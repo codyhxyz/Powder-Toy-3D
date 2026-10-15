@@ -7,8 +7,8 @@ The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` w
 
 ## Current evidence — 2026-10-15
 
-Latest production integration: `4080185e`, including fetched production `6d239845`.
-This feature checkpoint is 151 commits ahead and none behind that production base.
+Latest remote-main integration: `afc6ef4f`, including fetched `origin/main` at `2c5cb27d`.
+This feature checkpoint is 154 commits ahead and none behind that production base.
 Work remains in `/tmp/tpt-physics-v2-finish`; the recovery checkout is untouched.
 Physics results describe the feature branch, not the live site.
 The separate test-safety and measurement-guard fixes are deployed.
@@ -16,6 +16,14 @@ The separate test-safety and measurement-guard fixes are deployed.
 The native engine now includes contact rules, heat, phases, particles, air,
 jets, modes, exact persistence, and direct rendering.
 CPU coverage does not establish complete GPU feature parity.
+
+The latest merge adds four materials from production main.
+Contact and phase checks cover all 95 materials.
+All 49 applicable CPU scripts pass after removal of the candidate-specific uniform test.
+Terrain, adapter and build checks also pass.
+The new folded-terrain cache cannot yet preserve exact native core and bank state.
+Native capture and restore refuse before touching legacy stores, rather than losing that state.
+Independent merge review `8d642dea` finds no scoped blocker.
 
 | GPU check | Result | Total slot occupancy |
 | --- | --- | ---: |
@@ -50,20 +58,33 @@ The source changes preserve calibration:
 - Required contact compilation enters the bounded queue before graphics. The two-build concurrency limit remains unchanged.
 
 Two scalar contact-row experiments passed CPU checks but exceeded Metal's startup allowance.
-Both were reverted. Full row snapshots remain. The candidate below changes their read resource.
+Both were reverted. Full row snapshots remain.
 
-**Material-row access candidate (`f05eef58`):** production R5 reuses the existing table through an aligned, 14,656-byte uniform view.
-It adds no table buffer, upload, or pass.
-Rule-body bytes and default/custom emitter output remain unchanged.
-Capability and old-buffer checks retain the storage fallback.
-All 49 CPU check scripts, imports, minification, Naga validation and the build pass.
-Parent checks and independent review `a253087d` find no blocker within the inspected scope.
+**Material-row experiment (`f05eef58`, reverted by `fe9c7071`):**
+Production R5 reused the existing table through a 14,656-byte uniform view.
+All 49 CPU scripts and the build passed.
+Independent review `a253087d` found no scoped blocker.
 
-On-device selection, compilation, numerical acceptance and performance remain unverified.
-The first census attempt at `c325250c` does not launch because player detection finds the GPU 56% busy.
-The launcher releases its slot after 2.080 s.
-No simulation or GPU backend compilation starts, and no outcome returns.
-No override or automatic retry occurs.
+The first census attempt at `c325250c` did not launch because player detection found the GPU 56% busy.
+The launcher released its slot after 2.080 s.
+No simulation or GPU backend compilation started, and no outcome returned.
+No override or automatic retry occurred.
+
+After the user confirmed availability, one census ran at frozen checkpoint `1e846753`.
+The uniform path was selected.
+All 20 mass checks passed over 120 ticks, with zero drift.
+Total occupancy was 14.285 s, with clean release and no ownership errors.
+R5 backend compilation took 10.942 s.
+
+The historical same-fixture storage trace compiled R5 in 7.779 s.
+These runs are not a controlled benchmark, but they establish no compile benefit.
+The extra binding infrastructure was removed.
+Current main is merged, and full material snapshots use the original storage path.
+One current 95-material census ran at `afc6ef4f` with the storage path selected.
+All 20 checks passed over 120 ticks, with zero water, sand or wall drift.
+Total occupancy was 11.547 s, with clean release and no ownership errors.
+R5 backend compilation took 8.070 s.
+This scoped pass does not establish complete feature parity or a repeatable frame-time gain.
 
 ### Renderer-connected measurements
 
@@ -341,6 +362,12 @@ Local evidence:
 - `/tmp/v2-native-census-c325250c.jsonl`
 - `/tmp/v2-native-census-c325250c-run.log`
 - `/tmp/v2-cpu-6398bdda.log`
+- `/tmp/v2-native-census-1e846753.jsonl`
+- `/tmp/v2-native-census-1e846753-run.log`
+- `/tmp/v2-native-census-afc6ef4f.jsonl`
+- `/tmp/v2-native-census-afc6ef4f-run.log`
+- `/tmp/v2-cpu-main-merge-final.log`
+- `/tmp/v2-build-main-merge-final.log`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
 fresh production checks, independent review, deployment, and a live-site check.
