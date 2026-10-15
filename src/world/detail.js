@@ -36,7 +36,7 @@ export { DETAIL_CHUNK };
 // Exposed missing meshes precede live-window prewarming and stale replacements.
 // The cells kernel and both pipelines build alongside the far view at boot or
 // view switch (B5: nothing builds in views that don't draw it).
-// Only OFFSCREEN spares are bounded; wanted geometry is never budget-evicted.
+// Keep a look-around's working set; wanted geometry is never budget-evicted.
 // Until a mesh arrives there is a loading gap, not a coarse opaque substitute.
 const PAD = DETAIL_PAD, SPARE_CHUNKS = 192, SPARE_BYTES = 96 * 1024 * 1024;
 const BUFFER = { VERTEX: 0x20, INDEX: 0x10, COPY_DST: 0x08, STORAGE: 0x80, COPY_SRC: 0x04 };   // (GPUBufferUsage's bits)
@@ -60,6 +60,9 @@ export class WorldDetail {
     this.simVersion = this.sim.version;
     this.epoch = 0;
     this.bytes = 0;
+    this.spareChunks = SPARE_CHUNKS;
+    this.spareBytes = SPARE_BYTES;
+    this.retentionViews = 1;
     this.pending = new Map();
     this.visible = false;
     this.viewKey = null;
@@ -105,6 +108,9 @@ export class WorldDetail {
     this.mask.fill(0);
     this.maskDirty = true;
     this.wanted = [];
+    this.spareChunks = SPARE_CHUNKS;
+    this.spareBytes = SPARE_BYTES;
+    this.retentionViews = 1;
     this.dirty.clear();
     this.simVersion = this.sim.version;
     this.revisions.fill(0);
@@ -197,6 +203,14 @@ export class WorldDetail {
     }
     candidates.sort((a, b) => a.distance - b.distance);
     this.wanted = candidates;
+    const horizontalFov = 2 * Math.atan(Math.tan((camera.fov ?? 70) * Math.PI / 360) * (camera.aspect ?? 1));
+    // A real turn passes through several frusta, not just two opposite views.
+    this.retentionViews = Math.ceil(2 * Math.PI / horizontalFov);
+    // Map order is last use, not build order: revisiting a view refreshes it.
+    for (const { key } of candidates) {
+      const entry = this.entries.get(key);
+      if (entry) { this.entries.delete(key); this.entries.set(key, entry); }
+    }
     this.trimSpares();
     // Cache residency is independent of physics residency. The shaders clip
     // live-window fragments; keep their meshes ready for when the window moves.
@@ -205,10 +219,19 @@ export class WorldDetail {
   // Wanted entries do not consume spare budgets and are never victims.
   trimSpares() {
     const wanted = new Set(this.wanted.map((c) => c.key));
-    const spares = [...this.entries].filter(([key]) => !wanted.has(key));
+    const spares = [];
+    let wantedBytes = 0;
+    for (const [key, e] of this.entries) {
+      if (wanted.has(key)) wantedBytes += e.bytes;
+      else spares.push([key, e]);
+    }
+    // Size spares for a panorama, not a tiny fixed fraction of the old view.
+    const views = this.retentionViews ?? 1;
+    this.spareChunks = Math.min(this.mask.length, Math.max(this.spareChunks ?? SPARE_CHUNKS, wanted.size * views));
+    this.spareBytes = Math.max(this.spareBytes ?? SPARE_BYTES, wantedBytes * views);
     let count = spares.length, bytes = spares.reduce((n, [, e]) => n + e.bytes, 0);
     for (const [key, e] of spares) {
-      if (count <= SPARE_CHUNKS && bytes <= SPARE_BYTES) break;
+      if (count <= this.spareChunks && bytes <= this.spareBytes) break;
       this.drop(key); // oldest offscreen spare first
       count--; bytes -= e.bytes;
     }
@@ -344,7 +367,7 @@ export class WorldDetail {
       const bytes = positions.byteLength + normals.byteLength + ids.length * 4 + (indices?.byteLength ?? 0);
       // A late offscreen result cannot displace wanted geometry or allocate an
       // oversized spare. Wanted replacements have no geometry budget cutoff.
-      if (!this.wanted.some(c => c.key === token.key) && bytes > SPARE_BYTES) return;
+      if (!this.wanted.some(c => c.key === token.key) && bytes > (this.spareBytes ?? SPARE_BYTES)) return;
       const gpu = this.gpu;
       const upload = (label, data, usage) => {
         const b = gpu.createBuffer({ label, size: Math.max(4, Math.ceil(data.byteLength / 4) * 4), usage: usage | BUFFER.COPY_DST });
