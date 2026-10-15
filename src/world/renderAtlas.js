@@ -509,7 +509,9 @@ export class WorldRenderAtlas {
     }
     const jobs = explicit ? [...(input.cellJobs ?? []), ...(input.lightJobs ?? [])] : Array.isArray(input) ? input : [input];
     const ps = jobs.map(j => this._job(j)); check(new Set(ps).size === ps.length, 'duplicate publication job');
-    check(ps.every(p=>!p.producerOnly&&!p.restoreDeclarations?.gi?.publication.sourcePhaseToken),'private SOURCE/previous-GI closure cannot be presented');
+    check(ps.every(p=>!p.producerOnly&&p.publication?.sourcePhaseToken==null&&
+      p.restoreDeclarations?.source?.publication.sourcePhaseToken==null&&p.restoreDeclarations?.gi?.publication.sourcePhaseToken==null),
+      'private SOURCE/previous-GI closure cannot be presented');
     const dependencies = explicit && input.dependencyToken ? manifest(input.dependencyToken) : this.current.dependencies;
     const sun = explicit && Object.hasOwn(input, 'sunManifest') ? sunManifest(input.sunManifest) : this.current.sunManifest;
     check(dependencies.version >= this.current.dependencies.version, 'dependency manifest regression');

@@ -427,6 +427,7 @@ test('private readers preserve descriptor generation through actual input bindin
     const bundle=f.plan.captureRestore({...args,probeIndices:[]});
     const jobs=[f.job(bundle,f.M,READY.GI_SOURCE),f.job(bundle,f.N,READY.GI_SOURCE)];
     await f.write(bundle,jobs);
+    assert.throws(()=>f.atlas.publish({lightJobs:jobs}),/private SOURCE/,'source-only phase is private even before its reader snapshot exists');
     const generation=f.atlas.generation,current=f.atlas.snapshot();
     const privateBook=f.atlas.prepareProducerSnapshot({lightJobs:jobs,sourcePhaseToken:bundle.publication.sourcePhaseToken});
     assert.equal(privateBook.producerOnly,true);assert.equal(current.producerOnly,false);
