@@ -4,19 +4,20 @@
 //   node tools/industry-physical-check.mjs --case mechanisms --port 19543
 // CPU geometry check: --case thermal --preflight. Compute-only: --case thermal --harness.
 import { launchBrowser, newTestPage, ready } from './browser.mjs';
-import { budgetMs, CLEANUP_MS } from './gpu-deadline.mjs';
+import { budgetMs, CLEANUP_MS, MAX_SLOT_MS } from './gpu-deadline.mjs';
 import { validateDevices } from '../src/industry/validation.js';
 import { hearthRegions, hearthStructureCells } from '../src/industry/hearth.js';
 import { writeFileSync } from 'node:fs';
 
 const invokedAt = Date.now();
 const arg = name => process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : undefined;
-const slotBudgetMs = budgetMs(Number(arg('--budget-ms') || 10_000));
+const slotBudgetMs = budgetMs(Number(arg('--budget-ms') || MAX_SLOT_MS));
 // The independent watchdog starts graceful shutdown two cleanup intervals
 // before the slot ends. Return observations BEFORE that shutdown, not during it.
 const workDeadline = invokedAt + slotBudgetMs - 2 * CLEANUP_MS - 500;
 const caseDeadline = workDeadline - 300;
 const selectedCase = arg('--case');
+const operatorMode = arg('--operator') || 'transfer';
 const port = arg('--port') || '19543';
 const baseUrl = arg('--url') || `http://localhost:${port}/`;
 const useHarness = process.argv.includes('--harness');
@@ -25,15 +26,19 @@ const thermalDevices = validateDevices([
 ], [128, 128, 128]);
 const thermalGeometry = { ...hearthRegions(thermalDevices[0]), structure: hearthStructureCells(thermalDevices[0]) };
 if (!['thermal', 'mechanisms', 'diagnostics', 'line'].includes(selectedCase)) {
-  console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms|diagnostics|line [--budget-ms MS] [--harness] [--preflight] [--port PORT | --url URL]');
+  console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms|diagnostics|line [--operator transfer|tools] [--budget-ms MS] [--harness] [--preflight] [--port PORT | --url URL]');
+  process.exit(2);
+}
+if (!['transfer', 'tools'].includes(operatorMode) || (operatorMode === 'tools' && selectedCase !== 'line')) {
+  console.error('--operator tools requires --case line; valid operators are transfer and tools.');
   process.exit(2);
 }
 if (process.argv.includes('--preflight')) {
   if (selectedCase === 'line') {
     const { purelineDeviceLayout } = await import('./fixtures/industry-line.js');
     const devices = validateDevices(purelineDeviceLayout(), [128, 128, 128]);
-    console.log(JSON.stringify({ status: 'cpu-geometry-valid', devices: devices.length, bounds: [128, 128, 128],
-      limitations: 'Bounds/overlap only; no mining, thermal, cargo, browser, or GPU validation.' }));
+    console.log(JSON.stringify({ status: 'cpu-geometry-valid', operatorMode, devices: devices.length, bounds: [128, 128, 128],
+      limitations: 'Bounds/overlap only; no tools, mining, thermal, cargo, browser, or GPU validation.' }));
     process.exit(0);
   }
   console.log(JSON.stringify({ status: 'cpu-geometry-valid', devices: thermalDevices,
@@ -74,7 +79,7 @@ try {
   url.searchParams.set('test', 'manual');
   await within(page.goto(url.href, { waitUntil: 'domcontentloaded', timeout: Math.max(1, Math.min(4_000, workDeadline - Date.now())) }), workDeadline, 'app navigation');
   await within(useHarness ? page.waitForFunction(() => window.__harness?.ready) : ready(page), workDeadline, 'simulation ready');
-  const payload = await within(page.evaluate(async ({ caseName, deadline, useHarness, thermalDevices, thermalGeometry }) => {
+  const payload = await within(page.evaluate(async ({ caseName, deadline, useHarness, thermalDevices, thermalGeometry, operatorMode }) => {
     const cleanError = error => String(error?.message ?? error).replace(/\s+/g, ' ').slice(0, 500);
     const caseStarted = performance.now();
     const stage = name => console.log(`[physical-check] ${name} (${Math.round(performance.now() - caseStarted)} ms in page)`);
@@ -132,7 +137,11 @@ try {
     try {
       if (caseName === 'line') {
         const { runIndustryLine } = await import('/tools/fixtures/industry-line.js');
-        const result = await runIndustryLine({ sim, gpu: a.gpu, deadline, stage });
+        const result = await runIndustryLine({ sim, gpu: a.gpu, deadline, stage, operatorMode });
+        if (operatorMode === 'tools' && result.observations?.operatorMode !== 'tools') {
+          result.status = 'failed';
+          result.residualGaps.push('Actual tool mode was requested but the fixture did not attest its activation.');
+        }
         if (h?.failures?.length) return { ...result, status: 'failed', apiErrors: h.failures.map(cleanError) };
         return result;
       }
@@ -461,7 +470,7 @@ try {
       diagnostics?.dispose();
       nativeSim?.dispose();
     }
-  }, { caseName: selectedCase, deadline: caseDeadline, useHarness, thermalDevices, thermalGeometry }), workDeadline, 'physical checkpoint');
+  }, { caseName: selectedCase, deadline: caseDeadline, useHarness, thermalDevices, thermalGeometry, operatorMode }), workDeadline, 'physical checkpoint');
   result = payload;
   if (browserErrors.length) {
     result.browserErrors = browserErrors;
@@ -479,11 +488,12 @@ try {
     }
   }
 }
-  result.timing = { wallMs: Date.now() - invokedAt, slotBudgetMs };
+if (selectedCase === 'line') result.operatorMode = operatorMode;
+result.timing = { wallMs: Date.now() - invokedAt, slotBudgetMs };
 const outputPath = arg('--output');
 if (outputPath) {
   writeFileSync(outputPath, `${JSON.stringify(result, null, 2)}\n`);
-  console.log(JSON.stringify({ case: result.case, status: result.status, checks: result.checks,
+  console.log(JSON.stringify({ case: result.case, operatorMode: result.operatorMode, status: result.status, checks: result.checks,
     error: result.error, stage: result.observations?.stage, output: outputPath, timing: result.timing }));
 } else console.log(JSON.stringify(result));
 if (result.status !== 'passed') process.exitCode = 1;
