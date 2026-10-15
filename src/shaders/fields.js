@@ -348,7 +348,7 @@ ${listMainWGSL('LIST_EMA')}
   }
   // Ownership wins over old bulk history, before any spatial blur.
   if (particleOwned) { sv[ch] = 0.0; }
-  if (jetAt(p)) { sv.x = 1.0; }   // a pour: full now (jetWGSL)
+  if (jetAt(p) && !particleOwned) { sv.x = 1.0; }   // ownership wins over jet boost
   ema[s] = pack4x8unorm(sv);
   ema[SLOTS + s] = pack4x8unorm(m);
   var weight = vec4f(select(1.0, 0.0, crisp));
@@ -438,7 +438,7 @@ ${listMainWGSL('LIST_WORK')}${coverWGSL('boost')}
 ${stage === 0 ? `    acc += w * vec4f(unpack2x16float(src[t]), unpack2x16float(src[SLOTS + t]));
     let ch = SURFCH(eid(fetchAs(t)));
     if (ch >= 0 && !(P.particleSplit != 0u && hybridParticleOwns(q, P.world != 0u))) { occ[ch] = 1.0; }
-    if (jetAt(q)) { occ.x = 1.0; }   // a pour's wake is current liquid (jetWGSL)` : `    acc += w * unpack4x8unorm(src[t]);
+    if (jetAt(q) && !(P.particleSplit != 0u && hybridParticleOwns(q, P.world != 0u))) { occ.x = 1.0; }` : `    acc += w * unpack4x8unorm(src[t]);
     occ = max(occ, unpack4x8unorm(src[SLOTS + t]));`}
   }
   dst[s] = pack4x8unorm(acc);

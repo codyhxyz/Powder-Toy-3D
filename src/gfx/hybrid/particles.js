@@ -23,7 +23,7 @@
 // be a function(frame)->GPUBindGroup. No standard material struct is imposed.
 // handlesAppearance is a caller guarantee that both source art and decoration
 // are handled by that adapter; otherwise these scenes explicitly fall back.
-// Public resources expose {instances,args,layout,bind,capacity,stride} for
+// Public resources expose {instances,args,opticalArgs,layout,bind,capacity,stride} for
 // alternate materials/shadow owners. Instance ABI is in shaders/hybrid/particles.
 import { frameUniformsOf } from '../uniforms.js';
 import { fold } from '../../gpu/kernels.js';
@@ -37,15 +37,15 @@ export { PARTICLE_OWNERSHIP, particleOwns, particleOwnershipWGSL } from '../../s
 const STORAGE = 0x80, INDIRECT = 0x100;
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
-/** createHybridParticles(gpu,sim,{world=false,capacity=allCells,
+/** createHybridParticles(gpu,sim,{world=false,capacity=allCells/2,
  * shader}) -> {ready,isReady,stats,revision,resources,
- * update,draw,drawShadow,invalidate,dispose}. Optics owns ALL liquids,
- * molten matter and glass, including isolated droplets. Organic/granular
+ * update,draw,drawShadow,invalidate,dispose}. Optics shades liquid/molten
+ * instances using resources; glass stays cell/field geometry. Four-channel
  * ownership is the exact 26-neighbour same-channel predicate exported above.
  * Current source state has no subcell position; cell+.5 is its real location.
  */
 export function createHybridParticles(gpu, sim, {
-  world = false, capacity: requested = sim.g.slots / 4, shader = {},
+  world = false, capacity: requested = sim.g.slots / 2, shader = {},
 } = {}) {
   if (shader.wgsl !== undefined && typeof shader.wgsl !== 'string') throw new TypeError('shader.wgsl must be WGSL');
   if (shader.handlesAppearance && !shader.wgsl) throw new TypeError('Appearance support requires a shader adapter');
@@ -58,10 +58,11 @@ export function createHybridParticles(gpu, sim, {
   const meshLayout = gpu.layout('HYBRID_PARTICLE_MESH', PARTICLE_MESH_LAYOUT);
   const drawLayout = gpu.layout('HYBRID_PARTICLE_DRAW', PARTICLE_DRAW_LAYOUT);
   const instances = gpu.createBuffer({ label: label('instances'), size: capacity * PARTICLE_BYTES, usage: STORAGE });
-  const count = gpu.createBuffer({ label: label('count'), size: 4, usage: STORAGE });
+  const count = gpu.createBuffer({ label: label('count'), size: 8, usage: STORAGE });
   const args = gpu.createBuffer({ label: label('indirect'), size: 16, usage: STORAGE | INDIRECT });
+  const opticalArgs = gpu.createBuffer({ label: label('optical indirect'), size: 32, usage: STORAGE | INDIRECT });
   const ring = gpu.readback.ring(label('counts'), 16, 16);
-  const meshGroup = gpu.bindGroup(meshLayout, [instances, count, args, ring.buffer].map((buffer, binding) => ({ binding, resource: { buffer } })), label('mesh'));
+  const meshGroup = gpu.bindGroup(meshLayout, [instances, count, args, ring.buffer, opticalArgs].map((buffer, binding) => ({ binding, resource: { buffer } })), label('mesh'));
   const drawGroup = gpu.bindGroup(drawLayout, [{ binding: 0, resource: { buffer: instances } }], label('draw'));
   const code = particleMeshWGSL(g);
   const meshDesc = { code, layouts: [sim.L.TABLES, sim.L.STATE_RO, meshLayout], params: ParticleMeshParams };
@@ -77,7 +78,7 @@ export function createHybridParticles(gpu, sim, {
   const pipes = [mesh, finish, drawPipe, shadowPipe];
   let disposed = false, key = null, generation = 0, frameState = {};
   let viewport = [1, 1];
-  const stats = { builds: 0, count: 0, capacity, overflow: false, pending: false,
+  const stats = { builds: 0, count: 0, droplets:0, capacity, overflow: false, pending: false,
     fallbackRequired: true, fallbackReason: 'ownership-not-split', readbackError: null };
   function fallback(reason) { stats.fallbackRequired = !!reason; stats.fallbackReason = reason; }
   function blocked(frame) {
@@ -90,11 +91,11 @@ export function createHybridParticles(gpu, sim, {
     ready: Promise.all(pipes.map((p) => p.ready)).then(() => api),
     get isReady() { return !disposed && !gpu.failure && pipes.every((p) => p.state === 'ready'); },
     get revision() { return `${generation}|${key}|${stats.fallbackReason}`; },
-    capabilities: Object.freeze({ particleSplit: true, channels: [2, 3], liquids: false }),
+    capabilities: Object.freeze({ particleSplit: true, channels: [0, 1, 2, 3], liquids: true }),
     stats,
-    // A 2³ cell tile holds at most one isolated cell per channel: two / eight.
-    get guaranteedCapacity() { return capacity >= g.slots / 4; },
-    resources: { instances, args, layout: drawLayout, bind: drawGroup, capacity, stride: PARTICLE_BYTES },
+    // A 2³ cell tile holds at most one isolated cell per channel: four / eight.
+    get guaranteedCapacity() { return capacity >= g.slots / 2; },
+    resources: { instances, args, opticalArgs, layout: drawLayout, bind: drawGroup, capacity, stride: PARTICLE_BYTES },
     /** size: positive integer render pixels. sourceStyle must be supplied for
      * source-art scenes. Actual Derived mode (and matching world halo) is required. */
     update(frame = {}) {
@@ -126,8 +127,9 @@ export function createHybridParticles(gpu, sim, {
       stats.builds++;
       ring.read(slot).then((bytes) => {
         if (disposed || token !== generation) return;
-        const [n, overflow] = new Uint32Array(bytes);
+        const [n, overflow,, droplets=0] = new Uint32Array(bytes);
         stats.count = n;
+        stats.droplets=droplets;
         stats.pending = false;
         stats.overflow = !!overflow;
         fallback(blocked(frameState) || (overflow ? 'capacity-overflow' : ''));
@@ -161,7 +163,7 @@ export function createHybridParticles(gpu, sim, {
       fallback('disposed');
       gpu.flush('hybrid particles dispose');
       ring.close();
-      for (const buffer of [instances, count, args]) buffer.destroy();
+      for (const buffer of [instances, count, args, opticalArgs]) buffer.destroy();
     },
   };
   function canDraw() {

@@ -1,11 +1,11 @@
-// Isolated-cell geometry only. Liquid/molten/glass and independent energy
-// particles (src/rays.js) remain owned by optics/the existing renderer.
+// Isolated-cell instances. Optical instances are shaded by optics, never by
+// the opaque particle draw. Glass and independent energy stay separate.
 import { prelude, STATE_OPTS, STAGE } from '../common.js';
 import { frameBindings } from '../bindings.js';
-import { materialsGLSL, THIN_RADIUS } from '../../gfx/materials.js';
+import { materialsGLSL, THIN_RADIUS, LOOK } from '../../gfx/materials.js';
 import { uniformStruct } from '../../gpu/params.js';
 
-export const PARTICLE_OWNERSHIP = Object.freeze({ channels: Object.freeze([2, 3]), liquids: false, molten: false, glass: false });
+export const PARTICLE_OWNERSHIP = Object.freeze({ channels: Object.freeze([0, 1, 2, 3]), liquids: true, molten: true, glass: false });
 
 export const PARTICLE_BYTES = 32;
 export const PARTICLE_VERTICES = 96; // subdivided octahedron (32 triangles)
@@ -13,12 +13,17 @@ export const PARTICLE_RADIUS = THIN_RADIUS;
 export const PARTICLE_LOD_PIXELS = 8;
 export const ParticleMeshParams = uniformStruct('ParticleMeshParams', { capacity: 'u32', slot: 'u32', world: 'u32' });
 export const ParticleDrawParams = uniformStruct('ParticleDrawParams', { matrix: 'mat4x4f', viewport: 'vec2f' });
-export const PARTICLE_MESH_LAYOUT = [0, 1, 2, 3].map((binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }));
+export const PARTICLE_MESH_LAYOUT = [0, 1, 2, 3, 4].map((binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }));
 export const PARTICLE_DRAW_LAYOUT = [{ binding: 0, visibility: STAGE.VERTEX, buffer: { type: 'read-only-storage' } }];
+// Vertex shaders cannot access FRAME's fragment-only element table binding.
+export const particleChannelWGSL = `fn hpChannel(id: u32) -> i32 {
+  let channels = array<i32, ${LOOK.length}>(${LOOK.map(look => look.ch).join(',')});
+  return channels[min(id, ${LOOK.length - 1}u)];
+}`;
 
 /**
- * Exact ownership, shared with extraction. Requires SURFCH, CH_GRANULAR,
- * CH_ORGANIC, inGrid, fetchA, eid and NX/NY/NZ. `world` rejects the one-cell
+ * Exact four-channel ownership, shared with extraction. Requires SURFCH,
+ * inGrid, fetchA, eid and NX/NY/NZ. `world` rejects the one-cell
  * x/z window halo: its unseen neighbours cannot be classified honestly.
  * All 26 neighbours, including across bricks, are tested in state, NOT in
  * fieldThin (thin features are already boosted there and may still be visible).
@@ -27,13 +32,13 @@ export const PARTICLE_DRAW_LAYOUT = [{ binding: 0, visibility: STAGE.VERTEX, buf
  */
 export const particleOwnershipWGSL = /* wgsl */ `
 fn hybridParticleChannel(id: i32) -> bool {
-  return SURFCH(id) == CH_GRANULAR || SURFCH(id) == CH_ORGANIC;
+  return SURFCH(id) >= 0 && SURFCH(id) < 4;
 }
 fn hybridParticleOwns(c: vec3i, world: bool) -> bool {
   if (!inGrid(c)) { return false; }
   if (world && (c.x == 0 || c.z == 0 || c.x == NX - 1 || c.z == NZ - 1)) { return false; }
   let ch = SURFCH(eid(fetchA(c)));
-  if (ch != CH_GRANULAR && ch != CH_ORGANIC) { return false; }
+  if (ch < 0 || ch >= 4) { return false; }
   for (var z = -1; z <= 1; z++) {
     for (var y = -1; y <= 1; y++) {
       for (var x = -1; x <= 1; x++) {
@@ -56,7 +61,7 @@ export function particleOwns(cell, size, channelAt, world = false) {
   const [cx, , cz] = cell;
   if (world && (cx === 0 || cz === 0 || cx === size[0] - 1 || cz === size[2] - 1)) return false;
   const ch = channelAt(cell);
-  if (ch !== 2 && ch !== 3) return false;
+  if (ch < 0 || ch >= 4) return false;
   for (let z = -1; z <= 1; z++) for (let y = -1; y <= 1; y++) for (let x = -1; x <= 1; x++) {
     if (!(x || y || z)) continue;
     const p = [cell[0] + x, cell[1] + y, cell[2] + z];
@@ -94,7 +99,7 @@ export function particleCompaction(count, capacity) {
   return { count, overflow, args: [PARTICLE_VERTICES, overflow ? 0 : count, 0, 0] };
 }
 
-const instanceWGSL = /* wgsl */ `
+export const instanceWGSL = /* wgsl */ `
 struct HybridParticle {
   center: vec3f,
   id: u32,
@@ -109,9 +114,10 @@ ${ParticleMeshParams.wgsl}
 @group(3) @binding(1) var<uniform> P: ParticleMeshParams;
 ${instanceWGSL}
 @group(2) @binding(0) var<storage, read_write> particles: array<HybridParticle>;
-@group(2) @binding(1) var<storage, read_write> count: atomic<u32>;
+@group(2) @binding(1) var<storage, read_write> count: array<atomic<u32>, 2>;
 @group(2) @binding(2) var<storage, read_write> args: array<u32, 4>;
 @group(2) @binding(3) var<storage, read_write> results: array<vec4u>;
+@group(2) @binding(4) var<storage, read_write> opticalArgs: array<vec4u, 2>;
 ${particleOwnershipWGSL}
 @compute @workgroup_size(64) fn main(@builtin(workgroup_id) wg: vec3u,
   @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
@@ -119,21 +125,25 @@ ${particleOwnershipWGSL}
   if (s >= SLOTS) { return; }
   let c = cellOf(s);
   if (!hybridParticleOwns(c, P.world != 0u)) { return; }
-  let index = atomicAdd(&count, 1u);
+  let index = atomicAdd(&count[0], 1u);
+  if (SURFCH(eid(fetchAs(s))) < 2) { atomicAdd(&count[1], 1u); }
   if (index < P.capacity) {
     let a = fetchAs(s);
     particles[index] = HybridParticle(vec3f(c) + vec3f(0.5), u32(eid(a)), a);
   }
 }
 @compute @workgroup_size(1) fn finish() {
-  let n = atomicLoad(&count);
+  let n = atomicLoad(&count[0]);
   let overflow = n > P.capacity;
   args[0] = ${PARTICLE_VERTICES}u;
   args[1] = select(n, 0u, overflow); // never draw a silently truncated generation
   args[2] = 0u;
   args[3] = 0u;
-  results[P.slot] = vec4u(n, select(0u, 1u, overflow), P.capacity, 0u);
-  atomicStore(&count, 0u);
+  results[P.slot] = vec4u(n, select(0u, 1u, overflow), P.capacity, atomicLoad(&count[1]));
+  opticalArgs[0] = vec4u(3u, select(0u, 1u, atomicLoad(&count[1]) > 0u && !overflow), 0u, 0u);
+  opticalArgs[1] = vec4u(6u, select(n, 0u, overflow), 0u, 0u);
+  atomicStore(&count[0], 0u);
+  atomicStore(&count[1], 0u);
 }`;
 
 // Generate an octahedron with winding irrelevant (cullMode none). At <=8 px
@@ -154,6 +164,7 @@ export { vertices as particleUnitVertices };
 
 const geometryWGSL = /* wgsl */ `
 ${instanceWGSL}
+${particleChannelWGSL}
 ${ParticleDrawParams.wgsl}
 @group(3) @binding(1) var<uniform> P: ParticleDrawParams;
 @group(1) @binding(0) var<storage, read> particles: array<HybridParticle>;
@@ -223,6 +234,7 @@ fn hpDetailed(center: vec3f) -> bool {
   o.grid = p;
   o.normal = u;
   o.a = instance.a;
+  if (hpChannel(instance.id) < 2) { o.position = vec4f(2.0, 2.0, 2.0, 1.0); }
   return o;
 }
 @fragment fn fs(i: VOut) -> @location(0) vec4f {
@@ -236,5 +248,6 @@ export const particleShadowWGSL = () => /* wgsl */ `
 ${geometryWGSL}
 @vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> @builtin(position) vec4f {
   let p = particles[ii].center + HP_RADIUS * hpUnit(vi, true);
+  if (hpChannel(particles[ii].id) == 0) { return vec4f(2.0, 2.0, 2.0, 1.0); }
   return P.matrix * vec4f(p, 1.0);
 }`;

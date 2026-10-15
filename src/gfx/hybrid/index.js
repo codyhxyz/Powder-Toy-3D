@@ -63,7 +63,7 @@ export function createHybridRenderer(gpu,sim,{post,invalidateCaches=()=>{},onRea
   const segmentWGSL=hybridMediaSegmentWGSL({fieldGroup:2,fieldBinding:16,
     paramsGroup:2,paramsBinding:23,declareFrame:false,declareHeader:false,
     sunWGSL:'',sunVisibility:'hybridMediaSun'});
-  const optics=createHybridOptics(gpu,sim,{world,lighting:{
+  const optics=createHybridOptics(gpu,sim,{world,particles:particles.resources,lighting:{
     wgsl:opticalShader.wgsl+'\n'+mediaSun+'\n'+segmentWGSL,
     bindings:[...opticalShader.layout,...MEDIA_FIELD_LAYOUT.map(e=>({...e,binding:e.binding+16})),
       {binding:23,visibility:2,buffer:{type:'uniform'}}],

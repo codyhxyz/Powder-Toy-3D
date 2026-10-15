@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { gridDims } from '../src/shaders/common.js';
-import { opticsShader, opticsBindings, opticsFieldBindings, OPTICS_STATE_LAYOUT } from '../src/shaders/hybrid/optics.js';
+import { opticsShader, opticsBindings, opticsFieldBindings, OPTICS_STATE_LAYOUT, dropDepthWGSL } from '../src/shaders/hybrid/optics.js';
 import { interfaceEnergy, opticalTransmission, walkOpticalCells, traceOpticalReference,
   opticalFieldDensity, opticalFieldSegment, validateOpticsLimits, validateOpticsResources,
   createHybridOptics } from '../src/gfx/hybrid/optics.js';
@@ -141,7 +141,7 @@ const grid = gridDims({nx:32,ny:32,nz:32});
 const boundedCode = opticsShader(grid,{fieldBinding:2,boundsBinding:4});
 const boundedReflection = new WgslReflect(boundedCode);
 assert.equal(boundedReflection.storage.length,4); assert.equal(boundedReflection.textures.length,4);
-assert.match(boundedCode,/if \(opticalBounds.count == 0u\) \{ return out; \}/);
+assert.match(boundedCode,/if \(!forced && opticalBounds.count == 0u\) \{ return out; \}/);
 assert(boundedCode.indexOf('if (interval.x >= cut)') < boundedCode.indexOf('previous = opticsFieldState'));
 assert.match(boundedCode,/optical == 0 && bent/);
 assert.doesNotMatch(boundedCode,/if \(!covered\) \{ return out; \}/);
@@ -177,10 +177,10 @@ const gpu = {
   createTexture:fakeTexture,
   kernel(d){ const k={state:'ready',ready:Promise.resolve(),dispatch(frame,size,args){ calls.push({name:d.name,frame,size,args}); }}; pipelines.push(k); return k; },
   renderPipeline(d){ const p={state:'ready',ready:Promise.resolve(),draw(pass,args){
-    assert(!pass.ended); OpticsParams.pack(args.params,new DataView(new ArrayBuffer(OpticsParams.size)),0);
+    assert(!pass.ended); if (args.params) OpticsParams.pack(args.params,new DataView(new ArrayBuffer(OpticsParams.size)),0);
     calls.push({name:'draw',args});
   }}; pipelines.push(p); return p; },
-  frame:{render(){ calls.push({name:'render'}); return {ended:false,end(){this.ended=true;}}; }},
+  frame:{render(desc){ calls.push({name:'render',desc}); return {ended:false,end(){this.ended=true;}}; }},
 };
 const sim = {g:grid,L:{TABLES:{},STATE_RO:{}},tables:{},bindRO:{},header:()=>({}),version:1,cur:0,origin:{x:0,y:0,z:0},
   derived:{world:true,fieldSurf:{},fieldThin:{},views:{fieldSurf:{},fieldThin:{}}}};
@@ -209,10 +209,44 @@ assert.equal(frame.color.destroyed,0); assert.equal(frame.depth.destroyed,0); as
 assert.throws(()=>optics.update(frame),/disposed/);
 console.log(`hybrid optics follow-up: ${ELEMENTS.length} IDs; bounds support/miss/occlusion; four-channel intervals, normals, live sources and sphere geometry; WG64 layouts; 16/8 budgets; same-frame recording/cache/disposal passed (CPU only)`);
 
-if (process.argv.includes('--naga')) {
+const dropCode = opticsShader(grid,{fieldBinding:2,boundsBinding:4,particleBinding:5});
+const dropReflect = new WgslReflect(dropCode);
+for (const vs of dropReflect.entry.vertex) assert(!vs.resources.some(resource=>resource.name==='TB'));
+assert.equal(dropReflect.textures.length,4); // no added sampled resources
+assert.equal(dropReflect.storage.length,5);
+assert.match(dropCode,/opticsTrace\(OpticsVertex\(v.position\),true,d.a,entry\)/);
+assert.match(dropCode,/!forced && !bent/);
+assert.match(dropCode,/@builtin\(frag_depth\)/);
+assert.deepEqual(opticalParticleInterval([0.5,0.5,0.5],[1,0,0],[0,0,0]),[-0.5,0.5]);
+assert(opticalParticleInterval([-2,0.5,0.5],[1,0,0],[0,0,0])[0] > 1); // opaque at t=1 wins
+// The same sphere roots remain available to secondary rays behind glass.
+assert.match(dropCode,/let particle = opticsParticleOwns/);
+const resources = {instances:{},opticalArgs:{}};
+const drops = createHybridOptics(gpu,sim,{particles:resources,
+  lighting:{hooks:{worldHit:'fn opticsWorldHit(h: OpticalHit) -> vec3f { return vec3f(1); }'}}});
+assert.throws(()=>drops.record(frame),/particleSplit/);
+sim.derived.particleSplit=true;
+gpu.frame.encoder={};
+gpu.frame.flush=function(){ this.encoder=null; };
+const start=calls.length;
+drops.record(frame);
+const recorded=calls.slice(start);
+assert.deepEqual(recorded.filter(c=>c.name==='draw').map(c=>c.args.indirect?.offset),[undefined,0,16]);
+const passes=recorded.filter(c=>c.name==='render');
+assert(passes[2].desc.colorAttachments.every(a=>a.loadOp==='load'));
+assert.equal(passes[1].desc.depthStencilAttachment.depthLoadOp,'clear');
+assert.equal(passes[2].desc.depthStencilAttachment.depthLoadOp,'load');
+const dropAttachments=[...Object.values(drops.output),passes[2].desc.depthStencilAttachment.view.texture];
+drops.dispose();
+assert(dropAttachments.every(t=>t.destroyed===0),'encoded resources must survive until encoder submission');
+gpu.frame.flush();
+assert(dropAttachments.every(t=>t.destroyed===1),'retire exactly once after encoder changes');
+
+{
   const { spawnSync } = await import('node:child_process');
   for (const [name, code] of [['bounds',boundsCode], ['field-optics',boundedCode],
-    ['cell-optics',opticsShader(grid,{boundsBinding:2})]]) {
+    ['cell-optics',opticsShader(grid,{boundsBinding:2})], ['droplets',dropCode],
+    ['drop-depth',dropDepthWGSL], ['split-bounds',opticsBoundsShader(grid,{particles:true,world:true})]]) {
     const result = spawnSync('naga',['--stdin-file-path',`${name}.wgsl`],{input:code,encoding:'utf8'});
     assert.equal(result.status,0,`${name}: ${result.error ?? ''}${result.stdout}${result.stderr}`);
   }

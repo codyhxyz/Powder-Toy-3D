@@ -1,7 +1,7 @@
 import { prelude, STATE_OPTS, LAYOUT, STAGE } from '../common.js';
 import { frameBindings } from '../bindings.js';
 import { materialsGLSL, THIN_RADIUS } from '../../gfx/materials.js';
-import { particleOwnershipWGSL } from './particles.js';
+import { particleOwnershipWGSL, instanceWGSL, particleChannelWGSL } from './particles.js';
 import { uniformStruct } from '../../gpu/params.js';
 
 /** Per-pixel validity bits. Zero means supported, not 'no optical coverage'. */
@@ -10,7 +10,7 @@ export const OPTICS_FALLBACK = Object.freeze({
   APPEARANCE: 16, SMOOTH_BACKGROUND: 32, OUTSIDE_MEDIUM: 64, SURFACE: 128, MEDIA: 256,
 });
 export const OpticsParams = uniformStruct('OpticsParams', {
-  gridInv: 'mat4x4f', size: 'vec2f', unsupported: 'u32', depthTolerance: 'f32', world: 'u32',
+  gridInv: 'mat4x4f', size: 'vec2f', unsupported: 'u32', depthTolerance: 'f32', world: 'u32', particleSplit: 'u32',
 });
 export const opticsBindings = (binding = 0) => [
   { binding, visibility: STAGE.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
@@ -29,10 +29,11 @@ export const opticsClassWGSL = `fn opticsClass(id: i32) -> i32 {
 const boundsStruct = `struct OpticalBounds { lo: vec3u, count: u32, hi: vec3u, pad: u32 }`;
 export const opticsBoundsLayout = [0, 1].map(binding => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }));
 /** Two WG64 reductions. No per-cell global atomics and no CPU count readback. */
-export function opticsBoundsShader(g) {
+export function opticsBoundsShader(g, { particles = false, world = false } = {}) {
   return `${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
 ${opticsClassWGSL}
+${particleOwnershipWGSL}
 ${boundsStruct}
 @group(2) @binding(0) var<storage, read_write> bricks: array<OpticalBounds>;
 @group(2) @binding(1) var<storage, read_write> bounds: OpticalBounds;
@@ -57,7 +58,7 @@ fn reduceBounds(li: u32) {
   let slot = brick * 64u + li;
   lows[li] = vec3u(vec3i(NX, NY, NZ)); highs[li] = vec3u(0); counts[li] = 0u;
   let c = cellOf(slot);
-  if (inGrid(c) && opticsClass(eid(fetchAs(slot))) != 0) {
+  if (inGrid(c) && opticsClass(eid(fetchAs(slot))) != 0 ${particles ? `&& !hybridParticleOwns(c, ${world})` : ''}) {
     lows[li] = vec3u(c); highs[li] = vec3u(c) + vec3u(1); counts[li] = 1u;
   }
   reduceBounds(li);
@@ -169,7 +170,7 @@ fn opticsFieldState(p: vec3f, cellState: vec4f) -> vec4f {
   let id = eid(cellState); let cell = vec3i(floor(p));
   // Crisp solids and exact isolated spheres are not bulk density.
   if (id != E_EMPTY && KIND(id) != K_GAS && SURFCH(id) < 0) { return cellState; }
-  if (hybridParticleOwns(cell, P.world != 0u)) {
+  if (opticsParticleOwns(cell, P.world != 0u)) {
     if (distance(p, vec3f(cell)+vec3f(0.5)) <= ${THIN_RADIUS}) { return cellState; }
   }
   var best = 1e20; var source = vec4f(0.0);
@@ -183,7 +184,7 @@ fn opticsFieldState(p: vec3f, cellState: vec4f) -> vec4f {
       let a = fetchA(q); let ch = SURFCH(eid(a));
       if (ch >= 0 && ch < 4) {
         let delta = vec3f(q)+vec3f(0.5)-p; let d = dot(delta,delta);
-        if (density[ch] >= 0.5 && d < best && !hybridParticleOwns(q, P.world != 0u)) { best = d; source = a; }
+        if (density[ch] >= 0.5 && d < best && !opticsParticleOwns(q, P.world != 0u)) { best = d; source = a; }
       }
     }
   } } }
@@ -223,7 +224,7 @@ fn opticsFieldSegment(p: vec3f, rd: vec3f, cellExit: f32) -> f32 {
 `;
 }
 
-export function opticsShader(g, { maxSteps = 256, maxInterfaces = 8, fieldBinding = null, boundsBinding = null, wgsl = '', hooks = {}, binding = 0 } = {}) {
+export function opticsShader(g, { maxSteps = 256, maxInterfaces = 8, fieldBinding = null, boundsBinding = null, particleBinding = null, wgsl = '', hooks = {}, binding = 0 } = {}) {
   for (const [name, n, limit] of [['maxSteps', maxSteps, 2048], ['maxInterfaces', maxInterfaces, 32]]) {
     if (!Number.isInteger(n) || n < 1 || n > limit) throw new RangeError(`${name} must be in 1..${limit}`);
   }
@@ -241,6 +242,12 @@ struct OpticalHit { position: vec3f, normal: vec3f, id: i32, state: vec4f, view:
 ${boundsBinding === null ? '' : `${boundsStruct}
 @group(2) @binding(${boundsBinding}) var<storage, read> opticalBounds: OpticalBounds;`}
 ${particleOwnershipWGSL}
+fn opticsParticleOwns(c: vec3i, world: bool) -> bool {
+  return hybridParticleOwns(c, world) && (P.particleSplit != 0u || SURFCH(eid(fetchA(c))) >= 2);
+}
+${particleBinding === null ? '' : `${instanceWGSL}
+${particleChannelWGSL}
+@group(2) @binding(${particleBinding}) var<storage, read> drops: array<HybridParticle>;`}
 ${fieldBinding === null ? '' : opticalFieldsWGSL(fieldBinding)}
 ${wgsl}
 ${Object.entries(OPTICS_DEFAULT_HOOKS).map(([key, value]) => hooks[key] ?? value).join('\n')}
@@ -319,15 +326,16 @@ struct OpticsOutput {
   @location(1) metadata: vec4f,
   @location(2) fallback: u32,
 }
-@fragment fn fs(v: OpticsVertex) -> OpticsOutput {
+fn opticsTrace(v: OpticsVertex, forced: bool, source: vec4f, entry: f32) -> OpticsOutput {
   let px = vec2i(v.position.xy);
   let original = textureLoad(opticsColor, px, 0);
   var out: OpticsOutput;
   out.color = original; out.metadata = vec4f(1.0, 0.0, 1.0, 0.0); out.fallback = 0u;
   let uv = v.position.xy / P.size;
   var rd = normalize(opticsGridAt(uv, 0.5) - FU.cam);
-  ${boundsBinding === null ? '' : 'if (opticalBounds.count == 0u) { return out; }'}
-  let interval = opticsBox(FU.cam, rd, ${boundsBinding === null ? 'vec3f(0), vec3f(vec3i(NX, NY, NZ))' : 'vec3f(opticalBounds.lo), vec3f(opticalBounds.hi)'});
+  ${boundsBinding === null ? '' : 'if (!forced && opticalBounds.count == 0u) { return out; }'}
+  var interval = opticsBox(FU.cam, rd, ${boundsBinding === null ? 'vec3f(0), vec3f(vec3i(NX, NY, NZ))' : 'vec3f(opticalBounds.lo), vec3f(opticalBounds.hi)'});
+  if (forced) { interval = vec2f(entry, OPTICS_FAR); }
   if (interval.y < interval.x) { return out; }
   let sceneDepth = textureLoad(opticsDepth, px, 0);
   var cut = OPTICS_FAR;
@@ -361,6 +369,15 @@ struct OpticsOutput {
     if (opticsClass(medium) == 1) { covered = true; bent = true; out.metadata.x = 0.0; }
     else { medium = E_EMPTY; covered = false; bent = false; out.metadata.x = 1.0; }
   }`}
+  if (P.particleSplit != 0u && opticsParticleOwns(eyeCell, P.world != 0u) && !forced) {
+    medium = E_EMPTY; covered = false; bent = false; out.metadata.x = 1.0;
+  }
+  if (forced) {
+    medium = E_EMPTY; previous = vec4f(0); covered = false; bent = false; out.metadata.x = 1.0;
+    if (entry == 0.0 && opticsClass(eid(source)) == 1) {
+      previous = source; medium = eid(source); covered = true; bent = true; out.metadata.x = 0.0;
+    }
+  }
   // Pre-entry traversal must not silently omit distant optical cells. A straight
   // ray crosses a bounded number of cell/cube/tetra planes and four-channel
   // iso roots across the grid (64 per summed axis extent is conservative). The
@@ -372,14 +389,17 @@ struct OpticsOutput {
     let cell = vec3i(floor(p + rd * OPTICS_EPS));
     var a = vec4f(0.0); var id = E_EMPTY;
     if (inGrid(cell)) { a = fetchA(cell); id = eid(a); }
-    let particle = hybridParticleOwns(cell, P.world != 0u);
+    let particle = opticsParticleOwns(cell, P.world != 0u);
     let sphere = opticsSphere(p, rd, vec3f(cell)+vec3f(0.5));
     let particleHit = particle && sphere.x <= OPTICS_EPS && sphere.y > OPTICS_EPS;
     if (particle) {
+      let delta = p - (vec3f(cell)+vec3f(0.5));
+      if (dot(delta,delta) > 1e-12) {
+        normal = normalize(delta);
+        if (dot(normal,rd) > 0.0) { normal = -normal; }
+      }
       if (particleHit) {
-        let delta = p - (vec3f(cell)+vec3f(0.5));
-        normal = -rd;
-        if (dot(delta,delta) > 1e-12) { normal = normalize(delta); }
+        if (dot(delta,delta) <= 1e-12) { normal = -rd; }
       } else { a = vec4f(0); id = E_EMPTY; }
     }
     ${fieldBinding === null ? '' : `if (inGrid(cell)) { a = opticsFieldState(p + rd * OPTICS_EPS, a); id = eid(a); }
@@ -388,6 +408,10 @@ struct OpticsOutput {
       let fnormal = opticsFieldNormal(p + rd * OPTICS_EPS, normal, ch);
       if (dot(fnormal, fnormal) > 1e-8) { normal = normalize(fnormal); if (dot(normal, rd) > 0.0) { normal = -normal; } }
     }`}
+    if (forced && step == 0) { a = source; id = eid(source); }
+    if (particle && P.particleSplit != 0u && !forced && !bent && SURFCH(eid(fetchA(cell))) < 2) {
+      a = vec4f(0); id = E_EMPTY;
+    }
     let gas = id != E_EMPTY && KIND(id) == K_GAS;
     if (gas) { id = E_EMPTY; }
     let optical = opticsClass(id);
@@ -489,5 +513,54 @@ struct OpticsOutput {
     if (out.fallback == 0u) { out.color = vec4f(max(sum, vec3f(0.0)), 1.0); }
   }
   return out;
-}`;
 }
+@fragment fn fs(v: OpticsVertex) -> OpticsOutput { return opticsTrace(v, false, vec4f(0), 0.0); }
+${particleBinding === null ? '' : dropEntriesWGSL}
+`;
+}
+
+// Project the enclosing cube, not a guessed screen radius. If any corner
+// crosses the eye/near plane, fullscreen is the conservative candidate.
+const dropEntriesWGSL = `
+struct DropVertex { @builtin(position) position: vec4f, @location(0) @interpolate(flat) index: u32 }
+@vertex fn dropVS(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> DropVertex {
+  let d = drops[ii];
+  var lo = vec2f(1); var hi = vec2f(-1); var full = false;
+  for (var k = 0u; k < 8u; k++) {
+    let offset = vec3f(f32(k&1u), f32((k>>1u)&1u), f32((k>>2u)&1u))*2.0-1.0;
+    let c = opticsClip(d.center + offset * ${THIN_RADIUS});
+    if (c.w <= 0.0001 || c.z <= 0.0) { full = true; }
+    else { lo = min(lo,c.xy/c.w); hi = max(hi,c.xy/c.w); }
+  }
+  if (full) { lo = vec2f(-1); hi = vec2f(1); }
+  let corners = array<vec2f,6>(vec2f(0,0),vec2f(1,0),vec2f(0,1),vec2f(0,1),vec2f(1,0),vec2f(1,1));
+  var o: DropVertex;
+  o.position = vec4f(mix(lo,hi,corners[vi]),0,1); o.index = ii;
+  if (hpChannel(d.id) >= 2) { o.position = vec4f(2,2,2,1); }
+  return o;
+}
+struct DropOutput {
+  @location(0) color: vec4f, @location(1) metadata: vec4f,
+  @location(2) fallback: u32, @builtin(frag_depth) depth: f32,
+}
+@fragment fn dropFS(v: DropVertex) -> DropOutput {
+  let d = drops[v.index];
+  let rd = normalize(opticsGridAt(v.position.xy / P.size,0.5)-FU.cam);
+  let roots = opticsSphere(FU.cam,rd,d.center);
+  if (roots.y <= 0.0 || roots.x > roots.y) { discard; }
+  let entry = max(0.0,roots.x);
+  let clip = opticsClip(FU.cam+rd*entry);
+  let depth = select(clamp(clip.z/clip.w,0.0,1.0),0.0,entry == 0.0);
+  let result = opticsTrace(OpticsVertex(v.position),true,d.a,entry);
+  return DropOutput(result.color,result.metadata,result.fallback,depth);
+}`;
+
+export const dropDepthWGSL = `
+@group(0) @binding(0) var opaque: texture_depth_2d;
+@group(0) @binding(1) var metadata: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  return vec4f(f32((i<<1u)&2u)*2.0-1.0,f32(i&2u)*2.0-1.0,0,1);
+}
+@fragment fn fs(@builtin(position) p: vec4f) -> @builtin(frag_depth) f32 {
+  return min(textureLoad(opaque,vec2i(p.xy),0),textureLoad(metadata,vec2i(p.xy),0).x);
+}`;

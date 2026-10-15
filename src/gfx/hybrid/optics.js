@@ -3,8 +3,9 @@ import { LOOK, CHANNELS } from '../materials.js';
 import { fold } from '../../gpu/kernels.js';
 import { Matrix4 } from 'three/webgpu';
 import { frameUniformsOf } from '../uniforms.js';
+import { retireMediaResources } from './fieldBounds.js';
 import {
-  opticsBoundsShader, opticsBoundsLayout, opticsShader, opticsBindings, opticsEntries, opticsFieldBindings, OpticsParams, OPTICS_STATE_LAYOUT, OPTICS_FALLBACK,
+  opticsBoundsShader, opticsBoundsLayout, opticsShader, opticsBindings, opticsEntries, opticsFieldBindings, OpticsParams, OPTICS_STATE_LAYOUT, OPTICS_FALLBACK, dropDepthWGSL,
 } from '../../shaders/hybrid/optics.js';
 export { OPTICS_FALLBACK } from '../../shaders/hybrid/optics.js';
 
@@ -145,6 +146,9 @@ export function validateOpticsResources({ color, depth }, output) {
  * views; fieldBinding reserves two group-2 slots after lighting by default.
  * All four bulk channels use a 0.5 isosurface with exact tetra-linear roots;
  * ice/glass remain cells; isolated granular/organic cells use real-centred spheres.
+ * Optional particles: particles.resources adds GPU-indirect liquid/molten
+ * billboards sharing the same transport and outputs. Requires actual particleSplit;
+ * fullscreen primary bounds omit these cells, secondary rays retain sphere hits.
  * Thin masks blend liquid normals, not density. This is not
  * legacy tricubic/detail parity. Source/deco and hidden meshes remain flagged.
  * Reflections and untraced bounded tails use environment (not recursive rays).
@@ -180,32 +184,53 @@ export function createHybridOptics(gpu, sim, options = {}) {
   // Additions: options.derived (defaults to sim.derived), fieldBinding (defaults
   // to first free pair after lighting). Views are refreshed for every record.
   const derived = options.derived ?? sim.derived;
+  const particles = options.particles;
+  if (particles && (!particles.instances || !particles.opticalArgs)) throw new TypeError('optics particles require instances and opticalArgs');
   const hasFields = !!(derived?.views?.fieldSurf && derived?.views?.fieldThin);
   const fieldBinding = hasFields ? (options.fieldBinding ?? Math.max(2, ...(lighting.bindings ?? []).map(e => e.binding + 1))) : null;
   if (typeof lighting.hooks?.worldHit !== 'string') throw new TypeError('optics requires a dedicated lighting.hooks.worldHit WGSL callback');
   const boundsBinding = Math.max(2, ...(lighting.bindings ?? []).map(e => e.binding+1), hasFields ? fieldBinding+2 : 2);
+  const particleBinding = particles ? boundsBinding + 1 : null;
   const extraBindings = [...(lighting.bindings ?? []), ...(hasFields ? opticsFieldBindings(fieldBinding) : []),
-    { binding: boundsBinding, visibility: 2, buffer: { type: 'read-only-storage' } }];
+    { binding: boundsBinding, visibility: 2, buffer: { type: 'read-only-storage' } },
+    ...(particles ? [{ binding: particleBinding, visibility: 3, buffer: { type: 'read-only-storage' } }] : [])];
   if (extraBindings.some((e) => !Number.isInteger(e.binding) || e.binding < 2) || new Set(extraBindings.map((e) => e.binding)).size !== extraBindings.length) throw new Error('optics lighting bindings must be unique and >= 2');
   validateOpticsLimits(gpu.limits ?? gpu.device?.limits, extraBindings);
   if ((lighting.bindings ?? []).some((e) => e.texture) && typeof lighting.textures !== 'function') throw new TypeError('optics extension textures need lighting.textures(frame) for attachment alias checks');
   const fu = frameUniformsOf(gpu);
   const sceneLayout = gpu.layout('HYBRID_OPTICS_SCENE', [...opticsBindings(), ...extraBindings]);
   const stateLayout = gpu.layout('STATE_RO', OPTICS_STATE_LAYOUT);
+  const code = opticsShader(sim.g, { maxSteps, maxInterfaces, fieldBinding, boundsBinding, particleBinding, wgsl: lighting.wgsl, hooks: lighting.hooks });
   const pipe = gpu.renderPipeline({
-    name: 'hybrid optics', code: opticsShader(sim.g, { maxSteps, maxInterfaces, fieldBinding, boundsBinding, wgsl: lighting.wgsl, hooks: lighting.hooks }),
+    name: 'hybrid optics', code,
     layouts: [fu.layout, stateLayout, sceneLayout], params: OpticsParams,
     fragment: { targets: Object.values(OPTICS_OUTPUT_FORMATS).map((format) => ({ format })) },
+  });
+  const dropPipe = particles && gpu.renderPipeline({
+    name: 'hybrid optics droplets', code, layouts: [fu.layout, stateLayout, sceneLayout], params: OpticsParams,
+    vertex: { entry: 'dropVS' },
+    fragment: { entry: 'dropFS', targets: Object.values(OPTICS_OUTPUT_FORMATS).map(format => ({ format })) },
+    depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
+  });
+  const depthLayout = particles && gpu.layout('HYBRID_DROP_DEPTH', [
+    { binding: 0, visibility: 2, texture: { sampleType: 'depth' } },
+    { binding: 1, visibility: 2, texture: { sampleType: 'unfilterable-float' } },
+  ]);
+  const depthPipe = particles && gpu.renderPipeline({
+    name: 'hybrid optics droplet depth', code: dropDepthWGSL, layouts: [depthLayout],
+    fragment: { targets: [] },
+    depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'always' },
   });
   const boundsLayout = gpu.layout('HYBRID_OPTICS_BOUNDS', opticsBoundsLayout);
   const brickBounds = gpu.createBuffer({ label: 'optics brick bounds', size: sim.g.nbricks * 32, usage: 128 });
   const bounds = gpu.createBuffer({ label: 'optics bounds', size: 32, usage: 128 });
   const boundsGroup = gpu.bindGroup(boundsLayout, [brickBounds, bounds].map((buffer,binding) => ({ binding, resource: { buffer } })));
-  const boundsDesc = { code: opticsBoundsShader(sim.g), layouts: [sim.L.TABLES, sim.L.STATE_RO, boundsLayout], workgroupSize: [64,1,1] };
+  const boundsDesc = { code: opticsBoundsShader(sim.g, { particles: !!particles, world: !!(options.world ?? derived?.world) }), layouts: [sim.L.TABLES, sim.L.STATE_RO, boundsLayout], workgroupSize: [64,1,1] };
   const reduce = gpu.kernel({ name: 'hybrid.optics.bounds', ...boundsDesc });
   const finish = gpu.kernel({ name: 'hybrid.optics.bounds.finish', ...boundsDesc, entry: 'finish' });
   let boundsKey = null;
   function recordBounds(frame) {
+    if (particles && (!derived?.particleSplit || sim.derived !== derived)) throw new Error('droplet optics requires actual derived.particleSplit');
     if (reduce.state !== 'ready' || finish.state !== 'ready') return false;
     const o = sim.origin ?? {};
     const key = `${sim.version}|${sim.cur}|${o.x},${o.y},${o.z}|${frame.revision ?? ''}`;
@@ -216,13 +241,17 @@ export function createHybridOptics(gpu, sim, options = {}) {
     boundsKey = key; stats.boundsBuilds++; return true;
   }
   const inverse = new Matrix4();
-  let output = null, current = {}, disposed = false;
+  let output = null, dropDepth = null, outputEncoder = null, current = {}, disposed = false;
   const stats = { boundsBuilds: 0, draws: 0, allocations: 0, maxSteps, maxInterfaces, cellBoundarySurfaces: !hasFields };
   const live = () => { if (disposed) throw new Error('hybrid optics is disposed'); };
-  const release = () => { if (output) for (const t of Object.values(output)) t.destroy(); output = null; };
+  const release = () => {
+    if (output) retireMediaResources(gpu, { ...output, ...(dropDepth ? { dropDepth } : {}) }, outputEncoder);
+    output = null; dropDepth = null;
+  };
+  const pipelines = [pipe, reduce, finish, ...(particles ? [dropPipe, depthPipe] : [])];
   const api = {
-    ready: Promise.all([pipe.ready, reduce.ready, finish.ready]),
-    get isReady() { return !disposed && [pipe, reduce, finish].every(p => p.state === 'ready'); },
+    ready: Promise.all(pipelines.map(p => p.ready)),
+    get isReady() { return !disposed && pipelines.every(p => p.state === 'ready'); },
     stats,
     get output() { return output; },
     update(frame = {}) { live(); current = { ...frame }; return recordBounds(current); },
@@ -251,6 +280,8 @@ export function createHybridOptics(gpu, sim, options = {}) {
         output = Object.fromEntries(Object.entries(OPTICS_OUTPUT_FORMATS).map(([key, format]) => [key, gpu.createTexture({
           label: `hybrid optics ${key}`, size: [color.width, color.height], format, usage: TEX.TEXTURE_BINDING | TEX.RENDER_ATTACHMENT,
         })]));
+        if (particles) dropDepth = gpu.createTexture({ label: 'hybrid droplet depth',
+          size: [color.width, color.height], format: 'depth32float', usage: TEX.RENDER_ATTACHMENT });
         stats.allocations++;
       }
       validateOpticsResources(frame, output);
@@ -263,22 +294,42 @@ export function createHybridOptics(gpu, sim, options = {}) {
       const entries = [...opticsEntries(color, depth), { binding: boundsBinding, resource: { buffer: bounds } }, ...(lighting.entries?.(frame) ?? []), ...(hasFields ? [
         { binding: fieldBinding, resource: derived.views.fieldSurf },
         { binding: fieldBinding + 1, resource: derived.views.fieldThin },
-      ] : [])];
+      ] : []), ...(particles ? [{ binding: particleBinding, resource: { buffer: particles.instances } }] : [])];
       const group = gpu.bindGroup(sceneLayout, entries, 'hybrid optics scene');
+      const params = { gridInv: inverse, size: [color.width, color.height], unsupported, depthTolerance,
+        world: (options.world ?? derived?.world) ? 1 : 0, particleSplit: particles ? 1 : 0 };
       const rp = gpu.frame.render({ colorAttachments: Object.values(output).map((t) => ({
         view: t.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0],
       })) }, 'hybrid optics');
+      outputEncoder = gpu.frame.encoder;
       try {
         pipe.draw(rp, {
           bind: [fu.group, sim.bindRO, group], header: sim.header(),
-          params: { gridInv: inverse, size: [color.width, color.height], unsupported, depthTolerance, world: (options.world ?? derived?.world) ? 1 : 0 }, count: 3,
+          params, count: 3,
         });
       } finally { rp.end(); }
+      if (particles) {
+        const depthGroup = gpu.bindGroup(depthLayout, [
+          { binding: 0, resource: depth.createView() }, { binding: 1, resource: output.metadata.createView() },
+        ]);
+        const attachment = { view: dropDepth.createView(), depthLoadOp: 'clear', depthStoreOp: 'store', depthClearValue: 1 };
+        const init = gpu.frame.render({ colorAttachments: [], depthStencilAttachment: attachment }, 'hybrid droplet depth');
+        try { depthPipe.draw(init, { bind: [depthGroup], indirect: { buffer: particles.opticalArgs, offset: 0 } }); }
+        finally { init.end(); }
+        const drops = gpu.frame.render({
+          colorAttachments: Object.values(output).map(t => ({ view: t.createView(), loadOp: 'load', storeOp: 'store' })),
+          depthStencilAttachment: { ...attachment, depthLoadOp: 'load' },
+        }, 'hybrid droplets');
+        try { dropPipe.draw(drops, { bind: [fu.group, sim.bindRO, group], header: sim.header(), params,
+          indirect: { buffer: particles.opticalArgs, offset: 16 } }); }
+        finally { drops.end(); }
+      }
+      outputEncoder = gpu.frame.encoder;
       stats.draws++;
       return output;
     },
     draw(frame = current) { return api.record(frame); },
-    dispose() { if (disposed) return; disposed = true; release(); brickBounds.destroy(); bounds.destroy(); current = {}; },
+    dispose() { if (disposed) return; disposed = true; release(); retireMediaResources(gpu, { brickBounds, bounds }, gpu.frame.encoder); current = {}; },
   };
   return api;
 }

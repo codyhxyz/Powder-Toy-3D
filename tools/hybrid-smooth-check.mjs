@@ -83,7 +83,8 @@ const ema = fieldEmaFrag(g), boost = fieldBoostFrag(g, 0), extract = smoothExtra
 assert(ema.indexOf('if (particleOwned) { sv[ch] = 0.0; }') > ema.indexOf('sv = mix('));
 assert.match(ema, /ch >= 0 && !particleOwned/);
 assert.match(boost, /hybridParticleOwns\(q, P.world != 0u\)/);
-assert.match(boost, /if \(jetAt\(q\)\) \{ occ.x = 1.0/);
+assert.match(boost, /jetAt\(q\) && !\(P.particleSplit != 0u && hybridParticleOwns/);
+assert.match(ema, /jetAt\(p\) && !particleOwned/);
 assert.match(extract, /source == SLOTS\) \{ continue;/);
 assert(!extract.includes('textureLoad(thin'));
 assert.match(extract, /SURFCH\(eid\(s\)\) == ch && d < best && !/);

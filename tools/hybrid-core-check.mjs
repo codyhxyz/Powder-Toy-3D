@@ -144,7 +144,7 @@ assert.equal(renderer.update(input), true);
 assert(calls.length > composed, 'all producers and shared shadows record real commands');
 assert(renderer.drawOpaque(post));
 assert(renderer.compose(post,{...input,camera:new PerspectiveCamera()}));
-for(const pattern of [/scene acceptance/,/smooth.*build/,/particles.*finish/,/optics/,/media integrate/,/motion.*vectors/,/scene composite/])
+for(const pattern of [/scene acceptance/,/smooth.*build/,/particles.*finish/,/optics droplets/,/optics droplet depth/,/media integrate/,/motion.*vectors/,/scene composite/])
   assert(calls.some(c=>pattern.test(c.name)),`missing production path ${pattern}`);
 assert(post.inputs.motion&&post.inputs.reactive,'real motion and coverage reach post');
 assert.equal(renderer.stats.compositions,1);

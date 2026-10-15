@@ -2,7 +2,7 @@ import { hybridGateWGSL,hybridCompositeWGSL } from '../../shaders/hybrid/frame.j
 
 /** Owns one depth snapshot and the same-frame GPU fallback/compose arguments. */
 export function createHybridFrame(gpu,sim) {
-  const gate=gpu.createBuffer({label:'hybrid scene gate',size:48,usage:0x80|0x100});
+  const gate=gpu.createBuffer({label:'hybrid scene gate',size:48,usage:0x80|0x100|0x04});
   const gateLayout=gpu.layout('HYBRID_SCENE_GATE',[
     {binding:0,visibility:4,buffer:{type:'read-only-storage'}},
     {binding:1,visibility:4,buffer:{type:'read-only-storage'}},
