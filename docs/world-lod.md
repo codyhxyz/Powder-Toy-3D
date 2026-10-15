@@ -21,7 +21,8 @@ The simulation window controls physics, not the limit of visible detail.
 - Jobs own separate cell and planted snapshots. Epoch, revision, and version checks prevent old results from replacing newer jobs.
 - World reset rejects old results but keeps their slots occupied until completion. A fatal detail error terminates the pool and stops new jobs.
 - The three detail pipelines start with the far-view pipeline at boot or view switch. Build completion wakes paused rendering without polling.
-- Wanted meshes are not limited by 192 chunks or 96 MiB and cannot be evicted by late offscreen completions. Those bounds apply only to offscreen spares, oldest first. Total visible geometry memory is therefore not bounded by these cache limits. GPU buffers, worker/readback storage and render targets also consume memory.
+- Wanted meshes cannot be evicted by late offscreen completions. Offscreen spares keep a look-around working set, rather than shrinking it to 192 chunks or 96 MiB on a turn. Spare limits start at those values and grow to the largest wanted-view chunk count and resident bytes, multiplied by the number of horizontal views in a full turn. Chunk count cannot exceed the world. This includes intermediate views during normal mouse turns, not only opposite directions. Camera use refreshes eviction order. World reset releases the allowance. Memory use increases: the current view plus this panorama allowance can remain resident; visible geometry remains unbounded. GPU buffers, worker/readback storage and render targets also consume memory.
+- Hard-only chunks skip the loose-ground normal blur, and hard faces do not sample it. Cell geometry, material IDs and normals remain unchanged.
 - Completion, rejection, failure, drop and reset wake the app through the world wire. Runnable detail work prevents deep sleep even after the far lighting queue ends. Pipeline, worker/readback and window-transfer waits wake on completion instead of continuously polling, including when simulation is paused. Replicas tick render-only far/detail work without moving or simulating their window. A detail failure stops further detail submissions rather than retrying forever; remaining gaps require reload.
 - Chunk padding and the common cell lattice retain mesh seams. Surface nets can have non-manifold diagonal contacts. Liquid surfaces and underwater beds still use the coarse field and may differ from the cell geometry.
 
@@ -59,6 +60,7 @@ Run the CPU checks:
 node tools/surface-mesh-check.mjs
 node tools/detail-residency-check.mjs
 node tools/detail-worker-check.mjs
+node tools/detail-loading-cpu-check.mjs
 node tools/far-lod-check.mjs
 node tools/detail-culling-cpu-check.mjs
 node tools/check-presentation.mjs
@@ -70,6 +72,16 @@ GPU checks must use `tools/browser.mjs` and stay within the total slot budget in
 `world-detail-check.mjs` historically compared coarse versus cached rendering.
 Its old fallback assertions need revision before it can validate this path.
 Historical browser scripts and `lod-frame-bench.mjs` are not evidence for the new renderer.
+
+## CPU loading check
+
+The hard-material optimization was compared with production `2c5cb27d` in one process.
+Four padded 32×96×32 fixtures alternated old and new builders for 20 rounds, discarding the first six.
+Median rock time changed from 8.68 to 5.57 ms; brick changed from 7.69 to 4.95 ms.
+Sand and mixed-material times were essentially unchanged.
+Positions, normals, material IDs, appearances and indices matched byte-for-byte.
+These are CPU mesh times, not measurements of in-game loading latency or GPU memory use.
+The residency check also fills views during a continuous 360° turn and verifies that returning requires no new jobs.
 
 ## Historical local measurements
 

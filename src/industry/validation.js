@@ -1,4 +1,4 @@
-import { DEVICE_TYPES, FILTER_IDS, INDUSTRY_LIMIT } from './catalog.js';
+import { DEVICE_TYPES, FILTER_IDS, INDUSTRY_LIMIT, deviceCell } from './catalog.js';
 import { E } from '../elements.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../pov/constants.js';
 
@@ -11,7 +11,15 @@ export function deviceSpec(value, dims) {
   if (!Array.isArray(dims) || dims.length !== 3 || !dims.every(n => Number.isInteger(n) && n > 0)) throw new Error('Invalid Industry grid');
   if ([x,y,z].some((n,i) => n < 0 || n + (i === 1 ? deviceHeight(value) : 4) > dims[i])) throw new Error('Machine must fit inside the grid');
   if (!FILTER_IDS.includes(filter) || typeof powered !== 'boolean') throw new Error('Invalid machine filter or drive');
-  return { type, x, y, z, rotation, filter, powered };
+  const out = { type, x, y, z, rotation, filter, powered };
+  if (type === 'gate') {
+    const { gateMode = 'open', gateClosed = false } = value;
+    if (!['open', 'closed', 'signal'].includes(gateMode) || typeof gateClosed !== 'boolean') throw new Error('Invalid gate state');
+    Object.assign(out, { gateMode, gateClosed });
+    const port = deviceCell(out, -1, 0, 1);
+    if (port.some((n, i) => n < 0 || n >= dims[i])) throw new Error('Gate control port must fit inside the grid');
+  }
+  return out;
 }
 export function validateDevices(values, dims) {
   if (!Array.isArray(values) || values.length > INDUSTRY_LIMIT) throw new Error('Invalid Industry device count');

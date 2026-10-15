@@ -14,7 +14,9 @@ export const DEVICE_TYPES = Object.freeze({
   miner: { name: 'Mining agent', cost: 18, color: '#eda071', description: 'Drills the nearby face into loose debris. Catch its output.' },
   lift: { name: 'Grain lift', cost: 8, color: '#c8a7dc', description: 'Launches loose grains upward. Build a catch above it.' },
   pump: { name: 'Pump', cost: 14, color: '#7cbdd1', description: 'Moves real liquid from its inlet to an elevated outlet.' },
-  heater: { name: 'Furnace', cost: 20, color: '#ea8765', description: 'Heats matter on its tungsten bed. Route and cool the melt.' },
+  heater: { name: 'Furnace', cost: 20, color: '#ea8765', factoryLegacy: true, description: 'Legacy built-in furnace. Existing machines keep their original heating behavior.' },
+  hearth: { name: 'Coal hearth', cost: 20, color: '#ea8765', description: 'Thin tungsten shell. Finite coal heats either inside row. Catch molten overflow beyond the raised front lip.' },
+  gate: { name: 'Material gate', cost: 4, color: '#a6bd9c', description: 'A physical shutter. Open it to release material; closure waits for a clear opening.' },
 });
 export const FILTER_IDS = [E.NUGGETS, E.SAND, E.STONE, E.SCRAP, E.BROKENCOAL];
 export const QUARRY_SPAWN = [48, 8, 84];
@@ -33,4 +35,4 @@ export function deviceCell(d, x, y, z) {
 export function deviceDirection(d) {
   return [[0, 0, 1], [-1, 0, 0], [0, 0, -1], [1, 0, 0]][d.rotation];
 }
-export const baseMaterial = type => ['heater', 'pump', 'ship', 'foundation'].includes(type) ? E.TUNGSTEN : E.INSULATOR;
+export const baseMaterial = type => ['heater', 'hearth', 'pump', 'ship', 'foundation'].includes(type) ? E.TUNGSTEN : E.INSULATOR;

@@ -171,24 +171,73 @@ function fixture(nx = 16, nz = 16) {
   }
   assert.equal(d.entries.size, 256, 'all >192 wanted meshes remain resident');
   const first = d.entries.get(0);
-  for (let key = 256; key < 449; key++) d.accept(result(key));
-  assert.equal(d.entries.size, 256 + 192, 'only offscreen spare count is bounded');
+  for (let key = 256; key < 513; key++) d.accept(result(key));
+  assert.equal(d.entries.size, 256 + 256, 'spares retain at least one complete previous view');
   assert(!d.entries.has(256), 'oldest spare evicted');
   assert.equal(d.entries.get(0), first, 'late offscreen jobs never evict wanted geometry');
-  for (const key of [450, 451]) {
+  for (const key of [600, 601]) {
     const large = result(key);
     Object.defineProperty(large.positions, 'byteLength', { value: 50 * 1024 * 1024 });
     d.accept(large);
   }
-  assert(!d.entries.has(450) && d.entries.has(451), 'offscreen spare bytes are independently bounded');
-  const oversized = result(452), before = writes.length;
+  assert(!d.entries.has(600) && d.entries.has(601), 'offscreen spare bytes are independently bounded');
+  const oversized = result(602), before = writes.length;
   Object.defineProperty(oversized.positions, 'byteLength', { value: 97 * 1024 * 1024 });
   d.accept(oversized);
-  assert(!d.entries.has(452));
+  assert(!d.entries.has(602));
   assert.equal(writes.length, before, 'oversized late spare is rejected before upload');
   d.wanted = [];
   d.trimSpares();
-  assert(d.entries.size <= 192 && d.bytes <= 96 * 1024 * 1024, 'turning away trims newly offscreen geometry');
+  assert(d.entries.size <= 256 && d.bytes <= 96 * 1024 * 1024, 'spares remain bounded after turning away');
+}
+
+{
+  const { d, camera, view, result, retired } = fixture(64, 64);
+  camera.far = 10000; camera.updateProjectionMatrix();
+  camera.position.set(1024, 24, 1024);
+  const face = z => { camera.lookAt(1024, 24, z); camera.updateMatrixWorld(); view(); };
+  const fill = () => {
+    for (const c of d.jobs()) {
+      const mesh = result(c.key);
+      // Large-view accounting without allocating hundreds of MiB.
+      Object.defineProperty(mesh.positions, 'byteLength', { value: 512 * 1024 });
+      d.accept(mesh);
+    }
+  };
+  face(0); fill();
+  const front = new Map(d.entries), frontBytes = d.bytes;
+  assert(front.size > 192 && frontBytes > 96 * 1024 * 1024, 'fixture exceeds BOTH old spare limits');
+  face(2048);
+  for (const [key, e] of front) assert.equal(d.entries.get(key), e, 'turning away retains the entire previous view');
+  fill(); face(0);
+  assert.equal(d.jobs().length, 0, 'turn back has no readback or remeshing jobs');
+  for (const [key, e] of front) assert.equal(d.entries.get(key), e, 'returning reuses identical GPU buffers');
+  assert.equal(retired.length, 0, 'opposite views fit without retiring geometry');
+  // The viewed entries are newer than offscreen entries, regardless of build order.
+  const wanted = new Set(d.wanted.map(c => c.key));
+  let sawWanted = false;
+  for (const key of d.entries.keys()) {
+    if (wanted.has(key)) sawWanted = true;
+    else assert(!sawWanted, 'current view refreshes LRU order');
+  }
+  // Normal mouse movement visits many intermediate frusta; a direct 180° jump
+  // alone would miss the cache churn that originally emptied the previous view.
+  for (let degrees = 0; degrees <= 360; degrees += 15) {
+    const angle = degrees * Math.PI / 180;
+    camera.lookAt(1024 + Math.sin(angle) * 1024, 24, 1024 - Math.cos(angle) * 1024);
+    camera.updateMatrixWorld(); view(); fill();
+  }
+  face(0);
+  assert.equal(d.jobs().length, 0, 'a continuous full look-around never reloads the first view');
+  for (const [key, e] of front) assert.equal(d.entries.get(key), e, 'gradual turns keep original buffers too');
+  assert.equal(retired.length, 0);
+  const bytes = d.spareBytes;
+  assert(bytes >= frontBytes);
+  d.wanted = []; d.trimSpares();
+  assert(d.entries.size <= d.spareChunks && d.bytes <= bytes, 'history growth still obeys panorama bounds');
+  d.reset();
+  assert.equal(d.spareChunks, 192);
+  assert.equal(d.spareBytes, 96 * 1024 * 1024, 'world reset releases the larger working-set allowance');
 }
 
 {
@@ -431,4 +480,4 @@ for (const slots of [1, 2, 4]) {
   app.mp.replica = false; worldFollow(app, { moveWindow: () => moves++ });
   assert.equal(moves, 1); assert.equal(ticks, 1);
 }
-console.log('PASS: four-slot streaming, exposed missing priority, ordered dispatch/copy, out-of-order results, reset/invalidation, atomic replacement, paused refill, async build and replica streaming');
+console.log('PASS: continuous 360-degree cache reuse, bounded panorama spares/LRU/reset, four-slot streaming, exposed missing priority, ordered dispatch/copy, out-of-order results, reset/invalidation, atomic replacement, paused refill, async build and replica streaming');

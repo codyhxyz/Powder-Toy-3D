@@ -2498,7 +2498,11 @@ function tick(now, renderOnly = false) {
     stepOnce = false;
   } else if (stepping) {
     if (v2Running) { v2Running = false; sim.noteWrite(); }   // (today's activity map: every brick, as after a load)
-    for (let i = 0; i < settings.steps; i++) { scripts?.beforeStep(); weatherWire.step(ctx); sim.step(); scripts?.afterStep(); }
+    for (let i = 0; i < settings.steps; i++) {
+      scripts?.beforeStep(); weatherWire.step(ctx); sim.step();
+      ctx.industry?.nativeStep();
+      scripts?.afterStep();
+    }
     if (DAY.running) day.clock += settings.steps;
     animTime += dt;
     stepOnce = false;
@@ -2899,7 +2903,7 @@ try {
           if (!v2Running) { physicsV2.resync(); v2Running = true; }
           physicsV2.ticks(count);
         } else for (let i = 0; i < count; i++) {
-          weatherWire.step(ctx); sim.step();
+          weatherWire.step(ctx); sim.step(); ctx.industry?.nativeStep();
           lightning?.update(sim, { worldEpoch: win?.epoch, worldIdentity: win });
         }
         if (DAY.running) day.clock += count;
