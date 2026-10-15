@@ -82,7 +82,7 @@ function addPortMarker(root) {
 
 // Detailed physical guidance stays in titles, not repeated palette labels.
 const MACHINE_HELP = {
-  foundation: 'Stack blocks to catch loose grains and contain liquids.',
+  foundation: 'Stack blocks into catches. Fill corner gaps too: liquids can pass diagonally between separate walls.',
   belt: 'Connect decks edge to edge. Liquids and solid metal do not ride belts.',
   separator: 'Catch both streams: the selected material goes forward; everything else goes right.',
   ship: `Gold pays 1 credit per grain; metal pays 4 and must be ${CASTING_TEMPERATURE}°C or below.`,

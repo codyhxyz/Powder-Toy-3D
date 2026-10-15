@@ -50,7 +50,6 @@ Verified on the actual 128³ simulation:
 Report: `~/.cache/tpt-headless/runs/16439-16470.json`.
 
 This does not prove every material, orientation, or long-running circuit.
-Bounded diagnostics have not yet been executed in a browser.
 
 ### Thermal investigation and compact-shell pass
 
@@ -144,23 +143,83 @@ It does not prove real shovel loading, ash clearing, bucket extraction, cooling,
 CPU geometry command:
 `node tools/industry-physical-check.mjs --case thermal --preflight`.
 
+### Bounded diagnostics: passed
+
+Command:
+`node tools/industry-physical-check.mjs --case diagnostics --harness --budget-ms 25000 --port 19973`.
+
+The first protected attempt was refused at 50% measured GPU load.
+It released the slot after **1940 ms**, before browser launch, and supplied no diagnostic measurements.
+
+A later protected run passed all 14 native assertions.
+Total slot occupancy: **5981 ms**.
+Report: `~/.cache/tpt-headless/runs/13933-13970.json`.
+
+Verified:
+
+- The rotated physical shell matches the 48-cell construction geometry.
+- Default hearth regions sample six fuel, six charge, and four outlet cells.
+- Exhausted coal is not reported as usable fuel.
+- A real OFF switch does not disable optional built-in drive.
+- Required drive stops on OFF and reports ready on ON.
+- A damaged base does not falsify the independent port signal.
+- A negative guard material does not make an OFF switch appear ON.
+- Registered gates report their signal requirement and raw port state.
+- Changing gate mode invalidates the cached observation.
+- Combined hearth and port inspection stays within eight regions.
+- No asynchronous API errors were reported.
+
+This numerical harness does not prove inspection-panel interaction.
+
+### Batch production line: coolant failure
+
+Command:
+`node tools/industry-physical-check.mjs --case line --harness --budget-ms 25000 --port 19973`.
+
+The fixture uses 41 registered devices, including 36 ordinary refractory blocks.
+Total slot occupancy: **5712 ms**.
+Report: `~/.cache/tpt-headless/runs/15714-15745.json`.
+
+Observed:
+
+- The native miner produced six usable broken-coal cells.
+- Existing powder-transfer operations loaded the finite fuel and four scrap cells.
+- All four scrap cells melted and entered the existing liquid bucket.
+- The bucket retained their temperatures and METAL ctype.
+- Ordinary powder transfer removed three ash cells.
+- All 48 tungsten shell cells remained after ash clearing.
+- No asynchronous API errors were reported.
+
+The initial 24-cell water-source hold check failed.
+The pump confirmed no intake or outlet transfers.
+No cooling water reached the observed shipping catch, and no metal shipped.
+The bucket still held all four molten cells at the end.
+These observations do not establish whether the coolant fault is geometry, control, or physics.
+Source review then found uncovered rear tank corners.
+Native diagonal movement can cross the empty corner column between two separate face walls.
+The fixture now uses 63 devices, including 58 foundations, to close tank and catch corners.
+The CPU regression checks actual occupied cells, not empty machine reservations.
+Native confirmation of this layout remains pending.
+
+The first output was truncated.
+The runner now supports `--output PATH` to retain complete JSON results.
+Bounded probes also record initial water count, held water, pump base/control, and released-water locations.
+A protected follow-up was refused at 89% measured GPU load before browser launch.
+It released the slot after **2574 ms** and supplied no new physics measurements.
+Its guard result is saved at `/tmp/sandustry-physical-line-coolant.json`.
+GPU load does not establish that the user is playing.
+
+Interrupted runs do not establish complete accounting of outstanding loads and pending transfers.
+
 ## Open requirements
 
-- Verify ash removal or another usable way to refill the firebox.
-- Route actual molten metal to a separate shipping intake.
-- Cool it there with actual water and confirm shipment.
+- Diagnose the coolant hold/release and pump failure.
+- Place actual molten metal into a separate shipping catch.
+- Cool it there with actual water and confirm all four shipments.
+- Verify repeat refueling and real player shovel/bucket gestures.
 - Verify useful material release through a gate; precision fuel feeding remains unverified.
-- Validate the bounded diagnostics and combined controls in a browser.
+- Validate the combined controls and inspection panel in the real app.
 - Complete release checks, push main, watch deployment, and check the live site.
 
 Cooled metal is stationary matter; a conveyor cannot carry it to the intake.
-Neither a melting checkpoint nor CPU tests count as end-to-end evidence.
-
-### Diagnostic checkpoint: not run
-
-The native diagnostic case checks the rotated shell, exhausted fuel, real port signals,
-optional drive behavior, and independent base damage.
-CPU regressions and Naga pass.
-The first protected attempt was refused at 50% measured GPU load.
-The slot was released after **1940 ms**, before browser launch.
-This supplied no diagnostic measurements and does not establish that the user was playing.
+Neither melting, diagnostics, nor ash clearing alone counts as end-to-end evidence.

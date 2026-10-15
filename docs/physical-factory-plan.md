@@ -1,11 +1,14 @@
 # Physical factory delivery plan
 
-Status: controller and UI integrated. The compact hearth melts scrap in native physics.
-Cooling, shipment, and player interaction remain unverified. Nothing deployed yet.
+Status: native melting, diagnostics, mining, bucket extraction, and ash clearing pass.
+The coolant stage failed. Cooling, shipment, and player interaction remain unverified.
+Nothing deployed yet.
 
 Base: fetched `origin/main`, `1b23e28b74afccc9a5fb7166a168450f56e781ee`.
-The integration branch includes upstream updates through `c9eaefc53e3905461fab33629697cf47f069f535`.
-At `644e11c`, the fetched remote was 11 commits ahead of that merged upstream base.
+The integration branch includes fetched upstream `9581b346c10d9cb1f793d46fbb14073a271891b7`.
+At `83e88309`, the branch was 42 commits ahead and zero behind that remote.
+Work continues only in `/tmp/sandustry-physical-factory-1b23e28b`.
+The original checkout is preserved recovery, not a build or deployment directory.
 
 ## Target player experience
 
@@ -53,16 +56,17 @@ The ideal fuel-gate route remains an open requirement.
 | --- | --- | --- |
 | Finite-fuel heat | Fuel exhaustion stops added heat. The heat source does not duplicate fuel. | CPU exhaustion/budget checks pass; native ignition and fuel consumption observed |
 | Useful temperatures | A constructed hearth melts the target scrap at normal timing. | Passed: six broken-coal cells melted four scrap cells inside the real 48-cell shell |
-| Ignition | A player can start the process without unrestricted Sandbox spawning. | Finite starter verified in native physics; tool loading remains pending |
-| Physical gate | Closed material blocks flow. Opening preserves surrounding matter and temperature. | Tagged shutter writes/removal pass; native liquid hold/release still pending |
+| Ignition | A player can start the process without unrestricted Sandbox spawning. | Native starter, mining, and existing tool-transfer loading pass; player gestures remain pending |
+| Physical gate | Closed material blocks flow. Opening preserves surrounding matter and temperature. | Tagged shutter writes/removal pass; coolant hold/release checkpoint failed and needs investigation |
 | Obstructed closure | Closure never overwrites grains, liquids, or unrelated solids. | Native WALL and falling-sand checks pass; other materials covered by shared preflight |
 | Gate lifecycle | Removal, damaged structure, pending actions, and saves preserve owned material. | CPU lifecycle/save guards and native tagged removal/damage checks pass |
 | Controls | A Factory player can install and operate permitted controls without an economy bypass. | Integrated CPU economy/UI checks and native control writes pass; browser interaction pending |
-| Diagnostics | Each reported condition comes from current machine state or bounded observations. | Async/controller CPU checks and Naga pass; native check refused by busy guard |
-| Routing | The production line carries actual material between distinct hot and cold regions. | Pending |
+| Diagnostics | Each reported condition comes from current machine state or bounded observations. | CPU/Naga and 14 native GPU assertions pass; real inspection-panel interaction remains pending |
+| Routing | The production line carries actual material between distinct hot and cold regions. | Native bucket extracted all four molten cells; placement into the cold catch remains pending |
+| Ash clearing | Existing tools clear spent fuel without destroying the hearth. | Native powder transfer cleared three ash cells and preserved all 48 shell cells; repeat refueling remains pending |
 | Economy | Construction charges and refunds remain correct. Existing progression remains usable. | CPU confirmed-charge, ledger, migration, and anti-arbitrage checks pass |
 | Compatibility | Existing saves, built-in drives, Sandbox sparks, and unrelated modes still work. | Existing construction, controller, physics, and Quarry CPU suites pass; final integration pending |
-| End-to-end loop | Physical fuel, scrap, melt, coolant, and cooled shipment reach the expected stages. | Pending |
+| End-to-end loop | Physical fuel, scrap, melt, coolant, and cooled shipment reach the expected stages. | Failed coolant stage: zero confirmed pump intake/output and no shipment |
 | Resource use | Tests use the shared browser helper and respect the total GPU-slot budget. | Recorded slots respect their limits; one busy-check override had explicit user approval |
 | Release | Changes reach GitHub main, deployment succeeds, and the live site passes a focused check. | Pending |
 
@@ -110,6 +114,7 @@ These are open questions, not implementation claims.
 - Keep the top open and use a raised front lip. A molten heel can remain inside.
 - Actual grains redistribute between the fuel and charge rows. Probes must cover both.
 - Diagnostics must distinguish the real port signal from the machine's optional drive requirement.
+- Liquid catches need closed corner columns. Native diagonal movement can escape between separate face walls.
 
 ### Current validation
 
@@ -124,7 +129,13 @@ These are open questions, not implementation claims.
 - The real 48-cell shell passed native construction and melting checks.
 - Four cold scrap cells became LAVA with METAL ctype after 336 native ticks.
 - Peak sampled charge temperature was 1639.69°C; total slot occupancy was 5271 ms.
-- No complete loading, extraction, ash-clearing, cooling, or shipment test has passed yet.
+- Fourteen bounded diagnostic assertions pass on the native GPU; total slot occupancy was 5981 ms.
+- A native batch mined and loaded usable fuel, melted and bucketed four scrap cells, and cleared ash.
+- The same batch failed coolant delivery and shipment; total slot occupancy was 5712 ms.
+- The 24-cell coolant-source hold check failed. Source review found open tank corner columns.
+- The fixture now closes tank and catch corners with ordinary foundations; native confirmation remains pending.
+- A follow-up probe was refused before browser launch at 89% measured GPU load.
+- Real player tool gestures, refueling, cooling, shipment, release, and the live-site check remain pending.
 - See `physical-factory-validation.md` for failed checkpoints and measured slot occupancy.
 
 ## Work boundaries

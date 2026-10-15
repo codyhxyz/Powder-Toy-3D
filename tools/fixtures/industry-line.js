@@ -38,6 +38,14 @@ export function purelineDeviceLayout() {
     [52, 56, 'tank-south-west'], [56, 56, 'tank-south-east'],
   ]) column(name, x, z, 13, 15);
   column('tank-rear', 60, 52, 13, 15);
+  // Native TPT diagonal toppling tests the diagonal column, not both face
+  // walls. Close the corner columns with ordinary buildable foundations.
+  column('tank-rear-north-corner', 60, 48, 13, 15);
+  column('tank-rear-south-corner', 60, 56, 13, 15);
+  column('tank-front-north-corner', 48, 48, 13, 16);
+  column('tank-front-south-corner', 48, 56, 13, 16);
+  column('catch-left-rear-corner', 40, 48, 15, 18);
+  column('catch-left-front-corner', 40, 56, 15, 18);
   return devices;
 }
 
