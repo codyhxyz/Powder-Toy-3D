@@ -19,7 +19,7 @@ export class WorldCellAtlasAdapter {
     Object.assign(this,{gpu,source,producer,atlas,tables});
     this.mutableSource=source;this.boundCut=null;
     this.bounds={min:[...worldBounds.min],max:[...worldBounds.max]};
-    this.cache=new Map(); this.retiredCaptures=new WeakSet(); this.pending=null; this.dead=false; this.publication=null; this.lastSourceToken=null; this.dependencyID=dependencyID++;
+    this.cache=new Map(); this.capturePins=new WeakMap(); this.retiredCaptures=new WeakSet(); this.pending=null; this.dead=false; this.publication=null; this.lastSourceToken=null; this.dependencyID=dependencyID++;
     // Fields may commit while its Atlas publication is aborted or retried.
     // Keep that publication debt until a successful atomic Atlas patch.
     this.unpublishedInvalidations=new Set();this.unpublishedChanges=new Map();this.lightingDirty=false;
@@ -63,7 +63,58 @@ export class WorldCellAtlasAdapter {
     this.boundCut=held;this.source=held.source;this.producer=held.producer;
     old?.release();return this;
   }
-  _dropCapture(c){if(this.retiredCaptures.has(c))return;this.retiredCaptures.add(c);for(const b of [...c.buffers,c.classification,...c.uploads].filter(Boolean))this._retire(b);}
+  _destroyCapture(c){for(const b of [...c.buffers,c.classification,...c.uploads].filter(Boolean))this._retire(b);}
+  _dropCapture(c){if(this.retiredCaptures.has(c))return;this.retiredCaptures.add(c);if(!this.capturePins.get(c))this._destroyCapture(c);}
+  // Submitted classification only: no raw geometry readback. Captures are
+  // selected synchronously and pinned independently of later cache replacement.
+  acquireClassification({bricks}={}){
+    this._alive();const publication=this.acquire(),captures=new Set(),records=[];
+    try{
+      for(const brick of bricks){
+        const index=worldBrickIndex(this.atlas.bookLayout,brick),core=coreFor(brick),c=this.cache.get(brickKey(core));
+        if(!c||this.retiredCaptures.has(c)||!c.source.isCurrent()){
+          const error=new Error('Unknown world classification dependency');error.requirements=[{brick:[...brick],index,channels:READY.CELL}];throw error;
+        }
+        const local=brick.map((n,k)=>n-core[k]/4);
+        records.push(Object.freeze({brick:Object.freeze([...brick]),index,buffer:c.classification,byteOffset:brickIdOf(SOURCE_GRID,...local)*16}));captures.add(c);
+      }
+      for(const c of captures)this.capturePins.set(c,(this.capturePins.get(c)??0)+1);
+    }catch(error){publication.release();throw error;}
+    let released=false;const owned=[];
+    const retire=()=>{
+      // A suffix rejection cannot undo automatic prefix submissions. Close
+      // admission immediately, but retain capture/Source/Atlas pins until the
+      // normal Frame has no suffix, then fence all submitted work either way.
+      if(this.gpu.failure||this.gpu.pipelines?.failure)return;
+      if(this.gpu.frame.open){setTimeout(retire,0);return;}
+      const drop=()=>{for(const c of captures){const refs=this.capturePins.get(c)-1;this.capturePins.set(c,refs);if(!refs&&this.retiredCaptures.has(c))this._destroyCapture(c);}for(const b of owned)this._retire(b);publication.release();};
+      Promise.resolve((this.gpu.queue??this.gpu.device.queue).onSubmittedWorkDone()).then(drop,drop);
+    };
+    const live=()=>{if(released||!this.isCurrent(publication))throw new Error('Released/stale world classification lease');};
+    const make=(label,size)=>{const b=this._buffer(label,size,BU.STORAGE|BU.COPY_SRC|BU.COPY_DST);owned.push(b);return b;};
+    return Object.freeze({publication,records:Object.freeze(records),
+      recordMetadata:(frame=this.gpu.frame)=>{
+        live();if(frame!==this.gpu.frame)throw new Error('Normal Frame required');
+        const buffer=make('submitted world classification metadata',Math.max(16,records.length*16));
+        for(let i=0;i<records.length;i++)frame.copy(records[i].buffer,records[i].byteOffset,buffer,i*16,16);
+        return buffer;
+      },
+      recordEmission:(frame,{min,size})=>{
+        live();if(frame!==this.gpu.frame||min?.length!==3||size?.length!==3||size.some((n,k)=>!Number.isInteger(n)||n<1||!Number.isInteger(min[k])||min[k]<0||min[k]+n>this.bounds.max[k]/4))throw new RangeError('Exact in-world Glow emission region');
+        const byIndex=new Map(records.map(r=>[r.index,r])),selected=[];
+        for(let z=0;z<size[2];z++)for(let y=0;y<size[1];y++)for(let x=0;x<size[0];x++){
+          const brick=[min[0]+x,min[1]+y,min[2]+z],index=worldBrickIndex(this.atlas.bookLayout,brick),r=byIndex.get(index);
+          if(!r){const error=new Error('Unknown world Glow emission halo');error.requirements=[{brick,index,channels:READY.CELL}];throw error;}selected.push(r);
+        }
+        const buffer=make('original world emission div64',selected.length*16);
+        // Original classifier xyz are f32 emission /64; w is UINT info, not
+        // an emission component or half packing. Copy only xyz, clear padding.
+        selected.forEach((r,i)=>{frame.copy(r.buffer,r.byteOffset,buffer,i*16,12);frame.clear(buffer,i*16+12,4);});
+        return Object.freeze({complete:true,buffer,format:'xyz-linear-f32-vec4-emission-div64',min:Object.freeze([...min]),size:Object.freeze([...size]),byteLength:buffer.size,byteOffset:0});
+      },
+      release:()=>{if(!released){released=true;queueMicrotask(retire);}}
+    });
+  }
   _options({fieldTick,requirements=[],changedBricks=[],smoothing=1,full=false}){
     const cores=new Map(), normalized=[];
     for(const r of requirements){

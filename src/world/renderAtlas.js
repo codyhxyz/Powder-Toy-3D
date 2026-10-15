@@ -316,6 +316,7 @@ export class WorldRenderAtlas {
     check(this.feedbackBytes <= Math.min(this.limits.maxStorageBufferBindingSize, this.limits.maxBufferSize, 128 * 1024 ** 2), 'world feedback exceeds binding limit');
     this.retire = retire ?? (fn => { this.queue.onSubmittedWorkDone().then(fn, fn); });
     this.onChange = onChange; this.epoch = 1; this.generation = 0; this.required = new Set(); this.dead = false; this.recording = false;
+    this.snapshotStates = new WeakMap();
     this.cell = pool(); this.light = pool(); this.probe = pool();
     // Compatibility for cell-provider inspection; no light pages in this map.
     this.pages = this.cell.pages; this.pending = this.cell.pending;
@@ -569,16 +570,31 @@ export class WorldRenderAtlas {
     const next = createResources(this.device, worldAtlasLayout(sizes.capacity, this.limits, sizes.lightCapacity, sizes.probeCapacity), share);
     try {
       const encoder = this.device.createCommandEncoder({ label: 'world atlas growth' });
-      for (const pool of [this.cell, this.light]) for (const p of pool.pages.values()) if (p.public) copyJob(encoder, old, next, p);
+      // Pinned retired descriptors are still addressed by producer-only mixed
+      // readers. Every growth preserves their numeric pool prefix too.
+      for (const pool of [this.cell, this.light]) for (const p of pool.pages.values()) if (p.public || p.pins) copyJob(encoder, old, next, p);
       this.queue.submit([encoder.finish()]); this._commit(this.entries, this.lightEntries, next);
     } catch (e) { this._releaseResources(next); throw e; }
     this.resources = next; this._releaseResources(old);
     this.onChange({ epoch: this.epoch, generation: this.generation }); return next.layout;
   }
-  snapshot() {
-    this._alive(); const s = this.current; s.refs++; let released = false;
-    return frozen({ abi: WORLD_ATLAS_ABI, epoch: s.epoch, generation: s.generation, layout: s.r.layout, book: s.book, lightBook: s.lightBook, params: s.params, views: s.r.views,
+  snapshot() { this._alive(); return this._snapshot(this.current); }
+  _snapshot(s) {
+    s.refs++; let released = false;
+    const handle = frozen({ abi: WORLD_ATLAS_ABI, epoch: s.epoch, generation: s.generation, layout: s.r.layout, book: s.book, lightBook: s.lightBook, params: s.params, views: s.r.views,
       dependencies: s.dependencies, sunManifest: s.sunManifest,
+      retain: () => {
+        if (released) throw new Error('snapshot released');
+        check(s.epoch === this.epoch, 'stale world snapshot epoch');
+        return this._snapshot(s);
+      },
+      // Borrow only under this exact snapshot's existing pin. Never reconstruct
+      // native resources from the latest Atlas after an asynchronous boundary.
+      textures: () => {
+        if (released) throw new Error('snapshot released');
+        check(s.epoch === this.epoch, 'stale world snapshot epoch');
+        return frozen({ ...s.r.textures });
+      },
       bindings: (external, feedback) => {
         if (released) throw new Error('snapshot released');
         check(s.epoch === this.epoch, 'stale world snapshot epoch');
@@ -590,6 +606,21 @@ export class WorldRenderAtlas {
           [{ binding: 0, resource: { buffer: feedback, size: this.feedbackBytes } }],
         ];
       }, release: () => { if (!released) { released = true; this._releaseSnapshot(s); } } });
+    this.snapshotStates.set(handle, { s, live: () => !released });
+    return handle;
+  }
+  // Producer-only: current CELL plus an exact pinned previous LIGHT book.
+  // Default render snapshots and their coherent bindings are unchanged.
+  producerBindings(cellSnapshot, previousSnapshot, external, feedback) {
+    this._alive();
+    const a = this.snapshotStates.get(cellSnapshot), b = this.snapshotStates.get(previousSnapshot);
+    check(a?.live() && b?.live(), 'owned live producer snapshots required');
+    check(a.s.epoch === this.epoch && b.s.epoch === this.epoch && a.s.generation >= b.s.generation, 'producer snapshot epoch/generation mismatch');
+    check(a.s.r === this.resources, 'producer CELL snapshot must use current pool prefix');
+    for (const p of b.s.pins) if (p.kind === 'light') check(p.pins > 0 && this.light.pages.get(p.id) === p, 'previous LIGHT pool lifetime mismatch');
+    const groups = cellSnapshot.bindings(external, feedback);
+    groups[0][2] = { binding: 2, resource: { buffer: b.s.lightBook } };
+    return groups;
   }
   lookup(brick, readyBits = READY.CELL) {
     this._alive(); check(integer(readyBits, 1, READY.ALL), 'invalid requested channels');

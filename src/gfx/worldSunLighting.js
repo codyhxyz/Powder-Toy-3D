@@ -59,15 +59,17 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
       bindings(){if(released)throw new Error('released sun snapshot');return Object.freeze({params:p.params,book:p.book,sun0:p.view0,sun1:p.view1,token:p.token});}});
   }
   const snapshot=()=>{alive();return handle(active);};
-  async function prepare({direction,basisRevision,configVersion,sceneToken,receiverBounds,changedWorldBounds,changeBaseToken}={}) {
+  async function prepare({direction,basisRevision,configVersion,sceneToken,receiverBounds=[],requestedTiles,changedWorldBounds,changeBaseToken}={}) {
     alive(); const id=++serial, owned=[], candidatesTextures=[];let input=null,old=null,recorded=false,finished=false,retained=false;
     const releaseInputs=()=>{input?.release();input=null;if(old){drop(old);old=null;}owned.splice(0).forEach(b=>b.destroy());};
     const destroyOutputs=()=>candidatesTextures.splice(0).forEach(t=>t.destroy());
     try {
       if(!Number.isInteger(basisRevision)||basisRevision<0||basisRevision>0xffffffff||configVersion===undefined||sceneToken===undefined||!Array.isArray(receiverBounds))throw new TypeError('basis/config/scene and explicit receiver coverage required');
       const projection=worldSunProjection(size,direction);
-      const wanted=worldSunBoundsTiles(projection,receiverBounds,2+2*WORLD_SUN_PITCH+SUN_TAN_RADIUS*(projection.depth[0]-projection.depth[1]));
-      if(!wanted.length) return Object.freeze({status:'no-receivers',snapshot:snapshot()});
+      const tileLimit=projection.tiles[2]*projection.tiles[3];
+      if(requestedTiles!==undefined&&(!Array.isArray(requestedTiles)||requestedTiles.some(n=>!Number.isInteger(n)||n<0||n>=tileLimit)))throw new RangeError('requested virtual sun tile IDs');
+      const wanted=[...new Set([...worldSunBoundsTiles(projection,receiverBounds,2+2*WORLD_SUN_PITCH+SUN_TAN_RADIUS*(projection.depth[0]-projection.depth[1])),...(requestedTiles??[])])].sort((a,b)=>a-b);
+      // Empty is an UNKNOWN book for offscreen feedback, not a fully-lit map.
       // The caller may clear/reuse its dirty accumulator as soon as prepare
       // returns a promise. Capture physical tile meaning before any await.
       const changedTiles=changedWorldBounds===undefined?null:new Set(worldSunBoundsTiles(projection,changedWorldBounds,8+2*WORLD_SUN_PITCH));
@@ -77,8 +79,8 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
       if(![input.dependencySetID,input.dependencyVersion].every(n=>Number.isInteger(n)&&n>=0&&n<=0xffffffff))throw new TypeError('explicit dependency closure reference/version required');
       const key=[sceneToken,input.epoch,basisRevision,configVersion,...projection.basis.sun];
       const content=[input.source.contentToken,input.field.publishedToken,input.field.sourceRevision,input.field.logicalFieldTick,input.dependencySetID,input.dependencyVersion];
-      if(active&&equal(key,active.key)&&equal(content,active.content)&&wanted.every(i=>active.slots.has(i))) {releaseInputs();return Object.freeze({status:'cached',snapshot:snapshot()});}
-      const layers=Math.ceil(wanted.length/64), limit=device.limits?.maxTextureArrayLayers??256;
+      if(active&&equal(key,active.key)&&equal(content,active.content)&&equal(wanted,[...active.slots.keys()])) {releaseInputs();return Object.freeze({status:'cached',snapshot:snapshot()});}
+      const layers=Math.max(1,Math.ceil(wanted.length/64)), limit=device.limits?.maxTextureArrayLayers??256;
       if(layers>limit||(device.limits?.maxTextureDimension2D??8192)<2048)throw new RangeError('sun coverage exceeds legal physical array capacity; never lower texel density');
       const tileCount=projection.tiles[2]*projection.tiles[3];
       if(tileCount*32>maxBuffer)throw new RangeError('SunBook exceeds storage binding limit');

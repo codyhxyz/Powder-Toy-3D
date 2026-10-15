@@ -278,3 +278,21 @@ test('source/field changed bounds project via physical basis regardless of camer
   assert.ok(worldSunBoundsTiles(p,[roof]).some(i=>worldSunBoundsTiles(p,[receiver]).includes(i)));
   const source=readFileSync(new URL('../src/gfx/worldSunLighting.js',import.meta.url),'utf8');assert.doesNotMatch(source,/createCommandEncoder|queue\.submit\(/);
 });
+test('sparse virtual IDs, empty UNKNOWN bootstrap, exact selection/dependency/basis cache keys',async()=>{
+  const f=fixture(),options={...f.options,receiverBounds:[],requestedTiles:[]};
+  const empty=await f.lighting.prepare(options);assert.deepEqual(empty.tiles,[]);
+  assert.equal((await f.complete(empty)).status,'published');
+  const initial=f.lighting.snapshot(),emptyBook=new Uint32Array(initial.bindings().book.bytes.buffer);
+  assert(emptyBook.every(n=>n===0),'empty book is UNKNOWN, not fully lit');initial.release();
+  const ids=[17,2,17],preparing=f.lighting.prepare({...options,requestedTiles:ids});ids.fill(99);
+  const sparse=await preparing;assert.deepEqual(sparse.tiles,[2,17]);assert.equal((await f.complete(sparse)).status,'published');
+  const cached=await f.lighting.prepare({...options,requestedTiles:[17,2]});assert.equal(cached.status,'cached');cached.snapshot.release();
+  const subset=await f.lighting.prepare({...options,requestedTiles:[2]});assert.equal(subset.status,'prepared');assert.deepEqual(subset.tiles,[2]);assert.equal((await f.complete(subset)).status,'published');
+  const acquire=f.sourceFieldSnapshotProvider.acquire;
+  f.sourceFieldSnapshotProvider.acquire=async()=>({...await acquire(),dependencyVersion:99});
+  const changed=await f.lighting.prepare({...options,requestedTiles:[2]});assert.equal(changed.status,'prepared');assert.equal((await f.complete(changed)).status,'published');
+  const basis=await f.lighting.prepare({...options,requestedTiles:[2],basisRevision:2});assert.equal(basis.status,'prepared');basis.cancel();
+  await assert.rejects(f.lighting.prepare({...options,requestedTiles:[-1]}),/tile IDs/);
+  await assert.rejects(f.lighting.prepare({...options,requestedTiles:[1.5]}),/tile IDs/);
+  f.lighting.dispose();
+});

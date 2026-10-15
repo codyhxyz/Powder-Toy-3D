@@ -10,7 +10,7 @@ import { sceneStruct, sceneHeadWGSL } from '../src/world/scenes/sceneGpu.js';
 import { SharedUniforms } from '../src/gpu/params.js';
 import { WorldCellAtlasAdapter } from '../src/world/cellAtlasAdapter.js';
 import { WorldRenderAtlas, READY } from '../src/world/renderAtlas.js';
-import { gridDims, atlasDims, cellSlot } from '../src/shaders/common.js';
+import { gridDims, atlasDims, cellSlot, brickIdOf } from '../src/shaders/common.js';
 import { BrickStore, encodeBrick } from '../src/world/store.js';
 import { setAeration, aerationForSource } from '../src/gfx/foam.js';
 import { worldParams, treesIn } from '../src/world/generator.js';
@@ -249,4 +249,32 @@ test('departing pending-save authority stays owned across newer store acknowledg
   a.producer.record(f.gpu.frame,[0,0]);await drain(f.gpu);
   assert.equal(f32(a.source.getSource([0,0,0]).chunk.A)[s*4+3],.125);
   assert.equal(a.source.getSource([0,0,0]).kind,'captured');a.release();await f.finish();
+});
+test('submitted classification lease preserves original f32 emission/UINT info and native XYZ Glow halo through replacement and queue completion',async()=>{
+  const f=await fixture({size:[32,8,8]}),atlas=new WorldRenderAtlas(f.gpu,{worldSize:f.win.size,initialCapacity:4});
+  const adapter=new WorldCellAtlasAdapter({gpu:f.gpu,source:f.source,producer:f.producer,atlas,tables:f.sim.tables,worldBounds:{min:[0,0,0],max:f.win.size}});await adapter.ready;
+  const a=cut(f);adapter.bindCut(a);
+  const bricks=[];for(let z=0;z<2;z++)for(let y=0;y<2;y++)for(let x=0;x<8;x++)bricks.push([x,y,z]);
+  const batch=adapter.record(f.gpu.frame,{fieldTick:0,requirements:bricks});f.gpu.flush();adapter.commitAfterSourceFlush(batch).previousLightingSnapshot.release();await drain(f.gpu);
+  const capture=adapter.cache.get('0,0,0');
+  for(const b of bricks){const i=brickIdOf(SOURCE_GRID,...b);f32(capture.classification).set([b[0]+.25,b[1]+.5,b[2]+.75,0],i*4);u32(capture.classification)[i*4+3]=0x8000;}
+  const lease=adapter.acquireClassification({bricks}),metadata=lease.recordMetadata(f.gpu.frame);
+  assert.throws(()=>lease.recordEmission(f.gpu.frame,{min:[0,0,0],size:[8,2,3]}),/region/);
+  const emission=lease.recordEmission(f.gpu.frame,{min:[0,0,0],size:[8,2,2]});
+  f.gpu.flush();await drain(f.gpu);
+  for(let i=0;i<bricks.length;i++){
+    assert.equal(u32(metadata)[i*4+3],0x8000);
+    assert.deepEqual([...f32(emission.buffer).slice(i*4,i*4+4)],[bricks[i][0]+.25,bricks[i][1]+.5,bricks[i][2]+.75,0]);
+  }
+  const incomplete=adapter.acquireClassification({bricks:[[0,0,0]]});
+  assert.throws(()=>incomplete.recordEmission(f.gpu.frame,{min:[0,0,0],size:[2,1,1]}),e=>e.requirements[0].index===1);incomplete.release();await drain(f.gpu);
+  // Configuration replacement clears cache, but a queued lease owns its bytes
+  // until final normal boundary and completion (not an earlier prefix).
+  f.gpu.frame.copy(capture.classification,0,metadata,0,16);f.gpu.flush();
+  f.gpu.frame.copy(capture.classification,16,metadata,16,16);
+  const b=f.source.recordCut(f.gpu.frame,{sceneVersion:'scene',configVersion:2});adapter.bindCut(b);
+  lease.release();await tick();assert(!capture.classification.destroyed);assert(!metadata.destroyed);
+  assert.throws(()=>lease.recordMetadata(),/Released/);
+  f.gpu.flush();await drain(f.gpu);await drain(f.gpu);
+  assert(capture.classification.destroyed);assert(metadata.destroyed);a.release();b.release();adapter.dispose();atlas.dispose();await f.finish();
 });
