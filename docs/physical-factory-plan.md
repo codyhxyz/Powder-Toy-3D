@@ -33,6 +33,17 @@ Actual tool strokes and their candidate geometry require separate verification.
 This reduced verification path does not prove precise coal metering or continuous automation.
 The ideal fuel-gate route remains an open requirement.
 
+### Fuel-gate design review
+
+The existing gate retains its solid floor when open and supplies no grain-moving impulse.
+This limits simple flat feed layouts; it does not prove every existing-piece route impossible.
+A proposed drop-gate floor opening did not guarantee drainage of its twelve-grain source.
+Grains could settle in an undrained rear pocket while the gate was closed.
+Do not implement that proposal unchanged.
+A smaller four-grain fixture remains only a candidate for later validation.
+No drop-gate variant is approved or implemented.
+Preserve the proven full-floor coolant route while investigating fuel feeding.
+
 ## Scope
 
 - Finite-fuel heat with a usable ignition method.
