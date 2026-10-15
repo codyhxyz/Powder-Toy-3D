@@ -7,6 +7,18 @@ import { CONTACT_ROW_SCHEMA, CONTACT_RX_SCHEMA, contactTableLayout } from '../..
 
 const float = n => Number.isInteger(n) ? `${n}.0` : `${n}`;
 const layout = contactTableLayout(CONTACT_ROWS.length, CONTACT_REACTIONS.length);
+// Potential rules, not successful reactions: even a failed roll can mark busy.
+// Immutable scalar bits avoid copying two CTCells through five identity calls.
+const pairBits = new Uint32Array(Math.ceil(CONTACT_ROWS.length ** 2 / 32));
+for (let a = 0; a < CONTACT_ROWS.length; a++) for (let b = 0; b < CONTACT_ROWS.length; b++) {
+  const ra = CONTACT_ROWS[a], rb = CONTACT_ROWS[b], index = a * CONTACT_ROWS.length + b;
+  if (CONTACT_RX_INDEX[index] !== 0 || (ra.acid !== 0 && rb.edible !== 0) ||
+      (rb.acid !== 0 && ra.edible !== 0) ||
+      (a === E.SINGULARITY && (rb.singFood !== 0 || b === E.SINGULARITY)) ||
+      (b === E.SINGULARITY && (ra.singFood !== 0 || a === E.SINGULARITY))) {
+    pairBits[index >> 5] |= 1 << (index & 31);
+  }
+}
 // Read the immutable tail of the existing EV buffer. No constant struct arrays
 // for the backend to inline; signed bounds/defaults and field precision persist.
 const table = (name, struct, count, schema, offset, stride) => `fn ${name}(id:i32)->${struct} {
@@ -103,6 +115,12 @@ struct CTRow { ${CONTACT_ROW_SCHEMA.map(([key, type]) => `${key}:${type}`).join(
 struct CTRx { ${CONTACT_RX_SCHEMA.map(([key, type]) => `${key}:${type}`).join(',')} }
 ${table('ctRow', 'CTRow', CONTACT_ROWS.length, CONTACT_ROW_SCHEMA, layout.rowOffset, layout.rowStride)}
 ${table('ctRx', 'CTRx', CONTACT_REACTIONS.length, CONTACT_RX_SCHEMA, layout.rxOffset, layout.rxStride)}
+const ctPairRuleBits = array<u32,${pairBits.length}>(${Array.from(pairBits, n => `${n}u`).join(',')});
+fn ctPairPotential(a:i32,b:i32)->bool {
+ if(a<0 || b<0 || a>=${CONTACT_ROWS.length} || b>=${CONTACT_ROWS.length}){return false;}
+ let index=u32(a)*${CONTACT_ROWS.length}u+u32(b);
+ return (ctPairRuleBits[index>>5u] & (1u<<(index&31u)))!=0u;
+}
 fn ctRxAt(a:i32,b:i32)->i32 {
  switch a*${ELEMENTS.length}+b {
  ${Array.from(CONTACT_RX_INDEX).flatMap((v, i) => v ? [`case ${i}: { return ${v}; }`] : []).join('\n')}
@@ -231,13 +249,15 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
    let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
    let flux=ctFlux(cells[i],cells[j]);
    if(flux!=0){cells[i]=ctHeat(cells[i],flux);cells[j]=ctHeat(cells[j],-flux);cells[i].busy=1;cells[j].busy=1;}
-   let seed=ctSeed(positions[i],P.tick)^i32(j);
-   var pair=ctReaction(cells[i],cells[j],seed);
-   if(pair.changed==0){pair=ctAcid(pair.a,pair.b,seed);}
-   if(pair.changed==0){let rev=ctAcid(pair.b,pair.a,seed);pair=ctPairValue(rev.b,rev.a,rev.changed);}
-   if(pair.changed==0){pair=ctSwallow(pair.a,pair.b,seed);}
-   if(pair.changed==0){let rev=ctSwallow(pair.b,pair.a,seed);pair=ctPairValue(rev.b,rev.a,rev.changed);}
-   cells[i]=pair.a;cells[j]=pair.b;
+   if(cells[i].done==0 && cells[j].done==0 && ctPairPotential(cells[i].id,cells[j].id)){
+    let seed=ctSeed(positions[i],P.tick)^i32(j);
+    var pair=ctReaction(cells[i],cells[j],seed);
+    if(pair.changed==0){pair=ctAcid(pair.a,pair.b,seed);}
+    if(pair.changed==0){let rev=ctAcid(pair.b,pair.a,seed);pair=ctPairValue(rev.b,rev.a,rev.changed);}
+    if(pair.changed==0){pair=ctSwallow(pair.a,pair.b,seed);}
+    if(pair.changed==0){let rev=ctSwallow(pair.b,pair.a,seed);pair=ctPairValue(rev.b,rev.a,rev.changed);}
+    cells[i]=pair.a;cells[j]=pair.b;
+   }
   }
  }
  let snapshot=cells;
@@ -251,16 +271,20 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
  for(var i=0u;i<count;i++){
   for(var axis=0u;axis<u32(ctNeighborCount());axis++){
    let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
-   var pair=ctResolvePhase(cells[i],cells[j]);
-   if(pair.changed==0){let rev=ctResolvePhase(pair.b,pair.a);pair=ctPairValue(rev.b,rev.a,rev.changed);}
-   cells[i]=pair.a;cells[j]=pair.b;
+   if(cells[i].pending>=0 || cells[j].pending>=0){
+    var pair=ctResolvePhase(cells[i],cells[j]);
+    if(pair.changed==0){let rev=ctResolvePhase(pair.b,pair.a);pair=ctPairValue(rev.b,rev.a,rev.changed);}
+    cells[i]=pair.a;cells[j]=pair.b;
+   }
   }
  }
  for(var i=0u;i<count;i++){
   for(var axis=0u;axis<u32(ctNeighborCount());axis++){
    let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
-   let pair=ctPlume(cells[i],cells[j],ctSeed(positions[i],P.tick)^i32(j),select(0,1,positions[j].y>positions[i].y));
-   cells[i]=pair.a;cells[j]=pair.b;
+   if(cells[i].burning!=0 && cells[i].life!=0 && (cells[i].request&5)==0 && positions[j].y>positions[i].y && (cells[j].id==CT_EMPTY || cells[j].id==CT_OXYGEN)){
+    let pair=ctPlume(cells[i],cells[j],ctSeed(positions[i],P.tick)^i32(j),1);
+    cells[i]=pair.a;cells[j]=pair.b;
+   }
   }
  }
  for(var i=0u;i<count;i++){
