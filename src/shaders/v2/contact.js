@@ -18,16 +18,17 @@ const table = (name, struct, count, schema, offset, stride) => `fn ${name}(id:i3
  }).join(',')});
 }`;
 
-// A row view snapshots only its numeric EV base. Reject signed invalid IDs
-// before multiplication; field access returns the full-row ABI's typed zeros.
+// A row view snapshots a safe EV vector base and a raw-word validity mask.
+// Invalid signed IDs select AIR before multiplication; immutable reads are safe
+// and masking before bitcast preserves the full-row ABI's typed positive zeros.
 const rowViews = `// BEGIN scalar contact row views
-fn ctRowBase(id:i32)->u32 {
- if(id<0 || id>=${CONTACT_ROWS.length}){return 0xffffffffu;}
- return ${layout.rowOffset / 4}u+u32(id)*${layout.rowStride / 4}u;
+fn ctRowBase(id:i32)->vec2u {
+ let valid=id>=0 && id<${CONTACT_ROWS.length};
+ let safeID=select(0u,u32(id),valid);
+ return vec2u(${layout.rowOffset / 4}u+safeID*${layout.rowStride / 4}u,select(0u,0xffffffffu,valid));
 }
-${CONTACT_ROW_SCHEMA.map(([key, type], i) => `fn ctRow_${key}(base:u32)->${type} {
- if(base==0xffffffffu){return ${type === 'i32' ? '0' : '0.0'};}
- return bitcast<${type}>(EV[base+${Math.floor(i / 4)}u].${'xyzw'[i % 4]});
+${CONTACT_ROW_SCHEMA.map(([key, type], i) => `fn ctRow_${key}(base:vec2u)->${type} {
+ return bitcast<${type}>(EV[base.x+${Math.floor(i / 4)}u].${'xyzw'[i % 4]} & base.y);
 }`).join('\n')}
 // END scalar contact row views
 `;
