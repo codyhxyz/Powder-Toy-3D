@@ -223,6 +223,45 @@ export function externalTexture(gpuTexture, { dimension = gpuTexture.dimension, 
  * size, which TAAUNode takes as the output size, is [w, h].
  * @param {object} gpu with gpu.three (createThreeRenderer)
  */
+// Reserve a sample without touching the committed jitter index/history. This
+// uses the real TAAU view-offset hooks (including their velocity override),
+// then restores them synchronously after scene recording. Already queued
+// scenes can share a sample; each accepted scene advances the index once.
+export function reserveTemporalJitter(node, camera, w, h) {
+  const saved = { camera: node.camera, index: node._jitterIndex,
+    original: node._originalProjectionMatrix.clone(), offset: node._jitterOffset.value.clone(),
+    projection: camera.projectionMatrix.clone(), inverse: camera.projectionMatrixInverse.clone(),
+    view: camera.view ? { ...camera.view } : null, aspect: camera.aspect };
+  let restored = false, committed = false;
+  const restoreCamera = () => {
+    camera.view = saved.view ? { ...saved.view } : null;
+    if (saved.aspect !== undefined) camera.aspect = saved.aspect;
+    camera.projectionMatrix.copy(saved.projection);camera.projectionMatrixInverse.copy(saved.inverse);
+  };
+  const restore = () => {
+    if (restored) return;
+    node.camera = camera;node.clearViewOffset();node._jitterIndex = saved.index;
+    node._originalProjectionMatrix.copy(saved.original);node._jitterOffset.value.copy(saved.offset);node.camera = saved.camera;
+    restoreCamera();restored = true;
+  };
+  try {
+    node.camera = camera;node.setViewOffset(w, h);
+    if (saved.aspect !== undefined && camera.aspect !== saved.aspect) {camera.aspect = saved.aspect;camera.updateProjectionMatrix();}
+    const original = node._originalProjectionMatrix.clone();
+    const jitter = Object.freeze([node._jitterOffset.value.x, node._jitterOffset.value.y]);
+    return Object.freeze({jitter, restore, commit(frozenCamera) {
+      if (committed) throw new Error('temporal sample already committed');
+      restore();
+      node.camera = frozenCamera;node._originalProjectionMatrix.copy(original);node._jitterOffset.value.set(...jitter);
+      const projection = frozenCamera.projectionMatrix.clone(), inverse = frozenCamera.projectionMatrixInverse.clone();
+      const view = frozenCamera.view ? { ...frozenCamera.view } : null;
+      node.clearViewOffset();
+      frozenCamera.view = view;frozenCamera.projectionMatrix.copy(projection);frozenCamera.projectionMatrixInverse.copy(inverse);
+      committed = true;
+    }});
+  } catch (e) {restore();throw e;}
+}
+
 export function createTemporalUpscaler(gpu) {
   const renderer = gpu.three.renderer;
   const target = (name, format, filter) => {
@@ -279,6 +318,7 @@ export function createTemporalUpscaler(gpu) {
       node.camera = camera;
       node.clearViewOffset();
     },
+    reserveJitter(camera, w, h) { return reserveTemporalJitter(node, camera, w, h); },
     resolve(camera, depth, [w, h]) {
       node.camera = camera;
       if (node.depthNode.value !== depth) node.depthNode.value = depth;

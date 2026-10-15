@@ -52,18 +52,27 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
   const pipes=new Map(); let dead=false;
   const alive=()=>{if(dead)throw new Error('world volume disposed');};
   const module=(code,label)=>device.createShaderModule({code,label});
-  const pickReady=device.createComputePipelineAsync({label:'world pick',layout:pickLayout,
-    compute:{module:module(pickFrag(grid,{backend:'world'}),'world pick'),entryPoint:'main'}});
-  function pipeline(view='realistic',detail={},curved=false) {
+  function compiled(promise) {
+    let state='pending', pipeline=null, error=null;
+    const ready=Promise.resolve(promise).then(p=>{pipeline=p;state='ready';return p;},e=>{error=e;state='failed';throw e;});
+    ready.catch(()=>{});
+    return Object.freeze({get state(){return state;},get pipeline(){return pipeline;},get error(){return error;},ready});
+  }
+  const pickState=compiled(device.createComputePipelineAsync({label:'world pick',layout:pickLayout,
+    compute:{module:module(pickFrag(grid,{backend:'world'}),'world pick'),entryPoint:'main'}}));
+  const pickReady=pickState.ready;
+  function pipelineState(view='realistic',detail={},curved=false) {
     alive(); const key=JSON.stringify([view,Object.keys(detail).filter(k=>detail[k]).sort(),curved]);
     if (!pipes.has(key)) {
       const {vertex,fragment,...desc}=volumePipeline();
       const shader=module(volumeFrag(grid,{backend:'world',view,detail,curved}),`world ${key}`);
-      pipes.set(key,device.createRenderPipelineAsync({label:`world ${key}`,layout:pipelineLayout,...desc,
-        vertex:{module:shader,entryPoint:vertex.entry},fragment:{module:shader,entryPoint:fragment.entry,targets:fragment.targets}}));
+      pipes.set(key,compiled(device.createRenderPipelineAsync({label:`world ${key}`,layout:pipelineLayout,...desc,
+        vertex:{module:shader,entryPoint:vertex.entry},fragment:{module:shader,entryPoint:fragment.entry,targets:fragment.targets}})));
     }
     return pipes.get(key);
   }
+  const viewReady=(view,detail,curved)=>pipelineState(view,detail,curved).ready;
+  const pipeline=viewReady;
   // Parameters/resources are immutable per candidate, and caller pins the
   // external lighting/appearance/mesh/noise publication through final submission.
   // A supplied snapshot transfers ownership to this call, including failure.
@@ -104,26 +113,40 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       const first=entries.slice(0,3).map((e,i)=>group(layouts[i],e));
       const groups=[...first,group(layouts[3],[b(0,p),...base])];
       const valid=()=>{alive();if(released)throw new Error('world candidate released');if(snapshot.epoch!==atlas.epoch)throw new Error('stale world candidate epoch');};
+      function recordDraw(pass,{view='realistic',detail={},curved=false}={}) {
+        valid(); const state=pipelineState(view,detail,curved);
+        if(state.state!=='ready')return false;
+        pass.setPipeline(state.pipeline);groups.forEach((g,i)=>pass.setBindGroup(i,g));
+        pass.draw(curved?VOLUME_SCREEN_VERTICES:VOLUME_VERTICES);return true;
+      }
+      function capturePick({params:pickParams,output}) {
+        if(!output||output.size<32||output.size>storageLimit)throw new Error('pick output buffer required');
+        const n=pickParams?.n,slots=pickParams?.slot?.map(vec);
+        if(!Number.isInteger(n)||n<1||n>8)throw new RangeError('world pick batch must contain 1..8 rays');
+        for(let i=0;i<n;i++) {
+          const slot=slots?.[i>>2]?.[i&3];
+          if(!Number.isInteger(slot)||slot<0||(slot+1)*32>output.size)throw new RangeError('world pick slot outside output');
+        }
+        return {bytes:PickParams.pack({...pickParams,n,slot:slots}),output};
+      }
+      function recordCapturedPick(frame,{bytes,output}) {
+        valid();if(pickState.state!=='ready')return false;
+        const p=buffer('world pick params',bytes),pg=group(pickLayouts[3],[b(0,p),...base,b(6,output)]);
+        const encoder=frame.direct?frame.direct():frame;
+        const pass=encoder.beginComputePass({label:'world pick'});
+        try {pass.setPipeline(pickState.pipeline);[...first,pg].forEach((g,i)=>pass.setBindGroup(i,g));pass.dispatchWorkgroups(1);}
+        finally {pass.end();}
+        return true;
+      }
       return Object.freeze({snapshot,feedback,groups,params,requiredProtocol:'submit -> read entire feedback -> withhold entire incomplete candidate; retain resources until final submitted use completes',
-        async draw(pass,{view='realistic',detail={},curved=false}={}) {
-          valid(); const pipe=await pipeline(view,detail,curved); valid();
-          pass.setPipeline(pipe); groups.forEach((g,i)=>pass.setBindGroup(i,g)); pass.draw(curved?VOLUME_SCREEN_VERTICES:VOLUME_VERTICES);
-          return {requiresFeedback:true};
+        recordDraw,
+        async draw(pass,options={}) {
+          valid();await viewReady(options.view,options.detail,options.curved);valid();
+          recordDraw(pass,options);return {requiresFeedback:true};
         },
-        async recordPick(encoder,{params:pickParams,output}) {
-          valid(); if (!output || output.size<32 || output.size>storageLimit) throw new Error('pick output buffer required');
-          const n=pickParams?.n, slots=pickParams?.slot?.map(vec);
-          if (!Number.isInteger(n) || n<1 || n>8) throw new RangeError('world pick batch must contain 1..8 rays');
-          for(let i=0;i<n;i++) {
-            const slot=slots?.[i>>2]?.[i&3];
-            if (!Number.isInteger(slot) || slot<0 || (slot+1)*32>output.size) throw new RangeError('world pick slot outside output');
-          }
-          const pickBytes=PickParams.pack({...pickParams,n,slot:slots});
-          const pipe=await pickReady; valid();
-          const p=buffer('world pick params',pickBytes);
-          const pg=group(pickLayouts[3],[b(0,p),...base,b(6,output)]);
-          const pass=encoder.beginComputePass({label:'world pick'}); pass.setPipeline(pipe);
-          [...first,pg].forEach((g,i)=>pass.setBindGroup(i,g)); pass.dispatchWorkgroups(1); pass.end();
+        recordPickReady(frame,options) {valid();if(pickState.state!=='ready')return false;return recordCapturedPick(frame,capturePick(options));},
+        async recordPick(frame,options) {
+          valid();const captured=capturePick(options);await pickReady;valid();return recordCapturedPick(frame,captured);
         },
         decodeFeedback:words=>{valid();return decodeWorldFeedback(words,atlas.bookLayout,tileCount);},
         // ONLY after submitting the last use AND GPU completion. No hidden
@@ -132,6 +155,6 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       });
     } catch(e) {snapshot?.release();owned.forEach(b=>b.destroy());throw e;}
   }
-  return Object.freeze({g:grid,layouts,pickLayouts,pipeline,prepare,ready:pickReady,
+  return Object.freeze({g:grid,layouts,pickLayouts,pipeline,pipelineState,viewReady,pickState,prepare,ready:pickReady,
     dispose(){dead=true;/* candidates own their pinned lifetimes; no shared resource mutation */}});
 }

@@ -117,6 +117,7 @@ import {
 } from 'three/webgpu';
 import { uniformStruct, fullscreenVert, luma as lumaWGSL, STAGE } from '../gpu/index.js';
 import { initRenderTarget, gpuTextureOf, createTemporalUpscaler } from '../gpu/three.js';
+import { createBlit } from '../gpu/present.js';
 import { IDENTITY, presentationWGSL } from './presentationMath.js';
 import { glf as f } from '../glsl.js';
 import { sprintBlurWGSL } from './sprintBlur.js';
@@ -1159,7 +1160,8 @@ function createSceneTarget(gpu, label) {
  *   three's renderer (made at the first frame: make post after three's renderer)
  * @returns post-processing pipeline; see the file header.
  */
-export function createPost(gpu, { presenter = null, pixScale = null, sky = skyColours(), readable = false, presentation = null, temporal } = {}) {
+export function createPost(gpu, { presenter = null, pixScale = null, sky = skyColours(), readable = false, presentation = null, temporal, maxPendingScenes = 3 } = {}) {
+  if (!Number.isInteger(maxPendingScenes) || maxPendingScenes < 1 || maxPendingScenes > 8) throw new RangeError('post pending scene limit must be 1..8');
   const L = Object.fromEntries(Object.entries(POST_LAYOUTS).map(([k, entries]) => [k, gpu.layout(`POST_${k}`, entries)]));
   const pipes = {
     motion: postPipe(gpu, PIPES.motion),
@@ -1214,6 +1216,10 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   // References only: no copied scene, and never the mesh-motion cache. These
   // images belong to the last complete finish(), until any full scene starts.
   let keptPost = null;
+  // Staged scenes have no access to committed temporal state while recording.
+  const stagedTargets = [], sceneTickets = new WeakMap(), pendingScenes = new Set(), liveScenes = new Set();
+  let stageContext = null, sceneIdentity = null, sceneGeneration = 0, sceneSequence = 0, admittedSequence = 0;
+  let admitting = false, disposed = false, stageCameraKey = null, lastImage = null, stageBlit = null;
   const imageStamp = (camera, s) => {
     camera.updateMatrixWorld();
     // Composite-only controls don't change radiance, bloom or the histogram.
@@ -1275,20 +1281,21 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     /** Output size [w, h] (canvas or target). */
     get size() { return [...size]; },
     /** The scene's size [w, h]: the output size × the render scale (the still's size during renderStill). */
-    get inSize() { return active === still ? [still.width, still.height] : [...inSize]; },
+    get inSize() { return stageContext ? [...stageContext.inSize] : active === still ? [still.width, still.height] : [...inSize]; },
     /** This frame's jitter, scene pixels, y down: texel m sampled the view at m + ½ + jitter (three's TAAU's; FrameUniforms.jitter, F4); none during renderStill. */
-    get jitter() { return active === still ? [0, 0] : [...jitter]; },
+    get jitter() { return stageContext ? [...stageContext.jitter] : active === still ? [0, 0] : [...jitter]; },
     /** The target the scene is drawn into now ({ rt, color, depth, width, height }): the main one, or the still's during renderStill. */
     get sceneTarget() { return active; },
     /**
      * Between beginScene and endScene, the jittered camera's projection
      * without the jitter, { projectionMatrix, projectionMatrixInverse }; null otherwise.
      */
-    get unjittered() { return jittered ? { projectionMatrix: savedProj, projectionMatrixInverse: savedProjInv } : null; },
+    get unjittered() { return stageContext ? stageContext.unjittered : jittered ? { projectionMatrix: savedProj, projectionMatrixInverse: savedProjInv } : null; },
     /** Every texture post holds, for memory estimates (gpu.memory() counts ours; threeBytes is three's share). */
-    get allTargets() { return [main.color, main.depth, still.color, still.depth, ...down, ...up, bloomImage].filter(Boolean); },
+    get allTargets() { return [main.color,main.depth,still.color,still.depth,...down,...up,bloomImage,
+      ...stagedTargets.flatMap(s=>[s.target.color,s.target.depth]),...[...liveScenes].flatMap(t=>t.copies),lastImage?.texture].filter(Boolean); },
     /** Bytes of the scene targets three holds (not in gpu.memory()). */
-    get threeBytes() { return main.threeBytes + still.threeBytes; },
+    get threeBytes() { return main.threeBytes + still.threeBytes + stagedTargets.reduce((n,s)=>n+s.target.threeBytes,0); },
     /** Eyes still adjusting (the view should keep rendering until they settle). */
     get adapting() { return adaptOn && !!adaptSeen && adaptSeen.gain !== adaptSeen.target; },
     /** Last gain read back: { gain, target, view (log2 luminance) }, or null. */
@@ -1320,6 +1327,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      * renders at `scale` of it per axis. Allocates on a change only.
      */
     setSize(w, h, scale = 1) {
+      if (stageContext) throw new Error('cannot resize post from a staged scene hook');
       if (w === undefined) {
         const canvas = presenter?.canvas;
         if (!canvas) throw new Error('post.setSize: no size and no presenter canvas');
@@ -1333,7 +1341,10 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       main.resize(inSize[0], inSize[1]);
       if (outChanged) {
         if (down.length) gpu.flush('post resize');   // (as the scene target's resize)
-        [...down, ...up, bloomImage].forEach((t) => t?.destroy());
+        const retired = [...down,...up,bloomImage];
+        const uses = [...liveScenes].flatMap(t=>t.uses);
+        if (uses.length) Promise.allSettled(uses).then(()=>retired.forEach(t=>t?.destroy()));
+        else retired.forEach(t=>t?.destroy());
         down = z.mips.map((m, i) => make(`post down ${i}`, m, i === 0 ? ATTACH : STORE));
         up = z.mips.slice(0, MIPS - 1).map((m, i) => make(`post up ${i}`, m, i === 0 ? ATTACH : STORE));
         bloomImage = make('post bloom', z.mips[0], ATTACH);
@@ -1345,7 +1356,50 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     },
 
     /** Drop the TAA history (call after scene swaps, teleports, etc.): the next frame takes the current view alone. */
-    reset() { historyValid = false; keptPost = null; },
+    reset() {
+      if (stageContext) throw new Error('cannot reset post from a staged scene hook');
+      historyValid = false; keptPost = null;
+      if (!admitting) {sceneGeneration++;for (const t of [...pendingScenes]) retireScene(t, 'discarded');}
+    },
+
+    /** Prewarm before opening native passes. BOX render() remains unchanged. */
+    get sceneReady() {
+      if (presenter) stageBlit ??= createBlit(gpu, presenter.format);
+      return Promise.all([...allPipes().map(p=>p.ready), ...(stageBlit ? [stageBlit.ready] : [])]);
+    },
+    setSceneIdentity(identity) {
+      if (stageContext) throw new Error('cannot change scene identity from a staged scene hook');
+      if (disposed) throw new Error('post disposed');
+      checkIdentity(identity);
+      if (!sameIdentity(identity, sceneIdentity)) {
+        sceneIdentity = Object.freeze({ ...identity });post.reset();
+        if (lastImage) {retireImage(lastImage);lastImage = null;}
+      }
+    },
+    /** Synchronous native scene recording only. Ownership/submission protocol:
+     * see docs/world-scene-admission.md. null means no resources were acquired. */
+    recordScene(scene, camera, options = {}) { return recordStagedScene(scene, camera, options); },
+    recordStill(scene, camera, target, options = {}) {
+      return recordStagedScene(scene, camera, { ...options, target, still: true });
+    },
+    commitScene(ticket, options = {}) { return commitStagedScene(ticket, options); },
+    commitStill(ticket, options = {}) {
+      const t = sceneTickets.get(ticket);if (!t?.still) throw new Error('post still ticket required');
+      return commitStagedScene(ticket, options);
+    },
+    discardScene(ticket) {
+      const t = sceneTickets.get(ticket);if (!t) throw new Error('foreign post scene ticket');
+      if (t.status !== 'recorded') return false;
+      retireScene(t, 'discarded');return true;
+    },
+    /** Re-present the exact last admitted composite: no TAA/adaptation/time step. */
+    presentLast({ submission } = {}) {
+      if (stageContext || jittered) throw new Error('cannot present during scene recording');
+      if (disposed) throw new Error('post disposed');
+      if (!lastImage || !presenter || lastImage.width !== presenter.canvas.width || lastImage.height !== presenter.canvas.height) return false;
+      const use = sceneFence(submission);lastImage.uses.push(use);
+      blitLast(lastImage);return true;
+    },
 
     /**
      * A presented frame's start (render() calls it; the split methods are for
@@ -1359,6 +1413,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      * @param {{ target?: { width: number, height: number } | null }} [opts]
      */
     beginScene(camera, { target = null } = {}) {
+      if (stageContext) throw new Error('cannot begin immediate scene from a staged scene hook');
       keptPost = null;
       if (jittered) restore(jittered);   // (a scene left unended: don't jitter twice)
       const s = settingsOf();
@@ -1402,6 +1457,12 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      * @returns {T}
      */
     withoutJitter(fn) {
+      if (stageContext) {
+        const c = stageContext, camera = c.liveCamera;
+        const p = camera.projectionMatrix.clone(), pi = camera.projectionMatrixInverse.clone();
+        camera.projectionMatrix.copy(c.unjittered.projectionMatrix);camera.projectionMatrixInverse.copy(c.unjittered.projectionMatrixInverse);
+        try {return fn();} finally {camera.projectionMatrix.copy(p);camera.projectionMatrixInverse.copy(pi);}
+      }
       const camera = jittered;
       if (!camera || unjitteredNow) return fn();
       unjitteredNow = true;
@@ -1461,11 +1522,13 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      *   target: a GPUTexture or { view, width, height, format }; viewmodel, glow:
      *   the held tool's resolved target and its glow layer (F3), canvas only
      */
-    finish({ target = null, dt = ADAPT.DT, viewmodel = null, glow = null, postOnly = false } = {}) {
+    finish({ target = null, dt = ADAPT.DT, viewmodel = null, glow = null, postOnly = false,
+      sceneTarget = main, frameSettings = null, framePresentation = presentation, frameSky = sky, output = null } = {}) {
+      if (stageContext) throw new Error('cannot finish post from a staged scene hook');
       if (!postOnly) keptPost = null;
-      const s = settingsOf();
+      const s = frameSettings ?? settingsOf();
       const f = gpu.frame;
-      const scene = main.color, depth = main.depth;
+      const scene = sceneTarget.color, depth = sceneTarget.depth;
 
       // three's TAAU: the motion pass writes its inputs at the scene's size (velocity,
       // the colour sanitized), then the node resolves to output size (gpu/three.js:
@@ -1476,9 +1539,9 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
         if (taaNow) {
           const inputs = temporal.inputs(inSize[0], inSize[1]);
           invVP.copy(jitVP).invert();
-          const warp = presentation?.active ? presentation.parameters : IDENTITY;
+          const warp = framePresentation?.active ? framePresentation.parameters : IDENTITY;
           // (bent, this frame or the last: this frame's clip → displayed world cells, prevWorldToClip the rest)
-          if (warp.k !== 0 || prevWarp.k !== 0) reproj.multiplyMatrices(presentation.sceneToWorld, invVP);
+          if (warp.k !== 0 || prevWarp.k !== 0) reproj.multiplyMatrices(framePresentation.sceneToWorld, invVP);
           else reproj.multiplyMatrices(prevVP, invVP);
           const bind = group(L.MOTION, [scene, depth], () => [texEntry(0, scene), texEntry(1, depth)]);
           const attach = (t) => ({ view: viewOf(t), loadOp: 'clear', storeOp: 'store', clearValue: CLEAR });
@@ -1493,16 +1556,16 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           });
           rp.end();
           // (still in taaCompress's range: its readers expand it per texel, radiance())
-          color = resolved = temporal.resolve(prevCamera, main.rt?.depthTexture, size);
+          color = resolved = temporal.resolve(prevCamera, sceneTarget.rt?.depthTexture, size);
           packed = true;
           post.onPass?.('taa', { kind: 'render' });
           historyValid = true;
         }
         prevVP.copy(curVP);
-        if (presentation) {
+        if (framePresentation) {
           // (the next frame's "last": this camera, this frame's parameters)
-          prevWorldToClip.multiplyMatrices(curVP, presentation.worldToScene);
-          prevWarp = presentation.active ? presentation.parameters : IDENTITY;
+          prevWorldToClip.multiplyMatrices(curVP, framePresentation.worldToScene);
+          prevWarp = framePresentation.active ? framePresentation.parameters : IDENTITY;
         }
       }
       frame++;
@@ -1550,7 +1613,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       }
 
       // the composite: into the canvas (opaque, over the sky, viewmodel and glow) or a target
-      const out = outputOf(target);
+      const out = output ?? outputOf(target);
       const pipe = compositeFor(out.format);
       if (pipe.state !== 'ready') throw new Error(`post: the composite for ${out.format} isn't built yet (await post.ready, or render to it once and wait)`);
       const bloomTex = bloomOn ? bloomImage : blank;
@@ -1567,7 +1630,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           viewmodel: vm !== blank, glow: gl !== blank, vmNight: s.raw ? 0 : s.night,
           peak: out.canvas && presenter?.hdrActive && !s.raw && !s.cruelty ? HDR_OUT.PEAK : 1, packed,
           sprintBlur: s.raw ? 0 : s.sprintBlur,
-        }),
+        }, frameSky),
       });
       rp.end();
       post.onPass?.('composite', { kind: 'render' });
@@ -1651,16 +1714,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
         active = was;
       }
       post.onPass?.('scene', { kind: 'render' });
-      const adapt = s.adapt && !s.raw;
-      const bind = group(L.COMPOSITE, [still.color, blank, blank, blank], () => [
-        texEntry(0, still.color), texEntry(1, blank), samplerEntry(2), { binding: 3, resource: { buffer: adaptState } }, texEntry(4, blank), texEntry(5, blank),
-      ]);
-      const rp = gpu.frame.render({ colorAttachments: [out.attachment] }, 'still');
-      pipe.draw(rp, {
-        bind: [, , bind],
-        params: compositeParams(s, [out.width, out.height], { bloom: 0, sharpen: 0, adapt, night: 0, nightSeed: 0, opaque: false, viewmodel: false, glow: false, vmNight: 0, peak: 1 }),
-      });
-      rp.end();
+      finishStill(still,out,s);
       return true;
     },
 
@@ -1678,30 +1732,218 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     get adaptationBuffer() { return adaptState; },
 
     dispose() {
-      keptPost = null;
+      if (stageContext) throw new Error('cannot dispose post from a staged scene hook');
+      if (disposed) return;
+      disposed = true;keptPost = null;sceneGeneration++;
+      const waits = [...liveScenes].flatMap(t => t.uses);
+      for (const t of [...pendingScenes]) retireScene(t,'discarded');
+      if (lastImage) {waits.push(...lastImage.uses);retireImage(lastImage);lastImage=null;}
       gpu.flush('post dispose');
-      presentation?.dispose();
-      temporal?.dispose();
-      [...down, ...up, bloomImage, blank].forEach((t) => t?.destroy());
-      down = []; up = []; bloomImage = null; resolved = null;
-      main.destroy();
-      still.destroy();
-      adaptState.destroy();
-      groups = new Map();
+      const destroy = () => {
+        presentation?.dispose();temporal?.dispose();
+        [...down, ...up, bloomImage, blank].forEach(t => t?.destroy());
+        down=[];up=[];bloomImage=null;resolved=null;
+        main.destroy();still.destroy();stagedTargets.forEach(s => s.target.destroy());adaptState.destroy();groups=new Map();
+      };
+      if (waits.length) Promise.allSettled(waits).then(destroy);else destroy();
     },
   };
+
+  function finishStill(sceneTarget, out, s, frameSky = sky) {
+    const pipe = compositeFor(out.format), adapt = s.adapt && !s.raw;
+    const bind = group(L.COMPOSITE,[sceneTarget.color,blank,blank,blank],()=>[
+      texEntry(0,sceneTarget.color),texEntry(1,blank),samplerEntry(2),{binding:3,resource:{buffer:adaptState}},texEntry(4,blank),texEntry(5,blank),
+    ]);
+    const rp = gpu.frame.render({colorAttachments:[out.attachment]},'still');
+    try {pipe.draw(rp,{bind:[,,bind],params:compositeParams(s,[out.width,out.height],{
+      bloom:0,sharpen:0,adapt,night:0,nightSeed:0,opaque:false,viewmodel:false,glow:false,vmNight:0,peak:1,
+    },frameSky)});} finally {rp.end();}
+  }
+  function checkIdentity(identity) {
+    if (!identity || !Number.isInteger(identity.epoch) || identity.epoch < 0 || identity.sceneToken === undefined || identity.configVersion === undefined) throw new TypeError('scene epoch/token/configuration identity required');
+  }
+  const sameIdentity = (a, b) => !!a && !!b && a.epoch === b.epoch && a.sceneToken === b.sceneToken && a.configVersion === b.configVersion;
+  const freezeValues = value => {
+    if (Array.isArray(value) || ArrayBuffer.isView(value)) return Object.freeze(Array.from(value, freezeValues));
+    if (value?.clone) return value.clone();
+    if (value && typeof value === 'object') return Object.freeze(Object.fromEntries(Object.entries(value).map(([k,v]) => [k,freezeValues(v)])));
+    return value;
+  };
+  function frozenPresentation() {
+    return presentation ? {active:presentation.active, parameters:freezeValues(presentation.parameters ?? IDENTITY),
+      worldToScene:presentation.worldToScene.clone(), sceneToWorld:presentation.sceneToWorld?.clone()} : null;
+  }
+  // A rejected submitted promise MUST mean its final encoder was discarded or
+  // lost. Prefix auto-submits alone must never resolve this caller-owned fence.
+  function sceneFence(submission) {
+    if (!submission?.submitted?.then) throw new TypeError('final-submission ticket required');
+    const queue = gpu.queue ?? gpu.device.queue;
+    if (!queue?.onSubmittedWorkDone) throw new TypeError('queue completion service required');
+    const done = Promise.resolve(submission.submitted).then(() => queue.onSubmittedWorkDone());
+    done.catch(() => {});return done;
+  }
+  function retireImage(image) {
+    if (image.retired) return;
+    image.retired = true;Promise.allSettled(image.uses).then(() => image.texture.destroy());
+  }
+  function retireScene(t, status) {
+    if (t.retired) return;
+    t.retired = true;t.status = status;pendingScenes.delete(t);
+    t.completion = Promise.allSettled(t.uses).then(() => {
+      t.copies.forEach(texture => texture.destroy());t.copies.length = 0;
+      try {t.publication.release();} finally {t.slot.busy = false;liveScenes.delete(t);groups=new Map();if(disposed)t.slot.target.destroy();}
+    });
+  }
+  function syncHook(fn, ...args) {
+    if (!fn) return;
+    if (fn.constructor?.name === 'AsyncFunction' || fn.constructor?.name === 'AsyncGeneratorFunction') throw new TypeError('staged scene hooks must be synchronous');
+    const result = fn(...args);
+    if (result?.then) {result.catch?.(() => {});throw new TypeError('staged scene hooks must not return promises');}
+    return result;
+  }
+  function copySceneImage(image, t, label) {
+    if (!image) return null;
+    if (image.usage !== undefined && !(image.usage & TEX.COPY_SRC)) throw new Error(`${label} must support COPY_SRC`);
+    const copy = gpu.createTexture({label, size:[image.width,image.height], format:image.format, usage:TEX.COPY_DST|TEX.TEXTURE_BINDING});
+    t.copies.push(copy);
+    gpu.frame.direct().copyTextureToTexture({texture:image},{texture:copy},[image.width,image.height,1]);
+    return copy;
+  }
+  function freezeCamera(camera) {
+    const copy = camera.clone();copy.parent = null;copy.matrixAutoUpdate = false;
+    copy.matrix.copy(camera.matrixWorld);copy.matrixWorld.copy(camera.matrixWorld);copy.matrixWorldInverse.copy(camera.matrixWorldInverse);
+    copy.matrix.decompose(copy.position,copy.quaternion,copy.scale);return copy;
+  }
+  function recordStagedScene(scene, camera, options) {
+    if (disposed) throw new Error('post disposed');
+    if (jittered || stageContext) throw new Error('cannot nest staged and immediate scenes');
+    if (!post.isReady) return null;
+    const hooks = hooksOf(scene);
+    for (const fn of Object.values(hooks)) if (typeof fn === 'function' && /^(AsyncFunction|AsyncGeneratorFunction)$/.test(fn.constructor?.name)) throw new TypeError('staged scene hooks must be synchronous');
+    checkIdentity(options.identity);
+    const target = options.target ?? null, isStill = options.still === true;
+    if (isStill && !target) throw new Error('staged still requires an output target');
+    if (!target) {
+      if (!presenter) throw new Error('post: no target and no presenter');
+      stageBlit ??= createBlit(gpu,presenter.format);
+      if (stageBlit.pipe.state !== 'ready') return null;
+    }
+    const out = target ? outputOf(target) : {canvas:true,width:presenter.canvas.width,height:presenter.canvas.height,format:presenter.format};
+    if (compositeFor(out.format).state !== 'ready') return null;
+    if (!sceneIdentity) sceneIdentity = Object.freeze({...options.identity});
+    else if (!sameIdentity(options.identity,sceneIdentity)) throw new Error('set current scene identity before recording a new epoch/configuration');
+    let slot = stagedTargets.find(s => !s.busy);
+    if (!slot && stagedTargets.length < maxPendingScenes) {slot={target:createSceneTarget(gpu,`staged scene ${stagedTargets.length}`),busy:false};stagedTargets.push(slot);}
+    if (!slot) return null;
+    if (!options.publication?.release || options.feedbackIdentity === undefined) throw new TypeError('owned publication and feedback identity required');
+    const submitted = sceneFence(options.submission);
+    const s = freezeValues(settingsOf()), scale = isStill ? 1 : post.renderScale;
+    const capturedPresentation = frozenPresentation(), capturedSky = freezeValues(sky);
+    const worldModel = options.worldModel?.clone() ?? capturedPresentation?.worldToScene?.clone() ?? null;
+    if (options.onCommit && (typeof options.onCommit !== 'function' || /^(AsyncFunction|AsyncGeneratorFunction)$/.test(options.onCommit.constructor?.name))) throw new TypeError('scene commit callback must be synchronous');
+    const sizes = postSizes(out.width,out.height,scale);
+    slot.target.resize(...sizes.inSize);slot.target.refresh();slot.busy = true;
+    const t = {slot, publication:options.publication, feedbackIdentity:options.feedbackIdentity, identity:sceneIdentity,
+      generation:sceneGeneration, id:++sceneSequence, status:'recorded', retired:false, uses:[submitted], copies:[], completion:null,
+      settings:s,sizes,out,still:isStill,dt:options.dt ?? ADAPT.DT,presentation:capturedPresentation,sky:capturedSky,worldModel,
+      cameraKey:camera, reservation:null, onCommit:options.onCommit};
+    const ticket = Object.freeze({id:t.id,identity:t.identity,publication:t.publication,feedbackIdentity:t.feedbackIdentity,
+      worldModel:t.worldModel ? Object.freeze([...t.worldModel.elements]) : null,
+      width:out.width,height:out.height,get status(){return t.status;},get completion(){return t.completion;},recorded:submitted});
+    sceneTickets.set(ticket,t);pendingScenes.add(t);liveScenes.add(t);
+    Promise.resolve(options.submission.submitted).then(() => {t.submitted = true;}, () => retireScene(t,'failed'));
+    const previousTarget = active, previousPixScale = pixScale?.value;
+    const projection = camera.projectionMatrix.clone(), inverse = camera.projectionMatrixInverse.clone();
+    const view = camera.view ? {...camera.view} : null, aspect = camera.aspect;
+    try {
+      camera.updateMatrixWorld();t.taa = !isStill && !!(s.taa && temporalOf());
+      if (t.taa && !temporal.reserveJitter) throw new Error('staged TAA requires reversible jitter reservations');
+      if (t.taa) camera.updateProjectionMatrix();
+      const original = camera.projectionMatrix.clone(), originalInverse = camera.projectionMatrixInverse.clone();
+      t.camera = freezeCamera(camera);t.curVP = new Matrix4().multiplyMatrices(original,camera.matrixWorldInverse);
+      t.reservation = t.taa ? temporal.reserveJitter(camera,...sizes.inSize) : null;
+      t.jitter = t.reservation ? [...t.reservation.jitter] : [0,0];
+      t.jitVP = new Matrix4().multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);
+      active = slot.target;
+      stageContext = {liveCamera:camera,inSize:sizes.inSize,jitter:t.jitter,unjittered:{projectionMatrix:original,projectionMatrixInverse:originalInverse}};
+      if (pixScale) pixScale.value = sizes.inSize[0]/sizes.size[0];
+      syncHook(hooks.prepare,post);if (!isStill) syncHook(hooks.compute,post);
+      drawScene(hooks,true);
+      t.viewmodel = copySceneImage(options.viewmodel,t,'staged viewmodel');t.glow = copySceneImage(options.glow,t,'staged glow');
+      return ticket;
+    } catch (e) {retireScene(t,'failed');throw e;}
+    finally {
+      t.reservation?.restore();camera.view = view;if(aspect !== undefined)camera.aspect = aspect;
+      camera.projectionMatrix.copy(projection);camera.projectionMatrixInverse.copy(inverse);
+      stageContext = null;active = previousTarget;if(pixScale)pixScale.value = previousPixScale;
+    }
+  }
+  function blitLast(image) {
+    const rp = gpu.frame.render({colorAttachments:[presenter.attachment()]},'admitted scene');
+    try {stageBlit.draw(rp,viewOf(image.texture));} finally {rp.end();}
+  }
+  function commitStagedScene(ticket, options) {
+    if (stageContext || jittered) throw new Error('cannot admit during scene recording');
+    const t = sceneTickets.get(ticket);
+    if (!t) throw new Error('foreign post scene ticket');
+    if (disposed || t.status !== 'recorded') return false;
+    if (options.feedbackIdentity !== t.feedbackIdentity) throw new Error('scene feedback identity mismatch');
+    if (!t.submitted) return false; // feedback cannot admit an unsubmitted scene
+    if (options.feedback?.incomplete !== false) {retireScene(t,'discarded');return false;}
+    if (t.generation !== sceneGeneration || !sameIdentity(t.identity,sceneIdentity) || (!t.still && t.id <= admittedSequence)
+      || (t.out.canvas && (presenter.canvas.width !== t.out.width || presenter.canvas.height !== t.out.height))) {
+      retireScene(t,'discarded');return false;
+    }
+    if (!post.isReady || compositeFor(t.out.format).state !== 'ready') return false;
+    // TAAU owns resizeable history targets. Do not resize them while an older
+    // admitted scene still has an uncompleted final consumer.
+    if (!t.still && (size.some((n,i)=>n!==t.sizes.size[i]) || inSize.some((n,i)=>n!==t.sizes.inSize[i]))
+      && [...liveScenes].some(other=>other!==t && other.status==='committed')) return false;
+    const finished = sceneFence(options.submission);t.uses.push(finished);
+    admitting = true;
+    try {
+      if (t.still) {
+        post.onPass?.('scene',{kind:'render'});
+        finishStill(t.slot.target,t.out,t.settings,t.sky);
+      } else {
+        post.setSize(...t.sizes.size,t.sizes.inSize[0]/t.sizes.size[0]);
+        taaNow = t.taa;
+        if (taaNow !== lastTaa || stageCameraKey !== t.cameraKey || cameraJumped(t.camera)) {historyValid = false;keptPost = null;}
+        lastTaa = taaNow;stageCameraKey = t.cameraKey;prevCamera = t.camera;
+        prevPos.setFromMatrixPosition(t.camera.matrixWorld);prevQuat.setFromRotationMatrix(t.camera.matrixWorld);
+        curVP.copy(t.curVP);jitVP.copy(t.jitVP);jitter = [...t.jitter];
+        t.reservation?.commit(t.camera);
+        let image = null, out = t.out;
+        if (out.canvas) {
+          image = {texture:gpu.createTexture({label:'last admitted scene',size:t.sizes.size,format:out.format,usage:TEX.RENDER_ATTACHMENT|TEX.TEXTURE_BINDING|TEX.COPY_SRC}),
+            width:out.width,height:out.height,uses:[finished],retired:false};
+          out = {...out,attachment:{view:viewOf(image.texture),loadOp:'clear',storeOp:'store',clearValue:CLEAR}};
+        }
+        try {
+          post.onPass?.('scene',{kind:'render'});
+          post.finish({dt:t.dt,viewmodel:t.viewmodel,glow:t.glow,sceneTarget:t.slot.target,frameSettings:t.settings,
+            framePresentation:t.presentation,frameSky:t.sky,output:out,target:t.out.canvas ? null : options.target ?? t.out});
+          if (image) {blitLast(image);if(lastImage)retireImage(lastImage);lastImage=image;}
+        } catch (e) {if(image)retireImage(image);historyValid=false;throw e;}
+        admittedSequence = t.id;
+      }
+      retireScene(t,'committed');syncHook(t.onCommit,ticket);return true;
+    } catch (e) {retireScene(t,'failed');throw e;} finally {admitting = false;}
+  }
 
   // The scene pass and what goes around it: three's opaque meshes before it
   // (Sync log S1: the volume marches to their depth), the meshes after it
   // (three's own submits) and E2's overlay. Everything here draws into `active`.
-  function drawScene(hooks) {
-    const drew = hooks.opaque?.(post) === true;
+  function drawScene(hooks, strict = false) {
+    const call = strict ? syncHook : (fn,...args) => fn?.(...args);
+    const drew = call(hooks.opaque,post) === true;
+    if (strict) call(hooks.capture,post); // real opaque HDR/depth packing belongs here
     const rp = gpu.frame.render(post.sceneDescriptor({ load: drew }), 'scene');
-    try { hooks.draw?.(rp, post); } finally { rp.end(); }
-    hooks.meshes?.(post);
+    try {call(hooks.draw,rp,post);} finally {rp.end();}
+    call(hooks.meshes,post);
     if (hooks.overlay) {
       const op = gpu.frame.render(post.overlayDescriptor(), 'overlay');
-      try { hooks.overlay(op, post); } finally { op.end(); }
+      try {call(hooks.overlay,op,post);} finally {op.end();}
     }
   }
 
@@ -1734,7 +1976,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     };
   }
 
-  function compositeParams(s, outSize, o) {
+  function compositeParams(s, outSize, o, frameSky = sky) {
     return {
       size: outSize, thresh: [s.bloomThreshold, Math.max(s.bloomKnee, 1e-3)], hot: [s.hotStart, s.hotFull],
       bloom: o.bloom, exposure: 2 ** s.exposure, sharpen: o.sharpen, look: s.look,
@@ -1743,7 +1985,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       nightSeed: o.nightSeed >>> 0, opaque: o.opaque, viewmodel: o.viewmodel, glow: o.glow, vmNight: o.vmNight, peak: o.peak, packed: !!o.packed,
       white: srgbEncode(Math.max(o.peak, 1)),
       sprintBlur: Number.isFinite(o.sprintBlur) ? Math.max(0, Math.min(1, o.sprintBlur)) : 0,
-      skyTop: sky.top, skyMid: sky.mid, skyLow: sky.low, skyGlow: sky.glow,
+      skyTop: frameSky.top, skyMid: frameSky.mid, skyLow: frameSky.low, skyGlow: frameSky.glow,
     };
   }
 
