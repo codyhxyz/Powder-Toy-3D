@@ -7,6 +7,7 @@ import { createFlapAnimation } from './flapPose.js';
 import { useWebGPUCamera, gpuTextureOf } from '../gpu/three.js';
 import { guardMeshes, PENDING_MASK } from '../gfx/meshLight.js';
 import { BRICK } from '../shaders/common.js';
+import { WorldEyeIncomplete, captureWorldEye, sameWorldEye, createWorldEyeLighting, applyWorldEyeLighting } from './worldEyeLighting.js';
 import { SH_Y0, SH_Y1, SKYVIS_OPEN_DC, SHADOW_TINT_ID_SCALE, SHADOW_PAD, VOLUME_SHADOW_BIAS } from '../shaders/gfx/lighting.js';
 
 // The viewmodel: the tool in your hands, its motion, and the pass that draws it.
@@ -471,6 +472,8 @@ function eyeLight(camera, eye, sky) {
 
 // what this frame's pass drew: { frame (gpu.frameNo), drawn }
 let last = { frame: -1, drawn: null };
+const worldEye = createWorldEyeLighting(EYE_LIGHT_TAU);
+let lastWorld = null, imageRevision = 0;
 
 /**
  * Draws the viewmodels into their own targets for this presented frame: the
@@ -484,16 +487,42 @@ let last = { frame: -1, drawn: null };
  * @param {object} scene
  * @param {object} camera
  * @param {object} [post] gfx/post.js's (its exposure and raw switch light the glow layer)
- * @returns {{ viewmodel: GPUTexture, glow: GPUTexture | null } | null}
+ * @param {object} [options] Explicit {worldLighting}; see docs/world-viewmodel-eye.md.
+ * @returns {{ viewmodel: GPUTexture, glow: GPUTexture | null } | null | object}
  */
-export function renderViewmodels(three, scene, camera, post) {
+export function renderViewmodels(three, scene, camera, post, options) {
+  if (options && Object.hasOwn(options, 'worldLighting')) {
+    let lighting;
+    try {
+      const captured = captureWorldEye(options.worldLighting);
+      const frame = globalThis.__app?.gpu?.frameNo;
+      camera.updateMatrixWorld();
+      const pose = [...camera.matrixWorld.elements, camera.fov, camera.aspect];
+      if (lastWorld?.frame === frame && lastWorld.scene === scene && lastWorld.camera === camera &&
+          lastWorld.pose.every((v, i) => v === pose[i]) && sameWorldEye(lastWorld.captured, captured) &&
+          lastWorld.result.images.isCurrent() && lastWorld.result.lighting.canCommit()) return lastWorld.result;
+      lighting = worldEye.stage(captured);
+      last = { frame: -1, drawn: null }; // WORLD can overwrite the shared BOX targets.
+      const drawn = drawViewmodels(three, scene, camera, post, lighting);
+      if (drawn?.ready === false) { lighting.discard(); return drawn; }
+      const revision = imageRevision;
+      const result = Object.freeze({ ready: true, viewmodel: drawn?.viewmodel ?? null, glow: drawn?.glow ?? null, lighting,
+        images: Object.freeze({ identity: Object.freeze({}), copyBeforeNextDraw: true, isCurrent: () => imageRevision === revision }) });
+      lastWorld = { frame, scene, camera, pose, captured, result };
+      return result;
+    } catch (error) {
+      lighting?.discard();
+      if (error instanceof WorldEyeIncomplete) return Object.freeze({ ready: false, code: error.code, reason: error.message });
+      throw error;
+    }
+  }
   const frame = globalThis.__app?.gpu?.frameNo;
   if (frame != null && frame === last.frame) return last.drawn;
   last = { frame: frame ?? -1, drawn: drawViewmodels(three, scene, camera, post) };
   return last.drawn;
 }
 
-function drawViewmodels(three, scene, camera, post) {
+function drawViewmodels(three, scene, camera, post, worldLighting) {
   const vm = scene.getObjectByName('pov-viewmodel');
   if (!vm?.visible || !vm.parent) return null;
   pass ??= createPass();
@@ -514,28 +543,37 @@ function drawViewmodels(three, scene, camera, post) {
 
   // lit like the world: the key light's direction and colour, as much of it as
   // reaches the eye, and the light of the probe the eye is in
-  const SUN = globalThis.__app?.SUN;
-  if (SUN) sun.position.copy(SUN);
-  const lit = eyeLight(camera, eye, sky);
-  // the key light: the sun by day, the dim blue moon by night (gfx/daylight.js)
-  const [kr, kg, kb] = gfxUniforms.uKeyLight?.value ?? [1, 1, 1];
-  const [sr, sg, sb2] = gfxUniforms.uSunCol.value;
-  sun.color.setRGB(sr * kr * lit, sg * kg * lit, sb2 * kb * lit);
-  // the glow layer's tone map: post's exposure (its viewmodel composite's), or none in a raw view
-  flameOverlay.exposure.value = 2 ** (post?.settings.exposure ?? 0);
-  flameOverlay.raw.value = post?.settings.raw ? 1 : 0;
+  if (worldLighting) {
+    applyWorldEyeLighting(worldLighting, sun, sky);
+  } else {
+    const SUN = globalThis.__app?.SUN;
+    if (SUN) sun.position.copy(SUN);
+    const lit = eyeLight(camera, eye, sky);
+    // the key light: the sun by day, the dim blue moon by night (gfx/daylight.js)
+    const [kr, kg, kb] = gfxUniforms.uKeyLight?.value ?? [1, 1, 1];
+    const [sr, sg, sb2] = gfxUniforms.uSunCol.value;
+    sun.color.setRGB(sr * kr * lit, sg * kg * lit, sb2 * kb * lit);
+  }
+  // WORLD uses the frozen frame's settings, not the current Post's settings.
+  const settings = worldLighting ? worldLighting.frame.settings : post?.settings;
+  flameOverlay.exposure.value = 2 ** (settings?.exposure ?? 0);
+  flameOverlay.raw.value = settings?.raw ? 1 : 0;
 
   three.getDrawingBufferSize(size);
   const w = Math.max(1, size.x), h = Math.max(1, size.y);
-  if (target.width !== w || target.height !== h) { target.setSize(w, h); glowTarget.setSize(w, h); }
+  if (target.width !== w || target.height !== h) { imageRevision++; target.setSize(w, h); glowTarget.setSize(w, h); }
 
   // a mesh three hasn't compiled for these targets waits until it has (no pipeline built at a draw)
   const wake = () => globalThis.__app?.requestRender?.();
-  guardMeshes(vm, cam, { target, scene, onReady: wake });
+  let pending = guardMeshes(vm, cam, { target, scene, onReady: wake });
   if (glow) {
     cam.layers.set(VIEWMODEL_GLOW_LAYER);
-    guardMeshes(vm, cam, { target: glowTarget, scene, onReady: wake });
-    cam.layers.set(VIEWMODEL_LAYER);
+    try { pending += guardMeshes(vm, cam, { target: glowTarget, scene, onReady: wake }); }
+    finally { cam.layers.set(VIEWMODEL_LAYER); }
+  }
+  if (worldLighting) {
+    vm.traverseVisible(o => { if (o.layers.mask === PENDING_MASK) pending++; });
+    if (pending) return Object.freeze({ ready: false, code: 'WORLD_EYE_INCOMPLETE', reason: 'viewmodel meshes pending' });
   }
 
   const prev = { target: three.getRenderTarget(), autoClear: three.autoClear, alpha: three.getClearAlpha() };
@@ -545,6 +583,7 @@ function drawViewmodels(three, scene, camera, post) {
     three.autoClear = true;
     three.setClearColor(0x000000, 0);
     three.setRenderTarget(target);
+    imageRevision++;
     three.render(scene, cam);
     if (glow) {   // the hands' light, its own target added over the frame by post
       cam.layers.set(VIEWMODEL_GLOW_LAYER);
