@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import * as A from '../src/world/renderAtlas.js';
 import { worldAccessWGSL, worldPageWriterWGSL, worldPackedMeshWriterWGSL, worldShadowWriterWGSL, WGSL_CHECK } from '../src/shaders/worldAccess.js';
 import { checkPipeline } from './check-sampler-budget.mjs';
+import { giSrcWGSL } from '../src/shaders/gi.js';
 import { cellSlot } from '../src/shaders/common.js';
 
 function fakeGPU(limits = {}) {
@@ -63,7 +64,7 @@ function dataFor(job, seed = 0) {
     const length = (name==='aux' ? 132 : shape==='cells' ? 64 : 1)*4;
     const d = format==='rgba32uint' ? new Uint32Array(length) : new Uint16Array(length);
     for(let i=0;i<length;i++) d[i] = bits[(i+seed)%bits.length] ^ seed;
-    out[name] = d;
+    if (shape !== 'probes') out[name] = d;
   }
   out.aux = A.packWorldAux({ ...job, brickInfo: new Uint32Array([0x7f800001,0x80000000,0x7fc12345,0]), flow: new Uint32Array(128).fill(0x7c018000), aeration: new Uint32Array(128).fill(0xfe017fff), deco: new Uint32Array(64).fill(0xfefdfcff) });
   return out;
@@ -80,9 +81,10 @@ function readChannel(snapshot, name, pid) {
 const rawBytes = d => new Uint8Array(d.buffer,d.byteOffset,d.byteLength);
 
 test('default layouts count exactly 16 sampled; all variants enforce default/device limits', () => {
+  assert.equal(A.WORLD_ATLAS_ABI,2,'explicit ABI migration gate');
   const reader=A.worldReaderLayouts();
   assert.equal(reader.length,4); assert.equal(reader.flat().filter(e=>e.texture).length,16);
-  assert.equal(reader.flat().filter(e=>e.buffer?.type.includes('storage')).length,2);
+  assert.equal(reader.flat().filter(e=>e.buffer?.type.includes('storage')).length,3);
   for(const k of [...Object.keys(A.WRITER_CHANNELS),'shadow','mesh']) A.worldWriterLayouts(k);
   assert.throws(()=>A.worldReaderLayouts({maxSampledTexturesPerShaderStage:15}));
   assert.throws(()=>A.worldWriterLayouts('raw',{maxStorageTexturesPerShaderStage:2}));
@@ -94,7 +96,7 @@ test('default layouts count exactly 16 sampled; all variants enforce default/dev
 test('global book sizes, signed bounds, overflow and 384 high world', () => {
   for(const [h,mib] of [[128,24],[384,72]]) {
     const b=A.worldBookLayout([3072,h,1024]);
-    assert.equal(b.bytes,mib*1024**2); assert.equal(b.requestBytes,Math.ceil(b.count/32)*4);
+    assert.equal(b.bytes,mib*1024**2); assert.equal(b.requestBytes,Math.ceil(b.count/32)*4*6);
     assert.equal(A.worldBrickIndex(b,b.bricks.map(n=>n-1)),b.count-1);
     assert.equal(A.worldCellAddress(b,b.worldSize.map(n=>n-1)).slot,63);
     for(const c of [[-1,0,0],[3072,0,0],[0,h,0],[0,0,1024],[0.5,0,0],[NaN,0,0]]) assert.throws(()=>A.worldCellAddress(b,c));
@@ -114,7 +116,7 @@ test('original slot bijection, 32-core / page edges and array-layer geometry', (
   const book=A.worldBookLayout([128,384,128]);
   for(const p of [4,32,64]) for(const e of [-0.001,0,0.001]) assert.equal(A.worldCellAddress(book,[Math.floor(p+e),0,0]).brick[0],Math.floor((p+e)/4));
   for(const cap of [1,64,65,128,129,257]) {
-    const l=A.worldAtlasLayout(cap,{maxTextureDimension2D:32,maxTextureArrayLayers:64});
+    const l=A.worldAtlasLayout(cap,{maxTextureDimension2D:32,maxTextureArrayLayers:64},0,cap);
     const cells=new Set(), aux=new Set(), probes=new Set();
     for(let pid=0;pid<cap;pid++) {
       for(let s=0;s<64;s++) cells.add(A.pageTexel(pid,s,l).join(','));
@@ -135,8 +137,8 @@ test('original slot bijection, 32-core / page edges and array-layer geometry', (
   assert.throws(()=>A.worldReaderLayouts(webIDL));
 });
 test('aux ABI preserves complete BrickInfo, flow/aer half words and cell paint', () => {
-  const job={epoch:17,sourceRevision:19,fieldTick:23,readyBits:15}, d=dataFor(job).aux;
-  assert.equal(d.length,132*4); assert.deepEqual([...d.subarray(0,4)],[15,17,19,23]);
+  const job={epoch:17,sourceRevision:19,fieldTick:23,readyBits:7}, d=dataFor(job).aux;
+  assert.equal(d.length,132*4); assert.deepEqual([...d.subarray(0,4)],[7,17,19,23]);
   assert.deepEqual([...d.subarray(4,8)],[0x7f800001,0x80000000,0x7fc12345,0]);
   for(let s=0;s<64;s++) assert.deepEqual([...d.subarray(16+s*8,24+s*8)],[0x7c018000,0x7c018000,0xfe017fff,0xfe017fff,0xfefdfcff,0,0,0]);
   assert.throws(()=>A.packWorldAux({...job,flow:new Uint32Array(64)}));
@@ -190,8 +192,8 @@ test('revisions, readiness, stale work, required/pending/snapshot protection and
   atlas.update(raw,{stateA:d.stateA,stateB:d.stateB,aux:d.aux}); atlas.publish(raw);
   assert.equal(atlas.lookup([0,0,0],A.READY.RAW).known,true); assert.equal(atlas.lookup([0,0,0],A.READY.FIELD).incomplete,true);
   const old=atlas.snapshot(), external=Object.fromEntries(['sunDepth','sunOptical','mediaNoise','sourceAppearance','packedMesh'].map(n=>[n,{external:n}]));
-  const feedback=gpu.device.createBuffer({size:atlas.bookLayout.requestBytes,usage:128});
-  const binding=old.bindings(external,feedback); assert.equal(binding.flat().length,19); assert.equal(binding[2][9].resource,external.packedMesh);
+  const feedback=gpu.device.createBuffer({size:atlas.feedbackBytes,usage:128});
+  const binding=old.bindings(external,feedback); assert.equal(binding.flat().length,20); assert.equal(binding[2][9].resource,external.packedMesh);
   assert.throws(()=>old.bindings({},feedback)); assert.throws(()=>old.bindings(external,{size:4}));
   atlas.dispose(); assert.throws(()=>atlas.snapshot(),/disposed/); assert.throws(()=>atlas.publish(raw),/disposed/);
   gpu.flush(); assert.ok(!old.views.stateA.texture.destroyed); old.release(); old.release(); gpu.flush();
@@ -301,11 +303,12 @@ test('packed mesh all half patterns + HDR/depth/coverage independent of colour/d
 test('Naga validates ACTUAL new reader and every writer assembly, no GPU', () => {
   const dir=mkdtempSync(join(tmpdir(),'world-atlas-wgsl-'));
   try {
-    const reader=worldAccessWGSL()+`
+    const reader=worldAccessWGSL()+giSrcWGSL+`
 @fragment fn main() -> @location(0) vec4f {
  worldBeginQuery(); let c=vec3i(4,32,3); let p=vec3f(4.01,32.01,3.01);
  let a=worldFetchA(c)+worldFetchB(c)+vec4f(worldFlow(c),0.0)+worldAeration(c);
  let b=worldFieldLinear(worldField0,p)+worldFieldCubic(worldField1,p)+worldFieldCubic(worldField2,p);
+ let source=worldGISource(c/4); let packedAir=giSrcPack(vec3f(0.0),vec3f(0.0),vec3f(0.0));
  let gi=worldProbe(p); let bi=worldBrickInfo(c/4); let occ=worldBrickOccupancy(c/4);
  let dist=worldBrickDistance(c/4); let mesh=worldMeshAt(vec2i(0));
  let imports=textureLoad(worldSourceAppearance,vec3i(0),0);
@@ -314,7 +317,7 @@ test('Naga validates ACTUAL new reader and every writer assembly, no GPU', () =>
  if(worldQueryIncomplete()) { discard; }
  return a+b+gi.c0+gi.cx+gi.cy+gi.cz+vec4f(worldLight(p),0.0)+vec4f(bi.emit,0.0)+mesh.color+noise+sun+vec4f(f32(worldDeco(c)+occ.x+imports.x+bi.info)+f32(dist));
 }`;
-    const modules={reader,mesh:worldPackedMeshWriterWGSL(),shadow:worldShadowWriterWGSL()+`\n@compute @workgroup_size(1) fn main(){worldStoreShadow(vec2i(0),0,1.0,0.0);}`,...Object.fromEntries(Object.keys(A.WRITER_CHANNELS).map(k=>[k,worldPageWriterWGSL(k)]))};
+    const modules={reader,mesh:worldPackedMeshWriterWGSL(),shadow:worldShadowWriterWGSL()+`\n@compute @workgroup_size(1) fn main(){worldStoreShadow(vec2i(0),0,1.0,0.0);}`,...Object.fromEntries([...Object.keys(A.WRITER_CHANNELS),'source'].map(k=>[k,worldPageWriterWGSL(k)]))};
     for(const [name,code] of Object.entries(modules)) {
       const path=join(dir,`${name}.wgsl`); writeFileSync(path,code);
       const result=spawnSync(process.env.NAGA??'naga',[path],{encoding:'utf8'});
@@ -328,4 +331,200 @@ test('Naga validates ACTUAL new reader and every writer assembly, no GPU', () =>
     assert.equal((reader.match(/var world\w+: texture_/g)??[]).length,16);
     console.log(`Naga: ${Object.keys(modules).join(', ')} validated`);
   } finally { rmSync(dir,{recursive:true,force:true}); }
+});
+
+const AIR_SOURCE = new Uint32Array([0, 0, 0, 511 | (511 << 10) | (511 << 20)]);
+function lightData(job, source = AIR_SOURCE) {
+  const data = {};
+  if (job.readyBits & A.READY.GI_SOURCE) data.source = source;
+  if (job.readyBits & A.READY.GI) for (let i=0;i<4;i++) data[`gi${i}`] = new Uint16Array([0x3c00+i,0x8000,0x7bff,0x7e01]);
+  if (job.readyBits & A.READY.GLOW) data.glow = new Uint16Array([0x4000,0x4200,0x4400,0]);
+  return data;
+}
+function readDescriptor(snapshot, id, record) {
+  return new Uint32Array(snapshot.views.aux.texture.get(A.lightTexel(id,record,snapshot.layout)).buffer);
+}
+test('source-only and light-only real factories allocate no cell channels; all three IDs genuinely differ',()=>{
+  const {atlas,gpu}=setup({initialCapacity:0});
+  const initial=atlas.snapshot(), cellViews=['stateA','stateB','field0','field1','field2'].map(k=>initial.views[k]);
+  const source=atlas.allocateLight([1,0,0],{sourceRevision:3,sourceTick:11,readyBits:A.READY.GI_SOURCE});
+  assert.equal(source.probePID,null); assert.throws(()=>atlas.updateLight(source,{stateA:new Uint32Array(256)}),/channel/); atlas.updateLight(source,lightData(source)); atlas.publish(source);
+  assert.equal(atlas.cell.pages.size,0); assert.equal(atlas.probe.pages.size,0);
+  assert.equal(atlas.resources.layout.capacity,0); assert.equal(atlas.resources.layout.probeCapacity,0);
+  assert.deepEqual(['stateA','stateB','field0','field1','field2'].map(k=>atlas.resources.views[k]),cellViews);
+  assert.equal(atlas.lookup([1,0,0],A.READY.GI_SOURCE).known,true);
+  assert.equal(atlas.lookup([1,0,0],A.READY.GI|A.READY.GLOW).missingChannels,A.READY.GI|A.READY.GLOW);
+  assert.throws(()=>atlas.updateLight(source,{glow:new Uint16Array(4)}),/stale/);
+  const cell=atlas.allocate([2,0,0],{sourceRevision:3}); atlas.update(cell,dataFor(cell));
+  const light=atlas.allocateLight([2,0,0],{sourceRevision:3,sourceTick:12,giTick:23,glowTick:34});
+  // Descriptor1 and probe0 are independent. Allocate another source to make
+  // the next descriptor2/probe1 distinct from cell0 as well.
+  atlas.cancel(light); gpu.flush();
+  const reserved=atlas.allocateLight([3,0,0],{sourceRevision:3,readyBits:A.READY.GI});
+  const unequal=atlas.allocateLight([2,0,0],{sourceRevision:3,sourceTick:12,giTick:23,glowTick:34});
+  assert.equal(new Set([cell.physicalPageID,unequal.lightDescriptorID,unequal.probePID]).size,3);
+  atlas.updateLight(unequal,lightData(unequal));
+  atlas.publish({cellJobs:[cell],lightJobs:[unequal]});
+  const s=atlas.snapshot();
+  assert.deepEqual([...readDescriptor(s,source.lightDescriptorID,4)],[...AIR_SOURCE]);
+  const uniform=new Uint32Array(s.params.data.buffer);
+  assert.equal(uniform.length,28);
+  assert.deepEqual([...uniform.subarray(20,24)],[s.layout.descriptorBase,s.layout.lightCapacity,5,s.dependencies.version]);
+  assert.deepEqual([...uniform.subarray(24,28)],[atlas.bookLayout.planeWords,atlas.bookLayout.statusWord,atlas.bookLayout.sunWord,0]);
+  assert.equal(readDescriptor(s,unequal.lightDescriptorID,3)[3],s.generation);
+  const refs=readDescriptor(s,unequal.lightDescriptorID,1);
+  assert.deepEqual([...refs],[unequal.probePID+1,unequal.probePID+1,23,34]);
+  assert.equal(atlas.lookup([2,0,0],A.READY.ALL).known,true);
+  atlas.updateLight(reserved,lightData(reserved));atlas.publish(reserved);
+  assert.equal(atlas.lookup([3,0,0],A.READY.GI).known,true);
+  assert.equal(atlas.lookup([3,0,0],A.READY.GI_SOURCE|A.READY.GLOW).missingChannels,A.READY.GI_SOURCE|A.READY.GLOW);
+  const glow=atlas.allocateLight([4,0,0],{sourceRevision:3,readyBits:A.READY.GLOW,glowTick:8});atlas.updateLight(glow,lightData(glow));atlas.publish(glow);
+  const only=atlas.snapshot();
+  assert.deepEqual([...readDescriptor(only,reserved.lightDescriptorID,1)],[reserved.probePID+1,0,0,0]);
+  assert.deepEqual([...readDescriptor(only,glow.lightDescriptorID,1)],[0,glow.probePID+1,0,8]);
+  assert.equal(atlas.lookup([4,0,0],A.READY.GLOW).known,true);
+  assert.equal(atlas.lookup([4,0,0],A.READY.GI_SOURCE|A.READY.GI).missingChannels,A.READY.GI_SOURCE|A.READY.GI);
+  only.release(); initial.release(); s.release(); atlas.dispose(); gpu.flush();
+  assert.ok(gpu.textures.every(t=>t.destroyed));
+});
+test('independent pool growth/repack, pending old views, cross-pool replacement and per-pool retirement pins',()=>{
+  const {atlas,gpu}=setup({initialCapacity:1},{maxTextureDimension2D:32,maxTextureArrayLayers:64});
+  const c=atlas.allocate([0,0,0],{sourceRevision:1});atlas.update(c,dataFor(c));
+  const l=atlas.allocateLight([0,0,0],{sourceRevision:1});const ld=lightData(l);atlas.updateLight(l,ld);
+  atlas.publish({cellJobs:[c],lightJobs:[l]});const old=atlas.snapshot(), oldAux=readDescriptor(old,l.lightDescriptorID,4).slice();
+  const c2=atlas.allocate([0,0,0],{sourceRevision:2});atlas.update(c2,dataFor(c2,8));
+  const l2=atlas.allocateLight([0,0,0],{sourceRevision:2,sourceTick:4,giTick:5,glowTick:6});atlas.updateLight(l2,lightData(l2,new Uint32Array([1,2,3,4])));
+  // Cell growth changes descriptorBase even if aux dimensions happen to match.
+  const before=atlas.snapshot();atlas.grow(9);const cellsGrown=atlas.snapshot();
+  assert.notEqual(before.views.aux,cellsGrown.views.aux);assert.equal(before.views.gi0,cellsGrown.views.gi0);
+  atlas.growPool('light',13);const descGrown=atlas.snapshot();
+  assert.equal(descGrown.views.stateA,cellsGrown.views.stateA);
+  atlas.growPool('probe',129);const probesGrown=atlas.snapshot();
+  assert.equal(probesGrown.views.aux,descGrown.views.aux);assert.notEqual(probesGrown.views.gi0,descGrown.views.gi0);
+  for(const s of [before,cellsGrown,descGrown,probesGrown]) {
+    assert.deepEqual([...readDescriptor(s,l.lightDescriptorID,4)],[...oldAux]);
+    assert.deepEqual(readChannel(s,'gi2',l.probePID),rawBytes(ld.gi2));
+  }
+  const generation=atlas.generation;
+  assert.throws(()=>atlas.publish(c2),/incompatible cell\/light/);assert.equal(atlas.generation,generation);
+  atlas.publish({cellJobs:[c2],lightJobs:[l2]});const fresh=atlas.snapshot();
+  assert.deepEqual([...readDescriptor(fresh,l2.lightDescriptorID,4)],[1,2,3,4]);
+  assert.deepEqual([...readDescriptor(old,l.lightDescriptorID,4)],[...oldAux]);
+  atlas.remove([[0,0,0]]);gpu.flush();
+  assert.ok(atlas.cell.pages.has(c.physicalPageID));assert.ok(atlas.light.pages.has(l.lightDescriptorID));assert.ok(atlas.probe.pages.has(l.probePID));
+  for(const s of [old,before,cellsGrown,descGrown,probesGrown])s.release();gpu.flush();
+  assert.ok(!atlas.cell.pages.has(c.physicalPageID));assert.ok(!atlas.light.pages.has(l.lightDescriptorID));assert.ok(!atlas.probe.pages.has(l.probePID));
+  assert.ok(atlas.probe.pages.has(l2.probePID));fresh.release();gpu.flush();assert.equal(atlas.probe.pages.size,0);
+  atlas.dispose();gpu.flush();assert.ok(gpu.textures.every(t=>t.destroyed));assert.ok(gpu.buffers.every(b=>b.destroyed));
+});
+test('source/gi/glow readiness upgrade, independent clocks and dependency manifests publish atomically',()=>{
+  const {atlas,gpu}=setup();const b=[0,0,0], dependencyToken={version:1,sets:[{id:9,version:2}]};
+  const source=atlas.allocateLight(b,{sourceRevision:1,sourceTick:3,readyBits:A.READY.GI_SOURCE,dependencies:{source:{id:9,version:2}}});
+  atlas.updateLight(source,lightData(source));assert.throws(()=>atlas.publish(source),/dependency/);
+  atlas.publish({lightJobs:[source],dependencyToken});const old=atlas.snapshot();dependencyToken.sets[0].version=99;
+  assert.equal(old.dependencies.sets[0].version,2);
+  const requirements=atlas.require([{brick:b,channels:A.READY.ALL}]);
+  assert.equal(requirements[0].channels,A.READY.CELL|A.READY.GI|A.READY.GLOW);
+  assert.equal(atlas.require([{brick:b,channels:A.READY.GI_SOURCE}]).length,0);
+  assert.throws(()=>atlas.allocateLight(b,{sourceRevision:2,sourceTick:2,readyBits:A.READY.GI_SOURCE}),/tick regression/);
+  const upgrade=atlas.allocateLight(b,{sourceRevision:1,sourceTick:4,giTick:5,glowTick:6,dependencies:{source:{id:9,version:2},gi:{id:10,version:3},glow:{id:11,version:4}}});
+  atlas.updateLight(upgrade,{source:AIR_SOURCE});assert.throws(()=>atlas.publish(upgrade),/partial/);
+  atlas.updateLight(upgrade,lightData(upgrade));
+  const gen=atlas.generation;assert.throws(()=>atlas.publish(upgrade),/dependency/);assert.equal(atlas.generation,gen);
+  assert.throws(()=>atlas.publish({lightJobs:[upgrade],dependencyToken:{version:1,sets:[{id:9,version:2},{id:10,version:3},{id:11,version:4}]}}),/new manifest version/);
+  atlas.publish({lightJobs:[upgrade],dependencyToken:{version:2,sets:[{id:9,version:2},{id:10,version:3},{id:11,version:4}]}});
+  assert.equal(atlas.require([{brick:b,channels:A.READY.LIGHT}]).length,0);
+  assert.throws(()=>atlas.publish({dependencyToken:{version:3,sets:[{id:9,version:200}]}}),/dependency/);
+  const s=atlas.snapshot();assert.deepEqual([...readDescriptor(s,upgrade.lightDescriptorID,2)],[9,2,10,3]);
+  assert.deepEqual([...readDescriptor(s,upgrade.lightDescriptorID,3)].slice(0,3),[11,4,A.WORLD_ATLAS_ABI]);
+  old.release();s.release();atlas.dispose();gpu.flush();
+});
+test('light jobs delayed/cancel/reset/failure, non-reentrant synchronous source/GI/glow recorders',()=>{
+  const {atlas,gpu}=setup();
+  const j=atlas.allocateLight([0,0,0],{sourceRevision:1});
+  assert.throws(()=>atlas.publish({cellJobs:[j]}),/kind mismatch/);
+  assert.throws(()=>atlas.recordPageWrite(j,'raw',{record(){}}),/writer does not belong/);
+  const w=atlas.writerBindings(j,'source');assert.equal(w.outputs[0].resource,atlas.resources.views.aux);
+  assert.equal(w.params[12],atlas.resources.layout.descriptorBase+j.lightDescriptorID*A.LIGHT_RECORDS+4);
+  assert.throws(()=>atlas.recordLightWrite(j,'source',{record(){atlas.reset();}}),/non-reentrant/);
+  assert.throws(()=>atlas.recordLightWrite(j,'source',{record:async()=>{}}),/synchronous/);
+  assert.throws(()=>atlas.recordLightWrite(j,'source',{record(){return Promise.resolve();}}),/synchronous/);
+  assert.throws(()=>atlas.publish(j),/partial/);
+  atlas.recordLightWrite(j,'source',{record(encoder,bindings){assert.equal(bindings.outputs.length,1);}});
+  atlas.recordLightWrite(j,'gi',{record(encoder,bindings){assert.equal(bindings.params[0],j.probePID);assert.equal(bindings.outputs.length,4);}});
+  atlas.recordLightWrite(j,'glow',{record(){}});
+  const before=atlas.snapshot(), generation=atlas.generation, create=gpu.device.createBuffer;
+  gpu.device.createBuffer=d=>{if(d.label==='world immutable light book')throw new Error('injected second-book failure');return create(d);};
+  assert.throws(()=>atlas.publish(j),/injected/);assert.equal(atlas.generation,generation);assert.equal(atlas.lookup([0,0,0],A.READY.LIGHT).known,false);
+  assert.throws(()=>atlas.growPool('light',7),/injected/);assert.equal(atlas.generation,generation);
+  assert.throws(()=>atlas.reset(),/injected/);assert.equal(atlas.epoch,before.epoch);
+  gpu.device.createBuffer=create;atlas.publish(j);const retained=atlas.snapshot();
+  const createTexture=gpu.device.createTexture, generationBeforeViewFailure=atlas.generation;
+  gpu.device.createTexture=d=>{const t=createTexture(d);if(d.label==='world gi1')t.createView=()=>{throw new Error('injected view failure');};return t;};
+  assert.throws(()=>atlas.growPool('probe',129),/injected view failure/);
+  assert.equal(atlas.generation,generationBeforeViewFailure);gpu.flush();
+  assert.ok(!retained.views.gi0.texture.destroyed);assert.ok(!retained.views.stateA.texture.destroyed);
+  gpu.device.createTexture=createTexture;
+  const delayed=atlas.allocateLight([1,0,0],{sourceRevision:1,readyBits:A.READY.GI_SOURCE});
+  atlas.reset();assert.throws(()=>atlas.recordLightWrite(delayed,'source',{record(){}}),/stale/);assert.throws(()=>atlas.publish(j),/stale/);
+  const cancelled=atlas.allocateLight([1,0,0],{sourceRevision:0,readyBits:A.READY.GI_SOURCE});atlas.cancel(cancelled);assert.throws(()=>atlas.updateLight(cancelled,lightData(cancelled)),/stale/);
+  assert.ok(atlas.probe.pages.has(j.probePID));before.release();retained.release();atlas.dispose();gpu.flush();
+  assert.ok(gpu.textures.every(t=>t.destroyed));assert.ok(gpu.buffers.every(b=>b.destroyed));
+});
+test('six typed feedback planes preserve mixed/secondary reasons at high Y384, bit31 and globalN; sticky WGSL',()=>{
+  const book=A.worldBookLayout([3072,384,1024]), words=new Uint32Array(book.sunWord+1);
+  const index=A.worldBrickIndex(book,[767,95,255]);assert.equal(index,book.count-1);
+  A.requestChannels(words,book,index,A.READY.GI_SOURCE|A.READY.GLOW);
+  A.requestChannels(words,book,31,A.READY.RAW|A.READY.FIELD|A.READY.GI);
+  A.requestChannels(words,book,index,A.READY.AUX);
+  assert.deepEqual(A.requestedChannels(words,book),[
+    {index:31,brick:[31,0,0],channels:A.READY.RAW|A.READY.FIELD|A.READY.GI},
+    {index,brick:[767,95,255],channels:A.READY.AUX|A.READY.GI_SOURCE|A.READY.GLOW},
+  ]);
+  assert.equal(words[book.statusWord],0);assert.equal(words[book.sunWord],0);
+  for(let p=0;p<6;p++)assert.equal(words[p*book.planeWords+(31>>5)]>>>31,[1,1,0,0,1,0][p]);
+  const code=worldAccessWGSL();assert.equal((code.match(/worldIncomplete = false/g)||[]).length,1);
+  assert.match(code,/plane < 6u/);assert.match(code,/worldRequest\(i, ready & ~m.x\)/);
+  assert.match(code,/worldLightBook\[i\]/);assert.doesNotMatch(code,/worldPage\(b, WORLD_GI/);
+});
+test('CPU allocation accounting, independent rounded capacities and legal near-ceiling growth at both heights',()=>{
+  for(const h of [128,384]) {
+    const book=A.worldBookLayout([3072,h,1024]);assert.equal(book.requestBytes,book.bytes*6/32);
+    const l=A.worldAtlasLayout(book.count,{},book.count,book.count), bytes=A.worldAllocationBytes(l);
+    assert.ok(bytes.cells>=book.count*(2048+1536));assert.ok(bytes.aux>=book.count*(132+5)*16);assert.ok(bytes.probes>=book.count*40);
+    assert.equal(bytes.total,bytes.cells+bytes.aux+bytes.probes);
+    const near=A.worldAtlasLayout(2**24,{},1,1), max=A.worldPoolMax('cell',near);
+    const next=A.worldPoolGrowth('cell',near,{},book.count>2**24?book.count:2**24+1);
+    assert.equal(next,max);assert.ok(next>=book.count);assert.doesNotThrow(()=>A.worldAtlasLayout(next,{},1,1));
+    assert.throws(()=>A.worldPoolGrowth('cell',near,{},max+1),/exhausted/);
+  }
+  const l=A.worldAtlasLayout(0,{},1000,0), bytes=A.worldAllocationBytes(l);
+  assert.equal(bytes.cells,64*64*(16*2+8*3));assert.equal(bytes.probes,64*40); // minimum bound geometry only
+  assert.ok(bytes.aux>=1000*A.LIGHT_RECORDS*16);
+});
+test('canonical original GI-source packing fixtures survive source-only descriptor transport, not reserved cell record3',()=>{
+  // Inputs are already reduced giSourceFrag outputs, NOT material/profile aliases.
+  // Half words are exact representable fixture values; the shared original
+  // giSrcPack WGSL is Naga-compiled above (not GPU-executed by these CPU tests).
+  const fixtures=[
+    ['air',[0,0,0],[0,0,0],[0,0,0],[0,0,0,0x1ff7fdff]],
+    ['water',[0,0,0],[.5,.5,.5],[0,0,0],[0,0x38000000,0x38003800,0x1ff7fdff]],
+    ['smoke',[0,0,0],[.25,.25,.25],[0,0,0],[0,0x34000000,0x34003400,0x1ff7fdff]],
+    ['covered opaque',[0,0,0],[1,1,1],[0,0,0],[0,0x3c000000,0x3c003c00,0x1ff7fdff]],
+    ['crystal',[1,2,4],[.5,.5,.5],[1,0,-1],[0x40003c00,0x38004400,0x38003800,0x0007fffe]],
+    ['emitter',[2,4,8],[1,.5,.25],[0,1,0],[0x44004000,0x3c004800,0x34003800,0x1ffff9ff]],
+  ];
+  const half=new Map([[0,0],[.25,0x3400],[.5,0x3800],[1,0x3c00],[2,0x4000],[4,0x4400],[8,0x4800]]);
+  const pack=(a,b)=>(half.get(a)|(half.get(b)<<16))>>>0;
+  const {atlas,gpu}=setup();
+  fixtures.forEach(([name,rad,cov,dir,expected],i)=>{
+    const q=dir.map(v=>Math.floor(v*511+511+.5));
+    const packed=new Uint32Array([pack(rad[0],rad[1]),pack(rad[2],cov[0]),pack(cov[1],cov[2]),q[0]|(q[1]<<10)|(q[2]<<20)]);
+    assert.deepEqual([...packed],expected,name);
+    const j=atlas.allocateLight([i,0,0],{sourceRevision:0,readyBits:A.READY.GI_SOURCE});atlas.updateLight(j,{source:packed});atlas.publish(j);
+    const c=atlas.allocate([i,0,0],{sourceRevision:0});const data=dataFor(c);assert.deepEqual([...data.aux.subarray(12,16)],[0,0,0,0]);atlas.update(c,data);atlas.publish(c);
+    const s=atlas.snapshot();assert.deepEqual([...readDescriptor(s,j.lightDescriptorID,4)],expected,name);s.release();
+  });
+  assert.notDeepEqual([...AIR_SOURCE],[0,0,0,0]);
+  atlas.dispose();gpu.flush();
 });

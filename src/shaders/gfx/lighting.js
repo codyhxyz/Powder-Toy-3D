@@ -465,7 +465,7 @@ struct Probe { c0: vec4f, cx: vec4f, cy: vec4f, cz: vec4f }
 ${probes ? /* wgsl */ `
 // Trilinear probe lookup of band t at p (grid units): one hardware sample,
 // held to the edge probes' centres.
-${backend === 'world' ? `fn probeTex(t: texture_2d_array<f32>, p: vec3f) -> vec4f { return worldProbeTex(t,p); }` : `fn probeTex(t: texture_3d<f32>, p: vec3f) -> vec4f {
+${backend === 'world' ? `fn probeTex(t: texture_2d_array<f32>, p: vec3f) -> vec4f { return worldProbeTex(t,p,WORLD_GI); }` : `fn probeTex(t: texture_3d<f32>, p: vec3f) -> vec4f {
   let B = vec3f(f32(BX), f32(BY), f32(BZ));
   let q = clamp(p / f32(BS), vec3f(0.5), B - 0.5);
   return textureSampleLevel(t, linearClamp, q / B, 0.0);

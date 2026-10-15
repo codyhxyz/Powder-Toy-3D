@@ -171,7 +171,7 @@ export const giGatherDispatch = (g, parity) => fold(Math.ceil(giProbeCount(g, pa
 //         float in the GLSL; it only weighs the light by facing, GI_FACING)
 // Values past a half float's range saturate (the GLSL's targets made them
 // infinite), and so do the probes' (giHalf2 in giBlend).
-const giSrcWGSL = /* wgsl */ `
+export const giSrcWGSL = /* wgsl */ `
 const GI_HALF_MAX: f32 = 65504.0;
 const GI_DIR_STEPS: f32 = ${glf(GI.DIR_STEPS)};
 fn giHalf2(v: vec2f) -> u32 { return pack2x16float(clamp(v, vec2f(-GI_HALF_MAX), vec2f(GI_HALF_MAX))); }

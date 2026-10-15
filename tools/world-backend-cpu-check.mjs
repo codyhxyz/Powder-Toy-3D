@@ -1,3 +1,4 @@
+import { shadowOpticsWGSL } from '../src/shaders/gfx/shadowOptics.js';
 // CPU/static/fake-device + actual Naga, NOT GPU numerical/visual evidence.
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
@@ -34,7 +35,8 @@ test('132 actual world view/detail/curved/source/height/pick layouts and Naga mo
     const code=c.code(),groups=c.layouts();
     assert.deepEqual(checkPipeline({code,groups,kind:c.kind}).problems,[],c.name);
     assert.equal(groups.flat().filter(e=>e.texture).length,16);
-    assert.ok(groups.flat().filter(e=>e.buffer?.type.includes('storage')).length<=5);
+    assert.equal(groups.flat().filter(e=>e.buffer?.type.includes('storage')).length,c.kind==='compute'?6:5);
+    assert.equal(groups[0].find(e=>e.binding===5).buffer.type,'read-only-storage');
     assert.match(code,/fn worldPos\(p: vec3f\) -> vec3f \{ return p; \}/);
     assert.match(code,/fn brickId\(b: vec3i\).*b.x \+ BX \* \(b.y \+ BY \* b.z\)/);
     assert.doesNotMatch(code,/farCasterDepth|farBeyond|farShadeMaterial|LIQ_WINDOW_FADE|homogeneous liquid beyond/);
@@ -139,11 +141,16 @@ function fakeGPU(){
 const I=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
 test('actual world assembly, immutable frame conversion, view/pick resources and feedback lifetime',async()=>{
   const gpu=fakeGPU(),g={nx:128,ny:128,nz:128,sourceAppearance:true},sun=worldSunProjection([128,128,128],[1,.01,0]);
-  const extra=1+worldSunFeedbackWords(sun.tiles);
+  const extra=worldSunFeedbackWords(sun.tiles);
   const atlas=new WorldRenderAtlas(gpu,{worldSize:[128,128,128],initialCapacity:1,feedbackExtraWords:extra,retire:fn=>fn()});
   const appearance=createWorldAppearance(gpu,{words:new Uint32Array([0x80000000,0x7fc12345,0xffffffff,0x12345678]),width:2,depth:1});
   const uploaded=gpu.calls.find(c=>c[0]==='texture')[2];assert.deepEqual(Array.from(uploaded),[0,32768,9029,32705,65535,65535,22136,4660]);
   const lighting={params:{...sun,physical:[256,8,64,1],version:[1,1,1,atlas.bookLayout.requestBytes/4+1]},book:gpu.device.createBuffer({size:sun.tiles[2]*sun.tiles[3]*32}),sun0:{rgba32float:true},sun1:{r32float:true}};
+  atlas.publish({sunManifest:{epoch:1,basisRevision:1,publishRevision:1,dependencySetID:0,dependencyVersion:0,book:lighting.book,sun0:lighting.sun0,sun1:lighting.sun1,params:lighting.params}});
+  const manifestSnapshot=atlas.snapshot();
+  assert.ok(Object.isFrozen(manifestSnapshot.sunManifest.params.depth));
+  assert.notEqual(manifestSnapshot.sunManifest.params.depth,lighting.params.depth);
+  assert.equal(manifestSnapshot.sunManifest.book,lighting.book);manifestSnapshot.release();
   const volume=createWorldVolume(gpu,{g,atlas,tables:gpu.device.createBuffer({size:tableLayout().Tables.size}),lighting,appearance});await volume.ready;
   const original={cam:[200,20,30],viewProj:I,model:I,lampPos:[[1,2,3,4]],wandLightPosition:[[5,6,7,8]],digMin:[1,2,3,.5],digMax:[2,3,4,1],beacon:[100,100,100,10]};
   const before=JSON.stringify(original);const converted=worldFrameValues(original,[1536,0,512]);assert.deepEqual(converted.lampPos[0],[1537,2,515,4]);assert.deepEqual(converted.wandLightPosition[0],[1541,6,519,8]);assert.deepEqual(converted.cam,original.cam);assert.deepEqual(converted.beacon,original.beacon);assert.equal(JSON.stringify(original),before);
@@ -155,9 +162,43 @@ test('actual world assembly, immutable frame conversion, view/pick resources and
   await candidate.recordPick(encoder,{params:{ro:[[1,2,3,0]],rd:[[1,0,0,0]],warp:[[0,0,0,1]],slot:[[0,0,0,0]],n:1},output:gpu.device.createBuffer({size:32})});assert.equal(log.at(-1),'end');
   const words=new Uint32Array(atlas.feedbackBytes/4);assert.equal(candidate.decodeFeedback(words).incomplete,false);
   words[0]=1;words[atlas.bookLayout.requestBytes/4]=1;words[atlas.bookLayout.requestBytes/4+1]=2;
+  words[3*atlas.bookLayout.planeWords]=4;words[5*atlas.bookLayout.planeWords]=8;
   const missing=candidate.decodeFeedback(words);assert.deepEqual(missing.geometry,[0]);assert.deepEqual(missing.sun,[1]);assert.equal(missing.incomplete,true);
+  assert.deepEqual(missing.requirements,[{index:0,brick:[0,0,0],channels:1},{index:2,brick:[2,0,0],channels:8},{index:3,brick:[3,0,0],channels:32}]);
   assert.throws(()=>decodeWorldFeedback(words.subarray(0,1),atlas.bookLayout,1));
+  const badLighting={...lighting,params:{...lighting.params,depth:[...lighting.params.depth]}};
+  badLighting.params.depth[0]++;
+  assert.throws(()=>volume.prepare({frameUniforms:original,physicsOrigin:[0,0,0],lighting:badLighting}),/pinned sun manifest/);
+  assert.throws(()=>volume.prepare({snapshot:{abi:1,epoch:1,release(){}},lighting}),/stale atlas ABI/);
   candidate.release();assert.equal(candidate.feedback.dead,true);await assert.rejects(()=>candidate.draw(pass));
   assert.throws(()=>volume.prepare({frameUniforms:original,physicsOrigin:[0,0,0],lighting:{}}),/publication/);
+  const stale=volume.prepare({frameUniforms:original,physicsOrigin:[0,0,0],params:{meshInv:I,meshRes:[1,1]},external:{mediaNoise:{},packedMesh:{}}});
+  atlas.reset();await assert.rejects(()=>stale.draw(pass),/stale world candidate epoch/);stale.release();
   volume.dispose();appearance.dispose();atlas.dispose();
+});
+
+test('native world point reader full shared library with independent LIGHT/source leafs fits 16 textures / six storage buffers',()=>{
+  const dir=mkdtempSync('/tmp/tpt-world-point-naga-');
+  try {
+    for(const h of [128,384])for(const sourceAppearance of [false,true]) {
+      const g={nx:3072,ny:h,nz:1024,sourceAppearance,sourceGrid:[128,0,128]};
+      // Same native common layout as the pick output slot. This is a checked
+      // reader assembly, not application figure/hand/point integration.
+      const groups=PICK_LAYOUTS({backend:'world'});
+      const code=lib(g,{backend:'world'})+shadowOpticsWGSL({backend:'world'})+`
+@group(3) @binding(6) var<storage,read_write> pointOut: array<vec4f>;
+@compute @workgroup_size(1) fn main() {
+  worldBeginQuery(); worldSunValidate();
+  let p=FU.cam; let pr=probeAt(p); let src=worldGISource(vec3i(p)/4);
+  let v=giIrradiance(pr,vec3f(0.0,1.0,0.0))+worldLight(p)+sunShadowAt(p)*0.0;
+  worldEndQuery();
+  pointOut[0]=vec4f(v,select(1.0,-1.0,worldQueryIncomplete()));
+}`;
+      assert.deepEqual(checkPipeline({code,groups,kind:'compute'}).problems,[]);
+      assert.equal(groups.flat().filter(e=>e.texture).length,16);
+      assert.equal(groups.flat().filter(e=>e.buffer?.type.includes('storage')).length,6);
+      const path=`${dir}/point-${h}-${sourceAppearance}.wgsl`;writeFileSync(path,code);
+      const result=spawnSync('naga',[path],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
+    }
+  } finally {rmSync(dir,{recursive:true,force:true});}
 });

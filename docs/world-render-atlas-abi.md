@@ -1,175 +1,235 @@
-# World render atlas ABI v1 (isolated PHASE3a primitives)
+# World render atlas ABI v2 — independent lighting residency
 
-This is **not** a renderer switch or completion of the unified-world plan.
-Physics, Source/window/stamp, FieldDeriver, Derived, Three and application
-rendering are untouched. No visible quality policy is introduced.
+**Disabled foundation, not an application renderer switch.** No Source/Field
+provider, GI/glow/sun producer, scheduler, history initialization, compression,
+procedural recipe, or outside quality tier is added here. Box material/optical
+math and importer ABI remain unchanged. CPU/Naga evidence is not GPU acceptance.
 
-## Addressing / resources
+## Breaking migration from v1
 
-- A brick is world-aligned 4³. Book index is `bx + BX*(by + BY*bz)`;
-  dimensions must be positive multiples of four, origin is world zero. Signed,
-  fractional, out-of-world and overflowing addresses are rejected on CPU.
-- One book u32 per brick: 0 means **UNKNOWN**, otherwise physical page ID + 1.
-  `[3072,128,1024]` uses 24 MiB; height 384 uses 72 MiB. Book and feedback
-  bindings must individually fit both the actual device and 128 MiB.
-- Physical page cell slot is the **original**
-  `x + 4*(y&1) + 8*(z + 4*(y>>1))` with local coordinates 0..3, stored as an
-  8×8 tile. Never reinterpret source buffers as xyz-linear.
-- A/B are `rgba32uint`, read with float32 bitcast. All state bits, NaN payloads,
-  signed zero, ctype and seeds survive upload and copies without conversion.
-- Three final field textures are `rgba16float`; view storage has no EMA/tmp.
-  Persistent packed EMA remains a later FieldDeriver responsibility.
-- Four SH bands and glow are `rgba16float`, one texel per physical page.
-  Probe world centres are `4*brick + 2`, independent of construction chunks.
-- Aux is ONE `rgba32uint` 2D-array texture. Linear texel number is
-  `physicalPageID*132 + record`, flattened across width, height, then layers.
-  No extra sampled binding for each auxiliary plane.
-- Aux records: 0 = `[readyBits, epoch, sourceRevision, fieldTick]`;
-  1 = all four original BrickInfo words (`emit.xyz` float32 **bits**, `info`);
-  2 = `[occLo, occHi, distancePlus1, age]`; 3 = reserved zero words.
-  Records `4 + 2*slot` are `[flow.x,flow.y,aer.x,aer.y]` (original packed-half
-  vec2u words); next record is `[cellPaintRGBA8,0,0,0]`. Decoration is NOT the
-  particle pool. Distance zero decodes to -1 (unknown distance, not empty).
-- Readiness bits: RAW=1, FIELD=2, AUX=4, LIGHT=8. Every publication requires
-  aux metadata even when its declared read set is RAW only. A replacement may
-  not drop a previously ready subset. Source revisions are u32 and monotonic;
-  same-revision field ticks cannot regress. Revision/epoch wrap is not allowed.
+`WORLD_ATLAS_ABI = 2`. Migrate layouts, WorldParams reserved words, readiness
+masks, allocations and feedback together. Old `LIGHT=8` meant every lighting
+channel; v2 bit8 means **GI_SOURCE only**. `allocate()`/`lookup()` and legacy
+`require(bricks)` now default to CELL=7. Use `allocateLight()` for lighting.
+The separate LIGHT book is mandatory; never bind a v1 book/params combination
+as v2. WGSL checks ABI/epoch/publication; native candidates reject old ABI and
+reset epochs. Retained old resources remain pinned until release, not destroyed
+or reinterpreted on reset. The CPU CI Atlas gate explicitly asserts ABI2.
 
-The explicit reader has **exactly 16 sampled textures**, two storage buffers
-(book/read and requests/read-write), zero samplers, four bind groups:
+## Addressing and sizes
 
-| group | resources in binding order |
+- World-aligned 4³ brick index: `bx + BX*(by + BY*bz)`. Both immutable books
+  contain one u32 per GLOBAL brick: zero UNKNOWN, otherwise pool ID + 1.
+  Each book separately costs **24/72 MiB** at world `[3072,128/384,1024]`.
+  Do not combine them: height384 would exceed the 128 MiB binding limit.
+- **Cell PID**, **light descriptor ID**, and **probe PID** are independent
+  namespaces, not interchangeable. Source-only descriptors allocate no cell or
+  probe slot. GI/glow-only descriptors allocate no cell slot. GI/glow share a
+  probe slot namespace but have distinct readiness, ticks and dependencies.
+- State A/B are lossless rgba32uint. Three final fields are rgba16float. Only
+  cell capacity sizes these five textures and the cell region of auxiliary.
+- Cell slot order is the original `x + 4*(y&1) + 8*(z + 4*(y>>1))`, NOT xyz
+  linear. A cell page is an 8×8 tile. All pressure/ctype/seed/NaN/signed-zero
+  words survive exact uint transport.
+- Four SH bands and glow are rgba16float, one texel per **probe PID**. Only
+  probe capacity sizes them. World probe centres remain `4*brick + 2`.
+- Auxiliary remains ONE rgba32uint 2D-array texture. Linear texels flatten
+  width, height, layers. Cell region: `cellPID*132 + record`. Descriptor region:
+  `descriptorBase + lightID*5 + record`, where `descriptorBase=cellCapacity*132`.
+  Region growth/repacking uses COW; raw uploads never address the source region.
+- Every size honours device dimensions/layers and u32 linear addressing.
+  `worldPoolMax` and `worldPoolGrowth` cap doubling to a sufficient legal size;
+  e.g. cell capacity 2^24 grows to 32,537,630 with one descriptor, not the
+  illegal unchecked 2^25. Allocation failure is an error, never reduced quality.
+
+### Cell auxiliary (132 vec4u, unchanged payload)
+
+| record | words |
 |---|---|
-| 0 | immutable WorldParams uniform; immutable book storage |
-| 1 | stateA, stateB, field0, field1, field2, aux |
-| 2 | GI0..3, glow, sunDepth, sunOptical, mediaNoise, sourceAppearance, packedMesh |
-| 3 | atomic missing-brick bitset storage |
+| 0 | readyBits, epoch, sourceRevision, fieldTick |
+| 1 | original BrickInfo emission.xyz float32 **bits**, info |
+| 2 | occupancyLo, occupancyHi, distancePlus1, age |
+| 3 | reserved **zero**, NOT a GI-source record |
+| 4+2*slot | original packed-half flow.xy, aeration.xy |
+| 5+2*slot | cell paint RGBA8, 0, 0, 0 |
 
-This standalone ABI originally used caller-owned `r32float` depth/optical copy
-planes. The integrated full reader now uses sun1 `r32float` and sun0
-**`rgba32float`** 2D arrays, respectively, with the independent immutable SunBook,
-fixed pitch and final 128-byte SunParams specified in
-[world-shader-backend.md](world-shader-backend.md). The historical two-r32float
-copy helper is NOT a full optical sun producer. mediaNoise is
-float 3D; imported sourceAppearance is uint 3D; packedMesh is `rgba32uint` 2D.
-They are required bindings, never silently omitted/dummied by this module.
-The atlas owns only state/fields/aux/GI/glow, book and params. Shadow tiling,
-optical tracing, imported source provisioning and mesh capture remain later
-backends. Native actors may later bind a lighting-only subset alongside their
-own Three material textures. Do not append anything to local VOLUME_LAYOUTS.
+Distance zero means unknown (-1), not empty. Decoration is cell paint, not the
+particle pool. Even RAW-only publication needs its cell metadata packet.
 
-Separate writer layouts assert 8 storage buffers / 4 storage textures / 16
-sampled textures / 4 groups. Raw writer uses 3 storage outputs and 3 input
-buffers; field writer 3 outputs/inputs; GI 4; glow 1. These never sample their
-output resources. Page-writer inputs are slot-ordered vec4u for raw/aux and
-vec4f for half-float field/light outputs. WriterParams is 64 bytes; raw dispatch
-is 3 groups of 64 (132 aux records), other page writers need one group.
+### Lighting descriptor (5 vec4u = 80 B)
 
-## Producer / publication contract
+| record | words |
+|---|---|
+| 0 | readyBits, epoch, sourceRevision, sourceTick |
+| 1 | GI probePID+1, glow probePID+1, giTick, glowTick |
+| 2 | source dependency ID/version, GI dependency ID/version |
+| 3 | glow dependency ID/version, ABI=2, publication generation |
+| 4 | **actual original giSrcPack vec4u** |
 
-`new WorldRenderAtlas(deviceOrGpu, {worldSize, initialCapacity=64, retire,
-onChange, feedbackExtraWords=0})` allocates a dense book but **only a small resident atlas**, not a
-world Simulation. Allocation is lazy on explicit `allocate(brick, version)`
-demand. `require(bricks)` replaces the wanted set and returns missing indices;
-this set protects pages from `remove`. Allocation itself is an explicit request,
-not an automatic walk over the book. No eviction/quality budget is implemented.
+Absent probe/glow references are zero. Record4 is only ready when GI_SOURCE
+is declared and completely written. No fake air is synthesized. Original air
+is `[0,0,0,0x1ff7fdff]` (direction 511 in each ten-bit component), NOT vec4u(0).
+The original `giSrcWGSL` packing is shared/exported from `shaders/gi.js`.
 
-1. `allocate(brick,{sourceRevision,fieldTick,readyBits})` returns a frozen opaque
-   job identity, including epoch and physical ID. An update to a cached brick
-   reserves a DIFFERENT physical page. Only one pending job per brick.
-2. `update(job,{stateA,stateB,...})` accepts exact full-page Uint32Array packets
-   for uint formats, Uint16Array half **bits** for final fields/GI/glow. Every
-   supplied channel is validated before upload. Metadata must match the job.
-   Source/Field providers need not inherit any class or use a Simulation.
-3. GPU producers instead call `recordPageWrite(job,kind,{auxMetadata,record})`.
-   The callback receives a fresh encoder plus `writerBindings` (64-byte param
-   words and private output views). It must bind the matching writer input
-   buffers and encode the FULL declared channels. Raw metadata input must be
-   exactly the supplied four metadata words. The atlas owns submission so
-   readiness cannot precede the producer's queued commands. The callback is a
-   trusted GPU producer, not an adversarial shader sandbox.
-4. `publish(jobOrArray)` validates ALL declared channels for ALL jobs first;
-   it never exposes partial replacement content. Jobs whose resource set became
-   old during growth are repacked after their writes. Book/params and resource
-   views switch together, queue-ordered after copies. Batch jobs to avoid a
-   dense book upload per brick. Current reference implementation clones the
-   book per publication (correctness first; batch/COW optimisation is future).
-5. Take `snapshot()`, then `snapshot.bindings(externalViews, feedbackBuffer)`.
-   Snapshots capture old book, params, views and page pins. Their bindings do not
-   change during replacement, grow, remove, reset or dispose. Release a snapshot
-   **after submitting its final use**. Retain it while any unsubmitted encoder
-   refers to it. Released snapshots must not be used again.
-6. `retire(fn)` MUST invoke fn only after all submitted uses are GPU-safe. The
-   default is `queue.onSubmittedWorkDone()`. Snapshots additionally pin resources
-   through future submissions. Retired physical IDs are reused only after
-   neither public/pending mappings nor snapshots own them. Removing a requested
-   or pending page is rejected. A replaced page can retire once the requested
-   brick has its new public page. `cancel(job)` invalidates pending work;
-   reset increments epoch; disposed/stale/forged jobs are rejected.
-7. `grow(capacity)` repacks every public cell/aux/probe channel with GPU texture
-   copies; physical IDs do not change, including after width/height/layer growth.
-   Old views and params stay valid while snapshots or pending providers hold
-   them. Dimensions and layers honour actual device limits; allocation failure
-   is an error, never a reduced-quality fallback. No performance claim is made.
+Readiness: RAW=1, FIELD=2, AUX=4, GI_SOURCE=8, GI=16, GLOW=32;
+CELL=7, LIGHT=56, ALL=63. Source/GI/glow readiness never implies another channel.
 
-`onChange` fires after complete publication, growth, remove or reset. External
-providers must associate all output channels with one source revision/tick;
-these primitives do not derive fields, advance histories, trace GI, or resolve
-source authority. Their input buffers stay provider-owned.
+## WorldParams — 112 bytes, all vec4u
 
-## Reader requirements (mandatory)
+| byte offset | field | words |
+|---|---|---|
+| 0 | world | world size xyz, epoch |
+| 16 | bricks | brick dimensions xyz, publication generation |
+| 32 | tiles | cell tiles x/y, cell capacity, ABI |
+| 48 | aux | width/height/layers, 132 |
+| 64 | probes | width/height/layers, probe capacity |
+| 80 | light | descriptorBase, descriptor capacity, 5, dependency manifest version |
+| 96 | feedback | words/plane, status word offset, sun suffix word offset, 0 |
 
-`worldAccessWGSL()` declares this layout directly, no regex rewrite of an old
-shader. Raw access bitcasts uint to float. Fields explicitly sample eight
-trilinear or 64 B-spline control points, resolving each tap in GLOBAL cells.
-The B-spline is the reference equivalent of existing Sigg folding. Interpolation
-extends only genuine world edges; tiles/pages/chunks are never clamp bounds.
-Probe/glow interpolation uses spacing four with the same global phase.
+## Bindings
 
-For **each full dependent query**, call `worldBeginQuery`, then after all raw,
-field, aux and light reads check `worldQueryIncomplete()`. Missing/unready or
-wrong-epoch pages set a private incomplete flag and atomically OR bit
-`globalBrickIndex` into feedback. A zero placeholder is returned ONLY so the
-query can finish collecting feedback; it is NOT an AIR/sky result. Production
-must withhold the ENTIRE incomplete frame. Resetting the flag in a nested
-query would erase its parent's misses; begin only at the complete-query root.
-Raw access beyond genuine world bounds marks incomplete without an invalid
-request bit: the caller must handle world exterior before raw access.
+Standalone reader: **16 sampled textures, three storage buffers, four groups,
+zero samplers**. Integrated full reader: five storage buffers (six for
+pick/native point output), same 16 sampled textures/four groups.
 
-`feedbackExtraWords` reserves aligned u32 words AFTER the unchanged geometry
-bitset. `feedbackBytes` exposes the complete extent and snapshots bind it in
-full. The integrated backend reserves one status word plus virtual sun request
-words; see its caller protocol. Standalone defaults/layouts remain unchanged.
+| group | standalone bindings |
+|---|---|
+| 0 | params0, cell Book1, LIGHT Book2 |
+| 1 | stateA0, stateB1, field0/1/2 at2/3/4, aux5 |
+| 2 | GI0..3 at0..3, glow4, sunDepth5, sunOptical6, mediaNoise7, sourceAppearance8, packedMesh9 |
+| 3 | requests0 |
 
-Clear feedback before dispatch (not concurrently), read after completion,
-decode `requestedBricks`, and merge these requests into `require` before
-removing content. A known published all-zero page remains distinguishable from
-UNKNOWN. No unknown/all-producer region is classified as Empty by this API.
+Integrated group0 adds Tables0/Header1/Frame2, then params3/cell Book4/**LIGHT
+Book5**. Integrated group3 is params0/requests1/linearClamp2/linearRepeat3/
+WorldSunParams4/**separate SunBook5**/optional output6. SunParams remains exactly
+128 B, pitch **0.416531224**; sun0 remains rgba32float, sun1 r32float arrays.
+External noise/appearance/packed opaque mesh remain required, not omitted.
+See [world-shader-backend.md](world-shader-backend.md).
 
-## Packed opaque mesh
+Writer layouts remain separate, at most four storage textures/eight storage
+buffers. `worldPageWriterWGSL('source')` is a real one-record uint source writer
+into existing aux, with one vec4u input and no sampled output alias. Its 64-byte
+WriterParams uses reserved.x (byte48) for the absolute source texel index.
+Other writers retain raw3/fields3/GI4/glow1 output counts; GI/glow WriterParams
+page.x is **probe PID**, not descriptor ID. Raw dispatch is 3×64; others 1×64.
+These transport writers are NOT the phase4 optical/source/gather algorithms.
 
-Two u32 words contain four original RGBA16 half words, one u32 contains the
-exact depth32 float bits, one contains coverage flags (bit0 = covered). CPU
-`packMeshWords`/`unpackMeshWords` preserve EVERY half payload, HDR and signed
-zero. The optional compute packer reads existing RGBA16 scene colour and
-`texture_depth_2d`, keeps finite half values/depth and sets coverage for standard
-non-reversed depth `<1`. Custom/reversed depth conventions must use the provided
-`packWorldMesh` helper with explicit coverage. Float texture loads cannot retain
-NaN half payloads; use raw words if those matter. Coverage is NOT inferred from
-RGB/alpha, and depth zero is valid. This combines the old separate colour+depth
-reader slots: keeping them separate would exceed the world reader's limit (17).
+## CPU producer/publication API
 
-## Validation / intentionally unfinished
+`new WorldRenderAtlas(gpu,{worldSize,initialCapacity=64,initialLightCapacity=0,
+initialProbeCapacity=0,retire,onChange,feedbackExtraWords=0})` owns two dense
+books and small resident textures. Global metadata never allocates world-dense
+cell/lighting/history payloads. Zero logical capacities still require minimal
+bound textures (existing geometry rounds to 64 cell tiles/64 probe texels).
 
-`node --test tools/world-atlas-cpu-check.mjs` uses real helpers and a command-
-recording GPU double, and runs Naga on actual new reader and all writer modules.
-It checks bounds/sizes, slot bijection, page/layer geometry, uint/half copies,
-replacement/stale jobs, snapshots and ownership, interpolation/gradients vs
-Sigg, SH phase, unknown feedback, and all 65,536 half patterns in packed mesh.
-CPU/Naga checks do NOT prove GPU appearance, memory affordability or speed.
+- `allocate(brick,{sourceRevision,fieldTick=0,readyBits=CELL})`: frozen opaque
+  `{kind:'cell',physicalPageID,...}`. `allocateLight(brick,{sourceRevision,
+  sourceTick=0,giTick=0,glowTick=0,readyBits=LIGHT,dependencies:{source,gi,glow}})`:
+  frozen `{kind:'light',lightDescriptorID,probePID,...}`. Dependencies are
+  `{id,version}`; `{0,0}` is an explicit untracked dependency assertion.
+- `update(cellJob,{stateA,stateB,field0,field1,field2,aux})` and
+  `updateLight(lightJob,{source,gi0,gi1,gi2,gi3,glow})` accept exact Uint32Array
+  words/Uint16Array half bits. Only declared channels are legal. All packets
+  validate before any upload. Source is exactly four u32 words, not cell aux.
+- `recordPageWrite`/`recordLightWrite(job,kind,{auxMetadata,record})` give a fresh
+  encoder and immutable private output identities via `writerBindings`.
+  Callbacks must be synchronous and non-reentrant; the Atlas owns submission.
+  Complete output is a trusted producer assertion, not a shader sandbox.
+- `publish({cellJobs,lightJobs,dependencyToken,sunManifest})` validates the whole
+  transaction, repacks pending old-resource jobs and switches **both books,
+  params, views and manifests atomically**. Legacy `publish(jobOrArray)` works.
+  Missing writes, source-revision mismatch between co-resident cell/light,
+  dependency mismatch or allocation failure leave the prior snapshot public.
+  Replacements may not drop readiness; sourceRevision cannot regress. Logical
+  lighting clocks cannot regress across source changes. Cell field ticks retain
+  the existing same-source monotonic rule. ID/epoch/generation wrap is rejected.
+- `dependencyToken={version,sets:[{id,version}]}` is deeply captured. Every ready
+  retained/new descriptor's declared nonzero dependency must match. Changed
+  sets require a newer manifest version. This validates provenance declarations,
+  **not** the producer's mathematical dependency closure.
+- `sunManifest={epoch,basisRevision,publishRevision,dependencySetID,
+  dependencyVersion,book,sun0,sun1,params}` captures versions, external resource
+  identities and a deep immutable copy of complete WorldSunParams values.
+  Native preparation rejects mismatched sun versions/resources/parameter bytes.
+  Sun resources remain externally owned/pinned by the caller through final use.
+- `snapshot()` captures ABI/epoch/generation, both books, params, pool addresses,
+  all resource views, dependency token and sun manifest. Each pool has separate
+  ID ownership/pins/retirement. Unchanged textures share ownership on independent
+  growth; moving descriptorBase always COWs auxiliary even if geometry is equal.
+  Pending providers retain their old set until publication/cancellation.
+- `grow(capacity)` grows cells; `growPool('cell'|'light'|'probe',capacity)` grows
+  independently. Existing public contents copy bit-exactly; immutable old
+  snapshots survive growth/replacement. `cancel`/`reset` reject delayed jobs.
+  Reset increments epoch, clears books/manifests, **not arrival-based history**.
+- `retire(fn)` must wait for GPU-safe completion. Retain snapshots through any
+  unsubmitted encoder and release after final submitted use. Native candidates
+  require final GPU completion before release. Reset-era binding/record attempts
+  reject; already submitted old resources still retire safely. `remove(bricks,
+  channels=ALL)` removes selected pool domains, never requested/pending bricks.
 
-Still required: Source capture/population wiring; FieldDeriver output and EMA
-ownership; production connection of the disabled shared full primary/secondary shader
-backend (see world-shader-backend.md); shared optical/GI producers and dependency closure; complete-frame scheduling; imported resources;
-picks/actors/Three/presentation/paused/replica/stills integration; GPU invariance,
-review and eventual full-path deployment. This phase enables none of that path.
+## Typed requirements and incomplete-frame protocol
+
+`require([{brick,channels}])` replaces the wanted set and returns missing channel
+subsets, including **partially published entries**. Results contain
+`{brick,index,channels}` and can be passed back to require. Legacy brick arrays
+return missing global indices and demand CELL only. `lookup(brick,mask)` reports
+`missingChannels`. No missing request contains a physical ID.
+
+The existing requests storage contains **six aligned bitset planes** in order
+RAW/FIELD/AUX/GI_SOURCE/GI/GLOW, then one mandatory incomplete-status word, then
+the Sun suffix. For global N, `P=ceil(N/32)`: plane k begins at k*P, status=6*P,
+sun=6*P+1. At height128/384 the six planes cost **4.5/13.5 MiB**. Reserve only
+`feedbackExtraWords=worldSunFeedbackWords(tiles)`; status is now mandatory, not
+an optional extra. WorldSunParams.version.w must equal `bookLayout.sunWord`.
+
+`worldRequest(index,mask)` ORs **all** needed planes. Ready partial pages request
+only missing channels. `worldLightDescriptor`, `worldGISource`, `worldProbeLoad`
+and `worldProbeTex(t,p,ready)` resolve LIGHT independently of cell metadata;
+GI and glow leafs demand only their own readiness. Classification still requires
+RAW|FIELD|AUX before skipping. Probe/field interpolation retains global support,
+world-only edge extension and spacing-four phase.
+
+Begin once at the **entire** ray/shading/pick/point root. Missing or invalid
+reads return placeholders solely to collect dependencies and latch incomplete.
+Secondary/nested reads never clear it; unknown is not AIR, valid empty, a profile
+or sky. End after ALL shading, write status, copy/read the ENTIRE feedback buffer,
+and withhold the **whole** candidate when incomplete. `decodeWorldFeedback`
+returns typed `requirements`, geometry union (cell planes), Sun requests/status.
+Pass requirements to `atlas.require` before eviction. CPU helpers
+`requestChannels`/`requestedChannels` use the same global addressing.
+
+## CPU allocation accounting (not measured memory/performance)
+
+Logical bytes are **5696*cellCapacity + 80*descriptorCapacity +
+40*probeCapacity**, not 5736 times a coupled capacity. `worldAllocationBytes`
+accounts actual rounded texture geometries; both books/feedback are additional.
+
+| capacities cell/descriptor/probe | rounded texture bytes |
+|---|---:|
+| 0/1/0 (minimal binding textures included) | 232,960 |
+| 64/64/64 | 494,080 |
+| 1024/1024/1024 | 7,905,280 |
+| 6,291,456 each (H128 dense upper bound) | 36,842,766,336 |
+| 18,874,368 each (H384 dense upper bound) | 110,863,843,328 |
+
+Dense rows are upper-bound diagnostics, NOT allocations performed by the
+factory, GPU peak/affordability/performance claims, or a requirement to fill the
+world. Source cache, histories, staging, sun and retained/growth overlap excluded.
+
+## Validation and remaining phase4 work
+
+`node --test tools/world-atlas-cpu-check.mjs`: 21 real-helper/fake-device/Naga
+checks including unequal IDs, source-only demands, independent growth/repacking,
+old snapshots, transactional failures, stale/cancel/reset jobs, synchronous
+writers, typed high-Y384 feedback, canonical packed source transport, all half
+mesh patterns, interpolation and legal address ceilings. Full world gate retains
+136 Box golden hashes and 132 actual world modules; four native point modules
+also compile. These tests do NOT execute material/GI/optical WGSL on a GPU.
+
+Phase4 still owns source/field adapters and exact source reduction, continuous
+GI gather/optical sun/glow producers, dependency closure, source-before-gather
+barriers, world-owned probe history and reset/replay. No residency arrival may
+reset a probe or substitute sky; late cold demand must retain/replay the original
+logical tick history. No aliases/procedural profiles are claimed. Native figures,
+hands, point scheduling, presentation gating and the application switch remain
+unfinished; do not deploy this checkpoint as the completed renderer.

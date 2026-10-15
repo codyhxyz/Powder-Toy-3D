@@ -8,7 +8,7 @@ export function worldVolumeLayouts({ pick = false, limits, paramsSize = 0 } = {}
   const uniform = (binding,size) => ({binding,visibility:7,buffer:{type:'uniform',minBindingSize:size}});
   const storage = (binding,type='read-only-storage') => ({binding,visibility:6,buffer:{type}});
   return assertWorldLayout([
-    [{...storage(0),buffer:{type:'read-only-storage',minBindingSize:TABLES_BYTES}},uniform(1,Header.size),uniform(2,FrameUniforms.size),{...a[0][0],binding:3}, {...a[0][1],binding:4}],
+    [{...storage(0),buffer:{type:'read-only-storage',minBindingSize:TABLES_BYTES}},uniform(1,Header.size),uniform(2,FrameUniforms.size),{...a[0][0],binding:3}, {...a[0][1],binding:4}, {...a[0][2],binding:5}],
     a[1],a[2],
     [uniform(0,paramsSize),{...a[3][0],binding:1},
       {binding:2,visibility:6,sampler:{type:'filtering'}},{binding:3,visibility:6,sampler:{type:'filtering'}},
@@ -16,12 +16,11 @@ export function worldVolumeLayouts({ pick = false, limits, paramsSize = 0 } = {}
   ], limits);
 }
 export const worldQueryWGSL = /* wgsl */ `
-// One extra aligned word immediately after the unchanged geometry bitset.
+// Mandatory status after all six typed brick bitset planes.
 // An incomplete query must invalidate the ENTIRE offscreen candidate frame.
 fn worldEndQuery() {
   if (worldQueryIncomplete()) {
-    let count = WA.bricks.x*WA.bricks.y*WA.bricks.z;
-    atomicOr(&worldRequests[(count+31u)/32u],1u);
+    atomicOr(&worldRequests[WA.feedback.y],1u);
   }
 }
 `;

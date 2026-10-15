@@ -1,5 +1,5 @@
 // Explicit sparse world ABI, not a rewrite of the local shader library.
-import { AUX_RECORDS, READY, WORLD_ATLAS_ABI, WRITER_CHANNELS, PAGE_CHANNELS, worldReaderLayouts, worldWriterLayouts } from '../world/renderAtlas.js';
+import { AUX_RECORDS, LIGHT_RECORDS, READY, WORLD_ATLAS_ABI, WRITER_CHANNELS, PAGE_CHANNELS, worldReaderLayouts, worldWriterLayouts } from '../world/renderAtlas.js';
 
 /** Caller MUST worldBeginQuery(), perform the WHOLE dependent ray/shading
  * query, then test worldQueryIncomplete(). Placeholder zeros are unusable
@@ -21,18 +21,21 @@ const WORLD_ABI: u32 = ${WORLD_ATLAS_ABI}u;
 const WORLD_RAW: u32 = ${READY.RAW}u;
 const WORLD_FIELD: u32 = ${READY.FIELD}u;
 const WORLD_AUX: u32 = ${READY.AUX}u;
-const WORLD_LIGHT: u32 = ${READY.LIGHT}u;
+const WORLD_GI_SOURCE: u32 = ${READY.GI_SOURCE}u;
+const WORLD_GI: u32 = ${READY.GI}u;
+const WORLD_GLOW: u32 = ${READY.GLOW}u;
 struct WorldParams {
   world: vec4u, // size xyz, epoch
   bricks: vec4u, // brick dimensions xyz, generation
   tiles: vec4u, // cells tiles x/y, page capacity, ABI
   aux: vec4u, // width/height/layers, records per page
   probes: vec4u, // width/height/layers, reserved
-  reserved0: vec4u,
-  reserved1: vec4u,
+  light: vec4u, // descriptor base/count/stride, dependency manifest version
+  feedback: vec4u, // words per channel plane, status word, sun suffix, reserved
 }
 @group(0) @binding(${integrated ? 3 : 0}) var<uniform> WA: WorldParams;
 @group(0) @binding(${integrated ? 4 : 1}) var<storage, read> worldBook: array<u32>;
+@group(0) @binding(${integrated ? 5 : 2}) var<storage, read> worldLightBook: array<u32>;
 @group(1) @binding(0) var worldStateA: texture_2d_array<u32>;
 @group(1) @binding(1) var worldStateB: texture_2d_array<u32>;
 @group(1) @binding(2) var ${field[0]}: texture_2d_array<f32>;
@@ -56,9 +59,13 @@ fn worldQueryIncomplete() -> bool { return worldIncomplete; }
 fn worldInBounds(c: vec3i) -> bool { return all(c >= vec3i(0)) && all(c < vec3i(WA.world.xyz)); }
 fn worldBrickInBounds(b: vec3i) -> bool { return all(b >= vec3i(0)) && all(b < vec3i(WA.bricks.xyz)); }
 fn worldBookIndex(b: vec3i) -> u32 { return u32(b.x) + WA.bricks.x * (u32(b.y) + WA.bricks.y * u32(b.z)); }
-fn worldRequest(index: u32) {
+fn worldRequest(index: u32, channels: u32) {
   worldIncomplete = true;
-  atomicOr(&worldRequests[index >> 5u], 1u << (index & 31u));
+  for (var plane = 0u; plane < 6u; plane++) {
+    if ((channels & (1u << plane)) != 0u) {
+      atomicOr(&worldRequests[plane * WA.feedback.x + (index >> 5u)], 1u << (index & 31u));
+    }
+  }
 }
 fn worldLinearAddress(i: u32, dims: vec2u) -> vec3i {
   return vec3i(vec3u(i % dims.x, (i / dims.x) % dims.y, i / (dims.x * dims.y)));
@@ -75,10 +82,11 @@ fn worldPage(b: vec3i, ready: u32) -> i32 {
   if (!worldBrickInBounds(b)) { worldIncomplete = true; return -1; }
   let i = worldBookIndex(b);
   let e = worldBook[i];
-  if (e == 0u || e > WA.tiles.z || WA.tiles.w != WORLD_ABI) { worldRequest(i); return -1; }
+  if (e == 0u || e > WA.tiles.z || WA.tiles.w != WORLD_ABI) { worldRequest(i, ready); return -1; }
   let pid = e - 1u;
   let m = worldPageMeta(pid, 0u);
-  if (m.y != WA.world.w || (m.x & ready) != ready) { worldRequest(i); return -1; }
+  if (m.y != WA.world.w) { worldRequest(i, ready); return -1; }
+  if ((m.x & ready) != ready) { worldRequest(i, ready & ~m.x); return -1; }
   return i32(pid);
 }
 fn worldCellTexel(pid: u32, c: vec3i) -> vec3i {
@@ -163,29 +171,53 @@ fn worldFieldCubic(t: texture_2d_array<f32>, p: vec3f) -> vec4f {
   } } }
   return value;
 }
-fn worldProbeLoad(t: texture_2d_array<f32>, brick: vec3i) -> vec4f {
+// LIGHT book IDs never pass through worldPage/cell auxiliary metadata.
+fn worldLightMeta(id: u32, record: u32) -> vec4u {
+  let a = worldLinearAddress(WA.light.x + id * ${LIGHT_RECORDS}u + record, WA.aux.xy);
+  return textureLoad(worldAux, a.xy, a.z, 0);
+}
+fn worldLightDescriptor(b: vec3i, ready: u32) -> i32 {
+  if (!worldBrickInBounds(b)) { worldIncomplete = true; return -1; }
+  let i = worldBookIndex(b); let e = worldLightBook[i];
+  if (e == 0u || e > WA.light.y || WA.tiles.w != WORLD_ABI) { worldRequest(i, ready); return -1; }
+  let id = e - 1u; let m = worldLightMeta(id, 0u);
+  let publication = worldLightMeta(id, 3u);
+  if (m.y != WA.world.w || publication.z != WORLD_ABI || publication.w == 0u || publication.w > WA.bricks.w) { worldRequest(i, ready); return -1; }
+  if ((m.x & ready) != ready) { worldRequest(i, ready & ~m.x); return -1; }
+  return i32(id);
+}
+// Exact giSrcPack words. Missing zero is only a placeholder, NEVER canonical air.
+fn worldGISource(b: vec3i) -> vec4u {
+  let id = worldLightDescriptor(b, WORLD_GI_SOURCE);
+  if (id < 0) { return vec4u(0u); }
+  return worldLightMeta(u32(id), 4u);
+}
+fn worldProbeLoad(t: texture_2d_array<f32>, brick: vec3i, ready: u32) -> vec4f {
   let b = clamp(brick, vec3i(0), vec3i(WA.bricks.xyz) - 1);
-  let pid = worldPage(b, WORLD_LIGHT);
-  if (pid < 0) { return vec4f(0.0); }
-  let a = worldLinearAddress(u32(pid), WA.probes.xy);
+  let id = worldLightDescriptor(b, ready);
+  if (id < 0) { return vec4f(0.0); }
+  let refs = worldLightMeta(u32(id), 1u);
+  let e = select(refs.x, refs.y, ready == WORLD_GLOW);
+  if (e == 0u || e > WA.probes.w) { worldRequest(worldBookIndex(b), ready); return vec4f(0.0); }
+  let a = worldLinearAddress(e - 1u, WA.probes.xy);
   return textureLoad(t, a.xy, a.z, 0);
 }
 // Global SH/glow phase: probes at (4*b + 2), NEVER chunk-local or page-local.
-fn worldProbeTex(t: texture_2d_array<f32>, p: vec3f) -> vec4f {
+fn worldProbeTex(t: texture_2d_array<f32>, p: vec3f, ready: u32) -> vec4f {
   let q = clamp(p/4.0 - 0.5, vec3f(0.0), vec3f(WA.bricks.xyz) - 1.0);
   let base = vec3i(floor(q)); let f = fract(q);
   var value = vec4f(0.0);
   for (var z = 0; z < 2; z++) { for (var y = 0; y < 2; y++) { for (var x = 0; x < 2; x++) {
     let w = select(1.0-f, f, vec3i(x,y,z) == vec3i(1));
-    value += worldProbeLoad(t, base + vec3i(x,y,z)) * w.x * w.y * w.z;
+    value += worldProbeLoad(t, base + vec3i(x,y,z), ready) * w.x * w.y * w.z;
   } } }
   return value;
 }
 struct WorldProbe { c0: vec4f, cx: vec4f, cy: vec4f, cz: vec4f }
 fn worldProbe(p: vec3f) -> WorldProbe {
-  return WorldProbe(worldProbeTex(${gi[0]},p), worldProbeTex(${gi[1]},p), worldProbeTex(${gi[2]},p), worldProbeTex(${gi[3]},p));
+  return WorldProbe(worldProbeTex(${gi[0]},p,WORLD_GI), worldProbeTex(${gi[1]},p,WORLD_GI), worldProbeTex(${gi[2]},p,WORLD_GI), worldProbeTex(${gi[3]},p,WORLD_GI));
 }
-fn worldLight(p: vec3f) -> vec3f { return worldProbeTex(${glow},p).rgb; }
+fn worldLight(p: vec3f) -> vec3f { return worldProbeTex(${glow},p,WORLD_GLOW).rgb; }
 struct WorldMesh { color: vec4f, depth: f32, coverageFlags: u32 }
 fn worldMeshAt(pixel: vec2i) -> WorldMesh {
   let m = textureLoad(worldPackedMesh, pixel, 0);
@@ -201,7 +233,7 @@ fn worldMeshAt(pixel: vec2i) -> WorldMesh {
  */
 export function worldPageWriterWGSL(kind) {
   worldWriterLayouts(kind);
-  const names = WRITER_CHANNELS[kind];
+  const names = kind === 'source' ? ['aux'] : WRITER_CHANNELS[kind];
   if (!names) throw new Error('not a page writer');
   const declarations = names.map((name, i) => {
     const [format] = PAGE_CHANNELS[name], type = format === 'rgba32uint' ? 'u32' : 'f32';
@@ -210,6 +242,7 @@ export function worldPageWriterWGSL(kind) {
   }).join('\n');
   const stores = names.map((name, i) => {
     const shape = PAGE_CHANNELS[name][1];
+    if (kind === 'source') return `if (s == 0u) { let a = writerLinear(WP.reserved.x, WP.aux.xy); textureStore(out${i}, a.xy, a.z, src${i}[0]); }`;
     if (shape === 'aux') return `if (s < ${AUX_RECORDS}u) { let a = writerLinear(WP.page.x * ${AUX_RECORDS}u + s, WP.aux.xy); textureStore(out${i}, a.xy, a.z, src${i}[s]); }`;
     if (shape === 'cells') return `if (s < 64u) { textureStore(out${i}, cell.xy, cell.z, src${i}[s]); }`;
     return `if (s == 0u) { let a = writerLinear(WP.page.x, WP.probes.xy); textureStore(out${i}, a.xy, a.z, src${i}[0]); }`;
@@ -268,7 +301,7 @@ export const WGSL_CHECK = [
   { name: 'worldAtlasReaderABI', kind: 'compute', grids: false,
     code: () => worldAccessWGSL() + `\n@compute @workgroup_size(1) fn main() { worldBeginQuery(); let a = worldFetchA(vec3i(0)); }`,
     layouts: () => worldReaderLayouts(), dispatch: () => [1, 1, 1] },
-  ...Object.keys(WRITER_CHANNELS).map(kind => ({ name: `worldAtlasWriter_${kind}`, kind: 'compute', grids: false,
+  ...[...Object.keys(WRITER_CHANNELS), 'source'].map(kind => ({ name: `worldAtlasWriter_${kind}`, kind: 'compute', grids: false,
     code: () => worldPageWriterWGSL(kind), layouts: () => [...worldWriterLayouts(kind), [], []],
     dispatch: () => [kind === 'raw' ? 3 : 1, 1, 1] })),
   { name: 'worldAtlasPackedMesh', kind: 'compute', grids: false, code: () => worldPackedMeshWriterWGSL(),

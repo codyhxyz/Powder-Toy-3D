@@ -6,7 +6,7 @@ import { FRAME_UNIFORM_FIELDS } from '../shaders/bindings.js';
 import { uniformStruct } from '../gpu/params.js';
 import { Header } from '../shaders/common.js';
 import { WorldSunParams, worldSunFeedbackWords } from '../world/worldSun.js';
-import { requestedBricks } from '../world/renderAtlas.js';
+import { requestedBricks, requestedChannels, READY, WORLD_ATLAS_ABI } from '../world/renderAtlas.js';
 const BU={COPY_SRC:4,COPY_DST:8,UNIFORM:64,STORAGE:128};
 const WorldFrameStruct = uniformStruct('FrameUniforms', FRAME_UNIFORM_FIELDS);
 const vec = v => Array.from(v?.elements ?? (v?.toArray ? v.toArray() : v));
@@ -30,9 +30,10 @@ export function worldFrameValues(values, physicsOrigin) {
 export function decodeWorldFeedback(words, book, sunTileCount) {
   const at=book.requestBytes/4, sunWords=Math.ceil(sunTileCount/32);
   if (!(words instanceof Uint32Array) || words.length<at+1+sunWords) throw new RangeError('complete feedback readback required');
-  const geometry=requestedBricks(words,book.count);
+  const requirements=requestedChannels(words,book);
+  const geometry=requirements.filter(r=>r.channels & READY.CELL).map(r=>r.index);
   const sun=requestedBricks(words.subarray(at+1),sunTileCount);
-  return Object.freeze({incomplete:words[at]!==0||geometry.length!==0||sun.length!==0,status:words[at],geometry,sun});
+  return Object.freeze({incomplete:words[at]!==0||requirements.length!==0||sun.length!==0,status:words[at],geometry,requirements,sun});
 }
 export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}) {
   const device=gpu.device ?? gpu, queue=device.queue;
@@ -71,14 +72,19 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       const b=device.createBuffer({label,size:bytes.byteLength,usage}); owned.push(b); queue.writeBuffer(b,0,bytes); return b;
     };
     try {
+      if (snapshot.abi!==WORLD_ATLAS_ABI || snapshot.epoch!==atlas.epoch) throw new Error('stale atlas ABI/epoch');
       if (!light?.params || !light.book || !light.sun0 || !light.sun1) throw new Error('explicit immutable lighting publication/bindings required; no fully-lit fallback');
       if (!frameUniforms?.cam || !frameUniforms.model || !frameUniforms.viewProj) throw new Error('world eye/model/viewProj required');
-      const sun=light.params, tiles=sun.tiles;
+      const sun=snapshot.sunManifest?.params ?? light.params, tiles=sun.tiles;
       if (!tiles || tiles.length!==4 || !Array.from(tiles).every(Number.isInteger) || tiles[2]<=0 || tiles[3]<=0) throw new Error('full world caster projection required even for unpublished lighting');
-      const tileCount=tiles[2]*tiles[3], extra=1+worldSunFeedbackWords(tiles), geomWords=atlas.bookLayout.requestBytes/4;
+      const tileCount=tiles[2]*tiles[3], extra=worldSunFeedbackWords(tiles), geomWords=atlas.bookLayout.requestBytes/4;
       if (atlas.feedbackExtraWords<extra || sun.version?.[3]!==geomWords+1) throw new Error('atlas feedbackExtraWords / sun requestWordOffset mismatch');
+      const sm=snapshot.sunManifest;
+      if (!sm || sm.epoch!==sun.version?.[0] || sm.basisRevision!==sun.version?.[1] || sm.publishRevision!==sun.version?.[2] || sm.book!==light.book || sm.sun0!==light.sun0 || sm.sun1!==light.sun1) throw new Error('lighting publication must match pinned atlas sun manifest');
       if (light.book.size<tileCount*32 || light.book.size>storageLimit) throw new Error('SunBook binding size');
       const sunBytes=new ArrayBuffer(128); WorldSunParams.write(new DataView(sunBytes),0,sun);
+      const suppliedSun=new ArrayBuffer(128); WorldSunParams.write(new DataView(suppliedSun),0,light.params);
+      if (new Uint8Array(sunBytes).some((v,i)=>v!==new Uint8Array(suppliedSun)[i])) throw new Error('lighting params differ from pinned sun manifest');
       const values=worldFrameValues(frameUniforms,physicsOrigin);
       if (appearance) values.sourceAppearance=appearance.uniform;
       const fuBytes=WorldFrameStruct.pack(values);
@@ -93,7 +99,7 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       const group=(layout,entries)=>device.createBindGroup({layout,entries});
       const first=entries.slice(0,3).map((e,i)=>group(layouts[i],e));
       const groups=[...first,group(layouts[3],[b(0,p),...base])];
-      const valid=()=>{alive();if(released)throw new Error('world candidate released');};
+      const valid=()=>{alive();if(released)throw new Error('world candidate released');if(snapshot.epoch!==atlas.epoch)throw new Error('stale world candidate epoch');};
       return Object.freeze({snapshot,feedback,groups,params,requiredProtocol:'submit -> read entire feedback -> withhold entire incomplete candidate; retain resources until final submitted use completes',
         async draw(pass,{view='realistic',detail={},curved=false}={}) {
           valid(); const pipe=await pipeline(view,detail,curved); valid();

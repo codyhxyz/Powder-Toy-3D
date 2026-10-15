@@ -1,4 +1,4 @@
-# Shared world shader backend — PHASE3b-1
+# Shared world shader backend — PHASE3b-1 / Atlas ABI v2
 
 This is a **disabled assembly**, not an application switch or a completed world
 renderer. No second reduced shader library, whole-world Simulation, lighting
@@ -49,14 +49,14 @@ wrong side of a plane with tiny components, without changing the ray.
 
 | group | bindings |
 |---|---|
-| 0 | Tables0, zero-origin Header1, world FrameUniforms2, WA3, geometry Book4 |
+| 0 | Tables0, zero-origin Header1, world FrameUniforms2, WA3, geometry Book4, LIGHT Book5 |
 | 1 | A0, B1, surface2, media3, thin4, aux5 |
 | 2 | GI0..3, glow4, sun1 depth5, sun0 optical6, noise7, appearance8, packed opaque mesh9 |
 | 3 | operation params0, requests1, linearClamp2, linearRepeat3, WorldSunParams4, SunBook5, pick output6 only for picks |
 
-Exactly 16 sampled textures; four storage buffers (five for picks); four
+Exactly 16 sampled textures; five storage buffers (six for picks/native point output); four
 bind groups. Book bindings are 24/72 MiB at height128/384. Standalone Atlas
-reader/writer layouts retain their existing defaults. Integrated declarations
+reader/writer layouts migrate explicitly to Atlas ABI v2. Integrated declarations
 use the dedicated map, not emitted-WGSL regex rewriting or appended Box slots.
 
 ## Sun reader/writer ABI (finalized here)
@@ -122,7 +122,12 @@ It exposes `pipeline`, `ready` (pick pipeline) and `prepare`.
 - `lighting = {sun0,sun1,book,params}`: immutable texture views, SunBook buffer,
   and complete `WorldSunParams` host values. Missing bindings are rejected;
   bound but unbuilt/invalid lighting marks incomplete in WGSL. GI/glow are the
-  pinned atlas snapshot's channels and require LIGHT readiness.
+  pinned atlas snapshot's independently addressed GI/GLOW channels and require
+  their respective readiness, not cell pages or GI_SOURCE readiness. Before
+  preparing, publish an Atlas `sunManifest` containing the immutable sun versions,
+  complete params and book/sun0/sun1 resource identities. Preparation checks all
+  three against that pinned manifest; a mutable external lighting object cannot
+  silently change the captured sun transform or resource views.
 - `createWorldAppearance(gpu,{words,width,depth})` uploads original importer ABI
   v1 words losslessly to an independent rgba16uint 3D texture, reusing existing
   pair packing and source shading. Shader capability exclusion and
@@ -147,10 +152,14 @@ It exposes `pipeline`, `ready` (pick pipeline) and `prepare`.
   batch/slot params. Result format stays 32 bytes; face -1 is miss, **-2 is
   incomplete**. Pick resource lifetimes follow the candidate too.
 
-Reserve Atlas requests using `feedbackExtraWords = 1 +
-worldSunFeedbackWords(sunParams.tiles)`. Geometry's bitset is unchanged. The
-first extra word is the candidate incomplete-status word; sun requests begin
-at `bookLayout.requestBytes/4+1` (WorldSunParams.version.w). Snapshot bindings
+Atlas ABI v2 reserves `feedbackExtraWords =
+worldSunFeedbackWords(sunParams.tiles)`. Requests now contain six aligned GLOBAL
+brick bitsets RAW/FIELD/AUX/GI_SOURCE/GI/GLOW, followed by the mandatory candidate
+status word; sun requests begin at `bookLayout.sunWord = 6*ceil(N/32)+1`
+(WorldSunParams.version.w). `bookLayout.requestBytes` covers all six planes.
+Migrate the old one-plane/optional-status ABI together with both books, masks
+and WorldParams reserved words; old ABI/reset-era snapshots are rejected, not
+reinterpreted. [Full ABI/address/API contract](world-render-atlas-abi.md). Snapshot bindings
 expose the full allocated feedback extent; invalid reservation/offset/binding
 sizes are rejected. Storage bindings must still fit the device and 128 MiB.
 
@@ -166,10 +175,13 @@ sizes are rejected. Storage bindings must still fit the device and 128 MiB.
    complete frame or loading presentation meanwhile.
 3. Record/copy the **entire** feedback buffer to readback after all candidate
    consumers, submit, and await its completion. `candidate.decodeFeedback`
-   returns exact status, global geometry requests and virtual sun requests.
+   returns exact status, typed `requirements:[{index,brick,channels}]`, a
+   geometry union of the three cell planes, and virtual sun requests.
    Withhold the **entire** candidate if incomplete; discarding individual
    fragments alone does not make a complete frame. Serve secondary misses too.
-4. Merge geometry demand into `atlas.require` before eviction. Request sun
+4. Pass typed `requirements` to `atlas.require` before eviction (including
+   upgrades of partially ready entries); do not reduce LIGHT/source misses to
+   geometry-only demand. Request sun
    dependencies from the lighting owner. Retry against a new consistent
    publication; no unknown-as-sky, local water tail or fully-lit fallback.
 5. `candidate.release()` destroys candidate buffers and releases its atlas pin
@@ -200,7 +212,9 @@ modules** (all registered views/detail levels, curved twins, source capability
 on/off and heights128/384), native binding types/default limits, the real
 assembly with a fake device and command encoder, immutable global conversion,
 feedback/lifetime contracts, appearance words, sun layout/tile/epoch/pole and
-receiver-plane scalar fixtures, and long CPU DDA/address references. Existing
+receiver-plane scalar fixtures, and long CPU DDA/address references. Four additional native point assemblies
+compile the same full lighting library plus shared optical leafs at both heights
+with source capability on/off; these are not a figure/hand/point runtime switch. Existing
 source, quantized field and Atlas checks cover full state/pressure/seed/history,
 films/media/paint/interpolation and packed mesh bits. They remain separate gates.
 
@@ -210,8 +224,8 @@ visual/performance/memory-affordability evidence or shader driver compilation
 measurements. No browser/GPU/server/deployment was run.
 
 Still required: authoritative Source→Field→Atlas adapters and aux flags/distance;
-full sun/GI/glow producers, ages/history and dependency closure; immutable
-cross-channel publication; complete-frame presentation gating; full picks/edit
+full sun/GI/glow producers, ages/history and dependency closure; producer
+connection to the independent-pool atomic publication seam; complete-frame presentation gating; full picks/edit
 consumer staleness handling; figures/hands/native lighting readers; opaque mesh
 capture, camera/model/post/paused/replica/stills/data-view/source-provider
 integration; application single-path switch and removal of proxy composition;

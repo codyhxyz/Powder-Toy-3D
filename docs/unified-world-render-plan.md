@@ -11,6 +11,13 @@ limits of evidence](world-shader-backend.md). Box shader/layout hashes remain
 unchanged. Source/Field→Atlas providers, full lighting producers, complete-frame
 presentation and application switching are NOT implemented by that assembly.
 
+Atlas ABI v2 now separates cell pages, compact lighting/source descriptors and
+probe slots, with a separate LIGHT book and six typed feedback planes in the
+existing request buffer. Both books/views/dependencies/Sun manifest publish as
+one immutable token. See [ABI migration and phase4 hooks](world-render-atlas-abi.md).
+This is addressing/publication only: no lighting producer or arrival-based
+history reset, no profile/procedural aliases and no application selection.
+
 ## Required result
 
 Physics stays local. Graphics do not select quality from physics residency.
