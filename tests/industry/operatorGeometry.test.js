@@ -46,6 +46,15 @@ test('operator refuses a pose inside matter rather than inventing an entry face'
   assert.equal(await cast(scene(() => E.WALL), [2.5, 2.5, 2.5], [0, -1, 0]), null);
 });
 
+test('operator rays ignore fire and other gas exactly as the player picker does', async () => {
+  const sim = scene((x, y, z) => y === 6 ? E.FIRE : y === 5 ? E.SMOKE : y === 4 ? E.LAVA : E.EMPTY);
+  const hit = await cast(sim, [2.5, 7.5, 2.5], [0, -1, 0]);
+  assert.equal(hit.id, E.LAVA);
+  assert.deepEqual(hit.cell.toArray(), [2, 4, 2]);
+  assert.equal(hit.face, 2);
+  assert.equal(hit.dist, 2.5);
+});
+
 test('operator ray probes are limited by real hand reach and the deadline', async () => {
   const farX = Math.floor(10.5 + HAND_REACH) + 2;
   const sim = scene(x => x === farX ? E.SCRAP : E.EMPTY);

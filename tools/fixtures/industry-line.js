@@ -401,10 +401,11 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       const shovelLoad = physicalOperator.shovel.load;
       const stockCells = boxCells({ x: [95, 99], y: [30, 32], z: [92, 98] });
       const miningActions = [];
-      for (let attempt = 0; attempt < 12 && shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).length < 6; attempt++) {
+      for (let poll = 0; poll < 120 && shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).length < 6; poll++) {
         const stock = await readCells(stockCells);
         const at = stock.findIndex(cell => cell.id === E.BROKENCOAL);
         if (at < 0) { await nativeStep(4); await fence('wait for real miner output'); continue; }
+        if (miningActions.length >= 12) break;
         const before = shovelLoad.cells.filter(cell => cell[0] === E.BROKENCOAL).length;
         const action = await physicalOperator.act({ tool: 'SHOVEL', button: 'primary',
           pose: { feet: [98.5, 30, 94.5], target: stockCells[at] }, maxFrames: 12,
@@ -747,9 +748,10 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       const carriedAshBefore = shovelLoad.cells.filter(cell => cell[0] === E.ASH).length;
       let ashIndex = ashAfter.findIndex(cell => cell.id === E.ASH);
       let target = ashIndex >= 0 ? ashRegion[ashIndex] : null;
-      for (let i = 0; i < 8 && target && Date.now() < until; i++) {
+      for (let i = 0; i < 8 && target && Date.now() < until && observations.nativeTicks + 8 <= MAX_NATIVE_TICKS; i++) {
         const action = await physicalOperator.act({ tool: 'SHOVEL', button: 'primary',
-          pose: { feet: [16.5, 16, target[2] + 0.5], target }, maxFrames: 18,
+          pose: { feet: [16.5, 16, target[2] + 0.5], target },
+          maxFrames: Math.min(18, Math.floor((MAX_NATIVE_TICKS - observations.nativeTicks) / 4) - 1),
           done: () => shovelLoad.cells.filter(cell => cell[0] === E.ASH).length - carriedAshBefore >= ashInitially,
           label: `shovel actual ash cleanup ${i + 1}` });
         observations.operator.actions.push(action);
@@ -760,6 +762,8 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {}, op
       }
       ashTotal = shovelLoad.cells.filter(cell => cell[0] === E.ASH).length - carriedAshBefore;
       observations.cargo.operatorAshPayload = shovelLoad.cells.filter(cell => cell[0] === E.ASH).map(cell => [...cell]);
+      if (target && observations.nativeTicks + 8 > MAX_NATIVE_TICKS)
+        observations.cargo.ashCleanupSkippedReason = 'native tick budget reached';
       ashAfter = await readCells(ashRegion);
     } else {
       for (let i = 0; i < 4 && ashAfter.some(c => c.id === E.ASH) && Date.now() < until; i++) {

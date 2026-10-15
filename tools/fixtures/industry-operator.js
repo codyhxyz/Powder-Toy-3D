@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { E } from '../../src/elements.js';
+import { E, K, ELEMENTS } from '../../src/elements.js';
 import { HAND_REACH } from '../../src/pov/constants.js';
 
 const DT = 1 / 60;
@@ -22,7 +22,7 @@ function bounded(promise, until, label) {
   ]).finally(() => clearTimeout(timer));
 }
 
-/** Read only the cells crossed by a bounded hand-reach voxel ray. */
+/** Match render.js pickStops: first non-gas voxel, within real hand reach. */
 export async function firstOccupiedRayHit({ sim, eye, direction, deadline, flush = null }) {
   if (!sim?.readCell || !sim.g) throw new TypeError('ray probe requires a live simulation');
   const until = Number.isFinite(deadline) ? deadline : Date.now() + 20_000;
@@ -53,7 +53,7 @@ export async function firstOccupiedRayHit({ sim, eye, direction, deadline, flush
       ]), until, 'operator ray cell probe');
       const [state] = value;
       const id = Math.round(state[0]);
-      if (id !== E.EMPTY) {
+      if (id !== E.EMPTY && ELEMENTS[id]?.kind !== K.GAS) {
         // Starting inside matter has no entry face. Reject that test pose
         // rather than inventing a surface that a player could not aim at.
         if (face < 0) return null;
