@@ -1033,14 +1033,28 @@ ${brickCell}
 }
 `;
 
-// pass 2: a liquid's outflow limit (never send more than it holds). Each face out of it carries the
-// integer share a·K / 65535 of its integer flux a, K rounded down, so the shares never add up to more than
-// its fill; when it is limited, the remainder (< 32 quanta) goes out through its largest outflow face, so
-// it drains to exactly 0 (lean-sim's exact f64 K does the same; a 16-bit K alone strands the last quanta).
-// The face and the remainder go in its age byte. An air cell gets its claim.
+// Exact floor(q*K/65535) from the complete active f16 q (zero or >= 1/2).
+// q=a+b/2048: a*K <= 65504*65535; the residual numerator is < 2^28.
+// Full K keeps the ordinary gather/identity hot path to one conversion.
+const liquidAcceptedWGSL = /* wgsl */ `
+fn acceptedAmount(q: f32, k: u32) -> u32 {
+  let a = u32(max(q, 0.0));
+  if (k == 65535u) { return a; }
+  if (k == 0u) { return 0u; }
+  let b = u32((max(q, 0.0) - f32(a)) * 2048.0);
+  let p = a * k;
+  return p / 65535u + ((p % 65535u) * 2048u + b * k) / 134215680u;
+}
+`;
+
+// pass 2: retain complete f16 weights until AFTER scaling; limited sources drain
+// exactly through a deterministic largest face. The five-bit tail is proved in
+// liquid-limiter-order-check: < 6 + 2*6*65504/65535 + f32 error < 19.
+// The face and remainder use the existing snapshot tag byte; no new storage.
 export const v2LimitWGSL = (g) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'liquid')}
 ${fluxWGSL}
+${liquidAcceptedWGSL}
 ${MAIN} {
 ${brickCell}
   let c = cells[s];
@@ -1048,30 +1062,32 @@ ${brickCell}
   let kc = clsOf(c);
   if (kc == C_LIQUID) {
     let q = qOf(c);
-    var a6 = array<u32, 6>(0u, 0u, 0u, 0u, 0u, 0u);   // its integer outflow through each face, in face6 order
+    var a6 = array<u32, 6>(0u, 0u, 0u, 0u, 0u, 0u);   // exact q*2048 weights, in face6 order
     var out = 0u;
     for (var a = 0; a < 3; a++) {
-      if (q[a] > 0.0) { a6[2 * a] = u32(trunc(q[a])); }
+      if (q[a] > 0.0) { a6[2 * a] = u32(q[a] * 2048.0); }
       let ph = mEdge(p - axisV(a));
       if (inGrid(ph) && awakeCell(ph)) {
         let ch = loadCell(ph);
-        if (isOpenC(ch)) { let qh = qOf(ch)[a]; if (qh < 0.0) { a6[2 * a + 1] = u32(trunc(-qh)); } }
+        if (isOpenC(ch)) { let qh = qOf(ch)[a]; if (qh < 0.0) { a6[2 * a + 1] = u32(-qh * 2048.0); } }
       }
       out += a6[2 * a] + a6[2 * a + 1];
     }
     let fl = cFill(c);
     var kq = 65535u;
     var tag = 0u;
-    if (out > fl) {
-      kq = u32(max(floor(f32(fl) / f32(out) * 65535.0), 1.0)) - 1u;
+    if (out > fl * 2048u) {
+      // Three f32 roundings err by < .012 in K; subtracting one is
+      // conservative even across floor boundaries. Weight totals < 2^30.
+      kq = u32(max(floor(f32(fl * 2048u) / f32(out) * 65535.0), 1.0)) - 1u;
       var sum = 0u;
       var best = 0u;
       var mx = 0u;
       for (var i = 0u; i < 6u; i++) {
-        sum += (a6[i] * kq) / 65535u;
+        sum += acceptedAmount(f32(a6[i]) / 2048.0, kq);
         if (a6[i] > best) { best = a6[i]; mx = i; }
       }
-      tag = mx | (min(fl - sum, 31u) << 3u);
+      tag = mx | ((fl - sum) << 3u);
     }
     let payload = payloadOf(c);
     liquidScratch[s] = vec4u(kq | (tag << 16u) | (c.y & 0xff000000u),
@@ -1093,6 +1109,7 @@ function gatherHead(g) {
 }
 // One canonical accepted-face packet contract shared with native jets.
 export const liquidTransportWGSL = /* wgsl */ `
+${liquidAcceptedWGSL}
 fn snapshot(s: u32) -> Material {
   let a = liquidScratch[s];
   let payload = (a.y >> 24u) | ((a.z >> 24u) << 8u);
@@ -1113,7 +1130,7 @@ fn rawSendOf(p: vec3i, face: u32) -> u32 {
   if (!isLiq(snapshot(slotOf(p)).core)) { return 0u; }
   let a = liquidScratch[slotOf(p)]; let kq = a.x & 65535u;
   let tag = (a.x >> 16u) & 255u;
-  var n = u32(max(trunc(faceQ(p, face)), 0.0)) * kq / 65535u;
+  var n = acceptedAmount(faceQ(p, face), kq);
   if (kq < 65535u && (tag & 7u) == face) { n += tag >> 3u; }
   return n;
 }
@@ -1140,6 +1157,10 @@ fn sendOf(p: vec3i, face: u32) -> TransportPacket {
   let empty = TransportPacket(0u, vec2u(0u), 0u);
   let n = rawSendOf(p, face); if (n == 0u) { return empty; }
   let src = snapshot(slotOf(p)); let dst = snapshot(slotOf(mEdge(p + face6(i32(face)))));
+  // A largest-face tail can exceed that face's flux cap. Admit against frozen
+  // receiver headroom too, independent of gravity or other incoming packets.
+  let room = MAX_FILL - min(MAX_FILL, cFill(dst.core));
+  if (n > room / 6u) { markBusy(p); return empty; }
   let prefix = prefixOf(p, face);
   let heat = transportedEnergy(src, prefix, n);
   if (!energyPacketFits(src, dst, heat, n)) { markBusy(p); return empty; }

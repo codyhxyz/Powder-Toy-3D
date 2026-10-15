@@ -98,6 +98,14 @@ before jets/gather. Sleeping halo cells can retain transient low bits, but
 jets/gather reject sleeping faces before consuming limiter bits. There is no
 ACT resize, persistent-state or save-format change.
 
+R13 transport separately preserves fractional stored f16 weights through limiting,
+truncating only after scaling. Limiter sums and canonical gather/jet packets use
+one exact accepted-amount helper with the existing K/tag layout. This is numerical
+transport calibration, not a contact-kernel change or a byte-equivalent transport
+optimization. Canonical admission also rejects a packet exceeding one sixth of
+frozen destination headroom before any debit; rejected mass, heat and fuel remain
+at the source. See `docs/v2.md` §4.1 for scope and outstanding native acceptance.
+
 ### Production block compaction
 
 With the **exact** production `contactWGSL`, the driver now records:
