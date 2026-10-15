@@ -186,8 +186,18 @@ export class WorldRenderSource {
     for (const region of regions) {
       const box = intersectBounds(region, { lo: [0, 0, 0], hi: this.context.size });
       if (!box) continue;
-      for (let z = box.lo[2]; z < box.hi[2]; z++) for (let y = box.lo[1]; y < box.hi[1]; y++) for (let x = box.lo[0]; x < box.hi[0]; x++) {
-        if (this.getSource([x, y, z]).kind === 'unknown') throw new Error('Incomplete in-world raw source');
+      // Ownership is stable during this synchronous preflight. Check the cut
+      // once above, then scan the exact per-cell ranks without lookup objects.
+      for(const origin of this._cores(box)){
+        const c=this.chunks.get(origin.join(','));
+        if(!c)throw new Error('Incomplete in-world raw source');
+        const lo=box.lo.map((n,k)=>Math.max(0,n-origin[k]));
+        const hi=box.hi.map((n,k)=>Math.min(SOURCE_CORE,n-origin[k]));
+        if(lo.every(n=>n===0)&&hi.every(n=>n===SOURCE_CORE)){
+          if(c.rank.includes(SOURCE_RANK.unknown))throw new Error('Incomplete in-world raw source');
+        }else for(let z=lo[2];z<hi[2];z++)for(let y=lo[1];y<hi[1];y++)for(let x=lo[0];x<hi[0];x++){
+          if(c.rank[cellSlot(c.g,x,y,z)]===SOURCE_RANK.unknown)throw new Error('Incomplete in-world raw source');
+        }
       }
     }
     return true;
@@ -202,7 +212,11 @@ export class WorldRenderSource {
     for (const name of ['A', 'B']) frame.clear(resources[name], stateCopy * g.slots * 16, g.slots * 16);
     if (resources.aeration) frame.clear(resources.aeration, aerationCopy * g.slots * 8, g.slots * 8);
     for (const c of this.chunks.values()) {
-      const runs = planSourceCopies(c, dst, bounds, (_d, p) => c.rank[cellSlot(c.g, ...p.map((v, i) => v - c.origin[i]))] !== SOURCE_RANK.unknown);
+      const runs = planSourceCopies(c, dst, bounds, (_d, p) => c.rank[cellSlot(c.g, ...p.map((v, i) => v - c.origin[i]))] !== SOURCE_RANK.unknown, (_d,p)=>{
+        const slot=cellSlot(c.g,p[0]-c.origin[0],p[1]-c.origin[1],p[2]-c.origin[2]);
+        const ranks=c.rank.subarray(slot,slot+64);
+        return !ranks.includes(SOURCE_RANK.unknown)?true:ranks.some(n=>n!==SOURCE_RANK.unknown)?null:false;
+      });
       recordSourceCopies(frame, c, dst, runs);
     }
   }

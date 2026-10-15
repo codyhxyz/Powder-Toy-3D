@@ -52,6 +52,38 @@ function stateWords(src, name, p) {
   const slot = cellSlot(src.g, ...p.map((v, i) => v - src.origin[i]));
   return [...wordView(src[name]).subarray(((src.copy ?? 0) * src.g.slots + slot) * 4, ((src.copy ?? 0) * src.g.slots + slot + 1) * 4)];
 }
+check('raw completeness scans exact ranks without repeated cut validation or lookup objects',()=>{
+  const f=fixture();fillState(f);f.source.recordLiveCopy(f.frame);f.flush();
+  const bounds={lo:[32,0,32],hi:[64,32,64]},chunk=f.source.chunks.get('32,0,32');
+  let validations=0,valid=true;
+  f.source.ownedContext={isValid(){validations++;return valid;}};
+  f.source.getSource=()=>{throw Error('coverage must not allocate a lookup per cell');};
+  assert(f.source.assertComplete([bounds]));assert.equal(validations,1);
+  for(const local of [[0,0,0],[13,17,9],[31,31,31]]){
+    const slot=cellSlot(SOURCE_GRID,...local),old=chunk.rank[slot];chunk.rank[slot]=SOURCE_RANK.unknown;
+    assert.throws(()=>f.source.assertComplete([bounds]),/Incomplete in-world/);
+    const lo=local.map((v,k)=>v+bounds.lo[k]);
+    assert.throws(()=>f.source.assertComplete([{lo,hi:lo.map(v=>v+1)}]),/Incomplete in-world/);
+    chunk.rank[slot]=old;assert(f.source.assertComplete([bounds]));
+  }
+  assert(f.source.assertComplete([{lo:[33,1,33],hi:[39,9,42]}]));
+  assert(f.source.assertComplete([{lo:[-9,-9,-9],hi:[0,0,0]}]));
+  assert.throws(()=>f.source.assertComplete([{lo:[32,0,32],hi:[65,32,64]}]),/Incomplete in-world/);
+  valid=false;assert.throws(()=>f.source.assertComplete([bounds]),/Invalid owned Source/);
+  f.source.ownedContext=null;f.source.dispose();
+});
+check('bulk ranked raw gather preserves every native word and fails before any encoding on a one-cell hole',()=>{
+  const f=fixture();fillState(f);f.source.recordLiveCopy(f.frame);f.flush();
+  const resources=Object.fromEntries(['A','B'].map(n=>[n,f.gpu.createBuffer({size:SOURCE_GRID.slots*16})]));
+  const request={resources,g:SOURCE_GRID,scratchOrigin:[32,0,32],sourceRevision:f.source.contentRevision};
+  f.source.recordGatherRaw(f.frame,request);f.flush();
+  const chunk=f.source.chunks.get('32,0,32');
+  for(const n of ['A','B'])assert.deepEqual(resources[n].bytes,chunk[n].bytes);
+  chunk.rank[cellSlot(SOURCE_GRID,13,17,9)]=SOURCE_RANK.unknown;
+  const frame={copy(){assert.fail('must preflight before copy');},clear(){assert.fail('must preflight before clear');}};
+  assert.throws(()=>f.source.recordGatherRaw(frame,request),/Incomplete in-world/);
+  f.source.dispose();
+});
 check('whole-brick copy planning matches cell-exact runs, including mixed and partial authority', () => {
   const src = { origin: [1536, 0, 512], g: gridDims({ nx: 128, ny: 128, nz: 128 }) };
   const dst = { origin: [1600, 32, 544], g: SOURCE_GRID };
