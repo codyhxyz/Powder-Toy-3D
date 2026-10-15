@@ -7,6 +7,7 @@ import { launchBrowser, newTestPage, ready } from './browser.mjs';
 import { budgetMs, CLEANUP_MS } from './gpu-deadline.mjs';
 import { validateDevices } from '../src/industry/validation.js';
 import { hearthRegions, hearthStructureCells } from '../src/industry/hearth.js';
+import { writeFileSync } from 'node:fs';
 
 const invokedAt = Date.now();
 const arg = name => process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : undefined;
@@ -479,5 +480,10 @@ try {
   }
 }
   result.timing = { wallMs: Date.now() - invokedAt, slotBudgetMs };
-console.log(JSON.stringify(result));
+const outputPath = arg('--output');
+if (outputPath) {
+  writeFileSync(outputPath, `${JSON.stringify(result, null, 2)}\n`);
+  console.log(JSON.stringify({ case: result.case, status: result.status, checks: result.checks,
+    error: result.error, stage: result.observations?.stage, output: outputPath, timing: result.timing }));
+} else console.log(JSON.stringify(result));
 if (result.status !== 'passed') process.exitCode = 1;

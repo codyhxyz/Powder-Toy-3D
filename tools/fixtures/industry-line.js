@@ -7,6 +7,7 @@ import { deviceCell } from '../../src/industry/catalog.js';
 import { validateDevices } from '../../src/industry/validation.js';
 import { hearthRegions, hearthStructureCells } from '../../src/industry/hearth.js';
 import { createTransfer, Load } from '../../src/pov/tools/transfer.js';
+import { createIndustryDiagnostics } from '../../src/industry/diagnostics.js';
 
 const BOUNDS = [128, 128, 128];
 const NATIVE_DT = 4 / 240;
@@ -104,7 +105,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
   };
   const residualGaps = [];
   const asyncErrors = [];
-  let construction = null, gates = null, controls = null, industry = null, transfer = null;
+  let construction = null, gates = null, controls = null, industry = null, transfer = null, diagnostics = null;
   let fillKernel = null;
   let currentGate = initialGate;
   let switchState = null;
@@ -249,6 +250,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
       onError: error => asyncErrors.push(cleanError(error)),
     });
     transfer = createTransfer({ getSim: () => sim });
+    diagnostics = createIndustryDiagnostics({ getSim: () => sim, onError: error => asyncErrors.push(cleanError(error)) });
     await Promise.all([bounded(construction.ready, 'construction kernel ready'),
       bounded(gates.ready, 'gate kernel ready'), bounded(industry.ready, 'industry kernel ready')]);
     fillKernel = sim.editKernel('industryLineFiniteResources', {
@@ -290,6 +292,9 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     observations.gate.pumpSwitchInitial = 'OFF';
     await edit([58, 13, 52], [59, 15, 55], E.WATER, 20, 0, 0.125);
     await fence('cold water seed fence');
+    const seededWater = await readCells(waterSource);
+    observations.water.actualSeededWater = seededWater.filter(cell => cell.id === E.WATER).length;
+    if (observations.water.actualSeededWater !== 24) throw new Error('cold water source was not fully written before native stepping');
     for (let i = 0; i < 3; i++) {
       ensureTime('gate hold native steps');
       await nativeStep(4);
@@ -302,6 +307,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
       && sourceWater === waterSource.length && inletWater === 0;
     Object.assign(observations.gate, { closedStatus: gates.status(currentGate.id)?.status, sourceWaterHeld: sourceWater,
       sourceCells: waterSource.length, pumpInletWaterBeforeRelease: inletWater });
+    observations.water.heldSource = waterSource.map((at, i) => ({ at, ...heldSource[i] }));
     if (!checks.gateClosedSourceHeld) residualGaps.push('coolant source hold was not fully observed before opening the real gate');
 
     markStage('load finite coal and scrap through physical transfer rules');
@@ -424,6 +430,16 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
       if (observations.nativeTicks - lastPumpCheckpoint >= 96) {
         lastPumpCheckpoint = observations.nativeTicks;
         await fence('water-flow checkpoint');
+        if (!observations.water.firstRunningPumpProbe) {
+          const probe = await diagnostics.inspect(pump);
+          observations.water.firstRunningPumpProbe = { status: probe.status, evidence: probe.evidence };
+          observations.water.runningSwitch = await readCell(switchAt);
+          const warehouse = [];
+          for (let y = 13; y <= 16; y++) for (let z = 52; z <= 55; z++) for (let x = 52; x <= 59; x++) warehouse.push([x, y, z]);
+          const contents = await readCells(warehouse);
+          observations.water.releasedWaterLocations = warehouse.flatMap((at, i) =>
+            contents[i].id === E.WATER ? [{ at, ...contents[i] }] : []);
+        }
         const catchWater = await readCells(catchCells);
         const coldMetal = observations.shipments.filter(s => s.id === E.METAL && s.temperature <= 400);
         const catchWaterCells = catchWater.filter(c => c.id === E.WATER);
@@ -555,6 +571,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
       try { controls?.dispose(); } catch {}
       try { industry?.dispose(); } catch {}
       try { transfer?.dispose(); } catch {}
+      try { diagnostics?.dispose(); } catch {}
       if (Date.now() < until && gpu && !sim?.disposed) {
         try { await bounded(gpu.fence(), 'fixture cleanup fence'); } catch {}
       }
