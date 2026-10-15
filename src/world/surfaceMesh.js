@@ -193,8 +193,9 @@ export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1, appearan
   // the normals read: a vertex of cube y reads samples y..y + 2 and their
   // neighbours, y - 1..y + 3. Three separable passes of the kernel; a
   // sample's value doesn't depend on the range, so chunks agree on it.
-  const smooth = new Float32Array(nx * ny * nz);
-  if (mixed) {
+  // Hard terrain never uses the blurred ground normal.
+  const smooth = samples.some(id => loose[id]) ? new Float32Array(nx * ny * nz) : null;
+  if (mixed && smooth) {
     const y0 = Math.max(0, lowest - 1), y1 = Math.min(ny - 1, highest + 3);
     const h = y1 - y0 + 1, hy = h + 2 * reach, taps = 2 * reach + 1;
     // along x: wide rows y0 - reach..y1 + reach of the grid, every z
@@ -298,19 +299,25 @@ export function buildSurfaceMesh(ids, { size, origin, bounds, step = 1, appearan
       gx += weight * gradients[g];
       gy += weight * gradients[g + 1];
       gz += weight * gradients[g + 2];
-      level += weight * smooth[i];
-      wx += weight * (smooth[i - strides[0]] - smooth[i + strides[0]]);
-      wy += weight * (smooth[i - strides[1]] - smooth[i + strides[1]]);
-      wz += weight * (smooth[i - strides[2]] - smooth[i + strides[2]]);
+      if (ground) {
+        level += weight * smooth[i];
+        wx += weight * (smooth[i - strides[0]] - smooth[i + strides[0]]);
+        wy += weight * (smooth[i - strides[1]] - smooth[i + strides[1]]);
+        wz += weight * (smooth[i - strides[2]] - smooth[i + strides[2]]);
+      }
     }
     const length = Math.hypot(gx, gy, gz);
     if (length > 1e-12) {
       gx /= length; gy /= length; gz /= length;
-      const span = Math.hypot(wx, wy, wz);
-      const t = !ground || span <= 1e-12 ? 0 : 1 - smoothstep(SMOOTH_LO, SMOOTH_HI, Math.abs(level - 0.5));
-      const mx = gx + t * (wx / span - gx), my = gy + t * (wy / span - gy), mz = gz + t * (wz / span - gz);
-      const m = Math.hypot(mx, my, mz);
-      if (m > 1e-12) { gx = mx / m; gy = my / m; gz = mz / m; }
+      if (ground) {
+        const span = Math.hypot(wx, wy, wz);
+        if (span > 1e-12) {
+          const t = 1 - smoothstep(SMOOTH_LO, SMOOTH_HI, Math.abs(level - 0.5));
+          const mx = gx + t * (wx / span - gx), my = gy + t * (wy / span - gy), mz = gz + t * (wz / span - gz);
+          const m = Math.hypot(mx, my, mz);
+          if (m > 1e-12) { gx = mx / m; gy = my / m; gz = mz / m; }
+        }
+      }
       sampled[0] = gx;
       sampled[1] = gy;
       sampled[2] = gz;
