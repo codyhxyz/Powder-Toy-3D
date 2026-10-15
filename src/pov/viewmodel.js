@@ -503,7 +503,7 @@ export function renderViewmodels(three, scene, camera, post, options) {
           lastWorld.result.images.isCurrent() && lastWorld.result.lighting.canCommit()) return lastWorld.result;
       lighting = worldEye.stage(captured);
       last = { frame: -1, drawn: null }; // WORLD can overwrite the shared BOX targets.
-      const drawn = drawViewmodels(three, scene, camera, post, lighting);
+      const drawn = drawViewmodels(three, scene, camera, post, lighting, options);
       if (drawn?.ready === false) { lighting.discard(); return drawn; }
       const revision = imageRevision;
       const result = Object.freeze({ ready: true, viewmodel: drawn?.viewmodel ?? null, glow: drawn?.glow ?? null, lighting,
@@ -522,7 +522,7 @@ export function renderViewmodels(three, scene, camera, post, options) {
   return last.drawn;
 }
 
-function drawViewmodels(three, scene, camera, post, worldLighting) {
+function drawViewmodels(three, scene, camera, post, worldLighting, options) {
   const vm = scene.getObjectByName('pov-viewmodel');
   if (!vm?.visible || !vm.parent) return null;
   pass ??= createPass();
@@ -564,11 +564,15 @@ function drawViewmodels(three, scene, camera, post, worldLighting) {
   if (target.width !== w || target.height !== h) { imageRevision++; target.setSize(w, h); glowTarget.setSize(w, h); }
 
   // a mesh three hasn't compiled for these targets waits until it has (no pipeline built at a draw)
-  const wake = () => globalThis.__app?.requestRender?.();
-  let pending = guardMeshes(vm, cam, { target, scene, onReady: wake });
+  const wake = worldLighting ? options?.onReady ?? (() => globalThis.__app?.wakeLoop?.())
+    : () => globalThis.__app?.requestRender?.();
+  // WORLD's frame preflight owns these promises, including late failures and
+  // teardown. Even a caller without an observer must not restore failed meshes.
+  const onPending = worldLighting ? options?.onPending ?? (()=>{}) : undefined;
+  let pending = guardMeshes(vm, cam, { target, scene, onReady: wake, onPending });
   if (glow) {
     cam.layers.set(VIEWMODEL_GLOW_LAYER);
-    try { pending += guardMeshes(vm, cam, { target: glowTarget, scene, onReady: wake }); }
+    try { pending += guardMeshes(vm, cam, { target: glowTarget, scene, onReady: wake, onPending }); }
     finally { cam.layers.set(VIEWMODEL_LAYER); }
   }
   if (worldLighting) {

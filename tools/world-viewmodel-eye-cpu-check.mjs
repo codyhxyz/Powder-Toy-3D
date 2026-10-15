@@ -52,10 +52,10 @@ async function fixture({pending=false}={}) {
   const vm=new THREE.Group();vm.name='pov-viewmodel';scene.add(vm);
   const mesh=new THREE.Mesh(new THREE.BoxGeometry(),new THREE.MeshLambertMaterial());vm.add(mesh);
   const flameOverlay={exposure:{value:0},raw:{value:0}};
-  const snapshots=[],promises=[];let draws=0,wakes=0,reads=0,current=null,alpha=1,clear=new THREE.Color(.2,.3,.4);
+  const snapshots=[],promises=[],compilations=new Set(),failures=[];let draws=0,wakes=0,pureWakes=0,reads=0,current=null,alpha=1,clear=new THREE.Color(.2,.3,.4);
   const renderer={autoClear:false,getDrawingBufferSize:v=>v.set(8,4),getRenderTarget:()=>current,getClearAlpha:()=>alpha,getClearColor:v=>v.copy(clear),setClearColor:(c,a)=>{clear.set(c);alpha=a;},setRenderTarget:t=>{current=t;},render(s,c){draws++;snapshots.push({sun:s.children.find(o=>o.isDirectionalLight).color.toArray(),sh:s.children.find(o=>o.isLightProbe).sh.coefficients.slice(0,4).map(v=>v.toArray()),layer:c.layers.mask});}};
-  const gpu={frameNo:7,three:{defaults:{scene,camera,target:null},renderer:{info:{calls:0}},prepare(){if(!pending)return Promise.resolve();return new Promise(resolve=>promises.push(resolve));}}};
-  globalThis.__app={gpu,SUN:new THREE.Vector3(1,0,0),sim:{g:{nx:128,ny:128,nz:128},origin:{x:0,y:0,z:0}},volume:{worldToLocal:p=>p},derived:{readProbe(){reads++;return Promise.resolve(new Float32Array(16).fill(7));}},vol:{shadowState:'none'},requestRender(){wakes++;}};
+  const gpu={frameNo:7,three:{defaults:{scene,camera,target:null},renderer:{info:{calls:0}},prepare(){if(!pending)return Promise.resolve();return new Promise((resolve,reject)=>{resolve.reject=reject;promises.push(resolve);});}}};
+  globalThis.__app={gpu,SUN:new THREE.Vector3(1,0,0),sim:{g:{nx:128,ny:128,nz:128},origin:{x:0,y:0,z:0}},volume:{worldToLocal:p=>p},derived:{readProbe(){reads++;return Promise.resolve(new Float32Array(16).fill(7));}},vol:{shadowState:'none'},requestRender(){wakes++;},wakeLoop(){pureWakes++;}};
   const deps={THREE,gfxUniforms,flameOverlay,guardMeshes,PENDING_MASK,useWebGPUCamera:x=>x,gpuTextureOf:(_,t)=>t};
   const key=`__worldEyeFixture${serial++}`;globalThis[key]=deps;
   const source=readFileSync(new URL('../src/pov/viewmodel.js',import.meta.url),'utf8').replace(/^import .* from '([^']+)';$/gm,(line,spec)=>{
@@ -68,7 +68,8 @@ async function fixture({pending=false}={}) {
   });
   const mod=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);delete globalThis[key];
   setMeshGpu(pending?gpu:null);
-  return {scene,camera,vm,mesh,gpu,promises,flameOverlay,snapshots,get draws(){return draws;},get wakes(){return wakes;},get reads(){return reads;},draw:(f,post={settings:{exposure:99,raw:false}})=>mod.renderViewmodels(renderer,scene,camera,post,{worldLighting:f}),box:post=>mod.renderViewmodels(renderer,scene,camera,post)};
+  const onPending=work=>{compilations.add(work);work.catch(error=>failures.push(error));};
+  return {scene,camera,vm,mesh,gpu,promises,compilations,failures,flameOverlay,snapshots,get draws(){return draws;},get wakes(){return wakes+pureWakes;},get refillWakes(){return wakes;},get reads(){return reads;},draw:(f,post={settings:{exposure:99,raw:false}})=>mod.renderViewmodels(renderer,scene,camera,post,{worldLighting:f,onPending}),box:post=>mod.renderViewmodels(renderer,scene,camera,post)};
 }
 test('actual WORLD seam outside physics never reads BOX/hemisphere; frozen glow and Sun, cache publication/sample/camera identity',async()=>{
   const f=await fixture(),a=input();
@@ -96,6 +97,15 @@ test('BOX default path retains local hemisphere arithmetic, scalar Sun, post set
   f.snapshots[0].sun.forEach((v,i)=>near(v,[.2,.6,1.2][i]));
   assert.equal(f.snapshots[0].sh[0][0],Math.fround(3/(2*SH_Y0)));assert.equal(f.snapshots[0].sh[1][0],Math.fround(3/(4*SH_Y1)));
   assert.equal(f.flameOverlay.exposure.value,8);assert.equal(f.flameOverlay.raw.value,0);assert.equal(f.box(),a);assert.equal(f.draws,1);
+});
+test('WORLD VM compilation failures stay parked and reach the owning preflight without temporal refills',async()=>{
+ const f=await fixture({pending:true}),a=input(),error=new Error('native VM compilation failed');
+ assert.equal(f.draw(a).ready,false);assert.equal(f.compilations.size,1);
+ f.promises.splice(0).forEach(resolve=>resolve.reject(error));
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(f.failures,[error]);assert.equal(f.mesh.layers.mask,PENDING_MASK);assert.equal(f.draws,0);
+ assert.equal(f.draw(a).ready,false);assert.equal(f.promises.length,0,'failed mesh must not be restored/recompiled');
+ assert.equal(f.refillWakes,0);setMeshGpu(null);
 });
 test('BOX local async probe and guard keep original partial-frame behavior',async()=>{
   const f=await fixture({pending:true});f.camera.position.set(5,5,5);f.camera.updateMatrixWorld();

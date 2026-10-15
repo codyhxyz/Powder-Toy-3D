@@ -1,6 +1,6 @@
 # WORLD one-eye viewmodel consumer
 
-Implemented consumer seam only; App/readback/scene routing is **not wired**.
+App/readback/scene routing uses this consumer through the WORLD frame wire.
 This is the original eye LightProbe + directional key light for hands, not
 WORLD per-fragment figure lighting. No GPU/visual proof is claimed.
 BOX's four-argument call is unchanged (local async reads, hemisphere fallback,
@@ -32,6 +32,8 @@ const hands = renderViewmodels(renderer, scene, capturedCamera, post, {
       words, // exactly 20 decoded finite floats: c0,cx,cy,cz,SunRGB,+1
     },
   },
+  onPending: trackOwnedCompilation, // retain/drain in the frame preflight
+  onReady: wakeLoop,               // no temporal-settling refill
 });
 ```
 
@@ -82,12 +84,16 @@ discarded ticket. Different requests in one native frame draw independently.
 
 If any intended visible hand/glow mesh is waiting for `guardMeshes`, WORLD
 returns not-ready without rendering either target. The existing guard schedules
-compilation and requestRender; it owns the temporary pending layers and restores
-them on readiness. Visibility/frustum changes are restored by real prepareMesh,
+compilation; WORLD forwards the actual promises through `onPending`. The frame
+preflight must retain/drain them and propagate failures. Failed WORLD meshes
+stay parked instead of restoring and recompiling. `onReady` (or the WORLD
+`wakeLoop` default) wakes the loop without refilling settling. The guard restores
+pending layers only on success. Visibility/frustum changes are restored by real prepareMesh,
 and the temporary glow camera layer is restored on return/failure. BOX retains
 its existing partial-image behavior. Existing material/model/glow rendering is
-unchanged; the scene owner must supply the frozen rig/model pose and manage
-existing material animation/time through its frame hooks, not latest App state.
+unchanged. After asynchronous preparation, the scene owner selects actors and
+encodes hands, opaque, volume and transparent passes synchronously. It must not
+advance rigs or material animation between those passes.
 
 ## Concrete parent App integration (not implemented here)
 
