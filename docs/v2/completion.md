@@ -8,7 +8,7 @@ The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` w
 ## Current evidence — 2026-10-15
 
 Latest production integration: `1cd24b54`, including fetched production `375301e7`.
-Feature checkpoint `d1897f8e` is 138 commits ahead and none behind that production base.
+Feature checkpoint `142e6114` is 140 commits ahead and none behind that production base.
 Work remains in `/tmp/tpt-physics-v2-finish`; the recovery checkout is untouched.
 These results do not describe the live site.
 
@@ -176,14 +176,32 @@ The same original test on the unmodified CPU prototype also fails, at 12.78% wor
 This remaining hydraulic-model gap is not established as a native port regression.
 Independent review `c725db97` confirms the approved R14 rules, but also proves a liquid handback trap in a fixed-grid CPU witness.
 Matching film traversal can leave a stopped packet without an admissible deposition target.
-A canonical same-liquid handback repair is specified, not yet implemented.
+`142e6114` implements canonical whole-packet liquid handback. It does not change launch head or claim to fix jet accuracy.
 
-**Remaining throw settlement failure:** at `c6625d49`, the original throw lands four resident grains at the exact predicted centre, with passing spread.
+**Repaired throw settlement:** at `c6625d49`, the original throw lands four resident grains at the exact predicted centre, with passing spread.
 Its final eight-resident-grain gate fails. Total occupancy is 12.997 s.
 Readback diagnostics at `e176248a` retain all eight grains: four resident and four stationary particles overlapping that row.
 Diagnostic occupancy is 1.336 s. This is settlement failure, not measured mass loss.
 Setup now counts seeded whole particles; the final landing count remains resident-only.
-A bounded geometry-recovery specification addresses this distinct pre-R14 defect. GPU acceptance remains pending.
+`142e6114` adds bounded matching-powder recovery and single-winner liquid admission.
+Its 48 CPU check scripts pass, including 11 emitted-body deposition groups and 78 Naga dynamics modules.
+The unchanged GPU throw now passes: all eight grains are resident, centre x=19, spread 0.5.
+Total occupancy is 9.986 s. No packets are counted as landed grains.
+The original mixed-material census also passes 120 ticks and 20 checks with zero drift.
+Water remains 72 cells, sand 528 and walls 156; occupancy is 8.846 s.
+Water in flight falls from 0.227 cells at 0.5 s to zero by 1 s.
+Fresh independent handback review timed out; it does not count as completed review.
+
+**GPU validation hold:** the `142e6114` pipe attempt returns no assertions.
+Its trace ends during startup and lease `19727-19749` lacks a final report.
+Occupancy cannot be established; this is neither a pipe pass nor a physics failure.
+Later inspection finds no surviving tagged test processes or listener on port 19623.
+GPU testing is suspended, with no retry or extended budget.
+The CPU watchdog audit first fails its 1500 ms fixture deadline assertion.
+A diagnostic rerun passes six cases, then times out before reporting the slow-inspection case.
+That fixture budget is below the launcher's 4000 ms minimum and does not prove a production deadline miss.
+Source review separately identifies unsafe age-only dead-holder reclamation and a guard vulnerable to external process-group termination.
+Neither is established as the cause of this interruption. Safety repair and validation remain required.
 V2 remains incomplete and non-parity, and must not become the default yet.
 
 Other unchanged numeric controls pass after compaction.
@@ -245,6 +263,11 @@ Local evidence:
 - `/tmp/v2-native-vessel-5ddd0932.jsonl`
 - `/tmp/v2-native-throw-c6625d49.jsonl`
 - `/tmp/v2-native-throw-probe-e176248a.jsonl`
+- `/tmp/v2-native-throw-142e6114.jsonl`
+- `/tmp/v2-native-census-142e6114.jsonl`
+- `/tmp/v2-native-pipe-142e6114.jsonl`
+- `/tmp/v2-native-pipe-142e6114-run.log`
+- `/tmp/v2-deadline-cpu-diagnostic-142e6114.log`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
 fresh production checks, independent review, deployment, and a live-site check.

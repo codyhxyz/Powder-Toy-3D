@@ -110,7 +110,9 @@ process.stdout.write(require('node:child_process').execFileSync('/bin/ps', proce
   assert.equal(report.status, 'released');
   assert.equal(Date.parse(report.startedAt), start);
   assert.equal(Date.parse(report.deadlineAt), deadline, 'inspection allowance must not extend the absolute deadline');
-  assert(report.occupancyMs < budget && report.finishedAt);
+  assert(report.occupancyMs < budget && report.finishedAt,
+    JSON.stringify({ scenario: orphan, budgetMs: budget, status: report.status,
+      occupancyMs: report.occupancyMs, finishedAt: report.finishedAt, failures: report.failures }));
   if (slowPs) {
     assert.deepEqual(report.failures, [], 'valid inspections slower than 500 ms must not fail');
     assert(!guardOutput.includes('stop\n'), 'slow valid inspection must not request browser shutdown');
