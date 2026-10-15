@@ -38,6 +38,13 @@ awaits immutable media noise/Post/native readiness, and stores `win.renderFrame`
   A new clone alone does not reset TAA history.
 - Pending work presents only exact `post.presentLast` with a real final ticket,
   or explicit loading when no accepted image exists. No Far/local union fallback.
+- WORLD startup keeps physics and local raw picks ready. It does not compile
+  unused BOX volume views, local shadows, block views, or local GI. Native WORLD
+  preflight still waits for every pipeline it actually draws.
+- WORLD enables all selected detail defines. Camera distance from the physics
+  box does not select a cheaper variant. Original shader feature fades remain.
+- The loading screen waits for a confirmed MAIN publication in WORLD, even
+  after the old startup timeout. A timer cannot turn missing data into readiness.
 
 ## Ownership and seams
 

@@ -549,8 +549,9 @@ function build(savedWorldSize = null) {
     }
   }
   derived = new Derived(sim);
-  blocksOn = plainView();
-  vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !!(worldMode && sceneByKey(settings.scene).importManifest?.appearance) });
+  // WORLD uses its native frame wire. Keep local picks, not unused BOX views.
+  blocksOn = !worldMode && plainView();
+  vol = createVolume(gpu, sim, { shadows: !worldMode && !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !!(worldMode && sceneByKey(settings.scene).importManifest?.appearance) });
   if (blocksOn) blocks = createBlocks(gpu, sim, { world: !!worldMode });
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
   const s = sim, simWake = s.wake.bind(s);
@@ -564,7 +565,7 @@ function build(savedWorldSize = null) {
   coreReady = false;
   s.ready.then(() => readySims.add(s), () => {});
   const core = coreWait = Promise.all([s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready,
-    blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())]).then(() => {
+    worldMode ? null : blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())]).then(() => {
     if (coreWait === core) { coreReady = true; wakeLoop(); }
   });
   core.catch(() => {});   // (a pipeline that fails stops graphics: stopGraphics says why)
@@ -611,7 +612,7 @@ const baseDetail = () => (isMaterialView(settings.view) ? gateVariants(settings)
 let giWait = Promise.resolve(), giBuilt = 0;
 function prepareGI() {
   const d = derived;
-  if (blocksOn || !isMaterialView(settings.view) || !d?.prepareGI) return;
+  if (worldMode || blocksOn || !isMaterialView(settings.view) || !d?.prepareGI) return;
   const p = giWait = Promise.resolve(d.prepareGI()).then(() => { if (d === derived) { giBuilt++; wakeLoop(); } });
   p.catch(() => {});   // (a kernel that fails stops graphics: stopGraphics says why)
 }
@@ -1606,7 +1607,8 @@ const detailGate = createDetailGate(gpu, () => pacer.wake(), () => hud.toast('Pr
 const coldShader = createColdShaderGuard(() => { hud.toast('Loading something cool, please be patient'); launch.progress?.('cold'); });
 function applyDetail() {
   for (const w of live) w.detail?.(ctx);   // whitewater's per-step field (src/wire/foam.js)
-  detailGate.configure(vol, settings, settings.view);
+  if(worldMode)detailGate.dispose();
+  else detailGate.configure(vol, settings, settings.view);
   detailVersion++;   // the shadow map is a derived pass: redo it
   post.reset();
 }
@@ -1683,11 +1685,11 @@ function setView(id) {
     sim.resetGI();
   }
   settings.view = id;
-  detailGate.setView(id);
+  if(!worldMode)detailGate.setView(id);
   setBlocks(plainView(id));
   prepareGI();
   const key = viewKeyOf(id);
-  if (!blocksOn && viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
+  if (!worldMode && !blocksOn && viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
   settingsPanel.sync();
   shaderPanel.sync();
   hud.setLegend(VIEWS.find((v) => v.id === id));
@@ -1697,7 +1699,7 @@ function setView(id) {
 // The blocks renderer on or off (setView: on in the Plain view). Off again,
 // the derived passes it skipped rebuild every brick.
 function setBlocks(on) {
-  on = !!on;
+  on = !!on && !worldMode;
   if (on === blocksOn || graphicsFailure) return;
   blocksOn = on;
   if (on) {
@@ -2686,7 +2688,8 @@ function tick(now, renderOnly = false) {
     // Uniform uploads and scene hooks stay draw-only for post-only reuse.
     volume.updateMatrixWorld();
     camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
-    frameDetail = detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
+    // WORLD enables every selected feature; the physics box is not a detail gate.
+    frameDetail = win ? gateVariants(settings).near : detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
     if(win)renderView=settings.view;
     else selectRenderView();
   }
@@ -2933,6 +2936,11 @@ function bootReady(pending = null) {
   pending?.finally(() => { settled = true; });
   const check = async () => {
     if (graphicsFailure || launch.startupError) return;
+    if(win&&!win.renderFrame?.driver?.displayedMainFrame){
+      launch.progress?.('world');
+      setTimeout(check,READY_POLL_MS);
+      return;
+    }
     if (((win && !win.loaded) || !settled) && performance.now() - t0 < READY_WAIT_MS) {
       if (win && !win.loaded) launch.progress?.('world');   // (the loading screen's step: its passes compile, then it generates)
       setTimeout(check, READY_POLL_MS);
@@ -2959,6 +2967,12 @@ async function allReady() {
   for (;;) {
     const s = sim, v = vol;
     await coreWait;
+    if(win){
+      await gpu.settled();
+      if(graphicsFailure)throw graphicsFailure;
+      if(s===sim&&v===vol&&coreReady)return;
+      continue;
+    }
     const view = viewKeyOf(settings.view);
     if (blocksOn) {
       if (blocks) await blocks.ready;
