@@ -578,7 +578,9 @@ export class Simulation {
     // and that's a fixed point until something writes (docs/webgpu.md D4).
     if (this.idleCertified && !this.actDirty && !this.actFresh && this.actSteps >= SUPER_SETTLE_STEPS
         && this.quietOk && this.skipSleeping && !this.rays.active) {
+      const aerGeneration = this.aeration?.generation, aerCopy = this.aeration?.cur;
       this.aeration?.idle?.(f);   // nothing moves, but the foam left on it still bursts
+      if (this.aeration?.generation !== aerGeneration || this.aeration?.cur !== aerCopy) this.worldRenderSource?.recordLiveCopy(f, this);
       return;
     }
     // particles fly first: the map below keeps the bricks they're in awake
@@ -623,6 +625,7 @@ export class Simulation {
     if (!outOfPlace) this.cur = other;
     if (this.rays.active) this.rays.settle(f);
     this.version += 2;   // (the move and react: as the WebGL build counted its two state passes)
+    this.worldRenderSource?.recordLiveCopy(f, this);
   }
 
   // ---- writers that aren't steps (docs/webgpu.md D6) ----

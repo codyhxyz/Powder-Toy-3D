@@ -37,7 +37,8 @@ function fixture(nx = 16, nz = 16) {
       proj: new Matrix4(), frustum: new Frustum(), box: new Box3() },
   });
   const win = Object.assign(Object.create(WorldWindow.prototype), {
-    sim, size: [nx * 32, 64, nz * 32], scene: {},
+    sim, size: [nx * 32, 64, nz * 32], scene: {}, gpu: { frame: {} },
+    renderSource: { recordLeavingCopy() { return {}; }, restoreCaptured() {}, recordLiveCopy() {} },
     gen: { diff() {}, fill() { sim.version++; } }, readBack() {},
     restore() { sim.version++; return 0; },
   });

@@ -1,6 +1,9 @@
 # Unified world renderer: implementation contract
 
-Status: implementation in progress. The water/shadow checkpoint is not completion.
+Status: implementation in progress. Phase 1 raw source authority is connected;
+CPU/Naga validation is not GPU numerical or visual acceptance. The existing
+visible renderer is unchanged. Neither this phase nor the water/shadow
+checkpoint completes the unified renderer.
 
 ## Required result
 
@@ -68,6 +71,74 @@ not this plan. Grow resident storage without reducing wanted data resolution.
 6. Independent review, invariance validation, deployment, and live-site checks.
 
 Do not deploy an incomplete phase as the requested fix.
+
+## Phase 1 source handoff
+
+`src/world/renderSource.js` owns lazy world-aligned 32³ raw cores using the
+original 4³ supertile/tile cell layout. A/B transport is native, lossless GPU
+buffer copying; generated sources run the actual sceneCell WGSL. Each cell has
+explicit authority/revision/validity, so partial intersections do not imply
+empty space or permit a late static result over live/captured/saved state.
+
+Public recording API (all bounds are half-open WORLD cells):
+
+- `recordLiveCopy(frame, sim, bounds = sourceBounds(sim))`
+- `recordLeavingCopy(frame, sim, bounds, oldOrigin)` returns an epoch/revision token
+- `recordPopulate(frame, rawDescriptor, token)`; descriptor supplies
+  `g, origin, A, B, copy`, optional `bounds`, and `kind: generated|saved`.
+  Capture `token()` **before** awaiting asynchronous work.
+- `recordStore(bounds, token)`, `commitStoreRevision(keys, token)`,
+  `restoreCaptured(frame, sim, bounds)`, `needsLiveCopy(sim)`, `getSource(cell)`, `bindings`,
+  `reset(epoch)`, `dispose()`.
+
+`WorldWindow` records outgoing copies before origin/cur mutation and restores
+captured authority after incoming fill/store but before tree population/live
+publication. Native re-entry restores run the existing prewarmed fresh-flags
+pass before the next simulation map. Actual simulation steps refresh raw source; window updates also
+capture non-step version changes and auxiliary resource/copy/reset changes.
+Disabled-but-kept aeration is discovered through a read-only ownership accessor;
+its history is not confused with an absent/dropped field. A later consumer recording after edits but
+before a window update must explicitly call `recordLiveCopy` first. Binding
+getters do not secretly submit work. Copies snapshot buffer selection, origin,
+and offsets, never a mutable shared header.
+
+`RawWorldSourceProducer.record(frame, [coreX,coreZ], token, {physicsBounds})`
+is synchronous command recording **after** `ready`; async callers keep the
+pre-await token. It constructs 64×worldHeight×64 scratch columns (16-cell x/z
+halo), not a Simulation. The entire world-height column proves vertical footing
+support; shared `stampLib` reads no adjacent x/z columns. Tree candidates include
+roots outside the core, retain original world brick order, and use actual baked
+rotation/base/footing. Masks are by **target column**, never visited root: a
+planted root cannot suppress an unvisited crown. Exact saved/captured/edited
+cells support stamps but are protected from stamp writes. The window consumes
+the same stamped raw producer, applying only actual fresh-column stamp/footing
+writes and noting the write before publishing complete live authority.
+
+Persistence selection now compares complete bitcast A/B, including air seed,
+velocity, pressure, signed zero, and small heat/life differences. BrickStore's
+existing codec is byte-lossless. This can increase save size; cost is unmeasured.
+Out-of-order leaving reads use protected output buffers and per-key store
+revisions. Store acknowledgement releases pending A/B protection, **not** aux
+ownership. Flow/aeration/deco snapshots stay separately owned in raw cores;
+saved deco is decoded too. No source eviction policy has been introduced.
+Growing source residency and native-copy/metadata overhead remain unmeasured.
+
+Aux history extension: `auxContract` declares exact packed flow/aeration/deco
+formats and their available bits (absent/dropped live aux is explicitly cleared,
+not resurrected from an older owned buffer). A/B acknowledgement does not persist flow or
+aeration. EMA/GI and renderer-owned temporal fields are intentionally not copied:
+phase 2 must establish persistent world history and single-tick ownership.
+Imported `importManifest`/`appearanceWords` and scene identity stay in bindings;
+SourceStyle remains view policy, never physics-residency policy.
+
+CPU gate: `node tools/world-render-source-cpu-check.mjs`.
+CPU-only actual WGSL validation (requires Naga):
+`node tools/world-render-source-wgsl-cpu-check.mjs`.
+These exercise copy/authority/producer command wiring and assembled production
+scene/stamp/persistence modules; they do not execute GPU tree math or establish
+partitioned field, HDR, visual invariance, memory affordability, or performance.
+Phases 2–6 remain required; no atlas, field derivation or optical renderer is
+enabled here. Do not deploy this phase as the requested completed fix.
 
 ## Acceptance
 

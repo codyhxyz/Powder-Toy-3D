@@ -216,6 +216,11 @@ class Aeration {
 
 const kept = new WeakMap();   // sim → its field, kept while switched off
 
+// Raw world source snapshots preserve allocated history even while the detail
+// switch detaches it from physics. This is read-only ownership discovery, not
+// permission to advance or dispose the field.
+export const aerationForSource = (sim) => sim.aeration ?? kept.get(sim) ?? null;
+
 /**
  * Switch sim's aeration field on or off (made the first time it is on, kept
  * while off). Returns the field while it is on, else null.
