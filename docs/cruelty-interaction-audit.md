@@ -98,6 +98,14 @@ Bounded native evidence:
   and reset through the production affine helper, range uploader and WGSL reader.
 - A full realistic Androgen cold boot reached its guard at 23.985 seconds before
   assertions. This is not a completed textured-scene visual check.
+- All four deployed geometry, appearance and motion payloads match local bytes.
+  A live plain-view diagnostic stopped at 22.148 seconds with the existing core
+  `move` pipeline still compiling, before the door kernel starts. This port does
+  not change that core shader. Full live-game cold-boot verification is pending.
+- `tools/cruelty-ui-browser-check.mjs` verifies the real interaction component
+  against byte-identical deployed CSS without world bootstrap. Desktop click,
+  Enter/focus, scoped readout restoration, disposal and coarse-touch tap passed
+  in 2.950 seconds total. Desktop is 62×28 pixels; touch is 44×44.
 
 The compact interaction control is a scoped input/accessibility adaptation.
 Original `weapon.gd` uses doors directly, without an ordinary-door hover card.

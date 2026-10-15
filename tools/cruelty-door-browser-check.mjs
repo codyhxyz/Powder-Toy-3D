@@ -15,13 +15,44 @@ let browser;
 try {
   browser = await launchBrowser();
   const page = await newTestPage(browser, { mode: 'ui', viewport: { width: 800, height: 500 } });
+  if (process.argv.includes('--diagnostic')) await page.addInitScript(() => {
+    const pending = new Set();
+    if (globalThis.GPUDevice) for (const name of ['createComputePipelineAsync', 'createRenderPipelineAsync']) {
+      const original = GPUDevice.prototype[name];
+      GPUDevice.prototype[name] = function (descriptor) {
+        const label = descriptor.label ?? name;
+        pending.add(label);
+        return original.call(this, descriptor).finally(() => pending.delete(label));
+      };
+    }
+    let raf = 0;
+    const sampleFrame = () => requestAnimationFrame(() => raf++);
+    sampleFrame();
+    setInterval(() => {
+      const a = globalThis.__app;
+      console.debug('Door boot:', JSON.stringify({
+        raf, pending: [...pending], exposed: !!a, sim: !!a?.sim, pov: a?.pov?.mode,
+        phase: a?.pov?.mission?.state?.phase,
+        marks: performance.getEntriesByType('mark').slice(-10).map(m => m.name),
+        screen: document.body?.innerText.slice(-400),
+      }));
+      sampleFrame();
+    }, 2000);
+  });
   const errors = [];
   page.on('pageerror', error => { errors.push(error.message); console.error(error.message); });
   page.on('console', message => {
+    if (message.text().startsWith('Door boot:')) console.log(message.text());
     if (message.type() === 'error') { errors.push(message.text()); console.error(message.text()); }
   });
   await page.goto(`${origin}/?map=androgenAssault&mode=crueltySquad&view=${view}`, { waitUntil: 'commit' });
-  await ready(page);
+  await Promise.race([
+    ready(page),
+    page.waitForFunction(() => {
+      const error = document.getElementById('error');
+      return error && getComputedStyle(error).display !== 'none' && error.textContent.trim();
+    }).then(async () => { throw new Error(`Startup failed: ${await page.locator('#error').textContent()}`); }),
+  ]);
   await page.waitForFunction(() => __app.pov.mission.active && __app.pov.mode === 'on');
   if (view === 'realistic') {
     await page.waitForFunction(() => __app.view.renderView === __app.settings.view
