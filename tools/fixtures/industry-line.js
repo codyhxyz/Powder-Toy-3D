@@ -96,6 +96,8 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
   const pumpPorts = machinePorts(pump);
   const inletCells = pumpPorts.inlet;
   const outletCells = pumpPorts.outlet;
+  const [, spoutX, spoutZ, , spoutRoof] = LINE_FOUNDATION_COLUMNS.find(([name]) => name === 'spout-tower');
+  const spoutCells = boxCells({ x: [spoutX, spoutX + 3], y: [spoutRoof, spoutRoof + 3], z: [spoutZ, spoutZ + 3] });
   const coalSource = [];
   for (let z = 96; z <= 97; z++) for (let x = 96; x <= 98; x++) coalSource.push([x, 30, z]);
   const scrapSource = [];
@@ -135,7 +137,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     heat: {},
     water: { seededCells: waterSource.length, sourceBounds: LINE_WATER_SOURCE_BOUNDS,
       setup: 'finite cold-WATER fixture edit; not a player-filled bucket claim',
-      confirmedInput: 0, confirmedOutput: 0, steamObserved: 0 },
+      confirmedInput: 0, confirmedOutput: 0, confirmedReturn: 0, steamObserved: 0 },
     cargo: { bucketCells: [], ashTaken: 0, industryBufferAtEnd: 0, residuals: [] },
     shipments: [],
     elapsedMs: 0,
@@ -283,6 +285,7 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
         if (!event.confirmed) return;
         if (event.device?.id === pump.id && event.operation === 'pump-input') observations.water.confirmedInput += event.count ?? 0;
         if (event.device?.id === pump.id && event.operation === 'pump-output') observations.water.confirmedOutput += event.count ?? 0;
+        if (event.device?.id === pump.id && event.operation === 'pump-return') observations.water.confirmedReturn += event.count ?? 0;
       },
       onError: error => asyncErrors.push(cleanError(error)),
     });
@@ -593,6 +596,9 @@ export async function runIndustryLine({ sim, gpu, deadline, stage = () => {} } =
     observations.gate.basePeakC = Math.max(...gateBaseEnd.map(c => c.temperature));
     observations.water.sourceWaterRemaining = (await readCells(waterSource)).filter(c => c.id === E.WATER).length;
     observations.water.inletWaterRemaining = (await readCells(inletCells)).filter(c => c.id === E.WATER).length;
+    const spoutEnd = await readCells(spoutCells);
+    observations.water.spoutContents = spoutCells.flatMap((at, i) => spoutEnd[i].id !== E.EMPTY
+      ? [{ at, ...spoutEnd[i] }] : []);
     observations.cargo.industryBufferAtEnd = industry.buffered;
     if (bucketLoad?.count) observations.cargo.residuals.push({ kind: 'bucket-cargo', cells: bucketLoad.cells.map(cell => [...cell]) });
     observations.water.finalConfirmedInput = observations.water.confirmedInput;

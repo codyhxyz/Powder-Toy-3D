@@ -127,7 +127,8 @@ await test('reset, rebind and dispose invalidate asynchronous credit', async () 
   }
 });
 await test('pump conserves blocked cargo and spills after dismantling without guard', async () => {
-  const f = fixture(), p = createIndustryPhysics({ getSim: () => f.sim }); await p.ready;
+  const f = fixture(), transfers = [];
+  const p = createIndustryPhysics({ getSim: () => f.sim, onTransfer: event => transfers.push(event) }); await p.ready;
   p.step(0.1, [d('pump')]); p.step(0.1, [d('pump')]);
   assert.equal(f.calls[0].kinds, 1 << K.LIQUID);
   f.answer([[E.WATER, 24, 0, 0.2], [E.WATER, 25, 0, 0.3]]); await settle();
@@ -142,7 +143,21 @@ await test('pump conserves blocked cargo and spills after dismantling without gu
   assert.equal(f.calls[2].guardMaterial, -1, 'removed machine can spill without base');
   f.answer([[0, 0, 0, 0], [1, 0, 0, 0]]); await settle();
   assert.equal(p.pending, 0);
+  assert.deepEqual(transfers.map(({ operation, count }) => [operation, count]),
+    [['pump-input', 2], ['pump-return', 2]], 'returned cargo must not claim outlet throughput');
   p.step(0.1, []); assert.equal(f.calls.length, 3, 'no capture after dismantle');
+  p.dispose();
+});
+await test('successful pump outlet reports output rather than returned cargo', async () => {
+  const f = fixture(), transfers = [];
+  const p = createIndustryPhysics({ getSim: () => f.sim, onTransfer: event => transfers.push(event) }); await p.ready;
+  p.step(0.1, [d('pump')]); p.step(0.1, [d('pump')]);
+  f.answer([[E.WATER, 24, 0, 0.2]]); await settle();
+  p.step(0.1, [d('pump')]); p.step(0.1, [d('pump')]);
+  f.answer([[0, 0, 0, 0]]); await settle();
+  assert.deepEqual(transfers.map(({ operation, count }) => [operation, count]),
+    [['pump-input', 1], ['pump-output', 1]]);
+  assert.equal(p.buffered, 0);
   p.dispose();
 });
 await test('readback rejection releases reservations and reports once', async () => {

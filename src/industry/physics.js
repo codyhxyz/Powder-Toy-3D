@@ -176,7 +176,7 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = 
       const cells = spill ? region(d, -1, 4, 1, 3, -2, 3) : ports.outlet;
       const p = transfer.put(s.load, { cells, max: 8, guard: spill ? null : machineGuard(d), vel: [0, 0, 0] });
       if (track(s, p, n => {
-        if (n) { s.blocked = 0; confirmedTransfer(d, { operation: 'pump-output', count: n }); }
+        if (n) { s.blocked = 0; confirmedTransfer(d, { operation: spill ? 'pump-return' : 'pump-output', count: n }); }
       })) s.clock = 0;
     } else if (active) {
       const p = transfer.take(s.load, { cells: ports.inlet, kinds: [K.LIQUID], guard: machineGuard(d), limit: 8 });
