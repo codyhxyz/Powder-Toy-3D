@@ -8,6 +8,7 @@ import { WorldRenderAtlas } from '../src/world/renderAtlas.js';
 import { worldSunProjection, worldSunFeedbackWords } from '../src/world/worldSun.js';
 import { tableLayout } from '../src/shaders/common.js';
 import { PickParams, worldPlainPipelines, WORLD_PLAIN_PHASES, volumeFrag, pickFrag, PICK_LAYOUTS, VOLUME_LAYOUTS } from '../src/shaders/render.js';
+import { worldPlainWalkWGSL } from '../src/shaders/worldPlain.js';
 import { WorldPointParams, WORLD_POINT_BYTES, worldPointWGSL, worldPointLayouts, WGSL_CHECK } from '../src/shaders/worldPoint.js';
 import { worldQueryWGSL } from '../src/shaders/worldRenderBackend.js';
 import { checkPipeline } from './check-sampler-budget.mjs';
@@ -56,6 +57,14 @@ function checkModule(code,groups,kind,name) {
   assert.equal(n.status,0,`${name}: ${n.stdout}\n${n.stderr}`);
 }
 
+test('flat WORLD DDA uses distinct pointer roots required by native WGSL validation',()=>{
+  const code=worldPlainWalkWGSL();
+  assert.match(code,/ddaStart\(ro,rd,w\.t,&step,&delta,&cell,&next\)/);
+  assert.match(code,/ddaStep\(\(\*w\)\.step,\(\*w\)\.delta,&cell,&next\)/);
+  assert.doesNotMatch(code,/dda(?:Start|Step)\([^;\n]*&(?:w\.|\(\*w\)\.)/);
+  assert.match(code,/w\.step=step;w\.delta=delta;w\.cell=cell;w\.next=next/);
+  assert.match(code,/\(\*w\)\.cell=cell;\(\*w\)\.next=next/);
+});
 test('actual Plain facade compiles exact three descriptors and gates one-pass ordered flat/curved recording',async()=>{
   const f=fixture();try {
     const state=f.volume.pipelineState('plain');assert.equal(state.state,'pending');assert.equal(f.render.length,3);

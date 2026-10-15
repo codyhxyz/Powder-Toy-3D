@@ -57,7 +57,13 @@ fn ${prefix}Start(ro: vec3f, rd: vec3f, nearT: f32) -> ${prefix}Walk {
   var w: ${prefix}Walk;let bh=boxHit(ro,rd);
   w.ro=ro;w.rd=rd;w.t=max(bh.x,nearT);w.end=bh.y;w.axis=i32(bh.z);
   w.entry=bh.x>=nearT;
-  if (w.end>w.t) { ddaStart(ro,rd,w.t,&w.step,&w.delta,&w.cell,&w.next); }
+  if (w.end>w.t) {
+    // WGSL forbids multiple pointer arguments rooted in the same variable,
+    // even when their struct members do not overlap.
+    var step: vec3i;var delta: vec3f;var cell: vec3i;var next: vec3f;
+    ddaStart(ro,rd,w.t,&step,&delta,&cell,&next);
+    w.step=step;w.delta=delta;w.cell=cell;w.next=next;
+  }
   return w;
 }
 fn ${prefix}Next(w: ptr<function, ${prefix}Walk>) -> PlainSpan {
@@ -68,7 +74,9 @@ fn ${prefix}Next(w: ptr<function, ${prefix}Walk>) -> PlainSpan {
   s.outAxis=argmin3((*w).next);s.outStep=(*w).step[s.outAxis];
   let end=min((*w).next.x,min((*w).next.y,(*w).next.z));
   s.end=(*w).ro+(*w).rd*end;s.valid=true;
-  (*w).t=end;(*w).axis=ddaStep((*w).step,(*w).delta,&(*w).cell,&(*w).next);(*w).entry=true;
+  var cell=(*w).cell;var next=(*w).next;
+  (*w).t=end;(*w).axis=ddaStep((*w).step,(*w).delta,&cell,&next);
+  (*w).cell=cell;(*w).next=next;(*w).entry=true;
   return s;
 }
 `;
