@@ -1,5 +1,5 @@
 // Bounded, per-case physical Industry checkpoints. One real-GPU slot per run;
-// use --case thermal or --case mechanisms, never both in one invocation.
+// Choose one case per invocation.
 // Example (with this checkout's Vite already running):
 //   node tools/industry-physical-check.mjs --case mechanisms --port 19543
 // CPU geometry check: --case thermal --preflight. Compute-only: --case thermal --harness.
@@ -23,8 +23,8 @@ const thermalDevices = validateDevices([
   { id: 'physical-hearth', type: 'hearth', x: 48, y: 12, z: 48, rotation: 0 },
 ], [128, 128, 128]);
 const thermalGeometry = { ...hearthRegions(thermalDevices[0]), structure: hearthStructureCells(thermalDevices[0]) };
-if (!['thermal', 'mechanisms'].includes(selectedCase)) {
-  console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms [--budget-ms MS] [--harness] [--preflight] [--port PORT | --url URL]');
+if (!['thermal', 'mechanisms', 'diagnostics'].includes(selectedCase)) {
+  console.error('Usage: node tools/industry-physical-check.mjs --case thermal|mechanisms|diagnostics [--budget-ms MS] [--harness] [--preflight] [--port PORT | --url URL]');
   process.exit(2);
 }
 if (process.argv.includes('--preflight')) {
@@ -91,7 +91,7 @@ try {
       update: `fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) { *oA = P.material; *oB = vec4f(0.0); }`,
     });
     const errors = [];
-    let gates = null, parts = null, thermalPhysics = null;
+    let gates = null, parts = null, thermalPhysics = null, diagnostics = null;
     const read = async at => {
       const [cell] = await sim.readCell(...at);
       return { id: Math.round(cell[0]), temperature: cell[1], life: cell[2], ctype: Math.floor(cell[3]), seed: cell[3] - Math.floor(cell[3]) };
@@ -122,6 +122,85 @@ try {
     });
 
     try {
+      if (caseName === 'diagnostics') {
+        const { createConstruction } = await import('/src/industry/construction.js');
+        const { createIndustryDiagnostics } = await import('/src/industry/diagnostics.js');
+        const { hearthRegions, hearthStructureCells } = await import('/src/industry/hearth.js');
+        const { controlCell } = await import('/src/industry/physics.js');
+        const hearth = { id: 'diagnostic-hearth', type: 'hearth', x: 96, y: 12, z: 96, rotation: 1, powered: false };
+        const geometry = hearthRegions(hearth), port = controlCell(hearth);
+        const construction = createConstruction({ sim, gpu: a.gpu, requestRender() {} });
+        parts = createFactoryControlParts({ getSim: () => sim });
+        diagnostics = createIndustryDiagnostics({ getSim: () => sim, onError: error => errors.push(cleanError(error)) });
+        await Promise.all([a.test.ready(), fill.ready, construction.ready, parts.ready]);
+        if (!await construction.run(hearth, 1)) throw new Error('diagnostic hearth construction failed');
+        const shell = await readCells(hearthStructureCells(hearth));
+        if (!(await parts.place({ key: 'SWITCH', x: port[0], y: port[1], z: port[2] })).ok)
+          throw new Error('diagnostic switch placement failed');
+        one(geometry.fuel[0], E.BROKENCOAL, 20, 0);
+        await a.gpu.fence();
+        const spent = await diagnostics.inspect(hearth);
+        // Real body/port inspections have distinct region identities. Alternating
+        // those requests avoids cache reuse without disabling the production throttle.
+        const portRegions = Object.fromEntries(Array.from({ length: 5 }, (_, i) =>
+          [`portMembership${i}`, { cells: [port], ids: [E.SWITCH] }]));
+        one(geometry.fuel[0], E.BROKENCOAL, 20, 1);
+        await a.gpu.fence();
+        const builtInOff = await diagnostics.inspect(hearth, { regions: portRegions });
+        const controlled = { ...hearth, powered: true };
+        const controlledOff = await diagnostics.inspect(controlled);
+        const switchedOn = await parts.toggle({ x: port[0], y: port[1], z: port[2] });
+        const controlledOn = await diagnostics.inspect(controlled, { regions: portRegions });
+        one(hearthStructureCells(hearth)[0], E.EMPTY);
+        await a.gpu.fence();
+        const damagedWithLivePort = await diagnostics.inspect(controlled);
+        const switchedOff = await parts.toggle({ x: port[0], y: port[1], z: port[2] });
+        const standalone = await diagnostics.inspect({
+          id: 'standalone-switch', type: 'control-cell', x: port[0], y: port[1], z: port[2], rotation: 0,
+        }, {
+          base: { cells: [port], material: E.SWITCH },
+          guard: { base: [0, 0, 0], material: -1, port, powered: true },
+          regions: { switch: { cells: [port], ids: [E.SWITCH] } },
+          statusPolicy: { primaryRegions: ['switch'] },
+        });
+        const signalGate = { id: 'diagnostic-gate', type: 'gate', x: 80, y: 12, z: 96, rotation: 0, gateMode: 'signal' };
+        if (!await construction.run(signalGate, 1)) throw new Error('diagnostic gate base construction failed');
+        const gatePort = controlCell(signalGate);
+        if (!(await parts.place({ key: 'SWITCH', x: gatePort[0], y: gatePort[1], z: gatePort[2] })).ok)
+          throw new Error('gate diagnostic switch placement failed');
+        const signalGateOff = await diagnostics.inspect(signalGate);
+        if (!(await parts.toggle({ x: gatePort[0], y: gatePort[1], z: gatePort[2] })).ok)
+          throw new Error('gate diagnostic switch toggle failed');
+        const manualGate = { ...signalGate, gateMode: 'closed' };
+        const gateModeInvalidates = diagnostics.snapshot(manualGate).freshness === 'stale';
+        const manualGateOn = await diagnostics.inspect(manualGate);
+        const checks = {
+          actual128Cube: bounds.every(n => n === 128),
+          rotated48CellShellMatchesPhysicalConstruction: shell.length === 48 && shell.every(cell => cell.id === E.TUNGSTEN),
+          defaultHearthRegionsMatchPhysicalGeometry: spent.evidence?.regions.fuel?.sampled === 6
+            && spent.evidence?.regions.charge?.sampled === 6 && spent.evidence?.regions.outlet?.sampled === 4,
+          exhaustedCoalIsNotUsableFuel: spent.status === 'empty inlet' && spent.evidence?.regions.fuel?.eligible === 0,
+          optionalOffPortDoesNotDisableBuiltInDrive: builtInOff.status === 'ready'
+            && builtInOff.evidence?.control.required === false && builtInOff.evidence?.control.active === false,
+          eightRegionPortInspectionRemainsBounded: Object.keys(builtInOff.evidence?.regions ?? {}).length === 8,
+          requiredOffPortStopsMachine: controlledOff.status === 'control off' && controlledOff.evidence?.control.active === false,
+          actualSwitchOnReportsReady: switchedOn.ok && controlledOn.status === 'ready' && controlledOn.evidence?.control.active === true,
+          baseDamageDoesNotFalsifyLivePort: damagedWithLivePort.status === 'base damaged' && damagedWithLivePort.evidence?.control.active === true,
+          negativeGuardMaterialDoesNotFalsifyOffSwitch: switchedOff.ok && standalone.evidence?.control.active === false,
+          registeredGateReportsRealSignalRequirement: signalGateOff.evidence?.base.intact === true
+            && signalGateOff.evidence?.control.required === true && signalGateOff.evidence?.control.active === false,
+          manualGateStillReportsLivePortWithoutRequiringIt: manualGateOn.evidence?.control.required === false
+            && manualGateOn.evidence?.control.active === true,
+          gateModeChangeInvalidatesCachedObservation: gateModeInvalidates,
+          noAsyncApiErrors: errors.length === 0 && !(h?.failures?.length),
+        };
+        const brief = observation => ({ status: observation.status, freshness: observation.freshness, evidence: observation.evidence });
+        return { case: caseName, status: Object.values(checks).every(Boolean) ? 'passed' : 'failed', checks,
+          observations: Object.fromEntries(Object.entries({ spent, builtInOff, controlledOff, controlledOn, damagedWithLivePort, standalone, signalGateOff, manualGateOn })
+            .map(([key, value]) => [key, brief(value)])),
+          apiErrors: [...errors, ...(h?.failures ?? []).map(cleanError)],
+          residualGaps: ['Native GPU observations only; this case does not exercise the player UI.'] };
+      }
       if (caseName === 'thermal') {
         if (!a.industry && !h) throw new Error('integrated Industry controller is unavailable');
         const [hearth] = thermalDevices;
@@ -365,6 +444,7 @@ try {
       gates?.dispose();
       parts?.dispose();
       thermalPhysics?.dispose();
+      diagnostics?.dispose();
       nativeSim?.dispose();
     }
   }, { caseName: selectedCase, deadline: caseDeadline, useHarness, thermalDevices, thermalGeometry }), workDeadline, 'physical checkpoint');

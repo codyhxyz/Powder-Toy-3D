@@ -129,6 +129,26 @@ now += 101;
   f.api.dispose();
 }
 
+// Registered gate ports remain inspectable without pretending manual gate modes
+// require an electrical signal. Mode changes invalidate previous observations.
+{
+  const f = fixture(91);
+  const gate = { id: 'default-gate', type: 'gate', x: 20, y: 4, z: 20, rotation: 2, gateMode: 'open' };
+  const manual = await issue(f.api, f.sim, gate, {}, { control: 1, controlRequired: 0 });
+  assert.equal(manual.evidence.base.intact, true);
+  assert.equal(manual.evidence.control.active, true);
+  assert.equal(manual.evidence.control.required, false);
+  assert.deepEqual(f.sim.test.params.guardPort, deviceCell(gate, -1, 0, 1));
+  const signalGate = { ...gate, gateMode: 'signal' };
+  assert.notEqual(industryDiagnosticSignature(gate), industryDiagnosticSignature(signalGate));
+  assert.equal(f.api.snapshot(signalGate).freshness, 'stale');
+  const off = await issue(f.api, f.sim, signalGate, {}, { control: 0, controlRequired: 1 });
+  assert.equal(f.sim.test.params.guardPowered, 1);
+  assert.equal(off.evidence.control.active, false);
+  assert.equal(off.status, 'control off');
+  f.api.dispose();
+}
+
 // An entirely occupied pump outlet is blocked; partial occupancy stays available.
 now += 101;
 {

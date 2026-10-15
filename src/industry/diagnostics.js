@@ -47,6 +47,7 @@ export function industryDiagnosticSignature(device) {
   return stable({
     id: device.id, type: device.type, x: device.x, y: device.y, z: device.z,
     rotation: device.rotation, filter: device.filter ?? null, powered: !!device.powered,
+    ...(device.type === 'gate' ? { gateMode: device.gateMode ?? 'open' } : {}),
   });
 }
 
@@ -97,11 +98,10 @@ function defaultBase(device, overrides) {
   const supplied = overrides.base;
   const material = record(supplied) && supplied.material !== undefined ? supplied.material
     : overrides.baseMaterial !== undefined ? overrides.baseMaterial
-      : device.type === 'gate' ? null
-        : device.type === 'hearth' ? E.TUNGSTEN
+      : device.type === 'hearth' ? E.TUNGSTEN
           : Object.hasOwn(DEVICE_TYPES, device.type) ? baseMaterial(device.type) : null;
   const cells = record(supplied) && supplied.cells !== undefined ? supplied.cells
-    : device.type === 'gate' ? [] : regionCells(device, 0, 3, 0, 0, 0, 3);
+    : regionCells(device, 0, 3, 0, 0, 0, 3);
   return { material, cells };
 }
 
@@ -153,7 +153,7 @@ function defaultRegions(device, overrides) {
 
 function defaultGuard(device, overrides) {
   if (Object.hasOwn(overrides, 'guard')) return overrides.guard;
-  if (device.type === 'gate') return null;
+  if (device.type === 'gate') return { ...machineGuard(device), powered: device.gateMode === 'signal' };
   if (device.type === 'hearth') return {
     base: [device.x, device.y, device.z], material: E.TUNGSTEN,
     port: controlCell(device), powered: !!device.powered,
@@ -264,7 +264,8 @@ function normalizeRequest(device, overrides, sim) {
   });
   return {
     device: { id: device.id, type: device.type, x: device.x, y: device.y, z: device.z, rotation: device.rotation,
-      filter: device.filter ?? null, powered: !!device.powered },
+      filter: device.filter ?? null, powered: !!device.powered,
+      ...(device.type === 'gate' ? { gateMode: device.gateMode ?? 'open' } : {}) },
     deviceSignature, key, base: { configured: baseConfigured, material: base.material, cells: base.cells,
       expected: base.cells?.length ?? 0, complete: baseConfigured && baseInBounds },
     names, regionInfo, entries, rules, limits, samples, policy, guard: guard ? { ...guardFields } : null,
@@ -427,7 +428,8 @@ export function createIndustryDiagnostics({ getSim, throttleMs = 250, staleMs = 
     if (disposed) return lifecycleSnapshot(device, { reason: 'diagnostics disposed' });
     currentSim();
     const identity = device && { id: device.id, type: device.type, x: device.x, y: device.y, z: device.z,
-      rotation: device.rotation, filter: device.filter ?? null, powered: !!device.powered };
+      rotation: device.rotation, filter: device.filter ?? null, powered: !!device.powered,
+      ...(device.type === 'gate' ? { gateMode: device.gateMode ?? 'open' } : {}) };
     if (!identity || typeof identity.id !== 'string') return lifecycleSnapshot(null, { reason: 'invalid device identity' });
     const signature = industryDiagnosticSignature(identity);
     const latest = latestById.get(identity.id);
