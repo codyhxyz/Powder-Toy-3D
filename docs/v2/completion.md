@@ -8,7 +8,7 @@ The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` w
 ## Current evidence — 2026-10-15
 
 Latest production integration: `a2e7afe4`, including fetched production `c59bbdf0`.
-Feature checkpoint `c325250c` is 145 commits ahead and none behind that production base.
+Feature checkpoint `6398bdda` is 148 commits ahead and none behind that production base.
 Work remains in `/tmp/tpt-physics-v2-finish`; the recovery checkout is untouched.
 Physics results describe the feature branch, not the live site.
 The separate test-safety fix is deployed.
@@ -218,10 +218,20 @@ Four-cell recovery and OTHER-material refusals remain intentional limits.
 
 **Open splash observable:** source review `5025fae4` finds no resident-liquid kinetic state in native authority.
 The unchanged benchmark requires resident-plus-flight energy.
-Unknown velocity can silently understate peak upward energy, so it must not produce a pass.
+Unknown velocity could silently understate peak upward energy.
 A GPU run cannot supply the missing model definition.
 The original fixture, 0.3 cap and mass criterion remain binding.
 This gate remains open.
+
+`9a341a1c` and `6398bdda` reject unknown samples and nonfinite inputs or derived energy.
+Native adapters now report that complete cell velocities are unavailable.
+Unsupported `n/a` is not a pass.
+Seven CPU observer groups execute the actual outcome, including guard-removal and overflow counterexamples.
+They test measurement reliability, not splash physics.
+
+All 50 CPU check scripts and six adapter groups pass, along with the production build.
+Independent review `3b5410d1` finds no scoped blocker.
+The shared test-guard backport is prepared separately from native physics.
 
 **Historical safety interruption:** the `142e6114` pipe attempt returned no assertions.
 Its trace ends during startup and lease `19727-19749` lacks a final report.
@@ -325,6 +335,7 @@ Local evidence:
 - `/tmp/v2-native-pipe-a2e7afe4-run.log`
 - `/tmp/v2-native-census-c325250c.jsonl`
 - `/tmp/v2-native-census-c325250c-run.log`
+- `/tmp/v2-cpu-6398bdda.log`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
 fresh production checks, independent review, deployment, and a live-site check.
