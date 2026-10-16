@@ -114,6 +114,45 @@ export function assertNoPipelineActivity(activity, stats, baseline) {
     throw new Error(`Pipeline compilation during measurement; the entire case is invalid (activity=${activity}, pending=${stats.pipelinesPending}, created=${stats.pipelinesCreated}, baseline=${baseline})`);
 }
 
+// Observation only: no simulation, presentation, import, export or GPU read.
+// These clocks are necessary comparison evidence, not authoritative-state proof.
+export function frameSnapshot(a, engine) {
+  if (engine !== 'v1' && engine !== 'v2') throw new Error('Invalid benchmark snapshot engine');
+  const native = a.physics.v2;
+  if (engine === 'v2' && !native) throw new Error('Missing native engine for benchmark snapshot');
+  const result = {
+    simFrame: a.sim.frame, v2Tick: native?.tick ?? null,
+    asleep: engine === 'v2' ? native.asleep : null,
+    certified: engine === 'v2' ? native.certified : a.sim.idleCertified,
+    dayClock: a.day.clock, viewTime: a.view.time, renderFrame: a.view.frame,
+    parked: a.test.parked,
+    physicsSettings: {
+      gravityMode: a.settings.gravityMode, airMode: a.settings.airMode,
+      ambientHeat: a.settings.ambientHeat, edgeMode: a.settings.edgeMode,
+      gravity: a.sim.gravity, steps: a.settings.steps,
+    },
+  };
+  if (result.parked !== true) throw new Error('Benchmark clock snapshot requires a parked page');
+  if (typeof result.certified !== 'boolean' || (engine === 'v2' && typeof result.asleep !== 'boolean'))
+    throw new Error('Missing benchmark rest state');
+  for (const key of ['simFrame', 'renderFrame']) {
+    if (!Number.isSafeInteger(result[key]) || result[key] < 0) throw new Error(`Invalid benchmark clock: ${key}`);
+  }
+  if ((engine === 'v2' || result.v2Tick !== null) &&
+      (!Number.isSafeInteger(result.v2Tick) || result.v2Tick < 0)) throw new Error('Invalid benchmark clock: v2Tick');
+  for (const key of ['dayClock', 'viewTime']) {
+    if (!Number.isFinite(result[key])) throw new Error(`Invalid benchmark clock: ${key}`);
+  }
+  for (const [key, value] of Object.entries(result.physicsSettings)) {
+    if (!['boolean', 'string', 'number'].includes(typeof value) ||
+        (typeof value === 'number' && !Number.isFinite(value))) throw new Error(`Missing or invalid physics setting: ${key}`);
+  }
+  for (const key of ['gravity', 'steps']) {
+    if (!Number.isFinite(result.physicsSettings[key])) throw new Error(`Invalid numeric physics setting: ${key}`);
+  }
+  return result;
+}
+
 // Self-contained CPU builder, installed unchanged in the page. No GPU settling,
 // random browser state, heat sources, or per-engine scene generation differences.
 // The settled case is inert architecture, NOT pre-settled sand/water.
@@ -201,10 +240,38 @@ async function selfCheck() {
   assert.throws(() => assertNoPipelineActivity(1, quiet, 10), /entire case is invalid/);
   assert.throws(() => assertNoPipelineActivity(0, { ...quiet, pipelinesPending: 1 }, 10));
   assert.throws(() => assertNoPipelineActivity(0, { ...quiet, pipelinesCreated: 11 }, 10));
-  console.log('ok: statistics, CLI validation, deterministic full-size CPU fixtures, GPU-f32 camera quality checks');
+  const observed = {
+    sim: { frame: 12, gravity: 1, idleCertified: false, step() { throw new Error('Observation must not step'); } },
+    physics: { v2: { tick: 3, asleep: false, certified: false } },
+    day: { clock: 9 }, view: { time: 0, frame: 4 },
+    test: { parked: true, renderOnce() { throw new Error('Observation must not render'); } },
+    settings: { gravityMode: 'vertical', airMode: 'normal', ambientHeat: false, edgeMode: 'solid', steps: 4 },
+  };
+  const unchanged = JSON.stringify(observed);
+  const clock = frameSnapshot(observed, 'v2');
+  assert.equal(clock.dayClock, 9); assert.equal(clock.viewTime, 0); assert.equal(clock.renderFrame, 4);
+  assert.equal(clock.simFrame, 12); assert.equal(clock.v2Tick, 3); assert.equal(clock.parked, true);
+  assert.equal(JSON.stringify(observed), unchanged, 'snapshot does not mutate the app');
+  const { runInNewContext } = await import('node:vm');
+  assert.equal(JSON.stringify(runInNewContext(`(${frameSnapshot.toString()})`)(observed, 'v2')), JSON.stringify(clock),
+    'browser-installed function is self-contained');
+  clock.physicsSettings.gravity = 99;
+  assert.equal(observed.sim.gravity, 1, 'snapshot does not retain mutable input objects');
+  assert.notEqual(frameSnapshot({ ...observed, day: { clock: 10 } }, 'v2').dayClock, clock.dayClock);
+  assert.throws(() => frameSnapshot({ ...observed, test: { parked: false } }, 'v2'), /parked/);
+  assert.throws(() => frameSnapshot({ ...observed, view: { time: NaN, frame: 4 } }, 'v2'), /viewTime/);
+  assert.throws(() => frameSnapshot({ ...observed, view: { time: 0, frame: 1.5 } }, 'v2'), /renderFrame/);
+  assert.throws(() => frameSnapshot({ ...observed, physics: { v2: { tick: null, asleep: false, certified: false } } }, 'v2'), /v2Tick/);
+  assert.throws(() => frameSnapshot({ ...observed, physics: { v2: null } }, 'v2'), /Missing native engine/);
+  assert.throws(() => frameSnapshot(observed, 'v3'), /snapshot engine/);
+  assert.throws(() => frameSnapshot({ ...observed, settings: {} }, 'v2'), /physics setting/);
+  assert.throws(() => frameSnapshot({ ...observed, sim: { ...observed.sim, gravity: '1' } }, 'v2'), /numeric physics setting/);
+  assert.equal(frameSnapshot({ ...observed, physics: { v2: null } }, 'v1').v2Tick, null);
+  console.log('ok: statistics, CLI validation, deterministic full-size CPU fixtures, GPU-f32 quality, read-only clock snapshots');
 }
 
 async function run(o) {
+  const runStarted = performance.now();
   const { launchBrowser, newTestPage, ready, gpuInfo } = await import('../browser.mjs');
   const { startVite } = await import('../vite-server.mjs');
   let commit = null, gitStatus = null;
@@ -228,10 +295,13 @@ async function run(o) {
       'toolCommit identifies this checkout, not necessarily the build served by --url.',
       'Vite transforms the menu and its dynamically imported app on CPU before GPU acquisition; native shader compilation remains inside the slot.',
       'Measured windows reject native pipeline API calls, pending app builds, or app pipeline-count changes; contaminated frames are not silently discarded.',
-    ], results: [], errors: [] };
+      'Clock snapshots observe host/native ticks, daylight, view animation, render noise and physics settings without advancing them. Full native-state equality remains unverified.',
+      'Progress elapsedRunMs includes CPU preparation and is not verified GPU lease occupancy. Stage intervals include diagnostic work excluded from headline frame latency.',
+    ], progress: [], results: [], errors: [] };
   let vite, browser;
   const checkpoint = (stage, result = report) => {
     result.stage = stage;
+    report.progress.push({ stage, elapsedRunMs: performance.now() - runStarted });
     console.error(`[frame-bench] ${stage}`);
     if (o.out) {
       mkdirSync(dirname(o.out), { recursive: true });
@@ -298,6 +368,7 @@ async function run(o) {
         await checked(page.evaluate(async () => { const a = window.__app; a.test.park(); await a.test.ready(); await a.physics.v2?.ready; window.__stopCompileTrace?.(); }));
         result.adapter = await gpuInfo(page); // helper rejects fallback adapters on macOS
         await page.addScriptTag({ content: `window.__frameBenchFixture = ${buildFixture.toString()};
+          window.__frameBenchSnapshot = ${frameSnapshot.toString()};
           window.__frameBenchObservePipelines = ${tracePipelines.toString()};
           window.__frameBenchNoPipelineActivity = ${assertNoPipelineActivity.toString()};` });
         checkpoint(`${scene}/${engine}: fixture upload`, result);
@@ -330,9 +401,7 @@ async function run(o) {
         result.run = await page.evaluate(async ({ engine, compactPath, frames, warmup, split }) => {
           const a = window.__app, gpu = a.gpu, timing = gpu.timing;
           const stepCount = engine === 'v1' ? 4 : 1;
-          const snapshot = () => ({ simFrame: a.sim.frame, v2Tick: a.physics.v2?.tick ?? null,
-            asleep: engine === 'v2' ? a.physics.v2.asleep : null, // v1 exposes certification, not an asleep getter
-            certified: engine === 'v2' ? a.physics.v2.certified : a.sim.idleCertified });
+          const snapshot = () => window.__frameBenchSnapshot(a, engine);
           const awake = () => engine === 'v2' ? a.physics.v2.readStats() : a.sim.readCounts();
           const memory = () => ({ gpu: gpu.memory(), jsHeap: performance.memory ? {
             used: performance.memory.usedJSHeapSize, total: performance.memory.totalJSHeapSize, limit: performance.memory.jsHeapSizeLimit } : null });
@@ -343,8 +412,10 @@ async function run(o) {
             camera: { position: a.camera.position.toArray(), quaternion: a.camera.quaternion.toArray(), projection: a.camera.projectionMatrix.toArray() },
             detailShown: a.view.detailShown, testMode: a.test.mode, parked: a.test.parked });
           timing.enabled = false; timing.split = false;
+          const warmupStart = performance.now();
           for (let i = 0; i < warmup; i++) { a.test.step(stepCount); await a.test.renderOnce(); await gpu.fence(); }
           await a.test.ready();
+          const warmupMs = performance.now() - warmupStart, measurementStart = performance.now();
           const initialSettings = settings(), before = snapshot(), memoryBefore = memory();
           await gpu.fence();
           timing.split = split; timing.enabled = true;
@@ -384,6 +455,7 @@ async function run(o) {
               if (!sample.volumeDrawn || sample.renderScale !== initialSettings.renderScale || a.autoRes.enabled || a.autoRes.scale !== 1) throw new Error('Rendering/quality changed during measurement');
             }
           } finally { restorePipelines(); timing.enabled = false; timing.split = false; a.sim.onPass = onPass; }
+          const measurementAndReadbacksMs = performance.now() - measurementStart, finalDiagnosticsStart = performance.now();
           // Last partition only, outside every measured wall/timestamp interval.
           let blockCompaction = null;
           const native = engine === 'v2' ? a.physics.v2 : null;
@@ -396,7 +468,9 @@ async function run(o) {
               addedScratchBytes: native.blockCompact.bytes - a.sim.g.slots * 16 };
           }
           return { initialSettings, finalSettings: settings(), before, after: snapshot(), memoryBefore, memoryAfter: memory(),
-            timestampSupported: timing.supported, stepCount, samples, blockCompaction };
+            timestampSupported: timing.supported, stepCount, samples, blockCompaction,
+            stageMs: { warmup: warmupMs, measurementAndReadbacks: measurementAndReadbacksMs,
+              finalDiagnostics: performance.now() - finalDiagnosticsStart } };
         }, { engine, compactPath, frames: o.frames, warmup: o.warmup, split });
         result.samples = result.run.samples;
         delete result.run.samples;

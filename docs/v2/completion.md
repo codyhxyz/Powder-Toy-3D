@@ -159,6 +159,20 @@ CPU and VM coverage do not establish Factory hardware acceptance or physics pari
 
 ### Renderer-connected measurements
 
+Measurement audit `33a5f682` identifies missing evolved-state and clock evidence in the existing harness.
+Initial CPU fixture hashes and quality checks do not establish equal work after warmup.
+The default full comparison is not proven to fit the 25-second slot.
+
+The benchmark now records host/native ticks, day clock, view time, render-noise frame, parked state and physical settings.
+CPU self-checks cover the browser-installed snapshot function and reject missing or invalid observations without stepping or rendering.
+Elapsed run progress and warmup/measurement/diagnostic intervals include work excluded from headline frame samples.
+These timings are not verified GPU lease occupancy.
+No new frame benchmark runs.
+
+Authoritative warmup/end state, cross-report provenance checks, clock matching and verified release receipts remain required before claiming an equal-work improvement.
+Full-state readback and encoding cost remain unbounded for this slot.
+Short-window diagnostics would not establish a final win.
+
 The unchanged water fixture uses 128³ cells, 1280×720 output, DPR 1, and quality scale 2/3.
 The benchmark includes physics, rendering, and the GPU completion fence.
 Native frames use no legacy bridge dispatches.
