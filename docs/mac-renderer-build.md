@@ -93,7 +93,7 @@ The broader CPU pass also passed these regression groups:
 - Material, source artwork, crystal transmission, and straight/curved presentation invariants.
 - Element mechanisms, imports, state access, the build, and shipped local maps.
 
-The engine resource catalog passes 464 pipelines and 1,358 grid variants.
+With upstream `3c1129cb` merged, the engine resource catalog passes 467 pipelines and 1,376 grid variants.
 The hybrid composition is checked separately by the hybrid runner.
 The async-read lint still reports eight pre-existing pending reads in four unrelated legacy tools.
 No new hybrid file is exempted.
