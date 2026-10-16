@@ -72,6 +72,27 @@ check('raw completeness scans exact ranks without repeated cut validation or loo
   valid=false;assert.throws(()=>f.source.assertComplete([bounds]),/Invalid owned Source/);
   f.source.ownedContext=null;f.source.dispose();
 });
+check('partial-core brick-aligned completeness scans every rank and preserves exact unaligned edges',()=>{
+  const f=fixture();fillState(f);f.source.recordLiveCopy(f.frame);f.flush();
+  const chunk=f.source.chunks.get('32,0,32'),bounds={lo:[36,4,36],hi:[60,28,60]};
+  assert(f.source.assertComplete([bounds]));
+  for(const brick of [[4,4,4],[12,16,20],[24,24,24]]){
+    const base=cellSlot(SOURCE_GRID,...brick);
+    for(let i=0;i<64;i++){
+      const old=chunk.rank[base+i];chunk.rank[base+i]=SOURCE_RANK.unknown;
+      assert.throws(()=>f.source.assertComplete([bounds]),/Incomplete in-world/);
+      chunk.rank[base+i]=old;
+    }
+  }
+  const outside=cellSlot(SOURCE_GRID,0,0,0),old=chunk.rank[outside];chunk.rank[outside]=SOURCE_RANK.unknown;
+  assert(f.source.assertComplete([bounds]),'unknown cells outside the partial core do not count');
+  assert(f.source.assertComplete([{lo:[33,1,33],hi:[36,4,36]}]),'unaligned selection excludes a hole in the same brick');
+  chunk.rank[outside]=old;
+  const inside=cellSlot(SOURCE_GRID,1,1,1);chunk.rank[inside]=SOURCE_RANK.unknown;
+  assert.throws(()=>f.source.assertComplete([{lo:[33,1,33],hi:[36,4,36]}]),/Incomplete in-world/);
+  assert.throws(()=>f.source.assertComplete([{lo:[60,4,36],hi:[68,28,60]}]),/Incomplete in-world/);
+  f.source.dispose();
+});
 check('bulk ranked raw gather preserves every native word and fails before any encoding on a one-cell hole',()=>{
   const f=fixture();fillState(f);f.source.recordLiveCopy(f.frame);f.flush();
   const resources=Object.fromEntries(['A','B'].map(n=>[n,f.gpu.createBuffer({size:SOURCE_GRID.slots*16})]));

@@ -195,6 +195,13 @@ export class WorldRenderSource {
         const hi=box.hi.map((n,k)=>Math.min(SOURCE_CORE,n-origin[k]));
         if(lo.every(n=>n===0)&&hi.every(n=>n===SOURCE_CORE)){
           if(c.rank.includes(SOURCE_RANK.unknown))throw new Error('Incomplete in-world raw source');
+        }else if(lo.every(n=>n%BRICK===0)&&hi.every(n=>n%BRICK===0)){
+          // Field halos cut cores at brick boundaries: scan all 64 exact ranks,
+          // not a cell address calculation per rank. No completeness cache.
+          for(let z=lo[2];z<hi[2];z+=BRICK)for(let y=lo[1];y<hi[1];y+=BRICK)for(let x=lo[0];x<hi[0];x+=BRICK){
+            const slot=cellSlot(c.g,x,y,z);
+            if(c.rank.subarray(slot,slot+64).includes(SOURCE_RANK.unknown))throw new Error('Incomplete in-world raw source');
+          }
         }else for(let z=lo[2];z<hi[2];z++)for(let y=lo[1];y<hi[1];y++)for(let x=lo[0];x<hi[0];x++){
           if(c.rank[cellSlot(c.g,x,y,z)]===SOURCE_RANK.unknown)throw new Error('Incomplete in-world raw source');
         }
