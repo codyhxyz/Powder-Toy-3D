@@ -105,14 +105,18 @@ function post(candidate,confirmation=Promise.resolve(true)){const feedbackIdenti
 
 test('mode2 keeps SOURCE/data dependencies without invented probes; typed air GI still births',async()=>{
   const f=await setup({feedback:false,sourceKinds:{0:'air',1:'liquid'}});
-  let c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE},{brick:[1,0,0],channels:READY.GI_SOURCE},{brick:[2,0,0],channels:READY.CELL}]));
+  const pending=f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE},{brick:[1,0,0],channels:READY.GI_SOURCE},{brick:[2,0,0],channels:READY.CELL}]);
+  const progress=f.owner.progress;
+  assert(Object.isFrozen(progress));assert.equal(progress.stage,'initializing');assert.equal(progress.requirements,3);
+  let c=await settle(f.gpu,pending);
+  assert.equal(f.owner.progress.stage,'probe-ready');assert.equal(progress.stage,'initializing');
   assert.equal(f.giJobs.filter(j=>j.phase==='world GI gather').length,0);
   assert(f.giJobs.some(j=>j.index===0&&j.phase==='world GI source'));
   assert(f.giJobs.some(j=>j.index===1&&j.phase==='world GI source'));
   assert(f.owner.cells.acquireClassification({bricks:[[2,0,0]]}).release()===undefined);
   assert.equal(f.owner.atlas.lookup([0,0,0],READY.GI_SOURCE).known,true);
   assert.equal(f.owner.atlas.lookup([0,0,0],READY.GI).known,false);
-  await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
+  await settle(f.gpu,f.owner.accept(c,post(c)));c.release();assert.equal(f.owner.progress,null);
   const at=f.giJobs.length;
   c=await settle(f.gpu,f.owner.request({...f.frame,advance:false},[{brick:[0,0,0],channels:READY.GI}]));
   const gathers=f.giJobs.slice(at).filter(j=>j.phase==='world GI gather');

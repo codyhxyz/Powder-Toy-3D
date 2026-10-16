@@ -128,6 +128,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     }catch(e){for(const j of jobs)try{atlas.cancel(j);}catch{}throw e;}
   }
   async function attempt(t) {
+    t.attempts=(t.attempts??0)+1;t.stage='cell';
     await clearAttempt(t);
     const ids=new Set([...metadata.indices,...ownedSources,...ownedProbes,...t.requirements.keys()]);
     for(const i of ownedGlow)t.requirements.set(i,(t.requirements.get(i)??0)|READY.GLOW);
@@ -136,9 +137,11 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     for(const core of glowCores.values()){const region=worldGlowPlan(size,core).input;for(let z=0;z<region.size[2];z++)for(let y=0;y<region.size[1];y++)for(let x=0;x<region.size[0];x++)ids.add(index([x+region.min[0],y+region.min[1],z+region.min[2]]));}
     if(!ids.size)throw new Error('WORLD requires explicit initial CELL demand');
     await classify(t,ids);
+    t.stage='metadata';
     const classification=cells.acquireClassification({bricks:[...ids].map(brick)});
     try{t.batch=metadata.record(gpu.frame,{cut:t.cut,classification,derivedTick:t.tick});}catch(e){classification.release();throw e;}
     await t.batch.completion;
+    t.stage='history';
     const nearChanged=worldLightingNear(size,t.batch.changes.changedBricks,2);
     const records=t.batch.records([...ids]).map(r=>({...r,near:nearChanged(r.brick),probeEligible:ownedProbes.has(index(r.brick))||!!(t.requirements.get(index(r.brick))&READY.GI)}));
     // Reflective SOURCE self-reads discover GI demand through typed feedback.
@@ -154,18 +157,23 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     const previousProbes=[...ownedProbes].filter(i=>t.frame.advance||history.birth(i)?.birthTick<t.tick);
     const previous=t.plan.captureRestore({cut:t.cut,configVersion:t.frame.configVersion,sourceIndices:[...ownedSources],probeIndices:previousProbes});
     try{if(previous.leases.length)await restoreJobs(t,previous);}finally{previous.release();}
+    t.stage='sun';
     const sun=await result(t,t.sun,await t.sun.prepare({direction:t.frame.sun.direction,basisRevision:t.frame.sun.basisRevision,configVersion:t.frame.configVersion,sceneToken:t.frame.sceneVersion,receiverBounds:[],requestedTiles:[...t.sunTiles],changedWorldBounds:t.batch.changes.changedBricks.map(b=>({min:b.map(n=>n*4),max:b.map(n=>n*4+4)}))}));
     if(sun.feedback)return sun.feedback;t.sunHandle=sun.output;
     const sources=t.plan.sourceBricks;
     // GLOBAL barrier: all SOURCE slabs are submitted and staged before ANY gather.
+    t.stage='source';
     for(const sourceSlab of slabs(sources)){const r=await result(t,t.gi,await t.gi.prepare({lightingTick:t.tick,reset:t.tick===0,configVersion:t.frame.configVersion,initialization:t.plan.initialization,sourceBricks:sourceSlab,gatherBricks:[],shadows:t.frame.params.shadows!==false}));if(r.feedback)return r.feedback;t.outputs.push(r.output);t.plan.stage(r.output);}
     t.restore=t.plan.captureRestore({cut:t.cut,configVersion:t.frame.configVersion,sourceIndices:[...new Set([...ownedSources,...sources.map(index)])],probeIndices:previousProbes,sourcePhase:true});
+    t.stage='restore';
     if(t.restore.leases.length)await restoreJobs(t,t.restore,{privatePhase:true});
     const gathers=t.plan.gatherBricks;
+    t.stage='gather';
     for(const gatherSlab of slabs(gathers)){const r=await result(t,t.gi,await t.gi.prepare({lightingTick:t.tick,reset:t.tick===0,configVersion:t.frame.configVersion,initialization:t.plan.initialization,sourceBricks:[],gatherBricks:gatherSlab,shadows:t.frame.params.shadows!==false}));if(r.feedback)return r.feedback;t.outputs.push(r.output);t.plan.stage(r.output);}
     t.privateSnapshot?.release();t.privateSnapshot=null;for(const job of t.privateJobs.splice(0))atlas.cancel(job);t.restore?.release();t.restore=null;
+    t.stage='glow';
     for(const core of glowCores.values()){const r=await result(t,t.glow,await t.glow.prepare({core,lightingTick:t.tick,configVersion:t.frame.configVersion}));if(r.feedback)return r.feedback;t.glows.push(r.output);}
-    await publishFinal(t);
+    t.stage='publish';await publishFinal(t);
     return null;
   }
   async function publishFinal(t) {
@@ -234,7 +242,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     if(same&&(!accepted||JSON.stringify(frame.globalKey)!==JSON.stringify(accepted.frame.globalKey)||frame.configVersion!==accepted.frame.configVersion))throw new Error('camera-only births require the accepted lighting settings/cut');
     const cut=same?accepted.cut.retain():source.recordCut(gpu.frame,{previousCut:accepted?.cut,sceneVersion:frame.sceneVersion,configVersion:frame.schemaVersion});
     if(!history)history=createWorldLightingHistory({worldSize:size,epoch:source.epoch,sourceOwner:source,configuration:cut.configuration});
-    const t={id:++serial,frame,cut,tick:same?history.lightingTick:history.lightingTick+1,fieldTick:same?accepted.fieldTick:(cells.fields.lastTick??-1)+1,state:'building',requirements:new Map(),sunTiles:new Set(),outputs:[],glows:[],privateJobs:[],bundle:null,bundlePins:0,retired:false,cleaned:false};
+    const t={id:++serial,frame,cut,tick:same?history.lightingTick:history.lightingTick+1,fieldTick:same?accepted.fieldTick:(cells.fields.lastTick??-1)+1,state:'building',stage:'initializing',requirements:new Map(),sunTiles:new Set(),outputs:[],glows:[],privateJobs:[],bundle:null,bundlePins:0,retired:false,cleaned:false};
     try{add(t,requirements);}catch(e){cut.release();throw e;}
     active=t;t.work=run(t);t.work.catch(()=>{});return t.work;
   }
@@ -243,6 +251,8 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   }
   function next() {if(queued&&!dead){const q=queued;queued=null;try{start(q.frame,q.requirements).then(q.resolve,q.reject);}catch(e){releaseFrame(q.frame);q.reject(e);}}wake();}
   const api={atlas,cells,metadata,
+    // Passive counters only: inspecting readiness must never advance work.
+    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,sunTiles:t.sunTiles.size,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
     get busy(){return !!active||!!queued;},get failure(){return failure??metadataFeedback.failure??active?.feedback?.failure??active?.error??null;},get state(){return dead?'disposed':resetting?'resetting':metadataFeedback.failure||active?.feedback?.failure?'blocked':active?.state??'idle';},
     request(frame,requirements=[]){live();const f=captureFrame(frame);if(active){if(queued){releaseFrame(queued.frame);queued.resolve(null);}return new Promise((resolve,reject)=>{queued={frame:f,requirements:frozen(requirements),resolve,reject};});}try{return start(f,requirements);}catch(e){releaseFrame(f);throw e;}},
     probe(){live();return active?.state==='probe-ready'?active.bundle.retain():null;},
