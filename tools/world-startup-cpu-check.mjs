@@ -15,6 +15,31 @@ function appFunction(name,env){
 }
 function expression(code,env){return new Function(...Object.keys(env),`return (${code});`)(...Object.values(env));}
 const view=VIEWS.find(v=>v.key==='realistic').id;
+function renderMethod(env){
+  const start=source.indexOf('async render() {'),brace=source.indexOf('{',start);
+  assert(start>=0);let end=brace+1,depth=1;
+  for(;depth;end++){if(source[end]==='{')depth++;else if(source[end]==='}')depth--;}
+  return new Function(...Object.keys(env),`return async function render${source.slice(source.indexOf('(',start),end)};`)(...Object.values(env));
+}
+test('actual WORLD snapshot helper yields for native phases and counts confirmed images; BOX keeps synchronous pacing',async()=>{
+  let ticks=0,accepted=0,fences=0;
+  const driver={busy:true,displayedMainFrame:null},win={renderFrame:{driver}};
+  const pacer={wake(){},get settled(){return accepted>=2;},settleLimit:4};
+  const render=renderMethod({win,pacer,coreWait:Promise.resolve(),graphicsFailure:null,
+    gpu:{async fence(){fences++;}},
+    tick(){
+      if(++ticks>20)throw Error('helper never converged');
+      if(ticks>=8)setTimeout(()=>{driver.displayedMainFrame={frameIdentity:{accepted:++accepted}};driver.busy=false;},0);
+    }});
+  assert.equal(await render(),2);
+  assert(ticks>=9,'pending native phases must not spend the four-image limit');
+  assert(fences>=9);assert.equal(accepted,2);
+  ticks=0;fences=0;
+  const box=renderMethod({win:null,coreWait:Promise.resolve(),graphicsFailure:null,
+    pacer:{wake(){},get settled(){return ticks>=2;},settleLimit:4},
+    tick(){ticks++;},gpu:{async fence(){fences++;}}});
+  assert.equal(await box(),2);assert.equal(ticks,2);assert.equal(fences,1);
+});
 
 test('actual core startup retains physics/picks but never warms a BOX view for WORLD',()=>{
   const begin=source.indexOf('const core = coreWait = Promise.all(')+'const core = coreWait = Promise.all('.length;

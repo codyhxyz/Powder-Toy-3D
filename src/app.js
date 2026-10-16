@@ -3126,6 +3126,23 @@ try {
         if (graphicsFailure) throw graphicsFailure;
         // Two initial frames observe post-setting and spawner-transform changes.
         pacer.wake(); // also covers direct setting edits that aren't in the view key
+        if(win){
+          const world=win;let n=0;
+          while(n<2||!pacer.settled||world.renderFrame?.driver?.busy){
+            if(n>pacer.settleLimit)throw new Error('Test render did not converge');
+            const before=world.renderFrame?.driver?.displayedMainFrame?.frameIdentity;
+            tick(performance.now(),true);
+            await gpu.fence();
+            // Native preparation/readback continuations need a browser task.
+            // Count confirmed MAIN images, not ticks spent waiting for them.
+            await new Promise(resolve=>setTimeout(resolve,0));
+            if(graphicsFailure)throw graphicsFailure;
+            if(win!==world)throw new Error('World changed during test render');
+            const after=world.renderFrame?.driver?.displayedMainFrame?.frameIdentity;
+            if(after&&after!==before)n++;
+          }
+          return n;
+        }
         let n = 0;
         // The first render applies the requested upscale, which changes the limit.
         do { tick(performance.now(), true); n++; } while ((n < 2 || !pacer.settled) && n < pacer.settleLimit);
