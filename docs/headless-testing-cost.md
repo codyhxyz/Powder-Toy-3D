@@ -61,6 +61,9 @@ Each GPU slot lasts at most **25 seconds total**. This limit includes player det
 `TPT_TEST_TIMEOUT_MS` can shorten this limit, but cannot extend it.
 An independent watchdog runs in its own session/process group, requests closure before the deadline, and terminates only the test's own processes if closure fails.
 It reserves four seconds for forced cleanup and verified release, without extending the absolute deadline.
+Run GPU checks on an awake machine. Software cannot clean up while the operating system is suspended.
+After wake, the watchdog checks the original wall deadline on every poll.
+It does not wait for paused relative timers to finish. Relative timers remain as a second deadline check.
 Process-table queries have a 1000 ms timeout; orphan-environment inspection has a 250 ms timeout. Inspection failure never authorizes an unverified kill or release.
 Process identity checks and a unique launch marker prevent another session's processes from becoming cleanup targets.
 One launch attempt is allowed per test process. Additional pages must reuse that browser.
@@ -78,7 +81,8 @@ Afterward, report measured slot occupancy separately from the measurement interv
 The watchdog prints a report path under `~/.cache/tpt-headless/runs/`.
 The JSON report survives parent exit and closed output pipes.
 It records start time, inspection failure details, and verified release time and occupancy.
-Only `status: "released"` confirms cleanup. An incomplete report does not prove compliance with the time limit.
+It also records `deadlineMet` and `deadlineOverrunMs`, including suspension-related overruns.
+Only `status: "released"` confirms cleanup. Cleanup alone does not prove compliance with the time limit.
 Do not extend the deadline or repeat a failed run silently.
 If a suite cannot fit, split its assertions without reducing fixture size or changing physics.
 
