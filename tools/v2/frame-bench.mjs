@@ -143,10 +143,12 @@ export function frameSnapshot(a, engine) {
   for (const key of ['dayClock', 'viewTime']) {
     if (!Number.isFinite(result[key])) throw new Error(`Invalid benchmark clock: ${key}`);
   }
-  for (const [key, value] of Object.entries(result.physicsSettings)) {
-    if (!['boolean', 'string', 'number'].includes(typeof value) ||
-        (typeof value === 'number' && !Number.isFinite(value))) throw new Error(`Missing or invalid physics setting: ${key}`);
+  // Mirror simModes.js; the CPU check enumerates its canonical values.
+  for (const [key, max] of [['gravityMode', 2], ['airMode', 4], ['edgeMode', 2]]) {
+    const value = result.physicsSettings[key];
+    if (!Number.isSafeInteger(value) || value < 0 || value > max) throw new Error(`Invalid enum physics setting: ${key}`);
   }
+  if (typeof result.physicsSettings.ambientHeat !== 'boolean') throw new Error('Invalid boolean physics setting: ambientHeat');
   for (const key of ['gravity', 'steps']) {
     if (!Number.isFinite(result.physicsSettings[key])) throw new Error(`Invalid numeric physics setting: ${key}`);
   }
@@ -240,12 +242,13 @@ async function selfCheck() {
   assert.throws(() => assertNoPipelineActivity(1, quiet, 10), /entire case is invalid/);
   assert.throws(() => assertNoPipelineActivity(0, { ...quiet, pipelinesPending: 1 }, 10));
   assert.throws(() => assertNoPipelineActivity(0, { ...quiet, pipelinesCreated: 11 }, 10));
+  const { GRAV, AIR, EDGE, SIM_MODE_DEFAULTS } = await import('../../src/simModes.js');
   const observed = {
     sim: { frame: 12, gravity: 1, idleCertified: false, step() { throw new Error('Observation must not step'); } },
     physics: { v2: { tick: 3, asleep: false, certified: false } },
     day: { clock: 9 }, view: { time: 0, frame: 4 },
     test: { parked: true, renderOnce() { throw new Error('Observation must not render'); } },
-    settings: { gravityMode: 'vertical', airMode: 'normal', ambientHeat: false, edgeMode: 'solid', steps: 4 },
+    settings: { ...SIM_MODE_DEFAULTS, steps: 4 },
   };
   const unchanged = JSON.stringify(observed);
   const clock = frameSnapshot(observed, 'v2');
@@ -266,6 +269,26 @@ async function selfCheck() {
   assert.throws(() => frameSnapshot(observed, 'v3'), /snapshot engine/);
   assert.throws(() => frameSnapshot({ ...observed, settings: {} }, 'v2'), /physics setting/);
   assert.throws(() => frameSnapshot({ ...observed, sim: { ...observed.sim, gravity: '1' } }, 'v2'), /numeric physics setting/);
+  for (const [key, modes] of [['gravityMode', GRAV], ['airMode', AIR], ['edgeMode', EDGE]]) {
+    const valid = Object.values(modes);
+    for (let value = -1; value <= Math.max(...valid) + 1; value++) {
+      const app = { ...observed, settings: { ...observed.settings, [key]: value } };
+      if (valid.includes(value)) assert.equal(frameSnapshot(app, 'v2').physicsSettings[key], value);
+      else assert.throws(() => frameSnapshot(app, 'v2'), /physics setting/);
+    }
+    for (const value of ['0', 'vertical', true, false, 0.5, NaN, Infinity, null, undefined, [], {}]) {
+      assert.throws(() => frameSnapshot({ ...observed, settings: { ...observed.settings, [key]: value } }, 'v2'),
+        /physics setting/, `${key} rejects ${String(value)}`);
+    }
+  }
+  for (const value of [true, false]) {
+    assert.equal(frameSnapshot({ ...observed, settings: { ...observed.settings, ambientHeat: value } }, 'v2')
+      .physicsSettings.ambientHeat, value);
+  }
+  for (const value of [0, 1, 'false', null, undefined, NaN, [], {}]) {
+    assert.throws(() => frameSnapshot({ ...observed, settings: { ...observed.settings, ambientHeat: value } }, 'v2'),
+      /physics setting/, `ambientHeat rejects ${String(value)}`);
+  }
   assert.equal(frameSnapshot({ ...observed, physics: { v2: null } }, 'v1').v2Tick, null);
   console.log('ok: statistics, CLI validation, deterministic full-size CPU fixtures, GPU-f32 quality, read-only clock snapshots');
 }

@@ -165,6 +165,10 @@ The default full comparison is not proven to fit the 25-second slot.
 
 The benchmark now records host/native ticks, day clock, view time, render-noise frame, parked state and physical settings.
 CPU self-checks cover the browser-installed snapshot function and reject missing or invalid observations without stepping or rendering.
+Review `c8dcb42e` found no scoped blocker, but identified loose mode types.
+The follow-up accepts only canonical numeric modes and boolean ambient heat.
+The new rejection test failed before the fix.
+CPU checks now enumerate the actual mode constants and reject malformed types and unknown values.
 Elapsed run progress and warmup/measurement/diagnostic intervals include work excluded from headline frame samples.
 These timings are not verified GPU lease occupancy.
 No new frame benchmark runs.
