@@ -77,6 +77,8 @@ function checkReport(report, scenario, budget, start, deadline) {
   assert.equal(Date.parse(report.startedAt), start);
   assert.equal(Date.parse(report.deadlineAt), deadline, 'absolute deadline must not move');
   assert(report.occupancyMs < budget && report.finishedAt, diagnostic);
+  assert.equal(report.deadlineMet,true,diagnostic);
+  assert.equal(report.deadlineOverrunMs,0,diagnostic);
 }
 const guardFile = fileURLToPath(new URL('./gpu-deadline.mjs', import.meta.url));
 
@@ -196,7 +198,8 @@ console.log('GPU deadline CPU: fresh/old dead and malformed leases preserved; pr
   console.log('GPU deadline CPU: bounded pre-PID failure cleaned only its disposable tree.');
 }
 
-for (const scenario of ['normal', 'orphan', 'tagless', 'ps-failure', 'closed-pipe', 'ps-failure-closed-pipe', 'slow-ps', 'ps-timeout']) {
+for (const scenario of ['normal', 'orphan', 'tagless', 'ps-failure', 'closed-pipe', 'ps-failure-closed-pipe', 'slow-ps', 'ps-timeout', 'clock-jump']) {
+  const clockJump=scenario==='clock-jump';
   const faultyPs = scenario.includes('ps-failure'), slowPs = scenario === 'slow-ps', timeoutPs = scenario === 'ps-timeout';
   const customPs = faultyPs || slowPs || timeoutPs, closedPipe = scenario.includes('closed-pipe');
   const token = randomUUID(), dir = mkdtempSync(join(tmpdir(), 'gpu-deadline-cpu-')), slot = join(dir, 'fake-slot');
@@ -236,8 +239,14 @@ for (const scenario of ['normal', 'orphan', 'tagless', 'ps-failure', 'closed-pip
       `);
       writeFileSync(join(dir, 'failed-once'), '');
     }
-    const budget = budgetMs(6000), start = Date.now(), deadline = start + budget;
-    guard = spawn(process.execPath, [guardFile, String(owner.pid), owner.start, String(deadline), slot,
+    const clockArgs=[];
+    if(clockJump){
+      const file=join(dir,'clock-jump.cjs');
+      writeFileSync(file,'const now=Date.now;let offset=0;Date.now=()=>now()+offset;setTimeout(()=>{offset=300000;},400);');
+      clockArgs.push('--require',file);
+    }
+    const budget = budgetMs(clockJump?MAX_SLOT_MS:6000), start = Date.now(), deadline = start + budget;
+    guard = spawn(process.execPath, [...clockArgs,guardFile, String(owner.pid), owner.start, String(deadline), slot,
       String(statSync(slot).ino), token, String(start)], { detached: true, stdio: ['pipe', 'pipe', 'pipe'],
       env: customPs ? { ...process.env, PATH: `${dir}:${process.env.PATH}`, TPT_CPU_PS_FLAG: join(dir, 'failed-once') } : process.env });
     guardState = track(guard); seeds.push(identity(guard));
@@ -256,9 +265,15 @@ for (const scenario of ['normal', 'orphan', 'tagless', 'ps-failure', 'closed-pip
       assert.equal(failed.status, 'inspection-failed'); assert.equal(failed.failures[0].code, 'ETIMEDOUT');
       rmSync(join(dir, 'failed-once')); // Permit fresh verification, not a deadline extension.
     }
-    await waitFor(() => fixtureState.exited && guardState.exited, Math.max(1, deadline + 1500 - Date.now()), `${scenario} fixture/guard exit`);
+    await waitFor(() => fixtureState.exited && guardState.exited, clockJump?5000:Math.max(1, deadline + 1500 - Date.now()), `${scenario} fixture/guard exit`);
     const reportText = readFileSync(join(dir, 'runs', `${owner.pid}-${guard.pid}.json`), 'utf8'), report = JSON.parse(reportText);
-    checkReport(report, scenario, budget, start, deadline);
+    if(clockJump){
+      assert.equal(report.status,'released');
+      assert.equal(Date.parse(report.deadlineAt),deadline,'resume must not extend the original deadline');
+      assert.equal(report.deadlineMet,false,'suspend overrun must remain visible in the durable report');
+      assert(report.deadlineOverrunMs>=300000-budget);
+      assert(Date.now()-start<5000,'wake must trigger cleanup before relative timers would fire');
+    }else checkReport(report, scenario, budget, start, deadline);
     if (slowPs) {
       assert.deepEqual(report.failures, [], 'valid inspections slower than 500 ms must not fail');
       assert(!guardState.output.includes('stop\n'));
