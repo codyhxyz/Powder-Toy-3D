@@ -134,7 +134,9 @@ Review `c4a72bcc` finds a retained-owner admission race in merge `908c7a24`.
 A deterministic CPU interleaving reproduces machine removal during the activation wait.
 Fix `f7ee74f9` closes admission through the requested engine mode and serializes engine changes.
 The same regression now passes, alongside all 51 CPU suites and the build.
-Independent re-review remains pending.
+Independent re-review `99157fc7` finds no scoped blocker and repeats all seven boundary groups successfully.
+It confirms the real wiring, requested-mode admission, stable V1 behavior and serialization cleanup.
+CPU and VM coverage do not establish hardware acceptance or Factory physics parity.
 
 ### Renderer-connected measurements
 
