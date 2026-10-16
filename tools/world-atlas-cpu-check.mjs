@@ -234,6 +234,38 @@ test('provider writer snapshots have private outputs; no partial publication fro
   assert.throws(()=>atlas.publish(job),/partial/);
   atlas.cancel(job); assert.throws(()=>atlas.writerBindings(job,'raw'),/stale/); atlas.dispose(); gpu.flush();
 });
+test('provider write batch shares one submission and marks no channel before submission',()=>{
+  const {atlas,gpu}=setup({initialCapacity:4}),jobs=[0,1].map(x=>atlas.allocate([x,0,0],{sourceRevision:1}));
+  const pages=jobs.map(j=>atlas.cell.pages.get(j.physicalPageID)),encoders=new Set(),order=[];
+  const submit=gpu.device.queue.submit.bind(gpu.device.queue);
+  let submissions=0;gpu.device.queue.submit=commands=>{
+    submissions++;assert(pages.every(p=>p.written.size===0));order.push('submit');submit(commands);
+  };
+  assert.deepEqual(atlas.recordPageWrites([]),[]);assert.equal(submissions,0);
+  const writes=jobs.flatMap((job,i)=>['raw','fields'].map(kind=>({job,kind,
+    auxMetadata:[job.readyBits,job.epoch,job.sourceRevision,job.fieldTick],
+    record(encoder,bindings){encoders.add(encoder);order.push(`${i}:${kind}`);assert(pages.every(p=>p.written.size===0));
+      if(kind==='fields')assert.equal(bindings.destinations.length,3);}
+  })));
+  assert.deepEqual(atlas.recordPageWrites(writes),writes.map(w=>w.job));
+  assert.equal(encoders.size,1);assert.equal(submissions,1);
+  assert.deepEqual(order,['0:raw','0:fields','1:raw','1:fields','submit']);
+  assert(pages.every(p=>p.written.size===6));
+  for(const job of jobs)atlas.cancel(job);atlas.dispose();gpu.flush();
+});
+test('provider batch recording or submission failure cannot mark an unpublished prefix ready',()=>{
+  const {atlas,gpu}=setup(),job=atlas.allocate([0,0,0],{sourceRevision:1}),page=atlas.cell.pages.get(job.physicalPageID);
+  const raw={job,kind:'raw',auxMetadata:[job.readyBits,job.epoch,job.sourceRevision,job.fieldTick],record(){}};
+  const error=Error('batch prefix rejected'),submit=gpu.device.queue.submit.bind(gpu.device.queue);let submissions=0;
+  gpu.device.queue.submit=commands=>{submissions++;submit(commands);};
+  assert.throws(()=>atlas.recordPageWrites([raw,{job,kind:'fields',record(){throw error;}}]),e=>e===error);
+  assert.equal(submissions,0);assert.equal(atlas.recording,false);assert.equal(page.written.size,0);
+  assert.throws(()=>atlas.publish(job),/partial/);
+  gpu.device.queue.submit=()=>{throw error;};
+  assert.throws(()=>atlas.recordPageWrites([raw,{job,kind:'fields',record(){}}]),e=>e===error);
+  assert.equal(page.written.size,0);assert.throws(()=>atlas.publish(job),/partial/);
+  gpu.device.queue.submit=submit;atlas.cancel(job);atlas.dispose();gpu.flush();
+});
 test('known empty vs unknown and canonical feedback (including bit31)', () => {
   const {atlas,gpu}=setup(); const feedback=new Uint32Array(atlas.bookLayout.requestBytes/4);
   for(const c of [[0,0,0],[31,0,0],[0,1,0]]) { const miss=atlas.lookup(c); assert.equal(miss.known,false); A.requestMissing(feedback,miss.request); }

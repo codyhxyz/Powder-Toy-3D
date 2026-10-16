@@ -210,7 +210,8 @@ export class WorldCellAtlasAdapter {
     this._alive();const batch=this.pending;if(!batch||handle!==batch.handle||batch.state!=='captured')throw new Error('Invalid CELL batch');
     if(this.gpu.frame.open)throw new Error('Flush Source/Fields captures before CELL Atlas packing');
     if(!batch.source.isCurrent()||batch.plan.epoch!==this.fields.history.epoch)throw new Error('Stale CELL source/field batch');
-    const jobs=[], clears=[...invalidations], device=this.gpu.device, ephemeral=[];
+    const jobs=[], clears=[...invalidations], device=this.gpu.device, ephemeral=[], writes=[];
+    const flushWrites=()=>{if(writes.length){this.atlas.recordPageWrites(writes);writes.length=0;}};
     const previousLighting=this.atlas.snapshot();
     try{
       const derivedChanged = this.lightingDirty;
@@ -238,7 +239,7 @@ export class WorldCellAtlasAdapter {
         if(lightEntry&&this.atlas.light.pages.get(lightEntry-1).sourceRevision!==batch.source.sourceRevision)clears.push({brick,channels:READY.LIGHT});
         const words=new Uint32Array(68);words.set([start,bi,0,0]);words.set(source.aux.subarray(start,start+64),4);
         const list=this._upload('CELL page immutable job',words,BU.STORAGE);ephemeral.push(list);
-        this.atlas.recordPageWrite(job,'raw',{auxMetadata:[READY.CELL,job.epoch,job.sourceRevision,job.fieldTick],record:(encoder,bindings)=>{
+        writes.push({job,kind:'raw',auxMetadata:[READY.CELL,job.epoch,job.sourceRevision,job.fieldTick],record:(encoder,bindings)=>{
           const l=this.atlas.cell.pages.get(job.physicalPageID).resources.layout;
           const params=this._upload('CELL page version',new Uint32Array([job.physicalPageID,l.cells.x,l.cells.y,l.aux.width,l.aux.height,0,0,0,READY.CELL,job.epoch,job.sourceRevision,job.fieldTick]),BU.UNIFORM);ephemeral.push(params);
           const buffers=[source.A,source.B,source.flow??this.zero,source.aeration??this.zero,source.deco?.buffer??this.zero,capture.classification,list];
@@ -246,8 +247,11 @@ export class WorldCellAtlasAdapter {
           const output=device.createBindGroup({layout:this.packLayouts[1],entries:bindings.outputs});
           const pass=encoder.beginComputePass();pass.setPipeline(this.packPipeline);pass.setBindGroup(0,input);pass.setBindGroup(1,output);pass.dispatchWorkgroups(1);pass.end();
         }});
-        this.atlas.recordPageWrite(job,'fields',{record:(encoder,bindings)=>capture.buffers.forEach((buffer,i)=>copyCapturedFieldPage(encoder,buffer,local,bindings.destinations[i]))});
+        writes.push({job,kind:'fields',record:(encoder,bindings)=>capture.buffers.forEach((buffer,i)=>copyCapturedFieldPage(encoder,buffer,local,bindings.destinations[i]))});
+        // Bound command-buffer size, not work: every requested page is packed.
+        if(writes.length>=128)flushWrites();
       }
+      flushWrites();
       if(!batch.source.isCurrent()||batch.plan.epoch!==this.fields.history.epoch)throw new Error('CELL source changed while packing');
       const publication=this.atlas.publish({cellJobs:jobs,lightJobs,invalidations:clears,...(dependencyToken?{dependencyToken}:{}),...(sunManifest!==undefined?{sunManifest}:derivedChanged?{sunManifest:null}:{})});
       batch.state='published';this.pending=null;

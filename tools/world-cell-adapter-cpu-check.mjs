@@ -49,7 +49,9 @@ test('real Source/Producer/Fields/Atlas: two-core queued captures precede scratc
   const captures=f.gpu.trace.filter(t=>t.name==='capture');assert.equal(captures.length,6);
   const secondClassifier=f.gpu.trace.findIndex((t,i,a)=>t.name==='world owned classifier'&&a.slice(0,i).some(x=>x.name==='world owned classifier'));
   assert(f.gpu.trace.indexOf(captures[2])<secondClassifier);
-  f.gpu.flush();const publication=f.adapter.commitAfterSourceFlush(batch);assert.equal(f.adapter.fields.lastTick,0);f.gpu.finish();await Promise.resolve();
+  f.gpu.flush();const packBefore=f.gpu.nativeSubmits,publication=f.adapter.commitAfterSourceFlush(batch);
+  assert.equal(f.gpu.nativeSubmits-packBefore,1,'both raw/field pages share one native submission');
+  assert.equal(f.adapter.fields.lastTick,0);f.gpu.finish();await Promise.resolve();
   const snap=f.atlas.snapshot();
   for(const r of req){
     const core=r.brick.map(v=>Math.floor(v/8)*32),c=f.adapter.cache.get(core.join(',')),local=r.brick.map((v,i)=>v-core[i]/4),bi=brickIdOf(SOURCE_GRID,...local);
@@ -66,6 +68,26 @@ test('real Source/Producer/Fields/Atlas: two-core queued captures precede scratc
   const pinned=f.adapter.acquire();assert(f.adapter.isCurrent(pinned));assert.equal(pinned.field.complete,true);pinned.release();assert(!f.adapter.isCurrent(pinned));snap.release();publication.previousLightingSnapshot.release();await cleanup(f);
 });
 
+test('CELL write batches process every page across pool growth and preserve packed field words',async()=>{
+  const f=fixture();await f.adapter.ready;const requirements=[];
+  for(let z=0;z<2;z++)for(let y=0;y<2;y++)for(let x=0;x<24;x++)requirements.push({brick:[x,y,z],channels:READY.CELL});
+  const sizes=[],write=f.atlas.recordPageWrites.bind(f.atlas);
+  f.atlas.recordPageWrites=writes=>{sizes.push(writes.length);return write(writes);};
+  const batch=f.adapter.record(f.gpu.frame,{fieldTick:0,requirements});f.gpu.flush();
+  const publication=f.adapter.commitAfterSourceFlush(batch);f.gpu.finish();
+  assert.deepEqual(sizes,[128,64]);assert(requirements.every(r=>!f.atlas.lookup(r.brick,READY.CELL).incomplete));
+  const snap=f.atlas.snapshot();
+  for(const index of [0,63,95]){
+    const brick=requirements[index].brick,core=brick.map(v=>Math.floor(v/8)*32),capture=f.adapter.cache.get(core.join(','));
+    const local=brick.map((v,i)=>v-core[i]/4);
+    assert.deepEqual(auxWords(snap,brick,0),[READY.CELL,1,0,0]);
+    for(let s=0;s<64;s++){
+      const p=worldSlotCell(s).map((v,i)=>v+local[i]*4),offset=(p[0]+32*(p[1]+32*p[2]))*4;
+      for(let j=0;j<3;j++)assert.deepEqual(fieldWords(snap,'field'+j,brick,s),[...new Uint16Array(capture.buffers[j].bytes).subarray(offset,offset+4)]);
+    }
+  }
+  snap.release();publication.previousLightingSnapshot.release();await cleanup(f);
+});
 test('zero-output unseen settling invalidates retained required CELL pages atomically, preserving previous pins',async()=>{
   const f=fixture();await f.adapter.ready;f.atlas.require(req);
   const b=f.adapter.record(f.gpu.frame,{fieldTick:0,requirements:req});f.gpu.flush();f.adapter.commitAfterSourceFlush(b).previousLightingSnapshot.release();f.gpu.finish();
@@ -130,7 +152,8 @@ test('publisher rejection after partial auto-submit quarantines COW pages, prese
 
 test('Atlas packing retry preserves successful field batch without a second EMA advance; source edits reject stale batches',async()=>{
   const f=fixture();await f.adapter.ready;const batch=f.adapter.record(f.gpu.frame,{fieldTick:0,requirements:req});f.gpu.flush();
-  const write=f.atlas.recordPageWrite.bind(f.atlas);let fail=true;f.atlas.recordPageWrite=(job,kind,options)=>{if(kind==='fields'&&fail){fail=false;throw new Error('packing failed');}return write(job,kind,options);};
+  const write=f.atlas.recordPageWrites.bind(f.atlas);let fail=true;
+  f.atlas.recordPageWrites=writes=>write(writes.map(w=>({...w,record(...args){if(w.kind==='fields'&&fail){fail=false;throw new Error('packing failed');}return w.record(...args);}})));
   assert.throws(()=>f.adapter.commitAfterSourceFlush(batch),/packing failed/);assert.equal(f.adapter.pending.handle,batch);const v=f.adapter.fields.version;
   f.adapter.commitAfterSourceFlush(batch).previousLightingSnapshot.release();assert.equal(f.adapter.fields.version,v);f.gpu.finish();
   const next=f.adapter.record(f.gpu.frame,{fieldTick:1,requirements:req});f.gpu.flush();f.source.noteContentChange({lo:[0,0,0],hi:[1,1,1]});assert.throws(()=>f.adapter.commitAfterSourceFlush(next),/Stale/);f.adapter.abort(next);await cleanup(f);

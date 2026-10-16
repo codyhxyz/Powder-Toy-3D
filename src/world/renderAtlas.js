@@ -480,20 +480,30 @@ export class WorldRenderAtlas {
     return frozen({ params: words, outputs: frozen(names.map((n, binding) => frozen({ binding, resource: p.resources.views[n === 'source' ? 'aux' : n] }))) });
   }
   recordPageWrite(job, kind, { auxMetadata, record }) {
-    const p = this._job(job), bindings = this.writerBindings(job, kind);
-    check(typeof record === 'function' && record.constructor.name !== 'AsyncFunction', 'writer must be synchronous');
-    if (kind === 'raw') check(auxMetadata?.length === 4 && auxMetadata.every((v, i) => v === [p.readyBits, p.epoch, p.sourceRevision, p.fieldTick][i]), 'writer metadata mismatch');
-    const encoder = this.device.createCommandEncoder({ label: 'world provider page' });
-    this.recording = true;
-    try {
-      // Native packed-half copies are legal only into this unpublished page.
-      const scoped = kind === 'fields' ? frozen({ ...bindings, destinations: frozen(WRITER_CHANNELS.fields.map(name =>
-        frozen({ texture: p.resources.textures[name], origin: frozen(pageTexel(p.id, 0, p.resources.layout)) }))) }) : bindings;
-      const result = record(encoder, scoped); check(!result?.then, 'writer must be synchronous');
+    this.recordPageWrites([{ job, kind, auxMetadata, record }]); return job;
+  }
+  recordPageWrites(writes) {
+    this._alive(); check(Array.isArray(writes), 'page writes must be an array');
+    if (!writes.length) return [];
+    const encoder = this.device.createCommandEncoder({ label: 'world provider pages' }), staged = [];
+    for (const { job, kind, auxMetadata, record } of writes) {
+      const p = this._job(job), bindings = this.writerBindings(job, kind);
+      check(typeof record === 'function' && record.constructor.name !== 'AsyncFunction', 'writer must be synchronous');
+      if (kind === 'raw') check(auxMetadata?.length === 4 && auxMetadata.every((v, i) => v === [p.readyBits, p.epoch, p.sourceRevision, p.fieldTick][i]), 'writer metadata mismatch');
+      this.recording = true;
+      try {
+        // Native packed-half copies are legal only into this unpublished page.
+        const scoped = kind === 'fields' ? frozen({ ...bindings, destinations: frozen(WRITER_CHANNELS.fields.map(name =>
+          frozen({ texture: p.resources.textures[name], origin: frozen(pageTexel(p.id, 0, p.resources.layout)) }))) }) : bindings;
+        const result = record(encoder, scoped); check(!result?.then, 'writer must be synchronous');
+      }
+      finally { this.recording = false; }
+      staged.push({ job, p, kind });
     }
-    finally { this.recording = false; }
-    this._job(job); this.queue.submit([encoder.finish()]);
-    (kind === 'source' ? ['source'] : WRITER_CHANNELS[kind]).forEach(n => p.written.add(n)); return job;
+    for (const { job } of staged) this._job(job);
+    this.queue.submit([encoder.finish()]);
+    for (const { p, kind } of staged) (kind === 'source' ? ['source'] : WRITER_CHANNELS[kind]).forEach(n => p.written.add(n));
+    return staged.map(({ job }) => job);
   }
   _writeDescriptor(p) {
     const d = p.dependencies;
