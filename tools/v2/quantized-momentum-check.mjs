@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { FULL, SUB, TICK_HZ } from '../../src/shaders/v2.js';
 import { MAX_FILL } from '../../src/v2/layout.js';
 import { CELL_M } from '../../src/scale.js';
-import { nominalComp, sound2, state, flux, dot, subtract } from './hydrostatic-reference.mjs';
+import { nominalComp, sound2, state, flux, dot } from './hydrostatic-reference.mjs';
 
 // Candidate reference representation only: signed i32 Q24 momentum in units of
 // fullCellMass*c. It is NOT an approved cross-material/native persistence format.
@@ -21,6 +21,11 @@ const decode = (c, k) => state(c.fill / FULL, c.momentum.map(p => p / PQ / (c.fi
 const energy = cells => cells.reduce((sum, s) => sum + s.totalEnergy, 0);
 const totals = cells => [cells.reduce((sum, c) => sum + c.fill, 0),
   ...[0, 1, 2].map(a => cells.reduce((sum, c) => sum + c.momentum[a], 0))];
+function dissipativeFace(l, r) {
+  const speed = 1 + Math.max(Math.abs(l.velocity[0]), Math.abs(r.velocity[0]));
+  return { speed, mean: l.velocity.map((u, a) => (u + r.velocity[a]) / 2),
+    flux: flux(l, r).map((x, a) => x - speed * (r.conserved[a] - l.conserved[a]) / 2) };
+}
 function step(cells, k = nominalComp) {
   const refuse = reason => ({ accepted: false, reason, cells });
   if (cells.some(c => c.momentumKnown !== true)) return refuse('unknown momentum');
@@ -29,11 +34,7 @@ function step(cells, k = nominalComp) {
     c.momentum.some(p => !Number.isInteger(p) || p < IMIN || p > IMAX))) return refuse('unsupported representation');
   const old = cells.map(c => decode(c, k)), n = cells.length;
   assert.equal(n, 3, 'this gate covers exactly one three-cell ring');
-  const faces = old.map((l, i) => {
-    const r = old[(i + 1) % n], speed = 1 + Math.max(Math.abs(l.velocity[0]), Math.abs(r.velocity[0]));
-    return { speed, mean: l.velocity.map((u, a) => (u + r.velocity[a]) / 2),
-      flux: flux(l, r).map((x, a) => x - speed * (r.conserved[a] - l.conserved[a]) / 2) };
-  });
+  const faces = old.map((l, i) => dissipativeFace(l, old[(i + 1) % n]));
   // Explicit reference CFL ceiling, not a fitted physical parameter.
   // Report all required refinements; do NOT call this one native substep.
   const refinements = Math.max(1, Math.ceil(nominalTau * Math.max(...faces.map(f => f.speed)) / 0.25));
@@ -139,3 +140,21 @@ for (const [reason, cells] of [
 console.log(`${accepted} independent one-step cases accepted; exact integer mass/3-D momentum conservation; 5 atomic refusals.`);
 console.log(`Worst calculated energy-rounding budget=${worstBudget}; maximum one-axis refinement=${maxRefinements} per native substep.`);
 console.log('CPU Q24 reference only: not a native ABI, 3-D solver, thermal/payload admission, long-run energy bound or GPU result.');
+
+// Production-suitability rejection: ONE unquantized operator application verifies
+// the linear shear-mode amplification formula. No evolving ring/World is run.
+// Inviscid shear advection preserves amplitude; scalar acoustic diffusion does not.
+const count = 128, normal = 0.37, amplitude = 0.01, theta = 2 * Math.PI / count;
+const wave = Array.from({ length: count }, (_, i) => state(1.25, [normal, amplitude * Math.sin(theta * i), 0]));
+const waveFaces = wave.map((l, i) => dissipativeFace(l, wave[(i + 1) % count]));
+const speed = 1 + normal, tau = nominalTau / Math.ceil(nominalTau * speed / 0.25);
+const updated = wave.map((s, i) => s.conserved.map((x, a) =>
+  x + tau * (waveFaces[(i + count - 1) % count].flux[a] - waveFaces[i].flux[a])));
+assert(updated.every(u => u[0] === 1.25 && u[1] === wave[0].conserved[1]));
+const sine = updated.reduce((sum, u, i) => sum + u[2] * Math.sin(theta * i), 0) / (count / 2 * 1.25 * amplitude);
+const cosine = updated.reduce((sum, u, i) => sum + u[2] * Math.cos(theta * i), 0) / (count / 2 * 1.25 * amplitude);
+const real = 1 - speed * tau * (1 - Math.cos(theta)), imaginary = -normal * tau * Math.sin(theta);
+assert(Math.abs(sine - real) < 1e-13 && Math.abs(cosine - imaginary) < 1e-13, 'actual face operator matches Fourier symbol');
+const periodSteps = count / (normal * tau), gain = Math.hypot(real, imaginary);
+console.log(`Unquantized shear-mode prediction: amplitude=${gain ** periodSteps} after one ${count * CELL_M / (normal * Math.sqrt(sound2))}s advection period.`);
+console.log('Prediction only, not an accumulated quantized run. This scalar-diffusion reference is not approved for native integration.');

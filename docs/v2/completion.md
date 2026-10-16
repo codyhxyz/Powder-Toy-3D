@@ -312,6 +312,16 @@ This is not a measured GPU cost or an approved three-dimensional schedule.
 No accumulated-error, wet/dry, thermal/payload, phase-change, vertical/radial or packet-interface claim follows.
 Production physics and velocity capability remain unchanged; native storage is not allocated.
 
+Review `aeea5b3f` clears only that finite-step CPU gate.
+A subsequent source-verified linear shear analysis exposes its production limitation.
+At 128 cells, scalar diffusion predicts amplitude `0.570376` after one approximately `3.84384 s` advection period.
+Inviscid translation should preserve amplitude.
+The check applies the actual unquantized face operator once and verifies its Fourier symbol.
+It does not execute an accumulated quantized trajectory or claim an original physics outcome.
+This diffusion stays a conservation reference, not a native implementation candidate.
+No coefficient is tuned and no engine, momentum allocation or save format changes.
+Read-only planning now checks whether existing exact-state APIs can independently unblock folded-world handoffs.
+
 The unchanged water fixture uses 128³ cells, 1280×720 output, DPR 1, and quality scale 2/3.
 The benchmark includes physics, rendering, and the GPU completion fence.
 Native frames use no legacy bridge dispatches.

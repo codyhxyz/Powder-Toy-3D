@@ -187,6 +187,31 @@ The tested reference needs up to three microsteps per existing native liquid sub
 That is not a GPU timing result, an approved three-dimensional stepping schedule, or evidence of a faster completed engine.
 Next gates include long-run error, actual material admission, wet/dry motion, vertical/gravity work and other gravity modes.
 
+## Why this diffusion is not a native implementation candidate
+
+Review `aeea5b3f` clears the narrow finite-step gate, including its Taylor bound.
+That does not establish acceptable numerical accuracy.
+The same CPU check now verifies one unquantized shear-mode application against its Fourier symbol:
+
+```
+N=128, f=1.25, uNormal=0.37, tangentAmplitude=0.01
+theta=2*pi/N
+lambda=1+uNormal
+gamma=1-lambda*tau*(1-cos(theta)) - i*uNormal*tau*sin(theta)
+periodSteps=N/(uNormal*tau)
+```
+
+Inviscid translation should preserve this mode's amplitude.
+The actual face operator matches the symbol within `1e-13`.
+Projecting `abs(gamma)^periodSteps` gives amplitude `0.570376` after one approximately `3.84384 s` advection period.
+Only about `0.325329` of this shear mode's kinetic energy remains.
+This is a linear, unquantized prediction, not an accumulated trajectory, total-energy ratio, original outcome or GPU measurement.
+
+Scalar acoustic diffusion therefore remains a conservation reference, not a native integration plan.
+Do not hide its damping or timestep cost by tuning it to the hole or SPLASH controls.
+A production candidate must address characteristic transport accuracy as well as conservation.
+No storage allocation or native port follows from the one-step review.
+
 ## References and scope
 
 Existing game choices remain the TPT material calibration, Noita-style grid/flight custody, and the documented TF2 gravity scale.
