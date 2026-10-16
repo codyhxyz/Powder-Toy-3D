@@ -74,7 +74,7 @@ try {
               const mouth=[];
               for(const x of [7,8,9])for(const y of [13,14,15]){
                 const s=x+g.nx*(3+g.nz*y);
-                mouth.push({x,y,id:engine.nameOf(g.id[s]),mass:g.gridAmount[s],moving:g.moving[s],
+                mouth.push({x,y,id:engine.nameOf(g.id[s]),mass:g.gridAmount[s],moving:g.moving?.[s] ?? null,
                   air:[...g.airVel.subarray(s*3,s*3+3)]});
               }
               note({stage:'hole-state',time:engine.time,flight:flight(ps),band,mouth});

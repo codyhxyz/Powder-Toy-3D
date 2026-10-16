@@ -345,6 +345,23 @@ Its artificial clock overrun is not an actual GPU slot; no GPU or browser runs.
 Log: `/tmp/v2-main-wake-cpu.log`.
 The 25-second cap, cleanup reserve and player guard remain unchanged.
 
+Review `a98b61c7` finds a missed nullable-field consumer in the hole boot profiler.
+Its mouth diagnostic now emits `null` for unknown motion, preserving known zero and one values.
+A CPU regression executes that actual profiler block and reproduces the old null-index exception before the fix.
+All nine native-grid groups and seven SPLASH-observer groups pass afterward.
+No profiler GPU run occurs, and no physical outcome criterion changes.
+
+Source audit `9669fa61` confirms the existing three motion half-lanes occupy 48 bits.
+Additional persistent momentum storage is not proved necessary; a replacement liquid model might retain the 20-byte core/bank shape.
+That is not an approved encoding or a proven 64 MiB working-set saving.
+The current scalar liquid snapshot omits those lanes and relies on immutable face history during gather.
+Replacing history with mutable intrinsic momentum needs a new frozen-source argument and explicit temporary lifetimes.
+Phase changes, particles, cargo, weather, archives and undo also require coordinated semantics and version validation.
+Unscaled half-float SI momentum overflows above about 11.23 m/s at maximum mercury fill.
+Velocity or scaled momentum encoding still needs range, precision, rounding and refusal rules.
+No new interpretation, allocation, packet/phase policy or save migration is approved.
+Renderer/read ABI format 3 is already scalar-volume mode; it is not a free material-model version.
+
 The unchanged water fixture uses 128³ cells, 1280×720 output, DPR 1, and quality scale 2/3.
 The benchmark includes physics, rendering, and the GPU completion fence.
 Native frames use no legacy bridge dispatches.

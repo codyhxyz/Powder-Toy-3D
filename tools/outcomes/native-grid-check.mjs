@@ -12,8 +12,8 @@ import { packParticle, ballistic, DT, GRAVITY, CELL_M, dynamicsRows } from '../.
 import { toGrid, nativeTally, nativeFlight, nativeFall, readNativeState } from './native-grid.js';
 import { at } from './engine.js';
 
-function fixture() {
-  const layout = gridLayout(16, 8, 8), cells = new Uint32Array(layout.slots * 4), banks = new Int32Array(layout.slots);
+function fixture(ny = 8) {
+  const layout = gridLayout(16, ny, 8), cells = new Uint32Array(layout.slots * 4), banks = new Int32Array(layout.slots);
   for (let s = 0; s < layout.slots; s++) cells.set(makeMaterial(E.EMPTY).core, s * 4);
   return { layout, origin: [100, 0, -32], cells: cells.buffer, banks: banks.buffer,
     air: new Float32Array(layout.nbricks * 8).buffer, particles: new ArrayBuffer(0) };
@@ -186,4 +186,21 @@ test('zero-flux fresh and restored material bytes have no resident-liquid rest c
     assert.equal(g.moving, null, 'unknown motion is not published as proven moving or stationary');
     assert.equal(g.gridAmount[i], 1);
   }
+});
+test('real hole-profile mouth observation preserves unknown, known zero and known motion', async () => {
+  const source = await readFile(new URL('../v2/boot-profile.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('const mouth=[];'), end = source.indexOf("note({stage:'hole-state'", start);
+  assert(start >= 0 && end > start, 'exercise the actual profiler block, without launching its browser');
+  const mouthOf = new Function('g', 'engine', source.slice(start, end) + 'return mouth;');
+  const f = fixture(16);
+  put(f, [7,13,3], makeMaterial(E.WATER));
+  const g = toGrid(f), mouth = mouthOf(g, engine);
+  assert.equal(mouth.length, 9);
+  assert.equal(mouth[0].id, 'WATER'); assert.equal(mouth[0].mass, 1);
+  assert.equal(mouth[0].moving, null);
+  assert.equal(JSON.parse(JSON.stringify(mouth))[0].moving, null, 'unknown remains explicit in JSONL');
+  g.moving = new Uint8Array(g.id.length);
+  assert.equal(mouthOf(g, engine)[0].moving, 0, 'known zero must not become unknown');
+  g.moving[at(g, 7,13,3)] = 1;
+  assert.equal(mouthOf(g, engine)[0].moving, 1);
 });
