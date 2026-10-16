@@ -18,6 +18,10 @@ The complete mixed-scene numerical check still fails; converged visual acceptanc
 Isolated motion writes passed, but they do not validate the combined scene.
 Disabling TAA and splitting render submissions did not resolve the failure.
 GPU work stopped after a deadline overrun during sleep/dark-wake activity.
+An absolute wall-deadline poll now catches expiry immediately after wake.
+Later awake controls passed for opaque geometry, smooth surfaces, gas, and particles.
+A fresh bulk-optics control still reproduced the correctness failure.
+The latest optics shortcut has CPU evidence only; its native attempt was refused at 95% GPU load.
 Its diagnostic screenshots are not quality comparisons.
 See [the native correctness log](mac-renderer-build.md#native-follow-up-failed-checks-and-readback-controls).
 All reported slot durations include startup and cleanup. They are not performance samples.

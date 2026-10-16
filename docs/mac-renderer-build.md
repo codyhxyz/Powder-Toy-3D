@@ -7,7 +7,7 @@ Keep simulation rules, saves, imported artwork, data views, and the existing
 renderer intact. The parent integrates the new path behind `?renderer=hybrid`
 until native-GPU validation proves it can replace the default.
 
-Fetched production base: `375301e7bd4a05afab9ebf130c6f90e930bd2309`.
+Initial production base: `375301e7bd4a05afab9ebf130c6f90e930bd2309`.
 Integration checkout: `/Users/codyhergenroeder/code/claude/threejs-tpt-gpu-mac-build`.
 The recovery checkout is not a source, dependency, build, or deployment directory.
 Children work only in their tool-assigned managed worktrees based on this checkout.
@@ -87,7 +87,7 @@ npm run build
 
 The hybrid runner passes all nine suites. Its actual composition and shader/layout checks cover
 32³, 64³, 128³, 160×96×160, 256×96×128, and 128×384×128 grids.
-It now runs in the deployment workflow.
+The experimental branch's deployment workflow includes this runner.
 
 The broader CPU pass also passed these regression groups:
 
@@ -113,7 +113,14 @@ node tools/hybrid-full-check.mjs --readback-only
 node tools/hybrid-full-check.mjs --readback-controls
 node tools/hybrid-full-check.mjs --mixed-readback-controls
 node tools/hybrid-full-check.mjs --motion-only
+node tools/hybrid-full-check.mjs --control=optics
+node tools/hybrid-full-check.mjs --component-controls
 ```
+
+Single-component controls accept `opaque`, `smooth`, `media`, `optics`, or `particles`.
+They keep the 128³ grid, native output size, and unchanged rendering quality.
+They cannot replace the full mixed-scene and overflow checks.
+The sequence reuses one app and stops at its first failed control.
 
 The `--no-taa` and `--split-render` flags isolate integration boundaries.
 They change the diagnostic configuration and cannot establish normal-mode acceptance.
@@ -135,7 +142,7 @@ The full-scene check includes visible optics/media, smooth vertices, isolated dr
 motion and reactive pixels, finite HDR, temperature-only reuse, and zero legacy instances.
 It also injects a GPU capacity flag and checks molten matter transmitted through glass.
 
-Native correctness and visual review remain pending. They precede performance measurement.
+Full-scene native correctness and visual review remain pending. They precede performance measurement.
 No benchmark was run during this correctness-first pass.
 
 #### Native follow-up: failed checks and readback controls
@@ -183,18 +190,44 @@ No benchmark was run during this correctness-first pass.
   A distinct constant shader then wrote the same targets correctly.
   This is isolated shader/MRT evidence, not scene or temporal acceptance.
 - Disabling TAA did not fix the scene (6.021 seconds total).
-  Splitting render submissions did not fix it either; the watchdog forced cleanup at 21.158 seconds.
+  The split-submission test produced no result before watchdog cleanup at 21.158 seconds.
 - The optical source search now returns immediately when every field density is below 0.5.
   No source could satisfy the original selection test in that case.
   CPU tests preserve the exact iso boundary and all four channels.
   This change does not reduce path limits, image resolution, or physics.
-  Its native effect is unverified.
+  This did not resolve the later bulk-optics failure.
 - The subsequent attempt stalled during startup readiness.
   Report `83490-83537.json` records 296.096 seconds of wall occupancy despite a 25-second deadline.
   Cleanup is verified, but the wall-time cap was not met.
   Mac power logs show repeated sleep/dark-wake cycles.
   Further GPU runs stopped; no sleep-prevention setting was changed.
-  An awake GPU window and deadline investigation are required before another native attempt.
+  The guard now checks its absolute wall deadline on every poll, while retaining its relative timers.
+  A CPU-only five-minute clock-jump test forced verified cleanup in about 0.52 seconds of active execution.
+  Its report preserves the simulated overrun; cleanup does not conceal missed deadlines.
+  Independent review found no concrete safety regression.
+  This does not permit GPU work while the machine sleeps.
+  The isolated guard fix was merged separately in [PR 21](https://github.com/codyhxyz/Powder-Toy-3D/pull/21).
+  That PR contains no experimental renderer changes.
+- After the user requested continuation, the Mac reported lid open and user active.
+  The awake full-scene run still failed post-render sentinels (16.080 seconds total).
+  Sleep therefore does not explain the native scene failure.
+- The opaque control passed (5.572 seconds total), including finite HDR, visible geometry, reusable motion, and data-view fallback.
+  Its diagnostic image shows both opaque objects.
+- Smooth and gas controls passed within one 6.188-second slot.
+  The sequence then stopped on unexpected gas coverage after switching to optics.
+  Source review confirms that a completed whole-world reset must clear gas EMA.
+  The zero-gas assertion remains strict; no reset defect has been established.
+- A fresh particles control passed (5.278 seconds total).
+  Four instances produced 544 optical pixels, including 369 visible water-droplet pixels.
+  HDR remained finite; optical/media coverage rejected history pixel-for-pixel.
+- A fresh bulk-optics control reproduced stale post-render readbacks (10.633 seconds total).
+  Other components are no longer required to reproduce the failure.
+- A further source-selection shortcut avoids the full search for an eligible cell interior.
+  The current cell centre is uniquely nearest there. Faces, edges, and excluded particles retain the original search.
+  The CPU mirror matches the complete search at 500 distinct positions, with additional Float32-margin and excluded-current tests.
+  Independent review found no concrete regression.
+  Its native test was refused at 95% GPU utilization (1.962 seconds); no browser launched.
+  This is not a confirmed native fix. Performance measurement remains deferred.
 - The full numerical check is not a converged visual check.
   Failure screenshots remain diagnostic artifacts, not image-quality acceptance.
 - Every completed slot closed its own browser and test server. No benchmark samples were collected.

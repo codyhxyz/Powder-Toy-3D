@@ -143,6 +143,52 @@ for(let ch=0;ch<4;ch++){
 assert.equal(sourceReads,0,'sub-iso support cannot select a source in any channel');
 assert.equal(opticalFieldSource([1.2,1.3,1.4],[0,0,0.5,0],countedSource),sand,'exact iso boundary must still select live matter');
 assert(sourceReads>0);
+sourceReads=0;
+assert.equal(opticalFieldSource([1.2,1.3,1.4],[0,0,1,0],countedSource),sand);
+assert.equal(sourceReads,1,'eligible cell interior has a unique nearest source');
+const neighbor={...sand,state:[sand.id,900,0,.2]};
+const tied=q=>q.join()==='0,1,1'?neighbor:sourceAt(q);
+assert.equal(opticalFieldSource([1,1.3,1.4],[0,0,1,0],tied),neighbor,'cell-face tie order must not change');
+const sourceIds=['WATER','LAVA','SAND','WOOD'].map(id);
+const sources=new Map();
+for(let z=0;z<7;z++)for(let y=0;y<7;y++)for(let x=0;x<7;x++){
+  const n=(x*7+y*13+z*17)%5;
+  if(n<4)sources.set([x,y,z].join(),{id:sourceIds[n]});
+}
+const sample=q=>sources.get(q.join())??null;
+const excluded=q=>(q[0]*3+q[1]*5+q[2])%17===0;
+const bruteSource=(p,density,exclude=excluded,fetch=sample)=>{
+  const base=p.map(Math.floor);let best=Infinity,chosen=null;
+  for(let z=-2;z<=2;z++)for(let y=-2;y<=2;y++)for(let x=-2;x<=2;x++){
+    const q=base.map((v,i)=>v+[x,y,z][i]),a=fetch(q),ch=LOOK[a?.id]?.ch;
+    const d=q.reduce((s,v,i)=>s+(v+.5-p[i])**2,0);
+    if(ch>=0&&ch<4&&density[ch]>=.5&&d<best&&!exclude(q)){best=d;chosen=a;}
+  }
+  return chosen;
+};
+let fastCases=0;
+const checkedPositions=new Set();
+for(let n=0;n<500;n++){
+  const p=[0,1,2].map(i=>Math.fround(1+(n*(i+1))%5+((n*(i*14+3))%251)/251));
+  checkedPositions.add(p.join());
+  const density=[0,1,2,3].map(i=>[0,.49,.5,.9][(n+i)%4]);
+  let reads=0;
+  assert.equal(opticalFieldSource(p,density,q=>{reads++;return sample(q);},excluded),bruteSource(p,density),'fast source selection must match the complete search');
+  if(reads===1)fastCases++;
+}
+assert(fastCases>25,'differential cases must exercise the interior shortcut, not only its fallback');
+assert.equal(checkedPositions.size,500);
+for(const base of [3,128,384,2047])for(let axis=0;axis<3;axis++)for(const f of [0,1e-7,5e-7,1e-6,2e-6,.999998,.999999]){
+  const p=[base+.5,base+.5,base+.5];p[axis]=Math.fround(base+f);
+  const shifted=q=>sample(q.map(v=>v-base+3));
+  assert.equal(opticalFieldSource(p,[1,1,1,1],shifted),bruteSource(p,[1,1,1,1],()=>false,shifted),'Float32 margin/face selection must match the original search');
+}
+{
+  const p=[3.2,3.3,3.4],own=p.map(Math.floor),exclude=q=>q.every((v,i)=>v===own[i]);
+  const result=opticalFieldSource(p,[1,1,1,1],sample,exclude);
+  assert.notEqual(result,sample(own),'an excluded current source cannot take the shortcut');
+  assert.equal(result,bruteSource(p,[1,1,1,1],exclude));
+}
 assert.deepEqual(opticalParticleInterval([-1,0.5,0.5],[1,0,0],[0,0,0]),[1,2]);
 assert.equal(opticalParticleInterval([-1,0.01,0.01],[1,0,0],[0,0,0]),null, 'voxel corner is not sphere');
 const sphereHit = opticalParticleInterval([-1,0.8,0.5],[1,0,0],[0,0,0]);

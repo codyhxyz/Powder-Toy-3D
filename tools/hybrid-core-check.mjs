@@ -1,6 +1,6 @@
 // CPU-only. Source reflection and command recording are NOT GPU validation.
 import assert from 'node:assert/strict';
-import { Matrix4,PerspectiveCamera } from 'three';
+import { Matrix4,PerspectiveCamera,Vector3 } from 'three';
 import { execFileSync,spawnSync } from 'node:child_process';
 import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { EventEmitter } from 'node:events';
@@ -14,7 +14,7 @@ import { E,ELEMENTS,R } from '../src/elements.js';
 import { LOOK } from '../src/gfx/materials.js';
 import { withVisibility } from '../src/gpu/kernels.js';
 import { checkReadbackAfterRender } from './hybrid-readback-cpu-check.mjs';
-import { probeWGSL,forceOverflowWGSL,producerProbeWGSL,readbackSentinelWGSL,motionWriteSentinelWGSL,motionProbeWGSL,watchFailures,resetFixture,checkedRead,verifyReadback,withFreshStaging,fixturePaintRate,sceneReadbackControl,validateFixture,renderCompleteFrames } from './harness/hybrid-full.js';
+import { probeWGSL,forceOverflowWGSL,producerProbeWGSL,readbackSentinelWGSL,motionWriteSentinelWGSL,motionProbeWGSL,watchFailures,resetFixture,checkedRead,verifyReadback,withFreshStaging,fixturePaintRate,sceneReadbackControl,validateFixture,renderCompleteFrames,paintFixture,GLOSSY_FIXTURE,FIXTURE_COMPONENTS } from './harness/hybrid-full.js';
 
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_DST: 8 };
 globalThis.GPUTextureUsage = { TEXTURE_BINDING: 4, COPY_DST: 2 };
@@ -25,6 +25,16 @@ assert(Object.hasOwn(grids,gridName)&&process.argv.length<=3,'Usage: node tools/
 const [nx,ny,nz]=grids[gridName],g = gridDims({nx,ny,nz});
 await checkReadbackAfterRender();
 validateFixture();
+for(const component of ['all',...FIXTURE_COMPONENTS]){
+  const painted=[];
+  paintFixture({THREE:{Vector3},sim:{paint:p=>painted.push(p)},volume:{matrixWorld:new Matrix4(),updateMatrixWorld(){}},
+    camera:new PerspectiveCamera(),controls:{target:new Vector3()}},{component});
+  assert.equal(painted.length,{all:13,opaque:2,smooth:4,media:4,optics:5,particles:6}[component],'controls must not weaken the default fixture');
+  assert(painted.some(p=>p.tool===E.WALL)&&painted.some(p=>p.tool===GLOSSY_FIXTURE));
+  if(component==='all')for(const id of [E.SAND,E.WOOD,E.WATER,E.GLASS,E.SMOKE,E.LAVA,E.FIRE])assert(painted.some(p=>p.tool===id));
+  if(component==='opaque')assert.deepEqual(painted.map(p=>p.tool),[E.WALL,GLOSSY_FIXTURE]);
+  if(component==='particles')assert(painted.filter(p=>p.radius<1).length===4);
+}
 {
   let attempts=0,ready=false,nativeError=false;
   const scopes=[];

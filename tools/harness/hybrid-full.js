@@ -77,7 +77,16 @@ export async function verifyReadback(gpu){
     return{upload,compute};
   }finally{buffer.destroy();}
 }
-export function paintFixture(a){
+export const FIXTURE_COMPONENTS=['opaque','smooth','media','optics','particles'];
+export function paintFixture(a,{component='all'}={}){
+  if(component!=='all'&&!FIXTURE_COMPONENTS.includes(component))throw new Error(`Unknown fixture component: ${component}`);
+  const wanted={
+    all:()=>true,opaque:()=>false,
+    smooth:(id,r)=>r>1&&(id===E.SAND||id===E.WOOD),
+    media:id=>id===E.SMOKE||id===E.FIRE,
+    optics:(id,r)=>r>1&&(id===E.WATER||id===E.GLASS||id===E.LAVA),
+    particles:(_,r)=>r<1,
+  }[component];
   const V=a.THREE.Vector3;
   const cube=(id,p,r)=>a.sim.paint({tool:id,center:new V(...p),radius:r,shape:1,rate:fixturePaintRate(id),replace:true});
   for(const [id,p,r]of[
@@ -86,7 +95,7 @@ export function paintFixture(a){
     [GLOSSY_FIXTURE,[64,37,70],5],[E.SAND,[57.5,34.5,82.5],.3],[E.WOOD,[61.5,34.5,82.5],.3],
     [E.WATER,[73.5,36.5,85.5],.3],[E.LAVA,[80,12,75],3],[E.FIRE,[85,33,83],2],
     [E.LAVA,[43.5,17.5,76.5],.3], // isolated emitter behind the glass slab
-  ])cube(id,p,r);
+  ])if(id===E.WALL||id===GLOSSY_FIXTURE||wanted(id,r))cube(id,p,r);
   a.volume.updateMatrixWorld();
   const display=p=>new V(...p).applyMatrix4(a.volume.matrixWorld);
   a.camera.position.copy(display([64,52,122]));
@@ -256,12 +265,16 @@ ${ProbeParams.wgsl}
   if(z<0.999999&&inGrid(cell)&&cell.y>=35&&eid(fetchA(cell))==E_WATER){atomicAdd(&counts[8],1u);}
   let rgb=textureLoad(color,p,0).rgb;
   if(z<0.999999&&inGrid(cell)&&eid(fetchA(cell))==E_GLASS&&rgb.r>2.0&&rgb.r>2.0*rgb.g){atomicAdd(&counts[9],1u);}
+  if(z<0.999999&&inGrid(cell)&&(eid(fetchA(cell))==E_SAND||eid(fetchA(cell))==E_WOOD)){atomicAdd(&counts[10],1u);}
+  if((textureLoad(optical,p,0).x<0.999999||textureLoad(media,m,0).a>0.001)
+    &&textureLoad(reactive,p,0).r<0.5){atomicAdd(&counts[11],1u);}
 }`;
 
-export async function run(a){
+export async function run(a,{component='all'}={}){
+  const control=component!=='all',smooth=component==='smooth'||!control,particles=component==='particles'||!control;
   const assert=(v,why)=>{if(!v)throw new Error(why);};
   const phase=message=>console.info(`[hybrid correctness] ${message}`);
-  phase('mixed-scene setup');
+  phase(control?`${component} control setup`:'mixed-scene setup');
   a.test.park();a.settings.paused=true;a.settings.upscale='native';
   a.autoRes.enabled=false;a.autoRes.scale=1;
   a.day.fixed={az:215,el:38};
@@ -271,7 +284,7 @@ export async function run(a){
   const steps=a.sim.frame;
   let counts,producerCounts;
   try{
-    const cube=paintFixture(a);
+    const cube=paintFixture(a,{component});
     phase('awaiting mixed-scene pipelines');
     await a.test.ready();
     phase('waiting for fixture upload before numerical rendering');
@@ -295,8 +308,16 @@ export async function run(a){
     const recorded=hybrid.motion.resources;
     assert(recorded?.motion===inputs.motion&&recorded?.reactive===inputs.reactive,'probe must use the recorded motion outputs');
     assert(recorded?.opticalDepth===hybrid.optics.output.metadata,'probe must use the motion pass optical input');
+    const expected={
+      all:[[[64,15,65],E.SAND],[[85,20,65],E.WOOD],[[73,36,85],E.WATER]],
+      opaque:[[[44,20,65],E.WALL],[[64,37,70],GLOSSY_FIXTURE]],
+      smooth:[[[64,15,65],E.SAND],[[85,20,65],E.WOOD]],
+      media:[[[85,25,84],E.SMOKE],[[85,33,83],E.FIRE]],
+      optics:[[[67,20,84],E.WATER],[[45,20,84],E.GLASS]],
+      particles:[[[57,34,82],E.SAND],[[61,34,82],E.WOOD],[[73,36,85],E.WATER],[[43,17,76],E.LAVA]],
+    }[component];
     const cells=(await checkedRead(gpu,'hybrid fixture cells',()=>
-      Promise.all([[64,15,65],[85,20,65],[73,36,85]].map(p=>a.sim.readCell(...p))))).map(([A])=>[...A]);
+      Promise.all(expected.map(([p])=>a.sim.readCell(...p))))).map(([A])=>[...A]);
     phase(`fixture cells ${JSON.stringify(cells)}; CPU smooth ${JSON.stringify(hybrid.smooth.stats)}`);
     const sourceBuffers=[hybrid.smooth.resources.status,hybrid.smooth.resources.args,hybrid.particles.resources.args,
       hybrid.particles.resources.opticalArgs,hybrid.geometry.resources.status,hybrid.legacyIndirect.buffer];
@@ -321,17 +342,21 @@ export async function run(a){
     };
     const producers=await readProducers();
     phase(`GPU producers ${JSON.stringify(producers)}`);
-    assert(cells[0][0]===E.SAND&&cells[1][0]===E.WOOD&&cells[2][0]===E.WATER,'mixed-material fixture must exist in actual state');
+    assert(cells.every((cell,i)=>cell[0]===expected[i][1]),`${component} fixture must exist in actual state`);
     assert(a.sim.derived.particleSplit,'Derived must remove instanced cells from smooth fields');
-    assert(producers.smooth[2]>0&&producers.smooth[0]===0&&producers.smoothArgs[0]>0,`cached smooth vertices required: ${JSON.stringify(producers)}`);
-    assert(producers.particleArgs[1]>0,'disjoint isolated instances required');
-    assert(producers.opticalArgs[1]>0,'liquid droplets must be GPU-instanced, not left in fullscreen traversal');
+    if(smooth){
+      assert(producers.smooth[2]>0&&producers.smooth[0]===0&&producers.smoothArgs[0]>0,`cached smooth vertices required: ${JSON.stringify(producers)}`);
+    }else assert(producers.smooth[2]===0,'control must not contain bulk smooth surfaces');
+    if(particles){
+      assert(producers.particleArgs[1]>0,'disjoint isolated instances required');
+      assert(producers.opticalArgs[1]>0,'liquid droplets must be GPU-instanced, not left in fullscreen traversal');
+    }else assert(producers.particleArgs[1]===0,'control must not contain isolated instances');
     assert(hybrid.optics.stats.draws>0&&hybrid.media.stats.draws>0,'dedicated optics/media must actually record');
     assert(inputs?.motion&&inputs?.reactive&&hybrid.motion.stats.frames>1,'motion must reach real post frames');
     // The fields are still converging. Native cache reuse has its own check;
     // another app tick here legitimately changes the smooth caster revision.
     assert(hybrid.shadows.stats.passes>0,'actual scene must record raster shadow casters');
-    counts=gpu.createBuffer({label:'hybrid full probe',size:40,usage:128|4|8});
+    counts=gpu.createBuffer({label:'hybrid full probe',size:48,usage:128|4|8});
     const layout=gpu.layout('HYBRID_FULL_PROBE',[
       ...[0,1,2,3,4].map(binding=>({binding,visibility:4,texture:{sampleType:'unfilterable-float'}})),
       {binding:5,visibility:4,texture:{sampleType:'uint'}},
@@ -354,7 +379,7 @@ export async function run(a){
         gpu.frame.direct().clearBuffer(counts);
         probe.dispatch(gpu.frame,[Math.ceil(post.inSize[0]/8),Math.ceil(post.inSize[1]/8),1],
           {bind:[gpu._frameUniforms.group,a.sim.bindRO,group],header:a.sim.header(),params:{clipToGrid:inverse}});
-        return Promise.all([gpu.readback.buffer(counts,0,40),gpu.readback.buffer(hybrid.legacyIndirect.buffer,0,48)]);
+        return Promise.all([gpu.readback.buffer(counts,0,48),gpu.readback.buffer(hybrid.legacyIndirect.buffer,0,48)]);
       });
       return{pixels:[...new Uint32Array(pixelBuffer)],acceptance:[...new Uint32Array(gateBuffer)]};
     };
@@ -366,6 +391,18 @@ export async function run(a){
       await probeMotionWrites(a);
     }
     assert(pixels[0]===post.inSize[0]*post.inSize[1],'probe extent');
+    if(control){
+      assert(pixels[3]>0&&pixels[4]===0&&pixels[7]>0,`${component} control needs reusable motion, finite HDR and visible glossy geometry`);
+      assert(pixels[11]===0,'optical/media coverage must reject temporal history at those same pixels');
+      assert((pixels[1]>0)===(component==='optics'||component==='particles'),'unexpected optical coverage');
+      assert((pixels[2]>0)===(component==='media'),'unexpected gas coverage');
+      if(smooth)assert(pixels[10]>0,'cached smooth surfaces must write visible pixels');
+      if(particles)assert(pixels[8]>0,'instanced water must write visible pixels');
+      assert(acceptance[0]===0&&acceptance[9]===0,'component control must suppress legacy');
+      assert(a.sim.frame===steps,'component control must not step physics');
+      return{component,pixels,acceptance,producers,steps,preparationAttempts};
+    }
+    assert(pixels[11]===0,'optical/media coverage must reject history pixel-for-pixel');
     assert(pixels[1]>0&&pixels[2]>0,'visible optical entry and smoke required');
     assert(pixels[3]>0&&pixels[5]>0,'both reusable motion and reactive pixels required');
     assert(pixels[4]===0&&pixels[6]===0,'no nonfinite HDR or routine optical fallback pixels');

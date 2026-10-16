@@ -5,7 +5,7 @@ import { Matrix4 } from 'three/webgpu';
 import { frameUniformsOf } from '../uniforms.js';
 import { retireMediaResources } from './fieldBounds.js';
 import {
-  opticsBoundsShader, opticsBoundsLayout, opticsShader, opticsBindings, opticsEntries, opticsFieldBindings, OpticsParams, OPTICS_STATE_LAYOUT, OPTICS_FALLBACK, dropDepthWGSL,
+  opticsBoundsShader, opticsBoundsLayout, opticsShader, opticsBindings, opticsEntries, opticsFieldBindings, OpticsParams, OPTICS_STATE_LAYOUT, OPTICS_FALLBACK, dropDepthWGSL, OPTICS_SOURCE_MARGIN,
 } from '../../shaders/hybrid/optics.js';
 export { OPTICS_FALLBACK } from '../../shaders/hybrid/optics.js';
 
@@ -481,6 +481,10 @@ export function opticalFieldNormal(p, fetch) {
 export function opticalFieldSource(p, density, sample, particle = () => false) {
   if (density.every(v => v < 0.5)) return null;
   const base = p.map(Math.floor); let best = Infinity, source = null;
+  const current = sample(base), channel = LOOK[current?.id]?.ch;
+  if (channel >= 0 && channel < 4 && density[channel] >= 0.5
+      && p.every((v,i) => v-base[i] > OPTICS_SOURCE_MARGIN && v-base[i] < 1-OPTICS_SOURCE_MARGIN)
+      && !particle(base)) return current;
   for (let z=-2; z<=2; z++) for (let y=-2; y<=2; y++) for (let x=-2; x<=2; x++) {
     const q = base.map((v,i) => v+[x,y,z][i]); const a = sample(q);
     const ch = LOOK[a?.id]?.ch;

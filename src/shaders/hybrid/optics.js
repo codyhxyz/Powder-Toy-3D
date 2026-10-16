@@ -12,6 +12,7 @@ export const OPTICS_FALLBACK = Object.freeze({
 export const OpticsParams = uniformStruct('OpticsParams', {
   gridInv: 'mat4x4f', size: 'vec2f', unsupported: 'u32', depthTolerance: 'f32', world: 'u32', particleSplit: 'u32',
 });
+export const OPTICS_SOURCE_MARGIN = 0.000001;
 export const opticsBindings = (binding = 0) => [
   { binding, visibility: STAGE.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
   { binding: binding + 1, visibility: STAGE.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } },
@@ -170,7 +171,8 @@ fn opticsFieldState(p: vec3f, cellState: vec4f) -> vec4f {
   let id = eid(cellState); let cell = vec3i(floor(p));
   // Crisp solids and exact isolated spheres are not bulk density.
   if (id != E_EMPTY && KIND(id) != K_GAS && SURFCH(id) < 0) { return cellState; }
-  if (opticsParticleOwns(cell, P.world != 0u)) {
+  let owned = opticsParticleOwns(cell, P.world != 0u);
+  if (owned) {
     if (distance(p, vec3f(cell)+vec3f(0.5)) <= ${THIN_RADIUS}) { return cellState; }
   }
   var best = 1e20; var source = vec4f(0.0);
@@ -180,6 +182,13 @@ fn opticsFieldState(p: vec3f, cellState: vec4f) -> vec4f {
   // No candidate can pass the test below. Do not scan 125 live sources
   // at every empty pre-entry/tetra step.
   if (all(density < vec4f(0.5))) { return source; }
+  // Away from cell-face ties, the current centre is the unique nearest
+  // candidate. Preserve the old search at faces and for excluded particles.
+  let ch = SURFCH(id); let f = fract(p);
+  if (ch >= 0 && ch < 4 && !owned
+      && all(f > vec3f(${OPTICS_SOURCE_MARGIN})) && all(f < vec3f(${1 - OPTICS_SOURCE_MARGIN}))) {
+    if (density[ch] >= 0.5) { return cellState; }
+  }
   // Live sources within field support; stale EMA alone is never matter.
   for (var z = -2; z <= 2; z++) { for (var y = -2; y <= 2; y++) { for (var x = -2; x <= 2; x++) {
     let q = base + vec3i(x,y,z);

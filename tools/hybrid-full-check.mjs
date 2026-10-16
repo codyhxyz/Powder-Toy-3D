@@ -2,17 +2,18 @@
 import assert from 'node:assert/strict';
 import { launchBrowser,newTestPage,ready,gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
-import { watchFailures,validateFixture } from './harness/hybrid-full.js';
+import { watchFailures,validateFixture,FIXTURE_COMPONENTS } from './harness/hybrid-full.js';
 validateFixture(); // pure preconditions must fail before taking a GPU slot
 const args=process.argv.slice(2);
 const flags=new Set(args);
-const modes=['--readback-only','--readback-controls','--mixed-readback-controls','--motion-only'];
+const componentModes=FIXTURE_COMPONENTS.map(c=>`--control=${c}`);
+const modes=['--readback-only','--readback-controls','--mixed-readback-controls','--motion-only','--opaque-control','--component-controls',...componentModes];
 const diagnostics=['--no-taa','--split-render'];
 assert(flags.size===args.length&&args.every(arg=>[...modes,'--gpudebug',...diagnostics].includes(arg))
   &&modes.filter(mode=>flags.has(mode)).length<=1
   &&diagnostics.filter(mode=>flags.has(mode)).length<=1
   &&!(diagnostics.some(mode=>flags.has(mode))&&modes.some(mode=>flags.has(mode))),
-  'Usage: node tools/hybrid-full-check.mjs [--readback-only | --readback-controls | --mixed-readback-controls | --motion-only] [--gpudebug] [--no-taa | --split-render]');
+  'Usage: node tools/hybrid-full-check.mjs [--readback-only | --readback-controls | --mixed-readback-controls | --motion-only | --opaque-control | --component-controls | --control=opaque|smooth|media|optics|particles] [--gpudebug] [--no-taa | --split-render]');
 const readbackOnly=flags.has('--readback-only'),motionOnly=flags.has('--motion-only'),mixed=flags.has('--mixed-readback-controls');
 const controls=mixed||flags.has('--readback-controls'),debug=flags.has('--gpudebug');
 const vite=await startVite({port:58476,harness:true});
@@ -55,7 +56,7 @@ try{
   await failures.check(page.goto(vite.url(`/?renderer=hybrid&test=manual&view=realistic&size=128&preset=empty&paused=1${debug?'&gpudebug=1':''}`)));
   phase('app initialization');
   await failures.check(ready(page));
-  const result=await failures.check(page.evaluate(async ({only,motion,noTaa,splitRender})=>{
+  const result=await failures.check(page.evaluate(async ({only,motion,noTaa,splitRender,component,series})=>{
     const h=await import('/tools/harness/hybrid-full.js'),a=window.__app;
     if(noTaa)a.post.settings.taa=false;
     if(splitRender){
@@ -68,8 +69,19 @@ try{
     }
     if(motion)return h.probeMotionWrites(a);
     if(only){a.test.park();await a.test.ready();return{readback:await h.verifyReadback(a.gpu)};}
-    return h.run(a);
-  },{only:readbackOnly,motion:motionOnly,noTaa:flags.has('--no-taa'),splitRender:flags.has('--split-render')}));
+    if(series){
+      const results=[];
+      for(const component of h.FIXTURE_COMPONENTS.filter(c=>c!=='opaque')){
+        try{
+          results.push(await h.run(a,{component}));
+          console.info(`[hybrid correctness] ${component} control passed`);
+        }catch(error){throw new Error(`${component} control failed: ${error.message}`);}
+      }
+      return{steps:a.sim.frame,componentControls:results};
+    }
+    return h.run(a,{component});
+  },{only:readbackOnly,motion:motionOnly,noTaa:flags.has('--no-taa'),splitRender:flags.has('--split-render'),
+    component:componentModes.find(c=>flags.has(c))?.split('=')[1]??(flags.has('--opaque-control')?'opaque':'all'),series:flags.has('--component-controls')}));
   let snapshot,fallback;
   if(!readbackOnly&&!motionOnly){
     snapshot=`/tmp/tpt-hybrid-full-${process.pid}.png`;
@@ -82,7 +94,7 @@ try{
     assert(!fallback.enabled&&!fallback.split&&fallback.steps===result.steps,JSON.stringify(fallback));
   }
   assert.equal(errors.length,0,errors.join('\n'));
-  console.log(JSON.stringify({passed:true,debug,validation:motionOnly?'motion writes only':readbackOnly?'readback only':flags.has('--split-render')?'split-render diagnostic only':flags.has('--no-taa')?'temporal-disabled diagnostic only':'numerical scene (not converged visual acceptance)',
+  console.log(JSON.stringify({passed:true,debug,validation:motionOnly?'motion writes only':readbackOnly?'readback only':flags.has('--component-controls')||componentModes.some(c=>flags.has(c))||flags.has('--opaque-control')?'component controls only':flags.has('--split-render')?'split-render diagnostic only':flags.has('--no-taa')?'temporal-disabled diagnostic only':'numerical scene (not converged visual acceptance)',
     result,fallback,snapshot,offlineRelay,adapter:await gpuInfo(page)},null,2));
   }
 }catch(error){
