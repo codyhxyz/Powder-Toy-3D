@@ -7,8 +7,9 @@ The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` w
 
 ## Current evidence — 2026-10-16
 
-Latest remote-main integration: `908c7a24`, including fetched `origin/main` at `3c1129cb`.
-This feature checkpoint is 158 commits ahead and none behind that production base.
+Latest remote-main integration: `222a8a97`, including fetched `origin/main` at `48eaf221`.
+This feature checkpoint is 164 commits ahead and none behind that production base.
+That last remote update changes documentation and a comment, not executable behavior.
 Work remains in `/tmp/tpt-physics-v2-finish`; the recovery checkout is untouched.
 Physics results describe the feature branch, not the live site.
 The separate test-safety and measurement-guard fixes are deployed.
