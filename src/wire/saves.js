@@ -109,7 +109,8 @@ const savesWire = {
         return {
           map: m?.key ?? null, mapName: m?.name ?? null, size: settings.size, preset: app.win ? null : settings.preset,
           world: app.win ? { scene: settings.scene, seed: app.worldSeed ?? null } : null,
-          industryMode: app.industry?.state.active ? app.gamemode : undefined,
+          // Runtime refusal must not erase the saved Factory/Sandbox mode.
+          industryMode: app.industry && !app.win && ['sandbox', 'factory'].includes(app.gamemode) ? app.gamemode : undefined,
           nativeDynamicsVersion: app.physics.v2?.dynamics ? 1 : undefined,
           guestCopy: app.mp.isGuest || undefined,   // a guest's copy of the host's world (no velocity or pressure: net/codec.js)
         };

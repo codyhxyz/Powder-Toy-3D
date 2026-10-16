@@ -118,6 +118,8 @@ const shiftNative = (dx, dz) => sim.nativeIntegration.beginShift(dx, dz, () => s
 assert.equal(owner.nativeDynamics, adapter, 'application does not overwrite foundation adapter');
 assert.equal(nativeCapabilities(sim).world, true);
 assert.equal(nativeReadiness(sim, { world: true, pov: true }).ready, true);
+assert.equal(nativeReadiness(sim, { industry: true }).ready, false, 'Factory transport is not native momentum');
+assert.match(nativeReadiness(sim, { industry: true }).reason, /require V1/);
 owner.contactReady = false;
 assert.equal(nativeReadiness(sim, { world: true }).ready, false, 'pipeline names alone do not advertise contact parity');
 owner.contactReady = true;

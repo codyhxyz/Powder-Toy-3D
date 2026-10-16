@@ -1,5 +1,5 @@
 import { emitNativeRay, nativeRayKind } from './v2/tools.js';
-import { nativeHostSteps, nativeHostTick, nativeReadiness } from './v2/host.js';
+import { nativeHostSteps, nativeHostTick, nativeReadiness, INDUSTRY_V2_UNAVAILABLE } from './v2/host.js';
 // The game (docs/webgpu.md J1 U8): the settings, the grid and its scene, the
 // UI and input, and the frame loop, on one WebGPU device (src/gpu, B1).
 //
@@ -283,7 +283,8 @@ settings.paused = params.get('paused') === '1' || testMode === 'manual' || testM
 // Experimental native physics remains opt-in until measured parity/performance
 // acceptance. Worlds/POV use explicit readiness, never a silent v1 fallback.
 // Multiplayer guests are deliberately render-only, irrespective of host engine.
-let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
+  let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
+  let ctx; // Readiness also runs during picker construction, before wires attach.
 async function loadNativePhysics() {
   const [physics, contact, dynamics] = await Promise.all([import('./v2/physics.js'), import('./shaders/v2/contact.js'), import('./v2/dynamics.js')]);
   return { ...physics, options: { contactWGSL: contact.contactWGSL, Dynamics: dynamics.NativeDynamics } };
@@ -754,6 +755,7 @@ async function startMode(mode, { fresh = false } = {}) {
   }
   selectedMode = chosen.key;
   if (chosen.key === 'factory') hud.dismissHint(); // Sandbox's free-pouring hint is wrong here.
+  if (chosen.key === 'factory' && v2Box()) hud.toast(INDUSTRY_V2_UNAVAILABLE, { kind: 'error' });
   applyGravity();
   ctx.industry?.modeChanged();
   presentation.select(chosen.effect ?? null);
@@ -2430,7 +2432,10 @@ function viewClock(held) {
   // Remote replicas use legacy presentation without running either engine.
 // (declarations: the tool picker asks before this line has run)
 function v2Box() { return physicsMode === 'v2' && !mp.replica; }
-function v2Status() { return nativeReadiness(sim, { world: !!win, pov: !!pov?.active, guest: mp.replica }); }
+  function v2Status() {
+    return nativeReadiness(sim, { world: !!win, pov: !!pov?.active, guest: mp.replica,
+      industry: selectedMode === 'factory' || !!ctx?.industry?.hasMachines || !!ctx?.industry?.pending });
+  }
 function v2Active() { return v2Box() && v2Status().ready; }
 // The simulation records nothing per step (certified idle: sim.js step(); v2's own), so ticking it is pointless.
 const simAsleep = () => (v2Box() ? v2Active() && v2Running && physicsV2.asleep
@@ -2555,8 +2560,12 @@ function tick(now, renderOnly = false) {
     animTime += stepped / 60;
     stepOnce = false;
   } else if (stepping) {
-    if (v2Running) { physicsV2.suspend(); v2Running = false; }
-    for (let i = 0; i < settings.steps; i++) { scripts?.beforeStep(); weatherWire.step(ctx); sim.step(); scripts?.afterStep(); }
+      if (v2Running) { physicsV2.suspend(); v2Running = false; }
+      for (let i = 0; i < settings.steps; i++) {
+        scripts?.beforeStep(); weatherWire.step(ctx); sim.step();
+        ctx.industry?.nativeStep();
+        scripts?.afterStep();
+      }
     if (DAY.running) day.clock += settings.steps;
     animTime += dt;
     stepOnce = false;
@@ -2720,7 +2729,7 @@ function tick(now, renderOnly = false) {
 // ---------------------------------------------------------------- the wires' view of the app (src/wire)
 // What a subsystem's wiring reads and sets: the device, the grid, the scene,
 // the UI, and the subsystems' slots, which the wires fill.
-const ctx = {
+  ctx = {
   // J3's app: { gpu, three, sim, derived, scene, camera, settings, pacer, post } (three is the renderer, also as `renderer`)
   gpu, three: renderer, renderer, pacer, canvas, post, presenter, cut, overlays, brush, scene, camera, controls, rig, settings, DEFAULTS, SIZES, WORLDS,
   hover, day, sun: SUN, keyLight: KEY_LIGHT, toolGun, camGrid, sceneByKey,
@@ -2921,7 +2930,10 @@ try {
     // Saved engine modes also use this boundary. physics: { mode, active, v2 (its PhysicsV2) }
     async setPhysics(mode) {
       if (mode !== 'v1' && mode !== 'v2') throw new Error(`setPhysics: 'v1' or 'v2', not ${mode}`);
+      if (mode === 'v2' && ctx.industry?.pending) throw new Error('Wait for the machine transfer before changing physics.');
       if (mode === 'v2') V2mod ??= await loadNativePhysics();
+      // Loading the module yields. A transfer may start during that interval.
+      if (mode === 'v2' && ctx.industry?.pending) throw new Error('Wait for the machine transfer before changing physics.');
       if (mode === 'v1') {
         // Keep native mode published while legacy builds: the running loop must
         // not step unbuilt kernels. A map change meanwhile needs its own prepare.
@@ -2983,7 +2995,7 @@ try {
             before: nativeBeforeStep, after: () => scripts?.afterStep(),
           });
         } else for (let i = 0; i < count; i++) {
-          weatherWire.step(ctx); sim.step();
+          weatherWire.step(ctx); sim.step(); ctx.industry?.nativeStep();
           lightning?.update(sim, { worldEpoch: win?.epoch, worldIdentity: win });
         }
         if (DAY.running) day.clock += count;

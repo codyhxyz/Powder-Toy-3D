@@ -1,0 +1,164 @@
+{
+  "audited_build": "2c5cb27ded2a9683245e71f249b1ccfcee7edd4a",
+  "source_archive": "main-pre-inventory-restore-2026-05-21/world",
+  "original_file": "world_-1024_2048.png_petri",
+  "original_sha256": "608c56408abf559cf6392dbd1c19f8058964ac92173021869753e84248f5631d",
+  "decoded_sha256": "adf92d02eea01d0fec83e3480e8c40fad6a41df4e578b6175d8d313bf65a6e3f",
+  "origin": [
+    -1024,
+    2048
+  ],
+  "shape": [
+    512,
+    512
+  ],
+  "compared_cells": 262144,
+  "mismatched_native_material_names": 0,
+  "capture_source_anchor": {
+    "source": [
+      -589.5,
+      2285,
+      0
+    ],
+    "local_cell": [
+      434,
+      237
+    ],
+    "original_material": "moss",
+    "published_material": "moss",
+    "scene": "noitaTerrain04",
+    "world": [
+      3747.0925494582016,
+      51,
+      2925.9808776740488
+    ],
+    "limitation": "Source coordinates and native material query were logged by the CPU sampler during the GPU capture, not a direct GPU voxel readback."
+  },
+  "published_bands": [
+    {
+      "key": "noitaTerrain04",
+      "file": "noitaTerrain04.binpack",
+      "sha256": "5377f3c9233fe168d10db0bb3e4413dfde0f5247d12b5c46b8b55c60eab0d52b",
+      "core": [
+        2048,
+        2304
+      ]
+    },
+    {
+      "key": "noitaTerrain05",
+      "file": "noitaTerrain05.binpack",
+      "sha256": "e6fed3a7625dff9122feef88135e1ae898dfacf7413d4bcee49ce3785e613153",
+      "core": [
+        2304,
+        2560
+      ]
+    }
+  ],
+  "native_material_counts": {
+    "air": 165926,
+    "coal_static": 53992,
+    "rock_static_grey": 31962,
+    "moss": 970,
+    "radioactive_liquid": 718,
+    "soil": 5,
+    "smoke": 606,
+    "wood_static": 80,
+    "gold": 596,
+    "ice_radioactive_static": 392,
+    "rotten_meat": 147,
+    "rock_static_radioactive": 2,
+    "ice_blood_static": 26,
+    "blood": 36,
+    "metal_rust_molten": 3,
+    "wood_static_vertical": 6,
+    "coal": 834,
+    "smoke_explosion": 6,
+    "grass": 2,
+    "ceiling_plant_material": 5,
+    "plant_material_red": 1,
+    "rock_static": 1,
+    "oil": 2,
+    "magic_liquid_teleportation": 26,
+    "templebrick_static": 5800
+  },
+  "native_game_archive_sha256": "c95a0c01a55ec29267afef6bbec8a0cae0ba2b350638e2203674ed4dfb9227c3",
+  "native_materials_xml_sha256": "122df34514edaf312e1a15a619b3d6a44d49ce605c929d5950c9051a57429d04",
+  "native_texture_sources": [
+    {
+      "path": "data/materials_gfx/coal.png",
+      "sha256": "ddaf72e522b7def8e9db15e394677d932497302792f92efc92b5d78bd6825db5"
+    },
+    {
+      "path": "data/materials_gfx/coal_static.png",
+      "sha256": "27d084d7f88ee904643a96dadc7206ad2ece7998c2f6c6770d61fc1d5f18168e"
+    },
+    {
+      "path": "data/materials_gfx/gold.png",
+      "sha256": "e654a8641545626a120eb1084e069e736b6417e0d5f894b33b9d1fa28620ad34"
+    },
+    {
+      "path": "data/materials_gfx/grass.png",
+      "sha256": "7d9a007a690b7c344ff1f6ed5a1cfcce4c35300a4352a0b5e71cd15b2154e267"
+    },
+    {
+      "path": "data/materials_gfx/ice_blood.png",
+      "sha256": "59eea1f0145da1ee7919dbede05e5104e5204c77aad6e4648458f545f564b257"
+    },
+    {
+      "path": "data/materials_gfx/ice_radioactive.png",
+      "sha256": "8cd10a87c0d986a35af4b22fe7c368303f810381ffca4c7b4580858955f19f98"
+    },
+    {
+      "path": "data/materials_gfx/lavarock.png",
+      "sha256": "e5327314ecd99bcc6171765a565a0f8e63dd88bbbf755ecae8e558a97cf78135"
+    },
+    {
+      "path": "data/materials_gfx/meat_rotten.png",
+      "sha256": "33e0b60cd12090440f1796a6bba11677beec9331c26cb23405d50ba414754d2c"
+    },
+    {
+      "path": "data/materials_gfx/moss.png",
+      "sha256": "df78f0fe110fcf0c382f5b8c979d218789bab34b620c3f4ec540231bbf885df4"
+    },
+    {
+      "path": "data/materials_gfx/rock.png",
+      "sha256": "df3ccb53f58ead2f26ba97161424a8e53de45e6cc0c12c9b1b823a20ec9c8c9e"
+    },
+    {
+      "path": "data/materials_gfx/rock_grey.png",
+      "sha256": "23d90f944fe963242d5840e22adb58188d0129c27973dd13727bae1fec5636f3"
+    },
+    {
+      "path": "data/materials_gfx/rock_radioactive.png",
+      "sha256": "62b02d14d871226edc7a72eed0dd317cbf9762958f0e1d92eea22bbdcb35125a"
+    },
+    {
+      "path": "data/materials_gfx/soil.png",
+      "sha256": "7c3b4951a59c9c97045d2394763c712ddbca8131168a63fe05a2f9094da81f12"
+    },
+    {
+      "path": "data/materials_gfx/steel.png",
+      "sha256": "060a725ba7d4293067bfc81a69cf2dde18bed57df178b2ac7e3de10b97b0f420"
+    },
+    {
+      "path": "data/materials_gfx/templebrick.png",
+      "sha256": "47aad951e8440e91cf42db595794ea1a69d133250b2225f72d1d52a0771dd94a"
+    },
+    {
+      "path": "data/materials_gfx/wood.png",
+      "sha256": "f039a1de3658a3c734068fe161a3e8c51c95dc9eb561ad8734b00028a37af8c7"
+    },
+    {
+      "path": "data/materials_gfx/wood_vertical.png",
+      "sha256": "8f39c36d2d7fae6bfd3ff8b25b37c8b236e836c7262d7cdfed4367c580fbb9c7"
+    }
+  ],
+  "uncolored_native_materials": [
+    "blood",
+    "magic_liquid_teleportation",
+    "smoke",
+    "smoke_explosion"
+  ],
+  "image_statement": "Both images use the same diagnostic foreground renderer: native textures tiled at source coordinates; material Graphics color where no texture exists. Not Noita screenshots. Saved color overrides, edge art, backgrounds, bodies, entities and lighting are not reconstructed.",
+  "scope": "This checks one 512x512 material grid from the original saved file against published native raster data. It does NOT establish a straight port of geometry, appearance, physics, gameplay, or the full map."
+}
