@@ -3127,7 +3127,7 @@ try {
         // Two initial frames observe post-setting and spawner-transform changes.
         pacer.wake(); // also covers direct setting edits that aren't in the view key
         if(win){
-          const world=win;let n=0;
+          const world=win;let n=0,lastImageAt=performance.now();
           while(n<2||!pacer.settled||world.renderFrame?.driver?.busy){
             if(n>pacer.settleLimit)throw new Error('Test render did not converge');
             const before=world.renderFrame?.driver?.displayedMainFrame?.frameIdentity;
@@ -3139,7 +3139,8 @@ try {
             if(graphicsFailure)throw graphicsFailure;
             if(win!==world)throw new Error('World changed during test render');
             const after=world.renderFrame?.driver?.displayedMainFrame?.frameIdentity;
-            if(after&&after!==before)n++;
+            if(after&&after!==before){n++;lastImageAt=performance.now();}
+            else if(performance.now()-lastImageAt>=10000)throw new Error('Test render received no MAIN image for 10 seconds');
           }
           return n;
         }

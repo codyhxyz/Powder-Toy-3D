@@ -40,6 +40,15 @@ test('actual WORLD snapshot helper yields for native phases and counts confirmed
     tick(){ticks++;},gpu:{async fence(){fences++;}}});
   assert.equal(await box(),2);assert.equal(ticks,2);assert.equal(fences,1);
 });
+test('WORLD snapshot rejects a no-image stall by elapsed time, not preparation tick count',async()=>{
+  let wall=0,ticks=0;
+  const render=renderMethod({win:{renderFrame:{driver:{busy:true,displayedMainFrame:null}}},
+    coreWait:Promise.resolve(),graphicsFailure:null,performance:{now:()=>wall},
+    pacer:{wake(){},settled:false,settleLimit:2},gpu:{async fence(){}},
+    tick(){ticks++;wall+=2000;}});
+  await assert.rejects(render(),/no MAIN image for 10 seconds/);
+  assert.equal(ticks,5);
+});
 
 test('actual core startup retains physics/picks but never warms a BOX view for WORLD',()=>{
   const begin=source.indexOf('const core = coreWait = Promise.all(')+'const core = coreWait = Promise.all('.length;
