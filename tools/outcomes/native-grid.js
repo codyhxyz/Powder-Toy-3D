@@ -37,9 +37,10 @@ export async function readNativeState(v2) {
 export function toGrid({ layout: l, origin = [0, 0, 0], cells, banks, particles, air }) {
   const { nx, ny, nz } = l, n = nx * ny * nz;
   const words = new Uint32Array(cells), bank = new Int32Array(banks), a = new Float32Array(air);
+  // Complete motion is unsupported; never classify unknown/NaN as moving.
   const g = { nx, ny, nz, id: new Int32Array(n), amount: new Float32Array(n), gridAmount: new Float32Array(n),
     T: new Float32Array(n), burning: new Uint8Array(n), pressure: new Float32Array(n),
-    moving: new Uint8Array(n), velocityKnown: new Uint8Array(n).fill(1), vel: new Float32Array(n * 3), airVel: new Float32Array(n * 3),
+    moving: null, velocityKnown: new Uint8Array(n).fill(1), vel: new Float32Array(n * 3), airVel: new Float32Array(n * 3),
     bank: new Int32Array(n), ctype: new Uint8Array(n), life: new Float32Array(n), particles: [] };
   for (let y = 0; y < ny; y++) for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) {
     const i = x + nx * (z + nz * y), s = cellSlot(l, x, y, z), core = words.subarray(s * 4, s * 4 + 4);
@@ -52,12 +53,11 @@ export function toGrid({ layout: l, origin = [0, 0, 0], cells, banks, particles,
     // these as SI velocity; air velocity belongs only to air/gas, not stationary solids.
     if ([K.EMPTY, K.GAS].includes(ELEMENTS[c.id]?.kind)) g.vel.set(a.subarray(b, b + 3), i * 3);
     else if (ELEMENTS[c.id]?.kind === K.POWDER) g.vel[i * 3 + 1] = -gridFallVelocity(core);
-    else if (ELEMENTS[c.id]?.kind === K.LIQUID && (core[2] !== 0 || (core[3] & 65535) !== 0)) {
-      // Three packed face fluxes are NOT a unique cell velocity. Fail numerical
-      // velocity assertions honestly rather than report flowing liquid as still.
+    else if (ELEMENTS[c.id]?.kind === K.LIQUID) {
+      // Neither zero owned lanes nor zero saved flux certify rest: negative faces
+      // belong to neighbors, and this format has no resident momentum provenance.
       g.vel.fill(NaN, i * 3, i * 3 + 3); g.velocityKnown[i] = 0;
     }
-    g.moving[i] = g.vel.subarray(i * 3, i * 3 + 3).some(v => v !== 0) ? 1 : 0;
   }
   const bytes = new Uint8Array(particles);
   const particleWords = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

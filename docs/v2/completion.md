@@ -322,6 +322,20 @@ This diffusion stays a conservation reference, not a native implementation candi
 No coefficient is tuned and no engine, momentum allocation or save format changes.
 Read-only planning now checks whether existing exact-state APIs can independently unblock folded-world handoffs.
 
+Oracle `34ab28c1` finds no unrestricted native handoff through the current APIs.
+Native bricks preserve all core/bank bytes, but do not contain dynamic packets, air, events or held-session custody.
+Band-local coordinates, run-cache save ownership and failure publication still need explicit handling.
+The current native fold refusal remains; a material-only copy is not presented as complete support.
+
+The concrete false-rest diagnostic identified by `7103c6f0` is now corrected.
+`native-grid.js` marks every resident liquid velocity unknown, including zero owned flux and restored zero-flux bytes.
+Its `moving` field is `null`, as allowed by the outcome interface, rather than treating NaN as movement.
+This changes observations, not physical state or motion criteria.
+Red/green regressions cover all three neighbor-owned negative faces and fresh/restored zero-flux material.
+All eight native-grid CPU groups and seven SPLASH-observer groups pass.
+Both real native/app adapter capability checks still report complete velocity as false.
+Original physical outcomes remain unsupported or unproved as previously recorded.
+
 The unchanged water fixture uses 128³ cells, 1280×720 output, DPR 1, and quality scale 2/3.
 The benchmark includes physics, rendering, and the GPU completion fence.
 Native frames use no legacy bridge dispatches.

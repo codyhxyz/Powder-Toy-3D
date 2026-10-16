@@ -158,5 +158,32 @@ test('app compatibility uses canonical census and cannot certify particle-only a
 test('nonzero liquid face flux is not falsely reported as zero cell velocity', () => {
   const f=fixture(), m=makeMaterial(E.WATER); m.core[2]=1;
   put(f,[1,1,1],m); const g=toGrid(f),i=at(g,1,1,1);
-  assert.equal(g.velocityKnown[i],0); assert.ok(Number.isNaN(g.vel[i*3])); assert.equal(g.moving[i],1);
+  assert.equal(g.velocityKnown[i],0); assert.ok(Number.isNaN(g.vel[i*3])); assert.equal(g.moving,null);
+});
+test('negative-face motion cannot certify liquid with zero owned lanes as stationary', () => {
+  for (let axis = 0; axis < 3; axis++) {
+    const f = fixture(), target = [2,2,2], neighbor = [...target], flowing = makeMaterial(E.WATER);
+    neighbor[axis]--;
+    // Half-float 1.0 in the neighbor-owned +face lane; target owns no flux.
+    if (axis === 0) flowing.core[2] |= 0x3c00;
+    if (axis === 1) flowing.core[2] |= 0x3c000000;
+    if (axis === 2) flowing.core[3] |= 0x3c00;
+    put(f, target, makeMaterial(E.WATER)); put(f, neighbor, flowing);
+    const saved = new Uint8Array(f.cells).slice(), g = toGrid(f), i = at(g, ...target);
+    assert.equal(g.velocityKnown[i], 0, `axis ${axis}: neighbor-owned negative face is not known rest`);
+    assert([...g.vel.subarray(i * 3, i * 3 + 3)].every(Number.isNaN));
+    assert.deepEqual(new Uint8Array(f.cells), saved, 'observation does not change packed state');
+  }
+});
+test('zero-flux fresh and restored material bytes have no resident-liquid rest certificate', () => {
+  const fresh = fixture();
+  put(fresh, [2,2,2], makeMaterial(E.WATER));
+  const restored = { ...fresh, cells: fresh.cells.slice(0), banks: fresh.banks.slice(0) };
+  for (const f of [fresh, restored]) {
+    const g = toGrid(f), i = at(g, 2,2,2);
+    assert.equal(g.velocityKnown[i], 0);
+    assert([...g.vel.subarray(i * 3, i * 3 + 3)].every(Number.isNaN));
+    assert.equal(g.moving, null, 'unknown motion is not published as proven moving or stationary');
+    assert.equal(g.gridAmount[i], 1);
+  }
 });
