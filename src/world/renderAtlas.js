@@ -243,19 +243,29 @@ function createResources(device, layout, previous) {
 function packetAddress(name, pid, layout, record = 0) {
   return name === 'aux' ? auxTexel(pid, record, layout) : PAGE_CHANNELS[name][1] === 'cells' ? pageTexel(pid, 0, layout) : probeTexel(pid, layout);
 }
+function copyAuxPacket(encoder, from, to, pid, light = false) {
+  const address = light ? lightTexel : auxTexel, count = light ? LIGHT_RECORDS : AUX_RECORDS;
+  for (let record = 0; record < count;) {
+    const source = address(pid, record, from.layout), destination = address(pid, record, to.layout);
+    // Split at BOTH physical row boundaries, including differing geometries.
+    const width = Math.min(count - record, from.layout.aux.width - source[0], to.layout.aux.width - destination[0]);
+    encoder.copyTextureToTexture({ texture: from.textures.aux, origin: source },
+      { texture: to.textures.aux, origin: destination }, [width, 1, 1]);
+    record += width;
+  }
+}
 function copyJob(encoder, from, to, p) {
   if (p.kind === 'cell') {
     for (const name of ['stateA', 'stateB', 'field0', 'field1', 'field2', 'aux']) {
       if (from.textures[name] === to.textures[name]) continue;
-      for (let r = 0; r < (name === 'aux' ? AUX_RECORDS : 1); r++) encoder.copyTextureToTexture(
-        { texture: from.textures[name], origin: packetAddress(name, p.id, from.layout, r) },
-        { texture: to.textures[name], origin: packetAddress(name, p.id, to.layout, r) }, name === 'aux' ? [1, 1, 1] : [8, 8, 1]);
+      if (name === 'aux') copyAuxPacket(encoder, from, to, p.id);
+      else encoder.copyTextureToTexture(
+        { texture: from.textures[name], origin: packetAddress(name, p.id, from.layout) },
+        { texture: to.textures[name], origin: packetAddress(name, p.id, to.layout) }, [8, 8, 1]);
     }
   } else {
     // Even identical aux geometry needs a new texture when descriptorBase moves.
-    if (from.textures.aux !== to.textures.aux) for (let r = 0; r < LIGHT_RECORDS; r++) encoder.copyTextureToTexture(
-      { texture: from.textures.aux, origin: lightTexel(p.id, r, from.layout) },
-      { texture: to.textures.aux, origin: lightTexel(p.id, r, to.layout) }, [1, 1, 1]);
+    if (from.textures.aux !== to.textures.aux) copyAuxPacket(encoder, from, to, p.id, true);
     if (p.probeID !== null) for (const name of ['gi0', 'gi1', 'gi2', 'gi3', 'glow']) {
       if (from.textures[name] === to.textures[name]) continue;
       encoder.copyTextureToTexture({ texture: from.textures[name], origin: probeTexel(p.probeID, from.layout) },

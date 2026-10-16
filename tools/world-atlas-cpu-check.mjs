@@ -1,4 +1,5 @@
 // CPU only: real public helpers and command-recording/memory GPU double.
+import './world-atlas-copy-cpu-check.mjs';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
