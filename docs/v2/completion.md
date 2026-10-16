@@ -7,8 +7,8 @@ The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` w
 
 ## Current evidence — 2026-10-15
 
-Latest remote-main integration: `afc6ef4f`, including fetched `origin/main` at `2c5cb27d`.
-This feature checkpoint is 154 commits ahead and none behind that production base.
+Latest remote-main integration: `908c7a24`, including fetched `origin/main` at `3c1129cb`.
+This feature checkpoint is 158 commits ahead and none behind that production base.
 Work remains in `/tmp/tpt-physics-v2-finish`; the recovery checkout is untouched.
 Physics results describe the feature branch, not the live site.
 The separate test-safety and measurement-guard fixes are deployed.
@@ -17,9 +17,9 @@ The native engine now includes contact rules, heat, phases, particles, air,
 jets, modes, exact persistence, and direct rendering.
 CPU coverage does not establish complete GPU feature parity.
 
-The latest merge adds four materials from production main.
+Earlier integration `afc6ef4f` adds four materials from production main.
 Contact and phase checks cover all 95 materials.
-All 49 applicable CPU scripts pass after removal of the candidate-specific uniform test.
+All 51 applicable CPU scripts pass after the phase prototype and Factory boundary checks.
 Terrain, adapter and build checks also pass.
 The new folded-terrain cache cannot yet preserve exact native core and bank state.
 Native capture and restore refuse before touching legacy stores, rather than losing that state.
@@ -103,10 +103,38 @@ No browser, simulation or backend compilation started.
 No override or automatic retry occurred.
 Hardware acceptance and compile benefit remain unproven.
 
-The prototype stays on frozen base `b119bff1`.
-The subsequent fetch finds main at `afad9acb`, leaving that base 155 ahead and 90 behind.
-Those remote changes do not modify the v2 shader/table files or dependencies.
-Broader app reconciliation remains required before completion.
+The prototype first passes CPU validation on frozen base `b119bff1`.
+Integration `908c7a24` then incorporates the newer Factory and world presentation changes.
+It leaves the v2 shaders, packed tables, physical rules and dependencies unchanged.
+Hardware acceptance of the phase prototype remains open.
+
+**Factory integration boundary:** new molten-charge guidance writes legacy B velocity.
+That velocity does not define native particle momentum.
+Factory's “native step” hook means the legacy TPT cadence, not the 60-Hz v2 host.
+The merge retains that hook only beside legacy simulation steps.
+It does not multiply fuel consumption or invent a momentum conversion.
+
+V2 readiness refuses Factory mode and registered or pending machine operations.
+The controller refuses machine work while v2 is requested, including waits before a retained owner reactivates.
+It reports the unsupported operation rather than silently stepping V1.
+A retained, suspended native owner does not disable V1 Factory.
+Engine activation refuses pending machine transfers, including transfers that start during module loading.
+Concurrent engine-change requests refuse until the current change finishes.
+The serialization guard clears on success and preparation failure.
+
+Registration and cargo snapshots remain restorable while machine operation is unavailable.
+Save headers retain Factory or Sandbox mode despite the runtime refusal.
+Construction retains the new hearth shell, tagged pump backplate and selective demolition.
+Explicit ownership claims apply only inside admitted replacement branches.
+
+The real-controller and app-method CPU fixtures check refusal, unchanged words, metadata, asynchronous activation and V1 dispatch.
+The 17 Factory orchestration checks, diagnostics, surface-mesh checks, CPU Naga validation and production build also pass.
+These checks do not establish Factory physics parity under v2.
+Review `c4a72bcc` finds a retained-owner admission race in merge `908c7a24`.
+A deterministic CPU interleaving reproduces machine removal during the activation wait.
+Fix `f7ee74f9` closes admission through the requested engine mode and serializes engine changes.
+The same regression now passes, alongside all 51 CPU suites and the build.
+Independent re-review remains pending.
 
 ### Renderer-connected measurements
 
@@ -394,9 +422,18 @@ Local evidence:
 - `/tmp/v2-phase-table-build.log`
 - `/tmp/v2-native-census-5d417d93.jsonl`
 - `/tmp/v2-native-census-5d417d93-run.log`
+- `/tmp/v2-factory-merge-all-cpu.log`
+- `/tmp/v2-factory-integration-cpu.log`
+- `/tmp/v2-factory-physics-cpu.log`
+- `/tmp/v2-factory-diagnostics-cpu.log`
+- `/tmp/v2-factory-surface-cpu.log`
+- `/tmp/v2-factory-merge-build.log`
+- `/tmp/v2-factory-admission-all-cpu.log`
+- `/tmp/v2-factory-admission-physics-cpu.log`
+- `/tmp/v2-factory-admission-build.log`
 
-Remaining gates include full GPU feature coverage, reliable matched performance,
-fresh production checks, independent review, deployment, and a live-site check.
+Remaining gates include native Factory support, lossless folded-terrain handoff, full GPU feature coverage, and reliable matched performance.
+Fresh production checks, independent review, deployment, and a live-site check also remain open.
 V1 remains the default.
 
 ## Earlier startup checks — 2026-10-14 (historical)
