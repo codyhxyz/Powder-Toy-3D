@@ -384,7 +384,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
     }
     wake();return true;
   };
-  const wait=(p,work,next)=>{p.phase='waiting';p.work=Promise.resolve(work).then(value=>{
+  const wait=(p,work,next)=>{p.phase='waiting';p.waitTarget=next;p.work=Promise.resolve(work).then(value=>{
     if(dead || pending!==p){value?.release?.();return;}
     p.result=value;p.phase=next;wake();
   },error=>{if(!dead&&pending===p){failure=error;p.phase='failed';rejectStill(p,error);for(const job of stills.splice(0))job.reject(error);wake();}});};
@@ -397,6 +397,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
     wait(p,Promise.all([state.data.extend(old,feedback),releasePreflight(app,preflight)]).then(([data])=>data).finally(()=>old.release()),'data');
   };
   return {
+    get phase(){return pending ? pending.phase+(pending.phase==='waiting'?':'+pending.waitTarget:'') : 'idle';},
     get busy(){return !!pending || !!pickDemands.size || !!stills.length;},get failure(){return failure;},get accepted(){return accepted;},
     queueStill,requestStill:queueStill,
     get displayedMainFrame(){return displayedMainFrame;},queuePickDemand,

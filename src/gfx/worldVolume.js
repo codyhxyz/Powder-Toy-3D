@@ -239,7 +239,8 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       });
     } catch(e) {snapshot?.release();owned.forEach(b=>b.destroy());throw e;}
   }
-  return Object.freeze({g:grid,layouts,pickLayouts,pointLayouts,pipeline,pipelineState,viewReady,pickState,plainPickState,pickPipelineState,
+  return Object.freeze({get pipelineStates(){return Object.freeze([...pipes].map(([key,p])=>Object.freeze({key,state:p.state,error:p.error?.message??null})));},
+    g:grid,layouts,pickLayouts,pointLayouts,pipeline,pipelineState,viewReady,pickState,plainPickState,pickPipelineState,
     pointState,pointReady,signsState,signsReady,signsLayouts,prepare,ready:pickReady,
     dispose(){dead=true;/* candidates own their pinned lifetimes; no shared resource mutation */}});
 }
