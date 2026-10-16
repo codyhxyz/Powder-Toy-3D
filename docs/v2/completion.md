@@ -292,6 +292,26 @@ Next is a finite-time quantized update with an explicit admission/error budget.
 Oblique and radial geometry, wet/dry transport, original outcome acceptance and performance remain unproved.
 No production, layout, save-format or GPU change occurs.
 
+Review `83d4154a` clears that aligned constitutive/face proposal, not a three-dimensional native model.
+It identifies near-coincident means and a finite quantized step as the next numerical gates.
+The shared CPU reference now uses stable divided differences and checks equal-state flux directly.
+Additional samples straddle `fc` and compare close unequal enthalpies against numerical quadrature.
+
+`tools/v2/quantized-momentum-check.mjs` tests one finite step on a fully wet, one-material horizontal periodic ring.
+Seven independent cases accept with exact integer fill and all three integer momentum totals.
+The Q24 reference representation is not an approved native ABI or cross-material persistence format.
+Mass rounding also adjusts advective momentum before each face's canonical integer impulse is shared.
+A Taylor error bound is calculated before rounding, not inferred from the resulting energy error.
+All sixteen error-box corners are checked for each reference cell.
+The maximum sampled bound is about `1.97909e-5` in units of `fullCellMass*c²`.
+Moving samples dissipate more than that bound.
+Five atomic refusals preserve original state for capacity, unknown, dry, overflow and near-dry-bound conditions.
+
+The timestep cost remains explicit: up to three reference microsteps per native liquid substep for one axis.
+This is not a measured GPU cost or an approved three-dimensional schedule.
+No accumulated-error, wet/dry, thermal/payload, phase-change, vertical/radial or packet-interface claim follows.
+Production physics and velocity capability remain unchanged; native storage is not allocated.
+
 The unchanged water fixture uses 128³ cells, 1280×720 output, DPR 1, and quality scale 2/3.
 The benchmark includes physics, rendering, and the GPU completion fence.
 Native frames use no legacy bridge dispatches.

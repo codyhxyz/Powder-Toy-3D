@@ -122,10 +122,70 @@ Two counterexamples remain explicit:
 - Flooring accepted mass independently can violate the face entropy inequality.
 - Forward Euler can increase energy despite an exact semidiscrete entropy identity.
 
-Next, define a finite-time, quantized mass/momentum update and its admission/error budget.
+Native use still requires a finite-time update with complete admission and error rules.
 It must preserve material custody, thermal/payload admission and representability refusals.
 Do not replace that work with a post-update kinetic-energy cap or outlet launch boost.
 Do not authorize a momentum allocation or claim original outcome acceptance from these checks.
+
+## First finite-step CPU gate
+
+Run `node tools/v2/quantized-momentum-check.mjs`.
+It tests one step on a three-cell, fully wet, one-material horizontal periodic ring.
+The shared CPU reference is `tools/v2/hydrostatic-reference.mjs`; the application does not import it.
+This is not a `World` variant or an evolving outcome benchmark.
+
+The candidate uses the face flux above plus scalar conserved-state diffusion.
+Its speed bound is `lambda=1+max(abs(uNormal))`, in units of the reference sound speed.
+The reference timestep satisfies `lambda*tau <= 1/4`.
+This ceiling is an explicit candidate constraint, not a demonstrated general stability theorem.
+The unquantized finite proposal must also pass its measured energy check before rounding.
+
+The representation is integer fill and signed i32 Q24 momentum.
+Momentum units are `fullCellMass*c/2²⁴`.
+That one-material reference scale is not approved for native storage, cross-material transfer or persistence.
+Every input must explicitly declare known momentum.
+Zero values do not supply that declaration.
+
+Each canonical face rounds mass once.
+Its momentum transfer includes the mass-rounding correction times the mean advecting velocity.
+Then it rounds all three momentum components once.
+Both neighbors consume the same signed integer transfers.
+Thus integer mass and all momentum components conserve exactly.
+Pressure and numerical stress are not replaced with a post-update velocity adjustment.
+
+Before rounding, calculate a Taylor energy-error bound around the unquantized finite proposal.
+For one cell, let `ef=1/FULL` and:
+
+```
+ep[a] = (abs(uMeanLeft[a])+abs(uMeanRight[a]))/(2*FULL) + 1/2²⁴
+fmin = fReference - ef
+umax = (norm(jReference)+norm(ep))/fmin
+L = max(k, 1/fmin)
+B = abs(wMass)*ef + sum(abs(u[a])*ep[a])
+    + (L*ef² + (norm(ep)+umax*ef)²/fmin)/2
+```
+
+This uses the Hessian identity `d²E=a'*(df)²+norm(dj-u*df)²/f`.
+A separate f64 arithmetic allowance is explicit.
+The bound does not use the observed rounded energy error.
+Tests check all sixteen corners of each reference cell's error box.
+This is sampled numerical evidence, not certified interval arithmetic.
+
+Publication occurs only after fill bounds, momentum representation and energy admission pass.
+Any refusal returns the original state without partial stores.
+Seven independent cases pass, including nonzero transport, tangential momentum and exact uniform rest.
+Five refusals check near-capacity inflow, unknown momentum, dry input, momentum overflow and a near-dry rounding bound.
+The latter conservatively refuses even uniform one-quantum liquid; wet/dry handling is unresolved.
+
+The largest calculated rounding budget is about `1.97909e-5` in units of `fullCellMass*c²`.
+Moving samples lose more energy than that budget.
+This does not bound accumulated error over repeated steps.
+No thermal bank or payload admission is modeled.
+
+Timestep cost is not hidden.
+The tested reference needs up to three microsteps per existing native liquid substep for one axis.
+That is not a GPU timing result, an approved three-dimensional stepping schedule, or evidence of a faster completed engine.
+Next gates include long-run error, actual material admission, wet/dry motion, vertical/gravity work and other gravity modes.
 
 ## References and scope
 
