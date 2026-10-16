@@ -95,6 +95,13 @@ The actual emitted helpers pass 3,626 comparisons, including negative offsets, a
 The existing thermal-admission oracle passes 6,449,452 cases across all 95 materials.
 All 50 applicable CPU scripts, minified full-shader Naga checks and the build pass.
 This does not establish Metal compilation, runtime cost or a speedup.
+Independent review `db8c3425` finds no concrete blocker and repeats all 3,626 helper comparisons successfully.
+
+The guarded census attempt at `5d417d93` did not launch because player detection found the GPU 70% busy.
+The slot released after 2.104 s.
+No browser, simulation or backend compilation started.
+No override or automatic retry occurred.
+Hardware acceptance and compile benefit remain unproven.
 
 The prototype stays on frozen base `b119bff1`.
 The subsequent fetch finds main at `afad9acb`, leaving that base 155 ahead and 90 behind.
@@ -385,6 +392,8 @@ Local evidence:
 - `/tmp/v2-build-main-merge-final.log`
 - `/tmp/v2-phase-table-cpu.log`
 - `/tmp/v2-phase-table-build.log`
+- `/tmp/v2-native-census-5d417d93.jsonl`
+- `/tmp/v2-native-census-5d417d93-run.log`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
 fresh production checks, independent review, deployment, and a live-site check.
