@@ -398,6 +398,9 @@ export function createWorldFrameDriver(app,state,execution={}) {
   };
   return {
     get phase(){return pending ? pending.phase+(pending.phase==='waiting'?':'+pending.waitTarget:'') : 'idle';},
+    get preparation(){const v=state.volume;return Object.freeze({views:v?.pipelineStates,
+      point:v?.pointState?.state,signs:v?.signsState?.state,pick:v?.pickState?.state,
+      post:app.post.isReady,uses:state.uses?.size});},
     get busy(){return !!pending || !!pickDemands.size || !!stills.length;},get failure(){return failure;},get accepted(){return accepted;},
     queueStill,requestStill:queueStill,
     get displayedMainFrame(){return displayedMainFrame;},queuePickDemand,
