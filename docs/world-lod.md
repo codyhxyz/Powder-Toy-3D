@@ -31,6 +31,25 @@ Before render-idle, the controller restores the selected quality once.
 The simulation stops GPU passes only after an asynchronous read confirms that all activity channels are zero.
 External writes and relevant settings invalidate that confirmation.
 
+## Cache decision and next task
+
+The original goals are faster underground loading and reuse after camera turns.
+Commit `1f0c1738` improves hard-material meshing and passes stationary look-around reuse checks.
+Cold-loading gaps remain. In-game loading latency and real memory pressure are not measured.
+
+**Decision:** Keep the reuse fix. Do not restore the small fixed spare cache or add an arbitrary replacement cap.
+The panorama allowance is a temporary policy, not a validated device-memory budget.
+The review's 2 GiB example uses mocked chunk sizes. It does not establish normal usage or a safe limit.
+
+**Next task:** Measure representative underground, outdoor, dense-terrain, travel, and return-view sequences before changing cache policy.
+Record visible and spare bytes, cache misses, eviction-driven rebuilds, and time until terrain becomes visible.
+Include simulation, render targets, in-flight jobs, and retired buffers when estimating total memory.
+Use supported-device headroom and measured reuse to choose a budget.
+Compare eviction candidates against those same sequences before deployment.
+Keep world edits independent of disposable render caches.
+If visible geometry alone exceeds the budget, spare eviction cannot solve the problem.
+No general cache framework, additional cache tier, or benchmark platform is approved by this decision.
+
 ## GPU failures
 
 A context loss or shader link failure stops rendering and simulation.
