@@ -5,7 +5,7 @@ Original audit base: `b64183051da3ba978ab85f1e38399756fc842daf`, fetched from `o
 **Status: incomplete.** Renderer integration is one milestone, not completion of physics v2.
 The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` was superseded.
 
-## Current evidence — 2026-10-15
+## Current evidence — 2026-10-16
 
 Latest remote-main integration: `908c7a24`, including fetched `origin/main` at `3c1129cb`.
 This feature checkpoint is 158 commits ahead and none behind that production base.
@@ -86,7 +86,7 @@ Total occupancy was 11.547 s, with clean release and no ownership errors.
 R5 backend compilation took 8.070 s.
 This scoped pass does not establish complete feature parity or a repeatable frame-time gain.
 
-**CPU-only phase-lookup prototype:** seven scalar lookup helpers read existing signed EV metadata.
+**Phase-lookup prototype:** seven scalar lookup helpers read existing signed EV metadata.
 No buffer, upload, binding, pass or packed-table change is added.
 Full contact snapshots, rule bodies, default/custom emitters and prefix-only dynamics remain unchanged.
 The unguarded `MATERIAL_CAP` array remains untouched because unknown-ID equivalence is unresolved.
@@ -94,19 +94,37 @@ The unguarded `MATERIAL_CAP` array remains untouched because unknown-ID equivale
 The actual emitted helpers pass 3,626 comparisons, including negative offsets, absent transitions, lava formations and unknown IDs.
 The existing thermal-admission oracle passes 6,449,452 cases across all 95 materials.
 All 50 applicable CPU scripts, minified full-shader Naga checks and the build pass.
-This does not establish Metal compilation, runtime cost or a speedup.
+CPU evidence alone does not establish Metal compilation, runtime cost or a speedup.
 Independent review `db8c3425` finds no concrete blocker and repeats all 3,626 helper comparisons successfully.
 
 The guarded census attempt at `5d417d93` did not launch because player detection found the GPU 70% busy.
 The slot released after 2.104 s.
 No browser, simulation or backend compilation started.
 No override or automatic retry occurred.
-Hardware acceptance and compile benefit remain unproven.
+That refused attempt establishes no hardware result.
 
 The prototype first passes CPU validation on frozen base `b119bff1`.
 Integration `908c7a24` then incorporates the newer Factory and world presentation changes.
 It leaves the v2 shaders, packed tables, physical rules and dependencies unchanged.
-Hardware acceptance of the phase prototype remains open.
+Full phase-feature acceptance and repeatable compile benefit remain open.
+
+After the user confirms availability, two guarded GPU cases run with player detection enabled:
+
+| Checkpoint | Selected path | Result | Total occupancy |
+| --- | --- | --- | ---: |
+| Census, `32312bea` | Compact runtime, phase metadata from EV | 120 ticks, 20 checks, zero water, sand or wall drift | 11.240 s |
+| Thermal, `a46fdf3a` | Noncompact runtime fallback, phase metadata from EV | 32 ticks, two metal cells, exactly 2,535,663,075,328 energy units retained | 10.289 s |
+
+Both slots release normally, without ownership failures or GPU validation errors.
+The thermal fixture retains its original temperatures, dimensions, ticks and assertions.
+Its test now calls the actual runtime emitter instead of the original reference emitter.
+Hot metal loses heat and cold metal receives heat.
+Census R5 backend compilation takes 7.698 s.
+The thermal test reports 7.601 s for its combined kernel compilation interval.
+These single runs do not establish a repeatable compile improvement or full-frame gain.
+They do not cover all phase transitions or app-level Factory integration.
+The estimated pipe runtime still leaves insufficient early-stop margin, so no pipe retry occurs.
+No further GPU run occurs in this batch.
 
 **Factory integration boundary:** new molten-charge guidance writes legacy B velocity.
 That velocity does not define native particle momentum.
@@ -136,7 +154,7 @@ Fix `f7ee74f9` closes admission through the requested engine mode and serializes
 The same regression now passes, alongside all 51 CPU suites and the build.
 Independent re-review `99157fc7` finds no scoped blocker and repeats all seven boundary groups successfully.
 It confirms the real wiring, requested-mode admission, stable V1 behavior and serialization cleanup.
-CPU and VM coverage do not establish hardware acceptance or Factory physics parity.
+CPU and VM coverage do not establish Factory hardware acceptance or physics parity.
 
 ### Renderer-connected measurements
 
@@ -433,6 +451,11 @@ Local evidence:
 - `/tmp/v2-factory-admission-all-cpu.log`
 - `/tmp/v2-factory-admission-physics-cpu.log`
 - `/tmp/v2-factory-admission-build.log`
+- `/tmp/v2-native-census-32312bea.jsonl`
+- `/tmp/v2-native-census-32312bea-run.log`
+- `/tmp/v2-native-thermal-runtime-32312bea.json`
+- `/tmp/v2-native-thermal-runtime-32312bea-run.log`
+- `/tmp/v2-thermal-runtime-wrapper-cpu.log`
 
 Remaining gates include native Factory support, lossless folded-terrain handoff, full GPU feature coverage, and reliable matched performance.
 Fresh production checks, independent review, deployment, and a live-site check also remain open.
