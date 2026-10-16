@@ -19,7 +19,7 @@ import { setFall } from '../../src/v2/fall.js';
 import * as C from '../../src/v2/contact.js';
 import { modeWGSL } from '../../src/shaders/v2/modes.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
-import { ARGS2, V2_KERNELS, WGSL_CHECK, v2BlockWGSL, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockCompactLayout, v2Rows } from '../../src/shaders/v2.js';
+import { ARGS2, V2_KERNELS, WGSL_CHECK, v2BlockWGSL, v2RuntimeBlockWGSL, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockCompactLayout, v2Rows, v2Table } from '../../src/shaders/v2.js';
 import { buildFixture } from './frame-bench.mjs';
 import { wgslGroupingErrors } from './wgsl-grouping.mjs';
 
@@ -190,11 +190,11 @@ console.log('168 offset/edge/gravity permutations; partial wake, original IDs/co
 // finalizer has only scratch+args; custom dispatch/resources remain original.
 globalThis.GPUBufferUsage = { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, INDIRECT: 8 };
 async function record(contact, limits = {}, expectCompact = contact === contactWGSL) {
-  const commands = [], buffers = [], compiled = [];
+  const commands = [], buffers = [], compiled = [], uploads = [];
   const gpu = {
     device: { limits: { maxStorageBufferBindingSize: 134217728, maxBufferSize: 268435456, ...limits } },
     createBuffer(d) { const b = { ...d, destroy() {} }; buffers.push(b); return b; },
-    queue: { writeBuffer() {} }, write() {}, layout(name, entries) { return { name, entries }; },
+    queue: { writeBuffer(...args) { uploads.push(args); } }, write() {}, layout(name, entries) { return { name, entries }; },
     bindGroup(layout, entries) { assert.equal(entries.length, layout.entries.length); return { layout, entries }; },
     L: { EMPTY: { entries: [] } }, emptyGroup: {},
     kernel(d) { compiled.push(d); return { ...d, ready: Promise.resolve(), dispatch(frame, size, data) { commands.push({ name: d.name, size, data }); } }; },
@@ -204,6 +204,13 @@ async function record(contact, limits = {}, expectCompact = contact === contactW
     L: { STATE_RO: { entries: [0, 1] }, TABLES: { entries: [0] } }, header: () => ({}), ready: Promise.resolve() };
   const engine = new PhysicsV2(sim, { contactWGSL: contact }); await engine.ready;
   engine._tick();
+  assert.equal(buffers.length, 8, 'existing driver buffers only; no phase buffer');
+  const tableUploads = uploads.filter(([buffer]) => buffer.label === 'v2 elements');
+  assert.equal(tableUploads.length, 1, 'one existing immutable table upload');
+  assert.deepEqual(new Uint8Array(tableUploads[0][2].buffer), new Uint8Array(v2Table().buffer), 'table ABI and bytes unchanged');
+  assert.equal(engine.kernels.v2block.layouts.length, 3);
+  assert.equal(engine.kernels.v2block.layouts[1], gpu.L.EMPTY);
+  assert.equal(engine.kernels.v2block.layouts[2].name, 'V2_CONTACT', 'existing contact binding family');
   assert.equal(compiled.filter(k => k.build === 'now').length, 1); assert.equal(compiled.filter(k => k.code.includes('fn contactBlock(')).length, contact ? 1 : 0);
   for (const k of compiled) {
     const storage = k.layouts.flatMap(l => l.entries ?? []).filter(e => e?.buffer?.type?.includes('storage')).length;
@@ -223,14 +230,14 @@ async function record(contact, limits = {}, expectCompact = contact === contactW
     assert.deepEqual(final.data.bind[2].entries.map(e => e.resource.buffer), [engine.liquidScratch, engine.args]);
     assert.equal(block.size.offset, 36); assert.equal(block.size.indirect, engine.args);
     assert.equal(engine.liquidScratch.size, tail.bytes);
-    assert.equal(engine.kernels.v2block.code, heavy);
+    assert.equal(engine.kernels.v2block.code, v2RuntimeBlockWGSL(g, contactWGSL, true));
   } else {
     assert.equal(engine.blockCompact, null, 'custom contact or insufficient tail capacity keeps original dispatch');
     assert.deepEqual(commands.slice(supportAt, supportAt + 2).map(c => c.name), ['v2support', 'v2block']);
     assert.equal(commands[supportAt + 1].size.offset, 24);
     assert.equal(engine.liquidScratch.size, g.slots * 16);
     assert.equal(compiled.length, V2_KERNELS.length);
-    assert.equal(engine.kernels.v2block.code, v2BlockWGSL(g, contact));
+    assert.equal(engine.kernels.v2block.code, v2RuntimeBlockWGSL(g, contact));
   }
 }
 for (const contact of [contactWGSL, '', contactWGSL + '\n']) await record(contact);
@@ -370,7 +377,13 @@ try {
   const bundle = await build({ configFile: false, logLevel: 'warn', build: { write: false, minify: true, lib: { entry: 'src/shaders/v2.js', formats: ['es'] } } });
   const chunk = (Array.isArray(bundle) ? bundle[0] : bundle).output.find(c => c.type === 'chunk' && c.isEntry), file = join(dir, 'v2.mjs');
   writeFileSync(file, chunk.code); const minified = await import(pathToFileURL(file));
-  for (const [name, code, emit] of [['classify', scan, m => m.v2BlockClassifyWGSL(g)], ['finalize', finalizeCode, m => m.v2BlockFinalizeWGSL(g)], ['heavy', heavy, m => m.v2BlockWGSL(g, contactWGSL, true)]]) {
+  for (const [name, code, emit] of [
+    ['classify', scan, m => m.v2BlockClassifyWGSL(g)],
+    ['finalize', finalizeCode, m => m.v2BlockFinalizeWGSL(g)],
+    ['heavy', heavy, m => m.v2BlockWGSL(g, contactWGSL, true)],
+    ['runtimeCompact', v2RuntimeBlockWGSL(g, contactWGSL, true), m => m.v2RuntimeBlockWGSL(g, contactWGSL, true)],
+    ['runtimeFallback', v2RuntimeBlockWGSL(g, contactWGSL), m => m.v2RuntimeBlockWGSL(g, contactWGSL)],
+  ]) {
     assert.equal(emit(minified), code); assert.deepEqual(wgslGroupingErrors(code), []);
     const path = join(dir, `${name}.wgsl`); writeFileSync(path, code);
     const naga = spawnSync('naga', [path], { encoding: 'utf8' }); if (naga.error) throw naga.error; assert.equal(naga.status, 0, naga.stderr);

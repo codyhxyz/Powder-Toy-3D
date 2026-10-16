@@ -86,6 +86,21 @@ Total occupancy was 11.547 s, with clean release and no ownership errors.
 R5 backend compilation took 8.070 s.
 This scoped pass does not establish complete feature parity or a repeatable frame-time gain.
 
+**CPU-only phase-lookup prototype:** seven scalar lookup helpers read existing signed EV metadata.
+No buffer, upload, binding, pass or packed-table change is added.
+Full contact snapshots, rule bodies, default/custom emitters and prefix-only dynamics remain unchanged.
+The unguarded `MATERIAL_CAP` array remains untouched because unknown-ID equivalence is unresolved.
+
+The actual emitted helpers pass 3,626 comparisons, including negative offsets, absent transitions, lava formations and unknown IDs.
+The existing thermal-admission oracle passes 6,449,452 cases across all 95 materials.
+All 50 applicable CPU scripts, minified full-shader Naga checks and the build pass.
+This does not establish Metal compilation, runtime cost or a speedup.
+
+The prototype stays on frozen base `b119bff1`.
+The subsequent fetch finds main at `afad9acb`, leaving that base 155 ahead and 90 behind.
+Those remote changes do not modify the v2 shader/table files or dependencies.
+Broader app reconciliation remains required before completion.
+
 ### Renderer-connected measurements
 
 The unchanged water fixture uses 128³ cells, 1280×720 output, DPR 1, and quality scale 2/3.
@@ -368,6 +383,8 @@ Local evidence:
 - `/tmp/v2-native-census-afc6ef4f-run.log`
 - `/tmp/v2-cpu-main-merge-final.log`
 - `/tmp/v2-build-main-merge-final.log`
+- `/tmp/v2-phase-table-cpu.log`
+- `/tmp/v2-phase-table-build.log`
 
 Remaining gates include full GPU feature coverage, reliable matched performance,
 fresh production checks, independent review, deployment, and a live-site check.

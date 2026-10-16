@@ -35,7 +35,7 @@ try {
     };
     gpu.kernel=desc=>{
       note({stage:desc.build==='manual'?'deferred':'queued',name:desc.name,
-        ...(desc.name==='v2block'?{rowUniform:desc.code.includes('var<uniform> CTU:'),sourceChars:desc.code.length}:{})});
+ ...(desc.name==='v2block'?{rowUniform:desc.code.includes('var<uniform> CTU:'),phaseFromEV:!desc.code.includes('phaseHotQTable'),sourceChars:desc.code.length}:{})});
       const k=original(desc);
       if(desc.build==='idle' || desc.build==='manual') {
         const build=k.build.bind(k);
