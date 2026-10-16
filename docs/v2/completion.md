@@ -20,7 +20,8 @@ CPU coverage does not establish complete GPU feature parity.
 
 Earlier integration `afc6ef4f` adds four materials from production main.
 Contact and phase checks cover all 95 materials.
-All 51 applicable CPU scripts pass after the phase prototype and Factory boundary checks.
+All 50 applicable CPU scripts pass after removing the phase prototype.
+Factory boundary checks remain included.
 Terrain, adapter and build checks also pass.
 The new folded-terrain cache cannot yet preserve exact native core and bank state.
 Native capture and restore refuse before touching legacy stores, rather than losing that state.
@@ -87,7 +88,7 @@ Total occupancy was 11.547 s, with clean release and no ownership errors.
 R5 backend compilation took 8.070 s.
 This scoped pass does not establish complete feature parity or a repeatable frame-time gain.
 
-**Phase-lookup prototype:** seven scalar lookup helpers read existing signed EV metadata.
+**Historical phase-lookup prototype, now removed:** seven scalar lookup helpers read existing signed EV metadata.
 No buffer, upload, binding, pass or packed-table change is added.
 Full contact snapshots, rule bodies, default/custom emitters and prefix-only dynamics remain unchanged.
 The unguarded `MATERIAL_CAP` array remains untouched because unknown-ID equivalence is unresolved.
@@ -123,6 +124,8 @@ Hot metal loses heat and cold metal receives heat.
 Census R5 backend compilation takes 7.698 s.
 The thermal test reports 7.601 s for its combined kernel compilation interval.
 These single runs do not establish a repeatable compile improvement or full-frame gain.
+The later renderer-connected comparison demonstrates no gain, so the lookup wrapper and its helper module are removed.
+The current production shader matches the measured original-array reference byte for byte, in compact and fallback modes.
 They do not cover all phase transitions or app-level Factory integration.
 The estimated pipe runtime still leaves insufficient early-stop margin, so no pipe retry occurs.
 No further GPU run occurs in this batch.
@@ -171,11 +174,46 @@ The new rejection test failed before the fix.
 CPU checks now enumerate the actual mode constants and reject malformed types and unknown values.
 Elapsed run progress and warmup/measurement/diagnostic intervals include work excluded from headline frame samples.
 These timings are not verified GPU lease occupancy.
-No new frame benchmark runs.
 
-Authoritative warmup/end state, cross-report provenance checks, clock matching and verified release receipts remain required before claiming an equal-work improvement.
-Full-state readback and encoding cost remain unbounded for this slot.
-Short-window diagnostics would not establish a final win.
+At `c0c263d0`, two successful short-window cases compare the phase prototype with the original arrays.
+Both use three warmup frames and twelve measured frames.
+The unchanged sand fixture uses 128³ cells, 1280×720 output, DPR 1 and quality scale 2/3.
+The reference changes only one source line, bypassing the seven-helper substitution.
+CPU source checks confirm identical remaining shader output, tables, harness and dependency lockfile.
+The measured reference is preserved at `87d59f89` in `/tmp/tpt-v2-phase-reference-ab`.
+Both cases use the same browser, adapter, fixture, camera and complete render-quality key.
+Both reject compilation during measurement and record zero bridge dispatches.
+
+| Case | Median frame | Mean frame | p95 frame | Verified total occupancy |
+| --- | ---: | ---: | ---: | ---: |
+| EV lookup candidate | 29.10 ms | 30.48 ms | 37.40 ms | 16.879 s |
+| Original scalar arrays | 27.00 ms | 28.52 ms | 35.30 ms | 12.019 s |
+
+Both slots release normally, with no ownership failures.
+An earlier reference attempt aborts before measurement because Vite rejects font paths through a shared dependency symlink.
+That attempt releases after 3.212 s.
+Installing the reference's own locked dependencies fixes the path issue.
+The single retry is announced before launch.
+
+Warmup and end checkpoints hash complete core cells, auxiliary banks, activity, arguments and dynamic persistence state.
+Cells, auxiliary banks, arguments, particles, air, other dynamic state and all twelve frame-clock pairs match exactly.
+Activity-buffer hashes differ at both boundaries.
+Hash-only artifacts do not identify which activity words differ.
+The strict equal-work comparison therefore fails.
+These twelve-frame timings show no demonstrated gain, not a repeatable causal regression.
+The unproven lookup rewrite is removed rather than retained.
+No further GPU runs occur in this batch.
+
+Artifacts:
+- `/tmp/v2-phase-candidate-c0c263d0.json`
+- `/tmp/v2-phase-reference-c0c263d0.json` (aborted font-path attempt)
+- `/tmp/v2-phase-reference-c0c263d0-retry.json`
+- Matching `-run.log` and `.startup.jsonl` files
+- Lease receipts `11946-12008.json`, `17002-17169.json` and `22609-22903.json` in `~/.cache/tpt-headless/runs/`
+- `/tmp/v2-phase-removed-all-cpu.log` (50 CPU scripts pass)
+- `/tmp/v2-phase-removed-build.log` (production build passes)
+
+Current full-frame speedup and equivalent-work V1 comparison remain unproven.
 
 The unchanged water fixture uses 128³ cells, 1280×720 output, DPR 1, and quality scale 2/3.
 The benchmark includes physics, rendering, and the GPU completion fence.

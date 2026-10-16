@@ -19,7 +19,7 @@ import { setFall } from '../../src/v2/fall.js';
 import * as C from '../../src/v2/contact.js';
 import { modeWGSL } from '../../src/shaders/v2/modes.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
-import { ARGS2, V2_KERNELS, WGSL_CHECK, v2BlockWGSL, v2RuntimeBlockWGSL, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockCompactLayout, v2Rows, v2Table } from '../../src/shaders/v2.js';
+import { ARGS2, V2_KERNELS, WGSL_CHECK, v2BlockWGSL, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockCompactLayout, v2Rows, v2Table } from '../../src/shaders/v2.js';
 import { buildFixture } from './frame-bench.mjs';
 import { wgslGroupingErrors } from './wgsl-grouping.mjs';
 
@@ -230,14 +230,14 @@ async function record(contact, limits = {}, expectCompact = contact === contactW
     assert.deepEqual(final.data.bind[2].entries.map(e => e.resource.buffer), [engine.liquidScratch, engine.args]);
     assert.equal(block.size.offset, 36); assert.equal(block.size.indirect, engine.args);
     assert.equal(engine.liquidScratch.size, tail.bytes);
-    assert.equal(engine.kernels.v2block.code, v2RuntimeBlockWGSL(g, contactWGSL, true));
+    assert.equal(engine.kernels.v2block.code, v2BlockWGSL(g, contactWGSL, true));
   } else {
     assert.equal(engine.blockCompact, null, 'custom contact or insufficient tail capacity keeps original dispatch');
     assert.deepEqual(commands.slice(supportAt, supportAt + 2).map(c => c.name), ['v2support', 'v2block']);
     assert.equal(commands[supportAt + 1].size.offset, 24);
     assert.equal(engine.liquidScratch.size, g.slots * 16);
     assert.equal(compiled.length, V2_KERNELS.length);
-    assert.equal(engine.kernels.v2block.code, v2RuntimeBlockWGSL(g, contact));
+    assert.equal(engine.kernels.v2block.code, v2BlockWGSL(g, contact));
   }
 }
 for (const contact of [contactWGSL, '', contactWGSL + '\n']) await record(contact);
@@ -381,8 +381,7 @@ try {
     ['classify', scan, m => m.v2BlockClassifyWGSL(g)],
     ['finalize', finalizeCode, m => m.v2BlockFinalizeWGSL(g)],
     ['heavy', heavy, m => m.v2BlockWGSL(g, contactWGSL, true)],
-    ['runtimeCompact', v2RuntimeBlockWGSL(g, contactWGSL, true), m => m.v2RuntimeBlockWGSL(g, contactWGSL, true)],
-    ['runtimeFallback', v2RuntimeBlockWGSL(g, contactWGSL), m => m.v2RuntimeBlockWGSL(g, contactWGSL)],
+    ['fallback', v2BlockWGSL(g, contactWGSL), m => m.v2BlockWGSL(g, contactWGSL)],
   ]) {
     assert.equal(emit(minified), code); assert.deepEqual(wgslGroupingErrors(code), []);
     const path = join(dir, `${name}.wgsl`); writeFileSync(path, code);

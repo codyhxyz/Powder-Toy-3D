@@ -7,7 +7,7 @@ import { cTq } from './layout.js';
 import { encodeV2State, decodeV2State } from './state.js';
 import { cellSlot, marksLayout } from '../shaders/common.js';
 import {
-  v2BlockCompactLayout, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2RuntimeBlockWGSL, V2_BLOCK_FINALIZE_LAYOUT,
+  v2BlockCompactLayout, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockWGSL, V2_BLOCK_FINALIZE_LAYOUT,
   V2_KERNELS, V2Params, nativeDynamicsHead, V2_DYNAMICS_LAYOUT, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_MATERIAL_LAYOUT, V2_LIQUID_LAYOUT, V2_CONTACT_LAYOUT, V2_IMPORT_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
   TICK_HZ, FULL, SUB, V2, QUIET_TICKS,
 } from '../shaders/v2.js';
@@ -130,7 +130,7 @@ export class PhysicsV2 {
       // Contact is required and the long compile pole. Enqueue it before
       // graphics, not behind the idle queue; the shared two-build bound remains.
       this.kernels[k.name] = gpu.kernel({
-        name: k.name, build: k.name === 'v2block' ? 'now' : 'idle', code: k.name === 'v2block' ? v2RuntimeBlockWGSL(g, contactWGSL, !!this.blockCompact) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
+        name: k.name, build: k.name === 'v2block' ? 'now' : 'idle', code: k.name === 'v2block' ? v2BlockWGSL(g, contactWGSL, !!this.blockCompact) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
         layouts: [k.name === 'v2blockFinalize' ? gpu.L.EMPTY : sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : (k.name === 'v2invalidate' || k.name === 'v2externalEvents') ? L.INVALIDATE : gpu.L.EMPTY, k.name === 'v2blockFinalize' ? L.BLOCK_FINALIZE : familyLayouts[this.familyOf(k.name)]],
       });
     }

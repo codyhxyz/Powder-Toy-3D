@@ -13,7 +13,6 @@ import { modeWGSL } from './v2/modes.js';
 import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
 import { contactWGSL as productionContactWGSL } from './v2/contact.js';
-import { contactPhaseLookups } from './v2/contactPhase.js';
 
 // Physics v2, the fast version (docs/v2.md 2, 4.1, 5.1-5.6; the rules are
 // tools/v2/lean-sim.mjs's, the CPU prototype that validated them, ported to
@@ -869,13 +868,6 @@ ${MAIN} {
   }
 }
 `;
-};
-
-// Keep generic/default/custom emission untouched. Only the production runtime
-// has the complete immutable EV tail required by these scalar lookups.
-export const v2RuntimeBlockWGSL = (g, contactWGSL = '', compact = false) => {
-  const source = v2BlockWGSL(g, contactWGSL, compact);
-  return contactWGSL === productionContactWGSL ? contactPhaseLookups(source) : source;
 };
 
 // No production contact helpers/private contact frame in this small scan. The
