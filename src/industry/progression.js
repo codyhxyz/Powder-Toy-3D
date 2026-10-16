@@ -1,9 +1,11 @@
 import { E } from '../elements.js';
 import { DEVICE_TYPES, QUARRY_STARTERS, CASTING_TEMPERATURE } from './catalog.js';
+import { CONTROL_PARTS } from './controlParts.js';
 
 // Sandustry-style growth is paid for by physical deliveries, never a timer.
 const INITIAL_CREDITS = 24;
 const TYPES = Object.keys(DEVICE_TYPES);
+const ADDED_TYPES = new Set(['hearth', 'gate']);
 const starterOwned = Object.fromEntries(TYPES.map(type =>
   [type, QUARRY_STARTERS.filter(d => d.type === type).length]));
 const costOf = owned => TYPES.reduce((sum, type) => sum + owned[type] * DEVICE_TYPES[type].cost, 0);
@@ -15,35 +17,40 @@ const fail = reason => ({ ok: false, reason });
 const success = () => ({ ok: true, reason: '' });
 
 export function createProgression(saved) {
-  let credits = INITIAL_CREDITS, earned = 0;
+  let credits = INITIAL_CREDITS, earned = 0, partsSpent = 0;
   let owned = { ...starterOwned };
   let delivered = { nuggets: 0, metal: 0 };
   if (saved !== undefined) {
     if (!record(saved) || saved.version !== 1 || !natural(saved.credits) || !natural(saved.earned)
+      || (saved.partsSpent !== undefined && !natural(saved.partsSpent))
       || !record(saved.owned) || !record(saved.delivered)
-      || Object.keys(saved.owned).length !== TYPES.length
-      || !TYPES.every(type => Object.hasOwn(saved.owned, type) && natural(saved.owned[type]))
+      || Object.keys(saved.owned).some(type => !TYPES.includes(type))
+      || !TYPES.every(type => Object.hasOwn(saved.owned, type) ? natural(saved.owned[type]) : ADDED_TYPES.has(type))
       || !natural(saved.delivered.nuggets) || !natural(saved.delivered.metal)) {
       throw new TypeError('Invalid factory progression save');
     }
     const deliveryValue = saved.delivered.nuggets + saved.delivered.metal * 4;
-    const assets = costOf(saved.owned);
+    const restoredOwned = Object.fromEntries(TYPES.map(type => [type, saved.owned[type] ?? 0]));
+    const assets = costOf(restoredOwned);
+    const restoredPartsSpent = saved.partsSpent ?? 0;
     const equity = INITIAL_EQUITY + saved.earned;
-    if (!natural(deliveryValue) || !natural(assets) || !natural(equity)
-      || deliveryValue !== saved.earned || saved.credits + assets !== equity) {
+    const totalEquity = saved.credits + assets + restoredPartsSpent;
+    if (!natural(deliveryValue) || !natural(assets) || !natural(equity) || !natural(totalEquity)
+      || deliveryValue !== saved.earned || totalEquity !== equity) {
       throw new TypeError('Inconsistent factory progression economy');
     }
     credits = saved.credits;
     earned = saved.earned;
-    owned = Object.fromEntries(TYPES.map(type => [type, saved.owned[type]]));
+    partsSpent = restoredPartsSpent;
+    owned = restoredOwned;
     delivered = { nuggets: saved.delivered.nuggets, metal: saved.delivered.metal };
   }
 
   function snapshot() {
     const stage = earned < 12 ? 0 : earned < 48 ? 1 : earned < 96 ? 2 : delivered.metal < 32 ? 3 : 4;
-    const unlocked = TYPES.filter(type => !['miner', 'lift', 'pump', 'heater'].includes(type)
+    const unlocked = TYPES.filter(type => !['miner', 'lift', 'pump', 'heater', 'hearth'].includes(type)
       || ((type === 'miner' || type === 'lift') && earned >= 12)
-      || (type === 'pump' && earned >= 48) || (type === 'heater' && earned >= 96));
+      || (type === 'pump' && earned >= 48) || (['heater', 'hearth'].includes(type) && earned >= 96));
     const goals = [
       `Ship starter gold: ${Math.min(earned, 12)}/12 lifetime credits`,
       `Automate the gold face: ${Math.min(earned, 48)}/48 lifetime credits`,
@@ -54,11 +61,11 @@ export function createProgression(saved) {
     const hints = [
       'Watch the starter sorter. Catch more shallow paydirt; only gold entering the intake earns credits.',
       'Build a mining agent facing the exposed gold wall. Catch its nuggets with belts and a lift.',
-      'Pump the finite east reservoir toward a cooling catch. Keep shipping gold to unlock the furnace.',
-      `Mine METAL into SCRAP. Melt it on a furnace, pump molten metal into a separate intake catch, then cool below ${CASTING_TEMPERATURE}°C; solid metal will not ride belts.`,
+      'Pump the finite east reservoir toward a cooling catch. Keep shipping gold to unlock the coal hearth.',
+    `Mine coal and scrap. Load scrap first, then coal inside the hearth. Keep off hot surfaces. Catch and cool the melt below ${CASTING_TEMPERATURE}°C; solid metal will not ride belts.`,
       'Freeplay: all machines stay unlocked. Extend the quarry; dismantling refunds the full price.',
     ];
-    return { version: 1, credits, earned, stage, goal: goals[stage], hint: hints[stage],
+    return { version: 1, credits, earned, partsSpent, stage, goal: goals[stage], hint: hints[stage],
       unlocked, delivered: { ...delivered }, complete: stage === 4, owned: { ...owned } };
   }
 
@@ -82,6 +89,22 @@ export function createProgression(saved) {
     owned[type]--;
     return success();
   }
+  function canBuyPart(key) {
+    if (typeof key !== 'string' || !Object.hasOwn(CONTROL_PARTS, key)) return fail('Unknown control part');
+    if (credits < CONTROL_PARTS[key].cost) return fail('Not enough credits');
+    return success();
+  }
+  // Control-part prices come only from the fixed whitelist. Spend is permanent:
+  // TPT parts can react, melt, or move like ordinary matter, so no credit refund.
+  function buyPart(key) {
+    const result = canBuyPart(key);
+    if (!result.ok) return result;
+    const cost = CONTROL_PARTS[key].cost;
+    if (!natural(partsSpent + cost) || !natural(INITIAL_EQUITY + earned)) return fail('Purchase exceeds economy limit');
+    credits -= cost;
+    partsSpent += cost;
+    return result;
+  }
   function ship(batch) {
     if (!record(batch) || !Number.isSafeInteger(batch.count) || batch.count <= 0
       || !Number.isFinite(batch.temperature)) return fail('Invalid physical delivery');
@@ -96,5 +119,5 @@ export function createProgression(saved) {
     delivered[key] += batch.count;
     return success();
   }
-  return { snapshot, canBuild, build, refund, ship };
+  return { snapshot, canBuild, build, refund, canBuyPart, buyPart, ship };
 }

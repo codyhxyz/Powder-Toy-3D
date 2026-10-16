@@ -14,6 +14,8 @@ const hooks = registerHooks({ load(url, context, next) {
 const { createIndustry, validateIndustrySave } = await import('../src/industry/index.js');
 const { createIndustryView } = await import('../src/industry/view.js');
 const { createProgression } = await import('../src/industry/progression.js');
+const { createIndustryPhysics } = await import('../src/industry/physics.js');
+const { industryUpdateWGSL } = await import('../src/shaders/industry.js');
 const { createToolbar } = await import('../src/ui/topbar.js');
 hooks.deregister();
 class Element {
@@ -62,7 +64,7 @@ function fixture(mode='sandbox') {
     readback:{ring:name=>({buffer:{},next:()=>0,read:()=>name === 'industry construction'
       ? Promise.resolve(new Float32Array([1,0,0,0]).buffer)
       : new Promise(resolve=>reads.push(resolve))})}};
-  const sim = {gpu,g:{nx:128,ny:128,nz:128},L:{},tables:{},bindRW:{},version:0,
+  const sim = {gpu,g:{nx:128,ny:128,nz:128},L:{},tables:{},bindRW:{},version:0,frame:0,
     header:()=>({}),wake(){},editKernel:()=>({ready:Promise.resolve()}),edit:(...args)=>edits.push(args),
     _dispatch:(kernel,size,{params})=>calls.push({name:kernel.name,params}),history:[],terrain:'original',
     snapshot(label){this.history.push({label,terrain:this.terrain,note:null});},
@@ -112,8 +114,8 @@ await test('visible Factory controls replace build hotkeys; Sandbox UI stays hid
   assert(!key('KeyR').prevented);assert.equal(industry.state.rotation,0);
   assert(key('Escape',false,{tagName:'SELECT'}).prevented);assert(!industry.building);
   assert(!app.toolbar.open);industry.toggle();assert(industry.building);
-  const rejected=await industry.place(spec('belt',{powered:true}));
-  assert(!rejected.ok);assert.match(rejected.reason,/built-in drive/);
+  assert(industry.setDrive('starter-belt',true).ok,'Factory may opt a machine into its real native control port');
+  assert(industry.state.devices.find(d=>d.id==='starter-belt').powered);
   assert((await industry.place(spec('foundation'))).ok);assert.equal(industry.state.progression.credits,23);
   app.gamemode='survival';industry.modeChanged();assert(!key('KeyB',true).prevented);
   industry.dispose();
@@ -276,7 +278,7 @@ await test('construction UI exposes true costs, unlocks, progress, material flow
   const cls=name=>search(panel,e=>e.className===name);
   const machine=type=>search(panel,e=>e.attributes?.['data-machine']===type);
   await settle();update();
-  const belt=machine('belt'),miner=machine('miner'),pump=machine('pump'),heater=machine('heater');
+  const belt=machine('belt'),miner=machine('miner'),pump=machine('pump'),heater=machine('hearth');
   assert.equal(cls('industry-balance').textContent,'24 credits');
   assert.equal(cls('industry-progress').max,12);assert.equal(cls('industry-progress').value,0);
   assert.match(belt.attributes['aria-label'],/2 credits/);assert.equal(belt.attributes['aria-pressed'],'true');
@@ -343,5 +345,24 @@ await test('placement UI distinguishes aiming, checking, invalid, valid and tran
   assert.equal(feedback.textContent,'Click to place');
   assert.equal(feedback.attributes['data-state'],'aim');
   industry.dispose();
+});
+await test('hearth fuel dispatch follows native ticks without changing legacy heater timing', async()=>{
+  const {app,industry,edits}=fixture('sandbox');
+  await settle();industry.dispose();
+  const physics=createIndustryPhysics({getSim:()=>app.sim});
+  await physics.ready;
+  const hearth={...spec('hearth'),id:'coal-hearth'}, heater={...spec('heater'),id:'legacy-heater',x:24};
+  app.sim.frame=4;physics.step(1/60,[hearth,heater]);
+  assert.equal(edits.length,2);
+  assert.equal(edits[0][2].dt,4/240);
+  assert.equal(edits[1][2].dt,1/60);
+  app.sim.frame=12;physics.step(1/120,[hearth,heater]);
+  assert.equal(edits[2][2].dt,8/240,'hearth follows native advancement, not presentation dt');
+  assert.equal(edits[3][2].dt,1/120,'legacy heater retains its old clock');
+  const before=edits.length;physics.step(1/60,[hearth]);
+  assert.equal(edits.length,before,'no hearth work without native advancement');
+  assert(industryUpdateWGSL.includes('select(0.0, max(a.z, 0.0), id == E_COAL)'),
+    'mining preserves remaining coal fuel instead of exhausting or refilling it');
+  physics.dispose();
 });
 console.log(`${passed} Industry controller CPU checks passed (DOM and GPU transport mocked; actual controller, view, physics and app scene functions).`);

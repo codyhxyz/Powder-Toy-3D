@@ -1,0 +1,216 @@
+# Physical factory implementation contract
+
+This contract defines the approved implementation, not existing behavior.
+The parent integrates all feature modules into the current Industry controller.
+
+## Shared rules
+
+- Preserve the existing `heater` type and its saved behavior.
+- Add a separate `hearth` type for finite-fuel industrial heat.
+- Add a `gate` type for a physical shutter.
+- Keep old saves and Sandbox spark controls working.
+- Do not change global coal chemistry, steel melting points, or existing electronics.
+- Use existing credits for construction and control parts.
+- Never overwrite foreign material or count unconfirmed GPU work as success.
+- Do not introduce item inventories, recipe menus, or another E handler.
+- Cite the relevant Minecraft, TPT, or Sandustry rule in new behavior comments.
+
+## Work ownership
+
+The first implementation wave adds independent modules.
+Agents do not change shared integration files in this wave.
+
+| Lane | Owned files |
+| --- | --- |
+| Thermal | `src/industry/hearth.js`, `src/shaders/hearth.js`, new hearth-specific tests |
+| Gates and controls | `src/industry/gates.js`, `src/industry/controlParts.js`, new gate/control-specific shaders and tests |
+| Diagnostics | `src/industry/diagnostics.js`, new diagnostic-specific shaders and tests |
+| Parent/integration | Catalog, validation, controller, existing physics/shader, progression, view, icons, documentation, deployment workflow |
+
+Each implementation lane commits only its owned files.
+Each agent returns its commit, exact exports, validation results, and unresolved requirements.
+The parent integrates modules after that wave.
+
+## Hearth
+
+The new `hearth` uses a four-cell footprint and a four-cell-high reservation.
+It has a real 48-cell tungsten shell and ordinary physical fuel and charge cells.
+It does not change the behavior of the legacy `heater`.
+
+`src/industry/hearth.js` exports documented constants and pure geometry/budget helpers.
+`src/shaders/hearth.js` exports WGSL helpers compatible with the existing Industry edit kernel.
+The Industry shader will call a hearth-specific update after its existing base/control guard.
+New uniform fields must be listed explicitly in the handoff.
+
+The industrial heat rule is an abstraction, not a claim about ordinary coal combustion.
+Finite physical fuel consumption must bound the total added heat.
+Residual hot walls can continue transferring stored heat after the fuel expires.
+An empty or disabled hearth must not create heat.
+This refers to added industrial heat, not native combustion or stored heat.
+The device must ignite real fuel without requiring free Sandbox spawning.
+The charge still melts and cools through native phase-change rules.
+Do not directly convert scrap to molten metal.
+
+The atomic constructor places the shell, after checking all 64 reserved cells.
+The floor has 16 cells. The walls and raised front lip have 32 cells.
+`hearthStructureCells(device)` defines the rotated physical structure.
+Rear placement is local x=1..2, y=1..3, z=1: six cells.
+Front placement is local x=1..2, y=1..3, z=2: six cells.
+These remain separate transport and inventory regions, not fuel-only and charge-only restrictions.
+The unique twelve-cell interior is the firebox.
+Live COAL or BROKENCOAL receives the same fuel-paid draft in either row.
+This increases the eligible positions from six to twelve, not heat per fuel-life unit.
+No boost applies to scrap, ash, outlets, shell cells, or fuel outside the firebox.
+Fuel diagnostics sample all twelve cells and require positive life.
+Temperature summaries remain whole-region measurements, not material-filtered charge temperatures.
+The outlet occupies local x=1..2, y=2..3, z=3: four cells.
+The mouth at z=4 is outside the reservation; it is not owned containment.
+The open top permits loading and extraction. The raised lip can retain a molten heel.
+Dismantling checks shell coordinates and material ID; it does not erase interior cargo.
+The legacy heater retains its original 16-cell deck.
+Fuel cells retain authoritative temperature and remaining life in terrain saves.
+No hidden fuel counters are approved.
+The current calibration buys 300000 local heat units per fuel-life unit.
+The paid starter targets 550°C; the industrial source limit is 2200°C.
+The boost spends life only for delivered heat, not unused source headroom.
+Native combustion still consumes its own fuel normally.
+These are game rules, not measured coal chemistry.
+Hearth timing follows native simulation ticks, not presentation frames.
+The app calls `Industry.nativeStep()` after every native tick, including manual test stepping.
+Heat-only edits pay once per advanced native tick; repeated callbacks cannot spend fuel twice.
+The ordinary frame update applies melt guidance with zero additional heating.
+Legacy heaters, conveyors, pumps, and miners keep their existing frame cadence.
+Mining retains coal's remaining fuel life; it does not refill exhausted coal.
+
+## Pump backing
+
+The existing pump retains its seven-cell-high reservation and sixteen-cell floor.
+New construction adds 24 real tungsten cells at local x=0..3, y=1..6, z=3.
+This plate prevents raised outlet liquid from falling back into the open body.
+`pumpStructureCells(device)` defines all forty rotated cells.
+`pumpBackplateCells(device)` defines the twenty-four plate cells.
+The constructor checks the complete reservation before writing anything.
+
+Plate cells use `a.z = 1048572`; the fractional seed is preserved.
+Removal requires tungsten, that exact tag, and a registered plate coordinate.
+Foreign same-ID material and loose contents are preserved.
+Floor removal retains its existing material check.
+Old saves receive no implicit plate or repair; rebuilding adds the backing.
+No header field, inventory, or global physics rule is added.
+The floor guard is unchanged. A damaged plate can leak.
+Pump returns report `pump-return`, not successful forward `pump-output`.
+
+## Physical gate
+
+Use a shutter inside a reserved four-cell footprint.
+Define one rotated aperture and its exact ownership marker.
+The marker must not alter the native behavior of its material.
+The approved aperture is local x=0..3, y=1..3, z=2 inside a 4×4×4 reservation.
+The approved marker is `WALL` with `a.z = 1048573`.
+Ownership also requires the exact registered shutter coordinates.
+Opening preserves the seed and removes only cells with both the correct material and marker.
+Native movement, reaction, rest, and save paths must preserve this marker.
+
+Export `createGatePhysics({getSim, onError, onState})`.
+Provide `ready`, `step(dt, devices)`, `remove(device)`, `pending`, `status(id)`, `reset()`, and `dispose()`.
+Document any additional pure geometry or validation helpers.
+
+Device fields are `gateMode: 'open' | 'closed' | 'signal'` and `gateClosed: boolean`.
+The default for a newly placed gate is open.
+The controller saves desired mode and last confirmed physical closure.
+`onState(id, result)` reports confirmed changes to the controller.
+Pending transitions prevent a save or removal race.
+
+In signal mode, the existing real control port commands open while energized.
+Without a signal, the gate requests closure.
+A blocked closure leaves the gate open.
+A damaged owned shutter reports damage and does not silently regenerate.
+The gate also checks all sixteen base cells before actuation.
+A damaged base jams the gate; explicit dismantling can still remove owned shutter cells.
+Opening and removal erase only the gate's tagged material.
+No gate operation stores grains or liquids outside the simulation.
+All transitions are atomic and bounded.
+
+## Factory control parts
+
+Use real existing materials: switches, temperature sensors, batteries, and required conductors or insulation.
+Keep placement separate from the unrestricted Sandbox element dock.
+Parts occupy actual cells and can burn, melt, or otherwise react normally.
+
+Export the allowed part descriptions and pure specification validation from `controlParts.js`.
+Export `createFactoryControlParts({getSim})` with `place(spec)`, `toggle(spec)`, `pending`, and `dispose()`.
+The parent handles credits before or after confirmed placement, with rollback on failure.
+The GPU backend never charges credits.
+Placement succeeds only in an empty cell.
+Toggling operates only on a real switch at the requested position.
+Switch shutdown starts the native countdown, so OFF spreads through touching switches.
+Temperature-sensor configuration must use the native threshold convention.
+TSNS thresholds use `PHYS.CELL_TEMP_MIN` through `PHYS.CELL_TEMP_MAX`, currently −273.15°C through 10000°C.
+The default threshold is 200°C.
+Other parts reject threshold fields.
+
+Approved part prices are TSNS 3 credits, SWITCH 2 credits, and BATTERY 5 credits.
+METAL costs 5 credits; PSCN, NSCN, and INSULATOR each cost 1 credit.
+Metal costs more than its four-credit shipping value to prevent purchase-and-shipment profit.
+These are construction prices, not stored electrical energy.
+
+The controller persists consumed credit expenditure as `partsSpent`.
+Old saves default to zero.
+Part purchases are irreversible because their material can change through ordinary physics.
+The interface must state this policy.
+No refund can duplicate matter or money.
+
+## Diagnostics
+
+Export `createIndustryDiagnostics({getSim})`.
+Provide `inspect(device)`, `snapshot(device)`, `pending`, `reset()`, and `dispose()`.
+`inspect` returns the bounded asynchronous observation.
+`snapshot` returns cached data or an explicit unknown/pending state.
+Export pure presentation/status helpers for CPU tests.
+
+Inspect only the currently selected or hovered machine.
+Keep at most one observation in flight.
+Throttle observations and invalidate stale results after device or simulation changes.
+Use a compact GPU result, not `sim.readState()` or full-grid CPU scans.
+Reuse base, port, and material semantics from existing Industry code.
+Do not report a plausible guess as confirmed throughput.
+Use `ready`, `empty inlet`, `outlet occupied`, `control off`, `base damaged`, and `unknown` as appropriate.
+Gate-specific feedback comes from confirmed gate transitions.
+Hearth fuel and temperature feedback uses the documented hearth regions.
+
+## Integration and acceptance
+
+The integration lane adds palette entries, models, icons, inspection controls, ports, and visible operating guidance.
+It retains existing typography, camera input, placement behavior, and the Factory-only builder.
+It adds migrations for new catalog ownership keys and optional fields.
+It does not insert starter machines into an unrelated or old saved scene.
+
+CPU tests cover logic, bounds, state transitions, migrations, and economy.
+GPU tests cover atomic material operations and actual shader behavior.
+An end-to-end fixture covers physical fuel, scrap, melt, cooling, and confirmed shipment.
+The report must distinguish module tests from a complete production-line test.
+
+No first-wave implementation agent starts a browser.
+The parent schedules GPU validation after integration.
+Each slot includes startup, compilation, assertions, and cleanup within 25 seconds.
+If a required fixture cannot fit, report that limitation before changing its scope.
+
+## Routing constraints
+
+The gate is a vertical shutter across a lateral outlet, not a horizontal hopper lid.
+Its opening does not push matter; use gravity, pressure, or an existing transport device.
+The hearth shell consists of actual tungsten cells, not invisible refractory walls.
+The larger foundation-tub experiment failed to reach a useful charge temperature.
+The compact shell now passes native melting without that additional heat sink.
+Use existing foundations for external catches and channels, not a huge furnace lining.
+Keep live coal inside the firebox and the front molten outlet clear.
+The old diagnostic fixture's painted internal baffle is not an accepted construction plan.
+Actual tool loading, ash clearing, and repeatable refueling remain release requirements.
+
+Cooled metal is a stationary solid; ordinary belts cannot carry it.
+Route molten metal to the shipping intake, then cool it there.
+Do not present a belt carrying cooled ingots as a working production step.
+The finite reservoir can supply cooling water, but it is not an infinite source.
+
+The complete process remains unverified until the native-physics fixture passes.
+CPU budget checks do not prove three-dimensional melting, drainage, or cooling.

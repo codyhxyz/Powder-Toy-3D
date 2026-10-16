@@ -9,7 +9,8 @@ import { E, K } from '../src/elements.js';
 import { deviceCell, CASTING_TEMPERATURE } from '../src/industry/catalog.js';
 import { createIndustryPhysics, validateIndustryPhysics, controlCell, machineBox, machinePorts, validMachine } from '../src/industry/physics.js';
 import { createTransfer, Load } from '../src/pov/tools/transfer.js';
-import { WGSL_CHECK } from '../src/shaders/industry.js';
+import { WGSL_CHECK, INDUSTRY_KIND } from '../src/shaders/industry.js';
+import { constructionWGSL } from '../src/industry/construction.js';
 import { transferFrag, TransferParams } from '../src/shaders/transfer.js';
 
 globalThis.GPUBufferUsage = { STORAGE: 1, COPY_SRC: 2, INDIRECT: 4 };
@@ -39,6 +40,37 @@ function fixture() {
 const d = (type, extra = {}) => ({ id: type, type, x: 24, y: 8, z: 32, rotation: 0, ...extra });
 let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log(`PASS ${name}`); }
+
+await test('hearth pays once per native tick without accelerating legacy machinery', async () => {
+  const f = fixture();
+  f.sim.frame = 0;
+  const api = createIndustryPhysics({ getSim: () => f.sim });
+  await api.ready;
+  const devices = [d('hearth'), d('heater')];
+  api.nativeStep(devices);
+  assert.equal(f.edits.length, 0, 'no real tick means no heat');
+  for (let frame = 1; frame <= 4; frame++) {
+    f.sim.frame = frame;
+    api.nativeStep(devices);
+    api.nativeStep(devices);
+    assert.equal(f.edits.length, frame, 'repeated callbacks cannot charge a tick twice');
+    assert.equal(f.edits.at(-1).values.dt, 1 / 240);
+    assert.equal(f.edits.at(-1).values.kind, INDUSTRY_KIND.hearthHeat, 'native heat does not guide melt');
+  }
+  api.step(1 / 60, devices);
+  assert.equal(f.edits.length, 6, 'frame update adds guidance and legacy heater, not duplicate hearth heat');
+  assert.equal(f.edits.slice(4).find(edit => edit.values.kind === INDUSTRY_KIND.hearth).values.dt, 0,
+    'guidance cannot charge additional fuel');
+  assert.equal(f.edits.slice(4).find(edit => edit.values.kind === INDUSTRY_KIND.heater).values.dt, 1 / 60);
+  f.sim.frame++;
+  api.nativeStep([]);
+  api.nativeStep(devices);
+  assert.equal(f.edits.length, 6, 'inactive tick is not banked for later heating');
+  api.dispose();
+  f.sim.frame++;
+  api.nativeStep(devices);
+  assert.equal(f.edits.length, 6, 'disposed physics cannot heat');
+});
 
 await test('rotated ports, bounds and finite drilling footprint', () => {
   for (let rotation = 0; rotation < 4; rotation++) {
@@ -127,7 +159,8 @@ await test('reset, rebind and dispose invalidate asynchronous credit', async () 
   }
 });
 await test('pump conserves blocked cargo and spills after dismantling without guard', async () => {
-  const f = fixture(), p = createIndustryPhysics({ getSim: () => f.sim }); await p.ready;
+  const f = fixture(), transfers = [];
+  const p = createIndustryPhysics({ getSim: () => f.sim, onTransfer: event => transfers.push(event) }); await p.ready;
   p.step(0.1, [d('pump')]); p.step(0.1, [d('pump')]);
   assert.equal(f.calls[0].kinds, 1 << K.LIQUID);
   f.answer([[E.WATER, 24, 0, 0.2], [E.WATER, 25, 0, 0.3]]); await settle();
@@ -140,10 +173,29 @@ await test('pump conserves blocked cargo and spills after dismantling without gu
   f.answer(); await settle(); assert.equal(p.pending, 0); assert.equal(p.buffered, 2);
   p.step(0.1, []); p.step(0.1, []);
   assert.equal(f.calls[2].guardMaterial, -1, 'removed machine can spill without base');
+  assert.deepEqual(f.calls[2].vel, [0, 0, 0], 'cargo returns are not pressurized nozzle output');
   f.answer([[0, 0, 0, 0], [1, 0, 0, 0]]); await settle();
   assert.equal(p.pending, 0);
+  assert.deepEqual(transfers.map(({ operation, count }) => [operation, count]),
+    [['pump-input', 2], ['pump-return', 2]], 'returned cargo must not claim outlet throughput');
   p.step(0.1, []); assert.equal(f.calls.length, 3, 'no capture after dismantle');
   p.dispose();
+});
+await test('successful pump outlet reports output rather than returned cargo', async () => {
+  for (let rotation = 0; rotation < 4; rotation++) {
+    const f = fixture(), transfers = [];
+    const p = createIndustryPhysics({ getSim: () => f.sim, onTransfer: event => transfers.push(event) }); await p.ready;
+    const device = d('pump', { rotation });
+    p.step(0.1, [device]); p.step(0.1, [device]);
+    f.answer([[E.WATER, 24, 0, 0.2]]); await settle();
+    p.step(0.1, [device]); p.step(0.1, [device]);
+    assert.deepEqual(f.calls[1].vel, [0, 0, 0], 'gravity handles the actual outlet material');
+    f.answer([[0, 0, 0, 0]]); await settle();
+    assert.deepEqual(transfers.map(({ operation, count }) => [operation, count]),
+      [['pump-input', 1], ['pump-output', 1]]);
+    assert.equal(p.buffered, 0);
+    p.dispose();
+  }
 });
 await test('readback rejection releases reservations and reports once', async () => {
   const f = fixture(), errors = [], p = createIndustryPhysics({ getSim: () => f.sim, onError: e => errors.push(e.message) }); await p.ready;
@@ -300,12 +352,12 @@ await test('snapshot maximum capacities and current setting changes remain valid
   assert.deepEqual(validateIndustryPhysics(snapshot, pumps.map(p => ({ ...p.device, powered: true, filter: E.SAND }))), snapshot,
     'current powered/filter settings may differ without changing identity');
 });
-await test('Naga CPU validation of full industry and transfer WGSL at 32/128', () => {
+await test('Naga CPU validation of full industry, transfer and construction WGSL at 32/128', () => {
   assert.match(transferFrag({ nx: 32, ny: 32, nz: 32 }), /if \(a\.y > P\.maxTemperature\)/, 'temperature upper bound is inclusive');
   assert.ok(TransferParams.fields.some(f => f.name === 'maxTemperature'));
   const dir = mkdtempSync(join(tmpdir(), 'industry-wgsl-'));
   try {
-    for (const size of [32, 128]) for (const [name, code] of [['industry', WGSL_CHECK[0].code], ['transfer', transferFrag]]) {
+    for (const size of [32, 128]) for (const [name, code] of [['industry', WGSL_CHECK[0].code], ['transfer', transferFrag], ['construction', constructionWGSL]]) {
       const file = join(dir, `${name}-${size}.wgsl`);
       writeFileSync(file, code({ nx: size, ny: size, nz: size }));
       const r = spawnSync('naga', [file], { encoding: 'utf8' });

@@ -1,9 +1,15 @@
 // CPU-only; no browser or GPU. Run: node scripts/check-industry-construction.mjs
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { deviceSpec, validateDevices, overlaps, overlapsBody, deviceHeight } from '../src/industry/validation.js';
 import { DEVICE_TYPES, QUARRY_STARTERS, baseMaterial, deviceCell, deviceDirection } from '../src/industry/catalog.js';
 import { E } from '../src/elements.js';
-import { constructionWGSL, WGSL_CHECK } from '../src/industry/construction.js';
+import { constructionWGSL, createConstruction, WGSL_CHECK } from '../src/industry/construction.js';
+import { GATE_OWNER_MARKER } from '../src/industry/gates.js';
+import { PUMP_BACKPLATE_TAG, pumpBackplateCells, pumpStructureCells } from '../src/industry/pumpStructure.js';
 import { registerSaveSection, unregisterSaveSection, collectSections, applySections, validateSections } from '../src/saves/sections.js';
 
 const dims = [128,128,128];
@@ -30,7 +36,15 @@ assert.throws(() => deviceSpec({...base,type:'pump',y:122},dims));
 assert(overlaps({...base,type:'pump'},{...base,y:14}));
 assert.equal(baseMaterial('heater'),E.TUNGSTEN);
 assert.equal(baseMaterial('belt'),E.INSULATOR);
-assert.equal(Object.keys(DEVICE_TYPES).length,8);
+assert.deepEqual(Object.keys(DEVICE_TYPES).sort(), ['belt','foundation','gate','hearth','heater','lift','miner','pump','separator','ship']);
+assert.equal(baseMaterial('hearth'), E.TUNGSTEN);
+const gate = deviceSpec({...base, type:'gate'},dims);
+assert.equal(gate.gateMode, 'open');
+assert.equal(gate.gateClosed, false);
+assert.equal(deviceSpec({...base, type:'gate', gateMode:'signal', gateClosed:true},dims).gateClosed, true);
+for (const value of [{gateMode:'toggle'}, {gateClosed:1}, {gateMode:null}]) {
+  assert.throws(() => deviceSpec({...base, type:'gate', ...value},dims), /gate state/);
+}
 assert.equal(DEVICE_TYPES.foundation.cost,1);
 assert.equal(baseMaterial('foundation'),E.TUNGSTEN);
 assert.equal(deviceHeight({type:'foundation'}),1);
@@ -46,7 +60,47 @@ const code=constructionWGSL({nx:128,ny:128,nz:128});
 assert(code.includes('@workgroup_size(1)'));
 assert(code.includes('clear && P.mode == 1u'));
 assert(code.includes('P.mode == 2u && eid(a) != P.material'));
+assert(code.includes('hearthStructureCell(x, y, z)'));
+assert(code.includes('rotateLocal(x, z)'));
 assert.equal(WGSL_CHECK[0].name,'industryConstruction');
+assert.equal(PUMP_BACKPLATE_TAG,1048572);
+assert.equal(new Float32Array([PUMP_BACKPLATE_TAG])[0],PUMP_BACKPLATE_TAG);
+assert.notEqual(PUMP_BACKPLATE_TAG,GATE_OWNER_MARKER);
+for(let rotation=0;rotation<4;rotation++) {
+  const pump={...base,type:'pump',rotation};
+  assert.equal(pumpBackplateCells(pump).length,24);
+  assert.equal(new Set(pumpBackplateCells(pump).map(p=>p.join(','))).size,24);
+  assert.equal(pumpStructureCells(pump).length,40);
+  for(const [x,y,z] of pumpStructureCells(pump)) {
+    assert(x>=pump.x && x<pump.x+4 && y>=pump.y && y<pump.y+deviceHeight(pump) && z>=pump.z && z<pump.z+4);
+  }
+}
+assert(code.includes('P.pump != 0u'));
+assert(code.includes('eid(a) == E_TUNGSTEN && a.z == INDUSTRY_PUMP_BACKPLATE_TAG'));
+assert(code.includes('INDUSTRY_PUMP_BACKPLATE_TAG: f32 = 1048572.0'));
+assert(code.includes('pump: u32'));
+
+const dispatches=[];
+let ringSlot=0;
+const sim={g:{nx:128,ny:128,nz:128},L:{TABLES:[],STATE_RW:[]},tables:{},bindRW:{},version:0,disposed:false,
+  header:()=>({}),wake(){},_dispatch(_kernel,_size,args){dispatches.push(args);}};
+const gpu={layout:()=>({}),readback:{ring:()=>({buffer:{},next:()=>ringSlot++,read:async()=>new Float32Array([1]).buffer})},
+  bindGroup:()=>({}),kernel:()=>({ready:Promise.resolve()}),flush(){}};
+const app={sim,gpu,requestRender(){}};
+const construction=createConstruction(app);
+await construction.ready;
+for(const type of Object.keys(DEVICE_TYPES)) assert.equal(await construction.run({...base,type},1),true);
+assert.deepEqual(dispatches.map(call=>call.params.pump),Object.keys(DEVICE_TYPES).map(type=>type==='pump'?1:0),
+  'only pump placement opts into its owned plate');
+
+const nagaDir=mkdtempSync(join(tmpdir(),'industry-construction-wgsl-'));
+try {
+  const shader=join(nagaDir,'industry-construction.wgsl');
+  writeFileSync(shader,WGSL_CHECK[0].code({nx:128,ny:128,nz:128}));
+  const naga=spawnSync('naga',[shader],{encoding:'utf8'});
+  if(naga.error?.code==='ENOENT') throw new Error('Install naga-cli for CPU-only construction WGSL validation; no browser fallback.');
+  assert.equal(naga.status,0,`Naga must accept the actual exported construction kernel:\n${naga.stdout}\n${naga.stderr}`);
+} finally { rmSync(nagaDir,{recursive:true,force:true}); }
 
 let loaded=0, absent=0, validated=0;
 registerSaveSection('test-legacy',{save:()=>({old:true}),load:()=>loaded++,absent:()=>absent++});
