@@ -26,7 +26,7 @@ try {
     const {gridLayout}=await import('/src/sim.js');
     const {E}=await import('/src/elements.js');
     const {LAYOUT,tablesBuffer,cellSlot}=await import('/src/shaders/common.js');
-    const {v2BlockWGSL,v2SupportWGSL,V2Params,V2_CONTACT_LAYOUT,v2ActLayout,v2Table}=await import('/src/shaders/v2.js');
+    const {v2RuntimeBlockWGSL,v2SupportWGSL,V2Params,V2_CONTACT_LAYOUT,v2ActLayout,v2Table}=await import('/src/shaders/v2.js');
     const {contactWGSL}=await import('/src/shaders/v2/contact.js');
     const {makeMaterial,energyOf}=await import('/src/v2/layout.js');
     const gpu=window.__harness.gpu,g=gridLayout(32,32,32),a=v2ActLayout(g),buffers=[];
@@ -84,7 +84,7 @@ try {
       const bind=[gpu.bindGroup(tables,[{binding:0,resource:{buffer:buffer('contact legacy tables',legacy.byteLength,legacy)}}]),
         gpu.emptyGroup,gpu.bindGroup(material,entries)];
       const start=performance.now();
-      let code=v2BlockWGSL(g,contactWGSL);
+      let code=v2RuntimeBlockWGSL(g,contactWGSL);
       if(fixedBounds)for(const [before,after] of [
         ['let blockCount=min(8u,arrayLength(&events));','let blockCount=8u;'],
         ['let count=min(8u,arrayLength(&events));','let count=8u;'],
@@ -110,7 +110,8 @@ try {
         gpu.readback.buffer(cells,0,initial.byteLength),gpu.readback.buffer(banks,0,bankData.byteLength),
       ]);
       const raw=new Uint32Array(rawBytes),afterBanks=new Int32Array(bankBytes);
-      return {scope:'production R2–R5 only',variant:fixedBounds?'fixed-bound diagnostic':'production',
+      return {scope:'production R2–R5 runtime, noncompact fallback',phaseFromEV:!code.includes('phaseHotQTable'),
+        variant:fixedBounds?'fixed-bound diagnostic':'production',
         ticks:32,fixture:[32,32,32],compileMs,before,after:total(raw,afterBanks),
         beforeHot,beforeCold,afterHot:String(energyOf({core:raw.subarray(hot*4,hot*4+4),bank:afterBanks[hot]})),
         afterCold:String(energyOf({core:raw.subarray(cold*4,cold*4+4),bank:afterBanks[cold]})),
