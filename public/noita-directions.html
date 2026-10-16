@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Noita Mines — three reconstruction mockups</title>
+<style>
+:root{color-scheme:light;--paper:#faf8f3;--ink:#292c26;--muted:#5e6158;--line:#cecbbf;--accent:#286153;--caution:#8a4c22;--night:#11181d}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:17px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:1320px;margin:auto;padding:52px 38px 70px}h1,h2,h3,p,figure{margin:0}h1,h2{font-family:Georgia,"Times New Roman",serif;font-weight:400;letter-spacing:-.025em;line-height:1.12;text-wrap:balance}h1{font-size:clamp(38px,4.8vw,62px);max-width:960px}h2{font-size:34px}h3{font-size:19px;line-height:1.35}p{max-width:74ch}a{color:var(--accent);text-underline-offset:4px}a:hover{text-decoration-thickness:2px}button{font:inherit;cursor:pointer}button:focus-visible,a:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:4px}
+::selection{background:#d7e6d6;color:#192e27}.lede{margin-top:20px;font-size:22px;line-height:1.5;max-width:780px}.scope{margin-top:18px;font-size:15px;color:var(--caution);max-width:86ch}.small{font-size:14px;line-height:1.5;color:var(--muted)}.small code{font-size:12px}code{font:13px/1.6 ui-monospace,SFMono-Regular,monospace;overflow-wrap:anywhere}
+.choices{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;border-top:1px solid var(--line);margin-top:34px;padding-top:25px}.choice{appearance:none;text-align:left;color:inherit;background:none;border:0;border-bottom:3px solid transparent;padding:0 0 15px;display:block}.choice:hover{border-bottom-color:#aaa99c}.choice[aria-pressed=true]{border-bottom-color:var(--accent)}.choice strong{display:block;font-size:19px}.choice span{display:block;font-size:14px;margin-top:5px;color:var(--muted)}.choice img{width:100%;height:auto;display:block;margin-bottom:12px;background:var(--night);aspect-ratio:3/2}
+.workbench{border-top:1px solid var(--line);margin-top:30px;padding-top:30px}.heading{display:flex;align-items:baseline;justify-content:space-between;gap:18px;margin-bottom:22px}.tag{font-size:13px;color:var(--accent);font-weight:650;white-space:nowrap}.main-pair{display:grid;grid-template-columns:minmax(245px,.8fr) minmax(0,1.8fr);gap:30px}.source-column h3,.model-column h3{margin-bottom:12px}.source-picture,.stage{position:relative;overflow:hidden;background:var(--night)}.source-picture{aspect-ratio:1}.stage{aspect-ratio:3/2}.source-picture img,.stage img{width:100%;height:100%;object-fit:contain;display:block}.source-picture a{display:block;height:100%}.source-picture a:focus-visible{outline-offset:-5px}.marker{position:absolute;transform:translate(-50%,-50%);display:flex;align-items:center;justify-content:center;width:25px;height:25px;border-radius:50%;border:1px solid #fff;background:#eee9d9;color:#1a251e;font:bold 13px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;box-shadow:0 2px 5px #0007;pointer-events:none}.markers[hidden]{display:none}figcaption{margin-top:11px;font-size:14px;color:var(--muted);line-height:1.5}.legend{list-style:none;padding:0;margin:16px 0 0;display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;font-size:13px}.legend b{display:inline-flex;width:21px;height:21px;align-items:center;justify-content:center;background:#e5e3d7;border:1px solid #aaa895;border-radius:50%;margin-right:5px;font-size:12px}
+.toolrow{display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin:14px 0 0;font-size:14px}.toolrow label{display:inline-flex;gap:8px;align-items:center;min-height:32px;cursor:pointer}.toolrow input{accent-color:var(--accent);width:17px;height:17px}.caption-change{font-size:16px;margin-top:17px;max-width:76ch}.risk{font-size:14px;color:var(--caution);margin-top:10px}.views{display:grid;grid-template-columns:1.35fr 1fr;gap:30px;margin-top:30px}.views h3{margin-bottom:12px}.eye{width:100%;display:block;aspect-ratio:8/5;background:var(--night)}.plan-shell{position:relative;background:var(--night);aspect-ratio:8/5;display:grid;place-items:center;overflow:hidden}.plan-shell img{width:88%;max-height:80%;object-fit:contain;image-rendering:pixelated}.axes{position:absolute;bottom:10px;right:14px;width:78px;height:61px;color:#dde3d8}.axes text{font:11px sans-serif;fill:currentColor}
+.notes{margin-top:46px;padding-top:28px;border-top:1px solid var(--line)}.tradeoffs{display:grid;grid-template-columns:repeat(3,1fr);gap:32px;margin-top:23px}.tradeoffs h3{margin-bottom:9px}.tradeoffs p{font-size:15px;color:var(--muted)}.recommendation{margin-top:32px;border-top:1px solid var(--line);padding-top:25px;display:grid;grid-template-columns:1.4fr 1fr;gap:40px}.recommendation h3{font-size:21px;margin-bottom:10px}.recommendation p{font-size:16px}.copy{background:var(--accent);color:#fff;padding:12px 19px;border:0;min-height:48px}.copy:hover{background:#1d4c3f}.copy:active{transform:translateY(1px)}.copy-note{margin-top:9px;font-size:13px;color:var(--muted)}#copy-result{font-size:14px;min-height:24px;margin-top:8px;overflow-wrap:anywhere}details{margin-top:32px;border-top:1px solid var(--line);padding:20px 0}summary{cursor:pointer;font-size:16px;font-weight:600}details p{font-size:14px;margin-top:13px}details ul{font-size:14px;padding-left:22px;margin:14px 0}.source-meta{display:grid;grid-template-columns:140px 1fr;gap:8px 18px;font-size:13px;margin-top:18px}.source-meta dt{color:var(--muted)}.source-meta dd{margin:0;min-width:0}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:20px;margin-top:20px}
+@media(max-width:760px){main{padding:30px 20px 48px}.lede{font-size:19px}.choices{gap:14px}.choice strong{font-size:15px}.choice span{font-size:12px}.choice img{margin-bottom:8px}.heading{display:block}.tag{display:block;margin-top:8px}.main-pair{grid-template-columns:1fr;gap:27px}.source-column{display:grid;grid-template-columns:1fr 1fr;gap:0 20px}.source-column h3{grid-column:1/-1}.source-column figure{grid-row:2/4}.source-column .legend{grid-template-columns:1fr;margin-top:0}.source-column>.small{margin-top:10px}.views{grid-template-columns:1fr;gap:27px}.tradeoffs{grid-template-columns:1fr;gap:22px}.recommendation{grid-template-columns:1fr;gap:22px}h2{font-size:29px}.source-meta{grid-template-columns:1fr;gap:5px}.source-meta dd{margin-bottom:10px}}
+@media(max-width:430px){main{padding-left:16px;padding-right:16px}.choices{gap:10px}.choice strong{font-size:14px}.choice span{font-size:11px}.source-column{gap:0 14px}.legend{font-size:12px}.marker{width:21px;height:21px;font-size:11px}}
+@media print{main{padding:16px}.choices,.toolrow,.copy,.copy-note,#copy-result{display:none}.main-pair{grid-template-columns:1fr 2fr}.views{grid-template-columns:1.2fr 1fr}.notes,.views{break-inside:avoid}details{display:block}details>*{display:block}.stage,.source-picture{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>Three ways to give<br>the Mines depth.</h1>
+<p class="lede">One actual area from <strong>Noita’s first level</strong>. Three different interpretations of its missing dimension.</p>
+<p class="scope"><strong>Design mockups, not game screenshots.</strong> These are CPU-rendered volumes built from saved Mines materials. Depth and folds are proposed. No map has been replaced.</p>
+</header>
+
+<nav class="choices" aria-label="Choose a reconstruction mockup">
+<button class="choice" data-kind="reference" aria-pressed="false"><img src="noita-directions/reference-overview.webp" width="720" height="480" alt="Literal-depth version of the Mines crop: flat-sided, uniformly thick formations"><strong>A. Literal depth</strong><span>Recognition baseline. Still essentially 2.5D.</span></button>
+<button class="choice" data-kind="shaped" aria-pressed="true"><img src="noita-directions/shaped-overview.webp" width="720" height="480" alt="The same Mines formations modeled as uneven rock volumes"><strong>B. Shaped volumes</strong><span>Best first study. Real depth within the original layout.</span></button>
+<button class="choice" data-kind="fold" aria-pressed="false"><img src="noita-directions/fold-overview.webp" width="720" height="480" alt="The same Mines formations with left and right wings turned around vertical hinges"><strong>C. Hinged wings</strong><span>Stronger spatial change. Unvalidated joins.</span></button>
+</nav>
+
+<section class="workbench" aria-labelledby="selected-title">
+<div class="heading"><h2 id="selected-title">B. Shaped volumes</h2><span class="tag" id="selected-tag">Recommended first study, not a proven solution</span></div>
+<div class="main-pair">
+<aside class="source-column">
+<h3>The original 2D area</h3>
+<figure>
+<div class="source-picture">
+<a href="noita-directions/mines-source.png" target="_blank" rel="noopener" aria-label="Open the full 512 by 512 Mines material image"><img src="noita-directions/mines-source.png" width="512" height="512" alt="Decoded Mines terrain with timber supports, a broken beam, isolated rock platforms and a water pocket"></a>
+<div class="markers source-markers" aria-hidden="true"></div>
+</div>
+<figcaption>Actual saved material cells. Display colors, <strong>not a native-game screenshot</strong>. Click to enlarge.</figcaption>
+</figure>
+<ul class="legend" aria-label="Matching source landmarks"><li><b>1</b>Timber post</li><li><b>2</b>Broken beam</li><li><b>3</b>Rock platform</li><li><b>4</b>Water pocket</li></ul>
+<p class="small">A 512 × 512 crop inside the Mines, not the whole biome. The same four landmarks carry through every study.</p>
+</aside>
+<div class="model-column">
+<h3 id="model-view-title">Proposed 3D volume</h3>
+<figure>
+<div class="stage">
+<img id="overview" src="noita-directions/shaped-overview.webp" width="720" height="480" alt="Shaped-volume Mines reconstruction, seen obliquely">
+<div class="markers model-markers" aria-hidden="true"></div>
+</div>
+<figcaption id="overview-caption">An isolated crop with its surroundings omitted, not floating islands in a finished world. Markers identify the corresponding source positions, including positions inside rock.</figcaption>
+</figure>
+<div class="toolrow">
+<label><input id="section" type="checkbox">Open the original section</label>
+<label><input id="landmarks" type="checkbox" checked>Match landmarks</label>
+</div>
+<p class="caption-change" id="change">The original cross-section remains the anchor. Thick rock gets more depth; narrow formations taper. There is room to move around a mass, not just along a thin corridor.</p>
+<p class="risk" id="risk">Tradeoff: those new ways around rock can bypass original obstacles. They must be reviewed before this becomes a faithful playable layout.</p>
+</div>
+</div>
+
+<div class="views">
+<figure>
+<h3>Player-eye mockup</h3>
+<img class="eye" id="eye" src="noita-directions/shaped-eye.webp" width="640" height="400" alt="Illustrative eye-level view above the broken timber shelf">
+<figcaption>Same source viewpoint above the broken beam in all studies, looking forward and slightly into depth. Static materials, no game physics, no gameplay UI.</figcaption>
+</figure>
+<figure>
+<h3>Where the depth actually goes</h3>
+<div class="plan-shell">
+<img id="plan" src="noita-directions/shaped-plan.png" alt="Top view of the volume's horizontal footprint">
+<svg class="axes" viewBox="0 0 78 61" aria-label="Horizontal X points right. Depth Z points up."><path d="M12 48V8m0 40h48m-48-40-4 7m4-7 4 7m44 33-7-4m7 4-7 4" fill="none" stroke="currentColor" stroke-width="1.3"/><text x="19" y="14">Z</text><text x="64" y="52">X</text></svg>
+</div>
+<figcaption id="plan-caption">Top view of shaped rock volumes. Height is collapsed only for this diagram; the source’s up/down direction remains world height.</figcaption>
+</figure>
+</div>
+</section>
+
+<section class="notes" aria-labelledby="comparison-title">
+<h2 id="comparison-title">What each direction buys—and costs.</h2>
+<div class="tradeoffs">
+<div><h3>A. Least interpretation</h3><p>Every visible solid becomes the same-thickness extrusion. It is a useful recognition control, but depth is repetitive. I would not call this the requested full-3D result.</p></div>
+<div><h3>B. More natural local space</h3><p>Rock masses gain individual volume without relocating the source landmarks. It makes the missing dimension tangible. It also adds routes and changes how fluids can spread.</p></div>
+<div><h3>C. Actual changes of heading</h3><p>The left and right source strips turn around vertical hinges. The footprint is no longer a straight ribbon. Here the cuts are illustrative—not verified native junctions.</p></div>
+</div>
+<div class="recommendation">
+<div><h3>My preference: establish B, then evaluate C.</h3><p>First make one original chamber recognizable as a volume. Then consider folding coherent branches around it. Do not repeat a map-wide curve, or disguise loading slices as levels.</p></div>
+<div><button class="copy" id="copy">Copy this direction for discussion</button><p class="copy-note">Copies the selected study and its source reference. This does not approve an implementation or send anything.</p><p id="copy-result" role="status" aria-live="polite"></p></div>
+</div>
+</section>
+
+<details>
+<summary>Source, construction, and limits</summary>
+<p>The source is an actual saved Mines chunk, <code>world_-512_512.png_petri</code>. Its native biome-map cell is (34, 15), mapped to <code>data/biome/coalmine.xml</code>: the Mines, not Coal Pits.</p>
+<dl class="source-meta"><dt>Source origin</dt><dd>(−512, 512) in native world pixels</dd><dt>Original source</dt><dd>262,144 material cells, 34 native material names</dd><dt>Original file SHA-256</dt><dd><code id="source-sha">See the source manifest linked below.</code></dd><dt>Generator</dt><dd><code>python3 tools/noita-direction-mockups.py</code></dd><dt>Model scope</dt><dd>CPU-only preview at two source pixels per voxel. Fine features can disappear. Entities and rigid bodies are not modeled. Source materials are shown with a display palette.</dd></dl>
+<ul>
+<li><strong>A:</strong> constant 26-preview-voxel thickness.</li>
+<li><strong>B:</strong> depth tapers using an interior-distance profile. This is a lightweight illustrative profile, not an implementation of Teddy or Noita’s engine.</li>
+<li><strong>C:</strong> B’s profiles with left/right strips turned −55° / +80° around vertical hinges at local source X = 128 and 384. These cuts are not approved fold locations. Contacts and overlaps at the joins are unvalidated.</li>
+<li><strong>Not simulated:</strong> gravity, collision, destruction, liquids, gases, conservation, or progression. Liquids are frozen in place. These pictures cannot establish playability.</li>
+<li><strong>Not original evidence:</strong> the added dimension, the depth profiles, the hinges, and the illustrative lighting. Only the input material section comes from Noita.</li>
+<li><strong>Open section:</strong> removes the front half of the model to expose its source plane. This is a viewing cut, not a tunnel proposed for the game.</li>
+</ul>
+<p>Prior-art references: <a href="https://arcadestrikerblog.wordpress.com/2021/03/05/full-interview-with-starxxon/">Metroid Cubed’s source-driven voxel modeling</a>, <a href="https://itch.io/t/931543/1-ui-manual">3dSen Maker’s local depth controls</a>, and <a href="https://www-ui.is.s.u-tokyo.ac.jp/~takeo/teddy/teddy.htm">Teddy’s silhouette inflation</a>. These studies borrow ideas, not a claim that those projects solved Noita.</p>
+<p><a href="noita-directions/source.json">Download the source and camera manifest</a> · <a href="noita-map-explained.html">Earlier implementation and source evidence</a></p>
+</details>
+<footer>For choosing a reconstruction direction. No new game map has been implemented or deployed with this page.</footer>
+</main>
+<script>
+const studies = {
+  reference: {
+    title: 'A. Literal depth', tag: 'Recognition control — not the proposed endpoint',
+    change: 'The source section is extended by the same amount everywhere. The timber, gaps, and platforms stay easy to match, but the result is a thin, flat-sided world.',
+    risk: 'Tradeoff: this protects the side-view arrangement but does not supply the spatial richness you requested. A camera orbit is not a successful full-3D port.',
+    plan: 'A straight, constant-width footprint. This is the control against which the other studies should be judged.'
+  },
+  shaped: {
+    title: 'B. Shaped volumes', tag: 'Recommended first study, not a proven solution',
+    change: 'The original cross-section remains the anchor. Thick rock gets more depth; narrow formations taper. There is room to move around a mass, not just along a thin corridor.',
+    risk: 'Tradeoff: those new ways around rock can bypass original obstacles. They must be reviewed before this becomes a faithful playable layout.',
+    plan: 'Top view of shaped rock volumes. Height is collapsed only for this diagram; the source’s up/down direction remains world height.'
+  },
+  fold: {
+    title: 'C. Hinged wings', tag: 'A spatial hypothesis — joins remain unvalidated',
+    change: 'The central section stays fixed. The left strip turns −55° and the right strip turns +80°, keeping source height vertical. These are visible changes of heading, not one gentle map-wide arc.',
+    risk: 'Tradeoff: the illustrated cuts are not verified native junctions. Join geometry, new bypasses, and collision must be resolved before this could be accepted.',
+    plan: 'The actual folded footprint: a central run with two turned wings. The hinges are at local source X = 128 and 384, not new biome or loading boundaries.'
+  }
+};
+const landmarks = [[334,45,'Timber post'],[177,186,'Broken beam'],[247,275,'Rock platform'],[40,443,'Water pocket']];
+const $ = id => document.getElementById(id);
+let selected = 'shaped', manifest = null;
+function marker(parent,x,y,text,title) {
+  const el = document.createElement('span');
+  el.className = 'marker'; el.style.left=x+'%'; el.style.top=y+'%';
+  el.textContent=text; el.title=title; parent.append(el);
+}
+function updateMarkers() {
+  const source = document.querySelector('.source-markers'), model = document.querySelector('.model-markers');
+  source.replaceChildren(); model.replaceChildren();
+  landmarks.forEach(([x,y,title],i)=>marker(source,x/512*100,y/512*100,i+1,title));
+  if (manifest) Object.values(manifest.models[selected].overviewMarkers).forEach(([x,y],i)=>marker(model,x,y,i+1,landmarks[i][2]));
+  document.querySelectorAll('.markers').forEach(el=>el.hidden=!$('landmarks').checked);
+}
+function choose(kind, updateHash = true) {
+  if (!studies[kind]) return;
+  selected=kind;
+  const s=studies[kind];
+  document.querySelectorAll('.choice').forEach(el=>el.setAttribute('aria-pressed',String(el.dataset.kind===kind)));
+  $('selected-title').textContent=s.title; $('selected-tag').textContent=s.tag;
+  $('change').textContent=s.change; $('risk').textContent=s.risk; $('plan-caption').textContent=s.plan;
+  $('overview').src=`noita-directions/${kind}-${$('section').checked?'section':'overview'}.webp`;
+  $('overview').alt=`${s.title}: ${$('section').checked?'front half removed to expose the original section':'full proposed volume'}`;
+  $('model-view-title').textContent=$('section').checked?'Source section opened for inspection':'Proposed 3D volume';
+  $('eye').src=`noita-directions/${kind}-eye.webp`;
+  $('eye').alt=`${s.title}: static eye-level mockup above the original broken beam`;
+  $('plan').src=`noita-directions/${kind}-plan.png`;
+  $('plan').alt=`${s.title}: horizontal footprint, with height collapsed`;
+  $('copy-result').textContent='';
+  updateMarkers();
+  if(updateHash) history.replaceState(null,'','#'+kind);
+}
+document.querySelectorAll('.choice').forEach(el=>el.addEventListener('click',()=>choose(el.dataset.kind)));
+$('section').addEventListener('change',()=>choose(selected,false));
+$('landmarks').addEventListener('change',updateMarkers);
+window.addEventListener('hashchange',()=>choose(location.hash.slice(1),false));
+$('copy').addEventListener('click',async()=>{
+  const text=`For discussion: ${studies[selected].title}. Use the actual Mines source world_-512_512.png_petri, not Coal Pits. This selects a design study, not implementation approval.`;
+  try { await navigator.clipboard.writeText(text); $('copy-result').textContent='Copied. Paste it into our conversation.'; }
+  catch { $('copy-result').textContent=text; }
+});
+choose(studies[location.hash.slice(1)]?location.hash.slice(1):'shaped',false);
+fetch('noita-directions/source.json').then(r=>{if(!r.ok)throw new Error('Source manifest unavailable');return r.json();}).then(data=>{
+  manifest=data; $('source-sha').textContent=data.sha256; updateMarkers();
+}).catch(()=>{$('source-sha').textContent='Manifest did not load. Open the source manifest link below.';});
+</script>
+</body>
+</html>
