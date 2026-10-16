@@ -16,9 +16,16 @@ import { probeWGSL,forceOverflowWGSL } from './harness/hybrid-full.js';
 
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_DST: 8 };
 globalThis.GPUTextureUsage = { TEXTURE_BINDING: 4, COPY_DST: 2 };
-const g = gridDims({ nx: 128, ny: 128, nz: 128 });
-assert.equal(geometryCapacity(g).capacity, 384);
-assert.equal(geometryCapacity(g).faceBytes, 48 * 1024 ** 2);
+const grids={32:[32,32,32],64:[64,64,64],128:[128,128,128],
+  wide:[160,96,160],valley:[256,96,128],giant:[128,384,128]};
+const gridName=process.argv[2]??'128';
+assert(Object.hasOwn(grids,gridName)&&process.argv.length<=3,'Usage: node tools/hybrid-core-check.mjs [32|64|128|wide|valley|giant]');
+const [nx,ny,nz]=grids[gridName],g = gridDims({nx,ny,nz});
+const capacity=geometryCapacity(g);
+assert.equal(capacity.capacity,Math.min(384,Math.floor(128*1024**2/(g.nbricks*4))));
+assert.equal(capacity.faceBytes,g.nbricks*capacity.capacity*4);
+assert(capacity.faceBytes<=128*1024**2);
+assert.equal(geometryCapacity(gridDims({nx:128,ny:128,nz:128})).faceBytes,48*1024**2);
 assert.equal(geometryCapacity(g, { maxBufferSize: 1 }).reason, 'device-buffer-limit');
 assert.equal(geometryCapacity(g, {}, 1).guaranteed, false);
 assert.throws(() => geometryCapacity(g, {}, 385), RangeError);
@@ -226,4 +233,4 @@ assert.equal(renderer.prepare({view:'heat'}),true);
 assert.equal(renderer.enabled, false);
 assert.equal(sim.derived.particleSplit,false,'data view restores complete legacy fields');
 renderer.dispose();
-console.log(`PASS hybrid core: material bytes/mips/LOD, exact-change recording, actual entry/layout stage masks, allocation bounds, ALL scene producers/composition, transparent coverage, workload/pause timing metadata, thumbnail ownership and fallback/lifecycle; CPU only. Naga ${semantic?'passed':'unavailable'}.`);
+console.log(`PASS hybrid core @${gridName}: material bytes/mips/LOD, exact-change recording, actual entry/layout stage masks, allocation bounds, ALL scene producers/composition, transparent coverage, workload/pause timing metadata, thumbnail ownership and fallback/lifecycle; CPU only. Naga ${semantic?'passed':'unavailable'}.`);

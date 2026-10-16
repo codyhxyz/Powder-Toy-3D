@@ -60,18 +60,45 @@ Known limits remain:
 
 ### Validation
 
-CPU checks:
+Validate correctness first. Run performance comparisons only after correctness and visual acceptance.
+
+CPU checks (no browser or physical GPU):
 
 ```sh
 node tools/hybrid-check.mjs
+node tools/check-sampler-budget.mjs
 node tools/post-reuse-cpu-check.mjs
+node tools/view-inputs-check.mjs
+node tools/resolution-check.mjs
+node tools/check-ready-volume-view.mjs
+node tools/render-read-cpu-check.mjs --naga
+node tools/pipeline-safety-cpu-check.mjs
+node --experimental-vm-modules --test tools/startup-safety-cpu-check.mjs
 node tools/check-imports.mjs
 node tools/check-state-access.mjs
+node tools/check-async-reads.mjs
 node tools/check-browser-launch.mjs
 npm run build
 ```
 
-Native checks use separate, serialized GPU slots:
+The hybrid runner passes all nine suites. Its actual composition and shader/layout checks cover
+32³, 64³, 128³, 160×96×160, 256×96×128, and 128×384×128 grids.
+It now runs in the deployment workflow.
+
+The broader CPU pass also passed these regression groups:
+
+- Startup, compiler cancellation, GPU deadlines, readback failure, and input wake-up.
+- Post-only reuse, resolution handoff, retained-view readiness, reflection roots, and opaque transitions.
+- Terrain loading, residency, workers, culling, far LOD, surface seams, and packed terrain shader validation.
+- Material, source artwork, crystal transmission, and straight/curved presentation invariants.
+- Element mechanisms, imports, state access, the build, and shipped local maps.
+
+The engine resource catalog passes 464 pipelines and 1,358 grid variants.
+The hybrid composition is checked separately by the hybrid runner.
+The async-read lint still reports eight pre-existing pending reads in four unrelated legacy tools.
+No new hybrid file is exempted.
+
+Correctness-only native checks use separate, serialized GPU slots. They are not benchmarks:
 
 ```sh
 node tools/hybrid-gpu-check.mjs
@@ -90,15 +117,15 @@ The local account/AI relay was offline. The check records that specific network 
 Other native attempts exposed a barrier error, a fixture error, and a layout-name collision.
 Those errors are corrected. This evidence does not cover the later full composition.
 
-The full-scene native attempt was refused at 55% GPU utilization.
-No browser launched. Guard and cleanup occupancy was 2.09 seconds.
+The latest correctness-only full-scene attempt was refused at 56% GPU utilization.
+No browser launched. Guard and cleanup occupancy was 2.043 seconds.
 Do not retry while the user occupies the GPU.
 The unexecuted full-scene check includes visible optics/media, smooth vertices, isolated droplets,
 motion and reactive pixels, finite HDR, temperature-only reuse, and zero legacy instances.
 It also injects a GPU capacity flag and checks molten matter transmitted through glass.
 
-`tools/hybrid-check.mjs` passes all nine CPU suites covering the 12 features.
-Native validation, visual review, and performance comparison are still required.
+Native correctness and visual review remain pending. They precede performance measurement.
+No benchmark was run during this correctness-first pass.
 
 Independent review found five integration defects and a later mid-frame flush defect.
 The following CPU regressions cover their fixes:

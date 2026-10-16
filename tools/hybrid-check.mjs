@@ -31,15 +31,19 @@ for (const lane of lanes) {
     continue;
   }
   console.log(`\n--- ${lane} ---`);
-  const result = spawnSync(process.execPath, [path], {
-    cwd: root,
-    stdio: 'inherit',
-    timeout: 120_000,
-  });
-  if (result.error || result.signal || result.status !== 0) {
-    console.error(`${lane} failed: ${result.error?.message ?? result.signal ?? result.status}`);
-    failed++;
+  let laneFailed=false;
+  for(const grid of lane==='core'?['32','64','128','wide','valley','giant']:[null]){
+    const result = spawnSync(process.execPath, [path,...(grid?[grid]:[])], {
+      cwd: root,
+      stdio: 'inherit',
+      timeout: 120_000,
+    });
+    if (result.error || result.signal || result.status !== 0) {
+      console.error(`${lane}${grid?'@'+grid:''} failed: ${result.error?.message ?? result.signal ?? result.status}`);
+      laneFailed=true;
+    }
   }
+  if(laneFailed)failed++;
 }
 if (!list) {
   console.log(`\nHybrid CPU lanes: ${lanes.length - failed}/${lanes.length} passed.`);

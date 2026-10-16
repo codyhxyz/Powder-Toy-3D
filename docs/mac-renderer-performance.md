@@ -1,5 +1,8 @@
 # Hybrid performance: current evidence
 
+Performance measurement is deferred until correctness and visual acceptance finish.
+CPU validation proceeds independently. Native correctness checks still respect the GPU safety guard.
+
 ## Measured
 
 No legacy-versus-hybrid timing result exists yet.
@@ -8,6 +11,8 @@ The launcher released its slot without starting a browser.
 Total check and cleanup time was 2.08 seconds. The benchmark collected no samples.
 The later full-scene correctness check was also refused, at 55% utilization.
 It used 2.09 seconds and did not launch a browser.
+The correctness-first follow-up was refused at 56%, using 2.043 seconds without a browser.
+Neither correctness attempt collected performance samples.
 
 Earlier native checks establish work reuse, not speed:
 

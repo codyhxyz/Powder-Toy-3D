@@ -72,7 +72,7 @@ const fakeVolume = {
 };
 const far = {
   viewPipeline: ready, volumeFirst: () => true, volumePass: () => ({ end() {} }),
-  occlude(target, drew) { assert.equal(drew, true, 'local opaque coverage exists before far ownership clipping'); this.drew = drew; },
+  occlude(target, drew) { this.lastOcclusion=drew;this.drew = drew; },
   drawVolume() { const drew = this.drew; this.drew = false; return drew; },
 };
 let written;
@@ -85,6 +85,7 @@ const runtime = new Function('helpers', `
   const { createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, viewShadows, writeFrameUniforms, vol, far, gpu, camera, Matrix4, Vector3 } = helpers;
   const settings = { view: 6 }, readyVolumeView = createReadyVolumeView();
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', resets = 0, volumeFirst = false, volumeDrawn = false;
+  let hybrid=null;
   const blocks = null, blocksOn = false, testNoVolume = false, overlayWires = [], win = { far };
   const post = { reset() { resets++; } }, meshFrames = { drop() {} }, sim = { g: {}, resetGI() {} };
   const before = [], after = [], brush = { draw() {} };
@@ -97,7 +98,7 @@ const runtime = new Function('helpers', `
   const settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {} }, save = () => {};
   const frameValues = (cam, view) => ({ camera: cam, model: new Matrix4(), sun: new Vector3(0, 1, 0), view });
   ${setCode}\n${selectCode}\n${drawCode}\n${volumeFirstCode}\n${sceneCode}\n${hooksCode}
-  return { setView, settings, frame(detail = {}) {
+  return { setView, settings, setHybrid(value){hybrid=value;}, frame(detail = {}) {
     frameDetail = detail;
     selectRenderView();
     frameHooks.prepare({ jitter: [0, 0] });
@@ -109,6 +110,7 @@ const runtime = new Function('helpers', `
   vol: fakeVolume, far, gpu, camera, Matrix4, Vector3 });
 function check(expected, detail = {}) {
   const f = runtime.frame(detail);
+  assert.equal(far.lastOcclusion,true,'legacy local opaque coverage exists before far ownership clipping');
   assert.equal(f.volumeDrawn, true, 'volume-first pass composites uninterrupted local terrain');
   assert.equal(f.renderView, expected);
   assert.equal(f.contextView, expected, 'world/weather see the same retained view');
@@ -146,6 +148,11 @@ check(0, requestedDetail);
 failedDetail.fail();
 await failedDetail.ready.catch(() => {});
 assert.deepEqual(check(0, requestedDetail).draw.detail, {}, 'failed replacement retains ready detail');
+const indirect={buffer:{},offset:32};
+runtime.setHybrid({enabled:true,legacyIndirect:indirect});
+assert.equal(runtime.frame().draw.indirect,indirect,'hybrid retains only the GPU-controlled exceptional legacy draw');
+assert.equal(far.lastOcclusion,false,'hybrid clears the legacy far-field volume-first occluder');
+runtime.setHybrid(null);
 runtime.setView(6);
 check(6);
 assert(app.indexOf('selectRenderView();') < app.indexOf('for (const w of live) w.beforeView?.(ctx, dt)'), 'select before any presentation hooks');
@@ -169,6 +176,7 @@ const paused = new Function('helpers', `
   const { createReadyVolumeView, createPacer, canPostFrame, VIEWS, viewKeyOf, isMaterialView, viewShadows,
     writeFrameUniforms, Matrix4, Vector3, camera, gpu, vol } = helpers;
   const settings = { view: 6, paused: true }, readyVolumeView = createReadyVolumeView();
+  const hybrid=null;
   const pacer = createPacer({ derivedSettle: 3, viewSettle: 2 });
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', frameDerived = false, gi = 1;
   const events = [], blocks = null, blocksOn = false, overlayWires = [], live = [];
