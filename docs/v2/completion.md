@@ -274,6 +274,24 @@ They do not establish hole accuracy, SPLASH acceptance or complete velocity obse
 No GPU, storage, binding, save-format or production physics changes occur.
 Complete velocity remains disabled; zero owned face flux cannot certify rest or recover discarded deposit momentum.
 
+Independent review `b0bea169` finds no scoped blocker in those conditional checks.
+It confirms that the bookkeeping identities do not establish a coupled pressure-work closure.
+
+A separate [draft head/pressure contract](evidence/liquid-head-contract.md) now defines one explicit linear liquid EOS and aligned hydrostatic geometry.
+It changes the constitutive interpretation; it does not silently preserve the old `headOf`.
+`tools/v2/hydrostatic-contract-check.mjs` passes 44 independent density, traction, energy and rest-balance cases.
+It also passes 1,152 coupled horizontal-face algebra cases, including tangential momentum.
+Covered-state acoustics use a fixed reference sound scale, not a compression parameter retied to each timestep.
+No new coefficient is fitted against an outcome.
+
+The draft exposes two further rejection examples.
+Independent mass flooring produces a positive local entropy residual of about `1.56718e-5`.
+Forward Euler increases the three-state ring's dimensionless energy by about `1.85473e-6`, despite its zero semidiscrete derivative.
+Thus neither the face formula nor simple rounding is authorized for native implementation.
+Next is a finite-time quantized update with an explicit admission/error budget.
+Oblique and radial geometry, wet/dry transport, original outcome acceptance and performance remain unproved.
+No production, layout, save-format or GPU change occurs.
+
 The unchanged water fixture uses 128³ cells, 1280×720 output, DPR 1, and quality scale 2/3.
 The benchmark includes physics, rendering, and the GPU completion fence.
 Native frames use no legacy bridge dispatches.
