@@ -7,9 +7,10 @@ The current smooth renderer stays. The block-renderer proposal in `docs/v2.md` w
 
 ## Current evidence — 2026-10-16
 
-Latest remote-main integration: `222a8a97`, including fetched `origin/main` at `48eaf221`.
-This feature checkpoint is 164 commits ahead and none behind that production base.
-That last remote update changes documentation and a comment, not executable behavior.
+Latest remote-main integration: `bdde96ec`, including fetched `origin/main` at `7598b32f`.
+This feature checkpoint is 176 commits ahead and none behind that production base.
+The update preserves the direction mockups, removes rejected LOD claims and adopts the host-wake deadline fix.
+It changes no application or physics source.
 Work remains in `/tmp/tpt-physics-v2-finish`; the recovery checkout is untouched.
 Physics results describe the feature branch, not the live site.
 The separate test-safety and measurement-guard fixes are deployed.
@@ -20,7 +21,7 @@ CPU coverage does not establish complete GPU feature parity.
 
 Earlier integration `afc6ef4f` adds four materials from production main.
 Contact and phase checks cover all 95 materials.
-All 50 applicable CPU scripts pass after removing the phase prototype.
+All 53 applicable CPU scripts pass at `bdde96ec`, with the four browser checks excluded.
 Factory boundary checks remain included.
 Terrain, adapter and build checks also pass.
 The new folded-terrain cache cannot yet preserve exact native core and bank state.
@@ -335,6 +336,14 @@ Red/green regressions cover all three neighbor-owned negative faces and fresh/re
 All eight native-grid CPU groups and seven SPLASH-observer groups pass.
 Both real native/app adapter capability checks still report complete velocity as false.
 Original physical outcomes remain unsupported or unproved as previously recorded.
+
+After merging main, all 53 CPU check scripts, eight native-grid groups and the retained far-read ABI fixture pass.
+The production build and static browser-launch check also pass.
+Logs: `/tmp/v2-observer-main-all-cpu.log` and `/tmp/v2-observer-main-build.log`.
+The merged deadline CPU suite passes, including its simulated clock jump and verified disposable-process cleanup.
+Its artificial clock overrun is not an actual GPU slot; no GPU or browser runs.
+Log: `/tmp/v2-main-wake-cpu.log`.
+The 25-second cap, cleanup reserve and player guard remain unchanged.
 
 The unchanged water fixture uses 128³ cells, 1280×720 output, DPR 1, and quality scale 2/3.
 The benchmark includes physics, rendering, and the GPU completion fence.
