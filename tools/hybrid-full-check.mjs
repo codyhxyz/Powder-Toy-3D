@@ -6,11 +6,14 @@ import { watchFailures,validateFixture } from './harness/hybrid-full.js';
 validateFixture(); // pure preconditions must fail before taking a GPU slot
 const args=process.argv.slice(2);
 const flags=new Set(args);
-const modes=['--readback-only','--readback-controls','--mixed-readback-controls'];
-assert(flags.size===args.length&&args.every(arg=>[...modes,'--gpudebug'].includes(arg))
-  &&modes.filter(mode=>flags.has(mode)).length<=1,
-  'Usage: node tools/hybrid-full-check.mjs [--readback-only | --readback-controls | --mixed-readback-controls] [--gpudebug]');
-const readbackOnly=flags.has('--readback-only'),mixed=flags.has('--mixed-readback-controls');
+const modes=['--readback-only','--readback-controls','--mixed-readback-controls','--motion-only'];
+const diagnostics=['--no-taa','--split-render'];
+assert(flags.size===args.length&&args.every(arg=>[...modes,'--gpudebug',...diagnostics].includes(arg))
+  &&modes.filter(mode=>flags.has(mode)).length<=1
+  &&diagnostics.filter(mode=>flags.has(mode)).length<=1
+  &&!(diagnostics.some(mode=>flags.has(mode))&&modes.some(mode=>flags.has(mode))),
+  'Usage: node tools/hybrid-full-check.mjs [--readback-only | --readback-controls | --mixed-readback-controls | --motion-only] [--gpudebug] [--no-taa | --split-render]');
+const readbackOnly=flags.has('--readback-only'),motionOnly=flags.has('--motion-only'),mixed=flags.has('--mixed-readback-controls');
 const controls=mixed||flags.has('--readback-controls'),debug=flags.has('--gpudebug');
 const vite=await startVite({port:58476,harness:true});
 let browser,started,diagnosticPage;
@@ -52,13 +55,23 @@ try{
   await failures.check(page.goto(vite.url(`/?renderer=hybrid&test=manual&view=realistic&size=128&preset=empty&paused=1${debug?'&gpudebug=1':''}`)));
   phase('app initialization');
   await failures.check(ready(page));
-  const result=await failures.check(page.evaluate(async only=>{
+  const result=await failures.check(page.evaluate(async ({only,motion,noTaa,splitRender})=>{
     const h=await import('/tools/harness/hybrid-full.js'),a=window.__app;
+    if(noTaa)a.post.settings.taa=false;
+    if(splitRender){
+      const frame=a.gpu.frame,render=frame.render;
+      frame.render=function(...args){
+        const rp=render.apply(this,args),end=rp.end;
+        rp.end=()=>{end();a.gpu.flush('diagnostic render boundary');};
+        return rp;
+      };
+    }
+    if(motion)return h.probeMotionWrites(a);
     if(only){a.test.park();await a.test.ready();return{readback:await h.verifyReadback(a.gpu)};}
     return h.run(a);
-  },readbackOnly));
+  },{only:readbackOnly,motion:motionOnly,noTaa:flags.has('--no-taa'),splitRender:flags.has('--split-render')}));
   let snapshot,fallback;
-  if(!readbackOnly){
+  if(!readbackOnly&&!motionOnly){
     snapshot=`/tmp/tpt-hybrid-full-${process.pid}.png`;
     phase('diagnostic screenshot (not converged visual acceptance) and data-view regression');
     await failures.check(page.screenshot({path:snapshot}));
@@ -69,12 +82,12 @@ try{
     assert(!fallback.enabled&&!fallback.split&&fallback.steps===result.steps,JSON.stringify(fallback));
   }
   assert.equal(errors.length,0,errors.join('\n'));
-  console.log(JSON.stringify({passed:true,debug,validation:readbackOnly?'readback only':'numerical scene (not converged visual acceptance)',
+  console.log(JSON.stringify({passed:true,debug,validation:motionOnly?'motion writes only':readbackOnly?'readback only':flags.has('--split-render')?'split-render diagnostic only':flags.has('--no-taa')?'temporal-disabled diagnostic only':'numerical scene (not converged visual acceptance)',
     result,fallback,snapshot,offlineRelay,adapter:await gpuInfo(page)},null,2));
   }
 }catch(error){
   if(errors.length)console.error(errors.join('\n'));
-  if(diagnosticPage&&!diagnosticPage.isClosed()&&!readbackOnly){
+  if(diagnosticPage&&!diagnosticPage.isClosed()&&!readbackOnly&&!motionOnly){
     const snapshot=`/tmp/tpt-hybrid-failed-${process.pid}.png`;
     try{
       await diagnosticPage.screenshot({path:snapshot,timeout:1000});

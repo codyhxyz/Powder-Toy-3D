@@ -4,6 +4,8 @@ import { prelude,STATE_OPTS } from '../../src/shaders/common.js';
 import { frameBindings } from '../../src/shaders/bindings.js';
 import { uniformStruct } from '../../src/gpu/params.js';
 import { REFLECTION_DEFAULTS } from '../../src/shaders/hybrid/reflections.js';
+import { fullscreenVert } from '../../src/gpu/wgsl.js';
+import { writeFrameUniforms } from '../../src/gfx/uniforms.js';
 
 const ProbeParams=uniformStruct('ProbeParams',{clipToGrid:'mat4x4f'});
 export const GLOSSY_FIXTURE=E.CLONE; // roughness .25; ordinary METAL is .32
@@ -96,18 +98,29 @@ export function paintFixture(a){
 // Wait for those requests between attempts; this is not image convergence.
 export async function renderCompleteFrames(a,frames=2){
   await a.test.ready();
-  let complete=0;
-  for(let attempts=1;attempts<=6;attempts++){
-    const prior=a.hybrid,before=prior?{compositions:prior.stats.compositions,motion:prior.motion.stats.frames}:null;
-    await a.test.renderOnce();
-    await a.test.ready();
-    const h=a.hybrid,selected=a.post?.temporalInputs;
-    const fresh=!h||(h.enabled&&h.stats.compositions>(h===prior?before.compositions:0)
-      &&h.motion.stats.frames>(h===prior?before.motion:0)&&selected?.motion&&selected?.reactive);
-    complete=a.view.volumeDrawn&&fresh?complete+1:0;
-    if(complete===frames)return attempts;
+  const device=a.gpu.device,filters=['internal','out-of-memory','validation'];
+  filters.forEach(type=>device.pushErrorScope(type));
+  try{
+    let complete=0;
+    for(let attempts=1;attempts<=6;attempts++){
+      const prior=a.hybrid,before=prior?{compositions:prior.stats.compositions,motion:prior.motion.stats.frames}:null;
+      await a.test.renderOnce();
+      await a.test.ready();
+      const h=a.hybrid,selected=a.post?.temporalInputs;
+      const fresh=!h||(h.enabled&&h.stats.compositions>(h===prior?before.compositions:0)
+        &&h.motion.stats.frames>(h===prior?before.motion:0)&&selected?.motion&&selected?.reactive);
+      complete=a.view.volumeDrawn&&fresh?complete+1:0;
+      if(complete===frames)return attempts;
+    }
+    throw new Error('Fixture did not present the requested complete scenes within six attempts');
+  }finally{
+    const errors=[];
+    for(const type of [...filters].reverse()){
+      const error=await device.popErrorScope();
+      if(error)errors.push(`${type}: ${error.message}`);
+    }
+    if(errors.length)throw new Error(`Scene GPU error: ${errors.join('; ')}`);
   }
-  throw new Error('Fixture did not present the requested complete scenes within six attempts');
 }
 export async function sceneReadbackControl(a,mixed=false){
   a.test.park();a.settings.paused=true;a.settings.upscale='native';
@@ -139,6 +152,72 @@ export function watchFailures(page,report=console.error){
 }
 export const forceOverflowWGSL=`@group(0) @binding(0) var<storage,read_write> status:array<u32>;
 @compute @workgroup_size(1) fn main(){status[0]=1u;}`;
+export const motionWriteSentinelWGSL=`${fullscreenVert()}
+struct MotionSentinel { @location(0) motion:vec4f,@location(1) reactive:f32,@location(2) coverage:f32 }
+@fragment fn fs()->MotionSentinel{return MotionSentinel(vec4f(0,0,0.5,0),0.25,0.25);}`;
+export const motionProbeWGSL=`@group(0) @binding(0) var motion:texture_2d<f32>;
+@group(0) @binding(1) var reactive:texture_2d<f32>;
+@group(0) @binding(2) var<storage,read_write> counts:array<atomic<u32>>;
+@compute @workgroup_size(8,8) fn main(@builtin(global_invocation_id) id:vec3u){
+  if(any(id.xy>=textureDimensions(motion))){return;}
+  let p=vec2i(id.xy);let z=textureLoad(motion,p,0).z;let r=textureLoad(reactive,p,0).r;
+  if(r>0.9){atomicAdd(&counts[0],1u);}
+  if(z< -0.9){atomicAdd(&counts[1],1u);}
+  if(r>0.2&&r<0.3){atomicAdd(&counts[2],1u);}
+  if(z>0.4&&z<0.6){atomicAdd(&counts[3],1u);}
+}`;
+// Full-sized shader/attachment micro-check, independent of the mixed scene.
+// Its first motion record MUST reject history; the constant draw is different
+// so old staging bytes cannot satisfy both expected results.
+export async function probeMotionWrites(a){
+  a.test.park();await a.test.ready();
+  const {gpu,hybrid,post,sim}=a,size=[800,600],pixels=size[0]*size[1],steps=sim.frame,owned=[];
+  const texture=(format,usage)=>{const t=gpu.createTexture({label:'motion micro-check',size,format,usage});owned.push(t);return t;};
+  try{
+    await verifyReadback(gpu);
+    const depth=texture('depth32float',21),opticalDepth=texture('rgba32float',6),media=texture('rgba16float',4);
+    const data=new Float32Array(pixels*4);
+    for(let i=0;i<data.length;i+=4){data[i]=0.5;data[i+3]=1;}
+    gpu.queue.writeTexture({texture:opticalDepth},data,{bytesPerRow:size[0]*16,rowsPerImage:size[1]},size);
+    const clear=gpu.frame.render({colorAttachments:[],depthStencilAttachment:{
+      view:depth.createView(),depthLoadOp:'clear',depthStoreOp:'store',depthClearValue:1,
+    }},'motion micro-check source depth');clear.end();
+    a.volume.updateMatrixWorld();
+    writeFrameUniforms(gpu,{camera:a.camera,model:a.volume.matrixWorld,sun:new a.THREE.Vector3(0.2,1,0.3).normalize()});
+    hybrid.motion.invalidate();
+    const outputs=hybrid.motion.record({depth,opticalDepth,media,camera:a.camera,post,model:a.volume.matrixWorld,
+      revision:sim.version,fieldRevision:sim.derived.frameNo});
+    const layout=gpu.layout('MOTION_WRITE_PROBE',[
+      ...[0,1].map(binding=>({binding,visibility:4,texture:{sampleType:'unfilterable-float'}})),
+      {binding:2,visibility:4,buffer:{type:'storage'}},
+    ]);
+    const probe=gpu.kernel({name:'motion micro-check probe',code:motionProbeWGSL,layouts:[layout],workgroupSize:[8,8,1]});
+    await probe.ready;
+    const counts=gpu.createBuffer({label:'motion micro-check counts',size:16,usage:128|4|8});owned.push(counts);
+    const group=gpu.bindGroup(layout,[...Object.values(outputs).map((t,binding)=>({binding,resource:t.createView()})),
+      {binding:2,resource:{buffer:counts}}]);
+    const read=async()=>[...new Uint32Array(await checkedRead(gpu,'motion write micro-check',()=>{
+      gpu.frame.direct().clearBuffer(counts);
+      probe.dispatch(gpu.frame,[Math.ceil(size[0]/8),Math.ceil(size[1]/8),1],{bind:[group]});
+      return gpu.readback.buffer(counts,0,16);
+    }))];
+    const direct=await read();
+    const write=gpu.renderPipeline({name:'hybrid diagnostic constant motion',code:motionWriteSentinelWGSL,
+      layouts:[],fragment:{targets:[{format:'rgba16float'},{format:'r8unorm'},{format:'r8unorm'}]}});
+    await write.ready;
+    const coverage=texture('r8unorm',16);
+    const rp=gpu.frame.render({colorAttachments:[outputs.motion,outputs.reactive,coverage].map(t=>({
+      view:t.createView(),loadOp:'clear',storeOp:'store',clearValue:[0,0,0,0],
+    }))},'motion micro-check constant MRT');
+    try{write.draw(rp,{count:3});}finally{rp.end();}
+    const constant=await read();await verifyReadback(gpu);
+    const result={direct,constant,size,steps};
+    console.info(`[hybrid correctness] motion write micro-check ${JSON.stringify(result)}`);
+    if(direct.some((n,i)=>n!==[pixels,pixels,0,0][i])||constant.some((n,i)=>n!==[0,0,pixels,pixels][i])||sim.frame!==steps)
+      throw new Error(`Motion write micro-check failed: ${JSON.stringify(result)}`);
+    return result;
+  }finally{gpu.flush('motion micro-check cleanup');owned.forEach(r=>r.destroy());}
+}
 const producerLengths=[8,4,4,8,5,12];
 export const producerProbeWGSL=`${producerLengths.map((n,i)=>`@group(0) @binding(${i}) var<storage,read> source${i}:array<u32>;`).join('\n')}
 @group(0) @binding(6) var<storage,read_write> result:array<u32>;
@@ -282,6 +361,10 @@ export async function run(a){
     phase('reading mixed-scene pixels');
     const {pixels,acceptance}=await readPixels();
     phase(`mixed-scene pixel counters ${JSON.stringify(pixels)}; gate ${JSON.stringify(acceptance)}`);
+    if(pixels[1]>0&&pixels[5]===0){
+      // Diagnostic writes cannot turn the original pixel failure into a pass.
+      await probeMotionWrites(a);
+    }
     assert(pixels[0]===post.inSize[0]*post.inSize[1],'probe extent');
     assert(pixels[1]>0&&pixels[2]>0,'visible optical entry and smoke required');
     assert(pixels[3]>0&&pixels[5]>0,'both reusable motion and reactive pixels required');

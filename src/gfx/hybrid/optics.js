@@ -479,6 +479,7 @@ export function opticalFieldNormal(p, fetch) {
 }
 /** Nearest live nonparticle source in two-cell support; EMA alone is not matter. */
 export function opticalFieldSource(p, density, sample, particle = () => false) {
+  if (density.every(v => v < 0.5)) return null;
   const base = p.map(Math.floor); let best = Infinity, source = null;
   for (let z=-2; z<=2; z++) for (let y=-2; y<=2; y++) for (let x=-2; x<=2; x++) {
     const q = base.map((v,i) => v+[x,y,z][i]); const a = sample(q);

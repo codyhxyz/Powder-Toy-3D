@@ -80,7 +80,11 @@ for (const fieldBinding of [null, 2, 14]) {
   assert.match(code, /sum \+= transmission \* opticsWorldHit\(h\)/);
   assert.match(code, /sum \+= transmission \* opticsEnvironment\(p, rd, 1\.0\)/);
   assert.match(code, /floor\(a\.w\)/); assert.match(code, /incandescence\(a\.y\)/);
-  if (fieldBinding !== null) { assert.match(code, /segment = opticsFieldSegment/); assert.match(code, /textureLoad\(opticsThin/); }
+  if (fieldBinding !== null) {
+    assert.match(code, /segment = opticsFieldSegment/); assert.match(code, /textureLoad\(opticsThin/);
+    assert.match(code,/if \(all\(density < vec4f\(0\.5\)\)\) \{ return source; \}/);
+    assert(code.indexOf('all(density < vec4f(0.5))')<code.indexOf('for (var z = -2'),'empty support must return before source queries');
+  }
 }
 validateOpticsLimits({}, opticsFieldBindings());
 assert.throws(() => validateOpticsLimits({maxSampledTexturesPerShaderStage:32}, Array.from({length:15}, (_,i) => ({binding:i+2, texture:{}}))), /maxSampledTextures/);
@@ -130,6 +134,15 @@ assert.equal(opticalFieldSource([1.2,1.3,1.4],[0,0,1,0],sourceAt),sand);
 assert.equal(opticalFieldSource([1.2,1.3,1.4],[0,0,1,0],sourceAt,() => true),null);
 assert.equal(opticalFieldSource([1.2,1.3,1.4],[0,0,1,0],() => null),null);
 assert.equal(opticalFieldSource([1.2,1.3,1.4],[0,0,0.49,0],sourceAt),null);
+let sourceReads=0;
+const countedSource=q=>{sourceReads++;return sourceAt(q);};
+for(let ch=0;ch<4;ch++){
+  const density=[0,0,0,0];density[ch]=0.499999;
+  assert.equal(opticalFieldSource([1.2,1.3,1.4],density,countedSource),null);
+}
+assert.equal(sourceReads,0,'sub-iso support cannot select a source in any channel');
+assert.equal(opticalFieldSource([1.2,1.3,1.4],[0,0,0.5,0],countedSource),sand,'exact iso boundary must still select live matter');
+assert(sourceReads>0);
 assert.deepEqual(opticalParticleInterval([-1,0.5,0.5],[1,0,0],[0,0,0]),[1,2]);
 assert.equal(opticalParticleInterval([-1,0.01,0.01],[1,0,0],[0,0,0]),null, 'voxel corner is not sphere');
 const sphereHit = opticalParticleInterval([-1,0.8,0.5],[1,0,0],[0,0,0]);

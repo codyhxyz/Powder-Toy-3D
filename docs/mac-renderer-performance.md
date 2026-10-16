@@ -15,6 +15,9 @@ The correctness-first follow-up was refused at 56%, using 2.043 seconds without 
 Neither correctness attempt collected performance samples.
 Later correctness slots ran with the normal guard, including readback controls.
 The complete mixed-scene numerical check still fails; converged visual acceptance is also pending.
+Isolated motion writes passed, but they do not validate the combined scene.
+Disabling TAA and splitting render submissions did not resolve the failure.
+GPU work stopped after a deadline overrun during sleep/dark-wake activity.
 Its diagnostic screenshots are not quality comparisons.
 See [the native correctness log](mac-renderer-build.md#native-follow-up-failed-checks-and-readback-controls).
 All reported slot durations include startup and cleanup. They are not performance samples.

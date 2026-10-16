@@ -112,7 +112,11 @@ node tools/hybrid-full-check.mjs
 node tools/hybrid-full-check.mjs --readback-only
 node tools/hybrid-full-check.mjs --readback-controls
 node tools/hybrid-full-check.mjs --mixed-readback-controls
+node tools/hybrid-full-check.mjs --motion-only
 ```
+
+The `--no-taa` and `--split-render` flags isolate integration boundaries.
+They change the diagnostic configuration and cannot establish normal-mode acceptance.
 
 The earlier opaque-only M5 native core check passed with a 128³ grid.
 Heating a cell rebuilt zero bricks. Removing a boundary cell rebuilt seven bricks.
@@ -162,13 +166,35 @@ No benchmark was run during this correctness-first pass.
   Post exposes a read-only snapshot of its selected temporal inputs instead.
   Later native runs returned valid fixture cells and GPU producer buffers.
   This does not prove that the earlier intermittent readback failure is fixed.
-- The latest pixel check still failed (5.671 seconds total).
+- A pixel check still failed (5.671 seconds total).
   It read 71,004 smooth vertices, four particle instances, and zero normal legacy instances.
   Optical-entry and glossy-solid pixels were present. Media, motion, reactive, and droplet checks did not pass.
 - Its diagnostic screenshot showed a black canvas and the close-up-detail preparation message.
   Two manual frame attempts are not proof of two completed scenes.
   The checker now waits for cold pipeline requests between bounded attempts.
-  This readiness change still needs native validation.
+  Later attempts required fresh composition/motion records and matching texture identities.
+  This did not resolve the failure.
+- A later frame contained 154,912 nonfinite HDR pixels.
+  Optical coverage with zero reactive pixels contradicts the motion shader's output rule.
+  Complete-frame validation, internal-error, and out-of-memory scopes reported no error (5.982 seconds total).
+  Independent review found no concrete uniform-packing, attachment, or lifetime defect.
+- The isolated motion-write check passed on the M5 (5.165 seconds total).
+  The real motion shader rejected all 480,000 controlled pixels.
+  A distinct constant shader then wrote the same targets correctly.
+  This is isolated shader/MRT evidence, not scene or temporal acceptance.
+- Disabling TAA did not fix the scene (6.021 seconds total).
+  Splitting render submissions did not fix it either; the watchdog forced cleanup at 21.158 seconds.
+- The optical source search now returns immediately when every field density is below 0.5.
+  No source could satisfy the original selection test in that case.
+  CPU tests preserve the exact iso boundary and all four channels.
+  This change does not reduce path limits, image resolution, or physics.
+  Its native effect is unverified.
+- The subsequent attempt stalled during startup readiness.
+  Report `83490-83537.json` records 296.096 seconds of wall occupancy despite a 25-second deadline.
+  Cleanup is verified, but the wall-time cap was not met.
+  Mac power logs show repeated sleep/dark-wake cycles.
+  Further GPU runs stopped; no sleep-prevention setting was changed.
+  An awake GPU window and deadline investigation are required before another native attempt.
 - The full numerical check is not a converged visual check.
   Failure screenshots remain diagnostic artifacts, not image-quality acceptance.
 - Every completed slot closed its own browser and test server. No benchmark samples were collected.

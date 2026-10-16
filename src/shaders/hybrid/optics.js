@@ -177,6 +177,9 @@ fn opticsFieldState(p: vec3f, cellState: vec4f) -> vec4f {
   let base = vec3i(floor(p));
   var density = vec4f(0);
   for (var ch = 0; ch < 4; ch++) { density[ch] = opticsDensity(p, ch); }
+  // No candidate can pass the test below. Do not scan 125 live sources
+  // at every empty pre-entry/tetra step.
+  if (all(density < vec4f(0.5))) { return source; }
   // Live sources within field support; stale EMA alone is never matter.
   for (var z = -2; z <= 2; z++) { for (var y = -2; y <= 2; y++) { for (var x = -2; x <= 2; x++) {
     let q = base + vec3i(x,y,z);

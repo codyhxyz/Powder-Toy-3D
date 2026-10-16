@@ -14,7 +14,7 @@ import { E,ELEMENTS,R } from '../src/elements.js';
 import { LOOK } from '../src/gfx/materials.js';
 import { withVisibility } from '../src/gpu/kernels.js';
 import { checkReadbackAfterRender } from './hybrid-readback-cpu-check.mjs';
-import { probeWGSL,forceOverflowWGSL,producerProbeWGSL,readbackSentinelWGSL,watchFailures,resetFixture,checkedRead,verifyReadback,withFreshStaging,fixturePaintRate,sceneReadbackControl,validateFixture,renderCompleteFrames } from './harness/hybrid-full.js';
+import { probeWGSL,forceOverflowWGSL,producerProbeWGSL,readbackSentinelWGSL,motionWriteSentinelWGSL,motionProbeWGSL,watchFailures,resetFixture,checkedRead,verifyReadback,withFreshStaging,fixturePaintRate,sceneReadbackControl,validateFixture,renderCompleteFrames } from './harness/hybrid-full.js';
 
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_DST: 8 };
 globalThis.GPUTextureUsage = { TEXTURE_BINDING: 4, COPY_DST: 2 };
@@ -26,8 +26,12 @@ const [nx,ny,nz]=grids[gridName],g = gridDims({nx,ny,nz});
 await checkReadbackAfterRender();
 validateFixture();
 {
-  let attempts=0,ready=false;
-  const a={view:{volumeDrawn:false},test:{
+  let attempts=0,ready=false,nativeError=false;
+  const scopes=[];
+  const device={pushErrorScope:type=>scopes.push(type),popErrorScope:async()=>{
+    const type=scopes.pop();return nativeError&&type==='internal'?{message:'render command failed'}:null;
+  }};
+  const a={gpu:{device},view:{volumeDrawn:false},test:{
     ready:async()=>{ready=true;},
     renderOnce:async()=>{assert(ready,'wait for cold requests before the next attempt');ready=false;a.view.volumeDrawn=++attempts>2;},
   }};
@@ -43,6 +47,9 @@ validateFixture();
     if(++attempts>2){a.hybrid.stats.compositions++;a.hybrid.motion.stats.frames++;}
   };
   assert.equal(await renderCompleteFrames(a),4,'a retained volume flag cannot count stale hybrid outputs');
+  nativeError=true;
+  await assert.rejects(renderCompleteFrames(a),/Scene GPU error: internal: render command failed/);
+  assert.deepEqual(scopes,[],'all scene error scopes are popped on success and failure');
 }
 for(const id of [E.SAND,E.WOOD,E.WATER,E.LAVA,E.SMOKE,E.FIRE]){
   assert(ELEMENTS[id].spawn*fixturePaintRate(id)>=1,'required fixture cells cannot depend on random spawn acceptance');
@@ -50,7 +57,7 @@ for(const id of [E.SAND,E.WOOD,E.WATER,E.LAVA,E.SMOKE,E.FIRE]){
 assert.equal(fixturePaintRate(-2),1,'temperature tool must keep its normal rate');
 {
   let opened=0,closed=0,validation=null;
-  const gpu={device:{pushErrorScope(type){assert.equal(type,'validation');opened++;},
+  const gpu={device:{pushErrorScope(type){assert(['validation','internal','out-of-memory'].includes(type));opened++;},
     async popErrorScope(){closed++;return validation;}},flush(label){assert.equal(label,'probe');return true;}};
   assert.equal(await checkedRead(gpu,'probe',()=>42),42);
   validation={message:'invalid copy destination'};
@@ -162,7 +169,7 @@ const resource = (desc, list) => {
   list.push(r); return r;
 };
 const semantic=spawnSync('naga',['--version'],{encoding:'utf8'}).status===0;
-for(const code of [probeWGSL(g),forceOverflowWGSL,producerProbeWGSL,readbackSentinelWGSL]){
+  for(const code of [probeWGSL(g),forceOverflowWGSL,producerProbeWGSL,readbackSentinelWGSL,motionWriteSentinelWGSL,motionProbeWGSL]){
   new WgslReflect(code);
   if(semantic)execFileSync('naga',['--stdin-file-path','hybrid-full-check.wgsl'],{input:code,encoding:'utf8'});
 }
