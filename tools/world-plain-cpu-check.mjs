@@ -53,7 +53,10 @@ const g={nx:3072,ny:384,nz:1024};
 const TB=new Uint32Array(tablesBuffer());
 function execute(code,n,bindings){return new ShaderExec(new WgslParser().parse(code)).dispatchWorkgroups('main',n,{0:{0:TB,1:new Int32Array(8)},...bindings});}
 
-test('all nine pre-edit BOX Plain mesh/draw/sun emissions remain byte-identical',()=>{
+// Fixture baseline: fetched origin/main b85d26e977b53a95eb02fcc14d6c3179938a281b.
+// Receipt: independent detached production worktree; Buffer.equals verified all
+// nine mesh/draw/sun emissions at gridDims cubic sizes 32, 64 and 128.
+test('all nine independent production BOX Plain mesh/draw/sun hashes remain identical',()=>{
   const hashes=JSON.parse(readFileSync(new URL('./fixtures/world-plain-box-shaders.json',import.meta.url)));
   for(const n of [32,64,128])for(const [key,f]of Object.entries({mesh:meshWGSL,draw:drawWGSL,sun:sunWGSL}))assert.equal(hash(f(gridDims({nx:n,ny:n,nz:n}))),hashes[key+n]);
   assert.throws(()=>volumeFrag(g,{view:'plain'}),/no view plain/);
