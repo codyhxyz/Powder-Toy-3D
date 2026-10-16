@@ -93,6 +93,25 @@ check('partial-core brick-aligned completeness scans every rank and preserves ex
   assert.throws(()=>f.source.assertComplete([{lo:[60,4,36],hi:[68,28,60]}]),/Incomplete in-world/);
   f.source.dispose();
 });
+check('all-trusted wake preflight is uncached and mixed trust remains cell exact',()=>{
+  const f=fixture();fillState(f);f.source.recordLiveCopy(f.frame);f.flush();
+  const chunk=f.source.chunks.get('32,0,32'),bounds={lo:[36,4,36],hi:[60,28,60]};
+  chunk.wakeTrusted.fill(1);chunk.aux.fill(2);
+  assert.doesNotThrow(()=>f.source.assertBoundedWake([bounds]));
+  assert.throws(()=>f.source.assertBoundedWake([{lo:null,hi:[60,28,60]}]),TypeError);
+  const outside=cellSlot(SOURCE_GRID,0,0,0),inside=cellSlot(SOURCE_GRID,13,17,9);
+  chunk.wakeTrusted[outside]=0;
+  assert.doesNotThrow(()=>f.source.assertBoundedWake([bounds]),'untrusted outside the selected region is ignored');
+  chunk.wakeTrusted[inside]=0;
+  assert.throws(()=>f.source.assertBoundedWake([bounds]),/Untrusted world aeration/);
+  chunk.aux[inside]=0;
+  assert.doesNotThrow(()=>f.source.assertBoundedWake([bounds]),'untrusted cells without aeration remain valid');
+  chunk.aux[inside]=2;chunk.wakeTrusted.fill(1);
+  assert.doesNotThrow(()=>f.source.assertBoundedWake([bounds]));
+  chunk.wakeTrusted[inside]=0;
+  assert.throws(()=>f.source.assertBoundedWake([bounds]),/Untrusted world aeration/);
+  f.source.dispose();
+});
 check('bulk ranked raw gather preserves every native word and fails before any encoding on a one-cell hole',()=>{
   const f=fixture();fillState(f);f.source.recordLiveCopy(f.frame);f.flush();
   const resources=Object.fromEntries(['A','B'].map(n=>[n,f.gpu.createBuffer({size:SOURCE_GRID.slots*16})]));

@@ -146,12 +146,15 @@ export class WorldRenderSource {
     finally { this._retire(buffer); }
   }
   assertBoundedWake(regions) {
-    for (const c of this.chunks.values()) for (const region of regions) {
-      const box = intersectBounds(region, { lo: c.origin, hi: c.origin.map(v => v + 32) });
-      if (!box) continue;
-      for (let z = box.lo[2]; z < box.hi[2]; z++) for (let y = box.lo[1]; y < box.hi[1]; y++) for (let x = box.lo[0]; x < box.hi[0]; x++) {
-        const slot = cellSlot(c.g, x - c.origin[0], y - c.origin[1], z - c.origin[2]);
-        if ((c.aux[slot] & 2) && !c.wakeTrusted[slot]) throw new Error('Untrusted world aeration producer');
+    for (const c of this.chunks.values()) {
+      const allTrusted = !c.wakeTrusted.includes(0);
+      for (const region of regions) {
+        const box = intersectBounds(region, { lo: c.origin, hi: c.origin.map(v => v + 32) });
+        if (!box || allTrusted) continue;
+        for (let z = box.lo[2]; z < box.hi[2]; z++) for (let y = box.lo[1]; y < box.hi[1]; y++) for (let x = box.lo[0]; x < box.hi[0]; x++) {
+          const slot = cellSlot(c.g, x - c.origin[0], y - c.origin[1], z - c.origin[2]);
+          if ((c.aux[slot] & 2) && !c.wakeTrusted[slot]) throw new Error('Untrusted world aeration producer');
+        }
       }
     }
   }
