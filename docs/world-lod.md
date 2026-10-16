@@ -34,7 +34,7 @@ External writes and relevant settings invalidate that confirmation.
 ## Cache decision and next task
 
 The original goals are faster underground loading and reuse after camera turns.
-Commit `1f0c1738` improves hard-material meshing and passes stationary look-around reuse checks.
+Commit `1f0c1738` changes mesh retention and skips unused hard-material smoothing.
 Cold-loading gaps remain. In-game loading latency and real memory pressure are not measured.
 
 **Decision:** Keep the reuse fix. Do not restore the small fixed spare cache or add an arbitrary replacement cap.
@@ -79,7 +79,6 @@ Run the CPU checks:
 node tools/surface-mesh-check.mjs
 node tools/detail-residency-check.mjs
 node tools/detail-worker-check.mjs
-node tools/detail-loading-cpu-check.mjs
 node tools/far-lod-check.mjs
 node tools/detail-culling-cpu-check.mjs
 node tools/check-presentation.mjs
@@ -91,16 +90,6 @@ GPU checks must use `tools/browser.mjs` and stay within the total slot budget in
 `world-detail-check.mjs` historically compared coarse versus cached rendering.
 Its old fallback assertions need revision before it can validate this path.
 Historical browser scripts and `lod-frame-bench.mjs` are not evidence for the new renderer.
-
-## CPU loading check
-
-The hard-material optimization was compared with production `2c5cb27d` in one process.
-Four padded 32×96×32 fixtures alternated old and new builders for 20 rounds, discarding the first six.
-Median rock time changed from 8.68 to 5.57 ms; brick changed from 7.69 to 4.95 ms.
-Sand and mixed-material times were essentially unchanged.
-Positions, normals, material IDs, appearances and indices matched byte-for-byte.
-These are CPU mesh times, not measurements of in-game loading latency or GPU memory use.
-The residency check also fills views during a continuous 360° turn and verifies that returning requires no new jobs.
 
 ## Historical local measurements
 

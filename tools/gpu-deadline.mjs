@@ -109,7 +109,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }
   };
   const exclude = new Set([process.pid]);
-  let captured = [owner], browserTree = [], releasing = false, forced = false, warned = false;
+  let captured = [owner], browserTree = [], releasing = false, forced = false, warned = false, gracefulSent = false;
   const capture = () => {
     const table = processTable();
     // The unique launch argument survives reparenting if the owner dies
@@ -136,13 +136,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     warned = true;
     process.stdout.write('stop\n'); // asks the owner to close its Browser handles, not an unverified PID
   };
-  const graceful = setTimeout(() => {
+  const closeGracefully = () => {
+    if (gracefulSent) return;
+    gracefulSent = true;
     try { capture(); } catch (error) { failedOwnership(error); return; }
     if (captured.some(p => p.pid === owner.pid)) {
       console.error(`[browser] GPU slot deadline: closing test pid ${owner.pid}; total budget includes compilation`);
       signal(owner, 'SIGTERM');
     }
-  }, Math.max(0, deadline - 2 * CLEANUP_MS - Date.now()));
+  };
+  const graceful = setTimeout(closeGracefully, Math.max(0, deadline - 2 * CLEANUP_MS - Date.now()));
   const force = () => {
     try {
       capture();
@@ -159,6 +162,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   }, Math.max(0, deadline - CLEANUP_MS - Date.now()));
   const observe = setInterval(() => {
     try {
+      // Relative timers can pause during system sleep. On the first poll
+      // after wake, enforce the original wall deadline, not remaining uptime.
+      const now = Date.now();
+      if (!forced && now >= deadline - CLEANUP_MS) {
+        forced = releasing = true;
+        force();
+      } else if (!forced && now >= deadline - 2 * CLEANUP_MS) closeGracefully();
       capture();
       if (releasing && (forced ? captured.length === 0 : browserTree.length === 0)) {
         unlinkOwnedSlot();
@@ -166,6 +176,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         const ended = Date.now();
         report.finishedAt = new Date(ended).toISOString();
         report.occupancyMs = ended - started;
+        report.deadlineMet = ended <= deadline;
+        report.deadlineOverrunMs = Math.max(0, ended - deadline);
         report.forced = forced;
         persist();
         console.error(`[browser] total GPU slot occupancy ${report.occupancyMs} ms${forced ? ' (forced cleanup)' : ''}; end ${report.finishedAt}; report ${reportPath}`);
