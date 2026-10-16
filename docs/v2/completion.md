@@ -254,6 +254,26 @@ Artifacts:
 - Matching `-run.log` and `.startup.jsonl` files
 - Successful lease receipts `9344-9418.json` and `19372-19453.json`
 
+#### Momentum proposal: CPU-only design gates
+
+Oracle `7103c6f0` proposes resident momentum, not a second material carrier.
+Its auxiliary/snapshot layout would add 64 MiB at 128³.
+Neither that layout nor its pressure discretization is approved.
+
+`tools/v2/momentum-contract-check.mjs` checks 216 exact head-potential bookkeeping cases and 90 three-dimensional mixing identities.
+It extracts the existing emitted head function and compression constant.
+The pressure calculation is conditional: it treats head as an enthalpy/force potential, not reference-density pressure.
+Those interpretations must be reconciled with the existing face flux's units before choosing the physical model.
+Under that assumption, the proposed specific-energy derivative gives twice the below-full, mass-conserving pressure work.
+The corresponding barotropic model has maximum-fill acoustic Courant 2, so it cannot inherit the current explicit stability argument.
+With compression still tied to timestep squared, more substeps leave that Courant unchanged.
+
+These are design checks, not a coupled pressure/advection solver.
+They omit damping, limiters, films and f16 flux updates.
+They do not establish hole accuracy, SPLASH acceptance or complete velocity observability.
+No GPU, storage, binding, save-format or production physics changes occur.
+Complete velocity remains disabled; zero owned face flux cannot certify rest or recover discarded deposit momentum.
+
 The unchanged water fixture uses 128³ cells, 1280×720 output, DPR 1, and quality scale 2/3.
 The benchmark includes physics, rendering, and the GPU completion fence.
 Native frames use no legacy bridge dispatches.
