@@ -225,7 +225,7 @@ export class WorldDetail {
       if (wanted.has(key)) wantedBytes += e.bytes;
       else spares.push([key, e]);
     }
-    // Size spares for a panorama, not a tiny fixed fraction of the old view.
+    // shortcut: peak-view allowance is not a device-memory budget; measure real working sets before replacing it (docs/world-lod.md).
     const views = this.retentionViews ?? 1;
     this.spareChunks = Math.min(this.mask.length, Math.max(this.spareChunks ?? SPARE_CHUNKS, wanted.size * views));
     this.spareBytes = Math.max(this.spareBytes ?? SPARE_BYTES, wantedBytes * views);
