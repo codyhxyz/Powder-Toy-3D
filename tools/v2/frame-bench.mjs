@@ -155,6 +155,37 @@ export function frameSnapshot(a, engine) {
   return result;
 }
 
+// Read the persistence boundary without captureState()'s possible legacy import.
+// Hash every authoritative buffer, not a projection or a mass summary.
+export async function nativeStateEvidence(a) {
+  const n = a.physics.v2;
+  if (!a.test.parked || !n || n.importFull || n.importMarked ||
+      n.seenVersion !== a.sim.version || n.seenWhole !== (a.sim.wholeWrites ?? 0))
+    throw new Error('Native checkpoint requires parked, synchronized ownership');
+  const fingerprint = async value => {
+    if (ArrayBuffer.isView(value)) {
+      const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+      const hash = await crypto.subtle.digest('SHA-256', bytes);
+      return { bytes: bytes.byteLength, sha256: Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('') };
+    }
+    if (Array.isArray(value)) return Promise.all(value.map(fingerprint));
+    if (value && typeof value === 'object') {
+      const entries = await Promise.all(Object.keys(value).sort().map(async key => [key, await fingerprint(value[key])]));
+      return Object.fromEntries(entries);
+    }
+    if (value === null || typeof value === 'string' || typeof value === 'boolean' || Number.isFinite(value)) return value;
+    throw new Error('Unsupported native checkpoint value');
+  };
+  const metadata = { tick: n.tick, acc: n.acc, frame: a.sim.frame, paints: a.sim.paints,
+    certified: n.certified, writtenSinceTick: n.writtenSinceTick };
+  // Queue all copies before awaiting, as the existing persistence methods do.
+  const buffers = ['cells', 'act', 'args', 'aux'].filter(key => n[key]);
+  const reads = buffers.map(async key => [key, new Uint8Array(await a.gpu.readback.buffer(n[key], 0, n[key].size))]);
+  const dynamic = n.dynamics?.snapshotDynamicState();
+  const [entries, dynamics] = await Promise.all([Promise.all(reads), dynamic]);
+  return fingerprint({ metadata, buffers: Object.fromEntries(entries), dynamics: dynamics ?? null });
+}
+
 // Self-contained CPU builder, installed unchanged in the page. No GPU settling,
 // random browser state, heat sources, or per-engine scene generation differences.
 // The settled case is inert architecture, NOT pre-settled sand/water.
@@ -290,6 +321,18 @@ async function selfCheck() {
       /physics setting/, `ambientHeat rejects ${String(value)}`);
   }
   assert.equal(frameSnapshot({ ...observed, physics: { v2: null } }, 'v1').v2Tick, null);
+  const raw = new Uint32Array([1, 2, 3, 4]);
+  const checkpoint = { test: { parked: true }, sim: { version: 1, wholeWrites: 0, frame: 3, paints: 0 },
+    physics: { v2: { seenVersion: 1, seenWhole: 0, tick: 3, acc: 0, certified: false, writtenSinceTick: false,
+      cells: { size: raw.byteLength }, dynamics: { snapshotDynamicState: async () => ({ particles: raw, sequence: 3 }) } } },
+    gpu: { readback: { buffer: async () => raw.slice().buffer } } };
+  const evidence = await nativeStateEvidence(checkpoint);
+  assert.equal(evidence.buffers.cells.bytes, raw.byteLength);
+  assert.equal(evidence.buffers.cells.sha256, createHash('sha256').update(new Uint8Array(raw.buffer)).digest('hex'));
+  assert.equal(evidence.buffers.cells.sha256, evidence.dynamics.particles.sha256);
+  raw[3] = 5;
+  assert.notEqual((await nativeStateEvidence(checkpoint)).buffers.cells.sha256, evidence.buffers.cells.sha256);
+  await assert.rejects(nativeStateEvidence({ ...checkpoint, sim: { ...checkpoint.sim, version: 2 } }), /synchronized/);
   console.log('ok: statistics, CLI validation, deterministic full-size CPU fixtures, GPU-f32 quality, read-only clock snapshots');
 }
 
@@ -318,7 +361,8 @@ async function run(o) {
       'toolCommit identifies this checkout, not necessarily the build served by --url.',
       'Vite transforms the menu and its dynamically imported app on CPU before GPU acquisition; native shader compilation remains inside the slot.',
       'Measured windows reject native pipeline API calls, pending app builds, or app pipeline-count changes; contaminated frames are not silently discarded.',
-      'Clock snapshots observe host/native ticks, daylight, view animation, render noise and physics settings without advancing them. Full native-state equality remains unverified.',
+      'Clock snapshots observe host/native ticks, daylight, view animation, render noise and physics settings without advancing them.',
+      'Native warmup/end checkpoints hash full cells, auxiliary banks, activity, arguments and dynamic persistence state outside frame samples, inside the GPU lease. Cross-report equality must be checked.',
       'Progress elapsedRunMs includes CPU preparation and is not verified GPU lease occupancy. Stage intervals include diagnostic work excluded from headline frame latency.',
     ], progress: [], results: [], errors: [] };
   let vite, browser;
@@ -392,6 +436,7 @@ async function run(o) {
         result.adapter = await gpuInfo(page); // helper rejects fallback adapters on macOS
         await page.addScriptTag({ content: `window.__frameBenchFixture = ${buildFixture.toString()};
           window.__frameBenchSnapshot = ${frameSnapshot.toString()};
+          window.__frameBenchNativeState = ${nativeStateEvidence.toString()};
           window.__frameBenchObservePipelines = ${tracePipelines.toString()};
           window.__frameBenchNoPipelineActivity = ${assertNoPipelineActivity.toString()};` });
         checkpoint(`${scene}/${engine}: fixture upload`, result);
@@ -440,6 +485,8 @@ async function run(o) {
           await a.test.ready();
           const warmupMs = performance.now() - warmupStart, measurementStart = performance.now();
           const initialSettings = settings(), before = snapshot(), memoryBefore = memory();
+          const beforeState = engine === 'v2' ? await window.__frameBenchNativeState(a) : null;
+          if (JSON.stringify(snapshot()) !== JSON.stringify(before)) throw new Error('Clocks changed during warmup state checkpoint');
           await gpu.fence();
           timing.split = split; timing.enabled = true;
           const samples = window.__frameBenchSamples = [];
@@ -490,7 +537,9 @@ async function run(o) {
             blockCompaction = { tick: last.tick, originalBlocks, heavyBlocks, identityBlocks: originalBlocks - heavyBlocks,
               addedScratchBytes: native.blockCompact.bytes - a.sim.g.slots * 16 };
           }
-          return { initialSettings, finalSettings: settings(), before, after: snapshot(), memoryBefore, memoryAfter: memory(),
+          const after = snapshot(), afterState = native ? await window.__frameBenchNativeState(a) : null;
+          if (JSON.stringify(snapshot()) !== JSON.stringify(after)) throw new Error('Clocks changed during end state checkpoint');
+          return { initialSettings, finalSettings: settings(), before, after, beforeState, afterState, memoryBefore, memoryAfter: memory(),
             timestampSupported: timing.supported, stepCount, samples, blockCompaction,
             stageMs: { warmup: warmupMs, measurementAndReadbacks: measurementAndReadbacksMs,
               finalDiagnostics: performance.now() - finalDiagnosticsStart } };
