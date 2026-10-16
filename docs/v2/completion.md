@@ -215,6 +215,45 @@ Artifacts:
 
 Current full-frame speedup and equivalent-work V1 comparison remain unproven.
 
+#### Current baseline and next priorities
+
+A V1 sand baseline at `013fa82c` uses the same fixture, seed, camera, quality and 3/12 warmup/sample window.
+Its fixture hash and complete quality key match the earlier original-array native reference.
+No new native unsplit run is needed: the restored native shader matches that reference exactly.
+
+| Unsplit headline case | Median | Mean | p95 | Total occupancy |
+| --- | ---: | ---: | ---: | ---: |
+| V1, `013fa82c` | 46.00 ms | 57.58 ms | 121.10 ms | 13.663 s |
+| Native original-array reference, reused | 27.00 ms | 28.52 ms | 35.30 ms | 12.019 s |
+
+This is a promising diagnostic gap, not equivalent-work proof.
+The engines evolve different states, and twelve samples do not establish a stable general win.
+All samples remain included.
+
+One separate native split diagnostic completes at `013fa82c`, with all 236 observed intervals timed.
+Its slot releases normally after 15.166 s.
+Contact's median interval is 2.262 ms, scene rendering 7.294 ms, field peak 1.606 ms and field blur 0.898 ms.
+Scene and motion intervals overlap and must not be added.
+Split compute intervals include pass-boundary overhead and are not headline frame latency.
+Unsplit labels such as `nativeParticleArgs` can cover other kernels; the constant-time argument builder is not a seven-millisecond scan.
+
+The first profiler acquisition finds PID 12002 holding the slot and launches no browser.
+That owner's receipt records a compliant 17.195 s release.
+The profiler succeeds on one announced retry.
+Our successful slots close normally, without ownership errors; no further GPU runs occur in this batch.
+
+Next priorities are resident-liquid momentum and coupled flow correctness, then native Factory and folded-terrain integration.
+Preserve the packed engine and direct renderer instead of starting another table-lookup experiment.
+Keep renderer quality unchanged.
+Before promotion, repeat the original physics controls and representative frame benchmarks on the completed integration.
+
+Artifacts:
+- `/tmp/v2-plan-v1-sand-013fa82c.json`
+- `/tmp/v2-plan-native-split-013fa82c.json` (acquisition refused)
+- `/tmp/v2-plan-native-split-013fa82c-retry.json`
+- Matching `-run.log` and `.startup.jsonl` files
+- Successful lease receipts `9344-9418.json` and `19372-19453.json`
+
 The unchanged water fixture uses 128³ cells, 1280×720 output, DPR 1, and quality scale 2/3.
 The benchmark includes physics, rendering, and the GPU completion fence.
 Native frames use no legacy bridge dispatches.
