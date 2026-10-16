@@ -410,6 +410,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
       return queryWorldPick(app,state,display,options,d=>!dead&&displayedMainFrame===d,queuePickDemand);
     },
     presentLast(){
+      if(dead || !displayedMainFrame)return false;
       const ticket=createWorldFeedbackProvider(app.gpu,{}).reserve(app.gpu.frame);
       try{return app.post.presentLast({submission:ticket});}finally{
         const read=ticket.record(app.gpu.frame,state.boundary);read.catch(()=>{});

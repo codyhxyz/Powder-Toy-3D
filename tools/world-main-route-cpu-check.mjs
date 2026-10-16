@@ -15,6 +15,12 @@ import {frameUniformValues} from '../src/gfx/uniforms.js';
 const turn=()=>new Promise(r=>setImmediate(r));
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
 
+test('loading WORLD does not reserve GPU work to present an image that does not exist',()=>{
+  const app={gpu:{get frame(){assert.fail('no loading-frame submission/readback');}},
+    post:{presentLast(){assert.fail('no complete MAIN image');}},wakeLoop(){}};
+  const driver=createWorldFrameDriver(app,{data:{},uses:new Set()});
+  assert.equal(driver.presentLast(),false);
+});
 test('actual Post transfer distinguishes validation, null pool, prepare failure and throwing notification; release waits rejected submit and queue',async()=>{
   for(const mode of ['validation','resize','backpressure','prepare','notification']){
     const f=fixture({limit:1});await f.post.sceneReady;let transfers=0;
