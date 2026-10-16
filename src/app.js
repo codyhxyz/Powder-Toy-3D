@@ -284,6 +284,7 @@ settings.paused = params.get('paused') === '1' || testMode === 'manual' || testM
 // acceptance. Worlds/POV use explicit readiness, never a silent v1 fallback.
 // Multiplayer guests are deliberately render-only, irrespective of host engine.
   let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
+  let physicsChanging = false;
   let ctx; // Readiness also runs during picker construction, before wires attach.
 async function loadNativePhysics() {
   const [physics, contact, dynamics] = await Promise.all([import('./v2/physics.js'), import('./shaders/v2/contact.js'), import('./v2/dynamics.js')]);
@@ -2767,6 +2768,7 @@ function tick(now, renderOnly = false) {
   get brushValid() { return brushValid; }, get brushCenter() { return brushCenter; },
   industry: null,
   get menuPick() { return menuPick; }, get gamemode() { return selectedMode; },
+  get nativePhysicsRequested() { return v2Box(); },
   get animTime() { return animTime; }, get graphicsFailure() { return graphicsFailure; },
   // the animation clock as the far field's uniform-like reader takes it ({ value })
   viewTimeUniform: { get value() { return viewTime; } },
@@ -2930,29 +2932,35 @@ try {
     // Saved engine modes also use this boundary. physics: { mode, active, v2 (its PhysicsV2) }
     async setPhysics(mode) {
       if (mode !== 'v1' && mode !== 'v2') throw new Error(`setPhysics: 'v1' or 'v2', not ${mode}`);
-      if (mode === 'v2' && ctx.industry?.pending) throw new Error('Wait for the machine transfer before changing physics.');
-      if (mode === 'v2') V2mod ??= await loadNativePhysics();
-      // Loading the module yields. A transfer may start during that interval.
-      if (mode === 'v2' && ctx.industry?.pending) throw new Error('Wait for the machine transfer before changing physics.');
-      if (mode === 'v1') {
-        // Keep native mode published while legacy builds: the running loop must
-        // not step unbuilt kernels. A map change meanwhile needs its own prepare.
-        let prepared;
-        do { prepared = sim; await prepared.prepareLegacy(); } while (prepared !== sim);
+      if (physicsChanging) throw new Error('Wait for the current physics change to finish.');
+      physicsChanging = true;
+      try {
+        if (mode === 'v2' && ctx.industry?.pending) throw new Error('Wait for the machine transfer before changing physics.');
+        if (mode === 'v2') V2mod ??= await loadNativePhysics();
+        // Loading the module yields. A transfer may start during that interval.
+        if (mode === 'v2' && ctx.industry?.pending) throw new Error('Wait for the machine transfer before changing physics.');
+        if (mode === 'v1') {
+          // Keep native mode published while legacy builds: the running loop must
+          // not step unbuilt kernels. A map change meanwhile needs its own prepare.
+          let prepared;
+          do { prepared = sim; await prepared.prepareLegacy(); } while (prepared !== sim);
+        }
+        physicsMode = mode;
+        if (mode === 'v2' && !physicsV2 && !mp.isGuest) physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
+        if (mode === 'v1' && physicsV2) {
+          physicsV2.suspend();
+          v2Running = false;
+        }
+        await physicsV2?.ready;
+        if (mode === 'v2' && physicsV2) await sim.prepareNative(physicsV2);
+        if (mode === 'v2' && !v2Status().ready && !mp.isGuest) hud.toast(v2Status().reason, { kind: 'error' });
+        if (mode === 'v2' && v2Box()) physicsV2.activate();
+        pacer.wake();
+        wakeLoop();
+        return physicsMode;
+      } finally {
+        physicsChanging = false;
       }
-      physicsMode = mode;
-      if (mode === 'v2' && !physicsV2 && !mp.isGuest) physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
-      if (mode === 'v1' && physicsV2) {
-        physicsV2.suspend();
-        v2Running = false;
-      }
-      await physicsV2?.ready;
-      if (mode === 'v2' && physicsV2) await sim.prepareNative(physicsV2);
-      if (mode === 'v2' && !v2Status().ready && !mp.isGuest) hud.toast(v2Status().reason, { kind: 'error' });
-      if (mode === 'v2' && v2Box()) physicsV2.activate();
-      pacer.wake();
-      wakeLoop();
-      return physicsMode;
     },
     get physics() { return { mode: physicsMode, active: v2Active(), readiness: v2Status(), capabilities: sim.nativeCapabilities, v2: physicsV2 }; },
     fill: (req) => runFill(sim, req, { openSides: !!win }),   // a flood fill on the current grid (editing.js runFill), for tools

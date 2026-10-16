@@ -38,9 +38,9 @@ export function createIndustry(app) {
   let epoch = 0, pending = false, disposed = false, candidate = null, candidateResult = null;
   let probePending = false, probeKey = '', probeAt = 0, animation = 0, lastMode = app.gamemode, lastSim = app.sim;
   // ponytail: box maps only; streamed worlds need persistent world-coordinate machinery.
-  // A retained, suspended owner is compatible with V1. Only active compact
-  // authority blocks legacy velocity guidance and the Factory host cadence.
-  const unavailable = () => app.sim.compact ? INDUSTRY_V2_UNAVAILABLE : null;
+  // A retained, suspended owner is compatible with stable V1. Requested V2
+  // also closes admission while that owner awaits reactivation.
+  const unavailable = () => app.nativePhysicsRequested || app.sim.compact ? INDUSTRY_V2_UNAVAILABLE : null;
   const active = () => !unavailable() && !app.win && ['sandbox','factory'].includes(app.gamemode);
   // Keep machines running and preserve the build selection, but driving has no
   // construction input or placement ghost. Exit restores the previous console.

@@ -104,13 +104,16 @@ const statusStart = appSource.indexOf('  function v2Status()');
 const statusEnd = appSource.indexOf('function v2Active()', statusStart);
 const setterStart = appSource.indexOf('    async setPhysics(mode)');
 const setterEnd = appSource.indexOf('    get physics()', setterStart);
-assert(statusStart >= 0 && statusEnd > statusStart && setterStart >= 0 && setterEnd > setterStart);
+const requestStart = appSource.indexOf('get nativePhysicsRequested()');
+const requestEnd = appSource.indexOf('\n', requestStart);
+assert(statusStart >= 0 && statusEnd > statusStart && setterStart >= 0 && setterEnd > setterStart
+  && requestStart >= 0 && requestEnd > requestStart);
 function appFixture({ pending = false, duringImport = false, factory = false } = {}) {
   const calls = [], notices = [];
   const context = vm.createContext({
     nativeReadiness, sim: { compactOwner: { isReady: true }, nativeCapabilities: { state: true } },
     win: null, pov: null, mp: { replica: false, isGuest: false },
-    selectedMode: factory ? 'factory' : 'sandbox', physicsMode: 'v1',
+    selectedMode: factory ? 'factory' : 'sandbox', physicsMode: 'v1', physicsChanging: false,
     ctx: { industry: { pending, hasMachines: factory } }, V2mod: null, physicsV2: null,
     hud: { toast: message => notices.push(message) },
     pacer: { wake: noop }, wakeLoop: noop, v2Running: false,
@@ -136,9 +139,62 @@ for (const options of [{ pending: true }, { duringImport: true }]) {
   await assert.rejects(f.setPhysics('v2'), /Wait for the machine transfer/);
   assert.equal(f.context.physicsMode, 'v1');
   assert.equal(f.context.physicsV2, null);
+  assert.equal(f.context.physicsChanging, false, 'failed admission releases the engine-change lock');
   assert.deepEqual(f.calls, options.pending ? [] : ['import']);
 }
 console.log('PASS app refuses engine activation before and after an asynchronous machine-transfer race');
+
+{
+  const f = fixture(false), transition = appFixture({ factory: true });
+  const before = clone(f.api.toJSON()), core = f.core.slice(), bank = f.bank.slice();
+  let entered, release;
+  const prepared = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const owner = f.sim.compactOwner;
+  owner.ready = Promise.resolve();
+  owner.activate = () => { f.sim.compact = owner; };
+  f.sim.nativeCapabilities = { state: true };
+  f.sim.prepareNative = async () => { entered(); await gate; };
+  transition.context.sim = f.sim;
+  transition.context.physicsV2 = owner;
+  transition.context.V2mod = {};
+  transition.context.ctx.industry = f.api;
+  const request = vm.runInContext(`({${appSource.slice(requestStart, requestEnd)}})`, transition.context);
+  Object.defineProperty(f.app, 'nativePhysicsRequested', { get: () => request.nativePhysicsRequested });
+  assert.equal(f.api.state.active, true, 'stable V1 with a retained owner still admits machine work');
+  const activation = transition.setPhysics('v2');
+  try {
+    await prepared;
+    assert.equal(f.sim.compact, null, 'retained owner has not activated yet');
+    assert.equal(transition.context.physicsMode, 'v2', 'requested mode is already published');
+    await assert.rejects(transition.setPhysics('v1'), /current physics change/);
+    assert.equal(transition.context.physicsChanging, true);
+    const removal = await f.api.remove(before.devices[0].id);
+    assert.equal(removal.ok, false, 'reactivation must close admission before compact ownership resumes');
+    assert.equal(removal.reason, INDUSTRY_V2_UNAVAILABLE);
+    f.api.update(1 / 60, true);
+    f.api.nativeStep();
+    assert.equal(f.api.pending, false);
+    assert.deepEqual(f.writes, []);
+    assert.deepEqual(f.core, core);
+    assert.deepEqual(f.bank, bank);
+    assert.deepEqual(clone(f.api.toJSON()), before);
+  } finally {
+    release();
+    await activation;
+    assert.equal(transition.context.physicsChanging, false);
+    f.api.dispose();
+  }
+}
+console.log('PASS real app/controller retained-owner reactivation rejects admission throughout preparation');
+
+{
+  const f = appFixture();
+  f.context.sim.prepareNative = async () => { throw new Error('preparation failed'); };
+  await assert.rejects(f.setPhysics('v2'), /preparation failed/);
+  assert.equal(f.context.physicsChanging, false, 'failed preparation must not leave an admission lock');
+}
+console.log('PASS failed preparation releases engine-change serialization');
 
 {
   const f = appFixture({ factory: true });

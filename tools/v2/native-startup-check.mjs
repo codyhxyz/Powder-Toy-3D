@@ -93,7 +93,7 @@ const method = app.slice(start, end).trim().replace(/,$/, '');
 const setter = state => new Function('state', `with (state) { return ({ ${method} }).setPhysics; }`)(state);
 function appState(sim) {
   const state = {
-    sim, physicsMode: 'v2', V2mod: null, v2Running: true, mp: { isGuest: false },
+    sim, physicsMode: 'v2', physicsChanging: false, V2mod: null, v2Running: true, mp: { isGuest: false },
     pacer: { wake() {} }, wakeLoop() {},
   };
   state.physicsV2 = {
@@ -121,6 +121,7 @@ assert.equal(await switchLegacy, 'v1');
 assert.equal(state.physicsMode, 'v1');
 assert.equal(state.suspended, true);
 assert.equal(state.v2Running, false);
+assert.equal(state.physicsChanging, false);
 assert(LEGACY.every(name => native.kernels.get(name).state === 'ready'));
 native.dispatches.length = 0;
 native.sim.step();
@@ -171,6 +172,7 @@ for (const name of LEGACY.filter(name => name !== 'react')) failed.gate(name).re
 await assert.rejects(failureSwitch, error => error === compileError);
 assert.equal(failureState.physicsMode, 'v2');
 assert.equal(failureState.suspended, undefined);
+assert.equal(failureState.physicsChanging, false, 'failed legacy builds release serialization without publishing V1');
 failed.sim.compact = null;
 assert.throws(() => failed.sim.step(), /await sim.prepareLegacy/);
 await assert.rejects(failed.sim.prepareLegacy(), error => error === compileError);
