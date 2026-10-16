@@ -1377,6 +1377,9 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       if (presenter) stageBlit ??= createBlit(gpu, presenter.format);
       return Promise.all([...allPipes().map(p=>p.ready), ...(stageBlit ? [stageBlit.ready] : [])]);
     },
+    get sceneSettled() {
+      return Promise.allSettled([...allPipes().map(p=>p.compilationSettled), ...(stageBlit ? [stageBlit.pipe.compilationSettled] : [])]);
+    },
     setSceneIdentity(identity) {
       if (stageContext) throw new Error('cannot change scene identity from a staged scene hook');
       if (disposed) throw new Error('post disposed');

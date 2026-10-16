@@ -193,8 +193,13 @@ for (const late of ['resolve', 'reject']) {
     const failure = f.gpu.failure;
     assert.match(failure.message, /pipe-0[\s\S]*compilation exceeded/);
     await Promise.all(pipes.map((p) => sameFailure(p.ready, failure)));
+    let activeDrained=false,queuedDrained=false;
+    const activeFence=Promise.all(pipes.slice(0,2).map(p=>p.compilationSettled)).then(()=>{activeDrained=true;});
+    await Promise.all(pipes.slice(2).map(p=>p.compilationSettled)).then(()=>{queuedDrained=true;});
+    assert(queuedDrained,'canceled queued pipelines have no native use');assert.equal(activeDrained,false);
     for (const call of f.calls) call[late](late === 'resolve' ? {} : new Error('late rejection'));
     await drain();
+    await activeFence;assert(activeDrained,'native settlement, not public timeout, closes the fence');
     t.mock.timers.tick(PIPELINE_BUDGET_MS * 2);
     await drain();
     assert.ok(pipes.every((p) => p.state === 'failed' && p.pipeline === null));

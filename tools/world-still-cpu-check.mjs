@@ -21,7 +21,7 @@ async function setup() {
   f.frame.values=Object.fromEntries(Object.entries(values).map(([k,v])=>[k,v?.toArray?v.toArray():v]));
   const presentation=createPresentation(),app={gpu:f.gpu,post:p.post,camera:p.camera,presentation,settings:{view:0},win:f.win,wakeLoop(){}};
   const state={data:f.owner,uses:new Set(),volume:{dispose(){}},opaque:{dispose(){}},unused:{destroy(){}},boundary:{destroy(){}},emptyArtwork:{destroy(){}}};
-  const seen=[],controls={gate:null,miss:false,compileError:null,nativeStill:false},counts={reserve:0,probe:0,vm:0,sign:0,main:0};
+  const seen=[],controls={gate:null,pointGate:null,probeGate:null,eyeMiss:false,miss:false,compileError:null,nativeStill:false},counts={reserve:0,probe:0,vm:0,sign:0,main:0,prewarm:0,preflight:0},cuts=[];
   const phases=[];
   // Explicit native scene transport only: the real frame helper owns layout
   // bindings, opaque pack, whole feedback, Post transfer and final retirement.
@@ -40,11 +40,12 @@ async function setup() {
   };
   app.signs={worldRequest(){counts.sign++;return null;}};
   const driver=createWorldFrameDriver(app,state,{
-    async prewarm(_app,_state,_data){if(controls.gate)await controls.gate.promise;},
-    async probe(){counts.probe++;return {feedback:complete()};},
-    createPreflight:(_app,_state,data,view)=>controls.nativeStill?createWorldMeshPreflight(app,state,data,view):{},
+    async prewarm(_app,_state,_data){counts.prewarm++;state.volume.pointReady=controls.pointGate?.promise??Promise.resolve();if(controls.gate)await controls.gate.promise;},
+    async probe(_app,_state,data){counts.probe++;cuts.push(data.cut);if(controls.probeGate)await controls.probeGate.promise;
+      const miss=controls.eyeMiss;controls.eyeMiss=false;return {feedback:miss?{incomplete:true,requirements:[{brick:[1,0,0],channels:READY.GLOW}],sun:[]}:complete()};},
+    createPreflight:(_app,_state,data,view)=>{counts.preflight++;return controls.nativeStill?createWorldMeshPreflight(app,state,data,view):{};},
     preflight(_app,p,camera){if(controls.compileError)throw controls.compileError;return controls.nativeStill?preflightWorldMeshes(app,p,camera):true;},
-    releasePreflight:(_app,p)=>p?.native?releaseWorldMeshPreflight(app,p):Promise.resolve(),
+    releasePreflight:(_app,p)=>controls.retireError?Promise.reject(controls.retireError):p?.native?releaseWorldMeshPreflight(app,p):Promise.resolve(),
     record(_app,_state,data,options){
       if(controls.nativeStill)return recordWorldFrame(app,state,data,options);
       const still=!!options.stillTarget,submission=createWorldFeedbackProvider(f.gpu,{}).reserve(f.gpu.frame),feedbackIdentity={};
@@ -67,8 +68,61 @@ async function setup() {
   const pump=async(until,fn=()=>tick())=>{for(let i=0;i<500&&!until();i++){f.gpu.finish();await p.completeAll();if(!until())fn();}assert(until(),'driver/final queue did not settle');};
   const boot=async()=>{tick(true);await pump(()=>!!driver.accepted);await pump(()=>!driver.busy);};
   const close=async()=>{const done=driver.dispose();for(let i=0;i<20;i++){f.gpu.finish();await p.completeAll();}await done;p.post.dispose();await p.completeAll();presentation.dispose();await f.finish();};
-  return {f,p,app,state,driver,seen,controls,counts,phases,view,tick,pump,boot,close};
+  return {f,p,app,state,driver,seen,controls,counts,cuts,phases,view,tick,pump,boot,close};
 }
+
+test('point-ready MAIN extends same frozen cut before full warm, but complete eye cannot select actors or record',async()=>{
+  const t=await setup(),warm=deferred(),point=deferred();t.controls.gate=warm;t.controls.pointGate=point;t.controls.eyeMiss=true;
+  t.tick(true);await t.pump(()=>t.counts.prewarm===1);
+  assert.equal(t.counts.probe,0);point.resolve();await t.pump(()=>t.counts.probe===2);
+  await t.pump(()=>t.driver.phase==='waiting:warm');
+  assert.equal(t.cuts[0],t.cuts[1]);assert.equal(t.counts.prewarm,1);assert.equal(t.counts.reserve,1);
+  assert.equal(t.counts.preflight,0);assert.equal(t.counts.vm,0);assert.equal(t.seen.length,0);assert.equal(t.driver.accepted,null);
+  warm.resolve();await t.pump(()=>!!t.driver.accepted);assert.equal(t.counts.preflight,1);await t.close();
+});
+
+test('prewarm failure during actual same-cut extension releases late publication and never resurrects progress',async()=>{
+  const t=await setup(),warm=deferred(),extension=deferred();t.controls.gate=warm;t.controls.eyeMiss=true;
+  const extend=t.f.owner.extend.bind(t.f.owner);let entered=false,releases=0;
+  // Observe only the return transport; the actual owner still performs extension.
+  t.state.data={...t.f.owner,extend:async(...args)=>{const data=await extend(...args);entered=true;await extension.promise;
+    return {...data,release(){releases++;data.release();}};}};
+  t.tick(true);await t.pump(()=>entered);const error=Error('full warm failed');warm.reject(error);await turn();
+  assert.equal(t.driver.failure,error);assert.equal(t.driver.phase,'failed');assert.throws(()=>t.tick(),e=>e===error);
+  extension.resolve();await turn();await turn();assert.equal(releases,1);assert.equal(t.driver.phase,'failed');
+  assert.equal(t.counts.preflight,0);assert.equal(t.seen.length,0);await t.close();
+});
+
+test('prewarm rejection is immediate while point pending; disposal drains point and actual compilation settlement',async()=>{
+  const t=await setup();await t.boot();const probes=t.counts.probe,prewarms=t.counts.prewarm;
+  const warm=deferred(),point=deferred(),native=deferred();t.controls.gate=warm;t.controls.pointGate=point;
+  t.state.volume.compilationSettled=native.promise;t.tick(true);await t.pump(()=>t.counts.prewarm===prewarms+1);
+  let queuedRejected=false;
+  const queued=assert.rejects(t.driver.queueStill({view:t.view(),target:{}}),/view rejected while point pending/).then(()=>{queuedRejected=true;});
+  const error=Error('view rejected while point pending');warm.reject(error);await turn();assert.equal(t.driver.failure,error);
+  await queued;assert(queuedRejected,'queued jobs reject without waiting for point/native settlement');
+  let disposed=false;const done=t.driver.dispose().then(()=>{disposed=true;});await turn();assert.equal(disposed,false);
+  point.resolve();await turn();assert.equal(t.counts.probe,probes);assert.equal(disposed,false);
+  native.resolve();for(let i=0;i<20;i++){t.f.gpu.finish();await t.p.completeAll();}await done;await t.close();
+});
+
+test('disposal drains in-flight point readback, preparation and registered queue use independently',async()=>{
+  const t=await setup(),warm=deferred(),read=deferred(),use=deferred();t.controls.gate=warm;t.controls.probeGate=read;
+  t.tick(true);await t.pump(()=>t.counts.probe===1);t.state.uses.add(use.promise);
+  let disposed=false;const done=t.driver.dispose().then(()=>{disposed=true;});warm.resolve();await turn();assert.equal(disposed,false);
+  read.resolve();await turn();assert.equal(disposed,false);use.resolve();t.state.uses.delete(use.promise);
+  for(let i=0;i<20;i++){t.f.gpu.finish();await t.p.completeAll();}await done;assert.equal(t.counts.preflight,0);await t.close();
+});
+
+test('still remains full-prewarm gated and never issues MAIN eye query',async()=>{
+  const t=await setup();await t.boot();const warm=deferred();t.controls.gate=warm;
+  const probes=t.counts.probe,preflight=t.counts.preflight,prewarms=t.counts.prewarm;let finished=false;
+  const job=t.driver.queueStill({view:t.view(),target:t.p.gpu.createTexture({size:[320,200],format:'rgba8unorm'})}).then(()=>{finished=true;});
+  t.tick();await t.pump(()=>t.counts.prewarm===prewarms+1);
+  for(let i=0;i<5;i++){await turn();t.tick();}
+  assert.equal(finished,false);assert.equal(t.counts.probe,probes);assert.equal(t.counts.preflight,preflight);
+  warm.resolve();await t.pump(()=>finished);await job;assert.equal(t.counts.probe,probes);await t.close();
+});
 
 test('off-camera still extends same cut before target confirmation, preserves MAIN identity/TAA/VM/sign/waiters; fairness services picks and normal work between two targets',async()=>{
   const t=await setup();await t.boot();
@@ -108,6 +162,15 @@ test('disposal rejects queued targets immediately but active target waits outsta
   gate.resolve();await turn();assert.equal(active,false);use.resolve();
   for(let i=0;i<20;i++){t.f.gpu.finish();await t.p.completeAll();}await done;await Promise.all([a,b]);assert(active);
   t.p.post.dispose();await t.p.completeAll();t.app.presentation.dispose();await t.f.finish();
+});
+
+test('rejected preflight retirement still drains queue uses before rejecting active still',async()=>{
+  const t=await setup();await t.boot();const use=deferred();t.state.uses.add(use.promise);
+  t.controls.compileError=Error('scene preflight failed');t.controls.retireError=Error('retirement rejected');let rejected=false;
+  const job=assert.rejects(t.driver.queueStill({view:t.view(),target:{}}),/scene preflight failed/).then(()=>{rejected=true;});
+  t.tick();for(let i=0;i<100&&!t.driver.failure;i++){t.f.gpu.finish();await t.p.completeAll();try{t.tick();}catch{}}
+  await turn();assert(t.driver.failure);assert.equal(rejected,false);use.resolve();t.state.uses.delete(use.promise);
+  await job;await t.close();
 });
 
 test('native preflight failure rejects both UI jobs only after active prefix resources drain',async()=>{

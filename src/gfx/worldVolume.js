@@ -56,13 +56,14 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
   const pointLayout=device.createPipelineLayout({bindGroupLayouts:pointLayouts});
   const linear=device.createSampler({minFilter:'linear',magFilter:'linear'});
   const repeat=device.createSampler({minFilter:'linear',magFilter:'linear',addressModeU:'repeat',addressModeV:'repeat',addressModeW:'repeat'});
-  const pipes=new Map(); let dead=false;
+  const pipes=new Map(), compilations=[]; let dead=false;
   const alive=()=>{if(dead)throw new Error('world volume disposed');};
   const module=(code,label)=>device.createShaderModule({code,label});
   function compiled(promise) {
     let state='pending', pipeline=null, error=null;
     const ready=Promise.resolve(promise).then(p=>{pipeline=p;state='ready';return p;},e=>{error=e;state='failed';throw e;});
     ready.catch(()=>{});
+    compilations.push(ready);
     return Object.freeze({get state(){return state;},get pipeline(){return pipeline;},get error(){return error;},ready});
   }
   const makePick=view=>compiled(device.createComputePipelineAsync({label:`world pick${view==='plain'?' plain':''}`,layout:pickLayout,
@@ -242,5 +243,7 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
   return Object.freeze({get pipelineStates(){return Object.freeze([...pipes].map(([key,p])=>Object.freeze({key,state:p.state,error:p.error?.message??null})));},
     g:grid,layouts,pickLayouts,pointLayouts,pipeline,pipelineState,viewReady,pickState,plainPickState,pickPipelineState,
     pointState,pointReady,signsState,signsReady,signsLayouts,prepare,ready:pickReady,
+    // Aggregate readiness is fail-fast; only these native leaves prove drainage.
+    get compilationSettled(){return Promise.allSettled(compilations);},
     dispose(){dead=true;/* candidates own their pinned lifetimes; no shared resource mutation */}});
 }

@@ -96,8 +96,11 @@ test('actual Plain facade compiles exact three descriptors and gates one-pass or
     const failure=f.volume.pipelineState('plain',{different:true});
     f.settle(d=>d.fragment?.entryPoint==='fsAbsorb',new Error('absorb failed'));
     await assert.rejects(failure.ready,/absorb failed/);assert.equal(failure.state,'failed');assert.match(failure.error.message,/absorb/);
+    let drained=false;const drainedWork=f.volume.compilationSettled.then(()=>{drained=true;});
+    await tick();assert.equal(drained,false,'failed Plain aggregate does not settle sibling native leaves');
     const before=f.log.length;assert.equal(f.candidate.recordDraw(f.pass,{view:'plain',detail:{different:true}}),false);assert.equal(f.log.length,before);
     f.settle();
+    await drainedWork;assert.equal(drained,true);
   } finally {f.release();}
 });
 

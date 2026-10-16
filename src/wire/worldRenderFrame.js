@@ -364,8 +364,14 @@ export function createWorldFrameDriver(app,state,execution={}) {
   // asynchronous native material compilation can still use it.
   const rejectStill=(p,error)=>{
     if(!p?.job || p.rejectionDrain)return;
-    p.rejectionDrain=Promise.allSettled([p.work,releasePreflight(app,p.preflight),...state.uses])
+    p.rejectionDrain=drain(p)
       .then(()=>p.job.reject(error));
+  };
+  const drain=async p=>{
+    await Promise.allSettled([p.work,p.preparing,state.volume?.compilationSettled,
+      state.opaque.ready,app.post.sceneSettled]);
+    await Promise.allSettled([releasePreflight(app,p.preflight)]);
+    await Promise.allSettled([...state.uses]);
   };
   const queueStill=({view,target})=>{
     if(dead || failure || !accepted || !displayedMainFrame)return Promise.reject(failure??new Error('WORLD still not ready'));
@@ -384,17 +390,42 @@ export function createWorldFrameDriver(app,state,execution={}) {
     }
     wake();return true;
   };
+  const fail=(p,error)=>{
+    if(dead || pending!==p || failure)return;
+    failure=error;p.phase='failed';rejectStill(p,error);
+    for(const job of stills.splice(0))job.reject(error);
+    wake();
+  };
   const wait=(p,work,next)=>{p.phase='waiting';p.waitTarget=next;p.work=Promise.resolve(work).then(value=>{
-    if(dead || pending!==p){value?.release?.();return;}
+    if(dead || failure || pending!==p){value?.release?.();return;}
     p.result=value;p.phase=next;wake();
-  },error=>{if(!dead&&pending===p){failure=error;p.phase='failed';rejectStill(p,error);for(const job of stills.splice(0))job.reject(error);wake();}});};
+  },error=>fail(p,error));};
   // Stills have no hands, so do not manufacture an eye query/result. The whole
   // native scene feedback remains mandatory before any target is tonemapped.
-  const prepare=p=>wait(p,prewarm(app,state,p.data,p.view).then(()=>p.job ? {feedback:emptyFeedback()} : probe(app,state,p.data,p.view)),'eye');
+  const prepare=p=>{
+    // Start the existing full prewarm synchronously, once per frozen cut.
+    if(!p.preparing){
+      p.preparing=Promise.resolve(prewarm(app,state,p.data,p.view));
+      p.preparing.catch(error=>fail(p,error));
+    }
+    if(p.job){wait(p,p.preparing.then(()=>({feedback:emptyFeedback()})),'eye');return;}
+    wait(p,Promise.resolve().then(()=>{
+      if(dead || failure || pending!==p)return;
+      requireReady(state.volume?.pointReady?.then,'WORLD point readiness required');
+      return state.volume.pointReady;
+    }).then(()=>{
+      if(dead || failure || pending!==p)return;
+      return probe(app,state,p.data,p.view);
+    }),'eye');
+  };
   const extend=(p,feedback)=>{
     const old=p.data;p.data=null;
     const preflight=p.preflight;p.preflight=null;
-    wait(p,Promise.all([state.data.extend(old,feedback),releasePreflight(app,preflight)]).then(([data])=>data).finally(()=>old.release()),'data');
+    wait(p,Promise.allSettled([state.data.extend(old,feedback),releasePreflight(app,preflight)]).then(([data,released])=>{
+      if(data.status==='rejected')throw data.reason;
+      if(released.status==='rejected'){data.value?.release();throw released.reason;}
+      return data.value;
+    }).finally(()=>old.release()),'data');
   };
   return {
     get phase(){return pending ? pending.phase+(pending.phase==='waiting'?':'+pending.waitTarget:'') : 'idle';},
@@ -445,7 +476,10 @@ export function createWorldFrameDriver(app,state,execution={}) {
       else if(p.phase==='eye') {
         p.eye=p.result;p.result=null;
         if(!complete(p.eye.feedback)){extend(p,p.eye.feedback);return false;}
-        p.preflight=createPreflight(app,state,p.data,p.view);p.phase='scene';
+        wait(p,p.preparing,'warm');
+      }
+      if(p.phase==='warm') {
+        p.result=null;p.preflight=createPreflight(app,state,p.data,p.view);p.phase='scene';
       }
       if(p.phase==='scene') {
         const attempt=()=>withWorldView(app,p.view,()=>{
@@ -494,7 +528,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
         dead=true;state.dead=true;const p=pending;pending=null;
         const error=new Error('WORLD still driver disposed');
         for(const job of stills.splice(0))job.reject(error);
-        if(p){await p.work?.catch(()=>{});p.result?.release?.();await p.rejectionDrain;await releasePreflight(app,p.preflight);p.data?.release();}
+        if(p){await drain(p);p.result?.release?.();await p.rejectionDrain;p.data?.release();}
         displayedMainFrame?.data.release();displayedMainFrame=null;pickDemands.clear();
         await Promise.allSettled([...state.uses]);
         p?.job?.reject(error);

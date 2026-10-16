@@ -160,7 +160,10 @@ export class PipelineCache {
     if (cached) return cached;
     let resolve, reject;
     const p = new Promise((res, rej) => { resolve = res; reject = rej; });
-    const job = { kind, name, full, groups, module, descriptor, p, resolve, reject, done: false, timer: null };
+    let settle;
+    // Public failure cannot cancel a native compilation already in the driver.
+    p.settled = new Promise(resolve => { settle = resolve; });
+    const job = { kind, name, full, groups, module, descriptor, p, resolve, reject, settle, work: null, done: false, timer: null };
     this.gpu.stats.pipelinesPending++;
     this.pending.add(p);
     this.pipelines.set(full, p);
@@ -179,6 +182,7 @@ export class PipelineCache {
   finish(job, error, pipeline) {
     if (job.done) return;
     job.done = true;
+    if (!job.work) job.settle(); // canceled before native work could start
     if (job.timer !== null) clearTimeout(job.timer);
     this.active.delete(job);
     this.running = this.active.size;
@@ -206,7 +210,7 @@ export class PipelineCache {
         if (!job.done) this.gpu.fail(new GraphicsFailure(
           `GPU shader failed: ${job.name}.\nPipeline compilation exceeded ${PIPELINE_BUDGET_MS} ms.`));
       }, PIPELINE_BUDGET_MS);
-      Promise.resolve().then(async () => {
+      job.work = Promise.resolve().then(async () => {
         this.check();
         const layout = await this.pipelineLayout(job.name, job.groups);
         this.check();
@@ -222,6 +226,7 @@ export class PipelineCache {
         if (error instanceof GraphicsFailure) this.gpu.fail(error);
         else this.shaderFailed(job.name, job.module, error);
       });
+      job.work.then(job.settle, job.settle);
     }
   }
 
@@ -332,7 +337,9 @@ class Pipe {
       this.gpu.pipelines.check();
       this.state = 'pending';
       const module = this.gpu.pipelines.module(this.desc.code, this.name);
-      this._started = this.gpu.pipelines.pipeline(this.kind, this.name, this.key(), this.groups, module, () => this.descriptor(module))
+      const compilation = this.gpu.pipelines.pipeline(this.kind, this.name, this.key(), this.groups, module, () => this.descriptor(module));
+      this._compilationSettled = compilation.settled;
+      this._started = compilation
         .then((p) => {
           if (this.state === 'failed') return;
           this.gpu.pipelines.check();
@@ -354,6 +361,7 @@ class Pipe {
     this._settle.reject(error);
   }
 
+  get compilationSettled() { return this._compilationSettled ?? Promise.resolve(); }
   // the ms this pipeline took to create (null until it is ready)
   get buildMs() { return this.gpu.pipelines.times.get(this.name) ?? null; }
 

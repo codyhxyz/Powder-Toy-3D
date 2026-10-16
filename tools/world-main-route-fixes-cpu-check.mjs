@@ -54,7 +54,7 @@ test('actual driver/owner/Post reaches 32 accepted GI advances and then idles wi
   let wakes=0,advances=0,accepted=0;
   const app={gpu:f.gpu,post:p.post,win:f.win,camera:p.camera,presentation,settings:{},scene:new Scene(),
     wakeLoop(){wakes++;},requestRender(){pacer.wake();}};
-  const state={data:f.owner,uses:new Set(),volume:{dispose(){}},opaque:{dispose(){}},
+  const state={data:f.owner,uses:new Set(),volume:{pointReady:Promise.resolve(),dispose(){}},opaque:{dispose(){}},
     unused:{destroy(){}},boundary:{destroy(){}},emptyArtwork:{destroy(){}}};
   const driver=createWorldFrameDriver(app,state,{
     prewarm:async()=>{},probe:async()=>({feedback:f.owner.atlas.lookup([0,0,0],READY.GI).known?complete:{incomplete:true,requirements:[{brick:[0,0,0],channels:READY.GI}],sun:[]}}),createPreflight:()=>({}),preflight:()=>true,releasePreflight:async()=>{},

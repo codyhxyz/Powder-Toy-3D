@@ -12,13 +12,14 @@ import {frameUniformValues,writeFrameUniforms,worldModelMatrix,FrameUniformsStru
 import {worldFrameValues} from '../src/gfx/worldVolume.js';
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};};
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
-export function fixture({limit=3}={}) {
+export function fixture({limit=3,pipeGates=null}={}) {
   const events=[],textures=[],done=[],copies=[],resolved=[],draws=[];
   const texture=({label='',size=[64,32],format='rgba16float',usage=31}={})=>{
     const t={label,width:size[0],height:size[1],format,usage,dead:false,createView(){return{texture:t};},destroy(){t.dead=true;events.push(`destroy:${label}`);}};
     textures.push(t);return t;
   };
-  const pipe=desc=>({state:'ready',ready:Promise.resolve(),draw(pass,args){assert.ok(!pass.closed);events.push(desc.name);draws.push({name:desc.name,params:args?.params?Object.fromEntries(Object.entries(args.params).map(([k,v])=>[k,v?.clone?v.clone():Array.isArray(v)?[...v]:v])):null});},dispatch(){events.push(desc.name);}});
+  const pipe=desc=>{const ready=pipeGates?deferred():null,leaf=pipeGates?deferred():null;if(pipeGates)pipeGates.push({ready,leaf});
+    return {state:'ready',ready:ready?.promise??Promise.resolve(),compilationSettled:leaf?.promise??Promise.resolve(),draw(pass,args){assert.ok(!pass.closed);events.push(desc.name);draws.push({name:desc.name,params:args?.params?Object.fromEntries(Object.entries(args.params).map(([k,v])=>[k,v?.clone?v.clone():Array.isArray(v)?[...v]:v])):null});},dispatch(){events.push(desc.name);}};};
   const queue={onSubmittedWorkDone(){const d=deferred();done.push(d);return d.promise;}};
   const gpu={queue,device:{queue,createSampler:()=>({})},layout:label=>({label}),renderPipeline:pipe,kernel:pipe,createTexture:texture,
     createBuffer:()=>({destroy(){events.push('destroy:buffer');}}),bindGroup:()=>({}),flush(){events.push('flush');},
@@ -42,6 +43,15 @@ export function fixture({limit=3}={}) {
   function admit({ticket,opts},extra={}){const s=submission();const accepted=post.commitScene(ticket,{feedbackIdentity:opts.feedbackIdentity,feedback:{incomplete:false},submission:s,...extra});return{accepted,s};}
   return{post,gpu,presenter,camera,node,events,textures,copies,resolved,draws,identity,presentation,options,record,submit,completeAll,admit,submission};
 }
+
+test('actual Post readiness rejection does not settle unfinished native sibling compilation',async()=>{
+  const gates=[],f=fixture({pipeGates:gates});let drained=false;
+  const ready=f.post.sceneReady,settled=f.post.sceneSettled.then(()=>{drained=true;});
+  gates[0].ready.reject(Error('Post pipeline failed'));await assert.rejects(ready,/Post pipeline failed/);
+  for(const gate of gates.slice(1))gate.ready.resolve();await turn();assert.equal(drained,false);
+  for(const gate of gates.slice(0,-1))gate.leaf.resolve();await turn();assert.equal(drained,false);
+  gates.at(-1).leaf.resolve();await settled;assert(drained);f.post.dispose();await f.completeAll();
+});
 
 test('frame values use actual jittered camera while preserving frozen settings/coordinates',()=>{
   const c=new PerspectiveCamera(65,2,.1,500);c.position.set(12,18,30);c.updateMatrixWorld();

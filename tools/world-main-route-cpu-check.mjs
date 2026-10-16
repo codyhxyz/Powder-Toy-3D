@@ -88,7 +88,7 @@ test('actual driver + actual owner + actual Post: pending/same-cut eye miss/acce
   const presentation=createPresentation();let wakes=0,reservations=0,captures=0,probes=0,commits=0,desired=1;
   const app={gpu:f.gpu,post:p.post,win:f.win,camera:p.camera,presentation,settings:{},scene:new Scene(),wakeLoop(){wakes++;},requestRender(){throw Error('completion must not refill settling');}};
   const complete={incomplete:false,requirements:[],sun:[]},cuts=[];
-  const state={data:f.owner,uses:new Set(),volume:{dispose(){}},opaque:{dispose(){}},unused:{destroy(){}},boundary:{destroy(){}},emptyArtwork:{destroy(){}}};
+  const state={data:f.owner,uses:new Set(),volume:{pointReady:Promise.resolve(),dispose(){}},opaque:{dispose(){}},unused:{destroy(){}},boundary:{destroy(){}},emptyArtwork:{destroy(){}}};
   const eyeGate=deferred();
   const driver=createWorldFrameDriver(app,state,{
     prewarm:async()=>{}, // Native kernel math and scenegraph encoding deliberately mocked.
