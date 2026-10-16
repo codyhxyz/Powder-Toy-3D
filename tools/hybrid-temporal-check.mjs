@@ -101,6 +101,10 @@ const cameraBind = c.bind[2];
 assert.equal(run().bind[2], cameraBind, 'static bind group reused');
 c = run({ motion, reactive });
 assert.equal(c.params.explicitMotion, true); assert.equal(c.params.reactive, true);
+const inspected=post.temporalInputs;
+assert.equal(inspected.motion,motion);assert.equal(inspected.reactive,reactive);
+inspected.motion=null;
+assert.equal(post.temporalInputs.motion,motion,'inspection must not mutate the selected inputs');
 assert.equal(c.bind[2].entries[2].resource.texture, motion);
 assert.equal(c.bind[2].entries[3].resource.texture, reactive);
 assert.equal(post.canReuse(camera), false, 'frame-local fields never seed stale post-only reuse');
@@ -115,6 +119,7 @@ assert.notEqual(run({ motion, reactive }).bind[2], explicitBind, 'retired group 
 c = run();
 assert.equal(c.params.explicitMotion, false, 'frame-local input cannot leak into cached/mesh-only next frame');
 assert.equal(c.params.reactive, false);
+assert(!post.temporalInputs.motion&&!post.temporalInputs.reactive,'next scene clears inspected frame-local inputs');
 assert.equal(post.canReuse(camera), true, 'post-only adaptation remains possible without perpetual work');
 post.reset();
 assert.equal(post.canReuse(camera), false);

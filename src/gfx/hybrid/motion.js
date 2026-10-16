@@ -31,7 +31,7 @@ export function createHybridMotion(gpu, sim, { gate: providedGate = null } = {})
     layouts: [fu.layout,sim.L.STATE_RO,sceneLayout], params: HybridMotionParams,
     fragment: { targets: [{ format: 'rgba16float' },{ format: 'r8unorm' },{format:'r8unorm'}] } });
   let textures, previous = new Matrix4(), previousJittered = new Matrix4();
-  let valid = false, lastRevision, lastFields, lastOrigin, disposed = false;
+  let valid = false, lastRevision, lastFields, lastOrigin, lastOptical, disposed = false;
   const retired = [];
   const collect = () => {
     for (let i=retired.length-1; i>=0; i--) if (retired[i].encoder !== gpu.frame.encoder) {
@@ -42,6 +42,7 @@ export function createHybridMotion(gpu, sim, { gate: providedGate = null } = {})
   const api = {
     ready: Promise.all([capture.ready,pipe.ready]).then(() => api),
     get isReady() { return !disposed && capture.state === 'ready' && pipe.state === 'ready'; },
+    get resources() { return !disposed&&textures?{motion:textures.motion,reactive:textures.reactive,opticalDepth:lastOptical}:null; },
     stats,
     invalidate() { valid = false; lastRevision = undefined; },
     record({ depth, opticalDepth, media, camera, post, model, revision, fieldRevision=revision, externalAnimated = false, world = false }) {
@@ -82,7 +83,7 @@ export function createHybridMotion(gpu, sim, { gate: providedGate = null } = {})
       gpu.frame.direct().copyTextureToTexture({ texture:depth },{ texture:textures.depth },[w,h]);
       gpu.frame.direct().copyTextureToTexture({texture:textures.coverage},{texture:textures.previousCoverage},[w,h]);
       previous.copy(current); previousJittered.copy(jittered);
-      valid = true; lastRevision = revision; lastFields=fieldRevision; lastOrigin = origin; stats.frames++;
+      valid = true; lastRevision = revision; lastFields=fieldRevision; lastOrigin = origin; lastOptical=opticalDepth; stats.frames++;
       return { motion:textures.motion,reactive:textures.reactive };
     },
     dispose() {

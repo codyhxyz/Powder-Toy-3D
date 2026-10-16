@@ -10,10 +10,11 @@ import { buildHybridMaterialTable, buildHybridDetailAtlas, createHybridMaterials
 import { hybridDetailLod, hybridMaterialsWGSL } from '../src/shaders/hybrid/materials.js';
 import { drawWGSL, meshWGSL, compactWGSL, shadowWGSL, geometryCapacity } from '../src/shaders/hybrid/geometry.js';
 import { gridDims,LAYOUT } from '../src/shaders/common.js';
-import { ELEMENTS,R } from '../src/elements.js';
+import { E,ELEMENTS,R } from '../src/elements.js';
 import { LOOK } from '../src/gfx/materials.js';
 import { withVisibility } from '../src/gpu/kernels.js';
-import { probeWGSL,forceOverflowWGSL,producerProbeWGSL,watchFailures } from './harness/hybrid-full.js';
+import { checkReadbackAfterRender } from './hybrid-readback-cpu-check.mjs';
+import { probeWGSL,forceOverflowWGSL,producerProbeWGSL,readbackSentinelWGSL,watchFailures,resetFixture,checkedRead,verifyReadback,withFreshStaging,fixturePaintRate,sceneReadbackControl,validateFixture,renderCompleteFrames } from './harness/hybrid-full.js';
 
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_DST: 8 };
 globalThis.GPUTextureUsage = { TEXTURE_BINDING: 4, COPY_DST: 2 };
@@ -22,6 +23,89 @@ const grids={32:[32,32,32],64:[64,64,64],128:[128,128,128],
 const gridName=process.argv[2]??'128';
 assert(Object.hasOwn(grids,gridName)&&process.argv.length<=3,'Usage: node tools/hybrid-core-check.mjs [32|64|128|wide|valley|giant]');
 const [nx,ny,nz]=grids[gridName],g = gridDims({nx,ny,nz});
+await checkReadbackAfterRender();
+validateFixture();
+{
+  let attempts=0,ready=false;
+  const a={view:{volumeDrawn:false},test:{
+    ready:async()=>{ready=true;},
+    renderOnce:async()=>{assert(ready,'wait for cold requests before the next attempt');ready=false;a.view.volumeDrawn=++attempts>2;},
+  }};
+  assert.equal(await renderCompleteFrames(a),4,'skipped cold frames do not count as presented scenes');
+  assert(ready,'finish pipeline preparation before numerical probes');
+  attempts=0;a.test.renderOnce=async()=>{attempts++;a.view.volumeDrawn=false;};
+  await assert.rejects(renderCompleteFrames(a),/within six attempts/);
+  assert.equal(attempts,6,'cold preparation remains bounded');
+  attempts=0;a.view.volumeDrawn=true;
+  a.hybrid={enabled:true,stats:{compositions:0},motion:{stats:{frames:0}}};
+  a.post={temporalInputs:{motion:{},reactive:{}}};
+  a.test.renderOnce=async()=>{
+    if(++attempts>2){a.hybrid.stats.compositions++;a.hybrid.motion.stats.frames++;}
+  };
+  assert.equal(await renderCompleteFrames(a),4,'a retained volume flag cannot count stale hybrid outputs');
+}
+for(const id of [E.SAND,E.WOOD,E.WATER,E.LAVA,E.SMOKE,E.FIRE]){
+  assert(ELEMENTS[id].spawn*fixturePaintRate(id)>=1,'required fixture cells cannot depend on random spawn acceptance');
+}
+assert.equal(fixturePaintRate(-2),1,'temperature tool must keep its normal rate');
+{
+  let opened=0,closed=0,validation=null;
+  const gpu={device:{pushErrorScope(type){assert.equal(type,'validation');opened++;},
+    async popErrorScope(){closed++;return validation;}},flush(label){assert.equal(label,'probe');return true;}};
+  assert.equal(await checkedRead(gpu,'probe',()=>42),42);
+  validation={message:'invalid copy destination'};
+  await assert.rejects(checkedRead(gpu,'probe',()=>0),/probe: invalid copy destination/);
+  validation=null;
+  await assert.rejects(checkedRead(gpu,'probe',()=>{throw Error('record failed');}),/record failed/);
+  await assert.rejects(checkedRead(gpu,'probe',()=>Promise.reject(Error('mapping failed'))),/mapping failed/);
+  gpu.flush=()=>false;
+  await assert.rejects(checkedRead(gpu,'probe',()=>0),/readback recorded no submission/);
+  gpu.flush=()=>true;
+  gpu.failure=Error('graphics stopped');
+  await assert.rejects(checkedRead(gpu,'probe',()=>0),/graphics stopped/);
+  assert.equal(opened,closed,'every diagnostic error scope must be balanced');
+  delete gpu.failure;
+  let destroyed=0,stale=false,bytes;
+  gpu.flush=()=>true;
+  gpu.createBuffer=()=>({destroy(){destroyed++;}});
+  gpu.write=(_buffer,offset,data)=>{assert.equal(offset,0);bytes=data.buffer.slice(0);};
+  gpu.readback={buffer:async(_buffer,offset,size)=>stale?new ArrayBuffer(size):bytes.slice(offset,offset+size)};
+  gpu.layout=()=>({});gpu.bindGroup=()=>({});
+  gpu.kernel=({code})=>{assert.equal(code,readbackSentinelWGSL);return{ready:Promise.resolve(),dispatch(){
+    new Uint32Array(bytes).forEach((word,i,a)=>{a[i]=word^0x55555555;});
+  }};};
+  assert.equal((await verifyReadback(gpu)).upload[0],0x12345678);
+  stale=true;
+  await assert.rejects(verifyReadback(gpu),/Readback upload sentinel mismatch/,'zero or stale reads must fail before scene assertions');
+  assert.equal(destroyed,2);
+  const pool=new Map([[256,[{}]]]),staging=()=>{assert.equal(gpu.readback.pool.size,0);return 23;};
+  gpu.readback.pool=pool;gpu.readback._staging=staging;
+  assert.equal(await withFreshStaging(gpu,async()=>gpu.readback._staging(16)),23);
+  assert.equal(gpu.readback.pool,pool);assert.equal(gpu.readback._staging,staging);
+  await assert.rejects(withFreshStaging(gpu,()=>{throw Error('fresh probe failed');}),/fresh probe failed/);
+  assert.equal(gpu.readback.pool,pool);assert.equal(gpu.readback._staging,staging);
+  stale=false;gpu.frameNo=0;gpu.readback.idle=async()=>{};
+  let seeded=false;gpu.fence=async()=>{seeded=true;};
+  const control={gpu,settings:{},autoRes:{},day:{},loadPreset:()=>true,sim:{frame:77},view:{volumeDrawn:true},
+    post:{inSize:[800,600],temporalInputs:{motion:{},reactive:{}}},hybrid:{enabled:true,stats:{compositions:0},motion:{stats:{frames:0}}},
+    test:{park(){},ready:async()=>{},renderOnce:async()=>{assert(seeded);gpu.frameNo++;control.hybrid.stats.compositions++;control.hybrid.motion.stats.frames++;}}};
+  assert.deepEqual(await sceneReadbackControl(control),{hybrid:true,frames:2,size:[800,600],steps:77});
+  assert.equal(control.settings.upscale,'native');assert.equal(control.autoRes.enabled,false);
+}
+{
+  const order=[];
+  let ready=false,pendingClear,cleared=false;
+  await resetFixture({test:{async ready(){
+    order.push('ready');ready=true;pendingClear?.();
+  }},loadPreset(name,undoable){
+    assert(ready,'boot pipelines must settle before requesting the fixture scene');
+    assert.equal(name,'empty');assert.equal(undoable,false);
+    order.push('load');pendingClear=()=>{cleared=true;order.push('clear');};return true;
+  }});
+  assert(cleared,'deferred scene clearing must finish before fixture painting');
+  assert.deepEqual(order,['ready','load','ready','clear']);
+  await assert.rejects(resetFixture({test:{ready:async()=>{}},loadPreset:()=>false}),/Could not load/);
+}
 {
   const page=new EventEmitter(),reported=[],failures=watchFailures(page,message=>reported.push(message));
   page.emit('console',{type:()=> 'error',text:()=> 'net::ERR_CONNECTION_REFUSED',location:()=>({url:'http://127.0.0.1:8787/status'})});
@@ -78,7 +162,7 @@ const resource = (desc, list) => {
   list.push(r); return r;
 };
 const semantic=spawnSync('naga',['--version'],{encoding:'utf8'}).status===0;
-for(const code of [probeWGSL(g),forceOverflowWGSL,producerProbeWGSL]){
+for(const code of [probeWGSL(g),forceOverflowWGSL,producerProbeWGSL,readbackSentinelWGSL]){
   new WgslReflect(code);
   if(semantic)execFileSync('naga',['--stdin-file-path','hybrid-full-check.wgsl'],{input:code,encoding:'utf8'});
 }

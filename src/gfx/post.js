@@ -1389,6 +1389,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      * ignores these (it has no temporal resolve and must not alter history).
      * Opted-in frames cannot seed post-only reuse: their fields are frame-local.
      */
+    get temporalInputs() { return { ...motionInputs }; },
     setTemporalInputs(inputs = null) {
       if (active === still) return;
       if (!jittered) throw new Error('post.setTemporalInputs: call inside a scene');

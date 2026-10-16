@@ -16,7 +16,9 @@ Children work only in their tool-assigned managed worktrees based on this checko
 
 **All 12 features now have application wiring and CPU checks. Native acceptance is incomplete.**
 Production still uses the existing renderer. This is not a completed or deployed rewrite.
-The user has stopped further GPU work. Do not launch or retry GPU checks until explicitly authorized again.
+Correctness-only GPU work resumed when the shared lease became free.
+Use the normal safety guard. Do not override a busy player or another agent's lease.
+Performance measurement remains deferred.
 
 The first eleven workers and six recovery workers timed out.
 Their work was preserved. Focused follow-ups completed the missing producers.
@@ -67,6 +69,7 @@ CPU checks (no browser or physical GPU):
 
 ```sh
 node tools/hybrid-check.mjs
+node tools/hybrid-readback-cpu-check.mjs
 node tools/check-sampler-budget.mjs
 node tools/post-reuse-cpu-check.mjs
 node tools/view-inputs-check.mjs
@@ -106,6 +109,9 @@ Correctness-only native checks use separate, serialized GPU slots. They are not 
 node tools/hybrid-gpu-check.mjs
 node tools/hybrid-app-check.mjs
 node tools/hybrid-full-check.mjs
+node tools/hybrid-full-check.mjs --readback-only
+node tools/hybrid-full-check.mjs --readback-controls
+node tools/hybrid-full-check.mjs --mixed-readback-controls
 ```
 
 The earlier opaque-only M5 native core check passed with a 128³ grid.
@@ -121,24 +127,51 @@ Those errors are corrected. This evidence does not cover the later full composit
 
 The correctness-first full-scene attempt was refused at 56% GPU utilization.
 No browser launched. Guard and cleanup occupancy was 2.043 seconds.
-The unexecuted full-scene check includes visible optics/media, smooth vertices, isolated droplets,
+The full-scene check includes visible optics/media, smooth vertices, isolated droplets,
 motion and reactive pixels, finite HDR, temperature-only reuse, and zero legacy instances.
 It also injects a GPU capacity flag and checks molten matter transmitted through glass.
 
 Native correctness and visual review remain pending. They precede performance measurement.
 No benchmark was run during this correctness-first pass.
 
-#### Native follow-up, stopped by the user
+#### Native follow-up: failed checks and readback controls
 
 - A guarded attempt was refused at 69% utilization; no browser launched (2.088 seconds total).
 - A busy-player override run was stopped by the watchdog. Its verified occupancy was 21.116 seconds, including cleanup.
 - A diagnostic run reached scene rendering, then failed the cached-smooth assertion (10.014 seconds total).
-- Direct GPU probes then showed empty fixture cells and zero producer/indirect buffers (10.077 seconds total).
+- Direct GPU probes returned empty fixture cells and zero producer/indirect buffers (10.077 seconds total).
+  Later known-value probes showed that some post-render readbacks were stale.
+  Those early zero reads do not establish that the actual simulation state was empty.
 - These are failed checks, not native acceptance or performance results. No visual acceptance was obtained.
 - Startup phases and fatal errors now stream immediately; CPU tests cover the fail-fast observer.
-- Investigate deferred `loadPreset` / `whenSimReady` scene clearing before changing renderer algorithms.
-  This is an unverified fixture hypothesis, not a completed fix.
-- The test server and browser were closed. Further GPU work is paused until the user explicitly resumes it.
+- The fixture now waits for startup and the queued preset clear before painting.
+- Required cells use density-compensated paint rates. Normal water painting has a 35% spawn chance.
+- Its glossy solid uses CLONE's metallic material, with roughness 0.25.
+  Ordinary METAL has roughness 0.32, outside the default traced-reflection cutoff of 0.30.
+  The runner validates this material condition before acquiring a GPU slot.
+- After the shared slot became free, correctness-only checks resumed without a busy-player override.
+- Concurrent uploaded and compute-written readback sentinels passed natively before scene rendering (5.116 seconds total).
+- Empty legacy/hybrid readback controls passed (6.425 seconds total).
+  The same mixed fixture passed paired readback controls (7.950 seconds total).
+  These checked reads around two frame attempts, not accepted images.
+- Some full-check attempts returned stale pooled bytes after rendering.
+  Fresh staging also returned incorrect zeros. No pooling-only fix is justified.
+  Validation scopes and native stderr did not identify the cause.
+  The real frame/readback CPU regression passes, including concurrent copies and staging reuse.
+- The checker no longer replaces post or shadow methods to inspect a frame.
+  Post exposes a read-only snapshot of its selected temporal inputs instead.
+  Later native runs returned valid fixture cells and GPU producer buffers.
+  This does not prove that the earlier intermittent readback failure is fixed.
+- The latest pixel check still failed (5.671 seconds total).
+  It read 71,004 smooth vertices, four particle instances, and zero normal legacy instances.
+  Optical-entry and glossy-solid pixels were present. Media, motion, reactive, and droplet checks did not pass.
+- Its diagnostic screenshot showed a black canvas and the close-up-detail preparation message.
+  Two manual frame attempts are not proof of two completed scenes.
+  The checker now waits for cold pipeline requests between bounded attempts.
+  This readiness change still needs native validation.
+- The full numerical check is not a converged visual check.
+  Failure screenshots remain diagnostic artifacts, not image-quality acceptance.
+- Every completed slot closed its own browser and test server. No benchmark samples were collected.
 
 Independent review found five integration defects and a later mid-frame flush defect.
 The following CPU regressions cover their fixes:

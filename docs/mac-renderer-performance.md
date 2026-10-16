@@ -13,6 +13,11 @@ The later full-scene correctness check was also refused, at 55% utilization.
 It used 2.09 seconds and did not launch a browser.
 The correctness-first follow-up was refused at 56%, using 2.043 seconds without a browser.
 Neither correctness attempt collected performance samples.
+Later correctness slots ran with the normal guard, including readback controls.
+The complete mixed-scene numerical check still fails; converged visual acceptance is also pending.
+Its diagnostic screenshots are not quality comparisons.
+See [the native correctness log](mac-renderer-build.md#native-follow-up-failed-checks-and-readback-controls).
+All reported slot durations include startup and cleanup. They are not performance samples.
 
 Earlier native checks establish work reuse, not speed:
 

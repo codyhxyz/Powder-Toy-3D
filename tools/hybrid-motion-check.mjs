@@ -47,6 +47,9 @@ const frame={depth,opticalDepth,media,model:new Matrix4(),
   camera:{projectionMatrix:new Matrix4(),matrixWorldInverse:new Matrix4()},
   post:{withoutJitter:fn=>fn()},revision:1};
 const first=module.record(frame);
+assert.deepEqual(module.resources,{...first,opticalDepth});
+const inspected=module.resources;inspected.reactive=null;
+assert.equal(module.resources.reactive,first.reactive,'inspection cannot replace recorded outputs');
 assert.equal(first.motion.format,'rgba16float'); assert.equal(first.reactive.format,'r8unorm');
 assert.equal(events.find(e=>e[0]==='draw')[1].params.valid,0);
 assert.equal(module.stats.captures,1);
@@ -66,4 +69,5 @@ gpu.frame.encoder={}; module.record(next);
 assert.equal(first.motion.destroyed,true);
 module.dispose(); module.dispose();
 assert.equal(module.isReady,false);
+assert.equal(module.resources,null,'disposed output inspection must not expose destroyed textures');
 console.log(`PASS hybrid motion: exact/ambiguous particle identity, static camera/model recording, revision reuse, resize/shift rejection, deferred disposal and WGSL reflection; CPU only. Naga semantic validation ${semantic?'passed':'unavailable'}.`);
