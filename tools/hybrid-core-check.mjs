@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Matrix4,PerspectiveCamera } from 'three';
 import { execFileSync,spawnSync } from 'node:child_process';
 import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
+import { EventEmitter } from 'node:events';
 import { createHybridGeometry } from '../src/gfx/hybrid/geometry.js';
 import { createHybridRenderer, hybridEligibility } from '../src/gfx/hybrid/index.js';
 import { buildHybridMaterialTable, buildHybridDetailAtlas, createHybridMaterials } from '../src/gfx/hybrid/materials.js';
@@ -12,7 +13,7 @@ import { gridDims,LAYOUT } from '../src/shaders/common.js';
 import { ELEMENTS,R } from '../src/elements.js';
 import { LOOK } from '../src/gfx/materials.js';
 import { withVisibility } from '../src/gpu/kernels.js';
-import { probeWGSL,forceOverflowWGSL } from './harness/hybrid-full.js';
+import { probeWGSL,forceOverflowWGSL,producerProbeWGSL,watchFailures } from './harness/hybrid-full.js';
 
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_DST: 8 };
 globalThis.GPUTextureUsage = { TEXTURE_BINDING: 4, COPY_DST: 2 };
@@ -21,6 +22,20 @@ const grids={32:[32,32,32],64:[64,64,64],128:[128,128,128],
 const gridName=process.argv[2]??'128';
 assert(Object.hasOwn(grids,gridName)&&process.argv.length<=3,'Usage: node tools/hybrid-core-check.mjs [32|64|128|wide|valley|giant]');
 const [nx,ny,nz]=grids[gridName],g = gridDims({nx,ny,nz});
+{
+  const page=new EventEmitter(),reported=[],failures=watchFailures(page,message=>reported.push(message));
+  page.emit('console',{type:()=> 'error',text:()=> 'net::ERR_CONNECTION_REFUSED',location:()=>({url:'http://127.0.0.1:8787/status'})});
+  assert.equal(await failures.check(Promise.resolve(17)),17);
+  assert.equal(failures.offlineRelay.length,1);
+  const waiting=failures.check(new Promise(()=>{}));
+  page.emit('console',{type:()=> 'warning',text:()=> 'WebGPU validation error',location:()=>({url:'gpu.js'})});
+  await assert.rejects(waiting,/WebGPU validation error/,'GPU failures interrupt pending native startup immediately');
+  await assert.rejects(failures.check(Promise.resolve()),/WebGPU validation error/,'errors before a phase cannot be hidden by an already resolved promise');
+  assert.equal(reported.length,1);
+  const scriptPage=new EventEmitter(),script=watchFailures(scriptPage,()=>{});
+  scriptPage.emit('pageerror',new Error('app boot failed'));
+  await assert.rejects(script.check(Promise.resolve()),/app boot failed/);
+}
 const capacity=geometryCapacity(g);
 assert.equal(capacity.capacity,Math.min(384,Math.floor(128*1024**2/(g.nbricks*4))));
 assert.equal(capacity.faceBytes,g.nbricks*capacity.capacity*4);
@@ -63,7 +78,7 @@ const resource = (desc, list) => {
   list.push(r); return r;
 };
 const semantic=spawnSync('naga',['--version'],{encoding:'utf8'}).status===0;
-for(const code of [probeWGSL(g),forceOverflowWGSL]){
+for(const code of [probeWGSL(g),forceOverflowWGSL,producerProbeWGSL]){
   new WgslReflect(code);
   if(semantic)execFileSync('naga',['--stdin-file-path','hybrid-full-check.wgsl'],{input:code,encoding:'utf8'});
 }

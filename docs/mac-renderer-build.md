@@ -12,10 +12,11 @@ Integration checkout: `/Users/codyhergenroeder/code/claude/threejs-tpt-gpu-mac-b
 The recovery checkout is not a source, dependency, build, or deployment directory.
 Children work only in their tool-assigned managed worktrees based on this checkout.
 
-## Implementation status: October 15, 2026
+## Implementation status: October 16, 2026
 
-**All 12 features now have application wiring and CPU checks. Native acceptance is still blocked.**
+**All 12 features now have application wiring and CPU checks. Native acceptance is incomplete.**
 Production still uses the existing renderer. This is not a completed or deployed rewrite.
+The user has stopped further GPU work. Do not launch or retry GPU checks until explicitly authorized again.
 
 The first eleven workers and six recovery workers timed out.
 Their work was preserved. Focused follow-ups completed the missing producers.
@@ -95,8 +96,9 @@ The broader CPU pass also passed these regression groups:
 
 With upstream `3c1129cb` merged, the engine resource catalog passes 467 pipelines and 1,376 grid variants.
 The hybrid composition is checked separately by the hybrid runner.
-The async-read lint still reports eight pre-existing pending reads in four unrelated legacy tools.
-No new hybrid file is exempted.
+The async-read lint reports eight pre-existing pending reads in four unrelated legacy tools.
+After the latest upstream merge, it also fails on six calls inside deadline wrappers in upstream industry fixtures.
+It reports no hybrid-file violations. No new hybrid file is exempted.
 
 Correctness-only native checks use separate, serialized GPU slots. They are not benchmarks:
 
@@ -117,15 +119,26 @@ The local account/AI relay was offline. The check records that specific network 
 Other native attempts exposed a barrier error, a fixture error, and a layout-name collision.
 Those errors are corrected. This evidence does not cover the later full composition.
 
-The latest correctness-only full-scene attempt was refused at 56% GPU utilization.
+The correctness-first full-scene attempt was refused at 56% GPU utilization.
 No browser launched. Guard and cleanup occupancy was 2.043 seconds.
-Do not retry while the user occupies the GPU.
 The unexecuted full-scene check includes visible optics/media, smooth vertices, isolated droplets,
 motion and reactive pixels, finite HDR, temperature-only reuse, and zero legacy instances.
 It also injects a GPU capacity flag and checks molten matter transmitted through glass.
 
 Native correctness and visual review remain pending. They precede performance measurement.
 No benchmark was run during this correctness-first pass.
+
+#### Native follow-up, stopped by the user
+
+- A guarded attempt was refused at 69% utilization; no browser launched (2.088 seconds total).
+- A busy-player override run was stopped by the watchdog. Its verified occupancy was 21.116 seconds, including cleanup.
+- A diagnostic run reached scene rendering, then failed the cached-smooth assertion (10.014 seconds total).
+- Direct GPU probes then showed empty fixture cells and zero producer/indirect buffers (10.077 seconds total).
+- These are failed checks, not native acceptance or performance results. No visual acceptance was obtained.
+- Startup phases and fatal errors now stream immediately; CPU tests cover the fail-fast observer.
+- Investigate deferred `loadPreset` / `whenSimReady` scene clearing before changing renderer algorithms.
+  This is an unverified fixture hypothesis, not a completed fix.
+- The test server and browser were closed. Further GPU work is paused until the user explicitly resumes it.
 
 Independent review found five integration defects and a later mid-frame flush defect.
 The following CPU regressions cover their fixes:

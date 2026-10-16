@@ -5,8 +5,27 @@ import { frameBindings } from '../../src/shaders/bindings.js';
 import { uniformStruct } from '../../src/gpu/params.js';
 
 const ProbeParams=uniformStruct('ProbeParams',{clipToGrid:'mat4x4f'});
+export function watchFailures(page,report=console.error){
+  const errors=[],offlineRelay=[];
+  let reject;
+  const failed=new Promise((_,no)=>{reject=no;});failed.catch(()=>{});
+  const record=message=>{errors.push(message);report(message);reject(new Error(message));};
+  page.on('pageerror',error=>record(error.message));
+  page.on('console',message=>{
+    const location=message.location().url??'',text=message.text();
+    if(message.type()==='error'&&/net::ERR_CONNECTION_REFUSED/.test(text)&&/^http:\/\/127\.0\.0\.1:8787\//.test(location))offlineRelay.push(location);
+    else if(message.type()==='error'||message.type()==='warning'&&/WebGPU|GPU (validation|internal)/.test(text))record(`${text} (${location})`);
+  });
+  return{errors,offlineRelay,check:promise=>errors.length?Promise.reject(new Error(errors[0])):Promise.race([promise,failed])};
+}
 export const forceOverflowWGSL=`@group(0) @binding(0) var<storage,read_write> status:array<u32>;
 @compute @workgroup_size(1) fn main(){status[0]=1u;}`;
+const producerLengths=[8,4,4,8,5,12];
+export const producerProbeWGSL=`${producerLengths.map((n,i)=>`@group(0) @binding(${i}) var<storage,read> source${i}:array<u32>;`).join('\n')}
+@group(0) @binding(6) var<storage,read_write> result:array<u32>;
+@compute @workgroup_size(1) fn main(){
+${producerLengths.map((n,i)=>`for(var j=0u;j<${n}u;j++){result[${producerLengths.slice(0,i).reduce((a,b)=>a+b,0)}u+j]=source${i}[j];}`).join('\n')}
+}`;
 export const probeWGSL=g=>`${prelude(g,STATE_OPTS.STATE_RO)}
 ${frameBindings()}
 ${ProbeParams.wgsl}
@@ -43,6 +62,8 @@ ${ProbeParams.wgsl}
 
 export async function run(a){
   const assert=(v,why)=>{if(!v)throw new Error(why);};
+  const phase=message=>console.info(`[hybrid correctness] ${message}`);
+  phase('mixed-scene setup');
   a.test.park();a.settings.paused=true;a.settings.upscale='native';
   a.autoRes.enabled=false;a.autoRes.scale=1;
   a.day.fixed={az:215,el:38};
@@ -51,7 +72,7 @@ export async function run(a){
   let inputs;
   const setter=post.setTemporalInputs;
   post.setTemporalInputs=function(v){inputs=v;return setter.call(this,v);};
-  let counts;
+  let counts,producerCounts;
   try{
     a.loadPreset('empty',false);
     const cube=(id,p,r)=>a.sim.paint({tool:id,center:new V(...p),radius:r,shape:1,rate:1,replace:true});
@@ -67,12 +88,37 @@ export async function run(a){
     a.camera.position.copy(display([64,52,122]));
     a.controls.target.copy(display([64,22,77]));
     a.camera.lookAt(a.controls.target);a.camera.updateMatrixWorld();
-    await a.test.ready();await a.test.render();await gpu.readback.idle();
+    phase('awaiting mixed-scene pipelines');
+    await a.test.ready();phase('rendering mixed scene');await a.test.render();await gpu.readback.idle();
     assert(hybrid.enabled&&!gpu.failure,JSON.stringify(hybrid.stats));
+    const cellReads=[[64,15,65],[85,20,65],[73,36,85]].map(p=>a.sim.readCell(...p));
+    gpu.flush('hybrid fixture cells');
+    const cells=(await Promise.all(cellReads)).map(([A])=>[...A]);
+    phase(`fixture cells ${JSON.stringify(cells)}; CPU smooth ${JSON.stringify(hybrid.smooth.stats)}`);
+    const sourceBuffers=[hybrid.smooth.resources.status,hybrid.smooth.resources.args,hybrid.particles.resources.args,
+      hybrid.particles.resources.opticalArgs,hybrid.geometry.resources.status,hybrid.legacyIndirect.buffer];
+    const producerLayout=gpu.layout('HYBRID_FULL_PRODUCERS',[
+      ...sourceBuffers.map((_,binding)=>({binding,visibility:4,buffer:{type:'read-only-storage'}})),
+      {binding:6,visibility:4,buffer:{type:'storage'}},
+    ]);
+    producerCounts=gpu.createBuffer({label:'hybrid producer probe',size:164,usage:128|4});
+    const producerProbe=gpu.kernel({name:'hybrid producer diagnostics',code:producerProbeWGSL,layouts:[producerLayout],workgroupSize:[1,1,1]});
+    await producerProbe.ready;
+    const producerGroup=gpu.bindGroup(producerLayout,[...sourceBuffers.map((buffer,binding)=>({binding,resource:{buffer}})),
+      {binding:6,resource:{buffer:producerCounts}}]);
+    producerProbe.dispatch(gpu.frame,[1,1,1],{bind:[producerGroup]});
+    const producerRead=gpu.readback.buffer(producerCounts,0,164);
+    gpu.flush('hybrid producer diagnostics');
+    const producerWords=new Uint32Array(await producerRead);
+    let offset=0;
+    const producers=Object.fromEntries(['smooth','smoothArgs','particleArgs','opticalArgs','geometry','gate']
+      .map((name,i)=>{const words=[...producerWords.slice(offset,offset+producerLengths[i])];offset+=producerLengths[i];return[name,words];}));
+    phase(`GPU producers ${JSON.stringify(producers)}`);
+    assert(cells[0][0]===E.SAND&&cells[1][0]===E.WOOD&&cells[2][0]===E.WATER,'mixed-material fixture must exist in actual state');
     assert(a.sim.derived.particleSplit,'Derived must remove instanced cells from smooth fields');
-    assert(hybrid.smooth.stats.requiredVertices>0&&!hybrid.smooth.stats.flags,'cached smooth vertices required');
-    assert(hybrid.particles.stats.count>0&&!hybrid.particles.stats.overflow,'disjoint isolated instances required');
-    assert(hybrid.particles.stats.droplets>0,'liquid droplets must be GPU-instanced, not left in fullscreen traversal');
+    assert(producers.smooth[2]>0&&producers.smooth[0]===0&&producers.smoothArgs[0]>0,`cached smooth vertices required: ${JSON.stringify(producers)}`);
+    assert(producers.particleArgs[1]>0,'disjoint isolated instances required');
+    assert(producers.opticalArgs[1]>0,'liquid droplets must be GPU-instanced, not left in fullscreen traversal');
     assert(hybrid.optics.stats.draws>0&&hybrid.media.stats.draws>0,'dedicated optics/media must actually record');
     assert(inputs?.motion&&inputs?.reactive&&hybrid.motion.stats.frames>1,'motion must reach real post frames');
     assert(LOOK[E.METAL].rough<.3,'fixture must exercise selective reflection gating');
@@ -105,6 +151,7 @@ export async function run(a){
       const [pixelBuffer,gateBuffer]=await Promise.all([read,gate]);
       return{pixels:[...new Uint32Array(pixelBuffer)],acceptance:[...new Uint32Array(gateBuffer)]};
     };
+    phase('reading mixed-scene pixels');
     const {pixels,acceptance}=await readPixels();
     assert(pixels[0]===post.inSize[0]*post.inSize[1],'probe extent');
     assert(pixels[1]>0&&pixels[2]>0,'visible optical entry and smoke required');
@@ -129,6 +176,7 @@ export async function run(a){
       return result;
     };
     try{
+      phase('rendering forced-capacity fallback');
       await a.test.renderOnce();await gpu.readback.idle();
       fallback=await readPixels();
       assert(fallback.acceptance[0]!==0&&fallback.acceptance[9]===1,'fault must activate legacy background in the same frame');
@@ -137,14 +185,15 @@ export async function run(a){
     }finally{
       hybrid.smooth.update=smoothUpdate;hybrid.smooth.invalidate();
     }
+    phase('temperature-only edit regression');
     cube(-2,[44.5,20.5,65.5],1);
     await a.test.render();await gpu.readback.idle();
     assert(hybrid.geometry.stats.rebuiltBricks===0,'temperature-only edit must rebuild zero bricks');
     const stats=structuredClone(hybrid.stats);
     assert(a.sim.frame===steps,'rendering must not step physics');
-    return{pixels,acceptance,fallback,stats,steps,sceneSize:post.inSize};
+    return{pixels,acceptance,fallback,stats,producers,steps,sceneSize:post.inSize};
   }finally{
     a.test.park();post.setTemporalInputs=setter;
-    gpu.flush('hybrid full cleanup');counts?.destroy();
+    gpu.flush('hybrid full cleanup');counts?.destroy();producerCounts?.destroy();
   }
 }
