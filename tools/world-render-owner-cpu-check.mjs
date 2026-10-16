@@ -62,6 +62,7 @@ export async function setup({size=[16,8,8],feedback=true,sourceKinds=null}={}) {
     if(['world GI source','world GI gather','full world optical sun'].includes(label))tablesUsed.push(buf(0,0));
     if(label.startsWith('world lighting delta'))return push(()=>new Exec(new WgslParser().parse(pipe.compute.module.code)).dispatchWorkgroups('main',[n,1,1],{0:Object.fromEntries(groups[0].entries.map(e=>[e.binding,e.resource.buffer.bytes]))}));
     if(label==='world CELL raw/AUX pack')return push(()=>gpu._pack(groups));
+    if(label==='world CELL field pack')return push(()=>gpu._packFields(groups,n));
     if(label==='world GI source'||label==='world GI gather')return push(()=>{
       if(sourceKinds&&label==='world GI gather')assert.match(pipe.compute.module.code,/const GI_RAYS: i32 = 32;/);
       events.push(label);const p=words(buf(3,7)),jobs=words(buf(3,8)),out=words(buf(3,9)),fb=words(buf(3,1)),sun=words(buf(3,5)),book=words(buf(0,5));
@@ -93,7 +94,7 @@ export async function setup({size=[16,8,8],feedback=true,sourceKinds=null}={}) {
     });
     throw new Error(`unmocked native pipeline ${label}`);
   }
-  gpu.encoder=(label,frame=false)=>{const e=original(label,frame),push=fn=>frame?gpu._push(fn):e.ops.push(fn);e.clearBuffer=(b,o=0,n=b.size-o)=>push(()=>bytes(b).fill(0,o,o+n));e.beginComputePass=()=>{let pipe,n;const groups=[];return {setPipeline:p=>pipe=p,setBindGroup:(i,g)=>groups[i]=g,dispatchWorkgroups:x=>n=x,end:()=>dispatch(pipe,groups,n,push)};};return e;};
+  gpu.encoder=(label,frame=false)=>{const e=original(label,frame),push=fn=>frame?gpu._push(fn):e.ops.push(fn);e.clearBuffer=(b,o=0,n=b.size-o)=>push(()=>bytes(b).fill(0,o,o+n));e.beginComputePass=()=>{let pipe;const groups=[];return {setPipeline:p=>pipe=p,setBindGroup:(i,g)=>groups[i]=g,dispatchWorkgroups:n=>dispatch(pipe,[...groups],n,push),end(){}};};return e;};
   gpu.frame._command=()=>{};gpu.frame._commandDone=()=>{};
   gpu.frame.compute=()=>{let pipe;const groups=[];return {setPipeline:p=>pipe=p,setBindGroup:(i,g)=>groups[i]=g,dispatchWorkgroups:n=>dispatch(pipe,groups,n,fn=>gpu._push(fn))};};
   owner=installWorldRender(f.win);
