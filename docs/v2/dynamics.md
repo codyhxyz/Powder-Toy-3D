@@ -61,7 +61,10 @@ not proof of visible particles. `physgun` reports the real controller described 
 
 Flight uses swept DDA with no displacement cap. Deposition uses hashed stable
 IDs plus deterministic tie election. Entire core+bank land unchanged in empty
-cells; losers retain their payload. Spawn allocation is canonical brick/slot
+cells; losers retain their payload. Claim words are zero when free and each
+elected winner frees its own, so no tick sweeps the claim table. `clear` is
+one invocation that samples the exact live count; with an empty pool every
+particle-stage invocation returns before it reads a packet. Spawn allocation is canonical brick/slot
 prefix order into a deterministic free list, not dispatch-arrival atomics.
 Liquids never break solids. Fracture consumes an explicit KE budget.
 
