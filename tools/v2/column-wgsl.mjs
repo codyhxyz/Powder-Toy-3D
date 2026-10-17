@@ -13,9 +13,9 @@ import { FOAM_ROWS } from '../../src/v2/foam.js';
 
 export const TRANSLATED = ['colMove', 'colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colPack', 'colFall',
   'colFinish', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
-  'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colCrown'];
+  'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colCrown', 'colLayer', 'colDepthAt', 'colFloats', 'colFloor', 'colSends', 'colStratify'];
 // the f32 functions (division allowed: never on integers)
-export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown'];
+export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown', 'colLayer', 'colDepthAt', 'colSends'];
 
 export function wgslFunction(code, name) {
   const at = code.indexOf(`fn ${name}(`);
@@ -140,7 +140,8 @@ export class ColumnGrid {
       clsOf: c => CLS[L.cid(c)] ?? C.SOLID, isLiq: c => CLS[L.cid(c)] === C.LIQUID,
       isOpenC: c => { const k = CLS[L.cid(c)]; return k === C.AIR || k === C.LIQUID; },
       materialAmount: c => (L.cid(c) === 0 ? 0 : L.isLiquid(L.cid(c)) ? L.cFill(c) : L.FULL),
-      conductsNative: L.isConductor, dampOf: id => ROWS[id].damp, yieldOf: id => ROWS[id].yieldHead,
+      conductsNative: L.isConductor, dampOf: id => ROWS[id].damp, yieldOf: id => ROWS[id].yieldHead, densOfE: id => ROWS[id].dens,
+      vec2f: (a, b) => ({ x: a, y: b }),
       withPayload: (c, v) => L.withPayload({ core: c, bank: 0 }, v).core,
       withAge: (c, a) => { const o = new Uint32Array(c); o[0] = u((o[0] & 0xffffff) | (Math.min(a, 255) << 24)); return o; },
       zeroQ: c => { const k = CLS[L.cid(c)]; if (k !== C.AIR && k !== C.LIQUID) return c; return new Uint32Array([c[0], c[1], 0, u(c[3] & 0xffff0000)]); },

@@ -309,6 +309,50 @@ fn colStiff(r: vec4u) -> f32 {
   if (recLiq(r) == 0u || f32(recMass(r)) <= cap * COL_FULL) { return 1.0 / COL_FULL; }
   return 1.0 / (cap * COL_COMP * COL_FULL);
 }
+// ---- stacked liquids (oil on water): the hydrostatic pressure is the column's prefix sum over every layer
+// (the multilayer Saint-Venant system: Audusse, Bristeau, Perthame and Sainte-Marie, M2AN 45, 2011). For a
+// run k: x, its base's offset below its own bottom cell when it floats on a run whose top cell is partial
+// (the interface sits inside that cell, at the lower run's surface); y, the weight of the runs stacked on it,
+// each one's height times its density over the run's. Records are frozen while it is read (the flux stage).
+fn colLayer(x: i32, z: i32, k: i32) -> vec2f {
+  let r = colRec(x, k, z);
+  let base = recLiq(r);
+  if (base == 0u || recFalling(r)) { return vec2f(0.0, 0.0); }
+  var shift = 0.0;
+  if (k > 0) {
+    let below = colRec(x, k - 1, z);
+    if (recLiq(below) != 0u && !recFalling(below) && recTop(below) == recY0(r)) { shift = min(colEta(below) - f32(recY0(r)), 0.0); }
+  }
+  var load = 0.0;
+  var n = k;
+  var at = r;
+  loop {
+    if (recLast(at)) { break; }
+    let above = colRec(x, n + 1, z);
+    if (recY0(above) != recTop(at) || recLiq(above) == 0u || recFalling(above)) { break; }
+    load = load + f32(recMass(above)) / COL_FULL * densOfE(recLiq(above)) / densOfE(base);
+    at = above;
+    n = n + 1;
+  }
+  return vec2f(shift, load);
+}
+// A lighter liquid meets a denser one's domain above that one's surface: there the denser run is a dry
+// floor (oil spreads on water; the water below exchanges only with water). 1: the -side's run floats on
+// the +side's; 2: the other way; 0: an ordinary face (the same liquid, or a dry side).
+fn colFloats(ra: vec4u, rb: vec4u) -> i32 {
+  let la = recLiq(ra); let lb = recLiq(rb);
+  if (la == 0u || lb == 0u || recFalling(ra) || recFalling(rb) || (la == lb && recSub(ra) == recSub(rb))) { return 0; }
+  if (densOfE(la) < densOfE(lb)) { return 1; }
+  if (densOfE(lb) < densOfE(la)) { return 2; }
+  return 0;
+}
+// the dry floor over a run: the air of its domain above its top cell
+fn colFloor(r: vec4u) -> vec4u { return recMake(recR1(r), recTop(r), recR1(r), 0u, 0u, 0u, false, false); }
+fn colDepthAt(r: vec4u, s0: i32, s1: i32, shift: f32) -> f32 {
+  if (recLiq(r) == 0u) { return 0.0; }
+  return min(max(colEta(r) + shift - f32(s0), 0.0), f32(s1 - s0));
+}
+
 // wet depth of a domain at the segment [s0, s1): Audusse et al.'s hydrostatic reconstruction
 fn colDepth(r: vec4u, s0: i32, s1: i32) -> f32 {
   if (recLiq(r) == 0u) { return 0.0; }
@@ -317,7 +361,7 @@ fn colDepth(r: vec4u, s0: i32, s1: i32) -> f32 {
 
 // ---- the segment rule (prototype segment()): the new flux of [s0, s1) between a (-side) and b, from u.
 // Positive flows a to b. Falling runs, two dry floors and two different liquids exchange nothing.
-fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32) -> f32 {
+fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, lb: vec2f, bed: f32) -> f32 {
   let dryA = recLiq(ra) == 0u; let dryB = recLiq(rb) == 0u;
   if (recFalling(ra) || recFalling(rb) || (dryA && dryB)) { return 0.0; }
   if (!dryA && !dryB && (recLiq(ra) != recLiq(rb) || recSub(ra) != recSub(rb))) { return 0.0; }
@@ -325,9 +369,12 @@ fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32) -> f32 {
   if (acc <= 0.0) { return 0.0; }
   var liq = recLiq(ra);
   if (dryA) { liq = recLiq(rb); }
-  let ha = colDepth(ra, s0, s1); let hb = colDepth(rb, s0, s1);
+  // (bed: the segment's bottom below s0, a floating face's denser surface inside its top cell)
+  let ha = colDepthAt(ra, s0, s1, la.x - bed); let hb = colDepthAt(rb, s0, s1, lb.x - bed);
   let damp = colDampTick(liq);
-  var drive = colEta(ra) - colEta(rb);
+  // the layers' heads: each run's own surface (its base an interface inside the cell below when it floats on
+  // another liquid) plus the weight of the layers it carries
+  var drive = (colEta(ra) + la.x + la.y) - (colEta(rb) + lb.x + lb.y);
   // lean-sim's dead band (DEADQ quanta of the stiffer side, the yield), and never below the drive whose
   // damped steady flow v·h moves under one quantum a tick: 1.5·damp/(ACC·h), lean-sim's 1.5·damp/ACC at h = 1
   let hFace = max(max(ha, hb), 1.0 / COL_FULL);
@@ -503,6 +550,9 @@ fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
   }
   var speed = v;
   var landed = false;
+  // a layer floating on another liquid follows its surface: a gap of one cell (a lower layer's drained top
+  // cell) closes at once, not from rest, or the layer and the surface it rests on trade the cell forever
+  if (r0 - fl == 1 && fl > o0 && colClass(x, fl - 1, z) == C_LIQUID && v0 == 0.0) { d = 1; }
   if (d >= r0 - fl) { d = r0 - fl; speed = 0.0; a = 0.0; landed = true; }
   colBusy(x, r0, z);
   if (d > 0) {
@@ -584,6 +634,7 @@ fn colExtent(x: i32, z: i32, r0: i32, top: i32) -> i32 {
   return y + 1;
 }
 fn colScan(x: i32, z: i32, settle: bool) -> i32 {
+  if (settle) { colStratify(x, z); }
   var k = 0;
   var y = 0;
   loop {
@@ -620,6 +671,30 @@ fn colScan(x: i32, z: i32, settle: bool) -> i32 {
   if (k == 0) { colPut(x, 0, z, recMake(0, 0, 0, 0u, 0u, 0u, false, true)); return 1; }
   colPut(x, k - 1, z, withRecLast(colRec(x, k - 1, z), true));
   return k;
+}
+// A layer of a denser liquid that holds more than its cells under a lighter one floats that one up, not
+// compresses under it (a liquid is no lid): the air above the lighter run bubbles down to just over the
+// denser top cell, which spills its surplus into it. Cell swaps and colMove only: exact. (The way down, a
+// drained top cell under a floating layer, is colFall's one-cell gap.)
+fn colStratify(x: i32, z: i32) {
+  var y = 0;
+  loop {
+    if (y + 1 >= NY) { break; }
+    let here = colProbe(x, y, z); let up = colProbe(x, y + 1, z);
+    let a = probeLiquid(here); let b = probeLiquid(up);
+    if (a != 0u && b != 0u && a != b && probeFill(here) > FULLU && densOfE(b) < densOfE(a)) {
+      // the lighter run [y + 1, e) and the cell over it
+      var e = y + 2;
+      loop { if (e >= NY || probeLiquid(colProbe(x, e, z)) != b) { break; } e = e + 1; }
+      if (e < NY && probeOpen(colProbe(x, e, z)) && probeLiquid(colProbe(x, e, z)) == 0u) {
+        for (var k = e; k > y + 1; k--) { colSwap(x, k, k - 1, z); }
+        colMove(x, y, z, x, y + 1, z, probeFill(here) - FULLU, false);
+        y = e;
+        continue;
+      }
+    }
+    y = y + 1;
+  }
 }
 // What (x, y, z) is, for the scan: its brick's summary when one is known (support wrote it from the cells
 // and nothing changed them since: noteState clears it), else the cell itself. x: its kind, read flag, liquid
@@ -752,14 +827,21 @@ fn colTransfer(xs: i32, zs: i32, is: i32, xd: i32, zd: i32, id: i32, n: u32) {
 fn colFluxes(xa: i32, za: i32, xb: i32, zb: i32, axis: i32) {
   var i = 0; var j = 0;
   loop {
-    let ra = colRec(xa, i, za); let rb = colRec(xb, j, zb);
+    let qa = colRec(xa, i, za); let qb = colRec(xb, j, zb);
+    let floats = colFloats(qa, qb);
+    var ra = qa; var rb = qb; var la = colLayer(xa, za, i); var lb = colLayer(xb, zb, j);
+    // a floating face's floor is the denser run's surface, inside the cell under its dry floor
+    if (floats == 1) { rb = colFloor(qb); lb = vec2f(min(colEta(qb) - f32(recR1(qb)), 0.0), 0.0); }
+    if (floats == 2) { ra = colFloor(qa); la = vec2f(min(colEta(qa) - f32(recR1(qa)), 0.0), 0.0); }
     let s0 = max(recY0(ra), recY0(rb)); let s1 = min(recTop(ra), recTop(rb));
+    // the segment's true bed: the higher of the two sides' bases, each its bottom cell less its shift
+    let bed = min(max(f32(recY0(ra)) + la.x, f32(recY0(rb)) + lb.x) - f32(s0), 0.0);
     // a falling run's bottom lanes are its fall (it meets no segment)
     if (s0 < s1 && !recFalling(ra) && !recFalling(rb)) {
       // lanes hold last tick's fluxes all stage long (only the transfers write them), so the face
       // upwind is read race-free
       let u = laneOf(colCell(xa, s0, za), axis);
-      let v = colFlux(ra, rb, s0, s1, u, colUpwind(xa, za, xb, zb, s0, axis, u));
+      let v = colFlux(ra, rb, s0, s1, u, colUpwind(xa, za, xb, zb, s0, axis, u), la, lb, bed);
       // and R14's launch head, while every record is frozen: the sender's exact head, or a same-liquid
       // neighbour's that feeds it (an orifice's reservoir), over the segment's bottom
       // (only a face that pours needs one: its bottom over the receiver's surface or dry floor)
@@ -772,8 +854,8 @@ fn colFluxes(xa: i32, za: i32, xb: i32, zb: i32, axis: i32) {
         colBusy(xa, mark, za); colBusy(xb, mark, zb);
       }
     }
-    if (recTop(ra) < recTop(rb)) { if (recLast(ra)) { break; } i = i + 1; }
-    else { if (recLast(rb)) { break; } j = j + 1; }
+    if (recTop(qa) < recTop(qb)) { if (recLast(qa)) { break; } i = i + 1; }
+    else { if (recLast(qb)) { break; } j = j + 1; }
   }
 }
 // ---- the transfers of a column pair (the thread owns both columns and their records): one limit a
@@ -782,7 +864,11 @@ fn colTransfers(xa: i32, za: i32, xb: i32, zb: i32, axis: i32) {
   colClearScratch(xa, za); colClearScratch(xb, zb);
   var i = 0; var j = 0;
   loop {
-    let ra = colRec(xa, i, za); let rb = colRec(xb, j, zb);
+    let qa = colRec(xa, i, za); let qb = colRec(xb, j, zb);
+    let floats = colFloats(qa, qb);
+    var ra = qa; var rb = qb;
+    if (floats == 1) { rb = colFloor(qb); }
+    if (floats == 2) { ra = colFloor(qa); }
     let s0 = max(recY0(ra), recY0(rb)); let s1 = min(recTop(ra), recTop(rb));
     if (s0 < s1 && !recFalling(ra) && !recFalling(rb)) {
       // the flux stage's face becomes the lane; its word now holds what it carries (and the launch head)
@@ -790,27 +876,39 @@ fn colTransfers(xa: i32, za: i32, xb: i32, zb: i32, axis: i32) {
       if (v != laneOf(colCell(xa, s0, za), axis)) { colSetLane(xa, s0, za, axis, v); }
       let t = colDemand(ra, rb, s0, s1, v);
       colSetDemand(xa, s0, za, axis, t, colFaceHeadAt(xa, s0, za, axis));
-      if (v > 0.0) { colPut(xa, i, za, withRecScratch(ra, recScratch(ra) + f32(t))); }
-      if (v < 0.0) { colPut(xb, j, zb, withRecScratch(rb, recScratch(rb) + f32(t))); }
+      if (v > 0.0) { colPut(xa, i, za, withRecScratch(qa, recScratch(qa) + f32(t))); }
+      if (v < 0.0) { colPut(xb, j, zb, withRecScratch(qb, recScratch(qb) + f32(t))); }
     }
-    if (recTop(ra) < recTop(rb)) { if (recLast(ra)) { break; } i = i + 1; }
-    else { if (recLast(rb)) { break; } j = j + 1; }
+    if (recTop(qa) < recTop(qb)) { if (recLast(qa)) { break; } i = i + 1; }
+    else { if (recLast(qb)) { break; } j = j + 1; }
   }
   colLimit(xa, za); colLimit(xb, zb);
-  i = 0; j = 0;
+  // the floating faces first, while every floor is where the flux stage saw it; then the rest bottom up
+  colSends(xa, za, xb, zb, axis, true);
+  colSends(xa, za, xb, zb, axis, false);
+}
+fn colSends(xa: i32, za: i32, xb: i32, zb: i32, axis: i32, floating: bool) {
+  var i = 0; var j = 0;
   loop {
-    let ra = colRec(xa, i, za); let rb = colRec(xb, j, zb);
+    let qa = colRec(xa, i, za); let qb = colRec(xb, j, zb);
+    let floats = colFloats(qa, qb);
+    var ra = qa; var rb = qb;
+    if (floats == 1) { rb = colFloor(qb); }
+    if (floats == 2) { ra = colFloor(qa); }
     let s0 = max(recY0(ra), recY0(rb)); let s1 = min(recTop(ra), recTop(rb));
-    if (s0 < s1 && !recFalling(ra) && !recFalling(rb)) {
+    if (s0 < s1 && !recFalling(ra) && !recFalling(rb) && (floats != 0) == floating) {
       let t = colDemandAt(xa, s0, za, axis);
       let v = laneOf(colCell(xa, s0, za), axis);
       let head = colSentHeadAt(xa, s0, za, axis);
-      if (t != 0u && v > 0.0) { colSend(xa, za, i, xb, zb, j, s0, s1, axis, 1.0, v, head, u32(floor(f32(t) * recScratch(ra)))); }
-      if (t != 0u && v < 0.0) { colSend(xb, zb, j, xa, za, i, s0, s1, axis, -1.0, v, head, u32(floor(f32(t) * recScratch(rb)))); }
+      // a floating layer pours onto the denser surface (into the receiver's cells at the face rows)
+      if (t != 0u && v > 0.0 && floating) { colPour(xa, za, i, xb, zb, s0, s1, axis, 1.0, abs(v), head, u32(floor(f32(t) * recScratch(qa)))); }
+      if (t != 0u && v < 0.0 && floating) { colPour(xb, zb, j, xa, za, s0, s1, axis, -1.0, abs(v), head, u32(floor(f32(t) * recScratch(qb)))); }
+      if (t != 0u && v > 0.0 && !floating) { colSend(xa, za, i, xb, zb, j, s0, s1, axis, 1.0, v, head, u32(floor(f32(t) * recScratch(qa)))); }
+      if (t != 0u && v < 0.0 && !floating) { colSend(xb, zb, j, xa, za, i, s0, s1, axis, -1.0, v, head, u32(floor(f32(t) * recScratch(qb)))); }
     }
     // (transfers change a record's mass and end, never its y0, top or last flag)
-    if (recTop(ra) < recTop(rb)) { if (recLast(ra)) { break; } i = i + 1; }
-    else { if (recLast(rb)) { break; } j = j + 1; }
+    if (recTop(qa) < recTop(qb)) { if (recLast(qa)) { break; } i = i + 1; }
+    else { if (recLast(qb)) { break; } j = j + 1; }
   }
 }
 fn colClearScratch(x: i32, z: i32) {

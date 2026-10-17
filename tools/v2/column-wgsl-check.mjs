@@ -21,7 +21,8 @@ test('the executed functions stay in the scalar subset; the WGSL embeds the mode
     const body = wgslFunction(columnWaterWGSL, name).body.replace(/\/\/[^\n]*/g, '');
     assert.doesNotMatch(body.replace(/&&|\|\|/g, ''), /[&|^~]|<<|>>/, `${name}: a bit operation`);
     if (!FLOAT.includes(name)) assert.doesNotMatch(body, /[^/]\/[^/]|%/, `${name}: integer division`);
-    assert.doesNotMatch(body, /\.[xyzw]\b/, `${name}: a vector component`);
+    // (vec2f pairs map to JS { x, y }: their two components are the only ones these bodies may name)
+    assert.doesNotMatch(body, /\.[zw]\b/, `${name}: a vector component`);
   }
   const c = constants(columnWaterWGSL);
   for (const [k, v] of Object.entries({ COL_ACC: COLUMN.ACC, COL_G: COLUMN.G, COL_H_CAP: COLUMN.H_CAP, COL_COMP: COLUMN.COMP, COL_QMIN: COLUMN.QMIN,
@@ -153,6 +154,30 @@ test('open edges: a pool drains off the open sides and floor, every quantum and 
   let oil = 0; for (let i = 0; i < w.n; i++) if (L.cid(w.cores[i]) === E.OIL) oil++;
   assert.equal(oil, 0, 'the open floor holds nothing');
   assert.ok(drained || w.totals().mass < t0.mass * 0.05, `drained to ${(w.totals().mass / L.FULL).toFixed(2)} cells`);
+});
+
+test('oil on water: a layer poured on one side spreads; both layers rest flat, exact, without churn', () => {
+  // Pascal across layers (Audusse et al. 2011's multilayer hydrostatic sum): the water under the oil carries
+  // its weight, the oil floats on the water's surface inside its top cell, a denser surplus floats it up
+  const N = 16, w = new ColumnGrid(N, 16, N);
+  walls(w);
+  for (let y = 1; y < 7; y++) for (let z = 1; z < N - 1; z++) for (let x = 1; x < N - 1; x++) w.set(x, y, z, E.WATER, { T: 15 });
+  for (let y = 7; y < 11; y++) for (let z = 1; z < N - 1; z++) for (let x = 1; x < 8; x++) w.set(x, y, z, E.OIL, { T: 40 });
+  const t0 = w.totals();
+  for (let t = 0; t < 2700; t++) {
+    w.step();
+    if (t % 300 === 0) { const t1 = w.totals(); assert.equal(t1.mass, t0.mass); assert.equal(t1.energy, t0.energy); }
+  }
+  assert.ok(w.idleAt >= 0, 'certifies idle');
+  const layer = (x, z, id) => { let m = 0; for (let y = 0; y < 16; y++) { const c = w.cores[w.at(x, y, z)]; if (L.cid(c) === id) m += L.cFill(c) / L.FULL; } return m; };
+  for (let z = 1; z < N - 1; z++) for (let x = 1; x < N - 1; x++) {
+    assert.ok(Math.abs(layer(x, z, E.WATER) - 6) < 0.05, `water at ${x},${z}: ${layer(x, z, E.WATER)}`);
+    assert.ok(Math.abs(layer(x, z, E.OIL) - 2) < 0.05, `oil at ${x},${z}: ${layer(x, z, E.OIL)}`);
+  }
+  const cores = w.cores.map(c => Array.from(c));
+  for (let t = 0; t < 30; t++) { w.busyIn.fill(1); w.step(); }
+  w.cores.forEach((c, i) => assert.deepEqual(Array.from(c), cores[i], `cell ${i} churned at rest`));
+  const t1 = w.totals(); assert.equal(t1.mass, t0.mass); assert.equal(t1.energy, t0.energy);
 });
 
 test('migration: unpacked columns settle packed, compressed open water rises, all exactly', () => {
