@@ -39,6 +39,7 @@ function column(core, gravity, gravMode=0, obstacle=null) {
     vec4u:vec,vec3i:(x,y,z)=>({x,y,z}),loadCell:p=>cells[p.y],
     clsOf:c=>ELEMENTS[c.x&255].kind,markBusy:()=>{},storeCell:(p,c)=>{cells[p.y]=vec(...c);},
     zeroQ:c=>c,slotOf:p=>p.y,events:new Uint32Array(128),noteEvents:()=>{},
+    V2_SUMMARY:2,SUM_AIR:2,SUM_LIQUID:3,brickOfCell:p=>p.y>>2, // no summaries here: act2 holds none
     loadMaterial:s=>({core:cells[s],bank:0}),Material:(core,bank)=>({core,bank}),
     storeMaterial:(s,b,a)=>{cells[s]=vec(...a.core);},
   };

@@ -597,6 +597,14 @@ ${MAIN} {
   var runVelocity = 0.0;
   var runFrac = 0.0;
   for (var y = 0; y < NY; y++) {
+    // A brick summarised all air (each cell a continue) or all one still, full liquid (each a
+    // floor) moves nothing here: skip its four cells. Support wrote the summary from the cells and
+    // noteState clears it at any change since; other lanes' moves touch only their own cells.
+    if ((y & 3) == 0) {
+      let code = atomicLoad(&act2[V2_SUMMARY + brickOfCell(vec3i(x, y, z))]) & 255u;
+      if (code == SUM_AIR) { y += 3; continue; }
+      if (code == SUM_LIQUID) { fl = y + 4; runFalling = false; y += 3; continue; }
+    }
     let p = vec3i(x, y, z);
     var c = loadCell(p);
     let kc = clsOf(c);
