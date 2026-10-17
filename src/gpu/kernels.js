@@ -143,7 +143,9 @@ export class PipelineCache {
         if (error) throw error;
       }).catch((error) => { throw this.shaderFailed(label, module, error, optional); });
       // Direct module() callers still receive a GPUShaderModule, not a promise.
-      checked.catch(() => {});
+      checked.catch(() => {
+        if (optional && modules.get(code) === module) modules.delete(code);
+      });
       this.moduleValidations.set(m, checked);
       modules.set(code, m);
     }
@@ -181,6 +183,9 @@ export class PipelineCache {
         }
       })();
       this.layouts.set(key, p);
+      if (optional) p.catch(() => {
+        if (this.layouts.get(key) === p) this.layouts.delete(key);
+      });
     }
     return p;
   }

@@ -65,7 +65,11 @@ All 60 corrected grazing-ray cases advance across the tested axes, directions, a
 
 Test-owned pipelines now use an explicit optional compilation policy.
 An attributed compilation failure rejects Test readiness without destroying the shared device.
-The app returns to Realistic and prevents automatic retries for that session.
+The app returns to Realistic and prevents automatic retries.
+Selecting Test again explicitly starts one retry without replacing the simulation.
+The Test card retains the failing shader and a short reason after the error notice expires.
+Failed optional module and layout cache entries are removed so an explicit retry can recover.
+Successful compilation stays cached. Holding the view shortcut does not repeatedly retry.
 Readiness still completes after fallback or after leaving a pending Test view.
 Device loss, core shader failures, programming errors, and compilation deadlines remain fatal.
 CPU tests cover these boundaries and stale grid/view callbacks.
