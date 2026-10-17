@@ -140,7 +140,9 @@ export class NativeDynamics {
   _params(tick,extra={}) {
     // Only clocks are shared with V2Params; full/offset/edit markers belong to
     // the grid schema and must not leak into strict DynamicParams packing.
-    const {busyIn=0,busyOut=0}=this.owner._params?.(tick)??{};
+    // Wakes go where the next activity pass reads, whatever tick a caller numbers
+    // its stage with (forcing allocates as owner.tick + 1): the owner's tick now.
+    const {busyIn=0,busyOut=0}=this.owner._params?.(this.owner.tick??tick)??{};
     return {busyIn,busyOut,...nativeModes(this.owner.sim),tick,nativeJets:+(this.owner.jets?.isReady===true),origin:vector(this.owner.sim.origin),sequence:this.sequence,...extra};
   }
   _check() { if (!this.isReady || this.disposed) throw new Error('NativeDynamics is not ready'); }

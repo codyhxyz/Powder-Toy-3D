@@ -28,7 +28,7 @@ export function dynamicsCommon(g, nativeHead) {
   return /* wgsl */ `
 ${DynamicParams.wgsl}
 @group(3) @binding(1) var<uniform> P: DynamicParams;
-${nativeHead(g)}
+${nativeHead(g, { busyOut: true })}
 ${specialContactWGSL}
 const D_CAP: u32 = ${PARTICLE_CAP}u;
 const D_SLOTS: u32 = ${g.slots}u;

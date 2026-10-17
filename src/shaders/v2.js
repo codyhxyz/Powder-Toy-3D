@@ -1449,14 +1449,19 @@ export const WGSL_CHECK = V2_KERNELS.map(({ name, code, layouts, dispatch }) => 
 // three storage bindings and no legacy element buffer, leaving the device's
 // guaranteed eight-buffer budget intact. P is supplied by the family module.
 export const V2_DYNAMICS_LAYOUT = [buf(0, 'storage'), buf(1, 'storage'), buf(2, 'storage')];
-export function nativeDynamicsHead(g) {
+// A wake must land in the busy words the NEXT activity pass reads. DynamicParams
+// carries them as busyOut, taken at recording time (NativeDynamics._params), so
+// in-tick stages and tools between ticks agree. Heads without that field number
+// P.tick as the tick about to run (weather, forcing: owner.tick + 1) and wake
+// its busyIn, as the import does (tools/v2/wake-parity-check.mjs).
+export function nativeDynamicsHead(g, { busyOut = false } = {}) {
   const common = prelude(g, { state: false });
   const grid = common.slice(0, common.indexOf('// ---- the element tables'));
   const layout = common.slice(common.indexOf('// ---- the header and the state'), common.indexOf('// ---- the state\'s accessors'));
   const random = common.slice(common.indexOf('// ---- random streams'), common.indexOf('// ---- the shared physics tests'));
   let shared = v2Head(g).slice(v2Head(g).indexOf('const V2_BUSY0:'));
-  shared = shared.replace('if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after)))', 'if (all(before == after))')
-    .replace('P.busyOut', 'select(V2_BUSY0, V2_BUSY0 + NBRICKS, (P.tick & 1u) == 0u)');
+  shared = shared.replace('if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after)))', 'if (all(before == after))');
+  if (!busyOut) shared = shared.replace('P.busyOut', 'select(V2_BUSY0, V2_BUSY0 + NBRICKS, (P.tick & 1u) == 0u)');
   // Dynamics needs only the original finite-f32 prefix, never the contact tail.
   const rows = new Uint32Array(v2Table().buffer, 0, ELEMENTS.length * 8);
   const ev = Array.from({ length: rows.length / 4 }, (_, i) => `vec4u(${Array.from(rows.subarray(i * 4, i * 4 + 4), word => `${word}u`).join(',')})`);
