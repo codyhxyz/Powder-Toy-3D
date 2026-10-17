@@ -223,7 +223,7 @@ export class NativeDynamics {
     for (let n=0;n<this.blastBatch;n++) {
       // After a batch without work nothing has changed, so selecting again
       // finds exactly what it found. Later batches select through the last
-      // batch's grid args (zero without work); its finish reset them.
+      // batch's grid args (zero without work); that finish reset the selection.
       this._record('blasts','select',n?size(0):Math.ceil(this.g.slots/64),tick);
       this._record('blasts','workArgs',1,tick);
       // Separate INDIRECT buffer: never bind a read_write storage buffer as
