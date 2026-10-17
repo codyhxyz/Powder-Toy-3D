@@ -13,9 +13,9 @@ import { FOAM_ROWS } from '../../src/v2/foam.js';
 
 export const TRANSLATED = ['colMove', 'colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colPack', 'colFall',
   'colFinish', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
-  'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver'];
+  'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove'];
 // the f32 functions (division allowed: never on integers)
-export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour'];
+export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges'];
 
 export function wgslFunction(code, name) {
   const at = code.indexOf(`fn ${name}(`);
@@ -65,6 +65,8 @@ export class ColumnGrid {
     // the jets' per-brick marks, the particles in flight (the dynamics module's, as the prototype flies them)
     // support's brick summaries (v2ActLayout summary): 0 unknown; cleared by every write (noteState)
     this.summary = new Uint32Array(this.nb);
+    // the boundary ledger (open edges): what left the box, its mass and its exact carried energy
+    this.boundary = { mass: 0, energy: 0n };
     this.jetBricks = new Uint8Array(this.nb); this.parts = []; this.poolCap = 65536; this.landed = 0;
     this.P = { tick: 0, gravMode, gravity, edge, pairAxis: 0, pairParity: 0 };
     // loop edges (P.edge 2): mEdge wraps x and z (and y) around the box
@@ -200,6 +202,10 @@ export class ColumnGrid {
         g.cores[s] = ctx.withLane(ctx.withLane(ctx.zeroQ(g.cores[s]), axis, v), 1, COLUMN.JET_MARK); g.touch(s);
         g.jetBricks[(x >> 2) + g.bx * ((z >> 2) + g.bz * (y >> 2))] = 1;
       },
+      colSink: (x, y, z, n, heat) => {
+        g.boundary.mass += n; g.boundary.energy += heat;
+        const s = slotOf([x, y, z]); if (L.cid(g.cores[s]) === 0) g.events[s] = 0;
+      },
       colPending: (x, y, z) => (g.events[slotOf([x, y, z])] & 1) !== 0,
       colAwake: (x, z) => { for (let by = 0; by < g.by; by++) if (g.awake[(x >> 2) + g.bx * ((z >> 2) + g.bz * by)]) return true; return false; },
       colSetDemand: (x, y, z, axis, t, head) => { g.demand[2 * slotOf([x, y, z]) + (axis >> 1)] = (Math.min(t, COLUMN.DEMAND_MAX) | (Math.min(255, Math.max(0, Math.round(head * COLUMN.HEAD_Q))) << 24)) >>> 0; },
@@ -292,7 +298,11 @@ export class ColumnGrid {
       return;
     }
     const [next, prev] = ends(axis);
-    if (((axis === 0 ? x : z) & 1) === parity) { if (this.#inside(next)) ctx.colTransfers(x, z, next[0], next[1], axis); }
+    if (((axis === 0 ? x : z) & 1) === parity) {
+      if (this.#inside(next)) ctx.colTransfers(x, z, next[0], next[1], axis);
+      if (this.P.edge === 1 && !this.#inside(next)) ctx.colEdges(x, z);
+      if (this.P.edge === 1 && !this.#inside(prev)) ctx.colEdges(x, z);
+    }
     else if (asleep(prev)) ctx.colTransfers(prev[0], prev[1], x, z, axis);
   }
   #inside([x, z]) { return x >= 0 && z >= 0 && x < this.nx && z < this.nz; }
@@ -342,6 +352,9 @@ export class ColumnGrid {
         if (kind(he) !== C.AIR && !thin) landed = this.#land(q);
         else { q.x = nx; q.y = ny; q.z = nz; if (this.loop) { q.x = ((q.x % this.nx) + this.nx) % this.nx; q.z = ((q.z % this.nz) + this.nz) % this.nz; } }
       }
+      // past an open edge a particle leaves the box, into the boundary ledger (the dynamics module's rule)
+      const out = q.x < 0 || q.y < 0 || q.z < 0 || q.x >= this.nx || q.y >= this.ny || q.z >= this.nz;
+      if (!landed && out && this.P.edge === 1) { this.boundary.mass += L.cFill(q.m.core); this.boundary.energy += L.packetOwnedEnergy(q.m); continue; }
       if (!landed) keep.push(q);
     }
     this.parts = keep;

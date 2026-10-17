@@ -336,6 +336,89 @@ fn colDemand(ra: vec4u, rb: vec4u, s0: i32, s1: i32, v: f32) -> u32 {
   return 0u;
 }
 
+// ---- open edges (P.edge 1). Past a side of the grid is a dry, bottomless domain: a run's face against it
+// flows as a dam break onto dry ground (the drive is its head over the face's bottom, the dead band, the
+// film and the yield as at any face), memoryless (the void owns no lane), and what crosses leaves the box
+// through the boundary ledger with its exact carried energy. Past an open floor a run falls out at R1's
+// bulk run speed, from its bottom up.
+fn colEdgeFlux(r: vec4u) -> f32 {
+  if (recLiq(r) == 0u || recFalling(r)) { return 0.0; }
+  let acc = COL_ACC * colGravity() / COL_G;
+  if (acc <= 0.0) { return 0.0; }
+  let s0 = recY0(r);
+  let h = colDepth(r, s0, recTop(r));
+  if (h * COL_FULL < COL_FILM) { return 0.0; }
+  let damp = colDampTick(recLiq(r));
+  let drive = colEta(r) - f32(s0);
+  let band = max(max(COL_DEADQ * colStiff(r), COL_STALL * damp / (acc * min(h, 1.0))), yieldOf(recLiq(r)));
+  if (drive < band) { return 0.0; }
+  let v = acc * drive * min(1.0, COL_H_CAP / max(h, 1.0)) * (1.0 - damp);
+  if (v < COL_QMIN) { return 0.0; }
+  return min(v, COL_Q_MAX);
+}
+// every run of a column against the void on one side
+fn colEdges(x: i32, z: i32) {
+  var k = 0;
+  loop {
+    let r = colRec(x, k, z);
+    let v = colEdgeFlux(r);
+    if (v > 0.0) {
+      colBusy(x, recR1(r) - 1, z);
+      colDrain(x, z, k, min(recMass(r), u32(floor(v * colDepth(r, recY0(r), recTop(r))))), false);
+    }
+    if (recLast(r)) { break; }
+    k = k + 1;
+  }
+}
+// n out of the box from the run of record k: from its surface down, or from its bottom up (an open floor)
+fn colDrain(x: i32, z: i32, k: i32, n: u32, fromBottom: bool) {
+  let r = colRec(x, k, z);
+  var left = n;
+  var giver = recR1(r) - 1;
+  if (fromBottom) { giver = recY0(r); }
+  var mass = recMass(r);
+  loop {
+    if (left == 0u || giver < recY0(r) || giver >= recR1(r)) { break; }
+    let have = colFill(x, giver, z);
+    if (have == 0u) { if (fromBottom) { giver = giver + 1; } else { giver = giver - 1; } continue; }
+    let m = min(left, have);
+    if (!colRemove(x, giver, z, m)) { break; }
+    left = left - m; mass = mass - m;
+    if (m == have) { if (fromBottom) { giver = giver + 1; } else { giver = giver - 1; } }
+  }
+  var end = recR1(r);
+  if (!fromBottom) { end = giver + 1; }
+  var liq = recLiq(r);
+  if (mass == 0u) { end = recY0(r); liq = 0u; }
+  colPut(x, k, z, withRecRun(r, end, liq, select(0u, recSub(r), mass != 0u), mass));
+}
+// n of (x, y, z)'s fill leaves the box: colMove's source half, the receiver the boundary ledger
+fn colRemove(x: i32, y: i32, z: i32, n: u32) -> bool {
+  if (n == 0u) { return true; }
+  if (colPending(x, y, z)) { colBusy(x, y, z); return false; }
+  let s = slotOf(vec3i(x, y, z)); let src = loadMaterial(s);
+  if (!isLiq(src.core)) { return false; }
+  let have = cFill(src.core);
+  if (n > have) { return false; }
+  let carried = energySub(energyOf(src), energyMul(FULLU, cTq(src.core)));
+  let heat = energyShare(carried, 0u, n, have);
+  let conducts = conductsNative(cid(src.core));
+  var sent = drainedCore(src.core, have - n);
+  if (have > n && !conducts) { sent = withPayload(sent, payloadOf(src.core) - shareUnsigned(payloadOf(src.core), 0u, n, have)); }
+  let sentEnergy = energySub(energyOf(src), heat);
+  if (!energyFits(Material(sent, src.bank), sentEnergy)) { colBusy(x, y, z); return false; }
+  storeMaterial(s, src, withEnergy(Material(sent, src.bank), sentEnergy));
+  colSink(x, y, z, n, heat);
+  colBusy(x, y, z);
+  return true;
+}
+// the boundary ledger's mass and energy (v2BoundaryWGSL's for gases)
+fn colSink(x: i32, y: i32, z: i32, n: u32, heat: vec2u) {
+  let s = slotOf(vec3i(x, y, z));
+  noteBoundaryMass(n); noteEnergySink(vec3i(x, y, z), heat);
+  if (cid(loadCore(s)) == 0u) { events[s] = 0u; }
+}
+
 // ---- the advective term on contractions (Stelling and Duinmeijer 2003, energy-head form; agent 7's
 // docs/v2/water-momentum.md): a face faster than the one upwind of it loses the velocity-head difference,
 // q -= (q² - q_up²)/(2 FULL), from last tick's q, before the damping, so an outlet's steady flow is
@@ -436,6 +519,8 @@ fn colFinish(x: i32, z: i32, k: i32, y0: i32, top: i32, r1: i32, liq: u32, sub: 
     if (loose) { end = colPack(x, z, y0, top, mass); }
   }
   colPut(x, k, z, recMake(bottom, top, end, liq, sub, mass, falling, false));
+  // an open floor holds nothing: the run falls out of the box at R1's bulk run speed
+  if (settle && P.edge == 1u && bottom == 0 && !falling) { colDrain(x, z, k, min(mass, u32(COL_VT * COL_FULL)), true); }
   return k + 1;
 }
 // the run's end after a refused move: one past its highest cell holding any fill
@@ -762,6 +847,9 @@ ${COLUMN_THREAD}
   let next = mEdge(here + axisV(axis)); let prev = mEdge(here - axisV(axis));
   if (u32(select(z, x, axis == 0) & 1) == P.pairParity) {
     if (inGrid(next)) { colTransfers(x, z, next.x, next.z, axis); }
+    // a side of the grid on this axis is open: this thread owns the column, so its face to the void too
+    if (P.edge == 1u && !inGrid(next)) { colEdges(x, z); }
+    if (P.edge == 1u && !inGrid(prev)) { colEdges(x, z); }
   } else if (inGrid(prev) && !colAwake(prev.x, prev.z)) { colTransfers(prev.x, prev.z, x, z, axis); }
 }
 `;

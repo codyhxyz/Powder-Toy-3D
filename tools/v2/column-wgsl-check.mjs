@@ -134,6 +134,27 @@ test('loop edges: a pour across the seam is the same pour translated, cell for c
   void moved;
 });
 
+test('open edges: a pool drains off the open sides and floor, every quantum and its energy in the ledger', () => {
+  const w = new ColumnGrid(16, 16, 16, { edge: 1 });
+  // a shelf with a pool on it reaching two open sides, and a block over the open floor
+  for (let z = 0; z < 16; z++) for (let x = 0; x < 8; x++) w.set(x, 4, z, E.WALL);
+  for (let y = 5; y < 9; y++) for (let z = 0; z < 16; z++) for (let x = 0; x < 8; x++) w.set(x, y, z, E.WATER, { T: 10 + y + x });
+  for (let y = 0; y < 3; y++) for (let z = 6; z < 10; z++) for (let x = 11; x < 14; x++) w.set(x, y, z, E.OIL, { T: 70 });
+  const t0 = w.totals();
+  let drained = false;
+  for (let t = 0; t < 600; t++) {
+    w.step();
+    const t1 = w.totals();
+    assert.equal(t1.mass + w.boundary.mass, t0.mass, `mass at ${t}`);
+    assert.equal(t1.energy + w.boundary.energy, t0.energy, `energy at ${t}`);
+    if (t1.mass === 0) { drained = true; break; }
+  }
+  // the shelf keeps a film under the dry tolerance at most; the oil over the open floor is gone
+  let oil = 0; for (let i = 0; i < w.n; i++) if (L.cid(w.cores[i]) === E.OIL) oil++;
+  assert.equal(oil, 0, 'the open floor holds nothing');
+  assert.ok(drained || w.totals().mass < t0.mass * 0.05, `drained to ${(w.totals().mass / L.FULL).toFixed(2)} cells`);
+});
+
 test('migration: unpacked columns settle packed, compressed open water rises, all exactly', () => {
   const w = new ColumnGrid(8, 16, 8);
   walls(w);

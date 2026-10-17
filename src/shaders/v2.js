@@ -48,10 +48,6 @@ export const FULL = 1 << 16;                       // a full cell's fill
 // The face lanes hold a segment's depth-averaged flux in quanta a tick (src/shaders/v2/columns.js): this
 // many updates a second, for readers that turn a lane into a speed.
 export const LANE_HZ = TICK_HZ;
-// The open edge's drain (v2BoundaryWGSL) at the rate the 180 Hz substep model calibrated: fill a tick per
-// cell of head. Open edges are not yet column runs (stage 3).
-const EDGE_DRAIN_HZ = 180;
-const EDGE_ACC = G_CELLS / (EDGE_DRAIN_HZ * EDGE_DRAIN_HZ) * FULL;
 // rest: a brick sleeps once neither it nor any of its 26 neighbours was busy for one offset cycle (5.6)
 export const QUIET_TICKS = 8;
 // a brick's quiet run stops counting here (one byte); a brick at it, with nothing busy near, is unchanged
@@ -243,7 +239,6 @@ const DIFFUSE_AGE: u32 = ${DIFFUSE_AGE}u;
 const G_TICK: f32 = ${G_TICK};
 const FULLU: u32 = ${FULL}u;
 const FULLF: f32 = ${f(FULL)};
-const EDGE_ACC: f32 = ${EDGE_ACC};
 // a face lane at most (columns.js COLUMN.Q_MAX: under f16's 65,504), for writers of lanes outside the column passes
 const Q_MAX: f32 = ${f(COLUMN.Q_MAX)};
 const T_OFFSET: f32 = ${T_OFFSET};
@@ -642,8 +637,9 @@ ${MAIN} {
 }
 `;
 
-// Open faces alone are sinks. The retained empty carrier owns its energy;
-// only removed material enthalpy/bank and fill enter the existing exact ledger.
+// Open faces alone are sinks for gas. The retained empty carrier owns its energy; only removed material
+// enthalpy/bank enters the existing exact ledger. Liquids leave through the column passes' open edges
+// (columns.js colEdges, colDrain), into the same ledger.
 export const v2BoundaryWGSL = (g) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
 ${MAIN} {
@@ -651,34 +647,16 @@ ${MAIN} {
   let e=foldId(wg,nwg); if (e>=useAwake()) { return; }
   let s=atomicLoad(&act2[V2_LIST+e])*64u+li; let p=cellOf(s);
   let before=loadMaterial(s); let c=before.core; let k=clsOf(c);
-  if (k!=C_LIQUID && k!=C_GAS) { return; }
+  if (k!=C_GAS) { return; }
   if ((events[s]&1u)!=0u) { return; }
   var drive=0.0;
   for (var a=0;a<3;a++) { for (var side=-1;side<=1;side+=2) {
-    if (inGrid(p+axisV(a)*side)) { continue; }
-    let force=f32(side)*mGravity(vec3f(p)+0.5)[a]/19.6;
-    if (k==C_LIQUID) { drive+=max(0.0,f32(cFill(c))/FULLF+force); }
-    else if (k==C_GAS) { drive+=0.25; }
-    else { drive+=max(0.0,force); }
+    if (!inGrid(p+axisV(a)*side)) { drive+=0.25; }
   } }
   if (drive<=0.0) { return; } markBusy(p);
   let carrier=makeMaterial(0u,f32(cTq(c))*0.25-273.25,0u,0u);
-  var after=carrier; var amount=FULLU;
-  if (k==C_LIQUID) {
-    amount=min(cFill(c),max(1u,u32(EDGE_ACC*drive)));
-    let carried=energySub(energyOf(before),energyOf(carrier));
-    let heat=energyShare(carried,0u,amount,cFill(c));
-    var core=c; let left=cFill(c)-amount;
-    if (left==0u) { core=carrier.core; }
-    else { core.y=(core.y&0xff000000u)|left;
-      let fuel=energyDiv(energyMul(payloadOf(c),left),cFill(c)).x;
-      if (!conductsNative(cid(c))) { core.w=(core.w&65535u)|(fuel<<16u); }
-    }
-    after=withEnergy(Material(core,before.bank),energySub(energyOf(before),heat));
-  } else {
-    // Only gas reaches this branch; powder outflow belongs to dynamics.
-    if (drive<1.0) { var rng=seed3(p,P.tick,971u); if (rnd(&rng)>=drive) { return; } }
-  }
+  let after=carrier; let amount=FULLU;
+  if (drive<1.0) { var rng=seed3(p,P.tick,971u); if (rnd(&rng)>=drive) { return; } }
   noteBoundaryMass(amount); noteEnergySink(p,energySub(energyOf(before),energyOf(after)));
   storeMaterial(s,before,after); if (cid(after.core)==0u) { events[s]=0u; }
 }
