@@ -83,8 +83,9 @@ than eagerly copying the entire mutable generated cache.
 ## Lifetime and validity
 
 Handles expose `identity`, `configuration`, `contentToken`, `retain`, idempotent
-`release`, `isValid`, `isLatest`, borrowed `tables` and `snapshotForFields`. `isValid` deliberately
-survives later physics/source revisions; `isLatest` does not. Parent reset,
+`release`, `isValid`, and borrowed `tables`, `source` and `producer`. Request field
+snapshots through `cut.source.snapshotForFields`. `isValid` deliberately
+survives later physics/source revisions. Parent reset,
 disposal or a changed scene/configuration version invalidates old cuts. Owned
 snapshot completeness/gather and production reject invalidated input.
 `source`/`producer` expose the actual engine classes for the adapter, not mutable
@@ -97,19 +98,10 @@ physics or latest CELL publication**. Older coherent Atlas/field values remain
 valid while pinned; mutable-mode latest-publication checks remain unchanged.
 
 Keep every handle/snapshot until its reader's final submission **and queue
-completion**. A Source-only convenience reserves a pin **before** recording:
-
-```js
-const completion = cut.retainUntilSubmitted(finalSubmissionPromise);
-// Record all consumers, including possible automatic-prefix submits.
-// Resolve finalSubmissionPromise only AFTER their final suffix is submitted.
-// Rejection means aborted/orphaned work; close the normal Frame normally.
-await completion; // actual onSubmittedWorkDone, then releases the Source pin
-```
-
-Both submission outcomes wait for queue completion. Rejection of the final
-encoder does not cancel earlier automatic submissions. The completion promise
-rejects only after those submissions finish.
+completion**. Call `retain()` before recording future consumers. Release that
+pin after their final suffix is submitted and `queue.onSubmittedWorkDone()`
+settles. On failure, close or discard the suffix before fencing the submitted
+prefix. Discarding the final encoder does not cancel earlier submissions.
 
 This does not pin unrelated Atlas/lighting resources; retain those snapshots
 separately. A completed automatic prefix is never the final fence. On last

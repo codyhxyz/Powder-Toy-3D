@@ -206,10 +206,11 @@ SOURCE/GI are causal temporal inputs with their ORIGINAL config/compute tokens.
 The bundle has frozen `.publication` (explicitly `current-cut-validation`) and
 `.leases`. Allocate each Atlas job with `publication:bundle.publication`, current
 `sourceRevision`, ORIGINAL per-channel sourceTick/giTick and dependency IDs.
-`createLightingTransport(gpu.device,['source','gi']).restore(gpu,atlas,entries)`
+`createLightingTransport(gpu.device).restore(gpu,atlas,entries)`
 accepts `entries=[{job,lease},...]`. It prevalidates all requested prepared
-channels, batches exact packed native copies on normal gpu.frame, flushes once,
-then invokes unchanged Atlas native writers. GLOW is never restored here.
+channels and closes normal gpu.frame once before copying retained native texels
+directly into unpublished Atlas pages. No staging buffers or upload shaders are
+needed. GLOW is never restored here.
 Keep the bundle alive through publish (and every consumer through final submit
 and queue completion); release it afterwards. Transport's independent pins
 survive failed/partial writes, suffix closure and queue completion. An uncertain

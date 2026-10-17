@@ -502,9 +502,11 @@ export class WorldRenderAtlas {
       if (kind === 'raw') check(auxMetadata?.length === 4 && auxMetadata.every((v, i) => v === [p.readyBits, p.epoch, p.sourceRevision, p.fieldTick][i]), 'writer metadata mismatch');
       this.recording = true;
       try {
-        // Native packed-half copies are legal only into this unpublished page.
-        const scoped = kind === 'fields' ? frozen({ ...bindings, destinations: frozen(WRITER_CHANNELS.fields.map(name =>
-          frozen({ texture: p.resources.textures[name], origin: frozen(pageTexel(p.id, 0, p.resources.layout)) }))) }) : bindings;
+        // Native texel copies are scoped to this unpublished page only.
+        const destinations = kind === 'fields' ? WRITER_CHANNELS.fields.map(name => ({ texture: p.resources.textures[name], origin: pageTexel(p.id, 0, p.resources.layout) }))
+          : kind === 'source' ? [{ texture: p.resources.textures.aux, origin: lightTexel(p.id, 4, p.resources.layout) }]
+          : kind === 'gi' || kind === 'glow' ? WRITER_CHANNELS[kind].map(name => ({ texture: p.resources.textures[name], origin: probeTexel(p.probeID, p.resources.layout) })) : null;
+        const scoped = destinations ? frozen({ ...bindings, destinations: frozen(destinations.map(d => frozen({ ...d, origin: frozen(d.origin) }))) }) : bindings;
         const result = record(encoder, scoped); check(!result?.then, 'writer must be synchronous');
       }
       finally { this.recording = false; }

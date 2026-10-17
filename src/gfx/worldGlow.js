@@ -18,9 +18,9 @@ export function worldGlowPlan(worldSize, core) {
 export function createWorldGlow(gpu, { g, emissionProvider, submissionProvider } = {}) {
   if (!g || !emissionProvider?.acquire || !emissionProvider.isCurrent || !submissionProvider?.reserve) throw new TypeError('explicit complete emission/submission providers required');
   const device = gpu.device ?? gpu, queue = device.queue, size = [g.nx, g.ny, g.nz], resources = createLightingResources(device);
-  const transport = createLightingTransport(device, ['glow']);
+  const transport = createLightingTransport(device);
   const layouts = [false, true].map(last => device.createBindGroupLayout({ entries: worldGlowLayouts({ last })[0] }));
-  const ready = Promise.all(layouts.map((layout, i) => device.createComputePipelineAsync({ label: `world glow ${i ? 'half' : 'float'}`, layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }), compute: { module: device.createShaderModule({ code: worldGlow({ last: i === 1 }) }), entryPoint: 'main' } })).concat(transport.ready));
+  const ready = Promise.all(layouts.map((layout, i) => device.createComputePipelineAsync({ label: `world glow ${i ? 'half' : 'float'}`, layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }), compute: { module: device.createShaderModule({ code: worldGlow({ last: i === 1 }) }), entryPoint: 'main' } })));
   let dead = false, serial = 0, active = null;
   const pending = new Set(), alive = () => { if (dead) throw new Error('world glow disposed'); };
   const drop = p => { if (p && --p.refs === 0) p.owned.forEach(r => r.destroy()); };
@@ -31,13 +31,12 @@ export function createWorldGlow(gpu, { g, emissionProvider, submissionProvider }
     return Object.freeze({ token: p.token, plan: p.plan,
       retain() { live(); return handle(p); },
       release() { if (!released) { released = true; drop(p); } },
-      bindings() { live(); return Object.freeze({ values: p.values, texture: p.view, token: p.token }); },
       writeAtlas(atlas, job) {
         live(); worldLightingIndex(size, job.brick);
         const c = job.brick.map((n, k) => n - p.plan.output.min[k]);
         if (c.some((n, k) => n < 0 || n >= p.plan.output.size[k])) throw new RangeError('glow output does not own Atlas brick');
         const index = c[0] + p.plan.output.size[0] * (c[1] + p.plan.output.size[1] * c[2]);
-        return transport.write({ atlas, job, kind: 'glow', token: p.token, source: p.values, copies: [{ from: index * 16, to: 0, size: 16 }], retain: () => handle(p) });
+        return transport.write({ atlas, job, kind: 'glow', token: p.token, source: p.texture, origin: [index % 256, Math.floor(index / 256), 0], retain: () => handle(p) });
       },
     });
   }
@@ -66,18 +65,18 @@ export function createWorldGlow(gpu, { g, emissionProvider, submissionProvider }
       const view = texture.createView({ dimension: '2d-array' });
       let previous = emission.buffer, previousOffset = emission.byteOffset ?? 0;
       const jobs = plan.passes.map((pass, i) => {
-        const n = product(pass.output.size), out = buffer(`world glow f32 pass${i}`, n * 16, BU.STORAGE | BU.COPY_SRC);
+        const n = product(pass.output.size), last = i === 5, out = last ? null : buffer(`world glow f32 pass${i}`, n * 16, BU.STORAGE | BU.COPY_SRC);
         const raw = new ArrayBuffer(96), ints = new Int32Array(raw), words = new Uint32Array(raw);
         ints.set(pass.input.min, 0); words.set([...pass.input.size, product(pass.input.size)], 4); ints.set(pass.output.min, 8);
         words.set([...pass.output.size, n], 12); ints.set(plan.world, 16); words[19] = pass.axis; words[20] = i;
-        const params = buffer('world glow exact pass params', 96, BU.UNIFORM, words), last = i === 5;
+        const params = buffer('world glow exact pass params', 96, BU.UNIFORM, words);
         const group = device.createBindGroup({ layout: layouts[last ? 1 : 0], entries: [
           { binding: 0, resource: { buffer: params } }, { binding: 1, resource: { buffer: previous, offset: previousOffset, size: product(pass.input.size) * 16 } },
-          { binding: 2, resource: { buffer: out } }, { binding: 3, resource: { buffer: feedback } }, ...(last ? [{ binding: 4, resource: view }] : []),
+          ...(last ? [] : [{ binding: 2, resource: { buffer: out } }]), { binding: 3, resource: { buffer: feedback } }, ...(last ? [{ binding: 4, resource: view }] : []),
         ] });
-        previous = out; previousOffset = 0; return { group, n, last, out };
+        if (!last) previous = out; previousOffset = 0; return { group, n, last };
       });
-      const values = jobs[5].out; let status = 'prepared', completion;
+      let status = 'prepared', completion;
       const candidate = { get status() { return status; }, get completion() { return completion; }, plan,
         record(frame = gpu.frame) {
           alive(); if (recorded || finished) throw new Error('world glow candidate already consumed');
@@ -89,8 +88,8 @@ export function createWorldGlow(gpu, { g, emissionProvider, submissionProvider }
               if (failures.length) { status = 'incomplete'; return Object.freeze({ status, failedPasses: frozenArray(failures), retry: true }); }
               if (dead || id !== serial || !emissionProvider.isCurrent(input)) { status = 'stale'; return Object.freeze({ status, retry: true }); }
               const token = Object.freeze({ epoch: input.epoch, sourceRevision: input.source.sourceRevision, sourceContentToken: input.source.contentToken, fieldPublishedToken: input.field.publishedToken, logicalFieldTick: input.field.logicalFieldTick, lightingTick, configVersion, dependencySetID: input.dependencySetID, dependencyVersion: input.dependencyVersion });
-              const retainedResources = [values, texture]; for (const r of retainedResources) owned.splice(owned.indexOf(r), 1);
-              const next = { refs: 1, owned: retainedResources, values, texture, view, token, plan, key }; const old = active; active = next; drop(old); status = 'published'; return Object.freeze({ status, token });
+              owned.splice(owned.indexOf(texture), 1);
+              const next = { refs: 1, owned: [texture], texture, token, plan, key }; const old = active; active = next; drop(old); status = 'published'; return Object.freeze({ status, token });
             },
           });
           recorded = true; status = 'pending';

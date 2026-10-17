@@ -28,8 +28,8 @@ World gather keeps 32 Fibonacci rays, two probes per 64-thread workgroup,
 two, facing, SH reduction, normal `.4` blend and original background blend
 `1-(1-.4)^4`. Rays continue until genuine world exit/extinction, not step12,
 construction/physics edges or `farBeyond`. Exhaustion fails incomplete. Blending
-is f32; the exact packed half pairs are retained and those unpacked halves are
-stored to the four rgba16float outputs.
+is f32; the exact packed half pairs are retained and copied into the four Atlas
+rgba16float textures. The producer needs no private texture mirrors.
 
 `worldGILayouts` starts from the actual full world reader: 16 sampled textures,
 five storage buffers, four groups, separate cell/LIGHT/Sun books. Group3 adds:
@@ -41,13 +41,11 @@ five storage buffers, four groups, separate cell/LIGHT/Sun books. Group3 adds:
 | 8 | source-first sorted global jobs, read-only vec4u | same |
 | 9 | private packed GI-source buffer, read-write vec4u | same |
 | 10 | absent | COW band-major packed vec2u history |
-| 11..14 | absent | four write-only rgba16float 2D-array outputs |
 
-Thus source uses seven storage buffers; gather uses eight and four storage
+Thus source uses seven storage buffers; gather uses eight and no storage
 images. Outputs never alias sampled previous bands. Job words are global brick
 index, background flag bit0 and authenticated birth flag bit1, zero, zero. WorldGIParams contains source count,
 probe count, absolute first status word, logical tick, epoch and three zeros.
-The fixed output row width is256; probe slot `i` is `(i%256,floor(i/256),0)`.
 Source records are16 bytes; history is `8*(band*probeCount+slot)` bytes. Each
 allocation/binding is capped at the device limit and128MiB, not dense whole-world
 source/history. Large worklists must be split without violating the barrier.
@@ -61,8 +59,8 @@ not renormalized. Missing in-world halo marks incomplete, never valid zero.
 It requires four emission bricks/axis of support, hence17 raw cells including
 original open-face neighbors (26 cells for arbitrary shading queries). Each
 pass shrinks only its axis's remaining support. No low-resolution tier exists.
-Glow uses one group: 96-byte uniform0, f32 input1/output2 storage buffers,
-status storage3, final storage image4 only.
+Glow uses one group: 96-byte uniform0, f32 input1 and status storage3.
+The first five passes write f32 buffer2. The final pass writes only image4.
 
 ## Pinned input / history contract
 
@@ -149,7 +147,8 @@ retired after final submission AND completion; Frame rollback is never assumed.
 Producer `published` means an immutable **producer output**, NOT application
 admission or history advancement. Failed/stale candidates retain the previous
 complete producer output. `snapshot()` returns a refcounted handle with
-`retain()/release()/bindings()`. Source/field/config/tick/previous-history and
+`retain()/release()/writeAtlas()`. GI additionally exposes packed native
+`bindings()` for retained history. Source/field/config/tick/previous-history and
 closure tokens are immutable. A same-tick retry/slab seeds from tick-1 again;
 it does not blend twice. Existing complete cached handles are independent.
 Every consumer retains a handle through its final submission AND completion.
@@ -161,11 +160,10 @@ GI handle `writeAtlas(atlas,job,'source'|'gi')` and glow handle
 completion. They validate brick/epoch/source revision/channel tick/dependency
 provenance and invoke actual `Atlas.recordLightWrite` (that API owns submission).
 Source copies exact uint words; GI copies the four strided packed half pairs
-into private32-byte scratch and unpacks them with the original texture-store
-pattern; glow transports the final f32 result to the original rgba16float writer.
-Original packed history remains uint-backed; no claim is made that arbitrary
-NaN payloads survive floating-point texture transport. Scratch and output pins
-survive Atlas submission/completion. These endpoints never publish the Atlas.
+directly into the destination textures. Glow copies its existing final
+rgba16float texture. No upload shader or staging buffer is needed.
+Original packed history remains uint-backed. Output pins survive Atlas
+submission/completion. These endpoints never publish the Atlas.
 
 `createWorldLightingHistory` supplies world-keyed attachments plus original
 selector rates, changed-lamp spheres, two-brick/22-tick recent-change dilation

@@ -3,17 +3,17 @@
 import { GiParams, giBgBlend } from '../shaders/gi.js';
 import { worldGISource, worldGIGather, worldGILayouts } from '../shaders/worldGI.js';
 import { validateWorldGIInitialization } from '../world/worldLightingHistory.js';
-import { BU, TU, uint, frozenArray, worldLightingIndex, validateLightingInput, sameLightingProvenance, createLightingResources, completeLightingBatch, createLightingTransport } from './worldLightingBatch.js';
+import { BU, uint, frozenArray, worldLightingIndex, validateLightingInput, sameLightingProvenance, createLightingResources, completeLightingBatch, createLightingTransport } from './worldLightingBatch.js';
 
 export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider, feedbackProvider } = {}) {
   if (!g || ![g.nx, g.ny, g.nz].every(n => Number.isInteger(n) && n > 0 && n % 4 === 0) ||
     !snapshotProvider?.acquire || !snapshotProvider.isCurrent || typeof readerBindingProvider !== 'function' || !feedbackProvider?.layout || !feedbackProvider.reserve) throw new TypeError('explicit world GI providers required');
   const device = gpu.device ?? gpu, queue = device.queue, size = [g.nx, g.ny, g.nz];
-  const resources = createLightingResources(device), transport = createLightingTransport(device, ['source', 'gi']);
+  const resources = createLightingResources(device), transport = createLightingTransport(device);
   const sourceLayouts = worldGILayouts().map(entries => device.createBindGroupLayout({ entries }));
   const gatherLayouts = [...sourceLayouts.slice(0, 3), device.createBindGroupLayout({ entries: worldGILayouts({ gather: true })[3] })];
   const pipeline = (code, layouts, label) => device.createComputePipelineAsync({ label, layout: device.createPipelineLayout({ bindGroupLayouts: layouts }), compute: { module: device.createShaderModule({ code }), entryPoint: 'main' } });
-  const ready = Promise.all([pipeline(worldGISource(g), sourceLayouts, 'world GI source'), pipeline(worldGIGather(g), gatherLayouts, 'world GI gather'), transport.ready]);
+  const ready = Promise.all([pipeline(worldGISource(g), sourceLayouts, 'world GI source'), pipeline(worldGIGather(g), gatherLayouts, 'world GI gather')]);
   let dead = false, serial = 0, active = null;
   const pending = new Set();
   const alive = () => { if (dead) throw new Error('world GI disposed'); };
@@ -27,7 +27,7 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
       release() { if (!released) { released = true; drop(p); } },
       // Exact packed band-major history for the future provider. No texture
       // readback/float re-quantization is needed to retain temporal ownership.
-      bindings() { live(); return Object.freeze({ source: p.source, history: p.history, bands: p.views, probeCount: p.probes.length, token: p.token }); },
+      bindings() { live(); return Object.freeze({ source: p.source, history: p.history, probeCount: p.probes.length, token: p.token }); },
       writeAtlas(atlas, job, kind) {
         live(); const index = worldLightingIndex(size, job.brick), ids = kind === 'source' ? p.sources : kind === 'gi' ? p.probes : null;
         const slot = ids?.indexOf(index);
@@ -49,7 +49,7 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
     };
     const sources = canonical(sourceBricks, false), probes = canonical(gatherBricks, true), count = sources.length + probes.length;
     if (!count) throw new Error('empty GI selection: scheduler owns the logical tick, not draw/prepare');
-    if (count * 16 > resources.limit || probes.length * 32 > resources.limit || probes.length > 256 * (device.limits?.maxTextureDimension2D ?? 8192)) throw new RangeError('world GI selection exceeds bounded slab; provider must partition the SOURCE phase before any gather');
+    if (count * 16 > resources.limit || probes.length * 32 > resources.limit) throw new RangeError('world GI selection exceeds bounded slab; provider must partition the SOURCE phase before any gather');
     const id = ++serial, owned = []; let input, recorded = false, finished = false;
     const destroy = () => owned.splice(0).forEach(r => r.destroy());
     const release = () => { input?.release(); input = null; };
@@ -90,17 +90,12 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
       // background blend 1-(1-.4)^4, reset blend 1. No allocation-based phase.
       dv.setInt32(0, -1, true); dv.setUint32(4, probes.length, true); dv.setFloat32(8, reset ? 1 : .4, true); dv.setUint32(12, shadows ? 1 : 0, true); dv.setUint32(16, 0, true); dv.setFloat32(20, reset ? 1 : giBgBlend(.4), true);
       const giParams = buffer('world GI original params', gi.byteLength, BU.UNIFORM, new Uint8Array(gi));
-      const height = Math.max(1, Math.ceil(probes.length / 256));
-      const textures = Array.from({ length: 4 }, (_, k) => {
-        const t = device.createTexture({ label: `private world GI band${k}`, size: [256, height, 1], format: 'rgba16float', usage: TU.STORAGE_BINDING | TU.TEXTURE_BINDING | TU.COPY_SRC }); owned.push(t); return t;
-      });
-      const views = frozenArray(textures.map(t => t.createView({ dimension: '2d-array' })));
       const entries = readerBindingProvider(input);
       if (!Array.isArray(entries) || entries.length !== 4 || entries[3].some(e => e.binding > 5)) throw new TypeError('exact full world reader G0..G3 entries required, without pick output');
       const first = entries.slice(0, 3).map((entries, i) => device.createBindGroup({ layout: sourceLayouts[i], entries }));
       const operation = [...entries[3].filter(e => e.binding !== 1), { binding: 1, resource: { buffer: requests } }, { binding: 6, resource: { buffer: giParams } }, { binding: 7, resource: { buffer: params } }, { binding: 8, resource: { buffer: jobs } }, { binding: 9, resource: { buffer: source } }];
       const sourceGroup = device.createBindGroup({ layout: sourceLayouts[3], entries: operation });
-      const gatherGroup = device.createBindGroup({ layout: gatherLayouts[3], entries: [...operation, { binding: 10, resource: { buffer: history } }, ...views.map((resource, k) => ({ binding: 11 + k, resource }))] });
+      const gatherGroup = device.createBindGroup({ layout: gatherLayouts[3], entries: [...operation, { binding: 10, resource: { buffer: history } }] });
       let status = 'prepared', completion;
       const candidate = { get status() { return status; }, get completion() { return completion; },
         record(frame = gpu.frame) {
@@ -123,8 +118,8 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
                 if (dead || id !== serial || !snapshotProvider.isCurrent(input)) { status = 'stale'; return Object.freeze({ status, retry: true }); }
                 validateInitialization();
                 const token = Object.freeze({ initialization, epoch: input.epoch, sourceRevision: input.source.sourceRevision, sourceContentToken: input.source.contentToken, fieldPublishedToken: input.field.publishedToken, logicalFieldTick: input.field.logicalFieldTick, previousToken: input.previous.token, lightingTick, configVersion, dependencySetID: input.dependencySetID, dependencyVersion: input.dependencyVersion });
-                const retainedResources = [source, history, ...textures]; for (const r of retainedResources) owned.splice(owned.indexOf(r), 1);
-                const next = { refs: 1, owned: retainedResources, source, history, textures, views, sources: frozenArray(sources.map(j => j.index)), probes: frozenArray(probes.map(j => j.index)), token, key };
+                const retainedResources = [source, history]; for (const r of retainedResources) owned.splice(owned.indexOf(r), 1);
+                const next = { refs: 1, owned: retainedResources, source, history, sources: frozenArray(sources.map(j => j.index)), probes: frozenArray(probes.map(j => j.index)), token, key };
                 const old = active; active = next; drop(old); status = 'published'; return Object.freeze({ status, token });
               },
             });

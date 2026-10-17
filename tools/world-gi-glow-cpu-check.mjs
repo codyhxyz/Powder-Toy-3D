@@ -11,7 +11,6 @@ import { WGSL_CHECK as GI_CHECK, worldGISource, worldGIGather, worldGIBirthWGSL 
 import { WGSL_CHECK as GLOW_CHECK, worldGlow } from '../src/shaders/worldGlow.js';
 import { createWorldGI } from '../src/gfx/worldGI.js';
 import { createWorldGlow, worldGlowPlan } from '../src/gfx/worldGlow.js';
-import { worldLightingTransportSpec } from '../src/gfx/worldLightingBatch.js';
 import { createWorldLightingHistory, selectWorldGI } from '../src/world/worldLightingHistory.js';
 import { checkPipeline } from './check-sampler-budget.mjs';
 import { lightingFixture } from './world-gi-glow-fixture.mjs';
@@ -71,7 +70,7 @@ test('seven independent production GI/key/select/args and glow emissions remain 
   const hashes = ['9a0284d58bcec62ba9c7bd470775b3ed29de2ba923aefcc4c1fbe554d4a91675', '98cf28c3a150d1bdd8fe30f16f5710b9dc094942b7fe640949da0aa9f5165832', 'd2daecfbd07fb445f5295714cb22293d3b6a2d7d409e38cc972953683e086734', '89a027a627bc1e13b9c0bfb7a9f6d5351efeea2868b06a0cb107645a71fd7fa8', 'e95391017d1f3a3d79e23012ae2a35cdc130caff3b2f8cca6220bb5e4dba514b', '4318b9cc2d7b00cc5ee0ad72f578354bfdfa7df9e85cd762e7e59cdbe36d4266', '695dcc6cca142c9e6ce7c3d61ea57f6239b42cdeb501999dcef2b16b991e609a'];
   [giSourceFrag(g), giGatherFrag(g), giKeyFrag(g), giSelectFrag(g), giArgsFrag(g), blurFrag(g), blurFrag(g, { last: true })].forEach((code, i) => assert.equal(createHash('sha256').update(code).digest('hex'), hashes[i]));
 });
-test('actual eight world GI/two glow/three exact transport modules validate Naga and default budgets', () => {
+test('actual eight world GI/two glow modules validate Naga and default budgets', () => {
   let count = 0;
   for (const c of [...GI_CHECK(), ...GLOW_CHECK()]) {
     const code = c.code(), groups = c.layouts(); assert.deepEqual(checkPipeline({ code, groups, kind: 'compute' }).problems, [], c.name); naga(code, c.name); count++;
@@ -81,11 +80,35 @@ test('actual eight world GI/two glow/three exact transport modules validate Naga
       assert.doesNotMatch(code, /fn farBeyond\(/); if (c.name.includes('gather')) assert.match(code, /GI_STEPS: i32 = (1064|1128)/);
     }
   }
-  for (const kind of ['source', 'gi', 'glow']) { const c = worldLightingTransportSpec(kind); assert.deepEqual(checkPipeline({ code: c.code, groups: c.groups, kind: 'compute' }).problems, []); naga(c.code, `transport.${kind}`); count++; }
-  console.log(`Naga: ${count} actual GI/glow/transport modules passed; 16 sampled / <=8 storage / <=4 images`);
+  assert.equal(count, 10);
+  console.log(`Naga: ${count} actual GI/glow modules passed; 16 sampled / <=8 storage / <=4 images`);
   const source = worldGISource({ nx: 3072, ny: 384, nz: 1024 });
   assert.ok(source.indexOf('head[6] == 0u') < source.indexOf('let pr = worldGIPreviousProbe'), 'liquid/media early exit before previous GI');
   assert.match(worldGIGather({ nx: 3072, ny: 384, nz: 1024 }), /worldGISourceStaged\(b\)/);
+});
+test('world gather is the original generated module minus unused texture mirrors only', () => {
+  // Pre-deletion emissions, normalized ONLY by dropping output declarations/dst
+  // and unwrapping textureStore(..., giBlend(...)) to the same giBlend calls.
+  const hashes = ['6f623e466ec4de3944a98e2d68ab8e362f489cf3213a243dd90421e48420a3aa', '28b2bf2a204a6edcd4727d301f8c5481a48424ff8d0b8bdbbef5ed2b937376f1', '0e01893a06fe24d02184ae58a2a751f4ade69b6b372a6d5d9a2075c865fa4dbe', '512489b4a52d4663df822c819de3e1c3067152909f6a5638dc59185bd28daa40'];
+  const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
+  gathers.forEach((c, i) => {
+    const code = c.code(), groups = c.layouts();
+    assert.equal(createHash('sha256').update(code).digest('hex'), hashes[i], c.name);
+    assert.deepEqual(groups.slice(0, 3), GI_CHECK()[0].layouts().slice(0, 3));
+    assert.deepEqual(groups[3].map(e => e.binding), [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert.equal(groups.flat().filter(e => e.storageTexture).length, 0);
+    assert.doesNotMatch(code, /worldGI[0-3]Out|textureStore\(/);
+    assert.match(code, /worldGIHistory\[i\] = w;/);
+    assert.match(code, /worldGIReport\(WGI.counts.x \+ probe\)/);
+  });
+});
+test('final glow layout omits f32 dst and stores the identical final f32 expression directly', () => {
+  const [float, final] = GLOW_CHECK(), code = final.code();
+  assert.deepEqual(float.layouts()[0].map(e => e.binding), [0, 1, 2, 3]);
+  assert.deepEqual(final.layouts()[0].map(e => e.binding), [0, 1, 3, 4]);
+  assert.doesNotMatch(code, /\bdst\b|@binding\(2\)/);
+  assert.equal(fnBody(code, 'glowLoad'), fnBody(float.code(), 'glowLoad'));
+  assert.equal(fnBody(code, 'main'), fnBody(float.code(), 'main').replace('dst[i] = vec4f(s * LIGHT_BLUR_GAIN, 1.0);', 'textureStore(outGlow, vec2i(i32(i % 256u), i32(i / 256u)), 0, vec4f(s * LIGHT_BLUR_GAIN, 1.0));'));
 });
 test('executed production source packing preserves canonical air, half saturation, directions and mixed transport', () => {
   const cases = [[0, 0, 0, 0, 0, 0, 0, 0, 0], [2, .25, .125, .5, .75, 1, -1, 0, 1], [1e6, -.01, 65504, 1, .07, .02, .2, -.4, .9], [.001, .0002, .5, .11, .35, .95, 0, 0, 0]];
@@ -197,12 +220,25 @@ test('executed actual six glow passes equal contiguous f32/half output across 32
   const dims = [16, 16, 16], all = new Float32Array(16 ** 3 * 4);
   for (let z = 0; z < 16; z++) for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) { const at = (x + 16 * (y + 16 * z)) * 4; all.set([f((x * 7 + y * 11 + z * 13) % 19 / 17), x === 7 ? 13 : .01, y === 0 ? 3 : .2, 0], at); }
   let reference = all; for (const axis of [0, 1, 2, 0, 1, 2]) reference = blurReference(reference, dims, axis);
-  // Non-final production kernel has the SAME shared coefficient/loop body as
-  // final; final additionally stores these f32 values to rgba16float.
+  // Execute the actual final kernel too; capture its textureStore argument.
+  // Independent half() below models conversion, not GPU texture rounding.
   for (const core of [[0, 0, 0], [1, 1, 1]]) {
     const plan = worldGlowPlan([64, 64, 64], core), n = plan.input.size.reduce((a, n) => a * n, 1), feedback = new Uint32Array(6); let src = new Float32Array(n * 4);
     for (let z = 0; z < plan.input.size[2]; z++) for (let y = 0; y < plan.input.size[1]; y++) for (let x = 0; x < plan.input.size[0]; x++) { const p = [x, y, z].map((v, k) => v + plan.input.min[k]), i = x + plan.input.size[0] * (y + plan.input.size[1] * z); src.set(all.subarray((p[0] + 16 * (p[1] + 16 * p[2])) * 4, (p[0] + 16 * (p[1] + 16 * p[2])) * 4 + 4), i * 4); }
-    for (let i = 0; i < 6; i++) { const pass = plan.passes[i], p = packGlowParams(pass, dims, i), dst = new Float32Array(p[15] * 4); new ShaderExec(new WgslParser().parse(worldGlow())).dispatchWorkgroups('main', Math.ceil(p[15] / 64), { 0: { 0: p, 1: src, 2: dst, 3: feedback } }); src = dst; }
+    for (let i = 0; i < 6; i++) {
+      const pass = plan.passes[i], p = packGlowParams(pass, dims, i), dst = new Float32Array(p[15] * 4), last = i === 5;
+      const exec = new ShaderExec(new WgslParser().parse(worldGlow({ last })));
+      if (last) {
+        const call = exec._call;
+        exec._call = function(node, context) {
+          if (node.name !== 'textureStore') return call.call(this, node, context);
+          const q = this.evalExpression(node.args[1], context).data;
+          assert.equal(this.evalExpression(node.args[2], context).value, 0);
+          dst.set(this.evalExpression(node.args[3], context).data, (q[0] + 256 * q[1]) * 4);
+        };
+      }
+      exec.dispatchWorkgroups('main', Math.ceil(p[15] / 64), { 0: { 0: p, 1: src, ...(!last ? { 2: dst } : {}), 3: feedback } }); src = dst;
+    }
     assert.deepEqual([...feedback], [1, 1, 1, 1, 1, 1]);
     for (let z = 0; z < 8; z++) for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) { const p = [x, y, z].map((v, k) => v + plan.output.min[k]), a = (x + 8 * (y + 8 * z)) * 4, b = (p[0] + 16 * (p[1] + 16 * p[2])) * 4; for (let c = 0; c < 4; c++) { near(src[a + c], reference[b + c], 2e-7); assert.equal(half(src[a + c]), half(reference[b + c])); } }
   }
@@ -210,6 +246,7 @@ test('executed actual six glow passes equal contiguous f32/half output across 32
 
 test('native world GI global source barrier, sorted/reversed jobs, final submission AND completion pins, exact Atlas transport', async () => {
   const f = lightingFixture(), gi = createWorldGI(f.gpu, { g: f.g, snapshotProvider: f.snapshotProvider, readerBindingProvider: f.readerBindingProvider, feedbackProvider: f.feedbackProvider });
+  f.device.createTexture = () => { throw new Error('GI must not allocate private texture mirrors'); };
   const c = await gi.prepare({ lightingTick: 0, reset: true, configVersion: 1, sourceBricks: [[2, 1, 1], [1, 1, 1]], gatherBricks: [[1, 1, 1], [2, 1, 1]] });
   assert.equal(f.state.pins, 1); const done = c.record(); assert.equal(f.state.pins, 1); await Promise.resolve(); assert.equal(f.state.pins, 1, 'early readback is not a submission fence');
   assert.deepEqual(f.events.filter(e => e.startsWith('dispatch:world GI ')), ['dispatch:world GI source', 'dispatch:world GI gather']);
@@ -217,12 +254,15 @@ test('native world GI global source barrier, sorted/reversed jobs, final submiss
   assert.ok(f.events.indexOf('readback-boundary') > f.events.indexOf('dispatch:world GI gather'));
   f.tickets[0].submitted.resolve(); await Promise.resolve(); assert.equal(f.state.pins, 1); f.tickets[0].done.resolve(); assert.equal((await done).status, 'published'); assert.equal(f.state.pins, 0);
   const out = gi.snapshot(); assert.deepEqual(out.sources, [...out.sources].sort((a, b) => a - b)); const held = out.retain();
+  const { source, history } = out.bindings();
+  assert.deepEqual(Object.keys(out.bindings()).sort(), ['history', 'probeCount', 'source', 'token']);
   const cached = await gi.prepare({ lightingTick: 0, reset: true, configVersion: 1, sourceBricks: [[1, 1, 1], [2, 1, 1]], gatherBricks: [[2, 1, 1], [1, 1, 1]] }); assert.equal(cached.status, 'cached'); cached.snapshot.release();
-  const calls = [], atlas = { recordLightWrite(job, kind, { record }) { calls.push(kind); record(f.encoder, { params: new Uint32Array([3, 1, 1, 0, 256, 1, 0, 0, 256, 1, 0, 0, 132, 0, 0, 0]), outputs: Array.from({ length: kind === 'gi' ? 4 : 1 }, (_, binding) => ({ binding, resource: { output: true } })) }); f.device.queue.submit([]); } };
+  const calls = [], atlas = { recordLightWrite(job, kind, { record }) { calls.push(kind); record({ copyBufferToTexture() {} }, { destinations: Array.from({ length: kind === 'gi' ? 4 : 1 }, () => ({})) }); f.device.queue.submit([]); } };
   const job = { kind: 'light', brick: [1, 1, 1], epoch: 1, sourceRevision: 1, sourceTick: 0, giTick: 0, dependencies: { source: { id: 7, version: 1 }, gi: { id: 7, version: 1 } } };
   await out.writeAtlas(atlas, job, 'source'); await out.writeAtlas(atlas, job, 'gi'); assert.deepEqual(calls, ['source', 'gi']);
   await assert.rejects(out.writeAtlas(atlas, { ...job, sourceRevision: 99 }, 'gi'), /provenance/);
-  gi.dispose(); assert.equal(held.bindings().history.dead, false); out.release(); held.release(); assert.equal(f.state.pins, 0);
+  gi.dispose(); assert.equal(held.bindings().history.dead, false); assert.equal(source.dead, false); out.release(); held.release();
+  assert.equal(source.dead, true); assert.equal(history.dead, true); assert.equal(f.state.pins, 0);
 });
 
 test('newer physics does not cancel a queued coherent owned cut; same-tick retry never seeds from its own output', async () => {
@@ -265,7 +305,7 @@ test('GI incomplete/secondary misses, stale epoch, encode/readback/discard failu
 });
 test('queued reset/dispose retains orphan commands and source pins until final completion, never assumes Frame rollback', async () => {
   const f = lightingFixture(), gi = createWorldGI(f.gpu, { g: f.g, snapshotProvider: f.snapshotProvider, readerBindingProvider: f.readerBindingProvider, feedbackProvider: f.feedbackProvider });
-  const c = await gi.prepare({ lightingTick: 0, reset: true, configVersion: 1, sourceBricks: [[1, 1, 1]], gatherBricks: [[1, 1, 1]] }), done = c.record(); gi.reset(); gi.dispose(); assert.equal(f.state.pins, 1); await f.complete(); assert.equal((await done).status, 'stale'); assert.equal(f.state.pins, 0); assert.ok(f.textures.every(t => t.dead));
+  const c = await gi.prepare({ lightingTick: 0, reset: true, configVersion: 1, sourceBricks: [[1, 1, 1]], gatherBricks: [[1, 1, 1]] }), done = c.record(); gi.reset(); gi.dispose(); assert.equal(f.state.pins, 1); await f.complete(); assert.equal((await done).status, 'stale'); assert.equal(f.state.pins, 0); assert.equal(f.textures.length, 0);
 });
 test('cold/unknown history, wrong clocks and public candidate aliases reject before publication', async () => {
   const f = lightingFixture(), gi = createWorldGI(f.gpu, { g: f.g, snapshotProvider: f.snapshotProvider, readerBindingProvider: f.readerBindingProvider, feedbackProvider: f.feedbackProvider });
@@ -276,8 +316,38 @@ test('native glow six-phase ordering, complete emission halo, cached handles, st
   const f = lightingFixture(), glow = createWorldGlow(f.gpu, { g: f.g, emissionProvider: f.emissionProvider, submissionProvider: f.submissionProvider }), args = { core: [0, 1, 0], lightingTick: 0, configVersion: 1 };
   const c = await glow.prepare(args), done = c.record(); assert.equal(f.state.pins, 1); assert.equal(f.events.filter(e => e.startsWith('dispatch:world glow ')).length, 6); await f.complete(); assert.equal((await done).status, 'published');
   const out = glow.snapshot(), cached = await glow.prepare(args); assert.equal(cached.status, 'cached'); cached.snapshot.release();
-  const history = out.bindings().values; glow.reset(); assert.equal(history.dead, false); out.release(); assert.equal(history.dead, true);
+  let texture;
+  await out.writeAtlas({ recordLightWrite(_job, _kind, { record }) { record({ copyTextureToTexture(source) { texture = source.texture; } }, { destinations: [{}] }); } },
+    { kind: 'light', brick: [0, 8, 0], epoch: 1, sourceRevision: 1, glowTick: 0, dependencies: { glow: { id: 7, version: 1 } } });
+  glow.reset(); assert.equal(texture.dead, false); out.release(); assert.equal(texture.dead, true);
   f.state.missing = true; const missing = await glow.prepare({ ...args, lightingTick: 1 }), q = missing.record(); await f.complete(); assert.equal((await q).status, 'incomplete'); assert.equal(glow.snapshot(), null); glow.dispose();
+});
+test('Glow Atlas copies use the retained final texture at exact XYZ-linear texels and fence its lifetime', async () => {
+  const f = lightingFixture(), glow = createWorldGlow(f.gpu, { g: f.g, emissionProvider: f.emissionProvider, submissionProvider: f.submissionProvider });
+  let finalView;
+  const bind = f.device.createBindGroup;
+  f.device.createBindGroup = desc => { const output = desc.entries.find(e => e.binding === 4); if (output) finalView = output.resource; return bind(desc); };
+  const c = await glow.prepare({ core: [0, 1, 0], lightingTick: 0, configVersion: 1 }), completed = c.record();
+  const intermediates = f.buffers.filter(b => b.label.startsWith('world glow f32 pass'));
+  assert.deepEqual(intermediates.map(b => b.label), Array.from({ length: 5 }, (_, i) => 'world glow f32 pass' + i));
+  await f.complete(); assert.equal((await completed).status, 'published');
+  const out = glow.snapshot(); let texture;
+  assert.equal('bindings' in out, false); assert.ok(intermediates.every(b => b.dead));
+  let releaseFence; f.device.queue.onSubmittedWorkDone = () => new Promise(resolve => { releaseFence = resolve; });
+  const destination = {}, calls = [];
+  const atlas = { recordLightWrite(job, kind, { record }) {
+    assert.equal(kind, 'glow'); record({ copyTextureToTexture(...args) { texture = args[0].texture; assert.equal(texture, finalView.texture); calls.push(args); } }, { destinations: [destination] });
+    f.device.queue.submit([]);
+  } };
+  const job = { kind: 'light', brick: [1, 8, 4], epoch: 1, sourceRevision: 1, glowTick: 0, dependencies: { glow: { id: 7, version: 1 } } };
+  for (const bad of [{ kind: 'cell' }, { epoch: 2 }, { sourceRevision: 2 }, { glowTick: 1 }, { dependencies: { glow: { id: 8, version: 1 } } }, { dependencies: { glow: { id: 7, version: 2 } } }]) {
+    await assert.rejects(out.writeAtlas(atlas, { ...job, ...bad }), /provenance/);
+  }
+  assert.equal(calls.length, 0);
+  const done = out.writeAtlas(atlas, job);
+  assert.deepEqual(calls, [[{ texture, origin: [1, 1, 0] }, destination, [1, 1, 1]]]);
+  glow.reset(); out.release(); assert.equal(texture.dead, false);
+  releaseFence(); await done; assert.equal(texture.dead, true); glow.dispose();
 });
 test('GI/glow caches require complete cut provenance, including new epochs and dependencies',async()=>{
   for(const kind of ['gi','glow'])for(const changed of ['epoch','sourceRevision','fieldTick','dependencySetID','dependencyVersion']){

@@ -122,8 +122,8 @@ export class WorldRenderSource {
     const box = candidate && ['lo', 'hi'].every(k => Array.isArray(candidate[k]) && candidate[k].length === 3 && candidate[k].every(Number.isFinite)) &&
       candidate.lo.every((v, i) => v <= candidate.hi[i]) ? candidate : null;
     this.changeJournal ??= [];
-    this.changeJournal.push({ revision: this.contentRevision, global: !box,
-      bounds: box ? { lo: [...box.lo], hi: [...box.hi] } : null });
+    this.changeJournal.push(Object.freeze({ revision: this.contentRevision, global: !box,
+      bounds: box ? Object.freeze({ lo: Object.freeze([...box.lo]), hi: Object.freeze([...box.hi]) }) : null }));
   }
   changesSince(token) {
     const current = this.contentToken();

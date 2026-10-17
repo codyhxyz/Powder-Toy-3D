@@ -15,17 +15,9 @@ import { WorldRenderAtlas, READY, auxTexel, pageTexel, worldSlotCell, assertWorl
 import { BrickStore, encodeBrick } from '../src/world/store.js';
 import { gridDims, brickIdOf, cellSlot } from '../src/shaders/common.js';
 import { brickFrag } from '../src/shaders/passes.js';
-import { worldCellClassifierWGSL, worldCellPackWGSL, WORLD_CELL_PACK_LAYOUTS, worldFieldPackWGSL, WORLD_FIELD_PACK_LAYOUT, copyCapturedFieldPage } from '../src/shaders/worldCellAdapter.js';
+import { worldCellClassifierWGSL, worldCellPackWGSL, WORLD_CELL_PACK_LAYOUTS, copyCapturedFieldPage } from '../src/shaders/worldCellAdapter.js';
 import { setAeration, aerationForSource, isProducerBoundedAeration } from '../src/gfx/foam.js';
 const u32=b=>new Uint32Array(b.bytes), f32=b=>new Float32Array(b.bytes);
-class FieldShaderExec extends WgslExec {
-  _dispatchWorkgroup(fn,id,context){
-    // wgsl_reflect1.6.0 parses a single workgroup size as a string, then
-    // dispatches its digits as dimensions. Normalize AST metadata, not WGSL.
-    for(const a of fn.node.attributes??[])if(a.name==='workgroup_size'&&typeof a.value==='string')a.value=[a.value];
-    return super._dispatchWorkgroup(fn,id,context);
-  }
-}
 function fixture(){
   const gpu=new CellTestGPU(),g=gridDims({nx:32,ny:32,nz:32}),buffer=n=>gpu.createBuffer({size:n});
   const sim={g,gpu,cur:0,version:0,origin:{x:0,y:0,z:0},L:{TABLES:gpu.layout('TABLES',[])},tables:{},marks:buffer(16),state:{A:buffer(g.slots*32),B:buffer(g.slots*32),F:buffer(g.slots*8)},flow:buffer(g.slots*8),decoPlane:{buffer:buffer(g.slots*4),offset:0},
@@ -69,11 +61,9 @@ test('real Source/Producer/Fields/Atlas: two-core queued captures precede scratc
   assert(f.gpu.trace.indexOf(captures[2])<secondClassifier);
   f.gpu.flush();const packBefore=f.gpu.nativeSubmits,publication=f.adapter.commitAfterSourceFlush(batch);
   assert.equal(f.gpu.nativeSubmits-packBefore,1,'both raw/field pages share one native submission');
-  const dispatches=f.gpu.trace.filter(t=>t.name==='field CELL dispatch'),copies=f.gpu.trace.filter(t=>t.name==='native half copy');
-  assert.equal(dispatches.length,2,'one job list/dispatch per capture, not per channel');assert.equal(copies.length,req.length*3);
-  assert(dispatches.every(d=>f.gpu.trace.indexOf(d)<f.gpu.trace.indexOf(copies[0])),'all capture dispatches precede first packed copy');
-  for(const d of dispatches){assert.equal(d.groups[0].entries.length,5);for(const e of d.groups[0].entries.slice(0,3))assert(e.resource.buffer.usage&128);}
-  for(const c of copies){assert.deepEqual(c.extent,[8,8,1]);assert.equal(c.bytesPerRow,256);assert.equal(c.rowsPerImage,8);assert.equal(c.offset%2048,0);}
+  const copies=f.gpu.trace.filter(t=>t.name==='native half copy');
+  assert.equal(copies.length,req.length*3*16);
+  for(const c of copies){assert.deepEqual(c.extent,[4,1,1]);assert.equal(c.bytesPerRow,undefined);assert.equal(c.rowsPerImage,undefined);assert.equal(c.offset%32,0);assert.equal(c.src.usage&128,0,'capture needs no compute binding');}
   assert.equal(f.adapter.fields.lastTick,0);f.gpu.finish();await Promise.resolve();
   const snap=f.atlas.snapshot();
   for(const r of req){
@@ -101,7 +91,7 @@ test('CELL write batches process every page across pool growth and preserve pack
   const publication=f.adapter.commitAfterSourceFlush(batch);f.gpu.finish();
   assert.deepEqual(sizes,[128,64]);assert(requirements.every(r=>!f.atlas.lookup(r.brick,READY.CELL).incomplete));
   const snap=f.atlas.snapshot();
-  assert.equal(f.gpu.trace.filter(t=>t.name==='native half copy').length,96*3);
+  assert.equal(f.gpu.trace.filter(t=>t.name==='native half copy').length,96*3*16);
   for(let index=0;index<requirements.length;index++){
     const brick=requirements[index].brick,core=brick.map(v=>Math.floor(v/8)*32),capture=f.adapter.cache.get(core.join(','));
     assertFieldRows(f,snap,brick,capture);
@@ -133,7 +123,7 @@ for(const failure of ['recording','submission'])test(`second field batch ${failu
   assert(attempted[0].every(p=>p.written.has('field0')));assert(attempted[1].every(p=>!p.written.has('field0')),'failed batch never ready');
   assert.equal(f.adapter.publication,null,'growth may publish new resource layouts, never incomplete CELL pages');assert(requirements.every(r=>f.atlas.lookup(r.brick,READY.CELL).incomplete));assert.equal(f.adapter.pending.handle,batch);
   for(const channel of [READY.RAW,READY.FIELD,READY.AUX])assert(requirements.every(r=>f.atlas.lookup(r.brick,channel).incomplete),'no partial-channel admission');
-  const temporary=new Set(f.gpu.trace.filter(t=>t.name==='field CELL dispatch').flatMap(t=>t.groups[0].entries.slice(3).map(e=>e.resource.buffer)));
+  const temporary=new Set(f.gpu.trace.filter(t=>t.name==='raw CELL dispatch').flatMap(t=>t.groups[0].entries.slice(6).map(e=>e.resource.buffer)));
   assert(temporary.size>=4);assert([...temporary].every(b=>!b.destroyed),'buffers retained before completion fence');
   f.gpu.finish();await Promise.resolve();assert([...temporary].every(b=>b.destroyed),'both successful-prefix and failed-suffix buffers retired after fence');
   f.gpu.queue.submit=submit;f.atlas.recordPageWrites=write;
@@ -249,28 +239,8 @@ test('late quarantine completion cannot return old-epoch pages into the new hist
   assert.notEqual(current.buffer,old.buffer);assert(!history.free.includes(old));assert.equal(history.quarantined.size,0);history.dispose();
 });
 
-test('actual raw-u32 field WGSL preserves all half patterns, all channels and boundary pages against old native rows',()=>{
-  const gpu=new CellTestGPU(),buffers=Array.from({length:3},()=>gpu.createBuffer({size:32**3*8}));
-  for(let c=0;c<3;c++){const half=new Uint16Array(buffers[c].bytes);for(let i=0;i<half.length;i++)half[i]=(i+c*997)&65535;assert.equal(new Set(half).size,65536);}
-  // Includes both signs of NaN payloads/infinities/zero/subnormals, as raw words.
-  for(const pattern of [0,0x8000,1,0x8001,0x7c00,0xfc00,0x7c01,0x7e55,0xfc01,0xfe55])assert(new Uint16Array(buffers[0].bytes).includes(pattern));
-  const jobs=new Uint32Array(512*4),packed=new Uint32Array(512*3*2048/4);packed.fill(0xdededede);
-  for(let i=0;i<512;i++)jobs.set([i&7,(i>>3)&7,i>>6,511-i],i*4);
-  new FieldShaderExec(new WgslParser().parse(worldFieldPackWGSL)).dispatchWorkgroups('main',512,{0:{0:u32(buffers[0]),1:u32(buffers[1]),2:u32(buffers[2]),3:jobs,4:packed}});
-  const layout={capacity:512,cells:{x:8,y:8}},actual=[],expected=[];
-  for(let c=0;c<3;c++){actual.push(gpu.createTexture({size:[64,64,8],format:'rgba16float'}));expected.push(gpu.createTexture({size:[64,64,8],format:'rgba16float'}));}
-  for(let i=0;i<512;i++)for(let c=0;c<3;c++){
-    const origin=pageTexel(511-i,0,layout);
-    gpu._bufferTexture(new Uint8Array(packed.buffer),((511-i)*3+c)*2048,actual[c],origin,[8,8,1],256,8);
-    copyCapturedFieldPage(gpu.frame.direct(),buffers[c],[i&7,(i>>3)&7,i>>6],{texture:expected[c],origin});
-  }
-  gpu.finish();for(let c=0;c<3;c++)assert.deepEqual(new Uint8Array(actual[c].bytes),new Uint8Array(expected[c].bytes));
-  for(let row=0;row<512*3*8;row++)for(let word=16;word<64;word++)assert.equal(packed[row*64+word],0xdededede,'row padding untouched');
-  assertWorldLayout([WORLD_FIELD_PACK_LAYOUT]);assert.equal(WORLD_FIELD_PACK_LAYOUT.length,5);assert.equal(WORLD_FIELD_PACK_LAYOUT.filter(e=>e.buffer?.type==='read-only-storage').length,4);
-});
-
-test('native field rows preserve ALL 65,536 half bit patterns across original page slot order (height384 addresses remain global)',()=>{
-  const gpu=new CellTestGPU(),buffer=gpu.createBuffer({size:32**3*8}),data=new Uint16Array(buffer.bytes);for(let i=0;i<data.length;i++)data[i]=i&65535;
+for(let channel=0;channel<3;channel++)test(`direct field${channel} copies preserve all65,536 half bit patterns and all512 pages (height384 stays global)`,()=>{
+  const gpu=new CellTestGPU(),buffer=gpu.createBuffer({size:32**3*8}),data=new Uint16Array(buffer.bytes);for(let i=0;i<data.length;i++)data[i]=(i+channel*997)&65535;
   const texture=gpu.createTexture({size:[64,64,8],format:'rgba16float'}),layout={capacity:512,cells:{x:8,y:8}};
   for(let z=0;z<8;z++)for(let y=0;y<8;y++)for(let x=0;x<8;x++){const pid=x+8*(y+8*z),origin=pageTexel(pid,0,layout);copyCapturedFieldPage(gpu.frame.direct(),buffer,[x,y,z],{texture,origin});}
   gpu.finish();const seen=new Set(new Uint16Array(texture.bytes));assert.equal(seen.size,65536);
@@ -318,7 +288,7 @@ test('actual shared classifier Box emission unchanged at32/64/128; world classif
   }
   assertWorldLayout(WORLD_CELL_PACK_LAYOUTS);assert.equal(WORLD_CELL_PACK_LAYOUTS[0].filter(e=>e.buffer?.type==='read-only-storage').length,7);
   const dir=mkdtempSync(join(tmpdir(),'world-cell-naga-'));
-  try{for(const [name,code] of [['classifier',worldCellClassifierWGSL(gridDims({nx:64,ny:64,nz:64}))],['raw',worldCellPackWGSL],['fields',worldFieldPackWGSL]]){const path=join(dir,name+'.wgsl');writeFileSync(path,code);execFileSync('naga',[path],{stdio:'pipe',timeout:10000});}}
+  try{for(const [name,code] of [['classifier',worldCellClassifierWGSL(gridDims({nx:64,ny:64,nz:64}))],['raw',worldCellPackWGSL]]){const path=join(dir,name+'.wgsl');writeFileSync(path,code);execFileSync('naga',[path],{stdio:'pipe',timeout:10000});}}
   finally{rmSync(dir,{recursive:true,force:true});}
 });
 

@@ -62,8 +62,11 @@ export async function setup({size=[16,8,8],feedback=true,sourceKinds=null}={}) {
     if(['world GI source','world GI gather','full world optical sun'].includes(label))tablesUsed.push(buf(0,0));
     if(label.startsWith('world lighting delta'))return push(()=>new Exec(new WgslParser().parse(pipe.compute.module.code)).dispatchWorkgroups('main',[n,1,1],{0:Object.fromEntries(groups[0].entries.map(e=>[e.binding,e.resource.buffer.bytes]))}));
     if(label==='world CELL raw/AUX pack')return push(()=>gpu._pack(groups));
-    if(label==='world CELL field pack')return push(()=>gpu._packFields(groups,n));
     if(label==='world GI source'||label==='world GI gather')return push(()=>{
+      if(label==='world GI gather'){
+        assert.deepEqual(groups[3].entries.map(e=>e.binding).sort((a,b)=>a-b),[0,1,2,3,4,5,6,7,8,9,10]);
+        assert.doesNotMatch(pipe.compute.module.code,/worldGI[0-3]Out/);
+      }
       if(sourceKinds&&label==='world GI gather')assert.match(pipe.compute.module.code,/const GI_RAYS: i32 = 32;/);
       events.push(label);const p=words(buf(3,7)),jobs=words(buf(3,8)),out=words(buf(3,9)),fb=words(buf(3,1)),sun=words(buf(3,5)),book=words(buf(0,5));
       const start=label==='world GI source'?0:p[0],count=label==='world GI source'?p[0]:p[1];
@@ -85,12 +88,13 @@ export async function setup({size=[16,8,8],feedback=true,sourceKinds=null}={}) {
       events.push(label);const fb=words(buf(3,1)),job=words(buf(2,0)),book=words(buf(0,4));let missing=false;
       if(feedback&&!book[3]){fb[0]|=8;missing=true;events.push('unknown CELL');}fb[job[5]]=missing?3:1;
     });
-    if(label==='world glow float'||label==='world glow half')return push(()=>{events.push(label);const p=words(buf(0,0));words(buf(0,3))[p[20]]=1;});
-    if(label.startsWith('world ')&&label.endsWith(' transport'))return push(()=>{
-      const p=words(buf(0,0)),data=bytes(buf(0,1)),out=groups[1].entries.map(e=>e.resource.texture);
-      if(label==='world source transport')bytes(out[0]).set(data.subarray(0,16),p[12]*16);
-      else if(label==='world gi transport')out.forEach((t,k)=>bytes(t).set(data.subarray(k*8,k*8+8),p[0]*8));
-      else bytes(out[0]).set(data.subarray(0,8),p[0]*8);
+    if(label==='world glow float'||label==='world glow half')return push(()=>{
+      events.push(label);const p=words(buf(0,0));words(buf(0,3))[p[20]]=1;
+      // Lighting math is synthetic, but final storage matches the real shader:
+      // Five f32 intermediates; the final pass writes only outGlow.
+      const values=label==='world glow float'?new Float32Array(buf(0,2).bytes):null;
+      const half=label==='world glow half'?new Uint16Array(groups[0].entries.find(e=>e.binding===4).resource.texture.bytes):null;
+      for(let i=0;i<p[15];i++){values?.set([0,0,0,1],i*4);half?.set([0,0,0,0x3c00],i*4);}
     });
     throw new Error(`unmocked native pipeline ${label}`);
   }

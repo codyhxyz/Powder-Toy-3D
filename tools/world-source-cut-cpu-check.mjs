@@ -82,9 +82,9 @@ test('owned native tables survive later ambient writes, shared prepasses and fin
  shared.producer.record(f.gpu.frame,[32,0]);
  for(const event of f.gpu.trace.slice(start))if(event.opts?.bind)assert.equal(event.opts.bind[0],shared.tables.group);
  f.gpu.flush();await drain(f.gpu);assert.equal(f32(shared.tables.buffer)[ambient],200);
- let submitted;const pin=old.retainUntilSubmitted(new Promise(r=>submitted=r));old.release();
+ const pin=old.retain();old.release();
  await drain(f.gpu);assert(!oldTables.buffer.destroyed);
- submitted();await drain(f.gpu);await pin;await drain(f.gpu);assert(oldTables.buffer.destroyed);
+ pin.release();await drain(f.gpu);assert(oldTables.buffer.destroyed);
  shared.release();await f.finish();
 });
 
@@ -118,7 +118,7 @@ test('actual replica unpack captures the old origin before overwrite and claims 
   assert.notEqual(u32(leaving.chunk.flow)[leaving.slot*2+1],0);
   assert.deepEqual([...u32(incoming.chunk.flow).subarray(incoming.slot*2,incoming.slot*2+2)],[0,0]);
   assert.equal(u32(leaving.chunk.aeration)[leaving.slot*2],0x12345678);assert.equal(u32(incoming.chunk.aeration)[incoming.slot*2],0);
-  assert.deepEqual(events,['origin','write','still']);assert.equal(old.isValid(),true);assert.equal(old.isLatest(),false);
+  assert.deepEqual(events,['origin','write','still']);assert.equal(old.isValid(),true);assert.notDeepEqual(old.contentToken,f.source.contentToken());
   assert.equal(claims,2); // Initial outgoing capture, then complete incoming claim.
   bytes[0]=101;
   assert.equal(await unpack.unpack(f.sim,bytes,{commit(){f.sim.origin.x=32;}}),true);await drain(f.gpu);
@@ -145,12 +145,12 @@ test('owned native cut preserves old live/full auxiliary words while current phy
   const deco=f.gpu.createBuffer({size:f.sim.g.slots*4+16,usage:128|4|8});for(let i=0;i<u32(deco).length;i++)u32(deco)[i]=(0x7fc12345+i)>>>0;
   f.sim.decoPlane={buffer:deco,offset:16};
   const expected={A:u32(f.sim.state.A).slice(),B:u32(f.sim.state.B).slice(),flow:u32(f.sim.flow).slice(),aer:u32(aer.buffer).slice(),deco:u32(deco).slice()};
-  put(f,[20,0,0],45);const old=cut(f),oldSnapshot=old.snapshotForFields({jetValidity:'producer-bounded-v1'}),oldChunk=old.source.chunks.get('0,0,0');
+  put(f,[20,0,0],45);const old=cut(f),oldSnapshot=old.source.snapshotForFields({jetValidity:'producer-bounded-v1'}),oldChunk=old.source.chunks.get('0,0,0');
   // These execute AFTER cut copies. Do not mutate fake GPU backing bytes early.
   f.gpu._push(()=>{u32(f.sim.state.A).fill(0x12345678);u32(f.sim.state.B).fill(0xffffffff);u32(f.sim.flow).fill(0);u32(aer.buffer).fill(0);u32(f.sim.decoPlane.buffer).fill(0);});
   f.sim.version++;f.source.noteContentChange();f.source.recordLiveCopy(f.gpu.frame);
   put(f,[20,0,0],99);f.editScene(88);f.win.planted.fill(1);f.win.P.seed=999;
-  assert(old.isValid());assert(!old.isLatest());assert(oldSnapshot.isCurrent());
+  assert(old.isValid());assert.notDeepEqual(old.contentToken,f.source.contentToken());assert(oldSnapshot.isCurrent());
   assert.equal(old.source.getSource([80,0,0]).kind,'unknown'); // future dependency, not captured early
   old.producer.record(f.gpu.frame,[64,0]);
   await drain(f.gpu);
@@ -170,6 +170,23 @@ test('owned native cut preserves old live/full auxiliary words while current phy
   assert.equal(old.source.context.P.seed,13);assert(old.source.context.planted.every(v=>v===0));
   oldSnapshot.assertComplete([{lo:[64,0,0],hi:[96,8,8]}]);
   old.release();await f.finish();
+});
+
+test('cuts share immutable change records without following parent journal growth',async()=>{
+  const f=await fixture(),before=f.source.contentToken(),bounds={lo:[0,0,0],hi:[4,4,4]};
+  f.source.noteContentChange(bounds);
+  const a=cut(f),entry=f.source.changeJournal[0];
+  assert.notEqual(a.source.changeJournal,f.source.changeJournal);assert.equal(a.source.changeJournal[0],entry);
+  assert(Object.isFrozen(entry));assert(Object.isFrozen(entry.bounds));assert(Object.isFrozen(entry.bounds.lo));assert(Object.isFrozen(entry.bounds.hi));
+  bounds.lo[0]=64;bounds.hi[0]=68;
+  assert.throws(()=>{entry.bounds.lo[0]=64;},TypeError);
+  f.source.noteContentChange(bounds);
+  assert.equal(a.source.changeJournal.length,1);assert.equal(f.source.changeJournal.length,2);
+  assert.deepEqual(a.source.changesSince(before).changedBricks,[[0,0,0]]);
+  const b=f.source.recordCut(f.gpu.frame,{previousCut:a,sceneVersion:'scene',configVersion:1});
+  assert.equal(b.source.changeJournal[0],entry);assert.equal(b.source.changeJournal[1],f.source.changeJournal[1]);
+  assert.deepEqual(b.source.changesSince(before).changedBricks,[[0,0,0],[16,0,0]]);
+  a.release();b.release();await f.finish();
 });
 
 test('unchanged semantic cores share native versions, lazy population COW and changed cores keep older bytes pinned',async()=>{
@@ -192,7 +209,7 @@ test('actual CELL adapter binds a cut without replacing Fields/history and old s
   const f=await fixture(),atlas=new WorldRenderAtlas(f.gpu,{worldSize:f.win.size,initialCapacity:4}),adapter=new WorldCellAtlasAdapter({gpu:f.gpu,source:f.source,producer:f.producer,atlas,tables:f.sim.tables,worldBounds:{min:[0,0,0],max:f.win.size}});await adapter.ready;
   const a=cut(f),fields=adapter.fields;adapter.bindCut(a);const options={fieldTick:0,requirements:[{brick:[7,1,1],channels:READY.CELL}]};
   const batch=adapter.record(f.gpu.frame,options);assert.throws(()=>adapter.bindCut(a),/pending/);f.gpu.flush();adapter.commitAfterSourceFlush(batch).previousLightingSnapshot.release();await drain(f.gpu);
-  const pub=adapter.sourceFieldSnapshotProvider.acquire(),oldRaw=a.source.chunks.get('0,0,0').A;
+  const pub=adapter.acquire(),oldRaw=a.source.chunks.get('0,0,0').A;
   f.source.noteContentChange();f.sim.version++;f.gpu._push(()=>{f32(f.sim.state.A)[3]=.9;});
   // A future dependency is served by the SAME older cut, after current physics
   // has advanced. Its logical field tick must not need a paused simulation.
@@ -200,7 +217,7 @@ test('actual CELL adapter binds a cut without replacing Fields/history and old s
   f.gpu.flush();adapter.commitAfterSourceFlush(feedback).previousLightingSnapshot.release();await drain(f.gpu);
   assert.equal(f32(a.source.chunks.get('64,0,0').A)[3],17);assert(adapter.isCurrent(pub));
   const b=f.source.recordCut(f.gpu.frame,{previousCut:a,sceneVersion:'scene',configVersion:1});adapter.bindCut(b);
-  assert.equal(adapter.fields,fields);assert(adapter.sourceFieldSnapshotProvider.isCurrent(pub));
+  assert.equal(adapter.fields,fields);assert(adapter.isCurrent(pub));
   a.release();await drain(f.gpu);assert(!oldRaw.destroyed,'old provider owns its cut through asynchronous readers');
   pub.release();assert(!adapter.isCurrent(pub));b.release();await drain(f.gpu);adapter.dispose();atlas.dispose();await f.finish();
 });
@@ -224,15 +241,17 @@ test('configuration-only cut binding invalidates spatial publications without re
   a.release();b.release();adapter.dispose();atlas.dispose();await f.finish();
 });
 
-test('final submission pins cover unsubmitted suffixes, reset/config invalidation and independent handle release',async()=>{
+test('ordinary retains cover future consumers; final native copies survive release until queue completion',async()=>{
   const f=await fixture(),a=cut(f),native=a.source.chunks.get('0,0,0').A;
-  f.gpu.flush();f.gpu.frame.clear(f.sim.flow);let submit;
-  const submitted=new Promise(resolve=>{submit=resolve;}),done=a.retainUntilSubmitted(submitted),other=a.retain();a.release();
+  f.gpu.flush();f.gpu.frame.clear(f.sim.flow);
+  const pin=a.retain(),other=a.retain();a.release();
   f.gpu.finish();await tick();assert(!native.destroyed);
-  const b=f.source.recordCut(f.gpu.frame,{sceneVersion:'scene',configVersion:2});assert(!other.isValid());assert.throws(()=>other.snapshotForFields(),/Invalid/);
-  other.release();await drain(f.gpu);assert(!native.destroyed,'final consumer has not submitted');
-  submit();await tick();f.gpu.finish();await done;await drain(f.gpu);assert(native.destroyed);
-  const snapshot=b.snapshotForFields();f.source.reset();assert(!b.isValid());assert(!snapshot.isCurrent());assert.equal(b.producer.record(f.gpu.frame,[64,0]),null);b.release();await f.finish();
+  const b=f.source.recordCut(f.gpu.frame,{sceneVersion:'scene',configVersion:2});assert(!other.isValid());assert.throws(()=>other.source.getSource([0,0,0]),/Invalid/);
+  other.release();await drain(f.gpu);assert(!native.destroyed,'future consumer still owns its ordinary retain');
+  f.gpu.frame.copy(native,0,f.sim.state.A,0,16);f.gpu.flush();pin.release();
+  await tick();assert(!native.destroyed,'submitted consumer has not completed');
+  f.gpu.finish();await drain(f.gpu);assert(native.destroyed);
+  const snapshot=b.source.snapshotForFields();f.source.reset();assert(!b.isValid());assert(!snapshot.isCurrent());assert.equal(b.producer.record(f.gpu.frame,[64,0]),null);b.release();await f.finish();
 });
 
 test('partial auto-submit capture failure retires only after normal final orphan closure/completion',async()=>{
@@ -244,13 +263,13 @@ test('partial auto-submit capture failure retires only after normal final orphan
   f.gpu.frame.copy=copy;await drain(f.gpu);assert(allocated.every(b=>b.destroyed));
   const retry=cut(f);assert(retry.isValid());retry.release();await f.finish();
 });
-test('discarded final cut-consumer submission keeps its pin until earlier prefix completion',async()=>{
-  const f=await fixture(),a=cut(f),snapshot=a.snapshotForFields();f.gpu.flush();
-  let reject;const submitted=new Promise((_resolve,no)=>{reject=no;});
-  const done=a.retainUntilSubmitted(submitted);let settled=false;done.catch(()=>{settled=true;});
-  a.release();reject(new Error('final consumer encoder discarded'));
-  await tick();assert.equal(settled,false);assert(snapshot.isCurrent(),'queued prefix must still own the cut');
-  f.gpu.finish();await assert.rejects(done,/discarded/);await drain(f.gpu);assert(!snapshot.isCurrent());
+test('discarded final cut-consumer suffix retires native buffers only after earlier prefix completion',async()=>{
+  const f=await fixture(),a=cut(f),snapshot=a.source.snapshotForFields(),native=a.source.chunks.get('0,0,0').A;f.gpu.flush();
+  const pin=a.retain();a.release();
+  f.gpu.frame.clear(f.sim.flow);f.gpu.commands.length=0; // discard only the fake encoder's unsubmitted suffix
+  assert(snapshot.isCurrent(),'pending consumer still owns the cut');pin.release();
+  await tick();assert(!native.destroyed,'discarding a suffix does not complete its submitted prefix');
+  f.gpu.finish();await drain(f.gpu);assert(native.destroyed);assert(!snapshot.isCurrent());
   await f.finish();
 });
 
@@ -367,12 +386,7 @@ async function restoreFixture(){
   const initial=await produce();initial.bindings().source.words.set([11,12,13,14,21,22,23,24]);initial.bindings().history.words.set(Array.from({length:16},(_,i)=>0x34003400+i));
   plan.stage(initial).seal({cutToken:current.contentToken,feedback:{incomplete:false,requirements:[],sun:[]}}).commit();
   const atlas=new WorldRenderAtlas(f.gpu.device,{worldSize:f.win.size,initialCapacity:2,initialLightCapacity:4,initialProbeCapacity:4,epoch:1,retire:fn=>fn()});
-  const transport=createLightingTransport(f.gpu.device,['source','gi']);await transport.ready;
-  f.gpu._pack=groups=>{
-    const input=b=>groups[0].entries.find(e=>e.binding===b).resource.buffer,p=u32(input(0)),data=new Uint8Array(input(1).bytes),out=groups[1].entries.map(e=>e.resource.texture);
-    if(out.length===1)new Uint8Array(out[0].bytes).set(data.subarray(0,16),p[12]*16);
-    else out.forEach((t,k)=>new Uint8Array(t.bytes).set(data.subarray(k*8,k*8+8),p[0]*8));
-  };
+  const transport=createLightingTransport(f.gpu.device);
   const advance=()=>{f.source.noteContentChange();const old=current;current=cut(f);old.release();return current;};
   const job=(bundle,b=M,readyBits=READY.GI_SOURCE|READY.GI)=>{const s=bundle.leases.find(x=>x.kind==='source'&&x.index===b[0]),g=bundle.leases.find(x=>x.kind==='gi'&&x.index===b[0]);return atlas.allocateLight(b,{publication:bundle.publication,sourceRevision:current.contentToken.sourceRevision,sourceTick:s?.token.lightingTick??0,giTick:g?.token.lightingTick??0,readyBits,dependencies:{...(s?{source:{id:s.token.dependencySetID,version:s.token.dependencyVersion}}:{}),...(g?{gi:{id:g.token.dependencySetID,version:g.token.dependencyVersion}}:{})}});};
   const write=async(bundle,jobs)=>{let settled=false,error;const promise=transport.restore(f.gpu,atlas,jobs.flatMap(job=>bundle.leases.filter(x=>x.index===job.brick[0]&&(job.readyBits&(x.kind==='source'?READY.GI_SOURCE:READY.GI))).map(lease=>({job,lease})))).then(()=>{settled=true;},e=>{settled=true;error=e;});for(let i=0;i<30&&!settled;i++){f.gpu.finish();await tick();}await promise;if(error)throw error;await drain(f.gpu);};
@@ -384,8 +398,9 @@ test('ledger restores R into R+1 without recomputation, then mixed compute gener
     const original=f.initial.token;f.advance();
     const bundle=f.h.captureRestore({cut:f.current,configVersion:2,sourceIndices:[1],probeIndices:[1]});
     const job=f.job(bundle);await drain(f.gpu);const flushes=f.gpu.flushes;
-    f.source.noteContentChange();assert.equal(f.current.isValid(),true);assert.equal(f.current.isLatest(),false);
-    await f.write(bundle,[job]);assert.equal(f.gpu.flushes,flushes+1);
+    f.source.noteContentChange();assert.equal(f.current.isValid(),true);assert.notDeepEqual(f.current.contentToken,f.source.contentToken());
+    const pending=f.gpu.createBuffer({size:16});f.gpu.frame.clear(pending);
+    await f.write(bundle,[job]);pending.destroy();assert.equal(f.gpu.flushes,flushes+1);
     const sourceBinding=f.atlas.writerBindings(job,'source');
     assert.deepEqual([...new Uint32Array(sourceBinding.outputs[0].resource.texture.bytes,sourceBinding.params[12]*16,4)],[11,12,13,14]);
     assert.equal(f.initial.token,original);assert.equal(f.h.lightingTick,0);
@@ -514,13 +529,14 @@ test('wrong epoch/reset proofs reject and failed recordable suffix retains nativ
     assert.throws(()=>other.captureRestore(args),/owned Source cut/);other.dispose();
     const bundle=f.h.captureRestore(args),job=f.job(bundle),native=f.initial.bindings().source;
     await drain(f.gpu);
+    const pending=f.gpu.createBuffer({size:16});f.gpu.frame.clear(pending);
     const flush=f.gpu.flush.bind(f.gpu);f.gpu.flush=()=>{throw new Error('recordable suffix failure');};
     await assert.rejects(f.transport.restore(f.gpu,f.atlas,bundle.leases.map(lease=>({job,lease}))),/recordable suffix failure/);
     assert.equal(f.gpu.frame.open,true);assert.equal(f.h.lightingTick,0);assert.throws(()=>f.atlas.publish({lightJobs:[job]}),/partial page/);
     f.source.reset();assert.throws(()=>validateWorldLightingRestore(bundle.leases[0]),/owned Source cut/);
     bundle.release();f.initial.release();f.h.dispose();f.gi.dispose();
     assert.equal(native.dead,false,'in-flight native source remains pinned after ledger/output disposal');
-    f.gpu.flush=flush;await drain(f.gpu);await tick();
+    f.gpu.flush=flush;await drain(f.gpu);await tick();pending.destroy();
     assert.equal(native.dead,true,'pins retire only after recordable suffix and final queue close');f.atlas.cancel(job);
   }finally{await f.close();}
 });

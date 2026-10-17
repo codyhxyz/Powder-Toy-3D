@@ -510,11 +510,10 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   if (ray == 0u && live) {
     let w = 4.0 * PI_L / f32(GI_RAYS);   // Monte Carlo weight: sphere area per ray
     let id = ${backend === 'world' ? 'probe' : 'brickId(bc)'};
-    ${backend === 'world' ? `let dst = vec2i(i32(probe % 256u), i32(probe / 256u));
-    textureStore(worldGI0Out, dst, 0, giBlend(0u, id, wSH[li][0] * w, blend));
-    textureStore(worldGI1Out, dst, 0, giBlend(1u, id, wSH[li][1] * w, blend));
-    textureStore(worldGI2Out, dst, 0, giBlend(2u, id, wSH[li][2] * w, blend));
-    textureStore(worldGI3Out, dst, 0, giBlend(3u, id, wSH[li][3] * w, blend));` : `textureStore(tGI0, bc, giBlend(0u, id, wSH[li][0] * w, blend));
+    ${backend === 'world' ? `giBlend(0u, id, wSH[li][0] * w, blend);
+    giBlend(1u, id, wSH[li][1] * w, blend);
+    giBlend(2u, id, wSH[li][2] * w, blend);
+    giBlend(3u, id, wSH[li][3] * w, blend);` : `textureStore(tGI0, bc, giBlend(0u, id, wSH[li][0] * w, blend));
     textureStore(tGI1, bc, giBlend(1u, id, wSH[li][1] * w, blend));
     textureStore(tGI2, bc, giBlend(2u, id, wSH[li][2] * w, blend));
     textureStore(tGI3, bc, giBlend(3u, id, wSH[li][3] * w, blend));`}

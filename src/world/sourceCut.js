@@ -132,17 +132,8 @@ function handle(state){
     source:state.source,producer:state.producer,contentToken:state.token,
     get tables(){alive();return state.tables;},
     belongsTo:source=>source===state.parent,
-    isValid:()=>!released&&valid(state),isLatest:()=>!released&&valid(state)&&sameToken(state.parent.contentToken(),state.token),
-    snapshotForFields(options){alive();return state.source.snapshotForFields(options);},
+    isValid:()=>!released&&valid(state),
     retain(){alive();return handle(state);},
-    // Reserve BEFORE queued consumers, settle only after their FINAL submission.
-    retainUntilSubmitted(submitted){
-      alive();if(!submitted?.then)throw new TypeError('Final submission promise required');const pin=handle(state);
-      return Promise.resolve(submitted).then(()=>null,error=>({error})).then(async failure=>{
-        await (state.parent.gpu.queue??state.parent.gpu.device.queue).onSubmittedWorkDone();
-        if(failure)throw failure.error;
-      }).finally(()=>pin.release());
-    },
     release(){if(!released){released=true;if(!--state.refs)close(state);}}
   });handles.set(h,state);return h;
 }
@@ -186,7 +177,7 @@ export function recordWorldSourceCut(parent,frame,{previousCut=null,sceneVersion
       writableChunk:c=>{if(!valid(state))throw new Error('Invalid cut write');if(versions.get(c)?.refs>1){const next=cloneCore(state.source,c,frame);drop(parent.gpu,c);return next;}return c;}};
     const source=state.source=new parent.constructor(w,{context});
     source.epoch=state.epoch;source.revision=authority.revision;source.contentRevision=token.sourceRevision;source.minimumStaticRevision=parent.minimumStaticRevision;
-    source.changeJournal=(parent.changeJournal??[]).map(e=>({revision:e.revision,global:e.global,bounds:e.bounds&&{lo:[...e.bounds.lo],hi:[...e.bounds.hi]}}));
+    source.changeJournal=(parent.changeJournal??[]).slice();
     const changedCores=new Set(delta.changedBricks.map(b=>b.map(v=>Math.floor(v/8)*32).join(',')));
     if(compatible&&!delta.global)for(const [key,c] of old.source.chunks)if(!changedCores.has(key))source.chunks.set(key,hold(c));
     for(const [key,c] of parent.chunks) {
@@ -195,7 +186,7 @@ export function recordWorldSourceCut(parent,frame,{previousCut=null,sceneVersion
       if(existing&&completeCore(existing,context.size))continue;
       const next=cloneCore(source,c,frame);if(existing)drop(parent.gpu,existing);source.chunks.set(key,next);
     }
-    state.producer=new RawWorldSourceProducer(w,source,{context,kernels:producer});
+    state.producer=new RawWorldSourceProducer(w,source,{kernels:producer});
     if(parent.disposed||parent.epoch!==state.epoch||!sameToken(parent.contentToken(),token)||parent.revision!==authority.revision)throw new Error('Source changed during native cut capture');
     const result=handle(state);state.refs--;return result;
   } catch(error){state.refs=0;close(state);throw error;}

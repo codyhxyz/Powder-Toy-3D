@@ -11,7 +11,6 @@ GI/glow producer, application/consumer integration, or deployment in this change
 ```js
 const cells = new WorldCellAtlasAdapter({
   gpu, source, producer, atlas, tables, worldBounds, // all real engine objects
-  fields, // optional UNUSED WorldFields; otherwise adapter constructs it
 });
 await cells.ready; // pipeline readiness, no mutable source held over this await
 
@@ -156,7 +155,7 @@ uncertain resources rather than destroying an unsubmitted reference.
 Reset requires an advanced source epoch and no pending batch; Atlas is reset to
 the same next epoch if needed. Old queued resources retire safely. Pure origin
 movement must never reset. Dispose requires no pending/open Frame; owned Fields
-resources are released after queue completion. Borrowed Fields are caller-owned.
+resources are released after queue completion. The adapter owns its Fields.
 
 ## Submitted Source/Field provider
 
@@ -165,8 +164,8 @@ resources are released after queue completion. Borrowed Fields are caller-owned.
 sourceRevision,logicalFieldTick}`, world size/epoch, changed bricks, invalidated
 cores and the concrete publication dependency-set identity/version.
 `cells.isCurrent(snapshot)` rejects edits, superseded field publications,
-resets/disposal and released handles. `sourceFieldSnapshotProvider` directly
-provides these acquire/current methods to the optical owner. The field batch is
+resets/disposal and released handles. Pass the adapter directly as the optical
+owner's snapshot provider; it already supplies both methods. The field batch is
 complete, **not a claim all world cells exist**: unknown Atlas reads still latch
 feedback and withhold Sun/render candidates. Tables/global Header/Frame bindings
 and feedback/submission tickets remain the application integration's ownership.

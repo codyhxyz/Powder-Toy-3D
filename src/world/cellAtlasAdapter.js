@@ -6,7 +6,7 @@ import { gridDims, brickIdOf, LAYOUT } from '../shaders/common.js';
 import { FIELD_TEXTURES } from '../gfx/fieldDeriver.js';
 import { fold } from '../gpu/kernels.js';
 import { READY, worldBrickIndex } from './renderAtlas.js';
-import { worldCellClassifierWGSL, WorldBrickParams, WORLD_CLASSIFIER_LAYOUT, worldCellPackWGSL, WORLD_CELL_PACK_LAYOUTS, worldFieldPackWGSL, WORLD_FIELD_PACK_LAYOUT } from '../shaders/worldCellAdapter.js';
+import { worldCellClassifierWGSL, WorldBrickParams, WORLD_CLASSIFIER_LAYOUT, worldCellPackWGSL, WORLD_CELL_PACK_LAYOUTS, copyCapturedFieldPage } from '../shaders/worldCellAdapter.js';
 const BU = { COPY_SRC:4,COPY_DST:8,UNIFORM:64,STORAGE:128 };
 const same = (a,b) => a?.epoch === b?.epoch && a?.sourceRevision === b?.sourceRevision;
 const coreFor = b => b.map(v => Math.floor(v/8)*32);
@@ -14,7 +14,7 @@ const submittedCaptures = new WeakMap();
 let dependencyID = 1;
 
 export class WorldCellAtlasAdapter {
-  constructor({gpu,source,producer,fields=null,atlas,tables,worldBounds}={}) {
+  constructor({gpu,source,producer,atlas,tables,worldBounds}={}) {
     if (!gpu || !source || !producer || !atlas || !tables || !worldBounds) throw new TypeError('Concrete Source/Producer/Atlas/tables/bounds required');
     if (worldBounds.min.some(v=>v!==0) || worldBounds.max.some((v,i)=>v!==source.win.size[i] || v!==atlas.bookLayout.worldSize[i])) throw new Error('CELL source/atlas/world bounds mismatch');
     Object.assign(this,{gpu,source,producer,atlas,tables});
@@ -24,10 +24,7 @@ export class WorldCellAtlasAdapter {
     // Fields may commit while its Atlas publication is aborted or retried.
     // Keep that publication debt until a successful atomic Atlas patch.
     this.unpublishedInvalidations=new Set();this.unpublishedChanges=new Map();this.lightingDirty=false;
-    if (fields && (fields.publishedToken || fields.history.owners.size)) throw new Error('Cannot replace an active Fields publisher');
-    this.ownsFields=!fields;
-    this.fields=fields??new WorldFields(gpu,{worldBounds,tables,publisher:this});
-    this.fields.publisher=this;
+    this.fields=new WorldFields(gpu,{worldBounds,tables,publisher:this});
     if(this.fields.history.epoch<source.epoch)this.fields.reset(source.epoch);
     const layout=gpu.layout('world owned classifier',WORLD_CLASSIFIER_LAYOUT);
     this.classifierLayout=layout;
@@ -37,12 +34,9 @@ export class WorldCellAtlasAdapter {
     const device=gpu.device;
     this.packLayouts=WORLD_CELL_PACK_LAYOUTS.map((entries,i)=>device.createBindGroupLayout({label:`world CELL pack ${i}`,entries}));
     const nativeReady=device.createComputePipelineAsync({label:'world CELL raw/AUX pack',layout:device.createPipelineLayout({bindGroupLayouts:this.packLayouts}),compute:{module:device.createShaderModule({code:worldCellPackWGSL}),entryPoint:'main'}}).then(p=>{this.packPipeline=p;});
-    this.fieldPackLayout=device.createBindGroupLayout({label:'world CELL field pack',entries:WORLD_FIELD_PACK_LAYOUT});
-    const fieldReady=device.createComputePipelineAsync({label:'world CELL field pack',layout:device.createPipelineLayout({bindGroupLayouts:[this.fieldPackLayout]}),compute:{module:device.createShaderModule({code:worldFieldPackWGSL}),entryPoint:'main'}}).then(p=>{this.fieldPackPipeline=p;});
     this.zero=this._buffer('absent CELL auxiliary',SOURCE_GRID.slots*8,BU.STORAGE|BU.COPY_DST);
-    this.ready=Promise.all([this.fields.ready,producer.ready,this.classifier.ready,nativeReady,fieldReady]).then(()=>{this.readyState=true;return this;});
+    this.ready=Promise.all([this.fields.ready,producer.ready,this.classifier.ready,nativeReady]).then(()=>{this.readyState=true;return this;});
     this.ready.catch(()=>{});
-    this.sourceFieldSnapshotProvider=Object.freeze({acquire:()=>this.acquire(),isCurrent:s=>this.isCurrent(s)});
   }
   _alive(){if(this.dead)throw new Error('CELL adapter disposed');}
   _buffer(label,size,usage){return this.gpu.createBuffer({label,size,usage});}
@@ -195,7 +189,7 @@ export class WorldCellAtlasAdapter {
     const group=this.gpu.bindGroup(this.classifierLayout,[{binding:0,resource:{buffer:list}},...[1,2,3].map((binding,i)=>({binding,resource:payload.textures[FIELD_TEXTURES[i]].createView({dimension:'3d'})})),{binding:4,resource:{buffer:c.classification}}],'owned CELL classifier');
     this.classifier.dispatch(frame,fold(payload.ownedWorldBricks.length),{bind:[this.tables,this.fields.sourceGroup,group],header:{src:0,dst:0,origin:[0,0,0]},params:{scratchOrigin:payload.scratchOrigin,worldMin:this.bounds.min,worldMax:this.bounds.max,count:payload.ownedWorldBricks.length}});
     for(const name of FIELD_TEXTURES){
-      const buffer=this._buffer(`owned ${name}`,32**3*8,BU.COPY_SRC|BU.COPY_DST|BU.STORAGE);c.buffers.push(buffer);
+      const buffer=this._buffer(`owned ${name}`,32**3*8,BU.COPY_SRC|BU.COPY_DST);c.buffers.push(buffer);
       frame.direct().copyTextureToBuffer({texture:payload.textures[name],origin:[16,16,16]},{buffer,bytesPerRow:256,rowsPerImage:32},[32,32,32]);
     }
     Object.freeze(c.core);Object.freeze(c.buffers);Object.freeze(c.uploads);return Object.freeze(c);
@@ -213,27 +207,7 @@ export class WorldCellAtlasAdapter {
     if(this.gpu.frame.open)throw new Error('Flush Source/Fields captures before CELL Atlas packing');
     if(!batch.source.isCurrent()||batch.plan.epoch!==this.fields.history.epoch)throw new Error('Stale CELL source/field batch');
     const jobs=[], clears=[...invalidations], device=this.gpu.device, ephemeral=[], writes=[];
-    let fieldBatch={pages:[]};
-    const flushWrites=()=>{
-      if(!writes.length)return;
-      const transport=fieldBatch,groups=new Map();
-      transport.buffer=this._buffer('CELL packed field batch',transport.pages.length*3*2048,BU.STORAGE|BU.COPY_SRC);ephemeral.push(transport.buffer);
-      transport.pages.forEach(({capture,local},index)=>{if(!groups.has(capture))groups.set(capture,[]);groups.get(capture).push(...local,index);});
-      const dispatches=[];
-      for(const [capture,words] of groups){
-        const list=this._upload('CELL field batch jobs',new Uint32Array(words),BU.STORAGE);ephemeral.push(list);
-        const buffers=[...capture.buffers,list,transport.buffer];
-        dispatches.push({count:words.length/4,group:device.createBindGroup({layout:this.fieldPackLayout,entries:buffers.map((buffer,binding)=>({binding,resource:{buffer}}))})});
-      }
-      let encoded=false;
-      transport.record=encoder=>{
-        if(encoded)return;
-        const pass=encoder.beginComputePass();pass.setPipeline(this.fieldPackPipeline);
-        for(const {count,group} of dispatches){pass.setBindGroup(0,group);pass.dispatchWorkgroups(count);}
-        pass.end();encoded=true;
-      };
-      this.atlas.recordPageWrites(writes);writes.length=0;fieldBatch={pages:[]};
-    };
+    const flushWrites=()=>{if(writes.length){this.atlas.recordPageWrites(writes);writes.length=0;}};
     const previousLighting=this.atlas.snapshot();
     try{
       const derivedChanged = this.lightingDirty;
@@ -269,11 +243,7 @@ export class WorldCellAtlasAdapter {
           const output=device.createBindGroup({layout:this.packLayouts[1],entries:bindings.outputs});
           const pass=encoder.beginComputePass();pass.setPipeline(this.packPipeline);pass.setBindGroup(0,input);pass.setBindGroup(1,output);pass.dispatchWorkgroups(1);pass.end();
         }});
-        const transport=fieldBatch,pageIndex=transport.pages.length;transport.pages.push({capture,local});
-        writes.push({job,kind:'fields',record:(encoder,bindings)=>{
-          transport.record(encoder);
-          bindings.destinations.forEach((destination,i)=>encoder.copyBufferToTexture({buffer:transport.buffer,offset:(pageIndex*3+i)*2048,bytesPerRow:256,rowsPerImage:8},destination,[8,8,1]));
-        }});
+        writes.push({job,kind:'fields',record:(encoder,bindings)=>capture.buffers.forEach((buffer,i)=>copyCapturedFieldPage(encoder,buffer,local,bindings.destinations[i]))});
         // Bound command-buffer size, not work: every requested page is packed.
         if(writes.length>=128)flushWrites();
       }
@@ -330,6 +300,6 @@ export class WorldCellAtlasAdapter {
     this._alive();if(this.pending||this.gpu.frame.open)throw new Error('Finish/flush pending CELL work before dispose');
     for(const c of this.cache.values())this._dropCapture(c);this.cache.clear();this._retire(this.zero);this.dead=true;this.publication=null;
     this.boundCut?.release();this.boundCut=null;
-    if(this.ownsFields){const queue=this.gpu.queue??this.gpu.device.queue;Promise.resolve(queue.onSubmittedWorkDone()).then(()=>this.fields.dispose(),()=>this.fields.dispose());}
+    const queue=this.gpu.queue??this.gpu.device.queue;Promise.resolve(queue.onSubmittedWorkDone()).then(()=>this.fields.dispose(),()=>this.fields.dispose());
   }
 }

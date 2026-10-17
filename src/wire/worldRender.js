@@ -35,7 +35,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   const cells=new WorldCellAtlasAdapter({gpu,source,producer,atlas,tables,worldBounds:{min:[0,0,0],max:size}});
   const metadataFeedback=observedFeedback(gpu,{},wake);
   const metadata=createWorldLightingRecords(gpu,{worldSize:size,sourceOwner:source,submissionProvider:metadataFeedback});
-  const transport=createLightingTransport(gpu.device,['source','gi']);
+  const transport=createLightingTransport(gpu.device);
   let history=null, active=null, queued=null, accepted=null, dead=false, serial=0, failure=null, resetting=false, resetWork=null;
   const ownedSources=new Set(),ownedProbes=new Set(),ownedGlow=new Set();
   const brick=i=>[i%dims[0],Math.floor(i/dims[0])%dims[1],Math.floor(i/(dims[0]*dims[1]))];
@@ -204,7 +204,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   }
   async function run(t) {
     try{
-      await Promise.all([cells.ready,metadata.ready,transport.ready]);
+      await Promise.all([cells.ready,metadata.ready]);
       const inputOptions={atlas,tables:t.cut.tables?.buffer??tableBuffer,frameValues:t.frame.values,physicsOrigin:t.frame.physicsOrigin,params:t.frame.params,external:t.frame.external};
       const words=t.cut.source.context.scene.appearanceWords;
       t.appearance=words?createWorldAppearance(gpu,{words}):null;
@@ -217,7 +217,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       t.feedbackBuffer=gpu.device.createBuffer({label:'WORLD producer placeholder feedback',size:Math.max(16,atlas.feedbackBytes,t.feedback.layout().wordCount*4),usage:128|8});
       const provider={acquire:({probeIndices=[]}={})=>captureInput(t,{previous:t.plan.capturePrevious({indices:probeIndices})}),isCurrent:p=>cells.isCurrent(p)&&t.cut.isValid()};
       t.gi=createWorldGI(gpu,{g:grid,snapshotProvider:provider,readerBindingProvider:p=>t.inputs.reader(p),feedbackProvider:t.feedback});
-      t.sun=createWorldSunLighting(gpu,{g:grid,sourceFieldSnapshotProvider:cells.sourceFieldSnapshotProvider,readerBindingProvider:p=>t.inputs.sun(p),feedbackProvider:t.feedback});
+      t.sun=createWorldSunLighting(gpu,{g:grid,sourceFieldSnapshotProvider:cells,readerBindingProvider:p=>t.inputs.sun(p),feedbackProvider:t.feedback});
       const emission={acquire({plan}){const bricks=[];for(let z=0;z<plan.input.size[2];z++)for(let y=0;y<plan.input.size[1];y++)for(let x=0;x<plan.input.size[0];x++)bricks.push([x+plan.input.min[0],y+plan.input.min[1],z+plan.input.min[2]]);const c=cells.acquireClassification({bricks});try{const e=c.recordEmission(gpu.frame,plan.input),p=captureInput(t);return Object.freeze({...p,emission:e,release(){p.release();c.release();}});}catch(e){c.release();throw e;}},isCurrent:provider.isCurrent};
       t.glow=createWorldGlow(gpu,{g:grid,emissionProvider:emission,submissionProvider:t.feedback});
       while(active===t&&!dead){

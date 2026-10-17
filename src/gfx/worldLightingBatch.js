@@ -1,8 +1,6 @@
 // Lifetime and exact transport shared by the disabled world GI/glow producers.
 // No private queue submission: producer uses gpu.frame; transport explicitly
 // delegates to the existing Atlas recordLightWrite endpoint (which owns submit).
-import { worldPageWriterWGSL } from '../shaders/worldAccess.js';
-import { worldWriterLayouts } from '../world/renderAtlas.js';
 import { validateWorldLightingRestore } from '../world/worldLightingRestore.js';
 export const BU = Object.freeze({ COPY_SRC: 4, COPY_DST: 8, UNIFORM: 64, STORAGE: 128 });
 export const TU = Object.freeze({ COPY_SRC: 1, COPY_DST: 2, TEXTURE_BINDING: 4, STORAGE_BINDING: 8 });
@@ -79,71 +77,39 @@ export function completeLightingBatch({ frame, queue, feedbackBuffer, wordCount,
   });
 }
 
-// GI history is packed vec2u per band, exactly what giBlend stored. Transport
-// unpacks those finite/saturated half values, not the pre-rounded f32 blend.
-const packedGIWriter = /* wgsl */ `
-struct WriterParams { page: vec4u, aux: vec4u, probes: vec4u, reserved: vec4u }
-@group(0) @binding(0) var<uniform> WP: WriterParams;
-@group(0) @binding(1) var<storage, read> words: array<vec2u>;
-@group(1) @binding(0) var o0: texture_storage_2d_array<rgba16float, write>;
-@group(1) @binding(1) var o1: texture_storage_2d_array<rgba16float, write>;
-@group(1) @binding(2) var o2: texture_storage_2d_array<rgba16float, write>;
-@group(1) @binding(3) var o3: texture_storage_2d_array<rgba16float, write>;
-fn band(k: u32) -> vec4f { let h = words[k]; return vec4f(unpack2x16float(h.x), unpack2x16float(h.y)); }
-@compute @workgroup_size(1) fn main() {
-  let p = WP.page.x;
-  let a = vec3i(i32(p % WP.probes.x), i32((p / WP.probes.x) % WP.probes.y), i32(p / (WP.probes.x * WP.probes.y)));
-  textureStore(o0,a.xy,a.z,band(0u)); textureStore(o1,a.xy,a.z,band(1u));
-  textureStore(o2,a.xy,a.z,band(2u)); textureStore(o3,a.xy,a.z,band(3u));
-}`;
-export function worldLightingTransportSpec(kind) {
-  if (kind === 'gi') return { code: packedGIWriter, groups: [
-    [{ binding: 0, visibility: 4, buffer: { type: 'uniform', minBindingSize: 64 } }, { binding: 1, visibility: 4, buffer: { type: 'read-only-storage', minBindingSize: 32 } }],
-    Array.from({ length: 4 }, (_, binding) => ({ binding, visibility: 4, storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '2d-array' } })),
-  ] };
-  if (!['source', 'glow'].includes(kind)) throw new TypeError('lighting transport kind');
-  return { code: worldPageWriterWGSL(kind), groups: worldWriterLayouts(kind) };
-}
-export function createLightingTransport(device, kinds) {
-  const { buffer } = createLightingResources(device), pipelines = new Map();
-  const ready = Promise.all(kinds.map(async kind => {
-    const spec = worldLightingTransportSpec(kind);
-    const layouts = spec.groups.map((entries, i) => device.createBindGroupLayout({ label: `world ${kind} transport ${i}`, entries }));
-    const pipe = await device.createComputePipelineAsync({ label: `world ${kind} transport`, layout: device.createPipelineLayout({ bindGroupLayouts: layouts }),
-      compute: { module: device.createShaderModule({ code: spec.code }), entryPoint: 'main' } });
-    pipelines.set(kind, { layouts, pipe });
-  }));
-  async function write({ atlas, job, kind, token, source, copies, retain }) {
-    const held = retain(); const owned = [];
+// All outputs are already native texels; transport only records scoped copies.
+export function createLightingTransport(device) {
+  async function write({ atlas, job, kind, token, source, copies, origin, retain }) {
+    const held = retain();
     try {
-      await ready;
+      if (!['source', 'gi', 'glow'].includes(kind)) throw new TypeError('lighting transport kind');
       const tick = kind === 'source' ? 'sourceTick' : kind === 'gi' ? 'giTick' : 'glowTick';
       const dependency = job?.dependencies?.[kind];
       if (job?.kind !== 'light' || job.epoch !== token.epoch || job.sourceRevision !== token.sourceRevision || job[tick] !== token.lightingTick ||
         dependency?.id !== token.dependencySetID || dependency?.version !== token.dependencyVersion) throw new Error('lighting Atlas job provenance mismatch');
-      const scratch = buffer(`world ${kind} exact transport`, kind === 'gi' ? 32 : 16, BU.STORAGE | BU.COPY_DST); owned.push(scratch);
-      const { layouts, pipe } = pipelines.get(kind);
-      atlas.recordLightWrite(job, kind, { record(encoder, bindings) {
-        const params = buffer('world lighting transport params', 64, BU.UNIFORM, bindings.params); owned.push(params);
-        for (const c of copies) encoder.copyBufferToBuffer(source, c.from, scratch, c.to, c.size);
-        const inputs = device.createBindGroup({ layout: layouts[0], entries: [{ binding: 0, resource: { buffer: params } }, { binding: 1, resource: { buffer: scratch } }] });
-        const outputs = device.createBindGroup({ layout: layouts[1], entries: bindings.outputs });
-        const pass = encoder.beginComputePass({ label: 'world lighting Atlas transport' });
-        pass.setPipeline(pipe); pass.setBindGroup(0, inputs); pass.setBindGroup(1, outputs); pass.dispatchWorkgroups(1, 1, 1); pass.end();
-      } });
+      if (kind === 'glow') {
+        atlas.recordLightWrite(job, kind, { record(encoder, bindings) {
+          encoder.copyTextureToTexture({ texture: source, origin }, bindings.destinations[0], [1, 1, 1]);
+        } });
+      } else {
+        const stride = kind === 'gi' ? 8 : 16;
+        if (copies.length !== (kind === 'gi' ? 4 : 1) || copies.some((c, i) => c.to !== i * stride || c.size !== stride)) throw new Error('exact packed lighting ranges required');
+        atlas.recordLightWrite(job, kind, { record(encoder, bindings) {
+          copies.forEach((c, i) => encoder.copyBufferToTexture({ buffer: source, offset: c.from }, bindings.destinations[i], [1, 1, 1]));
+        } });
+      }
       // recordLightWrite has submitted; this is not a source-side hidden submit.
       await device.queue.onSubmittedWorkDone();
-    } finally { owned.forEach(b => b.destroy()); held.release(); }
+    } finally { held.release(); }
   }
-  // Copies for the whole closure share one normal Frame boundary. Atlas owns
-  // the subsequent texture-writer submits; no per-brick source flush/readback.
+  // Retained outputs are immutable, completed producer publications. Close
+  // the normal Frame once before Atlas copies; no staging or per-brick flush.
   async function restore(gpu,atlas,entries) {
-    await ready;
-    const held=[],owned=[],prepared=[];
+    const held=[],prepared=[];
     const retire=()=>{
       if(gpu.failure||gpu.pipelines?.failure)return; // uncertain suffix: retain
       if(gpu.frame.open){setTimeout(retire,0);return;}
-      const drop=()=>{owned.forEach(b=>b.destroy());held.forEach(l=>l.release());};
+      const drop=()=>held.forEach(l=>l.release());
       Promise.resolve(device.queue.onSubmittedWorkDone()).then(drop,drop);
     };
     try {
@@ -153,29 +119,18 @@ export function createLightingTransport(device, kinds) {
         // Validate readiness before any native copy or partial write.
         atlas.writerBindings(job,lease.kind);
         const pin=lease.retain();held.push(pin);
-        const scratch=buffer('world retained exact transport',lease.kind==='gi'?32:16,BU.STORAGE|BU.COPY_DST);owned.push(scratch);
-        prepared.push({job,lease,pin,scratch});
+        prepared.push({job,lease,pin});
       }
-      for(const {pin,scratch}of prepared){const {buffer:source,ranges}=pin.bindings();for(const c of ranges)gpu.frame.direct().copyBufferToBuffer(source,c.from,scratch,c.to,c.size);}
       gpu.flush('world retained lighting closure');
-      for(const {job,lease,scratch}of prepared){
+      for(const {job,lease,pin}of prepared){
         validateWorldLightingRestore(lease,{job});
-        const {layouts,pipe}=pipelines.get(lease.kind);
+        const {buffer:source,ranges}=pin.bindings();
         atlas.recordLightWrite(job,lease.kind,{restoreDeclaration:lease,record(encoder,bindings){
-          const params=buffer('world retained transport params',64,BU.UNIFORM,bindings.params);owned.push(params);
-          const inputs=device.createBindGroup({layout:layouts[0],entries:[{binding:0,resource:{buffer:params}},{binding:1,resource:{buffer:scratch}}]});
-          const outputs=device.createBindGroup({layout:layouts[1],entries:bindings.outputs});
-          const pass=encoder.beginComputePass({label:'world retained Atlas transport'});
-          pass.setPipeline(pipe);pass.setBindGroup(0,inputs);pass.setBindGroup(1,outputs);pass.dispatchWorkgroups(1,1,1);pass.end();
+          ranges.forEach((c,i)=>encoder.copyBufferToTexture({buffer:source,offset:c.from},bindings.destinations[i],[1,1,1]));
         }});
       }
       await device.queue.onSubmittedWorkDone();
     } finally {retire();}
   }
-  return { ready, write, restore };
+  return { write, restore };
 }
-export const WGSL_CHECK = () => ['source', 'gi', 'glow'].map(kind => {
-  const spec = worldLightingTransportSpec(kind);
-  return { name: `worldLightingTransport.${kind}`, kind: 'compute', grids: false, warm: false,
-    code: () => spec.code, layouts: () => spec.groups, workgroupSize: [kind === 'gi' ? 1 : 64, 1, 1], dispatch: () => [1, 1, 1] };
-});

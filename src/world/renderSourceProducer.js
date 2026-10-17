@@ -37,14 +37,14 @@ export function sourceTrees(win, origin, g) {
 }
 
 export class RawWorldSourceProducer {
-  constructor(win, source, { context = null, kernels = null } = {}) {
-    this.win = win; this.context = context ?? win; this.source = source; this.sim = win.sim; this.gpu = win.gpu;
-    this.resources = context?.resources ?? win.gen.res;
-    this.tables = context?.tables ?? this.sim.tables;
-    this.g = rawSourceGrid(this.context.size[1]); this.disposed = false; this.buffers = null;
+  constructor(win, source, { kernels = null } = {}) {
+    this.source = source; this.sim = win.sim; this.gpu = win.gpu;
+    this.resources = source.ownedContext?.resources ?? win.gen.res;
+    this.tables = source.ownedContext?.tables ?? this.sim.tables;
+    this.g = rawSourceGrid(source.context.size[1]); this.disposed = false; this.buffers = null;
     const gpu = this.gpu, sim = this.sim;
     if (kernels) {
-      if (!context || !kernels.sceneGroup) throw new Error('Await original producer readiness before capturing a cut');
+      if (!source.ownedContext || !kernels.sceneGroup) throw new Error('Await original producer readiness before capturing a cut');
       for (const key of ['rawL', 'readL', 'generate', 'stamp', 'sceneLayout']) this[key] = kernels[key];
       this.sceneGroup = gpu.bindGroup(this.sceneLayout, this.resources.entries(), 'owned cut scene');
       this.ready = Promise.resolve(this);
@@ -89,7 +89,7 @@ export class RawWorldSourceProducer {
   record(frame, coreXZ, token = this.source.token(), { physicsBounds = null } = {}) {
     if (this.disposed || (this.source.ownedContext && !this.source.ownedContext.isValid()) || token.epoch !== this.source.epoch || token.revision !== this.source.revision) return null;
     if (this.source.ownedContext && physicsBounds) throw new Error('An owned cut never applies generated data to current physics');
-    const win = this.context, g = this.g, origin = [coreXZ[0] - 16, 0, coreXZ[1] - 16];
+    const win = this.source.context, g = this.g, origin = [coreXZ[0] - 16, 0, coreXZ[1] - 16];
     const trees = sourceTrees(win, origin, g), mask = treeColumnMask(win, origin, g);
     const words = trees.reduce((n, t) => n + t.s.data.length, 0), shapes = new Float32Array(words);
     let base = 0;

@@ -400,32 +400,34 @@ export function createWorldFrameDriver(app,state,execution={}) {
     if(dead || failure || pending!==p){value?.release?.();return;}
     p.result=value;p.phase=next;wake();
   },error=>fail(p,error));};
-  // Stills have no hands, so do not manufacture an eye query/result. The whole
-  // native scene feedback remains mandatory before any target is tonemapped.
-  const prepare=p=>{
-    // Start the existing full prewarm synchronously, once per frozen cut.
-    if(!p.preparing){
-      p.preparing=Promise.resolve(prewarm(app,state,p.data,p.view));
-      p.preparing.catch(error=>fail(p,error));
+  // Eye misses extend the same cut while its full-view warm continues. Only
+  // preparation is asynchronous; preflight/actor selection still belong to tick.
+  const prepare=async(p,work)=>{
+    let data=await work;
+    while(!dead && !failure && pending===p) {
+      p.data=data;if(!data)throw new Error('WORLD request retired');
+      if(!p.preparing){p.preparing=Promise.resolve(prewarm(app,state,data,p.view));p.preparing.catch(error=>fail(p,error));}
+      if(p.job)p.eye={feedback:emptyFeedback()};
+      else {
+        requireReady(state.volume?.pointReady?.then,'WORLD point readiness required');
+        await state.volume.pointReady;
+        if(dead || failure || pending!==p)return;
+        p.eye=await probe(app,state,data,p.view);
+        if(dead || failure || pending!==p)return;
+        if(!complete(p.eye.feedback)){data=await extend(p,p.eye.feedback);continue;}
+      }
+      await p.preparing;return;
     }
-    if(p.job){wait(p,p.preparing.then(()=>({feedback:emptyFeedback()})),'eye');return;}
-    wait(p,Promise.resolve().then(()=>{
-      if(dead || failure || pending!==p)return;
-      requireReady(state.volume?.pointReady?.then,'WORLD point readiness required');
-      return state.volume.pointReady;
-    }).then(()=>{
-      if(dead || failure || pending!==p)return;
-      return probe(app,state,p.data,p.view);
-    }),'eye');
+    data?.release?.();
   };
   const extend=(p,feedback)=>{
     const old=p.data;p.data=null;
     const preflight=p.preflight;p.preflight=null;
-    wait(p,Promise.allSettled([state.data.extend(old,feedback),releasePreflight(app,preflight)]).then(([data,released])=>{
+    return Promise.allSettled([state.data.extend(old,feedback),releasePreflight(app,preflight)]).then(([data,released])=>{
       if(data.status==='rejected')throw data.reason;
       if(released.status==='rejected'){data.value?.release();throw released.reason;}
       return data.value;
-    }).finally(()=>old.release()),'data');
+    }).finally(()=>old.release());
   };
   return {
     get phase(){return pending ? pending.phase+(pending.phase==='waiting'?':'+pending.waitTarget:'') : 'idle';},
@@ -455,8 +457,8 @@ export function createWorldFrameDriver(app,state,execution={}) {
       if(!pending && stills.length && !preferMain) {
         const job=stills.shift();
         pending={phase:'new',job,view:job.view,data:null,preflight:null,eye:null,work:null};
-        wait(pending,state.data.request({...accepted.frame,advance:false},
-          worldInitialCellDemand(job.view.values.cam,app.win.size)),'data');
+        wait(pending,prepare(pending,state.data.request({...accepted.frame,advance:false},
+          worldInitialCellDemand(job.view.values.cam,app.win.size))),'prepared');
       }
       if(!pending && (present || pickDemands.size)) {
         const reservation={...reserve()};
@@ -467,18 +469,12 @@ export function createWorldFrameDriver(app,state,execution={}) {
             {requirements:[...pickDemands.values()],sun:[]}).requirements;
           pickDemands.clear();
           pending={phase:'new',view:request.view,reservation,data:null,preflight:null,eye:null,work:null};
-          wait(pending,state.data.request(request.frame,requirements),'data');
+          wait(pending,prepare(pending,state.data.request(request.frame,requirements)),'prepared');
         }
       }
       if(!pending && preferMain) {preferMain=false;wake();}
       const p=pending;if(!p)return false;
-      if(p.phase==='data') {p.data=p.result;p.result=null;if(!p.data)throw new Error('WORLD request retired');prepare(p);}
-      else if(p.phase==='eye') {
-        p.eye=p.result;p.result=null;
-        if(!complete(p.eye.feedback)){extend(p,p.eye.feedback);return false;}
-        wait(p,p.preparing,'warm');
-      }
-      if(p.phase==='warm') {
+      if(p.phase==='prepared') {
         p.result=null;p.preflight=createPreflight(app,state,p.data,p.view);p.phase='scene';
       }
       if(p.phase==='scene') {
@@ -497,7 +493,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
       if(p.phase==='finished') {
         const result=p.result;p.result=null;
         if(!result.accepted){
-          if(!complete(result.feedback)){extend(p,result.feedback);return false;}
+          if(!complete(result.feedback)){wait(p,prepare(p,extend(p,result.feedback)),'prepared');return false;}
           p.phase='scene';wake();return false;
         }
         if(!p.job) {

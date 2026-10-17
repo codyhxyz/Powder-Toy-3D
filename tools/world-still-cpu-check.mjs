@@ -71,11 +71,20 @@ async function setup() {
   return {f,p,app,state,driver,seen,controls,counts,cuts,phases,view,tick,pump,boot,close};
 }
 
+test('asynchronous preparation completes without another tick but cannot select actors or record',async()=>{
+  const t=await setup();t.tick(true);
+  for(let i=0;i<500&&t.driver.phase!=='prepared';i++){t.f.gpu.finish();await t.p.completeAll();}
+  assert.equal(t.driver.phase,'prepared');assert.equal(t.counts.prewarm,1);assert.equal(t.counts.probe,1);
+  assert.equal(t.counts.preflight,0);assert.equal(t.seen.length,0);assert.equal(t.driver.accepted,null);
+  t.tick();assert.equal(t.counts.preflight,1);assert.equal(t.seen.length,1);
+  await t.pump(()=>!!t.driver.accepted);await t.close();
+});
+
 test('point-ready MAIN extends same frozen cut before full warm, but complete eye cannot select actors or record',async()=>{
   const t=await setup(),warm=deferred(),point=deferred();t.controls.gate=warm;t.controls.pointGate=point;t.controls.eyeMiss=true;
   t.tick(true);await t.pump(()=>t.counts.prewarm===1);
   assert.equal(t.counts.probe,0);point.resolve();await t.pump(()=>t.counts.probe===2);
-  await t.pump(()=>t.driver.phase==='waiting:warm');
+  await turn();assert.equal(t.driver.phase,'waiting:prepared');
   assert.equal(t.cuts[0],t.cuts[1]);assert.equal(t.counts.prewarm,1);assert.equal(t.counts.reserve,1);
   assert.equal(t.counts.preflight,0);assert.equal(t.counts.vm,0);assert.equal(t.seen.length,0);assert.equal(t.driver.accepted,null);
   warm.resolve();await t.pump(()=>!!t.driver.accepted);assert.equal(t.counts.preflight,1);await t.close();

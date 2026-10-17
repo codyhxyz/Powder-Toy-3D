@@ -11,8 +11,6 @@ export function worldGILayouts({ gather = false, limits } = {}) {
   groups[3].push(uniform(6, GiParams.size), uniform(7, 32), storage(8, 'read-only-storage'), storage(9, 'storage'));
   if (gather) {
     groups[3].push({ binding: 10, visibility: 4, buffer: { type: 'storage', minBindingSize: 8 } });
-    for (let k = 0; k < 4; k++) groups[3].push({ binding: 11 + k, visibility: 4,
-      storageTexture: { access: 'write-only', format: 'rgba16float', viewDimension: '2d-array' } });
   }
   return assertWorldLayout(groups, limits);
 }
@@ -45,10 +43,6 @@ fn worldGIReport(job: u32) {
   atomicOr(&worldRequests[WGI.counts.z + job], select(1u, 3u, worldQueryIncomplete()));
 }
 ${gather ? `@group(3) @binding(10) var<storage, read_write> worldGIHistory: array<vec2u>;
-@group(3) @binding(11) var worldGI0Out: texture_storage_2d_array<rgba16float, write>;
-@group(3) @binding(12) var worldGI1Out: texture_storage_2d_array<rgba16float, write>;
-@group(3) @binding(13) var worldGI2Out: texture_storage_2d_array<rgba16float, write>;
-@group(3) @binding(14) var worldGI3Out: texture_storage_2d_array<rgba16float, write>;
 // Private source overlay. Every source dispatch precedes EVERY gather dispatch.
 // Nonselected sources come from the immutable published prior source snapshot.
 fn worldGISourceStaged(b: vec3i) -> vec4u {
