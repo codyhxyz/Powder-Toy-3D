@@ -188,7 +188,7 @@ function assertPrepared(calls,expected) {
 test('all real allocation paths prepare immediately, including empty indirect batches and external replay',async()=>{
   const {owner,d,calls}=recorder();await d.ready;
   const check=(fn,allocations)=>{calls.length=0;fn();assertPrepared(calls,allocations);};
-  check(()=>d.consumeMaterialEvents(3),2);
+  check(()=>d.consumeMaterialEvents(3),1); // one batch a tick
   assert.equal(calls.find(c=>c.name==='v2blasts_allocate').size.indirect,d.dispatchArgs);
   check(()=>d.advanceAir(3),1);
   check(()=>assert.equal(d.applyToolImpulse({kind:'impulse',position:[2,2,2],strength:2}).status,'queued'),1);
@@ -198,10 +198,10 @@ test('all real allocation paths prepare immediately, including empty indirect ba
   check(()=>d.applyPhysgun({mode:'punt',position:[2,2,2]}),1);
   check(()=>assert.equal(d.applyExternalBlast({position:[2,2,2],energy:100,radius:2}).status,'queued'),1);
   assert.ok(calls.findIndex(c=>c.name==='v2blasts_allocate')<calls.findIndex(c=>c.name==='v2blasts_externalGate'));
-  check(()=>d.consumeMaterialEvents(4),3); // unacknowledged immutable request replays first
+  check(()=>d.consumeMaterialEvents(4),2); // unacknowledged immutable request replays first
   const snapshot=await d.snapshotDynamicState();assert.equal(snapshot.control.length,32);
   assert.equal(snapshot.externalBlasts.length,1);d.restoreDynamicState(snapshot);
-  check(()=>d.consumeMaterialEvents(5),3);
+  check(()=>d.consumeMaterialEvents(5),2);
   for(const kind of ['photon','neutron']) {
     d.applyToolImpulse({kind,position:[2,2,2],count:5});calls.length=0;
     d.advanceParticles(6);d.advanceAir(6);assertPrepared(calls,1);
@@ -296,9 +296,9 @@ test('generated exact hasWork predicate gates all three prep dimensions, includi
     assert.equal(copies.length,priorCopies,'pool preparation reuses existing args without another copy');
   }
   control[3]=NONE;control[17]=0;control[18]=0;d.blastBatch=8;calls.length=0;
-  d.consumeMaterialEvents(4);assertPrepared(calls,8);
+  d.consumeMaterialEvents(4);assertPrepared(calls,1); // one batch a tick, whatever blastBatch is
   const emptyPrep=calls.filter(c=>ALLOCATION_STAGES.some(s=>c.name===`v2blasts_${s}`));
-  assert.equal(emptyPrep.length,24);
+  assert.equal(emptyPrep.length,3);
   for(const c of emptyPrep) assert.deepEqual(c.args,c.name==='v2blasts_freeScan'?[0,1,1]:[0,1024,1]);
   // A modular raw-neutron sum of zero was never an absence predicate. A
   // selected source or pending grid neutron must still run preparation.

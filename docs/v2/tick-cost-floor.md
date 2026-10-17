@@ -20,7 +20,7 @@ A tick costs `A·N + B·awake + C·changed + D·bricks + E·pool + F`.
 | E', pool while particles live | 12 MB (+6.8 MB a preparation) | same | **8 KB of live bits + ~200 B a live particle a stage** | every pool sweep reads only slots whose live bit is set |
 | B, per awake brick column (powder fall) | ~32 KB (16 lanes × 128 cells) | same | **~1 KB a brick that is not all air or all still liquid** | the column pass skips summarised bricks |
 | B, other awake cells | ~100 B outside water (estimate) | unchanged | unchanged | support, block |
-| F, dispatches a tick | 149 outside water (+32 old water) | 159 outside water | **173 with the column water** (137 indirect; ~135 zero-size when idle) | 115 are the blast batches and the first select's list |
+| F, dispatches a tick | 149 outside water (+32 old water) | 159 outside water | **75 with the column water** (45 indirect), from 173 | the blasts are 17 of them (were 115): one batch a tick |
 | F, passes a tick | — | 12 compute passes, split by 18 copies and 1 clear | **1 compute pass, 0 copies, 0 clears** | indirect args are written in place by one-thread stages in the lists layout |
 
 What each round did:
@@ -34,6 +34,8 @@ What each round did:
     retirements and the pool preparation, set everywhere by restores. Every sweep skips a slot whose bit is clear.
   - holdCOM walks the live-bit words, in the same ascending order.
   - The powder column pass skips bricks the column water's summaries call all air or all still liquid.
+- Round 5 (a behaviour change, its own commit): one blast batch a tick serves up to blastBatch charges
+  together, each with its own shielded energy and normalisation. A lone charge is planned exactly as before.
 - Round 4: one compute pass a tick. workArgs and coupleGate write their indirect args directly (the lists
   layout binds the args buffer only there), the jets publish their gate's args with a one-thread stage, and
   the block compaction's finalize restarts its count instead of a clear. On the M5 the idle tick's ~1 ms was
@@ -68,13 +70,9 @@ bound ≈ 0. Scene 1 is ~2× V1 by bytes. The lab scene drops from ~90 mW to ~38
 
 ## The remaining gap, ranked (scene 1, this branch)
 
-1. **Fixed dispatches: 173 a tick, ~135 zero-size when idle**, now in one compute pass. The batches are 104 of
-   them: 8 batches of 13 indirect stages, plus a workArgs each. The one-batch rule (The Powder Toy: an explosion's chain spreads one step a frame)
-   at an unchanged service rate means one batch serving up to 8 charges at once. That needs multi-source blast
-   planning: per-source shielded energy and per-source normalisation in one plan pass, a pick of the 8 lowest
-   serviceable slots, and a finish over all of them. It is a behaviour change, so it gets its own commit and
-   checks. Not done here; then merge the one-thread stages it leaves (listArgs ×4, actArgs, coupleGate, args).
-   The cost of one zero-size indirect dispatch on the GPU is still unmeasured.
+1. **Fixed dispatches: 75 a tick, one compute pass.** Measured on the M5 before round 5: 173 dispatches in 0.493 ms,
+   ~2.8 µs each when near empty, so ~0.21 ms is expected now (unmeasured). What remains is ~45 indirect
+   stages behind lists and gates, plus the always-on scans; certified idle still records none of them.
 2. **All-brick scans of small words, 2.0 MB (3.6 mW).** Pushing the lists (append on a word's 0 → 1 change in
    markBusy, noteState, noteEvents and noteAir) does not clearly pay, so it is not done. The scans it would
    remove read ~2 MB in ~3,000 workgroups a tick, about 15–20 µs at the M5's bandwidth. The stores it would slow

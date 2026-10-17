@@ -1,180 +1,165 @@
-// CPU-only: later blast batches select only through the previous batch's args,
-// and that batch's finish resets the selection. Replays the production driver
-// and the a700d765 reference loop (reset + full select every batch) over one
-// abstract event world; the selection/argument code that decides what runs is
-// the generated WGSL itself. Both must do identical work and end identical.
+// CPU-only: one blast batch a tick (dynamics.js consumeMaterialEvents) serves
+// the lowest blastBatch serviceable charges together. 1. The generated pick
+// (run here as JS) takes exactly the K lowest marked slots, in slot order, and
+// clears the masks. 2. Replaying the real driver's recording over an abstract
+// world of charges, tick after tick: the same charges per tick as the old
+// eight batches (K per tick, 480/s at the default), nothing dropped when more
+// than K are queued (each charge served once, the rest the next tick), and a
+// chain resolves one step a tick (The Powder Toy). 3. One charge's plan,
+// sums, scale and damage use today's expressions in today's order, so a lone
+// charge is planned bit for bit as before. 4. An idle tick records 17 blast
+// dispatches, not 115.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
-import { blastsWGSL, externalBlastBase, RESET_SELECTION } from '../../src/shaders/v2/blasts.js';
-const NONE=0xffffffff, BATCH_DEFAULT=8;
-// eventList and its listArgs (events) build the first select's brick list.
-const SELECTION=['reset','select','workArgs','eventList','events'];
-// Straight-line integer WGSL → JS, as allocation-check executes workArgs.
-const js=code=>code.replace(/\b(\d+)u\b/g,'$1')
-  .replace(/atomicLoad\(&control\[([^\]]+)\]\)/g,'control[$1]')
-  .replace(/atomicStore\(&control\[([^\]]+)\],([^;]+)\);/g,'control[$1]=$2;');
-const body=code=>{ const s=code.trimEnd(); return s.slice(s.lastIndexOf('fn main() {')+'fn main() {'.length,-1); };
-// workArgs writes the dispatch args itself (the lists layout): it runs on both buffers.
-const run=(code,control,P,args=new Uint32Array(64))=>Function('control','args','P','D_NONE','select',js(code))(control,args,P,NONE,(no,yes,c)=>c?yes:no);
-
+import { blastsWGSL, listsStageWGSL, listControl, RESET_SELECTION, CHARGES_MAX } from '../../src/shaders/v2/blasts.js';
+const NONE = 0xffffffff, BATCH_DEFAULT = 8;
+// Straight-line integer WGSL with loops → JS (atomics as plain words).
+const js = code => code.replace(/\b(0x[\da-f]+|\d+)u\b/gi, '$1')
+  .replace(/var (\w+): array<u32, \d+>;/g, 'var $1=new Array(64).fill(0);')
+  .replace(/atomicExchange\(&control\[([^\]]+)\],([^)]+)\)/g, 'xchg(control,$1,$2)')
+  .replace(/atomicLoad\(&control\[([^\]]+)\]\)/g, 'control[$1]')
+  .replace(/atomicStore\(&control\[([^\]]+)\],([^;]+)\);/g, 'control[$1]=$2;')
+  .replace(/\bmin\(/g, 'Math.min(');
+const body = code => { const s = code.trimEnd(); return s.slice(s.lastIndexOf('fn main() {') + 'fn main() {'.length, -1); };
+const helpers = { select: (no, yes, c) => (c ? yes : no), xchg: (a, i, v) => { const o = a[i]; a[i] = v; return o; },
+  firstTrailingBit: x => 31 - Math.clz32(x & -x) };
+function runner(code, constants) {
+  const names = Object.keys(constants);
+  return Function('control', 'args', 'P', 'D_NONE', 'select', 'xchg', 'firstTrailingBit', ...names, js(body(code)));
+}
 function recorder() {
-  globalThis.GPUBufferUsage={STORAGE:1,COPY_SRC:2,COPY_DST:4,INDIRECT:8};
-  const commands=[];
-  const copy=(b,offset,src)=>new Uint8Array(b.bytes).set(new Uint8Array(src.buffer??src,src.byteOffset??0,src.byteLength),offset);
-  const gpu={
-    createBuffer(d){return {...d,bytes:new ArrayBuffer(d.size),destroy(){}};},
-    queue:{writeBuffer:copy},write:copy,layout:(name,entries)=>({name,entries}),
-    bindGroup:(layout,entries)=>({layout,entries}),
-    kernel(d){return {...d,ready:Promise.resolve(),dispatch(frame,size,data){
+  globalThis.GPUBufferUsage = { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, INDIRECT: 8 };
+  const commands = [];
+  const copy = (b, offset, src) => new Uint8Array(b.bytes).set(new Uint8Array(src.buffer ?? src, src.byteOffset ?? 0, src.byteLength), offset);
+  const gpu = {
+    createBuffer(d) { return { ...d, bytes: new ArrayBuffer(d.size), destroy() {} }; },
+    queue: { writeBuffer: copy }, write: copy, layout: (name, entries) => ({ name, entries }),
+    bindGroup: (layout, entries) => ({ layout, entries }),
+    kernel(d) { return { ...d, ready: Promise.resolve(), dispatch(frame, size, data) {
       d.params.pack(data.params); // strict uniform packing of every recorded field
-      commands.push({stage:d.name.replace(/^v2(blasts|lists)_/,''),code:d.code,size,params:data.params});
-    }};},
-    frame:{clear(){},copy(src,so,dst,dof,n){commands.push({copy:[src,so,dst,dof,n]});}},
-    readback:{buffer:(b,o,n)=>Promise.resolve(b.bytes.slice(o,o+n))},
+      commands.push({ stage: d.name.replace(/^v2(blasts|lists)_/, ''), code: d.code, size, params: data.params });
+    } }; },
+    frame: { clear() {}, copy(src, so, dst, dof, n) { commands.push({ copy: [src, so, dst, dof, n] }); } },
+    readback: { buffer: (b, o, n) => Promise.resolve(b.bytes.slice(o, o + n)) },
   };
-  const g=gridLayout(16,8,8),owner={gpu,g,tick:3,epoch:0,sim:{origin:[0,0,0],header:()=>({})},
-    nativeDynamics:{head:nativeDynamicsHead,layout:{entries:V2_DYNAMICS_LAYOUT},group:{}},wake(){},_params:()=>({busyIn:1,busyOut:2})};
-  owner.events=gpu.createBuffer({size:g.slots*4});
-  return {g,owner,commands};
+  const g = gridLayout(16, 8, 8), owner = { gpu, g, tick: 3, epoch: 0, sim: { origin: [0, 0, 0], header: () => ({}) },
+    nativeDynamics: { head: nativeDynamicsHead, layout: { entries: V2_DYNAMICS_LAYOUT }, group: {} }, wake() {}, _params: () => ({ busyIn: 1, busyOut: 2 }) };
+  owner.events = gpu.createBuffer({ size: g.slots * 4 });
+  return { g, owner, commands };
 }
-// The a700d765 consumeMaterialEvents loop, verbatim order and sizes.
-function reference(d,tick) {
-  for(const [slot,r] of d.externalBlasts) d._recordExternalBlast(slot,r,tick);
-  for (let n=0;n<d.blastBatch;n++) {
-    d._record('blasts','reset',1,tick);
-    d._record('blasts','select',Math.ceil(d.g.slots/64),tick);
-    d._record('lists','workArgs',1,tick); // the reference's copies below then write the same args
-    d.gpu.frame.copy(d.control,20*4,d.dispatchArgs,0,48);
-    d.gpu.frame.copy(d.control,28*4,d.dispatchArgs,48,4);
-    const size=offset=>({indirect:d.dispatchArgs,offset});
-    d._record('blasts','plan',size(0),tick);
-    d._record('blasts','sum',size(16),tick);
-    d._record('blasts','normalize',size(32),tick);
-    d._record('blasts','damagePlan',size(0),tick);
-    d._allocate(tick,{},true);
-    d._record('blasts','finish',size(32),tick);
-  }
-}
-// Abstract world: event cells {bits, fits, stuck}, a free particle pool, wakes.
-// Plan-only stages change nothing outside their batch; their inputs are logged.
-function replay(commands,buffers,state,g) {
-  const control=state.control, args=state.args, work=[];
-  const hash=()=>JSON.stringify([Array.from(control.subarray(0,32)),Array.from(args),[...state.cells],state.free]);
-  for(const c of commands) {
-    if(c.copy) {
-      const [src,so,dst,dof,n]=c.copy;
-      new Uint8Array(buffers.get(dst).buffer,dof,n).set(new Uint8Array(buffers.get(src).buffer,so,n));continue;
-    }
-    const P={...c.params,mode:c.params.mode??0,substep:c.params.substep??0};
-    // The first select (substep 1) covers the event list: every brick noted as holding a
-    // request, here every brick with an event cell (air-cache-check proves the notes).
-    const listed=c.stage==='select' && P.substep===1;
-    const groups=c.size.indirect?args.subarray(c.size.offset/4,c.size.offset/4+3).reduce((a,b)=>a*b,1):c.size.reduce((a,b)=>a*b,1);
-    if(!groups && !listed) continue; // zero-size dispatches are no-ops (WebGPU)
-    if(c.stage==='select') state.selects++;
-    if(!SELECTION.includes(c.stage)) work.push([c.stage,P.mode,hash()]);
-    if(c.stage==='reset') run(body(c.code),control,P);
-    else if(c.stage==='workArgs') run(body(c.code),control,P,args);
-    else if(c.stage==='select') for(const [slot,cell] of state.cells) {
-      if(!cell.bits || (!listed && slot>=groups*64)) continue; // dThread covers groups*64 slots
-      control[2]++;state.wakes.add(slot);if(cell.bits&4) control[17]++;
-      if((cell.bits&1) && cell.fits) control[3]=Math.min(control[3],slot);
-    } else if(c.stage==='externalBegin') control[3]=control[externalBlastBase(g)+P.substep]===0?g.slots:NONE;
-    else if(c.stage==='apply' && P.mode!==14) for(const [,cell] of state.cells) {
-      if(!(cell.bits&4)) continue;
-      if(state.free) { state.free--;cell.bits&=~4; } else control[7]++; // backpressure: request stays
-    } else if(c.stage==='children') { const served=Math.min(control[18],state.free);control[18]-=served;state.free-=served; }
-    else if(c.stage==='finish') {
-      const finish=body(c.code),at=finish.indexOf('if (s==D_NONE)');
-      assert.ok(at>0,'finish reads its selection once, before any exit');
-      const s=run(finish.slice(0,at)+'return s;',control,P); // production prefix, incl. its reset
-      if(s===NONE) continue;
-      if(P.mode===14) control[externalBlastBase(g)+P.substep]=1;
-      else if(!state.cells.get(s).stuck) state.cells.get(s).bits&=~1;
-    }
-  }
-  return work;
-}
-function world(seed,{charges,unfit,gas,neutrons,stuck,free,children,external}) {
-  const cells=new Map();let x=seed;
-  const random=()=>{x=(Math.imul(x,1664525)+1013904223)>>>0;return x;};
-  const add=cell=>{let s;do s=random()%g.slots;while(cells.has(s));cells.set(s,cell);};
-  for(let i=0;i<charges;i++) add({bits:1|(i%3===0 && neutrons?4:0),fits:true});
-  for(let i=0;i<unfit;i++) add({bits:1,fits:false});
-  for(let i=0;i<gas;i++) add({bits:2,fits:false});
-  for(let i=0;i<neutrons;i++) add({bits:4,fits:false});
-  for(let i=0;i<stuck;i++) add({bits:1,fits:true,stuck:true});
-  return {cells,free,children,external};
-}
-// One driver; every schedule restarts from its freshly constructed buffers.
-const {g,owner,commands}=recorder();
-const d=owner.dynamics=new NativeDynamics(owner);await d.ready;
-const initial=[d.control,d.dispatchArgs].map(b=>b.bytes.slice(0));
-async function schedule(record,blastBatch,w,ticks) {
-  d.blastBatch=blastBatch;d.externalBlasts=new Map();d.sequence=0;
-  [d.control,d.dispatchArgs].forEach((b,i)=>new Uint8Array(b.bytes).set(new Uint8Array(initial[i])));
-  if(w.external) assert.equal(d.applyExternalBlast({position:[2,2,2],energy:100,radius:2}).status,'queued');
-  const control=new Uint32Array(d.control.bytes),args=new Uint32Array(d.dispatchArgs.bytes);
-  control[3]=NONE;control[18]=w.children;
-  if(w.external==='done') control[externalBlastBase(g)]=1;
-  const state={control,args,cells:structuredClone(w.cells),free:w.free,wakes:new Set(),selects:0};
-  const buffers=new Map([[d.control,control],[d.dispatchArgs,args]]);
-  commands.length=0;
-  let recorded=0;const work=[];
-  for(let tick=4;tick<4+ticks;tick++) {
-    const before=commands.length;record(d,tick);recorded+=commands.filter((c,i)=>i>=before && !c.copy).length;
-  }
-  work.push(...replay(commands,buffers,state,g));
-  return {work,state:{control:Array.from(control),args:Array.from(args),cells:[...state.cells],free:state.free,wakes:[...state.wakes].sort((a,b)=>a-b)},
-    selects:state.selects,recorded};
-}
-const current=(d,tick)=>d.consumeMaterialEvents(tick);
+const { g, owner, commands } = recorder();
+const d = owner.dynamics = new NativeDynamics(owner); await d.ready;
+const L = listControl(g), C = L.charges;
+const constants = { LIST_EVENTS: L.lists.events, D_SERVE_MASKS: C.masks, D_CHARGES: C.slots, D_CHARGE_COUNT: C.count, D_CHARGES_MAX: CHARGES_MAX };
+const pickCode = blastsWGSL(g, nativeDynamicsHead, 'pick'), pick = runner(pickCode, constants);
+const runPick = (control, K) => pick(control, null, { substep: K }, NONE, helpers.select, helpers.xchg, helpers.firstTrailingBit, ...Object.values(constants));
+function rng(seed) { let s = seed >>> 0 || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
 
-test('production reset and finish share the selection reset; finish resets only between material batches',()=>{
-  const reset=blastsWGSL(g,nativeDynamicsHead,'reset'),finish=blastsWGSL(g,nativeDynamicsHead,'finish');
-  assert.equal(body(reset).trim(),RESET_SELECTION);
-  assert.ok(finish.includes(`if (P.mode!=14u && P.substep>0u) { ${RESET_SELECTION} }`));
-  // Resetting before the rest of finish equals the old reset after it.
-  assert.doesNotMatch(body(finish).split('if (s==D_NONE)')[1],/control\[(2|3|17)\]/,'finish never reads or writes the selection words after its first read');
+test('the generated pick takes the K lowest marked slots in slot order and clears the masks', () => {
+  for (let seed = 1; seed <= 60; seed++) {
+    const random = rng(seed), control = new Uint32Array(L.words), marked = [];
+    const bricks = [...new Set(Array.from({ length: 1 + Math.floor(random() * 12) }, () => Math.floor(random() * g.nbricks)))];
+    control[L.lists.events] = bricks.length; bricks.forEach((b, i) => { control[L.lists.events + 2 + i] = b; });
+    for (const b of bricks) for (let l = 0; l < 64; l++) if (random() < 0.15) { const s = b * 64 + l; marked.push(s); control[C.masks + 2 * b + (l >> 5)] |= 1 << (l & 31); }
+    const K = [1, 3, 8, 64][seed % 4], expected = marked.sort((a, b) => a - b).slice(0, K);
+    runPick(control, K);
+    assert.equal(control[C.count], expected.length);
+    assert.deepEqual(Array.from(control.subarray(C.slots, C.slots + expected.length)), expected);
+    assert.equal(control[3], expected.length ? expected[0] : NONE);
+    for (const b of bricks) assert.equal(control[C.masks + 2 * b] | control[C.masks + 2 * b + 1], 0, 'masks cleared for the next tick');
+  }
 });
 
-const fixtures={
-  idle:{charges:0,unfit:0,gas:0,neutrons:0,stuck:0,free:100,children:0},
-  dormant:{charges:0,unfit:3,gas:4,neutrons:0,stuck:0,free:100,children:0},
-  oneCharge:{charges:1,unfit:2,gas:2,neutrons:0,stuck:0,free:100,children:0},
-  chain:{charges:5,unfit:1,gas:0,neutrons:0,stuck:0,free:100,children:0},
-  saturated:{charges:20,unfit:0,gas:3,neutrons:0,stuck:0,free:100,children:0},
-  neutrons:{charges:2,unfit:0,gas:0,neutrons:2,stuck:0,free:1,children:0},
-  backpressure:{charges:0,unfit:0,gas:0,neutrons:3,stuck:0,free:0,children:2},
-  children:{charges:1,unfit:0,gas:1,neutrons:0,stuck:0,free:2,children:3},
-  retry:{charges:2,unfit:0,gas:0,neutrons:0,stuck:1,free:100,children:0},
-};
-for(const blastBatch of [1,2,3,BATCH_DEFAULT]) for(const [name,fixture] of Object.entries(fixtures)) for(const external of [null,'pending','done']) {
-  test(`${blastBatch} batches, ${name}, external ${external??'none'}: identical work, retries and final state over 3 ticks`,async()=>{
-    for(const seed of [1,7,99]) {
-      const w=world(seed,{...fixture,external});
-      const old=await schedule(reference,blastBatch,w,3),now=await schedule(current,blastBatch,w,3);
-      assert.deepEqual(now.work,old.work,'same non-empty work dispatches, each on the same state');
-      assert.deepEqual(now.state,old.state,'same control words, args, events, pool and wakes');
-      assert.equal(old.selects,blastBatch*3);
-      assert.equal(old.recorded-now.recorded,(blastBatch-1-2)*3,'one reset dispatch per tick, not per batch, plus the event list and its args');
+// The driver's recording replayed over charges {slot, ready tick, armed}: select marks the ready ones,
+// pick (generated) takes the batch, finishCharges serves it; a served chain link arms the next one,
+// whose request the next tick's block pass makes (so it is ready the tick after).
+function serve(world, ticks, K) {
+  d.blastBatch = K; const served = [];
+  const control = new Uint32Array(d.control.bytes), args = new Uint32Array(d.dispatchArgs.bytes);
+  for (let tick = 0; tick < ticks; tick++) {
+    commands.length = 0; d.consumeMaterialEvents(tick); const now = [];
+    for (const c of commands) {
+      if (c.stage === 'reset') runner(c.code, {})(control, args, c.params, NONE, helpers.select, helpers.xchg, helpers.firstTrailingBit);
+      else if (c.stage === 'eventList') { const bricks = [...new Set(world.filter(w => w.ready <= tick && !w.done).map(w => w.slot >> 6))];
+        control[L.lists.events + 1] = bricks.length; bricks.forEach((b, i) => { control[L.lists.events + 2 + i] = b; }); }
+      else if (c.stage === 'events') { control[L.lists.events] = control[L.lists.events + 1]; control[L.lists.events + 1] = 0; }
+      else if (c.stage === 'select') for (const w of world) { if (w.ready <= tick && !w.done) control[C.masks + 2 * (w.slot >> 6) + ((w.slot & 63) >> 5)] |= 1 << (w.slot & 31); }
+      else if (c.stage === 'pick') runPick(control, c.params.substep);
+      else if (c.stage === 'workArgs') runner(c.code, {})(control, args, c.params, NONE, helpers.select, helpers.xchg, helpers.firstTrailingBit);
+      else if (c.stage === 'finishCharges' && args[8] * args[9] * args[10]) {
+        for (let k = 0; k < control[C.count]; k++) { const w = world.find(x => x.slot === control[C.slots + k]);
+          assert.ok(w, `picked slot ${control[C.slots + k]} is a queued charge (${world.map(x => x.slot)})`); w.done = true; now.push(w.slot);
+          if (w.arms !== undefined) world.find(x => x.slot === w.arms).ready = tick + 1; }
+      }
     }
-  });
-}
-
-test('an idle default tick runs one listed select instead of eight full ones and records 115 dispatches instead of 120',async()=>{
-  const w=world(1,fixtures.idle);
-  const old=await schedule(reference,BATCH_DEFAULT,w,1),now=await schedule(current,BATCH_DEFAULT,w,1);
-  assert.equal(old.selects,BATCH_DEFAULT);assert.equal(now.selects,1);
-  assert.equal(old.recorded,120);assert.equal(now.recorded,115);
-  // k batches with work select k+1 times; full chains keep all eight.
-  for(const [charges,selects] of [[1,2],[3,4],[7,8],[20,8]]) {
-    const r=await schedule(current,BATCH_DEFAULT,world(5,{...fixtures.idle,charges}),1);assert.equal(r.selects,selects);
+    served.push(now);
   }
-  const big=gridLayout(128,128,128);
-  console.log(`idle 128³ tick: ${(BATCH_DEFAULT-1)*big.slots*4} fewer event bytes read, ${(BATCH_DEFAULT-1)*Math.ceil(big.slots/64)} fewer workgroups, ${old.recorded-now.recorded} fewer recorded dispatches`);
+  return served;
+}
+// The old eight batches over the same world: each batch served the lowest ready charge.
+function servedBefore(world, ticks, batches) {
+  const out = [];
+  for (let tick = 0; tick < ticks; tick++) { const now = [];
+    for (let n = 0; n < batches; n++) { const w = world.filter(x => x.ready <= tick && !x.done).sort((a, b) => a.slot - b.slot)[0]; if (!w) break;
+      w.done = true; now.push(w.slot); if (w.arms !== undefined) world.find(x => x.slot === w.arms).ready = tick + 1; }
+    out.push(now); }
+  return out;
+}
+const charges = (slots, chain = false) => slots.map((slot, i) => ({ slot, ready: chain && i ? Infinity : 0, done: false, ...(chain && i + 1 < slots.length ? { arms: slots[i + 1] } : {}) }));
+test('the same charges a tick (and a second) as the eight batches, lowest first', () => {
+  for (const [seed, M] of [[1, 3], [2, 8], [3, 13], [4, 30]]) {
+    const random = rng(seed), slots = [...new Set(Array.from({ length: M }, () => Math.floor(random() * g.slots)))];
+    const now = serve(charges(slots), 6, BATCH_DEFAULT), before = servedBefore(charges(slots), 6, BATCH_DEFAULT);
+    assert.deepEqual(now, before, `charges served per tick: ${slots.length} queued`);
+    for (const tick of now) assert.ok(tick.length <= BATCH_DEFAULT);
+  }
+  const full = serve(charges(Array.from({ length: 60 }, (_, i) => i * 17)), 4, BATCH_DEFAULT); // inside the 1,024-slot grid
+  assert.deepEqual(full.map(t => t.length), [8, 8, 8, 8], 'eight a tick: 480 charges a second at 60 Hz');
 });
-test.after(()=>d.dispose());
+test('nothing is dropped when more than a batch is queued: each charge once, the rest the next tick', () => {
+  const slots = Array.from({ length: 20 }, (_, i) => 3 + i * 11), served = serve(charges(slots), 4, BATCH_DEFAULT);
+  assert.deepEqual(served.map(t => t.length), [8, 8, 4, 0]);
+  assert.deepEqual(served.flat().sort((a, b) => a - b), slots, 'every charge served exactly once');
+});
+test('a chain spreads one step a tick (The Powder Toy): a charge set off this tick waits for the next', () => {
+  const slots = [40, 41, 42, 43, 44], served = serve(charges(slots, true), 6, BATCH_DEFAULT);
+  assert.deepEqual(served, [[40], [41], [42], [43], [44], []]);
+  assert.deepEqual(servedBefore(charges(slots, true), 6, BATCH_DEFAULT), served, 'the old batches never chained within a tick either');
+});
+
+test('a lone charge: today\'s expressions, in today\'s order', () => {
+  const plan = blastsWGSL(g, nativeDynamicsHead, 'plan'), now = blastsWGSL(g, nativeDynamicsHead, 'planCharges');
+  for (const expression of ['let received = explosionEnergy * 0.5 * weight / (12.566370614359*r2);', 'let r2 = max(0.25,dot(delta,delta));'])
+    assert.ok(plan.includes(expression) && now.includes(expression), expression);
+  assert.match(plan, /plan\.velocity = normalize\(delta\+vec3f\(0\.000001\)\)\*received;/);
+  assert.match(now, /return normalize\(delta\+vec3f\(0\.000001\)\)\*received;/);
+  assert.match(now, /if \(k==0u\) \{ plan\.velocity=velocity; \}/);
+  assert.match(now, /if \(live\) \{ if \(n!=1u\) \{ plan\.velocity=vec3f\(0\); \} plans\[t\] = plan; \}/);
+  // sum's order: slot order within a brick, from 0 (lane order here)
+  assert.match(blastsWGSL(g, nativeDynamicsHead, 'sum'), /for \(var s=t\*64u;s<\(t\+1u\)\*64u;s\+\+\) \{ energy \+= length\(plans\[s\]\.velocity\); \}/);
+  assert.match(now, /wgEnergy\[li\]=length\(velocity\); workgroupBarrier\(\);/);
+  assert.match(now, /var energy=0\.0; for \(var lane=0u;lane<64u;lane\+\+\) \{ energy \+= wgEnergy\[lane\]; \}/);
+  // normalize's: bricks in order, then the same scale expression; control[6] is that scale
+  const norm = blastsWGSL(g, nativeDynamicsHead, 'normalizeCharges');
+  assert.match(blastsWGSL(g, nativeDynamicsHead, 'normalize'), /scale=min\(1\.0,budget\*0\.5\/max\(sum,0\.000001\)\);/);
+  assert.match(norm, /for \(var b=0u;b<D_BRICKS;b\+\+\) \{ sum \+= bitcast<f32>/);
+  assert.match(norm, /min\(1\.0,budget\*0\.5\/max\(sum,0\.000001\)\)/);
+  // damagePlan's energy and direction for one charge
+  const damage = blastsWGSL(g, nativeDynamicsHead, 'damageCharges');
+  assert.match(blastsWGSL(g, nativeDynamicsHead, 'damagePlan'), /let energy=length\(plan\.velocity\)\*bitcast<f32>\(atomicLoad\(&control\[6\]\)\);/);
+  assert.match(damage, /var energy=length\(plan\.velocity\)\*bitcast<f32>\(atomicLoad\(&control\[6\]\)\);/);
+  assert.match(damage, /if \(n>1u && /);
+  assert.match(damage, /select\(normalize\(plan\.velocity\),normalize\(combined\+vec3f\(0\.000001\)\),n>1u\)/);
+  // the rest (allocate, apply, children) is shared and unchanged: one charge is planned as before
+});
+test('an idle tick records 17 blast dispatches, not 115, and no copies', () => {
+  commands.length = 0; d.blastBatch = BATCH_DEFAULT; d.consumeMaterialEvents(9);
+  assert.equal(commands.filter(c => !c.copy).length, 17); assert.equal(commands.filter(c => c.copy).length, 0);
+  assert.equal(body(blastsWGSL(g, nativeDynamicsHead, 'reset')).trim(), RESET_SELECTION);
+  assert.match(listsStageWGSL(g, 'workArgs'), /let hasWork=control\[3\]!=D_NONE/);
+  assert.match(pickCode, /The Powder Toy/);
+});
+test.after(() => d.dispose());
