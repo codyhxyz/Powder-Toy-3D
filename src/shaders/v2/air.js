@@ -1,9 +1,21 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
 import { dynamicsCommon, storageLayout, main64 } from './particles.js';
+import { SPAWN_PREFIX } from './blasts.js';
 import { AIR, DT, GRAVITY, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { PHYS } from '../../physics.js';
 import { E } from '../../elements.js';
 export const AIR_LAYOUT = storageLayout(5, [0]);
+// Per-brick reach word of the acoustic substeps. It borrows the count stage's
+// spawn-prefix run, dead from the air source until couplePlan's count rewrites
+// every brick. Bit 0: this brick may change in the first substep; bit a+1: a
+// bit-a brick lies within REACH along axis a; REACH_STEP: run its substeps.
+export const REACH_BASE = SPAWN_PREFIX;
+// A substep reads only its six face neighbours, so a change travels at most one
+// brick per substep. The start set is read before the neighbours' own source,
+// which costs one brick more (see source): AIR.substeps in all.
+export const REACH = AIR.substeps;
+export const REACH_STEP = 1 << 3;
+const NEGATIVE_ZERO = 0x80000000;
 const f = n => Number.isInteger(n) ? `${n}.0` : String(n);
 function head(g,nativeHead) {
   return /* wgsl */ `${dynamicsCommon(g,nativeHead)}
@@ -20,6 +32,7 @@ const A_DIFF: f32 = ${f(AIR.diffusion)};
 const A_PQ: f32 = ${f(AIR.pQuantum)};
 const A_VQ: f32 = ${f(AIR.vQuantum)};
 const A_SQ: f32 = ${f(AIR.scalarQuantum)};
+const A_REACH: u32 = ${REACH_BASE}u;
 // contactVacuum twin: singularity raw life is mass in1/256-cell units.
 // Legacy pressure is explicitly converted, shared with native tool adapters.
 fn aVacuum(core: vec4u) -> f32 {
@@ -41,6 +54,14 @@ fn aFace(b: u32, q: u32, axis: u32, sign_: i32) -> f32 {
   } if (sign_>0) { return faces[b][axis]; } return faces[q][axis];
 }
 fn aStill(a: DAir) -> bool { return abs(a.vp.w)<A_PQ && all(abs(a.vp.xyz)<vec3f(A_VQ)); }
+// A resting value is a fixed point of step: zero motion bits, a full quiet run
+// and no -0 scalar (x - (-0) turns a -0 into +0, a bit change).
+fn aRest(a: DAir) -> bool {
+  return all(bitcast<vec4u>(a.vp)==vec4u(0u)) && a.thermal.z==${f(AIR.quietTicks)} && all(bitcast<vec4u>(a.thermal)!=vec4u(${NEGATIVE_ZERO}u));
+}
+// Neither diffusion nor the gradient test acts across this pair: canonical
+// aFlux zeroes each scalar delta under A_SQ, and |r-l| equals |l-r| exactly.
+fn aLevel(a: DAir, b: DAir) -> bool { return all(abs(a.thermal.xy-b.thermal.xy)<vec2f(A_SQ)); }
 // Oriented finite-volume flux; the adjacent cell evaluates the SAME face in
 // canonical order, then subtracts instead of adds. Acoustic Rusanov (TPT's
 // slowed sound, R12) plus bounded upwind transport, not nonconservative sampling.
@@ -65,7 +86,10 @@ fn aFlux(left: DAir, right: DAir, axis: u32) -> DAir {
 }
 export function airWGSL(g,nativeHead,stage) {
   const h=head(g,nativeHead);
-  if (stage==='faces') return h+main64(/* wgsl */ `
+  // One read of the brick's cells feeds step's cached faces (open fractions
+  // toward +x/+y/+z, gas buoyancy), the vacuum, gas sources and the durable
+  // event census. No air stage writes a cell before step, so order is free.
+  if (stage==='source') return h+main64(/* wgsl */ `
     if (t>=D_BRICKS) { return; } let base=aBase(t); var open=vec3f(0);
     for (var a=0u;a<3u;a++) { let u=(a+1u)%3u; let v=(a+2u)%3u;
       for (var i=0;i<4;i++) { for (var j=0;j<4;j++) {
@@ -73,17 +97,10 @@ export function airWGSL(g,nativeHead,stage) {
         if (dOpen(p) && dOpen(p+dAxis(a))) { open[a]+=1.0/16.0; }
       } }
     }
-    var buoyancy=0.0;
-    for (var s=t*64u;s<(t+1u)*64u;s++) {
-      let c=loadMaterial(s).core;
-      if (cls(cid(c))==4u) { buoyancy+=(f32(cTq(c))*0.25-273.25-P.ambient)/64.0; }
-    }
-    faces[t]=vec4f(open,buoyancy);
-  `);
-  if (stage==='source') return h+main64(/* wgsl */ `
-    if (t>=D_BRICKS) { return; } var a=airIn[t]; var count=0u; var heat=0.0; var vacuum=0.0;
+    let before=airIn[t]; var a=before; var count=0u; var heat=0.0; var vacuum=0.0; var buoyancy=0.0; var pending=0u;
     for (var s=t*64u;s<(t+1u)*64u;s++) {
       let core=loadMaterial(s).core; vacuum=min(vacuum,aVacuum(core));
+      if (cls(cid(core))==4u) { buoyancy+=(f32(cTq(core))*0.25-273.25-P.ambient)/64.0; }
       // The contact rule's0.6 open-neighbour ring, including cross-brick faces.
       // Interior neighbours already share the stronger source-brick target.
       if (cls(cid(core))==0u || cls(cid(core))==4u) {
@@ -98,7 +115,12 @@ export function airWGSL(g,nativeHead,stage) {
         count++; heat+=(f32(cTq(loadMaterial(s).core))*0.25-273.25-P.ambient)/64.0;
         events[s]&=~2u; // bit consumed only together with its bounded, once-only source
       }
+      // Requests left after this source. Nothing later in the air tick sets
+      // or clears an event bit, so this is the census activity used to take.
+      if (events[s]!=0u) { pending++; dWake(cellOf(s)); }
     }
+    faces[t]=vec4f(open,buoyancy);
+    if (pending>0u) { atomicAdd(&control[2],pending); }
     let shock=atomicExchange(&control[D_SHOCK+t],0u);
     if (shock>0u && mAirPressure()) { a.vp.w+=f32(shock)/256.0; a.thermal.z=0.0; dWake(aBase(t)); }
     if (count>0u) {
@@ -108,9 +130,36 @@ export function airWGSL(g,nativeHead,stage) {
     if (vacuum<0.0 && mAirPressure()) { a.vp.w=min(a.vp.w,vacuum); a.thermal.z=0.0; dWake(aBase(t)); }
     if(!mAirPressure()) { a.vp.w=0.0; } if(!mAirVelocity()) { a.vp=vec4f(0,0,0,a.vp.w); } if(!mAirHeat()) { a.thermal.x=0.0; }
     airOut[t]=a;
+    // Start set of the substeps' reach: everything but a brick this source left
+    // bitwise unchanged, resting, without buoyancy (gravity ignored: a superset)
+    // and level with resting neighbours. Neighbours are read BEFORE their own
+    // source; one that source changed is in the set itself, and REACH counts
+    // that extra brick.
+    let changed=any(bitcast<vec4u>(a.vp)!=bitcast<vec4u>(before.vp)) || any(bitcast<vec4u>(a.thermal)!=bitcast<vec4u>(before.thermal));
+    var settled=!changed && aRest(a) && !(mAirHeat() && mAirVelocity() && abs(a.thermal.x+buoyancy)>0.01);
+    for (var axis=0u;axis<3u;axis++) { for (var side=-1;side<=1;side+=2) {
+      let q=aNeighbor(t,axis,side); if (q==D_NONE && P.edge!=1u) { continue; }
+      var other=DAir(vec4f(0),vec4f(0,0,${f(AIR.quietTicks)},0)); if (q!=D_NONE) { other=airIn[q]; }
+      settled=settled && aRest(other) && aLevel(a,other);
+    } }
+    atomicStore(&control[A_REACH+t],select(1u,0u,settled));
+  `);
+  // Separable box dilation of that start set, one axis per dispatch
+  // (P.substep), in step's own neighbour topology (mEdge wraps loop edges).
+  if (stage==='reach') return h+main64(/* wgsl */ `
+    if (t>=D_BRICKS) { return; } let axis=P.substep; var near=false;
+    for (var d=-${REACH};d<=${REACH};d++) {
+      let p=mEdge(aBase(t)+dAxis(axis)*4*d); if (!inGrid(p)) { continue; }
+      near=near || (atomicLoad(&control[A_REACH+brickOfCell(p)])&(1u<<axis))!=0u;
+    }
+    if (near) { atomicOr(&control[A_REACH+t],2u<<axis); }
   `);
   if (stage==='step') return h+main64(/* wgsl */ `
-    if (t>=D_BRICKS) { return; } let before=airIn[t]; var next=before;
+    if (t>=D_BRICKS) { return; }
+    // Outside the reach every substep is an exact identity and both ping-pong
+    // copies already hold this value: no read, no write.
+    if ((atomicLoad(&control[A_REACH+t])&${REACH_STEP}u)==0u) { return; }
+    let before=airIn[t]; var next=before;
     var quiet=aStill(before); var gradient=false;
     for (var axis=0u;axis<3u;axis++) { for (var side=-1;side<=1;side+=2) {
       let q=aNeighbor(t,axis,side); if (q==D_NONE && P.edge!=1u) { continue; }
@@ -153,9 +202,7 @@ export function airWGSL(g,nativeHead,stage) {
   `);
   if (stage==='activity') return h+main64(/* wgsl */ `
     if (t>=D_BRICKS) { return; }
-    let a=airIn[t]; var pending=0u;
-    for (var s=t*64u;s<(t+1u)*64u;s++) { if (events[s]!=0u) { pending++; dWake(cellOf(s)); } }
-    if (pending>0u) { atomicAdd(&control[2],pending); }
+    let a=airIn[t];
     var working=(a.thermal.z<${f(AIR.quietTicks)} || !aStill(a)) && P.airMode!=4u;
     if(P.airMode==4u) { for(var axis=0u;axis<3u;axis++) { for(var side=-1;side<=1;side+=2) {
       let q=aNeighbor(t,axis,side);if(q==D_NONE || aFace(t,q,axis,side)==0.0) { continue; }
@@ -183,11 +230,13 @@ export function airWGSL(g,nativeHead,stage) {
     // and bank, not just temperature/id; no neighboring write/read race.
     if (((p[axis]+P.origin[axis]+i32((P.tick/3u)&1u))&1)!=0) { return; }
     let q=mEdge(p+dAxis(axis)); if (!inGrid(q)) { return; }
+    // No wind across the pair: neither the wake nor the swap test can pass
+    // (dRandom is never negative). Decide before touching events or cells.
+    let wind=(airIn[brickOfCell(p)].vp[axis]+airIn[brickOfCell(q)].vp[axis])*0.5;
+    let probability=min(1.0,abs(wind)*D_DT/D_CELL*6.0); if (probability==0.0) { return; }
     let sa=slotOf(p); let sb=slotOf(q); if((events[sa]&1u)!=0u || (events[sb]&1u)!=0u) { return; }
     let a=loadMaterial(sa); let b=loadMaterial(sb);
     let ka=cls(cid(a.core)); let kb=cls(cid(b.core));
-    let wind=(airIn[brickOfCell(p)].vp[axis]+airIn[brickOfCell(q)].vp[axis])*0.5;
-    let probability=min(1.0,abs(wind)*D_DT/D_CELL*6.0);
     let movable=(wind>0.0 && ka==4u && cid(b.core)==0u) || (wind<0.0 && kb==4u && cid(a.core)==0u);
     if(movable && probability>0.0) { dWake(p);dWake(q); }
     if (movable && dRandom(dId(p,0x474153u),0u)<probability) {
@@ -195,13 +244,16 @@ export function airWGSL(g,nativeHead,stage) {
     }
   `);
   if(stage==='gasBoundary') return h+main64(`
-    if(t>=D_SLOTS || P.edge!=1u || !mAirVelocity() || (events[t]&1u)!=0u) { return; }
-    let before=loadMaterial(t);if(cls(cid(before.core))!=4u) { return; }
+    if(t>=D_SLOTS || P.edge!=1u || !mAirVelocity()) { return; }
+    // Interior cells and still edges have no outward wind: no wake, and the
+    // outflow test is dRandom<0. Decide before reading events or cells.
     let p=cellOf(t);let wind=airIn[brickOfCell(p)].vp.xyz;var outward=0.0;
     for(var axis=0u;axis<3u;axis++) {
       if(!inGrid(p-dAxis(axis))) { outward+=max(0.0,-wind[axis]); }
       if(!inGrid(p+dAxis(axis))) { outward+=max(0.0,wind[axis]); }
     }
+    if(outward==0.0 || (events[t]&1u)!=0u) { return; }
+    let before=loadMaterial(t);if(cls(cid(before.core))!=4u) { return; }
     if(outward>0.0) { dWake(p); }
     if(dRandom(dId(p,0x4f5554u),0u)<min(1.0,outward*D_DT/D_CELL)) {
       dOutflow(p,before);storeMaterial(t,before,dCarrier(before));atomicAdd(&control[16],1u);
@@ -209,7 +261,7 @@ export function airWGSL(g,nativeHead,stage) {
   `);
   throw new Error(`Unknown air stage ${stage}`);
 }
-export const AIR_STAGES=['faces','source','step','activity','tool','gas','gasBoundary'];
+export const AIR_STAGES=['source','reach','step','activity','tool','gas','gasBoundary'];
 
 export const WGSL_CHECK = AIR_STAGES.map(stage => ({ name: `v2air_${stage}`, kind: 'compute',
   code: g => airWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,AIR_LAYOUT,'EMPTY'], tool: true }));
