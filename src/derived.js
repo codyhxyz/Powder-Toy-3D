@@ -1,6 +1,6 @@
 import { BRICK, brickIdOf } from './shaders/common.js';
 import {
-  fieldEmaFrag, fieldBlurFrag, fieldBoostFrag, fieldPeakFrag, fieldShiftFrag, fieldMaxFrag,
+  particleAgeFrag, fieldEmaFrag, fieldBlurFrag, fieldBoostFrag, fieldPeakFrag, fieldShiftFrag, fieldMaxFrag,
   EmaParams, FieldBlurParams, BoostParams, PeakParams, FieldShiftParams, MaxParams,
   FIELD_LAYOUT, FIELD_FORMAT, DIRTY, dirtyLists, BLUR_TAPS,
 } from './shaders/fields.js';
@@ -134,6 +134,7 @@ export class Derived {
     this.sim = sim;
     this.g = sim.g;
     this.world = world;
+    this.particleSplit = false;
     this.far = null;              // the far field's textures (attachFar; the GI's far branch)
     this.shiftsBricks = true;     // sim.shift: this keeps the history across a move (no changedAll)
     // test only (gpu.testMode): dropFold leaves the changes pending at a shift
@@ -201,6 +202,8 @@ export class Derived {
     const dist = (name, src, dst) => gpu.bindGroup(L.DIST, [b(0, src), b(1, dst), b(2, this.boxes)], name);
     const v = this.views;
     this.groups = {
+      particleAges: gpu.bindGroup(L.BOOK, [b(0, this.age), b(1, this.scratchB)], 'particle ages'),
+      particleBook: gpu.bindGroup(L.BOOK, [b(0, this.scratchB), b(1, this.dlist)], 'particle book'),
       book: gpu.bindGroup(L.BOOK, [b(0, this.age), b(1, this.dlist)], 'derived book'),
       // the blur: x, y, then z normalised into the half-float planes
       blur: [field('blur x', this.ema, this.tmpA), field('blur y', this.tmpA, this.tmpB), field('blur z', this.tmpB, this.blurred)],
@@ -228,6 +231,7 @@ export class Derived {
     const kernel = (name, code, group1, group2, params = null) => gpu.kernel({ name, code, layouts: [SL.TABLES, group1, group2], params, workgroupSize: [64, 1, 1] });
     this.kernels = {
       age: kernel('age', ageFrag(g), SL.STATE_BUILD, L.BOOK, AgeParams),
+      particleAges: kernel('particleAges', particleAgeFrag(g), E, L.BOOK),
       dirty: kernel('dirty', dirtyFrag(g), E, L.BOOK),
       dirtyArgs: kernel('dirtyArgs', dirtyArgsFrag(g), E, L.BOOK),
       fieldEma: kernel('fieldEma', fieldEmaFrag(g), SL.STATE_RO, L.JET, EmaParams),
@@ -345,7 +349,10 @@ export class Derived {
     });
     sim.changedAll = false;
     sim.actNoted = false;
-    this._dispatch(dirty, this._perBrick, { bind: [tables, this.gpu.emptyGroup, book] });
+    if (this.particleSplit) {
+      this._dispatch(this.kernels.particleAges, this._perBrick, { bind: [tables, this.gpu.emptyGroup, this.groups.particleAges] });
+    }
+    this._dispatch(dirty, this._perBrick, { bind: [tables, this.gpu.emptyGroup, this.particleSplit ? this.groups.particleBook : book] });
     this._dispatch(dirtyArgs, [1, 1, 1], { bind: [tables, this.gpu.emptyGroup, book] });
   }
 
@@ -357,6 +364,15 @@ export class Derived {
     sim.actCarry = sim.actAge;
   }
 
+  /** Toggle before updateBricks: rebuild existing fields, never simulation state. */
+  setParticleSplit(enabled) {
+    enabled = !!enabled;
+    if (this.particleSplit === enabled) return false;
+    this.particleSplit = enabled;
+    this.sim.fieldReset = this.sim.changedAll = true;
+    return true;
+  }
+
   /**
    * The render fields over the dirty sets (shaders/fields.js): the EMA over
    * EMA, the blur over FIELDS and the boost's smoothing over WORK (each over
@@ -366,13 +382,14 @@ export class Derived {
    */
   updateFields() {
     const sim = this.sim, k = this.kernels, gr = this.groups, tables = sim.tables, empty = this.gpu.emptyGroup;
+    const particleSplit = this.particleSplit ? 1 : 0, world = this.world ? 1 : 0;
     const reset = sim.fieldReset;
     sim.fieldReset = false;
     const { w, bulk, s } = fieldWeights(sim.smoothing);
     const aer = this._jet();   // (the groups below follow its buffer)
     this._dispatch(k.fieldEma, this._over(DIRTY.EMA), {
       bind: [tables, sim.bindRO, gr.ema], header: sim.header(),
-      params: { emaS: CHANNELS.map((c) => c.ema), emaM: MEDIA.map((m) => m.ema), reset, aer },
+      params: { emaS: CHANNELS.map((c) => c.ema), emaM: MEDIA.map((m) => m.ema), reset, aer, particleSplit, world },
     });
     const work = this._over(DIRTY.WORK), fields = this._over(DIRTY.FIELDS);
     for (let axis = 0; axis < 3; axis++) {
@@ -380,7 +397,7 @@ export class Derived {
     }
     for (let axis = 0; axis < 3; axis++) {
       const bind = axis ? [tables, empty, gr.boost[axis]] : [tables, sim.bindRO, gr.boost[0]];
-      this._dispatch(axis ? k.fieldBoost : k.fieldBoost0, work, { bind, header: sim.header(), params: { s, axis, aer } });
+      this._dispatch(axis ? k.fieldBoost : k.fieldBoost0, work, { bind, header: sim.header(), params: { s, axis, aer, particleSplit, world } });
     }
     this._dispatch(k.fieldPeak, fields, { bind: [tables, sim.bindRO, gr.peak], header: sim.header(), params: { bulk, reach: [1, 1, 1], aer } });
   }

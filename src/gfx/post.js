@@ -121,6 +121,7 @@ import { IDENTITY, presentationWGSL } from './presentationMath.js';
 import { glf as f } from '../glsl.js';
 import { sprintBlurWGSL } from './sprintBlur.js';
 import { crueltyDisplayWGSL, crueltyFrameSettings } from './crueltyDisplay.js';
+import { temporalInputs, TEMPORAL_REACTIVE_RADIUS } from './hybrid/temporal.js';
 
 export const POST_DEFAULTS = {
   taa: true,
@@ -319,6 +320,7 @@ const MotionParams = uniformStruct('MotionParams', {
   jitterNdc: 'vec2f',    // this frame's jitter in NDC (2·jx/w, −2·jy/h): jittered NDC + this = unjittered
   size: 'vec2f',         // the scene's size
   historyValid: 'bool',  // false: send every pixel's history off the screen (HISTORY_GONE_NDC)
+  explicitMotion: 'bool', reactive: 'bool', rejectUntracked: 'bool', // optional hybrid inputs
   // the rolling log (gfx/presentation.js): this frame's and the last frame's parameters (k 0: flat)
   warpK: 'f32',
   prevK: 'f32',
@@ -353,8 +355,8 @@ const F = STAGE.FRAGMENT, C = STAGE.COMPUTE;
 const tex = (binding, visibility, sampleType = 'float') => ({ binding, visibility, texture: { sampleType } });
 const linear = (binding, visibility) => ({ binding, visibility, sampler: { type: 'filtering' } });
 export const POST_LAYOUTS = {
-  // the scene's colour and its depth (texelFetch)
-  MOTION: [tex(0, F), tex(1, F, 'depth')],
+  // scene colour/depth, optional explicit motion and reactive mask (texelFetch)
+  MOTION: [tex(0, F), tex(1, F, 'depth'), tex(2, F), tex(3, F)],
   // two images and a sampler: the prefilter and the bloom pass (one source each)
   PAIR: [tex(0, F), tex(1, F), linear(2, F)],
   // a bloom level: source (or low), high, sampler, the level written
@@ -452,6 +454,8 @@ ${COMMON}
 ${MotionParams.wgsl}
 @group(2) @binding(0) var tColor: texture_2d<f32>;     // the scene: linear premultiplied radiance, alpha = coverage
 @group(2) @binding(1) var tDepth: texture_depth_2d;    // its depth, 0..1 (F4)
+@group(2) @binding(2) var tMotion: texture_2d<f32>;   // xyz: NDC current-minus-previous, validity (hybrid/temporal.js)
+@group(2) @binding(3) var tReactive: texture_2d<f32>; // R > 0: reject history
 @group(3) @binding(1) var<uniform> P: MotionParams;
 const HISTORY_GONE: f32 = ${f(HISTORY_GONE_NDC)};
 
@@ -482,6 +486,28 @@ struct Motion {
   o.color = taaCompress(sanitize(textureLoad(tColor, p, 0)));
   o.velocity = vec2f(HISTORY_GONE);
   if (P.historyValid == 0u) { return o; }
+  // Bitwise finite tests survive finite-math compiler assumptions, as sanitize does.
+  if (P.reactive != 0u) {
+    // Reject the complete 2-scene-pixel neighbourhood, including at target edges.
+    let hi = vec2i(textureDimensions(tReactive)) - 1;
+    for (var y = -${TEMPORAL_REACTIVE_RADIUS}; y <= ${TEMPORAL_REACTIVE_RADIUS}; y++) {
+      for (var x = -${TEMPORAL_REACTIVE_RADIUS}; x <= ${TEMPORAL_REACTIVE_RADIUS}; x++) {
+        let r = textureLoad(tReactive, clamp(p + vec2i(x, y), vec2i(0), hi), 0).r;
+        if ((bitcast<u32>(r) & F32_ABS) >= F32_INF || r > 0.0) { return o; }
+      }
+    }
+  }
+  if (P.explicitMotion != 0u) {
+    let m = textureLoad(tMotion, p, 0).xyz;
+    if (any((bitcast<vec3u>(m) & vec3u(F32_ABS)) >= vec3u(F32_INF)) || m.z < 0.0) { return o; }
+    if (m.z > 0.0) {
+      // Both corresponding samples must be on screen; also keeps rg16float finite.
+      if (all(abs(m.xy) <= vec2f(2.0))) { o.velocity = m.xy; }
+      return o;
+    }
+  }
+  // A changing simulation without a complete mask cannot claim static correspondence.
+  if (P.rejectUntracked != 0u) { return o; }
   let uv = in.position.xy / P.size;
   let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);   // this texel's centre, as the jittered camera drew it
   let prev = presentationReproject(vec4f(ndc, textureLoad(tDepth, p, 0), 1.0));
@@ -1192,7 +1218,10 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
   let active = main;
   let size = [0, 0], inSize = [0, 0];
   let down = [], up = [], bloomImage = null, resolved = null;
-  let historyValid = false, frame = 0, lastTaa = null, prevCamera = null;
+  let historyValid = false, historyRevision = 0, frame = 0, lastTaa = null, prevCamera = null;
+  let motionInputs = temporalInputs(null, inSize);
+  let temporalFrame = false;
+  let motionResources = [null, null];
   let crueltyTime = 0; // render dt clock: dt=0 freezes noise; stills don't advance it
   let jitter = [0, 0], taaNow = false;
   // the cameras' view-projections: last frame's and this frame's unjittered, this frame's jittered (as the scene drew)
@@ -1276,6 +1305,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     get size() { return [...size]; },
     /** The scene's size [w, h]: the output size × the render scale (the still's size during renderStill). */
     get inSize() { return active === still ? [still.width, still.height] : [...inSize]; },
+    get historyRevision() { return historyRevision; },
     /** This frame's jitter, scene pixels, y down: texel m sampled the view at m + ½ + jitter (three's TAAU's; FrameUniforms.jitter, F4); none during renderStill. */
     get jitter() { return active === still ? [0, 0] : [...jitter]; },
     /** The target the scene is drawn into now ({ rt, color, depth, width, height }): the main one, or the still's during renderStill. */
@@ -1345,7 +1375,28 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
     },
 
     /** Drop the TAA history (call after scene swaps, teleports, etc.): the next frame takes the current view alone. */
-    reset() { historyValid = false; keptPost = null; },
+    reset() {
+      historyRevision++;
+      historyValid = false; keptPost = null;
+      motionInputs = temporalInputs(null, inSize);
+      motionResources = [null, null]; groups = new Map();
+    },
+
+    /** Optional frame-local motion inputs; see hybrid/temporal.js for units/formats.
+     * Call in prepare/compute AFTER beginScene selects inSize; record producers
+     * before finish. Null restores camera-only motion. Throws on size/format
+     * mismatch, never silently rescales. Inputs are caller-owned. renderStill
+     * ignores these (it has no temporal resolve and must not alter history).
+     * Opted-in frames cannot seed post-only reuse: their fields are frame-local.
+     */
+    get temporalInputs() { return { ...motionInputs }; },
+    setTemporalInputs(inputs = null) {
+      if (active === still) return;
+      if (!jittered) throw new Error('post.setTemporalInputs: call inside a scene');
+      motionInputs = temporalInputs(inputs, inSize, [main.color, main.depth]);
+      temporalFrame = inputs != null;
+      keptPost = null;
+    },
 
     /**
      * A presented frame's start (render() calls it; the split methods are for
@@ -1360,6 +1411,8 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
      */
     beginScene(camera, { target = null } = {}) {
       keptPost = null;
+      motionInputs = temporalInputs(null, inSize); // never replay last frame's moving matter
+      temporalFrame = false;
       if (jittered) restore(jittered);   // (a scene left unended: don't jitter twice)
       const s = settingsOf();
       const scale = post.renderScale;
@@ -1480,13 +1533,23 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
           // (bent, this frame or the last: this frame's clip → displayed world cells, prevWorldToClip the rest)
           if (warp.k !== 0 || prevWarp.k !== 0) reproj.multiplyMatrices(presentation.sceneToWorld, invVP);
           else reproj.multiplyMatrices(prevVP, invVP);
-          const bind = group(L.MOTION, [scene, depth], () => [texEntry(0, scene), texEntry(1, depth)]);
+          // Revalidate at consumption too (a caller may have resized/replaced inputs).
+          const mi = temporalInputs(motionInputs, inSize, [scene, depth, inputs.velocity, inputs.color]);
+          const motion = mi.motion ?? blank, reactive = mi.reactive ?? blank;
+          if (motionResources[0] !== motion || motionResources[1] !== reactive) {
+            groups = new Map(); // do not retain bind groups for retired producer textures
+            motionResources = [motion, reactive];
+          }
+          const bind = group(L.MOTION, [scene, depth, motion, reactive], () => [
+            texEntry(0, scene), texEntry(1, depth), texEntry(2, motion), texEntry(3, reactive),
+          ]);
           const attach = (t) => ({ view: viewOf(t), loadOp: 'clear', storeOp: 'store', clearValue: CLEAR });
           const rp = f.render({ colorAttachments: [attach(inputs.velocity), attach(inputs.color)] }, 'motion');
           pipes.motion.draw(rp, {
             bind: [, , bind],
             params: {
               reproj, jitterNdc: [(2 * jitter[0]) / inSize[0], (-2 * jitter[1]) / inSize[1]], size: inSize, historyValid,
+              explicitMotion: !!mi.motion, reactive: !!mi.reactive, rejectUntracked: mi.rejectUntracked,
               warpK: warp.k, warpAnchor: warp.anchor, warpDir: warp.dir,
               prevK: prevWarp.k, prevAnchor: prevWarp.anchor, prevDir: prevWarp.dir, prevWorldToClip,
             },
@@ -1571,7 +1634,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
       });
       rp.end();
       post.onPass?.('composite', { kind: 'render' });
-      if (!postOnly && !target && !viewmodel && !glow && adaptOn && !s.night && !s.meter) {
+      if (!postOnly && !temporalFrame && !target && !viewmodel && !glow && adaptOn && !s.night && !s.meter) {
         keptPost = { color, packed, camera: prevCamera, stamp: imageStamp(prevCamera, s) };
       }
     },
@@ -1679,6 +1742,7 @@ export function createPost(gpu, { presenter = null, pixScale = null, sky = skyCo
 
     dispose() {
       keptPost = null;
+      motionInputs = temporalInputs(null, inSize); motionResources = [null, null];
       gpu.flush('post dispose');
       presentation?.dispose();
       temporal?.dispose();

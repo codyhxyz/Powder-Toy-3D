@@ -85,7 +85,7 @@ import { withCityBusFocus } from './pov/village/bus.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
-import { VIEWS, viewKey as viewKeyOf, isMaterialView, viewForMode } from './views.js';
+import { VIEWS, viewKey as viewKeyOf, isMaterialView, isTestView, viewForMode } from './views.js';
 import { createReadyVolumeView } from './gfx/readyVolumeView.js';
 import { WIRES, wireNamed } from './wire/index.js';
 import { offline as OFFLINE } from './wire/mp.js';
@@ -282,6 +282,10 @@ settings.paused = params.get('paused') === '1' || testMode === 'manual' || testM
 // then; not persisted. A world, first person and a multiplayer guest keep today's physics (the box
 // switches back to it while the body is out, and to v2 again after). __app.setPhysics('v2' | 'v1') for tools.
 let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
+// Keep the old diagnostic URL; the picker loads Test on demand.
+const hybridOptIn = params.get('renderer') === 'hybrid';
+let hybridModule = hybridOptIn ? await import('./gfx/hybrid/index.js') : null;
+let hybridLoad = null;
 let V2mod = physicsMode === 'v2' ? await import('./v2/physics.js') : null;
 let physicsV2 = null;    // the box's PhysicsV2 while the mode is v2
 let v2Running = false;   // the last steps were v2's (switching away notes a whole write for today's activity map)
@@ -290,7 +294,9 @@ let saveTimer = 0;
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, settings[k]])), [REV_KEY]: DEFAULT_CHANGES.length })); } catch { /* storage unavailable */ }
+    // A broken experimental scene must not become the next visit's default.
+    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, settings[k]])),
+      view: isTestView(settings.view) ? DEFAULTS.view : settings.view, [REV_KEY]: DEFAULT_CHANGES.length })); } catch { /* storage unavailable */ }
   }, 300);
 }
 
@@ -357,7 +363,7 @@ function applyOutputRatio() {
 }
 
 // the grid: the simulation, its derived passes and its volume (made per grid: build)
-let sim, derived, vol, scale;
+let sim, derived, vol, scale, hybrid = null;
 // The blocks renderer (gfx/blocks.js) draws the Plain view (src/views.js):
 // the world as its cells' visible faces, Minecraft's way, and nothing that
 // only feeds the volume's march runs (the derived passes, GI, the volume's
@@ -512,6 +518,8 @@ function build(savedWorldSize = null) {
     for (const w of live) w.detach?.(ctx);
     // (what is recorded on the old grid goes out first: each dispose flushes)
     vol.dispose();
+    hybrid?.dispose();
+    hybrid = null;
     blocks?.dispose();
     blocks = null;
     derived.dispose?.();
@@ -548,6 +556,7 @@ function build(savedWorldSize = null) {
   derived = new Derived(sim);
   blocksOn = plainView();
   vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !!(worldMode && sceneByKey(settings.scene).importManifest?.appearance) });
+  ensureHybrid();
   if (blocksOn) blocks = createBlocks(gpu, sim, { world: !!worldMode });
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
   const s = sim, simWake = s.wake.bind(s);
@@ -560,7 +569,7 @@ function build(savedWorldSize = null) {
   // the pipelines a frame needs (warm from the start menu, or building now)
   coreReady = false;
   s.ready.then(() => readySims.add(s), () => {});
-  const core = coreWait = Promise.all([s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready,
+  const core = coreWait = Promise.all([s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready, hybrid?.ready,
     blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())]).then(() => {
     if (coreWait === core) { coreReady = true; wakeLoop(); }
   });
@@ -595,6 +604,39 @@ function whenSimReady(fn) {
   if (readySims.has(sim)) { fn(); return; }
   const s = sim;
   s.ready.then(() => { if (s === sim && !graphicsFailure) fn(); }, () => {});
+}
+
+function ensureHybrid() {
+  if (!hybridOptIn && !isTestView(settings.view)) {
+    if (hybrid) {
+      hybrid.dispose(); hybrid = null;
+      post.reset(); meshFrames.drop();
+    }
+    return;
+  }
+  if (hybrid || graphicsFailure || !sim) return;
+  if (!hybridModule) {
+    hybridLoad ??= import('./gfx/hybrid/index.js').then(module => {
+      hybridModule = module; hybridLoad = null;
+      // Resolve against the current selection/grid, not the one at click time.
+      ensureHybrid();
+      wakeLoop();
+    }).catch(error => {
+      hybridLoad = null;
+      console.warn('Test renderer unavailable', error);
+      if (isTestView(settings.view)) {
+        hud.toast('Test could not load. Switched to Realistic.', { kind: 'error' });
+        setView(0);
+      }
+    });
+    return;
+  }
+  hybrid = hybridModule.createHybridRenderer(gpu, sim, {
+    post, invalidateCaches: () => meshFrames.drop(), onRead: () => wakeLoop(),
+    world: !!worldMode, sourceAppearance: !!(worldMode && sceneByKey(settings.scene).importManifest?.appearance),
+  });
+  wakeWhen(hybrid.ready);
+  post.reset(); meshFrames.drop();
 }
 
 // Lit material views draw the gate's base variant first (gfx/detailGate.js).
@@ -1606,12 +1648,14 @@ function setPaused(p) {
 // are ready; its history and GI reset when the rendered view actually switches.
 function setView(id) {
   if (!VIEWS.some((v) => v.id === id)) return;
+  if (settings.view !== id && isTestView(id)) hud.toast('Test is experimental. Water/glass may render incorrectly; choose Realistic to return.');
   if (settings.view !== id && !(isMaterialView(settings.view) && isMaterialView(id))) {
     post.reset();
     meshFrames.drop();
     sim.resetGI();
   }
   settings.view = id;
+  ensureHybrid();
   detailGate.setView(id);
   setBlocks(plainView(id));
   prepareGI();
@@ -1711,11 +1755,12 @@ async function renderThumb(viewId, out) {
   useWebGPUCamera(thumbCam);
   const rawWas = post.settings.raw;
   const crueltyWas = post.settings.cruelty;
+  const splitWas = !!sim.derived.particleSplit;
   post.settings.raw = view === 'plain' ? false : !isMaterialView(view);
   post.settings.cruelty = selectedMode === 'crueltySquad' && isMaterialView(view);
   try {
     // flat, as main's stills are: a presentation effect is the play view's (gfx/presentation.js neutral)
-    presentation.neutral(() => post.renderStill({
+    const drawStill = () => presentation.neutral(() => post.renderStill({
       prepare() { writeFrameUniforms(gpu, frameValues(thumbCam, viewId, [0, 0])); },
       // the meshes too, as a frame draws them (the stills' target is post's still one)
       opaque: (p) => (threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false),
@@ -1731,9 +1776,11 @@ async function renderThumb(viewId, out) {
       },
       meshes: (p) => { threeMeshes(p, true, thumbCam); },
     }, thumbCam, thumbTarget));
+    if (hybrid) hybrid.legacyStill(drawStill); else drawStill();
   } finally {
     post.settings.raw = rawWas;
     post.settings.cruelty = crueltyWas;
+    if (splitWas) { pacer.wake(); wakeLoop(); }
   }
   const px = await gpu.readback.texture(thumbTarget);
   const [w, hgt] = THUMB_SIZE;
@@ -2090,7 +2137,7 @@ const pacer = createPacer({
 // (gfx/pacing.js); viewKey.still, when what our own passes draw with does
 const viewKey = createViewKey({ still: [volume, floorGrid] });
 const viewSettings = createViewSettings(settings);
-bindViewInputWake(window, () => { autoRes.wake(); wakeLoop(); });
+  bindViewInputWake(window, () => { autoRes.wake(); hybrid?.wake(); wakeLoop(); });
 let lastVersion = -1, renderedLast = false;
 // the browser capping the page at 30 Hz (gfx/pacing.js createCapCheck): say so once
 const capCheck = createCapCheck();
@@ -2246,6 +2293,8 @@ function drawVolume(rp) {
   const warp = warpNow(), curved = !!warp && warp.k !== 0;
   const drew = !testNoVolume && vol.draw(rp, {
     view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0, warp,
+    // A valid hybrid frame has zero legacy instances, decided on the GPU.
+    indirect: hybrid?.legacyIndirect,
   });
   if (!drew && !testNoVolume) {
     // (its pipeline is building: the frame goes without it, and the toast says why after a moment)
@@ -2262,6 +2311,7 @@ function drawVolume(rp) {
 function drawVolumeFirst(p) {
   volumeFirst = false;
   const far = win?.far;
+  if (hybrid?.enabled) { far?.occlude(p.sceneTarget, false); return; }
   if (blocks || !far?.volumeFirst(p.sceneTarget)) return;
   const rp = far.volumePass(p.sceneTarget);
   let drew = false;
@@ -2313,11 +2363,15 @@ const frameHooks = {
   // passes, the shadow map (views that read it), GI (the realistic view), the
   // wires' upkeep, the picks asked for this tick
   compute: () => {
+    const splitChanged = hybrid?.prepare({
+      view: viewKeyOf(renderView), model: volume.matrixWorld, warp: warpNow(),
+      disabled: !!blocks || testNoVolume, decoration: gfxUniforms.uDeco.value,
+    });
     if (blocks) {
       // nothing that only feeds the march: the faces again if the state or the window moved
       prof.phase('blocks');
       blocks.update({ sun: SUN });
-    } else if (frameDerived) {
+    } else if (frameDerived || splitChanged) {
       prof.phase('derived');
       sim.updateBricks();
       if (viewShadows(viewKeyOf(renderView))) {
@@ -2332,6 +2386,13 @@ const frameHooks = {
     prof.phase('view');
     // (a mesh-only frame keeps what the wires drew into the scene pass: their upkeep for it too, the far field's prepass)
     for (const w of live) if (frameMode !== 'meshes' || !w.scene) w.compute?.(ctx);
+    hybrid?.update({
+      view: viewKeyOf(renderView), sun: SUN, model: volume.matrixWorld, warp: warpNow(),
+      camera, paused: settings.paused,
+      disabled: !!blocks || testNoVolume,
+      decoration: gfxUniforms.uDeco.value,
+      externalAnimated: live.some(w => w.busy?.(ctx)),
+    });
     vol.recordPicks();
   },
   // (the blocks' faces are depth-tested against the meshes: no copy of their depth for the volume's cut)
@@ -2340,18 +2401,22 @@ const frameHooks = {
     if (frameMode === 'meshes' && meshFrames.restore(p)) { threeMeshes(p, false, camera, false); return true; }
     if (frameMode === 'meshes') frameMode = 'full';
     if (frameMode === 'capture') { drawVolumeFirst(p); return false; }   // (the volume uncut: the meshes go over it in the meshes hook)
-    const drew = threeMeshes(p, false) ? (blocks ? true : cut.capture(p.sceneTarget.depth)) : false;
+    let drew = threeMeshes(p, false);
+    if (hybrid?.drawOpaque(p, { load: drew })) drew = true;
+    if (drew && !blocks) cut.capture(p.sceneTarget.depth);
     drawVolumeFirst(p);
     return drew;
   },
   draw: (rp) => { if (frameMode !== 'meshes') drawScene(rp); },
   meshes: (p) => {
+    hybrid?.compose(p);
     if (frameMode === 'capture') {
       // the scene as drawn, before the meshes, kept; then the opaque meshes over it
       if (volumeDrawn) meshFrames.capture(p); else meshFrames.drop();
       threeMeshes(p, false, camera, false);
     }
-    threeMeshes(p, true);
+    const transparentMeshes = threeMeshes(p, true);
+    hybrid?.temporalFrame(p, { camera, model: volume.matrixWorld, transparentMeshes });
   },
   overlay: overlayWires.length ? (rp) => { for (const w of overlayWires) w.overlay(ctx, rp); } : undefined,
 };
@@ -2367,7 +2432,7 @@ let frameDetailSeen = null, frameDetailV = 0;   // (the detail variant drawn, th
 function planMeshFrame(runDerived) {
   if (frameDetail !== frameDetailSeen) { frameDetailSeen = frameDetail; frameDetailV++; }
   if (!threeHasVisible(scene, camera)) { meshFrames.release(); return 'full'; }
-  if (runDerived || blocks || testNoVolume || live.some((w) => !w.meshesOnly && w.busy?.(ctx))) {
+  if (hybrid || runDerived || blocks || testNoVolume || live.some((w) => !w.meshesOnly && w.busy?.(ctx))) {
     meshFrames.drop();
     return 'full';
   }
@@ -2443,7 +2508,7 @@ function tick(now, renderOnly = false) {
   const frameDt = renderOnly ? 0 : clock.getDelta();
   const dt = Math.min(frameDt, DT_MAX);
   // Measure real rendering time: the animation cap hides improvements below 10 fps.
-  if (!renderOnly && renderedLast && post.settings.taa && frameDt > 0) autoRes.update(frameDt, clock.getElapsed());
+  if (!hybrid?.enabled && !renderOnly && renderedLast && post.settings.taa && frameDt > 0) autoRes.update(frameDt, clock.getElapsed());
   // Set before pacing's view key so a scale change always schedules a render.
   post.settings.resolutionScale = autoRes.scale;
   ctx.renderOnly = renderOnly;
@@ -2516,7 +2581,7 @@ function tick(now, renderOnly = false) {
   }
   prof.phase('other');
   const worldChanged = sim.version !== lastVersion;
-  if (worldChanged) autoRes.wake();
+  if (worldChanged) { autoRes.wake(); hybrid?.wake(); }
   lastVersion = sim.version;
   // Keep animation time tied to simulation, not the test preview's draw rate.
   if (worldChanged) viewTime += dt;
@@ -2537,6 +2602,11 @@ function tick(now, renderOnly = false) {
     post.settings.cruelty = crueltyDisplay;
     post.reset(); // Never blend temporal history across source-style transitions.
   }
+  const hybridScale = hybrid?.adapt({
+    view: viewKeyOf(renderView), model: volume.matrixWorld, warp: warpNow(),
+    disabled: !!blocks || testNoVolume, decoration: gfxUniforms.uDeco.value,
+  });
+  if (hybridScale != null) post.settings.resolutionScale = hybridScale;
   const runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
@@ -2550,8 +2620,8 @@ function tick(now, renderOnly = false) {
   if (pacer.takeMeshWake() || (viewV !== viewSeen && viewKey.still === stillSeen)) meshesMoved = true;
   viewSeen = viewV;
   stillSeen = viewKey.still;
-  if (present && !runView && autoRes.recover(clock.getElapsed())) {
-    post.settings.resolutionScale = autoRes.scale;
+  if (present && !runView && (hybrid?.enabled ? hybrid.recover() : autoRes.recover(clock.getElapsed()))) {
+    post.settings.resolutionScale = hybrid?.enabled ? hybrid.resolution.resolutionScale : autoRes.scale;
     pacer.wake();   // settle the final full-quality still; don't wake auto resolution
     runView = true;
   }
@@ -2768,6 +2838,10 @@ async function allReady() {
   for (;;) {
     const s = sim, v = vol;
     await coreWait;
+    await hybridLoad;
+    const h = hybrid;
+    if (h) await h.ready;
+    if (s !== sim || v !== vol || h !== hybrid) continue;
     const view = viewKeyOf(settings.view);
     if (blocksOn) {
       if (blocks) await blocks.ready;
@@ -2814,6 +2888,7 @@ try {
     volume, get vol() { return vol; }, get shadowMap() { return vol.shadowTextures; },
     // the blocks renderer (gfx/blocks.js: stats, pipelines), the Plain view's; null in the others
     get blocks() { return blocks; },
+    get hybrid() { return hybrid; },
     get pov() { return pov; },
     get descent() { return descent; },   // Descent's level switch (pov/descent/switch.js): level, index, inside, busy
     get spawners() { return spawners; },

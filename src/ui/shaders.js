@@ -3,8 +3,8 @@ import { ICON } from './icons.js';
 
 export function createShaderPicker({ settings, views, renderThumb, onChange, onClose, trigger }) {
   const cards = views.map(v => {
-    const canvas = h('canvas', { width: 320, height: 200, 'aria-hidden': 'true' });
-    const status = h('span.preview-status', { text: 'Loading preview…' });
+    const canvas = v.experimental ? null : h('canvas', { width: 320, height: 200, 'aria-hidden': 'true' });
+    const status = h('span.preview-status', { text: v.experimental ? 'Experimental renderer' : 'Loading preview…' });
     const card = h('button.view-card', { type: 'button', title: v.desc, 'aria-label': v.name,
       on: {
         click: () => { onChange(v.id); sync(); },
@@ -12,6 +12,7 @@ export function createShaderPicker({ settings, views, renderThumb, onChange, onC
       },
     }, h('span.thumb', {}, canvas, status),
     h('span.name', {}, v.name, h('kbd', { text: v.hotkey })),
+    v.experimental ? h('span.desc', { text: v.desc }) : null,
     v.legend ? h('span.legend', { style: { background: v.legend.css } }) : null);
     return { v, card, canvas, status };
   });
@@ -45,6 +46,7 @@ export function createShaderPicker({ settings, views, renderThumb, onChange, onC
     queue = queue.then(async () => {
       for (const c of cards) {
         if (run !== generation) return;
+        if (c.v.experimental) continue; // Legacy thumbnails cannot represent Test.
         try {
           const rendered = await renderThumb(c.v.id, c.canvas);
           c.status.hidden = !!rendered || c.canvas.dataset.rendered === '1';
