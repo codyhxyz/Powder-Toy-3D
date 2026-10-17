@@ -101,7 +101,7 @@ for(var z=0;z<4;z++) { for(var y=0;y<4;y++) { for(var x=0;x<4;x++) {
 } } }
 if(!mAirVelocity()) { delta=vec4f(0,0,0,delta.w); }
 if(!mAirPressure()) { delta.w=0.0; }
-if(any(delta!=vec4f(0))) { let k=brickId(b); air[k].vp+=delta; air[k].thermal.z=0.0; markBusy(b*4); }
+if(any(delta!=vec4f(0))) { let k=brickId(b); air[k].vp+=delta; air[k].thermal.z=0.0; noteAir(k); markBusy(b*4); }
 `);
   return head + weatherMain(`if(i>=weatherCount()) { return; }
 let p=weatherCell(i); let s=slotOf(p); let r=results[i];

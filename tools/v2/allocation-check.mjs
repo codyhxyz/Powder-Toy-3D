@@ -10,7 +10,7 @@ import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js'
 import { CONTROL } from '../../src/shaders/v2/particles.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 import { ALLOCATION_CHUNKS, ALLOCATION_STAGES, allocationScratchBase, controlWords,
-  externalMaskBase, externalMaskWords, blastsWGSL, SPAWN_PREFIX, COUPLE_ARGS, COUPLE_MODE } from '../../src/shaders/v2/blasts.js';
+  externalMaskBase, externalMaskWords, blastsWGSL, SPAWN_PREFIX, COUPLE_ARGS, COUPLE_MODE, DISPATCH_ARGS_BYTES, LIST_ARGS } from '../../src/shaders/v2/blasts.js';
 import { jetsWGSL } from '../../src/shaders/v2/jets.js';
 const NONE=0xffffffff, WORDS=12;
 const fresh=()=>({freeList:new Uint32Array(CAP).fill(0xdeadbeef),childPrefixes:new Uint32Array(CAP),control4:0});
@@ -234,10 +234,10 @@ test('the couple gate skips pool preparation exactly when nothing is requested a
     const names=calls.map(c=>c.name);
     assert.deepEqual(names,['v2blasts_count','v2blasts_coupleGate',...ALLOCATION_STAGES.map(s=>`v2blasts_${s}`),'v2blasts_allocate','v2blasts_apply','v2blasts_children']);
     assert.ok(calls.every(c=>c.params.mode===COUPLE_MODE));
-    const args=Object.fromEntries(calls.filter(c=>c.size?.indirect).map(c=>[c.name,c.args]));
+    const args=Object.fromEntries(calls.filter(c=>c.size?.indirect && c.name!=='v2blasts_apply').map(c=>[c.name,c.args]));
     const w=work?1:0;
     assert.deepEqual(args,{v2blasts_freeCount:[w,1024,1],v2blasts_freeScan:[w,1,1],v2blasts_freeScatter:[w,1024,1],v2blasts_allocate:[w,1,1],v2blasts_children:[w,1024,1]});
-    assert.ok(!calls.find(c=>c.name==='v2blasts_apply').size.indirect,'apply stays direct: fractures need no allocation');
+    assert.equal(calls.find(c=>c.name==='v2blasts_apply').size.offset,LIST_ARGS.windCells,'apply runs over the wind list, not behind the gate: fractures need no allocation');
     // skipped: the totals the skipped stages would have written; working: untouched by the gate
     assert.deepEqual([control[4],control[5]],work?[0xabc,0xdef]:[CAP,0]);
   }
@@ -323,7 +323,7 @@ test('generated exact hasWork predicate gates all three prep dimensions, includi
   }
   for(const count of [{indirect:d.control,offset:32},{indirect:d.dispatchArgs,offset:0}])
     assert.throws(()=>d._prepareAllocation(3,{},count),/Unsupported native allocation dispatch/);
-  assert.equal(d.dispatchArgs.size,COUPLE_ARGS+32);
+  assert.equal(d.dispatchArgs.size,DISPATCH_ARGS_BYTES);
   // Both direct [1024,1,1] and reused [1,1024,1] cover each slot exactly once.
   for(const [nx,ny] of [[1024,1],[1,1024]]) {
     const seen=new Uint8Array(CAP);

@@ -1,15 +1,16 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
 import { dynamicsCommon, storageLayout, main64 } from './particles.js';
-import { SPAWN_PREFIX } from './blasts.js';
+import { listControl, listWGSL } from './blasts.js';
 import { AIR, DT, GRAVITY, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { PHYS } from '../../physics.js';
 import { E } from '../../elements.js';
 export const AIR_LAYOUT = storageLayout(5, [0]);
-// Per-brick reach word of the acoustic substeps. It borrows the count stage's
-// spawn-prefix run, dead from the air source until couplePlan's count rewrites
-// every brick. Bit 0: this brick may change in the first substep; bit a+1: a
-// bit-a brick lies within REACH along axis a; REACH_STEP: run its substeps.
-export const REACH_BASE = SPAWN_PREFIX;
+// Per-brick reach word of the acoustic substeps, its own run in control
+// (listControl). Bit 0: this brick may change in the first substep; bit a+1: a
+// bit-a brick lies within REACH along axis a; REACH_STEP: run its substeps. A
+// word is zero unless its brick's air is live: any bit dilates over the brick
+// itself to REACH_STEP, which notes it (reach), so an unlisted brick reads 0.
+export const reachBase = g => listControl(g).reach;
 // A substep reads only its six face neighbours, so a change travels at most one
 // brick per substep. The start set is read before the neighbours' own source,
 // which costs one brick more (see source): AIR.substeps in all.
@@ -24,6 +25,7 @@ function head(g,nativeHead) {
 @group(1) @binding(2) var<storage, read_write> events: array<u32>;
 @group(1) @binding(3) var<storage, read_write> control: array<atomic<u32>>;
 @group(1) @binding(4) var<storage, read_write> faces: array<vec4f>;
+${listWGSL(g)}
 const A_DT: f32 = ${f(DT/AIR.substeps)};
 const A_DX: f32 = ${f(AIR.edge)};
 const A_C: f32 = ${f(AIR.sound)};
@@ -32,7 +34,6 @@ const A_DIFF: f32 = ${f(AIR.diffusion)};
 const A_PQ: f32 = ${f(AIR.pQuantum)};
 const A_VQ: f32 = ${f(AIR.vQuantum)};
 const A_SQ: f32 = ${f(AIR.scalarQuantum)};
-const A_REACH: u32 = ${REACH_BASE}u;
 // contactVacuum twin: singularity raw life is mass in1/256-cell units.
 // Legacy pressure is explicitly converted, shared with native tool adapters.
 fn aVacuum(core: vec4u) -> f32 {
@@ -94,6 +95,26 @@ export function airWGSL(g,nativeHead,stage) {
   // scatter noted every brick). Gas sources and the durable event census read
   // only bricks noted as holding a request. No air stage writes a cell before
   // step, so order is free. faces holds faces at t, the vacuum at D_BRICKS+t.
+  // The bricks source must read: what it caches or applies may differ from last
+  // tick (a cell note, a request, a shock), or its air or a face neighbour's is
+  // live. Any other brick's source is an identity that leaves its reach word 0:
+  // its air and its neighbours' are as they were when it last settled, its faces
+  // and vacuum are cached, and both copies are equal (tools/v2/air-reach-check.mjs).
+  if (stage==='list') return h+main64(/* wgsl */ `
+    // The tick's first air dispatch: source recounts durable events, activity the
+    // working air (not live particles); no separate clear splits the pass.
+    if (t==0u) { atomicStore(&control[1],0u); atomicStore(&control[2],0u); }
+    if (t>=D_BRICKS) { return; }
+    var seed=aLive(t) || atomicLoad(&act2[V2_STATE_DIRTY+t])!=0u || atomicLoad(&act2[V2_EVENTS+t])!=0u || atomicLoad(&control[D_SHOCK+t])!=0u;
+    for (var axis=0u;axis<3u;axis++) { for (var side=-1;side<=1;side+=2) {
+      let q=aNeighbor(t,axis,side); if (q!=D_NONE && (aLive(q) || atomicLoad(&act2[V2_STATE_DIRTY+q])!=0u)) { seed=true; }
+    } }
+    if (seed) { dAppend(LIST_SOURCE,t); }
+  `);
+  // After the substeps: the bricks where wind or pressure can act (dWindListed).
+  if (stage==='windList') return h+main64(/* wgsl */ `
+    if (t>=D_BRICKS) { return; } if (dWindListed(t)) { dAppend(LIST_WIND,t); }
+  `);
   if (stage==='source') return h+main64(/* wgsl */ `
     if (t>=D_BRICKS) { return; } let base=aBase(t);
     var stale=atomicLoad(&act2[V2_STATE_DIRTY+t])!=0u;
@@ -163,19 +184,23 @@ export function airWGSL(g,nativeHead,stage) {
       settled=settled && aRest(other) && aLevel(a,other);
     } }
     atomicStore(&control[A_REACH+t],select(1u,0u,settled));
-  `);
+    // Settled: unchanged, resting, level with resting neighbours, and both copies hold it.
+    atomicStore(&act2[V2_AIR_LIVE+t],select(1u,0u,settled));
+  `,'dListedBrick(LIST_SOURCE,wg,nwg,li)');
   // Separable box dilation of that start set, one axis per dispatch
   // (P.substep), in step's own neighbour topology (mEdge wraps loop edges).
   if (stage==='reach') return h+main64(/* wgsl */ `
     if (t>=D_BRICKS) { return; } let axis=P.substep; var near=false;
     // Every source has read its neighbours' notes, and no cell is written
     // between source and here: a later write notes its brick for the next one.
-    if (axis==0u) { atomicStore(&act2[V2_STATE_DIRTY+t],0u); }
+    if (axis==0u && atomicLoad(&act2[V2_STATE_DIRTY+t])!=0u) { atomicStore(&act2[V2_STATE_DIRTY+t],0u); }
     for (var d=-${REACH};d<=${REACH};d++) {
       let p=mEdge(aBase(t)+dAxis(axis)*4*d); if (!inGrid(p)) { continue; }
       near=near || (atomicLoad(&control[A_REACH+brickOfCell(p)])&(1u<<axis))!=0u;
     }
     if (near) { atomicOr(&control[A_REACH+t],2u<<axis); }
+    // Reached: the substeps run here and may move its air; list it for them.
+    if (axis==2u && near) { noteAir(t); dAppend(LIST_STEP,t); }
   `);
   if (stage==='step') return h+main64(/* wgsl */ `
     if (t>=D_BRICKS) { return; }
@@ -222,7 +247,8 @@ export function airWGSL(g,nativeHead,stage) {
       } else { next.thermal.z=0.0; }
     }
     airOut[t]=next;
-  `);
+  `,'dListedBrick(LIST_STEP,wg,nwg,li)');
+  // Over the wind list: a brick outside it is at rest with resting, level neighbours.
   if (stage==='activity') return h+main64(/* wgsl */ `
     if (t>=D_BRICKS) { return; }
     let a=airIn[t];
@@ -233,7 +259,7 @@ export function airWGSL(g,nativeHead,stage) {
       working=working || (mAirHeat() && delta.x>=A_SQ) || delta.y>=A_SQ;
     } } }
     if (working) { atomicAdd(&control[1],1u); dWake(aBase(t)); }
-  `);
+  `,'dListedBrick(LIST_WIND,wg,nwg,li)');
   if (stage==='tool') return h+main64(/* wgsl */ `
     if (t>=D_BRICKS) { return; } var a=airIn[t];
     let delta=vec3f(aBase(t)+P.origin)+2.0-P.center; let r=length(delta);
@@ -243,7 +269,7 @@ export function airWGSL(g,nativeHead,stage) {
       if (P.mode==3u) { a.vp=vec4f(a.vp.xyz+P.vector*P.strength*falloff,a.vp.w); }
       if (P.mode==4u || P.mode==5u) { a.vp.w+=select(1.0,-1.0,P.mode==5u)*P.strength*falloff; }
       if (P.mode==6u && length(delta.xz)>0.0) { a.vp=vec4f(a.vp.xyz+normalize(vec3f(delta.z,0,-delta.x))*P.strength*falloff,a.vp.w); }
-      a.thermal.z=0.0; dWake(aBase(t));
+      a.thermal.z=0.0; dWake(aBase(t)); noteAir(t);
     }
     airOut[t]=a;
   `);
@@ -265,7 +291,7 @@ export function airWGSL(g,nativeHead,stage) {
     if (movable && dRandom(dId(p,0x474153u),0u)<probability) {
       storeMaterial(sa,a,b); storeMaterial(sb,b,a); dWake(p); dWake(q);
     }
-  `);
+  `,'dListedCell(LIST_WIND,wg,nwg,li)');
   if(stage==='gasBoundary') return h+main64(`
     if(t>=D_SLOTS || P.edge!=1u || !mAirVelocity()) { return; }
     // Interior cells and still edges have no outward wind: no wake, and the
@@ -281,10 +307,10 @@ export function airWGSL(g,nativeHead,stage) {
     if(dRandom(dId(p,0x4f5554u),0u)<min(1.0,outward*D_DT/D_CELL)) {
       dOutflow(p,before);storeMaterial(t,before,dCarrier(before));atomicAdd(&control[16],1u);
     }
-  `);
+  `,'dListedCell(LIST_WIND,wg,nwg,li)');
   throw new Error(`Unknown air stage ${stage}`);
 }
-export const AIR_STAGES=['source','reach','step','activity','tool','gas','gasBoundary'];
+export const AIR_STAGES=['list','source','reach','step','windList','activity','tool','gas','gasBoundary'];
 
 export const WGSL_CHECK = AIR_STAGES.map(stage => ({ name: `v2air_${stage}`, kind: 'compute',
   code: g => airWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,AIR_LAYOUT,'EMPTY'], tool: true }));

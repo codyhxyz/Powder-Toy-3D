@@ -191,6 +191,96 @@ for (const dims of [[56, 3, 2], [2, 3, 56], [3, 56, 2]]) for (const edge of Obje
 assert.ok(longSkipped > longTotal / 10, `fixtures must skip real work (${longSkipped}/${longTotal})`);
 assert.ok(shortFailed > 0, 'a reach two bricks short must break some fixture');
 
+// ---- The list-driven air tick (air.js list/source/reach/windList). Source runs
+// only on listed bricks: a live brick, a cell note or an effect, or a face
+// neighbour live or noted. A listed brick's live word becomes "not settled",
+// a reached brick's becomes live, and an unlisted brick keeps a reach word of 0
+// and both copies. Outside writers (a blast finish, weather) note the air they
+// write; a cell change notes its brick (faces change for it or a neighbour).
+// Both copies must match the full driver bit for bit, and a brick off the wind
+// list (no live word on it or a face neighbour) must be at rest, level with
+// resting neighbours and equal in both copies, so wind, pressure differences
+// and air activity are all zero there.
+const keyOf = a => bits([...a.vp, ...a.th]).join();
+function listedTick(w, P, s, effects, variant) {
+  const nbrs = t => { const out = []; for (let a = 0; a < 3; a++) for (const side of [-1, 1]) { const q = w.neighbor(t, a, side); if (q >= 0) out.push(q); } return out; };
+  const listed = Array.from({ length: w.n }, (_, t) => s.live[t] || s.notes[t] || effects.has(t) ||
+    (!variant.noDilation && nbrs(t).some(q => s.live[q] || s.notes[q])));
+  // the cached faces: read again where source runs and it or a face neighbour is noted
+  for (let t = 0; t < w.n; t++) if (listed[t] && (s.notes[t] || nbrs(t).some(q => s.notes[q]))) s.cache[t] = w.faces[t];
+  const wc = { ...w, faces: s.cache };
+  const { out, start } = P.source(wc, s.buffers[s.index], effects), starts = new Array(w.n).fill(false);
+  for (let t = 0; t < w.n; t++) if (listed[t]) { s.buffers[1 - s.index][t] = out[t]; starts[t] = start[t]; s.live[t] = start[t] ? 1 : 0; }
+  s.index ^= 1;
+  const reached = reach(w, starts, REACH);
+  for (let t = 0; t < w.n; t++) if (reached[t] && !variant.forgetReached) s.live[t] = 1;
+  s.notes.fill(0);
+  for (let i = 0; i < AIR.substeps; i++) {
+    const airIn = s.buffers[s.index], airOut = s.buffers[1 - s.index];
+    for (let t = 0; t < w.n; t++) if (reached[t]) airOut[t] = P.step(wc, airIn, t, i);
+    s.index ^= 1;
+  }
+  // the wind list's promise for every brick off it
+  for (let t = 0; t < w.n; t++) {
+    if (s.live[t] || nbrs(t).some(q => s.live[q])) continue;
+    const a = s.buffers[s.index][t], rest = x => bits(x.vp).every(v => v === 0) && x.th[2] === QUIET;
+    if (!rest(a) || keyOf(a) !== keyOf(s.buffers[1 - s.index][t])) return { listed, promise: false };
+    if (nbrs(t).some(q => !rest(s.buffers[s.index][q]) || [0, 1].some(i => Math.abs(fr(a.th[i] - s.buffers[s.index][q].th[i])) >= A_SQ))) return { listed, promise: false };
+  }
+  return { listed, promise: true };
+}
+function listedScenario(seed, dims, modes, variant = {}, still = false) {
+  const random = rng(seed), w = world(dims, modes, random, still), P = physics(modes);
+  const initial = Array.from({ length: w.n }, () => ({ vp: [0, 0, 0, 0], th: [0, 0, QUIET, 0] }));
+  const copy = a => a.map(x => ({ vp: [...x.vp], th: [...x.th] }));
+  const full = { buffers: [copy(initial), copy(initial)], index: 0 };
+  const lean = { buffers: [copy(initial), copy(initial)], index: 0, live: new Uint8Array(w.n).fill(1), notes: new Uint8Array(w.n).fill(1), cache: w.faces.slice() };
+  let listedBricks = 0, total = 0;
+  for (let n = 0; n < 10; n++) {
+    const rate = variant.rare ? 0.06 : 1;
+    const effects = new Map(); if (random() < 0.3 * rate) effects.set(Math.floor(random() * w.n), F(random() * 50));
+    if (random() < 0.4 * rate) { // an outside write to the current copy: pressure, heat or a broken quiet run
+      const t = Math.floor(random() * w.n), k = Math.floor(random() * 3), heat = F(random() < 0.5 ? A_SQ * 0.25 : random());
+      for (const s of [full, lean]) { const a = s.buffers[s.index][t], b = { vp: [...a.vp], th: [...a.th] };
+        if (k === 0) b.vp[3] = F(b.vp[3] + 20); else if (k === 1) b.th[0] = heat; else b.th[2] = 0;
+        s.buffers[s.index][t] = b; }
+      if (!variant.silentStray) lean.live[t] = 1;
+    }
+    if (random() < 0.3 * rate) { // a cell change: its brick's or a face neighbour's faces and buoyancy
+      const t = Math.floor(random() * w.n), q = random() < 0.5 ? t : w.neighbor(t, Math.floor(random() * 3), random() < 0.5 ? -1 : 1);
+      w.faces[t] = { open: w.faces[t].open.map(o => random() < 0.5 ? o : F(Math.floor(random() * 17) / 16)), w: random() < 0.5 ? F((random() - 0.5) * 0.05) : 0 };
+      if (!variant.silentFaces) lean.notes[q >= 0 ? q : t] = 1;
+    }
+    full.index = tick(w, P, full.buffers, full.index, effects, null).index;
+    const r = listedTick(w, P, lean, effects, variant);
+    listedBricks += r.listed.filter(Boolean).length; total += w.n;
+    for (const b of [0, 1]) for (let t = 0; t < w.n; t++) if (keyOf(full.buffers[b][t]) !== keyOf(lean.buffers[b][t])) return { equal: false, listedBricks, total };
+    if (!r.promise) return { equal: false, promise: false, listedBricks, total };
+  }
+  return { equal: true, listedBricks, total };
+}
+let listedRuns = 0, listedShare = 0, listedTotal = 0;
+for (const [m, modes] of modeSets.entries()) for (const [s, dims] of [...shapes, [24, 2, 2], [2, 24, 2]].entries()) for (let k = 0; k < 2; k++) {
+  const seed = 5 + m * 89 + s * 11 + k, r = listedScenario(seed, dims, modes);
+  assert.ok(r.equal, `listed air tick changed air bits or broke the wind list's promise: seed ${seed}, dims ${dims}, modes ${JSON.stringify(modes)}`);
+  listedRuns++; listedShare += r.listedBricks; listedTotal += r.total;
+}
+// Long boxes with one disturbance at a time: the source list stays near the disturbance.
+let longListed = 0, longBricks = 0;
+for (const dims of [[56, 3, 2], [2, 3, 56], [3, 56, 2]]) for (const edge of Object.values(EDGE)) for (let k = 0; k < 2; k++) {
+  const r = listedScenario(31 + edge * 7 + k, dims, { airMode: AIR_MODE.ON, edge, heat: true, gravity: true, ambient: 20 }, { rare: true }, true);
+  assert.ok(r.equal, `listed air tick changed air bits: dims ${dims}, edge ${edge}`);
+  listedRuns++; longListed += r.listedBricks; longBricks += r.total;
+}
+console.log(`listed share small ${(100 * listedShare / listedTotal).toFixed(1)}% long ${(100 * longListed / longBricks).toFixed(1)}%`);
+assert.ok(longListed < longBricks * 0.75, `the source list must skip real work in long boxes (${longListed}/${longBricks})`);
+for (const [what, variant] of [['an outside write without noteAir', { silentStray: true }], ['a list without its neighbour dilation', { noDilation: true }],
+  ['reached bricks left calm', { forgetReached: true }], ['a cell change without a note', { silentFaces: true }]]) {
+  let broke = false;
+  for (const [m, modes] of modeSets.entries()) { for (const dims of shapes) for (let k = 0; k < 2 && !broke; k++) broke = !listedScenario(5 + m * 89 + k, dims, modes, variant).equal; if (broke) break; }
+  assert.ok(broke, `${what} must break the listed air tick`);
+}
+
 // couplePlan's quiet-brick skip rests on two row facts: every lift is above 0
 // (no wind, no lift) and no breakable row is weaker than the emitted minimum.
 const breakable = dynamicsRows.filter(r => r.breakInto >= 0), weakest = Math.min(...breakable.map(r => r.strength));
@@ -198,7 +288,7 @@ assert.ok(dynamicsRows.every(r => r.lift > 0), 'a zero-wind brick must lift noth
 assert.ok(breakable.every(r => fr(r.strength) >= fr(weakest)) && weakest > 0, 'zero pressure difference must break nothing');
 const g = gridLayout(16, 8, 8);
 assert.match(blastsWGSL(g, nativeDynamicsHead, 'couplePlan'), /!dCoupleActive\(t\/64u\)/);
-assert.match(blastsWGSL(g, nativeDynamicsHead, 'count'), new RegExp(`P\\.mode!=${COUPLE_MODE}u \\|\\| dCoupleActive\\(t\\)`));
+assert.match(blastsWGSL(g, nativeDynamicsHead, 'count'), new RegExp(`P\\.mode!=${COUPLE_MODE}u \\|\\| \\(dWindListed\\(t\\) && dCoupleActive\\(t\\)\\)`));
 assert.match(blastsWGSL(g, nativeDynamicsHead, 'apply'), new RegExp(`P\\.mode==${COUPLE_MODE}u && !dCoupleActive`));
 
 // Recorded air tick: no faces pass, three reach axes, gas stages only where
@@ -222,3 +312,4 @@ for (const [airMode, edge] of [[AIR_MODE.ON, EDGE.SOLID], [AIR_MODE.ON, EDGE.VOI
   d.dispose();
 }
 console.log(`air reach gate: ${runs} scenarios bit-identical in both ping-pong copies; ${(100 * skipped / total).toFixed(1)}% brick-substeps skipped; reach ${REACH - 2} breaks ${shortFailed}`);
+console.log(`air lists: ${listedRuns} listed-tick scenarios bit-identical with the wind list's promise kept; source read ${(100 * longListed / longBricks).toFixed(1)}% of a long box's bricks; 4 red variants caught`);

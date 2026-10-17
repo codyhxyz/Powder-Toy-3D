@@ -62,6 +62,20 @@ function audit(name, code) { for (const fn of functions(code)) {
   }
 } }
 for (const [name, code] of modules) audit(name, code);
+// Air stores: only the air tick's source and substeps settle or list what they write (the
+// source sets the live word, reach notes every brick the substeps reach); every other store
+// of a brick's air notes it (noteAir) in the same function.
+let airWrites = 0;
+function auditAir(name, code) { for (const fn of functions(code)) {
+  for (const m of fn.matchAll(/\b(air|airOut)\[[^\]]*\](?:\.[a-z]+(?:\.[a-z]+|\[[^\]]*\])?)?\s*([-+*\/]?=)(?!=)/g)) {
+    if (name === 'air source' || name === 'air step') continue;
+    assert.ok(fn.includes('noteAir('), `${name}: an air store without noteAir: ${fn.slice(m.index, m.index + 60)}`);
+    airWrites++;
+  }
+} }
+for (const [name, code] of modules) auditAir(name, code);
+assert.ok(airWrites >= 4, `the audit sees the air writers (${airWrites})`);
+assert.throws(() => auditAir('red air', 'fn red() {\n  air[b].vp.w = 1.0;\n}'), /without noteAir/);
 // red: the audit itself catches an unnoted core or request store
 assert.throws(() => audit('red core', 'fn red() {\n  cells[s].y = 7u;\n}'), /without noteState/);
 assert.throws(() => audit('red request', 'fn red() {\n  events[s] = request;\n}'), /without noteEvents/);
@@ -78,10 +92,10 @@ assert.match(source, /var stale=atomicLoad\(&act2\[V2_STATE_DIRTY\+t\]\)!=0u;\s*
 assert.match(source, /if \(atomicLoad\(&act2\[V2_EVENTS\+t\]\)!=0u\) \{/);
 assert.match(source, /if \(pending==0u\) \{ atomicStore\(&act2\[V2_EVENTS\+t\],0u\); \}/);
 assert.doesNotMatch(source.slice(source.lastIndexOf('@compute')), /atomic(Store|And|Exchange)\(&act2\[V2_STATE_DIRTY/, 'source never clears a note its neighbours still read');
-assert.match(reach, /if \(axis==0u\) \{ atomicStore\(&act2\[V2_STATE_DIRTY\+t\],0u\); \}/);
+assert.match(reach, /if \(axis==0u && atomicLoad\(&act2\[V2_STATE_DIRTY\+t\]\)!=0u\) \{ atomicStore\(&act2\[V2_STATE_DIRTY\+t\],0u\); \}/);
 assert.match(blastsWGSL(g, nativeDynamicsHead, 'select'), /atomicLoad\(&act2\[V2_EVENTS\+t\/64u\]\) == 0u \|\| events\[t\] == 0u/);
 const A = v2ActLayout(g);
-assert.ok(A.events >= A.words && A.allocated === A.events + g.nbricks, 'the request notes sit after the saved activity words');
+assert.ok(A.events >= A.words && A.air === A.events + g.nbricks && A.allocated === A.air + g.nbricks, 'the request and air notes sit after the saved activity words');
 
 // ---- 2. the faces / buoyancy / vacuum cache
 const fr = Math.fround;
@@ -192,4 +206,4 @@ function censusRun(seed, variant = {}) {
 for (let seed = 1; seed <= 40; seed++) assert.ok(censusRun(seed), `census over noted bricks differs: seed ${seed}`);
 let forgot = false; for (let seed = 1; seed <= 40 && !forgot; seed++) forgot = !censusRun(seed, { forget: true });
 assert.ok(forgot, 'a request store without noteEvents must break the census');
-console.log(`air cache: ${coreWrites} core and ${requestWrites} request stores noted across ${modules.length} modules; ${cacheRuns} f32 cache runs exact over 12 ticks; census and select exact over 40 runs; 7 red variants caught`);
+console.log(`air cache: ${coreWrites} core, ${requestWrites} request and ${airWrites} outside air stores noted across ${modules.length} modules; ${cacheRuns} f32 cache runs exact over 12 ticks; census and select exact over 40 runs; 7 red variants caught`);

@@ -93,8 +93,9 @@ export class PhysicsV2 {
     // every brick starts asleep (its quiet run full): only what the first import changes wakes, so a
     // settled box certifies idle after one tick instead of a whole offset cycle of every brick awake
     gpu.queue.writeBuffer(this.act, this.layout.quiet * 4, new Uint32Array(g.nbricks).fill(QUIET_TICKS));
-    // nothing derived from the cells is cached yet (the air source's faces)
+    // nothing derived from the cells is cached yet (the air source's faces), no air has settled
     gpu.queue.writeBuffer(this.act, this.layout.state * 4, new Uint32Array(g.nbricks).fill(1));
+    gpu.queue.writeBuffer(this.act, this.layout.air * 4, new Uint32Array(g.nbricks).fill(1));
     const L = {
       V2: gpu.layout('V2', V2_LAYOUT), ARGS: gpu.layout('V2_ARGS', V2_ARGS_LAYOUT), STATE: gpu.layout('V2_STATE', V2_STATE_LAYOUT),
       INVALIDATE: gpu.layout('V2_INVALIDATE', V2_INVALIDATE_LAYOUT),
@@ -168,13 +169,15 @@ export class PhysicsV2 {
   // ---- writes and rest ----
 
   /**
-   * Notes every brick's cells as changed (and, with events, as maybe holding a material request),
-   * so what is derived from them is read again (the air source's faces, vacuum and census).
-   * For writes that bypass noteState/noteEvents: restores, window scatters, mode changes.
+   * Notes every brick's cells as changed and its air as live (and, with events, as maybe holding
+   * a material request), so what is derived from them is read again (the air source's faces,
+   * vacuum, census and brick lists). For writes that bypass noteState/noteEvents/noteAir:
+   * restores, window scatters, mode changes (the air's masks), dynamics restores.
    */
   noteAllCells({ events = false } = {}) {
     const ones = new Uint32Array(this.g.nbricks).fill(1);
     this.gpu.write(this.act, this.layout.state * 4, ones);
+    this.gpu.write(this.act, this.layout.air * 4, ones);
     if (events) this.gpu.write(this.act, this.layout.events * 4, ones);
   }
 
