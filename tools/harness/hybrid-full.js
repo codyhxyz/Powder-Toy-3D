@@ -113,8 +113,11 @@ export async function renderCompleteFrames(a,frames=2){
     let complete=0;
     for(let attempts=1;attempts<=6;attempts++){
       const prior=a.hybrid,before=prior?{compositions:prior.stats.compositions,motion:prior.motion.stats.frames}:null;
+      console.info(`[hybrid correctness] scene attempt ${attempts}: render`);
       await a.test.renderOnce();
+      console.info(`[hybrid correctness] scene attempt ${attempts}: await readiness`);
       await a.test.ready();
+      console.info(`[hybrid correctness] scene attempt ${attempts}: readiness complete`);
       const h=a.hybrid,selected=a.post?.temporalInputs;
       const fresh=!h||(h.enabled&&h.stats.compositions>(h===prior?before.compositions:0)
         &&h.motion.stats.frames>(h===prior?before.motion:0)&&selected?.motion&&selected?.reactive);

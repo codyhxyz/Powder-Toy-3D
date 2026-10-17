@@ -53,7 +53,7 @@ assert.equal(traceReflectionReference({origin:[.5,1.5,1.5],direction:[1,0,0],gri
 {
   const reflection=hybridReflectionsWGSL();
   const trace=reflection.slice(reflection.indexOf('fn hrTrace('),reflection.indexOf('fn hrReflection('));
-  assert(trace.indexOf('hybridReflectionShade(')>trace.indexOf('if (eid(hit) == E_EMPTY)'),
+  assert(!trace.includes('for (') && trace.indexOf('hybridReflectionShade(')>trace.indexOf('if (eid(hit.state) == E_EMPTY)'),
     'full hit lighting must stay after traversal, not inside its loop');
   const cases=[
     {ro:-1,dir:1,budget:8,id:1,hit:3,normal:-1},

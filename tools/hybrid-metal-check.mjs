@@ -1,5 +1,5 @@
 // Focused production opaque-pipeline compiler probe; no app, resources or draws.
-// --cpu validates all variants without a browser; native runs compile one variant.
+// --cpu validates all variants without a browser; native variants share one slot.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
@@ -13,9 +13,11 @@ import { createHybridShading } from '../src/gfx/hybrid/shading.js';
 import { launchBrowser, newTestPage } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 
-const variants = ['full', 'no-reflections', 'unlit-hit'];
+const variants = ['full', 'no-reflections', 'unlit-hit', 'dynamic-gi', 'material-hit', 'immutable-hit', 'no-shadow-hit', 'runtime-gi'];
 const variant = process.argv.find(a => a.startsWith('--variant='))?.split('=')[1] ?? 'full';
-assert(variants.includes(variant), '--variant must be full, no-reflections or unlit-hit');
+const selected = variant.split(',');
+assert(selected.every(v => variants.includes(v)) && new Set(selected).size === selected.length,
+  `--variant must list ${variants.join(', ')}`);
 const cpu = process.argv.includes('--cpu');
 const artifacts = mkdtempSync('/tmp/hybrid-metal-');
 const g = gridDims({ nx: 128, ny: 128, nz: 128 });
@@ -30,7 +32,7 @@ function generate(name) {
     gate: {}, binding: 1, reflections: name !== 'no-reflections' });
   assert.deepEqual(shading.layout.map(e => e.binding), shading.entries.map(e => e.binding));
   assert.equal(new Set(shading.layout.map(e => e.binding)).size, shading.layout.length);
-  if (name === 'unlit-hit') {
+  if (name === 'unlit-hit' || name === 'material-hit') {
     const start = shading.wgsl.indexOf('fn hybridReflectionShade(');
     assert(start >= 0, 'reflection hit callback must exist');
     const open = shading.wgsl.indexOf('{', start);
@@ -40,26 +42,57 @@ function generate(name) {
       if (c === '{') depth++; else if (c === '}') depth--;
     }
     assert.equal(depth, 0, 'reflection callback body must close');
-    shading.wgsl = shading.wgsl.slice(0, open + 1) + '\nreturn ALBEDO(id);\n' + shading.wgsl.slice(end - 1);
+    const body = name === 'unlit-hit' ? 'return ALBEDO(id);' : `
+      let a=fetchA(vec3i(floor(p-n*0.01)));
+      let m=hybridMaterialStateLod(id,fract(a.w),p,n,a.y,i32(floor(a.w)),0.0);
+      return m.baseColor+m.emission;`;
+    shading.wgsl = shading.wgsl.slice(0, open + 1) + body + '\n' + shading.wgsl.slice(end - 1);
+  }
+  if (name === 'dynamic-gi') {
+    const loop = 'for (var k = 0; k < 8; k++)';
+    assert(shading.wgsl.includes(loop), 'production GI stencil loop must exist');
+    // Diagnostic: always eight for the validated 0..32 reflection budget,
+    // but not a compile-time trip count. No shader quality is removed.
+    shading.wgsl = shading.wgsl.replace(loop, 'for (var k = 0; k < i32(min(8u, HC.reflectionSteps + 8u)); k++)');
+  }
+  if (name === 'runtime-gi') {
+    const loop = 'for (var k = 0; k < 8; k++)';
+    assert(shading.wgsl.includes(loop));
+    // Compile only: field substitutes a future fixed-eight host uniform.
+    shading.wgsl = shading.wgsl.replace(loop, 'for (var k = 0; k < i32(HC.reflectionSteps); k++)');
+  }
+  if (name === 'immutable-hit') {
+    const before = 'var m=hybridMaterialStateLod(id,fract(a.w),p,n,a.y,i32(floor(a.w)),0.0);\n      m.opacity=1.0;';
+    assert(shading.wgsl.includes(before));
+    shading.wgsl = shading.wgsl.replace(before, `let original=hybridMaterialStateLod(id,fract(a.w),p,n,a.y,i32(floor(a.w)),0.0);
+      let m=HybridMaterial(original.baseColor,original.roughness,original.metalness,original.emission,1.0,original.normal,original.f0);`);
+  }
+  if (name === 'no-shadow-hit') {
+    const before = 'hybridShade(m,p,n,m.normal,view,vec3f(hybridSunVisibility(p,n)),1.0)';
+    assert(shading.wgsl.includes(before));
+    shading.wgsl = shading.wgsl.replace(before, 'hybridShade(m,p,n,m.normal,view,vec3f(1.0),1.0)');
   }
   return { code: drawWGSL(g, { shadingWGSL: shading.wgsl, shade: 'hybridOpaqueShade' }),
-    layouts: [RENDER_LAYOUT.FRAME, LAYOUT.STATE_RO, [...FACES_LAYOUT, ...shading.layout]],
+    layouts: [RENDER_LAYOUT.FRAME, LAYOUT.STATE_RO, [...FACES_LAYOUT, ...shading.layout], LAYOUT.PARAMS],
     pipeline: geometryPipelines().opaque };
 }
 let browser, vite, launchedAt;
 const browserLog = [];
 try {
-  const sources = Object.fromEntries((cpu ? variants : [variant]).map(name => [name, generate(name)]));
+  const sources = Object.fromEntries((cpu ? variants : selected).map(name => [name, generate(name)]));
   for (const [name, source] of Object.entries(sources)) {
     writeFileSync(`${artifacts}/${name}.wgsl`, source.code);
     writeFileSync(`${artifacts}/${name}.json`, JSON.stringify({ layouts: source.layouts, pipeline: source.pipeline }, null, 2));
-    new WgslReflect(source.code);
+    const reflected = new WgslReflect(source.code);
+    for (const r of [...reflected.uniforms, ...reflected.storage, ...reflected.textures, ...reflected.samplers]) {
+      assert(source.layouts[r.group]?.some(e => e.binding === r.binding), `missing layout for ${r.name}`);
+    }
     execFileSync('naga', ['--stdin-file-path', `${name}.wgsl`], { input: source.code, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
     console.log(`PASS CPU ${name}: production 128³ opaque WGSL/layouts; Naga validated`);
   }
   if (!cpu) {
     vite = await startVite({ port: 58476, harness: true });
-    console.log(`GPU plan: one ${variant} native pipeline compile, Chrome/manual, no draws; <=25s including startup and cleanup`);
+    console.log(`GPU plan: ${selected.length} native pipeline compile(s): ${variant}, one Chrome/manual slot, no draws; <=25s total`);
     launchedAt = Date.now();
     browser = await launchBrowser({ channel: 'chrome', lifetimeMs: 25000, browserLog: line => browserLog.push(line) });
     const page = await newTestPage(browser, { mode: 'manual' });
@@ -67,6 +100,8 @@ try {
     await page.route('**/__metal-probe', route => route.fulfill({ contentType: 'text/html',
       body: '<!doctype html><title>Metal compiler probe</title>' }));
     await page.goto(vite.url('/__metal-probe'));
+    const failed = [];
+    for (const name of selected) {
     const result = await page.evaluate(async ({ source, mac }) => {
       let device;
       try {
@@ -95,10 +130,14 @@ try {
         return { ok: true, adapter: identity };
       } catch (e) { return { ok: false, error: `${e.name}: ${e.message}\n${e.stack ?? ''}` }; }
       finally { device?.destroy(); }
-    }, { source: sources[variant], mac: process.platform === 'darwin' });
-    writeFileSync(`${artifacts}/result.json`, JSON.stringify(result, null, 2));
-    if (!result.ok) throw new Error(result.error);
-    console.log(`PASS native ${variant}: ${result.adapter}`);
+    }, { source: sources[name], mac: process.platform === 'darwin' });
+    writeFileSync(`${artifacts}/${name}-result.json`, JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      failed.push(name);
+      console.log(`FAIL native ${name}: ${result.error.split('\n')[0]}`);
+    } else console.log(`PASS native ${name}: ${result.adapter}`);
+    }
+    assert.equal(failed.length, 0, `Native compilation failed: ${failed.join(', ')}; full errors in per-variant result.json`);
   }
 } catch (error) {
   const detail = [error.stack ?? String(error), error.stdout, error.stderr].filter(Boolean).join('\n');
