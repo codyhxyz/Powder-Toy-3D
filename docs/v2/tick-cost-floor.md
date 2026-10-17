@@ -1,39 +1,41 @@
 # Tick cost floor
 
-Branch `lean/perf-floor` from `lean/integrate` (81f7393b). CPU-only work: these figures are byte counts from the code
-at 128³ (N = 2,097,152 cells, B = 32,768 bricks of 4³, a 65,536-slot particle pool of 48 B), **not GPU timings**.
-DRAM bytes are counted as each dispatch's footprint (an upper bound: small per-brick arrays may stay in the
-system cache). Water (R13, jets) belongs to the column-water work and is listed apart. Watts use the brief's
-model: about 30 pJ per DRAM byte at 60 ticks/s, so 1 MB/tick ≈ 1.8 mW.
+Branch `lean/perf-floor`, now on `lean/integrate` 3c95d72f (column-run water). CPU-only work: these figures are
+byte counts from the code at 128³ (N = 2,097,152 cells, B = 32,768 bricks of 4³, a 65,536-slot particle pool of
+48 B), **not GPU timings**. DRAM bytes are counted as each dispatch's footprint (an upper bound: small per-brick
+arrays may stay in the system cache). Water (column runs, jets) belongs to the column-water work and is listed
+apart. Watts use the brief's model: about 30 pJ per DRAM byte at 60 ticks/s, so 1 MB/tick ≈ 1.8 mW.
 
 ## The formula
 
 A tick costs `A·N + B·awake + C·changed + D·bricks + E·pool + F`.
 
-| term | lean/integrate | round 1 | this branch | what it is |
+| term | lean/integrate 81f7393b | after round 2 | this branch | what it is |
 |---|---|---|---|---|
-| A, per grid cell | **24 B** (50 MB) | 0 | 0 | air `source` read every core and request word (20 B); blast `select` read every request word (4 B) |
-| D, per brick | 344 B (11.3 MB) | 376 B (12.3 MB) | **60 B (2.0 MB)** | now only small words: the activity scan (8 B), cols (4), invalidate (4), the air source list (16), reach (16), windList (4), count (4), the event list (4) |
+| A, per grid cell | **24 B** (50 MB) | 0 | 0 | air `source` read every core and request word; the first blast select read every request word |
+| D, per brick | 344 B (11.3 MB) | 60 B (2.0 MB) | 60 B (2.0 MB) | small words only: the activity scan (8 B), cols (4), invalidate (4), the air source list (16), reach (16), windList (4), count (4), the event list (4) |
 | C, per changed brick | (inside A) | ~1.3 KB on it and its 6 face neighbours | same | faces and vacuum read again from its 64 cores; requests read only where noted |
-| air-active bricks | (inside D) | (inside D) | ~116 B source + ~80 B a reached substep, on listed bricks only | source, substeps, gas, couple and air activity run over GPU-built lists |
-| E, pool | **6.8 MB every tick**, even with no particle | 0 without a launch request or live particle | same | the air tick's couple allocation read the whole pool twice |
-| E', live particles | 12 MB while any particle lives | unchanged | unchanged | integrate/elect/impact/deposit sweep all 65,536 slots |
-| B, per awake cell | ~100 B outside water (estimate) | unchanged | unchanged | support, block, column (whole awake columns) |
-| F, fixed | 149 dispatches + 18 copies/clears outside water (water: 11, jets: 21) | 150 + 19 | 159 + 18 | 113 are the eight blast batches; ~121 are zero-size indirect when idle |
+| air-active bricks | (inside D) | ~116 B source + ~80 B a reached substep, listed bricks only | same | source, substeps, gas, couple and air activity run over GPU-built lists |
+| E, pool, no particle | **6.8 MB every tick** | 0 | 0 | the couple allocation's pool preparation, behind its gate |
+| E', pool while particles live | 12 MB (+6.8 MB a preparation) | same | **8 KB of live bits + ~200 B a live particle a stage** | every pool sweep reads only slots whose live bit is set |
+| B, per awake brick column (powder fall) | ~32 KB (16 lanes × 128 cells) | same | **~1 KB a brick that is not all air or all still liquid** | the column pass skips summarised bricks |
+| B, other awake cells | ~100 B outside water (estimate) | unchanged | unchanged | support, block |
+| F, dispatches a tick | 149 outside water (+32 old water) | 159 outside water | **172 with the column water** (137 indirect; ~135 zero-size when idle), 18 copies, 1 clear | 115 are the blast batches and the first select's list |
 
-Round 1: noteState's per-brick word (every core store sets it) tells the air source which bricks' faces and vacuum to
-read again; a per-brick request word (noteEvents) limits gas sources, the census and the first select; a one-thread
-gate keeps the couple allocation off the particle pool. Round 2: a per-brick **air-live** word (clear: the brick's
-air ended its last air tick settled and unchanged in both copies; noteAir for every other writer) and GPU-built
-brick lists: source, the eight substeps (the reached bricks), gas, couplePlan, apply and air activity (live
-bricks and their face neighbours) and the first select (noted bricks) run over lists whose args a one-thread
-`listArgs` writes directly; count skips unlisted bricks. The activity pass runs over a scan's list: bricks near a
-busy brick, or still counting their quiet run. Each step is exact: `tools/v2/air-cache-check.mjs`,
-`air-reach-check.mjs` (an f32 twin of the listed air tick), `activity-list-check.mjs`, `allocation-check.mjs`
-and `blast-batch-check.mjs` hold the proofs and their red variants.
+What each round did:
+- Round 1: noteState's per-brick word tells the air source which bricks' faces and vacuum to read again. A
+  per-brick request word (noteEvents) limits gas sources, the census and the first select. A one-thread gate keeps
+  the couple allocation off the particle pool.
+- Round 2: a per-brick air-live word (noteAir) and GPU-built brick lists for the air tick and the first select,
+  and the activity pass over a scan's list.
+- Round 3:
+  - Particle-pool live bits (a bit a slot): set at every spawn (the column-water jets' too), cleared by
+    retirements and the pool preparation, set everywhere by restores. Every sweep skips a slot whose bit is clear.
+  - holdCOM walks the live-bit words, in the same ascending order.
+  - The powder column pass skips bricks the column water's summaries call all air or all still liquid.
 
-One cost moved rather than vanished: a brick's quiet run counts on to its cap of 255 ticks after it sleeps, and
-the saves keep that count, so every brick is in the activity list for ~4 s after a load or restore.
+The proofs and their red variants: `tools/v2/air-cache-check.mjs`, `air-reach-check.mjs`, `activity-list-check.mjs`,
+`allocation-check.mjs`, `blast-batch-check.mjs`, `particle-live-check.mjs` and `column-skip-check.mjs`.
 
 ## The lower bound
 
@@ -49,41 +51,33 @@ scales with N or B: a still brick need not be touched.
 
 ## Three scenes (per tick, outside water)
 
-| scene | lean/integrate | round 1 | this branch | bound | V1 |
+| scene | lean/integrate 81f7393b | after round 2 | this branch | bound | V1 |
 |---|---|---|---|---|---|
-| one grain falling in a still world (~30–60 awake bricks, ~9 awake columns, still air, no particles) | **69 MB** (68 + ~0.5 awake), 149 dispatches | 12.8 MB, 150 | **~2.5 MB** (2.0 + ~0.5 awake), 159 | ~2 KB, ~20 | 1.1 MB |
-| lab, ~25 % awake, ~10 % of bricks changing, particles live | 68 + 19 MB + awake and substep terms | 12.3 + 13 + 19 MB + same | 2.0 + 13 + 19 MB + same (air work now only on listed bricks) | ∝ changed cells | — |
-| everything awake and changing, few requests, particles live | 68 + 19 MB + awake terms | 47 + 19 MB + same | ~47.5 + 19 MB + same (every list full; +0.5 MB of list words) | ∝ N | — |
+| one grain falling in a still world (~30–60 awake bricks, ~9 awake columns of ground under air, no particles) | **69 MB** | 2.5 MB | **~2.3 MB** (2.0 + ~0.1 column + ~0.2 support/block) | ~2 KB | 1.1 MB |
+| lab, ~25 % awake (~half the columns), ~10 % of bricks changing, ~1,000 live particles | 68 + 19 + 16 MB + other awake terms | 2.0 + 13 + 19 + 16 MB + same | **~21 MB** (2.0 + 13 + ~0.3 pool + ~6 column) + same | ∝ changed cells | — |
+| everything awake and changing, few requests, particles live | 68 + 19 + 32 MB + same | ~47.5 + 19 + 32 MB + same | ~47.5 + ~0.5–19 (with the live particle count) + 12–32 MB (with the ground) + same | ∝ N | — |
 
-Watts, scene 1 (bytes only): 124 mW before, 23 mW after round 1, **~4.5 mW now**, V1 ≈ 2 mW, the bound ≈ 0. Scene 1 is now
-2.3× V1 by bytes. The awake share (~0.5 MB) is mostly the column pass reading the full 128-cell height of each
-awake column.
+Watts, scene 1 (bytes only): 124 mW before round 1, ~4.5 mW after round 2, **~4.1 mW now**. V1 is ≈ 2 mW and the
+bound ≈ 0. Scene 1 is ~2× V1 by bytes. The lab scene drops from ~90 mW to ~38 mW of the terms above.
 
 ## The remaining gap, ranked (scene 1, this branch)
 
-1. **Fixed dispatches: 159 a tick, ~121 zero-size indirect when idle** (103 in the blast batches, 8 air
-   substeps, gas, couplePlan, apply, activity, the couple chain). Each costs a recorded command and, in Chrome,
-   a validation dispatch. With bytes at ~2.6 MB this is probably the largest remaining cost; it is unmeasured
-   (at an assumed 2 to 5 µs each it is 0.2 to 0.6 ms a tick). Closing it: one blast batch a tick at the same
-   service rate (a behaviour change, the user's call, removes ~98); merging adjacent one-thread stages
-   (listArgs ×4, actArgs, coupleGate, workArgs, args); skipping a recorded subsystem needs a GPU-to-CPU
-   signal the CPU does not have.
-2. **All-brick scans of small words, 2.0 MB (3.6 mW).** Air: the source list builder, reach ×3, windList, count
-   and the event list (1.44 MB); grid: the activity scan, cols and invalidate (0.52 MB). Closing it: push the
-   lists instead of scanning (append on a word's 0 → 1 change in markBusy, noteState, noteEvents and noteAir),
-   dilate reach by scattering over the start list, make cols and invalidate list-driven.
-3. **The column pass reads whole columns**, 128 cells per lane for each awake brick column (~32 KB each,
-   ~0.3 MB here). Restricting it to the awake bricks' heights plus a falling run's reach makes it ∝ awake.
-4. **The particle pool, 12 MB (+6.8 MB of couple preparation) while any particle lives**: ∝ capacity, not live
-   particles. A per-64-slot live mask kept by every spawner and retirer needs the column-water branch (jets).
-5. **A noted brick re-reads its 64 cores** (~1.3 KB) even when one cell changed. An incremental update needs
-   integer sums: the f32 summation order is part of today's bits, so that would be a behaviour change.
-6. **holdCOM** loops over 65,536 slots in one thread while the physgun holds; a parallel reduction fixes it.
+1. **Fixed dispatches: 172 a tick, ~135 zero-size when idle.** The batches are 104 of them: 8 batches of 13 indirect
+   stages, plus a workArgs each. The one-batch rule (The Powder Toy: an explosion's chain spreads one step a frame)
+   at an unchanged service rate means one batch serving up to 8 charges at once. That needs multi-source blast
+   planning: per-source shielded energy and per-source normalisation in one plan pass, a pick of the 8 lowest
+   serviceable slots, and a finish over all of them. It is a behaviour change, so it gets its own commit and
+   checks. Not done here; then merge the one-thread stages it leaves (listArgs ×4, actArgs, coupleGate, args).
+   The cost of one zero-size indirect dispatch on the GPU is still unmeasured.
+2. **All-brick scans of small words, 2.0 MB (3.6 mW).** Push the lists instead: append on a word's 0 → 1 change in
+   markBusy, noteState, noteEvents and noteAir; dilate reach by scattering over the start list; drive cols and
+   invalidate from lists. Each turns a hot store into an exchange-and-branch, so it needs GPU timing to pay.
+3. **A noted brick re-reads its 64 cores.** Skipped: an incremental update changes the f32 summation order.
+4. **The column pass still reads ground bricks it cannot change** (no summary for "solid or supported powder at
+   rest"). A "settled" summary from support would extend the skip; the support pass would have to prove it.
 
 ## What to measure on the GPU
 
-Split timings of the air tick, the first select, the couple chain, the activity scan and the zero-size
-dispatches in scene 1 at 128³ on both branches; the cost of one zero-size indirect dispatch in Chrome and Safari;
-and a bit-identity A/B of cells, banks, both air copies, particles and control words 0–31 after N ticks against
-lean/integrate with the wake fix (`a000f667`) applied to both sides. Leave out the activity buffer's state
-words (transient here, sticky there) and everything past the saved words.
+The `--hash` A/B of this branch against lean/integrate 3c95d72f in the eight scenes. Then split timings of the
+particle stages with a few live particles, the column pass in a lab scene, and one zero-size indirect dispatch in
+Chrome and Safari.
