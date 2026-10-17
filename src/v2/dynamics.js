@@ -6,7 +6,8 @@ import { ELEMENTS, K } from '../elements.js';
 import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
 import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase } from '../shaders/v2/particles.js';
-import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, COUPLE_MODE } from '../shaders/v2/blasts.js';
+import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, COUPLE_MODE,
+  coupleArgsBase, COUPLE_ARGS_WORDS, COUPLE_ARGS } from '../shaders/v2/blasts.js';
 import { AIR as AIR_MODE, EDGE } from '../simModes.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M } from './dynamics-reference.js';
@@ -103,9 +104,12 @@ export class NativeDynamics {
     this.claims=make('claims',g.slots*16);
     this.air=[make('air0',g.nbricks*32),make('air1',g.nbricks*32)];
     this.faces=make('faces and vacuum',g.nbricks*32); // the air source's per-brick cache (air.js)
-    this.control=make('control',controlWords(g)*4);
-    this.dispatchArgs=make('dispatch args',64,GPUBufferUsage.INDIRECT);
-    const args=new Uint32Array(16);args[13]=PARTICLE_CAP/64;args[14]=1;gpu.queue.writeBuffer(this.dispatchArgs,0,args);
+    this.control=make('control',(controlWords(g)+COUPLE_ARGS_WORDS)*4);
+    // 0..48: the batch args workArgs fills, 48: [work, CAP/64, 1]; COUPLE_ARGS: the couple gate's
+    // [work, 1, 1, 0, work] then the constant tail of [work, CAP/64, 1] at COUPLE_ARGS + 16.
+    this.dispatchArgs=make('dispatch args',COUPLE_ARGS+32,GPUBufferUsage.INDIRECT);
+    const args=new Uint32Array(COUPLE_ARGS/4+8);args[13]=PARTICLE_CAP/64;args[14]=1;
+    args[COUPLE_ARGS/4+5]=PARTICLE_CAP/64;args[COUPLE_ARGS/4+6]=1;gpu.queue.writeBuffer(this.dispatchArgs,0,args);
     this.plans=make('plans',g.slots*16);
     const initial=new Float32Array(g.nbricks*8); for (let b=0;b<g.nbricks;b++) initial[b*8+6]=AIR.quietTicks;
     for (const b of this.air) gpu.queue.writeBuffer(b,0,initial);
@@ -119,7 +123,7 @@ export class NativeDynamics {
     this.kernels={};
     for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES]]) {
       for (const stage of stages) {
-        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','workArgs','externalBegin','externalGate'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage));
+        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','workArgs','externalBegin','externalGate','coupleGate'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage));
         const name=`v2${family}_${stage}`;
         this.kernels[`${family}/${stage}`]=gpu.kernel({name,build:'idle',code:generate(g,owner.nativeDynamics.head,stage),
           params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
@@ -150,11 +154,11 @@ export class NativeDynamics {
     this._check();
     // Match the kernel descriptor protocol: vectors are direct dispatches.
     const indirect=!Array.isArray(count) && count?.indirect;
-    if(indirect && (indirect!==this.dispatchArgs || count.offset!==32)) throw new Error('Unsupported native allocation dispatch');
+    if(indirect && (indirect!==this.dispatchArgs || ![32,COUPLE_ARGS].includes(count.offset))) throw new Error('Unsupported native allocation dispatch');
     // Existing ray args are [hasWork ? 1 : 0, CAP/64, 1]; dThread folds
     // their two dimensions into exactly the same canonical pool slots.
     for(const stage of ALLOCATION_STAGES) {
-      const size=indirect?(stage==='freeScan'?count:{indirect:this.dispatchArgs,offset:48}):
+      const size=indirect?(stage==='freeScan'?count:{indirect:this.dispatchArgs,offset:count.offset+16}):
         (stage==='freeScan'?1:PARTICLE_CAP/64);
       this._record('blasts',stage,size,tick,params);
     }
@@ -254,8 +258,21 @@ export class NativeDynamics {
     // Both gas stages return at once without wind, and the boundary one off void edges.
     if(wind) this._record('air','gas',cells,tick);
     if(wind && edge===EDGE.VOID) this._record('air','gasBoundary',cells,tick);
-    this._record('blasts','couplePlan',cells,tick,{mode:COUPLE_MODE}); this._allocate(tick,{mode:COUPLE_MODE});
+    this._record('blasts','couplePlan',cells,tick,{mode:COUPLE_MODE}); this._coupleAllocate(tick);
     this._record('air','activity',bricks,tick);
+  }
+  // _allocate's run for the couple plans, with pool preparation, allocation and children behind
+  // the GPU's coupleGate: without a request or a live particle they would find a free pool, no
+  // neutron parent and zero counts, and the gate writes the free and requested totals they would.
+  // apply stays direct (fractures need no allocation). tools/v2/allocation-check.mjs
+  _coupleAllocate(tick) {
+    const p={mode:COUPLE_MODE},args=offset=>({indirect:this.dispatchArgs,offset});
+    this._record('blasts','count',Math.ceil(this.g.nbricks/64),tick,p);
+    this._record('blasts','coupleGate',1,tick,p);
+    this.gpu.frame.copy(this.control,coupleArgsBase(this.g)*4,this.dispatchArgs,COUPLE_ARGS,COUPLE_ARGS_WORDS*4);
+    this._record('blasts','allocate',args(COUPLE_ARGS),tick,p);
+    this._record('blasts','apply',Math.ceil(this.g.slots/64),tick,p);
+    this._record('blasts','children',args(COUPLE_ARGS+16),tick,p);
   }
   /** strength is already integrated: impulse delta-v m/s; pressure/vacuum Pa;
    * wind/cyclone delta-v m/s. No hidden per-frame or second dt multiplier. */

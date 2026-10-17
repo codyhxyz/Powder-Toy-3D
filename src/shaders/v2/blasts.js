@@ -26,6 +26,12 @@ export const externalMaskWords = g => { const {width,height}=atlasDims(g);return
 export const ALLOCATION_CHUNKS = PARTICLE_CAP / 64;
 export const allocationScratchBase = g => externalMaskBase(g) + externalMaskWords(g);
 export const controlWords = g => allocationScratchBase(g) + ALLOCATION_CHUNKS * 2;
+// After every saved and scratch range: the couple gate's [work, 1, 1, 0, work], copied whole to
+// the dispatch args at COUPLE_ARGS (allocate, freeScan) and COUPLE_ARGS + 16 (freeCount,
+// freeScatter, children). The control buffer holds these words past controlWords.
+export const coupleArgsBase = g => controlWords(g);
+export const COUPLE_ARGS_WORDS = 5;
+export const COUPLE_ARGS = 64;
 export const ALLOCATION_STAGES = ['freeCount','freeScan','freeScatter'];
 // The air tick's couplePlan → count → apply run. Allocation stages treat it as
 // mode 0; only couplePlan/count/apply read it, to skip couple-quiet bricks.
@@ -396,6 +402,17 @@ var<workgroup> brickDemand: array<u32,64>;
     if(t<D_BRICKS) { atomicStore(&control[D_SPAWN_PREFIX+t],prefix); }
     if(li==63u) { atomicStore(&control[D_SPAWN_COUNTS+t/64u],prefix+n); }
   `);
+  // The air tick's couple run (dynamics.js _coupleAllocate), after count. With nothing requested
+  // and no live particle, preparation would find every slot free and no neutron parent, and the
+  // allocator turn all-zero counts into all-zero bases: write the totals they would, skip them.
+  if (stage === 'coupleGate') return h + main1(`
+    var demand=0u; for(var group=0u;group<${Math.ceil(g.nbricks/64)}u;group++) { demand+=atomicLoad(&control[D_SPAWN_COUNTS+group]); }
+    let work=select(0u,1u,demand>0u || atomicLoad(&control[0])>0u);
+    if(work==0u) { atomicStore(&control[4],D_CAP); atomicStore(&control[5],0u); }
+    let base=${coupleArgsBase(g)}u;
+    atomicStore(&control[base],work); atomicStore(&control[base+1u],1u); atomicStore(&control[base+2u],1u);
+    atomicStore(&control[base+3u],0u); atomicStore(&control[base+4u],work);
+  `);
   if (stage === 'freeCount') return h + `
 var<workgroup> freeMasks: array<atomic<u32>,2>;
 var<workgroup> childSum: atomic<u32>;
@@ -572,7 +589,7 @@ var<workgroup> childCounts: array<u32,64>;
   `);
   throw new Error(`Unknown blast stage ${stage}`);
 }
-export const BLAST_STAGES = [...ALLOCATION_STAGES,'reset','select','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','workArgs','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply'];
+export const BLAST_STAGES = [...ALLOCATION_STAGES,'coupleGate','reset','select','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','workArgs','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply'];
 
 export const WGSL_CHECK = BLAST_STAGES.map(stage => ({ name: `v2blasts_${stage}`, kind: 'compute',
   code: g => blastsWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,BLASTS_LAYOUT,'EMPTY'], tool: true }));

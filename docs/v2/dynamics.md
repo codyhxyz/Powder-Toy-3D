@@ -86,8 +86,10 @@ Gas events add one bounded1/64-brick source exactly once. Heat/gas scalars are
 not erased at sleep. Native gas drift swaps the complete Material in disjoint
 pairs. Surface wind lift and unsupported liquid jets feed the same allocator.
 
-One source pass reads each brick's cells once (faces, vacuum, gas sources,
-event census). The substeps then run only within an 8-brick box of a brick that
+One source pass derives each brick's faces and vacuum from its cells, and reads
+them again only when it or a face neighbour noted a cell change (noteState)
+since the last reach pass; gas sources and the event census read only bricks
+noted as holding a request (noteEvents; `tools/v2/air-cache-check.mjs`). The substeps then run only within an 8-brick box of a brick that
 source changed or that is not resting and level with resting neighbours; every
 other substep is an exact identity with both copies already equal
 (`tools/v2/air-reach-check.mjs`). Gas drift and edge outflow skip windless
@@ -144,14 +146,19 @@ source, or (outside mode14) pending grid neutron or positive child sum. A zero
 child sum alone is not an absence proof (u32 sums may wrap).
 FreeCount/freeScatter use these args; freeScan uses the allocator's existing
 1-or-0 args at byte32. Unsupported indirect allocation descriptors fail closed.
-Direct allocators and jets still prepare directly. All stages remain required
+The air tick's couple run is gated the same way by `coupleGate` after its count:
+with no requested launch and no live particle, preparation would find every slot
+free and no parent, so preparation, allocation and children run at zero
+workgroups (args at byte64/80, written past `controlWords`) and the gate writes
+the free and requested totals they would (`control[4]=CAP`, `control[5]=0`).
+Tools, bodies and forcing still prepare directly; jets prepare directly. All stages remain required
 and awaited, even when an indirect count is zero.
 
 **Scratch/save ABI:** append2048 u32 (8192 bytes) at
 `externalMaskBase(g) + externalMaskWords(g)` in the existing control buffer. Each chunk uses two
 words (free and child counts, then bases). All prior offsets, buffer/binding
 identities, eight-storage layouts and persisted fields are unchanged. The
-existing separate dispatch-args buffer remains64 bytes. Saves
+separate dispatch-args buffer is 96 bytes: the couple gate's args follow byte64. Saves
 still capture only the first32 control words plus explicit held/shock/request and
 external fields; this tail is ephemeral and overwritten before use. Restore
 clears the entire control buffer before restoring those explicit durable ranges.
