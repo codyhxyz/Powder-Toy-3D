@@ -258,7 +258,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      *   drawn when src/deco.js decoShown(sim) says so (painted, display on)
      * @returns {boolean}
      */
-    draw(rp, { view = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, warp = null } = {}) {
+    draw(rp, { view = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, warp = null, indirect = null } = {}) {
       const curved = isCurved(warp);
       const header = sim.readHeader(), format = volumeReadFormat(sim, gpu, header);
       if ((header.format ?? 0) !== format) return false;
@@ -274,6 +274,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
           warpK: curved ? warp.k : 0, warpAnchor: curved ? warp.anchor : [0, 0], warpDir: curved ? warp.dir : [0, 1],
         },
         count: curved ? VOLUME_SCREEN_VERTICES : VOLUME_VERTICES,
+        ...(indirect ? { indirect } : {}),
       });
       return true;
     },

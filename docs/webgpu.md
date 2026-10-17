@@ -156,7 +156,7 @@ shows only if Start comes first; the near-detail variant is prefetched; other
 views, world kernels and POV families build on first use with the existing toast. three's mesh pipelines go through
 `renderer.compileAsync`. `gfx/coldShader.js`'s hold, `detailGate`'s warm draw and `gfx/programs.js` go away (B5).
 
-**W19. Failure keeps today's contract.** `device.lost`, uncaptured errors (ours and three's) and pipeline failures go
+**W19. Failure keeps today's contract.** `device.lost`, uncaptured errors (ours and three's) and core pipeline failures go
 to `stopGraphics`; every state-mutating entry point throws `GraphicsFailure` afterwards (B9).
 
 **W20. Rays sprites are drawn by us, after three.js, in an overlay pass; figures read our textures through
@@ -442,6 +442,12 @@ const counts = await ring.read(slot);                                // after th
 - A pipeline promise that rejects calls `module.getCompilationInfo()` and fails with
   `GPU shader failed: <kernel name>.\n<line:col message>…` (the format `tools/gpu-failure-check.mjs` asserts, with the
   offending identifier in the text).
+- Experimental Test pipelines explicitly set `optional: true`. Attributed module,
+  pipeline-layout, and native compilation errors reject their readiness with
+  `OptionalShaderFailure`, without calling `gpu.fail`. Fatal and optional caches
+  are separate. The app disposes Test and returns to Realistic without retrying
+  during that session. Device loss, uncaptured errors, programming errors, and
+  native compilation deadlines still stop graphics.
 - `fail` is app.js's `stopGraphics`, registered with `gpu.onFailure`. After it, `gpu.frame` throws `GraphicsFailure`,
   so `sim.step`, `sim.paint`, `openMap`, `setSize`, `loadPreset`, `worldLoad` and `test.step` throw as today. The old
   `renderer.render = () => { throw }` monkeypatch (app.js:201) goes.

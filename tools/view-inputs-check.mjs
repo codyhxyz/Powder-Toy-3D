@@ -85,7 +85,14 @@ assert.equal(pacer.wakes, wakes + 1, 'only explicit invalidation advances wake c
 // Keep the production wiring on this tested path, not the old full-settings key.
 const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
 assert.ok(app.includes('const viewSettings = createViewSettings(settings);'));
-assert.ok(app.includes('bindViewInputWake(window, () => { autoRes.wake(); wakeLoop(); });'));
+const wakeBody=app.match(/bindViewInputWake\(window,\s*\(\)\s*=>\s*\{([^}]+)\}\);/)?.[1];
+assert(wakeBody,'production input wake callback');
+const productionWake=new Function('autoRes','hybrid','wakeLoop',wakeBody),woken=[];
+const auto={wake:()=>woken.push('auto')},hybrid={wake:()=>woken.push('hybrid')},wakeLoop=()=>woken.push('loop');
+productionWake(auto,hybrid,wakeLoop);
+assert.deepEqual(woken,['auto','hybrid','loop'],'input wakes both resolution controllers and the loop');
+woken.length=0;productionWake(auto,null,wakeLoop);
+assert.deepEqual(woken,['auto','loop'],'the default renderer needs no hybrid instance');
 assert.ok(app.includes('viewSettings, gfx, post.settings)'));
 assert.ok(app.includes('brushKey(brush, toolById(settings.tool).color)'));
 assert.ok(app.includes('pointerPickDirty = true;'));
