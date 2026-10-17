@@ -84,6 +84,30 @@ test('brick summaries change nothing: the scan over them equals a scan of every 
   assert.ok(a.summary.some(v => v !== 0), 'summaries were used');
 });
 
+test('a run whose support goes falls from rest: its face lanes are never read as a fall', () => {
+  // a pool flowing over a shelf; the shelf vanishes under part of it (an edit) while its lanes carry flux
+  const w = new ColumnGrid(16, 16, 8);
+  walls(w);
+  for (let z = 1; z < 7; z++) for (let x = 1; x < 15; x++) w.set(x, 5, z, E.WALL);
+  // flowing toward -x, so the -side lanes under the pool are negative
+  for (let y = 6; y < 9; y++) for (let z = 1; z < 7; z++) for (let x = 9; x < 15; x++) w.set(x, y, z, E.WATER);
+  for (let t = 0; t < 20; t++) w.step();
+  let negative = 0;
+  for (let z = 1; z < 7; z++) for (let x = 1; x < 13; x++) if (w.ctx.laneOf(w.cores[w.at(x, 6, z)], 0) < 0) negative++;
+  assert.ok(negative > 0, 'negative lanes under the moving water');
+  for (let z = 1; z < 7; z++) for (let x = 1; x < 13; x++) w.set(x, 5, z, E.EMPTY);
+  const t0 = w.totals();
+  for (let t = 0; t < 120; t++) {
+    w.step();
+    for (let z = 1; z < 7; z++) for (let x = 1; x < 15; x++) for (let k = 0; k < 16; k++) {
+      const r = w.ctx.colRec(x, k, z);
+      assert.ok(w.ctx.recTop(r) <= w.ny && w.ctx.recY0(r) <= w.ctx.recTop(r), `record ${x},${k},${z} in the column`);
+      if (w.ctx.recLast(r)) break;
+    }
+  }
+  assert.equal(w.totals().mass, t0.mass);
+});
+
 test('migration: unpacked columns settle packed, compressed open water rises, all exactly', () => {
   const w = new ColumnGrid(8, 16, 8);
   walls(w);

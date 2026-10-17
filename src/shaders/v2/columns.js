@@ -385,9 +385,11 @@ fn colPack(x: i32, z: i32, r0: i32, top: i32, mass: u32) -> i32 {
 // (v += g to the run speed, whole cells, a landing ends the fall). Returns its new bottom.
 fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
   let b = colCell(x, r0, z);
-  // a deposit whose launch was refused (or never ran) falls from rest
+  // a run that was not falling last tick (its bottom's x lane is then a segment's flux), or a deposit
+  // whose launch was refused, falls from rest
   var v0 = laneOf(b, 1); var a0 = laneOf(b, 0);
-  if (v0 < 0.0) { v0 = 0.0; a0 = 0.0; }
+  if (v0 <= 0.0) { v0 = 0.0; a0 = 0.0; }
+  a0 = clamp(a0, 0.0, 1.0);
   let v = min(v0 + colGravity(), COL_VT);
   var a = a0 + v;
   var d = i32(floor(a));
