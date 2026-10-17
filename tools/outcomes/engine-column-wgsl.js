@@ -1,7 +1,8 @@
 // The outcome bench's engine on the column-run water model as production emits it: the col* bodies of
 // src/shaders/v2/columns.js executed on the CPU (tools/v2/column-wgsl.mjs), on production-format cells. So the
 // bench's liquid tests and thresholds measure the WGSL's own rules, as engine-column.js measures the prototype.
-// Node only. Elements: air, wall and the liquids (water, mud, oil); no powders, heat sources, fire or jets yet.
+// Node only. Elements: air, wall and the liquids (water, mud, oil); no powders, heat sources or fire. Jets are
+// the emitted pour and launch marks, flown by the prototype's R4 (the dynamics module's flight is not executed).
 // Contract: ./engine.js.
 import { ColumnGrid } from '../v2/column-wgsl.mjs';
 import { E, ELEMENTS, K } from '../../src/elements.js';
@@ -43,7 +44,12 @@ export function createEngine() {
     async read() {
       const n = w.n, id = new Int32Array(n), amount = new Float32Array(n);
       for (let i = 0; i < n; i++) { id[i] = cid(w.cores[i]); if (isLiquid(id[i])) amount[i] = cFill(w.cores[i]) / FULL; }
-      return { nx: w.nx, ny: w.ny, nz: w.nz, id, amount, T: null, burning: null, pressure: null, moving: null, vel: w.velocities(), particles: [] };
+      const particles = w.parts.map((p) => ({ x: p.x, y: p.y, z: p.z, vx: p.vx * CELL_M, vy: p.vy * CELL_M, vz: p.vz * CELL_M, mass: cFill(p.m.core) / FULL, id: cid(p.m.core) }));
+      for (const p of particles) {
+        const x = Math.floor(p.x), y = Math.floor(p.y), z = Math.floor(p.z);
+        if (x >= 0 && y >= 0 && z >= 0 && x < w.nx && y < w.ny && z < w.nz) amount[w.at(x, y, z)] += p.mass;
+      }
+      return { nx: w.nx, ny: w.ny, nz: w.nz, id, amount, T: null, burning: null, pressure: null, moving: null, vel: w.velocities(), particles };
     },
     async census() { return tally(await this.read(), this); },
     async activity() {

@@ -56,6 +56,8 @@ const EDGE_ACC = G_CELLS / (EDGE_DRAIN_HZ * EDGE_DRAIN_HZ) * FULL;
 export const QUIET_TICKS = 8;
 // a brick's quiet run stops counting here (one byte); a brick at it, with nothing busy near, is unchanged
 export const QUIET_CAP = 255;
+// a brick summary's codes (v2ActLayout summary): a liquid's code carries its id and lava subtype above it
+export const SUMMARY = { CLOSED: 1, AIR: 2, LIQUID: 3 };
 // gases diffuse by random swaps only this long after they last moved (R4: diffusionAge, so a still pool rests)
 const DIFFUSE_AGE = 120;
 // ¼ K steps from -273.25 °C: 20 °C is 1173 exactly
@@ -131,12 +133,16 @@ export function fallCells(id, ticks) {
 // nonzero material request (noteEvents); clear means every request word in it is zero.
 // air: unsaved too. Clear means the brick's air ended its last air tick settled and unchanged,
 // in both ping-pong copies (the air source clears it); every other writer sets it (noteAir).
+// colAwake: unsaved; a brick column holds an awake brick this tick (v2cols writes every one).
+// summary: unsaved; what every cell of a brick is, for the runs pass's scan (columns.js colProbe): 0 unknown,
+// else written by support from its cells and cleared by noteState at any change since.
+// jets: unsaved; a brick holds a deposited cell marked to launch (columns.js colMarkJet; the jets pass clears it).
 // near, plist: the activity scan's words (unsaved): bit 0 a busy brick in the 3³ neighbourhood,
 // bit 1 listed; then the list [count, use, bricks]. Zero again after every activity pass.
 export function v2ActLayout(g) {
   const { nbricks: nb, bx, bz } = gridDims(g);
   const ledger = 10 * nb + bx * bz + 8;
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, allocated: ledger + 8 + 4 * nb };
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, jets: ledger + 8 + 4 * nb, colAwake: ledger + 8 + 5 * nb, summary: ledger + 8 + 5 * nb + bx * bz, allocated: ledger + 8 + 6 * nb + bx * bz };
 }
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
@@ -215,6 +221,13 @@ const V2_EVENTS: u32 = ${a.events}u;
 const V2_AIR_LIVE: u32 = ${a.air}u;
 const V2_NEAR: u32 = ${a.near}u;
 const V2_PLIST: u32 = ${a.plist}u;
+const V2_JETS: u32 = ${a.jets}u;
+const V2_COL_AWAKE: u32 = ${a.colAwake}u;
+const V2_SUMMARY: u32 = ${a.summary}u;
+// a brick summary's codes: all closed (solid, powder or gas), all air, all one liquid full and still
+const SUM_CLOSED: u32 = ${SUMMARY.CLOSED}u;
+const SUM_AIR: u32 = ${SUMMARY.AIR}u;
+const SUM_LIQUID: u32 = ${SUMMARY.LIQUID}u;
 const QUIET_CAP: u32 = ${QUIET_CAP}u;
 const V2_ENERGY_SOURCE: u32 = ${a.energySource}u;
 const V2_ENERGY_SINK: u32 = ${a.energySink}u;
@@ -256,7 +269,7 @@ fn noteVisible(p: vec3i, before: vec4u, after: vec4u) {
 }
 // Every write that can change a cell's core goes through here (the air source
 // caches what it derives from a brick's cells until it or a face neighbour is noted).
-fn noteState(s: u32) { atomicStore(&act2[V2_STATE_DIRTY + s / 64u], 1u); }
+fn noteState(s: u32) { atomicStore(&act2[V2_STATE_DIRTY + s / 64u], 1u); atomicStore(&act2[V2_SUMMARY + s / 64u], 0u); }
 // Every store of a nonzero material request: whole-grid request scans visit noted bricks only.
 fn noteEvents(s: u32, request: u32) { if (request != 0u) { atomicStore(&act2[V2_EVENTS + s / 64u], 1u); } }
 // Every write of a brick's air outside the air tick's source and substeps.
@@ -516,6 +529,9 @@ ${MAIN} {
   var any_ = false;
   for (var by = 0; by < BY; by++) { if (atomicLoad(&act2[V2_AWAKE + brickId(vec3i(bx, by, bz))]) != 0u) { any_ = true; } }
   if (any_) { atomicStore(&act2[V2_COLS + atomicAdd(&act2[V2_COUNT + CNT_COLS], 1u)], col); }
+  // the column water's one-word test of it (columns.js colAwake); written only when it changes
+  let flag = select(0u, 1u, any_);
+  if (atomicLoad(&act2[V2_COL_AWAKE + col]) != flag) { atomicStore(&act2[V2_COL_AWAKE + col], flag); }
 }
 `;
 
@@ -674,15 +690,29 @@ export const v2SupportWGSL = (g) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
 var<workgroup> wgN: u32;
 var<workgroup> occW: array<atomic<u32>, 2>;
+var<workgroup> wgFirst: u32;
+var<workgroup> wgMixed: atomic<u32>;
 ${MAIN} {
   let e = foldId(wg, nwg);
   if (li == 0u) { wgN = useAwake(); }
   if (e >= workgroupUniformLoad(&wgN)) { return; }
   let b = atomicLoad(&act2[V2_LIST + e]);
-  let kc = clsOf(cells[b * 64u + li]);
+  let cell = cells[b * 64u + li];
+  let kc = clsOf(cell);
   if (kc == C_SOLID || kc == C_POWDER) { atomicOr(&occW[li >> 5u], 1u << (li & 31u)); }
+  // the brick's summary for the column water's scan: one code if every cell has it
+  var code = SUM_CLOSED;
+  if (kc == C_AIR) { code = SUM_AIR; }
+  if (kc == C_LIQUID) {
+    code = 0u;
+    if (cFill(cell) == FULLU && cAge(cell) == 0u) { code = SUM_LIQUID | (cid(cell) << 8u) | (select(0u, ctypeOf(cell), cid(cell) == ${E.LAVA}u) << 16u); }
+  }
+  if (li == 0u) { wgFirst = code; }
   workgroupBarrier();
+  if (code != wgFirst) { atomicStore(&wgMixed, 1u); }
   if (li < 2u) { atomicStore(&act2[V2_OCC + 2u * b + li], atomicLoad(&occW[li])); }
+  workgroupBarrier();
+  if (li == 0u) { atomicStore(&act2[V2_SUMMARY + b], select(wgFirst, 0u, atomicLoad(&wgMixed) != 0u)); }
   // Same cube SET as R5, including its one-cell halo outside the awake brick.
   // mBlockOffset only permutes corners, so no gravity-dependent ownership.
   let j=li/8u; let i=li%8u;

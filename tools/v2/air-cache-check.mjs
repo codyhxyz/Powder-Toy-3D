@@ -27,6 +27,7 @@ import { nativeForceCommitWGSL } from '../../src/v2/nativeForcing.js';
 import { PHYS } from '../../src/physics.js';
 import { LEGACY_PRESSURE_PA } from '../../src/v2/dynamics-reference.js';
 import { EDGE } from '../../src/simModes.js';
+import { jetsWGSL, JET_STAGES } from '../../src/shaders/v2/jets.js';
 
 // ---- 1. writer audit
 const g = gridLayout(16, 8, 8);
@@ -38,6 +39,7 @@ const modules = [
   ...PARTICLE_STAGES.map(s => [`particles ${s}`, particlesWGSL(g, nativeDynamicsHead, s)]),
   ...BLAST_STAGES.map(s => [`blasts ${s}`, blastsWGSL(g, nativeDynamicsHead, s)]),
   ...AIR_STAGES.map(s => [`air ${s}`, airWGSL(g, nativeDynamicsHead, s)]),
+  ...JET_STAGES.map(s => [`jets ${s}`, jetsWGSL(g, s)]),
   ...['material', 'sourcePlan', 'air'].map(s => [`weather ${s}`, nativeWeatherCommitWGSL(g, params, s)]),
   ...['plan', 'particles'].map(s => [`forcing ${s}`, nativeForceCommitWGSL(g, params, s)]),
 ];

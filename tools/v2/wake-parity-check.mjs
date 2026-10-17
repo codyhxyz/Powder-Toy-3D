@@ -15,6 +15,7 @@ import { nativeDynamicsHead, v2ActLayout, v2ColumnWGSL, v2ImportWGSL, v2RunsWGSL
 import { particlesWGSL } from '../../src/shaders/v2/particles.js';
 import { blastsWGSL } from '../../src/shaders/v2/blasts.js';
 import { airWGSL } from '../../src/shaders/v2/air.js';
+import { jetsWGSL } from '../../src/shaders/v2/jets.js';
 import { nativeWeatherCommitWGSL } from '../../src/v2/nativeWeather.js';
 import { nativeForceCommitWGSL } from '../../src/v2/nativeForcing.js';
 
@@ -40,6 +41,7 @@ const writers = [
   ['air source (in tick)', airWGSL(g, nativeDynamicsHead, 'source'), t => dynamicParams(t)],
   ['column water runs (in tick)', v2RunsWGSL(g), t => owner._params(t)],
   ['column water pairs (in tick)', v2PairsWGSL(g), t => ({ ...owner._params(t), pairStage: 1 })],
+  ['jets spawn (in tick)', jetsWGSL(g, 'spawn'), t => dynamicParams(t)],
   // tools record with the owner's tick, between ticks (applyToolImpulse, physgun, body coupling)
   ['tool impulse apply (between ticks)', blastsWGSL(g, nativeDynamicsHead, 'apply'), t => dynamicParams(t, { mode: 2 })],
   ['air tool (between ticks)', airWGSL(g, nativeDynamicsHead, 'tool'), t => dynamicParams(t, { mode: 3 })],

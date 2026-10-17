@@ -67,6 +67,23 @@ test('custody: exact mass, energy and fuel through packs, falls and transfers of
   for (let i = 0; i < w.n; i++) if (L.cid(w.cores[i]) === E.LAVA) assert.ok([E.STONE, E.GLASS].includes(L.ctypeOf(w.cores[i])));
 });
 
+test('brick summaries change nothing: the scan over them equals a scan of every cell, bit for bit', () => {
+  const scene = (summaries) => {
+    const w = new ColumnGrid(16, 16, 16);
+    if (!summaries) w.summarize = (b) => { w.summary[b] = 0; };
+    walls(w);
+    for (let y = 1; y < 9; y++) for (let z = 1; z < 15; z++) for (let x = 1; x < 6; x++) w.set(x, y, z, E.WATER, { T: 10 + 3 * y });
+    for (let y = 9; y < 11; y++) for (let z = 1; z < 15; z++) for (let x = 1; x < 6; x++) w.set(x, y, z, E.OIL, { T: 60 });
+    for (let y = 1; y < 4; y++) for (let z = 10; z < 15; z++) for (let x = 10; x < 15; x++) w.set(x, y, z, E.MUD);
+    for (let t = 0; t < 180; t++) { w.step(); if (t === 90) for (let z = 4; z < 8; z++) w.set(12, 12, z, E.WATER); }
+    return w;
+  };
+  const a = scene(true), b = scene(false);
+  a.cores.forEach((c, i) => assert.deepEqual(Array.from(c), Array.from(b.cores[i]), `cell ${i}`));
+  assert.deepEqual(Array.from(a.banks), Array.from(b.banks));
+  assert.ok(a.summary.some(v => v !== 0), 'summaries were used');
+});
+
 test('migration: unpacked columns settle packed, compressed open water rises, all exactly', () => {
   const w = new ColumnGrid(8, 16, 8);
   walls(w);
@@ -124,7 +141,14 @@ test('the real driver records the runs pass and the pair stages over the awake c
   for (const tick of [1, 2]) {
     commands.length = 0; owner.ticks(1);
     const names = commands.map(c => c.name);
-    assert.ok(!names.some(n => /^v2(flux|limit|gather|foam|liquidFinalize)$|^v2jets_/.test(n)), 'no R13 pass');
+    assert.ok(!names.some(n => /^v2(flux|limit|gather|foam|liquidFinalize)$|^v2jets_candidate$/.test(n)), 'no R13 pass');
+    // the jets once a tick, after the last pair stage: count, the shared allocator's preparation, allocate, spawn
+    const jets = names.slice(names.lastIndexOf('v2pairs') + 1, names.indexOf('v2jets_spawn') + 1);
+    assert.equal(jets[0], 'v2jets_count'); assert.equal(jets.at(-2), 'v2jets_allocate'); assert.equal(jets.at(-1), 'v2jets_spawn');
+    assert.ok(jets.includes('v2blasts_freeScatter') && jets.indexOf('v2blasts_freeScatter') < jets.indexOf('v2jets_allocate'), 'the free list is built before the jets allocate');
+    assert.equal(names.filter(n => n === 'v2jets_spawn').length, 1);
+    const spawn = commands.find(c => c.name === 'v2jets_spawn'), count = commands.find(c => c.name === 'v2jets_count');
+    assert.deepEqual(spawn.size, [g.nbricks, 1, 1], 'a workgroup a brick'); assert.deepEqual(count.size, [Math.ceil(g.nbricks / 64), 1, 1]);
     const liquid = commands.filter(c => c.name === 'v2runs' || c.name === 'v2pairs');
     assert.deepEqual(liquid.map(c => c.name), ['v2runs', 'v2pairs', 'v2pairs', 'v2pairs', 'v2pairs', 'v2pairs']);
     for (const c of liquid) { assert.equal(c.size.indirect, owner.args); assert.equal(c.size.offset, ARGS2.COLS * 4); }

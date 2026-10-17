@@ -189,7 +189,7 @@ assert.equal(engine.isReady, true);
 assert.equal(sim.version, 1);
 for (const [name, bytes] of [['cells', 16], ['aux', 4], ['liquidScratch', 16], ['events', 4]]) assert.equal(engine[name].size, g.slots * bytes);
 assert.equal(engine.jetMask.size, v2DemandWords(g) * 4, 'the face demands, two words a cell');
-assert.equal(engine.contactReady, false); assert.equal(engine.dynamics, null); assert.equal(engine.jets, undefined);
+assert.equal(engine.contactReady, false); assert.equal(engine.dynamics, null); assert.equal(engine.jets, null);
 assert.equal(engine.groups.liquid.entries.length, 7); // plus one shared table = eight
 assert.equal(engine.nativeDynamics.layout.entries.length, 3); assert.equal(V2_DYNAMICS_LAYOUT.length, 3);
 engine.sync();

@@ -8,14 +8,14 @@
 import { columnWaterWGSL, pairOrder, COLUMN } from '../../src/shaders/v2/columns.js';
 import { ELEMENTS, E, K } from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
-import { v2Rows } from '../../src/shaders/v2.js';
+import { v2Rows, SUMMARY } from '../../src/shaders/v2.js';
 import { FOAM_ROWS } from '../../src/v2/foam.js';
 
 export const TRANSLATED = ['colMove', 'colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colPack', 'colFall',
-  'colFinish', 'colExtent', 'colScan', 'colOpen', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
-  'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy'];
+  'colFinish', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
+  'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver'];
 // the f32 functions (division allowed: never on integers)
-export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colFluxes', 'colTransfers'];
+export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour'];
 
 export function wgslFunction(code, name) {
   const at = code.indexOf(`fn ${name}(`);
@@ -62,6 +62,10 @@ export class ColumnGrid {
     this.busy = new Uint8Array(this.nb); this.busyIn = new Uint8Array(this.nb).fill(1);
     this.quiet = new Uint8Array(this.nb); this.awake = new Uint8Array(this.nb);
     this.quietTicks = 0; this.idleAt = -1;
+    // the jets' per-brick marks, the particles in flight (the dynamics module's, as the prototype flies them)
+    // support's brick summaries (v2ActLayout summary): 0 unknown; cleared by every write (noteState)
+    this.summary = new Uint32Array(this.nb);
+    this.jetBricks = new Uint8Array(this.nb); this.parts = []; this.poolCap = 65536; this.landed = 0;
     this.P = { tick: 0, gravMode, gravity, edge, pairAxis: 0, pairParity: 0 };
     this.ctx = this.#context();
   }
@@ -69,13 +73,29 @@ export class ColumnGrid {
   material(i) { return { core: this.cores[i], bank: this.banks[i] }; }
   set(x, y, z, id, { T = 20, fill = L.FULL, ctype = 0 } = {}) {
     const i = this.at(x, y, z), m = L.makeMaterial(id, T, L.isLiquid(id) ? fill : L.FULL, ctype);
-    this.cores[i] = new Uint32Array(m.core); this.banks[i] = m.bank;
+    this.cores[i] = new Uint32Array(m.core); this.banks[i] = m.bank; this.touch(i);
     // an edit wakes its brick for the next tick (the import's busyIn)
     this.markAt(x, y, z); this.busyIn[(x >> 2) + this.bx * ((z >> 2) + this.bz * (y >> 2))] = 1;
+  }
+  brickOf(x, y, z) { return (x >> 2) + this.bx * ((z >> 2) + this.bz * (y >> 2)); }
+  touch(i) { const x = i % this.nx, z = Math.floor(i / this.nx) % this.nz, y = Math.floor(i / (this.nx * this.nz)); this.summary[this.brickOf(x, y, z)] = 0; }
+  // v2support's summary of an awake brick, from its cells
+  summarize(b) {
+    const bx = b % this.bx, bz = Math.floor(b / this.bx) % this.bz, by = Math.floor(b / (this.bx * this.bz));
+    let first = null;
+    for (let y = by * 4; y < by * 4 + 4; y++) for (let z = bz * 4; z < bz * 4 + 4; z++) for (let x = bx * 4; x < bx * 4 + 4; x++) {
+      const c = this.cores[this.at(x, y, z)], k = CLS[L.cid(c)];
+      let code = SUMMARY.CLOSED;
+      if (k === C.AIR) code = SUMMARY.AIR;
+      if (k === C.LIQUID) code = L.cFill(c) === L.FULL && !(c[0] >>> 24) ? (SUMMARY.LIQUID | (L.cid(c) << 8) | ((L.cid(c) === E.LAVA ? L.ctypeOf(c) : 0) << 16)) >>> 0 : 0;
+      if (first === null) first = code; else if (code !== first) { this.summary[b] = 0; return; }
+    }
+    this.summary[b] = first;
   }
   markAt(x, y, z) { if (x >= 0 && y >= 0 && z >= 0 && x < this.nx && y < this.ny && z < this.nz) this.busy[(x >> 2) + this.bx * ((z >> 2) + this.bz * (y >> 2))] = 1; }
   totals() {
     let mass = 0, energy = 0n, fuel = 0;
+    for (const q of this.parts) { mass += L.cFill(q.m.core); energy += L.packetOwnedEnergy(q.m); if (!L.isConductor(L.cid(q.m.core))) fuel += L.payloadOf(q.m.core); }
     for (let i = 0; i < this.n; i++) {
       const m = this.material(i);
       energy += L.energyOf(m);
@@ -95,7 +115,21 @@ export class ColumnGrid {
       clamp: (x, a, b) => Math.min(Math.max(x, a), b), select: (a, b, c) => (c ? b : a),
       slotOf, events: g.events,
       loadCore: s => new Uint32Array(g.cores[s]), loadMaterial: s => ({ core: new Uint32Array(g.cores[s]), bank: g.banks[s] }),
-      storeMaterial: (s, before, after) => { g.cores[s] = new Uint32Array(after.core); g.banks[s] = after.bank; },
+      storeMaterial: (s, before, after) => {
+        if (before.core.some((v, k) => v !== after.core[k]) || before.bank !== after.bank) g.touch(s);
+        g.cores[s] = new Uint32Array(after.core); g.banks[s] = after.bank;
+      },
+      colProbe: (x, y, z) => {
+        const code = g.summary[g.brickOf(x, y, z)];
+        if (code === SUMMARY.CLOSED) return { kind: 0, read: false, id: 0, sub: 0, fill: 0 };
+        if (code === SUMMARY.AIR) return { kind: 1, read: false, id: 0, sub: 0, fill: 0 };
+        if ((code & 255) === SUMMARY.LIQUID) return { kind: 2, read: false, id: (code >>> 8) & 255, sub: code >>> 16, fill: L.FULL };
+        const c = g.cores[slotOf([x, y, z])], k = CLS[L.cid(c)];
+        if (k === C.AIR) return { kind: 1, read: true, id: 0, sub: 0, fill: 0 };
+        if (k === C.LIQUID) return { kind: 2, read: true, id: L.cid(c), sub: L.cid(c) === E.LAVA ? L.ctypeOf(c) : 0, fill: L.cFill(c) };
+        return { kind: 0, read: true, id: 0, sub: 0, fill: 0 };
+      },
+      probeOpen: p => p.kind !== 0, probeLiquid: p => (p.kind === 2 ? p.id : 0), probeSub: p => p.sub, probeFill: p => p.fill, probeRead: p => p.read,
       markBusy: p => g.markAt(p[0], p[1], p[2]),
       // the format's accessors (src/v2/layout.js), classes by element kind, rows by v2Rows()
       cid: L.cid, cFill: L.cFill, cTq: L.cTq, ctypeOf: L.ctypeOf, payloadOf: L.payloadOf, cAge: c => c[0] >>> 24,
@@ -147,14 +181,48 @@ export class ColumnGrid {
         const foam = c[0] >>> 24; if (!foam) return;
         const period = L.cid(c) === E.SALTWATER ? 231 : 152, phase = (g.P.tick + s) % period;
         const loss = Math.floor((phase + 1) * foam / period) - Math.floor(phase * foam / period);
-        g.cores[s] = ctx.withAge(c, foam - loss);
+        g.cores[s] = ctx.withAge(c, foam - loss); g.touch(s);
         if (foam - loss) g.markAt(x, y, z);
       },
       noteEvents: () => {},
+      colUpwind: (xa, za, xb, zb, y, axis, v) => {
+        const d = axis === 0 ? [1, 0] : [0, 1], p = v > 0 ? [xa - d[0], y, za - d[1]] : [xb, y, zb];
+        if (p[0] < 0 || p[2] < 0 || p[0] >= g.nx || p[2] >= g.nz) return 0;
+        const c = g.cores[slotOf(p)], k = CLS[L.cid(c)];
+        if (k !== C.AIR && k !== C.LIQUID) return 0;
+        const up = ctx.laneOf(c, axis);
+        return up * v > 0 ? up : 0;
+      },
+      colMarkJet: (x, y, z, axis, v) => {
+        const s = slotOf([x, y, z]);
+        g.cores[s] = ctx.withLane(ctx.withLane(ctx.zeroQ(g.cores[s]), axis, v), 1, COLUMN.JET_MARK); g.touch(s);
+        g.jetBricks[(x >> 2) + g.bx * ((z >> 2) + g.bz * (y >> 2))] = 1;
+      },
       colPending: (x, y, z) => (g.events[slotOf([x, y, z])] & 1) !== 0,
       colAwake: (x, z) => { for (let by = 0; by < g.by; by++) if (g.awake[(x >> 2) + g.bx * ((z >> 2) + g.bz * by)]) return true; return false; },
-      colSetDemand: (x, y, z, axis, t) => { g.demand[2 * slotOf([x, y, z]) + (axis >> 1)] = t; },
-      colDemandAt: (x, y, z, axis) => g.demand[2 * slotOf([x, y, z]) + (axis >> 1)],
+      colSetDemand: (x, y, z, axis, t, head) => { g.demand[2 * slotOf([x, y, z]) + (axis >> 1)] = (Math.min(t, COLUMN.DEMAND_MAX) | (Math.min(255, Math.max(0, Math.round(head * COLUMN.HEAD_Q))) << 24)) >>> 0; },
+      colDemandAt: (x, y, z, axis) => g.demand[2 * slotOf([x, y, z]) + (axis >> 1)] & COLUMN.DEMAND_MAX,
+      colSentHeadAt: (x, y, z, axis) => (g.demand[2 * slotOf([x, y, z]) + (axis >> 1)] >>> 24) / COLUMN.HEAD_Q,
+      colSetVelocity: (x, y, z, axis, v, head) => { g.demand[2 * slotOf([x, y, z]) + (axis >> 1)] = (new Uint16Array(new Float16Array([v, head]).buffer)[0] | (new Uint16Array(new Float16Array([v, head]).buffer)[1] << 16)) >>> 0; },
+      colVelocityAt: (x, y, z, axis) => new Float16Array(new Uint16Array([g.demand[2 * slotOf([x, y, z]) + (axis >> 1)] & 65535]).buffer)[0],
+      colFaceHeadAt: (x, y, z, axis) => new Float16Array(new Uint16Array([g.demand[2 * slotOf([x, y, z]) + (axis >> 1)] >>> 16]).buffer)[0],
+      colLaunchHead: (xs, zs, xt, zt, rs, y) => {
+        let eta = ctx.colEta(rs);
+        const fresh = ctx.colAwake(xs, zs);
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = xs + dx, nz = zs + dz;
+          if (nx < 0 || nz < 0 || nx >= g.nx || nz >= g.nz || (nx === xt && nz === zt) || !(fresh || ctx.colAwake(nx, nz))) continue;
+          for (let k = 0; ; k++) {
+            const r = ctx.colRec(nx, k, nz);
+            if (y >= ctx.recY0(r) && y < ctx.recTop(r)) {
+              if (ctx.recLiq(r) === ctx.recLiq(rs) && ctx.recSub(r) === ctx.recSub(rs) && !ctx.recFalling(r) && y < ctx.recR1(r)) eta = Math.max(eta, ctx.colEta(r));
+              break;
+            }
+            if (ctx.recLast(r)) break;
+          }
+        }
+        return eta;
+      },
     };
     for (const name of TRANSLATED) {
       const { args, body } = wgslFunction(code, name);
@@ -180,10 +248,13 @@ export class ColumnGrid {
       this.awake[b] = this.quiet[b] < 8 ? 1 : 0;
     }
     this.busy.fill(0);
+    this.particles();
+    for (let b = 0; b < this.nb; b++) if (this.awake[b]) this.summarize(b);
     const cols = [];
     for (let z = 0; z < this.nz; z++) for (let x = 0; x < this.nx; x++) if (this.ctx.colAwake(x, z)) cols.push([x, z]);
     if (this.P.gravMode !== 2) {
       // v2runs: settle each awake column; read its sleeping neighbours' records (the halo)
+      this.onStage?.('v2runs');
       for (const [x, z] of cols) {
         this.ctx.colScan(x, z, true);
         for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -193,10 +264,13 @@ export class ColumnGrid {
       }
       for (const [axis, stage, parity] of pairOrder(this.tick)) {
         Object.assign(this.P, { pairAxis: axis, pairStage: stage, pairParity: parity });
+        this.onStage?.('v2pairs');
         for (const [x, z] of cols) this.#pairThread(x, z, axis, stage, parity);
       }
+      this.onStage?.('jets');
+      this.jets();
     }
-    let n = 0; for (const b of this.busy) n += b;
+    let n = this.parts.length ? 1 : 0; for (const b of this.busy) n += b;
     this.busyIn = Uint8Array.from(this.busy);
     this.quietTicks = n ? 0 : this.quietTicks + 1;
     if (this.quietTicks >= 8 && this.idleAt < 0) this.idleAt = this.tick - 7;
@@ -220,6 +294,70 @@ export class ColumnGrid {
     else if (asleep(prev)) ctx.colTransfers(prev[0], prev[1], x, z, axis);
   }
   #inside([x, z]) { return x >= 0 && z >= 0 && x < this.nx && z < this.nz; }
+
+  // jets.js's count, allocate and spawn: every marked cell of a marked brick, brick by brick, becomes a
+  // particle carrying the whole cell but its air carrier; refused (pool or format), it loses its mark
+  jets() {
+    const ctx = this.ctx;
+    for (let b = 0; b < this.nb; b++) {
+      if (!this.jetBricks[b]) continue;
+      this.jetBricks[b] = 0;
+      const bx = b % this.bx, bz = Math.floor(b / this.bx) % this.bz, by = Math.floor(b / (this.bx * this.bz));
+      for (let y = by * 4; y < Math.min(this.ny, by * 4 + 4); y++) for (let z = bz * 4; z < Math.min(this.nz, bz * 4 + 4); z++) for (let x = bx * 4; x < Math.min(this.nx, bx * 4 + 4); x++) {
+        const i = this.at(x, y, z), c = this.cores[i];
+        if (CLS[L.cid(c)] !== C.LIQUID || !L.cFill(c) || ctx.laneOf(c, 1) !== COLUMN.JET_MARK) continue;
+        const before = this.material(i), carried = L.energyOf(before) - BigInt(L.FULL) * BigInt(L.cTq(c));
+        let m = { core: new Uint32Array([c[0], c[1], 0, (L.payloadOf(c) << 16) >>> 0]), bank: 0 };
+        m.bank = Number(BigInt.asIntN(32, carried - L.packetOwnedEnergy(m)));
+        const vx = ctx.laneOf(c, 0), vz = ctx.laneOf(c, 2), speed = Math.hypot(vx, vz);
+        const empty = { core: new Uint32Array([(c[0] & 0x00ffff00) >>> 0, 0, 0, 0]), bank: before.bank }, rest = L.energyOf(before) - carried;
+        this.markAt(x, y, z);
+        if (this.parts.length < this.poolCap && speed > 0 && L.packetOwnedEnergy(m) === carried && L.energyFits(empty, rest)) {
+          const out = L.withEnergy(empty, rest);
+          this.cores[i] = new Uint32Array(out.core); this.banks[i] = out.bank; this.touch(i);
+          this.parts.push({ x: x + 0.5 - 0.499 * vx / speed, y: y + 0.5, z: z + 0.5 - 0.499 * vz / speed, vx: vx / COLUMN.CELL_M, vy: 0, vz: vz / COLUMN.CELL_M, m });
+        } else { this.cores[i] = ctx.zeroQ(c); this.touch(i); }
+      }
+    }
+  }
+  // R4 flight (the prototype's): ballistic under g, half-cell sub-steps; a particle lands in the cell it is
+  // in when the next is neither air nor a thin or unsupported liquid, joining it exactly
+  particles() {
+    const dt = 1 / COLUMN.TICK_HZ, gc = COLUMN.G_MS2 / COLUMN.CELL_M * this.P.gravity / COLUMN.G_MS2, keep = [];
+    const cell = (x, y, z) => (x < 0 || y < 0 || z < 0 || x >= this.nx || y >= this.ny || z >= this.nz) ? null : this.cores[this.at(x, y, z)];
+    const kind = (c) => (c ? CLS[L.cid(c)] : C.SOLID);
+    for (const q of this.parts) {
+      q.vy -= gc * dt;
+      const steps = Math.max(1, Math.ceil(Math.hypot(q.vx, q.vy, q.vz) * dt / 0.5));
+      let landed = false;
+      for (let k = 0; k < steps && !landed; k++) {
+        const nx = q.x + q.vx * dt / steps, ny = q.y + q.vy * dt / steps, nz = q.z + q.vz * dt / steps;
+        const hx = Math.floor(nx), hy = Math.floor(ny), hz = Math.floor(nz), he = cell(hx, hy, hz), be = cell(hx, hy - 1, hz);
+        const held = kind(be) === C.SOLID || kind(be) === C.POWDER || (kind(be) === C.LIQUID && L.cFill(be) >= L.FULL);
+        const thin = kind(he) === C.LIQUID && (L.cFill(he) < L.FULL / 2 || !held);
+        if (kind(he) !== C.AIR && !thin) landed = this.#land(q);
+        else { q.x = nx; q.y = ny; q.z = nz; }
+      }
+      if (!landed) keep.push(q);
+    }
+    this.parts = keep;
+  }
+  #land(q) {
+    const x = Math.floor(q.x), y = Math.floor(q.y), z = Math.floor(q.z);
+    if (x < 0 || y < 0 || z < 0 || x >= this.nx || y >= this.ny || z >= this.nz) return false;
+    const i = this.at(x, y, z), dst = this.material(i), id = L.cid(dst.core), src = q.m.core;
+    if (id !== 0 && (id !== L.cid(src) || this.ctx.liquidSub(dst.core) !== this.ctx.liquidSub(src))) return false;
+    const n = L.cFill(src), fill = (id ? L.cFill(dst.core) : 0) + n;
+    if (fill > L.MAX_FILL) return false;
+    let core = this.ctx.receivedCore(dst.core, src, fill);
+    core = L.withPayload({ core, bank: 0 }, Math.min(65535, (id ? L.payloadOf(dst.core) : 0) + L.payloadOf(src))).core;
+    const e = L.energyOf(dst) + L.packetOwnedEnergy(q.m), next = { core, bank: dst.bank };
+    if (!L.energyFits(next, e)) return false;
+    const out = L.withEnergy(next, e);
+    this.cores[i] = new Uint32Array(out.core); this.banks[i] = out.bank; this.touch(i);
+    this.markAt(x, y, z); this.landed++;
+    return true;
+  }
 
   /** Resident velocities (m/s) from the lanes: each wet cell of a segment carries its depth-averaged flux. */
   velocities() {

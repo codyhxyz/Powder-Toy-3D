@@ -1,5 +1,6 @@
 import { contactWGSL as productionContactWGSL } from '../shaders/v2/contact.js';
 import { nativeModes, modeSignature } from './modes.js';
+import { NativeJets } from './jets.js';
 import { fold } from '../gpu/kernels.js';
 import { fallVelocity } from './fall.js';
 import { cTq } from './layout.js';
@@ -141,8 +142,9 @@ export class PhysicsV2 {
       });
     }
     this.dynamics = Dynamics ? new Dynamics(this) : null;
+    this.jets = this.dynamics?.particles && this.dynamics?.control ? new NativeJets(this) : null;
     // Publish native readiness only after legacy storage has its blank defaults.
-    this.ready = Promise.all([sim.ready, ...Object.values(this.kernels).map((k) => k.ready), this.dynamics?.ready]).then(() => this);
+    this.ready = Promise.all([sim.ready, ...Object.values(this.kernels).map((k) => k.ready), this.dynamics?.ready, this.jets?.ready]).then(() => this);
     this.isReady = false;
     this.ready.then(() => {
       if (this.disposed) return;
@@ -172,10 +174,12 @@ export class PhysicsV2 {
    * vacuum, census and brick lists). For writes that bypass noteState/noteEvents/noteAir:
    * restores, window scatters, mode changes (the air's masks), dynamics restores.
    */
-  noteAllCells({ events = false } = {}) {
+  noteAllCells({ events = false, summaries = true } = {}) {
     const ones = new Uint32Array(this.g.nbricks).fill(1);
     this.gpu.write(this.act, this.layout.state * 4, ones);
     this.gpu.write(this.act, this.layout.air * 4, ones);
+    // the brick summaries describe cells these writes bypassed: unknown again (a mode change keeps them)
+    if (summaries) this.gpu.write(this.act, this.layout.summary * 4, new Uint32Array(this.g.nbricks));
     if (events) this.gpu.write(this.act, this.layout.events * 4, ones);
   }
 
@@ -204,7 +208,7 @@ export class PhysicsV2 {
     const busy = new Uint32Array(this.g.nbricks).fill(1);
     this.gpu.write(this.act, this.layout.busy0 * 4, busy);
     this.gpu.write(this.act, this.layout.busy1 * 4, busy);
-    this.noteAllCells(); // edge and ambient enter the air source's faces and buoyancy
+    this.noteAllCells({ summaries: false }); // edge and ambient enter the air source's faces and buoyancy
     this.writtenSinceTick = true;
     this.dynamics?._work();
     this.wake();
@@ -373,6 +377,8 @@ export class PhysicsV2 {
     // every face's flux and the four colours of transfers, one step a tick.
     run(k.v2runs, ind(ARGS2.COLS));
     for (const [pairAxis, pairStage, pairParity] of pairOrder(this.tick)) run(k.v2pairs, ind(ARGS2.COLS), undefined, { ...params, pairAxis, pairStage, pairParity });
+    // R14: the cells the pair stages marked leave as particles (src/shaders/v2/jets.js)
+    this.jets?.advance(this.tick);
     if (params.edge === 1) run(k.v2boundary, ind(ARGS2.BRICKS));
     this.dynamics?.advanceAir(this.tick);
     run(k.v2invalidate, fold(Math.ceil(this.g.nbricks / 64)), invalidation);
@@ -512,6 +518,7 @@ export class PhysicsV2 {
     if (this.sim.compactOwner === this) this.sim.compactOwner = null;
     this.wake();
     if (!this.gpu.failure) this.gpu.flush('v2 dispose');
+    this.jets?.dispose();
     this.dynamics?.dispose();
     for (const b of [this.cells, this.aux, this.liquidScratch, this.jetMask, this.events, this.act, this.args]) b.destroy();
   }
