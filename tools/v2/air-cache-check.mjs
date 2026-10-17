@@ -95,7 +95,7 @@ assert.doesNotMatch(source.slice(source.lastIndexOf('@compute')), /atomic(Store|
 assert.match(reach, /if \(axis==0u && atomicLoad\(&act2\[V2_STATE_DIRTY\+t\]\)!=0u\) \{ atomicStore\(&act2\[V2_STATE_DIRTY\+t\],0u\); \}/);
 assert.match(blastsWGSL(g, nativeDynamicsHead, 'select'), /atomicLoad\(&act2\[V2_EVENTS\+t\/64u\]\) == 0u \|\| events\[t\] == 0u/);
 const A = v2ActLayout(g);
-assert.ok(A.events >= A.words && A.air === A.events + g.nbricks && A.allocated === A.air + g.nbricks, 'the request and air notes sit after the saved activity words');
+assert.ok(A.events >= A.words && A.air === A.events + g.nbricks && A.allocated >= A.air + g.nbricks, 'the request and air notes sit after the saved activity words');
 
 // ---- 2. the faces / buoyancy / vacuum cache
 const fr = Math.fround;

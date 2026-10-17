@@ -89,7 +89,7 @@ export class PhysicsV2 {
     this.contactReady = false;
     this.dynamics = null;
     this.act = buf('activity', this.layout.allocated * 4);
-    this.args = buf('args', ARGS2.words * 4, S | CS | CD | GPUBufferUsage.INDIRECT);
+    this.args = buf('args', ARGS2.allocated * 4, S | CS | CD | GPUBufferUsage.INDIRECT);
     // every brick starts asleep (its quiet run full): only what the first import changes wakes, so a
     // settled box certifies idle after one tick instead of a whole offset cycle of every brick awake
     gpu.queue.writeBuffer(this.act, this.layout.quiet * 4, new Uint32Array(g.nbricks).fill(QUIET_TICKS));
@@ -124,7 +124,7 @@ export class PhysicsV2 {
     }
     this.nativeDynamics = { head: nativeDynamicsHead, layout: gpu.layout('V2_DYNAMICS', V2_DYNAMICS_LAYOUT) };
     this.nativeDynamics.group = gpu.bindGroup(this.nativeDynamics.layout, [b(0, this.cells), b(1, this.aux), b(2, this.act)], 'native dynamics state');
-    this.familyOf = name => ({ v2args: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2support: 'contact', v2blockClassify: 'contact', v2blockFinalize: 'blockFinalize', v2liquidFinalize: 'liquidFinalize', v2block: 'contact', v2flux: 'liquid', v2limit: 'liquid', v2gather: 'liquid', v2foam: 'liquid' }[name] ?? 'v2');
+    this.familyOf = name => ({ v2args: 'args', v2actArgs: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2support: 'contact', v2blockClassify: 'contact', v2blockFinalize: 'blockFinalize', v2liquidFinalize: 'liquidFinalize', v2block: 'contact', v2flux: 'liquid', v2limit: 'liquid', v2gather: 'liquid', v2foam: 'liquid' }[name] ?? 'v2');
     const familyLayouts = { v2: L.V2, args: L.ARGS, material: L.MATERIAL, liquid: L.LIQUID, contact: L.CONTACT };
     this.kernels = {};
     const specs = this.blockCompact ? [...V2_KERNELS,
@@ -353,7 +353,10 @@ export class PhysicsV2 {
     };
     const ind = (at) => ({ indirect: this.args, offset: at * 4 });
     this._import(params);
-    run(k.v2activity, fold(Math.ceil(this.g.nbricks / 64)));
+    // activity over the bricks near a busy one or still counting their quiet run (v2ActScanWGSL)
+    run(k.v2actScan, fold(Math.ceil(this.g.nbricks / 64)));
+    run(k.v2actArgs, [1, 1, 1], [sim.tables, gpu.emptyGroup, groups.args]);
+    run(k.v2activity, ind(ARGS2.ACT));
     run(k.v2cols, fold(Math.ceil((this.g.bx * this.g.bz) / 64)));
     run(k.v2args, [1, 1, 1], [sim.tables, gpu.emptyGroup, groups.args]);
     this.dynamics?.advanceParticles(this.tick);

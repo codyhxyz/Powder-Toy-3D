@@ -9,7 +9,7 @@ import { BRICK } from '../../src/shaders/common.js';
 import { gridLayout } from '../../src/sim.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
-import { ARGS2, SUB, v2FluxWGSL, v2GatherWGSL, v2LimitWGSL, v2FoamWGSL, v2ActivityWGSL, v2LiquidListLayout } from '../../src/shaders/v2.js';
+import { ARGS2, SUB, v2FluxWGSL, v2GatherWGSL, v2LimitWGSL, v2FoamWGSL, v2ActScanWGSL, v2LiquidListLayout } from '../../src/shaders/v2.js';
 import { jetsWGSL } from '../../src/shaders/v2/jets.js';
 
 const g = gridLayout(32, 16, 48);
@@ -59,7 +59,8 @@ assert(fnBody(flux, 'flux').trimStart().startsWith('if (!isOpenC(c)) { return; }
 // (2) Reach. Listed = the awake bricks within the activity pass's 3³ neighbourhood (mEdge wrap) of
 // a brick holding liquid work. Over a tick liquid reaches SUB cells from where it was; each wet cell
 // reads its six neighbours. All of it must lie in listed bricks (asleep bricks are never read).
-assert(v2ActivityWGSL(g).includes('let n = mEdge((bc + vec3i(dx, dy, dz))*BS)/BS;'));
+// The activity scan scatters each busy brick over the same 3³ set (negated offsets: the set is symmetric).
+assert(v2ActScanWGSL(g).includes('let n = mEdge((bc + vec3i(-dx, -dy, -dz))*BS)/BS;'));
 assert(flux.includes('let n = mEdge((brickCoord(b) + vec3i(i32(li % 3u), i32(li / 3u % 3u), i32(li / 9u)) - vec3i(1)) * BS) / BS;'));
 assert.deepEqual(new Set(Array.from({ length: 27 }, (_, li) => `${li % 3 - 1},${Math.floor(li / 3) % 3 - 1},${Math.floor(li / 9) - 1}`)).size, 27);
 assert(SUB < BRICK);
