@@ -67,7 +67,9 @@ for(const [key,value] of [['gravityMode',GRAV.OFF],['gravityMode',GRAV.RADIAL],[
   engine.certified=true;engine.acc=0.375;const beforeEpoch=engine.epoch;sim[key]=value;
   assert.equal(engine.asleep,false);engine._noteWrites();assert.equal(engine.certified,false);assert.equal(engine.acc,0.375);
   assert.ok(engine.epoch>beforeEpoch);assert.equal(engine.importFull,false);assert.equal(engine.importMarked,false);
-  assert.equal(commands.length,2);assert.ok(commands.every(c=>c[0]==='write'&&c[1]===engine.act));
+  // busy0, busy1 and every brick's cell note (edge and ambient enter the air source's cached faces)
+  assert.equal(commands.length,3);assert.ok(commands.every(c=>c[0]==='write'&&c[1]===engine.act));
+  assert.equal(commands[2][2],engine.layout.state*4);
   assert.equal(engine.settingsSignature,modeSignature(nativeModes(sim)));commands.length=0;
   engine._noteWrites();assert.equal(commands.length,0);
 }

@@ -195,7 +195,8 @@ export function blastsWGSL(g,nativeHead,stage) {
   `);
   if (stage === 'reset') return h + main1(RESET_SELECTION);
   if (stage === 'select') return h + main64(`
-    if (t >= D_SLOTS || events[t] == 0u) { return; }
+    // A brick never noted as holding a request holds none (noteEvents): one word, not 64.
+    if (t >= D_SLOTS || atomicLoad(&act2[V2_EVENTS+t/64u]) == 0u || events[t] == 0u) { return; }
     atomicAdd(&control[2],1u); dWake(cellOf(t)); if ((events[t]&4u)!=0u) { atomicAdd(&control[17],1u); }
     let m=loadMaterial(t);
     if ((events[t]&1u) != 0u && (dChargeEnergy(m)>0.0 || dEvaporates(m)) && energyFits(dProduct(m),dProductEnergy(m))) { atomicMin(&control[3],t); }

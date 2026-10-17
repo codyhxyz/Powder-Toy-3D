@@ -102,7 +102,7 @@ export class NativeDynamics {
     this.flight=make('flight',(PARTICLE_CAP+1)*32); // one record per slot, then the sweep record
     this.claims=make('claims',g.slots*16);
     this.air=[make('air0',g.nbricks*32),make('air1',g.nbricks*32)];
-    this.faces=make('faces',g.nbricks*16);
+    this.faces=make('faces and vacuum',g.nbricks*32); // the air source's per-brick cache (air.js)
     this.control=make('control',controlWords(g)*4);
     this.dispatchArgs=make('dispatch args',64,GPUBufferUsage.INDIRECT);
     const args=new Uint32Array(16);args[13]=PARTICLE_CAP/64;args[14]=1;gpu.queue.writeBuffer(this.dispatchArgs,0,args);
@@ -409,6 +409,7 @@ export class NativeDynamics {
     this.gpu.write(this.control,externalBlastBase(g)*4,external.done);this.externalBlasts=external.requests;
     this.gpu.write(this.control,heldBase(g)*4,s.held); this.gpu.write(this.control,shockBase(g)*4,s.shocks);
     this.gpu.write(this.owner.events,0,events); this.gpu.frame.clear(this.flight); this.gpu.frame.clear(this.claims); this.gpu.frame.clear(this.plans);
+    this.owner.noteAllCells?.({events:true}); // requests written behind noteEvents: every brick may hold one
     this.airIndex=0; this.origin=[...s.origin]; this.sequence=s.sequence; this.blastBatch=s.blastBatch;
     this.rayRequests=requests; this.airArchive=archive; this.pendingOutside=outside;
     this.holdSession=s.holdSession?structuredClone(s.holdSession):null;

@@ -86,40 +86,60 @@ fn aFlux(left: DAir, right: DAir, axis: u32) -> DAir {
 }
 export function airWGSL(g,nativeHead,stage) {
   const h=head(g,nativeHead);
-  // One read of the brick's cells feeds step's cached faces (open fractions
-  // toward +x/+y/+z, gas buoyancy), the vacuum, gas sources and the durable
-  // event census. No air stage writes a cell before step, so order is free.
+  // What step needs from a brick's cells: its faces (open fractions toward
+  // +x/+y/+z, gas buoyancy) and its vacuum are a function of its cells, its
+  // six face neighbours' (mEdge topology) and the modes alone, so they are
+  // read again only when one of those seven bricks noted a cell change since
+  // the last reach pass cleared the notes (or a mode change, restore or window
+  // scatter noted every brick). Gas sources and the durable event census read
+  // only bricks noted as holding a request. No air stage writes a cell before
+  // step, so order is free. faces holds faces at t, the vacuum at D_BRICKS+t.
   if (stage==='source') return h+main64(/* wgsl */ `
-    if (t>=D_BRICKS) { return; } let base=aBase(t); var open=vec3f(0);
-    for (var a=0u;a<3u;a++) { let u=(a+1u)%3u; let v=(a+2u)%3u;
-      for (var i=0;i<4;i++) { for (var j=0;j<4;j++) {
-        var p=base+dAxis(a)*3; p[u]+=i; p[v]+=j;
-        if (dOpen(p) && dOpen(p+dAxis(a))) { open[a]+=1.0/16.0; }
-      } }
-    }
-    let before=airIn[t]; var a=before; var count=0u; var heat=0.0; var vacuum=0.0; var buoyancy=0.0; var pending=0u;
-    for (var s=t*64u;s<(t+1u)*64u;s++) {
-      let core=loadMaterial(s).core; vacuum=min(vacuum,aVacuum(core));
-      if (cls(cid(core))==4u) { buoyancy+=(f32(cTq(core))*0.25-273.25-P.ambient)/64.0; }
-      // The contact rule's0.6 open-neighbour ring, including cross-brick faces.
-      // Interior neighbours already share the stronger source-brick target.
-      if (cls(cid(core))==0u || cls(cid(core))==4u) {
-        let p=cellOf(s);
-        for(var axis=0u;axis<3u;axis++) {
-          let local=p[axis]&3; if(local!=0 && local!=3) { continue; }
-          let q=p+dAxis(axis)*select(-1,1,local==3);
-          if(inGrid(q)) { vacuum=min(vacuum,${f(PHYS.SING_RING)}*aVacuum(loadMaterial(slotOf(q)).core)); }
+    if (t>=D_BRICKS) { return; } let base=aBase(t);
+    var stale=atomicLoad(&act2[V2_STATE_DIRTY+t])!=0u;
+    for (var axis=0u;axis<3u;axis++) { for (var side=-1;side<=1;side+=2) {
+      let q=aNeighbor(t,axis,side); if (q!=D_NONE && atomicLoad(&act2[V2_STATE_DIRTY+q])!=0u) { stale=true; }
+    } }
+    if (stale) {
+      var open=vec3f(0);
+      for (var a=0u;a<3u;a++) { let u=(a+1u)%3u; let v=(a+2u)%3u;
+        for (var i=0;i<4;i++) { for (var j=0;j<4;j++) {
+          var p=base+dAxis(a)*3; p[u]+=i; p[v]+=j;
+          if (dOpen(p) && dOpen(p+dAxis(a))) { open[a]+=1.0/16.0; }
+        } }
+      }
+      var vacuum=0.0; var buoyancy=0.0;
+      for (var s=t*64u;s<(t+1u)*64u;s++) {
+        let core=loadMaterial(s).core; vacuum=min(vacuum,aVacuum(core));
+        if (cls(cid(core))==4u) { buoyancy+=(f32(cTq(core))*0.25-273.25-P.ambient)/64.0; }
+        // The contact rule's0.6 open-neighbour ring, including cross-brick faces.
+        // Interior neighbours already share the stronger source-brick target.
+        if (cls(cid(core))==0u || cls(cid(core))==4u) {
+          let p=cellOf(s);
+          for(var axis=0u;axis<3u;axis++) {
+            let local=p[axis]&3; if(local!=0 && local!=3) { continue; }
+            let q=p+dAxis(axis)*select(-1,1,local==3);
+            if(inGrid(q)) { vacuum=min(vacuum,${f(PHYS.SING_RING)}*aVacuum(loadMaterial(slotOf(q)).core)); }
+          }
         }
       }
-      if ((events[s]&2u)!=0u) {
-        count++; heat+=(f32(cTq(loadMaterial(s).core))*0.25-273.25-P.ambient)/64.0;
-        events[s]&=~2u; // bit consumed only together with its bounded, once-only source
-      }
-      // Requests left after this source. Nothing later in the air tick sets
-      // or clears an event bit, so this is the census activity used to take.
-      if (events[s]!=0u) { pending++; dWake(cellOf(s)); }
+      faces[t]=vec4f(open,buoyancy); faces[D_BRICKS+t]=vec4f(vacuum,0.0,0.0,0.0);
     }
-    faces[t]=vec4f(open,buoyancy);
+    let buoyancy=faces[t].w; let vacuum=faces[D_BRICKS+t].x;
+    let before=airIn[t]; var a=before; var count=0u; var heat=0.0; var pending=0u;
+    if (atomicLoad(&act2[V2_EVENTS+t])!=0u) {
+      for (var s=t*64u;s<(t+1u)*64u;s++) {
+        if ((events[s]&2u)!=0u) {
+          count++; heat+=(f32(cTq(loadMaterial(s).core))*0.25-273.25-P.ambient)/64.0;
+          events[s]&=~2u; // bit consumed only together with its bounded, once-only source
+        }
+        // Requests left after this source. Nothing later in the air tick sets
+        // or clears an event bit, so this is the census activity used to take.
+        if (events[s]!=0u) { pending++; dWake(cellOf(s)); }
+      }
+      // Every request word of the brick is zero now; a later store notes it again.
+      if (pending==0u) { atomicStore(&act2[V2_EVENTS+t],0u); }
+    }
     if (pending>0u) { atomicAdd(&control[2],pending); }
     let shock=atomicExchange(&control[D_SHOCK+t],0u);
     if (shock>0u && mAirPressure()) { a.vp.w+=f32(shock)/256.0; a.thermal.z=0.0; dWake(aBase(t)); }
@@ -148,6 +168,9 @@ export function airWGSL(g,nativeHead,stage) {
   // (P.substep), in step's own neighbour topology (mEdge wraps loop edges).
   if (stage==='reach') return h+main64(/* wgsl */ `
     if (t>=D_BRICKS) { return; } let axis=P.substep; var near=false;
+    // Every source has read its neighbours' notes, and no cell is written
+    // between source and here: a later write notes its brick for the next one.
+    if (axis==0u) { atomicStore(&act2[V2_STATE_DIRTY+t],0u); }
     for (var d=-${REACH};d<=${REACH};d++) {
       let p=mEdge(aBase(t)+dAxis(axis)*4*d); if (!inGrid(p)) { continue; }
       near=near || (atomicLoad(&control[A_REACH+brickOfCell(p)])&(1u<<axis))!=0u;

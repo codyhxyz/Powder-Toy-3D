@@ -126,10 +126,13 @@ export function fallCells(id, ticks) {
 
 // ---------------------------------------------------------------- buffers
 // v2's activity words (u32), one run per brick each, then the brick columns and the counts.
+// state: a brick's cells changed since the air reach pass last cleared it (noteState).
+// events: after the saved words (`words`), so saves keep their length: a brick may hold a
+// nonzero material request (noteEvents); clear means every request word in it is zero.
 export function v2ActLayout(g) {
   const { nbricks: nb, bx, bz } = gridDims(g);
   const ledger = 10 * nb + bx * bz + 8;
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6 };
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, allocated: ledger + 6 + nb };
 }
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
@@ -228,6 +231,7 @@ const V2_COUNT: u32 = ${a.count}u;
 const V2_LEGACY: u32 = ${a.legacy}u;
 const V2_VISIBLE: u32 = ${a.visible}u;
 const V2_STATE_DIRTY: u32 = ${a.state}u;
+const V2_EVENTS: u32 = ${a.events}u;
 const V2_ENERGY_SOURCE: u32 = ${a.energySource}u;
 const V2_ENERGY_SINK: u32 = ${a.energySink}u;
 const V2_BOUNDARY_MASS: u32 = ${a.boundaryMass}u;
@@ -269,7 +273,11 @@ fn noteVisible(p: vec3i, before: vec4u, after: vec4u) {
   atomicStore(&act2[V2_VISIBLE + b], 1u);
   atomicStore(&act2[V2_LEGACY + b], 1u);
 }
+// Every write that can change a cell's core goes through here (the air source
+// caches what it derives from a brick's cells until it or a face neighbour is noted).
 fn noteState(s: u32) { atomicStore(&act2[V2_STATE_DIRTY + s / 64u], 1u); }
+// Every store of a nonzero material request: whole-grid request scans visit noted bricks only.
+fn noteEvents(s: u32, request: u32) { if (request != 0u) { atomicStore(&act2[V2_EVENTS + s / 64u], 1u); } }
 // Explicit chemical/removed-material energy, separate from conservative transfers.
 // Three atomic words retain carries across concurrent additions (96-bit totals).
 fn noteEnergyCounter(index: u32, amount: vec2u) {
@@ -585,6 +593,7 @@ ${MAIN} {
       let q = vec3i(x, to, z);
       let o = zeroQ(loadCell(q));
       let request = events[slotOf(p)]; events[slotOf(p)] = events[slotOf(q)]; events[slotOf(q)] = request;
+      noteEvents(slotOf(p), events[slotOf(p)]); noteEvents(slotOf(q), request);
       let source = loadMaterial(slotOf(p));
       let destination = loadMaterial(slotOf(q));
       storeMaterial(slotOf(q), destination, Material(c, source.bank));
@@ -892,7 +901,7 @@ ${MAIN} {
     if (inGrid(p)) {
       let slot = slotOf(p);
       storeMaterial(slot, Material(orig[i], oldBanks[i]), Material(cs[i], bs[i]));
-      events[slot] = pending[i] | requests[i];
+      events[slot] = pending[i] | requests[i]; noteEvents(slot, pending[i] | requests[i]);
     }
   }
 }

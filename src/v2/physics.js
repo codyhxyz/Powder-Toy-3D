@@ -88,11 +88,13 @@ export class PhysicsV2 {
     // Explicit injection seams. These modules do not exist in the foundation alone.
     this.contactReady = false;
     this.dynamics = null;
-    this.act = buf('activity', this.layout.words * 4);
+    this.act = buf('activity', this.layout.allocated * 4);
     this.args = buf('args', ARGS2.words * 4, S | CS | CD | GPUBufferUsage.INDIRECT);
     // every brick starts asleep (its quiet run full): only what the first import changes wakes, so a
     // settled box certifies idle after one tick instead of a whole offset cycle of every brick awake
     gpu.queue.writeBuffer(this.act, this.layout.quiet * 4, new Uint32Array(g.nbricks).fill(QUIET_TICKS));
+    // nothing derived from the cells is cached yet (the air source's faces)
+    gpu.queue.writeBuffer(this.act, this.layout.state * 4, new Uint32Array(g.nbricks).fill(1));
     const L = {
       V2: gpu.layout('V2', V2_LAYOUT), ARGS: gpu.layout('V2_ARGS', V2_ARGS_LAYOUT), STATE: gpu.layout('V2_STATE', V2_STATE_LAYOUT),
       INVALIDATE: gpu.layout('V2_INVALIDATE', V2_INVALIDATE_LAYOUT),
@@ -165,6 +167,17 @@ export class PhysicsV2 {
 
   // ---- writes and rest ----
 
+  /**
+   * Notes every brick's cells as changed (and, with events, as maybe holding a material request),
+   * so what is derived from them is read again (the air source's faces, vacuum and census).
+   * For writes that bypass noteState/noteEvents: restores, window scatters, mode changes.
+   */
+  noteAllCells({ events = false } = {}) {
+    const ones = new Uint32Array(this.g.nbricks).fill(1);
+    this.gpu.write(this.act, this.layout.state * 4, ones);
+    if (events) this.gpu.write(this.act, this.layout.events * 4, ones);
+  }
+
   /** Something wrote: the box may move again. */
   wake() {
     this.epoch++;
@@ -190,6 +203,7 @@ export class PhysicsV2 {
     const busy = new Uint32Array(this.g.nbricks).fill(1);
     this.gpu.write(this.act, this.layout.busy0 * 4, busy);
     this.gpu.write(this.act, this.layout.busy1 * 4, busy);
+    this.noteAllCells(); // edge and ambient enter the air source's faces and buoyancy
     this.writtenSinceTick = true;
     this.dynamics?._work();
     this.wake();
@@ -312,6 +326,7 @@ export class PhysicsV2 {
     gpu.write(this.act, this.layout.busy0 * 4, new Uint32Array(g.nbricks).fill(1));
     gpu.write(this.act, this.layout.busy1 * 4, new Uint32Array(g.nbricks).fill(1));
     gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(1));
+    this.noteAllCells(); // the copy above bypassed noteState; the requests are clear
     this.importFull = this.importMarked = false;
     this.seenVersion = sim.version;
     this.seenWhole = sim.wholeWrites;
@@ -443,6 +458,8 @@ export class PhysicsV2 {
     // Legacy A/B loaded by saves/game is only a projection of these words.
     // Dirtiness is cache metadata, not physics state; rebuild that projection on demand.
     gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(legacyCurrent ? 0 : 1));
+    // The cells above bypassed noteState; the requests are clear until a dynamics restore.
+    this.noteAllCells();
     const m = marksLayout(g);
     gpu.frame.clear(sim.marks, m.owned * 4, Math.ceil(g.slots / 32) * 4);
     this.tick = state.tick;
