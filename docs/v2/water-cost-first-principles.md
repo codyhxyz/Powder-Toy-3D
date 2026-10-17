@@ -189,5 +189,13 @@ Where it differs from the prototype, and why:
   4.09 and 4.2 MB before those fixes (R13: 44.0, 20.8, 17.4), counted as each dispatch's footprint.
 - **Open and loop edges.** An open side is a dry, bottomless neighbour and an open floor drains at R1's run
   speed, into the boundary ledger; loop seams wrap like any face (the witness checks both).
-- **Not yet:** radial gravity only drips liquids toward the centre (no spreading); one liquid's weight on
-  another (oil on water) needs a sub-cell interface first; the splash crown.
+- **Splash.** Resident liquid velocity is read from the runs (`tools/outcomes/native-grid.js`
+  `columnLiquidVelocity`: segment lanes, falling runs, no vertical momentum in a supported run), so the
+  splash outcome is expressible on the GPU. A run landing on liquid faster than 5 m/s throws 15 % of its
+  mass up at its impact speed (Worthington 1908): splash 0.15 to 0.16 of the incoming energy (limit 0.3).
+- **Layers.** A run's head adds the weight of the liquids stacked on it, and a floating layer's base is the
+  denser surface inside the cell below (the multilayer hydrostatic sum of Audusse, Bristeau, Perthame and
+  Sainte-Marie 2011). A lighter liquid pours onto a denser surface, a denser surplus floats the lighter
+  layer up rather than compressing under it, and a drained interface cell closes at once: oil poured on
+  half a basin rests flat on flat water (±0.05 cells), exact.
+- **Not yet:** radial gravity only drips liquids toward the centre (no sideways spreading).
