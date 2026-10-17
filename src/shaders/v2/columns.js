@@ -166,6 +166,7 @@ fn colSwap(x: i32, a: i32, b: i32, z: i32) {
   let sa = slotOf(vec3i(x, a, z)); let sb = slotOf(vec3i(x, b, z));
   let ma = loadMaterial(sa); let mb = loadMaterial(sb);
   let request = events[sa]; events[sa] = events[sb]; events[sb] = request;
+  noteEvents(sa, events[sa]); noteEvents(sb, request);
   storeMaterial(sb, mb, Material(zeroQ(ma.core), ma.bank));
   storeMaterial(sa, ma, Material(zeroQ(mb.core), mb.bank));
 }

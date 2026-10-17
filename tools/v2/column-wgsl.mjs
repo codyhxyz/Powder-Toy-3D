@@ -150,6 +150,7 @@ export class ColumnGrid {
         g.cores[s] = ctx.withAge(c, foam - loss);
         if (foam - loss) g.markAt(x, y, z);
       },
+      noteEvents: () => {},
       colPending: (x, y, z) => (g.events[slotOf([x, y, z])] & 1) !== 0,
       colAwake: (x, z) => { for (let by = 0; by < g.by; by++) if (g.awake[(x >> 2) + g.bx * ((z >> 2) + g.bz * by)]) return true; return false; },
       colSetDemand: (x, y, z, axis, t) => { g.demand[2 * slotOf([x, y, z]) + (axis >> 1)] = t; },

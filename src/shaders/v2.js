@@ -54,6 +54,8 @@ const EDGE_DRAIN_HZ = 180;
 const EDGE_ACC = G_CELLS / (EDGE_DRAIN_HZ * EDGE_DRAIN_HZ) * FULL;
 // rest: a brick sleeps once neither it nor any of its 26 neighbours was busy for one offset cycle (5.6)
 export const QUIET_TICKS = 8;
+// a brick's quiet run stops counting here (one byte); a brick at it, with nothing busy near, is unchanged
+export const QUIET_CAP = 255;
 // gases diffuse by random swaps only this long after they last moved (R4: diffusionAge, so a still pool rests)
 const DIFFUSE_AGE = 120;
 // ¼ K steps from -273.25 °C: 20 °C is 1173 exactly
@@ -124,15 +126,24 @@ export function fallCells(id, ticks) {
 
 // ---------------------------------------------------------------- buffers
 // v2's activity words (u32), one run per brick each, then the brick columns and the counts.
+// state: a brick's cells changed since the air reach pass last cleared it (noteState).
+// events: after the saved words (`words`), so saves keep their length: a brick may hold a
+// nonzero material request (noteEvents); clear means every request word in it is zero.
+// air: unsaved too. Clear means the brick's air ended its last air tick settled and unchanged,
+// in both ping-pong copies (the air source clears it); every other writer sets it (noteAir).
+// near, plist: the activity scan's words (unsaved): bit 0 a busy brick in the 3³ neighbourhood,
+// bit 1 listed; then the list [count, use, bricks]. Zero again after every activity pass.
 export function v2ActLayout(g) {
   const { nbricks: nb, bx, bz } = gridDims(g);
   const ledger = 10 * nb + bx * bz + 8;
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6 };
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, allocated: ledger + 8 + 4 * nb };
 }
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
 // the indirect args and the stats the driver reads back (u32 words)
-export const ARGS2 = { COLS: 0, BRICKS: 3, BLOCKS: 6, COMPACT: 9, STATS: 12, words: 20 };
+// ACT, the activity pass's (v2actArgs), follows the saved words. Words 20-31 are reserved (the
+// retired liquid list's args): saves keep their length.
+export const ARGS2 = { COLS: 0, BRICKS: 3, BLOCKS: 6, COMPACT: 9, STATS: 12, words: 32, ACT: 32, allocated: 36 };
 // jetMask: the pair stages' face demands, two words a cell (x, z)
 export const v2DemandWords = (g) => 2 * gridDims(g).slots;
 // Scratch's original slots*16 bytes are ALL live (including support atmosphere).
@@ -200,6 +211,11 @@ const V2_COUNT: u32 = ${a.count}u;
 const V2_LEGACY: u32 = ${a.legacy}u;
 const V2_VISIBLE: u32 = ${a.visible}u;
 const V2_STATE_DIRTY: u32 = ${a.state}u;
+const V2_EVENTS: u32 = ${a.events}u;
+const V2_AIR_LIVE: u32 = ${a.air}u;
+const V2_NEAR: u32 = ${a.near}u;
+const V2_PLIST: u32 = ${a.plist}u;
+const QUIET_CAP: u32 = ${QUIET_CAP}u;
 const V2_ENERGY_SOURCE: u32 = ${a.energySource}u;
 const V2_ENERGY_SINK: u32 = ${a.energySink}u;
 const V2_BOUNDARY_MASS: u32 = ${a.boundaryMass}u;
@@ -238,7 +254,13 @@ fn noteVisible(p: vec3i, before: vec4u, after: vec4u) {
   atomicStore(&act2[V2_VISIBLE + b], 1u);
   atomicStore(&act2[V2_LEGACY + b], 1u);
 }
+// Every write that can change a cell's core goes through here (the air source
+// caches what it derives from a brick's cells until it or a face neighbour is noted).
 fn noteState(s: u32) { atomicStore(&act2[V2_STATE_DIRTY + s / 64u], 1u); }
+// Every store of a nonzero material request: whole-grid request scans visit noted bricks only.
+fn noteEvents(s: u32, request: u32) { if (request != 0u) { atomicStore(&act2[V2_EVENTS + s / 64u], 1u); } }
+// Every write of a brick's air outside the air tick's source and substeps.
+fn noteAir(b: u32) { atomicStore(&act2[V2_AIR_LIVE + b], 1u); }
 // Explicit chemical/removed-material energy, separate from conservative transfers.
 // Three atomic words retain carries across concurrent additions (96-bit totals).
 fn noteEnergyCounter(index: u32, amount: vec2u) {
@@ -422,26 +444,59 @@ ${MAIN} {
 }
 `;
 
-// ---- activity: a thread a brick. Busy in its 3³ neighbourhood last tick → its quiet run starts over;
+// ---- activity scan: a thread a brick. Only a brick near a busy one (its quiet run starts over) or
+// still counting its run changes in the activity pass; any other is at QUIET_CAP, asleep, with a
+// busy word already clear (busy two ticks ago means near one last tick). Each busy brick marks its
+// 3³ neighbourhood near, scattered (mEdge's loop wrap is symmetric), and each such brick is listed
+// once (tools/v2/activity-list-check.mjs).
+export const v2ActScanWGSL = (g) => /* wgsl */ `
+${v2Head(g)}
+fn actClaim(b: u32, bits: u32) {
+  if ((atomicOr(&act2[V2_NEAR + b], bits) & 2u) == 0u) { atomicStore(&act2[V2_PLIST + 2u + atomicAdd(&act2[V2_PLIST], 1u)], b); }
+}
+${MAIN} {
+  let b = foldThread(wg, nwg, li);
+  if (b >= NBRICKS) { return; }
+  if (atomicLoad(&act2[P.busyIn + b]) != 0u) {
+    let bc = brickCoord(b);
+    for (var dz = -1; dz <= 1; dz++) {
+      for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+          let n = mEdge((bc + vec3i(-dx, -dy, -dz))*BS)/BS;
+          if (all(n >= vec3i(0)) && all(n < vec3i(BX, BY, BZ))) { actClaim(brickId(n), 3u); }
+        }
+      }
+    }
+  }
+  if (atomicLoad(&act2[V2_QUIET + b]) < QUIET_CAP) { actClaim(b, 2u); }
+}
+`;
+
+// One thread: the scan is done; publish its list and its args, start it over.
+export const v2ActArgsWGSL = (g) => /* wgsl */ `
+${v2Head(g)}
+@group(2) @binding(3) var<storage, read_write> args: array<u32>;
+@compute @workgroup_size(1)
+fn main() {
+  let n = atomicLoad(&act2[V2_PLIST]);
+  atomicStore(&act2[V2_PLIST + 1u], n); atomicStore(&act2[V2_PLIST], 0u);
+  let groups = (n + 63u) / 64u; let y = max(1u, (groups + 65534u) / 65535u);
+  args[${ARGS2.ACT}u] = (groups + y - 1u) / y; args[${ARGS2.ACT + 1}u] = y; args[${ARGS2.ACT + 2}u] = 1u;
+}
+`;
+
+// ---- activity: a thread a listed brick. Busy in its 3³ neighbourhood last tick → its quiet run starts over;
 // awake while the run is under QUIET_TICKS (one offset cycle); awake bricks into the list
 export const v2ActivityWGSL = (g) => /* wgsl */ `
 ${v2Head(g)}
 ${MAIN} {
-  let b = foldThread(wg, nwg, li);
-  if (b >= NBRICKS) { return; }
-  let bc = brickCoord(b);
-  var near = false;
-  for (var dz = -1; dz <= 1; dz++) {
-    for (var dy = -1; dy <= 1; dy++) {
-      for (var dx = -1; dx <= 1; dx++) {
-        let n = mEdge((bc + vec3i(dx, dy, dz))*BS)/BS;
-        if (all(n >= vec3i(0)) && all(n < vec3i(BX, BY, BZ)) && atomicLoad(&act2[P.busyIn + brickId(n)]) != 0u) { near = true; }
-      }
-    }
-  }
+  let i = foldThread(wg, nwg, li);
+  if (i >= atomicLoad(&act2[V2_PLIST + 1u])) { return; }
+  let b = atomicLoad(&act2[V2_PLIST + 2u + i]);
+  let near = (atomicExchange(&act2[V2_NEAR + b], 0u) & 1u) != 0u;
   if (atomicLoad(&act2[P.busyIn + b]) != 0u) { atomicAdd(&act2[V2_COUNT + CNT_BUSY], 1u); }
   var q = atomicLoad(&act2[V2_QUIET + b]);
-  if (near) { q = 0u; } else { q = min(q + 1u, 255u); }
+  if (near) { q = 0u; } else { q = min(q + 1u, QUIET_CAP); }
   atomicStore(&act2[V2_QUIET + b], q);
   let awake = q < QUIET_TICKS;
   atomicStore(&act2[V2_AWAKE + b], select(0u, 1u, awake));
@@ -554,6 +609,7 @@ ${MAIN} {
       let q = vec3i(x, to, z);
       let o = zeroQ(loadCell(q));
       let request = events[slotOf(p)]; events[slotOf(p)] = events[slotOf(q)]; events[slotOf(q)] = request;
+      noteEvents(slotOf(p), events[slotOf(p)]); noteEvents(slotOf(q), request);
       let source = loadMaterial(slotOf(p));
       let destination = loadMaterial(slotOf(q));
       storeMaterial(slotOf(q), destination, Material(c, source.bank));
@@ -861,7 +917,7 @@ ${MAIN} {
     if (inGrid(p)) {
       let slot = slotOf(p);
       storeMaterial(slot, Material(orig[i], oldBanks[i]), Material(cs[i], bs[i]));
-      events[slot] = pending[i] | requests[i];
+      events[slot] = pending[i] | requests[i]; noteEvents(slot, pending[i] | requests[i]);
     }
   }
 }
@@ -929,7 +985,8 @@ ${v2Head(g, { state: false, marks: true })}
 ${MAIN} {
   let b = foldThread(wg, nwg, li);
   if (b >= NBRICKS) { return; }
-  if (atomicExchange(&act2[V2_VISIBLE + b], 0u) == 0u) { return; }
+  // Read first: a clean brick's word stays untouched (no write of the zero it holds).
+  if (atomicLoad(&act2[V2_VISIBLE + b]) == 0u || atomicExchange(&act2[V2_VISIBLE + b], 0u) == 0u) { return; }
   atomicOr(&marks[MARK_DERIVED + (b >> 5u)], 1u << (b & 31u));
   atomicStore(&marks[MARK_FOAMS + b], 1u);
 }
@@ -966,6 +1023,8 @@ const contact = () => [LAYOUT.TABLES, 'EMPTY', V2_CONTACT_LAYOUT];
 export const V2_KERNELS = [
   { name: 'v2externalEvents', code: v2ExternalEventsWGSL, layouts: () => [LAYOUT.TABLES, V2_INVALIDATE_LAYOUT, V2_CONTACT_LAYOUT], dispatch: (g) => fold(gridDims(g).nbricks) },
   { name: 'v2import', code: v2ImportWGSL, layouts: () => [LAYOUT.TABLES, V2_IMPORT_LAYOUT, V2_MATERIAL_LAYOUT], dispatch: (g) => fold(gridDims(g).nbricks) },
+  { name: 'v2actScan', code: v2ActScanWGSL, layouts: own, dispatch: perBrick },
+  { name: 'v2actArgs', code: v2ActArgsWGSL, layouts: () => [LAYOUT.TABLES, 'EMPTY', V2_ARGS_LAYOUT], dispatch: () => [1, 1, 1], workgroupSize: [1, 1, 1] },
   { name: 'v2activity', code: v2ActivityWGSL, layouts: own, dispatch: perBrick },
   { name: 'v2cols', code: v2ColsWGSL, layouts: own, dispatch: (g) => fold(Math.ceil((g.nx / 4) * (g.nz / 4) / 64)) },
   { name: 'v2args', code: v2ArgsWGSL, layouts: () => [LAYOUT.TABLES, 'EMPTY', V2_ARGS_LAYOUT], dispatch: () => [1, 1, 1], workgroupSize: [1, 1, 1] },
@@ -986,14 +1045,19 @@ export const WGSL_CHECK = V2_KERNELS.map(({ name, code, layouts, dispatch }) => 
 // three storage bindings and no legacy element buffer, leaving the device's
 // guaranteed eight-buffer budget intact. P is supplied by the family module.
 export const V2_DYNAMICS_LAYOUT = [buf(0, 'storage'), buf(1, 'storage'), buf(2, 'storage')];
-export function nativeDynamicsHead(g) {
+// A wake must land in the busy words the NEXT activity pass reads. DynamicParams
+// carries them as busyOut, taken at recording time (NativeDynamics._params), so
+// in-tick stages and tools between ticks agree. Heads without that field number
+// P.tick as the tick about to run (weather, forcing: owner.tick + 1) and wake
+// its busyIn, as the import does (tools/v2/wake-parity-check.mjs).
+export function nativeDynamicsHead(g, { busyOut = false } = {}) {
   const common = prelude(g, { state: false });
   const grid = common.slice(0, common.indexOf('// ---- the element tables'));
   const layout = common.slice(common.indexOf('// ---- the header and the state'), common.indexOf('// ---- the state\'s accessors'));
   const random = common.slice(common.indexOf('// ---- random streams'), common.indexOf('// ---- the shared physics tests'));
   let shared = v2Head(g).slice(v2Head(g).indexOf('const V2_BUSY0:'));
-  shared = shared.replace('if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after)))', 'if (all(before == after))')
-    .replace('P.busyOut', 'select(V2_BUSY0, V2_BUSY0 + NBRICKS, (P.tick & 1u) == 0u)');
+  shared = shared.replace('if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after)))', 'if (all(before == after))');
+  if (!busyOut) shared = shared.replace('P.busyOut', 'select(V2_BUSY0, V2_BUSY0 + NBRICKS, (P.tick & 1u) == 0u)');
   // Dynamics needs only the original finite-f32 prefix, never the contact tail.
   const rows = new Uint32Array(v2Table().buffer, 0, ELEMENTS.length * 8);
   const ev = Array.from({ length: rows.length / 4 }, (_, i) => `vec4u(${Array.from(rows.subarray(i * 4, i * 4 + 4), word => `${word}u`).join(',')})`);

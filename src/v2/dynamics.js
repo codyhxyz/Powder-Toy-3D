@@ -5,11 +5,14 @@ import { fold } from '../gpu/kernels.js';
 import { ELEMENTS, K } from '../elements.js';
 import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
-import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase } from '../shaders/v2/particles.js';
-import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, COUPLE_MODE } from '../shaders/v2/blasts.js';
+import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase, storageLayout } from '../shaders/v2/particles.js';
+import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, COUPLE_MODE,
+  coupleArgsBase, COUPLE_ARGS_WORDS, COUPLE_ARGS, listControl, LIST_NAMES, LIST_ARGS, DISPATCH_ARGS_BYTES, listArgsWGSL } from '../shaders/v2/blasts.js';
 import { AIR as AIR_MODE, EDGE } from '../simModes.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M } from './dynamics-reference.js';
+// listArgs: control and the dispatch args, nothing else (it writes the args it publishes).
+export const LISTS_LAYOUT = storageLayout(2);
 
 export const DYNAMICS_ABI = Object.freeze({ version: 1, particleBytes: PARTICLE_BYTES, capacity: PARTICLE_CAP,
   position: 'world cells', velocity: 'm/s', particleIdOffset: 12, coreOffsets: [28,32,36,40], bankOffset: 44,
@@ -102,24 +105,29 @@ export class NativeDynamics {
     this.flight=make('flight',(PARTICLE_CAP+1)*32); // one record per slot, then the sweep record
     this.claims=make('claims',g.slots*16);
     this.air=[make('air0',g.nbricks*32),make('air1',g.nbricks*32)];
-    this.faces=make('faces',g.nbricks*16);
-    this.control=make('control',controlWords(g)*4);
-    this.dispatchArgs=make('dispatch args',64,GPUBufferUsage.INDIRECT);
-    const args=new Uint32Array(16);args[13]=PARTICLE_CAP/64;args[14]=1;gpu.queue.writeBuffer(this.dispatchArgs,0,args);
+    this.faces=make('faces and vacuum',g.nbricks*32); // the air source's per-brick cache (air.js)
+    this.control=make('control',listControl(g).words*4);
+    // 0..48: the batch args workArgs fills, 48: [work, CAP/64, 1]; COUPLE_ARGS: the couple gate's
+    // [work, 1, 1, 0, work] then the constant tail of [work, CAP/64, 1] at COUPLE_ARGS + 16;
+    // then the brick lists' args (LIST_ARGS), written by listArgs.
+    this.dispatchArgs=make('dispatch args',DISPATCH_ARGS_BYTES,GPUBufferUsage.INDIRECT);
+    const args=new Uint32Array(DISPATCH_ARGS_BYTES/4);args[13]=PARTICLE_CAP/64;args[14]=1;
+    args[COUPLE_ARGS/4+5]=PARTICLE_CAP/64;args[COUPLE_ARGS/4+6]=1;gpu.queue.writeBuffer(this.dispatchArgs,0,args);
     this.plans=make('plans',g.slots*16);
     const initial=new Float32Array(g.nbricks*8); for (let b=0;b<g.nbricks;b++) initial[b*8+6]=AIR.quietTicks;
     for (const b of this.air) gpu.queue.writeBuffer(b,0,initial);
-    const L={ particles:gpu.layout('V2_PARTICLES',PARTICLES_LAYOUT), blasts:gpu.layout('V2_BLASTS',BLASTS_LAYOUT), air:gpu.layout('V2_AIR',AIR_LAYOUT) };
+    const L={ particles:gpu.layout('V2_PARTICLES',PARTICLES_LAYOUT), blasts:gpu.layout('V2_BLASTS',BLASTS_LAYOUT), air:gpu.layout('V2_AIR',AIR_LAYOUT), lists:gpu.layout('V2_LISTS',LISTS_LAYOUT) };
     const bg=(layout,buffers,label) => gpu.bindGroup(layout,buffers.map((buffer,binding)=>({binding,resource:{buffer}})),label);
     this.groups={
       particles:this.air.map(a=>bg(L.particles,[this.particles,this.flight,this.claims,a,this.control],'native particles')),
       blasts:this.air.map(a=>bg(L.blasts,[owner.events,this.particles,a,this.control,this.plans],'native blasts')),
       air:this.air.map((a,i)=>bg(L.air,[a,this.air[1-i],owner.events,this.control,this.faces],'native air')),
     };
+    const lists=bg(L.lists,[this.control,this.dispatchArgs],'native list args'); this.groups.lists=[lists,lists];
     this.kernels={};
-    for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES]]) {
+    for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES],['lists',(g,_head,name)=>listArgsWGSL(g,name),LIST_NAMES]]) {
       for (const stage of stages) {
-        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','workArgs','externalBegin','externalGate'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage));
+        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','workArgs','externalBegin','externalGate','coupleGate'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage)) || family==='lists';
         const name=`v2${family}_${stage}`;
         this.kernels[`${family}/${stage}`]=gpu.kernel({name,build:'idle',code:generate(g,owner.nativeDynamics.head,stage),
           params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
@@ -140,7 +148,9 @@ export class NativeDynamics {
   _params(tick,extra={}) {
     // Only clocks are shared with V2Params; full/offset/edit markers belong to
     // the grid schema and must not leak into strict DynamicParams packing.
-    const {busyIn=0,busyOut=0}=this.owner._params?.(tick)??{};
+    // Wakes go where the next activity pass reads, whatever tick a caller numbers
+    // its stage with (forcing allocates as owner.tick + 1): the owner's tick now.
+    const {busyIn=0,busyOut=0}=this.owner._params?.(this.owner.tick??tick)??{};
     return {busyIn,busyOut,...nativeModes(this.owner.sim),tick,nativeJets:+(this.owner.jets?.isReady===true),origin:vector(this.owner.sim.origin),sequence:this.sequence,...extra};
   }
   _check() { if (!this.isReady || this.disposed) throw new Error('NativeDynamics is not ready'); }
@@ -148,11 +158,11 @@ export class NativeDynamics {
     this._check();
     // Match the kernel descriptor protocol: vectors are direct dispatches.
     const indirect=!Array.isArray(count) && count?.indirect;
-    if(indirect && (indirect!==this.dispatchArgs || count.offset!==32)) throw new Error('Unsupported native allocation dispatch');
+    if(indirect && (indirect!==this.dispatchArgs || ![32,COUPLE_ARGS].includes(count.offset))) throw new Error('Unsupported native allocation dispatch');
     // Existing ray args are [hasWork ? 1 : 0, CAP/64, 1]; dThread folds
     // their two dimensions into exactly the same canonical pool slots.
     for(const stage of ALLOCATION_STAGES) {
-      const size=indirect?(stage==='freeScan'?count:{indirect:this.dispatchArgs,offset:48}):
+      const size=indirect?(stage==='freeScan'?count:{indirect:this.dispatchArgs,offset:count.offset+16}):
         (stage==='freeScan'?1:PARTICLE_CAP/64);
       this._record('blasts',stage,size,tick,params);
     }
@@ -224,11 +234,13 @@ export class NativeDynamics {
     // and busy. Dense chains are explicitly latency-limited, not called parity.
     const size=offset=>({indirect:this.dispatchArgs,offset});
     this._record('blasts','reset',1,tick);
+    // The first select reads only bricks noted as holding a request (noteEvents).
+    this._record('blasts','eventList',Math.ceil(this.g.nbricks/64),tick); this._publish('events',tick);
     for (let n=0;n<this.blastBatch;n++) {
       // After a batch without work nothing has changed, so selecting again
       // finds exactly what it found. Later batches select through the last
       // batch's grid args (zero without work); that finish reset the selection.
-      this._record('blasts','select',n?size(0):Math.ceil(this.g.slots/64),tick);
+      this._record('blasts','select',n?size(0):this._listed('eventCells'),tick,n?{}:{substep:1});
       this._record('blasts','workArgs',1,tick);
       // Separate INDIRECT buffer: never bind a read_write storage buffer as
       // the indirect source of that same dispatch (WebGPU usage conflict).
@@ -242,18 +254,38 @@ export class NativeDynamics {
       this._record('blasts','finish',size(32),tick,{substep:this.blastBatch-1-n}); // batches still to select
     }
   }
+  // A brick list's builders have run: publish its length and dispatch args (blasts.js listArgs).
+  _publish(name,tick) { this._record('lists',name,1,tick); }
+  _listed(arg) { return {indirect:this.dispatchArgs,offset:LIST_ARGS[arg]}; }
   advanceAir(tick) {
-    const bricks=Math.ceil(this.g.nbricks/64),cells=Math.ceil(this.g.slots/64);
+    const bricks=Math.ceil(this.g.nbricks/64);
     const {airMode,edge}=nativeModes(this.owner.sim),wind=AIR_VELOCITY_MODES.includes(airMode);
-    this.gpu.frame.clear(this.control,4,8); // source recounts durable events, activity air; not live particles
-    this._record('air','source',bricks,tick); this.airIndex^=1;
+    // Source, the substeps, gas, couple and activity run over GPU-built brick lists; every
+    // brick off a list would be an exact identity there (air.js, tools/v2/air-reach-check.mjs).
+    this._record('air','list',bricks,tick); this._publish('source',tick);
+    this._record('air','source',this._listed('source'),tick); this.airIndex^=1;
     for (let axis=0;axis<3;axis++) this._record('air','reach',bricks,tick,{substep:axis});
-    for (let i=0;i<AIR.substeps;i++) { this._record('air','step',bricks,tick,{substep:i}); this.airIndex^=1; }
+    this._publish('step',tick);
+    for (let i=0;i<AIR.substeps;i++) { this._record('air','step',this._listed('step'),tick,{substep:i}); this.airIndex^=1; }
+    this._record('air','windList',bricks,tick); this._publish('wind',tick);
     // Both gas stages return at once without wind, and the boundary one off void edges.
-    if(wind) this._record('air','gas',cells,tick);
-    if(wind && edge===EDGE.VOID) this._record('air','gasBoundary',cells,tick);
-    this._record('blasts','couplePlan',cells,tick,{mode:COUPLE_MODE}); this._allocate(tick,{mode:COUPLE_MODE});
-    this._record('air','activity',bricks,tick);
+    if(wind) this._record('air','gas',this._listed('windCells'),tick);
+    if(wind && edge===EDGE.VOID) this._record('air','gasBoundary',this._listed('windCells'),tick);
+    this._record('blasts','couplePlan',this._listed('windCells'),tick,{mode:COUPLE_MODE}); this._coupleAllocate(tick);
+    this._record('air','activity',this._listed('wind'),tick);
+  }
+  // _allocate's run for the couple plans, with pool preparation, allocation and children behind
+  // the GPU's coupleGate: without a request or a live particle they would find a free pool, no
+  // neutron parent and zero counts, and the gate writes the free and requested totals they would.
+  // apply runs over the wind list whatever the gate says. tools/v2/allocation-check.mjs
+  _coupleAllocate(tick) {
+    const p={mode:COUPLE_MODE},args=offset=>({indirect:this.dispatchArgs,offset});
+    this._record('blasts','count',Math.ceil(this.g.nbricks/64),tick,p);
+    this._record('blasts','coupleGate',1,tick,p);
+    this.gpu.frame.copy(this.control,coupleArgsBase(this.g)*4,this.dispatchArgs,COUPLE_ARGS,COUPLE_ARGS_WORDS*4);
+    this._record('blasts','allocate',args(COUPLE_ARGS),tick,p);
+    this._record('blasts','apply',this._listed('windCells'),tick,p); // fractures need no allocation
+    this._record('blasts','children',args(COUPLE_ARGS+16),tick,p);
   }
   /** strength is already integrated: impulse delta-v m/s; pressure/vacuum Pa;
    * wind/cyclone delta-v m/s. No hidden per-frame or second dt multiplier. */
@@ -407,6 +439,7 @@ export class NativeDynamics {
     this.gpu.write(this.control,externalBlastBase(g)*4,external.done);this.externalBlasts=external.requests;
     this.gpu.write(this.control,heldBase(g)*4,s.held); this.gpu.write(this.control,shockBase(g)*4,s.shocks);
     this.gpu.write(this.owner.events,0,events); this.gpu.frame.clear(this.flight); this.gpu.frame.clear(this.claims); this.gpu.frame.clear(this.plans);
+    this.owner.noteAllCells?.({events:true}); // requests written behind noteEvents: every brick may hold one
     this.airIndex=0; this.origin=[...s.origin]; this.sequence=s.sequence; this.blastBatch=s.blastBatch;
     this.rayRequests=requests; this.airArchive=archive; this.pendingOutside=outside;
     this.holdSession=s.holdSession?structuredClone(s.holdSession):null;

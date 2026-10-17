@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { gridLayout } from '../../src/sim.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
 import { particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT } from '../../src/shaders/v2/particles.js';
-import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT } from '../../src/shaders/v2/blasts.js';
+import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, listArgsWGSL, LIST_NAMES } from '../../src/shaders/v2/blasts.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../../src/shaders/v2/air.js';
 import { wgslGroupingErrors, nagaErrors } from './wgsl-grouping.mjs';
 let count=0; const failures=[];
@@ -24,6 +24,13 @@ for (const [name,generate,stages,layout] of [
       if (errors) failures.push(`${name}/${stage}/${dims}: ${errors}`);
     }
   }
+}
+// listArgs: two storage buffers (control, dispatch args), one thread.
+for (const dims of [[32,32,32],[48,16,32]]) for (const name of LIST_NAMES) {
+  const source=listArgsWGSL(gridLayout(...dims),name);
+  assert.equal([...source.matchAll(/var<storage,/g)].length,2,`lists/${name} storage count`);
+  const errors=nagaErrors(source); count++;
+  if (errors) failures.push(`lists/${name}/${dims}: ${errors}`);
 }
 console.log(`${count} native dynamics WGSL modules; ${failures.length} failures; max8 storage buffers`);
 for (const error of failures) console.error(error);

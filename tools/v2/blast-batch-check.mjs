@@ -10,7 +10,8 @@ import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
 import { blastsWGSL, externalBlastBase, RESET_SELECTION } from '../../src/shaders/v2/blasts.js';
 const NONE=0xffffffff, BATCH_DEFAULT=8;
-const SELECTION=['reset','select','workArgs'];
+// eventList and its listArgs (v2lists_events) build the first select's brick list.
+const SELECTION=['reset','select','workArgs','eventList','v2lists_events'];
 // Straight-line integer WGSL → JS, as allocation-check executes workArgs.
 const js=code=>code.replace(/\b(\d+)u\b/g,'$1')
   .replace(/atomicLoad\(&control\[([^\]]+)\]\)/g,'control[$1]')
@@ -66,14 +67,17 @@ function replay(commands,buffers,state,g) {
       const [src,so,dst,dof,n]=c.copy;
       new Uint8Array(buffers.get(dst).buffer,dof,n).set(new Uint8Array(buffers.get(src).buffer,so,n));continue;
     }
-    const groups=c.size.indirect?args.subarray(c.size.offset/4,c.size.offset/4+3).reduce((a,b)=>a*b,1):c.size.reduce((a,b)=>a*b,1);
-    if(!groups) continue; // zero-size dispatches are no-ops (WebGPU)
     const P={...c.params,mode:c.params.mode??0,substep:c.params.substep??0};
+    // The first select (substep 1) covers the event list: every brick noted as holding a
+    // request, here every brick with an event cell (air-cache-check proves the notes).
+    const listed=c.stage==='select' && P.substep===1;
+    const groups=c.size.indirect?args.subarray(c.size.offset/4,c.size.offset/4+3).reduce((a,b)=>a*b,1):c.size.reduce((a,b)=>a*b,1);
+    if(!groups && !listed) continue; // zero-size dispatches are no-ops (WebGPU)
     if(c.stage==='select') state.selects++;
     if(!SELECTION.includes(c.stage)) work.push([c.stage,P.mode,hash()]);
     if(c.stage==='reset' || c.stage==='workArgs') run(body(c.code),control,P);
     else if(c.stage==='select') for(const [slot,cell] of state.cells) {
-      if(!cell.bits || slot>=groups*64) continue; // dThread covers groups*64 slots
+      if(!cell.bits || (!listed && slot>=groups*64)) continue; // dThread covers groups*64 slots
       control[2]++;state.wakes.add(slot);if(cell.bits&4) control[17]++;
       if((cell.bits&1) && cell.fits) control[3]=Math.min(control[3],slot);
     } else if(c.stage==='externalBegin') control[3]=control[externalBlastBase(g)+P.substep]===0?g.slots:NONE;
@@ -154,16 +158,16 @@ for(const blastBatch of [1,2,3,BATCH_DEFAULT]) for(const [name,fixture] of Objec
       assert.deepEqual(now.work,old.work,'same non-empty work dispatches, each on the same state');
       assert.deepEqual(now.state,old.state,'same control words, args, events, pool and wakes');
       assert.equal(old.selects,blastBatch*3);
-      assert.equal(old.recorded-now.recorded,(blastBatch-1)*3,'one reset dispatch per tick, not per batch');
+      assert.equal(old.recorded-now.recorded,(blastBatch-1-2)*3,'one reset dispatch per tick, not per batch, plus the event list and its args');
     }
   });
 }
 
-test('an idle default tick runs one full-grid select instead of eight and records 113 dispatches instead of 120',async()=>{
+test('an idle default tick runs one listed select instead of eight full ones and records 115 dispatches instead of 120',async()=>{
   const w=world(1,fixtures.idle);
   const old=await schedule(reference,BATCH_DEFAULT,w,1),now=await schedule(current,BATCH_DEFAULT,w,1);
   assert.equal(old.selects,BATCH_DEFAULT);assert.equal(now.selects,1);
-  assert.equal(old.recorded,120);assert.equal(now.recorded,113);
+  assert.equal(old.recorded,120);assert.equal(now.recorded,115);
   // k batches with work select k+1 times; full chains keep all eight.
   for(const [charges,selects] of [[1,2],[3,4],[7,8],[20,8]]) {
     const r=await schedule(current,BATCH_DEFAULT,world(5,{...fixtures.idle,charges}),1);assert.equal(r.selects,selects);

@@ -38,7 +38,7 @@ function column(core, gravity, gravMode=0, obstacle=null) {
     fromBits:x=>new Float32Array(new Uint32Array([x]).buffer)[0],toBits:word,
     vec4u:vec,vec3i:(x,y,z)=>({x,y,z}),loadCell:p=>cells[p.y],
     clsOf:c=>ELEMENTS[c.x&255].kind,markBusy:()=>{},storeCell:(p,c)=>{cells[p.y]=vec(...c);},
-    zeroQ:c=>c,slotOf:p=>p.y,events:new Uint32Array(128),
+    zeroQ:c=>c,slotOf:p=>p.y,events:new Uint32Array(128),noteEvents:()=>{},
     loadMaterial:s=>({core:cells[s],bank:0}),Material:(core,bank)=>({core,bank}),
     storeMaterial:(s,b,a)=>{cells[s]=vec(...a.core);},
   };

@@ -9,7 +9,7 @@ import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js'
 import { CONTROL } from '../../src/shaders/v2/particles.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 import { ALLOCATION_CHUNKS, ALLOCATION_STAGES, allocationScratchBase, controlWords,
-  externalMaskBase, externalMaskWords, blastsWGSL } from '../../src/shaders/v2/blasts.js';
+  externalMaskBase, externalMaskWords, blastsWGSL, SPAWN_PREFIX, COUPLE_ARGS, COUPLE_MODE, DISPATCH_ARGS_BYTES, LIST_ARGS } from '../../src/shaders/v2/blasts.js';
 const NONE=0xffffffff, WORDS=12;
 const fresh=()=>({freeList:new Uint32Array(CAP).fill(0xdeadbeef),childPrefixes:new Uint32Array(CAP),control4:0});
 function serialPool(records) {
@@ -144,6 +144,14 @@ function executeWorkArgs(source,control,P) {
     .replace(/atomicStore\(&control\[([^\]]+)\],([^;]+)\);/g,'control[$1]=$2;');
   Function('control','P','D_NONE','select',body)(control,P,NONE,(no,yes,condition)=>condition?yes:no);
 }
+// The couple gate is integer code with one constant-bound loop: run it as JS too.
+function executeCoupleGate(source,control,g) {
+  const body=source.slice(source.lastIndexOf('fn main() {')+'fn main() {'.length,-1)
+    .replace(/\b(\d+)u\b/g,'$1')
+    .replace(/atomicLoad\(&control\[([^\]]+)\]\)/g,'control[$1]')
+    .replace(/atomicStore\(&control\[([^\]]+)\],([^;]+)\);/g,'control[$1]=$2;');
+  Function('control','D_SPAWN_COUNTS','D_CAP','select',body)(control,SPAWN_PREFIX+g.nbricks,CAP,(no,yes,condition)=>condition?yes:no);
+}
 function recorder(gate=()=>Promise.resolve()) {
   globalThis.GPUBufferUsage={STORAGE:1,COPY_SRC:2,COPY_DST:4,INDIRECT:8};
   const calls=[],descriptors=[],copies=[];
@@ -155,6 +163,7 @@ function recorder(gate=()=>Promise.resolve()) {
     kernel(d){descriptors.push(d);return {...d,ready:gate(d.name),dispatch(frame,size,data){
       d.params.pack(data.params);
       if(d.name==='v2blasts_workArgs') executeWorkArgs(d.code,new Uint32Array(data.bind[1].entries[3].resource.buffer.bytes),data.params);
+      if(d.name==='v2blasts_coupleGate') executeCoupleGate(d.code,new Uint32Array(data.bind[1].entries[3].resource.buffer.bytes),g);
       const args=size?.indirect?Array.from(new Uint32Array(size.indirect.bytes,size.offset??0,3)):size;
       calls.push({name:d.name,size,args,...data});
     }};},
@@ -176,7 +185,7 @@ function assertPrepared(calls,expected) {
     assert.deepEqual(prep.map(p=>p.name),ALLOCATION_STAGES.map(s=>`v2blasts_${s}`));
     const indirect=!Array.isArray(c.size) && c.size?.indirect;
     assert.deepEqual(prep.map(p=>p.size),indirect?
-      [{indirect:c.size.indirect,offset:48},c.size,{indirect:c.size.indirect,offset:48}]:
+      [{indirect:c.size.indirect,offset:c.size.offset+16},c.size,{indirect:c.size.indirect,offset:c.size.offset+16}]:
       [[1024,1,1],[1,1,1],[1024,1,1]]);
     for(const p of prep) assert.deepEqual(p.params,c.params,'preparation receives exactly the allocator uniforms');
   }
@@ -203,6 +212,35 @@ test('all real allocation paths prepare immediately, including empty indirect ba
     d.advanceParticles(6);d.advanceAir(6);assertPrepared(calls,1);
     assert.ok(calls.findIndex(c=>c.name==='v2blasts_rayEmit')<calls.findIndex(c=>c.name==='v2blasts_freeCount'));
   }
+  d.dispose();
+});
+test('the couple gate skips pool preparation exactly when nothing is requested and no particle is live',async()=>{
+  const {d,calls}=recorder();await d.ready;
+  const control=new Uint32Array(d.control.bytes),g=d.g,counts=SPAWN_PREFIX+g.nbricks,groups=Math.ceil(g.nbricks/64);
+  // With an empty pool the serial oracle frees every slot and finds no parent: what the gate writes.
+  const empty=serialPool(new Uint32Array(CAP*WORDS));
+  assert.equal(empty.control4,CAP);assert.ok(empty.childPrefixes.every(x=>x===NONE));
+  for(const [live,demand,work] of [[0,0,false],[1,0,true],[0,3,true],[7,1,true]]) {
+    control.fill(0);control[0]=live;control[4]=0xabc;control[5]=0xdef;
+    calls.length=0;d.advanceAir(5);
+    // count ran before the gate; seed its group sums the way count would have
+    calls.length=0;control.fill(0,counts,counts+groups);control[counts+groups-1]=demand;control[0]=live;control[4]=0xabc;control[5]=0xdef;
+    d._coupleAllocate(5);
+    const names=calls.map(c=>c.name);
+    assert.deepEqual(names,['v2blasts_count','v2blasts_coupleGate',...ALLOCATION_STAGES.map(s=>`v2blasts_${s}`),'v2blasts_allocate','v2blasts_apply','v2blasts_children']);
+    assert.ok(calls.every(c=>c.params.mode===COUPLE_MODE));
+    const args=Object.fromEntries(calls.filter(c=>c.size?.indirect && c.name!=='v2blasts_apply').map(c=>[c.name,c.args]));
+    const w=work?1:0;
+    assert.deepEqual(args,{v2blasts_freeCount:[w,1024,1],v2blasts_freeScan:[w,1,1],v2blasts_freeScatter:[w,1024,1],v2blasts_allocate:[w,1,1],v2blasts_children:[w,1024,1]});
+    assert.equal(calls.find(c=>c.name==='v2blasts_apply').size.offset,LIST_ARGS.windCells,'apply runs over the wind list, not behind the gate: fractures need no allocation');
+    // skipped: the totals the skipped stages would have written; working: untouched by the gate
+    assert.deepEqual([control[4],control[5]],work?[0xabc,0xdef]:[CAP,0]);
+  }
+  // red: a gate that ignored live particles would skip a pool with neutron parents
+  const code=blastsWGSL(g,nativeDynamicsHead,'coupleGate');
+  assert.match(code,/demand>0u \|\| atomicLoad\(&control\[0\]\)>0u/);
+  const red=new Uint32Array(control.length);red[0]=1;executeCoupleGate(code.replace('|| atomicLoad(&control[0])>0u',''),red,g);
+  assert.equal(red[4],CAP,'a gate without the live test would wrongly declare a live pool free');
   d.dispose();
 });
 test('preparation kernels build idle and every new stage is awaited; no optional missing-pipeline skip',async()=>{
@@ -280,7 +318,7 @@ test('generated exact hasWork predicate gates all three prep dimensions, includi
   }
   for(const count of [{indirect:d.control,offset:32},{indirect:d.dispatchArgs,offset:0}])
     assert.throws(()=>d._prepareAllocation(3,{},count),/Unsupported native allocation dispatch/);
-  assert.equal(d.dispatchArgs.size,64);
+  assert.equal(d.dispatchArgs.size,DISPATCH_ARGS_BYTES);
   // Both direct [1024,1,1] and reused [1,1024,1] cover each slot exactly once.
   for(const [nx,ny] of [[1024,1],[1,1024]]) {
     const seen=new Uint8Array(CAP);

@@ -56,6 +56,7 @@ export class NativeIntegration {
     const { owner: o, sim, gpu } = this, g = sim.g;
     const ones = new Uint32Array(g.nbricks).fill(1);
     for (const field of ['busy0', 'busy1', 'legacy']) gpu.write(o.act, o.layout[field] * 4, ones);
+    o.noteAllCells?.(); // the scatter wrote cores behind noteState
     o.importFull = o.importMarked = false;
     o.legacyPending = o.writtenSinceTick = true;
     sim.version++; sim.changedAll = true;
