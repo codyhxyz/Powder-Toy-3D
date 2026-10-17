@@ -95,6 +95,8 @@ ${loc ? `@group(${loc.group}) @binding(${loc.binding}) var<storage, read> hrOccu
 const HR_STEPS: u32 = ${p.maxSteps}u;
 const HR_DISTANCE: f32 = ${number(p.maxDistance)};
 const HR_BIAS: f32 = ${number(p.bias)};
+struct HRHit { state: vec4f, position: vec3f, normal: vec3f, direction: vec3f }
+struct HRQuery { environment: vec3f, fresnel: vec3f, weight: f32, hit: HRHit }
 fn hrFinite3(v: vec3f) -> bool { return all(abs(v) <= vec3f(1e8)); }
 fn hrColor(v: vec3f) -> vec3f {
   // Comparisons also reject NaN/Inf, without relying on optional shader features.
@@ -123,11 +125,11 @@ fn hrBox(ro: vec3f, rd: vec3f) -> vec3f {
   }
   return vec3f(near, far, f32(axis));
 }
-fn hrTrace(ro: vec3f, direction: vec3f, env: vec3f, budget: u32) -> vec3f {
+fn hrFindHit(ro: vec3f, direction: vec3f, budget: u32) -> HRHit {
   let bounds = hrBox(ro, direction);
   var t = max(bounds.x, 0.0);
   let end = min(bounds.y, HR_DISTANCE);
-  if (end <= t || budget == 0u) { return env; }
+  if (end <= t || budget == 0u) { return HRHit(); }
   let rd = safeDir(direction);
   var cell: vec3i; var step: vec3i; var delta: vec3f; var next: vec3f;
   ddaStart(ro, rd, t, &step, &delta, &cell, &next);
@@ -135,6 +137,7 @@ fn hrTrace(ro: vec3f, direction: vec3f, env: vec3f, budget: u32) -> vec3f {
   // A start inside matter has no known entry surface/normal: fail closed to sky,
   // rather than reflecting the back of the originating voxel or skipping a wall.
   var entered = bounds.x >= 0.0;
+  var hit = vec4f(0.0);
   for (var i = 0u; i < HR_STEPS; i++) {
     if (i >= min(budget, HR_STEPS) || t >= end || outside(cell)) { break; }
     ${loc ? `let bc = cell / BS;
@@ -148,24 +151,32 @@ fn hrTrace(ro: vec3f, direction: vec3f, env: vec3f, budget: u32) -> vec3f {
     let a = fetchA(cell);
     let id = eid(a);
     if (id != E_EMPTY) {
-      if (!entered || !isCrisp(id) || RCLASS(id) == R_GLASS) { return env; }
-      var n = vec3f(0.0); n[axis] = -f32(step[axis]);
-      let radiance = ${shade}(id, fract(a.w), a.y, ro + direction * t, n, direction);
-      if (!hrFinite3(radiance)) { return env; }
-      return hrColor(radiance);
+      if (!entered || !isCrisp(id) || RCLASS(id) == R_GLASS) { return HRHit(); }
+      hit = a;
+      break;
     }
     let ax = argmin3(next);
     t = next[ax];
     axis = ddaStep(step, delta, &cell, &next);
     entered = true;
   }
-  return env;
+  if (eid(hit) == E_EMPTY) { return HRHit(); }
+  var n = vec3f(0.0); n[axis] = -f32(step[axis]);
+  return HRHit(hit, ro + direction * t, n, direction);
 }
-fn hrReflection(p: vec3f, incident: vec3f, normal: vec3f, rough: f32,
-                pixels: f32, f0: vec3f, budget: u32) -> vec3f {
+fn hrTrace(ro: vec3f, direction: vec3f, env: vec3f, budget: u32) -> vec3f {
+  let hit = hrFindHit(ro, direction, budget);
+  if (eid(hit.state) == E_EMPTY) { return env; }
+  let radiance = ${shade}(eid(hit.state), fract(hit.state.w), hit.state.y, hit.position, hit.normal, hit.direction);
+  if (!hrFinite3(radiance)) { return env; }
+  return hrColor(radiance);
+}
+fn hrReflectionQuery(p: vec3f, incident: vec3f, normal: vec3f, rough: f32,
+                     pixels: f32, f0: vec3f, budget: u32) -> HRQuery {
   if (!hrFinite3(incident) || dot(incident, incident) < 1e-12
       || !hrFinite3(normal) || dot(normal, normal) < 1e-12 || !hrFinite3(p)) {
-    return hrColor(${environment}(vec3f(0.0, 1.0, 0.0))) * clamp(hrColor(f0), vec3f(0.0), vec3f(1.0));
+    return HRQuery(hrColor(${environment}(vec3f(0.0, 1.0, 0.0))),
+      clamp(hrColor(f0), vec3f(0.0), vec3f(1.0)), 0.0, HRHit());
   }
   let d = normalize(incident);
   var n = normalize(normal);
@@ -175,9 +186,24 @@ fn hrReflection(p: vec3f, incident: vec3f, normal: vec3f, rough: f32,
   let F = base + (vec3f(1.0) - base) * pow(1.0 - clamp(-dot(d, n), 0.0, 1.0), 5.0);
   let env = hrColor(${environment}(r));
   let w = hrGate(rough, pixels, max(F.x, max(F.y, F.z)), budget);
-  if (w <= 0.0) { return hrColor(env * F); }
-  let hit = hrTrace(p + n * HR_BIAS, r, env, budget);
-  return hrColor(mix(env, hit, w) * F);
+  var hit = HRHit();
+  if (w > 0.0) { hit = hrFindHit(p + n * HR_BIAS, r, budget); }
+  return HRQuery(env, F, w, hit);
+}
+fn hrReflectionResolve(query: HRQuery, radiance: vec3f) -> vec3f {
+  if (query.weight <= 0.0) { return hrColor(query.environment * query.fresnel); }
+  let safe = select(query.environment, hrColor(radiance), hrFinite3(radiance));
+  return hrColor(mix(query.environment, safe, query.weight) * query.fresnel);
+}
+fn hrReflection(p: vec3f, incident: vec3f, normal: vec3f, rough: f32,
+                pixels: f32, f0: vec3f, budget: u32) -> vec3f {
+  let query = hrReflectionQuery(p, incident, normal, rough, pixels, f0, budget);
+  var radiance = query.environment;
+  let h = query.hit;
+  if (eid(h.state) != E_EMPTY) {
+    radiance = ${shade}(eid(h.state), fract(h.state.w), h.state.y, h.position, h.normal, h.direction);
+  }
+  return hrReflectionResolve(query, radiance);
 }
 `;
 }

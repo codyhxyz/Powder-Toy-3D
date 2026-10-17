@@ -78,7 +78,7 @@ export async function verifyReadback(gpu){
   }finally{buffer.destroy();}
 }
 export const FIXTURE_COMPONENTS=['opaque','smooth','media','optics','particles'];
-export function paintFixture(a,{component='all'}={}){
+export function paintFixture(a,{component='all',isolatedEmitter=true}={}){
   if(component!=='all'&&!FIXTURE_COMPONENTS.includes(component))throw new Error(`Unknown fixture component: ${component}`);
   const wanted={
     all:()=>true,opaque:()=>false,
@@ -95,7 +95,7 @@ export function paintFixture(a,{component='all'}={}){
     [GLOSSY_FIXTURE,[64,37,70],5],[E.SAND,[57.5,34.5,82.5],.3],[E.WOOD,[61.5,34.5,82.5],.3],
     [E.WATER,[73.5,36.5,85.5],.3],[E.LAVA,[80,12,75],3],[E.FIRE,[85,33,83],2],
     [E.LAVA,[43.5,17.5,76.5],.3], // isolated emitter behind the glass slab
-  ])if(id===E.WALL||id===GLOSSY_FIXTURE||wanted(id,r))cube(id,p,r);
+  ])if((isolatedEmitter||id!==E.LAVA||r>=1)&&(id===E.WALL||id===GLOSSY_FIXTURE||wanted(id,r)))cube(id,p,r);
   a.volume.updateMatrixWorld();
   const display=p=>new V(...p).applyMatrix4(a.volume.matrixWorld);
   a.camera.position.copy(display([64,52,122]));
@@ -113,8 +113,11 @@ export async function renderCompleteFrames(a,frames=2){
     let complete=0;
     for(let attempts=1;attempts<=6;attempts++){
       const prior=a.hybrid,before=prior?{compositions:prior.stats.compositions,motion:prior.motion.stats.frames}:null;
+      console.info(`[hybrid correctness] scene attempt ${attempts}: render`);
       await a.test.renderOnce();
+      console.info(`[hybrid correctness] scene attempt ${attempts}: await readiness`);
       await a.test.ready();
+      console.info(`[hybrid correctness] scene attempt ${attempts}: readiness complete`);
       const h=a.hybrid,selected=a.post?.temporalInputs;
       const fresh=!h||(h.enabled&&h.stats.compositions>(h===prior?before.compositions:0)
         &&h.motion.stats.frames>(h===prior?before.motion:0)&&selected?.motion&&selected?.reactive);
@@ -155,7 +158,7 @@ export function watchFailures(page,report=console.error){
   page.on('console',message=>{
     const location=message.location().url??'',text=message.text();
     if(message.type()==='error'&&/net::ERR_CONNECTION_REFUSED/.test(text)&&/^http:\/\/127\.0\.0\.1:8787\//.test(location))offlineRelay.push(location);
-    else if(message.type()==='error'||message.type()==='warning'&&/WebGPU|GPU (validation|internal)/.test(text))record(`${text} (${location})`);
+    else if(message.type()==='error'||message.type()==='warning'&&/WebGPU|GPU (validation|internal)|Test shader unavailable/.test(text))record(`${text} (${location})`);
   });
   return{errors,offlineRelay,check:promise=>errors.length?Promise.reject(new Error(errors[0])):Promise.race([promise,failed])};
 }
@@ -264,13 +267,22 @@ ${ProbeParams.wgsl}
   if(z<0.999999&&inGrid(cell)&&eid(fetchA(cell))==${GLOSSY_FIXTURE}){atomicAdd(&counts[7],1u);}
   if(z<0.999999&&inGrid(cell)&&cell.y>=35&&eid(fetchA(cell))==E_WATER){atomicAdd(&counts[8],1u);}
   let rgb=textureLoad(color,p,0).rgb;
-  if(z<0.999999&&inGrid(cell)&&eid(fetchA(cell))==E_GLASS&&rgb.r>2.0&&rgb.r>2.0*rgb.g){atomicAdd(&counts[9],1u);}
+  // 1600 C lava has red radiance 2.72 BEFORE Beer/Fresnel attenuation.
+  // Native emitter-off control peaks at .326; transmitted emitter peaks at
+  // 1.47. Require bright red transmission, not unattenuated lava brightness.
+  if(z<0.999999&&inGrid(cell)&&eid(fetchA(cell))==E_GLASS&&rgb.r>1.0&&rgb.r>2.0*rgb.g){atomicAdd(&counts[9],1u);}
+  if(z<0.999999&&inGrid(cell)&&eid(fetchA(cell))==E_GLASS){
+    atomicAdd(&counts[12],1u);
+    if(rgb.r>1.0&&rgb.r>2.0*rgb.g){atomicAdd(&counts[13],1u);}
+    if(rgb.r>2.0*rgb.g){atomicAdd(&counts[14],1u);}
+    atomicMax(&counts[15],bitcast<u32>(max(rgb.r,0.0)));
+  }
   if(z<0.999999&&inGrid(cell)&&(eid(fetchA(cell))==E_SAND||eid(fetchA(cell))==E_WOOD)){atomicAdd(&counts[10],1u);}
   if((textureLoad(optical,p,0).x<0.999999||textureLoad(media,m,0).a>0.001)
     &&textureLoad(reactive,p,0).r<0.5){atomicAdd(&counts[11],1u);}
 }`;
 
-export async function run(a,{component='all'}={}){
+export async function run(a,{component='all',isolatedEmitter=true}={}){
   const control=component!=='all',smooth=component==='smooth'||!control,particles=component==='particles'||!control;
   const assert=(v,why)=>{if(!v)throw new Error(why);};
   const phase=message=>console.info(`[hybrid correctness] ${message}`);
@@ -284,7 +296,7 @@ export async function run(a,{component='all'}={}){
   const steps=a.sim.frame;
   let counts,producerCounts;
   try{
-    const cube=paintFixture(a,{component});
+  const cube=paintFixture(a,{component,isolatedEmitter});
     phase('awaiting mixed-scene pipelines');
     await a.test.ready();
     phase('waiting for fixture upload before numerical rendering');
@@ -356,7 +368,7 @@ export async function run(a,{component='all'}={}){
     // The fields are still converging. Native cache reuse has its own check;
     // another app tick here legitimately changes the smooth caster revision.
     assert(hybrid.shadows.stats.passes>0,'actual scene must record raster shadow casters');
-    counts=gpu.createBuffer({label:'hybrid full probe',size:48,usage:128|4|8});
+    counts=gpu.createBuffer({label:'hybrid full probe',size:64,usage:128|4|8});
     const layout=gpu.layout('HYBRID_FULL_PROBE',[
       ...[0,1,2,3,4].map(binding=>({binding,visibility:4,texture:{sampleType:'unfilterable-float'}})),
       {binding:5,visibility:4,texture:{sampleType:'uint'}},
@@ -379,13 +391,15 @@ export async function run(a,{component='all'}={}){
         gpu.frame.direct().clearBuffer(counts);
         probe.dispatch(gpu.frame,[Math.ceil(post.inSize[0]/8),Math.ceil(post.inSize[1]/8),1],
           {bind:[gpu._frameUniforms.group,a.sim.bindRO,group],header:a.sim.header(),params:{clipToGrid:inverse}});
-        return Promise.all([gpu.readback.buffer(counts,0,48),gpu.readback.buffer(hybrid.legacyIndirect.buffer,0,48)]);
+        return Promise.all([gpu.readback.buffer(counts,0,64),gpu.readback.buffer(hybrid.legacyIndirect.buffer,0,48)]);
       });
       return{pixels:[...new Uint32Array(pixelBuffer)],acceptance:[...new Uint32Array(gateBuffer)]};
     };
     phase('reading mixed-scene pixels');
     const {pixels,acceptance}=await readPixels();
     phase(`mixed-scene pixel counters ${JSON.stringify(pixels)}; gate ${JSON.stringify(acceptance)}`);
+    phase(`glass signal ${JSON.stringify({pixels:pixels[12],warmAboveOne:pixels[13],redDominant:pixels[14],
+      maxRed:new Float32Array(Uint32Array.of(pixels[15]).buffer)[0]})}`);
     if(pixels[1]>0&&pixels[5]===0){
       // Diagnostic writes cannot turn the original pixel failure into a pass.
       await probeMotionWrites(a);
@@ -408,7 +422,8 @@ export async function run(a,{component='all'}={}){
     assert(pixels[4]===0&&pixels[6]===0,'no nonfinite HDR or routine optical fallback pixels');
     assert(pixels[7]>0,'glossy metal must be visible, not merely painted offscreen');
     assert(pixels[8]>0,'instanced optical droplet must write visible entry/depth pixels');
-    assert(pixels[9]>0,'isolated molten emitter must be visible through the glass');
+    assert(isolatedEmitter?pixels[9]>0:pixels[9]===0,
+      isolatedEmitter?'isolated molten emitter must be visible through the glass':'emitter-off control must have no bright red glass signal');
     assert(acceptance[0]===0&&acceptance[5]===1&&acceptance[9]===0,'normal hybrid scene must execute ZERO legacy volume instances');
     // Fault injection exercises the actual GPU predicate without changing
     // physics, shrinking production capacities, or trusting async diagnostics.
@@ -429,7 +444,9 @@ export async function run(a,{component='all'}={}){
       await a.test.renderOnce();await gpu.readback.idle();
       fallback=await readPixels();
       assert(fallback.acceptance[0]!==0&&fallback.acceptance[9]===1,'fault must activate legacy background in the same frame');
-      assert(fallback.pixels[8]>0&&fallback.pixels[9]>0,'fallback must retain front droplets AND molten matter transmitted through glass');
+      assert(fallback.pixels[8]>0,'fallback must retain front droplets');
+      assert(isolatedEmitter?fallback.pixels[9]>0:fallback.pixels[9]===0,
+        isolatedEmitter?'fallback must retain molten matter transmitted through glass':'emitter-off fallback must have no bright red glass signal');
       assert(fallback.pixels[4]===0,'fallback HDR must remain finite');
     }finally{
       hybrid.smooth.update=smoothUpdate;hybrid.smooth.invalidate();
@@ -441,7 +458,7 @@ export async function run(a,{component='all'}={}){
     assert(heated.geometry[1]===0,'temperature-only edit must rebuild zero bricks');
     const stats=structuredClone(hybrid.stats);
     assert(a.sim.frame===steps,'rendering must not step physics');
-    return{pixels,acceptance,fallback,stats,producers,heated,steps,sceneSize:post.inSize,preparationAttempts,numericalOnly:true};
+    return{pixels,acceptance,fallback,stats,producers,heated,steps,sceneSize:post.inSize,preparationAttempts,isolatedEmitter,numericalOnly:true};
   }finally{
     a.test.park();
     gpu.flush('hybrid full cleanup');counts?.destroy();producerCounts?.destroy();

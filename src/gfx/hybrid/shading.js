@@ -45,11 +45,40 @@ export function createHybridShading(gpu,sim,{materials,shadows,controls,gate=nul
       ${gate?'if (hybridGate[0] != 0u) { discard; }':''}
       let m=hybridMaterialStateLod(id,fract(a.w),p,ng,a.y,i32(floor(a.w)),hybridMaterialFootprintLod(id,footprint));
       var reflected=vec4f(0.0);
-      ${reflections ? `if (m.roughness < 0.3 && HC.reflectionSteps > 0u) {
+      ${reflections ? `var query=HRQuery();
+      if (m.roughness < 0.3 && HC.reflectionSteps > 0u) {
         let pixels=1.0/max(footprint*footprint,1e-8);
-        reflected=vec4f(hrReflection(p,p-FU.cam,ng,m.roughness,pixels,m.f0,HC.reflectionSteps),1.0);
-      }` : ''}
-      return hybridShadeSpecular(m,p,ng,m.normal,FU.cam-p,vec3f(hybridSunVisibility(p,ng)),1.0,reflected);
+        query=hrReflectionQuery(p,p-FU.cam,ng,m.roughness,pixels,m.f0,HC.reflectionSteps);
+        reflected=vec4f(hrReflectionResolve(query,query.environment),1.0);
+      }
+      // One lighting-call site for both surfaces; keep the full reflected-hit
+      // material, GI, shadows and lamps without duplicating the PBR body.
+      var hitStage=eid(query.hit.state)!=E_EMPTY;
+      var result=vec4f(0.0);
+      loop {
+        var sampleMaterial=m;
+        var samplePosition=p;
+        var sampleNormal=ng;
+        var sampleView=FU.cam-p;
+        var sampleReflection=reflected;
+        if (hitStage) {
+          let h=query.hit;
+          let state=fetchA(vec3i(floor(h.position-h.normal*0.01)));
+          sampleMaterial=hybridMaterialStateLod(eid(h.state),fract(state.w),h.position,h.normal,
+            state.y,i32(floor(state.w)),0.0);
+          sampleMaterial.opacity=1.0;
+          samplePosition=h.position;
+          sampleNormal=h.normal;
+          sampleView=-h.direction;
+          sampleReflection=vec4f(0.0);
+        }
+        let shaded=hybridShadeSpecular(sampleMaterial,samplePosition,sampleNormal,sampleMaterial.normal,
+          sampleView,vec3f(hybridSunVisibility(samplePosition,sampleNormal)),1.0,sampleReflection);
+        if (!hitStage) { result=shaded; break; }
+        reflected=vec4f(hrReflectionResolve(query,shaded.rgb),1.0);
+        hitStage=false;
+      }
+      return result;` : `return hybridShadeSpecular(m,p,ng,m.normal,FU.cam-p,vec3f(hybridSunVisibility(p,ng)),1.0,reflected);`}
     }
     fn shadeSmooth(p:vec3f,n:vec3f,id:i32,a:vec4f,footprint:f32)->vec3f {
       return hybridOpaqueShade(id,a,p,n,footprint).rgb;
