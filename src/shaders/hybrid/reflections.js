@@ -135,6 +135,7 @@ fn hrTrace(ro: vec3f, direction: vec3f, env: vec3f, budget: u32) -> vec3f {
   // A start inside matter has no known entry surface/normal: fail closed to sky,
   // rather than reflecting the back of the originating voxel or skipping a wall.
   var entered = bounds.x >= 0.0;
+  var hit = vec4f(0.0);
   for (var i = 0u; i < HR_STEPS; i++) {
     if (i >= min(budget, HR_STEPS) || t >= end || outside(cell)) { break; }
     ${loc ? `let bc = cell / BS;
@@ -149,17 +150,21 @@ fn hrTrace(ro: vec3f, direction: vec3f, env: vec3f, budget: u32) -> vec3f {
     let id = eid(a);
     if (id != E_EMPTY) {
       if (!entered || !isCrisp(id) || RCLASS(id) == R_GLASS) { return env; }
-      var n = vec3f(0.0); n[axis] = -f32(step[axis]);
-      let radiance = ${shade}(id, fract(a.w), a.y, ro + direction * t, n, direction);
-      if (!hrFinite3(radiance)) { return env; }
-      return hrColor(radiance);
+      hit = a;
+      break;
     }
     let ax = argmin3(next);
     t = next[ax];
     axis = ddaStep(step, delta, &cell, &next);
     entered = true;
   }
-  return env;
+  if (eid(hit) == E_EMPTY) { return env; }
+  // Keep full hit lighting outside traversal so Metal does not inline its
+  // texture/light loops into the ray-search loop.
+  var n = vec3f(0.0); n[axis] = -f32(step[axis]);
+  let radiance = ${shade}(eid(hit), fract(hit.w), hit.y, ro + direction * t, n, direction);
+  if (!hrFinite3(radiance)) { return env; }
+  return hrColor(radiance);
 }
 fn hrReflection(p: vec3f, incident: vec3f, normal: vec3f, rough: f32,
                 pixels: f32, f0: vec3f, budget: u32) -> vec3f {

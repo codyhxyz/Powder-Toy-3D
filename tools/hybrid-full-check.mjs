@@ -9,13 +9,14 @@ const flags=new Set(args);
 const componentModes=FIXTURE_COMPONENTS.map(c=>`--control=${c}`);
 const modes=['--readback-only','--readback-controls','--mixed-readback-controls','--motion-only','--opaque-control','--component-controls',...componentModes];
 const diagnostics=['--no-taa','--split-render'];
-assert(flags.size===args.length&&args.every(arg=>[...modes,'--gpudebug',...diagnostics].includes(arg))
+assert(flags.size===args.length&&args.every(arg=>[...modes,'--gpudebug','--chrome','--test-view',...diagnostics].includes(arg))
   &&modes.filter(mode=>flags.has(mode)).length<=1
   &&diagnostics.filter(mode=>flags.has(mode)).length<=1
   &&!(diagnostics.some(mode=>flags.has(mode))&&modes.some(mode=>flags.has(mode))),
-  'Usage: node tools/hybrid-full-check.mjs [--readback-only | --readback-controls | --mixed-readback-controls | --motion-only | --opaque-control | --component-controls | --control=opaque|smooth|media|optics|particles] [--gpudebug] [--no-taa | --split-render]');
+  'Usage: node tools/hybrid-full-check.mjs [--readback-only | --readback-controls | --mixed-readback-controls | --motion-only | --opaque-control | --component-controls | --control=opaque|smooth|media|optics|particles] [--gpudebug] [--chrome] [--test-view] [--no-taa | --split-render]');
 const readbackOnly=flags.has('--readback-only'),motionOnly=flags.has('--motion-only'),mixed=flags.has('--mixed-readback-controls');
 const controls=mixed||flags.has('--readback-controls'),debug=flags.has('--gpudebug');
+const entry=renderer=>renderer==='hybrid'&&flags.has('--test-view')?'view=test':`renderer=${renderer}&view=realistic`;
 const vite=await startVite({port:58476,harness:true});
 let browser,started,diagnosticPage;
 let errors=[],offlineRelay=[];
@@ -23,6 +24,7 @@ const phase=message=>console.log(`[hybrid correctness] ${message}`);
 try{
   phase('browser startup');
   started=Date.now();browser=await launchBrowser({lifetimeMs:25000,
+    ...(flags.has('--chrome')?{channel:'chrome'}:{}),
     browserLog:line=>console.error(`[native browser] ${line}`)});
   if(controls){
     const results=[];
@@ -32,7 +34,7 @@ try{
       const failures=watchFailures(page);({errors,offlineRelay}=failures);
       try{
         await page.routeWebSocket(/.*/,()=>{});
-        await failures.check(page.goto(vite.url(`/?renderer=${renderer}&test=manual&view=realistic&size=128&preset=empty&paused=1${debug?'&gpudebug=1':''}`)));
+        await failures.check(page.goto(vite.url(`/?${entry(renderer)}&test=manual&size=128&preset=empty&paused=1${debug?'&gpudebug=1':''}`)));
         await failures.check(ready(page));
         const result=await failures.check(page.evaluate(async mixed=>{
           const h=await import('/tools/harness/hybrid-full.js');return h.sceneReadbackControl(window.__app,mixed);
@@ -53,7 +55,7 @@ try{
   });
   await page.routeWebSocket(/.*/,()=>{});
   phase('page navigation');
-  await failures.check(page.goto(vite.url(`/?renderer=hybrid&test=manual&view=realistic&size=128&preset=empty&paused=1${debug?'&gpudebug=1':''}`)));
+  await failures.check(page.goto(vite.url(`/?${entry('hybrid')}&test=manual&size=128&preset=empty&paused=1${debug?'&gpudebug=1':''}`)));
   phase('app initialization');
   await failures.check(ready(page));
   const result=await failures.check(page.evaluate(async ({only,motion,noTaa,splitRender,component,series})=>{

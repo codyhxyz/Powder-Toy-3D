@@ -155,7 +155,7 @@ export function watchFailures(page,report=console.error){
   page.on('console',message=>{
     const location=message.location().url??'',text=message.text();
     if(message.type()==='error'&&/net::ERR_CONNECTION_REFUSED/.test(text)&&/^http:\/\/127\.0\.0\.1:8787\//.test(location))offlineRelay.push(location);
-    else if(message.type()==='error'||message.type()==='warning'&&/WebGPU|GPU (validation|internal)/.test(text))record(`${text} (${location})`);
+    else if(message.type()==='error'||message.type()==='warning'&&/WebGPU|GPU (validation|internal)|Test shader unavailable/.test(text))record(`${text} (${location})`);
   });
   return{errors,offlineRelay,check:promise=>errors.length?Promise.reject(new Error(errors[0])):Promise.race([promise,failed])};
 }
