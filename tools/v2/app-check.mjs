@@ -56,6 +56,15 @@ async function open(browser) {
       E, ERASE: TOOLS.find((t) => t.key === 'ERASE').id,
       async v2Count(id) { a.physics.v2.sync(); const c = await a.physics.v2.readCells(); let n = 0, ymin = 1e9, fill = 0; for (let i = 0; i < c.id.length; i++) if (c.id[i] === id) { n++; fill += c.fill[i]; ymin = Math.min(ymin, Math.floor(i / (a.sim.g.nx * a.sim.g.nz))); } return { n, ymin, fill }; },
       async todayCount(id) { const c = await a.sim.census(); return c[id]?.n ?? 0; },
+      // a liquid's resident fill plus what is airborne as particles (a splash crown is in flight for a while)
+      async liquidMass(id) {
+        const { readNativeState, toGrid } = await import('/tools/outcomes/native-grid.js');
+        const g = toGrid(await readNativeState(a.physics.v2));
+        let m = 0;
+        for (let i = 0; i < g.id.length; i++) if (g.id[i] === id) m += g.gridAmount[i];
+        for (const q of g.particles) if (q.id === id) m += q.mass;
+        return m;
+      },
       paint(x, y, z, r, tool) { a.sim.paint({ center: new a.THREE.Vector3(x, y, z), radius: r, shape: 0, tool, rate: 1, replace: false }); },
     };
   });
@@ -84,12 +93,12 @@ async function edits(page) {
   const water = await page.evaluate(async () => {
     const a = window.__app, h = window.__v2;
     h.paint(20, 6, 20, 3, h.E.WATER);
-    const m0 = await h.v2Count(h.E.WATER);
+    const m0 = await h.liquidMass(h.E.WATER);
     a.test.step(120);
-    const m1 = await h.v2Count(h.E.WATER);
-    return { m0: m0.fill, m1: m1.fill, n1: m1.n };
+    const m1 = await h.liquidMass(h.E.WATER), c1 = await h.v2Count(h.E.WATER);
+    return { m0, m1, n1: c1.n, flying: m1 - c1.fill };
   });
-  ok(water.m0 > 50 && Math.abs(water.m1 - water.m0) < 1e-3, `painted water spreads with its mass kept: ${water.m0.toFixed(3)} → ${water.m1.toFixed(3)} cells over ${water.n1} cells`);
+  ok(water.m0 > 50 && Math.abs(water.m1 - water.m0) < 1e-3, `painted water spreads with its mass kept: ${water.m0.toFixed(3)} → ${water.m1.toFixed(3)} cells over ${water.n1} cells (${water.flying.toFixed(3)} of it airborne)`);
 
   // erasing (the eraser tool, as the right button paints it): v2's cells go
   const erased = await page.evaluate(async () => {
@@ -108,7 +117,7 @@ async function edits(page) {
     a.loadPreset('lab');
     await a.test.ready();
     a.test.step(1);
-    const h2o = async () => (await h.v2Count(h.E.WATER)).fill + (await h.v2Count(h.E.ICE)).n;
+    const h2o = async () => (await h.liquidMass(h.E.WATER)) + (await h.v2Count(h.E.ICE)).n;
     const w0 = await h.v2Count(h.E.WATER), s0 = await h.v2Count(h.E.SAND), m0 = await h2o();
     a.test.step(120);
     const w1 = await h.v2Count(h.E.WATER), s1 = await h.v2Count(h.E.SAND), m1 = await h2o(), stats = await a.physics.v2.readStats();
