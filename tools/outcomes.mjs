@@ -57,7 +57,7 @@ const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 const recordPath = opt('expected') ?? here(`./outcomes/expected-${ENGINE}.json`);
 const JSON_OUT = opt('json');
 
-if (!['v1', 'lean', 'column', 'v2'].includes(ENGINE)) throw new Error(`--engine v1, lean, column or v2, not ${ENGINE}`);
+if (!['v1', 'lean', 'column', 'column-wgsl', 'v2'].includes(ENGINE)) throw new Error(`--engine v1, lean, column, column-wgsl or v2, not ${ENGINE}`);
 if (!PHASES.includes(PHASE)) throw new Error(`--phase ${PHASES.join(', ')}`);
 if (flag('json') && !JSON_OUT) throw new Error('--json needs a path');
 const tests = select({ tests: opt('tests', ''), groups: opt('group', '') });
@@ -99,9 +99,9 @@ const checkpoint = (complete = false) => {
 };
 checkpoint();
 
-if (ENGINE === 'lean' || ENGINE === 'column') {
+if (ENGINE === 'lean' || ENGINE === 'column' || ENGINE === 'column-wgsl') {
   // column: tools/v2/column-water.mjs, the column-run water prototype (docs/v2/water-cost-first-principles.md)
-  const { createEngine } = await import(ENGINE === 'lean' ? './outcomes/engine-lean.js' : './outcomes/engine-column.js');
+  const { createEngine } = await import({ lean: './outcomes/engine-lean.js', column: './outcomes/engine-column.js', 'column-wgsl': './outcomes/engine-column-wgsl.js' }[ENGINE]);
   const engine = createEngine();
   adapterLine = engine.info.label;
   engineInfo = engine.info;

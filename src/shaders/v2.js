@@ -13,6 +13,7 @@ import { modeWGSL } from './v2/modes.js';
 import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
 import { contactWGSL as productionContactWGSL } from './v2/contact.js';
+import { v2RunsKernel, v2PairsKernel } from './v2/columns.js';
 
 // Physics v2, the fast version (docs/v2.md 2, 4.1, 5.1-5.6; the rules are
 // tools/v2/lean-sim.mjs's, the CPU prototype that validated them, ported to
@@ -163,7 +164,7 @@ export function v2BlockCompactLayout(g, limits = {}) {
 export const STATS = { TICK: 0, AWAKE: 1, BUSY: 2, QUIET: 3, LAST_BUSY: 4, COLS: 5, words: 8 };
 
 // liquidList: flux runs over the liquid list (1), not the awake list it builds that list from (0)
-export const V2Params = uniformStruct('V2Params', { tick: 'u32', busyIn: 'u32', busyOut: 'u32', full: 'u32', offset: 'vec3i', preserveLegacyMarks: 'u32', liquidList: 'u32', ...MODE_FIELDS });
+export const V2Params = uniformStruct('V2Params', { tick: 'u32', busyIn: 'u32', busyOut: 'u32', full: 'u32', offset: 'vec3i', preserveLegacyMarks: 'u32', liquidList: 'u32', pairAxis: 'u32', pairStage: 'u32', pairParity: 'u32', ...MODE_FIELDS });
 
 const buf = (binding, type) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type } });
 // group 2 of every v2 kernel: the cells, the activity words, the element rows (and for args, the args)
@@ -1415,6 +1416,10 @@ ${MAIN} {
 }
 `;
 
+// ---- column-run water (src/shaders/v2/columns.js): the runs pass and the pair stages
+export const v2RunsWGSL = (g) => v2RunsKernel(v2Head(g, { state: false }, 'liquid'), MAIN);
+export const v2PairsWGSL = (g) => v2PairsKernel(v2Head(g, { state: false }, 'liquid'), MAIN);
+
 // ---------------------------------------------------------------- the kernels
 const perBrick = (g) => fold(Math.ceil(gridDims(g).nbricks / 64));
 const own = () => [LAYOUT.TABLES, 'EMPTY', V2_LAYOUT];
@@ -1486,6 +1491,8 @@ ${V2Params.wgsl}
 }`, layouts: () => [V2_DYNAMICS_LAYOUT, 'EMPTY', 'EMPTY'], dispatch: perBrick, tool: true });
 
 WGSL_CHECK.push(
+  { name: 'v2runs', kind: 'compute', code: v2RunsWGSL, layouts: liquid, dispatch: perBrick, tool: true },
+  { name: 'v2pairs', kind: 'compute', code: v2PairsWGSL, layouts: liquid, dispatch: perBrick, tool: true },
   { name: 'v2blockClassify', kind: 'compute', code: v2BlockClassifyWGSL, layouts: contact, dispatch: perBrick, tool: true },
   { name: 'v2blockFinalize', kind: 'compute', code: v2BlockFinalizeWGSL, layouts: () => ['EMPTY', 'EMPTY', V2_BLOCK_FINALIZE_LAYOUT], dispatch: () => [1, 1, 1], tool: true },
   { name: 'v2blockCompact', kind: 'compute', code: g => v2BlockWGSL(g, productionContactWGSL, true), layouts: contact, dispatch: perBrick, tool: true },
