@@ -257,7 +257,7 @@ function spawnFixture(f,free,candidates=63) {
   control[ctx.J_COUNTS]=Array.from({length:6},(_,f)=>(candidates>>f)&1).reduce((a,b)=>a+b,0);
   const allocate=syntax(main(jetsWGSL(g,'allocate'))).replace(/&([A-Za-z]+)\[([^\]]+)\]/g,'[$1,$2]');
   new Function('ctx',`with(ctx) { ${allocate} }`)(ctx);
-  let s=main(constants).replace('let t = dThread(wg,nwg,li);','')
+  let s=main(constants).replace(/let t = \w+\(wg,nwg,li\);/,'')
     .replaceAll('vec3f(p+P.origin)+0.5+direction*0.501','add(add(add(p,P.origin),0.5),mul(direction,0.501))')
     .replaceAll('direction*jetLaunchSpeed(p)','mul(direction,jetLaunchSpeed(p))')
     .replaceAll('t/64u','Math.floor(t/64u)').replaceAll('t/4096u','Math.floor(t/4096u)');

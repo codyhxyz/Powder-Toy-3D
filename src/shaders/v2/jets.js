@@ -1,13 +1,21 @@
-import { liquidTransportWGSL, nativeDynamicsHead, V2_DYNAMICS_LAYOUT, SUB, TICK_HZ } from '../v2.js';
+import { liquidTransportWGSL, nativeDynamicsHead, V2_DYNAMICS_LAYOUT, SUB, TICK_HZ, liquidListWGSL, listedAwake } from '../v2.js';
 import { dynamicsCommon, DynamicParams, storageLayout, main64, main1 } from './particles.js';
 import { SPAWN_PREFIX } from './blasts.js';
 export { DynamicParams };
 export const JETS_LAYOUT = storageLayout(4);
 export const JET_STAGES = ['candidate','count','allocate','spawn'];
+// Like gather, the jets see only the liquid list's bricks awake (listedAwake): candidates and spawns
+// run a workgroup a listed brick; counts still give every brick its prefix (unlisted ones count 0).
 function head(g) {
-  return `${dynamicsCommon(g,nativeDynamicsHead)}
+  return `${listedAwake(dynamicsCommon(g,nativeDynamicsHead))}
 @group(1) @binding(0) var<storage, read_write> liquidScratch: array<vec4u>;
 @group(1) @binding(1) var<storage, read_write> jetMask: array<atomic<u32>>;
+${liquidListWGSL(g)}
+fn liquidSlot(wg: vec3u, nwg: vec3u, li: u32) -> u32 {
+  let e = wg.x + wg.y * nwg.x;
+  if (e >= atomicLoad(&jetMask[LIQ_USE])) { return D_SLOTS; }
+  return atomicLoad(&jetMask[LIQ_LIST + e]) * 64u + li;
+}
 @group(1) @binding(2) var<storage, read_write> particles: array<DParticle>;
 @group(1) @binding(3) var<storage, read_write> control: array<atomic<u32>>;
 const J_PREFIX: u32 = ${SPAWN_PREFIX}u;
@@ -80,7 +88,7 @@ export function jetsWGSL(g,stage) {
     var mask=atomicLoad(&jetMask[t])&0xff000000u;
     for(var f=0u;f<6u;f++) { if(jetCandidate(cellOf(t),f)) { mask|=1u<<(f+8u); } }
     atomicStore(&jetMask[t],mask);
-  `);
+  `,'liquidSlot(wg,nwg,li)');
   if(stage==='count') return h+`
 var<workgroup> brickDemand: array<u32,64>;
 `+main64(`
@@ -124,7 +132,7 @@ var<workgroup> brickDemand: array<u32,64>;
     }
     // Preserve candidate bits for neighbour rank reads; only owned low bits change.
     atomicStore(&jetMask[t],(atomicLoad(&jetMask[t])&~63u)|accepted);
-  `);
+  `,'liquidSlot(wg,nwg,li)');
   throw new Error(`Unknown jet stage ${stage}`);
 }
 export const WGSL_CHECK=JET_STAGES.map(stage=>({name:`v2jets_${stage}`,kind:'compute',code:g=>jetsWGSL(g,stage),layouts:()=>[V2_DYNAMICS_LAYOUT,JETS_LAYOUT,'EMPTY'],tool:true}));

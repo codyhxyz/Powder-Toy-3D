@@ -6,7 +6,7 @@ import { PhysicsV2 } from '../../src/v2/physics.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { GRAV, AIR, EDGE } from '../../src/simModes.js';
 import { nativeModes } from '../../src/v2/modes.js';
-import { SUB } from '../../src/shaders/v2.js';
+import { SUB, v2LiquidListLayout } from '../../src/shaders/v2.js';
 
 globalThis.GPUBufferUsage={STORAGE:1,COPY_SRC:2,COPY_DST:4,INDIRECT:8};
 function recorder(ready = () => Promise.resolve()) {
@@ -33,7 +33,7 @@ test('real driver shares canonical pool and records every jet stage between snap
   assert.equal(owner.jets.group.entries[2].resource.buffer,owner.dynamics.particles);
   assert.equal(owner.jets.group.entries[3].resource.buffer,owner.dynamics.control);
   assert.equal(owner.dynamics.particles.size,48*65536);
-  assert.equal(owner.jetMask.size,sim.g.slots*4);
+  assert.equal(owner.jetMask.size,v2LiquidListLayout(sim.g).words*4);
   const names=commands.map(c=>c.name);
   const support=commands.findIndex(c=>c.name==='v2support'),block=commands.findIndex(c=>c.name==='v2block');
   assert.equal(block,support+1,'Support snapshot immediately precedes block');

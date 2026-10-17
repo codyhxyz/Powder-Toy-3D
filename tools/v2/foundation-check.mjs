@@ -6,7 +6,7 @@ import { FULL, MAX_FILL, FUEL_Q, lifeScale, isConductor, makeMaterial, withPaylo
 import { PHASE_ROWS, PHASE_NORMAL_MAX, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, phaseOffsetEnergy, validatePhaseCore } from '../../src/v2/phase.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
 import { gridLayout } from '../../src/sim.js';
-import { V2_KERNELS, v2ImportWGSL, v2ExternalEventsWGSL, v2FluxWGSL, v2ColumnWGSL, v2GatherWGSL, v2LimitWGSL, v2BlockWGSL, V2_DYNAMICS_LAYOUT, v2ActLayout } from '../../src/shaders/v2.js';
+import { V2_KERNELS, v2ImportWGSL, v2ExternalEventsWGSL, v2FluxWGSL, v2ColumnWGSL, v2GatherWGSL, v2LimitWGSL, v2BlockWGSL, V2_DYNAMICS_LAYOUT, v2ActLayout, v2LiquidListLayout } from '../../src/shaders/v2.js';
 import { encodeV2State, decodeV2State, stateLengths } from '../../src/v2/state.js';
 const id = key => ELEMENTS.find(e => e.key === key).id;
 const water = id('WATER'), oil = id('OIL');
@@ -187,7 +187,8 @@ finishInitialization();
 await engine.ready;
 assert.equal(engine.isReady, true);
 assert.equal(sim.version, 1);
-for (const [name, bytes] of [['cells', 16], ['aux', 4], ['liquidScratch', 16], ['jetMask', 4], ['events', 4]]) assert.equal(engine[name].size, g.slots * bytes);
+for (const [name, bytes] of [['cells', 16], ['aux', 4], ['liquidScratch', 16], ['events', 4]]) assert.equal(engine[name].size, g.slots * bytes);
+assert.equal(engine.jetMask.size, v2LiquidListLayout(g).words * 4, 'jet masks, then the liquid list');
 assert.equal(engine.contactReady, false); assert.equal(engine.dynamics, null); assert.equal(engine.jets, null);
 assert.equal(engine.groups.liquid.entries.length, 7); // plus one shared table = eight
 assert.equal(engine.nativeDynamics.layout.entries.length, 3); assert.equal(V2_DYNAMICS_LAYOUT.length, 3);
