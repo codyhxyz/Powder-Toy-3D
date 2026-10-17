@@ -5,7 +5,7 @@ import { VIEWS, isTestView, isMaterialView, materialStyleForView, viewKey } from
 import { hybridEligibility } from '../src/gfx/hybrid/index.js';
 import { VOLUME_VIEWS, viewShadows, volumeFrag } from '../src/shaders/render.js';
 import { gridLayout } from '../src/sim.js';
-import { createShaderPicker } from '../src/ui/shaders.js';
+import { createShaderPicker, testFailureMessage } from '../src/ui/shaders.js';
 import { OptionalShaderFailure } from '../src/gpu/kernels.js';
 
 const test = VIEWS.find(v => v.key === 'test');
@@ -35,20 +35,24 @@ const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
 const ensure = app.match(/function ensureHybrid\(\) \{[\s\S]*?\n\}/)[0]
   .replace("import('./gfx/hybrid/index.js')", 'loadModule()');
 const allReady = app.match(/async function allReady\(\) \{[\s\S]*?\n\}/)[0];
-const makeMachine = Function('isTestView', 'loadModule', 'initial', 'OptionalShaderFailure', 'viewKeyOf', `
+const selectView = app.match(/function setView\(id\) \{[\s\S]*?\n\}/)[0];
+const makeMachine = Function('isTestView', 'loadModule', 'initial', 'OptionalShaderFailure', 'viewKeyOf', 'VIEWS', 'isMaterialView', 'testFailureMessage', `
   let settings={view:initial.view??0,scene:'island'},sim=initial.sim??{id:'A'};
   let hybrid=null,hybridLoad=null,hybridModule=initial.module??null;
   let hybridWait=Promise.resolve(),releaseHybrid=()=>{},hybridUnavailable=false;
   const hybridOptIn=!!initial.force,graphicsFailure=false,worldMode=null;
   const gpu={lost:false,failure:null,fail(e){return this.failure??=e;},async settled(){}};
-  const events={created:[],disposed:[],resets:0,drops:0,toasts:[],views:[]};
+  const events={created:[],disposed:[],resets:0,drops:0,toasts:[],views:[],statuses:[]};
   const post={reset(){events.resets++;}},meshFrames={drop(){events.drops++;}};
-  const hud={toast(message){events.toasts.push(message);}},console={warn(){}};
+  const hud={toast(message){events.toasts.push(message);},setLegend(){}},console={warn(){}};
+  const shaderPanel={setTestStatus(text,detail){events.statuses.push({text,detail});},sync(){}};
+  const settingsPanel={sync(){}},detailGate={setView(){}};
+  const plainView=()=>false,setBlocks=()=>{},prepareGI=()=>{},save=()=>{};
   const sceneByKey=()=>({}),wakeLoop=()=>{},wakeWhen=p=>p.catch(()=>{});
   const vol={async viewReady(view){events.views.push(view);}};
   let coreWait=Promise.resolve();const coreReady=true,blocksOn=false,win=null,physicsV2=null,giWait=Promise.resolve();
   const warpNow=()=>null,baseDetail=()=>({}),viewShadows=()=>false;
-  function setView(id){if(isTestView(id)&&hybridUnavailable)return;settings.view=id;ensureHybrid();}
+  ${selectView}
   ${ensure}
   ${allReady}
   return {events,setView,ensureHybrid,allReady,gpu,get view(){return settings.view;},
@@ -57,7 +61,7 @@ const makeMachine = Function('isTestView', 'loadModule', 'initial', 'OptionalSha
     startCore(){coreWait=hybridWait;},
     replaceSim(next){releaseHybrid();hybridWait=Promise.resolve();hybrid?.dispose();hybrid=null;sim=next;ensureHybrid();}};
 `);
-const machine=(check,load,initial)=>makeMachine(check,load,initial,OptionalShaderFailure,viewKey);
+const machine=(check,load,initial)=>makeMachine(check,load,initial,OptionalShaderFailure,viewKey,VIEWS,isMaterialView,testFailureMessage);
 const deferred = () => {
   let resolve, reject; const promise = new Promise((a,b) => { resolve=a; reject=b; });
   return { promise, resolve, reject };
@@ -101,15 +105,24 @@ for (const force of [false,true]) {
   // Simulate the module already having loaded, then fail actual lifecycle readiness.
   const transport=deferred(),n=machine(isTestView,()=>transport.promise,{view:force?0:test.id,force});
   n.ensureHybrid();const loaded=n.pending;
-  transport.resolve(moduleFor(n.events,()=>compilation.promise));await loaded;
+  let attempt=0;
+  transport.resolve(moduleFor(n.events,()=>attempt++===0?compilation.promise:Promise.resolve()));await loaded;
   n.startCore();const complete=n.allReady();
-  compilation.reject(new OptionalShaderFailure('Metal XPC_ERROR_CONNECTION_INTERRUPTED'));
+  compilation.reject(new OptionalShaderFailure('GPU shader failed: sim2 hybrid geometry opaque.\nXPC_ERROR_CONNECTION_INTERRUPTED'));
   await complete;
   assert.equal(n.view,0);assert.equal(n.renderer,null);assert(n.unavailable);
   assert.equal(n.gpu.failure,null,'optional compilation must leave the shared device live');
   assert.deepEqual(n.events.disposed,['A']);assert.equal(n.events.views.at(-1),'realistic');
-  n.ensureHybrid();n.setView(test.id);
+  assert.match(n.events.statuses.at(-1).detail,/sim2 hybrid geometry opaque/);
+  assert.match(n.events.statuses.at(-1).detail,/Metal compiler connection interrupted/);
+  n.ensureHybrid();
   assert.equal(n.view,0);assert.deepEqual(n.events.created,['A'],'failed Test must not recompile automatically');
+  n.setView(test.id);await n.wait;
+  assert.equal(n.view,test.id);assert(!n.unavailable);assert.equal(n.renderer.sim.id,'A');
+  assert.deepEqual(n.events.created,['A','A'],'a deliberate Test selection retries exactly once');
+  assert.equal(n.events.statuses.at(-1).text,'Shaders ready');
+  n.setView(test.id);n.ensureHybrid();
+  assert.deepEqual(n.events.created,['A','A'],'selection during an existing attempt must not create another');
 }
 {
   const a=deferred(),b=deferred(),transport=deferred();
@@ -143,15 +156,10 @@ for(const deviceLost of [false,true]){
 assert.match(app,/brush\.ready, hybridWait,/);
 assert.match(app,/await hybridLoad;\s*const h = hybrid, pending = hybridWait;\s*await pending;/);
 assert.match(app,/isTestView\(id\) && hybridUnavailable/);
-{
-  const select=app.match(/function setView\(id\) \{[\s\S]*?\n\}/)[0];
-  const blocked=Function('VIEWS','isTestView','id',`
-    const settings={view:0},hybridUnavailable=true,messages=[];
-    const hud={toast(message){messages.push(message);}};
-    ${select} setView(id);return {view:settings.view,messages};
-  `)(VIEWS,isTestView,test.id);
-  assert.equal(blocked.view,0);assert.equal(blocked.messages.length,1);
-}
+assert(!app.includes('Test is unavailable in this session. Use Realistic.'));
+assert.match(app,/if \(v && !e\.repeat\) setView\(v\.id\)/);
+assert(testFailureMessage(new Error('GPU shader failed: test shader.\n'+'x'.repeat(1000))).length<360);
+assert(!testFailureMessage(new Error('<img src=x onerror=alert(1)>')).includes('\n'));
 {
   const save=app.match(/function save\(\) \{[\s\S]*?\n\}/)[0];
   for(const view of [0,6,test.id]){
@@ -193,6 +201,15 @@ try{
   const card=all(picker.el).find(n=>n.attrs?.['aria-label']==='Test');
   assert(card&&all(card).some(n=>n.textContent===test.desc));
   assert(all(card).some(n=>n.textContent==='Experimental renderer'&&!n.hidden));
+  const failure=testFailureMessage(new Error('GPU shader failed: sim2 hybrid geometry opaque.\nXPC_ERROR_CONNECTION_INTERRUPTED'));
+  picker.setTestStatus('Failed — select to retry',failure);
+  assert(all(card).some(n=>n.textContent===failure&&n.attrs?.['aria-live']==='polite'));
+  assert.equal(card.attrs['aria-describedby'],'view-status-test');
+  let prevented=false;
+  card.listeners.keydown({code:'Enter',repeat:true,stopPropagation(){},preventDefault(){prevented=true;}});
+  assert(prevented,'holding Enter must not repeatedly retry compilation');
+  picker.sync();assert(all(card).some(n=>n.textContent===failure),'failure must survive picker sync/reopening');
+  picker.setTestStatus('Compiling shaders…');assert(all(card).some(n=>n.textContent===test.desc));
   card.listeners.click();assert.equal(settings.view,test.id);assert.equal(card.attrs['aria-pressed'],'true');
   picker.setOpen(false);assert.equal(document.activeElement,trigger);
 }finally{

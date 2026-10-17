@@ -445,8 +445,10 @@ const counts = await ring.read(slot);                                // after th
 - Experimental Test pipelines explicitly set `optional: true`. Attributed module,
   pipeline-layout, and native compilation errors reject their readiness with
   `OptionalShaderFailure`, without calling `gpu.fail`. Fatal and optional caches
-  are separate. The app disposes Test and returns to Realistic without retrying
-  during that session. Device loss, uncaptured errors, programming errors, and
+are separate. The app disposes Test and returns to Realistic without automatically
+retrying. The picker retains the failure; selecting Test again retries once.
+Failed optional module/layout entries are evicted; successful entries stay cached.
+Device loss, uncaptured errors, programming errors, and
   native compilation deadlines still stop graphics.
 - `fail` is app.js's `stopGraphics`, registered with `gpu.onFailure`. After it, `gpu.frame` throws `GraphicsFailure`,
   so `sim.step`, `sim.paint`, `openMap`, `setSize`, `loadPreset`, `worldLoad` and `test.step` throw as today. The old

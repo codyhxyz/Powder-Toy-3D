@@ -52,7 +52,7 @@ import { createBrand, createToolbar } from './ui/topbar.js';
 import { createDock } from './ui/dock.js';
 import { createCard } from './ui/card.js';
 import { createSettings } from './ui/settings.js';
-import { createShaderPicker } from './ui/shaders.js';
+import { createShaderPicker, testFailureMessage } from './ui/shaders.js';
 import { createHud, createHelp } from './ui/hud.js';
 import { createScoreboard } from './ui/scoreboard.js';
 import { h, inkFor, luminance } from './ui/dom.js';
@@ -615,6 +615,7 @@ function ensureHybrid() {
     if (hybrid) {
       releaseHybrid(); hybridWait = Promise.resolve();
       hybrid.dispose(); hybrid = null;
+      shaderPanel.setTestStatus();
       post.reset(); meshFrames.drop();
     }
     return;
@@ -641,7 +642,10 @@ function ensureHybrid() {
     post, invalidateCaches: () => meshFrames.drop(), onRead: () => wakeLoop(),
     world: !!worldMode, sourceAppearance: !!(worldMode && sceneByKey(settings.scene).importManifest?.appearance),
   });
-  const ready = candidate.ready.catch(error => {
+  shaderPanel.setTestStatus('Compiling shaders…');
+  const ready = candidate.ready.then(() => {
+    if (hybrid === candidate && sim === owner) shaderPanel.setTestStatus('Shaders ready');
+  }).catch(error => {
     // Only attributed optional compilation is recoverable, never device loss.
     if (!(error instanceof OptionalShaderFailure) || graphicsFailure || gpu.failure || gpu.lost) throw gpu.fail(error);
     if (hybrid !== candidate || sim !== owner) return;
@@ -649,7 +653,9 @@ function ensureHybrid() {
     candidate.dispose(); hybrid = null;
     post.reset(); meshFrames.drop();
     console.warn('Test shader unavailable; using Realistic', error);
-    hud.toast('Test shader failed. Switched to Realistic.', { kind: 'error' });
+    const message = testFailureMessage(error);
+    shaderPanel.setTestStatus('Failed — select to retry', message);
+    hud.toast(message, { kind: 'error', ms: 12000 });
     if (isTestView(settings.view)) setView(0);
     wakeLoop();
   });
@@ -1669,8 +1675,9 @@ function setPaused(p) {
 function setView(id) {
   if (!VIEWS.some((v) => v.id === id)) return;
   if (isTestView(id) && hybridUnavailable) {
-    hud.toast('Test is unavailable in this session. Use Realistic.', { kind: 'error' });
-    return;
+    // A deliberate selection retries once; automatic readiness checks cannot.
+    hybridUnavailable = false;
+    hud.toast('Retrying Test shaders.');
   }
   if (settings.view !== id && isTestView(id)) hud.toast('Test is experimental. Water/glass may render incorrectly; choose Realistic to return.');
   if (settings.view !== id && !(isMaterialView(settings.view) && isMaterialView(id))) {
@@ -2101,7 +2108,7 @@ addEventListener('keydown', (e) => {
     // nothing open: out of a construction's options, else the start menu (Garry's Mod's Esc)
     if (!overlay) { if (isBuild(settings.tool)) leaveBuild(); else actions.openMenu(); }
   }
-  else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v) setView(v.id); }
+  else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v && !e.repeat) setView(v.id); }
 });
 addEventListener('keyup', (e) => {
   if (e.key === 'Alt') controls.mouseButtons.LEFT = null;

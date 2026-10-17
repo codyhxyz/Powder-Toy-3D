@@ -601,3 +601,32 @@ await test('optional descriptor/programmer errors are not optional shader failur
   assert.equal(f.calls.length, 0);
   stopped(f);
 });
+
+for (const stage of ['module', 'layout', 'native']) {
+  await test(`a deliberate optional retry can recover from a transient ${stage} failure`, async (t) => {
+    let failing = true;
+    const f = await fixture(t, {
+      moduleError: () => stage === 'module' && failing ? { message: 'transient module error' } : null,
+      layout: () => stage === 'layout' && failing ? 'error' : 'ok',
+    });
+    const first = pipe(f.gpu, 700, { optional: true });
+    await drain();
+    if (stage === 'native') f.calls[0].reject(new Error('XPC_ERROR_CONNECTION_INTERRUPTED'));
+    await assert.rejects(first.ready, OptionalShaderFailure);
+    await drain();
+    liveAndDrained(f);
+    failing = false;
+    const retry = pipe(f.gpu, 700, { optional: true });
+    await drain();
+    f.calls.at(-1).resolve({});
+    await retry.ready;
+    const modules = f.counts.modules, layouts = f.counts.layouts, calls = f.calls.length;
+    await pipe(f.gpu, 700, { optional: true }).ready;
+    assert.equal(f.counts.modules, modules, 'successful modules remain cached');
+    assert.equal(f.counts.layouts, layouts, 'successful layouts remain cached');
+    assert.equal(f.calls.length, calls, 'successful retry pipeline remains cached');
+    assert.equal(modules, stage === 'module' ? 2 : 1);
+    assert.equal(layouts, stage === 'layout' ? 2 : 1);
+    liveAndDrained(f);
+  });
+}
