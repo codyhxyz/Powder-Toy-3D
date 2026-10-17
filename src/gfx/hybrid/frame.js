@@ -14,9 +14,9 @@ export function createHybridFrame(gpu,sim) {
     {binding:2,visibility:2,texture:{sampleType:'unfilterable-float'}},
     {binding:3,visibility:2,buffer:{type:'read-only-storage'}},
   ]);
-  const kernel=gpu.kernel({name:'hybrid scene acceptance',code:hybridGateWGSL,
+  const kernel=gpu.kernel({optional:true,name:'hybrid scene acceptance',code:hybridGateWGSL,
     layouts:[undefined,undefined,gateLayout],entry:'gate',workgroupSize:[1,1,1]});
-  const pipe=gpu.renderPipeline({name:'hybrid scene composite',code:hybridCompositeWGSL,
+  const pipe=gpu.renderPipeline({optional:true,name:'hybrid scene composite',code:hybridCompositeWGSL,
     layouts:[undefined,undefined,layout],fragment:{targets:[{format:'rgba16float'}]},
     depthStencil:{format:'depth32float',depthWriteEnabled:true,depthCompare:'always'}});
   let depth=null,encoder=null,disposed=false;

@@ -1,11 +1,11 @@
 // CPU only: numerical oracles, generated WGSL reflection, resource contracts.
 // Includes Naga semantic compilation, not GPU execution or visual validation.
 import assert from 'node:assert/strict';
-import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
+import { WgslReflect, WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { gridDims } from '../src/shaders/common.js';
-import { opticsShader, opticsBindings, opticsFieldBindings, OPTICS_STATE_LAYOUT, dropDepthWGSL } from '../src/shaders/hybrid/optics.js';
+import { opticsShader, opticsBindings, opticsFieldBindings, OPTICS_STATE_LAYOUT, dropDepthWGSL, opticsProbeWGSL } from '../src/shaders/hybrid/optics.js';
 import { interfaceEnergy, opticalTransmission, walkOpticalCells, traceOpticalReference,
-  opticalFieldDensity, opticalFieldSegment, validateOpticsLimits, validateOpticsResources,
+  opticalFieldDensity, opticalFieldSegment, opticalProbe, validateOpticsLimits, validateOpticsResources,
   createHybridOptics } from '../src/gfx/hybrid/optics.js';
 const close = (a, b, tol = 1e-8) => assert(Math.abs(a - b) < tol, `${a} != ${b}`);
 const white = a => a.forEach(v => close(v, 1));
@@ -24,6 +24,63 @@ assert(walkOpticalCells([-1, 0.5, 0.5], [1, 0, 0], [12, 1, 1], { maxSteps: 2 }).
 cells = [];
 walkOpticalCells([0, 0, 0], [1, 1, 1], [3, 3, 3], { visit: c => { cells.push(c); } });
 assert.deepEqual(cells, [[0,0,0], [1,1,1], [2,2,2]]);
+{
+  // Execute the production probe in Float32, not just a double-precision oracle.
+  const rays = [];
+  for (const face of [64, 128, 384, 1024, 2048]) for (const sign of [-1, 1]) {
+    for (let axis = 0; axis < 3; axis++) {
+      const p = [10.25, 10.25, 10.25], d = [0, 0, 0];
+      p[axis] = face - sign * 0.001;
+      d[axis] = sign * 0.01; d[(axis + 1) % 3] = Math.sqrt(0.9999);
+      rays.push([p, d]);
+      rays.push([p.map((v, i) => i === axis ? face : v), d]);
+    }
+  }
+  const input = new Float32Array(rays.flatMap(([p, d]) => [...p, 0, ...d, 0]));
+  const march = probe => {
+    const code = `const OPTICS_EPS: f32 = 0.0001;
+${probe}
+@group(0) @binding(0) var<storage,read> rays: array<vec4f>;
+@group(0) @binding(1) var<storage,read_write> result: array<vec4f>;
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x; var p = rays[2u*i].xyz; let rd = rays[2u*i+1u].xyz;
+  result[i*6u] = vec4f(opticsProbe(p,rd),0);
+  for (var step=0u;step<4u;step++) {
+    let cell = floor(opticsProbe(p,rd)); var exits = vec3f(1e20);
+    for (var axis=0;axis<3;axis++) {
+      if (abs(rd[axis])>1e-8) {
+        let face = cell[axis]+select(0.0,1.0,rd[axis]>0.0);
+        exits[axis] = max(0.0,(face-p[axis])/rd[axis]);
+      }
+    }
+    let segment = min(exits.x,min(exits.y,exits.z));
+    result[i*6u+step+1u] = vec4f(cell,segment);
+    p += rd*segment;
+  }
+  result[i*6u+5u] = vec4f(p,0);
+}`;
+    const result = new Float32Array(rays.length * 24);
+    new WgslExec(new WgslParser().parse(code)).dispatchWorkgroups('main', rays.length, {0:{0:input,1:result}});
+    return result;
+  };
+  const old = march('fn opticsProbe(p:vec3f,rd:vec3f)->vec3f{return p+rd*OPTICS_EPS;}');
+  assert.equal(old[11], 0, 'old Float32 tracer stalls at x=64 on its second segment');
+  const result = march(opticsProbeWGSL);
+  for (let i = 0; i < rays.length; i++) {
+    const [p, d] = rays[i];
+    assert.deepEqual([...result.slice(i*24,i*24+3)], opticalProbe(p,d));
+    for (let step = 0; step < 4; step++) {
+      const length = result[i*24+(step+1)*4+3];
+      assert(length > 0 && Number.isFinite(length), `ray ${i}, segment ${step} must advance`);
+    }
+  }
+  for (const p of [[0,0,0],[-64,-128,-384],[0.5,64.5,384.5]]) {
+    for (const d of [[0,0,0],[0.01,-0.01,0],[1e-6,0,-1e-6]]) {
+      const q = opticalProbe(p,d);
+      q.forEach((v,i) => assert(d[i] === 0 ? v === p[i] : (v-p[i])*d[i] > 0));
+    }
+  }
+}
 const run = (extra = {}, origin = [-1, 0.5, 0.5], direction = [1, 0, 0]) => traceOpticalReference(origin, direction, [8, 1, 1], {
   sample: ([x]) => x === 1 ? water : x === 2 ? oil : x === 3 ? glass : null, ...extra,
 });
@@ -80,6 +137,7 @@ for (const fieldBinding of [null, 2, 14]) {
   assert.match(code, /sum \+= transmission \* opticsWorldHit\(h\)/);
   assert.match(code, /sum \+= transmission \* opticsEnvironment\(p, rd, 1\.0\)/);
   assert.match(code, /floor\(a\.w\)/); assert.match(code, /incandescence\(a\.y\)/);
+  assert.match(code, /let probe = opticsProbe\(p, rd\);\s*let cell = vec3i\(floor\(probe\)\)/);
   if (fieldBinding !== null) {
     assert.match(code, /segment = opticsFieldSegment/); assert.match(code, /textureLoad\(opticsThin/);
     assert.match(code,/if \(all\(density < vec4f\(0\.5\)\)\) \{ return source; \}/);

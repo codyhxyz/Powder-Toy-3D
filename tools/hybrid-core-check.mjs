@@ -184,6 +184,7 @@ const semantic=spawnSync('naga',['--version'],{encoding:'utf8'}).status===0;
   if(semantic)execFileSync('naga',['--stdin-file-path','hybrid-full-check.wgsl'],{input:code,encoding:'utf8'});
 }
 const pipe = desc => {
+  assert.equal(desc.optional, true, `${desc.name}: Test-owned compilation must not destroy the shared device`);
   const r=new WgslReflect(desc.code);
   if(semantic)execFileSync('naga',['--stdin-file-path',desc.name+'.wgsl'],{input:desc.code,encoding:'utf8'});
   for(const stage of ['compute','vertex','fragment'])for(const entry of r.entry[stage]){

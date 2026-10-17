@@ -13,6 +13,19 @@ export const OpticsParams = uniformStruct('OpticsParams', {
   gridInv: 'mat4x4f', size: 'vec2f', unsupported: 'u32', depthTolerance: 'f32', world: 'u32', particleSplit: 'u32',
 });
 export const OPTICS_SOURCE_MARGIN = 0.000001;
+// Probe ownership without moving the geometric ray or adding optical thickness.
+// A grazing component's EPS can round away even at x=64; use its next float.
+export const opticsProbeWGSL = `fn opticsProbe(p: vec3f, rd: vec3f) -> vec3f {
+  var q = p + rd * OPTICS_EPS;
+  for (var axis = 0; axis < 3; axis++) {
+    if (q[axis] == p[axis] && abs(rd[axis]) > 1e-8) {
+      let bits = bitcast<u32>(p[axis]);
+      let down = (p[axis] > 0.0) != (rd[axis] > 0.0);
+      q[axis] = bitcast<f32>(select(bits + 1u, bits - 1u, down));
+    }
+  }
+  return q;
+}`;
 export const opticsBindings = (binding = 0) => [
   { binding, visibility: STAGE.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
   { binding: binding + 1, visibility: STAGE.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } },
@@ -205,7 +218,7 @@ fn opticsFieldState(p: vec3f, cellState: vec4f) -> vec4f {
 fn opticsFieldSegment(p: vec3f, rd: vec3f, cellExit: f32) -> f32 {
   // Split at every interpolation-cube face and tetra diagonal. Within that
   // interval density is affine: its single possible root is solved exactly.
-  let probe = p + rd * OPTICS_EPS;
+  let probe = opticsProbe(p, rd);
   let base = floor(probe - vec3f(0.5));
   var end = cellExit;
   for (var i = 0; i < 3; i++) {
@@ -250,6 +263,7 @@ ${OpticsParams.wgsl}
 @group(2) @binding(${binding + 1}) var opticsDepth: texture_depth_2d;
 const OPTICS_EPS: f32 = 0.0001;
 const OPTICS_FAR: f32 = 1e20;
+${opticsProbeWGSL}
 struct OpticalHit { position: vec3f, normal: vec3f, id: i32, state: vec4f, view: vec3f }
 ${boundsBinding === null ? '' : `${boundsStruct}
 @group(2) @binding(${boundsBinding}) var<storage, read> opticalBounds: OpticalBounds;`}
@@ -401,7 +415,8 @@ fn opticsTrace(v: OpticsVertex, forced: bool, source: vec4f, entry: f32) -> Opti
   for (var step = 0; step < ${maxSteps} + 64 * (NX + NY + NZ); step++) {
     if (!covered && traveled >= interval.y) { return out; }
     if (covered) { if (pathSteps >= ${maxSteps}) { break; } pathSteps++; }
-    let cell = vec3i(floor(p + rd * OPTICS_EPS));
+    let probe = opticsProbe(p, rd);
+    let cell = vec3i(floor(probe));
     var a = vec4f(0.0); var id = E_EMPTY;
     if (inGrid(cell)) { a = fetchA(cell); id = eid(a); }
     let particle = opticsParticleOwns(cell, P.world != 0u);
@@ -417,10 +432,10 @@ fn opticsTrace(v: OpticsVertex, forced: bool, source: vec4f, entry: f32) -> Opti
         if (dot(delta,delta) <= 1e-12) { normal = -rd; }
       } else { a = vec4f(0); id = E_EMPTY; }
     }
-    ${fieldBinding === null ? '' : `if (inGrid(cell)) { a = opticsFieldState(p + rd * OPTICS_EPS, a); id = eid(a); }
+    ${fieldBinding === null ? '' : `if (inGrid(cell)) { a = opticsFieldState(probe, a); id = eid(a); }
     let ch = select(SURFCH(medium), SURFCH(id), SURFCH(id) >= 0);
     if (!particleHit && ch >= 0 && ch < 4 && abs(opticsDensity(p, ch) - 0.5) < 0.001) {
-      let fnormal = opticsFieldNormal(p + rd * OPTICS_EPS, normal, ch);
+      let fnormal = opticsFieldNormal(probe, normal, ch);
       if (dot(fnormal, fnormal) > 1e-8) { normal = normalize(fnormal); if (dot(normal, rd) > 0.0) { normal = -normal; } }
     }`}
     if (forced && step == 0) { a = source; id = eid(source); }
@@ -486,7 +501,7 @@ fn opticsTrace(v: OpticsVertex, forced: bool, source: vec4f, entry: f32) -> Opti
       sum += transmission * (ALBEDO(id) * opticsBody(p, id) + opticsMoltenEmission(a));
       transmission = vec3f(0.0); complete = true; break;
     }
-    // Exact cell-exit DDA; all tied axes advance through floor(p+rd*EPS).
+    // Exact cell-exit DDA; the representable forward probe owns tied faces.
     var exits = vec3f(OPTICS_FAR);
     for (var axis = 0; axis < 3; axis++) {
       if (abs(rd[axis]) > 1e-8) {

@@ -25,9 +25,9 @@ export function createHybridMotion(gpu, sim, { gate: providedGate = null } = {})
   const keys = gpu.createBuffer({ label: label('previous identities'), size: sim.g.slots*8, usage: 0x80 });
   const gate=providedGate??gpu.createBuffer({label:label('accepted scene'),size:4,usage:0x80});
   const captureBind = gpu.bindGroup(captureLayout, [{ binding: 0, resource: { buffer: keys } }]);
-  const capture = gpu.kernel({ name: label('capture'), code: motionCaptureWGSL(sim.g),
+  const capture = gpu.kernel({ optional: true, name: label('capture'), code: motionCaptureWGSL(sim.g),
     layouts: [sim.L.TABLES,sim.L.STATE_RO,captureLayout], workgroupSize: [64,1,1] });
-  const pipe = gpu.renderPipeline({ name: label('vectors'), code: motionWGSL(sim.g),
+  const pipe = gpu.renderPipeline({ optional: true, name: label('vectors'), code: motionWGSL(sim.g),
     layouts: [fu.layout,sim.L.STATE_RO,sceneLayout], params: HybridMotionParams,
     fragment: { targets: [{ format: 'rgba16float' },{ format: 'r8unorm' },{format:'r8unorm'}] } });
   let textures, previous = new Matrix4(), previousJittered = new Matrix4();
