@@ -165,7 +165,8 @@ for(const k of V2_KERNELS) {
 }
 assert.equal(v2ActLayout(g).words,10*g.nbricks+g.bx*g.bz+14,'no ACT resize');
 assert(driver.indexOf('run(k.v2support,')<driver.indexOf('run(k.v2block,'));
-assert(driver.indexOf('run(k.v2limit,')<driver.indexOf('this.jets?.advance('));
-assert(driver.indexOf('run(k.v2limit,')<driver.indexOf('run(k.v2gather,'));
+// the column records overwrite support's atmosphere bytes in liquidScratch only after the block pass read them
+assert(driver.lastIndexOf('run(k.v2block,')<driver.indexOf('run(k.v2runs,'));
+assert(driver.indexOf('run(k.v2runs,')<driver.indexOf('run(k.v2pairs,'));
 assert.equal(V2Params.pack({tick:1,busyIn:0,busyOut:g.nbricks,full:0,offset:offsetOf(1),preserveLegacyMarks:0,gravMode:0,edge:0,airMode:0,ambientHeat:0,gravity:19.6,ambient:20}).byteLength,V2Params.size);
 console.log(`Native opaque round trip, real params, unchanged ACT, binding budget max ${maxStorage}: pass`);

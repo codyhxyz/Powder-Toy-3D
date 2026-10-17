@@ -5,7 +5,8 @@ import { FULL, MAX_FILL, FUEL_Q, lifeScale, isConductor, makeMaterial, withPaylo
 import { PHASE_ROWS, PHASE_NORMAL_MAX, PHASE_HOT_BASE, PHASE_COLD_BASE, phaseOffsetEnergy, validatePhaseCore } from '../../src/v2/phase.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
 import { gridLayout } from '../../src/sim.js';
-import { v2ImportWGSL, v2ExternalEventsWGSL, v2FluxWGSL, v2ColumnWGSL, v2GatherWGSL, v2LimitWGSL, v2BlockWGSL, V2_DYNAMICS_LAYOUT, v2LiquidListLayout } from '../../src/shaders/v2.js';
+import { v2ImportWGSL, v2ExternalEventsWGSL, v2ColumnWGSL, v2RunsWGSL, v2PairsWGSL, v2BlockWGSL, V2_DYNAMICS_LAYOUT, v2DemandWords } from '../../src/shaders/v2.js';
+import { columnWaterWGSL } from '../../src/shaders/v2/columns.js';
 import { encodeV2State, decodeV2State, stateLengths } from '../../src/v2/state.js';
 const id = key => ELEMENTS.find(e => e.key === key).id;
 const water = id('WATER'), oil = id('OIL');
@@ -187,15 +188,18 @@ await engine.ready;
 assert.equal(engine.isReady, true);
 assert.equal(sim.version, 1);
 for (const [name, bytes] of [['cells', 16], ['aux', 4], ['liquidScratch', 16], ['events', 4]]) assert.equal(engine[name].size, g.slots * bytes);
-assert.equal(engine.jetMask.size, v2LiquidListLayout(g).words * 4, 'jet masks, then the liquid list');
-assert.equal(engine.contactReady, false); assert.equal(engine.dynamics, null); assert.equal(engine.jets, null);
+assert.equal(engine.jetMask.size, v2DemandWords(g) * 4, 'the face demands, two words a cell');
+assert.equal(engine.contactReady, false); assert.equal(engine.dynamics, null); assert.equal(engine.jets, undefined);
 assert.equal(engine.groups.liquid.entries.length, 7); // plus one shared table = eight
 assert.equal(engine.nativeDynamics.layout.entries.length, 3); assert.equal(V2_DYNAMICS_LAYOUT.length, 3);
 engine.sync();
 const resetRequests = commands.findIndex(c => c[0] === 'dispatch' && c[1] === 'v2externalEvents');
 assert(resetRequests >= 0 && resetRequests < commands.findIndex(c => c[0] === 'dispatch' && c[1] === 'v2import'));
 assert(v2ExternalEventsWGSL(g).includes('P.full != 0u || owned != 0u'));
-assert(v2FluxWGSL(g).includes('(events[slotOf(pi)] | events[slotOf(pj)]) & 1u'));
+// an unallocated detonation keeps its one source: no liquid moves out of or into a pending cell
+assert(columnWaterWGSL.includes('if (colPending(xa, ya, za) || colPending(xb, yb, zb)) {'));
+assert(columnWaterWGSL.includes('(events[slotOf(vec3i(x, y, z))] & 1u) != 0u'));
+assert(columnWaterWGSL.includes('let request = events[sa]; events[sa] = events[sb]; events[sb] = request;'), 'a falling run carries its requests');
 assert(v2ColumnWGSL(g).includes('events[slotOf(p)] = events[slotOf(q)]'));
 const imported = commands.find(c => c[0] === 'dispatch' && c[1] === 'v2import');
 assert.equal(imported[2].bind[1], engine.groups.import); assert.equal(imported[2].bind[2], engine.groups.material);
@@ -212,8 +216,8 @@ assert.equal(commands.filter(c => c[0] === 'dispatch' && c[1] === 'v2import').at
 engine.restore({}, {});
 for (const buffer of [engine.liquidScratch, engine.jetMask, engine.events]) assert(commands.some(c => c[0] === 'clear' && c[1] === buffer));
 const source = v2ImportWGSL(g); assert(source.includes('if (P.preserveLegacyMarks == 0u) { atomicAnd(&marks[MARK_ACT'), 'suspended imports retain legacy wake marks'); assert(source.indexOf('banks[s] = 0') < source.indexOf('if (any(n != c)'), 'equal cores still reset bank');
-const limit = v2LimitWGSL(g); assert(!/cells\[s\]\.[xyzw]\s*=/.test(limit.slice(limit.indexOf('fn main'))), 'limiter never writes persistent core');
-const gather = v2GatherWGSL(g); assert(gather.includes('w: atomic<u32>')); assert(gather.includes('atomicLoad(&cells[s].w)')); assert(gather.includes('atomicStore(&cells[s].w'));
+// the column passes write cells only through storeMaterial / storeCell (state and visibility marks)
+for (const code of [v2RunsWGSL(g), v2PairsWGSL(g)]) assert(!/cells\[[^\]]+\](\.[xyzw])?\s*=[^=]/.test(code.slice(code.indexOf(columnWaterWGSL.slice(0, 40)))), 'no raw core writes');
 const contact = v2BlockWGSL(g, 'fn contactBlock(c:ptr<function,array<vec4u,8>>,b:ptr<function,array<i32,8>>,p:array<vec3i,8>,r:ptr<function,array<u32,8>>) {}');
 assert(contact.includes('contactBlock(&cs, &bs, positions, &requests);'));
 engine.dispose(); for (const name of ['cells', 'aux', 'liquidScratch', 'jetMask', 'events', 'act', 'args']) assert(engine[name].destroyed);

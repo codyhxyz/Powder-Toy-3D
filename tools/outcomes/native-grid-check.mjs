@@ -74,7 +74,7 @@ function spyGPU() {
     readback: { buffer(b, offset, n) { calls.push({ read: b.label }); return Promise.resolve(b.bytes.slice(offset, offset + n)); } }, flush() {} };
   return { gpu, calls, kernels, buffers };
 }
-test('adapter constructs actual contact, dynamics and jets, checks velocity allocation instead of pretending', async () => {
+test('adapter constructs actual contact and dynamics, checks velocity allocation instead of pretending', async () => {
   const { gpu, calls, kernels } = spyGPU();
   let sim;
   globalThis.OutcomeSimulationSpy = class {
@@ -87,7 +87,7 @@ test('adapter constructs actual contact, dynamics and jets, checks velocity allo
     gpuSync() { return Promise.resolve(); }
     dispose() {}
   };
-  // Only Simulation is a spy. Production PhysicsV2, NativeDynamics, NativeJets,
+  // Only Simulation is a spy. Production PhysicsV2, NativeDynamics,
   // shader generators and the adapter's constructor call run unchanged.
   const url = new URL('./engine-v2.js', import.meta.url);
   let source = await readFile(url, 'utf8');
@@ -106,7 +106,7 @@ test('adapter constructs actual contact, dynamics and jets, checks velocity allo
     assert.equal(ready, false); release(); await creation;
     const owner = sim.compactOwner;
     assert.equal(owner.constructor.name, 'PhysicsV2'); assert.equal(owner.dynamics.constructor.name, 'NativeDynamics');
-    assert.ok(owner.contactReady && owner.jets.isReady);
+    assert.ok(owner.contactReady && owner.dynamics);
     assert.match(kernels.find(k => k.name === 'v2block').code, /fn contactBlock/);
     assert.ok(kernels.some(k => k.name === 'v2particles_integrate'));
     assert.ok(kernels.some(k => k.name === 'v2air_step'));

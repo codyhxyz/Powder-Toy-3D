@@ -102,3 +102,38 @@ test('the bench single-liquid gates at unchanged thresholds (U-tube, partial, pu
     assert.equal(r.status, 'pass', `${name}: ${JSON.stringify(r.checks ?? r.reason)}`);
   }
 });
+
+test('the real driver records the runs pass and the pair stages over the awake columns, nothing of R13', async () => {
+  const { gridLayout } = await import('../../src/sim.js');
+  const { PhysicsV2 } = await import('../../src/v2/physics.js');
+  const { NativeDynamics } = await import('../../src/v2/dynamics.js');
+  const { ARGS2, V2_KERNELS, v2DemandWords } = await import('../../src/shaders/v2.js');
+  const g = gridLayout(32, 32, 32);
+  globalThis.GPUBufferUsage = { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, INDIRECT: 8 };
+  const commands = [];
+  const gpu = {
+    createBuffer(d) { return { ...d, destroy() {} }; }, queue: { writeBuffer() {} }, write() {}, flush() {},
+    layout: (name, entries) => ({ name, entries }), L: { EMPTY: { entries: [] } }, emptyGroup: {},
+    bindGroup(layout, entries) { return { layout, entries }; },
+    kernel(d) { return { ...d, ready: Promise.resolve(), dispatch(frame, size, data) { d.params.pack(data.params); commands.push({ name: d.name, size, ...data }); } }; },
+    frame: { clear() {}, copy() {} }, readback: { buffer: (b, o, n) => Promise.resolve(new ArrayBuffer(n)) },
+  };
+  const sim = { gpu, g, id: 1, version: 0, wholeWrites: 0, frame: 0, paints: 0, origin: [0, 0, 0], state: { A: {}, B: {}, F: {} }, marks: {}, tables: {},
+    L: { STATE_RO: { entries: [0, 1] }, TABLES: { entries: [0] } }, header: () => ({ format: 0 }), noteWrite() {} };
+  const owner = new PhysicsV2(sim, { Dynamics: NativeDynamics }); await owner.ready;
+  for (const tick of [1, 2]) {
+    commands.length = 0; owner.ticks(1);
+    const names = commands.map(c => c.name);
+    assert.ok(!names.some(n => /^v2(flux|limit|gather|foam|liquidFinalize)$|^v2jets_/.test(n)), 'no R13 pass');
+    const liquid = commands.filter(c => c.name === 'v2runs' || c.name === 'v2pairs');
+    assert.deepEqual(liquid.map(c => c.name), ['v2runs', 'v2pairs', 'v2pairs', 'v2pairs', 'v2pairs', 'v2pairs']);
+    for (const c of liquid) { assert.equal(c.size.indirect, owner.args); assert.equal(c.size.offset, ARGS2.COLS * 4); }
+    assert.deepEqual(liquid.slice(1).map(c => [c.params.pairAxis, c.params.pairStage, c.params.pairParity]), pairOrder(tick));
+    // after the block pass and its material events, before the open edges and the air
+    assert.ok(names.indexOf('v2runs') > names.indexOf('v2block'));
+    assert.deepEqual(liquid[0].bind[2], owner.groups.liquid);
+  }
+  assert.equal(owner.jetMask.size, v2DemandWords(g) * 4);
+  assert.ok(V2_KERNELS.some(k => k.name === 'v2runs') && V2_KERNELS.some(k => k.name === 'v2pairs'));
+  owner.dispose();
+});

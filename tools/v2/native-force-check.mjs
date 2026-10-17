@@ -2,6 +2,7 @@ import { povGpu } from '../../src/pov/gpu.js';
 import { TOOLS, PROP_TOOL, E } from '../../src/elements.js';
 import { PROP } from '../../src/editing.js';
 import { WEATHER_SPEED_SI, WEATHER_SPEED_FLUX } from '../../src/v2/nativeWeather.js';
+import { LANE_HZ } from '../../src/shaders/v2.js';
 import { makeMaterial, cFill, withPayload, payloadOf, energyOf, capacityQ, withEnergy } from '../../src/v2/layout.js';
 import { packParticle, unpackParticle, allocateSources } from '../../src/v2/dynamics-reference.js';
 // Actual native force driver and shader compilation; CPU ONLY.
@@ -60,7 +61,7 @@ assert(Math.abs(packet.velocity[0]-14.4)<1e-5);assert.equal(packet.velocity[1],-
 const cooled=withEnergy(material,energyOf(material)-BigInt(capacityQ(material.core))*80n);
 assert.equal(cFill(cooled.core),17003);assert.equal(payloadOf(cooled.core),54321);
 assert.equal(energyOf(material)-energyOf(cooled),BigInt(capacityQ(material.core))*80n);
-assert.equal(WEATHER_SPEED_FLUX/65536*180*0.3,WEATHER_SPEED_SI);
+assert.equal(WEATHER_SPEED_FLUX/65536*LANE_HZ*0.3,WEATHER_SPEED_SI);
 const source={slot:0,material,particle:packet};allocateSources([source],[{id:1}],1);assert(source.retry);assert.deepEqual(source.material,material);
 
 console.log(`20 native force modules validated; actual bounded driver ordering, canonical predicates, particle lanes, <=8 bindings; no GPU execution`);

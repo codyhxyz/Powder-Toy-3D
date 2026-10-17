@@ -4,14 +4,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
-import { NativeJets } from '../../src/v2/jets.js';
 import { PARTICLE_CAP as CAP, NEUTRON_TAG } from '../../src/v2/dynamics-reference.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
 import { CONTROL } from '../../src/shaders/v2/particles.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 import { ALLOCATION_CHUNKS, ALLOCATION_STAGES, allocationScratchBase, controlWords,
   externalMaskBase, externalMaskWords, blastsWGSL } from '../../src/shaders/v2/blasts.js';
-import { jetsWGSL } from '../../src/shaders/v2/jets.js';
 const NONE=0xffffffff, WORDS=12;
 const fresh=()=>({freeList:new Uint32Array(CAP).fill(0xdeadbeef),childPrefixes:new Uint32Array(CAP),control4:0});
 function serialPool(records) {
@@ -171,7 +169,7 @@ function recorder(gate=()=>Promise.resolve()) {
   return {owner,d,calls,descriptors,copies};
 }
 function assertPrepared(calls,expected) {
-  const allocations=calls.map((c,i)=>({c,i})).filter(({c})=>['v2blasts_allocate','v2jets_allocate'].includes(c.name));
+  const allocations=calls.map((c,i)=>({c,i})).filter(({c})=>['v2blasts_allocate'].includes(c.name));
   assert.equal(allocations.length,expected);
   for(const {c,i} of allocations) {
     const prep=calls.slice(i-3,i);
@@ -205,10 +203,7 @@ test('all real allocation paths prepare immediately, including empty indirect ba
     d.advanceParticles(6);d.advanceAir(6);assertPrepared(calls,1);
     assert.ok(calls.findIndex(c=>c.name==='v2blasts_rayEmit')<calls.findIndex(c=>c.name==='v2blasts_freeCount'));
   }
-  owner.liquidScratch={};owner.jetMask={};const jets=owner.jets=new NativeJets(owner);await jets.ready;
-  check(()=>jets.advance(7,2),1);
-  assert.deepEqual(calls.map(c=>c.name),['v2jets_candidate','v2jets_count',...ALLOCATION_STAGES.map(s=>`v2blasts_${s}`),'v2jets_allocate','v2jets_spawn']);
-  jets.dispose();d.dispose();
+  d.dispose();
 });
 test('preparation kernels build idle and every new stage is awaited; no optional missing-pipeline skip',async()=>{
   for(const stage of ALLOCATION_STAGES) {
@@ -240,7 +235,7 @@ test('scratch is exactly 8KiB after old mask end, with unchanged existing offset
       assert.doesNotMatch(code.slice(code.lastIndexOf('@compute')),/particles\[[^\]]+\]\s*=/);
       assert.doesNotMatch(code,/array<[^>]*,\s*1024>/,'scan uses tail storage, not a large private array');
     }
-    for(const code of [blastsWGSL(g,nativeDynamicsHead,'allocate'),jetsWGSL(g,'allocate')]) {
+    for(const code of [blastsWGSL(g,nativeDynamicsHead,'allocate')]) {
       const body=code.slice(code.lastIndexOf('@compute'));
       assert.doesNotMatch(body,/D_CAP|particles\[/,'allocation only scans request group sums');
       assert.match(body,/group<\(D_BRICKS\+63u\)\/64u/);
@@ -362,15 +357,14 @@ for(const bricks of [...new Set([1,16,63,64,65,127,129,...registeredDims.map(dim
 test('minimum-world partial request group count and allocation modules validate with CPU Naga',()=>{
   const g=gridLayout(16,8,8);assert.equal(g.nbricks,16);
   for(const stage of ['count','allocate']) for(const [family,source] of [
-    ['blasts',blastsWGSL(g,nativeDynamicsHead,stage)],['jets',jetsWGSL(g,stage)],
+    ['blasts',blastsWGSL(g,nativeDynamicsHead,stage)],
   ]) assertNaga(source,`${family}-${stage}`);
 });
 
 test('request counts retain all lanes at barriers and only group sums occupy the old count region',()=>{
   for(const g of [gridLayout(16,8,8),gridLayout(48,16,32),gridLayout(128,128,128)]) {
     assert.match(blastsWGSL(g,nativeDynamicsHead,'apply'),/atomicLoad\(&control\[D_SPAWN_PREFIX\+b\]\)\+atomicLoad\(&control\[D_SPAWN_COUNTS\+b\/64u\]\)/);
-    assert.match(jetsWGSL(g,'spawn'),/atomicLoad\(&control\[J_PREFIX\+t\/64u\]\)\+atomicLoad\(&control\[J_COUNTS\+t\/4096u\]\)/);
-    for(const source of [blastsWGSL(g,nativeDynamicsHead,'count'),jetsWGSL(g,'count')]) {
+    for(const source of [blastsWGSL(g,nativeDynamicsHead,'count')]) {
       const body=source.slice(source.lastIndexOf('@compute'));
       assert.doesNotMatch(body,/return;/,'out-of-range and rejected box lanes cannot skip workgroupBarrier');
       assert.match(body,/brickDemand\[li\]=\w+; workgroupBarrier\(\)/);

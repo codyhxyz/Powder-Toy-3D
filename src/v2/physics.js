@@ -1,5 +1,4 @@
 import { contactWGSL as productionContactWGSL } from '../shaders/v2/contact.js';
-import { NativeJets } from './jets.js';
 import { nativeModes, modeSignature } from './modes.js';
 import { fold } from '../gpu/kernels.js';
 import { fallVelocity } from './fall.js';
@@ -8,9 +7,10 @@ import { encodeV2State, decodeV2State } from './state.js';
 import { cellSlot, marksLayout } from '../shaders/common.js';
 import {
   v2BlockCompactLayout, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockWGSL, V2_BLOCK_FINALIZE_LAYOUT,
-  V2_KERNELS, V2Params, nativeDynamicsHead, v2LiquidListLayout, V2_DYNAMICS_LAYOUT, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_MATERIAL_LAYOUT, V2_LIQUID_LAYOUT, V2_CONTACT_LAYOUT, V2_IMPORT_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
-  TICK_HZ, FULL, SUB, V2, QUIET_TICKS,
+  V2_KERNELS, V2Params, nativeDynamicsHead, v2DemandWords, V2_DYNAMICS_LAYOUT, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_MATERIAL_LAYOUT, V2_LIQUID_LAYOUT, V2_CONTACT_LAYOUT, V2_IMPORT_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
+  TICK_HZ, FULL, V2, QUIET_TICKS,
 } from '../shaders/v2.js';
+import { pairOrder } from '../shaders/v2/columns.js';
 
 // Opt-in box physics. Compact cells are authoritative; read-only presentation
 // consumes them directly. Legacy A/B are a lazy, lossy compatibility cache for
@@ -84,7 +84,7 @@ export class PhysicsV2 {
     this.aux = buf('energy banks', g.slots * 4);
     this.liquidScratch = buf('liquid snapshots', this.blockCompact?.bytes ?? g.slots * 16);
     this.events = buf('material requests', g.slots * 4);
-    this.jetMask = buf('jet acceptance and foam snapshot, liquid list', v2LiquidListLayout(g).words * 4);
+    this.jetMask = buf('liquid face demands', v2DemandWords(g) * 4);
     // Explicit injection seams. These modules do not exist in the foundation alone.
     this.contactReady = false;
     this.dynamics = null;
@@ -110,7 +110,6 @@ export class PhysicsV2 {
       args: gpu.bindGroup(L.ARGS, [...own, b(3, this.args)], 'v2 args'),
     };
     L.BLOCK_FINALIZE = gpu.layout('V2_BLOCK_FINALIZE', V2_BLOCK_FINALIZE_LAYOUT);
-    this.groups.liquidFinalize = gpu.bindGroup(L.BLOCK_FINALIZE, [b(0, this.jetMask), b(1, this.args)], 'v2 liquid list args');
     this.legacyLayouts = { read: sim.L.STATE_RO, import: L.IMPORT, state: L.STATE };
     this.bindLegacy();
     // Only the current legacy copy is ours to use: a box lets V1's other go
@@ -121,7 +120,7 @@ export class PhysicsV2 {
     }
     this.nativeDynamics = { head: nativeDynamicsHead, layout: gpu.layout('V2_DYNAMICS', V2_DYNAMICS_LAYOUT) };
     this.nativeDynamics.group = gpu.bindGroup(this.nativeDynamics.layout, [b(0, this.cells), b(1, this.aux), b(2, this.act)], 'native dynamics state');
-    this.familyOf = name => ({ v2args: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2support: 'contact', v2blockClassify: 'contact', v2blockFinalize: 'blockFinalize', v2liquidFinalize: 'liquidFinalize', v2block: 'contact', v2flux: 'liquid', v2limit: 'liquid', v2gather: 'liquid', v2foam: 'liquid' }[name] ?? 'v2');
+    this.familyOf = name => ({ v2args: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2support: 'contact', v2blockClassify: 'contact', v2blockFinalize: 'blockFinalize', v2block: 'contact', v2runs: 'liquid', v2pairs: 'liquid' }[name] ?? 'v2');
     const familyLayouts = { v2: L.V2, args: L.ARGS, material: L.MATERIAL, liquid: L.LIQUID, contact: L.CONTACT };
     this.kernels = {};
     const specs = this.blockCompact ? [...V2_KERNELS,
@@ -130,7 +129,7 @@ export class PhysicsV2 {
     ] : V2_KERNELS;
     for (const k of specs) {
       const withState = k.name === 'v2import' || k.name === 'v2bridge';
-      const finalize = k.name === 'v2blockFinalize' || k.name === 'v2liquidFinalize';
+      const finalize = k.name === 'v2blockFinalize';
       // Contact is required and the long compile pole. Enqueue it before
       // graphics, not behind the idle queue; the shared two-build bound remains.
       this.kernels[k.name] = gpu.kernel({
@@ -139,9 +138,8 @@ export class PhysicsV2 {
       });
     }
     this.dynamics = Dynamics ? new Dynamics(this) : null;
-    this.jets = this.dynamics?.particles && this.dynamics?.control ? new NativeJets(this) : null;
     // Publish native readiness only after legacy storage has its blank defaults.
-    this.ready = Promise.all([sim.ready, ...Object.values(this.kernels).map((k) => k.ready), this.dynamics?.ready, this.jets?.ready]).then(() => this);
+    this.ready = Promise.all([sim.ready, ...Object.values(this.kernels).map((k) => k.ready), this.dynamics?.ready]).then(() => this);
     this.isReady = false;
     this.ready.then(() => {
       if (this.disposed) return;
@@ -350,17 +348,10 @@ export class PhysicsV2 {
       run(k.v2block, ind(ARGS2.COMPACT));
     } else run(k.v2block, ind(ARGS2.BLOCKS));
     this.dynamics?.consumeMaterialEvents(this.tick);
-    // The first flux runs over every awake brick and lists those liquid can reach this tick; every
-    // later liquid pass, the jets' too, runs over that list alone (v2FluxWGSL: exactly as before).
-    const liquid = ind(ARGS2.LIQUID);
-    for (let s = 0; s < SUB; s++) {
-      run(k.v2flux, s ? liquid : ind(ARGS2.BRICKS), undefined, { ...params, liquidList: s ? 1 : 0 });
-      if (s === 0) run(k.v2liquidFinalize, [1, 1, 1], [gpu.emptyGroup, gpu.emptyGroup, groups.liquidFinalize]);
-      run(k.v2limit, liquid);
-      this.jets?.advance(this.tick, s);
-      run(k.v2gather, liquid);
-    }
-    run(k.v2foam, liquid);
+    // R13 as column runs (src/shaders/v2/columns.js), a thread an awake column: settle the runs, then
+    // every face's flux and the four colours of transfers, one step a tick.
+    run(k.v2runs, ind(ARGS2.COLS));
+    for (const [pairAxis, pairStage, pairParity] of pairOrder(this.tick)) run(k.v2pairs, ind(ARGS2.COLS), undefined, { ...params, pairAxis, pairStage, pairParity });
     if (params.edge === 1) run(k.v2boundary, ind(ARGS2.BRICKS));
     this.dynamics?.advanceAir(this.tick);
     run(k.v2invalidate, fold(Math.ceil(this.g.nbricks / 64)), invalidation);
@@ -498,7 +489,6 @@ export class PhysicsV2 {
     if (this.sim.compactOwner === this) this.sim.compactOwner = null;
     this.wake();
     if (!this.gpu.failure) this.gpu.flush('v2 dispose');
-    this.jets?.dispose();
     this.dynamics?.dispose();
     for (const b of [this.cells, this.aux, this.liquidScratch, this.jetMask, this.events, this.act, this.args]) b.destroy();
   }

@@ -53,7 +53,7 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
       await Promise.all([sim.ready, kernel.ready, v2.ready]);
       clock = stepClock(TICK_HZ);
       launches = [];
-      if (!v2.isReady || !v2.contactReady || !v2.dynamics?.isReady || !v2.jets?.isReady) throw new SetupError('v2: integrated native physics did not become ready');
+      if (!v2.isReady || !v2.contactReady || !v2.dynamics?.isReady) throw new SetupError('v2: integrated native physics did not become ready');
     },
     box(lo, hi, name, { T, v = [0, 0, 0], onlyEmpty = false, pressure } = {}) {
       const id = idOf(name);

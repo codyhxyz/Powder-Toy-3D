@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { ELEMENTS } from '../../src/elements.js';
-import { liquidTransportWGSL } from '../../src/shaders/v2.js';
+import { columnWaterWGSL } from '../../src/shaders/v2/columns.js';
 import { FULL, MAX_FILL, capacityPerQuantum, isLiquid, share } from '../../src/v2/layout.js';
 import { PHASE_ROWS, PHASE_STEPS, PHASE_NORMAL_MAX } from '../../src/v2/phase.js';
 import { limbs, wide, signed, mul, mulSmall, energyDiv, energyDivExact, phaseDiv, phaseDivExact, highestBit, energyScale, energyShare, shareUnsigned } from './integer-transport-reference.mjs';
@@ -164,13 +164,13 @@ for (const material of ELEMENTS.filter(e => isLiquid(e.id))) {
     }
   }
 }
-const source = readFileSync(new URL('../../src/shaders/v2.js', import.meta.url), 'utf8');
-const gather = source.slice(source.indexOf('export const v2GatherWGSL'), source.indexOf('export const', source.indexOf('export const v2GatherWGSL') + 20));
-assert.match(gather, /\$\{liquidTransportWGSL\}/);
-assert.match(liquidTransportWGSL, /struct TransportPacket/);
-assert.match(gather, /energySub\(energy, out.heat\)/);
-assert.match(gather, /energyAdd\(energy, incoming.heat\)/);
-assert.equal((liquidTransportWGSL.match(/transportedEnergy\(src, prefix, n\)/g) ?? []).length, 1, 'gating computes each packet only once');
+// The column model's one transfer (colMove): each packet's heat is computed once and the same value leaves
+// the source and reaches the receiver, so the share's exactness above is the transfer's.
+const move = columnWaterWGSL.slice(columnWaterWGSL.indexOf('fn colMove('), columnWaterWGSL.indexOf('// ---- the head of a record'));
+assert.match(move, /let heat = energyShare\(carried, 0u, n, have\);/);
+assert.match(move, /let sentEnergy = energySub\(energyOf\(src\), heat\);/);
+assert.match(move, /let gotEnergy = energyAdd\(energyOf\(dst\), heat\);/);
+assert.equal((move.match(/energyShare\(/g) ?? []).length, 1, 'each packet computed once');
 const report = s => ({ ...s, fallbackRate: `${(100 * ((s.energyFallback ?? 0) + (s.phaseFallback ?? 0)) / (s.energyCalls + s.phaseCalls)).toFixed(5)}%` });
 console.log(`${checks} exact BigInt oracle checks; all ${ELEMENTS.length} materials; ${samples} liquid + ${phaseSamples} phase domain samples`);
 console.log(`bounds: capacity=${maxCapacity}; latent*PHASE_STEPS=${maxLatentProduct}; |offset|=${maxOffset}`);

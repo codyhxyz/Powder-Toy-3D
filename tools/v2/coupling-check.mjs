@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { E, ELEMENTS } from '../../src/elements.js';
 import { FULL, MAX_FILL, makeMaterial, energyOf, withEnergy, advectReference, cTq, cFill, ctypeOf, withPayload, payloadOf } from '../../src/v2/layout.js';
 import { phaseOffsetEnergy } from '../../src/v2/phase.js';
-import { v2BlockWGSL, v2FluxWGSL } from '../../src/shaders/v2.js';
+import { v2BlockWGSL } from '../../src/shaders/v2.js';
+import { columnWaterWGSL } from '../../src/shaders/v2/columns.js';
 import { gridLayout } from '../../src/sim.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
 
@@ -38,6 +39,7 @@ assert(block.indexOf('requests[i] = pending[i]') > block.indexOf('// Gas ageing'
 assert(block.includes('let dU = motionDensity(hi)'));
 assert(block.includes('return contactDensity(c)'));
 assert(!block.includes('cid(lo) == cid(hi)'), 'same gas with different temperatures can convect');
-const flux = v2FluxWGSL(g);
-assert(flux.includes('ctypeOf(ci) != ctypeOf(cj)'), 'real WGSL rejects incompatible lava');
+// runs are single-subtype and two runs of different subtypes never share a segment
+assert(columnWaterWGSL.includes('if (liq == cid(c) && sub == liquidSub(c) && r1 == y)'), 'a subtype change ends a run');
+assert(columnWaterWGSL.includes('(recLiq(ra) != recLiq(rb) || recSub(ra) != recSub(rb))'), 'real WGSL rejects incompatible lava');
 console.log('native coupling: typed lava enthalpy/transport, strongest-face tags, freshwater sparks, pending ownership and buoyancy passed');

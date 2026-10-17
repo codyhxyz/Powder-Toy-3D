@@ -5,7 +5,7 @@ import { GRAV, AIR, EDGE } from '../../src/simModes.js';
 import { CELL_M } from '../../src/scale.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
 import { gridLayout } from '../../src/sim.js';
-import { v2ActLayout, v2GatherWGSL, v2FluxWGSL, v2BlockWGSL, v2BoundaryWGSL } from '../../src/shaders/v2.js';
+import { v2ActLayout, v2PairsWGSL, v2RunsWGSL, v2BlockWGSL, v2BoundaryWGSL } from '../../src/shaders/v2.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { makeMaterial, withEnergy, energyOf, cFill, FULL, advectReference } from '../../src/v2/layout.js';
 import { E } from '../../src/elements.js';
@@ -50,8 +50,9 @@ assert.equal(after.reduce((s,m)=>s+cFill(m.core),0),FULL);
 assert.equal(cFill(after[1].core),12345,'periodic claimant must actually receive material');
 // Open ledger is in previously reserved count words, NOT an ABI/save resize.
 const layout=v2ActLayout(g); assert.equal(layout.boundaryMass,layout.count+6); assert.equal(layout.boundaryMass+2,layout.legacy);
-assert.match(v2FluxWGSL(g),/let q = mEdge\(p \+ face6\(i\)\)/);
-assert.match(v2GatherWGSL(g),/mEdge\(p \+ face6\(i32\(face\)\)\)/);
+// a column's pair partners and halo cross periodic seams through mEdge
+assert.match(v2PairsWGSL(g),/let next = mEdge\(here \+ axisV\(axis\)\); let prev = mEdge\(here - axisV\(axis\)\);/);
+assert.match(v2RunsWGSL(g),/let n = mEdge\(vec3i\(x, 0, z\) \+ face6/);
 assert.match(v2BoundaryWGSL(g),/noteBoundaryMass\(amount\); noteEnergySink/);
 const block=v2BlockWGSL(g,contactWGSL);assert.match(block,/P.edge==1u && mAirHeat\(\)/);assert.match(block,/p.y==NY-1/);
 // Real recorder proves certified-rest mode changes wake without importing cells,

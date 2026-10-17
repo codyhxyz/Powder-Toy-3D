@@ -4,6 +4,7 @@ import { createElementWeather } from '../../src/elementWeather.js';
 import { createOceanEvents } from '../../src/oceanEvents.js';
 import { createLightning } from '../../src/lightning.js';
 import { createNativeWeatherKernel, WEATHER_SPEED_SI, WEATHER_SPEED_FLUX } from '../../src/v2/nativeWeather.js';
+import { LANE_HZ } from '../../src/shaders/v2.js';
 import { oceanEventsEdit, OCEAN_EVENT } from '../../src/shaders/oceanEvents.js';
 import { gridLayout } from '../../src/sim.js';
 import { makeMaterial, cFill, energyOf, capacityQ, withEnergy, withPayload, payloadOf, ctypeOf } from '../../src/v2/layout.js';
@@ -70,11 +71,11 @@ assert.deepEqual(calls.filter(c=>c.name.startsWith('testOcean')).map(c=>c.name),
 assert.equal(calls.at(-1).bind[1].entries[1].resource.buffer,sim.compactOwner.dynamics.air[1]);
 assert.equal(retired.at(-1).size,8*64);
 // Independent numerical oracle: calibrated SI pulse, not a 60Hz reinterpretation.
-close(WEATHER_SPEED_SI,72); close(WEATHER_SPEED_FLUX,65536*4/3);
+close(WEATHER_SPEED_SI,72); close(WEATHER_SPEED_FLUX,65536*4); // 240 Hz source cells into lanes of quanta a 60 Hz tick
 const surge=0.5, old=[0.01,-0.02,0.03], direction=[0.6,0.8];
 const target=[direction[0]*OCEAN_EVENT.speed,OCEAN_EVENT.lift,direction[1]*OCEAN_EVENT.speed];
 const q=old.map((v,a)=>(v+(target[a]-v)*surge)*WEATHER_SPEED_FLUX);
-q.forEach((v,a)=>close(v/65536*180*CELL_M,(old[a]+(target[a]-old[a])*surge)*240*CELL_M));
+q.forEach((v,a)=>close(v/65536*LANE_HZ*CELL_M,(old[a]+(target[a]-old[a])*surge)*240*CELL_M));
 close(legacyPressureToPa(OCEAN_EVENT.pressure*surge)/64*64,legacyPressureToPa(0.25));
 // Coarse-air volume integral preserves a bounded pulse; untouched cells add zero.
 const wind=[0.6*0.025*72,0,0.8*0.025*72], emitted=7;

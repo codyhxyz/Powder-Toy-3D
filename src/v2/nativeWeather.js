@@ -1,7 +1,7 @@
 import { fold } from '../gpu/kernels.js';
 import { uniformStruct } from '../gpu/params.js';
 import { prelude, STATE_OPTS, EDIT_FIELDS, STAGE, SEED_MAX } from '../shaders/common.js';
-import { nativeDynamicsHead, SUB, TICK_HZ, FULL } from '../shaders/v2.js';
+import { nativeDynamicsHead, LANE_HZ, FULL } from '../shaders/v2.js';
 import { MODE_FIELDS, nativeModes } from './modes.js';
 import { modeWGSL } from '../shaders/v2/modes.js';
 import { fallWGSL } from '../shaders/v2/fall.js';
@@ -10,9 +10,9 @@ import { CELL_M } from '../scale.js';
 import { LEGACY_PRESSURE_PA } from './pressure.js';
 
 // TPT source speeds are authored in cells/240 Hz step. Native face flux is
-// fill quanta/180 Hz substep; air is m/s and Pa, never legacy B storage.
+// fill quanta a tick a cell of segment depth (LANE_HZ); air is m/s and Pa, never legacy B storage.
 export const WEATHER_SPEED_SI = 240 * CELL_M;
-export const WEATHER_SPEED_FLUX = 240 * FULL / (SUB * TICK_HZ);
+export const WEATHER_SPEED_FLUX = 240 * FULL / LANE_HZ;
 const binding = (n, read = false) => ({ binding: n, visibility: STAGE.COMPUTE, buffer: { type: read ? 'read-only-storage' : 'storage' } });
 export const NATIVE_WEATHER_COMMIT_LAYOUT = [binding(0, true), binding(1), binding(2)];
 export const scratchWGSL = 'struct WeatherResult { before: vec4f, after: vec4f, motion: vec4f, airDelta: vec4f }';
