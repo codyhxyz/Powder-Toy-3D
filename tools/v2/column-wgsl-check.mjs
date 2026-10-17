@@ -215,7 +215,10 @@ test('the real driver records the runs pass and the pair stages over the awake c
     assert.ok(!names.some(n => /^v2(flux|limit|gather|foam|liquidFinalize)$|^v2jets_candidate$/.test(n)), 'no R13 pass');
     // the jets once a tick, after the last pair stage: count, the shared allocator's preparation, allocate, spawn
     const jets = names.slice(names.lastIndexOf('v2pairs') + 1, names.indexOf('v2jets_spawn') + 1);
-    assert.equal(jets[0], 'v2jets_count'); assert.equal(jets.at(-2), 'v2jets_allocate'); assert.equal(jets.at(-1), 'v2jets_spawn');
+    assert.equal(jets[0], 'v2jets_count'); assert.equal(jets[1], 'v2jets_gate'); assert.equal(jets.at(-2), 'v2jets_allocate'); assert.equal(jets.at(-1), 'v2jets_spawn');
+    // nothing launched, nothing swept: the preparation and the allocation run on the gate's indirect args
+    const allocate = commands.find(c => c.name === 'v2jets_allocate');
+    assert.equal(allocate.size.indirect, owner.dynamics.dispatchArgs);
     assert.ok(jets.includes('v2blasts_freeScatter') && jets.indexOf('v2blasts_freeScatter') < jets.indexOf('v2jets_allocate'), 'the free list is built before the jets allocate');
     assert.equal(names.filter(n => n === 'v2jets_spawn').length, 1);
     const spawn = commands.find(c => c.name === 'v2jets_spawn'), count = commands.find(c => c.name === 'v2jets_count');

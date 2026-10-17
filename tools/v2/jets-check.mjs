@@ -129,6 +129,11 @@ test('the WGSL: deterministic ranks, refusal keeps the liquid, the allocator pro
   const countBody = count.slice(count.lastIndexOf('@compute'));
   assert.doesNotMatch(countBody, /return;/); assert.match(countBody, /brickDemand\[li\]=count; workgroupBarrier\(\)/);
   assert.match(allocate, /atomicStore\(&control\[5\],requested\);/); assert.match(allocate, /if\(requested>free\) \{ atomicAdd\(&control\[7\],requested-free\); \}/);
+  // the gate: a tick that launches nothing never prepares the pool (the couple gate's [work, 1, 1, 0, work])
+  const gate = jetsWGSL(g, 'gate');
+  assert.match(gate, /let work=select\(0u,1u,demand>0u\);/);
+  assert.match(gate, /atomicStore\(&control\[base\],work\); atomicStore\(&control\[base\+1u\],1u\); atomicStore\(&control\[base\+2u\],1u\);/);
+  assert.match(gate, /atomicStore\(&control\[base\+3u\],0u\); atomicStore\(&control\[base\+4u\],work\);/);
   for (const stage of JET_STAGES) assertNaga(jetsWGSL(gridLayout(16, 8, 8), stage), `jets ${stage}`);
 });
 

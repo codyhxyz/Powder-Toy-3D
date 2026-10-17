@@ -178,9 +178,16 @@ Where it differs from the prototype, and why:
   point drop's ripples without bound, and alternating the colours keeps the U-tube's covered channel
   trading single quanta past 10 s. The flux stage is the prototype's Jacobi step; a sending run is
   limited by what it still holds when each pair moves, not by one K over its four sides.
-- **An overfall lands.** Mass crossing a face above the receiver's surface joins it at once (no
-  mid-air deposit). R14 jets, which carried the fast part, are not yet rebuilt on run heads (stage 2),
-  so the hole gate and splash do not pass yet.
-- **Whole-column scans.** `v2runs` reads every cell of each awake column (16 B a cell). The brick-mask
-  scan the cost table assumes is not built, so a deep, mostly sleeping column still costs its height.
-- Radial gravity leaves liquids still; open edges keep the 180 Hz-calibrated per-cell drain.
+- **Overfalls pour and jets launch from the exact head.** A face above the receiver's surface pours into
+  the receiver's cells at its wet rows (they fall as runs); a cell left faster than 1 m/s over open space
+  is marked and `src/shaders/v2/jets.js` launches it at sqrt(2 g H), H the sender's or its feeding
+  neighbour's exact run head. Agent 7's energy-head term acts on contractions in the flux stage. Hole:
+  1.08 % off the parabola, launch 1.00 and discharge 0.96 of Torricelli.
+- **Cost.** A brick summary (support writes it, noteState clears it) lets the runs pass skip uniform
+  bricks, and a per-brick-column awake word replaces the brick loop. On this note's 64×32×64 scenes the
+  passes now move 1.43 MB (woken lake), 2.09 MB (pour) and 1.91 MB (dam break) per awake tick, from 6.2,
+  4.09 and 4.2 MB before those fixes (R13: 44.0, 20.8, 17.4), counted as each dispatch's footprint.
+- **Open and loop edges.** An open side is a dry, bottomless neighbour and an open floor drains at R1's run
+  speed, into the boundary ledger; loop seams wrap like any face (the witness checks both).
+- **Not yet:** radial gravity only drips liquids toward the centre (no spreading); one liquid's weight on
+  another (oil on water) needs a sub-cell interface first; the splash crown.

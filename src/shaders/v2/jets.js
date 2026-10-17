@@ -1,6 +1,6 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
 import { dynamicsCommon, DynamicParams, storageLayout, main64, main1 } from './particles.js';
-import { SPAWN_PREFIX } from './blasts.js';
+import { SPAWN_PREFIX, coupleArgsBase } from './blasts.js';
 import { COLUMN } from './columns.js';
 export { DynamicParams };
 
@@ -12,7 +12,7 @@ export { DynamicParams };
 // stays), in a deterministic order: count per brick, the shared allocator, spawn at prefix ranks. A cell
 // the pool or the format refuses keeps its liquid and loses its mark: it falls as a run.
 export const JETS_LAYOUT = storageLayout(2);
-export const JET_STAGES = ['count', 'allocate', 'spawn'];
+export const JET_STAGES = ['count', 'gate', 'allocate', 'spawn'];
 // the hash rule of a jet particle's id (the retired per-face jets' base)
 const JET_RULE = 0x4a000;
 const f = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
@@ -48,6 +48,14 @@ var<workgroup> brickDemand: array<u32,64>;
     var prefix=0u; for(var lane=0u;lane<li;lane++) { prefix+=brickDemand[lane]; }
     if(t<D_BRICKS) { atomicStore(&control[J_PREFIX+t],prefix); }
     if(li==63u) { atomicStore(&control[J_COUNTS+t/64u],prefix+count); }
+  `);
+  // The couple gate's protocol (blasts.js coupleGate): [work, 1, 1, 0, work] for the pool preparation and
+  // the allocation's indirect args, so a tick that launches nothing never sweeps the particle pool.
+  if (stage === 'gate') return h + main1(`
+    var demand=0u; for(var group=0u;group<(D_BRICKS+63u)/64u;group++) { demand+=atomicLoad(&control[J_COUNTS+group]); }
+    let work=select(0u,1u,demand>0u); let base=${coupleArgsBase(g)}u;
+    atomicStore(&control[base],work); atomicStore(&control[base+1u],1u); atomicStore(&control[base+2u],1u);
+    atomicStore(&control[base+3u],0u); atomicStore(&control[base+4u],work);
   `);
   if (stage === 'allocate') return h + main1(`
     let free=atomicLoad(&control[4]); var requested=0u;
