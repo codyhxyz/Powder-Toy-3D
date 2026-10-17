@@ -192,6 +192,26 @@ class World {
     this.parts = keep;
   }
 
+  // Opt-in energy-head advection, `bernoulli` (off by default: the recorded prototype is unchanged;
+  // docs/v2/water-momentum.md). The face flux is a staggered (MAC) velocity, q/FULL cells a substep
+  // (Mei et al. 2007). Each cell's upwind face velocity on each axis (Zijlema 2019 eq. 24: the
+  // -face's when the cell's mean flux is positive, the +face's when negative), from the substep's
+  // frozen fluxes; its kinetic head ½û² in flux units², so ACC·(KE_i − KE_j)/(ACC·FULL) adds
+  // (q_up² − q²)/(2·FULL) to a face on that axis: Stelling and Duinmeijer 2003's Bernoulli
+  // approximation, which their scheme uses in contractions. Per axis, as their 1-D form: ½|u|²
+  // across axes drops the vortex force, and a fast film then throws itself off the floor
+  kinetic(Q, D) {
+    const KE = this.KE ??= [0, 1, 2].map(() => new Float64Array(this.n));
+    for (let y = 0; y < this.ny; y++) for (let z = 0; z < this.nz; z++) for (let x = 0; x < this.nx; x++) {
+      const c = this.at(x, y, z);
+      for (let a = 0; a < 3; a++) {
+        const [dx, dy, dz] = D[a], qm = this.inside(x - dx, y - dy, z - dz) ? Q[a][this.at(x - dx, y - dy, z - dz)] : 0, qp = Q[a][c];
+        const u = qm + qp > 0 ? qm : qm + qp < 0 ? qp : 0;
+        KE[a][c] = 0.5 * u * u;
+      }
+    }
+    return KE;
+  }
   head(i) { if (this.id[i] !== WATER) return 0; const f = this.fill[i]; return f <= FULL ? f / FULL : 1 + (f - FULL) / (COMP * FULL); }
   wet(x, y, z) { return this.inside(x, y, z) && this.id[this.at(x, y, z)] === WATER; }
   open(x, y, z) { const e = this.get(x, y, z); return e === AIR || e === WATER; }
@@ -201,6 +221,7 @@ class World {
   flux() {
     const { nx, ny, nz } = this;
     const Q = [this.qx, this.qy, this.qz], D = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const KE = this.bernoulli ? this.kinetic(Q, D) : null;
     for (let y = 0; y < ny; y++) for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) {
       const i = this.at(x, y, z);
       for (let a = 0; a < 3; a++) {
@@ -214,6 +235,7 @@ class World {
         // fast, so quantized fills reach an exact fixed point instead of a +-1 quantum limit cycle. In units of
         // quanta, not head: a compressed cell's quantum is 1/COMP times a free surface's
         let drive = pi - pj - (a === 1 ? 1 : 0);
+        if (KE) drive += (KE[a][i] - KE[a][j]) / (ACC * FULL);   // total (Bernoulli) head: + the axis's upwind velocity head
         const stiff = Math.max(this.fill[i] > FULL ? 1 / COMP : 1, this.fill[j] > FULL ? 1 / COMP : 1) / FULL;
         // ...and never below the drive whose damped steady flow stays under one quantum (it would stall)
         if (Math.abs(drive) < Math.max(DEADQ * stiff, 1.5 * DAMP / ACC)) drive = 0;
@@ -266,10 +288,14 @@ class World {
             // the orifice cell itself is drained below hydrostatic, so take the static head of the wettest
             // cell feeding it (its own or a neighbour's): the tank's pressure just behind the hole
             const [sx, sy, sz] = T > 0 ? [x, y, z] : [x + dx, y + dy, z + dz];
-            let hs = this.head(src);
+            // opt-in `launch` (default 'head', the above): 'total' adds each cell's upwind velocity head
+            // ½|û|²/g to its pressure head (Bernoulli's total head under `bernoulli`); 'face' launches
+            // at the face's own velocity (Mei 2007), the resident momentum the packet takes with it
+            const kin = (c) => (KE && this.launch === 'total' ? (KE[0][c] + KE[1][c] + KE[2][c]) / (ACC * FULL) : 0);
+            let hs = this.head(src) + kin(src);
             for (const [ex, ey, ez] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]])
-              if (this.wet(sx + ex, sy + ey, sz + ez)) hs = Math.max(hs, this.head(this.at(sx + ex, sy + ey, sz + ez)) - (ey > 0 ? -1 : ey < 0 ? 1 : 0));
-            const vJet = Math.sqrt(2 * G_CELLS * Math.max(hs - 0.5, 0));
+              if (this.wet(sx + ex, sy + ey, sz + ez)) { const c = this.at(sx + ex, sy + ey, sz + ez); hs = Math.max(hs, this.head(c) + kin(c) - (ey > 0 ? -1 : ey < 0 ? 1 : 0)); }
+            const vJet = this.launch === 'face' ? Math.abs(v) / FULL * TICK_HZ * SUB : Math.sqrt(2 * G_CELLS * Math.max(hs - 0.5, 0));
             this.parts.push({ x: tx + 0.5 - 0.5 * sgn * dx, y: ty + 0.5, z: tz + 0.5 - 0.5 * sgn * dz,
               vx: sgn * dx * vJet, vy: 0, vz: sgn * dz * vJet, m: Math.abs(T) });
             continue;
@@ -411,4 +437,4 @@ import { writeFileSync } from 'node:fs';
 if (MAIN) writeFileSync(fileURLToPath(new URL(`./lean-sim.out${tests.length === ALL.length ? '' : '-' + tests.join('-')}.json`, import.meta.url)), JSON.stringify(out, null, 1));
 
 // The prototype's World and constants, for tools/outcomes/engine-lean.js.
-export { World, AIR, WALL, SAND, FLOUR, WATER, FULL, TICK_HZ, CELL_M, G_MS2, G, G_CELLS, VT_SAND, SUB, FILM, DEADQ };
+export { World, AIR, WALL, SAND, FLOUR, WATER, FULL, TICK_HZ, CELL_M, G_MS2, G, G_CELLS, VT_SAND, SUB, FILM, DEADQ, ACC, DAMP };
