@@ -1,13 +1,9 @@
 // CPU-only scalar phase lookup regression. No browser, device or GPU.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { ELEMENTS, E } from '../../src/elements.js';
 import { PHASE_ROWS, phaseOffsetPerQuantum } from '../../src/v2/phase.js';
 import { phaseWGSL } from '../../src/shaders/v2/phase.js';
-import { wgslGroupingErrors } from './wgsl-grouping.mjs';
+import { wgslGroupingErrors, assertNaga } from './wgsl-grouping.mjs';
 
 // Decode the emitted array and bounds/load source independently of field().
 function decode(source, name) {
@@ -98,17 +94,11 @@ assert.ok(expected.phaseLavaOffsetPerQuantum.some(value => value < 0), 'Lava exe
 
 // Dynamic indexing fixture validates constant-array grammar and all seven
 // signed return channels on CPU Naga, including i32 extremes in the control.
-const dir = mkdtempSync(join(tmpdir(), 'phase-table-'));
-try {
-  const source = `${functions.join('\n')}\n${fixture}\n@group(0) @binding(0) var<storage,read_write> result:array<i32>;
+const source = `${functions.join('\n')}\n${fixture}\n@group(0) @binding(0) var<storage,read_write> result:array<i32>;
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid:vec3u) {
 ${Object.keys(expected).map((name, i) => `result[gid.x*8u+${i}u]=${name}(gid.x);`).join('\n')}
 result[gid.x*8u+7u]=fixture(gid.x);
 }`;
-  assert.deepEqual(wgslGroupingErrors(source), []);
-  const file = join(dir, 'phase-tables.wgsl'); writeFileSync(file, source);
-  const naga = spawnSync('naga', [file], { encoding: 'utf8' });
-  if (naga.error) throw naga.error;
-  assert.equal(naga.status, 0, naga.stderr);
-  console.log(`Phase lookups: ${PHASE_ROWS.length * functions.length} exact i32 entries (${PHASE_ROWS.length * functions.length * 4} bytes); seven bounds guards, zero switches; dynamic arrays CPU Naga valid; no GPU`);
-} finally { rmSync(dir, { recursive: true, force: true }); }
+assert.deepEqual(wgslGroupingErrors(source), []);
+assertNaga(source, 'phase tables');
+console.log(`Phase lookups: ${PHASE_ROWS.length * functions.length} exact i32 entries (${PHASE_ROWS.length * functions.length * 4} bytes); seven bounds guards, zero switches; dynamic arrays CPU Naga valid; no GPU`);

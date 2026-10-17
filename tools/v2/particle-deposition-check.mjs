@@ -1,10 +1,5 @@
 // CPU-only: execute complete emitted bodies through finite syntax/vector/atomic adapters.
 import { test } from 'node:test';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { build } from 'vite';
 import { gridLayout } from '../../src/sim.js';
 import { impactFoam } from '../../src/v2/foam.js';
 import { PHASE_ROWS, PHASE_NORMAL_MAX } from '../../src/v2/phase.js';
@@ -14,6 +9,7 @@ import {nativeDynamicsHead} from '../../src/shaders/v2.js';
 import {E,ELEMENTS} from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
 import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY} from '../../src/v2/dynamics-reference.js';
+import { importMinified } from './wgsl-grouping.mjs';
 const floatBits=v=>{const b=new ArrayBuffer(4);new Float32Array(b)[0]=v;return new Uint32Array(b)[0];};
 const g={nx:32,ny:32,nz:32,nbx:8,nby:8,nbz:8,nbricks:512,slots:32768,windowed:false},NONE=0xffffffff,S=Object.fromEntries(['integrate','elect','impact','deposit'].map(s=>[s,particlesWGSL(g,nativeDynamicsHead,s)]));
 const add=(a,b)=>a.map((v,i)=>v+(Array.isArray(b)?b[i]:b)),sub=(a,b)=>a.map((v,i)=>v-b[i]),mul=(a,b)=>a.map(v=>v*b),vec=(...v)=>v.flat().length===1?Array(3).fill(v[0]):v.flat(),copy=structuredClone;
@@ -344,18 +340,11 @@ test('actual admission drives current-to-previous fallback on exact fuel/energy 
 });
 
 test('minified emitted integrate/elect/impact/deposit parity on square and rectangular layouts',async()=>{
-  const dir=mkdtempSync(join(tmpdir(),'particle-deposition-'));
-  try {
-    const bundle=await build({configFile:false,logLevel:'warn',build:{write:false,minify:true,
-      lib:{entry:'src/shaders/v2/particles.js',formats:['es']}}});
-    const chunk=(Array.isArray(bundle)?bundle[0]:bundle).output.find(c=>c.type==='chunk'&&c.isEntry);
-    const file=join(dir,'particles.mjs');writeFileSync(file,chunk.code);
-    const minified=await import(pathToFileURL(file));
-    for(const dims of [[32,32,32],[48,16,32]])for(const stage of Object.keys(S)) {
-      const args=[gridLayout(...dims),nativeDynamicsHead,stage];
-      assert.equal(minified.particlesWGSL(...args),particlesWGSL(...args),`${stage}/${dims}`);
-    }
-  } finally {rmSync(dir,{recursive:true,force:true});}
+  const minified=await importMinified('src/shaders/v2/particles.js');
+  for(const dims of [[32,32,32],[48,16,32]])for(const stage of Object.keys(S)) {
+    const args=[gridLayout(...dims),nativeDynamicsHead,stage];
+    assert.equal(minified.particlesWGSL(...args),particlesWGSL(...args),`${stage}/${dims}`);
+  }
 });
 
 test('minimum/full/compressed packets and exact MAX_FILL energy-bearing receivers',()=>{

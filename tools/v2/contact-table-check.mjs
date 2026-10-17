@@ -1,15 +1,12 @@
 // CPU-only table-memory/accessor regression. No browser, device or GPU.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { CONTACT_ROWS, CONTACT_REACTIONS } from '../../src/v2/contact.js';
 import { CONTACT_ROW_SCHEMA, CONTACT_RX_SCHEMA, contactTableLayout, appendContactTable } from '../../src/v2/contactTable.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { v2Table, v2Rows, v2BlockWGSL, V2_CONTACT_LAYOUT, nativeDynamicsHead } from '../../src/shaders/v2.js';
 import { gridLayout } from '../../src/sim.js';
 import { ELEMENTS } from '../../src/elements.js';
+import { assertNaga } from './wgsl-grouping.mjs';
 
 const block=contactWGSL.slice(contactWGSL.indexOf('fn contactBlock('));
 assert(block.includes('let count=min(8u,arrayLength(&events));'));
@@ -118,16 +115,10 @@ const bakedWords=[...baked[2].matchAll(/\b(\d+)u/g)].map(m=>Number(m[1]));
 assert.deepEqual(bakedWords,Array.from(new Uint32Array(prefix.buffer)),'dynamics prefix bytes unchanged');
 
 // Dynamic lookup fixture and actual full foundation/contact, compiled by CPU Naga.
-const dir=mkdtempSync(join(tmpdir(),'contact-table-'));
-try {
-  for(const [name,source] of [
-    ['tables',`@group(2) @binding(2) var<storage,read> EV:array<vec4u>;\n${declarations.join('\n')}\n@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid:vec3u) {let row=ctRow(i32(gid.x));let rx=ctRx(i32(gid.y));}`],
-    ['foundation-contact',foundation],
-  ]) {
-    const file=join(dir,`${name}.wgsl`);writeFileSync(file,source);
-    const naga=spawnSync('naga',[file],{encoding:'utf8'});
-    if(naga.error) throw naga.error;
-    assert.equal(naga.status,0,naga.stderr);
-    console.log(`${name}: CPU Naga valid; no GPU`);
-  }
-} finally {rmSync(dir,{recursive:true,force:true});}
+for(const [name,source] of [
+  ['tables',`@group(2) @binding(2) var<storage,read> EV:array<vec4u>;\n${declarations.join('\n')}\n@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid:vec3u) {let row=ctRow(i32(gid.x));let rx=ctRx(i32(gid.y));}`],
+  ['foundation-contact',foundation],
+]) {
+  assertNaga(source,name);
+  console.log(`${name}: CPU Naga valid; no GPU`);
+}

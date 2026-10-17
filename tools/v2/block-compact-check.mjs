@@ -1,12 +1,6 @@
 // CPU only: emitted predicates/dispatch, original-ID geometry, shuffled replay.
 // This is not a native GPU replay, compile-time/resource or Metal speed claim.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { spawnSync } from 'node:child_process';
-import { build } from 'vite';
 import { E } from '../../src/elements.js';
 import { gridLayout, cellTexel } from '../../src/sim.js';
 import { brickCoordOf, brickIdOf, SEED_MAX, LAYOUT } from '../../src/shaders/common.js';
@@ -21,7 +15,7 @@ import { modeWGSL } from '../../src/shaders/v2/modes.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { ARGS2, V2_KERNELS, WGSL_CHECK, v2BlockWGSL, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockCompactLayout, v2Rows, v2Table } from '../../src/shaders/v2.js';
 import { buildFixture } from './frame-bench.mjs';
-import { wgslGroupingErrors } from './wgsl-grouping.mjs';
+import { wgslGroupingErrors, assertNaga, importMinified } from './wgsl-grouping.mjs';
 
 const g = gridLayout(16, 16, 16), dims = [16, 16, 16];
 const original = v2BlockWGSL(g, contactWGSL), heavy = v2BlockWGSL(g, contactWGSL, true), scan = v2BlockClassifyWGSL(g);
@@ -372,20 +366,14 @@ for (let offset = 0; offset < 8; offset++) {
 assert(Math.min(...fractions) > .73 && Math.max(...fractions) < .83);
 console.log(`INITIAL CPU ONLY eligibility ${(100 * Math.min(...fractions)).toFixed(3)}–${(100 * Math.max(...fractions)).toFixed(3)}%; no evolved/native performance claim`);
 
-const dir = mkdtempSync(join(tmpdir(), 'block-compact-'));
-try {
-  const bundle = await build({ configFile: false, logLevel: 'warn', build: { write: false, minify: true, lib: { entry: 'src/shaders/v2.js', formats: ['es'] } } });
-  const chunk = (Array.isArray(bundle) ? bundle[0] : bundle).output.find(c => c.type === 'chunk' && c.isEntry), file = join(dir, 'v2.mjs');
-  writeFileSync(file, chunk.code); const minified = await import(pathToFileURL(file));
-  for (const [name, code, emit] of [
-    ['classify', scan, m => m.v2BlockClassifyWGSL(g)],
-    ['finalize', finalizeCode, m => m.v2BlockFinalizeWGSL(g)],
-    ['heavy', heavy, m => m.v2BlockWGSL(g, contactWGSL, true)],
-    ['fallback', v2BlockWGSL(g, contactWGSL), m => m.v2BlockWGSL(g, contactWGSL)],
-  ]) {
-    assert.equal(emit(minified), code); assert.deepEqual(wgslGroupingErrors(code), []);
-    const path = join(dir, `${name}.wgsl`); writeFileSync(path, code);
-    const naga = spawnSync('naga', [path], { encoding: 'utf8' }); if (naga.error) throw naga.error; assert.equal(naga.status, 0, naga.stderr);
-  }
-} finally { rmSync(dir, { recursive: true, force: true }); }
+const minified = await importMinified('src/shaders/v2.js');
+for (const [name, code, emit] of [
+  ['classify', scan, m => m.v2BlockClassifyWGSL(g)],
+  ['finalize', finalizeCode, m => m.v2BlockFinalizeWGSL(g)],
+  ['heavy', heavy, m => m.v2BlockWGSL(g, contactWGSL, true)],
+  ['fallback', v2BlockWGSL(g, contactWGSL), m => m.v2BlockWGSL(g, contactWGSL)],
+]) {
+  assert.equal(emit(minified), code); assert.deepEqual(wgslGroupingErrors(code), []);
+  assertNaga(code, name);
+}
 console.log('Production minified classifier/finalizer/heavy identical; CPU Naga/grouping pass; no GPU');

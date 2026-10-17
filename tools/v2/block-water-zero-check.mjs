@@ -1,12 +1,6 @@
 // CPU-only identity proof: actual emitted predicate + production contacts and
 // mechanical/store source guards. NOT a full native-block interpreter/GPU replay.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { spawnSync } from 'node:child_process';
-import { build } from 'vite';
 import { E, K, ELEMENTS } from '../../src/elements.js';
 import * as C from '../../src/v2/contact.js';
 import { PHASE_ROWS } from '../../src/v2/phase.js';
@@ -18,7 +12,7 @@ import { v2BlockWGSL, v2Rows, WGSL_CHECK, v2SupportWGSL } from '../../src/shader
 import { materialStorageWGSL } from '../../src/shaders/v2/state.js';
 import { modeWGSL } from '../../src/shaders/v2/modes.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
-import { wgslGroupingErrors } from './wgsl-grouping.mjs';
+import { wgslGroupingErrors, assertNaga, importMinified } from './wgsl-grouping.mjs';
 
 // Changes to these assumptions require re-proving the shortcut, not silently
 // treating a new WATER rule/calibration as an identity.
@@ -196,15 +190,9 @@ note(positions[0], original, aerated, () => [E.WATER, 20, 0, 0],
 assert.deepEqual(marked, ['VISIBLE', 'LEGACY'], 'liquid age inequality must still reach the real visibility marks');
 console.log('Strict negative domain, all modes/corner permutations, mechanical/boundary/custom ABI and actual liquid store/noteVisible guards passed');
 
-const dir = mkdtempSync(join(tmpdir(), 'block-water-zero-'));
-try {
-  const bundle = await build({ configFile: false, logLevel: 'warn', build: { write: false, minify: true, lib: { entry: 'src/shaders/v2.js', formats: ['es'] } } });
-  const chunk = (Array.isArray(bundle) ? bundle[0] : bundle).output.find(x => x.type === 'chunk' && x.isEntry), file = join(dir, 'v2.mjs');
-  writeFileSync(file, chunk.code); const minified = await import(pathToFileURL(file));
-  assert.equal(minified.v2BlockWGSL(g, contactWGSL), shader);
-  assert(!minified.v2BlockWGSL(g, contactWGSL + '\n').includes('var zeroWater'));
-  assert.deepEqual(wgslGroupingErrors(shader), []);
-  const wgsl = join(dir, 'block.wgsl'); writeFileSync(wgsl, shader);
-  const naga = spawnSync('naga', [wgsl], { encoding: 'utf8' }); if (naga.error) throw naga.error; assert.equal(naga.status, 0, naga.stderr);
-} finally { rmSync(dir, { recursive: true, force: true }); }
+const minified = await importMinified('src/shaders/v2.js');
+assert.equal(minified.v2BlockWGSL(g, contactWGSL), shader);
+assert(!minified.v2BlockWGSL(g, contactWGSL + '\n').includes('var zeroWater'));
+assert.deepEqual(wgslGroupingErrors(shader), []);
+assertNaga(shader, 'block');
 console.log('Full minified production block byte-identical; CPU Naga and Chromium expression grouping valid; no GPU/performance claim');

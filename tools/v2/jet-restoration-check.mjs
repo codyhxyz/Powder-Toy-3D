@@ -5,12 +5,7 @@
 // amounts are declared fixtures. Actual mode helper bodies are executed too.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
-import { build } from 'vite';
+import { readFileSync } from 'node:fs';
 import { E, ELEMENTS, K } from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
 import { PHASE_ROWS, PHASE_NORMAL_MAX } from '../../src/v2/phase.js';
@@ -19,7 +14,7 @@ import { CELL_M, GRAVITY, dynamicsRows, packParticle } from '../../src/v2/dynami
 import { jetsWGSL, JET_STAGES } from '../../src/shaders/v2/jets.js';
 import { particlesWGSL } from '../../src/shaders/v2/particles.js';
 import { nativeDynamicsHead, liquidTransportWGSL, v2GatherWGSL, SUB, TICK_HZ } from '../../src/shaders/v2.js';
-import { wgslGroupingErrors } from './wgsl-grouping.mjs';
+import { wgslGroupingErrors, assertNaga, importMinified } from './wgsl-grouping.mjs';
 const { FULL, MAX_FILL, makeMaterial, cFill, cid, ctypeOf, cTq, payloadOf, energyOf, share, packetOwnedEnergy, withPacketEnergy, withPayload, energyPacketFits, isLiquid, isConductor }=L;
 // Odd CPU fixture bounds expose an exact cell-center radial singularity; emitted
 // modules still use real production square/rectangular grid layouts below.
@@ -306,20 +301,16 @@ test('actual spawn: signed faces, position, accepted masks, partial source, free
 });
 
 test('minification parity; square/rectangular CPU Naga, eight storage max and 48-byte ABI',async()=>{
-  const dir=mkdtempSync(join(tmpdir(),'jet-restoration-'));
-  try {
-    for(const [entry,generate] of [['jets',jetsWGSL],['particles',particlesWGSL]]) {
-      const bundle=await build({configFile:false,logLevel:'warn',build:{write:false,minify:true,lib:{entry:`src/shaders/v2/${entry}.js`,formats:['es']}}});
-      const chunk=(Array.isArray(bundle)?bundle[0]:bundle).output.find(c=>c.type==='chunk'&&c.isEntry);
-      const file=join(dir,`${entry}.mjs`);writeFileSync(file,chunk.code);const minified=await import(pathToFileURL(file));
-      for(const dims of [[32,32,32],[48,16,32]])for(const stage of entry==='jets'?JET_STAGES:['integrate']) {
-        const args=entry==='jets'?[gridLayout(...dims),stage]:[gridLayout(...dims),nativeDynamicsHead,stage];
-        assert.equal(minified[`${entry}WGSL`](...args),generate(...args),`${entry}/${stage} minification parity`);
-      }
+  for(const [entry,generate] of [['jets',jetsWGSL],['particles',particlesWGSL]]) {
+    const minified=await importMinified(`src/shaders/v2/${entry}.js`);
+    for(const dims of [[32,32,32],[48,16,32]])for(const stage of entry==='jets'?JET_STAGES:['integrate']) {
+      const args=entry==='jets'?[gridLayout(...dims),stage]:[gridLayout(...dims),nativeDynamicsHead,stage];
+      assert.equal(minified[`${entry}WGSL`](...args),generate(...args),`${entry}/${stage} minification parity`);
     }
-    for(const dims of [[32,32,32],[48,16,32]])for(const [name,code] of [...JET_STAGES.map(s=>[s,jetsWGSL(gridLayout(...dims),s)]),['integrate',particlesWGSL(gridLayout(...dims),nativeDynamicsHead,'integrate')]]) {
+  }
+  for(const dims of [[32,32,32],[48,16,32]])for(const [name,code] of [...JET_STAGES.map(s=>[s,jetsWGSL(gridLayout(...dims),s)]),['integrate',particlesWGSL(gridLayout(...dims),nativeDynamicsHead,'integrate')]]) {
     assert.deepEqual(wgslGroupingErrors(code),[]);assert.ok([...code.matchAll(/var<storage,/g)].length<=8);
     assert.match(code,/struct DParticle \{ position: vec3f, id: u32, velocity: vec3f, c0: u32, tail: vec4u \}/);
-    const file=join(dir,`${name}-${dims.join('x')}.wgsl`);writeFileSync(file,code);const result=spawnSync('naga',[file],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
-  }} finally {rmSync(dir,{recursive:true,force:true});}
+    assertNaga(code,name);
+  }
 });
