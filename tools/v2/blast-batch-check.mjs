@@ -10,14 +10,15 @@ import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
 import { blastsWGSL, externalBlastBase, RESET_SELECTION } from '../../src/shaders/v2/blasts.js';
 const NONE=0xffffffff, BATCH_DEFAULT=8;
-// eventList and its listArgs (v2lists_events) build the first select's brick list.
-const SELECTION=['reset','select','workArgs','eventList','v2lists_events'];
+// eventList and its listArgs (events) build the first select's brick list.
+const SELECTION=['reset','select','workArgs','eventList','events'];
 // Straight-line integer WGSL → JS, as allocation-check executes workArgs.
 const js=code=>code.replace(/\b(\d+)u\b/g,'$1')
   .replace(/atomicLoad\(&control\[([^\]]+)\]\)/g,'control[$1]')
   .replace(/atomicStore\(&control\[([^\]]+)\],([^;]+)\);/g,'control[$1]=$2;');
-const body=code=>code.slice(code.lastIndexOf('fn main() {')+'fn main() {'.length,-1);
-const run=(code,control,P)=>Function('control','P','D_NONE','select',js(code))(control,P,NONE,(no,yes,c)=>c?yes:no);
+const body=code=>{ const s=code.trimEnd(); return s.slice(s.lastIndexOf('fn main() {')+'fn main() {'.length,-1); };
+// workArgs writes the dispatch args itself (the lists layout): it runs on both buffers.
+const run=(code,control,P,args=new Uint32Array(64))=>Function('control','args','P','D_NONE','select',js(code))(control,args,P,NONE,(no,yes,c)=>c?yes:no);
 
 function recorder() {
   globalThis.GPUBufferUsage={STORAGE:1,COPY_SRC:2,COPY_DST:4,INDIRECT:8};
@@ -29,7 +30,7 @@ function recorder() {
     bindGroup:(layout,entries)=>({layout,entries}),
     kernel(d){return {...d,ready:Promise.resolve(),dispatch(frame,size,data){
       d.params.pack(data.params); // strict uniform packing of every recorded field
-      commands.push({stage:d.name.replace('v2blasts_',''),code:d.code,size,params:data.params});
+      commands.push({stage:d.name.replace(/^v2(blasts|lists)_/,''),code:d.code,size,params:data.params});
     }};},
     frame:{clear(){},copy(src,so,dst,dof,n){commands.push({copy:[src,so,dst,dof,n]});}},
     readback:{buffer:(b,o,n)=>Promise.resolve(b.bytes.slice(o,o+n))},
@@ -45,7 +46,7 @@ function reference(d,tick) {
   for (let n=0;n<d.blastBatch;n++) {
     d._record('blasts','reset',1,tick);
     d._record('blasts','select',Math.ceil(d.g.slots/64),tick);
-    d._record('blasts','workArgs',1,tick);
+    d._record('lists','workArgs',1,tick); // the reference's copies below then write the same args
     d.gpu.frame.copy(d.control,20*4,d.dispatchArgs,0,48);
     d.gpu.frame.copy(d.control,28*4,d.dispatchArgs,48,4);
     const size=offset=>({indirect:d.dispatchArgs,offset});
@@ -75,7 +76,8 @@ function replay(commands,buffers,state,g) {
     if(!groups && !listed) continue; // zero-size dispatches are no-ops (WebGPU)
     if(c.stage==='select') state.selects++;
     if(!SELECTION.includes(c.stage)) work.push([c.stage,P.mode,hash()]);
-    if(c.stage==='reset' || c.stage==='workArgs') run(body(c.code),control,P);
+    if(c.stage==='reset') run(body(c.code),control,P);
+    else if(c.stage==='workArgs') run(body(c.code),control,P,args);
     else if(c.stage==='select') for(const [slot,cell] of state.cells) {
       if(!cell.bits || (!listed && slot>=groups*64)) continue; // dThread covers groups*64 slots
       control[2]++;state.wakes.add(slot);if(cell.bits&4) control[17]++;

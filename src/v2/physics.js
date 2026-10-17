@@ -367,9 +367,8 @@ export class PhysicsV2 {
     run(k.v2column, ind(ARGS2.COLS));
     run(k.v2support, ind(ARGS2.BRICKS));
     if (this.blockCompact) {
-      // Support above MUST cover every original target before the identity scan.
-      // Clear only the tail header, not the frozen cell-indexed atmosphere.
-      f.clear(this.liquidScratch, this.blockCompact.header, 16);
+      // Support above MUST cover every original target before the identity scan. The header's
+      // count starts each tick at 0: finalize restarts it after publishing it (v2BlockFinalizeWGSL).
       run(k.v2blockClassify, ind(ARGS2.BLOCKS));
       run(k.v2blockFinalize, [1, 1, 1], [gpu.emptyGroup, gpu.emptyGroup, groups.blockFinalize]);
       run(k.v2block, ind(ARGS2.COMPACT));

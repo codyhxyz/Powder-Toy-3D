@@ -7,7 +7,7 @@ import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
 import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase, storageLayout } from '../shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, COUPLE_MODE,
-  coupleArgsBase, COUPLE_ARGS_WORDS, COUPLE_ARGS, listControl, LIST_NAMES, LIST_ARGS, DISPATCH_ARGS_BYTES, listArgsWGSL } from '../shaders/v2/blasts.js';
+  COUPLE_ARGS, listControl, LIST_ARGS, DISPATCH_ARGS_BYTES, LISTS_STAGES, listsStageWGSL } from '../shaders/v2/blasts.js';
 import { AIR as AIR_MODE, EDGE } from '../simModes.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M } from './dynamics-reference.js';
@@ -125,9 +125,9 @@ export class NativeDynamics {
     };
     const lists=bg(L.lists,[this.control,this.dispatchArgs],'native list args'); this.groups.lists=[lists,lists];
     this.kernels={};
-    for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES],['lists',(g,_head,name)=>listArgsWGSL(g,name),LIST_NAMES]]) {
+    for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES],['lists',(g,_head,name)=>listsStageWGSL(g,name),LISTS_STAGES]]) {
       for (const stage of stages) {
-        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','workArgs','externalBegin','externalGate','coupleGate'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage)) || family==='lists';
+        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','externalBegin','externalGate'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage)) || family==='lists';
         const name=`v2${family}_${stage}`;
         this.kernels[`${family}/${stage}`]=gpu.kernel({name,build:'idle',code:generate(g,owner.nativeDynamics.head,stage),
           params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
@@ -216,9 +216,7 @@ export class NativeDynamics {
       blastFade:+!!s?.fade,blastMasked:+!!s?.maskWords,blastMaskOrigin:s?.maskOrigin??[0,0,0]};
     if(s?.maskWords) this.gpu.write(this.control,externalMaskBase(this.g)*4,s.maskWords);
     this._record('blasts','externalBegin',1,tick,p);
-    this._record('blasts','workArgs',1,tick,p);
-    this.gpu.frame.copy(this.control,20*4,this.dispatchArgs,0,48);
-    this.gpu.frame.copy(this.control,28*4,this.dispatchArgs,48,4);
+    this._record('lists','workArgs',1,tick,p); // writes the batch's dispatch args itself: no copy
     for(const stage of ['plan','externalParticlePlan','sum','normalize','damagePlan','count','allocate','externalGate','externalParticleApply','apply','finish']) {
       if(stage==='externalParticlePlan' || stage==='externalParticleApply') { this._record('blasts',stage,{indirect:this.dispatchArgs,offset:48},tick,p);continue; }
       const offset=['normalize','allocate','externalGate','finish'].includes(stage)?32:
@@ -241,11 +239,9 @@ export class NativeDynamics {
       // finds exactly what it found. Later batches select through the last
       // batch's grid args (zero without work); that finish reset the selection.
       this._record('blasts','select',n?size(0):this._listed('eventCells'),tick,n?{}:{substep:1});
-      this._record('blasts','workArgs',1,tick);
-      // Separate INDIRECT buffer: never bind a read_write storage buffer as
-      // the indirect source of that same dispatch (WebGPU usage conflict).
-      this.gpu.frame.copy(this.control,20*4,this.dispatchArgs,0,48);
-      this.gpu.frame.copy(this.control,28*4,this.dispatchArgs,48,4);
+      // The args go straight into the separate INDIRECT buffer (the lists layout binds it only
+      // there): never a read_write binding of the indirect source of the same dispatch.
+      this._record('lists','workArgs',1,tick);
       this._record('blasts','plan',size(0),tick);
       this._record('blasts','sum',size(16),tick);
       this._record('blasts','normalize',size(32),tick);
@@ -281,8 +277,7 @@ export class NativeDynamics {
   _coupleAllocate(tick) {
     const p={mode:COUPLE_MODE},args=offset=>({indirect:this.dispatchArgs,offset});
     this._record('blasts','count',Math.ceil(this.g.nbricks/64),tick,p);
-    this._record('blasts','coupleGate',1,tick,p);
-    this.gpu.frame.copy(this.control,coupleArgsBase(this.g)*4,this.dispatchArgs,COUPLE_ARGS,COUPLE_ARGS_WORDS*4);
+    this._record('lists','coupleGate',1,tick,p);
     this._record('blasts','allocate',args(COUPLE_ARGS),tick,p);
     this._record('blasts','apply',this._listed('windCells'),tick,p); // fractures need no allocation
     this._record('blasts','children',args(COUPLE_ARGS+16),tick,p);

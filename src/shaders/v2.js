@@ -794,7 +794,7 @@ fn supportAt(position: vec3i) -> bool {
 }
 ${MAIN} {
   ${compact ? `let index = foldId(wg, nwg) * 64u + li;
-  if (index >= liquidScratch[${tail.header / 16}u].x) { return; }
+  if (index >= liquidScratch[${tail.header / 16}u].y) { return; }
   let t = liquidScratch[${tail.list / 16}u + index / 4u][index % 4u];
   let e = t / 8u;` : 'let e = foldId(wg, nwg) * 8u + li / 8u;'}
   if (e >= useAwake()) { return; }
@@ -988,7 +988,10 @@ export const v2BlockFinalizeWGSL = g => {
 @group(2) @binding(0) var<storage, read_write> scratch: array<u32>;
 @group(2) @binding(1) var<storage, read_write> args: array<u32>;
 @compute @workgroup_size(1) fn main() {
+  // classify's count: published to block (header .y) and restarted for the next tick's classify,
+  // so no clear splits the tick's compute pass.
   let count = scratch[${tail.header / 4}u];
+  scratch[${tail.header / 4 + 1}u] = count; scratch[${tail.header / 4}u] = 0u;
   let groups = (count + 63u) / 64u;
   let y = max(1u, (groups + 65534u) / 65535u);
   args[${ARGS2.COMPACT}u] = (groups + y - 1u) / y;

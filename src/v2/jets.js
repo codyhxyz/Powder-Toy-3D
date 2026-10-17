@@ -1,6 +1,6 @@
 import { fold } from '../gpu/kernels.js';
 import { jetsWGSL, JETS_LAYOUT, JET_STAGES, DynamicParams } from '../shaders/v2/jets.js';
-import { coupleArgsBase, COUPLE_ARGS, COUPLE_ARGS_WORDS } from '../shaders/v2/blasts.js';
+import { COUPLE_ARGS } from '../shaders/v2/blasts.js';
 
 /** R14 jets on column runs (src/shaders/v2/jets.js): launches the cells the pair stages marked. Shares
  * the native 48 B records and the canonical free slots with NativeDynamics; owns no particle pool. */
@@ -27,7 +27,7 @@ export class NativeJets {
     for (const stage of JET_STAGES) {
       const count = stage === 'gate' ? [1, 1, 1] : stage === 'allocate' ? gated : stage === 'count' ? perBrick : brickGroups;
       if (stage === 'allocate') {
-        o.gpu.frame.copy(d.control, coupleArgsBase(o.g) * 4, d.dispatchArgs, COUPLE_ARGS, COUPLE_ARGS_WORDS * 4);
+        d._record('lists', 'publishCouple', 1, tick); // the gate's words into the args: no copy
         d._prepareAllocation(tick, {}, gated);
       }
       const k = this.kernels[stage];

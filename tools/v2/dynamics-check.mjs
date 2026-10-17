@@ -273,7 +273,8 @@ test('DUST/SING pressure-derived energy reproduces prescribed targets and vacuum
 });
 test('unused blast batches indirect-dispatch zero work with separate nonaliased args',async()=>{
   const {owner,calls}=mockOwner(),d=new NativeDynamics(owner);await d.ready;d.consumeMaterialEvents(1);
-  assert.equal(calls.filter(c=>c.name==='v2blasts_workArgs').length,8);
+  // workArgs writes each batch's dispatch args itself (the lists layout), no copy
+  assert.equal(calls.filter(c=>c.name==='v2lists_workArgs').length,8);
   for(const c of calls.filter(c=>['v2blasts_plan','v2blasts_apply','v2blasts_allocate','v2blasts_children'].includes(c.name))) {
     assert.equal(c.size.indirect,d.dispatchArgs);assert.notEqual(c.size.indirect,d.control);
   }

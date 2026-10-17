@@ -74,6 +74,48 @@ fn dWindListed(b: u32) -> bool {
 }
 `;
 }
+// The one-thread stages that write indirect args, in listArgs' two-buffer layout (control, dispatch
+// args): each writes the args it decides directly, so no copy splits the tick's compute pass.
+export const LISTS_STAGES = [...LIST_NAMES, 'workArgs', 'coupleGate', 'publishCouple'];
+const listsHead = `${DynamicParams.wgsl}
+@group(3) @binding(1) var<uniform> P: DynamicParams;
+@group(1) @binding(0) var<storage, read_write> control: array<u32>;
+@group(1) @binding(1) var<storage, read_write> args: array<u32>;
+const D_NONE: u32 = 0xffffffffu;`;
+export function listsStageWGSL(g, name) {
+  if (LIST_NAMES.includes(name)) return listArgsWGSL(g, name);
+  const [cells0, cells1] = fold(Math.ceil(g.slots / 64)), [bricks0, bricks1] = fold(Math.ceil(g.nbricks / 64));
+  // A batch's work: a selected source, or (outside mode 14) a pending grid neutron or children. The
+  // saved control words 20..30 keep the args; the dispatch args get them at 0, 16, 32 and 48.
+  if (name === 'workArgs') return `${listsHead}
+@compute @workgroup_size(1) fn main() {
+  let hasWork=control[3]!=D_NONE || (P.mode!=14u && (control[17]>0u || control[18]>0u));
+  let cells=select(0u,${cells0}u,hasWork); let bricks=select(0u,${bricks0}u,hasWork); let one=select(0u,1u,hasWork);
+  control[20]=cells; control[21]=${cells1}u; control[22]=1u; control[24]=bricks; control[25]=${bricks1}u; control[26]=1u;
+  control[28]=one; control[29]=1u; control[30]=1u;
+  args[0]=cells; args[1]=${cells1}u; args[2]=1u; args[4]=bricks; args[5]=${bricks1}u; args[6]=1u;
+  args[8]=one; args[9]=1u; args[10]=1u; args[12]=one;
+}
+`;
+  // The air tick's couple run (dynamics.js _coupleAllocate), after count. With nothing requested
+  // and no live particle, preparation would find every slot free and no neutron parent, and the
+  // allocator turn all-zero counts into all-zero bases: write the totals they would, zero their args.
+  if (name === 'coupleGate') return `${listsHead}
+@compute @workgroup_size(1) fn main() {
+  var demand=0u; for(var group=0u;group<${Math.ceil(g.nbricks/64)}u;group++) { demand+=control[${SPAWN_PREFIX + g.nbricks}u+group]; }
+  let work=select(0u,1u,demand>0u || control[0]>0u);
+  if(work==0u) { control[4]=${PARTICLE_CAP}u; control[5]=0u; }
+  args[${COUPLE_ARGS / 4}u]=work; args[${COUPLE_ARGS / 4 + 1}u]=1u; args[${COUPLE_ARGS / 4 + 2}u]=1u; args[${COUPLE_ARGS / 4 + 4}u]=work;
+}
+`;
+  // The jets' gate words ([work, 1, 1, 0, work] at coupleArgsBase) into the couple args.
+  if (name === 'publishCouple') return `${listsHead}
+@compute @workgroup_size(1) fn main() {
+  for (var i=0u;i<${COUPLE_ARGS_WORDS}u;i++) { args[${COUPLE_ARGS / 4}u+i]=control[${coupleArgsBase(g)}u+i]; }
+}
+`;
+  throw new Error(`Unknown lists stage ${name}`);
+}
 // One thread: a list's builders are done; publish its length and dispatch args, start it over.
 export function listArgsWGSL(g, name) {
   const L = listControl(g), base = L.lists[name];
@@ -271,14 +313,6 @@ export function blastsWGSL(g,nativeHead,stage) {
     let m=loadMaterial(t);
     if ((events[t]&1u) != 0u && (dChargeEnergy(m)>0.0 || dEvaporates(m)) && energyFits(dProduct(m),dProductEnergy(m))) { atomicMin(&control[3],t); }
   `,'select(dThread(wg,nwg,li),dListedCell(LIST_EVENTS,wg,nwg,li),P.substep==1u)');
-  if (stage === 'workArgs') return h + main1(`
-    let hasWork=atomicLoad(&control[3])!=D_NONE || (P.mode!=14u && (atomicLoad(&control[17])>0u || atomicLoad(&control[18])>0u));
-    atomicStore(&control[20],select(0u,${fold(Math.ceil(g.slots/64))[0]}u,hasWork));
-    atomicStore(&control[21],${fold(Math.ceil(g.slots/64))[1]}u); atomicStore(&control[22],1u);
-    atomicStore(&control[24],select(0u,${fold(Math.ceil(g.nbricks/64))[0]}u,hasWork));
-    atomicStore(&control[25],${fold(Math.ceil(g.nbricks/64))[1]}u); atomicStore(&control[26],1u);
-    atomicStore(&control[28],select(0u,1u,hasWork)); atomicStore(&control[29],1u); atomicStore(&control[30],1u);
-  `);
   if (stage === 'plan') return h + main64(/* wgsl */ `
     if (t >= D_SLOTS) { return; }
     let p = cellOf(t); let m = loadMaterial(t); let id = cid(m.core); let k = cls(id);
@@ -471,17 +505,6 @@ var<workgroup> brickDemand: array<u32,64>;
     if(t<D_BRICKS && (P.mode!=${COUPLE_MODE}u || n>0u)) { atomicStore(&control[D_SPAWN_PREFIX+t],prefix); }
     if(li==63u) { atomicStore(&control[D_SPAWN_COUNTS+t/64u],prefix+n); }
   `);
-  // The air tick's couple run (dynamics.js _coupleAllocate), after count. With nothing requested
-  // and no live particle, preparation would find every slot free and no neutron parent, and the
-  // allocator turn all-zero counts into all-zero bases: write the totals they would, skip them.
-  if (stage === 'coupleGate') return h + main1(`
-    var demand=0u; for(var group=0u;group<${Math.ceil(g.nbricks/64)}u;group++) { demand+=atomicLoad(&control[D_SPAWN_COUNTS+group]); }
-    let work=select(0u,1u,demand>0u || atomicLoad(&control[0])>0u);
-    if(work==0u) { atomicStore(&control[4],D_CAP); atomicStore(&control[5],0u); }
-    let base=${coupleArgsBase(g)}u;
-    atomicStore(&control[base],work); atomicStore(&control[base+1u],1u); atomicStore(&control[base+2u],1u);
-    atomicStore(&control[base+3u],0u); atomicStore(&control[base+4u],work);
-  `);
   if (stage === 'freeCount') return h + `
 var<workgroup> freeMasks: array<atomic<u32>,2>;
 var<workgroup> childSum: atomic<u32>;
@@ -660,9 +683,9 @@ var<workgroup> childCounts: array<u32,64>;
   `);
   throw new Error(`Unknown blast stage ${stage}`);
 }
-export const BLAST_STAGES = [...ALLOCATION_STAGES,'coupleGate','eventList','reset','select','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','workArgs','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply'];
+export const BLAST_STAGES = [...ALLOCATION_STAGES,'eventList','reset','select','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply'];
 
 export const WGSL_CHECK = BLAST_STAGES.map(stage => ({ name: `v2blasts_${stage}`, kind: 'compute',
   code: g => blastsWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,BLASTS_LAYOUT,'EMPTY'], tool: true }));
-WGSL_CHECK.push(...LIST_NAMES.map(name => ({ name: `v2lists_${name}`, kind: 'compute',
-  code: g => listArgsWGSL(g, name), layouts: () => [V2_DYNAMICS_LAYOUT, storageLayout(2), 'EMPTY'], tool: true })));
+WGSL_CHECK.push(...LISTS_STAGES.map(name => ({ name: `v2lists_${name}`, kind: 'compute',
+  code: g => listsStageWGSL(g, name), layouts: () => [V2_DYNAMICS_LAYOUT, storageLayout(2), 'EMPTY'], tool: true })));

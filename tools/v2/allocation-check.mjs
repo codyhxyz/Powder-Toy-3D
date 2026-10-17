@@ -9,7 +9,7 @@ import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js'
 import { CONTROL } from '../../src/shaders/v2/particles.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 import { ALLOCATION_CHUNKS, ALLOCATION_STAGES, allocationScratchBase, controlWords,
-  externalMaskBase, externalMaskWords, blastsWGSL, SPAWN_PREFIX, COUPLE_ARGS, COUPLE_MODE, DISPATCH_ARGS_BYTES, LIST_ARGS } from '../../src/shaders/v2/blasts.js';
+  externalMaskBase, externalMaskWords, blastsWGSL, SPAWN_PREFIX, COUPLE_ARGS, COUPLE_MODE, DISPATCH_ARGS_BYTES, LIST_ARGS, listsStageWGSL } from '../../src/shaders/v2/blasts.js';
 const NONE=0xffffffff, WORDS=12;
 const fresh=()=>({freeList:new Uint32Array(CAP).fill(0xdeadbeef),childPrefixes:new Uint32Array(CAP),control4:0});
 function serialPool(records) {
@@ -137,21 +137,16 @@ test('backpressure, grid-before-children, held clearing and immutable external r
 
 // Execute only the generated workArgs straight-line integer subset on the CPU.
 // The predicate and all three stored dispatch dimensions come from production WGSL.
-function executeWorkArgs(source,control,P) {
-  const body=source.slice(source.lastIndexOf('fn main() {')+'fn main() {'.length,-1)
-    .replace(/\b(\d+)u\b/g,'$1')
-    .replace(/atomicLoad\(&control\[([^\]]+)\]\)/g,'control[$1]')
-    .replace(/atomicStore\(&control\[([^\]]+)\],([^;]+)\);/g,'control[$1]=$2;');
-  Function('control','P','D_NONE','select',body)(control,P,NONE,(no,yes,condition)=>condition?yes:no);
+// They now write the dispatch args themselves (the lists layout): run both buffers.
+const mainBody=source=>{ const s=source.trimEnd(); return s.slice(s.lastIndexOf('fn main() {')+'fn main() {'.length,-1).replace(/\b(0x[\da-f]+|\d+)u\b/gi,'$1'); };
+function executeWorkArgs(source,control,args,P) {
+  Function('control','args','P','D_NONE','select',mainBody(source))(control,args,P,NONE,(no,yes,condition)=>condition?yes:no);
 }
 // The couple gate is integer code with one constant-bound loop: run it as JS too.
-function executeCoupleGate(source,control,g) {
-  const body=source.slice(source.lastIndexOf('fn main() {')+'fn main() {'.length,-1)
-    .replace(/\b(\d+)u\b/g,'$1')
-    .replace(/atomicLoad\(&control\[([^\]]+)\]\)/g,'control[$1]')
-    .replace(/atomicStore\(&control\[([^\]]+)\],([^;]+)\);/g,'control[$1]=$2;');
-  Function('control','D_SPAWN_COUNTS','D_CAP','select',body)(control,SPAWN_PREFIX+g.nbricks,CAP,(no,yes,condition)=>condition?yes:no);
+function executeCoupleGate(source,control,args) {
+  Function('control','args','select',mainBody(source))(control,args,(no,yes,condition)=>condition?yes:no);
 }
+const listBuffers=data=>data.bind[1].entries.map(e=>new Uint32Array(e.resource.buffer.bytes));
 function recorder(gate=()=>Promise.resolve()) {
   globalThis.GPUBufferUsage={STORAGE:1,COPY_SRC:2,COPY_DST:4,INDIRECT:8};
   const calls=[],descriptors=[],copies=[];
@@ -162,8 +157,8 @@ function recorder(gate=()=>Promise.resolve()) {
     bindGroup:(layout,entries)=>({layout,entries}),
     kernel(d){descriptors.push(d);return {...d,ready:gate(d.name),dispatch(frame,size,data){
       d.params.pack(data.params);
-      if(d.name==='v2blasts_workArgs') executeWorkArgs(d.code,new Uint32Array(data.bind[1].entries[3].resource.buffer.bytes),data.params);
-      if(d.name==='v2blasts_coupleGate') executeCoupleGate(d.code,new Uint32Array(data.bind[1].entries[3].resource.buffer.bytes),g);
+      if(d.name==='v2lists_workArgs') executeWorkArgs(d.code,...listBuffers(data),data.params);
+      if(d.name==='v2lists_coupleGate') executeCoupleGate(d.code,...listBuffers(data));
       const args=size?.indirect?Array.from(new Uint32Array(size.indirect.bytes,size.offset??0,3)):size;
       calls.push({name:d.name,size,args,...data});
     }};},
@@ -227,7 +222,7 @@ test('the couple gate skips pool preparation exactly when nothing is requested a
     calls.length=0;control.fill(0,counts,counts+groups);control[counts+groups-1]=demand;control[0]=live;control[4]=0xabc;control[5]=0xdef;
     d._coupleAllocate(5);
     const names=calls.map(c=>c.name);
-    assert.deepEqual(names,['v2blasts_count','v2blasts_coupleGate',...ALLOCATION_STAGES.map(s=>`v2blasts_${s}`),'v2blasts_allocate','v2blasts_apply','v2blasts_children']);
+    assert.deepEqual(names,['v2blasts_count','v2lists_coupleGate',...ALLOCATION_STAGES.map(s=>`v2blasts_${s}`),'v2blasts_allocate','v2blasts_apply','v2blasts_children']);
     assert.ok(calls.every(c=>c.params.mode===COUPLE_MODE));
     const args=Object.fromEntries(calls.filter(c=>c.size?.indirect && c.name!=='v2blasts_apply').map(c=>[c.name,c.args]));
     const w=work?1:0;
@@ -237,9 +232,9 @@ test('the couple gate skips pool preparation exactly when nothing is requested a
     assert.deepEqual([control[4],control[5]],work?[0xabc,0xdef]:[CAP,0]);
   }
   // red: a gate that ignored live particles would skip a pool with neutron parents
-  const code=blastsWGSL(g,nativeDynamicsHead,'coupleGate');
-  assert.match(code,/demand>0u \|\| atomicLoad\(&control\[0\]\)>0u/);
-  const red=new Uint32Array(control.length);red[0]=1;executeCoupleGate(code.replace('|| atomicLoad(&control[0])>0u',''),red,g);
+  const code=listsStageWGSL(g,'coupleGate');
+  assert.match(code,/demand>0u \|\| control\[0\]>0u/);
+  const red=new Uint32Array(control.length),redArgs=new Uint32Array(DISPATCH_ARGS_BYTES/4);red[0]=1;executeCoupleGate(code.replace('|| control[0]>0u',''),red,redArgs);
   assert.equal(red[4],CAP,'a gate without the live test would wrongly declare a live pool free');
   d.dispose();
 });
@@ -292,9 +287,7 @@ test('generated exact hasWork predicate gates all three prep dimensions, includi
   ]) {
     control[3]=source;control[17]=neutrons;control[18]=children;
     calls.length=0;copies.length=0;
-    d._record('blasts','workArgs',1,3,{mode});
-    d.gpu.frame.copy(d.control,28*4,d.dispatchArgs,32,12);
-    d.gpu.frame.copy(d.control,28*4,d.dispatchArgs,48,4);
+    d._record('lists','workArgs',1,3,{mode}); // writes args 32 and 48 itself
     const priorCopies=copies.length;
     d._record('blasts','allocate',{indirect:d.dispatchArgs,offset:32},3,{mode});
     assertPrepared(calls,1);
@@ -309,8 +302,8 @@ test('generated exact hasWork predicate gates all three prep dimensions, includi
   for(const c of emptyPrep) assert.deepEqual(c.args,c.name==='v2blasts_freeScan'?[0,1,1]:[0,1024,1]);
   // A modular raw-neutron sum of zero was never an absence predicate. A
   // selected source or pending grid neutron must still run preparation.
-  const code=blastsWGSL(d.g,nativeDynamicsHead,'workArgs');
-  assert.match(code,/let hasWork=atomicLoad\(&control\[3\]\)!=D_NONE \|\| \(P.mode!=14u && \(atomicLoad\(&control\[17\]\)>0u \|\| atomicLoad\(&control\[18\]\)>0u\)\)/);
+  const code=listsStageWGSL(d.g,'workArgs');
+  assert.match(code,/let hasWork=control\[3\]!=D_NONE \|\| \(P.mode!=14u && \(control\[17\]>0u \|\| control\[18\]>0u\)\)/);
   for(const count of [0,1,[0,1,1],[1,1,1]]) {
     calls.length=0;copies.length=0;
     d._record('blasts','allocate',count,3);assertPrepared(calls,1);

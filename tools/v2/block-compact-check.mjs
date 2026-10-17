@@ -159,6 +159,8 @@ const finalize = new Function('scratch', 'args', finalizeBody);
 for (const count of [0, 1, 7, 8, 63, 64, 65, tail.capacity, 65535 * 64, 65535 * 64 + 1, 9000000]) {
   const scratch = { [tail.header / 4]: count }, args = new Uint32Array(32).fill(0xaabbccdd);
   finalize(scratch, args); assert.deepEqual([...args.slice(9, 12)], fold(Math.ceil(count / 64)));
+  // published to block (header .y) and restarted for the next tick's classify: no tail clear
+  assert.equal(scratch[tail.header / 4 + 1], count); assert.equal(scratch[tail.header / 4], 0);
   assert(args.every((v, i) => (i >= 9 && i < 12) || v === 0xaabbccdd));
   const [x, y, z] = args.slice(9, 12); assert(x <= 65535 && y <= 65535 && z === 1);
   assert(x * y * 64 >= count && x * y * 64 - count < y * 64);
@@ -213,10 +215,11 @@ async function record(contact, limits = {}, expectCompact = contact === contactW
   assert.equal(buffers.filter(b => b.usage & GPUBufferUsage.INDIRECT).length, 1);
   const supportAt = commands.findIndex(c => c.name === 'v2support');
   if (expectCompact) {
-    assert.deepEqual(commands.slice(supportAt, supportAt + 5).map(c => c.name), ['v2support', 'clear', 'v2blockClassify', 'v2blockFinalize', 'v2block']);
-    const [support, clear, classify, final, block] = commands.slice(supportAt, supportAt + 5);
+    // no tail clear between them: finalize restarts classify's count (no pass split)
+    assert.deepEqual(commands.slice(supportAt, supportAt + 4).map(c => c.name), ['v2support', 'v2blockClassify', 'v2blockFinalize', 'v2block']);
+    assert.ok(!commands.some(c => c.name === 'clear'), 'a tick records no clear');
+    const [support, classify, final, block] = commands.slice(supportAt, supportAt + 4);
     assert.equal(support.size.offset, ARGS2.BRICKS * 4);
-    assert.deepEqual(clear.args, [engine.liquidScratch, tail.header, 16]);
     assert.equal(classify.size.offset, 24); assert(!classify.data.bind[2].entries.some(e => e.resource.buffer === engine.args));
     assert.deepEqual(final.size, [1, 1, 1]); assert.equal(final.data.bind[2].entries.length, 2);
     assert.equal(engine.kernels.v2blockFinalize.layouts[0], gpu.L.EMPTY);
@@ -242,7 +245,7 @@ for (const k of WGSL_CHECK.filter(k => /v2block(Classify|Finalize|Compact)/.test
   const storage = k.layouts(g).flatMap(l => typeof l === 'string' ? LAYOUT[l] ?? [] : l).filter(e => e?.buffer?.type?.includes('storage')).length;
   assert(storage <= 8);
 }
-console.log('Real driver: support -> tail clear -> original indirect classify -> DIRECT finalize -> heavy byte36; custom unchanged, max8 storage');
+console.log('Real driver: support -> original indirect classify -> DIRECT finalize (publishes and restarts the count) -> heavy byte36; custom unchanged, max8 storage');
 
 // Full production contact replay; include actual emitted motion (not a sorted
 // material simulation). Syntax-only translation, with CPU storage helpers.
