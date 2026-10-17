@@ -9,6 +9,7 @@ import { E, ELEMENTS, K } from '../../src/elements.js';
 import { FULL, cid, cFill, isLiquid } from '../../src/v2/layout.js';
 import { stepClock } from './engine.js';
 import { tally } from './lib.js';
+import { columnLiquidVelocity } from './native-grid.js';
 
 const TICK_HZ = 60, CELL_M = 0.3, G_MS2 = 19.6;
 const IDS = { AIR: E.EMPTY, WALL: E.WALL, WATER: E.WATER, MUD: E.MUD, OIL: E.OIL };
@@ -49,7 +50,9 @@ export function createEngine() {
         const x = Math.floor(p.x), y = Math.floor(p.y), z = Math.floor(p.z);
         if (x >= 0 && y >= 0 && z >= 0 && x < w.nx && y < w.ny && z < w.nz) amount[w.at(x, y, z)] += p.mass;
       }
-      return { nx: w.nx, ny: w.ny, nz: w.nz, id, amount, T: null, burning: null, pressure: null, moving: null, vel: w.velocities(), particles };
+      const vel = new Float32Array(3 * n), velocityKnown = new Uint8Array(n).fill(1);
+      columnLiquidVelocity({ nx: w.nx, ny: w.ny, nz: w.nz, loop: w.loop }, (x, y, z) => (x < 0 || y < 0 || z < 0 || x >= w.nx || y >= w.ny || z >= w.nz ? null : w.cores[w.at(x, y, z)]), vel, velocityKnown);
+      return { nx: w.nx, ny: w.ny, nz: w.nz, id, amount, T: null, burning: null, pressure: null, moving: null, vel, velocityKnown, particles };
     },
     async census() { return tally(await this.read(), this); },
     async activity() {

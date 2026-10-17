@@ -145,3 +145,28 @@ test('radial gravity: column water stands down and a liquid over open space drip
   assert.match(plan, /\|\| radialDrip\) \{\s*\/\/ Real SI flight/);
   for (const code of [v2RunsWGSL(g), v2PairsWGSL(g)]) assert.match(code.slice(code.lastIndexOf('@compute')), /if \(P\.gravMode == 2u\) \{ return; \}/);
 });
+
+test('the crown: a fast landing throws CROWN_SHARE of the run up and out, exactly; a slow one merges', () => {
+  const drop = (height) => {
+    const w = new ColumnGrid(16, 24, 16);
+    for (let x = 0; x < 16; x++) for (let z = 0; z < 16; z++) { w.set(x, 0, z, E.WALL); for (let y = 1; y < 4; y++) w.set(x, y, z, E.WATER, { T: 15 }); }
+    for (let y = 4 + height; y < 6 + height; y++) for (let z = 6; z < 10; z++) for (let x = 6; x < 10; x++) w.set(x, y, z, E.WATER, { T: 60 });
+    const t0 = w.totals();
+    let launched = 0, crownMass = 0, up = 0;
+    for (let t = 0; t < 90; t++) {
+      const before = new Set(w.parts);
+      w.step();
+      // the landing tick's launches are the crown (later ones are jets off the settling bump)
+      const born = w.parts.filter(q => !before.has(q));
+      if (born.length && !launched) for (const q of born) { launched++; crownMass += L.cFill(q.m.core); if (q.vy > 0) up++; }
+      const t1 = w.totals();
+      assert.equal(t1.mass, t0.mass); assert.equal(t1.energy, t0.energy); assert.equal(t1.fuel, t0.fuel);
+    }
+    return { launched, crownMass, up };
+  };
+  const fast = drop(8), slow = drop(1);
+  assert.ok(fast.launched > 0 && fast.up === fast.launched, 'a fast landing throws droplets upward');
+  const block = 32 * L.FULL, want = COLUMN.CROWN_SHARE * block;
+  assert.ok(Math.abs(fast.crownMass - want) <= 16 * 2, `crown mass ${fast.crownMass} vs ${want} (one quantum a column)`);
+  assert.equal(slow.launched, 0, 'a one-cell drop merges');
+});

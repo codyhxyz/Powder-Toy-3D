@@ -6,8 +6,8 @@ export { DynamicParams };
 
 // R14 jets on column runs. The pair stages pour a fast overfall into the receiver's cells at the face
 // rows and mark each cell that was air (columns.js colPour, colMarkJet): its face lane holds its launch
-// velocity (m/s: the source's exact head over the row plus the velocity head arriving upwind, Bernoulli's
-// total head), its y lane JET_MARK, and its brick's jets word is set. These stages make every marked cell
+// velocity (m/s: R14's sqrt(2 g H) from the exact launch head), its y lane JET_MARK (less a crown droplet's
+// rise, columns.js colCrown), and its brick's jets word is set. These stages make every marked cell
 // a particle carrying the whole cell (its fill, payload and carried energy; the stationary air carrier
 // stays), in a deterministic order: count per brick, the shared allocator, spawn at prefix ranks. A cell
 // the pool or the format refuses keeps its liquid and loses its mark: it falls as a run.
@@ -24,7 +24,7 @@ function head(g) {
 const J_PREFIX: u32 = ${SPAWN_PREFIX}u;
 const J_COUNTS: u32 = J_PREFIX + D_BRICKS;
 const JET_MARK: f32 = ${f(COLUMN.JET_MARK)};
-fn jetMarked(c: vec4u) -> bool { return isLiq(c) && cFill(c) != 0u && qOf(c).y == JET_MARK; }
+fn jetMarked(c: vec4u) -> bool { return isLiq(c) && cFill(c) != 0u && qOf(c).y <= JET_MARK; }
 fn jetBrick(b: u32) -> bool { return b < D_BRICKS && atomicLoad(&act2[V2_JETS + b]) != 0u; }
 // the whole cell as a flight packet: everything but the stationary air carrier (FULL at its temperature)
 fn jetCarried(m: Material) -> vec2u { return energySub(energyOf(m), energyMul(FULLU, cTq(m.core))); }
@@ -84,7 +84,8 @@ var<workgroup> wgMarked: array<u32,64>;
     let m=jetMaterial(before); let carried=jetCarried(before);
     let empty=Material(vec4u(c.x&0x00ffff00u,0u,0u,0u),before.bank);
     let rest=energySub(energyOf(before),carried);
-    let q=qOf(c); let velocity=vec3f(q.x,0.0,q.z);
+    // the mark's y lane is JET_MARK less the upward speed (a crown droplet's; a jet's is level)
+    let q=qOf(c); let velocity=vec3f(q.x,JET_MARK-q.y,q.z);
     if(rank<atomicLoad(&control[4]) && length(velocity)>0.0 && all(dParticleEnergy(m)==carried) && energyFits(empty,rest)) {
       let dest=atomicLoad(&control[D_FREE+rank]);
       particles[dest]=dParticle(vec3f(p+P.origin)+0.5-normalize(velocity)*0.499,velocity,dId(p,${JET_RULE}u),m); noteLive(dest);

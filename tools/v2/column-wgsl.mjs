@@ -13,9 +13,9 @@ import { FOAM_ROWS } from '../../src/v2/foam.js';
 
 export const TRANSLATED = ['colMove', 'colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colPack', 'colFall',
   'colFinish', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
-  'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove'];
+  'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colCrown'];
 // the f32 functions (division allowed: never on integers)
-export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges'];
+export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown'];
 
 export function wgslFunction(code, name) {
   const at = code.indexOf(`fn ${name}(`);
@@ -112,7 +112,7 @@ export class ColumnGrid {
     const g = this, code = columnWaterWGSL;
     const slotOf = p => g.at(p[0], p[1], p[2]);
     const ctx = {
-      ...constants(code), NY: g.ny, FULLU: L.FULL, MAX_FILL: L.MAX_FILL, C_AIR: C.AIR, P: g.P,
+      ...constants(code), NY: g.ny, FULLU: L.FULL, MAX_FILL: L.MAX_FILL, C_AIR: C.AIR, C_LIQUID: C.LIQUID, P: g.P,
       vec3i: (x, y, z) => [x, y, z], Material: (core, bank) => ({ core, bank }),
       u32: x => Math.max(0, Math.trunc(x)), i32: Math.trunc, f32: Math.fround,
       min: Math.min, max: Math.max, abs: Math.abs, floor: Math.floor, ceil: Math.ceil, sqrt: Math.sqrt,
@@ -206,6 +206,14 @@ export class ColumnGrid {
         g.boundary.mass += n; g.boundary.energy += heat;
         const s = slotOf([x, y, z]); if (L.cid(g.cores[s]) === 0) g.events[s] = 0;
       },
+      colMarkCrown: (x, y, z, vx, vy, vz) => {
+        const s = slotOf([x, y, z]);
+        g.cores[s] = ctx.withLane(ctx.withLane(ctx.withLane(ctx.zeroQ(g.cores[s]), 0, vx), 2, vz), 1, COLUMN.JET_MARK - vy); g.touch(s);
+        g.jetBricks[g.brickOf(x, y, z)] = 1;
+      },
+      // seed3/rnd's role: any deterministic hash of position and tick (the twin need not match its bits)
+      colCrownAzimuth: (x, y, z) => { let h = Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791) ^ Math.imul(g.P.tick, 2654435761) ^ COLUMN.CROWN_SALT; h = Math.imul(h ^ (h >>> 16), 0x7feb352d); h = Math.imul(h ^ (h >>> 15), 0x846ca68b); return ((h ^ (h >>> 16)) >>> 8) / 16777216; },
+      cos: Math.cos, sin: Math.sin,
       colPending: (x, y, z) => (g.events[slotOf([x, y, z])] & 1) !== 0,
       colAwake: (x, z) => { for (let by = 0; by < g.by; by++) if (g.awake[(x >> 2) + g.bx * ((z >> 2) + g.bz * by)]) return true; return false; },
       colSetDemand: (x, y, z, axis, t, head) => { g.demand[2 * slotOf([x, y, z]) + (axis >> 1)] = (Math.min(t, COLUMN.DEMAND_MAX) | (Math.min(255, Math.max(0, Math.round(head * COLUMN.HEAD_Q))) << 24)) >>> 0; },
@@ -319,17 +327,17 @@ export class ColumnGrid {
       const bx = b % this.bx, bz = Math.floor(b / this.bx) % this.bz, by = Math.floor(b / (this.bx * this.bz));
       for (let y = by * 4; y < Math.min(this.ny, by * 4 + 4); y++) for (let z = bz * 4; z < Math.min(this.nz, bz * 4 + 4); z++) for (let x = bx * 4; x < Math.min(this.nx, bx * 4 + 4); x++) {
         const i = this.at(x, y, z), c = this.cores[i];
-        if (CLS[L.cid(c)] !== C.LIQUID || !L.cFill(c) || ctx.laneOf(c, 1) !== COLUMN.JET_MARK) continue;
+        if (CLS[L.cid(c)] !== C.LIQUID || !L.cFill(c) || !(ctx.laneOf(c, 1) <= COLUMN.JET_MARK)) continue;
         const before = this.material(i), carried = L.energyOf(before) - BigInt(L.FULL) * BigInt(L.cTq(c));
         let m = { core: new Uint32Array([c[0], c[1], 0, (L.payloadOf(c) << 16) >>> 0]), bank: 0 };
         m.bank = Number(BigInt.asIntN(32, carried - L.packetOwnedEnergy(m)));
-        const vx = ctx.laneOf(c, 0), vz = ctx.laneOf(c, 2), speed = Math.hypot(vx, vz);
+        const vx = ctx.laneOf(c, 0), vz = ctx.laneOf(c, 2), vy = COLUMN.JET_MARK - ctx.laneOf(c, 1), speed = Math.hypot(vx, vy, vz);
         const empty = { core: new Uint32Array([(c[0] & 0x00ffff00) >>> 0, 0, 0, 0]), bank: before.bank }, rest = L.energyOf(before) - carried;
         this.markAt(x, y, z);
         if (this.parts.length < this.poolCap && speed > 0 && L.packetOwnedEnergy(m) === carried && L.energyFits(empty, rest)) {
           const out = L.withEnergy(empty, rest);
           this.cores[i] = new Uint32Array(out.core); this.banks[i] = out.bank; this.touch(i);
-          this.parts.push({ x: x + 0.5 - 0.499 * vx / speed, y: y + 0.5, z: z + 0.5 - 0.499 * vz / speed, vx: vx / COLUMN.CELL_M, vy: 0, vz: vz / COLUMN.CELL_M, m });
+          this.parts.push({ x: x + 0.5 - 0.499 * vx / speed, y: y + 0.5 - 0.499 * vy / speed, z: z + 0.5 - 0.499 * vz / speed, vx: vx / COLUMN.CELL_M, vy: vy / COLUMN.CELL_M, vz: vz / COLUMN.CELL_M, m });
         } else { this.cores[i] = ctx.zeroQ(c); this.touch(i); }
       }
     }
@@ -374,28 +382,5 @@ export class ColumnGrid {
     this.cores[i] = new Uint32Array(out.core); this.banks[i] = out.bank; this.touch(i);
     this.markAt(x, y, z); this.landed++;
     return true;
-  }
-
-  /** Resident velocities (m/s) from the lanes: each wet cell of a segment carries its depth-averaged flux. */
-  velocities() {
-    const vel = new Float32Array(3 * this.n), toMs = 0.3 * COLUMN.TICK_HZ / L.FULL, ctx = this.ctx;
-    for (let y = 0; y < this.ny; y++) for (let z = 0; z < this.nz; z++) for (let x = 0; x < this.nx; x++) {
-      const c = this.cores[this.at(x, y, z)];
-      for (const axis of [0, 2]) {
-        const v = ctx.laneOf(c, axis);
-        if (!v) continue;
-        const bx = x + (axis === 0 ? 1 : 0), bz = z + (axis === 2 ? 1 : 0);
-        for (let k = y; k < this.ny; k++) {
-          let any = false;
-          for (const [cx, cz] of [[x, z], [bx, bz]]) {
-            if (cx >= this.nx || cz >= this.nz) continue;
-            const i = this.at(cx, k, cz);
-            if (CLS[L.cid(this.cores[i])] === C.LIQUID) { vel[3 * i + axis] += 0.5 * v * toMs; any = true; }
-          }
-          if (!any) break;
-        }
-      }
-    }
-    return vel;
   }
 }

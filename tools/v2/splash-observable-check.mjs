@@ -89,7 +89,7 @@ test('finite packet inputs cannot overflow energy into a false pass', async () =
   assert.equal(r.status,'error'); assert.match(r.reason,/setup:.*nonfinite kinetic energy/);
 });
 
-test('actual native capability returns n/a before create or GPU access', async () => {
+test('actual native capability makes splash expressible, before create or GPU access', async () => {
   // Older production modules use /src imports. Resolve those paths only while
   // importing the actual adapter; no browser, device or replacement model.
   const hooks=registerHooks({resolve(specifier,context,nextResolve) {
@@ -99,10 +99,11 @@ test('actual native capability returns n/a before create or GPU access', async (
   try { ({createEngine}=await import('../outcomes/engine-v2.js')); } finally { hooks.deregister(); }
   const gpu=new Proxy({adapterInfo:{}},{get(target,key){assert.equal(key,'adapterInfo');return target[key];}});
   const e=createEngine(gpu);
-  assert.equal(e.info.velocity,false);
-  e.create=()=>assert.fail('unsupported splash must not create');
+  // column-run water defines resident liquid motion (native-grid.js columnLiquidVelocity)
+  assert.equal(e.info.velocity,true); assert.match(e.info.velocityDetails,/column runs/);
+  e.create=()=>{ throw new Error('expressible: create reached'); };
   const r=await runTest(splash,e);
-  assert.equal(r.status,'n/a'); assert.match(r.reason,/no complete cell velocities/);
+  assert.notEqual(r.status,'n/a'); assert.match(r.reason ?? JSON.stringify(r),/create reached/);
 });
 
 test('in-memory removal of new guards reproduces false pass for NaN postcontact numerator', async () => {

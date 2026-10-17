@@ -114,7 +114,7 @@ test('adapter constructs actual contact and dynamics, checks velocity allocation
     const before = calls.length, pending = readNativeState(owner);
     assert.deepEqual(calls.slice(before).filter(c => c.read).map(c => c.read), [owner.cells.label, owner.aux.label, owner.dynamics.particles.label, owner.dynamics.air[1].label]);
     await pending;
-    assert.deepEqual([e.info.velocity,e.info.pressure,e.info.burning,e.info.airCell], [false,true,true,4]);
+    assert.deepEqual([e.info.velocity,e.info.pressure,e.info.burning,e.info.airCell], [true,true,true,4]);
     assert.throws(() => e.box([1,1,1],[1,1,1], 'WATER', {pressure: 1}), /unsupported/);
     e.box([2,3,4],[3,3,4], 'SAND', {v: [9,0,0]});
     const plan = calls.find(c => c.name === 'v2blasts_bodyPlan');
@@ -155,37 +155,48 @@ test('app compatibility uses canonical census and cannot certify particle-only a
     v2.contactReady=false; await assert.rejects(app.create(null,{url:'/'}),/integration is unavailable/);
   } finally { await app.dispose(); delete globalThis.window; delete globalThis.document; delete globalThis.OutcomePageSpy; }
 });
-test('nonzero liquid face flux is not falsely reported as zero cell velocity', () => {
-  const f=fixture(), m=makeMaterial(E.WATER); m.core[2]=1;
-  put(f,[1,1,1],m); const g=toGrid(f),i=at(g,1,1,1);
-  assert.equal(g.velocityKnown[i],0); assert.ok(Number.isNaN(g.vel[i*3])); assert.equal(g.moving,null);
-});
-test('negative-face motion cannot certify liquid with zero owned lanes as stationary', () => {
-  for (let axis = 0; axis < 3; axis++) {
-    const f = fixture(), target = [2,2,2], neighbor = [...target], flowing = makeMaterial(E.WATER);
-    neighbor[axis]--;
-    // Half-float 1.0 in the neighbor-owned +face lane; target owns no flux.
-    if (axis === 0) flowing.core[2] |= 0x3c00;
-    if (axis === 1) flowing.core[2] |= 0x3c000000;
-    if (axis === 2) flowing.core[3] |= 0x3c00;
-    put(f, target, makeMaterial(E.WATER)); put(f, neighbor, flowing);
-    const saved = new Uint8Array(f.cells).slice(), g = toGrid(f), i = at(g, ...target);
-    assert.equal(g.velocityKnown[i], 0, `axis ${axis}: neighbor-owned negative face is not known rest`);
-    assert([...g.vel.subarray(i * 3, i * 3 + 3)].every(Number.isNaN));
-    assert.deepEqual(new Uint8Array(f.cells), saved, 'observation does not change packed state');
+// Column-run water defines resident motion (native-grid.js columnLiquidVelocity): a face segment's lane is
+// its depth-averaged flux, a falling run's bottom y lane its fall speed, a supported run no vertical motion.
+const LANE_MS = 60 * 0.3 / FULL;
+test('a face lane reads as its segment\'s depth-averaged velocity at every row it spans (MAC mean)', () => {
+  const f = fixture();
+  for (let x = 0; x < 16; x++) for (let z = 0; z < 8; z++) put(f, [x, 0, z], makeMaterial(E.WALL));
+  const a = makeMaterial(E.WATER); a.core[2] |= 0x3c00;   // f16 1.0 in the x lane of the segment's bottom
+  put(f, [1, 1, 1], a); put(f, [1, 2, 1], makeMaterial(E.WATER)); put(f, [2, 1, 1], makeMaterial(E.WATER));
+  const saved = new Uint8Array(f.cells).slice(), g = toGrid(f);
+  for (const p of [[1, 1, 1], [1, 2, 1], [2, 1, 1]]) {
+    const i = at(g, ...p);
+    assert.equal(g.velocityKnown[i], 1, `${p} known`);
+    assert.ok(Math.abs(g.vel[3 * i] - (p[0] === 1 && p[1] === 2 ? 0.5 : 0.5) * LANE_MS) < 1e-12, `${p}: vx ${g.vel[3 * i]}`);
+    assert.equal(g.vel[3 * i + 1], 0, 'a supported run holds no vertical momentum');
   }
+  assert.deepEqual(new Uint8Array(f.cells), saved, 'observation does not change packed state');
 });
-test('zero-flux fresh and restored material bytes have no resident-liquid rest certificate', () => {
+test('a falling run reports its fall speed; a supported run\'s stale y lane is not motion', () => {
+  const f = fixture();
+  for (let x = 0; x < 16; x++) for (let z = 0; z < 8; z++) put(f, [x, 0, z], makeMaterial(E.WALL));
+  const falling = makeMaterial(E.WATER); falling.core[2] |= 0x3c000000;   // f16 1.0 cells a tick in the y lane
+  put(f, [3, 5, 3], falling); put(f, [3, 6, 3], makeMaterial(E.WATER));
+  const resting = makeMaterial(E.WATER); resting.core[2] |= 0x3c000000; put(f, [6, 1, 6], resting);
+  const g = toGrid(f);
+  for (const y of [5, 6]) { const i = at(g, 3, y, 3); assert.equal(g.velocityKnown[i], 1); assert.ok(Math.abs(g.vel[3 * i + 1] + 60 * 0.3) < 1e-9); assert.equal(g.vel[3 * i], 0); }
+  const i = at(g, 6, 1, 6); assert.equal(g.velocityKnown[i], 1); assert.equal(g.vel[3 * i + 1], 0);
+});
+test('fresh and restored zero-flux bytes read as known rest; a launch mark is unknown', () => {
   const fresh = fixture();
-  put(fresh, [2,2,2], makeMaterial(E.WATER));
+  put(fresh, [2, 2, 2], makeMaterial(E.WATER));
   const restored = { ...fresh, cells: fresh.cells.slice(0), banks: fresh.banks.slice(0) };
   for (const f of [fresh, restored]) {
-    const g = toGrid(f), i = at(g, 2,2,2);
-    assert.equal(g.velocityKnown[i], 0);
-    assert([...g.vel.subarray(i * 3, i * 3 + 3)].every(Number.isNaN));
-    assert.equal(g.moving, null, 'unknown motion is not published as proven moving or stationary');
+    const g = toGrid(f), i = at(g, 2, 2, 2);
+    assert.equal(g.velocityKnown[i], 1);
+    assert.deepEqual([...g.vel.subarray(i * 3, i * 3 + 3)], [0, 0, 0]);
+    assert.equal(g.moving, null, 'the motion mask stays unpublished');
     assert.equal(g.gridAmount[i], 1);
   }
+  const marked = fixture(), m = makeMaterial(E.WATER); m.core[2] |= 0xbc000000;   // f16 -1.0: JET_MARK
+  put(marked, [4, 3, 4], m);
+  const g = toGrid(marked), i = at(g, 4, 3, 4);
+  assert.equal(g.velocityKnown[i], 0); assert([...g.vel.subarray(i * 3, i * 3 + 3)].every(Number.isNaN));
 });
 test('real hole-profile mouth observation preserves unknown, known zero and known motion', async () => {
   const source = await readFile(new URL('../v2/boot-profile.mjs', import.meta.url), 'utf8');

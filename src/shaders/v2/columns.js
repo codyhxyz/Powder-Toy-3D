@@ -61,8 +61,14 @@ export const COLUMN = (() => {
     VT: 12 / CELL_M / TICK_HZ,
     // R14's birth gate: an overfall faster than this leaves as particles (lean-sim V_JET), m/s
     JET_SPEED: 1,
-    // a deposited cell to launch: its y lane holds this (a falling run's own y lane is never negative)
+    // a deposited cell to launch: its y lane holds this, less its upward launch speed (a falling run's own
+    // y lane is never negative)
     JET_MARK: -1,
+    // The crown (Worthington, A Study of Splashes, 1908): a run that lands on liquid faster than CROWN_SPEED
+    // m/s throws this share of its mass up out of its column at its impact speed, CROWN_ANGLE from the
+    // vertical, at a hashed azimuth: that share of its kinetic energy, half the bench's 0.3 bound
+    // (docs/v2.md 4.4). Slower landings (a pour's one-cell drop) merge inelastically.
+    CROWN_SHARE: 0.15, CROWN_SPEED: 5, CROWN_ANGLE: Math.PI / 4, CROWN_SALT: 0x63726f77,
     // a liquid this thin under a pour still leaves it open below (lean-sim openBelow: FULL/16)
     THIN: FULL >> 4,
     // a face's demand word: what it carries in the low 24 bits, its launch head in the byte above, in
@@ -101,6 +107,11 @@ const COL_TICK_HZ: f32 = ${f(COLUMN.TICK_HZ)};
 const COL_CELL_M: f32 = ${COLUMN.CELL_M};
 const COL_JET_SPEED: f32 = ${f(COLUMN.JET_SPEED)};
 const COL_JET_MARK: f32 = ${f(COLUMN.JET_MARK)};
+const COL_CROWN_SHARE: f32 = ${COLUMN.CROWN_SHARE};
+const COL_CROWN_SPEED: f32 = ${f(COLUMN.CROWN_SPEED)};
+const COL_CROWN_SIN: f32 = ${Math.sin(COLUMN.CROWN_ANGLE)};
+const COL_CROWN_COS: f32 = ${Math.cos(COLUMN.CROWN_ANGLE)};
+const COL_TAU: f32 = ${2 * Math.PI};
 const COL_THIN: u32 = ${COLUMN.THIN}u;
 const COL_DEMAND_MAX: u32 = ${COLUMN.DEMAND_MAX}u;
 const COL_PROBE_CLOSED: u32 = 0u;
@@ -234,6 +245,14 @@ fn colLaunchHead(xs: i32, zs: i32, xt: i32, zt: i32, rs: vec4u, y: i32) -> f32 {
   }
   return eta;
 }
+// a crown droplet to launch at (vx, vy, vz) m/s, vy upward: the jets' mark with the rise in its y lane
+fn colMarkCrown(x: i32, y: i32, z: i32, vx: f32, vy: f32, vz: f32) {
+  let p = vec3i(x, y, z); let s = slotOf(p); let before = loadMaterial(s);
+  storeMaterial(s, before, Material(withLane(withLane(withLane(zeroQ(before.core), 0, vx), 2, vz), 1, COL_JET_MARK - vy), before.bank));
+  atomicStore(&act2[V2_JETS + brickOfCell(p)], 1u);
+}
+// a hashed azimuth in [0, 1) turns (deterministic: position and tick only)
+fn colCrownAzimuth(x: i32, y: i32, z: i32) -> f32 { var rs = seed3(vec3i(x, y, z), P.tick, ${COLUMN.CROWN_SALT}u); return rnd(&rs); }
 // a deposited cell to launch at v (m/s along the axis): its lanes, and its brick on the jets' list
 fn colMarkJet(x: i32, y: i32, z: i32, axis: i32, v: f32) {
   let p = vec3i(x, y, z); let s = slotOf(p); let before = loadMaterial(s);
@@ -483,14 +502,46 @@ fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
     fl = fl - 1;
   }
   var speed = v;
-  if (d >= r0 - fl) { d = r0 - fl; speed = 0.0; a = 0.0; }
+  var landed = false;
+  if (d >= r0 - fl) { d = r0 - fl; speed = 0.0; a = 0.0; landed = true; }
   colBusy(x, r0, z);
   if (d > 0) {
     for (var k = r0; k < r1; k++) { colSwap(x, k, k - d, z); }
     colBusy(x, r0 - d, z); colBusy(x, r1 - 1, z);
   }
   colSetLanes(x, r0 - d, z, speed, a);
+  let impact = v * COL_TICK_HZ * COL_CELL_M;
+  if (landed && d > 0 && r0 - d > o0 && colClass(x, r0 - d - 1, z) == C_LIQUID && impact > COL_CROWN_SPEED) {
+    colCrown(x, z, r0 - d, r1 - d, d, impact);
+  }
   return r0 - d;
+}
+// The crown of a run [b0, b1) that just landed at impact m/s: CROWN_SHARE of its mass, cut from its top
+// down, into the cells it vacated above it (rows of them), each marked to launch up and out.
+fn colCrown(x: i32, z: i32, b0: i32, b1: i32, rows: i32, impact: f32) {
+  var mass = 0u;
+  for (var k = b0; k < b1; k++) { mass = mass + colFill(x, k, z); }
+  var left = u32(floor(f32(mass) * COL_CROWN_SHARE));
+  var giver = b1 - 1;
+  for (var r = 0; r < rows; r++) {
+    if (left == 0u) { break; }
+    let y = b1 + r;
+    let share = min(left, FULLU);
+    var put = 0u;
+    loop {
+      if (put >= share || giver < b0) { break; }
+      let have = colFill(x, giver, z);
+      if (have == 0u) { giver = giver - 1; continue; }
+      let m = min(share - put, have);
+      if (!colMove(x, giver, z, x, y, z, m, false)) { break; }
+      put = put + m;
+      if (m == have) { giver = giver - 1; }
+    }
+    if (put == 0u) { break; }
+    left = left - put;
+    let azimuth = colCrownAzimuth(x, y, z) * COL_TAU;
+    colMarkCrown(x, y, z, impact * COL_CROWN_SIN * cos(azimuth), impact * COL_CROWN_COS, impact * COL_CROWN_SIN * sin(azimuth));
+  }
 }
 
 // ---- the column: its domains bottom up into records (settle: pack and fall, as the runs pass does; a pair's
