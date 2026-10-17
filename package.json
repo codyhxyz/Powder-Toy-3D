@@ -14,8 +14,6 @@
     "check:async": "node tools/check-async-reads.mjs",
     "check:icons": "node tools/bake-icons.mjs --check",
     "bake:icons": "node tools/bake-icons.mjs",
-    "bake:bench": "node tools/v2/bake-bench-scene.mjs",
-    "bench:raster": "node tools/raster-bench.mjs",
     "power": "node tools/power.mjs",
     "relay": "wrangler dev --config relay/wrangler.toml",
     "construct": "node scripts/construct.mjs",

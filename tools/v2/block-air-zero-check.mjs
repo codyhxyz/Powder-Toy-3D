@@ -1,11 +1,5 @@
 // CPU-only proof of the production R5 zero-work domain, never an all-AIR oracle.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { spawnSync } from 'node:child_process';
-import { build } from 'vite';
 import { E, K, ELEMENTS } from '../../src/elements.js';
 import * as C from '../../src/v2/contact.js';
 import { makeMaterial, withEnergy, energyOf } from '../../src/v2/layout.js';
@@ -17,7 +11,7 @@ import { v2BlockWGSL, WGSL_CHECK, v2SupportWGSL } from '../../src/shaders/v2.js'
 import { materialStorageWGSL } from '../../src/shaders/v2/state.js';
 import { modeWGSL } from '../../src/shaders/v2/modes.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
-import { wgslGroupingErrors } from './wgsl-grouping.mjs';
+import { wgslGroupingErrors, assertNaga, importMinified } from './wgsl-grouping.mjs';
 
 const g=gridLayout(16,16,16), dims=[16,16,16], shader=v2BlockWGSL(g,contactWGSL);
 const start=shader.indexOf('  let rawTq ='), end=shader.indexOf('  // R2 topple',start);
@@ -193,15 +187,9 @@ for(const gravMode of Object.values(GRAV)) for(const edge of Object.values(EDGE)
 console.log('Mechanical/store guards audited; custom/ABI side effects retained; canonical AIR forward/reverse replay matches full contact in every mode');
 
 // Minify the FULL production shader emitter (including identity specialization).
-const dir=mkdtempSync(join(tmpdir(),'block-air-zero-'));
-try {
-  const bundle=await build({configFile:false,logLevel:'warn',build:{write:false,minify:true,lib:{entry:'src/shaders/v2.js',formats:['es']}}});
-  const chunk=(Array.isArray(bundle)?bundle[0]:bundle).output.find(x=>x.type==='chunk'&&x.isEntry), file=join(dir,'v2.mjs');
-  writeFileSync(file,chunk.code);const minified=await import(pathToFileURL(file));
-  assert.equal(minified.v2BlockWGSL(g,contactWGSL),shader,'production minification preserves complete shader and exact identity specialization');
-  assert(!minified.v2BlockWGSL(g,contactWGSL+'\n').includes('var zeroWork'));
-  assert.deepEqual(wgslGroupingErrors(shader),[]);
-  const wgsl=join(dir,'block.wgsl');writeFileSync(wgsl,shader);
-  const naga=spawnSync('naga',[wgsl],{encoding:'utf8'});if(naga.error)throw naga.error;assert.equal(naga.status,0,naga.stderr);
-} finally {rmSync(dir,{recursive:true,force:true});}
+const minified=await importMinified('src/shaders/v2.js');
+assert.equal(minified.v2BlockWGSL(g,contactWGSL),shader,'production minification preserves complete shader and exact identity specialization');
+assert(!minified.v2BlockWGSL(g,contactWGSL+'\n').includes('var zeroWork'));
+assert.deepEqual(wgslGroupingErrors(shader),[]);
+assertNaga(shader,'block');
 console.log('Full minified production block byte-identical; CPU Naga and Chromium expression grouping valid; no GPU');

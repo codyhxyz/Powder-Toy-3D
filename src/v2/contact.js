@@ -10,17 +10,15 @@ import { EMITTERS } from '../rays.js';
 
 import { FUEL_Q } from './layout.js';
 import { PHASE_ROWS, phaseTemperatureQ, phaseOffsetEnergy, phaseLatentEnergy, encodePhaseEnergy } from './phase.js';
-export const ENERGY_SCALE = 256 * 65536;
-export const CONTACT_FULL = 65536;
+const CONTACT_FULL = 65536;
 export const CONTACT_ELEMENT_COUNT = ELEMENTS.length;
-export const LIFE_SCALE = FUEL_Q;
+const LIFE_SCALE = FUEL_Q;
 export const CONTACT_HZ = 60;
 // Historical age constants remain for old fixtures; contacts use stored speed
 // in cells/tick, never age times the currently configured gravity.
 export const CONTACT_G_TICK = 19.6 / CELL_M / CONTACT_HZ ** 2;
 export const DUST_MIN_FALL_SPEED = PHYS.DUST_LIFT_V * NOMINAL_STEP_RATE / CONTACT_HZ; // cells/tick
 export const DUST_MIN_FALL_AGE = Math.ceil(PHYS.DUST_LIFT_V * NOMINAL_STEP_RATE / CONTACT_HZ / CONTACT_G_TICK);
-export const CONTACT_REQUEST = { DETONATE: 1, GAS: 2, NEUTRON: 4 };
 const q = T => Math.round((T + 273.25) * 4);
 const cap = ELEMENTS.map(e => Math.max(1, Math.round(e.cap * 64)));
 const offsets = PHASE_ROWS.map(r => r.offset);
@@ -78,7 +76,7 @@ export const CONTACT_REACTIONS = REACTIONS.map(r => ({
 const mech = mechanisms();
 export const CONTACT_RX_INDEX = mech.lookup;
 
-export const ctI = value => Math.trunc(value) + 0;
+const ctI = value => Math.trunc(value) + 0;
 export const ctF = Math.fround;
 export const ctDiv = (a, b) => Math.trunc(a / b) + 0;
 export const ctCopy = c => ({ ...c });
@@ -529,10 +527,7 @@ export function packContact(c, original = new Uint32Array(4)) {
   }
   return { core, bank: c.bank };
 }
-export const energyCapacity = (id, fill = CONTACT_FULL) => ctCapacity(ctNew(id, 0, fill));
-export const energyOffset = (id, fill = CONTACT_FULL) => ctOffset(ctNew(id, 0, fill));
 export const materialEnergy = (core, bank = 0) => ctEnergy(unpackContact(core, bank));
-export const setMaterialEnergy = (core, energy) => packContact(ctSetEnergy(unpackContact(core), energy), core);
 export function contactDensity(id, temperatureQ) {
   const e = ELEMENTS[id];
   return e.kind === K.GAS || e.kind === K.EMPTY ? e.dens * (e.temp + 273.25) / Math.max(1, temperatureQ / 4) : e.dens;

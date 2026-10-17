@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { E } from '../../src/elements.js';
 import { FULL, MAX_FILL, makeMaterial, withPayload, energyOf, cTq, cFill, ctypeOf, payloadOf, share, isConductor, energyPacketFits } from '../../src/v2/layout.js';
 import { FOAM_ROWS, decayFoam, impactFoam } from '../../src/v2/foam.js';
 import { gridLayout } from '../../src/sim.js';
 import { CONTROL } from '../../src/shaders/v2/particles.js';
 import { jetsWGSL, JET_STAGES } from '../../src/shaders/v2/jets.js';
+import { assertNaga } from './wgsl-grouping.mjs';
 import { v2GatherWGSL, v2LimitWGSL, v2FoamWGSL, liquidTransportWGSL, SUB, TICK_HZ } from '../../src/shaders/v2.js';
 
 // Independent BigInt conservation oracle for the packet/allocator contract.
@@ -98,13 +96,11 @@ test('foam accepts impacts once, preserves incoming, all liquids participate, re
   assert.match(readFileSync('src/shaders/common.js','utf8'),/f32\(core.x >> 24u\) \/ 255.0/);
 });
 test('generated square and rectangular WGSL validates with <=8 storage bindings',()=>{
-  const dir=mkdtempSync(join(tmpdir(),'jets-check-'));
-  try {for(const dims of [[32,32,32],[48,16,32]]) {
+  for(const dims of [[32,32,32],[48,16,32]]) {
     const g=gridLayout(...dims);
     for(const [name,source] of [...JET_STAGES.map(s=>[s,jetsWGSL(g,s)]),['gather',v2GatherWGSL(g)],['limit',v2LimitWGSL(g)],['foam',v2FoamWGSL(g)]]) {
       assert.ok([...source.matchAll(/var<storage,/g)].length<=8,name);
-      const path=join(dir,`${name}.wgsl`);writeFileSync(path,source);
-      const result=spawnSync('naga',[path],{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
+      assertNaga(source,name);
     }
-  }} finally {rmSync(dir,{recursive:true,force:true});}
+  }
 });

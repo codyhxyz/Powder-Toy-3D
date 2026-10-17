@@ -1,20 +1,17 @@
 import assert from 'node:assert/strict';
 import { setFall } from '../../src/v2/fall.js';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { gridLayout } from '../../src/sim.js';
 import { v2BlockWGSL, V2_CONTACT_LAYOUT } from '../../src/shaders/v2.js';
 import { CONTACT_KERNEL } from '../../src/v2/contact.js';
 import { contactKernelWGSL } from '../../src/shaders/v2/contact-kernel.js';
 import { emitContactKernel } from '../../src/shaders/v2/contact.js';
 import { E, ELEMENTS, K, REACTIONS } from '../../src/elements.js';
-import { CONDUCTS, ELEC, SPARK_COST, conductsInto, packSpark } from '../../src/electricity.js';
+import { CONDUCTS, SPARK_COST, conductsInto, packSpark } from '../../src/electricity.js';
 import * as C from '../../src/v2/contact.js';
 import * as F from '../../src/v2/phase.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { contactPrelude, contactEntry } from './contact-prelude.mjs';
+import { assertNaga } from './wgsl-grouping.mjs';
 const q = T => Math.round((T + 273.25) * 4);
 const cell = (id, T = ELEMENTS[id].temp, fill = 65536) => C.ctNew(id, q(T), fill);
 const energy = c => C.ctEnergy(c);
@@ -403,16 +400,9 @@ test('checked generated scalar WGSL remains identical to canonical CPU kernels',
 });
 test('generated WGSL validates on CPU Naga with explicit shared prelude and bounded shared bindings',()=>{
   assert.equal((contactWGSL.match(/var<storage/g)||[]).length,0);
-  const dir=mkdtempSync(join(tmpdir(),'native-contact-'));
-  try{
-    const file=join(dir,'contact.wgsl');writeFileSync(file,contactPrelude+contactWGSL+contactEntry);
-    const result=spawnSync('naga',[file],{encoding:'utf8'});
-    if(result.error)throw result.error;
-    assert.equal(result.status,0,result.stderr);console.log(result.stdout.trim());
-    const real=join(dir,'real-contact.wgsl');writeFileSync(real,v2BlockWGSL(gridLayout(32,32,32),contactWGSL));
-    const integrated=spawnSync('naga',[real],{encoding:'utf8'});if(integrated.error)throw integrated.error;assert.equal(integrated.status,0,integrated.stderr);
-    assert.ok(V2_CONTACT_LAYOUT.filter(e=>e.buffer&&e.buffer.type.includes('storage')).length<=8);
-    console.log('Real foundation contact block Naga validation successful');
-  }finally{rmSync(dir,{recursive:true,force:true});}
+  assertNaga(contactPrelude+contactWGSL+contactEntry,'contact');
+  assertNaga(v2BlockWGSL(gridLayout(32,32,32),contactWGSL),'real contact');
+  assert.ok(V2_CONTACT_LAYOUT.filter(e=>e.buffer&&e.buffer.type.includes('storage')).length<=8);
+  console.log('Standalone and real foundation contact block Naga validation successful');
 });
 console.log(`${checks} native contact CPU groups passed; no GPU launched`);

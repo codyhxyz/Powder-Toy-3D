@@ -110,7 +110,7 @@ let code=v2BlockWGSL(g,contactWGSL);
         gpu.readback.buffer(cells,0,initial.byteLength),gpu.readback.buffer(banks,0,bankData.byteLength),
       ]);
       const raw=new Uint32Array(rawBytes),afterBanks=new Int32Array(bankBytes);
-      return {scope:'production R2–R5 runtime, noncompact fallback',phaseFromEV:!code.includes('phaseHotQTable'),
+      return {scope:'production R2–R5 runtime, noncompact fallback',
         variant:fixedBounds?'fixed-bound diagnostic':'production',
         ticks:32,fixture:[32,32,32],compileMs,before,after:total(raw,afterBanks),
         beforeHot,beforeCold,afterHot:String(energyOf({core:raw.subarray(hot*4,hot*4+4),bank:afterBanks[hot]})),

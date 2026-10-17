@@ -1,19 +1,13 @@
 // CPU-only fixed-point proof. The predicate below is translated from production
 // WGSL; transport and re-encoding use the pre-existing independent references.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { spawnSync } from 'node:child_process';
-import { build } from 'vite';
 import { E, ELEMENTS, K } from '../../src/elements.js';
 import { FULL, MAX_FILL, AIR_CAPACITY_Q, makeMaterial, withPayload, cid, cFill, cRawTq, isLiquid, energyOf, withEnergy, energyPacketFits, advectReference } from '../../src/v2/layout.js';
 import { PHASE_ROWS } from '../../src/v2/phase.js';
 import { gridLayout } from '../../src/sim.js';
 import { v2GatherWGSL } from '../../src/shaders/v2.js';
 import { energyShare, limbs, signed } from './integer-transport-reference.mjs';
-import { wgslGroupingErrors } from './wgsl-grouping.mjs';
+import { wgslGroupingErrors, assertNaga, importMinified } from './wgsl-grouping.mjs';
 
 const shader=v2GatherWGSL(gridLayout(16,16,16));
 assert.deepEqual(wgslGroupingErrors(shader),[]);
@@ -160,16 +154,7 @@ assert(!source.includes('events['));
 for(const pending of [0,1,2,0xffffffff]) {const c=good();c.pending=pending;assert.equal(eligible(c),2);assert.equal(c.pending,pending);}
 console.log(`Gather identities: ${airCases} AIR codes, ${liquidCases} liquid states, ${packets} exact limb packets, ${periodicCases} periodic forward/reverse cases; guards/opaque words/busy passed`);
 
-const dir=mkdtempSync(join(tmpdir(),'gather-identity-'));
-try {
-  const bundle=await build({configFile:false,logLevel:'warn',build:{write:false,minify:true,lib:{entry:'src/shaders/v2.js',formats:['es']}}});
-  const chunk=(Array.isArray(bundle)?bundle[0]:bundle).output.find(x=>x.type==='chunk'&&x.isEntry);
-  const module=join(dir,'v2.mjs');writeFileSync(module,chunk.code);
-  const minified=await import(pathToFileURL(module));
-  assert.equal(minified.v2GatherWGSL(gridLayout(16,16,16)),shader,'minification preserves the full gather shader');
-  const file=join(dir,'gather.wgsl');writeFileSync(file,shader);
-  const naga=spawnSync('naga',[file],{encoding:'utf8'});
-  if(naga.error)throw naga.error;
-  assert.equal(naga.status,0,naga.stderr);
-} finally {rmSync(dir,{recursive:true,force:true});}
+const minified=await importMinified('src/shaders/v2.js');
+assert.equal(minified.v2GatherWGSL(gridLayout(16,16,16)),shader,'minification preserves the full gather shader');
+assertNaga(shader,'gather');
 console.log('Full minified gather byte-identical; CPU Naga and expression grouping valid; no GPU');

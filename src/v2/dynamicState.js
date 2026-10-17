@@ -12,7 +12,7 @@ function grid(dims) {
   if (g.slots > 2 ** 28) fail('grid too large');
   return g;
 }
-export function validateDynamicSnapshot(snapshot, { dims = snapshot?.dims, origin } = {}) {
+function validateDynamicSnapshot(snapshot, { dims = snapshot?.dims, origin } = {}) {
   const g = grid(dims);
   validateDynamicState(snapshot, g);
   if (origin && (!Array.isArray(origin) || origin.length !== 3 || origin.some((v, i) => v !== snapshot.origin[i]))) fail('origin does not match core world window');

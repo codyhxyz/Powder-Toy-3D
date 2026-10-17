@@ -3,8 +3,8 @@
 import assert from 'node:assert/strict';
 import { Simulation, gridLayout } from '../../src/sim.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
-import { NativeIntegration, nativeCapabilities } from '../../src/v2/integration.js';
-import { nativeHostSteps, nativeHostTick, nativeReadiness } from '../../src/v2/host.js';
+import { nativeCapabilities } from '../../src/v2/integration.js';
+import { nativeHostSteps, nativeReadiness } from '../../src/v2/host.js';
 import { emitNativeRay, nativeImpulse, worldPosition } from '../../src/v2/tools.js';
 import { NativeBrickStore, encodeNativeBrick, decodeNativeBrick, validateNativeWorldStore } from '../../src/world/nativeStore.js';
 import { WorldWindow } from '../../src/world/window.js';

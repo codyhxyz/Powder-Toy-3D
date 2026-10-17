@@ -1,6 +1,6 @@
 // Native host clock. Minecraft-style bounded catch-up: lag dilates game time
 // instead of recording an unbounded burst. Guests never own this clock.
-export const HOST_HZ = 60;
+const HOST_HZ = 60;
 export const INDUSTRY_V2_UNAVAILABLE = 'Factory machines require V1 physics. V2 machine transport is not implemented.';
 export function nativeHostSteps(owner, dt, { speed = 1, once = false, keepAlive = false, before, after } = {}) {
   if (!owner?.isReady || owner.disposed || owner.sim.nativeTransition || owner.sim.nativeTransitionError) return 0;

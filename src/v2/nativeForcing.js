@@ -4,7 +4,7 @@ import { nativeModes } from './modes.js';
 import { nativeWeatherParams, nativeWeatherEvaluateWGSL, nativeWeatherCommitWGSL, NATIVE_WEATHER_COMMIT_LAYOUT, scratchWGSL, boxWGSL, weatherMain, WEATHER_SPEED_SI } from './nativeWeather.js';
 import { STAGE } from '../gpu/kernels.js';
 const binding=(n,read=false)=>({binding:n,visibility:STAGE.COMPUTE,buffer:{type:read?'read-only-storage':'storage'}});
-export const FORCE_COMMIT_LAYOUT=[...NATIVE_WEATHER_COMMIT_LAYOUT,binding(3)];
+const FORCE_COMMIT_LAYOUT=[...NATIVE_WEATHER_COMMIT_LAYOUT,binding(3)];
 export function nativeForceCommitWGSL(g,params,stage) {
   const head=`${params.wgsl}
 @group(3) @binding(1) var<uniform> P: ${params.name};

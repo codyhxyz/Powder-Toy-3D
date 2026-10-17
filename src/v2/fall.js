@@ -13,7 +13,7 @@ export const fallTerminal = id => ELEMENTS[id]?.kind === K.POWDER ? ({ ASH: 3, S
 const bits = new DataView(new ArrayBuffer(4));
 const toFloat = word => { bits.setUint32(0, word, true); return bits.getFloat32(0, true); };
 const toWord = value => { bits.setFloat32(0, value, true); return bits.getUint32(0, true); };
-export const hasFallVelocity = core => (core[2] & 0x80000000) !== 0;
+const hasFallVelocity = core => (core[2] & 0x80000000) !== 0;
 export function fallVelocity(core) {
   if (ELEMENTS[core[0] & 255]?.kind !== K.POWDER) return 0;
   // Legacy saves have no historical gravity setting in each cell. Decode their

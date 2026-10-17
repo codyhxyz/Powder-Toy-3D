@@ -1,15 +1,15 @@
 // Pure native phase/enthalpy ABI. No dependency on contact rules or foundation.
 import { ELEMENTS, E, K } from '../elements.js';
 import { PHYS } from '../physics.js';
-export const PHASE_FULL = 65536;
+const PHASE_FULL = 65536;
 export const PHASE_NORMAL_MAX = 41093;
 export const PHASE_HOT_BASE = 41094;
 export const PHASE_COLD_BASE = 53315;
-export const PHASE_CODES = 12221;
+const PHASE_CODES = 12221;
 export const PHASE_STEPS = PHASE_CODES - 1;
 // Foundation capacityPerQuantum = round(cap*64); one cap·K is 256
 // energy units per amount quantum. Persistent carrier is always FULL.
-export const PHASE_ENERGY_PER_CAP_K = 256;
+const PHASE_ENERGY_PER_CAP_K = 256;
 const q = T => Math.round((T + 273.25) * 4);
 const cp = id => Math.max(1, Math.round(ELEMENTS[id].cap * 64));
 export const PHASE_ROWS = ELEMENTS.map(e => {

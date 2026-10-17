@@ -1,12 +1,11 @@
 // CPU only. Numerical/property checks plus the real driver with a command recorder.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { ELEMENTS, K } from '../../src/elements.js';
 import { FULL, MAX_FILL, FUEL_Q, lifeScale, isConductor, makeMaterial, withPayload, payloadOf, cTq, cFill, cid, ctypeOf, capacityQ, energyOf, withEnergy, energyFits, cRawTq, advectReference, validateMaterialTable } from '../../src/v2/layout.js';
-import { PHASE_ROWS, PHASE_NORMAL_MAX, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, phaseOffsetEnergy, validatePhaseCore } from '../../src/v2/phase.js';
+import { PHASE_ROWS, PHASE_NORMAL_MAX, PHASE_HOT_BASE, PHASE_COLD_BASE, phaseOffsetEnergy, validatePhaseCore } from '../../src/v2/phase.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
 import { gridLayout } from '../../src/sim.js';
-import { V2_KERNELS, v2ImportWGSL, v2ExternalEventsWGSL, v2FluxWGSL, v2ColumnWGSL, v2GatherWGSL, v2LimitWGSL, v2BlockWGSL, V2_DYNAMICS_LAYOUT, v2ActLayout, v2LiquidListLayout } from '../../src/shaders/v2.js';
+import { v2ImportWGSL, v2ExternalEventsWGSL, v2FluxWGSL, v2ColumnWGSL, v2GatherWGSL, v2LimitWGSL, v2BlockWGSL, V2_DYNAMICS_LAYOUT, v2LiquidListLayout } from '../../src/shaders/v2.js';
 import { encodeV2State, decodeV2State, stateLengths } from '../../src/v2/state.js';
 const id = key => ELEMENTS.find(e => e.key === key).id;
 const water = id('WATER'), oil = id('OIL');

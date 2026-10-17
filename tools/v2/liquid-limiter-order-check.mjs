@@ -1,17 +1,11 @@
 // CPU only. Execute the emitted scalar WGSL, compare with independent rational
 // BigInt arithmetic, and exercise the emitted limiter and canonical raw sender.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
-import { build } from 'vite';
 import { gridLayout } from '../../src/sim.js';
 import { FULL, MAX_FILL, share } from '../../src/v2/layout.js';
 import { v2LimitWGSL, v2GatherWGSL, liquidTransportWGSL } from '../../src/shaders/v2.js';
 import { energyShare, shareUnsigned, limbs, signed } from './integer-transport-reference.mjs';
-import { wgslGroupingErrors } from './wgsl-grouping.mjs';
+import { wgslGroupingErrors, assertNaga, importMinified } from './wgsl-grouping.mjs';
 
 const F = Math.fround, K = 65535, D = 2048;
 const g = gridLayout(16,16,16), shader = v2LimitWGSL(g);
@@ -280,17 +274,11 @@ for(const q of [.5,1.5,43008]) {
 console.log(`${fluxCases} actual faceFlux signed/cap cases; ${admissions} canonical headroom admissions, six simultaneous inbound/tail/MAX/above-MAX cases; exact signed heat/fuel ledgers`);
 
 // Validate the actual generated shaders, not a standalone substitute helper.
-const dir=mkdtempSync(join(tmpdir(),'liquid-limiter-order-'));
-try {
-  const bundle=await build({configFile:false,logLevel:'warn',build:{write:false,minify:true,lib:{entry:'src/shaders/v2.js',formats:['es']}}});
-  const chunk=(Array.isArray(bundle)?bundle[0]:bundle).output.find(x=>x.type==='chunk'&&x.isEntry);
-  const module=join(dir,'minified.mjs');writeFileSync(module,chunk.code);
-  const minified=await import(pathToFileURL(module));
-  assert.equal(minified.v2LimitWGSL(g),shader,'minification preserves full limiter');
-  assert.equal(minified.v2GatherWGSL(g),v2GatherWGSL(g),'minification preserves full gather');
-  for(const [name,code] of [['limit',shader],['gather',v2GatherWGSL(g)]]) {
-    assert.deepEqual(wgslGroupingErrors(code),[]);
-    const file=join(dir,`${name}.wgsl`);writeFileSync(file,code);execFileSync('naga',[file],{stdio:'pipe'});
-  }
-} finally {rmSync(dir,{recursive:true,force:true});}
+const minified=await importMinified('src/shaders/v2.js');
+assert.equal(minified.v2LimitWGSL(g),shader,'minification preserves full limiter');
+assert.equal(minified.v2GatherWGSL(g),v2GatherWGSL(g),'minification preserves full gather');
+for(const [name,code] of [['limit',shader],['gather',v2GatherWGSL(g)]]) {
+  assert.deepEqual(wgslGroupingErrors(code),[]);
+  assertNaga(code,name);
+}
 console.log(`${comparisons} emitted-WGSL/BigInt half checks; ${sixways} randomized six-way f32 limits; max tail ${maxTail} (analytic <${tailBound.toFixed(3)}); complete-weight ordering, signed ownership, packet telescoping and Naga passed; no GPU`);

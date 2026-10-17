@@ -2,16 +2,13 @@
 // plus production driver recording with strict, real uniform packing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { NativeJets } from '../../src/v2/jets.js';
 import { PARTICLE_CAP as CAP, NEUTRON_TAG } from '../../src/v2/dynamics-reference.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
 import { CONTROL } from '../../src/shaders/v2/particles.js';
+import { assertNaga } from './wgsl-grouping.mjs';
 import { ALLOCATION_CHUNKS, ALLOCATION_STAGES, allocationScratchBase, controlWords,
   externalMaskBase, externalMaskWords, blastsWGSL } from '../../src/shaders/v2/blasts.js';
 import { jetsWGSL } from '../../src/shaders/v2/jets.js';
@@ -363,17 +360,10 @@ for(const bricks of [...new Set([1,16,63,64,65,127,129,...registeredDims.map(dim
 }
 
 test('minimum-world partial request group count and allocation modules validate with CPU Naga',()=>{
-  const dir=mkdtempSync(join(tmpdir(),'allocation-prefix-'));
-  try {
-    const g=gridLayout(16,8,8);assert.equal(g.nbricks,16);
-    for(const stage of ['count','allocate']) for(const [family,source] of [
-      ['blasts',blastsWGSL(g,nativeDynamicsHead,stage)],['jets',jetsWGSL(g,stage)],
-    ]) {
-      const file=join(dir,`${family}-${stage}.wgsl`);writeFileSync(file,source);
-      const result=spawnSync('naga',[file],{encoding:'utf8'});
-      assert.equal(result.status,0,result.error?.message??result.stderr);
-    }
-  } finally {rmSync(dir,{recursive:true,force:true});}
+  const g=gridLayout(16,8,8);assert.equal(g.nbricks,16);
+  for(const stage of ['count','allocate']) for(const [family,source] of [
+    ['blasts',blastsWGSL(g,nativeDynamicsHead,stage)],['jets',jetsWGSL(g,stage)],
+  ]) assertNaga(source,`${family}-${stage}`);
 });
 
 test('request counts retain all lanes at barriers and only group sums occupy the old count region',()=>{

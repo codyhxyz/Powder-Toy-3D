@@ -1,14 +1,12 @@
 // CPU-only: conservative final-field certificates, interpolation support, march
 // equivalence, source contracts. --naga additionally validates generated WGSL.
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { BRICK_INFO, packBrickInfo, unpackBrickInfo } from '../../src/shaders/bindings.js';
 import { brickFrag } from '../../src/shaders/passes.js';
 import { volumeFrag, REALISTIC_LEVELS } from '../../src/shaders/render.js';
 import { gridLayout } from '../../src/sim.js';
+import { assertNaga } from './wgsl-grouping.mjs';
 
 const read = path => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
 const core = read('src/shaders/gfx/core.js'), render = read('src/shaders/render.js');
@@ -184,17 +182,13 @@ console.log(`ok: source contracts, info-bit isolation, ${probes} trilinear/cubic
 console.log(`static 88×88×32 slab: ${eligible} interior bricks eligible before blurred-edge erosion; no GPU timing claim`);
 
 if (process.argv.includes('--naga')) {
-  const dir = mkdtempSync(join(tmpdir(), 'liquid-interior-'));
-  try {
-    const g = gridLayout(128, 128, 128);
-    const modules = { brick: brickFrag(g) };
-    for (const level of ['off', 'balanced', 'full']) for (const curved of [false, true]) {
-      modules[`realistic-${level}-${curved ? 'curved' : 'flat'}`] = volumeFrag(g, { view: 'realistic', detail: REALISTIC_LEVELS[level](), curved });
-    }
-    for (const [name, code] of Object.entries(modules)) {
-      const path = join(dir, `${name}.wgsl`); writeFileSync(path, code);
-      execFileSync('naga', [path], { stdio: 'pipe' });
-      console.log(`ok: Naga ${name} (128³)`);
-    }
-  } finally { rmSync(dir, { recursive: true }); }
+  const g = gridLayout(128, 128, 128);
+  const modules = { brick: brickFrag(g) };
+  for (const level of ['off', 'balanced', 'full']) for (const curved of [false, true]) {
+    modules[`realistic-${level}-${curved ? 'curved' : 'flat'}`] = volumeFrag(g, { view: 'realistic', detail: REALISTIC_LEVELS[level](), curved });
+  }
+  for (const [name, code] of Object.entries(modules)) {
+    assertNaga(code, name);
+    console.log(`ok: Naga ${name} (128³)`);
+  }
 }
