@@ -9,7 +9,7 @@ import {
 } from '../../shaders/hybrid/optics.js';
 export { OPTICS_FALLBACK } from '../../shaders/hybrid/optics.js';
 
-const TEX = { TEXTURE_BINDING: 4, RENDER_ATTACHMENT: 16 };
+const TEX = { TEXTURE_BINDING: 4, STORAGE_BINDING: 8, RENDER_ATTACHMENT: 16 };
 export const OPTICS_OUTPUT_FORMATS = Object.freeze({ color: 'rgba16float', metadata: 'rgba32float', fallback: 'r32uint' });
 export function opticsClass(id) {
   const ch = CHANNELS[LOOK[id]?.ch]?.key;
@@ -176,8 +176,8 @@ export function validateOpticsResources({ color, depth }, output) {
  * Filtering samplers must never be paired with the unfilterable metadata output.
  * The pass itself uses textureLoad only; extension resources stay caller-owned.
  */
-export function validateOpticsLimits(limits = {}, bindings = []) {
-  limits = { maxSampledTexturesPerShaderStage: 16, maxStorageBuffersPerShaderStage: 8, ...limits };
+export function validateOpticsLimits(limits = {}, bindings = [], { bulkCompute = false } = {}) {
+  limits = { maxSampledTexturesPerShaderStage: 16, maxStorageBuffersPerShaderStage: 8, maxStorageTexturesPerShaderStage: 4, ...limits };
   limits.maxSampledTexturesPerShaderStage = Math.min(16, limits.maxSampledTexturesPerShaderStage);
   limits.maxStorageBuffersPerShaderStage = Math.min(8, limits.maxStorageBuffersPerShaderStage);
   const counts = { maxSampledTexturesPerShaderStage: 2, maxSamplersPerShaderStage: 0,
@@ -188,7 +188,8 @@ export function validateOpticsLimits(limits = {}, bindings = []) {
     if (e.sampler) counts.maxSamplersPerShaderStage++;
     if (e.buffer) counts[e.buffer.type === 'read-only-storage' ? 'maxStorageBuffersPerShaderStage' : 'maxUniformBuffersPerShaderStage']++;
   }
-  for (const [key, n] of Object.entries({ ...counts, maxBindGroups: 4, maxBindingsPerBindGroup: Math.max(2, ...bindings.map((e) => e.binding + 1)),
+  for (const [key, n] of Object.entries({ ...counts, ...(bulkCompute ? { maxStorageTexturesPerShaderStage: 3 } : {}),
+    maxBindGroups: 4, maxBindingsPerBindGroup: Math.max(2, ...bindings.map((e) => e.binding + 1)) + (bulkCompute ? 3 : 0),
     maxColorAttachments: 3, maxColorAttachmentBytesPerSample: 28 })) {
     if (limits[key] !== undefined && n > limits[key]) throw new RangeError(`optics exceeds ${key}: ${n} > ${limits[key]}`);
   }
@@ -196,7 +197,8 @@ export function validateOpticsLimits(limits = {}, bindings = []) {
 }
 
 export function createHybridOptics(gpu, sim, options = {}) {
-  const { lighting = {}, maxSteps = 256, maxInterfaces = 8, depthTolerance = 0.15 } = options;
+  const { lighting = {}, maxSteps = 256, maxInterfaces = 8, depthTolerance = 0.15, bulkCompute = false } = options;
+  if (typeof bulkCompute !== 'boolean') throw new TypeError('bulkCompute must be boolean');
   if (!(depthTolerance >= 0 && Number.isFinite(depthTolerance))) throw new RangeError('depthTolerance must be finite and nonnegative');
   // Additions: options.derived (defaults to sim.derived), fieldBinding (defaults
   // to first free pair after lighting). Views are refreshed for every record.
@@ -216,13 +218,21 @@ export function createHybridOptics(gpu, sim, options = {}) {
     ...(particles ? [{ binding: particleBinding, visibility: 3, buffer: { type: 'read-only-storage' } }] : []),
     ...(fallbackGate ? [{ binding: fallbackBinding, visibility: 2, buffer: { type: 'read-only-storage' } }] : [])];
   if (extraBindings.some((e) => !Number.isInteger(e.binding) || e.binding < 2) || new Set(extraBindings.map((e) => e.binding)).size !== extraBindings.length) throw new Error('optics lighting bindings must be unique and >= 2');
-  validateOpticsLimits(gpu.limits ?? gpu.device?.limits, extraBindings);
+  validateOpticsLimits(gpu.limits ?? gpu.device?.limits, extraBindings, { bulkCompute });
   if ((lighting.bindings ?? []).some((e) => e.texture) && typeof lighting.textures !== 'function') throw new TypeError('optics extension textures need lighting.textures(frame) for attachment alias checks');
   const fu = frameUniformsOf(gpu);
   const sceneLayout = gpu.layout('HYBRID_OPTICS_SCENE', [...opticsBindings(), ...extraBindings]);
+  const computeBinding = bulkCompute ? Math.max(2, ...extraBindings.map(e => e.binding + 1)) : null;
+  const outputBindings = bulkCompute ? Object.values(OPTICS_OUTPUT_FORMATS).map((format, i) => ({
+    binding: computeBinding + i, visibility: 4, storageTexture: { access: 'write-only', format },
+  })) : [];
+  const computeLayout = bulkCompute && gpu.layout('HYBRID_OPTICS_COMPUTE_SCENE',
+    [...opticsBindings(), ...extraBindings].map(e => ({ ...e, visibility: 4 })).concat(outputBindings));
   const stateLayout = gpu.layout('STATE_RO', OPTICS_STATE_LAYOUT);
-  const code = opticsShader(sim.g, { maxSteps, maxInterfaces, fieldBinding, boundsBinding, particleBinding, fallbackBinding, wgsl: lighting.wgsl, hooks: lighting.hooks });
-  const pipe = gpu.renderPipeline({ optional: true,
+  const code = opticsShader(sim.g, { maxSteps, maxInterfaces, fieldBinding, boundsBinding, particleBinding, fallbackBinding, computeBinding, wgsl: lighting.wgsl, hooks: lighting.hooks });
+  const pipe = bulkCompute ? gpu.kernel({ optional: true, name: 'hybrid optics', code,
+    layouts: [fu.layout, stateLayout, computeLayout], params: OpticsParams, entry: 'bulkCS', workgroupSize: [8,8,1],
+  }) : gpu.renderPipeline({ optional: true,
     name: 'hybrid optics', code,
     layouts: [fu.layout, stateLayout, sceneLayout], params: OpticsParams,
     fragment: { targets: Object.values(OPTICS_OUTPUT_FORMATS).map((format) => ({ format })) },
@@ -273,6 +283,7 @@ export function createHybridOptics(gpu, sim, options = {}) {
   };
   const pipelines = [pipe, reduce, finish, ...(particles ? [dropPipe, depthPipe] : [])];
   const api = {
+    computePassName: bulkCompute ? pipe.name : null,
     ready: Promise.all(pipelines.map(p => p.ready)),
     get isReady() { return !disposed && pipelines.every(p => p.state === 'ready'); },
     stats,
@@ -301,7 +312,8 @@ export function createHybridOptics(gpu, sim, options = {}) {
         // Texture destruction is deferred by WebGPU; no submit/flush in hook.
         release();
         output = Object.fromEntries(Object.entries(OPTICS_OUTPUT_FORMATS).map(([key, format]) => [key, gpu.createTexture({
-          label: `hybrid optics ${key}`, size: [color.width, color.height], format, usage: TEX.TEXTURE_BINDING | TEX.RENDER_ATTACHMENT,
+          label: `hybrid optics ${key}`, size: [color.width, color.height], format,
+          usage: TEX.TEXTURE_BINDING | TEX.RENDER_ATTACHMENT | (bulkCompute ? TEX.STORAGE_BINDING : 0),
         })]));
         if (particles) dropDepth = gpu.createTexture({ label: 'hybrid droplet depth',
           size: [color.width, color.height], format: 'depth32float', usage: TEX.RENDER_ATTACHMENT });
@@ -319,18 +331,28 @@ export function createHybridOptics(gpu, sim, options = {}) {
         { binding: fieldBinding + 1, resource: derived.views.fieldThin },
       ] : []), ...(particles ? [{ binding: particleBinding, resource: { buffer: particles.instances } }] : []),
         ...(fallbackGate ? [{ binding: fallbackBinding, resource: { buffer: fallbackGate } }] : [])];
-      const group = gpu.bindGroup(sceneLayout, entries, 'hybrid optics scene');
+      // Writable outputs belong only to compute, never the droplet attachment pass.
+      const group = (!bulkCompute || particles) && gpu.bindGroup(sceneLayout, entries, 'hybrid optics scene');
       const params = { gridInv: inverse, size: [color.width, color.height], unsupported, depthTolerance,
         world: (options.world ?? derived?.world) ? 1 : 0, particleSplit: particles ? 1 : 0 };
-      const rp = gpu.frame.render({ colorAttachments: Object.values(output).map((t) => ({
-        view: t.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0],
-      })) }, 'hybrid optics');
-      try {
-        pipe.draw(rp, {
-          bind: [fu.group, sim.bindRO, group], header: sim.header(),
-          params, count: 3,
+      if (bulkCompute) {
+        const computeGroup = gpu.bindGroup(computeLayout, [...entries, ...Object.values(output).map((t,i) => ({
+          binding: computeBinding+i, resource: t.createView(),
+        }))], 'hybrid optics compute scene');
+        // Isolate optical transport from physics/extraction for timing attribution.
+        gpu.frame.direct();
+        pipe.dispatch(gpu.frame, [Math.ceil(color.width/8), Math.ceil(color.height/8), 1], {
+          bind: [fu.group, sim.bindRO, computeGroup], header: sim.header(), params,
         });
-      } finally { rp.end(); }
+        gpu.frame.direct();
+      } else {
+        const rp = gpu.frame.render({ colorAttachments: Object.values(output).map((t) => ({
+          view: t.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0],
+        })) }, 'hybrid optics');
+        try {
+          pipe.draw(rp, { bind: [fu.group, sim.bindRO, group], header: sim.header(), params, count: 3 });
+        } finally { rp.end(); }
+      }
       if (particles) {
         const depthGroup = gpu.bindGroup(depthLayout, [
           { binding: 0, resource: depth.createView() }, { binding: 1, resource: output.metadata.createView() },

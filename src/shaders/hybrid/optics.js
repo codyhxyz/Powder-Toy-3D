@@ -271,10 +271,11 @@ fn opticsFieldSegment(p: vec3f, rd: vec3f, cellExit: f32) -> f32 {
 `;
 }
 
-export function opticsShader(g, { maxSteps = 256, maxInterfaces = 8, fieldBinding = null, boundsBinding = null, particleBinding = null, fallbackBinding = null, wgsl = '', hooks = {}, binding = 0 } = {}) {
+export function opticsShader(g, { maxSteps = 256, maxInterfaces = 8, fieldBinding = null, boundsBinding = null, particleBinding = null, fallbackBinding = null, computeBinding = null, wgsl = '', hooks = {}, binding = 0 } = {}) {
   for (const [name, n, limit] of [['maxSteps', maxSteps, 2048], ['maxInterfaces', maxInterfaces, 32]]) {
     if (!Number.isInteger(n) || n < 1 || n > limit) throw new RangeError(`${name} must be in 1..${limit}`);
   }
+  if (computeBinding !== null && (!Number.isInteger(computeBinding) || computeBinding < 2)) throw new RangeError('invalid optics compute output binding');
   return /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
@@ -571,6 +572,21 @@ fn opticsTrace(v: OpticsVertex, forced: bool, source: vec4f, entry: f32) -> Opti
   return out;
 }
 @fragment fn fs(v: OpticsVertex) -> OpticsOutput { return opticsTrace(v, false, vec4f(0), 0.0); }
+${computeBinding === null ? '' : `
+@group(2) @binding(${computeBinding}) var opticsOutColor: texture_storage_2d<rgba16float, write>;
+@group(2) @binding(${computeBinding + 1}) var opticsOutMetadata: texture_storage_2d<rgba32float, write>;
+@group(2) @binding(${computeBinding + 2}) var opticsOutFallback: texture_storage_2d<r32uint, write>;
+@compute @workgroup_size(8, 8, 1)
+fn bulkCS(@builtin(global_invocation_id) gid: vec3u) {
+  if (any(gid.xy >= textureDimensions(opticsOutColor))) { return; }
+  var v: OpticsVertex;
+  v.position = vec4f(vec2f(gid.xy) + vec2f(0.5), 0.0, 1.0);
+  let out = opticsTrace(v, false, vec4f(0), 0.0);
+  let px = vec2i(gid.xy);
+  textureStore(opticsOutColor, px, out.color);
+  textureStore(opticsOutMetadata, px, out.metadata);
+  textureStore(opticsOutFallback, px, vec4u(out.fallback, 0u, 0u, 0u));
+}`}
 ${particleBinding === null ? '' : dropEntriesWGSL}
 `;
 }

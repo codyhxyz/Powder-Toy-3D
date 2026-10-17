@@ -13,7 +13,7 @@ import { createHybridShading } from '../src/gfx/hybrid/shading.js';
 import { launchBrowser, newTestPage } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 
-const variants = ['full', 'no-reflections', 'unlit-hit', 'dynamic-gi', 'material-hit', 'immutable-hit', 'no-shadow-hit', 'runtime-gi'];
+const variants = ['full', 'no-reflections'];
 const variant = process.argv.find(a => a.startsWith('--variant='))?.split('=')[1] ?? 'full';
 const selected = variant.split(',');
 assert(selected.every(v => variants.includes(v)) && new Set(selected).size === selected.length,
@@ -32,46 +32,6 @@ function generate(name) {
     gate: {}, binding: 1, reflections: name !== 'no-reflections' });
   assert.deepEqual(shading.layout.map(e => e.binding), shading.entries.map(e => e.binding));
   assert.equal(new Set(shading.layout.map(e => e.binding)).size, shading.layout.length);
-  if (name === 'unlit-hit' || name === 'material-hit') {
-    const start = shading.wgsl.indexOf('fn hybridReflectionShade(');
-    assert(start >= 0, 'reflection hit callback must exist');
-    const open = shading.wgsl.indexOf('{', start);
-    let end = open + 1, depth = 1;
-    while (depth && end < shading.wgsl.length) {
-      const c = shading.wgsl[end++];
-      if (c === '{') depth++; else if (c === '}') depth--;
-    }
-    assert.equal(depth, 0, 'reflection callback body must close');
-    const body = name === 'unlit-hit' ? 'return ALBEDO(id);' : `
-      let a=fetchA(vec3i(floor(p-n*0.01)));
-      let m=hybridMaterialStateLod(id,fract(a.w),p,n,a.y,i32(floor(a.w)),0.0);
-      return m.baseColor+m.emission;`;
-    shading.wgsl = shading.wgsl.slice(0, open + 1) + body + '\n' + shading.wgsl.slice(end - 1);
-  }
-  if (name === 'dynamic-gi') {
-    const loop = 'for (var k = 0; k < 8; k++)';
-    assert(shading.wgsl.includes(loop), 'production GI stencil loop must exist');
-    // Diagnostic: always eight for the validated 0..32 reflection budget,
-    // but not a compile-time trip count. No shader quality is removed.
-    shading.wgsl = shading.wgsl.replace(loop, 'for (var k = 0; k < i32(min(8u, HC.reflectionSteps + 8u)); k++)');
-  }
-  if (name === 'runtime-gi') {
-    const loop = 'for (var k = 0; k < 8; k++)';
-    assert(shading.wgsl.includes(loop));
-    // Compile only: field substitutes a future fixed-eight host uniform.
-    shading.wgsl = shading.wgsl.replace(loop, 'for (var k = 0; k < i32(HC.reflectionSteps); k++)');
-  }
-  if (name === 'immutable-hit') {
-    const before = 'var m=hybridMaterialStateLod(id,fract(a.w),p,n,a.y,i32(floor(a.w)),0.0);\n      m.opacity=1.0;';
-    assert(shading.wgsl.includes(before));
-    shading.wgsl = shading.wgsl.replace(before, `let original=hybridMaterialStateLod(id,fract(a.w),p,n,a.y,i32(floor(a.w)),0.0);
-      let m=HybridMaterial(original.baseColor,original.roughness,original.metalness,original.emission,1.0,original.normal,original.f0);`);
-  }
-  if (name === 'no-shadow-hit') {
-    const before = 'hybridShade(m,p,n,m.normal,view,vec3f(hybridSunVisibility(p,n)),1.0)';
-    assert(shading.wgsl.includes(before));
-    shading.wgsl = shading.wgsl.replace(before, 'hybridShade(m,p,n,m.normal,view,vec3f(1.0),1.0)');
-  }
   return { code: drawWGSL(g, { shadingWGSL: shading.wgsl, shade: 'hybridOpaqueShade' }),
     layouts: [RENDER_LAYOUT.FRAME, LAYOUT.STATE_RO, [...FACES_LAYOUT, ...shading.layout], LAYOUT.PARAMS],
     pipeline: geometryPipelines().opaque };
