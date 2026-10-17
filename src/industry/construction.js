@@ -93,7 +93,7 @@ export function createConstruction(app) {
       sim._dispatch(kernel, [1, 1, 1], { bind: [sim.tables, sim.bindRW, group], header: sim.header(),
         params: { at: [d.x, d.y, d.z], material: baseMaterial(d.type), mode, slot, height: deviceHeight(d),
           hearth: d.type === 'hearth' ? 1 : 0, pump: d.type === 'pump' ? 1 : 0, rotation: d.rotation } });
-      if (mode) { sim.version++; sim.wake(); }
+      if (mode) { sim.version++; sim.worldRenderSource?.noteContentChange(); sim.wake(); }
       app.requestRender();
       // Also works on an explicitly parked test page, without a frame pump.
       gpu.flush('industry construction');

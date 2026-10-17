@@ -13,26 +13,21 @@ import { sceneLayout, SCENE_BINDING } from '../world/scenes/sceneGpu.js';
 // sceneGLSL is the scene's glsl(g): WGSL after the prelude, its resources in
 // group 2 (scenes/sceneGpu.js), which these kernels share with their own.
 
-// Diff tolerances, over a slab about to leave the window (docs/scaling.md D11,
-// "Leaving slabs"): a brick that differs from what the scene makes there is
-// kept (world/window.js). Air counts as unchanged while it is still air
-// within AIR_REST_T of the generator's temperature: its seed, velocity and
-// pressure don't matter. Matter needs the same element, ctype and seed (state
-// A's w holds both), life within STORE_LIFE_TOL and temperature within
-// STORE_MATTER_T; its velocity and pressure are ignored too.
+// Persistence is bit-exact, including air seeds, signed zero, and pressure.
+// Source authority must survive a residency move without changing appearance.
+// The legacy tolerance exports remain for existing tools, not store selection.
 export const STORE_MATTER_T = 0.5;   // °C: drift a regenerated brick may lose (it is still quiet: well under AIR_REST_T)
 export const STORE_LIFE_TOL = 1e-4;  // life/latent/fuel units: float slop only (life changes by reactions)
 // WEBGPU-STUB (docs/webgpu.md J3): texels per row of the WebGL diff target; the leaving slab is one kernel now (G1)
 export const DIFF_W = null;
-const cellDiffersWGSL = /* wgsl */ `
-const STORE_MATTER_T: f32 = ${STORE_MATTER_T};
-const STORE_LIFE_TOL: f32 = ${STORE_LIFE_TOL};
-fn cellDiffers(a: vec4f, gen: vec4f) -> bool {
-  let id = eid(a);
-  if (id != eid(gen)) { return true; }
-  if (id == E_EMPTY) { return abs(a.y - gen.y) > AIR_REST_T; }
-  return a.w != gen.w || abs(a.y - gen.y) > STORE_MATTER_T || abs(a.z - gen.z) > STORE_LIFE_TOL;
+export const cellDiffersWGSL = /* wgsl */ `
+fn cellDiffers(a: vec4f, b: vec4f, genA: vec4f, genB: vec4f) -> bool {
+  return any(bitcast<vec4u>(a) != bitcast<vec4u>(genA)) || any(bitcast<vec4u>(b) != bitcast<vec4u>(genB));
 }`;
+// CPU persistence fixtures use the same complete word comparison.
+export function cellWordsDiffer(a, b, genA, genB) {
+  return a.some((v, i) => v !== genA[i]) || b.some((v, i) => v !== genB[i]);
+}
 
 // ---------------------------------------------------------------- the fill
 // An edit (docs/webgpu.md D6) writing the scene's state into the cells of its
@@ -112,7 +107,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u,
   if (live && inGrid(p)) {
     a = fetchA(p);
     bb = fetchB(p);
-    if (cellDiffers(a, sceneCell(H.origin + p).A)) { atomicOr(&wgDiffers, 1u); }
+    let generated = sceneCell(H.origin + p);
+    if (cellDiffers(a, bb, generated.A, generated.B)) { atomicOr(&wgDiffers, 1u); }
   }
   workgroupBarrier();
   if (li == 0u) { wgFlag = atomicLoad(&wgDiffers); }

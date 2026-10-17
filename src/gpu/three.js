@@ -11,7 +11,7 @@
 // three into their module graph.
 
 import {
-  WebGPURenderer, ExternalTexture, WebGPUCoordinateSystem, RenderTarget, DepthTexture, QuadMesh, NodeMaterial,
+  WebGPURenderer, ExternalTexture, StorageBufferAttribute, WebGPUCoordinateSystem, RenderTarget, DepthTexture, QuadMesh, NodeMaterial,
   RGBAFormat, RedFormat, RGFormat, RGBAIntegerFormat, RedIntegerFormat,
   HalfFloatType, FloatType, UnsignedByteType, UnsignedIntType, IntType,
   LinearFilter, NearestFilter, ClampToEdgeWrapping, NoColorSpace,
@@ -44,6 +44,7 @@ export async function createThreeRenderer(gpu, canvas, { assertTarget, hdr = fal
   const renderer = new WebGPURenderer({ device: gpu.device, canvas, antialias: false, alpha: false, ...(hdr && { outputType: HalfFloatType }) });
   renderer._getFallback = null;
   await renderer.init();
+  trackNativeRenderPipelines(renderer);
   renderer.autoClear = false;
   renderer._animation.stop();
   renderer.onError = (info) => gpu.fail(new GraphicsFailure(gpuErrorMessage(info?.originalEvent?.error ?? info), { cause: info }));
@@ -96,6 +97,82 @@ export async function createThreeRenderer(gpu, canvas, { assertTarget, hdr = fal
     },
   };
   return renderer;
+}
+
+/**
+ * r186-only, renderer-instance interop: compileAsync's pipeline-cache hits do
+ * not await the first creation, and WebGPUBackend catches native rejection.
+ * Enroll the ORIGINAL native completion on every async getForRender, including
+ * sync-created pipelines' existing validation scopes, then require the actual
+ * backend GPURenderPipeline handle before certifying it. No native device
+ * mutations/new error scopes; synchronous draw behavior is unchanged.
+ * Exported so CPU tests can exercise the actual Three Pipelines cache path.
+ */
+const nativePipelineTrackers = new WeakSet();
+export function trackNativeRenderPipelines(renderer) {
+  if (nativePipelineTrackers.has(renderer)) return;
+  const { backend, _pipelines: pipelines } = renderer;
+  const nativeWork = new WeakMap();
+  const create = backend.createRenderPipeline;
+  const get = pipelines.getForRender;
+  backend.createRenderPipeline = function (renderObject, promises) {
+    const pipeline = renderObject.pipeline;
+    const pending = [];
+    let result;
+    if (!promises) {
+      const device = this.device;
+      // r186 PipelineUtils reads device once, then pops its existing scope
+      // synchronously. Forward native receivers for WebIDL brand checks; never
+      // change the shared device or leave this renderer-local facade installed.
+      this.device = new Proxy(device, {
+        get(target, key) {
+          const value = Reflect.get(target, key, target);
+          if (key === 'popErrorScope') return (...args) => {
+            const completion = value.apply(target, args);
+            pending.push(completion); // no handlers before Three registers its own
+            return completion;
+          };
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      try { result = create.call(this, renderObject, promises); }
+      finally { this.device = device; }
+    } else {
+      // Keep Three's original async native creation + diagnostics completion.
+      result = create.call(this, renderObject, pending);
+    }
+    // For sync creation, Three's validation .then is already registered, so it
+    // sets pipelineData.error before this fence checks the handle/error pair.
+    const work = Promise.allSettled(pending).then(results => {
+      if (!pending.length) throw new Error(`Three native mesh pipeline has no tracked completion (${pipeline.cacheKey})`);
+      const failed = results.find(r => r.status === 'rejected');
+      if (failed) throw failed.reason;
+      if (!backend.get(pipeline).pipeline || backend.get(pipeline).error === true) {
+        // Three has discarded the native error: do not invent its cause.
+        throw new Error(`Three native mesh pipeline unavailable after compilation (${pipeline.cacheKey}); WebGPUBackend may have swallowed the native creation error. Check Three/WebGPU diagnostics.`);
+      }
+    });
+    nativeWork.set(pipeline, work);
+    work.catch(() => {}); // cache retains failures for later strict subscribers
+    if (promises) promises.push(work);
+    return result;
+  };
+  pipelines.getForRender = function (renderObject, promises) {
+    const pipeline = get.call(this, renderObject, promises);
+    if (promises) {
+      const work = nativeWork.get(pipeline);
+      if (work) {
+        if (!promises.includes(work)) promises.push(work);
+      } else {
+        // A handle alone says nothing about outstanding native validation.
+        const failed = Promise.reject(new Error(`Three native mesh pipeline has no tracked completion (${pipeline.cacheKey})`));
+        failed.catch(() => {});
+        promises.push(failed);
+      }
+    }
+    return pipeline;
+  };
+  nativePipelineTrackers.add(renderer);
 }
 
 // three r186 gives every texture view `swizzle: 'rgba'` (GPUTextureViewDescriptor.js:84),
@@ -175,7 +252,7 @@ const FORMATS = {
  * dispose the old one. Float32 textures bind as unfilterable (the device has
  * no float32-filterable, W3): read them in TSL with textureLoad only.
  * @param {GPUTexture} gpuTexture
- * @param {{ dimension?: '2d' | '3d', format?: GPUTextureFormat, type?: number, width?: number, height?: number, depth?: number }} [opts]
+ * @param {{ dimension?: '2d' | '3d' | '2d-array', format?: GPUTextureFormat, type?: number, width?: number, height?: number, depth?: number }} [opts]
  * @returns {ExternalTexture}
  */
 export function externalTexture(gpuTexture, { dimension = gpuTexture.dimension, format = gpuTexture.format, type, width, height, depth } = {}) {
@@ -185,6 +262,7 @@ export function externalTexture(gpuTexture, { dimension = gpuTexture.dimension, 
   tex.type = type ?? t;
   tex.image = { width: width ?? gpuTexture.width, height: height ?? gpuTexture.height, depth: depth ?? gpuTexture.depthOrArrayLayers };
   if (dimension === '3d') tex.is3DTexture = true;
+  if (dimension === '2d-array') tex.isArrayTexture = true;
   const filterable = tex.type === HalfFloatType || tex.type === UnsignedByteType;
   tex.minFilter = tex.magFilter = filterable ? LinearFilter : NearestFilter;
   tex.wrapS = tex.wrapT = tex.wrapR = ClampToEdgeWrapping;
@@ -192,6 +270,21 @@ export function externalTexture(gpuTexture, { dimension = gpuTexture.dimension, 
   tex.flipY = false;
   tex.colorSpace = NoColorSpace;
   return tex;
+}
+
+/** Adopt an immutable native storage binding without upload or ownership transfer.
+ * r186 AttributeUtils skips creation for an adopted backend buffer, and
+ * NodeStorageBuffer reads its current attribute on every bindings update.
+ * The one-word array is a uint type witness, NEVER an upload/readback mirror.
+ * Keep the native owner pinned until final submission AND completion. Do not
+ * attach this attribute to geometry or ask Three to delete/destroy it.
+ */
+export function externalStorageAttribute(renderer, buffer, count) {
+  if (!renderer?.backend?.get || !buffer || !Number.isSafeInteger(count) || count < 1 || buffer.size < count * 4) throw new TypeError('external uint storage extent/renderer required');
+  const attribute = new StorageBufferAttribute(new Uint32Array(1), 1);
+  attribute.count = count;
+  renderer.backend.get(attribute).buffer = buffer;
+  return attribute;
 }
 
 /**
@@ -223,6 +316,45 @@ export function externalTexture(gpuTexture, { dimension = gpuTexture.dimension, 
  * size, which TAAUNode takes as the output size, is [w, h].
  * @param {object} gpu with gpu.three (createThreeRenderer)
  */
+// Reserve a sample without touching the committed jitter index/history. This
+// uses the real TAAU view-offset hooks (including their velocity override),
+// then restores them synchronously after scene recording. Already queued
+// scenes can share a sample; each accepted scene advances the index once.
+export function reserveTemporalJitter(node, camera, w, h) {
+  const saved = { camera: node.camera, index: node._jitterIndex,
+    original: node._originalProjectionMatrix.clone(), offset: node._jitterOffset.value.clone(),
+    projection: camera.projectionMatrix.clone(), inverse: camera.projectionMatrixInverse.clone(),
+    view: camera.view ? { ...camera.view } : null, aspect: camera.aspect };
+  let restored = false, committed = false;
+  const restoreCamera = () => {
+    camera.view = saved.view ? { ...saved.view } : null;
+    if (saved.aspect !== undefined) camera.aspect = saved.aspect;
+    camera.projectionMatrix.copy(saved.projection);camera.projectionMatrixInverse.copy(saved.inverse);
+  };
+  const restore = () => {
+    if (restored) return;
+    node.camera = camera;node.clearViewOffset();node._jitterIndex = saved.index;
+    node._originalProjectionMatrix.copy(saved.original);node._jitterOffset.value.copy(saved.offset);node.camera = saved.camera;
+    restoreCamera();restored = true;
+  };
+  try {
+    node.camera = camera;node.setViewOffset(w, h);
+    if (saved.aspect !== undefined && camera.aspect !== saved.aspect) {camera.aspect = saved.aspect;camera.updateProjectionMatrix();}
+    const original = node._originalProjectionMatrix.clone();
+    const jitter = Object.freeze([node._jitterOffset.value.x, node._jitterOffset.value.y]);
+    return Object.freeze({jitter, restore, commit(frozenCamera) {
+      if (committed) throw new Error('temporal sample already committed');
+      restore();
+      node.camera = frozenCamera;node._originalProjectionMatrix.copy(original);node._jitterOffset.value.set(...jitter);
+      const projection = frozenCamera.projectionMatrix.clone(), inverse = frozenCamera.projectionMatrixInverse.clone();
+      const view = frozenCamera.view ? { ...frozenCamera.view } : null;
+      node.clearViewOffset();
+      frozenCamera.view = view;frozenCamera.projectionMatrix.copy(projection);frozenCamera.projectionMatrixInverse.copy(inverse);
+      committed = true;
+    }});
+  } catch (e) {restore();throw e;}
+}
+
 export function createTemporalUpscaler(gpu) {
   const renderer = gpu.three.renderer;
   const target = (name, format, filter) => {
@@ -279,6 +411,7 @@ export function createTemporalUpscaler(gpu) {
       node.camera = camera;
       node.clearViewOffset();
     },
+    reserveJitter(camera, w, h) { return reserveTemporalJitter(node, camera, w, h); },
     resolve(camera, depth, [w, h]) {
       node.camera = camera;
       if (node.depthNode.value !== depth) node.depthNode.value = depth;

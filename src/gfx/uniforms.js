@@ -140,14 +140,19 @@ function tablesOf(gpu) {
 
 // a Float32Array of LAMP_MAX vec4s as the packer's array of vectors
 const vec4s = (a) => Array.from({ length: LAMP_MAX }, (_, i) => a.subarray(4 * i, 4 * i + 4));
-const toGrid = new Matrix4();
+// World cells -> scene. The local volume model already contains the physics
+// window translation, so remove that captured origin exactly once.
+export function worldModelMatrix(model, physicsOrigin) {
+  const origin = physicsOrigin?.toArray ? physicsOrigin.toArray() : Array.from(physicsOrigin ?? []);
+  if (origin.length !== 3 || !origin.every(Number.isFinite)) throw new RangeError('captured physics origin required');
+  return model.clone().multiply(new Matrix4().makeTranslation(-origin[0], -origin[1], -origin[2]));
+}
+const copyValue = v => ArrayBuffer.isView(v) ? v.slice() : Array.isArray(v) ? v.map(copyValue) : v?.clone ? v.clone() : v;
 
 /**
- * Writes FrameUniforms for this tick: gfxUniforms' values, the camera's and
- * the volume's. The camera is the one post jittered for the frame (its
- * projectionMatrix holds the jitter, F4), or the unjittered one on a
- * derived-only tick.
- * @param {object} gpu
+ * Builds owned FrameUniforms values from the supplied camera/model and the
+ * current graphics settings. The camera matrices must already be current:
+ * jittered during scene recording, unjittered on a derived-only tick.
  * @param {{ camera: object, model: object, sun: object, view?: number, shadowRes?: number, time?: number,
  *   lightGain?: number, shadows?: boolean, far?: boolean, sea?: number, jitter?: number[] }} frame
  *   model: the volume's matrixWorld (grid cells → scene); sun: unit vector toward
@@ -156,18 +161,15 @@ const toGrid = new Matrix4();
  *   simulation); lightGain: the glow's gain (uLightGain); far: a world's far
  *   field is drawn; sea: its sea level; jitter: post.jitter
  */
-export function writeFrameUniforms(gpu, { camera, model, sun, view = 0, shadowRes = 1, time = 0, lightGain = 1, shadows = true, far = false, sea = 0, jitter = [0, 0], sourceAppearance = [0, 0, 0, 0], sourceStyle = false }) {
-  const { uniforms, last } = frameUniformsOf(gpu);
-  camera.updateMatrixWorld();
-  last.viewProj.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-  last.invViewProj.copy(last.viewProj).invert();
-  last.model.copy(model);
-  last.eye.setFromMatrixPosition(camera.matrixWorld);
-  last.written = true;
-  const cam = last.eye.clone().applyMatrix4(toGrid.copy(model).invert());   // the eye in grid cells (uCam)
+// Pure value construction: the caller updates camera matrices first. Returned
+// matrices, vectors and arrays are owned snapshots; no GPU or shared-last write.
+export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1, time = 0, lightGain = 1, shadows = true, far = false, sea = 0, jitter = [0, 0], sourceAppearance = [0, 0, 0, 0], sourceStyle = false }) {
+  const viewProj = new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+  const invViewProj = viewProj.clone().invert();
+  const cam = new Vector3().setFromMatrixPosition(camera.matrixWorld).applyMatrix4(model.clone().invert());
   const u = gfxUniforms;
-  uniforms.write({
-    viewProj: last.viewProj, invViewProj: last.invViewProj, model: last.model,
+  const values = {
+    viewProj, invViewProj, model,
     lampPos: vec4s(u.uLampPos.value), lampCol: vec4s(u.uLampCol.value), lampShape: vec4s(u.uLampShape.value),
     wandLightPosition: u.uWandLightPosition.value, wandLightColor: u.uWandLightColor.value,
     cam, time, sun, lightGain, sourceAppearance, sourceStyle: !!sourceStyle,
@@ -179,5 +181,15 @@ export function writeFrameUniforms(gpu, { camera, model, sun, view = 0, shadowRe
     beacon: u.uBeacon.value, beaconDir: u.uBeaconDir.value, beaconCell: u.uBeaconCell.value,
     shadows: !!shadows, nearGI: !!u.uNearGI.value, glowLights: !!u.uGlowLights.value, caustics: !!u.uCaustics.value,
     clouds: !!u.uClouds.value, far: !!far, caveAmbient: u.uCaveAmbient.value, digMin: u.uDigMin.value, digMax: u.uDigMax.value,
-  });
+  };
+  return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, copyValue(value)]));
+}
+
+export function writeFrameUniforms(gpu, frame) {
+  const { uniforms, last } = frameUniformsOf(gpu);
+  frame.camera.updateMatrixWorld();
+  const values = frameUniformValues(frame);
+  last.viewProj.copy(values.viewProj);last.invViewProj.copy(values.invViewProj);last.model.copy(values.model);
+  last.eye.setFromMatrixPosition(frame.camera.matrixWorld);last.written = true;
+  uniforms.write(values);
 }

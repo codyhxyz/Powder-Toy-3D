@@ -1,0 +1,471 @@
+{
+  "volume": [
+    [
+      {
+        "binding": 0,
+        "visibility": 6,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      },
+      {
+        "binding": 1,
+        "visibility": 7,
+        "buffer": {
+          "type": "uniform"
+        }
+      },
+      {
+        "binding": 2,
+        "visibility": 2,
+        "texture": {
+          "sampleType": "depth",
+          "viewDimension": "2d"
+        }
+      },
+      {
+        "binding": 3,
+        "visibility": 2,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      }
+    ],
+    [
+      {
+        "binding": 0,
+        "visibility": 6,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      },
+      {
+        "binding": 1,
+        "visibility": 6,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      }
+    ],
+    [
+      {
+        "binding": 0,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 1,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 2,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 3,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 4,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 5,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 6,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 7,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 8,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "unfilterable-float",
+          "viewDimension": "2d"
+        }
+      },
+      {
+        "binding": 9,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "unfilterable-float",
+          "viewDimension": "2d"
+        }
+      },
+      {
+        "binding": 10,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 11,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "uint",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 12,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "2d"
+        }
+      },
+      {
+        "binding": 13,
+        "visibility": 6,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "2d"
+        }
+      },
+      {
+        "binding": 14,
+        "visibility": 6,
+        "sampler": {
+          "type": "filtering"
+        }
+      },
+      {
+        "binding": 15,
+        "visibility": 6,
+        "sampler": {
+          "type": "filtering"
+        }
+      },
+      {
+        "binding": 16,
+        "visibility": 6,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      },
+      {
+        "binding": 17,
+        "visibility": 6,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      },
+      {
+        "binding": 18,
+        "visibility": 6,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      },
+      {
+        "binding": 19,
+        "visibility": 6,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      }
+    ],
+    [
+      {
+        "binding": 0,
+        "visibility": 7,
+        "buffer": {
+          "type": "uniform",
+          "hasDynamicOffset": true
+        }
+      },
+      {
+        "binding": 1,
+        "visibility": 7,
+        "buffer": {
+          "type": "uniform",
+          "hasDynamicOffset": true
+        }
+      }
+    ]
+  ],
+  "pick": [
+    [
+      {
+        "binding": 0,
+        "visibility": 6,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      }
+    ],
+    [
+      {
+        "binding": 0,
+        "visibility": 6,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      },
+      {
+        "binding": 1,
+        "visibility": 6,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      }
+    ],
+    [
+      {
+        "binding": 0,
+        "visibility": 4,
+        "buffer": {
+          "type": "storage"
+        }
+      }
+    ]
+  ],
+  "shadow": [
+    [
+      {
+        "binding": 0,
+        "visibility": 6,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      },
+      {
+        "binding": 1,
+        "visibility": 7,
+        "buffer": {
+          "type": "uniform"
+        }
+      }
+    ],
+    [
+      {
+        "binding": 0,
+        "visibility": 6,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      },
+      {
+        "binding": 1,
+        "visibility": 6,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      }
+    ],
+    [
+      {
+        "binding": 0,
+        "visibility": 4,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 1,
+        "visibility": 4,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 2,
+        "visibility": 4,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 3,
+        "visibility": 4,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 4,
+        "visibility": 4,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 5,
+        "visibility": 4,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 6,
+        "visibility": 4,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 7,
+        "visibility": 4,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 8,
+        "visibility": 4,
+        "storageTexture": {
+          "access": "write-only",
+          "format": "rgba32float",
+          "viewDimension": "2d"
+        }
+      },
+      {
+        "binding": 9,
+        "visibility": 4,
+        "storageTexture": {
+          "access": "write-only",
+          "format": "r32float",
+          "viewDimension": "2d"
+        }
+      },
+      {
+        "binding": 10,
+        "visibility": 4,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 11,
+        "visibility": 4,
+        "texture": {
+          "sampleType": "uint",
+          "viewDimension": "3d"
+        }
+      },
+      {
+        "binding": 12,
+        "visibility": 4,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "2d"
+        }
+      },
+      {
+        "binding": 13,
+        "visibility": 4,
+        "texture": {
+          "sampleType": "float",
+          "viewDimension": "2d"
+        }
+      },
+      {
+        "binding": 14,
+        "visibility": 4,
+        "sampler": {
+          "type": "filtering"
+        }
+      },
+      {
+        "binding": 15,
+        "visibility": 4,
+        "sampler": {
+          "type": "filtering"
+        }
+      },
+      {
+        "binding": 16,
+        "visibility": 4,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      },
+      {
+        "binding": 17,
+        "visibility": 4,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      },
+      {
+        "binding": 18,
+        "visibility": 4,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      },
+      {
+        "binding": 19,
+        "visibility": 4,
+        "buffer": {
+          "type": "read-only-storage"
+        }
+      }
+    ],
+    [
+      {
+        "binding": 0,
+        "visibility": 7,
+        "buffer": {
+          "type": "uniform",
+          "hasDynamicOffset": true
+        }
+      },
+      {
+        "binding": 1,
+        "visibility": 7,
+        "buffer": {
+          "type": "uniform",
+          "hasDynamicOffset": true
+        }
+      }
+    ]
+  ]
+}

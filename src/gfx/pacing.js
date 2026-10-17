@@ -79,10 +79,12 @@ export function blendFixedFrames(w) {
 // reset, stays rougher until it changes again.)
 export const TAA_SETTLE_FRAMES = 8;
 
-// viewSettle: a frame count, or a function returning one (it may change at run time),
+// derivedSettle/viewSettle: a frame count, or a function returning one.
+// The view count may change at run time and is
 // at most TAA_SETTLE_FRAMES.
 // onWake: called by wake(), so a loop that stopped (createFrameLoop) starts again.
 export function createPacer({ derivedSettle, viewSettle, presentHz = MAX_FPS, onWake = null }) {
+  const derivedFrames = typeof derivedSettle === 'function' ? derivedSettle : () => derivedSettle;
   const viewFramesOf = typeof viewSettle === 'function' ? viewSettle : () => viewSettle;
   const viewFrames = () => Math.min(TAA_SETTLE_FRAMES, viewFramesOf());
   let last = -Infinity, lastPresent = -Infinity;
@@ -104,12 +106,12 @@ export function createPacer({ derivedSettle, viewSettle, presentHz = MAX_FPS, on
       return true;
     },
     get settled() { return derivedLeft <= 0 && viewLeft <= 0; },
-    get settleLimit() { return derivedSettle + viewFrames() + 4; },
+    get settleLimit() { return derivedFrames() + viewFrames() + 4; },
     /** Frames the view renders after a change until it has settled (TAA converged). */
     get viewSettle() { return viewFrames(); },
     // Run the derived passes this frame? key: everything they depend on.
     derived(key) {
-      if (key !== derivedKey) { derivedKey = key; derivedLeft = derivedSettle; }
+      if (key !== derivedKey) { derivedKey = key; derivedLeft = derivedFrames(); }
       if (derivedLeft <= 0) return false;
       derivedLeft--;
       return true;

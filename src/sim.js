@@ -189,7 +189,7 @@ function simLayouts(gpu) {
 function tablesOf(gpu) {
   if (!gpu._simTables) {
     const bytes = tablesBuffer();
-    const buffer = gpu.createBuffer({ label: 'tables', size: Math.ceil(bytes.byteLength / 16) * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    const buffer = gpu.createBuffer({ label: 'tables', size: Math.ceil(bytes.byteLength / 16) * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
     gpu.queue.writeBuffer(buffer, 0, bytes);
     gpu._simTables = {
       buffer, group: gpu.bindGroup(simLayouts(gpu).TABLES, [{ binding: 0, resource: { buffer } }], 'tables'),
@@ -578,7 +578,9 @@ export class Simulation {
     // and that's a fixed point until something writes (docs/webgpu.md D4).
     if (this.idleCertified && !this.actDirty && !this.actFresh && this.actSteps >= SUPER_SETTLE_STEPS
         && this.quietOk && this.skipSleeping && !this.rays.active) {
+      const aerGeneration = this.aeration?.generation, aerCopy = this.aeration?.cur;
       this.aeration?.idle?.(f);   // nothing moves, but the foam left on it still bursts
+      if (this.aeration?.generation !== aerGeneration || this.aeration?.cur !== aerCopy) this.worldRenderSource?.recordLiveCopy(f, this);
       return;
     }
     // particles fly first: the map below keeps the bricks they're in awake
@@ -623,6 +625,8 @@ export class Simulation {
     if (!outOfPlace) this.cur = other;
     if (this.rays.active) this.rays.settle(f);
     this.version += 2;   // (the move and react: as the WebGL build counted its two state passes)
+    this.worldRenderSource?.noteContentChange();
+    this.worldRenderSource?.recordLiveCopy(f, this);
   }
 
   // ---- writers that aren't steps (docs/webgpu.md D6) ----
@@ -672,14 +676,16 @@ export class Simulation {
    * @param {ReturnType<Simulation['editKernel']>} kernel
    * @param {{ lo: number[], hi: number[] }} box inclusive grid cells (clipped to the grid)
    * @param {object} [values] the params' other fields
-   * @param {{ bind?: GPUBindingResource[], scrub?: boolean }} [opts] bind: the kernel's own group-2
+   * @param {{ bind?: GPUBindingResource[], scrub?: boolean, residency?: boolean }} [opts] bind: the kernel's own group-2
    *   resources: one per entry of editKernel's `layout`, in order ({ buffer, offset?, size? } for a
    *   buffer); the sim adds the two-phase scratch and makes the bind group once per set of resources (a
    *   buffer's range included). Bind long-lived buffers (B6): a kernel keeps at most EDIT_GROUPS_MAX
    *   groups. scrub: the cells it gives a new element lose their decoration, as TPT's create_part
-   *   resets dcolour (the brush, a stamp, the console's script: main's scrubDeco callers)
+   *   resets dcolour (the brush, a stamp, the console's script: main's scrubDeco callers).
+   *   residency: internal exact world refill/restore only; suppresses this writer's semantic
+   *   content notification, never unrelated edits or callbacks.
    */
-  edit(kernel, { lo, hi }, values = {}, { bind = [], scrub = false } = {}) {
+  edit(kernel, { lo, hi }, values = {}, { bind = [], scrub = false, residency = false } = {}) {
     const box = this._clip(lo, hi);
     if (!box) return;
     const [a, b] = box;
@@ -704,6 +710,7 @@ export class Simulation {
     if (kernel.apply) this._dispatch(kernel.apply, size, { bind: groups, header, params });
     deco?.scrub?.(f, clipped);
     this.version++;
+    if (!residency) this.worldRenderSource?.noteContentChange();
     this.wake();   // the next step rebuilds the map: the marked bricks are forced
   }
 
@@ -826,10 +833,12 @@ export class Simulation {
   /**
    * A whole-grid write that isn't a step (a load, an undo, the codec's unpack):
    * the next map rebuilds every inert bit and draws every unit, and the
-   * derived passes rebuild every brick.
+   * derived passes rebuild every brick. Residency copies may opt out of the
+   * semantic content notification for this write only (never across an await).
    */
-  noteWrite() {
+  noteWrite({ residency = false } = {}) {
     this.version++;
+    if (!residency) this.worldRenderSource?.noteContentChange();
     this.wholeWrites++;
     this.forceAll = true;
     this.actFull = true;
@@ -844,9 +853,9 @@ export class Simulation {
    * the next map draws every unit). Its kernel is built on demand:
    * sim.prepare('fresh').
    */
-  freshFlags() {
+  freshFlags(options) {
     this._dispatch(this.passOf('fresh'), fold(Math.ceil(this.g.slots / 64)), { bind: [this.tables, this.bindRW], header: this.header() });
-    this.noteWrite();
+    this.noteWrite(options);
   }
 
   // Upload CPU-built state (Float32Array RGBA per atlas texel: cellTexel)
@@ -968,6 +977,7 @@ export class Simulation {
   // The state was replaced: nothing is moving until the next step says so.
   stillFlow() {
     this.gpu.frame.clear(this.flow);
+    this.worldRenderSource?.noteContentChange();
     this.aeration?.reset?.(this.gpu.frame);
   }
 

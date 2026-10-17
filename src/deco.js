@@ -129,7 +129,9 @@ export class Deco {
     this.ready.catch(() => {});
     this.active = false;     // the plane may hold decoration (else it is all 0 and nothing reads or carries it)
     this.store = new Map();  // the World's decorated bricks outside the window, by world brick key (leave)
-    this._pending = null;    // the leaving slab's readback (world/window.js waits for it)
+    this.storeReads = new Set(); // retain EVERY outstanding read, even reversed completions
+    this.storeRevisions = new Map();
+    this.revision = 0;
     this.epoch = 0;          // bumped by reset: a readback of what was before lands nowhere
     this.queue = [];         // work waiting for the kernels, in call order
     this.snaps = new Set();  // undo snapshots holding a copy of the plane (t.decoBuf)
@@ -149,7 +151,7 @@ export class Deco {
    * made by a load). null when nothing is outstanding.
    */
   get pending() {
-    return this._pending ?? (this.active && !this.kernelsReady ? this.ready : null);
+    return this.storeReads.values().next().value ?? (this.active && !this.kernelsReady ? this.ready : null);
   }
 
   get kernelsReady() { return Object.values(this.k).every((k) => k.state === 'ready'); }
@@ -225,6 +227,7 @@ export class Deco {
       this._run('decoPaintApply', size, params);
       this.active = true;
       this.sim.version++;   // the picture changed (gfx/pacing.js redraws on it)
+      this.sim.worldRenderSource?.noteContentChange();
     });
   }
 
@@ -281,6 +284,7 @@ export class Deco {
     this._whenReady(() => {
       this._run('decoUndo', fold(Math.ceil(this.sim.g.slots / 64)), { shift: [dx, 0, dz], blank: had ? 0 : 1 }, { source: had ?? this.dummy });
       this.active = true;
+      this.sim.worldRenderSource?.noteContentChange();
       this._spend(t);
     });
   }
@@ -300,12 +304,14 @@ export class Deco {
   // Everything goes (a new state replaced the old: Simulation.load, a new world).
   reset() {
     this._sweep();
-    if (!this.active && !this.store.size && !this._pending && !this.queue.length) return;
+    if (!this.active && !this.store.size && !this.storeReads.size && !this.queue.length) return;
     const p = this.plane;
     if (p && this.active) this.gpu.frame.clear(p.buffer, p.offset, p.size);
     this.queue = [];   // (strokes waiting for the kernels were made on the old state)
     this.store.clear();
+    this.storeRevisions.clear();
     this.epoch++;
+    this.sim.worldRenderSource?.noteContentChange();
     this.active = false;
   }
 
@@ -320,20 +326,24 @@ export class Deco {
     const keys = [];
     for (let i = 0; i < n; i++) keys.push(key(i % bricks[0], Math.floor(i / bricks[0]) % bricks[1], Math.floor(i / (bricks[0] * bricks[1]))));
     this._run('decoStage', stageDispatch(bricks), { lo, bricks });
-    const epoch = this.epoch;
+    const epoch = this.epoch, revision = ++this.revision;
+    // Reserve each key at request time, including deletes and failed newer
+    // reads. An older completion must never resurrect obsolete paint.
+    for (const k of keys) this.storeRevisions.set(k, revision);
     // (the copy is recorded now, before whatever the frame records next into the work buffer: docs/webgpu.md B7)
     const read = this.gpu.readback.buffer(this.work, 0, n * brickBytes).then((bytes) => {
       if (epoch !== this.epoch) return;
       const buf = new Uint8Array(bytes);
       keys.forEach((k, i) => {
+        if (this.storeRevisions.get(k) !== revision) return;
         const b = buf.subarray(i * brickBytes, (i + 1) * brickBytes);
         if (b.some((v) => v)) this.store.set(k, b.slice());
         else this.store.delete(k);
       });
     }).catch((err) => {
       if (!this.gpu.failure) console.error('deco: a leaving slab could not be read back; its decoration is lost', err);
-    }).finally(() => { if (this._pending === read) this._pending = null; });
-    this._pending = read;
+    }).finally(() => { this.storeReads.delete(read); });
+    this.storeReads.add(read);
   }
 
   // The slab of grid cells [lo, lo + 4·bricks) was uncovered: its stored
@@ -376,6 +386,7 @@ export class Deco {
     this.gpu.write(p.buffer, p.offset, words);
     this.active = words.some((v) => v);
     this.sim.version++;
+    this.sim.worldRenderSource?.noteContentChange();
   }
 
   dispose() {

@@ -27,10 +27,11 @@
 // mesh before it joins the scene (B5: three otherwise builds its pipeline
 // synchronously at the first draw).
 import {
-  Vector3, Vector4, Matrix4, DataTexture, Data3DTexture, RGBAFormat, FloatType, HalfFloatType, UnsignedByteType,
+  Node, Vector3, Vector4, Matrix4, DataTexture, Data3DTexture, RGBAFormat, FloatType, HalfFloatType, UnsignedByteType,
   NearestFilter, LinearFilter, ClampToEdgeWrapping, RepeatWrapping, NoColorSpace, MeshBasicNodeMaterial,
 } from 'three/webgpu';
-import { uniform, texture, texture3D, sampler, wgslFn, code, vec4, float, positionWorld, normalWorld, smoothstep, max, dot } from 'three/tsl';
+import { nodeObject, uniform, texture, texture3D, sampler, wgslFn, code, vec4, float, positionWorld, normalWorld, smoothstep, max, dot } from 'three/tsl';
+import { createWorldMeshLightNodes, createWorldMeshLightContext } from './worldMeshLight.js';
 import { externalTexture } from '../gpu/three.js';
 import { glslMod } from '../gpu/wgsl.js';
 import { gfxUniforms, WAND_LIGHTS } from './uniforms.js';
@@ -313,6 +314,60 @@ export const meshLight = {
   worldToGrid: uniform(new Matrix4()),          // scene → grid cells (the volume's matrixWorld, inverted)
 };
 
+const worldFamily = createWorldMeshLightNodes(LIGHT_WGSL, meshLight);
+let worldContext = null, lightDomainRevision = 0;
+const litMaterials = new Set();
+function trackMaterial(material) {
+  for (const m of Array.isArray(material) ? material : [material]) {
+    if (!m || litMaterials.has(m)) continue;
+    litMaterials.add(m);
+    const key = m.customProgramCacheKey;
+    m.customProgramCacheKey = function () { return `${key.call(this)}|mesh-light-domain:${lightDomainRevision}`; };
+    m.addEventListener('dispose', () => litMaterials.delete(m));
+  }
+}
+function domain(context) {
+  if (Boolean(context) !== Boolean(worldContext)) {
+    lightDomainRevision++;
+    for (const m of litMaterials) m.needsUpdate = true;
+  }
+  worldContext = context;
+}
+class LightDomainTerm extends Node {
+  constructor(box, args, term) { super('vec3'); this.boxNode=box; this.args=args; this.term=term; }
+  getHash() { return `${this.id}:mesh-light-domain:${lightDomainRevision}`; }
+  customCacheKey() { return this.id+lightDomainRevision*0x1000000; }
+  setup() {
+    if (!worldContext) return this.boxNode;
+    if (this.term==='normal') return worldFamily.normal(this.boxNode);
+    if (this.term==='position') return meshLight.worldToGrid.mul(vec4(positionWorld,1)).xyz;
+    return worldFamily.terms(this.args)[this.term];
+  }
+}
+/** Switches existing material graphs; prepareMesh/guardMeshes own async compile. */
+export function setMeshLightDomain(context = null) {
+  if (context) context.bind(); else domain(null);
+}
+export const meshLightDomain = () => Object.freeze({backend:worldContext?'world':'box',revision:lightDomainRevision});
+/** Scene ticket context; transfers the supplied publication ownership. */
+export function createNativeWorldMeshLightContext(gpu, options) {
+  return createWorldMeshLightContext(gpu,{...options,install(owned,context) {
+    const W=worldFamily.nodes,L=meshLight;
+    for(const name of ['aux','glow','sun'])W[name].value=owned[name];
+    owned.gi.forEach((t,i)=>{W.gi[i].value=t;});
+    for(const name of ['book','sunBook','requests'])W[name].value=owned[name];
+    for(const name of ['world','light','geometry','feedback','depth','tiles','physical','version'])W[name].value.fromArray(owned[name]);
+    W.projection.value.fromArray(owned.projection);W.normalToGrid.value.copy(owned.normalToGrid);L.worldToGrid.value.copy(owned.worldToGrid);L.noise.value=owned.noise;
+    const v=owned.values;
+    L.sun.value.set(...v.sun.slice(0,3),v.shadows?1:0);L.sunCol.value.set(...v.sunCol.slice(0,3),v.lightGain??1);
+    L.origin.value.set(0,0,0,v.time??0);L.cave.value.set(...v.caveAmbient.slice(0,3),v.caustics?1:0);
+    L.cloud.value.set(v.clouds?1:0,v.cloudSea??0,...v.cloudShift.slice(0,2));
+    const n=Math.min(v.wandLightCount??0,WAND_LIGHTS);L.wandCount.value=n;
+    for(let i=0;i<n;i++) { wandData.set(v.wandLightPosition[i],4*i);wandData.set(v.wandLightColor[i],4*(WAND_LIGHTS+i)); }
+    L.wand.value.needsUpdate=true;domain(context);
+  }});
+}
+
 /**
  * The radiance of a lit surface (linear HDR, as the volume's), TSL:
  * albedo × (sun × n·l × shadow + GI + glow) + emit, as figure.js's GLSL had it.
@@ -324,6 +379,7 @@ export const meshLight = {
  * @param {{ albedo: object, n?: object, grid?: object, emit?: object | null, toon?: boolean, toonEdge?: number }} o
  */
 export function litColor({ albedo, n = normalWorld, grid = null, emit = null, toon = false, toonEdge = 0.08 }) {
+  n = nodeObject(new LightDomainTerm(n,null,'normal'));
   const p = grid ?? gridPosition();
   const sunDir = meshLight.sun.xyz;
   const { sun, ambient } = meshLightTerms({ p: p.add(sunDir.mul(SHADOW_LIFT)), q: p.add(n.mul(GI_LIFT)), n, glowAt: p });
@@ -353,21 +409,22 @@ export function meshLightTerms({ p, q, n, glowAt = p }) {
     p: glowAt, q, n, gi0: L.gi[0], gi1: L.gi[1], gi2: L.gi[2], gi3: L.gi[3], light: L.light, s: sampler(L.light),
     wand: L.wand, wandCount: L.wandCount, sunCol: L.sunCol, grid: L.grid, cave: L.cave,
   });
-  return { sun, ambient };
+  const args={p,q,n,glowAt};
+  return { sun:nodeObject(new LightDomainTerm(sun,args,'sun')), ambient:nodeObject(new LightDomainTerm(ambient,args,'ambient')) };
 }
 
 /**
  * The fragment's point in grid cells: worldToGrid (default the shared one) × positionWorld.
  * @param {object} [worldToGrid] a mat4 uniform node
  */
-export const gridPosition = (worldToGrid = meshLight.worldToGrid) => worldToGrid.mul(vec4(positionWorld, 1)).xyz;
+export const gridPosition = (worldToGrid = meshLight.worldToGrid) => nodeObject(new LightDomainTerm(worldToGrid.mul(vec4(positionWorld, 1)).xyz,null,'position'));
 
 // ---------------------------------------------------------------- per frame
 
 const ext = new Map();   // a node's key → { source: GPUTexture, tex: ExternalTexture }
 function point(key, node, source, opts) {
   const had = ext.get(key);
-  if (had?.source === source) return;
+  if (had?.source === source && node.value === had.tex) return;
   if (!source) {
     if (had) { node.value = had.stand; had.tex.dispose(); ext.delete(key); }
     return;
@@ -389,6 +446,8 @@ const sunV = new Vector3(), inv = new Matrix4();
  *   viewTimeUniform?: { value: number } }} app
  */
 export function updateMeshLight(app) {
+  if (app.worldMeshLightContext) { app.worldMeshLightContext.bind(); return; }
+  domain(null);
   const L = meshLight, u = gfxUniforms;
   const { sim, vol, volume } = app;
   const derived = app.derived ?? sim?.derived;
@@ -455,13 +514,15 @@ export const getMeshGpu = () => meshGpu;
  * culling is off for the compile. Resolves when three's pipelines are built;
  * at once when there is no device yet.
  * @param {object} object
- * @param {{ camera?: object, scene?: object, target?: object, alone?: boolean }} [opts]
+ * @param {{ camera?: object, scene?: object, target?: object, alone?: boolean, rejectOnFailure?: boolean }} [opts]
  *   alone: the object only, not what is under it
  * @returns {Promise<void>}
  */
-export function prepareMesh(object, { alone = false, ...opts } = {}) {
+export function prepareMesh(object, { alone = false, rejectOnFailure = false, ...opts } = {}) {
   const three = meshGpu?.three;
-  if (!three || meshGpu.failure || meshGpu.lost) return Promise.resolve();
+  if (!three) return Promise.resolve();
+  if (meshGpu.failure || meshGpu.lost) return rejectOnFailure
+    ? Promise.reject(meshGpu.failure ?? new Error('prepareMesh: GPU device lost')) : Promise.resolve();
   for (const k of Object.keys(opts)) if (opts[k] === undefined) delete opts[k];   // (left out: the defaults')
   const saved = [], done = [];
   const tSig = targetSig(opts.target ?? three.defaults.target);
@@ -470,7 +531,7 @@ export function prepareMesh(object, { alone = false, ...opts } = {}) {
     saved.push([o, o.visible, o.frustumCulled]);
     o.visible = !alone || o === object;
     o.frustumCulled = false;
-    if (o.material && o.visible) done.push([o, o.material]);
+    if (o.material && o.visible) { trackMaterial(o.material); done.push([o, o.material]); }
   });
   // three keys a render object's lights and environment by the renderer's
   // render-call count (NodeManager.getCacheKey caches it per info.calls): a
@@ -480,16 +541,19 @@ export function prepareMesh(object, { alone = false, ...opts } = {}) {
   // the compile's key fresh. (Belongs in gpu.three.prepare: hand-back.)
   const info = three.renderer.info, calls = info.calls;
   info.calls = -(++prepares);
+  const domainAtStart = lightDomainRevision;
   let p;
   try {
     p = three.prepare(object, opts);   // (three reads visibility, and the key, before its first await)
+  } catch (error) {
+    p = Promise.reject(error);
   } finally {
     info.calls = calls;
     for (const [o, v, fc] of saved) { o.visible = v; o.frustumCulled = fc; }
   }
   return Promise.resolve(p).then(() => {
-    for (const [o, m] of done) preparedWith.set(o, { material: m, key: keyOf(tSig, lSig) });
-  }, (e) => { if (!meshGpu?.failure) console.warn('prepareMesh:', e?.message ?? e); });
+    for (const [o, m] of done) preparedWith.set(o, { material: m, key: keyOf(tSig, lSig, domainAtStart) });
+  }, (e) => { if (!meshGpu?.failure) console.warn('prepareMesh:', e?.message ?? e); if(rejectOnFailure)throw e; });
 }
 
 let prepares = 0;
@@ -504,7 +568,7 @@ function lightsSig(scene, camera) {
   scene.traverseVisible((o) => { if (o.isLight && o.layers.test(camera.layers)) out.push(`${o.type}${o.castShadow ? '*' : ''}`); });
   return out.sort().join(',');
 }
-const keyOf = (tSig, lSig) => `${tSig}#${lSig}`;
+const keyOf = (tSig, lSig, revision=lightDomainRevision) => `${tSig}#${lSig}#mesh-light-domain:${revision}`;
 
 // ---------------------------------------------------------------- meshes three hasn't compiled yet
 
@@ -525,11 +589,12 @@ const waiting = new WeakMap();        // mesh → the layers it goes back to
  * which skip(o) is true are left alone with everything under them.
  * @param {object} root
  * @param {object} camera
- * @param {{ target?: object, scene?: object, skip?: (o: object) => boolean, onReady?: () => void }} [opts]
+ * @param {{ target?: object, scene?: object, skip?: (o: object) => boolean, onReady?: () => void, onPending?: (work: Promise<void>) => void }} [opts]
  *   target and scene: what the meshes are drawn into and lit by (prepareMesh's)
  * @returns {number} how many meshes wait
  */
-export function guardMeshes(root, camera, { target, scene, skip, onReady } = {}) {
+const guardCompilations = new WeakMap();
+export function guardMeshes(root, camera, { target, scene, skip, onReady, onPending } = {}) {
   if (!meshGpu?.three) return 0;
   let n = 0;
   const tSig = targetSig(target ?? meshGpu.three.defaults.target);
@@ -540,18 +605,37 @@ export function guardMeshes(root, camera, { target, scene, skip, onReady } = {})
     if (!o.visible || skip?.(o)) continue;
     for (const c of o.children) stack.push(c);
     if (!(o.isMesh || o.isLine || o.isPoints || o.isSprite)) continue;
-    if (waiting.has(o)) { n++; continue; }
+    if (waiting.has(o)) {
+      n++;
+      const record = guardCompilations.get(o);
+      if (record && onPending) { record.strict = true; onPending(record.work); }
+      continue;
+    }
     if (!o.layers.test(camera.layers)) continue;
     const was = preparedWith.get(o);
     if (was && was.material === o.material && was.key === keyOf(tSig, lSig)) continue;
     waiting.set(o, o.layers.mask);
     n++;
-    prepareMesh(o, { camera, target, scene, alone: true }).then(() => {
+    // Policy belongs to the pending record, not the initiating closure: a
+    // later WORLD subscriber must upgrade a default-started compilation.
+    const record = { strict: Boolean(onPending), work: null };
+    const work=prepareMesh(o, { camera, target, scene, alone: true, rejectOnFailure:true }).then(() => {
       // (a module that moved it to another layer meanwhile keeps its own)
       if (o.layers.mask === PENDING_MASK) o.layers.mask = waiting.get(o);
       waiting.delete(o);
+      guardCompilations.delete(o);
       onReady?.();
+    },error=>{
+      if(!record.strict){
+        if(o.layers.mask===PENDING_MASK)o.layers.mask=waiting.get(o);
+        waiting.delete(o);guardCompilations.delete(o);onReady?.();
+      }
+      throw error;
     });
+    record.work = work;
+    guardCompilations.set(o,record);
+    work.catch(() => {}); // failure remains parked and fail-closed
+    onPending?.(work);
     o.layers.set(PENDING_LAYER);
   }
   return n;

@@ -40,6 +40,10 @@ const START_STEPS = 2;
 // settled world sleeps without waiting out AER_IDLE_STEPS.
 const FOAM_CHECK_STEPS = 8;
 
+// Internal producer ownership, not validation of arbitrary imported GPU bytes.
+// All writes of this class use the bounded original wake producer or zero/reset.
+export const isProducerBoundedAeration = (aeration) => aeration instanceof Aeration;
+
 class Aeration {
   constructor(sim) {
     const gpu = (this.gpu = sim.gpu), g = (this.g = sim.g);
@@ -130,6 +134,7 @@ class Aeration {
       this._dispatch(step, fold(this.g.nbricks), { bind: [sim.tables, sim.bindAct, this._group(ref, moveSrc)], header, params: { ...params, all: 1 } });
     }
     this.cur = 1 - this.cur;
+    sim.worldRenderSource?.noteContentChange();
   }
 
   _group(fd, moveSrc) {
@@ -176,6 +181,7 @@ class Aeration {
     this.allSteps = START_STEPS;
     this.idleSteps = AER_IDLE_STEPS + 1;   // nothing left to burst
     this.generation++;
+    this.sim.worldRenderSource?.noteContentChange();
   }
 
   /**
@@ -216,6 +222,11 @@ class Aeration {
 
 const kept = new WeakMap();   // sim → its field, kept while switched off
 
+// Raw world source snapshots preserve allocated history even while the detail
+// switch detaches it from physics. This is read-only ownership discovery, not
+// permission to advance or dispose the field.
+export const aerationForSource = (sim) => sim.aeration ?? kept.get(sim) ?? null;
+
 /**
  * Switch sim's aeration field on or off (made the first time it is on, kept
  * while off). Returns the field while it is on, else null.
@@ -246,4 +257,5 @@ export function dropAeration(sim) {
   if (sim.aeration === aer && !sim.disposed) sim.attachAeration(null);
   aer.dispose();
   kept.delete(sim);
+  sim.worldRenderSource?.noteContentChange();
 }

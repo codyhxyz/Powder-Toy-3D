@@ -86,7 +86,7 @@ const runtime = new Function('helpers', `
   const settings = { view: 6 }, readyVolumeView = createReadyVolumeView();
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', resets = 0, volumeFirst = false, volumeDrawn = false;
   let hybrid=null;
-  const blocks = null, blocksOn = false, testNoVolume = false, overlayWires = [], win = { far };
+  const blocks = null, blocksOn = false, testNoVolume = false, overlayWires = [], win = { far }, worldMode = null;
   const post = { reset() { resets++; } }, meshFrames = { drop() {} }, sim = { g: {}, resetGI() {} };
   const before = [], after = [], brush = { draw() {} };
   const ctx = { get renderView() { return renderView; } };
@@ -160,14 +160,19 @@ assert(app.indexOf('selectRenderView();') < app.indexOf('for (const w of live) w
 assert.match(source('src/wire/world.js'), /far\?\.view\(app\.volume, isMaterialView\(app\.renderView\)/);
 assert.match(source('src/wire/weather.js'), /enabled\(app\) && isMaterialView\(app\.renderView\)/);
 assert.match(source('src/shaders/far.js'), /if \(all\(v\.world\.xz >= winLo\.xz\) && all\(v\.world\.xz < winLo\.xz \+ GRID_XZ\)\) \{ discard; \}/, 'actual live-window ownership unchanged');
-// Paused, settled world: requested Realistic stays pending long enough for
+// Paused, settled BOX: requested Realistic stays pending long enough for
 // all earlier keys to settle. Pipeline completion only wakes VIEW pacing;
 // the actual selected view must re-key DERIVED pacing after resetting GI.
-const scheduleCode = app.slice(app.indexOf('  const present = renderOnly || pacer.present('), app.indexOf('  const viewV = present ?'));
-const viewScheduleCode = app.match(/  let runView = present && pacer\.view\(viewV, runDerived \|\| wantFrame\(\)\);/)[0];
+// Execute the actual BOX branch. WORLD has a separate admitted-frame driver.
+const scheduleBegin = app.indexOf('  const present = renderOnly || pacer.present(');
+const worldSplit = app.indexOf('  let runDerived=false, runView=false;', scheduleBegin);
+const localBegin = app.indexOf('  const hybridScale = hybrid?.adapt(', worldSplit);
+assert(scheduleBegin>=0&&worldSplit>scheduleBegin&&localBegin>worldSplit);
+const scheduleCode = app.slice(scheduleBegin,worldSplit)+'  let runDerived=false, runView=false;\n'+app.slice(localBegin,app.indexOf('  const viewV = present ?'));
+const viewScheduleCode = app.match(/  runView = present && pacer\.view\(viewV, runDerived \|\| wantFrame\(\)\);/)[0];
 const wakeCode = app.slice(app.indexOf('const waited = new WeakSet();'), app.indexOf('// the wires that draw into the scene pass'));
 assert.equal((scheduleCode.match(/selectRenderView\(\);/g) ?? []).length, 1, 'select exactly once before scheduling');
-assert.equal((app.match(/    selectRenderView\(\);/g) ?? []).length, 1, 'no second selection after scheduling');
+assert.equal((app.match(/\bselectRenderView\(\);/g) ?? []).length, 1, 'no second selection after scheduling');
 const latePipe = pipeline();
 const settlingVolume = {
   shadowState: 'ready', shadowTextures: {}, shadowRes: 1,
@@ -181,7 +186,7 @@ const paused = new Function('helpers', `
   const pacer = createPacer({ derivedSettle: 3, viewSettle: 2 });
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', frameDerived = false, gi = 1;
   const events = [], blocks = null, blocksOn = false, overlayWires = [], live = [];
-  const win = { far: { viewPipeline: { state: 'ready' } } };
+  const win = null, worldMode = null;
   const post = { settings: { cruelty: false }, renderScale: 1, reset() { events.push('post.reset'); } };
   const meshFrames = { drop() {} }, prof = { phase() {} };
   const sim = { id: 1, version: 1, g: { nx: 32, ny: 32, nz: 32 },

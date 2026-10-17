@@ -5,6 +5,7 @@ import { execFileSync,spawnSync } from 'node:child_process';
 import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { DataUtils } from 'three';
 import { Derived } from '../src/derived.js';
+import { FieldDeriver } from '../src/gfx/fieldDeriver.js';
 import { gridDims } from '../src/shaders/common.js';
 import { uniformStruct } from '../src/gpu/params.js';
 import { EmaParams, BoostParams, fieldEmaFrag, fieldBoostFrag, particleAgeFrag } from '../src/shaders/fields.js';
@@ -67,6 +68,12 @@ Object.assign(d, {
   _dispatch(kernel, size, opts) { calls.push({ kernel, size, ...opts }); },
 });
 Object.assign(d.sim, { smoothing: 1, header: () => ({}), actNoted: true });
+d.fields = new FieldDeriver(d.gpu, {
+  g, resources: { dlist: {} }, layouts: {}, groups: d.groups, tables: d.sim.tables,
+  kernels: Object.fromEntries(['fieldEma', 'fieldBlur', 'fieldFinal', 'fieldBoost0', 'fieldBoost', 'fieldPeak']
+    .map(name => [name, { dispatch(_frame, size, opts) { d._dispatch(name, size, opts); } }])),
+});
+d.fields.aer = 1;
 for (const split of [false, true]) {
   d.setParticleSplit(split); calls.length = 0;
   d.updateDirty();
@@ -147,7 +154,9 @@ renderer.dispose(); renderer.dispose();
 assert(f.buffers.every(b => b.destroyed)); assert(f.rings.every(r => r.closed));
 const source = readFileSync(new URL('../src/derived.js', import.meta.url), 'utf8');
 assert.match(source, /particleSplit \? this.groups.particleBook : book/);
-assert.match(source, /params: \{ s, axis, aer, particleSplit, world \}/);
+assert.match(source, /this.fields.recordSpatial\([^\n]*particleSplit, world/);
+const fieldSource = readFileSync(new URL('../src/gfx/fieldDeriver.js', import.meta.url), 'utf8');
+assert.match(fieldSource, /params: \{ s, axis, aer: this.aer, particleSplit, world \}/);
 // Packing mirror: five IEEE halfs and one untouched 32-bit physical state slot.
 const unit = n => { const l = Math.hypot(...n); return n.map(x => x/l); };
 const sign = x => x < 0 ? -1 : 1;

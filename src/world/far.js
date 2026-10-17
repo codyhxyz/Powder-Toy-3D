@@ -96,7 +96,7 @@ const BUFFER = { STORAGE: 0x80, COPY_DST: 0x08, COPY_SRC: 0x04 };               
 // The open level beyond a world's edge (cells): its sea, or for a world
 // without one (sea 0: world/scenes) the plain the far view draws there, at the
 // median height of the ground along its edge, so the plain meets it.
-function beyondLevel(scene, P) {
+export function beyondLevel(scene, P) {
   if (P.sea > 0) return P.sea;
   const [wx, , wz] = P.size, per = 2 * (wx + wz), hs = [];
   for (let i = 0; i < EDGE_SAMPLES; i++) {

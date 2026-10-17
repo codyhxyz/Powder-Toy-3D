@@ -127,7 +127,7 @@ const wgslArray = (xs) => `array<f32, ${xs.length}>(${xs.map(g).join(', ')})`;
 /** Whether any liquid detail switch is on (the GLSL's LIQ_DETAIL), for the tracer. */
 export const LIQ_DETAIL = (detail = {}) => !!(detail.DETAIL_LIQ_RIPPLES || detail.DETAIL_LIQ_MENISCUS || detail.DETAIL_LIQ_FOAM);
 
-export const liquidDetailGLSL = (detail = {}) => {
+export const liquidDetailGLSL = (detail = {}, { backend = 'box' } = {}) => {
   const ripples = !!detail.DETAIL_LIQ_RIPPLES;
   const meniscus = !!detail.DETAIL_LIQ_MENISCUS;
   const foam = !!detail.DETAIL_LIQ_FOAM;
@@ -222,8 +222,8 @@ const AER_PROBE: f32 = 0.25;         // cells into the liquid (against n) where 
 const AER_LIQ_MIN: f32 = 0.02;       // liquid weight below which the read is no liquid's
 fn aerTap(c: vec3i) -> vec3f {
   if (outside(c)) { return vec3f(0.0); }
-  let w = aeration[gAerCopy * SLOTS + slotOf(c)];
-  let f = vec4f(unpack2x16float(w.x), unpack2x16float(w.y));
+  ${backend === 'world' ? 'let f = worldAeration(c);' : `let w = aeration[gAerCopy * SLOTS + slotOf(c)];
+  let f = vec4f(unpack2x16float(w.x), unpack2x16float(w.y));`}
   return select(vec3f(0.0), vec3f(f.x, 1.0, f.w), f.y > 0.5);
 }
 fn aerationAt(p: vec3f) -> vec2f {   // (aeration, grounded share), 0..1

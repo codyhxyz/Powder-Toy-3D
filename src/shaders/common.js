@@ -449,6 +449,9 @@ const flagConsts = () => Object.entries(FLAG).map(([k, v]) => `const FLAG_${k}: 
 // carry sleepUnit).
 export function prelude(g, opts = {}) {
   const o = stateOpts(opts), d = gridDims(g), m = marksLayout(g), u = g.sleepUnit ?? SLEEP_UNIT;
+  const backend = opts.backend ?? 'box';
+  if (!['box', 'world'].includes(backend)) throw new Error(`prelude: backend ${backend}`);
+  if (backend === 'world' && (o.state || o.flags || o.marks || o.act)) throw new Error('world prelude is render metadata only');
   return /* wgsl */ `
 // ---- the grid ----
 const NX: i32 = ${d.nx};
@@ -494,13 +497,14 @@ fn airT() -> f32 { return TB.airT; }
 
 // ---- the header and the state (docs/webgpu.md B4, C1, C4) ----
 ${Header.wgsl}
-@group(3) @binding(0) var<uniform> H: Header;
+@group(${backend === 'world' ? 0 : 3}) @binding(${backend === 'world' ? 1 : 0}) var<uniform> H: Header;
 ${stateBindings(o)}
 
 // ---- the layout (docs/webgpu.md C2) ----
 // Brick b's number: its supertile's (x fastest, then z, then y) times 16, plus
 // its tile's row-major place in the supertile's 4×4-tile square.
-fn brickId(b: vec3i) -> u32 {
+${backend === 'world' ? `fn brickId(b: vec3i) -> u32 { return u32(b.x + BX * (b.y + BY * b.z)); }
+fn brickCoord(id: u32) -> vec3i { return vec3i(i32(id % u32(BX)), i32(id / u32(BX) % u32(BY)), i32(id / u32(BX * BY))); }` : `fn brickId(b: vec3i) -> u32 {
   let s = b / SUPER_B;
   let k = b - s * SUPER_B;
   let st = s.x + STX * (s.z + STZ * s.y);
@@ -511,7 +515,7 @@ fn brickCoord(id: u32) -> vec3i {
   let t = i32(id & 15u);
   let s = vec3i(st % STX, st / (STX * STZ), (st / STX) % STZ);
   return s * SUPER_B + vec3i(t & 3, t >> 3u, (t >> 2u) & 1);
-}
+}`}
 // Cell p's slot: its brick's 64-cell run, in the brick tile's row-major order
 // (x + BS·(y & 1) across, z + BS·(y >> 1) down). Outside the grid it is
 // another cell's (bounds are the caller's, H1.29).
