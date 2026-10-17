@@ -11,20 +11,10 @@ npx playwright install chromium            # the tools drive a real Chrome on th
 git worktree add ../tpt-v1 c953a6c && (cd ../tpt-v1 && npm ci)   # today's build, frozen, for comparisons
 ```
 
-## 1. Raster bench (decides MSAA vs TAAU for P1)
+## 1. Raster bench (removed)
 
-P1 and its block renderer were rejected on 2026-10-14 (`docs/v2.md`), so this bench no longer decides anything.
-
-Mac, in Chrome and then in Safari:
-
-```sh
-npx vite --port 5390 --strictPort
-# open http://localhost:5390/bench/raster.html, press Start (both scenes), keep it in front, then Copy JSON
-```
-
-iPhone: WebGPU needs https. Either the page ships to https://tpt3d.codyh.xyz/bench/raster.html (a standalone page that
-leaves the game untouched), or you tunnel the Mac's server. The page shows its verdict: MSAA if 4× MSAA costs at most
-1.5× TAAU at ⅔ resolution, otherwise TAAU.
+It decided MSAA vs TAAU for P1, and P1's block renderer was rejected on 2026-10-14 (`docs/v2.md`). The page and its
+run instructions are in `git show a700d765:bench/raster.html` and `git show a700d765:docs/v2/week0.md`.
 
 ## 2. Outcome bench (what the physics does; P2's gate)
 

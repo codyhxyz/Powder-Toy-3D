@@ -103,7 +103,7 @@ export function sheetHtml(run) {
       ${media(sh)}
       <div class="cols">
         <div><h3>A vs B</h3>${diffTable(sh.diff, sh.kind === 'clip')}</div>
-        <div><h3>Harness time</h3>${sideTimes(sh)}<p class="muted">The tool's wall time over each side, with pipeline compiles, screenshot readbacks and, unless --serial, the other side's load on the same GPU: not frame or step cost. Speed is the raster bench's and power.mjs's to measure (docs/v2.md 11, Week 0).</p></div>
+        <div><h3>Harness time</h3>${sideTimes(sh)}<p class="muted">The tool's wall time over each side, with pipeline compiles, screenshot readbacks and, unless --serial, the other side's load on the same GPU: not frame or step cost. Speed is power.mjs's to measure (docs/v2.md 11, Week 0).</p></div>
         <div><h3>On a phone</h3><p><code>?shot=${esc(sh.name)}</code> on either build (src/shot.js): the same scene, camera and time, then it's yours</p></div>
       </div>
     </section>`).join('\n');

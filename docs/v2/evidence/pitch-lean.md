@@ -605,4 +605,5 @@ power run, and an iPhone Safari timeline.
   construction and shows only that nothing caps the speed. The jet's landing average mixes particles from different
   heads, so "within ~3 cells" is loose.
 - Borrowed: the exposed-face counts of the real presets (`v2/crisp/faces.txt`) and the shading-family mock
-  (`v2/crisp/shots/`), both from the crisp pitch.
+  (`v2/crisp/shots/`), both from the crisp pitch. (Repository note, 2026-10-16: see `pitch-crisp.md`'s note for where
+  those files are now.)
