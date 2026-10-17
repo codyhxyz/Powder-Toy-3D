@@ -14,6 +14,7 @@ import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
 import { contactWGSL as productionContactWGSL } from './v2/contact.js';
 import { v2RunsKernel, v2PairsKernel, COLUMN } from './v2/columns.js';
+import { PARTICLE_CAP } from '../v2/dynamics-reference.js';
 
 // Physics v2, the fast version (docs/v2.md 2, 4.1, 5.1-5.6; the rules are
 // tools/v2/lean-sim.mjs's, the CPU prototype that validated them, ported to
@@ -135,10 +136,13 @@ export function fallCells(id, ticks) {
 // jets: unsaved; a brick holds a deposited cell marked to launch (columns.js colMarkJet; the jets pass clears it).
 // near, plist: the activity scan's words (unsaved): bit 0 a busy brick in the 3³ neighbourhood,
 // bit 1 listed; then the list [count, use, bricks]. Zero again after every activity pass.
+// plive: a bit a particle-pool slot (unsaved), set wherever a slot may be live: every spawn sets
+// it, retirements and the pool preparation clear it, restores set every bit. Pool sweeps read
+// only slots whose bit is set (a clear bit means the slot's record has ID 0).
 export function v2ActLayout(g) {
   const { nbricks: nb, bx, bz } = gridDims(g);
   const ledger = 10 * nb + bx * bz + 8;
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, jets: ledger + 8 + 4 * nb, colAwake: ledger + 8 + 5 * nb, summary: ledger + 8 + 5 * nb + bx * bz, allocated: ledger + 8 + 6 * nb + bx * bz };
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, jets: ledger + 8 + 4 * nb, colAwake: ledger + 8 + 5 * nb, summary: ledger + 8 + 5 * nb + bx * bz, plive: ledger + 8 + 6 * nb + bx * bz, allocated: ledger + 8 + 6 * nb + bx * bz + PARTICLE_CAP / 32 };
 }
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
@@ -215,6 +219,7 @@ const V2_VISIBLE: u32 = ${a.visible}u;
 const V2_STATE_DIRTY: u32 = ${a.state}u;
 const V2_EVENTS: u32 = ${a.events}u;
 const V2_AIR_LIVE: u32 = ${a.air}u;
+const V2_PLIVE: u32 = ${a.plive}u;
 const V2_NEAR: u32 = ${a.near}u;
 const V2_PLIST: u32 = ${a.plist}u;
 const V2_JETS: u32 = ${a.jets}u;
@@ -269,6 +274,10 @@ fn noteState(s: u32) { atomicStore(&act2[V2_STATE_DIRTY + s / 64u], 1u); atomicS
 fn noteEvents(s: u32, request: u32) { if (request != 0u) { atomicStore(&act2[V2_EVENTS + s / 64u], 1u); } }
 // Every write of a brick's air outside the air tick's source and substeps.
 fn noteAir(b: u32) { atomicStore(&act2[V2_AIR_LIVE + b], 1u); }
+// The particle pool's live bits (v2ActLayout plive): every spawn notes its slot; a retirement may clear it.
+fn noteLive(slot: u32) { atomicOr(&act2[V2_PLIVE + (slot >> 5u)], 1u << (slot & 31u)); }
+fn noteDead(slot: u32) { atomicAnd(&act2[V2_PLIVE + (slot >> 5u)], ~(1u << (slot & 31u))); }
+fn slotLive(slot: u32) -> bool { return (atomicLoad(&act2[V2_PLIVE + (slot >> 5u)]) & (1u << (slot & 31u))) != 0u; }
 // Explicit chemical/removed-material energy, separate from conservative transfers.
 // Three atomic words retain carries across concurrent additions (96-bit totals).
 fn noteEnergyCounter(index: u32, amount: vec2u) {

@@ -181,6 +181,8 @@ export class PhysicsV2 {
     // the brick summaries describe cells these writes bypassed: unknown again (a mode change keeps them)
     if (summaries) this.gpu.write(this.act, this.layout.summary * 4, new Uint32Array(this.g.nbricks));
     if (events) this.gpu.write(this.act, this.layout.events * 4, ones);
+    // the particle pool's live bits: every slot may be live (a restore can bring any record back)
+    this.gpu.write(this.act, this.layout.plive * 4, new Uint32Array(this.layout.allocated - this.layout.plive).fill(0xffffffff));
   }
 
   /** Something wrote: the box may move again. */

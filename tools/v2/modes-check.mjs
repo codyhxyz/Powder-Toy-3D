@@ -69,9 +69,9 @@ for(const [key,value] of [['gravityMode',GRAV.OFF],['gravityMode',GRAV.RADIAL],[
   assert.equal(engine.asleep,false);engine._noteWrites();assert.equal(engine.certified,false);assert.equal(engine.acc,0.375);
   assert.ok(engine.epoch>beforeEpoch);assert.equal(engine.importFull,false);assert.equal(engine.importMarked,false);
   // busy0, busy1, every brick's cell note (edge and ambient enter the air source's cached faces)
-  // and air note (the air masks)
-  assert.equal(commands.length,4);assert.ok(commands.every(c=>c[0]==='write'&&c[1]===engine.act));
-  assert.deepEqual([commands[2][2],commands[3][2]],[engine.layout.state*4,engine.layout.air*4]);
+  // and air note (the air masks), and the particle pool's live bits (every slot may be live)
+  assert.equal(commands.length,5);assert.ok(commands.every(c=>c[0]==='write'&&c[1]===engine.act));
+  assert.deepEqual([commands[2][2],commands[3][2],commands[4][2]],[engine.layout.state*4,engine.layout.air*4,engine.layout.plive*4]);
   assert.equal(engine.settingsSignature,modeSignature(nativeModes(sim)));commands.length=0;
   engine._noteWrites();assert.equal(commands.length,0);
 }

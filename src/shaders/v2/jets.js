@@ -87,7 +87,7 @@ var<workgroup> wgMarked: array<u32,64>;
     let q=qOf(c); let velocity=vec3f(q.x,0.0,q.z);
     if(rank<atomicLoad(&control[4]) && length(velocity)>0.0 && all(dParticleEnergy(m)==carried) && energyFits(empty,rest)) {
       let dest=atomicLoad(&control[D_FREE+rank]);
-      particles[dest]=dParticle(vec3f(p+P.origin)+0.5-normalize(velocity)*0.499,velocity,dId(p,${JET_RULE}u),m);
+      particles[dest]=dParticle(vec3f(p+P.origin)+0.5-normalize(velocity)*0.499,velocity,dId(p,${JET_RULE}u),m); noteLive(dest);
       atomicStore(&control[D_HELD+dest],0u); atomicAdd(&control[0],1u);
       storeMaterial(t,before,withEnergy(empty,rest));
     } else {

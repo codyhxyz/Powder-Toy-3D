@@ -229,7 +229,7 @@ export function particlesWGSL(g, nativeHead, stage) {
   `);
   if (stage === 'integrate') return h + main64(/* wgsl */ `
     // Later stages read flight only for live slots, so dead slots skip it.
-    if (t >= D_CAP || dPoolEmpty() || particles[t].id == 0u) { return; }
+    if (t >= D_CAP || dPoolEmpty() || !slotLive(t) || particles[t].id == 0u) { return; }
     var particle = particles[t]; flight[t] = DFlight(vec4u(D_NONE,D_NONE,0u,0u),vec4f(0));
     atomicAdd(&control[0],1u);
     let local = dWrap(particle.position - vec3f(P.origin));
@@ -251,7 +251,7 @@ export function particlesWGSL(g, nativeHead, stage) {
         dClaim(slot,0u,dKey(particle.id)); return; // exact deferred capture/fission, no re-roll or ageing
       }
       if (particle.tail.z > 0u) { atomicAdd(&control[18],particle.tail.z); return; } // pending children: allocator must account for every one
-      if (particle.tail.x == 0u) { particles[t].id = 0u; atomicSub(&control[0],1u); return; }
+      if (particle.tail.x == 0u) { particles[t].id = 0u; atomicSub(&control[0],1u); noteDead(t); return; }
       particle.tail.x -= 1u; acceleration = vec3f(0);
     } else {
       let wind = select(vec3f(0),air[brickOfCell(startCell)].vp.xyz,mAirVelocity());
@@ -282,7 +282,7 @@ export function particlesWGSL(g, nativeHead, stage) {
         if (!D_WINDOWED) {
           if (neutron || photon || P.edge==1u) {
             if (!neutron && !photon) { dOutflow(previous,m); }
-            particles[t].id=0u; atomicSub(&control[0],1u); atomicAdd(&control[16],1u); return;
+            particles[t].id=0u; atomicSub(&control[0],1u); noteDead(t); atomicAdd(&control[16],1u); return;
           }
           boundary=true;let velocityAtHit=v+acceleration*(D_DT*entry);
           energy=0.5*dMass(id)*dAmount(m)*dot(velocityAtHit,velocityAtHit);
@@ -345,7 +345,7 @@ export function particlesWGSL(g, nativeHead, stage) {
     if(atomicLoad(&control[D_HELD+t])!=0u) { flight[t].destination.y=D_NONE; } else { dClaim(deposit,1u,dKey(particle.id)); }
   `);
   if (stage === 'elect') return h + main64(`
-    if (t >= D_CAP || dPoolEmpty() || particles[t].id == 0u) { return; }
+    if (t >= D_CAP || dPoolEmpty() || !slotLive(t) || particles[t].id == 0u) { return; }
     let f = flight[t];
     for (var kind = 0u; kind < 2u; kind++) { let s = f.destination[kind];
       if (s != D_NONE && atomicLoad(&claims[s*4u+kind*2u]) == ~f.destination.w) { dElect(s,kind,t); }
@@ -354,7 +354,7 @@ export function particlesWGSL(g, nativeHead, stage) {
   // Impact reads only kind-0 election words and deposit only kind-1 words, so
   // a winner may free its claim at once: every other claimant loses either way.
   if (stage === 'impact') return h + main64(/* wgsl */ `
-    if (t >= D_CAP || dPoolEmpty() || particles[t].id == 0u) { return; }
+    if (t >= D_CAP || dPoolEmpty() || !slotLive(t) || particles[t].id == 0u) { return; }
     let f = flight[t]; let s = f.destination.x; if (!dWon(s,0u,t)) { return; }
     dFree(s,0u);
     var p = particles[t]; let before = loadMaterial(s); var after = before;
@@ -396,7 +396,7 @@ export function particlesWGSL(g, nativeHead, stage) {
       if (!energyFits(before,dHeatEnergy(before,heat))) { return; } // retain all RGB energy for retry
       after=dAddHeat(before,heat);
       p.tail=vec4u(bitcast<vec3u>(left),p.tail.w);
-      if (all(left==vec3f(0))) { p.id=0u; atomicSub(&control[0],1u); }
+      if (all(left==vec3f(0))) { p.id=0u; atomicSub(&control[0],1u); noteDead(t); }
     } else if (f.destination.z == 2u) {
       let id = contactNuclearMaterial(before.core);
       let n = dNuclear(id); let alpha = pow((n.A-1.0)/(n.A+1.0),2.0);
@@ -420,23 +420,23 @@ export function particlesWGSL(g, nativeHead, stage) {
         p.tail.z = u32(floor(f.effect.x-1.0)) + select(0u,1u,dRandom(p.id,761u)<fract(f.effect.x-1.0));
         atomicAdd(&control[18],p.tail.z);
         p.velocity = dDir(p.id)*${f(RAYS.NEUT_V*60*CELL_M)};
-      } else { p.id = 0u; atomicSub(&control[0],1u); }
+      } else { p.id = 0u; atomicSub(&control[0],1u); noteDead(t); }
     }
     if (f.destination.z>=3u) { noteEnergySource(cellOf(s),energySub(energyOf(after),energyOf(before))); }
     storeMaterial(s,before,after); dWake(cellOf(s)); particles[t] = p;
   `);
   if (stage === 'deposit') return h + main64(`
-    if (t >= D_CAP || dPoolEmpty() || particles[t].id == 0u) { return; }
+    if (t >= D_CAP || dPoolEmpty() || !slotLive(t) || particles[t].id == 0u) { return; }
     let s = flight[t].destination.y; if (!dWon(s,1u,t)) { return; }
     dFree(s,1u); if (atomicLoad(&control[D_HELD+t])!=0u) { return; }
     let before = loadMaterial(s);
     let admitted=dDeposit(before,dMaterial(particles[t]),flight[t].effect.x);
     if (!admitted.accepted) { return; }
     storeMaterial(s,before,admitted.material); dWake(cellOf(s));
-    particles[t].id = 0u; atomicSub(&control[0],1u);
+    particles[t].id = 0u; atomicSub(&control[0],1u); noteDead(t);
   `);
   if(stage==='bodyCouple') return h+main64(`
-    if(t>=D_CAP || particles[t].id==0u) { return; }var p=particles[t];let id=p.c0&255u;
+    if(t>=D_CAP || !slotLive(t) || particles[t].id==0u) { return; }var p=particles[t];let id=p.c0&255u;
     if(id>=D_PHOTON || cls(id)==1u || any(p.position<P.center) || any(p.position>P.boxMax) || (P.bodyOnly>=0 && id!=u32(P.bodyOnly))) { return; }
     let radial=p.position.xz-(P.center.xz+P.boxMax.xz)*0.5;var outward=vec2f(0);
     if(length(radial)>0.000001) { outward=normalize(radial); }
@@ -447,7 +447,7 @@ export function particlesWGSL(g, nativeHead, stage) {
     particles[t]=p;
   `);
   if (stage === 'holdSelect') return h + main64(`
-    if (t>=D_CAP || particles[t].id==0u || (particles[t].c0&255u)>=D_PHOTON) { return; }
+    if (t>=D_CAP || !slotLive(t) || particles[t].id==0u || (particles[t].c0&255u)>=D_PHOTON) { return; }
     if (distance(particles[t].position,P.center)<=P.radius) { atomicStore(&control[D_HELD+t],P.sequence); }
   `);
   if (stage === 'holdCOM') return h + main1(`
@@ -455,7 +455,7 @@ export function particlesWGSL(g, nativeHead, stage) {
     // Only _hold records holdCOM, after this tick's clear: an empty pool skips the scan.
     let scanned=select(D_CAP,0u,dPoolEmpty());
     for (var i=0u;i<scanned;i++) {
-      let p=particles[i]; if (p.id==0u || atomicLoad(&control[D_HELD+i])!=P.sequence) { continue; }
+      if (!slotLive(i)) { continue; } let p=particles[i]; if (p.id==0u || atomicLoad(&control[D_HELD+i])!=P.sequence) { continue; }
       let m=dMass(p.c0&255u)*dAmount(dMaterial(p));
       mass+=m; offset+=(p.position-P.center)*m; velocity+=p.velocity*m; count++;
     }
@@ -465,7 +465,7 @@ export function particlesWGSL(g, nativeHead, stage) {
   `);
   if (stage === 'holdApply') return h + main64(`
     // Mode 9 comes only from _hold, after this tick's clear; tool calls between ticks never gate.
-    if (t>=D_CAP || (P.mode==9u && dPoolEmpty()) || particles[t].id==0u || (particles[t].c0&255u)>=D_PHOTON) { return; }
+    if (t>=D_CAP || (P.mode==9u && dPoolEmpty()) || !slotLive(t) || particles[t].id==0u || (particles[t].c0&255u)>=D_PHOTON) { return; }
     let held=atomicLoad(&control[D_HELD+t]); var p=particles[t];
     if (P.mode==9u) {
       if (held!=P.sequence) { return; }

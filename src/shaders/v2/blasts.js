@@ -236,7 +236,7 @@ fn dRank(slot: u32) -> u32 {
 fn dSpawn(slot: u32, rank: u32, m: Material, v: vec3f, rule: u32) -> bool {
   if (rank >= atomicLoad(&control[4])) { return false; }
   let dest = atomicLoad(&control[D_FREE+rank]); let p = cellOf(slot);
-  particles[dest] = dParticle(vec3f(p+P.origin)+0.5,v,dId(p,rule),m);
+  particles[dest] = dParticle(vec3f(p+P.origin)+0.5,v,dId(p,rule),m); noteLive(dest);
   atomicStore(&control[D_HELD+dest],select(0u,P.sequence,P.mode==9u));
   atomicAdd(&control[0],1u); dWake(p); return true;
 }
@@ -307,7 +307,7 @@ export function blastsWGSL(g,nativeHead,stage) {
     if(t>=D_CAP) { return; }let base=D_EXTERNAL_PARTICLES+t*4u;
     for(var a=0u;a<4u;a++) { atomicStore(&control[base+a],0u); }
     if(atomicLoad(&control[3])==D_NONE) { return; }
-    let particle=particles[t];let id=particle.c0&255u;
+    if(!slotLive(t)) { return; } let particle=particles[t];let id=particle.c0&255u;
     if(particle.id==0u || id>=254u) { return; }
     let local=vec3i(floor(particle.position))-P.origin;if(!inGrid(local)) { return; }
     let weight=dSelected(particle.position,id);if(weight==0.0 || dExternalShieldedPosition(particle.position-vec3f(P.origin))) { return; }
@@ -318,7 +318,7 @@ export function blastsWGSL(g,nativeHead,stage) {
   `);
   if(stage==='externalParticleApply') return h+main64(`
     if(t>=D_CAP || atomicLoad(&control[3])==D_NONE) { return; }
-    let base=D_EXTERNAL_PARTICLES+t*4u;var particle=particles[t];
+    if(!slotLive(t)) { return; } let base=D_EXTERNAL_PARTICLES+t*4u;var particle=particles[t];
     if(particle.id==0u || particle.id!=atomicLoad(&control[base+3u])) { return; }
     let impulse=vec3f(bitcast<f32>(atomicLoad(&control[base])),bitcast<f32>(atomicLoad(&control[base+1u])),bitcast<f32>(atomicLoad(&control[base+2u])));
     let received=length(impulse)*bitcast<f32>(atomicLoad(&control[6]));if(received<=0.0) { return; }
@@ -489,7 +489,9 @@ var<workgroup> childSum: atomic<u32>;
     // Exactly D_CAP/64 workgroups: every lane owns one canonical pool slot.
     if(li==0u) { atomicStore(&freeMasks[0],0u); atomicStore(&freeMasks[1],0u); atomicStore(&childSum,0u); }
     workgroupBarrier();
-    let particle=particles[t];
+    // A clear live bit means ID 0 (v2ActLayout plive): read only the others, and clear the stale ones.
+    var particle=DParticle(vec3f(0.0),0u,vec3f(0.0),0u,vec4u(0u));
+    if(slotLive(t)) { particle=particles[t]; if(particle.id==0u) { noteDead(t); } }
     if(particle.id==0u) { atomicOr(&freeMasks[li/32u],1u<<(li&31u)); }
     if(particle.id!=0u && particle.c0==D_NEUTRON && particle.tail.z>0u) { atomicAdd(&childSum,particle.tail.z); }
     workgroupBarrier();
@@ -515,7 +517,7 @@ var<workgroup> childCounts: array<u32,64>;
 ` + main64(`
     if(li==0u) { atomicStore(&freeMasks[0],0u); atomicStore(&freeMasks[1],0u); }
     workgroupBarrier();
-    let particle=particles[t];
+    var particle=DParticle(vec3f(0.0),0u,vec3f(0.0),0u,vec4u(0u)); if(slotLive(t)) { particle=particles[t]; }
     let eligible=particle.id!=0u && particle.c0==D_NEUTRON && particle.tail.z>0u;
     childCounts[li]=select(0u,particle.tail.z,eligible);
     if(particle.id==0u) { atomicOr(&freeMasks[li/32u],1u<<(li&31u)); }
@@ -595,7 +597,7 @@ var<workgroup> childCounts: array<u32,64>;
       if (rank>=atomicLoad(&control[4])) { break; }
       let dest=atomicLoad(&control[D_FREE+rank]); let id=max(1u,dHash(parent.id ^ (P.tick*2654435761u) ^ ((child+1u)*0x9e3779b9u)));
       var born=parent; born.id=id; born.tail.z=0u; born.tail.x=${RAYS.NEUT_LIFE}u; born.velocity=dDir(id)*${f(RAYS.NEUT_V*60*CELL_M)};
-      particles[dest]=born; atomicStore(&control[D_HELD+dest],0u); atomicAdd(&control[0],1u); n--;
+      particles[dest]=born; noteLive(dest); atomicStore(&control[D_HELD+dest],0u); atomicAdd(&control[0],1u); n--;
     }
     particles[t].tail.z=n; atomicSub(&control[18],parent.tail.z-n);
   `);
@@ -603,7 +605,7 @@ var<workgroup> childCounts: array<u32,64>;
     let index=${rayRequestBase(g)}u+P.substep; var remaining=atomicLoad(&control[index]);
     if (remaining==0u) { return; }
     for (var slot=0u;slot<D_CAP;slot++) {
-      if (particles[slot].id!=0u) { continue; }
+      if (slotLive(slot) && particles[slot].id!=0u) { continue; }
       let emitted=u32(P.strength)-remaining;
       let seed=max(1u,dHash(P.sequence ^ (emitted*2654435761u) ^ P.tick));
       let position=P.center+dDir(seed)*P.radius*pow(dRandom(seed,11u),1.0/3.0);
@@ -614,7 +616,7 @@ var<workgroup> childCounts: array<u32,64>;
         m=Material(vec4u(D_PHOTON|(${RAYS.PHOTON_LIFE}u<<8u)|(medium<<24u),bitcast<u32>(1.0),bitcast<u32>(1.0),bitcast<u32>(1.0)),0i);
       }
       var velocity=P.vector; if (length(velocity)<0.000001) { velocity=dDir(seed)*${f(RAYS.NEUT_V*60*CELL_M)}; }
-      particles[slot]=dParticle(position,velocity,seed,m); atomicStore(&control[D_HELD+slot],0u); remaining--; atomicAdd(&control[0],1u);
+      particles[slot]=dParticle(position,velocity,seed,m); noteLive(slot); atomicStore(&control[D_HELD+slot],0u); remaining--; atomicAdd(&control[0],1u);
       let local=vec3i(floor(position))-P.origin; if (inGrid(local)) { dWake(local); }
       if (remaining==0u) { break; }
     }
