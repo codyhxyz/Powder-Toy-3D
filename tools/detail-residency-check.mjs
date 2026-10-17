@@ -253,7 +253,8 @@ function runnable(count = 6) {
   const { d, pipes, wakes } = runnable();
   assert(d.busy);
   assert(worldBusy({ win: { far: { queue: [], detail: d } } }), 'detail queue prevents sleep after far queue drains');
-  assert(/detail\.onChange = \(\) => app\.pacer\?\.wake\(\)/.test(wireSource), 'async callback reaches app pacer');
+  // Standalone legacy detail still reports readiness below. The WORLD wire
+  // now schedules its native owner rather than constructing this detail path.
   let farBuilds = 0;
   const far = { detail: d, viewPipeline: { state: 'idle' }, buildView() {
     farBuilds++; this.viewPipeline.state = 'pending'; return Promise.resolve();
