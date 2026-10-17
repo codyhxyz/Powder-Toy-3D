@@ -6,7 +6,8 @@ import { ELEMENTS, K } from '../elements.js';
 import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
 import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase } from '../shaders/v2/particles.js';
-import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES } from '../shaders/v2/blasts.js';
+import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, COUPLE_MODE } from '../shaders/v2/blasts.js';
+import { AIR as AIR_MODE, EDGE } from '../simModes.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M } from './dynamics-reference.js';
 
@@ -25,6 +26,8 @@ const key = p => p.join(',');
 const isInside = (p,g) => p.every((x,a) => x>=0 && x<[g.nx,g.ny,g.nz][a]);
 const equal = (a,b) => a.length===b.length && a.every((x,i)=>x===b[i]);
 const IMPULSE_KINDS=['impulse','photon','neutron','wind','pressure','vacuum','cyclone'];
+// modes.js mAirVelocity: the air modes that keep wind.
+const AIR_VELOCITY_MODES=[AIR_MODE.ON,AIR_MODE.PRESSURE_OFF,AIR_MODE.NO_UPDATE];
 const cloneRequest = r => ({ ...r, position:[...r.position], direction:[...r.direction] });
 
 /** Pure validation: callers may preflight a save before ANY app/GPU mutation. */
@@ -241,12 +244,15 @@ export class NativeDynamics {
   }
   advanceAir(tick) {
     const bricks=Math.ceil(this.g.nbricks/64),cells=Math.ceil(this.g.slots/64);
-    this._record('air','faces',bricks,tick);
+    const {airMode,edge}=nativeModes(this.owner.sim),wind=AIR_VELOCITY_MODES.includes(airMode);
+    this.gpu.frame.clear(this.control,4,8); // source recounts durable events, activity air; not live particles
     this._record('air','source',bricks,tick); this.airIndex^=1;
+    for (let axis=0;axis<3;axis++) this._record('air','reach',bricks,tick,{substep:axis});
     for (let i=0;i<AIR.substeps;i++) { this._record('air','step',bricks,tick,{substep:i}); this.airIndex^=1; }
-    this._record('air','gas',cells,tick);this._record('air','gasBoundary',cells,tick);
-    this._record('blasts','couplePlan',cells,tick); this._allocate(tick);
-    this.gpu.frame.clear(this.control,4,8); // recompute air and durable-event counts, not live particles
+    // Both gas stages return at once without wind, and the boundary one off void edges.
+    if(wind) this._record('air','gas',cells,tick);
+    if(wind && edge===EDGE.VOID) this._record('air','gasBoundary',cells,tick);
+    this._record('blasts','couplePlan',cells,tick,{mode:COUPLE_MODE}); this._allocate(tick,{mode:COUPLE_MODE});
     this._record('air','activity',bricks,tick);
   }
   /** strength is already integrated: impulse delta-v m/s; pressure/vacuum Pa;

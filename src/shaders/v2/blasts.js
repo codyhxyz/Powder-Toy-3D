@@ -27,9 +27,14 @@ export const ALLOCATION_CHUNKS = PARTICLE_CAP / 64;
 export const allocationScratchBase = g => externalMaskBase(g) + externalMaskWords(g);
 export const controlWords = g => allocationScratchBase(g) + ALLOCATION_CHUNKS * 2;
 export const ALLOCATION_STAGES = ['freeCount','freeScan','freeScatter'];
+// The air tick's couplePlan → count → apply run. Allocation stages treat it as
+// mode 0; only couplePlan/count/apply read it, to skip couple-quiet bricks.
+export const COUPLE_MODE = 16;
 const f = n => Number.isInteger(n) ? `${n}.0` : String(n);
 // Durable-event count, lowest serviceable source, neutron requests: select's sums.
 export const RESET_SELECTION = 'atomicStore(&control[2],0u); atomicStore(&control[3],D_NONE); atomicStore(&control[17],0u);';
+// The weakest breakable row: a pressure difference at or under it fractures nothing.
+const MIN_BREAK_STRENGTH = Math.min(...dynamicsRows.filter(r => r.breakInto >= 0).map(r => r.strength));
 const blastTables = dynamicsRows.filter(r => r.energy > 0 || r.id===E.SINGULARITY).map(r => `case ${r.id}u: { return DExplosive(${f(r.energy)},${r.product}u,${f(r.productT)},${r.productCtype}u); }`).join('\n');
 function head(g, nativeHead) {
   return /* wgsl */ `${dynamicsCommon(g,nativeHead)}
@@ -127,6 +132,20 @@ fn dExternalShieldedPosition(endpoint: vec3f) -> bool {
 }
 fn dExternalShielded(destination: vec3i) -> bool { return dExternalShieldedPosition(vec3f(destination)+0.5); }
 fn dPressureAt(p0: vec3i) -> f32 { let p=mEdge(p0); if (!inGrid(p) || !mAirPressure()) { return 0.0; } return air[brickOfCell(p)].vp.w; }
+// A superset of the bricks where couplePlan can flag anything. The powder-fall
+// and jet-less lip rules read cells, so their modes keep every brick. Otherwise
+// a cell needs wind in its own brick (every lift is >0) or a face-neighbour
+// pressure difference over the weakest strength; p±4 on an axis lands in the
+// same neighbour brick for every cell of b under solid edges.
+fn dCoupleActive(b: u32) -> bool {
+  if (P.gravMode==2u || P.edge!=0u || P.nativeJets==0u) { return true; }
+  if (mAirVelocity() && any(air[b].vp.xyz!=vec3f(0))) { return true; }
+  let base=cellOf(b*64u);
+  for (var a=0u;a<3u;a++) {
+    if (!(abs(dPressureAt(base+dAxis(a)*4)-dPressureAt(base-dAxis(a)*4))<=${f(MIN_BREAK_STRENGTH)})) { return true; }
+  }
+  return false;
+}
 fn dUnsupported(start: vec3i) -> bool {
   var p=start;
   for(var n=0u;n<D_SWEEP_MAX;n++) {
@@ -272,7 +291,8 @@ export function blastsWGSL(g,nativeHead,stage) {
     plans[t]=plan;
   `,'dPlanSlot(dThread(wg,nwg,li))');
   if (stage === 'couplePlan') return h + main64(/* wgsl */ `
-    if (t >= D_SLOTS) { return; }
+    // A quiet brick's plans would all be empty; count and apply skip it too.
+    if (t >= D_SLOTS || !dCoupleActive(t/64u)) { return; }
     var plan = DPlan(vec3f(0),0u); let p = cellOf(t);
     let m = loadMaterial(t); let id = cid(m.core); let k = cls(id);
     if (id != 0u && (events[t]&1u)==0u) {
@@ -365,7 +385,7 @@ var<workgroup> brickDemand: array<u32,64>;
         let base=cellOf(t*64u)&vec3i(-4);
         selected=!(any(base+vec3i(3)<P.boxStart) || any(base>=P.boxStart+vec3i(P.boxSize)));
       }
-      if(selected) {
+      if(selected && (P.mode!=${COUPLE_MODE}u || dCoupleActive(t))) {
         for(var s=t*64u;s<(t+1u)*64u;s++) { if((plans[s].flags&1u)!=0u && (P.mode!=13u || dInBody(cellOf(s)))) { n++; } }
       }
     }
@@ -437,7 +457,8 @@ var<workgroup> childCounts: array<u32,64>;
   `);
   if (stage === 'apply') return h + main64(/* wgsl */ `
     if(P.mode==14u && atomicLoad(&control[3])==D_NONE) { return; }
-    if (t >= D_SLOTS) { return; } let plan=plans[t]; if (plan.flags==0u) { return; }
+    if (t >= D_SLOTS || (P.mode==${COUPLE_MODE}u && !dCoupleActive(t/64u))) { return; }
+    let plan=plans[t]; if (plan.flags==0u) { return; }
     if(P.mode==15u && (events[t]&1u)!=0u) { atomicAdd(&control[7],1u); dWake(cellOf(t)); return; }
     let before=loadMaterial(t); var after=before;
     if ((plan.flags&2u)!=0u) {

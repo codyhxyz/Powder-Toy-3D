@@ -86,6 +86,15 @@ Gas events add one bounded1/64-brick source exactly once. Heat/gas scalars are
 not erased at sleep. Native gas drift swaps the complete Material in disjoint
 pairs. Surface wind lift and unsupported liquid jets feed the same allocator.
 
+One source pass reads each brick's cells once (faces, vacuum, gas sources,
+event census). The substeps then run only within an 8-brick box of a brick that
+source changed or that is not resting and level with resting neighbours; every
+other substep is an exact identity with both copies already equal
+(`tools/v2/air-reach-check.mjs`). Gas drift and edge outflow skip windless
+cells before their cell reads; couplePlan/count/apply (mode 16) skip bricks
+with no wind and no neighbour pressure difference above the weakest strength,
+except under radial gravity, non-solid edges or without native jets.
+
 ### Parallel canonical pool preparation
 
 Both blast and liquid-jet allocators use `freeCount → freeScan → freeScatter`
