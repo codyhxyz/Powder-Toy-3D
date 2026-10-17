@@ -7,7 +7,7 @@ import { CELL_M } from '../scale.js';
 export const EXTERNAL_BLAST_CAP = 64;
 const finite = n => Number.isFinite(n) && Math.abs(n) <= 1e12 && Number.isFinite(Math.fround(n));
 const vector=v=>Array.isArray(v) && v.length===3 && v.every(finite);
-export function validBlastSelection(s,g) {
+function validBlastSelection(s,g) {
  if(s===undefined) return true;
  if(!s || ![0,1].includes(s.shape) || !vector(s.end) || !vector(s.grow) || s.grow.some(v=>v<0) ||
   !Number.isInteger(s.filter) || s.filter< -1 || s.filter>=ELEMENTS.length || typeof s.fade!=='boolean') return false;

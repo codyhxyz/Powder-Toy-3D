@@ -74,7 +74,7 @@ export function sweep(from, to, occupied) {
     previous = [...cell]; t = next[axis]; cell[axis] += step[axis]; next[axis] += inv[axis];
   }
 }
-export function canonicalParticleBefore(a,b) {
+function canonicalParticleBefore(a,b) {
   const words=p=>new Uint32Array(packParticle({...p,position:p.position??p.target.map(x=>x+0.5),velocity:p.velocity??[0,0,0]}));
   const aw=words(a),bw=words(b);
   for(let i=0;i<12;i++) if(aw[i]!==bw[i]) return aw[i]<bw[i];return false;

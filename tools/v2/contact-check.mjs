@@ -6,7 +6,7 @@ import { CONTACT_KERNEL } from '../../src/v2/contact.js';
 import { contactKernelWGSL } from '../../src/shaders/v2/contact-kernel.js';
 import { emitContactKernel } from '../../src/shaders/v2/contact.js';
 import { E, ELEMENTS, K, REACTIONS } from '../../src/elements.js';
-import { CONDUCTS, ELEC, SPARK_COST, conductsInto, packSpark } from '../../src/electricity.js';
+import { CONDUCTS, SPARK_COST, conductsInto, packSpark } from '../../src/electricity.js';
 import * as C from '../../src/v2/contact.js';
 import * as F from '../../src/v2/phase.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';

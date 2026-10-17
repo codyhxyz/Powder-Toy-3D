@@ -13,6 +13,8 @@ git worktree add ../tpt-v1 c953a6c && (cd ../tpt-v1 && npm ci)   # today's build
 
 ## 1. Raster bench (decides MSAA vs TAAU for P1)
 
+P1 and its block renderer were rejected on 2026-10-14 (`docs/v2.md`), so this bench no longer decides anything.
+
 Mac, in Chrome and then in Safari:
 
 ```sh

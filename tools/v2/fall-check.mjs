@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { E, ELEMENTS, K } from '../../src/elements.js';
 import { CELL_M } from '../../src/scale.js';
-import { FALL_Q, FALL_HZ, FALL_GRAVITY, FALL_QUANTIZATION_BOUND, fallTerminal, fallVelocity, fallFraction, setFall, stepFall } from '../../src/v2/fall.js';
+import { FALL_Q, FALL_QUANTIZATION_BOUND, fallTerminal, fallVelocity, fallFraction, setFall, stepFall } from '../../src/v2/fall.js';
 import { fallWGSL } from '../../src/shaders/v2/fall.js';
 import { v2ColumnWGSL, v2BlockWGSL, nativeDynamicsHead } from '../../src/shaders/v2.js';
 import { blastsWGSL } from '../../src/shaders/v2/blasts.js';

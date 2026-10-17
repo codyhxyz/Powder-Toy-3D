@@ -1,4 +1,4 @@
-import { phaseTemperatureQ, phaseOffsetEnergy, phaseLatentEnergy, encodePhaseEnergy, phaseAmount, PHASE_NORMAL_MAX, PHASE_COLD_BASE, PHASE_ROWS } from './phase.js';
+import { phaseTemperatureQ, phaseOffsetEnergy, phaseLatentEnergy, encodePhaseEnergy, phaseAmount, PHASE_NORMAL_MAX } from './phase.js';
 import { E, ELEMENTS, K } from '../elements.js';
 
 // Native v2 format 2. Capacity is measured in 1/(64*FULL) water-cell units;
