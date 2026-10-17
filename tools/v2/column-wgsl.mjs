@@ -70,7 +70,8 @@ export class ColumnGrid {
   set(x, y, z, id, { T = 20, fill = L.FULL, ctype = 0 } = {}) {
     const i = this.at(x, y, z), m = L.makeMaterial(id, T, L.isLiquid(id) ? fill : L.FULL, ctype);
     this.cores[i] = new Uint32Array(m.core); this.banks[i] = m.bank;
-    this.markAt(x, y, z);
+    // an edit wakes its brick for the next tick (the import's busyIn)
+    this.markAt(x, y, z); this.busyIn[(x >> 2) + this.bx * ((z >> 2) + this.bz * (y >> 2))] = 1;
   }
   markAt(x, y, z) { if (x >= 0 && y >= 0 && z >= 0 && x < this.nx && y < this.ny && z < this.nz) this.busy[(x >> 2) + this.bx * ((z >> 2) + this.bz * (y >> 2))] = 1; }
   totals() {
