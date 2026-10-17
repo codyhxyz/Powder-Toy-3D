@@ -95,6 +95,7 @@ const runtime = new Function('helpers', `
   const coldShader = { watch() {} }, wakeWhen = promise => promise.catch(() => {});
   const detailGate = { setView() {} }, plainView = id => viewKeyOf(id) === 'plain';
   const setBlocks = () => {}, prepareGI = () => {}, pacer = { wake() {} };
+  const hybridUnavailable = false;
   const settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {}, toast() {} }, save = () => {}, ensureHybrid = () => {};
   const frameValues = (cam, view) => ({ camera: cam, model: new Matrix4(), sun: new Vector3(0, 1, 0), view });
   ${setCode}\n${selectCode}\n${drawCode}\n${volumeFirstCode}\n${sceneCode}\n${hooksCode}
@@ -193,6 +194,7 @@ const paused = new Function('helpers', `
   const warpNow = () => null, baseDetail = () => ({}), coldShader = { watch() {} };
   const detailGate = { setView() {}, update: () => ({}) }, plainView = id => viewKeyOf(id) === 'plain';
   const setBlocks = () => {}, prepareGI = () => {}, settingsPanel = { sync() {} }, shaderPanel = { sync() {} };
+  const hybridUnavailable = false;
   const hud = { setLegend() {}, toast() {} }, save = () => {}, ensureHybrid = () => {};
   const volume = { matrixWorld: new Matrix4(), updateMatrixWorld() {} };
   const camGrid = new Vector3(), invVol = new Matrix4(), canvas = { height: 600 };

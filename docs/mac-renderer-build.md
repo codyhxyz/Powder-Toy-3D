@@ -54,6 +54,27 @@ Particle draws remain paired with their field exclusion during that fallback.
 These checks include numerical references, recording mocks, resource limits, and Naga semantic compilation.
 They do not prove native pixels, equal image quality, frame rate, thermals, or battery use.
 
+### Water/glass and compilation follow-up: October 17
+
+The optical tracer could stop advancing at a cell face.
+At `x=64`, a grazing ray's directional offset can round back to `64` in Float32.
+The ownership probe now uses the next representable float when that occurs.
+The geometric ray position, thickness, quality settings, and traversal budgets do not change.
+The CPU WGSL interpreter reproduces the old zero-length segment.
+All 60 corrected grazing-ray cases advance across the tested axes, directions, and grid extents.
+
+Test-owned pipelines now use an explicit optional compilation policy.
+An attributed compilation failure rejects Test readiness without destroying the shared device.
+The app returns to Realistic and prevents automatic retries for that session.
+Readiness still completes after fallback or after leaving a pending Test view.
+Device loss, core shader failures, programming errors, and compilation deadlines remain fatal.
+CPU tests cover these boundaries and stale grid/view callbacks.
+
+Native confirmation remains pending.
+The normal guard refused the latest optics control at 99% GPU load.
+No browser launched; total occupancy was 2.084 seconds.
+This is not proof that all native optical failures are resolved.
+
 Known limits remain:
 
 - Crisp opaque faces are sharp, not bevelled.

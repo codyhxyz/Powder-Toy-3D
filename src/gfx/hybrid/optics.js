@@ -59,6 +59,19 @@ export function opticalTransmission(sigma, thickness) {
   return sigma.map((v) => Math.exp(-Math.max(0, v) * thickness));
 }
 
+/** Float32 ownership probe, matching opticsProbe; never used as path distance. */
+export function opticalProbe(position, direction) {
+  const bits = new Uint32Array(1), value = new Float32Array(bits.buffer);
+  return position.map((v, i) => {
+    const p = Math.fround(v), rd = Math.fround(direction[i]);
+    const q = Math.fround(p + Math.fround(rd * Math.fround(0.0001)));
+    if (q !== p || Math.abs(rd) <= 1e-8) return q;
+    value[0] = p;
+    bits[0] += (p > 0) !== (rd > 0) ? -1 : 1;
+    return value[0];
+  });
+}
+
 /** CPU reference for the exact-cell-exit DDA (no optical shading/refraction).
  * visit(cell, tNear, tFar) may return false to stop. Reports exhaustion rather
  * than silently dropping the rest. Ties advance every crossed cell axis.
@@ -70,7 +83,7 @@ export function walkOpticalCells(origin, direction, size, { maxSteps = 256, far 
   let t = interval[0];
   for (let step = 0; step < maxSteps; step++) {
     const p = origin.map((v, i) => v + direction[i] * t);
-    const cell = p.map((v, i) => Math.floor(v + direction[i] * 0.0001));
+    const cell = opticalProbe(p, direction).map(Math.floor);
     if (cell.some((v, i) => v < 0 || v >= size[i]) || t >= interval[1]) return { steps: step, exhausted: false, end: t };
     let segment = interval[1] - t;
     for (let axis = 0; axis < 3; axis++) {
@@ -209,12 +222,12 @@ export function createHybridOptics(gpu, sim, options = {}) {
   const sceneLayout = gpu.layout('HYBRID_OPTICS_SCENE', [...opticsBindings(), ...extraBindings]);
   const stateLayout = gpu.layout('STATE_RO', OPTICS_STATE_LAYOUT);
   const code = opticsShader(sim.g, { maxSteps, maxInterfaces, fieldBinding, boundsBinding, particleBinding, fallbackBinding, wgsl: lighting.wgsl, hooks: lighting.hooks });
-  const pipe = gpu.renderPipeline({
+  const pipe = gpu.renderPipeline({ optional: true,
     name: 'hybrid optics', code,
     layouts: [fu.layout, stateLayout, sceneLayout], params: OpticsParams,
     fragment: { targets: Object.values(OPTICS_OUTPUT_FORMATS).map((format) => ({ format })) },
   });
-  const dropPipe = particles && gpu.renderPipeline({
+  const dropPipe = particles && gpu.renderPipeline({ optional: true,
     name: 'hybrid optics droplets', code, layouts: [fu.layout, stateLayout, sceneLayout], params: OpticsParams,
     vertex: { entry: 'dropVS' },
     fragment: { entry: 'dropFS', targets: Object.values(OPTICS_OUTPUT_FORMATS).map(format => ({ format })) },
@@ -224,7 +237,7 @@ export function createHybridOptics(gpu, sim, options = {}) {
     { binding: 0, visibility: 2, texture: { sampleType: 'depth' } },
     { binding: 1, visibility: 2, texture: { sampleType: 'unfilterable-float' } },
   ]);
-  const depthPipe = particles && gpu.renderPipeline({
+  const depthPipe = particles && gpu.renderPipeline({ optional: true,
     name: 'hybrid optics droplet depth', code: dropDepthWGSL, layouts: [depthLayout],
     fragment: { targets: [] },
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'always' },
@@ -234,8 +247,8 @@ export function createHybridOptics(gpu, sim, options = {}) {
   const bounds = gpu.createBuffer({ label: 'optics bounds', size: 32, usage: 128 });
   const boundsGroup = gpu.bindGroup(boundsLayout, [brickBounds, bounds].map((buffer,binding) => ({ binding, resource: { buffer } })));
   const boundsDesc = { code: opticsBoundsShader(sim.g, { particles: !!particles, world: !!(options.world ?? derived?.world) }), layouts: [sim.L.TABLES, sim.L.STATE_RO, boundsLayout], workgroupSize: [64,1,1] };
-  const reduce = gpu.kernel({ name: 'hybrid.optics.bounds', ...boundsDesc });
-  const finish = gpu.kernel({ name: 'hybrid.optics.bounds.finish', ...boundsDesc, entry: 'finish' });
+  const reduce = gpu.kernel({ optional: true, name: 'hybrid.optics.bounds', ...boundsDesc });
+  const finish = gpu.kernel({ optional: true, name: 'hybrid.optics.bounds.finish', ...boundsDesc, entry: 'finish' });
   let boundsKey = null;
   function recordBounds(frame) {
     if (particles && (!derived?.particleSplit || sim.derived !== derived)) throw new Error('droplet optics requires actual derived.particleSplit');
@@ -364,7 +377,7 @@ export function traceOpticalReference(origin, direction, size, {
   let p = origin.map((v, i) => v + rd[i] * interval[0]);
   const inside = c => c.every((v, i) => v >= 0 && v < size[i]);
   const at = (q, d = [0, 0, 0]) => {
-    const cell = q.map((v, i) => Math.floor(v + d[i] * 1e-4));
+    const cell = opticalProbe(q, d).map(Math.floor);
     let material = inside(cell) ? sample(cell) : null;
     if (material?.isolated) {
       const roots = opticalParticleInterval(q, d, cell);
@@ -442,7 +455,7 @@ export function opticalFieldDensity(position, fetch) {
 }
 /** Next cell/tetra boundary or exact iso-root, not fixed-step ray marching. */
 export function opticalFieldSegment(p, rd, cellExit, fetch) {
-  const base = p.map((v, i) => Math.floor(v + rd[i] * 1e-4 - 0.5));
+  const base = opticalProbe(p, rd).map(v => Math.floor(v - 0.5));
   let end = cellExit;
   for (let i = 0; i < 3; i++) {
     if (Math.abs(rd[i]) > 1e-8) {

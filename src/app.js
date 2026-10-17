@@ -23,6 +23,7 @@ import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './ui/styles.css';
 import { createGpu } from './gpu/device.js';
+import { OptionalShaderFailure } from './gpu/kernels.js';
 import { createPresenter } from './gpu/present.js';
 import { createThreeRenderer, useWebGPUCamera, threeHasVisible } from './gpu/three.js';
 import { Simulation, GI_BLEND } from './sim.js';
@@ -285,7 +286,8 @@ let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
 // Keep the old diagnostic URL; the picker loads Test on demand.
 const hybridOptIn = params.get('renderer') === 'hybrid';
 let hybridModule = hybridOptIn ? await import('./gfx/hybrid/index.js') : null;
-let hybridLoad = null;
+let hybridLoad = null, hybridWait = Promise.resolve(), hybridUnavailable = false;
+let releaseHybrid = () => {};
 let V2mod = physicsMode === 'v2' ? await import('./v2/physics.js') : null;
 let physicsV2 = null;    // the box's PhysicsV2 while the mode is v2
 let v2Running = false;   // the last steps were v2's (switching away notes a whole write for today's activity map)
@@ -518,7 +520,9 @@ function build(savedWorldSize = null) {
     for (const w of live) w.detach?.(ctx);
     // (what is recorded on the old grid goes out first: each dispose flushes)
     vol.dispose();
-    hybrid?.dispose();
+  releaseHybrid();
+  hybridWait = Promise.resolve();
+  hybrid?.dispose();
     hybrid = null;
     blocks?.dispose();
     blocks = null;
@@ -569,7 +573,7 @@ function build(savedWorldSize = null) {
   // the pipelines a frame needs (warm from the start menu, or building now)
   coreReady = false;
   s.ready.then(() => readySims.add(s), () => {});
-  const core = coreWait = Promise.all([s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready, hybrid?.ready,
+  const core = coreWait = Promise.all([s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready, hybridWait,
     blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())]).then(() => {
     if (coreWait === core) { coreReady = true; wakeLoop(); }
   });
@@ -609,12 +613,13 @@ function whenSimReady(fn) {
 function ensureHybrid() {
   if (!hybridOptIn && !isTestView(settings.view)) {
     if (hybrid) {
+      releaseHybrid(); hybridWait = Promise.resolve();
       hybrid.dispose(); hybrid = null;
       post.reset(); meshFrames.drop();
     }
     return;
   }
-  if (hybrid || graphicsFailure || !sim) return;
+  if (hybrid || hybridUnavailable || graphicsFailure || !sim) return;
   if (!hybridModule) {
     hybridLoad ??= import('./gfx/hybrid/index.js').then(module => {
       hybridModule = module; hybridLoad = null;
@@ -631,11 +636,26 @@ function ensureHybrid() {
     });
     return;
   }
-  hybrid = hybridModule.createHybridRenderer(gpu, sim, {
+  const owner = sim;
+  const candidate = hybrid = hybridModule.createHybridRenderer(gpu, sim, {
     post, invalidateCaches: () => meshFrames.drop(), onRead: () => wakeLoop(),
     world: !!worldMode, sourceAppearance: !!(worldMode && sceneByKey(settings.scene).importManifest?.appearance),
   });
-  wakeWhen(hybrid.ready);
+  const ready = candidate.ready.catch(error => {
+    // Only attributed optional compilation is recoverable, never device loss.
+    if (!(error instanceof OptionalShaderFailure) || graphicsFailure || gpu.failure || gpu.lost) throw gpu.fail(error);
+    if (hybrid !== candidate || sim !== owner) return;
+    hybridUnavailable = true;
+    candidate.dispose(); hybrid = null;
+    post.reset(); meshFrames.drop();
+    console.warn('Test shader unavailable; using Realistic', error);
+    hud.toast('Test shader failed. Switched to Realistic.', { kind: 'error' });
+    if (isTestView(settings.view)) setView(0);
+    wakeLoop();
+  });
+  // Leaving Test must not keep normal startup waiting for unused compilation.
+  hybridWait = Promise.race([ready, new Promise(resolve => { releaseHybrid = resolve; })]);
+  wakeWhen(hybridWait);
   post.reset(); meshFrames.drop();
 }
 
@@ -1648,6 +1668,10 @@ function setPaused(p) {
 // are ready; its history and GI reset when the rendered view actually switches.
 function setView(id) {
   if (!VIEWS.some((v) => v.id === id)) return;
+  if (isTestView(id) && hybridUnavailable) {
+    hud.toast('Test is unavailable in this session. Use Realistic.', { kind: 'error' });
+    return;
+  }
   if (settings.view !== id && isTestView(id)) hud.toast('Test is experimental. Water/glass may render incorrectly; choose Realistic to return.');
   if (settings.view !== id && !(isMaterialView(settings.view) && isMaterialView(id))) {
     post.reset();
@@ -2839,9 +2863,9 @@ async function allReady() {
     const s = sim, v = vol;
     await coreWait;
     await hybridLoad;
-    const h = hybrid;
-    if (h) await h.ready;
-    if (s !== sim || v !== vol || h !== hybrid) continue;
+    const h = hybrid, pending = hybridWait;
+    await pending;
+    if (s !== sim || v !== vol || h !== hybrid || pending !== hybridWait) continue;
     const view = viewKeyOf(settings.view);
     if (blocksOn) {
       if (blocks) await blocks.ready;

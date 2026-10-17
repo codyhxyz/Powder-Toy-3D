@@ -66,14 +66,14 @@ export function createHybridParticles(gpu, sim, {
   const drawGroup = gpu.bindGroup(drawLayout, [{ binding: 0, resource: { buffer: instances } }], label('draw'));
   const code = particleMeshWGSL(g);
   const meshDesc = { code, layouts: [sim.L.TABLES, sim.L.STATE_RO, meshLayout], params: ParticleMeshParams };
-  const mesh = gpu.kernel({ name: 'hybrid.particles.compact', ...meshDesc, workgroupSize: [64, 1, 1] });
-  const finish = gpu.kernel({ name: 'hybrid.particles.finish', ...meshDesc, entry: 'finish', workgroupSize: [1, 1, 1] });
+  const mesh = gpu.kernel({ optional: true, name: 'hybrid.particles.compact', ...meshDesc, workgroupSize: [64, 1, 1] });
+  const finish = gpu.kernel({ optional: true, name: 'hybrid.particles.finish', ...meshDesc, entry: 'finish', workgroupSize: [1, 1, 1] });
   const depthStencil = { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' };
   const primitive = { topology: 'triangle-list', cullMode: 'none' };
-  const drawPipe = gpu.renderPipeline({ name: 'hybrid.particles.draw', code: particleDrawWGSL(g, { shadeWGSL: shader.wgsl, shadeState: shader.shadeState }),
+  const drawPipe = gpu.renderPipeline({ optional: true, name: 'hybrid.particles.draw', code: particleDrawWGSL(g, { shadeWGSL: shader.wgsl, shadeState: shader.shadeState }),
     layouts: [fu.layout, drawLayout, shader.layout], params: ParticleDrawParams,
     fragment: { targets: [{ format: 'rgba16float' }] }, depthStencil, primitive });
-  const shadowPipe = gpu.renderPipeline({ name: 'hybrid.particles.shadow', code: particleShadowWGSL(),
+  const shadowPipe = gpu.renderPipeline({ optional: true, name: 'hybrid.particles.shadow', code: particleShadowWGSL(),
     layouts: [undefined, drawLayout], params: ParticleDrawParams, fragment: null, depthStencil, primitive });
   const pipes = [mesh, finish, drawPipe, shadowPipe];
   let disposed = false, key = null, generation = 0, frameState = {};

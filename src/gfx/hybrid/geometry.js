@@ -30,16 +30,16 @@ export function createHybridGeometry(gpu, sim, { world = false, facesPerBrick = 
   const compactGroup = gpu.bindGroup(compactLayout, entries([bricks, faces, compact, args, control, ring.buffer]), label('compact'));
   const shadowGroup = gpu.bindGroup(shadowLayout, entries([compact]), label('shadow'));
   const code = meshWGSL(g), compactCode = compactWGSL(g);
-  const meshKernel = entry => gpu.kernel({ name: label(entry), code, entry, layouts: [tables, state, meshLayout],
+  const meshKernel = entry => gpu.kernel({ optional: true, name: label(entry), code, entry, layouts: [tables, state, meshLayout],
     params: GeometryParams, workgroupSize: [64, 1, 1] });
-  const compactKernel = entry => gpu.kernel({ name: label(entry), code: compactCode, entry, layouts: [tables, undefined, compactLayout],
+  const compactKernel = entry => gpu.kernel({ optional: true, name: label(entry), code: compactCode, entry, layouts: [tables, undefined, compactLayout],
     params: GeometryParams, workgroupSize: [entry === 'compact' ? 64 : 1, 1, 1] });
   const compare = meshKernel('compare'), mesh = meshKernel('mesh');
   const prepare = compactKernel('prepare'), gather = compactKernel('compact'), finish = compactKernel('finish');
   const pipeline = geometryPipelines();
-  const opaque = gpu.renderPipeline({ name: label('opaque'), code: drawWGSL(g, shader),
+  const opaque = gpu.renderPipeline({ optional: true, name: label('opaque'), code: drawWGSL(g, shader),
     layouts: [fu.layout, state, drawLayout], ...pipeline.opaque });
-  const shadow = gpu.renderPipeline({ name: label('shadow'), code: shadowWGSL(g),
+  const shadow = gpu.renderPipeline({ optional: true, name: label('shadow'), code: shadowWGSL(g),
     layouts: [tables, undefined, shadowLayout], params: ShadowParams, ...pipeline.shadow });
   const all = [compare, mesh, prepare, gather, finish, opaque, shadow];
   let disposed = false, key = null, origin = null, serial = 0, frame = {}, drawGroup = null, extra = [];

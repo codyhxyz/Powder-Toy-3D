@@ -71,15 +71,15 @@ export function createHybridSmooth(gpu, sim, { maxVertices = 2 ** 21, shader = {
   let drawBind = null, extraEntries = null;
   const code = smoothExtractWGSL(g);
   const meshDesc = { code, layouts: [sim.L.TABLES, sim.L.STATE_RO, extractLayout], params: SmoothParams };
-  const extract = gpu.kernel({ name: 'hybrid.smooth.extract', ...meshDesc, entry: 'extract', workgroupSize: [128, 1, 1] });
-  const finish = gpu.kernel({ name: 'hybrid.smooth.finish', ...meshDesc, layouts: [sim.L.TABLES, sim.L.STATE_RO, prefixLayout], entry: 'finish', workgroupSize: [1, 1, 1] });
-  const build = gpu.kernel({ name: 'hybrid.smooth.build', ...meshDesc, entry: 'build', workgroupSize: [128, 1, 1] });
+  const extract = gpu.kernel({ optional: true, name: 'hybrid.smooth.extract', ...meshDesc, entry: 'extract', workgroupSize: [128, 1, 1] });
+  const finish = gpu.kernel({ optional: true, name: 'hybrid.smooth.finish', ...meshDesc, layouts: [sim.L.TABLES, sim.L.STATE_RO, prefixLayout], entry: 'finish', workgroupSize: [1, 1, 1] });
+  const build = gpu.kernel({ optional: true, name: 'hybrid.smooth.build', ...meshDesc, entry: 'build', workgroupSize: [128, 1, 1] });
   const drawCode = smoothDrawWGSL(g, { shadingWGSL: shader.wgsl });
   const drawDesc = { code: drawCode, layouts: [fu.layout, vertexStateLayout, drawLayout], params: SmoothParams,
     primitive: { topology: 'triangle-list', cullMode: 'none' },
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' } };
-  const drawPipe = gpu.renderPipeline({ name: 'hybrid.smooth.draw', ...drawDesc, fragment: { targets: [{ format: 'rgba16float' }] } });
-  const shadowPipe = gpu.renderPipeline({ name: 'hybrid.smooth.shadow', ...drawDesc, code: smoothDrawWGSL(g), layouts: [fu.layout, vertexStateLayout, shadowLayout], vertex: { entry: 'shadowVS' }, fragment: null });
+  const drawPipe = gpu.renderPipeline({ optional: true, name: 'hybrid.smooth.draw', ...drawDesc, fragment: { targets: [{ format: 'rgba16float' }] } });
+  const shadowPipe = gpu.renderPipeline({ optional: true, name: 'hybrid.smooth.shadow', ...drawDesc, code: smoothDrawWGSL(g), layouts: [fu.layout, vertexStateLayout, shadowLayout], vertex: { entry: 'shadowVS' }, fragment: null });
   const pipes = [extract, finish, build, drawPipe, shadowPipe];
   let disposed = false, key = null, lastRevision, lastOrigin, lastSplit, generation = 0, frameState = {};
   const stats = { builds: 0, maxVertices: capacity, count: 0, flags: 0, requiredVertices: 0,

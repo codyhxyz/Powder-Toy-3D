@@ -57,7 +57,7 @@ export function createHybridMedia(gpu, sim, { scale = .5, maxSteps = 128, step =
   const depths = gpu.layout('HYBRID_MEDIA_DEPTH', MEDIA_DEPTH_LAYOUT);
   const composite = gpu.layout('HYBRID_MEDIA_COMPOSITE', MEDIA_COMPOSITE_LAYOUT);
   const shaderOptions = { sunWGSL: sun.wgsl, sunVisibility: sun.visibility };
-  const make = (name, code, scene, formats) => gpu.renderPipeline({ name, code, layouts: [fu.layout, fields, scene], params: HybridMediaParams, fragment: { targets: formats.map((format) => ({ format })) } });
+  const make = (name, code, scene, formats) => gpu.renderPipeline({ optional: true, name, code, layouts: [fu.layout, fields, scene], params: HybridMediaParams, fragment: { targets: formats.map((format) => ({ format })) } });
   const integrate = make('hybrid media integrate', hybridMediaIntegrateWGSL(shaderOptions), depths, ['rgba16float', 'r32float']);
   const compose = make('hybrid media compose', hybridMediaCompositeWGSL(shaderOptions), composite, ['rgba16float']);
   let disposed = false, ready = false, targets = null, current = {}, lastParams = null, targetEncoder = null;

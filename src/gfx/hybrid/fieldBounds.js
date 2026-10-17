@@ -43,7 +43,7 @@ export function retireMediaResources(gpu, resources, encoder) {
 
 export function createFieldBounds(gpu, sim) {
   const layout = gpu.layout('HYBRID_MEDIA_BOUNDS', FIELD_BOUNDS_LAYOUT);
-  const make = (entry) => gpu.kernel({ name: `hybrid media bounds ${entry}`, code: fieldBoundsWGSL,
+  const make = (entry) => gpu.kernel({ optional: true, name: `hybrid media bounds ${entry}`, code: fieldBoundsWGSL,
     entry, layouts: [layout], workgroupSize: [64, 1, 1] });
   const scan = make('scan'), finish = make('finish');
   let buffers = null, dims = '', view = null, revision, encoder = null;
