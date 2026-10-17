@@ -1,5 +1,8 @@
 # Hybrid performance: current evidence
 
+The renderer is exposed as an opt-in **Test** view, not as the default.
+This experimental release does not claim native correctness or a measured speedup.
+
 Performance measurement is deferred until correctness and visual acceptance finish.
 CPU validation proceeds independently. Native correctness checks still respect the GPU safety guard.
 
@@ -16,7 +19,7 @@ Neither correctness attempt collected performance samples.
 Later correctness slots ran with the normal guard, including readback controls.
 The complete mixed-scene numerical check still fails; converged visual acceptance is also pending.
 Isolated motion writes passed, but they do not validate the combined scene.
-Disabling TAA and splitting render submissions did not resolve the failure.
+Disabling TAA did not resolve the failure. The split-submission diagnostic timed out without an acceptance result.
 GPU work stopped after a deadline overrun during sleep/dark-wake activity.
 An absolute wall-deadline poll now catches expiry immediately after wake.
 Later awake controls passed for opaque geometry, smooth surfaces, gas, and particles.

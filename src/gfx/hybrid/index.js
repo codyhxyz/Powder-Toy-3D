@@ -20,7 +20,7 @@ export function hybridEligibility({ sourceAppearance=false,decoration=false,view
   if(disabled)return 'disabled';
   if(sourceAppearance)return 'source artwork integration pending';
   if(decoration)return 'decoration integration pending';
-  if(view!=='realistic')return 'non-realistic view';
+  if(view!=='realistic'&&view!=='test')return 'non-realistic view';
   if(warp?.k)return 'curved presentation';
   if(model)try{shadowModel(model);}catch(e){return e.message;}
   return null;

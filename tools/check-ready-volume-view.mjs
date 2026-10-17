@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { Matrix4, PerspectiveCamera, Vector3 } from 'three/webgpu';
 import { createReadyVolumeView } from '../src/gfx/readyVolumeView.js';
-import { VIEWS, viewKey as viewKeyOf, isMaterialView } from '../src/views.js';
+import { VIEWS, viewKey as viewKeyOf, isMaterialView, isTestView } from '../src/views.js';
 import { viewShadows } from '../src/shaders/render.js';
 import { writeFrameUniforms } from '../src/gfx/uniforms.js';
 import { createPacer } from '../src/gfx/pacing.js';
@@ -82,7 +82,7 @@ const gpu = { _frameUniforms: {
 } };
 const camera = new PerspectiveCamera();
 const runtime = new Function('helpers', `
-  const { createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, viewShadows, writeFrameUniforms, vol, far, gpu, camera, Matrix4, Vector3 } = helpers;
+  const { createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows, writeFrameUniforms, vol, far, gpu, camera, Matrix4, Vector3 } = helpers;
   const settings = { view: 6 }, readyVolumeView = createReadyVolumeView();
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', resets = 0, volumeFirst = false, volumeDrawn = false;
   let hybrid=null;
@@ -95,7 +95,7 @@ const runtime = new Function('helpers', `
   const coldShader = { watch() {} }, wakeWhen = promise => promise.catch(() => {});
   const detailGate = { setView() {} }, plainView = id => viewKeyOf(id) === 'plain';
   const setBlocks = () => {}, prepareGI = () => {}, pacer = { wake() {} };
-  const settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {} }, save = () => {};
+  const settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {}, toast() {} }, save = () => {}, ensureHybrid = () => {};
   const frameValues = (cam, view) => ({ camera: cam, model: new Matrix4(), sun: new Vector3(0, 1, 0), view });
   ${setCode}\n${selectCode}\n${drawCode}\n${volumeFirstCode}\n${sceneCode}\n${hooksCode}
   return { setView, settings, setHybrid(value){hybrid=value;}, frame(detail = {}) {
@@ -106,7 +106,7 @@ const runtime = new Function('helpers', `
     drawScene({});
     return { draw: vol.lastDraw, volumeDrawn, renderView, contextView: ctx.renderView, resets };
   } };
-`)({ createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, viewShadows, writeFrameUniforms,
+`)({ createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows, writeFrameUniforms,
   vol: fakeVolume, far, gpu, camera, Matrix4, Vector3 });
 function check(expected, detail = {}) {
   const f = runtime.frame(detail);
@@ -173,7 +173,7 @@ const settlingVolume = {
   pipeline: view => view === 'cozy' ? ready : latePipe,
 };
 const paused = new Function('helpers', `
-  const { createReadyVolumeView, createPacer, canPostFrame, VIEWS, viewKeyOf, isMaterialView, viewShadows,
+  const { createReadyVolumeView, createPacer, canPostFrame, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows,
     writeFrameUniforms, Matrix4, Vector3, camera, gpu, vol } = helpers;
   const settings = { view: 6, paused: true }, readyVolumeView = createReadyVolumeView();
   const hybrid=null;
@@ -193,7 +193,7 @@ const paused = new Function('helpers', `
   const warpNow = () => null, baseDetail = () => ({}), coldShader = { watch() {} };
   const detailGate = { setView() {}, update: () => ({}) }, plainView = id => viewKeyOf(id) === 'plain';
   const setBlocks = () => {}, prepareGI = () => {}, settingsPanel = { sync() {} }, shaderPanel = { sync() {} };
-  const hud = { setLegend() {} }, save = () => {};
+  const hud = { setLegend() {}, toast() {} }, save = () => {}, ensureHybrid = () => {};
   const volume = { matrixWorld: new Matrix4(), updateMatrixWorld() {} };
   const camGrid = new Vector3(), invVol = new Matrix4(), canvas = { height: 600 };
   const selectedMode = 'sandbox', renderOnly = false, wantFrame = () => false;
@@ -217,7 +217,7 @@ const paused = new Function('helpers', `
       painting: false, povActive: false, busy: false });
     return { runDerived, runView, renderView, gi, events: [...events], settled: pacer.settled, postOnlyEligible };
   } };
-`)({ createReadyVolumeView, createPacer, canPostFrame, VIEWS, viewKeyOf, isMaterialView, viewShadows,
+`)({ createReadyVolumeView, createPacer, canPostFrame, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows,
   writeFrameUniforms, Matrix4, Vector3, camera, gpu, vol: settlingVolume });
 for (let i = 0; i < 12; i++) paused.tick();
 let settled = paused.tick();

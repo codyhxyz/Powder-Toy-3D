@@ -4,8 +4,8 @@
 
 Build the approved raster-first hybrid renderer on the existing WebGPU engine.
 Keep simulation rules, saves, imported artwork, data views, and the existing
-renderer intact. The parent integrates the new path behind `?renderer=hybrid`
-until native-GPU validation proves it can replace the default.
+renderer intact. The new path is exposed as the opt-in **Test** view (`?view=test`).
+Native-GPU validation must pass before it can replace the default.
 
 Initial production base: `375301e7bd4a05afab9ebf130c6f90e930bd2309`.
 Integration checkout: `/Users/codyhergenroeder/code/claude/threejs-tpt-gpu-mac-build`.
@@ -15,7 +15,11 @@ Children work only in their tool-assigned managed worktrees based on this checko
 ## Implementation status: October 16, 2026
 
 **All 12 features now have application wiring and CPU checks. Native acceptance is incomplete.**
-Production still uses the existing renderer. This is not a completed or deployed rewrite.
+The default still uses the existing renderer. Test is an experimental release, not a completed replacement.
+The user explicitly requested deployment as a view named Test.
+Select **Shaders → Test** or press **7**. Water/glass and mixed scenes may render incorrectly.
+Choose Realistic to return. Test is not saved as the next visit's default.
+Unsupported source artwork, decoration, and curved presentation retain the existing renderer.
 Correctness-only GPU work resumed when the shared lease became free.
 Use the normal safety guard. Do not override a busy player or another agent's lease.
 Performance measurement remains deferred.
@@ -24,7 +28,9 @@ The first eleven workers and six recovery workers timed out.
 Their work was preserved. Focused follow-ups completed the missing producers.
 The earlier opaque-only delivery did not meet the approved scope.
 
-Use `?renderer=hybrid&view=realistic` to select the experimental path.
+Use `?view=test` to select the experimental path.
+The diagnostic URL `?renderer=hybrid&view=realistic` remains supported.
+Normal views do not load or allocate the hybrid renderer unless that explicit diagnostic flag is present.
 Normal sand, terrain, water, glass, smoke, and isolated matter have dedicated owners.
 The GPU gives the legacy volume zero instances when the new scene is accepted.
 Capacity failures select an exceptional legacy draw in that same frame.
@@ -69,6 +75,7 @@ CPU checks (no browser or physical GPU):
 
 ```sh
 node tools/hybrid-check.mjs
+node tools/hybrid-test-view-check.mjs
 node tools/hybrid-readback-cpu-check.mjs
 node tools/check-sampler-budget.mjs
 node tools/post-reuse-cpu-check.mjs
@@ -87,7 +94,7 @@ npm run build
 
 The hybrid runner passes all nine suites. Its actual composition and shader/layout checks cover
 32³, 64³, 128³, 160×96×160, 256×96×128, and 128×384×128 grids.
-The experimental branch's deployment workflow includes this runner.
+The deployment workflow includes this runner and the Test-view lifecycle/disclosure check.
 
 The broader CPU pass also passed these regression groups:
 
@@ -98,6 +105,7 @@ The broader CPU pass also passed these regression groups:
 - Element mechanisms, imports, state access, the build, and shipped local maps.
 
 With upstream `3c1129cb` merged, the engine resource catalog passes 467 pipelines and 1,376 grid variants.
+Adding Test's legacy fallback expands that catalog to 479 pipelines and 1,424 variants.
 The hybrid composition is checked separately by the hybrid runner.
 The async-read lint reports eight pre-existing pending reads in four unrelated legacy tools.
 After the latest upstream merge, it also fails on six calls inside deadline wrappers in upstream industry fixtures.

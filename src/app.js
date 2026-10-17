@@ -85,7 +85,7 @@ import { withCityBusFocus } from './pov/village/bus.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
 import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
-import { VIEWS, viewKey as viewKeyOf, isMaterialView, viewForMode } from './views.js';
+import { VIEWS, viewKey as viewKeyOf, isMaterialView, isTestView, viewForMode } from './views.js';
 import { createReadyVolumeView } from './gfx/readyVolumeView.js';
 import { WIRES, wireNamed } from './wire/index.js';
 import { offline as OFFLINE } from './wire/mp.js';
@@ -282,8 +282,10 @@ settings.paused = params.get('paused') === '1' || testMode === 'manual' || testM
 // then; not persisted. A world, first person and a multiplayer guest keep today's physics (the box
 // switches back to it while the body is out, and to v2 again after). __app.setPhysics('v2' | 'v1') for tools.
 let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
-// Experimental opt-in, not persisted. The default renderer remains unchanged.
-const hybridModule = params.get('renderer') === 'hybrid' ? await import('./gfx/hybrid/index.js') : null;
+// Keep the old diagnostic URL; the picker loads Test on demand.
+const hybridOptIn = params.get('renderer') === 'hybrid';
+let hybridModule = hybridOptIn ? await import('./gfx/hybrid/index.js') : null;
+let hybridLoad = null;
 let V2mod = physicsMode === 'v2' ? await import('./v2/physics.js') : null;
 let physicsV2 = null;    // the box's PhysicsV2 while the mode is v2
 let v2Running = false;   // the last steps were v2's (switching away notes a whole write for today's activity map)
@@ -292,7 +294,9 @@ let saveTimer = 0;
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, settings[k]])), [REV_KEY]: DEFAULT_CHANGES.length })); } catch { /* storage unavailable */ }
+    // A broken experimental scene must not become the next visit's default.
+    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, settings[k]])),
+      view: isTestView(settings.view) ? DEFAULTS.view : settings.view, [REV_KEY]: DEFAULT_CHANGES.length })); } catch { /* storage unavailable */ }
   }, 300);
 }
 
@@ -552,10 +556,7 @@ function build(savedWorldSize = null) {
   derived = new Derived(sim);
   blocksOn = plainView();
   vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !!(worldMode && sceneByKey(settings.scene).importManifest?.appearance) });
-  hybrid = hybridModule?.createHybridRenderer(gpu, sim, {
-    post, invalidateCaches: () => meshFrames.drop(), onRead: () => wakeLoop(),
-    world: !!worldMode, sourceAppearance: !!(worldMode && sceneByKey(settings.scene).importManifest?.appearance),
-  }) ?? null;
+  ensureHybrid();
   if (blocksOn) blocks = createBlocks(gpu, sim, { world: !!worldMode });
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
   const s = sim, simWake = s.wake.bind(s);
@@ -603,6 +604,39 @@ function whenSimReady(fn) {
   if (readySims.has(sim)) { fn(); return; }
   const s = sim;
   s.ready.then(() => { if (s === sim && !graphicsFailure) fn(); }, () => {});
+}
+
+function ensureHybrid() {
+  if (!hybridOptIn && !isTestView(settings.view)) {
+    if (hybrid) {
+      hybrid.dispose(); hybrid = null;
+      post.reset(); meshFrames.drop();
+    }
+    return;
+  }
+  if (hybrid || graphicsFailure || !sim) return;
+  if (!hybridModule) {
+    hybridLoad ??= import('./gfx/hybrid/index.js').then(module => {
+      hybridModule = module; hybridLoad = null;
+      // Resolve against the current selection/grid, not the one at click time.
+      ensureHybrid();
+      wakeLoop();
+    }).catch(error => {
+      hybridLoad = null;
+      console.warn('Test renderer unavailable', error);
+      if (isTestView(settings.view)) {
+        hud.toast('Test could not load. Switched to Realistic.', { kind: 'error' });
+        setView(0);
+      }
+    });
+    return;
+  }
+  hybrid = hybridModule.createHybridRenderer(gpu, sim, {
+    post, invalidateCaches: () => meshFrames.drop(), onRead: () => wakeLoop(),
+    world: !!worldMode, sourceAppearance: !!(worldMode && sceneByKey(settings.scene).importManifest?.appearance),
+  });
+  wakeWhen(hybrid.ready);
+  post.reset(); meshFrames.drop();
 }
 
 // Lit material views draw the gate's base variant first (gfx/detailGate.js).
@@ -1614,12 +1648,14 @@ function setPaused(p) {
 // are ready; its history and GI reset when the rendered view actually switches.
 function setView(id) {
   if (!VIEWS.some((v) => v.id === id)) return;
+  if (settings.view !== id && isTestView(id)) hud.toast('Test is experimental. Water/glass may render incorrectly; choose Realistic to return.');
   if (settings.view !== id && !(isMaterialView(settings.view) && isMaterialView(id))) {
     post.reset();
     meshFrames.drop();
     sim.resetGI();
   }
   settings.view = id;
+  ensureHybrid();
   detailGate.setView(id);
   setBlocks(plainView(id));
   prepareGI();
@@ -2802,6 +2838,10 @@ async function allReady() {
   for (;;) {
     const s = sim, v = vol;
     await coreWait;
+    await hybridLoad;
+    const h = hybrid;
+    if (h) await h.ready;
+    if (s !== sim || v !== vol || h !== hybrid) continue;
     const view = viewKeyOf(settings.view);
     if (blocksOn) {
       if (blocks) await blocks.ready;
