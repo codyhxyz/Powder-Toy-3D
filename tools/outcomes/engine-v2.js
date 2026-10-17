@@ -88,6 +88,18 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
       return toGrid(await readNativeState(v2));
     },
     async census() { return nativeTally(await engine.read(), engine); },
+    // FNV-1a of each native buffer, and control words 0-31 as they are (docs/v2/tick-cost-floor.md, "What to measure on the GPU")
+    async stateHash() {
+      v2.sync();
+      const d = v2.dynamics;
+      const named = { cells: v2.cells, banks: v2.aux, particles: d.particles, air0: d.air[0], air1: d.air[1] };
+      const copies = await Promise.all([...Object.values(named), d.control].map(b => v2.gpu.readback.buffer(b, 0, b.size)));
+      const fnv = (buf) => { const w = new Uint32Array(buf); let h = 0x811c9dc5; for (let i = 0; i < w.length; i++) h = Math.imul(h ^ w[i], 0x01000193) >>> 0; return h.toString(16).padStart(8, '0'); };
+      const out = Object.fromEntries(Object.keys(named).map((k, i) => [k, fnv(copies[i])]));
+      out.airIndex = d.airIndex; out.tick = v2.tick ?? null;
+      out.control = [...new Uint32Array(copies.at(-1)).slice(0, 32)];
+      return out;
+    },
     async activity() {
       v2.sync();
       const [s] = await Promise.all([v2.readStats(), v2.dynamics.readActivity()]);

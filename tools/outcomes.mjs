@@ -138,7 +138,7 @@ if (ENGINE === 'lean' || ENGINE === 'column' || ENGINE === 'column-wgsl') {
           if (!adapterLine) { const g = await gpuInfo(page); adapterLine = `${g.vendor} ${g.architecture} ${g.description}${g.isFallbackAdapter ? ' (fallback adapter: SwiftShader numbers, not representative)' : ''}`; }
           engineInfo ??= await page.evaluate(() => window.__harness.run('info'));
           for (const t of b.tests) {
-            const r = await page.evaluate(([n, o]) => window.__harness.run('outcome', n, o), [t.name, { seed: SEED, budgetMs: BUDGET_MS }]);
+            const r = await page.evaluate(([n, o]) => window.__harness.run('outcome', n, o), [t.name, { seed: SEED, budgetMs: BUDGET_MS, hash: flag('hash') }]);
             // an error in the page (a GPU validation error, an exception) voids the result
             if (errors.length) {
               r.pageErrors = errors.splice(0);
