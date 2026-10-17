@@ -433,12 +433,13 @@ export class Simulation {
    * copy-through, shaders/react.js), as after any load. Only a box (g.windowed
    * false) drops one: a window's shift runs out of place. The groups holding the
    * old buffers are made again (here and the native owner's), and the old
-   * buffers go once the queue is done with them.
+   * buffers go once the queue is done with them. (Once graphics have stopped,
+   * nothing is remade: nothing records any more.)
    * @param {boolean} on
    */
   pingPong(on) {
     const n = on ? PING_PONG : ONE_COPY;
-    if (n === this.copies || (!on && this.g.windowed !== false)) return;
+    if (n === this.copies || (!on && this.g.windowed !== false) || this.gpu.failure) return;
     const f = this.gpu.frame, state = this.state, next = this._stateBuffers(n), slots = this.g.slots;
     for (const k of Object.keys(STATE_BYTES)) {
       f.copy(state[k], this.cur * slots * STATE_BYTES[k], next[k], 0, slots * STATE_BYTES[k]);
