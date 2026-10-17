@@ -124,6 +124,11 @@ export const VIEWS = [
     legend: null, shadows: true, materialStyle: 1,
   },
   {
+    id: 7, key: 'test', hotkey: '7', name: 'Test', experimental: true,
+    desc: 'Experimental renderer. Water/glass and mixed scenes may render incorrectly. Unsupported scenes use the existing renderer. Choose Realistic to return.',
+    legend: null, shadows: true, materialStyle: 0,
+  },
+  {
     id: 1, key: 'heat', hotkey: '2', name: 'Heat',
     desc: 'Colors show temperature, from blue below freezing through grey at room temperature to red, yellow and white-hot, and warm air glows faintly.',
     legend: legend(COLORMAPS.heat, 'Temperature (°C)',
@@ -155,6 +160,7 @@ export const VIEWS = [
 
 /** A view's key (its shader module in src/shaders/render.js) from its id; unknown ids are the realistic view. */
 export const viewKey = (id) => VIEWS.find((v) => v.id === id)?.key ?? 'realistic';
+export const isTestView = (view) => view === 'test' || viewKey(view) === 'test';
 
 /** Launch defaults only: authored map, then gamemode, otherwise the player's selection. */
 export const viewForMode = (mode, fallback, map = null) => VIEWS.find((v) => v.key === (map?.defaultView ?? mode?.defaultView))?.id ?? fallback;

@@ -147,6 +147,8 @@ jobs:
       - run: npm run check:world-gi-glow   # shared world GI/glow producers, bounded history/native recording + Naga; NOT application activation
       - run: npm run check:world-gi-birth   # explicit native-history initialization/adoption; CPU fake transport, no app activation
       - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
+      - run: node tools/hybrid-check.mjs   # CPU/Naga: all hybrid producers, actual stage layouts and six grid shapes
+      - run: node tools/hybrid-test-view-check.mjs   # CPU-only: explicit Test activation, teardown, and warning UI
       - run: npm run build
       - run: node tools/check-local-map-build.mjs
       - name: Deploy to Cloudflare Pages

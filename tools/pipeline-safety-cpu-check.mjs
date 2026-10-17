@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createGpu } from '../src/gpu/device.js';
 import { GraphicsFailure } from '../src/gpu/errors.js';
-import { PIPELINE_BUDGET_MS, PIPELINE_CONCURRENCY } from '../src/gpu/kernels.js';
+import { OptionalShaderFailure, PIPELINE_BUDGET_MS, PIPELINE_CONCURRENCY } from '../src/gpu/kernels.js';
 
 const deferred = () => {
   let resolve, reject;
@@ -14,7 +14,7 @@ const deferred = () => {
 const drain = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 const sameFailure = (promise, failure) => assert.rejects(promise, (e) => e === failure);
 
-async function fixture(t, { layout = 'ok', diagnosticsHang = false, moduleError = null, destroyThrows = false } = {}) {
+async function fixture(t, { layout = 'ok', diagnosticsHang = false, moduleError = null, moduleHang = false, destroyThrows = false } = {}) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const oldUsage = globalThis.GPUBufferUsage;
   globalThis.GPUBufferUsage = { UNIFORM: 64, COPY_DST: 8 };
@@ -23,7 +23,7 @@ async function fixture(t, { layout = 'ok', diagnosticsHang = false, moduleError 
   let nextIdle = 1;
   globalThis.requestIdleCallback = (fn) => { const id = nextIdle++; idle.set(id, fn); return id; };
   globalThis.cancelIdleCallback = (id) => { canceled.push(id); idle.delete(id); };
-  const calls = [], scopes = [], layoutWaits = [], listeners = new Map(), lost = deferred();
+  const calls = [], scopes = [], layoutWaits = [], moduleWaits = [], listeners = new Map(), lost = deferred();
   const counts = { modules: 0, layouts: 0, active: 0, maxActive: 0, destroy: 0, requests: 0, submits: 0, diagnostics: 0 };
   const compile = (kind, descriptor) => {
     const d = deferred();
@@ -42,15 +42,19 @@ async function fixture(t, { layout = 'ok', diagnosticsHang = false, moduleError 
     popErrorScope() {
       const scope = scopes.pop();
       assert.ok(scope, 'balanced error scopes');
-      if (scope.kind === 'module') return Promise.resolve(moduleError);
-      if (layout === 'hang') { const d = deferred(); layoutWaits.push(d); return d.promise; }
-      if (layout === 'error') return Promise.resolve({ message: 'layout limit exceeded' });
-      if (layout === 'reject') return Promise.reject(new Error('layout scope rejected'));
+      if (scope.kind === 'module') {
+        if (moduleHang) { const d = deferred(); moduleWaits.push(d); return d.promise; }
+        return Promise.resolve(typeof moduleError === 'function' ? moduleError(scope.label) : moduleError);
+      }
+      const mode = typeof layout === 'function' ? layout(scope.label) : layout;
+      if (mode === 'hang') { const d = deferred(); layoutWaits.push(d); return d.promise; }
+      if (mode === 'error') return Promise.resolve({ message: 'layout limit exceeded' });
+      if (mode === 'reject') return Promise.reject(new Error('layout scope rejected'));
       return Promise.resolve(null);
     },
-    createShaderModule({ code }) {
+    createShaderModule({ code, label }) {
       counts.modules++;
-      scopes.at(-1).kind = 'module';
+      Object.assign(scopes.at(-1), { kind: 'module', label });
       return { code, getCompilationInfo() {
         counts.diagnostics++;
         return diagnosticsHang ? new Promise(() => {}) : Promise.resolve({ messages: [
@@ -58,7 +62,7 @@ async function fixture(t, { layout = 'ok', diagnosticsHang = false, moduleError 
         ] });
       } };
     },
-    createPipelineLayout(desc) { counts.layouts++; scopes.at(-1).kind = 'layout'; return { ...desc }; },
+    createPipelineLayout(desc) { counts.layouts++; Object.assign(scopes.at(-1), { kind: 'layout', label: desc.label }); return { ...desc }; },
     createComputePipelineAsync: (d) => compile('compute', d),
     createRenderPipelineAsync: (d) => compile('render', d),
     createBindGroupLayout: (d) => ({ ...d }), createBindGroup: (d) => ({ ...d }),
@@ -82,12 +86,12 @@ async function fixture(t, { layout = 'ok', diagnosticsHang = false, moduleError 
     if (oldIdle === undefined) delete globalThis.requestIdleCallback; else globalThis.requestIdleCallback = oldIdle;
     if (oldCancel === undefined) delete globalThis.cancelIdleCallback; else globalThis.cancelIdleCallback = oldCancel;
   });
-  return { gpu, device, counts, calls, scopes, layoutWaits, reports, idle, canceled, listeners, lost,
+  return { gpu, device, counts, calls, scopes, layoutWaits, moduleWaits, reports, idle, canceled, listeners, lost,
     runIdle() { const callbacks = [...idle.values()]; idle.clear(); for (const fn of callbacks) fn(); } };
 }
 
-function pipe(gpu, i, { kind = 'compute', build = 'now', name = `pipe-${i}` } = {}) {
-  return gpu[kind === 'compute' ? 'kernel' : 'renderPipeline']({ name, code: 'shared WGSL', constants: { i }, build });
+function pipe(gpu, i, { kind = 'compute', build = 'now', name = `pipe-${i}`, optional, code = 'shared WGSL' } = {}) {
+  return gpu[kind === 'compute' ? 'kernel' : 'renderPipeline']({ name, code, constants: { i }, build, optional });
 }
 
 function stopped(f) {
@@ -351,3 +355,283 @@ await test('device loss and uncaptured errors preserve the first failure without
   assert.equal(f.reports.length, 1);
   stopped(f);
 });
+
+
+function liveAndDrained(f) {
+  assert.equal(f.gpu.failure, null);
+  assert.equal(f.gpu.pipelines.failure, null);
+  assert.equal(f.counts.destroy, 0);
+  assert.equal(f.counts.requests, 1);
+  assert.equal(f.reports.length, 0);
+  assert.equal(f.gpu.stats.pipelinesPending, 0);
+  assert.equal(f.gpu.pipelines.pending.size, 0);
+  assert.equal(f.gpu.pipelines.running, 0);
+  assert.equal(f.gpu.pipelines.active.size, 0);
+  assert.equal(f.gpu.pipelines.queue.length, 0);
+  assert.equal(f.gpu.pipelines.pipes.size, 0);
+  assert.equal(f.scopes.length, 0);
+  f.device.queue.submit([]);
+  assert.ok(f.gpu.frame, 'shared device remains usable');
+}
+
+for (const kind of ['render', 'compute']) {
+  await test(`optional ${kind} native rejection drains and pumps unrelated core builds`, async (t) => {
+    const f = await fixture(t, { diagnosticsHang: true });
+    const optional = pipe(f.gpu, 0, { optional: true, kind });
+    const alias = pipe(f.gpu, 0, { optional: true, kind, name: 'optional alias' });
+    const core = [pipe(f.gpu, 1), pipe(f.gpu, 2), pipe(f.gpu, 3)];
+    await drain();
+    const error = new Error('Metal XPC_ERROR_CONNECTION_INTERRUPTED after retries');
+    f.calls[0].reject(error);
+    await drain();
+    let failure;
+    await assert.rejects(optional.ready, (e) => {
+      failure = e;
+      return e instanceof OptionalShaderFailure && e.cause === error && /pipe-0.*\nMetal/.test(e.message);
+    });
+    await sameFailure(alias.ready, failure);
+    assert.equal(f.calls.length, 3, 'optional failure releases only its settled slot');
+    f.calls[1].resolve({}); f.calls[2].resolve({});
+    await drain();
+    f.calls[3].resolve({});
+    await Promise.all(core.map((p) => p.ready));
+    await f.gpu.settled();
+    assert.equal(optional.pipeline, null);
+    assert.equal(optional.state, 'failed');
+    assert.equal(f.gpu.stats.pipelinesCreated, 3);
+    assert.equal(f.counts.maxActive, PIPELINE_CONCURRENCY);
+    liveAndDrained(f);
+  });
+}
+
+await test('optional diagnostics enrich asynchronously without changing original cause', async (t) => {
+  const f = await fixture(t);
+  const info = deferred();
+  const module = f.gpu.pipelines.module('shared WGSL', 'optional module', true);
+  module.getCompilationInfo = () => info.promise;
+  const p = pipe(f.gpu, 0, { optional: true });
+  await drain();
+  const cause = new Error('native failed');
+  f.calls[0].reject(cause);
+  await drain();
+  let failure;
+  await assert.rejects(p.ready, (e) => { failure = e; return e instanceof OptionalShaderFailure; });
+  assert.match(failure.message, /native failed/);
+  info.resolve({ messages: [{ type: 'error', lineNum: 4, linePos: 2, message: 'later diagnostic' }] });
+  await drain();
+  assert.match(failure.message, /4:2 later diagnostic/);
+  assert.equal(failure.cause, cause);
+  liveAndDrained(f);
+});
+
+for (const stage of ['module', 'layout']) {
+  for (const mode of ['throw', 'error', 'reject']) {
+    await test(`optional ${stage} ${mode} is isolated and preserves the cause`, async (t) => {
+      const cause = new Error(`${stage} ${mode}`);
+      const f = await fixture(t, stage === 'module' && mode !== 'throw'
+        ? { moduleError: (label) => label === 'pipe-0' ? (mode === 'reject' ? Promise.reject(cause) : cause) : null }
+        : {});
+      if (mode === 'throw') {
+        const api = stage === 'module' ? 'createShaderModule' : 'createPipelineLayout';
+        const original = f.device[api];
+        f.device[api] = (d) => {
+          if (d.label.startsWith('pipe-0')) {
+            // A throwing mock still belongs to its pushed validation scope.
+            f.scopes.at(-1).kind = stage;
+            throw cause;
+          }
+          return original(d);
+        };
+      } else if (stage === 'layout') {
+        const original = f.device.popErrorScope;
+        f.device.popErrorScope = () => {
+          if (f.scopes.at(-1).label === 'pipe-0 layout') {
+            f.scopes.pop();
+            return mode === 'reject' ? Promise.reject(cause) : Promise.resolve(cause);
+          }
+          return original();
+        };
+      }
+      const p = pipe(f.gpu, 0, { optional: true });
+      const core = pipe(f.gpu, 1);
+      await drain();
+      await assert.rejects(p.ready, (e) => e instanceof OptionalShaderFailure && e.cause === cause);
+      assert.equal(f.calls.length, 1, 'failed optional validation never enters native compilation');
+      f.calls[0].resolve({});
+      await core.ready;
+      liveAndDrained(f);
+    });
+  }
+}
+
+for (const optionalFirst of [true, false]) {
+  await test(`identical source/layout/pipeline keeps fatal and optional policy separate (optional first: ${optionalFirst})`, async (t) => {
+    const f = await fixture(t);
+    const first = pipe(f.gpu, 0, { optional: optionalFirst });
+    const second = pipe(f.gpu, 0, { optional: !optionalFirst });
+    await drain();
+    assert.equal(f.calls.length, 2);
+    assert.equal(f.counts.modules, 2);
+    assert.equal(f.counts.layouts, 2);
+    const a = f.calls[0].descriptor, b = f.calls[1].descriptor;
+    assert.notEqual(a.compute.module, b.compute.module);
+    assert.notEqual(a.layout, b.layout);
+    const optional = optionalFirst ? first : second, core = optionalFirst ? second : first;
+    f.calls[optionalFirst ? 0 : 1].reject(new Error('optional rejection'));
+    await assert.rejects(optional.ready, OptionalShaderFailure);
+    assert.equal(f.gpu.failure, null);
+    f.calls[optionalFirst ? 1 : 0].reject(new Error('core rejection'));
+    await drain();
+    await sameFailure(core.ready, f.gpu.failure);
+    assert.ok(f.gpu.failure instanceof GraphicsFailure);
+    stopped(f);
+  });
+}
+
+for (const outcome of ['resolve', 'error', 'reject']) {
+  await test(`module validation gates apparent ready and native creation until ${outcome}`, async (t) => {
+    const f = await fixture(t, { moduleHang: true });
+    const p = pipe(f.gpu, 0, { optional: true });
+    await drain();
+    assert.equal(f.calls.length, 0);
+    assert.equal(p.state, 'pending');
+    assert.equal(f.counts.layouts, 0);
+    const cause = new Error('late module failure');
+    f.moduleWaits[0][outcome === 'reject' ? 'reject' : 'resolve'](outcome === 'resolve' ? null : cause);
+    await drain();
+    if (outcome === 'resolve') {
+      assert.equal(f.calls.length, 1);
+      f.calls[0].resolve({});
+      await p.ready;
+    } else {
+      await assert.rejects(p.ready, (e) => e instanceof OptionalShaderFailure && e.cause === cause);
+      assert.equal(f.calls.length, 0);
+      assert.equal(p.state, 'failed');
+    }
+    liveAndDrained(f);
+  });
+}
+
+for (const stage of ['native', 'module', 'layout']) {
+  await test(`optional ${stage} timeout remains fatal; late resolve cannot resurrect failed pipe`, async (t) => {
+    const f = await fixture(t, { moduleHang: stage === 'module', layout: stage === 'layout' ? 'hang' : 'ok' });
+    const pipes = [0, 1, 2].map((i) => pipe(f.gpu, i, { optional: true }));
+    await drain();
+    t.mock.timers.tick(PIPELINE_BUDGET_MS);
+    await drain();
+    const failure = f.gpu.failure;
+    assert.ok(failure instanceof GraphicsFailure);
+    await Promise.all(pipes.map((p) => sameFailure(p.ready, failure)));
+    for (const wait of [...f.calls, ...f.moduleWaits, ...f.layoutWaits]) wait.resolve(null);
+    await drain();
+    assert.equal(f.calls.length, stage === 'native' ? 2 : 0);
+    assert.ok(pipes.every((p) => p.state === 'failed' && p.pipeline === null));
+    assert.equal(f.gpu.stats.pipelinesCreated, 0);
+    stopped(f);
+  });
+}
+
+for (const event of ['loss', 'uncaptured']) {
+  await test(`optional active and queued builds cannot absorb device ${event}`, async (t) => {
+    const f = await fixture(t);
+    const pipes = [0, 1, 2, 3].map((i) => pipe(f.gpu, i, { optional: true }));
+    await drain();
+    if (event === 'loss') f.lost.resolve({ reason: 'unknown', message: 'device lost during optional build' });
+    else f.listeners.get('uncapturederror')({ error: new Error('uncaptured optional error') });
+    await drain();
+    const failure = f.gpu.failure;
+    assert.ok(failure instanceof GraphicsFailure);
+    await Promise.all(pipes.map((p) => sameFailure(p.ready, failure)));
+    f.calls[0].resolve({}); f.calls[1].reject(new Error('late optional rejection'));
+    await drain();
+    assert.equal(f.calls.length, 2, 'fatal device state prevents more native jobs');
+    assert.equal(f.gpu.stats.pipelinesCreated, 0);
+    assert.ok(pipes.every((p) => p.state === 'failed' && p.pipeline === null));
+    stopped(f);
+  });
+}
+
+await test('optional policy requires an explicit boolean', async (t) => {
+  const f = await fixture(t);
+  for (const optional of ['true', 1, null, {}]) {
+    assert.throws(() => pipe(f.gpu, 0, { optional }), /optional must be a boolean/);
+  }
+  liveAndDrained(f);
+});
+
+for (const kind of ['render', 'compute']) {
+  await test(`optional ${kind} synchronous native API throw remains local`, async (t) => {
+    const f = await fixture(t);
+    const cause = new Error('native API threw');
+    const api = kind === 'compute' ? 'createComputePipelineAsync' : 'createRenderPipelineAsync';
+    f.device[api] = () => { throw cause; };
+    const p = pipe(f.gpu, 0, { optional: true, kind });
+    await assert.rejects(p.ready, (e) => e instanceof OptionalShaderFailure && e.cause === cause);
+    liveAndDrained(f);
+  });
+}
+
+await test('optional idle failure releases idle scheduling and manual build remains usable', async (t) => {
+  const f = await fixture(t);
+  const pipes = [0, 1, 2].map((i) => pipe(f.gpu, i, { optional: true, build: 'idle' }));
+  const manual = pipe(f.gpu, 3, { build: 'manual' });
+  f.runIdle();
+  await drain();
+  f.calls[0].reject(new Error('optional idle failed'));
+  f.calls[1].resolve({});
+  await drain();
+  await assert.rejects(pipes[0].ready, OptionalShaderFailure);
+  assert.equal(f.idle.size, 1, 'next idle build scheduled after local rejection');
+  f.runIdle();
+  manual.build();
+  await drain();
+  for (const call of f.calls.slice(2)) call.resolve({});
+  await Promise.all([pipes[1].ready, pipes[2].ready, manual.ready]);
+  await f.gpu.settled();
+  assert.equal(f.gpu.pipelines.idleJobs.size, 0);
+  assert.equal(f.gpu.pipelines.idleQueue.length, 0);
+  liveAndDrained(f);
+});
+
+await test('optional descriptor/programmer errors are not optional shader failures', async (t) => {
+  const f = await fixture(t);
+  const p = pipe(f.gpu, 0, { optional: true, build: 'manual' });
+  const cause = new Error('descriptor failed before native API');
+  p.descriptor = () => { throw cause; };
+  p.build();
+  await drain();
+  await sameFailure(p.ready, f.gpu.failure);
+  assert.ok(f.gpu.failure instanceof GraphicsFailure);
+  assert.equal(f.gpu.failure.cause, cause);
+  assert.equal(f.calls.length, 0);
+  stopped(f);
+});
+
+for (const stage of ['module', 'layout', 'native']) {
+  await test(`a deliberate optional retry can recover from a transient ${stage} failure`, async (t) => {
+    let failing = true;
+    const f = await fixture(t, {
+      moduleError: () => stage === 'module' && failing ? { message: 'transient module error' } : null,
+      layout: () => stage === 'layout' && failing ? 'error' : 'ok',
+    });
+    const first = pipe(f.gpu, 700, { optional: true });
+    await drain();
+    if (stage === 'native') f.calls[0].reject(new Error('XPC_ERROR_CONNECTION_INTERRUPTED'));
+    await assert.rejects(first.ready, OptionalShaderFailure);
+    await drain();
+    liveAndDrained(f);
+    failing = false;
+    const retry = pipe(f.gpu, 700, { optional: true });
+    await drain();
+    f.calls.at(-1).resolve({});
+    await retry.ready;
+    const modules = f.counts.modules, layouts = f.counts.layouts, calls = f.calls.length;
+    await pipe(f.gpu, 700, { optional: true }).ready;
+    assert.equal(f.counts.modules, modules, 'successful modules remain cached');
+    assert.equal(f.counts.layouts, layouts, 'successful layouts remain cached');
+    assert.equal(f.calls.length, calls, 'successful retry pipeline remains cached');
+    assert.equal(modules, stage === 'module' ? 2 : 1);
+    assert.equal(layouts, stage === 'layout' ? 2 : 1);
+    liveAndDrained(f);
+  });
+}

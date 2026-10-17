@@ -32,7 +32,7 @@ deriver.recordEMA(gpu.frame, { sourceGroup, header: { src: 1, origin: [8, 0, 4] 
 deriver.recordSpatial(gpu.frame, { sourceGroup, header: { src: 1, origin: [8, 0, 4] }, smoothing: 0.75 });
 assert.deepEqual(events, ['fieldEma', 'fieldBlur', 'fieldBlur', 'fieldFinal', 'fieldBoost0', 'fieldBoost', 'fieldBoost', 'fieldPeak']);
 const dispatches = gpu.trace.filter((e) => e.kernel), weights = fieldWeights(0.75);
-assert.deepEqual(dispatches[0].opts.params, { emaS: CHANNELS.map((c) => c.ema), emaM: MEDIA.map((m) => m.ema), reset: true, aer: 2 });
+assert.deepEqual(dispatches[0].opts.params, { emaS: CHANNELS.map((c) => c.ema), emaM: MEDIA.map((m) => m.ema), reset: true, aer: 2, particleSplit: 0, world: 0 });
 assert.equal(dispatches[0].opts.bind[1], sourceGroup);
 assert.deepEqual(dispatches[1].opts.params, { w: weights.w, axis: 0 });
 assert.equal(dispatches[1].opts.header, undefined);
@@ -56,6 +56,11 @@ assert(sim.fieldReset && sim.giReset && sim.changedAll);
 gpu.trace.length = 0; box.updateDirty(); box.updateFields();
 assert.deepEqual(gpu.trace.filter((e) => e.kernel).map((e) => e.name), ['age', 'dirty', 'dirtyArgs', ...events.slice(0, 8)]);
 assert.equal(sim.fieldReset, false); assert.equal(box.frameNo, 1);
+gpu.trace.length = 0;
+assert.equal(box.setParticleSplit(true),true);box.updateFields();
+for (const e of gpu.trace.filter(e=>e.kernel && (e.name==='fieldEma'||e.name.startsWith('fieldBoost')))) {
+  assert.equal(e.opts.params.particleSplit,1);assert.equal(e.opts.params.world,0);
+}
 await box.prepare('shift', 'fieldMax', 'brickBits');
 assert(box.passes.fieldShift && box.passes.fieldMax && box.passes.brickShift && box.passes.giShift);
 const sharedTmpB = box.tmpB; box.dispose(); assert(sharedTmpB.destroyed);

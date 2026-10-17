@@ -10,10 +10,19 @@
 // bind groups are shared across pipelines and made once per grid. Shader
 // modules are cached by source text and pipelines by module, entry points,
 // layouts, constants and targets, so a rebuilt grid of the same size reuses
-// every pipeline. A pipeline that fails stops graphics with
-// `GPU shader failed: <name>.` and the compiler's messages (B9).
+// every pipeline. Unless explicitly optional, a failed pipeline stops graphics
+// with `GPU shader failed: <name>.` and the compiler's messages (B9).
 
 import { shaderFailure, GraphicsFailure } from './errors.js';
+
+/** An explicitly optional shader failed without stopping the shared GPU. */
+export class OptionalShaderFailure extends Error {
+  /** @param {string} message @param {{ cause?: unknown }} [options] */
+  constructor(message, options) {
+    super(message, options);
+    this.name = 'OptionalShaderFailure';
+  }
+}
 
 /** GPUShaderStage's bits, importable where there is no WebGPU (Node tools, generators). */
 export const STAGE = Object.freeze({ VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 });
@@ -70,6 +79,9 @@ export class PipelineCache {
   constructor(gpu) {
     this.gpu = gpu;
     this.modules = new Map();
+    // Keep the default module() API/cache intact, but never share failure policy.
+    this.optionalModules = new Map();
+    this.moduleValidations = new WeakMap();
     this.layouts = new Map();
     this.pipelines = new Map();
     this.pending = new Set();
@@ -93,69 +105,95 @@ export class PipelineCache {
     else this.pipes.add(pipe);
   }
 
-  // Diagnostics must not delay stopping graphics: getCompilationInfo can hang,
+  // Diagnostics must not delay settling a failure: getCompilationInfo can hang,
   // too. Enrich the same failure object if the browser eventually answers.
-  shaderFailed(name, module, error) {
-    if (this.failure) return this.failure;
-    const failure = new GraphicsFailure(`GPU shader failed: ${name}.\n${error?.message ?? String(error)}`, { cause: error });
-    this.gpu.fail(failure);
+  shaderFailed(name, module, error, optional = false) {
+    if (this.failure || this.gpu.failure) return this.failure || this.gpu.failure;
+    const Failure = optional ? OptionalShaderFailure : GraphicsFailure;
+    const failure = new Failure(`GPU shader failed: ${name}.\n${error?.message ?? String(error)}`, { cause: error });
+    if (!optional) this.gpu.fail(failure);
     shaderFailure(name, module, error).then((detail) => { failure.message = detail.message; }, () => {});
-    return this.failure || failure;
+    return this.failure || this.gpu.failure || failure;
   }
 
-  /** The module for this source text (cached). */
-  module(code, label) {
+  /** The module for this source text (cached separately by failure policy). */
+  module(code, label, optional = false) {
     this.check();
-    let m = this.modules.get(code);
+    const modules = optional ? this.optionalModules : this.modules;
+    let m = modules.get(code);
     if (!m) {
       const device = this.gpu.device;
-      device.pushErrorScope('validation');
+      let scoped = false, validation;
       try {
+        device.pushErrorScope('validation');
+        scoped = true;
         m = device.createShaderModule({ label, code });
+        scoped = false;
+        validation = device.popErrorScope();
       } catch (error) {
         // Always balance the scope, even if a fake/lost device throws.
-        Promise.resolve(device.popErrorScope()).catch(() => {});
-        throw this.shaderFailed(label, m, error);
+        if (scoped) {
+          try { Promise.resolve(device.popErrorScope()).catch(() => {}); } catch { /* already lost */ }
+        }
+        throw this.shaderFailed(label, m, error, optional);
       }
       const module = m;
-      Promise.resolve(device.popErrorScope()).then((error) => {
-        if (error && !this.failure) this.shaderFailed(label, module, error);
-      }, (error) => { if (!this.failure) this.shaderFailed(label, module, error); });
-      this.modules.set(code, m);
+      const checked = Promise.resolve(validation).then((error) => {
+        this.check();
+        if (error) throw error;
+      }).catch((error) => { throw this.shaderFailed(label, module, error, optional); });
+      // Direct module() callers still receive a GPUShaderModule, not a promise.
+      checked.catch(() => {
+        if (optional && modules.get(code) === module) modules.delete(code);
+      });
+      this.moduleValidations.set(m, checked);
+      modules.set(code, m);
     }
     return m;
   }
 
   // Explicit layouts preserve the bind-group ABI. The active job's deadline
   // includes this scope: some drivers never answer popErrorScope().
-  async pipelineLayout(name, groups) {
+  async pipelineLayout(name, groups, optional = false, module) {
     this.check();
-    const key = groups.map(idOf).join(',');
+    const key = `${optional}|${groups.map(idOf).join(',')}`;
     let p = this.layouts.get(key);
     if (!p) {
-      const device = this.gpu.device;
-      device.pushErrorScope('validation');
-      let layout;
-      try {
-        layout = device.createPipelineLayout({ label: `${name} layout`, bindGroupLayouts: groups });
-      } catch (error) {
-        Promise.resolve(device.popErrorScope()).catch(() => {});
-        throw error;
-      }
-      p = Promise.resolve(device.popErrorScope()).then((error) => {
-        this.check();
-        if (error) throw new GraphicsFailure(`GPU shader failed: ${name}.\nPipeline layout: ${error.message}`);
-        return layout;
-      });
+      p = (async () => {
+        const device = this.gpu.device;
+        let scoped = false;
+        try {
+          device.pushErrorScope('validation');
+          scoped = true;
+          const layout = device.createPipelineLayout({ label: `${name} layout`, bindGroupLayouts: groups });
+          scoped = false;
+          const error = await device.popErrorScope();
+          this.check();
+          if (error) {
+            if (optional) throw error;
+            throw new GraphicsFailure(`GPU shader failed: ${name}.\nPipeline layout: ${error.message}`, { cause: error });
+          }
+          return layout;
+        } catch (error) {
+          if (scoped) {
+            try { Promise.resolve(device.popErrorScope()).catch(() => {}); } catch { /* already lost */ }
+          }
+          if (!optional && error instanceof GraphicsFailure) throw error;
+          throw this.shaderFailed(name, module, error, optional);
+        }
+      })();
       this.layouts.set(key, p);
+      if (optional) p.catch(() => {
+        if (this.layouts.get(key) === p) this.layouts.delete(key);
+      });
     }
     return p;
   }
 
   /** Creates (or reuses) a pipeline; every native build goes through pump(). */
-  pipeline(kind, name, key, groups, module, descriptor) {
-    if (this.failure) return this.rejected(this.failure);
-    const full = `${kind}|${idOf(module)}|${groups.map(idOf).join(',')}|${key}`;
+  pipeline(kind, name, key, groups, module, descriptor, optional = false) {
+    if (this.failure || this.gpu.failure) return this.rejected(this.failure || this.gpu.failure);
+    const full = `${optional}|${kind}|${idOf(module)}|${groups.map(idOf).join(',')}|${key}`;
     const cached = this.pipelines.get(full);
     if (cached) return cached;
     let resolve, reject;
@@ -163,11 +201,11 @@ export class PipelineCache {
     let settle;
     // Public failure cannot cancel a native compilation already in the driver.
     p.settled = new Promise(resolve => { settle = resolve; });
-    const job = { kind, name, full, groups, module, descriptor, p, resolve, reject, settle, work: null, done: false, timer: null };
+    const job = { kind, name, full, groups, module, descriptor, optional, p, resolve, reject, settle, work: null, done: false, timer: null };
     this.gpu.stats.pipelinesPending++;
     this.pending.add(p);
     this.pipelines.set(full, p);
-    p.catch(() => {}); // gpu.fail reports it; awaiting callers still see it
+    p.catch(() => {}); // awaiting callers still see optional and fatal failures
     this.queue.push(job);
     this.pump();
     return p;
@@ -199,7 +237,7 @@ export class PipelineCache {
   }
 
   pump() {
-    while (!this.failure && this.running < PIPELINE_CONCURRENCY && this.queue.length) {
+    while (!this.failure && !this.gpu.failure && this.running < PIPELINE_CONCURRENCY && this.queue.length) {
       const job = this.queue.shift();
       this.active.add(job);
       this.running = this.active.size;
@@ -212,18 +250,28 @@ export class PipelineCache {
       }, PIPELINE_BUDGET_MS);
       job.work = Promise.resolve().then(async () => {
         this.check();
-        const layout = await this.pipelineLayout(job.name, job.groups);
+        await this.moduleValidations.get(job.module);
+        this.check();
+        const layout = await this.pipelineLayout(job.name, job.groups, job.optional, job.module);
         this.check();
         const d = { label: job.name, layout, ...job.descriptor(layout) };
         this.check();
-        return job.kind === 'compute' ? this.gpu.device.createComputePipelineAsync(d) : this.gpu.device.createRenderPipelineAsync(d);
+        try {
+          return await (job.kind === 'compute' ? this.gpu.device.createComputePipelineAsync(d) : this.gpu.device.createRenderPipelineAsync(d));
+        } catch (error) {
+          if (!job.optional && error instanceof GraphicsFailure) throw error;
+          throw this.shaderFailed(job.name, job.module, error, job.optional);
+        }
       }).then((pipeline) => {
         if (job.done || this.failure) return;
         this.finish(job, null, pipeline);
         this.pump();
       }, (error) => {
         if (job.done || this.failure) return;
-        if (error instanceof GraphicsFailure) this.gpu.fail(error);
+        if (error instanceof OptionalShaderFailure && job.optional && !this.gpu.failure) {
+          this.finish(job, error);
+          this.pump();
+        } else if (job.optional || error instanceof GraphicsFailure) this.gpu.fail(error);
         else this.shaderFailed(job.name, job.module, error);
       });
       job.work.then(job.settle, job.settle);
@@ -303,11 +351,13 @@ function groupsFor(gpu, layouts = []) {
 class Pipe {
   constructor(gpu, desc, kind) {
     if (!desc?.name) throw new Error(`gpu.${kind === 'compute' ? 'kernel' : 'renderPipeline'}: a name is required`);
+    if (desc.optional !== undefined && typeof desc.optional !== 'boolean') throw new TypeError(`${desc.name}: optional must be a boolean`);
     if (typeof desc.code !== 'string') throw new Error(`${desc.name}: code must be a WGSL string`);
     this.gpu = gpu;
     this.kind = kind;
     this.name = desc.name;
     this.desc = desc;
+    this.optional = desc.optional === true;
     this.params = desc.params ?? null;
     this.groups = groupsFor(gpu, desc.layouts);
     this.pipeline = null;
@@ -336,8 +386,8 @@ class Pipe {
     try {
       this.gpu.pipelines.check();
       this.state = 'pending';
-      const module = this.gpu.pipelines.module(this.desc.code, this.name);
-      const compilation = this.gpu.pipelines.pipeline(this.kind, this.name, this.key(), this.groups, module, () => this.descriptor(module));
+      const module = this.gpu.pipelines.module(this.desc.code, this.name, this.optional);
+      const compilation = this.gpu.pipelines.pipeline(this.kind, this.name, this.key(), this.groups, module, () => this.descriptor(module), this.optional);
       this._compilationSettled = compilation.settled;
       this._started = compilation
         .then((p) => {
@@ -349,7 +399,7 @@ class Pipe {
           this._settle.resolve(this);
         }).catch((e) => this.cancel(e));
     } catch (e) {
-      this.cancel(this.gpu.fail(e));
+      this.cancel(this.optional && e instanceof OptionalShaderFailure ? e : this.gpu.fail(e));
     }
     return this.ready;
   }
@@ -391,7 +441,8 @@ export class Kernel extends Pipe {
   /**
    * @param {object} gpu
    * @param {{ name: string, code: string, entry?: string, layouts?: GPUBindGroupLayout[], params?: object,
-   *   constants?: Record<string, number>, workgroupSize?: number[], build?: 'now' | 'idle' | 'manual' }} desc
+   *   constants?: Record<string, number>, workgroupSize?: number[], build?: 'now' | 'idle' | 'manual', optional?: boolean }} desc
+   *   optional: true isolates attributed shader failures, not device loss or timeout.
    *   build: 'now' starts at once (boot and a mode just entered), 'idle' queues it
    *   behind PIPELINE_CONCURRENCY, 'manual' waits for build()
    */
@@ -457,7 +508,8 @@ export class RenderPipe extends Pipe {
    *   vertex?: { entry?: string, buffers?: GPUVertexBufferLayout[] },
    *   fragment?: { entry?: string, targets: GPUColorTargetState[] } | null,
    *   primitive?: GPUPrimitiveState, depthStencil?: GPUDepthStencilState, multisample?: GPUMultisampleState,
-   *   constants?: Record<string, number>, build?: 'now' | 'idle' | 'manual' }} desc
+   *   constants?: Record<string, number>, build?: 'now' | 'idle' | 'manual', optional?: boolean }} desc
+   *   optional: true isolates attributed shader failures, not device loss or timeout.
    */
   constructor(gpu, desc) {
     super(gpu, desc, 'render');

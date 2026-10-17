@@ -16,7 +16,7 @@ import { farLayout, WORLD_SIZE } from '../src/shaders/farShared.js';
 import { WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { cozyFixture, SWATCHES } from './cozy-fixture.mjs';
 import { E } from '../src/elements.js';
-import { VIEWS, viewKey, viewForMode, isMaterialView, materialStyleForView } from '../src/views.js';
+import { VIEWS, viewKey, viewForMode, isMaterialView, isTestView, materialStyleForView } from '../src/views.js';
 import { GAMEMODES, mapByKey, mapOf, modeByKey, resolveMode } from '../src/maps.js';
 import { createDetailGate, gateVariants } from '../src/gfx/detailGate.js';
 import { detailDefaults } from '../src/gfx/detail.js';
@@ -178,18 +178,20 @@ assert.equal(warmer.calls[2].view, 'cozy', 'the authored map exception warms Coz
 assert.equal(warmer.calls[2].curved, false, 'Sandbox does not inherit the Animal Crossing presentation effect');
 assert.match(preload, /view = views\.viewKey\(settings\.view\)/);
 assert.match(preload, /render\.warmChecks\(view, settings, \{ fallback, curved \}\)/);
-assert.doesNotMatch(app, /materialStyle|Material style/, 'separate preference and drawer control removed');
+assert.doesNotMatch(app.match(/const DEFAULTS = \{[\s\S]*?\n\};/)[0], /materialStyle/, 'separate preference removed');
+assert.doesNotMatch(app, /key:\s*['"]materialStyle['"]|['"]Material style['"]/, 'separate drawer control removed; internal frozen view state is allowed');
 assert.match(app.slice(app.indexOf('const PERSIST'), app.indexOf('const STORE')), /'view'/);
 assert.match(app, /view: 0, camSpeed/, 'Realistic remains the default');
 const runtime = app.slice(app.indexOf('function setView(id)'), app.indexOf('// The blocks renderer on or off'));
 for (const text of ['settings.view = id', 'post.reset()', 'meshFrames.drop()', 'sim.resetGI()', 'detailGate.setView(id)', 'save()']) assert.ok(runtime.includes(text), text);
-const selectView = new Function('settings', 'VIEWS', 'isMaterialView', `
+const selectView = new Function('settings', 'VIEWS', 'isMaterialView', 'isTestView', `
+  const hybridUnavailable = false, worldMode = null;
   const post = { reset() {} }, meshFrames = { drop() {} }, sim = { resetGI() {} }, detailGate = { setView() {} };
   const setBlocks = () => {}, plainView = () => false, prepareGI = () => {}, viewKeyOf = () => 'cozy';
-  const blocksOn = true, settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {} }, save = () => {};
+  const blocksOn = true, settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {}, toast() {} }, save = () => {}, ensureHybrid = () => {};
   ${runtime}
   return setView;
-`)(modeSettings, VIEWS, isMaterialView);
+`)(modeSettings, VIEWS, isMaterialView, isTestView);
 for (const view of VIEWS) {
   selectView(view.id);
   await startMode('sandbox');
@@ -206,12 +208,12 @@ for (const file of ['src/app.js', 'src/wire/world.js', 'src/wire/weather.js']) {
 }
 
 const detail = detailDefaults();
-for (const shader of ['realistic', 'cozy']) {
+for (const shader of ['realistic', 'cozy', 'test']) {
   assert(isMaterialView(shader));
   const warm = warmChecks(shader, detail);
   assert.deepEqual(warm[0].detail, gateVariants(detail).base);
   assert(warm.some(e => e.name === 'shadow'));
-  assert(giChecks().every(e => e.warm({ view: shader })), 'both material views preload GI');
+  assert(giChecks().every(e => e.warm({ view: shader })), 'lit material views preload GI');
   assert(warmChecks(shader, detail, { curved: true })[0].curved);
 }
 assert(!isMaterialView('plain'));
