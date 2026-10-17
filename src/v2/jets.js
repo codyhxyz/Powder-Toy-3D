@@ -1,5 +1,6 @@
 import { fold } from '../gpu/kernels.js';
 import { jetsWGSL, JETS_LAYOUT, JET_STAGES, DynamicParams } from '../shaders/v2/jets.js';
+import { ARGS2 } from '../shaders/v2.js';
 
 /** Exact accepted-face diversion. Shares native48B records and canonical free
  * slots with NativeDynamics; owns no particle pool or legacy conversion. */
@@ -20,11 +21,12 @@ export class NativeJets {
   advance(tick,substep) {
     if(!this.isReady || this.disposed) throw new Error('NativeJets not ready');
     const o=this.owner;
+    // Candidates and spawns: the cells of the liquid list's bricks. Counts keep every brick's prefix.
     for(const stage of JET_STAGES) {
-      const count=stage==='allocate'?1:Math.ceil((stage==='count'?o.g.nbricks:o.g.slots)/64);
+      const count=stage==='allocate'?[1,1,1]:stage==='count'?fold(Math.ceil(o.g.nbricks/64)):{indirect:o.args,offset:ARGS2.LIQUID*4};
       if(stage==='allocate') o.dynamics._prepareAllocation(tick,{substep});
       const k=this.kernels[stage];
-      k.dispatch(o.gpu.frame,fold(count),{bind:[o.nativeDynamics.group,this.group],header:o.sim.header(),params:o.dynamics._params(tick,{substep})});
+      k.dispatch(o.gpu.frame,count,{bind:[o.nativeDynamics.group,this.group],header:o.sim.header(),params:o.dynamics._params(tick,{substep})});
       o.sim.onPass?.(k.name,{kind:'compute',gpuMs:null});
     }
     o.dynamics._work();
