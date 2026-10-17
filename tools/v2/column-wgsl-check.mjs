@@ -108,6 +108,32 @@ test('a run whose support goes falls from rest: its face lanes are never read as
   assert.equal(w.totals().mass, t0.mass);
 });
 
+test('loop edges: a pour across the seam is the same pour translated, cell for cell, mass exact', () => {
+  const scene = (x0) => {
+    const w = new ColumnGrid(32, 16, 8, { edge: 2 });
+    for (let x = 0; x < 32; x++) for (let z = 0; z < 8; z++) w.set(x, 0, z, E.WALL);
+    // a 12-wide block from x0 (wrapped), with a fast face over a step to pour at the seam too
+    for (let y = 1; y < 9; y++) for (let z = 0; z < 8; z++) for (let k = 0; k < 12; k++) w.set((x0 + k) % 32, y, z, E.WATER, { T: 10 + y + k });
+    for (let z = 0; z < 8; z++) for (let k = 14; k < 18; k++) w.set((x0 + k) % 32, 1, z, E.WALL);
+    const t0 = w.totals();
+    for (let t = 0; t < 150; t++) w.step();
+    const t1 = w.totals();
+    assert.equal(t1.mass, t0.mass); assert.equal(t1.energy, t0.energy);
+    return w;
+  };
+  const seam = scene(26), plain = scene(10);   // 26 + 12 wraps; both start brick-aligned modulo 16
+  let moved = false;
+  for (let y = 0; y < 16; y++) for (let z = 0; z < 8; z++) for (let x = 0; x < 32; x++) {
+    // (foam's Monahan decay phase is hashed by slot, so the age byte is the one positional field)
+    const strip = (c) => [c[0] & 0x00ffffff, c[1], c[2], c[3]];
+    const a = seam.cores[seam.at((x + 16) % 32, y, z)], b = plain.cores[plain.at(x, y, z)];
+    assert.deepEqual(strip(a), strip(b), `cell ${x},${y},${z}`);
+    if (x === 31 && L.cid(a) === E.WATER) moved = true;
+  }
+  assert.deepEqual(seam.parts.length, plain.parts.length);
+  void moved;
+});
+
 test('migration: unpacked columns settle packed, compressed open water rises, all exactly', () => {
   const w = new ColumnGrid(8, 16, 8);
   walls(w);

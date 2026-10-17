@@ -67,6 +67,8 @@ export class ColumnGrid {
     this.summary = new Uint32Array(this.nb);
     this.jetBricks = new Uint8Array(this.nb); this.parts = []; this.poolCap = 65536; this.landed = 0;
     this.P = { tick: 0, gravMode, gravity, edge, pairAxis: 0, pairParity: 0 };
+    // loop edges (P.edge 2): mEdge wraps x and z (and y) around the box
+    this.loop = edge === 2;
     this.ctx = this.#context();
   }
   at(x, y, z) { return x + this.nx * (z + this.nz * y); }
@@ -186,7 +188,7 @@ export class ColumnGrid {
       },
       noteEvents: () => {},
       colUpwind: (xa, za, xb, zb, y, axis, v) => {
-        const d = axis === 0 ? [1, 0] : [0, 1], p = v > 0 ? [xa - d[0], y, za - d[1]] : [xb, y, zb];
+        const d = axis === 0 ? [1, 0] : [0, 1], [ux, uz] = v > 0 ? g.edge([xa - d[0], za - d[1]]) : [xb, zb], p = [ux, y, uz];
         if (p[0] < 0 || p[2] < 0 || p[0] >= g.nx || p[2] >= g.nz) return 0;
         const c = g.cores[slotOf(p)], k = CLS[L.cid(c)];
         if (k !== C.AIR && k !== C.LIQUID) return 0;
@@ -210,7 +212,7 @@ export class ColumnGrid {
         let eta = ctx.colEta(rs);
         const fresh = ctx.colAwake(xs, zs);
         for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const nx = xs + dx, nz = zs + dz;
+          const [nx, nz] = g.edge([xs + dx, zs + dz]);
           if (nx < 0 || nz < 0 || nx >= g.nx || nz >= g.nz || (nx === xt && nz === zt) || !(fresh || ctx.colAwake(nx, nz))) continue;
           for (let k = 0; ; k++) {
             const r = ctx.colRec(nx, k, nz);
@@ -240,7 +242,7 @@ export class ColumnGrid {
     for (let y = 0; y < by; y++) for (let z = 0; z < bz; z++) for (let x = 0; x < bx; x++) {
       let near = false;
       for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
-        const X = x + dx, Y = y + dy, Z = z + dz;
+        const [X, Y, Z] = this.loop ? [(x + dx + bx) % bx, (y + dy + by) % by, (z + dz + bz) % bz] : [x + dx, y + dy, z + dz];
         if (X >= 0 && Y >= 0 && Z >= 0 && X < bx && Y < by && Z < bz && this.busyIn[X + bx * (Z + bz * Y)]) near = true;
       }
       const b = x + bx * (z + bz * y);
@@ -258,7 +260,7 @@ export class ColumnGrid {
       for (const [x, z] of cols) {
         this.ctx.colScan(x, z, true);
         for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const n = [x + dx, z + dz];
+          const n = this.edge([x + dx, z + dz]);
           if (this.#inside(n) && !this.ctx.colAwake(n[0], n[1])) this.ctx.colScan(n[0], n[1], false);
         }
       }
@@ -280,7 +282,7 @@ export class ColumnGrid {
   // v2pairs main (columns.js v2PairsKernel), on a grid without loop edges
   #pairThread(x, z, axis, stage, parity) {
     const ctx = this.ctx, asleep = ([a, b]) => this.#inside([a, b]) && !ctx.colAwake(a, b);
-    const ends = (ax) => { const d = ax === 0 ? [1, 0] : [0, 1]; return [[x + d[0], z + d[1]], [x - d[0], z - d[1]]]; };
+    const ends = (ax) => { const d = ax === 0 ? [1, 0] : [0, 1]; return [this.edge([x + d[0], z + d[1]]), this.edge([x - d[0], z - d[1]])]; };
     if (stage === 0) {
       for (const ax of [0, 2]) {
         const [next, prev] = ends(ax);
@@ -294,6 +296,8 @@ export class ColumnGrid {
     else if (asleep(prev)) ctx.colTransfers(prev[0], prev[1], x, z, axis);
   }
   #inside([x, z]) { return x >= 0 && z >= 0 && x < this.nx && z < this.nz; }
+  // mEdge on a column: wrapped under loop edges, else as it is
+  edge([x, z]) { return this.loop ? [((x % this.nx) + this.nx) % this.nx, ((z % this.nz) + this.nz) % this.nz] : [x, z]; }
 
   // jets.js's count, allocate and spawn: every marked cell of a marked brick, brick by brick, becomes a
   // particle carrying the whole cell but its air carrier; refused (pool or format), it loses its mark
@@ -332,11 +336,11 @@ export class ColumnGrid {
       let landed = false;
       for (let k = 0; k < steps && !landed; k++) {
         const nx = q.x + q.vx * dt / steps, ny = q.y + q.vy * dt / steps, nz = q.z + q.vz * dt / steps;
-        const hx = Math.floor(nx), hy = Math.floor(ny), hz = Math.floor(nz), he = cell(hx, hy, hz), be = cell(hx, hy - 1, hz);
+        const [hx, hz] = this.edge([Math.floor(nx), Math.floor(nz)]), hy = Math.floor(ny), he = cell(hx, hy, hz), be = cell(hx, hy - 1, hz);
         const held = kind(be) === C.SOLID || kind(be) === C.POWDER || (kind(be) === C.LIQUID && L.cFill(be) >= L.FULL);
         const thin = kind(he) === C.LIQUID && (L.cFill(he) < L.FULL / 2 || !held);
         if (kind(he) !== C.AIR && !thin) landed = this.#land(q);
-        else { q.x = nx; q.y = ny; q.z = nz; }
+        else { q.x = nx; q.y = ny; q.z = nz; if (this.loop) { q.x = ((q.x % this.nx) + this.nx) % this.nx; q.z = ((q.z % this.nz) + this.nz) % this.nz; } }
       }
       if (!landed) keep.push(q);
     }
