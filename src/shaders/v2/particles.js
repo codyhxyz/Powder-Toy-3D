@@ -454,10 +454,16 @@ export function particlesWGSL(g, nativeHead, stage) {
     var mass=0.0; var offset=vec3f(0); var velocity=vec3f(0); var count=0u;
     // Only _hold records holdCOM, after this tick's clear: an empty pool skips the scan.
     let scanned=select(D_CAP,0u,dPoolEmpty());
-    for (var i=0u;i<scanned;i++) {
-      if (!slotLive(i)) { continue; } let p=particles[i]; if (p.id==0u || atomicLoad(&control[D_HELD+i])!=P.sequence) { continue; }
-      let m=dMass(p.c0&255u)*dAmount(dMaterial(p));
-      mass+=m; offset+=(p.position-P.center)*m; velocity+=p.velocity*m; count++;
+    // Ascending slots, as the f32 sums require, but only those with a live bit: a word at a time,
+    // its set bits lowest first (cost ∝ live particles, not the pool).
+    for (var w=0u;w<scanned/32u;w++) {
+      var live=atomicLoad(&act2[V2_PLIVE+w]);
+      while (live!=0u) {
+        let i=w*32u+firstTrailingBit(live); live&=live-1u;
+        let p=particles[i]; if (p.id==0u || atomicLoad(&control[D_HELD+i])!=P.sequence) { continue; }
+        let m=dMass(p.c0&255u)*dAmount(dMaterial(p));
+        mass+=m; offset+=(p.position-P.center)*m; velocity+=p.velocity*m; count++;
+      }
     }
     var center=P.center; if (mass>0.0) { center+=offset/mass; velocity/=mass; }
     for(var a=0u;a<3u;a++) { atomicStore(&control[8u+a],bitcast<u32>(center[a])); atomicStore(&control[12u+a],bitcast<u32>(velocity[a])); }

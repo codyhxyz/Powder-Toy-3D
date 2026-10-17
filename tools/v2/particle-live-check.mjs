@@ -73,4 +73,21 @@ for (const [what, variant] of [['a spawn without noteLive', { silentSpawn: true 
   let broke = false; for (let seed = 1; seed <= 50 && !broke; seed++) broke = !run(seed, variant);
   assert.ok(broke, `${what} must break the live bits`);
 }
+// holdCOM: the held set's mass-weighted sums in ascending slot order, now visiting only set bits
+// (lowest first) instead of every slot: the same f32 additions in the same order.
+const fr = Math.fround;
+function com(slots, bits, viaBits) {
+  let mass = 0, x = 0, count = 0;
+  const visit = i => { const p = slots[i]; if (!p) return; mass = fr(mass + p.m); x = fr(x + fr(p.x * p.m)); count++; };
+  if (!viaBits) { for (let i = 0; i < slots.length; i++) if (bits[i >> 5] >>> (i & 31) & 1) visit(i); }
+  else for (let w = 0; w < bits.length; w++) { let live = bits[w]; while (live) { const i = w * 32 + (31 - Math.clz32(live & -live)); live = (live & (live - 1)) >>> 0; visit(i); } }
+  return [mass, x, count].join();
+}
+for (let seed = 1; seed <= 20; seed++) {
+  const random = rng(seed), slots = Array.from({ length: 1024 }, () => random() < 0.1 ? { m: fr(random() * 3), x: fr(random() * 100 - 50) } : null);
+  const bits = new Uint32Array(32); slots.forEach((p, i) => { if (p || random() < 0.05) bits[i >> 5] |= 1 << (i & 31); });
+  assert.equal(com(slots, bits, true), com(slots, bits, false), `holdCOM order changed: seed ${seed}`);
+}
+const holdCOM = particlesWGSL(g, nativeDynamicsHead, 'holdCOM');
+assert.match(holdCOM, /let i=w\*32u\+firstTrailingBit\(live\); live&=live-1u;/);
 console.log(`particle live bits: ${spawns} spawns noted and ${updates} live-slot stores audited across ${modules.length} modules; 50 models exact; 3 red variants caught`);
