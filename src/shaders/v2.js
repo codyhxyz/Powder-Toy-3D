@@ -1444,7 +1444,8 @@ ${v2Head(g, { state: false, marks: true })}
 ${MAIN} {
   let b = foldThread(wg, nwg, li);
   if (b >= NBRICKS) { return; }
-  if (atomicExchange(&act2[V2_VISIBLE + b], 0u) == 0u) { return; }
+  // Read first: a clean brick's word stays untouched (no write of the zero it holds).
+  if (atomicLoad(&act2[V2_VISIBLE + b]) == 0u || atomicExchange(&act2[V2_VISIBLE + b], 0u) == 0u) { return; }
   atomicOr(&marks[MARK_DERIVED + (b >> 5u)], 1u << (b & 31u));
   atomicStore(&marks[MARK_FOAMS + b], 1u);
 }
