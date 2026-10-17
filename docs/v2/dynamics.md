@@ -73,10 +73,16 @@ solid cells. Global demand normalization bounds damage/KE to half the scaled
 chemical energy; one quarter drives air, one quarter is reserved for products.
 `BLAST_SCALE=0.001`. Existing TPT hardness is interpreted as gameplay toughness
 in J; density uses the existing element density table (100kg/m³ per unit).
-Default batch8, configurable1..64, bounds recording work. For1000 immediately
-eligible sources, ideal service latency is125 ticks (2.0833s) at default,
-16 ticks (0.2667s) at64; real chains/blocked capacity can take longer. This is
-NOT a claim of dense-explosion timing parity. Empty batch work and allocation preparation are indirect-dispatched at zero workgroups. Only the first batch scans events directly: a later batch selects through the previous batch's grid args, because after a batch without work nothing changed and a new scan would find the same nothing. That previous finish resets the selection words (`tools/v2/blast-batch-check.mjs`). Active full-grid plans remain a performance risk requiring parent-owned GPU evidence. Plans and claims each cost16B/cell, below128MiB/binding at6.3M cells.
+One batch a tick serves up to blastBatch charges together (default 8, configurable 1..64): select marks the
+serviceable ones in per-brick masks, a one-thread pick takes the lowest slots, and each charge keeps its own
+shielded energy and its own normalisation (plan sums every charge's share per brick; normalize scales each to its
+own budget; damage adds the scaled shares; finish serves the charges in slot order). The Powder Toy's rule holds:
+a chain spreads one step a frame, so a charge set off this tick (its request comes from the next block pass)
+waits for the next tick. For 1000 immediately eligible sources the service latency is 125 ticks (2.0833 s) at the
+default, 16 ticks at 64, as before; the rest stay intact and busy. A lone charge is planned exactly as the old
+single batch did. External blasts keep their single-charge plan/sum/normalize/damagePlan/finish
+(`tools/v2/blast-batch-check.mjs`, `tools/v2/external-blast-check.mjs`). Several charges cost two shielding walks
+a cell instead of one. Empty work is indirect-dispatched at zero workgroups. Active full-grid plans remain a performance risk requiring parent-owned GPU evidence. Plans and claims each cost16B/cell, below128MiB/binding at6.3M cells.
 
 Air is32B per4³ brick in two copies. Eight60Hz substeps use50m/s acoustic
 Rusanov exchange plus bounded conservative upwind/diffusive heat/gas transport.

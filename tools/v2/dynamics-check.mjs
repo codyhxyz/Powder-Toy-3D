@@ -104,7 +104,9 @@ test('driver records real pipeline families, batch8, and separate draw capabilit
   const {owner,calls,buffers}=mockOwner(),d=new NativeDynamics(owner); await d.ready;
   assert.equal(d.capabilities.physicsReady,true); assert.equal(d.capabilities.drawReady,false);
   d.advanceParticles(1); d.consumeMaterialEvents(1); d.advanceAir(1);
-  assert.equal(calls.filter(c=>c.name==='v2blasts_finish').length,8);
+  // one batch a tick serves up to blastBatch (8) charges together
+  assert.equal(calls.filter(c=>c.name==='v2blasts_finishCharges').length,1);
+  assert.equal(calls.filter(c=>c.name==='v2blasts_pick').length,1); assert.equal(d.blastBatch,8);
   assert.equal(calls.filter(c=>c.name==='v2air_step').length,8);
   assert.equal(calls.filter(c=>c.name==='v2particles_integrate').length,1);
   assert.equal(d.renderState.particleBytes,48); assert.equal(d.renderState.particles,d.particles);
@@ -274,8 +276,8 @@ test('DUST/SING pressure-derived energy reproduces prescribed targets and vacuum
 test('unused blast batches indirect-dispatch zero work with separate nonaliased args',async()=>{
   const {owner,calls}=mockOwner(),d=new NativeDynamics(owner);await d.ready;d.consumeMaterialEvents(1);
   // workArgs writes each batch's dispatch args itself (the lists layout), no copy
-  assert.equal(calls.filter(c=>c.name==='v2lists_workArgs').length,8);
-  for(const c of calls.filter(c=>['v2blasts_plan','v2blasts_apply','v2blasts_allocate','v2blasts_children'].includes(c.name))) {
+  assert.equal(calls.filter(c=>c.name==='v2lists_workArgs').length,1);
+  for(const c of calls.filter(c=>['v2blasts_planCharges','v2blasts_apply','v2blasts_allocate','v2blasts_children'].includes(c.name))) {
     assert.equal(c.size.indirect,d.dispatchArgs);assert.notEqual(c.size.indirect,d.control);
   }
   assert.equal(d.plans.size,owner.g.slots*16);

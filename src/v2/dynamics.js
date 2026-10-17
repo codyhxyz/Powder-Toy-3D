@@ -127,7 +127,7 @@ export class NativeDynamics {
     this.kernels={};
     for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES],['lists',(g,_head,name)=>listsStageWGSL(g,name),LISTS_STAGES]]) {
       for (const stage of stages) {
-        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','externalBegin','externalGate'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage)) || family==='lists';
+        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','externalBegin','externalGate','pick','normalizeCharges','finishCharges'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage)) || family==='lists';
         const name=`v2${family}_${stage}`;
         this.kernels[`${family}/${stage}`]=gpu.kernel({name,build:'idle',code:generate(g,owner.nativeDynamics.head,stage),
           params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
@@ -227,28 +227,24 @@ export class NativeDynamics {
   consumeMaterialEvents(tick) {
     // GPU completion, not CPU readback latency, decides exactly-once execution.
     for(const [slot,r] of this.externalBlasts) this._recordExternalBlast(slot,r,tick);
-    // Deterministic bounded batches, not an unbounded GPU event loop. At the
-    // default the service rate is 480 charges/s; remaining sources stay intact
-    // and busy. Dense chains are explicitly latency-limited, not called parity.
+    // One batch a tick serves up to blastBatch charges together (480 charges/s at the default 8),
+    // the lowest serviceable slots; the rest stay intact and busy for the next tick. The Powder
+    // Toy's rule: an explosion's chain spreads one step a frame, so a charge another one sets off
+    // this tick (its request comes from the next block pass) waits for the next batch.
     const size=offset=>({indirect:this.dispatchArgs,offset});
     this._record('blasts','reset',1,tick);
-    // The first select reads only bricks noted as holding a request (noteEvents).
+    // Select reads only bricks noted as holding a request (noteEvents); pick takes the charges.
     this._record('blasts','eventList',Math.ceil(this.g.nbricks/64),tick); this._publish('events',tick);
-    for (let n=0;n<this.blastBatch;n++) {
-      // After a batch without work nothing has changed, so selecting again
-      // finds exactly what it found. Later batches select through the last
-      // batch's grid args (zero without work); that finish reset the selection.
-      this._record('blasts','select',n?size(0):this._listed('eventCells'),tick,n?{}:{substep:1});
-      // The args go straight into the separate INDIRECT buffer (the lists layout binds it only
-      // there): never a read_write binding of the indirect source of the same dispatch.
-      this._record('lists','workArgs',1,tick);
-      this._record('blasts','plan',size(0),tick);
-      this._record('blasts','sum',size(16),tick);
-      this._record('blasts','normalize',size(32),tick);
-      this._record('blasts','damagePlan',size(0),tick);
-      this._allocate(tick,{},true);
-      this._record('blasts','finish',size(32),tick,{substep:this.blastBatch-1-n}); // batches still to select
-    }
+    this._record('blasts','select',this._listed('eventCells'),tick);
+    this._record('blasts','pick',1,tick,{substep:this.blastBatch});
+    // The args go straight into the separate INDIRECT buffer (the lists layout binds it only
+    // there): never a read_write binding of the indirect source of the same dispatch.
+    this._record('lists','workArgs',1,tick);
+    this._record('blasts','planCharges',size(0),tick);
+    this._record('blasts','normalizeCharges',size(32),tick);
+    this._record('blasts','damageCharges',size(0),tick);
+    this._allocate(tick,{},true);
+    this._record('blasts','finishCharges',size(32),tick);
   }
   // A brick list's builders have run: publish its length and dispatch args (blasts.js listArgs).
   _publish(name,tick) { this._record('lists',name,1,tick); }

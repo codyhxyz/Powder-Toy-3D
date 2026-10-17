@@ -41,6 +41,14 @@ assert.deepEqual(selection.end,[9,4,4]);assert.deepEqual(selection.grow,[2,1,0])
 assert.deepEqual(selection.lo,[1,1,1]);assert.deepEqual(selection.hi,[6,6,6]);
 const stages=commands.slice(0,16).map(c=>c.name.split('_')[1]);
 assert.deepEqual(stages,['externalBegin','workArgs','plan','externalParticlePlan','sum','normalize','damagePlan','count','freeCount','freeScan','freeScatter','allocate','externalGate','externalParticleApply','apply','finish']);
+// One batch a tick: the external blast keeps its single-charge stages (mode 14), then the grid's
+// charges run once through the charge stages, never the external ones.
+commands.length=0;d.consumeMaterialEvents(1);
+const tickStages=commands.map(c=>c.name.split('_')[1]),firstBatch=tickStages.indexOf('reset');
+assert.ok(firstBatch>0 && tickStages.slice(0,firstBatch).includes('plan') && tickStages.slice(0,firstBatch).includes('finish'));
+assert.deepEqual(tickStages.slice(firstBatch).filter(s=>['plan','sum','normalize','damagePlan','finish'].includes(s)),[],'the batch never runs the external stages');
+assert.deepEqual(tickStages.slice(firstBatch).filter(s=>s.endsWith('Charges')||s==='pick'),['pick','planCharges','normalizeCharges','damageCharges','finishCharges']);
+assert.ok(commands.slice(0,firstBatch).filter(c=>['plan','normalize','finish'].includes(c.name.split('_')[1])).every(c=>c.p.mode===14),'the external stages run in mode 14 only');
 // Completion flags stay GPU-authoritative across repeated recordings, snapshots,
 // and restores. No readback is required between a blast and the next tick.
 const flags=new Uint32Array(d.control.bytes);flags[externalBlastBase(g)]=1;

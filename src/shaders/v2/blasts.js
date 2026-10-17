@@ -39,10 +39,18 @@ export const COUPLE_ARGS = 64;
 // use, writes the list's dispatch args at LIST_ARGS and zeroes count. Then the air reach
 // words, one a brick (the substeps' start set and its dilation), all past controlWords.
 export const LIST_NAMES = ['source', 'step', 'wind', 'events'];
+// The charges one batch serves at most (DYNAMICS_ABI.blastBatchMax): its per-charge words.
+export const CHARGES_MAX = 64;
+// After the reach words, the one batch a tick's charge words: select's serviceable masks (two a
+// brick), pick's charges in slot order and their count, normalize's scales, and plan's per-charge
+// per-brick energy sums (charge-major).
 export function listControl(g) {
   let at = coupleArgsBase(g) + COUPLE_ARGS_WORDS; const lists = {};
   for (const name of LIST_NAMES) { lists[name] = at; at += 2 + g.nbricks; }
-  return { lists, reach: at, words: at + g.nbricks };
+  const reach = at; at += g.nbricks;
+  const charges = { masks: at, slots: at + 2 * g.nbricks, count: at + 2 * g.nbricks + CHARGES_MAX,
+    scales: at + 2 * g.nbricks + CHARGES_MAX + 1, sums: at + 2 * g.nbricks + 2 * CHARGES_MAX + 1 };
+  return { lists, reach, charges, words: charges.sums + CHARGES_MAX * g.nbricks };
 }
 // Dispatch args (bytes): a thread a listed brick, or a workgroup a listed brick (cells).
 export const LIST_ARGS = { source: COUPLE_ARGS + 32, step: COUPLE_ARGS + 48, wind: COUPLE_ARGS + 64, windCells: COUPLE_ARGS + 80, eventCells: COUPLE_ARGS + 96 };
@@ -56,6 +64,12 @@ export function listWGSL(g) {
   return /* wgsl */ `
 ${LIST_NAMES.map(n => `const LIST_${n.toUpperCase()}: u32 = ${L.lists[n]}u;`).join('\n')}
 const A_REACH: u32 = ${L.reach}u;
+const D_SERVE_MASKS: u32 = ${L.charges.masks}u;
+const D_CHARGES: u32 = ${L.charges.slots}u;
+const D_CHARGE_COUNT: u32 = ${L.charges.count}u;
+const D_CHARGE_SCALES: u32 = ${L.charges.scales}u;
+const D_CHARGE_SUMS: u32 = ${L.charges.sums}u;
+const D_CHARGES_MAX: u32 = ${CHARGES_MAX}u;
 // The i-th brick of a list, or D_NONE past the length its listArgs published.
 fn dListed(list: u32, i: u32) -> u32 { if (i >= atomicLoad(&control[list])) { return D_NONE; } return atomicLoad(&control[list + 2u + i]); }
 fn dAppend(list: u32, b: u32) { atomicStore(&control[list + 2u + atomicAdd(&control[list + 1u], 1u)], b); }
@@ -236,6 +250,14 @@ fn dExternalShieldedPosition(endpoint: vec3f) -> bool {
   return true;
 }
 fn dExternalShielded(destination: vec3i) -> bool { return dExternalShieldedPosition(vec3f(destination)+0.5); }
+// A charge's received share at p (direction times J, or zero): plan's expressions for a grid source.
+fn dChargeShare(source: u32, p: vec3i) -> vec3f {
+  let sourcePos=cellOf(source); let explosionEnergy=dChargeEnergy(loadMaterial(source)); let delta=vec3f(p-sourcePos);
+  let weight=1.0; let r2 = max(0.25,dot(delta,delta));
+  let received = explosionEnergy * 0.5 * weight / (12.566370614359*r2);
+  if (received >= 0.01 && !dShielded(sourcePos,p)) { return normalize(delta+vec3f(0.000001))*received; }
+  return vec3f(0);
+}
 fn dPressureAt(p0: vec3i) -> f32 { let p=mEdge(p0); if (!inGrid(p) || !mAirPressure()) { return 0.0; } return air[brickOfCell(p)].vp.w; }
 // A superset of the bricks where couplePlan can flag anything. The powder-fall
 // and jet-less lip rules read cells, so their modes keep every brick. Otherwise
@@ -305,14 +327,41 @@ export function blastsWGSL(g,nativeHead,stage) {
   if (stage === 'eventList') return h + main64(`
     if (t < D_BRICKS && atomicLoad(&act2[V2_EVENTS+t]) != 0u) { dAppend(LIST_EVENTS,t); }
   `);
-  // P.substep 1: the first batch, a workgroup a listed brick; 0: every slot.
+  // A workgroup a brick of the event list: the census, and each serviceable charge into its brick's mask.
   if (stage === 'select') return h + main64(`
     // A brick never noted as holding a request holds none (noteEvents): one word, not 64.
     if (t >= D_SLOTS || atomicLoad(&act2[V2_EVENTS+t/64u]) == 0u || events[t] == 0u) { return; }
     atomicAdd(&control[2],1u); dWake(cellOf(t)); if ((events[t]&4u)!=0u) { atomicAdd(&control[17],1u); }
     let m=loadMaterial(t);
-    if ((events[t]&1u) != 0u && (dChargeEnergy(m)>0.0 || dEvaporates(m)) && energyFits(dProduct(m),dProductEnergy(m))) { atomicMin(&control[3],t); }
-  `,'select(dThread(wg,nwg,li),dListedCell(LIST_EVENTS,wg,nwg,li),P.substep==1u)');
+    if ((events[t]&1u) != 0u && (dChargeEnergy(m)>0.0 || dEvaporates(m)) && energyFits(dProduct(m),dProductEnergy(m))) {
+      atomicOr(&control[D_SERVE_MASKS+2u*(t/64u)+((t&63u)>>5u)],1u<<(t&31u));
+    }
+  `,'dListedCell(LIST_EVENTS,wg,nwg,li)');
+  // One thread: the batch's charges, the P.substep lowest serviceable slots (the mask bits of the
+  // event list's bricks, which it clears), in slot order. One batch a tick serves them together:
+  // The Powder Toy's rule, a chain spreads one step a frame. A charge another one sets off this tick
+  // (contact requests come from the next tick's block pass) waits for the next tick's batch.
+  if (stage === 'pick') return h + main1(`
+    // The Powder Toy: a chain spreads one step a frame; a charge set off this tick waits for the next.
+    var picked: array<u32, ${CHARGES_MAX}>; var n=0u; let most=min(P.substep,D_CHARGES_MAX);
+    let bricks=atomicLoad(&control[LIST_EVENTS]);
+    for (var i=0u;i<bricks;i++) {
+      let b=atomicLoad(&control[LIST_EVENTS+2u+i]);
+      for (var w=0u;w<2u;w++) {
+        var bits=atomicExchange(&control[D_SERVE_MASKS+2u*b+w],0u);
+        while (bits!=0u) {
+          let s=b*64u+w*32u+firstTrailingBit(bits); bits&=bits-1u;
+          var j=n;
+          if (n<most) { n++; } else if (most==0u || s>=picked[most-1u]) { continue; } else { j=most-1u; }
+          while (j>0u && picked[j-1u]>s) { picked[j]=picked[j-1u]; j--; }
+          picked[j]=s;
+        }
+      }
+    }
+    for (var k=0u;k<n;k++) { atomicStore(&control[D_CHARGES+k],picked[k]); }
+    atomicStore(&control[D_CHARGE_COUNT],n);
+    atomicStore(&control[3],select(D_NONE,picked[0],n>0u)); // the batch has work (workArgs)
+  `);
   if (stage === 'plan') return h + main64(/* wgsl */ `
     if (t >= D_SLOTS) { return; }
     let p = cellOf(t); let m = loadMaterial(t); let id = cid(m.core); let k = cls(id);
@@ -336,6 +385,110 @@ export function blastsWGSL(g,nativeHead,stage) {
       }
     }
     plans[t] = plan;
+  `);
+  // ---- One batch a tick (dynamics.js consumeMaterialEvents): the picked charges planned together.
+  // Each charge keeps its own shielded energy and its own normalisation: plan sums every charge's
+  // received energy per brick (a workgroup a brick, lanes in slot order: sum's order), normalize
+  // scales each charge to its own budget, damage adds the charges' scaled shares. One charge is
+  // today's plan, sum, normalize and damagePlan bit for bit (tools/v2/blast-batch-check.mjs).
+  // External blasts (mode 14) keep plan/sum/normalize/damagePlan/finish.
+  if (stage === 'planCharges') return h + `
+var<workgroup> wgEnergy: array<f32,64>;
+var<workgroup> wgCharges: u32;
+` + main64(/* wgsl */ `
+    // the charge count, uniform across the workgroup for the barriers below
+    if (li==0u) { wgCharges=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX); }
+    let n=workgroupUniformLoad(&wgCharges); let live=t<D_SLOTS;
+    var plan=DPlan(vec3f(0),0u); var p=vec3i(0); var eligible=false;
+    if (live) {
+      p=cellOf(t); let id=cid(loadMaterial(t).core);
+      if ((events[t]&4u)!=0u) { plan.flags = 9u; } // neutron request has its own immutable source
+      eligible=id != 0u && (events[t]&1u)==0u;
+      for (var k=0u;k<n;k++) { if (atomicLoad(&control[D_CHARGES+k])==t) { plan.flags |= 4u; eligible=false; } }
+    }
+    for (var k=0u;k<n;k++) {
+      var velocity=vec3f(0);
+      if (eligible) { velocity=dChargeShare(atomicLoad(&control[D_CHARGES+k]),p); }
+      if (k==0u) { plan.velocity=velocity; }
+      wgEnergy[li]=length(velocity); workgroupBarrier();
+      if (li==0u) {
+        var energy=0.0; for (var lane=0u;lane<64u;lane++) { energy += wgEnergy[lane]; }
+        atomicStore(&control[D_CHARGE_SUMS+k*D_BRICKS+t/64u],bitcast<u32>(energy));
+      }
+      workgroupBarrier();
+    }
+    // One charge: damage reads its share from the plan, as before; more: damage adds them up.
+    if (live) { if (n!=1u) { plan.velocity=vec3f(0); } plans[t] = plan; }
+  `);
+  if (stage === 'normalizeCharges') return h + main1(`
+    let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
+    for (var k=0u;k<n;k++) {
+      var sum=0.0; for (var b=0u;b<D_BRICKS;b++) { sum += bitcast<f32>(atomicLoad(&control[D_CHARGE_SUMS+k*D_BRICKS+b])); }
+      let budget=dChargeEnergy(loadMaterial(atomicLoad(&control[D_CHARGES+k])));
+      atomicStore(&control[D_CHARGE_SCALES+k],bitcast<u32>(min(1.0,budget*0.5/max(sum,0.000001))));
+    }
+    // control[6] is the first charge's scale (one charge: normalize's), 1 without one
+    atomicStore(&control[6],select(bitcast<u32>(1.0),atomicLoad(&control[D_CHARGE_SCALES]),n>0u));
+  `);
+  if (stage === 'damageCharges') return h + main64(`
+    if (t >= D_SLOTS) { return; } var plan=plans[t]; let m=loadMaterial(t); let id=cid(m.core); let k=cls(id);
+    let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
+    var energy=length(plan.velocity)*bitcast<f32>(atomicLoad(&control[6]));
+    var combined=vec3f(0);
+    if (n>1u && id!=0u && (events[t]&1u)==0u && (plan.flags&4u)==0u) {
+      // several charges: each one's share at its own scale, summed (energy) and as a direction
+      energy=0.0; let p=cellOf(t);
+      for (var c=0u;c<n;c++) {
+        let share=dChargeShare(atomicLoad(&control[D_CHARGES+c]),p)*bitcast<f32>(atomicLoad(&control[D_CHARGE_SCALES+c]));
+        energy+=length(share); combined+=share;
+      }
+    }
+    var kinetic=energy;
+    if (energy>0.0 && k==1u) {
+      var broken=m; broken.core.x=(broken.core.x&0xffffff00u)|u32(max(0,dBreak(id)));
+      if (dBreak(id)>=0 && energy>=dToughness(id) && energyFits(broken,energyOf(m))) { plan.flags|=2u|(u32(dBreak(id))<<8u); kinetic-=dToughness(id); }
+      else { kinetic=0.0; }
+    }
+    if (kinetic>0.0 && (k==2u || k==3u || (plan.flags&2u)!=0u) && (plan.flags&8u)==0u) {
+      plan.flags|=1u;
+      {
+        var incoming=vec3f(0);
+        if(k==2u) { incoming=vec3f(0,-fallVelocity(m.core),0); }
+        if(k==3u) {incoming=vec3f(unpack2x16float(m.core.z),unpack2x16float(m.core.w&65535u).x)*${f(180*CELL_M/65536)};}
+        let into=select(id,(plan.flags>>8u)&255u,(plan.flags&2u)!=0u);
+        let direction=select(normalize(plan.velocity),normalize(combined+vec3f(0.000001)),n>1u);
+        plan.velocity=dBudgetVelocity(incoming,direction,kinetic,dMass(into)*dAmount(m));
+        plan.flags|=32u; // Absolute budgeted velocity already includes incoming motion.
+      }
+    }
+    plans[t]=plan;
+  `);
+  // One thread: every picked charge in slot order, as finish served one: products, ledger, air.
+  if (stage === 'finishCharges') return h + main1(/* wgsl */ `
+    let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
+    for (var c=0u;c<n;c++) {
+      let s=atomicLoad(&control[D_CHARGES+c]);
+      let before=loadMaterial(s);
+      if ((dChargeEnergy(before)<=0.0 && !dEvaporates(before)) || (events[s]&1u)==0u) { continue; }
+      let product=dProduct(before); let productEnergy=dProductEnergy(before);
+      // select() gated this BEFORE any damage: retry cannot duplicate a blast.
+      if (!energyFits(product,productEnergy)) { continue; }
+      let after=withEnergy(product,productEnergy);
+      if (dEvaporates(before)) {
+        let removed=energySub(energyOf(before),productEnergy);
+        if ((removed.y&0x80000000u)==0u) { noteEnergySink(cellOf(s),removed); }
+        else { noteEnergySource(cellOf(s),energyNeg(removed)); }
+        storeMaterial(s,before,after); events[s]&=~1u; dWake(cellOf(s)); continue;
+      }
+      noteEnergySource(cellOf(s),energySub(productEnergy,energyOf(before)));
+      storeMaterial(s,before,after);
+      let b=brickOfCell(cellOf(s)); var a=air[b];
+      // 1/4 blast energy enters acoustic compression, 1/2 bounded damage/KE,
+      // 1/4 hot products. Pressure energy p² V / (2 rho c²), not an arbitrary kick.
+      let addedP2=2.0*${f(AIR.rho*AIR.sound**2)}*dChargeEnergy(before)*0.25/${f(AIR.edge**3)};
+      if(mAirPressure()) { a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2); } a.thermal.z=0.0; air[b]=a; noteAir(b);
+      events[s]&=~1u; dWake(cellOf(s));
+    }
   `);
   if(stage==='externalParticlePlan') return h+main64(`
     if(t>=D_CAP) { return; }let base=D_EXTERNAL_PARTICLES+t*4u;
@@ -683,7 +836,7 @@ var<workgroup> childCounts: array<u32,64>;
   `);
   throw new Error(`Unknown blast stage ${stage}`);
 }
-export const BLAST_STAGES = [...ALLOCATION_STAGES,'eventList','reset','select','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply'];
+export const BLAST_STAGES = [...ALLOCATION_STAGES,'eventList','reset','select','pick','planCharges','normalizeCharges','damageCharges','finishCharges','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply'];
 
 export const WGSL_CHECK = BLAST_STAGES.map(stage => ({ name: `v2blasts_${stage}`, kind: 'compute',
   code: g => blastsWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,BLASTS_LAYOUT,'EMPTY'], tool: true }));
