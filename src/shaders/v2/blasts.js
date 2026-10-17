@@ -216,10 +216,9 @@ fn dProductEnergy(m: Material) -> vec2u {
 }
 fn dShielded(source: vec3i, destination: vec3i) -> bool {
   let delta = vec3f(destination-source);
-  var cell = source; var next = vec3f(1e30); var stride = vec3f(1e30); let step = vec3i(sign(delta)); var crossed=0u;
+  var cell = source; var next = vec3f(1e30); var stride = vec3f(1e30); let step = vec3i(sign(delta));
   for (var a = 0u; a < 3u; a++) { if (delta[a] != 0.0) { stride[a] = abs(1.0/delta[a]); next[a] = 0.5*stride[a]; } }
-  loop {
-    if (crossed>D_SWEEP_MAX) { return true; } crossed++; // non-progress is shielded, never transparent
+  for (var crossed = 0u; crossed <= D_SWEEP_MAX; crossed++) {
     var a = 0u; if (next.y < next.x) { a = 1u; } if (next.z < next[a]) { a = 2u; }
     if (next[a] > 1.0) { return false; }
     cell[a] += step[a]; next[a] += stride[a];
@@ -227,7 +226,7 @@ fn dShielded(source: vec3i, destination: vec3i) -> bool {
     if (!inGrid(cell)) { return true; }
     if (cls(cid(loadMaterial(slotOf(cell)).core)) == 1u) { return true; }
   }
-  return false;
+  return true;   // non-progress is shielded, never transparent (the loop's old unreachable tail: Tint warned)
 }
 // Exact external source position (not the voxel centre) for DDA shielding.
 fn dExternalShieldedPosition(endpoint: vec3f) -> bool {
