@@ -21,7 +21,7 @@
 // and glows: matter whose default temperature is past 600 °C, a little above
 // the Draper point where hot matter starts to glow visibly, 525 °C). Lava is a
 // liquid that today's table draws opaque; v2 draws it as opaque faces too
-// (docs/v2.md 3.5), so here it is emissive. The face rules are faces.mjs's:
+// (the rejected renderer's 3.5, `git show a700d765:docs/v2.md`), so here it is emissive. The face rules are faces.mjs's:
 // opaque against non-opaque; liquid against air, gas or translucent;
 // translucent against air, gas or liquid. The box floor counts as opaque, the
 // open sides and top as air. The header's face counts are what the page's own
