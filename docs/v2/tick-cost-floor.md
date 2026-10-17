@@ -20,7 +20,8 @@ A tick costs `A·N + B·awake + C·changed + D·bricks + E·pool + F`.
 | E', pool while particles live | 12 MB (+6.8 MB a preparation) | same | **8 KB of live bits + ~200 B a live particle a stage** | every pool sweep reads only slots whose live bit is set |
 | B, per awake brick column (powder fall) | ~32 KB (16 lanes × 128 cells) | same | **~1 KB a brick that is not all air or all still liquid** | the column pass skips summarised bricks |
 | B, other awake cells | ~100 B outside water (estimate) | unchanged | unchanged | support, block |
-| F, dispatches a tick | 149 outside water (+32 old water) | 159 outside water | **172 with the column water** (137 indirect; ~135 zero-size when idle), 18 copies, 1 clear | 115 are the blast batches and the first select's list |
+| F, dispatches a tick | 149 outside water (+32 old water) | 159 outside water | **173 with the column water** (137 indirect; ~135 zero-size when idle) | 115 are the blast batches and the first select's list |
+| F, passes a tick | — | 12 compute passes, split by 18 copies and 1 clear | **1 compute pass, 0 copies, 0 clears** | indirect args are written in place by one-thread stages in the lists layout |
 
 What each round did:
 - Round 1: noteState's per-brick word tells the air source which bricks' faces and vacuum to read again. A
@@ -33,6 +34,11 @@ What each round did:
     retirements and the pool preparation, set everywhere by restores. Every sweep skips a slot whose bit is clear.
   - holdCOM walks the live-bit words, in the same ascending order.
   - The powder column pass skips bricks the column water's summaries call all air or all still liquid.
+- Round 4: one compute pass a tick. workArgs and coupleGate write their indirect args directly (the lists
+  layout binds the args buffer only there), the jets publish their gate's args with a one-thread stage, and
+  the block compaction's finalize restarts its count instead of a clear. On the M5 the idle tick's ~1 ms was
+  the near-empty dispatches in the passes these splits opened (v2blasts_plan 0.266 ms, v2blasts_freeCount
+  0.261 ms): the GPU A/B of this commit shows how much of it was the splits.
 
 The proofs and their red variants: `tools/v2/air-cache-check.mjs`, `air-reach-check.mjs`, `activity-list-check.mjs`,
 `allocation-check.mjs`, `blast-batch-check.mjs`, `particle-live-check.mjs` and `column-skip-check.mjs`.
@@ -62,16 +68,20 @@ bound ≈ 0. Scene 1 is ~2× V1 by bytes. The lab scene drops from ~90 mW to ~38
 
 ## The remaining gap, ranked (scene 1, this branch)
 
-1. **Fixed dispatches: 172 a tick, ~135 zero-size when idle.** The batches are 104 of them: 8 batches of 13 indirect
-   stages, plus a workArgs each. The one-batch rule (The Powder Toy: an explosion's chain spreads one step a frame)
+1. **Fixed dispatches: 173 a tick, ~135 zero-size when idle**, now in one compute pass. The batches are 104 of
+   them: 8 batches of 13 indirect stages, plus a workArgs each. The one-batch rule (The Powder Toy: an explosion's chain spreads one step a frame)
    at an unchanged service rate means one batch serving up to 8 charges at once. That needs multi-source blast
    planning: per-source shielded energy and per-source normalisation in one plan pass, a pick of the 8 lowest
    serviceable slots, and a finish over all of them. It is a behaviour change, so it gets its own commit and
    checks. Not done here; then merge the one-thread stages it leaves (listArgs ×4, actArgs, coupleGate, args).
    The cost of one zero-size indirect dispatch on the GPU is still unmeasured.
-2. **All-brick scans of small words, 2.0 MB (3.6 mW).** Push the lists instead: append on a word's 0 → 1 change in
-   markBusy, noteState, noteEvents and noteAir; dilate reach by scattering over the start list; drive cols and
-   invalidate from lists. Each turns a hot store into an exchange-and-branch, so it needs GPU timing to pay.
+2. **All-brick scans of small words, 2.0 MB (3.6 mW).** Pushing the lists (append on a word's 0 → 1 change in
+   markBusy, noteState, noteEvents and noteAir) does not clearly pay, so it is not done. The scans it would
+   remove read ~2 MB in ~3,000 workgroups a tick, about 15–20 µs at the M5's bandwidth. The stores it would slow
+   are the hottest in the engine. markBusy and noteState run once per moved or possible cell, from a few
+   hundred a tick (one grain) to 10⁵–10⁶ (a busy lab), and an exchange makes each one wait on the returned
+   word and then branch. At 1 ns extra per store, 10⁵ stores already cost ~100 µs, more than the scans. It
+   would win only in near-idle scenes, where certified idle already records nothing.
 3. **A noted brick re-reads its 64 cores.** Skipped: an incremental update changes the f32 summation order.
 4. **The column pass still reads ground bricks it cannot change** (no summary for "solid or supported powder at
    rest"). A "settled" summary from support would extend the skip; the support pass would have to prove it.
