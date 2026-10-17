@@ -15,7 +15,7 @@ import {E,ELEMENTS} from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
 import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY} from '../../src/v2/dynamics-reference.js';
 const floatBits=v=>{const b=new ArrayBuffer(4);new Float32Array(b)[0]=v;return new Uint32Array(b)[0];};
-const g={nx:32,ny:32,nz:32,nbx:8,nby:8,nbz:8,nbricks:512,slots:32768,windowed:false},NONE=0xffffffff,S=Object.fromEntries(['integrate','elect','impact','deposit'].map(s=>[s,particlesWGSL(g,nativeDynamicsHead,s)]));
+const g={nx:32,ny:32,nz:32,nbx:8,nby:8,nbz:8,nbricks:512,slots:32768,windowed:false},NONE=0xffffffff,S=Object.fromEntries(['clear','integrate','elect','impact','deposit'].map(s=>[s,particlesWGSL(g,nativeDynamicsHead,s)]));
 const add=(a,b)=>a.map((v,i)=>v+(Array.isArray(b)?b[i]:b)),sub=(a,b)=>a.map((v,i)=>v-b[i]),mul=(a,b)=>a.map(v=>v*b),vec=(...v)=>v.flat().length===1?Array(3).fill(v[0]):v.flat(),copy=structuredClone;
 function body(s,name) {
   const at=s.indexOf(`fn ${name}(`);assert.ok(at>=0,name);
@@ -67,18 +67,21 @@ return s.replace(/\/\/[^\n]*/g,'')
   .replace(/\b(let|const) (\w+): (u32|i32|f32|bool)/g,'$1 $2')
   .replace(/&(control|claims)\[([^\]]+)\]/g,'[$1,$2]')
   .replace(/\.xyz\b/g,'.slice(0,3)')
-  .replace(/\.(x|y|z|w)\b/g,(_,v)=>`[${'xyzw'.indexOf(v)}]`);}
+  .replace(/\.(x|y|z|w)\b/g,(_,v)=>`[${'xyzw'.indexOf(v)}]`)
+  .replace(/~(\w+(?:\.\w+|\[[^\]]+\])*)/g,'(~$1>>>0)');}
 const compile=(ctx,s,name,args=[])=>new Function('ctx',...args,`with(ctx){${syntax(body(s,name))}}`).bind(null,ctx);
 // Foundation material/energy codecs are production CPU helpers. Only storage,
 // vectors, bitcasts, atomics and syntax are adapted; no landing/election model.
 function fixture({mode=0, edge=0, windowed=false,
   position=[18.796724319458008,.5098053216934204,15.5], velocity=[0,0,0],
   material=L.makeMaterial(E.SAND), held=0, gravity=GRAVITY}={}) {
-  const world=new Map(), claims=new Uint32Array(g.slots*4).fill(NONE);
+  const world=new Map(), claims=new Uint32Array(g.slots*4);
   const control=new Uint32Array(heldBase(g)+65536), flight=[];
   const particles=[{position:[...position],velocity:[...velocity],id:2487686783,
     c0:material.core[0],tail:[...material.core.slice(1),material.bank>>>0]}];
-  control[heldBase(g)]=held;
+  control[heldBase(g)]=held;control[0]=particles.length;
+  // As if clear saw the live packet; tick() runs the real clear stage.
+  flight[65536]={destination:[particles.length,0,0,0],effect:[0,0,0,0]};
   const slotOf=p=>p[0]+32*p[1]+1024*p[2];
   const cellOf=s=>[s%32,Math.floor(s/32)%32,Math.floor(s/1024)];
   const ctx={...L,add,sub,mul,copy,vec3f:vec,vec3i:(...v)=>vec(...v).map(Math.trunc),
@@ -92,7 +95,7 @@ function fixture({mode=0, edge=0, windowed=false,
     fract:v=>v.map(x=>x-Math.floor(x)),normalize:v=>mul(v,1/Math.hypot(...v)),
     floatBits,floatBits3:v=>v.map(floatBits),
     P:{origin:[0,0,0],edge,tick:108,gravMode:mode,gravity},
-    D_CAP:65536,D_HELD:heldBase(g),D_NONE:NONE,D_PHOTON:254,D_NEUTRON:255,
+    D_CAP:65536,D_SWEEP:65536,D_HELD:heldBase(g),D_NONE:NONE,D_PHOTON:254,D_NEUTRON:255,
     D_G:GRAVITY,D_DT:DT,D_CELL:CELL_M,D_SWEEP_MAX:99,NX:32,NY:32,NZ:32,
     D_WINDOWED:windowed,FULLU:L.FULL,particles,flight,control,claims,air:[{vp:[0,0,0,0]}],
     DFlight:(destination,effect)=>({destination,effect}),
@@ -112,7 +115,7 @@ function fixture({mode=0, edge=0, windowed=false,
     storeMaterial:(s,b,a)=>world.set(s,copy(a)),
     loadMaterial:s=>copy(world.get(s)??L.makeMaterial(0)),loadCore:s=>ctx.loadMaterial(s).core,
     atomicLoad:([a,i])=>a[i],atomicAdd:([a,i],n)=>a[i]+=n,atomicSub:([a,i],n)=>a[i]-=n,
-    atomicMin:([a,i],n)=>a[i]=Math.min(a[i],n),
+    atomicMax:([a,i],n)=>a[i]=Math.max(a[i],n>>>0),atomicStore:([a,i],n)=>a[i]=n,
     atomicCompareExchangeWeak:([a,i],old,n)=>{
       if(a[i]!==old)return {exchanged:false};a[i]=n;return {exchanged:true};
     },
@@ -129,13 +132,15 @@ function fixture({mode=0, edge=0, windowed=false,
     ['dSameLiquid',['a','b']],
 ['dLiquidStreamPasses',['cell','incoming','resident']],
     ['dClaim',['s','kind','key']],
+['dFree',['s','kind']],
+['dPoolEmpty',[]],
 ['dWon',['s','kind','index']],
 ['dElect',['s','kind','index']],
   ])ctx[name]=compile(ctx,S.integrate,name,args);
   const stages=Object.fromEntries(Object.entries(S).map(([s,c])=>[s,compile(ctx,c,'main',['t'])]));
   return {ctx,world,particles,claims,flight,stages,set:(p,m)=>world.set(slotOf(p),copy(m)),
     tick:()=>{
-      claims.fill(NONE);control[0]=0;
+      stages.clear(0);
       for(const s of ['integrate','elect','impact','deposit'])
         for(let t=0;t<particles.length;t++)stages[s](t);
     }};
@@ -170,7 +175,7 @@ const wet=(fill=L.FULL,id=E.WATER,t=20,ct=0)=>L.makeMaterial(id,t,fill,ct);
 const at=(f,p)=>f.ctx.loadMaterial(f.ctx.slotOf(p));
 function preelect(f,p,kinetic=0) {
   const s=f.ctx.slotOf(p);f.flight[0]={destination:[NONE,s,1,0],effect:[kinetic,0,0,0]};
-  f.claims[s*4+3]=0; f.ctx.control[0]=1;return s;
+  f.claims[s*4+3]=1; f.ctx.control[0]=1;return s;
 }
 function unchangedRefusal(f,p) {
   const packet=copy(f.particles[0]),world=copy(f.world),live=f.ctx.control[0];
@@ -319,7 +324,7 @@ test('actual claim/election/impact/deposit: reversed invocation, key tie, loser 
     if(tie)f.ctx.dKey=()=>7;
     f.ctx.control[0]=0;
     for(const stage of ['integrate','elect','impact'])for(const t of order)f.stages[stage](t);
-    const s=f.ctx.slotOf([6,1,6]),winner=f.claims[s*4+3],loser=1-winner;
+    const s=f.ctx.slotOf([6,1,6]),winner=f.claims[s*4+3]-1,loser=1-winner;
     const expected=tie?0:(f.ctx.dKey(f.particles[0].id)<f.ctx.dKey(f.particles[1].id)?0:1);
     assert.equal(winner,expected);const retained=copy(f.particles[loser]);
     for(const t of order)f.stages.deposit(t);
@@ -366,4 +371,41 @@ test('minimum/full/compressed packets and exact MAX_FILL energy-bearing receiver
     assert.equal(f.particles[0].id,0);assert.equal(L.cFill(at(f,p).core),air?amount:L.MAX_FILL);
     assert.equal(L.energyOf(at(f,p)),L.energyOf(before)+L.packetOwnedEnergy(incoming));
   }
+});
+
+const packet=(m,id,position,velocity)=>({position,velocity,id,c0:m.core[0],tail:[...m.core.slice(1),m.bank>>>0]});
+const runTicks=(f,order,ticks,after=()=>{})=>{
+  for(let tick=0;tick<ticks;tick++) {
+    f.stages.clear(0);
+    for(const s of ['integrate','elect','impact','deposit']) for(const t of order) f.stages[s](t);
+    assert.ok(f.claims.every(v=>v===0),`tick ${tick}: every winner freed its claim words`);after(tick);
+  }
+};
+test('winners free every claim: fracture, contention and ties leave an empty table in any thread order',()=>{
+  // A fracture is not a landing, so impact itself frees the deposit claim it won.
+  const glass=fixture({position:[6.5,2.5,6.5],velocity:[0,-20,0]});
+  glass.set([6,1,6],L.makeMaterial(E.GLASS));glass.set([6,0,6],L.makeMaterial(E.STONE));
+  runTicks(glass,[0],1);assert.equal(L.cid(at(glass,[6,1,6]).core),E.SHARDS);assert.notEqual(glass.particles[0].id,0);
+  for(const tie of [false,true]) {
+    const run=reverse=>{
+      const f=fixture({material:wet(4096),position:[6.5,2.5,6.5],velocity:[0,-6,0]});if(tie)f.ctx.dKey=()=>7;
+      f.set([6,0,6],L.makeMaterial(E.STONE));f.set([7,0,6],L.makeMaterial(E.STONE));f.set([6,1,6],wet(L.FULL/2));
+      for(let i=1;i<16;i++) f.particles.push(packet(i%3?wet(1024*i):L.makeMaterial(E.SAND),1000+7919*i,
+        [6.2+(i%3)*.3,1.6+(i%5)*.4,6.2+(i%4)*.2],[(i%3)-1,-4-(i%4),0]));
+      f.ctx.control[0]=f.particles.length;let contested=0;
+      const order=[...f.particles.keys()];if(reverse) order.reverse();
+      runTicks(f,order,8,()=>{const s=order.map(t=>f.flight[t]?.destination[1]).filter(s=>s!==undefined&&s!==NONE);contested+=s.length-new Set(s).size;});
+      assert.ok(contested>0,'several packets claimed one receiver');
+      return {world:[...f.world].sort((a,b)=>a[0]-b[0]),particles:f.particles,live:f.ctx.control[0]};
+    };
+    assert.deepEqual(run(true),run(false));
+  }
+});
+
+test('an empty pool reads no packet record and writes no flight record',()=>{
+  const f=fixture();f.particles[0].id=0;f.ctx.control[0]=0;let reads=0;
+  const pool=f.particles;f.ctx.particles=new Proxy(pool,{get:(a,k)=>{if(/^\d+$/.test(k))reads++;return a[k];}});
+  const flight=copy(f.flight);runTicks(f,[0],2);
+  assert.equal(reads,0);assert.equal(f.flight[65536].destination[0],0);
+  f.flight[65536]=flight[65536];assert.deepEqual(f.flight,flight);
 });

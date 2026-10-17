@@ -191,8 +191,17 @@ fn dRecover(start: vec3i, local: vec3f, incoming: Material, kinetic: f32) -> u32
   }
   return D_NONE;
 }
-fn dClaim(s: u32, kind: u32, key: u32) { if (s != D_NONE) { atomicMin(&claims[s * 4u + kind * 2u], key); } }
-fn dWon(s: u32, kind: u32, index: u32) -> bool { return s != D_NONE && atomicLoad(&claims[s*4u+kind*2u+1u]) == index; }
+// Claim words are 0 when free, so a zeroed buffer is an empty table and no
+// per-cell clear runs. The key word holds ~key: atomicMax(~key) keeps the
+// minimum key. The election word holds index+1. Each (cell, kind) elects one
+// claimant, and that winner frees both words once it has read them (dFree).
+// flight[D_SWEEP] holds the live count that clear saw before its recount:
+// zero means every pool sweep of this tick has no slot to visit.
+const D_SWEEP: u32 = D_CAP;
+fn dPoolEmpty() -> bool { return flight[D_SWEEP].destination.x == 0u; }
+fn dClaim(s: u32, kind: u32, key: u32) { if (s != D_NONE) { atomicMax(&claims[s * 4u + kind * 2u], ~key); } }
+fn dWon(s: u32, kind: u32, index: u32) -> bool { return s != D_NONE && atomicLoad(&claims[s*4u+kind*2u+1u]) == index + 1u; }
+fn dFree(s: u32, kind: u32) { atomicStore(&claims[s*4u+kind*2u],0u); atomicStore(&claims[s*4u+kind*2u+1u],0u); }
 fn dBefore(a: DParticle,b: DParticle) -> bool {
   let ap=bitcast<vec3u>(a.position);let av=bitcast<vec3u>(a.velocity);
   let bp=bitcast<vec3u>(b.position);let bv=bitcast<vec3u>(b.velocity);
@@ -204,22 +213,24 @@ fn dElect(s: u32,kind: u32,index: u32) {
   let at=s*4u+kind*2u+1u;
   loop {
     let old=atomicLoad(&claims[at]);
-    if(old!=D_NONE && !dBefore(particles[index],particles[old])) { return; }
-    if(atomicCompareExchangeWeak(&claims[at],old,index).exchanged) { return; }
+    if(old!=0u && !dBefore(particles[index],particles[old-1u])) { return; }
+    if(atomicCompareExchangeWeak(&claims[at],old,index+1u).exchanged) { return; }
   }
 }
 `;
 }
 export function particlesWGSL(g, nativeHead, stage) {
   const h = head(g, nativeHead);
-  if (stage === 'clear') return h + main64(`
-    if (t < D_SLOTS * 4u) { atomicStore(&claims[t], D_NONE); }
-    if (t == 0u) { atomicStore(&control[0],0u); atomicStore(&control[18],0u); }
+  // control[0] counts live slots exactly (spawns add, retirements subtract,
+  // restore recounts); the particle renderer already gates on it.
+  if (stage === 'clear') return h + main1(`
+    flight[D_SWEEP] = DFlight(vec4u(atomicLoad(&control[0]),0u,0u,0u),vec4f(0));
+    atomicStore(&control[0],0u); atomicStore(&control[18],0u);
   `);
   if (stage === 'integrate') return h + main64(/* wgsl */ `
-    if (t >= D_CAP) { return; }
+    // Later stages read flight only for live slots, so dead slots skip it.
+    if (t >= D_CAP || dPoolEmpty() || particles[t].id == 0u) { return; }
     var particle = particles[t]; flight[t] = DFlight(vec4u(D_NONE,D_NONE,0u,0u),vec4f(0));
-    if (particle.id == 0u) { return; }
     atomicAdd(&control[0],1u);
     let local = dWrap(particle.position - vec3f(P.origin));
     // Test in float BEFORE the i32 conversion: high-speed outflow may exceed
@@ -334,15 +345,18 @@ export function particlesWGSL(g, nativeHead, stage) {
     if(atomicLoad(&control[D_HELD+t])!=0u) { flight[t].destination.y=D_NONE; } else { dClaim(deposit,1u,dKey(particle.id)); }
   `);
   if (stage === 'elect') return h + main64(`
-    if (t >= D_CAP || particles[t].id == 0u) { return; }
+    if (t >= D_CAP || dPoolEmpty() || particles[t].id == 0u) { return; }
     let f = flight[t];
     for (var kind = 0u; kind < 2u; kind++) { let s = f.destination[kind];
-      if (s != D_NONE && atomicLoad(&claims[s*4u+kind*2u]) == f.destination.w) { dElect(s,kind,t); }
+      if (s != D_NONE && atomicLoad(&claims[s*4u+kind*2u]) == ~f.destination.w) { dElect(s,kind,t); }
     }
   `);
+  // Impact reads only kind-0 election words and deposit only kind-1 words, so
+  // a winner may free its claim at once: every other claimant loses either way.
   if (stage === 'impact') return h + main64(/* wgsl */ `
-    if (t >= D_CAP || particles[t].id == 0u) { return; }
+    if (t >= D_CAP || dPoolEmpty() || particles[t].id == 0u) { return; }
     let f = flight[t]; let s = f.destination.x; if (!dWon(s,0u,t)) { return; }
+    dFree(s,0u);
     var p = particles[t]; let before = loadMaterial(s); var after = before;
     if (f.destination.z == 1u) {
       let id = cid(before.core); let cost = dToughness(id);
@@ -354,6 +368,7 @@ export function particlesWGSL(g, nativeHead, stage) {
         // Fracture spends KE, never manufactures heat. Stop at the first face;
         // remaining KE survives for the next swept segment.
         p.velocity *= sqrt(max(0.0,1.0-cost/max(f.effect.x,0.000001)));
+        if (dWon(f.destination.y,1u,t)) { dFree(f.destination.y,1u); } // deposit will not see it
         flight[t].destination.y=D_NONE; // fracture is not a landing: retain unspent KE
       } else { p.velocity = vec3f(0); }
     } else if (f.destination.z == 5u) {
@@ -411,8 +426,9 @@ export function particlesWGSL(g, nativeHead, stage) {
     storeMaterial(s,before,after); dWake(cellOf(s)); particles[t] = p;
   `);
   if (stage === 'deposit') return h + main64(`
-    if (t >= D_CAP || particles[t].id == 0u || atomicLoad(&control[D_HELD+t])!=0u) { return; }
+    if (t >= D_CAP || dPoolEmpty() || particles[t].id == 0u) { return; }
     let s = flight[t].destination.y; if (!dWon(s,1u,t)) { return; }
+    dFree(s,1u); if (atomicLoad(&control[D_HELD+t])!=0u) { return; }
     let before = loadMaterial(s);
     let admitted=dDeposit(before,dMaterial(particles[t]),flight[t].effect.x);
     if (!admitted.accepted) { return; }
@@ -436,7 +452,9 @@ export function particlesWGSL(g, nativeHead, stage) {
   `);
   if (stage === 'holdCOM') return h + main1(`
     var mass=0.0; var offset=vec3f(0); var velocity=vec3f(0); var count=0u;
-    for (var i=0u;i<D_CAP;i++) {
+    // Only _hold records holdCOM, after this tick's clear: an empty pool skips the scan.
+    let scanned=select(D_CAP,0u,dPoolEmpty());
+    for (var i=0u;i<scanned;i++) {
       let p=particles[i]; if (p.id==0u || atomicLoad(&control[D_HELD+i])!=P.sequence) { continue; }
       let m=dMass(p.c0&255u)*dAmount(dMaterial(p));
       mass+=m; offset+=(p.position-P.center)*m; velocity+=p.velocity*m; count++;
@@ -446,7 +464,8 @@ export function particlesWGSL(g, nativeHead, stage) {
     atomicStore(&control[11],bitcast<u32>(mass)); atomicStore(&control[15],count);
   `);
   if (stage === 'holdApply') return h + main64(`
-    if (t>=D_CAP || particles[t].id==0u || (particles[t].c0&255u)>=D_PHOTON) { return; }
+    // Mode 9 comes only from _hold, after this tick's clear; tool calls between ticks never gate.
+    if (t>=D_CAP || (P.mode==9u && dPoolEmpty()) || particles[t].id==0u || (particles[t].c0&255u)>=D_PHOTON) { return; }
     let held=atomicLoad(&control[D_HELD+t]); var p=particles[t];
     if (P.mode==9u) {
       if (held!=P.sequence) { return; }

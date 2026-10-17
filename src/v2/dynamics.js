@@ -96,7 +96,7 @@ export class NativeDynamics {
     const usage=GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST;
     const make=(label,size,extraUsage=0) => { const b=gpu.createBuffer({label:`v2 dynamics ${label}`,size:Math.max(16,Math.ceil(size/16)*16),usage:usage|extraUsage}); this.buffers.push(b); return b; };
     this.particles=make('particles',PARTICLE_CAP*PARTICLE_BYTES);
-    this.flight=make('flight',PARTICLE_CAP*32);
+    this.flight=make('flight',(PARTICLE_CAP+1)*32); // one record per slot, then the sweep record
     this.claims=make('claims',g.slots*16);
     this.air=[make('air0',g.nbricks*32),make('air1',g.nbricks*32)];
     this.faces=make('faces',g.nbricks*16);
@@ -116,7 +116,7 @@ export class NativeDynamics {
     this.kernels={};
     for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES]]) {
       for (const stage of stages) {
-        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','workArgs','externalBegin','externalGate'].includes(stage)) || (family==='particles' && stage==='holdCOM');
+        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','workArgs','externalBegin','externalGate'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage));
         const name=`v2${family}_${stage}`;
         this.kernels[`${family}/${stage}`]=gpu.kernel({name,build:'idle',code:generate(g,owner.nativeDynamics.head,stage),
           params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
@@ -180,8 +180,9 @@ export class NativeDynamics {
       vector:r.direction.map(v=>v*36),radius:r.radius,strength:r.count,sequence:r.requestId,substep:slot});
   }
   advanceParticles(tick) {
-    this._work(); this._rays(tick); this._hold(tick);
-    this._record('particles','clear',Math.ceil(this.g.slots*4/64),tick);
+    // Rays spawn before clear samples the live count; hold neither spawns nor counts.
+    this._work(); this._rays(tick);
+    this._record('particles','clear',1,tick); this._hold(tick);
     for (const stage of ['integrate','elect','impact','deposit']) this._record('particles',stage,PARTICLE_CAP/64,tick);
   }
   applyExternalBlast(request) {
@@ -389,7 +390,10 @@ export class NativeDynamics {
     // All validation precedes all writes. Bad saves never partially replace state.
     this.gpu.write(this.particles,0,s.particles);
     for(const b of this.air) this.gpu.write(b,0,s.air);
-    this.gpu.frame.clear(this.control); this.gpu.write(this.control,0,s.control);
+    // Pool sweeps skip an empty pool, so the live count must match the records.
+    const control=s.control.slice(); control[0]=0;
+    for(let i=0;i<PARTICLE_CAP;i++) if(s.particles[i*12+3]) control[0]++;
+    this.gpu.frame.clear(this.control); this.gpu.write(this.control,0,control);
     this.gpu.write(this.control,rayRequestBase(g)*4,s.rayRemaining);
     this.gpu.write(this.control,externalBlastBase(g)*4,external.done);this.externalBlasts=external.requests;
     this.gpu.write(this.control,heldBase(g)*4,s.held); this.gpu.write(this.control,shockBase(g)*4,s.shocks);
