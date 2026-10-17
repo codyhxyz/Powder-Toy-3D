@@ -160,3 +160,27 @@ the `_tick` loop in src/v2/physics.js.
 
 **Measure next:** split GPU timings of both models on these three scenes; the original GPU gates; L2 hit
 rate on the mask reads; and a long-run heat-stratification check.
+
+## The port (src/shaders/v2/columns.js)
+
+The native tick runs the model as two kernels over the awake column list, after the block pass: `v2runs`
+(pack, fall, foam decay, per-column domain records in `liquidScratch`, and the records of sleeping
+neighbours) and `v2pairs` five times (one Jacobi flux stage over every x and z face, then four
+transfer colours, x and z at each parity, in which a thread owns a column pair outright). Every unit of
+fill moves cell to cell through `colMove`, with the exact integer share of carried energy and fuel, its
+ctype, lava subtype and burning flag; a move that would leave the format is refused and retried.
+`tools/v2/column-wgsl.mjs` executes the emitted `col*` bodies on the CPU, and the bench runs them with
+`--engine column-wgsl`: U-tube 0.02 cm / rest 9.18 s, partial 0.02 cm / 7.7 s, puddle 3.33 s,
+pipe 0.084, tankStill 4.000 / 0.02 s, yield pass, mass exact (`tools/v2/column-wgsl-check.mjs`).
+
+Where it differs from the prototype, and why:
+- **Transfers by colour, limit per pair.** Splitting the axes (x then z, each on the new heads) grows a
+  point drop's ripples without bound, and alternating the colours keeps the U-tube's covered channel
+  trading single quanta past 10 s. The flux stage is the prototype's Jacobi step; a sending run is
+  limited by what it still holds when each pair moves, not by one K over its four sides.
+- **An overfall lands.** Mass crossing a face above the receiver's surface joins it at once (no
+  mid-air deposit). R14 jets, which carried the fast part, are not yet rebuilt on run heads (stage 2),
+  so the hole gate and splash do not pass yet.
+- **Whole-column scans.** `v2runs` reads every cell of each awake column (16 B a cell). The brick-mask
+  scan the cost table assumes is not built, so a deep, mostly sleeping column still costs its height.
+- Radial gravity leaves liquids still; open edges keep the 180 Hz-calibrated per-cell drain.
