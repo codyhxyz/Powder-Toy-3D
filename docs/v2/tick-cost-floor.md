@@ -20,7 +20,7 @@ A tick costs `A·N + B·awake + C·changed + D·bricks + E·pool + F`.
 | E', pool while particles live | 12 MB (+6.8 MB a preparation) | same | **8 KB of live bits + ~200 B a live particle a stage** | every pool sweep reads only slots whose live bit is set |
 | B, per awake brick column (powder fall) | ~32 KB (16 lanes × 128 cells) | same | **~1 KB a brick that is not all air or all still liquid** | the column pass skips summarised bricks |
 | B, other awake cells | ~100 B outside water (estimate) | unchanged | unchanged | support, block |
-| F, dispatches a tick | 149 outside water (+32 old water) | 159 outside water | **75 with the column water** (45 indirect), from 173 | the blasts are 17 of them (were 115): one batch a tick |
+| F, dispatches a tick | 149 outside water (+32 old water) | 159 outside water | **77 with the column water**, from 173 | the blasts are 17 of them (were 115): one batch a tick; +2 list publishes for the scattered reach |
 | F, passes a tick | — | 12 compute passes, split by 18 copies and 1 clear | **1 compute pass, 0 copies, 0 clears** | indirect args are written in place by one-thread stages in the lists layout |
 
 What each round did:
@@ -44,6 +44,32 @@ What each round did:
 
 The proofs and their red variants: `tools/v2/air-cache-check.mjs`, `air-reach-check.mjs`, `activity-list-check.mjs`,
 `allocation-check.mjs`, `blast-batch-check.mjs`, `particle-live-check.mjs` and `column-skip-check.mjs`.
+
+## Measured (M5, settled 128³, nothing else running)
+
+The idle physics tick took 0.526 ms before round 4, 0.493 ms after one compute pass a tick, and 0.491 ms after one
+blast batch a tick (173 → 75 dispatches). Neither pass splits nor dispatch count was the cost. A `--split`
+diagnostic (each dispatch its own pass: 53 passes, 0.392 ms in all) shows where it went:
+
+| pass | ms per idle tick | what it was | round 6 |
+|---|---|---|---|
+| v2air_reach | 0.0611 | 3 gathers over every brick, 17 loads each | scattered over lists (start bricks, then each axis's reached ones) |
+| v2jets_spawn | 0.0588 | a workgroup for every brick (32,768), launching nothing | a workgroup a brick of count's list of flagged bricks |
+| v2jets_gate | 0.0337 | one thread looping over the 512 group sums | one word count adds into |
+| v2actScan | 0.0272 | every brick's busy and quiet words | unchanged |
+| v2blasts_count | 0.0217 | the couple run's per-brick count | unchanged |
+| v2activity | 0.0157 | the listed activity pass | unchanged |
+| v2jets_count | 0.0143 | every brick's jets word | unchanged |
+| v2air_step | 0.0142 | 8 substeps over the step list | unchanged |
+| v2air_list | 0.0106 | the source list's scan | unchanged |
+| v2pairs | 0.0094 | column water | — |
+| v2blasts_freeScan | 0.0092 | one thread over 1,024 chunks | unchanged |
+| v2air_windList | 0.0075 | the wind list's scan (now also clears the cell notes) | unchanged |
+
+Everything else was under 0.007 ms. Round 6 targets the top three, 0.154 ms of the 0.392 ms. A re-time shows how much
+went. What is left follows the same pattern: all-brick launches over small words (actScan, the counts, the list
+scans) and one-thread loops (freeScan, coupleGate). Cutting the counts needs the shared allocator's per-64-brick
+prefix layout to run over a list.
 
 ## The lower bound
 
