@@ -67,6 +67,14 @@ const TOUCH_MARGIN = 1;
 // Undo snapshots kept, at most (each is the current A and B: ~67 MB at 128³).
 const UNDO_LIMIT = 3;
 
+// The legacy state's copies (docs/webgpu.md C1; Simulation.pingPong): V1's step
+// ping-pongs between two (the move in place, the react into the other); a box
+// the native engine owns (src/v2/physics.js) keeps only the current one, the
+// cache its edits and readbacks go through. Bytes a slot in each copy: A and B
+// a vec4f each, F a u32 (a copy is 36 B a slot: 75.5 MB at 128³).
+const PING_PONG = 2, ONE_COPY = 1;
+const STATE_BYTES = { A: 16, B: 16, F: 4 };
+
 // Bind groups an edit kernel keeps for its group 2, at most. Bindings are
 // meant to be long-lived (B6: a pooled upload buffer and its sub-ranges); a
 // caller binding a new buffer per edit would otherwise grow the cache forever.
@@ -232,7 +240,8 @@ export class Simulation {
    *   sleepUnit: the sleeping unit in bricks (shaders/common.js SLEEP_UNIT; SUPER for an A/B);
    *   debug: every state access tests its cell and counts misses (readDebug; I2.8);
    *   form: the move's code form (shaders/move.js MOVE_FORMS; tools compare them, D2)
-   *   nativeStartup: defer legacy stepping kernels until prepareLegacy(); edits/imports still build now
+   *   nativeStartup: defer legacy stepping kernels until prepareLegacy(); edits/imports still build now.
+   *     A box keeps one state copy until something ping-pongs (pingPong)
    */
   constructor(gpu, nx, ny, nz, { windowed = false, world = null, sleepUnit = null, debug = gpu.debug, form = MOVE_FORM, nativeStartup = false } = {}) {
     this.gpu = gpu;
@@ -294,7 +303,7 @@ export class Simulation {
     const buf = (label, size, usage = S | CS | CD) => gpu.createBuffer({ label: `sim${this.id} ${label}`, size: Math.max(16, Math.ceil(size / 16) * 16), usage });
     const slots = g.slots;
     this.cur = 0;
-    const A = buf('A', 2 * slots * 16), B = buf('B', 2 * slots * 16), F = buf('F', 2 * slots * 4);
+    const { A, B, F } = this._stateBuffers(nativeStartup && !windowed ? ONE_COPY : PING_PONG);
     this.flow = buf('flow', slots * 8);
     // moveSrc's buffer: whitewater's moveSrc plane and the decoration's (_side)
     this.moveSrc = buf('moveSrc (none)', 16);
@@ -323,12 +332,7 @@ export class Simulation {
     // ---- bind groups, made once (B6) ----
     const L = (this.L = simLayouts(gpu));
     this.tables = tablesOf(gpu).group;
-    const b = (binding, buffer) => ({ binding, resource: { buffer } });
-    this._bindRW = gpu.bindGroup(L.STATE_RW, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state rw');
-    this._bindRO = gpu.bindGroup(L.STATE_RO, [b(0, A), b(1, B)], 'state ro');
-    this._bindAct = gpu.bindGroup(L.STATE_ACT, [b(0, A), b(1, B), b(4, this.act)], 'state act');
-    this.bindBuild = gpu.bindGroup(L.STATE_BUILD, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state build');
-    this._bindFlagsRO = gpu.bindGroup(L.STATE_FLAGS_RO, [b(0, A), b(1, B), b(2, F)], 'state flags ro');
+    this._stateGroups();
     this._groups();
 
     // ---- kernels (B5): native hosts need edits/imports now, not legacy stepping ----
@@ -396,6 +400,54 @@ export class Simulation {
     this.giReset = true;
     this.shiftKeepsHistory = true;   // false: a shift starts the derived history over (A/B)
     this.history = [];
+  }
+
+  // The legacy state's buffers with `copies` copies (docs/webgpu.md C1).
+  _stateBuffers(copies) {
+    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
+    const buf = (k) => this.gpu.createBuffer({ label: `sim${this.id} ${k}`, size: copies * this.g.slots * STATE_BYTES[k], usage });
+    return { A: buf('A'), B: buf('B'), F: buf('F') };
+  }
+
+  // The group-1 bind groups that hold the state's buffers (made once per set of them, B6).
+  _stateGroups() {
+    const { gpu, L } = this, { A, B, F } = this.state;
+    const b = (binding, buffer) => ({ binding, resource: { buffer } });
+    this._bindRW = gpu.bindGroup(L.STATE_RW, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state rw');
+    this._bindRO = gpu.bindGroup(L.STATE_RO, [b(0, A), b(1, B)], 'state ro');
+    this._bindAct = gpu.bindGroup(L.STATE_ACT, [b(0, A), b(1, B), b(4, this.act)], 'state act');
+    this.bindBuild = gpu.bindGroup(L.STATE_BUILD, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state build');
+    this._bindFlagsRO = gpu.bindGroup(L.STATE_FLAGS_RO, [b(0, A), b(1, B), b(2, F)], 'state flags ro');
+  }
+
+  // The legacy state's copies held now.
+  get copies() { return this.state.A.size / (this.g.slots * STATE_BYTES.A); }
+
+  /**
+   * Holds both legacy copies (on: V1's step, a shift, the copy tools) or only
+   * the current one (off: a box the native engine owns, src/v2/physics.js). The
+   * current copy keeps its words, as copy 0. A second copy comes back zeroed, as
+   * a new grid's starts: V1 steps only after a whole write is noted (a load, or
+   * PhysicsV2.suspend's noteWrite), so its first map draws every unit and its
+   * react writes every cell of that copy before anything reads it (the
+   * copy-through, shaders/react.js), as after any load. Only a box (g.windowed
+   * false) drops one: a window's shift runs out of place. The groups holding the
+   * old buffers are made again (here and the native owner's), and the old
+   * buffers go once the queue is done with them.
+   * @param {boolean} on
+   */
+  pingPong(on) {
+    const n = on ? PING_PONG : ONE_COPY;
+    if (n === this.copies || (!on && this.g.windowed !== false)) return;
+    const f = this.gpu.frame, state = this.state, next = this._stateBuffers(n), slots = this.g.slots;
+    for (const k of Object.keys(STATE_BYTES)) {
+      f.copy(state[k], this.cur * slots * STATE_BYTES[k], next[k], 0, slots * STATE_BYTES[k]);
+      this._retire(state[k]);
+      state[k] = next[k];
+    }
+    this.cur = 0;
+    this._stateGroups();
+    this.compactOwner?.bindLegacy();
   }
 
   // The group-2 bind groups that hold attachable resources (rays, aeration).
@@ -655,6 +707,7 @@ export class Simulation {
       return;
     }
     if (this._legacyDeferred) throw new Error('Legacy physics is not prepared: await sim.prepareLegacy() before stepping');
+    this.pingPong(true);   // (a box the native engine owned holds one copy)
     const f = this.gpu.frame;   // (throws GraphicsFailure once graphics have stopped)
     this.frame++;   // simulation time and parity advance even when there is nothing to step
     // Certified idle: every unit settled in both copies, no unit AWAKE or DRAWN,
@@ -1005,6 +1058,7 @@ export class Simulation {
   // A, B and F keeps the sleeping invariant, so it forces nothing. (One
   // dispatch: WebGPU copies no range of a buffer into another range of it.)
   syncCopies() {
+    this.pingPong(true);
     this._dispatch(this.passOf('copy'), fold(Math.ceil(this.g.slots / 64)), {
       bind: [this.tables, this.bindRW], header: this.header(this.cur, 1 - this.cur),
     });
@@ -1164,6 +1218,7 @@ export class Simulation {
     // is a cache move, never permission to reimport the entire native grid.
     this.compactOwner?.exportLegacy();
     native?.shift(dx, dz);
+    this.pingPong(true);   // (out of place: a box the native engine owns holds one copy)
     const f = this.gpu.frame, size = fold(Math.ceil(this.g.slots / 64)), shift = [dx, 0, dz];
     this._dispatch(this.passOf('shift'), size, { bind: [this.tables, this._bindRW], header: { ...this.header(this.cur, 1 - this.cur), capture: 0 }, params: { shift } });
     this.cur = 1 - this.cur;
@@ -1322,6 +1377,7 @@ export class Simulation {
   async readCopies() {
     const texels = this.g.width * this.g.height, rb = this.gpu.readback, wait = this._readyFor('toAtlas');
     if (wait) await wait;
+    this.pingPong(true);
     const reads = [];
     for (const c of [0, 1]) {
       this._toAtlas(c, false);

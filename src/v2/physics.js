@@ -102,16 +102,18 @@ export class PhysicsV2 {
     const b = (binding, buffer) => ({ binding, resource: { buffer } });
     const own = [b(0, this.cells), b(1, this.act), b(2, tableOf(gpu))];
     this.groups = {
-      read: gpu.bindGroup(sim.L.STATE_RO, [b(0, this.cells), b(1, sim.state.B)], 'compact readers'),
       invalidate: gpu.bindGroup(L.INVALIDATE, [b(3, sim.marks)], 'compact invalidation'),
       v2: gpu.bindGroup(L.V2, own, 'v2'),
       material: gpu.bindGroup(L.MATERIAL, [...own, b(4, this.aux)], 'v2 material'),
       liquid: gpu.bindGroup(L.LIQUID, [...own, b(4, this.aux), b(5, this.liquidScratch), b(6, this.events), b(7, this.jetMask)], 'v2 liquid'),
       contact: gpu.bindGroup(L.CONTACT, [...own, b(4, this.aux), b(5, this.liquidScratch), b(6, this.events)], 'v2 contact'),
-      import: gpu.bindGroup(L.IMPORT, [b(0, sim.state.A), b(1, sim.state.B), b(3, sim.marks)], 'v2 import'),
       args: gpu.bindGroup(L.ARGS, [...own, b(3, this.args)], 'v2 args'),
-      state: gpu.bindGroup(L.STATE, [b(0, sim.state.A), b(1, sim.state.B), b(2, sim.state.F), b(3, sim.marks)], 'v2 state'),
     };
+    this.legacyLayouts = { read: sim.L.STATE_RO, import: L.IMPORT, state: L.STATE };
+    this.bindLegacy();
+    // Only the current legacy copy is ours to use: a box lets V1's other go
+    // while it's owned (Simulation.pingPong: it binds the groups above again).
+    sim.pingPong?.(false);
     if (this.blockCompact) {
       L.BLOCK_FINALIZE = gpu.layout('V2_BLOCK_FINALIZE', V2_BLOCK_FINALIZE_LAYOUT);
       this.groups.blockFinalize = gpu.bindGroup(L.BLOCK_FINALIZE, [b(0, this.liquidScratch), b(1, this.args)], 'v2 compact block args');
@@ -146,6 +148,17 @@ export class PhysicsV2 {
       sim.version++;
       sim.changedAll = true;
     }, () => {});
+  }
+
+  // The groups holding the simulation's legacy state: the import of today's
+  // writers, the boundary bridge and the readers' B. Made again whenever the
+  // simulation makes those buffers again (Simulation.pingPong).
+  bindLegacy() {
+    const { gpu, sim, legacyLayouts: L } = this, { A, B, F } = sim.state;
+    const b = (binding, buffer) => ({ binding, resource: { buffer } });
+    this.groups.read = gpu.bindGroup(L.read, [b(0, this.cells), b(1, B)], 'compact readers');
+    this.groups.import = gpu.bindGroup(L.import, [b(0, A), b(1, B), b(3, sim.marks)], 'v2 import');
+    this.groups.state = gpu.bindGroup(L.state, [b(0, A), b(1, B), b(2, F), b(3, sim.marks)], 'v2 state');
   }
 
   // ---- writes and rest ----
@@ -262,6 +275,7 @@ export class PhysicsV2 {
   activate() {
     if (this.sim.compact === this) return;
     this.sim.compact = this;
+    this.sim.pingPong?.(false);
     this.sync();
     this.sim.changedAll = true;
     this.sim.version++;
