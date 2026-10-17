@@ -32,7 +32,7 @@
 // default there) and paste the table back; on a phone or in Safari, open the
 // harness page by hand (tools/harness/outcomes.html, ?run=<group>).
 //
-// usage: node tools/outcomes.mjs [--engine v1|lean|v2] [--group liquids,solids,...] [--tests utube,puddle]
+// usage: node tools/outcomes.mjs [--engine v1|lean|column|v2] [--group liquids,solids,...] [--tests utube,puddle]
 //          [--strict [--phase P2]] [--json results.json] [--record] [--expected file.json] [--verbose] [--list]
 //          [--port N] [--app-url http://127.0.0.1:N] [--app-query physics=v2] [--seed N] [--self-check]
 //   groups: liquids, solids, fire, blasts, world, census, controls
@@ -57,7 +57,7 @@ const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 const recordPath = opt('expected') ?? here(`./outcomes/expected-${ENGINE}.json`);
 const JSON_OUT = opt('json');
 
-if (!['v1', 'lean', 'v2'].includes(ENGINE)) throw new Error(`--engine v1, lean or v2, not ${ENGINE}`);
+if (!['v1', 'lean', 'column', 'v2'].includes(ENGINE)) throw new Error(`--engine v1, lean, column or v2, not ${ENGINE}`);
 if (!PHASES.includes(PHASE)) throw new Error(`--phase ${PHASES.join(', ')}`);
 if (flag('json') && !JSON_OUT) throw new Error('--json needs a path');
 const tests = select({ tests: opt('tests', ''), groups: opt('group', '') });
@@ -99,13 +99,14 @@ const checkpoint = (complete = false) => {
 };
 checkpoint();
 
-if (ENGINE === 'lean') {
-  const { createEngine } = await import('./outcomes/engine-lean.js');
+if (ENGINE === 'lean' || ENGINE === 'column') {
+  // column: tools/v2/column-water.mjs, the column-run water prototype (docs/v2/water-cost-first-principles.md)
+  const { createEngine } = await import(ENGINE === 'lean' ? './outcomes/engine-lean.js' : './outcomes/engine-column.js');
   const engine = createEngine();
   adapterLine = engine.info.label;
   engineInfo = engine.info;
   for (const t of tests) {
-    const r = (t.kind ?? 'harness') === 'app' ? { name: t.name, title: t.title, group: t.group, phase: OUTCOMES[t.key ?? t.name]?.phase, engine: 'lean', status: 'n/a', reason: 'lean is a bare simulation: this test boots the game' }
+    const r = (t.kind ?? 'harness') === 'app' ? { name: t.name, title: t.title, group: t.group, phase: OUTCOMES[t.key ?? t.name]?.phase, engine: ENGINE, status: 'n/a', reason: `${ENGINE} is a bare simulation: this test boots the game` }
       : await runTest(t, engine, { seed: SEED });
     results.push(r);
     checkpoint();
