@@ -218,21 +218,24 @@ export class NativeDynamics {
     // Deterministic bounded batches, not an unbounded GPU event loop. At the
     // default the service rate is 480 charges/s; remaining sources stay intact
     // and busy. Dense chains are explicitly latency-limited, not called parity.
+    const size=offset=>({indirect:this.dispatchArgs,offset});
+    this._record('blasts','reset',1,tick);
     for (let n=0;n<this.blastBatch;n++) {
-      this._record('blasts','reset',1,tick);
-      this._record('blasts','select',Math.ceil(this.g.slots/64),tick);
+      // After a batch without work nothing has changed, so selecting again
+      // finds exactly what it found. Later batches select through the last
+      // batch's grid args (zero without work); its finish reset them.
+      this._record('blasts','select',n?size(0):Math.ceil(this.g.slots/64),tick);
       this._record('blasts','workArgs',1,tick);
       // Separate INDIRECT buffer: never bind a read_write storage buffer as
       // the indirect source of that same dispatch (WebGPU usage conflict).
       this.gpu.frame.copy(this.control,20*4,this.dispatchArgs,0,48);
       this.gpu.frame.copy(this.control,28*4,this.dispatchArgs,48,4);
-      const size=offset=>({indirect:this.dispatchArgs,offset});
       this._record('blasts','plan',size(0),tick);
       this._record('blasts','sum',size(16),tick);
       this._record('blasts','normalize',size(32),tick);
       this._record('blasts','damagePlan',size(0),tick);
       this._allocate(tick,{},true);
-      this._record('blasts','finish',size(32),tick);
+      this._record('blasts','finish',size(32),tick,{substep:this.blastBatch-1-n}); // batches still to select
     }
   }
   advanceAir(tick) {

@@ -28,6 +28,8 @@ export const allocationScratchBase = g => externalMaskBase(g) + externalMaskWord
 export const controlWords = g => allocationScratchBase(g) + ALLOCATION_CHUNKS * 2;
 export const ALLOCATION_STAGES = ['freeCount','freeScan','freeScatter'];
 const f = n => Number.isInteger(n) ? `${n}.0` : String(n);
+// Durable-event count, lowest serviceable source, neutron requests: select's sums.
+export const RESET_SELECTION = 'atomicStore(&control[2],0u); atomicStore(&control[3],D_NONE); atomicStore(&control[17],0u);';
 const blastTables = dynamicsRows.filter(r => r.energy > 0 || r.id===E.SINGULARITY).map(r => `case ${r.id}u: { return DExplosive(${f(r.energy)},${r.product}u,${f(r.productT)},${r.productCtype}u); }`).join('\n');
 function head(g, nativeHead) {
   return /* wgsl */ `${dynamicsCommon(g,nativeHead)}
@@ -172,7 +174,7 @@ export function blastsWGSL(g,nativeHead,stage) {
       atomicStore(&control[3],D_NONE); atomicAdd(&control[7],1u);
     }
   `);
-  if (stage === 'reset') return h + main1(`atomicStore(&control[2],0u); atomicStore(&control[3],D_NONE); atomicStore(&control[17],0u);`);
+  if (stage === 'reset') return h + main1(RESET_SELECTION);
   if (stage === 'select') return h + main64(`
     if (t >= D_SLOTS || events[t] == 0u) { return; }
     atomicAdd(&control[2],1u); dWake(cellOf(t)); if ((events[t]&4u)!=0u) { atomicAdd(&control[17],1u); }
@@ -511,7 +513,11 @@ var<workgroup> childCounts: array<u32,64>;
     atomicStore(&control[index],remaining);
   `);
   if (stage === 'finish') return h + main1(/* wgsl */ `
-    let s=atomicLoad(&control[3]); if (s==D_NONE) { return; }
+    let s=atomicLoad(&control[3]);
+    // The selection's last reader starts the next batch's select, which runs
+    // only after work; nothing below touches the selection words.
+    if (P.mode!=14u && P.substep>0u) { ${RESET_SELECTION} }
+    if (s==D_NONE) { return; }
     if(P.mode==14u) {
       let total=bitcast<f32>(atomicLoad(&control[${externalAirBase(g)+g.nbricks}u]));
       if(mAirPressure() && total>0.0) { for(var b=0u;b<D_BRICKS;b++) {
