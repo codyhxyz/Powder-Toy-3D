@@ -1,6 +1,6 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
 import { dynamicsCommon, DynamicParams, storageLayout, main64, main1 } from './particles.js';
-import { SPAWN_PREFIX, coupleArgsBase } from './blasts.js';
+import { SPAWN_PREFIX, coupleArgsBase, listWGSL, listControl } from './blasts.js';
 import { COLUMN } from './columns.js';
 export { DynamicParams };
 
@@ -21,6 +21,9 @@ function head(g) {
   return `${dynamicsCommon(g, nativeDynamicsHead)}
 @group(1) @binding(0) var<storage, read_write> particles: array<DParticle>;
 @group(1) @binding(1) var<storage, read_write> control: array<atomic<u32>>;
+${listWGSL(g)}
+// the ticks' demand, every group's sum added by count (u32, so the order is free); the gate restarts it
+const J_TOTAL: u32 = ${listControl(g).jetTotal}u;
 const J_PREFIX: u32 = ${SPAWN_PREFIX}u;
 const J_COUNTS: u32 = J_PREFIX + D_BRICKS;
 const JET_MARK: f32 = ${f(COLUMN.JET_MARK)};
@@ -42,17 +45,19 @@ export function jetsWGSL(g, stage) {
 var<workgroup> brickDemand: array<u32,64>;
 ` + main64(`
     var count=0u;
-    if(jetBrick(t)) { for(var s=t*64u;s<(t+1u)*64u;s++) { if(jetMarked(loadCore(s))) { count++; } } }
+    // a flagged brick goes to spawn's list (spawn returns at once for any other)
+    if(jetBrick(t)) { dAppend(LIST_JETS,t); for(var s=t*64u;s<(t+1u)*64u;s++) { if(jetMarked(loadCore(s))) { count++; } } }
     // Padding lanes contribute zero without skipping the barrier.
     brickDemand[li]=count; workgroupBarrier();
     var prefix=0u; for(var lane=0u;lane<li;lane++) { prefix+=brickDemand[lane]; }
     if(t<D_BRICKS) { atomicStore(&control[J_PREFIX+t],prefix); }
-    if(li==63u) { atomicStore(&control[J_COUNTS+t/64u],prefix+count); }
+    if(li==63u) { atomicStore(&control[J_COUNTS+t/64u],prefix+count); if(prefix+count!=0u) { atomicAdd(&control[J_TOTAL],prefix+count); } }
   `);
   // The couple gate's protocol (blasts.js coupleGate): [work, 1, 1, 0, work] for the pool preparation and
   // the allocation's indirect args, so a tick that launches nothing never sweeps the particle pool.
   if (stage === 'gate') return h + main1(`
-    var demand=0u; for(var group=0u;group<(D_BRICKS+63u)/64u;group++) { demand+=atomicLoad(&control[J_COUNTS+group]); }
+    // count's groups' sums, added as it wrote them: one word, not a loop over the groups
+    let demand=atomicExchange(&control[J_TOTAL],0u);
     let work=select(0u,1u,demand>0u); let base=${coupleArgsBase(g)}u;
     atomicStore(&control[base],work); atomicStore(&control[base+1u],1u); atomicStore(&control[base+2u],1u);
     atomicStore(&control[base+3u],0u); atomicStore(&control[base+4u],work);
@@ -96,7 +101,7 @@ var<workgroup> wgMarked: array<u32,64>;
       storeMaterial(t,before,Material(zeroQ(c),before.bank));
     }
     dWake(p);
-  `);
+  `,'dListedCell(LIST_JETS,wg,nwg,li)');
   throw new Error(`Unknown jet stage ${stage}`);
 }
 export const WGSL_CHECK = JET_STAGES.map(stage => ({ name: `v2jets_${stage}`, kind: 'compute', code: g => jetsWGSL(g, stage), layouts: () => [V2_DYNAMICS_LAYOUT, JETS_LAYOUT, 'EMPTY'], tool: true }));

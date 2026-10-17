@@ -6,6 +6,7 @@
 // (4) migration: unpacked columns (a partial cell under full ones, water mid-air, open water compressed by
 // the substep model) settle with exact totals, and (5) the bench's single-liquid gates at their unchanged
 // thresholds. No GPU, browser or World variant of the application.
+import { LIST_ARGS } from '../../src/shaders/v2/blasts.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { columnWaterWGSL, COLUMN, pairOrder } from '../../src/shaders/v2/columns.js';
@@ -247,7 +248,8 @@ test('the real driver records the runs pass and the pair stages over the awake c
     assert.ok(jets.includes('v2blasts_freeScatter') && jets.indexOf('v2blasts_freeScatter') < jets.indexOf('v2jets_allocate'), 'the free list is built before the jets allocate');
     assert.equal(names.filter(n => n === 'v2jets_spawn').length, 1);
     const spawn = commands.find(c => c.name === 'v2jets_spawn'), count = commands.find(c => c.name === 'v2jets_count');
-    assert.deepEqual(spawn.size, [g.nbricks, 1, 1], 'a workgroup a brick'); assert.deepEqual(count.size, [Math.ceil(g.nbricks / 64), 1, 1]);
+    // a workgroup a brick of count's list of flagged bricks, never over every brick
+    assert.deepEqual(spawn.size, { indirect: owner.dynamics.dispatchArgs, offset: LIST_ARGS.jetCells }, 'a workgroup a listed brick'); assert.deepEqual(count.size, [Math.ceil(g.nbricks / 64), 1, 1]);
     const liquid = commands.filter(c => c.name === 'v2runs' || c.name === 'v2pairs');
     assert.deepEqual(liquid.map(c => c.name), ['v2runs', 'v2pairs', 'v2pairs', 'v2pairs', 'v2pairs', 'v2pairs']);
     for (const c of liquid) { assert.equal(c.size.indirect, owner.args); assert.equal(c.size.offset, ARGS2.COLS * 4); }

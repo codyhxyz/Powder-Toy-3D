@@ -38,7 +38,9 @@ export const COUPLE_ARGS = 64;
 // request). Each is [use, count, bricks...]: builders append to count, listArgs moves it to
 // use, writes the list's dispatch args at LIST_ARGS and zeroes count. Then the air reach
 // words, one a brick (the substeps' start set and its dilation), all past controlWords.
-export const LIST_NAMES = ['source', 'step', 'wind', 'events'];
+// jets: bricks the jets' count found flagged (src/shaders/v2/jets.js spawn runs over them); reachX,
+// reachY: bricks the air reach's x and y scatters reached (air.js reach).
+export const LIST_NAMES = ['source', 'step', 'wind', 'events', 'jets', 'reachX', 'reachY'];
 // The charges one batch serves at most (DYNAMICS_ABI.blastBatchMax): its per-charge words.
 export const CHARGES_MAX = 64;
 // After the reach words, the one batch a tick's charge words: select's serviceable masks (two a
@@ -50,14 +52,18 @@ export function listControl(g) {
   const reach = at; at += g.nbricks;
   const charges = { masks: at, slots: at + 2 * g.nbricks, count: at + 2 * g.nbricks + CHARGES_MAX,
     scales: at + 2 * g.nbricks + CHARGES_MAX + 1, sums: at + 2 * g.nbricks + 2 * CHARGES_MAX + 1 };
-  return { lists, reach, charges, words: charges.sums + CHARGES_MAX * g.nbricks };
+  // the jets' count adds every group's demand here; their gate reads it once and restarts it
+  const jetTotal = charges.sums + CHARGES_MAX * g.nbricks;
+  return { lists, reach, charges, jetTotal, words: jetTotal + 1 };
 }
 // Dispatch args (bytes): a thread a listed brick, or a workgroup a listed brick (cells).
-export const LIST_ARGS = { source: COUPLE_ARGS + 32, step: COUPLE_ARGS + 48, wind: COUPLE_ARGS + 64, windCells: COUPLE_ARGS + 80, eventCells: COUPLE_ARGS + 96 };
-export const DISPATCH_ARGS_BYTES = COUPLE_ARGS + 112;
+export const LIST_ARGS = { source: COUPLE_ARGS + 32, step: COUPLE_ARGS + 48, wind: COUPLE_ARGS + 64, windCells: COUPLE_ARGS + 80, eventCells: COUPLE_ARGS + 96,
+  jetCells: COUPLE_ARGS + 112, reachX: COUPLE_ARGS + 128, reachY: COUPLE_ARGS + 144 };
+export const DISPATCH_ARGS_BYTES = COUPLE_ARGS + 160;
 // Which args each list writes: [byte offset, per-cell (a workgroup a brick) or a thread a brick].
 export const LIST_DISPATCH = { source: [[LIST_ARGS.source, false]], step: [[LIST_ARGS.step, false]],
-  wind: [[LIST_ARGS.wind, false], [LIST_ARGS.windCells, true]], events: [[LIST_ARGS.eventCells, true]] };
+  wind: [[LIST_ARGS.wind, false], [LIST_ARGS.windCells, true]], events: [[LIST_ARGS.eventCells, true]],
+  jets: [[LIST_ARGS.jetCells, true]], reachX: [[LIST_ARGS.reachX, false]], reachY: [[LIST_ARGS.reachY, false]] };
 // The list words and helpers, for families that bind control as atomics (air, blasts).
 export function listWGSL(g) {
   const L = listControl(g);
@@ -123,11 +129,17 @@ export function listsStageWGSL(g, name) {
 }
 `;
   // The jets' gate words ([work, 1, 1, 0, work] at coupleArgsBase) into the couple args.
-  if (name === 'publishCouple') return `${listsHead}
+  // The jets' gate words ([work, 1, 1, 0, work] at coupleArgsBase) into the couple args, and the jets'
+  // brick list (their count appended it) with spawn's args: a workgroup a listed brick.
+  if (name === 'publishCouple') { const jets = listControl(g).lists.jets; return `${listsHead}
+const MAX_WG: u32 = 65535u;
 @compute @workgroup_size(1) fn main() {
   for (var i=0u;i<${COUPLE_ARGS_WORDS}u;i++) { args[${COUPLE_ARGS / 4}u+i]=control[${coupleArgsBase(g)}u+i]; }
+  let n = control[${jets + 1}u]; control[${jets}u] = n; control[${jets + 1}u] = 0u;
+  let y = max(1u, (n + MAX_WG - 1u) / MAX_WG);
+  args[${LIST_ARGS.jetCells / 4}u] = (n + y - 1u) / y; args[${LIST_ARGS.jetCells / 4 + 1}u] = y; args[${LIST_ARGS.jetCells / 4 + 2}u] = 1u;
 }
-`;
+`; }
   throw new Error(`Unknown lists stage ${name}`);
 }
 // One thread: a list's builders are done; publish its length and dispatch args, start it over.

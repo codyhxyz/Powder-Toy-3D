@@ -256,8 +256,10 @@ export class NativeDynamics {
     // brick off a list would be an exact identity there (air.js, tools/v2/air-reach-check.mjs).
     this._record('air','list',bricks,tick); this._publish('source',tick);
     this._record('air','source',this._listed('source'),tick); this.airIndex^=1;
-    for (let axis=0;axis<3;axis++) this._record('air','reach',bricks,tick,{substep:axis});
-    this._publish('step',tick);
+    // reach scatters from the start bricks, then from what each axis reached (air.js reach)
+    this._record('air','reach',this._listed('source'),tick,{substep:0}); this._publish('reachX',tick);
+    this._record('air','reach',this._listed('reachX'),tick,{substep:1}); this._publish('reachY',tick);
+    this._record('air','reach',this._listed('reachY'),tick,{substep:2}); this._publish('step',tick);
     for (let i=0;i<AIR.substeps;i++) { this._record('air','step',this._listed('step'),tick,{substep:i}); this.airIndex^=1; }
     this._record('air','windList',bricks,tick); this._publish('wind',tick);
     // Both gas stages return at once without wind, and the boundary one off void edges.

@@ -179,6 +179,28 @@ for (const [m, modes] of modeSets.entries()) for (const [s, dims] of shapes.entr
   runs++; skipped += r.skipped; total += r.total;
   if (!scenario(seed, dims, modes, REACH - 2).equal) shortFailed++;
 }
+// The reach is now scattered from lists (air.js reach): each brick with bit a marks bit a+1 on the
+// bricks within REACH along a. On every topology it equals the gather above.
+function scatterReach(w, start, radius, variant = {}) {
+  let set = start;
+  for (let axis = 0; axis < 3; axis++) {
+    const next = new Array(w.n).fill(false);
+    for (let t = 0; t < w.n; t++) if (set[t]) for (let d = -radius; d <= radius; d++) {
+      if (d === 0 && variant.noSelf) continue;
+      const q = d === 0 ? t : w.neighbor(t, axis, Math.sign(d), Math.abs(d)); if (q >= 0) next[q] = true;
+    }
+    set = next;
+  }
+  return set;
+}
+let scatterRuns = 0, selfBroke = false;
+for (const edge of Object.values(EDGE)) for (const dims of [...shapes, [1, 1, 5], [2, 9, 1]]) for (let seed = 1; seed <= 8; seed++) {
+  const random = rng(seed * 31 + edge), w = world(dims, { edge }, random), start = Array.from({ length: w.n }, () => random() < 0.08);
+  assert.deepEqual(scatterReach(w, start, REACH), reach(w, start, REACH), `scattered reach differs: dims ${dims}, edge ${edge}`);
+  if (scatterReach(w, start, REACH, { noSelf: true }).join() !== reach(w, start, REACH).join()) selfBroke = true;
+  scatterRuns++;
+}
+assert.ok(selfBroke, 'a scatter that skips the brick itself must break the reach');
 // The exhaustive fixtures are about as wide as the 17-brick reach box; longer
 // ones show that a pressure disturbance leaves most of a still box untouched
 // (heat and gas disturbances really do spread a brick per substep).

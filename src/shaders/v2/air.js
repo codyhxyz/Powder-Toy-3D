@@ -113,7 +113,11 @@ export function airWGSL(g,nativeHead,stage) {
   `);
   // After the substeps: the bricks where wind or pressure can act (dWindListed).
   if (stage==='windList') return h+main64(/* wgsl */ `
-    if (t>=D_BRICKS) { return; } if (dWindListed(t)) { dAppend(LIST_WIND,t); }
+    if (t>=D_BRICKS) { return; }
+    // Every source has read its neighbours' notes, and no cell is written between source and here
+    // (reach and the substeps write only air): a later write notes its brick for the next source.
+    if (atomicLoad(&act2[V2_STATE_DIRTY+t])!=0u) { atomicStore(&act2[V2_STATE_DIRTY+t],0u); }
+    if (dWindListed(t)) { dAppend(LIST_WIND,t); }
   `);
   if (stage==='source') return h+main64(/* wgsl */ `
     if (t>=D_BRICKS) { return; } let base=aBase(t);
@@ -189,19 +193,22 @@ export function airWGSL(g,nativeHead,stage) {
   `,'dListedBrick(LIST_SOURCE,wg,nwg,li)');
   // Separable box dilation of that start set, one axis per dispatch
   // (P.substep), in step's own neighbour topology (mEdge wraps loop edges).
+  // Scattered, over lists: axis 0 from the source list's start bricks, axis 1 from the bricks axis 0
+  // reached (reachX), axis 2 from axis 1's (reachY). A brick with bit a marks bit a+1 on every brick
+  // within REACH along a (mEdge: loop seams wrap), the same set the old gather over every brick
+  // found, since that neighbourhood is symmetric; the first to mark a brick lists it.
   if (stage==='reach') return h+main64(/* wgsl */ `
-    if (t>=D_BRICKS) { return; } let axis=P.substep; var near=false;
-    // Every source has read its neighbours' notes, and no cell is written
-    // between source and here: a later write notes its brick for the next one.
-    if (axis==0u && atomicLoad(&act2[V2_STATE_DIRTY+t])!=0u) { atomicStore(&act2[V2_STATE_DIRTY+t],0u); }
+    let axis=P.substep;
+    if (t>=D_BRICKS || (atomicLoad(&control[A_REACH+t])&(1u<<axis))==0u) { return; }
     for (var d=-${REACH};d<=${REACH};d++) {
       let p=mEdge(aBase(t)+dAxis(axis)*4*d); if (!inGrid(p)) { continue; }
-      near=near || (atomicLoad(&control[A_REACH+brickOfCell(p)])&(1u<<axis))!=0u;
+      let n=brickOfCell(p);
+      if ((atomicOr(&control[A_REACH+n],2u<<axis)&(2u<<axis))!=0u) { continue; }
+      if (axis==0u) { dAppend(LIST_REACHX,n); } else if (axis==1u) { dAppend(LIST_REACHY,n); }
+      // Reached: the substeps run here and may move its air; list it for them.
+      else { noteAir(n); dAppend(LIST_STEP,n); }
     }
-    if (near) { atomicOr(&control[A_REACH+t],2u<<axis); }
-    // Reached: the substeps run here and may move its air; list it for them.
-    if (axis==2u && near) { noteAir(t); dAppend(LIST_STEP,t); }
-  `);
+  `,'select(select(dListedBrick(LIST_REACHY,wg,nwg,li),dListedBrick(LIST_REACHX,wg,nwg,li),P.substep==1u),dListedBrick(LIST_SOURCE,wg,nwg,li),P.substep==0u)');
   if (stage==='step') return h+main64(/* wgsl */ `
     if (t>=D_BRICKS) { return; }
     // Outside the reach every substep is an exact identity and both ping-pong

@@ -92,7 +92,9 @@ assert.match(source, /var stale=atomicLoad\(&act2\[V2_STATE_DIRTY\+t\]\)!=0u;\s*
 assert.match(source, /if \(atomicLoad\(&act2\[V2_EVENTS\+t\]\)!=0u\) \{/);
 assert.match(source, /if \(pending==0u\) \{ atomicStore\(&act2\[V2_EVENTS\+t\],0u\); \}/);
 assert.doesNotMatch(source.slice(source.lastIndexOf('@compute')), /atomic(Store|And|Exchange)\(&act2\[V2_STATE_DIRTY/, 'source never clears a note its neighbours still read');
-assert.match(reach, /if \(axis==0u && atomicLoad\(&act2\[V2_STATE_DIRTY\+t\]\)!=0u\) \{ atomicStore\(&act2\[V2_STATE_DIRTY\+t\],0u\); \}/);
+// the notes are cleared after every source read them, before any later cell write: windList (all bricks)
+assert.match(airWGSL(g, nativeDynamicsHead, 'windList'), /if \(atomicLoad\(&act2\[V2_STATE_DIRTY\+t\]\)!=0u\) \{ atomicStore\(&act2\[V2_STATE_DIRTY\+t\],0u\); \}/);
+assert.doesNotMatch(reach.slice(reach.lastIndexOf('@compute')), /V2_STATE_DIRTY/);
 assert.match(blastsWGSL(g, nativeDynamicsHead, 'select'), /atomicLoad\(&act2\[V2_EVENTS\+t\/64u\]\) == 0u \|\| events\[t\] == 0u/);
 const A = v2ActLayout(g);
 assert.ok(A.events >= A.words && A.air === A.events + g.nbricks && A.allocated >= A.air + g.nbricks, 'the request and air notes sit after the saved activity words');
