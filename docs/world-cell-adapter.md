@@ -100,10 +100,13 @@ not XYZ occupancy-bit order. AUX record3 is zero; distancePlus1=0 means unknown
 
 `recordPageWrite(job,'fields',...)` exposes callback-scoped unpublished
 `destinations: [{texture,origin}, ...]`, retaining Atlas-owned submission.
-For each page/field, sixteen native four-cell single-row buffer-to-texture
-copies preserve every half bit. No packed half buffer is bound as `vec4f`, no
-unpack/requantize step is introduced, and no illegal bytesPerRow=128 copy is used.
-The existing float writer is unchanged.
+One integer-only pass rearranges captured field words for each existing batch
+of up to 64 pages. Each page then needs three native buffer-to-texture copies,
+not 48. The pass uses five storage buffers and no storage images. Its temporary
+output is at most 393,216 bytes per batch and retires after queue completion.
+Every half bit is preserved: there is no float conversion or requantization.
+Copies use `bytesPerRow=256`; the original row-copy helper remains the test
+reference. The existing float writer is unchanged.
 
 `atlas.publish({cellJobs,lightJobs,invalidations,...})` validates complete pool
 invalidations (`CELL`, `LIGHT`, `ALL`), clears mappings and installs replacements
@@ -129,6 +132,9 @@ only the live simulation box; callers knowing smaller bounds may pass `{lo,hi}`
 or `{min,max}`. Unknown/global scene writers explicitly pass `{global:true}`.
 Generation, store acknowledgement, capture and origin transfer never journal a
 semantic edit. Journal/cache residency is retained (no eviction policy here).
+Each edit owns one frozen record of scalar bounds, not nested bounds arrays.
+Cuts share these immutable records but copy journal membership. Invalid bounds,
+including sparse arrays, conservatively invalidate the whole world.
 
 Reused column, baked-shape, touched-mask and saved A/B/deco writes now use
 immutable mapped upload buffers and ordered Frame copies, not `gpu.write` or

@@ -177,16 +177,55 @@ test('cuts share immutable change records without following parent journal growt
   f.source.noteContentChange(bounds);
   const a=cut(f),entry=f.source.changeJournal[0];
   assert.notEqual(a.source.changeJournal,f.source.changeJournal);assert.equal(a.source.changeJournal[0],entry);
-  assert(Object.isFrozen(entry));assert(Object.isFrozen(entry.bounds));assert(Object.isFrozen(entry.bounds.lo));assert(Object.isFrozen(entry.bounds.hi));
+  assert(Object.isFrozen(entry));assert(Object.values(entry).every(v=>typeof v==='number'||typeof v==='boolean'));
+  assert.deepEqual(entry,{revision:1,global:false,loX:0,loY:0,loZ:0,hiX:4,hiY:4,hiZ:4});
+  assert.equal(Object.isFrozen(bounds),false);assert.equal(Object.isFrozen(bounds.lo),false);assert.equal(Object.isFrozen(bounds.hi),false);
   bounds.lo[0]=64;bounds.hi[0]=68;
-  assert.throws(()=>{entry.bounds.lo[0]=64;},TypeError);
+  assert.throws(()=>{entry.loX=64;},TypeError);
   f.source.noteContentChange(bounds);
   assert.equal(a.source.changeJournal.length,1);assert.equal(f.source.changeJournal.length,2);
   assert.deepEqual(a.source.changesSince(before).changedBricks,[[0,0,0]]);
   const b=f.source.recordCut(f.gpu.frame,{previousCut:a,sceneVersion:'scene',configVersion:1});
   assert.equal(b.source.changeJournal[0],entry);assert.equal(b.source.changeJournal[1],f.source.changeJournal[1]);
   assert.deepEqual(b.source.changesSince(before).changedBricks,[[0,0,0],[16,0,0]]);
+  const oldEpoch=f.source.epoch;
+  f.source.reset();
+  assert.equal(f.source.epoch,oldEpoch+1);assert.deepEqual(f.source.contentToken(),{epoch:oldEpoch+1,sourceRevision:0});
+  assert.equal(f.source.changeJournal.length,0);assert.equal(a.source.changeJournal.length,1);assert.equal(b.source.changeJournal.length,2);
+  assert.deepEqual(a.source.changesSince(before).changedBricks,[[0,0,0]]);
+  assert.deepEqual(b.source.changesSince(before).changedBricks,[[0,0,0],[16,0,0]]);
+  assert.equal(f.source.changesSince(before).global,true);
   a.release();b.release();await f.finish();
+});
+
+test('content journal validates bounds, clips regions and preserves revision tokens',()=>{
+  const source=Object.create(WorldRenderSource.prototype);
+  Object.assign(source,{sim:{origin:{x:4,y:0,z:0},g:{nx:4,ny:4,nz:4}},context:{size:[12,8,8]},epoch:7,revision:0,contentRevision:0});
+  const check=(input,expected,global=false,defaultBounds=false)=>{
+    const before=source.contentToken(),authority=source.revision;
+    if(defaultBounds)source.noteContentChange();else source.noteContentChange(input);
+    const after=source.contentToken(),delta=source.changesSince(before),entry=source.changeJournal.at(-1);
+    assert.deepEqual(after,{epoch:7,sourceRevision:before.sourceRevision+1});assert.equal(source.revision,authority+1);
+    assert.deepEqual(delta,{token:after,global,changedBricks:expected});assert(Object.isFrozen(entry));
+    assert.deepEqual(source.changesSince(after),{token:after,global:false,changedBricks:[]});
+  };
+  check({lo:[-4,0,0],hi:[5,4,4]},[[0,0,0],[1,0,0]]);
+  const alias={min:[8,0,0],max:[12,4,4]},before=source.contentToken();
+  check(alias,[[2,0,0]]);alias.min[0]=0;alias.max[0]=4;
+  assert.deepEqual(source.changesSince(before).changedBricks,[[2,0,0]]);
+  check(undefined,[[1,0,0]],false,true);
+  check({lo:[4,0,0],hi:[4,4,4]},[]);
+  check({lo:[12,0,0],hi:[16,4,4]},[]);
+  check({lo:[0.5,0,0],hi:[4.5,4,4]},[[0,0,0],[1,0,0]]);
+  for(const malformed of [null,{}, {global:true,lo:[0,0,0],hi:[4,4,4]},
+    {lo:[0,0,0]}, {min:[0,0,0]}, {lo:[0,0],hi:[4,4,4]},
+    {lo:[0,0,0],hi:[4,4,4,4]}, {lo:[0,0,0],hi:[-1,4,4]},
+    {lo:[NaN,0,0],hi:[4,4,4]}, {lo:[0,0,0],hi:[Infinity,4,4]},
+    {lo:['0',0,0],hi:[4,4,4]}, {lo:[,0,0],hi:[4,4,4]},
+    {lo:new Float32Array(3),hi:[4,4,4]}])check(malformed,[],true);
+  for(const token of [null,{epoch:6,sourceRevision:0},{epoch:7,sourceRevision:source.contentRevision+1}])assert.equal(source.changesSince(token).global,true);
+  const token=source.contentToken();source.disposed=true;source.noteContentChange(null);assert.deepEqual(source.contentToken(),token);
+  source.ownedContext={};assert.throws(()=>source.noteContentChange(null),/owned Source cut/);
 });
 
 test('unchanged semantic cores share native versions, lazy population COW and changed cores keep older bytes pinned',async()=>{

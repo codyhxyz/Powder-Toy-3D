@@ -61,6 +61,26 @@ fn main(@builtin(local_invocation_index) s: u32) {
 }
 `;
 
+// Raw half words only: no floating-point load/conversion can canonicalize NaNs.
+export const WORLD_FIELD_PACK_LAYOUT = [...[0,1,2,3].map(ro), { binding: 4, visibility: 4, buffer: { type: 'storage' } }];
+export const worldFieldPackWGSL = /* wgsl */ `
+@group(0) @binding(0) var<storage,read> field0: array<vec2u>;
+@group(0) @binding(1) var<storage,read> field1: array<vec2u>;
+@group(0) @binding(2) var<storage,read> field2: array<vec2u>;
+@group(0) @binding(3) var<storage,read> jobs: array<vec4u>;
+@group(0) @binding(4) var<storage,read_write> packed: array<vec2u>;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) s: u32) {
+  let job = jobs[group.x];
+  let x = s & 3u; let y = ((s >> 2u) & 1u) + 2u*(s >> 5u); let z = (s >> 3u) & 3u;
+  let src = x + 4u*job.x + 32u*(y + 4u*job.y + 32u*(z + 4u*job.z));
+  let dst = job.w*768u + (s >> 3u)*32u + (s & 7u);
+  packed[dst] = field0[src];
+  packed[dst + 256u] = field1[src];
+  packed[dst + 512u] = field2[src];
+}
+`;
+
 // Capture XYZ rows -> original 8x8 brick slot tile. Each native copy is a
 // single four-cell row, so WebGPU needs no bytesPerRow (and no illegal 128).
 export function copyCapturedFieldPage(encoder, buffer, localBrick, destination) {

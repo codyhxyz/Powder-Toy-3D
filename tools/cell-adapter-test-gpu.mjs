@@ -29,7 +29,7 @@ export class CellTestGPU extends FieldTestGPU {
       copyBufferToTexture:(s,d,e)=>push(()=>this._bufferTexture(bytes(s.buffer),s.offset??0,d.texture,d.origin??[0,0,0],e,s.bytesPerRow,s.rowsPerImage),{name:'native half copy',src:s.buffer,dst:d.texture,offset:s.offset??0,bytesPerRow:s.bytesPerRow,rowsPerImage:s.rowsPerImage,extent:e}),
       copyTextureToTexture:(s,d,e)=>push(()=>{const [w,h,z]=e;for(let k=0;k<z;k++)for(let y=0;y<h;y++)for(let x=0;x<w;x++){const a=(s.origin??[0,0,0]).map((v,i)=>v+[x,y,k][i]),b=(d.origin??[0,0,0]).map((v,i)=>v+[x,y,k][i]);bytes(d.texture).set(bytes(s.texture).subarray(at(s.texture,a),at(s.texture,a)+bpp(s.texture)),at(d.texture,b));}},{name:'texture copy'}),
       copyBufferToBuffer:(s,so,d,to,n)=>push(()=>bytes(d).set(bytes(s).subarray(so,so+n),to),{name:'native buffer copy'}),
-      beginComputePass:()=>{const groups=[];let pipeline;return {setPipeline:p=>pipeline=p,setBindGroup:(i,g)=>groups[i]=g,dispatchWorkgroups:(count=1)=>{const frozen=[...groups];push(()=>this._pack(frozen),{name:'raw CELL dispatch',pipeline,groups:frozen,count});},end(){}};},finish(){return {ops};}};
+      beginComputePass:()=>{const groups=[];let pipeline;return {setPipeline:p=>pipeline=p,setBindGroup:(i,g)=>groups[i]=g,dispatchWorkgroups:(count=1)=>{const frozen=[...groups],fields=pipeline.label==='world CELL field pack';push(()=>fields?this._packFields(frozen,count):this._pack(frozen),{name:fields?'field CELL dispatch':'raw CELL dispatch',pipeline,groups:frozen,count});},end(){}};},finish(){return {ops};}};
   }
   _bufferTexture(input,offset,t,origin,extent,row,image){
     const [w,h,z]=extent, stride=bpp(t);row??=w*stride;image??=h;
@@ -53,6 +53,13 @@ export class CellTestGPU extends FieldTestGPU {
     for(let i=0;i<params.count;i++)out.set([jobs[2*i]+1,0x7fc12345,0x80000000,0x01020304],jobs[2*i+1]*4);
   }
   _generate({bind,header}){const A=bind[1].entries.find(e=>e.binding===0).resource.buffer,B=bind[1].entries.find(e=>e.binding===1).resource.buffer;const a=new Float32Array(A.bytes),b=words(B);for(let i=0;i<a.length;i+=4){a[i]=2;a[i+1]=20;a[i+2]=.5;a[i+3]=.125;b.set([0x80000000,0x7fc12345,i,0x11223344],i);}}
+  _packFields(groups,count){
+    const buffers=groups[0].entries.map(e=>e.resource.buffer),jobs=words(buffers[3]),out=words(buffers[4]);
+    for(let i=0;i<count;i++)for(let s=0;s<64;s++){
+      const [x,y,z]=worldSlotCell(s),src=x+4*jobs[4*i]+32*(y+4*jobs[4*i+1]+32*(z+4*jobs[4*i+2])),dst=jobs[4*i+3]*768+(s>>3)*32+(s&7);
+      for(let c=0;c<3;c++)out.set(words(buffers[c]).subarray(src*2,src*2+2),(dst+c*256)*2);
+    }
+  }
   _pack(groups){
     const input=i=>groups[0].entries.find(e=>e.binding===i).resource.buffer;
     const src=[0,1,2,3,4,5,6,7].map(i=>words(input(i))),p=src[7],jobs=src[6],pid=p[0];

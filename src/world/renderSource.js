@@ -118,23 +118,30 @@ export class WorldRenderSource {
     this.nextRevision();
     // Engine writers without a smaller box write only the live simulation.
     // Scene/global writers must explicitly declare global, never origin moves.
-    const candidate = change && !change.global && (change.lo ? change : change.min ? { lo: change.min, hi: change.max } : null);
-    const box = candidate && ['lo', 'hi'].every(k => Array.isArray(candidate[k]) && candidate[k].length === 3 && candidate[k].every(Number.isFinite)) &&
-      candidate.lo.every((v, i) => v <= candidate.hi[i]) ? candidate : null;
+    const lo = change && !change.global && (change.lo || change.min);
+    const hi = change && (change.lo ? change.hi : change.max);
+    const bounded = Array.isArray(lo) && Array.isArray(hi) && lo.length === 3 && hi.length === 3 &&
+      Number.isFinite(lo[0]) && Number.isFinite(lo[1]) && Number.isFinite(lo[2]) &&
+      Number.isFinite(hi[0]) && Number.isFinite(hi[1]) && Number.isFinite(hi[2]) &&
+      lo[0] <= hi[0] && lo[1] <= hi[1] && lo[2] <= hi[2];
     this.changeJournal ??= [];
-    this.changeJournal.push(Object.freeze({ revision: this.contentRevision, global: !box,
-      bounds: box ? Object.freeze({ lo: Object.freeze([...box.lo]), hi: Object.freeze([...box.hi]) }) : null }));
+    // Flat primitive records need one freeze, own no caller arrays, and can be
+    // shared by cuts that copy only journal membership.
+    this.changeJournal.push(Object.freeze(bounded ? { revision: this.contentRevision, global: false,
+      loX: lo[0], loY: lo[1], loZ: lo[2], hiX: hi[0], hiY: hi[1], hiZ: hi[2] } :
+      { revision: this.contentRevision, global: true }));
   }
   changesSince(token) {
     const current = this.contentToken();
     if (!token || token.epoch !== this.epoch || token.sourceRevision > this.contentRevision) return { token: current, global: true, changedBricks: [] };
-    const changed = new Map();
+    const changed = new Map(), size = this.context.size;
     for (const entry of this.changeJournal ?? []) if (entry.revision > token.sourceRevision) {
       if (entry.global) return { token: current, global: true, changedBricks: [] };
-      const box = intersectBounds(entry.bounds, { lo: [0, 0, 0], hi: this.context.size });
-      if (box) for (let z = Math.floor(box.lo[2] / 4); z < Math.ceil(box.hi[2] / 4); z++)
-        for (let y = Math.floor(box.lo[1] / 4); y < Math.ceil(box.hi[1] / 4); y++)
-          for (let x = Math.floor(box.lo[0] / 4); x < Math.ceil(box.hi[0] / 4); x++) changed.set(`${x},${y},${z}`, [x, y, z]);
+      const loX = Math.max(0, entry.loX), loY = Math.max(0, entry.loY), loZ = Math.max(0, entry.loZ);
+      const hiX = Math.min(size[0], entry.hiX), hiY = Math.min(size[1], entry.hiY), hiZ = Math.min(size[2], entry.hiZ);
+      if (loX < hiX && loY < hiY && loZ < hiZ) for (let z = Math.floor(loZ / 4); z < Math.ceil(hiZ / 4); z++)
+        for (let y = Math.floor(loY / 4); y < Math.ceil(hiY / 4); y++)
+          for (let x = Math.floor(loX / 4); x < Math.ceil(hiX / 4); x++) changed.set(`${x},${y},${z}`, [x, y, z]);
     }
     return { token: current, global: false, changedBricks: [...changed.values()] };
   }

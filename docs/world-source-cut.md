@@ -19,7 +19,7 @@ const batch = cells.record(gpu.frame, { fieldTick, requirements });
 gpu.flush('owned source/cell captures');
 const publication = cells.commitAfterSourceFlush(batch);
 publication.previousLightingSnapshot.release(); // if unused
-const provider = cells.sourceFieldSnapshotProvider;
+const provider = cells;
 const snapshot = provider.acquire();
 ```
 

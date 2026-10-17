@@ -62,6 +62,7 @@ export async function setup({size=[16,8,8],feedback=true,sourceKinds=null}={}) {
     if(['world GI source','world GI gather','full world optical sun'].includes(label))tablesUsed.push(buf(0,0));
     if(label.startsWith('world lighting delta'))return push(()=>new Exec(new WgslParser().parse(pipe.compute.module.code)).dispatchWorkgroups('main',[n,1,1],{0:Object.fromEntries(groups[0].entries.map(e=>[e.binding,e.resource.buffer.bytes]))}));
     if(label==='world CELL raw/AUX pack')return push(()=>gpu._pack(groups));
+    if(label==='world CELL field pack')return push(()=>gpu._packFields(groups,n));
     if(label==='world GI source'||label==='world GI gather')return push(()=>{
       if(label==='world GI gather'){
         assert.deepEqual(groups[3].entries.map(e=>e.binding).sort((a,b)=>a-b),[0,1,2,3,4,5,6,7,8,9,10]);
