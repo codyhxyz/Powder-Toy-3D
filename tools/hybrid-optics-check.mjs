@@ -1,14 +1,49 @@
 // CPU only: numerical oracles, generated WGSL reflection, resource contracts.
 // Includes Naga semantic compilation, not GPU execution or visual validation.
 import assert from 'node:assert/strict';
+import { rewriteOpticsDiagnostic } from './harness/hybrid-optics-diagnostic.js';
 import { WgslReflect, WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { gridDims } from '../src/shaders/common.js';
-import { opticsShader, opticsBindings, opticsFieldBindings, OPTICS_STATE_LAYOUT, dropDepthWGSL, opticsProbeWGSL } from '../src/shaders/hybrid/optics.js';
+import { opticsShader, opticsBindings, opticsFieldBindings, OPTICS_STATE_LAYOUT, dropDepthWGSL, opticsProbeWGSL, opticsRefractionWGSL } from '../src/shaders/hybrid/optics.js';
 import { interfaceEnergy, opticalTransmission, walkOpticalCells, traceOpticalReference,
   opticalFieldDensity, opticalFieldSegment, opticalProbe, validateOpticsLimits, validateOpticsResources,
   createHybridOptics } from '../src/gfx/hybrid/optics.js';
 const close = (a, b, tol = 1e-8) => assert(Math.abs(a - b) < tol, `${a} != ${b}`);
 const white = a => a.forEach(v => close(v, 1));
+{
+  const critical=0.3950336277484894,eta=1.0885341167449951;
+  const rows=[[eta,1,critical,0]],iors=[1,eta,1.33,1.47,1.5];
+  for(const from of iors)for(const to of iors){
+    for(const cosine of [0,.1,critical,.5,.9,1])rows.push([from,to,cosine,0]);
+    if(from>to){
+      const bits=new Uint32Array(new Float32Array([Math.sqrt(1-(to/from)**2)]).buffer)[0];
+      for(let ulp=-2;ulp<=2;ulp++)rows.push([from,to,new Float32Array(new Uint32Array([bits+ulp]).buffer)[0],0]);
+    }
+  }
+  const input=new Float32Array(rows.flat()),output=new Float32Array(rows.length*8);
+  const code=`${opticsRefractionWGSL}
+@group(0) @binding(0) var<storage,read> input:array<vec4f>;
+@group(0) @binding(1) var<storage,read_write> output:array<vec4f>;
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid:vec3u){
+  let a=input[gid.x];let n=vec3f(0,1,0);
+  let d=vec3f(sqrt(max(0.0,1.0-a.z*a.z)),-a.z,0);
+  let r=opticsRefraction(d,n,a.x,a.y);
+  output[gid.x*2u]=vec4f(r.direction,r.reflected);
+  let eta=a.x/a.y;var oldF=1.0;
+  if(eta*eta*(1.0-a.z*a.z)<1.0){oldF=0.5;}
+  output[gid.x*2u+1u]=vec4f(normalize(refract(d,n,eta)),oldF);
+}`;
+  new WgslExec(new WgslParser().parse(code)).dispatchWorkgroups('main',rows.length,{0:{0:input,1:output}});
+  assert.equal(output[7],.5,'old TIR check selects transmission at the counterexample');
+  assert([...output.slice(4,7)].some(Number.isNaN),'old builtin refract disagrees and normalizes zero');
+  for(let i=0;i<rows.length;i++){
+    const r=output.slice(i*8,i*8+4);
+    assert(r.every(Number.isFinite),'critical-angle transport must stay finite');
+    assert(r[3]>=0&&r[3]<=1);
+    if(r[3]<1){close(Math.hypot(...r.slice(0,3)),1,2e-6);assert(r[1]<=1e-6);}
+  }
+  console.log(`PASS ${rows.length} executed WGSL refractions: critical-angle ULPs, finite transmission/TIR, old NaN reproduced.`);
+}
 const water = { id: 1, ior: 1.33, sigma: [0, 0, 0] };
 const oil = { id: 2, ior: 1.47, sigma: [0, 0, 0] };
 const glass = { id: 3, ior: 1.5, sigma: [0, 0, 0] };
@@ -467,7 +502,12 @@ console.log('Root selected-entry masks/layout: fragment storage 8, sampled textu
   const { spawnSync } = await import('node:child_process');
   for (const [name, code] of [['bounds',boundsCode], ['field-optics',boundedCode],
     ['cell-optics',opticsShader(grid,{boundsBinding:2})], ['droplets',dropCode],
-    ['root-normal',rootCodes[0]], ['root-fallback',rootCodes[1]], ['drop-depth',dropDepthWGSL], ['fallback-optics',fallbackCode], ['split-bounds',opticsBoundsShader(grid,{particles:true,world:true})]]) {
+['root-normal',rootCodes[0]], ['root-fallback',rootCodes[1]], ['root-point-diagnostic',rewriteOpticsDiagnostic(rootCodes[0],'steps')],
+['root-limited-diagnostic',rewriteOpticsDiagnostic(rootCodes[0],'steps',64)],
+['root-exit-diagnostic',rewriteOpticsDiagnostic(rootCodes[0],'steps',64,true)],
+['root-runtime-gi-diagnostic',rewriteOpticsDiagnostic(rootCodes[0],'runtime-gi')],
+['root-unlit-surfaces-diagnostic',rewriteOpticsDiagnostic(rootCodes[0],'unlit-surfaces')],
+    ['drop-depth',dropDepthWGSL], ['fallback-optics',fallbackCode], ['split-bounds',opticsBoundsShader(grid,{particles:true,world:true})]]) {
     const result = spawnSync('naga',['--stdin-file-path',`${name}.wgsl`],{input:code,encoding:'utf8'});
     assert.equal(result.status,0,`${name}: ${result.error ?? ''}${result.stdout}${result.stderr}`);
   }

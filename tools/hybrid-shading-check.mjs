@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './hybrid-shading-control-check.mjs';
 import { WgslReflect, WgslParser, WgslExec } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { execFileSync,spawnSync } from 'node:child_process';
 import { gridDims } from '../src/shaders/common.js';
