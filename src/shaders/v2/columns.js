@@ -81,6 +81,29 @@ export const COLUMN = (() => {
   };
 })();
 
+// Radial gravity (P.gravMode 2) has no runs: "down" is a different axis in each of the six pyramids around
+// the centre, and a run is a column along y. There a liquid moves cell face to cell face instead, The Powder
+// Toy's way (SimulationImpl::MovementPhase: a liquid that cannot move along the gravity vector steps
+// perpendicular to it, then along it from where it got to; GetGravityField's radial case: full strength
+// toward the centre). Each cell's pull is the dominant axis of its vector (modes.js mDown, as radialDrip and
+// V1's rotated blocks read it, shaders/move.js gravFrame). A face along that axis PACKS (the upper cell's
+// fill into the lower's room); a face across it FLOWS, from the higher head to the lower, the head being the
+// radial potential (constant pull: the distance to the centre, in cells) at the surface of the liquid
+// stacked over the cell along its pull, so a lake at rest is an exact sphere about the centre. Liquid over
+// air is radialDrip's (blasts.js): it flies toward the centre as particles. Momentum-free (no lanes): the
+// head relaxes, it does not slosh.
+export const RADIAL = {
+  // the share of a face's head difference (cells) that crosses it a tick at reference gravity. The demands
+  // are frozen (Jacobi), and explicit diffusion over a cell's four sideways faces keeps every Fourier mode's
+  // sign, so it never overshoots or rings, only up to 1/8 (amplification 1 - 8 r ≥ 0).
+  RATE: 1 / 8,
+  // a covered giver keeps this many quanta, so the liquid over it never stands on air (radialDrip would
+  // throw it as particles)
+  KEEP: 1,
+  // a face's demand word: its quanta, the direction, and each side's cover (frozen with the demand)
+  DEMAND_MAX: 0x1fffffff, BACK: 0x80000000, COVERED_MINUS: 0x40000000, COVERED_PLUS: 0x20000000,
+};
+
 // record flags, in the mass word (a run's mass stays under 2^30: 16 383 cells of FULL, or 1 023 of MAX_FILL)
 const REC_FALLING = 0x80000000, REC_LAST = 0x40000000, REC_MASS = 0x3fffffff;
 const f = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
@@ -123,6 +146,12 @@ const COL_FOAM_MAX_GAIN: f32 = ${f(COLUMN.FOAM_MAX_GAIN)};
 const REC_FALLING: u32 = ${REC_FALLING >>> 0}u;
 const REC_LAST: u32 = ${REC_LAST}u;
 const REC_MASS: u32 = ${REC_MASS}u;
+const RAD_RATE: f32 = ${RADIAL.RATE};
+const RAD_KEEP: u32 = ${RADIAL.KEEP}u;
+const RAD_DEMAND_MAX: u32 = ${RADIAL.DEMAND_MAX}u;
+const RAD_BACK: u32 = ${RADIAL.BACK >>> 0}u;
+const RAD_COVERED_MINUS: u32 = ${RADIAL.COVERED_MINUS}u;
+const RAD_COVERED_PLUS: u32 = ${RADIAL.COVERED_PLUS}u;
 const COL_FOAM_GAIN = array<f32, ${FOAM_ROWS.length}>(${FOAM_ROWS.map(r => `${r.gain}.0`).join(',')});
 
 // ---- records: a column's domains bottom up, record k in the liquidScratch slot of the column's cell at
@@ -946,6 +975,227 @@ fn colSetDemand(x: i32, y: i32, z: i32, axis: i32, t: u32, head: f32) {
 }
 fn colDemandAt(x: i32, y: i32, z: i32, axis: i32) -> u32 { return atomicLoad(&jetMask[colWord(x, y, z, axis)]) & COL_DEMAND_MAX; }
 fn colSentHeadAt(x: i32, y: i32, z: i32, axis: i32) -> f32 { return f32(atomicLoad(&jetMask[colWord(x, y, z, axis)]) >> 24u) / COL_HEAD_Q; }
+
+// ---- radial gravity (RADIAL above). Three stages a tick on the column passes' threads and ownership:
+//   v2runs         every face's demand from the frozen cells (reads only; writes its words): colRadRuns
+//   v2pairs 0      each column's y faces, its own cells only: colRadColumn
+//   v2pairs 1      the x and z faces of the pairs a thread owns, as the transfers: colRadPairs
+// A face's demand word lives in the liquidScratch slot of its -side cell, where the runs keep their records
+// under vertical gravity (none exist under radial; support's air byte in .x is untouched): .y its +x face,
+// .z its +y face, .w its +z face. The quanta in the low 29 bits, RAD_BACK when the +side gives, and each
+// side's cover when it gives this tick (sideways, or packing down).
+fn radSetDemand(x: i32, y: i32, z: i32, axis: i32, n: f32, coveredMinus: bool, coveredPlus: bool) {
+  let s = slotOf(vec3i(x, y, z));
+  let w = min(u32(abs(n)), RAD_DEMAND_MAX) | select(0u, RAD_BACK, n < 0.0) | select(0u, RAD_COVERED_MINUS, coveredMinus) | select(0u, RAD_COVERED_PLUS, coveredPlus);
+  if (axis == 0) { liquidScratch[s].y = w; } else if (axis == 1) { liquidScratch[s].z = w; } else { liquidScratch[s].w = w; }
+}
+fn radWord(x: i32, y: i32, z: i32, axis: i32) -> u32 {
+  let r = liquidScratch[slotOf(vec3i(x, y, z))];
+  if (axis == 0) { return r.y; }
+  if (axis == 1) { return r.z; }
+  return r.w;
+}
+fn radDemandAt(x: i32, y: i32, z: i32, axis: i32) -> f32 { let w = radWord(x, y, z, axis); let n = f32(w & RAD_DEMAND_MAX); return select(n, -n, (w & RAD_BACK) != 0u); }
+fn radCoveredAt(x: i32, y: i32, z: i32, axis: i32, plus: bool) -> bool { return (radWord(x, y, z, axis) & select(RAD_COVERED_MINUS, RAD_COVERED_PLUS, plus)) != 0u; }
+fn colRadInside(x: i32, y: i32, z: i32) -> bool { return x >= 0 && y >= 0 && z >= 0 && x < NX && y < NY && z < NZ; }
+// at most reference gravity's rate: past it the relaxation would overshoot
+fn colRadPull() -> f32 { return min(P.gravity / COL_G_MS2, 1.0); }
+// the dominant axis of the pull at a cell's centre (mDown's rule: its ties go to y, then x), and its sign
+// along it (+1 toward +axis; 0 with no gravity, as mDown's zero vector)
+fn colRadAxis(x: i32, y: i32, z: i32) -> i32 {
+  let ax = abs(0.5 * f32(NX) - (f32(x) + 0.5)); let ay = abs(0.5 * f32(NY) - (f32(y) + 0.5)); let az = abs(0.5 * f32(NZ) - (f32(z) + 0.5));
+  var axis = 1;
+  if (ax > ay && ax >= az) { axis = 0; }
+  if (az > ay && az > ax) { axis = 2; }
+  return axis;
+}
+fn colRadSign(x: i32, y: i32, z: i32, axis: i32) -> i32 {
+  if (P.gravity <= 0.0) { return 0; }
+  var d = 0.5 * f32(NY) - (f32(y) + 0.5);
+  if (axis == 0) { d = 0.5 * f32(NX) - (f32(x) + 0.5); }
+  if (axis == 2) { d = 0.5 * f32(NZ) - (f32(z) + 0.5); }
+  if (d > 0.0) { return 1; }
+  if (d < 0.0) { return -1; }
+  return 0;
+}
+// the fill (quanta) of the same liquid from this cell up against its pull: the column's prefix sum (colEta's),
+// whatever its packing. The path need not stay in one pyramid: a head is the same along any path.
+fn colRadMass(x: i32, y: i32, z: i32, axis: i32, sg: i32) -> f32 {
+  let c = colCell(x, y, z);
+  if (!isLiq(c)) { return 0.0; }
+  if (sg == 0) { return f32(cFill(c)); }
+  let id = cid(c); let sub = liquidSub(c);
+  var m = 0.0;
+  var px = x; var py = y; var pz = z;
+  loop {
+    if (!colRadInside(px, py, pz)) { break; }
+    let q = colCell(px, py, pz);
+    if (!isLiq(q) || cid(q) != id || liquidSub(q) != sub) { break; }
+    m = m + f32(cFill(q));
+    if (axis == 0) { px = px - sg; }
+    if (axis == 1) { py = py - sg; }
+    if (axis == 2) { pz = pz - sg; }
+  }
+  return m;
+}
+// the head (cells) of a cell holding m over its bottom face: the potential where that much liquid stands, its
+// distance to the centre. A dry cell's (m = 0) is its bottom face's.
+fn colRadHead(x: i32, y: i32, z: i32, axis: i32, sg: i32, m: f32) -> f32 {
+  let up = f32(-sg) * (m / COL_FULL - 0.5);
+  var px = f32(x) + 0.5; var py = f32(y) + 0.5; var pz = f32(z) + 0.5;
+  if (axis == 0) { px = px + up; }
+  if (axis == 1) { py = py + up; }
+  if (axis == 2) { pz = pz + up; }
+  let dx = px - 0.5 * f32(NX); let dy = py - 0.5 * f32(NY); let dz = pz - 0.5 * f32(NZ);
+  return sqrt(dx * dx + dy * dy + dz * dz);
+}
+// the cell one step along (below) or against (above) a cell's pull is liquid, or the same liquid as it
+fn colRadWetBelow(x: i32, y: i32, z: i32, axis: i32, sg: i32) -> bool {
+  var px = x; var py = y; var pz = z;
+  if (axis == 0) { px = x + sg; }
+  if (axis == 1) { py = y + sg; }
+  if (axis == 2) { pz = z + sg; }
+  if (sg == 0 || !colRadInside(px, py, pz)) { return false; }
+  return isLiq(colCell(px, py, pz));
+}
+fn colRadCovered(x: i32, y: i32, z: i32) -> bool {
+  let axis = colRadAxis(x, y, z); let sg = colRadSign(x, y, z, axis);
+  var px = x; var py = y; var pz = z;
+  if (axis == 0) { px = x - sg; }
+  if (axis == 1) { py = y - sg; }
+  if (axis == 2) { pz = z - sg; }
+  if (sg == 0 || !colRadInside(px, py, pz)) { return false; }
+  let c = colCell(x, y, z);
+  if (!isLiq(c)) { return false; }
+  let q = colCell(px, py, pz);
+  return isLiq(q) && cid(q) == cid(c) && liquidSub(q) == liquidSub(c);
+}
+// The demand (quanta, + from the cell to its +axis neighbour) of a face across both sides' pulls. Only a wet
+// side gives, into air or the same liquid with room (an interior face carries nothing and reads no column);
+// a face along either side's pull packs instead. As colFlux: lean-sim's dead band (DEADQ quanta) or the
+// liquid's yield, and the dry tolerance (a liquid thinner than FILM spreads onto no dry ground).
+fn colRadDemand(x: i32, y: i32, z: i32, axis: i32) -> f32 {
+  var bx = x; var by = y; var bz = z;
+  if (axis == 0) { bx = x + 1; }
+  if (axis == 1) { by = y + 1; }
+  if (axis == 2) { bz = z + 1; }
+  if (!colRadInside(bx, by, bz)) { return 0.0; }
+  let ca = colCell(x, y, z); let cb = colCell(bx, by, bz);
+  let wa = isLiq(ca); let wb = isLiq(cb);
+  if (!wa && !wb) { return 0.0; }
+  if ((!wa && clsOf(ca) != C_AIR) || (!wb && clsOf(cb) != C_AIR)) { return 0.0; }
+  if (wa && wb && (cid(ca) != cid(cb) || liquidSub(ca) != liquidSub(cb))) { return 0.0; }
+  if (wa && wb && cFill(ca) >= FULLU && cFill(cb) >= FULLU) { return 0.0; }
+  let aa = colRadAxis(x, y, z); let ab = colRadAxis(bx, by, bz);
+  if (aa == axis || ab == axis) { return 0.0; }
+  let sa = colRadSign(x, y, z, aa); let sb = colRadSign(bx, by, bz, ab);
+  let ma = colRadMass(x, y, z, aa, sa); let mb = colRadMass(bx, by, bz, ab, sb);
+  let drive = colRadHead(x, y, z, aa, sa, ma) - colRadHead(bx, by, bz, ab, sb, mb);
+  var liq = cid(ca);
+  if (!wa) { liq = cid(cb); }
+  if (abs(drive) < max(COL_DEADQ / COL_FULL, yieldOf(liq))) { return 0.0; }
+  if (drive > 0.0 && (!wa || cFill(cb) >= FULLU)) { return 0.0; }
+  if (drive < 0.0 && (!wb || cFill(ca) >= FULLU)) { return 0.0; }
+  if (drive > 0.0 && !wb && ma < COL_FILM && !colRadWetBelow(bx, by, bz, ab, sb)) { return 0.0; }
+  if (drive < 0.0 && !wa && mb < COL_FILM && !colRadWetBelow(x, y, z, aa, sa)) { return 0.0; }
+  let n = floor(RAD_RATE * colRadPull() * abs(drive) * COL_FULL);
+  if (drive < 0.0) { return -n; }
+  return n;
+}
+// a face's demand into its word, with the cover of each side that gives across it (sideways, or as the upper
+// cell of a face along its pull): read here, while every cell is frozen, since a transfer stage owns only the
+// face's two cells. A face that will move keeps both awake.
+fn colRadNote(x: i32, y: i32, z: i32, axis: i32) {
+  var bx = x; var by = y; var bz = z;
+  if (axis == 0) { bx = x + 1; }
+  if (axis == 1) { by = y + 1; }
+  if (axis == 2) { bz = z + 1; }
+  var n = 0.0; var coveredA = false; var coveredB = false;
+  if (colRadInside(bx, by, bz)) {
+    n = colRadDemand(x, y, z, axis);
+    let aa = colRadAxis(x, y, z); let ab = colRadAxis(bx, by, bz);
+    if (n > 0.0 || (aa == axis && colRadSign(x, y, z, aa) > 0)) { coveredA = colRadCovered(x, y, z); }
+    if (n < 0.0 || (ab == axis && colRadSign(bx, by, bz, ab) < 0)) { coveredB = colRadCovered(bx, by, bz); }
+    if (n != 0.0) { colBusy(x, y, z); colBusy(bx, by, bz); }
+  }
+  radSetDemand(x, y, z, axis, n, coveredA, coveredB);
+}
+// v2runs: the demands of the column's +faces, and of a sleeping -side neighbour's face into it (the pair
+// stages own that face the same way)
+fn colRadRuns(x: i32, z: i32) {
+  for (var y = 0; y < NY; y++) {
+    for (var axis = 0; axis < 3; axis++) { colRadNote(x, y, z, axis); }
+    if (x > 0 && !colAwake(x - 1, z)) { colRadNote(x - 1, y, z, 0); }
+    if (z > 0 && !colAwake(x, z - 1)) { colRadNote(x, y, z - 1, 2); }
+  }
+}
+fn colRadTowardPlus(x: i32, y: i32, z: i32) -> bool { let a = colRadAxis(x, y, z); return a == 1 && colRadSign(x, y, z, a) > 0; }
+// v2pairs stage 0: the column's foam (colScan's, which does not run), then its y faces: those that pack
+// toward -y bottom up, so a hole rises through a stack in one sweep, then those toward +y top down
+fn colRadColumn(x: i32, z: i32) {
+  for (var y = 0; y < NY; y++) { foamDecay(x, y, z); }
+  for (var y = 0; y + 1 < NY; y++) { if (!colRadTowardPlus(x, y, z)) { colRadFace(x, y, z, 1); } }
+  for (var y = NY - 2; y >= 0; y--) { if (colRadTowardPlus(x, y, z)) { colRadFace(x, y, z, 1); } }
+}
+// v2pairs stage 1: the pairs this thread owns along P.pairAxis (v2PairsKernel's ownership, without loop edges)
+fn colRadPairs(x: i32, z: i32) {
+  if (P.pairStage == 0u) { colRadColumn(x, z); return; }
+  let axis = i32(P.pairAxis);
+  var own = z; var xn = x; var zn = z + 1; var xp = x; var zp = z - 1;
+  if (axis == 0) { own = x; xn = x + 1; zn = z; xp = x - 1; zp = z; }
+  let odd = floor(f32(own) * 0.5) * 2.0 != f32(own);
+  if (select(0u, 1u, odd) == P.pairParity) {
+    if (xn < NX && zn < NZ) { colRadPair(x, z, axis); }
+  } else if (xp >= 0 && zp >= 0 && !colAwake(xp, zp)) { colRadPair(xp, zp, axis); }
+}
+fn colRadPair(x: i32, z: i32, axis: i32) { for (var y = 0; y < NY; y++) { colRadFace(x, y, z, axis); } }
+// a face at its stage: along a side's pull it packs, across both it carries its demand (never more than the
+// giver holds, less RAD_KEEP when covered, nor more than the receiver has room for)
+fn colRadFace(x: i32, y: i32, z: i32, axis: i32) {
+  var bx = x; var by = y; var bz = z;
+  if (axis == 0) { bx = x + 1; }
+  if (axis == 1) { by = y + 1; }
+  if (axis == 2) { bz = z + 1; }
+  if (!colRadInside(bx, by, bz)) { return; }
+  let aa = colRadAxis(x, y, z); let ab = colRadAxis(bx, by, bz);
+  if (aa == axis || ab == axis) {
+    if (aa == axis && colRadSign(x, y, z, aa) > 0) { colRadPack(x, y, z, bx, by, bz, radCoveredAt(x, y, z, axis, false)); }
+    if (ab == axis && colRadSign(bx, by, bz, ab) < 0) { colRadPack(bx, by, bz, x, y, z, radCoveredAt(x, y, z, axis, true)); }
+    return;
+  }
+  let t = radDemandAt(x, y, z, axis);
+  if (t > 0.0) { colRadSend(x, y, z, bx, by, bz, t, radCoveredAt(x, y, z, axis, false)); }
+  if (t < 0.0) { colRadSend(bx, by, bz, x, y, z, -t, radCoveredAt(x, y, z, axis, true)); }
+}
+// the upper cell's fill into the room of the lower one, air or the same liquid (along the upper's pull: less
+// RAD_KEEP when covered, so a hole climbs a stack and never opens under it; one the face's other stages
+// opened this tick closes from above); a lower cell over FULL (left compressed by vertical gravity's covered
+// runs) gives its surplus up. (Liquid over open air is radialDrip's before it is this rule's: it flies.)
+fn colRadPack(xu: i32, yu: i32, zu: i32, xl: i32, yl: i32, zl: i32, covered: bool) {
+  let cu = colCell(xu, yu, zu); let cl = colCell(xl, yl, zl);
+  if (isLiq(cu) && (clsOf(cl) == C_AIR || (isLiq(cl) && cFill(cl) < FULLU))) {
+    var have = cFill(cu);
+    if (covered) { have = have - min(have, RAD_KEEP); }
+    var room = FULLU;
+    if (isLiq(cl)) { room = FULLU - cFill(cl); }
+    colMove(xu, yu, zu, xl, yl, zl, min(have, room), false);
+    return;
+  }
+  if (isLiq(cl) && cFill(cl) > FULLU && (clsOf(cu) == C_AIR || (isLiq(cu) && cFill(cu) < FULLU))) {
+    var room = FULLU;
+    if (isLiq(cu)) { room = FULLU - cFill(cu); }
+    colMove(xl, yl, zl, xu, yu, zu, min(cFill(cl) - FULLU, room), false);
+  }
+}
+fn colRadSend(xs: i32, ys: i32, zs: i32, xd: i32, yd: i32, zd: i32, t: f32, covered: bool) {
+  let cs = colCell(xs, ys, zs); let cd = colCell(xd, yd, zd);
+  if (!isLiq(cs)) { return; }
+  var have = cFill(cs);
+  if (covered) { have = have - min(have, RAD_KEEP); }
+  var room = FULLU;
+  if (isLiq(cd)) { room = FULLU - min(cFill(cd), FULLU); }
+  colMove(xs, ys, zs, xd, yd, zd, min(u32(t), min(have, room)), true);
+}
 `;
 
 // The column the thread of an awake brick column's column list handles (v2column's indexing).
@@ -963,9 +1213,9 @@ export const v2RunsKernel = (head, MAIN) => /* wgsl */ `
 ${head}
 ${columnWaterWGSL}
 ${MAIN} {
-  // radial gravity has no columns: liquids hold still under it (the pipe model it replaced is not kept)
-  if (P.gravMode == 2u) { return; }
 ${COLUMN_THREAD}
+  // radial gravity has no runs: the column's face demands instead (RADIAL)
+  if (P.gravMode == 2u) { colRadRuns(x, z); return; }
   colScan(x, z, true);
   for (var side = 0; side < 4; side++) {
     let n = mEdge(vec3i(x, 0, z) + face6(select(side, side + 2, side >= 2)));
@@ -981,8 +1231,8 @@ export const v2PairsKernel = (head, MAIN) => /* wgsl */ `
 ${head}
 ${columnWaterWGSL}
 ${MAIN} {
-  if (P.gravMode == 2u) { return; }
 ${COLUMN_THREAD}
+  if (P.gravMode == 2u) { colRadPairs(x, z); return; }
   let here = vec3i(x, 0, z);
   if (P.pairStage == 0u) {
     for (var axis = 0; axis <= 2; axis += 2) {

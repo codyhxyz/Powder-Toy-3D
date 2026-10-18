@@ -5,7 +5,7 @@
 // division in them); the codec helpers they call (records, lanes, the moved cores, foam, atomics) are JS
 // twins of the bit layouts they name. f32 expressions run in f64 (integer custody does not depend on it).
 // No GPU, browser or World variant of the application.
-import { columnWaterWGSL, pairOrder, COLUMN } from '../../src/shaders/v2/columns.js';
+import { columnWaterWGSL, pairOrder, COLUMN, RADIAL } from '../../src/shaders/v2/columns.js';
 import { ELEMENTS, E, K } from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
 import { v2Rows, SUMMARY } from '../../src/shaders/v2.js';
@@ -13,9 +13,13 @@ import { FOAM_ROWS } from '../../src/v2/foam.js';
 
 export const TRANSLATED = ['colMove', 'colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colPack', 'colFall',
   'colFinish', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
-  'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colCrown', 'colLayer', 'colDepthAt', 'colFloats', 'colFloor', 'colSends', 'colStratify'];
+  'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colCrown', 'colLayer', 'colDepthAt', 'colFloats', 'colFloor', 'colSends', 'colStratify',
+  // radial gravity (columns.js RADIAL)
+  'colRadInside', 'colRadPull', 'colRadAxis', 'colRadSign', 'colRadMass', 'colRadHead', 'colRadWetBelow', 'colRadCovered', 'colRadDemand',
+  'colRadNote', 'colRadRuns', 'colRadTowardPlus', 'colRadColumn', 'colRadPairs', 'colRadPair', 'colRadFace', 'colRadPack', 'colRadSend'];
 // the f32 functions (division allowed: never on integers)
-export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown', 'colLayer', 'colDepthAt', 'colSends'];
+export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown', 'colLayer', 'colDepthAt', 'colSends',
+  'colRadPull', 'colRadHead', 'colRadDemand'];
 
 export function wgslFunction(code, name) {
   const at = code.indexOf(`fn ${name}(`);
@@ -50,8 +54,9 @@ const u = x => x >>> 0;
 
 /** A CPU grid running the emitted column passes. Cells are x + nx (z + nz y); bricks of 4³ for activity. */
 export class ColumnGrid {
-  constructor(nx, ny, nz, { gravity = 19.6, gravMode = 0, edge = 0 } = {}) {
-    Object.assign(this, { nx, ny, nz, n: nx * ny * nz, tick: 0 });
+  constructor(nx, ny, nz, { gravity = 19.6, gravMode = 0, edge = 0, stillRadial = false } = {}) {
+    // stillRadial: radial gravity as it was before columns.js RADIAL (liquids held still: the red variant)
+    Object.assign(this, { nx, ny, nz, n: nx * ny * nz, tick: 0, stillRadial });
     this.cores = Array.from({ length: this.n }, () => new Uint32Array([L.makeMaterial(0, 20, 0).core[0], 0, 0, 0]));
     this.banks = new Int32Array(this.n);
     this.events = new Uint32Array(this.n);
@@ -112,7 +117,7 @@ export class ColumnGrid {
     const g = this, code = columnWaterWGSL;
     const slotOf = p => g.at(p[0], p[1], p[2]);
     const ctx = {
-      ...constants(code), NY: g.ny, FULLU: L.FULL, MAX_FILL: L.MAX_FILL, C_AIR: C.AIR, C_LIQUID: C.LIQUID, P: g.P,
+      ...constants(code), NX: g.nx, NY: g.ny, NZ: g.nz, FULLU: L.FULL, MAX_FILL: L.MAX_FILL, C_AIR: C.AIR, C_LIQUID: C.LIQUID, P: g.P,
       vec3i: (x, y, z) => [x, y, z], Material: (core, bank) => ({ core, bank }),
       u32: x => Math.max(0, Math.trunc(x)), i32: Math.trunc, f32: Math.fround,
       min: Math.min, max: Math.max, abs: Math.abs, floor: Math.floor, ceil: Math.ceil, sqrt: Math.sqrt,
@@ -149,6 +154,13 @@ export class ColumnGrid {
       energyOf: L.energyOf, energySub: (a, b) => a - b, energyAdd: (a, b) => a + b, energyMul: (a, b) => BigInt(a) * BigInt(b),
       energyShare: (e, p, n, d) => L.share(e, p, n, d), shareUnsigned: (t, p, n, d) => Number(L.share(t, p, n, d)),
       energyFits: L.energyFits, withEnergy: L.withEnergy,
+      // radial face demands (columns.js radSetDemand's layout: .y +x, .z +y, .w +z of the -side cell's slot)
+      radSetDemand: (x, y, z, axis, n, coveredMinus, coveredPlus) => {
+        g.scratch[slotOf([x, y, z])][1 + axis] = (Math.min(Math.trunc(Math.abs(n)), RADIAL.DEMAND_MAX) | (n < 0 ? RADIAL.BACK : 0) |
+          (coveredMinus ? RADIAL.COVERED_MINUS : 0) | (coveredPlus ? RADIAL.COVERED_PLUS : 0)) >>> 0;
+      },
+      radDemandAt: (x, y, z, axis) => { const w = g.scratch[slotOf([x, y, z])][1 + axis], n = w & RADIAL.DEMAND_MAX; return w & RADIAL.BACK ? -n : n; },
+      radCoveredAt: (x, y, z, axis, plus) => (g.scratch[slotOf([x, y, z])][1 + axis] & (plus ? RADIAL.COVERED_PLUS : RADIAL.COVERED_MINUS)) !== 0,
       // records (columns.js recMake's layout)
       colRec: (x, k, z) => new Uint32Array(g.scratch[slotOf([x, k, z])]),
       colPut: (x, k, z, r) => { g.scratch[slotOf([x, k, z])] = new Uint32Array(r); },
@@ -286,6 +298,16 @@ export class ColumnGrid {
       }
       this.onStage?.('jets');
       this.jets();
+    } else if (!this.stillRadial) {
+      // radial gravity (columns.js RADIAL): v2runs writes every face's demand, v2pairs stage 0 each column's
+      // y faces, the transfer stages the pairs' x and z faces
+      this.onStage?.('v2runs');
+      for (const [x, z] of cols) this.ctx.colRadRuns(x, z);
+      for (const [axis, stage, parity] of pairOrder(this.tick)) {
+        Object.assign(this.P, { pairAxis: axis, pairStage: stage, pairParity: parity });
+        this.onStage?.('v2pairs');
+        for (const [x, z] of cols) this.ctx.colRadPairs(x, z);
+      }
     }
     let n = this.parts.length ? 1 : 0; for (const b of this.busy) n += b;
     this.busyIn = Uint8Array.from(this.busy);
