@@ -19,7 +19,7 @@ assert.equal(nativePaintUpdateWGSL().replace('\n  paintPartner = q;', ''), paint
 let modules = 0;
 for (const dims of [[32, 32, 32], [48, 16, 32]]) {
   const g = gridLayout(...dims), params = nativePaintParams();
-  for (const stage of ['evaluate', 'commit', 'particleEvaluate', 'particleErase']) {
+  for (const stage of ['evaluate', 'commit', 'particleEvaluate', 'particleCommit']) {
     const code = nativePaintWGSL(g, params, stage);
     assert([...code.matchAll(/var<storage,/g)].length <= 8, `${stage} storage budget`);
     assertNaga(code, `nativePaint/${stage} ${dims}`); modules++;
@@ -89,15 +89,37 @@ for (const stroke of [{ tool: TOOLS.find(t => t.key === 'ERASE').id }, { tool: E
   let threw = null;
   try { Simulation.prototype.paint.call(sim, { center, radius: 3, shape: 0, rate: 1, ...stroke }); } catch (e) { threw = e; }
   const names = calls.filter(c => c.name).map(c => c.name);
-  assert(names.includes('nativePaintParticleEvaluate') && names.indexOf('nativePaintParticleEvaluate') < names.indexOf('nativePaintParticleErase'), 'flying matter in the brush is erased');
-  const erase = calls.find(c => c.name === 'nativePaintParticleErase');
+  assert(names.includes('nativePaintParticleEvaluate') && names.indexOf('nativePaintParticleEvaluate') < names.indexOf('nativePaintParticleCommit'), 'flying matter in the brush is erased');
+  const erase = calls.find(c => c.name === 'nativePaintParticleCommit');
   assert.deepEqual(erase.args.bind[1].map(e => e.resource.buffer), [erase.args.bind[1][0].resource.buffer, d.particles, d.control], 'the erase writes the particle list and its live count');
   assert.equal(erase.size[0] * 64, 65536);
   if (stroke.tool === PROP_TOOL) { assert.equal(threw, null); assert(names.includes('nativePaintCommit'), 'type none: the grid cells go natively too'); }
   else assert.match(threw?.message ?? '', /legacy edit forbidden/, 'the grid cells still take the exact edit-intent replacement, after the particles');
 }
-const erase = nativePaintWGSL(g, nativePaintParams(), 'particleErase');
+const erase = nativePaintWGSL(g, nativePaintParams(), 'particleCommit');
 assert.match(erase, /paintParticles\[i\]\.id=0u; atomicSub\(&paintControl\[0\],1u\); noteDead\(i\);/, 'a particle dies as the particle lane kills one');
+// Heat, Cool, Spark and the Property tool's type, temperature, life and ctype reach flying matter too
+// (V1's flying matter was grid cells): the particle pass runs, and the grid keeps its own route.
+const ids = Object.fromEntries(TOOLS.map(t => [t.key, t.id]));
+for (const stroke of [{ tool: ids.HEAT }, { tool: ids.COOL }, { tool: ids.SPARK }, { tool: PROP_TOOL, prop: { field: PROP.TEMP, value: 300 } },
+  { tool: PROP_TOOL, prop: { field: PROP.LIFE, value: 5 } }, { tool: PROP_TOOL, prop: { field: PROP.CTYPE, value: E.WATER } }, { tool: PROP_TOOL, prop: { field: PROP.TYPE, value: E.OIL } }]) {
+  calls.length = 0;
+  let threw = null;
+  try { Simulation.prototype.paint.call(sim, { center, radius: 3, shape: 0, rate: 1, ...stroke }); } catch (e) { threw = e; }
+  const names = calls.filter(c => c.name).map(c => c.name);
+  const label = stroke.prop ? `Property ${Object.keys(PROP).find(k => PROP[k] === stroke.prop.field)}` : TOOLS.find(t => t.id === stroke.tool).key;
+  assert(names.indexOf('nativePaintParticleEvaluate') >= 0 && names.indexOf('nativePaintParticleEvaluate') < names.indexOf('nativePaintParticleCommit'), `${label} reaches flying matter`);
+  if (stroke.prop?.field === PROP.TYPE) { assert.equal(threw, null); assert(names.includes('nativePaintCommit'), 'Property type: grid cells natively too'); }
+  else assert.match(threw?.message ?? '', /legacy edit forbidden/, `${label}: grid cells keep the edit-intent merge, after the particles`);
+}
+// The flying cell's change is V1's own rule's result, merged as V2's importProperties merges a grid cell's,
+// in packet energy (a particle owns no air carrier): sensible heat by packet capacity, a declared source.
+const pe = nativePaintWGSL(g, nativePaintParams(), 'particleEvaluate');
+assert.match(pe, /update\(p,a,b,&outA,&outB\);/, 'the particle runs V1 passes.js update');
+assert.match(erase, /let heat=energyMul\(packetCapacityQ\(m\.core\),u32\(abs\(dq\)\)\);/, 'heat by packet capacity');
+assert.match(erase, /if\(packetEnergyFits\(m,edited\)\) \{ m=withPacketEnergy\(m,edited\); \}/, 'unrepresentable heat stays out, never wraps');
+assert.match(erase, /noteEnergySource\(p,energySub\(packetOwnedEnergy\(m\),packetOwnedEnergy\(before\)\)\)/, 'the tool\'s energy is a declared source');
+assert.match(erase, /if\(isLiq\(before\.core\) && cls\(id\)==C_LIQUID\) \{ amount=cFill\(before\.core\); \}/, 'a retyped liquid droplet keeps its fill');
 // Not ready: refused explicitly (prepareNative builds it before the first frame), never a V1 edit.
 const notReady = Object.assign(Object.create(Simulation.prototype), { ...sim, compactOwner: { ...owner }, compact: null });
 notReady.compact = notReady.compactOwner; notReady.compactOwner.dynamics = { ...d, isReady: false };
