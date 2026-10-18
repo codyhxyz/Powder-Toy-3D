@@ -1246,10 +1246,11 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     var c = vec3f(0.0);
     if (stop) {
       var s: Surf;${grains ? `
-      // a clod is shaded as the crisp grain it is: one inlined matOf (gfx/grains.js grainCrisp)
-      let clod = hitK == HIT_GRAIN && grainCrisp(gHitK, gHitA, hitP, &hitCell, &hitId, &hitA, &hitN);
-      if (clod) { hitK = HIT_CRISP; }` : ''}
-      if (hitK == HIT_CRISP) { s = crispSurf(hitCell, hitId, hitA, hitP, hitN);${grains ? ' if (clod) { clodFinish(&s); }' : ''} }${grains ? `
+      // a clod is shaded as the crisp grain it is: one inlined matOf (gfx/grains.js
+      // grainCrisp). A local flag, not a hitK write: the kind stays loop-invariant
+      // here (tools/check-opaque-surface.mjs)
+      let clod = hitK == HIT_GRAIN && grainCrisp(gHitK, gHitA, hitP, &hitCell, &hitId, &hitA, &hitN);` : ''}
+      if (hitK == HIT_CRISP${grains ? ' || clod' : ''}) { s = crispSurf(hitCell, hitId, hitA, hitP, hitN);${grains ? ' if (clod) { clodFinish(&s); }' : ''} }${grains ? `
       else if (hitK == HIT_GRAIN) { s = grainSurf(gHitA, gHitK, hitP, shadeRd); }` : ''}
       else {
         var ns = hitN;

@@ -21,7 +21,8 @@
 //   near  base plus the rest, prefetched at idle time a moment after start-up
 //         or a settings change, and shown when the camera is close and it is
 //         ready: detail shows up late rather than the frame waiting.
-// With the default (Balanced) switches only Smooth up close is gated.
+// With the default (Balanced) switches nothing is gated: every feature's
+// derived fade (gfx/detail.js) shows from ordinary views. Full gates the pebbles.
 // Only lit material views have detail: in any other view nothing builds
 // (docs/webgpu.md B5: boot builds the current view's module only), and the
 // variants build when entering Realistic or Cozy (setView).

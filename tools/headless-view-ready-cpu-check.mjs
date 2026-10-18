@@ -35,12 +35,13 @@ function deferred() {
   return { promise, resolve, reject };
 }
 function watch(p) { let done = false; p.then(() => { done = true; }, () => { done = true; }); return () => done; }
-// The gate is exercised with a feature it gates: Loose clumps up close (a
-// lone clod's lumps start at 1.3 cm per pixel). Smooth up close used to be
-// the one; its fade (gfx/detail.js CUBIC_ERR: shape error over 1 px) now
-// shows from any ordinary view, so the gate leaves it in the base variant.
-const GATED = 'DETAIL_GRAIN_CLUSTERS';
-const settings = () => ({ view: 'realistic', upscale: 'quality', detail_grainClusters: true });
+// The gate is exercised with a feature it gates: Pebbles and grains up close
+// (their geometry starts at 6.25 mm per pixel, gfx/detail.js GRAINS_FADE_M).
+// Smooth up close used to be the one, then Loose clumps; their derived fades
+// (CUBIC_ERR's shape error over 1 px; a clod's lump at 1 px) show from any
+// ordinary view, so the gate leaves them in the base variant.
+const GATED = 'DETAIL_GRAINS';
+const settings = () => ({ view: 'realistic', upscale: 'quality', detail_grains: true });
 {
   const balanced = gateVariants({ view: 'realistic', detail_smoothClose: true });
   assert.equal(balanced.base.DETAIL_CUBIC_CLOSE, 1, 'Smooth up close is in the base variant');

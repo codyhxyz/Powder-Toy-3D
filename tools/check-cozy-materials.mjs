@@ -232,7 +232,9 @@ try {
   gate.setView(cozy.id);
   gate.update(camera, [0, 0, 0], [32, 32, 32], 640);
   assert.equal(gate.view, 'cozy');
-  assert(requests.length >= 2, 'Cozy builds its own base and near variants');
+  // a near variant exists only while a switched-on feature is gated by distance
+  const { base, near } = gateVariants(detail), gated = Object.keys(near).length > Object.keys(base).length;
+  assert(requests.length >= (gated ? 2 : 1), 'Cozy builds its own base (and near) variants');
   assert(requests.every(r => r.shader === 'cozy'), 'cannot reuse a Realistic near pipeline');
   requests.length = 0;
   gate.setView(1);
