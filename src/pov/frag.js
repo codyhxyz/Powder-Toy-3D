@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ROCKET } from '../shaders/povTools.js';
 import { povGpu } from './gpu.js';
+import { projectileSeconds } from '../v2/host.js';
 import { gravityScale, ROUND_GRAVITY } from './ballistics.js';
 import { povEvents } from './events.js';
 import { areaTargets, dealtScale, PLAYER } from './targets.js';
@@ -266,9 +267,11 @@ export function createFrags({ scene, getSim, getVolume, getScale, ballistics, wo
     },
     // every frame; stepsPerFrame 0 (paused): the fuses wait, as the grenades in the air do
     update(dt, stepsPerFrame = 1) {
+      const sim = getSim();
+      dt = projectileSeconds(sim, dt, stepsPerFrame);   // (V2: the ticks this frame ran)
       if (!(dt > 0) || stepsPerFrame === 0) return;
       // (the POV kernels still building, B5: a fuse that runs out waits for its blast's edit)
-      const sim = getSim(), blasts = !sim || povGpu(sim).ready;
+      const blasts = !sim || povGpu(sim).ready;
       for (const g of [...live]) {
         g.t += dt;
         if (g.armed) {

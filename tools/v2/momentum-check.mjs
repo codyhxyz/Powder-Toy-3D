@@ -20,8 +20,19 @@ import { wandApplyWGSL, WandParams } from '../../src/shaders/wands.js';
 import { TRANSFER_PUT, TRANSFER_TAKE } from '../../src/shaders/transfer.js';
 import { NOMINAL_STEP_RATE, PHYS } from '../../src/physics.js';
 import { CELL_M } from '../../src/scale.js';
-import { E } from '../../src/elements.js';
+import { E, itemByKey } from '../../src/elements.js';
 import { assertNaga } from './wgsl-grouping.mjs';
+import { projectileSeconds, nativeSeconds, HOST_HZ } from '../../src/v2/host.js';
+import { setPovGpu } from '../../src/pov/gpu.js';
+import { createWandWorld } from '../../src/pov/wands/world.js';
+import { WAND_COMMANDS } from '../../src/shaders/wands.js';
+import { waveDemoEdit, seedWaveDemo } from '../../src/world/waveDemo.js';
+import { nativeRectToAtlasWGSL } from '../../src/v2/nativeRead.js';
+import { createGpuBackend } from '../../src/console/gpu.js';
+import { scriptEditUpdateWGSL, ScriptEditParams, scriptEditDeclsWGSL } from '../../src/shaders/script.js';
+import { applyGuestStroke } from '../../src/net/edits.js';
+import { emitHeldNativeRays, releaseHeldNativeRays, heldNativeRays } from '../../src/v2/tools.js';
+import { readFileSync } from 'node:fs';
 
 const g = gridLayout(32, 32, 32), calls = [], allocations = [];
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_SRC: 4, COPY_DST: 8, INDIRECT: 0x100, UNIFORM: 0x40, MAP_READ: 1 };
@@ -165,6 +176,92 @@ const box = sim.touchCentres([5, 5, 5], [11, 11, 11]);
     assertNaga(nativeWeatherEvaluateWGSL(g, { update, nativeForcing: true }, p), `${label} evaluate`);
   }
   console.log('PASS V2 force commit rules generate and validate (Naga): fracture-now, new-source, default');
+}
+
+// ---- 6. Projectiles, fuses and wand casts advance by the ticks a frame ran under V2.
+{
+  const v2 = { compact: {} }, v1 = {};
+  assert.equal(projectileSeconds(v2, 1 / 120, 1), 1 / HOST_HZ, 'a 120 Hz frame that ran a tick advances one tick');
+  assert.equal(projectileSeconds(v2, 1 / 120, 0), 0, 'and one that ran none does not move');
+  assert.equal(projectileSeconds(v1, 1 / 120, 4), 1 / 120, "V1 keeps the frame's time");
+  assert.equal(nativeSeconds(2), 2 / HOST_HZ);
+  // 120 frames at 120 Hz run 60 ticks: one second of flight either way
+  let flown = 0; for (let i = 0; i < 120; i++) flown += projectileSeconds(v2, 1 / 120, i & 1);
+  assert(Math.abs(flown - 1) < 1e-9, 'a second of 120 Hz frames flies a second (it flew half)');
+  const src = f => readFileSync(new URL(`../../src/${f}`, import.meta.url), 'utf8');
+  assert(/const t = projectileSeconds\(sim, dt, stepsPerFrame\);/.test(src('pov/ballistics.js')) && /frameTime = t;/.test(src('pov/ballistics.js')), 'rounds fly the native ticks');
+  assert(/dt = projectileSeconds\(sim, dt, stepsPerFrame\);/.test(src('pov/frag.js')), 'fuses run the native ticks');
+  assert(/ctx\.sim\?\.compact \? clamp\(nativeSeconds\(ctx\.stepsPerFrame\)/.test(src('pov/wands/runtime.js')), 'wand casts run the native ticks');
+  // the wand's command speeds are V1 cells/step (the native commit converts them), not per frame
+  const wandSim = { id: 7, g, compact: {}, touchCentres: sim.touchCentres };
+  let sent = null;
+  setPovGpu(wandSim, { ready: true, edit: (name, b, values) => { sent = values; return true; } });
+  const world = createWandWorld({ getSim: () => wandSim });
+  world.begin({ sim: wandSim, dt: 1 / 120, stepsPerFrame: 1 });
+  assert(world.queue({ effect: 'repel', center: { x: 8, y: 8, z: 8 }, radius: 2, velocity: { x: 120, y: 0, z: 0 }, power: 10 }));
+  world.flush();
+  const [vx, , , force] = sent.commands[2 * WAND_COMMANDS];
+  assert.equal(vx, 120 / NOMINAL_STEP_RATE, "a wand's velocity is V1 cells/step (120 cells/s → 0.5)");
+  assert(Math.abs(force - 10 * (1 / HOST_HZ) / NOMINAL_STEP_RATE) < 1e-12, "its force integrates the tick's game time");
+  console.log('PASS V2 projectiles/fuses/wands advance by the native ticks; wand speeds are V1 cells/step');
+}
+
+// ---- 7. The wave demo pushes the water natively (no V1 edit, no "Wave created" over a level sea).
+{
+  const mark = calls.length; legacyEdits = 0;
+  const win = { loaded: true, pending: false, P: { sea: 10 }, sim, epoch: 1 };
+  const clone = sim.origin.clone; sim.origin.clone = () => ({ ...clone.call(sim.origin), equals: () => true }); sim.snapshot = () => {};
+  assert.equal(await seedWaveDemo(win, 'shore'), true);
+  sim.origin.clone = clone;
+  const names = calls.slice(mark).map(c => c.name);
+  assert.equal(legacyEdits, 0, 'no V1 edit');
+  assert(names.includes('waveDemoNativeEvaluate') && names.includes('waveDemoNativematerial') && names.includes('waveDemoNativeair'), 'V1 rule evaluated, committed natively (water flux, air)');
+  const p = nativeWeatherParams('waveDemo', waveDemoEdit);
+  assertNaga(nativeWeatherEvaluateWGSL(g, waveDemoEdit, p), 'wave evaluate');
+  console.log('PASS V2 wave demo: V1 rule on native cells, the push as water flux');
+}
+
+// ---- 8. The console reads V2's real motion and writes it natively.
+{
+  const code = nativeRectToAtlasWGSL(g);
+  assert(/b = bitcast<vec4u>\(nativeB\(p, s\)\);/.test(code), 'B is the native motion');
+  assert(/-fallVelocity\(fetchNativeCore\(p\)\)/.test(code) && /unpack2x16float\(c\.z\)/.test(code), "a grain's fall, a liquid's flux");
+  assertNaga(code, 'nativeRectToAtlas');
+  const mark = calls.length;
+  sim._rectScratch = n => (sim.rectScratch ??= buffer({ size: Math.max(n, 1024) }));
+  sim._rectGroup = {};
+  await sim.readStateRect(0, 0, 4, 4, new Float32Array(64), new Float32Array(64), true);
+  const read = calls.slice(mark).find(c => c.name === 'nativeRectToAtlas');
+  assert(read, 'readStateRect reads the native cells under V2');
+  assert.equal(read.opts.header.format, 3, 'through the physical readers (cells + air)');
+  // writes: the batch runs on the native cells
+  const backend = createGpuBackend(() => sim);
+  const before = calls.length; legacyEdits = 0;
+  backend.applyEdits({ data: new Float32Array(16), lo: [1, 1, 1], hi: [2, 2, 2], count: 1, rows: 1, ids: [] });
+  await new Promise(r => setTimeout(r, 0));
+  const names = calls.slice(before).map(c => c.name);
+  assert.equal(legacyEdits, 0, 'no V1 script edit under V2');
+  assert(names.includes('nativeScriptEditForceEvaluate') && names.includes('nativeScriptEditForcePlan') && names.includes('nativeScriptEditForceAir'), 'vx/vy/vz and pressure commit natively');
+  const params = nativeWeatherParams('script', { params: { ...Object.fromEntries(ScriptEditParams.fields.map(f => [f.name, f.type])), origin: 'vec3i' } });
+  assertNaga(nativeWeatherEvaluateWGSL(g, { update: scriptEditUpdateWGSL, decls: scriptEditDeclsWGSL, nativeForcing: true }, params), 'script evaluate');
+  assertNaga(nativeForceCommitWGSL(g, params, 'plan', { sources: true, life: true }), 'script plan');
+  console.log('PASS V2 console: reads return native velocity/pressure; partProperty vx/vy/vz and sim.pressure commit natively');
+}
+
+// ---- 9. A guest's particle brush is held and emitted per tick, as the host's own.
+{
+  const emitted = [];
+  const raySim = { compact: { wake() {} }, applyNativeTool: r => { emitted.push(r); return true; }, origin: { x: 0, y: 0, z: 0 } };
+  const stroke = { c: [8, 8, 8], r: 2, shape: 0, tool: itemByKey('PHOTON').id, rate: 1, replace: false, from: 'g1' };
+  for (let frame = 0; frame < 4; frame++) assert.equal(applyGuestStroke(raySim, stroke), true);   // four frames of one held stroke
+  assert.equal(emitted.length, 0, 'no emission per presentation frame');
+  assert.equal(heldNativeRays(raySim), 1, 'one held brush per guest');
+  emitHeldNativeRays(raySim, 1 / 60);
+  const perTick = emitted.length;
+  assert(perTick > 0, 'a tick emits the held brush');
+  releaseHeldNativeRays(raySim);
+  assert.equal(heldNativeRays(raySim), 0);
+  console.log('PASS V2 guest ray strokes are held and emitted per native tick');
 }
 
 console.log('momentum-check: all passed');

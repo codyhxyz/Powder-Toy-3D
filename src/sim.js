@@ -3,6 +3,7 @@ import { captureNativeSnapshot, restoreNativeSnapshot, validateNativeSnapshot, r
 import { nativeHostTick } from './v2/host.js';
 import { emitNativeRay, nativeRayKind, nativeImpulse, legacyVelocityToMS } from './v2/tools.js';
 import { NativeIntegration, nativeCapabilities } from './v2/integration.js';
+import { nativeRectToAtlasWGSL } from './v2/nativeRead.js';
 import {
   BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, LAYOUT, STATE_OPTS, gridDims, atlasDims, sleepUnitOf,
   marksLayout, actLayout, ACT_COUNTS, ACT_MAP, tablesBuffer, tablesAirTOffset, cellSlot, slotCell, brickIdOf, brickCoordOf,
@@ -368,6 +369,7 @@ export class Simulation {
     this._lazy = {
       toAtlas: () => kernel('toAtlas', toAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], ConvertParams),
       rectToAtlas: () => kernel('rectToAtlas', rectToAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], RectParams),
+      nativeRectToAtlas: () => kernel('nativeRectToAtlas', nativeRectToAtlasWGSL(g), [L.STATE_RO, L.CONVERT], RectParams),
       copy: () => kernel('copy', copyFrag(g, dbg), [L.STATE_RW]),
       fresh: () => kernel('fresh', freshFrag(g, dbg), [L.STATE_RW]),
       inertRef: () => kernel('inertRef', inertRefFrag(g), [L.STATE_RO, L.REF]),
@@ -1376,10 +1378,15 @@ export class Simulation {
     if (!(x >= 0 && y >= 0 && w > 0 && h > 0 && x + w <= width && y + h <= height)) {
       return Promise.reject(new Error(`readStateRect: ${w} × ${h} at ${x}, ${y} is outside the ${width} × ${height} atlas`));
     }
+    // V2: the native cells and the motion V2 holds (v2/nativeRead.js), once its readers are built
+    const native = !!this.compact?.isReady && !!this.compact.dynamics;
+    const pass = native ? 'nativeRectToAtlas' : 'rectToAtlas';
     const read = () => {
       const n = w * h, scratch = this._rectScratch(n * 32);
-      this._dispatch(this.passOf('rectToAtlas'), fold(Math.ceil(n / 64)), {
-        bind: [this.tables, this.bindFlagsRO, this._rectGroup], header: this.header(), params: { at: [x, y], size: [w, h] },
+      const state = native ? this.bindPhysicalRO : this.bindFlagsRO;
+      if (!state) return Promise.reject(new Error('readStateRect: the native readers changed while reading'));
+      this._dispatch(this.passOf(pass), fold(Math.ceil(n / 64)), {
+        bind: [this.tables, state, this._rectGroup], header: native ? this.readHeader({ physical: true }) : this.header(), params: { at: [x, y], size: [w, h] },
       });
       const got = this.gpu.readback.buffer(scratch, 0, n * 32);
       // (a later read reuses it: its dispatch is recorded after this copy)
@@ -1392,8 +1399,8 @@ export class Simulation {
         b.set(new Float32Array(bytes, n * 16, n * 4));
       });
     };
-    const wait = this._readyFor('rectToAtlas');
-    return wait ? wait.then(read) : read();
+    const waits = [this._readyFor(pass), native && !this.compact.dynamics.isReady ? this.compact.dynamics.ready : null].filter(Boolean);
+    return waits.length ? Promise.all(waits).then(read) : read();
   }
 
   // readStateRect's scratch (A then B, 32 bytes a texel), grown as needed and

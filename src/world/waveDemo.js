@@ -1,4 +1,5 @@
 import { E, ELEMENTS } from '../elements.js';
+import { createNativeWeatherKernel } from '../v2/nativeWeather.js';
 
 // The original waves-in-sim demo, unchanged at its 128³ window size.
 // This is a one-shot initial condition, not a sustained ocean solver.
@@ -51,20 +52,25 @@ export async function seedWaveDemo(win, kind) {
   const sim = win.sim, epoch = win.epoch, origin = sim.origin.clone();
   const sea = Math.floor(win.P.sea);
   if (sea < 2 || sea >= sim.g.ny) return false;
-  let kernel = kernels.get(sim);
-  if (!kernel) {
-    kernel = sim.editKernel('waveDemo', waveDemoEdit);
-    kernels.set(sim, kernel);
+  // V2: the same rule on the native cells (v2/nativeWeather.js): new water at V1's temperature and
+  // life, the crest's push as the water's own face flux, the cleared air at rest. V1's edit would
+  // reach V2 through the import with its velocity dropped: a level sea toasting "Wave created".
+  const native = !!sim.compact;
+  let entry = kernels.get(sim);
+  if (!entry || entry.native !== native || (native && entry.owner !== sim.compactOwner)) {
+    const owner = sim.compactOwner;
+    entry = { native, owner, kernel: native ? createNativeWeatherKernel(sim, 'waveDemo', waveDemoEdit) : sim.editKernel('waveDemo', waveDemoEdit) };
+    kernels.set(sim, entry);
   }
+  const { kernel } = entry;
   await kernel.ready;
   // Compilation may finish after a map switch or a window move.
   if (!win.loaded || win.pending || epoch !== win.epoch || !origin.equals(sim.origin)) return false;
+  if (native && sim.compact !== entry.owner) return false;
+  const box = { lo: [0, 2, 0], hi: [sim.g.nx - 1, Math.min(sim.g.ny - 1, sea + preset.amplitude + 1), sim.g.nz - 1] };
+  const values = { ...preset, sea, waterTemp: ELEMENTS[E.WATER].temp, waterLife: ELEMENTS[E.WATER].life };
   sim.snapshot(kind === 'shore' ? 'Shore wave' : 'Offshore wave');
-  sim.edit(kernel, {
-    lo: [0, 2, 0],
-    hi: [sim.g.nx - 1, Math.min(sim.g.ny - 1, sea + preset.amplitude + 1), sim.g.nz - 1],
-  }, {
-    ...preset, sea, waterTemp: ELEMENTS[E.WATER].temp, waterLife: ELEMENTS[E.WATER].life,
-  }, { scrub: true });
+  if (native) return kernel.run(box, values);
+  sim.edit(kernel, box, values, { scrub: true });
   return true;
 }

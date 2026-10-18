@@ -8,6 +8,7 @@ import { Load, sharedTransfer, cellsNear, outsideBody, toStepVelocity, TRANSFER_
 import { areaTargets, segmentTarget, PLAYER } from '../targets.js';
 import { povEvents } from '../events.js';
 import { toolDt } from '../tools/action.js';
+import { nativeSeconds } from '../../v2/host.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
 
 export const WAND_LIMITS = Object.freeze({
@@ -458,7 +459,9 @@ export function createWandRuntime(env) {
     ctx = nextCtx;
     frameCommands = frameTransfers = frameNodes = frameCasts = frameRays = 0;
     world.begin(ctx);
-    const dt = ctx.stepsPerFrame > 0 && !ctx.paused ? clamp(finite(ctx.dt), 0, WAND_LIMITS.dt) : 0;
+    // (V2: the ticks this frame ran, v2/host.js projectileSeconds)
+    const dt = ctx.sim?.compact ? clamp(nativeSeconds(ctx.stepsPerFrame), 0, WAND_LIMITS.dt)
+      : ctx.stepsPerFrame > 0 && !ctx.paused ? clamp(finite(ctx.dt), 0, WAND_LIMITS.dt) : 0;
     if (!sim || !dt) { draw(0); return; }
     time += dt; nodesLeft = WAND_LIMITS.nodes;
     // Cast delays and recharge count down on the tool clock: Faster Tools speeds

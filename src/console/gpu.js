@@ -1,5 +1,6 @@
 import { SUPER_TEX } from '../shaders/common.js';
 import { ScriptEditParams, SCRIPT_EDIT_LAYOUT, scriptEditUpdateWGSL, scriptEditDeclsWGSL } from '../shaders/script.js';
+import { nativeScriptKernel } from '../v2/interactions.js';
 
 // The console's GPU backend for ScriptWorld (console/world.js): reads blocks
 // of the state back and applies queued edits with the script edit
@@ -47,9 +48,20 @@ export function createGpuBackend(getSim) {
     return { a: da, b: db };
   }
 
-  // the edit kernel for the current simulation (made per simulation: its grid's)
+  // the edit kernel for the current simulation (made per simulation: its grid's). Under V2 the
+  // batch runs on the native cells (v2/interactions.js nativeScriptKernel): through V1's edit and
+  // the import, vx/vy/vz and pressure would be dropped.
   function kernelFor(s) {
-    if (kernelSim !== s) {
+    if (s.compact) {
+      if (kernelSim !== s || kernel?.owner !== s.compact) {
+        const k = nativeScriptKernel(s);
+        kernel = { native: k, owner: s.compact, ready: k.ready, main: { get state() { return k.isReady ? 'ready' : 'pending'; } } };
+        kernelSim = s;
+        queued = [];
+      }
+      return kernel;
+    }
+    if (kernelSim !== s || kernel?.native) {
       kernel = s.editKernel('scriptEdit', {
         update: scriptEditUpdateWGSL, params: ScriptEditParams, reads: 'own', decls: scriptEditDeclsWGSL, layout: SCRIPT_EDIT_LAYOUT,
       });
@@ -76,6 +88,7 @@ export function createGpuBackend(getSim) {
     // a buffer it outgrew goes once the work submitted with it is done
     if (old) s.gpu.queue.onSubmittedWorkDone().then(() => old.destroy(), () => old.destroy());
     for (const id of chunk.ids) s.rays.noteElement(id);   // an emitter (plutonium) wakes the particle layer, as the brush does
+    if (kernel.native) { kernel.native.run({ lo: chunk.lo, hi: chunk.hi }, { count: chunk.count, rows: chunk.rows }, buffer); return; }
     // cells given a new element lose their paint, as after a brush stroke (src/deco.js)
     s.edit(kernel, { lo: chunk.lo, hi: chunk.hi }, { count: chunk.count, rows: chunk.rows }, { bind: [{ buffer }], scrub: true });
   }

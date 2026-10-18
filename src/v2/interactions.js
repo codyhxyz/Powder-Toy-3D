@@ -10,6 +10,7 @@ import { PHYS } from '../physics.js';
 import { ROCKET, blowWGSL, BlowParams, flameWGSL, FlameParams } from '../shaders/povTools.js';
 import { burrowWGSL, BurrowParams } from '../shaders/povBore.js';
 import { wandApplyWGSL, WandParams } from '../shaders/wands.js';
+import { scriptEditUpdateWGSL, ScriptEditParams, scriptEditDeclsWGSL, SCRIPT_EDIT_LAYOUT } from '../shaders/script.js';
 import { specialBlastEnergy } from './pressure.js';
 import { worldPosition } from './tools.js';
 
@@ -30,6 +31,11 @@ const forceSpecs={povKick:{update:kickWGSL,params:KickParams},povStrike:{update:
   povBlow:{update:blowWGSL,params:BlowParams,commit:{renameNow:true}},povBurrow:{update:burrowWGSL,params:BurrowParams},
   povFlame:{update:flameWGSL,params:FlameParams,commit:{sources:true}},povWand:{update:wandApplyWGSL,params:WandParams,commit:{sources:true}}};
 // The melee blow's launches wait for its gather (nativeForcing.js defer).
+// The console's writes (shaders/script.js: partCreate, partKill, partProperty, sim.pressure, ...):
+// a created or retyped cell is a new cell as V1 makes it, temperature as heat, life and ctype as
+// V1 sets them, vx/vy/vz as launches or the air's wind, pressure as the air's.
+const scriptSpec={update:scriptEditUpdateWGSL,params:ScriptEditParams,decls:scriptEditDeclsWGSL,layout:SCRIPT_EDIT_LAYOUT,commit:{sources:true,life:true}};
+export const nativeScriptKernel=sim=>forceKernel(sim,'nativeScriptEdit');
 const deferred=new Set(['povBlow']);
 const forces=new WeakMap();
 function forceKernel(sim,name) {
@@ -37,7 +43,7 @@ function forceKernel(sim,name) {
   let kernel=cache.kernels.get(name);
   if(!kernel && name==='nativePaint') cache.kernels.set(name,kernel=createNativePaintKernel(sim));
   if(!kernel) {
-    const spec=name==='nativePaintForce'?{update:paintUpdateWGSL,params:PaintParams,decls:paintDeclsWGSL(sim.g),layout:PAINT_LAYOUT}:forceSpecs[name];
+    const spec=name==='nativePaintForce'?{update:paintUpdateWGSL,params:PaintParams,decls:paintDeclsWGSL(sim.g),layout:PAINT_LAYOUT}:name==='nativeScriptEdit'?scriptSpec:forceSpecs[name];
     cache.kernels.set(name,kernel=createNativeForceKernel(sim,name,spec));
   }
   return kernel;

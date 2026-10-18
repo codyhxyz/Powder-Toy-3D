@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { WAND_COMMANDS, WAND_RAYS, WAND_EFFECTS } from '../../shaders/wands.js';
 import { povGpu } from '../gpu.js';
 import { ELEMENTS, E } from '../../elements.js';
-import { PHYS } from '../../physics.js';
+import { PHYS, NOMINAL_STEP_RATE } from '../../physics.js';
+import { nativeSeconds } from '../../v2/host.js';
 import { gfxUniforms, WAND_LIGHTS } from '../../gfx/uniforms.js';
 
 const READBACKS = 3;
@@ -57,7 +58,7 @@ export function createWandWorld({ getSim }) {
         || center.x - radius >= g.nx || center.y - radius >= g.ny || center.z - radius >= g.nz) return reject();
     const power = clamp(c.power ?? 1, c.effect === 'pressure' ? PHYS.P_MIN : 0, 6000);
     const dt = clamp(c.dt ?? context.dt, 0, 0.25);
-    const stepTime = context.stepsPerFrame > 0 ? context.dt / context.stepsPerFrame : 0;
+    const stepTime = context.native ? 1 / NOMINAL_STEP_RATE : context.stepsPerFrame > 0 ? context.dt / context.stepsPerFrame : 0;
     const velocity = c.velocity ? vector(c.velocity).multiplyScalar(stepTime) : new THREE.Vector3();
     velocity.clampLength(0, PHYS.V_MAX);
     commands.push({ effect: WAND_EFFECTS[c.effect], center, radius, power, id,
@@ -173,8 +174,11 @@ export function createWandWorld({ getSim }) {
       current();
       if (!held) commands.length = 0;
       held = false; flushed = false;
-      context = { dt: Number.isFinite(ctx.dt) ? clamp(ctx.dt, 0, 0.25) : 0,
-        stepsPerFrame: Number.isFinite(ctx.stepsPerFrame) ? Math.floor(clamp(ctx.stepsPerFrame, 0, 1000)) : 0 };
+      // V2: the frame's game time is the ticks it ran, and a command's velocity and force are V1's
+      // cells/step (the native wand commit converts them to m/s: v2/interactions.js povWand)
+      const native = !!ctx.sim?.compact;
+      context = { dt: native ? clamp(nativeSeconds(ctx.stepsPerFrame), 0, 0.25) : Number.isFinite(ctx.dt) ? clamp(ctx.dt, 0, 0.25) : 0,
+        stepsPerFrame: Number.isFinite(ctx.stepsPerFrame) ? Math.floor(clamp(ctx.stepsPerFrame, 0, 1000)) : 0, native };
       for (const k of ['queued', 'rejected', 'passes', 'commands', 'rays', 'readbacks']) stats[k] = 0;
       stats.touched = null;
     },

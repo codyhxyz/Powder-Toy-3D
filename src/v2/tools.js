@@ -42,5 +42,21 @@ export function emitNativeRay(sim, stroke, dt = 1 / 60) {
   sim.nativeEmission[kind] = accepted ? amount - count : amount;
   return accepted;
 }
+// A held particle brush that isn't the local one (a multiplayer guest's, which reaches the host
+// as one stroke a guest frame): held, as the host's own is (app.js paintNativeRay), and emitted
+// once per native tick for the tick's 1/60 s, so its rate is the host's local brush rate whatever
+// the frame or network cadence. Lines and boxes paint their dabs at once, as V1's do.
+export function holdNativeRay(sim, key, stroke) {
+  if (!sim.compact || !nativeRayKind(stroke.tool)) return false;
+  if (isRayShape(stroke)) return emitNativeRayShape(sim, stroke);
+  (sim.nativeHeldRays ??= new Map()).set(key, stroke);
+  sim.compact.wake?.();
+  return true;
+}
+export const heldNativeRays = sim => sim.nativeHeldRays?.size ?? 0;
+// Each native tick (app.js nativeBeforeStep): every held brush emits for dt; after a frame's ticks
+// ran they are released, and the next stroke holds them again.
+export function emitHeldNativeRays(sim, dt) { for (const stroke of sim.nativeHeldRays?.values() ?? []) emitNativeRay(sim, stroke, dt); }
+export function releaseHeldNativeRays(sim) { sim.nativeHeldRays?.clear(); }
 // Conversion for legacy-authored single-action tunings, not a timestep.
 export const legacyVelocityToMS = cellsPerStep => cellsPerStep * 240 * CELL_M;

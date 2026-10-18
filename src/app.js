@@ -1,4 +1,4 @@
-import { emitNativeRay, isRayShape } from './v2/tools.js';
+import { emitNativeRay, isRayShape, emitHeldNativeRays, releaseHeldNativeRays, heldNativeRays } from './v2/tools.js';
 import { nativeHostSteps, nativeHostTick, nativeReadiness } from './v2/host.js';
 // The game (docs/webgpu.md J1 U8): the settings, the grid and its scene, the
 // UI and input, and the frame loop, on one WebGPU device (src/gpu, B1).
@@ -1273,6 +1273,7 @@ function nativeBeforeStep() {
   weatherWire.step(ctx, { hz: 60 });
   sim.flushNativeTools();
   if (nativeRayStroke) emitNativeRay(sim, nativeRayStroke, 1 / 60);
+  emitHeldNativeRays(sim, 1 / 60);   // the guests' held brushes (net/edits.js), per tick as the local one
 }
 // As the V1 loop runs the hearths' paid draft beside each sim step.
 function nativeAfterStep() {
@@ -2807,7 +2808,7 @@ function tick(now, renderOnly = false) {
     if (v2Active()) {
       if (!v2Running) { physicsV2.activate(); v2Running = true; }
       stepped = nativeHostSteps(physicsV2, dt, { speed: settings.steps / DEFAULTS.steps, once: stepOnce && settings.paused,
-        keepAlive: !!nativeRayStroke || live.some(w => w.busy?.(ctx)),
+        keepAlive: !!nativeRayStroke || heldNativeRays(sim) > 0 || live.some(w => w.busy?.(ctx)),
         before: nativeBeforeStep,
         after: nativeAfterStep,
       });
@@ -2828,7 +2829,7 @@ function tick(now, renderOnly = false) {
   } else if (!renderOnly && mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
   ctx.nativeStepped = v2Box() ? (stepping ? stepped : 0) : null;
   ctx.stepping = stepping && (!v2Box() || stepped > 0);
-  if (!renderOnly && stepping && stepped > 0) nativeRayStroke = null;
+  if (!renderOnly && stepping && stepped > 0) { nativeRayStroke = null; releaseHeldNativeRays(sim); }
   if (!renderOnly && !mp.replica) scripts?.endFrame();
   updateSun();
   if (!ctx.descent?.terrainPending) for (const w of live) if (!mp.replica || ['pov', 'mp'].includes(w.name)) w.afterStep?.(ctx, dt);   // lightning, birds, the session, the meshes

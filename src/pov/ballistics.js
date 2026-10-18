@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { TRACE, TRACE_MISS, TRACE_ROUND, STRIKE } from '../shaders/povTrace.js';
 import { povGpu } from './gpu.js';
+import { projectileSeconds } from '../v2/host.js';
 import { ELEMENTS, K } from '../elements.js';
 import { CELL_METERS } from './vitals.js';
 import { povEvents } from './events.js';
@@ -277,11 +278,12 @@ export function createBallistics() {
     update({ sim, dt, stepsPerFrame }) {
       ensureWorld(sim);
       frameNo++;
-      if (!rounds.length || stepsPerFrame === 0 || !(dt > 0)) return;
+      const t = projectileSeconds(sim, dt, stepsPerFrame);   // (V2: the ticks this frame ran)
+      if (!rounds.length || stepsPerFrame === 0 || !(t > 0)) return;
       // the POV kernels still building (B5: a new grid while in POV): the rounds hold where they
       // are, as when paused, rather than strike or burst with no edit to do it
       if (!povGpu(sim).ready) return;
-      frameTime = dt;
+      frameTime = t;
       // each round's events are its shooter's (an NPC's carry by, events.js)
       for (const r of [...rounds]) povEvents.as(r.actor, () => fly(sim, r));
       if (rounds.length) requestTrace(sim);
