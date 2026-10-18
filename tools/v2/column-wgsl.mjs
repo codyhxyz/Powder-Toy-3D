@@ -16,7 +16,7 @@ export const TRANSLATED = ['colMove', 'colEta', 'colStiff', 'colDepth', 'colFlux
   'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colCrown', 'colLayer', 'colDepthAt', 'colFloats', 'colFloor', 'colSends', 'colStratify',
   // radial gravity (columns.js RADIAL)
   'colRadInside', 'colRadPull', 'colRadAxis', 'colRadSign', 'colRadMass', 'colRadHead', 'colRadWetBelow', 'colRadCovered', 'colRadDemand',
-  'colRadNote', 'colRadRuns', 'colRadTowardPlus', 'colRadColumn', 'colRadPairs', 'colRadPair', 'colRadFace', 'colRadPack', 'colRadSend'];
+  'colRadNote', 'colRadRuns', 'colRadTowardPlus', 'colRadColumn', 'colRadPairs', 'colRadPair', 'colRadFace', 'colRadPackAmount', 'colRadSendAmount'];
 // the f32 functions (division allowed: never on integers)
 export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown', 'colLayer', 'colDepthAt', 'colSends',
   'colRadPull', 'colRadHead', 'colRadDemand'];

@@ -1089,8 +1089,15 @@ fn colRadDemand(x: i32, y: i32, z: i32, axis: i32) -> f32 {
   let aa = colRadAxis(x, y, z); let ab = colRadAxis(bx, by, bz);
   if (aa == axis || ab == axis) { return 0.0; }
   let sa = colRadSign(x, y, z, aa); let sb = colRadSign(bx, by, bz, ab);
-  let ma = colRadMass(x, y, z, aa, sa); let mb = colRadMass(bx, by, bz, ab, sb);
-  let drive = colRadHead(x, y, z, aa, sa, ma) - colRadHead(bx, by, bz, ab, sb, mb);
+  // each side's mass over it and head, in one loop (one inlined copy of each: Metal's compile time)
+  var ma = 0.0; var mb = 0.0; var drive = 0.0;
+  for (var side = 0; side < 2; side++) {
+    var px = x; var py = y; var pz = z; var pa = aa; var ps = sa;
+    if (side == 1) { px = bx; py = by; pz = bz; pa = ab; ps = sb; }
+    let m = colRadMass(px, py, pz, pa, ps);
+    let h = colRadHead(px, py, pz, pa, ps, m);
+    if (side == 0) { ma = m; drive = drive + h; } else { mb = m; drive = drive - h; }
+  }
   var liq = cid(ca);
   if (!wa) { liq = cid(cb); }
   if (abs(drive) < max(COL_DEADQ / COL_FULL, yieldOf(liq))) { return 0.0; }
@@ -1124,9 +1131,14 @@ fn colRadNote(x: i32, y: i32, z: i32, axis: i32) {
 // stages own that face the same way)
 fn colRadRuns(x: i32, z: i32) {
   for (var y = 0; y < NY; y++) {
-    for (var axis = 0; axis < 3; axis++) { colRadNote(x, y, z, axis); }
-    if (x > 0 && !colAwake(x - 1, z)) { colRadNote(x - 1, y, z, 0); }
-    if (z > 0 && !colAwake(x, z - 1)) { colRadNote(x, y, z - 1, 2); }
+    // its own three +faces, then the faces into it from a sleeping -side neighbour along x and along z (one
+    // call site: one inlined copy)
+    for (var k = 0; k < 5; k++) {
+      var fx = x; var fz = z; var axis = k;
+      if (k == 3) { fx = x - 1; axis = 0; }
+      if (k == 4) { fz = z - 1; axis = 2; }
+      if (k < 3 || (fx >= 0 && fz >= 0 && !colAwake(fx, fz))) { colRadNote(fx, y, fz, axis); }
+    }
   }
 }
 fn colRadTowardPlus(x: i32, y: i32, z: i32) -> bool { let a = colRadAxis(x, y, z); return a == 1 && colRadSign(x, y, z, a) > 0; }
@@ -1134,8 +1146,12 @@ fn colRadTowardPlus(x: i32, y: i32, z: i32) -> bool { let a = colRadAxis(x, y, z
 // toward -y bottom up, so a hole rises through a stack in one sweep, then those toward +y top down
 fn colRadColumn(x: i32, z: i32) {
   for (var y = 0; y < NY; y++) { foamDecay(x, y, z); }
-  for (var y = 0; y + 1 < NY; y++) { if (!colRadTowardPlus(x, y, z)) { colRadFace(x, y, z, 1); } }
-  for (var y = NY - 2; y >= 0; y--) { if (colRadTowardPlus(x, y, z)) { colRadFace(x, y, z, 1); } }
+  // one sweep of 2 (NY - 1) steps, the ascending faces then the descending ones (one call site)
+  for (var k = 0; k < 2 * (NY - 1); k++) {
+    var y = k; var plus = false;
+    if (k >= NY - 1) { y = 2 * (NY - 1) - 1 - k; plus = true; }
+    if (colRadTowardPlus(x, y, z) == plus) { colRadFace(x, y, z, 1); }
+  }
 }
 // v2pairs stage 1: the pairs this thread owns along P.pairAxis (v2PairsKernel's ownership, without loop edges)
 fn colRadPairs(x: i32, z: i32) {
@@ -1150,7 +1166,8 @@ fn colRadPairs(x: i32, z: i32) {
 }
 fn colRadPair(x: i32, z: i32, axis: i32) { for (var y = 0; y < NY; y++) { colRadFace(x, y, z, axis); } }
 // a face at its stage: along a side's pull it packs, across both it carries its demand (never more than the
-// giver holds, less RAD_KEEP when covered, nor more than the receiver has room for)
+// giver holds, less RAD_KEEP when covered, nor more than the receiver has room for). One move a face, from
+// one colMove call site (each inlined copy is Metal compile time).
 fn colRadFace(x: i32, y: i32, z: i32, axis: i32) {
   var bx = x; var by = y; var bz = z;
   if (axis == 0) { bx = x + 1; }
@@ -1158,43 +1175,50 @@ fn colRadFace(x: i32, y: i32, z: i32, axis: i32) {
   if (axis == 2) { bz = z + 1; }
   if (!colRadInside(bx, by, bz)) { return; }
   let aa = colRadAxis(x, y, z); let ab = colRadAxis(bx, by, bz);
+  let ca = colCell(x, y, z); let cb = colCell(bx, by, bz);
+  // n quanta from the -side to the +side (n > 0) or back (n < 0)
+  var n = 0; var agitate = false;
   if (aa == axis || ab == axis) {
-    if (aa == axis && colRadSign(x, y, z, aa) > 0) { colRadPack(x, y, z, bx, by, bz, radCoveredAt(x, y, z, axis, false)); }
-    if (ab == axis && colRadSign(bx, by, bz, ab) < 0) { colRadPack(bx, by, bz, x, y, z, radCoveredAt(x, y, z, axis, true)); }
-    return;
+    if (aa == axis && colRadSign(x, y, z, aa) > 0) { n = colRadPackAmount(ca, cb, radCoveredAt(x, y, z, axis, false)); }
+    else if (ab == axis && colRadSign(bx, by, bz, ab) < 0) { n = 0 - colRadPackAmount(cb, ca, radCoveredAt(x, y, z, axis, true)); }
+  } else {
+    let t = radDemandAt(x, y, z, axis);
+    agitate = true;
+    if (t > 0.0) { n = colRadSendAmount(ca, cb, t, radCoveredAt(x, y, z, axis, false)); }
+    if (t < 0.0) { n = 0 - colRadSendAmount(cb, ca, 0.0 - t, radCoveredAt(x, y, z, axis, true)); }
   }
-  let t = radDemandAt(x, y, z, axis);
-  if (t > 0.0) { colRadSend(x, y, z, bx, by, bz, t, radCoveredAt(x, y, z, axis, false)); }
-  if (t < 0.0) { colRadSend(bx, by, bz, x, y, z, -t, radCoveredAt(x, y, z, axis, true)); }
+  if (n == 0) { return; }
+  var gx = x; var gy = y; var gz = z; var rx = bx; var ry = by; var rz = bz;
+  if (n < 0) { gx = bx; gy = by; gz = bz; rx = x; ry = y; rz = z; }
+  colMove(gx, gy, gz, rx, ry, rz, u32(abs(n)), agitate);
 }
-// the upper cell's fill into the room of the lower one, air or the same liquid (along the upper's pull: less
-// RAD_KEEP when covered, so a hole climbs a stack and never opens under it; one the face's other stages
-// opened this tick closes from above); a lower cell over FULL (left compressed by vertical gravity's covered
-// runs) gives its surplus up. (Liquid over open air is radialDrip's before it is this rule's: it flies.)
-fn colRadPack(xu: i32, yu: i32, zu: i32, xl: i32, yl: i32, zl: i32, covered: bool) {
-  let cu = colCell(xu, yu, zu); let cl = colCell(xl, yl, zl);
+// Packing between an upper cell and the lower one along its pull: + the upper's fill down into the lower's
+// room, air or the same liquid (less RAD_KEEP when covered, so a hole climbs a stack and never opens under it;
+// one the face's other stages opened this tick closes from above); - a lower cell's surplus over FULL (left
+// compressed by vertical gravity's covered runs) up. (Liquid over open air is radialDrip's first: it flies.)
+fn colRadPackAmount(cu: vec4u, cl: vec4u, covered: bool) -> i32 {
   if (isLiq(cu) && (clsOf(cl) == C_AIR || (isLiq(cl) && cFill(cl) < FULLU))) {
     var have = cFill(cu);
     if (covered) { have = have - min(have, RAD_KEEP); }
     var room = FULLU;
     if (isLiq(cl)) { room = FULLU - cFill(cl); }
-    colMove(xu, yu, zu, xl, yl, zl, min(have, room), false);
-    return;
+    return i32(min(have, room));
   }
   if (isLiq(cl) && cFill(cl) > FULLU && (clsOf(cu) == C_AIR || (isLiq(cu) && cFill(cu) < FULLU))) {
-    var room = FULLU;
-    if (isLiq(cu)) { room = FULLU - cFill(cu); }
-    colMove(xl, yl, zl, xu, yu, zu, min(cFill(cl) - FULLU, room), false);
+    var space = FULLU;
+    if (isLiq(cu)) { space = FULLU - cFill(cu); }
+    return 0 - i32(min(cFill(cl) - FULLU, space));
   }
+  return 0;
 }
-fn colRadSend(xs: i32, ys: i32, zs: i32, xd: i32, yd: i32, zd: i32, t: f32, covered: bool) {
-  let cs = colCell(xs, ys, zs); let cd = colCell(xd, yd, zd);
-  if (!isLiq(cs)) { return; }
+// a sideways giver's share of its demand: what it holds (less RAD_KEEP when covered), within the room it pours into
+fn colRadSendAmount(cs: vec4u, cd: vec4u, t: f32, covered: bool) -> i32 {
+  if (!isLiq(cs)) { return 0; }
   var have = cFill(cs);
   if (covered) { have = have - min(have, RAD_KEEP); }
   var room = FULLU;
   if (isLiq(cd)) { room = FULLU - min(cFill(cd), FULLU); }
-  colMove(xs, ys, zs, xd, yd, zd, min(u32(t), min(have, room)), true);
+  return i32(min(u32(t), min(have, room)));
 }
 `;
 
