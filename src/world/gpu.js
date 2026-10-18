@@ -280,11 +280,11 @@ export class WorldGenerator {
    * whole grid by default), the grid sitting at world cell `origin` (P must be
    * the generator's world). An edit over that box.
    */
-  fill(P = this.P, origin = [0, 0, 0], min = [0, 0, 0], max = null) {
+  fill(P = this.P, origin = [0, 0, 0], min = [0, 0, 0], max = null, { residency = false } = {}) {
     if (P !== this.P && JSON.stringify(P) !== JSON.stringify(this.P)) throw new Error('WorldGenerator.fill: another world than its own (make a generator for it)');
     const g = this.sim.g, hi = max ?? [g.nx, g.ny, g.nz];
     this.res.prepassFor(min.map((v, i) => v + origin[i]), hi.map((v, i) => v + origin[i]));
-    this.sim.edit(this.kernels.fill, { lo: min, hi: hi.map((v) => v - 1) }, { origin }, { bind: this.res.resources });
+    this.sim.edit(this.kernels.fill, { lo: min, hi: hi.map((v) => v - 1) }, { origin }, { bind: this.res.resources, residency });
   }
 
   /**

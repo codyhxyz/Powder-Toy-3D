@@ -237,6 +237,8 @@ export function createHeld({ scene }) {
       if (tip) frameM.multiply(mA.makeRotationX(tip));
       const g = rec.model.info.grip;
       frameM.multiply(mA.makeTranslation(-g.x, -g.y, -g.z));
+      // a body in a barrel (barrel.js) holds it up over the rim; a tool stood on (the pogo) stays on the ground
+      if (!h.feet) figure.liftGrips?.(frameM, [rec.right.at, rec.left?.at]);
       // the viewmodel onto the held model: camera · viewmodel · rig root · (its hand's rest) = the frame
       if (!fp) { resetViewmodel(viewmodel); return; }
       const rest = fp.hand.userData.rest;

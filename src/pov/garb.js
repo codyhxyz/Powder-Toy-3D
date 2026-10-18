@@ -1,17 +1,17 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { buildBarrel } from './barrel.js';
 
 // The wizard's hat for the realistic body (figureReal.js): a lathe (brim and
 // cone, the tip bent back), built once per loaded model, seated on the head and
 // skinned wholly to the head bone, so every clip (walk, swim, death...) carries
 // it. Below it he wears only his boxers, dyed the hat's purple when the model is
 // packed (tools/character-pack.mjs): wizard boxers. She stands in a barrel
-// (Minecraft's: oak staves, iron hoops), skinned to the spine so it walks with her.
+// (barrel.js: oak staves, iron hoops), skinned to the spine so it walks with her.
 //
 // Lengths are in model units (metres); the body's own scale takes them to cells.
 
 const HEAD_BONE = 'Head';
-const ROBE_BONES = ['pelvis', 'spine_01', 'spine_02', 'spine_03'];
 
 // hat (sizes as multiples of the head's half-width)
 const HAT_BRIM = 2.0;                    // brim radius
@@ -102,133 +102,22 @@ function skinTo(geo, index) {
   return geo;
 }
 
-// A barrel she stands in. Staves are separate planks with seams. The side planks
-// stop under her hands, so the hanging arms fall outside the wood instead of through it.
-const STAVES = 14;
-const STAVE_GAP = 0.05;          // rad of seam between planks
-const STAVE_THICK = 0.016;
-const ARM_NOTCH = 0.95;          // rad from ±x (the arms) with no wood above the hands
-const NOTCH_Y = 0.78;            // m: side planks end below the idle hands
-
-function radiusAt(y, hem, top, radius) {
-  const t = Math.max(0, Math.min(1, (y - hem) / (top - hem)));
-  return radius * (0.9 + 0.16 * Math.sin(t * Math.PI));
-}
-function fromSide(ang) {
-  const a = Math.abs(Math.atan2(Math.sin(ang), Math.cos(ang)));
-  return Math.min(a, Math.PI - a);   // 0 on the arms' sides, π/2 front and back
-}
-function pushTri(idx, a, b, c) { idx.push(a, b, c); }
-function addQuad(idx, a, b, c, d) { pushTri(idx, a, b, c); pushTri(idx, a, c, d); }
-
-function buildStaves(hem, top, radius) {
-  const pos = [], idx = [];
-  const half = Math.PI / STAVES - STAVE_GAP / 2;
-  const steps = 6;
-  for (let s = 0; s < STAVES; s++) {
-    const ang = (s + 0.5) * (Math.PI * 2 / STAVES);
-    const y1 = fromSide(ang) < ARM_NOTCH ? Math.min(top, NOTCH_Y) : top;
-    const base = pos.length / 3;
-    for (let i = 0; i <= steps; i++) {
-      const y = hem + (y1 - hem) * (i / steps);
-      const r = radiusAt(y, hem, top, radius);
-      for (const side of [-1, 1]) {
-        const a = ang + side * half, c = Math.cos(a), z = Math.sin(a);
-        for (const layer of [0, 1]) {
-          const rr = r + layer * STAVE_THICK;
-          pos.push(rr * c, y, rr * z);
-        }
-      }
-    }
-    const ring = 4;
-    for (let i = 0; i < steps; i++) {
-      const o = base + i * ring;
-      addQuad(idx, o + 1, o + 5, o + 7, o + 3);   // outer, facing out
-      addQuad(idx, o + 0, o + 2, o + 6, o + 4);   // inner, facing in
-      addQuad(idx, o + 0, o + 4, o + 5, o + 1);   // left edge
-      addQuad(idx, o + 3, o + 7, o + 6, o + 2);   // right edge
-    }
-    const top0 = base + steps * ring;
-    addQuad(idx, base + 1, base + 3, base + 2, base + 0);       // bottom cap
-    addQuad(idx, top0 + 0, top0 + 2, top0 + 3, top0 + 1);       // top cap
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geo.setIndex(idx);
-  // Split the plank faces so seams and end grain get their actual face normals.
-  const faceted = geo.toNonIndexed();
-  faceted.computeVertexNormals();
-  geo.dispose();
-  return faceted;
-}
-
-function buildBarrel(verts, boneIndex) {
-  const hips = verts.filter((p) => p.bone === 'pelvis' || p.bone.startsWith('thigh'));
-  const boneY = Object.fromEntries(ROBE_BONES.map((name) => {
-    const pts = verts.filter((p) => p.bone === name);
-    return [name, pts.reduce((s, p) => s + p.y, 0) / pts.length];
-  }));
-  let hipR = 0.16;
-  for (const p of hips) if (Math.abs(p.y - boneY.pelvis) < 0.1) hipR = Math.max(hipR, Math.hypot(p.x, p.z));
-  const radius = hipR + 0.08;
-  const hem = Math.min(...hips.map((p) => p.y)) + 0.04;
-  // Front and back run up over the chest. The sides stay open so the arms hang out.
-  const top = boneY.spine_03 + 0.16;
-  // Minecraft's barrel is rigid: wood and iron must move together, not bend at each spine joint.
-  const barrelBone = boneIndex('spine_01');
-  const robe = skinTo(buildStaves(hem, top, radius), barrelBone);
-  const hoops = buildHoops(hem, top, radius, barrelBone);
-  const bung = new THREE.CylinderGeometry(0.02, 0.018, 0.045, 8);
-  bung.rotateX(Math.PI / 2);
-  bung.translate(0, hem + (top - hem) * 0.42, radiusAt(hem + (top - hem) * 0.42, hem, top, radius) + 0.03);
-  return { robe, hoops, bung: skinTo(bung, barrelBone) };
-}
-
-function buildHoops(hem, top, radius, barrelBone) {
-  const parts = [];
-  const add = (geo) => parts.push(skinTo(geo, barrelBone));
-  for (const t of [0.04, 0.28]) {
-    const y = hem + (NOTCH_Y - hem) * t;
-    const hoop = new THREE.TorusGeometry(radiusAt(y, hem, top, radius) + STAVE_THICK + 0.008, 0.02, 6, 22);
-    hoop.rotateX(Math.PI / 2);
-    hoop.translate(0, y, 0);
-    add(hoop);
-  }
-  // Front and back bands only: a full hoop here would run through the hanging arms.
-  for (const t of [0.55, 0.96]) {
-    const y = hem + (top - hem) * t;
-    const r = radiusAt(y, hem, top, radius) + STAVE_THICK + 0.008;
-    const arcLen = Math.PI - 2 * ARM_NOTCH - STAVE_GAP;
-    // Center each band on the front and the back. An arc that starts on that
-    // axis runs out into the arms.
-    for (const center of [Math.PI / 2, -Math.PI / 2]) {
-      const arc = new THREE.TorusGeometry(r, 0.016, 6, 10, arcLen);
-      arc.rotateX(Math.PI / 2);
-      arc.rotateY(arcLen / 2 - center);
-      arc.translate(0, y, 0);
-      add(arc);
-    }
-  }
-  const merged = mergeGeometries(parts);
-  for (const g of parts) g.dispose();
-  return merged;
-}
-
 // The hat's geometry, from the model's skinned meshes (bind pose). Skin indices
 // refer to meshes[0].skeleton's bones.
 export function buildGarb(meshes, { bag = false } = {}) {
-  const bones = meshes[0].skeleton.bones;
+  const { bones, boneInverses } = meshes[0].skeleton;
   const boneIndex = (name) => {
     const i = bones.findIndex((b) => b.name === name);
     if (i < 0) throw new Error(`the character model has no ${name} bone`);
     return i;
   };
+  const bindPos = (name) => new THREE.Vector3().setFromMatrixPosition(boneInverses[boneIndex(name)].clone().invert());
   const verts = bodyVertices(meshes);
   const female = meshes.some((m) => m.material?.name === 'MI_Superhero_Female');
   const garb = {};
   if (bag) Object.assign(garb, buildPaperBag(verts, boneIndex));
   else garb.hat = buildHat(verts, boneIndex);
-  if (female && !bag) Object.assign(garb, buildBarrel(verts, boneIndex));
+  if (female && !bag) Object.assign(garb, buildBarrel(verts, bindPos, boneIndex, skinTo));
   return garb;
 }
 

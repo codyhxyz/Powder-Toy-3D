@@ -26,6 +26,28 @@ export const opticsProbeWGSL = `fn opticsProbe(p: vec3f, rd: vec3f) -> vec3f {
   }
   return q;
 }`;
+// Use one discriminant for transmission and TIR. Independent builtin refract
+// and Fresnel calculations can disagree by one Float32 ULP at critical angles.
+export const opticsRefractionWGSL = `
+struct OpticalRefraction { direction: vec3f, reflected: f32 }
+fn opticsRefraction(rd: vec3f, n: vec3f, fromIOR: f32, toIOR: f32) -> OpticalRefraction {
+  let cosine = clamp(-dot(rd, n), 0.0, 1.0);
+  let eta = fromIOR / toIOR;
+  let k = 1.0 - eta * eta * (1.0 - cosine * cosine);
+  if (!(k >= 0.0)) { return OpticalRefraction(vec3f(0.0), 1.0); }
+  let candidate = eta * rd + (eta * cosine - sqrt(k)) * n;
+  let length2 = dot(candidate, candidate);
+  if (!(length2 > 1e-12) || !all(abs(candidate) <= vec3f(1e8))) {
+    return OpticalRefraction(vec3f(0.0), 1.0);
+  }
+  var f = 0.0;
+  if (fromIOR != toIOR) {
+    let ratio = (fromIOR - toIOR) / (fromIOR + toIOR);
+    let f0 = ratio * ratio;
+    f = f0 + (1.0 - f0) * pow(1.0 - cosine, 5.0);
+  }
+  return OpticalRefraction(candidate * inverseSqrt(length2), f);
+}`;
 export const opticsBindings = (binding = 0) => [
   { binding, visibility: STAGE.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
   { binding: binding + 1, visibility: STAGE.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } },
@@ -249,10 +271,11 @@ fn opticsFieldSegment(p: vec3f, rd: vec3f, cellExit: f32) -> f32 {
 `;
 }
 
-export function opticsShader(g, { maxSteps = 256, maxInterfaces = 8, fieldBinding = null, boundsBinding = null, particleBinding = null, fallbackBinding = null, wgsl = '', hooks = {}, binding = 0 } = {}) {
+export function opticsShader(g, { maxSteps = 256, maxInterfaces = 8, fieldBinding = null, boundsBinding = null, particleBinding = null, fallbackBinding = null, computeBinding = null, wgsl = '', hooks = {}, binding = 0 } = {}) {
   for (const [name, n, limit] of [['maxSteps', maxSteps, 2048], ['maxInterfaces', maxInterfaces, 32]]) {
     if (!Number.isInteger(n) || n < 1 || n > limit) throw new RangeError(`${name} must be in 1..${limit}`);
   }
+  if (computeBinding !== null && (!Number.isInteger(computeBinding) || computeBinding < 2)) throw new RangeError('invalid optics compute output binding');
   return /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
@@ -282,13 +305,7 @@ ${wgsl}
 ${Object.entries(OPTICS_DEFAULT_HOOKS).map(([key, value]) => hooks[key] ?? value).join('\n')}
 ${opticsClassWGSL}
 ${dropSphereWGSL}
-fn opticsFresnel(cosine: f32, fromIOR: f32, toIOR: f32) -> f32 {
-  if (fromIOR == toIOR) { return 0.0; }
-  let eta = fromIOR / toIOR;
-  if (eta * eta * (1.0 - cosine * cosine) >= 1.0) { return 1.0; }
-  let f0 = ((fromIOR - toIOR) / (fromIOR + toIOR)) * ((fromIOR - toIOR) / (fromIOR + toIOR));
-  return f0 + (1.0 - f0) * pow(1.0 - clamp(cosine, 0.0, 1.0), 5.0);
-}
+${opticsRefractionWGSL}
 // Slab intersection handles parallel rays without 0*infinity or sign(0).
 fn opticsBox(ro: vec3f, rd: vec3f, lower: vec3f, upper: vec3f) -> vec2f {
   var lo = 0.0; var hi = OPTICS_FAR;
@@ -456,10 +473,12 @@ fn opticsTrace(v: OpticsVertex, forced: bool, source: vec4f, entry: f32) -> Opti
       let toIOR = select(IOR(id), 1.0, id == E_EMPTY);
       var n = opticsSurface(OpticalHit(p, normal, lid, state, -rd));
       if (dot(n, n) < 1e-8) { n = normal; } else { n = normalize(n); }
-      let candidate = refract(rd, n, fromIOR / toIOR);
+      var refraction = opticsRefraction(rd, n, fromIOR, toIOR);
       if (dot(n, normal) <= 0.0 || dot(rd, n) >= 0.0 || dot(reflect(rd, n), normal) <= 0.0
-          || (dot(candidate, candidate) > 1e-8 && dot(candidate, normal) >= 0.0)) { n = normal; }
-      let f = opticsFresnel(clamp(-dot(rd, n), 0.0, 1.0), fromIOR, toIOR);
+          || (dot(refraction.direction, refraction.direction) > 1e-8 && dot(refraction.direction, normal) >= 0.0)) {
+        n = normal; refraction = opticsRefraction(rd, n, fromIOR, toIOR);
+      }
+      let f = refraction.reflected;
       interfaces++;
       if (f >= 1.0) {
         // TIR follows its actual reflected path within this medium; no energy
@@ -468,7 +487,7 @@ fn opticsTrace(v: OpticsVertex, forced: bool, source: vec4f, entry: f32) -> Opti
       }
       sum += transmission * f * opticsEnvironment(p, reflect(rd, n), ROUGH(lid));
       transmission *= 1.0 - f;
-      rd = normalize(refract(rd, n, fromIOR / toIOR)); bent = true;
+      rd = refraction.direction; bent = true;
       medium = id; previous = a;
       // Restart at the exact face; EPS chooses the cell only, not thickness.
       continue;
@@ -553,6 +572,21 @@ fn opticsTrace(v: OpticsVertex, forced: bool, source: vec4f, entry: f32) -> Opti
   return out;
 }
 @fragment fn fs(v: OpticsVertex) -> OpticsOutput { return opticsTrace(v, false, vec4f(0), 0.0); }
+${computeBinding === null ? '' : `
+@group(2) @binding(${computeBinding}) var opticsOutColor: texture_storage_2d<rgba16float, write>;
+@group(2) @binding(${computeBinding + 1}) var opticsOutMetadata: texture_storage_2d<rgba32float, write>;
+@group(2) @binding(${computeBinding + 2}) var opticsOutFallback: texture_storage_2d<r32uint, write>;
+@compute @workgroup_size(8, 8, 1)
+fn bulkCS(@builtin(global_invocation_id) gid: vec3u) {
+  if (any(gid.xy >= textureDimensions(opticsOutColor))) { return; }
+  var v: OpticsVertex;
+  v.position = vec4f(vec2f(gid.xy) + vec2f(0.5), 0.0, 1.0);
+  let out = opticsTrace(v, false, vec4f(0), 0.0);
+  let px = vec2i(gid.xy);
+  textureStore(opticsOutColor, px, out.color);
+  textureStore(opticsOutMetadata, px, out.metadata);
+  textureStore(opticsOutFallback, px, vec4u(out.fallback, 0u, 0u, 0u));
+}`}
 ${particleBinding === null ? '' : dropEntriesWGSL}
 `;
 }

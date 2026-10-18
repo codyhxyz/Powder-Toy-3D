@@ -48,6 +48,7 @@ const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve
 const events=[], prior=deferred();
 const win=Object.assign(Object.create(WorldWindow.prototype),{
   loaded:true,capturing:false,epoch:2,pending:prior.promise,readbackError:null,
+  renderSource:{needsLiveCopy:()=>false},
   sim:{g:{nx:32,ny:320,nz:16},origin:new Vector3(64,0,128)},P:{},leave:{},gpu:{failure:null},store:original,
   gen:{diff(_P,lo,bricks){events.push(['diff',lo,bricks]);}},
   readBack(base,bricks){events.push(['read',base,bricks]);this.pending=Promise.resolve();},
@@ -64,7 +65,7 @@ assert.equal(win.capturing,false);
 win.readbackError=new Error('readback failed');
 await assert.rejects(win.captureEdits(),/readback failed/);
 assert.equal(win.capturing,false);
-const readFailure=Object.assign(Object.create(WorldWindow.prototype),{epoch:1,lastKept:0,leave:{head:{},cells:{}},gpu:{failure:Error('device failed'),readback:{buffer:()=>Promise.reject(Error('GPU read failed'))}}});
+const readFailure=Object.assign(Object.create(WorldWindow.prototype),{epoch:1,lastKept:0,storeReads:new Set(),leave:{head:{},cells:{}},gpu:{failure:Error('device failed'),readback:{buffer:()=>Promise.reject(Error('GPU read failed'))}}});
 readFailure.readBack([0,0,0],[1,1,1]); await readFailure.pending;
 assert.match(readFailure.readbackError.message,/GPU read failed/,'actual readback failure is latched for capture');
 

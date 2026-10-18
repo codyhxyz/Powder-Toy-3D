@@ -263,6 +263,42 @@ export const FIELD_LAYOUT = {
 // The format of the final fields (src/derived.js allocates them).
 export const FIELD_FORMAT = 'rgba16float';
 
+// Domain parameters occupy the existing group-3 uniform; no extra bindings.
+// The planner proves in-world reads are in scratch. Missing in-world input
+// is a readiness error, never a boundary/zero sample.
+const worldParamsCache = new Map();
+export function worldFieldParams(base) {
+  if (!worldParamsCache.has(base)) worldParamsCache.set(base, uniformStruct(`World${base.name}`,
+    { ...Object.fromEntries(base.fields.map((f) => [f.name, f.type])),
+      worldMin: 'vec3i', worldMax: 'vec3i', scratchOrigin: 'vec3i', lo: 'vec3i', hi: 'vec3i' }));
+  return worldParamsCache.get(base);
+}
+function fieldDomain(code, base, domain) {
+  if (domain === 'box') return code;
+  if (domain !== 'world') throw new Error(`Unknown field domain: ${domain}`);
+  const params = worldFieldParams(base);
+  const helpers = /* wgsl */ `
+fn fieldInWorld(c: vec3i) -> bool {
+  let w = P.scratchOrigin + c;
+  return all(w >= P.worldMin) && all(w < P.worldMax);
+}
+fn fieldClamp(c: vec3i) -> vec3i {
+  return clamp(c, P.worldMin - P.scratchOrigin, P.worldMax - P.scratchOrigin - 1);
+}
+`;
+  code = code.replace(base.wgsl, params.wgsl).replace(`P: ${base.name}`, `P: ${params.name}`);
+  // Remove the Box-only incremental coverage optimization: transient normalized
+  // planes are never persistent. Stage intervals replace COVER completely.
+  for (const pass of ['blur', 'boost']) code = code.replace(coverWGSL(pass), '');
+  code = code.replace('  let p = cellOf(s);', `  let p = cellOf(s);
+  if (any(p < P.lo) || any(p >= P.hi) || !fieldInWorld(p)) { return; }`);
+  code = code.replaceAll('if (!inGrid(c))', 'if (!fieldInWorld(c))')
+    .replaceAll('if (!inGrid(q))', 'if (!fieldInWorld(q))')
+    .replaceAll('if (inGrid(q))', 'if (fieldInWorld(q))')
+    .replace('clamp(p + dir * i, vec3i(0), vec3i(NX, NY, NZ) - 1)', 'fieldClamp(p + dir * i)');
+  return code + helpers;
+}
+
 // ---- pours (docs/webgpu.md G4; the header's paragraph above) ----
 // Whitewater's aeration buffer (gfx/foam.js; its record: shaders/gfx/
 // liquidDetail.js, the aeration model) holds both copies (copy c of slot s
@@ -301,7 +337,7 @@ fn jetAt(p: vec3i) -> bool {
 // reset: every cell starts over at its target (a load, a new smoothing:
 // sim.fieldReset), as the cells of FRESH bricks do. aer: jetWGSL's.
 export const EmaParams = uniformStruct('EmaParams', { emaS: 'vec4f', emaM: 'vec4f', reset: 'u32', aer: 'u32', particleSplit: 'u32', world: 'u32' });
-export const fieldEmaFrag = (g) => /* wgsl */ `
+export const fieldEmaFrag = (g, domain = 'box') => fieldDomain(/* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
 ${dirtyListsWGSL(g)}
@@ -356,7 +392,7 @@ ${listMainWGSL('LIST_EMA')}
   if (ch > CH_LIQUID) { weight.x = 0.0; }
   ema[2u * SLOTS + s] = pack4x8unorm(weight);
 }
-`;
+`, EmaParams, domain);
 
 // ---- 2. the blur ----
 // w: per-tap weights, one per surface channel (media use .x); axis 0, 1, 2.
@@ -364,7 +400,7 @@ export const FieldBlurParams = uniformStruct('FieldBlurParams', { w: `array<vec4
 // final: the last axis, which normalises and writes the blurred fields in
 // half floats (planes φ.xy, φ.zw, media.xy, media.zw); else the source's
 // three planes (surface, media, weight) blurred along one axis, in 8 bits.
-export const fieldBlurFrag = (g, final) => /* wgsl */ `
+export const fieldBlurFrag = (g, final, domain = 'box') => fieldDomain(/* wgsl */ `
 ${prelude(g, { state: false })}
 ${dirtyListsWGSL(g)}
 const BLUR_TAPS: i32 = ${BLUR_TAPS};
@@ -402,7 +438,7 @@ ${final ? `  // normalise; deep inside crisp solids there is nothing to normalis
   dst[SLOTS + s] = pack4x8unorm(m);
   dst[2u * SLOTS + s] = pack4x8unorm(d);`}
 }
-`;
+`, FieldBlurParams, domain);
 
 // ---- 3. the thin-feature boost ----
 // Stages 0-2 (x, y, z): lattice smoothing of φ (stage 0 reads the blurred φ
@@ -413,7 +449,7 @@ ${final ? `  // normalise; deep inside crisp solids there is nothing to normalis
 // s: per-channel centre weight of the lattice smoothing (1 = none). aer:
 // jetWGSL's (stage 0 reads it: a pour's wake is current liquid).
 export const BoostParams = uniformStruct('BoostParams', { s: 'vec4f', axis: 'u32', aer: 'u32', particleSplit: 'u32', world: 'u32' });
-export const fieldBoostFrag = (g, stage) => /* wgsl */ `
+export const fieldBoostFrag = (g, stage, domain = 'box') => fieldDomain(/* wgsl */ `
 ${prelude(g, stage === 0 ? STATE_OPTS.STATE_RO : { state: false })}
 ${dirtyListsWGSL(g)}
 ${stage === 0 ? `${materialsGLSL()}\n${particleOwnershipWGSL}` : ''}
@@ -444,7 +480,7 @@ ${stage === 0 ? `    acc += w * vec4f(unpack2x16float(src[t]), unpack2x16float(s
   dst[s] = pack4x8unorm(acc);
   dst[SLOTS + s] = pack4x8unorm(occ);
 }
-`;
+`, BoostParams, domain);
 
 // The local peak and the boost (the WebGL build's stages 3-5): each channel's
 // maximum of the smoothed field over the 3³ cells around (those in the grid),
@@ -456,7 +492,7 @@ ${stage === 0 ? `    acc += w * vec4f(unpack2x16float(src[t]), unpack2x16float(s
 // own x and y passes, fieldMaxFrag).
 // aer: unread since Sync 3 (the layout's binding 6 above); src/derived.js still passes it.
 export const PeakParams = uniformStruct('PeakParams', { bulk: 'vec4f', reach: 'vec3i', aer: 'u32' });
-export const fieldPeakFrag = (g) => /* wgsl */ `
+export const fieldPeakFrag = (g, domain = 'box') => fieldDomain(/* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
 ${dirtyListsWGSL(g)}
@@ -488,7 +524,7 @@ ${listMainWGSL('LIST_FIELDS')}
   textureStore(fieldMedia, p, med);
   textureStore(fieldThin, p, boosted * smoothstep(vec4f(THIN_MASK_LO), vec4f(THIN_MASK_HI), k));
 }
-`;
+`, PeakParams, domain);
 
 // Test only (tools/derived-check.mjs): the WebGL build's separable peak
 // stages 3 and 4, one axis each (the maximum along it, taps outside the grid

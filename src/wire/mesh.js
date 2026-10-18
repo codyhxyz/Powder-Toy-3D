@@ -90,6 +90,8 @@ const mesh = {
   },
   beforeView(app) {
     if (getMeshGpu() !== app.gpu) setMeshGpu(app.gpu);   // (a device replaced at Start)
+    // WORLD preflight binds the actual native graph before any guard/VM pass.
+    if(app.win?.render)return;
     updateMeshLight(app);
     // the held tool's pass (once a frame: src/wire/pov.js may have run it already), to post: an
     // overlay drawn over the frame, which a presentation effect doesn't bend (gfx/presentation.js neutral)

@@ -38,7 +38,8 @@ function fixture(nx = 16, nz = 16) {
       proj: new Matrix4(), frustum: new Frustum(), box: new Box3() },
   });
   const win = Object.assign(Object.create(WorldWindow.prototype), {
-    sim, size: [nx * 32, 64, nz * 32], scene: {},
+    sim, size: [nx * 32, 64, nz * 32], scene: {}, gpu: { frame: {} },
+    renderSource: { recordLeavingCopy() { return {}; }, recordStore() {}, restoreCaptured() {}, recordLiveCopy() {} },
     gen: { diff() {}, fill() { sim.version++; } }, readBack() {},
     restore() { sim.version++; return 0; },
   });
@@ -263,7 +264,8 @@ function runnable(count = 6) {
   const { d, pipes, wakes } = runnable();
   assert(d.busy);
   assert(worldBusy({ win: { far: { queue: [], detail: d } } }), 'detail queue prevents sleep after far queue drains');
-  assert(/detail\.onChange = \(\) => app\.pacer\?\.wake\(\)/.test(wireSource), 'async callback reaches app pacer');
+  // Standalone legacy detail still reports readiness below. The WORLD wire
+  // now schedules its native owner rather than constructing this detail path.
   let farBuilds = 0;
   const far = { detail: d, viewPipeline: { state: 'idle' }, buildView() {
     farBuilds++; this.viewPipeline.state = 'pending'; return Promise.resolve();

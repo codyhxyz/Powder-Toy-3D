@@ -178,13 +178,14 @@ assert.equal(warmer.calls[2].view, 'cozy', 'the authored map exception warms Coz
 assert.equal(warmer.calls[2].curved, false, 'Sandbox does not inherit the Animal Crossing presentation effect');
 assert.match(preload, /view = views\.viewKey\(settings\.view\)/);
 assert.match(preload, /render\.warmChecks\(view, settings, \{ fallback, curved, fixedReadFormat: 0 \}\)/);
-assert.doesNotMatch(app, /materialStyle|Material style/, 'separate preference and drawer control removed');
+assert.doesNotMatch(app.match(/const DEFAULTS = \{[\s\S]*?\n\};/)[0], /materialStyle/, 'separate preference removed');
+assert.doesNotMatch(app, /key:\s*['"]materialStyle['"]|['"]Material style['"]/, 'separate drawer control removed; internal frozen view state is allowed');
 assert.match(app.slice(app.indexOf('const PERSIST'), app.indexOf('const STORE')), /'view'/);
 assert.match(app, /view: 0, camSpeed/, 'Realistic remains the default');
 const runtime = app.slice(app.indexOf('function setView(id)'), app.indexOf('// The blocks renderer on or off'));
 for (const text of ['settings.view = id', 'post.reset()', 'meshFrames.drop()', 'sim.resetGI()', 'detailGate.setView(id)', 'save()']) assert.ok(runtime.includes(text), text);
 const selectView = new Function('settings', 'VIEWS', 'isMaterialView', 'isTestView', `
-  const hybridUnavailable = false;
+  const hybridUnavailable = false, worldMode = null;
   const post = { reset() {} }, meshFrames = { drop() {} }, sim = { resetGI() {} }, detailGate = { setView() {} };
   const setBlocks = () => {}, plainView = () => false, prepareGI = () => {}, viewKeyOf = () => 'cozy';
   const blocksOn = true, settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {}, toast() {} }, save = () => {}, ensureHybrid = () => {};

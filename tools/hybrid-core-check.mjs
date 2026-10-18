@@ -32,6 +32,12 @@ for(const component of ['all',...FIXTURE_COMPONENTS]){
   assert.equal(painted.length,{all:13,opaque:2,smooth:4,media:4,optics:5,particles:6}[component],'controls must not weaken the default fixture');
   assert(painted.some(p=>p.tool===E.WALL)&&painted.some(p=>p.tool===GLOSSY_FIXTURE));
   if(component==='all')for(const id of [E.SAND,E.WOOD,E.WATER,E.GLASS,E.SMOKE,E.LAVA,E.FIRE])assert(painted.some(p=>p.tool===id));
+  if(component==='all'){
+    const negative=[];
+    paintFixture({THREE:{Vector3},sim:{paint:p=>negative.push(p)},volume:{matrixWorld:new Matrix4(),updateMatrixWorld(){}},
+      camera:new PerspectiveCamera(),controls:{target:new Vector3()}},{isolatedEmitter:false});
+    assert.deepEqual(negative,painted.filter(p=>p.tool!==E.LAVA||p.radius>=1),'negative control removes only the isolated emitter');
+  }
   if(component==='opaque')assert.deepEqual(painted.map(p=>p.tool),[E.WALL,GLOSSY_FIXTURE]);
   if(component==='particles')assert(painted.filter(p=>p.radius<1).length===4);
 }
@@ -188,7 +194,9 @@ const pipe = desc => {
   const r=new WgslReflect(desc.code);
   if(semantic)execFileSync('naga',['--stdin-file-path',desc.name+'.wgsl'],{input:desc.code,encoding:'utf8'});
   for(const stage of ['compute','vertex','fragment'])for(const entry of r.entry[stage]){
-    assert(entry.resources.filter(v=>r.storage.includes(v)).length<=8,`${desc.name} ${entry.name} storage`);
+    const storageTextures=entry.resources.filter(v=>v.type.name.startsWith('texture_storage_'));
+    assert(storageTextures.length<=4,`${desc.name} ${entry.name} storage textures`);
+    assert(entry.resources.filter(v=>r.storage.includes(v)&&!storageTextures.includes(v)).length<=8,`${desc.name} ${entry.name} storage buffers`);
     assert(entry.resources.filter(v=>r.textures.includes(v)).length<=16,`${desc.name} ${entry.name} textures`);
   }
   const stages=desc.entry||(r.entry.compute.length&&!r.entry.vertex.length)
@@ -197,22 +205,23 @@ const pipe = desc => {
   for(const [stage,mask,name] of stages){
     const entry=r.entry[stage].find(e=>e.name===name);
     assert(entry,`${desc.name}: missing ${stage} entry ${name}`);
-    let storage=0,textures=0;
+    let storage=0,textures=0,storageTextures=0;
     for(const layout of desc.layouts){
       const entries=(Array.isArray(layout)?layout:layout?.entries)??[];
       for(const e of entries.filter(e=>e.visibility&mask)){
         storage+=/storage/.test(e.buffer?.type??'')?1:0;
         textures+=e.texture?1:0;
+        storageTextures+=e.storageTexture?1:0;
       }
     }
-    assert(storage<=8&&textures<=16,`${desc.name} ${stage}: explicit layout limits`);
+    assert(storage<=8&&textures<=16&&storageTextures<=4,`${desc.name} ${stage}: explicit layout limits`);
     for(const v of entry.resources.filter(v=>v.group<desc.layouts.length)){
       const layout=desc.layouts[v.group],entries=(Array.isArray(layout)?layout:layout?.entries)??[];
       const binding=entries.find(e=>e.binding===v.binding);
       assert(binding?.visibility&mask,`${desc.name} ${name}: group ${v.group} binding ${v.binding} lacks ${stage} visibility`);
     }
   }
-  return { state: 'ready', ready: Promise.resolve(),
+  return { name: desc.name, state: 'ready', ready: Promise.resolve(),
     dispatch(_f, size, args) { calls.push({ name: desc.name, size, ...args }); },
     draw(_rp, args) { calls.push({ name: desc.name, ...args }); },
   };
@@ -296,7 +305,7 @@ const composed = calls.length;
 const input={sun:{x:0,y:1,z:0},model:new Matrix4(),camera:new PerspectiveCamera(),paused:false};
 const samples=[],updateResolution=renderer.resolution.update;
 renderer.resolution.update=f=>{samples.push(f);return updateResolution(f);};
-const complete=frame=>gpu.timing.onFrame({frame,coverage:{complete:true},passes:[{kind:'render',gpu:25}]});
+const complete=(frame,passes=[{kind:'render',gpu:25}])=>gpu.timing.onFrame({frame,coverage:{complete:true},passes});
 assert.equal(renderer.prepare(input),true);
 assert.equal(renderer.update(input), true);
 assert(calls.length > composed, 'all producers and shared shadows record real commands');
@@ -326,8 +335,10 @@ assert.equal(calls.find(c=>/scene composite/.test(c.name)).bind[2].entries.find(
   renderer.legacyIndirect.buffer,'composition masks the complete optical layer against the same GPU fallback predicate');
 complete(1);
 assert.equal(samples.at(-1).stable,false,'first workload has no comparable baseline');
-gpu.frameNo=1;renderer.update(input);complete(2);
+gpu.frameNo=1;renderer.update(input);complete(2,[{kind:'render',gpu:25},
+  {kind:'compute',name:renderer.optics.computePassName,gpu:7},{kind:'compute',name:'physics/extraction',gpu:999}]);
 assert.equal(samples.at(-1).stable,true,'held camera and producer workload are comparable');
+assert.equal(samples.at(-1).gpuMs,32,'isolated optics compute counts; mixed physics/extraction does not');
 gpu.frameNo=2;renderer.update(input);
 input.camera.position.x=1;
 gpu.frameNo=3;renderer.update(input);complete(3);

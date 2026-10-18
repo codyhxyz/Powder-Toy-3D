@@ -124,6 +124,8 @@ const world = Object.assign(Object.create(WorldWindow.prototype), { sim, gpu, sc
   historyIdentity: {}, historyReaders: 0, epoch: 1, pending: null, loaded: true,
   store: new BrickStore(wb), nativeStore: new NativeBrickStore(wb), planted: new Uint8Array(wb[0] * wb[2]),
   far: { build() { notified.push('far rebuilt'); } },
+  // main's World render source (src/world/renderSource.js): not under test here
+  renderSource: { reset() {}, recordLiveCopy() {}, needsLiveCopy() { return false; }, commitStoreRevision() {} }, storeRevisions: new Map(), storeReads: new Set(),
 });
 sim.worldWindow = world;
 sim.onWorldHistoryRestore = (...delta) => notified.push(delta);
@@ -230,7 +232,7 @@ world.leave = { head: buffer({ size: 128, label: 'save leaving head' }), cells: 
 world.lastKept = 0;
 words(world.leave.head).set([1, 17]);
 delayed = true;
-world.readBack([17, 0, 0], [1, 1, 1], Promise.resolve([rawBrick]));
+world.readBack([17, 0, 0], [1, 1, 1], { revision: 0 }, world.leave, Promise.resolve([rawBrick]));
 let prepareDone, prepareEntered, thumbnailDone, thumbnailEntered, prepareCalls = 0;
 const entering = new Promise(resolve => { prepareEntered = resolve; });
 const thumbnailStarted = new Promise(resolve => { thumbnailEntered = resolve; });

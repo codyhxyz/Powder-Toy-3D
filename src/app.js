@@ -58,7 +58,10 @@ import { createShaderPicker, testFailureMessage } from './ui/shaders.js';
 import { createHud, createHelp } from './ui/hud.js';
 import { createScoreboard } from './ui/scoreboard.js';
 import { h, inkFor, luminance } from './ui/dom.js';
-import { gfx, gfxUniforms, updateGfxUniforms, writeFrameUniforms } from './gfx/uniforms.js';
+import { gfx, gfxUniforms, updateGfxUniforms, writeFrameUniforms, frameUniformValues, frameUniformsOf } from './gfx/uniforms.js';
+import { freezeWorldView, worldInitialCellDemand } from './wire/worldRenderFrame.js';
+import { GI_SETTLE } from './shaders/gi.js';
+import { displayedWorldRay, transportWorldRay, localWorldHover, worldPickNotReady } from './wire/worldPick.js';
 import { cloudShift } from './shaders/gfx/clouds.js';
 import { DETAIL, settingKey, detailDefaults, detailRows } from './gfx/detail.js';
 import { createDetailGate, gateVariants } from './gfx/detailGate.js';
@@ -567,8 +570,9 @@ function build(savedWorldSize = null) {
     owner.integrationReady.then(() => wakeLoop(), () => {});
   }
   derived = new Derived(sim);
-  blocksOn = plainView();
-  vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !!(worldMode && sceneByKey(settings.scene).importManifest?.appearance) });
+  // WORLD uses its native frame wire. Keep local picks, not unused BOX views.
+  blocksOn = !worldMode && plainView();
+  vol = createVolume(gpu, sim, { shadows: !worldMode && !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !!(worldMode && sceneByKey(settings.scene).importManifest?.appearance) });
   ensureHybrid();
   if (blocksOn) blocks = createBlocks(gpu, sim, { world: !!worldMode });
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
@@ -584,7 +588,7 @@ function build(savedWorldSize = null) {
   s.ready.then(() => readySims.add(s), () => {});
   const nativeOwner = physicsV2;
   const core = coreWait = Promise.all([...(nativeOwner ? [nativeOwner.ready, nativeOwner.integrationReady] : []), s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready, hybridWait,
-    blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())]).then(() => {
+    worldMode ? null : blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())]).then(() => {
     if (coreWait === core) { coreReady = true; wakeLoop(); }
   });
   core.catch(() => {});   // (a pipeline that fails stops graphics: stopGraphics says why)
@@ -621,7 +625,8 @@ function whenSimReady(fn) {
 }
 
 function ensureHybrid() {
-  if (!hybridOptIn && !isTestView(settings.view)) {
+  // The optional hybrid uses local Simulation buffers, not the WORLD data wire.
+  if (worldMode || (!hybridOptIn && !isTestView(settings.view))) {
     if (hybrid) {
       releaseHybrid(); hybridWait = Promise.resolve();
       hybrid.dispose(); hybrid = null;
@@ -686,7 +691,7 @@ const baseDetail = () => (isMaterialView(settings.view) ? gateVariants(settings)
 let giWait = Promise.resolve(), giBuilt = 0;
 function prepareGI() {
   const d = derived;
-  if (blocksOn || !isMaterialView(settings.view) || !d?.prepareGI) return;
+  if (worldMode || blocksOn || !isMaterialView(settings.view) || !d?.prepareGI) return;
   const p = giWait = Promise.resolve(d.prepareGI()).then(() => { if (d === derived) { giBuilt++; wakeLoop(); } });
   p.catch(() => {});   // (a kernel that fails stops graphics: stopGraphics says why)
 }
@@ -1028,7 +1033,44 @@ function screenPlane(ray, height, out) {
   const r = screenCurve(ray), t = planeRoots(r, 1, height).find((x) => x >= 0);
   return t == null ? null : out.fromArray(rayPoint(r, t));
 }
+const worldPickToken = () => `${modeEpoch}:${presentation.revision}:${settings.tool}:${!!pov?.active}:${pov?.toolbelt?.selectedKey}:${skipPickLiquids()}`;
+function syncWorldHover() {
+  if(!win)return hover.valid;
+  return localWorldHover(hover,sim.origin,inWindow,identity=>
+    win.renderFrame?.driver?.displayedMainFrame?.frameIdentity===identity && hover.worldToken===worldPickToken());
+}
+function worldMutationReady() {
+  if(!win)return true;
+  if(!hover.worldReady || hover.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity ||
+    hover.worldToken!==worldPickToken())return false;
+  // A certified sky miss permits air placement. An unknown/stale query does
+  // not. Hit-anchored operations still need their own in-window surface.
+  return !hover.valid || syncWorldHover();
+}
+function requestWorldPick() {
+  const driver=win?.renderFrame?.driver,display=driver?.displayedMainFrame;
+  const fromPov=!!pov?.active;
+  if(pickPending || (!pointerInside && !fromPov))return;
+  syncWorldHover();
+  if(!display){hover.valid=false;hover.worldReady=false;return;}
+  const ndc=fromPov?[0,0]:pointer.toArray(),token=worldPickToken(),from=sim;
+  pointerPickDirty=false;pickPending=true;
+  driver.pick({ray:displayedWorldRay(display,ndc),skipLiquids:fromPov&&skipPickLiquids()}).then(hit=>{
+    if(from!==sim || token!==worldPickToken() || driver.displayedMainFrame!==display
+      || (!fromPov && (ndc[0]!==pointer.x || ndc[1]!==pointer.y)))return;
+    hover.valid=hit.ready && hit.valid;
+    hover.worldReady=hit.ready===true;
+    if(hit.ready){
+      Object.assign(hover,{face:hit.face,id:hit.id,T:hit.T,P:hit.P,life:hit.life,raw:hit.raw,
+        frameIdentity:hit.frameIdentity,worldToken:token,globalCell:new THREE.Vector3().fromArray(hit.cell)});
+      syncWorldHover();
+    }
+    wakeLoop();
+  },()=>{hover.valid=false;hover.worldReady=false;}).finally(()=>{pickPending=false;});
+}
 function requestPick() {
+  if(win){requestWorldPick();return;}
+  hover.globalCell=null;
   const fromPov = !!aimScreenRay();
   if (pickPending || (!pointerInside && !fromPov)) return;
   pointerPickDirty = false;
@@ -1057,11 +1099,36 @@ function requestPick() {
 // (from the eye through a pixel), which a presentation effect bends: it walks the
 // displayed ray then. Physics' rays (the ground, the body) keep the flat path.
 function pickRay(ro, rd, visible = false) {
+  if(win && visible){
+    const driver=win.renderFrame?.driver,display=driver?.displayedMainFrame;
+    if(!display)return Promise.resolve(worldPickNotReady());
+    const from=sim,token=worldPickToken();
+    const ray=transportWorldRay(display,ro,rd,volume.matrixWorld,camera);
+    return driver.pick({ray}).then(hit=>{
+      if(from!==sim || token!==worldPickToken() || display!==driver.displayedMainFrame)return worldPickNotReady('WORLD_PICK_OBSOLETE');
+      if(!hit.ready)return hit;
+      const globalCell=new THREE.Vector3().fromArray(hit.cell),cell=globalCell.clone().sub(sim.origin);
+      // This App interface serves physical tools. The native driver and hover
+      // retain global visual validity, but tool cells keep their local ABI.
+      return {...hit,globalValid:hit.valid,valid:hit.valid&&inWindow(cell),globalCell,cell,worldToken:token};
+    });
+  }
   const o = sim.origin.clone(), from = sim, revision = presentation.revision;
   return vol.pick(ro, rd, visible ? warpNow() : null).then((hit) => {
     const cell = pickedNow(new THREE.Vector3().fromArray(hit.cell), o);
     return { valid: from === sim && (!visible || revision === presentation.revision) && hit.valid && inWindow(cell), cell, face: hit.face, id: hit.id, T: hit.T, P: hit.P };
   });
+}
+
+function physicalPickCell(hit) {
+  if(!hit.valid)return null;
+  if(win&&hit.globalCell){
+    if(hit.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity ||
+      hit.worldToken!==worldPickToken())return null;
+    const cell=hit.globalCell.clone().sub(sim.origin);
+    return inWindow(cell)?cell:null;
+  }
+  return hit.cell.clone();
 }
 
 const isTool = () => settings.tool < 0;
@@ -1078,6 +1145,7 @@ function hoverBrushCenter(out, tool = settings.tool) {
 const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const tmpV = new THREE.Vector3();
 function updateBrush() {
+  syncWorldHover();
   brushValid = false;
   if (ctx.industry?.building || selectedMode === 'factory') {
     brush.set({ visible: false });
@@ -1089,12 +1157,13 @@ function updateBrush() {
     if (painting || shapeDrag) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       if (planePoint(tmpV)) { brushCenter.copy(tmpV); brushValid = true; }
-    } else if (hover.valid) {
+    } else if (hover.valid && (!win || syncWorldHover())) {
       hoverBrushCenter(brushCenter);
       brushValid = true;
     }
   }
-  if (brushValid) clampToGrid(brushCenter);
+  if(win && brushValid && !inWindow(brushCenter))brushValid=false;
+  if (brushValid && !win) clampToGrid(brushCenter);
   if (shapeDrag) {
     if (brushValid) shapeDrag.end.copy(brushCenter);
     showShapeDrag();
@@ -1107,7 +1176,7 @@ function updateBrush() {
     shape: settings.shape,
     color: toolById(settings.tool).color,
   });
-  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper });
+  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper && (!win || syncWorldHover()) });
 }
 
 const clampToGrid = (v) => v.set(THREE.MathUtils.clamp(v.x, 0, sim.g.nx), THREE.MathUtils.clamp(v.y, 0, sim.g.ny), THREE.MathUtils.clamp(v.z, 0, sim.g.nz));
@@ -1261,6 +1330,7 @@ const FILL_REFUSED = {
   gone: 'The world changed before the fill: try again',
 };
 function fillAt() {
+  if(win && !syncWorldHover())return;
   if (mp.replica && !mp.isGuest) { mp.guard(); return; }
   if (!hover.valid) { hud.toast('Click a surface to fill from', { kind: 'error' }); return; }
   const tool = settings.tool, st = brushStroke(tool);
@@ -1275,6 +1345,7 @@ function fillAt() {
     if (id < 0) { hud.toast(FILL_REFUSED.start, { kind: 'error' }); return; }
     if (st.filter >= 0 && id !== st.filter) { hud.toast(`${editModeText()}: click ${ELEMENTS[st.filter].name} to fill it`); return; }
   }
+  if(win && !inWindow(cell))return;
   const req = { cell: cell.toArray(), id, maxY, stroke: { ...st, rate: oneShotRate(tool, settings.rate) } };
   delete req.stroke.center;
   hud.dismissHint();
@@ -1293,6 +1364,7 @@ const isBrush = (id) => id !== SIGN_TOOL && !isBuild(id) && !isSpawnerTool(id);
 // stays on its drag plane, so a held pour doesn't climb up its own heap toward
 // you; a brush tool's (erase, heat) follows the crosshair into what it works on.
 function updateGunBrush() {
+  syncWorldHover();
   const g = sim.g;
   const out = toolGunOut;
   toolGunOut = false;   // the gun says so again next frame (toolGun.aim), while it's in hand
@@ -1304,12 +1376,13 @@ function updateGunBrush() {
         screenAt(povRay, strokeDist, brushCenter);   // (along the displayed aim: the rolling log bends it)
         brushValid = !win || inWindow(brushCenter);
       }
-    } else if (hover.valid) {
+    } else if (hover.valid && (!win || syncWorldHover())) {
       hoverBrushCenter(brushCenter, tool);
       brushValid = true;
     }
   }
-  if (brushValid) {
+  if(win && brushValid && !inWindow(brushCenter))brushValid=false;
+  if (brushValid && !win) {
     brushCenter.x = THREE.MathUtils.clamp(brushCenter.x, 0, g.nx);
     brushCenter.y = THREE.MathUtils.clamp(brushCenter.y, 0, g.ny);
     brushCenter.z = THREE.MathUtils.clamp(brushCenter.z, 0, g.nz);
@@ -1321,7 +1394,7 @@ function updateGunBrush() {
     shape: settings.shape,
     color: toolById(tool).color,
   });
-  builds?.update({ hover, active: out && isBuild(settings.tool), crosshair: true });
+  builds?.update({ hover, active: out && isBuild(settings.tool) && (!win || syncWorldHover()), crosshair: true });
 }
 
 // ---------------------------------------------------------------- UI
@@ -1635,7 +1708,8 @@ const detailGate = createDetailGate(gpu, () => pacer.wake(), () => hud.toast('Pr
 const coldShader = createColdShaderGuard(() => { hud.toast('Loading something cool, please be patient'); launch.progress?.('cold'); });
 function applyDetail() {
   for (const w of live) w.detail?.(ctx);   // whitewater's per-step field (src/wire/foam.js)
-  detailGate.configure(vol, settings, settings.view);
+  if(worldMode)detailGate.dispose();
+  else detailGate.configure(vol, settings, settings.view);
   detailVersion++;   // the shadow map is a derived pass: redo it
   post.reset();
 }
@@ -1719,11 +1793,11 @@ function setView(id) {
   }
   settings.view = id;
   ensureHybrid();
-  detailGate.setView(id);
+  if(!worldMode)detailGate.setView(id);
   setBlocks(plainView(id));
   prepareGI();
   const key = viewKeyOf(id);
-  if (!blocksOn && viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
+  if (!worldMode && !blocksOn && viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
   settingsPanel.sync();
   shaderPanel.sync();
   hud.setLegend(VIEWS.find((v) => v.id === id));
@@ -1733,7 +1807,7 @@ function setView(id) {
 // The blocks renderer on or off (setView: on in the Plain view). Off again,
 // the derived passes it skipped rebuild every brick.
 function setBlocks(on) {
-  on = !!on;
+  on = !!on && !worldMode;
   if (on === blocksOn || graphicsFailure) return;
   blocksOn = on;
   if (on) {
@@ -1804,6 +1878,7 @@ const THUMB_SIZE = [320, 200];
 const thumbCam = useWebGPUCamera(new THREE.PerspectiveCamera());
 let thumbTarget = null;
 async function renderThumb(viewId, out) {
+  if(win)return renderWorldThumb(viewId,out);
   if (graphicsFailure || !coreReady) return false;
   const view = viewKeyOf(viewId), detail = isMaterialView(view) ? gateVariants(settings).base : {};
   // (Plain is the blocks renderer's, which only the Plain view keeps: from another view its card stays
@@ -1864,6 +1939,55 @@ async function renderThumb(viewId, out) {
   return true;
 }
 
+// Each WORLD card owns its camera and RGBA8 target through final readback.
+// Only the frozen view is captured here; actors are selected by the normal tick.
+async function renderWorldThumb(viewId,out) {
+  const world=win,slot=world?.renderFrame,driver=slot?.driver;
+  const retired=()=>win!==world || world.renderFrame!==slot || slot.dead ||
+    (world.renderSource && world.renderSource.epoch!==slot.epoch);
+  if(graphicsFailure || !coreReady || slot?.dead || !driver?.accepted || !driver.displayedMainFrame || retired())return false;
+  const view=viewKeyOf(viewId),detail=isMaterialView(view) ? gateVariants(settings).base : {};
+  const ownCamera=useWebGPUCamera(new THREE.PerspectiveCamera());
+  camera.updateMatrixWorld();ownCamera.copy(camera,false);
+  // Detach from any POV rig without turning its world pose into a local pose.
+  ownCamera.matrix.copy(camera.matrixWorld);ownCamera.matrixWorld.copy(camera.matrixWorld);
+  ownCamera.matrixWorldInverse.copy(camera.matrixWorldInverse);
+  ownCamera.matrix.decompose(ownCamera.position,ownCamera.quaternion,ownCamera.scale);
+  ownCamera.aspect=THUMB_SIZE[0]/THUMB_SIZE[1];
+  useWebGPUCamera(ownCamera);
+  const frame=driver.accepted.frame;
+  // Source/time/light/artwork stay in accepted data; only view style changes.
+  const model=volume.matrixWorld.clone().multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray().map(v=>-v)));
+  const style=frameUniformValues({camera:ownCamera,model,
+    view:viewId,sourceStyle:selectedMode==='crueltySquad' && isMaterialView(view)});
+  const frozen=presentation.neutral(()=>freezeWorldView({camera:ownCamera,presentation,settings,post,pov},
+    {...frame.values,model:model.toArray(),view:style.view,materialStyle:style.materialStyle,sourceStyle:style.sourceStyle},
+    {view,detail,curved:false}));
+  frozen.settings.view=viewId;
+  frozen.post.raw=view==='plain' ? false : !isMaterialView(view);
+  frozen.post.cruelty=selectedMode==='crueltySquad' && isMaterialView(view);
+  frozen.params.warpK=0;
+  const target=gpu.createTexture({label:'WORLD view thumbnail',size:THUMB_SIZE,format:'rgba8unorm',
+    usage:GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC});
+  try {
+    await driver.queueStill({view:frozen,target});
+    if(retired())return false;
+    const px=await gpu.readback.texture(target);
+    if(retired())return false;
+    const [w,h]=THUMB_SIZE,ctx2d=out.getContext('2d'),img=ctx2d.createImageData(w,h);
+    for(let i=0;i<w*h*4;i+=4) {
+      const a=px[i+3]/255 || 1;
+      img.data[i]=Math.min(255,px[i]/a);img.data[i+1]=Math.min(255,px[i+1]/a);
+      img.data[i+2]=Math.min(255,px[i+2]/a);img.data[i+3]=px[i+3];
+    }
+    ctx2d.putImageData(img,0,0);out.dataset.rendered='1';return true;
+  } finally {
+    // A rejected job has already drained its native prefix/compilation. Keep
+    // the UI-owned target alive through readback's own queue use as well.
+    await gpu.device.queue.onSubmittedWorkDone();target.destroy();
+  }
+}
+
 // ---------------------------------------------------------------- input
 const canvasEl = canvas;
 const canEraseClick = () => !pov?.active && selectedMode !== 'factory' && !ctx.industry?.building
@@ -1876,12 +2000,13 @@ async function eraseClick(e) {
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   const from = sim, ray = gridRay(), stroke = brushStroke(ERASE_TOOL);
   const hit = await pickRay(ray.origin, ray.direction, true);
-  if (from !== sim || !hit.valid || hit.id < 0 || !canEraseClick()) return;
+  const cell=physicalPickCell(hit);
+  if (from !== sim || !cell || hit.id < 0 || !canEraseClick()) return;
   if (!mp.isGuest) {
     sim.snapshot(toolById(ERASE_TOOL).name);
     toolbar.setUndoEnabled(true);
   }
-  paintStroke({ ...stroke, center: hit.cell.clone().addScalar(0.5) });
+  paintStroke({ ...stroke, center: cell.addScalar(0.5) });
   pacer.wake();
   hud.dismissHint();
 }
@@ -1933,6 +2058,7 @@ function press(e) {
 // tool gun. true if it did something, false if it couldn't (it says why),
 // null if the tool paints a stroke instead.
 function clickTool() {
+  if(win && !worldMutationReady())return false;
   if ((settings.tool === SIGN_TOOL || isDecoTool(settings.tool) || isSpawnerTool(settings.tool)) && mp.guardEntities?.()) return false;
   if (selectedMode === 'factory' || ctx.industry?.building) return false;
   if (isDecoTool(settings.tool) && mp.guard()) return false;   // decoration isn't in the host's stream yet (src/deco.js)
@@ -2054,8 +2180,12 @@ function touchDown(e) {
   Promise.all([pickRay(ray.origin, ray.direction, true), new Promise((r) => setTimeout(r, TOUCH_PRESS_DELAY_MS))]).then(([hit]) => {
     if (touchPress !== id) return;
     touchPress = 0;
-    Object.assign(hover, { valid: hit.valid, face: hit.face, id: hit.id, T: hit.T, P: hit.P });
-    hover.cell.copy(hit.cell);
+    const cell=win?(hit.globalValid?physicalPickCell(hit):hit.cell):hit.cell;
+    if(win&&(!hit.ready || !cell || hit.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity ||
+      hit.worldToken!==worldPickToken()))return;
+    Object.assign(hover, { valid: hit.valid, face: hit.face, id: hit.id, T: hit.T, P: hit.P,
+      globalCell:hit.globalCell??null,frameIdentity:hit.frameIdentity,worldToken:hit.worldToken,worldReady:hit.ready===true });
+    hover.cell.copy(cell);
     press(e);
     if (painting && !touchesDown.size) setTimeout(() => { if (!touchesDown.size) painting = false; }, TOUCH_TAP_MS);
   }).catch(() => { if (touchPress === id) touchPress = 0; });
@@ -2193,7 +2323,7 @@ let stepTime = 0, stepCount = 0, stepRate = 0;
 // longer), or at once without TAA (tools turn it off: no history to converge).
 const GI_PROBE_EVERY = 2;
 const pacer = createPacer({
-  derivedSettle: Math.max(...[...CHANNELS, ...MEDIA].map((c) => settleFrames(c.ema)), settleFrames(GI_BLEND, GI_PROBE_EVERY)),
+  derivedSettle: () => Math.max(...[...CHANNELS, ...MEDIA].map((c) => settleFrames(c.ema)), settleFrames(GI_BLEND, GI_PROBE_EVERY), win ? GI_SETTLE : 0),
   viewSettle: () => (post.settings.taa ? settleFrames(post.settleWeight) : 1),
   presentHz: testMode === 'preview' ? PREVIEW_HZ : MAX_FPS,
   onWake: wakeLoop,
@@ -2254,6 +2384,40 @@ function saveScreenshot() {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     hud.toast('Screenshot saved', { icon: 'camera' });
   });
+}
+
+// A WORLD request captures source/lighting once, independently of the view.
+function captureWorldRequest(reservation,state,dt,accepted) {
+  updateGfxUniforms(sim,SUN,KEY_LIGHT);
+  wire('world').captureLighting(ctx);
+  post.settings.raw=!isMaterialView(renderView);
+  post.settings.upscale=presetOf()*DEVICE_RATIO/pixelRatio;
+  post.settings.adaptive=presetOf()<1;
+  post.settings.floor=UPSCALE_FLOOR*DEVICE_RATIO/pixelRatio;
+  post.settings.sprintBlur=0;
+  gfxUniforms.uNearGI.value=settings.nearGI;gfxUniforms.uGlowLights.value=settings.glowLights;gfxUniforms.uCaustics.value=settings.caustics;
+  const model=volume.matrixWorld.clone().multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray().map(v=>-v)));
+  const captured=frameUniformValues({...frameValues(camera,renderView,[0,0]),model,far:false,sourceAppearance:[0,0,0,0]});
+  const values=Object.fromEntries(Object.entries(captured).map(([k,v])=>[k,v?.toArray?v.toArray():v]));
+  const view=freezeWorldView(ctx,values,{view:viewKeyOf(renderView),detail:frameDetail,curved:!!warpNow()?.k});
+  const warp=view.presentation.parameters;
+  // Exact uint words, no hash. Camera/origin/time are not global EMA resets.
+  const key=Array.from(new Uint32Array(new Float32Array([...values.sun,...values.sunCol,...values.keyLight,
+    ...values.caveAmbient,...values.skyUp,values.lightGain,values.cloudSea,values.clouds?1:0,
+    values.nearGI?1:0,values.glowLights?1:0,values.caustics?1:0]).buffer));
+  const rows=values.lampPos, origin=sim.origin.toArray();
+  const lamps=Array.from({length:values.lampCount},(_,i)=>({pos:Array.from(rows[i],(v,k)=>k<3?v+origin[k]:v),
+    col:[...values.lampCol[i]],shape:[...values.lampShape[i]]}));
+  const frame={values,physicsOrigin:origin,params:{marchNear:pov?.marchNear??0,warpK:warp.k,warpAnchor:warp.anchor,warpDir:warp.dir},
+    globalKey:key,lamps,sun:{direction:[...values.sun],basisRevision:1},
+    sceneVersion:modeEpoch,schemaVersion:1,configVersion:1,advance:reservation.runDerived||!accepted,
+    external:{mediaNoise:state.noise.view,packedMesh:state.unused.createView(),sourceAppearance:state.emptyArtwork.createView()}};
+  // Reuse source settings only when they really remain compatible. Camera or
+  // physics-origin changes alone must not turn a new light setting into stale data.
+  if(accepted && (JSON.stringify(key)!==JSON.stringify(accepted.frame.globalKey)
+    || JSON.stringify(lamps)!==JSON.stringify(accepted.frame.lamps)))frame.advance=true;
+  if(!frame.advance && accepted)Object.assign(frame,{...accepted.frame,advance:false,external:frame.external});
+  return {frame,view,requirements:worldInitialCellDemand(view.values.cam,win.size)};
 }
 
 // ---------------------------------------------------------------- a presented frame
@@ -2431,6 +2595,7 @@ const frameHooks = {
   // passes, the shadow map (views that read it), GI (the realistic view), the
   // wires' upkeep, the picks asked for this tick
   compute: () => {
+    if(win?.render)return; // WORLD has its own owned native transaction; no local union upkeep.
     const splitChanged = hybrid?.prepare({
       view: viewKeyOf(renderView), model: volume.matrixWorld, warp: warpNow(),
       disabled: !!blocks || testNoVolume, decoration: gfxUniforms.uDeco.value,
@@ -2571,7 +2736,8 @@ function syncRenderResolution(resolutionScale = post.settings.resolutionScale) {
 function updateFrameDetail() {
   volume.updateMatrixWorld();
   camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
-  return detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
+  // WORLD enables every selected feature; the physics box is not a detail gate.
+  return win ? gateVariants(settings).near : detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
 }
 
 // One tick: input, the steps, and, when due, a presented frame. Returns
@@ -2623,7 +2789,7 @@ function tick(now, renderOnly = false) {
 
     prof.phase('paint');
     if (selectedMode === 'factory' || ctx.industry?.building) painting = false;
-  if (painting && brushValid) {
+  if (painting && brushValid && (!win || (inWindow(brushCenter) && worldMutationReady()))) {
       tmpV.copy(brushCenter).add(sim.origin);   // world cells
       const wind = windFromValid ? [tmpV.x - windFrom.x, tmpV.y - windFrom.y, tmpV.z - windFrom.z] : null;
       windFrom.copy(tmpV);
@@ -2691,7 +2857,8 @@ function tick(now, renderOnly = false) {
     // Uniform uploads and scene hooks stay draw-only for post-only reuse.
     syncRenderResolution();
     frameDetail = updateFrameDetail();
-    selectRenderView();
+    if(win)renderView=settings.view;
+    else selectRenderView();
   }
   // Set before viewKey: changing source style invalidates the cached image.
   const crueltyDisplay = selectedMode === 'crueltySquad' && isMaterialView(renderView);
@@ -2699,18 +2866,35 @@ function tick(now, renderOnly = false) {
     post.settings.cruelty = crueltyDisplay;
     post.reset(); // Never blend temporal history across source-style transitions.
   }
+  let runDerived=false, runView=false;
+  if(win) {
+    const driver=wire('world').prepareRender(ctx);
+    if(driver) {
+      runView=driver.tick({present,dt,
+        reserve:()=>{
+          const derived=pacer.derived(`${sim.id}:${sim.version}|${SUN.toArray()}|${KEY_LIGHT}|${renderView}|${JSON.stringify(gfx)}|${settings.nearGI}:${settings.glowLights}:${settings.caustics}|${detailVersion}`);
+          const key=viewKey(camera,scene,pixelRatio,innerWidth,innerHeight,`${brushKey(brush,toolById(settings.tool).color)}|${presentation.key}`,viewSettings,gfx,post.settings);
+          return {runDerived:derived,runView:pacer.view(key,derived||wantFrame())};
+        },capture:(reservation,state)=>captureWorldRequest(reservation,state,dt,driver.accepted)});
+      if(present || runView)driver.presentLast();
+      if(runView)viewClock(false); // Only an accepted WORLD transaction advances presentation clocks.
+      if(!renderOnly && (pointerPickDirty || runView || pov?.active))requestPick();
+    }
+    lastFrameMode='world';
+    if(runView && captureNext){const c=captureNext;captureNext=null;c(post.capture());}
+  } else {
   const hybridScale = hybrid?.adapt({
     view: viewKeyOf(renderView), model: volume.matrixWorld, warp: warpNow(),
     disabled: !!blocks || testNoVolume, decoration: gfxUniforms.uDeco.value,
   });
   if (hybridScale != null) post.settings.resolutionScale = hybridScale;
-  const runDerived = present && pacer.derived(
+  runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}|${vol.format}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
     `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}|${vol.format}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
     viewSettings, gfx, post.settings) : viewSeen;
   const viewChanged = viewV !== viewSeen;
-  let runView = present && pacer.view(viewV, runDerived || wantFrame());
+  runView = present && pacer.view(viewV, runDerived || wantFrame());
   // Adaptation is scheduled separately below: forcing the view here would
   // restart TAA settling on every exposure update, forever until eyes settle.
   // three's meshes moved, and nothing else in the key (gfx/meshFrames.js), since the last view frame
@@ -2788,6 +2972,7 @@ function tick(now, renderOnly = false) {
     if (captureNext) { const c = captureNext; captureNext = null; c(post.capture()); }
     prof.phase('other');
   }
+  }
   gpu.endFrame();   // this tick's command buffer, if it recorded anything (B3)
   if (runView) {
     if (wantShot) { wantShot = false; saveScreenshot(); }
@@ -2835,6 +3020,19 @@ function tick(now, renderOnly = false) {
   // J3's app: { gpu, three, sim, derived, scene, camera, settings, pacer, post } (three is the renderer, also as `renderer`)
   gpu, three: renderer, renderer, pacer, canvas, post, presenter, cut, overlays, brush, scene, camera, controls, rig, settings, DEFAULTS, SIZES, WORLDS,
   hover, day, sun: SUN, keyLight: KEY_LIGHT, toolGun, camGrid, sceneByKey,
+  threeMeshes,
+  prepareWorldAfter(values,cam) {
+    // Local sprites/cursors retain their existing coordinate ABI; source lamp
+    // conversion remains based on data.frame.physicsOrigin, not this origin.
+    const model=new THREE.Matrix4().fromArray(values.model).multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray()));
+    const local={...values,model:model.toArray(),cam:values.cam.map((v,i)=>v-sim.origin.toArray()[i])};
+    const fu=frameUniformsOf(gpu);fu.uniforms.write(local);
+    fu.last.viewProj.fromArray(values.viewProj);fu.last.model.copy(model);fu.last.invViewProj.fromArray(values.invViewProj);
+    fu.last.eye.setFromMatrixPosition(cam.matrixWorld);fu.last.written=true;
+    wire('rays')?.beforeView(ctx);
+  },
+  drawWorldAfter(rp){for(const w of after)w.scene(ctx,rp);brush.draw(rp);},
+  drawWorldOverlay(rp){for(const w of overlayWires)w.overlay(ctx,rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
   get renderView() { return renderView; },
   get scale() { return scale; }, get anchor() { return anchor; }, get worldMode() { return worldMode; },
@@ -2888,6 +3086,7 @@ function tick(now, renderOnly = false) {
   isTyping, selectTool, leaveBuild, setPaused, setRadius, setSimMode, setSimModes, resetSimModes, simModeLock,
   updateSun, save, camState, onNextFrame,
   requestRender: () => pacer.wake(),
+  wakeLoop, // Completion wakes do not refill temporal settling.
   // only three's meshes changed (the birds): a frame, which may keep the volume's scene (gfx/meshFrames.js)
   requestMeshFrame: () => pacer.wakeMeshes(),
 };
@@ -2908,6 +3107,11 @@ function bootReady(pending = null) {
   pending?.finally(() => { settled = true; });
   const check = async () => {
     if (graphicsFailure || launch.startupError) return;
+    if(win&&!win.renderFrame?.driver?.displayedMainFrame){
+      launch.progress?.('world');
+      setTimeout(check,READY_POLL_MS);
+      return;
+    }
     if (((win && !win.loaded) || !settled) && performance.now() - t0 < READY_WAIT_MS) {
       if (win && !win.loaded) launch.progress?.('world');   // (the loading screen's step: its passes compile, then it generates)
       setTimeout(check, READY_POLL_MS);
@@ -2936,6 +3140,12 @@ async function allReady() {
     const h = hybrid, pending = hybridWait;
     await pending;
     if (s !== sim || v !== vol || h !== hybrid || pending !== hybridWait) continue;
+    if(win){
+      await gpu.settled();
+      if(graphicsFailure)throw graphicsFailure;
+      if(s===sim&&v===vol&&coreReady)return;
+      continue;
+    }
     const view = viewKeyOf(settings.view);
     if (blocksOn) {
       if (blocks) await blocks.ready;
@@ -3123,6 +3333,24 @@ try {
         if (graphicsFailure) throw graphicsFailure;
         // Two initial frames observe post-setting and spawner-transform changes.
         pacer.wake(); // also covers direct setting edits that aren't in the view key
+        if(win){
+          const world=win;let n=0,lastImageAt=performance.now();
+          while(n<2||!pacer.settled||world.renderFrame?.driver?.busy){
+            if(n>pacer.settleLimit)throw new Error('Test render did not converge');
+            const before=world.renderFrame?.driver?.displayedMainFrame?.frameIdentity;
+            tick(performance.now(),true);
+            await gpu.fence();
+            // Native preparation/readback continuations need a browser task.
+            // Count confirmed MAIN images, not ticks spent waiting for them.
+            await new Promise(resolve=>setTimeout(resolve,0));
+            if(graphicsFailure)throw graphicsFailure;
+            if(win!==world)throw new Error('World changed during test render');
+            const after=world.renderFrame?.driver?.displayedMainFrame?.frameIdentity;
+            if(after&&after!==before){n++;lastImageAt=performance.now();}
+            else if(performance.now()-lastImageAt>=10000)throw new Error('Test render received no MAIN image for 10 seconds');
+          }
+          return n;
+        }
         let n = 0;
         // The first render applies the requested upscale, which changes the limit.
         do { tick(performance.now(), true); n++; } while ((n < 2 || !pacer.settled) && n < pacer.settleLimit);

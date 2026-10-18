@@ -124,21 +124,25 @@ ${Object.keys(LIQ_PROPS).map((k) => `  if (id == E_${k}) { return ${g(fn(LIQ_PRO
 }`;
 const wgslArray = (xs) => `array<f32, ${xs.length}>(${xs.map(g).join(', ')})`;
 
-/** Native compact foam is always compiled; legacy detail switches still gate their effects. */
-export const LIQ_DETAIL = () => true;
+/** Box programs always compile native compact foam (legacy detail switches still gate their effects).
+ * WORLD reads no V2 state, so its switches decide what is compiled in, as before. */
+export const LIQ_DETAIL = (detail = {}, backend = 'box') => backend !== 'world'
+  || !!(detail.DETAIL_LIQ_RIPPLES || detail.DETAIL_LIQ_MENISCUS || detail.DETAIL_LIQ_FOAM);
 
-export const liquidDetailGLSL = (detail = {}, fixedReadFormat) => {
-  const format = readFormatWGSL(fixedReadFormat);
+export const liquidDetailGLSL = (detail = {}, { backend = 'box', fixedReadFormat } = {}) => {
+  // WORLD reads its own atlas, never V2's packed state: its format is the legacy one.
+  const format = backend === 'world' ? '0u' : readFormatWGSL(fixedReadFormat);
   const ripples = !!detail.DETAIL_LIQ_RIPPLES;
   const meniscus = !!detail.DETAIL_LIQ_MENISCUS;
-  const foam = true; // native §4.3 foam is independent of the legacy Whitewater switch
+  const world = backend === 'world';
+  const foam = !world || !!detail.DETAIL_LIQ_FOAM; // native §4.3 foam is independent of the legacy Whitewater switch
   return /* wgsl */ `
 // Which copy of the aeration buffer (binding 19: both copies, docs/webgpu.md
 // G4) is the current one, 0 or 1. The aeration's ping-pong isn't the state's,
 // so the header's src can't say: the entry point sets it from its params, as
 // it sets gFragCoord (docs/webgpu.md B6: a param chooses the copy).
 var<private> gAerCopy: u32 = 0u;
-${LIQ_DETAIL(detail) ? `
+${LIQ_DETAIL(detail, backend) ? `
 fn liqDetailOn(id: i32) -> bool { return SURFCH(id) == CH_LIQUID && id != E_ICE; }
 
 // Tilt outward normal n by a height field's world gradient gr (slope units):
@@ -223,11 +227,11 @@ const AER_PROBE: f32 = 0.25;         // cells into the liquid (against n) where 
 const AER_LIQ_MIN: f32 = 0.02;       // liquid weight below which the read is no liquid's
 fn aerTap(c: vec3i) -> vec3f {
   if (outside(c)) { return vec3f(0.0); }
-  if (${format} == 2u || ${format} == 3u) {
+  ${backend === 'world' ? 'let f = worldAeration(c);' : `if (${format} == 2u || ${format} == 3u) {
     return fetchNativeAeration(c);
   }
   let w = aeration[gAerCopy * SLOTS + slotOf(c)];
-  let f = vec4f(unpack2x16float(w.x), unpack2x16float(w.y));
+  let f = vec4f(unpack2x16float(w.x), unpack2x16float(w.y));`}
   return select(vec3f(0.0), vec3f(f.x, 1.0, f.w), f.y > 0.5);
 }
 fn aerationAt(p: vec3f) -> vec2f {   // (aeration, grounded share), 0..1
@@ -316,11 +320,12 @@ fn liquidFoam(p: vec3f, n: ptr<function, vec3f>, id: i32, col: ptr<function, vec
 // The tracer's hook at a liquid surface event: hp, outward normal n0 (wind
 // ripples applied), liquid id. Returns the normal to refract/reflect with;
 // foam adds its light and covers what is behind it.
-fn liquidDetail(hp: vec3f, n0: vec3f, id: i32, col: ptr<function, vec3f>, trans: ptr<function, vec3f>) -> vec3f {${LIQ_DETAIL(detail) ? `
+fn liquidDetail(hp: vec3f, n0: vec3f, id: i32, col: ptr<function, vec3f>, trans: ptr<function, vec3f>) -> vec3f {${LIQ_DETAIL(detail, backend) ? `
   if (!liqDetailOn(id)) { return n0; }
   var n = n0;${ripples ? `
   n = liquidCapillary(hp, n);` : ''}${meniscus ? `
-  n = liquidMeniscus(hp, n, id);` : ''}${foam ? `
+  n = liquidMeniscus(hp, n, id);` : ''}${foam ? world ? `
+  liquidFoam(hp, &n, id, col, trans);` : `
   if (${format} == 2u || ${format} == 3u || ${!!detail.DETAIL_LIQ_FOAM}) { liquidFoam(hp, &n, id, col, trans); }` : ''}
   return n;` : `
   return n0;   // (no liquid detail compiled in)`}

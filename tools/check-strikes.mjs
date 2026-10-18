@@ -138,7 +138,9 @@ for (const file of ['body', 'woman']) {
       for (let repeat = 0; repeat < 10; repeat++) {
         fig.update(0, { ...s, kick: 0.4 });
         const delta = foot.getWorldPosition(new THREE.Vector3()).sub(rest).divideScalar(scale);
-        assert.ok(delta.dot(forward) > 1.5 && delta.y > 2, `${file}: correctly framed, yaw/scale independent kick ${delta.toArray()}`);
+        // in her barrel (barrel.js) the thigh can't rise through the staves: she kicks out under the hem
+        const up = file === 'woman' ? 0.5 : 2;
+        assert.ok(delta.dot(forward) > 1.5 && delta.y > up, `${file}: correctly framed, yaw/scale independent kick ${delta.toArray()}`);
         fig.update(0, s);
         joints.forEach((b, i) => nearQ(b.quaternion, idle[i], `${file}: mixer restores kick bones`));
       }

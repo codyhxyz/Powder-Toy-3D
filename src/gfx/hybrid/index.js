@@ -63,7 +63,8 @@ export function createHybridRenderer(gpu,sim,{post,invalidateCaches=()=>{},onRea
   const segmentWGSL=hybridMediaSegmentWGSL({fieldGroup:2,fieldBinding:16,
     paramsGroup:2,paramsBinding:23,declareFrame:false,declareHeader:false,
     sunWGSL:'',sunVisibility:'hybridMediaSun'});
-  const optics=createHybridOptics(gpu,sim,{world,particles:particles.resources,fallbackGate:frame.gate,lighting:{
+  // Keep full transport out of the failing Metal fragment path. See docs/test-metal-validation.md.
+  const optics=createHybridOptics(gpu,sim,{world,particles:particles.resources,fallbackGate:frame.gate,bulkCompute:true,lighting:{
     wgsl:opticalShader.wgsl+'\n'+mediaSun+'\n'+segmentWGSL,
     bindings:[...opticalShader.layout,...MEDIA_FIELD_LAYOUT.map(e=>({...e,binding:e.binding+16})),
       {binding:23,visibility:2,buffer:{type:'uniform'}}],
@@ -117,9 +118,9 @@ export function createHybridRenderer(gpu,sim,{post,invalidateCaches=()=>{},onRea
     const meta=submitted.get(sample.frame);
     submitted.delete(sample.frame);
     if(disposed||!meta||!sample.coverage?.complete)return;
-    // Unsplit compute passes can contain physics AND extraction. Do not call
-    // their sum a render-only cost. Use complete render-pass samples instead.
-    const passes=sample.passes.filter(p=>p.kind==='render');
+    // Optical compute is isolated; other compute can mix physics/extraction.
+    const passes=sample.passes.filter(p=>p.kind==='render'||
+      (p.kind==='compute'&&optics.computePassName!=null&&p.name===optics.computePassName));
     if(!passes.length||passes.some(p=>!Number.isFinite(p.gpu)||p.gpu<0))return;
     const now=meta.now;
     if(lastSampleTime!==undefined&&now<=lastSampleTime)return;

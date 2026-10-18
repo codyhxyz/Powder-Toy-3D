@@ -311,7 +311,7 @@ export class PhysicsV2 {
     this.sim.compact = null;
     // A presentation switch is not a state replacement. The retained owner
     // imports only sticky per-cell legacy writes, even after v1 activity consumes its marks.
-    this.sim.noteWrite(false);
+    this.sim.noteWrite({ replaceState: false });
     this.seenVersion = this.sim.version;
   }
 
@@ -404,6 +404,7 @@ export class PhysicsV2 {
   // After ticks the authoritative state changed: advance the derived key, then read idle.
   _ran() {
     this.sim.version++;
+    this.sim.worldRenderSource?.noteContentChange();
     this.seenVersion = this.sim.version;
     this._readIdle();
   }

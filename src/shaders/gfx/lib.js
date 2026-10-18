@@ -1,10 +1,13 @@
+import { worldAccessWGSL } from '../worldAccess.js';
+import { worldVolumeLayouts, worldQueryWGSL } from '../worldRenderBackend.js';
+import { renderBackend, worldCoreBindingsWGSL, worldCoreBindingsWGSLForWriter } from './worldCore.js';
 import { prelude, STATE_OPTS, LAYOUT, STAGE } from '../common.js';
 import { frameBindings, lightingBindings, RENDER_LAYOUT } from '../bindings.js';
 import { materialsGLSL } from '../../gfx/materials.js';
 import { glslMod, fullscreenVert } from '../../gpu/wgsl.js';
 import { coreGLSL, ddaGLSL } from './core.js';
 import { noiseGLSL } from './noise.js';
-import { lightingGLSL } from './lighting.js';
+import { lightingGLSL, meanSigmaWGSL, SHADOW_TINT_ID_SCALE } from './lighting.js';
 import { crystalGLSL } from './crystal.js';
 import { sourceAppearanceWGSL, sourceAppearanceFallbackWGSL } from './sourceAppearance.js';
 import { SOURCE_APPEARANCE_ENABLED } from '../../gfx/sourceAppearance.js';
@@ -61,19 +64,31 @@ export const LIB_VARIANTS = {
  * @param {{ nx: number, ny: number, nz: number, maxSteps?: number }} g
  * @param {{ variant?: string, far?: boolean, aeration?: boolean, debug?: boolean, detail?: object, fixedReadFormat?: 0 | 2 | 3 }} [opts]
  */
-export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debug = false, detail = {}, fixedReadFormat } = {}) {
+export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debug = false, detail = {}, backend = 'box', fixedReadFormat } = {}) {
+  renderBackend(backend);
+  if (backend === 'world' && variant === 'LIGHTING_SHADOW') {
+    // Optical compute has no dependency on GI, sun readers, appearance, mesh,
+    // flow, noise textures or samplers. Explicit subset, not a WGSL rewrite.
+    return [prelude(g, { state: false, backend }), frameBindings({ backend }),
+      worldAccessWGSL({ backend, opticalWriter: true }), worldCoreBindingsWGSLForWriter(),
+      glslMod, materialsGLSL(), coreGLSL(g, { flow: false, backend, physicalRays: true }),
+      noiseGLSL, crystalGLSL, meanSigmaWGSL,
+      `const SHADOW_TINT_ID_SCALE: f32 = ${SHADOW_TINT_ID_SCALE.toFixed(1)};`].join('\n');
+  }
+  if (backend === 'world' && !['LIGHTING', 'LIGHTING_GISRC', 'LIGHTING_GI'].includes(variant)) throw new Error('world writer libraries require separate phase-4 layouts');
+  const world = backend === 'world';
   const v = LIB_VARIANTS[variant];
   if (!v) throw new Error(`lib: no variant ${variant} (${Object.keys(LIB_VARIANTS).join(', ')})`);
   return [
-    prelude(g, { ...STATE_OPTS.STATE_RO, debug, fixedReadFormat }),
-    frameBindings(),
-    lightingBindings({ far, aeration, variant }),
+    prelude(g, world ? { state: false, backend } : { ...STATE_OPTS.STATE_RO, debug, fixedReadFormat }),
+    frameBindings({ backend }),
+    world ? worldAccessWGSL({ backend }) + worldCoreBindingsWGSL + worldQueryWGSL : lightingBindings({ far, aeration, variant }),
     glslMod,
     materialsGLSL(),
-    coreGLSL(g, { flow: v.flow, detail }),
+    coreGLSL(g, { flow: v.flow, detail, backend }),
     noiseGLSL,
-    SOURCE_APPEARANCE_ENABLED && g.sourceAppearance === true && far ? sourceAppearanceWGSL(far, g.sourceGrid) : sourceAppearanceFallbackWGSL,
-    lightingGLSL({ ...v, far }),
+    SOURCE_APPEARANCE_ENABLED && g.sourceAppearance === true && (far || world) ? sourceAppearanceWGSL(true, g.sourceGrid, { backend }) : sourceAppearanceFallbackWGSL,
+    lightingGLSL({ ...v, far, backend }),
     crystalGLSL,
   ].join('\n');
 }
@@ -83,7 +98,14 @@ export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debu
  * groups 0-3, for gpu.layout(name, entries).
  * @param {string} [variant]
  */
-export const libLayouts = (variant = 'LIGHTING') => [RENDER_LAYOUT.FRAME, LAYOUT.STATE_RO, RENDER_LAYOUT[variant], LAYOUT.PARAMS];
+export const libLayouts = (variant = 'LIGHTING', { backend = 'box' } = {}) => {
+  renderBackend(backend);
+  if (backend === 'world') {
+    if (variant !== 'LIGHTING') throw new Error('world writer layout not implemented');
+    return worldVolumeLayouts();
+  }
+  return [RENDER_LAYOUT.FRAME, LAYOUT.STATE_RO, RENDER_LAYOUT[variant], LAYOUT.PARAMS];
+};
 
 // ---------------------------------------------------------------- the probes
 // Kernels that call every function the library exports, so check-wgsl and
