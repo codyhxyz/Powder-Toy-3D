@@ -15,9 +15,9 @@
 // lookup (domain warp), so the filaments wind. Flames get the same octaves as
 // wrinkles of their luminous edge. This is the detail-noise texture approach
 // of Horizon Zero Dawn's clouds (Schneider 2015: a small tileable 3D noise
-// read finer than the base shape, eroding thin gas more than dense cores) with
-// wavelet turbulence's spectral rule for the octaves' strengths (Kim et al.
-// 2008), not ALU noise: two 3D texture reads a sample.
+// read finer than the base shape, eroding thin gas more than dense cores),
+// not ALU noise: two 3D texture reads a sample. The octaves' strengths follow
+// Kolmogorov's inertial range, as wavelet turbulence's do (Kim et al. 2008).
 //
 // Where it fades (gfx/detail.js MEDIA_FINE_FADE_M). Each sample fades each
 // octave by its own pixel footprint (footprint(p): the cone widens along the
@@ -72,10 +72,11 @@ const FINE_SCALE_1 = Math.max(1, Math.round(NOISE_FINEST_M / FILAMENT_1_M));
 const FINE_SCALE_2 = Math.max(1, Math.round(NOISE_FINEST_M / FILAMENT_2_M));
 /** m: the octaves' actual finest structure (their lattice cell, after rounding the scales), for gfx/detail.js's fade */
 export const FINE_1_M = NOISE_FINEST_M / FINE_SCALE_1, FINE_2_M = NOISE_FINEST_M / FINE_SCALE_2;
-// Octave 2's strength relative to octave 1: a passive scalar (smoke) in
-// turbulence has the Obukhov-Corrsin spectrum E(k) ~ k^-5/3, so a band of
-// fixed ratio around k holds variance ~ k^-2/3 and its rms goes as k^-1/3
-// (the -5/3 law wavelet turbulence builds its octaves on, Kim et al. 2008).
+// Octave 2's strength relative to octave 1: in turbulence's inertial range a
+// passive scalar (smoke) has the Obukhov-Corrsin spectrum E(k) ~ k^-5/3, so a
+// band of fixed ratio around k holds variance ~ k^-2/3 and its rms goes as
+// k^-1/3: the 2/3 law, a scalar's difference across a gap l grows as l^1/3
+// (Kolmogorov 1941; Obukhov 1949, Corrsin 1951).
 const FINE_AMT_2 = (FINE_2_M / FINE_1_M) ** (1 / 3);
 // Filament sharpness: gas gathers on the noise's ridges as r^FIL_EXP (a whole
 // number, written out as products: Metal's pow is exp2(log2) per call).
@@ -196,12 +197,14 @@ const FLAME_FINE_2: f32 = 0.5;       // octave 2's share of them
 // the fire's wrinkle, to add to the flame's level (fire density units, mean
 // 0). Each octave is weighted by how well the pixel footprint resolves it
 // (lodFade) and how much of the ray's light still gets through (detailVis);
-// an octave weighted 0 isn't read, nor is anything where there is no gas.
-// One exit and plain values, nothing kept across the flame's block but z.
+// an octave weighted 0 isn't read. The reads depend on p alone, not on d, so
+// they go out alongside the warped field read (gasDensity skips empty space
+// before either, as Nubis skips detail where the base shape is empty). One
+// exit and plain values: nothing kept across the flame's block but z.
 fn gasFine(p: vec3f, d: vec3f) -> vec3f {
   let fw = (1.0 - smoothstep(vec2f(DETAIL_FADE_LO), vec2f(DETAIL_FADE_HI), FINE_F * footprint(p))) * detailVis();
   var r = vec3f(d.xy, 0.0);
-  if (fw.x > 0.0 && max(d.x, max(d.y, d.z)) > 0.0) {
+  if (fw.x > 0.0) {
     let a = detailNoise(p, FINE_SCALE_1, FINE_OFF_1, MD_RISE.y, 1.0);
     var n = a.gb;   // octave 1's wisps (filaments) and tongues (flame wrinkles)...
     var m = vec2f(NOISE_MEAN);   // ...and octave 2's, at the mean while unread
