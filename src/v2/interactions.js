@@ -4,7 +4,7 @@ import { paintUpdateWGSL, PaintParams, paintDeclsWGSL, PAINT_LAYOUT } from '../s
 import { kickWGSL, KickParams } from '../shaders/povKick.js';
 import { strikeWGSL, StrikeParams } from '../shaders/povTrace.js';
 import { povFieldWGSL, FieldParams } from '../shaders/povBody.js';
-import { TOOLS, PROP_TOOL } from '../elements.js';
+import { TOOLS, PROP_TOOL, E } from '../elements.js';
 import { PROP } from '../editing.js';
 import { PHYS } from '../physics.js';
 import { ROCKET } from '../shaders/povTools.js';
@@ -58,11 +58,15 @@ function blast(sim, center, radius, pressure, selection) {
 // never run a legacy B writer and report success when native import ignores it.
 export function routeNativePaint(sim, stroke) {
   const { tool, prop, center, end = center, radius, shape, grow, mask, filter = -1, erase } = stroke;
-  if (nativeCellPaint(stroke)) {
+  const erases = tool === ids.ERASE || (tool >= 0 && erase) || (tool === PROP_TOOL && prop?.field === PROP.TYPE && prop.value === E.EMPTY);
+  if (nativeCellPaint(stroke) || erases) {
     const a=[center.x,center.y,center.z],b=[end.x,end.y,end.z],reach=a.map((_,k)=>radius+Math.max(grow?.[k]??0,0));
     const box=mask?{lo:mask.lo,hi:mask.hi}:sim.touchCentres(a.map((x,k)=>Math.min(x,b[k])-reach[k]),a.map((x,k)=>Math.max(x,b[k])+reach[k]));
+    const grid=nativeCellPaint(stroke);
+    // (an erase of grid cells stays the edit intent's replacement, which is exact; it follows in sim.paint)
     const accepted=forceKernel(sim,'nativePaint').run(box,{center:a,end:b,radius,shape,tool,rate:stroke.rate??1,replace:+!!stroke.replace,
-      frame:++sim.paints,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},mask?.data);
+      frame:grid?++sim.paints:sim.paints+1,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},mask?.data,{grid,particles:erases});
+    if (!grid) return null;
     sim.nativeInteractionResult=accepted?{status:'queued'}:{status:'rejected',reason:'native paint kernel not ready or empty bounds'};
     return accepted;
   }

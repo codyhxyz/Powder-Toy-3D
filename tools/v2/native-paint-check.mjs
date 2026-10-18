@@ -19,7 +19,7 @@ assert.equal(nativePaintUpdateWGSL().replace('\n  paintPartner = q;', ''), paint
 let modules = 0;
 for (const dims of [[32, 32, 32], [48, 16, 32]]) {
   const g = gridLayout(...dims), params = nativePaintParams();
-  for (const stage of ['evaluate', 'commit']) {
+  for (const stage of ['evaluate', 'commit', 'particleEvaluate', 'particleErase']) {
     const code = nativePaintWGSL(g, params, stage);
     assert([...code.matchAll(/var<storage,/g)].length <= 8, `${stage} storage budget`);
     assertNaga(code, `nativePaint/${stage} ${dims}`); modules++;
@@ -38,7 +38,7 @@ const calls = [], built = [], retired = [];
 const gpu = { _simTables: { airT: 22 }, limits: {}, createBuffer: o => ({ ...o }), layout: (_n, x) => x, bindGroup: (_l, x) => x, frame: { clear() {} },
   kernel: o => { built.push(o.name); return { ...o, state: 'ready', ready: Promise.resolve(), dispatch(_f, size, args) { calls.push({ name: o.name, size, args }); } }; } };
 const g = gridLayout(32, 32, 32);
-const d = { isReady: true, ready: Promise.resolve(), air: [{}], airIndex: 0, plans: {}, particles: {}, _allocate() {}, _externalWork() { calls.push('externalWork'); } };
+const d = { isReady: true, ready: Promise.resolve(), air: [{}], airIndex: 0, plans: {}, particles: { label: 'particles' }, control: { label: 'control' }, _allocate() {}, _externalWork() { calls.push('externalWork'); } };
 const owner = { dynamics: d, aux: { label: 'banks' }, nativeDynamics: { head: nativeDynamicsHead, layout: V2_DYNAMICS_LAYOUT, group: {} }, tick: 7,
   sync() { calls.push('sync'); } };
 const sim = Object.assign(Object.create(Simulation.prototype), {
@@ -83,6 +83,21 @@ ev = calls.filter(c => c.name === 'nativePaintEvaluate');
 assert.equal(ev.length, 1); assert.equal(ev[0].args.params.prop, PROP.TYPE); assert.equal(ev[0].args.params.propValue, E.OIL);
 assert.throws(() => Simulation.prototype.paint.call(sim, { center, radius: 2, shape: 1, tool: PROP_TOOL, rate: 1, prop: { field: PROP.TEMP, value: 300 } }),
   /legacy edit forbidden/, 'temperature merges as sensible heat through the edit intent (edit-intent-check), not this kernel');
+// Erase and specific delete empty V2's flying matter too (V1 kept it in the grid), before the grid's own edit.
+for (const stroke of [{ tool: TOOLS.find(t => t.key === 'ERASE').id }, { tool: E.SAND, erase: true }, { tool: PROP_TOOL, prop: { field: PROP.TYPE, value: E.EMPTY } }]) {
+  calls.length = 0;
+  let threw = null;
+  try { Simulation.prototype.paint.call(sim, { center, radius: 3, shape: 0, rate: 1, ...stroke }); } catch (e) { threw = e; }
+  const names = calls.filter(c => c.name).map(c => c.name);
+  assert(names.includes('nativePaintParticleEvaluate') && names.indexOf('nativePaintParticleEvaluate') < names.indexOf('nativePaintParticleErase'), 'flying matter in the brush is erased');
+  const erase = calls.find(c => c.name === 'nativePaintParticleErase');
+  assert.deepEqual(erase.args.bind[1].map(e => e.resource.buffer), [erase.args.bind[1][0].resource.buffer, d.particles, d.control], 'the erase writes the particle list and its live count');
+  assert.equal(erase.size[0] * 64, 65536);
+  if (stroke.tool === PROP_TOOL) { assert.equal(threw, null); assert(names.includes('nativePaintCommit'), 'type none: the grid cells go natively too'); }
+  else assert.match(threw?.message ?? '', /legacy edit forbidden/, 'the grid cells still take the exact edit-intent replacement, after the particles');
+}
+const erase = nativePaintWGSL(g, nativePaintParams(), 'particleErase');
+assert.match(erase, /paintParticles\[i\]\.id=0u; atomicSub\(&paintControl\[0\],1u\); noteDead\(i\);/, 'a particle dies as the particle lane kills one');
 // Not ready: refused explicitly (prepareNative builds it before the first frame), never a V1 edit.
 const notReady = Object.assign(Object.create(Simulation.prototype), { ...sim, compactOwner: { ...owner }, compact: null });
 notReady.compact = notReady.compactOwner; notReady.compactOwner.dynamics = { ...d, isReady: false };
