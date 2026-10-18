@@ -68,7 +68,11 @@ test('seven independent production GI/key/select/args and glow emissions remain 
   const g = { nx: 128, ny: 128, nz: 128 };
   // Independent clean production 2c5cb27d, including its new element constants, then the V2 merge:
   // V2 tip 7f9b2f1c's emissions, which the merge reproduces byte for byte.
-  const hashes = ['8634698f177b30e809b00db55bc6fb0cd2cfd499939e8303fcc82798b11be494', 'a1ba7af091e6128b642d0f67a38ab45fd9c8a3302a91453fbf16edeb56e97eb7', 'c23f65bac9a6c19beb099008c9632cb61d0725db8ef0f95cdee02cfed4f594a5', '6747d5a3bb5f272a55c363de8cf276558654426a0497594e8f99db70373a87f1', 'a1b3cbe7ae7db28916ca66f804c4bcf0c5424440ad997f5ff436902ca330af6e', 'ba1deae3afc9c9fb10eed56a4818fccb350591908a184a327b00f633b5e71a43', '3389880deb5b25b77ed4b69d57d0a16bb58e4ea34bc8dea1adb72be901e9e611'];
+  // Re-pinned 2026-10-17 (Smooth up close): the source and gather emissions changed only
+  // in core.js's cubic helpers (fieldCubic, cubicFetch8, fieldCubicGrad, surfSample,
+  // surfChannel, surfNormal, NORMAL_DIFF_SCALE for NORMAL_STEP_CUBIC), diffed function by
+  // function against 40e1eb8c; the other five are unchanged.
+  const hashes = ['b9914619dd6ee585dcfa6228f4e4747390929e485199d1d683efdf707e2e4dbc', '5c3eac1a5e7a5b3920e7bdc18f1c43793959e4e8908925cebee7fbf8c52c4146', 'c23f65bac9a6c19beb099008c9632cb61d0725db8ef0f95cdee02cfed4f594a5', '6747d5a3bb5f272a55c363de8cf276558654426a0497594e8f99db70373a87f1', 'a1b3cbe7ae7db28916ca66f804c4bcf0c5424440ad997f5ff436902ca330af6e', 'ba1deae3afc9c9fb10eed56a4818fccb350591908a184a327b00f633b5e71a43', '3389880deb5b25b77ed4b69d57d0a16bb58e4ea34bc8dea1adb72be901e9e611'];
   [giSourceFrag(g), giGatherFrag(g), giKeyFrag(g), giSelectFrag(g), giArgsFrag(g), blurFrag(g), blurFrag(g, { last: true })].forEach((code, i) => assert.equal(createHash('sha256').update(code).digest('hex'), hashes[i]));
 });
 test('actual eight world GI/two glow modules validate Naga and default budgets', () => {
@@ -97,7 +101,11 @@ test('world gather is the original generated module minus unused texture mirrors
   // Later that day: worldPage/worldLightDescriptor read a page's channels from
   // its book entry (renderAtlas.js bookEntry) and the three WORLD_BOOK_* consts
   // arrived; again nothing else moved.
-  const hashes = ['ea8ba58d674aedd159f47fcd23089edb058ade2596126cc5916d5ae86cf1e4f8', '0360436a0adf0abe5351cee4310af1c4ef5c496ff09e2fb4e7d095ec947109e6', 'df0aca9017d45804905bc5127a72853a4703e2afd03729a8dbef54c6caf8339f', '9a1660f9cb752b2a707902b1e0f2b85a6bd60c9d50f8bb57579b7281ee90be1d'];
+  // Then Smooth up close's normals: surfSample, surfChannel and surfNormal (core.js),
+  // fieldCubicGrad and worldAccess.js's worldBSplineD / worldFieldCubicGrad, and
+  // NORMAL_DIFF_SCALE for NORMAL_STEP_CUBIC; diffed function by function against
+  // 40e1eb8c, nothing else moved.
+  const hashes = ['5ed0a1dde6e62e25e58ec8fc1aec357e830cc6b59c7fc960d69bb16abe9f9701', '8fbda2a7b0a5a48403d1ba6a40da71570102f6f829da39b0e86bb814064bfcc5', '6520339af36606b58f76e469bfbb23846b6881b3684b0074168275ec627f6116', 'fe01ad3a1cecc7da68926fd80cb7afa395445332d2ea5331f4abb71c402de071'];
   const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
   gathers.forEach((c, i) => {
     const code = c.code(), groups = c.layouts();

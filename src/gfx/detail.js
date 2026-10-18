@@ -115,6 +115,8 @@ export const DETAIL = [
   // medium (estimated): lab eyeSandClose (standing on the pile) +5 to +24 % of the view in three
   // runs, eyeTank and volcano eyeFlank within noise, 2026-10-11. The GPU was saturated by other
   // sessions (the god view, where the gate leaves it out, read +3 ms), so re-measure on a quiet one.
+  // Re-measure anyway: since 2026-10-17 the fade (CUBIC_ERR) reaches ~4x further, the god view
+  // included, while a cubic hit costs 10-38 % fewer fetches (analytic normals, one call site each).
   { key: 'smoothClose', define: 'DETAIL_CUBIC_CLOSE', label: 'Smooth sand and water up close', cost: 'medium', fadeM: CUBIC_FADE_M,
     desc: 'Clumps of falling sand, snow and powder and splashes of liquid stay round right in front of you, instead of turning into flat-faced shards' },
   // low: ~0 ms (25 rounds at eyeTank: -0.3; within noise) (shaders/gfx/liquidDetail.js)
