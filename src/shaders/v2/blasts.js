@@ -1,4 +1,4 @@
-import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
+import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
 import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase } from './particles.js';
 import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { E } from '../../elements.js';
@@ -54,8 +54,14 @@ export function listControl(g) {
     scales: at + 2 * g.nbricks + CHARGES_MAX + 1, sums: at + 2 * g.nbricks + 2 * CHARGES_MAX + 1 };
   // the jets' count adds every group's demand here; their gate reads it once and restarts it
   const jetTotal = charges.sums + CHARGES_MAX * g.nbricks;
-  return { lists, reach, charges, jetTotal, words: jetTotal + 1 };
+  // windList's word for each group of BRICK_GROUP bricks (shaders/v2.js; a workgroup of it): whether it listed any.
+  // The couple run's count reads it instead of every brick's air words (only listed bricks count there).
+  const windGroups = jetTotal + 1;
+  return { lists, reach, charges, jetTotal, windGroups, words: windGroups + brickGroups(g) };
 }
+// windList's group words, for the two stages that write and read them (air.js windList, count here).
+export const windGroupsWGSL = g => `${brickGroupWGSL(g)}
+const D_WIND_GROUPS: u32 = ${listControl(g).windGroups}u;`;
 // Dispatch args (bytes): a thread a listed brick, or a workgroup a listed brick (cells).
 export const LIST_ARGS = { source: COUPLE_ARGS + 32, step: COUPLE_ARGS + 48, wind: COUPLE_ARGS + 64, windCells: COUPLE_ARGS + 80, eventCells: COUPLE_ARGS + 96,
   jetCells: COUPLE_ARGS + 112, reachX: COUPLE_ARGS + 128, reachY: COUPLE_ARGS + 144 };
@@ -648,9 +654,21 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
     }
     plans[t]=plan;
   `);
-  if (stage === 'count') return h + `
+  if (stage === 'count') return h + `${windGroupsWGSL(g)}
 var<workgroup> brickDemand: array<u32,64>;
+var<workgroup> wgCounted: u32;
 ` + main64(`
+    // The couple run counts only wind-listed bricks. A group windList listed none of (air.js) counts
+    // zero: its group sum is 0 and nothing else is written (dRank reads only counted bricks' prefixes).
+    let group=wg.x+wg.y*nwg.x;
+    if(li==0u) {
+      wgCounted=1u;
+      if(P.mode==${COUPLE_MODE}u && group<BRICK_GROUPS) {
+        wgCounted=atomicLoad(&control[D_WIND_GROUPS+group]);
+        if(wgCounted==0u) { atomicStore(&control[D_SPAWN_COUNTS+group],0u); }
+      }
+    }
+    if(workgroupUniformLoad(&wgCounted)==0u) { return; }
     var n=0u;
     if(t<D_BRICKS) {
       var selected=true;

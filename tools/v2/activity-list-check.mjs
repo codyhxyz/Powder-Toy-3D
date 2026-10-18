@@ -5,11 +5,14 @@
 // word activity would clear that is already zero (it was busy two ticks ago
 // only if it was near one last tick, which reset its run). The scan scatters
 // each busy brick to its neighbourhood (mEdge's loop wrap is symmetric) and
-// lists every such brick once. A twin of v2ActivityWGSL over every brick and a
+// lists every such brick once, and every awake brick; an asleep brick still
+// counting toward the cap counts on in the scan instead (a near claim then
+// starts it over in the pass). A twin of v2ActivityWGSL over every brick and a
 // twin of the scan + listed pass must agree on every quiet, awake and busy
 // word, the awake set and the busy count, tick after tick, on solid and loop
 // edges, with sparse marks and whole-box writes. Dropping the quiet-run
-// seeding, the wrap, or the claim bit must break it.
+// seeding, the wrap, the claim bit or the scan's count, or counting a brick
+// twice or an awake brick in the scan, must break it.
 import assert from 'node:assert/strict';
 import { gridLayout } from '../../src/sim.js';
 import { v2ActivityWGSL, v2ActScanWGSL, v2ActLayout, QUIET_TICKS, QUIET_CAP } from '../../src/shaders/v2.js';
@@ -48,7 +51,11 @@ function listed(B, s, busyIn, busyOut, variant) {
   const claim = (b, bits) => { const old = s.near[b]; s.near[b] |= bits; if (!(old & 2) || variant.noClaim) plist.push(b); };
   for (let b = 0; b < B.nb; b++) {
     if (busyIn[b]) for (const n of (variant.noWrap ? B.aroundNoWrap : B.around)(b, -1)) claim(n, 3);
-    if (s.quiet[b] < QUIET_CAP && !variant.noWarm) claim(b, 2);
+    // the scan's own count: awake bricks are listed, asleep ones under the cap count on here
+    const q = s.quiet[b], awake = q < (variant.scanAwake ? 0 : QUIET_TICKS);
+    if (variant.noWarm) continue;
+    if (awake || (variant.claimWarm && q < QUIET_CAP)) claim(b, 2);
+    if (!awake && q < QUIET_CAP && !variant.noScanCount) s.quiet[b] = q + 1;
   }
   let busy = 0; const list = [];
   for (const b of plist) {
@@ -84,7 +91,9 @@ let runs = 0;
 for (const loop of [false, true]) for (const dims of shapes) for (let seed = 1; seed <= 12; seed++) {
   assert.ok(run(seed + 31 * runs, dims, loop), `listed activity differs: dims ${dims}, loop ${loop}, seed ${seed}`); runs++;
 }
-for (const [what, variant, loop] of [['no quiet-run seeding', { noWarm: true }, false], ['a scatter without the loop wrap', { noWrap: true }, true], ['no claim bit', { noClaim: true }, false]]) {
+for (const [what, variant, loop] of [['no quiet-run seeding', { noWarm: true }, false], ['a scatter without the loop wrap', { noWrap: true }, true], ['no claim bit', { noClaim: true }, false],
+  ['an asleep run the scan does not count', { noScanCount: true }, false], ['an asleep run counted in the scan and the pass', { claimWarm: true }, false],
+  ['an awake run counted in the scan', { scanAwake: true }, false]]) {
   let broke = false;
   for (const dims of shapes) for (let seed = 1; seed <= 12 && !broke; seed++) broke = !run(seed, dims, loop, variant);
   assert.ok(broke, `${what} must break the listed activity`);
@@ -93,9 +102,11 @@ for (const [what, variant, loop] of [['no quiet-run seeding', { noWarm: true }, 
 const g = gridLayout(16, 8, 8), scan = v2ActScanWGSL(g), act = v2ActivityWGSL(g), L = v2ActLayout(g);
 assert.match(scan, /let n = mEdge\(\(bc \+ vec3i\(-dx, -dy, -dz\)\)\*BS\)\/BS;/);
 assert.match(scan, /if \(atomicLoad\(&act2\[P\.busyIn \+ b\]\) != 0u\)/);
-assert.match(scan, /if \(atomicLoad\(&act2\[V2_QUIET \+ b\]\) < QUIET_CAP\) \{ actClaim\(b, 2u\); \}/);
+assert.match(scan, /let q = atomicLoad\(&act2\[V2_QUIET \+ b\]\);\s*if \(q < QUIET_TICKS\) \{ actClaim\(b, 2u\); \} else if \(q < QUIET_CAP\) \{ atomicStore\(&act2\[V2_QUIET \+ b\], q \+ 1u\); \}/);
+// the scan's count follows the scatter: a busy brick's near claim on itself is in place before its pass
+assert.ok(scan.indexOf('actClaim(brickId(n), 3u)') < scan.indexOf('atomicStore(&act2[V2_QUIET + b], q + 1u)'));
 assert.match(scan, /if \(\(atomicOr\(&act2\[V2_NEAR \+ b\], bits\) & 2u\) == 0u\)/);
 assert.match(act, /let near = \(atomicExchange\(&act2\[V2_NEAR \+ b\], 0u\) & 1u\) != 0u;/);
 assert.match(act, /if \(near\) \{ q = 0u; \} else \{ q = min\(q \+ 1u, QUIET_CAP\); \}/);
 assert.ok(L.near >= L.words && L.plist >= L.words, 'the scan words are not saved');
-console.log(`activity list: ${runs} runs of 300 ticks identical to the all-brick pass (quiet, awake, busy words, awake set, busy count); 3 red variants caught`);
+console.log(`activity list: ${runs} runs of 300 ticks identical to the all-brick pass (quiet, awake, busy words, awake set, busy count); 6 red variants caught`);

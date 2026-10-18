@@ -1,6 +1,6 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
 import { dynamicsCommon, storageLayout, main64 } from './particles.js';
-import { listControl, listWGSL } from './blasts.js';
+import { listControl, listWGSL, windGroupsWGSL } from './blasts.js';
 import { AIR, DT, GRAVITY, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { PHYS } from '../../physics.js';
 import { E } from '../../elements.js';
@@ -111,13 +111,23 @@ export function airWGSL(g,nativeHead,stage) {
     } }
     if (seed) { dAppend(LIST_SOURCE,t); }
   `);
-  // After the substeps: the bricks where wind or pressure can act (dWindListed).
-  if (stage==='windList') return h+main64(/* wgsl */ `
-    if (t>=D_BRICKS) { return; }
-    // Every source has read its neighbours' notes, and no cell is written between source and here
-    // (reach and the substeps write only air): a later write notes its brick for the next source.
-    if (atomicLoad(&act2[V2_STATE_DIRTY+t])!=0u) { atomicStore(&act2[V2_STATE_DIRTY+t],0u); }
-    if (dWindListed(t)) { dAppend(LIST_WIND,t); }
+  // After the substeps: the bricks where wind or pressure can act (dWindListed). A workgroup is one
+  // group of the shared allocator's (shaders/v2.js BRICK_GROUP): its word says whether it listed any, so
+  // the couple run's count reads one word for a group instead of every brick's air words. Nothing
+  // writes an air-live word between here and that count (gas, couplePlan: cells and plans only).
+  if (stage==='windList') return h+`${windGroupsWGSL(g)}
+var<workgroup> wgWind: atomic<u32>;
+`+main64(/* wgsl */ `
+    // Every lane reaches the barrier: one past the bricks lists nothing.
+    if (t<D_BRICKS) {
+      // Every source has read its neighbours' notes, and no cell is written between source and here
+      // (reach and the substeps write only air): a later write notes its brick for the next source.
+      if (atomicLoad(&act2[V2_STATE_DIRTY+t])!=0u) { atomicStore(&act2[V2_STATE_DIRTY+t],0u); }
+      if (dWindListed(t)) { dAppend(LIST_WIND,t); atomicStore(&wgWind,1u); }
+    }
+    workgroupBarrier();
+    let group=wg.x+wg.y*nwg.x;
+    if (li==0u && group<BRICK_GROUPS) { atomicStore(&control[D_WIND_GROUPS+group],atomicLoad(&wgWind)); }
   `);
   if (stage==='source') return h+main64(/* wgsl */ `
     if (t>=D_BRICKS) { return; } let base=aBase(t);

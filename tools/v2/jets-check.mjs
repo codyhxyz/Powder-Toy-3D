@@ -127,7 +127,9 @@ test('the WGSL: deterministic ranks, refusal keeps the liquid, the allocator pro
   assert.match(body, /if\(li==0u\) \{ atomicStore\(&act2\[V2_JETS\+b\],0u\); \}/);
   // count keeps padding lanes through its barrier; allocate gives group bases and the request total
   const countBody = count.slice(count.lastIndexOf('@compute'));
-  assert.doesNotMatch(countBody, /return;/); assert.match(countBody, /brickDemand\[li\]=count; workgroupBarrier\(\)/);
+  // only a group no mark noted skips, whole and before the barrier (tools/v2/group-skip-check.mjs)
+  assert.equal([...countBody.matchAll(/return;/g)].length, 1); assert.match(countBody, /if\(workgroupUniformLoad\(&wgNoted\)==0u\) \{ return; \}/);
+  assert.match(countBody, /brickDemand\[li\]=count; workgroupBarrier\(\)/);
   assert.match(allocate, /atomicStore\(&control\[5\],requested\);/); assert.match(allocate, /if\(requested>free\) \{ atomicAdd\(&control\[7\],requested-free\); \}/);
   // the gate: a tick that launches nothing never prepares the pool (the couple gate's [work, 1, 1, 0, work])
   const gate = jetsWGSL(g, 'gate');

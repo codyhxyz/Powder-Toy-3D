@@ -1,4 +1,4 @@
-import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
+import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroupWGSL } from '../v2.js';
 import { dynamicsCommon, DynamicParams, storageLayout, main64, main1 } from './particles.js';
 import { SPAWN_PREFIX, coupleArgsBase, listWGSL, listControl } from './blasts.js';
 import { COLUMN } from './columns.js';
@@ -41,9 +41,19 @@ fn jetMaterial(m: Material) -> Material {
 
 export function jetsWGSL(g, stage) {
   const h = head(g);
-  if (stage === 'count') return h + `
+  if (stage === 'count') return h + `${brickGroupWGSL(g)}
 var<workgroup> brickDemand: array<u32,64>;
+var<workgroup> wgNoted: u32;
 ` + main64(`
+    // A workgroup is a group of the shared allocator's (BRICK_GROUP bricks). Every mark notes its
+    // group (noteJet): a group none noted counts zero, its group sum 0 (allocate reads every group)
+    // and nothing else, since spawn reads prefixes of flagged bricks only. Its word clears here.
+    let group=wg.x+wg.y*nwg.x;
+    if(li==0u) {
+      wgNoted=0u; if(group<BRICK_GROUPS) { wgNoted=atomicLoad(&act2[V2_JET_GROUPS+group]); }
+      if(wgNoted==0u) { atomicStore(&control[J_COUNTS+group],0u); } else { atomicStore(&act2[V2_JET_GROUPS+group],0u); }
+    }
+    if(workgroupUniformLoad(&wgNoted)==0u) { return; }
     var count=0u;
     // a flagged brick goes to spawn's list (spawn returns at once for any other)
     if(jetBrick(t)) { dAppend(LIST_JETS,t); for(var s=t*64u;s<(t+1u)*64u;s++) { if(jetMarked(loadCore(s))) { count++; } } }

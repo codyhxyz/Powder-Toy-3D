@@ -397,7 +397,10 @@ test('request counts retain all lanes at barriers and only group sums occupy the
     assert.match(blastsWGSL(g,nativeDynamicsHead,'apply'),/atomicLoad\(&control\[D_SPAWN_PREFIX\+b\]\)\+atomicLoad\(&control\[D_SPAWN_COUNTS\+b\/64u\]\)/);
     for(const source of [blastsWGSL(g,nativeDynamicsHead,'count')]) {
       const body=source.slice(source.lastIndexOf('@compute'));
-      assert.doesNotMatch(body,/return;/,'out-of-range and rejected box lanes cannot skip workgroupBarrier');
+      // only a whole group skips (uniformly, before the barrier: tools/v2/group-skip-check.mjs)
+      assert.equal([...body.matchAll(/return;/g)].length,1,'out-of-range and rejected box lanes cannot skip workgroupBarrier');
+      assert.match(body,/if\(workgroupUniformLoad\(&wgCounted\)==0u\) \{ return; \}/);
+      assert.ok(body.indexOf('return;')<body.indexOf('workgroupBarrier()'));
       assert.match(body,/brickDemand\[li\]=\w+; workgroupBarrier\(\)/);
       assert.match(body,/COUNTS\+t\/64u/);
       assert.match(body,/PREFIX\+t\],prefix/);

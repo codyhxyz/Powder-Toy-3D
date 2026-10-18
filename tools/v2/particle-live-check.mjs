@@ -46,7 +46,7 @@ assert.throws(() => audit('red', 'fn red() {\n  particles[dest]=born;\n}'), /wit
 assert.match(PhysicsV2.prototype.noteAllCells.toString(), /layout\.plive/);
 assert.match(NativeDynamics.prototype.restoreDynamicState.toString(), /noteAllCells/);
 const L = v2ActLayout(g);
-assert.ok(L.plive >= L.words && L.allocated - L.plive === CAP / 32, 'a live bit a pool slot, after the saved words');
+assert.ok(L.plive >= L.words && L.liveWords === CAP / 32 && L.jetGroups === L.plive + L.liveWords, 'a live bit a pool slot, after the saved words');
 
 // 2. the model: records (ID or 0) and bits; the operations a tick and a restore can do.
 function rng(seed) { let s = seed >>> 0 || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }

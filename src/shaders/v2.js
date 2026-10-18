@@ -124,6 +124,19 @@ export function fallCells(id, ticks) {
 }
 
 // ---------------------------------------------------------------- buffers
+// The shared allocator's per-brick prefixes (shaders/v2/blasts.js count, jets.js count) are local to
+// groups of this many bricks, a workgroup each. A count that knows a group holds no requests skips
+// all of it: the jets' marks note their group (v2ActLayout jetGroups), windList notes the wind list's.
+export const BRICK_GROUP = 64;
+export function brickGroups(g) { return Math.ceil(gridDims(g).nbricks / BRICK_GROUP); }
+// Their WGSL, declared only in the stages that read or write the group words (the liquid passes' marks,
+// windList, the jets' and the couple run's counts): every other module's text stays as it was.
+export function brickGroupWGSL(g) {
+  return /* wgsl */ `
+const BRICK_GROUP: u32 = ${BRICK_GROUP}u;
+const BRICK_GROUPS: u32 = ${brickGroups(g)}u;
+const V2_JET_GROUPS: u32 = ${v2ActLayout(g).jetGroups}u;`;
+}
 // v2's activity words (u32), one run per brick each, then the brick columns and the counts.
 // state: a brick's cells changed since the air reach pass last cleared it (noteState).
 // events: after the saved words (`words`), so saves keep their length: a brick may hold a
@@ -136,13 +149,15 @@ export function fallCells(id, ticks) {
 // jets: unsaved; a brick holds a deposited cell marked to launch (columns.js colMarkJet; the jets pass clears it).
 // near, plist: the activity scan's words (unsaved): bit 0 a busy brick in the 3³ neighbourhood,
 // bit 1 listed; then the list [count, use, bricks]. Zero again after every activity pass.
-// plive: a bit a particle-pool slot (unsaved), set wherever a slot may be live: every spawn sets
-// it, retirements and the pool preparation clear it, restores set every bit. Pool sweeps read
-// only slots whose bit is set (a clear bit means the slot's record has ID 0).
+// plive: a bit a particle-pool slot (unsaved, liveWords of them), set wherever a slot may be live:
+// every spawn sets it, retirements and the pool preparation clear it, restores set every bit. Pool
+// sweeps read only slots whose bit is set (a clear bit means the slot's record has ID 0).
+// jetGroups: unsaved, last; a word a group of BRICK_GROUP bricks, set with any of its bricks' jets words
+// (noteJet); the jets' count reads and clears it instead of the bricks' words. Zero between ticks, like them.
 export function v2ActLayout(g) {
   const { nbricks: nb, bx, bz } = gridDims(g);
-  const ledger = 10 * nb + bx * bz + 8;
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, jets: ledger + 8 + 4 * nb, colAwake: ledger + 8 + 5 * nb, summary: ledger + 8 + 5 * nb + bx * bz, plive: ledger + 8 + 6 * nb + bx * bz, allocated: ledger + 8 + 6 * nb + bx * bz + PARTICLE_CAP / 32 };
+  const ledger = 10 * nb + bx * bz + 8, plive = ledger + 8 + 6 * nb + bx * bz, liveWords = PARTICLE_CAP / 32, jetGroups = plive + liveWords;
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, jets: ledger + 8 + 4 * nb, colAwake: ledger + 8 + 5 * nb, summary: ledger + 8 + 5 * nb + bx * bz, plive, liveWords, jetGroups, allocated: jetGroups + brickGroups(g) };
 }
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
@@ -273,7 +288,10 @@ fn noteState(s: u32) { atomicStore(&act2[V2_STATE_DIRTY + s / 64u], 1u); atomicS
 // Every store of a nonzero material request: whole-grid request scans visit noted bricks only.
 fn noteEvents(s: u32, request: u32) { if (request != 0u) { atomicStore(&act2[V2_EVENTS + s / 64u], 1u); } }
 // Every write of a brick's air outside the air tick's source and substeps.
-fn noteAir(b: u32) { atomicStore(&act2[V2_AIR_LIVE + b], 1u); }
+fn noteAir(b: u32) { atomicStore(&act2[V2_AIR_LIVE + b], 1u); }${family === 'liquid' ? `${brickGroupWGSL(g)}
+// Every mark of a cell to launch (columns.js colMarkJet, colMarkCrown): its brick's jets word and its
+// group's (v2ActLayout jetGroups), which the jets' count reads instead of the bricks' words.
+fn noteJet(b: u32) { atomicStore(&act2[V2_JETS + b], 1u); atomicStore(&act2[V2_JET_GROUPS + b / BRICK_GROUP], 1u); }` : ''}
 // The particle pool's live bits (v2ActLayout plive): every spawn notes its slot; a retirement may clear it.
 fn noteLive(slot: u32) { atomicOr(&act2[V2_PLIVE + (slot >> 5u)], 1u << (slot & 31u)); }
 fn noteDead(slot: u32) { atomicAnd(&act2[V2_PLIVE + (slot >> 5u)], ~(1u << (slot & 31u))); }
@@ -465,7 +483,11 @@ ${MAIN} {
 // still counting its run changes in the activity pass; any other is at QUIET_CAP, asleep, with a
 // busy word already clear (busy two ticks ago means near one last tick). Each busy brick marks its
 // 3³ neighbourhood near, scattered (mEdge's loop wrap is symmetric), and each such brick is listed
-// once (tools/v2/activity-list-check.mjs).
+// once. An awake brick (its run under QUIET_TICKS) is listed: the pass counts it on and lists it
+// awake. An asleep brick still counting toward QUIET_CAP counts on here instead, with no claim and
+// no pass: it stays asleep and its busy word is clear, and a near claim above starts its run over
+// in the pass whatever it counted to here. After a load or a restore every brick counts for ~4 s;
+// a claim each would contend on the list's one count (tools/v2/activity-list-check.mjs).
 export const v2ActScanWGSL = (g) => /* wgsl */ `
 ${v2Head(g)}
 fn actClaim(b: u32, bits: u32) {
@@ -485,7 +507,8 @@ ${MAIN} {
       }
     }
   }
-  if (atomicLoad(&act2[V2_QUIET + b]) < QUIET_CAP) { actClaim(b, 2u); }
+  let q = atomicLoad(&act2[V2_QUIET + b]);
+  if (q < QUIET_TICKS) { actClaim(b, 2u); } else if (q < QUIET_CAP) { atomicStore(&act2[V2_QUIET + b], q + 1u); }
 }
 `;
 

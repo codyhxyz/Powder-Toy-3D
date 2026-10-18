@@ -249,7 +249,7 @@ fn colLaunchHead(xs: i32, zs: i32, xt: i32, zt: i32, rs: vec4u, y: i32) -> f32 {
 fn colMarkCrown(x: i32, y: i32, z: i32, vx: f32, vy: f32, vz: f32) {
   let p = vec3i(x, y, z); let s = slotOf(p); let before = loadMaterial(s);
   storeMaterial(s, before, Material(withLane(withLane(withLane(zeroQ(before.core), 0, vx), 2, vz), 1, COL_JET_MARK - vy), before.bank));
-  atomicStore(&act2[V2_JETS + brickOfCell(p)], 1u);
+  noteJet(brickOfCell(p));
 }
 // a hashed azimuth in [0, 1) turns (deterministic: position and tick only)
 fn colCrownAzimuth(x: i32, y: i32, z: i32) -> f32 { var rs = seed3(vec3i(x, y, z), P.tick, ${COLUMN.CROWN_SALT}u); return rnd(&rs); }
@@ -257,7 +257,7 @@ fn colCrownAzimuth(x: i32, y: i32, z: i32) -> f32 { var rs = seed3(vec3i(x, y, z
 fn colMarkJet(x: i32, y: i32, z: i32, axis: i32, v: f32) {
   let p = vec3i(x, y, z); let s = slotOf(p); let before = loadMaterial(s);
   storeMaterial(s, before, Material(withLane(withLane(zeroQ(before.core), axis, v), 1, COL_JET_MARK), before.bank));
-  atomicStore(&act2[V2_JETS + brickOfCell(p)], 1u);
+  noteJet(brickOfCell(p));
 }
 fn colGravity() -> f32 { if (P.gravMode != 0u) { return 0.0; } return COL_G * P.gravity / COL_G_MS2; }
 fn colDampTick(liq: u32) -> f32 { let keep = 1.0 - dampOf(liq); return 1.0 - keep * keep * keep; }

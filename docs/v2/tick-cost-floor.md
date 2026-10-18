@@ -41,9 +41,33 @@ What each round did:
   the block compaction's finalize restarts its count instead of a clear. On the M5 the idle tick's ~1 ms was
   the near-empty dispatches in the passes these splits opened (v2blasts_plan 0.266 ms, v2blasts_freeCount
   0.261 ms): the GPU A/B of this commit shows how much of it was the splits.
+- Round 7 (`v2/list-scans`, bit-identical): the last three all-brick launches stop doing per-brick work
+  where nothing can change.
+  - The activity scan counts an asleep brick's quiet run itself (one store) and claims only awake or near
+    bricks. A brick counts from QUIET_TICKS to QUIET_CAP for 247 ticks after it sleeps, and every brick
+    starts at QUIET_TICKS, so for ~4 s after a load or a restore every brick was claimed: an atomicOr, a
+    returning atomicAdd on the list's one count (32,768-way contention at 128³) and a store, then a thread
+    of the activity pass. The words are the same tick for tick.
+  - The two counts skip whole groups of the shared allocator (BRICK_GROUP = 64 bricks, one workgroup).
+    A jet mark notes its group as it notes its brick (noteJet); the jets' count's lane 0 reads and clears
+    the word. windList, whose workgroup is a group, writes whether it listed any brick; the couple count's
+    lane 0 reads it. A skipped group writes only its zero group sum. Its stale prefixes are never read:
+    spawn and dRank read only bricks their own count counted.
+  - Lists instead: a list of groups needs an args stage (~1.5 µs, one thread) and an indirect dispatch
+    (~1.8 µs near empty), ~3.3 µs at idle. The 512 workgroups that leave at lane 0 measured 3.0 µs (jets)
+    and 4.5 µs (couple): a wash. Group words need no new stage and no append in the hot stores, so they
+    are what this round does.
+  - Only the six modules that use the group words change text (`v2actScan`, `v2runs`, `v2pairs`,
+    `v2air_windList`, `v2blasts_count`, `v2jets_count`); every other pipeline stays compiled.
+  - Bytes at 128³, while every brick still counts its run: the claims (~12 B a brick, net ~0.26 MB after the
+    scan's own 4 B store) and the activity pass (~32 B a listed brick, ~1.05 MB); the couple count's seven
+    air-live words (28 B a brick, ~0.92 MB) and the jets' count's word and prefix (8 B, ~0.26 MB), for
+    4 KB of group words. About 2.5 MB a tick (≈ 4.5 mW by the model above). In a box settled longer, the
+    two counts' ~1.2 MB (≈ 2 mW) every tick.
 
 The proofs and their red variants: `tools/v2/air-cache-check.mjs`, `air-reach-check.mjs`, `activity-list-check.mjs`,
-`allocation-check.mjs`, `blast-batch-check.mjs`, `particle-live-check.mjs` and `column-skip-check.mjs`.
+`allocation-check.mjs`, `blast-batch-check.mjs`, `particle-live-check.mjs`, `column-skip-check.mjs` and
+`group-skip-check.mjs`.
 
 ## Measured (M5, settled 128³, nothing else running)
 
@@ -51,25 +75,35 @@ The idle physics tick took 0.526 ms before round 4, 0.493 ms after one compute p
 blast batch a tick (173 → 75 dispatches). Neither pass splits nor dispatch count was the cost. A `--split`
 diagnostic (each dispatch its own pass: 53 passes, 0.392 ms in all) shows where it went:
 
-| pass | ms per idle tick | what it was | round 6 |
-|---|---|---|---|
-| v2air_reach | 0.0611 | 3 gathers over every brick, 17 loads each | scattered over lists (start bricks, then each axis's reached ones) |
-| v2jets_spawn | 0.0588 | a workgroup for every brick (32,768), launching nothing | a workgroup a brick of count's list of flagged bricks |
-| v2jets_gate | 0.0337 | one thread looping over the 512 group sums | one word count adds into |
-| v2actScan | 0.0272 | every brick's busy and quiet words | unchanged |
-| v2blasts_count | 0.0217 | the couple run's per-brick count | unchanged |
-| v2activity | 0.0157 | the listed activity pass | unchanged |
-| v2jets_count | 0.0143 | every brick's jets word | unchanged |
-| v2air_step | 0.0142 | 8 substeps over the step list | unchanged |
-| v2air_list | 0.0106 | the source list's scan | unchanged |
-| v2pairs | 0.0094 | column water | — |
-| v2blasts_freeScan | 0.0092 | one thread over 1,024 chunks | unchanged |
-| v2air_windList | 0.0075 | the wind list's scan (now also clears the cell notes) | unchanged |
+| pass | ms per idle tick | what it was | round 6 | 7f9b2f1c (round 6) | round 7 |
+|---|---|---|---|---|---|
+| v2air_reach | 0.0611 | 3 gathers over every brick, 17 loads each | scattered over lists (start bricks, then each axis's reached ones) | 0.0054 | 0.0055 |
+| v2jets_spawn | 0.0588 | a workgroup for every brick (32,768), launching nothing | a workgroup a brick of count's list of flagged bricks | 0.0018 | 0.0019 |
+| v2jets_gate | 0.0337 | one thread looping over the 512 group sums | one word count adds into | 0.0014 | 0.0014 |
+| v2actScan | 0.0272 | every brick's busy and quiet words | unchanged | 0.0269 | **0.0048**: an asleep brick counts its run in the scan, no claim |
+| v2blasts_count | 0.0217 | the couple run's per-brick count | unchanged | 0.0217 | **0.0045**: a group windList listed nothing skips at lane 0 |
+| v2activity | 0.0157 | the listed activity pass | unchanged | 0.0156 | **0.0023**: only awake and near bricks listed |
+| v2jets_count | 0.0143 | every brick's jets word | unchanged | 0.0151 | **0.0030**: a group no mark noted skips at lane 0 |
+| v2air_step | 0.0142 | 8 substeps over the step list | unchanged | 0.0141 | 0.0143 |
+| v2air_list | 0.0106 | the source list's scan | unchanged | 0.0105 | 0.0107 |
+| v2pairs | 0.0094 | column water | — | 0.0093 | 0.0095 |
+| v2blasts_freeScan | 0.0092 | one thread over 1,024 chunks | unchanged | 0.0093 | 0.0093 |
+| v2lists_coupleGate | — | one thread over the 512 group sums | — | 0.0092 | 0.0092 |
+| v2air_windList | 0.0075 | the wind list's scan (now also clears the cell notes) | unchanged | 0.0078 | 0.0079 (+ a group word a workgroup) |
 
-Everything else was under 0.007 ms. Round 6 targets the top three, 0.154 ms of the 0.392 ms. A re-time shows how much
-went. What is left follows the same pattern: all-brick launches over small words (actScan, the counts, the list
-scans) and one-thread loops (freeScan, coupleGate). Cutting the counts needs the shared allocator's per-64-brick
-prefix layout to run over a list.
+Everything else was under 0.007 ms. Round 6 targeted the top three, 0.154 ms of the 0.392 ms; at 7f9b2f1c the split
+V2 passes sum to 0.254 ms (54 passes) and the unsplit idle tick takes 0.207 ms.
+
+Round 7 (`frame-bench.mjs --frames 30 --warmup 6 --engine v2 --scene settled`, split, the same options as the
+7f9b2f1c run): the split V2 sum drops from 0.2536 to 0.1901 ms, **−63.5 µs** (predicted −65 µs: actScan −22,
+activity −14, couple count −19, jets count −12, windList +1). The unsplit idle tick was not re-timed. Expect
+≈ 0.207 − 0.06 ≈ 0.15 ms if the split saving carries over. The bench is inside the 247 ticks after a load in which every
+brick still counts its quiet run. In a box settled longer than ~4 s, the old scan claimed nothing either, and
+round 7's actScan and activity save nothing there; the two counts save their share every tick.
+
+What is left follows the same pattern: the all-brick scans of small words (actScan's 2 loads a brick, eventList,
+the air source list, windList, invalidate; 3 to 11 µs each), one-thread loops over 512 or 1,024 words (freeScan,
+coupleGate: ~9 µs each) and ~1.8 µs a near-empty dispatch. coupleGate could read one total, as the jets' gate does.
 
 ## The lower bound
 
