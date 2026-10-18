@@ -330,7 +330,7 @@ export class PhysicsV2 {
     if (!this.gpu.failure) this.exportLegacy(false);
     this.sim.compact = null;
     const legacyPlane = this.sim.decoPlane;
-    if (legacyPlane && !this.gpu.failure) this._givePlane(legacyPlane);
+    if (legacyPlane && !this.gpu.failure && !this.sim.disposed) this._givePlane(legacyPlane);
     // A presentation switch is not a state replacement. The retained owner
     // imports only sticky per-cell legacy writes, even after v1 activity consumes its marks.
     this.sim.noteWrite({ replaceState: false });
