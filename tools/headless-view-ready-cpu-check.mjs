@@ -189,12 +189,14 @@ try {
   const switchedNear = [...switches.vol.pipes.entries()].find(([key]) => key.includes(GATED) && key.includes('DETAIL_MEDIA_FLOW'))?.[1];
   assert(switchedNear); switchedNear.resolve(); await swp;
 
-  const dependencies = context(), shadow = deferred(), gi = deferred(), farView = deferred();
+  const dependencies = context(), shadow = deferred(), gi = deferred();
   dependencies.vol.shadowReady = () => shadow.promise; dependencies.giWait = gi.promise;
-  dependencies.win = { far: { buildView: () => farView.promise } };
   const dp = dependencies.ready(), dd = watch(dp); await turn(); assert.equal(dd(), false);
-  shadow.resolve(); gi.resolve(); await turn(); assert.equal(dd(), false, 'far-view readiness is retained');
-  farView.resolve(); await dp;
+  shadow.resolve(); await turn(); assert.equal(dd(), false, 'GI readiness is retained');
+  gi.resolve(); await dp;
+  // In a World (app.js allReady's win branch) readiness is the GPU's settling alone.
+  const world = context(), worldFar = deferred(); world.win = { far: { buildView: () => worldFar.promise } };
+  const settles = world.settles; await world.ready(); assert.equal(world.settles, settles + 1, 'World readiness waits on the GPU');
 
   const curvature = context({ close: true }), kp = curvature.ready(), kd = watch(kp);
   await turn(); curvature.curved = true; curvature.vol.near().resolve(); await turn();
@@ -226,7 +228,7 @@ try {
   const pp = plain.ready(), pd = watch(pp); await turn(); assert.equal(pd(), false);
   blocks.resolve(); await pp; assert.equal(plain.updates.length, 0, 'Plain branch stays unchanged');
   assert.equal(plain.vol.near(), undefined);
-  for (const c of [far, near, bent, scale, moved, native, rejected, integration, changed, switches, dependencies, curvature, transition, plain]) c.detailGate.dispose();
+  for (const c of [far, near, bent, scale, moved, native, rejected, integration, changed, switches, dependencies, world, curvature, transition, plain]) c.detailGate.dispose();
   assert.equal(timers.size, 0);
   console.log('Headless view CPU: default timer retained; far opt-out; demanded flat/curved detail; real transforms/hysteresis; first-frame upscale/DPR/floor; grid/view/camera/curvature changes; native/integration/Plain waits passed');
 } finally {
