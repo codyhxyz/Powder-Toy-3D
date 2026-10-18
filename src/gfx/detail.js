@@ -51,13 +51,32 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 const GRAINS_FADE_M = 0.05 / 8;           // m per pixel
 const CLODS_FADE_M = 0.34 * CELL_M / 8;   // m per pixel
 // Smooth up close (shaders/gfx/core.js cubicClose): sand's and liquids' smooth
-// surfaces read their fields cubic wherever a trilinear surface's facets (about
-// half a cell across: a lone peak's octahedron) would span CUBIC_PX_NONE pixels,
-// all of it by CUBIC_PX_FULL: the grains' hand-off (shaders/gfx/grains.js
-// *_PX_NONE, *_PX_FULL) on the facet. Until then the thin mask alone decides.
-export const CUBIC_FACET = 0.5;           // cells
-export const CUBIC_PX_NONE = 8, CUBIC_PX_FULL = 16;
-const CUBIC_FADE_M = CUBIC_FACET * CELL_M / CUBIC_PX_NONE;   // m per pixel
+// surfaces read their fields cubic wherever the trilinear reading's shape
+// error would show, by the screen-space geometric error rule of terrain and
+// mesh LOD: a coarse surface may stand in for the exact one while its error,
+// projected to the screen, stays under τ pixels. Lindstrom et al. 1996
+// ("Real-Time, Continuous Level of Detail Rendering of Height Fields", §6)
+// single out τ = 1 px as "small enough that virtually no popping can be seen";
+// Nanite's cluster LOD keeps its projected error under a pixel too. So the
+// cubic share is 0 while the error is under CUBIC_ERR_PX_NONE pixels and 1
+// from CUBIC_ERR_PX_FULL, one octave on, as the material LOD's fade (above)
+// spans one octave; across the blend the drawn error peaks at 1.08 px.
+// CUBIC_ERR is the error: the largest deviation in shape of the far reading
+// (trilinear, blended toward cubic by the thin mask) from the cubic one,
+// measured over 11 canonical clumps of 1-27 cells (lone, pair, line, L,
+// square, diagonals, plus, 2³, 3³, a 5-cell-wide ball) for both cubic
+// channels at their blur, boosted and masked as shaders/fields.js does, 600
+// directions each (2026-10-17). The worst is a powder plus sign (sigma 0.75),
+// whose trilinear arms stick out 0.23 cells; lone grains and drops, pairs,
+// lines and Ls are boosted and read cubic anyway (error 0). Not counted: the
+// B-spline's extra blur sits the cubic surface up to 0.25 cells further in all
+// round, an offset rather than a shard, which the blend morphs over its octave
+// (Hoppe's geomorphs, Progressive Meshes 1996, hide LOD pops the same way).
+export const CUBIC_ERR = 0.23;            // cells
+export const CUBIC_ERR_PX_NONE = 1, CUBIC_ERR_PX_FULL = 2;   // px
+// = 0.069 m/px: 49 m away at 1080p and 75° vertical field of view
+// (2·tan(37.5°)/1080 = 1.42 mrad per pixel), all of it nearer than 24 m
+const CUBIC_FADE_M = CUBIC_ERR * CELL_M / CUBIC_ERR_PX_NONE;   // m per pixel
 // Smoke filaments start once their coarser octave (FILAMENT_1_M = 20 cm)
 // passes the material LOD's fade-out (lodFade: DETAIL_FADE_HI cycles per
 // pixel). The finer media sampling and flow-following apply at any distance

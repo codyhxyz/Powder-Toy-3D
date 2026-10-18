@@ -1,6 +1,6 @@
 import { libChecks } from './lib.js';
 import { ddaWalk } from '../dda.js';
-import { CUBIC_FACET, CUBIC_PX_NONE, CUBIC_PX_FULL } from '../../gfx/detail.js';
+import { CUBIC_ERR, CUBIC_ERR_PX_NONE, CUBIC_ERR_PX_FULL } from '../../gfx/detail.js';
 import { glf as f } from '../../glsl.js';
 import { occupancyReadWGSL } from '../occupancy.js';
 import { renderBackend, worldOccupancyWGSL, worldFieldWGSL } from './worldCore.js';
@@ -219,9 +219,10 @@ var<private> gThin: bool = true;
 var<private> gCubicEye: vec3f = vec3f(0.0);
 var<private> gCubicPixAng: f32 = 0.0;
 ${detail.DETAIL_CUBIC_CLOSE ? `
-// cells per pixel at which a trilinear facet (CUBIC_FACET cells) spans gfx/detail.js CUBIC_PX_NONE / _FULL pixels
-const CUBIC_FP_NONE: f32 = ${f(CUBIC_FACET)} / ${f(CUBIC_PX_NONE)};
-const CUBIC_FP_FULL: f32 = ${f(CUBIC_FACET)} / ${f(CUBIC_PX_FULL)};
+// cells per pixel at which the trilinear reading's shape error (CUBIC_ERR
+// cells) spans gfx/detail.js CUBIC_ERR_PX_NONE / _FULL pixels on screen
+const CUBIC_FP_NONE: f32 = ${f(CUBIC_ERR)} / ${f(CUBIC_ERR_PX_NONE)};
+const CUBIC_FP_FULL: f32 = ${f(CUBIC_ERR)} / ${f(CUBIC_ERR_PX_FULL)};
 fn cubicClose(p: vec3f) -> f32 {
   if (gCubicPixAng > 0.0) { return 1.0 - smoothstep(CUBIC_FP_FULL, CUBIC_FP_NONE, distance(p, gCubicEye) * gCubicPixAng); }
   return 0.0;

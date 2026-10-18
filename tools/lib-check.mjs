@@ -223,6 +223,22 @@ function cubic(vol, p) {
   }
   return out;
 }
+// its gradient for channel ch (core.js fieldCubicGrad): the derivative kernel
+// along each axis in turn, at the same clamped point
+function cubicGrad(vol, p, ch) {
+  const c = clampV(p, [0.5, 0.5, 0.5], vol.size.map((n) => n - 0.5)).map((v) => v - 0.5);
+  const i = c.map(Math.floor), f = c.map((v, k) => v - i[k]);
+  const w = f.map((t) => [(1 - t) ** 3 / 6, (4 - 6 * t * t + 3 * t ** 3) / 6, (1 + 3 * t + 3 * t * t - 3 * t ** 3) / 6, t ** 3 / 6]);
+  const d = f.map((t) => [-((1 - t) ** 2) / 2, 1.5 * t * t - 2 * t, -1.5 * t * t + t + 0.5, t * t / 2]);
+  const out = [0, 0, 0];
+  for (let a = 0; a < 4; a++) for (let b = 0; b < 4; b++) for (let e = 0; e < 4; e++) {
+    const v = vol.at(i[0] - 1 + a, i[1] - 1 + b, i[2] - 1 + e)[ch];
+    out[0] += v * d[0][a] * w[1][b] * w[2][e];
+    out[1] += v * w[0][a] * d[1][b] * w[2][e];
+    out[2] += v * w[0][a] * w[1][b] * d[2][e];
+  }
+  return out;
+}
 
 // giAirSkyVis: band 0's sky visibility against the open sky's, clamped to
 // [0, 1]; outside the grid (no probes) open
@@ -476,7 +492,7 @@ ${body}
       ];
       const lt = volume(bricks, (x, y, z) => [q(((x * 3 + z) % 7) / 2), q(y), q(z / 6), 1]);
       const GI_OFFSET = 3;   // lighting.js: cells out along the normal a surface reads the probes
-      const IN = 2, OUT = 14;
+      const IN = 2, OUT = 15;
       const N = 256, io = new Float32Array(N * 4 * (IN + OUT)), pts = [], nrm = [];
       for (let i = 0; i < N; i++) {
         // inside, with some outside the grid (the edge clamps)
@@ -506,14 +522,15 @@ ${body}
   io[o + 10u] = sp.cx;
   io[o + 11u] = sp.cy;
   io[o + 12u] = sp.cz;
-  io[o + 13u] = vec4f(giAirSkyVis(p), 0.0, 0.0, 0.0);`), groups: groupsFor(layouts, { io, extra }), dispatch: [N / 64, 1, 1] });
+  io[o + 13u] = vec4f(giAirSkyVis(p), 0.0, 0.0, 0.0);
+  io[o + 14u] = vec4f(fieldCubicGrad(tFS, p, 1), 0.0);`), groups: groupsFor(layouts, { io, extra }), dispatch: [N / 64, 1, 1] });
       if (ranOk('3D-texture kernel', r)) {
         const out = f32s(r.outputs['3.2']);
         const fieldQ = (p, n) => clampV(p, [0.5, 0.5, 0.5], n.map((s) => s - 0.5));
         const brickQ = (p) => clampV(p.map((v) => v / 4), [0.5, 0.5, 0.5], bricks.map((s) => s - 0.5));
         const BANDS = ['c0', 'cx', 'cy', 'cz'];
         const sets = Object.fromEntries(['fieldTex', 'mediaField', 'fieldCubic', 'probeTex', ...BANDS.map((b) => `probeAt.${b}`),
-          'sampleLight', ...BANDS.map((b) => `surfProbe.${b}`), 'giAirSkyVis'].map((k) => [k, [[], []]]));
+          'sampleLight', ...BANDS.map((b) => `surfProbe.${b}`), 'giAirSkyVis', 'fieldCubicGrad'].map((k) => [k, [[], []]]));
         pts.forEach((p, i) => {
           const o = 4 * (IN * N + OUT * i), at = (k, n = 4) => Array.from(out.subarray(o + 4 * k, o + 4 * k + n));
           const add = (k, got, want) => { sets[k][0].push(got); sets[k][1].push(want); };
@@ -526,15 +543,18 @@ ${body}
           add('sampleLight', at(8, 3), lt.tri(brickQ(p)).slice(0, 3));
           BANDS.forEach((b, k) => add(`surfProbe.${b}`, at(9 + k), gi[k].tri(brickQ(ps))));
           add('giAirSkyVis', at(13, 1), [airSkyRef(gi[0], grid, p)]);
+          add('fieldCubicGrad', at(14, 3), cubicGrad(fs, p, 1));
         });
         // Hardware filtering weights are fixed point (SwiftShader: 8 bits of
         // fraction would be 1/256 of the texel step); the data steps by up to 2
         // per texel: within 2/256 of the double reference. A misplaced texel
         // (an axis swapped, an off-by-half, a band from the wrong texture, a
-        // wrong offset) is off by far more.
+        // wrong offset) is off by far more. The gradient's two fetches per axis
+        // carry derivative weights up to 0.75 each: within 2 · 0.75 · 2/256.
+        const tol = { fieldCubicGrad: 3 / 256 };
         for (const [k, [got, want]] of Object.entries(sets)) {
           const { max, at } = worst(got, want);
-          check(`${k}: ${N} points (edges included), max |err| ${fmt(max)}${at >= 0 ? ` at (${pts[at].map((v) => v.toFixed(2))})` : ''}`, max <= 2 / 256);
+          check(`${k}: ${N} points (edges included), max |err| ${fmt(max)}${at >= 0 ? ` at (${pts[at].map((v) => v.toFixed(2))})` : ''}`, max <= (tol[k] ?? 2 / 256));
         }
       }
     }
@@ -623,13 +643,16 @@ ${body}
       const fs = volume(grid, (x, y, z) => [q(((x * 7 + y * 3 + z * 5) % 32) / 32), q(((x + 2 * z) % 16) / 16), q(((3 * x + y) % 16) / 16), q(((y + z) % 8) / 8)]);
       const ft = volume(grid, (x, y, z) => [q(((x + y) % 5) / 4), q(((y + z) % 3) / 2), q(((x + z) % 4) / 3), q(((x + 2 * z) % 5) / 4)]);
       const CH = materialsM.CHANNELS.map((c) => (c.cubic ? 1 : 0));
-      const FP_NONE = detailM.CUBIC_FACET / detailM.CUBIC_PX_NONE, FP_FULL = detailM.CUBIC_FACET / detailM.CUBIC_PX_FULL;
+      const FP_NONE = detailM.CUBIC_ERR / detailM.CUBIC_ERR_PX_NONE, FP_FULL = detailM.CUBIC_ERR / detailM.CUBIC_ERR_PX_FULL;
+      // a pixel angle putting the hand-off HAND_NEAR..HAND_NEAR · FP_NONE/FP_FULL cells
+      // from the eye: inside this 32×16×24 box, with points on both sides of it
+      const HAND_NEAR = 6, HAND_ANG = F(FP_FULL / HAND_NEAR);
       const eye = [g.nx / 2, g.ny / 2, g.nz / 2];
       const N = 256, IN = 2, OUT = 7, io = new Float32Array(N * 4 * (IN + OUT)), cases = [];
       for (let i = 0; i < N; i++) {
         const p = grid.map((n) => F((rand() * 0.9 + 0.05) * n));
         // gThin on or off; the eye's pixel angle 0 (another pass) or one putting the hand-off inside the box
-        const thin = i % 2 === 0, pixAng = i % 4 < 2 ? 0 : F(0.004);
+        const thin = i % 2 === 0, pixAng = i % 4 < 2 ? 0 : HAND_ANG;
         io.set([...p, thin ? 1 : 0, ...eye, pixAng], 4 * IN * i);
         cases.push({ p, thin, pixAng });
       }
@@ -691,8 +714,9 @@ ${body}
       const extra = { '2.0': { tex: fs.tex }, '2.2': { tex: ft.tex } };
       for (const [name, detail, angle] of [
         ['off', {}, 0],
-        ['balanced transition', { DETAIL_CUBIC_CLOSE: 1 }, 0.0077],
-        ['fully close', { DETAIL_CUBIC_CLOSE: 1 }, 0.001],
+        // the pixel angle putting ro (4√3 cells from the eye) mid hand-off, and well inside it
+        ['balanced transition', { DETAIL_CUBIC_CLOSE: 1 }, F(0.75 * detailM.CUBIC_ERR / detailM.CUBIC_ERR_PX_NONE / (4 * Math.sqrt(3)))],
+        ['fully close', { DETAIL_CUBIC_CLOSE: 1 }, F(0.1 * detailM.CUBIC_ERR / detailM.CUBIC_ERR_PX_FULL / (4 * Math.sqrt(3)))],
       ]) {
         const body = `
   let ch = select(CH_LIQUID, CH_GRANULAR, i >= 2u);
