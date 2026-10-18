@@ -101,7 +101,8 @@ var<private> gFlowV: vec3f = vec3f(0.0);   // flow velocity at the current media
 
 // Sim velocity at p (cells/step), clamped to FLOW_MAX: linear over the Kuhn
 // (Freudenthal) tetrahedron of the cell-centre lattice that holds p, the
-// tetrahedral interpolation of 3D colour lookup tables (Kasson et al. 1995).
+// tetrahedral interpolation of 3D colour lookup tables (Kasson, Nin, Plouffe
+// and Hafner 1995, J. Electronic Imaging 4(3)).
 // Like trilinear it is continuous everywhere and exact for a linear field, but
 // it reads 4 cells instead of 8: half the velocity loads per media sample,
 // and in the World half the inlined page lookups (worldFetchB), which were

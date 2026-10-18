@@ -77,6 +77,8 @@ function context({ close = false, curved = false, ratio = 1 } = {}) {
     camera: new PerspectiveCamera(60, 1280 / 720, 0.1, 10000), camGrid: new Vector3(), invVol: new Matrix4(),
     coreWait: Promise.resolve(), coreReady: true, blocksOn: false, blocks: null,
     graphicsFailure: null, giWait: Promise.resolve(), physicsV2: null, win: null,
+    // the hybrid renderer (Test view) allReady also waits for: none loading
+    hybridLoad: null, hybrid: null, hybridWait: Promise.resolve(),
     curved, isMaterialView, gateVariants, detailKey, UPSCALE_FLOOR,
     viewKeyOf: v => v, viewShadows: v => isMaterialView(v),
     post: { settings: { taa: true, upscale: 0.1, resolutionScale: 0.1 } }, updates: [], settles: 0 };
