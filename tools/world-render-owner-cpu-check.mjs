@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { fixture, drain } from './world-lighting-records-fixture.mjs';
 import { installWorldRender } from '../src/wire/worldRender.js';
-import { READY } from '../src/world/renderAtlas.js';
+import { READY, bookPage } from '../src/world/renderAtlas.js';
 import { tableLayout } from '../src/shaders/common.js';
 import { worldGISource, worldGIBirthWGSL } from '../src/shaders/worldGI.js';
 import { selectWorldGI } from '../src/world/worldLightingHistory.js';
@@ -295,7 +295,7 @@ test('two actual SOURCE core slabs precede ANY gather; retained GI crosses R+1 w
   await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
   for(let i=1;i<=2;i++){f.source.noteContentChange();c=await settle(f.gpu,f.owner.request(f.frame,demand));await settle(f.gpu,f.owner.accept(c,post(c)));if(i===1)c.release();}
   const proof=c.snapshot.lightingProvenance([0,0,0]).gi;assert.equal(proof.computeToken.lightingTick,1);assert(proof.computeToken.sourceRevision<c.cut.sourceRevision);assert.equal(proof.publication.sourceRevision,c.cut.sourceRevision);
-  const pid=f.owner.atlas.lightEntries[0]-1,page=f.owner.atlas.light.pages.get(pid);assert.equal(page.sourceTick,2);assert.equal(page.giTick,1);assert(f.owner.metadata.indices.includes(8),'offscreen ownership retained across cuts');
+  const pid=bookPage(f.owner.atlas.lightEntries[0]),page=f.owner.atlas.light.pages.get(pid);assert.equal(page.sourceTick,2);assert.equal(page.giTick,1);assert(f.owner.metadata.indices.includes(8),'offscreen ownership retained across cuts');
   c.release();await f.close();
 });
 

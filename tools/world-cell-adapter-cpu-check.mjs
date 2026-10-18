@@ -8,7 +8,7 @@ import { WorldCellAtlasAdapter } from '../src/world/cellAtlasAdapter.js';
 import { WorldFieldHistory } from '../src/world/fieldHistory.js';
 import { WorldRenderSource, SOURCE_GRID, snapshotSource } from '../src/world/renderSource.js';
 import { RawWorldSourceProducer } from '../src/world/renderSourceProducer.js';
-import { WorldRenderAtlas, READY, auxTexel, pageTexel, worldSlotCell, assertWorldLayout } from '../src/world/renderAtlas.js';
+import { WorldRenderAtlas, READY, auxTexel, bookPage, pageTexel, worldSlotCell, assertWorldLayout } from '../src/world/renderAtlas.js';
 import { BrickStore, encodeBrick } from '../src/world/store.js';
 import { gridDims, brickIdOf, cellSlot } from '../src/shaders/common.js';
 import { brickFrag } from '../src/shaders/passes.js';
@@ -40,7 +40,7 @@ function fixture(){
   return {gpu,sim,win,source,producer,atlas,adapter};
 }
 const req=[{brick:[7,1,1],channels:READY.CELL},{brick:[8,1,1],channels:READY.CELL}];
-function lookupSnapshot(snapshot,brick){const p=u32(snapshot.params),i=brick[0]+p[4]*(brick[1]+p[5]*brick[2]),v=u32(snapshot.book)[i];return {physicalPageID:v-1,incomplete:!v};}
+function lookupSnapshot(snapshot,brick){const p=u32(snapshot.params),i=brick[0]+p[4]*(brick[1]+p[5]*brick[2]),v=u32(snapshot.book)[i];return {physicalPageID:bookPage(v),incomplete:!v};}
 function fieldWords(snapshot,name,brick,s){const p=lookupSnapshot(snapshot,brick).physicalPageID,pos=pageTexel(p,s,snapshot.layout),t=snapshot.views[name].texture,d=t.size;return [...new Uint16Array(t.bytes,(pos[0]+d[0]*(pos[1]+d[1]*pos[2]))*8,4)];}
 function auxWords(snapshot,brick,record){const p=lookupSnapshot(snapshot,brick).physicalPageID,pos=auxTexel(p,record,snapshot.layout),t=snapshot.views.aux.texture,d=t.size;return [...new Uint32Array(t.bytes,(pos[0]+d[0]*(pos[1]+d[1]*pos[2]))*16,4)];}
 async function cleanup(f){f.gpu.finish();await Promise.resolve();f.adapter.dispose();f.producer.dispose();f.atlas.dispose();f.source.dispose();f.gpu.finish();await Promise.resolve();}

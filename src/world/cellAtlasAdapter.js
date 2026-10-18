@@ -5,7 +5,7 @@ import { SOURCE_GRID } from './renderSource.js';
 import { gridDims, brickIdOf, LAYOUT } from '../shaders/common.js';
 import { FIELD_TEXTURES } from '../gfx/fieldDeriver.js';
 import { fold } from '../gpu/kernels.js';
-import { READY, worldBrickIndex } from './renderAtlas.js';
+import { READY, bookPage, worldBrickIndex } from './renderAtlas.js';
 import { worldCellClassifierWGSL, WorldBrickParams, WORLD_CLASSIFIER_LAYOUT, worldCellPackWGSL, WORLD_CELL_PACK_LAYOUTS, worldFieldPackWGSL, WORLD_FIELD_PACK_LAYOUT } from '../shaders/worldCellAdapter.js';
 const BU = { COPY_SRC:4,COPY_DST:8,UNIFORM:64,STORAGE:128 };
 const same = (a,b) => a?.epoch === b?.epoch && a?.sourceRevision === b?.sourceRevision;
@@ -254,7 +254,7 @@ export class WorldCellAtlasAdapter {
         const local=brick.map((v,i)=>v-core[i]/4),bi=brickIdOf(SOURCE_GRID,...local),start=bi*64;
         const job=this.atlas.allocate(brick,{sourceRevision:batch.source.sourceRevision,fieldTick:batch.fieldToken.fieldTick,readyBits:READY.CELL});jobs.push(job);
         const lightEntry=this.atlas.lightEntries[worldBrickIndex(this.atlas.bookLayout,brick)];
-        if(lightEntry&&this.atlas.light.pages.get(lightEntry-1).sourceRevision!==batch.source.sourceRevision)clears.push({brick,channels:READY.LIGHT});
+        if(lightEntry&&this.atlas.light.pages.get(bookPage(lightEntry)).sourceRevision!==batch.source.sourceRevision)clears.push({brick,channels:READY.LIGHT});
         const words=new Uint32Array(68);words.set([start,bi,0,0]);words.set(source.aux.subarray(start,start+64),4);
         const list=this._upload('CELL page immutable job',words,BU.STORAGE);ephemeral.push(list);
         writes.push({job,kind:'raw',auxMetadata:[READY.CELL,job.epoch,job.sourceRevision,job.fieldTick],record:(encoder,bindings)=>{

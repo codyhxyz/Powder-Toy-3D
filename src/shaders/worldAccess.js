@@ -1,5 +1,5 @@
 // Explicit sparse world ABI, not a rewrite of the local shader library.
-import { AUX_RECORDS, LIGHT_RECORDS, READY, WORLD_ATLAS_ABI, WRITER_CHANNELS, PAGE_CHANNELS, worldReaderLayouts, worldWriterLayouts } from '../world/renderAtlas.js';
+import { AUX_RECORDS, BOOK_LIGHT_SHIFT, BOOK_READY_SHIFT, LIGHT_RECORDS, READY, WORLD_ATLAS_ABI, WRITER_CHANNELS, PAGE_CHANNELS, worldReaderLayouts, worldWriterLayouts } from '../world/renderAtlas.js';
 
 /** Caller MUST worldBeginQuery(), perform the WHOLE dependent ray/shading
  * query, then test worldQueryIncomplete(). Placeholder zeros are unusable
@@ -25,6 +25,9 @@ const WORLD_AUX: u32 = ${READY.AUX}u;
 const WORLD_GI_SOURCE: u32 = ${READY.GI_SOURCE}u;
 const WORLD_GI: u32 = ${READY.GI}u;
 const WORLD_GLOW: u32 = ${READY.GLOW}u;
+const WORLD_BOOK_READY: u32 = ${BOOK_READY_SHIFT}u;
+const WORLD_BOOK_LIGHT: u32 = ${BOOK_LIGHT_SHIFT}u;
+const WORLD_BOOK_PAGE: u32 = ${2 ** BOOK_READY_SHIFT - 1}u;
 struct WorldParams {
   world: vec4u, // size xyz, epoch
   bricks: vec4u, // brick dimensions xyz, generation
@@ -89,19 +92,17 @@ fn worldPageMeta(pid: u32, record: u32) -> vec4u {
   return textureLoad(worldAux, a.xy, a.z, 0);
 }
 // -1 is UNKNOWN; a physical ID of zero is valid (book entry=1). One exit and
-// one request: the volume shader inlines ~380 copies of this.
+// one request: the volume shader inlines ~380 copies of this. The entry holds
+// the page's channels (renderAtlas.js bookEntry); a snapshot's book only ever
+// names pages of its own epoch, which their aux metadata repeats.
 fn worldPage(b: vec3i, ready: u32) -> i32 {
   if (!worldBrickInBounds(b)) { worldIncomplete = true; return -1; }
   let i = worldBookIndex(b);
-  let e = worldBook[i];
-  var fresh = false; var have = 0u;   // a page of this epoch, and the channels it holds
-  if (e != 0u && e <= WA.tiles.z && WA.tiles.w == WORLD_ABI) {
-    let m = worldPageMeta(e - 1u, 0u);
-    fresh = m.y == WA.world.w;
-    if (fresh) { have = m.x; }
-  }
-  if (!fresh || (have & ready) != ready) { worldRequest(i, ready, have); return -1; }
-  return i32(e - 1u);
+  let e = worldBook[i]; let page = e & WORLD_BOOK_PAGE;
+  let known = page != 0u && page <= WA.tiles.z && WA.tiles.w == WORLD_ABI;
+  let have = select(0u, e >> WORLD_BOOK_READY, known);   // the channels the page holds
+  if (!known || (have & ready) != ready) { worldRequest(i, ready, have); return -1; }
+  return i32(page - 1u);
 }
 fn worldCellTexel(pid: u32, c: vec3i) -> vec3i {
   let l = c & vec3i(3);
@@ -191,18 +192,15 @@ fn worldLightMeta(id: u32, record: u32) -> vec4u {
   let a = worldLinearAddress(WA.light.x + id * ${LIGHT_RECORDS}u + record, WA.aux.xy);
   return textureLoad(worldAux, a.xy, a.z, 0);
 }
+// One load, as worldPage: a book names only descriptors its snapshot
+// published (their stamp, record 3, is never newer than its generation).
 fn worldLightDescriptor(b: vec3i, ready: u32) -> i32 {
   if (!worldBrickInBounds(b)) { worldIncomplete = true; return -1; }
-  let i = worldBookIndex(b); let e = worldLightBook[i];
-  var fresh = false; var have = 0u;   // one exit and one request, as worldPage
-  if (e != 0u && e <= WA.light.y && WA.tiles.w == WORLD_ABI) {
-    let m = worldLightMeta(e - 1u, 0u);
-    let publication = worldLightMeta(e - 1u, 3u);
-    fresh = m.y == WA.world.w && publication.z == WORLD_ABI && publication.w != 0u && publication.w <= WA.bricks.w;
-    if (fresh) { have = m.x; }
-  }
-  if (!fresh || (have & ready) != ready) { worldRequest(i, ready, have); return -1; }
-  return i32(e - 1u);
+  let i = worldBookIndex(b); let e = worldLightBook[i]; let id = e & WORLD_BOOK_PAGE;
+  let known = id != 0u && id <= WA.light.y && WA.tiles.w == WORLD_ABI;
+  let have = select(0u, (e >> WORLD_BOOK_READY) << WORLD_BOOK_LIGHT, known);
+  if (!known || (have & ready) != ready) { worldRequest(i, ready, have); return -1; }
+  return i32(id - 1u);
 }
 // Exact giSrcPack words. Missing zero is only a placeholder, NEVER canonical air.
 fn worldGISource(b: vec3i) -> vec4u {

@@ -6,6 +6,16 @@ export const WORLD_ATLAS_ABI = 2;
 export const READY = Object.freeze({ RAW: 1, FIELD: 2, AUX: 4, GI_SOURCE: 8, GI: 16, GLOW: 32, CELL: 7, LIGHT: 56, ALL: 63 });
 export const LIGHT_RECORDS = 5;
 export const CHANNELS = Object.freeze([1, 2, 4, 8, 16, 32]);
+// A book entry is its page's ID + 1 (0: none) with the channels the page holds
+// in the top 3 bits (a light page's READY.LIGHT shifted down), so a shader
+// lookup is one load: reading them from the page's aux metadata as well put a
+// dependent texture load in each of the World volume shader's ~520 inlined
+// lookups (worldAccess.js worldPage), ~3 s of its cold build.
+export const BOOK_READY_SHIFT = 29;
+export const BOOK_LIGHT_SHIFT = 3;   // READY.LIGHT = 7 << 3
+const BOOK_PAGE_MASK = 2 ** BOOK_READY_SHIFT - 1;
+export const bookPage = v => (v & BOOK_PAGE_MASK) - 1;
+const bookEntry = p => (p.id + 1 | (p.kind === 'cell' ? p.readyBits : p.readyBits >>> BOOK_LIGHT_SHIFT) << BOOK_READY_SHIFT) >>> 0;
 export const AUX_RECORDS = 132;
 export const DEFAULT_WORLD_LIMITS = Object.freeze({
   maxTextureDimension2D: 8192, maxTextureArrayLayers: 256,
@@ -79,8 +89,9 @@ export function worldAtlasLayout(capacity = 64, deviceLimits = {}, lightCapacity
 export function worldPoolMax(kind, layout, deviceLimits = {}) {
   const lim = limitsOf(deviceLimits), texels = pow2Floor(lim.maxTextureDimension2D) ** 2 * lim.maxTextureArrayLayers;
   const auxMax = Math.min(U32_MAX, texels);
-  if (kind === 'cell') return Math.min(pow2Floor(Math.floor(lim.maxTextureDimension2D / 8)) ** 2 * lim.maxTextureArrayLayers, Math.floor((auxMax - layout.lightCapacity * LIGHT_RECORDS) / AUX_RECORDS));
-  if (kind === 'light') return Math.floor((auxMax - layout.capacity * AUX_RECORDS) / LIGHT_RECORDS);
+  // Page IDs + 1 fit below a book entry's ready bits.
+  if (kind === 'cell') return Math.min(pow2Floor(Math.floor(lim.maxTextureDimension2D / 8)) ** 2 * lim.maxTextureArrayLayers, Math.floor((auxMax - layout.lightCapacity * LIGHT_RECORDS) / AUX_RECORDS), BOOK_PAGE_MASK);
+  if (kind === 'light') return Math.min(Math.floor((auxMax - layout.capacity * AUX_RECORDS) / LIGHT_RECORDS), BOOK_PAGE_MASK);
   check(kind === 'probe', 'invalid pool'); return Math.min(U32_MAX, texels);
 }
 export function worldPoolGrowth(kind, layout, deviceLimits = {}, needed) {
@@ -363,7 +374,7 @@ export class WorldRenderAtlas {
       params = this._buffer('world immutable params', 112, BU.UNIFORM | BU.COPY_DST, paramWords(this.bookLayout, r.layout, epoch, generation, dependencies.version));
     } catch (e) { this.retire(() => { book?.destroy(); lightBook?.destroy(); params?.destroy(); }); throw e; }
     const pins = [];
-    for (const [kind, values] of [['cell', entries], ['light', lightEntries]]) for (const id of new Set(values.filter(v => v).map(v => v - 1))) {
+    for (const [kind, values] of [['cell', entries], ['light', lightEntries]]) for (const id of new Set(values.filter(v => v).map(bookPage))) {
       const p = this[kind].pages.get(id); p.pins++; pins.push(p);
       if (p.kind === 'light' && p.probeID !== null) this.probe.pages.get(p.probeID).pins++;
     }
@@ -423,7 +434,7 @@ export class WorldRenderAtlas {
   _allocate(kind, brick, version) {
     const index = worldBrickIndex(this.bookLayout, brick), pool = this[kind], entries = kind === 'cell' ? this.entries : this.lightEntries;
     check(!pool.pending.has(index), 'brick already has pending replacement');
-    const old = entries[index] ? pool.pages.get(entries[index] - 1) : null;
+    const old = entries[index] ? pool.pages.get(bookPage(entries[index])) : null;
     check(!old || version.sourceRevision >= old.sourceRevision, 'source revision regression');
     check(!old || (version.readyBits & old.readyBits) === old.readyBits, 'replacement cannot drop ready channels');
     for (const tick of kind === 'cell' ? ['fieldTick'] : ['sourceTick', 'giTick', 'glowTick']) check(!old || (kind === 'cell' && version.sourceRevision !== old.sourceRevision) || version[tick] >= old[tick], 'channel tick regression');
@@ -556,22 +567,22 @@ export class WorldRenderAtlas {
     // replacements below win, and older snapshots retain their original pins.
     for (const { index, channels } of cleared) for (const [kind, entries, mask] of [['cell', nextCell, READY.CELL], ['light', nextLight, READY.LIGHT]]) {
       if (!(channels & mask)) continue;
-      if (entries[index]) oldPages.push(this[kind].pages.get(entries[index] - 1));
+      if (entries[index]) oldPages.push(this[kind].pages.get(bookPage(entries[index])));
       entries[index] = 0;
     }
     for (const p of ps) {
       check(this._needed(p).every(n => p.written.has(n)), 'cannot publish partial page');
       for(const [kind,lease]of Object.entries(p.restoreDeclarations??{}))validateWorldLightingRestore(lease,{job:p.job,kind});
       const entries = p.kind === 'cell' ? nextCell : nextLight;
-      if (entries[p.index]) oldPages.push(this[p.kind].pages.get(entries[p.index] - 1));
-      entries[p.index] = p.id + 1;
+      if (entries[p.index]) oldPages.push(this[p.kind].pages.get(bookPage(entries[p.index])));
+      entries[p.index] = bookEntry(p);
     }
     for (let i = 0; i < nextLight.length; i++) if (nextLight[i] && nextCell[i]) {
-      check(this.light.pages.get(nextLight[i] - 1).sourceRevision === this.cell.pages.get(nextCell[i] - 1).sourceRevision, 'incompatible cell/light source revision');
+      check(this.light.pages.get(bookPage(nextLight[i])).sourceRevision === this.cell.pages.get(bookPage(nextCell[i])).sourceRevision, 'incompatible cell/light source revision');
     }
     // Revalidate retained descriptors too: a new manifest cannot silently mix old dependencies.
     for (const v of nextLight) if (v) {
-      const p = this.light.pages.get(v - 1);
+      const p = this.light.pages.get(bookPage(v));
       for (const [channel, bit] of [['source', READY.GI_SOURCE], ['gi', READY.GI], ['glow', READY.GLOW]]) if (p.readyBits & bit) {
         const d = p.dependencies[channel];
         const retained=p.provenance?.[channel];
@@ -596,7 +607,7 @@ export class WorldRenderAtlas {
     for (const i of indices) check(!this.required.has(i) && !this.cell.pending.has(i) && !this.light.pending.has(i), 'cannot remove requested/pending brick');
     const cells = this.entries.slice(), lights = this.lightEntries.slice(), oldPages = [];
     for (const [kind, entries, mask] of [['cell', cells, READY.CELL], ['light', lights, READY.LIGHT]]) if (channels & mask) for (const i of indices) {
-      if (entries[i]) oldPages.push(this[kind].pages.get(entries[i] - 1)); entries[i] = 0;
+      if (entries[i]) oldPages.push(this[kind].pages.get(bookPage(entries[i]))); entries[i] = 0;
     }
     this._commit(cells, lights);
     for (const p of oldPages) { p.public = false; this._collect(p); }
@@ -676,7 +687,7 @@ export class WorldRenderAtlas {
       check(p.resources===this.resources,'private closure must use current pool prefix');
       if(p.readyBits&READY.GI_SOURCE)sourceCovered.add(p.index);
       if(p.readyBits&READY.GI)probeCovered.add(p.index);
-      this._writeDescriptor(p);lights[p.index]=p.id+1;
+      this._writeDescriptor(p);lights[p.index]=bookEntry(p);
     }
     const required=target?.sourceIndices,probes=target?.probeIndices;
     check(required?.every(i=>sourceCovered.has(i)),'private closure omits selected SOURCE records');
@@ -707,7 +718,7 @@ export class WorldRenderAtlas {
   lookup(brick, readyBits = READY.CELL) {
     this._alive(); check(integer(readyBits, 1, READY.ALL), 'invalid requested channels');
     const index = worldBrickIndex(this.bookLayout, brick), c = this.entries[index], l = this.lightEntries[index];
-    const cell = c ? this.cell.pages.get(c - 1) : null, light = l ? this.light.pages.get(l - 1) : null;
+    const cell = c ? this.cell.pages.get(bookPage(c)) : null, light = l ? this.light.pages.get(bookPage(l)) : null;
     const missingChannels = readyBits & ~((cell?.readyBits ?? 0) | (light?.readyBits ?? 0));
     return missingChannels ? { known: false, incomplete: true, request: index, missingChannels } : { known: true, incomplete: false, physicalPageID: cell?.id, lightDescriptorID: light?.id, probePID: light?.probeID, epoch: this.epoch, sourceRevision: cell?.sourceRevision ?? light?.sourceRevision, fieldTick: cell?.fieldTick };
   }

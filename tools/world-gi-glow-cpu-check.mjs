@@ -94,7 +94,10 @@ test('world gather is the original generated module minus unused texture mirrors
   // (MARK_OWNED, MARK_WORDS, Header format/capture, BRICK_LIQUID_INTERIOR).
   // Then 2026-10-17: worldAccess.js's request/page/address helpers took their
   // compile-cheap form (same results); nothing else in the module moved.
-  const hashes = ['480fc99ab325eedd6417805de6e71d7f146d45cdcbfa0040e37c4c469213d880', '63c54c6bf2ea301063fbb4b2665771505479dc05cc0b1966441e9eae1fffbe29', 'c781228d78bd2990f5192665fac5c597d818fe500b7dd02776bca43b580b3452', '9c9d988f60d8b6e93fd43be94183acfd900d748e5c9bcabee9fbe199c92c75bc'];
+  // Later that day: worldPage/worldLightDescriptor read a page's channels from
+  // its book entry (renderAtlas.js bookEntry) and the three WORLD_BOOK_* consts
+  // arrived; again nothing else moved.
+  const hashes = ['ea8ba58d674aedd159f47fcd23089edb058ade2596126cc5916d5ae86cf1e4f8', '0360436a0adf0abe5351cee4310af1c4ef5c496ff09e2fb4e7d095ec947109e6', 'df0aca9017d45804905bc5127a72853a4703e2afd03729a8dbef54c6caf8339f', '9a1660f9cb752b2a707902b1e0f2b85a6bd60c9d50f8bb57579b7281ee90be1d'];
   const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
   gathers.forEach((c, i) => {
     const code = c.code(), groups = c.layouts();

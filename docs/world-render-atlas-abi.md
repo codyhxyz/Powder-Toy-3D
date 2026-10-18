@@ -14,14 +14,18 @@ masks, allocations and feedback together. Old `LIGHT=8` meant every lighting
 channel; v2 bit8 means **GI_SOURCE only**. `allocate()`/`lookup()` and legacy
 `require(bricks)` now default to CELL=7. Use `allocateLight()` for lighting.
 The separate LIGHT book is mandatory; never bind a v1 book/params combination
-as v2. WGSL checks ABI/epoch/publication; native candidates reject old ABI and
-reset epochs. Retained old resources remain pinned until release, not destroyed
+as v2. WGSL checks ABI and pool capacity; epoch and publication are the CPU's
+invariant (a snapshot's books name only pages of its epoch that it published),
+and native candidates reject old ABI and reset epochs. Retained old resources remain pinned until release, not destroyed
 or reinterpreted on reset. The CPU CI Atlas gate explicitly asserts ABI2.
 
 ## Addressing and sizes
 
 - World-aligned 4³ brick index: `bx + BX*(by + BY*bz)`. Both immutable books
-  contain one u32 per GLOBAL brick: zero UNKNOWN, otherwise pool ID + 1.
+  contain one u32 per GLOBAL brick: zero UNKNOWN, otherwise pool ID + 1 in
+  bits 0–28 and the page's readiness in bits 29–31 (LIGHT's shifted down by 3;
+  `bookEntry`/`bookPage`), so a shader lookup is one load, not also the aux
+  record 0 read (~3 s of the World volume shader's cold build).
   Each book separately costs **24/72 MiB** at world `[3072,128/384,1024]`.
   Do not combine them: height384 would exceed the 128 MiB binding limit.
 - **Cell PID**, **light descriptor ID**, and **probe PID** are independent

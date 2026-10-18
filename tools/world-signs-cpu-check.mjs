@@ -7,7 +7,7 @@ import {pathToFileURL} from 'node:url';
 import {WgslExec,WgslParser,ScalarData,TypedData,VectorData} from 'wgsl_reflect/wgsl_reflect.module.js';
 import * as THREE from 'three/webgpu';
 import {createWorldVolume} from '../src/gfx/worldVolume.js';
-import {WorldRenderAtlas} from '../src/world/renderAtlas.js';
+import {WorldRenderAtlas,BOOK_LIGHT_SHIFT,BOOK_READY_SHIFT} from '../src/world/renderAtlas.js';
 import {worldSunProjection,worldSunFeedbackWords} from '../src/world/worldSun.js';
 import {tableLayout,prelude,tablesBuffer} from '../src/shaders/common.js';
 import {materialsGLSL} from '../src/gfx/materials.js';
@@ -231,20 +231,21 @@ test('actual typed world page/request/brick reader rejects missing RAW/FIELD/AUX
  const start=cpuCode.indexOf('fn brickAt('),end=cpuCode.indexOf('\nfn fetchA',start);
  const readers=`
  const WORLD_ABI:u32=2u; const WORLD_RAW:u32=1u; const WORLD_FIELD:u32=2u; const WORLD_AUX:u32=4u;
+ const WORLD_BOOK_READY:u32=${BOOK_READY_SHIFT}u; const WORLD_BOOK_LIGHT:u32=${BOOK_LIGHT_SHIFT}u; const WORLD_BOOK_PAGE:u32=${2**BOOK_READY_SHIFT-1}u;
  struct Meta {world:vec4u,tiles:vec4u,feedback:vec4u}
  @group(2)@binding(0)var<uniform> WA:Meta;
  @group(2)@binding(1)var<storage,read> worldBook:array<u32>;
  @group(2)@binding(2)var<storage,read_write> worldRequests:array<atomic<u32>>;
  fn worldBrickInBounds(b:vec3i)->bool{return all(b>=vec3i(0));}
  fn worldBookIndex(b:vec3i)->u32{return u32(b.x);}
- fn worldPageMeta(pid:u32,record:u32)->vec4u {if(record==0u){return vec4u(u32(P.cells[1].z),1u,0u,0u);}return vec4u(0u,0u,0u,1u);}
+ fn worldPageMeta(pid:u32,record:u32)->vec4u {return vec4u(0u,0u,0u,1u);}
  struct WorldBrickInfo {emit:vec3f,info:u32}
  ${fn('worldRequest')}${fn('worldPage')}${fn('worldBrickInfo')}
  fn brickAt(b:vec3i)->BrickInfo{let r=worldBrickInfo(b);return BrickInfo(r.emit,r.info);}
  `;
  const code=(cpuCode.slice(0,start)+readers+cpuCode.slice(end)).replace('fn worldEndQuery(){}','fn worldEndQuery(){if(worldQueryIncomplete()){atomicOr(&worldRequests[192],1u);}}');
  for(const ready of [0,1,3,7]){
-  const out=new Float32Array(512),requests=new Uint32Array(193),book=new Uint32Array(768).fill(1),meta=new Uint32Array([3072,384,1024,1,1,1,1,2,32,192,0,0]);
+  const out=new Float32Array(512),requests=new Uint32Array(193),book=new Uint32Array(768).fill((1|ready<<BOOK_READY_SHIFT)>>>0),meta=new Uint32Array([3072,384,1024,1,1,1,1,2,32,192,0,0]);
   const exec=new ShaderExec(new WgslParser().parse(code));
   exec.dispatchWorkgroups('main',1,{0:{0:new Uint32Array(tablesBuffer()),1:new Int32Array(8)},2:{0:meta,1:book,2:requests},3:{0:WorldSignsParams.pack({cam:[.5,383.5,.5],count:1,anchors:[[33,383.5,.5,0]],cells:[[33,383,0,0],[4000,0,ready,0]],dir:[1,0],anchor:[0,0]}),6:out}});
   assert.equal(out[4],ready===7?1:-1);assert.equal(requests[192],ready===7?0:1);
