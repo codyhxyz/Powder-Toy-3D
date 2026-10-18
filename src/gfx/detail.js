@@ -112,12 +112,18 @@ const MEDIA_FLOW_FADE_M = DETAIL_FADE_HI * Math.max(FLOW_TRAVEL_CELLS, NOISE_COA
 // 1080 = 1.42 mrad per pixel); the finest (1.7 cm) is fully drawn to 6 m and
 // gone by 12 m. Past its fade an octave's slope variance is the glint's
 // roughness (specular anti-aliasing), so in the box the feature shows at any
-// distance: fadeM Infinity. The meniscus, over the capillary
-// length (2.7 mm for water), is averaged away once a pixel spans more than
-// MENISCUS_PX of them. Whitewater follows speed at any distance (no fadeM).
+// distance: fadeM Infinity. Whitewater follows speed at any
+// distance (no fadeM).
 export const RIPPLE_FADE_M = DETAIL_FADE_HI * CAP_LAMBDA_MAX_M;   // m per pixel: the ripples' normals end
-const MENISCUS_PX = 4;                  // capillary lengths per pixel
-const MENISCUS_FADE_M = MENISCUS_PX * 0.0027;   // m per pixel
+// The meniscus (liquidDetail.js liquidMeniscus) rises h0·exp(-x/lc) over the
+// capillary length lc = √(σ/ρg): a low-pass whose wavelength is λm = 2π·lc,
+// 1.7 cm for water (σ 0.072 N/m, ρ 1000 kg/m³), the widest of the liquids it
+// models (MENISCUS_LAMBDA_MAX_M there; tools/volume-id-cpu-check.mjs holds the
+// two equal). The shader fades it with lodFade at 1/λm: whole while a pixel
+// spans up to DETAIL_FADE_LO of λm, gone at DETAIL_FADE_HI. At 1080p and a 75°
+// vertical FOV (1.42 mrad per pixel) that is whole to 6 m and gone by 12 m.
+const MENISCUS_LAMBDA_M = 2 * Math.PI * Math.sqrt(0.072 / (1000 * 9.81));   // m
+const MENISCUS_FADE_M = DETAIL_FADE_HI * MENISCUS_LAMBDA_M;   // m per pixel
 
 // Costs below: extra GPU ms per frame at 1280×800 on the M-series laptop
 // (tools/detail-bench.mjs, 2026-10-08, after all features were merged and
