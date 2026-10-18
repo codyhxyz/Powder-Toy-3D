@@ -3248,10 +3248,11 @@ try {
       if (physicsChanging) throw new Error('Wait for the current physics change to finish.');
       physicsChanging = true;
       try {
-        if (mode === 'v2' && ctx.industry?.pending) throw new Error('Wait for the machine transfer before changing physics.');
+        // A machine or tool transfer in flight rides the switch: both engines run the machines, a V1
+        // transfer's writes are recorded before the owner's import of them (PhysicsV2.activate sync),
+        // its answer is V1 cells V2 places as it imports V1's, and V2 cargo meets V1 as V2's export
+        // gives it (pov/tools/transfer.js legacyCargo).
         if (mode === 'v2') V2mod ??= await loadNativePhysics();
-        // Loading the module yields. A transfer may start during that interval.
-        if (mode === 'v2' && ctx.industry?.pending) throw new Error('Wait for the machine transfer before changing physics.');
         if (mode === 'v1') {
           // Keep native mode published while legacy builds: the running loop must
           // not step unbuilt kernels. A map change meanwhile needs its own prepare.

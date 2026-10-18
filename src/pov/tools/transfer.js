@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { TRANSFER_SLOTS, TRANSFER_TAKE, TRANSFER_PUT, ALLOW_IDS } from '../../shaders/transfer.js';
 import { povGpu } from '../gpu.js';
-import { ELEMENTS } from '../../elements.js';
+import { ELEMENTS, K } from '../../elements.js';
+import { FULL } from '../../v2/layout.js';
 import { PHYS } from '../../physics.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
 import { voxelWalk } from '../grid.js';
@@ -169,7 +170,42 @@ export const allLoads = () => loads;
 // The world was replaced (undo, a scene load, a new grid): what the tools carry
 // came from the old one, so keeping it would duplicate those cells.
 export function emptyLoads() {
-  for (const load of loads.values()) { load.cells.length = 0; load.version++; }
+  for (const load of loads.values()) { load.cells.length = 0; load.legacyCarry?.clear(); load.version++; }
+}
+
+// ---------------------------------------------------------------- cargo across engines
+
+// V2's cargo (v2/transfer.js nativeCargo: four display fields, then the five raw native words) going
+// into V1's cells: a runtime switch to V1 with cargo in a pump, a bucket or the pack. V1 has no fill
+// or energy bank, so it gets what V2's own V1 export gives (shaders/compact.js): a non-liquid as its
+// display fields (compactProbeA: id, T, life, ctype), a liquid as whole cells of its element. Liquid
+// is counted by fill (FULL a whole cell), never by item, so no mass is made or lost: a liquid's fill
+// short of a whole cell, or past the load's room, waits in load.legacyCarry (by element: fill and
+// fill-weighted temperature) and comes out with the next V1 put. V1's 4-word cells pass unchanged,
+// and V2 places them as it imports V1's (shaders/v2/transfer.js fromLegacy). native: V2 steps the grid,
+// so its cargo stays exact and only whole cells of a carry left from V1 come out.
+export function legacyCargo(load, { native = false } = {}) {
+  const carry = load.legacyCarry;
+  if ((native || !load.cells.some(c => c.length > 4)) && !carry?.size) return;
+  const keep = [], liquids = new Map(carry ?? []);
+  for (const c of load.cells) {
+    if (c.length <= 4 || native) { keep.push(c); continue; }
+    if (ELEMENTS[c[0]]?.kind !== K.LIQUID) { keep.push(c.slice(0, 4)); continue; }
+    const fill = c[5] & 0xffffff, l = liquids.get(c[0]) ?? { fill: 0, heat: 0, life: c[2], ctype: c[3] };
+    liquids.set(c[0], { ...l, fill: l.fill + fill, heat: l.heat + fill * c[1] });
+  }
+  let room = Math.max(0, load.capacity - keep.length - load.out - load.reserved);
+  const rest = new Map();
+  for (const [id, l] of liquids) {
+    const T = l.fill > 0 ? l.heat / l.fill : 0, whole = Math.min(Math.floor(l.fill / FULL), room);
+    for (let i = 0; i < whole; i++) keep.push([id, T, l.life, l.ctype]);
+    room -= whole;
+    const left = l.fill - whole * FULL;
+    if (left > 0) rest.set(id, { ...l, fill: left, heat: T * left });
+  }
+  load.cells = keep;
+  load.legacyCarry = rest;
+  load.version++;
 }
 
 // ---------------------------------------------------------------- the transfer engine
@@ -247,6 +283,7 @@ export function createTransfer({ getSim }) {
     // moving at `vel` cells/step. Returns a promise of how many landed; the rest
     // go back into the load.
     put(load, { cells, max = Infinity, vel, id = ANY_ID, guard = null }) {
+      legacyCargo(load, { native: !!getSim()?.compact });   // (V1's cells: V2 cargo as V2's export gives it)
       const picked = [];   // indices into load.cells, newest first
       const want = Math.min(max, TRANSFER_SLOTS);
       for (let i = load.cells.length - 1; i >= 0 && picked.length < want; i--) {
