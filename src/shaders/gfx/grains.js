@@ -138,12 +138,12 @@ const CLOD_HIT_PX: f32 = 0.5;
 const CLOD_NOISE_LIP: f32 = 1.2;
 // Bounding balls (Hart 1996, bounding volumes): the clod lies where some lobe's
 // sdEll is within CLOD_MARGIN (plus the hit tolerance), and sdEll <= δ reaches
-// at most CLOD_BALL_SLACK · δ past the lobe's longest semi-axis (1.131 found
-// by sampling flattenings 0.4–1 and δ up to 0.1 cells: a flat ellipsoid's
-// bound grows slower off its broad faces). A ray that misses every lobe's
-// ball misses the clod; one that doesn't is traced only from the first entry
-// to the last exit.
-const CLOD_BALL_SLACK: f32 = 1.15;
+// at most CLOD_BALL_SLACK · δ past the lobe's longest semi-axis (1.163 at
+// worst over the lobes' flattenings and δ up to 0.1 cells, swept by
+// tools/check-clod-budget.mjs: a flat ellipsoid's bound grows slower off its
+// broad faces). A ray that misses every lobe's ball misses the clod; one that
+// doesn't is traced only from the first entry to the last exit.
+const CLOD_BALL_SLACK: f32 = 1.2;
 
 // ---- hand-off by footprint ----
 // Pebbles start where a pebble is PEB_PX_NONE pixels across and have taken
