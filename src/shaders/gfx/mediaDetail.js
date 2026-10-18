@@ -16,9 +16,15 @@
 // wrinkles of their luminous edge.
 //
 // DETAIL_MEDIA_STEP: a finer march near the camera. The media lattice step
-// grows with distance (geometric marching: a constant number of samples per
-// doubling of distance), between MEDIA_STEP_MIN and MEDIA_STEP, so gas right
-// in front of the eye is sampled finely enough to show the filaments.
+// is a fixed number of pixel footprints (cone marching: the step grows with
+// distance, as Frostbite's and Unreal's froxel slices do), between
+// MEDIA_STEP_MIN and MEDIA_STEP, so gas in front of the eye is sampled finely
+// enough to show its wisps and filaments; it widens back to MEDIA_STEP as the
+// ray's transmittance drops (detailVis), where detail no longer shows. Those
+// fine samples refine the density only: light is evaluated at the base
+// march's rate (once per MEDIA_STEP) and reused in between (media.js
+// mediaSegment), as froxel fog lights a coarse grid and integrates through it.
+// The rule (step in footprints) and its constants are derived below.
 //
 // DETAIL_MEDIA_FLOW: the detail rides the simulation's velocity field (tB,
 // cells/step, trilinearly read) instead of a fixed rise: wisps follow the
@@ -33,13 +39,14 @@
 //
 // WGSL (the names are the GLSL version's, docs/webgpu.md W2). Each switch is
 // a JS template switch (F2): detail is the defines object of gfx/detail.js.
-// The GLSL's MEDIA_STEP_AT(t) macro is the function mediaStepAt(t) either
-// way, and its FLOW_PERIOD here is MEDIA_FLOW_PERIOD: WGSL has one scope for
+// The GLSL's MEDIA_STEP_AT(t) macro is the function mediaStepAt(p) either
+// way (now of the sample's point: its step follows its pixel footprint), and its FLOW_PERIOD here is MEDIA_FLOW_PERIOD: WGSL has one scope for
 // both, and surface.js's flowing grains have their own FLOW_PERIOD (32).
 import { MEDIA_NOISE_CELLS } from '../../gfx/materials.js';
 import { NOISE_FINEST_PERIOD } from '../../gfx/mediaNoise.js';
 import { CELL_M } from '../../scale.js';
 import { glf as f } from '../../glsl.js';
+import { DETAIL_FADE_LO } from '../../gfx/detail.js';
 
 // Fine filament sizes (m): what resolves when the eye is inside a plume 1-3 m
 // across. Turned into whole-number scales of the noise tile.
@@ -47,9 +54,36 @@ const FILAMENT_1_M = 0.2, FILAMENT_2_M = 0.05;
 const NOISE_FINEST_M = (MEDIA_NOISE_CELLS / NOISE_FINEST_PERIOD) * CELL_M;   // m, the base noise's finest structure
 const FINE_SCALE_1 = Math.max(1, Math.round(NOISE_FINEST_M / FILAMENT_1_M));
 const FINE_SCALE_2 = Math.max(1, Math.round(NOISE_FINEST_M / FILAMENT_2_M));
-// Finest march step (m): finer than the octave-2 filaments.
-const MEDIA_STEP_MIN_M = 0.04;
+// ---- the fine march's step rule (DETAIL_MEDIA_STEP) ----
+// What the image needs from depth samples. A pixel shows the integral of the
+// gas along its ray, so by the projection-slice theorem only the density's
+// variation across the ray reaches the image; detail along the ray matters
+// only through what the samples alias onto it, which the per-pixel jitter
+// (IGN in space, R1 over frames: shaders/gfx/noise.js) turns into noise that
+// TAA averages. TAA keeps 1 / currentFrameWeight frames of history (three's
+// TAAUNode: 0.025), and R1-stratified jitter over N frames fills the gaps of
+// an N-times finer lattice. Detail across the ray is drawn fully up to
+// DETAIL_FADE_LO cycles per pixel (the material LOD: lodFade, gfx/detail.js),
+// whose Nyquist spacing is 1 / (2 DETAIL_FADE_LO) pixel footprints. A
+// per-frame step of N times that therefore resolves, once the history has
+// settled, every depth structure as finely as the pixel grid resolves it
+// across the ray: MEDIA_STEP_PX footprints.
+const TAA_HISTORY_FRAMES = 1 / 0.025;   // three's TAAUNode.currentFrameWeight (src/gpu/three.js keeps the default)
+export const MEDIA_STEP_PX = TAA_HISTORY_FRAMES / (2 * DETAIL_FADE_LO);   // pixel footprints per step: 40
+// Finest step (m): Nyquist on the finest structure any switch draws, the
+// octave-2 filaments (FILAMENT_2_M); closer than where the cone rule reaches
+// it, the step stays here. (A geometric march spends the same number of
+// samples, 1 / (MEDIA_STEP_PX * pixel angle), in this near bubble whatever its
+// size, so a finer floor costs only its log: ln(MEDIA_STEP / floor) more
+// footprint-scaled samples.)
+const MEDIA_STEP_MIN_M = FILAMENT_2_M / 2;
 const STEP_MIN_CELLS = MEDIA_STEP_MIN_M / CELL_M;
+// The rule in m per pixel (the units of gfx/detail.js fadeM): at the finest
+// step below MEDIA_STEP_FINE_M, at the base step (1 cell) from
+// MEDIA_STEP_BASE_M on. At 1080p and a 75° vertical field of view (1.42 mrad
+// per pixel) those footprints are 0.44 m and 5.3 m away.
+export const MEDIA_STEP_FINE_M = MEDIA_STEP_MIN_M / MEDIA_STEP_PX;   // 0.6 mm per pixel
+export const MEDIA_STEP_BASE_M = CELL_M / MEDIA_STEP_PX;             // 7.5 mm per pixel
 
 /** Whether any media detail switch is on (the GLSL's MEDIA_DETAIL_ON). */
 export const MEDIA_DETAIL_ON = (detail = {}) => !!(detail.DETAIL_MEDIA_FINE || detail.DETAIL_MEDIA_STEP || detail.DETAIL_MEDIA_FLOW);
@@ -73,15 +107,20 @@ var<private> gMediaVis: f32 = 1.0;    // the ray's transmittance at the current 
 fn detailVis() -> f32 { return smoothstep(DETAIL_VIS_LO, DETAIL_VIS_HI, gMediaVis); }` : ''}
 
 // ---- march step ----${stepOn ? `
-const MEDIA_STEP_PER_DIST: f32 = 0.125;   // step (cells) per cell of distance from the eye: 8 samples per e-fold of distance
-const MEDIA_STEP_MIN: f32 = ${f(STEP_MIN_CELLS)};   // finest step (cells), right at the eye: MEDIA_STEP_MIN_M
+const MEDIA_STEP_PX: f32 = ${f(MEDIA_STEP_PX)};   // step in pixel footprints (TAA history / the LOD's Nyquist: mediaDetail.js)
+const MEDIA_STEP_MIN: f32 = ${f(STEP_MIN_CELLS)};   // finest step (cells): Nyquist on the 5 cm filaments
 // lattice samples in one cell segment: sqrt(3) / MEDIA_STEP_MIN rounded up
+// (a bound the compiler can't unroll: the loop stays one copy of the sample)
 const MEDIA_SEG_SAMPLES: i32 = ${Math.ceil(Math.sqrt(3) / STEP_MIN_CELLS)};
-fn mediaStepAt(t: f32) -> f32 {
-  return mix(MEDIA_STEP, clamp(t * MEDIA_STEP_PER_DIST, MEDIA_STEP_MIN, MEDIA_STEP), detailVis());
+// the step at p: MEDIA_STEP_PX footprints (cone marching, footprint() is
+// distance from the eye times the pixel's angle, so refraction and the
+// rolling log's chords don't restart it), back to MEDIA_STEP behind gas that
+// already hides what is further on
+fn mediaStepAt(p: vec3f) -> f32 {
+  return mix(MEDIA_STEP, clamp(MEDIA_STEP_PX * footprint(p), MEDIA_STEP_MIN, MEDIA_STEP), detailVis());
 }` : `
 const MEDIA_SEG_SAMPLES: i32 = MEDIA_MAX_PER_SEG;
-fn mediaStepAt(t: f32) -> f32 { return MEDIA_STEP; }`}
+fn mediaStepAt(p: vec3f) -> f32 { return MEDIA_STEP; }`}
 ${flow ? `
 // ---- advection by the flow ----
 const MEDIA_FLOW_PERIOD: f32 = 16.0;   // sim steps each noise copy rides the flow before restarting (divides the clock wrap);
