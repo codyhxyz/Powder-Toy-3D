@@ -574,7 +574,7 @@ var<workgroup> wgCharges: u32;
       } else if (k==2u || k==3u) {
         var exposed = false; for (var a=0u;a<3u;a++) { exposed = exposed || dOpen(p+dAxis(a)) || dOpen(p-dAxis(a)); }
         // Column-run water has no radial columns (columns.js): there a liquid cell over open space
-        // drips the same way, so liquids fall toward the centre; what lands spreads by columns.js RADIAL.
+        // drips the same way, so liquids fall toward the centre instead of freezing (no spreading yet).
         let radialDrip = k==3u && P.gravMode==2u && P.gravity>0.0 && dUnsupported(p);
         if ((k==2u && (P.gravMode==2u || P.edge!=0u) && ((P.gravity>0.0 && P.gravMode!=1u && dUnsupported(p)) || fallVelocity(m.core)>0.0)) || radialDrip) {
           // Real SI flight replaces disabled radial/open/loop column falls.
