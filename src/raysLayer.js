@@ -76,7 +76,7 @@ export class Rays {
   // Records a dispatch into the frame's compute pass and tells the profiler.
   _dispatch(kernel, params) {
     const sim = this.sim;
-    kernel.dispatch(this.gpu.frame, raysDispatch(), { bind: [sim.tables, sim.bindRO, this.group], header: sim.header(), params });
+    kernel.dispatch(this.gpu.frame, raysDispatch(), { bind: [sim.tables, sim.bindRO, this.group], header: sim.readHeader(), params });
     sim.onPass?.(kernel.name, { kind: 'compute', gpuMs: null });
   }
 

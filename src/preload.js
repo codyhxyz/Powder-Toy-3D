@@ -230,7 +230,7 @@ async function startWarmer() {
         }
       }
       // the view's module (realistic: the detail gate's base variant, its near one last), the shadow kernel if it reads it, pick
-      const volume = render.warmChecks(view, settings, { fallback, curved });
+      const volume = render.warmChecks(view, settings, { fallback, curved, fixedReadFormat: 0 });
       const own = (e) => (e.name === 'shadow' ? { ...e, code: (gg) => render.shadowFrag(gg, world ? { world } : {}) } : e);
       // Match createVolume's specialization so menu warm-up is reused, not
       // a second, expensive variable-division version of the same shader.

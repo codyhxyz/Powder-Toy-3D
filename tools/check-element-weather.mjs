@@ -33,6 +33,7 @@ const makeSim = () => ({
   gpu, g: gridLayout(128, 128, 128), frame: 0, origin: { x: 160, y: 0, z: 256 },
   L: { TABLES: LAYOUT.TABLES, STATE_RO: LAYOUT.STATE_RO, STATE_RW: LAYOUT.STATE_RW },
   tables: {}, bindRO: {}, debug: false,
+  readHeader() { return this.header(); },
   header() { return { origin: [this.origin.x, this.origin.y, this.origin.z], src: 1, dst: 1 }; },
   editKernel: Simulation.prototype.editKernel,
   edit(kernel, box, values, opts) { calls.push({ op: 'edit', kernel, box, values, opts }); },
@@ -158,6 +159,11 @@ sim.frame = 0;
 assert.equal(sources.step(storm, context), true, 'rewound clock rebases');
 world.epoch++;
 assert.equal(sources.step(storm, context), true, 'world reload rebases');
+world.epoch++; sim.frame = 0;
+const nativeContext = { ...context, stepHz: 60 };
+const nativePulses = sources.pulses;
+for (let i = 0; i < 60; i++) { sim.frame = i; sources.step(storm, nativeContext); }
+assert.equal(sources.pulses - nativePulses, 4, 'native weather retains four material pulses per second');
 const writes = calls.length;
 sources.reset();
 assert.equal(calls.length, writes);

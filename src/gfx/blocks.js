@@ -106,7 +106,7 @@ export function createBlocks(gpu, sim, { world = false } = {}) {
       lastKey = key;
       sunDrawn = false;
       const f = gpu.frame;
-      const bind = [sim.tables, sim.bindRO, meshGroup], header = sim.header();
+      const bind = [sim.tables, sim.bindRO, meshGroup], header = sim.readHeader();
       const params = { capO: cap.o, capT: cap.t, edge: world ? 1 : 0, slot: 0 };
       mesh.dispatch(f, fold(g.nbricks), { bind, header, params });
       const slot = ring.next();

@@ -1,3 +1,4 @@
+import { nativeCargo } from '../v2/transfer.js';
 import { E, K, ELEMENTS } from '../elements.js';
 import { INDUSTRY_LIMIT, DEVICE_TYPES, FILTER_IDS, CASTING_TEMPERATURE, baseMaterial, deviceCell, deviceDirection } from './catalog.js';
 import { INDUSTRY_EDIT, INDUSTRY_KIND } from '../shaders/industry.js';
@@ -71,7 +72,7 @@ export function validateIndustryPhysics(data, devices, bounds = SAVE_BOUNDS) {
     if (!Array.isArray(entry.cells) || !entry.cells.length || entry.cells.length > 16) throw new Error('Invalid industry cargo capacity');
     const cells = [];
     for (const cell of entry.cells) {
-      if (!Array.isArray(cell) || cell.length !== 4 || !Number.isInteger(cell[0])
+      if (!Array.isArray(cell) || (cell.length !== 4 && !nativeCargo(cell)) || !Number.isInteger(cell[0])
           || ELEMENTS[cell[0]]?.kind !== K.LIQUID
           || ![cell[1], cell[2], cell[3]].every(n => Number.isFinite(n) && Number.isFinite(Math.fround(n)))) {
         throw new Error('Invalid industry liquid cargo');

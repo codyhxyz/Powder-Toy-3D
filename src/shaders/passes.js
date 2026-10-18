@@ -83,7 +83,17 @@ export const MIX_BITS = 3;
 // No cell is lost or copied (tools/brush-tools-check.mjs runs a twin of it).
 // A cell reads its partner, so Mix is a two-phase edit (sim.js paint: every
 // read sees the state before the stroke, docs/webgpu.md D6).
+// Shared by native external sources: exactly the brush's swept/grown metric.
+export const strokeDistanceWGSL = `
+fn strokeDistance(position: vec3f, center: vec3f, end: vec3f, grow: vec3f, shape: u32) -> f32 {
+  var d=position-center;let segment=end-center;
+  d-=segment*clamp(dot(d,segment)/max(dot(segment,segment),1e-6),0.0,1.0);
+  d=max(abs(d)-grow,vec3f(0));
+  if(shape==0u) { return length(d); }return max(d.x,max(d.y,d.z));
+}
+`;
 const brushToolsWGSL = /* wgsl */ `
+${strokeDistanceWGSL}
 const MIX_BITS: u32 = ${MIX_BITS}u;
 const MIX_MASK: u32 = ${(1 << MIX_BITS) - 1}u;
 // Is the fill's mask off at cell p (its byte below half of MASK_ON)?
@@ -99,12 +109,7 @@ fn strokeDist(p: vec3i) -> f32 {
     if (maskOff(p)) { return P.radius + 1.0; }
     return 0.0;
   }
-  var d = vec3f(p) + 0.5 - P.center;
-  let s = P.end - P.center;
-  d -= s * clamp(dot(d, s) / max(dot(s, s), SEGMENT_EPS), 0.0, 1.0);   // from the line's nearest point
-  d = max(abs(d) - P.grow, vec3f(0.0));                                  // from the box's core
-  if (P.shape == 0u) { return length(d); }
-  return max(d.x, max(d.y, d.z));
+  return strokeDistance(vec3f(p)+0.5,P.center,P.end,P.grow,P.shape);
 }
 fn inBrush(p: vec3i) -> bool { return strokeDist(p) <= P.radius; }
 // a push dv given to the air, as the cell (id at T) takes it, capped at V_MAX
@@ -144,6 +149,7 @@ fn mixCell(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<funct
   if (!isLooseOrGas(id) || KIND(eid(qa)) != KIND(id)) { return; }
   var ps = seedWorld(base + select(lq, l, mixIndex(l) < mixIndex(lq)), P.frame, SALT_MIX_PAIR);
   if (rnd(&ps) >= TOOL_MIX_SWAP) { return; }
+  ownLegacy(slotOf(p)); // a successful Mix swap replaces the selected cell
   *oA = qa;
   *oB = vec4f(fetchB(q).xyz, b.w);   // the cell moves with its velocity; the air's pressure stays
 }
@@ -171,15 +177,20 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let propErases = tool == T_PROP && P.prop == PROP_TYPE && P.propValue == f32(E_EMPTY);   // TPT: type NONE kills the particle
 
   if (tool >= 0 && P.del == 0u) {
-    if (id == tool) { return; }
+    if (id == tool) {
+      if (P.replace != 0u) { ownLegacy(slotOf(p)); }
+      return;
+    }
     if (id != E_EMPTY && P.replace == 0u) { return; }
     if (rnd(&rs) > SPAWNDENS(tool) * P.rate) { return; }
+    ownLegacy(slotOf(p));
     let T = SPAWNT(tool);
     let ctype = select(0.0, f32(E_STONE), tool == E_LAVA);
     *oA = vec4f(f32(tool), T, SPAWNLIFE(tool), ctype + rnd(&rs) * SEED_MAX);
     let vy = select(0.0, SPAWN_DROP_V, isLoose(tool));
     *oB = vec4f(0.0, vy, 0.0, b.w);
   } else if (tool == T_ERASE || tool >= 0 || propErases) {   // (tool >= 0 here: specific delete)
+    ownLegacy(slotOf(p));
     *oA = vec4f(f32(E_EMPTY), airT(), 0.0, rnd(&rs) * SEED_MAX);
     *oB = vec4f(0.0, 0.0, 0.0, b.w);
   } else if (tool == T_HEAT) {
@@ -206,6 +217,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
     let v = P.propValue;
     if (P.prop == PROP_PRESSURE) { (*oB).w = v; }
     else if (P.prop == PROP_TYPE) {
+      ownLegacy(slotOf(p));
       if (i32(v + 0.5) != id) { (*oA).w = physicalCtype(id, a.w) + fract(a.w); }
       (*oA).x = v;
     }
@@ -250,7 +262,7 @@ export const CONVERT_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: 
 // Cell p's texel in the atlas (sim.js cellTexel): supertile i's square at
 // (i % STW, i / STW), its brick k's tile at (k.x, k.z + SUPER.z·k.y), the cell
 // at (x + BRICK·(y & 1), z + BRICK·(y >> 1)) in the tile.
-const atlasIndexWGSL = (g) => {
+export const atlasIndexWGSL = (g) => {
   const at = atlasDims(g);
   return /* wgsl */ `
 const STW: i32 = ${at.stw};   // supertiles per atlas row (shaders/common.js atlasDims)
@@ -814,7 +826,7 @@ fn openFaces(c: vec3i) -> f32 {
 
 var<workgroup> wgEm: array<vec4f, 64>;    // emission (rgb), summed
 var<workgroup> wgMax: array<vec4f, 64>;   // surface field, opaque, thin mask, media field
-var<workgroup> wgAir: array<vec4f, 64>;   // |pressure|, speed² (the core's cells)
+var<workgroup> wgAir: array<vec4f, 64>;   // |pressure|, speed² (core cells), liquid-interior violation (all cells)
 var<workgroup> wgOcc: atomic<u32>;        // a cell holds matter
 var<workgroup> wgGas: atomic<u32>;        // steam and smoke cells
 var<workgroup> wgFlags: atomic<u32>;      // air flags
@@ -867,6 +879,10 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     let bv = fetchBs(s);
     air = vec4f(abs(bv.w), dot(bv.xyz, bv.xyz), 0.0, 0.0);
   }
+  // Reuse the existing max reduction and texel load: no new resource/pass.
+  // A safety margin from the isovalue covers filtering roundoff. This is a
+  // certificate, not a surface approximation: uncertified bricks march normally.
+  air.z = max(1.0 - sf.x, max(sf.y, max(sf.z, sf.w)));
   wgAir[li] = air;
   workgroupBarrier();
   for (var w = 32u; w > 0u; w >>= 1u) {
@@ -888,7 +904,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     let hi = atomicLoad(&wgLiqHi);
     let mixed = hi != 0u && hi - 1u != u32(NE) - atomicLoad(&wgLiqLo);
     let bits = select(0u, BRICK_MEDIA, hasMedia) | select(0u, BRICK_SURF, hasSurf) | select(0u, BRICK_OPAQUE, hasOpaque)
-             | select(0u, BRICK_THIN, mx.z > 0.0) | select(0u, BRICK_MIXED, mixed);
+             | select(0u, BRICK_THIN, mx.z > 0.0) | select(0u, BRICK_MIXED, mixed)
+             | select(0u, BRICK_LIQUID_INTERIOR, wgAir[0].z < 0.499);
     var info = brickInfoWord(0u, flags, 0u, false);
     if (atomicLoad(&wgOcc) != 0u || hasSurf || hasMedia) { info = brickInfoWord(bits, flags, atomicLoad(&wgGas), true); }
     let rec = BrickInfo(wgEm[0].xyz / f32(BS * BS * BS), info);

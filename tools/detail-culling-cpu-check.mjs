@@ -31,8 +31,8 @@ const entries = new Map([
 const color = [], depth = [];
 let ended = 0, passes = 0;
 const detail = Object.assign(Object.create(WorldDetail.prototype), {
-  entries, visible: true, sim: { cur: 0 }, _m: { frustum: new Frustum(), box: new Box3() },
-  pipe: { state: 'ready', draw: (_, o) => color.push(o.vertexBuffers[0]) },
+  entries, visible: true, sim: { cur: 0, readHeader: () => ({ src: 0, dst: 0, format: 2 }) }, _m: { frustum: new Frustum(), box: new Box3() },
+  pipe: { state: 'ready', draw: (_, o) => { assert.equal(o.header.format,2); color.push(o.vertexBuffers[0]); } },
   depthPipe: { state: 'ready', draw: (_, o) => depth.push(o.vertexBuffers[0]) },
   depthTex: { width: 64, height: 64 }, depthView: {},
   depthZ: { createView: () => ({}) },

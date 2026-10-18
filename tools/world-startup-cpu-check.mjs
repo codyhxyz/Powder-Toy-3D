@@ -58,7 +58,7 @@ test('actual core startup retains physics/picks but never warms a BOX view for W
     const vol={ready:pick,noiseReady:Promise.resolve(),viewReady(){calls.push('view');return Promise.resolve();}};
     const env={s:{ready:physical},derived:{ready:Promise.resolve()},vol,post:{ready:Promise.resolve()},
       overlays:{ready:Promise.resolve()},brush:{ready:Promise.resolve()},hybridWait:Promise.resolve(),worldMode,blocks:null,
-      viewKeyOf:()=> 'realistic',settings:{view},baseDetail:()=>({}),warpNow:()=>null};
+      viewKeyOf:()=> 'realistic',settings:{view},baseDetail:()=>({}),warpNow:()=>null,nativeOwner:null};
     const waits=expression(code,env);
     assert(waits.includes(physical));assert(waits.includes(pick));assert(waits.includes(vol.noiseReady));
     assert.deepEqual(calls,worldMode?[]:['view']);
@@ -100,7 +100,9 @@ test('actual WORLD readiness waits core/queue without unrelated local view, GI o
     const calls=[],sim={},vol={viewReady(){calls.push('view');return Promise.resolve();},shadowReady(){calls.push('shadow');return Promise.resolve();}};
     await appFunction('allReady',{win,sim,vol,coreWait:Promise.resolve(),coreReady:true,graphicsFailure:null,hybridLoad:null,hybrid:null,hybridWait:Promise.resolve(),
       gpu:{async settled(){calls.push('queue');}},viewKeyOf:()=> 'realistic',settings:{view},blocksOn:false,blocks:null,
-      warpNow:()=>null,viewShadows:()=>true,baseDetail:()=>({}),giWait:Promise.resolve(),physicsV2:null})();
+      warpNow:()=>null,viewShadows:()=>true,baseDetail:()=>({}),giWait:Promise.resolve(),physicsV2:null,
+      // the BOX checkpoint's footprint (syncRenderResolution, updateFrameDetail): not under test here
+      applyOutputRatio(){},syncRenderResolution(){},updateFrameDetail(){},autoRes:{scale:1},detailGate:{level:0},gateVariants,isMaterialView,detailKey:d=>JSON.stringify(d)})();
     assert.deepEqual(calls,win?['queue']:['view','shadow','queue']);
   }
 });
@@ -113,7 +115,8 @@ test('WORLD Test fallback never allocates unused local hybrid pipelines',()=>{
 });
 
 test('WORLD frame detail uses all selected defines, never camera distance from physics',()=>{
-  const code=source.match(/frameDetail = win \? .*;/)[0];
+  // updateFrameDetail (app.js) returns it for the frame and the parked checkpoints alike.
+  const code=`frameDetail = ${source.match(/function updateFrameDetail\(\) \{[\s\S]*?return (win \? .*);\n\}/)[1]};`;
   const settings=Object.fromEntries(DETAIL.map(f=>[settingKey(f),true])),all=gateVariants(settings).near;
   assert(Object.keys(all).length>0);
   const detailGate={update(){throw Error('WORLD must not query the local detail gate');}};

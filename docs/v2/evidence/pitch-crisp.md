@@ -8,6 +8,8 @@ and from doing it only when something visibly changed.
 
 Inputs: the four audits (`v2/audit-{render,liquids,physics,perf}.md`), `docs/webgpu.md` A–F and the Sync log, the
 subsystem maps, and the code at `claude/webgpu-port` 42f4039. Evidence I produced is in `v2/crisp/` (section 11).
+(Repository note, 2026-10-16: the scripts later lived in `tools/v2/crisp/` and were removed after `a700d765`;
+read them with `git show a700d765:tools/v2/crisp/<file>`. The shots are in `docs/v2/evidence/`.)
 
 **See it first:** `v2/crisp/shots/side-by-side-64.png` puts today's realistic view next to a CPU mock of this
 pitch's shading model, with the same presets, the same grid (64³) and the same cameras. `v2/crisp/shots/mock-128-montage.png`

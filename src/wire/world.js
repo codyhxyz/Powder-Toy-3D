@@ -55,6 +55,14 @@ const world = {
     if (!app.worldMode) return;
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene: app.sceneByKey(app.settings.scene) });
     sim.origin.fromArray(world.worldStart(app));
+    sim.onWorldHistoryRestore = (dx, dz) => {
+      if (app.sim !== sim || app.win !== win) return;
+      app.placeVolume(); app.pov?.windowShifted(dx, dz);
+      app.hover.cell.x -= dx; app.hover.cell.z -= dz;
+      if (app.hover.valid && !app.inWindow(app.hover.cell)) app.hover.valid = false;
+      app.pacer?.wake();
+    };
+    sim.resetNativeDynamics(); // initial native air coordinates match the world before any tick
     // Preserve the original cumulus deck and its optical shadows without
     // constructing the retired Far textures, kernels or detail queue.
     gfxUniforms.uClouds.value=true;
@@ -66,6 +74,7 @@ const world = {
     far.buildView().then(() => app.pacer?.wake(), () => {});
   },
   detach(app) {
+    app.sim.onWorldHistoryRestore = null;
     releaseGenerator(app.sim);   // the Island scene's, made for this grid
     const win=app.win;
     app.win = null;
@@ -272,20 +281,25 @@ const world = {
     else { fx = controls.target.x / scale + anchor.x; fz = controls.target.z / scale + anchor.y; }
     const move = win.update(fx, fz);
     if (!move) return;
-    const [dx, dz] = move;
-    app.placeVolume();
-    pov?.windowShifted(dx, dz);
-    if(hover.globalCell){
-      // Streaming the physical window does not invalidate a displayed global
-      // hit. Physical tools check their own current-window bounds.
-      hover.cell.copy(hover.globalCell).sub(sim.origin);
-      if(hover.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity)hover.valid=false;
-    }else{
-      hover.cell.x -= dx; // Legacy local picks retain their original behavior.
-      hover.cell.z -= dz;
-      if(hover.valid&&!app.inWindow(hover.cell))hover.valid=false;
-    }
-    return move;
+    const committed = ([dx, dz]) => {
+      if (app.sim !== sim || app.win !== win) return;
+      app.placeVolume();
+      pov?.windowShifted(dx, dz);
+      if(hover.globalCell){
+        // Streaming the physical window does not invalidate a displayed global
+        // hit. Physical tools check their own current-window bounds.
+        hover.cell.copy(hover.globalCell).sub(sim.origin);
+        if(hover.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity)hover.valid=false;
+      }else{
+        hover.cell.x -= dx; // Legacy local picks retain their original behavior.
+        hover.cell.z -= dz;
+        if(hover.valid&&!app.inWindow(hover.cell))hover.valid=false;
+      }
+      app.pacer?.wake();
+      return [dx, dz];
+    };
+    if (move.then) { move.then(committed, error => app.hud?.toast?.(error.message, { kind: 'error' })); return null; }
+    return committed(move);
   },
 };
 

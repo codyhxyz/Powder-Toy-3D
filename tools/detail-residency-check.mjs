@@ -24,6 +24,7 @@ function fixture(nx = 16, nz = 16) {
     origin: new Vector3(64, 0, 64), g: { nx: 64, ny: 64, nz: 64 }, version: 1,
     _retire: (b) => retired.push(b),
     header: () => ({}),
+    readHeader: () => ({ format: 0 }),
     shift(dx, dz) { this.origin.x += dx; this.origin.z += dz; this.version++; },
   };
   const d = Object.assign(Object.create(WorldDetail.prototype), {
@@ -65,6 +66,16 @@ function fixture(nx = 16, nz = 16) {
     indices: new Uint16Array(empty ? 0 : [0, 1, 2]), liquid: false,
   });
   return { d, win, sim, retired, writes, camera, view, candidate, token, result };
+}
+
+for (const format of [0, 2, 3]) {
+  const { d, sim } = fixture(), header = { format };
+  sim.readHeader = () => header;
+  sim.header = () => { throw new Error('far summaries must use the current read ABI'); };
+  let calls = 0;
+  d.far.region = (_kernel, _groups, _at, _size, params) => { calls++; assert.equal(params.header, header); };
+  d.far.summarize([0, 0, 0], [1, 1, 1]);
+  assert.equal(calls, 1);
 }
 
 {

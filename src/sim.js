@@ -1,3 +1,8 @@
+import { routeNativePaint } from './v2/interactions.js';
+import { captureNativeSnapshot, restoreNativeSnapshot, validateNativeSnapshot, resetNativeDynamics } from './v2/dynamicState.js';
+import { nativeHostTick } from './v2/host.js';
+import { emitNativeRay, nativeRayKind, nativeImpulse, legacyVelocityToMS } from './v2/tools.js';
+import { NativeIntegration, nativeCapabilities } from './v2/integration.js';
 import {
   BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, LAYOUT, STATE_OPTS, gridDims, atlasDims, sleepUnitOf,
   marksLayout, actLayout, ACT_COUNTS, ACT_MAP, tablesBuffer, tablesAirTOffset, cellSlot, slotCell, brickIdOf, brickCoordOf,
@@ -61,6 +66,14 @@ const TOUCH_MARGIN = 1;
 
 // Undo snapshots kept, at most (each is the current A and B: ~67 MB at 128³).
 const UNDO_LIMIT = 3;
+
+// The legacy state's copies (docs/webgpu.md C1; Simulation.pingPong): V1's step
+// ping-pongs between two (the move in place, the react into the other); a box
+// the native engine owns (src/v2/physics.js) keeps only the current one, the
+// cache its edits and readbacks go through. Bytes a slot in each copy: A and B
+// a vec4f each, F a u32 (a copy is 36 B a slot: 75.5 MB at 128³).
+const PING_PONG = 2, ONE_COPY = 1;
+const STATE_BYTES = { A: 16, B: 16, F: 4 };
 
 // Bind groups an edit kernel keeps for its group 2, at most. Bindings are
 // meant to be long-lived (B6: a pooled upload buffer and its sub-ranges); a
@@ -221,14 +234,16 @@ export class Simulation {
    * @param {number} nx
    * @param {number} ny
    * @param {number} nz
-   * @param {{ windowed?: boolean, world?: number[], sleepUnit?: {x: number, y: number, z: number}, debug?: boolean, form?: string }} [opts]
+   * @param {{ windowed?: boolean, world?: number[], sleepUnit?: {x: number, y: number, z: number}, debug?: boolean, form?: string, nativeStartup?: boolean }} [opts]
    *   windowed: the grid is a window of a larger world (docs/scaling.md D11);
    *   world: that world's size (the GI's far layout, src/derived.js);
    *   sleepUnit: the sleeping unit in bricks (shaders/common.js SLEEP_UNIT; SUPER for an A/B);
    *   debug: every state access tests its cell and counts misses (readDebug; I2.8);
    *   form: the move's code form (shaders/move.js MOVE_FORMS; tools compare them, D2)
+   *   nativeStartup: defer legacy stepping kernels until prepareLegacy(); edits/imports still build now.
+   *     A box keeps one state copy until something ping-pongs (pingPong)
    */
-  constructor(gpu, nx, ny, nz, { windowed = false, world = null, sleepUnit = null, debug = gpu.debug, form = MOVE_FORM } = {}) {
+  constructor(gpu, nx, ny, nz, { windowed = false, world = null, sleepUnit = null, debug = gpu.debug, form = MOVE_FORM, nativeStartup = false } = {}) {
     this.gpu = gpu;
     this.id = nextSimId++;   // tells a rebuilt simulation from the old one
     this.g = gridLayout(nx, ny, nz);
@@ -288,7 +303,7 @@ export class Simulation {
     const buf = (label, size, usage = S | CS | CD) => gpu.createBuffer({ label: `sim${this.id} ${label}`, size: Math.max(16, Math.ceil(size / 16) * 16), usage });
     const slots = g.slots;
     this.cur = 0;
-    const A = buf('A', 2 * slots * 16), B = buf('B', 2 * slots * 16), F = buf('F', 2 * slots * 4);
+    const { A, B, F } = this._stateBuffers(nativeStartup && !windowed ? ONE_COPY : PING_PONG);
     this.flow = buf('flow', slots * 8);
     // moveSrc's buffer: whitewater's moveSrc plane and the decoration's (_side)
     this.moveSrc = buf('moveSrc (none)', 16);
@@ -317,27 +332,24 @@ export class Simulation {
     // ---- bind groups, made once (B6) ----
     const L = (this.L = simLayouts(gpu));
     this.tables = tablesOf(gpu).group;
-    const b = (binding, buffer) => ({ binding, resource: { buffer } });
-    this.bindRW = gpu.bindGroup(L.STATE_RW, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state rw');
-    this.bindRO = gpu.bindGroup(L.STATE_RO, [b(0, A), b(1, B)], 'state ro');
-    this.bindAct = gpu.bindGroup(L.STATE_ACT, [b(0, A), b(1, B), b(4, this.act)], 'state act');
-    this.bindBuild = gpu.bindGroup(L.STATE_BUILD, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state build');
-    this.bindFlagsRO = gpu.bindGroup(L.STATE_FLAGS_RO, [b(0, A), b(1, B), b(2, F)], 'state flags ro');
+    this._stateGroups();
     this._groups();
 
-    // ---- kernels (B5): built now, asynchronously; sim.ready resolves when they are ----
+    // ---- kernels (B5): native hosts need edits/imports now, not legacy stepping ----
     const dbg = { debug: this.debug };
     const kernel = (name, code, layouts, params, extra = {}) => gpu.kernel({ name, code, layouts: [this.L.TABLES, ...layouts], params, ...extra });
-    const build = (name, frag) => kernel(name, frag(g), [L.STATE_BUILD, L.BUILD], BuildParams);
+    const build = (name, frag, extra = {}) => kernel(name, frag(g), [L.STATE_BUILD, L.BUILD], BuildParams, extra);
+    const legacy = nativeStartup ? { build: 'manual' } : {};
+    this._legacyDeferred = nativeStartup;
     this.kernels = {
-      move: kernel('move', moveBlockFrag(g, { form, ...dbg }), [L.STATE_RW, L.MOVE], MoveParams),
-      react: kernel('react', reactFrag(g, dbg), [L.STATE_RW, L.REACT], ReactParams),
-      inertList: build('inertList', inertListFrag),
-      inert: kernel('inert', inertFrag(g, dbg), [L.STATE_BUILD], BuildParams),
-      quiet: build('quiet', quietFrag),
-      drawn: build('drawn', drawnFrag),
-      move1: build('move1', move1Frag),
-      args: build('args', argsFrag),
+      move: kernel('move', moveBlockFrag(g, { form, ...dbg }), [L.STATE_RW, L.MOVE], MoveParams, legacy),
+      react: kernel('react', reactFrag(g, dbg), [L.STATE_RW, L.REACT], ReactParams, legacy),
+      inertList: build('inertList', inertListFrag, legacy),
+      inert: kernel('inert', inertFrag(g, dbg), [L.STATE_BUILD], BuildParams, legacy),
+      quiet: build('quiet', quietFrag, legacy),
+      drawn: build('drawn', drawnFrag, legacy),
+      move1: build('move1', move1Frag, legacy),
+      args: build('args', argsFrag, legacy),
     };
     // the simulation's other passes (docs/webgpu.md D6, D7, C2): what a session
     // writes with (the brush, load, undo, the derived passes' note) built now
@@ -366,7 +378,7 @@ export class Simulation {
     if (windowed) for (const k of ['shift', 'flowShift', 'copy']) this.passOf(k);
     if (gpu.testMode) for (const k of ['toAtlas', 'copy']) this.passOf(k);
     // (the state starts blank once they are: load() needs its kernel)
-    this.ready = Promise.all([...Object.values(this.kernels), ...Object.values(this.passes)].map((k) => k.ready))
+    this.ready = Promise.all([...(nativeStartup ? [] : Object.values(this.kernels)), ...Object.values(this.passes)].map((k) => k.ready))
       .then(() => { if (!this.disposed && this.version === 0) this.clear(); return this; });
 
     // ---- activity (docs/webgpu.md D4, D5) ----
@@ -388,6 +400,55 @@ export class Simulation {
     this.giReset = true;
     this.shiftKeepsHistory = true;   // false: a shift starts the derived history over (A/B)
     this.history = [];
+  }
+
+  // The legacy state's buffers with `copies` copies (docs/webgpu.md C1).
+  _stateBuffers(copies) {
+    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
+    const buf = (k) => this.gpu.createBuffer({ label: `sim${this.id} ${k}`, size: copies * this.g.slots * STATE_BYTES[k], usage });
+    return { A: buf('A'), B: buf('B'), F: buf('F') };
+  }
+
+  // The group-1 bind groups that hold the state's buffers (made once per set of them, B6).
+  _stateGroups() {
+    const { gpu, L } = this, { A, B, F } = this.state;
+    const b = (binding, buffer) => ({ binding, resource: { buffer } });
+    this._bindRW = gpu.bindGroup(L.STATE_RW, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state rw');
+    this._bindRO = gpu.bindGroup(L.STATE_RO, [b(0, A), b(1, B)], 'state ro');
+    this._bindAct = gpu.bindGroup(L.STATE_ACT, [b(0, A), b(1, B), b(4, this.act)], 'state act');
+    this.bindBuild = gpu.bindGroup(L.STATE_BUILD, [b(0, A), b(1, B), b(2, F), b(3, this.marks), b(4, this.act)], 'state build');
+    this._bindFlagsRO = gpu.bindGroup(L.STATE_FLAGS_RO, [b(0, A), b(1, B), b(2, F)], 'state flags ro');
+  }
+
+  // The legacy state's copies held now.
+  get copies() { return this.state.A.size / (this.g.slots * STATE_BYTES.A); }
+
+  /**
+   * Holds both legacy copies (on: V1's step, a shift, the copy tools) or only
+   * the current one (off: a box the native engine owns, src/v2/physics.js). The
+   * current copy keeps its words, as copy 0. A second copy comes back zeroed, as
+   * a new grid's starts: V1 steps only after a whole write is noted (a load, or
+   * PhysicsV2.suspend's noteWrite), so its first map draws every unit and its
+   * react writes every cell of that copy before anything reads it (the
+   * copy-through, shaders/react.js), as after any load. Only a box (g.windowed
+   * false) drops one: a window's shift runs out of place. The groups holding the
+   * old buffers are made again (here and the native owner's), and the old
+   * buffers go once the queue is done with them. (Once graphics have stopped,
+   * nothing is remade: nothing records any more.)
+   * @param {boolean} on
+   */
+  pingPong(on) {
+    const n = on ? PING_PONG : ONE_COPY;
+    if (n === this.copies || (!on && this.g.windowed !== false) || this.gpu.failure) return;
+    const f = this.gpu.frame, state = this.state, next = this._stateBuffers(n), slots = this.g.slots;
+    for (const k of Object.keys(STATE_BYTES)) {
+      f.copy(state[k], this.cur * slots * STATE_BYTES[k], next[k], 0, slots * STATE_BYTES[k]);
+      this._retire(state[k]);
+      state[k] = next[k];
+    }
+    this.cur = 0;
+    this._stateGroups();
+    this.compactOwner?.bindLegacy();
   }
 
   // The group-2 bind groups that hold attachable resources (rays, aeration).
@@ -413,6 +474,14 @@ export class Simulation {
    * @param {...string} names
    */
   prepare(...names) { return Promise.all(names.map((n) => this.passOf(n).ready)); }
+
+  // Explicit engine-switch boundary. Build once, await every legacy step/activity
+  // kernel and the initial clear; a failure leaves legacy stepping disabled.
+  async prepareLegacy() {
+    await Promise.all([this.ready, ...Object.values(this.kernels).map((k) => k.build())]);
+    this._legacyDeferred = false;
+    return this;
+  }
 
   // Settings can change while asleep (including away and back during a readback).
   // gravity: cells/step², as the app's setting has it; read back, what pulls
@@ -459,10 +528,12 @@ export class Simulation {
   set airT(v) {
     if (v === this.airT) return;
     setAirT(this.gpu, v);
+    // Native settings wake activity, not the lossy legacy material cache.
+    if (this.compact) { this.compact._noteModes(); return; }
     if (this.version === 0) return;
     const fresh = this.passOf('fresh');
-    if (fresh.state === 'ready') this.freshFlags();
-    else fresh.ready.then(() => { if (!this.disposed && !this.gpu.failure) this.freshFlags(); }, () => {});
+    if (fresh.state === 'ready') this.freshFlags({ replaceState: false });
+    else fresh.ready.then(() => { if (!this.disposed && !this.gpu.failure) this.freshFlags({ replaceState: false }); }, () => {});
   }
 
   wake() {
@@ -477,7 +548,65 @@ export class Simulation {
    * default: an edit's).
    */
   header(src = this.cur, dst = src) {
-    return { origin: [this.origin.x, this.origin.y, this.origin.z], src, dst };
+    return { origin: [this.origin.x, this.origin.y, this.origin.z], src, dst, format: 0, capture: this.compactOwner?.isReady ? (this.compact === this.compactOwner ? 2 : 1) : 0 };
+  }
+
+  // Writer/readback compatibility boundaries. Internal compact kernels bind
+  // their own groups and legacy headers, so synchronization cannot recurse.
+  legacyState(native = false) { this.compact?.exportLegacy(native); }
+  get bindRW() { this.legacyState(true); return this._bindRW; }
+  get bindAct() { this.legacyState(); return this._bindAct; }
+  get bindFlagsRO() { this.legacyState(); return this._bindFlagsRO; }
+  get bindRO() {
+    const v2 = this.compact;
+    if (!v2?.isReady) return this._bindRO;
+    v2.sync();
+    if (v2.forceCompatibility && this.gpu.testMode) { v2.exportLegacy(false); return this._bindRO; }
+    return v2.groups.read;
+  }
+  // Physical readers share the compact core but read current native coarse
+  // air in B. Renderer format2 keeps its existing projection-only read group.
+  get bindPhysicalRO() {
+    const v2 = this.compact;
+    if (!v2?.isReady) return this._bindRO;
+    // forceCompatibility is renderer-only: physical probes always read the
+    // canonical core and current coarse air, never the visual projection.
+    v2.sync();
+    const d = v2.dynamics;
+    if (!d?.isReady) return null;
+    if (this._physicalOwner !== this.compact) {
+      this._physicalOwner = this.compact;
+      this._physicalGroups = d.air.map(buffer => this.gpu.bindGroup(this.L.STATE_RO, [
+        { binding: 0, resource: { buffer: this.compact.cells } }, { binding: 1, resource: { buffer } },
+      ], 'native physical readers'));
+    }
+    return this._physicalGroups[d.airIndex];
+  }
+  get nativeCapabilities() { return nativeCapabilities(this); }
+  async prepareNative(owner = this.compactOwner) {
+    await owner?.ready;
+    if (!owner?.aux) return false;
+    if (this.nativeIntegration?.owner !== owner) {
+      this.nativeIntegration?.dispose();
+      this.nativeIntegration = new NativeIntegration(this, owner);
+    }
+    await this.nativeIntegration.ready;
+    return true;
+  }
+  applyNativeTool(request) {
+    if (this.nativeTransition || this.nativeTransitionError) return false;
+    const kind = request.kind ?? 'impulse';
+    if (!this.compact || !this.nativeCapabilities[kind]) return false;
+    this.compact.sync();
+    const accepted = this.compact.dynamics.applyToolImpulse(request);
+    const ok = accepted === 'accepted' || accepted === 'queued' || accepted?.status === 'accepted' || accepted?.status === 'queued';
+    if (ok) { this.compact.wake(); this.wake(); }
+    return ok;
+  }
+  readHeader({ physical = false } = {}) {
+    this.compact?.sync();
+    const v2 = this.compact;
+    return { ...this.header(), format: v2?.isReady && (physical || !(v2.forceCompatibility && this.gpu.testMode)) ? (physical ? 3 : 2) : 0 };
   }
 
   // Records a dispatch into the frame's compute pass and tells the profiler.
@@ -572,6 +701,14 @@ export class Simulation {
   // ---- the step (docs/webgpu.md D1) ----
 
   step() {
+    // Callers outside app.js (scripts/fixtures) step the active engine too.
+    // Engine switching is explicit; a step must never silently suspend v2.
+    if (this.compact) {
+      if (this.compact.isReady) nativeHostTick(this.compact);
+      return;
+    }
+    if (this._legacyDeferred) throw new Error('Legacy physics is not prepared: await sim.prepareLegacy() before stepping');
+    this.pingPong(true);   // (a box the native engine owned holds one copy)
     const f = this.gpu.frame;   // (throws GraphicsFailure once graphics have stopped)
     this.frame++;   // simulation time and parity advance even when there is nothing to step
     // Certified idle: every unit settled in both copies, no unit AWAKE or DRAWN,
@@ -686,6 +823,7 @@ export class Simulation {
    *   content notification, never unrelated edits or callbacks.
    */
   edit(kernel, { lo, hi }, values = {}, { bind = [], scrub = false, residency = false } = {}) {
+    if ((this.nativeTransitionKind === 'shift' && !this.nativeCommitting) || this.nativeTransitionError) return false;
     const box = this._clip(lo, hi);
     if (!box) return;
     const [a, b] = box;
@@ -708,8 +846,8 @@ export class Simulation {
     deco?.beforeWrite?.(f, clipped);
     this._dispatch(kernel.main, size, { bind: groups, header, params });
     if (kernel.apply) this._dispatch(kernel.apply, size, { bind: groups, header, params });
-    deco?.scrub?.(f, clipped);
     this.version++;
+    deco?.scrub?.(f, clipped);
     if (!residency) this.worldRenderSource?.noteContentChange();
     this.wake();   // the next step rebuilds the map: the marked bricks are forced
   }
@@ -781,6 +919,25 @@ export class Simulation {
   // last paint (the Wind tool's drag). One edit (docs/webgpu.md D6): Mix, whose
   // cells read their partners, a two-phase one.
   paint({ center, radius, shape, tool, rate, replace, wind = null, end = center, grow = null, mask = null, filter = -1, erase = false, prop = null }) {
+    if (this.nativeTransition || this.nativeTransitionError) return false;
+    if (this.compact) {
+      const routed = routeNativePaint(this, { center, radius, shape, tool, rate, replace, wind, end, grow, mask, filter, erase, prop });
+      if (routed !== null) return routed;
+    }
+    if (this.compact && tool === TOOLS.find(t => t.key === 'WIND').id) {
+      if (!this.nativeCapabilities.impulse) throw new Error('Native wind impulse is unavailable');
+      if (!wind || !Math.hypot(...wind)) return;
+      // TPT's wind drag is an input displacement, not a per-frame force.
+      // Its accumulated delta-v is independent of presentation frequency.
+      if (!nativeImpulse(this, { position: center, direction: wind, radius,
+        deltaV: legacyVelocityToMS(Math.hypot(...wind) * PHYS.TOOL_WIND),
+      })) throw new Error('Native wind impulse was rejected');
+      return;
+    }
+    if (this.compact && nativeRayKind(tool)) {
+      if (!emitNativeRay(this, { center, radius, shape, tool, rate })) throw new Error('Native particle tool unavailable or rejected');
+      return;
+    }
     if (tool === PROP_TOOL && !prop) return;
     // TPT's deco tools paint the decoration layer, not the cells (src/deco.js): made on the first stroke
     if (isDecoTool(tool)) { this.ensureDeco()?.paint?.({ center, radius, shape, tool }); return; }
@@ -835,11 +992,12 @@ export class Simulation {
    * the next map rebuilds every inert bit and draws every unit, and the
    * derived passes rebuild every brick. Residency copies may opt out of the
    * semantic content notification for this write only (never across an await).
+   * A flags-only refresh (replaceState false) keeps V2's imported state current.
    */
-  noteWrite({ residency = false } = {}) {
+  noteWrite({ residency = false, replaceState = true } = {}) {
     this.version++;
     if (!residency) this.worldRenderSource?.noteContentChange();
-    this.wholeWrites++;
+    if (replaceState) this.wholeWrites++;
     this.forceAll = true;
     this.actFull = true;
     this.changedAll = true;
@@ -858,9 +1016,12 @@ export class Simulation {
     this.noteWrite(options);
   }
 
+  resetNativeDynamics() { return resetNativeDynamics(this.compactOwner); }
+
   // Upload CPU-built state (Float32Array RGBA per atlas texel: cellTexel)
   // into the current copy, with fresh flags (docs/webgpu.md C2).
   load(dataA, dataB) {
+    if (this.nativeTransitionKind === 'shift') throw new Error('Cannot load during a native world shift');
     const { width, height } = this.g, texels = width * height;
     const scratch = this._atlasScratch();
     this.gpu.write(scratch, 0, dataA.subarray(0, texels * 4));
@@ -873,6 +1034,7 @@ export class Simulation {
     this.fieldReset = true;
     this.giReset = true;
     this.stillFlow();
+    this.resetNativeDynamics();
     this.rays.reset();   // a new state: the old particles go, and it may hold plutonium
     this.deco?.reset?.();   // a new state: its decoration, if any, comes after (src/deco.js uploadDeco)
   }
@@ -907,24 +1069,55 @@ export class Simulation {
   // A, B and F keeps the sleeping invariant, so it forces nothing. (One
   // dispatch: WebGPU copies no range of a buffer into another range of it.)
   syncCopies() {
+    this.pingPong(true);
     this._dispatch(this.passOf('copy'), fold(Math.ceil(this.g.slots / 64)), {
       bind: [this.tables, this.bindRW], header: this.header(this.cur, 1 - this.cur),
     });
   }
 
   // ---- undo history: GPU copies of the state, newest last ----
-  // Each snapshot is the current A and B (~67 MB at 128³), so keep only a few.
+  // Each snapshot keeps legacy A/B (~67 MB at 128³); v2 entries additionally
+  // keep exact compact words (~34 MB). The projection is only for undo in v1.
   // Each remembers the window's origin it was taken at (t.origin): after the
   // window moves (docs/scaling.md D11) it still holds the cells where they were,
   // and what it was taken before (t.label: 'Sand', 'House'), for the undo
   // notice's "Undone Sand" (Garry's Mod's "Undone Prop").
   snapshot(label = null, limit = UNDO_LIMIT) {
+    if (this.nativeTransition || this.nativeTransitionError) throw new Error('Cannot snapshot during a native world transition');
+    this.legacyState();
     const f = this.gpu.frame, bytes = this.g.slots * 16, { A, B } = this.state;
     let t = this.history.length >= limit ? this.history.shift() : null;
     if (!t) {
       const mk = (n) => this.gpu.createBuffer({ label: `sim${this.id} undo ${n}`, size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
       t = { A: mk('A'), B: mk('B') };
       t.group = this.gpu.bindGroup(this.L.UNDO, [{ binding: 0, resource: { buffer: t.A } }, { binding: 1, resource: { buffer: t.B } }], 'undo snapshot');
+    }
+    t.nativeSnapshot = t.nativeError = t.nativePending = t.worldHistory = null;
+    const snapshotEpoch = t.snapshotEpoch = (t.snapshotEpoch ?? 0) + 1;
+    t.format = this.compact?.isReady ? 'v2' : 'v1';
+    if (t.format === 'v2' && this.compact.dynamics) {
+      // Calls enqueue all core/aux/activity/dynamics copies in this task,
+      // alongside the GPU undo buffers below, before any user edit can run.
+      const native = captureNativeSnapshot(this.compact, 'v2');
+      const world = this.worldWindow?.captureHistory();
+      t.nativePending = Promise.all([native, world]).then(([snapshot, history]) => {
+        if (t.snapshotEpoch === snapshotEpoch && this.history.includes(t)) { t.nativeSnapshot = snapshot; t.worldHistory = history ?? null; }
+      }, error => { if (t.snapshotEpoch === snapshotEpoch) t.nativeError = error; }).finally(() => {
+        if (t.snapshotEpoch === snapshotEpoch) t.nativePending = null;
+      });
+    }
+    if (t.format === 'v2') {
+      t.compact ??= this.gpu.createBuffer({ label: `sim${this.id} undo compact`, size: bytes,
+        usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+      f.copy(this.compact.cells, 0, t.compact, 0, bytes);
+      if (this.compact.aux) {
+        t.aux ??= this.gpu.createBuffer({ label: `sim${this.id} undo aux`, size: this.g.slots * 4,
+          usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+        f.copy(this.compact.aux, 0, t.aux, 0, this.g.slots * 4);
+      } else if (t.aux) { this._retire(t.aux); t.aux = null; }
+    } else {
+      if (t.compact) { this._retire(t.compact); t.compact = null; }
+      if (t.aux) { this._retire(t.aux); t.aux = null; }
     }
     f.copy(A, this.cur * bytes, t.A, 0, bytes);
     f.copy(B, this.cur * bytes, t.B, 0, bytes);
@@ -953,24 +1146,52 @@ export class Simulation {
   undo() {
     const t = this.history.at(-1);
     if (!t) return false;
+    if (this.nativeTransition || this.nativeTransitionError) throw new Error('Cannot undo during a native world transition');
+    if (t.nativePending) return t.nativePending.then(() => this.history.at(-1) === t ? this.undo() : false);
+    if (t.nativeError) throw t.nativeError;
     const [dx, dz] = this.undoShift;
-    if (Math.abs(dx) >= this.g.nx || Math.abs(dz) >= this.g.nz) return false;
+    if (t.nativeSnapshot && (dx || dz) && !t.worldHistory) throw new Error('Native world undo across a shift requires matching retained-world history; entry preserved');
+    if (t.worldHistory && (this.worldWindow?.pending || this.deco?.pending)) {
+      return Promise.all([this.worldWindow?.pending, this.deco?.pending]).then(() => this.history.at(-1) === t ? this.undo() : false);
+    }
+    if (!t.worldHistory && (Math.abs(dx) >= this.g.nx || Math.abs(dz) >= this.g.nz)) return false;
+    if (!t.worldHistory && t.format === 'v2' && this.compact && (dx || dz) && !this.nativeIntegration?.isReady) throw new Error('Native shifted undo is not ready');
+    let worldDelta = null;
+    if (t.format === 'v2' && this.compactOwner && t.nativeSnapshot) {
+      const owner = this.compactOwner;
+      if (t.worldHistory) {
+        const commitWorld = this.worldWindow?.prepareHistoryRestore(t.worldHistory);
+        if (!commitWorld) throw new Error('Native world history owner is unavailable');
+        validateNativeSnapshot(owner, t.nativeSnapshot, t.worldHistory.origin);
+        worldDelta = commitWorld();
+      }
+      restoreNativeSnapshot(owner, t.nativeSnapshot);
+      if (!this.compact) owner.exportLegacy();
+    } else if (t.format === 'v2' && this.compact) {
+      if (dx || dz) this.nativeIntegration.undo(t.compact, t.aux, dx, dz);
+      else this.compact.restore(t.compact, t.aux);
+      this.nativeIntegration?.changed();
+    } else {
+      this._dispatch(this.passes.undoShift, fold(Math.ceil(this.g.slots / 64)), {
+        bind: [this.tables, this.bindRW, t.group], header: this.header(), params: { shift: [dx, 0, dz] },
+      });
+      this.noteWrite();
+    }
     this.history.pop();
-    this._dispatch(this.passes.undoShift, fold(Math.ceil(this.g.slots / 64)), {
-      bind: [this.tables, this.bindRW, t.group], header: this.header(), params: { shift: [dx, 0, dz] },
-    });
-    this.deco?.restore?.(t, dx, dz);
-    this.noteWrite();
+    this.deco?.restore?.(t, worldDelta ? 0 : dx, worldDelta ? 0 : dz);
+    if (worldDelta) this.worldWindow.finishHistoryRestore(worldDelta);
     this.stillFlow();
     this.rays.wake();   // it may bring plutonium back
     this._retire(t.A);
     this._retire(t.B);
+    if (t.compact) this._retire(t.compact);
+    if (t.aux) this._retire(t.aux);
     return true;
   }
 
   // Forget the undo snapshots (they hold a window that has moved or been replaced).
   dropHistory() {
-    for (const t of this.history) { this._retire(t.A); this._retire(t.B); }
+    for (const t of this.history) { this._retire(t.A); this._retire(t.B); if (t.compact) this._retire(t.compact); if (t.aux) this._retire(t.aux); }
     this.history = [];
   }
 
@@ -1003,8 +1224,15 @@ export class Simulation {
     if (dx % SUPER_CELLS.x || dz % SUPER_CELLS.z) {
       throw new Error(`shift ${dx}, ${dz}: must be whole supertiles (${SUPER_CELLS.x} × ${SUPER_CELLS.z} cells)`);
     }
+    const native = this.compactOwner?.isReady ? this.nativeIntegration : null;
+    if (this.compactOwner?.isReady && !native?.isReady) throw new Error('Native world shift is not ready');
+    // Synchronize/project before moving either representation. Legacy shifting
+    // is a cache move, never permission to reimport the entire native grid.
+    this.compactOwner?.exportLegacy();
+    native?.shift(dx, dz);
+    this.pingPong(true);   // (out of place: a box the native engine owns holds one copy)
     const f = this.gpu.frame, size = fold(Math.ceil(this.g.slots / 64)), shift = [dx, 0, dz];
-    this._dispatch(this.passOf('shift'), size, { bind: [this.tables, this.bindRW], header: this.header(this.cur, 1 - this.cur), params: { shift } });
+    this._dispatch(this.passOf('shift'), size, { bind: [this.tables, this._bindRW], header: { ...this.header(this.cur, 1 - this.cur), capture: 0 }, params: { shift } });
     this.cur = 1 - this.cur;
     // the flow field: into a scratch, then back
     this.flowTmp ??= this.gpu.createBuffer({ label: `sim${this.id} flow shift`, size: this.flow.size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
@@ -1023,6 +1251,7 @@ export class Simulation {
     this.rays.reset();   // particles are in grid cells: v1 lets them go (docs/particles.md)
     this.version++;
     this.wholeWrites++;
+    native?.shifted();
     this.forceAll = true;
     this.actFull = true;
     // the derived passes shift their own history by whole bricks and re-age
@@ -1070,10 +1299,11 @@ export class Simulation {
   texelCell(i) { return texelCell(this.g, i); }
 
   // Records the conversion of copy `c` (A and B, or with flags its F) into the scratch.
-  _toAtlas(c, flags) {
+  _toAtlas(c, flags, physical = false) {
+    this.legacyState(physical);
     this._atlasScratch();
     this._dispatch(this.passOf('toAtlas'), fold(Math.ceil(this.g.slots / 64)), {
-      bind: [this.tables, this.bindFlagsRO, this._convertGroup], header: this.header(c), params: { flags },
+      bind: [this.tables, this._bindFlagsRO, this._convertGroup], header: this.header(c), params: { flags },
     });
   }
 
@@ -1084,10 +1314,10 @@ export class Simulation {
    * test mode; elsewhere the first read waits for it, and reads the state then.)
    * @returns {Promise<[Float32Array, Float32Array]>}
    */
-  async readState() {
+  async readState({ physical = false } = {}) {
     const texels = this.g.width * this.g.height, wait = this._readyFor('toAtlas');
     if (wait) await wait;   // (not await null: that records after the caller's next writes)
-    this._toAtlas(this.cur, false);
+    this._toAtlas(this.cur, false, physical);
     const read = this.gpu.readback.buffer(this.atlasScratch, 0, texels * 32);
     this._dropAtlasScratch();
     const bytes = await read;
@@ -1099,7 +1329,7 @@ export class Simulation {
    * its pmap: editing.js runFill).
    * @returns {Promise<Float32Array>}
    */
-  readStateAAsync() { return this.readState().then(([a]) => a); }
+  readStateAAsync(options) { return this.readState(options).then(([a]) => a); }
 
   /**
    * A w × h rectangle of the state atlas at texel (x, y), as it is at this
@@ -1159,6 +1389,7 @@ export class Simulation {
   async readCopies() {
     const texels = this.g.width * this.g.height, rb = this.gpu.readback, wait = this._readyFor('toAtlas');
     if (wait) await wait;
+    this.pingPong(true);
     const reads = [];
     for (const c of [0, 1]) {
       this._toAtlas(c, false);
@@ -1177,7 +1408,8 @@ export class Simulation {
    * fetchA/fetchB layout. For tests and tools.
    * @returns {Promise<[Float32Array, Float32Array]>}
    */
-  async readCell(x, y, z) {
+  async readCell(x, y, z, { physical = false } = {}) {
+    this.legacyState(physical);
     const s = cellSlot(this.g, x, y, z), at = (this.cur * this.g.slots + s) * 16, rb = this.gpu.readback;
     const [a, b] = await Promise.all([rb.buffer(this.state.A, at, 16), rb.buffer(this.state.B, at, 16)]);
     return [new Float32Array(a), new Float32Array(b)];
@@ -1250,7 +1482,7 @@ export class Simulation {
     }
     const k = this.passOf('inertRef');
     if (k.state !== 'ready') await k.ready;   // (once prepared, it records at the call, as the other reads do)
-    this._dispatch(k, fold(g.nbricks), { bind: [this.tables, this.bindRO, this._refGroup], header: this.header() });
+    this._dispatch(k, fold(g.nbricks), { bind: [this.tables, this.bindRO, this._refGroup], header: this.readHeader() });
     const w = new Uint32Array(await this.gpu.readback.buffer(this.refInert, 0, g.nbricks * 4));
     const out = new Uint8Array(g.nbricks);
     for (let id = 0; id < g.nbricks; id++) {
@@ -1293,8 +1525,14 @@ export class Simulation {
    * @returns {Promise<ArrayBuffer>}
    */
   probe(kernel, size, { ring, bind = [], params = {} }) {
+    const physical = !!this.compact && bind[1] === this.compact.groups.read;
+    if (physical) {
+      const state = this.bindPhysicalRO;
+      if (!state) return null;
+      bind = [...bind]; bind[1] = state;
+    }
     const slot = ring.next();
-    this._dispatch(kernel, size, { bind, header: this.header(), params: { ...params, slot } });
+    this._dispatch(kernel, size, { bind, header: physical ? this.readHeader({ physical: true }) : this.header(), params: { ...params, slot } });
     return ring.read(slot);
   }
 
@@ -1426,6 +1664,7 @@ export class Simulation {
 
   dispose() {
     this.disposed = true;
+    this.nativeIntegration?.dispose();
     this.wake();   // an outstanding readback cannot certify a disposed simulation
     // what is recorded on these buffers goes out first: a destroyed buffer in a
     // later submit is a validation error, while one already submitted is freed

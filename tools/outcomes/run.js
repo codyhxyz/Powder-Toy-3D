@@ -18,7 +18,7 @@ const now = () => (typeof performance !== 'undefined' ? performance.now() : Date
  * @param {object} engine an engine (./engine.js)
  * @param {{ seed?: number, budgetMs?: number, log?: (line: string) => void }} [opts]
  */
-export async function runTest(test, engine, { seed = 1, budgetMs = 0, log = () => {} } = {}) {
+export async function runTest(test, engine, { seed = 1, budgetMs = 0, log = () => {}, hash = false } = {}) {
   const row = OUTCOMES[test.key ?? test.name] ?? {};
   const base = { name: test.name, title: test.title, group: test.group, phase: row.phase ?? 'P2', engine: engine.name, size: test.size, audit: test.audit, clock: engine.info.clock };
   const missing = (test.needs ?? []).filter((n) => engine.id(n) === null);
@@ -36,6 +36,8 @@ export async function runTest(test, engine, { seed = 1, budgetMs = 0, log = () =
     await engine.create(test.size, { seed, url: test.url });
     const ctx = { log, fresh: () => engine.create(test.size, { seed, url: test.url }) };
     const r = await test.run(engine, ctx);
+    // --hash: the final state's words, for a bit-identity A/B between two checkouts
+    if (hash && engine.stateHash) r.stateHash = await engine.stateHash();
     const status = r.na ? 'n/a' : r.criteria.every((c) => c.ok) ? 'pass' : 'fail';
     // (an app engine knows its clock only once its page has booted)
     return { ...base, clock: engine.info.clock, status, ...r, gameSeconds: +engine.time.toFixed(3), steps: engine.steps, wallSeconds: +((now() - t0) / 1000).toFixed(1) };

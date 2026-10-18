@@ -23,7 +23,7 @@
 // of under ~3 minutes each on SwiftShader. App tests (the default island)
 // boot the game itself (Vite on --port + 1, or --app-url: a dev server of any
 // checkout, e.g. the frozen v1 checkout's or a v2 candidate's with --app-query
-// engine=v2; a bundled build needs __app.test.elements: engine-app.js).
+// physics=v2; a bundled build needs __app.test.elements: engine-app.js).
 //
 // Every run first checks the roundness measure on footprints whose answer is
 // known (lib.js selfCheck: lattice discs read round, squares and diamonds
@@ -32,9 +32,9 @@
 // default there) and paste the table back; on a phone or in Safari, open the
 // harness page by hand (tools/harness/outcomes.html, ?run=<group>).
 //
-// usage: node tools/outcomes.mjs [--engine v1|lean|v2] [--group liquids,solids,...] [--tests utube,puddle]
+// usage: node tools/outcomes.mjs [--engine v1|lean|column|v2] [--group liquids,solids,...] [--tests utube,puddle]
 //          [--strict [--phase P2]] [--json results.json] [--record] [--expected file.json] [--verbose] [--list]
-//          [--port N] [--app-url http://127.0.0.1:N] [--app-query engine=v2] [--seed N] [--self-check]
+//          [--port N] [--app-url http://127.0.0.1:N] [--app-query physics=v2] [--seed N] [--self-check]
 //   groups: liquids, solids, fire, blasts, world, census, controls
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -57,7 +57,7 @@ const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 const recordPath = opt('expected') ?? here(`./outcomes/expected-${ENGINE}.json`);
 const JSON_OUT = opt('json');
 
-if (!['v1', 'lean', 'v2'].includes(ENGINE)) throw new Error(`--engine v1, lean or v2, not ${ENGINE}`);
+if (!['v1', 'lean', 'column', 'column-wgsl', 'v2'].includes(ENGINE)) throw new Error(`--engine v1, lean, column, column-wgsl or v2, not ${ENGINE}`);
 if (!PHASES.includes(PHASE)) throw new Error(`--phase ${PHASES.join(', ')}`);
 if (flag('json') && !JSON_OUT) throw new Error('--json needs a path');
 const tests = select({ tests: opt('tests', ''), groups: opt('group', '') });
@@ -90,16 +90,26 @@ const results = [];
 let adapterLine = '', engineInfo = null;
 const t0 = Date.now();
 const say = (s) => console.log(`[${((Date.now() - t0) / 1000).toFixed(0).padStart(4)} s] ${s}`);
+// Keep completed evidence when a later test exceeds its browser deadline.
+const checkpoint = (complete = false) => {
+  if (JSON_OUT) writeFileSync(JSON_OUT, JSON.stringify({
+    engine: ENGINE, adapter: adapterLine, info: engineInfo,
+    date: new Date().toISOString(), complete, selected: tests.map(t => t.name), results,
+  }, null, 1));
+};
+checkpoint();
 
-if (ENGINE === 'lean') {
-  const { createEngine } = await import('./outcomes/engine-lean.js');
+if (ENGINE === 'lean' || ENGINE === 'column' || ENGINE === 'column-wgsl') {
+  // column: tools/v2/column-water.mjs, the column-run water prototype (docs/v2/water-cost-first-principles.md)
+  const { createEngine } = await import({ lean: './outcomes/engine-lean.js', column: './outcomes/engine-column.js', 'column-wgsl': './outcomes/engine-column-wgsl.js' }[ENGINE]);
   const engine = createEngine();
   adapterLine = engine.info.label;
   engineInfo = engine.info;
   for (const t of tests) {
-    const r = (t.kind ?? 'harness') === 'app' ? { name: t.name, title: t.title, group: t.group, phase: OUTCOMES[t.key ?? t.name]?.phase, engine: 'lean', status: 'n/a', reason: 'lean is a bare simulation: this test boots the game' }
+    const r = (t.kind ?? 'harness') === 'app' ? { name: t.name, title: t.title, group: t.group, phase: OUTCOMES[t.key ?? t.name]?.phase, engine: ENGINE, status: 'n/a', reason: `${ENGINE} is a bare simulation: this test boots the game` }
       : await runTest(t, engine, { seed: SEED });
     results.push(r);
+    checkpoint();
     say(`${t.name}: ${r.status}`);
   }
 } else {
@@ -128,17 +138,19 @@ if (ENGINE === 'lean') {
           if (!adapterLine) { const g = await gpuInfo(page); adapterLine = `${g.vendor} ${g.architecture} ${g.description}${g.isFallbackAdapter ? ' (fallback adapter: SwiftShader numbers, not representative)' : ''}`; }
           engineInfo ??= await page.evaluate(() => window.__harness.run('info'));
           for (const t of b.tests) {
-            const r = await page.evaluate(([n, o]) => window.__harness.run('outcome', n, o), [t.name, { seed: SEED, budgetMs: BUDGET_MS }]);
+            const r = await page.evaluate(([n, o]) => window.__harness.run('outcome', n, o), [t.name, { seed: SEED, budgetMs: BUDGET_MS, hash: flag('hash') }]);
             // an error in the page (a GPU validation error, an exception) voids the result
             if (errors.length) {
               r.pageErrors = errors.splice(0);
               if (r.status !== 'error') { r.status = 'error'; r.reason = `page errors: ${r.pageErrors.join(' | ').slice(0, 500)}`; }
             }
             results.push(r);
+            checkpoint();
             say(`${t.name}: ${r.status} (${r.wallSeconds} s)`);
           }
         } catch (e) {
           for (const t of b.tests) if (!results.some((r) => r.name === t.name)) results.push({ name: t.name, title: t.title, group: t.group, phase: OUTCOMES[t.key ?? t.name]?.phase, engine: ENGINE, status: 'error', reason: `${e.message} ${errors.join(' | ')}`.slice(0, 800) });
+          checkpoint();
           say(`browser run failed: ${e.message.slice(0, 300)}`);
         } finally { await browser.close(); }
       }
@@ -154,12 +166,13 @@ if (ENGINE === 'lean') {
         const errors = [];
         try {
           say(`browser run: ${t.name} (the game at ${base}${t.url})`);
-          const engine = createEngine(browser, { base, query: opt('app-query', ENGINE === 'v2' ? 'engine=v2' : ''), errors });
+          const engine = createEngine(browser, { base, query: opt('app-query', ENGINE === 'v2' ? 'physics=v2' : ''), expectedPhysics: ENGINE, errors });
           const r = await runTest(t, engine, { seed: SEED, budgetMs: BUDGET_MS * 2 });
           r.engine = ENGINE;
           r.adapter = engine.info.label;
           if (errors.length) r.pageErrors = errors.slice(0, 10);
           results.push(r);
+          checkpoint();
           say(`${t.name}: ${r.status} (${r.wallSeconds} s)`);
         } finally { await browser.close(); }
       }
@@ -209,7 +222,7 @@ if (flag('strict')) {
 }
 
 if (JSON_OUT) {
-  writeFileSync(JSON_OUT, JSON.stringify({ engine: ENGINE, adapter: adapterLine, info: engineInfo, date: new Date().toISOString(), results }, null, 1));
+  checkpoint(true);
   console.log(`results: ${JSON_OUT}`);
 }
 if (flag('record')) {

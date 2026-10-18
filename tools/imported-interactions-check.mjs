@@ -14,6 +14,7 @@ import { createImportedInteractions, importedDoorOccupied, IMPORTED_DOOR_EDIT, W
 import { decodeImportedIndex } from '../src/world/import/importedInteractionState.js';
 import { WorldWindow } from '../src/world/window.js';
 import { BrickStore } from '../src/world/store.js';
+import { NativeBrickStore } from '../src/world/nativeStore.js';
 import { createSaves } from '../src/saves/game.js';
 import { decodeSave } from '../src/saves/format.js';
 import { E } from '../src/elements.js';
@@ -95,7 +96,7 @@ test('E provider opens/closes exclusively owned cells, CPU/GPU generator agree; 
   assert.equal(await f.runtime.use(f.door), true);
   assert.deepEqual(f.scene.data().words, original);
   await f.runtime.use(f.door);
-  const fake = { gpu: { frame: {} }, renderSource: { reset() {}, recordLiveCopy() {} }, storeRevisions: new Map(), sim: { g: {}, deco: null, origin: { set() {} }, noteWrite() {}, dropHistory() {}, stillFlow() {} }, scene: f.scene, epoch: 0, store: { clear() {} }, planted: { fill() {} }, gen: { fill() { assert.deepEqual(f.scene.data().words, original); } } };
+  const fake = { gpu: { frame: {} }, renderSource: { reset() {}, recordLiveCopy() {} }, storeRevisions: new Map(), sim: { g: {}, deco: null, origin: { set() {} }, noteWrite() {}, dropHistory() {}, stillFlow() {}, resetNativeDynamics() {} }, scene: f.scene, epoch: 0, store: { clear() {} }, nativeStore: { clear() {} }, planted: { fill() {} }, gen: { fill() { assert.deepEqual(f.scene.data().words, original); } } };
   WorldWindow.prototype.load.call(fake, [0, 0, 0]);
   assert.equal(f.scene.interactionState.states.size, 0);
   assert.equal(f.world.pending, null);
@@ -181,7 +182,9 @@ test('real save codec restores open doors, destruction masks, timers and canonic
     blankState: blank, load() {}, dropHistory() {} });
   Object.assign(f.world, { loaded: true, epoch: 0, size: f.map.size,
     gpu: { frame: {} }, renderSource: { reset() {}, recordLiveCopy() {} }, storeRevisions: new Map(),
+    historyReaders: 0, historyIdentity: {}, acquireReadLock: WorldWindow.prototype.acquireReadLock,
     store: new BrickStore(f.map.size.map(n => n / 4)),
+    nativeStore: new NativeBrickStore(f.map.size.map(n => n / 4)),
     planted: new Uint8Array(f.map.size[0] * f.map.size[2] / 16),
     loadSaved: WorldWindow.prototype.loadSaved });
   const saves = createSaves({ settings: {}, getSim: () => f.sim, getWin: () => f.world,

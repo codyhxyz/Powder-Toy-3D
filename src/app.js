@@ -1,3 +1,5 @@
+import { emitNativeRay, nativeRayKind } from './v2/tools.js';
+import { nativeHostSteps, nativeHostTick, nativeReadiness, INDUSTRY_V2_UNAVAILABLE } from './v2/host.js';
 // The game (docs/webgpu.md J1 U8): the settings, the grid and its scene, the
 // UI and input, and the frame loop, on one WebGPU device (src/gpu, B1).
 //
@@ -29,7 +31,7 @@ import { createThreeRenderer, useWebGPUCamera, threeHasVisible } from './gpu/thr
 import { Simulation, GI_BLEND } from './sim.js';
 import { seedWaveDemo } from './world/waveDemo.js';
 import { Derived } from './derived.js';
-import { createVolume } from './gfx/volume.js';
+import { createVolume, detailKey } from './gfx/volume.js';
 import { createBlocks } from './gfx/blocks.js';
 import { viewShadows } from './shaders/render.js';
 import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
@@ -282,17 +284,24 @@ if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 if (!['real', 'woman', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
 if (!['boy', 'girl'].includes(settings.villageCharacter)) settings.villageCharacter = DEFAULTS.villageCharacter;
 settings.paused = params.get('paused') === '1' || testMode === 'manual' || testMode === 'ui';
-// ?physics=v2: the new physics' fast version (src/v2/physics.js, docs/v2.md 5) in box mode, loaded only
-// then; not persisted. A world, first person and a multiplayer guest keep today's physics (the box
-// switches back to it while the body is out, and to v2 again after). __app.setPhysics('v2' | 'v1') for tools.
-let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
+// Experimental native physics remains opt-in until measured parity/performance
+// acceptance. Worlds/POV use explicit readiness, never a silent v1 fallback.
+// Multiplayer guests are deliberately render-only, irrespective of host engine.
+  let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
+  let physicsChanging = false;
+  let ctx; // Readiness also runs during picker construction, before wires attach.
+async function loadNativePhysics() {
+  const [physics, contact, dynamics] = await Promise.all([import('./v2/physics.js'), import('./shaders/v2/contact.js'), import('./v2/dynamics.js')]);
+  return { ...physics, options: { contactWGSL: contact.contactWGSL, Dynamics: dynamics.NativeDynamics } };
+}
 // Keep the old diagnostic URL; the picker loads Test on demand.
 const hybridOptIn = params.get('renderer') === 'hybrid';
 let hybridModule = hybridOptIn ? await import('./gfx/hybrid/index.js') : null;
 let hybridLoad = null, hybridWait = Promise.resolve(), hybridUnavailable = false;
 let releaseHybrid = () => {};
-let V2mod = physicsMode === 'v2' ? await import('./v2/physics.js') : null;
-let physicsV2 = null;    // the box's PhysicsV2 while the mode is v2
+let V2mod = physicsMode === 'v2' ? await loadNativePhysics() : null;
+let physicsV2 = null;    // the authoritative native host (guests never simulate)
+let nativeRayStroke = null;
 let v2Running = false;   // the last steps were v2's (switching away notes a whole write for today's activity map)
 
 let saveTimer = 0;
@@ -552,13 +561,13 @@ function build(savedWorldSize = null) {
   }
   const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
   win = null;
-  sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
-  if (physicsMode === 'v2') {
-    if (worldMode) hud.toast('The new physics (?physics=v2) runs in boxes: this world keeps today\'s', { kind: 'hint' });
-    else {
-      physicsV2 = new V2mod.PhysicsV2(sim);
-      physicsV2.ready.then(() => wakeLoop(), () => {});   // (the loop may have slept meanwhile)
-    }
+  nativeRayStroke = null;
+  sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size, nativeStartup: physicsMode === 'v2' && !mp.isGuest });
+  if (physicsMode === 'v2' && !mp.isGuest) {
+    physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
+    const owner = physicsV2;
+    owner.integrationReady = sim.prepareNative(owner);
+    owner.integrationReady.then(() => wakeLoop(), () => {});
   }
   derived = new Derived(sim);
   // WORLD uses its native frame wire. Keep local picks, not unused BOX views.
@@ -577,7 +586,8 @@ function build(savedWorldSize = null) {
   // the pipelines a frame needs (warm from the start menu, or building now)
   coreReady = false;
   s.ready.then(() => readySims.add(s), () => {});
-  const core = coreWait = Promise.all([s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready, hybridWait,
+  const nativeOwner = physicsV2;
+  const core = coreWait = Promise.all([...(nativeOwner ? [nativeOwner.ready, nativeOwner.integrationReady] : []), s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready, hybridWait,
     worldMode ? null : blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())]).then(() => {
     if (coreWait === core) { coreReady = true; wakeLoop(); }
   });
@@ -819,6 +829,7 @@ async function startMode(mode, { fresh = false } = {}) {
   }
   selectedMode = chosen.key;
   if (chosen.key === 'factory') hud.dismissHint(); // Sandbox's free-pouring hint is wrong here.
+  if (chosen.key === 'factory' && v2Box()) hud.toast(INDUSTRY_V2_UNAVAILABLE, { kind: 'error' });
   applyGravity();
   ctx.industry?.modeChanged();
   presentation.select(chosen.effect ?? null);
@@ -1248,8 +1259,23 @@ function brushStroke(tool) {
   };
 }
 const paintStroke = (stroke) => (mp.replica && !mp.isGuest ? undefined : mp.isGuest ? mp.paint(stroke)   // a guest's goes to the host
-  : v2Box() && rayKindOfTool(stroke.tool) !== RAY_KIND.NONE ? undefined   // (v2 has no particle layer: selectTool)
+  : v2Box() && rayKindOfTool(stroke.tool) !== RAY_KIND.NONE ? paintNativeRay(stroke)
     : sim.paint(stroke));
+function paintNativeRay(stroke) {
+  if (!sim.nativeCapabilities[nativeRayKind(stroke.tool)]) {
+    hud.toast('Native particle tool unavailable', { kind: 'error' });
+    return false;
+  }
+  // Retain input until a native tick, not one emission per presentation frame.
+  nativeRayStroke = { ...stroke, center: stroke.center.clone() };
+  physicsV2?.wake();
+  return true;
+}
+function nativeBeforeStep() {
+  scripts?.beforeStep();
+  weatherWire.step(ctx, { hz: 60 });
+  if (nativeRayStroke) emitNativeRay(sim, nativeRayStroke, 1 / 60);
+}
 
 function editModeText() {
   const t = ELEMENTS[settings.replaceTarget]?.name;
@@ -1395,8 +1421,12 @@ function selectTool(id) {
   setEyedropper(false);
   // a tool whose subsystem isn't ported yet stays greyed out (src/wire)
   const needs = toolWire(id);
-  // the new physics' fast version has no particle layer: photons and neutrons wait for today's physics
-  if (needs === 'rays' && v2Box()) {
+  if (v2Box() && toolById(id)?.key === 'WIND' && !sim.nativeCapabilities.impulse) {
+    hud.toast('Native wind impulse is unavailable', { kind: 'error' });
+    return;
+  }
+  // Native particle tools require a functioning, ready producer/consumer path.
+  if (needs === 'rays' && v2Box() && !sim.nativeCapabilities[nativeRayKind(id)]) {
     hud.toast(`${toolById(id)?.name ?? 'That tool'}: not in the new physics (?physics=v2) yet`, { kind: 'error' });
     return;
   }
@@ -1672,7 +1702,9 @@ const settingsPanel = createSettings({
 let detailVersion = 0;
 // Pending material views retain the last complete variant (readyVolumeView).
 // At initial load without one, coldShader reports the wait; readiness wakes the loop.
-const detailGate = createDetailGate(gpu, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'));
+// Headless checkpoints request their actual view explicitly: an unfired prefetch
+// timer is invisible to gpu.settled() and could start compiling during a sample.
+const detailGate = createDetailGate(gpu, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'), { prefetch: testMode == null });
 const coldShader = createColdShaderGuard(() => { hud.toast('Loading something cool, please be patient'); launch.progress?.('cold'); });
 function applyDetail() {
   for (const w of live) w.detail?.(ctx);   // whitewater's per-step field (src/wire/foam.js)
@@ -1790,14 +1822,16 @@ function setBlocks(on) {
   pacer.wake();
 }
 
-function undo() {
+async function undo() {
   if (ctx.descent?.terrainPending) return; // DOM shortcuts must not mutate a multi-slab terrain snapshot.
   if (selectedMode === 'factory') { hud.toast('Use Build → Dismantle to remove machines.'); return; }
   if (ctx.industry?.pending) { hud.toast('Wait for the machine transfer before undoing.'); return; }
   if (mp.guard()) return;
   const { note, label } = sim.history?.at(-1) ?? {};
   const shrine = note?.shrine;
-  if (sim.undo()) {
+  let restored;
+  try { restored = await sim.undo(); } catch (error) { hud.toast(error.message, { kind: 'error' }); return; }
+  if (restored) {
     if (shrine) perkOrbs?.removeShrine(shrine);
     if (note?.scene) wire('saves')?.restoreSceneExtras(ctx, note.scene);   // a loaded save taken back: the box's signs, spawners and orbs too
     if (note?.industry) {
@@ -1849,10 +1883,10 @@ async function renderThumb(viewId, out) {
   const view = viewKeyOf(viewId), detail = isMaterialView(view) ? gateVariants(settings).base : {};
   // (Plain is the blocks renderer's, which only the Plain view keeps: from another view its card stays
   // blank; the volume's views from Plain draw the bricks as they were when Plain began)
-  const v = vol, b = view === 'plain' ? blocks : null;
+  const v = vol, format = v.format, b = view === 'plain' ? blocks : null;
   if (view === 'plain' && !b) return false;
   await (b ? b.ready : Promise.all([v.viewReady(view, detail), ...(viewShadows(view) ? [v.shadowReady()] : [])]));
-  if (graphicsFailure || v !== vol || (b && b !== blocks)) return false;
+  if (graphicsFailure || v !== vol || format !== v.format || (b && b !== blocks)) return false;
   thumbTarget ??= gpu.createTexture({
     label: 'view thumbnail', size: THUMB_SIZE, format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
   });
@@ -2449,12 +2483,15 @@ function threeMeshes(p, transparent, cam = camera, clear = !transparent) {
 // Lines are one rendered pixel wide: under TAAU that is 1/scale output pixels,
 // so the grid and the box outline fade by the render scale to keep their weight.
 let volumeDrawn = false;   // the last presented frame drew the volume (__app.view.volumeDrawn)
+let volumeFormat;
 let volumeFirst = false;  // this frame's volume drew before the scene pass (the opaque hook: world/far.js volumePass)
 // Select once, before any presentation consumer writes uniforms or draws.
 // The far meshes discard live-window columns even without a local draw; a
 // pending shader must therefore keep the actual previous full-resolution view.
 function selectRenderView() {
-  let next = { view: viewKeyOf(settings.view), detail: frameDetail, curved: !!warpNow()?.k };
+  const format = vol.format;
+  if (volumeFormat !== format) { post.reset(); meshFrames.drop(); sim.resetGI(); volumeFormat = format; }
+  let next = { view: viewKeyOf(settings.view), detail: frameDetail, curved: !!warpNow()?.k, format };
   if (blocks) {
     readyVolumeView.reset();
   } else {
@@ -2653,11 +2690,15 @@ function viewClock(held) {
   cloudShift(t, gfxUniforms.uCloudShift.value);
 }
 
-// The new physics owns this box's steps (?physics=v2): no world, body or guest. Today's step never runs
-// meanwhile, not even while v2's pipelines build (then nothing steps); v2Active: they're built.
+// A native host never falls back to v1 while dependencies are building or unavailable.
+  // Remote replicas use legacy presentation without running either engine.
 // (declarations: the tool picker asks before this line has run)
-function v2Box() { return !!physicsV2 && !win && !pov?.active && !mp.isGuest; }
-function v2Active() { return v2Box() && physicsV2.isReady; }
+function v2Box() { return physicsMode === 'v2' && !mp.replica; }
+  function v2Status() {
+    return nativeReadiness(sim, { world: !!win, pov: !!pov?.active, guest: mp.replica,
+      industry: selectedMode === 'factory' || !!ctx?.industry?.hasMachines || !!ctx?.industry?.pending });
+  }
+function v2Active() { return v2Box() && v2Status().ready; }
 // The simulation records nothing per step (certified idle: sim.js step(); v2's own), so ticking it is pointless.
 const simAsleep = () => (v2Box() ? v2Active() && v2Running && physicsV2.asleep
   : sim.idleCertified && !sim.actDirty && !sim.actFresh && sim.actSteps >= SUPER_SETTLE_STEPS
@@ -2683,6 +2724,22 @@ function frame(now) {
     return false;
   }
 }
+// Shared with parked checkpoints: footprint uses the next render's resolution,
+// including a directly edited upscale preset, rather than the previous frame's.
+function syncRenderResolution(resolutionScale = post.settings.resolutionScale) {
+  post.settings.resolutionScale = resolutionScale;
+  post.settings.upscale = presetOf() * DEVICE_RATIO / pixelRatio;
+  post.settings.adaptive = presetOf() < 1;
+  post.settings.floor = UPSCALE_FLOOR * DEVICE_RATIO / pixelRatio;
+}
+
+function updateFrameDetail() {
+  volume.updateMatrixWorld();
+  camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
+  // WORLD enables every selected feature; the physics box is not a detail gate.
+  return win ? gateVariants(settings).near : detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
+}
+
 // One tick: input, the steps, and, when due, a presented frame. Returns
 // whether the loop should go on (false: nothing to do until something wakes it).
 function tick(now, renderOnly = false) {
@@ -2712,9 +2769,11 @@ function tick(now, renderOnly = false) {
   if (!renderOnly) {
     const cam = camState();
     if (cam !== camShown) toolbar.setCamera(camShown = cam);
+    const nativeSpeed = settings.steps / DEFAULTS.steps;
+    ctx.nativeToolSteps = v2Box() ? (!v2Active() || settings.paused ? 0 : Math.min(Math.floor((physicsV2.acc ?? 0) + dt * 60 * nativeSpeed), Math.max(1, Math.ceil(2 * nativeSpeed)))) : null;
     for (const w of live) {
       if (ctx.descent?.terrainPending) break;
-      if (!mp.replica || w.name === 'pov' || w.name === 'mp') w.beforeStep?.(ctx, dt);
+      if (!mp.replica || w.name === 'pov' || w.name === 'mp') w.beforeStep?.(ctx, sim.nativeTransition || sim.nativeTransitionError ? 0 : dt);
     }
     // The switch can start in the hooks above: gate the very same tick too.
     if (ctx.descent?.terrainPending) { renderOnly=true; ctx.renderOnly=true; }
@@ -2742,6 +2801,9 @@ function tick(now, renderOnly = false) {
     }
   }
   prof.phase('sim');
+  if (physicsV2?.isReady) {
+    if (v2Box()) physicsV2.activate(); else { physicsV2.suspend(); v2Running = false; }
+  }
   const stepping = !renderOnly && !mp.replica && (!settings.paused || stepOnce);
   ctx.stepping = stepping;
   if (!renderOnly && !mp.replica) scripts?.tick();   // event.tick: every frame, paused too (TPT)
@@ -2750,24 +2812,30 @@ function tick(now, renderOnly = false) {
     // v2: a fixed 60 Hz tick on game time, Speed scaling it (4 steps a frame is 1×); none while it rests
     stepped = 0;
     if (v2Active()) {
-      if (!v2Running) { physicsV2.resync(); v2Running = true; }
-      stepped = physicsV2.frame(dt, { speed: settings.steps / DEFAULTS.steps, once: stepOnce && settings.paused, each: () => scripts?.beforeStep() });
-      for (let i = 0; i < stepped; i++) scripts?.afterStep();
+      if (!v2Running) { physicsV2.activate(); v2Running = true; }
+      stepped = nativeHostSteps(physicsV2, dt, { speed: settings.steps / DEFAULTS.steps, once: stepOnce && settings.paused,
+        keepAlive: !!nativeRayStroke || live.some(w => w.busy?.(ctx)),
+        before: nativeBeforeStep,
+        after: () => scripts?.afterStep(),
+      });
     }
-    if (DAY.running) day.clock += settings.steps;
-    animTime += dt;
+    if (DAY.running) day.clock += stepped * 4; // legacy day tuning is 240 ticks/s, native host is 60
+    animTime += stepped / 60;
     stepOnce = false;
   } else if (stepping) {
-    if (v2Running) { v2Running = false; sim.noteWrite(); }   // (today's activity map: every brick, as after a load)
-    for (let i = 0; i < settings.steps; i++) {
-      scripts?.beforeStep(); weatherWire.step(ctx); sim.step();
-      ctx.industry?.nativeStep();
-      scripts?.afterStep();
-    }
+      if (v2Running) { physicsV2.suspend(); v2Running = false; }
+      for (let i = 0; i < settings.steps; i++) {
+        scripts?.beforeStep(); weatherWire.step(ctx); sim.step();
+        ctx.industry?.nativeStep();
+        scripts?.afterStep();
+      }
     if (DAY.running) day.clock += settings.steps;
     animTime += dt;
     stepOnce = false;
   } else if (!renderOnly && mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
+  ctx.nativeStepped = v2Box() ? (stepping ? stepped : 0) : null;
+  ctx.stepping = stepping && (!v2Box() || stepped > 0);
+  if (!renderOnly && stepping && stepped > 0) nativeRayStroke = null;
   if (!renderOnly && !mp.replica) scripts?.endFrame();
   updateSun();
   if (!ctx.descent?.terrainPending) for (const w of live) if (!mp.replica || ['pov', 'mp'].includes(w.name)) w.afterStep?.(ctx, dt);   // lightning, birds, the session, the meshes
@@ -2787,10 +2855,8 @@ function tick(now, renderOnly = false) {
     // CPU-only inspection, before scheduling derived work: a late-ready view
     // can reset GI here and must start its settling passes in this same frame.
     // Uniform uploads and scene hooks stay draw-only for post-only reuse.
-    volume.updateMatrixWorld();
-    camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
-    // WORLD enables every selected feature; the physics box is not a detail gate.
-    frameDetail = win ? gateVariants(settings).near : detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
+    syncRenderResolution();
+    frameDetail = updateFrameDetail();
     if(win)renderView=settings.view;
     else selectRenderView();
   }
@@ -2823,9 +2889,9 @@ function tick(now, renderOnly = false) {
   });
   if (hybridScale != null) post.settings.resolutionScale = hybridScale;
   runDerived = present && pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}|${vol.format}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
-    `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
+    `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}|${vol.format}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
     viewSettings, gfx, post.settings) : viewSeen;
   const viewChanged = viewV !== viewSeen;
   runView = present && pacer.view(viewV, runDerived || wantFrame());
@@ -2883,10 +2949,8 @@ function tick(now, renderOnly = false) {
       && !pov.player?.dead && !pov.vehicles.seated && pov.camera.zoom === 1;
     post.settings.sprintBlur = blurAllowed
       ? sprintBlurStep(post.settings.sprintBlur, pov.player?.sprintRush ?? 0, dt) : 0;
-    // The preset is a share of the screen's (device) pixels, FSR 2's; post takes shares of the canvas's.
-    post.settings.upscale = presetOf() * DEVICE_RATIO / pixelRatio;
-    post.settings.adaptive = presetOf() < 1;
-    post.settings.floor = UPSCALE_FLOOR * DEVICE_RATIO / pixelRatio;
+    // beforeView hooks may edit presentation settings; retain the final sync.
+    syncRenderResolution();
     gfxUniforms.uNearGI.value = settings.nearGI;
     gfxUniforms.uGlowLights.value = settings.glowLights;
     gfxUniforms.uCaustics.value = settings.caustics;
@@ -2952,7 +3016,7 @@ function tick(now, renderOnly = false) {
 // ---------------------------------------------------------------- the wires' view of the app (src/wire)
 // What a subsystem's wiring reads and sets: the device, the grid, the scene,
 // the UI, and the subsystems' slots, which the wires fill.
-const ctx = {
+  ctx = {
   // J3's app: { gpu, three, sim, derived, scene, camera, settings, pacer, post } (three is the renderer, also as `renderer`)
   gpu, three: renderer, renderer, pacer, canvas, post, presenter, cut, overlays, brush, scene, camera, controls, rig, settings, DEFAULTS, SIZES, WORLDS,
   hover, day, sun: SUN, keyLight: KEY_LIGHT, toolGun, camGrid, sceneByKey,
@@ -3003,6 +3067,7 @@ const ctx = {
   get brushValid() { return brushValid; }, get brushCenter() { return brushCenter; },
   industry: null,
   get menuPick() { return menuPick; }, get gamemode() { return selectedMode; },
+  get nativePhysicsRequested() { return v2Box(); },
   get animTime() { return animTime; }, get graphicsFailure() { return graphicsFailure; },
   // the animation clock as the far field's uniform-like reader takes it ({ value })
   viewTimeUniform: { get value() { return viewTime; } },
@@ -3065,10 +3130,8 @@ function bootReady(pending = null) {
   requestAnimationFrame(() => requestAnimationFrame(check));
 }
 
-// Everything the session's settings draw with is built (docs/webgpu.md B5):
-// the grid's pipelines, the view's module (the realistic view's base
-// variant), the shadow kernel if the view reads it, and whatever else is
-// still building (the near-detail variant's prefetch, a wire's meshes).
+// Everything the current view demands is built (docs/webgpu.md B5), including
+// close-up/curved detail for parked captures, plus all native and pending work.
 async function allReady() {
   for (;;) {
     const s = sim, v = vol;
@@ -3091,14 +3154,29 @@ async function allReady() {
       if (s === sim && v === vol && coreReady && blocksOn) return;
       continue;
     }
-    // (bent by a presentation effect: the view's curved variant, and a world's curved far view)
-    const curved = !!warpNow()?.k, far = win?.far;
-    await Promise.all([v.viewReady(view, baseDetail(), curved), ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
-      ...(physicsV2 ? [physicsV2.ready] : []),
+    if (s !== sim || v !== vol || !coreReady) continue;
+    applyOutputRatio();
+    syncRenderResolution(autoRes.scale);
+    updateFrameDetail();
+    // level is demand, unlike the shown fallback while a near shader is pending.
+    const near = isMaterialView(view) && detailGate.level === 1;
+    const detail = near ? gateVariants(settings).near : baseDetail();
+    const curved = !!warpNow()?.k, far = win?.far, format = v.format;
+    await Promise.all([v.viewReady(view, detail, curved),
+      // update() uses flat-near readiness even when the drawn view is curved.
+      ...(near && curved ? [v.viewReady(view, detail, false)] : []),
+      ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
+      ...(physicsV2 ? [physicsV2.ready, physicsV2.integrationReady] : []),
       ...(far && isMaterialView(view) ? [far.buildView()] : [])]);
     await gpu.settled();
     if (graphicsFailure) throw graphicsFailure;
-    if (s === sim && v === vol && coreReady) return;   // (rebuilt meanwhile: wait for the new grid)
+    if (s !== sim || v !== vol || format !== v.format || !coreReady || blocksOn || view !== viewKeyOf(settings.view) || curved !== !!warpNow()?.k) continue;
+    applyOutputRatio();
+    syncRenderResolution(autoRes.scale);
+    updateFrameDetail();
+    if (near === (isMaterialView(view) && detailGate.level === 1) &&
+        detailKey(detail) === detailKey(near ? gateVariants(settings).near : baseDetail())) return;
+    // Camera, resolution, switches or grid changed while awaiting compilation.
   }
 }
 
@@ -3166,24 +3244,41 @@ try {
     setSimMode,      // (key, value): as the drawer's Simulation switches do (simModes.js SIM_MODE_KEYS)
     setSimModes,     // ({ gravityMode, airMode, ambientHeat, edgeMode }): a world's, at once (a save's)
     // the physics a box runs: 'v1' (today's) or 'v2' (the new physics' fast version, as ?physics=v2);
-    // resolves once v2's pipelines are built. Not persisted. physics: { mode, active, v2 (its PhysicsV2) }
+    // resolves once the requested engine's pipelines are built. Not persisted.
+    // Saved engine modes also use this boundary. physics: { mode, active, v2 (its PhysicsV2) }
     async setPhysics(mode) {
       if (mode !== 'v1' && mode !== 'v2') throw new Error(`setPhysics: 'v1' or 'v2', not ${mode}`);
-      if (mode === 'v2') V2mod ??= await import('./v2/physics.js');
-      physicsMode = mode;
-      if (mode === 'v2' && worldMode) hud.toast('The new physics (?physics=v2) runs in boxes: this world keeps today\'s', { kind: 'hint' });
-      if (mode === 'v2' && !physicsV2 && !worldMode) physicsV2 = new V2mod.PhysicsV2(sim);
-      if (mode === 'v1' && physicsV2) {
-        physicsV2.dispose();
-        physicsV2 = null;
-        if (v2Running) { v2Running = false; sim.noteWrite(); }
+      if (physicsChanging) throw new Error('Wait for the current physics change to finish.');
+      physicsChanging = true;
+      try {
+        if (mode === 'v2' && ctx.industry?.pending) throw new Error('Wait for the machine transfer before changing physics.');
+        if (mode === 'v2') V2mod ??= await loadNativePhysics();
+        // Loading the module yields. A transfer may start during that interval.
+        if (mode === 'v2' && ctx.industry?.pending) throw new Error('Wait for the machine transfer before changing physics.');
+        if (mode === 'v1') {
+          // Keep native mode published while legacy builds: the running loop must
+          // not step unbuilt kernels. A map change meanwhile needs its own prepare.
+          let prepared;
+          do { prepared = sim; await prepared.prepareLegacy(); } while (prepared !== sim);
+        }
+        physicsMode = mode;
+        if (mode === 'v2' && !physicsV2 && !mp.isGuest) physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
+        if (mode === 'v1' && physicsV2) {
+          physicsV2.suspend();
+          v2Running = false;
+        }
+        await physicsV2?.ready;
+        if (mode === 'v2' && physicsV2) await sim.prepareNative(physicsV2);
+        if (mode === 'v2' && !v2Status().ready && !mp.isGuest) hud.toast(v2Status().reason, { kind: 'error' });
+        if (mode === 'v2' && v2Box()) physicsV2.activate();
+        pacer.wake();
+        wakeLoop();
+        return physicsMode;
+      } finally {
+        physicsChanging = false;
       }
-      await physicsV2?.ready;
-      pacer.wake();
-      wakeLoop();
-      return physicsMode;
     },
-    get physics() { return { mode: physicsMode, active: v2Active(), v2: physicsV2 }; },
+    get physics() { return { mode: physicsMode, active: v2Active(), readiness: v2Status(), capabilities: sim.nativeCapabilities, v2: physicsV2 }; },
     fill: (req) => runFill(sim, req, { openSides: !!win }),   // a flood fill on the current grid (editing.js runFill), for tools
     get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
     MOBILE, SUN, day, scene, settings, camera, controls, loadPreset, selectTool, setView, hover, renderer, rig, renderThumb, gfx, post, mp, autoRes, prof,
@@ -3197,7 +3292,10 @@ try {
       get meshFrames() { return { mode: lastFrameMode, ...meshFrames.state }; },
     },
     // the frame loop: asleep when settled (deep idle, F7); callbacks: animation frames it ran
-    loop: { get asleep() { return loop.asleep; }, get callbacks() { return loopCallbacks; } },
+    loop: {
+      get asleep() { return loop.asleep; }, get callbacks() { return loopCallbacks; },
+      get busy() { return live.filter(w => w.busy?.(ctx)).map(w => w.name); },
+    },
     wires: Object.fromEntries(WIRES.map((w) => [w.name, w.ready])),   // which subsystems are ported (src/wire)
     applyDetail,   // after changing settings.detail_* by hand
     detailGate,    // .level / .shown: which close-up features the view has compiled in
@@ -3216,8 +3314,10 @@ try {
         if (!readySims.has(sim)) throw new Error('The grid is still building its pipelines: await __app.test.ready() first');
         if (v2Box()) {
           if (!v2Active()) throw new Error('The new physics is still building its pipelines: await __app.test.ready() first');
-          if (!v2Running) { physicsV2.resync(); v2Running = true; }
-          physicsV2.ticks(count);
+          if (!v2Running) { physicsV2.activate(); v2Running = true; }
+          for (let i = 0; i < count; i++) nativeHostTick(physicsV2, {
+            before: nativeBeforeStep, after: () => scripts?.afterStep(),
+          });
         } else for (let i = 0; i < count; i++) {
           weatherWire.step(ctx); sim.step(); ctx.industry?.nativeStep();
           lightning?.update(sim, { worldEpoch: win?.epoch, worldIdentity: win });

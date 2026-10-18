@@ -132,7 +132,10 @@ export const throwLump = {
     // a 2×2×2 lump of sand at x 2-3, y 24-25, z 15-16 thrown along +x (audit-physics E1's grains, as one lump)
     e.box([2, DROP, 15], [3, DROP + 1, 16], 'SAND', { v: [vx * e.info.cellM, 0, 0] });
     const sand = e.id('SAND');
-    setup(cellsOf(await e.read(), [sand]).length === 8, 'start: 8 grains');
+    const start = await e.read(), packets = (start.particles ?? []).filter(p => p.id === sand);
+    // Native throws begin as eight whole particles, not resident cells. The final
+    // landing assertion below still requires eight resident grains.
+    setup(cellsOf(start, [sand]).length + packets.length === 8 && packets.every(p => p.mass === 1), 'start: 8 grains');
     await e.advance(tLand * 1.5 + 0.5);
     const cells = cellsOf(await e.read(), [sand]);
     const mx = cells.reduce((s, c) => s + c[0] + 0.5, 0) / cells.length, ideal = X0 + O.travel;

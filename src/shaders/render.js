@@ -1,4 +1,4 @@
-import { STATE_OPTS, LAYOUT, prelude } from './common.js';
+import { STATE_OPTS, LAYOUT, prelude, readFormatWGSL } from './common.js';
 import { RENDER_LAYOUT } from './bindings.js';
 import { ELEMENTS } from '../elements.js';
 import { COLORMAPS, VIEWS, xrayDensity, isMaterialView } from '../views.js';
@@ -751,9 +751,13 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 // The realistic view (0).
 // =====================================================================
 
-const realistic = (detail, curved = false, backend = 'box') => {
+const realistic = (detail, curved = false, backend = 'box', fixedReadFormat) => {
+  // WORLD reads its own atlas, never V2's packed state: its format is the legacy one.
+  const format = backend === 'world' ? '0u' : readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
-  const liq = LIQ_DETAIL(detail);
+  const liq = LIQ_DETAIL(detail, backend);
+  // Certified liquid interiors (passes.js brickFrag): only the Box's brick kernel writes the certificate.
+  const interior = !curved && backend !== 'world';
   return /* wgsl */ `
 // Inside a liquid, sunlight fades with depth: the sun's visibility is read
 // where the ray got in (shadow map) and then attenuated by the liquid between
@@ -854,7 +858,8 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var bid = 0u;              // the brick's number (brickId(lastB)) ...
   var occM = vec2u(0u);      // ... and its occupancy mask (shaders/occupancy.js), loaded with flags
   var phiA = surfSample(${curved ? 'warpAt(walk.ray, walk.t)' : 'ro + rd * tEnter'});   // fields at the current segment start
-  var phiStale = false;
+  var phiStale = false;${interior ? `
+  var interiorLiquid = false;   // final fields prove this brick has no surface crossing` : ''}
   // the hit that ends the ray (HIT_*), shaded after the march
   var hitK = HIT_NONE;
   var hitCh = -1;
@@ -926,7 +931,11 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       bid = brickId(bc);
       flags = brickInfoOf(bid);
       gThin = brickThin(flags);
-      if (flags != 0u) { occM = occMaskOf(bid); }
+      if (flags != 0u) { occM = occMaskOf(bid); }${interior ? `
+      interiorLiquid = false;
+      if (liq != E_EMPTY && (flags & BRICK_LIQUID_INTERIOR) != 0u) {
+        interiorLiquid = liquidInterior(bc);
+      }` : ''}
     }
     if (flags == 0u) {
       ${curved ? 'warpSkip(&walk, bc, true);' : 'ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);'}
@@ -1059,8 +1068,12 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       var evCh = -1;
       var tEv = tExit;
       var evN = vec3f(0.0);   // forced normal (else from the field)
-      var phiB = vec4f(0.0);
-      if (brickSurf(flags)) {
+      var phiB = vec4f(0.0);${backend !== 'world' ? `
+      // In certified liquid, keep every DDA segment, absorption, mixed ID,
+      // paint, mesh cut and grain test. Only omit impossible surface events.
+      // The else marks phi stale so leaving the certificate resamples the
+      // actual entry value; never propagate a synthetic field to a boundary.` : ''}
+      if (brickSurf(flags)${interior ? ' && !(liq != E_EMPTY && interiorLiquid)' : ''}) {
         if (phiStale) { phiA = surfSample(ro + rd * tEnter); }
         // A missed entry has no later entering crossing. Recover it in every
         // segment, including rays in liquid, not just after a brick/glass skip.
@@ -1241,7 +1254,16 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         s = gatherSurf(hitP, ns, hitCh);
       }
       decoSurf(&s);   // TPT's deco colour (gfx/deco.js)
-      c = shadeSurf(s, shadeRd);${grains ? `
+      c = shadeSurf(s, shadeRd);${backend === 'world' ? '' : `
+      // Native molten liquids share compact foam, not water's refraction or
+      // detail eligibility. Layer only reflected light; retain heat emission.
+      if ((${format} == 2u || ${format} == 3u) && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
+        var foamCol = vec3f(0.0);
+        var foamTrans = vec3f(1.0);
+        var foamN = s.n;
+        liquidFoam(s.p, &foamN, s.id, &foamCol, &foamTrans);
+        c = foamCol + foamTrans * (c - s.emit) + s.emit;
+      }`}${grains ? `
       gGrainSun = 1.0;   // (grainSurf set it for this shadeSurf)` : ''}
     }
     if (sp == 0) {
@@ -1373,6 +1395,19 @@ ${plain ? 'fn worldPlainFragment(v: VolumeVarying, phase: u32)' : '@fragment fn 
 @fragment fn fsAbsorb(v: VolumeVarying) -> VolumeFrag { return worldPlainFragment(v,1u); }
 @fragment fn fsScatter(v: VolumeVarying) -> VolumeFrag { return worldPlainFragment(v,2u); }` : ''}`;
 
+// ID-only probes need neither temperature tables nor life/colour decoding.
+// Use the same raw cell and canonical dither coordinate as fetchAs; debug
+// readers retain their original access-count instrumentation.
+const volumeIdWGSL = format => /* wgsl */ `
+fn volumeId(p: vec3i) -> i32 {
+  let c = fetchNativeCore(p);
+  let id = i32(c.x & 255u);
+  let k = KIND(id);
+  if (k == K_EMPTY) { return E_EMPTY; }
+  if (k == K_LIQUID && ${format === 3 ? '(c.y & 0xffffffu) == 0u' : '(c.y & 0xffffffu) <= (seed3(cellOf(slotOf(p)), 0u, 4243u) >> 16u)'}) { return E_EMPTY; }
+  return id;
+}
+`;
 /**
  * The volume's WGSL module for grid g: a vertex entry `vs` and a fragment
  * entry `fs` drawing `view` (a key of src/views.js VIEWS: 'realistic',
@@ -1382,34 +1417,39 @@ ${plain ? 'fn worldPlainFragment(v: VolumeVarying, phase: u32)' : '@fragment fn 
  * its globals are a template switch, so the flat views carry none of it);
  * its draw is VOLUME_SCREEN_VERTICES.
  * @param {{ nx: number, ny: number, nz: number, maxSteps?: number }} g
- * @param {{ view?: string, detail?: object, curved?: boolean, debug?: boolean }} [opts]
+ * @param {{ view?: string, detail?: object, curved?: boolean, debug?: boolean, fixedReadFormat?: 0 | 2 | 3 }} [opts]
  * @returns {string}
  */
-export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false, backend = 'box' } = {}) => {
+export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false, backend = 'box', fixedReadFormat } = {}) => {
   renderBackend(backend);
+  readFormatWGSL(fixedReadFormat);
   const plain = backend === 'world' && view === 'plain';
   if (!plain && !VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
   const lit = isMaterialView(view), d = lit ? detail : {};
+  const nativeIds = !debug && (fixedReadFormat === 2 || fixedReadFormat === 3);
   const parts = [
     `// volume: ${view}${lit ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}`,
-    lib(plain ? { ...g, sourceAppearance: false } : g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d, backend }),
+    lib(plain ? { ...g, sourceAppearance: false } : g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d, backend, fixedReadFormat }),
+    ...(nativeIds ? [volumeIdWGSL(fixedReadFormat)] : []),
     tracerWGSL(backend),
     curved ? presentationNearWGSL() : '',
     surfaceGLSL(d, { sourceAppearance: lit && g.sourceAppearance === true }),
     backend === 'world' ? decoViewWGSL({ backend }) : decoViewGLSL,
     liquidGLSL,
     decoSurfGLSL,
-    liquidDetailGLSL(d, { backend }),
+    liquidDetailGLSL(d, { backend, fixedReadFormat }),
     mediaGLSL(d),
     grainsGLSL(d),
   ];
   if (backend === 'world') parts.push(shadowOpticsWGSL({ backend }));
   if (plain) parts.push(worldPlainWGSL({ curved }));
-  else if (lit) parts.push(farHazeGLSL, realistic(d, curved, backend));
+  else if (lit) parts.push(farHazeGLSL, realistic(d, curved, backend, fixedReadFormat));
   else parts.push(DATA_COMMON, DATA_CODE[view](curved, backend), dataView(view));
   parts.push(volumeVertOf(curved), volumeEntry(view, lit || plain, curved, backend, plain));
   // Keep the heavier artwork out of Realistic's active shader path/registers.
-  return parts.join('\n').replaceAll('FU.materialStyle', view === 'cozy' ? '1.0' : '0.0');
+  const code = parts.join('\n').replaceAll('FU.materialStyle', view === 'cozy' ? '1.0' : '0.0');
+  // Literal cell identifiers only, not a general WGSL expression rewrite.
+  return nativeIds ? code.replace(/\beid\(fetchA\((cell|c|lc|oc|q|nc|cj)\)\)/g, 'volumeId($1)') : code;
 };
 
 // ---- the pipeline (docs/webgpu.md F1, F2) ----
@@ -1737,7 +1777,8 @@ export const WGSL_CHECK = () => [
  *   variants, the only ones it draws
  * @returns {object[]}
  */
-export function warmChecks(view, settings, { fallback = false, curved = false } = {}) {
+export function warmChecks(view, settings, { fallback = false, curved = false, fixedReadFormat } = {}) {
+  readFormatWGSL(fixedReadFormat);
   const out = [];
   const tag = curved ? '.curved' : '';
   if (isMaterialView(view)) {
@@ -1747,7 +1788,8 @@ export function warmChecks(view, settings, { fallback = false, curved = false } 
   } else if (VOLUME_VIEWS.includes(view)) out.push(volumeCheck(`volume.${view}${tag}`, view, {}, undefined, curved));   // (plain: the blocks renderer's)
   if (SHADOWED_VIEWS.includes(view)) out.push(SHADOW_CHECK);
   out.push(PICK_CHECK);
-  return out;
+  return out.map(e => e.name.startsWith('volume.') && fixedReadFormat !== undefined
+    ? { ...e, name: `${e.name}.format${fixedReadFormat}`, code: g => volumeFrag(g, { view, detail: e.detail, curved, fixedReadFormat }) } : e);
 }
 
 // check-wgsl (b)'s exceptions on SwiftShader (W23), each with why. These are

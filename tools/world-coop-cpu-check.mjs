@@ -21,7 +21,7 @@ let now = 10000;
 globalThis.GPUBufferUsage = { STORAGE: 128, COPY_SRC: 4, COPY_DST: 8 };
 function simulation(dims = [64, 64, 64], { delayPack = null, delayUnpack = null, delayRead = null } = {}) {
   const g = { nx: dims[0], ny: dims[1], nz: dims[2], slots: dims.reduce((a, b) => a * b, 1), ...atlasDims({ nx: dims[0], ny: dims[1], nz: dims[2] }) };
-  const sim = { id: 1, g, origin: new THREE.Vector3(), L: {}, header: () => [], bytes: new Uint8Array(g.width * g.height * 4),
+  const sim = { id: 1, g, origin: new THREE.Vector3(), L: {}, header: () => [], readHeader() { return this.header(); }, bytes: new Uint8Array(g.width * g.height * 4),
     writes: 0, paints: [], frame: 0, gravity: 0.025, disposed: false, noteWrite() { this.writes++; }, stillFlow() {}, paint(s) { this.paints.push(s); }, touchCentres: (lo, hi) => ({ lo, hi }) };
   const gpu = sim.gpu = {
     layout: () => ({}), createBuffer: ({ size }) => ({ size, data: new Uint8Array(size), destroy() {} }),

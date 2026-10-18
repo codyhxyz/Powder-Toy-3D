@@ -230,7 +230,8 @@ fn shadeSmooth(cellPosition: vec3f, normal: vec3f, elementId: i32, stateA: vec4f
  * radiance; opaque coverage is 1. No tone mapping. */
 export function smoothDrawWGSL(g, { shadingWGSL = baselineShade } = {}) {
   gridDims(g);
-  return `${prelude(g, STATE_OPTS.STATE_RO)}
+  // The draw reads the bound legacy copies (gfx/hybrid/smooth.js rebinds them), never V2's packed cells.
+  return `${prelude(g, { ...STATE_OPTS.STATE_RO, fixedReadFormat: 0 })}
 ${frameBindings()}
 ${materialsGLSL()}
 ${SmoothParams.wgsl}

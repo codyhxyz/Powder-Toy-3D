@@ -7,14 +7,27 @@
 // ready wire has an overlay hook, and an empty pass that loads and stores the
 // scene target isn't free on a tiled GPU.
 import { Rays } from '../raysLayer.js';
+import { NativeParticles } from '../gfx/nativeParticles.js';
+
+function nativeLayer(app) {
+  const source = app.sim.compactOwner?.dynamics;
+  if (!source || source.disposed) return null;
+  if (app.nativeParticles?.source !== source) {
+    app.nativeParticles?.dispose();
+    const layer = app.nativeParticles = new NativeParticles(app.sim.gpu, source);
+    layer.ready.then(() => app.pacer?.wake(), () => {});
+  }
+  return app.nativeParticles;
+}
 
 const rays = {
   name: 'rays',
   ready: true,
   order: 0,
 
-  attach(app) { app.sim.attachRays(new Rays(app.sim)); },
+  attach(app) { app.sim.attachRays(new Rays(app.sim)); nativeLayer(app); },
   detach(app) {
+    app.nativeParticles?.dispose(); app.nativeParticles = null;
     const layer = app.sim.rays;
     app.sim.attachRays(null);
     layer.dispose?.();
@@ -22,7 +35,12 @@ const rays = {
   // the sprites' size: px per cell at unit distance, for the scene target's height
   beforeView(app) {
     app.volume.updateMatrixWorld();
-    app.sim.rays.updateView?.(app.camera, app.post.sceneTarget.height || app.canvas.height * app.post.renderScale, app.volume.matrixWorld);
+    const native = app.sim.compact ? nativeLayer(app) : null;
+    const height = app.post.sceneTarget.height || app.canvas.height * app.post.renderScale;
+    if (native) {
+      native.updateView(app.camera, height, app.volume.matrixWorld, app.sim.origin);
+      if (native.isReady) native.prepareDraw(); // compute must precede the scene pass
+    } else app.sim.rays.updateView?.(app.camera, height, app.volume.matrixWorld);
   },
   // (Not bent by a presentation effect yet, as main's Points were: the
   // sprites' vertex stage, shaders/rays.js, would warp each particle's world
@@ -30,12 +48,20 @@ const rays = {
   // parameters app.presentation holds while active: U12's.)
   scene(app, rp) {
     const t = app.post.sceneTarget;
-    app.sim.rays.draw?.(rp, { width: t.width, height: t.height });
+    if (app.sim.compact) { if (app.nativeParticles?.isReady) app.nativeParticles.draw(rp, t); }
+    else app.sim.rays.draw?.(rp, { width: t.width, height: t.height });
   },
   // particles fly between frames: the loop keeps ticking while any may be
   // alive, unless paused (they fly only with the steps; a load wakes the layer
   // until a sweep finds it empty, which a paused box would never run)
-  busy(app) { return !!app.sim.rays.active && !app.settings.paused; },
+  busy(app) {
+    const native = app.sim.compact?.dynamics;
+    if (native) return !app.settings.paused && native.isIdle !== true;
+    const layer = app.sim.rays;
+    // V2 does not run the legacy emitter scan. Its empty "scan pending" flag
+    // must not keep an idle box ticking; actual particles still keep it awake.
+    return !!layer.active && !app.settings.paused && (!app.sim.compact || !!layer.holds);
+  },
 };
 
 export default rays;

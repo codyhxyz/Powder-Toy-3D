@@ -130,7 +130,7 @@ export class Occupancy {
   update(all = false) {
     const d = this.derived, sim = d.sim;
     d._dispatch(this.kernel, all ? fold(d.g.nbricks) : d._over(DIRTY.FIELDS), {
-      bind: [sim.tables, sim.bindRO, this.group], header: sim.header(), params: { all: all ? 1 : 0 },
+      bind: [sim.tables, sim.bindRO, this.group], header: sim.readHeader(), params: { all: all ? 1 : 0 },
     });
   }
 

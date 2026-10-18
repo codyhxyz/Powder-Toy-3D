@@ -41,6 +41,7 @@ fn main() {
         if (!inGrid(c)) { continue; }
         let a = fetchA(c); let b = fetchB(c);
         if (P.mode == 2u && eid(a) != P.material) { continue; }
+        ownLegacy(slotOf(c));
         let id = select(P.material, E_EMPTY, P.mode == 2u);
         let out = vec4f(f32(id), airT(), 0.0, fract(a.w));
         if (writeCell(c, a, b, fetchF(c), out, vec4f(0.0,0.0,0.0,b.w))) { markBrick(brickId(c >> vec3u(2u))); }
@@ -52,6 +53,7 @@ fn main() {
         if (!inGrid(c)) { continue; }
         let a = fetchA(c); let b = fetchB(c);
         if (P.mode == 2u && eid(a) != P.material) { continue; }
+        ownLegacy(slotOf(c));
         let id = select(P.material, E_EMPTY, P.mode == 2u);
         let out = vec4f(f32(id), airT(), 0.0, fract(a.w));
         if (writeCell(c, a, b, fetchF(c), out, vec4f(0.0,0.0,0.0,b.w))) { markBrick(brickId(c >> vec3u(2u))); }
@@ -66,6 +68,7 @@ fn main() {
           let a = fetchA(c); let b = fetchB(c);
           let owned = eid(a) == E_TUNGSTEN && a.z == INDUSTRY_PUMP_BACKPLATE_TAG;
           if (P.mode == 2u && !owned) { continue; }
+          ownLegacy(slotOf(c));
           let id = select(E_TUNGSTEN, E_EMPTY, P.mode == 2u);
           let marker = select(INDUSTRY_PUMP_BACKPLATE_TAG, 0.0, P.mode == 2u);
           let out = vec4f(f32(id), airT(), marker, fract(a.w));

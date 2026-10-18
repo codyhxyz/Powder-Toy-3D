@@ -15,7 +15,7 @@ export function createReadyVolumeView() {
       // Only retain material transitions, with the same presentation geometry.
       // Plain/blocks and grid rebuilds keep their existing loading lifetimes.
       if (shown && isMaterialView(shown.view) && isMaterialView(requested.view)
-        && shown.curved === requested.curved) return shown;
+        && shown.curved === requested.curved && shown.format === requested.format) return shown;
       shown = null;
       return requested;
     },
