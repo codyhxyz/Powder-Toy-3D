@@ -11,6 +11,7 @@ import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, 
 import { AIR as AIR_MODE, EDGE } from '../simModes.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M } from './dynamics-reference.js';
+import { NATIVE_LAUNCH_MODE } from './nativeForcing.js';
 // listArgs: control and the dispatch args, nothing else (it writes the args it publishes).
 export const LISTS_LAYOUT = storageLayout(2);
 
@@ -176,6 +177,13 @@ export class NativeDynamics {
     k.dispatch(this.gpu.frame,typeof count==='number'?fold(count):count,{bind:[this.owner.nativeDynamics.group,this.groups[family][this.airIndex]],
       header:this.owner.sim.header?.(),params:this._params(tick,params)});
     this.owner.sim.onPass?.(k.name,{kind:'compute',gpuMs:null});
+  }
+  // A force writer's launches planned and held for its caller's take (nativeForcing.js defer):
+  // flushLaunch allocates them at bounded forcing's absolute velocity, once.
+  deferLaunch(tick) { this.launchPending=tick; this._work(); }
+  flushLaunch() {
+    const tick=this.launchPending; if(tick==null || this.disposed || !this.isReady) return false;
+    this.launchPending=null; this._allocate(tick,{mode:NATIVE_LAUNCH_MODE}); this._externalWork(); return true;
   }
   _work() { this.isIdle=false; this.serial++; }
   _externalWork() { this._work(); this.owner.wake(); }

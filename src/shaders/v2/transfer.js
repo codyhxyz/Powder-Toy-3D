@@ -2,9 +2,20 @@ import { prelude, LAYOUT, STAGE } from '../common.js';
 import { compactDecodeWGSL } from '../compact.js';
 import { TransferParams, TRANSFER_SLOTS } from '../transfer.js';
 import { machineGuardWGSL } from '../industry.js';
+import { NOMINAL_STEP_RATE } from '../../physics.js';
+import { CELL_M } from '../../scale.js';
+import { glf as f } from '../../glsl.js';
+// m/s per V1 cell/step (V1 steps NOMINAL_STEP_RATE times a second: v2/tools.js legacyVelocityToMS)
+const LEGACY_SPEED_SI = NOMINAL_STEP_RATE * CELL_M;
 
-export const NATIVE_TRANSFER_LAYOUT = [0, 1, 2, 3].map(binding => ({ binding, visibility: STAGE.COMPUTE,
+// Binding 4: the native dynamics' launch plans (src/v2/dynamics.js plans, shaders/v2/blasts.js
+// apply). A put that throws (P.vel, V1's cells/step: shaders/transfer.js oB = (P.vel, b.w)) plans
+// each placed cell's launch at that velocity in m/s, and the driver's allocation turns it into a
+// particle carrying the whole cell; a take clears its cells' plans, so a launch planned before it
+// (a melee blow's chips: v2/nativeForcing.js defer) never throws the air the take left.
+export const NATIVE_TRANSFER_LAYOUT = [0, 1, 2, 3, 4].map(binding => ({ binding, visibility: STAGE.COMPUTE,
   buffer: { type: binding === 3 ? 'read-only-storage' : 'storage' } }));
+export const NATIVE_TRANSFER_LAUNCH = 1;   // blasts.js apply's launch flag
 export const nativeTransferWGSL = g => `${prelude(g, { state: false })}
 ${compactDecodeWGSL}
 ${TransferParams.wgsl}
@@ -13,6 +24,8 @@ ${TransferParams.wgsl}
 @group(2) @binding(1) var<storage, read_write> banks: array<i32>;
 @group(2) @binding(2) var<storage, read_write> result: array<u32>;
 @group(2) @binding(3) var<storage, read> items: array<vec4u>;
+struct TransferPlan { velocity: vec3f, flags: u32 }
+@group(2) @binding(4) var<storage, read_write> plans: array<TransferPlan>;
 fn fetchA(p: vec3i) -> vec4f { if (!inGrid(p)) { return vec4f(-1.0, 0.0, 0.0, 0.0); } return compactProbeA(p, cores[slotOf(p)]); }
 ${machineGuardWGSL}
 var<workgroup> ranks: array<u32, ${TRANSFER_SLOTS}>;
@@ -56,7 +69,9 @@ fn main(@builtin(local_invocation_index) i: u32) {
       var put = items[2u * rank]; let extra = items[2u * rank + 1u];
       if (extra.y == 0u) { put = fromLegacy(P.items[rank]); }
       cores[s] = put; banks[s] = bitcast<i32>(extra.x);
+      if (any(P.vel != vec3f(0.0))) { plans[s] = TransferPlan(P.vel * ${f(LEGACY_SPEED_SI)},${NATIVE_TRANSFER_LAUNCH}u); }
     } else {
+      plans[s] = TransferPlan(vec3f(0.0), 0u);
       var got = eid(a);
       if (P.breaks != 0u && KIND(got) == K_SOLID) { got = BREAKINTO(got); }
       carried = vec4u((c.x & 0xffffff00u) | u32(got), c.yzw); carriedBank = bank;

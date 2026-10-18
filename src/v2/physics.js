@@ -344,6 +344,8 @@ export class PhysicsV2 {
   /** Records one tick (docs/v2.md 5.4) into the open frame. */
   _tick() {
     this._noteWrites();
+    // a writer's launches held for a take (nativeForcing.js defer) go before anything else moves
+    this.dynamics?.flushLaunch?.();
     const { gpu, sim, kernels: k, groups } = this;
     const f = gpu.frame;
     const params = this._params(++this.tick);

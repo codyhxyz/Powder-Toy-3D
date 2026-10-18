@@ -3,14 +3,44 @@ import { nativeDynamicsHead } from '../shaders/v2.js';
 import { nativeModes } from './modes.js';
 import { nativeWeatherParams, nativeWeatherEvaluateWGSL, nativeWeatherCommitWGSL, NATIVE_WEATHER_COMMIT_LAYOUT, scratchWGSL, boxWGSL, weatherMain, WEATHER_SPEED_SI } from './nativeWeather.js';
 import { STAGE } from '../gpu/kernels.js';
+import { SEED_MAX } from '../shaders/common.js';
 const binding=(n,read=false)=>({binding:n,visibility:STAGE.COMPUTE,buffer:{type:read?'read-only-storage':'storage'}});
 export const FORCE_COMMIT_LAYOUT=[...NATIVE_WEATHER_COMMIT_LAYOUT,binding(3)];
+// blasts.js apply's bounded forcing: the plan's velocity is absolute (no fall added) and a launch
+// the pool can't take leaves the cell exact on the grid.
+export const NATIVE_LAUNCH_MODE=15;
 // Writers that set more than motion and heat (Factory machines: src/v2/industry.js) opt in:
 // opts.speedSI: m/s per authored cell/step (default WEATHER_SPEED_SI, TPT's 240 Hz step);
 // opts.life: also merge the update's life and ctype/spark writes, as importProperties does;
-// opts.sparse: write only cells that plan something, so boxes committed in turn share one plan clear.
+// opts.sparse: write only cells that plan something, so boxes committed in turn share one plan clear;
+// opts.sources: a change of element is a new cell, as V1's writer made it (its temperature, life,
+//   ctype and seed: nativeWeather.js's new-source rule; air into fire, a wand's emit, a script's
+//   create), not a fracture, and it launches when it is loose matter the update set moving;
+// opts.renameNow: a fracture renames the cell here, energy-exact as apply does, and plans only its
+//   launch, so a take recorded before the allocation (a melee tool's gather: run's defer) finds the
+//   debris on the grid where V1's take found it.
 export function nativeForceCommitWGSL(g,params,stage,opts={}) {
   const SI=opts.speedSI ?? WEATHER_SPEED_SI;
+  const sources=opts.sources ? `
+if(r.before.x!=r.after.x) {
+ let made=u32(r.after.x);
+ var m=makeMaterial(made,r.after.y,FULLU,u32(max(floor(r.after.w),0.0)));
+ m.core=withLife(m.core,r.after.z);
+ if(!isLiq(m.core)) { m.core.w=u32(fract(r.after.w)/${SEED_MAX / 65536})<<16u; }
+ let made_k=cls(made);
+ if((made_k==2u || made_k==3u) && r.motion.w!=0.0) { plans[s]=ForcePlan(r.motion.xyz*${SI},1u); }
+ if(any(m.core!=before.core) || m.bank!=before.bank) { noteEnergySource(p,energySub(energyOf(m),energyOf(before)));storeMaterial(s,before,m);markBusy(p); }
+ return;
+}` : '';
+  const renameNow=opts.renameNow ? `
+if(r.before.x!=r.after.x) {
+ var broken=before;broken.core.x=(broken.core.x&0xffffff00u)|u32(r.after.x);
+ if(cls(cid(broken.core))==2u) { broken.core=setFall(broken.core,0.0,0.0); }
+ if(!energyFits(broken,energyOf(before))) { markBusy(p);return; }
+ broken=withEnergy(broken,energyOf(before));storeMaterial(s,before,broken);markBusy(p);
+ if(r.motion.w!=0.0) { plans[s]=ForcePlan(r.motion.xyz*${SI},1u); }
+ return;
+}` : '';
   // The payload layout of the material the plan leaves (a fracture renames the cell in apply).
   const life=opts.life ? `
 let into=select(id,(flags>>8u)&255u,(flags&2u)!=0u);
@@ -49,7 +79,7 @@ fn forcePacketHeat(m: Material, r: WeatherResult) -> Material {
 `;
   if(stage==='plan') return head+weatherMain(`if(i>=weatherCount()) { return; }
 let p=weatherCell(i);let s=slotOf(p);let r=results[i];let before=loadMaterial(s);
-let id=cid(before.core);let k=cls(id);var flags=0u;
+let id=cid(before.core);let k=cls(id);var flags=0u;${sources}${renameNow}
 if(r.before.x!=r.after.x) { flags=2u|(u32(r.after.x)<<8u); }
 if((k==2u || k==3u || flags!=0u) && r.motion.w!=0.0) { flags|=1u; }
 ${opts.sparse?'if(flags!=0u) { ':''}plans[s]=ForcePlan(r.motion.xyz*${SI},flags);${opts.sparse?' }':''}
@@ -82,11 +112,13 @@ export function createNativeForceKernel(sim,name,spec) {
   const evalSpec={...spec,nativeForcing:true};
   const evaluate=make('ForceEvaluate',nativeWeatherEvaluateWGSL(sim.g,evalSpec,params),[sim.L.TABLES,sim.L.STATE_RO,evalLayout]);
   const particles=make('ForceParticleEvaluate',nativeWeatherEvaluateWGSL(sim.g,{...evalSpec,nativeParticles:true},params),[sim.L.TABLES,sim.L.STATE_RO,particleLayout]);
-  const plan=make('ForcePlan',nativeForceCommitWGSL(sim.g,params,'plan'),[o.nativeDynamics.layout,commitLayout]);
+  const plan=make('ForcePlan',nativeForceCommitWGSL(sim.g,params,'plan',spec.commit ?? {}),[o.nativeDynamics.layout,commitLayout]);
   const commit=make('ForceParticleCommit',nativeForceCommitWGSL(sim.g,params,'particles'),[o.nativeDynamics.layout,commitLayout]);
   const air=make('ForceAir',nativeWeatherCommitWGSL(sim.g,params,'air'),[o.nativeDynamics.layout,commitLayout]);
   const kernels=[evaluate,particles,plan,commit,air],ready=Promise.all(kernels.map(k=>k.ready));ready.catch(()=>{});
-  return {ready,get isReady(){return kernels.every(k=>k.state==='ready') && d.isReady;},run(box,values,source) {
+  // defer: leave the launches planned for the caller's flush (dynamics.flushLaunch) after the take
+  // it records next: V1's melee took its chips before any step could move them (tools/melee.js).
+  return {ready,get isReady(){return kernels.every(k=>k.state==='ready') && d.isReady;},run(box,values,source,{defer=false}={}) {
     if(kernels.some(k=>k.state!=='ready') || !d.isReady || sim.disposed || sim.compactOwner!==o || !box) return false;
     const dims=[sim.g.nx,sim.g.ny,sim.g.nz];box={lo:box.lo.map(v=>Math.max(0,Math.ceil(v))),hi:box.hi.map((v,a)=>Math.min(dims[a]-1,Math.floor(v)))};
     if(box.lo.some((v,a)=>v>box.hi[a])) return false;
@@ -111,12 +143,13 @@ export function createNativeForceKernel(sim,name,spec) {
     // Every predicate, including strike's neighbour walk, sees the SAME frozen grid.
     for(const c of chunks) { c.scratch=buffer(c.count);dispatch(evaluate,c.count,[sim.tables,sim.bindPhysicalRO,group(evalLayout,c.scratch)],c.box,true); }
     const particleScratch=buffer(65536);dispatch(particles,65536,[sim.tables,sim.bindPhysicalRO,group(particleLayout,particleScratch,true)],box,true);
+    d.flushLaunch?.(); // (a launch left for an earlier take: these plans are the next)
     gpu.frame.clear(d.plans);
     for(const c of chunks) {
       const bind=[o.nativeDynamics.group,commitGroup(c.scratch)];dispatch(plan,c.count,bind,c.box);
       const bricks=c.box.hi.reduce((n,v,a)=>n*(Math.floor(v/4)-Math.floor(c.box.lo[a]/4)+1),1);dispatch(air,bricks,bind,c.box);
     }
-    d._allocate(o.tick+1,{mode:15});
+    if(defer) d.deferLaunch(o.tick+1); else d._allocate(o.tick+1,{mode:NATIVE_LAUNCH_MODE});
     dispatch(commit,65536,[o.nativeDynamics.group,commitGroup(particleScratch)],box);
     for(const c of chunks) sim._retire(c.scratch);sim._retire(particleScratch);
     o.legacyPending=o.writtenSinceTick=true;sim.version++;o.seenVersion=sim.version;sim.changedAll=true;d._externalWork();sim.wake();

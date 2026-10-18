@@ -7,7 +7,9 @@ import { povFieldWGSL, FieldParams } from '../shaders/povBody.js';
 import { TOOLS, PROP_TOOL, E } from '../elements.js';
 import { PROP } from '../editing.js';
 import { PHYS } from '../physics.js';
-import { ROCKET } from '../shaders/povTools.js';
+import { ROCKET, blowWGSL, BlowParams, flameWGSL, FlameParams } from '../shaders/povTools.js';
+import { burrowWGSL, BurrowParams } from '../shaders/povBore.js';
+import { wandApplyWGSL, WandParams } from '../shaders/wands.js';
 import { specialBlastEnergy } from './pressure.js';
 import { worldPosition } from './tools.js';
 
@@ -15,7 +17,20 @@ const ids = Object.fromEntries(TOOLS.map(t => [t.key, t.id]));
 const pendingPaint = new Set(['VACUUM', 'CYCLONE', 'GRAV_IN', 'GRAV_OUT'].map(k => ids[k]));
 // Tools whose V1 rule moves or retypes whole cells: the native paint kernel (nativePaint.js).
 const nativeCellPaint = stroke => stroke.tool === ids.MIX || (stroke.tool === PROP_TOOL && stroke.prop?.field === PROP.TYPE);
-const forceSpecs={povKick:{update:kickWGSL,params:KickParams},povStrike:{update:strikeWGSL,params:StrikeParams},povField:{update:povFieldWGSL,params:FieldParams}};
+// The POV writers whose V1 rule sets velocity or pressure, or throws matter, as native forcing: V1's
+// update on the frozen native grid, its motion as V2 launches and air (nativeForcing.js).
+//   povBlow (axe, pickaxe, knife, jackhammer, a worm's bite): V1's fracture into debris with the
+//     cut's spare energy as the chip's speed, renamed at once so the melee gather's take finds the
+//     debris where V1's did (tools/melee.js flushes the launches after it);
+//   povBurrow: the bore's debris and its conveyor's spoil thrown back out of it;
+//   povFlame (flamethrower, torch, a burning body): air into fire at the flame's temperature and
+//     life (a new cell, not a fracture), the stream as the air's wind, heat as energy;
+//   povWand: a wand's dig, emit, place, erase, heat and its pressure, attract/repel and velocity.
+const forceSpecs={povKick:{update:kickWGSL,params:KickParams},povStrike:{update:strikeWGSL,params:StrikeParams},povField:{update:povFieldWGSL,params:FieldParams},
+  povBlow:{update:blowWGSL,params:BlowParams,commit:{renameNow:true}},povBurrow:{update:burrowWGSL,params:BurrowParams},
+  povFlame:{update:flameWGSL,params:FlameParams,commit:{sources:true}},povWand:{update:wandApplyWGSL,params:WandParams,commit:{sources:true}}};
+// The melee blow's launches wait for its gather (nativeForcing.js defer).
+const deferred=new Set(['povBlow']);
 const forces=new WeakMap();
 function forceKernel(sim,name) {
   let cache=forces.get(sim);if(!cache || cache.owner!==sim.compactOwner) {cache={owner:sim.compactOwner,kernels:new Map()};forces.set(sim,cache);}
@@ -33,8 +48,8 @@ export const prepareNativePOVForces=sim=>Promise.all(Object.keys(forceSpecs).map
 export const NATIVE_BRUSH_KERNELS=['nativePaintForce','nativePaint'];
 export const prepareNativeBrush=sim=>Promise.all(NATIVE_BRUSH_KERNELS.map(name=>forceKernel(sim,name).ready));
 export const nativePOVForcesReady=sim=>Object.keys(forceSpecs).every(name=>forces.get(sim)?.owner===sim.compactOwner && forces.get(sim).kernels.get(name)?.isReady);
-function force(sim,name,box,values,source) {
-  const accepted=forceKernel(sim,name).run(box,values,source);
+function force(sim,name,box,values,source,opts) {
+  const accepted=forceKernel(sim,name).run(box,values,source,opts);
   sim.nativeInteractionResult=accepted?{status:'queued',fallback:'capacity-limited packets remain exact on grid; capacityFallbacks counts refused launches'}:{status:'rejected',reason:'native force kernel not ready or empty bounds'};
   return accepted;
 }
@@ -88,10 +103,12 @@ export function routeNativePaint(sim, stroke) {
   return blast(sim, center, radius, PHYS.TOOL_PRESSURE, selection);
 }
 export function routeNativePOV(sim, name, box, values) {
-  if (forceSpecs[name]) return force(sim,name,box,values);
+  if (forceSpecs[name]) return force(sim,name,box,values,undefined,{defer:deferred.has(name)});
   if (name !== 'povRocket') return null;
   if (!box) return refused(sim, 'rocket has no active bounds');
   const origin=[sim.origin.x,sim.origin.y,sim.origin.z];
   return blast(sim,values.center,ROCKET.PULSE_RADIUS,ROCKET.PULSE_P,{shape:0,end:worldPosition(sim,values.center),grow:[0,0,0],filter:-1,fade:false,
     lo:box.lo.map((v,a)=>Math.ceil(v)+origin[a]),hi:box.hi.map((v,a)=>Math.floor(v)+origin[a])});
 }
+// Allocates the launches a deferred writer left for its take (dynamics.js flushLaunch); a no-op on V1.
+export function flushNativeLaunch(sim) { return sim?.compact?.dynamics?.flushLaunch?.() ?? false; }

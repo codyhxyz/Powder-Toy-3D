@@ -3,6 +3,7 @@ import { MovingEntity, Vehicle, PursuitBehavior, SeekBehavior, WanderBehavior, V
 import { ELEMENTS, E, K } from '../elements.js';
 import { wormFrag, wormGiantFrag, WORM_BITE, WORM_GIANT_BITE } from '../shaders/povTools.js';
 import { toolPass } from './gpu.js';
+import { flushNativeLaunch } from '../v2/interactions.js';
 import { figureMaterial, figureUniforms } from './figure.js';
 import { prepareMesh } from '../gfx/meshLight.js';
 import { addTarget, allTargets, spotAround, PLAYER } from './targets.js';
@@ -409,6 +410,7 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
     const reach = Math.max(BITE.RADIUS, BITE.DEPTH);
     // (its kernel still building, B5: no bite this frame, and the next frame tries again)
     if (!pass(sim, { center: [cx, cy, cz], dir: d }, sim.touchCentres([cx - reach, cy - reach, cz - reach], [cx + reach, cy + reach, cz + reach]))) return;
+    flushNativeLaunch(sim);   // V2: nothing takes a worm's rubble, its chips fly now (v2/interactions.js)
     digAt = { x: p.x, y: p.y, z: p.z };
     digWait = DIG_MIN_S;
     stats.digs++;

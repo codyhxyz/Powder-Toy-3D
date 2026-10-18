@@ -1,6 +1,7 @@
 import { ELEMENTS, K } from '../elements.js';
 import { nativeTransferWGSL, NATIVE_TRANSFER_LAYOUT } from '../shaders/v2/transfer.js';
-import { TransferParams, TRANSFER_SLOTS } from '../shaders/transfer.js';
+import { TransferParams, TRANSFER_SLOTS, TRANSFER_PUT } from '../shaders/transfer.js';
+import { NATIVE_LAUNCH_MODE } from './nativeForcing.js';
 
 // Carried cells keep their four legacy display fields followed by five raw
 // native words. JSON arrays preserve uint32s exactly (including bank bits).
@@ -38,9 +39,18 @@ export class NativeTransfer {
     const buf = sim.nativeIntegration.buffer('transfer items', upload.byteLength);
     const out = sim.nativeIntegration.buffer('transfer result', TRANSFER_SLOTS * 9 * 4);
     gpu.write(buf, 0, upload);
-    const group = gpu.bindGroup(this.layout, [o.cells, o.aux, out, buf].map((buffer, binding) => ({ binding, resource: { buffer } })), 'native transfer');
+    // A throw (a put with V1's vel, cells/step: the shovel, bucket, flask, hook, gibs, a wand's
+    // place) launches what lands as V2 particles carrying the whole cell, as Factory machines do
+    // (v2/industry.js): the plans start clear, the kernel plans each placed cell, then one
+    // allocation at absolute velocity (blasts.js apply, mode NATIVE_LAUNCH_MODE). A take keeps a
+    // pending launch (its kernel clears its own cells' plans) for the caller to flush after it.
+    const d = o.dynamics, throws = values.mode === TRANSFER_PUT && !!d?.plans && (values.vel ?? []).some(v => v !== 0);
+    const plans = d?.plans ?? (this.noPlans ??= gpu.createBuffer({ label: 'native transfer no plans', size: TRANSFER_SLOTS * 16, usage: GPUBufferUsage.STORAGE }));
+    if (throws) { d.flushLaunch?.(); gpu.frame.clear(plans); }
+    const group = gpu.bindGroup(this.layout, [o.cells, o.aux, out, buf, plans].map((buffer, binding) => ({ binding, resource: { buffer } })), 'native transfer');
     sim._dispatch(this.kernel, [1, 1, 1], { bind: [sim.tables, gpu.emptyGroup, group], header: { ...sim.header(), capture: 0 },
       params: { ...values, items: values.items?.map(c => c.slice(0, 4)) ?? [], slot: 0 } });
+    if (throws) { d._allocate(o.tick + 1, { mode: NATIVE_LAUNCH_MODE }); d._externalWork?.(); }
     sim.nativeIntegration.changed();
     return gpu.readback.buffer(out, 0, values.count * 9 * 4).then(bytes => decodeNativeTransfer(bytes, values.count))
       .finally(() => { sim._retire(buf); sim._retire(out); });

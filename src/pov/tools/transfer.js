@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { TRANSFER_SLOTS, TRANSFER_TAKE, TRANSFER_PUT, ALLOW_IDS } from '../../shaders/transfer.js';
 import { povGpu } from '../gpu.js';
 import { ELEMENTS } from '../../elements.js';
-import { PHYS } from '../../physics.js';
+import { PHYS, NOMINAL_STEP_RATE } from '../../physics.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
 import { voxelWalk } from '../grid.js';
 
@@ -94,9 +94,11 @@ export function bodyExit(eye, dir, feet, margin = 0) {
   return Number.isFinite(tExit) ? tExit : 0;
 }
 
-// Sim velocity (cells/step) from a velocity in cells/s, at the current step rate.
+// Sim velocity (cells/step) from a velocity in cells/s, at the current step rate. Under V2 it is
+// V1's cells/step at V1's nominal rate, with V1's V_MAX cap: the native put launches the cells at
+// that velocity in m/s (shaders/v2/transfer.js), the speed the throw has in the world.
 export function toStepVelocity(v, ctx, out = new THREE.Vector3()) {
-  const stepsPerSecond = ctx.sim?.compact ? 60 : ctx.stepsPerFrame > 0 && ctx.dt > 0 ? ctx.stepsPerFrame / ctx.dt : 0;
+  const stepsPerSecond = ctx.sim?.compact ? NOMINAL_STEP_RATE : ctx.stepsPerFrame > 0 && ctx.dt > 0 ? ctx.stepsPerFrame / ctx.dt : 0;
   if (!stepsPerSecond) return out.set(0, 0, 0);
   out.copy(v).divideScalar(stepsPerSecond);
   if (out.length() > PHYS.V_MAX) out.setLength(PHYS.V_MAX);

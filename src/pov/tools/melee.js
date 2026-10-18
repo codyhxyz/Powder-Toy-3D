@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { ELEMENTS, K } from '../../elements.js';
 import { HAND_REACH } from '../constants.js';
 import { toolPass } from '../gpu.js';
+import { flushNativeLaunch } from '../../v2/interactions.js';
 import { povEvents } from '../events.js';
 import { heldModel } from './held.js';
 import { trigger, swing, toolDt } from './action.js';
@@ -150,6 +151,8 @@ export function meleeTool({ key, name, model: modelKey, desc, blow, frag, hit: H
         const point = aim.cell.clone().addScalar(0.5);
         // (every landed blow: the patch breaks more than the struck cell, the axe's leaves around the wood)
         gather(sim, point, swingDir, aim.id, broke);
+        // V2: the chips the pack didn't take fly now, from where V1's take left them (v2/interactions.js)
+        flushNativeLaunch(sim);
         povEvents.emit('impact', { source, point, normal: faceNormal(aim.face), id: aim.id, energy: blow.ENERGY, broke });
         model.rig.hit(HIT_ROW);
         if (broke === false) env.feedback?.refuse(null, { id: aim.id, point }, { silent: true });
