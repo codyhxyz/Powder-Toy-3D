@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createElementWeather } from '../../src/elementWeather.js';
 import { createOceanEvents } from '../../src/oceanEvents.js';
 import { createLightning } from '../../src/lightning.js';
+import { STORM } from '../../src/bolt.js';
 import { createNativeWeatherKernel, WEATHER_SPEED_SI, WEATHER_SPEED_FLUX } from '../../src/v2/nativeWeather.js';
 import { LANE_HZ } from '../../src/shaders/v2.js';
 import { oceanEventsEdit, OCEAN_EVENT } from '../../src/shaders/oceanEvents.js';
@@ -151,5 +152,16 @@ assert.equal(pending.main.state,'ready');
   lb.strike(switched,[10,50,10],[10,10,10],{strikeR:2});
   assert(calls.some(c=>c.name==='boltNativeEvaluate'),'native bolt after the switch');
   lb.dispose();
+}
+// Storms keep their seconds on V2's 60 Hz ticks: STORM's step counts are
+// authored at 240 steps a second, so a native grid polls every quarter as many.
+{
+  const st=createLightning(), ss=fixture(), poll=STORM.POLL_STEPS*60/240;
+  st.update(ss,{stepHz:60}); await st.ready;
+  calls.length=0; ss.frame=poll-1; st.update(ss,{stepHz:60});
+  assert(!calls.some(c=>c.name==='stormSearch'),'not before its quarter');
+  ss.frame=poll; st.update(ss,{stepHz:60});
+  assert(calls.some(c=>c.name==='stormSearch'),'a V2 storm polls after POLL_STEPS/4 ticks, as often in seconds as V1');
+  st.dispose();
 }
 console.log('native producers: actual weather/ocean/bolt dispatch, physical reads, exact bounds/cadence, owner bindings; independent SI/property/particle oracles passed (no GPU execution)');

@@ -25,11 +25,15 @@ import { fold } from './gpu/kernels.js';
 
 const RESULT_SLOTS = 4;   // storm reads in flight at most (one a poll, POLL_STEPS steps apart)
 const VEC4 = 4;
+export const STORM_HZ = 240;     // the steps a second STORM's step counts are authored at (V1's 4 steps a frame)
+// STORM's step count n for a grid stepping hz times a second (V2 ticks 60 a
+// second): the same seconds between polls and strikes on either engine
+const stormSteps = (n, hz) => Math.max(1, Math.round(n * hz / STORM_HZ));
 
 // gpu: unused (each simulation's device is its own gpu); kept for the wire's call
 export function createLightning({ onReady = () => {} } = {}) {
   let k = null, simId = -1, frame = 0;
-  let nextPoll = 0, lastStrike = -Infinity, job = null, generation = 0;
+  let nextPoll = 0, lastStrike = -Infinity, job = null, generation = 0, hz = STORM_HZ;
   const rng = Math.random;
   const api = {
     strikes: 0,             // natural strikes so far (tools/mat-check)
@@ -62,7 +66,7 @@ export function createLightning({ onReady = () => {} } = {}) {
     k.native = !!sim.compactOwner;
     k.ready = Promise.all([k.bolt.ready, k.search.ready, k.scan.ready]);
     simId = sim.id;
-    nextPoll = sim.frame + STORM.POLL_STEPS;
+    nextPoll = sim.frame + stormSteps(STORM.POLL_STEPS, hz);
     lastStrike = -Infinity;
     job = null;
   }
@@ -126,8 +130,10 @@ export function createLightning({ onReady = () => {} } = {}) {
 
   // Call only during allowed host steps (including explicit manual stepping).
   // Readback callbacks deposit results; only this entry point scans or strikes.
+  // context.stepHz: the grid's steps a second (STORM_HZ unless said)
   function update(sim, context = {}) {
     if (sim.disposed || sim.gpu.failure) { job = null; return; }
+    hz = context.stepHz ?? STORM_HZ;
     ensure(sim);
     if (job && !current(sim, job.capture, context)) { job = null; nextPoll = 0; }
     if (job) {
@@ -135,7 +141,7 @@ export function createLightning({ onReady = () => {} } = {}) {
       const finished = job; job = null;
       if (finished.stage === 'poll') {
         if (finished.result) scan(sim, finished.result, context);
-      } else if (finished.result && sim.frame - lastStrike >= STORM.MIN_STEPS) {
+      } else if (finished.result && sim.frame - lastStrike >= stormSteps(STORM.MIN_STEPS, hz)) {
         lastStrike = sim.frame; api.strikes++;
         strike(sim, finished.origin, finished.result.to, {
           strikeR: STORM.STRIKE_R, dischargeR: STORM.DISCHARGE_R, id: finished.result.id,
@@ -144,8 +150,8 @@ export function createLightning({ onReady = () => {} } = {}) {
       return;
     }
     if (sim.frame < nextPoll || !built(k.search) || !built(k.scan) || !built(k.bolt.main)) return;
-    nextPoll = sim.frame + STORM.POLL_STEPS;
-    if (sim.frame - lastStrike < STORM.MIN_STEPS) return;
+    nextPoll = sim.frame + stormSteps(STORM.POLL_STEPS, hz);
+    if (sim.frame - lastStrike < stormSteps(STORM.MIN_STEPS, hz)) return;
     const kernels = k, f = sim.gpu.frame;
     const slot = kernels.pick.next();
     f.clear(kernels.pick.buffer, kernels.pick.offset(slot), kernels.pick.slotBytes);   // (its key is an atomicMax)
