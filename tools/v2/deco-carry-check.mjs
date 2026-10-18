@@ -17,7 +17,7 @@ import { Simulation, gridLayout } from '../../src/sim.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
 import { v2BlockWGSL, v2ColumnWGSL } from '../../src/shaders/v2.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
-import { auxLayout, materialStorageWGSL } from '../../src/shaders/v2/state.js';
+import { auxLayout, decoStorageWGSL } from '../../src/shaders/v2/state.js';
 import { jetsWGSL } from '../../src/shaders/v2/jets.js';
 import { blastsWGSL } from '../../src/shaders/v2/blasts.js';
 import { particlesWGSL, PARTICLE_CAP } from '../../src/shaders/v2/particles.js';
@@ -240,9 +240,10 @@ test('the brush\'s native retype and Mix scrub as V1\'s brush does; POV transfer
   const transfer = statements(nativeTransferWGSL(g16));
   assert.match(transfer, /cores\[s\] = put; banks\[s\] = bitcast<i32>\(extra\.x\);\s*banks\[SLOTS \+ s\] = 0;/);
   assert.match(transfer, /banks\[s\] = 0; banks\[SLOTS \+ s\] = 0;/);
-  // every family's material storage has the plane's accessors at the auxLayout offsets
-  assert.match(materialStorageWGSL, /fn decoOf\(slot: u32\) -> u32 \{ return bitcast<u32>\(banks\[SLOTS \+ slot\]\); \}/);
-  assert.match(materialStorageWGSL, /fn particleDecoOf\(i: u32\) -> u32 \{ return bitcast<u32>\(banks\[2u \* SLOTS \+ i\]\); \}/);
+  // every family with material storage has the plane's accessors at the auxLayout offsets
+  for (const code of [v2BlockWGSL(g16, contactWGSL), nativeDynamicsHead(g16)]) assert.ok(code.includes(decoStorageWGSL));
+  assert.match(decoStorageWGSL, /fn decoOf\(slot: u32\) -> u32 \{ return bitcast<u32>\(banks\[SLOTS \+ slot\]\); \}/);
+  assert.match(decoStorageWGSL, /fn particleDecoOf\(i: u32\) -> u32 \{ return bitcast<u32>\(banks\[2u \* SLOTS \+ i\]\); \}/);
 });
 
 test('wind moves a gas with its paint; open edges and weather leave or make unpainted cells', () => {

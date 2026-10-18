@@ -30,7 +30,8 @@ const main=emitted.slice(emitted.lastIndexOf('  if (P.gravMode == 2u'),emitted.l
 function column(core, gravity, gravMode=0, obstacle=null) {
   const cells=Array.from({length:128},()=>vec(...makeMaterial(E.EMPTY).core)); cells[100]=vec(...core);
   if (obstacle) cells[99]=vec(...obstacle);
-  const env={ P:{gravity,gravMode,edge:0}, wg:0,nwg:0,li:0, BS:4,BX:1,NY:128,
+  const env={ P:{gravity,gravMode,edge:0,deco:0},  // (deco: V2Params', no layer here)
+    wg:0,nwg:0,li:0, BS:4,BX:1,NY:128,
     V2_COUNT:0,CNT_USE_COLS:0,V2_COLS:1,act2:[1,0], C_AIR:0,C_GAS:4,C_POWDER:2,
     atomicLoad:x=>x,foldThread:()=>0,u32:x=>x>>>0,i32:Math.trunc,f32:Math.fround,
     min:Math.min,floor:Math.floor,select:(a,b,c)=>c?b:a,

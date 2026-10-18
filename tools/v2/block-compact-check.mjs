@@ -264,7 +264,7 @@ const helpers = { add, pcg, seed3, unit: s => f(f(f(s >>> 8) * 256) + f(s & 255)
   motionDensity: c => C.ctDensity(C.unpackContact(c)), select: (a, b, yes) => yes ? b : a,
   C_SOLID: 1, C_POWDER: 2, C_LIQUID: 3, C_AIR: 0, C_GAS: 4,
   MOORE_U: 0x80000000, SINK_RATE: 0.6, LIQ_SWAP: 0.3, GAS_SWAP: 0.5, DIFFUSE: 0.25, DIFFUSE_AGE: 120 };
-const move = new Function(...Object.keys(helpers), 'cs', 'bs', 'positions', 'pending', 'P', 'down', 'supportAt', 'markBusy', `const gravityOn=down.some(v=>v!==0),blockCount=8,columnCount=4;${motion}`);
+const move = new Function(...Object.keys(helpers), 'cs', 'bs', 'positions', 'pending', 'P', 'down', 'supportAt', 'markBusy', `const gravityOn=down.some(v=>v!==0),blockCount=8,columnCount=4;let fromCell=[0,1,2,3,4,5,6,7];${motion}`);
 const clone = a => a.map(c => new Uint32Array(c));
 function replay(compact, order, ticks, edge, down, awake = allAwake, startTick = 1) {
   const cores = Array.from({ length: g.slots }, () => makeMaterial(E.EMPTY).core), banks = new Int32Array(g.slots), events = new Uint32Array(g.slots);

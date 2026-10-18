@@ -4,6 +4,7 @@ import { ELEMENTS, K } from '../../src/elements.js';
 import { FULL, MAX_FILL, FUEL_Q, lifeScale, isConductor, makeMaterial, withPayload, payloadOf, cTq, cFill, cid, ctypeOf, capacityQ, energyOf, withEnergy, energyFits, cRawTq, advectReference, validateMaterialTable } from '../../src/v2/layout.js';
 import { PHASE_ROWS, PHASE_NORMAL_MAX, PHASE_HOT_BASE, PHASE_COLD_BASE, phaseOffsetEnergy, validatePhaseCore } from '../../src/v2/phase.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
+import { PARTICLE_CAP } from '../../src/v2/dynamics-reference.js';
 import { gridLayout } from '../../src/sim.js';
 import { v2ImportWGSL, v2ExternalEventsWGSL, v2ColumnWGSL, v2RunsWGSL, v2PairsWGSL, v2BlockWGSL, V2_DYNAMICS_LAYOUT, v2DemandWords } from '../../src/shaders/v2.js';
 import { columnWaterWGSL } from '../../src/shaders/v2/columns.js';
@@ -187,7 +188,9 @@ finishInitialization();
 await engine.ready;
 assert.equal(engine.isReady, true);
 assert.equal(sim.version, 1);
-for (const [name, bytes] of [['cells', 16], ['aux', 4], ['liquidScratch', 16], ['events', 4]]) assert.equal(engine[name].size, g.slots * bytes);
+for (const [name, bytes] of [['cells', 16], ['liquidScratch', 16], ['events', 4]]) assert.equal(engine[name].size, g.slots * bytes);
+// the banks, then the decoration V2 carries: a word a cell and a word a particle-pool slot (shaders/v2/state.js auxLayout)
+assert.equal(engine.aux.size, (2 * g.slots + PARTICLE_CAP) * 4);
 assert.equal(engine.jetMask.size, v2DemandWords(g) * 4, 'the face demands, two words a cell');
 assert.equal(engine.contactReady, false); assert.equal(engine.dynamics, null); assert.equal(engine.jets, null);
 assert.equal(engine.groups.liquid.entries.length, 7); // plus one shared table = eight

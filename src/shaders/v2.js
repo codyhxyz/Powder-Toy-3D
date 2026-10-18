@@ -1,7 +1,7 @@
 import { fallTerminal } from '../v2/fall.js';
 import { fallWGSL } from './v2/fall.js';
 import { FOAM_ROWS } from '../v2/foam.js';
-import { nativeStateWGSL, materialStorageWGSL } from './v2/state.js';
+import { nativeStateWGSL, materialStorageWGSL, decoStorageWGSL } from './v2/state.js';
 import { compactDecodeWGSL } from './compact.js';
 import { prelude, gridDims, LAYOUT, stateLayout, SEED_MAX, STAGE, BRICK } from './common.js';
 import { uniformStruct } from '../gpu/params.js';
@@ -212,7 +212,7 @@ export function v2Head(g, opts = { state: false }, family = 'base') {
 ${prelude(g, opts).replace(/\bMaterial\b/g, 'LegacyMaterial')}
 ${opts.state === 'read' ? '' : compactDecodeWGSL}
 ${nativeStateWGSL}
-${family !== 'base' ? materialStorageWGSL : ''}
+${family !== 'base' ? materialStorageWGSL + decoStorageWGSL : ''}
 ${family === 'contact' || family === 'liquid' ? '@group(2) @binding(5) var<storage, read_write> liquidScratch: array<vec4u>;' : ''}
 ${family === 'liquid' ? '@group(2) @binding(7) var<storage, read_write> jetMask: array<atomic<u32>>;' : ''}
 ${family === 'contact' || family === 'liquid' ? '@group(2) @binding(6) var<storage, read_write> events: array<u32>;' : ''}
@@ -1139,7 +1139,8 @@ export function nativeDynamicsHead(g, { busyOut = false } = {}) {
 const EV = array<vec4u, ${ev.length}>(${ev.join(',')});
 ${shared}
 ${nativeStateWGSL}
-${materialStorageWGSL.replace('@group(2) @binding(4)', '@group(0) @binding(1)')}`;
+${materialStorageWGSL.replace('@group(2) @binding(4)', '@group(0) @binding(1)')}
+${decoStorageWGSL}`;
 }
 
 // CPU validators exercise the injection ABI, not just the empty default seam.

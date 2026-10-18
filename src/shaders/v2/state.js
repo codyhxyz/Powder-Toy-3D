@@ -221,4 +221,4 @@ fn storeMaterial(slot: u32, before: Material, after: Material) {
   if (any(before.core != after.core) || before.bank != after.bank) { noteState(slot); }
   storeCore(slot, after.core); banks[slot] = after.bank;
 }
-${decoStorageWGSL}`;
+`;
