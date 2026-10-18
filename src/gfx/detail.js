@@ -87,7 +87,14 @@ export const DETAIL = [
   // high: plume fireNear +16, smokeIn / steamNear +9 ms (shaders/gfx/mediaDetail.js)
   { key: 'mediaFine', define: 'DETAIL_MEDIA_FINE', label: 'Smoke filaments', cost: 'high', fadeM: MEDIA_FINE_FADE_M,
     desc: 'Fine wisps and filaments (20 cm and 5 cm) in smoke, steam and flames when you are close to them' },
-  // medium: plume smokeIn / steamNear +1.9 ms
+  // medium: plume smokeIn / steamNear +1.9 ms (the old rule: step = distance / 8, every sample lit).
+  // Since 2026-10-17 the step is 40 pixel footprints (shaders/gfx/mediaDetail.js MEDIA_STEP_PX) and
+  // only the density is sampled finely, light stays at the base rate: about the old cost at 1080p,
+  // a quarter less at 1280×800 (static estimate; re-measure). No fadeM: the rule itself reaches the
+  // base step from MEDIA_STEP_BASE_M (7.5 mm per pixel) on, so a far view gets nothing to gate, and
+  // its compile cost is small (cold Metal, 2026-10-17: World 16.3 s vs 19.6 s without, as its
+  // per-segment loop stays rolled where the 2-sample one unrolls; Box 5.3 s vs 4.6 s). Kept a switch: the Off
+  // level (phones, MOBILE_DEFAULTS) opts out of its near-gas cost.
   { key: 'mediaStep', define: 'DETAIL_MEDIA_STEP', label: 'Fine smoke sampling', cost: 'medium',
     desc: 'Samples smoke, steam and fire more finely near the camera: crisper wisps, less grain' },
   // high: plume fireNear +5.9, smokeIn / steamNear +3-4 ms
