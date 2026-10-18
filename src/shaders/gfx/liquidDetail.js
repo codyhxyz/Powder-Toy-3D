@@ -172,8 +172,10 @@ ${ripples ? `
 // upward-facing surfaces (RIPPLE_UP_*), each its own value-noise height field
 // in (x, z, time). Equal slope per octave (the saturation range of wind-wave
 // spectra: slope variance flat per octave), the same slope as the wind
-// ripples'. Octaves fade in by the pixel footprint (lodFade), so far away
-// nothing changes. (Five entries each: private arrays, docs/webgpu.md C6.)
+// ripples'. Octaves fade in by the pixel footprint (lodFade); in the box the
+// variance of what is faded is the glint's roughness instead (capHandoff, the
+// JS above), so far away they widen the sun's lobe rather than vanish. (Five
+// entries each: private arrays, docs/webgpu.md C6.)
 const CAP_OCTAVES: i32 = ${CAP_OCTAVES};
 var<private> CAP_FREQ: array<f32, CAP_OCTAVES> = ${wgslArray(CAP_FREQS)};    // cycles/cell (λ ${CAP_LAMBDAS.map((l) => (l * 100).toFixed(1)).join(', ')} cm)
 var<private> CAP_DRIFT: array<f32, CAP_OCTAVES> = ${wgslArray(CAP_DRIFTS)};  // noise units/s, by dispersion
