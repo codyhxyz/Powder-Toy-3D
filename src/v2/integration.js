@@ -11,7 +11,9 @@ export function nativeCapabilities(sim) {
   const owner = sim?.compactOwner, integration = sim?.nativeIntegration, d = owner?.dynamics;
   const state = !!(owner?.isReady && !owner.disposed && !sim.disposed && owner.aux && integration?.owner === owner && integration.isReady);
   const tools = state && d?.capabilities?.physicsReady === true && d.isReady === true;
-  const particles = tools && d.capabilities.drawReady === true;
+  // Photons and neutrons are physics: they fly, heat and split whether or not
+  // their sprites have built yet (gfx/nativeParticles.js draws them once ready).
+  const particles = tools;
   return {
     state,
     world: state && owner.contactReady === true && tools && (typeof d?.shiftWindow === 'function' || typeof d?.shiftOrigin === 'function'),

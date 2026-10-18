@@ -402,9 +402,13 @@ export class Signs {
       group = pr.gpu.bindGroup(pr.L, [b(0, brick), b(1, pr.data), b(2, pr.ring.buffer)], 'signs');
       pr.groups.set(brick, group);
     }
+    // V2: the physical view, whose B is the live coarse air ({p}); the drawn
+    // projection's B is empty there (shaders/common.js fetchBs). V1: unchanged.
+    const read = sim.compact ? sim.bindPhysicalRO : sim.bindRO;
+    if (!read) return;   // (the native dynamics are still building)
     const slot = pr.ring.next();
     pr.kernel.dispatch(pr.gpu.frame, [1, 1, 1], {
-      bind: [sim.tables, sim.bindRO, group], header: sim.readHeader(), params: { cam: info.camGrid, count: n, slot },
+      bind: [sim.tables, read, group], header: sim.readHeader({ physical: true }), params: { cam: info.camGrid, count: n, slot },
     });
     const batch = this.batch.slice();
     const gen = this.generation;

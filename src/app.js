@@ -1,4 +1,4 @@
-import { emitNativeRay, nativeRayKind } from './v2/tools.js';
+import { emitNativeRay, isRayShape } from './v2/tools.js';
 import { nativeHostSteps, nativeHostTick, nativeReadiness } from './v2/host.js';
 // The game (docs/webgpu.md J1 U8): the settings, the grid and its scene, the
 // UI and input, and the frame loop, on one WebGPU device (src/gpu, B1).
@@ -1261,18 +1261,17 @@ const paintStroke = (stroke) => (mp.replica && !mp.isGuest ? undefined : mp.isGu
   : v2Box() && rayKindOfTool(stroke.tool) !== RAY_KIND.NONE ? paintNativeRay(stroke)
     : sim.paint(stroke));
 function paintNativeRay(stroke) {
-  if (!sim.nativeCapabilities[nativeRayKind(stroke.tool)]) {
-    hud.toast('Native particle tool unavailable', { kind: 'error' });
-    return false;
-  }
+  physicsV2?.wake();
+  // A line or box is one paint of each of its dabs, as V1's (v2/tools.js).
+  if (isRayShape(stroke)) return emitNativeRay(sim, stroke);
   // Retain input until a native tick, not one emission per presentation frame.
   nativeRayStroke = { ...stroke, center: stroke.center.clone() };
-  physicsV2?.wake();
   return true;
 }
 function nativeBeforeStep() {
   scripts?.beforeStep();
   weatherWire.step(ctx, { hz: 60 });
+  sim.flushNativeTools();
   if (nativeRayStroke) emitNativeRay(sim, nativeRayStroke, 1 / 60);
 }
 // As the V1 loop runs the hearths' paid draft beside each sim step.
@@ -1425,15 +1424,6 @@ function selectTool(id) {
   setEyedropper(false);
   // a tool whose subsystem isn't ported yet stays greyed out (src/wire)
   const needs = toolWire(id);
-  if (v2Box() && toolById(id)?.key === 'WIND' && !sim.nativeCapabilities.impulse) {
-    hud.toast('Native wind impulse is unavailable', { kind: 'error' });
-    return;
-  }
-  // Native particle tools require a functioning, ready producer/consumer path.
-  if (needs === 'rays' && v2Box() && !sim.nativeCapabilities[nativeRayKind(id)]) {
-    hud.toast(`${toolById(id)?.name ?? 'That tool'}: not in the new physics (?physics=v2) yet`, { kind: 'error' });
-    return;
-  }
   if (needs && !wire(needs)) {
     hud.toast(notYet(toolById(id)?.name ?? 'That tool'), { kind: 'error' });
     if (!toolById(settings.tool) || (toolWire(settings.tool) && !wire(toolWire(settings.tool)))) selectTool(DEFAULTS.tool);

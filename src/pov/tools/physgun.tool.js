@@ -165,7 +165,8 @@ export default {
     function run(ctx, mode) {
       const sim = ctx.sim ?? env.getSim();
       if (sim.compact) {
-        if (sim.nativeTransition || sim.nativeTransitionError) return false;
+        // (a world shift freezes native tools; the hold resumes after it)
+        if (sim.nativeTransition || sim.nativeTransitionError || !sim.nativeCapabilities.physgun) return false;
         const result = sim.compact.dynamics.applyPhysgun({ mode: mode === PHYS_MODE.FLING ? 'fling' : 'hold',
           position: worldPosition(sim, hold), target: worldPosition(sim, aimPt), direction: ctx.dir.toArray(),
           radius: PHYS.RADIUS, dt: ctx.nativeDt ?? 0,
@@ -173,9 +174,7 @@ export default {
           // the legacy fling speed mistakenly treated as stiffness.
           strength: mode === PHYS_MODE.FLING ? legacyVelocityToMS(PHYS.FLING) : undefined,
         });
-        if (result.status !== 'queued' && result.status !== 'accepted') {
-          env.feedback?.notice?.(result.reason ?? 'Native physgun rejected', { kind: 'error' }); return false;
-        }
+        if (result.status !== 'queued' && result.status !== 'accepted') { console.warn('physgun:', result.reason); return false; }
         return true;
       }
       const pov = povGpu(sim), buffer = comBuffer(sim.gpu);
@@ -250,11 +249,6 @@ export default {
       update(ctx) {
         const sim = ctx.sim ?? env.getSim();
         if (nativeReleasePending && !sim.nativeTransition) { nativeReleasePending = false; release(); }
-        if (sim.compact && !sim.nativeCapabilities.physgun) {
-          if (ctx.primaryPressed || ctx.secondaryPressed) env.feedback?.notice?.('Native physgun hold is unavailable', { kind: 'error' });
-          release(); model.beam.visible = model.sphere.visible = false;
-          return;
-        }
         time += ctx.dt;
         blastWait = Math.max(blastWait - toolDt(ctx), 0);
         flash = Math.max(flash - ctx.dt, 0);

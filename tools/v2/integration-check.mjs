@@ -287,8 +287,45 @@ assert.equal(requests.reduce((n, r) => n + r.count, 0), emitted);
 assert(requests.every(r => r.count > 0 && Number.isInteger(r.count)));
 assert.equal(sim.nativeCapabilities.physgun, false, 'generic impulse cannot advertise working physgun hold');
 owner.dynamics.capabilities.drawReady = false;
-assert.equal(sim.nativeCapabilities.photon, false, 'invisible particle tools remain blocked until native presentation exists');
+assert.equal(sim.nativeCapabilities.photon, true, 'photons are physics: their sprites building never refuses the tool');
+assert.equal(sim.nativeCapabilities.neutron, true);
 owner.dynamics.capabilities.drawReady = true;
+// A line of photons is V1's: each dab painted once, ceil(volume x RAY_PAINT_PER_CELL x rate) a dab.
+{
+  const { RAYS } = await import('../../src/rays.js');
+  const { strokeDabs } = await import('../../src/editing.js');
+  const { isRayShape } = await import('../../src/v2/tools.js');
+  const line = { tool: photon, center: { x: 1, y: 2, z: 3 }, end: { x: 21, y: 2, z: 3 }, radius: 2, shape: 0, rate: 1 };
+  assert(isRayShape(line) && !isRayShape(stroke) && !isRayShape({ ...stroke, end: stroke.center }));
+  requests.length = 0;
+  assert(emitNativeRay(sim, line));
+  const dabs = strokeDabs(line.center, line.end, undefined, line.radius), each = Math.min(RAYS.RAY_PAINT_MAX, Math.ceil(4 / 3 * Math.PI * 8 * RAYS.RAY_PAINT_PER_CELL));
+  assert(dabs.length > 1);
+  assert.deepEqual(requests.map(r => r.position[0]), dabs.map(c => c.x + sim.origin.x), 'one request a dab, along the whole line');
+  assert(requests.every(r => r.count === each && r.kind === 'photon'));
+  requests.length = 0;
+  assert(Simulation.prototype.paint.call(sim, { ...line, tool: TOOLS.find(t => t.key === 'NEUTRON').id }), 'sim.paint keeps the line too');
+  assert.equal(requests.length, dabs.length); assert(requests.every(r => r.kind === 'neutron'));
+}
+// Not ready yet (dynamics still building): native tool requests wait, bounded, then run in order. Never a refusal or V1.
+{
+  requests.length = 0;
+  owner.dynamics.capabilities.physicsReady = false;
+  assert.equal(sim.nativeCapabilities.impulse, false);
+  const wind = TOOLS.find(t => t.key === 'WIND').id;
+  assert.equal(sim.paint({ center: { x: 1, y: 2, z: 3 }, radius: 2, tool: wind, wind: [0, 0, 2] }), true, 'wind before the dynamics are ready is held, not thrown');
+  sim.nativeEmission = undefined;
+  assert(emitNativeRay(sim, { ...stroke, radius: 6, rate: 1 }), 'a held photon brush is held too');
+  assert.equal(requests.length, 0); assert.equal(sim.nativePending.length, 2);
+  assert.equal(sim.flushNativeTools(), 0, 'nothing runs before readiness');
+  let accepted = 0; while (sim.applyNativeTool({ kind: 'impulse', position: [0, 0, 0], direction: [0, 1, 0], radius: 1, strength: 1 })) accepted++;
+  assert.equal(sim.nativePending.length, accepted + 2, 'the wait is bounded');
+  owner.dynamics.capabilities.physicsReady = true;
+  assert.equal(sim.flushNativeTools(), accepted + 2); assert.equal(sim.nativePending.length, 0);
+  assert.equal(requests[0].kind, 'impulse'); assert.deepEqual(requests[0].direction, [0, 0, 1], 'the wind went first, as painted');
+  assert.equal(requests[1].kind, 'photon');
+  requests.length = 0;
+}
 const nativeEdits = edits.length;
 sim.paint({ center: { x: 1, y: 2, z: 3 }, radius: 2, tool: TOOLS.find(t => t.key === 'WIND').id, wind: [1, 0, 0] });
 assert.equal(edits.length, nativeEdits, 'live native wind never writes legacy velocity or reimports liquid cells');
