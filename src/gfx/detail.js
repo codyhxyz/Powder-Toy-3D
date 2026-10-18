@@ -15,6 +15,7 @@
 // GLSL had `#define <define> 1`), so a switched-off feature costs nothing.
 
 import { CELL_M } from '../scale.js';
+import { FINE_1_M } from '../shaders/gfx/mediaDetail.js';
 
 export const BENCH_W = 1280, BENCH_H = 800;   // px, the benchmark viewport
 
@@ -58,11 +59,15 @@ const CLODS_FADE_M = 0.34 * CELL_M / 8;   // m per pixel
 export const CUBIC_FACET = 0.5;           // cells
 export const CUBIC_PX_NONE = 8, CUBIC_PX_FULL = 16;
 const CUBIC_FADE_M = CUBIC_FACET * CELL_M / CUBIC_PX_NONE;   // m per pixel
-// Smoke filaments start once their coarser octave (FILAMENT_1_M = 20 cm)
-// passes the material LOD's fade-out (lodFade: DETAIL_FADE_HI cycles per
-// pixel). The finer media sampling and flow-following apply at any distance
-// (no fadeM: always in).
-const MEDIA_FINE_FADE_M = DETAIL_FADE_HI * 0.2;   // m per pixel
+// Smoke filaments start once their coarser octave (FINE_1_M = 20 cm, one
+// cycle per lattice cell) passes the material LOD's fade-out (lodFade:
+// DETAIL_FADE_HI cycles per pixel), which holds for a medium too: TAA
+// converges to the pixel's box filter, zero at 1 cycle per pixel, and the
+// along-ray averaging dims an octave at every distance alike (derivation in
+// shaders/gfx/mediaDetail.js). At 1080p and 75° vertical FOV: 141 m. The
+// finer media sampling and flow-following apply at any distance (no fadeM:
+// always in).
+const MEDIA_FINE_FADE_M = DETAIL_FADE_HI * FINE_1_M;   // m per pixel
 // Liquid ripples (shaders/gfx/liquidDetail.js) start as their longest new
 // octave (24.5 cm) passes the same fade-out; the meniscus, over the capillary
 // length (2.7 mm for water), is averaged away once a pixel spans more than

@@ -13,7 +13,30 @@
 // The density is multiplied by a mix of 1 and that, so a cell's gas moves
 // around inside it but its mean is unchanged. Octave 1 also curls octave 2's
 // lookup (domain warp), so the filaments wind. Flames get the same octaves as
-// wrinkles of their luminous edge.
+// wrinkles of their luminous edge. This is the detail-noise texture approach
+// of Horizon Zero Dawn's clouds (Schneider 2015: a small tileable 3D noise
+// read finer than the base shape, eroding thin gas more than dense cores) with
+// wavelet turbulence's spectral rule for the octaves' strengths (Kim et al.
+// 2008), not ALU noise: two 3D texture reads a sample.
+//
+// Where it fades (gfx/detail.js MEDIA_FINE_FADE_M). Each sample fades each
+// octave by its own pixel footprint (footprint(p): the cone widens along the
+// ray, so the far side of a plume loses its filaments first), by the material
+// rule lodFade: full up to 0.5 cycles per pixel (Nyquist), gone at 1. That
+// rule holds for a medium too: TAA jitters the pixel across its own width, so
+// what it converges to is the box-filtered radiance, whose response to a
+// frequency of f cycles per pixel is sinc(f): 0.64 at Nyquist, 0 at 1. The
+// medium differs in two ways, and neither moves the cut-off. Along the ray the
+// pixel integrates the gas over its visible depth L, which averages an
+// octave of frequency F down to (F L)^-1/2 of its contrast, but at every
+// distance alike. And a march step longer than the octave (MEDIA_STEP = 30 cm)
+// samples it along the ray as a jittered Monte Carlo estimate, unbiased, whose
+// noise TAA averages away over its history. The frequency is one cycle per
+// finest lattice cell (the ridge doubles the noise's own ~0.5 cycle per
+// cell), so octave 1 (20 cm) is gone at 0.2 m per pixel and full to 0.1;
+// octave 2 (5 cm) at 0.05 and 0.025: at 1080p and a 75° vertical FOV
+// (1.42 mrad per pixel), filaments to 70 m, gone by 141 m; the 5 cm ones to
+// 18 m, gone by 35 m.
 //
 // DETAIL_MEDIA_STEP: a finer march near the camera. The media lattice step
 // grows with distance (geometric marching: a constant number of samples per
@@ -47,6 +70,17 @@ const FILAMENT_1_M = 0.2, FILAMENT_2_M = 0.05;
 const NOISE_FINEST_M = (MEDIA_NOISE_CELLS / NOISE_FINEST_PERIOD) * CELL_M;   // m, the base noise's finest structure
 const FINE_SCALE_1 = Math.max(1, Math.round(NOISE_FINEST_M / FILAMENT_1_M));
 const FINE_SCALE_2 = Math.max(1, Math.round(NOISE_FINEST_M / FILAMENT_2_M));
+/** m: the octaves' actual finest structure (their lattice cell, after rounding the scales), for gfx/detail.js's fade */
+export const FINE_1_M = NOISE_FINEST_M / FINE_SCALE_1, FINE_2_M = NOISE_FINEST_M / FINE_SCALE_2;
+// Octave 2's strength relative to octave 1: a passive scalar (smoke) in
+// turbulence has the Obukhov-Corrsin spectrum E(k) ~ k^-5/3, so a band of
+// fixed ratio around k holds variance ~ k^-2/3 and its rms goes as k^-1/3
+// (the -5/3 law wavelet turbulence builds its octaves on, Kim et al. 2008).
+const FINE_AMT_2 = (FINE_2_M / FINE_1_M) ** (1 / 3);
+// Filament sharpness: gas gathers on the noise's ridges as r^FIL_EXP (a whole
+// number, written out as products: Metal's pow is exp2(log2) per call).
+const FIL_EXP = 3;
+const powN = (x, n) => Array(n).fill(x).join(' * ');
 // Finest march step (m): finer than the octave-2 filaments.
 const MEDIA_STEP_MIN_M = 0.04;
 const STEP_MIN_CELLS = MEDIA_STEP_MIN_M / CELL_M;
@@ -147,47 +181,43 @@ const FINE_SCALE_2: f32 = ${f(FINE_SCALE_2)};
 // tile offsets of the octaves (fractions of a tile): uncorrelated with the base
 const FINE_OFF_1: vec3f = vec3f(0.4142, 0.7321, 0.2361);
 const FINE_OFF_2: vec3f = vec3f(0.6180, 0.1547, 0.8284);
-const FIL_EXP: f32 = 3.0;            // filament sharpness: gas gathers on the noise's ridges as r^FIL_EXP
+// the octaves' frequencies (cycles per cell): one cycle per finest lattice cell
+const FINE_F: vec2f = vec2f(FINE_SCALE_1, FINE_SCALE_2) / NOISE_FINEST_CELLS;
+const FIL_NORM: f32 = ${f(FIL_EXP + 1)};   // (FIL_EXP + 1): r^FIL_EXP of uniform r has mean 1 / (FIL_EXP + 1)
 const FINE_EDGE: f32 = 0.9;          // filament strength in thin gas (0-1; 1 empties the gaps)...
 const FINE_CORE: f32 = 0.35;         // ...and in dense gas, which keeps its body
-const FINE_AMT_2: f32 = 0.7;         // octave 2's strength relative to octave 1
+const FINE_AMT_2: f32 = ${f(FINE_AMT_2)};   // octave 2's strength relative to octave 1: (FINE_2_M / FINE_1_M)^1/3
 const FINE_WARP_M: f32 = 0.15;       // m: octave 1 curls octave 2's lookup this far
 const FLAME_FINE: f32 = 0.2;         // fire-density units: fine wrinkles of the flame edge
 const FLAME_FINE_2: f32 = 0.5;       // octave 2's share of them
 
-// weight of each octave at p: fades in as the pixel footprint resolves it
-// (and out behind mostly opaque gas)
-fn fineWeights(p: vec3f) -> vec2f {
-  let fp = footprint(p);
-  const F1: f32 = FINE_SCALE_1 / NOISE_FINEST_CELLS;   // cycles per cell
-  const F2: f32 = FINE_SCALE_2 / NOISE_FINEST_CELLS;
-  return vec2f(lodFade(F1, fp), lodFade(F2, fp)) * detailVis();
-}
-// mean-1 redistribution of uniform noise n onto its ridges
-fn filament(n: f32) -> f32 { return (FIL_EXP + 1.0) * pow(1.0 - abs(2.0 * n - 1.0), FIL_EXP); }
-
-// The fine octaves at p (weights fw; an octave weighted 0 isn't read and
-// stays at the noise mean). Smoke, steam and flames share the reads.
-fn fineNoise(p: vec3f, fw: vec2f, n1: ptr<function, vec4f>, n2: ptr<function, vec4f>) {
-  let a = detailNoise(p, FINE_SCALE_1, FINE_OFF_1, MD_RISE.y, 1.0);
-  *n1 = a;
-  *n2 = vec4f(NOISE_MEAN);
-  if (fw.y > 0.0) {
-    let q = p + (FINE_WARP_M / CELL_M * fw.x) * (2.0 * a.gba - 1.0);
-    *n2 = detailNoise(q, FINE_SCALE_2, FINE_OFF_2, MD_RISE.y, 1.0);
+// The fine octaves at p on the detailed densities d (smoke, steam, fire):
+// smoke and steam come back redistributed onto the filaments (xy), and z is
+// the fire's wrinkle, to add to the flame's level (fire density units, mean
+// 0). Each octave is weighted by how well the pixel footprint resolves it
+// (lodFade) and how much of the ray's light still gets through (detailVis);
+// an octave weighted 0 isn't read, nor is anything where there is no gas.
+// One exit and plain values, nothing kept across the flame's block but z.
+fn gasFine(p: vec3f, d: vec3f) -> vec3f {
+  let fw = (1.0 - smoothstep(vec2f(DETAIL_FADE_LO), vec2f(DETAIL_FADE_HI), FINE_F * footprint(p))) * detailVis();
+  var r = vec3f(d.xy, 0.0);
+  if (fw.x > 0.0 && max(d.x, max(d.y, d.z)) > 0.0) {
+    let a = detailNoise(p, FINE_SCALE_1, FINE_OFF_1, MD_RISE.y, 1.0);
+    var n = a.gb;   // octave 1's wisps (filaments) and tongues (flame wrinkles)...
+    var m = vec2f(NOISE_MEAN);   // ...and octave 2's, at the mean while unread
+    if (fw.y > 0.0) {
+      let q = p + (FINE_WARP_M / CELL_M * fw.x) * (2.0 * a.gba - 1.0);
+      m = detailNoise(q, FINE_SCALE_2, FINE_OFF_2, MD_RISE.y, 1.0).gb;
+    }
+    let s = fw * vec2f(1.0, FINE_AMT_2);
+    // mean-1 redistribution of each octave's uniform wisp noise onto its ridges
+    let ridge = 1.0 - abs(2.0 * vec2f(n.x, m.x) - 1.0);
+    let k2 = 1.0 + s * (FIL_NORM * ${powN('ridge', FIL_EXP)} - 1.0);
+    let amt = mix(vec2f(FINE_EDGE), vec2f(FINE_CORE), smoothstep(vec2f(0.0), vec2f(BILLOW_CORE_D), d.xy));
+    r = vec3f(d.xy * (1.0 + amt * (k2.x * k2.y - 1.0)),
+              FLAME_FINE * dot(fw * vec2f(1.0, FLAME_FINE_2), vec2f(n.y, m.y) - NOISE_MEAN));
   }
-}
-
-// Smoke and steam densities d with the fine octaves n1, n2 (weights fw).
-fn gasFine(d: vec2f, fw: vec2f, n1: vec4f, n2: vec4f) -> vec2f {
-  let amt = mix(vec2f(FINE_EDGE), vec2f(FINE_CORE), smoothstep(vec2f(0.0), vec2f(BILLOW_CORE_D), d));
-  let k = (1.0 + fw.x * (filament(n1.g) - 1.0)) * (1.0 + (FINE_AMT_2 * fw.y) * (filament(n2.g) - 1.0));
-  return d * (1.0 + amt * (k - 1.0));
-}
-
-// Fine wrinkles of the flame edge (fire density units, mean 0).
-fn flameFine(fw: vec2f, n1: vec4f, n2: vec4f) -> f32 {
-  return FLAME_FINE * (fw.x * (n1.b - NOISE_MEAN) + FLAME_FINE_2 * fw.y * (n2.b - NOISE_MEAN));
+  return r;
 }` : ''}
 `;
 };
