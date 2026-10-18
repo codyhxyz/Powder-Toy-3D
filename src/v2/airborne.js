@@ -16,9 +16,10 @@
 // Energy is exact. A packet owns no air carrier (layout.js packetCapacityQ), so it is seen as a
 // cell with a virtual carrier at its own temperature, and whatever that carrier gains or loses
 // meanwhile is the host air's at the end. A packet that is used up (burnt to nothing) leaves all
-// it held in the host. A detonation is a cell's event (native-contract.md requests bit 0), so a
-// charge set off in flight lands where it is (displacing a gas there, which flies on in its place)
-// and the block pass after it sets it off.
+// it held in the host. Requests are a cell's (native-contract.md), so the packet's and its host's
+// are posted at the host slot (blasts.js airborneEvents): gas and neutrons from where it flies, and
+// a detonation once a charge set off in flight has landed where it is (displacing a gas there,
+// which flies on in its place), for this tick's blasts to set off.
 // Anything that cannot be represented leaves both exactly as they were for the next tick.
 import { E, ELEMENTS, K } from '../elements.js';
 import { AIR_CAPACITY_Q, cTq, energyOf, withEnergy, energyFits, withPacketEnergy, packetEnergyFits } from './layout.js';
@@ -37,6 +38,14 @@ export const AIRBORNE = Object.freeze({
   REFUSED: 0, FLYING: 1, GONE: 2, LANDED: 3, DISPLACED: 4,
 });
 
+// A posted request word: the host slot (grids hold under 2^28 slots: v2/state.js stateLengths)
+// and the request bits above it.
+export const AIRBORNE_BITS_SHIFT = 28;
+export const AIRBORNE_SLOT_MASK = (1 << AIRBORNE_BITS_SHIFT) - 1;
+// Which requests a packet's host takes, by what became of the packet: a detonation only once it
+// has landed (bit 0), gas and neutron requests from wherever it is (bits 1, 2).
+export const AIRBORNE_FLYING_REQUESTS = 6, AIRBORNE_LANDED_REQUESTS = 7;
+
 /** The packet's outside as contactBlock counts it: [air, oxygen, CO2, gas] among the host's faces. */
 export function outsideOf(cores) {
   const out = [0, 0, 0, 0];
@@ -53,10 +62,11 @@ export function outsideOf(cores) {
 /**
  * One tick of a flying packet in its host cell. packet, host: { core, bank }; seed: i32;
  * outside: [air, oxygen, CO2, gas] among the host's six faces.
- * @returns {{ state: number, particle: {core,bank}, host: {core,bank}, source: bigint, sink: bigint }}
+ * @returns {{ state: number, particle: {core,bank}, host: {core,bank}, source: bigint, sink: bigint, requests: number }}
+ *   requests: the host slot's request bits (native-contract.md: 1 detonate, 2 gas, 4 neutron)
  */
 export function airborneReference(packet, host, seed, outside = [0, 0, 0, 0]) {
-  const refused = { state: AIRBORNE.REFUSED, particle: packet, host, source: 0n, sink: 0n };
+  const refused = { state: AIRBORNE.REFUSED, particle: packet, host, source: 0n, sink: 0n, requests: 0 };
   const carrier0 = BigInt(AIR_CAPACITY_Q) * BigInt(cTq(packet.core));
   try {
     let v = unpackContact(packet.core, packet.bank);
@@ -76,18 +86,19 @@ export function airborneReference(packet, host, seed, outside = [0, 0, 0, 0]) {
     v = pair.a; h = pair.b;
     pair = ctPlume(v, h, seed ^ AIRBORNE.PLUME_SALT, 1);
     v = pair.a; h = pair.b;
-    const source = v.source + h.source, sink = v.sink + h.sink;
+    const source = v.source + h.source, sink = v.sink + h.sink, asked = (v.request | h.request) & AIRBORNE_LANDED_REQUESTS;
+    const requests = landed => asked & (landed ? AIRBORNE_LANDED_REQUESTS : AIRBORNE_FLYING_REQUESTS);
     const vm = packContact(v, packet.core), hm = packContact(h, host.core);
     const ev = energyOf(vm), eh = energyOf(hm);
     if (v.id === E.EMPTY) {
       const he = eh + ev - carrier0;
       if (!energyFits(hm, he)) return refused;
-      return { state: AIRBORNE.GONE, particle: packet, host: withEnergy(hm, he), source, sink };
+      return { state: AIRBORNE.GONE, particle: packet, host: withEnergy(hm, he), source, sink, requests: requests(false) };
     }
     if ((v.request & 1) !== 0 && h.id === E.EMPTY) {
       const le = ev + eh - carrier0;
       if (!energyFits(vm, le)) return refused;
-      return { state: AIRBORNE.LANDED, particle: packet, host: withEnergy(vm, le), source, sink };
+      return { state: AIRBORNE.LANDED, particle: packet, host: withEnergy(vm, le), source, sink, requests: requests(true) };
     }
     if ((v.request & 1) !== 0 && ELEMENTS[h.id].kind === K.GAS) {
       // in a gas (a charge in the flames that set it off): it lands, and the gas it displaces flies
@@ -95,12 +106,12 @@ export function airborneReference(packet, host, seed, outside = [0, 0, 0, 0]) {
       const hostCarrier = BigInt(AIR_CAPACITY_Q) * BigInt(cTq(hm.core));
       const le = ev - carrier0 + hostCarrier, ge = eh - hostCarrier;
       if (!energyFits(vm, le) || !packetEnergyFits(hm, ge)) return refused;
-      return { state: AIRBORNE.DISPLACED, particle: withPacketEnergy(hm, ge), host: withEnergy(vm, le), source, sink };
+      return { state: AIRBORNE.DISPLACED, particle: withPacketEnergy(hm, ge), host: withEnergy(vm, le), source, sink, requests: requests(true) };
     }
     const carrier1 = BigInt(AIR_CAPACITY_Q) * BigInt(cTq(vm.core));
     const pe = ev - carrier1, he = eh + carrier1 - carrier0;
     if (!packetEnergyFits(vm, pe) || !energyFits(hm, he)) return refused;
-    return { state: AIRBORNE.FLYING, particle: withPacketEnergy(vm, pe), host: withEnergy(hm, he), source, sink };
+    return { state: AIRBORNE.FLYING, particle: withPacketEnergy(vm, pe), host: withEnergy(hm, he), source, sink, requests: requests(false) };
   } catch (error) {
     if (error instanceof RangeError || /unrepresentable|overflow/.test(error?.message ?? '')) return refused;
     throw error;

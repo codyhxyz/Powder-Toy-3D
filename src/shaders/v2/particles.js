@@ -8,6 +8,7 @@ import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG } fro
 import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
 import { contactRulesWGSL, withContactTable, airborneReactWGSL, airborneClaimWGSL } from './airborne.js';
+import { AIRBORNE_BITS_SHIFT } from '../../v2/airborne.js';
 export { PARTICLE_CAP };
 export const DynamicParams = uniformStruct('DynamicParams', {
   tick: 'u32', busyIn: 'u32', busyOut: 'u32', mode: 'u32', origin: 'vec3i', sequence: 'u32',
@@ -22,6 +23,9 @@ export const CONTROL = Object.freeze({ LIVE: 0, AIR: 1, PENDING: 2, BLAST: 3, FR
   OUTFLOW: 16, FREE_LIST: 32, PREFIX: 32 + PARTICLE_CAP });
 export const shockBase = g => 32 + 2 * PARTICLE_CAP + 3 * g.nbricks + 64;
 export const heldBase = g => shockBase(g) + g.nbricks;
+// the airborne requests (src/v2/airborne.js): a count, then a word a particle slot (the host slot
+// and its request bits), which the react stage writes and blasts.js airborneEvents posts to events
+export const airborneBase = g => heldBase(g) + PARTICLE_CAP;
 const f = n => Number.isInteger(n) && Math.abs(n)<1e21 ? `${n}.0` : String(n);
 const table = (name, type, field, fallback) => `fn ${name}(id: u32) -> ${type} { switch id {\n${dynamicsRows.filter(r => r[field] !== fallback).map(r =>
   `case ${r.id}u: { return ${type === 'f32' ? f(r[field]) : `${r[field]}${type === 'u32' ? 'u' : 'i'}`}; }`).join('\n')}\ndefault: { return ${type === 'f32' ? f(fallback) : `${fallback}${type === 'u32' ? 'u' : 'i'}`}; } } }`;
@@ -499,6 +503,8 @@ export function particlesWGSL(g, nativeHead, stage) {
   // packet claims the cell it is in, elect breaks ties as for impacts, and the winner runs the native
   // contact rules on the pair. A loser waits a tick, as a cell whose block another owns does.
   if (stage === 'reactClaim') return h + airborneClaimWGSL + main64(/* wgsl */ `
+    // the posted requests' count starts over (blasts.js airborneEvents read last tick's)
+    if (t == 0u) { atomicStore(&control[${airborneBase(g)}u],0u); }
     if (t >= D_CAP || dPoolEmpty() || !slotLive(t) || particles[t].id == 0u) { return; }
     let particle = particles[t];
     flight[t] = DFlight(vec4u(D_NONE,D_NONE,0u,0u),vec4f(0));
@@ -526,6 +532,9 @@ export function particlesWGSL(g, nativeHead, stage) {
     if (any(r.source != vec2u(0u))) { noteEnergySource(p,r.source); }
     if (any(r.sink != vec2u(0u))) { noteEnergySink(p,r.sink); }
     storeMaterial(s,before,r.host); dWake(p);
+    if (r.requests != 0u) {
+      atomicStore(&control[${airborneBase(g) + 1}u+t],s|(r.requests<<${AIRBORNE_BITS_SHIFT}u)); atomicAdd(&control[${airborneBase(g)}u],1u);
+    }
     if (r.state == D_REACT_FLYING || r.state == D_REACT_DISPLACED) {
       particle.c0 = r.particle.core.x; particle.tail = vec4u(r.particle.core.yzw,bitcast<u32>(r.particle.bank));
       particles[t] = particle; return;

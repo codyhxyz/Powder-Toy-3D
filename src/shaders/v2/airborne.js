@@ -1,7 +1,7 @@
 import { contactWGSL, specialContactWGSL } from './contact.js';
 import { v2Table } from '../v2.js';
 import { AIR_CAPACITY_Q } from '../../v2/layout.js';
-import { AIRBORNE } from '../../v2/airborne.js';
+import { AIRBORNE, AIRBORNE_FLYING_REQUESTS, AIRBORNE_LANDED_REQUESTS } from '../../v2/airborne.js';
 
 // Airborne matter takes part (docs/v2/native-contract.md "Contact module"): V1 had no flying
 // state, its splashes and ejecta were ordinary cells, so its react pass (shaders/react.js) heated,
@@ -45,7 +45,9 @@ const D_REACT_FLYING: u32 = ${AIRBORNE.FLYING}u;
 const D_REACT_GONE: u32 = ${AIRBORNE.GONE}u;
 const D_REACT_LANDED: u32 = ${AIRBORNE.LANDED}u;
 const D_REACT_DISPLACED: u32 = ${AIRBORNE.DISPLACED}u;
-struct DReact { particle: Material, host: Material, state: u32, source: vec2u, sink: vec2u }
+const D_REACT_FLYING_REQUESTS: u32 = ${AIRBORNE_FLYING_REQUESTS}u;
+const D_REACT_LANDED_REQUESTS: u32 = ${AIRBORNE_LANDED_REQUESTS}u;
+struct DReact { particle: Material, host: Material, state: u32, source: vec2u, sink: vec2u, requests: u32 }
 // [air, oxygen, CO2, gas] among the host cell's six faces: the packet's outside, as the
 // support pass counts a cell's out-of-block faces for contactBlock (shaders/v2.js v2SupportWGSL).
 fn dReactOutside(p: vec3i) -> vec4i {
@@ -63,7 +65,7 @@ fn dReactOutside(p: vec3i) -> vec4i {
 // (a packet owns none: layout.js packetCapacityQ). What the carrier gains or loses meanwhile is the
 // air's, so it is the host's at the end; a packet that is used up leaves all it held there.
 fn dReact(packet: Material, host: Material, outside: vec4i, seed: i32) -> DReact {
-  let refused = DReact(packet, host, D_REACT_REFUSED, vec2u(0u), vec2u(0u));
+  let refused = DReact(packet, host, D_REACT_REFUSED, vec2u(0u), vec2u(0u), 0u);
   let carrier0 = energyMul(D_CARRIER_Q, cTq(packet.core));
   var v = ctUnpack(packet.core, packet.bank);
   var h = ctUnpack(host.core, host.bank);
@@ -84,20 +86,22 @@ fn dReact(packet: Material, host: Material, outside: vec4i, seed: i32) -> DReact
   pair = ctPlume(v, h, seed ^ D_REACT_PLUME_SALT, 1);
   v = pair.a; h = pair.b;
   let source = energyAdd(v.source, h.source); let sink = energyAdd(v.sink, h.sink);
+  let asked = u32(v.request | h.request) & D_REACT_LANDED_REQUESTS;
+  let flyingRequests = asked & D_REACT_FLYING_REQUESTS;
   let vm = Material(ctPack(v, packet.core), v.bank);
   let hm = Material(ctPack(h, host.core), h.bank);
   let ev = energyOf(vm); let eh = energyOf(hm);
   if (v.id == 0) {
     let he = energyAdd(eh, energySub(ev, carrier0));
     if (!energyFits(hm, he)) { return refused; }
-    return DReact(packet, withEnergy(hm, he), D_REACT_GONE, source, sink);
+    return DReact(packet, withEnergy(hm, he), D_REACT_GONE, source, sink, flyingRequests);
   }
   // A detonation is a cell's event (requests bit 0): a charge set off in flight lands in the air it
   // is in, one carrier for the two, and the block pass after this sets it off there.
   if ((v.request & 1) != 0 && h.id == 0) {
     let le = energySub(energyAdd(ev, eh), carrier0);
     if (!energyFits(vm, le)) { return refused; }
-    return DReact(packet, withEnergy(vm, le), D_REACT_LANDED, source, sink);
+    return DReact(packet, withEnergy(vm, le), D_REACT_LANDED, source, sink, asked);
   }
   if ((v.request & 1) != 0 && ctRow(h.id).kind == 4) {
     // in a gas (a charge in the flames that set it off): it lands, and the gas it displaces flies
@@ -105,12 +109,12 @@ fn dReact(packet: Material, host: Material, outside: vec4i, seed: i32) -> DReact
     let hostCarrier = energyMul(D_CARRIER_Q, cTq(hm.core));
     let le = energyAdd(energySub(ev, carrier0), hostCarrier); let ge = energySub(eh, hostCarrier);
     if (!energyFits(vm, le) || !packetEnergyFits(hm, ge)) { return refused; }
-    return DReact(withPacketEnergy(hm, ge), withEnergy(vm, le), D_REACT_DISPLACED, source, sink);
+    return DReact(withPacketEnergy(hm, ge), withEnergy(vm, le), D_REACT_DISPLACED, source, sink, asked);
   }
   let carrier1 = energyMul(D_CARRIER_Q, cTq(vm.core));
   let pe = energySub(ev, carrier1);
   let he = energyAdd(eh, energySub(carrier1, carrier0));
   if (!packetEnergyFits(vm, pe) || !energyFits(hm, he)) { return refused; }
-  return DReact(withPacketEnergy(vm, pe), withEnergy(hm, he), D_REACT_FLYING, source, sink);
+  return DReact(withPacketEnergy(vm, pe), withEnergy(hm, he), D_REACT_FLYING, source, sink, flyingRequests);
 }
 `;

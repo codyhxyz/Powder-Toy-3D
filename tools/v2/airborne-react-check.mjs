@@ -9,7 +9,8 @@ import { E, ELEMENTS } from '../../src/elements.js';
 import { gridLayout } from '../../src/sim.js';
 import { makeMaterial, packetOwnedEnergy, energyOf, cTq, cid, FULL } from '../../src/v2/layout.js';
 import { airborneReference, outsideOf, AIRBORNE } from '../../src/v2/airborne.js';
-import { particlesWGSL, PARTICLE_STAGES } from '../../src/shaders/v2/particles.js';
+import { particlesWGSL, PARTICLE_STAGES, airborneBase, heldBase, PARTICLE_CAP } from '../../src/shaders/v2/particles.js';
+import { blastsWGSL, BLAST_STAGES, externalBlastBase } from '../../src/shaders/v2/blasts.js';
 import { nativeDynamicsHead, v2Table } from '../../src/shaders/v2.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { assertNaga } from './wgsl-grouping.mjs';
@@ -57,6 +58,8 @@ function fly(p, hostAt, ticks, outside = OPEN) {
 {
   const out = fly(packet(E.WATER, 20, FULL / 8), fire, 600);
   assert.equal(key(out.p.core), 'STEAM', 'the drop boils in flight');
+  assert.equal(out.r.requests & 2, 2, 'its steam is the air\'s gas source at its host (requests bit 1)');
+  assert.equal(out.r.requests & 1, 0, 'never a detonation while flying');
 }
 // 3. Melting: ice through flames melts.
 assert.equal(key(fly(packet(E.ICE, -10), fire, 600).p.core), 'WATER', 'ice melts in flight');
@@ -86,6 +89,7 @@ assert.equal(key(fly(packet(E.FIRE, 900), () => air(20), 600).p.core), 'SMOKE');
 {
   const r = airborneReference(packet(E.GUNPOWDER, 400), air(20), 3, OPEN);
   assert.equal(r.state, AIRBORNE.LANDED); assert.equal(cid(r.host.core), E.GUNPOWDER, 'the charge is the host cell now');
+  assert.equal(r.requests & 1, 1, 'and its detonation request is posted there, for this tick\'s blasts');
 }
 // ...or in the flames that set it off, the fire flying on in its place.
 {
@@ -115,6 +119,14 @@ for (const dims of [[32, 32, 32], [48, 16, 32]]) {
   for (const rule of ['ctFlux(v, h)', 'ctReaction(v, h, seed)', 'ctStepAtmosphere(v,', 'ctResolvePhase(v, h)', 'ctPlume(v, h,']) assert(react.includes(rule), `the pair runs ${rule}`);
 }
 assert(PARTICLE_STAGES.includes('reactClaim') && PARTICLE_STAGES.includes('react'));
+// the requests' posting stage (blasts family: it binds events) and its control words
+for (const dims of [[32, 32, 32], [48, 16, 32]]) {
+  const g = gridLayout(...dims), code = blastsWGSL(g, nativeDynamicsHead, 'airborneEvents');
+  assertNaga(code, `blasts/airborneEvents ${dims}`); modules++;
+  assert.match(code, /events\[s\] \|= bits; noteEvents\(s, bits\);/, 'posted as the block pass posts a cell\'s requests');
+  assert.equal(airborneBase(g), heldBase(g) + PARTICLE_CAP); assert.equal(externalBlastBase(g), airborneBase(g) + 1 + PARTICLE_CAP, 'its words overlap no other range');
+}
+assert(BLAST_STAGES.includes('airborneEvents'));
 
 // 12. The real driver records them every tick, after the landings, with elect between.
 globalThis.GPUBufferUsage = { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, INDIRECT: 8 };
@@ -132,4 +144,5 @@ d.advanceParticles(1);
 const at = name => calls.lastIndexOf(`v2particles_${name}`);
 assert(at('react') > at('reactClaim') && at('reactClaim') > at('deposit') && calls.slice(at('reactClaim'), at('react')).includes('v2particles_elect'),
   'claim, elect, react: after this tick\'s landings');
-console.log(`airborne matter: conduction, boiling, melting, setting, burning, plume, reactions, smothering, detonation all exact; ${modules} stage modules validated; driver records them; no GPU`);
+assert(calls.lastIndexOf('v2blasts_airborneEvents') > at('react'), 'then their requests are posted, before the grid passes read them');
+console.log(`airborne matter: conduction, boiling, melting, setting, burning, plume, reactions, smothering, detonation all exact, requests posted at the host; ${modules} stage modules validated; driver records them; no GPU`);
