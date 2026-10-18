@@ -58,7 +58,7 @@ export const SUMMARY = { CLOSED: 1, AIR: 2, LIQUID: 3 };
 // gases diffuse by random swaps only this long after they last moved (R4: diffusionAge, so a still pool rests)
 const DIFFUSE_AGE = 120;
 // ¼ K steps from -273.25 °C: 20 °C is 1173 exactly
-const T_OFFSET = 273.25;
+export const T_OFFSET = 273.25;
 
 // ---------------------------------------------------------------- element classes
 export const V2 = { AIR: 0, SOLID: 1, POWDER: 2, LIQUID: 3, GAS: 4 };
