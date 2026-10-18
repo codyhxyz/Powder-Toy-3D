@@ -162,10 +162,9 @@ const PEB_MAX_STEPS: i32 = 24;            // sub-lattice steps per ray; then it 
 const PEB_SUN_STEPS: i32 = 8;             // sub-lattice steps toward the sun tested for pebble shadows
 // A walk's first sub-lattice cell tests its 8 corner sites; each later one
 // only the 4 on the face it entered through (it shares the other 4 with the
-// cell before, already tested), so a walk is at most this many site tests.
+// cell before, already tested): the sun walk's most site tests.
 const PEB_CORNERS: i32 = 8;
 const PEB_FACE_CORNERS: i32 = 4;
-const PEB_WALK_TESTS: i32 = PEB_CORNERS + PEB_FACE_CORNERS * (PEB_MAX_STEPS - 1);
 const PEB_LIGHT_TESTS: i32 = PEB_CORNERS + PEB_FACE_CORNERS * (PEB_SUN_STEPS - 1);
 const CLOD_MAX_CELLS: i32 = 4;            // lone cells tested per ray
 
@@ -371,16 +370,17 @@ fn pebCorner(k: i32, face: i32, fb: i32) -> vec3i {
 
 // The first pebble the ray hits in [t0, t1] (its stretch through cell 'cell':
 // gravel, state a, fill = 0, lone if a lone cell; or an empty cell borrowing
-// pebbles, fill > 0 and a its gravel neighbour's), NO_HIT if none; *sHit = its site. Walks the dual
-// sub-lattice (whose corners are the sites) and tests the sites at each
-// step's corners (PEB_CORNERS, then PEB_FACE_CORNERS): the cell's own and
-// those of gravel next door reaching in. Cheap tests first (the site's hash,
-// its bounding ball, then the chip); only a chip that would be the nearest
-// hit yet is checked against the heap's shape (pebbleIn, a field read).
-// *steps (the march's gPebSteps) counts the walk against PEB_MAX_STEPS;
-// *tStop = where it ran out (a dual-lattice plane, half a site off every
-// cell face). One loop of single site tests (not steps of eight unrolled
-// ones), so the shader holds one copy of a test.
+// pebbles, fill > 0 and a its gravel neighbour's), NO_HIT if none; *sHit = its
+// site. Walks the dual sub-lattice (whose corners are the sites) and tests the
+// sites at each step's corners: the cell's own and those of gravel next door
+// reaching in; after the first step only the four on the face it came in
+// through (the step before tested the other four). Cheap tests first (the
+// site's hash, its bounding ball, then the chip); only a chip that would be
+// the nearest hit yet is checked against the heap's shape (pebbleIn, a field
+// read). *steps (the march's gPebSteps) counts the walk against
+// PEB_MAX_STEPS; *tStop = where it ran out (a dual-lattice plane, half a site
+// off every cell face). (The eight corners stay an unrolled loop inside the
+// rolled walk: rolled into one loop of single tests, the walk built slower.)
 fn pebblesHit(cell: vec3i, a: vec4f, lone: bool, fill: i32, ro: vec3f, rd: vec3f, t0: f32, t1: f32,
               steps: ptr<private, i32>, sHit: ptr<function, vec3i>, tStop: ptr<function, f32>) -> f32 {
   *sHit = vec3i(-1);
@@ -396,14 +396,16 @@ fn pebblesHit(cell: vec3i, a: vec4f, lone: bool, fill: i32, ro: vec3f, rd: vec3f
   let mine = PebOwner(cell, a, fill, lone, true);
   var next = PebOwner(PEB_NO_CELL, vec4f(0.0), 0, false, false);   // the last cell next door read
   var best = NO_HIT;
-  var k = 0;
-  var nK = PEB_CORNERS;
   var face = -1;
   var fb = 0;
-  if (*steps < PEB_MAX_STEPS) {
+  for (var i = 0; i < PEB_MAX_STEPS; i++) {
+    if (*steps >= PEB_MAX_STEPS) { break; }
     *steps += 1;
-    for (var i = 0; i < PEB_WALK_TESTS; i++) {
-      let s = dc + pebCorner(k, face, fb);
+    let tb = min(min(tMax.x, tMax.y), tMax.z);
+    for (var k = 0; k < PEB_CORNERS; k++) {
+      let off = vec3i(k & 1, (k >> 1u) & 1, k >> 2u);
+      if (face >= 0 && off[face] != fb) { continue; }   // tested in the step before
+      let s = dc + off;
       let o = vec3i(floor((vec3f(s) + 0.5) * PEB_Q));
       let isOwn = all(o == cell);
       if (!isOwn && any(o != next.cell)) { next = pebbleOwner(o); }
@@ -412,26 +414,17 @@ fn pebblesHit(cell: vec3i, a: vec4f, lone: bool, fill: i32, ro: vec3f, rd: vec3f
       var c: vec3f;
       var r: f32;
       var h: u32;
-      if (pebbleSite(s, w, &c, &r, &h) && ballNear(ro, rd, c, PEB_CORNER * r, t0, best)) {
-        var sa: vec3f;
-        var R: mat3x3f;
-        pebbleShape(r, &h, &sa, &R);
-        let t = chipHit(ro, rd, c, sa, R);
-        if (t >= t0 && t < best && pebbleIn(c, r, w)) { best = t; *sHit = s; }
-      }
-      k++;
-      if (k == nK) {
-        let tb = min(min(tMax.x, tMax.y), tMax.z);
-        if (best <= tb || tb >= t1) { break; }   // nothing nearer can come later
-        *tStop = tb;
-        if (*steps >= PEB_MAX_STEPS) { break; }
-        *steps += 1;
-        face = ddaStep(istp, tDelta, &dc, &tMax);
-        fb = select(0, 1, istp[face] > 0);
-        k = 0;
-        nK = PEB_FACE_CORNERS;
-      }
+      if (!pebbleSite(s, w, &c, &r, &h) || !ballNear(ro, rd, c, PEB_CORNER * r, t0, best)) { continue; }
+      var sa: vec3f;
+      var R: mat3x3f;
+      pebbleShape(r, &h, &sa, &R);
+      let t = chipHit(ro, rd, c, sa, R);
+      if (t >= t0 && t < best && pebbleIn(c, r, w)) { best = t; *sHit = s; }
     }
+    if (best <= tb || tb >= t1) { break; }   // nothing nearer can come later
+    *tStop = tb;
+    face = ddaStep(istp, tDelta, &dc, &tMax);
+    fb = select(0, 1, istp[face] > 0);
   }
   return select(NO_HIT, best, best <= t1 + PEB_Q);   // (a pebble straddling the exit face counts)
 }
