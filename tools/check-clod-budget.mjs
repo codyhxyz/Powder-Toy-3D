@@ -96,7 +96,9 @@ function fixture(code, weight, options = {}) {
       calls.clod.push([...c]);
       return calls.clod.length === options.hitAt ? enter + options.hitOffset : NO_HIT;
     },
-    pebblesHit: (c, a, lone, fill, ro, rd, enter, exit, steps, site, stop) => {
+    pebblesHit: (...args) => {
+      if (args.length === 11) args.splice(2, 1);   // (--shader-ref: before pebblesHit lost its lone argument)
+      const [c, a, fill, ro, rd, enter, exit, steps, site, stop] = args;
       calls.pebble++; steps.value++; site.value = [...c]; stop.value = enter + 0.75;
       return options.pebbleHit ? enter + 0.4 : NO_HIT;
     },
