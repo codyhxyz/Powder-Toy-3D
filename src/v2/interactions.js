@@ -15,6 +15,11 @@ const ids = Object.fromEntries(TOOLS.map(t => [t.key, t.id]));
 const pendingPaint = new Set(['VACUUM', 'CYCLONE', 'GRAV_IN', 'GRAV_OUT'].map(k => ids[k]));
 // Tools whose V1 rule moves or retypes whole cells: the native paint kernel (nativePaint.js).
 const nativeCellPaint = stroke => stroke.tool === ids.MIX || (stroke.tool === PROP_TOOL && stroke.prop?.field === PROP.TYPE);
+// Tools whose V1 rule changes what a cell is or holds (passes.js update: Heat, Cool, Spark and the
+// Property tool's type, temperature, life and ctype). V1's flying matter was grid cells, so they
+// reach V2's particles too (nativePaint.js particleCommit); the grid cells keep their own route.
+const particleRule = stroke => [ids.HEAT, ids.COOL, ids.SPARK].includes(stroke.tool) ||
+  (stroke.tool === PROP_TOOL && [PROP.TYPE, PROP.TEMP, PROP.LIFE, PROP.CTYPE].includes(stroke.prop?.field));
 const forceSpecs={povKick:{update:kickWGSL,params:KickParams},povStrike:{update:strikeWGSL,params:StrikeParams},povField:{update:povFieldWGSL,params:FieldParams}};
 const forces=new WeakMap();
 function forceKernel(sim,name) {
@@ -59,13 +64,14 @@ function blast(sim, center, radius, pressure, selection) {
 export function routeNativePaint(sim, stroke) {
   const { tool, prop, center, end = center, radius, shape, grow, mask, filter = -1, erase } = stroke;
   const erases = tool === ids.ERASE || (tool >= 0 && erase) || (tool === PROP_TOOL && prop?.field === PROP.TYPE && prop.value === E.EMPTY);
-  if (nativeCellPaint(stroke) || erases) {
+  if (nativeCellPaint(stroke) || erases || particleRule(stroke)) {
     const a=[center.x,center.y,center.z],b=[end.x,end.y,end.z],reach=a.map((_,k)=>radius+Math.max(grow?.[k]??0,0));
     const box=mask?{lo:mask.lo,hi:mask.hi}:sim.touchCentres(a.map((x,k)=>Math.min(x,b[k])-reach[k]),a.map((x,k)=>Math.max(x,b[k])+reach[k]));
     const grid=nativeCellPaint(stroke);
-    // (an erase of grid cells stays the edit intent's replacement, which is exact; it follows in sim.paint)
+    // (an erase of grid cells stays the edit intent's replacement, which is exact; it follows in sim.paint,
+    // as do Heat, Cool, Spark and the Property tool's temperature, life and ctype on grid cells)
     const accepted=forceKernel(sim,'nativePaint').run(box,{center:a,end:b,radius,shape,tool,rate:stroke.rate??1,replace:+!!stroke.replace,
-      frame:grid?++sim.paints:sim.paints+1,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},mask?.data,{grid,particles:erases});
+      frame:grid?++sim.paints:sim.paints+1,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},mask?.data,{grid,particles:erases||particleRule(stroke)});
     if (!grid) return null;
     sim.nativeInteractionResult=accepted?{status:'queued'}:{status:'rejected',reason:'native paint kernel not ready or empty bounds'};
     return accepted;

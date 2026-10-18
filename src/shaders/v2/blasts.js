@@ -1,5 +1,5 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
-import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase } from './particles.js';
+import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase } from './particles.js';
 import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { E } from '../../elements.js';
 import { RAYS } from '../../rays.js';
@@ -8,6 +8,7 @@ import { EXTERNAL_BLAST_CAP, blastHeatBudgetWGSL } from '../../v2/externalBlast.
 import { strokeDistanceWGSL, atlasIndexWGSL } from '../passes.js';
 import { atlasDims } from '../common.js';
 import { fold } from '../../gpu/kernels.js';
+import { AIRBORNE_SLOT_MASK, AIRBORNE_BITS_SHIFT } from '../../v2/airborne.js';
 export { DynamicParams };
 // Native cells/bank/activity3 + events, particles, air, control, plans5.
 export const BLASTS_LAYOUT = storageLayout(5);
@@ -16,7 +17,8 @@ export const CHILD_PREFIX = CONTROL.PREFIX;
 export const SPAWN_PREFIX = CHILD_PREFIX + PARTICLE_CAP;
 export const RAY_REQUEST_CAP = 64;
 export const rayRequestBase = g => SPAWN_PREFIX + g.nbricks * 3;
-export const externalBlastBase = g => heldBase(g) + PARTICLE_CAP;
+// (after the airborne requests' count and per-slot words: particles.js airborneBase)
+export const externalBlastBase = g => airborneBase(g) + 1 + PARTICLE_CAP;
 export const externalParticleBase = g => externalBlastBase(g) + EXTERNAL_BLAST_CAP;
 export const externalAirBase = g => externalParticleBase(g) + PARTICLE_CAP*4;
 export const externalMaskBase = g => externalAirBase(g) + g.nbricks + 1;
@@ -340,6 +342,14 @@ export function blastsWGSL(g,nativeHead,stage) {
     }
   `);
   if (stage === 'reset') return h + main1(RESET_SELECTION);
+  // A flying packet's requests are its host cell's (native-contract.md requests): post what this
+  // tick's airborne react stage asked for (particles.js react), before the grid passes read them.
+  if (stage === 'airborneEvents') { const A = airborneBase(g); return h + main64(`
+    if (t >= D_CAP || atomicLoad(&control[${A}u]) == 0u) { return; }
+    let w = atomicExchange(&control[${A + 1}u + t], 0u); if (w == 0u) { return; }
+    let s = w & ${AIRBORNE_SLOT_MASK}u; let bits = w >> ${AIRBORNE_BITS_SHIFT}u;
+    events[s] |= bits; noteEvents(s, bits); dWake(cellOf(s));
+  `); }
   // Bricks noted as holding a request (noteEvents), for the first select. Only clears follow
   // it until the next tick's grid passes, so later batches could use it too; they select
   // through the previous batch's args instead (zero without work).
@@ -868,7 +878,7 @@ var<workgroup> childCounts: array<u32,64>;
   `);
   throw new Error(`Unknown blast stage ${stage}`);
 }
-export const BLAST_STAGES = [...ALLOCATION_STAGES,'eventList','reset','select','pick','planCharges','normalizeCharges','damageCharges','finishCharges','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply'];
+export const BLAST_STAGES = [...ALLOCATION_STAGES,'airborneEvents','eventList','reset','select','pick','planCharges','normalizeCharges','damageCharges','finishCharges','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply'];
 
 export const WGSL_CHECK = BLAST_STAGES.map(stage => ({ name: `v2blasts_${stage}`, kind: 'compute',
   code: g => blastsWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,BLASTS_LAYOUT,'EMPTY'], tool: true }));

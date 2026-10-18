@@ -202,6 +202,9 @@ export class NativeDynamics {
     this._work(); this._rays(tick);
     this._record('particles','clear',1,tick); this._hold(tick);
     for (const stage of ['integrate','elect','impact','deposit']) this._record('particles',stage,PARTICLE_CAP/64,tick);
+    // what is still flying takes part, as V1's moving cells did (src/v2/airborne.js)
+    for (const stage of ['reactClaim','elect','react']) this._record('particles',stage,PARTICLE_CAP/64,tick);
+    this._record('blasts','airborneEvents',PARTICLE_CAP/64,tick);
   }
   applyExternalBlast(request) {
     if(!this.isReady || this.disposed || !validExternalBlast(request,this.g)) return {status:'rejected',reason:'invalid or unavailable external blast'};
