@@ -742,7 +742,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   var drawn = false;
   var wet = false;
   var changed = false;
-  for (var i = 0; i < 27; i++) {
+  // (done once near is known true, or on an idle step, where nothing is near, once changed is)
+  for (var i = 0; i < 27 && !(drawn && wet) && !(P.still != 0u && changed); i++) {
     var n = c + vec3i(i % 3, (i / 3) % 3, i / 9) - 1;
     if (P.wrap != 0u) { n = (n + vec3i(BX, BY, BZ)) % vec3i(BX, BY, BZ); }
     else if (any(n < vec3i(0)) || any(n >= vec3i(BX, BY, BZ))) { continue; }
