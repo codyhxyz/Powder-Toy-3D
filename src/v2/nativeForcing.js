@@ -19,6 +19,8 @@ export const NATIVE_LAUNCH_MODE=15;
 // opts.renameNow: a fracture renames the cell here, energy-exact as apply does, and plans only its
 //   launch, so a take recorded before the allocation (a melee tool's gather: run's defer) finds the
 //   debris on the grid where V1's take found it.
+// opts.motion: { decls, velocity, flags }: WGSL for the plan's velocity (m/s) from p and r, and a
+// statement adding plan flags (src/v2/industry.js: a deck's carry and a machine's throw differ).
 export function nativeForceCommitWGSL(g,params,stage,opts={}) {
   const SI=opts.speedSI ?? WEATHER_SPEED_SI;
   const sources=opts.sources ? `
@@ -57,7 +59,7 @@ if(isLiq(shaped)==isLiq(after.core)) {
 @group(3) @binding(1) var<uniform> P: ${params.name};
 ${nativeDynamicsHead(g)}
 ${scratchWGSL}
-${boxWGSL}
+${boxWGSL}${opts.motion?.decls ?? ''}
 @group(1) @binding(0) var<storage, read> results: array<WeatherResult>;
 struct ForceAir { vp: vec4f, thermal: vec4f }
 @group(1) @binding(1) var<storage, read_write> air: array<ForceAir>;
@@ -83,7 +85,7 @@ let p=weatherCell(i);let s=slotOf(p);let r=results[i];let before=loadMaterial(s)
 let id=cid(before.core);let k=cls(id);var flags=0u;${sources}${renameNow}
 if(r.before.x!=r.after.x) { flags=2u|(u32(r.after.x)<<8u); }
 if((k==2u || k==3u || flags!=0u) && r.motion.w!=0.0) { flags|=1u; }
-${opts.sparse?'if(flags!=0u) { ':''}plans[s]=ForcePlan(r.motion.xyz*${SI},flags);${opts.sparse?' }':''}
+${opts.motion?.flags ?? ''}${opts.sparse?'if(flags!=0u) { ':''}plans[s]=ForcePlan(${opts.motion?.velocity ?? `r.motion.xyz*${SI}`},flags);${opts.sparse?' }':''}
 ${opts.life?'var':'let'} after=forceHeat(before,r);${life}
 if(any(after.core!=before.core) || after.bank!=before.bank) {
  noteEnergySource(p,energySub(energyOf(after),energyOf(before)));storeMaterial(s,before,after);markBusy(p);

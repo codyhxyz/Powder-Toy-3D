@@ -1,6 +1,7 @@
 import {
   fillEdit, sceneFillFrag, FillParams, sceneDiffFrag, leaveLayout, leaveDispatch, LeaveParams, leaveHeadBytes, LEAVE_BRICK_BYTES, LEAVE_BINDING,
 } from '../shaders/generate.js';
+import { sceneNativeDiffFrag } from '../shaders/v2/leave.js';
 import { stampEdit, MAX_FOOT } from '../shaders/stamp.js';
 import { BRICK, LAYOUT } from '../shaders/common.js';
 import { fold } from '../gpu/kernels.js';
@@ -25,6 +26,7 @@ import { WORLD_SCENES } from './scenes/index.js';
 // kernels built and the scene's resources made: await `ready` first.
 
 const BUFFER = { STORAGE: 0x80, COPY_DST: 0x08, COPY_SRC: 0x04 };   // (GPUBufferUsage's bits: Node imports this module)
+const NATIVE_READ_FORMAT = 2;   // Simulation.readHeader's format while the readers see V2's cells (shaders/common.js prelude)
 // a scene bake's and prepass's group 2: the uniforms, and the data they write
 const WRITE_LAYOUT = sceneLayout({ data: true, write: true });
 
@@ -276,6 +278,22 @@ export class WorldGenerator {
   }
 
   /**
+   * Physics V2's leaving slab kernel (shaders/v2/leave.js; made on the first
+   * call, only once V2 owns the grid): built in the background and optional,
+   * so until it is ready (or if it fails) diff records V1's and the window
+   * keeps every native brick, as before. Resolves when it is built.
+   */
+  prepareNativeDiff() {
+    const { sim, scene } = this;
+    this.kernels.nativeDiff ??= sim.gpu.kernel({
+      name: `${scene.key} native leave`, code: sceneNativeDiffFrag(sim.g, this.code), build: 'idle', optional: true,
+      layouts: [sim.L.TABLES, sim.L.STATE_RO, sim.gpu.layout(`leave ${JSON.stringify(this.res.has)}`, leaveLayout(this.res.has))],
+      params: LeaveParams, workgroupSize: [BRICK, BRICK, BRICK],
+    });
+    return this.kernels.nativeDiff.ready;
+  }
+
+  /**
    * Generate the scene into the grid's cells [min, max) (window-local; the
    * whole grid by default), the grid sitting at world cell `origin` (P must be
    * the generator's world). An edit over that box.
@@ -290,21 +308,28 @@ export class WorldGenerator {
   /**
    * Record the leaving slab's kernel over the grid's slab [lo, lo + 4·bricks)
    * (the grid at the simulation's origin), into `out` (diffBuffers: its head's
-   * count cleared here). Needs prepareDiff() resolved.
+   * count cleared here). Needs prepareDiff() resolved. native: the grid is
+   * Physics V2's (the window reads its native cells too): V2's kernel compares
+   * native cores with the generator's import (prepareNativeDiff) once it is
+   * built and V2 is what the readers see. Returns whether it did.
    */
-  diff(P, lo, bricks, out) {
+  diff(P, lo, bricks, out, { native = false } = {}) {
     const sim = this.sim, o = sim.origin, f = sim.gpu.frame, O = [o.x, o.y, o.z];
     this.res.prepassFor(lo.map((v, i) => v + O[i]), lo.map((v, i) => v + O[i] + bricks[i] * BRICK));
     f.clear(out.head, 0, 16);
     out.group ??= sim.gpu.bindGroup(this.kernels.diff.groups[2], this.res.entries([
       { binding: LEAVE_BINDING.head, resource: { buffer: out.head } }, { binding: LEAVE_BINDING.cells, resource: { buffer: out.cells } }]),
     `${this.scene.key} leave`);
-    this.kernels.diff.dispatch(f, leaveDispatch(bricks), {
-      bind: [sim.tables, sim.bindRO, out.group], header: sim.readHeader(),
+    const header = sim.readHeader(), nativeDiff = this.kernels.nativeDiff;
+    // (format 2: the readers bind V2's cells, Simulation.bindRO; a test's forced projection is format 0)
+    const exact = native && !!nativeDiff?.pipeline && header.format === NATIVE_READ_FORMAT;
+    (exact ? nativeDiff : this.kernels.diff).dispatch(f, leaveDispatch(bricks), {
+      bind: [sim.tables, sim.bindRO, out.group], header,
       params: {
         lo, bricks, wlo: [(o.x + lo[0]) / BRICK, (o.y + lo[1]) / BRICK, (o.z + lo[2]) / BRICK], wb: P.size.map((n) => n / BRICK),
       },
     });
+    return exact;
   }
 
   /** The leaving slab's buffers for slabs of up to n bricks (diff's `out`). */

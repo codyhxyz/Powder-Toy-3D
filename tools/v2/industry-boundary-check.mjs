@@ -11,6 +11,7 @@ import { createProgression } from '../../src/industry/progression.js';
 import { validateIndustryPhysics, controlCell } from '../../src/industry/physics.js';
 import { E } from '../../src/elements.js';
 import { nativeReadiness } from '../../src/v2/host.js';
+import { createEngineRetag } from '../../src/industry/engineSwitch.js';
 
 const indexSource = readFileSync(new URL('../../src/industry/index.js', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
@@ -20,8 +21,10 @@ function fixture(native, gamemode = 'factory') {
   const core = Uint32Array.of(0xdeadbeef, 0x89abcdef), bank = Uint32Array.of(0x81234567);
   const writes = [], notices = [];
   const owner = { isReady: true };
+  const retags = [];
   const sim = { compact: native ? owner : null, compactOwner: owner,
-    g: { nx: 128, ny: 128, nz: 128 }, frame: 17, canUndo: false };
+    g: { nx: 128, ny: 128, nz: 128 }, frame: 17, canUndo: false,
+    editKernel: name => ({ name, main: { state: 'ready' } }), edit: (kernel, box, values) => retags.push({ kernel: kernel.name, box, values, at: writes.length }) };
   const write = name => { writes.push(name); core[0]++; bank[0]++; };
   let cargo = { version: 1, pumps: [] };
   const physics = {
@@ -38,7 +41,7 @@ function fixture(native, gamemode = 'factory') {
   const create = vm.runInNewContext(
     indexSource.replace(/^import .*;\n/gm, '').replace(/^export /gm, '') + '\ncreateIndustry;',
     { ...catalog, ...validation, ...controls, E, validateIndustryPhysics, controlCell, createProgression,
-      structuredClone, performance, crypto,
+      structuredClone, performance, crypto, createEngineRetag,
       addEventListener: noop, removeEventListener: noop, allLoads: () => new Map(),
       createIndustryPhysics: () => physics,
       createConstruction: () => ({ ready: Promise.resolve(), run: async () => { write('construction'); return true; } }),
@@ -53,7 +56,7 @@ function fixture(native, gamemode = 'factory') {
   const api = create(app);
   app.industry = api;
   api.reset({ starters: true });
-  return { api, app, sim, physics, core, bank, writes, notices };
+  return { api, app, sim, physics, core, bank, writes, notices, retags };
 }
 
 for (const mode of ['factory', 'sandbox']) {
@@ -94,6 +97,30 @@ console.log('PASS active native Factory/Sandbox admit and step machine work, and
 }
 console.log('PASS suspended native owner retains V1 machine dispatch');
 
+// A runtime V2 -> V1 switch gives the machines' tagged cells V1's ownership tags before they step
+// (industry/engineSwitch.js): a gate closed under V2 is CLOSED to V1's kernel, not DAMAGED.
+{
+  const f = fixture(true, 'sandbox'), { api } = f;
+  for (const d of [{ type: 'gate', x: 40, y: 8, z: 40 }, { type: 'pump', x: 60, y: 8, z: 60 }]) {
+    const placed = await api.place(d);
+    assert.equal(placed.ok, true, `${d.type} placed under V2: ${placed.reason ?? ''}`);
+  }
+  const tagged = api.state.devices.filter(d => d.type === 'gate' || d.type === 'pump');
+  assert.equal(tagged.length, 2);
+  api.update(1 / 60, true);
+  assert.equal(f.retags.length, 0, 'no retag while V2 runs');
+  f.sim.compact = null;   // (PhysicsV2.suspend: compactOwner stays)
+  f.writes.length = 0;
+  api.update(1 / 60, true);
+  assert.equal(f.retags.length, tagged.length, 'one retag a tagged machine');
+  assert(f.retags.every(r => r.kernel === 'industryRetag' && r.at === 0), 'recorded before any machine or gate steps');
+  assert.deepEqual(f.writes, ['machinery', 'gate']);
+  api.update(1 / 60, true);
+  assert.equal(f.retags.length, tagged.length, 'once a switch');
+  api.dispose();
+}
+console.log('PASS V2 -> V1 retags gates and pump backplates before the machines step');
+
 const statusStart = appSource.indexOf('  function v2Status()');
 const statusEnd = appSource.indexOf('function v2Active()', statusStart);
 const setterStart = appSource.indexOf('    async setPhysics(mode)');
@@ -126,15 +153,17 @@ function appFixture({ pending = false, duringImport = false, factory = false } =
   return { context, calls, notices, setPhysics };
 }
 
+// A machine transfer in flight (a running pump is nearly always waiting on one) no longer stops a
+// switch to V2: it rides the switch (app.js setPhysics; engine-switch-check covers the cargo).
 for (const options of [{ pending: true }, { duringImport: true }]) {
   const f = appFixture(options);
-  await assert.rejects(f.setPhysics('v2'), /Wait for the machine transfer/);
-  assert.equal(f.context.physicsMode, 'v1');
-  assert.equal(f.context.physicsV2, null);
-  assert.equal(f.context.physicsChanging, false, 'failed admission releases the engine-change lock');
-  assert.deepEqual(f.calls, options.pending ? [] : ['import']);
+  assert.equal(await f.setPhysics('v2'), 'v2', 'the switch goes through with a transfer in flight');
+  assert.equal(f.context.physicsMode, 'v2');
+  assert.equal(f.context.physicsChanging, false, 'the engine-change lock is released');
+  assert.deepEqual(f.calls.slice(0, 2), ['import', 'construct']);
+  assert.equal(f.notices.some(n => /machine transfer/.test(n)), false, 'no refusal');
 }
-console.log('PASS app refuses engine activation before and after an asynchronous machine-transfer race');
+console.log('PASS app switches to V2 with a machine transfer in flight (no refusal)');
 
 {
   const f = fixture(false), transition = appFixture({ factory: true });

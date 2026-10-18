@@ -74,9 +74,11 @@ export function createElementWeather() {
     resources = null;
   }
   // (a physics switch on the same grid swaps the writer: V2's kernels write
-  // its cells, V1's an edit; the one built for the other engine has no run)
+  // its cells, V1's an edit; the one built for the other engine has no run).
+  // The engine stepping the grid decides (sim.compact), not the owner kept
+  // through a switch: a suspended V2 keeps its cells, but V1 reads its own.
   function ensure(sim) {
-    if (current === sim && resources?.native === !!sim.compactOwner) return;
+    if (current === sim && resources?.native === !!sim.compact) return;
     release(); current = sim;
     const { gpu, g } = sim;
     const layout = gpu.layout('WEATHER_ROOF', WEATHER_ROOF_LAYOUT);
@@ -84,12 +86,12 @@ export function createElementWeather() {
     const group = gpu.bindGroup(layout, [{ binding: 0, resource: { buffer: roof } }], 'element weather roofs');
     const scan = gpu.kernel({ name: 'weatherRoof', code: weatherRoofFrag(g),
       layouts: [sim.L.TABLES, sim.L.STATE_RO, layout], workgroupSize: [64, 1, 1] });
-    const makeSource = sim.compactOwner ? (name, spec) => createNativeWeatherKernel(sim, name, spec) : (name, spec) => sim.editKernel(name, spec);
+    const makeSource = sim.compact ? (name, spec) => createNativeWeatherKernel(sim, name, spec) : (name, spec) => sim.editKernel(name, spec);
     const source = makeSource('elementWeather', {
       nativePrecipitation: true, update: weatherUpdateWGSL, params: WeatherParams, reads: 'neighbours',
       decls: weatherDeclsWGSL, layout: WEATHER_SOURCE_LAYOUT,
     });
-    resources = { roof, group, scan, source, native: !!sim.compactOwner, ready: Promise.all([scan.ready, source.ready]) };
+    resources = { roof, group, scan, source, native: !!sim.compact, ready: Promise.all([scan.ready, source.ready]) };
     resources.ready.catch(() => {}); // pipeline failures already go through gpu.fail
     nextFrame = 0; lastFrame = -1;
   }

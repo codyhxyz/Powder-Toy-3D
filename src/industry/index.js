@@ -5,6 +5,7 @@ import { createFactoryControlParts, CONTROL_PARTS, CONTROL_PART_THRESHOLD_BOUNDS
 import { createIndustryDiagnostics } from './diagnostics.js';
 import { createProgression } from './progression.js';
 import { createConstruction } from './construction.js';
+import { createEngineRetag } from './engineSwitch.js';
 import { createIndustryView } from './view.js';
 import { deviceSpec, validateDevices, overlaps, overlapsBody, deviceHeight } from './validation.js';
 import { allLoads } from '../pov/tools/transfer.js';
@@ -64,6 +65,7 @@ export function createIndustry(app) {
     },
   });
   const controlParts = createFactoryControlParts({ getSim: () => app.sim });
+  const engineTags = createEngineRetag({ getSim: () => app.sim });
   const physics = createIndustryPhysics({ getSim: () => app.sim,
     onShip: shipment => {
       if (disposed || !factory() || !progression) return;
@@ -424,8 +426,10 @@ export function createIndustry(app) {
     if (disposed) return;
     modeChanged();
     if (!active() || !factory()) { building = false; dismantling = false; if (part || inspectMode) clearCompetingModes(); }
+    // A switch to V1 gives the machines' cells V1's ownership tags first (engineSwitch.js).
+    const tagged = engineTags.update(devices);
     // Native machines and shutters advance only beside real simulation steps.
-    if (stepping && active() && !pending) {
+    if (stepping && active() && !pending && tagged) {
       const stepDt = Math.min(Math.max(dt, 0), .05);
       physics.step(stepDt, devices); gatePhysics.step(stepDt, devices); animation += stepDt;
     }
@@ -473,6 +477,7 @@ export function createIndustry(app) {
     nativeStep() {
       if (disposed) return;
       if (app.sim !== lastSim || app.gamemode !== lastMode) modeChanged();
+      engineTags.update(devices);
       physics.nativeStep(active() && !pending ? devices : []);
     },
     update, place, placeControlPart, remove, toggle, modeChanged, selectPart, setThreshold, toggleInspect,

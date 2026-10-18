@@ -1,5 +1,5 @@
-import { emitNativeRay, isRayShape, emitHeldNativeRays, releaseHeldNativeRays, heldNativeRays } from './v2/tools.js';
-import { nativeHostSteps, nativeHostTick, nativeReadiness } from './v2/host.js';
+import { emitNativeRay, isRayShape, emitHeldNativeRays, releaseHeldNativeRays } from './v2/tools.js';
+import { nativeHostSteps, nativeHostTick, nativeReadiness, stepClock, HOST_HZ, LEGACY_STEPS_PER_TICK } from './v2/host.js';
 // The game (docs/webgpu.md J1 U8): the settings, the grid and its scene, the
 // UI and input, and the frame loop, on one WebGPU device (src/gpu, B1).
 //
@@ -1268,17 +1268,20 @@ function paintNativeRay(stroke) {
   nativeRayStroke = { ...stroke, center: stroke.center.clone() };
   return true;
 }
+// A native tick is LEGACY_STEPS_PER_TICK of V1's steps: the console's beforesim and aftersim
+// fire that many times around it, as V1's loop fires them around each of its steps (below),
+// so a script counting steps keeps V1's rate (TPT's event.beforesim / event.aftersim).
 function nativeBeforeStep() {
-  scripts?.beforeStep();
-  weatherWire.step(ctx, { hz: 60 });
+  for (let i = 0; i < LEGACY_STEPS_PER_TICK; i++) scripts?.beforeStep();
+  weatherWire.step(ctx, { hz: HOST_HZ });
   sim.flushNativeTools();
-  if (nativeRayStroke) emitNativeRay(sim, nativeRayStroke, 1 / 60);
-  emitHeldNativeRays(sim, 1 / 60);   // the guests' held brushes (net/edits.js), per tick as the local one
+  if (nativeRayStroke) emitNativeRay(sim, nativeRayStroke, 1 / HOST_HZ);
+  emitHeldNativeRays(sim, 1 / HOST_HZ);   // the guests' held brushes (net/edits.js), per tick as the local one
 }
 // As the V1 loop runs the hearths' paid draft beside each sim step.
 function nativeAfterStep() {
   ctx.industry?.nativeStep();
-  scripts?.afterStep();
+  for (let i = 0; i < LEGACY_STEPS_PER_TICK; i++) scripts?.afterStep();
 }
 
 function editModeText() {
@@ -2674,13 +2677,15 @@ function planMeshFrame(runDerived) {
 // there, so nothing jumps forward when the view is drawn in full again.
 const SIM_CLOCK_WRAP = 1 << 20;   // (gfx/uniforms.js's)
 let clockSim = null, clockAt = 0, clockLag = 0;
+// (in V1 steps under either engine: v2/host.js stepClock)
 function viewClock(held) {
-  if (sim !== clockSim) { clockSim = sim; clockAt = sim.frame; clockLag = 0; }
-  if (held) clockLag += Math.max(0, sim.frame - clockAt);
-  clockAt = sim.frame;
-  clockLag = Math.min(clockLag, sim.frame);
+  const now = stepClock(sim);
+  if (sim !== clockSim) { clockSim = sim; clockAt = now; clockLag = 0; }
+  if (held) clockLag += Math.max(0, now - clockAt);
+  clockAt = now;
+  clockLag = Math.min(clockLag, now);
   if (!clockLag) return;
-  const t = sim.frame - clockLag;
+  const t = now - clockLag;
   gfxUniforms.uSimClock.value = t % SIM_CLOCK_WRAP;
   cloudShift(t, gfxUniforms.uCloudShift.value);
 }
@@ -2807,14 +2812,14 @@ function tick(now, renderOnly = false) {
     stepped = 0;
     if (v2Active()) {
       if (!v2Running) { physicsV2.activate(); v2Running = true; }
+      // (a resting box ticks its clock and hooks and records nothing, as V1's idle steps: v2/host.js)
       stepped = nativeHostSteps(physicsV2, dt, { speed: settings.steps / DEFAULTS.steps, once: stepOnce && settings.paused,
-        keepAlive: !!nativeRayStroke || heldNativeRays(sim) > 0 || live.some(w => w.busy?.(ctx)),
         before: nativeBeforeStep,
         after: nativeAfterStep,
       });
     }
-    if (DAY.running) day.clock += stepped * 4; // legacy day tuning is 240 ticks/s, native host is 60
-    animTime += stepped / 60;
+    if (DAY.running) day.clock += stepped * LEGACY_STEPS_PER_TICK; // the day is tuned in V1 steps
+    animTime += stepped / HOST_HZ;
     stepOnce = false;
   } else if (stepping) {
       if (v2Running) { physicsV2.suspend(); v2Running = false; }
@@ -3244,10 +3249,11 @@ try {
       if (physicsChanging) throw new Error('Wait for the current physics change to finish.');
       physicsChanging = true;
       try {
-        if (mode === 'v2' && ctx.industry?.pending) throw new Error('Wait for the machine transfer before changing physics.');
+        // A machine or tool transfer in flight rides the switch: both engines run the machines, a V1
+        // transfer's writes are recorded before the owner's import of them (PhysicsV2.activate sync),
+        // its answer is V1 cells V2 places as it imports V1's, and V2 cargo meets V1 as V2's export
+        // gives it (pov/tools/transfer.js legacyCargo).
         if (mode === 'v2') V2mod ??= await loadNativePhysics();
-        // Loading the module yields. A transfer may start during that interval.
-        if (mode === 'v2' && ctx.industry?.pending) throw new Error('Wait for the machine transfer before changing physics.');
         if (mode === 'v1') {
           // Keep native mode published while legacy builds: the running loop must
           // not step unbuilt kernels. A map change meanwhile needs its own prepare.
@@ -3311,11 +3317,14 @@ try {
           for (let i = 0; i < count; i++) nativeHostTick(physicsV2, {
             before: nativeBeforeStep, after: nativeAfterStep,
           });
-        } else for (let i = 0; i < count; i++) {
-          weatherWire.step(ctx); sim.step(); ctx.industry?.nativeStep();
-          lightning?.update(sim, { worldEpoch: win?.epoch, worldIdentity: win });
+          if (DAY.running) day.clock += count * LEGACY_STEPS_PER_TICK;   // (the day is tuned in V1 steps)
+        } else {
+          for (let i = 0; i < count; i++) {
+            weatherWire.step(ctx); sim.step(); ctx.industry?.nativeStep();
+            lightning?.update(sim, { worldEpoch: win?.epoch, worldIdentity: win });
+          }
+          if (DAY.running) day.clock += count;
         }
-        if (DAY.running) day.clock += count;
       },
       // Every pipeline the current settings need is built, ours and three's (B5).
       ready: allReady,

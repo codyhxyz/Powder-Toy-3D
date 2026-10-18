@@ -46,9 +46,10 @@ export function createLightning({ onReady = () => {} } = {}) {
 
   // The kernels for sim's grid (pipelines are cached by source, so a rebuilt
   // grid of the same size builds nothing) and the storm's result rings.
-  // (rebuilt across a physics switch: V2's bolt writer and V1's are different kernels)
+  // (rebuilt across a physics switch: V2's bolt writer and V1's are different kernels;
+  // the engine stepping the grid picks, sim.compact, not a suspended owner: elementWeather.js)
   function ensure(sim) {
-    if (sim.id === simId && k?.native === !!sim.compactOwner) return;
+    if (sim.id === simId && k?.native === !!sim.compact) return;
     const gpu = sim.gpu, g = sim.g;
     if (g.slots - 1 > STORM_KEY.SLOT_MAX) throw new Error(`lightning: a ${g.nx}×${g.ny}×${g.nz} grid has more slots than a storm key holds`);
     const L = gpu.layout('STORM', STORM_LAYOUT);
@@ -56,14 +57,14 @@ export function createLightning({ onReady = () => {} } = {}) {
     const pick = gpu.readback.ring('storm pick', VEC4 * 4, RESULT_SLOTS);
     const scan = gpu.readback.ring('storm scan', STORM.CANDIDATES * VEC4 * 4, RESULT_SLOTS);
     const group = (ring, name) => gpu.bindGroup(L, [{ binding: 0, resource: { buffer: ring.buffer } }], name);
-    const makeBolt = sim.compactOwner ? (name, spec) => createNativeWeatherKernel(sim, name, spec) : (name, spec) => sim.editKernel(name, spec);
+    const makeBolt = sim.compact ? (name, spec) => createNativeWeatherKernel(sim, name, spec) : (name, spec) => sim.editKernel(name, spec);
     k = {
       bolt: makeBolt('bolt', { update: boltUpdateWGSL, params: BoltParams, reads: 'own', decls: boltDeclsWGSL }),
       search: gpu.kernel({ name: 'stormSearch', code: stormBrickFrag(g), layouts, params: StormParams, build: 'idle' }),
       scan: gpu.kernel({ name: 'stormScan', code: stormScanFrag(g), layouts, params: ScanParams, build: 'idle' }),
       pick, scanRing: scan, pickGroup: group(pick, 'storm pick'), scanGroup: group(scan, 'storm scan'),
     };
-    k.native = !!sim.compactOwner;
+    k.native = !!sim.compact;
     k.ready = Promise.all([k.bolt.ready, k.search.ready, k.scan.ready]);
     simId = sim.id;
     nextPoll = sim.frame + stormSteps(STORM.POLL_STEPS, hz);

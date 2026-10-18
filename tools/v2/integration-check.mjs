@@ -188,7 +188,7 @@ owner.dynamics.shiftWindow = () => new Promise(resolve => { finishShift = resolv
 const oldOrigin = sim.origin.x, oldTick = owner.tick, oldCore = core.slice();
 const inFlightShift = shiftNative(16, 0);
 assert(sim.nativeTransition);
-assert.equal(nativeHostSteps(owner, 1, { keepAlive: true }), 0);
+assert.equal(nativeHostSteps(owner, 1), 0);
 assert.equal(nativeReadiness(sim, { world: true }).ready, false);
 assert.equal(sim.applyNativeTool({ kind: 'impulse' }), false);
 assert.equal(sim.origin.x, oldOrigin); assert.equal(owner.tick, oldTick); assert.deepEqual(core, oldCore);
@@ -237,19 +237,22 @@ assert.deepEqual(edits.at(-1).box, { lo: [16, 2, 3], hi: [19, 5, 10] });
 owner.acc = 0; owner.certified = false;
 let before = 0, after = 0, weatherTime = 0;
 const startTick = owner.tick, startFrame = sim.frame;
-for (let i = 0; i < 60; i++) nativeHostSteps(owner, 1 / 60, { keepAlive: true,
+for (let i = 0; i < 60; i++) nativeHostSteps(owner, 1 / 60, {
   before: () => { before++; weatherTime += 1 / 60; assert.equal(after, before - 1); },
   after: () => { after++; assert.equal(before, after); } });
 assert.equal(owner.tick - startTick, 60); assert.equal(sim.frame - startFrame, 60);
 const directTick = owner.tick; sim.step();
 assert.equal(owner.tick, directTick + 1); assert.equal(sim.compact, owner, 'Simulation.step cannot silently fall back to v1');
 assert(Math.abs(weatherTime - 1) < 1e-12); assert.equal(before, 60); assert.equal(after, 60);
-assert.equal(nativeHostSteps(owner, 30, { keepAlive: true }), 2); assert.equal(owner.acc, 0);
-assert.equal(nativeHostSteps(owner, 1 / 120, { keepAlive: true }), 0);
-assert.equal(nativeHostSteps(owner, 1 / 120, { keepAlive: true }), 1);
+assert.equal(nativeHostSteps(owner, 30), 2); assert.equal(owner.acc, 0);
+assert.equal(nativeHostSteps(owner, 1 / 120), 0);
+assert.equal(nativeHostSteps(owner, 1 / 120), 1);
 assert.throws(() => nativeHostSteps(owner, NaN));
+// At rest the host still ticks its clock and hooks, recording nothing (V1's idle step, sim.js step()).
 owner.certified = true;
-assert.equal(nativeHostSteps(owner, 1), 0);
+const restTick = owner.tick, restFrame = sim.frame;
+assert.equal(nativeHostSteps(owner, 1), 2, 'a resting box keeps its clock (bounded catch-up)');
+assert.equal(owner.tick, restTick, 'a resting tick records nothing'); assert.equal(sim.frame, restFrame + 2);
 assert.equal(nativeHostSteps(owner, 0, { once: true }), 1, 'manual step works at rest');
 
 // Real host paint entrypoint routes a guest intent into its current owner,

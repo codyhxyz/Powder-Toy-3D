@@ -157,7 +157,8 @@ export function createNativeWeatherKernel(sim, name, spec) {
   const status = { get state() { return built() ? 'ready' : 'pending'; } };
   const kernel = { ready, main:status, apply:status,
     run(box, values, source) {
-      if(!built() || sim.disposed || o.disposed || sim.compactOwner!==o) return false;
+      // (a suspended owner's cells aren't the grid's: V1 steps its own, so its writers write those)
+      if(!built() || sim.disposed || o.disposed || sim.compact!==o) return false;
       if(!box || box.lo.some((v,a)=>v>box.hi[a])) return false;
       const count=box.hi.reduce((n,v,a)=>n*(v-box.lo[a]+1),1);
       const limit=Math.min(gpu.limits?.maxStorageBufferBindingSize ?? 128*1024*1024, gpu.limits?.maxBufferSize ?? Infinity);

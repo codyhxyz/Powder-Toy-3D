@@ -8,6 +8,7 @@ import { createConsole } from '../console/index.js';
 import { registerConsoleApi } from '../console/registry.js';
 import { EDGE, sanitizeModes } from '../simModes.js';
 import { DAY } from '../gfx/daylight.js';
+import { legacyStepCarry } from '../v2/host.js';
 
 // The Simulation options in the console by TPT's Lua names and numbers
 // (src/lua/LuaSimulation.cpp gravityMode, airMode, ambientHeatSim, edgeMode):
@@ -16,6 +17,10 @@ import { DAY } from '../gfx/daylight.js';
 const TPT_EDGES = [EDGE.VOID, EDGE.SOLID, EDGE.LOOP];
 // the most gravity a script may set (sim.gravity): the Gravity slider's top
 const CONSOLE_GRAVITY_MAX = 0.06;
+
+// sim.step(n) counts V1 steps under either engine (TPT's sim frames; console/api.js MAX_SCRIPT_STEPS):
+// under V2 it runs the native ticks they make (v2/host.js legacyStepCarry).
+const scriptTicks = legacyStepCarry();
 
 const console_ = {
   name: 'console',
@@ -51,7 +56,11 @@ const console_ = {
       app.scripts = createConsole({
         getSim: () => app.sim, isGuest: () => app.mp.replica,
         paused: () => settings.paused, setPaused: app.setPaused,
-        stepNow: (n) => { for (let i = 0; i < n; i++) app.sim.step(); if (DAY.running) app.day.clock += n; },
+        stepNow: (n) => {
+          const sim = app.sim, steps = sim.compact ? scriptTicks(sim, n) : n;   // (Simulation.step: a native tick under V2)
+          for (let i = 0; i < steps; i++) sim.step();
+          if (DAY.running) app.day.clock += n;   // (the day is tuned in V1 steps)
+        },
         gravity: () => settings.gravity / app.DEFAULTS.gravity,
         setGravity: (g) => {
           settings.gravity = THREE.MathUtils.clamp(g * app.DEFAULTS.gravity, 0, CONSOLE_GRAVITY_MAX);
