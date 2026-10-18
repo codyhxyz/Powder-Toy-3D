@@ -30,24 +30,28 @@ export function failureKind(message) {
 }
 
 /**
- * Watches `gpu`'s pipeline builds (their names, while they build) and the
- * app's finished frames.
+ * Watches the device's pipeline builds (their labels, while they build) and
+ * the app's finished frames.
  * @param {object} gpu
  */
 export function createGpuLossTracker(gpu) {
   let settledAt = performance.now();
   let asleep = false;            // the frame loop stopped with nothing to do since the last frame
-  const building = new Map();   // pipeline name → builds of it in flight
-  const cache = gpu.pipelines;
-  const pipeline = cache.pipeline.bind(cache);
-  cache.pipeline = (kind, name, ...rest) => {
-    const p = pipeline(kind, name, ...rest);
-    if (!building.has(p)) {
-      building.set(p, name);
+  const building = new Map();   // build in flight → its pipeline's label
+  // Every async build on the device, not only the cache's (gpu/kernels.js):
+  // World's renderer builds its own (gfx/world*.js, world/*.js) and three
+  // builds some. Watching the cache alone, a World load the watchdog killed
+  // mid-build reported "Pipelines still building then: none" (2026-10-17).
+  const { device } = gpu;
+  for (const method of ['createComputePipelineAsync', 'createRenderPipelineAsync']) {
+    const create = device[method].bind(device);
+    device[method] = (descriptor) => {
+      const p = create(descriptor);
+      building.set(p, descriptor?.label || method);
       p.then(() => building.delete(p), () => building.delete(p));
-    }
-    return p;
-  };
+      return p;
+    };
+  }
   return {
     // after each frame (and boot) completes
     settle() { settledAt = performance.now(); asleep = false; },

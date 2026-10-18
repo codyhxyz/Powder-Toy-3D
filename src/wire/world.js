@@ -134,7 +134,7 @@ const world = {
   invalidate(app) {
     const { win } = app;
     if (win) {
-      if(win.renderFrame){win.renderFrame.dead=true;win.renderFrame.driver?.dispose().catch(error=>console.error('WORLD graphics retirement failed',error));}
+      if(win.renderFrame){win.renderFrame.dead=true;win.renderFrame.driver?.dispose().catch(error=>{if(!app.gpu.failure)console.error('WORLD graphics retirement failed',error);});} // (once graphics stop, stopGraphics has said why)
       win.epoch++; // reject readbacks without clearing surviving CPU edits
       if (win.far?.detail) win.far.detail.epoch++;
     }
