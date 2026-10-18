@@ -20,6 +20,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { BODY_MODEL_URLS } from '../pov/bodyModel.js';
 import { YOU_ZOOM_MIN, YOU_ZOOM_MAX } from '../pov/character.js';
 import { buildGarb, GARB_COLORS } from '../pov/garb.js';
+import { createBarrelFit } from '../pov/barrel.js';
 
 const FOV = 20;                       // degrees: a long lens, little distortion (pov/classPortraits.js uses 24)
 const FRAME_MARGIN = 1.03;            // room round his box
@@ -86,7 +87,10 @@ async function loadBody(character, time) {
   });
   // the hat, skinned to his head bone as in the game
   const body = meshes.reduce((a, b) => (b.geometry.attributes.position.count > a.geometry.attributes.position.count ? b : a));
-  for (const [name, geo] of Object.entries(buildGarb(meshes, { bag: character === 'stick' }))) {
+  const garb = buildGarb(meshes, { bag: character === 'stick' });
+  // her barrel: the arms hung over its rim and the legs inside it, as in the game (figureReal.js)
+  const fit = garb.robe ? createBarrelFit(garb.robe.userData.barrel, model, body) : null;
+  for (const [name, geo] of Object.entries(garb)) {
     const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color().setRGB(...(GARB_COLORS[name] ?? GARB_COLORS.hat)),
       roughness: name === 'hoops' ? 0.55 : 0.95,
@@ -103,8 +107,10 @@ async function loadBody(character, time) {
   // his idle clip: the breathing
   const mixer = new THREE.AnimationMixer(model);
   mixer.clipAction(gltf.animations.find((c) => c.name === 'idle')).play();
+  const pose = () => { if (fit) { model.updateMatrixWorld(true); fit.drape(); fit.keepLegs(); } };
   mixer.setTime(time);
-  return { model, step(dt) { mixer?.update(dt); }, stop() { mixer?.stopAllAction(); } };
+  pose();
+  return { model, step(dt) { fit?.restore(); mixer?.update(dt); pose(); }, stop() { mixer?.stopAllAction(); } };
 }
 
 export async function createYou({ canvas, width, height, character = 'real', zoom = 1, pixelRatio = 1, yaw = YOU_YAW, time = YOU_TIME, preserveDrawingBuffer = false }) {

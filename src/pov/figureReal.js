@@ -5,6 +5,7 @@ import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { BODY_HEIGHT, EYE_HEIGHT } from './constants.js';
 import { BODY_MODEL_URLS } from './bodyModel.js';
 import { buildGarb, GARB_COLORS } from './garb.js';
+import { createBarrelFit, BARREL_CROUCH } from './barrel.js';
 import { buildSpartan } from './figureSpartan.js';
 import {
   createFigure, createContactShadow, buildJetpack, updateJetFlames, figureMaterial, figureUniforms, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
@@ -193,6 +194,9 @@ export function createRealFigure(gltf, { bag = false } = {}) {
   // ---- looking and holding: bones read off the bind pose (the clone is still in it)
   root.updateMatrixWorld(true);
   const bone = (n) => model.getObjectByName(n);
+  // her barrel (barrel.js): arms over its rim, thighs inside it, a held tool's grips up out of it
+  const barrel = model.getObjectByName('robe')?.geometry.userData.barrel;
+  const fit = barrel ? createBarrelFit(barrel, model, body) : null;
   const kickPose = strikePose(), kickFoot = new THREE.Quaternion(), kickTurn = new THREE.Quaternion();
   // Body-axis turns must be conjugated into each bone's resting parent frame.
   const kickJoints = [['thigh_r', 'hip'], ['calf_r', 'knee'], ['foot_r', 'foot'], ['spine_01', 'torso']].map(([name, key]) => {
@@ -284,10 +288,15 @@ export function createRealFigure(gltf, { bag = false } = {}) {
       solveLimb(a.L, wingTarget, wingPole);
       a.L.upper.quaternion.copy(wingFromUpper.slerp(a.L.upper.quaternion, wingPose.weight));
       a.L.lower.quaternion.copy(wingFromLower.slerp(a.L.lower.quaternion, wingPose.weight));
+      fit?.settle(side);   // a wingbeat clears her barrel's rim
     }
     holding = true;
   }
   const length = (a, b) => a.getWorldPosition(va).distanceTo(b.getWorldPosition(vb));
+  // In her barrel she kneels: there's no room in it for a squat's knees, nor for a stance's.
+  const crouchPose = fit ? BARREL_CROUCH : CROUCH_POSE;
+  const LEG_BONES = ['pelvis', 'thigh_l', 'thigh_r', 'calf_l', 'calf_r', 'foot_l', 'foot_r'];
+  const legRest = fit && canCrouch ? LEG_BONES.map((n) => bones[n].quaternion.clone()) : null;   // the bind pose
   function crouchBend(c) {
     // the clip pose back first: a bone without a track would keep last frame's bend
     if (bent) CROUCH_BONES.forEach((n, i) => { bones[n].quaternion.copy(clipPose[i].q); bones[n].position.copy(clipPose[i].p); });
@@ -297,7 +306,9 @@ export function createRealFigure(gltf, { bag = false } = {}) {
     bent = true;
     root.updateWorldMatrix(true, true);
     right.set(1, 0, 0).applyQuaternion(root.getWorldQuaternion(qa));   // the body faces −z
-    const hip = CROUCH_POSE.hip * c, knee = CROUCH_POSE.knee * c;
+    // kneeling in the barrel starts from the hips' and legs' rest, squared up, the clips' stance let go as she goes down
+    if (legRest) LEG_BONES.forEach((n, i) => bones[n].quaternion.slerp(legRest[i], c));
+    const hip = crouchPose.hip * c, knee = crouchPose.knee * c;
     // the pelvis down by what the bend takes off a straight leg
     const thigh = length(bones.thigh_l, bones.calf_l), shin = length(bones.calf_l, bones.foot_l);
     const drop = thigh * (1 - Math.cos(hip)) + shin * (1 - Math.cos(hip + knee));
@@ -305,12 +316,12 @@ export function createRealFigure(gltf, { bag = false } = {}) {
     pelvis.getWorldPosition(va).y -= drop;
     pelvis.parent.updateWorldMatrix(true, false);
     pelvis.position.copy(pelvis.parent.worldToLocal(va));
-    turn(bones.spine_01, -CROUCH_POSE.lean * c);   // forward is a negative turn for a bone pointing up
-    turn(bones.neck_01, CROUCH_POSE.head * c);
+    turn(bones.spine_01, -crouchPose.lean * c);   // forward is a negative turn for a bone pointing up
+    turn(bones.neck_01, crouchPose.head * c);
     for (const side of ['l', 'r']) {
       turn(bones[`thigh_${side}`], hip);           // and a positive one for a bone pointing down
       turn(bones[`calf_${side}`], knee);
-      turn(bones[`foot_${side}`], -(hip + knee));  // the sole stays flat
+      turn(bones[`foot_${side}`], -(hip + knee) + (crouchPose.foot ?? 0) * c);  // the sole stays flat (kneeling: the toes back)
     }
   }
 
@@ -381,6 +392,7 @@ export function createRealFigure(gltf, { bag = false } = {}) {
       actions.swim.timeScale = THREE.MathUtils.clamp(s.speedH / clipSpeed.swim, SWIM_RATE_MIN, SWIM_RATE_MAX);
       actions.tread.setEffectiveWeight(w.tread);
       death.setEffectiveWeight(w.death);
+      fit?.restore();
       putBack();
       crouchBend(0);   // the clips' pose, for the mixer to write over
       mixer.update(dt);
@@ -399,6 +411,7 @@ export function createRealFigure(gltf, { bag = false } = {}) {
         for (const b of spine) { turn(b, (lean - rushLean) / spine.length); b.updateWorldMatrix(false, false); }
         for (const b of head) { turn(b, nod / head.length); b.updateWorldMatrix(false, false); }
       }
+      if (fit) { fit.drape(); holding = true; }   // her arms over the barrel's rim; reach() takes a gripping one
       const wing = s.dead ? 0 : s.flap ?? 0;
       if (s.dead) wingAnimation.reset();
       flapArms(dt, wing);   // reach() keeps a gripping arm aimed; the free arm keeps flapping
@@ -413,6 +426,7 @@ export function createRealFigure(gltf, { bag = false } = {}) {
         }
         holding = true;   // restore even untracked bones before the next mixer update
       }
+      fit?.keepLegs();   // a stride or a kick stays inside her barrel
       contact.visible = s.onGround && !s.dead && !riding;
       updateJetFlames(jetpack.flames, s);
     },
@@ -444,10 +458,13 @@ export function createRealFigure(gltf, { bag = false } = {}) {
         const wrist = vAt.copy(a.frame.fingers).multiplyScalar(GRIP_ALONG * a.frame.reach).addScaledVector(a.frame.palm, GRIP_PALM)
           .applyQuaternion(qHand).multiplyScalar(-ws).add(g.pos);
         const target = wrist.clone();
-        solveLimb(a.L, target, pole(a.L, a.side, ELBOW_POLE));
+        if (fit && !fit.reachable(target)) continue;   // a grip inside her barrel (the pogo's bar): that arm stays over the rim
+        if (fit) fit.solve(k, target, pole(a.L, a.side, ELBOW_POLE), qHand);   // the elbow round, out of the staves
+        else solveLimb(a.L, target, pole(a.L, a.side, ELBOW_POLE));
         setWorldQuaternion(a.hand, qHand);
         for (const f of a.fingers) f.b.quaternion.setFromAxisAngle(f.axis, f.curl).premultiply(f.bind);
         blend(bones, from);
+        if (weight < 1) fit?.settle(k);   // half drawn, between the rim and the grip
       }
       if (feet) {
         for (const [k, at] of [['r', feet[0]], ['l', feet[1]]]) {
@@ -458,11 +475,16 @@ export function createRealFigure(gltf, { bag = false } = {}) {
           setWorldQuaternion(g.foot, qFoot.copy(qRoot).multiply(g.level));
           blend(bones, from);
         }
+        fit?.keepLegs(false);
       }
     },
+    // A held tool's frame (held.js, world matrix m; grips: points in its own frame) up over her
+    // barrel's rim, so her hands and the tool stay out of the wood. Returns the lift (model units).
+    liftGrips(m, grips) { return fit ? fit.liftGrips(m, grips) : 0; },
     get material() { return mats[0]; },
-    // tests: the posed rig and each clip's blend weight
+    // tests: the posed rig, her barrel's fit, and each clip's blend weight
     model,
+    barrel: fit,
     get weights() { return Object.fromEntries(Object.entries(actions).map(([k, a]) => [k, a.getEffectiveWeight()])); },
     dispose() {
       mixer.stopAllAction();
@@ -532,6 +554,7 @@ export function createBody({ choice }) {
     // the showing body's eye and reach (held.js), after update()
     anchor(out) { return active().anchor(out); },
     reach(r) { active().reach(r); },
+    liftGrips(m, grips) { return active().liftGrips?.(m, grips) ?? 0; },
     // which body is showing (tests)
     get showing() { return active() === spartan ? 'spartan' : active() === stick ? 'stick' : choice(); },
     // where the showing body's jetpack exhaust leaves (vfx.js)
