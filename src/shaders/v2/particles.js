@@ -7,6 +7,7 @@ import { STAGE } from '../../gpu/kernels.js';
 import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG } from '../../v2/dynamics-reference.js';
 import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
+import { PHYS } from '../../physics.js';
 export { PARTICLE_CAP };
 export const DynamicParams = uniformStruct('DynamicParams', {
   tick: 'u32', busyIn: 'u32', busyOut: 'u32', mode: 'u32', origin: 'vec3i', sequence: 'u32',
@@ -363,9 +364,13 @@ export function particlesWGSL(g, nativeHead, stage) {
       if (cls(p.c0 & 255u) != 3u && dBreak(id) >= 0 && f.effect.x >= cost) {
         after.core.x = (before.core.x & 0xffffff00u) | u32(dBreak(id));
         if (cid(after.core)!=id && cls(cid(after.core))==2u) { after.core=setFall(after.core,0.0,0.0); }
-        if (!energyFits(after,energyOf(before))) { particles[t].velocity=vec3f(0); return; }
-        after=withEnergy(after,energyOf(before));
-        // Fracture spends KE, never manufactures heat. Stop at the first face;
+        // V1 react.js: the debris takes the fracture work as heat, KE_TO_HEAT
+        // cap·°C per unit of toughness (a declared source; physics.js KE_TO_HEAT:
+        // a shot keg's wood → sawdust ~200 °C, past gunpowder's ignition).
+        let warm=dHeatEnergy(before,cost*${f(PHYS.KE_TO_HEAT)});
+        if (!energyFits(after,warm)) { particles[t].velocity=vec3f(0); return; }
+        after=withEnergy(after,warm); noteEnergySource(cellOf(s),energySub(warm,energyOf(before)));
+        // Fracture spends KE. Stop at the first face;
         // remaining KE survives for the next swept segment.
         p.velocity *= sqrt(max(0.0,1.0-cost/max(f.effect.x,0.000001)));
         if (dWon(f.destination.y,1u,t)) { dFree(f.destination.y,1u); } // deposit will not see it

@@ -16,7 +16,7 @@ const cell = (id, T = ELEMENTS[id].temp) => C.ctNew(id, Math.round((T + 273.25) 
 const owned = (...ids) => ids.map(id => cell(id));
 const wood = cell(E.WOOD, 450); wood.burning = 1;
 const closed = owned(E.WOOD, E.WOOD, E.WOOD);
-const step = (ns, out, input = wood) => C.ctStepAtmosphere(input, ns, 1, ...out);
+const step = (ns, out, input = wood) => C.ctStepAtmosphere(input, ns, 1, ...out, 0, C.contactAmbientQ(20));
 const extinguished=C.ctStep(wood, closed, 1);
 assert.equal(extinguished.burning, 0, 'closed six faces extinguish');
 assert.equal(extinguished.life,wood.life,'closed fuel is not spent');
@@ -35,7 +35,8 @@ for (const id of [E.OXYGEN, E.FIRE]) {
   assert.deepEqual(step([n,n,n],[0,0,0,0]), pureOxygen, 'outside O2 and owned O2/FIRE-O2 have identical combustion');
 }
 const flame = cell(E.FIRE, 1000);
-assert.equal(step(closed,[0,0,0,0],flame).id,E.SMOKE);
+// V1 react.js: a flame is burning gas and needs no air face (a fireball's core).
+assert.equal(step(closed,[0,0,0,0],flame).id,E.FIRE);
 assert.equal(step(closed,[1,0,0,1],flame).id,E.FIRE);
 // Outside air/gas must not alter cloud/growth/phase or sampled-contact formulae.
 for (const id of [E.CLOUD,E.PLANT,E.FUNGUS,E.MOSS,E.ICE,E.WATER,E.DUST]) {
@@ -61,7 +62,8 @@ function counts(cores,p,local,edge) {
   for(let a=0;a<3;a++) {
     const q=edgeCell(p.map((x,k)=>x+(k===a?(local[a]===0?-1:1):0)),dims,edge);
     const c=q?cores[index(q)]:wall, id=c[0]&255, kind=ELEMENTS[id].kind;
-    if(id===E.EMPTY)out[0]++;
+    // V1 react.js: a flame is burning air to a fuel (oxygen when it burns in it).
+    if(id===E.EMPTY || (id===E.FIRE && ((c[1]>>>16)&255)!==E.OXYGEN))out[0]++;
     if(id===E.OXYGEN || (id===E.FIRE && ((c[1]>>>16)&255)===E.OXYGEN))out[1]++;
     if(id===E.CO2)out[2]++;
     if(kind===K.EMPTY || kind===K.GAS)out[3]++;
@@ -132,8 +134,11 @@ function replay(reverse=false) {
   }
   assert.deepEqual(tick3,[1,1,1,1],'all four hot edge cells remain burning on tick 3');
   for(let i=0;i<4;i++)assert((cores[hot[i]][1]&65535)<initialLife[i],'fuel spent');
-  assert(burningTicks>120,'persistent burning beyond initial ignition');
-  assert(hot.some(s=>(cores[s][1]>>>24)&1),'burning persists at tick 60');
+  // This replay runs contact alone: no R4 gas motion lifts the flames' smoke
+  // (V1 FIRE_TO_SMOKE, SMOKE_FADE ~1.4 s), so it takes a fuel cell's air faces
+  // after ~10 ticks and the cell stops burning, as V1 does with smoke parked on
+  // it. Each hot cell still burns well past its ignition tick.
+  assert(burningTicks>2*4*10,'persistent burning beyond initial ignition');
   return {cores,banks,burningTicks,tick3,hot:hot.map(s=>({T:C.unpackContact(cores[s],banks[s]).tq/4-273.25,fuel:cores[s][1]&65535,burning:(cores[s][1]>>>24)&1}))};
 }
 const forward=replay(), reverse=replay(true);

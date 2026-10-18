@@ -51,17 +51,24 @@ const eligible=(cores=air(1173),bs=banks,ps=positions,pending=zero,P=modes,count
 assert(eligible()); assert(!eligible(air(1173),banks,positions,zero,modes,7));
 assert.equal(E.EMPTY,0); assert.equal(ELEMENTS[E.EMPTY].kind,K.EMPTY);
 
-function proveContact(q,tick,ps=positions,vs=Array(8).fill(true),outside=Array.from({length:8},()=>[3,0,0,3])) {
+// V1 react.js pulls air toward the scene's ambient everywhere (ctAmbient), so
+// uniform AIR is a zero-work identity exactly when it is AT ambient: prove it
+// at every normal code with that code as the scene's ambient.
+const atAmbient=q=>({ambient:q/4-273.25,ambientHeat:1,edge:EDGE.SOLID});
+function proveContact(q,tick,ps=positions,vs=Array(8).fill(true),outside=Array.from({length:8},()=>[3,0,0,3]),cmodes=atAmbient(q)) {
   const input=air(q), before=input.map(c=>new Uint32Array(c));
-  const out=C.contactReference(input,new Int32Array(8),tick,ps,zero,vs,outside);
+  assert.equal(C.contactAmbientQ(cmodes.ambient),q,'ambient encodes to the code itself');
+  const out=C.contactReference(input,new Int32Array(8),tick,ps,zero,vs,outside,cmodes);
   assert.deepEqual(out.cores,before,`raw Tq ${q}: byte-exact all eight cores`);
   assert.deepEqual(out.banks,new Int32Array(8)); assert.deepEqual(out.requests,zero);
   assert.deepEqual(out.busy,[]); assert.deepEqual(out.sources,Array(8).fill(0n)); assert.deepEqual(out.sinks,Array(8).fill(0n));
   return out;
 }
 for(let q=0;q<=41093;q++) {
-  assert(eligible(air(q)),`normal code ${q}`);
+  assert.equal(eligible(air(q)),q===1173,`normal code ${q}: identity only at the 20 °C ambient`);
+  assert(eligible(air(q),banks,positions,zero,{...modes,ambient:q/4-273.25}),`normal code ${q} at its own ambient`);
   proveContact(q,[0,1,7,0xffffffff][q%4]);
+  for(const ambientHeat of [0,1]) proveContact(q,1,positions,Array(8).fill(true),undefined,{...atAmbient(q),ambientHeat});
   const c=C.unpackContact(air(q)[0]);
   for(const open of [1,3,5]) {
     const boundary=C.ctBoundary(c,open,q);
@@ -77,7 +84,14 @@ for(const q of [0,1,1173,41093]) for(const tick of [0,1,8,12345,0xffffffff]) {
   }
   for(const outside of [[0,0,0,0],[0,3,0,3],[0,0,3,3],[1,1,1,3]]) proveContact(q,tick,positions,Array(8).fill(true),Array(8).fill(outside));
 }
-console.log('All 41094 normal codes: full production contactReference and ambient boundary byte-exact; zero banks, requests, busy and energy ledgers');
+// Away from ambient the same block is real work: V1's pull, a declared ledger.
+for(const q of [0,1,1172,1174,4000,41093]) {
+  const out=C.contactReference(air(q),new Int32Array(8),1);
+  assert.equal(out.busy.length,8,`air at code ${q} relaxes toward 20 °C`);
+  const after=out.cores.map((c,i)=>C.materialEnergy(c,out.banks[i])), before=air(q).map(c=>C.materialEnergy(c,0));
+  for(let i=0;i<8;i++) { assert.equal(after[i]+out.sinks[i]-out.sources[i],before[i]); assert((after[i]-before[i])*BigInt(Math.sign(1173-q))>0n); }
+}
+console.log('All 41094 normal codes: full production contactReference and ambient boundary byte-exact at their own ambient; zero banks, requests, busy and energy ledgers');
 
 // Reject every slot, every native core bit (including opaque history), every
 // request bit and signed nonzero bank. This is deliberately stricter than AIR id.
@@ -97,7 +111,7 @@ for(const gravMode of Object.values(GRAV)) for(const edge of Object.values(EDGE)
   const P={...modes,gravMode,edge,airMode,ambientHeat};
   for(const ambient of [-1000,-273.25,-273.125,-272.875,20,20.125,20.375,10000,20000]) for(const tie of [0,1]) {
     P.ambient=ambient;const encoded=ambientQ(ambient,tie);
-    for(const q of [0,1,1173,1174,41093]) assert.equal(eligible(air(q),banks,positions,zero,P,8,tie),edge!==EDGE.VOID||!airHeat(P)||q===encoded);
+    for(const q of [0,1,1173,1174,41093]) assert.equal(eligible(air(q),banks,positions,zero,P,8,tie),q===encoded);
     if(encoded<=41093) assert(eligible(air(encoded),banks,positions,zero,P,8,tie));
   }
 }
