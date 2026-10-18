@@ -73,8 +73,10 @@ export function createElementWeather() {
     }
     resources = null;
   }
+  // (a physics switch on the same grid swaps the writer: V2's kernels write
+  // its cells, V1's an edit; the one built for the other engine has no run)
   function ensure(sim) {
-    if (current === sim) return;
+    if (current === sim && resources?.native === !!sim.compactOwner) return;
     release(); current = sim;
     const { gpu, g } = sim;
     const layout = gpu.layout('WEATHER_ROOF', WEATHER_ROOF_LAYOUT);
@@ -87,7 +89,7 @@ export function createElementWeather() {
       nativePrecipitation: true, update: weatherUpdateWGSL, params: WeatherParams, reads: 'neighbours',
       decls: weatherDeclsWGSL, layout: WEATHER_SOURCE_LAYOUT,
     });
-    resources = { roof, group, scan, source, ready: Promise.all([scan.ready, source.ready]) };
+    resources = { roof, group, scan, source, native: !!sim.compactOwner, ready: Promise.all([scan.ready, source.ready]) };
     resources.ready.catch(() => {}); // pipeline failures already go through gpu.fail
     nextFrame = 0; lastFrame = -1;
   }
@@ -135,7 +137,7 @@ export function createElementWeather() {
       // empty column between sea fog and high clouds. V1 uses two edit phases;
       // native commits properties/air and allocates only new snow sources.
       for (const box of boxes) {
-        if (sim.compactOwner) source.run(box, values, roof);
+        if (resources.native) source.run(box, values, roof);
         else sim.edit(source, box, values, { bind: [{ buffer: roof }] });
       }
       pulses++; lastFrame = sim.frame; nextFrame = sim.frame + cadence;

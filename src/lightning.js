@@ -42,8 +42,9 @@ export function createLightning({ onReady = () => {} } = {}) {
 
   // The kernels for sim's grid (pipelines are cached by source, so a rebuilt
   // grid of the same size builds nothing) and the storm's result rings.
+  // (rebuilt across a physics switch: V2's bolt writer and V1's are different kernels)
   function ensure(sim) {
-    if (sim.id === simId) return;
+    if (sim.id === simId && k?.native === !!sim.compactOwner) return;
     const gpu = sim.gpu, g = sim.g;
     if (g.slots - 1 > STORM_KEY.SLOT_MAX) throw new Error(`lightning: a ${g.nx}×${g.ny}×${g.nz} grid has more slots than a storm key holds`);
     const L = gpu.layout('STORM', STORM_LAYOUT);
@@ -58,6 +59,7 @@ export function createLightning({ onReady = () => {} } = {}) {
       scan: gpu.kernel({ name: 'stormScan', code: stormScanFrag(g), layouts, params: ScanParams, build: 'idle' }),
       pick, scanRing: scan, pickGroup: group(pick, 'storm pick'), scanGroup: group(scan, 'storm scan'),
     };
+    k.native = !!sim.compactOwner;
     k.ready = Promise.all([k.bolt.ready, k.search.ready, k.scan.ready]);
     simId = sim.id;
     nextPoll = sim.frame + STORM.POLL_STEPS;
@@ -98,7 +100,7 @@ export function createLightning({ onReady = () => {} } = {}) {
     const values = { segA, segB, segs: segs.length, strike: to, strikeR, boltFrom: from, dischargeR, lo, hi, frame };
     job = null; // retire a natural decision superseded by this explicit strike
     const write = () => {
-      if (sim.compactOwner) k.bolt.run(sim.touchCentres(lo, hi), values);
+      if (k.native) k.bolt.run(sim.touchCentres(lo, hi), values);
       else sim.edit(k.bolt, sim.touchCentres(lo, hi), values);
       api.lastBolt = { from, to, segs, id };
     };

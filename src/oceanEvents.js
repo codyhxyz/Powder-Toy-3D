@@ -89,7 +89,8 @@ export function createOceanEvents() {
     if (!equal(map, key)) { reset(); map = key; }
   }
   function ensure(sim) {
-    if (resources?.sim === sim && resources.g === sim.g) return resources;
+    // (rebuilt across a physics switch: V2's writer and V1's are different kernels)
+    if (resources?.sim === sim && resources.g === sim.g && resources.native === !!sim.compactOwner) return resources;
     release();
     const gpu = sim.gpu, g = sim.g;
     const layout = gpu.layout('OCEAN_COLUMNS', OCEAN_COLUMNS_LAYOUT);
@@ -102,7 +103,7 @@ export function createOceanEvents() {
     const group = gpu.bindGroup(layout, [
       { binding: 0, resource: { buffer: edges } }, { binding: 1, resource: { buffer: columns } },
     ], 'ocean columns');
-    const r = { sim, g, probe, force, columns, edges, group, edgeKey: null, ready: false };
+    const r = { sim, g, probe, force, columns, edges, group, native: !!sim.compactOwner, edgeKey: null, ready: false };
     // Readiness callbacks never dispatch a material writer.
     r.whenReady = Promise.all([probe.ready, force.ready]).then(() => { r.ready = true; });
     r.whenReady.catch(() => {}); // GPU service reports compilation failure; trigger still rejects it.
@@ -201,7 +202,7 @@ export function createOceanEvents() {
         sea, time: frame / C.stepsPerSecond, chop, surge, wind,
         source: event?.source ?? [0, 0], direction: event?.direction ?? [1, 0],
       };
-      if (sim.compactOwner) r.force.run({ lo, hi }, values, r.columns);
+      if (r.native) r.force.run({ lo, hi }, values, r.columns);
       else sim.edit(r.force, { lo, hi }, values, { bind: [{ buffer: r.columns }], scrub: !!surge });
       // Keep the original phase when 60Hz ticks straddle a 240Hz-authored
       // pulse boundary (30 old ticks = 7.5 native ticks). Skip missed pulses

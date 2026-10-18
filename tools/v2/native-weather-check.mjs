@@ -120,4 +120,36 @@ assert.equal(pending.main.state,'pending');
 assert.equal(pending.run({lo:[0,0,0],hi:[0,0,0]},{}),false);
 pendingSim.compactOwner.dynamics.isReady=true;release();await pending.ready;
 assert.equal(pending.main.state,'ready');
+// A physics switch on the same grid (a V1 session loading a V2 save) swaps
+// the writer: each system built V1's edit kernel first, which has no run, so
+// its next pulse, wave or bolt threw once V2 owned the cells.
+{
+  const switched=fixture(), owner=switched.compactOwner, edits=[];
+  switched.compact=switched.compactOwner=null;
+  switched.editKernel=(name)=>({name,state:'ready',ready:Promise.resolve(),main:{state:'ready'},apply:{state:'ready'}});
+  switched.edit=(k)=>edits.push(k.name);
+  const w=createElementWeather(), wctx={sim:switched,enabled:true,advancing:true,host:true,seaLevel:18,stepHz:60};
+  w.step(state,wctx); await w.ready; switched.frame=15; calls.length=0;
+  assert(w.step(state,wctx)); assert(edits.includes('elementWeather'),'V1 weather is an edit');
+  switched.compact=switched.compactOwner=owner; w.step(state,wctx); await w.ready; switched.frame=30; calls.length=0;
+  assert(w.step(state,wctx),'V2 weather after the switch');
+  assert(calls.some(c=>c.name==='elementWeatherNativeEvaluate'),'the native writer runs, not the V1 edit');
+  w.dispose();
+  switched.compact=switched.compactOwner=null; edits.length=0;
+  const oc=createOceanEvents(), octx={sim:switched,seaLevel:18,groundHeight:()=>0,stepHz:60};
+  oc.step({ocean:1},octx); await new Promise(resolve=>setImmediate(resolve)); switched.frame=31; oc.step({ocean:1},octx);
+  assert(edits.includes('oceanForce'),'V1 ocean force is an edit');
+  switched.compact=switched.compactOwner=owner; calls.length=0;
+  switched.frame=100; oc.step({ocean:1},octx); await new Promise(resolve=>setImmediate(resolve)); switched.frame=200;
+  assert(oc.step({ocean:1},octx),'V2 ocean chop after the switch');
+  assert(calls.some(c=>c.name==='oceanForceNativeEvaluate'),'native ocean force after the switch');
+  oc.dispose();
+  switched.compact=switched.compactOwner=null; edits.length=0;
+  const lb=createLightning();
+  lb.strike(switched,[10,50,10],[10,10,10],{strikeR:2}); await lb.ready;
+  switched.compact=switched.compactOwner=owner; calls.length=0;
+  lb.strike(switched,[10,50,10],[10,10,10],{strikeR:2});
+  assert(calls.some(c=>c.name==='boltNativeEvaluate'),'native bolt after the switch');
+  lb.dispose();
+}
 console.log('native producers: actual weather/ocean/bolt dispatch, physical reads, exact bounds/cadence, owner bindings; independent SI/property/particle oracles passed (no GPU execution)');
