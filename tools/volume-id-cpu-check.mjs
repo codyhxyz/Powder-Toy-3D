@@ -7,6 +7,8 @@ import { compactDecodeWGSL } from '../src/shaders/compact.js';
 import { SEED_MAX } from '../src/shaders/common.js';
 import { gridLayout } from '../src/sim.js';
 import { volumeFrag } from '../src/shaders/render.js';
+import { DETAIL, DETAIL_FADE_HI } from '../src/gfx/detail.js';
+import { MENISCUS_LAMBDA_MAX_M } from '../src/shaders/gfx/liquidDetail.js';
 
 function body(source, name) {
   const start = source.indexOf(`fn ${name}(`);
@@ -40,6 +42,15 @@ for (const format of [2, 3]) {
   assert(!body(source, 'volumeId').includes('compactTq'), 'no temperature decoding');
 }
 assert(!body(code(3), 'volumeId').includes('seed3'), 'physical nonzero fill is never dithered');
+// The meniscus looks a wall up once in the code (a 0-2 round loop, not four
+// unrolled rounds), through the scalar probe, and gfx/detail.js's fadeM is
+// the shader's own fade: DETAIL_FADE_HI of the widest liquid's wavelength.
+for (const format of [2, 3]) {
+  const men = body(code(format), 'liquidMeniscus');
+  assert.equal((men.match(/\bvolumeId\(/g) ?? []).length, 1, 'one wall probe in the meniscus');
+}
+const menFade = DETAIL.find((f) => f.define === 'DETAIL_LIQ_MENISCUS').fadeM;
+assert(Math.abs(menFade / (DETAIL_FADE_HI * MENISCUS_LAMBDA_MAX_M) - 1) < 1e-3, `meniscus fadeM ${menFade} is the shader's fade`);
 // fetchAs decodes cellOf(slotOf(p)), NOT p. Deliberately choose different
 // coordinates to catch incorrect dither for aliased/out-of-grid coordinates.
 const p = [-1, 4, 33], canonical = [31, 4, 1];
