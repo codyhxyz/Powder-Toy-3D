@@ -2,7 +2,8 @@ import { E, ELEMENTS } from '../../elements.js';
 import { CELL_M } from '../../scale.js';
 import { PHYS } from '../../physics.js';
 import { contactKernelWGSL } from './contact-kernel.js';
-import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, DUST_MIN_FALL_AGE, DUST_MIN_FALL_SPEED, CONTACT_G_TICK, CONTACT_HZ, CONTACT_ELEMENT_COUNT, CONTACT_CONSTANTS } from '../../v2/contact.js';
+import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, DUST_MIN_FALL_AGE, DUST_MIN_FALL_SPEED, CONTACT_G_TICK, CONTACT_HZ, CONTACT_ELEMENT_COUNT, CONTACT_CONSTANTS,
+  CONTACT_DAMP_REACH, CONTACT_DAMP_DRY_Q, CONTACT_CEDAR_BASE, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR, CONTACT_TSNS_MARGIN_Q, CONTACT_PUFF_UNIT } from '../../v2/contact.js';
 import { EDGE } from '../../simModes.js';
 import { CONTACT_ROW_SCHEMA, CONTACT_RX_SCHEMA, contactTableLayout } from '../../v2/contactTable.js';
 
@@ -91,14 +92,26 @@ fn contactSpecialExplosion(core:vec4u,gunpowderEnergyJ:f32)->vec4f {
 }
 `;
 
+// Two requests on one cell: their flags together, the larger unconsumed puff
+// (v2/contact.js ctPuff). The block pass stores every request word through it.
+export const requestMergeWGSL = /* wgsl */ `
+fn ctMergeRequest(a:u32,b:u32)->u32 { return ((a|b)&${CONTACT_PUFF_UNIT - 1}u)|(max(a/${CONTACT_PUFF_UNIT}u,b/${CONTACT_PUFF_UNIT}u)*${CONTACT_PUFF_UNIT}u); }
+`;
 export const contactWGSL = /* wgsl */ `
 ${Object.entries(E).map(([k, id]) => `const CT_${k}:i32=${id};`).join('\n')}
 const DUST_MIN_FALL_SPEED:f32=${DUST_MIN_FALL_SPEED};
 const DUST_MIN_FALL_AGE:i32=${DUST_MIN_FALL_AGE};
 const CONTACT_G_TICK:f32=${CONTACT_G_TICK};
 const CONTACT_ELEMENT_COUNT:i32=${CONTACT_ELEMENT_COUNT};
+const CONTACT_DAMP_REACH:i32=${CONTACT_DAMP_REACH};
+const CONTACT_DAMP_DRY_Q:i32=${CONTACT_DAMP_DRY_Q};
+const CONTACT_CEDAR_BASE:i32=${CONTACT_CEDAR_BASE};
+const CONTACT_DUST_MEC_NB:i32=${CONTACT_DUST_MEC_NB};
+const CONTACT_DUST_RICH_AIR:i32=${CONTACT_DUST_RICH_AIR};
+const CONTACT_TSNS_MARGIN_Q:f32=${float(CONTACT_TSNS_MARGIN_Q)};
+const CONTACT_PUFF_UNIT:i32=${CONTACT_PUFF_UNIT};
 ${Object.entries(CONTACT_CONSTANTS).map(([k, [type, v]]) => `const ${k}:${type}=${type === 'f32' ? float(Math.fround(v)) : v};`).join('\n')}
-struct CTCell { id:i32,tq:i32,raw:i32,fill:i32,life:i32,ctype:i32,spark:i32,age:i32,fallSpeed:f32,burning:i32,valid:i32,bank:i32,state:i32,request:i32,busy:i32,done:i32,pending:i32,pendingOf:i32,pendingGas:i32,source:vec2u,sink:vec2u }
+${requestMergeWGSL}struct CTCell { id:i32,tq:i32,raw:i32,fill:i32,life:i32,ctype:i32,spark:i32,age:i32,fallSpeed:f32,burning:i32,valid:i32,bank:i32,state:i32,request:i32,busy:i32,done:i32,pending:i32,pendingOf:i32,pendingGas:i32,source:vec2u,sink:vec2u }
 struct CTPair { a:CTCell,b:CTCell,changed:i32 }
 fn ctNeighborCount()->i32 { return i32(min(3u,arrayLength(&events))); }
 struct CTRow { ${CONTACT_ROW_SCHEMA.map(([key, type]) => `${key}:${type}`).join(',')} }
@@ -267,7 +280,7 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
  for(var i=0u;i<count;i++){
   if(cells[i].valid==0){continue;}
   cells[i]=ctAmbient(cells[i],contactAmbientQ(),i32(P.ambientHeat));
-  (*cores)[i]=ctPack(cells[i],(*cores)[i]);(*banks)[i]=cells[i].bank;(*requests)[i]|=u32(cells[i].request);
+  (*cores)[i]=ctPack(cells[i],(*cores)[i]);(*banks)[i]=cells[i].bank;(*requests)[i]=ctMergeRequest((*requests)[i],u32(cells[i].request));
   if(any(cells[i].source!=vec2u(0u))){noteEnergySource(positions[i],cells[i].source);}
   if(any(cells[i].sink!=vec2u(0u))){noteEnergySink(positions[i],cells[i].sink);}
   if(cells[i].busy!=0){markBusy(positions[i]);}

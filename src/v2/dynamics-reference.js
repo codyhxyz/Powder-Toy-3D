@@ -24,7 +24,11 @@ export const dynamicsRows = ELEMENTS.map(e => ({
   id: e.id, kind: e.kind, mass: Math.max(e.dens * 100 * CELL_M ** 3, 0.001),
   // TPT hardness is retained as the gameplay fracture energy, now explicitly J.
   toughness: e.breakInto ? e.hard : 1e30, breakInto: e.breakInto ? E[e.breakInto] : -1,
-  strength: e.breakInto ? e.hard / CELL_M ** 2 : 1e30,
+  // V1 react.js breaking: the air pressure difference across a solid past
+  // hard·P_BREAK_PER_HARD (legacy pressure, here in Pa) breaks it.
+  strength: e.breakInto ? e.hard * PHYS.P_BREAK_PER_HARD * LEGACY_PRESSURE_PA : 1e30,
+  // V1 react.js: an explosive goes off under more than blast.crushP air pressure (Pa here).
+  crush: e.blast?.crushP ? e.blast.crushP * LEGACY_PRESSURE_PA : 0,
   terminal: ({ ASH: 3, SNOW: 3, SAWDUST: 4, DUST: 3 })[e.key] ?? 55,
   lift: ({ ASH: 1, DUST: 1, SNOW: 2, SAWDUST: 2 })[e.key] ?? 12,
   energy: e.key==='DUST' ? specialBlastEnergy(PHYS.DUST_P) : e.blast ? Math.max(e.dens * 100 * CELL_M ** 3, 0.001) * (SPECIFIC_J[e.key] ?? 3e6) * BLAST_SCALE : 0,

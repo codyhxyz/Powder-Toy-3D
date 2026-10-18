@@ -12,7 +12,7 @@ import { MODE_FIELDS } from '../v2/modes.js';
 import { modeWGSL } from './v2/modes.js';
 import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
-import { contactWGSL as productionContactWGSL } from './v2/contact.js';
+import { contactWGSL as productionContactWGSL, requestMergeWGSL } from './v2/contact.js';
 import { v2RunsKernel, v2PairsKernel, COLUMN } from './v2/columns.js';
 import { PARTICLE_CAP } from '../v2/dynamics-reference.js';
 
@@ -798,6 +798,7 @@ export const v2BlockWGSL = (g, contactWGSL = '', compact = false) => {
   return /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
 ${contactWGSL}
+${/\bfn\s+ctMergeRequest\s*\(/.test(contactWGSL) ? '' : requestMergeWGSL}
 fn motionDensity(c: vec4u) -> f32 {
   return ${/\bfn\s+contactDensity\s*\(/.test(contactWGSL) ? 'contactDensity(c)' : 'densOfE(cid(c))'};
 }
@@ -966,7 +967,7 @@ ${MAIN} {
     if (inGrid(p)) {
       let slot = slotOf(p);
       storeMaterial(slot, Material(orig[i], oldBanks[i]), Material(cs[i], bs[i]));
-      events[slot] = pending[i] | requests[i]; noteEvents(slot, pending[i] | requests[i]);
+      events[slot] = ctMergeRequest(pending[i], requests[i]); noteEvents(slot, events[slot]);
     }
   }
 }

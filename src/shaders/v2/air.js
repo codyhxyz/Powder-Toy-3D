@@ -4,6 +4,7 @@ import { listControl, listWGSL, windGroupsWGSL } from './blasts.js';
 import { AIR, DT, GRAVITY, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { PHYS } from '../../physics.js';
 import { E } from '../../elements.js';
+import { CONTACT_PUFF_UNIT, CONTACT_PUFF_MAX_PA } from '../../v2/contact.js';
 export const AIR_LAYOUT = storageLayout(5, [0]);
 // Per-brick reach word of the acoustic substeps, its own run in control
 // (listControl). Bit 0: this brick may change in the first substep; bit a+1: a
@@ -143,30 +144,35 @@ var<workgroup> wgWind: atomic<u32>;
           if (dOpen(p) && dOpen(p+dAxis(a))) { open[a]+=1.0/16.0; }
         } }
       }
-      var vacuum=0.0; var buoyancy=0.0;
+      // V1 keeps pressure per cell (react.js): a singularity's cell holds its
+      // vacuum and every open cell touching it SING_RING of that (the min).
+      // The brick holds the mean of those cells' pressures: here the sum and
+      // count of the singularity cells' vacuums and of the ring cells' pins.
+      var pins=vec4f(0.0); var buoyancy=0.0;
       for (var s=t*64u;s<(t+1u)*64u;s++) {
-        let core=loadMaterial(s).core; vacuum=min(vacuum,aVacuum(core));
+        let core=loadMaterial(s).core;
         if (cls(cid(core))==4u) { buoyancy+=(f32(cTq(core))*0.25-273.25-P.ambient)/64.0; }
-        // The contact rule's0.6 open-neighbour ring, including cross-brick faces.
-        // Interior neighbours already share the stronger source-brick target.
-        if (cls(cid(core))==0u || cls(cid(core))==4u) {
-          let p=cellOf(s);
-          for(var axis=0u;axis<3u;axis++) {
-            let local=p[axis]&3; if(local!=0 && local!=3) { continue; }
-            let q=p+dAxis(axis)*select(-1,1,local==3);
-            if(inGrid(q)) { vacuum=min(vacuum,${f(PHYS.SING_RING)}*aVacuum(loadMaterial(slotOf(q)).core)); }
-          }
-        }
+        if (cid(core)==${E.SINGULARITY}u) { pins.x+=aVacuum(core); pins.y+=1.0; continue; }
+        if (cls(cid(core))==1u) { continue; }   // a solid holds no air
+        let p=cellOf(s); var ring=0.0;
+        for(var axis=0u;axis<3u;axis++) { for(var side=-1;side<=1;side+=2) {
+          let q=mEdge(p+dAxis(axis)*side);
+          if(inGrid(q)) { ring=min(ring,${f(PHYS.SING_RING)}*aVacuum(loadMaterial(slotOf(q)).core)); }
+        } }
+        if (ring<0.0) { pins.z+=ring; pins.w+=1.0; }
       }
-      faces[t]=vec4f(open,buoyancy); faces[D_BRICKS+t]=vec4f(vacuum,0.0,0.0,0.0);
+      faces[t]=vec4f(open,buoyancy); faces[D_BRICKS+t]=pins;
     }
-    let buoyancy=faces[t].w; let vacuum=faces[D_BRICKS+t].x;
-    let before=airIn[t]; var a=before; var count=0u; var heat=0.0; var pending=0u;
+    let buoyancy=faces[t].w; let pins=faces[D_BRICKS+t];
+    let before=airIn[t]; var a=before; var count=0u; var heat=0.0; var pending=0u; var gas=0.0; var puff=0.0;
     if (atomicLoad(&act2[V2_EVENTS+t])!=0u) {
       for (var s=t*64u;s<(t+1u)*64u;s++) {
         if ((events[s]&2u)!=0u) {
           count++; heat+=(f32(cTq(loadMaterial(s).core))*0.25-273.25-P.ambient)/64.0;
-          events[s]&=~2u; // bit consumed only together with its bounded, once-only source
+          // A puff carries V1's pressure in Pa (contact.js ctPuff); a plain GAS request, one cell of gas.
+          let payload=events[s]/${CONTACT_PUFF_UNIT}u;
+          if (payload==0u) { gas+=${f(AIR.gasPressure)}; } else { puff+=f32(payload); }
+          events[s]&=5u; // bit and puff consumed only together with their bounded, once-only source
         }
         // Requests left after this source. Nothing later in the air tick sets
         // or clears an event bit, so this is the census activity used to take.
@@ -179,10 +185,14 @@ var<workgroup> wgWind: atomic<u32>;
     let shock=atomicExchange(&control[D_SHOCK+t],0u);
     if (shock>0u && mAirPressure()) { a.vp.w+=f32(shock)/256.0; a.thermal.z=0.0; dWake(aBase(t)); }
     if (count>0u) {
-      if(mAirPressure()) { a.vp.w+=f32(count)*${f(AIR.gasPressure)}; } if(mAirHeat()) { a.thermal.x+=heat; }
+      // V1 clamps a cell's pressure at P_MAX (react.js): puffs raise the brick at most to it.
+      if(mAirPressure()) { a.vp.w+=gas; a.vp.w+=clamp(puff,0.0,max(0.0,${f(CONTACT_PUFF_MAX_PA)}-a.vp.w)); } if(mAirHeat()) { a.thermal.x+=heat; }
       a.thermal.y+=f32(count)/64.0; a.thermal.z=0.0; dWake(aBase(t));
     }
-    if (vacuum<0.0 && mAirPressure()) { a.vp.w=min(a.vp.w,vacuum); a.thermal.z=0.0; dWake(aBase(t)); }
+    if (pins.y+pins.w>0.0 && mAirPressure()) {
+      // The singularity cells take their vacuum, the ring cells the lower of theirs and the brick's.
+      a.vp.w=(a.vp.w*(64.0-pins.y-pins.w)+pins.x+min(a.vp.w*pins.w,pins.z))/64.0; a.thermal.z=0.0; dWake(aBase(t));
+    }
     if(!mAirPressure()) { a.vp.w=0.0; } if(!mAirVelocity()) { a.vp=vec4f(0,0,0,a.vp.w); } if(!mAirHeat()) { a.thermal.x=0.0; }
     airOut[t]=a;
     // Start set of the substeps' reach: everything but a brick this source left

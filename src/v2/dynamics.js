@@ -10,8 +10,9 @@ import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, 
   COUPLE_ARGS, listControl, LIST_ARGS, DISPATCH_ARGS_BYTES, LISTS_STAGES, listsStageWGSL } from '../shaders/v2/blasts.js';
 import { AIR as AIR_MODE, EDGE } from '../simModes.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
-import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M } from './dynamics-reference.js';
+import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M, EVENT } from './dynamics-reference.js';
 import { NATIVE_LAUNCH_MODE } from './nativeForcing.js';
+import { CONTACT_PUFF_UNIT as PUFF_UNIT } from './contact.js';   // a GAS request's puff rides above its flags
 // listArgs: control and the dispatch args, nothing else (it writes the args it publishes).
 export const LISTS_LAYOUT = storageLayout(2);
 
@@ -73,7 +74,8 @@ export function validateDynamicState(snapshot,g) {
   }
   for(let slot=0;slot<RAY_REQUEST_CAP;slot++) if(s.rayRemaining[slot] && !requests.has(slot)) throw new Error('Unowned native ray obligation');
   for (const e of s.pendingEvents) {
-    if (!finiteVector(e.worldCell) || !e.worldCell.every(Number.isInteger) || !Number.isInteger(e.bits) || e.bits<1 || (e.bits&~7)!==0) throw new Error('Invalid pending native event');
+    if (!finiteVector(e.worldCell) || !e.worldCell.every(Number.isInteger) || !Number.isInteger(e.bits) || e.bits<1 || e.bits>0xffffffff || (e.bits%PUFF_UNIT&~7)!==0 ||
+      (e.bits>=PUFF_UNIT && !(e.bits&EVENT.GAS))) throw new Error('Invalid pending native event');
     const p=e.worldCell.map((x,a)=>x-s.origin[a]);
     if(isInside(p,g)) events[cellSlot(g,...p)]|=e.bits;
     else outside.set(key(e.worldCell),(outside.get(key(e.worldCell))??0)|e.bits);

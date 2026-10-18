@@ -153,7 +153,8 @@ test('fire/smoke/plasma life ends, steam/caustic gas do not fade as prototype',(
   const acid=cell(E.CAUSTIC_GAS);assert.equal(C.ctStep(acid,ns(),0).life,acid.life);
 });
 test('blasts request source without consuming, fuse handoff, suspended dust and neutron source',()=>{
-  for(const e of ELEMENTS.filter(e=>e.blast)) {
+  // A blast into matter (thermite) converts in place: tools/v2/elements-boom-check.mjs.
+  for(const e of ELEMENTS.filter(e=>e.blast && !e.blast.into)) {
     const c=cell(e.id,Math.min(10000,e.ignite+50));const out=C.ctStep(c,ns(),0);
     assert.equal(out.id,c.id,e.key);assert.ok(out.request&1,e.key);
   }

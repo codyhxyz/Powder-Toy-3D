@@ -129,7 +129,7 @@ assert(materialStorageWGSL.includes('noteVisible(cellOf(slot), before.core, afte
 assert(materialStorageWGSL.includes('if (any(before.core != after.core) || before.bank != after.bank) { noteState(slot); }'));
 assert(materialStorageWGSL.includes('storeCore(slot, after.core); banks[slot] = after.bank;'));
 assert(shader.includes('if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after))) { return; }'));
-assert(shader.includes('events[slot] = pending[i] | requests[i];'));
+assert(shader.includes('events[slot] = ctMergeRequest(pending[i], requests[i]);'));   // flags OR, the larger puff
 assert(v2SupportWGSL(g).includes('liquidScratch[s].x=(liquidScratch[s].x&0xffffff00u)|air|(oxygen<<2u)|(co2<<4u)|(gas<<6u);'));
 // Execute the real store helper with observable storage/mark hooks. Equal AIR
 // has equal deterministic compactA projections and is not liquid, so the exact
