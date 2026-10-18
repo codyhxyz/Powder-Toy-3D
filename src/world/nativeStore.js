@@ -16,6 +16,29 @@ export function decodeNativeBrick(bytes) {
   for (let i = 0; i < core.length; i += 4) validateMaterialCore(core.subarray(i, i + 4));
   return { core, bank: new Int32Array(copy.buffer, 1024, 64) };
 }
+// A native store keeps every brick that leaves the window, changed or not
+// (the projection never decides what to retain), and most are air or rock at
+// rest: 64 identical cells, identical banks. Stored bytes are never written
+// after put, so equal uniform payloads share one array (Minecraft's palette
+// idea, at brick scale). The count of distinct payloads shared is bounded.
+export const UNIFORM_SHARED_MAX = 4096;   // distinct uniform brick payloads kept for sharing
+const uniformShared = new Map();
+function uniformKey(bytes) {
+  if (bytes.byteOffset % 4) return null;
+  const w = new Uint32Array(bytes.buffer, bytes.byteOffset, NATIVE_BRICK_BYTES / 4);
+  for (let i = 4; i < 256; i++) if (w[i] !== w[i & 3]) return null;
+  for (let i = 257; i < 320; i++) if (w[i] !== w[256]) return null;
+  return `${w[0]},${w[1]},${w[2]},${w[3]},${w[256]}`;
+}
+export function shareUniformBrick(bytes) {
+  const key = uniformKey(bytes);
+  if (key === null) return bytes;
+  const shared = uniformShared.get(key);
+  if (shared) return shared;
+  if (uniformShared.size >= UNIFORM_SHARED_MAX) uniformShared.clear();
+  uniformShared.set(key, bytes);
+  return bytes;
+}
 // Separate tagged save section: never feed native bits to the legacy PackBits
 // decoder. Validate the complete store before mutating either the world or map.
 export class NativeBrickStore extends BrickStore {
@@ -23,7 +46,7 @@ export class NativeBrickStore extends BrickStore {
     const max = this.bricks.reduce((a, b) => a * b, 1);
     if (!Number.isSafeInteger(key) || key < 0 || key >= max || !(bytes instanceof Uint8Array) || bytes.length !== NATIVE_BRICK_BYTES) throw new Error('Invalid native world brick');
     decodeNativeBrick(bytes);
-    super.put(key, bytes);
+    super.put(key, shareUniformBrick(bytes));
   }
   fromBytes(bytes) {
     if (!(bytes instanceof Uint8Array) || bytes.length < 4) throw new Error('Invalid native world store');

@@ -287,23 +287,29 @@ export class WorldWindow {
   // Capture every resident brick through the existing bounded slab diff/readback,
   // retaining off-resident edits already in the store. Caller must freeze state
   // writers for the entire operation; update() cannot move this window meanwhile.
+  // A Physics V2 window also reads every resident brick's exact native cells
+  // into nativeStore, slab by slab, as a leaving slab's are (captureSlab).
   async captureEdits() {
-    if (this.sim.compactOwner) throw new Error('Native terrain edit capture is not supported');
     if (!this.loaded || this.capturing) throw new Error('Window is not available for edit capture');
     this.capturing = true;
-    const epoch = this.epoch, g = this.sim.g, origin = this.sim.origin;
+    const epoch = this.epoch, g = this.sim.g, origin = this.sim.origin, native = !!this.sim.compactOwner;
     const check = () => {
       if (this.readbackError) throw this.readbackError;
+      if (this.persistenceError) throw this.persistenceError;
       if (epoch !== this.epoch || this.sim.disposed) throw new Error('Window changed during edit capture');
       if (this.gpu.failure) throw this.gpu.failure;
     };
     try {
       await this.pending;
+      if (native && !(await this.sim.prepareNative())) throw new Error('Native terrain capture has no native integration');
       check();
       for (let x=0;x<g.nx;x+=WIN_STEP) {
-        const bricks=[Math.min(WIN_STEP,g.nx-x)/BRICK,g.ny/BRICK,g.nz/BRICK];
-        this.gen.diff(this.P,[x,0,0],bricks,this.leave);
-        this.readBack([origin.x/BRICK+x/BRICK,0,origin.z/BRICK],bricks);
+        const lo=[x,0,0], bricks=[Math.min(WIN_STEP,g.nx-x)/BRICK,g.ny/BRICK,g.nz/BRICK];
+        // Nothing moves: the store takes the resident cells at the source's current revision.
+        const capture = this.renderSource.token();
+        const nativeRead = native ? this.sim.nativeIntegration.captureSlab(lo, bricks) : null;
+        this.gen.diff(this.P,lo,bricks,this.leave);
+        this.readBack([origin.x/BRICK+x/BRICK,0,origin.z/BRICK],bricks,capture,this.leave,nativeRead);
         await this.pending;
         check();
       }
@@ -314,14 +320,26 @@ export class WorldWindow {
   // A band cache supplies its complete compressed store after the normal load.
   // Restore in bounded slabs too: a fully edited tall window can exceed the
   // device's storage-buffer limit if uploaded as one dense restore operation.
-  async restoreEdits(store) {
-    if (this.sim.compactOwner) throw new Error('Native terrain edit restore is not supported');
+  // native: the band's exact native bricks (TerrainEditCache.seedNative) for a
+  // Physics V2 window: restored over the legacy bricks, as a shift restores.
+  async restoreEdits(store, native = null) {
     if (!this.loaded || this.pending) throw new Error('Window is not ready for edit restore');
     if (!store.bricks.every((n,i)=>n===this.wb[i])) throw new Error('Edit store dimensions do not match window');
-    const epoch=this.epoch, g=this.sim.g;
+    if (native && !native.bricks.every((n,i)=>n===this.wb[i])) throw new Error('Native edit store dimensions do not match window');
+    const epoch=this.epoch, g=this.sim.g, owned = !!this.sim.compactOwner;
+    // (the window loads before V2's window kernels finish building)
+    if (owned && !(await this.sim.prepareNative())) throw new Error('Native terrain restore has no native integration');
+    if (this.epoch !== epoch || this.sim.disposed || this.pending) throw new Error('Window changed during edit restore');
     this.store.clear();
     for (const [key,bytes] of store.map) this.store.put(key,bytes);
-    for (let x=0;x<g.nx;x+=WIN_STEP) this.restore([x,0,0],[Math.min(WIN_STEP,g.nx-x)/BRICK,g.ny/BRICK,g.nz/BRICK]);
+    if (owned) {
+      this.nativeStore.clear();
+      for (const [key, bytes] of native?.map ?? []) this.nativeStore.put(key, bytes);
+    }
+    const slabs = [];
+    for (let x=0;x<g.nx;x+=WIN_STEP) slabs.push([[x,0,0],[Math.min(WIN_STEP,g.nx-x)/BRICK,g.ny/BRICK,g.nz/BRICK]]);
+    for (const [lo, bricks] of slabs) this.restore(lo, bricks);
+    if (owned) for (const [lo, bricks] of slabs) this.restoreNative(lo, bricks);
     await this.gpu.fence();
     if (this.gpu.failure) throw this.gpu.failure;
     if (this.epoch !== epoch || this.sim.disposed) throw new Error('Window changed during edit restore');

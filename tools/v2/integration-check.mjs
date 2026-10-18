@@ -8,6 +8,8 @@ import { nativeHostSteps, nativeReadiness } from '../../src/v2/host.js';
 import { emitNativeRay, nativeImpulse, worldPosition } from '../../src/v2/tools.js';
 import { NativeBrickStore, encodeNativeBrick, decodeNativeBrick, validateNativeWorldStore } from '../../src/world/nativeStore.js';
 import { WorldWindow } from '../../src/world/window.js';
+import { BrickStore } from '../../src/world/store.js';
+import { TerrainEditCache } from '../../src/world/terrainEditCache.js';
 import { WorldRenderSource } from '../../src/world/renderSource.js';
 import { Stamper } from '../../src/world/gpu.js';
 import { cellSlot, slotCell, marksLayout } from '../../src/shaders/common.js';
@@ -330,16 +332,45 @@ assert.equal(bucket.out, 1); assert.equal(await put, 1); assert.equal(bucket.out
 assert.deepEqual([...core.subarray(to * 4, to * 4 + 4)], material); assert.equal(bank[to], 0xffffff80);
 assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouched fractional material is bit-exact');
 
-// Folded-terrain band stores currently carry only the legacy projection.
-// Refuse before examining that store or changing exact native authority.
-assert(sim.compactOwner);
-const terrainCore = core.slice(), terrainBank = bank.slice();
-let terrainTouched = false;
-const terrainWindow = { sim, get loaded() { terrainTouched = true; throw new Error('legacy terrain touched'); } };
-await assert.rejects(WorldWindow.prototype.captureEdits.call(terrainWindow), /Native terrain edit capture is not supported/);
-await assert.rejects(WorldWindow.prototype.restoreEdits.call(terrainWindow, {}), /Native terrain edit restore is not supported/);
-assert.equal(terrainTouched, false);
-assert.deepEqual(core, terrainCore); assert.deepEqual(bank, terrainBank);
+// Descent's band/portal handoff under V2 (src/wire/descent.js): the old band's
+// window captures every resident brick's exact native cells through the real
+// captureEdits/readBack, the run's cache carries them by global brick, and the
+// next band's window restores them through the real restoreEdits/restoreNative.
+// Fill, flux and energy banks come through bit-exact; nothing is projected.
+{
+  assert(sim.compactOwner);
+  for (let s = 0; s < g.slots; s++) {
+    core.set([E.WATER | (1173 << 8), (s % 3 === 0 ? 1 : 0x12345) | ((s & 255) << 24), (0xbc003c00 ^ (s & 1023)) >>> 0, (0x80000000 | (s & 0x7bff)) >>> 0], s * 4);
+    bank[s] = (0x80000000 + s * 991) >>> 0;
+  }
+  const bandCore = core.slice(), bandBank = bank.slice();
+  const wb = [(sim.origin.x + g.nx) / 4 + 8, g.ny / 4, (sim.origin.z + g.nz) / 4 + 8];
+  const region = { sourceTop: 1000, sourceHeight: g.ny }, head = buffer({ size: 64 }), leaveCells = buffer({ size: 64 });
+  const bandWindow = () => Object.assign(Object.create(WorldWindow.prototype), {
+    sim, gpu: { ...gpu, failure: null, fence: async () => {} }, wb, loaded: true, capturing: false, epoch: 4, pending: null,
+    readbackError: null, persistenceError: null, lastKept: 0, last: null, P: {},
+    store: new BrickStore(wb), nativeStore: new NativeBrickStore(wb), storeReads: new Set(), storeRevisions: new Map(),
+    renderSource: { token: () => ({ epoch: 4, revision: 1, contentRevision: 0 }), commitStoreRevision() {} },
+    leave: { head, cells: leaveCells }, gen: { diff() { words(head)[0] = 0; } },   // (the projection matches the generator)
+  });
+  const old = bandWindow(), cache = new TerrainEditCache();
+  assert.equal(await old.captureEdits(), old.store);
+  assert.equal(old.readbackError, null);
+  assert.equal(old.nativeStore.size, g.nbricks, 'every resident brick is kept exact, changed or not');
+  cache.capture(region, old.store, 1, old.nativeStore);
+  assert.equal(cache.native.size, g.nbricks);
+  // The next band's window: a fresh generator load is something else entirely.
+  for (let s = 0; s < g.slots; s++) { core.set([1173 << 8, 0, 0, 0], s * 4); bank[s] = 0; }
+  const target = bandWindow();
+  await target.restoreEdits(cache.seed(region, wb), cache.seedNative(region, wb));
+  // (first difference, not deepEqual: a failing diff of 130k words takes minutes)
+  assert.equal(core.findIndex((v, i) => v !== bandCore[i]), -1, 'band handoff restores every native word');
+  assert.equal(bank.findIndex((v, i) => v !== bandBank[i]), -1, 'band handoff restores every energy bank');
+  assert.equal(target.nativeStore.size, 0, 'resident bricks leave the store as they go live');
+  // A legacy-only snapshot of the band (V1 owned it) clears its exact bricks.
+  cache.capture(region, new BrickStore(wb), 1, null);
+  assert.equal(cache.native.size, 0);
+}
 
 // main's World renderer keeps its own copy of the cells, from the live A/B
 // (src/world/renderSource.js). On a V2 world those are V2's lazy projection:

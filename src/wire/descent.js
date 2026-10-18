@@ -73,11 +73,13 @@ export function createTerrainPersistence() {
       try {
         const store=await old.captureEdits();
         if (app.win!==old) throw new Error('Terrain capture was replaced');
-        cache.capture(old.scene.sourceRegion,store,old.scene.fold.config.cellScale); captured=true;
+        // Physics V2's exact cells come along with the legacy diff (world/terrainEditCache.js)
+        cache.capture(old.scene.sourceRegion,store,old.scene.fold.config.cellScale,old.sim?.compactOwner ? old.nativeStore : null); captured=true;
         await load(app,key,arrival);
         const target=app.win;
         if (identity(target)!==scope) throw new Error('Terrain source/fold changed during handoff');
-        await target.restoreEdits(cache.seed(target.scene.sourceRegion,target.wb,target.scene.fold.config.cellScale));
+        const region=target.scene.sourceRegion, scale=target.scene.fold.config.cellScale;
+        await target.restoreEdits(cache.seed(region,target.wb,scale),target.sim?.compactOwner ? cache.seedNative(region,target.wb,scale) : null);
         if (app.win!==target) throw new Error('Terrain restore was replaced');
         observe(target);
       } catch (error) {
