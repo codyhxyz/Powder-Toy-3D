@@ -946,6 +946,14 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     m.g = pm * (tilt + gEdge) + (1.0 - pm) * lw * GRIT_H * gt.yzw + PEB_MOTTLE_H * gr.yzw;
     m.cav = mix(MEAN, mix(PEB_VOID_CAV, (1.0 - EDGE_CAV * bev) * depth, pm), lw);
     m.rough += (PEB_ROUGH_VAR * (c.w - 0.5) - PEB_POLISH * pm) * lw;
+    // Specular AA (as for leaves): the chips' faces a pixel covers but can't
+    // show widen the highlight instead of vanishing as they fade (lw), here
+    // and where the pebbles drawn as geometry hand over (gfx/grains.js). Per
+    // axis: a uniform tilt of ±TILT (variance TILT² / 3) plus the ridge's
+    // RIDGE along a random direction within the surface (RIDGE² / 2); the
+    // narrow bevels are left out.
+    const CHIP_SLOPE_VAR: f32 = TILT * TILT / 3.0 + 0.5 * RIDGE * RIDGE;
+    m.slopeVar = CHIP_SLOPE_VAR * unresolvedShare(PEBBLE_F, lw, fp);
   } else if (id == E_SNOW) {
     // Old powder snow: soft drifts, clumps and (up close) a sugary crust of
     // crystals; the sparkle comes from the glints.

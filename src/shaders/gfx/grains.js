@@ -54,6 +54,11 @@
 /** A clod's lump: longest semi-axis, cells (CLOD_LUMP_R below; gfx/detail.js derives the clods' fadeM from it). */
 export const CLOD_LUMP_R = 0.17;
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+// The pebbles' hand-off (see "hand-off by footprint" below), shared with
+// gfx/detail.js's GRAINS_FADE_M: the relief as a share of PEBBLE_M, and the
+// stand-in's error in pixels where the geometry starts and where it is all.
+export const PEB_RELIEF_SHARE = 0.5;
+export const PEB_ERR_PX_NONE = 4, PEB_ERR_PX_FULL = 8;
 
 /** Whether either grain switch is on (the GLSL's GRAINS_ANY), for the tracer. */
 export const GRAINS_ANY = (detail = {}) => !!(detail.DETAIL_GRAINS || detail.DETAIL_GRAIN_CLUSTERS);
@@ -94,10 +99,6 @@ const PEB_FLAT_MAX: f32 = 0.85;
 const PEB_CLUMP_R: f32 = 0.45;            // a lone gravel cell: pebbles within this of its middle (cells)
 // An empty cell inside the smooth surface holds pebbles of the gravel cell
 // next to it, looked for in this order (below first: they slumped there).
-// A site of an empty cell whose middle's field is under this share of the
-// surface level can't hold a pebble (its jittered centre is inside the
-// surface only where the field is near it): skips the neighbour search.
-const PEB_FILL_PRECHECK: f32 = 0.6;
 // six entries, so a private array (docs/webgpu.md C6)
 var<private> PEB_FILL_DIRS: array<vec3i, 6> = array<vec3i, 6>(vec3i(0, -1, 0), vec3i(1, 0, 0), vec3i(-1, 0, 0),
                                                              vec3i(0, 0, 1), vec3i(0, 0, -1), vec3i(0, 1, 0));
@@ -146,14 +147,26 @@ const CLOD_NOISE_LIP: f32 = 1.2;
 const CLOD_BALL_SLACK: f32 = 1.2;
 
 // ---- hand-off by footprint ----
-// Pebbles start where a pebble is PEB_PX_NONE pixels across and have taken
-// over by PEB_PX_FULL; clods by their lumps (below).
-const PEB_PX_NONE: f32 = 8.0;
-const PEB_PX_FULL: f32 = 16.0;
-const PEB_D: f32 = PEBBLE_M / CELL_M;            // a pebble's size, cells
+// Pebbles: by the error of the stand-in. The textured surface draws the heap
+// with no relief, so it misses each pebble's top and the gaps around it by
+// about the pebble's half-height, PEB_RELIEF (a chip's mean vertical
+// semi-extent under a uniformly random turn is 0.505 site pitches, by
+// sampling the shapes above), which is PEB_RELIEF / fp pixels on a silhouette
+// or a grazing view. A switch that error can't show sits at 1 pixel of it
+// (Nanite picks its level of detail at one pixel of error: Karis, Stubbe &
+// Wihlidal, SIGGRAPH 2021), where the texture's chip outlines also reach their
+// mip fade (gfx/surface.js: PEBBLE_F * CHIP_LOD at DETAIL_FADE_LO..HI cycles
+// per pixel is fp = PEB_RELIEF / 2 .. PEB_RELIEF). The geometry starts at
+// PEB_ERR_PX_NONE pixels of error instead and has taken over by
+// PEB_ERR_PX_FULL: a cost trade (gfx/detail.js GRAINS_FADE_M; at 1 pixel the
+// geometry would draw 4x as far out, about twice the pixels of a standing
+// view over flat gravel, measured on the GPU at +12-17 ms where it is now).
+const PEB_RELIEF: f32 = ${PEB_RELIEF_SHARE} * PEBBLE_M / CELL_M;   // cells
+const PEB_ERR_PX_NONE: f32 = ${PEB_ERR_PX_NONE}.0;
+const PEB_ERR_PX_FULL: f32 = ${PEB_ERR_PX_FULL}.0;
+const PEB_FP_NONE: f32 = PEB_RELIEF / PEB_ERR_PX_NONE;   // cells per pixel
+const PEB_FP_FULL: f32 = PEB_RELIEF / PEB_ERR_PX_FULL;
 const CLOD_D: f32 = 2.0 * CLOD_LUMP_R;           // a lump's size, cells
-const PEB_FP_NONE: f32 = PEB_D / PEB_PX_NONE;    // cells per pixel
-const PEB_FP_FULL: f32 = PEB_D / PEB_PX_FULL;
 // A clod is drawn while its lumps can be seen. A lump and the crease to the
 // next one are one cycle of the surface's shape, CLOD_D cells long, and by the
 // mip rule (gfx/detail.js DETAIL_FADE_LO/HI) such a band is all there up to
@@ -165,8 +178,14 @@ const CLOD_FP_NONE: f32 = CLOD_D * DETAIL_FADE_HI;
 const CLOD_FP_FULL: f32 = CLOD_D * DETAIL_FADE_LO;
 
 // ---- bounds on the work per ray ----
-const PEB_MAX_STEPS: i32 = 24;            // sub-lattice steps (8 sites each) per ray; then it is in the dark between them
+const PEB_MAX_STEPS: i32 = 24;            // sub-lattice steps per ray; then it is in the dark between them
 const PEB_SUN_STEPS: i32 = 8;             // sub-lattice steps toward the sun tested for pebble shadows
+// A walk's first sub-lattice cell tests its 8 corner sites; each later one
+// only the 4 on the face it entered through (it shares the other 4 with the
+// cell before, already tested): the sun walk's most site tests.
+const PEB_CORNERS: i32 = 8;
+const PEB_FACE_CORNERS: i32 = 4;
+const PEB_LIGHT_TESTS: i32 = PEB_CORNERS + PEB_FACE_CORNERS * (PEB_SUN_STEPS - 1);
 const CLOD_MAX_CELLS: i32 = 4;            // lone cells tested per ray
 
 // ---- shading ----
@@ -285,29 +304,70 @@ fn ballNear(ro: vec3f, rd: vec3f, c: vec3f, r: f32, tMin: f32, tBest: f32) -> bo
 }
 
 // ---- pebbles ----
-// The pebble at site s of its cell (state a; trimmed to a round clump if the
-// cell is lone): false if the site is empty, else its centre *c (grid units)
-// and longest semi-axis *r. *h carries on to pebbleShape.
-// (cell: the cell the site is in; a: its owner's state, the cell itself or,
-// filling an empty cell, its gravel neighbour PEB_FILL_DIRS[fill - 1])
-fn pebbleAt(s: vec3i, cell: vec3i, a: vec4f, lone: bool, fill: i32, c: ptr<function, vec3f>, r: ptr<function, f32>,
-            h: ptr<function, u32>) -> bool {
-  let l = s - cell * PEB_N;
-  *h = pcg(bitcast<u32>(fract(a.w)) ^ (u32(1 + l.x + PEB_N * (l.y + PEB_N * (l.z + PEB_N * fill))) * GRAIN_SALT));
+// Who owns a site's pebble: the gravel cell the site is in (fill = 0, a its
+// state), or an empty cell inside the heap's smooth surface borrowing the
+// pebbles of the gravel next to it (fill = 1 + its PEB_FILL_DIRS index, a
+// that gravel's state). ok: either holds pebbles. lone: a lone gravel cell
+// (a round clump), known only for the cell a walk starts from (loneCell, six
+// reads, outside the walk's loop: inside it, its copy alone took 6 s of a
+// cold Metal build); cells next door are taken as part of a heap.
+struct PebOwner { cell: vec3i, a: vec4f, fill: i32, lone: bool, ok: bool }
+// a cell no site is in (far outside any grid): a walk's empty neighbour entry
+const PEB_NO_CELL: vec3i = vec3i(-1000000000);
+
+// The gravel cell an empty cell borrows pebbles from (fill = 1 + its index in
+// PEB_FILL_DIRS, its state in *a), or fill = 0 if none.
+fn pebbleFill(cell: vec3i, a: ptr<function, vec4f>) -> i32 {
+  *a = vec4f(0.0);
+  var fill = 0;
+  for (var i = 0; i < 6; i++) {
+    let c = cell + PEB_FILL_DIRS[i];
+    if (outside(c)) { continue; }
+    let ac = fetchA(c);
+    if (eid(ac) == E_STONE) { *a = ac; fill = i + 1; break; }
+  }
+  return fill;
+}
+fn pebbleOwner(o: vec3i) -> PebOwner {
+  var w = PebOwner(o, vec4f(0.0), 0, false, false);
+  if (!outside(o)) {
+    w.a = fetchA(o);
+    let id = eid(w.a);
+    if (id == E_STONE) { w.ok = true; }
+    else if (id == E_EMPTY) {
+      var af: vec4f;   // (not &w.a: Naga's SPIR-V writer panics on a pointer to a struct's member)
+      w.fill = pebbleFill(o, &af);
+      w.a = af;
+      w.ok = w.fill > 0;
+    }
+  }
+  return w;
+}
+
+// The pebble at site s, if its owner w puts one there (false: the site is
+// empty): centre *c (grid units), longest semi-axis *r; *h carries on to
+// pebbleShape. Whether it lies inside the heap's shape is pebbleIn's to say:
+// the walks ask only for a pebble that would be their nearest hit.
+// (Pebbles may straddle their cell's faces: the walks test them from both
+// sides; where they would poke into open air pebbleIn leaves them out.)
+fn pebbleSite(s: vec3i, w: PebOwner, c: ptr<function, vec3f>, r: ptr<function, f32>, h: ptr<function, u32>) -> bool {
+  let l = s - w.cell * PEB_N;
+  *h = pcg(bitcast<u32>(fract(w.a.w)) ^ (u32(1 + l.x + PEB_N * (l.y + PEB_N * (l.z + PEB_N * w.fill))) * GRAIN_SALT));
   let pr = u01(h);
-  let rr = PEB_Q * (PEB_R_MIN + PEB_R_VAR * u01(h));
-  *r = rr;
+  *r = PEB_Q * (PEB_R_MIN + PEB_R_VAR * u01(h));
   let jx = u01(h);
   let jy = u01(h);
   let jz = u01(h);
-  let cc = (vec3f(s) + 0.5 + (2.0 * vec3f(jx, jy, jz) - 1.0) * PEB_JITTER) * PEB_Q;
-  *c = cc;
-  // (Pebbles may straddle their cell's faces: the walk tests them from both
-  // sides; where they would poke into open air the smooth surface below has
-  // already left them out.)
-  if (pr >= PEB_P) { return false; }
-  if (lone) { return distance(cc, vec3f(cell) + 0.5) + rr < PEB_CLUMP_R; }   // a round clump inside its cell
-  return surfField(cc)[CH_GRANULAR] >= SURF_ISO;   // the heap's smooth shape
+  *c = (vec3f(s) + 0.5 + (2.0 * vec3f(jx, jy, jz) - 1.0) * PEB_JITTER) * PEB_Q;
+  return w.ok && pr < PEB_P;
+}
+// Whether the pebble (centre c, longest semi-axis r) of owner w lies inside
+// the heap's smooth shape, or for a lone cell in its round clump.
+fn pebbleIn(c: vec3f, r: f32, w: PebOwner) -> bool {
+  var inside: bool;
+  if (w.lone) { inside = distance(c, vec3f(w.cell) + 0.5) + r < PEB_CLUMP_R; }
+  else { inside = surfField(c)[CH_GRANULAR] >= SURF_ISO; }
+  return inside;
 }
 fn pebbleShape(r: f32, h: ptr<function, u32>, sa: ptr<function, vec3f>, R: ptr<function, mat3x3f>) {
   let u1 = u01(h);
@@ -315,28 +375,32 @@ fn pebbleShape(r: f32, h: ptr<function, u32>, sa: ptr<function, vec3f>, R: ptr<f
   *sa = r * vec3f(1.0, mix(PEB_MID_MIN, 1.0, u1), mix(PEB_FLAT_MIN, PEB_FLAT_MAX, u2));
   *R = randomTurn(h);
 }
-
-// The gravel cell an empty cell borrows pebbles from (fill = 1 + its index in
-// PEB_FILL_DIRS, its state in *a), or fill = 0 if none.
-fn pebbleFill(cell: vec3i, a: ptr<function, vec4f>) -> i32 {
-  *a = vec4f(0.0);
-  for (var i = 0; i < 6; i++) {
-    let c = cell + PEB_FILL_DIRS[i];
-    if (outside(c)) { continue; }
-    let ac = fetchA(c);
-    *a = ac;
-    if (eid(ac) == E_STONE) { return i + 1; }
-  }
-  return 0;
+// Corner k of a dual sub-lattice cell, as the offset of its site from the
+// cell's lowest one: any of the eight while face < 0, else one of the four on
+// the face across axis face it was entered through (that axis's offset fb).
+fn pebCorner(k: i32, face: i32, fb: i32) -> vec3i {
+  let lo = k & 1;
+  let mid = (k >> 1u) & 1;
+  var o = vec3i(lo, mid, (k >> 2u) & 1);
+  o = select(o, vec3i(fb, lo, mid), face == 0);
+  o = select(o, vec3i(lo, fb, mid), face == 1);
+  o = select(o, vec3i(lo, mid, fb), face == 2);
+  return o;
 }
 
-// The first pebble the ray hits in [t0, t1] (its stretch through cell 'cell',
-// gravel or an empty cell borrowing pebbles), NO_HIT if none; *sHit = its
+// The first pebble the ray hits in [t0, t1] (its stretch through cell 'cell':
+// gravel, state a, fill = 0, lone if a lone cell; or an empty cell borrowing
+// pebbles, fill > 0 and a its gravel neighbour's), NO_HIT if none; *sHit = its
 // site. Walks the dual sub-lattice (whose corners are the sites) and tests the
 // sites at each step's corners: the cell's own and those of gravel next door
-// reaching in. *steps (the march's gPebSteps) counts the walk against
+// reaching in; after the first step only the four on the face it came in
+// through (the step before tested the other four). Cheap tests first (the
+// site's hash, its bounding ball, then the chip); only a chip that would be
+// the nearest hit yet is checked against the heap's shape (pebbleIn, a field
+// read). *steps (the march's gPebSteps) counts the walk against
 // PEB_MAX_STEPS; *tStop = where it ran out (a dual-lattice plane, half a site
-// off every cell face).
+// off every cell face). (The eight corners stay an unrolled loop inside the
+// rolled walk: rolled into one loop of single tests, the walk built slower.)
 fn pebblesHit(cell: vec3i, a: vec4f, lone: bool, fill: i32, ro: vec3f, rd: vec3f, t0: f32, t1: f32,
               steps: ptr<private, i32>, sHit: ptr<function, vec3i>, tStop: ptr<function, f32>) -> f32 {
   *sHit = vec3i(-1);
@@ -349,43 +413,38 @@ fn pebblesHit(cell: vec3i, a: vec4f, lone: bool, fill: i32, ro: vec3f, rd: vec3f
   var tDelta: vec3f;
   var tMax: vec3f;
   ddaInit(o2, d2, dc, &istp, &tDelta, &tMax);
+  let mine = PebOwner(cell, a, fill, lone, true);
+  var next = PebOwner(PEB_NO_CELL, vec4f(0.0), 0, false, false);   // the last cell next door read
   var best = NO_HIT;
+  var face = -1;
+  var fb = 0;
   for (var i = 0; i < PEB_MAX_STEPS; i++) {
     if (*steps >= PEB_MAX_STEPS) { break; }
     *steps += 1;
     let tb = min(min(tMax.x, tMax.y), tMax.z);
-    for (var k = 0; k < 8; k++) {
-      let s = dc + vec3i(k & 1, (k >> 1u) & 1, k >> 2u);
-      let own = vec3i(floor((vec3f(s) + 0.5) * PEB_Q));
+    for (var k = 0; k < PEB_CORNERS; k++) {
+      let off = vec3i(k & 1, (k >> 1u) & 1, k >> 2u);
+      if (face >= 0 && off[face] != fb) { continue; }   // tested in the step before
+      let s = dc + off;
+      let o = vec3i(floor((vec3f(s) + 0.5) * PEB_Q));
+      let isOwn = all(o == cell);
+      if (!isOwn && any(o != next.cell)) { next = pebbleOwner(o); }
+      var w = next;
+      if (isOwn) { w = mine; }
       var c: vec3f;
       var r: f32;
       var h: u32;
-      if (all(own == cell)) {
-        if (!pebbleAt(s, cell, a, lone, fill, &c, &r, &h)) { continue; }
-      } else {
-        // a neighbour's pebble reaching in: gravel's own, or one an empty cell borrowed
-        if (outside(own)) { continue; }
-        let an = fetchA(own);
-        let idn = eid(an);
-        if (idn == E_STONE) {
-          if (!pebbleAt(s, own, an, false, 0, &c, &r, &h)) { continue; }
-        } else if (idn == E_EMPTY) {
-          if (surfField((vec3f(s) + 0.5) * PEB_Q)[CH_GRANULAR] < SURF_ISO * PEB_FILL_PRECHECK) { continue; }   // (cheap: clearly outside)
-          var af: vec4f;
-          let fl = pebbleFill(own, &af);
-          if (fl == 0 || !pebbleAt(s, own, af, false, fl, &c, &r, &h)) { continue; }
-        } else { continue; }
-      }
-      if (!ballNear(ro, rd, c, PEB_CORNER * r, t0, best)) { continue; }
+      if (!pebbleSite(s, w, &c, &r, &h) || !ballNear(ro, rd, c, PEB_CORNER * r, t0, best)) { continue; }
       var sa: vec3f;
       var R: mat3x3f;
       pebbleShape(r, &h, &sa, &R);
       let t = chipHit(ro, rd, c, sa, R);
-      if (t >= t0 && t < best) { best = t; *sHit = s; }
+      if (t >= t0 && t < best && pebbleIn(c, r, w)) { best = t; *sHit = s; }
     }
     if (best <= tb || tb >= t1) { break; }   // nothing nearer can come later
     *tStop = tb;
-    ddaStep(istp, tDelta, &dc, &tMax);
+    face = ddaStep(istp, tDelta, &dc, &tMax);
+    fb = select(0, 1, istp[face] > 0);
   }
   return select(NO_HIT, best, best <= t1 + PEB_Q);   // (a pebble straddling the exit face counts)
 }
@@ -703,54 +762,69 @@ fn ballOcc(p: vec3f, n: vec3f, c: vec3f, r: f32) -> f32 {
   return max(dot(n, d) * inverseSqrt(l2), 0.0) * min(r * r / l2, 1.0);   // (inside the ball: fully)
 }
 
-// The pebble at site s, whichever cell owns it: false if none.
-fn pebbleOf(s: vec3i, cell: ptr<function, vec3i>, a: ptr<function, vec4f>, c: ptr<function, vec3f>, r: ptr<function, f32>,
-            h: ptr<function, u32>) -> bool {
-  let own = vec3i(floor((vec3f(s) + 0.5) * PEB_Q));
-  *cell = own;
-  *a = vec4f(0.0); *c = vec3f(0.0); *r = 0.0; *h = 0u;
-  if (outside(own)) { return false; }
-  let ao = fetchA(own);
-  *a = ao;
-  let id = eid(ao);
-  if (id == E_STONE) { return pebbleAt(s, own, ao, loneCell(own), 0, c, r, h); }
-  if (id != E_EMPTY) { return false; }
-  let fill = pebbleFill(own, a);
-  return fill > 0 && pebbleAt(s, own, *a, false, fill, c, r, h);
-}
-
-// Sun visibility at p on the pebble at site sSelf, past the pebbles between it
-// and the sun (the shadow map is far too coarse for them): PEB_SUN_STEPS steps.
-fn pebbleSunVis(sSelf: vec3i, p: vec3f) -> f32 {
+// Contact occlusion and sun visibility at p (normal n) on the pebble at site
+// sSelf (owner own): *occ = the summed ball occlusion by the pebbles
+// touching it (the eight sites around p), returned the sun's visibility past
+// the pebbles between it and the sun (the shadow map is far too coarse for
+// them). One walk of the dual sub-lattice toward the sun, PEB_SUN_STEPS cells,
+// whose first cell is those eight sites; facing away from the sun, that cell
+// alone. As in the march's walk, only own's cell may be a lone clump.
+fn pebbleLight(sSelf: vec3i, own: PebOwner, p: vec3f, n: vec3f, occ: ptr<function, f32>) -> f32 {
   let rd = safeDir(FU.sun);
+  let sunward = dot(n, FU.sun) > 0.0;
+  let q = p + n * GRAIN_NUDGE;
   let N = f32(PEB_N);
-  let o2 = p * N - 0.5;
+  let o2 = q * N - 0.5;
   let d2 = rd * N;
   var dc = vec3i(floor(o2));
   var istp: vec3i;
   var tDelta: vec3f;
   var tMax: vec3f;
   ddaInit(o2, d2, dc, &istp, &tDelta, &tMax);
-  for (var i = 0; i < PEB_SUN_STEPS; i++) {
-    for (var k = 0; k < 8; k++) {
-      let s = dc + vec3i(k & 1, (k >> 1u) & 1, k >> 2u);
-      if (all(s == sSelf)) { continue; }
-      var cell: vec3i;
-      var a: vec4f;
-      var c: vec3f;
-      var r: f32;
-      var h: u32;
-      if (!pebbleOf(s, &cell, &a, &c, &r, &h)) { continue; }
-      if (!ballNear(p, rd, c, PEB_CORNER * r, 0.0, NO_HIT)) { continue; }
-      var sa: vec3f;
-      var R: mat3x3f;
-      pebbleShape(r, &h, &sa, &R);
-      let t = chipHit(p, rd, c, sa, R);
-      if (t >= 0.0 && t < NO_HIT) { return 0.0; }
+  var next = PebOwner(PEB_NO_CELL, vec4f(0.0), 0, false, false);   // the last other owner read
+  var vis = 1.0;
+  *occ = 0.0;
+  var k = 0;
+  var nK = PEB_CORNERS;
+  var face = -1;
+  var fb = 0;
+  var cells = 1;
+  for (var i = 0; i < PEB_LIGHT_TESTS; i++) {
+    let s = dc + pebCorner(k, face, fb);
+    let o = vec3i(floor((vec3f(s) + 0.5) * PEB_Q));
+    let isSelf = all(o == own.cell);
+    if (!isSelf && any(o != next.cell)) { next = pebbleOwner(o); }
+    var w = next;
+    if (isSelf) { w = own; }
+    var c: vec3f;
+    var r: f32;
+    var h: u32;
+    if (any(s != sSelf) && pebbleSite(s, w, &c, &r, &h)) {
+      let bo = select(0.0, ballOcc(q, n, c, PEB_AO_R * r), face < 0);
+      var t = NO_HIT;
+      if (sunward && vis > 0.0 && ballNear(q, rd, c, PEB_CORNER * r, 0.0, NO_HIT)) {
+        var sa: vec3f;
+        var R: mat3x3f;
+        pebbleShape(r, &h, &sa, &R);
+        t = chipHit(q, rd, c, sa, R);
+      }
+      let shades = t >= 0.0 && t < NO_HIT;
+      if ((bo > 0.0 || shades) && pebbleIn(c, r, w)) {
+        *occ += bo;
+        if (shades) { vis = 0.0; }
+      }
     }
-    ddaStep(istp, tDelta, &dc, &tMax);
+    k++;
+    if (k == nK) {
+      if (!sunward || vis <= 0.0 || cells >= PEB_SUN_STEPS) { break; }
+      cells++;
+      face = ddaStep(istp, tDelta, &dc, &tMax);
+      fb = select(0, 1, istp[face] > 0);
+      k = 0;
+      nK = PEB_FACE_CORNERS;
+    }
   }
-  return 1.0;
+  return vis;
 }
 
 // A material with element id's base values (as matOf starts from).
@@ -779,12 +853,13 @@ fn grainSurf(aH: vec3i, k: i32, p: vec3f, rd: vec3f) -> Surf {
   gGrainSun = 1.0;
   var m: Mat;
   if (k == GK_PEBBLE) {
-    var cell: vec3i;
-    var a: vec4f;
+    var w = pebbleOwner(vec3i(floor((vec3f(aH) + 0.5) * PEB_Q)));
+    let cell = w.cell;
+    let a = w.a;
     var c: vec3f;
     var r: f32;
     var h: u32;
-    _ = pebbleOf(aH, &cell, &a, &c, &r, &h);
+    _ = pebbleSite(aH, w, &c, &r, &h);   // (the walk found it in the heap)
     var sa: vec3f;
     var R: mat3x3f;
     pebbleShape(r, &h, &sa, &R);
@@ -804,22 +879,12 @@ fn grainSurf(aH: vec3i, k: i32, p: vec3f, rd: vec3f) -> Surf {
       m.g = R * (PEB_MOTTLE_H * gr.yzw);
       m.rough += PEB_ROUGH_VAR * (shade - 0.5) - PEB_POLISH;
     }
-    // contact occlusion by the nearest pebbles (the 2×2×2 sites around p)
-    let s0 = vec3i(floor(p * f32(PEB_N) - 0.5));
-    var occ = 0.0;
-    for (var i = 0; i < 8; i++) {
-      let sn = s0 + vec3i(i & 1, (i >> 1u) & 1, i >> 2u);
-      if (all(sn == aH)) { continue; }
-      var cn: vec3i;
-      var an: vec4f;
-      var cc: vec3f;
-      var rn: f32;
-      var hn: u32;
-      if (pebbleOf(sn, &cn, &an, &cc, &rn, &hn)) { occ += ballOcc(p, n, cc, PEB_AO_R * rn); }
-    }
+    // contact occlusion by the nearest pebbles, and their shadows
+    var occ: f32;
+    w.lone = w.fill == 0 && loneCell(w.cell);
+    gGrainSun = pebbleLight(aH, w, p, n, &occ);
     m.cav *= 1.0 - min(PEB_AO_GAIN * occ, PEB_AO_MAX);
     m.emit = hotEmit(m, s.id, s.T);
-    if (dot(n, FU.sun) > 0.0) { gGrainSun = pebbleSunVis(aH, p + n * GRAIN_NUDGE); }
   } else if (k == GK_VOID) {
     let cell = clamp(vec3i(floor(p)), vec3i(0), GRID - 1);
     let a = fetchA(cell);

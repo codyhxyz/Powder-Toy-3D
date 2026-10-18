@@ -18,7 +18,7 @@ import { CELL_M } from '../scale.js';
 import { DETAIL_FADE_LO, DETAIL_FADE_HI } from './lodFade.js';
 import { FINE_1_M, FLOW_MAX, MEDIA_FLOW_PERIOD } from '../shaders/gfx/mediaDetail.js';
 import { CAP_LAMBDA_MAX_M } from '../shaders/gfx/liquidDetail.js';
-import { CLOD_LUMP_R } from '../shaders/gfx/grains.js';
+import { CLOD_LUMP_R, PEB_RELIEF_SHARE, PEB_ERR_PX_NONE } from '../shaders/gfx/grains.js';
 
 export const BENCH_W = 1280, BENCH_H = 800;   // px, the benchmark viewport
 
@@ -43,9 +43,13 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // shader leaves it out (gfx/detailGate.js). Infinity = always in.
 // Solid surface detail uses the material's normal and cavity shading at every
 // level, not an additional displacement/self-shadow march.
-// Grains (shaders/gfx/grains.js) start where a pebble (PEBBLE_M = 5 cm) spans
-// 8 pixels (PEB_PX_NONE).
-const GRAINS_FADE_M = 0.05 / 8;           // m per pixel
+// Pebbles (shaders/gfx/grains.js) start where the textured stand-in, which
+// has no relief, misses the pebbles' half-height (PEB_RELIEF_SHARE of
+// PEBBLE_M = 5 cm: 2.5 cm) by PEB_ERR_PX_NONE pixels: 6.25 mm per pixel,
+// 4.4 m away at 1080p and a 75° vertical field of view (1 px = 1.42 mrad),
+// all geometry by 2.2 m. The rule that hides the switch is 1 pixel (17.6 m):
+// see grains.js for that trade.
+const GRAINS_FADE_M = PEB_RELIEF_SHARE * 0.05 / PEB_ERR_PX_NONE;   // m per pixel (0.05: PEBBLE_M, gfx/surface.js)
 // Clods start where their lumps can be seen: a lump and the crease to the next
 // (2 · CLOD_LUMP_R = 0.34 cells ≈ 10 cm) are one cycle of the clod's shape, which
 // the mip rule above averages away by DETAIL_FADE_HI cycles per pixel (a lump
