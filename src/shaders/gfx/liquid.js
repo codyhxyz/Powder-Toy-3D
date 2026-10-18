@@ -158,15 +158,18 @@ fn liquidIdAt(p: vec3f, fallback: i32) -> i32 {
 const RIPPLE_SLOPE: f32 = 0.035;     // height-field slope per unit noise gradient
 const RIPPLE_UP_LO: f32 = 0.6;       // n.y where ripples start ...
 const RIPPLE_UP_HI: f32 = 0.9;       // ... and reach full strength
-const RIPPLE_EPS: f32 = 0.1;         // finite-difference step, noise space
 fn liquidRipple(p: vec3f, n: vec3f) -> vec3f {
   // fades out with the finer octave, by the material LOD (lodFade)
   let k = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y) * lodFade(RIPPLE_FREQ * RIPPLE_OCT2, footprint(p));
   if (k <= 0.0) { return n; }
   let q = worldPos(p).xz * RIPPLE_FREQ;   // anchored in the world
   let t = FU.time * RIPPLE_DRIFT;
-  let h = rippleH(q, t);
-  let g = vec2f(rippleH(q + vec2f(RIPPLE_EPS, 0.0), t) - h, rippleH(q + vec2f(0.0, RIPPLE_EPS), t) - h) / RIPPLE_EPS;
+  // rippleH's gradient in noise space, analytically: mNoiseD is vnoise with its
+  // derivatives (the same hash13 corners and smoothstep fade), so two lookups
+  // replace the six of a forward difference (which drew the same field, a
+  // twentieth of a lattice cell over and a little smoothed).
+  let g = mNoiseD(vec3f(q, t)).yz
+        + RIPPLE_OCT2_AMP * RIPPLE_OCT2 * mNoiseD(vec3f(q * RIPPLE_OCT2 + RIPPLE_OCT2_SHIFT, t * RIPPLE_OCT2_DRIFT)).yz;
   return normalize(n - vec3f(g.x, 0.0, g.y) * RIPPLE_SLOPE * k);
 }
 
