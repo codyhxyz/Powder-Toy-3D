@@ -22,6 +22,7 @@ import { glf } from '../../glsl.js';
 //                        each octave fading in only once pixels resolve it
 //   DETAIL_LIQ_MENISCUS  the surface climbing walls and glass over its
 //                        capillary length (a few mm), box-filtered per pixel
+//                        and faded out by the footprint (a few metres away)
 //   DETAIL_LIQ_FOAM      whitewater: liquid white with entrained air where it
 //                        plunged or landed hard, or tore up falling; the foam
 //                        rides the flow and bursts over seconds (the
@@ -59,9 +60,33 @@ const LIQ_PROPS = {
 };
 // Capillary length lc = √(σ / ρg) (m): how far the meniscus reaches (2.7 mm
 // for water). Meniscus height at the wall h0 = lc·√(2(1 − sin θ)) (m), the
-// exact result for a flat wall (Landau & Lifshitz §61).
+// exact result for a flat vertical wall (Landau & Lifshitz §61; de Gennes,
+// Brochard-Wyart & Quéré, Capillarity and Wetting Phenomena §1.3), a rise for
+// θ < 90° and a dip for θ > 90° (mercury on glass, 140°).
 const capLen = (p) => Math.sqrt(p.sigma / (p.rho * G_REAL));
-const menH0 = (p) => capLen(p) * Math.sqrt(2 * (1 - Math.sin((p.theta * Math.PI) / 180)));
+const menH0 = (p) => Math.sign(Math.cos((p.theta * Math.PI) / 180))
+  * capLen(p) * Math.sqrt(2 * (1 - Math.sin((p.theta * Math.PI) / 180)));
+// The meniscus draws on more liquids than the foam models (LIQ_PROPS, which
+// the aeration pass and FOAMS share): every liquid of the liquid channel
+// whose real counterpart's σ, ρ and wetting are measured. The rest (Nitro,
+// Toxic, Slime, the potions) are made up, so they keep a flat edge.
+const MENISCUS_PROPS = {
+  ...LIQ_PROPS,
+  // Seawater, S = 35 g/kg at 20 °C: σ = σ_water·(1 + 3.766e-4·S + 2.347e-6·S·t)
+  // (Nayar, Panchanathan, McKinley & Lienhard 2014, J. Phys. Chem. Ref. Data
+  // 43, 043103); ρ 1025 kg/m³; wets like fresh water.
+  SALTWATER: { sigma: 0.0738, rho: 1025, theta: 20 },
+  // At 77 K: σ 8.9–9.05 mN/m (Jasper 1972; double capillary, Chin. J. Chem.
+  // Phys. 13, 378), ρ 807 kg/m³ (NIST WebBook); cryogens wet every cold solid.
+  LIQUID_NITROGEN: { sigma: 0.009, rho: 807, theta: 0 },
+  // 40 % ABV (34 % ethanol by mass): σ ≈ 31 mN/m, between 33 (30 wt%) and
+  // 30.2 (40 wt%) (Vázquez, Alvarez & Navaza 1995, J. Chem. Eng. Data 40,
+  // 611); ρ 948 kg/m³; ethanol solutions wet glass nearly fully, as oils do.
+  WHISKEY: { sigma: 0.031, rho: 948, theta: 10 },
+  // Whole blood: σ(t) = (70.105 − 0.473 t) mN/m, 59.7 at 22 °C (Rosina et al.
+  // 2007, Physiol. Res. 56 S93); ρ 1060 kg/m³; aqueous, so water's angle.
+  BLOOD: { sigma: 0.0597, rho: 1060, theta: 20 },
+};
 
 // Dispersion of gravity-capillary waves, ω² = gk + σk³/ρ (water), for the
 // time scale of each ripple octave.
@@ -124,6 +149,32 @@ ${Object.keys(LIQ_PROPS).map((k) => `  if (id == E_${k}) { return ${g(fn(LIQ_PRO
 }`;
 const wgslArray = (xs) => `array<f32, ${xs.length}>(${xs.map(g).join(', ')})`;
 
+// ---- Meniscus (DETAIL_LIQ_MENISCUS) ----
+// The linearised profile h(x) = h0·exp(−x/lc) is, as a feature, a low-pass
+// whose spectrum turns over at 1/(2π·lc): its wavelength λm = 2π·lc (1.7 cm
+// for water, the capillary crossover λc the ripples' last octave stops at).
+// By the material LOD rule (gfx/detail.js DETAIL_FADE_LO/HI, lodFade) it is
+// drawn whole while a pixel spans up to half of λm and gone once it spans
+// all of it. Within that the pixel box filter below is exact, so it never
+// aliases; past it what is left is a one-pixel rim whose tilt h0/fp is under
+// h0/λm (0.18 for water) and falling, at the cost of a neighbour lookup on
+// every pixel that straddles a cell face, most of which find no wall.
+export const meniscusLambdaM = (p) => 2 * Math.PI * capLen(p);   // m
+// The widest liquid's λm, which gfx/detail.js's fadeM mirrors.
+export const MENISCUS_LAMBDA_MAX_M = Math.max(...Object.values(MENISCUS_PROPS).map(meniscusLambdaM));
+// A wall face is looked up only while the pixel's near edge is within
+// MEN_REACH capillary lengths of it: past that the rise is under MEN_TAIL of
+// h0, and its slope (h0/lc·MEN_TAIL ≤ 0.005) under an 8-bit normal map's
+// step (2/255), the precision every game's normal maps have.
+const MEN_TAIL = 1 / 256;
+const MEN_REACH = -Math.log(MEN_TAIL);   // capillary lengths (5.5)
+// (h0 cells, lc cells, 1/λm cycles per cell) of each liquid that has one, as
+// one comparison chain (perLiquidFn's, three numbers at once).
+const meniscusFn = () => `fn MEN(id: i32) -> vec3f {
+${Object.entries(MENISCUS_PROPS).map(([k, p]) => `  if (id == E_${k}) { return vec3f(${[menH0(p) / CELL_M, capLen(p) / CELL_M, CELL_M / meniscusLambdaM(p)].map(g).join(', ')}); }`).join('\n')}
+  return vec3f(0.0);
+}`;
+
 /** Box programs always compile native compact foam (legacy detail switches still gate their effects).
  * WORLD reads no V2 state, so its switches decide what is compiled in, as before. */
 export const LIQ_DETAIL = (detail = {}, backend = 'box') => backend !== 'world'
@@ -179,36 +230,44 @@ ${meniscus ? `
 // (linearised Young–Laplace; d = distance to the wall). Its slope, averaged
 // over the pixel's footprint [d − fp/2, d + fp/2] (exactly: the height
 // difference across it over its width), tilts the normal away from the wall:
-// a thin bright or dark line where water meets glass, and nothing when a
-// pixel is much wider than lc.
-${perLiquidFn('MEN_LC', (p) => capLen(p) / CELL_M)}   // cells
-${perLiquidFn('MEN_H0', (p) => menH0(p) / CELL_M)}    // cells
+// a thin bright or dark line where water meets glass. It fades by the
+// footprint (lodFade at 1/λm, MENISCUS_LAMBDA_MAX_M above), so past a few
+// metres nothing is looked up.
+// Only the nearer face on each axis can be in reach (reach < half a cell
+// wherever the fade lets it draw), and only faces in reach are looked up,
+// nearer first, in a loop of 0-2 rounds: one wall lookup in the code (Metal
+// inlines it once, where four unrolled rounds made four), none on the open
+// surface or a distant pixel, and one exit.
+${meniscusFn()}
 const MEN_PROBE: f32 = 0.25;   // cells into the liquid (against n) where the wall cells are looked up
-fn menHeight(d: f32, lc: f32, h0: f32) -> f32 { return h0 * exp(-max(d, 0.0) / lc); }
+const MEN_REACH: f32 = ${g(MEN_REACH)};   // capillary lengths past the pixel's edge a wall is looked up within
 fn liquidMeniscus(p: vec3f, n: vec3f, id: i32) -> vec3f {
-  if (n.y < RIPPLE_UP_LO) { return n; }
-  let lc = MEN_LC(id);
-  let h0 = MEN_H0(id);
-  // A liquid without the model (h0 = 0) has no rise at all. (The GLSL went on
-  // and could form 0 · exp(-0 / 0) = NaN at a wall: lc is 0 there too.)
-  if (h0 <= 0.0) { return n; }
-  let half_ = 0.5 * footprint(p);
+  let m = MEN(id);   // (h0, lc, 1/λm); lc = 0: a liquid without the model
+  let fp = footprint(p);
+  let half_ = 0.5 * fp;
+  let w = lodFade(m.z, fp);
   let c = vec3i(floor(p - n * MEN_PROBE));
   let f = p.xz - vec2f(c.xz);
+  let hiSide = f >= vec2f(0.5);          // the nearer face is the cell's high one (x, z)
+  let d = select(f, 1.0 - f, hiSide);    // cells to it
+  let reach = half_ + MEN_REACH * m.y;
+  let first = select(0, 1, d.y < d.x);   // the nearer of the two: 0 x, 1 z
+  let on = m.y > 0.0 && n.y >= RIPPLE_UP_LO && w > 0.0;
+  let rounds = select(0, select(1, 2, max(d.x, d.y) < reach), on && min(d.x, d.y) < reach);
   var gr = vec2f(0.0);   // height gradient, xz
-  for (var k = 0; k < 4; k++) {
+  for (var k = 0; k < rounds; k++) {
+    let a = first ^ k;
+    let s = select(-1.0, 1.0, hiSide[a]);   // side the wall is on
     var q = c;
-    let ax = select(2, 0, k < 2);
-    let s = select(1.0, -1.0, (k & 1) == 0);   // side the wall is on
-    q[ax] += i32(s);
-    if (outside(q) || !isCrisp(eid(fetchA(q)))) { continue; }
-    let d = select(1.0 - f[ax >> 1u], f[ax >> 1u], s < 0.0);   // to the wall's face
-    let a = d - half_;
-    let b = d + half_;
-    let slope = (menHeight(a, lc, h0) - menHeight(b, lc, h0)) / max(b - max(a, 0.0), 1e-6);
-    gr[ax >> 1u] += s * slope;   // the surface rises toward the wall
+    q[a * 2] += i32(s);
+    if (!outside(q) && isCrisp(eid(fetchA(q)))) {
+      let lo = max(d[a] - half_, 0.0);   // the footprint's part over the liquid
+      let hi = d[a] + half_;
+      // the surface rises toward the wall
+      gr[a] += s * m.x * (exp(-lo / m.y) - exp(-hi / m.y)) / max(hi - lo, 1e-6);
+    }
   }
-  return tiltNormal(n, vec3f(gr.x, 0.0, gr.y));
+  return tiltNormal(n, vec3f(gr.x, 0.0, gr.y) * w);
 }` : ''}
 ${foam ? `
 // Whitewater, drawn from the aeration field (the aeration pass, stepped with
