@@ -1,4 +1,5 @@
 import { createNativeForceKernel } from './nativeForcing.js';
+import { createNativePaintKernel } from './nativePaint.js';
 import { paintUpdateWGSL, PaintParams, paintDeclsWGSL, PAINT_LAYOUT } from '../shaders/passes.js';
 import { kickWGSL, KickParams } from '../shaders/povKick.js';
 import { strikeWGSL, StrikeParams } from '../shaders/povTrace.js';
@@ -12,11 +13,14 @@ import { worldPosition } from './tools.js';
 
 const ids = Object.fromEntries(TOOLS.map(t => [t.key, t.id]));
 const pendingPaint = new Set(['VACUUM', 'CYCLONE', 'GRAV_IN', 'GRAV_OUT'].map(k => ids[k]));
+// Tools whose V1 rule moves or retypes whole cells: the native paint kernel (nativePaint.js).
+const nativeCellPaint = stroke => stroke.tool === ids.MIX || (stroke.tool === PROP_TOOL && stroke.prop?.field === PROP.TYPE);
 const forceSpecs={povKick:{update:kickWGSL,params:KickParams},povStrike:{update:strikeWGSL,params:StrikeParams},povField:{update:povFieldWGSL,params:FieldParams}};
 const forces=new WeakMap();
 function forceKernel(sim,name) {
   let cache=forces.get(sim);if(!cache || cache.owner!==sim.compactOwner) {cache={owner:sim.compactOwner,kernels:new Map()};forces.set(sim,cache);}
   let kernel=cache.kernels.get(name);
+  if(!kernel && name==='nativePaint') cache.kernels.set(name,kernel=createNativePaintKernel(sim));
   if(!kernel) {
     const spec=name==='nativePaintForce'?{update:paintUpdateWGSL,params:PaintParams,decls:paintDeclsWGSL(sim.g),layout:PAINT_LAYOUT}:forceSpecs[name];
     cache.kernels.set(name,kernel=createNativeForceKernel(sim,name,spec));
@@ -24,6 +28,10 @@ function forceKernel(sim,name) {
   return kernel;
 }
 export const prepareNativePOVForces=sim=>Promise.all(Object.keys(forceSpecs).map(name=>forceKernel(sim,name).ready));
+// The god-view brush's native kernels build with the native owner (sim.prepareNative), as V1's
+// paint pass builds with the simulation: the first stroke never finds them still compiling.
+export const NATIVE_BRUSH_KERNELS=['nativePaintForce','nativePaint'];
+export const prepareNativeBrush=sim=>Promise.all(NATIVE_BRUSH_KERNELS.map(name=>forceKernel(sim,name).ready));
 export const nativePOVForcesReady=sim=>Object.keys(forceSpecs).every(name=>forces.get(sim)?.owner===sim.compactOwner && forces.get(sim).kernels.get(name)?.isReady);
 function force(sim,name,box,values,source) {
   const accepted=forceKernel(sim,name).run(box,values,source);
@@ -50,6 +58,14 @@ function blast(sim, center, radius, pressure, selection) {
 // never run a legacy B writer and report success when native import ignores it.
 export function routeNativePaint(sim, stroke) {
   const { tool, prop, center, end = center, radius, shape, grow, mask, filter = -1, erase } = stroke;
+  if (nativeCellPaint(stroke)) {
+    const a=[center.x,center.y,center.z],b=[end.x,end.y,end.z],reach=a.map((_,k)=>radius+Math.max(grow?.[k]??0,0));
+    const box=mask?{lo:mask.lo,hi:mask.hi}:sim.touchCentres(a.map((x,k)=>Math.min(x,b[k])-reach[k]),a.map((x,k)=>Math.max(x,b[k])+reach[k]));
+    const accepted=forceKernel(sim,'nativePaint').run(box,{center:a,end:b,radius,shape,tool,rate:stroke.rate??1,replace:+!!stroke.replace,
+      frame:++sim.paints,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},mask?.data);
+    sim.nativeInteractionResult=accepted?{status:'queued'}:{status:'rejected',reason:'native paint kernel not ready or empty bounds'};
+    return accepted;
+  }
   if (pendingPaint.has(tool) || (tool === PROP_TOOL && [PROP.VX, PROP.VY, PROP.VZ, PROP.PRESSURE].includes(prop?.field)))
   {
     const a=[center.x,center.y,center.z],b=[end.x,end.y,end.z],reach=a.map((_,k)=>radius+Math.max(grow?.[k]??0,0));
