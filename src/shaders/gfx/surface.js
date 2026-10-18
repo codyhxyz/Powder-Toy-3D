@@ -1,5 +1,6 @@
 import { liquidGLSL } from './liquid.js';
 import { cozySurfaceWGSL } from './cozy.js';
+import { noitaSurfaceWGSL } from './noita.js';
 import { sourceShadeWGSL, sourceShadeFallbackWGSL } from './sourceAppearance.js';
 import { SOURCE_APPEARANCE_ENABLED } from '../../gfx/sourceAppearance.js';
 import { liquidDetailGLSL } from './liquidDetail.js';
@@ -807,6 +808,7 @@ fn matFlat(id: i32, T: f32, ctype: f32) -> Mat {
 // The look of element id at world point p (grid units) on a surface with
 // normal n, temperature T (°C). fp = pixel footprint (grid units) for LOD.
 ${cozySurfaceWGSL}
+${noitaSurfaceWGSL}
 fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
   if (sourceEnabled()) {
     let original = sourceMaterial(id, p, n);
@@ -823,7 +825,8 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
   }
   // anything hot glows (hotEmit, once the texture is known); lava does its own thing
   if (FU.matDetail < 0.5) { return matFlat(id, T, ctype); }   // (no texture: the cells' own glow)
-  if (FU.materialStyle > 0.5 && cozySupported(id, ctype)) { return cozyMat(id, p, n, T, ctype, fp); }
+  if (FU.materialStyle == 2.0 && noitaSupported(id, ctype)) { return noitaMat(id, p, n, T, ctype, fp); }
+  if (FU.materialStyle == 1.0 && cozySupported(id, ctype)) { return cozyMat(id, p, n, T, ctype, fp); }
   var m = matBase(id);
 
   // Scale: a cell is CELL_M (src/scale.js). Frequencies below are cycles (or

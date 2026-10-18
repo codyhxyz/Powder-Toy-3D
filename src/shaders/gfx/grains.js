@@ -898,9 +898,14 @@ fn grainSurf(aH: vec3i, k: i32, p: vec3f, rd: vec3f) -> Surf {
     m.emit = hotEmit(m, s.id, s.T);
     gGrainSun = 0.0;
   }   // (a clod is shaded through crispSurf: grainCrisp)
-  if (k == GK_PEBBLE && FU.matDetail > 0.5 && FU.materialStyle > 0.5) {
+  if (k == GK_PEBBLE && FU.matDetail > 0.5 && FU.materialStyle == 1.0) {
     let contact = m.cav;
     m = cozyMat(s.id, worldPos(p), s.ng, s.T, floor(fetchA(s.cell).w), fp);
+    m.cav *= contact;
+  }
+  if (k == GK_PEBBLE && FU.matDetail > 0.5 && FU.materialStyle == 2.0 && noitaSupported(s.id, floor(fetchA(s.cell).w))) {
+    let contact = m.cav;
+    m = noitaMat(s.id, worldPos(p), s.ng, s.T, floor(fetchA(s.cell).w), fp);
     m.cav *= contact;
   }
   applyMat(&s, m);

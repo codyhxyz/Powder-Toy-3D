@@ -67,12 +67,13 @@ const pair = (x, y) => (half(x) | half(y) << 16) >>> 0;
 test('seven independent production GI/key/select/args and glow emissions remain byte-identical', () => {
   const g = { nx: 128, ny: 128, nz: 128 };
   // Independent clean production 2c5cb27d, including its new element constants, then the V2 merge:
-  // V2 tip 7f9b2f1c's emissions, which the merge reproduces byte for byte.
+  // V2 tip 7f9b2f1c's emissions, which the merge reproduces byte for byte. Then (Noita view):
+  // only the shared appearance prelude's VARIANT_* labels changed.
   // Re-pinned 2026-10-17 (Smooth up close): the source and gather emissions changed only
   // in core.js's cubic helpers (fieldCubic, cubicFetch8, fieldCubicGrad, surfSample,
   // surfChannel, surfNormal, NORMAL_DIFF_SCALE for NORMAL_STEP_CUBIC), diffed function by
   // function against 40e1eb8c; the other five are unchanged.
-  const hashes = ['b9914619dd6ee585dcfa6228f4e4747390929e485199d1d683efdf707e2e4dbc', '5c3eac1a5e7a5b3920e7bdc18f1c43793959e4e8908925cebee7fbf8c52c4146', 'c23f65bac9a6c19beb099008c9632cb61d0725db8ef0f95cdee02cfed4f594a5', '6747d5a3bb5f272a55c363de8cf276558654426a0497594e8f99db70373a87f1', 'a1b3cbe7ae7db28916ca66f804c4bcf0c5424440ad997f5ff436902ca330af6e', 'ba1deae3afc9c9fb10eed56a4818fccb350591908a184a327b00f633b5e71a43', '3389880deb5b25b77ed4b69d57d0a16bb58e4ea34bc8dea1adb72be901e9e611'];
+  const hashes = ['8824baf65cb440884274268bf5264b1c853b266893ce4e20eed7c7f68114f76e', 'cbce1b575d155a73206e4e2110dfc4c6f377708b1290fb71f29cdd0f5bc1d891', 'cd05e9601ab40b432f33e75b694890318bf3c21539b22a316b2691902a1dbdef', 'db11e39f8164b3ba8c0ec8a11bc19d6d198ba50286248545cfcf1135e6d97fc3', '6cda34448b472e59566eabc1884e5d0a1b7f0d95a8bbf2c7c7d867fbcb0b1fa7', '3b1edbb954ffedd0d046381e720f705b867a2f747d97fa6f8aa8cf600efdc7c7', '6ea4390df86678b91c303561a169955dbb1e176a4f80d2e56287dd2d184125d0'];
   [giSourceFrag(g), giGatherFrag(g), giKeyFrag(g), giSelectFrag(g), giArgsFrag(g), blurFrag(g), blurFrag(g, { last: true })].forEach((code, i) => assert.equal(createHash('sha256').update(code).digest('hex'), hashes[i]));
 });
 test('actual eight world GI/two glow modules validate Naga and default budgets', () => {
@@ -101,11 +102,13 @@ test('world gather is the original generated module minus unused texture mirrors
   // Later that day: worldPage/worldLightDescriptor read a page's channels from
   // its book entry (renderAtlas.js bookEntry) and the three WORLD_BOOK_* consts
   // arrived; again nothing else moved.
+  // Then (Noita view): the shared appearance prelude gained VARIANT_* labels and
+  // the surface artwork its Noita style; nothing else in the module moved.
   // Then Smooth up close's normals: surfSample, surfChannel and surfNormal (core.js),
   // fieldCubicGrad and worldAccess.js's worldBSplineD / worldFieldCubicGrad, and
   // NORMAL_DIFF_SCALE for NORMAL_STEP_CUBIC; diffed function by function against
   // 40e1eb8c, nothing else moved.
-  const hashes = ['5ed0a1dde6e62e25e58ec8fc1aec357e830cc6b59c7fc960d69bb16abe9f9701', '8fbda2a7b0a5a48403d1ba6a40da71570102f6f829da39b0e86bb814064bfcc5', '6520339af36606b58f76e469bfbb23846b6881b3684b0074168275ec627f6116', 'fe01ad3a1cecc7da68926fd80cb7afa395445332d2ea5331f4abb71c402de071'];
+  const hashes = ['8ff42ed93510e5518c9824639cb29684fc341541d1e35874213d2fc14205d755', 'cba274d0438a9aacf48b6fba713c857c6184c1d841b6c56637d0193c8e952175', '7ed7c115239c53d4526a918fd0712ffaa7e94ccac16129ead125212a2386908f', 'd0ca0dd2fa29042b3f7efbdc118b56ca591694b98849886f3275562da28ffbe4'];
   const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
   gathers.forEach((c, i) => {
     const code = c.code(), groups = c.layouts();

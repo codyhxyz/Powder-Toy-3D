@@ -1,19 +1,27 @@
 import { E } from './elements.js';
 import { PHYS } from './physics.js';
 
-// Authored appearance, not a physical element. Only wood/plant's unused ctype
-// and a bounded, reversible cedar-moss damp encoding carry these labels.
-// Both fit the existing byte ctype in stamps, saved state and network cells.
+// Authored appearance, not a physical element. Only wood/plant's unused ctype,
+// a bounded, reversible cedar-moss damp encoding and the VARIANT_* source
+// labels of non-conducting terrain carry these labels. All fit the existing
+// byte ctype in stamps, saved state and network cells.
+// VARIANT_*: which of a source game's materials one element stands for, e.g.
+// Noita's rock_hard vs rock_static, both ROCK (the Noita view draws them apart,
+// src/shaders/gfx/noita.js; tools/noita-terrain-looks.json assigns them).
 export const Appearance = Object.freeze({
   NONE: 0, GRASS: 1, LEAVES: 2,
   LOG_X: 3, LOG_Y: 4, LOG_Z: 5,
   PLANK_X: 6, PLANK_Y: 7, PLANK_Z: 8,
   PLAIN: 9, BARK: 10,
+  VARIANT_1: 11, VARIANT_2: 12, VARIANT_3: 13, VARIANT_4: 14, VARIANT_5: 15,
 });
+// Elements whose ctype has no physical use (no conductor: a conductor's ctype
+// holds its spark, src/elements.js), so a source variant label can ride in it.
+export const VARIANT_ELEMENTS = Object.freeze([E.ROCK, E.SANDSTONE, E.NOITA_TEMPLE]);
 const NAMES = Object.fromEntries(Object.entries(Appearance).map(([k, v]) => [k.toLowerCase().replaceAll('_', '-'), v]));
 export const APPEARANCE_BASE = 240;
 export const CEDAR_BASE = 224;
-if (APPEARANCE_BASE + Appearance.BARK > 255 || CEDAR_BASE + PHYS.DAMP_REACH >= APPEARANCE_BASE) {
+if (APPEARANCE_BASE + Appearance.VARIANT_5 > 255 || CEDAR_BASE + PHYS.DAMP_REACH >= APPEARANCE_BASE) {
   throw new Error('Appearance codes must fit the existing ctype byte');
 }
 
@@ -26,6 +34,7 @@ export function resolveAppearance(value) {
 function allowed(id, a) {
   if (id === E.PLANT) return a === Appearance.GRASS || a === Appearance.LEAVES || a === Appearance.PLAIN;
   if (id === E.WOOD) return a >= Appearance.LOG_X && a <= Appearance.BARK;
+  if (VARIANT_ELEMENTS.includes(id)) return a >= Appearance.VARIANT_1 && a <= Appearance.VARIANT_5;
   return id === E.MOSS && a === Appearance.LEAVES;
 }
 
@@ -76,6 +85,7 @@ export const appearanceScope = Object.freeze({
   materialWord, materialId, materialAppearance,
 });
 
+const VARIANT_ELEMENTS_WGSL = VARIANT_ELEMENTS.map((id) => `id == E_${Object.keys(E).find((k) => E[k] === id)}`).join(' || ');
 export const appearanceWGSL = /* wgsl */ `
 ${Object.entries(Appearance).map(([k, v]) => `const AP_${k}: i32 = ${v};`).join('\n')}
 const AP_CTYPE_BASE: i32 = ${APPEARANCE_BASE};
@@ -83,6 +93,7 @@ const AP_CEDAR_BASE: i32 = ${CEDAR_BASE};
 fn appearanceAllowed(id: i32, a: i32) -> bool {
   if (id == E_PLANT) { return a == AP_GRASS || a == AP_LEAVES || a == AP_PLAIN; }
   if (id == E_WOOD) { return a >= AP_LOG_X && a <= AP_BARK; }
+  if (${VARIANT_ELEMENTS_WGSL}) { return a >= AP_VARIANT_1 && a <= AP_VARIANT_5; }
   return id == E_MOSS && a == AP_LEAVES;
 }
 fn appearanceOf(id: i32, ctype: f32) -> i32 {

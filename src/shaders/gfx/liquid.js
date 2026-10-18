@@ -352,7 +352,7 @@ fn liquidInterface(hp: vec3f, n0: vec3f, geometric: vec3f, entering: bool, id: i
   let ior = IOR(id);
   var n = liquidOpticalNormal(*rd, n0, geometric, entering, ior);
   if (entering) {
-    let cartoon = FU.materialStyle > 0.5 && cozyWater(id) && geometric.y > 0.55;
+    let cartoon = FU.materialStyle == 1.0 && cozyWater(id) && geometric.y > 0.55;
     if (cartoon) {
       n = liquidOpticalNormal(*rd, cozyWaterNormal(worldPos(hp), geometric, footprint(hp)), geometric, true, ior);
     }

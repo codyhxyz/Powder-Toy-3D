@@ -39,7 +39,7 @@ export const MAPS = [
   // Source-derived, folded 3D Noita main route. Legacy Wang scenes are not this map.
   { key: 'descent', name: 'Descent', size: 'world', scene: terrainRoute.startScene,
     scenes: terrainRoute.regions.map((r) => r.key),
-    dims: createFold(terrainRoute.fold).size, modes: ['noita'], previewVersion: 5,
+    dims: createFold(terrainRoute.fold).size, modes: ['noita'], defaultView: 'noita', previewVersion: 5,
     desc: 'A fresh Noita world folded into a continuous 3D arc, its caves rounded out in depth, from the start mountain and the Mines down to Kolmi. Original Holy Mountain portals connect the main biomes; vertical bands load around the player.' },
   { key: 'damValley', name: 'Dam Valley', size: 'valley', preset: 'damValley', dims: [256, 96, 128], modes: TEAM_MODES,
     desc: 'Two bases across a dammed river, with vehicles and shrines. Blow the sluice gate to flood the tunnel.' },
@@ -61,7 +61,7 @@ export const GAMEMODES = [
   { key: 'sandbox', name: 'Sandbox', defaultView: 'realistic', desc: 'Pour, build, burn and blow it up. Every map.' },
   { key: 'factory', name: 'Factory', desc: 'Catch and sort real grains. Build miners, lifts, pumps and furnaces; ship gold and cooled metal to grow your quarry.' },
   { key: 'crueltySquad', name: 'Cruelty Squad', desc: 'Eliminate every designated target, then reach extraction. Death fails the mission; retry from the beginning.' },
-  { key: 'noita', name: 'Noita', desc: 'Wands only. Explore the source-derived 3D Descent, with Holy Mountains between biomes. Ends at the Sampo platform; no boss combat yet.' },
+  { key: 'noita', name: 'Noita', defaultView: 'noita', desc: 'Wands only. Explore the source-derived 3D Descent, with Holy Mountains between biomes. Ends at the Sampo platform; no boss combat yet.' },
   { key: 'animalCrossing', name: 'Animal Crossing', defaultView: 'cozy', effect: 'rollingLog', gravityScale: 0.5, desc: 'Settle into a furnished home, arrange your furniture, and meet animal neighbors in Tinker Creek.' },
   { key: 'slayer', name: 'Team Slayer', team: true, desc: 'Red against blue with bots on both sides. First to the kill limit wins.' },
   { key: 'ctf', name: 'Capture the Flag', team: true, desc: 'Take their flag from its stand and bring it home while yours is there.' },

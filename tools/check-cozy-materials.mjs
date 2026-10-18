@@ -37,8 +37,9 @@ assert(viewShadows('cozy'));
 const animalCrossing = modeByKey('animalCrossing');
 assert.equal(animalCrossing.defaultView, 'cozy');
 for (const mode of GAMEMODES) for (const saved of VIEWS) {
-  assert.equal(viewForMode(mode, saved.id), mode === animalCrossing ? cozy.id : mode.key === 'sandbox' ? 0 : saved.id,
-    'Sandbox starts Realistic, Animal Crossing starts Cozy, other modes retain the selected view');
+  const authored = VIEWS.find(v => v.key === mode.defaultView)?.id;
+  assert.equal(viewForMode(mode, saved.id), mode === animalCrossing ? cozy.id : authored ?? saved.id,
+    'Sandbox starts Realistic, Animal Crossing starts Cozy, Noita starts Noita, other modes retain the selected view');
 }
 assert.equal(viewForMode(resolveMode(mapByKey('lab'), 'animalCrossing'), 0), 0, 'ineligible maps do not receive the mode default');
 // Compare the ABI before Cozy was appended, not fields added by later styles.
@@ -263,7 +264,7 @@ for (const file of ['src/shaders/gfx/liquid.js', 'src/shaders/far.js']) {
   assert.match(source(file), /COZY_WATER_ROUGH/);
   assert.match(source(file), /COZY_WATER_REFLECT/);
 }
-assert.match(source('src/shaders/gfx/grains.js'), /k == GK_PEBBLE && FU\.matDetail > 0\.5 && FU\.materialStyle > 0\.5/);
+assert.match(source('src/shaders/gfx/grains.js'), /k == GK_PEBBLE && FU\.matDetail > 0\.5 && FU\.materialStyle == 1\.0/);
 assert.match(source('src/shaders/gfx/grains.js'), /m\.cav \*= contact/, 'painted pebbles retain neighbor occlusion');
 assert.match(source('src/shaders/far.js'), /RCLASS\(farIds\(q\)\.x\) == R_GLASS/, 'far glass cannot become a foam shoreline');
 
@@ -387,7 +388,7 @@ for (const entry of renderChecks().filter(e => e.view === 'cozy')) modules.push(
 for (const entry of renderChecks().filter(e => e.view === 'realistic')) {
   const code = entry.code(g);
   assert(!code.includes('FU.materialStyle'), 'Realistic has no runtime artwork branch');
-  assert.match(code, /if \(0\.0 > 0\.5 && cozySupported\(id, ctype\)\)/);
+  assert.match(code, /if \(0\.0 == 1\.0 && cozySupported\(id, ctype\)\)/);
 }
 for (const mesh of [false, true]) for (const curved of [false, true]) {
   modules.push([`far.${mesh ? 'mesh' : 'view'}.${curved ? 'curved' : 'flat'}`, farFrag(g, farLayout(WORLD_SIZE), mesh, { curved })]);
@@ -396,8 +397,8 @@ for (const [name, code] of modules) {
   for (const fn of ['cozyMat', 'cozyWaterPaint']) assert.equal((code.match(new RegExp(`fn ${fn}\\(`, 'g')) || []).length, 1, `${name}: helper defined once`);
   if (!name.startsWith('optics.') && !name.startsWith('seams.')) {
     const selector = name.startsWith('volume.cozy.') ? '1.0' : 'FU.materialStyle';
-    assert.ok(code.includes(`if (${selector} > 0.5 && cozySupported(id, ctype))`));
-    assert.ok(code.indexOf('if (FU.matDetail < 0.5)') < code.indexOf(`if (${selector} > 0.5 && cozySupported(id, ctype))`), 'flat-texture mode still takes precedence');
+    assert.ok(code.includes(`if (${selector} == 1.0 && cozySupported(id, ctype))`));
+    assert.ok(code.indexOf('if (FU.matDetail < 0.5)') < code.indexOf(`if (${selector} == 1.0 && cozySupported(id, ctype))`), 'flat-texture mode still takes precedence');
   }
   if (name.startsWith('far.')) assert.match(code, /cozyWaterPaint\(p, footprint\(p\), cozyFarShore\(p\)\)/);
   if (process.argv.includes('--validate-wgsl')) {

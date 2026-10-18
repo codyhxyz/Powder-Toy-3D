@@ -109,7 +109,7 @@ xrayLegend.css = legendCSS(xrayLegend);
 // `legend` is null or { title, stops: [[pos 0..1, '#hex'], ...], labels: [[text, pos], ...], css }.
 // `shadows`: the view reads the volume's sun shadow map, so the app renders it.
 // `materialStyle`: lit material views share the tracer; their artwork is selected
-// per draw, including picker thumbnails (0: Realistic, 1: Cozy).
+// per draw, including picker thumbnails (0: Realistic, 1: Cozy, 2: Noita).
 // Labels are always evenly spaced (so a flex row with space-between lines up
 // with the bar). Flow also has `legend2`: brightness = speed.
 export const VIEWS = [
@@ -122,6 +122,11 @@ export const VIEWS = [
     id: 6, key: 'cozy', hotkey: '6', name: 'Cozy',
     desc: 'Animal Crossing-inspired wood grain, patterned terrain and cartoon water, with shadows and glowing hot materials.',
     legend: null, shadows: true, materialStyle: 1,
+  },
+  {
+    id: 8, key: 'noita', hotkey: '8', name: 'Noita',
+    desc: 'Noita-inspired pixel art: every cell face is one Noita pixel of its material, rock specks, temple brick, planks and steel panels, with shadows and glowing hot materials.',
+    legend: null, shadows: true, materialStyle: 2,
   },
   {
     id: 7, key: 'test', hotkey: '7', name: 'Test', experimental: true,

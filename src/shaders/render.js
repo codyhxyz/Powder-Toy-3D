@@ -1,7 +1,7 @@
 import { STATE_OPTS, LAYOUT, prelude, readFormatWGSL } from './common.js';
 import { RENDER_LAYOUT } from './bindings.js';
 import { ELEMENTS } from '../elements.js';
-import { COLORMAPS, VIEWS, xrayDensity, isMaterialView } from '../views.js';
+import { COLORMAPS, VIEWS, xrayDensity, isMaterialView, materialStyleForView } from '../views.js';
 import { materialsGLSL } from '../gfx/materials.js';
 import { lib, libLayouts } from './gfx/lib.js';
 import { ddaGLSL } from './gfx/core.js';
@@ -1451,7 +1451,7 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
   else parts.push(DATA_COMMON, DATA_CODE[view](curved, backend), dataView(view));
   parts.push(volumeVertOf(curved), volumeEntry(view, lit || plain, curved, backend, plain));
   // Keep the heavier artwork out of Realistic's active shader path/registers.
-  const code = parts.join('\n').replaceAll('FU.materialStyle', view === 'cozy' ? '1.0' : '0.0');
+  const code = parts.join('\n').replaceAll('FU.materialStyle', `${materialStyleForView(view) ?? 0}.0`);
   // Literal cell identifiers only, not a general WGSL expression rewrite.
   return nativeIds ? code.replace(/\beid\(fetchA\((cell|c|lc|oc|q|nc|cj)\)\)/g, 'volumeId($1)') : code;
 };
