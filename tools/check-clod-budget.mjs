@@ -216,6 +216,36 @@ for (const detail of details) {
 }
 console.log('PASS generated grainEvent/grainSuppress: five-clod fallback, full/crossfade, empty envelopes, fourth-test hits, gAlt preservation, pebbles, unchanged budgets');
 
+// clodHit's bounding balls: where sdEll <= δ reaches at most CLOD_BALL_SLACK · δ
+// past the lobe's longest semi-axis, for every flattening a clod lobe takes
+// (shortest/longest CLOD_FLAT_* .. 1, middle axis between them) and δ up to
+// CLOD_MARGIN plus a wide hit tolerance. Directions on a Fibonacci sphere.
+{
+  const code = grainsGLSL({ DETAIL_GRAIN_CLUSTERS: true });
+  const num = (name) => Number(code.match(new RegExp(`const ${name}: f32 = ([\\d.e+-]+);`))[1]);
+  const slack = num('CLOD_BALL_SLACK');
+  const flats = [...code.matchAll(/const CLOD_FLAT_\w+: f32 = ([\d.]+);/g)].map((m) => Number(m[1]));
+  const sdEll = (q, s) => {
+    const k0 = Math.hypot(q[0] / s[0], q[1] / s[1], q[2] / s[2]);
+    const k1 = Math.hypot(q[0] / s[0] ** 2, q[1] / s[1] ** 2, q[2] / s[2] ** 2);
+    return k0 * (k0 - 1) / k1;
+  };
+  const DIRS = 4000, GOLDEN = Math.PI * (3 - Math.sqrt(5));
+  let worst = 0;
+  for (const fl of [Math.min(...flats), ...flats, 1]) for (const mid of [fl, (fl + 1) / 2, 1]) {
+    const s = [1, mid, fl].map((v) => v * num('CLOD_LUMP_R'));
+    const margin = num('CLOD_BUMP') + num('CLOD_GRIT') + num('SMIN_BULGE') * num('CLOD_BLEND');   // CLOD_MARGIN
+    for (const delta of [0.01, margin, 0.1]) for (let i = 0; i < DIRS; i++) {
+      const y = 1 - 2 * (i + 0.5) / DIRS, r = Math.sqrt(1 - y * y), d = [r * Math.cos(GOLDEN * i), y, r * Math.sin(GOLDEN * i)];
+      let lo = 0, hi = 4;
+      for (let k = 0; k < 50; k++) { const m = (lo + hi) / 2; if (sdEll(d.map((v) => v * m), s) <= delta) lo = m; else hi = m; }
+      worst = Math.max(worst, (lo - s[0]) / delta);
+    }
+  }
+  assert(worst <= slack, `sdEll reaches ${worst.toFixed(3)} δ past the longest semi-axis, over CLOD_BALL_SLACK ${slack}`);
+  console.log(`PASS clod bounding balls: sdEll <= δ reaches ${worst.toFixed(3)} δ past the longest semi-axis (CLOD_BALL_SLACK ${slack})`);
+}
+
 if (process.argv.includes('--naga')) {
   assert(refIndex < 0, '--naga validates current complete shaders only');
   const dir = mkdtempSync(join(tmpdir(), 'clod-budget-'));

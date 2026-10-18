@@ -51,6 +51,10 @@
 // The march's state (gGrainMode, gPebSteps, ...) is private to the
 // invocation; the tracer resets nothing, one pixel being one invocation.
 
+/** A clod's lump: longest semi-axis, cells (CLOD_LUMP_R below; gfx/detail.js derives the clods' fadeM from it). */
+export const CLOD_LUMP_R = 0.17;
+const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
+
 /** Whether either grain switch is on (the GLSL's GRAINS_ANY), for the tracer. */
 export const GRAINS_ANY = (detail = {}) => !!(detail.DETAIL_GRAINS || detail.DETAIL_GRAIN_CLUSTERS);
 
@@ -102,7 +106,7 @@ var<private> PEB_FILL_DIRS: array<vec3i, 6> = array<vec3i, 6>(vec3i(0, -1, 0), v
 const CLOD_LOBES: i32 = 4;                // a core and its lumps
 const CLOD_CORE_R: f32 = 0.27;            // core's longest semi-axis, cells
 const CLOD_CORE_VAR: f32 = 0.05;
-const CLOD_LUMP_R: f32 = 0.17;            // lump's longest semi-axis, cells
+const CLOD_LUMP_R: f32 = ${f(CLOD_LUMP_R)};            // lump's longest semi-axis, cells
 const CLOD_LUMP_VAR: f32 = 0.06;
 const CLOD_LUMP_OFF: f32 = 0.1;           // lump's distance from the middle, cells (they overlap the core)
 const CLOD_LUMP_OFF_VAR: f32 = 0.08;
@@ -121,26 +125,44 @@ const CLOD_FLAT_SNOW: f32 = 0.7;
 const CLOD_FLAT_GUNPOWDER: f32 = 0.6;
 const CLOD_FLAT_ASH: f32 = 0.4;
 const CLOD_FLAT_STONE: f32 = 0.6;
-// Sphere tracing: steps, step shrink (the noise steepens the field past a true
-// distance), hit tolerance (share of a pixel), normal stencil (cells, at least).
+// Sphere tracing: steps, hit tolerance (share of a pixel).
 const CLOD_STEPS: i32 = 48;
-const CLOD_STEP_K: f32 = 0.6;
 const CLOD_HIT_PX: f32 = 0.5;
-const CLOD_NORMAL_H: f32 = 2e-3;
+// Step = distance / the field's Lipschitz bound (Hart 1996, "Sphere tracing").
+// The lobes' smooth minimum is a distance bound; the noise displacement
+// Σ w·A·(2n − 1) steepens it by 2 · CLOD_NOISE_LIP · Σ w·A·F, CLOD_NOISE_LIP
+// being the value noise's slope per lattice unit the march trusts: 1.2 gives
+// the step the clods shipped with at full detail, 1 / (1 + 2·1.2·(0.035·4.5 +
+// 0.01·12)) = 0.6. Octaves the footprint fades out (clodOctaves) stop
+// steepening it, so a far clod takes full steps.
+const CLOD_NOISE_LIP: f32 = 1.2;
+// Bounding balls (Hart 1996, bounding volumes): the clod lies where some lobe's
+// sdEll is within CLOD_MARGIN (plus the hit tolerance), and sdEll <= δ reaches
+// at most CLOD_BALL_SLACK · δ past the lobe's longest semi-axis (1.163 at
+// worst over the lobes' flattenings and δ up to 0.1 cells, swept by
+// tools/check-clod-budget.mjs: a flat ellipsoid's bound grows slower off its
+// broad faces). A ray that misses every lobe's ball misses the clod; one that
+// doesn't is traced only from the first entry to the last exit.
+const CLOD_BALL_SLACK: f32 = 1.2;
 
 // ---- hand-off by footprint ----
-// Geometry starts where a feature is *_PX_NONE pixels across and has taken
-// over by *_PX_FULL (feature: a pebble; a clod's lump).
+// Pebbles start where a pebble is PEB_PX_NONE pixels across and have taken
+// over by PEB_PX_FULL; clods by their lumps (below).
 const PEB_PX_NONE: f32 = 8.0;
 const PEB_PX_FULL: f32 = 16.0;
-const CLOD_PX_NONE: f32 = 8.0;
-const CLOD_PX_FULL: f32 = 16.0;
 const PEB_D: f32 = PEBBLE_M / CELL_M;            // a pebble's size, cells
 const CLOD_D: f32 = 2.0 * CLOD_LUMP_R;           // a lump's size, cells
 const PEB_FP_NONE: f32 = PEB_D / PEB_PX_NONE;    // cells per pixel
 const PEB_FP_FULL: f32 = PEB_D / PEB_PX_FULL;
-const CLOD_FP_NONE: f32 = CLOD_D / CLOD_PX_NONE;
-const CLOD_FP_FULL: f32 = CLOD_D / CLOD_PX_FULL;
+// A clod is drawn while its lumps can be seen. A lump and the crease to the
+// next one are one cycle of the surface's shape, CLOD_D cells long, and by the
+// mip rule (gfx/detail.js DETAIL_FADE_LO/HI) such a band is all there up to
+// DETAIL_FADE_LO cycles per pixel and averaged away by DETAIL_FADE_HI: the
+// geometry gives way to the smooth blob from a lump 2 px across and is gone at
+// 1 px. Its finer bands (the noise octaves) fade before that, each by the same
+// rule, and leave their slope variance to the roughness (clodSlopeVar).
+const CLOD_FP_NONE: f32 = CLOD_D * DETAIL_FADE_HI;
+const CLOD_FP_FULL: f32 = CLOD_D * DETAIL_FADE_LO;
 
 // ---- bounds on the work per ray ----
 const PEB_MAX_STEPS: i32 = 24;            // sub-lattice steps (8 sites each) per ray; then it is in the dark between them
@@ -416,12 +438,19 @@ fn sdEll(q: vec3f, s: vec3f) -> f32 {
   let k1 = length(q / (s * s));
   return k0 * (k0 - 1.0) / max(k1, 1e-6);
 }
+// Weights of the roughness octaves (bump, grit) at footprint fp: each fades by
+// the mip rule (lodFade) before it would alias, as material texture does.
+fn clodOctaves(fp: f32) -> vec2f { return vec2f(lodFade(CLOD_BUMP_F, fp), lodFade(CLOD_GRIT_F, fp)); }
+// The clod's field at p (octave weights wn): the lobes' smooth minimum,
+// roughened by noise. An octave faded out costs nothing.
 fn clodSDF(p: vec3f, C: ptr<function, array<vec3f, CLOD_LOBES>>, S: ptr<function, array<vec3f, CLOD_LOBES>>,
-           RT: ptr<function, array<mat3x3f, CLOD_LOBES>>, off: vec3f, cell: vec3i) -> f32 {
+           RT: ptr<function, array<mat3x3f, CLOD_LOBES>>, off: vec3f, cell: vec3i, wn: vec2f) -> f32 {
   var d = sdEll((*RT)[0] * (p - (*C)[0]), (*S)[0]);
   for (var k = 1; k < CLOD_LOBES; k++) { d = sminP(d, sdEll((*RT)[k] * (p - (*C)[k]), (*S)[k]), CLOD_BLEND); }
   let q = M_ROT * (p - vec3f(cell) + off);
-  return d + CLOD_BUMP * (2.0 * vnoise(q * CLOD_BUMP_F) - 1.0) + CLOD_GRIT * (2.0 * vnoise(q * CLOD_GRIT_F) - 1.0);
+  if (wn.x > 0.0) { d += wn.x * CLOD_BUMP * (2.0 * vnoise(q * CLOD_BUMP_F) - 1.0); }
+  if (wn.y > 0.0) { d += wn.y * CLOD_GRIT * (2.0 * vnoise(q * CLOD_GRIT_F) - 1.0); }
+  return d;
 }
 // First hit of the clod in a lone cell along [t0, t1], NO_HIT if none.
 fn clodHit(cell: vec3i, id: i32, a: vec4f, ro: vec3f, rd: vec3f, t0: f32, t1: f32) -> f32 {
@@ -430,26 +459,105 @@ fn clodHit(cell: vec3i, id: i32, a: vec4f, ro: vec3f, rd: vec3f, t0: f32, t1: f3
   var RT: array<mat3x3f, CLOD_LOBES>;
   var off: vec3f;
   clodBuild(cell, id, a, &C, &S, &RT, &off);
-  var t = t0;
-  for (var i = 0; i < CLOD_STEPS; i++) {
-    if (t > t1) { break; }
-    let p = ro + rd * t;
-    let d = clodSDF(p, &C, &S, &RT, off, cell);
-    if (d < CLOD_HIT_PX * footprint(p)) { return t; }
-    t += max(d * CLOD_STEP_K, CLOD_HIT_PX * footprint(p));
+  // the footprint along the ray: |p - eye| grows at most as fast as t (exact for a camera ray)
+  let fp0 = footprint(ro + rd * t0);
+  let wn = clodOctaves(fp0);
+  // the stretch of the ray inside the lobes' bounding balls
+  let reach = CLOD_BALL_SLACK * (CLOD_MARGIN + CLOD_HIT_PX * (fp0 + gPixAng * (t1 - t0)));
+  var tA = t1;
+  var tB = t0;
+  for (var k = 0; k < CLOD_LOBES; k++) {
+    let oc = ro - C[k];
+    let b = dot(oc, rd);
+    let r = S[k].x + reach;   // (x: the longest semi-axis, clodBuild)
+    let h = b * b - dot(oc, oc) + r * r;
+    if (h > 0.0) {
+      let sh = sqrt(h);
+      tA = min(tA, -b - sh);
+      tB = max(tB, -b + sh);
+    }
   }
-  return NO_HIT;
+  let kStep = 1.0 / (1.0 + 2.0 * CLOD_NOISE_LIP * (wn.x * CLOD_BUMP * CLOD_BUMP_F + wn.y * CLOD_GRIT * CLOD_GRIT_F));
+  let tEnd = min(t1, tB);
+  var t = max(t0, tA);
+  var res = NO_HIT;
+  for (var i = 0; i < CLOD_STEPS; i++) {
+    if (t > tEnd) { break; }
+    let tol = CLOD_HIT_PX * (fp0 + gPixAng * (t - t0));
+    let d = clodSDF(ro + rd * t, &C, &S, &RT, off, cell, wn);
+    if (d < tol) { res = t; break; }
+    t += max(d * kStep, tol);
+  }
+  return res;
 }
+// Unit normal of the clod at p: the field's gradient, analytic in one pass
+// (Quilez, "Smooth minimum": d smin = the blend of its arguments' gradients;
+// mNoiseJ: value noise with its gradient) instead of four finite-difference
+// taps of the whole field. A lobe's gradient is its ellipsoid's, normalize(q / s²).
 fn clodNormal(p: vec3f, cell: vec3i, id: i32, a: vec4f) -> vec3f {
   var C: array<vec3f, CLOD_LOBES>;
   var S: array<vec3f, CLOD_LOBES>;
   var RT: array<mat3x3f, CLOD_LOBES>;
   var off: vec3f;
   clodBuild(cell, id, a, &C, &S, &RT, &off);
-  let hN = max(CLOD_NORMAL_H, footprint(p));
-  let e = vec2f(1.0, -1.0);
-  return normalize(e.xyy * clodSDF(p + e.xyy * hN, &C, &S, &RT, off, cell) + e.yyx * clodSDF(p + e.yyx * hN, &C, &S, &RT, off, cell)
-                 + e.yxy * clodSDF(p + e.yxy * hN, &C, &S, &RT, off, cell) + e.xxx * clodSDF(p + e.xxx * hN, &C, &S, &RT, off, cell));
+  var d = 0.0;
+  var g = vec3f(0.0);
+  for (var k = 0; k < CLOD_LOBES; k++) {
+    let q = RT[k] * (p - C[k]);
+    let dk = sdEll(q, S[k]);
+    let gk = normalize(transpose(RT[k]) * (q / (S[k] * S[k])));
+    if (k == 0) {
+      d = dk;
+      g = gk;
+    } else {
+      // sminP: min(d, dk) - h² · CLOD_BLEND / 4; its slope is 1 - h/2 on the nearer argument, h/2 on the other
+      let h = max(CLOD_BLEND - abs(d - dk), 0.0) / CLOD_BLEND;
+      g = mix(g, gk, select(1.0 - 0.5 * h, 0.5 * h, d < dk));
+      d = min(d, dk) - h * h * CLOD_BLEND * 0.25;
+    }
+  }
+  let wn = clodOctaves(footprint(p));
+  let pc = p - vec3f(cell) + off;
+  let nb = mNoiseJ(pc, M_ROT * CLOD_BUMP_F, vec3f(0.0));
+  let ng = mNoiseJ(pc, M_ROT * CLOD_GRIT_F, vec3f(0.0));
+  return normalize(g + 2.0 * (wn.x * CLOD_BUMP * nb.yzw + wn.y * CLOD_GRIT * ng.yzw));
+}
+// Specular anti-aliasing (gfx/surface.js aaRough): the slope variance per axis
+// of the clod's roughness a pixel covers but can't show, the octaves' share
+// left unresolved (unresolvedShare: what lodFade took away and what falls
+// inside a pixel). A displacement A·(2n − 1) at F cycles per cell has slopes
+// 2·A·F times the value noise's (VNOISE_SLOPE_VAR).
+fn clodSlopeVar(fp: f32) -> f32 {
+  let wn = clodOctaves(fp);
+  let sb = 2.0 * CLOD_BUMP * CLOD_BUMP_F;
+  let sg = 2.0 * CLOD_GRIT * CLOD_GRIT_F;
+  return VNOISE_SLOPE_VAR * (sb * sb * unresolvedShare(CLOD_BUMP_F, wn.x, fp) + sg * sg * unresolvedShare(CLOD_GRIT_F, wn.y, fp));
+}
+
+// A clod is shaded as the lone crisp grain it is (gfx/surface.js crispSurf:
+// the element's texture carried along with the cell's seed), through the
+// tracer's one crispSurf call, so the view inlines matOf (the biggest function
+// in it) once fewer. For the EV_GRAIN hit (k, aH) at p: true if it is a clod,
+// with the crisp hit crispSurf takes (*cell, *id, *a, *n); clodFinish then
+// makes the record the clod's.
+fn grainCrisp(k: i32, aH: vec3i, p: vec3f, cell: ptr<function, vec3i>, id: ptr<function, i32>, a: ptr<function, vec4f>,
+              n: ptr<function, vec3f>) -> bool {
+  // (without pebbles every grain hit is a clod; without clods none is)
+  let clod = ${clusters ? (pebbles ? 'k == GK_CLOD' : 'true') : 'false'};
+  if (clod) {
+    let ac = fetchA(aH);
+    *cell = aH;
+    *a = ac;
+    *id = eid(ac);
+    *n = clodNormal(p, aH, eid(ac), ac);
+  }
+  return clod;
+}
+// The clod's record from crispSurf's: the smooth surface's AO (fieldAO: the
+// clod stands in for it), and the roughness widened by its unresolved slopes.
+fn clodFinish(s: ptr<function, Surf>) {
+  (*s).ch = CH_GRANULAR;
+  (*s).rough = clamp(aaRough((*s).rough, clodSlopeVar(footprint((*s).p))), MAT_ROUGH_MIN, 1.0);
 }
 
 // ---- the march's state for this pixel (kept small: it stays live across the whole march) ----
@@ -656,8 +764,13 @@ fn baseMat(id: i32) -> Mat {
   return m;
 }
 
-// Surface record of the geometry hit at p (site / cell aH, GK_* / lobe k) by a
-// ray along rd; sets gGrainSun for its shadeSurf.
+// Surface record of the pebble geometry hit at p (site aH, GK_*) by a ray
+// along rd; sets gGrainSun for its shadeSurf. Without pebbles it is never
+// reached (every grain hit is a clod: grainCrisp), so it is a stub.
+${pebbles ? '' : `fn grainSurf(aH: vec3i, k: i32, p: vec3f, rd: vec3f) -> Surf {
+  var s: Surf;
+  return s;
+}`}${pebbles ? `
 fn grainSurf(aH: vec3i, k: i32, p: vec3f, rd: vec3f) -> Surf {
   var s: Surf;
   s.p = p; s.tp = p; s.tp1 = p; s.flowW = 0.0;   // glints sample at tp (shadeSurf); grains have one layer
@@ -716,19 +829,7 @@ fn grainSurf(aH: vec3i, k: i32, p: vec3f, rd: vec3f) -> Surf {
     m.cav = PEB_VOID_CAV;
     m.emit = hotEmit(m, s.id, s.T);
     gGrainSun = 0.0;
-  } else {
-    // a clod: the element's own texture, from a spot of texture space of the clod's own
-    let a = fetchA(aH);
-    let id = eid(a);
-    let n = clodNormal(p, aH, id, a);
-    s.n = n; s.ng = n; s.id = id; s.cell = aH; s.seed = fract(a.w); s.T = a.y;
-    var hc = pcg(bitcast<u32>(s.seed));
-    let ox = u01(&hc);
-    let oy = u01(&hc);
-    let oz = u01(&hc);
-    let tp = p - vec3f(aH) + vec3f(ox, oy, oz) * GRAIN_TEX_SPREAD;
-    m = matOf(id, tp, n, s.T, floor(a.w), fp);
-  }
+  }   // (a clod is shaded through crispSurf: grainCrisp)
   if (k == GK_PEBBLE && FU.matDetail > 0.5 && FU.materialStyle > 0.5) {
     let contact = m.cav;
     m = cozyMat(s.id, worldPos(p), s.ng, s.T, floor(fetchA(s.cell).w), fp);
@@ -736,6 +837,6 @@ fn grainSurf(aH: vec3i, k: i32, p: vec3f, rd: vec3f) -> Surf {
   }
   applyMat(&s, m);
   return s;
-}
+}` : ''}
 `;
 };

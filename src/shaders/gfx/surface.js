@@ -2198,8 +2198,15 @@ const realisticBody = (d) => /* wgsl */ `
   grainEvent(ci, id, a, ro, rd, s, s + 1.0, acc.xyz, vec3f(1.0), &ev, CH_GRANULAR, &tEv, &anyHit, &hitPos);
   if (ev == EV_GRAIN) { hitK = 3; hp = ro + rd * tEv; }
   acc += vec4f(hitPos, gAltW + select(0.0, 1.0, anyHit || gAltGeom) + gAltCol.x + gAltTrans.y + gAltRd.z + gAltP.x + f32(gAltA.x + gAltK));` : ''}
-  var sf: Surf;
-  if (hitK == 1) { sf = crispSurf(ci, id, a, hp, nh); }${GRAINS_ANY(d) ? `
+  var sf: Surf;${GRAINS_ANY(d) ? `
+  // as the tracer: a clod is shaded as a crisp grain (gfx/grains.js grainCrisp)
+  var cc = ci;
+  var cid = id;
+  var ca = a;
+  let clod = hitK == 3 && grainCrisp(gHitK, gHitA, hp, &cc, &cid, &ca, &nh);
+  if (clod) { hitK = 1; }
+  if (hitK == 1) { sf = crispSurf(cc, cid, ca, hp, nh); if (clod) { clodFinish(&sf); } }` : `
+  if (hitK == 1) { sf = crispSurf(ci, id, a, hp, nh); }`}${GRAINS_ANY(d) ? `
   else if (hitK == 3) { sf = grainSurf(gHitA, gHitK, hp, rd); }` : ''}
   else { sf = gatherSurf(hp, surfNormal(hp, CH_GRANULAR, -rd), CH_GRANULAR); }
   acc += vec4f(shadeSurf(sf, rd), 1.0);${GRAINS_ANY(d) ? `
