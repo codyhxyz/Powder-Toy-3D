@@ -17,7 +17,7 @@
 // of Horizon Zero Dawn's clouds (Schneider 2015: a small tileable 3D noise
 // read finer than the base shape, eroding thin gas more than dense cores),
 // not ALU noise: two 3D texture reads a sample. The octaves' strengths follow
-// Kolmogorov's inertial range, as wavelet turbulence's do (Kim et al. 2008).
+// Kolmogorov's inertial range (FINE_AMT_2).
 //
 // Where it fades (gfx/detail.js MEDIA_FINE_FADE_M). Each sample fades each
 // octave by its own pixel footprint (footprint(p): the cone widens along the
@@ -76,7 +76,9 @@ export const FINE_1_M = NOISE_FINEST_M / FINE_SCALE_1, FINE_2_M = NOISE_FINEST_M
 // passive scalar (smoke) has the Obukhov-Corrsin spectrum E(k) ~ k^-5/3, so a
 // band of fixed ratio around k holds variance ~ k^-2/3 and its rms goes as
 // k^-1/3: the 2/3 law, a scalar's difference across a gap l grows as l^1/3
-// (Kolmogorov 1941; Obukhov 1949, Corrsin 1951).
+// (Kolmogorov 1941; Obukhov 1949, Corrsin 1951). Wavelet turbulence (Kim et
+// al. 2008) weights its octaves by the spectral density instead, 2^-5/6 per
+// doubling (4^-5/6 = 0.31 here), which would all but erase the 5 cm octave.
 const FINE_AMT_2 = (FINE_2_M / FINE_1_M) ** (1 / 3);
 // Filament sharpness: gas gathers on the noise's ridges as r^FIL_EXP (a whole
 // number, written out as products: Metal's pow is exp2(log2) per call).
