@@ -1,0 +1,224 @@
+{
+ "engine": "column",
+ "adapter": "column-water World (CPU prototype, 60 Hz, 2 g, one step a tick)",
+ "clock": "60 ticks a game second (Speed 1×)",
+ "recorded": "2026-10-17",
+ "tests": {
+  "utube": {
+   "status": "pass",
+   "headline": "left 6.537, right 6.537 cells: 0.02 cm apart; idle at 8.73 s",
+   "criteria": [
+    {
+     "name": "arms level",
+     "measured": 0.02,
+     "unit": "cm",
+     "threshold": "≤ 1",
+     "ok": true
+    },
+    {
+     "name": "rests (certified idle)",
+     "measured": 8.73,
+     "unit": "s",
+     "threshold": "≤ 10",
+     "ok": true,
+     "note": "read every 0.017 s"
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "partial": {
+   "status": "pass",
+   "headline": "surface 3.36…3.36 cells (0.03 cm; flat would be 3.36); idle at 7.42 s",
+   "criteria": [
+    {
+     "name": "surface flat",
+     "measured": 0.03,
+     "unit": "cm",
+     "threshold": "≤ 1",
+     "ok": true
+    },
+    {
+     "name": "rests (certified idle)",
+     "measured": 7.42,
+     "unit": "s",
+     "threshold": "≤ 8",
+     "ok": true,
+     "note": "read every 0.017 s"
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "puddle": {
+   "status": "pass",
+   "headline": "76 wet columns, 7 cells from the nearest wall, liquid up to y = 0; idle at 3.65 s",
+   "criteria": [
+    {
+     "name": "rests (certified idle)",
+     "measured": 3.65,
+     "unit": "s",
+     "threshold": "≤ 6",
+     "ok": true,
+     "note": "read every 0.017 s"
+    },
+    {
+     "name": "has an edge (cells to the nearest wall)",
+     "measured": 7,
+     "unit": "cells",
+     "threshold": "≥ 1",
+     "ok": true
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "pipe": {
+   "status": "pass",
+   "headline": "tank at 3.093 after 43.5 s (the bore's top is 3), reached at 43.5 s; 178.84 cells out",
+   "criteria": [
+    {
+     "name": "tank level over the bore's top",
+     "measured": 0.093,
+     "unit": "cells",
+     "threshold": "≤ 0.1",
+     "ok": true
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "hole": {
+   "status": "pass",
+   "headline": "3.5 s ± 0.125 s (16 steps): head 9.28…8.8 cells; the stream 1.78 % off the √(2gh) parabola; unbroken from the hole to the floor in 16 of 16 reads",
+   "criteria": [
+    {
+     "name": "one unbroken stream (worst window: share of its reads)",
+     "measured": 1,
+     "unit": "",
+     "threshold": "≥ 0.9",
+     "ok": true
+    },
+    {
+     "name": "reach off the √(2gh) parabola (worst window)",
+     "measured": 1.78,
+     "unit": "%",
+     "threshold": "≤ 5",
+     "ok": true
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "splash": {
+   "status": "pass",
+   "headline": "the block met the pool at 8.17 m/s (free fall: 8.4); at its peak, 0.03 s after contact, the splash carried 0.14 of that energy (60 cells); all liquid at most 0.64",
+   "criteria": [
+    {
+     "name": "splash kinetic energy / incoming (peak)",
+     "measured": 0.14,
+     "unit": "",
+     "threshold": "≤ 0.3",
+     "ok": true
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "yield": {
+   "status": "pass",
+   "headline": "after 5 s a 4³ block stands 2.02 cells tall as mud over 84 columns, 0.25 as water over 256",
+   "criteria": [
+    {
+     "name": "mud stands taller than water",
+     "measured": 53.13,
+     "unit": "cm",
+     "threshold": "> 1",
+     "ok": true
+    },
+    {
+     "name": "water spreads to a layer or less",
+     "measured": 0.25,
+     "unit": "cells",
+     "threshold": "≤ 1",
+     "ok": true
+    }
+   ]
+  },
+  "woodBurns": {
+   "status": "n/a",
+   "headline": "column has no WOOD",
+   "criteria": []
+  },
+  "tankStill": {
+   "status": "pass",
+   "headline": "surface 4…4 (4 is full), idle at 0 s",
+   "criteria": [
+    {
+     "name": "stays full (lowest surface)",
+     "measured": 4,
+     "unit": "cells",
+     "threshold": "3.85…4",
+     "ok": true
+    },
+    {
+     "name": "stays flat",
+     "measured": 0,
+     "unit": "cm",
+     "threshold": "≤ 1",
+     "ok": true
+    },
+    {
+     "name": "rests (certified idle)",
+     "measured": 0,
+     "unit": "s",
+     "threshold": "≤ 4",
+     "ok": true,
+     "note": "read every 0.017 s"
+    },
+    {
+     "name": "mass exact",
+     "measured": 0,
+     "unit": "cells",
+     "threshold": "0",
+     "ok": true
+    }
+   ]
+  },
+  "sandFalls": {
+   "status": "n/a",
+   "headline": "column has no SAND",
+   "criteria": []
+  }
+ }
+}

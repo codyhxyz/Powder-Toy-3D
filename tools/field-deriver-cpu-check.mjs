@@ -48,7 +48,7 @@ deriver.setAeration({ buffer: aerBuffer, active: false }); assert.equal(deriver.
 // onPass notifications, shifts' lazy factories and one destruction owner.
 const sim = { gpu, id: 99, g, world: null, L: { TABLES: tablesLayout, STATE_RO: stateLayout, STATE_BUILD: stateLayout },
   tables, bindRO: sourceGroup, bindBuild: {}, smoothing: 1, incremental: true, actCarry: null, actAge: 0,
-  attachDerived(d) { this.derived = d; }, onShift() { return () => {}; }, header() { return { src: 0, origin: [0, 0, 0] }; }, onPass(name) { events.push(name); } };
+  attachDerived(d) { this.derived = d; }, onShift() { return () => {}; }, header() { return { src: 0, origin: [0, 0, 0] }; }, readHeader() { return this.header(); }, onPass(name) { events.push(name); } };
 const box = new Derived(sim); await box.ready;
 assert.equal(box.ema, box.fields.resources.ema); assert.equal(box.groups.blur, box.fields.groups.blur);
 assert.equal(box.tmpB, box.fields.resources.tmpB);

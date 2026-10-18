@@ -67,7 +67,7 @@ Object.assign(d, {
   _over: x => x, _jet: () => 1, _carry() {},
   _dispatch(kernel, size, opts) { calls.push({ kernel, size, ...opts }); },
 });
-Object.assign(d.sim, { smoothing: 1, header: () => ({}), actNoted: true });
+Object.assign(d.sim, { smoothing: 1, header: () => ({}), readHeader: () => ({}), actNoted: true });
 d.fields = new FieldDeriver(d.gpu, {
   g, resources: { dlist: {} }, layouts: {}, groups: d.groups, tables: d.sim.tables,
   kernels: Object.fromEntries(['fieldEma', 'fieldBlur', 'fieldFinal', 'fieldBoost0', 'fieldBoost', 'fieldPeak']

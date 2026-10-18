@@ -436,8 +436,9 @@ export function createPov(app) {
     }
     return kernelsBuilt;
   }
-  // compile the figure's shader once the page has settled, not on the first F
-  if (createPlayer) {
+  // Optional prewarm must not compile invisible bodies during headless samples.
+  // Entering POV still awaits ensureFigure() below.
+  if (createPlayer && app.getSim()?.gpu?.testMode == null) {
     const idle = globalThis.requestIdleCallback ?? ((fn) => setTimeout(fn, PREWARM_DELAY_MS));
     setTimeout(() => idle(() => { if (app.getSim()) ensureFigure(); }), PREWARM_DELAY_MS);
   }
@@ -470,7 +471,7 @@ export function createPov(app) {
           getMode: () => app.gamemode?.() ?? 'sandbox',   // the gamemode playing: Noita's wands only in it
           toolGun: app.toolGun,   // the god view's click at the crosshair (app.js), for the tool gun
           isActive: () => live() && !editing && !coop(),
-          getStepsPerFrame: () => app.settings.paused ? 0 : app.settings.steps,
+          getStepsPerFrame: () => app.nativeToolSteps ?? (app.settings.paused ? 0 : app.settings.steps),
           requestRender: app.requestRender,
           getPost: () => app.post,   // its settings: the wand's halo tone maps itself by them (tools/index.js)
           releaseInput,
@@ -735,7 +736,7 @@ export function createPov(app) {
     // the NPCs: one per enemy spawner, with every tool you have. Not in a world
     // (g.windowed): the NPCs don't move with the window (windowShifted).
     const sp = app.getSpawners?.();
-    const npcFrame = { player: mode === 'on' || mode === 'entering' ? player : null, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps };
+    const npcFrame = { player: mode === 'on' || mode === 'entering' ? player : null, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.nativeToolSteps ?? (app.settings.paused ? 0 : app.settings.steps) };
     const npcsWanted = !!sp && !g.windowed;
     const homes = npcsWanted && !mission.engaged ? ENEMY_KINDS.flatMap((k) => sp.of(k)).filter((s) => s.oneShot || !game.running) : [];   // a team game (src/game) has its own bots
     if (homes.some((s) => !s.consumed)) {
@@ -957,7 +958,8 @@ export function createPov(app) {
       ctx.peaceful = village.enabled;   // mining tools must not turn village play into body combat
       ctx.dt = dt;
       ctx.toolRate = player.perks.toolRate;
-      ctx.stepsPerFrame = app.settings.paused ? 0 : app.settings.steps;
+      ctx.nativeDt = sim.compact ? (app.nativeToolSteps ?? 0) / 60 : undefined;
+      ctx.stepsPerFrame = app.nativeToolSteps ?? (app.settings.paused ? 0 : app.settings.steps);
       const use = !editing && (village.enabled ? village.canAct && !!village.tool && (isLocked() || touch.enabled || villageToolTap) : canUse()) && !app.industryBuilding?.();
       if (village.enabled && !use) toolbelt.tool(toolbelt.selectedKey)?.deselect?.();
       // a touch tap can start and end between frames: it still holds for one (on desktop the mouse can't)
@@ -997,7 +999,7 @@ export function createPov(app) {
     kickLeg?.update(dt);
     if (!coop()) combat.update({
       dt, player, eye: ctx.eye, dir: ctx.dir, tool: toolbelt?.selectedKey ?? null,
-      live: live() && mode === 'on' && canUse() && !editing && !driving, stepsPerFrame: app.settings.paused ? 0 : app.settings.steps,
+      live: live() && mode === 'on' && canUse() && !editing && !driving, stepsPerFrame: app.nativeToolSteps ?? (app.settings.paused ? 0 : app.settings.steps),
     });
     buttons.primaryPressed = buttons.secondaryPressed = false;
     wheelNotches = 0; villageToolTap = false;

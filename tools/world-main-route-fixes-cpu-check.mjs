@@ -17,7 +17,7 @@ test('actual WORLD attachment never constructs or starts the retired Far/detail 
  const source=readFileSync(new URL('../src/wire/world.js',import.meta.url),'utf8');
  const start=source.indexOf('  attach(app) {'),brace=source.indexOf('{',start);let depth=1,end=brace+1;
  for(;depth;end++){if(source[end]==='{')depth++;else if(source[end]==='}')depth--;}
- const window={},sim={origin:{fromArray(v){this.value=v;}}},app={sim,worldMode:{size:[512,384,512]},settings:{scene:'island'},sceneByKey:k=>k};
+ const window={},sim={origin:{fromArray(v){this.value=v;}},resetNativeDynamics(){}},app={sim,worldMode:{size:[512,384,512]},settings:{scene:'island'},sceneByKey:k=>k};
  const Window=class{constructor(renderer,actualSim,options){assert.equal(actualSim,sim);assert.deepEqual(options.size,app.worldMode.size);return window;}};
  const uniforms={uClouds:{value:false},uCloudSea:{value:0}};
  const attach=new Function('WorldWindow','world','gfxUniforms','beyondLevel',`return ({${source.slice(start,end)}}).attach;`)(Window,{worldStart:()=>[32,0,64]},uniforms,()=>42);

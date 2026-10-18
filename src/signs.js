@@ -404,7 +404,7 @@ export class Signs {
     }
     const slot = pr.ring.next();
     pr.kernel.dispatch(pr.gpu.frame, [1, 1, 1], {
-      bind: [sim.tables, sim.bindRO, group], header: sim.header(), params: { cam: info.camGrid, count: n, slot },
+      bind: [sim.tables, sim.bindRO, group], header: sim.readHeader(), params: { cam: info.camGrid, count: n, slot },
     });
     const batch = this.batch.slice();
     const gen = this.generation;

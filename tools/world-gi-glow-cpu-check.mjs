@@ -66,8 +66,9 @@ const pair = (x, y) => (half(x) | half(y) << 16) >>> 0;
 
 test('seven independent production GI/key/select/args and glow emissions remain byte-identical', () => {
   const g = { nx: 128, ny: 128, nz: 128 };
-  // Independent clean production 2c5cb27d, including its new element constants.
-  const hashes = ['9a0284d58bcec62ba9c7bd470775b3ed29de2ba923aefcc4c1fbe554d4a91675', '98cf28c3a150d1bdd8fe30f16f5710b9dc094942b7fe640949da0aa9f5165832', 'd2daecfbd07fb445f5295714cb22293d3b6a2d7d409e38cc972953683e086734', '89a027a627bc1e13b9c0bfb7a9f6d5351efeea2868b06a0cb107645a71fd7fa8', 'e95391017d1f3a3d79e23012ae2a35cdc130caff3b2f8cca6220bb5e4dba514b', '4318b9cc2d7b00cc5ee0ad72f578354bfdfa7df9e85cd762e7e59cdbe36d4266', '695dcc6cca142c9e6ce7c3d61ea57f6239b42cdeb501999dcef2b16b991e609a'];
+  // Independent clean production 2c5cb27d, including its new element constants, then the V2 merge:
+  // V2 tip 7f9b2f1c's emissions, which the merge reproduces byte for byte.
+  const hashes = ['8634698f177b30e809b00db55bc6fb0cd2cfd499939e8303fcc82798b11be494', 'a1ba7af091e6128b642d0f67a38ab45fd9c8a3302a91453fbf16edeb56e97eb7', 'c23f65bac9a6c19beb099008c9632cb61d0725db8ef0f95cdee02cfed4f594a5', '6747d5a3bb5f272a55c363de8cf276558654426a0497594e8f99db70373a87f1', 'a1b3cbe7ae7db28916ca66f804c4bcf0c5424440ad997f5ff436902ca330af6e', 'ba1deae3afc9c9fb10eed56a4818fccb350591908a184a327b00f633b5e71a43', '3389880deb5b25b77ed4b69d57d0a16bb58e4ea34bc8dea1adb72be901e9e611'];
   [giSourceFrag(g), giGatherFrag(g), giKeyFrag(g), giSelectFrag(g), giArgsFrag(g), blurFrag(g), blurFrag(g, { last: true })].forEach((code, i) => assert.equal(createHash('sha256').update(code).digest('hex'), hashes[i]));
 });
 test('actual eight world GI/two glow modules validate Naga and default budgets', () => {
@@ -89,9 +90,11 @@ test('actual eight world GI/two glow modules validate Naga and default budgets',
 test('world gather is the original generated module minus unused texture mirrors only', () => {
   // Pre-deletion emissions, normalized ONLY by dropping output declarations/dst
   // and unwrapping textureStore(..., giBlend(...)) to the same giBlend calls.
-  // Re-pinned 2026-10-17: worldAccess.js's request/page/address helpers took
-  // their compile-cheap form (same results); nothing else in the module moved.
-  const hashes = ['0eb369ce3dfce2a3ea422421049cb00f9e89e1f7033f7d2a76006a85a5ebdf51', '1019eee21976ccb69ee077c089340de1260dccd5258a1427aaa153b4db161448', '2c27139329a591ac5ef85dcd0f0cfe329901ac0827ca3fc8b9568cfd4db734fb', '58504d9d93b3496cd0c239dbb4f510c162f23ad8baa920a8099461b7cbdfaa4c'];
+  // Re-pinned at the V2 merge: only the shared marks and header layout lines changed
+  // (MARK_OWNED, MARK_WORDS, Header format/capture, BRICK_LIQUID_INTERIOR).
+  // Then 2026-10-17: worldAccess.js's request/page/address helpers took their
+  // compile-cheap form (same results); nothing else in the module moved.
+  const hashes = ['480fc99ab325eedd6417805de6e71d7f146d45cdcbfa0040e37c4c469213d880', '63c54c6bf2ea301063fbb4b2665771505479dc05cc0b1966441e9eae1fffbe29', 'c781228d78bd2990f5192665fac5c597d818fe500b7dd02776bca43b580b3452', '9c9d988f60d8b6e93fd43be94183acfd900d748e5c9bcabee9fbe199c92c75bc'];
   const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
   gathers.forEach((c, i) => {
     const code = c.code(), groups = c.layouts();

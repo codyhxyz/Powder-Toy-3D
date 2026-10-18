@@ -47,6 +47,9 @@
 //                              [dx, dy] cells a cell of `name` thrown at [vx, vy] cells/s flies in
 //                              `seconds` under the engine's own declared law, or null when the engine
 //                              has no thrown matter
+//   setGravity(mode)           optional: 'vertical' (the default) or 'radial' (TPT's radial mode: full
+//                              strength toward the box's centre). An engine without it cannot express a
+//                              radial test (n/a)
 //   park(), resume()           the game's loop (app engines); harness engines have none
 //   dispose()
 //

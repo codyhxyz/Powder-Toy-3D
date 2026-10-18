@@ -1,3 +1,5 @@
+import { decodeWorldState } from './persistence.js';
+import { NativeBrickStore } from './nativeStore.js';
 import { BRICK } from '../shaders/common.js';
 import { restoreEdit, BRICK_CELLS } from '../shaders/window.js';
 import { leaveHeadBytes, LEAVE_BRICK_BYTES } from '../shaders/generate.js';
@@ -76,6 +78,9 @@ export class WorldWindow {
     if (g.ny !== size[1]) throw new Error(`window ${g.ny} cells tall in a world ${size[1]} tall: it spans the world's height`);
     if (size.some((n, i) => n % WIN_STEP && i !== 1)) throw new Error(`world ${size}: x and z must be multiples of ${WIN_STEP}`);
     this.sim = sim;
+    sim.worldWindow = this;
+    this.historyIdentity = {};
+    this.historyReaders = 0;
     this.gpu = sim.gpu;
     this.size = size;
     this.scene = scene;
@@ -86,6 +91,7 @@ export class WorldWindow {
     this.gen = new WorldGenerator(sim, scene, this.P, { regions: [[S.side, size[1], S.side]] });
     this.wb = size.map((n) => n / BRICK);                          // the world in bricks
     this.store = new BrickStore(this.wb);
+    this.nativeStore = new NativeBrickStore(this.wb); // exact core+bank; projection never decides whether to retain
     this.planted = new Uint8Array(this.wb[0] * this.wb[2]);       // brick columns whose trees are in
     this.baked = new Map();
     this.candidates = new Map();                                  // tree candidates by brick column (treesIn)
@@ -133,16 +139,21 @@ export class WorldWindow {
   // edits, nothing planted. A whole-grid write (docs/webgpu.md D6): the next
   // map draws every unit, so no syncCopies follows (G1). Needs whenReady.
   load(origin = this.centre()) {
+    if (this.sim.nativeTransitionKind === 'shift') throw new Error('Cannot replace a world during its native shift');
     const sim = this.sim, g = sim.g;
+    this.historyIdentity = {};
     this.epoch++;   // a slab of the old world still being read back is dropped
     this.renderSource.reset(this.epoch);
     this.storeRevisions.clear();
     this.store.clear();
+    this.nativeStore.clear();
+    this.persistenceError = null;
     this.readbackError = null;
     this.scene.reset?.();   // imported interaction state is per loaded run, not per cached scene
     sim.deco?.reset();   // the decoration and its store go too (src/deco.js)
     this.planted.fill(0);
     sim.origin.set(origin[0], 0, origin[2]);
+    sim.resetNativeDynamics();
     this.gen.fill(this.P, [origin[0], 0, origin[2]]);
     if (this.scene.trees) this.plant([0, 0, 0], [g.nx, g.ny, g.nz]);
     sim.noteWrite();
@@ -163,15 +174,19 @@ export class WorldWindow {
   // derived passes over. The far field is rebuilt from the scene and the
   // window: stored edits outside the window show from afar once the window has
   // passed over them.
-  loadSaved(origin, fillState, storeBytes, planted, interactions = null) {
+  loadSaved(origin, fillState, storeBytes, planted, interactions = null, nativeBytes = null) {
     const sim = this.sim;
-    if (planted.length !== this.planted.length) throw new Error(`saved world: ${planted.length} brick columns, this world has ${this.planted.length}`);
+    const next = decodeWorldState({ size: this.size, origin }, [sim.g.nx, sim.g.ny, sim.g.nz], storeBytes, planted, nativeBytes);
+    if (sim.nativeTransitionKind === 'shift') throw new Error('Cannot load during a native world shift');
     this.scene.interactionState?.restore(interactions);
+    this.historyIdentity = {};
     this.epoch++;
+    this.persistenceError = null;
     this.renderSource.reset(this.epoch);
     this.storeRevisions.clear();
-    this.store.fromBytes(storeBytes);
-    this.planted.set(planted);
+    this.store.map = next.store.map; this.store.bytes = next.store.bytes;
+    this.nativeStore.map = next.nativeStore.map; this.nativeStore.bytes = next.nativeStore.bytes;
+    this.planted.set(next.planted);
     sim.origin.set(origin[0], 0, origin[2]);
     fillState();
     this.far?.build();
@@ -182,13 +197,78 @@ export class WorldWindow {
     this.renderSource.recordLiveCopy(this.gpu.frame, sim);
   }
 
+  // Acquire synchronously before save preparation can yield. Existing shifts
+  // may finish their already-recorded transition/readback; only NEW shifts are
+  // excluded, so waiting for this.pending while holding the lock cannot deadlock.
+  acquireReadLock() {
+    this.historyReaders = (this.historyReaders ?? 0) + 1;
+    let released = false;
+    return () => { if (!released) { released = true; this.historyReaders--; } };
+  }
+
+  // COW history: stored byte strings are immutable after put(); snapshots copy
+  // only Map indices, never all retained material. Existing sim history limit
+  // bounds the retained versions. A previous leaving readback must land first.
+  captureHistory() {
+    const identity = this.historyIdentity, origin = this.sim.origin.toArray(), planted = this.planted.slice();
+    this.historyReaders++;
+    const capture = () => {
+      if (identity !== this.historyIdentity || this.sim.disposed || this.persistenceError) throw new Error('World changed or failed during history capture');
+      return { window: this, identity, origin, planted, store: new Map(this.store.map), storeBytes: this.store.bytes,
+        nativeStore: new Map(this.nativeStore.map), nativeBytes: this.nativeStore.bytes,
+        decoStore: this.sim.deco ? new Map(this.sim.deco.store) : null };
+    };
+    const pending = [this.pending, this.sim.deco?.pending].filter(Boolean);
+    if (!pending.length) {
+      try { return Promise.resolve(capture()); } finally { this.historyReaders--; }
+    }
+    return Promise.all(pending).then(capture).finally(() => { this.historyReaders--; });
+  }
+  prepareHistoryRestore(h) {
+    if (!h || h.window !== this || h.identity !== this.historyIdentity || this.pending || this.sim.deco?.pending || this.historyReaders)
+      throw new Error('Native world history is not ready for this window');
+    const g = this.sim.g;
+    if (!Array.isArray(h.origin) || h.origin.length !== 3 || h.origin.some((n, i) => !Number.isInteger(n) || n < 0 || (i === 1 ? n !== 0 : n % WIN_STEP !== 0) || n + [g.nx, g.ny, g.nz][i] > this.size[i]) ||
+      !(h.planted instanceof Uint8Array) || h.planted.length !== this.planted.length || !(h.store instanceof Map) || !(h.nativeStore instanceof Map))
+      throw new Error('Invalid native world history');
+    const max = this.wb.reduce((a, b) => a * b, 1), A = new Float32Array(BRICK_FLOATS), B = new Float32Array(BRICK_FLOATS);
+    let legacyBytes = 0, nativeBytes = 0;
+    for (const [key, bytes] of h.store) {
+      if (!Number.isInteger(key) || key < 0 || key >= max || !(bytes instanceof Uint8Array)) throw new Error('Invalid legacy world history brick');
+      decodeBrick(bytes, A, 0, B, 0); legacyBytes += bytes.length;
+    }
+    const native = new NativeBrickStore(this.wb);
+    for (const [key, bytes] of h.nativeStore) { native.put(key, bytes); nativeBytes += bytes.length; }
+    if (legacyBytes !== h.storeBytes || nativeBytes !== h.nativeBytes) throw new Error('Invalid world history byte counts');
+    if (h.decoStore !== null && (!(h.decoStore instanceof Map) || [...h.decoStore].some(([key, bytes]) => !Number.isInteger(key) || key < 0 || key >= max || !(bytes instanceof Uint8Array) || bytes.length !== 256))) throw new Error('Invalid decoration world history');
+    // Allocate all new indices before the commit. Byte payloads remain shared,
+    // future store.put/drop changes only the current Map, not this history.
+    const legacy = new Map(h.store), deco = h.decoStore && new Map(h.decoStore);
+    return () => {
+      const o = this.sim.origin, delta = [h.origin[0] - o.x, h.origin[2] - o.z];
+      this.epoch++;
+      this.store.map = legacy; this.store.bytes = legacyBytes;
+      this.nativeStore.map = native.map; this.nativeStore.bytes = nativeBytes;
+      this.planted.set(h.planted); o.fromArray(h.origin);
+      if (this.sim.deco) { this.sim.deco.epoch++; this.sim.deco.store = deco ?? new Map(); }
+      this.sim.fieldReset = this.sim.giReset = this.sim.changedAll = true;
+      this.sim.forceAll = this.sim.actFull = true;
+      return delta;
+    };
+  }
+  finishHistoryRestore(delta) {
+    this.far?.build();
+    this.sim.onWorldHistoryRestore?.(...delta);
+  }
+
   // Keep the window centred on the focus (world cells, x and z). Returns the
   // move made, [dx, dz] world cells, or null.
   update(fx, fz) {
-    if (!this.loaded) return null;
+    if (!this.loaded || this.persistenceError || this.sim.nativeTransition || this.historyReaders) return null;
     if (this.renderSource.needsLiveCopy(this.sim)) this.renderSource.recordLiveCopy(this.gpu.frame, this.sim);
     this.far?.tick();
     if (this.capturing || this.pending || this.sim.deco?.pending) return null;
+    if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) return null;
     const g = this.sim.g, o = this.sim.origin, lim = WIN_STEP + WIN_HYSTERESIS;
     const off = [fx - (o.x + g.nx / 2), fz - (o.z + g.nz / 2)];
     const at = [o.x, o.z], span = [g.nx, g.nz], world = [this.size[0], this.size[2]];
@@ -200,14 +280,15 @@ export class WorldWindow {
     }
     if (!best) return null;
     const move = best.axis ? [0, best.d] : [best.d, 0];
-    this.shift(...move);
-    return move;
+    const result = this.shift(...move);
+    return result?.then ? result.then(() => move) : move;
   }
 
   // Capture every resident brick through the existing bounded slab diff/readback,
   // retaining off-resident edits already in the store. Caller must freeze state
   // writers for the entire operation; update() cannot move this window meanwhile.
   async captureEdits() {
+    if (this.sim.compactOwner) throw new Error('Native terrain edit capture is not supported');
     if (!this.loaded || this.capturing) throw new Error('Window is not available for edit capture');
     this.capturing = true;
     const epoch = this.epoch, g = this.sim.g, origin = this.sim.origin;
@@ -234,6 +315,7 @@ export class WorldWindow {
   // Restore in bounded slabs too: a fully edited tall window can exceed the
   // device's storage-buffer limit if uploaded as one dense restore operation.
   async restoreEdits(store) {
+    if (this.sim.compactOwner) throw new Error('Native terrain edit restore is not supported');
     if (!this.loaded || this.pending) throw new Error('Window is not ready for edit restore');
     if (!store.bricks.every((n,i)=>n===this.wb[i])) throw new Error('Edit store dimensions do not match window');
     const epoch=this.epoch, g=this.sim.g;
@@ -248,6 +330,22 @@ export class WorldWindow {
   // Move the window by (dx, 0, dz) world cells (one of them 0): steps 1–4 above.
   shift(dx, dz) {
     if (this.capturing) throw new Error('Cannot shift a window during edit capture');
+    if (this.persistenceError) throw this.persistenceError;
+    if (this.historyReaders) throw new Error('World history capture is pending');
+    if (this.sim.compactOwner && this.pending) throw new Error('World shift while leaving slab is pending');
+    if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) throw new Error('Native world shift is not ready');
+    if (this.sim.compactOwner) {
+      const transition = this.sim.nativeIntegration.beginShift(dx, dz, () => {
+        this.pending = null;
+        this._shiftCommitted(dx, dz);
+      });
+      this.pending = transition;
+      transition.catch(error => { this.persistenceError = error; });
+      return transition;
+    }
+    return this._shiftCommitted(dx, dz);
+  }
+  _shiftCommitted(dx, dz) {
     const t0 = performance.now();
     const sim = this.sim, g = sim.g, before = sim.origin.clone();
     // the slab that leaves (grid cells before the move) and the one the move uncovers (after it)
@@ -264,10 +362,11 @@ export class WorldWindow {
       hi: leaveLo.map((v, i) => v + size[i] + oldOrigin[i]),
     }, oldOrigin);
     // 1.
+    const nativeRead = sim.nativeIntegration?.captureSlab(leaveLo, bricks);
     const out = this.pending ? this.gen.diffBuffers(this.maxBricks) : this.leave;
     this.gen.diff(this.P, leaveLo, bricks, out);
     const leaveB = [before.x / BRICK + leaveLo[0] / BRICK, 0, before.z / BRICK + leaveLo[2] / BRICK];
-    this.readBack(leaveB, bricks, capture, out);
+    this.readBack(leaveB, bricks, capture, out, nativeRead);
     // the decoration of the slab that leaves goes into its own store (src/deco.js)
     sim.deco?.leave(leaveLo, bricks, (x, y, z) => this.store.key(leaveB[0] + x, leaveB[1] + y, leaveB[2] + z));
     this.far?.summarize(leaveLo, bricks);
@@ -286,6 +385,9 @@ export class WorldWindow {
     // 4.
     this.plantCost = { placeMs: 0, bakeMs: 0 };
     const trees = this.scene.trees ? this.plant(enterLo, enterHi) : 0;
+    // Import only generator-owned coordinates, then restore exact retained
+    // material after all legacy stamps. Untouched overlap is never imported.
+    this.restoreNative(enterLo, bricks);
     this.renderSource.recordLiveCopy(this.gpu.frame, sim);
     // Fill/restore/plant transferred residency, not world contents. summarize
     // already recorded real writes before the move; don't dirty meshes again.
@@ -298,7 +400,7 @@ export class WorldWindow {
   // more bricks differ than the estimate (then a second for the rest). The
   // bricks that match the generator leave the store, the ones that differ go
   // into it. base is slab brick 0's world brick.
-  readBack(base, bricks, capture, out = this.leave) {
+  readBack(base, bricks, capture, out = this.leave, nativeRead = null) {
     const n = bricks[0] * bricks[1] * bricks[2], rb = this.gpu.readback, epoch = this.epoch;
     const est = Math.min(n, Math.max(READ_MIN, Math.ceil(this.lastKept * READ_AHEAD)));
     const t0 = performance.now(), last = () => this.last;
@@ -306,7 +408,7 @@ export class WorldWindow {
     const head = rb.buffer(out.head, 0, Math.ceil(leaveHeadBytes(n) / 4) * 4);
     const cells = rb.buffer(out.cells, 0, est * LEAVE_BRICK_BYTES);
     let t1 = 0, kept = 0;
-    const pending = Promise.all([head, cells]).then(async ([h, c]) => {
+    const pending = Promise.all([head, cells, nativeRead]).then(async ([h, c, native]) => {
       if (epoch !== this.epoch) return;
       t1 = performance.now();
       const words = new Uint32Array(h), count = Math.min(words[0], n);
@@ -334,6 +436,8 @@ export class WorldWindow {
         if (!keep.has(key) && (this.storeRevisions.get(key) ?? -1) <= capture.revision) {
           this.store.drop(key); this.storeRevisions.set(key, capture.revision);
         }
+        if (native) this.nativeStore.put(key, native[i]);
+        else this.nativeStore.drop(key);
       }
       const keys = [];
       for (let i = 0; i < n; i++) keys.push(this.store.key(base[0] + i % bricks[0], base[1] + Math.floor(i / bricks[0]) % bricks[1], base[2] + Math.floor(i / (bricks[0] * bricks[1]))));
@@ -344,8 +448,8 @@ export class WorldWindow {
       const L = last();
       if (L && epoch === this.epoch) Object.assign(L, { flagsMs: t1 - t0, readbackMs: t1 - t0, keepMs: performance.now() - t1, kept, landedAt: performance.now() });
     }).catch((err) => {
-      if (epoch === this.epoch) this.readbackError = err;
-      if (!this.gpu.failure) console.error('world window: a leaving slab could not be read back; its edits are lost', err);
+      if (epoch === this.epoch) this.persistenceError = this.readbackError = err;
+      if (!this.gpu.failure) console.error('world window: leaving slab readback failed; native streaming/saving is blocked', err);
     }).finally(() => {
       this.storeReads.delete(pending);
       this.pending = this.storeReads.values().next().value ?? null;
@@ -392,6 +496,25 @@ export class WorldWindow {
     return keys.length;
   }
 
+  restoreNative(lo, bricks) {
+    const sim = this.sim, native = sim.nativeIntegration;
+    if (!native?.isReady) return 0;
+    sim.compactOwner.sync();
+    const o = sim.origin, base = [o.x, o.y, o.z].map((v, i) => (v + lo[i]) / BRICK);
+    const entries = [], keys = [];
+    for (let z = 0; z < bricks[2]; z++) for (let y = 0; y < bricks[1]; y++) for (let x = 0; x < bricks[0]; x++) {
+      const key = this.nativeStore.key(base[0] + x, base[1] + y, base[2] + z);
+      const bytes = this.nativeStore.map.get(key);
+      if (!bytes) continue;
+      entries.push({ index: x + bricks[0] * (y + bricks[1] * z), bytes });
+      keys.push(key);
+    }
+    native.restoreBricks(lo, bricks, entries);
+    for (const key of keys) this.nativeStore.drop(key);
+    if (!sim.compact) sim.compactOwner.exportLegacy();
+    return keys.length;
+  }
+
   // Stamp the scene's trees in the brick columns of grid cells [lo, hi) (x and z,
   // brick-aligned) that are visited for the first time, clipped to those
   // columns, and mark them planted. Returns how many trees were stamped.
@@ -432,10 +555,11 @@ export class WorldWindow {
 
   // The store's size: bricks kept, bytes, and the brick columns planted.
   stats() {
-    return { bricks: this.store.size, bytes: this.store.bytes, planted: this.planted.reduce((n, v) => n + v, 0) };
+    return { bricks: this.store.size, bytes: this.store.bytes + this.nativeStore.bytes, nativeBricks: this.nativeStore.size, planted: this.planted.reduce((n, v) => n + v, 0) };
   }
 
   dispose() {
+    if (this.sim.worldWindow === this) this.sim.worldWindow = null;
     this.epoch++;
     this.far?.dispose();
     if (this.sim.worldRenderSource === this.renderSource) this.sim.worldRenderSource = null;

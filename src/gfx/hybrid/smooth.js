@@ -56,7 +56,15 @@ export function createHybridSmooth(gpu, sim, { maxVertices = 2 ** 21, shader = {
   const ring = gpu.readback.ring(label('status results'), 16, 16);
   const b = (binding, buffer) => ({ binding, resource: { buffer } });
   const vertexStateLayout = gpu.layout('HYBRID_SMOOTH_STATE_RO', SMOOTH_STATE_LAYOUT);
-  const vertexStateBind = gpu.bindGroup(vertexStateLayout, [b(0, sim.state.A), b(1, sim.state.B)], label('vertex state'));
+  // Rebound whenever the box's legacy copies are replaced (Simulation.pingPong under native physics).
+  let vertexState = null;
+  const vertexStateBind = () => {
+    const { A, B } = sim.state;
+    if (vertexState?.A !== A || vertexState.B !== B) {
+      vertexState = { A, B, group: gpu.bindGroup(vertexStateLayout, [b(0, A), b(1, B)], label('vertex state')) };
+    }
+    return vertexState.group;
+  };
   const prefixLayout = gpu.layout(label('prefix layout'), SMOOTH_PREFIX_LAYOUT);
   const shadowLayout = gpu.layout(label('shadow layout'), SMOOTH_DRAW_LAYOUT);
   const extractBind = gpu.bindGroup(extractLayout, [
@@ -148,12 +156,12 @@ export function createHybridSmooth(gpu, sim, { maxVertices = 2 ** 21, shader = {
     },
     draw(rp) {
       if (!canDraw()) return false;
-      drawPipe.draw(rp, { bind: [fu.group, vertexStateBind, drawBind], header: sim.header(), params: params(), indirect: { buffer: args } });
+      drawPipe.draw(rp, { bind: [fu.group, vertexStateBind(), drawBind], header: sim.header(), params: params(), indirect: { buffer: args } });
       return true;
     },
     drawShadow(rp, { matrix } = {}) {
       if (!matrix || !canDraw()) return false;
-      shadowPipe.draw(rp, { bind: [fu.group, vertexStateBind, shadowBind], header: sim.header(), params: params(matrix), indirect: { buffer: args } });
+      shadowPipe.draw(rp, { bind: [fu.group, vertexStateBind(), shadowBind], header: sim.header(), params: params(matrix), indirect: { buffer: args } });
       return true;
     },
     invalidate() { key = null; generation++; stats.pending = false; fallback('invalidated'); },

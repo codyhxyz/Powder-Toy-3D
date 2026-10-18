@@ -201,7 +201,7 @@ export class Deco {
   _run(name, size, params, opts = {}) {
     const sim = this.sim;
     sim._dispatch(this.k[name], size, {
-      bind: [sim.tables, sim.bindRO, this._group(opts.source, opts.plane)], header: sim.header(), params,
+      bind: [sim.tables, sim.bindRO, this._group(opts.source, opts.plane)], header: sim.readHeader(), params,
     });
   }
 

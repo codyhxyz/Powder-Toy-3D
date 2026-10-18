@@ -62,7 +62,8 @@ fn footing(p: vec3i, y0: i32, foot: i32) -> bool {
   return false;
 }
 // Cell p (state B b) stamped with voxel s: its element, temperature and
-// ctype, a fresh colour seed, at rest.
+// ctype, a fresh colour seed, at rest. Writers into the state own the cell
+// first (ownLegacy); the raw source producer stamps scratch, not the state.
 fn stampPut(p: vec3i, s: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
   let id = i32(s.x + 0.5) - 1;
   var rs = seed3(p, P.seed, SALT_STAMP);
@@ -85,6 +86,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let s = bitcast<vec4f>(stampData[P.base + u32(q.x + P.size.x * (max(q.y, 0) + P.size.y * q.z))]);
   if (q.y < 0 && (s.w < 0.5 || !footing(p, P.at.y, P.foot))) { return; }
   if (s.x < 0.5) { return; }
+  ownLegacy(slotOf(p)); // only an eligible voxel/footing, including explicit air
   stampPut(p, s, b, oA, oB);
 }`;
 /** The stamp's edit kernel (sim.editKernel takes this). */

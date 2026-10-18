@@ -9,6 +9,7 @@ import { createIndustryView } from './view.js';
 import { deviceSpec, validateDevices, overlaps, overlapsBody, deviceHeight } from './validation.js';
 import { allLoads } from '../pov/tools/transfer.js';
 import { E } from '../elements.js';
+import { INDUSTRY_V2_UNAVAILABLE } from '../v2/host.js';
 
 const fail = reason => ({ ok: false, reason });
 const dimensions = app => [app.sim.g.nx, app.sim.g.ny, app.sim.g.nz];
@@ -37,7 +38,10 @@ export function createIndustry(app) {
   let epoch = 0, pending = false, disposed = false, candidate = null, candidateResult = null;
   let probePending = false, probeKey = '', probeAt = 0, animation = 0, lastMode = app.gamemode, lastSim = app.sim;
   // ponytail: box maps only; streamed worlds need persistent world-coordinate machinery.
-  const active = () => !app.win && ['sandbox','factory'].includes(app.gamemode);
+  // A retained, suspended owner is compatible with stable V1. Requested V2
+  // also closes admission while that owner awaits reactivation.
+  const unavailable = () => app.nativePhysicsRequested || app.sim.compact ? INDUSTRY_V2_UNAVAILABLE : null;
+  const active = () => !unavailable() && !app.win && ['sandbox','factory'].includes(app.gamemode);
   // Keep machines running and preserve the build selection, but driving has no
   // construction input or placement ghost. Exit restores the previous console.
   const driving = () => !!app.pov?.vehicles?.seated;
@@ -85,11 +89,12 @@ export function createIndustry(app) {
   });
   physics.ready.catch(error => app.hud.toast(`Industry unavailable: ${error.message}`));
   const anyMutationPending = () => pending || !!gatePhysics.pending || !!controlParts.pending;
-  const canBuild = type => !active() ? fail('Industry is available in Sandbox and Factory box maps')
+  const canBuild = type => unavailable() ? fail(unavailable())
+    : !active() ? fail('Industry is available in Sandbox and Factory box maps')
     : anyMutationPending() ? fail('Construction is finishing') : devices.length >= INDUSTRY_LIMIT ? fail('128 machines is the limit')
     : factory() ? progression?.canBuild(type) ?? fail('The Quarry is still loading') : { ok: true };
   const state = () => ({ devices: devices.map(d => ({...d})), progression: factory() ? progression?.snapshot() ?? null : null,
-    active: active(), factory: factory(), selected, building: isBuilding(), dismantling, rotation, filter, powered, assisted, factoryRun,
+    active: active(), unavailable: unavailable(), factory: factory(), selected, building: isBuilding(), dismantling, rotation, filter, powered, assisted, factoryRun,
     part, partThreshold, inspectMode, inspection: inspection && { ...inspection, device: inspection.device && { ...inspection.device },
       observation: inspection.observation && structuredClone(inspection.observation), gateStatus: inspection.gateStatus && { ...inspection.gateStatus },
       controlPart: inspection.controlPart && { ...inspection.controlPart } },
@@ -99,6 +104,7 @@ export function createIndustry(app) {
   const clearInspection = () => { inspection = null; inspectionKey = ''; inspectionAt = 0; inspectionFlight = false; inspectionControlAt = 0; inspectionAnchor = null; };
   const clearCompetingModes = () => { part = null; inspectMode = false; partCandidate = null; partCandidateResult = null; clearInspection(); };
   const toggle = value => {
+    if (unavailable()) return report(fail(unavailable()));
     if (!active() || !factory() || driving()) return;
     building = value ?? !building; app.painting = false;
     if (!building) { dismantling = false; clearCompetingModes(); }
@@ -108,6 +114,7 @@ export function createIndustry(app) {
   };
   const rotate = () => { rotation = (rotation + 1) % 4; probeKey = ''; app.requestRender(); };
   function selectPart(key) {
+    if (unavailable()) return report(fail(unavailable()));
     if (key !== null && (typeof key !== 'string' || !Object.hasOwn(CONTROL_PARTS, key))) return report(fail('Choose a permitted native control part'));
     if (!active() || !factory() || driving()) return report(fail('Control parts are available in the Factory'));
     building = true; dismantling = false; inspectMode = false;
@@ -116,6 +123,7 @@ export function createIndustry(app) {
     app.requestRender(); return { ok: true, reason: '' };
   }
   function setThreshold(value) {
+    if (unavailable()) return report(fail(unavailable()));
     if (part !== 'TSNS') return report(fail('Select a temperature sensor for placement first'));
     if (typeof value !== 'number' || !Number.isFinite(value)) return report(fail('Temperature threshold must be finite'));
     const [minimum, maximum] = CONTROL_PART_THRESHOLD_BOUNDS;
@@ -123,6 +131,7 @@ export function createIndustry(app) {
     app.requestRender(); return { ok: true, reason: '', threshold: partThreshold };
   }
   function toggleInspect(value) {
+    if (unavailable()) return report(fail(unavailable()));
     if (!active() || !factory() || driving()) return report(fail('Inspection is available in the Factory'));
     if (value !== undefined && typeof value !== 'boolean') return report(fail('Inspection mode must be on or off'));
     inspectMode = value ?? !inspectMode;
@@ -131,6 +140,7 @@ export function createIndustry(app) {
     syncToolbar(); app.requestRender(); return { ok: true, reason: '' };
   }
   function setDrive(id, value) {
+    if (unavailable()) return report(fail(unavailable()));
     if (typeof value !== 'boolean') return report(fail('Drive state must be on or off'));
     const device = devices.find(d => d.id === id);
     if (!device || ['foundation', 'gate'].includes(device.type)) return report(fail('Choose a registered machine to drive'));
@@ -138,6 +148,7 @@ export function createIndustry(app) {
     device.powered = value; app.requestRender(); return { ok: true, reason: '' };
   }
   function setGateMode(id, mode) {
+    if (unavailable()) return report(fail(unavailable()));
     if (!['open', 'closed', 'signal'].includes(mode)) return report(fail('Gate mode must be open, closed, or signal'));
     const device = devices.find(d => d.id === id && d.type === 'gate');
     if (!device) return report(fail('Choose a registered material gate'));
@@ -145,6 +156,7 @@ export function createIndustry(app) {
     device.gateMode = mode; app.requestRender(); return { ok: true, reason: '' };
   }
   async function toggleControl() {
+    if (unavailable()) return report(fail(unavailable()));
     const selectedControl = inspection?.controlPart;
     if (!selectedControl || selectedControl.type !== 'SWITCH') return report(fail('Inspect a real native switch first'));
     if (!factory() || !active()) return report(fail('Native control switches are available in the Factory'));
@@ -179,6 +191,7 @@ export function createIndustry(app) {
     try {
       await construction.ready;
       if (token !== epoch || disposed) return fail('The map changed');
+      if (unavailable()) return fail(unavailable());
       // Check the body again immediately before dispatch, not after a queued compile.
       if (app.pov?.active && overlapsBody(d, app.pov.player?.pos)) return fail('Move clear of the machine footprint');
       if (!await construction.run(d, 1)) return fail('Obstructed: clear the full 4 × 4 deck and headroom first');
@@ -202,6 +215,7 @@ export function createIndustry(app) {
       && spec.z >= d.z && spec.z < d.z + 4);
   }
   function checkControlPart(spec) {
+    if (unavailable()) return fail(unavailable());
     if (!active() || !factory()) return fail('Paid control parts are available in the Factory');
     if (anyMutationPending()) return fail('Construction is finishing');
     if (!part || !Object.hasOwn(CONTROL_PARTS, part)) return fail('Choose a control part first');
@@ -241,6 +255,7 @@ export function createIndustry(app) {
     finally { if (token === epoch) pending = false; }
   }
   async function remove(id) {
+    if (unavailable()) return fail(unavailable());
     if (!active()) return fail('Industry is not active');
     if (anyMutationPending() || physics.pending) return fail('Wait for the current machine transfer to finish');
     const d = devices.find(d => d.id === id); if (!d) return fail('Aim at a machine to dismantle it');
@@ -477,6 +492,7 @@ export function createIndustry(app) {
     update, place, placeControlPart, remove, toggle, modeChanged, selectPart, setThreshold, toggleInspect,
     setDrive, setGateMode, toggleControl,
     get state() { return state(); }, get building() { return isBuilding(); },
+    get hasMachines() { return devices.length > 0; },
     get pending() { return pending || !!physics.pending || !!gatePhysics.pending || !!controlParts.pending; },
     reset({ starters = false } = {}) {
       if (factory()) app.hud.dismissHint?.(); // The Sandbox pouring hint is false on the initial Factory boot too.

@@ -1,3 +1,4 @@
+import { createNativeWeatherKernel } from './v2/nativeWeather.js';
 import { fold } from './gpu/kernels.js';
 import { OCEAN_EVENT as C, OceanColumnsParams, OCEAN_COLUMNS_LAYOUT, oceanColumnsWGSL, oceanEventsEdit } from './shaders/oceanEvents.js';
 export { OCEAN_EVENT } from './shaders/oceanEvents.js';
@@ -94,7 +95,7 @@ export function createOceanEvents() {
     const layout = gpu.layout('OCEAN_COLUMNS', OCEAN_COLUMNS_LAYOUT);
     const probe = gpu.kernel({ name: 'oceanColumns', code: oceanColumnsWGSL(g),
       layouts: [sim.L.TABLES, sim.L.STATE_RO, layout], params: OceanColumnsParams });
-    const force = sim.editKernel('oceanForce', oceanEventsEdit);
+    const force = sim.compactOwner ? createNativeWeatherKernel(sim, 'oceanForce', oceanEventsEdit) : sim.editKernel('oceanForce', oceanEventsEdit);
     // GPUBufferUsage bits, so importing and CPU-mocking need no browser globals.
     const columns = gpu.createBuffer({ label: 'ocean columns', size: g.nx * g.nz * 8, usage: 0x80 | 0x04 });
     const edges = gpu.createBuffer({ label: 'ocean open edges', size: Math.max(g.nx, g.nz) * 16, usage: 0x80 | 0x08 });
@@ -110,13 +111,16 @@ export function createOceanEvents() {
   }
   function updateColumns(context, r) {
     const sim = context.sim, key = [...originOf(sim), context.seaLevel, context.groundHeight];
+    const read = sim.compact ? sim.bindPhysicalRO : sim.bindRO;
+    if (!read) return false;
     if (!equal(r.edgeKey, key)) {
       sim.gpu.write(r.edges, 0, oceanOpenEdges(context));
       r.edgeKey = key;
     }
     r.probe.dispatch(sim.gpu.frame, fold(Math.ceil(sim.g.nx * sim.g.nz / 64)), {
-      bind: [sim.tables, sim.bindRO, r.group], header: sim.header(), params: { sea: context.seaLevel },
+      bind: [sim.tables, read, r.group], header: sim.readHeader({ physical: true }), params: { sea: context.seaLevel },
     });
+    return true;
   }
   const api = {
     get active() { return !!event; },
@@ -130,16 +134,16 @@ export function createOceanEvents() {
       const candidates = oceanSourceCandidates(context).slice(0, 16);
       if (!candidates.length) return false;
       const sim = context.sim, world = context.world, identity = identityOf(context), o = originOf(sim);
-      const token = ++generation, frame = sim.frame;
+      const token = ++generation, frame = sim.frame * C.stepsPerSecond / (context.stepHz ?? C.stepsPerSecond);
       request = token;
       const current = () => !disposed && request === token && generation === token && valid(context)
         && !context.isGuest && !world?.pending && equal(identity, identityOf(context))
-        && equal(map, identity) && equal(o, originOf(sim)) && sim.frame >= frame;
+        && equal(map, identity) && equal(o, originOf(sim)) && sim.frame * C.stepsPerSecond / (context.stepHz ?? C.stepsPerSecond) >= frame;
       try {
         const r = ensure(sim);
         await r.whenReady;
         if (!current()) return false;
-        updateColumns(context, r);
+        if (!updateColumns(context, r)) return false;
         const bytes = await sim.gpu.readback.buffer(r.columns, 0, r.columns.size);
         if (!current()) return false;
         const data = new Float32Array(bytes);
@@ -147,8 +151,9 @@ export function createOceanEvents() {
           const x = Math.floor(candidate.source[0] - o[0]), z = Math.floor(candidate.source[1] - o[2]);
           const i = (x + sim.g.nx * z) * 2;
           if (!(data[i] >= 0.5) || !(Math.abs(data[i + 1] - context.seaLevel) <= 3)) continue;
-          event = { ...candidate, started: sim.frame, age: 0 };
-          lastFrame = sim.frame; nextSource = sim.frame + 1;
+          const now = sim.frame * C.stepsPerSecond / (context.stepHz ?? C.stepsPerSecond);
+          event = { ...candidate, started: now, age: 0 };
+          lastFrame = now; nextSource = now + 1;
           return true;
         }
         return false;
@@ -159,7 +164,7 @@ export function createOceanEvents() {
       sameMap(context);
       if (!valid(context)) { reset(); return false; }
       if (context.isGuest || context.paused || context.world?.pending) return false;
-      const { sim, seaLevel: sea } = context, frame = sim.frame;
+      const { sim, seaLevel: sea } = context, frame = sim.frame * C.stepsPerSecond / (context.stepHz ?? C.stepsPerSecond);
       if (!Number.isSafeInteger(frame) || frame < 0) return false;
       if (lastFrame !== null && frame <= lastFrame) {
         if (frame < lastFrame) { reset(); map = identityOf(context); lastFrame = frame; }
@@ -191,13 +196,18 @@ export function createOceanEvents() {
         hi[2] = Math.min(nz - 1, Math.floor(event.source[1] + extent[1] - o[2]));
       }
       if (lo.some((v, i) => v > hi[i])) return false;
-      updateColumns(context, r); // ordered before edit; authoritative live mask each forcing tick
-      sim.edit(r.force, { lo, hi }, {
+      if (!updateColumns(context, r)) return false; // ordered before edit; authoritative live mask each forcing tick
+      const values = {
         sea, time: frame / C.stepsPerSecond, chop, surge, wind,
         source: event?.source ?? [0, 0], direction: event?.direction ?? [1, 0],
-      }, { bind: [{ buffer: r.columns }], scrub: !!surge });
-      if (surge) nextSource = frame + C.sourceEvery;
-      if (chop) nextChop = frame + C.chopEvery;
+      };
+      if (sim.compactOwner) r.force.run({ lo, hi }, values, r.columns);
+      else sim.edit(r.force, { lo, hi }, values, { bind: [{ buffer: r.columns }], scrub: !!surge });
+      // Keep the original phase when 60Hz ticks straddle a 240Hz-authored
+      // pulse boundary (30 old ticks = 7.5 native ticks). Skip missed pulses
+      // rather than drifting the source rate or performing unbounded catch-up.
+      if (surge) nextSource = context.stepHz === 60 ? nextSource + (Math.floor((frame - nextSource) / C.sourceEvery) + 1) * C.sourceEvery : frame + C.sourceEvery;
+      if (chop) nextChop = context.stepHz === 60 ? nextChop + (Math.floor((frame - nextChop) / C.chopEvery) + 1) * C.chopEvery : frame + C.chopEvery;
       return true;
     },
     // Stop sources, never erase already-created WATER or cancel its momentum.

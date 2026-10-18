@@ -9,18 +9,32 @@ import { crit, r2 } from '../lib.js';
 
 const setup = (ok, what) => { if (!ok) throw new SetupError(what); };
 
-// Wood cells, how many of them the engine says are burning, the hottest, and flames, smoke and ash about
-// (in the cells x0..x1 only, when given: one bay).
-function woodStats(g, e, x0 = 0, x1 = g.nx - 1) {
+// Cell-equivalent material, including live packets. Leaving the grid is not
+// conversion. Explicit x bounds select one bay, using the packet's cell index.
+export function woodStats(g, e, x0, x1 = g.nx - 1) {
   const wood = e.id('WOOD'), fire = e.id('FIRE'), smoke = e.id('SMOKE'), ash = e.id('ASH');
+  const tracked = new Set([wood, fire, smoke, ash]);
   const s = { wood: 0, burning: 0, maxT: -Infinity, fire: 0, smoke: 0, ash: 0 };
   for (let i = 0; i < g.id.length; i++) {
-    if (i % g.nx < x0 || i % g.nx > x1) continue;
+    if (x0 !== undefined && (i % g.nx < x0 || i % g.nx > x1)) continue;
     const id = g.id[i];
     if (id === wood) { s.wood++; if (g.burning?.[i]) s.burning++; if (g.T) s.maxT = Math.max(s.maxT, g.T[i]); }
     else if (id === fire) s.fire++;
     else if (id === smoke) s.smoke++;
     else if (id === ash) s.ash++;
+  }
+  for (const p of g.particles ?? []) {
+    if (!tracked.has(p.id)) continue;
+    setup(Number.isFinite(p.mass) && p.mass > 0 && Number.isFinite(p.x), 'invalid fire material packet mass/position');
+    if (x0 !== undefined && (Math.floor(p.x) < x0 || Math.floor(p.x) > x1)) continue;
+    if (p.id === wood) {
+      setup(Number.isFinite(p.T), 'invalid wood packet temperature');
+      s.wood += p.mass;
+      if (p.burning) s.burning += p.mass;
+      s.maxT = Math.max(s.maxT, p.T);
+    } else if (p.id === fire) s.fire += p.mass;
+    else if (p.id === smoke) s.smoke += p.mass;
+    else if (p.id === ash) s.ash += p.mass;
   }
   return s;
 }

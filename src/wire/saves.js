@@ -1,3 +1,5 @@
+import { captureNativeSnapshot, encodeDynamicState, decodeDynamicState, emptyDynamicState } from '../v2/dynamicState.js';
+import { validateNativeWorldStore } from '../world/nativeStore.js';
 // Saves (src/saves; docs/webgpu.md Sync log S4, U12): ⌘S or the toolbar's
 // Save keeps the game in the Saves list, with a picture; the map menu's Saves
 // (Esc, ⌘O) loads one, exports it as a .tpt3d file or opens one. Garry's
@@ -7,6 +9,7 @@
 // like the codec's, recorded at the moment it is asked for and read back
 // without a stall (saves/game.js).
 import { createSaves, SaveRefused } from '../saves/game.js';
+import { decodeV2State } from '../v2/state.js';
 import { registerSaveSection, registerSavedSettings } from '../saves/sections.js';
 import { putSave, getSave, cleanName } from '../saves/local.js';
 import { SIM_MODE_KEYS, SIM_MODE_DEFAULTS } from '../simModes.js';
@@ -32,6 +35,7 @@ const savesWire = {
 
   boot(app) {
     const { settings } = app;
+    let nativeCapture = null;
     // the gravity and speed a world was saved with come back with it (TPT keeps gravity in a save)
     registerSavedSettings(['gravity', 'steps']);
     // The simulation modes (simModes.js) are the world's, as TPT keeps gravity,
@@ -42,14 +46,72 @@ const savesWire = {
       load: (m) => app.setSimModes({ ...SIM_MODE_DEFAULTS, ...mapOf(settings)?.modes, ...m }),
       absent: () => app.resetSimModes(),
     });
+    // Core world-store bytes are captured alongside the legacy world store.
+    // Register the strict type/validation contract before container decoding.
+    registerSaveSection('worldNativeStore', {
+      strict: true, save: () => undefined, load: () => {},
+      validate: (data, h) => {
+        const listed = h.sections?.some(s => s.key === 'worldNativeStore');
+        const required = h.world && h.sections?.some(s => s.key === 'physicsV2');
+        if (data === undefined && (listed || required)) throw new Error('Native world store is missing');
+        validateNativeWorldStore(data, h.world);
+      },
+    });
+    // This section owns the compact engine's exact words and continuation clock.
+    // Other physics side buffers must register their actual owner, not piggyback on cells.
+    registerSaveSection('physicsV2', {
+      strict: true,
+      save: () => {
+        nativeCapture = app.physics.v2 ? captureNativeSnapshot(app.physics.v2, app.physics.mode) : null;
+        return nativeCapture?.then(s => s.core);
+      },
+      validate: (data, h) => {
+        if (data === undefined && !h.sections?.some(s => s.key === 'physicsV2')) return;
+        decodeV2State(data, h.dims);
+      },
+      load: async (data, h) => {
+        const state = decodeV2State(data, h.dims);
+        await app.setPhysics('v2');
+        if (!app.physics.v2) throw new Error('v2 state: no compact engine for this grid');
+        app.physics.v2.restoreState(data, { legacyCurrent: state.mode === 'v1' });
+        if (state.mode === 'v1') await app.setPhysics('v1');
+      },
+      // An old save is an intentional legacy replacement, never a reason to revive retained cells.
+      absent: () => app.physics.v2?.resync(),
+    });
+    registerSaveSection('physicsV2Dynamics', {
+      strict: true,
+      save: () => nativeCapture?.then(s => s.dynamic ? encodeDynamicState(s.dynamic) : undefined),
+      validate: (data, h) => {
+        const listed = h.sections?.some(s => s.key === 'physicsV2Dynamics');
+        if (h.nativeDynamicsVersion !== undefined && h.nativeDynamicsVersion !== 1) throw new Error('Unsupported native dynamics save version');
+        if (data === undefined && !listed && h.nativeDynamicsVersion === undefined) return;
+        if (!h.sections?.some(s => s.key === 'physicsV2')) throw new Error('Native dynamics requires matching core state');
+        decodeDynamicState(data, { dims: h.dims, origin: h.world?.origin ?? [0, 0, 0] });
+      },
+      load: (data, h) => {
+        const d = app.physics.v2?.dynamics;
+        if (!d?.isReady) throw new Error('Native dynamics restore owner is unavailable');
+        const o = app.sim.origin;
+        const snapshot = decodeDynamicState(data, { dims: h.dims, origin: [o.x, o.y, o.z] });
+        d.restoreDynamicState(snapshot);
+      },
+      absent: () => {
+        const d = app.physics.v2?.dynamics, sim = app.sim;
+        if (d) d.restoreDynamicState(emptyDynamicState([sim.g.nx, sim.g.ny, sim.g.nz], [sim.origin.x, sim.origin.y, sim.origin.z]));
+      },
+    });
     saves = createSaves({
       settings, getSim: () => app.sim, getWin: () => app.win,
+      prepareCapture: () => app.physics.v2?.ready,
       header: () => {
         const m = mapOf(settings);
         return {
           map: m?.key ?? null, mapName: m?.name ?? null, size: settings.size, preset: app.win ? null : settings.preset,
           world: app.win ? { scene: settings.scene, seed: app.worldSeed ?? null } : null,
-          industryMode: app.industry?.state.active ? app.gamemode : undefined,
+          // Runtime refusal must not erase the saved Factory/Sandbox mode.
+          industryMode: app.industry && !app.win && ['sandbox', 'factory'].includes(app.gamemode) ? app.gamemode : undefined,
+          nativeDynamicsVersion: app.physics.v2?.dynamics ? 1 : undefined,
           guestCopy: app.mp.isGuest || undefined,   // a guest's copy of the host's world (no velocity or pressure: net/codec.js)
         };
       },

@@ -1,3 +1,6 @@
+import { routeNativePOV, prepareNativePOVForces, nativePOVForcesReady } from '../v2/interactions.js';
+import { NativeTransfer } from '../v2/transfer.js';
+import { coupleNativeBody } from '../v2/body.js';
 // The first person's GPU work on WebGPU (docs/webgpu.md G2): every write to
 // the world is an edit (sim.edit, D6: one dispatch over a box, in call order,
 // the bricks it changes marked on the GPU), and every read is a probe whose
@@ -135,6 +138,11 @@ class PovGpu {
    * @returns {boolean} false when nothing was recorded (no box, or the kernel is still building)
    */
   edit(name, box, values, opts) {
+    if (this.sim.compact) {
+      const routed = routeNativePOV(this.sim, name, box, values);
+      if (routed !== null) return routed;
+    }
+    if (this.sim.compact && name === 'povCouple') return !!box && coupleNativeBody(this.sim, values);
     const k = this.editKernel(name);
     if (!box || !ready(k.main) || (k.apply && !ready(k.apply))) return false;
     this.sim.edit(k, box, values, opts);
@@ -185,8 +193,9 @@ class PovGpu {
     if (!ready(k)) return false;
     let group = this.d.comGroups.get(buffer);
     if (!group) this.d.comGroups.set(buffer, group = this.gpu.bindGroup(this.d.layouts.com, [{ binding: 0, resource: { buffer } }], 'pov com'));
-    const sim = this.sim;
-    sim._dispatch(k, [1, 1, 1], { bind: [sim.tables, sim.bindRO, group], header: sim.header(), params: { hold } });
+    const sim = this.sim, state = sim.bindPhysicalRO;
+    if (!state) return false;
+    sim._dispatch(k, [1, 1, 1], { bind: [sim.tables, state, group], header: sim.readHeader({ physical: true }), params: { hold } });
     return true;
   }
 
@@ -213,6 +222,11 @@ class PovGpu {
    * @returns {Promise<ArrayBuffer> | null} TRANSFER_SLOTS vec4s; null while the kernel is building
    */
   transfer(values) {
+    if (this.sim.compact) {
+      this.nativeTransfer ??= new NativeTransfer(this.sim);
+      return this.nativeTransfer.run(values);
+    }
+    if (values.items?.some(c => c.length > 4)) throw new Error('Native cargo must be placed with native physics; switching to v1 cannot discard fill/banks');
     const k = this._transferKernel();
     if (!ready(k)) return null;
     const sim = this.sim;
@@ -244,6 +258,8 @@ class PovGpu {
     const sim = this.sim, d = this.d;
     const [reach, apply] = this._laserKernels();
     if (!ready(reach) || !ready(apply)) return null;
+    const state = sim.bindPhysicalRO;
+    if (!state) return null;
     const { ring } = ringOf(this.gpu, 'laser', LASER_RING);
     d.laserReachGroup ??= this.gpu.bindGroup(d.layouts.laserReach, [
       { binding: 0, resource: { buffer: d.beam } }, { binding: 1, resource: { buffer: d.beamArgs } }, { binding: 2, resource: { buffer: ring.buffer } },
@@ -251,7 +267,7 @@ class PovGpu {
     d.laserApplyGroup ??= this.gpu.bindGroup(d.layouts.laserApply, [{ binding: 0, resource: { buffer: d.beam } }], 'pov laser apply');
     const slot = ring.next();
     const header = sim.header();
-    sim._dispatch(reach, [1, 1, 1], { bind: [sim.tables, sim.bindRO, d.laserReachGroup], header, params: { muzzle, dir, slot } });
+    sim._dispatch(reach, [1, 1, 1], { bind: [sim.tables, state, d.laserReachGroup], header: sim.readHeader({ physical: true }), params: { muzzle, dir, slot } });
     sim._dispatch(apply, { indirect: d.beamArgs, offset: 0 }, { bind: [sim.tables, sim.bindRW, d.laserApplyGroup], header, params: { muzzle, dir, slot } });
     this._wrote();
     return ring.read(slot).then((bytes) => {
@@ -282,6 +298,7 @@ class PovGpu {
   prepare() {
     if (!this.prepared) {
       this.prepared = Promise.all([
+        ...(this.sim.compact ? [prepareNativePOVForces(this.sim)] : []),
         ...Object.keys(POV_EDITS).map((n) => this.editKernel(n).ready),
         ...Object.keys(PROBES).map((n) => this._probeKernel(n).ready),
         ...[this._comKernel(), this._transferKernel(), ...this._laserKernels()].map((k) => k.ready),
@@ -298,6 +315,7 @@ class PovGpu {
    * has (prepare(): an NPC's tool, a check's toolbelt).
    */
   get ready() {
+    if (this.sim.compact && !nativePOVForcesReady(this.sim)) { prepareNativePOVForces(this.sim).catch(()=>{}); return false; }
     if (!this.built) this.prepare();
     return this.built === true;
   }

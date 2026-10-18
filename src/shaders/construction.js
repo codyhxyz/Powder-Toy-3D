@@ -45,6 +45,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   let s = stampCell(vec3i(q.x, max(q.y, 0), q.z));
   if (q.y < 0 && (s.w < 0.5 || !footing(p, P.at.y, P.foot))) { return; }
   if (s.x < 0.5) { return; }
+  ownLegacy(slotOf(p)); // as stamp.js: only an eligible voxel/footing, including explicit air
   stampPut(p, s, b, oA, oB);
 }
 `;

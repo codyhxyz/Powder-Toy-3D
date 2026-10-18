@@ -1,3 +1,4 @@
+import { createNativeWeatherKernel } from './v2/nativeWeather.js';
 import { fold } from './gpu/kernels.js';
 import { E } from './elements.js';
 import {
@@ -81,8 +82,9 @@ export function createElementWeather() {
     const group = gpu.bindGroup(layout, [{ binding: 0, resource: { buffer: roof } }], 'element weather roofs');
     const scan = gpu.kernel({ name: 'weatherRoof', code: weatherRoofFrag(g),
       layouts: [sim.L.TABLES, sim.L.STATE_RO, layout], workgroupSize: [64, 1, 1] });
-    const source = sim.editKernel('elementWeather', {
-      update: weatherUpdateWGSL, params: WeatherParams, reads: 'neighbours',
+    const makeSource = sim.compactOwner ? (name, spec) => createNativeWeatherKernel(sim, name, spec) : (name, spec) => sim.editKernel(name, spec);
+    const source = makeSource('elementWeather', {
+      nativePrecipitation: true, update: weatherUpdateWGSL, params: WeatherParams, reads: 'neighbours',
       decls: weatherDeclsWGSL, layout: WEATHER_SOURCE_LAYOUT,
     });
     resources = { roof, group, scan, source, ready: Promise.all([scan.ready, source.ready]) };
@@ -113,6 +115,7 @@ export function createElementWeather() {
       const policy = elementWeatherPolicy(state, context);
       if (!policy) return false;
       const { sim, world } = context;
+      const cadence = Math.max(1, Math.round(ELEMENT_WEATHER.cadence * (context.stepHz ?? 240) / 240));
       ensure(sim);
       if (worldKey !== world || epoch !== world?.epoch || sim.frame < lastFrame) {
         worldKey = world; epoch = world?.epoch; nextFrame = 0; lastFrame = -1;
@@ -120,17 +123,22 @@ export function createElementWeather() {
       if (sim.frame === lastFrame || sim.frame < nextFrame) return false;
       const { scan, source, group, roof } = resources;
       if (scan.state !== 'ready' || source.main.state !== 'ready' || source.apply.state !== 'ready') return false;
+      const read = sim.compact ? sim.bindPhysicalRO : sim.bindRO;
+      if (!read) return false;
       scan.dispatch(sim.gpu.frame, fold(Math.ceil(sim.g.nx * sim.g.nz / 64)), {
-        bind: [sim.tables, sim.bindRO, group], header: sim.header(),
+        bind: [sim.tables, read, group], header: sim.readHeader({ physical: true }),
       });
       sim.onPass?.(scan.name, { kind: 'compute', gpuMs: null });
       const { boxes, ...values } = policy;
-      values.pulse = Math.floor(sim.frame / ELEMENT_WEATHER.cadence) >>> 0;
+      values.pulse = Math.floor(sim.frame / cadence) >>> 0;
       // Separate thin bands bound the shared scratch and avoid dispatching the
-      // empty column between sea fog and high clouds. At most five dispatches
-      // per pulse: one roof scan and two phases per band, never a full-grid edit.
-      for (const box of boxes) sim.edit(source, box, values, { bind: [{ buffer: roof }] });
-      pulses++; lastFrame = sim.frame; nextFrame = sim.frame + ELEMENT_WEATHER.cadence;
+      // empty column between sea fog and high clouds. V1 uses two edit phases;
+      // native commits properties/air and allocates only new snow sources.
+      for (const box of boxes) {
+        if (sim.compactOwner) source.run(box, values, roof);
+        else sim.edit(source, box, values, { bind: [{ buffer: roof }] });
+      }
+      pulses++; lastFrame = sim.frame; nextFrame = sim.frame + cadence;
       return true;
     },
     reset() {

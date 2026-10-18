@@ -5,6 +5,7 @@ import { WorldRenderSource, SOURCE_GRID, SOURCE_RANK, snapshotSource, sourceBoun
 import { rawSourceGrid, treeColumnMask, sourceTrees, RawWorldSourceProducer } from '../src/world/renderSourceProducer.js';
 import { gridDims, cellSlot, slotCell } from '../src/shaders/common.js';
 import { BrickStore, encodeBrick } from '../src/world/store.js';
+import { NativeBrickStore } from '../src/world/nativeStore.js';
 import { WorldWindow } from '../src/world/window.js';
 import { Simulation } from '../src/sim.js';
 import { Deco } from '../src/deco.js';
@@ -34,8 +35,9 @@ function fixture() {
     flow: buf(g.slots * 8), aeration: { buffer: buf(g.slots * 16), cur: 1 },
     decoPlane: { buffer: buf(g.slots * 4), offset: 0 },
     _retire(b) { retired.push(b); }, noteWrite() { this.version++; }, freshFlags() { this.refreshedFlags = true; this.noteWrite(); },
-    header() { return { origin: [this.origin.x, 0, this.origin.z], src: this.cur, dst: this.cur }; } };
-  const win = { sim, gpu, size: [128, 32, 128], epoch: 1, wb: [32, 8, 32], scene: { importManifest: { sourceStyle: true }, appearanceWords: new Uint32Array([0x12345678]) }, planted: new Uint8Array(32 * 32), candidates: new Map() };
+    header() { return { origin: [this.origin.x, 0, this.origin.z], src: this.cur, dst: this.cur }; }, readHeader() { return this.header(); }, pingPong() {} };
+  const win = { sim, gpu, size: [128, 32, 128], epoch: 1, wb: [32, 8, 32], scene: { importManifest: { sourceStyle: true }, appearanceWords: new Uint32Array([0x12345678]) }, planted: new Uint8Array(32 * 32), candidates: new Map(),
+    _shiftCommitted: WorldWindow.prototype._shiftCommitted, restoreNative: WorldWindow.prototype.restoreNative };
   win.store = new BrickStore(win.wb);
   const source = new WorldRenderSource(win); win.renderSource = source;
   return { sim, win, source, gpu, frame, flush, retired, owned };
@@ -433,7 +435,7 @@ function windowFixture() {
   });
   win.gen = { P: {}, sim, res: { resources: [], prepassFor() {} }, kernels: { fill: { main: 'fill' } }, fill: WorldGenerator.prototype.fill, diff() {} };
   win.P = win.gen.P; win.restoreKernel = { main: 'restore' }; win.restore = WorldWindow.prototype.restore;
-  win.storeRevisions = new Map(); win.leave = {}; win.readBack = () => {}; win.loaded = true;
+  win.storeRevisions = new Map(); win.nativeStore = new NativeBrickStore(win.wb); win.leave = {}; win.readBack = () => {}; win.loaded = true;
   sim.dropHistory = () => {}; win.far = null;
   return f;
 }

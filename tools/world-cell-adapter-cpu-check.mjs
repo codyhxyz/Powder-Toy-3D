@@ -15,6 +15,9 @@ import { brickFrag } from '../src/shaders/passes.js';
 import { worldCellClassifierWGSL, worldCellPackWGSL, WORLD_CELL_PACK_LAYOUTS, worldFieldPackWGSL, WORLD_FIELD_PACK_LAYOUT, copyCapturedFieldPage } from '../src/shaders/worldCellAdapter.js';
 import { setAeration, aerationForSource, isProducerBoundedAeration } from '../src/gfx/foam.js';
 const u32=b=>new Uint32Array(b.bytes), f32=b=>new Float32Array(b.bytes);
+// The Box brickFrag the world classifier matches: 9cdee27b's plus only V2's liquid-interior
+// certificate bit (7c893f14), as merged into main from 7f9b2f1c.
+const BOX_BRICK_FRAG_AT='7f9b2f1c';
 class FieldShaderExec extends WgslExec {
   _dispatchWorkgroup(fn,id,context){
     // wgsl_reflect1.6.0 parses a single workgroup size as a string, then
@@ -311,7 +314,7 @@ test('unknown offscreen LIGHT closures invalidate atomically, no-op preserves, o
 
 test('actual shared classifier Box emission unchanged at32/64/128; world classifier/raw pack Naga and exact seven-buffer layouts',()=>{
   for(const n of [32,64,128]){
-    const path='src/shaders/passes.js',text=execFileSync('git',['show',`9cdee27b:${path}`],{encoding:'utf8'});
+    const path='src/shaders/passes.js',text=execFileSync('git',['show',`${BOX_BRICK_FRAG_AT}:${path}`],{encoding:'utf8'});
     // Import the historical module alongside its unchanged dependencies through
     // a data URL whose relative imports are resolved to the actual module URLs.
     const rewritten=text.replace(/from '([^']+)'/g,(_m,p)=>`from '${new URL(p,new URL('../src/shaders/passes.js',import.meta.url)).href}'`);
@@ -324,7 +327,7 @@ test('actual shared classifier Box emission unchanged at32/64/128; world classif
 });
 
 test('actual historical Box brickFrag text remains byte-identical, not merely equivalent arithmetic',async()=>{
-  const text=execFileSync('git',['show','9cdee27b:src/shaders/passes.js'],{encoding:'utf8'}).replace(/from '([^']+)'/g,(_m,p)=>`from '${new URL(p,new URL('../src/shaders/passes.js',import.meta.url)).href}'`);
+  const text=execFileSync('git',['show',`${BOX_BRICK_FRAG_AT}:src/shaders/passes.js`],{encoding:'utf8'}).replace(/from '([^']+)'/g,(_m,p)=>`from '${new URL(p,new URL('../src/shaders/passes.js',import.meta.url)).href}'`);
   const historical=await import('data:text/javascript;base64,'+Buffer.from(text).toString('base64'));
   for(const n of [32,64,128]){const g=gridDims({nx:n,ny:n,nz:n});assert.equal(brickFrag(g),historical.brickFrag(g));}
 });

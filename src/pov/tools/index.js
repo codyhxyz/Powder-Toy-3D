@@ -368,6 +368,10 @@ export function createToolbelt(env) {
       return equipWand(id === 'custom' ? custom : id);
     }
     if (typeof key === 'number') key = carried()[key];
+    if (key === 'physgun' && env.getSim()?.compact && !env.getSim().nativeCapabilities.physgun) {
+      env.hud?.toast?.('Native physgun hold is unavailable', { kind: 'error' });
+      return false;
+    }
     const t = tools.get(key);
     if (!t || !inventory.has(key) || descentLevel || (only && !only.includes(key))) return false;
     if (wandSelected) { putAway(); wandSelected = false; wandId = null; descentWands.held = -1; }

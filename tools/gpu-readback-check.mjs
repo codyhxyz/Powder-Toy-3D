@@ -30,7 +30,7 @@ const gpu = {
   },
 };
 const sim = {
-  g: gridLayout(16, 16, 16), gpu, origin: new THREE.Vector3(), L: {}, tables: {}, bindRO: {}, header: () => ({}),
+  g: gridLayout(16, 16, 16), gpu, origin: new THREE.Vector3(), L: {}, tables: {}, bindRO: {}, header: () => ({}), readHeader: () => ({}),
 };
 const probe = createBirdWorld({ getSim: () => sim, getWin: () => null });
 probe.update(1);

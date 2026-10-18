@@ -38,10 +38,10 @@ export function argPort(argv = process.argv) {
 
 /**
  * Starts a Vite dev server rooted at the repository.
- * @param {{ port?: number, harness?: boolean, quiet?: boolean }} [opts]
+ * @param {{ port?: number, harness?: boolean, quiet?: boolean, warmupEntries?: string[] }} [opts]
  * @returns {Promise<{ port: number, origin: string, url: (path?: string) => string, close: () => Promise<void> }>}
  */
-export async function startVite({ port, harness = false, quiet = true } = {}) {
+export async function startVite({ port, harness = false, quiet = true, warmupEntries = [] } = {}) {
   const { createServer } = await import('vite');
   port ??= argPort() ?? (process.env.TPT_VITE_PORT ? Number(process.env.TPT_VITE_PORT) : await freePort());
   const server = await createServer({
@@ -53,6 +53,15 @@ export async function startVite({ port, harness = false, quiet = true } = {}) {
     server: { host: '127.0.0.1', port, strictPort: true, hmr: false, watch: null },
   });
   await server.listen();
+  try {
+    // CPU transforms only. Finish the static import graph before a caller
+    // acquires a GPU slot; do not spend that slot building JavaScript.
+    for (const entry of warmupEntries) await server.warmupRequest(entry);
+    if (warmupEntries.length) await server.waitForRequestsIdle();
+  } catch (error) {
+    await server.close();
+    throw error;
+  }
   // WebGPU needs a secure origin: http://127.0.0.1 and http://localhost are secure
   const origin = `http://127.0.0.1:${port}`;
   return {

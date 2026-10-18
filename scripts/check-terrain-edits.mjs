@@ -123,6 +123,7 @@ const firstGate=source.match(/  renderOnly \|\|= !!ctx\.descent\?\.terrainPendin
 const runWriters=new Function('ctx','live','log',`
 let renderOnly=false; ${firstGate}
 const mp={replica:false,isGuest:false}, settings={paused:true,steps:1},dt=1/60;
+const DEFAULTS={steps:4},physicsV2=null;
 let stepOnce=true,camShown='on',releasePending=false,painting=false,windFromValid=false,v2Running=false;
 const camState=()=> 'on',toolbar={},pov={active:false},rig={update:()=>log.push('rig')},controls={update:()=>log.push('controls')};
 const updatePresentation=()=>{},updateBrush=()=>log.push('brush'),prof={phase:()=>{}},selectedMode='noita';
@@ -136,15 +137,17 @@ assert.equal(runWriters(state,hooks,logs).renderOnly,true);
 assert.deepEqual(logs,['begin'],'same-tick gate stops all later writers, including paused stepOnce');
 logs.length=0; runWriters(state,hooks,logs); assert.deepEqual(logs,[],'subsequent capture/load ticks have no writers');
 assert(source.indexOf('gpu.endFrame();',end)>end,'GPU submissions remain outside the writer gate');
-const undoStart=source.indexOf('function undo() {');
+const undoDeclaration=source.match(/^(?:async )?function undo\(\) \{/m);
+assert(undoDeclaration,'actual undo declaration');
+const undoStart=undoDeclaration.index;
 const undoBody=source.slice(undoStart,source.indexOf('\n}',undoStart)+2);
 const runUndo=new Function('ctx','sim',`
 const selectedMode='noita',mp={guard:()=>false},hud={toast:()=>{}},toolbar={setUndoEnabled:()=>{}};
 ${undoBody}
-undo();`);
+return undo();`);
 let undoWrites=0;
-runUndo({descent:{terrainPending:true}},{undo:()=>{undoWrites++;return false;}});
+await runUndo({descent:{terrainPending:true}},{undo:()=>{undoWrites++;return false;}});
 assert.equal(undoWrites,0,'event-driven undo cannot race the frozen snapshot');
-runUndo({descent:{terrainPending:false}},{undo:()=>{undoWrites++;return false;}});
+await runUndo({descent:{terrainPending:false}},{undo:()=>{undoWrites++;return false;}});
 assert.equal(undoWrites,1,'ordinary undo remains available');
 console.log('Terrain edits: down/up overlap + remote XZ, baseline deletion, global-Y mapping, run reset, bounded capture/restore, failure retention, lifecycle and actual app writer gate passed');

@@ -30,7 +30,7 @@ function oceanContext(app) {
   // Ocean candidates use world cells: scene -> local grid -> streamed origin.
   app.volume.worldToLocal(app.camera.getWorldPosition(eye)).add(sim.origin);
   return {
-    sim, world: win, mapId: win ? `${win.scene.key}:${win.P.seed}` : null,
+    sim, stepHz: sim.compact ? 60 : WEATHER_STEPS_PER_SECOND, world: win, mapId: win ? `${win.scene.key}:${win.P.seed}` : null,
     seaLevel: win?.P.sea, target: [eye.x, eye.z],
     oceanEligible: enabled(app) && win.P.sea > 0, isGuest: app.mp.isGuest || app.mp.replica,
     groundHeight,
@@ -77,17 +77,17 @@ const wire = {
   detach: reset,
   // Called once BEFORE each host sim.step, including explicit manual test steps.
   // Neither render-only ticks nor async compilation callbacks call this.
-  step(app) {
+  step(app, { hz = WEATHER_STEPS_PER_SECOND } = {}) {
     observeWorld(app);
     if (!enabled(app)) return;
-    weather.update(clock += 1 / WEATHER_STEPS_PER_SECOND);
+    weather.update(clock += 1 / hz);
     app.elementWeather.step(weather.state, {
-      sim: app.sim, world: app.win, advancing: true, host: true,
+      sim: app.sim, world: app.win, advancing: true, host: true, stepHz: hz,
       fogEnabled: weather.selection.fog !== 'off',
     });
     const active = app.oceanEvents.active;
     if (active || weather.state.ocean > 0)
-      app.oceanEvents.step(weather.state, { ...oceanContext(app), paused: false });
+      app.oceanEvents.step(weather.state, { ...oceanContext(app), paused: false, stepHz: hz });
     if (active && !app.oceanEvents.active) weather.finishTsunami();
   },
   afterStep(app) {

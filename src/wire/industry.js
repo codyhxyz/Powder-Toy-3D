@@ -21,7 +21,7 @@ export default {
   },
   attach(app) { app.industry = createIndustry(app); },
   detach(app) { app.industry?.dispose(); app.industry = null; },
-  afterStep(app, dt) { app.industry?.update(dt, app.stepping); },
+  afterStep(app, dt) { app.industry?.update(app.nativeStepped == null ? dt : app.nativeStepped / 60, app.stepping); },
   busy(app) { return !!(app.industry?.building || app.industry?.pending); },
   invalidate(app) { app.industry?.dispose(); app.industry = null; },
 };

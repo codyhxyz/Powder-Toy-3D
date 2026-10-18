@@ -163,7 +163,7 @@ export function uniformStruct(name, fields, { space = 'uniform' } = {}) {
  * it reads (`src`) and writes (`dst`). Kernels that don't touch the state get
  * gpu.nullHeader.
  */
-export const Header = uniformStruct('Header', { origin: 'vec3i', src: 'u32', dst: 'u32' });
+export const Header = uniformStruct('Header', { origin: 'vec3i', src: 'u32', dst: 'u32', format: 'u32', capture: 'u32' });
 
 /**
  * WGSL for the header binding, for modules that don't take it from the prelude.

@@ -74,7 +74,8 @@ export async function encodeSave(header, sections) {
   return out;
 }
 
-const asBytes = (buf) => (buf instanceof Uint8Array ? buf : new Uint8Array(buf instanceof ArrayBuffer ? buf : buf.buffer));
+const asBytes = (buf) => (buf instanceof ArrayBuffer ? new Uint8Array(buf) : ArrayBuffer.isView(buf)
+  ? new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength) : new Uint8Array(buf));
 
 // The header alone (no sections inflated): for lists and file pickers. Throws
 // on anything that isn't a save.
@@ -97,22 +98,28 @@ export async function decodeSave(buf) {
   const bytes = asBytes(buf);
   const header = readSaveHeader(bytes);
   if (header.version > SAVE_VERSION) throw new Error('this save was made by a newer version of the game');
-  const sections = new Map();
+  if (header.version !== SAVE_VERSION || !Array.isArray(header.sections)) throw new Error('invalid save version or sections');
+  const sections = new Map(), keys = new Set();
   let at = header.bodyAt;
-  for (const s of header.sections ?? []) {
+  for (const s of header.sections) {
+    if (!s || typeof s.key !== 'string' || !s.key || keys.has(s.key) || typeof s.type !== 'string'
+        || !Number.isSafeInteger(s.size) || s.size < 0 || !Number.isSafeInteger(s.raw) || s.raw < 0) throw new Error('invalid save section descriptor');
+    keys.add(s.key);
     const body = bytes.subarray(at, at + s.size);
     at += s.size;
     if (body.length !== s.size) throw new Error(`save is cut short in section '${s.key}'`);
-    if (s.type !== JSON_TYPE && !TYPED[s.type]) continue;
+    if (s.type !== JSON_TYPE && !Object.hasOwn(TYPED, s.type)) continue;
     const raw = await inflate(body);
     if (raw.length !== s.raw) throw new Error(`section '${s.key}' inflates to ${raw.length} bytes, not ${s.raw}`);
     if (s.type === JSON_TYPE) sections.set(s.key, JSON.parse(new TextDecoder().decode(raw)));
     else {
       const T = TYPED[s.type];
+      if (raw.length % T.BYTES_PER_ELEMENT) throw new Error(`section '${s.key}' has invalid typed-array length`);
       // (a fresh buffer: a typed array needs its offset aligned to its element size)
       sections.set(s.key, new T(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength)));
     }
   }
+  if (at !== bytes.length) throw new Error('save has trailing data');
   return { header, sections };
 }
 

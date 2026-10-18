@@ -62,9 +62,9 @@ export const LIB_VARIANTS = {
  *   detail    the close-up detail's defines (gfx/detail.js: { DETAIL_CUBIC_CLOSE: 1, … });
  *             core reads DETAIL_CUBIC_CLOSE (the volume's; other passes leave it out)
  * @param {{ nx: number, ny: number, nz: number, maxSteps?: number }} g
- * @param {{ variant?: string, far?: boolean, aeration?: boolean, debug?: boolean, detail?: object }} [opts]
+ * @param {{ variant?: string, far?: boolean, aeration?: boolean, debug?: boolean, detail?: object, fixedReadFormat?: 0 | 2 | 3 }} [opts]
  */
-export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debug = false, detail = {}, backend = 'box' } = {}) {
+export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debug = false, detail = {}, backend = 'box', fixedReadFormat } = {}) {
   renderBackend(backend);
   if (backend === 'world' && variant === 'LIGHTING_SHADOW') {
     // Optical compute has no dependency on GI, sun readers, appearance, mesh,
@@ -80,7 +80,7 @@ export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debu
   const v = LIB_VARIANTS[variant];
   if (!v) throw new Error(`lib: no variant ${variant} (${Object.keys(LIB_VARIANTS).join(', ')})`);
   return [
-    prelude(g, world ? { state: false, backend } : { ...STATE_OPTS.STATE_RO, debug }),
+    prelude(g, world ? { state: false, backend } : { ...STATE_OPTS.STATE_RO, debug, fixedReadFormat }),
     frameBindings({ backend }),
     world ? worldAccessWGSL({ backend }) + worldCoreBindingsWGSL + worldQueryWGSL : lightingBindings({ far, aeration, variant }),
     glslMod,

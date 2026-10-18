@@ -1,3 +1,4 @@
+import { decodeWorldState, validateDecorationState } from '../world/persistence.js';
 import { encodeSave, decodeSave, packCells, unpackCells } from './format.js';
 import { collectSections, applySections, validateSections, savedSettingKeys } from './sections.js';
 import { cellTexel } from '../sim.js';
@@ -44,47 +45,51 @@ export function createSaves(app) {
   // Capture the game now: resolves to the save's bytes. name: the save's name.
   async function capture(name) {
     const sim = app.getSim(), win = app.getWin();
-    if (win) {
-      if (!win.loaded) throw new SaveRefused('The world is still loading: try again in a moment');
-      // a slab that left the window is still on its way into the store: wait for it
-      while (win.pending) await win.pending.catch(() => {});
-      if (sim !== app.getSim()) throw new SaveRefused('The map changed while saving');
-    }
-    // the conversion to the atlas order and the particles' kernels, built before the moment
-    await Promise.all([sim.prepare('toAtlas'), sim.rays.prepare?.()]);
-    // Interaction readbacks or streaming can begin during preparation too.
-    while (win?.pending) await win.pending.catch(() => {});
-    if (sim !== app.getSim() || sim.disposed) throw new SaveRefused('The map changed while saving');
-    // ---- from here to the readbacks, one task: everything below is the same moment ----
-    const g = sim.g;
-    const reads = [sim.readState()];
-    let rays = null;
-    const raysCursor = sim.rays.cursor ?? 0;   // (where the particle brush writes next)
-    if (sim.rays.active) rays = sim.rays.readList();
-    const scene = app.header(), thumbnail = app.thumbnail?.() ?? null;
-    const header = {
-      name, created: new Date().toISOString(), ...scene,
-      dims: [g.nx, g.ny, g.nz],
-      world: win ? { ...scene.world, size: [...win.size], origin: [sim.origin.x, sim.origin.y, sim.origin.z] } : null,
-    };
-    const core = [
-      { key: 'settings', data: Object.fromEntries(savedSettingKeys().filter((k) => k in settings).map((k) => [k, settings[k]])) },
-    ];
-    if (win) core.push({ key: 'worldStore', data: win.store.toBytes() }, { key: 'worldPlanted', data: win.planted.slice() });
-    if (win?.scene.interactionState) core.push({ key: 'worldInteractions', data: win.scene.interactionState.snapshot() });
-    const extra = collectSections();
-    // ---- (the moment ends) ----
-    const [[A, B], list, extras] = await Promise.all([reads[0], rays, extra]);
-    header.thumbnail = await thumbnail;
-    const cells = packCells(header.dims, (x, y, z) => cellTexel(g, x, y, z), [A, B]);
-    const sections = [{ key: 'cells', data: cells }, ...core];
-    if (list) {
-      const data = new Float32Array(RAY_LISTS * RAY_SLOTS * CHANNELS);
-      [list.l0, list.l1, list.l2, list.l3].forEach((l, i) => data.set(l, i * RAY_SLOTS * CHANNELS));
-      sections.push({ key: 'rays', data }, { key: 'raysCursor', data: { cursor: raysCursor } });
-    }
-    sections.push(...extras);
-    return encodeSave(header, sections);
+    const release = win?.acquireReadLock(), identity = win?.historyIdentity;
+    try {
+      if (win) {
+        if (!win.loaded) throw new SaveRefused('The world is still loading: try again in a moment');
+        // a slab that left the window is still on its way into the store: wait for it
+        while (win.pending || sim.deco?.pending) await Promise.all([win.pending, sim.deco?.pending]);
+        if (win.persistenceError) throw new SaveRefused('World readback failed; saving would lose retained material');
+        if (sim !== app.getSim()) throw new SaveRefused('The map changed while saving');
+      }
+      // the conversion to the atlas order and the particles' kernels, built before the moment
+      await Promise.all([sim.prepare('toAtlas'), sim.rays.prepare?.(), app.prepareCapture?.()]);
+      // Interaction readbacks can begin during preparation too.
+      while (win?.pending || sim.deco?.pending) await Promise.all([win?.pending, sim.deco?.pending]);
+      if (sim !== app.getSim() || sim.disposed || win !== app.getWin() || identity !== win?.historyIdentity) throw new SaveRefused('The map changed while saving');
+      // ---- from here to the readbacks, one task: everything below is the same moment ----
+      const g = sim.g;
+      const reads = [sim.readState()];
+      let rays = null;
+      const raysCursor = sim.rays.cursor ?? 0;   // (where the particle brush writes next)
+      if (sim.rays.active) rays = sim.rays.readList();
+      const scene = app.header(), thumbnail = app.thumbnail?.() ?? null;
+      const header = {
+        name, created: new Date().toISOString(), ...scene,
+        dims: [g.nx, g.ny, g.nz],
+        world: win ? { ...scene.world, size: [...win.size], origin: [sim.origin.x, sim.origin.y, sim.origin.z] } : null,
+      };
+      const core = [
+        { key: 'settings', data: Object.fromEntries(savedSettingKeys().filter((k) => k in settings).map((k) => [k, settings[k]])) },
+      ];
+      if (win) core.push({ key: 'worldStore', data: win.store.toBytes() }, { key: 'worldNativeStore', data: win.nativeStore.toBytes() }, { key: 'worldPlanted', data: win.planted.slice() });
+      if (win?.scene.interactionState) core.push({ key: 'worldInteractions', data: win.scene.interactionState.snapshot() });
+      const extra = collectSections();
+      // ---- (the moment ends) ----
+      const [[A, B], list, extras] = await Promise.all([reads[0], rays, extra]);
+      header.thumbnail = await thumbnail;
+      const cells = packCells(header.dims, (x, y, z) => cellTexel(g, x, y, z), [A, B]);
+      const sections = [{ key: 'cells', data: cells }, ...core];
+      if (list) {
+        const data = new Float32Array(RAY_LISTS * RAY_SLOTS * CHANNELS);
+        [list.l0, list.l1, list.l2, list.l3].forEach((l, i) => data.set(l, i * RAY_SLOTS * CHANNELS));
+        sections.push({ key: 'rays', data }, { key: 'raysCursor', data: { cursor: raysCursor } });
+      }
+      sections.push(...extras);
+      return await encodeSave(header, sections);
+    } finally { release?.(); }
   }
 
   // Load a save's bytes. Resolves to its header, or null if the app refused
@@ -92,7 +97,13 @@ export function createSaves(app) {
   async function apply(bytes) {
     const { header, sections } = await decodeSave(bytes);
     const cells = sections.get('cells');
-    if (!cells || !Array.isArray(header.dims)) throw new Error('this save has no grid');
+    if (!(cells instanceof Uint8Array) || !Array.isArray(header.dims) || header.dims.length !== 3
+        || header.dims.some(n => !Number.isSafeInteger(n) || n <= 0)
+        || !Number.isSafeInteger(header.dims.reduce((a, n) => a * n, 32))
+        || cells.length !== header.dims.reduce((a, n) => a * n, 32)) throw new Error('this save has an invalid grid');
+    if (header.world) decodeWorldState(header.world, header.dims, sections.get('worldStore'), sections.get('worldPlanted'), sections.get('worldNativeStore'));
+    else if (['worldStore', 'worldPlanted', 'worldNativeStore', 'decoStore'].some(key => sections.has(key))) throw new Error('World sections require a world');
+    validateDecorationState(sections, header);
     await validateSections(sections, header);
     if (!await app.prepare(header)) return null;
     const sim = app.getSim(), win = app.getWin(), g = sim.g;
@@ -103,7 +114,7 @@ export function createSaves(app) {
       if (!win) throw new Error('a world save, but no world is loaded');
       const store = sections.get('worldStore'), planted = sections.get('worldPlanted');
       if (!store || !planted) throw new Error('this world save has no world edits');
-      win.loadSaved(header.world.origin, () => sim.load(A, B), store, planted, sections.get('worldInteractions'));
+      win.loadSaved(header.world.origin, () => sim.load(A, B), store, planted, sections.get('worldInteractions'), sections.get('worldNativeStore'));
     } else sim.load(A, B);
     // the particles in flight (sim.load let the old ones go). The step counter
     // isn't saved: storms and the cloud deck time themselves by it, and it only runs forward.

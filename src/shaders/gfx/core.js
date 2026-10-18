@@ -72,7 +72,26 @@ fn brickOpaque(f: u32) -> bool { return brickHas(f, BRICK_OPAQUE); }   // crisp 
 fn brickThin(f: u32) -> bool { return brickHas(f, BRICK_THIN); }       // thin cubic matter (drops, grains): read cubic
 fn brickMixed(f: u32) -> bool { return brickHas(f, BRICK_MIXED); }     // more than one liquid
 ${backend === 'world' ? worldOccupancyWGSL : occupancyReadWGSL}
-
+${backend === 'world' ? '' : `
+// Certify the entire brick's sampling support, not just its cells. At a brick
+// face, trilinear reaches one neighbouring texel; cubic B-splines reach two.
+// Both are convex combinations, as is their thin/close blend. The 3³ brick
+// neighbourhood covers all these taps (including edge-clamped samples).
+// Read once per entered brick, only when its own texels are certified. Reading
+// neighbours here avoids stale halo certificates after a dirty update/shift.
+fn liquidInterior(bc: vec3i) -> bool {
+  for (var z = -1; z <= 1; z++) {
+    for (var y = -1; y <= 1; y++) {
+      for (var x = -1; x <= 1; x++) {
+        if (x == 0 && y == 0 && z == 0) { continue; }
+        let q = clamp(bc + vec3i(x, y, z), vec3i(0), vec3i(BX, BY, BZ) - 1);
+        if ((brickOcc(q) & BRICK_LIQUID_INTERIOR) == 0u) { return false; }
+      }
+    }
+  }
+  return true;
+}
+`}
 // ---- brick skipping (the brick map and brickDist; skipBrick: shaders/dda.js) ----
 // Jump the DDA out of the empty region around empty brick bc: every brick
 // within (distance - 1) of it is empty (brickDistAt, built by the derived
