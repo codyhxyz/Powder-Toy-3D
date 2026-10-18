@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createFold, foldWGSL } from '../src/world/scenes/descent/terrainFold.js';
 
 const config = {
@@ -103,4 +104,13 @@ for (let z = 0; z < fold.size[2]; z += 64) for (let x = 0; x < fold.size[0]; x +
   }
 }
 assert.ok(skipped / columns > .85, 'do not generate empty square-world corners around a thin folded map');
+// The published fold holds the inflation: deepest envelope, a backdrop skin, then the cap.
+const published = JSON.parse(readFileSync(new URL('../src/world/scenes/descent/terrainRoute.json', import.meta.url), 'utf8'));
+const inflated = createFold(published.fold), deep = published.inflation.maxHalfDepth;
+assert.equal(published.fold.thickness, 2 * (deep + published.inflation.backdropMargin));
+for (const sign of [-1, 1]) {
+  assert.equal(inflated.classify(inflated.forward([mid, sy, sign * deep], top, height), top, height), 'source');
+  assert.equal(inflated.classify(inflated.forward([mid, sy, sign * (published.fold.thickness / 2 - .1)], top, height), top, height), 'source');
+  assert.equal(inflated.classify(inflated.forward([mid, sy, sign * (published.fold.thickness / 2 + .5)], top, height), top, height), 'cap');
+}
 console.log(`Noita fold: 20,000 round trips, caps, band coordinates, immutable source, perturbation fibers, non-overlap; ${skipped}/${columns} provably empty far columns skipped.`);

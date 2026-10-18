@@ -2,11 +2,16 @@ import { E, ELEMENTS, K } from '../../../elements.js';
 import { sceneStruct, sceneHeadWGSL } from '../sceneGpu.js';
 import { fetchImportedWords } from '../importedMap.js';
 import { createFold, foldWGSL } from './terrainFold.js';
-import { validateTerrainManifest, prepareTerrainWords, nativeIndex, OUTSIDE, PALETTE_WORDS } from './terrainRaster.js';
+import { validateTerrainManifest, prepareTerrainWords, terrainLayout, inflatedIndex, OUTSIDE, PALETTE_WORDS } from './terrainRaster.js';
 
 const TERRAIN_U = sceneStruct({ uFoldA: 'vec4f', uFoldB: 'vec4f', uFoldC: 'vec4f', uRasterWidth: 'u32', uRasterMinX: 'i32', uAirT: 'f32' });
-const TERRAIN_WGSL = `${sceneHeadWGSL(TERRAIN_U, { data: true })}
+// The packed planes' byte offsets are the same for every band (terrainLayout), so
+// they are constants and every band compiles one shader.
+const terrainWGSL = (L) => `${sceneHeadWGSL(TERRAIN_U, { data: true })}
 ${foldWGSL}
+fn rasterByte(offset: u32) -> u32 {
+  return (sdWord(${PALETTE_WORDS}u + (offset >> 2u)) >> ((offset & 3u) * 8u)) & 255u;
+}
 fn terrainId(w: vec3i) -> i32 {
   let p = vec3f(w) + vec3f(0.5);
   let kind = foldClassify(p, SU.uFoldA, SU.uFoldB, SU.uFoldC);
@@ -17,9 +22,14 @@ fn terrainId(w: vec3i) -> i32 {
   let y = i32(floor(source.y)) - i32(SU.uFoldC.x);
   if (x < 0 || x >= i32(SU.uRasterWidth) || y < 0 || y >= i32(SU.uFoldC.y)) { return E_WALL; }
   let index = u32(x) + SU.uRasterWidth * u32(y);
-  let native = (sdWord(${PALETTE_WORDS}u + (index >> 2u)) >> ((index & 3u) * 8u)) & 255u;
+  let native = rasterByte(index);
   if (native == 255u) { return E_WALL; }
-  return i32(sdWord(native));
+  // Inflation (variant A): an open pixel is open out to its envelope's half-depth
+  // (half cells); behind that sits the band's backdrop rock. Closed pixels hold at every depth.
+  let open = rasterByte(${L.depthAt}u + index);
+  if (open == 0u || 2.0 * abs(source.z) < f32(open)) { return i32(sdWord(native)); }
+  let block = u32(x) / ${L.block}u + ${L.blockWidth}u * (u32(y) / ${L.block}u);
+  return i32(sdWord(rasterByte(${L.backdropAt}u + block)));
 }
 fn sceneCell(w: vec3i) -> SceneCell {
   let id = terrainId(w);
@@ -35,7 +45,7 @@ fn sceneCell(w: vec3i) -> SceneCell {
 
 export function createTerrainScene(route, region, { fetchWords = fetchImportedWords } = {}) {
   validateTerrainManifest(route);
-  const fold = createFold(route.fold), { sourceTop: top, sourceHeight: height } = region;
+  const fold = createFold(route.fold), layout = terrainLayout(route), { sourceTop: top, sourceHeight: height } = region;
   const size = fold.dimensions(height), section = route.sections[region.sectionIndex];
   const airT = region.airT ?? section?.airT ?? (/snow|hiisi/i.test(`${region.label} ${section?.label} ${section?.key}`) ? -12 : 18);
   let words = null, packed = null, preparing = null, arrival = null;
@@ -47,9 +57,11 @@ export function createTerrainScene(route, region, { fetchWords = fetchImportedWo
     if (kind !== 'source') return { kind, source: null, nativeIndex: null, element: kind === 'cap' ? E.WALL : E.EMPTY };
     const source = fold.inverse(world, top, height);
     const x = Math.floor(source[0]) - route.fold.sourceMinX, y = Math.floor(source[1]) - top;
-    const index = x < 0 || x >= route.fold.sourceWidth || y < 0 || y >= height ? OUTSIDE : nativeIndex(loaded(), x + route.fold.sourceWidth * y);
-    if (index === OUTSIDE) return { kind: 'cap', source, nativeIndex: index, element: E.WALL };
-    return { kind: 'source', source, nativeIndex: index, material: route.palette[index].name, element: route.palette[index].element };
+    const at = x < 0 || x >= route.fold.sourceWidth || y < 0 || y >= height ? { native: OUTSIDE, material: OUTSIDE, layer: 'outside' }
+      : inflatedIndex(loaded(), layout, x, y, source[2]);
+    if (at.material === OUTSIDE) return { kind: 'cap', source, nativeIndex: at.native, element: E.WALL };
+    return { kind: 'source', source, nativeIndex: at.native, materialIndex: at.material, layer: at.layer,
+      material: route.palette[at.material].name, element: route.palette[at.material].element };
   };
   const cell = (x,y,z) => querySource([Math.floor(x)+.5,Math.floor(y)+.5,Math.floor(z)+.5]).element;
   return {
@@ -82,6 +94,6 @@ export function createTerrainScene(route, region, { fetchWords = fetchImportedWo
       }
       return 0;
     },
-    glsl: () => TERRAIN_WGSL,
+    glsl: () => terrainWGSL(layout),
   };
 }

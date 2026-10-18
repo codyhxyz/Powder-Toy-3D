@@ -214,5 +214,18 @@
     "LAMP",
     "BASALT",
     "STONE"
+  ],
+  "backdropElements": [
+    "ROCK",
+    "NOITA_SNOWROCK",
+    "NOITA_VAULT",
+    "NOITA_TEMPLE",
+    "NOITA_LUSH",
+    "SANDSTONE",
+    "LIMESTONE",
+    "BASALT",
+    "ICE",
+    "METAL",
+    "BRICK"
   ]
 }

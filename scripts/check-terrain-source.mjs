@@ -8,9 +8,10 @@ import { createFold } from '../src/world/scenes/descent/terrainFold.js';
 import { E, ELEMENTS, K } from '../src/elements.js';
 import { BODY_HEIGHT, BODY_WIDTH } from '../src/pov/constants.js';
 import { bandHandoff, nativePortalHandoff } from '../src/pov/descent/terrainHandoff.js';
+import { terrainLayout } from '../src/world/scenes/descent/terrainRaster.js';
 const root=resolve(process.argv[2] ?? 'public/local-maps/noita-terrain');
 const route=JSON.parse(readFileSync(resolve(root,'route.json'),'utf8'));
-const fold=createFold(route.fold);
+const fold=createFold(route.fold), L=terrainLayout(route), W=route.fold.sourceWidth;
 const raster=async region=>new Uint8Array(await new Response(
   new Blob([readFileSync(resolve(root,region.file))]).stream().pipeThrough(new DecompressionStream('gzip'))
 ).arrayBuffer());
@@ -49,8 +50,10 @@ const targets=new Set(route.nativePortals.filter(p=>p.enabled).map(p=>route.regi
 const targetScenes=new Map();
 for (const region of route.regions) {
   const bytes=await raster(region);
-  assert.equal(createHash('sha256').update(bytes).digest('hex'),region.sha256,`native raster hash ${region.key}`);
-  for(const n of bytes) if(n!==255 && n>=route.palette.length) assert.fail(`Unknown native palette index ${region.key}: ${n}`);
+  assert.equal(bytes.length,L.bytes,`${region.key}: native, depth and backdrop planes`);
+  assert.equal(createHash('sha256').update(bytes.subarray(0,L.pixels)).digest('hex'),region.sha256,`native raster hash ${region.key}`);
+  assert.equal(createHash('sha256').update(bytes.subarray(L.pixels,L.bytes)).digest('hex'),region.fieldsSha256,`inflation hash ${region.key}`);
+  for(const n of bytes.subarray(0,L.pixels)) if(n!==255 && n>=route.palette.length) assert.fail(`Unknown native palette index ${region.key}: ${n}`);
   if(region.spawnSupported || targets.has(region.key)) {
     const s=createTerrainScene(route,region,{fetchWords:async()=>wordsFrom(bytes)});
     await s.prepare();
@@ -58,7 +61,11 @@ for (const region of route.regions) {
     if(targets.has(region.key)) targetScenes.set(region.key,s);
   }
   if(previous && previous.core[1]===region.core[0]) {
-    assert.deepEqual(previousBytes.subarray(256*route.fold.sourceWidth),bytes.subarray(0,64*route.fold.sourceWidth));
+    // Native, depth and backdrop planes all agree across the 64 shared context rows: no band seams.
+    assert.deepEqual(previousBytes.subarray(256*W,320*W),bytes.subarray(0,64*W));
+    assert.deepEqual(previousBytes.subarray(L.depthAt+256*W,L.depthAt+320*W),bytes.subarray(L.depthAt,L.depthAt+64*W));
+    const rowBlocks=L.blockWidth, shared=64/L.block;
+    assert.deepEqual(previousBytes.subarray(L.backdropAt+(40-shared)*rowBlocks,L.bytes),bytes.subarray(L.backdropAt,L.backdropAt+shared*rowBlocks));
     const source=[route.startSource[0],region.core[0]+.125,3.25];
     const a=levels.find(l=>l.key===previous.key), b=levels.find(l=>l.key===region.key);
     assert.equal(bandHandoff(levels,a,source).next,b);
@@ -77,6 +84,6 @@ for(const p of route.nativePortals.filter(p=>p.enabled)) {
   const go=nativePortalHandoff(levels,current,[...p.source,2.5]);
   assert(go,`portal ${p.id} needs a destination region`);
   bodyClear(targetScenes.get(go.next.key),go.source,`native portal ${p.id} arrival`);
-  assert.deepEqual(go.source,[...p.target,2.5]); portals++;
+  assert.deepEqual(go.source,[...p.target,0]); portals++;
 }
 console.log(`Actual source: full-body start clear at ${route.startSource} (supported=${arrivalSupported}; native airborne arrival preserved); ${seams} byte-identical context seams, bidirectional same-XZ handoffs; ${portals} native portal endpoints passed; start element ${E.EMPTY}`);

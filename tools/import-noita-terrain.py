@@ -126,6 +126,159 @@ def physical_elements():
     return {name: i for i, name in enumerate(keys)}
 
 
+def element_kinds():
+    # Matter kind per element key (K.EMPTY/SOLID/POWDER/LIQUID/GAS), from the same defs.
+    defs = (ROOT / 'src/elements.js').read_text().split('const defs = [', 1)[1].split('\n];', 1)[0]
+    kinds = dict(re.findall(r"\{[^{}]*?\bkey:\s*'([A-Z_0-9]+)'[^{}]*?\bkind:\s*K\.([A-Z]+)", defs))
+    if set(kinds) != set(physical_elements()):
+        raise ValueError('Cannot read a kind for every elements.js def')
+    return kinds
+
+
+# Third dimension, variant A ("air-only round inflation"): every open pixel (air,
+# liquid, gas) gets a depth from the union of balls on its 2D medial discs, so a
+# tunnel becomes a round tube and a chamber a dome. Solid and powder pixels stay
+# themselves at every depth; behind an open pixel's envelope sits the biome's own
+# rock (the backdrop). Depth 0 is exactly the native raster. Depth units are half
+# cells so every quantity is an exact small integer.
+OPEN_KINDS = {'EMPTY', 'LIQUID', 'GAS'}
+INFLATE_STRIPE = 1024    # rows per pass; memory stays ~50 MB per working array
+CLOSED_POWER = -(1 << 30)  # "no ball here" in the power envelope
+BACKDROP_EXCLUDED_NAMES = ('box2d', 'prop', 'item', 'player')
+# POV body half-width (src/pov/constants.js BODY_WIDTH / 2) plus the farthest a
+# body voxel's centre sits from it radially once the fold turns X/Z (sqrt(2) * 1.3).
+BODY_HALF_WIDTH = .8
+BODY_RADIAL_REACH = 1.9
+
+
+def vertical_distance(closed, cap, top_closed, bottom_closed):
+    """Cells to the nearest closed pixel in the same column, capped at cap."""
+    h, w = closed.shape
+    out = np.empty((h, w), np.int16)
+    prev = np.zeros(w, np.int16) if top_closed else np.full(w, cap, np.int16)
+    for y in range(h):
+        prev = np.where(closed[y], 0, np.minimum(prev + 1, cap)).astype(np.int16)
+        out[y] = prev
+    prev = np.zeros(w, np.int16) if bottom_closed else np.full(w, cap, np.int16)
+    for y in range(h - 1, -1, -1):
+        prev = np.where(closed[y], 0, np.minimum(prev + 1, cap)).astype(np.int16)
+        np.minimum(out[y], prev, out=out[y])
+    return out
+
+
+def inflate_depth(open_, max_half_depth):
+    """Half-depth (half cells, u8) of each open pixel's 3D envelope; 0 for closed pixels.
+
+    Ball radius at an open pixel is its distance to the nearest closed pixel centre
+    minus half a cell (the pixel boundary), capped at max_half_depth. The envelope's
+    half-depth at p is sqrt(max_q (r_q^2 - |p - q|^2)): the union of those balls.
+    Outside the raster counts as closed. Exact integers, bounded radius: any pixel's
+    value depends only on pixels within 2 * (max_half_depth + 2) of it.
+    """
+    h, w = open_.shape
+    r_cap = 2 * max_half_depth                  # radius cap, half cells
+    cap = max_half_depth + 2                    # beyond this distance every ball is capped
+    reach = max_half_depth                      # |offset| at which 4 * offset^2 >= r_cap^2
+    halo = cap + reach + 1
+    out = np.zeros((h, w), np.uint8)
+    offsets = np.arange(-cap, cap + 1)
+    for s in range(0, h, INFLATE_STRIPE):
+        a, b = max(0, s - halo), min(h, s + INFLATE_STRIPE + halo)
+        o = open_[a:b]
+        g = vertical_distance(~o, cap, a == 0, b == h).astype(np.int32)
+        g2 = np.pad(g * g, ((0, 0), (cap, cap)))            # columns beyond the raster: closed
+        d2 = np.full(o.shape, cap * cap, np.int32)
+        for dx in offsets:
+            np.minimum(d2, g2[:, cap + dx:cap + dx + w] + dx * dx, out=d2)
+        # r = floor(2 * sqrt(d2)) - 1 half cells = distance minus half a cell, capped.
+        r = np.minimum(np.floor(np.sqrt(4.0 * d2)).astype(np.int32) - 1, r_cap)
+        power = np.where(o, r * r, CLOSED_POWER).astype(np.int32)
+        rows = np.full((power.shape[0] + 2 * reach, w), CLOSED_POWER, np.int32)
+        rows[reach:reach + power.shape[0]] = power
+        v = np.full(power.shape, CLOSED_POWER, np.int32)
+        for dy in range(-reach, reach + 1):
+            np.maximum(v, rows[reach + dy:reach + dy + power.shape[0]] - 4 * dy * dy, out=v)
+        cols = np.pad(v, ((0, 0), (reach, reach)), constant_values=CLOSED_POWER)
+        p = np.full(power.shape, CLOSED_POWER, np.int32)
+        for dx in range(-reach, reach + 1):
+            np.maximum(p, cols[:, reach + dx:reach + dx + w] - 4 * dx * dx, out=p)
+        e = np.floor(np.sqrt(np.maximum(p, 0).astype(np.float64))).astype(np.int32)
+        e = np.where(o, np.clip(e, 1, r_cap), 0).astype(np.uint8)
+        out[s:min(s + INFLATE_STRIPE, h)] = e[s - a:s - a + min(INFLATE_STRIPE, h - s)]
+    return out
+
+
+def backdrop_blocks(raster, candidates, block, window):
+    """Per block, the commonest backdrop-candidate material within window x window blocks.
+
+    Blocks with none in reach take a neighbour's value, grown outward in a fixed
+    order, so the result is deterministic. Returns u8 palette indices.
+    """
+    h, w = raster.shape
+    if h % block or w % block:
+        raise ValueError('Raster is not a whole number of backdrop blocks')
+    bh, bw = h // block, w // block
+    best = np.zeros((bh, bw), np.int32)
+    choice = np.full((bh, bw), OUTSIDE, np.uint8)
+    half = window // 2
+    for index in sorted(candidates):
+        counts = (raster == index).reshape(bh, block, bw, block).sum(axis=(1, 3), dtype=np.int32)
+        if not counts.any():
+            continue
+        c = np.pad(counts, half).cumsum(0).cumsum(1)
+        c = np.pad(c, ((1, 0), (1, 0)))
+        box = c[window:, window:] - c[:-window, window:] - c[window:, :-window] + c[:-window, :-window]
+        better = box > best   # ties keep the lower palette index
+        best[better] = box[better]
+        choice[better] = index
+    if np.all(choice == OUTSIDE):
+        raise ValueError('No backdrop material anywhere in the raster')
+    while np.any(choice == OUTSIDE):
+        for shifted in (np.pad(choice, ((1, 0), (0, 0)), constant_values=OUTSIDE)[:-1],
+                        np.pad(choice, ((0, 1), (0, 0)), constant_values=OUTSIDE)[1:],
+                        np.pad(choice, ((0, 0), (1, 0)), constant_values=OUTSIDE)[:, :-1],
+                        np.pad(choice, ((0, 0), (0, 1)), constant_values=OUTSIDE)[:, 1:]):
+            fill = (choice == OUTSIDE) & (shifted != OUTSIDE)
+            choice[fill] = shifted[fill]
+    return choice
+
+
+def inflation_tables(palette, backdrop_elements):
+    # Palette indices that inflate (air, liquids, gases) and that may form backdrop rock.
+    kinds, ids = element_kinds(), physical_elements()
+    keys = {v: k for k, v in ids.items()}
+    unknown = sorted(set(backdrop_elements) - set(ids))
+    if unknown or any(kinds[k] != 'SOLID' for k in backdrop_elements):
+        raise ValueError(f'Backdrop elements must be existing solids: {unknown or backdrop_elements}')
+    open_ids = [i for i, p in enumerate(palette) if kinds[keys[p['element']]] in OPEN_KINDS]
+    # Rigid-body pieces and props (bones, crates, items) are never bulk rock.
+    backdrop_ids = [i for i, p in enumerate(palette) if keys[p['element']] in backdrop_elements
+                    and not any(tag in p['name'] for tag in BACKDROP_EXCLUDED_NAMES)]
+    if not backdrop_ids:
+        raise ValueError('No palette material can form backdrop rock')
+    return open_ids, backdrop_ids
+
+
+def check_inflation(fold, inflation):
+    # The fold's slab must hold the deepest envelope plus a skin of backdrop rock.
+    half, margin = inflation['maxHalfDepth'], inflation['backdropMargin']
+    if not (isinstance(half, int) and 1 <= half <= 127 and isinstance(margin, int) and margin >= 1):
+        raise ValueError('Inflation depth must be 1..127 cells with a backdrop margin')
+    if fold['thickness'] != 2 * (half + margin):
+        raise ValueError('Fold thickness must equal 2 * (maxHalfDepth + backdropMargin)')
+    if inflation['backdropWindow'] % 2 != 1 or inflation['backdropBlock'] < 1:
+        raise ValueError('Backdrop window must be odd and blocks at least one pixel')
+
+
+def band_rows(array, origin_y, source_top, height, fill):
+    # The same rows regions_from gives a band, for any per-pixel (or per-block) plane.
+    out = np.full((height, array.shape[1]), fill, dtype=array.dtype)
+    lo, hi = max(source_top, origin_y), min(source_top + height, origin_y + len(array))
+    if hi > lo:
+        out[lo - source_top:hi - source_top] = array[lo - origin_y:hi - origin_y]
+    return out
+
+
 class Compiler:
     def __init__(self, config_path, decoder, world=None, wak=None):
         self.config_path = config_path
@@ -310,14 +463,19 @@ class Compiler:
         self.fixed_records, self.proof = fixed_records, proof
         return names
 
-    def body(self, sx, sy, passable=None):
+    def body(self, sx, sy, passable=None, depth=None):
         # POV body feet coordinate: width1.6,height5.5, y increases DOWN here.
-        x0, x1 = int(np.floor(sx - .8)) - self.minx, int(np.floor(sx + .8)) - self.minx + 1
+        x0, x1 = int(np.floor(sx - BODY_HALF_WIDTH)) - self.minx, int(np.floor(sx + BODY_HALF_WIDTH)) - self.minx + 1
         y0, y1 = int(np.floor(sy - 5.5)) - self.miny, int(np.ceil(sy)) - self.miny
         if x0 < 0 or x1 > self.width or y0 < 0 or y1 > len(self.raster):
             return False
         cells = self.raster[y0:y1, x0:x1]
-        return bool(np.all(cells == 0) if passable is None else np.all(np.isin(cells, passable)))
+        clear = bool(np.all(cells == 0) if passable is None else np.all(np.isin(cells, passable)))
+        if depth is None or not clear:
+            return clear
+        # In 3D the whole body, at this depth, must sit inside every body pixel's envelope.
+        need = 2 * (abs(depth) + BODY_RADIAL_REACH)
+        return bool(np.all(self.depth[y0:y1, x0:x1] > need))
 
     def spawn(self, lo, hi, allow_context=True, resident_top=None):
         # Search real air directly above real solid support; no carving/filling.
@@ -343,7 +501,7 @@ class Compiler:
                     if open_view and (y < lo + 8 or y >= hi - 8 or y - 12 < resident_top or ix < 2 or ix + 21 > self.width or
                                       not np.all(self.raster[row - 12:row, ix - 2:ix + 21] == 0)):
                         continue
-                    if y - 6 >= resident_top and self.body(x, y) and np.all(np.isin(self.raster[row, ix - 1:ix + 2], support_ids)):
+                    if y - 6 >= resident_top and self.body(x, y, depth=0) and np.all(np.isin(self.raster[row, ix - 1:ix + 2], support_ids)):
                         return [x, y, 0], dict(spawnPolicy='native-floor', spawnSupported=True, spawnOpenView=open_view)
         if allow_context and lo >= 13312:
             # Bottom guard bands need not invent an independent safe start.
@@ -421,7 +579,7 @@ class Compiler:
                                                   relativeY='Native component target.y=280 relative to portal center; engine default assumption',
                                                   targetBodyAir=self.body(1891 if row == 39 else -677, base + 326),
                                                   targetBodyCollisionFree=self.body(1891 if row == 39 else -677, base + 326,
-                                                      [i for i, n in enumerate(self.names) if self.mapping[n] in BODY_PASSABLE_ELEMENTS]))))
+                                                      [i for i, n in enumerate(self.names) if self.mapping[n] in BODY_PASSABLE_ELEMENTS], depth=0))))
         if not all(p['evidence']['targetBodyCollisionFree'] for p in portals):
             raise ValueError('Native portal destination body intersects source terrain; not modified')
         # Hash exact topology sources rather than claiming saved entities survived.
@@ -438,9 +596,17 @@ class Compiler:
         self.mapping = material_config['nativeToElement']
         self.support_elements = set(material_config['solidSupportElements'])
         palette = make_palette(self.names, self.mapping, physical_elements())
+        inflation = self.c['inflation']
+        open_ids, backdrop_ids = inflation_tables(palette, material_config['backdropElements'])
+        check_inflation(self.c['fold'], inflation)
+        block = inflation['backdropBlock']
+        if self.miny % block or self.c['coreHeight'] % block or len(self.raster) % block:
+            raise ValueError('Bands must start on whole backdrop blocks')
+        self.depth = inflate_depth(np.isin(self.raster, open_ids), inflation['maxHalfDepth'])
+        self.backdrop = backdrop_blocks(self.raster, backdrop_ids, block, inflation['backdropWindow'])
         start = self.c['startSource']
-        if not self.body(*start[:2]):
-            raise ValueError('Native first portal arrival lacks air body clearance; terrain unchanged')
+        if not self.body(*start[:2], depth=0):
+            raise ValueError('Native first arrival lacks 3D air body clearance; terrain unchanged')
         # Report original landing column, including liquids, without moving arrival.
         ix, iy = int(start[0] - self.minx), int(start[1] - self.miny)
         below = self.raster[iy:, ix]
@@ -456,16 +622,24 @@ class Compiler:
             section_index = next(i for i, s in enumerate(self.c['sections']) if s['sourceRange'][0] <= lo < s['sourceRange'][1])
             key = f'noitaTerrain{index:02d}'
             raw = data.tobytes()
-            assets[f'{key}.binpack'] = packed(raw)
+            # v2 payload: native plane (unchanged bytes and hash), then the depth plane,
+            # then the per-block backdrop plane. Beyond the raster: closed, outside rock.
+            depth = band_rows(self.depth, self.miny, source_top, len(data), 0)
+            # Rows past the raster are OUTSIDE (never sampled); they repeat the edge row.
+            edge = len(data) // block
+            backdrop = band_rows(np.pad(self.backdrop, ((edge, edge), (0, 0)), mode='edge'),
+                                 self.miny // block - edge, source_top // block, edge, OUTSIDE)
+            fields = depth.tobytes() + backdrop.tobytes()
+            assets[f'{key}.binpack'] = packed(raw + fields)
             spawn, spawn_metadata = self.spawn(lo, hi)
             regions.append(dict(key=key, label=self.c['sections'][section_index]['label'], sourceTop=source_top,
                                 sourceHeight=len(data), core=[lo, hi], sectionIndex=section_index, file=f'{key}.binpack',
-                                sha256=sha(raw), spawnSource=spawn, **spawn_metadata))
+                                sha256=sha(raw), fieldsSha256=sha(fields), spawnSource=spawn, **spawn_metadata))
         start_scene = next(r['key'] for r in regions if r['core'][0] <= start[1] < r['core'][1])
         portals = self.portals()
-        manifest = dict(version=1, encoding='noita-folded-raster-u8-v1', fold=self.c['fold'], palette=palette,
-                        regions=regions, sections=self.c['sections'], startScene=start_scene, startSource=start,
-                        nativePortals=portals)
+        manifest = dict(version=2, encoding='noita-folded-raster-u8-v2', fold=self.c['fold'], inflation=inflation,
+                        palette=palette, regions=regions, sections=self.c['sections'], startScene=start_scene,
+                        startSource=start, nativePortals=portals)
         manifest['source'] = dict(world=str(self.world), wak=str(self.wak_path), wak_sha256=self.wak_hash,
                                   compiler_sha256=sha(Path(__file__).read_bytes()), decoder_sha256=sha(Path(self.decoder.__file__).read_bytes()),
                                   configuration=[dict(path=self.config_path.name, sha256=sha(self.config_bytes)),
