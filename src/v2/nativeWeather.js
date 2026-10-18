@@ -31,7 +31,9 @@ export function nativeWeatherParams(name, spec) {
   const fields = spec.params?.fields ? Object.fromEntries(spec.params.fields.map(f => [f.name, f.type])) : spec.params;
   return uniformStruct(`${name}NativeParams`, { ...EDIT_FIELDS, ...fields, tick: 'u32', ...MODE_FIELDS });
 }
+// spec.speedSI: m/s per authored cell/step (default WEATHER_SPEED_SI, TPT's 240 Hz step).
 export function nativeWeatherEvaluateWGSL(g, spec, params) {
+  const SI = spec.speedSI ?? WEATHER_SPEED_SI;
   return `${prelude(g, STATE_OPTS.STATE_RO)}
 ${params.wgsl}
 @group(3) @binding(1) var<uniform> P: ${params.name};
@@ -50,10 +52,10 @@ let particle=forceParticles[i];if(particle.id==0u || (particle.c0&255u)>=254u) {
 let p=vec3i(floor(particle.position))-H.origin;
 if(!inGrid(p) || any(p<P.editLo) || any(p>P.editHi)) { return; }
 let a=compactProbeA(p,vec4u(particle.c0,particle.tail.xyz));
-var b=vec4f(particle.velocity/${WEATHER_SPEED_SI},fetchB(p).w);` : `if(i>=weatherCount()) { return; }
+var b=vec4f(particle.velocity/${SI},fetchB(p).w);` : `if(i>=weatherCount()) { return; }
 let p=weatherCell(i); let a=fetchA(p); var b=fetchB(p);`}
 ${spec.nativeForcing && !spec.nativeParticles ? `if(KIND(eid(a))==K_POWDER) {
- b=vec4f(vec3f(0,-fallVelocity(fetchNativeCore(p)),0)/${WEATHER_SPEED_SI},b.w);
+ b=vec4f(vec3f(0,-fallVelocity(fetchNativeCore(p)),0)/${SI},b.w);
 }` : ''}
 // Read canonical liquid faces even when the renderer would dither this cell out.
 if(KIND(eid(a))==K_LIQUID${spec.nativeParticles ? ' && false' : ''}) {
@@ -65,7 +67,7 @@ ${spec.nativePrecipitation ? `if(eid(a)==E_EMPTY && (eid(outA)==E_WATER || eid(o
  var down=vec3f(0); if(speed>0.0) { down=gravity/speed; }
  outB=vec4f(vec3f(outB.x,0,outB.z)+down*abs(outB.y),outB.w);
 }` : ''}
-var delta=vec4f((outB.xyz-b.xyz)*${WEATHER_SPEED_SI},(outB.w-b.w)*${LEGACY_PRESSURE_PA});
+var delta=vec4f((outB.xyz-b.xyz)*${SI},(outB.w-b.w)*${LEGACY_PRESSURE_PA});
 if(KIND(eid(outA))==K_LIQUID${spec.nativePrecipitation ? ' || eid(outA)==E_SNOW' : ''}${spec.nativeForcing ? ' || KIND(eid(outA))==K_POWDER || KIND(eid(outA))==K_SOLID' : ''}) { delta=vec4f(0,0,0,delta.w); }
 ${spec.nativeParticles ? 'delta=vec4f(0);' : ''}
 results[i]=WeatherResult(a,outA,vec4f(outB.xyz,select(0.0,1.0,any(outB.xyz!=b.xyz))),delta);`)}

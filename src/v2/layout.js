@@ -10,6 +10,8 @@ export const MAX_FILL = 16 * FULL;
 export const AIR_CAPACITY_Q = FULL;
 export const FUEL_Q = 2048; // total fuel, not concentration; 16 full cells fit u16.
 export const lifeScale = id => ELEMENTS[id]?.key === 'SINGULARITY' ? 256 : FUEL_Q;
+// A non-liquid's life as V2 keeps it: the 16-bit payload withLife writes and compactA reads back.
+export const nativeLife = (id, life) => Math.min(65535, Math.max(0, Math.round(life * lifeScale(id)))) / lifeScale(id);
 export const capacityPerQuantum = id => Math.max(1, Math.round((ELEMENTS[id]?.cap ?? 1) * 64));
 export const isLiquid = id => ELEMENTS[id]?.kind === K.LIQUID;
 export const isConductor = id => (ELEMENTS[id]?.elec ?? 0) > 0;

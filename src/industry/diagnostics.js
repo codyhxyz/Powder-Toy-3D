@@ -464,10 +464,15 @@ export function createIndustryDiagnostics({ getSim, throttleMs = 250, staleMs = 
       if (disposed || job.cancelled || job.generation !== generation || getSim() !== job.sim || job.sim.disposed) {
         return unknownFor(request, 'stale observation discarded', 'stale');
       }
+      // V2: read the canonical native core as physical readers do (format 3), never the
+      // legacy-format header over compact words. V1's header and group are unchanged.
+      const native = !!job.sim.compact;
+      const state = native ? job.sim.bindPhysicalRO : job.sim.bindRO;
+      if (!state) return unknownFor(request, 'native state not ready', UNKNOWN);
       const slot = prepared.ring.next();
       job.startedAt = now();
       job.sim._dispatch(prepared.kernel, [1, 1, 1], {
-        bind: [job.sim.tables, job.sim.bindRO, prepared.group], header: job.sim.header(),
+        bind: [job.sim.tables, state, prepared.group], header: native ? job.sim.readHeader({ physical: true }) : job.sim.header(),
         params: packParams(request, slot),
       });
       job.sim.gpu.flush?.('industry diagnostics');

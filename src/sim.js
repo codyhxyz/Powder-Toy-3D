@@ -1,4 +1,4 @@
-import { routeNativePaint } from './v2/interactions.js';
+import { routeNativePaint, prepareNativeBrush } from './v2/interactions.js';
 import { captureNativeSnapshot, restoreNativeSnapshot, validateNativeSnapshot, resetNativeDynamics } from './v2/dynamicState.js';
 import { nativeHostTick } from './v2/host.js';
 import { emitNativeRay, nativeRayKind, nativeImpulse, legacyVelocityToMS } from './v2/tools.js';
@@ -55,6 +55,9 @@ const GRAVITY_DEFAULT = 0.025;
 
 // TPT's Mix tool (elements.js TOOLS): its stroke reads other cells, so it is a two-phase edit (passes.js).
 const MIX_TOOL = TOOLS.find((t) => t.key === 'MIX').id;
+// Native tool requests held while the dynamics finish building: two seconds of
+// a 60 Hz brush (applyNativeTool). More would be a stuck build, not a wait.
+const NATIVE_PENDING_MAX = 120;
 
 // Steps an activity map stays valid (shaders/activity.js).
 const ACTIVITY_PERIOD = activityPeriod(BRICK);
@@ -591,12 +594,39 @@ export class Simulation {
       this.nativeIntegration = new NativeIntegration(this, owner);
     }
     await this.nativeIntegration.ready;
+    // The brush's native kernels are part of being ready, as V1's paint pass is.
+    // (A failed build is a bug to see in the console, not a reason to stop the engine.)
+    if (owner.dynamics) await prepareNativeBrush(this).catch((err) => console.error('native brush kernels failed to build', err));
     return true;
   }
+  // A tool request made while the native owner is active but its dynamics or
+  // integration are still building waits here (bounded) and runs once they are
+  // ready, never refused nor handed to V1. A world shift still freezes tools.
   applyNativeTool(request) {
     if (this.nativeTransition || this.nativeTransitionError) return false;
     const kind = request.kind ?? 'impulse';
-    if (!this.compact || !this.nativeCapabilities[kind]) return false;
+    if (!this.compact) return false;
+    if (!this.nativeCapabilities[kind]) {
+      if ((this.nativePending ??= []).length >= NATIVE_PENDING_MAX) return false;
+      this.nativePending.push(request);
+      this.wake();
+      return true;
+    }
+    if (this.nativePending?.length) this.flushNativeTools();
+    return this._applyNativeTool(request, kind);
+  }
+  // Runs the requests that waited for readiness, oldest first (app.js nativeBeforeStep).
+  flushNativeTools() {
+    const pending = this.nativePending;
+    if (!pending?.length || !this.compact || this.nativeTransition || this.nativeTransitionError) return 0;
+    let n = 0;
+    while (pending.length && this.nativeCapabilities[pending[0].kind ?? 'impulse']) {
+      const request = pending.shift();
+      if (this._applyNativeTool(request, request.kind ?? 'impulse')) n++;
+    }
+    return n;
+  }
+  _applyNativeTool(request, kind) {
     this.compact.sync();
     const accepted = this.compact.dynamics.applyToolImpulse(request);
     const ok = accepted === 'accepted' || accepted === 'queued' || accepted?.status === 'accepted' || accepted?.status === 'queued';
@@ -925,19 +955,17 @@ export class Simulation {
       if (routed !== null) return routed;
     }
     if (this.compact && tool === TOOLS.find(t => t.key === 'WIND').id) {
-      if (!this.nativeCapabilities.impulse) throw new Error('Native wind impulse is unavailable');
-      if (!wind || !Math.hypot(...wind)) return;
+      // (no drag, no wind: V1's paint pass pushes by P.wind, zero then)
+      if (!wind || !Math.hypot(...wind)) return true;
       // TPT's wind drag is an input displacement, not a per-frame force.
       // Its accumulated delta-v is independent of presentation frequency.
-      if (!nativeImpulse(this, { position: center, direction: wind, radius,
+      // (applyNativeTool holds it while the dynamics finish building.)
+      return nativeImpulse(this, { position: center, direction: wind, radius,
         deltaV: legacyVelocityToMS(Math.hypot(...wind) * PHYS.TOOL_WIND),
-      })) throw new Error('Native wind impulse was rejected');
-      return;
+      });
     }
-    if (this.compact && nativeRayKind(tool)) {
-      if (!emitNativeRay(this, { center, radius, shape, tool, rate })) throw new Error('Native particle tool unavailable or rejected');
-      return;
-    }
+    // a line or box of particles: V1's dabs, each painted once (v2/tools.js)
+    if (this.compact && nativeRayKind(tool)) return emitNativeRay(this, { center, radius, shape, tool, rate, end, grow });
     if (tool === PROP_TOOL && !prop) return;
     // TPT's deco tools paint the decoration layer, not the cells (src/deco.js): made on the first stroke
     if (isDecoTool(tool)) { this.ensureDeco()?.paint?.({ center, radius, shape, tool }); return; }

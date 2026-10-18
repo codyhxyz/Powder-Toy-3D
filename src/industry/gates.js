@@ -3,10 +3,15 @@ import { prelude, STATE_OPTS, LAYOUT } from '../shaders/common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { RING_LAYOUT, ringWGSL } from '../shaders/povBody.js';
 import { INDUSTRY_LIMIT, deviceCell, baseMaterial } from './catalog.js';
+import { nativeLife } from '../v2/layout.js';
 
 // TPT WALL has no life field semantics. Keep this exact f32 integer in A.z;
 // ownership always requires both WALL and this marker, never element ID alone.
 export const GATE_OWNER_MARKER = 1048573;
+// V2 holds WALL life in a 16-bit payload, where the marker arrives as its clamp
+// (a V1-closed shutter imports to exactly this). Its gate kernel owns that value.
+export const GATE_OWNER_MARKER_NATIVE = nativeLife(E.WALL, GATE_OWNER_MARKER);
+const wgslFloat = n => (Number.isInteger(n) ? `${n}.0` : String(n));
 export const GATE_APERTURE_CELLS = 12;
 export const GATE_RETRY_SECONDS = 0.25;
 export const GATE_SIGNAL_POLL_SECONDS = 0.1;
@@ -96,12 +101,12 @@ const GateParams = uniformStruct('IndustryGate', {
 });
 
 /** One-invocation preflight-and-write kernel. The leaf is an actuator, never cargo. */
-export const gateWGSL = g => /* wgsl */ `
+export const gateWGSL = (g, marker = GATE_OWNER_MARKER) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RW)}
 ${GateParams.wgsl}
 @group(3) @binding(1) var<uniform> P: IndustryGate;
 ${ringWGSL()}
-const INDUSTRY_GATE_OWNER_TAG: f32 = ${GATE_OWNER_MARKER}.0;
+const INDUSTRY_GATE_OWNER_TAG: f32 = ${wgslFloat(marker)};
 const INDUSTRY_GATE_OPEN: u32 = 1u;
 const INDUSTRY_GATE_CLOSED: u32 = 2u;
 const INDUSTRY_GATE_BLOCKED: u32 = 3u;
@@ -206,7 +211,9 @@ fn main() {
   ringOut[P.slot] = vec4f(f32(status), f32(physicallyClosed), select(0.0, 1.0, changed), select(0.0, 1.0, desiredClosed));
 }`;
 
-export const WGSL_CHECK = [{ name: 'industryGate', kind: 'compute', code: gateWGSL,
+export const WGSL_CHECK = [{ name: 'industryGate', kind: 'compute', code: g => gateWGSL(g),
+  layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, RING_LAYOUT], dispatch: () => [1, 1, 1] },
+{ name: 'industryGateNative', kind: 'compute', code: g => gateWGSL(g, GATE_OWNER_MARKER_NATIVE),
   layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, RING_LAYOUT], dispatch: () => [1, 1, 1] }];
 
 function decodeResult(bytes, operation, id, mode = null) {
@@ -244,13 +251,19 @@ export function createGatePhysics({ getSim, onError = console.error, onState = (
       const gpu = next.gpu, layout = gpu.layout('industry gate result', RING_LAYOUT);
       const ring = gpu.readback.ring('industry gate', 16, 16);
       const group = gpu.bindGroup(layout, [{ binding: 0, resource: { buffer: ring.buffer } }], 'industry gate result');
-      const kernel = gpu.kernel({ name: 'industryGate', code: gateWGSL(next.g), params: GateParams,
-        layouts: [next.L.TABLES, next.L.STATE_RW, layout], workgroupSize: [1, 1, 1] });
+      const make = (name, marker) => {
+        const kernel = gpu.kernel({ name, code: gateWGSL(next.g, marker), params: GateParams,
+          layouts: [next.L.TABLES, next.L.STATE_RW, layout], workgroupSize: [1, 1, 1] });
+        kernel.ready.catch(err => { if (generation === epoch && !disposed) reportError(err); });
+        return kernel;
+      };
       const generation = epoch;
+      const kernel = make('industryGate', GATE_OWNER_MARKER);
       const ready = kernel.ready;
-      ready.catch(err => { if (generation === epoch && !disposed) reportError(err); });
       sim = next;
-      context = { sim: next, gpu, ring, group, kernel, ready, generation };
+      // V2 runs the same transitions on its own marker (built on first use).
+      context = { sim: next, gpu, ring, group, kernel, ready, generation,
+        get current() { return next.compact ? (this.native ??= make('industryGateNative', GATE_OWNER_MARKER_NATIVE)) : kernel; } };
     } catch (error) {
       reportError(error);
       sim = null; context = null;
@@ -263,10 +276,10 @@ export function createGatePhysics({ getSim, onError = console.error, onState = (
     transactionQueue = job.catch(() => {});
     return job;
   }
-  function dispatch(ctx, d, operation = 'step') {
+  function dispatch(ctx, d, operation = 'step', kernel = ctx.kernel) {
     const geom = d.geometry;
     const slot = ctx.ring.next();
-    ctx.sim._dispatch(ctx.kernel, [1, 1, 1], { bind: [ctx.sim.tables, ctx.sim.bindRW, ctx.group], header: ctx.sim.header(),
+    ctx.sim._dispatch(kernel, [1, 1, 1], { bind: [ctx.sim.tables, ctx.sim.bindRW, ctx.group], header: ctx.sim.header(),
       params: { at: geom.at, across: geom.across, port: geom.port, base: [d.x, d.y, d.z],
         gateMode: operation === 'remove' ? 0 : MODES[d.gateMode], expectedClosed: +(operation === 'remove' ? false : d.gateClosed),
         operation: +(operation === 'remove'), slot } });
@@ -292,8 +305,11 @@ export function createGatePhysics({ getSim, onError = console.error, onState = (
     const job = enqueue(async () => {
       try {
         await ctx.ready;
-        if (!isCurrent(ctx) || states.get(state.device.id) !== state || state.removing || !state.active) return null;
-        const bytes = await dispatch(ctx, device);
+        const kernel = ctx.current;
+        await kernel.ready;
+        // The engine may have changed while its kernel built: retry on the next poll.
+        if (!isCurrent(ctx) || ctx.current !== kernel || states.get(state.device.id) !== state || state.removing || !state.active) return null;
+        const bytes = await dispatch(ctx, device, 'step', kernel);
         if (!isCurrent(ctx) || states.get(state.device.id) !== state || state.removing || !state.active) return null;
         const result = decodeResult(bytes, 'step', device.id, device.gateMode);
         if (result.changed) {
@@ -391,8 +407,10 @@ export function createGatePhysics({ getSim, onError = console.error, onState = (
     const removal = prior.catch(() => {}).then(() => enqueue(async () => {
       try {
         await ctx.ready;
-        if (!isCurrent(ctx)) return { ok: false, id: d.id, status: GATE_STATUS.DAMAGED, reason: 'Simulation changed before gate removal' };
-        const bytes = await dispatch(ctx, d, 'remove');
+        const kernel = ctx.current;
+        await kernel.ready;
+        if (!isCurrent(ctx) || ctx.current !== kernel) return { ok: false, id: d.id, status: GATE_STATUS.DAMAGED, reason: 'Simulation changed before gate removal' };
+        const bytes = await dispatch(ctx, d, 'remove', kernel);
         if (!isCurrent(ctx)) return { ok: false, id: d.id, status: GATE_STATUS.DAMAGED, reason: 'Simulation changed during gate removal' };
         const result = decodeResult(bytes, 'remove', d.id);
         if (result.changed) { ctx.sim.version++; ctx.sim.wake(); }

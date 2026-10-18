@@ -1,5 +1,5 @@
-import { emitNativeRay, nativeRayKind } from './v2/tools.js';
-import { nativeHostSteps, nativeHostTick, nativeReadiness, INDUSTRY_V2_UNAVAILABLE } from './v2/host.js';
+import { emitNativeRay, isRayShape } from './v2/tools.js';
+import { nativeHostSteps, nativeHostTick, nativeReadiness } from './v2/host.js';
 // The game (docs/webgpu.md J1 U8): the settings, the grid and its scene, the
 // UI and input, and the frame loop, on one WebGPU device (src/gpu, B1).
 //
@@ -829,7 +829,6 @@ async function startMode(mode, { fresh = false } = {}) {
   }
   selectedMode = chosen.key;
   if (chosen.key === 'factory') hud.dismissHint(); // Sandbox's free-pouring hint is wrong here.
-  if (chosen.key === 'factory' && v2Box()) hud.toast(INDUSTRY_V2_UNAVAILABLE, { kind: 'error' });
   applyGravity();
   ctx.industry?.modeChanged();
   presentation.select(chosen.effect ?? null);
@@ -1262,19 +1261,23 @@ const paintStroke = (stroke) => (mp.replica && !mp.isGuest ? undefined : mp.isGu
   : v2Box() && rayKindOfTool(stroke.tool) !== RAY_KIND.NONE ? paintNativeRay(stroke)
     : sim.paint(stroke));
 function paintNativeRay(stroke) {
-  if (!sim.nativeCapabilities[nativeRayKind(stroke.tool)]) {
-    hud.toast('Native particle tool unavailable', { kind: 'error' });
-    return false;
-  }
+  physicsV2?.wake();
+  // A line or box is one paint of each of its dabs, as V1's (v2/tools.js).
+  if (isRayShape(stroke)) return emitNativeRay(sim, stroke);
   // Retain input until a native tick, not one emission per presentation frame.
   nativeRayStroke = { ...stroke, center: stroke.center.clone() };
-  physicsV2?.wake();
   return true;
 }
 function nativeBeforeStep() {
   scripts?.beforeStep();
   weatherWire.step(ctx, { hz: 60 });
+  sim.flushNativeTools();
   if (nativeRayStroke) emitNativeRay(sim, nativeRayStroke, 1 / 60);
+}
+// As the V1 loop runs the hearths' paid draft beside each sim step.
+function nativeAfterStep() {
+  ctx.industry?.nativeStep();
+  scripts?.afterStep();
 }
 
 function editModeText() {
@@ -1421,15 +1424,6 @@ function selectTool(id) {
   setEyedropper(false);
   // a tool whose subsystem isn't ported yet stays greyed out (src/wire)
   const needs = toolWire(id);
-  if (v2Box() && toolById(id)?.key === 'WIND' && !sim.nativeCapabilities.impulse) {
-    hud.toast('Native wind impulse is unavailable', { kind: 'error' });
-    return;
-  }
-  // Native particle tools require a functioning, ready producer/consumer path.
-  if (needs === 'rays' && v2Box() && !sim.nativeCapabilities[nativeRayKind(id)]) {
-    hud.toast(`${toolById(id)?.name ?? 'That tool'}: not in the new physics (?physics=v2) yet`, { kind: 'error' });
-    return;
-  }
   if (needs && !wire(needs)) {
     hud.toast(notYet(toolById(id)?.name ?? 'That tool'), { kind: 'error' });
     if (!toolById(settings.tool) || (toolWire(settings.tool) && !wire(toolWire(settings.tool)))) selectTool(DEFAULTS.tool);
@@ -2695,8 +2689,7 @@ function viewClock(held) {
 // (declarations: the tool picker asks before this line has run)
 function v2Box() { return physicsMode === 'v2' && !mp.replica; }
   function v2Status() {
-    return nativeReadiness(sim, { world: !!win, pov: !!pov?.active, guest: mp.replica,
-      industry: selectedMode === 'factory' || !!ctx?.industry?.hasMachines || !!ctx?.industry?.pending });
+    return nativeReadiness(sim, { world: !!win, pov: !!pov?.active, guest: mp.replica });
   }
 function v2Active() { return v2Box() && v2Status().ready; }
 // The simulation records nothing per step (certified idle: sim.js step(); v2's own), so ticking it is pointless.
@@ -2816,7 +2809,7 @@ function tick(now, renderOnly = false) {
       stepped = nativeHostSteps(physicsV2, dt, { speed: settings.steps / DEFAULTS.steps, once: stepOnce && settings.paused,
         keepAlive: !!nativeRayStroke || live.some(w => w.busy?.(ctx)),
         before: nativeBeforeStep,
-        after: () => scripts?.afterStep(),
+        after: nativeAfterStep,
       });
     }
     if (DAY.running) day.clock += stepped * 4; // legacy day tuning is 240 ticks/s, native host is 60
@@ -3067,7 +3060,6 @@ function tick(now, renderOnly = false) {
   get brushValid() { return brushValid; }, get brushCenter() { return brushCenter; },
   industry: null,
   get menuPick() { return menuPick; }, get gamemode() { return selectedMode; },
-  get nativePhysicsRequested() { return v2Box(); },
   get animTime() { return animTime; }, get graphicsFailure() { return graphicsFailure; },
   // the animation clock as the far field's uniform-like reader takes it ({ value })
   viewTimeUniform: { get value() { return viewTime; } },
@@ -3316,7 +3308,7 @@ try {
           if (!v2Active()) throw new Error('The new physics is still building its pipelines: await __app.test.ready() first');
           if (!v2Running) { physicsV2.activate(); v2Running = true; }
           for (let i = 0; i < count; i++) nativeHostTick(physicsV2, {
-            before: nativeBeforeStep, after: () => scripts?.afterStep(),
+            before: nativeBeforeStep, after: nativeAfterStep,
           });
         } else for (let i = 0; i < count; i++) {
           weatherWire.step(ctx); sim.step(); ctx.industry?.nativeStep();

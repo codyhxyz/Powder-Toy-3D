@@ -1,5 +1,6 @@
 // CPU protocol checks. Execute the real controller and app methods with GPU/UI
-// services stubbed. This is refusal/cadence evidence, not Factory physics proof.
+// services stubbed. This is admission/cadence evidence: both engines run the
+// machines (native transport itself: tools/v2/industry-native-check.mjs).
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -9,7 +10,7 @@ import * as controls from '../../src/industry/controlParts.js';
 import { createProgression } from '../../src/industry/progression.js';
 import { validateIndustryPhysics, controlCell } from '../../src/industry/physics.js';
 import { E } from '../../src/elements.js';
-import { nativeReadiness, INDUSTRY_V2_UNAVAILABLE } from '../../src/v2/host.js';
+import { nativeReadiness } from '../../src/v2/host.js';
 
 const indexSource = readFileSync(new URL('../../src/industry/index.js', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
@@ -37,7 +38,7 @@ function fixture(native, gamemode = 'factory') {
   const create = vm.runInNewContext(
     indexSource.replace(/^import .*;\n/gm, '').replace(/^export /gm, '') + '\ncreateIndustry;',
     { ...catalog, ...validation, ...controls, E, validateIndustryPhysics, controlCell, createProgression,
-      INDUSTRY_V2_UNAVAILABLE, structuredClone, performance, crypto,
+      structuredClone, performance, crypto,
       addEventListener: noop, removeEventListener: noop, allLoads: () => new Map(),
       createIndustryPhysics: () => physics,
       createConstruction: () => ({ ready: Promise.resolve(), run: async () => { write('construction'); return true; } }),
@@ -57,41 +58,34 @@ function fixture(native, gamemode = 'factory') {
 
 for (const mode of ['factory', 'sandbox']) {
   const f = fixture(true, mode), { api } = f;
-  const before = clone(api.toJSON()), core = f.core.slice(), bank = f.bank.slice();
+  const before = clone(api.toJSON());
   assert.equal(api.hasMachines, true);
-  assert.equal(api.state.active, false);
-  assert.equal(api.state.unavailable, INDUSTRY_V2_UNAVAILABLE);
+  assert.equal(api.state.active, true, `${mode}: V2 runs the machines`);
+  assert.equal('unavailable' in api.state, false, 'no engine refusal is published');
   api.update(1 / 60, true);
   api.nativeStep();
+  assert.deepEqual(f.writes, ['machinery', 'gate', 'paid heat'], `${mode}: native ticks drive machines, gates and paid heat`);
   const machine = before.devices[0];
-  const results = [
-    await api.place({ type: 'belt', x: 88, y: 8, z: 88 }),
-    await api.remove(machine.id), api.setDrive(machine.id, true),
-    api.setGateMode(machine.id, 'open'), api.selectPart('TSNS'),
-    api.setThreshold(500), api.toggleInspect(true), await api.toggleControl(),
-    await api.placeControlPart({ x: 80, y: 8, z: 80 }), api.toggle(true),
-  ];
-  for (const result of results) {
-    assert.equal(result.ok, false);
-    assert.equal(result.reason, INDUSTRY_V2_UNAVAILABLE);
+  assert.equal(api.setDrive(machine.id, true).ok, true);
+  const placed = await api.place({ type: 'belt', x: 88, y: 8, z: 88 });
+  if (mode === 'factory') assert.equal(placed.ok, true, 'V2 Factory builds machines');
+  else assert.equal(placed.ok, true, 'V2 Sandbox builds machines');
+  assert.equal((await api.remove(placed.id)).ok, true, 'V2 dismantles machines');
+  for (const result of [api.setGateMode(machine.id, 'open'), api.toggle(true)]) {
+    assert.notEqual(result?.reason ?? '', 'Factory machines require V1 physics. V2 machine transport is not implemented.');
   }
-  // Registration/cargo restore is still allowed: loading must not discard
-  // exact escrow merely because its machine operation is unsupported.
+  // Save and undo snapshots round-trip registrations and cargo under V2.
   api.fromJSON(before);
   assert.deepEqual(clone(api.toJSON()), before);
-  assert.deepEqual(f.core, core);
-  assert.deepEqual(f.bank, bank);
-  assert.deepEqual(f.writes, [], `${mode}: no machine GPU work`);
-  assert.equal(f.sim.frame, 17);
+  assert.equal(f.notices.some(n => /V1|not implemented/.test(n)), false, `${mode}: no V1-required notice`);
   api.dispose();
 }
-console.log('PASS active native Factory/Sandbox refuse machine work without changing registrations, core or bank');
+console.log('PASS active native Factory/Sandbox admit and step machine work, and round-trip their saves');
 
 {
   const f = fixture(false);
   assert(f.sim.compactOwner, 'retain the native owner after suspension');
   assert.equal(f.api.state.active, true, 'retained owner must not disable V1 Factory');
-  assert.equal(f.api.state.unavailable, null);
   assert.equal(f.api.setDrive(f.api.state.devices[0].id, true).ok, true);
   f.api.update(1 / 60, true);
   f.api.nativeStep();
@@ -104,10 +98,8 @@ const statusStart = appSource.indexOf('  function v2Status()');
 const statusEnd = appSource.indexOf('function v2Active()', statusStart);
 const setterStart = appSource.indexOf('    async setPhysics(mode)');
 const setterEnd = appSource.indexOf('    get physics()', setterStart);
-const requestStart = appSource.indexOf('get nativePhysicsRequested()');
-const requestEnd = appSource.indexOf('\n', requestStart);
-assert(statusStart >= 0 && statusEnd > statusStart && setterStart >= 0 && setterEnd > setterStart
-  && requestStart >= 0 && requestEnd > requestStart);
+assert(statusStart >= 0 && statusEnd > statusStart && setterStart >= 0 && setterEnd > setterStart);
+assert(!appSource.includes('INDUSTRY_V2_UNAVAILABLE') && !appSource.includes('nativePhysicsRequested'), 'the app no longer gates Factory on the engine');
 function appFixture({ pending = false, duringImport = false, factory = false } = {}) {
   const calls = [], notices = [];
   const context = vm.createContext({
@@ -146,7 +138,7 @@ console.log('PASS app refuses engine activation before and after an asynchronous
 
 {
   const f = fixture(false), transition = appFixture({ factory: true });
-  const before = clone(f.api.toJSON()), core = f.core.slice(), bank = f.bank.slice();
+  const before = clone(f.api.toJSON());
   let entered, release;
   const prepared = new Promise(resolve => { entered = resolve; });
   const gate = new Promise(resolve => { release = resolve; });
@@ -159,34 +151,30 @@ console.log('PASS app refuses engine activation before and after an asynchronous
   transition.context.physicsV2 = owner;
   transition.context.V2mod = {};
   transition.context.ctx.industry = f.api;
-  const request = vm.runInContext(`({${appSource.slice(requestStart, requestEnd)}})`, transition.context);
-  Object.defineProperty(f.app, 'nativePhysicsRequested', { get: () => request.nativePhysicsRequested });
-  assert.equal(f.api.state.active, true, 'stable V1 with a retained owner still admits machine work');
+  assert.equal(f.api.state.active, true, 'stable V1 with a retained owner admits machine work');
   const activation = transition.setPhysics('v2');
   try {
     await prepared;
     assert.equal(f.sim.compact, null, 'retained owner has not activated yet');
     assert.equal(transition.context.physicsMode, 'v2', 'requested mode is already published');
     await assert.rejects(transition.setPhysics('v1'), /current physics change/);
-    assert.equal(transition.context.physicsChanging, true);
+    // Admission stays open: a dismantle now is a captured edit the owner imports on activation.
     const removal = await f.api.remove(before.devices[0].id);
-    assert.equal(removal.ok, false, 'reactivation must close admission before compact ownership resumes');
-    assert.equal(removal.reason, INDUSTRY_V2_UNAVAILABLE);
-    f.api.update(1 / 60, true);
-    f.api.nativeStep();
-    assert.equal(f.api.pending, false);
-    assert.deepEqual(f.writes, []);
-    assert.deepEqual(f.core, core);
-    assert.deepEqual(f.bank, bank);
-    assert.deepEqual(clone(f.api.toJSON()), before);
+    assert.equal(removal.ok, true, 'machines stay usable while V2 prepares');
+    assert.deepEqual(f.writes, ['construction']);
   } finally {
     release();
     await activation;
     assert.equal(transition.context.physicsChanging, false);
-    f.api.dispose();
   }
+  assert.equal(f.sim.compact, owner);
+  assert.equal(f.api.state.active, true, 'V2 keeps the Factory running after activation');
+  f.api.update(1 / 60, true);
+  assert.deepEqual(f.writes, ['construction', 'machinery', 'gate']);
+  f.api.dispose();
 }
-console.log('PASS real app/controller retained-owner reactivation rejects admission throughout preparation');
+console.log('PASS real app/controller keeps machines admitted through V2 activation');
+
 
 {
   const f = appFixture();
@@ -199,17 +187,16 @@ console.log('PASS failed preparation releases engine-change serialization');
 {
   const f = appFixture({ factory: true });
   await f.setPhysics('v2');
-  assert.equal(f.context.physicsMode, 'v2', 'unsupported native state never silently falls back');
-  assert.equal(f.context.v2Status().ready, false);
-  assert.deepEqual(f.notices, [INDUSTRY_V2_UNAVAILABLE]);
+  assert.equal(f.context.physicsMode, 'v2');
+  assert.equal(f.context.v2Status().ready, true, 'a Factory with machines runs on V2');
+  assert.deepEqual(f.notices, [], 'no V1-required toast');
   f.context.selectedMode = 'sandbox';
-  assert.equal(f.context.v2Status().ready, false, 'registered Sandbox machines also block native stepping');
-  f.context.ctx.industry.hasMachines = false;
-  assert.equal(f.context.v2Status().ready, true);
+  assert.equal(f.context.v2Status().ready, true, 'registered Sandbox machines run on V2 too');
   f.context.ctx = undefined;
   assert.equal(f.context.v2Status().ready, true, 'picker readiness runs before wires attach');
 }
-console.log('PASS app publishes explicit unavailable status, preserves requested engine and handles early readiness');
+console.log('PASS app reports Factory and Sandbox machines ready on V2 with no refusal notice');
+
 
 {
   const source = readFileSync(new URL('../../src/wire/saves.js', import.meta.url), 'utf8');
@@ -222,9 +209,9 @@ console.log('PASS app publishes explicit unavailable status, preserves requested
     f.app.mp = { isGuest: false };
     const header = vm.runInNewContext(`({${source.slice(start, end)}}).header()`,
       { app: f.app, settings: f.app.settings, mapOf: () => ({ key: 'quarry', name: 'Quarry' }) });
-    assert.equal(f.api.state.active, false);
-    assert.equal(header.industryMode, mode, 'unavailable operation does not erase saved mode');
+    assert.equal(f.api.state.active, true);
+    assert.equal(header.industryMode, mode, 'a V2 save keeps its Factory/Sandbox mode');
     f.api.dispose();
   }
 }
-console.log('PASS real save header retains unsupported Factory/Sandbox metadata');
+console.log('PASS real save header keeps V2 Factory/Sandbox metadata');

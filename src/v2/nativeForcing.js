@@ -4,8 +4,24 @@ import { nativeModes } from './modes.js';
 import { nativeWeatherParams, nativeWeatherEvaluateWGSL, nativeWeatherCommitWGSL, NATIVE_WEATHER_COMMIT_LAYOUT, scratchWGSL, boxWGSL, weatherMain, WEATHER_SPEED_SI } from './nativeWeather.js';
 import { STAGE } from '../gpu/kernels.js';
 const binding=(n,read=false)=>({binding:n,visibility:STAGE.COMPUTE,buffer:{type:read?'read-only-storage':'storage'}});
-const FORCE_COMMIT_LAYOUT=[...NATIVE_WEATHER_COMMIT_LAYOUT,binding(3)];
-export function nativeForceCommitWGSL(g,params,stage) {
+export const FORCE_COMMIT_LAYOUT=[...NATIVE_WEATHER_COMMIT_LAYOUT,binding(3)];
+// Writers that set more than motion and heat (Factory machines: src/v2/industry.js) opt in:
+// opts.speedSI: m/s per authored cell/step (default WEATHER_SPEED_SI, TPT's 240 Hz step);
+// opts.life: also merge the update's life and ctype/spark writes, as importProperties does;
+// opts.sparse: write only cells that plan something, so boxes committed in turn share one plan clear.
+export function nativeForceCommitWGSL(g,params,stage,opts={}) {
+  const SI=opts.speedSI ?? WEATHER_SPEED_SI;
+  // The payload layout of the material the plan leaves (a fracture renames the cell in apply).
+  const life=opts.life ? `
+let into=select(id,(flags>>8u)&255u,(flags&2u)!=0u);
+var shaped=after.core; shaped.x=(shaped.x&0xffffff00u)|into;
+if(isLiq(shaped)==isLiq(after.core)) {
+ if(r.after.z!=r.before.z && !(isLiq(shaped) && conductsNative(into))) { after.core=withPayload(after.core,payloadOf(withLife(shaped,r.after.z))); }
+ if(floor(r.after.w)!=floor(r.before.w)) {
+  let ct=u32(max(floor(r.after.w),0.0));
+  if(conductsNative(into)) { after.core.w=withSpark(shaped,ct).w; } else { after.core.y=withCtype(shaped,ct).y; }
+ }
+}` : '';
   const head=`${params.wgsl}
 @group(3) @binding(1) var<uniform> P: ${params.name};
 ${nativeDynamicsHead(g)}
@@ -36,8 +52,8 @@ let p=weatherCell(i);let s=slotOf(p);let r=results[i];let before=loadMaterial(s)
 let id=cid(before.core);let k=cls(id);var flags=0u;
 if(r.before.x!=r.after.x) { flags=2u|(u32(r.after.x)<<8u); }
 if((k==2u || k==3u || flags!=0u) && r.motion.w!=0.0) { flags|=1u; }
-plans[s]=ForcePlan(r.motion.xyz*${WEATHER_SPEED_SI},flags);
-let after=forceHeat(before,r);
+${opts.sparse?'if(flags!=0u) { ':''}plans[s]=ForcePlan(r.motion.xyz*${SI},flags);${opts.sparse?' }':''}
+${opts.life?'var':'let'} after=forceHeat(before,r);${life}
 if(any(after.core!=before.core) || after.bank!=before.bank) {
  noteEnergySource(p,energySub(energyOf(after),energyOf(before)));storeMaterial(s,before,after);markBusy(p);
 }`);
@@ -49,7 +65,7 @@ if(r.before.x!=r.after.x) {
  let enthalpy=packetOwnedEnergy(after);after.core.x=(after.core.x&0xffffff00u)|u32(r.after.x);
  if(!packetEnergyFits(after,enthalpy)) { return; }after=withPacketEnergy(after,enthalpy);
 }
-if(r.motion.w!=0.0) { particle.velocity=r.motion.xyz*${WEATHER_SPEED_SI}; }
+if(r.motion.w!=0.0) { particle.velocity=r.motion.xyz*${SI}; }
 particle.c0=after.core.x;particle.tail=vec4u(after.core.yzw,bitcast<u32>(after.bank));particles[i]=particle;
 let p=vec3i(floor(particle.position))-P.origin;
 noteEnergySource(p,energySub(packetOwnedEnergy(after),packetOwnedEnergy(before)));markBusy(p);
