@@ -593,10 +593,17 @@ fn sourceOf(p: vec3i) -> vec3i {
   if (P.still != 0u) { return p; }
   let par = i32(P.parity);
   let base = ((p - par) >> vec3u(1u)) * 2 + par;
-  // a block that didn't run, or is based in a quiet brick, stayed put (shaders/move.js)
+  // a block that didn't run, or is based in a quiet brick, stayed put (shaders/move.js).
+  // Along an axis its two cells share a brick (and so a unit, and whether
+  // they are in the grid: its sides are brick faces) unless it is based on a
+  // brick's last layer, so each brick it spans is looked up once: 1 at
+  // parity 0, 3.4 on average at parity 1, not 8.
+  let span = select(vec3i(0), vec3i(1), (base & vec3i(BS - 1)) == vec3i(BS - 1));
   var ran = false;
   for (var i = 0; i < 8; i++) {
-    let c = edgeCell(base + vec3i(i & 1, (i >> 1u) & 1, (i >> 2u) & 1));
+    let o = vec3i(i & 1, (i >> 1u) & 1, (i >> 2u) & 1);
+    if (any(o > span)) { continue; }
+    let c = edgeCell(base + o);
     if (inGrid(c) && drawnUnit(unitOfCell(c))) { ran = true; }
   }
   if (!ran || quietCell(edgeCell(base))) { return p; }
