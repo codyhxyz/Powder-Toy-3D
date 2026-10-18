@@ -49,13 +49,16 @@
 // mediaSegment), as froxel fog lights a coarse grid and integrates through it.
 // The rule (step in footprints) and its constants are derived below.
 //
-// DETAIL_MEDIA_FLOW: the detail rides the simulation's velocity field (tB,
-// cells/step, trilinearly read) instead of a fixed rise: wisps follow the
+// DETAIL_MEDIA_FLOW: the detail rides the simulation's velocity field (state
+// B, cells/step: each particle's own velocity, read linearly over the
+// lattice's tetrahedra, flowVel) instead of a fixed rise: wisps follow the
 // actual flow, curl around obstacles and stall where the gas stalls. Texture
-// advection (Neyret 2003): two copies of the noise, half a cycle apart, are
-// each carried along the flow for FLOW_PERIOD steps and then restarted at a
-// new place; each fades out before its restart. Their blend is rescaled to
-// keep the noise's contrast (and so its mean 0.5 and spread). Only the base
+// advection (Neyret 2003; Portal 2's two-phase flow maps, Vlachos 2010): two
+// copies of the noise, half a cycle apart, are each carried along the flow for
+// FLOW_PERIOD steps and then restarted at a new place; each fades out before
+// its restart. Their blend is rescaled to keep the noise's contrast (and so
+// its mean 0.5 and spread). It has no distance fade: gfx/detail.js derives
+// where it would end (fadeM) and that lies past any media the view marches. Only the base
 // noise rides the flow, and always at the local velocity: blending toward any
 // other velocity over space (by distance or transmittance), or advecting the
 // fine octaves, shears the noise into rings and streaks.
@@ -122,6 +125,9 @@ const STEP_MIN_CELLS = MEDIA_STEP_MIN_M / CELL_M;
 // per pixel) those footprints are 0.44 m and 5.3 m away.
 export const MEDIA_STEP_FINE_M = MEDIA_STEP_MIN_M / MEDIA_STEP_PX;   // 0.6 mm per pixel
 export const MEDIA_STEP_BASE_M = CELL_M / MEDIA_STEP_PX;             // 7.5 mm per pixel
+// Flow advection (DETAIL_MEDIA_FLOW); gfx/detail.js derives its fadeM from these two.
+export const MEDIA_FLOW_PERIOD = 16;   // sim steps a noise copy rides the flow (whole, so it divides the clock wrap)
+export const FLOW_MAX = 1;             // cells/step: the sim moves a particle at most one cell a step
 
 /** Whether any media detail switch is on (the GLSL's MEDIA_DETAIL_ON). */
 export const MEDIA_DETAIL_ON = (detail = {}) => !!(detail.DETAIL_MEDIA_FINE || detail.DETAIL_MEDIA_STEP || detail.DETAIL_MEDIA_FLOW);
@@ -161,32 +167,49 @@ const MEDIA_SEG_SAMPLES: i32 = MEDIA_MAX_PER_SEG;
 fn mediaStepAt(t: f32) -> f32 { return MEDIA_STEP; }`}
 ${flow ? `
 // ---- advection by the flow ----
-const MEDIA_FLOW_PERIOD: f32 = 16.0;   // sim steps each noise copy rides the flow before restarting (divides the clock wrap);
+const MEDIA_FLOW_PERIOD: f32 = ${f(MEDIA_FLOW_PERIOD)};   // sim steps each noise copy rides the flow before restarting (divides the clock wrap);
                                        // short, so per-particle velocity jitter shears the noise less
-const FLOW_MAX: f32 = 1.0;             // cells/step: the sim moves a particle at most one cell a step
+const FLOW_MAX: f32 = ${f(FLOW_MAX)};             // cells/step: the sim moves a particle at most one cell a step
 const FLOW_PHASES: i32 = 2;            // noise copies, evenly staggered over the cycle
 // tile offset per cycle, so a restarted copy shows new detail (fractions of a tile, mutually irrational-ish)
 const FLOW_CYCLE_OFFSET: vec3f = vec3f(0.3183, 0.5772, 0.6931);
 var<private> gFlowV: vec3f = vec3f(0.0);   // flow velocity at the current media sample (cells/step), set by gasDensity
 
-// sim velocity at p (cells/step), trilinear between cell centres, clamped to FLOW_MAX
+// Sim velocity at p (cells/step), clamped to FLOW_MAX: linear over the Kuhn
+// (Freudenthal) tetrahedron of the cell-centre lattice that holds p, the
+// tetrahedral interpolation of 3D colour lookup tables (Kasson, Nin, Plouffe
+// and Hafner 1995, J. Electronic Imaging 4(3)).
+// Like trilinear it is continuous everywhere and exact for a linear field, but
+// it reads 4 cells instead of 8: half the velocity loads per media sample,
+// and in the World half the inlined page lookups (worldFetchB), which were
+// most of this feature's Metal compile time. The tetrahedron runs from the
+// lower corner along the axis of the largest fraction, then the middle one,
+// to the upper corner; its weights are the gaps between the sorted fractions.
+// On a tie the corner it can't decide has weight 0, so either choice is the same.
 fn flowVel(p: vec3f) -> vec3f {
   let q = clamp(p, vec3f(0.5), vec3f(GRID) - 0.5) - 0.5;
   let i0 = vec3i(floor(q));
   let fr = q - vec3f(i0);
-  var v = vec3f(0.0);
-  for (var c = 0; c < 8; c++) {
-    let o = vec3i(c & 1, (c >> 1u) & 1, c >> 2u);
-    let w = mix(1.0 - fr, fr, vec3f(o));
-    v += fetchB(min(i0 + o, GRID - 1)).xyz * (w.x * w.y * w.z);
-  }
-  let s = length(v);
-  if (s > FLOW_MAX) { return v * (FLOW_MAX / s); }
-  return v;
+  let hi = max(fr.x, max(fr.y, fr.z));
+  let lo = min(fr.x, min(fr.y, fr.z));
+  let mid = fr.x + fr.y + fr.z - hi - lo;
+  let eHi = select(select(vec3i(0, 0, 1), vec3i(0, 1, 0), fr.y == hi), vec3i(1, 0, 0), fr.x == hi);
+  let eLo = select(select(vec3i(0, 0, 1), vec3i(0, 1, 0), fr.y == lo), vec3i(1, 0, 0), fr.x == lo);
+  let top = GRID - 1;
+  let v = fetchB(i0).xyz * (1.0 - hi)
+        + fetchB(min(i0 + eHi, top)).xyz * (hi - mid)
+        + fetchB(min(i0 + vec3i(1) - eLo, top)).xyz * (mid - lo)
+        + fetchB(min(i0 + vec3i(1), top)).xyz * lo;
+  // |v| <= FLOW_MAX scales by 1, faster by FLOW_MAX / |v| (one exit, no 1/0)
+  return v * (FLOW_MAX * inverseSqrt(max(dot(v, v), FLOW_MAX * FLOW_MAX)));
 }
 
 // The detail noise at p (scale: tiles per MEDIA_NOISE_CELLS, off: tile offset),
-// carried along gFlowV, stretched along y.
+// carried along gFlowV, stretched along y. Each copy is pushed back along the
+// flow by its time from mid-cycle, not from its restart (as Portal 2's flow
+// maps do, and surface.js's flowing grains): it is undistorted when it weighs
+// most, and strays at most half a cycle's travel, so where the velocity varies
+// it shears half as far.
 fn flowNoise(p: vec3f, scale: f32, off: vec3f, stretch: f32) -> vec4f {
   let c = FU.simClock / MEDIA_FLOW_PERIOD;
   var n = vec4f(0.0);
@@ -195,13 +218,14 @@ fn flowNoise(p: vec3f, scale: f32, off: vec3f, stretch: f32) -> vec4f {
     let ph = c + f32(i) / f32(FLOW_PHASES);
     let cyc = floor(ph);
     let fr = ph - cyc;
-    var q = worldPos(p) - gFlowV * (fr * MEDIA_FLOW_PERIOD);   // anchored in the world (the noise tiles)
+    var q = worldPos(p) - gFlowV * ((fr - 0.5) * MEDIA_FLOW_PERIOD);   // anchored in the world (the noise tiles)
     q.y /= stretch;
     let w = 1.0 - abs(2.0 * fr - 1.0);   // 0 at the restart, 1 mid-cycle; the copies' weights sum to 1
     n += w * textureSampleLevel(tMediaNoise, linearRepeat, q * (scale / MEDIA_NOISE_CELLS) + off + fract(cyc * FLOW_CYCLE_OFFSET), 0.0);
     w2 += w * w;
   }
-  // a blend of independent noises has less spread than each: rescale it
+  // a blend of independent noises has less spread than each: rescale it to
+  // the same spread (variance-preserving blending: Heitz & Neyret 2018)
   return clamp(NOISE_MEAN + (n - NOISE_MEAN) * inverseSqrt(w2), vec4f(0.0), vec4f(1.0));
 }` : ''}
 

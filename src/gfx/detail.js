@@ -16,7 +16,7 @@
 
 import { CELL_M } from '../scale.js';
 import { DETAIL_FADE_LO, DETAIL_FADE_HI } from './lodFade.js';
-import { FINE_1_M } from '../shaders/gfx/mediaDetail.js';
+import { FINE_1_M, FLOW_MAX, MEDIA_FLOW_PERIOD } from '../shaders/gfx/mediaDetail.js';
 
 export const BENCH_W = 1280, BENCH_H = 800;   // px, the benchmark viewport
 
@@ -81,6 +81,28 @@ const CUBIC_FADE_M = CUBIC_ERR * CELL_M / CUBIC_ERR_PX_NONE;   // m per pixel
 // finer media sampling and flow-following apply at any distance (no fadeM:
 // always in).
 const MEDIA_FINE_FADE_M = DETAIL_FADE_HI * FINE_1_M;   // m per pixel
+// Smoke follows the flow (shaders/gfx/mediaDetail.js flowNoise) moves the base
+// detail noise, so it shows while both of these hold, and is gone only once
+// both fail:
+// - the moved pattern is resolved. Its octaves (gfx/mediaNoise.js) are
+//   MEDIA_NOISE_CELLS / {16, 8, 4} = 4, 8 and 16 cells (1.2, 2.4, 4.8 m) across;
+//   by the material LOD rule the coarsest, which carries ~3/4 of the
+//   variance (octave weights 0.57, 0.29, 0.14, squared), is averaged away at
+//   DETAIL_FADE_HI cycles per pixel: 4.8 m per pixel.
+// - the motion is resolved. A copy rides the flow for one cycle, then is
+//   restarted; within it the pattern moves |v| · MEDIA_FLOW_PERIOD cells, at
+//   most FLOW_MAX · MEDIA_FLOW_PERIOD = 16 cells = 4.8 m. Motion under a pixel
+//   per cycle is not drawn (the restarts crossfade it, TAA averages it).
+// Both end at 4.8 m per pixel: 3.4 km at 1080p and 75° vertical field of view
+// (a pixel spans 2 tan(37.5°) / 1080 = 1.42 mrad). Typical smoke and steam
+// (rise 0.0625 cells/step, gfx/materials.js MEDIA) travel 1 cell a cycle,
+// under a pixel past 0.3 m per pixel (211 m). Both lie past every media sample
+// the views march (gas lives in the sim's grid: a box, or the World's window
+// around the player), so the feature has no runtime fade, and as fadeM is above
+// detailGate's GATE_ALWAYS_M the Box view keeps it in its base variant.
+const FLOW_TRAVEL_CELLS = FLOW_MAX * MEDIA_FLOW_PERIOD;
+const NOISE_COARSEST_CELLS = 64 / 4;         // MEDIA_NOISE_CELLS / BILLOW_PERIODS[0] (gfx/mediaNoise.js)
+const MEDIA_FLOW_FADE_M = DETAIL_FADE_HI * Math.max(FLOW_TRAVEL_CELLS, NOISE_COARSEST_CELLS) * CELL_M;   // m per pixel
 // Liquid ripples (shaders/gfx/liquidDetail.js) start as their longest new
 // octave (24.5 cm) passes the same fade-out; the meniscus, over the capillary
 // length (2.7 mm for water), is averaged away once a pixel spans more than
@@ -116,7 +138,7 @@ export const DETAIL = [
   { key: 'mediaStep', define: 'DETAIL_MEDIA_STEP', label: 'Fine smoke sampling', cost: 'medium',
     desc: 'Samples smoke, steam and fire more finely near the camera: crisper wisps, less grain' },
   // high: plume fireNear +5.9, smokeIn / steamNear +3-4 ms
-  { key: 'mediaFlow', define: 'DETAIL_MEDIA_FLOW', label: 'Smoke follows the flow', cost: 'high',
+  { key: 'mediaFlow', define: 'DETAIL_MEDIA_FLOW', label: 'Smoke follows the flow', cost: 'high', fadeM: MEDIA_FLOW_FADE_M,
     desc: 'Wisps of smoke, steam and fire ride the simulated flow instead of a steady rise' },
   // medium (estimated): lab eyeSandClose (standing on the pile) +5 to +24 % of the view in three
   // runs, eyeTank and volcano eyeFlank within noise, 2026-10-11. The GPU was saturated by other
