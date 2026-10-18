@@ -324,15 +324,17 @@ fn liquidFoam(p: vec3f, n: ptr<function, vec3f>, id: i32, col: ptr<function, vec
   if (ag <= 0.0) { return; }
   let fp = footprint(p);
   let wp = worldPos(p);   // the churn and foam are anchored in the world
-  // Each noise is evaluated only while its lodFade weight is above 0 (past
-  // DETAIL_FADE_HI cycles a pixel it is exactly 0, so nothing drawn changes):
-  // the churn's past ~100 m, the clusters' past ~28 m, the raft's past ~84 m
-  // at 1080p and 75° (gfx/detail.js, liquidFoam).
-  let rw = lodFade(ROUGH_FREQ, fp);
-  if (rw > 0.0) {
-    let r = triNoiseD(wp, *n, ROUGH_FREQ, FU.simClock * ROUGH_EVOLVE);
-    *n = tiltNormal(*n, r.yzw * (ROUGH_SLOPE * ag * rw / ROUGH_FREQ));
-  }
+  // Each noise's weight is its lodFade: the churn's is 0 past ~106 m, the
+  // clusters' past ~28 m, the raft's past ~84 m at 1080p and 75° (gfx/
+  // detail.js, liquidFoam). The churn and the clusters are evaluated
+  // straight-line, as before, not behind tests of their weight: foam is
+  // only drawn within the live physics window, so skipping them past those
+  // distances saves little, and the branches would add control flow to every
+  // inlined copy of the World's cold-built shader (2026-10-17: Metal timings
+  // on a loaded machine could not tell the two apart, so the cheaper-to-
+  // compile shape stays).
+  let r = triNoiseD(wp, *n, ROUGH_FREQ, FU.simClock * ROUGH_EVOLVE);
+  *n = tiltNormal(*n, r.yzw * (ROUGH_SLOPE * ag * lodFade(ROUGH_FREQ, fp) / ROUGH_FREQ));
   // covered fraction: the pattern where pixels resolve it, its mean beyond
   // (the coverage itself never fades: whitewater reads from any distance)
   let cover = mix(SPRAY_COVER_MAX, FOAM_COVER_MAX, aer.y) * ag;
@@ -342,16 +344,13 @@ fn liquidFoam(p: vec3f, n: ptr<function, vec3f>, id: i32, col: ptr<function, vec
     let q = wp + FOAM_SHIFT;
     let t = FU.simClock * FOAM_EVOLVE;
     // the octaves about their mean, blended keeping one octave's spread
-    var v = triNoiseD(q, *n, FOAM_FREQ, t).x - 0.5;
     let w2 = FOAM_OCT2_W * lodFade(FOAM_FREQ2, fp);
-    if (w2 > 0.0) {
-      v = mix(v, triNoiseD(q, *n, FOAM_FREQ2, t).x - 0.5, w2) * inverseSqrt((1.0 - w2) * (1.0 - w2) + w2 * w2);
-    }
-    v *= triSpread(*n);
+    let v = mix(triNoiseD(q, *n, FOAM_FREQ, t).x, triNoiseD(q, *n, FOAM_FREQ2, t).x, w2) - 0.5;
+    let vs = v * inverseSqrt((1.0 - w2) * (1.0 - w2) + w2 * w2) * triSpread(*n);
     // white where the noise is past its (1 − cover) quantile: a share cover of the surface
     let pc = clamp(1.0 - cover, FOAM_COVER_EPS, 1.0 - FOAM_COVER_EPS);
     let z = FOAM_NOISE_SD * FOAM_PROBIT_K * log(pc / (1.0 - pc));
-    c = mix(cover, smoothstep(z - FOAM_EDGE, z + FOAM_EDGE, v), pw);
+    c = mix(cover, smoothstep(z - FOAM_EDGE, z + FOAM_EDGE, vs), pw);
   }
   if (c <= 0.0) { return; }
   var sunVis = vec3f(1.0);
