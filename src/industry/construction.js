@@ -4,15 +4,22 @@ import { RING_LAYOUT, ringWGSL } from '../shaders/povBody.js';
 import { baseMaterial } from './catalog.js';
 import { deviceHeight } from './validation.js';
 import { PUMP_BACKPLATE_TAG } from './pumpStructure.js';
+import { nativeLife } from '../v2/layout.js';
+import { E } from '../elements.js';
+
+// V2 holds TUNGSTEN life in a 16-bit payload, where the tag arrives as its
+// clamp (a V1-built backplate imports to exactly this); its kernel owns that value.
+export const PUMP_BACKPLATE_TAG_NATIVE = nativeLife(E.TUNGSTEN, PUMP_BACKPLATE_TAG);
+const wgslFloat = n => (Number.isInteger(n) ? `${n}.0` : String(n));
 
 const Params = uniformStruct('IndustryConstruction', { at: 'vec3i', material: 'i32', mode: 'u32', slot: 'u32', height: 'i32', hearth: 'u32', pump: 'u32', rotation: 'u32' });
 // One invocation tests the entire machine before writing any cell. Unlike a
 // brush or sixteen independent transfers this cannot leave half a paid deck.
-export const constructionWGSL = g => /* wgsl */ `
+export const constructionWGSL = (g, backplateTag = PUMP_BACKPLATE_TAG) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RW)}
 ${Params.wgsl}
 @group(3) @binding(1) var<uniform> P: IndustryConstruction;
-const INDUSTRY_PUMP_BACKPLATE_TAG: f32 = ${PUMP_BACKPLATE_TAG}.0;
+const INDUSTRY_PUMP_BACKPLATE_TAG: f32 = ${wgslFloat(backplateTag)};
 ${ringWGSL()}
 fn hearthStructureCell(x: i32, y: i32, z: i32) -> bool {
   return y == 0 || (y >= 1 && y <= 3 && (x == 0 || x == 3 || z == 0 || (z == 3 && y == 1)));
@@ -85,15 +92,19 @@ export function createConstruction(app) {
   const layout = gpu.layout('industry construction result', RING_LAYOUT);
   const ring = gpu.readback.ring('industry construction', 16, 8);
   const group = gpu.bindGroup(layout, [{ binding: 0, resource: { buffer: ring.buffer } }], 'industry construction result');
-  const kernel = gpu.kernel({ name: 'industryConstruction', code: constructionWGSL(sim.g), params: Params,
+  const make = (name, tag) => gpu.kernel({ name, code: constructionWGSL(sim.g, tag), params: Params,
     layouts: [sim.L.TABLES, sim.L.STATE_RW, layout], workgroupSize: [1, 1, 1] });
+  const kernel = make('industryConstruction', PUMP_BACKPLATE_TAG);
+  let native = null; // V2's backplate tag, built on first use
+  const current = () => sim.compact ? (native ??= make('industryConstructionNative', PUMP_BACKPLATE_TAG_NATIVE)) : kernel;
   return {
     ready: kernel.ready,
     async run(d, mode) {
-      await kernel.ready;
-      if (app.sim !== sim || sim.disposed) return false;
+      const k = current();
+      await k.ready;
+      if (app.sim !== sim || sim.disposed || current() !== k) return false;
       const slot = ring.next();
-      sim._dispatch(kernel, [1, 1, 1], { bind: [sim.tables, sim.bindRW, group], header: sim.header(),
+      sim._dispatch(k, [1, 1, 1], { bind: [sim.tables, sim.bindRW, group], header: sim.header(),
         params: { at: [d.x, d.y, d.z], material: baseMaterial(d.type), mode, slot, height: deviceHeight(d),
           hearth: d.type === 'hearth' ? 1 : 0, pump: d.type === 'pump' ? 1 : 0, rotation: d.rotation } });
       if (mode) { sim.version++; sim.worldRenderSource?.noteContentChange(); sim.wake(); }
@@ -105,5 +116,7 @@ export function createConstruction(app) {
   };
 }
 
-export const WGSL_CHECK = [{ name: 'industryConstruction', kind: 'compute', code: constructionWGSL,
+export const WGSL_CHECK = [{ name: 'industryConstruction', kind: 'compute', code: g => constructionWGSL(g),
+  layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, RING_LAYOUT], dispatch: () => [1, 1, 1] },
+{ name: 'industryConstructionNative', kind: 'compute', code: g => constructionWGSL(g, PUMP_BACKPLATE_TAG_NATIVE),
   layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, RING_LAYOUT], dispatch: () => [1, 1, 1] }];

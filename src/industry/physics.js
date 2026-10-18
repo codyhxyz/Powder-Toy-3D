@@ -6,6 +6,8 @@ import { createTransfer, Load } from '../pov/tools/transfer.js';
 import { povGpu } from '../pov/gpu.js';
 import { deviceHeight } from './validation.js';
 import { NOMINAL_STEP_RATE } from '../physics.js';
+import { nativeIndustry } from '../v2/industry.js';
+import { HOST_HZ } from '../v2/host.js';
 
 // Ports are integer local cells, rotated exactly like construction geometry.
 export const controlCell = d => deviceCell(d, -1, 0, 1);
@@ -187,14 +189,28 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = 
       })) s.clock = 0;
     }
   }
+  let batch = null; // V2: this pass's machine edits, committed natively together (src/v2/industry.js)
   function editDevice(d, dt, drill = false, kind = INDUSTRY_KIND[d.type]) {
     const guard = machineGuard(d), forward = deviceDirection(d), right = [forward[2], 0, -forward[0]];
-    sim.edit(kernel, machineBox(d), {
+    const values = {
       guardBase: guard.base, guardMaterial: guard.material, guardPort: guard.port, guardPowered: +guard.powered,
       corner: deviceCell(d, 0, 0, 0), forward, right, kind,
       selectedId: FILTER_IDS.includes(d.filter) ? d.filter : E.NUGGETS,
       dt, drill: +drill,
-    });
+    };
+    if (batch) { batch.push({ box: machineBox(d), values }); return; }
+    sim.edit(kernel, machineBox(d), values);
+  }
+  // Under V2 the same rules run on V2's own cells: one native batch, never a
+  // legacy B write. A batch whose native kernels are still building is skipped
+  // like a V1 edit before its kernel is built, never handed to V1.
+  function nativePass(run, launch) {
+    if (!sim.compact) { run(); return; }
+    batch = [];
+    try { run(); } finally {
+      const edits = batch; batch = null;
+      if (edits.length) nativeIndustry(sim)?.run(edits, { launch });
+    }
   }
   // Like TPT conduction, paid draft runs beside each native tick, not once
   // after a presentation-frame batch has already cooled its hot sources.
@@ -211,11 +227,15 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = 
     nativeFrame = frame;
     if (!sim || !built || ticks <= 0) return;
     const seen = new Set();
-    for (const d of list) {
-      if (!validMachine(d, sim.g) || seen.has(d.id)) continue;
-      seen.add(d.id);
-      if (d.type === 'hearth') editDevice(d, ticks / NOMINAL_STEP_RATE, false, INDUSTRY_KIND.hearthHeat);
-    }
+    // A native host tick is 1/HOST_HZ s; V1's is one of NOMINAL_STEP_RATE a second.
+    const tickRate = sim.compact ? HOST_HZ : NOMINAL_STEP_RATE;
+    nativePass(() => {
+      for (const d of list) {
+        if (!validMachine(d, sim.g) || seen.has(d.id)) continue;
+        seen.add(d.id);
+        if (d.type === 'hearth') editDevice(d, ticks / tickRate, false, INDUSTRY_KIND.hearthHeat);
+      }
+    }, false);
   }
   function step(dt, devices) {
     if (disposed || !Number.isFinite(dt) || dt <= 0) return;
@@ -246,7 +266,7 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = 
     // transfer engine's eight-readback limit. One operation/device at a time.
     const entries = [...states.entries()];
     if (entries.length) cursor = (cursor + 1) % entries.length;
-    for (let i = 0; i < entries.length; i++) {
+    nativePass(() => { for (let i = 0; i < entries.length; i++) {
       const [key, s] = entries[(i + cursor) % entries.length];
       const d = s.device, present = live.has(key);
       s.clock += dt; s.drillClock += dt;
@@ -266,7 +286,7 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = 
       const drill = s.drillClock >= 0.35;
       editDevice(d, dt, drill);
       if (drill) s.drillClock = 0;
-    }
+    } }, true);
   }
   const pending = () => [...states.values()].reduce((n, s) => n + +(s.busy || s.load.busy), 0);
   function toJSON() {
