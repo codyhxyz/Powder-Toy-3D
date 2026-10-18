@@ -534,6 +534,12 @@ export function particlesWGSL(g, nativeHead, stage) {
     if (r.state == D_REACT_REFUSED) { return; }
     if (any(r.source != vec2u(0u))) { noteEnergySource(p,r.source); }
     if (any(r.sink != vec2u(0u))) { noteEnergySink(p,r.sink); }
+    // the decoration follows the matter (shaders/move.js): a charge that lands brings its paint, a gas it
+    // displaces takes the cell's into flight, and matter its plume makes in air holds none
+    let paint = particleDecoOf(t);
+    if (r.state == D_REACT_LANDED) { setDeco(s,paint); }
+    else if (r.state == D_REACT_DISPLACED) { setParticleDeco(t,decoOf(s)); setDeco(s,paint); }
+    else if (cid(before.core) == 0u && cid(r.host.core) != 0u) { setDeco(s,0u); }
     storeMaterial(s,before,r.host); dWake(p);
     if (r.requests != 0u) {
       atomicStore(&control[${airborneBase(g) + 1}u+t],s|(r.requests<<${AIRBORNE_BITS_SHIFT}u)); atomicAdd(&control[${airborneBase(g)}u],1u);

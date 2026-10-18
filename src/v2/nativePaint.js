@@ -129,6 +129,8 @@ if((r.changed&${PF.TYPE}u)!=0u) {
 if(all(m.core==before.core) && m.bank==before.bank) { return; }
 if(inGrid(p)) { noteEnergySource(p,energySub(packetOwnedEnergy(m),packetOwnedEnergy(before))); }
 particle.c0=m.core.x; particle.tail=vec4u(m.core.yzw,bitcast<u32>(m.bank));
+// a flying cell the brush gives a new element loses its paint, as the grid commit's (V1's scrub)
+if(cid(m.core)!=cid(before.core)) { setParticleDeco(i,0u); }
 paintParticles[i]=particle;
 if(inGrid(p)) { markBusy(p); }`)}
 `;

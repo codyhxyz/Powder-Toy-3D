@@ -227,6 +227,11 @@ test('every particle spawn writes its slot\'s paint: a cell\'s own, none for ray
   assert.match(statements(blastsWGSL(g16, nativeDynamicsHead, 'rayEmit')), /setParticleDeco\(slot,0u\)/);
 });
 
+test('airborne reactions: a charge landing in flight brings its paint; a displaced gas flies off with the cell\'s; plumes in air are unpainted', () => {
+  const react = statements(particlesWGSL(g16, nativeDynamicsHead, 'react'));
+  assert.match(react, /let paint = particleDecoOf\(t\);\s*if \(r\.state == D_REACT_LANDED\) \{ setDeco\(s,paint\); \}\s*else if \(r\.state == D_REACT_DISPLACED\) \{ setParticleDeco\(t,decoOf\(s\)\); setDeco\(s,paint\); \}\s*else if \(cid\(before\.core\) == 0u && cid\(r\.host\.core\) != 0u\) \{ setDeco\(s,0u\); \}\s*storeMaterial\(s,before,r\.host\)/);
+});
+
 test('a landing brings the paint back to the grid: into air the particle\'s, into its own liquid the receiver\'s', () => {
   const deposit = statements(particlesWGSL(g16, nativeDynamicsHead, 'deposit'));
   assert.match(deposit, /if \(cid\(before\.core\)==0u\) \{ setDeco\(s,particleDecoOf\(t\)\); \}\s*storeMaterial\(s,before,admitted\.material\)/);
@@ -236,6 +241,8 @@ test('a landing brings the paint back to the grid: into air the particle\'s, int
 
 test('the brush\'s native retype and Mix scrub as V1\'s brush does; POV transfer cargo is unpainted, as V1\'s', () => {
   const commit = statements(nativePaintWGSL(g16, nativePaintParams(), 'commit'));
+  assert.match(statements(nativePaintWGSL(g16, nativePaintParams(), 'particleCommit')), /if\(cid\(m\.core\)!=cid\(before\.core\)\) \{ setParticleDeco\(i,0u\); \}\s*paintParticles\[i\]=particle;/,
+    'a flying cell the brush retypes loses its paint too');
   assert.match(commit, /if\(cid\(m\.core\)!=cid\(before\.core\)\) \{ setDeco\(s,0u\); \}\s*storeMaterial\(s,before,m\)/);
   const transfer = statements(nativeTransferWGSL(g16));
   assert.match(transfer, /cores\[s\] = put; banks\[s\] = bitcast<i32>\(extra\.x\);\s*banks\[SLOTS \+ s\] = 0;/);
