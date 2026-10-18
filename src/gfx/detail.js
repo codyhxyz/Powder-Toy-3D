@@ -105,11 +105,19 @@ export const DETAIL = [
   { key: 'liquidMeniscus', define: 'DETAIL_LIQ_MENISCUS', label: 'Liquid meniscus', cost: 'low', fadeM: MENISCUS_FADE_M,
     desc: 'Liquid climbing walls and glass over its last few millimetres' },
   // medium: 1.4 ms at eyeTank (25 rounds), before the aeration field. Its
-  // per-step pass (gfx/foam.js) adds ~0.4 ms a step on a 128³ grid with a
+  // per-step pass (gfx/foam.js) added ~0.4 ms a step on a 128³ grid with a
   // pool over the whole floor (7 interleaved rounds, 2026-10-10), ~1.6 ms a
-  // frame at 4 steps; the view's lookup costs no more than the old column
-  // walks did. The pour / pourAfter presets of tools/detail-bench.mjs add
-  // the step cost to the tier.
+  // frame at 4 steps, while it ran over every brick holding liquid; it now
+  // runs only where records may change (near drawn liquid, or foam still
+  // bursting), so a settled pool costs its list kernel alone (re-measure:
+  // the pour / pourAfter presets of tools/detail-bench.mjs add the step cost
+  // to the tier). No fadeM: its coverage is a low-frequency albedo change
+  // that reads from any distance (whitecap coverage is measured from orbit:
+  // Anguelova & Webster 2006, satellite microwave radiometry), so
+  // it never fades; only its texture does, per noise by lodFade (the raft's
+  // 12 cm patches by 84 m, its 4 cm clusters by 28 m, the 15 cm churn by
+  // 106 m at 1080p and 75° vertical), its mean kept in the albedo
+  // (shaders/gfx/liquidDetail.js liquidFoam).
   { key: 'liquidFoam', define: 'DETAIL_LIQ_FOAM', label: 'Whitewater', cost: 'medium',
     desc: 'Liquid that plunges or lands hard turns white with foam that drifts on the flow and bursts over a few seconds; long falls tear into spray' },
 ];

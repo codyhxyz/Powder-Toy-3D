@@ -474,27 +474,40 @@ const FOAM_V_FULL = 4.0;          // m/s
 // quiet-base block and a block that didn't run stayed put (q = p), as the
 // gather's slots said in the WebGL build.
 //
-// The AER list (docs/webgpu.md G4). The wakes live in air cells, so the
-// output isn't zero only where the source cell's pre-move content foams, and
-// the list doesn't count steps for them: it keeps what the field itself
-// says. A brick is listed at a step when
-//   - a brick within one brick of it (wrapped past loop edges) may hold a
-//     foaming liquid (marks.foams: react's word for the bricks it wrote, 1 from
-//     any writer; the pre-move content, since the move only changes DRAWN
-//     bricks, which react then rewrites): p's q is within a cell of p;
-//   - or its output was not all zero at either of the last two steps (nz, a
-//     word per brick: bit 0 the last step's, bit 1 the one before, which the
-//     aeration kernel sets and the list kernel shifts);
+// The AER list (docs/webgpu.md G4). Every liquid cell's record is nonzero
+// (y = 1), so listing the bricks whose output isn't zero ran the kernel over
+// every pool, settled or not, at every step (~0.4 ms a step on a 128³ grid
+// with a pool over the floor). It lists the bricks whose output may CHANGE
+// instead. A cell's output is a function of the records and the state within
+// a cell of it (q, the cells above and below q, its wakes), and the state
+// changes only in DRAWN bricks (the settle rule, shaders/activity.js: a unit
+// not DRAWN keeps its cells, and a write between steps forces it DRAWN). A
+// brick is listed at a step when
+//   - near: a brick within one brick of it (wrapped past loop edges) is
+//     DRAWN under this step's map and one may hold a foaming liquid
+//     (marks.foams: react's word for the DRAWN bricks it wrote, 1 from any
+//     writer; exact for the pre-move content, as a brick not DRAWN keeps its
+//     cells), on a real step (an idle one moves nothing);
+//   - or it was near at the last step (nz bit AER_NEAR_BIT): that step's
+//     move and react changed the state this step reads;
+//   - or a brick within one brick of it had a record changed by the last
+//     step (nz bit 1 − P.tb: the aeration kernel sets bit
+//     P.tb for a brick whose output differs from its previous record, and
+//     the list kernel clears it first, so a brick off the list reads as
+//     unchanged; the bits alternate so that neighbours read the last step's
+//     while each brick clears its own for this one);
 //   - or the field starts over (P.all: after a reset or a window shift, for
 //     two steps, as the foams words and the copies then say nothing).
-// Exact: a cell's output is nonzero only if its q's content foams (then its
-// brick is near a foams brick) or its previous record was nonzero (then its
-// brick's nz bit 0 is set). So a brick off the list has an all-zero output,
-// and the copy it would have written holds zeros too: that copy was last
-// written two steps ago, when its output (bit 1) was all zero, or the brick
-// was off the list then too (by induction from the zeroed start). The
-// reference runs the same kernel over every brick (P.all, I2.6: tools/
-// aeration-check.mjs compares the two bit for bit at every step).
+// Exact: off the list, nothing within a cell of the brick was drawn at this
+// step or the last, so the state its cells read is what the last step read,
+// with no moves (q = p); and the records within a cell are what the last
+// step read too. So its output is its last record, which both copies hold:
+// it did not change at the last step, so the copy written then and the one
+// before agree (by induction from the zeroed start). The reference runs the
+// same kernel over every brick (P.all, I2.6: tools/aeration-check.mjs
+// compares the two bit for bit at every step). A settled pool, foam burst,
+// costs only the list kernel (a thread per brick); foam bursting on it lists
+// its bricks while their records change.
 const AER_FOAMS_NOTE = 'FOAMS(id): the tables\' (gfx/materials.js FOAMS), which react lists by';
 export const AerParams = uniformStruct('AerParams', {
   ...SIM_MODE_FIELDS,   // gravMode, edge (src/simModes.js: edgeCell)
@@ -503,7 +516,11 @@ export const AerParams = uniformStruct('AerParams', {
   srcAt: 'u32',         // moveSrc's plane in its buffer (words)
   cur: 'u32',           // the aeration copy read; the other is written
   all: 'u32',           // every brick (the reference), not the list
+  tb: 'u32',            // this step's changed bit in nz (AER list, above): its aeration steps alternate 0, 1
 });
+// nz's bits per brick (the AER list, above): changed at an aeration step of
+// parity tb (bit tb), and near at the last step.
+const AER_NEAR_BIT = 4;
 // Group 2: moveSrc (sim.moveSrc), the aeration's two copies (vec2u: f16
 // pairs), the nz words.
 export const AER_LAYOUT = [
@@ -641,9 +658,11 @@ fn aeration(p: vec3i) -> vec4f {
   return vec4f(min(F, 1.0), select(1.0, 2.0, pour), fall, select(0.0, 1.0, grounded));
 }
 // A workgroup per brick of the AER list (P.all: of the grid), a thread per
-// cell: the other copy's record, and the brick's nz bit 0; and the field's
-// count of visible foam (liquid at AER_VISIBLE_MIN or more) into the word
-// after the bricks' (gfx/foam.js reads it on idle steps).
+// cell: the other copy's record, and the brick's nz bit P.tb if any record
+// changed; and the field's count of visible foam (liquid at AER_VISIBLE_MIN
+// or more) into the word after the bricks' (gfx/foam.js reads it on idle
+// steps; a brick off the list holds no foam that is bursting, so none it
+// would count that matters).
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
   let k = foldId(wg, nwg);
@@ -657,13 +676,16 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     let s = b * 64u + li;
     let o = aeration(cellOf(s));
     let w = vec2u(pack2x16float(o.xy), pack2x16float(o.zw));
+    let prev = aer[P.cur * SLOTS + s];
     aer[(1u - P.cur) * SLOTS + s] = w;
-    if (any(w != vec2u(0u))) { atomicOr(&wgNz, 1u); }
+    if (any(w != prev)) { atomicOr(&wgNz, 1u); }
     if (o.y > 0.5 && o.x >= AER_VISIBLE_MIN) { atomicAdd(&wgFoam, 1u); }
   }
   workgroupBarrier();
   if (li == 0u && valid) {
-    atomicStore(&nz[b], (atomicLoad(&nz[b]) & 2u) | atomicLoad(&wgNz));
+    // (the list kernel cleared bit P.tb; nothing else in the word is this kernel's)
+    let changed = atomicLoad(&wgNz);
+    if (changed != 0u) { atomicOr(&nz[b], changed << P.tb); }
     let foam = atomicLoad(&wgFoam);
     if (foam != 0u) { atomicAdd(&nz[NBRICKS], foam); }
   }
@@ -677,10 +699,11 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 // the aeration's indirect arguments (ARGS.AER, fold()ed).
 export const AER_APPEND = 6;   // act's count words: ACT_COUNTS uses 0-5
 export const AerListParams = uniformStruct('AerListParams', {
-  still: 'u32',   // an idle step: a brick's own foams word is enough (nothing moves)
+  still: 'u32',   // an idle step: nothing is drawn, nothing moves
   all: 'u32',     // list every brick
-  hist: 'u32',    // the nz bits that list a brick: 3 (test only: 0, tools/aeration-check.mjs's negative control)
+  hist: 'u32',    // whether nz's history lists a brick: 1 (test only: 0, tools/aeration-check.mjs's negative control)
   wrap: 'u32',    // loop edges: the dilation wraps (edgeCell; 'loop' is reserved in WGSL)
+  tb: 'u32',      // this step's changed bit (AerParams.tb)
 });
 // group 1 (marks, act read_write: no state) and group 2 (args, nz)
 export const AER_LIST_STATE = { state: false, marks: true, act: 'read_write' };
@@ -693,30 +716,41 @@ ${prelude(grid, AER_LIST_STATE)}
 ${AerListParams.wgsl}
 @group(3) @binding(1) var<uniform> P: AerListParams;
 @group(2) @binding(0) var<storage, read_write> args: array<u32>;
-@group(2) @binding(1) var<storage, read_write> nz: array<u32>;
+@group(2) @binding(1) var<storage, read_write> nz: array<atomic<u32>>;   // (neighbours read a word while its brick's thread clears another bit of it)
 const AER_APPEND: u32 = ${AER_APPEND}u;
+const AER_NEAR_BIT: u32 = ${AER_NEAR_BIT}u;
 const ARGS_AER: u32 = ${ARGS.AER / 4}u;   // words
 const MAX_WG: u32 = ${MAX_WORKGROUPS}u;`;
 export const aerListFrag = (grid) => /* wgsl */ `
 ${aerListHead(grid)}
-fn foamsAt(c: vec3i) -> bool {
-  var n = c;
-  if (P.wrap != 0u) { n = (c + vec3i(BX, BY, BZ)) % vec3i(BX, BY, BZ); }
-  else if (any(n < vec3i(0)) || any(n >= vec3i(BX, BY, BZ))) { return false; }
-  return atomicLoad(&marks[MARK_FOAMS + brickId(n)]) != 0u;
-}
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
   let b = foldThread(wg, nwg, li);
   if (b >= NBRICKS) { return; }
-  let h = nz[b];
-  var on = P.all != 0u || (h & P.hist) != 0u;
+  let h = atomicLoad(&nz[b]);
   let c = brickCoord(b);
-  if (!on && P.still != 0u) { on = foamsAt(c); }
-  for (var i = 0; i < 27 && !on && P.still == 0u; i++) {
-    on = foamsAt(c + vec3i(i % 3, (i / 3) % 3, i / 9) - 1);
+  let last = 1u << (1u - P.tb);   // the last step's changed bit
+  // over the bricks within one (wrapped past loop edges): drawn, holding
+  // foaming liquid, changed at the last step (the AER list, above)
+  var drawn = false;
+  var wet = false;
+  var changed = false;
+  for (var i = 0; i < 27; i++) {
+    var n = c + vec3i(i % 3, (i / 3) % 3, i / 9) - 1;
+    if (P.wrap != 0u) { n = (n + vec3i(BX, BY, BZ)) % vec3i(BX, BY, BZ); }
+    else if (any(n < vec3i(0)) || any(n >= vec3i(BX, BY, BZ))) { continue; }
+    let id = brickId(n);
+    if (P.still == 0u) {
+      drawn = drawn || drawnUnit(unitOfBrick(id));
+      wet = wet || atomicLoad(&marks[MARK_FOAMS + id]) != 0u;
+    }
+    changed = changed || (atomicLoad(&nz[id]) & last) != 0u;
   }
-  nz[b] = (h << 1u) & 2u;
+  let near = drawn && wet;
+  let on = P.all != 0u || near || (P.hist != 0u && (changed || (h & AER_NEAR_BIT) != 0u));
+  // this step's changed bit starts clear (the aeration kernel sets it), and the near bit is this step's
+  atomicAnd(&nz[b], ~((1u << P.tb) | AER_NEAR_BIT));
+  if (near) { atomicOr(&nz[b], AER_NEAR_BIT); }
   if (on) {
     let k = atomicAdd(&act[ACT_COUNT + AER_APPEND], 1u);
     atomicStore(&act[ACT_AERL + k], b);
@@ -730,7 +764,7 @@ fn main() {
   let n = atomicLoad(&act[ACT_COUNT + AER_APPEND]);
   atomicStore(&act[ACT_COUNT + CNT_AER], n);
   atomicStore(&act[ACT_COUNT + AER_APPEND], 0u);
-  nz[NBRICKS] = 0u;   // the visible foam's count, which this step's aeration adds up
+  atomicStore(&nz[NBRICKS], 0u);   // the visible foam's count, which this step's aeration adds up
   let y = max(1u, (n + MAX_WG - 1u) / MAX_WG);
   args[ARGS_AER] = (n + y - 1u) / y;
   args[ARGS_AER + 1u] = y;
