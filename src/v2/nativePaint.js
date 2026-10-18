@@ -120,6 +120,9 @@ if(r.flags==${NATIVE_PAINT_FLAG.SWAP}u) {
  noteEnergySource(p,energySub(energyOf(m),energyOf(before)));
 }
 if(all(m.core==before.core) && m.bank==before.bank) { return; }
+// V1's brush scrubs the decoration of every cell it gives a new element (sim.edit { scrub: true },
+// src/deco.js decoScrub: TPT's create_part resets dcolour); a Mix swap of equals keeps it in place
+if(cid(m.core)!=cid(before.core)) { setDeco(s,0u); }
 storeMaterial(s,before,m);
 for(var z=-1;z<=1;z++) { for(var y=-1;y<=1;y++) { for(var x=-1;x<=1;x++) { markBusy(p+4*vec3i(x,y,z)); } } }`)}
 `;

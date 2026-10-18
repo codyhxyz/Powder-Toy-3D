@@ -43,7 +43,9 @@ export function validateDynamicState(snapshot,g) {
     !(s.held instanceof Uint32Array) || s.held.length!==PARTICLE_CAP || !(s.shocks instanceof Uint32Array) || s.shocks.length!==g.nbricks ||
     !(s.rayRemaining instanceof Uint32Array) || s.rayRemaining.length!==RAY_REQUEST_CAP || !Array.isArray(s.requests) ||
     !Array.isArray(s.pendingEvents) || !Array.isArray(s.airArchive) || !Number.isInteger(s.sequence) || s.sequence<0 || s.sequence>0xfffffffe ||
-    !Number.isInteger(s.blastBatch) || s.blastBatch<1 || s.blastBatch>64) throw new Error('Invalid native dynamics snapshot');
+    !Number.isInteger(s.blastBatch) || s.blastBatch<1 || s.blastBatch>64 ||
+    // each pool slot's decoration (src/v2/physics.js particleDecoRange); saves from before it have none
+    (s.particleDeco!==undefined && (!(s.particleDeco instanceof Uint32Array) || s.particleDeco.length!==PARTICLE_CAP))) throw new Error('Invalid native dynamics snapshot');
   if(s.holdSession && (!Number.isInteger(s.holdSession.token) || s.holdSession.token<1 || s.holdSession.token>s.sequence ||
     !finiteVector(s.holdSession.position) || !finiteVector(s.holdSession.target) || !safeDynamicNumber(s.holdSession.radius) || s.holdSession.radius<0 ||
     !safeDynamicNumber(s.holdSession.strength) || s.holdSession.strength<0 || !Number.isInteger(s.holdSession.lastTick))) throw new Error('Invalid native physgun state');
@@ -142,8 +144,11 @@ export class NativeDynamics {
       externalBlast:ready, physicsReady:ready, drawReady:ready&&this.drawAdapter?.isReady===true, physgun:ready, bodyCoupling:ready };
   }
   supportsToolKind(kind) { return [...IMPULSE_KINDS,'physgun'].includes(kind) && this.capabilities[kind]===true; }
+  // deco: each pool slot's decoration words (src/v2/physics.js particleDecoRange); decoActive: the
+  // layer may hold paint (src/deco.js active; the view adds its display switch, decoShown)
   get renderState() { return { ...DYNAMICS_ABI, particles:this.particles, control:this.control, liveCountOffset:0,
-    ready:this.isReady&&!this.disposed, interpolationSeconds:1/60, origin:[...this.origin] }; }
+    ready:this.isReady&&!this.disposed, interpolationSeconds:1/60, origin:[...this.origin],
+    deco:this.owner.particleDecoRange ?? null, decoActive:this.owner.sim?.deco?.active===true }; }
   attachDrawAdapter(adapter) { this.drawAdapter=adapter; }
   _params(tick,extra={}) {
     // Only clocks are shared with V2Params; full/offset/edit markers belong to
@@ -411,18 +416,23 @@ export class NativeDynamics {
       airArchive:[...this.airArchive].map(([worldCell,words])=>({worldCell:worldCell.split(',').map(Number),words:new Uint32Array(words)})),
       pendingEvents:[...this.pendingOutside].map(([worldCell,bits])=>({worldCell:worldCell.split(',').map(Number),bits}))};
     const reads=[this.particles,this.air[this.airIndex],this.control,this.owner.events].map(b=>this.gpu.readback.buffer(b,0,b.size));
+    // the flying matter's decoration, beside its records (recorded with them, before any await)
+    const paint=this.owner.particleDecoRange, decoRead=paint ? this.gpu.readback.buffer(paint.buffer,paint.offset,PARTICLE_CAP*4) : null;
     const [particles,air,control,events]=(await Promise.all(reads)).map(b=>new Uint32Array(b));
+    const particleDeco=decoRead ? new Uint32Array(await decoRead) : undefined;
     for(let s=0;s<g.slots;s++) if(events[s]) metadata.pendingEvents.push({worldCell:slotCell(g,s).map((v,a)=>v+origin[a]),bits:events[s]});
     const externalBlastDone=control.slice(externalBlastBase(g),externalBlastBase(g)+EXTERNAL_BLAST_CAP);
     const owned=new Set(metadata.externalBlasts.map(r=>r.slot));
     for(let i=0;i<externalBlastDone.length;i++) if(!owned.has(i)) externalBlastDone[i]=0;
-    return {...metadata,externalBlastDone,particles,air,control:control.slice(0,32),held:control.slice(heldBase(g),heldBase(g)+PARTICLE_CAP),shocks:control.slice(shockBase(g),shockBase(g)+g.nbricks),rayRemaining:control.slice(rayRequestBase(g),rayRequestBase(g)+RAY_REQUEST_CAP),serial};
+    return {...metadata,...(particleDeco?{particleDeco}:{}),externalBlastDone,particles,air,control:control.slice(0,32),held:control.slice(heldBase(g),heldBase(g)+PARTICLE_CAP),shocks:control.slice(shockBase(g),shockBase(g)+g.nbricks),rayRemaining:control.slice(rayRequestBase(g),rayRequestBase(g)+RAY_REQUEST_CAP),serial};
   }
   restoreDynamicState(snapshot) {
     this._check(); const g=this.g,s=snapshot;
     const { requests, archive, outside, events, external } = validateDynamicState(s, g);
     // All validation precedes all writes. Bad saves never partially replace state.
     this.gpu.write(this.particles,0,s.particles);
+    const paint=this.owner.particleDecoRange;
+    if(paint) { if(s.particleDeco) this.gpu.write(paint.buffer,paint.offset,s.particleDeco); else this.gpu.frame.clear(paint.buffer,paint.offset,PARTICLE_CAP*4); }
     for(const b of this.air) this.gpu.write(b,0,s.air);
     // Pool sweeps skip an empty pool, so the live count must match the records.
     const control=s.control.slice(); control[0]=0;

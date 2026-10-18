@@ -432,6 +432,9 @@ export function particlesWGSL(g, nativeHead, stage) {
     let before = loadMaterial(s);
     let admitted=dDeposit(before,dMaterial(particles[t]),flight[t].effect.x);
     if (!admitted.accepted) { return; }
+    // landing in air, it brings its decoration back to the grid; merging into its own liquid, the
+    // receiver keeps its paint, as a column move's does (columns.js colMove)
+    if (cid(before.core)==0u) { setDeco(s,particleDecoOf(t)); }
     storeMaterial(s,before,admitted.material); dWake(cellOf(s));
     particles[t].id = 0u; atomicSub(&control[0],1u); noteDead(t);
   `);

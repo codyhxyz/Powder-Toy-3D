@@ -4,6 +4,7 @@ import {
   PARTICLE_BYTES, NativeParticleParams, NATIVE_PARTICLE_LAYOUT, NATIVE_PARTICLE_ARGS_LAYOUT,
   nativeParticleWGSL, nativeParticlePipeline, nativeParticleArgsWGSL,
 } from '../shaders/v2/particleRender.js';
+import { decoView } from '../deco.js';
 
 const vector = p => Array.isArray(p) || ArrayBuffer.isView(p) ? Array.from(p) : [p?.x ?? 0,p?.y ?? 0,p?.z ?? 0];
 
@@ -30,7 +31,7 @@ export function validateNativeParticleSource(state) {
     || state.particleIdOffset !== 12 || state.bankOffset !== 44 || state.liveCountOffset !== 0
     || state.coreOffsets?.join(',') !== '28,32,36,40'
     || !Number.isInteger(state.capacity) || state.capacity < 1 || state.capacity > 65536
-    || !state.particles || !state.control) throw new Error('unsupported native particle render ABI');
+    || !state.particles || !state.control || (state.deco && !(state.deco.buffer && state.deco.size >= state.capacity * 4))) throw new Error('unsupported native particle render ABI');
   if (state.particles.size < state.capacity*PARTICLE_BYTES || state.control.size < 4) throw new Error('native particle buffer too small');
   return state;
 }
@@ -77,7 +78,7 @@ export class NativeParticles {
     if (this.source?.drawAdapter === this) this.source.attachDrawAdapter?.(null);
     this.source = source;
     this.group = this.countGroup = null;
-    this.boundParticles = this.boundControl = null;
+    this.boundParticles = this.boundControl = this.boundDeco = null;
     this.preparedFrame = null;
     source?.attachDrawAdapter?.(this);
     return this;
@@ -90,11 +91,13 @@ export class NativeParticles {
     this.preparedFrame = null;
     if (!this.isReady || !this.view || this.source.isIdle === true || this.source.active === false) return false;
     const s = validateNativeParticleSource(this.state);
-    if (s.particles !== this.boundParticles || s.control !== this.boundControl) {
+    if (s.particles !== this.boundParticles || s.control !== this.boundControl || (s.deco?.buffer ?? null) !== this.boundDeco) {
       const b = (binding,buffer) => ({ binding, resource: { buffer } });
-      this.group = this.gpu.bindGroup(this.layout,[b(0,s.particles)],'native particle draw');
+      // (a source without decoration words binds its records there again, read-only and never read: P.deco 0)
+      const deco = s.deco ? { binding: 1, resource: { buffer: s.deco.buffer, offset: s.deco.offset, size: s.deco.size } } : b(1,s.particles);
+      this.group = this.gpu.bindGroup(this.layout,[b(0,s.particles),deco],'native particle draw');
       this.countGroup = this.gpu.bindGroup(this.argsLayout,[b(0,s.control),b(1,this.args)],'native particle count');
-      this.boundParticles = s.particles; this.boundControl = s.control;
+      this.boundParticles = s.particles; this.boundControl = s.control; this.boundDeco = s.deco?.buffer ?? null;
     }
     // A GPU-zero live count means zero vertex work, even when air/emitter work
     // keeps the dynamics source awake. No async CPU count can race new spawns.
@@ -106,10 +109,10 @@ export class NativeParticles {
     if (!this.isReady || !this.view || this.preparedFrame !== rp.frame || !this.preparedFrame
       || this.source.isIdle === true || this.source.active === false) return false;
     const s = this.state;
-    if (s.particles !== this.boundParticles || s.control !== this.boundControl) return false;
+    if (s.particles !== this.boundParticles || s.control !== this.boundControl || (s.deco?.buffer ?? null) !== this.boundDeco) return false;
     if (!(width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height))) throw new RangeError('invalid particle viewport');
     const options = { bind: [this.fu.group,this.group], indirect: { buffer: this.args, offset: 0 },
-      params: { ...this.view, capacity: s.capacity, viewport: [width,height] } };
+      params: { ...this.view, capacity: s.capacity, viewport: [width,height], deco: s.deco && s.decoActive && decoView.show ? 1 : 0 } };
     for (const pipe of this.pipes) pipe.draw(rp,options);
     return true; // Recorded, not a claim of a nonzero GPU count.
   }

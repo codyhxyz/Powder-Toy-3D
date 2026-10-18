@@ -186,7 +186,8 @@ export function v2BlockCompactLayout(g, limits = {}) {
 export const STATS = { TICK: 0, AWAKE: 1, BUSY: 2, QUIET: 3, LAST_BUSY: 4, COLS: 5, words: 8 };
 
 // pairAxis, pairStage, pairParity: which of a tick's pair stages a v2pairs dispatch is (columns.js pairOrder)
-export const V2Params = uniformStruct('V2Params', { tick: 'u32', busyIn: 'u32', busyOut: 'u32', full: 'u32', offset: 'vec3i', preserveLegacyMarks: 'u32', pairAxis: 'u32', pairStage: 'u32', pairParity: 'u32', ...MODE_FIELDS });
+// deco: the moves carry the decoration plane (src/deco.js; V1's MoveParams deco: only while the layer may hold paint)
+export const V2Params = uniformStruct('V2Params', { tick: 'u32', busyIn: 'u32', busyOut: 'u32', full: 'u32', offset: 'vec3i', preserveLegacyMarks: 'u32', pairAxis: 'u32', pairStage: 'u32', pairParity: 'u32', ...MODE_FIELDS, deco: 'u32' });
 
 const buf = (binding, type) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type } });
 // group 2 of every v2 kernel: the cells, the activity words, the element rows (and for args, the args)
@@ -663,6 +664,8 @@ ${MAIN} {
       noteEvents(slotOf(p), events[slotOf(p)]); noteEvents(slotOf(q), request);
       let source = loadMaterial(slotOf(p));
       let destination = loadMaterial(slotOf(q));
+      // the decoration rides with the content, as the bank does; air holds none (shaders/move.js)
+      if (P.deco != 0u) { let d = decoOf(slotOf(p)); setDeco(slotOf(p), select(decoOf(slotOf(q)), 0u, cid(o) == 0u)); setDeco(slotOf(q), d); }
       storeMaterial(slotOf(q), destination, Material(c, source.bank));
       storeMaterial(slotOf(p), source, Material(o, destination.bank));
       markBusy(q);
@@ -835,6 +838,8 @@ ${MAIN} {
   var orig: array<vec4u, 8>;
   var bs: array<i32, 8>; var oldBanks: array<i32, 8>;
   var positions: array<vec3i, 8>; var requests: array<u32, 8>; var pending: array<u32, 8>;
+  // which of the block's cells each one's content came from (the decoration rides with it: shaders/move.js)
+  var fromCell = array<u32, 8>(0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u);
   for (var i = 0u; i < blockCount; i++) {
     let p = mEdge(c0 + mBlockOffset(off8(i),down)); positions[i] = p;
     cs[i] = cellAt(p); orig[i] = cs[i];
@@ -887,6 +892,7 @@ ${MAIN} {
     cs[ti] = zeroQ(moved);
     let bank = bs[pick]; bs[pick] = bs[ti]; bs[ti] = bank;
     let request = pending[pick]; pending[pick] = pending[ti]; pending[ti] = request;
+    let came = fromCell[pick]; fromCell[pick] = fromCell[ti]; fromCell[ti] = came;
     markBusy(positions[pick]);
   }
   // R3 sink and float, R4 buoyancy: a denser movable over a lighter fluid swaps down
@@ -910,6 +916,7 @@ ${MAIN} {
       cs[4u + c] = resetMotionAge(zeroQ(lo));
       let bank = bs[c]; bs[c] = bs[4u + c]; bs[4u + c] = bank;
       let request = pending[c]; pending[c] = pending[4u + c]; pending[4u + c] = request;
+      let came = fromCell[c]; fromCell[c] = fromCell[4u + c]; fromCell[4u + c] = came;
       markBusy(positions[c]);
     }
   }
@@ -935,6 +942,7 @@ ${MAIN} {
       cs[i1] = zeroQ(a0);
       let bank = bs[i0]; bs[i0] = bs[i1]; bs[i1] = bank;
       let request = pending[i0]; pending[i0] = pending[i1]; pending[i1] = request;
+      let came = fromCell[i0]; fromCell[i0] = fromCell[i1]; fromCell[i1] = came;
       markBusy(positions[i1]);
     }
   }
@@ -960,6 +968,18 @@ ${MAIN} {
       }
     }
   }` : ''}
+  // V1's move over a running block (shaders/move.js): every cell takes its content's source's paint,
+  // all 8 read before any is written, and air (what a swap or a reaction left) holds none, nor does
+  // matter a reaction made in air (V1's move left that cell 0 the step before its react pass ran)
+  if (P.deco != 0u) {
+    var dc: array<u32, 8>;
+    for (var i = 0u; i < blockCount; i++) { if (inGrid(positions[i])) { dc[i] = decoOf(slotOf(positions[i])); } }
+    for (var i = 0u; i < blockCount; i++) {
+      if (!inGrid(positions[i])) { continue; }
+      let d = select(dc[fromCell[i]], 0u, cid(cs[i]) == 0u || cid(orig[fromCell[i]]) == 0u || !inGrid(positions[fromCell[i]]));
+      if (d != dc[i]) { setDeco(slotOf(positions[i]), d); }
+    }
+  }
   for (var i = 0u; i < blockCount; i++) {
     let p = positions[i];
     if (inGrid(p)) {

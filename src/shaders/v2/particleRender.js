@@ -7,15 +7,18 @@ import { STAGE } from '../common.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { RAY_LOOK } from '../rays.js';
 import { RAYS } from '../../rays.js';
+import { DECO_SIGMA } from '../gfx/deco.js';
 
 export const PARTICLE_BYTES = 48;
 export const PARTICLE_WORDS = 12;
+// deco: draw each particle's decoration (src/deco.js decoShown: painted, display on)
 export const NativeParticleParams = uniformStruct('NativeParticleParams', {
   inverseModel: 'mat4x4f', origin: 'vec3f', scale: 'f32', eye: 'vec3f', sample: 'u32',
-  viewport: 'vec2f', capacity: 'u32',
+  viewport: 'vec2f', capacity: 'u32', deco: 'u32',
 });
 const ro = (binding, visibility) => ({ binding, visibility, buffer: { type: 'read-only-storage' } });
-export const NATIVE_PARTICLE_LAYOUT = [ro(0, STAGE.VERTEX)];
+// 1: each pool slot's decoration, RGBA8 (src/v2/physics.js particleDecoRange)
+export const NATIVE_PARTICLE_LAYOUT = [ro(0, STAGE.VERTEX), ro(1, STAGE.VERTEX)];
 export const NATIVE_PARTICLE_ARGS_LAYOUT = [ro(0, STAGE.COMPUTE),
   { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
 export const nativeParticleArgsWGSL = () => `
@@ -50,6 +53,10 @@ ${NativeParticleParams.wgsl}
 // Three vec4u preserve the exact 48B mixed float/integer ABI (no padding).
 struct Particle { positionId: vec4u, velocityCore: vec4u, payloadBank: vec4u }
 @group(1) @binding(0) var<storage, read> particles: array<Particle>;
+@group(1) @binding(1) var<storage, read> particleDeco: array<u32>;
+// TPT's decoration over the element's colour by its alpha (src/graphics/Renderer.cpp; the volume's
+// shaders/gfx/deco.js decoTint and absorbDeco, for a sphere of one albedo: no texture detail to keep)
+fn decoLinear(c: vec3f) -> vec3f { return select(c / 12.92, pow((c + 0.055) / 1.055, vec3f(2.4)), c >= vec3f(0.04045)); }
 ${tables}
 ${incandescenceGLSL().replace('TB.incand[i]', 'PARTICLE_INCAND[i]')}
 fn temperature(id: u32, word: u32) -> f32 {
@@ -68,12 +75,14 @@ struct Out {
   @location(2) @interpolate(flat) id: u32,
   @location(3) @interpolate(flat) stableId: u32,
   @location(4) @interpolate(flat) glow: vec3f,
+  @location(5) @interpolate(flat) paint: vec4f,
 }
 @vertex fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> Out {
   var o: Out; o.position = vec4f(2.0,2.0,2.0,1.0);
   let p = particles[ii]; let id = p.velocityCore.w & 255u;
   if (p.positionId.w == 0u || ${rays ? '(id != 254u && id != 255u)' : `(id == 0u || id >= ${ELEMENTS.length}u)`}) { return o; }
   o.id = id; o.stableId = p.positionId.w;
+  if (P.deco != 0u && ii < arrayLength(&particleDeco)) { o.paint = unpack4x8unorm(particleDeco[ii]); }
   o.center = bitcast<vec3f>(p.positionId.xyz) - P.origin;
   ${rays ? `
   // Existing TPT ray-layer colours/diameter, not matter volume.
@@ -150,16 +159,20 @@ struct Surface { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }
   let light = FU.sunCol * FU.sunExt * max(dot(normal,sun),0.0);
   let ambient = mix(FU.ground,FU.skyUp,normal.y*0.5+0.5) + FU.caveAmbient;
   var diffuse = alb.rgb * (1.0-metal);
+  let paint = o.paint;
+  // a painted metal is a painted (dielectric) coat, as the volume's decoSurf
+  if (paint.a > 0.0) { diffuse = mix(diffuse, decoLinear(paint.rgb), paint.a); specular *= 1.0 - paint.a * metal; }
   if (LOOK_CLASS[id].y != ${R.OPAQUE}u) {
     let chord = 2.0*root;
-    let transmission = exp(-optics.rgb * chord);
+    // painted liquid or glass reads as paint, not dye (shaders/gfx/deco.js DECO_SIGMA)
+    let transmission = exp(-mix(optics.rgb, vec3f(${f(DECO_SIGMA)}), paint.a) * chord);
     let alpha = clamp(1.0-dot(transmission*(vec3f(1.0)-fresnel),vec3f(0.2126,0.7152,0.0722)),0.0,1.0);
     // ID + pixel + explicit TAA sample: independent stacked layers; default
     // sample=0 stays stable when TAA is disabled and never wakes an idle scene.
     let pixel = vec2u(o.position.xy);
     let hash = coverageHash(o.stableId ^ coverageHash(pixel.x) ^ coverageHash(pixel.y+0x9e3779b9u) ^ coverageHash(P.sample));
     if (f32(hash >> 8u) / 16777216.0 >= alpha) { discard; }
-    diffuse = LOOK_SCATTER[id] * (vec3f(1.0)-transmission) / max(alpha,0.00001);
+    diffuse = mix(LOOK_SCATTER[id], decoLinear(paint.rgb), paint.a) * (vec3f(1.0)-transmission) / max(alpha,0.00001);
     specular /= max(alpha,0.00001);
   }
   // Binary coverage is premultiplied alpha 0 or 1, NOT additive matter.

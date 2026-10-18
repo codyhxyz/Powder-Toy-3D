@@ -227,6 +227,8 @@ fn colSwap(x: i32, a: i32, b: i32, z: i32) {
   let ma = loadMaterial(sa); let mb = loadMaterial(sb);
   let request = events[sa]; events[sa] = events[sb]; events[sb] = request;
   noteEvents(sa, events[sa]); noteEvents(sb, request);
+  // the decoration rides with the run, as the bank does; the air it leaves holds none (shaders/move.js)
+  if (P.deco != 0u) { let paint = decoOf(sa); setDeco(sa, select(decoOf(sb), 0u, cid(mb.core) == 0u)); setDeco(sb, select(paint, 0u, cid(ma.core) == 0u)); }
   storeMaterial(sb, mb, Material(zeroQ(ma.core), ma.bank));
   storeMaterial(sa, ma, Material(zeroQ(mb.core), mb.bank));
 }
@@ -319,6 +321,12 @@ fn colMove(xa: i32, ya: i32, za: i32, xb: i32, yb: i32, zb: i32, n: u32, agitate
   let sentEnergy = energySub(energyOf(src), heat);
   let gotEnergy = energyAdd(energyOf(dst), heat);
   if (!energyFits(Material(sent, src.bank), sentEnergy) || !energyFits(Material(got, dst.bank), gotEnergy)) { colBusy(xa, ya, za); return false; }
+  // the decoration goes with the fill, as its ctype does (receivedCore): a receiver that was air takes the
+  // source's paint, one that holds liquid keeps its own, and a source drained to air holds none (shaders/move.js)
+  if (P.deco != 0u) {
+    if (cid(dst.core) == 0u) { setDeco(ts, decoOf(fs)); }
+    if (have == n) { setDeco(fs, 0u); }
+  }
   storeMaterial(fs, src, withEnergy(Material(sent, src.bank), sentEnergy));
   storeMaterial(ts, dst, withEnergy(Material(got, dst.bank), gotEnergy));
   colBusy(xa, ya, za); colBusy(xb, yb, zb);
@@ -502,6 +510,7 @@ fn colRemove(x: i32, y: i32, z: i32, n: u32) -> bool {
   if (have > n && !conducts) { sent = withPayload(sent, payloadOf(src.core) - shareUnsigned(payloadOf(src.core), 0u, n, have)); }
   let sentEnergy = energySub(energyOf(src), heat);
   if (!energyFits(Material(sent, src.bank), sentEnergy)) { colBusy(x, y, z); return false; }
+  if (P.deco != 0u && have == n) { setDeco(s, 0u); }
   storeMaterial(s, src, withEnergy(Material(sent, src.bank), sentEnergy));
   colSink(x, y, z, n, heat);
   colBusy(x, y, z);

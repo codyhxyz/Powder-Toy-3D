@@ -56,13 +56,16 @@ fn main(@builtin(local_invocation_index) i: u32) {
       var put = items[2u * rank]; let extra = items[2u * rank + 1u];
       if (extra.y == 0u) { put = fromLegacy(P.items[rank]); }
       cores[s] = put; banks[s] = bitcast<i32>(extra.x);
+      // V1's cargo carries no decoration (shaders/transfer.js): a placed cell comes unpainted
+      banks[SLOTS + s] = 0;
     } else {
       var got = eid(a);
       if (P.breaks != 0u && KIND(got) == K_SOLID) { got = BREAKINTO(got); }
       carried = vec4u((c.x & 0xffffff00u) | u32(got), c.yzw); carriedBank = bank;
       out = vec4f(f32(got), a.yzw);
       cores[s] = vec4u(u32(clamp(round((airT() + 273.25) * 4.0), 0.0, 65535.0)) << 8u, 0u, 0u, 0u);
-      banks[s] = 0;
+      // the air a taken cell leaves holds no decoration (src/v2/physics.js decoPlane, shaders/move.js)
+      banks[s] = 0; banks[SLOTS + s] = 0;
     }
   }
   if (i < P.count) {

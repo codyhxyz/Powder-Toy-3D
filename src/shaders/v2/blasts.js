@@ -318,6 +318,8 @@ fn dSpawn(slot: u32, rank: u32, m: Material, v: vec3f, rule: u32) -> bool {
   if (rank >= atomicLoad(&control[4])) { return false; }
   let dest = atomicLoad(&control[D_FREE+rank]); let p = cellOf(slot);
   particles[dest] = dParticle(vec3f(p+P.origin)+0.5,v,dId(p,rule),m); noteLive(dest);
+  // matter launched from a cell keeps that cell's decoration in flight (rays carry none)
+  setParticleDeco(dest,select(decoOf(slot),0u,cid(m.core)>=D_PHOTON));
   atomicStore(&control[D_HELD+dest],select(0u,P.sequence,P.mode==9u));
   atomicAdd(&control[0],1u); dWake(p); return true;
 }
@@ -788,7 +790,8 @@ var<workgroup> childCounts: array<u32,64>;
         }
         // Bounded forcing supplies absolute velocity; ordinary impulses add to falling motion.
         let incoming=select(vec3f(0,-fallVelocity(before.core),0),vec3f(0),P.mode==15u || (plan.flags&32u)!=0u);
-        if (dSpawn(t,rank,packet,plan.velocity+incoming,P.sequence ^ 0x53504157u)) { after=remainder; }
+        // (a cell launched whole leaves air, which holds no decoration: shaders/move.js)
+        if (dSpawn(t,rank,packet,plan.velocity+incoming,P.sequence ^ 0x53504157u)) { after=remainder; if (cid(after.core)==0u) { setDeco(t,0u); } }
         else { atomicAdd(&control[7],1u); if(P.mode==15u) { dWake(cellOf(t)); return; } } // authoritative grid fallback, never erase a failed launch
       }
     }
@@ -802,7 +805,7 @@ var<workgroup> childCounts: array<u32,64>;
       if (rank>=atomicLoad(&control[4])) { break; }
       let dest=atomicLoad(&control[D_FREE+rank]); let id=max(1u,dHash(parent.id ^ (P.tick*2654435761u) ^ ((child+1u)*0x9e3779b9u)));
       var born=parent; born.id=id; born.tail.z=0u; born.tail.x=${RAYS.NEUT_LIFE}u; born.velocity=dDir(id)*${f(RAYS.NEUT_V*60*CELL_M)};
-      particles[dest]=born; noteLive(dest); atomicStore(&control[D_HELD+dest],0u); atomicAdd(&control[0],1u); n--;
+      particles[dest]=born; noteLive(dest); setParticleDeco(dest,0u); atomicStore(&control[D_HELD+dest],0u); atomicAdd(&control[0],1u); n--;
     }
     particles[t].tail.z=n; atomicSub(&control[18],parent.tail.z-n);
   `);
@@ -821,7 +824,7 @@ var<workgroup> childCounts: array<u32,64>;
         m=Material(vec4u(D_PHOTON|(${RAYS.PHOTON_LIFE}u<<8u)|(medium<<24u),bitcast<u32>(1.0),bitcast<u32>(1.0),bitcast<u32>(1.0)),0i);
       }
       var velocity=P.vector; if (length(velocity)<0.000001) { velocity=dDir(seed)*${f(RAYS.NEUT_V*60*CELL_M)}; }
-      particles[slot]=dParticle(position,velocity,seed,m); noteLive(slot); atomicStore(&control[D_HELD+slot],0u); remaining--; atomicAdd(&control[0],1u);
+      particles[slot]=dParticle(position,velocity,seed,m); noteLive(slot); setParticleDeco(slot,0u); atomicStore(&control[D_HELD+slot],0u); remaining--; atomicAdd(&control[0],1u);
       let local=vec3i(floor(position))-P.origin; if (inGrid(local)) { dWake(local); }
       if (remaining==0u) { break; }
     }
