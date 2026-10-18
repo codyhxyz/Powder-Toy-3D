@@ -2199,7 +2199,15 @@ const realisticBody = (d) => /* wgsl */ `
   if (ev == EV_GRAIN) { hitK = 3; hp = ro + rd * tEv; }
   acc += vec4f(hitPos, gAltW + select(0.0, 1.0, anyHit || gAltGeom) + gAltCol.x + gAltTrans.y + gAltRd.z + gAltP.x + f32(gAltA.x + gAltK));` : ''}
   var sf: Surf;
-  if (hitK == 1) { sf = crispSurf(ci, id, a, hp, nh); }${GRAINS_ANY(d) ? `
+  var cid = id;
+  var ca = a;
+  var cc = ci;${GRAINS_ANY(d) ? `
+  let clod = hitK == 3 && grainCrisp(gHitK, gHitA, hp, &cc, &cid, &ca, &nh);   // (as the tracer: a clod is a crisp grain)
+  if (clod) { hitK = 1; }` : ''}
+  if (hitK == 1) {
+    sf = crispSurf(cc, cid, ca, hp, nh);${GRAINS_ANY(d) ? `
+    if (clod) { clodFinish(&sf); }` : ''}
+  }${GRAINS_ANY(d) ? `
   else if (hitK == 3) { sf = grainSurf(gHitA, gHitK, hp, rd); }` : ''}
   else { sf = gatherSurf(hp, surfNormal(hp, CH_GRANULAR, -rd), CH_GRANULAR); }
   acc += vec4f(shadeSurf(sf, rd), 1.0);${GRAINS_ANY(d) ? `
