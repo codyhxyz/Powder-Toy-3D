@@ -70,11 +70,16 @@ const savesWire = {
         decodeV2State(data, h.dims);
       },
       load: async (data, h) => {
-        const state = decodeV2State(data, h.dims);
+        const state = decodeV2State(data, h.dims), session = app.physics.mode;
         await app.setPhysics('v2');
         if (!app.physics.v2) throw new Error('v2 state: no compact engine for this grid');
         app.physics.v2.restoreState(data, { legacyCurrent: state.mode === 'v1' });
-        if (state.mode === 'v1') await app.setPhysics('v1');
+        // Saved while V1 ran: its legacy cells are the current ones. A V1
+        // session goes back to V1; a V2 session runs V2 on them, never V1.
+        if (state.mode === 'v1') {
+          if (session === 'v1') await app.setPhysics('v1');
+          else app.physics.v2.resync();
+        }
       },
       // An old save is an intentional legacy replacement, never a reason to revive retained cells.
       absent: () => app.physics.v2?.resync(),

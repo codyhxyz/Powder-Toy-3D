@@ -94,15 +94,21 @@ assert(events.indexOf('engine v2') < events.indexOf('restore compact'));
 assert(events.indexOf('legacy load') < events.indexOf('restore compact'));
 assert.equal(mode, 'v2');
 
-// Save while temporarily in v1: the retained compact owner is included and v1 returns on load.
+// Save while temporarily in v1: the retained compact owner is included. A V1
+// session returns to v1 on load; a V2 session keeps V2 and imports the saved
+// legacy cells, which were the current ones (no quiet switch to V1).
 mode = 'v1';
 const switched = await saves.capture('suspended');
-mode = 'v2'; events.length = 0;
+events.length = 0;
 await saves.apply(switched);
 assert.equal(mode, 'v1');
 assert.deepEqual(restored.cells, state.cells);
 assert.deepEqual(restored.aux, state.aux);
 assert.deepEqual(events.filter(e => e.startsWith('engine') || e === 'restore compact'), ['engine v2', 'restore compact', 'engine v1']);
+mode = 'v2'; events.length = 0;
+await saves.apply(switched);
+assert.equal(mode, 'v2', 'a V2 session never switches to V1 on load');
+assert.deepEqual(events.filter(e => e.startsWith('engine') || e === 'restore compact' || e === 'legacy resync'), ['engine v2', 'restore compact', 'legacy resync']);
 
 // Older files keep their intentional legacy replacement semantics.
 const old = await encodeSave(decoded.header, [...decoded.sections].filter(([key]) => key !== 'physicsV2').map(([key, data]) => ({ key, data })));
