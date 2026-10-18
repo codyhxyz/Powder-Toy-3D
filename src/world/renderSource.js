@@ -29,6 +29,16 @@ export function snapshotSource(sim, origin = sim.origin) {
     boundedWake: !aer || isProducerBoundedAeration(aer),
     deco: sim.decoPlane ? Object.freeze({ ...sim.decoPlane }) : null });
 }
+// A raw read of the live cells. Physics V2 owns its cells and keeps A/B as a
+// lazy projection (src/v2/physics.js exportLegacy): bring it up to date first.
+// The export converts only the bricks whose projection changed since the last
+// one, or all of them after a whole-grid write or a switch of projection.
+// The drawn projection by default; native: the edit projection, for a read
+// that is written back into physics. Without V2 (sim.compact unset) a no-op.
+export function liveSource(sim, origin = sim.origin, { native = false } = {}) {
+  sim.legacyState?.(native);
+  return snapshotSource(sim, origin);
+}
 
 // Exact native-copy plans. Both ends use the original brick/tile layout.
 // Coalesce within a 4³ brick; partial edges are cell exact, never widened.
@@ -324,7 +334,7 @@ export class WorldRenderSource {
   }
   recordLiveCopy(frame, sim = this.sim, bounds = sourceBounds(sim)) {
     if (this.ownedContext) throw new Error('A Source cut cannot read newer live state');
-    const revision = this.nextRevision(), src = snapshotSource(sim);
+    const revision = this.nextRevision(), src = liveSource(sim);
     this._record(frame, src, bounds, SOURCE_RANK.live, revision);
     this.liveVersion = sim.version; this.liveContentRevision = this.contentRevision; this.liveSnapshot = src;
     return revision;
@@ -338,7 +348,7 @@ export class WorldRenderSource {
   }
   recordLeavingCopy(frame, sim, bounds, oldOrigin = sim.origin) {
     if (this.ownedContext) throw new Error('A Source cut cannot transfer current authority');
-    const revision = this.nextRevision(), src = snapshotSource(sim, oldOrigin);
+    const revision = this.nextRevision(), src = liveSource(sim, oldOrigin);
     // Leaving live cells transfer ownership to captured; they are not stale
     // static data and must be allowed to replace the previous live revision.
     for (const c of this.chunks.values()) planSourceCopies(src, c, bounds,

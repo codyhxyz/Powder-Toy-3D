@@ -381,7 +381,10 @@ export class WorldWindow {
     this.renderSource.recordStore(incoming);
     const restored = this.restore(enterLo, bricks);
     sim.deco?.enter(enterLo, bricks, (x, y, z) => this.store.key(o.x / BRICK + enterLo[0] / BRICK + x, y, o.z / BRICK + enterLo[2] / BRICK + z));
-    this.renderSource.restoreCaptured(this.gpu.frame, sim, incoming);
+    // A native world restores every retained brick exactly (restoreNative,
+    // below). Its captured cells are only V2's lossy projection, and their
+    // fresh-flags write would make V2 reimport the whole window from it.
+    if (!sim.compactOwner) this.renderSource.restoreCaptured(this.gpu.frame, sim, incoming);
     // 4.
     this.plantCost = { placeMs: 0, bakeMs: 0 };
     const trees = this.scene.trees ? this.plant(enterLo, enterHi) : 0;
@@ -539,7 +542,9 @@ export class WorldWindow {
         trees += result.trees;
       }
     for (const k of fresh) this.planted[k] = 1;
-    sim.noteWrite({ residency: true });
+    // The apply marks the bricks it wrote, so V2 imports only those. A whole-grid
+    // write would make it reimport its lossy projection over every cell.
+    sim.noteWrite({ residency: true, replaceState: !sim.compactOwner });
     if (this.plantCost) this.plantCost.bakeMs += performance.now() - t0;
     return trees;
   }

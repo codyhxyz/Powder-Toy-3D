@@ -339,6 +339,17 @@ check('actual window control ordering captures before origin mutation; no incomp
   WorldWindow.prototype.shift.call(win, 16, 0);
   assert.deepEqual(order, ['capture', 'diff', 'readBack', 'shift', 'fill', 'recordStore', 'restoreStore', 'restoreCaptured', 'plant', 'publishLive']);
 });
+check('a native window shift restores retained cells from the native store, never the captured projection', () => {
+  const f = fixture(), order = [], win = f.win, sim = f.sim;
+  sim.origin.clone = () => ({ ...sim.origin }); sim.shift = (dx, dz) => { order.push('shift'); sim.origin.x += dx; sim.origin.z += dz; sim.cur = 1 - sim.cur; };
+  sim.compactOwner = {}; sim.nativeIntegration = { captureSlab() { order.push('captureNative'); return null; } };
+  win.renderSource = { recordLeavingCopy() { order.push('capture'); return {}; }, recordStore() { order.push('recordStore'); },
+    restoreCaptured() { order.push('restoreCaptured'); }, recordLiveCopy() { order.push('publishLive'); } };
+  win.gen = { diff() { order.push('diff'); }, fill() { order.push('fill'); } }; win.leave = {}; win.readBack = () => order.push('readBack'); win.restore = () => { order.push('restoreStore'); return 0; };
+  win.plant = () => { order.push('plant'); return 0; }; win.scene.trees = {}; win.restoreNative = () => { order.push('restoreNative'); return 0; };
+  WorldWindow.prototype._shiftCommitted.call(win, 16, 0);
+  assert.deepEqual(order, ['capture', 'captureNative', 'diff', 'readBack', 'shift', 'fill', 'recordStore', 'restoreStore', 'plant', 'restoreNative', 'publishLive']);
+});
 check('raw producer rejects an epoch/revision overtaken before recording; separate default-limit layouts', () => {
   const f = fixture(); f.win.gen = { ready: Promise.resolve(), res: { layout: [] } }; f.win.scene.glsl = () => '';
   const p = new RawWorldSourceProducer(f.win, f.source), token = f.source.token(); f.source.nextRevision();

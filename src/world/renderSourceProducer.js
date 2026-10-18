@@ -5,7 +5,7 @@ import { rawGenerateWGSL, rawStampWGSL, rawApplyWGSL, RAW_LAYOUT, RAW_READ_LAYOU
 import { TREE } from './generator.js';
 import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
-import { planSourceCopies, recordSourceCopies, intersectBounds, snapshotSource, sourceBounds, SOURCE_RANK } from './renderSource.js';
+import { planSourceCopies, recordSourceCopies, intersectBounds, snapshotSource, liveSource, sourceBounds, SOURCE_RANK } from './renderSource.js';
 
 // Complete vertical columns avoid recursive footing support at a scratch y
 // edge. A 16-cell x/z halo is NOT a field support assertion: stamp footing
@@ -115,7 +115,8 @@ export class RawWorldSourceProducer {
       for (const r of runs) this.source.recordUpload(frame, raw.touched, r.dst * 4, new Uint32Array(r.cells).fill(0x80000000));
     }
     if (!this.source.ownedContext && (win.loaded || physicsBounds)) {
-      const live = snapshotSource(this.sim), liveBox = intersectBounds(box, sourceBounds(this.sim));
+      // Trees stamped for physics are applied back like an edit: its projection.
+      const live = liveSource(this.sim, undefined, { native: !!physicsBounds }), liveBox = intersectBounds(box, sourceBounds(this.sim));
       if (liveBox) recordSourceCopies(frame, live, raw, planSourceCopies(live, raw, liveBox), { aux: false });
     }
     for (const t of trees) {
