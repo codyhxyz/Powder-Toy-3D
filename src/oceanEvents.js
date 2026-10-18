@@ -1,4 +1,5 @@
 import { createNativeWeatherKernel } from './v2/nativeWeather.js';
+import { stepClock } from './v2/host.js';
 import { fold } from './gpu/kernels.js';
 import { OCEAN_EVENT as C, OceanColumnsParams, OCEAN_COLUMNS_LAYOUT, oceanColumnsWGSL, oceanEventsEdit } from './shaders/oceanEvents.js';
 export { OCEAN_EVENT } from './shaders/oceanEvents.js';
@@ -8,6 +9,10 @@ const smooth = x => { const t = clamp(x); return t * t * (3 - 2 * t); };
 export const surgeEnvelope = age => Number.isFinite(age) && age >= 0 && age < C.duration
   ? smooth(age / C.rise) * (1 - smooth((age - C.hold) / (C.duration - C.hold))) : 0;
 const originOf = sim => sim.origin.toArray();
+// The event clock, in the 240 Hz steps C is authored in: game time under either engine and across a
+// runtime switch (v2/host.js stepClock), where a rate applied to the whole of sim.frame jumped (×4 or
+// ÷4: a wave ended at once, or the rewind check cancelled it).
+const stepsNow = sim => stepClock(sim);
 const valid = c => !!c?.sim && !c.sim.disposed && c.oceanEligible !== false && c.world?.loaded !== false
   && Number.isFinite(c.seaLevel) && c.seaLevel - c.sim.origin.y >= 2
   && c.seaLevel - c.sim.origin.y < c.sim.g.ny && typeof c.groundHeight === 'function';
@@ -89,21 +94,22 @@ export function createOceanEvents() {
     if (!equal(map, key)) { reset(); map = key; }
   }
   function ensure(sim) {
-    // (rebuilt across a physics switch: V2's writer and V1's are different kernels)
-    if (resources?.sim === sim && resources.g === sim.g && resources.native === !!sim.compactOwner) return resources;
+    // (rebuilt across a physics switch: V2's writer and V1's are different kernels;
+    // the engine stepping the grid picks, sim.compact, not a suspended owner: elementWeather.js)
+    if (resources?.sim === sim && resources.g === sim.g && resources.native === !!sim.compact) return resources;
     release();
     const gpu = sim.gpu, g = sim.g;
     const layout = gpu.layout('OCEAN_COLUMNS', OCEAN_COLUMNS_LAYOUT);
     const probe = gpu.kernel({ name: 'oceanColumns', code: oceanColumnsWGSL(g),
       layouts: [sim.L.TABLES, sim.L.STATE_RO, layout], params: OceanColumnsParams });
-    const force = sim.compactOwner ? createNativeWeatherKernel(sim, 'oceanForce', oceanEventsEdit) : sim.editKernel('oceanForce', oceanEventsEdit);
+    const force = sim.compact ? createNativeWeatherKernel(sim, 'oceanForce', oceanEventsEdit) : sim.editKernel('oceanForce', oceanEventsEdit);
     // GPUBufferUsage bits, so importing and CPU-mocking need no browser globals.
     const columns = gpu.createBuffer({ label: 'ocean columns', size: g.nx * g.nz * 8, usage: 0x80 | 0x04 });
     const edges = gpu.createBuffer({ label: 'ocean open edges', size: Math.max(g.nx, g.nz) * 16, usage: 0x80 | 0x08 });
     const group = gpu.bindGroup(layout, [
       { binding: 0, resource: { buffer: edges } }, { binding: 1, resource: { buffer: columns } },
     ], 'ocean columns');
-    const r = { sim, g, probe, force, columns, edges, group, native: !!sim.compactOwner, edgeKey: null, ready: false };
+    const r = { sim, g, probe, force, columns, edges, group, native: !!sim.compact, edgeKey: null, ready: false };
     // Readiness callbacks never dispatch a material writer.
     r.whenReady = Promise.all([probe.ready, force.ready]).then(() => { r.ready = true; });
     r.whenReady.catch(() => {}); // GPU service reports compilation failure; trigger still rejects it.
@@ -135,11 +141,11 @@ export function createOceanEvents() {
       const candidates = oceanSourceCandidates(context).slice(0, 16);
       if (!candidates.length) return false;
       const sim = context.sim, world = context.world, identity = identityOf(context), o = originOf(sim);
-      const token = ++generation, frame = sim.frame * C.stepsPerSecond / (context.stepHz ?? C.stepsPerSecond);
+      const token = ++generation, frame = stepsNow(sim);
       request = token;
       const current = () => !disposed && request === token && generation === token && valid(context)
         && !context.isGuest && !world?.pending && equal(identity, identityOf(context))
-        && equal(map, identity) && equal(o, originOf(sim)) && sim.frame * C.stepsPerSecond / (context.stepHz ?? C.stepsPerSecond) >= frame;
+        && equal(map, identity) && equal(o, originOf(sim)) && stepsNow(sim) >= frame;
       try {
         const r = ensure(sim);
         await r.whenReady;
@@ -152,7 +158,7 @@ export function createOceanEvents() {
           const x = Math.floor(candidate.source[0] - o[0]), z = Math.floor(candidate.source[1] - o[2]);
           const i = (x + sim.g.nx * z) * 2;
           if (!(data[i] >= 0.5) || !(Math.abs(data[i + 1] - context.seaLevel) <= 3)) continue;
-          const now = sim.frame * C.stepsPerSecond / (context.stepHz ?? C.stepsPerSecond);
+          const now = stepsNow(sim);
           event = { ...candidate, started: now, age: 0 };
           lastFrame = now; nextSource = now + 1;
           return true;
@@ -165,7 +171,7 @@ export function createOceanEvents() {
       sameMap(context);
       if (!valid(context)) { reset(); return false; }
       if (context.isGuest || context.paused || context.world?.pending) return false;
-      const { sim, seaLevel: sea } = context, frame = sim.frame * C.stepsPerSecond / (context.stepHz ?? C.stepsPerSecond);
+      const { sim, seaLevel: sea } = context, frame = stepsNow(sim);
       if (!Number.isSafeInteger(frame) || frame < 0) return false;
       if (lastFrame !== null && frame <= lastFrame) {
         if (frame < lastFrame) { reset(); map = identityOf(context); lastFrame = frame; }

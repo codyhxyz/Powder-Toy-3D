@@ -211,11 +211,30 @@ assert.equal(marine((x, y, z) => y === 19 ? 'air' : y === 22 ? 'water' : sea(x, 
 // including the source's non-integral 7.5-tick cadence.
 const native = fixture(); native.ctx.stepHz = 60;
 assert(await native.events.trigger(native.ctx));
-for (let i = 1; i <= 60; i++) { native.sim.frame = i; native.events.step({ ocean: 1 }, native.ctx); }
+// (a native host tick advances sim.frame and nativeTicks together: v2/host.js nativeHostTick)
+for (let i = 1; i <= 60; i++) { native.sim.frame = native.sim.nativeTicks = i; native.events.step({ ocean: 1 }, native.ctx); }
 assert.equal(native.writes().filter(w => w.params.surge > 0).length, 8, 'eight surge pulses in one native second');
 assert.equal(native.writes().filter(w => w.params.chop > 0).length, 5, 'chop includes both t=0-ish and t=1 boundary');
 assert.equal(native.writes().at(-1).params.time, 1);
 native.events.dispose();
+
+// A wave in progress rides a runtime switch either way. The event clock is game time in V1 steps
+// (v2/host.js stepClock): sim.frame scaled by the current rate jumped ×4 on V1 → V2 (the wave ended at
+// once) and fell ÷4 on V2 → V1 (the rewind check cancelled it).
+{
+  const w = fixture();
+  assert(await w.events.trigger(w.ctx));
+  w.sim.frame = C.stepsPerSecond * C.rise / 2; w.events.step({ ocean: 0 }, w.ctx);   // V1, half way up its rise
+  const before = w.events.source.age;
+  const nativeCtx = { ...w.ctx, stepHz: 60 };
+  w.sim.frame++; w.sim.nativeTicks = 1; w.events.step({ ocean: 0 }, nativeCtx);      // V1 → V2: one native tick
+  assert.equal(w.events.active, true, 'the wave survives V1 → V2');
+  assert(Math.abs(w.events.source.age - before - 1 / 60) < 1e-12, 'one native tick is 1/60 s of the wave');
+  w.sim.frame += 4; w.events.step({ ocean: 0 }, w.ctx);                              // V2 → V1: four steps
+  assert.equal(w.events.active, true, 'the wave survives V2 → V1');
+  assert(Math.abs(w.events.source.age - before - 2 / 60) < 1e-12, 'four V1 steps are 1/60 s more');
+  w.events.dispose();
+}
 
 if (process.argv.includes('--naga')) {
   const dir = mkdtempSync(join(tmpdir(), 'ocean-wgsl-'));

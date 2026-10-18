@@ -55,7 +55,7 @@ assert.equal(weather.step(state,{...context,advancing:false}),false);
 assert.equal(calls.length,count);
 weather.dispose();
 const ocean=createOceanEvents(), oceanSim=fixture(), oceanContext={sim:oceanSim,seaLevel:18,groundHeight:()=>0,stepHz:60};
-ocean.step({ocean:1},oceanContext); await new Promise(resolve=>setImmediate(resolve)); oceanSim.frame=1;
+ocean.step({ocean:1},oceanContext); await new Promise(resolve=>setImmediate(resolve)); oceanSim.frame=oceanSim.nativeTicks=1; // (one native host tick: v2/host.js)
 calls.length=0; assert(ocean.step({ocean:1},oceanContext));
 const oce=calls.find(c=>c.name==='oceanForceNativeEvaluate'); assert(oce);
 assert.deepEqual(oce.params.editLo,[0,12,0]); assert.deepEqual(oce.params.editHi,[31,22,31]);
@@ -152,6 +152,41 @@ assert.equal(pending.main.state,'ready');
   lb.strike(switched,[10,50,10],[10,10,10],{strikeR:2});
   assert(calls.some(c=>c.name==='boltNativeEvaluate'),'native bolt after the switch');
   lb.dispose();
+}
+// A runtime switch to V1 SUSPENDS the V2 owner: sim.compact goes, sim.compactOwner stays (its cells
+// are kept for a switch back). Weather, waves and bolts must then write V1's cells with V1's edit;
+// writing the suspended owner's cells left V1 dry (it never reads them).
+{
+  const suspended=fixture(), owner=suspended.compactOwner, edits=[];
+  suspended.editKernel=(name)=>({name,state:'ready',ready:Promise.resolve(),main:{state:'ready'},apply:{state:'ready'}});
+  suspended.edit=(k)=>edits.push(k.name);
+  const w=createElementWeather(), wctx={sim:suspended,enabled:true,advancing:true,host:true,seaLevel:18,stepHz:60};
+  w.step(state,wctx); await w.ready; suspended.frame=15; calls.length=0;
+  assert(w.step(state,wctx)); assert(calls.some(c=>c.name==='elementWeatherNativeEvaluate'),'V2 active: the native writer');
+  suspended.compact=null; edits.length=0; calls.length=0;   // (PhysicsV2.suspend: the owner is kept)
+  w.step(state,wctx); await w.ready; suspended.frame=30;
+  assert(w.step(state,wctx),'weather goes on under V1');
+  assert(edits.includes('elementWeather'),'V1 weather is a V1 edit while V2 is suspended');
+  assert(!calls.some(c=>c.name==='elementWeatherNativeEvaluate'),'nothing writes the suspended owner\'s cells');
+  w.dispose();
+  const oc=createOceanEvents(), octx={sim:suspended,seaLevel:18,groundHeight:()=>0,stepHz:240};
+  oc.step({ocean:1},octx); await new Promise(resolve=>setImmediate(resolve)); suspended.frame=31; edits.length=0; calls.length=0;
+  oc.step({ocean:1},octx);
+  assert(edits.includes('oceanForce'),'V1 ocean force while V2 is suspended');
+  assert(!calls.some(c=>c.name==='oceanForceNativeEvaluate'));
+  oc.dispose();
+  edits.length=0; calls.length=0;
+  const lb=createLightning();
+  lb.strike(suspended,[10,50,10],[10,10,10],{strikeR:2}); await lb.ready;
+  lb.strike(suspended,[10,50,10],[10,10,10],{strikeR:2});
+  assert(edits.includes('bolt'),'V1 bolt edit while V2 is suspended');
+  assert(!calls.some(c=>c.name==='boltNativeEvaluate'));
+  lb.dispose();
+  // the native writer itself refuses a suspended owner's cells (built while V2 ran, run after the switch)
+  suspended.compact=owner;
+  const k=createNativeWeatherKernel(suspended,'suspendedTest',oceanEventsEdit); await k.ready;
+  suspended.compact=null;
+  assert.equal(k.run({lo:[1,2,3],hi:[2,3,4]},{sea:18,time:1,chop:1,surge:0,wind:[1,0],source:[0,0],direction:[1,0]},{}),false);
 }
 // Storms keep their seconds on V2's 60 Hz ticks: STORM's step counts are
 // authored at 240 steps a second, so a native grid polls every quarter as many.
