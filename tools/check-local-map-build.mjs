@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import { ELEMENTS, K } from '../src/elements.js';
 import terrainRoute from '../src/world/scenes/descent/terrainRoute.json' with { type: 'json' };
 import { createTerrainScene } from '../src/world/scenes/descent/terrainScenes.js';
+import { terrainLayout } from '../src/world/scenes/descent/terrainRaster.js';
 
 // Cloudflare Pages rejects any single asset over 25 MiB (docs/cruelty-source-comparison.md).
 const FILE_LIMIT = 25 * 1024 * 1024;
@@ -49,7 +50,7 @@ for (const directory of ['public/local-maps', 'dist/local-maps']) {
   assert.ok(!expected.some((n) => n.endsWith('.bin')), `${directory} ships no uncompressed geometry`);
   const nativeDir = join(directory, 'noita-terrain');
   const route = JSON.parse(await readFile(join(nativeDir, 'route.json'), 'utf8'));
-  for (const key of ['version', 'encoding', 'fold', 'palette', 'regions', 'sections', 'startScene', 'startSource']) {
+  for (const key of ['version', 'encoding', 'fold', 'inflation', 'palette', 'regions', 'sections', 'startScene', 'startSource']) {
     assert.deepEqual(route[key], terrainRoute[key], `${directory}: runtime and shipped native ${key} agree`);
   }
   const portal = p => ({ id:p.id, source:p.source, halfSize:p.halfSize, target:p.target, enabled:p.enabled });
@@ -60,8 +61,10 @@ for (const directory of ['public/local-maps', 'dist/local-maps']) {
   for (const region of route.regions) {
     const path = join(nativeDir, region.file), info = await stat(path);
     assert.ok(info.size < FILE_LIMIT, `${path} is under the host's per-file limit`);
-    const bytes = gunzipSync(await readFile(path));
-    assert.equal(createHash('sha256').update(bytes).digest('hex'), region.sha256, `${region.key}: immutable native pixels ship unchanged`);
+    const bytes = gunzipSync(await readFile(path)), layout = terrainLayout(route);
+    assert.equal(bytes.length, layout.bytes, `${region.key}: native, inflation-depth and backdrop planes`);
+    assert.equal(createHash('sha256').update(bytes.subarray(0, layout.pixels)).digest('hex'), region.sha256, `${region.key}: immutable native pixels ship unchanged`);
+    assert.equal(createHash('sha256').update(bytes.subarray(layout.pixels)).digest('hex'), region.fieldsSha256, `${region.key}: inflation planes ship unchanged`);
     if (directory === 'public/local-maps') packed += info.size;
     const words = new Uint32Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
     const scene = createTerrainScene(route, region, { fetchWords: async () => words });

@@ -17,7 +17,7 @@ export function bandHandoff(levels, current, source) {
 }
 
 export function nativePortalHandoff(levels, current, source, feet = null) {
-  const [x, y, depth] = source;
+  const [x, y] = source;
   let minX=x, maxX=x, minY=y, maxY=y;
   // Transform the real upright body corners back into the native chart,
   // rather than testing an oversized folded-world trigger box.
@@ -28,7 +28,9 @@ export function nativePortalHandoff(levels, current, source, feet = null) {
   for (const portal of current.nativePortals ?? []) {
     if (!portal.enabled || minX > portal.source[0]+portal.halfSize[0] || maxX < portal.source[0]-portal.halfSize[0] || minY > portal.source[1]+portal.halfSize[1] || maxY < portal.source[1]-portal.halfSize[1]) continue;
     const next = levels.find((l) => portal.target[1] >= l.sourceRegion.core[0] && portal.target[1] < l.sourceRegion.core[1]);
-    if (next) return { next, source: [portal.target[0], portal.target[1], depth], kind: 'portal', portalId: portal.id, preserveMomentum: false,
+    // Arrive on the mid-plane: an inflated destination is not the same cross-section
+    // at every depth, and the native arrival is proven body-clear there (importer, check-noita-source).
+    if (next) return { next, source: [portal.target[0], portal.target[1], 0], kind: 'portal', portalId: portal.id, preserveMomentum: false,
       yawDelta: -(portal.target[0] - x) * current.fold.angleSpan / current.fold.sourceWidth };
   }
   return null;

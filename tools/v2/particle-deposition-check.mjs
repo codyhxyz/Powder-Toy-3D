@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import { gridLayout } from '../../src/sim.js';
 import { impactFoam } from '../../src/v2/foam.js';
+import { PHYS } from '../../src/physics.js';
 import { PHASE_ROWS, PHASE_NORMAL_MAX } from '../../src/v2/phase.js';
 import assert from 'node:assert/strict';
 import {particlesWGSL,heldBase} from '../../src/shaders/v2/particles.js';
@@ -103,7 +104,9 @@ function fixture({mode=0, edge=0, windowed=false,
     cls:id=>id?ELEMENTS[id].kind:0,isLiq:c=>L.isLiquid(L.cid(c)),
     dTerminal:id=>dynamicsRows[id].terminal,dMass:id=>dynamicsRows[id].mass,
     dAmount:m=>L.isLiquid(L.cid(m.core))?L.cFill(m.core)/L.FULL:1,
-    dParticleEnergy:L.packetOwnedEnergy,energyAdd:(a,b)=>a+b,
+    dParticleEnergy:L.packetOwnedEnergy,energyAdd:(a,b)=>a+b,energySub:(a,b)=>a-b,noteEnergySource:()=>{},
+    // particles.js dHeatEnergy: one legacy cap·°C is 256·FULL native energy units
+    dHeatEnergy:(m,heat)=>L.energyOf(m)+BigInt(Math.round(Math.abs(heat)*256))*65536n*(heat<0?-1n:1n),
     dToughness:id=>dynamicsRows[id].toughness,dBreak:id=>dynamicsRows[id].breakInto,
     MATERIAL_BURNS:ELEMENTS.map(e=>e.burnRate>0),conductsNative:L.isConductor,
     withPayload:(c,v)=>L.withPayload({core:c,bank:0},v).core,
@@ -375,6 +378,10 @@ test('winners free every claim: fracture, contention and ties leave an empty tab
   const glass=fixture({position:[6.5,2.5,6.5],velocity:[0,-20,0]});
   glass.set([6,1,6],L.makeMaterial(E.GLASS));glass.set([6,0,6],L.makeMaterial(E.STONE));
   runTicks(glass,[0],1);assert.equal(L.cid(at(glass,[6,1,6]).core),E.SHARDS);assert.notEqual(glass.particles[0].id,0);
+  // V1 react.js: the debris takes the fracture work as heat, hard·KE_TO_HEAT / cap (glass → shards: ~+48 °C;
+  // a native cell's capacity also holds its 1/64 air carrier).
+  const warmed=L.cTq(at(glass,[6,1,6]).core)/4-273.25, rise=ELEMENTS[E.GLASS].hard*PHYS.KE_TO_HEAT*64/(Math.round(ELEMENTS[E.SHARDS].cap*64)+1);
+  assert.ok(Math.abs(warmed-(20+rise))<=0.5,`shards at ${warmed} °C, V1 ${20+rise} °C`);
   for(const tie of [false,true]) {
     const run=reverse=>{
       const f=fixture({material:wet(4096),position:[6.5,2.5,6.5],velocity:[0,-6,0]});if(tie)f.ctx.dKey=()=>7;

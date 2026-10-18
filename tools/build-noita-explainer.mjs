@@ -96,7 +96,8 @@ const raster = new Uint8Array(width*(cb-ct)).fill(255);
 for (const r of route.regions) {
   const a=Math.max(ct,r.core[0]),b=Math.min(cb,r.core[1]);
   if (a>=b) continue;
-  const bytes=gunzipSync(read(`public/local-maps/noita-terrain/${r.file}`));
+  // Native plane only: v2 packs append the inflation depth and backdrop planes.
+  const bytes=gunzipSync(read(`public/local-maps/noita-terrain/${r.file}`)).subarray(0,width*r.sourceHeight);
   if (createHash('sha256').update(bytes).digest('hex')!==r.sha256) throw new Error(`Bad source hash: ${r.key}`);
   raster.set(bytes.subarray((a-r.sourceTop)*width,(b-r.sourceTop)*width),(a-ct)*width);
 }

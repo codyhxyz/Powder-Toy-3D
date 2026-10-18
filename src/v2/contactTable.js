@@ -10,6 +10,7 @@ export const CONTACT_ROW_SCHEMA = Object.freeze([
   ['blast','i32'], ['blastAir','i32'], ['blastChance','f32'], ['acid','i32'],
   ['edible','i32'], ['fizz','i32'], ['bed','i32'], ['rots','i32'],
   ['singFood','i32'], ['conductor','i32'], ['cost','f32'], ['wire','i32'], ['emitter','f32'],
+  ['cool','f32'],
 ].map(Object.freeze));
 export const CONTACT_RX_SCHEMA = Object.freeze([
   ['a','i32'], ['b','i32'], ['aOut','i32'], ['bOut','i32'], ['chance','f32'],

@@ -7,6 +7,7 @@ import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { createFold } from '../src/world/scenes/descent/terrainFold.js';
 import { ELEMENTS, E } from '../src/elements.js';
+import { terrainLayout } from '../src/world/scenes/descent/terrainRaster.js';
 
 const unit = v => { const n = Math.hypot(...v); return v.map(x => x / n); };
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -49,28 +50,38 @@ export function descentVolume(sectionKey = 'coal') {
   const section = route.sections.find(s => s.key === sectionKey);
   if (!section) throw new Error(`No source section: ${sectionKey}`);
   const [top, bottom] = section.sourceRange, height = bottom - top;
-  const width = route.fold.sourceWidth;
-  const raster = new Uint8Array(width * height).fill(255);
+  const width = route.fold.sourceWidth, L = terrainLayout(route);
+  // The section's native, inflation-depth and backdrop planes, stitched from band cores.
+  const raster = new Uint8Array(width * height).fill(255), depths = new Uint8Array(width * height);
+  const backdrop = new Uint8Array(L.blockWidth * Math.ceil(height / L.block));
   for (const region of route.regions) {
     const lo = Math.max(top, region.core[0]), hi = Math.min(bottom, region.core[1]);
     if (lo >= hi) continue;
     const bytes = gunzipSync(readFileSync(new URL(region.file, base)));
     raster.set(bytes.subarray((lo - region.sourceTop) * width, (hi - region.sourceTop) * width), (lo - top) * width);
+    depths.set(bytes.subarray(L.depthAt + (lo - region.sourceTop) * width, L.depthAt + (hi - region.sourceTop) * width), (lo - top) * width);
+    backdrop.set(bytes.subarray(L.backdropAt + (lo - region.sourceTop) / L.block * L.blockWidth, L.backdropAt + (hi - region.sourceTop) / L.block * L.blockWidth),
+      (lo - top) / L.block * L.blockWidth);
   }
   const fold = createFold(route.fold), dimensions = fold.dimensions(height);
   // Only XZ lookup is cached. A dense 3D cache would allocate billions of cells.
-  const cache = new Int16Array(dimensions[0] * dimensions[2]).fill(-32768);
+  const cache = new Int16Array(dimensions[0] * dimensions[2]).fill(-32768), depthOf = new Float32Array(dimensions[0] * dimensions[2]);
   const cell = (x, y, z) => {
     const i = x + dimensions[0] * z;
     if (cache[i] === -32768) {
       const p = fold.inverse([x + .5, height / 2, z + .5], top, height);
       cache[i] = p ? Math.floor(p[0]) - route.fold.sourceMinX : -1;
+      depthOf[i] = p ? p[2] : 0;
     }
-    const sx = cache[i];
-    if (sx < 0 || sx >= width) return E.EMPTY;
-    const index = raster[sx + width * (height - 1 - y)];
-    // Cutaway preview: crop/ribbon caps are not Noita terrain and are omitted.
-    return index === 255 ? E.EMPTY : route.palette[index].element;
+    const sx = cache[i], depth = depthOf[i];
+    // Cutaway preview: the near half of the slab (toward the outside camera) and the
+    // crop/ribbon caps are omitted, so the inflated caves show as hollows behind the cut.
+    if (sx < 0 || sx >= width || depth > 0) return E.EMPTY;
+    const sy = height - 1 - y, at = sx + width * sy, index = raster[at];
+    if (index === 255) return E.EMPTY;
+    const open = depths[at];
+    if (!open || 2 * Math.abs(depth) < open) return route.palette[index].element;
+    return route.palette[backdrop[Math.floor(sx / L.block) + L.blockWidth * Math.floor(sy / L.block)]].element;
   };
   return { cell, size: dimensions, fold, raster, route, section, top, height };
 }
