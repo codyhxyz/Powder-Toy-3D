@@ -51,6 +51,12 @@
 // The march's state (gGrainMode, gPebSteps, ...) is private to the
 // invocation; the tracer resets nothing, one pixel being one invocation.
 
+// The pebbles' hand-off (see "hand-off by footprint" below), shared with
+// gfx/detail.js's GRAINS_FADE_M: the relief as a share of PEBBLE_M, and the
+// stand-in's error in pixels where the geometry starts and where it is all.
+export const PEB_RELIEF_SHARE = 0.5;
+export const PEB_ERR_PX_NONE = 4, PEB_ERR_PX_FULL = 8;
+
 /** Whether either grain switch is on (the GLSL's GRAINS_ANY), for the tracer. */
 export const GRAINS_ANY = (detail = {}) => !!(detail.DETAIL_GRAINS || detail.DETAIL_GRAIN_CLUSTERS);
 
@@ -125,16 +131,29 @@ const CLOD_HIT_PX: f32 = 0.5;
 const CLOD_NORMAL_H: f32 = 2e-3;
 
 // ---- hand-off by footprint ----
-// Geometry starts where a feature is *_PX_NONE pixels across and has taken
-// over by *_PX_FULL (feature: a pebble; a clod's lump).
-const PEB_PX_NONE: f32 = 8.0;
-const PEB_PX_FULL: f32 = 16.0;
+// Pebbles: by the error of the stand-in. The textured surface draws the heap
+// with no relief, so it misses each pebble's top and the gaps around it by
+// about the pebble's half-height, PEB_RELIEF (a chip's mean vertical
+// semi-extent under a uniformly random turn is 0.505 site pitches, by
+// sampling the shapes above), which is PEB_RELIEF / fp pixels on a silhouette
+// or a grazing view. A switch that error can't show sits at 1 pixel of it
+// (Nanite picks its level of detail at one pixel of error: Karis, Stubbe &
+// Wihlidal, SIGGRAPH 2021), where the texture's chip outlines also reach their
+// mip fade (gfx/surface.js: PEBBLE_F * CHIP_LOD at DETAIL_FADE_LO..HI cycles
+// per pixel is fp = PEB_RELIEF / 2 .. PEB_RELIEF). The geometry starts at
+// PEB_ERR_PX_NONE pixels of error instead and has taken over by
+// PEB_ERR_PX_FULL: a cost trade (gfx/detail.js GRAINS_FADE_M; at 1 pixel the
+// geometry would draw 4x as far out, about twice the pixels of a standing
+// view over flat gravel, measured on the GPU at +12-17 ms where it is now).
+// Clods: where a lump is CLOD_PX_NONE pixels across, all of it by CLOD_PX_FULL.
+const PEB_RELIEF: f32 = ${PEB_RELIEF_SHARE} * PEBBLE_M / CELL_M;   // cells
+const PEB_ERR_PX_NONE: f32 = ${PEB_ERR_PX_NONE}.0;
+const PEB_ERR_PX_FULL: f32 = ${PEB_ERR_PX_FULL}.0;
 const CLOD_PX_NONE: f32 = 8.0;
 const CLOD_PX_FULL: f32 = 16.0;
-const PEB_D: f32 = PEBBLE_M / CELL_M;            // a pebble's size, cells
 const CLOD_D: f32 = 2.0 * CLOD_LUMP_R;           // a lump's size, cells
-const PEB_FP_NONE: f32 = PEB_D / PEB_PX_NONE;    // cells per pixel
-const PEB_FP_FULL: f32 = PEB_D / PEB_PX_FULL;
+const PEB_FP_NONE: f32 = PEB_RELIEF / PEB_ERR_PX_NONE;   // cells per pixel
+const PEB_FP_FULL: f32 = PEB_RELIEF / PEB_ERR_PX_FULL;
 const CLOD_FP_NONE: f32 = CLOD_D / CLOD_PX_NONE;
 const CLOD_FP_FULL: f32 = CLOD_D / CLOD_PX_FULL;
 
@@ -296,7 +315,12 @@ fn pebbleOwner(o: vec3i) -> PebOwner {
     w.a = fetchA(o);
     let id = eid(w.a);
     if (id == E_STONE) { w.ok = true; }
-    else if (id == E_EMPTY) { w.fill = pebbleFill(o, &w.a); w.ok = w.fill > 0; }
+    else if (id == E_EMPTY) {
+      var af: vec4f;   // (not &w.a: Naga's SPIR-V writer panics on a pointer to a struct's member)
+      w.fill = pebbleFill(o, &af);
+      w.a = af;
+      w.ok = w.fill > 0;
+    }
   }
   return w;
 }
