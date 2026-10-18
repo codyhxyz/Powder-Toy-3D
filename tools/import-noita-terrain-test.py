@@ -262,6 +262,16 @@ class PublishedChecks(unittest.TestCase):
         self.assertEqual(pieces[3072, 13312]['savedMaterialCounts'], {'air': 6656})
         self.assertEqual(sum(sum(r['savedMaterialCounts'].values()) for r in proof['pieces']), 612469)
 
+    def test_palette_carries_noita_view_labels(self):
+        looks = json.loads((ROOT / 'tools/noita-terrain-looks.json').read_text())['nativeAppearance']
+        codes, allowed = m.appearance_rules()
+        keys = {v: k for k, v in m.physical_elements().items()}
+        for p in self.route['palette']:
+            label = looks.get(p['name'])
+            self.assertEqual(p.get('appearance'), codes[label] if label else None, p['name'])
+            if label:
+                self.assertIn(p['appearance'], allowed[keys[p['element']]])
+
     def test_runtime_manifest_same_interface_without_provenance(self):
         small = json.loads((ROOT / 'src/world/scenes/descent/terrainRoute.json').read_text())
         for key in ['fold', 'inflation', 'palette', 'regions', 'sections', 'startScene', 'startSource']:

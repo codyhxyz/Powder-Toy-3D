@@ -54,7 +54,22 @@ def packed(data):
     return bytes(compressed)
 
 
-def make_palette(names, mapping, elements):
+def appearance_rules():
+    # Label codes and the elements allowed to carry them, read from src/appearance.js.
+    text = (ROOT / 'src/appearance.js').read_text()
+    body = text.split('export const Appearance = Object.freeze({', 1)[1].split('});', 1)[0]
+    codes = {k.lower().replace('_', '-'): int(v) for k, v in re.findall(r'([A-Z][A-Z_0-9]*):\s*(\d+)', body)}
+    variants = re.findall(r'E\.([A-Z_0-9]+)', text.split('export const VARIANT_ELEMENTS', 1)[1].split(';', 1)[0])
+    if not codes or not variants:
+        raise ValueError('Cannot read src/appearance.js appearance labels')
+    allowed = {'WOOD': range(codes['log-x'], codes['bark'] + 1)}
+    allowed.update({key: range(codes['variant-1'], codes['variant-5'] + 1) for key in variants})
+    return codes, allowed
+
+
+def make_palette(names, mapping, elements, looks=None):
+    # looks: native name -> src/appearance.js label (tools/noita-terrain-looks.json), drawn by the Noita view.
+    codes, allowed = appearance_rules() if looks else ({}, {})
     names = ['air'] + sorted(set(names) - {'air'})
     if len(names) > 255:
         raise ValueError('Native palette exceeds 255 entries')
@@ -66,7 +81,13 @@ def make_palette(names, mapping, elements):
         key = mapping[name]
         if key not in elements or (key == 'EMPTY') != (name == 'air'):
             raise ValueError(f'Invalid physical mapping {name}: {key}')
-        result.append(dict(name=name, element=elements[key]))
+        entry = dict(name=name, element=elements[key])
+        label = (looks or {}).get(name)
+        if label:
+            if codes.get(label) not in allowed.get(key, ()):
+                raise ValueError(f'Appearance {label} is not valid for {name} ({key})')
+            entry['appearance'] = codes[label]
+        result.append(entry)
     return result
 
 
@@ -595,7 +616,9 @@ class Compiler:
         material_config = json.loads(material_bytes)
         self.mapping = material_config['nativeToElement']
         self.support_elements = set(material_config['solidSupportElements'])
-        palette = make_palette(self.names, self.mapping, physical_elements())
+        looks_path = ROOT / 'tools/noita-terrain-looks.json'
+        looks_bytes = looks_path.read_bytes()
+        palette = make_palette(self.names, self.mapping, physical_elements(), json.loads(looks_bytes)['nativeAppearance'])
         inflation = self.c['inflation']
         open_ids, backdrop_ids = inflation_tables(palette, material_config['backdropElements'])
         check_inflation(self.c['fold'], inflation)
@@ -643,7 +666,8 @@ class Compiler:
         manifest['source'] = dict(world=str(self.world), wak=str(self.wak_path), wak_sha256=self.wak_hash,
                                   compiler_sha256=sha(Path(__file__).read_bytes()), decoder_sha256=sha(Path(self.decoder.__file__).read_bytes()),
                                   configuration=[dict(path=self.config_path.name, sha256=sha(self.config_bytes)),
-                                                 dict(path=materials_path.name, sha256=sha(material_bytes))],
+                                                 dict(path=materials_path.name, sha256=sha(material_bytes)),
+                                                 dict(path=looks_path.name, sha256=sha(looks_bytes))],
                                   elements_sha256=sha((ROOT / 'src/elements.js').read_bytes()),
                                   rasterOrigin=[self.minx, self.miny], rasterShape=list(self.raster.shape),
                                   materialRasterSha256=sha(self.raster.tobytes()), selectedPixels=int(self.selected.sum()),

@@ -1,4 +1,5 @@
 import { ELEMENTS, K } from '../../../elements.js';
+import { appearanceCtype, materialWord } from '../../../appearance.js';
 
 export const OUTSIDE = 255;
 export const PALETTE_WORDS = 256;
@@ -25,6 +26,7 @@ export function validateTerrainManifest(route) {
   for (const p of route.palette) {
     if (!p.name || names.has(p.name) || !Number.isInteger(p.element) || !ELEMENTS[p.element] ||
         (p.element === 0) !== (p.name === 'air')) throw new Error(`Unmapped native material: ${p.name}`);
+    if (p.appearance !== undefined) appearanceCtype(p.element, 0, p.appearance);   // throws on a label its element can't carry
     names.add(p.name);
   }
   if (!Number.isSafeInteger(route.fold.sourceWidth) || route.fold.sourceWidth <= 0) throw new Error('Invalid raster width');
@@ -84,7 +86,8 @@ export async function prepareTerrainWords(route, region, words) {
     if (b >= route.palette.length || ELEMENTS[route.palette[b].element].kind !== K.SOLID) throw new Error(`Invalid backdrop material ${b} at block ${i}`);
   }
   const packed = new Uint32Array(PALETTE_WORDS + words.length);
-  route.palette.forEach((p, i) => { packed[i] = p.element; });
+  // Palette words carry the native material's appearance label for the Noita view (src/appearance.js).
+  route.palette.forEach((p, i) => { packed[i] = materialWord(p.element, p.appearance ?? 0); });
   packed.set(words, PALETTE_WORDS);
   return packed;
 }

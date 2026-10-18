@@ -3614,6 +3614,7 @@
       "name": "coal_static"
     },
     {
+      "appearance": 12,
       "element": 20,
       "name": "concrete_static"
     },
@@ -3650,6 +3651,7 @@
       "name": "fungi"
     },
     {
+      "appearance": 13,
       "element": 27,
       "name": "fungisoil"
     },
@@ -3850,10 +3852,12 @@
       "name": "radioactive_liquid_fading"
     },
     {
+      "appearance": 11,
       "element": 20,
       "name": "rock_box2d_hard"
     },
     {
+      "appearance": 11,
       "element": 20,
       "name": "rock_hard"
     },
@@ -3870,6 +3874,7 @@
       "name": "rock_static_cursed"
     },
     {
+      "appearance": 12,
       "element": 20,
       "name": "rock_static_grey"
     },
@@ -3898,10 +3903,12 @@
       "name": "rock_vault"
     },
     {
+      "appearance": 4,
       "element": 14,
       "name": "root"
     },
     {
+      "appearance": 4,
       "element": 14,
       "name": "root_growth"
     },
@@ -3926,10 +3933,12 @@
       "name": "sand_static"
     },
     {
+      "appearance": 11,
       "element": 27,
       "name": "sand_static_rainforest"
     },
     {
+      "appearance": 11,
       "element": 27,
       "name": "sand_static_rainforest_dark"
     },
@@ -3966,14 +3975,17 @@
       "name": "snowrock_static"
     },
     {
+      "appearance": 13,
       "element": 27,
       "name": "soil"
     },
     {
+      "appearance": 13,
       "element": 27,
       "name": "soil_dark"
     },
     {
+      "appearance": 12,
       "element": 27,
       "name": "soil_dead"
     },
@@ -3982,6 +3994,7 @@
       "name": "soil_lush"
     },
     {
+      "appearance": 13,
       "element": 27,
       "name": "soil_lush_dark"
     },
@@ -4082,6 +4095,7 @@
       "name": "templebrick_thick_static_noedge"
     },
     {
+      "appearance": 11,
       "element": 93,
       "name": "templebrickdark_static"
     },
@@ -4106,18 +4120,22 @@
       "name": "water_swamp"
     },
     {
+      "appearance": 6,
       "element": 14,
       "name": "wood_prop"
     },
     {
+      "appearance": 6,
       "element": 14,
       "name": "wood_static"
     },
     {
+      "appearance": 7,
       "element": 14,
       "name": "wood_static_vertical"
     },
     {
+      "appearance": 4,
       "element": 14,
       "name": "wood_tree"
     }
@@ -27350,7 +27368,7 @@
         "source_bytes": 1084
       }
     ],
-    "compiler_sha256": "c1028e033bbdd5678827957a9192147d56daf6d770eb822903d75c4d15a41805",
+    "compiler_sha256": "4921fd29c956f1f21e8c2ba657b9f823c94d94be9646b2b7d97085ae9dcef08f",
     "configuration": [
       {
         "path": "noita-terrain-source.json",
@@ -27359,6 +27377,10 @@
       {
         "path": "noita-terrain-materials.json",
         "sha256": "669ae6f1d762b6c541a17920032bff02bd67d66bf4e1984fe860c792323ec6a0"
+      },
+      {
+        "path": "noita-terrain-looks.json",
+        "sha256": "5999d74a175647360e25a6e2d7a2c16b1585c2684c00fe447fb19df6474e4477"
       }
     ],
     "decoder_sha256": "905f9c54b40110d3d29eef8417127ff0f63c50afef9bff085aeaaf7d87a3d563",

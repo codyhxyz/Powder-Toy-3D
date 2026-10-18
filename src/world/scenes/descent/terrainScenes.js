@@ -32,14 +32,15 @@ fn terrainId(w: vec3i) -> i32 {
   return i32(sdWord(rasterByte(${L.backdropAt}u + block)));
 }
 fn sceneCell(w: vec3i) -> SceneCell {
-  let id = terrainId(w);
+  let word = terrainId(w);
+  let id = materialId(word);
   var temperature = SPAWNT(id);
   if (temperature == AMBIENT) { temperature = SU.uAirT; }
   if (id == E_ICE || id == E_SNOW) { temperature = min(temperature, SU.uAirT); }
   // The same source voxel keeps its grain/physics seed in overlapping bands.
   let globalCell = w - vec3i(0, i32((SU.uFoldC.x + SU.uFoldC.y) * SU.uFoldB.y), 0);
   let seed = u32ToF32(seedWorld(globalCell, SU.uSceneSeed, 0x1a90u)) * UINT_TO_UNIT * SEED_MAX;
-  return SceneCell(vec4f(f32(id), temperature, SPAWNLIFE(id), seed), vec4f(0.0));
+  return SceneCell(vec4f(f32(id), temperature, SPAWNLIFE(id), appearanceCtype(id, 0.0, materialAppearance(word)) + seed), vec4f(0.0));
 }
 `;
 
@@ -61,7 +62,7 @@ export function createTerrainScene(route, region, { fetchWords = fetchImportedWo
       : inflatedIndex(loaded(), layout, x, y, source[2]);
     if (at.material === OUTSIDE) return { kind: 'cap', source, nativeIndex: at.native, element: E.WALL };
     return { kind: 'source', source, nativeIndex: at.native, materialIndex: at.material, layer: at.layer,
-      material: route.palette[at.material].name, element: route.palette[at.material].element };
+      material: route.palette[at.material].name, element: route.palette[at.material].element, appearance: route.palette[at.material].appearance ?? 0 };
   };
   const cell = (x,y,z) => querySource([Math.floor(x)+.5,Math.floor(y)+.5,Math.floor(z)+.5]).element;
   return {

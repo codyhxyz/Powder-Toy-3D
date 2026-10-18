@@ -1629,6 +1629,7 @@
       "name": "coal_static"
     },
     {
+      "appearance": 12,
       "element": 20,
       "name": "concrete_static"
     },
@@ -1665,6 +1666,7 @@
       "name": "fungi"
     },
     {
+      "appearance": 13,
       "element": 27,
       "name": "fungisoil"
     },
@@ -1865,10 +1867,12 @@
       "name": "radioactive_liquid_fading"
     },
     {
+      "appearance": 11,
       "element": 20,
       "name": "rock_box2d_hard"
     },
     {
+      "appearance": 11,
       "element": 20,
       "name": "rock_hard"
     },
@@ -1885,6 +1889,7 @@
       "name": "rock_static_cursed"
     },
     {
+      "appearance": 12,
       "element": 20,
       "name": "rock_static_grey"
     },
@@ -1913,10 +1918,12 @@
       "name": "rock_vault"
     },
     {
+      "appearance": 4,
       "element": 14,
       "name": "root"
     },
     {
+      "appearance": 4,
       "element": 14,
       "name": "root_growth"
     },
@@ -1941,10 +1948,12 @@
       "name": "sand_static"
     },
     {
+      "appearance": 11,
       "element": 27,
       "name": "sand_static_rainforest"
     },
     {
+      "appearance": 11,
       "element": 27,
       "name": "sand_static_rainforest_dark"
     },
@@ -1981,14 +1990,17 @@
       "name": "snowrock_static"
     },
     {
+      "appearance": 13,
       "element": 27,
       "name": "soil"
     },
     {
+      "appearance": 13,
       "element": 27,
       "name": "soil_dark"
     },
     {
+      "appearance": 12,
       "element": 27,
       "name": "soil_dead"
     },
@@ -1997,6 +2009,7 @@
       "name": "soil_lush"
     },
     {
+      "appearance": 13,
       "element": 27,
       "name": "soil_lush_dark"
     },
@@ -2097,6 +2110,7 @@
       "name": "templebrick_thick_static_noedge"
     },
     {
+      "appearance": 11,
       "element": 93,
       "name": "templebrickdark_static"
     },
@@ -2121,18 +2135,22 @@
       "name": "water_swamp"
     },
     {
+      "appearance": 6,
       "element": 14,
       "name": "wood_prop"
     },
     {
+      "appearance": 6,
       "element": 14,
       "name": "wood_static"
     },
     {
+      "appearance": 7,
       "element": 14,
       "name": "wood_static_vertical"
     },
     {
+      "appearance": 4,
       "element": 14,
       "name": "wood_tree"
     }

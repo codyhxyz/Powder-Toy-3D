@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { E } from '../src/elements.js';
+import { Appearance, materialWord } from '../src/appearance.js';
 import { createTerrainScene } from '../src/world/scenes/descent/terrainScenes.js';
 import { createFold } from '../src/world/scenes/descent/terrainFold.js';
 import { prepareTerrainWords, validateTerrainManifest, terrainLayout, PALETTE_WORDS } from '../src/world/scenes/descent/terrainRaster.js';
@@ -22,13 +23,14 @@ const hash = (a) => createHash('sha256').update(a).digest('hex');
 const region = {key:'fixture',label:'Snowy Depths',sourceTop:992,sourceHeight:320,core:[1024,1280],sectionIndex:0,file:'fixture.binpack',
   sha256:hash(bytes.subarray(0,L.pixels)),fieldsSha256:hash(bytes.subarray(L.pixels,L.bytes)),spawnSource:[-677,1200,0]};
 const route = {version:2,encoding:'noita-folded-raster-u8-v2',fold:foldConfig,inflation,
-  palette:[{name:'air',element:E.EMPTY},{name:'rock_static',element:E.ROCK},{name:'templebrick_static',element:E.NOITA_TEMPLE}],
+  palette:[{name:'air',element:E.EMPTY},{name:'rock_static',element:E.ROCK},{name:'templebrick_static',element:E.NOITA_TEMPLE,appearance:Appearance.VARIANT_1}],
   regions:[region],sections:[],startScene:'fixture',startSource:region.spawnSource,nativePortals:[]};
 validateTerrainManifest(route);
 assert.throws(()=>validateTerrainManifest({...route,palette:[...route.palette,{name:'unknown'}]}),/Unmapped/);
 assert.throws(()=>validateTerrainManifest({...route,palette:[...route.palette,{name:'rock_static',element:E.ROCK}]}),/Unmapped/);
 assert.throws(()=>validateTerrainManifest({...route,palette:[...route.palette,{name:'not_air',element:E.EMPTY}]}),/Unmapped/);
 assert.throws(()=>validateTerrainManifest({...route,version:1,encoding:'noita-folded-raster-u8-v1'}),/Unsupported/);
+assert.throws(()=>validateTerrainManifest({...route,palette:[...route.palette,{name:'water',element:E.WATER,appearance:Appearance.VARIANT_1}]}),/not valid/,'a label its element cannot carry');
 assert.throws(()=>validateTerrainManifest({...route,fold:{...foldConfig,thickness:48}}),/thickness/,'the slab must hold the deepest envelope');
 let fetches=0;
 const scene=createTerrainScene(route,region,{fetchWords:async()=>{fetches++;return words;}});
@@ -38,6 +40,7 @@ assert.equal(fetches,1);
 assert.equal(scene.airT,-12);
 const packed=scene.data().words;
 assert.equal(packed[1],E.ROCK);
+assert.equal(packed[2],materialWord(E.NOITA_TEMPLE,Appearance.VARIANT_1),'a palette word carries its appearance label');
 assert.deepEqual(packed.slice(PALETTE_WORDS),words);
 const fold=createFold(foldConfig);
 // Exact packed-word/byte operations used by terrainId in WGSL.
@@ -58,7 +61,7 @@ for (let k=0;k<1000;k++) {
   layers[query.layer]++;
   const shaderOpen=shaderByte(L.depthAt+index);
   const shaderMaterial=shaderOpen===0||2*Math.abs(depth)<shaderOpen ? shaderByte(index) : shaderByte(L.backdropAt+(x>>>3)+L.blockWidth*(y>>>3));
-  assert.equal(packed[shaderMaterial],query.element);
+  assert.equal(packed[shaderMaterial],materialWord(query.element,query.appearance));
 }
 assert.ok(layers.solid>0 && layers.open>100 && layers.backdrop>100,`all three layers sampled: ${JSON.stringify(layers)}`);
 // Depth 0 is the native raster, everywhere: an open pixel's envelope is at least half a cell.
