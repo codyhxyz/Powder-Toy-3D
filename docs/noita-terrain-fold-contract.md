@@ -65,6 +65,7 @@ Preserve depth, facing, velocity, and run inventory on that handoff.
 Keep terrain damage in global brick coordinates across bands and portals.
 Freeze all writers during capture, including event-driven undo.
 Capture and restore in bounded slabs. A complete snapshot removes stale edits.
+Under Physics V2 the snapshot also carries every resident brick exactly (docs/v2/application-integration.md).
 Native portal handoffs use native entry and destination source coordinates.
 
 The lateral crop boundary is sealed. Treat its caps as explicit domain boundaries,

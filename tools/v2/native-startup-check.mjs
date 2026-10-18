@@ -193,5 +193,6 @@ const outcomes = readFileSync(new URL('../outcomes/engine-v2.js', import.meta.ur
 assert.match(outcomes, /new Simulation\(gpu, nx, ny, nz, \{ debug: false, nativeStartup: true \}\)/);
 assert.match(outcomes, /await Promise\.all\(\[sim\.ready, kernel\.ready, v2\.ready\]\)/);
 const saves = readFileSync(new URL('../../src/wire/saves.js', import.meta.url), 'utf8');
-assert.match(saves, /if \(state\.mode === 'v1'\) await app\.setPhysics\('v1'\)/);
+// (only a V1 session goes back to V1; a V2 session stays on V2: tools/v2/saves-check.mjs)
+assert.match(saves, /if \(state\.mode === 'v1'\) \{\s*if \(session === 'v1'\) await app\.setPhysics\('v1'\)/);
 console.log('native startup CPU: eight manual kernels, retained initialization, awaited app/saved legacy activation, unchanged v1, map replacement and failure propagation passed');
