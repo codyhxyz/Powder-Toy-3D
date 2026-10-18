@@ -51,14 +51,17 @@
 // The march's state (gGrainMode, gPebSteps, ...) is private to the
 // invocation; the tracer resets nothing, one pixel being one invocation.
 
+import { GEOM_ERR_PX_NONE, GEOM_ERR_PX_FULL } from '../../gfx/lodFade.js';
+
 /** A clod's lump: longest semi-axis, cells (CLOD_LUMP_R below; gfx/detail.js derives the clods' fadeM from it). */
 export const CLOD_LUMP_R = 0.17;
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 // The pebbles' hand-off (see "hand-off by footprint" below), shared with
 // gfx/detail.js's GRAINS_FADE_M: the relief as a share of PEBBLE_M, and the
-// stand-in's error in pixels where the geometry starts and where it is all.
+// stand-in's error in pixels where the geometry starts and where it is all
+// (the shared geometry hand-off, gfx/lodFade.js).
 export const PEB_RELIEF_SHARE = 0.5;
-export const PEB_ERR_PX_NONE = 4, PEB_ERR_PX_FULL = 8;
+export const PEB_ERR_PX_NONE = GEOM_ERR_PX_NONE, PEB_ERR_PX_FULL = GEOM_ERR_PX_FULL;
 
 /** Whether either grain switch is on (the GLSL's GRAINS_ANY), for the tracer. */
 export const GRAINS_ANY = (detail = {}) => !!(detail.DETAIL_GRAINS || detail.DETAIL_GRAIN_CLUSTERS);

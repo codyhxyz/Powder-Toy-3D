@@ -37,15 +37,16 @@ function deferred() {
 function watch(p) { let done = false; p.then(() => { done = true; }, () => { done = true; }); return () => done; }
 // The gate is exercised with a feature it gates: Pebbles and grains up close
 // (their geometry starts at 6.25 mm per pixel, gfx/detail.js GRAINS_FADE_M).
-// Smooth up close used to be the one, then Loose clumps; their derived fades
-// (CUBIC_ERR's shape error over 1 px; a clod's lump at 1 px) show from any
-// ordinary view, so the gate leaves them in the base variant.
+// Loose clumps' derived fade (a clod's lump at 1 px) shows from any ordinary
+// view, so the gate leaves them in the base variant.
 const GATED = 'DETAIL_GRAINS';
 const settings = () => ({ view: 'realistic', upscale: 'quality', detail_grains: true });
 {
   const balanced = gateVariants({ view: 'realistic', detail_smoothClose: true });
-  assert.equal(balanced.base.DETAIL_CUBIC_CLOSE, 1, 'Smooth up close is in the base variant');
-  assert.equal(balanced.nearFadeM, 0, 'nothing left to gate with Smooth up close alone');
+  // its hand-off (gfx/lodFade.js GEOM_ERR_PX_NONE pixels of shape error) starts
+  // inside the gate's always-in footprint, so Balanced still gates it
+  assert.equal(balanced.base.DETAIL_CUBIC_CLOSE, undefined, 'Smooth up close is gated');
+  assert(balanced.nearFadeM > 0, 'Smooth up close sets the near footprint');
 }
 function fakeVolume() {
   const pipes = new Map(), requests = [];

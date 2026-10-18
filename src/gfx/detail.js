@@ -15,7 +15,7 @@
 // GLSL had `#define <define> 1`), so a switched-off feature costs nothing.
 
 import { CELL_M } from '../scale.js';
-import { DETAIL_FADE_LO, DETAIL_FADE_HI } from './lodFade.js';
+import { DETAIL_FADE_LO, DETAIL_FADE_HI, GEOM_ERR_PX_NONE, GEOM_ERR_PX_FULL } from './lodFade.js';
 import { FINE_1_M, FLOW_MAX, MEDIA_FLOW_PERIOD } from '../shaders/gfx/mediaDetail.js';
 import { CAP_LAMBDA_MAX_M } from '../shaders/gfx/liquidDetail.js';
 import { CLOD_LUMP_R, PEB_RELIEF_SHARE, PEB_ERR_PX_NONE } from '../shaders/gfx/grains.js';
@@ -64,10 +64,11 @@ const CLODS_FADE_M = DETAIL_FADE_HI * 2 * CLOD_LUMP_R * CELL_M;   // m per pixel
 // projected to the screen, stays under τ pixels. Lindstrom et al. 1996
 // ("Real-Time, Continuous Level of Detail Rendering of Height Fields", §6)
 // single out τ = 1 px as "small enough that virtually no popping can be seen";
-// Nanite's cluster LOD keeps its projected error under a pixel too. So the
-// cubic share is 0 while the error is under CUBIC_ERR_PX_NONE pixels and 1
-// from CUBIC_ERR_PX_FULL, one octave on, as the material LOD's fade (above)
-// spans one octave; across the blend the drawn error peaks at 1.08 px.
+// Nanite's cluster LOD keeps its projected error under a pixel too. The cubic
+// share is 0 while the error is under CUBIC_ERR_PX_NONE pixels and 1 from
+// CUBIC_ERR_PX_FULL, one octave on: the shared geometry hand-off and its cost
+// trade (gfx/lodFade.js GEOM_ERR_PX_*; at 1-2 px the drawn error would peak
+// at 1.08 px across the blend).
 // CUBIC_ERR is the error: the largest deviation in shape of the far reading
 // (trilinear, blended toward cubic by the thin mask) from the cubic one,
 // measured over 11 canonical clumps of 1-27 cells (lone, pair, line, L,
@@ -80,9 +81,9 @@ const CLODS_FADE_M = DETAIL_FADE_HI * 2 * CLOD_LUMP_R * CELL_M;   // m per pixel
 // round, an offset rather than a shard, which the blend morphs over its octave
 // (Hoppe's geomorphs, Progressive Meshes 1996, hide LOD pops the same way).
 export const CUBIC_ERR = 0.23;            // cells
-export const CUBIC_ERR_PX_NONE = 1, CUBIC_ERR_PX_FULL = 2;   // px
-// = 0.069 m/px: 49 m away at 1080p and 75° vertical field of view
-// (2·tan(37.5°)/1080 = 1.42 mrad per pixel), all of it nearer than 24 m
+export const CUBIC_ERR_PX_NONE = GEOM_ERR_PX_NONE, CUBIC_ERR_PX_FULL = GEOM_ERR_PX_FULL;   // px
+// = 17 mm/px: 12 m away at 1080p and 75° vertical field of view
+// (2·tan(37.5°)/1080 = 1.42 mrad per pixel), all of it nearer than 6 m
 const CUBIC_FADE_M = CUBIC_ERR * CELL_M / CUBIC_ERR_PX_NONE;   // m per pixel
 // Smoke filaments start once their coarser octave (FINE_1_M = 20 cm, one
 // cycle per lattice cell) passes the material LOD's fade-out (lodFade:
