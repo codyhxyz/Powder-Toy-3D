@@ -15,18 +15,13 @@
 // GLSL had `#define <define> 1`), so a switched-off feature costs nothing.
 
 import { CELL_M } from '../scale.js';
+import { DETAIL_FADE_LO, DETAIL_FADE_HI } from './lodFade.js';
+import { FINE_1_M } from '../shaders/gfx/mediaDetail.js';
 
 export const BENCH_W = 1280, BENCH_H = 800;   // px, the benchmark viewport
 
-// Material texture LOD (shaders/gfx/surface.js lodFade): detail of spatial
-// frequency f is fully drawn up to DETAIL_FADE_LO cycles per pixel and gone at
-// DETAIL_FADE_HI. This is what trilinear mipmapping does to a texture (Minecraft's
-// Mipmap Levels; any GPU): mip 0 keeps every frequency up to Nyquist, 0.5 cycles
-// per pixel, and the blend into mip 1 averages that finest band away by 1 cycle
-// per pixel, where a pixel's box filter (TAA's jittered accumulation) would
-// average it to its mean anyway. Fading earlier (0.15, then 0.25) washed
-// textures out a few metres from the camera: bark was smooth plastic.
-export const DETAIL_FADE_LO = 0.5, DETAIL_FADE_HI = 1.0;
+// Material texture LOD: 0.5–1 cycles per pixel, the mipmapping rule (gfx/lodFade.js).
+export { DETAIL_FADE_LO, DETAIL_FADE_HI };
 
 // Cost tiers, by extra GPU ms per frame (measured as above).
 export const COST_LOW_MS = 0.5;       // below this: low
@@ -77,11 +72,15 @@ export const CUBIC_ERR_PX_NONE = 1, CUBIC_ERR_PX_FULL = 2;   // px
 // = 0.069 m/px: 49 m away at 1080p and 75° vertical field of view
 // (2·tan(37.5°)/1080 = 1.42 mrad per pixel), all of it nearer than 24 m
 const CUBIC_FADE_M = CUBIC_ERR * CELL_M / CUBIC_ERR_PX_NONE;   // m per pixel
-// Smoke filaments start once their coarser octave (FILAMENT_1_M = 20 cm)
-// passes the material LOD's fade-out (lodFade: DETAIL_FADE_HI cycles per
-// pixel). The finer media sampling and flow-following apply at any distance
-// (no fadeM: always in).
-const MEDIA_FINE_FADE_M = DETAIL_FADE_HI * 0.2;   // m per pixel
+// Smoke filaments start once their coarser octave (FINE_1_M = 20 cm, one
+// cycle per lattice cell) passes the material LOD's fade-out (lodFade:
+// DETAIL_FADE_HI cycles per pixel), which holds for a medium too: TAA
+// converges to the pixel's box filter, zero at 1 cycle per pixel, and the
+// along-ray averaging dims an octave at every distance alike (derivation in
+// shaders/gfx/mediaDetail.js). At 1080p and 75° vertical FOV: 141 m. The
+// finer media sampling and flow-following apply at any distance (no fadeM:
+// always in).
+const MEDIA_FINE_FADE_M = DETAIL_FADE_HI * FINE_1_M;   // m per pixel
 // Liquid ripples (shaders/gfx/liquidDetail.js) start as their longest new
 // octave (24.5 cm) passes the same fade-out; the meniscus, over the capillary
 // length (2.7 mm for water), is averaged away once a pixel spans more than

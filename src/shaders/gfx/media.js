@@ -154,18 +154,13 @@ fn gasDensity(p0: vec3f, warp: f32, m: ptr<function, vec4f>, nf: ptr<function, v
   }
   var d = gasBase(mf);
   d = vec3f(gasDetail(d.xy, n), d.z);${fine ? `
-  let fw = fineWeights(p);
-  var f1 = vec4f(NOISE_MEAN);
-  var f2 = vec4f(NOISE_MEAN);
-  if (fw.x > 0.0) {
-    fineNoise(p, fw, &f1, &f2);
-    d = vec3f(gasFine(d.xy, fw, f1, f2), d.z);
-  }` : ''}
+  let fine = gasFine(p, d);   // the filaments (xy) and the flame's wrinkle (z)
+  d = vec3f(fine.xy, d.z);` : ''}
   if (d.z > 0.0) {
     let nfv = gasNoise(p, MD_RISE.z, FLAME_STRETCH, FLAME_SCALE);
     *nf = nfv;
     var v = d.z * (1.0 + FLAME_SPLIT * (2.0 * nfv.b - 1.0)) + FLAME_DETAIL * (nfv.b - NOISE_MEAN);${fine ? `
-    if (fw.x > 0.0) { v += flameFine(fw, f1, f2); }` : ''}
+    v += fine.z;` : ''}
     d.z = smoothstep(FLAME_LEVEL - FLAME_SOFT, FLAME_LEVEL + FLAME_SOFT, v);
     // flamelets: the soot on the sheets where the wisp noise crosses its mean
     let sheet = (FLAME_SHEET_EXP + 1.0) * pow(1.0 - abs(2.0 * nfv.g - 1.0), FLAME_SHEET_EXP);
