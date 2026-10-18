@@ -48,6 +48,19 @@ const MS_PER_CELL_STEP = Math.sqrt((G_REAL * CELL_M) / SIM_GRAVITY);   // m/s pe
 // screen; a slower Speed (or a real-time POV clock) shows it at its own pace.
 export const STEP_S = Math.sqrt((CELL_M * SIM_GRAVITY) / G_REAL);   // physical s per step
 
+// The foam raft's threshold (liquidFoam): the spread of the noise it is cut
+// from, and the normal quantile that cuts it. One octave of mNoiseD's value
+// is a trilinear blend of uniform hashes (variance 1/12) with smoothstep
+// weights s, so its variance is (1/12)·E[s² + (1 − s)²]³, E = 26/35 over a
+// cell (∫s² = 13/35): σ ≈ 0.185 (200k samples of the WGSL noise: 0.184).
+// Its quantiles are within 0.01 of a normal's, so a cover's threshold is
+// σ·Φ⁻¹(1 − cover), Φ⁻¹ by the logistic approximation Φ(x) ≈ 1/(1 + e^(−1.702x))
+// (Haley 1952; error < 0.01): the raft then covers what the far pixels show
+// as its mean (Dupuy & Bruneton 2012, "Real-time animation and rendering of
+// ocean whitecaps": coverage = ½ + ½·erf(threshold / √2σ)).
+const FOAM_NOISE_SD = Math.sqrt((26 / 35) ** 3 / 12);
+const PROBIT_LOGISTIC = 1.702;
+
 // Liquid properties at room temperature: surface tension σ (N/m), density ρ
 // (kg/m³), contact angle θ on ordinary solids and glass (degrees; water on
 // clean glass 0–20°, oils wet nearly everything). Acid is aqueous. Ice is
@@ -260,6 +273,16 @@ fn triNoiseD(p: vec3f, n: vec3f, f: f32, t: f32) -> vec4f {
   if (w.z > TRI_MIN) { let h = mNoiseD(vec3f(p.xy * f, t)); r += w.z * vec4f(h.x, h.yz * f, 0.0); }
   return r / max(w.x * step(TRI_MIN, w.x) + w.y * step(TRI_MIN, w.y) + w.z * step(TRI_MIN, w.z), 1e-6);
 }
+// Where triNoiseD blends planes it averages independent noises, which
+// narrows their spread (by 1/√2 on a 45° face). This factor widens it back,
+// Σw / √(Σw²) over the planes it read (variance-preserving blending: Heitz &
+// Neyret 2018, "High-Performance By-Example Noise using a Histogram-Preserving
+// Blending Operator"), so the foam threshold keeps its coverage on any face.
+fn triSpread(n: vec3f) -> f32 {
+  var w = pow(abs(n), vec3f(TRI_POW));
+  w *= step(vec3f(TRI_MIN * (w.x + w.y + w.z)), w);
+  return (w.x + w.y + w.z) / max(length(w), 1e-6);
+}
 
 // Aerated water is rough: breaking, churning surfaces carry slopes of
 // ~0.3 over ~15 cm (Cox & Munk's slope variance at gale force is ~0.05,
@@ -268,8 +291,9 @@ const ROUGH_LAMBDA_M: f32 = 0.15;    // m, size of the churned bumps
 const ROUGH_FREQ: f32 = CELL_M / ROUGH_LAMBDA_M;   // cycles/cell
 const ROUGH_SLOPE: f32 = 0.3;        // rms-ish slope at full aeration, per unit noise gradient
 const ROUGH_EVOLVE: f32 = ${g(ROUGH_RATE_S * STEP_S)};   // noise units per step: churn decorrelates in ~1/3 s
-// Foam: a bubble raft, patchy (two octaves of noise thresholded to the
-// covered fraction), white by multiple scattering: fresh foam reflects ~55%
+// Foam: a bubble raft, patchy (two octaves of noise thresholded at the
+// quantile that leaves the covered fraction white: FOAM_NOISE_SD, above, so
+// near and far pixels show the same amount of it), white by multiple scattering: fresh foam reflects ~55%
 // of light (Whitlock et al. 1982), scattered nearly diffusely and wrapping
 // past the terminator, since light goes in and out of the bubble layer. As
 // the aeration decays the covered fraction shrinks, so patches thin into the
@@ -286,6 +310,11 @@ const FOAM_FREQ2: f32 = CELL_M / FOAM_CLUSTER_M;   // cycles/cell
 const FOAM_OCT2_W: f32 = 0.4;        // its weight (first: 1 − this)
 const FOAM_EVOLVE: f32 = ${g(STEP_S / FOAM_TAU_S)};   // noise units per step (one per FOAM_TAU_S)
 const FOAM_EDGE: f32 = 0.08;         // threshold softness (noise units)
+const FOAM_NOISE_SD: f32 = ${g(FOAM_NOISE_SD)};   // one octave's spread (noise units)
+const FOAM_PROBIT_K: f32 = ${g(1 / PROBIT_LOGISTIC)};   // Φ⁻¹(p) ≈ ln(p / (1 − p)) / 1.702
+// A cover below this is under a ten-thousandth of the surface (invisible); it
+// keeps Φ⁻¹(1 − cover) finite.
+const FOAM_COVER_EPS: f32 = 1e-4;
 const FOAM_ALBEDO: f32 = 0.55;
 const FOAM_WRAP: f32 = 0.5;          // diffuse wrap (0 = Lambert)
 const FOAM_SHIFT: f32 = 29.3;        // lattice offset of the foam noise from the roughness noise
@@ -295,18 +324,34 @@ fn liquidFoam(p: vec3f, n: ptr<function, vec3f>, id: i32, col: ptr<function, vec
   if (ag <= 0.0) { return; }
   let fp = footprint(p);
   let wp = worldPos(p);   // the churn and foam are anchored in the world
-  let r = triNoiseD(wp, *n, ROUGH_FREQ, FU.simClock * ROUGH_EVOLVE);
-  *n = tiltNormal(*n, r.yzw * (ROUGH_SLOPE * ag * lodFade(ROUGH_FREQ, fp) / ROUGH_FREQ));
+  // Each noise is evaluated only while its lodFade weight is above 0 (past
+  // DETAIL_FADE_HI cycles a pixel it is exactly 0, so nothing drawn changes):
+  // the churn's past ~100 m, the clusters' past ~28 m, the raft's past ~84 m
+  // at 1080p and 75° (gfx/detail.js, liquidFoam).
+  let rw = lodFade(ROUGH_FREQ, fp);
+  if (rw > 0.0) {
+    let r = triNoiseD(wp, *n, ROUGH_FREQ, FU.simClock * ROUGH_EVOLVE);
+    *n = tiltNormal(*n, r.yzw * (ROUGH_SLOPE * ag * rw / ROUGH_FREQ));
+  }
   // covered fraction: the pattern where pixels resolve it, its mean beyond
+  // (the coverage itself never fades: whitewater reads from any distance)
   let cover = mix(SPRAY_COVER_MAX, FOAM_COVER_MAX, aer.y) * ag;
   let pw = lodFade(FOAM_FREQ, fp);
   var c = cover;
   if (pw > 0.0) {
     let q = wp + FOAM_SHIFT;
     let t = FU.simClock * FOAM_EVOLVE;
-    let v = mix(triNoiseD(q, *n, FOAM_FREQ, t).x, triNoiseD(q, *n, FOAM_FREQ2, t).x,
-                FOAM_OCT2_W * lodFade(FOAM_FREQ2, fp));
-    c = mix(cover, smoothstep(1.0 - cover - FOAM_EDGE, 1.0 - cover + FOAM_EDGE, v), pw);
+    // the octaves about their mean, blended keeping one octave's spread
+    var v = triNoiseD(q, *n, FOAM_FREQ, t).x - 0.5;
+    let w2 = FOAM_OCT2_W * lodFade(FOAM_FREQ2, fp);
+    if (w2 > 0.0) {
+      v = mix(v, triNoiseD(q, *n, FOAM_FREQ2, t).x - 0.5, w2) * inverseSqrt((1.0 - w2) * (1.0 - w2) + w2 * w2);
+    }
+    v *= triSpread(*n);
+    // white where the noise is past its (1 − cover) quantile: a share cover of the surface
+    let pc = clamp(1.0 - cover, FOAM_COVER_EPS, 1.0 - FOAM_COVER_EPS);
+    let z = FOAM_NOISE_SD * FOAM_PROBIT_K * log(pc / (1.0 - pc));
+    c = mix(cover, smoothstep(z - FOAM_EDGE, z + FOAM_EDGE, v), pw);
   }
   if (c <= 0.0) { return; }
   var sunVis = vec3f(1.0);
