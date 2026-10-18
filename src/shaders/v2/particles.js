@@ -7,6 +7,7 @@ import { STAGE } from '../../gpu/kernels.js';
 import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG } from '../../v2/dynamics-reference.js';
 import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
+import { contactRulesWGSL, withContactTable, airborneReactWGSL, airborneClaimWGSL } from './airborne.js';
 export { PARTICLE_CAP };
 export const DynamicParams = uniformStruct('DynamicParams', {
   tick: 'u32', busyIn: 'u32', busyOut: 'u32', mode: 'u32', origin: 'vec3i', sequence: 'u32',
@@ -494,9 +495,48 @@ export function particlesWGSL(g, nativeHead, stage) {
     }
     particles[t]=p; let local=vec3i(floor(p.position))-P.origin; if (inGrid(local)) { dWake(local); }
   `);
+  // ---- airborne matter takes part (src/v2/airborne.js): after the tick's landings, each flying
+  // packet claims the cell it is in, elect breaks ties as for impacts, and the winner runs the native
+  // contact rules on the pair. A loser waits a tick, as a cell whose block another owns does.
+  if (stage === 'reactClaim') return h + airborneClaimWGSL + main64(/* wgsl */ `
+    if (t >= D_CAP || dPoolEmpty() || !slotLive(t) || particles[t].id == 0u) { return; }
+    let particle = particles[t];
+    flight[t] = DFlight(vec4u(D_NONE,D_NONE,0u,0u),vec4f(0));
+    if ((particle.c0 & 255u) >= D_PHOTON) { return; }
+    let local = dWrap(particle.position - vec3f(P.origin));
+    if (any(local<vec3f(0)) || any(local>=vec3f(${g.nx}.0,${g.ny}.0,${g.nz}.0))) { return; }
+    let s = slotOf(vec3i(floor(local))); let kind = cls(cid(loadCore(s)));
+    // only through air and gas: a packet inside other matter lands or strikes it this tick or the next
+    if (kind != C_AIR && kind != C_GAS) { return; }
+    let key = dKey(particle.id ^ D_REACT_SALT);
+    flight[t] = DFlight(vec4u(s,D_NONE,D_REACT_KIND,key),vec4f(0));
+    dClaim(s,0u,key);
+  `);
+  if (stage === 'react') {
+    const rh = head(g, (grid, o) => withContactTable(nativeHead(grid, o)));
+    return rh + contactRulesWGSL() + airborneReactWGSL + main64(/* wgsl */ `
+    if (t >= D_CAP || dPoolEmpty() || !slotLive(t) || particles[t].id == 0u) { return; }
+    let f = flight[t]; let s = f.destination.x;
+    if (f.destination.z != D_REACT_KIND || !dWon(s,0u,t)) { return; }
+    dFree(s,0u);
+    var particle = particles[t]; let p = cellOf(s);
+    let before = loadMaterial(s);
+    let r = dReact(dMaterial(particle), before, dReactOutside(p), bitcast<i32>(dKey(particle.id ^ D_REACT_SALT)));
+    if (r.state == D_REACT_REFUSED) { return; }
+    if (any(r.source != vec2u(0u))) { noteEnergySource(p,r.source); }
+    if (any(r.sink != vec2u(0u))) { noteEnergySink(p,r.sink); }
+    storeMaterial(s,before,r.host); dWake(p);
+    if (r.state == D_REACT_FLYING || r.state == D_REACT_DISPLACED) {
+      particle.c0 = r.particle.core.x; particle.tail = vec4u(r.particle.core.yzw,bitcast<u32>(r.particle.bank));
+      particles[t] = particle; return;
+    }
+    // used up, or landed in air: the packet's death as the particle lane writes it, no hold surviving it
+    particles[t].id = 0u; atomicSub(&control[0],1u); noteDead(t); atomicStore(&control[D_HELD+t],0u);
+  `);
+  }
   throw new Error(`Unknown particles stage ${stage}`);
 }
-export const PARTICLE_STAGES = ['clear','integrate','elect','impact','deposit','holdSelect','holdCOM','holdApply','bodyCouple'];
+export const PARTICLE_STAGES = ['clear','integrate','elect','impact','deposit','holdSelect','holdCOM','holdApply','bodyCouple','reactClaim','react'];
 
 export const WGSL_CHECK = PARTICLE_STAGES.map(stage => ({ name: `v2particles_${stage}`, kind: 'compute',
   code: g => particlesWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,PARTICLES_LAYOUT,'EMPTY'], tool: true }));
