@@ -26,10 +26,10 @@ const prefix=new Float32Array(CONTACT_ROWS.length*8);
 v2Rows().forEach((r,i)=>prefix.set([r.cls,r.drop,r.vt,r.dens,r.yieldHead,r.damp,r.fade,0],i*8));
 const memory=v2Table(), bits=new Uint32Array(memory.buffer), signed=new Int32Array(memory.buffer);
 assert.equal(layout.rowOffset,prefix.length);
-assert.equal(layout.rowStride,40);
-assert.equal(layout.rxOffset,prefix.length+ELEMENTS.length*40);
+assert.equal(layout.rowStride,44);   // + blastInto, blastOf, blastQ, blastPuff (V1 blast into matter)
+assert.equal(layout.rxOffset,prefix.length+ELEMENTS.length*44);
 assert.equal(layout.rxStride,12);
-assert.equal(memory.length,prefix.length+ELEMENTS.length*40+14*12);
+assert.equal(memory.length,prefix.length+ELEMENTS.length*44+14*12);
 assert.deepEqual(bits.slice(0,prefix.length),new Uint32Array(prefix.buffer),'EV prefix raw bits unchanged');
 assert.deepEqual(bits,new Uint32Array(appendContactTable(prefix,CONTACT_ROWS,CONTACT_REACTIONS).buffer));
 assert.throws(()=>appendContactTable(prefix.subarray(1),CONTACT_ROWS,CONTACT_REACTIONS),/prefix length/);
@@ -44,7 +44,7 @@ for(const value of [-2147483648,-123456789,-1,0,2147483647]) {
 }
 
 // Independent ABI expectation: cost/emitter are f32, not integer channels.
-const rowIntegers=new Set('kind capacity offset spawnQ spawnLife hotQ hotOut hotL hotGas hotOf coldQ coldOut coldL coldOf meltQ meltInto igniteQ flashQ burn heat flameQ ash blast blastAir acid edible fizz bed rots singFood conductor wire'.split(' '));
+const rowIntegers=new Set('kind capacity offset spawnQ spawnLife hotQ hotOut hotL hotGas hotOf coldQ coldOut coldL coldOf meltQ meltInto igniteQ flashQ burn heat flameQ ash blast blastAir acid edible fizz bed rots singFood conductor wire blastInto blastOf blastQ blastPuff'.split(' '));
 const scalar=new Float32Array(1), scalarBits=new Uint32Array(scalar.buffer);
 const declarations=[];
 for(const [name,struct,rows,schema,offset,stride,isInteger] of [

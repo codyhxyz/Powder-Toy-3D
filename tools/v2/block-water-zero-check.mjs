@@ -23,6 +23,7 @@ assert.deepEqual(C.CONTACT_ROWS[E.WATER], {
   meltQ: 65536, meltInto: E.WATER, igniteQ: 65536, flashQ: 65536,
   burn: 0, heat: 0, flameQ: 1093, ash: 1, blast: 0, blastAir: 0, blastChance: 0,
   acid: 0, edible: 0, fizz: 0, bed: 0, rots: 0, singFood: 1, conductor: 1, cost: 100, wire: 0, emitter: 0,
+  blastInto: -1, blastOf: 0, blastQ: 0, blastPuff: 0,   // no blast: water's shortcut is unchanged
 });
 assert.deepEqual(PHASE_ROWS[E.WATER], {
   hot: { T: 100, into: 'STEAM', latent: 540, puff: 1700 }, cold: { T: 0, into: 'ICE', latent: 80 },
@@ -130,7 +131,7 @@ assert(shader.includes('k0 == C_GAS && k1 == C_AIR'));
 assert(shader.includes('k1 == C_GAS && k0 == C_AIR'));
 assert(shader.includes('if (clsOf(cs[i]) == C_GAS && cAge(cs[i]) < DIFFUSE_AGE)'));
 assert(shader.indexOf('if (zeroWater) { return; }') < shader.indexOf('  // R2 topple'));
-assert(shader.includes('events[slot] = pending[i] | requests[i];'));
+assert(shader.includes('events[slot] = ctMergeRequest(pending[i], requests[i]);'));   // flags OR, the larger puff
 assert(v2SupportWGSL(g).includes('liquidScratch[s].x=(liquidScratch[s].x&0xffffff00u)|air|(oxygen<<2u)|(co2<<4u)|(gas<<6u);'));
 assert(!v2SupportWGSL(g).includes('zeroWater'), 'support snapshots remain unconditional for AIR/WATER and halo targets');
 for (const code of ['', contactWGSL + '\n', 'fn contactBlock() {}']) assert(!v2BlockWGSL(g, code).includes('var zeroWater'));

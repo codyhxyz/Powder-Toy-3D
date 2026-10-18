@@ -171,6 +171,9 @@ const f = n => Number.isInteger(n) ? `${n}.0` : String(n);
 export const RESET_SELECTION = 'atomicStore(&control[2],0u); atomicStore(&control[3],D_NONE); atomicStore(&control[17],0u);';
 // The weakest breakable row: a pressure difference at or under it fractures nothing.
 const MIN_BREAK_STRENGTH = Math.min(...dynamicsRows.filter(r => r.breakInto >= 0).map(r => r.strength));
+// The most sensitive explosive's crush pressure (V1 blast.crushP, Pa): at or under it none goes off.
+const MIN_CRUSH = Math.min(...dynamicsRows.filter(r => r.crush > 0).map(r => r.crush));
+const crushTable = dynamicsRows.filter(r => r.crush > 0).map(r => `case ${r.id}u: { return ${f(r.crush)}; }`).join('\n');
 const blastTables = dynamicsRows.filter(r => r.energy > 0 || r.id===E.SINGULARITY).map(r => `case ${r.id}u: { return DExplosive(${f(r.energy)},${r.product}u,${f(r.productT)},${r.productCtype}u); }`).join('\n');
 function head(g, nativeHead) {
   return /* wgsl */ `${dynamicsCommon(g,nativeHead)}
@@ -276,6 +279,34 @@ fn dChargeShare(source: u32, p: vec3i) -> vec3f {
   return vec3f(0);
 }
 fn dPressureAt(p0: vec3i) -> f32 { let p=mEdge(p0); if (!inGrid(p) || !mAirPressure()) { return 0.0; } return air[brickOfCell(p)].vp.w; }
+fn dCrush(id: u32) -> f32 { switch id { ${crushTable} default: { return 0.0; } } }
+// V1 keeps pressure per cell (react.js b.w); v2 keeps it per 4³ brick. A cell's
+// pressure is the brick field read trilinearly between brick centres, as V1's
+// own pressure sampler reads its field (render.js pressureAt), with V1's local
+// singularity rule on top: its cell holds its vacuum, an open cell touching one
+// SING_RING of it (air.js source holds the brick at those cells' mean).
+fn dBrickPressure(b0: vec3i) -> f32 {
+  let p=clamp(mEdge(b0*4),vec3i(0),vec3i(NX-1,NY-1,NZ-1)); return air[brickOfCell(p)].vp.w;
+}
+fn dPressureCell(p: vec3i) -> f32 {
+  let x=(vec3f(p)+0.5)*0.25-0.5; let i0=vec3i(floor(x)); let w1=x-vec3f(i0); var s=0.0;
+  for (var k=0u;k<8u;k++) {
+    let o=vec3i(i32(k&1u),i32((k>>1u)&1u),i32((k>>2u)&1u)); let w=mix(1.0-w1,w1,vec3f(o));
+    s+=dBrickPressure(i0+o)*w.x*w.y*w.z;
+  }
+  let core=loadMaterial(slotOf(p)).core;
+  if (cid(core)==${E.SINGULARITY}u) { return contactVacuum(core)*${f(LEGACY_PRESSURE_PA)}; }
+  for (var a=0u;a<3u;a++) { for (var side=-1;side<=1;side+=2) {
+    let q=mEdge(p+dAxis(a)*side);
+    if (inGrid(q)) { s=min(s,${f(PHYS.SING_RING)}*contactVacuum(loadMaterial(slotOf(q)).core)*${f(LEGACY_PRESSURE_PA)}); }
+  } }
+  return s;
+}
+// What V1 reads as a neighbour's pressure (react.js): 0 past the grid and in a solid (it holds no air).
+fn dOpenPressure(p0: vec3i) -> f32 {
+  let p=mEdge(p0); if (!inGrid(p) || !mAirPressure() || cls(cid(loadMaterial(slotOf(p)).core))==1u) { return 0.0; }
+  return dPressureCell(p);
+}
 // A superset of the bricks where couplePlan can flag anything. The powder-fall
 // and jet-less lip rules read cells, so their modes keep every brick. Otherwise
 // a cell needs wind in its own brick (every lift is >0) or a face-neighbour
@@ -284,11 +315,15 @@ fn dPressureAt(p0: vec3i) -> f32 { let p=mEdge(p0); if (!inGrid(p) || !mAirPress
 fn dCoupleActive(b: u32) -> bool {
   if (P.gravMode==2u || P.edge!=0u || P.nativeJets==0u) { return true; }
   if (mAirVelocity() && any(air[b].vp.xyz!=vec3f(0))) { return true; }
-  let base=cellOf(b*64u);
-  for (var a=0u;a<3u;a++) {
-    if (!(abs(dPressureAt(base+dAxis(a)*4)-dPressureAt(base-dAxis(a)*4))<=${f(MIN_BREAK_STRENGTH)})) { return true; }
-  }
-  return false;
+  // A cell's pressure (dPressureCell) blends the bricks of this one's 3³ block, or is a
+  // singularity's pin (a brick below zero holds one): the difference across a cell is at
+  // most twice their largest magnitude, the pressure on an explosive at most that magnitude.
+  if (!mAirPressure()) { return false; }
+  let base=cellOf(b*64u)&vec3i(-4); var most=0.0;
+  for (var z=-1;z<=1;z++) { for (var y=-1;y<=1;y++) { for (var x=-1;x<=1;x++) {
+    let pr=dPressureAt(base+4*vec3i(x,y,z)); most=max(most,abs(pr)); if (pr<0.0) { return true; }
+  } } }
+  return !(2.0*most<=${f(MIN_BREAK_STRENGTH)} && most<=${f(MIN_CRUSH)});
 }
 fn dUnsupported(start: vec3i) -> bool {
   var p=start;
@@ -573,9 +608,17 @@ var<workgroup> wgCharges: u32;
     let m = loadMaterial(t); let id = cid(m.core); let k = cls(id);
     if (id != 0u && (events[t]&1u)==0u) {
       let wind = select(vec3f(0),air[brickOfCell(p)].vp.xyz,mAirVelocity());
+      // V1 react.js: an explosive under more than its crushP goes off (setOff),
+      // the highest pressure on it its own (a solid holds none) or an open neighbour's.
+      if (dCrush(id)>0.0 && mAirPressure()) {
+        var on=-1e30; if (k!=1u) { on=dPressureCell(p); }
+        for (var a=0u;a<3u;a++) { on=max(on,max(dOpenPressure(p+dAxis(a)),dOpenPressure(p-dAxis(a)))); }
+        if (on>dCrush(id)) { events[t]|=1u; noteEvents(t,events[t]); dWake(p); plans[t]=plan; return; }
+      }
       if (k==1u && dBreak(id)>=0) {
+        // V1 react.js: the pressure difference across me along any axis; a solid neighbour holds no air.
         var difference = 0.0;
-        for (var a=0u;a<3u;a++) { difference = max(difference,abs(dPressureAt(p+dAxis(a)*4)-dPressureAt(p-dAxis(a)*4))); }
+        for (var a=0u;a<3u;a++) { difference = max(difference,abs(dOpenPressure(p+dAxis(a))-dOpenPressure(p-dAxis(a)))); }
         if (difference > dStrength(id)) { plan.flags=2u|(u32(dBreak(id))<<8u); }
       } else if (k==2u || k==3u) {
         var exposed = false; for (var a=0u;a<3u;a++) { exposed = exposed || dOpen(p+dAxis(a)) || dOpen(p-dAxis(a)); }

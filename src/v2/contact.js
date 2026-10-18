@@ -7,6 +7,8 @@ import { PHYS, NOMINAL_STEP_RATE } from '../physics.js';
 import { fallVelocity } from './fall.js';
 import { CELL_M } from '../scale.js';
 import { EMITTERS } from '../rays.js';
+import { CEDAR_BASE } from '../appearance.js';
+import { legacyPressureToPa } from './pressure.js';
 
 import { FUEL_Q } from './layout.js';
 import { PHASE_ROWS, phaseTemperatureQ, phaseOffsetEnergy, phaseLatentEnergy, encodePhaseEnergy } from './phase.js';
@@ -22,6 +24,30 @@ export const DUST_MIN_FALL_AGE = Math.ceil(PHYS.DUST_LIFT_V * NOMINAL_STEP_RATE 
 const q = T => Math.round((T + 273.25) * 4);
 const cap = ELEMENTS.map(e => Math.max(1, Math.round(e.cap * 64)));
 const offsets = PHASE_ROWS.map(r => r.offset);
+// V1's moss and fungus damp (physics.js DAMP_REACH, DAMP_DRY_T; shaders/activity.js
+// dampOf): DAMP_REACH beside liquid water, else one less than the dampest
+// grower beside it, 0 at or above DAMP_DRY_T. Cedar-leaf moss keeps its look
+// and carries that damp as CEDAR_BASE + damp (appearance.js appearanceCtype).
+export const CONTACT_DAMP_REACH = PHYS.DAMP_REACH;
+export const CONTACT_DAMP_DRY_Q = q(PHYS.DAMP_DRY_T);
+export const CONTACT_CEDAR_BASE = CEDAR_BASE;
+// V1's dust cloud (physics.js DUST_MEC_NB, DUST_RICH_AIR; react.js "dust clouds"):
+// the dust faces and air faces of six that a suspended dust cell needs.
+export const CONTACT_DUST_MEC_NB = PHYS.DUST_MEC_NB;
+export const CONTACT_DUST_RICH_AIR = PHYS.DUST_RICH_AIR;
+// V1's temperature sensor fires on a neighbour hotter than it by more than
+// MATTER_REST_T (electricity.js electric, TSNS), here in 1/4 K.
+export const CONTACT_TSNS_MARGIN_Q = PHYS.MATTER_REST_T * 4;
+// A request's puff: V1's pressure from gas set free (react.js puffP, Pr += ...),
+// in Pa (pressure.js legacyPressureToPa), above the request's flag byte. It
+// rides with the GAS request (2) and the air source adds it once.
+export const CONTACT_PUFF_UNIT = 256;
+// V1 clamps a cell's pressure at P_MAX (react.js clamp(Pr, P_MIN, P_MAX)).
+export const CONTACT_PUFF_MAX_PA = Math.round(legacyPressureToPa(PHYS.P_MAX));
+// Any puff at all moves at least one Pa: zero is the plain GAS request's default.
+const puffPa = legacyP => legacyP > 0 ? Math.max(1, Math.round(legacyPressureToPa(Math.min(PHYS.P_MAX, legacyP)))) : 0;
+// react.js puffP: puff volumes at ambient per volume, scaled from water flashing to steam.
+const puffP = puff => PHYS.STEAM_BOIL_PUFF * puff / PHYS.STEAM_EXPANSION;
 
 const outSpecs = [];
 function spec(into = 'FIRE') {
@@ -61,6 +87,11 @@ export const CONTACT_ROWS = ELEMENTS.map(e => {
     fizz: +(e.fizz > 0), bed: +e.mossBed, rots: +e.rots, singFood: +(e.id !== E.EMPTY && !e.singProof),
     conductor: +CONDUCTS[e.id], cost: SPARK_COST[e.id], wire: +WIRE[e.id],
     emitter: (EMITTERS[e.key] ?? 0) * 4,
+    // V1 react.js explosives: lit, it becomes pickOut(INTO[PH_BLAST]) at blast.T
+    // with blast.P on its cell. A blast whose product is matter (thermite's
+    // LAVA of METAL) is that conversion and puff, not a charge for the blast pass.
+    blastInto: e.blast?.into ? E[e.blast.into] : -1, blastOf: E[e.blast?.of] ?? 0,
+    blastQ: e.blast ? q(e.blast.T) : 0, blastPuff: e.blast ? puffPa(e.blast.P) : 0,
   };
 });
 export const CONTACT_PRODUCTS = outSpecs;
@@ -72,6 +103,8 @@ export const CONTACT_REACTIONS = REACTIONS.map(r => ({
   heat: Math.round((r.heat ?? 0) * 256), gas: +(!!r.puff),
   // Hydrogen's adiabatic oxygen flame: existing elements.js reaction content.
   ceiling: q(r.a === 'HYDROGEN' ? (r.b === 'OXYGEN' ? 2800 : 2254) : 10000),
+  // V1 react.js: each cell of the pair takes half the puff's pressure (rxP).
+  puff: puffPa(0.5 * puffP(r.puff ?? 0)),
 }));
 const mech = mechanisms();
 export const CONTACT_RX_INDEX = mech.lookup;
@@ -269,7 +302,7 @@ export function ctElectric(input, ns, random) {
     if (b.valid === 0) continue;
     if (b.id === c.id) { off = off || (ctLife(b) > 0 && ctLife(b) < 10); on = on || ctLife(b) >= 10; }
     if (ctLive(b)) { p = p || b.id === E.PSCN; n = n || b.id === E.NSCN; }
-    hot = hot || (b.id !== E.EMPTY && b.id !== E.TSNS && ctRow(b.id).wire === 0 && b.tq > c.tq);
+    hot = hot || (b.id !== E.EMPTY && b.id !== E.TSNS && ctRow(b.id).wire === 0 && ctF(b.tq - c.tq) + ctTemperatureRemainder(b) - ctTemperatureRemainder(c) > CONTACT_TSNS_MARGIN_Q);
     dc = dc || b.id === E.BATTERY;
     if (b.id === E.BATTERY || (b.id === E.TSNS && ctLife(b) >= 1)) best = 400;
     else if (ctLive(b) && ctConductsInto(b.id, c.id)) best = Math.max(best, ctDiv(b.spark, 9));
@@ -312,6 +345,18 @@ export function ctElectric(input, ns, random) {
   c.spark = ph + 9 * level;
   if (ph > 0 || (c.id === E.LAMP && level > 0)) c.busy = 1;
   return c;
+}
+
+// appearance.js physicalCtype for the growers: cedar-leaf moss holds its damp
+// as CONTACT_CEDAR_BASE + damp; fungus and plain moss hold the damp itself.
+export function ctGrowerDamp(id, ctype) {
+  if (id === E.MOSS && ctype >= CONTACT_CEDAR_BASE && ctype <= CONTACT_CEDAR_BASE + CONTACT_DAMP_REACH) return ctype - CONTACT_CEDAR_BASE;
+  return ctype;
+}
+// A GAS request with its puff (Pa), keeping the larger of two unconsumed puffs.
+export function ctPuff(request, pressure) {
+  const held = ctDiv(request, CONTACT_PUFF_UNIT);
+  return (request - held * CONTACT_PUFF_UNIT) | 2 | (Math.max(held, pressure) * CONTACT_PUFF_UNIT);
 }
 
 export function ctStep(input, ns, seed) {
@@ -360,11 +405,12 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (b.id === E.CO2) co2++;
     if (b.id === E.CLOUD) cloud++;
     if (b.id === E.PLANT) plant++;
-    if (b.id === E.FUNGUS && b.ctype > 0) fungus++;
-    if (b.id === E.MOSS && b.ctype > 0) moss++;
+    if (b.id === E.FUNGUS && ctGrowerDamp(b.id, b.ctype) > 0) fungus++;
+    if (b.id === E.MOSS && ctGrowerDamp(b.id, b.ctype) > 0) moss++;
     if (br.bed !== 0) bed++;
-    if (b.id === E.WATER || b.id === E.SALTWATER) damp = 4;
-    if (b.id === E.MOSS || b.id === E.FUNGUS) damp = Math.max(damp, b.ctype - 1);
+    // V1 dampOf: liquid water wets a grower (saltwater does not); a grower passes one less on.
+    if (b.id === E.WATER) damp = CONTACT_DAMP_REACH;
+    if (b.id === E.MOSS || b.id === E.FUNGUS) damp = Math.max(damp, ctGrowerDamp(b.id, b.ctype) - 1);
     if (b.id === E.DUST) dust++;
     hotTouch = hotTouch || (br.kind !== 0 && br.kind !== 4 && b.tq >= r.igniteQ);
     fuseTouch = fuseTouch || (b.id === E.FUSE && b.life <= 102);
@@ -390,7 +436,16 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     const canBlast = r.blastAir === 0 || exposed || fire > 0;
     if (canBlast && (c.tq >= r.igniteQ || hotTouch || (fire > 0 && r.blastChance > 0))) {
       c.busy = 1;
-      if (c.tq >= r.igniteQ || hotTouch || random < r.blastChance) c.request = c.request | 1;
+      if (c.tq >= r.igniteQ || hotTouch || random < r.blastChance) {
+        if (r.blastInto < 0) { c.request = c.request | 1; return c; }
+        // V1: the product at blast.T, its ctype blast.of, and blast.P on the cell.
+        let out = ctInherit(ctNew(r.blastInto, r.blastQ, 65536), c);
+        out.ctype = r.blastOf;
+        out.busy = 1;
+        out = ctRecordChange(out, ctEnergy(c));
+        out.request = ctPuff(out.request, r.blastPuff);
+        return out;
+      }
     }
     return c;
   }
@@ -450,11 +505,14 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     }
   }
   if (c.id === E.WATER && plant > 0) { c.busy = 1; if (random < 0.048 * ctF(plant)) return ctCreate(c, E.PLANT, c.tq); }
-  if (r.rots !== 0 && fungus > 0 && c.tq < 1493) { c.busy = 1; if (random < 0.0008 * ctF(fungus)) return ctCreate(c, E.FUNGUS, c.tq); }
+  if (r.rots !== 0 && fungus > 0 && c.tq < CONTACT_DAMP_DRY_Q) { c.busy = 1; if (random < 0.0008 * ctF(fungus)) return ctCreate(c, E.FUNGUS, c.tq); }
   if (c.id === E.MOSS || c.id === E.FUNGUS) {
     const previous = c.ctype;
-    c.ctype = 0;
-    if (c.tq < 1493) c.ctype = Math.max(0, damp);
+    let own = 0;
+    if (c.tq < CONTACT_DAMP_DRY_Q) own = Math.max(0, damp);
+    // appearance.js appearanceCtype: cedar-leaf moss keeps its look.
+    if (ctGrowerDamp(c.id, previous) !== previous) own = own + CONTACT_CEDAR_BASE;
+    c.ctype = own;
     if (c.ctype !== previous) c.busy = 1;
   }
   if ((c.id === E.CLONE || c.id === E.PCLN) && c.ctype === 0 && growOf > 0) { c.ctype = growOf; c.busy = 1; }
@@ -478,7 +536,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
       }
     }
   }
-  if (c.id === E.DUST && c.fallSpeed >= DUST_MIN_FALL_SPEED && dust > 0 && air > 0 && (c.tq >= r.igniteQ || hotTouch || fire > 0)) { c.request = c.request | 1; c.busy = 1; }
+  if (c.id === E.DUST && c.fallSpeed >= DUST_MIN_FALL_SPEED && dust >= CONTACT_DUST_MEC_NB && fullAir >= CONTACT_DUST_RICH_AIR && (c.tq >= r.igniteQ || hotTouch || fire > 0)) { c.request = c.request | 1; c.busy = 1; }
   if (c.id === E.SINGULARITY) {
     // Mass has 1/256 cell units; unlike normalized fuel it reaches 200 cells.
     c.busy = 1;
@@ -498,6 +556,7 @@ export const CONTACT_KERNEL = [
   [ctTemperatureRemainder, ['CTCell'], 'f32'], [ctFlux, ['CTCell', 'CTCell'], 'i32'], [ctPhase, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctNuclearId, ['CTCell'], 'i32'], [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
   [ctElectric, ['CTCell', 'array<CTCell, 3>', 'f32'], 'CTCell'],
+  [ctGrowerDamp, ['i32', 'i32'], 'i32'], [ctPuff, ['i32', 'i32'], 'i32'],
   [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
   [ctStep, ['CTCell', 'array<CTCell, 3>', 'i32'], 'CTCell'],
 ];
@@ -611,7 +670,7 @@ export function ctReaction(a0, b0, seed) {
   const delta = ctSub(energy, initial);
   if (ctLess(delta, ctSigned(0))) pair.a.sink = ctAdd(pair.a.sink, ctSub(ctSigned(0), delta));
   else pair.a.source = ctAdd(pair.a.source, delta);
-  if (row.gas !== 0) { pair.a.request = pair.a.request | 2; pair.b.request = pair.b.request | 2; }
+  if (row.gas !== 0) { pair.a.request = ctPuff(pair.a.request, row.puff); pair.b.request = ctPuff(pair.b.request, row.puff); }
   return pair;
 }
 export function ctAcid(a0, b0, seed) {

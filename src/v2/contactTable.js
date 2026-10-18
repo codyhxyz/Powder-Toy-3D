@@ -10,10 +10,11 @@ export const CONTACT_ROW_SCHEMA = Object.freeze([
   ['blast','i32'], ['blastAir','i32'], ['blastChance','f32'], ['acid','i32'],
   ['edible','i32'], ['fizz','i32'], ['bed','i32'], ['rots','i32'],
   ['singFood','i32'], ['conductor','i32'], ['cost','f32'], ['wire','i32'], ['emitter','f32'],
+  ['blastInto','i32'], ['blastOf','i32'], ['blastQ','i32'], ['blastPuff','i32'],
 ].map(Object.freeze));
 export const CONTACT_RX_SCHEMA = Object.freeze([
   ['a','i32'], ['b','i32'], ['aOut','i32'], ['bOut','i32'], ['chance','f32'],
-  ['minQ','i32'], ['maxQ','i32'], ['heat','i32'], ['gas','i32'], ['ceiling','i32'],
+  ['minQ','i32'], ['maxQ','i32'], ['heat','i32'], ['gas','i32'], ['ceiling','i32'], ['puff','i32'],
 ].map(Object.freeze));
 const stride = schema => Math.ceil(schema.length / 4) * 4;
 export function contactTableLayout(elementCount, reactionCount) {
