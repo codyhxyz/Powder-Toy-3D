@@ -175,17 +175,68 @@ fn worldBSpline(t: f32) -> vec4f {
   let t2 = t*t; let t3 = t2*t;
   return vec4f(1.0-3.0*t+3.0*t2-t3, 4.0-6.0*t2+3.0*t3, 1.0+3.0*t+3.0*t2-3.0*t3, t3) / 6.0;
 }
+// d/dt of worldBSpline's weights (the derivative kernel: they sum to zero)
+fn worldBSplineD(t: f32) -> vec4f {
+  let t2 = t*t;
+  return vec4f(-0.5*(1.0-t)*(1.0-t), 1.5*t2-2.0*t, -1.5*t2+t+0.5, 0.5*t2);
+}
+// A cubic reading's 4³ control points (cells base-1 .. base+2, held to the
+// world) span at most two bricks along each axis (bricks are 4 cells), so
+// worldCubicReady resolves those 8 bricks' pages once, with worldPage's
+// requests and incomplete flag (no early exit: every missing brick is
+// requested), and each of the 64 taps then reads its page straight from the
+// book (worldFieldTap): one load, no branch, no side effect. A worldPage per
+// tap was 64 bounds checks, page tests and request branches per reading,
+// inlined at every call site. When a brick is missing the reading is the
+// placeholder zero: the query is incomplete, so its frame is withheld anyway.
+fn worldCubicReady(base: vec3i) -> bool {
+  let top = vec3i(WA.world.xyz) - 1;
+  let lo = clamp(base - 1, vec3i(0), top) >> vec3u(2u);
+  let hi = clamp(base + 2, vec3i(0), top) >> vec3u(2u);
+  var ok = true;
+  for (var k = 0; k < 8; k++) {
+    let b = select(lo, hi, ((vec3i(k) >> vec3u(0u, 1u, 2u)) & vec3i(1)) == vec3i(1));
+    if (worldPage(b, WORLD_FIELD) < 0) { ok = false; }
+  }
+  return ok;
+}
+// Cell c (in the world) of a brick worldCubicReady found resident.
+fn worldFieldTap(t: texture_2d_array<f32>, c: vec3i) -> vec4f {
+  let pid = (worldBook[worldBookIndex(c >> vec3u(2u))] & WORLD_BOOK_PAGE) - 1u;
+  let a = worldCellTexel(pid, c);
+  return textureLoad(t, a.xy, a.z, 0);
+}
 // Reference 64-control-point B-spline. No hardware blend between unrelated
 // atlas tiles; equivalent to local Sigg folding, including WORLD edge clamp.
 fn worldFieldCubic(t: texture_2d_array<f32>, p: vec3f) -> vec4f {
   let q = clamp(p - 0.5, vec3f(0.0), vec3f(WA.world.xyz) - 1.0);
   let base = vec3i(floor(q)); let f = fract(q);
   let wx = worldBSpline(f.x); let wy = worldBSpline(f.y); let wz = worldBSpline(f.z);
+  let top = vec3i(WA.world.xyz) - 1;
   var value = vec4f(0.0);
-  for (var z = 0; z < 4; z++) { for (var y = 0; y < 4; y++) { for (var x = 0; x < 4; x++) {
-    value += worldFieldLoad(t, base + vec3i(x,y,z) - 1) * wx[x] * wy[y] * wz[z];
-  } } }
+  if (worldCubicReady(base)) {
+    for (var z = 0; z < 4; z++) { for (var y = 0; y < 4; y++) { for (var x = 0; x < 4; x++) {
+      value += worldFieldTap(t, clamp(base + vec3i(x,y,z) - 1, vec3i(0), top)) * wx[x] * wy[y] * wz[z];
+    } } }
+  }
   return value;
+}
+// Its gradient for channel ch (shaders/gfx/core.js fieldCubicGrad): the same
+// 64 taps with the derivative kernel along each axis in turn.
+fn worldFieldCubicGrad(t: texture_2d_array<f32>, p: vec3f, ch: i32) -> vec3f {
+  let q = clamp(p - 0.5, vec3f(0.0), vec3f(WA.world.xyz) - 1.0);
+  let base = vec3i(floor(q)); let f = fract(q);
+  let wx = worldBSpline(f.x); let wy = worldBSpline(f.y); let wz = worldBSpline(f.z);
+  let dx = worldBSplineD(f.x); let dy = worldBSplineD(f.y); let dz = worldBSplineD(f.z);
+  let top = vec3i(WA.world.xyz) - 1;
+  var g = vec3f(0.0);
+  if (worldCubicReady(base)) {
+    for (var z = 0; z < 4; z++) { for (var y = 0; y < 4; y++) { for (var x = 0; x < 4; x++) {
+      let v = worldFieldTap(t, clamp(base + vec3i(x,y,z) - 1, vec3i(0), top))[ch];
+      g += v * vec3f(dx[x] * wy[y] * wz[z], wx[x] * dy[y] * wz[z], wx[x] * wy[y] * dz[z]);
+    } } }
+  }
+  return g;
 }
 ${opticalWriter ? '' : `// LIGHT book IDs never pass through worldPage/cell auxiliary metadata.
 fn worldLightMeta(id: u32, record: u32) -> vec4u {
