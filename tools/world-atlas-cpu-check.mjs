@@ -517,7 +517,7 @@ test('six typed feedback planes preserve mixed/secondary reasons at high Y384, b
   assert.equal(words[book.statusWord],0);assert.equal(words[book.sunWord],0);
   for(let p=0;p<6;p++)assert.equal(words[p*book.planeWords+(31>>5)]>>>31,[1,1,0,0,1,0][p]);
   const code=worldAccessWGSL();assert.equal((code.match(/worldIncomplete = false/g)||[]).length,1);
-  assert.match(code,/plane < 6u/);assert.match(code,/worldRequest\(i, ready & ~m.x\)/);
+  assert.match(code,/plane < 6u/);assert.match(code,/worldRequest\(i, ready, have\)/);assert.match(code,/\(have & bit\) == 0u/);
   assert.match(code,/worldLightBook\[i\]/);assert.doesNotMatch(code,/worldPage\(b, WORLD_GI/);
 });
 test('CPU allocation accounting, independent rounded capacities and legal near-ceiling growth at both heights',()=>{

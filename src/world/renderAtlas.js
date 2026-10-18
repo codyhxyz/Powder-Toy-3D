@@ -47,8 +47,11 @@ export function worldSlotCell(slot) {
   check(integer(slot, 0, 63), 'invalid local slot');
   return [slot & 3, ((slot >> 2) & 1) + 2 * (slot >> 5), (slot >> 3) & 3];
 }
+// The largest power of two ≤ n: atlas sides stay powers of two, which the
+// shaders' page addresses rely on (worldAccess.js worldLinearAddress shifts).
+const pow2Floor = n => 2 ** Math.floor(Math.log2(n));
 function geometry(texels, maxDim, maxLayers, tile = 1) {
-  const side = Math.floor(maxDim / tile);
+  const side = pow2Floor(Math.floor(maxDim / tile));
   check(side >= 1, 'device texture dimension too small');
   let x = Math.min(side, 8), y = Math.min(side, 8);
   while (x * y < texels && (x < side || y < side)) {
@@ -74,9 +77,9 @@ export function worldAtlasLayout(capacity = 64, deviceLimits = {}, lightCapacity
 }
 // Clamp doubling to a sufficient *legal* capacity (including combined aux region).
 export function worldPoolMax(kind, layout, deviceLimits = {}) {
-  const lim = limitsOf(deviceLimits), texels = lim.maxTextureDimension2D ** 2 * lim.maxTextureArrayLayers;
+  const lim = limitsOf(deviceLimits), texels = pow2Floor(lim.maxTextureDimension2D) ** 2 * lim.maxTextureArrayLayers;
   const auxMax = Math.min(U32_MAX, texels);
-  if (kind === 'cell') return Math.min(Math.floor(lim.maxTextureDimension2D / 8) ** 2 * lim.maxTextureArrayLayers, Math.floor((auxMax - layout.lightCapacity * LIGHT_RECORDS) / AUX_RECORDS));
+  if (kind === 'cell') return Math.min(pow2Floor(Math.floor(lim.maxTextureDimension2D / 8)) ** 2 * lim.maxTextureArrayLayers, Math.floor((auxMax - layout.lightCapacity * LIGHT_RECORDS) / AUX_RECORDS));
   if (kind === 'light') return Math.floor((auxMax - layout.capacity * AUX_RECORDS) / LIGHT_RECORDS);
   check(kind === 'probe', 'invalid pool'); return Math.min(U32_MAX, texels);
 }

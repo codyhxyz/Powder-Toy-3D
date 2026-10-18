@@ -147,7 +147,7 @@ export async function createYou({ canvas, width, height, character = 'real', zoo
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, preserveDrawingBuffer });
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.shadowMap.type = THREE.PCFShadowMap;   // (three r186 dropped PCFSoft and drew this anyway, with a warning)
   model.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
   renderer.setPixelRatio(pixelRatio);
   renderer.setSize(width, height, false);

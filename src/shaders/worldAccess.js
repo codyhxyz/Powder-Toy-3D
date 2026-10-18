@@ -60,16 +60,26 @@ fn worldQueryIncomplete() -> bool { return worldIncomplete; }
 fn worldInBounds(c: vec3i) -> bool { return all(c >= vec3i(0)) && all(c < vec3i(WA.world.xyz)); }
 fn worldBrickInBounds(b: vec3i) -> bool { return all(b >= vec3i(0)) && all(b < vec3i(WA.bricks.xyz)); }
 fn worldBookIndex(b: vec3i) -> u32 { return u32(b.x) + WA.bricks.x * (u32(b.y) + WA.bricks.y * u32(b.z)); }
-fn worldRequest(index: u32, channels: u32) {
+// Requests the channels of ready that have lacks. Every caller passes ready as
+// a constant, so each inlined copy folds to its own planes: Metal inlines a
+// page lookup at every fetch, and a runtime channel mask kept all six planes
+// in each of the volume shader's ~1,700 copies (a 31 s cold build that
+// Chrome's GPU watchdog killed, 2026-10-17).
+fn worldRequest(index: u32, ready: u32, have: u32) {
   worldIncomplete = true;
   for (var plane = 0u; plane < 6u; plane++) {
-    if ((channels & (1u << plane)) != 0u) {
+    let bit = 1u << plane;
+    if ((ready & bit) != 0u && (have & bit) == 0u) {
       atomicOr(&worldRequests[plane * WA.feedback.x + (index >> 5u)], 1u << (index & 31u));
     }
   }
 }
+// Atlas dims are powers of two (renderAtlas.js geometry), so the address is
+// shifts and masks: a division by a runtime value expands to a long sequence
+// at each of its ~1,000 inlined copies.
 fn worldLinearAddress(i: u32, dims: vec2u) -> vec3i {
-  return vec3i(vec3u(i % dims.x, (i / dims.x) % dims.y, i / (dims.x * dims.y)));
+  let s = firstTrailingBit(dims);
+  return vec3i(vec3u(i & (dims.x - 1u), (i >> s.x) & (dims.y - 1u), i >> (s.x + s.y)));
 }
 fn worldAuxAddress(pid: u32, record: u32) -> vec3i {
   return worldLinearAddress(pid * ${AUX_RECORDS}u + record, WA.aux.xy);
@@ -78,22 +88,26 @@ fn worldPageMeta(pid: u32, record: u32) -> vec4u {
   let a = worldAuxAddress(pid, record);
   return textureLoad(worldAux, a.xy, a.z, 0);
 }
-// -1 is UNKNOWN; a physical ID of zero is valid (book entry=1).
+// -1 is UNKNOWN; a physical ID of zero is valid (book entry=1). One exit and
+// one request: the volume shader inlines ~380 copies of this.
 fn worldPage(b: vec3i, ready: u32) -> i32 {
   if (!worldBrickInBounds(b)) { worldIncomplete = true; return -1; }
   let i = worldBookIndex(b);
   let e = worldBook[i];
-  if (e == 0u || e > WA.tiles.z || WA.tiles.w != WORLD_ABI) { worldRequest(i, ready); return -1; }
-  let pid = e - 1u;
-  let m = worldPageMeta(pid, 0u);
-  if (m.y != WA.world.w) { worldRequest(i, ready); return -1; }
-  if ((m.x & ready) != ready) { worldRequest(i, ready & ~m.x); return -1; }
-  return i32(pid);
+  var fresh = false; var have = 0u;   // a page of this epoch, and the channels it holds
+  if (e != 0u && e <= WA.tiles.z && WA.tiles.w == WORLD_ABI) {
+    let m = worldPageMeta(e - 1u, 0u);
+    fresh = m.y == WA.world.w;
+    if (fresh) { have = m.x; }
+  }
+  if (!fresh || (have & ready) != ready) { worldRequest(i, ready, have); return -1; }
+  return i32(e - 1u);
 }
 fn worldCellTexel(pid: u32, c: vec3i) -> vec3i {
   let l = c & vec3i(3);
   let s = u32(l.x + 4 * (l.y & 1) + 8 * (l.z + 4 * (l.y >> 1)));
-  return vec3i(vec3u((pid % WA.tiles.x) * 8u + (s & 7u), ((pid / WA.tiles.x) % WA.tiles.y) * 8u + (s >> 3u), pid / (WA.tiles.x * WA.tiles.y)));
+  let t = vec3u(worldLinearAddress(pid, WA.tiles.xy));
+  return vec3i(vec3u(t.x * 8u + (s & 7u), t.y * 8u + (s >> 3u), t.z));
 }
 fn worldFetchState(t: texture_2d_array<u32>, c: vec3i) -> vec4f {
   if (!worldInBounds(c)) { worldIncomplete = true; return vec4f(0.0); }
@@ -180,12 +194,15 @@ fn worldLightMeta(id: u32, record: u32) -> vec4u {
 fn worldLightDescriptor(b: vec3i, ready: u32) -> i32 {
   if (!worldBrickInBounds(b)) { worldIncomplete = true; return -1; }
   let i = worldBookIndex(b); let e = worldLightBook[i];
-  if (e == 0u || e > WA.light.y || WA.tiles.w != WORLD_ABI) { worldRequest(i, ready); return -1; }
-  let id = e - 1u; let m = worldLightMeta(id, 0u);
-  let publication = worldLightMeta(id, 3u);
-  if (m.y != WA.world.w || publication.z != WORLD_ABI || publication.w == 0u || publication.w > WA.bricks.w) { worldRequest(i, ready); return -1; }
-  if ((m.x & ready) != ready) { worldRequest(i, ready & ~m.x); return -1; }
-  return i32(id);
+  var fresh = false; var have = 0u;   // one exit and one request, as worldPage
+  if (e != 0u && e <= WA.light.y && WA.tiles.w == WORLD_ABI) {
+    let m = worldLightMeta(e - 1u, 0u);
+    let publication = worldLightMeta(e - 1u, 3u);
+    fresh = m.y == WA.world.w && publication.z == WORLD_ABI && publication.w != 0u && publication.w <= WA.bricks.w;
+    if (fresh) { have = m.x; }
+  }
+  if (!fresh || (have & ready) != ready) { worldRequest(i, ready, have); return -1; }
+  return i32(e - 1u);
 }
 // Exact giSrcPack words. Missing zero is only a placeholder, NEVER canonical air.
 fn worldGISource(b: vec3i) -> vec4u {
@@ -199,7 +216,7 @@ fn worldProbeLoad(t: texture_2d_array<f32>, brick: vec3i, ready: u32) -> vec4f {
   if (id < 0) { return vec4f(0.0); }
   let refs = worldLightMeta(u32(id), 1u);
   let e = select(refs.x, refs.y, ready == WORLD_GLOW);
-  if (e == 0u || e > WA.probes.w) { worldRequest(worldBookIndex(b), ready); return vec4f(0.0); }
+  if (e == 0u || e > WA.probes.w) { worldRequest(worldBookIndex(b), ready, 0u); return vec4f(0.0); }
   let a = worldLinearAddress(e - 1u, WA.probes.xy);
   return textureLoad(t, a.xy, a.z, 0);
 }

@@ -89,7 +89,9 @@ test('actual eight world GI/two glow modules validate Naga and default budgets',
 test('world gather is the original generated module minus unused texture mirrors only', () => {
   // Pre-deletion emissions, normalized ONLY by dropping output declarations/dst
   // and unwrapping textureStore(..., giBlend(...)) to the same giBlend calls.
-  const hashes = ['6f623e466ec4de3944a98e2d68ab8e362f489cf3213a243dd90421e48420a3aa', '28b2bf2a204a6edcd4727d301f8c5481a48424ff8d0b8bdbbef5ed2b937376f1', '0e01893a06fe24d02184ae58a2a751f4ade69b6b372a6d5d9a2075c865fa4dbe', '512489b4a52d4663df822c819de3e1c3067152909f6a5638dc59185bd28daa40'];
+  // Re-pinned 2026-10-17: worldAccess.js's request/page/address helpers took
+  // their compile-cheap form (same results); nothing else in the module moved.
+  const hashes = ['0eb369ce3dfce2a3ea422421049cb00f9e89e1f7033f7d2a76006a85a5ebdf51', '1019eee21976ccb69ee077c089340de1260dccd5258a1427aaa153b4db161448', '2c27139329a591ac5ef85dcd0f0cfe329901ac0827ca3fc8b9568cfd4db734fb', '58504d9d93b3496cd0c239dbb4f510c162f23ad8baa920a8099461b7cbdfaa4c'];
   const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
   gathers.forEach((c, i) => {
     const code = c.code(), groups = c.layouts();
