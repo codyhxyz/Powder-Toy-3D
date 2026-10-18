@@ -116,8 +116,10 @@ for(const velocity of [NaN,Infinity,-1,1e50]) assert.throws(()=>setFall(seed,vel
 assert.match(v2BlockWGSL(g),/setFall\(gr, 0\.0, 0\.0\)/);
 const apply=blastsWGSL(g,nativeDynamicsHead,'apply');
 assert.match(apply,/plan.velocity\+incoming/);
-assert.match(apply,/select\(vec3f\(0,-fallVelocity\(before.core\),0\),vec3f\(0\),P.mode==15u \|\| \(plan.flags&32u\)!=0u\)/,
+assert.match(apply,/select\(vec3f\(0,-fallVelocity\(before.core\),0\),vec3f\(0\),forcing \|\| \(plan.flags&32u\)!=0u\)/,
   'absolute force/blast velocities do not receive incoming motion twice');
+// (forcing: mode 15, and the Factory's listed launch run, blasts.js LAUNCH_MODE)
+assert.match(apply,/let forcing=P.mode==15u \|\| P.mode==17u;/);
 assert.match(blastsWGSL(g,nativeDynamicsHead,'damagePlan'),/incoming=vec3f\(0,-fallVelocity\(m.core\),0\)/);
 assert.match(blastsWGSL(g,nativeDynamicsHead,'couplePlan'),/fallVelocity\(m.core\)>0.0/);
 assert.match(particlesWGSL(g,nativeDynamicsHead,'deposit'),/setFall\(after.core,0.0,0.0\)/);

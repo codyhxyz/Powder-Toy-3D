@@ -7,7 +7,7 @@ import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
 import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase, storageLayout } from '../shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, COUPLE_MODE,
-  COUPLE_ARGS, listControl, LIST_ARGS, DISPATCH_ARGS_BYTES, LISTS_STAGES, listsStageWGSL } from '../shaders/v2/blasts.js';
+  COUPLE_ARGS, listControl, LIST_ARGS, DISPATCH_ARGS_BYTES, LISTS_STAGES, listsStageWGSL, controlBufferWords, LAUNCH_MODE } from '../shaders/v2/blasts.js';
 import { AIR as AIR_MODE, EDGE } from '../simModes.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M } from './dynamics-reference.js';
@@ -106,7 +106,7 @@ export class NativeDynamics {
     this.claims=make('claims',g.slots*16);
     this.air=[make('air0',g.nbricks*32),make('air1',g.nbricks*32)];
     this.faces=make('faces and vacuum',g.nbricks*32); // the air source's per-brick cache (air.js)
-    this.control=make('control',listControl(g).words*4);
+    this.control=make('control',controlBufferWords(g)*4);
     // 0..48: the batch args workArgs fills, 48: [work, CAP/64, 1]; COUPLE_ARGS: the couple gate's
     // [work, 1, 1, 0, work] then the constant tail of [work, CAP/64, 1] at COUPLE_ARGS + 16;
     // then the brick lists' args (LIST_ARGS), written by listArgs.
@@ -127,7 +127,7 @@ export class NativeDynamics {
     this.kernels={};
     for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES],['lists',(g,_head,name)=>listsStageWGSL(g,name),LISTS_STAGES]]) {
       for (const stage of stages) {
-        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','externalBegin','externalGate','pick','normalizeCharges','finishCharges'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage)) || family==='lists';
+        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','externalBegin','externalGate','pick','normalizeCharges','finishCharges','launchMark','launchPrefix'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage)) || family==='lists';
         const name=`v2${family}_${stage}`;
         this.kernels[`${family}/${stage}`]=gpu.kernel({name,build:'idle',code:generate(g,owner.nativeDynamics.head,stage),
           params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
@@ -186,6 +186,22 @@ export class NativeDynamics {
     const candidates=params.mode===13?params.boxSize.reduce((n,v)=>n*v,1):this.g.slots;
     this._record('blasts','apply',size(0,Math.ceil(candidates/64)),tick,params);
     this._record('blasts','children',size(48,Math.ceil(PARTICLE_CAP/64)),tick,params);
+  }
+  /** A Factory batch's box (inclusive cells lo..hi), before its plans: lists its bricks for the
+   * batch's launch, clearing the plans of each the batch hasn't listed yet (blasts.js launchMark). */
+  markLaunch(tick,lo,hi) {
+    this._record('blasts','launchMark',1,tick,{mode:LAUNCH_MODE,boxStart:lo,boxSize:hi.map((v,a)=>v-lo[a]+1)});
+  }
+  /** After a batch's last plan: _allocate over the listed bricks alone (blasts.js launchCount,
+   * launchPrefix, apply as LAUNCH_MODE); pool preparation and children are the particle pool's. */
+  allocateLaunch(tick) {
+    const p={mode:LAUNCH_MODE},args=offset=>({indirect:this.dispatchArgs,offset});
+    this._record('lists','launch',1,tick,p); // publish the list: its length and args (_publish's)
+    this._prepareAllocation(tick,p,1);
+    this._record('blasts','launchCount',args(LIST_ARGS.launchBricks),tick,p);
+    this._record('blasts','launchPrefix',1,tick,p);
+    this._record('blasts','apply',args(LIST_ARGS.launchCells),tick,p);
+    this._record('blasts','children',Math.ceil(PARTICLE_CAP/64),tick,p);
   }
   _rays(tick) { for (const [slot,r] of this.rayRequests) this._recordRay(slot,r,tick); }
   _recordRay(slot,r,tick) {
