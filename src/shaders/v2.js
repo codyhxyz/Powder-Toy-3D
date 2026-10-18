@@ -742,7 +742,8 @@ ${MAIN} {
   for(var axis=0;axis<3;axis++) {
     let sign=select(-1,1,local[axis]!=0);
     let n=cellAt(mEdge(p+axisV(axis)*sign)); let id=cid(n); let kind=clsOf(n);
-    if(id==${E.EMPTY}u){air++;}
+    // V1 react.js: a flame is burning air to a fuel (oxygen when it burns in it).
+    if(id==${E.EMPTY}u || (id==${E.FIRE}u && ctypeOf(n)!=${E.OXYGEN}u)){air++;}
     if(id==${E.OXYGEN}u || (id==${E.FIRE}u && ctypeOf(n)==${E.OXYGEN}u)){oxygen++;}
     if(id==${E.CO2}u){co2++;}
     if(kind==C_AIR || kind==C_GAS){gas++;}
@@ -780,9 +781,9 @@ const blockIdentityWGSL = /* wgsl */ `
   for (var k = 0u; k < blockCount; k++) {
     if (!inGrid(positions[k]) || any(cs[k] != canonicalAir) || bs[k] != 0 || pending[k] != 0u) { zeroWork = false; }
   }
-  // Match the boundary wrapper's exact f32 round/clamp encoding. Even an
-  // interior open-edge block conservatively requires ambient equality.
-  if (P.edge == 1u && mAirHeat() && rawTq != u32(clamp(round((P.ambient+273.25)*4.0),0.0,65535.0))) { zeroWork = false; }
+  // Match the boundary wrapper's exact f32 round/clamp encoding. Air away from
+  // ambient relaxes to it everywhere (V1's pull, ctAmbient), whatever the edge.
+  if (rawTq != u32(clamp(round((P.ambient+273.25)*4.0),0.0,65535.0))) { zeroWork = false; }
   // AIR cannot topple, equal-density AIR cannot swap, AIR is not ageing gas.
   // Uniform normal AIR emits no contact/boundary heat, requests or ledgers;
   // equal storeMaterial values would only rewrite identical cells/banks.

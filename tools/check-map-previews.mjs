@@ -13,7 +13,7 @@ import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
 assert.equal(mapPreviewUrl('willowCove'), '/maps/willowCove.webp?v=2', 'replace the four-hour cached legacy preview');
 assert.equal(mapPreviewUrl('tinkerCreek'), mapPreviewUrl('willowCove'), 'aliases use the current canonical preview');
 assert.equal(mapPreviewUrl('island'), '/maps/island.webp', 'unrelated previews keep their URLs');
-assert.equal(mapPreviewUrl('descent'), '/maps/descent.webp?v=3', 'assembled terrain replaces the rejected room-collage preview');
+assert.equal(mapPreviewUrl('descent'), '/maps/descent.webp?v=4', 'assembled terrain replaces the rejected room-collage preview');
 assert.equal(mapLoadingUrl('island'), mapPreviewUrl('island'), 'maps without loading art retain a thumbnail fallback');
 assert.equal(mapLoadingUrl('tinkerCreek'), mapPreviewUrl('willowCove'), 'loading fallback resolves aliases too');
 const crossing = geometry(32), cozy = shader(32);

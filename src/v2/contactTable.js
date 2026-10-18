@@ -11,6 +11,7 @@ export const CONTACT_ROW_SCHEMA = Object.freeze([
   ['edible','i32'], ['fizz','i32'], ['bed','i32'], ['rots','i32'],
   ['singFood','i32'], ['conductor','i32'], ['cost','f32'], ['wire','i32'], ['emitter','f32'],
   ['blastInto','i32'], ['blastOf','i32'], ['blastQ','i32'], ['blastPuff','i32'],
+  ['cool','f32'],
 ].map(Object.freeze));
 export const CONTACT_RX_SCHEMA = Object.freeze([
   ['a','i32'], ['b','i32'], ['aOut','i32'], ['bOut','i32'], ['chance','f32'],

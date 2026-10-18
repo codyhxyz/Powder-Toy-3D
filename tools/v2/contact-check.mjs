@@ -6,6 +6,7 @@ import { CONTACT_KERNEL } from '../../src/v2/contact.js';
 import { contactKernelWGSL } from '../../src/shaders/v2/contact-kernel.js';
 import { emitContactKernel } from '../../src/shaders/v2/contact.js';
 import { E, ELEMENTS, K, REACTIONS } from '../../src/elements.js';
+import { PHYS } from '../../src/physics.js';
 import { CONDUCTS, SPARK_COST, conductsInto, packSpark } from '../../src/electricity.js';
 import * as C from '../../src/v2/contact.js';
 import * as F from '../../src/v2/phase.js';
@@ -245,26 +246,56 @@ test('every melt/burn content row executes, combustible liquid fuel is extensive
   assert.equal(half.life,1024);assert.equal(compressed.life,32768);
   assert.throws(()=>cell(E.OIL,20,16777215),/fuel payload/);
 });
-test('finite-fuel plume production, gas and exhaust ledgers balance exactly',()=>{
-  const fuel=cell(E.WOOD,400);fuel.burning=1;
-  let emitted;
-  for(let seed=0;seed<100;seed++){const pair=C.ctPlume(fuel,cell(E.EMPTY),seed,1);if(pair.changed&&pair.b.id===E.FIRE){emitted=pair;break;}}
-  assert.ok(emitted,'burning wood emits a real FIRE plume');assert.ok(emitted.b.tq>=q(350));
-  assert.ok(emitted.a.life<fuel.life,'plume creation debits finite fuel');
-  assert.equal(energy(emitted.a)+energy(emitted.b),energy(fuel)+energy(cell(E.EMPTY))+emitted.a.source+emitted.b.source-emitted.a.sink-emitted.b.sink);
-  const whiskey=cell(E.WHISKEY,20);whiskey.burning=1;let vapour;
-  for(let seed=0;seed<100;seed++){const pair=C.ctPlume(whiskey,cell(E.EMPTY),seed,1);if(pair.changed&&pair.b.id===E.FIRE){vapour=pair;break;}}
-  assert.ok(vapour);assert.ok(vapour.b.tq>=q(350));assert.ok(vapour.a.tq<=whiskey.tq);assert.ok(vapour.a.life<whiskey.life);
-  assert.equal(energy(vapour.a)+energy(vapour.b),energy(whiskey)+energy(cell(E.EMPTY))+vapour.a.source+vapour.b.source-vapour.a.sink-vapour.b.sink);
-  const spent={...fuel,life:0};assert.equal(C.ctPlume(spent,cell(E.EMPTY),0,1).changed,0);
-  assert.equal(C.ctPlume(fuel,cell(E.EMPTY),0,0).changed,0,'no downward plume');
+test('V1 flames into air on every face, flash-point vapour, oxygen, smoke share and burnt-out residue, exact ledgers',()=>{
+  const ledger=out=>out.source-out.sink;
+  const catches=(input,neighbors,tries=200)=>{for(let seed=0;seed<tries;seed++){const out=C.ctStep(input,neighbors,seed);if(out.id===E.FIRE)return out;}return null;};
+  // V1 react.js: air beside a fuel at its ignition point catches (FLAME_SPREAD a step per burning face).
+  const wood=cell(E.WOOD,400),air=cell(E.EMPTY);
+  const flame=catches(air,ns(wood));assert.ok(flame,'air beside burning wood catches');
+  const flameT=ELEMENTS[E.WOOD].flameT;
+  assert.ok(flame.tq>=q(flameT*PHYS.FLAME_T_MIN)-1&&flame.tq<=q(flameT)+1,'flameT·(FLAME_T_MIN + FLAME_T_SPREAD·rnd)');
+  assert.equal(energy(flame)-ledger(flame),energy(air),'the flame is a declared source');
+  assert.equal(flame.request&2,0,'air catching is no gas puff');
+  assert.ok(flame.life>=PHYS.FIRE_LIFE_MIN*2048-1&&flame.life<=2048,'FIRE_LIFE_MIN + FIRE_LIFE_SPREAD·rnd');
+  // every face: the burning partner's position does not matter (no up-only plume)
+  for(let k=0;k<3;k++){const n=[cell(E.WALL),cell(E.WALL),cell(E.WALL)];n[k]=wood;assert.ok(catches(air,n),`face ${k}`);}
+  // per-tick rate: 1 - (1 - FLAME_SPREAD)^8 per burning partner
+  let lit=0;for(let seed=0;seed<4000;seed++)if(C.ctStep(air,ns(wood),seed).id===E.FIRE)lit++;
+  const expected=1-(1-PHYS.FLAME_SPREAD)**8;assert.ok(Math.abs(lit/4000-expected)<0.03,`rate ${lit/4000} vs ${expected}`);
+  assert.equal(catches(air,ns(cell(E.WOOD,20))),null,'cold fuel lights no air');
+  assert.equal(catches(air,ns(wood,cell(E.CO2),cell(E.CO2))),null,'smothered air does not catch');
+  // past its flash point a fuel's vapour carries a flame: only with a flame touching the air too
+  const whiskey=cell(E.WHISKEY,ELEMENTS[E.WHISKEY].flash+5);assert.ok(ELEMENTS[E.WHISKEY].flash<ELEMENTS[E.WHISKEY].ignite);
+  assert.equal(catches(air,ns(whiskey)),null,'flash-point vapour alone does not catch');
+  assert.ok(catches(air,ns(whiskey,cell(E.FIRE,1000))),'flash-point vapour beside a flame catches');
+  // oxygen catches O2_PER_AIR times as often (certain here) and hotter, burning in oxygen
+  const oxygen=cell(E.OXYGEN),ox=C.ctStep(oxygen,ns(wood),0);assert.equal(ox.id,E.FIRE);assert.equal(ox.ctype,E.OXYGEN);
+  assert.ok(ox.tq>q(flameT*PHYS.FLAME_T_MIN));assert.equal(energy(ox)-ledger(ox),energy(oxygen));
+  // a flame needs no air face, goes out under FIRE_MIN_T, and leaves smoke FIRE_TO_SMOKE of the time
+  const closedFlame=cell(E.FIRE,1000);assert.equal(C.ctStep(closedFlame,ns(cell(E.WALL),cell(E.WALL),cell(E.WALL)),0).id,E.FIRE);
+  assert.notEqual(C.ctStep(cell(E.FIRE,300),ns(),0).id,E.FIRE);
+  let smoke=0;for(let seed=0;seed<4000;seed++){const f=cell(E.FIRE,1000);f.life=1;if(C.ctStep(f,ns(),seed).id===E.SMOKE)smoke++;}
+  assert.ok(Math.abs(smoke/4000-PHYS.FIRE_TO_SMOKE)<0.03,`smoke share ${smoke/4000}`);
   const fire=cell(E.FIRE,1000);fire.bank=317;fire.life=1;
-  const smoke=C.ctStep(fire,ns(),0);assert.equal(smoke.id,E.SMOKE);assert.equal(smoke.tq,fire.tq);assert.equal(smoke.bank,317);
-  assert.equal(energy(smoke)+smoke.sink-smoke.source,energy(fire));
-  smoke.life=1;smoke.source=0n;smoke.sink=0n;
-  const air=C.ctStep(smoke,ns(),0);assert.equal(air.id,E.EMPTY);assert.equal(air.tq,smoke.tq);assert.equal(air.bank,317);assert.equal(energy(air)+air.sink-air.source,energy(smoke));
-  const dying=cell(E.WOOD,900);dying.life=1;dying.burning=1;
-  const exhaust=C.ctStep(dying,ns(),0);assert.notEqual(exhaust.id,E.WOOD);assert.ok(exhaust.tq<=q(900));assert.equal(energy(exhaust)+exhaust.sink-exhaust.source,energy(dying));
+  let dead;for(let seed=0;seed<100;seed++){dead=C.ctStep(fire,ns(),seed);if(dead.id===E.SMOKE)break;}
+  assert.equal(dead.id,E.SMOKE);assert.equal(dead.tq,fire.tq);assert.equal(dead.bank,317);
+  assert.equal(energy(dead)+dead.sink-dead.source,energy(fire));
+  dead.life=1;dead.source=0n;dead.sink=0n;
+  const gone=C.ctStep(dead,ns(),0);assert.equal(gone.id,E.EMPTY);assert.equal(gone.tq,dead.tq);assert.equal(gone.bank,317);assert.equal(energy(gone)+gone.sink-gone.source,energy(dead));
+  // lives per tick: V1 FIRE_BURN(+SPREAD) and SMOKE_FADE a step, four steps a tick
+  const smokeCell=cell(E.SMOKE);let fade=0;for(let seed=0;seed<1000;seed++)fade+=smokeCell.life-C.ctStep(smokeCell,ns(),seed).life;
+  assert.ok(Math.abs(fade/1000-PHYS.SMOKE_FADE*4*2048)<0.1,`smoke fade ${fade/1000}`);
+  let burn=0;for(let seed=0;seed<1000;seed++)burn+=closedFlame.life-C.ctStep(closedFlame,ns(cell(E.EMPTY)),seed).life;
+  assert.ok(Math.abs(burn/1000-(PHYS.FIRE_BURN+PHYS.FIRE_BURN_SPREAD/2)*4*2048)<4,`flame burn ${burn/1000}`);
+  // burnt out: ash (ASH_SHARE) or a flame, at least BURNT_MIN_T hot, as a declared source
+  const products=new Set();
+  for(let seed=0;seed<64;seed++){
+    const dying=cell(E.WOOD,320);dying.life=1;dying.burning=1;
+    const out=C.ctStep(dying,ns(),seed);products.add(out.id);
+    assert.ok(out.id===E.FIRE||out.id===E.ASH);assert.ok(out.tq>=q(PHYS.BURNT_MIN_T));
+    assert.equal(energy(out)+out.sink-out.source,energy(dying));
+  }
+  assert.deepEqual([...products].sort(),[E.ASH,E.FIRE].sort(),'V1 leaves ash or fire, no CO2');
 });
 test('growth/rot witness each biological rule at actual temperature with explicit ledger',()=>{
   const wet=cell(E.MOSS);wet.ctype=4;const fungus=cell(E.FUNGUS);fungus.ctype=4;

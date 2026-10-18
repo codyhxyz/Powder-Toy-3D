@@ -2,8 +2,9 @@ import { E, ELEMENTS } from '../../elements.js';
 import { CELL_M } from '../../scale.js';
 import { PHYS } from '../../physics.js';
 import { contactKernelWGSL } from './contact-kernel.js';
-import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, DUST_MIN_FALL_AGE, DUST_MIN_FALL_SPEED, CONTACT_G_TICK, CONTACT_HZ, CONTACT_ELEMENT_COUNT,
+import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, DUST_MIN_FALL_AGE, DUST_MIN_FALL_SPEED, CONTACT_G_TICK, CONTACT_HZ, CONTACT_ELEMENT_COUNT, CONTACT_CONSTANTS,
   CONTACT_DAMP_REACH, CONTACT_DAMP_DRY_Q, CONTACT_CEDAR_BASE, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR, CONTACT_TSNS_MARGIN_Q, CONTACT_PUFF_UNIT } from '../../v2/contact.js';
+import { EDGE } from '../../simModes.js';
 import { CONTACT_ROW_SCHEMA, CONTACT_RX_SCHEMA, contactTableLayout } from '../../v2/contactTable.js';
 
 const float = n => Number.isInteger(n) ? `${n}.0` : `${n}`;
@@ -109,6 +110,7 @@ const CONTACT_DUST_MEC_NB:i32=${CONTACT_DUST_MEC_NB};
 const CONTACT_DUST_RICH_AIR:i32=${CONTACT_DUST_RICH_AIR};
 const CONTACT_TSNS_MARGIN_Q:f32=${float(CONTACT_TSNS_MARGIN_Q)};
 const CONTACT_PUFF_UNIT:i32=${CONTACT_PUFF_UNIT};
+${Object.entries(CONTACT_CONSTANTS).map(([k, [type, v]]) => `const ${k}:${type}=${type === 'f32' ? float(Math.fround(v)) : v};`).join('\n')}
 ${requestMergeWGSL}struct CTCell { id:i32,tq:i32,raw:i32,fill:i32,life:i32,ctype:i32,spark:i32,age:i32,fallSpeed:f32,burning:i32,valid:i32,bank:i32,state:i32,request:i32,busy:i32,done:i32,pending:i32,pendingOf:i32,pendingGas:i32,source:vec2u,sink:vec2u }
 struct CTPair { a:CTCell,b:CTCell,changed:i32 }
 fn ctNeighborCount()->i32 { return i32(min(3u,arrayLength(&events))); }
@@ -161,6 +163,7 @@ fn ctSub(a:vec2u,b:vec2u)->vec2u{return energySub(a,b);}
 fn ctSigned(n:i32)->vec2u{return energySigned(n);}
 fn ctMul(a:i32,b:i32)->vec2u{return energyMul(u32(a),u32(b));}
 fn ctLess(a:vec2u,b:vec2u)->bool{return phaseLess(a,b);}
+fn ctSmall(d:vec2u)->i32{return bitcast<i32>(d.x);}
 fn ctFits(c:CTCell,energy:vec2u)->bool {return energyFits(ctMaterial(c),energy);}
 fn ctSetEnergy(input:CTCell,energy:vec2u)->CTCell {
  var c=input; let m=withEnergy(ctMaterial(c),energy);
@@ -226,6 +229,8 @@ fn contactBoundary(material:Material,openFaces:u32,ambientQ:u32,position:vec3i)-
  return Material(ctPack(c,material.core),c.bank);
 }
 
+// contactAmbientQ (v2/contact.js) and the boundary wrapper's encoding of P.ambient.
+fn contactAmbientQ()->i32 { return i32(clamp(round((P.ambient+273.25)*4.0),0.0,65535.0)); }
 fn ctSeed(position:vec3i,tick:u32)->i32 {
  return bitcast<i32>((u32(position.x)*73856093u) ^ (u32(position.y)*19349663u) ^ (u32(position.z)*83492791u) ^ (tick*2654435761u));
 }
@@ -242,7 +247,8 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
  for(var i=0u;i<count;i++){
   for(var axis=0u;axis<u32(ctNeighborCount());axis++){
    let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
-   let flux=ctFlux(cells[i],cells[j]);
+   var flux=0;if(ctConducts(cells[i],cells[j],i32(P.ambientHeat))){flux=ctFlux(cells[i],cells[j]);}
+   if(flux!=0){flux=-ctHeatRoom(cells[j],-ctHeatRoom(cells[i],flux));}
    if(flux!=0){cells[i]=ctHeat(cells[i],flux);cells[j]=ctHeat(cells[j],-flux);cells[i].busy=1;cells[j].busy=1;}
    let seed=ctSeed(positions[i],P.tick)^i32(j);
    var pair=ctReaction(cells[i],cells[j],seed);
@@ -259,7 +265,9 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
   let ns=array<CTCell,3>(snapshot[i^1u],snapshot[i^2u],snapshot[i^4u]);
   // Frozen pre-block atmosphere, never a global core read during R5.
   let outside=liquidScratch[slotOf(positions[i])].x&255u;
-  cells[i]=ctStepAtmosphere(cells[i],ns,ctSeed(positions[i],P.tick),i32(outside&3u),i32((outside>>2u)&3u),i32((outside>>4u)&3u),i32((outside>>6u)&3u));
+  // V1 react.js counts the box's solid floor as a surface (its sides and lid don't).
+  let onFloor=select(0,1,positions[i].y==0 && P.edge==${EDGE.SOLID}u);
+  cells[i]=ctStepAtmosphere(cells[i],ns,ctSeed(positions[i],P.tick),i32(outside&3u),i32((outside>>2u)&3u),i32((outside>>4u)&3u),i32((outside>>6u)&3u),onFloor,contactAmbientQ());
  }
  for(var i=0u;i<count;i++){
   for(var axis=0u;axis<u32(ctNeighborCount());axis++){
@@ -270,14 +278,8 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
   }
  }
  for(var i=0u;i<count;i++){
-  for(var axis=0u;axis<u32(ctNeighborCount());axis++){
-   let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
-   let pair=ctPlume(cells[i],cells[j],ctSeed(positions[i],P.tick)^i32(j),select(0,1,positions[j].y>positions[i].y));
-   cells[i]=pair.a;cells[j]=pair.b;
-  }
- }
- for(var i=0u;i<count;i++){
   if(cells[i].valid==0){continue;}
+  cells[i]=ctAmbient(cells[i],contactAmbientQ(),i32(P.ambientHeat));
   (*cores)[i]=ctPack(cells[i],(*cores)[i]);(*banks)[i]=cells[i].bank;(*requests)[i]=ctMergeRequest((*requests)[i],u32(cells[i].request));
   if(any(cells[i].source!=vec2u(0u))){noteEnergySource(positions[i],cells[i].source);}
   if(any(cells[i].sink!=vec2u(0u))){noteEnergySink(positions[i],cells[i].sink);}

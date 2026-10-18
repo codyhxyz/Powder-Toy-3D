@@ -24,6 +24,7 @@ assert.deepEqual(C.CONTACT_ROWS[E.WATER], {
   burn: 0, heat: 0, flameQ: 1093, ash: 1, blast: 0, blastAir: 0, blastChance: 0,
   acid: 0, edible: 0, fizz: 0, bed: 0, rots: 0, singFood: 1, conductor: 1, cost: 100, wire: 0, emitter: 0,
   blastInto: -1, blastOf: 0, blastQ: 0, blastPuff: 0,   // no blast: water's shortcut is unchanged
+  cool: 0,   // V1 react.js: water has no rad, so no pull toward ambient
 });
 assert.deepEqual(PHASE_ROWS[E.WATER], {
   hot: { T: 100, into: 'STEAM', latent: 540, puff: 1700 }, cold: { T: 0, into: 'ICE', latent: 80 },
