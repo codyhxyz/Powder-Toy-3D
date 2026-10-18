@@ -46,6 +46,7 @@ import { mediaDetailGLSL, MEDIA_DETAIL_ON } from './mediaDetail.js';
 export const mediaGLSL = (detail = {}) => {
   const flow = !!detail.DETAIL_MEDIA_FLOW;
   const fine = !!detail.DETAIL_MEDIA_FINE;
+  const stepOn = !!detail.DETAIL_MEDIA_STEP;
   return /* wgsl */ `
 // tMediaNoise (r billows, g wisps, b flame tongues, a flicker; gba: warp) is the lighting group's binding 10 (shaders/bindings.js)
 
@@ -252,20 +253,30 @@ fn gasLamps(p: vec3f, rd: vec3f, sigT: f32, g0: f32, bMul: f32) -> vec3f {
 // over between segments. Returns the opacity added, for depth decisions.
 fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>, col: ptr<function, vec3f>,
                 trans: ptr<function, vec3f>) -> f32 {
-  let st = mediaStepAt(ta);
+  let st = mediaStepAt(${stepOn ? 'ro + rd * ta' : 'ta'});
   if (*next < ta || *next >= ta + st) { *next = ta + glslMod(*next - ta, st); }
   if (*next >= tb) { return 0.0; }
   // Nothing here outlives the call: state kept across the tracer's loop costs
   // registers, and so occupancy, for the whole shader.
   let mu = dot(rd, FU.sun);
   var amb = vec3f(-1.0);   // per segment, on its first lit sample
-  var tr = 1.0;
+  var tr = 1.0;${stepOn ? `
+  // The fine march's light (mediaDetail.js): radiance per unit scattering,
+  // evaluated at the base march's rate (once per MEDIA_STEP along the ray, and
+  // again when the gas turns thick enough to shade itself) and reused by the
+  // fine samples in between, which refine only the density. Sun, sky and lamp
+  // light vary over cells (the self-shadow probe is a cell toward the sun), so
+  // the fine samples' light is what the base march would have given them.
+  var litL = vec3f(0.0);
+  var litT = -1.0;          // ray distance where it was evaluated (< 0: not yet)
+  var litDense = false;     // whether that sample shaded itself (sigT >= SELF_SHADOW_MIN_SIGMA)` : ''}
   for (var k = 0; k < MEDIA_SEG_SAMPLES; k++) {
     if (*next >= tb) { break; }${MEDIA_DETAIL_ON(detail) ? `
     let tv = *trans;
     gMediaVis = max(tv.r, max(tv.g, tv.b));` : ''}
     let p = ro + rd * (*next);
-    let dt = mediaStepAt(*next);   // this sample stands for [next, next + dt)
+    let dt = mediaStepAt(${stepOn ? 'p' : '*next'});   // this sample stands for [next, next + dt)${stepOn ? `
+    let tS = *next;` : ''}
     *next += dt;
     var m: vec4f;
     var nf: vec4f;
@@ -275,7 +286,11 @@ fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>
     let sigS2 = sig.xy * MD_ALBEDO.xy;   // fire (soot) doesn't scatter
     let sigS = sigS2.x + sigS2.y;
     var S = vec3f(0.0);
-    if (sigS > MEDIA_MIN_SIGMA) {
+    if (sigS > MEDIA_MIN_SIGMA) {${stepOn ? `
+      let dense = sigT >= SELF_SHADOW_MIN_SIGMA;
+      if (litT < 0.0 || tS - litT >= MEDIA_STEP || dense != litDense) {
+        litT = tS;
+        litDense = dense;` : ''}
       // sun, octave by octave: each sees half the optical depth (sqrt of T)
       var Ts = gasSun(p, sigT);
       var Lsun = vec3f(0.0);
@@ -292,8 +307,11 @@ fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>
       if (amb.x < 0.0) { amb = gasAmbient(ro + rd * (0.5 * (ta + tb))); }
       // FU.sunCol is irradiance / pi; so is a lamp's colour × falloff
       var Llamp = vec3f(0.0);
-      if (FU.lampCount > 0 || FU.beaconDir.w > 0.0) { Llamp = gasLamps(p, rd, sigT, g0, bMul); }
-      S = sigS * (PI_L * (FU.sunCol * Lsun + Llamp) + amb);
+      if (FU.lampCount > 0 || FU.beaconDir.w > 0.0) { Llamp = gasLamps(p, rd, sigT, g0, bMul); }${stepOn ? `
+        litL = PI_L * (FU.sunCol * Lsun + Llamp) + amb;
+      }
+      S = sigS * litL;` : `
+      S = sigS * (PI_L * (FU.sunCol * Lsun + Llamp) + amb);`}
     }
     if (sig.z > 0.0 && m.z > FLAME_MIN_FIRE) {
       // flames: soot emits blackbody light at the burning gas's temperature
