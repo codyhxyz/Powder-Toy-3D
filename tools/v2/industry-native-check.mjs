@@ -10,7 +10,9 @@ import { cellSlot, marksLayout, editKernelWGSL } from '../../src/shaders/common.
 import { createIndustryPhysics, machineBox, machinePorts } from '../../src/industry/physics.js';
 import { deviceCell, deviceDirection, baseMaterial, FILTER_IDS } from '../../src/industry/catalog.js';
 import { INDUSTRY_KIND, INDUSTRY_EDIT } from '../../src/shaders/industry.js';
-import { NativeIndustry, MACHINE_SPEED_SI, nativeIndustryEvaluateWGSL, nativeIndustryPlanWGSL, nativeIndustryParams } from '../../src/v2/industry.js';
+import { NativeIndustry, MACHINE_SPEED_SI, MACHINE_CARRY_SI, industryMotionWGSL, nativeIndustryEvaluateWGSL, nativeIndustryPlanWGSL, nativeIndustryParams } from '../../src/v2/industry.js';
+import { LAUNCH_MODE, PLAN } from '../../src/shaders/v2/blasts.js';
+import { NOMINAL_STEP_RATE } from '../../src/physics.js';
 import { nativeForceCommitWGSL } from '../../src/v2/nativeForcing.js';
 import { nativeWeatherParams } from '../../src/v2/nativeWeather.js';
 import { kickWGSL, KickParams } from '../../src/shaders/povKick.js';
@@ -25,7 +27,7 @@ import { CELL_M } from '../../src/scale.js';
 import { E, K, ELEMENTS } from '../../src/elements.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 
-const g = gridLayout(32, 32, 32), calls = [], allocations = [];
+const g = gridLayout(32, 32, 32), calls = [], allocations = [], marks = [];
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_SRC: 4, COPY_DST: 8, INDIRECT: 0x100, UNIFORM: 0x40, MAP_READ: 1 };
 const buffer = ({ size, ...desc }) => ({ ...desc, size, data: new Uint8Array(size), destroy() {} });
 const words = b => new Uint32Array(b.data.buffer);
@@ -86,7 +88,11 @@ owner.aux ??= buffer({ size: g.slots * 4 });
 owner.contactReady = true;
 const plans = buffer({ size: g.slots * 16 }), particles = buffer({ size: 64 }), air = [buffer({ size: g.nbricks * 32 }), buffer({ size: g.nbricks * 32 })];
 owner.dynamics = { isReady: true, isIdle: true, ready: Promise.resolve(), plans, particles, air, airIndex: 0,
-  _allocate: (tick, params) => allocations.push({ tick, params, at: calls.length }), _externalWork() {},
+  // A Factory batch launches over its machines' bricks (dynamics.js markLaunch, allocateLaunch),
+  // never the whole-grid allocation.
+  _allocate() { throw new Error('a Factory batch never runs the whole-grid allocation'); },
+  markLaunch: (tick, lo, hi) => { marks.push({ tick, lo, hi, at: calls.length }); },
+  allocateLaunch: tick => allocations.push({ tick, params: { mode: LAUNCH_MODE }, at: calls.length }), _externalWork() {},
   advanceParticles() {}, consumeMaterialEvents() {}, advanceAir() {}, readActivity: async () => ({}),
   capabilities: { physicsReady: true, drawReady: true, impulse: true } };
 await sim.prepareNative(owner);
@@ -147,10 +153,17 @@ moving.forEach(d => {
 });
 // Evaluate then commit, machine by machine, so each sees what the last committed.
 assert.deepEqual(native(stepped).map(c => c.name), moving.flatMap(() => ['industryNativeEvaluate', 'industryNativePlan']));
-const clearAt = stepped.findIndex(c => c.name === 'clear' && c.buffer === plans);
-assert(clearAt >= 0 && clearAt < stepped.findIndex(c => c.name === 'industryNativeEvaluate'), 'plans are cleared once before the batch');
+assert(!stepped.some(c => c.name === 'clear' && c.buffer === plans), 'no whole-grid plan clear: the launch list clears the bricks it lists');
+// Each box lists its bricks after its evaluation and before its plans, with its own box.
+const stepStart = calls.length - stepped.length, batchMarks = marks.filter(m => m.at >= stepStart);
+assert.equal(batchMarks.length, moving.length, 'one launch mark per transport machine');
+batchMarks.forEach(m => {
+  const i = m.at - stepStart, before = stepped[i - 1], after = stepped[i];
+  assert.equal(before.name, 'industryNativeEvaluate'); assert.equal(after.name, 'industryNativePlan');
+  assert.deepEqual(m.lo, before.opts.params.editLo, 'the mark is the evaluated box'); assert.deepEqual(m.hi, before.opts.params.editHi);
+});
 assert.equal(allocations.length, 1, 'ONE native allocation launches every machine-moved cell');
-assert.equal(allocations[0].params.mode, 15, 'bounded-forcing launches carry absolute velocity and the whole cell');
+assert.equal(allocations[0].params.mode, LAUNCH_MODE, 'bounded-forcing launches over the launch list carry absolute velocity and the whole cell');
 assert.equal(allocations[0].at, calls.length, 'the allocation follows the last commit');
 console.log(`PASS V2 step: ${moving.length} transport machines evaluate and commit natively, one allocation, no legacy edit/export`);
 
@@ -186,6 +199,7 @@ assert.equal(draft[0].opts.params.dt, 2 / HOST_HZ, 'two native ticks are 2/60 s 
 assert.deepEqual(draft[0].opts.params.corner, deviceCell(hearth, 0, 0, 0));
 assert.equal(allocations.length, before, 'heat and fuel commits launch nothing');
 assert(!calls.slice(mark).some(c => c.name === 'clear' && c.buffer === plans), 'a heat-only batch leaves plans alone');
+assert.equal(marks.filter(m => m.at >= mark).length, 0, 'and lists nothing to launch');
 console.log('PASS V2 hearth draft runs per native tick in real seconds without a launch');
 
 // Saves under V2: machine state is registrations and cargo; native cargo validates.
@@ -208,13 +222,31 @@ const params = nativeIndustryParams();
 const evaluate = nativeIndustryEvaluateWGSL(g, params), plan = nativeIndustryPlanWGSL(g, params);
 assert(evaluate.includes(INDUSTRY_EDIT.update) && evaluate.includes(INDUSTRY_EDIT.decls), "V1's machine rules run verbatim");
 assert(!/\bownLegacy\(slotOf/.test(evaluate), 'evaluation claims no legacy ownership');
-assert(plan.includes(`r.motion.xyz*${MACHINE_SPEED_SI}`), 'motion converts at the trajectory-preserving machine speed');
+assert(plan.includes('plans[s]=ForcePlan(industryVelocity(p,r.motion.xyz),flags)'), "motion converts by what it is: a deck's carry or a throw");
+assert(plan.includes(`if((flags&1u)!=0u && industryCarries(p)) { flags|=${PLAN.SLIDE}u; }`), "a deck's carry leaves from its contact with the deck");
+assert(industryMotionWGSL.includes(`return motion * ${MACHINE_SPEED_SI}; }`), 'a throw keeps V1\'s trajectory in cells');
+assert(industryMotionWGSL.includes(`vec3f(motion.x * ${MACHINE_CARRY_SI}.0, motion.y * ${MACHINE_SPEED_SI}, motion.z * ${MACHINE_CARRY_SI}.0)`),
+  "a carry moves at V1's cells/s along the deck; its vertical part is a throw's");
 assert(evaluate.includes(`/${MACHINE_SPEED_SI}`), 'grain fall state reads in the same unit');
 assert(plan.includes('withLife(shaped,r.after.z)') && plan.includes('withCtype(shaped,ct)'), 'fuel life and ctype writes commit natively');
 assert(plan.includes('if(flags!=0u) { plans[s]=ForcePlan('), 'boxes share one plan clear');
 assert.equal(MACHINE_SPEED_SI, Math.sqrt(GRAVITY * CELL_M / SIM_GRAVITY));
 const apex = v => (v * MACHINE_SPEED_SI) ** 2 / (2 * GRAVITY) / CELL_M;
 assert(Math.abs(apex(1) - 1 / (2 * SIM_GRAVITY)) < 1e-9, "a lift's grain peaks at V1's 20 cells");
+// A belt's 0.6 cells/step (shaders/industry.js update) is V1's 144 cells/s, as V1's move pass carries it.
+const BELT = 0.6, cellsPerSecond = v => v * MACHINE_CARRY_SI / CELL_M;
+assert(Math.abs(cellsPerSecond(BELT) - BELT * NOMINAL_STEP_RATE) < 1e-9, "a belt carries at V1's 144 cells/s");
+assert(Math.abs(cellsPerSecond(BELT) - 144) < 1e-9);
+// Which motion is a carry: V1's rule kinds and the miner's deck (z 0..3) against its cut face (z 4..7).
+const carries = (kind, rel, forward) => {
+  if (kind === INDUSTRY_KIND.belt || kind === INDUSTRY_KIND.separator) return true;
+  if (kind !== INDUSTRY_KIND.miner) return false;
+  return rel[1] === 1 && rel[0] * forward[0] + rel[1] * forward[1] + rel[2] * forward[2] <= 3;
+};
+assert(carries(INDUSTRY_KIND.miner, [1, 1, 2], [0, 0, 1]) && !carries(INDUSTRY_KIND.miner, [1, 2, 5], [0, 0, 1]) && !carries(INDUSTRY_KIND.lift, [1, 1, 1], [0, 0, 1]));
+assert(industryMotionWGSL.includes(`if (P.kind == ${INDUSTRY_KIND.belt}u || P.kind == ${INDUSTRY_KIND.separator}u) { return true; }`)
+  && industryMotionWGSL.includes(`if (P.kind != ${INDUSTRY_KIND.miner}u) { return false; }`)
+  && industryMotionWGSL.includes('return rel.y == 1 && dot(vec3f(rel), vec3f(P.forward)) <= 3.0;'), 'the WGSL classifies as this does');
 // The POV force kernels keep their text exactly (opt-in options only).
 const kick = nativeWeatherParams('povKick', { update: kickWGSL, params: { ...Object.fromEntries(KickParams.fields.map(f => [f.name, f.type])), origin: 'vec3i' } });
 assert.equal(nativeForceCommitWGSL(g, kick, 'plan', {}), nativeForceCommitWGSL(g, kick, 'plan'));

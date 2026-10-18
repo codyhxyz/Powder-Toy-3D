@@ -11,7 +11,8 @@ import { fold } from '../../gpu/kernels.js';
 export { DynamicParams };
 // Native cells/bank/activity3 + events, particles, air, control, plans5.
 export const BLASTS_LAYOUT = storageLayout(5);
-export const PLAN = Object.freeze({ SPAWN: 1, BREAK: 2, SOURCE: 4, NEUTRON: 8 });
+// SLIDE: a Factory deck's carry (src/v2/industry.js): the cell leaves from its contact with the deck.
+export const PLAN = Object.freeze({ SPAWN: 1, BREAK: 2, SOURCE: 4, NEUTRON: 8, SLIDE: 64 });
 export const CHILD_PREFIX = CONTROL.PREFIX;
 export const SPAWN_PREFIX = CHILD_PREFIX + PARTICLE_CAP;
 export const RAY_REQUEST_CAP = 64;
@@ -59,17 +60,55 @@ export function listControl(g) {
   const windGroups = jetTotal + 1;
   return { lists, reach, charges, jetTotal, windGroups, words: windGroups + brickGroups(g) };
 }
+// Factory batches (src/v2/industry.js) launch over the bricks their machine boxes touch, never
+// the whole grid: marks (a word a brick: listed in this batch), the list ([use, count, bricks...],
+// in recording order) and each listed brick's planned launches, by list position. Past every
+// range above, so no other stage's words move.
+export function launchControl(g) {
+  const marks = listControl(g).words, list = marks + g.nbricks, counts = list + 2 + g.nbricks;
+  return { marks, list, counts, words: counts + g.nbricks };
+}
+// The words the control buffer holds (dynamics.js).
+export const controlBufferWords = g => launchControl(g).words;
+// Forcing (mode 15: a bounded writer's absolute velocities) over the launch list (launchControl).
+// Allocation stages treat it as mode 0, as the couple run's; apply runs it as mode 15 does.
+export const LAUNCH_MODE = 17;
+const launchWGSL = g => { const L = launchControl(g); return /* wgsl */ `
+const D_LAUNCH_MARKS: u32 = ${L.marks}u;
+const D_LAUNCH_LIST: u32 = ${L.list}u;
+const D_LAUNCH_COUNTS: u32 = ${L.counts}u;
+`; };
+// A deck's carry (PLAN.SLIDE). V1 moves a supported grain along its deck at its velocity
+// (shaders/move.js: support cancels only the approaching velocity), and its move pass rounds a
+// fraction of a cell by chance (draw()). A particle has no support, so one launched from its cell's
+// centre glides half a cell of fall over the deck (0.12 s, ~18 cells at a belt's speed): over the
+// next machine's deck. It leaves from its contact instead, a uniformly random point of its cell's
+// floor (V1's chance rounding) just under one tick's fall from rest above it: it slides one tick at
+// the deck's speed and lands back on the deck where the next pass carries it on. Off a deck's end
+// nothing is under it, and it flies on at that speed.
+const SLIDE_CONTACT = 0.98;          // of one tick's fall: the landing comes inside the tick
+const SLIDE_SALT = 0x534c4944;       // 'SLID': the contact point's own random stream
+const slideWGSL = () => /* wgsl */ `
+fn dSlideStart(slot: u32) -> vec3f {
+  let p=cellOf(slot); let id=dId(p,${SLIDE_SALT}u);
+  let lift=${f(SLIDE_CONTACT * 0.5 * DT * DT / CELL_M)}*P.gravity;
+  return vec3f(p+P.origin)+vec3f(dRandom(id,1u),lift,dRandom(id,2u));
+}
+`;
 // windList's group words, for the two stages that write and read them (air.js windList, count here).
 export const windGroupsWGSL = g => `${brickGroupWGSL(g)}
 const D_WIND_GROUPS: u32 = ${listControl(g).windGroups}u;`;
 // Dispatch args (bytes): a thread a listed brick, or a workgroup a listed brick (cells).
 export const LIST_ARGS = { source: COUPLE_ARGS + 32, step: COUPLE_ARGS + 48, wind: COUPLE_ARGS + 64, windCells: COUPLE_ARGS + 80, eventCells: COUPLE_ARGS + 96,
-  jetCells: COUPLE_ARGS + 112, reachX: COUPLE_ARGS + 128, reachY: COUPLE_ARGS + 144 };
-export const DISPATCH_ARGS_BYTES = COUPLE_ARGS + 160;
+  jetCells: COUPLE_ARGS + 112, reachX: COUPLE_ARGS + 128, reachY: COUPLE_ARGS + 144,
+  launchBricks: COUPLE_ARGS + 160, launchCells: COUPLE_ARGS + 176 };
+export const DISPATCH_ARGS_BYTES = COUPLE_ARGS + 192;
 // Which args each list writes: [byte offset, per-cell (a workgroup a brick) or a thread a brick].
 export const LIST_DISPATCH = { source: [[LIST_ARGS.source, false]], step: [[LIST_ARGS.step, false]],
   wind: [[LIST_ARGS.wind, false], [LIST_ARGS.windCells, true]], events: [[LIST_ARGS.eventCells, true]],
   jets: [[LIST_ARGS.jetCells, true]], reachX: [[LIST_ARGS.reachX, false]], reachY: [[LIST_ARGS.reachY, false]] };
+// The launch list's args: a thread a listed brick (launchCount), a workgroup a listed brick (apply).
+const LAUNCH_DISPATCH = [[LIST_ARGS.launchBricks, false], [LIST_ARGS.launchCells, true]];
 // The list words and helpers, for families that bind control as atomics (air, blasts).
 export function listWGSL(g) {
   const L = listControl(g);
@@ -102,7 +141,7 @@ fn dWindListed(b: u32) -> bool {
 }
 // The one-thread stages that write indirect args, in listArgs' two-buffer layout (control, dispatch
 // args): each writes the args it decides directly, so no copy splits the tick's compute pass.
-export const LISTS_STAGES = [...LIST_NAMES, 'workArgs', 'coupleGate', 'publishCouple'];
+export const LISTS_STAGES = [...LIST_NAMES, 'workArgs', 'coupleGate', 'publishCouple', 'launch'];
 const listsHead = `${DynamicParams.wgsl}
 @group(3) @binding(1) var<uniform> P: DynamicParams;
 @group(1) @binding(0) var<storage, read_write> control: array<u32>;
@@ -110,6 +149,7 @@ const listsHead = `${DynamicParams.wgsl}
 const D_NONE: u32 = 0xffffffffu;`;
 export function listsStageWGSL(g, name) {
   if (LIST_NAMES.includes(name)) return listArgsWGSL(g, name);
+  if (name === 'launch') return publishListWGSL(launchControl(g).list, LAUNCH_DISPATCH);
   const [cells0, cells1] = fold(Math.ceil(g.slots / 64)), [bricks0, bricks1] = fold(Math.ceil(g.nbricks / 64));
   // A batch's work: a selected source, or (outside mode 14) a pending grid neutron or children. The
   // saved control words 20..30 keep the args; the dispatch args get them at 0, 16, 32 and 48.
@@ -149,8 +189,8 @@ const MAX_WG: u32 = 65535u;
   throw new Error(`Unknown lists stage ${name}`);
 }
 // One thread: a list's builders are done; publish its length and dispatch args, start it over.
-export function listArgsWGSL(g, name) {
-  const L = listControl(g), base = L.lists[name];
+export function listArgsWGSL(g, name) { return publishListWGSL(listControl(g).lists[name], LIST_DISPATCH[name]); }
+function publishListWGSL(base, dispatch) {
   return /* wgsl */ `
 @group(1) @binding(0) var<storage, read_write> control: array<u32>;
 @group(1) @binding(1) var<storage, read_write> args: array<u32>;
@@ -158,7 +198,7 @@ const MAX_WG: u32 = 65535u;
 fn writeFold(at: u32, n: u32) { let y = max(1u, (n + MAX_WG - 1u) / MAX_WG); args[at] = (n + y - 1u) / y; args[at + 1u] = y; args[at + 2u] = 1u; }
 @compute @workgroup_size(1) fn main() {
   let n = control[${base + 1}u]; control[${base}u] = n; control[${base + 1}u] = 0u;
-${LIST_DISPATCH[name].map(([offset, cells]) => `  writeFold(${offset / 4}u, ${cells ? 'n' : '(n + 63u) / 64u'});`).join('\n')}
+${dispatch.map(([offset, cells]) => `  writeFold(${offset / 4}u, ${cells ? 'n' : '(n + 63u) / 64u'});`).join('\n')}
 }
 `;
 }
@@ -749,11 +789,14 @@ var<workgroup> childCounts: array<u32,64>;
     }
     atomicStore(&control[5],total);
   `);
-  if (stage === 'apply') return h + main64(/* wgsl */ `
+  if (stage === 'apply') return h + launchWGSL(g) + slideWGSL() + main64(/* wgsl */ `
+    // A launch run's workgroup is one listed brick: its mark goes once the run has read it.
+    if(P.mode==${LAUNCH_MODE}u && li==0u && t<D_SLOTS) { atomicStore(&control[D_LAUNCH_MARKS+t/64u],0u); }
+    let forcing=P.mode==15u || P.mode==${LAUNCH_MODE}u;
     if(P.mode==14u && atomicLoad(&control[3])==D_NONE) { return; }
     if (t >= D_SLOTS || (P.mode==${COUPLE_MODE}u && !dCoupleActive(t/64u))) { return; }
     let plan=plans[t]; if (plan.flags==0u) { return; }
-    if(P.mode==15u && (events[t]&1u)!=0u) { atomicAdd(&control[7],1u); dWake(cellOf(t)); return; }
+    if(forcing && (events[t]&1u)!=0u) { atomicAdd(&control[7],1u); dWake(cellOf(t)); return; }
     let before=loadMaterial(t); var after=before;
     if ((plan.flags&2u)!=0u) {
       after.core.x=(after.core.x&0xffffff00u)|((plan.flags>>8u)&255u);
@@ -787,13 +830,47 @@ var<workgroup> childCounts: array<u32,64>;
           }
         }
         // Bounded forcing supplies absolute velocity; ordinary impulses add to falling motion.
-        let incoming=select(vec3f(0,-fallVelocity(before.core),0),vec3f(0),P.mode==15u || (plan.flags&32u)!=0u);
-        if (dSpawn(t,rank,packet,plan.velocity+incoming,P.sequence ^ 0x53504157u)) { after=remainder; }
-        else { atomicAdd(&control[7],1u); if(P.mode==15u) { dWake(cellOf(t)); return; } } // authoritative grid fallback, never erase a failed launch
+        let incoming=select(vec3f(0,-fallVelocity(before.core),0),vec3f(0),forcing || (plan.flags&32u)!=0u);
+        if (dSpawn(t,rank,packet,plan.velocity+incoming,P.sequence ^ 0x53504157u)) {
+          after=remainder;
+          if (forcing && (plan.flags&${PLAN.SLIDE}u)!=0u && P.gravMode==0u) { particles[atomicLoad(&control[D_FREE+rank])].position=dSlideStart(t); }
+        }
+        else { atomicAdd(&control[7],1u); if(forcing) { dWake(cellOf(t)); return; } } // authoritative grid fallback, never erase a failed launch
       }
     }
     storeMaterial(t,before,after); dWake(cellOf(t));
-  `,`select(dPlanSlot(dThread(wg,nwg,li)),dListedCell(LIST_WIND,wg,nwg,li),P.mode==${COUPLE_MODE}u)`);
+  `,`select(select(dPlanSlot(dThread(wg,nwg,li)),dListedCell(D_LAUNCH_LIST,wg,nwg,li),P.mode==${LAUNCH_MODE}u),dListedCell(LIST_WIND,wg,nwg,li),P.mode==${COUPLE_MODE}u)`);
+  // A Factory batch's launch run (dynamics.js markLaunch, allocateLaunch). Its cost follows the
+  // bricks its machine boxes touch: no whole-grid plan clear, count or apply.
+  // Mark (one thread a box, its bricks in x, y, z order, so the list's order is the recording's and
+  // the ranks are deterministic): a brick new to the batch has its plans cleared and is listed; one an
+  // earlier box listed keeps that box's plans.
+  if (stage === 'launchMark') return h + launchWGSL(g) + main1(/* wgsl */ `
+    let lo=P.boxStart>>vec3u(2u); let hi=(P.boxStart+vec3i(P.boxSize)-1)>>vec3u(2u);
+    for (var z=lo.z;z<=hi.z;z++) { for (var y=lo.y;y<=hi.y;y++) { for (var x=lo.x;x<=hi.x;x++) {
+      let b=brickId(vec3i(x,y,z));
+      if (atomicExchange(&control[D_LAUNCH_MARKS+b],1u)!=0u) { continue; }
+      for (var s=b*64u;s<b*64u+64u;s++) { plans[s]=DPlan(vec3f(0),0u); }
+      dAppend(D_LAUNCH_LIST,b);
+    } } }
+  `);
+  // Count: a thread a listed brick, its launches (count's rule, over listed bricks alone).
+  if (stage === 'launchCount') return h + launchWGSL(g) + main64(/* wgsl */ `
+    let b=dListed(D_LAUNCH_LIST,t); if (b==D_NONE) { return; }
+    var n=0u; for (var s=b*64u;s<b*64u+64u;s++) { if ((plans[s].flags&1u)!=0u) { n++; } }
+    atomicStore(&control[D_LAUNCH_COUNTS+t],n);
+  `);
+  // Prefix (allocate's): each listed brick's base in list order, where dRank reads it (its group's
+  // count word zero), and the batch's total.
+  if (stage === 'launchPrefix') return h + launchWGSL(g) + main1(/* wgsl */ `
+    let n=atomicLoad(&control[D_LAUNCH_LIST]); var total=0u;
+    for (var i=0u;i<n;i++) {
+      let b=atomicLoad(&control[D_LAUNCH_LIST+2u+i]);
+      atomicStore(&control[D_SPAWN_PREFIX+b],total); atomicStore(&control[D_SPAWN_COUNTS+b/64u],0u);
+      total+=atomicLoad(&control[D_LAUNCH_COUNTS+i]);
+    }
+    atomicStore(&control[5],total);
+  `);
   if (stage === 'children') return h + main64(/* wgsl */ `
     if (t >= D_CAP) { return; } let offset=atomicLoad(&control[D_CHILD_PREFIX+t]); if (offset==D_NONE) { return; }
     var parent=particles[t]; var n=parent.tail.z;
@@ -865,7 +942,7 @@ var<workgroup> childCounts: array<u32,64>;
   `);
   throw new Error(`Unknown blast stage ${stage}`);
 }
-export const BLAST_STAGES = [...ALLOCATION_STAGES,'eventList','reset','select','pick','planCharges','normalizeCharges','damageCharges','finishCharges','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply'];
+export const BLAST_STAGES = [...ALLOCATION_STAGES,'eventList','reset','select','pick','planCharges','normalizeCharges','damageCharges','finishCharges','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply','launchMark','launchCount','launchPrefix'];
 
 export const WGSL_CHECK = BLAST_STAGES.map(stage => ({ name: `v2blasts_${stage}`, kind: 'compute',
   code: g => blastsWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,BLASTS_LAYOUT,'EMPTY'], tool: true }));

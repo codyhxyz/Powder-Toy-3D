@@ -3,9 +3,10 @@ import { nativeWeatherParams, nativeWeatherEvaluateWGSL } from './nativeWeather.
 import { nativeForceCommitWGSL, FORCE_COMMIT_LAYOUT } from './nativeForcing.js';
 import { nativeModes } from './modes.js';
 import { GRAVITY } from './dynamics-reference.js';
-import { SIM_GRAVITY } from '../physics.js';
+import { SIM_GRAVITY, NOMINAL_STEP_RATE } from '../physics.js';
 import { CELL_M } from '../scale.js';
-import { INDUSTRY_EDIT } from '../shaders/industry.js';
+import { INDUSTRY_EDIT, INDUSTRY_KIND } from '../shaders/industry.js';
+import { PLAN } from '../shaders/v2/blasts.js';
 
 // Factory machines on V2's own cells. The machine rules are V1's, unchanged:
 // shaders/industry.js update() (belt, separator, lift, miner, furnace, hearth)
@@ -15,17 +16,46 @@ import { INDUSTRY_EDIT } from '../shaders/industry.js';
 // a V2 particle that carries the whole cell (a liquid's fill, a grain's fall
 // state, the heat bank). No legacy B, projection or import is involved.
 //
-// Units. The rules author speeds in cells per V1 step, under V1's gravity of
-// SIM_GRAVITY cells/step² (physics.js). V2 falls at GRAVITY m/s² (docs/v2.md
-// §5.1). Converting with the speed that keeps the same trajectory in cells,
-// v·√(GRAVITY·CELL_M/SIM_GRAVITY), keeps every machine's geometry: a lift
-// still throws its grains V1's 20 cells up (1²/(2·0.025)) into the catch you
-// built, and a belt's grains clear the same 5 cells per cell of drop. Time
-// follows V2's slower 2 g clock, like every other fall. (The 240 Hz
-// conversion tools use, 72 m/s, would throw a lift's grains ~250 cells.)
+// Units. The rules author speeds in cells per V1 step: V1 steps NOMINAL_STEP_RATE
+// (240) times a second under SIM_GRAVITY = 0.025 cells/step² (physics.js), which is
+// 0.025·240² = 1440 cells/s² (432 m/s², 44 g at CELL_M = 0.3 m: V1's clock runs
+// SIM_TIME_SCALE ≈ 6.6× real time). V2 falls at GRAVITY = 19.6 m/s² (TF2's 2 g,
+// docs/v2.md §5.1), 65.3 cells/s²: 22× less in cells. One speed can't keep both
+// V1's cells/s and V1's trajectories under that gravity, so a machine's motion
+// converts by what it is (V1's rule kinds, shaders/industry.js update):
+// - a throw (a lift's launch, a miner's cut debris, a furnace's or hearth's pour)
+//   keeps V1's trajectory in cells: v·√(GRAVITY·CELL_M/SIM_GRAVITY)
+//   (MACHINE_SPEED_SI, 15.3 m/s per cell/step). A lift still throws its grains
+//   V1's 20 cells up (1²/(2·0.025)) into the catch you built; the flight takes
+//   √22 ≈ 4.7× V1's time (0.78 s to the top against 0.17 s);
+// - a deck's carry (a belt's, a separator's, a miner's deck: grains resting on it)
+//   moves at V1's cells/s along the deck: v·NOMINAL_STEP_RATE·CELL_M
+//   (MACHINE_CARRY_SI, 72 m/s per cell/step: a belt's 0.6 is 144 cells/s). The
+//   vertical part of a carry is still a throw's. A grain that runs off a deck's
+//   end flies on at that speed: under V2's gravity it falls one cell over ~25
+//   cells, where V1's fell one over ~5.
 export const MACHINE_SPEED_SI = Math.sqrt(GRAVITY * CELL_M / SIM_GRAVITY);
+export const MACHINE_CARRY_SI = NOMINAL_STEP_RATE * CELL_M;
+const wf = n => (Number.isInteger(n) ? `${n}.0` : String(n));
+// V2's own: which motion is a deck's carry (V1's update: a belt or separator moves only grains on its
+// deck; a miner's deck is its 4×4 at y 1, its cut face z 4..7 ahead). A carry leaves from its contact
+// with the deck (blasts.js PLAN.SLIDE), so it slides on to the next deck instead of gliding over it.
+export const industryMotionWGSL = /* wgsl */ `
+fn industryCarries(p: vec3i) -> bool {
+  if (P.kind == ${INDUSTRY_KIND.belt}u || P.kind == ${INDUSTRY_KIND.separator}u) { return true; }
+  if (P.kind != ${INDUSTRY_KIND.miner}u) { return false; }
+  let rel = p - P.corner;
+  return rel.y == 1 && dot(vec3f(rel), vec3f(P.forward)) <= 3.0;
+}
+fn industryVelocity(p: vec3i, motion: vec3f) -> vec3f {
+  if (!industryCarries(p)) { return motion * ${wf(MACHINE_SPEED_SI)}; }
+  return vec3f(motion.x * ${wf(MACHINE_CARRY_SI)}, motion.y * ${wf(MACHINE_SPEED_SI)}, motion.z * ${wf(MACHINE_CARRY_SI)});
+}
+`;
 export const NATIVE_INDUSTRY_SPEC = { ...INDUSTRY_EDIT, nativeForcing: true, speedSI: MACHINE_SPEED_SI };
-export const NATIVE_INDUSTRY_COMMIT = { speedSI: MACHINE_SPEED_SI, life: true, sparse: true };
+export const NATIVE_INDUSTRY_COMMIT = { speedSI: MACHINE_SPEED_SI, life: true, sparse: true, motion: {
+  decls: industryMotionWGSL, velocity: 'industryVelocity(p,r.motion.xyz)',
+  flags: `if((flags&1u)!=0u && industryCarries(p)) { flags|=${PLAN.SLIDE}u; }\n` } };
 const RESULT_BYTES = 64;   // nativeWeather.js WeatherResult: four vec4s a cell
 const binding = (n, read = false) => ({ binding: n, visibility: STAGE.COMPUTE, buffer: { type: read ? 'read-only-storage' : 'storage' } });
 export const nativeIndustryParams = () => nativeWeatherParams('industry', { ...NATIVE_INDUSTRY_SPEC,
@@ -72,8 +102,10 @@ export class NativeIndustry {
     return this.groups;
   }
   /** One batch of machine edits ({ box: {lo, hi} inclusive cells, values: IndustryParams' fields }).
-   * launch: the batch may move matter, so plans are cleared first and ONE native allocation
-   * after the last box turns every planned cell into a particle (or leaves it exact on the grid). */
+   * launch: the batch may move matter: each box lists its bricks before its plans (clearing those
+   * the batch hasn't listed yet), and ONE native allocation over the listed bricks after the last box
+   * turns every planned cell into a particle (or leaves it exact on the grid). Its cost follows the
+   * machines' bricks, not the grid's. */
   run(edits, { launch = true } = {}) {
     const sim = this.sim, o = this.owner, d = this.dynamics;
     if (!this.isReady || sim.nativeTransition || sim.nativeTransitionError) return false;
@@ -92,12 +124,12 @@ export class NativeIndustry {
         params: { ...nativeModes(sim), ...b.values, editLo: b.lo, editHi: b.hi, tick, origin } });
       sim.onPass?.(k.name, { kind: 'compute', gpuMs: null });
     };
-    if (launch) this.gpu.frame.clear(d.plans);
     for (const b of boxes) {
       dispatch(this.evaluate, b.count, [sim.tables, sim.bindPhysicalRO, groups.evaluate], sim.readHeader({ physical: true }), b);
+      if (launch) d.markLaunch(tick, b.lo, b.hi);
       dispatch(this.plan, b.count, [o.nativeDynamics.group, groups.commit], sim.header(), b);
     }
-    if (launch) d._allocate(tick, { mode: 15 });
+    if (launch) d.allocateLaunch(tick);
     // As the native tick does: storeMaterial noted every changed brick, so a frame of
     // running machines never forces whole-grid derived passes (no changedAll).
     o.legacyPending = o.writtenSinceTick = true;
