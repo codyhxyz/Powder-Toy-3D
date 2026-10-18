@@ -39,8 +39,9 @@
 //
 // WGSL (the names are the GLSL version's, docs/webgpu.md W2). Each switch is
 // a JS template switch (F2): detail is the defines object of gfx/detail.js.
-// The GLSL's MEDIA_STEP_AT(t) macro is the function mediaStepAt(p) either
-// way (now of the sample's point: its step follows its pixel footprint), and its FLOW_PERIOD here is MEDIA_FLOW_PERIOD: WGSL has one scope for
+// The GLSL's MEDIA_STEP_AT(t) macro is the function mediaStepAt: of the ray
+// distance t when off, of the sample's point p when on (its footprint), and
+// its FLOW_PERIOD here is MEDIA_FLOW_PERIOD: WGSL has one scope for
 // both, and surface.js's flowing grains have their own FLOW_PERIOD (32).
 import { MEDIA_NOISE_CELLS } from '../../gfx/materials.js';
 import { NOISE_FINEST_PERIOD } from '../../gfx/mediaNoise.js';
@@ -120,7 +121,7 @@ fn mediaStepAt(p: vec3f) -> f32 {
   return mix(MEDIA_STEP, clamp(MEDIA_STEP_PX * footprint(p), MEDIA_STEP_MIN, MEDIA_STEP), detailVis());
 }` : `
 const MEDIA_SEG_SAMPLES: i32 = MEDIA_MAX_PER_SEG;
-fn mediaStepAt(p: vec3f) -> f32 { return MEDIA_STEP; }`}
+fn mediaStepAt(t: f32) -> f32 { return MEDIA_STEP; }`}
 ${flow ? `
 // ---- advection by the flow ----
 const MEDIA_FLOW_PERIOD: f32 = 16.0;   // sim steps each noise copy rides the flow before restarting (divides the clock wrap);

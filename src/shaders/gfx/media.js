@@ -253,7 +253,7 @@ fn gasLamps(p: vec3f, rd: vec3f, sigT: f32, g0: f32, bMul: f32) -> vec3f {
 // over between segments. Returns the opacity added, for depth decisions.
 fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>, col: ptr<function, vec3f>,
                 trans: ptr<function, vec3f>) -> f32 {
-  let st = mediaStepAt(ro + rd * ta);
+  let st = mediaStepAt(${stepOn ? 'ro + rd * ta' : 'ta'});
   if (*next < ta || *next >= ta + st) { *next = ta + glslMod(*next - ta, st); }
   if (*next >= tb) { return 0.0; }
   // Nothing here outlives the call: state kept across the tracer's loop costs
@@ -275,7 +275,7 @@ fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>
     let tv = *trans;
     gMediaVis = max(tv.r, max(tv.g, tv.b));` : ''}
     let p = ro + rd * (*next);
-    let dt = mediaStepAt(p);   // this sample stands for [next, next + dt)${stepOn ? `
+    let dt = mediaStepAt(${stepOn ? 'p' : '*next'});   // this sample stands for [next, next + dt)${stepOn ? `
     let tS = *next;` : ''}
     *next += dt;
     var m: vec4f;
@@ -307,8 +307,8 @@ fn mediaSegment(ro: vec3f, rd: vec3f, ta: f32, tb: f32, next: ptr<function, f32>
       if (amb.x < 0.0) { amb = gasAmbient(ro + rd * (0.5 * (ta + tb))); }
       // FU.sunCol is irradiance / pi; so is a lamp's colour × falloff
       var Llamp = vec3f(0.0);
-      if (FU.lampCount > 0 || FU.beaconDir.w > 0.0) { Llamp = gasLamps(p, rd, sigT, g0, bMul); }
-${stepOn ? `        litL = PI_L * (FU.sunCol * Lsun + Llamp) + amb;
+      if (FU.lampCount > 0 || FU.beaconDir.w > 0.0) { Llamp = gasLamps(p, rd, sigT, g0, bMul); }${stepOn ? `
+        litL = PI_L * (FU.sunCol * Lsun + Llamp) + amb;
       }
       S = sigS * litL;` : `
       S = sigS * (PI_L * (FU.sunCol * Lsun + Llamp) + amb);`}
