@@ -3,12 +3,46 @@
 import assert from 'node:assert/strict';
 import { WgslReflect, WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { gridDims } from '../src/shaders/common.js';
-import { opticsShader, opticsBindings, opticsFieldBindings, OPTICS_STATE_LAYOUT, dropDepthWGSL, opticsProbeWGSL } from '../src/shaders/hybrid/optics.js';
+import { opticsShader, opticsBindings, opticsFieldBindings, OPTICS_STATE_LAYOUT, dropDepthWGSL, opticsProbeWGSL, opticsRefractionWGSL } from '../src/shaders/hybrid/optics.js';
 import { interfaceEnergy, opticalTransmission, walkOpticalCells, traceOpticalReference,
   opticalFieldDensity, opticalFieldSegment, opticalProbe, validateOpticsLimits, validateOpticsResources,
   createHybridOptics } from '../src/gfx/hybrid/optics.js';
 const close = (a, b, tol = 1e-8) => assert(Math.abs(a - b) < tol, `${a} != ${b}`);
 const white = a => a.forEach(v => close(v, 1));
+{
+  const critical=0.3950336277484894,eta=1.0885341167449951;
+  const rows=[[eta,1,critical,0]],iors=[1,eta,1.33,1.47,1.5];
+  for(const from of iors)for(const to of iors){
+    for(const cosine of [0,.1,critical,.5,.9,1])rows.push([from,to,cosine,0]);
+    if(from>to){
+      const bits=new Uint32Array(new Float32Array([Math.sqrt(1-(to/from)**2)]).buffer)[0];
+      for(let ulp=-2;ulp<=2;ulp++)rows.push([from,to,new Float32Array(new Uint32Array([bits+ulp]).buffer)[0],0]);
+    }
+  }
+  const input=new Float32Array(rows.flat()),output=new Float32Array(rows.length*8);
+  const code=`${opticsRefractionWGSL}
+@group(0) @binding(0) var<storage,read> input:array<vec4f>;
+@group(0) @binding(1) var<storage,read_write> output:array<vec4f>;
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid:vec3u){
+  let a=input[gid.x];let n=vec3f(0,1,0);
+  let d=vec3f(sqrt(max(0.0,1.0-a.z*a.z)),-a.z,0);
+  let r=opticsRefraction(d,n,a.x,a.y);
+  output[gid.x*2u]=vec4f(r.direction,r.reflected);
+  let eta=a.x/a.y;var oldF=1.0;
+  if(eta*eta*(1.0-a.z*a.z)<1.0){oldF=0.5;}
+  output[gid.x*2u+1u]=vec4f(normalize(refract(d,n,eta)),oldF);
+}`;
+  new WgslExec(new WgslParser().parse(code)).dispatchWorkgroups('main',rows.length,{0:{0:input,1:output}});
+  assert.equal(output[7],.5,'old TIR check selects transmission at the counterexample');
+  assert([...output.slice(4,7)].some(Number.isNaN),'old builtin refract disagrees and normalizes zero');
+  for(let i=0;i<rows.length;i++){
+    const r=output.slice(i*8,i*8+4);
+    assert(r.every(Number.isFinite),'critical-angle transport must stay finite');
+    assert(r[3]>=0&&r[3]<=1);
+    if(r[3]<1){close(Math.hypot(...r.slice(0,3)),1,2e-6);assert(r[1]<=1e-6);}
+  }
+  console.log(`PASS ${rows.length} executed WGSL refractions: critical-angle ULPs, finite transmission/TIR, old NaN reproduced.`);
+}
 const water = { id: 1, ior: 1.33, sigma: [0, 0, 0] };
 const oil = { id: 2, ior: 1.47, sigma: [0, 0, 0] };
 const glass = { id: 3, ior: 1.5, sigma: [0, 0, 0] };
@@ -292,12 +326,16 @@ const gpu = {
   bindGroup(layout,entries){ assert.deepEqual(entries.map(e=>e.binding).sort(),layout.entries.map(e=>e.binding).sort()); return {layout,entries}; },
   createBuffer(d){ assert.equal(d.usage,128); const b={...d,destroyed:0,destroy(){this.destroyed++;}}; buffers.push(b); return b; },
   createTexture:fakeTexture,
-  kernel(d){ const k={state:'ready',ready:Promise.resolve(),dispatch(frame,size,args){ calls.push({name:d.name,frame,size,args}); }}; pipelines.push(k); return k; },
+  kernel(d){ const k={name:d.name,descriptor:d,state:'ready',ready:Promise.resolve(),dispatch(frame,size,args){
+    if(args.params)OpticsParams.pack(args.params,new DataView(new ArrayBuffer(OpticsParams.size)),0);
+    calls.push({name:d.name,frame,size,args});
+  }}; pipelines.push(k); return k; },
   renderPipeline(d){ const p={state:'ready',ready:Promise.resolve(),draw(pass,args){
     assert(!pass.ended); if (args.params) OpticsParams.pack(args.params,new DataView(new ArrayBuffer(OpticsParams.size)),0);
     calls.push({name:'draw',args,pipeline:d});
   }}; pipelines.push(p); return p; },
-  frame:{render(desc){ calls.push({name:'render',desc}); return {ended:false,end(){this.ended=true;}}; }},
+  frame:{direct(){calls.push({name:'boundary'});return{};},
+    render(desc){ calls.push({name:'render',desc}); return {ended:false,end(){this.ended=true;}}; }},
 };
 const sim = {g:grid,L:{TABLES:{},STATE_RO:{}},tables:{},bindRO:{},header:()=>({}),version:1,cur:0,origin:{x:0,y:0,z:0},
   derived:{world:true,fieldSurf:{},fieldThin:{},views:{fieldSurf:{},fieldThin:{}}}};
@@ -421,6 +459,44 @@ assert(lastOutput.every(t=>t.destroyed===0));
 gpu.frame.flush(); assert(lastOutput.every(t=>t.destroyed===1));
 assert.equal(gate.destroyed,undefined); assert.equal(resources.instances.destroyed,undefined);
 console.log('Fallback full solver: gate, bounds bypass, primary spheres, no snapshot reuse, opaque cut, encoder replacement/resize/disposal passed (CPU only)');
+{
+  validateOpticsLimits({},extras,{bulkCompute:true});
+  assert.throws(()=>validateOpticsLimits({maxStorageTexturesPerShaderStage:2},extras,{bulkCompute:true}),/maxStorageTextures/);
+  assert.throws(()=>validateOpticsLimits({},[{binding:2,storageTexture:{format:'r32uint'}}],{bulkCompute:true}),/read-only/);
+  const derived={...sim.derived,particleSplit:true},computeSim={...sim,derived};
+  const compute=createHybridOptics(gpu,computeSim,{bulkCompute:true,particles:resources,fallbackGate:gate,
+    lighting:{hooks:{worldHit:'fn opticsWorldHit(h: OpticalHit) -> vec3f { return vec3f(1); }'}}});
+  const input={color:fakeTexture({size:[33,17],format:'rgba16float',usage:4}),
+    depth:fakeTexture({size:[33,17],format:'depth32float',usage:4})};
+  const first=calls.length;
+  await compute.ready;gpu.frame.encoder={};compute.record(input);
+  const recorded=calls.slice(first),bulk=recorded.find(c=>c.name==='hybrid optics');
+  assert.deepEqual(bulk.size,[5,3,1]);
+  assert.equal(compute.computePassName,'hybrid optics');
+  assert.deepEqual(recorded.map(c=>c.name),['hybrid.optics.bounds','hybrid.optics.bounds.finish','boundary',
+    'hybrid optics','boundary','render','draw','render','draw']);
+  const group=bulk.args.bind[2],outputs=Object.values(compute.output);
+  assert(group.layout.entries.every(e=>e.visibility===4));
+  assert.equal(group.layout.entries.filter(e=>e.storageTexture).length,3);
+  assert.deepEqual(group.entries.filter(e=>outputs.includes(e.resource.texture)).map(e=>e.resource.texture),outputs);
+  assert(outputs.every(t=>t.usage===28));
+  const drops=recorded.filter(c=>c.name==='draw').at(-1);
+  assert(drops.args.bind[2].layout.entries.every(e=>!e.storageTexture));
+  assert(drops.args.bind[2].entries.every(e=>!outputs.includes(e.resource.texture)));
+  assert(recorded.filter(c=>c.name==='render').at(-1).desc.colorAttachments.every(e=>e.loadOp==='load'));
+  const counts=new Uint8Array(33*17);
+  for(let gy=0;gy<3;gy++)for(let gx=0;gx<5;gx++)for(let y=0;y<8;y++)for(let x=0;x<8;x++){
+    const px=gx*8+x,py=gy*8+y;if(px<33&&py<17)counts[py*33+px]++;
+  }
+  assert(counts.every(n=>n===1),'every full-resolution pixel is dispatched exactly once');
+  compute.record({color:fakeTexture({size:[37,19],format:'rgba16float',usage:4}),
+    depth:fakeTexture({size:[37,19],format:'depth32float',usage:4})});
+  assert(outputs.every(t=>t.destroyed===0),'compute outputs retain existing encoder lifetime');
+  gpu.frame.flush();assert(outputs.every(t=>t.destroyed===1));
+  compute.dispose();gpu.frame.flush();
+  assert.equal(input.color.destroyed,0);
+  console.log('PASS optical compute recording: full coverage, isolated timing pass, separate droplet bindings, load order and resize retirement.');
+}
 
 // Full root composition, including actual material/light/media hooks and ABI.
 const { createHybridShading } = await import('../src/gfx/hybrid/shading.js');
@@ -450,6 +526,21 @@ validateOpticsLimits({},rootExtras);
 assert.equal(rootExtras.filter(e=>((e.visibility??7)&2)&&e.buffer?.type==='read-only-storage').length+3,8);
 assert.equal(rootExtras.filter(e=>((e.visibility??7)&2)&&e.texture).length+2,16);
 const rootCodes=[null,28].map(fallbackBinding=>opticsShader(grid,{fieldBinding:24,boundsBinding:26,particleBinding:27,fallbackBinding,wgsl:rootWGSL,hooks}));
+const rootComputeCodes=[null,28].map(fallbackBinding=>opticsShader(grid,{fieldBinding:24,boundsBinding:26,particleBinding:27,
+  fallbackBinding,computeBinding:29,wgsl:rootWGSL,hooks}));
+for(let i=0;i<rootComputeCodes.length;i++){
+  const code=rootComputeCodes[i],reflection=new WgslReflect(code),entry=reflection.entry.compute.find(e=>e.name==='bulkCS');
+  assert(entry);
+  const storageTextures=entry.resources.filter(e=>e.type.name.startsWith('texture_storage_'));
+  assert.equal(storageTextures.length,3);
+  assert(entry.resources.filter(e=>reflection.storage.includes(e)&&!storageTextures.includes(e)).length<=8);
+  assert(entry.resources.filter(e=>reflection.textures.includes(e)).length<=16);
+  assert.match(code,/vec2f\(gid.xy\) \+ vec2f\(0.5\)/);
+  assert.match(code,/if \(any\(gid.xy >= textureDimensions\(opticsOutColor\)\)\) \{ return; \}/);
+  for(const field of ['color','metadata','fallback'])assert.match(code,new RegExp(`textureStore\\(opticsOut\\w+, px, (?:vec4u\\()?out\\.${field}`));
+  const trace=s=>s.slice(s.indexOf('fn opticsTrace('),s.indexOf('@fragment fn fs'));
+  assert.equal(trace(code),trace(rootCodes[i]),'compute and fragment use identical transport, lighting and budgets');
+}
 for (const code of rootCodes) {
   const reflection=new WgslReflect(code);
   for (const [stage,bit] of [['vertex',1],['fragment',2]]) for (const entry of reflection.entry[stage]) {
@@ -467,7 +558,9 @@ console.log('Root selected-entry masks/layout: fragment storage 8, sampled textu
   const { spawnSync } = await import('node:child_process');
   for (const [name, code] of [['bounds',boundsCode], ['field-optics',boundedCode],
     ['cell-optics',opticsShader(grid,{boundsBinding:2})], ['droplets',dropCode],
-    ['root-normal',rootCodes[0]], ['root-fallback',rootCodes[1]], ['drop-depth',dropDepthWGSL], ['fallback-optics',fallbackCode], ['split-bounds',opticsBoundsShader(grid,{particles:true,world:true})]]) {
+['root-normal',rootCodes[0]], ['root-fallback',rootCodes[1]],
+['root-compute-normal',rootComputeCodes[0]],['root-compute-fallback',rootComputeCodes[1]],
+    ['drop-depth',dropDepthWGSL], ['fallback-optics',fallbackCode], ['split-bounds',opticsBoundsShader(grid,{particles:true,world:true})]]) {
     const result = spawnSync('naga',['--stdin-file-path',`${name}.wgsl`],{input:code,encoding:'utf8'});
     assert.equal(result.status,0,`${name}: ${result.error ?? ''}${result.stdout}${result.stderr}`);
   }

@@ -51,6 +51,15 @@ export const OUTCOMES = {
     seconds: 6,
     wallGap: 1,   // cells: the puddle stops short of every wall (it has an edge)
   },
+  radialSpread: {
+    phase: 'P2',
+    // the CPU witness (column-wgsl): the 16-cell tower spreads over 44 columns, the 32 deeper than a quarter
+    // cell level to 0.03 cm about the centre, idle at 1.3 s
+    seconds: 6,
+    levelCm: LEVEL_CM,
+    minDepth: 0.25,       // cells: a column this deep is lens, not the film at its rim (twice the dry tolerance)
+    minWetColumns: 16,    // the tower's 2×2 footprint four times over
+  },
   pipe: {
     phase: 'P2',
     // "a tank drains through a 30-cell pipe to the pipe's level" (docs/v2.md 4.4): the surface ends within

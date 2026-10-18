@@ -1,5 +1,5 @@
 // CPU-only: decode both shipped bodies with the game's loader, pose their rigs,
-// fit the shared hat, and exercise lazy body switching without compiling GPU pipelines.
+// fit the shared hat and her barrel, and exercise lazy body switching without compiling GPU pipelines.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
@@ -8,56 +8,67 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { buildGarb } from '../src/pov/garb.js';
+import { createBarrelFit, innerRadius, outerRadius } from '../src/pov/barrel.js';
 
-const ARM_BONES = new Set(['upperarm_l', 'upperarm_r', 'lowerarm_l', 'lowerarm_r', 'hand_l', 'hand_r']);
-// Idle and a walking swing: no arm vertex sits in the stave wood.
-function armsClearBarrel(gltf, body, geos) {
-  const worn = geos.map((geo) => {
-    const mesh = new THREE.SkinnedMesh(geo, body.material);
-    mesh.bind(body.skeleton, body.bindMatrix);
-    body.parent.add(mesh);
-    return mesh;
-  });
-  const mixer = new THREE.AnimationMixer(gltf.scene);
+// Her barrel: which wood each skinned body vertex is in after the fit (barrel.js), in the
+// barrel's own frame (spine_01's rest). Arms must be out of the wood and out of the barrel, legs and
+// torso out of the wood. Returns { arm, armInside, leg, legDeep, torso } (counts, legDeep in m).
+const KIND = (name) => /^(upperarm|lowerarm|hand|thumb|index|middle|ring|pinky)_/.test(name) ? 'arm'
+  : /^(thigh|calf|foot|ball)/.test(name) ? 'leg' : /^(Head|neck)/.test(name) ? 'head' : 'torso';
+function barrelCensus(body, s) {
+  const { bones, boneInverses } = body.skeleton;
+  const spine = bones.find(b => b.name === 'spine_01');
+  body.parent.updateMatrixWorld(true);
+  body.skeleton.update();
+  const toBarrel = new THREE.Matrix4().multiplyMatrices(spine.matrixWorld, boneInverses[bones.indexOf(spine)])
+    .multiply(body.bindMatrix).invert();
   const si = body.geometry.attributes.skinIndex, sw = body.geometry.attributes.skinWeight;
-  const bones = body.skeleton.bones;
   const v = new THREE.Vector3();
-  const points = (mesh, pred) => {
-    mesh.skeleton.update();
-    const out = [], n = mesh.geometry.attributes.position.count;
-    for (let i = 0; i < n; i += pred ? 2 : 1) {
-      if (pred && !pred(i)) continue;
-      mesh.getVertexPosition(i, v).applyMatrix4(mesh.matrixWorld);
-      out.push(v.clone());
-    }
-    return out;
-  };
-  const armAt = (i) => {
-    const idx = [si.getX(i), si.getY(i), si.getZ(i), si.getW(i)];
+  const out = { arm: 0, armInside: 0, leg: 0, legDeep: 0, torso: 0 };
+  for (let i = 0; i < si.count; i++) {
     const w = [sw.getX(i), sw.getY(i), sw.getZ(i), sw.getW(i)];
-    return ARM_BONES.has(bones[idx[w.indexOf(Math.max(...w))]].name);
-  };
-  let clear = true;
-  for (const [name, times] of [['idle', [0.6]], ['walk', [0.15, 0.4, 0.7]]]) {
-    const action = mixer.clipAction(gltf.animations.find((c) => c.name === name));
-    action.play();
-    for (const t of times) {
-      mixer.setTime(t);
-      gltf.scene.updateMatrixWorld(true);
-      const arms = points(body, armAt);
-      const wood = worn.flatMap((mesh) => points(mesh));
-      for (const a of arms) {
-        for (const w of wood) {
-          if (Math.abs(a.y - w.y) > 0.03) continue;
-          if (a.distanceTo(w) < 0.01) { clear = false; break; }
-        }
-        if (!clear) break;
-      }
-    }
-    mixer.stopAllAction();
+    const kind = KIND(bones[[si.getX(i), si.getY(i), si.getZ(i), si.getW(i)][w.indexOf(Math.max(...w))]].name);
+    if (kind === 'head') continue;
+    body.getVertexPosition(i, v).applyMatrix4(body.matrixWorld).applyMatrix4(toBarrel);
+    if (v.y < s.hem || v.y > s.top) continue;
+    const r = Math.hypot(v.x, v.z - s.zc), rIn = innerRadius(s, v.y), rOut = outerRadius(s, v.y);
+    const wood = r >= rIn && r <= rOut;
+    if (kind === 'arm') { if (wood) out.arm++; else if (r < rIn) out.armInside++; }
+    else if (kind === 'leg' && wood) { out.leg++; out.legDeep = Math.max(out.legDeep, Math.min(r - rIn, rOut - r)); }
+    else if (kind === 'torso' && wood) out.torso++;
   }
-  for (const mesh of worn) mesh.removeFromParent();
-  return clear;
+  return out;
+}
+
+// Her figure in its barrel (figureReal.js + barrel.js): she kneels in it, a grip inside it is
+// refused (that arm stays over the rim), one over the rim is reached clear of the wood, and a held
+// tool's grip at her hip is lifted over the rim while one held out ahead is not.
+function checkBarrelFigure(body, state) {
+  const fit = body.real.barrel;
+  assert.ok(fit, 'her figure wears the barrel fit');
+  const at = (n) => body.model.getObjectByName(n).getWorldPosition(new THREE.Vector3());
+  for (let i = 0; i < 90; i++) body.update(1 / 60, { ...state, crouch: 1 });
+  body.model.updateMatrixWorld(true);
+  assert.ok(Math.max(at('calf_l').y, at('calf_r').y) < 0.25, 'crouched, she kneels: knees on the floor');
+  assert.ok(Math.min(...['foot_l', 'foot_r', 'ball_l', 'ball_r'].map((n) => at(n).y)) > -0.1, 'her feet stay on the floor');
+  assert.ok(fit.legRoom(0) >= 0 && fit.legRoom(1) >= 0, 'kneeling fits inside the barrel');
+  assert.ok(fit.armGap('l') >= 0 && fit.armGap('r') >= 0, 'kneeling, her arms lie over the rim');
+  for (let i = 0; i < 60; i++) body.update(1 / 60, state);
+  const q = body.real.root.getWorldQuaternion(new THREE.Quaternion());
+  const grip = (pos) => ({ pos, fingers: new THREE.Vector3(0, -0.35, -1).applyQuaternion(q), palm: new THREE.Vector3(-1, 0, 0).applyQuaternion(q) });
+  body.reach({ right: grip(at('spine_02')) });
+  assert.ok(fit.armGap('r') >= 0, 'a grip inside the barrel is refused: the arm stays over the rim');
+  body.update(1 / 60, state);
+  const ahead = body.anchor(new THREE.Vector3()).add(new THREE.Vector3(0.4, -0.5, -1.45).applyQuaternion(q));   // holds.js pistol
+  body.reach({ right: grip(ahead) });
+  body.model.updateMatrixWorld(true);
+  assert.ok(at('hand_r').distanceTo(ahead) < 0.6, 'a grip over the rim is reached');
+  assert.ok(fit.armGap('r') >= -1e-3, 'reaching it, the arm stays out of the wood');
+  body.update(1 / 60, state);
+  const hip = new THREE.Matrix4().makeTranslation(at('pelvis').add(new THREE.Vector3(0.3, 0, -0.7).applyQuaternion(q)));
+  assert.ok(body.liftGrips(hip, [new THREE.Vector3()]) > 0, 'a grip at her hip comes up over the rim');
+  const out = new THREE.Matrix4().makeTranslation(at('pelvis').add(new THREE.Vector3(0.3, 0, -3).applyQuaternion(q)));
+  assert.equal(body.liftGrips(out, [new THREE.Vector3()]), 0, 'a grip held well out ahead stays put');
 }
 
 // Image decoding needs a browser; texture references and bytes are checked below.
@@ -98,7 +109,9 @@ for (const file of ['body', 'woman']) {
   }
   if (file === 'woman') {
     assert.ok(garb.robe && garb.hoops && garb.bung, 'woman stands in a barrel');
-    assert.equal(garb.hoops.index?.count, 3024, 'all six iron bands retain their torus triangle indices');
+    const shape = garb.robe.userData.barrel;
+    assert.ok(shape && shape.top - shape.hem > 0.4, 'barrel covers her from mid-thigh to under the arms');
+    assert.ok(garb.hoops.index.count > 0);
     for (const i of garb.hoops.index.array) assert.ok(i < garb.hoops.attributes.position.count);
     const barrelBone = body.skeleton.bones.findIndex(b => b.name === 'spine_01');
     for (const geo of [garb.robe, garb.hoops, garb.bung]) {
@@ -110,7 +123,6 @@ for (const file of ['body', 'woman']) {
       }
     }
     garb.robe.computeBoundingBox();
-    assert.ok(garb.robe.boundingBox.max.y - garb.robe.boundingBox.min.y > 0.4, 'barrel covers the torso');
     const { position, normal } = garb.robe.attributes;
     const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), face = new THREE.Vector3();
     for (let i = 0; i < position.count; i += 3) {
@@ -122,7 +134,44 @@ for (const file of ['body', 'woman']) {
           'plank bottom faces down and top faces up');
       }
     }
-    assert.ok(armsClearBarrel(gltf, body, [garb.robe, garb.hoops]), 'hanging arms stay outside the staves');
+    // Closed all the way round: a ray out from the axis at any height and bearing meets a stave.
+    const staves = new THREE.Mesh(garb.robe, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+    const ray = new THREE.Raycaster();
+    for (let h = 1; h < 8; h++) {
+      const y = shape.hem + (shape.top - shape.hem) * (h / 8);
+      for (let k = 0; k < 360; k++) {
+        const ang = (k + 0.5) * Math.PI / 180;
+        ray.set(new THREE.Vector3(0, y, shape.zc), new THREE.Vector3(Math.sin(ang), 0, Math.cos(ang)));
+        assert.ok(ray.intersectObject(staves).length > 0, `no hole in the staves at ${k + 0.5}° and ${y.toFixed(2)} m`);
+      }
+    }
+    // Every clip, with the fit: her arms over the rim, out of the wood, legs and torso inside it.
+    const fit = createBarrelFit(shape, gltf.scene, body);
+    const fitMixer = new THREE.AnimationMixer(gltf.scene);
+    for (const clip of gltf.animations) {
+      fitMixer.stopAllAction();
+      fitMixer.clipAction(clip).play();
+      for (let k = 0; k < 16; k++) {
+        fit.restore();
+        fitMixer.setTime(clip.duration * k / 16);
+        gltf.scene.updateMatrixWorld(true);
+        fit.drape();
+        fit.keepLegs();
+        const n = barrelCensus(body, shape);
+        const at = `${clip.name} at ${(k / 16).toFixed(2)}`;
+        // the death clip folds her torso over the barrel's front for a moment; nothing else may touch the wood
+        if (clip.name === 'death') assert.ok(n.arm <= 2, `${at}: ${n.arm} arm vertices in the wood`);
+        else {
+          assert.equal(n.arm, 0, `${at}: ${n.arm} arm vertices in the wood`);
+          assert.equal(n.torso, 0, `${at}: ${n.torso} torso vertices in the wood`);
+        }
+        assert.ok(n.armInside <= 2, `${at}: ${n.armInside} arm vertices inside the barrel`);
+        // a stride's thigh and calf may graze the inside of the hem by a skin's thickness, never through it
+        assert.ok(n.leg <= 4 && n.legDeep < 0.015, `${at}: ${n.leg} leg vertices ${n.legDeep.toFixed(3)} m into the wood`);
+      }
+    }
+    fit.restore();
+    fitMixer.stopAllAction();
   } else assert.equal(garb.robe, undefined);
   hat.computeBoundingBox();
   assert.ok(hat.boundingBox.min.toArray().every(Number.isFinite));
@@ -151,7 +200,7 @@ for (const file of ['body', 'woman']) {
   mixer.stopAllAction();
   models.set(file === 'body' ? 'real' : 'woman', gltf);
   hat.dispose();
-  console.log(`PASS ${file}: textures, rig, eight animations and head-skinned hat`);
+  console.log(`PASS ${file}: textures, rig, eight animations and head-skinned hat${file === 'woman' ? ', a closed barrel and every clip out of its wood' : ''}`);
 }
 
 // Real figure materials, animation blending, crouch/look overlays and hand IK.
@@ -192,13 +241,14 @@ try {
         fingers: new THREE.Vector3(0, 0, -1), palm: new THREE.Vector3(0, -1, 0) } });
       body.model.updateMatrixWorld(true);
       assert.ok(hand.matrixWorld.elements.every(Number.isFinite));
+      if (key === 'woman') checkBarrelFigure(body, state);
     }
   } finally { body.dispose(); }
 } finally {
   GLTFLoader.prototype.loadAsync = loadAsync;
   hooks.deregister();
 }
-console.log('PASS real figures: live model switching, gait/crouch/swim/death/respawn, look and hand IK');
+console.log('PASS real figures: live model switching, gait/crouch/swim/death/respawn, look and hand IK, her kneel and reach over the rim');
 
 // Exercise the actual shell with CPU figures and controlled asynchronous loads.
 const source = readFileSync(new URL('../src/pov/figureReal.js', import.meta.url), 'utf8');

@@ -162,7 +162,7 @@ assert(layout.legacy > layout.count && layout.words >= layout.legacy + g.nbricks
 const driver = readFileSync(new URL('../../src/v2/physics.js', import.meta.url), 'utf8');
 assert(!driver.slice(driver.indexOf('  _tick()'), driver.indexOf('  ticks(n)')).includes('run(k.v2bridge'));
 const wholeBefore = sim.wholeWrites;
-sim.noteWrite(false);
+sim.noteWrite({ replaceState: false });
 assert.equal(sim.wholeWrites, wholeBefore, 'flags-only invalidation does not replace compact state');
 sim.noteWrite();
 assert.equal(sim.wholeWrites, wholeBefore + 1, 'actual full-state writes still request full import');

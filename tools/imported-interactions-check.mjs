@@ -96,7 +96,7 @@ test('E provider opens/closes exclusively owned cells, CPU/GPU generator agree; 
   assert.equal(await f.runtime.use(f.door), true);
   assert.deepEqual(f.scene.data().words, original);
   await f.runtime.use(f.door);
-  const fake = { sim: { g: {}, deco: null, origin: { set() {} }, noteWrite() {}, dropHistory() {}, stillFlow() {}, resetNativeDynamics() {} }, scene: f.scene, epoch: 0, store: { clear() {} }, nativeStore: { clear() {} }, planted: { fill() {} }, gen: { fill() { assert.deepEqual(f.scene.data().words, original); } } };
+  const fake = { gpu: { frame: {} }, renderSource: { reset() {}, recordLiveCopy() {} }, storeRevisions: new Map(), sim: { g: {}, deco: null, origin: { set() {} }, noteWrite() {}, dropHistory() {}, stillFlow() {}, resetNativeDynamics() {} }, scene: f.scene, epoch: 0, store: { clear() {} }, nativeStore: { clear() {} }, planted: { fill() {} }, gen: { fill() { assert.deepEqual(f.scene.data().words, original); } } };
   WorldWindow.prototype.load.call(fake, [0, 0, 0]);
   assert.equal(f.scene.interactionState.states.size, 0);
   assert.equal(f.world.pending, null);
@@ -181,6 +181,7 @@ test('real save codec restores open doors, destruction masks, timers and canonic
   Object.assign(f.sim, { rays: { active: false }, prepare: async () => {}, readState: async () => blank(),
     blankState: blank, load() {}, dropHistory() {} });
   Object.assign(f.world, { loaded: true, epoch: 0, size: f.map.size,
+    gpu: { frame: {} }, renderSource: { reset() {}, recordLiveCopy() {} }, storeRevisions: new Map(),
     historyReaders: 0, historyIdentity: {}, acquireReadLock: WorldWindow.prototype.acquireReadLock,
     store: new BrickStore(f.map.size.map(n => n / 4)),
     nativeStore: new NativeBrickStore(f.map.size.map(n => n / 4)),

@@ -1,0 +1,197 @@
+// Actual WorldVolume + normal GpuFrame + whole-feedback final provider.
+// Native compute writes explicit hit words: this is transport, NOT DDA/GPU proof.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {Matrix4,PerspectiveCamera,Ray,Vector3} from 'three/webgpu';
+import {readFileSync} from 'node:fs';
+import {fixture} from './world-volume-consumers-cpu-check.mjs';
+import {GpuFrame} from '../src/gpu/frame.js';
+import {queryWorldPick,displayedWorldRay,transportWorldRay,localWorldHover} from '../src/wire/worldPick.js';
+import {PickParams} from '../src/shaders/render.js';
+import {tableLayout} from '../src/shaders/common.js';
+const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};};
+function setup({unknown=false,reject=false}={}) {
+  const f=fixture(),queue=deferred(),device=f.device;let pins=0,dispatches=0,captured;
+  const create=device.createBuffer;
+  device.createBuffer=d=>{const b=create(d);b.getMappedRange=()=>b.data.buffer;b.mapAsync=()=>Promise.resolve();b.unmap=()=>{};return b;};
+  device.createCommandEncoder=()=>{const ops=[];return {
+    beginComputePass(){let groups=[];return {setPipeline(){},setBindGroup(i,g){groups[i]=g;},dispatchWorkgroups(){dispatches++;
+      const buf=b=>groups[3].entries.find(e=>e.binding===b).resource.buffer;
+      captured=new DataView(buf(0).data.buffer);
+      ops.push(()=>{new Float32Array(buf(6).data.buffer).set([3071,383,1023,unknown?-2:4,27,123,9,.5]);
+        if(unknown)new Uint32Array(buf(1).data.buffer)[0]=1;});},end(){}};},
+    copyBufferToBuffer(s,so,d,to,n){ops.push(()=>d.data.set(s.data.subarray(so,so+n),to));},finish(){return ops;}};};
+  device.queue.submit=cmd=>{for(const ops of cmd)for(const op of ops)op();};
+  device.queue.onSubmittedWorkDone=()=>queue.promise;
+  const gpu={device,queue:device.queue,stats:{bytesUploaded:0,flushes:0},paramRing:{upload:()=>0},
+    readback:{_beforeSubmit(){},_afterSubmit(){}},flush(){const result=this.frame.flush();if(reject)throw Error('closed suffix');return result;}};
+  gpu.frame=new GpuFrame(gpu);
+  const camera=new PerspectiveCamera();camera.position.set(8,7,6);camera.updateMatrixWorld();
+  const I=new Matrix4().toArray(),frame={values:{cam:[8,7,6],model:I,viewProj:I},physicsOrigin:[2048,0,512],params:{},external:{mediaNoise:{},sourceAppearance:{}}};
+  const data={frame,snapshot:f.candidate.snapshot,tables:{buffer:f.device.createBuffer({size:tableLayout().Tables.size})},lighting:f.lighting,appearance:null,
+    retain(){pins++;return {release(){pins--;}};}};
+  const displayed={data,view:{camera,values:frame.values,view:'realistic',params:{},presentation:{parameters:{k:.002,anchor:[8,6],dir:[0,1]}}},frameIdentity:{order:1}};
+  const state={volume:f.volume,unused:{createView:()=>({stable:true})},uses:new Set(),boundary:device.createBuffer({size:16})};
+  return {...f,gpu,state,displayed,queue,get pins(){return pins;},get dispatches(){return dispatches;},get captured(){return captured;}};
+}
+
+test('delayed compilation freezes global/high-Y curved ray, skipLiquids, table/appearance and slot; complete output retained through queue',async()=>{
+ const f=setup(),ray=new Ray(new Vector3(3071,383,1023),new Vector3(-1,0,0));
+ const work=queryWorldPick({gpu:f.gpu},f.state,f.displayed,{ray,skipLiquids:true},()=>true,()=>assert.fail('complete query demands'));
+ assert.equal(f.pins,1);assert.equal(f.state.uses.size,1);assert.equal(f.dispatches,0);
+ ray.origin.set(1,2,3);f.displayed.view.presentation.parameters.k=0;f.displayed.view.presentation.parameters.anchor[0]=999;
+ f.settle();const hit=await work;
+ assert.equal(f.captured.getFloat32(PickParams.offsets.ro,true),3071);
+ assert.equal(f.captured.getFloat32(PickParams.offsets.ro+4,true),383);
+ assert.equal(f.captured.getFloat32(PickParams.offsets.ro+12,true),Math.fround(.002));
+ assert.equal(f.captured.getFloat32(PickParams.offsets.rd+12,true),1);
+ assert.equal(f.captured.getFloat32(PickParams.offsets.warp,true),8);
+ assert.equal(hit.valid,true);assert.deepEqual(hit.cell,[3071,383,1023]);assert.equal(hit.raw.byteLength,32);
+ assert.equal(hit.T,123);assert.equal(hit.P,9);assert.equal(hit.life,.5);assert.equal(hit.frameIdentity,f.displayed.frameIdentity);
+ assert.equal(f.pins,1);assert.equal(f.state.uses.size,1);
+ f.queue.resolve();await Promise.all([...f.state.uses]);assert.equal(f.pins,0);f.release();
+});
+
+test('whole unknown feedback invalidates apparent hit and queues typed requirements only after final read',async()=>{
+ const f=setup({unknown:true});let demand;
+ const work=queryWorldPick({gpu:f.gpu},f.state,f.displayed,{ray:new Ray()},()=>true,(fb,d)=>{demand=fb;assert.equal(d,f.displayed);});
+ f.settle();const hit=await work;assert.equal(hit.ready,false);assert.equal(hit.code,'WORLD_PICK_INCOMPLETE');
+ assert.equal(demand.requirements[0].channels,1);assert.deepEqual(demand.requirements[0].brick,[0,0,0]);
+ f.queue.resolve();await Promise.all([...f.state.uses]);f.release();
+});
+
+test('obsolete/disposed compile never dispatches; rejected closed suffix pins drain only after queue',async()=>{
+ for(const mode of ['obsolete','dispose','reject']){
+ const f=setup({reject:mode==='reject'});
+ const work=queryWorldPick({gpu:f.gpu},f.state,f.displayed,{ray:new Ray()},()=>mode!=='obsolete',()=>{});
+ if(mode==='dispose')f.state.dead=true;
+ f.settle();if(mode==='reject')await assert.rejects(work,/closed suffix/);else assert.equal((await work).code,'WORLD_PICK_OBSOLETE');
+ assert.equal(f.dispatches,mode==='reject'?1:0);assert.equal(f.pins,1);
+ f.queue.resolve();await Promise.all([...f.state.uses]);assert.equal(f.pins,0);f.release();
+ }
+});
+
+test('displayed ray ignores live camera; legacy transport and origin-shift physical guards never clip global validity',()=>{
+ const camera=new PerspectiveCamera();camera.position.set(2,3,4);camera.updateMatrixWorld();
+ const display={view:{camera:camera.clone(),values:{model:new Matrix4().makeTranslation(-10,0,0).toArray()}}};
+ camera.position.set(999,999,999);camera.updateMatrixWorld();
+ assert.equal(displayedWorldRay(display,[0,0]).origin.x,12);
+ const ray=transportWorldRay(display,new Vector3(999,999,999),new Vector3(0,0,-1),new Matrix4(),camera);
+ assert.equal(ray.origin.x,12);
+ const identity={},hover={valid:true,globalCell:new Vector3(100,383,100),cell:new Vector3(),frameIdentity:identity};
+ const inside=c=>c.x>=0&&c.x<32&&c.y>=0&&c.y<512&&c.z>=0&&c.z<32;
+ assert.equal(localWorldHover(hover,new Vector3(),inside,i=>i===identity),false);assert.equal(hover.valid,true);
+ assert.equal(localWorldHover(hover,new Vector3(96,0,96),inside,i=>i===identity),true);assert.deepEqual(hover.cell.toArray(),[4,383,4]);
+ assert.equal(localWorldHover(hover,new Vector3(128,0,128),inside,i=>i===identity),false);assert.equal(hover.valid,true);
+ assert.equal(localWorldHover(hover,new Vector3(),inside,()=>false),false);assert.equal(hover.valid,false);
+});
+
+test('actual App mutation entry points refuse outside/stale global hover after origin shifts',()=>{
+ const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
+ const extract=name=>{
+   const start=source.indexOf(`function ${name}(`),brace=source.indexOf('{',start);let depth=1,i=brace+1;
+   for(;depth;i++){if(source[i]==='{')depth++;else if(source[i]==='}')depth--;}
+   return source.slice(start,i);
+ };
+ const identity={},hover={valid:true,worldReady:true,globalCell:new Vector3(4,5,4),cell:new Vector3(),frameIdentity:identity,worldToken:'tool'};
+ const sim={origin:new Vector3()},win={renderFrame:{driver:{displayedMainFrame:{frameIdentity:identity}}}};
+ const inWindow=c=>c.x>=0&&c.x<32&&c.y>=0&&c.y<32&&c.z>=0&&c.z<32;
+ const sync=new Function('win','hover','sim','inWindow','localWorldHover','worldPickToken',`${extract('syncWorldHover')};return syncWorldHover;`)(win,hover,sim,inWindow,localWorldHover,()=> 'tool');
+ const ready=new Function('win','hover','worldPickToken','syncWorldHover',`${extract('worldMutationReady')};return worldMutationReady;`)(win,hover,()=> 'tool',sync);
+ assert.equal(sync(),true);sim.origin.set(32,0,32);
+ for(const name of ['fillAt','clickTool']){
+   const action=new Function('win','syncWorldHover','worldMutationReady',`${extract(name)};return ${name};`)(win,sync,ready);
+   assert.doesNotThrow(()=>action(),'must return before reaching ANY physical subsystem');
+   assert.equal(hover.valid,true,'physical refusal must not erase global visual validity');
+ }
+ assert.deepEqual(hover.cell.toArray(),[-28,5,-28]);
+ win.renderFrame.driver.displayedMainFrame={frameIdentity:{}};
+ assert.equal(sync(),false);assert.equal(hover.valid,false);
+ // Brush guards run in both actual update paths before BOX-only clamps.
+ assert.match(extract('updateBrush'),/if\(win && brushValid && !inWindow\(brushCenter\)\)brushValid=false/);
+ assert.match(extract('updateGunBrush'),/if\(win && brushValid && !inWindow\(brushCenter\)\)brushValid=false/);
+ assert.match(source,/painting && brushValid && \(!win \|\| \(inWindow\(brushCenter\)/);
+});
+
+test('actual App visible tool ray preserves local-cell ABI and revalidates global hits at delayed mutation',async()=>{
+ const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
+ const extract=name=>{
+   const start=source.indexOf(`function ${name}(`),brace=source.indexOf('{',start);let depth=1,i=brace+1;
+   for(;depth;i++){if(source[i]==='{')depth++;else if(source[i]==='}')depth--;}
+   return source.slice(start,i);
+ };
+ const frameIdentity={},display={frameIdentity},sim={origin:new Vector3(96,0,96)};
+ const driver={displayedMainFrame:display,async pick(){return {ready:true,valid:true,cell:[100,5,100],frameIdentity};}};
+ const win={renderFrame:{driver}},inside=c=>c.x>=0&&c.x<32&&c.z>=0&&c.z<32;
+ let token='tool';
+ // Native transport is covered above. Here execute the actual App ABI adapter.
+ const pick=new Function('win','sim','worldPickToken','transportWorldRay','volume','camera','THREE','inWindow',
+   `${extract('pickRay')};return pickRay;`)(win,sim,()=>token,()=>({}),{matrixWorld:new Matrix4()},{},{Vector3},inside);
+ const physical=new Function('win','sim','worldPickToken','inWindow',
+   `${extract('physicalPickCell')};return physicalPickCell;`)(win,sim,()=>token,inside);
+ const hit=await pick(new Vector3(),new Vector3(0,0,-1),true);
+ assert(hit.valid);assert.deepEqual(hit.cell.toArray(),[4,5,4]);assert.deepEqual(hit.globalCell.toArray(),[100,5,100]);
+ sim.origin.set(98,0,98);assert.deepEqual(physical(hit).toArray(),[2,5,2]);
+ sim.origin.set(128,0,128);assert.equal(physical(hit),null);
+ sim.origin.set(96,0,96);token='other tool';assert.equal(physical(hit),null);
+ token='tool';driver.displayedMainFrame={frameIdentity:{}};assert.equal(physical(hit),null);
+ assert.match(source,/const cell=physicalPickCell\(hit\)/,'erase/touch mutation must revalidate delayed hits');
+});
+
+test('actual world.moveWindow preserves a displayed global hit beyond the new physical window',()=>{
+ const source=readFileSync(new URL('../src/wire/world.js',import.meta.url),'utf8');
+ const start=source.indexOf('  moveWindow(app) {'),brace=source.indexOf('{',start);let depth=1,end=brace+1;
+ for(;depth;end++){if(source[end]==='{')depth++;else if(source[end]==='}')depth--;}
+ const move=new Function(`return ({${source.slice(start,end)}}).moveWindow;`)();
+ const identity={},sim={origin:new Vector3(96,0,96)};
+ const hover={valid:true,globalCell:new Vector3(100,5,100),cell:new Vector3(4,5,4),frameIdentity:identity};
+ const win={renderFrame:{driver:{displayedMainFrame:{frameIdentity:identity}}},update(){sim.origin.x+=16;return[16,0];}};
+ const app={mp:{replica:false},win,sim,hover,controls:{target:new Vector3()},scale:1,anchor:{x:0,y:0},
+   placeVolume(){},inWindow:p=>p.x>=0&&p.x<32&&p.z>=0&&p.z<32};
+ assert.deepEqual(move(app),[16,0]);assert(hover.valid);assert.deepEqual(hover.cell.toArray(),[-12,5,4]);
+ win.renderFrame.driver.displayedMainFrame={frameIdentity:{}};move(app);assert(!hover.valid);
+ hover.globalCell=null;hover.valid=true;hover.cell.set(4,5,4);move(app);assert(!hover.valid,'legacy local hit remains bounded');
+});
+
+test('actual App brush dispatch permits certified sky misses, but not unknown or outside-window hits',()=>{
+ const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
+ const extract=name=>{
+   const start=source.indexOf(`function ${name}(`),brace=source.indexOf('{',start);let depth=1,i=brace+1;
+   for(;depth;i++){if(source[i]==='{')depth++;else if(source[i]==='}')depth--;}
+   return source.slice(start,i);
+ };
+ const identity={},hover={valid:false,worldReady:true,frameIdentity:identity,worldToken:'tool'};
+ const win={renderFrame:{driver:{displayedMainFrame:{frameIdentity:identity}}}};
+ let inside=false;
+ const ready=new Function('win','hover','worldPickToken','syncWorldHover',
+   `${extract('worldMutationReady')};return worldMutationReady;`)(win,hover,()=> 'tool',()=>inside);
+ const click=new Function('win','worldMutationReady','settings','SIGN_TOOL','LIGHTNING_TOOL',
+   'isDecoTool','isSpawnerTool','isBuild','mp','selectedMode','ctx',
+   `${extract('clickTool')};return clickTool;`)(win,ready,{tool:1},-1,-2,()=>false,()=>false,()=>false,{},'sandbox',{});
+ assert.equal(click(),null,'a brush can reach its existing air-pouring path');
+ hover.worldReady=false;assert.equal(click(),false,'missing dependencies are not sky');
+ hover.worldReady=true;hover.valid=true;assert.equal(click(),false,'outside-window surface cannot anchor an edit');
+ inside=true;assert.equal(click(),null);
+ hover.valid=false;win.renderFrame.driver.displayedMainFrame={frameIdentity:{}};assert.equal(click(),false);
+ assert.match(source,/inWindow\(brushCenter\) && worldMutationReady\(\)/,'air placement still validates its computed center');
+});
+
+test('actual rejected App pick revokes previous sky readiness',async()=>{
+ const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
+ const extract=name=>{
+   const start=source.indexOf(`function ${name}(`),brace=source.indexOf('{',start);let depth=1,i=brace+1;
+   for(;depth;i++){if(source[i]==='{')depth++;else if(source[i]==='}')depth--;}
+   return source.slice(start,i);
+ };
+ const identity={},hover={valid:true,worldReady:true,frameIdentity:identity,worldToken:'tool'};
+ const win={renderFrame:{driver:{displayedMainFrame:{frameIdentity:identity},pick:()=>Promise.reject(new Error('failed readback'))}}};
+ const pointer={x:0,y:0,toArray:()=>[0,0]};
+ const request=new Function('win','hover','pointer','sim','worldPickToken','displayedWorldRay','syncWorldHover',
+   `let pickPending=false,pointerInside=true,pointerPickDirty=true,pov=null;
+    ${extract('requestWorldPick')};return requestWorldPick;`)(win,hover,pointer,{},()=> 'tool',()=>({}),()=>true);
+ request();await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(hover.valid,false);assert.equal(hover.worldReady,false);
+ const ready=new Function('win','hover','worldPickToken','syncWorldHover',
+   `${extract('worldMutationReady')};return worldMutationReady;`)(win,hover,()=> 'tool',()=>true);
+ assert.equal(ready(),false,'failed readback must not become a certified sky miss');
+});

@@ -146,6 +146,8 @@ sim.dropHistory = () => {};
 const world = Object.assign(Object.create(WorldWindow.prototype), {
   sim, scene: {}, loaded: true, pending: null, size: [64, 32, 64], epoch: 0,
   store: new BrickStore([16, 8, 16]), nativeStore: new NativeBrickStore([16, 8, 16]), planted: new Uint8Array(16 * 16),
+  // main's World render source (src/world/renderSource.js): not under test here
+  gpu: { frame: {} }, renderSource: { reset() {}, recordLiveCopy() {}, needsLiveCopy() { return false; }, commitStoreRevision() {} }, storeRevisions: new Map(), storeReads: new Set(),
 });
 const nativeBrick = encodeNativeBrick(Uint32Array.from({ length: 256 }, (_, i) => [E.WATER | (1173 << 8), 0x12345, 0xbc003c00, 0xffff3800][i % 4]), new Int32Array(64).fill(-321));
 world.nativeStore.put(7, nativeBrick); world.planted[4] = 1;

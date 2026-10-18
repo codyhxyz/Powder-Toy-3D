@@ -171,7 +171,7 @@ export const giGatherDispatch = (g, parity) => fold(Math.ceil(giProbeCount(g, pa
 //         float in the GLSL; it only weighs the light by facing, GI_FACING)
 // Values past a half float's range saturate (the GLSL's targets made them
 // infinite), and so do the probes' (giHalf2 in giBlend).
-const giSrcWGSL = /* wgsl */ `
+export const giSrcWGSL = /* wgsl */ `
 const GI_HALF_MAX: f32 = 65504.0;
 const GI_DIR_STEPS: f32 = ${glf(GI.DIR_STEPS)};
 fn giHalf2(v: vec2f) -> u32 { return pack2x16float(clamp(v, vec2f(-GI_HALF_MAX), vec2f(GI_HALF_MAX))); }
@@ -196,11 +196,11 @@ const paramsWGSL = `${GiParams.wgsl}@group(3) @binding(1) var<uniform> P: GiPara
  * (the GLSL's one fragment summed the cells in turn).
  * @param {{ nx: number, ny: number, nz: number }} g
  */
-export const giSourceFrag = (g) => /* wgsl */ `
-${lib(g, { variant: 'LIGHTING_GISRC', far: false, aeration: false })}
+export const giSourceFrag = (g, { backend = 'box', worldWGSL = '' } = {}) => /* wgsl */ `
+${lib(g, { variant: 'LIGHTING_GISRC', far: false, aeration: false, backend })}
 ${giSrcWGSL}
-${paramsWGSL}
-${giListsWGSL(g)}
+${backend === 'world' ? worldWGSL : paramsWGSL}
+${backend === 'world' ? '' : giListsWGSL(g)}
 var<workgroup> wEntry: u32;   // P.list: the list's entry, the same for the whole workgroup
 
 const GI_METAL_DIFFUSE: f32 = ${glf(GI.METAL_DIFFUSE)};
@@ -243,18 +243,22 @@ fn giReduce(li: u32) {
 
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
-  var id = foldId(wg, nwg);
+  ${backend === 'world' ? `let job = foldId(wg, nwg);
+  if (job >= WGI.counts.x) { return; }
+  worldBeginQuery();
+  let id = worldGIJobs[job].x;
+  if (WGI.config.x != WA.world.w || id >= NBRICKS) { worldIncomplete = true; worldGIReport(job); return; }` : `var id = foldId(wg, nwg);
   if (P.list != 0u) {
     if (li == 0u) { wEntry = select(NBRICKS, gsWord(GS_SRC + id), id < gsWord(GS_SRC_LAST)); }
     id = workgroupUniformLoad(&wEntry);
   }
-  if (id >= NBRICKS) { return; }
+  if (id >= NBRICKS) { return; }`}
   let bc = brickCoord(id);
   gFragCoord = vec2f(f32(id) + 0.5, 0.5);   // (nothing GI calls reads it: no per-pixel jitter here)
   // a brick without matter blocks nothing and sends nothing (the brick map is
   // read-only, so this is the same for the whole workgroup)
   if (!brickMatter(brickOcc(bc))) {
-    if (li == 0u) { giSrc[id] = giSrcPack(vec3f(0.0), vec3f(0.0), vec3f(0.0)); }
+    if (li == 0u) { ${backend === 'world' ? 'worldGISources[job]' : 'giSrc[id]'} = giSrcPack(vec3f(0.0), vec3f(0.0), vec3f(0.0)); }${backend === 'world' ? '\n    worldGIReport(job);' : ''}
     return;
   }
   let l = vec3i(i32(li & 3u), i32((li >> 2u) & 3u), i32(li >> 4u));
@@ -288,13 +292,13 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   let trans = exp(-bitcast<f32>(head[5]) * f32(BS) / f32(BRICK_CELLS));
   let covOut = 1.0 - (1.0 - cov) * trans;
   if (all(m == vec2u(0u)) && head[6] == 0u) {
-    if (li == 0u) { giSrc[id] = giSrcPack(vec3f(0.0), covOut, vec3f(0.0)); }
+    if (li == 0u) { ${backend === 'world' ? 'worldGISources[job]' : 'giSrc[id]'} = giSrcPack(vec3f(0.0), covOut, vec3f(0.0)); }${backend === 'world' ? '\n    worldGIReport(job);' : ''}
     return;
   }
 
   // pass 2: light leaving the exposed faces (neighbours inside the brick come
   // from the mask). Last frame's light here: sky and bounce on the faces.
-  let pr = Probe(textureLoad(tGI0, bc, 0), textureLoad(tGI1, bc, 0), textureLoad(tGI2, bc, 0), textureLoad(tGI3, bc, 0));
+  ${backend === 'world' ? 'let pr = worldGIPreviousProbe(job, bc);' : 'let pr = Probe(textureLoad(tGI0, bc, 0), textureLoad(tGI1, bc, 0), textureLoad(tGI2, bc, 0), textureLoad(tGI3, bc, 0));'}
   var rad = vec3f(0.0);
   var dir = vec3f(0.0);
   var nf = 0.0;
@@ -349,8 +353,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
       let lum = dot(s.xyz, vec3f(1.0 / 3.0));
       if (lum > 0.0) { dirOut = wB[0].xyz / lum; }
     }
-    giSrc[id] = giSrcPack(radOut, covOut, dirOut);
-  }
+    ${backend === 'world' ? 'worldGISources[job]' : 'giSrc[id]'} = giSrcPack(radOut, covOut, dirOut);
+  }${backend === 'world' ? '\n  worldGIReport(job);' : ''}
 }
 `;
 
@@ -365,15 +369,15 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
  * @param {{ nx: number, ny: number, nz: number }} g
  * @param {{ world?: number[] }} [opts]
  */
-export const giGatherFrag = (g, { world = WORLD_SIZE } = {}) => (gatherShape(), /* wgsl */ `
-${lib(g, { variant: 'LIGHTING_GI', far: true, aeration: false })}
-${farGIGLSL(farLayout(world))}
+export const giGatherFrag = (g, { world = WORLD_SIZE, backend = 'box', worldWGSL = '' } = {}) => (gatherShape(), /* wgsl */ `
+${lib(g, { variant: 'LIGHTING_GI', far: backend !== 'world', aeration: false, backend })}
+${backend === 'world' ? '' : farGIGLSL(farLayout(world))}
 ${giSrcWGSL}
-${paramsWGSL}
-${giListsWGSL(g)}
+${backend === 'world' ? worldWGSL : paramsWGSL}
+${backend === 'world' ? '' : giListsWGSL(g)}
 
 const GI_RAYS: i32 = ${GI.RAYS};   // a power of two (gatherShape)
-const GI_STEPS: i32 = ${GI.STEPS};
+const GI_STEPS: i32 = ${backend === 'world' ? Math.ceil((g.nx + g.ny + g.nz) / 4) + 8 : GI.STEPS};
 const GI_NEAR_STEPS: i32 = ${GI.NEAR_STEPS};
 const GI_FAR_STRIDE: f32 = ${glf(GI.FAR_STRIDE)};
 const GI_BURIED: f32 = ${glf(GI.BURIED)};
@@ -416,11 +420,11 @@ fn giProbe(i: u32) -> vec3i {
 // build's blend did): into the history, and the halves it now holds are what
 // the band's texture gets.
 fn giBlend(k: u32, id: u32, sh: vec4f, blend: f32) -> vec4f {
-  let i = k * NBRICKS + id;
-  let h = giHist[i];
+  let i = k * ${backend === 'world' ? 'WGI.counts.y' : 'NBRICKS'} + id;
+  let h = ${backend === 'world' ? 'worldGIHistory' : 'giHist'}[i];
   let v = mix(vec4f(unpack2x16float(h.x), unpack2x16float(h.y)), sh, blend);
   let w = vec2u(giHalf2(v.xy), giHalf2(v.zw));
-  giHist[i] = w;
+  ${backend === 'world' ? 'worldGIHistory' : 'giHist'}[i] = w;
   return vec4f(unpack2x16float(w.x), unpack2x16float(w.y));
 }
 
@@ -436,7 +440,15 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   var live = false;
   var bc = vec3i(0);
   var blend = P.blend;
-  if (P.list != 0u) {
+  ${backend === 'world' ? `worldBeginQuery();
+  live = probe < WGI.counts.y;
+  if (live) {
+    let entry = worldGIJobs[WGI.counts.x + probe];
+    bc = brickCoord(entry.x);
+    if ((entry.y & 1u) != 0u) { blend = P.blendBg; }
+    blend = worldGIJobBlend(blend, entry.y);
+    if (entry.x >= NBRICKS || WGI.config.x != WA.world.w) { worldIncomplete = true; }
+  }` : `if (P.list != 0u) {
     live = probe < gsWord(GS_PRB_LAST);
     if (live) {
       let w = gsWord(GS_PRB + probe);
@@ -446,17 +458,17 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   } else {
     live = probe < P.count;
     if (live) { bc = giProbe(probe); }
-  }
+  }`}
   gFragCoord = vec2f(f32(brickId(bc)) + 0.5, 0.5);   // (nothing GI calls reads it: no per-pixel jitter here)
   let bmax = vec3i(BX, BY, BZ);
   var blk = 1.0;
-  for (var k = 0; k < 7; k++) {
+  ${backend === 'world' ? 'if (live) { ' : ''}for (var k = 0; k < 7; k++) {
     var b = bc;
     if (k > 0) { b[(k - 1) >> 1u] += select(-1, 1, (k & 1) == 1); }
     if (any(b < vec3i(0)) || any(b >= bmax)) { blk = 0.0; break; }
-    let cv = giSrcCov(giSrc[brickId(b)]);
+    let cv = giSrcCov(${backend === 'world' ? 'worldGISourceStaged(b)' : 'giSrc[brickId(b)]'});
     blk = min(blk, min(cv.x, min(cv.y, cv.z)));
-  }
+  }${backend === 'world' ? ' }' : ''}
   var sh = array<vec4f, 4>(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));
   // a buried probe gathers nothing: its light fades out of the history
   if (live && blk <= GI_BURIED) {
@@ -471,7 +483,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
       if (k < GI_NEAR_STEPS) { q += d; } else { q += d * GI_FAR_STRIDE; }
       let b = vec3i(floor(q));
       if (any(b < vec3i(0)) || any(b >= bmax)) { break; }
-      let s = giSrc[brickId(b)];
+      let s = ${backend === 'world' ? 'worldGISourceStaged(b)' : 'giSrc[brickId(b)]'};
       var a = dot(giSrcCov(s), d2);
       if (a <= 0.0) { continue; }
       let nd = giSrcDir(s);
@@ -482,7 +494,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     }
     var open = 1.0;
     if (T >= GI_T_MIN) {
-      if (FU.far != 0u) { L += T * farBeyond(pc * f32(BS), q * f32(BS), d, &open); } else { L += T * beyond(pc * f32(BS), d); }
+      ${backend === 'world' ? `if (all(q >= vec3f(0.0)) && all(q < vec3f(bmax))) { worldIncomplete = true; }
+      else { L += T * beyond(pc * f32(BS), d); }` : 'if (FU.far != 0u) { L += T * farBeyond(pc * f32(BS), q * f32(BS), d, &open); } else { L += T * beyond(pc * f32(BS), d); }'}
     }
     var vis = 0.0;
     if (d.y > 0.0) { vis = T * open; }
@@ -496,12 +509,15 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   }
   if (ray == 0u && live) {
     let w = 4.0 * PI_L / f32(GI_RAYS);   // Monte Carlo weight: sphere area per ray
-    let id = brickId(bc);
-    textureStore(tGI0, bc, giBlend(0u, id, wSH[li][0] * w, blend));
+    let id = ${backend === 'world' ? 'probe' : 'brickId(bc)'};
+    ${backend === 'world' ? `giBlend(0u, id, wSH[li][0] * w, blend);
+    giBlend(1u, id, wSH[li][1] * w, blend);
+    giBlend(2u, id, wSH[li][2] * w, blend);
+    giBlend(3u, id, wSH[li][3] * w, blend);` : `textureStore(tGI0, bc, giBlend(0u, id, wSH[li][0] * w, blend));
     textureStore(tGI1, bc, giBlend(1u, id, wSH[li][1] * w, blend));
     textureStore(tGI2, bc, giBlend(2u, id, wSH[li][2] * w, blend));
-    textureStore(tGI3, bc, giBlend(3u, id, wSH[li][3] * w, blend));
-  }
+    textureStore(tGI3, bc, giBlend(3u, id, wSH[li][3] * w, blend));`}
+  }${backend === 'world' ? '\n  if (live) { worldGIReport(WGI.counts.x + probe); }' : ''}
 }
 `);
 

@@ -16,7 +16,8 @@ const IDS = { AIR: E.EMPTY, WALL: E.WALL, WATER: E.WATER, MUD: E.MUD, OIL: E.OIL
 const NAMES = Object.fromEntries(Object.entries(IDS).map(([k, v]) => [v, k]));
 const kind = (id) => ({ [K.EMPTY]: 'air', [K.SOLID]: 'solid', [K.POWDER]: 'powder', [K.LIQUID]: 'liquid', [K.GAS]: 'gas' }[ELEMENTS[id]?.kind] ?? 'solid');
 
-export function createEngine() {
+// stillRadial: radial gravity as it was at 7f9b2f1c, liquids held still (column-wgsl.mjs; the red variant)
+export function createEngine({ stillRadial = false } = {}) {
   let w = null, clock = stepClock(TICK_HZ), lastBusy = 0;
   return {
     name: 'column-wgsl',
@@ -27,7 +28,9 @@ export function createEngine() {
     id: (name) => IDS[name] ?? null,
     nameOf: (id) => NAMES[id] ?? `#${id}`,
     kindOf: (id) => kind(id),
-    async create([nx, ny, nz]) { w = new ColumnGrid(nx, ny, nz); clock = stepClock(TICK_HZ); lastBusy = 0; },
+    async create([nx, ny, nz]) { w = new ColumnGrid(nx, ny, nz, { stillRadial }); clock = stepClock(TICK_HZ); lastBusy = 0; },
+    // 'vertical' or 'radial' (TPT's radial mode: P.gravMode 2, src/v2/modes.js)
+    setGravity(mode) { w.P.gravMode = mode === 'radial' ? 2 : 0; },
     box(lo, hi, name, { onlyEmpty = false, v = null, T } = {}) {
       const e = IDS[name];
       if (e === undefined) throw new Error(`column-wgsl: no element ${name}`);

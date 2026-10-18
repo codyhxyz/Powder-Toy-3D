@@ -6,8 +6,11 @@ import * as THREE from 'three';
 import { structureClear, shrineAltars as worldShrineAltars } from '../world/structures.js';
 import { loadIsland, releaseGenerator } from '../world/gpu.js';
 import { WorldWindow, WIN_STEP } from '../world/window.js';
+import { installWorldRender } from './worldRender.js';
+import { createMediaNoise } from '../gfx/mediaNoise.js';
+import { createWorldFrameState, createWorldFrameDriver, disposeWorldFrame } from './worldRenderFrame.js';
 import { bakedAir } from '../constructions/runtime.js';
-import { FarField } from '../world/far.js';
+import { beyondLevel } from '../world/far.js';
 import { createTorchLights } from '../world/torchLights.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
 import { isMaterialView } from '../views.js';
@@ -44,7 +47,8 @@ const world = {
   ready: true,
   order: -1,   // the far field draws before the volume (docs/webgpu.md F1)
 
-  // A world's grid: the window over it (app.worldMode set by build()), its far field.
+  // A world's physical window. Rendering is installed separately from its
+  // immutable Source, never from a second coarse/detailed representation.
   // The window's size is the simulation's: build() made it worldMode.win, ?win= applied.
   attach(app) {
     const { sim } = app;
@@ -59,13 +63,10 @@ const world = {
       app.pacer?.wake();
     };
     sim.resetNativeDynamics(); // initial native air coordinates match the world before any tick
-    win.far = new FarField(app.renderer, win, { sun: app.sun });
-    win.far.detail.onChange = () => app.pacer?.wake();
-    win.far.presentation = app.presentation;   // a gamemode's effect bends its view (gfx/presentation.js: the rolling log)
-    win.far.attach(app.vol, app.derived);   // its haze, shadows and GI on the window
-    // its view builds with the view that draws it (B5: at boot in the realistic view, else on switching to it),
-    // and the frame that follows its build draws it
-    if (isMaterialView(app.settings.view)) world.buildFarView(app, win.far);
+    // Preserve the original cumulus deck and its optical shadows without
+    // constructing the retired Far textures, kernels or detail queue.
+    gfxUniforms.uClouds.value=true;
+    gfxUniforms.uCloudSea.value=beyondLevel(win.scene,win.P);
   },
   buildFarView(app, far) {
     far.detail.build();
@@ -75,12 +76,18 @@ const world = {
   detach(app) {
     app.sim.onWorldHistoryRestore = null;
     releaseGenerator(app.sim);   // the Island scene's, made for this grid
-    app.win?.dispose();
+    const win=app.win;
     app.win = null;
+    if(win?.renderFrame) {
+      win.renderFrame.dead=true;
+      Promise.resolve(win.renderFrame.ready).then(()=>win.renderFrame.driver?.dispose())
+        .then(()=>win.render?.dispose()).then(()=>win.dispose()).catch(error=>console.error('WORLD retirement failed',error));
+    } else win?.dispose();
   },
   // Keep runnable streaming work alive after the coarse lighting queue ends.
   // Async detail waits have their own completion wake, so they need no polling.
   busy(app) {
+    if(app.win?.renderFrame)return !app.win.renderFrame.driver || app.win.renderFrame.driver.busy;
     const far = app.win?.far;
     return !!far && (far.queue.length > 0 || far.detail.busy);
   },
@@ -91,19 +98,52 @@ const world = {
     if (app.mp.replica) app.win.far?.tick();
     else world.moveWindow(app);
   },
+  // Installation and completion only store state; SceneAttempt remains in App.tick.
+  prepareRender(app) {
+    const win=app.win;
+    if(!win?.loaded)return null;
+    const previous=win.renderFrame;
+    if(previous && previous.epoch!==win.renderSource.epoch) {
+      if(!previous.dead) {
+        previous.dead=true;
+        previous.ready=Promise.resolve(previous.ready).then(()=>previous.driver?.dispose()).then(()=>win.render?.dispose())
+          .then(()=>{if(app.win===win){delete win.renderFrame;app.wakeLoop();}})
+          .catch(error=>{previous.error=error;app.wakeLoop();});
+      }
+      if(previous.error)throw previous.error;
+      return null;
+    }
+    if(!win.renderFrame) {
+      const slot=win.renderFrame={epoch:win.renderSource.epoch,dead:false,driver:null,error:null,ready:null};
+      const data=installWorldRender(win,{wake:()=>app.wakeLoop()});
+      app.signs?.setWorldOwner(true);
+      slot.ready=createWorldFrameState(app,data,createMediaNoise(app.gpu)).then(async state=>{
+        if(slot.dead){await data.dispose();await disposeWorldFrame(state);return;}
+        slot.driver=createWorldFrameDriver(app,state);app.wakeLoop();
+      }).catch(error=>{slot.error=error;app.wakeLoop();});
+    }
+    if(win.renderFrame.error)throw win.renderFrame.error;
+    return win.renderFrame.driver;
+  },
+  captureLighting(app) {
+    gfxUniforms.uCaveAmbient.value=app.win?.scene.ambient??NO_AMBIENT;
+    torchLights.update(app.win?.scene??null,app.camGrid,app.sim.origin);
+  },
   beforeView(app) {
     const { win } = app;
+    if(win?.render)return;
     gfxUniforms.uCaveAmbient.value = win?.scene.ambient ?? NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)
     torchLights.update(win?.scene ?? null, app.camGrid, app.sim.origin);   // the nearest wall torches lit as lamps (world/torchLights.js)
     if (win?.far && isMaterialView(app.renderView)) world.buildFarView(app, win.far);
     win?.far?.view(app.volume, isMaterialView(app.renderView), app.camera);
   },
   // the detail meshes' distances, before the scene pass (world/far.js prepass: their own render pass)
-  compute(app) { app.win?.far?.prepass(app.post?.sceneTarget); },
-  scene(app, rp) { app.win?.far?.draw?.(rp, app.post?.sceneTarget); },
+  compute(app) { if(!app.win?.render)app.win?.far?.prepass(app.post?.sceneTarget); },
+  scene(app, rp) { if(!app.win?.render)app.win?.far?.draw?.(rp, app.post?.sceneTarget); },
   invalidate(app) {
     const { win } = app;
     if (win) {
+      if(win.renderFrame){win.renderFrame.dead=true;win.renderFrame.driver?.dispose().catch(error=>{if(!app.gpu.failure)console.error('WORLD graphics retirement failed',error);});} // (once graphics stop, stopGraphics has said why)
       win.epoch++; // reject readbacks without clearing surviving CPU edits
       if (win.far?.detail) win.far.detail.epoch++;
     }
@@ -245,9 +285,16 @@ const world = {
       if (app.sim !== sim || app.win !== win) return;
       app.placeVolume();
       pov?.windowShifted(dx, dz);
-      hover.cell.x -= dx;
-      hover.cell.z -= dz;
-      if (hover.valid && !app.inWindow(hover.cell)) hover.valid = false;
+      if(hover.globalCell){
+        // Streaming the physical window does not invalidate a displayed global
+        // hit. Physical tools check their own current-window bounds.
+        hover.cell.copy(hover.globalCell).sub(sim.origin);
+        if(hover.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity)hover.valid=false;
+      }else{
+        hover.cell.x -= dx; // Legacy local picks retain their original behavior.
+        hover.cell.z -= dz;
+        if(hover.valid&&!app.inWindow(hover.cell))hover.valid=false;
+      }
       app.pacer?.wake();
       return [dx, dz];
     };

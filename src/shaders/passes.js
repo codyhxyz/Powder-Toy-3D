@@ -772,17 +772,19 @@ fn main() {
 // per cell, reduced in workgroup memory: maxima and counts are order-free,
 // and the emission's sum runs a fixed tree, so it doesn't depend on how the
 // threads are scheduled (docs/webgpu.md W21).
-export const brickFrag = (g) => /* wgsl */ `
+export const WorldBrickParams = uniformStruct('WorldBrickParams', { scratchOrigin: 'vec3i', worldMin: 'vec3i', worldMax: 'vec3i', count: 'u32' });
+// Shared classification/reduction; only ownership and genuine exterior differ.
+export const brickFrag = (g, { world = false } = {}) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
 ${brickInfoWGSL}
 ${dirtyListsWGSL(g)}
-@group(2) @binding(0) var<storage, read> dlist: array<u32>;
+@group(2) @binding(0) var<storage, read> ${world ? 'worldJobs: array<vec2u>' : 'dlist: array<u32>'};
 @group(2) @binding(1) var tFS: texture_3d<f32>;
 @group(2) @binding(2) var tFM: texture_3d<f32>;
 @group(2) @binding(3) var tFT: texture_3d<f32>;   // thin-feature mask, per surface channel (the cubic ones read it)
 @group(2) @binding(4) var<storage, read_write> brick: array<BrickInfo>;
-// the regions' change boxes (REGIONS): the bricks whose matter bit flipped, and whose light changed
+${world ? `${WorldBrickParams.wgsl}\n@group(3) @binding(1) var<uniform> P: WorldBrickParams;` : `// the regions' change boxes (REGIONS): the bricks whose matter bit flipped, and whose light changed
 @group(2) @binding(5) var<storage, read_write> boxes: array<atomic<u32>>;
 ${boxesWGSL}
 fn noteChange(box: u32, b: vec3i) {
@@ -790,7 +792,7 @@ fn noteChange(box: u32, b: vec3i) {
     atomicMin(&boxes[box + c], u32(b[c]));
     atomicMax(&boxes[box + 3u + c], u32(b[c]));
   }
-}
+}`}
 // Air worth flagging for the data views: off ambient by more than AIR_FLAG_T °C,
 // pressure beyond AIR_FLAG_P, or moving faster than AIR_FLAG_V cells/step.
 const AIR_FLAG_T: f32 = 3.0;
@@ -812,8 +814,10 @@ fn openFaces(c: vec3i) -> f32 {
   for (var k = 0; k < 6; k++) {
     var q = c;
     q[k >> 1u] += select(1, -1, (k & 1) == 0);
-    if (q.y < 0) { continue; }                         // the floor
-    if (!inGrid(q)) { n += 1.0; continue; }            // open sky past the box
+    ${world ? `let worldQ = P.scratchOrigin + q;
+    if (worldQ.y < P.worldMin.y) { continue; }
+    if (any(worldQ < P.worldMin) || any(worldQ >= P.worldMax)) { n += 1.0; continue; }` : `if (q.y < 0) { continue; }                         // the floor
+    if (!inGrid(q)) { n += 1.0; continue; }            // open sky past the box`}
     let id = eid(fetchA(q));
     if (RCLASS(id) != R_OPAQUE && id != E_CRYSTAL) { n += 1.0; }
   }
@@ -828,7 +832,13 @@ var<workgroup> wgGas: atomic<u32>;        // steam and smoke cells
 var<workgroup> wgFlags: atomic<u32>;      // air flags
 var<workgroup> wgLiqHi: atomic<u32>;      // 1 + the highest liquid-channel element id (0: none)
 var<workgroup> wgLiqLo: atomic<u32>;      // NE - the lowest
-${listMainWGSL('LIST_FIELDS')}
+${world ? `@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let e = foldId(wg, nwg);
+  if (e >= P.count) { return; }
+  let b = worldJobs[e].x;
+  let s = b * 64u + li;
+  let p = cellOf(s);` : listMainWGSL('LIST_FIELDS')}
   let a = fetchAs(s);
   let id = eid(a);
   if (id != E_EMPTY) { atomicOr(&wgOcc, 1u); }
@@ -899,10 +909,10 @@ ${listMainWGSL('LIST_FIELDS')}
     var info = brickInfoWord(0u, flags, 0u, false);
     if (atomicLoad(&wgOcc) != 0u || hasSurf || hasMedia) { info = brickInfoWord(bits, flags, atomicLoad(&wgGas), true); }
     let rec = BrickInfo(wgEm[0].xyz / f32(BS * BS * BS), info);
-    let was = brick[b];
+    ${world ? 'brick[worldJobs[e].y] = rec;' : `let was = brick[b];
     if (brickMatter(was.info) != brickMatter(rec.info)) { noteChange(BOX_DIST, brickCoord(b)); }
     if (any(was.emit != rec.emit)) { noteChange(BOX_LIGHT, brickCoord(b)); }
-    brick[b] = rec;
+    brick[b] = rec;`}
   }
 }
 `;
@@ -954,13 +964,25 @@ ${regionMainWGSL}
 // which every view reads, and storage buffers don't count against the 16
 // sampled textures, so nothing reads the light volume's alpha. One thread
 // per brick of the pass's region (REGIONS: region = REGIONS.LIGHT + pass).
+export const glowBlurWeightsWGSL = /* wgsl */ `// tent-ish 5-tap weights (sum 1), and a gain that makes up for light spread past the box
+const LIGHT_BLUR_GAIN: f32 = 1.15;
+var<private> W: array<f32, 5> = array<f32, 5>(0.10, 0.22, 0.36, 0.22, 0.10);`;
+// Structural leaf composition only: Box emission and arithmetic stay identical.
+export const glowBlurWGSL = ({ lookup = 'src[brickId(q)].rgb', store = 'dst[i] = vec4f(s * LIGHT_BLUR_GAIN, 1.0);', hi = 'vec3i(BX, BY, BZ) - 1' } = {}) => /* wgsl */ `  var dir = vec3i(0);
+  dir[P.axis] = 1;
+  let hi = ${hi};
+  var s = vec3f(0.0);
+  for (var k = 0; k < 5; k++) {
+    let q = bc + dir * (k - 2);
+    if (any(q < vec3i(0)) || any(q > hi)) { continue; }   // skipped, not renormalised, as before
+    s += ${lookup} * W[k];
+  }
+  ${store}`;
 export const BlurParams = uniformStruct('BlurParams', { axis: 'u32', region: 'u32' });
 export const blurFrag = (g, { last = false } = {}) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${boxesWGSL}
-// tent-ish 5-tap weights (sum 1), and a gain that makes up for light spread past the box
-const LIGHT_BLUR_GAIN: f32 = 1.15;
-var<private> W: array<f32, 5> = array<f32, 5>(0.10, 0.22, 0.36, 0.22, 0.10);
+${glowBlurWeightsWGSL}
 ${BlurParams.wgsl}
 @group(3) @binding(1) var<uniform> P: BlurParams;
 @group(2) @binding(0) var<storage, read> src: array<vec4f>;   // a texel per brick, brickId order
@@ -969,16 +991,7 @@ ${last
     : '@group(2) @binding(1) var<storage, read_write> dst: array<vec4f>;'}
 @group(2) @binding(2) var<storage, read> boxes: array<u32>;
 ${regionMainWGSL}
-  var dir = vec3i(0);
-  dir[P.axis] = 1;
-  let hi = vec3i(BX, BY, BZ) - 1;
-  var s = vec3f(0.0);
-  for (var k = 0; k < 5; k++) {
-    let q = bc + dir * (k - 2);
-    if (any(q < vec3i(0)) || any(q > hi)) { continue; }   // skipped, not renormalised, as before
-    s += src[brickId(q)].rgb * W[k];
-  }
-  ${last ? 'textureStore(dstTex, bc, vec4f(s * LIGHT_BLUR_GAIN, 1.0));' : 'dst[i] = vec4f(s * LIGHT_BLUR_GAIN, 1.0);'}
+${glowBlurWGSL({ store: last ? 'textureStore(dstTex, bc, vec4f(s * LIGHT_BLUR_GAIN, 1.0));' : 'dst[i] = vec4f(s * LIGHT_BLUR_GAIN, 1.0);' })}
 }
 `;
 

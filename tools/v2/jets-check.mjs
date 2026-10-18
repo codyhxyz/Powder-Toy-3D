@@ -139,13 +139,18 @@ test('the WGSL: deterministic ranks, refusal keeps the liquid, the allocator pro
   for (const stage of JET_STAGES) assertNaga(jetsWGSL(gridLayout(16, 8, 8), stage), `jets ${stage}`);
 });
 
-test('radial gravity: column water stands down and a liquid over open space drips toward the centre', async () => {
+test('radial gravity: the column passes run the radial face stages, and a liquid over open space drips toward the centre', async () => {
   const { blastsWGSL } = await import('../../src/shaders/v2/blasts.js');
   const { nativeDynamicsHead, v2RunsWGSL, v2PairsWGSL } = await import('../../src/shaders/v2.js');
   const g = gridLayout(16, 8, 8), plan = blastsWGSL(g, nativeDynamicsHead, 'couplePlan');
   assert.match(plan, /let radialDrip = k==3u && P\.gravMode==2u && P\.gravity>0\.0 && dUnsupported\(p\);/);
   assert.match(plan, /\|\| radialDrip\) \{\s*\/\/ Real SI flight/);
-  for (const code of [v2RunsWGSL(g), v2PairsWGSL(g)]) assert.match(code.slice(code.lastIndexOf('@compute')), /if \(P\.gravMode == 2u\) \{ return; \}/);
+  // columns.js RADIAL: each kernel's radial stage, then return, before any of the runs' code (vertical gravity
+  // runs none of it; tools/v2/radial-spread-check.mjs executes it)
+  for (const [code, stage, first] of [[v2RunsWGSL(g), 'colRadRuns', 'colScan(x, z, true);'], [v2PairsWGSL(g), 'colRadPairs', 'let here = vec3i(x, 0, z);']]) {
+    const main = code.slice(code.lastIndexOf('@compute')), at = main.indexOf(`if (P.gravMode == 2u) { ${stage}(x, z); return; }`);
+    assert.ok(at > 0 && at < main.indexOf(first), `${stage} branches first`);
+  }
 });
 
 test('the crown: a fast landing throws CROWN_SHARE of the run up and out, exactly; a slow one merges', () => {

@@ -9,6 +9,7 @@ import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { readNativeState, toGrid, nativeTally, nativeFall, nativeFlight } from './native-grid.js';
 import { stepClock, SetupError } from './engine.js';
+import { GRAV } from '../../src/simModes.js';
 
 // bench names that are named otherwise today
 const TODAY = { AIR: 'EMPTY', FLOUR: 'DUST' };
@@ -81,6 +82,8 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
         await sim.gpuSync();
       }
     },
+    // 'vertical' or 'radial' (TPT's radial mode): the box's own setting, as the drawer sets it (sim.js)
+    setGravity(mode) { sim.gravityMode = mode === 'radial' ? GRAV.RADIAL : GRAV.VERTICAL; },
     get time() { return clock.time; },
     get steps() { return clock.steps; },
     async read() {

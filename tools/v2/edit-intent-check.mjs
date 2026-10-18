@@ -62,13 +62,15 @@ const stamp=new Function('ctx','p',`with(ctx) { let a=vec4f(),b=vec4f(),oA=a,oB=
 function stampClaim(voxel, params={}, point=vec()) {
  let owned=0;const ctx={...base,P:{masked:0,at:vec(),size:vec(1,1,1),foot:1,base:0,...params},
  stampData:[voxel],sub:(a,b)=>vec(a.x-b.x,a.y-b.y,a.z-b.z),stampColumn:()=>false,footing:()=>false,
- stampPut:()=>owned++}; stamp(ctx,point);return owned;
+ slotOf:()=>0,ownLegacy:()=>owned++,stampPut:()=>{}}; stamp(ctx,point);return owned;
 }
 assert.equal(stampClaim(vec()),0,'sparse stamp holes untouched');
 assert.equal(stampClaim(vec(1)),1,'explicit air voxel selected');
 assert.equal(stampClaim(vec(1),{masked:1}),0,'masked-out column untouched');
 assert.equal(stampClaim(vec(1,0,0,1),{},vec(0,-1,0)),0,'unsupported footing untouched');
-assert.match(body(stampEdit().decls,'stampPut'),/ownLegacy\(slotOf\(p\)\)/);
+// The state edit owns before stamping; stampPut stays pure for main's raw source stamp (shaders/renderSource.js).
+assert.match(stampEdit().update,/ownLegacy\(slotOf\(p\)\);[^\n]*\n\s*stampPut\(/);
+assert.doesNotMatch(body(stampEdit().decls,'stampPut'),/ownLegacy/);
 const access=prelude(g,STATE_OPTS.STATE_RW);
 assert.doesNotMatch(body(access,'writeCell'),/ownLegacy/);
 assert.match(body(access,'noteLegacy'),/H.capture == 1u.*any\(a != fetchAs/s);

@@ -46,12 +46,14 @@ const makeMachine = Function('isTestView', 'loadModule', 'initial', 'OptionalSha
   const post={reset(){events.resets++;}},meshFrames={drop(){events.drops++;}};
   const hud={toast(message){events.toasts.push(message);},setLegend(){}},console={warn(){}};
   const shaderPanel={setTestStatus(text,detail){events.statuses.push({text,detail});},sync(){}};
-  const settingsPanel={sync(){}},detailGate={setView(){}};
+  const settingsPanel={sync(){}},detailGate={setView(){},level:0};
   const plainView=()=>false,setBlocks=()=>{},prepareGI=()=>{},save=()=>{};
   const sceneByKey=()=>({}),wakeLoop=()=>{},wakeWhen=p=>p.catch(()=>{});
   const vol={async viewReady(view){events.views.push(view);}};
   let coreWait=Promise.resolve();const coreReady=true,blocksOn=false,win=null,physicsV2=null,giWait=Promise.resolve();
   const warpNow=()=>null,baseDetail=()=>({}),viewShadows=()=>false;
+  // allReady's checkpoint footprint (app.js syncRenderResolution, updateFrameDetail): resolution is not under test.
+  const applyOutputRatio=()=>{},syncRenderResolution=()=>{},updateFrameDetail=()=>{},autoRes={scale:1},gateVariants=()=>({near:{}}),detailKey=d=>JSON.stringify(d);
   ${selectView}
   ${ensure}
   ${allReady}
