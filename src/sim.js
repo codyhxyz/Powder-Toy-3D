@@ -595,7 +595,8 @@ export class Simulation {
     }
     await this.nativeIntegration.ready;
     // The brush's native kernels are part of being ready, as V1's paint pass is.
-    if (owner.dynamics) await prepareNativeBrush(this);
+    // (A failed build is a bug to see in the console, not a reason to stop the engine.)
+    if (owner.dynamics) await prepareNativeBrush(this).catch((err) => console.error('native brush kernels failed to build', err));
     return true;
   }
   // A tool request made while the native owner is active but its dynamics or
