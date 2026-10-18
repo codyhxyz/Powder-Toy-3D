@@ -306,6 +306,8 @@ var<workgroup> wgWind: atomic<u32>;
     let movable=(wind>0.0 && ka==4u && cid(b.core)==0u) || (wind<0.0 && kb==4u && cid(a.core)==0u);
     if(movable && probability>0.0) { dWake(p);dWake(q); }
     if (movable && dRandom(dId(p,0x474153u),0u)<probability) {
+      // the gas takes its decoration along; the air it leaves holds none (shaders/move.js)
+      let paint=decoOf(sa); setDeco(sa,select(decoOf(sb),0u,cid(b.core)==0u)); setDeco(sb,select(paint,0u,cid(a.core)==0u));
       storeMaterial(sa,a,b); storeMaterial(sb,b,a); dWake(p); dWake(q);
     }
   `,'dListedCell(LIST_WIND,wg,nwg,li)');
@@ -322,7 +324,7 @@ var<workgroup> wgWind: atomic<u32>;
     let before=loadMaterial(t);if(cls(cid(before.core))!=4u) { return; }
     if(outward>0.0) { dWake(p); }
     if(dRandom(dId(p,0x4f5554u),0u)<min(1.0,outward*D_DT/D_CELL)) {
-      dOutflow(p,before);storeMaterial(t,before,dCarrier(before));atomicAdd(&control[16],1u);
+      dOutflow(p,before);setDeco(t,0u);storeMaterial(t,before,dCarrier(before));atomicAdd(&control[16],1u);
     }
   `,'dListedCell(LIST_WIND,wg,nwg,li)');
   throw new Error(`Unknown air stage ${stage}`);

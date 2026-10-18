@@ -24,6 +24,9 @@ import { particlesWGSL, PARTICLE_CAP } from '../../src/shaders/v2/particles.js';
 import { nativeDynamicsHead } from '../../src/shaders/v2.js';
 import { nativePaintWGSL, nativePaintParams } from '../../src/v2/nativePaint.js';
 import { nativeTransferWGSL } from '../../src/shaders/v2/transfer.js';
+import { airWGSL } from '../../src/shaders/v2/air.js';
+import { v2BoundaryWGSL } from '../../src/shaders/v2.js';
+import { nativeWeatherCommitWGSL, nativeWeatherParams } from '../../src/v2/nativeWeather.js';
 import { validateDynamicState } from '../../src/v2/dynamics.js';
 import { emptyDynamicState } from '../../src/v2/dynamicState.js';
 import { NativeParticles } from '../../src/gfx/nativeParticles.js';
@@ -240,6 +243,14 @@ test('the brush\'s native retype and Mix scrub as V1\'s brush does; POV transfer
   // every family's material storage has the plane's accessors at the auxLayout offsets
   assert.match(materialStorageWGSL, /fn decoOf\(slot: u32\) -> u32 \{ return bitcast<u32>\(banks\[SLOTS \+ slot\]\); \}/);
   assert.match(materialStorageWGSL, /fn particleDecoOf\(i: u32\) -> u32 \{ return bitcast<u32>\(banks\[2u \* SLOTS \+ i\]\); \}/);
+});
+
+test('wind moves a gas with its paint; open edges and weather leave or make unpainted cells', () => {
+  const gas = statements(airWGSL(g16, nativeDynamicsHead, 'gas'));
+  assert.match(gas, /let paint=decoOf\(sa\); setDeco\(sa,select\(decoOf\(sb\),0u,cid\(b\.core\)==0u\)\); setDeco\(sb,select\(paint,0u,cid\(a\.core\)==0u\)\);\s*storeMaterial\(sa,a,b\)/);
+  assert.match(statements(airWGSL(g16, nativeDynamicsHead, 'gasBoundary')), /setDeco\(t,0u\);storeMaterial\(t,before,dCarrier\(before\)\)/);
+  assert.match(statements(v2BoundaryWGSL(g16)), /setDeco\(s,0u\);\s*storeMaterial\(s,before,after\)/);
+  assert.match(statements(nativeWeatherCommitWGSL(g16, nativeWeatherParams('decoCheck', { params: {} }), 'commit')), /if\(cid\(before\.core\)==0u && cid\(m\.core\)!=0u\) \{ setDeco\(s,0u\); \}\s*storeMaterial\(s,before,m\)/);
 });
 
 // ---------------------------------------------------------------- (5) snapshots and drawing

@@ -701,6 +701,7 @@ ${MAIN} {
   let after=carrier; let amount=FULLU;
   if (drive<1.0) { var rng=seed3(p,P.tick,971u); if (rnd(&rng)>=drive) { return; } }
   noteBoundaryMass(amount); noteEnergySink(p,energySub(energyOf(before),energyOf(after)));
+  setDeco(s,0u); // the air a gas leaves holds no decoration (shaders/move.js)
   storeMaterial(s,before,after); if (cid(after.core)==0u) { events[s]=0u; }
 }
 `;
