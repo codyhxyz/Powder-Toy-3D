@@ -258,16 +258,30 @@ const fullBefore = sim.wholeWrites;
 applyGuestStroke(sim, { c: [3, 4, 5], r: 999, shape: 0, tool: E.SAND, rate: 1, replace: false });
 assert.equal(edits.at(-1).values.radius, 24); assert.equal(sim.compact, owner);
 assert.equal(sim.wholeWrites, fullBefore);
-// A guest's stroke the host's V2 engine refuses (here wind, its impulse not
-// built) drops that dab only: the queue empties and the next stroke paints,
-// where the throw used to escape the host's frame every frame from then on.
+// A guest's wind before the host's impulse is built waits for it (sim.nativePending), it is not refused.
 {
-  const wind = TOOLS.find(t => t.key === 'WIND').id, impulse = owner.dynamics.capabilities.impulse, warn = console.warn;
-  owner.dynamics.capabilities.impulse = false; console.warn = () => {};
+  const wind = TOOLS.find(t => t.key === 'WIND').id, impulse = owner.dynamics.capabilities.impulse;
+  owner.dynamics.capabilities.impulse = false;
   const queue = [{ c: [3, 4, 5], r: 2, shape: 0, tool: wind, rate: 1 }, { c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }];
+  const painted = edits.length, held = sim.nativePending?.length ?? 0;
+  try { assert.equal(applyGuestStrokes(sim, queue, { options: () => ({ wind: [1, 0, 0] }) }), 0, 'the unbuilt wind is held, not refused'); }
+  finally { owner.dynamics.capabilities.impulse = impulse; }
+  assert.equal(sim.nativePending.length, held + 1, 'the wind waits for its impulse');
+  sim.nativePending.length = held;
+  assert.equal(queue.length, 0, 'the frame takes its strokes off the queue');
+  assert.equal(edits.length, painted + 1, 'the next guest stroke still paints');
+}
+// A stroke that throws on the host (e.g. a load mid-shift) drops that dab only: the queue
+// empties and the next stroke paints, where the throw used to escape the host's frame every frame.
+{
+  const paint = sim.paint, warn = console.warn;
+  let first = true;
+  sim.paint = function (stroke) { if (first) { first = false; throw new Error('refused'); } return paint.call(this, stroke); };
+  console.warn = () => {};
+  const queue = [{ c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }, { c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }];
   const painted = edits.length;
-  try { assert.equal(applyGuestStrokes(sim, queue, { options: () => ({ wind: [1, 0, 0] }) }), 1, 'the refused stroke is counted, not thrown'); }
-  finally { owner.dynamics.capabilities.impulse = impulse; console.warn = warn; }
+  try { assert.equal(applyGuestStrokes(sim, queue), 1, 'the refused stroke is counted, not thrown'); }
+  finally { sim.paint = paint; console.warn = warn; }
   assert.equal(queue.length, 0, 'the frame takes its strokes off the queue');
   assert.equal(edits.length, painted + 1, 'the next guest stroke still paints');
 }
