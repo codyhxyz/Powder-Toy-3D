@@ -1,5 +1,5 @@
 import { decodeWorldState } from './persistence.js';
-import { NativeBrickStore } from './nativeStore.js';
+import { NativeBrickStore, nativeBrickBanked } from './nativeStore.js';
 import { BRICK } from '../shaders/common.js';
 import { restoreEdit, BRICK_CELLS } from '../shaders/window.js';
 import { leaveHeadBytes, LEAVE_BRICK_BYTES } from '../shaders/generate.js';
@@ -124,6 +124,7 @@ export class WorldWindow {
   // scene has prepared (started in the background on the first call; give the
   // window its far field first): load and the moves then record at once.
   whenReady() {
+    if (this.sim.compactOwner) this.gen.prepareNativeDiff?.();   // (V2's leaving slab: not awaited, see update)
     return (this.ready ??= Promise.all([
       this.gen.ready, this.gen.prepareDiff(), this.restoreKernel.ready, this.sourceProducer.ready, this.sim.prepare('fresh'), this.far?.whenReady?.(),
     ]).then(() => this));
@@ -269,6 +270,9 @@ export class WorldWindow {
     this.far?.tick();
     if (this.capturing || this.pending || this.sim.deco?.pending) return null;
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) return null;
+    // V2's leaving slab keeps what differs from the generator (readBack); a
+    // grid V2 came to after load builds it now, keeping everything meanwhile
+    if (this.sim.compactOwner) this.gen.prepareNativeDiff?.();
     const g = this.sim.g, o = this.sim.origin, lim = WIN_STEP + WIN_HYSTERESIS;
     const off = [fx - (o.x + g.nx / 2), fz - (o.z + g.nz / 2)];
     const at = [o.x, o.z], span = [g.nx, g.nz], world = [this.size[0], this.size[2]];
@@ -308,8 +312,8 @@ export class WorldWindow {
         // Nothing moves: the store takes the resident cells at the source's current revision.
         const capture = this.renderSource.token();
         const nativeRead = native ? this.sim.nativeIntegration.captureSlab(lo, bricks) : null;
-        this.gen.diff(this.P,lo,bricks,this.leave);
-        this.readBack([origin.x/BRICK+x/BRICK,0,origin.z/BRICK],bricks,capture,this.leave,nativeRead);
+        const exact = this.gen.diff(this.P,lo,bricks,this.leave,{ native }) === true;
+        this.readBack([origin.x/BRICK+x/BRICK,0,origin.z/BRICK],bricks,capture,this.leave,nativeRead,exact);
         await this.pending;
         check();
       }
@@ -382,9 +386,9 @@ export class WorldWindow {
     // 1.
     const nativeRead = sim.nativeIntegration?.captureSlab(leaveLo, bricks);
     const out = this.pending ? this.gen.diffBuffers(this.maxBricks) : this.leave;
-    this.gen.diff(this.P, leaveLo, bricks, out);
+    const exact = this.gen.diff(this.P, leaveLo, bricks, out, { native: !!nativeRead }) === true;
     const leaveB = [before.x / BRICK + leaveLo[0] / BRICK, 0, before.z / BRICK + leaveLo[2] / BRICK];
-    this.readBack(leaveB, bricks, capture, out, nativeRead);
+    this.readBack(leaveB, bricks, capture, out, nativeRead, exact);
     // the decoration of the slab that leaves goes into its own store (src/deco.js)
     sim.deco?.leave(leaveLo, bricks, (x, y, z) => this.store.key(leaveB[0] + x, leaveB[1] + y, leaveB[2] + z));
     this.far?.summarize(leaveLo, bricks);
@@ -421,7 +425,13 @@ export class WorldWindow {
   // more bricks differ than the estimate (then a second for the rest). The
   // bricks that match the generator leave the store, the ones that differ go
   // into it. base is slab brick 0's world brick.
-  readBack(base, bricks, capture, out = this.leave, nativeRead = null) {
+  // nativeRead: a V2 window's exact bricks of the slab (NativeIntegration.captureSlab).
+  // exact: the head came from V2's diff (WorldGenerator.diff), so it lists the
+  // bricks whose cores differ from the generator's import. The native store then
+  // keeps those and any with a nonzero energy bank, and lets the rest go as V1's
+  // store lets a matching brick go: coming back, it is generated and imported
+  // again, bit for bit (shaders/v2/leave.js). Without it every native brick stays.
+  readBack(base, bricks, capture, out = this.leave, nativeRead = null, exact = false) {
     const n = bricks[0] * bricks[1] * bricks[2], rb = this.gpu.readback, epoch = this.epoch;
     const est = Math.min(n, Math.max(READ_MIN, Math.ceil(this.lastKept * READ_AHEAD)));
     const t0 = performance.now(), last = () => this.last;
@@ -457,7 +467,7 @@ export class WorldWindow {
         if (!keep.has(key) && (this.storeRevisions.get(key) ?? -1) <= capture.revision) {
           this.store.drop(key); this.storeRevisions.set(key, capture.revision);
         }
-        if (native) this.nativeStore.put(key, native[i]);
+        if (native && (!exact || keep.has(key) || nativeBrickBanked(native[i]))) this.nativeStore.put(key, native[i]);
         else this.nativeStore.drop(key);
       }
       const keys = [];
