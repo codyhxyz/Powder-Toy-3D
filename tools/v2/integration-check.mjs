@@ -8,6 +8,7 @@ import { nativeHostSteps, nativeReadiness } from '../../src/v2/host.js';
 import { emitNativeRay, nativeImpulse, worldPosition } from '../../src/v2/tools.js';
 import { NativeBrickStore, encodeNativeBrick, decodeNativeBrick, validateNativeWorldStore } from '../../src/world/nativeStore.js';
 import { WorldWindow } from '../../src/world/window.js';
+import { WorldRenderSource } from '../../src/world/renderSource.js';
 import { Stamper } from '../../src/world/gpu.js';
 import { cellSlot, slotCell, marksLayout } from '../../src/shaders/common.js';
 import { cellOf, Load, createTransfer } from '../../src/pov/tools/transfer.js';
@@ -118,7 +119,7 @@ const shiftNative = (dx, dz) => sim.nativeIntegration.beginShift(dx, dz, () => s
 assert.equal(owner.nativeDynamics, adapter, 'application does not overwrite foundation adapter');
 assert.equal(nativeCapabilities(sim).world, true);
 assert.equal(nativeReadiness(sim, { pov: true }).ready, true);
-assert.match(nativeReadiness(sim, { world: true, pov: true }).reason, /World map requires V1/, "main's World renderer reads V1 cells");
+assert.equal(nativeReadiness(sim, { world: true, pov: true }).ready, true, "the World renderer's copy gets V2's cells (src/world/renderSource.js liveSource)");
 assert.equal(nativeReadiness(sim, { industry: true }).ready, false, 'Factory transport is not native momentum');
 assert.match(nativeReadiness(sim, { industry: true }).reason, /require V1/);
 owner.contactReady = false;
@@ -339,6 +340,41 @@ await assert.rejects(WorldWindow.prototype.captureEdits.call(terrainWindow), /Na
 await assert.rejects(WorldWindow.prototype.restoreEdits.call(terrainWindow, {}), /Native terrain edit restore is not supported/);
 assert.equal(terrainTouched, false);
 assert.deepEqual(core, terrainCore); assert.deepEqual(bank, terrainBank);
+
+// main's World renderer keeps its own copy of the cells, from the live A/B
+// (src/world/renderSource.js). On a V2 world those are V2's lazy projection:
+// a tick reaches the copy through an export of only the bricks it changed,
+// recorded before the copy reads A/B. Nothing ticked: nothing exported.
+{
+  const realCopy = gpu.frame.copy;
+  gpu.frame.copy = function (...args) { calls.push({ name: 'copy' }); return realCopy.apply(this, args); };
+  const win = { sim, gpu, epoch: 1, size: [sim.origin.x + g.nx, g.ny, sim.origin.z + g.nz], scene: {} };
+  const source = sim.worldRenderSource = new WorldRenderSource(win);
+  source.recordLiveCopy(gpu.frame);
+  assert.equal(source.needsLiveCopy(), false);
+  owner.ticks(1);
+  assert(source.needsLiveCopy(), 'a V2 tick is a live content change');
+  calls.length = 0;
+  source.recordLiveCopy(gpu.frame);
+  const bridge = calls.findIndex(c => c.name === 'v2bridge'), copy = calls.findIndex(c => c.name === 'copy');
+  assert(bridge >= 0 && bridge < copy, 'the export is recorded before the copy');
+  assert.equal(calls.filter(c => c.name === 'v2bridge').length, 1);
+  assert.equal(calls[bridge].opts.params.full, 0, 'only the bricks the tick changed');
+  assert.equal(calls[bridge].opts.header.format, 0, 'the drawn projection, as the Box draws it');
+  calls.length = 0;
+  assert.equal(source.needsLiveCopy(), false);
+  source.recordLiveCopy(gpu.frame);
+  assert(!calls.some(c => c.name === 'v2bridge'), 'nothing ticked: nothing to export');
+  // Planted trees are a bounded write: V2 imports the marked bricks, not the window.
+  const whole = sim.wholeWrites, version = sim.version;
+  const planter = { sim, gpu, wb: [win.size[0] / 4, 1, win.size[2] / 4], planted: new Uint8Array(win.size[0] * win.size[2] / 16), plantCost: null,
+    renderSource: { token: () => ({}) }, sourceProducer: { record: () => ({ trees: 1 }) } };
+  assert.equal(WorldWindow.prototype.plant.call(planter, [0, 0, 0], [g.nx, g.ny, g.nz]), 1);
+  assert.equal(sim.wholeWrites, whole); assert.equal(sim.version, version + 1);
+  calls.length = 0; owner.sync();
+  assert.equal(calls.find(c => c.name === 'v2import').opts.params.full, 0, 'a tree stamp never reimports the whole window');
+  sim.worldRenderSource = null; source.dispose(); gpu.frame.copy = realCopy;
+}
 
 const app = readFileSync('src/app.js', 'utf8');
 assert(app.includes("let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1'"), 'v1 remains default');
