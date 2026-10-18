@@ -117,7 +117,12 @@ sim.edit = (...args) => { legacyEdits++; return edit(...args); };
   assert.equal(v2.x, 120 / NOMINAL_STEP_RATE);
   const fast = toStepVelocity(new THREE.Vector3(1000, 0, 0), { sim: { compact: {} } });
   assert.equal(fast.x, PHYS.V_MAX, "V1's V_MAX caps it at V1's 240 cells/s, not 60");
-  console.log('PASS V2 throw speed is V1 cells/step at NOMINAL_STEP_RATE with V1 V_MAX');
+  // the kick's shove and its landing clump, and the gibs: V1 cells/step too (V2's 60 ticks/s made them 4x)
+  const kick = readFileSync(new URL('../../src/pov/kick.js', import.meta.url), 'utf8');
+  assert(/const speedRate = \(sim\) => \(sim\?\.compact \? NOMINAL_STEP_RATE : body\.stepRate\);/.test(kick), 'the kick converts on V1 steps under V2');
+  assert(/KICK_SPEED \* share \/ speedRate\(sim\)/.test(kick) && /speed \/ speedRate\(getSim\(\)\)/.test(kick), 'shove and landing clump both');
+  assert(/meat\.gib\(p\.pos, p\.vel, sim\.compact && stepRate > 0 \? NOMINAL_STEP_RATE : stepRate,/.test(readFileSync(new URL('../../src/pov/player.js', import.meta.url), 'utf8')), 'gibs too');
+  console.log('PASS V2 throw speed is V1 cells/step at NOMINAL_STEP_RATE with V1 V_MAX (throws, kick, gibs)');
 }
 
 // ---- 3. POV writers of velocity route to native forcing, never V1's edit.
@@ -155,6 +160,9 @@ const box = sim.touchCentres([5, 5, 5], [11, 11, 11]);
   povGpu(sim).edit('povBlow', box, blowValues);
   owner.ticks(1);
   assert.equal(allocations.length, before + 2, 'the next tick allocates a held launch first');
+  const melee = readFileSync(new URL('../../src/pov/tools/melee.js', import.meta.url), 'utf8');
+  assert(/gather\(sim, point, swingDir, aim\.id, broke\);\n(.*\n)?\s*flushNativeLaunch\(sim\);/.test(melee), 'the melee tool flushes right after its gather');
+  assert(/flushNativeLaunch\(sim\);/.test(readFileSync(new URL('../../src/pov/worm.js', import.meta.url), 'utf8')), "the worm's bite flies at once (nothing gathers it)");
   console.log('PASS V2 melee: the blow renames at once, its take clears taken plans, the rest launch after it');
 }
 

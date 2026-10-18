@@ -28,7 +28,8 @@ if(r.before.x!=r.after.x) {
  m.core=withLife(m.core,r.after.z);
  if(!isLiq(m.core)) { m.core.w=u32(fract(r.after.w)/${SEED_MAX / 65536})<<16u; }
  let made_k=cls(made);
- if((made_k==2u || made_k==3u) && r.motion.w!=0.0) { plans[s]=ForcePlan(r.motion.xyz*${SI},1u); }
+ // (a new cell the rule sets at rest stays on the grid, as V1's create_part leaves it)
+ if((made_k==2u || made_k==3u) && r.motion.w!=0.0 && any(r.motion.xyz!=vec3f(0.0))) { plans[s]=ForcePlan(r.motion.xyz*${SI},1u); }
  if(any(m.core!=before.core) || m.bank!=before.bank) { noteEnergySource(p,energySub(energyOf(m),energyOf(before)));storeMaterial(s,before,m);markBusy(p); }
  return;
 }` : '';

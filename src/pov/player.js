@@ -746,7 +746,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       gibDue = false;
       const point = p.pos.clone().setY(p.pos.y + H / 2);
       // (V2: V1's cells/step, which the native put launches at as m/s: tools/transfer.js toStepVelocity)
-      meat.gib(p.pos, p.vel, sim.compact ? NOMINAL_STEP_RATE : stepRate, (placed, lost) => povEvents.emit('body:gib', { point, cells: placed, lost, ...by }));
+      meat.gib(p.pos, p.vel, sim.compact && stepRate > 0 ? NOMINAL_STEP_RATE : stepRate, (placed, lost) => povEvents.emit('body:gib', { point, cells: placed, lost, ...by }));
     }
     if (!readOnly()) meat.update();
     if (vitals.dead) { p.sprintBuild = 0; sprintingNow = false; sprintCarry = false; sinceFlap = Infinity; airFlapHold = false; }

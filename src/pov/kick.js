@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { ELEMENTS, E, K } from '../elements.js';
-import { PHYS } from '../physics.js';
+import { PHYS, NOMINAL_STEP_RATE } from '../physics.js';
 import { CELL_M } from '../scale.js';
 import { KICK, kickWeight } from '../shaders/povKick.js';
 import { povGpu } from './gpu.js';
@@ -116,6 +116,10 @@ const debrisOf = (id) => E[ELEMENTS[id].breakInto];
 export function createKick({ body, owner = null, renderer, getSim, cellAt, unknown }) {
   const transfer = () => sharedTransfer({ renderer, getSim });
   const load = persistentLoad(ownedKey('KICK', owner), SOLE_CELLS);   // grains on the boot (kept if a mode or scene change comes mid-kick)
+  // The steps a second a cells/step speed is on: the body's measured rate, or under V2 V1's own
+  // (the native kick and put read V1's cells/step as m/s: v2/nativeForcing.js, shaders/v2/transfer.js;
+  // V2's 60 ticks a second would make every kick and landing clump four times as fast)
+  const speedRate = (sim) => (sim?.compact ? NOMINAL_STEP_RATE : body.stepRate);
   let carried = null;   // { from, splash, speed, at, vel, tries, flying, flew, round } while grains are on their way
   let flight = null;    // the projectile engine kicked grains fly in (ballistics.js), set by the shell
   const lastCarry = { from: null, took: -1, round: 0, landedAt: null, putTries: 0 };   // for checks: how the last kicked clump went
@@ -233,7 +237,7 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
       if (l.loose && share > 0) carry(struck, share);
       if (l.breaks) {
         // the lump's speed on the sim's clock (cells/step, as player.js's coupling converts)
-        const v = body.stepRate > 0 ? KICK_SPEED * share / body.stepRate : 0;
+        const v = body.stepRate > 0 ? KICK_SPEED * share / speedRate(sim) : 0;
         const r = KICK.RADIUS;
         povGpu(sim).edit('povKick', sim.touchCentres([center.x - r, center.y - r, center.z - r], [center.x + r, center.y + r, center.z + r]), {
           center, shove: dir.clone().multiplyScalar(Math.min(v, PHYS.V_MAX)),
@@ -275,7 +279,7 @@ export function createKick({ body, owner = null, renderer, getSim, cellAt, unkno
   }
 
   // a velocity (unit dir × cells/s) on the sim's clock, cells/step (as player.js's coupling converts)
-  const stepVel = (d, speed) => d.clone().multiplyScalar(body.stepRate > 0 ? Math.min(speed / body.stepRate, PHYS.V_MAX) : 0);
+  const stepVel = (d, speed) => d.clone().multiplyScalar(body.stepRate > 0 ? Math.min(speed / speedRate(getSim()), PHYS.V_MAX) : 0);
 
   // the clump lands: back into the sim in the open cell before what it hit, at the speed it arrives with
   function land({ hit, dir }) {
