@@ -87,6 +87,25 @@ const CAP_FREQS = CAP_LAMBDAS.map((l) => CELL_M / l);   // cycles/cell
 // Each octave evolves faster than the base octave by the ratio of their wave
 // frequencies, so the model's existing clock is kept, scaled physically.
 const CAP_DRIFTS = CAP_LAMBDAS.map((l) => (RIPPLE_BASE_DRIFT * omega(l)) / omega(CELL_M / RIPPLE_BASE_FREQ));
+// The longest octave, m: past a footprint of DETAIL_FADE_HI of it (gfx/detail.js) no octave is drawn as a normal.
+export const CAP_LAMBDA_MAX_M = CAP_LAMBDAS[0];
+// Specular anti-aliasing (the geometry -> normal -> BRDF hand-off of Bruneton,
+// Neyret & Holzschuch 2010): an octave lodFade draws at weight w shows w² of its
+// slope variance as normals; the rest, (1 − w²), is slope variance inside the
+// pixel, so it widens the sun's and lamps' GGX lobe instead of vanishing (LEAN
+// mapping, Olano & Baker 2010: second moments add under filtering; GGX
+// α² += 2σ², Tokuyoshi & Kaplanyan 2019, Unity HDRP's normal filtering). Far
+// away the octaves are then a constant roughness, not a mirror or sparkles.
+// Per octave the slope is RIPPLE_SLOPE times value noise's gradient (mNoiseD),
+// whose per-component variance is E[du²]·Var(Δ)·E[(1 − u)² + u²]² =
+// (6/5)·(1/6)·(26/35)² ≈ 0.110 (u the smoothstep fade, Δ the difference of two
+// uniform corner values; a Monte Carlo of the shader's hash13 gives 0.1105).
+// x and z together: the octave's mean square slope, GGX α² per octave.
+const VNOISE_GRAD_VAR = (6 / 5) * (1 / 6) * (26 / 35) ** 2;
+// The World's far field (shaders/far.js) draws its water without these
+// octaves or their variance, so the window's edge would show the hand-off as a
+// seam in the sun's glint: there the variance stays out until far.js has it too.
+const capHandoff = (backend) => backend !== 'world';
 
 // ---- Whitewater (DETAIL_LIQ_FOAM) ----
 // Foam at a free surface decays exponentially as its bubbles burst: the
@@ -158,20 +177,29 @@ ${ripples ? `
 const CAP_OCTAVES: i32 = ${CAP_OCTAVES};
 var<private> CAP_FREQ: array<f32, CAP_OCTAVES> = ${wgslArray(CAP_FREQS)};    // cycles/cell (λ ${CAP_LAMBDAS.map((l) => (l * 100).toFixed(1)).join(', ')} cm)
 var<private> CAP_DRIFT: array<f32, CAP_OCTAVES> = ${wgslArray(CAP_DRIFTS)};  // noise units/s, by dispersion
-const CAP_SHIFT: f32 = 13.7;   // lattice offset per octave (noise units), so octaves don't line up
+const CAP_SHIFT: f32 = 13.7;   // lattice offset per octave (noise units), so octaves don't line up${capHandoff(backend) ? `
+// mean square slope (x and z) of one octave at full strength: GGX α² (above)
+const CAP_OCT_MS: f32 = 2.0 * ${g(VNOISE_GRAD_VAR)} * RIPPLE_SLOPE * RIPPLE_SLOPE;` : ''}
 fn liquidCapillary(p: vec3f, n: vec3f) -> vec3f {
   let up = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y);
-  if (up <= 0.0) { return n; }
-  let fp = footprint(p);
-  let wq = worldPos(p).xz;   // anchored in the world, like the wind ripples
   var gr = vec2f(0.0);       // (x, z)
-  for (var i = 0; i < CAP_OCTAVES; i++) {
-    let w = lodFade(CAP_FREQ[i], fp);
-    if (w <= 0.0) { break; }
-    // d/d(noise xz) is the slope per unit noise gradient, as RIPPLE_SLOPE
-    let h = mNoiseD(vec3f(wq * CAP_FREQ[i] + CAP_SHIFT * f32(i + 1), FU.time * CAP_DRIFT[i]));
-    gr += h.yz * w;
-  }
+  var lost = 0.0;            // octaves' worth of slope variance not drawn as normals
+  if (up > 0.0) {
+    let fp = footprint(p);
+    let wq = worldPos(p).xz;   // anchored in the world, like the wind ripples
+    lost = f32(CAP_OCTAVES);
+    for (var i = 0; i < CAP_OCTAVES; i++) {
+      let w = lodFade(CAP_FREQ[i], fp);
+      if (w <= 0.0) { break; }
+      // d/d(noise xz) is the slope per unit noise gradient, as RIPPLE_SLOPE
+      let h = mNoiseD(vec3f(wq * CAP_FREQ[i] + CAP_SHIFT * f32(i + 1), FU.time * CAP_DRIFT[i]));
+      gr += h.yz * w;
+      lost -= w * w;
+    }
+  }${capHandoff(backend) ? `
+  // the rest is roughness at this point (liquid.js liquidInterface reads it)
+  gLiqSlopeMS = lost * CAP_OCT_MS * up * up;
+  gLiqSlopeAt = p;` : ''}
   return tiltNormal(n, vec3f(gr.x, 0.0, gr.y) * RIPPLE_SLOPE * up);
 }` : ''}
 ${meniscus ? `

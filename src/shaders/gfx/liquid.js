@@ -319,6 +319,16 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
   return env;
 }
 
+// Slope variance (mean square slope, GGX α²) of ripples too fine for the
+// pixel at gLiqSlopeAt, which the interface there adds to the liquid's
+// roughness: the close-up ripples' octaves hand over to the glint's lobe as
+// they fade (gfx/liquidDetail.js liquidCapillary), so far water keeps their
+// roughness instead of turning into a mirror. 0 where nothing set it.
+var<private> gLiqSlopeMS: f32 = 0.0;
+var<private> gLiqSlopeAt: vec3f = vec3f(-1.0);
+// GGX roughness rough (α = rough²) widened by mean square slope ms: α² + ms.
+fn roughWithSlope(rough: f32, ms: f32) -> f32 { return sqrt(sqrt(rough * rough * rough * rough + ms)); }
+
 // Refraction at a smooth liquid surface. n = outward normal of the liquid.
 // Updates the ray (restarting just past the interface) and returns true if
 // the ray now travels inside the liquid (entering, or total internal reflection).
@@ -351,7 +361,8 @@ fn liquidInterface(hp: vec3f, n0: vec3f, geometric: vec3f, entering: bool, id: i
     let r = reflect(*rd, n);
     let gi = surfProbe(hp, n);
     gSkyIn = skyInAt(gi);
-    let rough = select(ROUGH(id), COZY_WATER_ROUGH, cartoon);
+    let fine = select(0.0, gLiqSlopeMS, all(hp == gLiqSlopeAt));   // (set for this point, not an earlier one)
+    let rough = select(roughWithSlope(ROUGH(id), fine), COZY_WATER_ROUGH, cartoon);
     var env = envReflectGI(gi, n, -*rd, rough, ml);
     if (cartoon) {
       let paint = cozyWaterPaint(worldPos(hp), footprint(hp), cozyNearShore(hp));
