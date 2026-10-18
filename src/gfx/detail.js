@@ -17,6 +17,7 @@
 import { CELL_M } from '../scale.js';
 import { DETAIL_FADE_LO, DETAIL_FADE_HI } from './lodFade.js';
 import { FINE_1_M, FLOW_MAX, MEDIA_FLOW_PERIOD } from '../shaders/gfx/mediaDetail.js';
+import { CAP_LAMBDA_MAX_M } from '../shaders/gfx/liquidDetail.js';
 
 export const BENCH_W = 1280, BENCH_H = 800;   // px, the benchmark viewport
 
@@ -103,11 +104,18 @@ const MEDIA_FINE_FADE_M = DETAIL_FADE_HI * FINE_1_M;   // m per pixel
 const FLOW_TRAVEL_CELLS = FLOW_MAX * MEDIA_FLOW_PERIOD;
 const NOISE_COARSEST_CELLS = 64 / 4;         // MEDIA_NOISE_CELLS / BILLOW_PERIODS[0] (gfx/mediaNoise.js)
 const MEDIA_FLOW_FADE_M = DETAIL_FADE_HI * Math.max(FLOW_TRAVEL_CELLS, NOISE_COARSEST_CELLS) * CELL_M;   // m per pixel
-// Liquid ripples (shaders/gfx/liquidDetail.js) start as their longest new
-// octave (24.5 cm) passes the same fade-out; the meniscus, over the capillary
+// Liquid ripples (shaders/gfx/liquidDetail.js): each octave of wavelength λ is
+// drawn as normals while a pixel spans up to DETAIL_FADE_LO·λ (Nyquist) and is
+// gone by DETAIL_FADE_HI·λ (the material LOD above), so the normals end once the
+// longest octave (CAP_LAMBDA_MAX_M, 24.5 cm) passes the fade-out: 24.5 cm per
+// pixel, ~172 m away at 1080p and a 75° vertical field of view (2·tan 37.5° /
+// 1080 = 1.42 mrad per pixel); the finest (1.7 cm) is fully drawn to 6 m and
+// gone by 12 m. Past its fade an octave's slope variance is the glint's
+// roughness (specular anti-aliasing), so in the box the feature shows at any
+// distance: fadeM Infinity. The meniscus, over the capillary
 // length (2.7 mm for water), is averaged away once a pixel spans more than
 // MENISCUS_PX of them. Whitewater follows speed at any distance (no fadeM).
-const RIPPLE_FADE_M = DETAIL_FADE_HI * 0.245;   // m per pixel
+export const RIPPLE_FADE_M = DETAIL_FADE_HI * CAP_LAMBDA_MAX_M;   // m per pixel: the ripples' normals end
 const MENISCUS_PX = 4;                  // capillary lengths per pixel
 const MENISCUS_FADE_M = MENISCUS_PX * 0.0027;   // m per pixel
 
@@ -148,7 +156,7 @@ export const DETAIL = [
   { key: 'smoothClose', define: 'DETAIL_CUBIC_CLOSE', label: 'Smooth sand and water up close', cost: 'medium', fadeM: CUBIC_FADE_M,
     desc: 'Clumps of falling sand, snow and powder and splashes of liquid stay round right in front of you, instead of turning into flat-faced shards' },
   // low: ~0 ms (25 rounds at eyeTank: -0.3; within noise) (shaders/gfx/liquidDetail.js)
-  { key: 'liquidRipples', define: 'DETAIL_LIQ_RIPPLES', label: 'Liquid ripples', cost: 'low', fadeM: RIPPLE_FADE_M,
+  { key: 'liquidRipples', define: 'DETAIL_LIQ_RIPPLES', label: 'Liquid ripples', cost: 'low', fadeM: Infinity,
     desc: 'Centimetre capillary ripples on open liquid, fading in as you get close' },
   // low: ~0 ms (25 rounds at eyeTank; within noise)
   { key: 'liquidMeniscus', define: 'DETAIL_LIQ_MENISCUS', label: 'Liquid meniscus', cost: 'low', fadeM: MENISCUS_FADE_M,
