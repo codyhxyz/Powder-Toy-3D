@@ -15,6 +15,7 @@
 // GLSL had `#define <define> 1`), so a switched-off feature costs nothing.
 
 import { CELL_M } from '../scale.js';
+import { CLOD_LUMP_R } from '../shaders/gfx/grains.js';
 
 export const BENCH_W = 1280, BENCH_H = 800;   // px, the benchmark viewport
 
@@ -46,10 +47,16 @@ export const costTier = (ms) => (ms < COST_LOW_MS ? 'low' : ms < COST_MEDIUM_MS 
 // shader leaves it out (gfx/detailGate.js). Infinity = always in.
 // Solid surface detail uses the material's normal and cavity shading at every
 // level, not an additional displacement/self-shadow march.
-// Grains (shaders/gfx/grains.js) start where a pebble (PEBBLE_M = 5 cm) or a
-// clod's lump (2 · CLOD_LUMP_R = 0.34 cells ≈ 10 cm) spans 8 pixels (*_PX_NONE).
+// Grains (shaders/gfx/grains.js) start where a pebble (PEBBLE_M = 5 cm) spans
+// 8 pixels (PEB_PX_NONE).
 const GRAINS_FADE_M = 0.05 / 8;           // m per pixel
-const CLODS_FADE_M = 0.34 * CELL_M / 8;   // m per pixel
+// Clods start where their lumps can be seen: a lump and the crease to the next
+// (2 · CLOD_LUMP_R = 0.34 cells ≈ 10 cm) are one cycle of the clod's shape, which
+// the mip rule above averages away by DETAIL_FADE_HI cycles per pixel (a lump
+// 1 px across, ~72 m away at 1080p and 75° vertical field of view) and keeps
+// whole up to DETAIL_FADE_LO (2 px, ~36 m). Its noise octaves fade before
+// that by the same rule (grains.js clodOctaves).
+const CLODS_FADE_M = DETAIL_FADE_HI * 2 * CLOD_LUMP_R * CELL_M;   // m per pixel
 // Smooth up close (shaders/gfx/core.js cubicClose): sand's and liquids' smooth
 // surfaces read their fields cubic wherever a trilinear surface's facets (about
 // half a cell across: a lone peak's octahedron) would span CUBIC_PX_NONE pixels,

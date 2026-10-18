@@ -1249,10 +1249,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       // a clod is shaded as the crisp grain it is: one inlined matOf (gfx/grains.js grainCrisp)
       let clod = hitK == HIT_GRAIN && grainCrisp(gHitK, gHitA, hitP, &hitCell, &hitId, &hitA, &hitN);
       if (clod) { hitK = HIT_CRISP; }` : ''}
-      if (hitK == HIT_CRISP) {
-        s = crispSurf(hitCell, hitId, hitA, hitP, hitN);${grains ? `
-        if (clod) { clodFinish(&s); }` : ''}
-      }${grains ? `
+      if (hitK == HIT_CRISP) { s = crispSurf(hitCell, hitId, hitA, hitP, hitN);${grains ? ' if (clod) { clodFinish(&s); }' : ''} }${grains ? `
       else if (hitK == HIT_GRAIN) { s = grainSurf(gHitA, gHitK, hitP, shadeRd); }` : ''}
       else {
         var ns = hitN;
