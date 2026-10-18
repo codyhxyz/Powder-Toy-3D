@@ -140,6 +140,7 @@ const PROBE_CALLS = {
   acc.z += f32(skipBrick(qb, p, d, vec3i(sign(d)), &qCell, &qMax, &qEnter) + skipEmpty(qb, p, d, vec3i(sign(d)), &qCell, &qMax, &qEnter));
   acc += vec4f(qMax + vec3f(qCell), qEnter);
   acc += fieldTex(tFT, p) + surfField(p) + mediaField(p) + fieldCubic(tFM, p) + surfSample(p);
+  acc += vec4f(fieldCubicGrad(tFS, p, CH_LIQUID), 0.0);
   acc.w += cubicClose(p) + cubicShare(p, CH_GRANULAR) + surfChannel(p, CH_LIQUID) + surfChannel(p, CH_ORGANIC);
   acc.w += surfRoot(p, d, 1, 0.0, 1.0, -0.5, 0.5);
   acc.w += surfCross(p, d, CH_LIQUID, s > 0.0, 0.0, 0.5, 1.0, 0.2, 0.6, 0.4) + tClosest(ci, p, d, 0.0, 4.0);

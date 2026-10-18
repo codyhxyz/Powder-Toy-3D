@@ -35,7 +35,17 @@ function deferred() {
   return { promise, resolve, reject };
 }
 function watch(p) { let done = false; p.then(() => { done = true; }, () => { done = true; }); return () => done; }
-const settings = () => ({ view: 'realistic', upscale: 'quality', detail_smoothClose: true });
+// The gate is exercised with a feature it gates: Loose clumps up close (a
+// lone clod's lumps start at 1.3 cm per pixel). Smooth up close used to be
+// the one; its fade (gfx/detail.js CUBIC_ERR: shape error over 1 px) now
+// shows from any ordinary view, so the gate leaves it in the base variant.
+const GATED = 'DETAIL_GRAIN_CLUSTERS';
+const settings = () => ({ view: 'realistic', upscale: 'quality', detail_grainClusters: true });
+{
+  const balanced = gateVariants({ view: 'realistic', detail_smoothClose: true });
+  assert.equal(balanced.base.DETAIL_CUBIC_CLOSE, 1, 'Smooth up close is in the base variant');
+  assert.equal(balanced.nearFadeM, 0, 'nothing left to gate with Smooth up close alone');
+}
 function fakeVolume() {
   const pipes = new Map(), requests = [];
   const key = (view, detail, curved = false) => `${view}|${detailKey(detail)}|${curved}|${api.format}`;
@@ -44,7 +54,7 @@ function fakeVolume() {
     pipeline(view, detail, build = 'now', curved = false) {
       const k = key(view, detail, curved); requests.push({ view, detail, build, curved, format: api.format });
       if (!pipes.has(k)) {
-        const d = deferred(), near = !!detail.DETAIL_CUBIC_CLOSE;
+        const d = deferred(), near = !!detail[GATED];
         const p = { state: near ? 'idle' : 'ready', ready: d.promise,
           build() { if (this.state === 'idle') this.state = 'pending'; return this.ready; },
           resolve() { this.state = 'ready'; d.resolve(this); } };
@@ -57,7 +67,7 @@ function fakeVolume() {
     },
     viewReady(view, detail, curved) { return this.pipeline(view, detail, 'now', curved).ready; },
     shadowReady: () => Promise.resolve(),
-    near(curved = false, view = 'realistic') { return pipes.get(key(view, { DETAIL_CUBIC_CLOSE: 1 }, curved)); },
+    near(curved = false, view = 'realistic') { return pipes.get(key(view, { [GATED]: 1 }, curved)); },
   };
   return api;
 }
@@ -77,6 +87,7 @@ function context({ close = false, curved = false, ratio = 1 } = {}) {
     camera: new PerspectiveCamera(60, 1280 / 720, 0.1, 10000), camGrid: new Vector3(), invVol: new Matrix4(),
     coreWait: Promise.resolve(), coreReady: true, blocksOn: false, blocks: null,
     graphicsFailure: null, giWait: Promise.resolve(), physicsV2: null, win: null,
+    hybridLoad: null, hybrid: null, hybridWait: Promise.resolve(),   // the hybrid renderer off (app.js)
     curved, isMaterialView, gateVariants, detailKey, UPSCALE_FLOOR,
     viewKeyOf: v => v, viewShadows: v => isMaterialView(v),
     post: { settings: { taa: true, upscale: 0.1, resolutionScale: 0.1 } }, updates: [], settles: 0 };
@@ -102,9 +113,9 @@ try {
   const normalVolume = fakeVolume(), normalGate = createDetailGate(null);
   normalGate.configure(normalVolume, settings(), 'realistic');
   advance(PREWARM_DELAY_MS - 1); assert.equal(normalVolume.near(), undefined);
-  advance(1); assert(normalVolume.requests.some(r => r.build === 'idle' && r.detail.DETAIL_CUBIC_CLOSE));
+  advance(1); assert(normalVolume.requests.some(r => r.build === 'idle' && r.detail[GATED]));
   normalGate.setView('cozy'); advance(PREWARM_DELAY_MS);
-  assert(normalVolume.requests.some(r => r.view === 'cozy' && r.build === 'idle' && r.detail.DETAIL_CUBIC_CLOSE));
+  assert(normalVolume.requests.some(r => r.view === 'cozy' && r.build === 'idle' && r.detail[GATED]));
   normalGate.dispose();
 
   const far = context(); await far.ready(); advance(PREWARM_DELAY_MS * 3);
@@ -115,7 +126,7 @@ try {
   await turn(); assert.equal(nd(), false); assert.equal(near.detailGate.level, 1);
   assert.equal(near.detailGate.shown, '', 'pending shown fallback is not demanded readiness');
   assert.equal(near.vol.near().state, 'pending'); near.vol.near().resolve(); await np;
-  assert.match(near.detailGate.shown, /DETAIL_CUBIC_CLOSE/);
+  assert.match(near.detailGate.shown, new RegExp(GATED));
 
   const bent = context({ close: true, curved: true }), bp = bent.ready(), bd = watch(bp);
   await turn(); assert(bent.vol.near(true)); assert(bent.vol.near(false));
@@ -168,22 +179,24 @@ try {
   old.near().resolve(); await turn(); assert.equal(cd(), false); assert(changed.vol.near());
   changed.settings.view = 'heat'; changed.detailGate.setView('heat');
   changed.vol.near().resolve(); await cp;
-  assert(changed.vol.requests.some(r => r.view === 'heat' && !r.detail.DETAIL_CUBIC_CLOSE));
+  assert(changed.vol.requests.some(r => r.view === 'heat' && !r.detail[GATED]));
 
   const switches = context({ close: true }), swp = switches.ready(), swd = watch(swp);
   await turn(); const originalNear = switches.vol.near();
   switches.settings.detail_mediaFlow = true;
   switches.detailGate.configure(switches.vol, switches.settings, 'realistic');
   originalNear.resolve(); await turn(); assert.equal(swd(), false, 'same near level with changed defines must re-wait');
-  const switchedNear = [...switches.vol.pipes.entries()].find(([key]) => key.includes('DETAIL_CUBIC_CLOSE') && key.includes('DETAIL_MEDIA_FLOW'))?.[1];
+  const switchedNear = [...switches.vol.pipes.entries()].find(([key]) => key.includes(GATED) && key.includes('DETAIL_MEDIA_FLOW'))?.[1];
   assert(switchedNear); switchedNear.resolve(); await swp;
 
-  const dependencies = context(), shadow = deferred(), gi = deferred(), farView = deferred();
+  const dependencies = context(), shadow = deferred(), gi = deferred();
   dependencies.vol.shadowReady = () => shadow.promise; dependencies.giWait = gi.promise;
-  dependencies.win = { far: { buildView: () => farView.promise } };
   const dp = dependencies.ready(), dd = watch(dp); await turn(); assert.equal(dd(), false);
-  shadow.resolve(); gi.resolve(); await turn(); assert.equal(dd(), false, 'far-view readiness is retained');
-  farView.resolve(); await dp;
+  shadow.resolve(); await turn(); assert.equal(dd(), false, 'GI readiness is retained');
+  gi.resolve(); await dp;
+  // In a World (app.js allReady's win branch) readiness is the GPU's settling alone.
+  const world = context(), worldFar = deferred(); world.win = { far: { buildView: () => worldFar.promise } };
+  const settles = world.settles; await world.ready(); assert.equal(world.settles, settles + 1, 'World readiness waits on the GPU');
 
   const curvature = context({ close: true }), kp = curvature.ready(), kd = watch(kp);
   await turn(); curvature.curved = true; curvature.vol.near().resolve(); await turn();
@@ -215,7 +228,7 @@ try {
   const pp = plain.ready(), pd = watch(pp); await turn(); assert.equal(pd(), false);
   blocks.resolve(); await pp; assert.equal(plain.updates.length, 0, 'Plain branch stays unchanged');
   assert.equal(plain.vol.near(), undefined);
-  for (const c of [far, near, bent, scale, moved, native, rejected, integration, changed, switches, dependencies, curvature, transition, plain]) c.detailGate.dispose();
+  for (const c of [far, near, bent, scale, moved, native, rejected, integration, changed, switches, dependencies, world, curvature, transition, plain]) c.detailGate.dispose();
   assert.equal(timers.size, 0);
   console.log('Headless view CPU: default timer retained; far opt-out; demanded flat/curved detail; real transforms/hysteresis; first-frame upscale/DPR/floor; grid/view/camera/curvature changes; native/integration/Plain waits passed');
 } finally {
