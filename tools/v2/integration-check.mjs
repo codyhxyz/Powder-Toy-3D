@@ -15,7 +15,7 @@ import { Stamper } from '../../src/world/gpu.js';
 import { cellSlot, slotCell, marksLayout } from '../../src/shaders/common.js';
 import { cellOf, Load, createTransfer } from '../../src/pov/tools/transfer.js';
 import { decodeNativeTransfer, nativeCargo, NativeTransfer } from '../../src/v2/transfer.js';
-import { applyGuestStroke } from '../../src/net/edits.js';
+import { applyGuestStroke, applyGuestStrokes } from '../../src/net/edits.js';
 import { createPacker, createUnpacker, encodeFrame, decodeFrame, FRAME_KEY } from '../../src/net/codec.js';
 import { E, K, TOOLS, ELEMENTS } from '../../src/elements.js';
 import { readFileSync } from 'node:fs';
@@ -259,6 +259,19 @@ const fullBefore = sim.wholeWrites;
 applyGuestStroke(sim, { c: [3, 4, 5], r: 999, shape: 0, tool: E.SAND, rate: 1, replace: false });
 assert.equal(edits.at(-1).values.radius, 24); assert.equal(sim.compact, owner);
 assert.equal(sim.wholeWrites, fullBefore);
+// A guest's stroke the host's V2 engine refuses (here wind, its impulse not
+// built) drops that dab only: the queue empties and the next stroke paints,
+// where the throw used to escape the host's frame every frame from then on.
+{
+  const wind = TOOLS.find(t => t.key === 'WIND').id, impulse = owner.dynamics.capabilities.impulse, warn = console.warn;
+  owner.dynamics.capabilities.impulse = false; console.warn = () => {};
+  const queue = [{ c: [3, 4, 5], r: 2, shape: 0, tool: wind, rate: 1 }, { c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }];
+  const painted = edits.length;
+  try { assert.equal(applyGuestStrokes(sim, queue, { options: () => ({ wind: [1, 0, 0] }) }), 1, 'the refused stroke is counted, not thrown'); }
+  finally { owner.dynamics.capabilities.impulse = impulse; console.warn = warn; }
+  assert.equal(queue.length, 0, 'the frame takes its strokes off the queue');
+  assert.equal(edits.length, painted + 1, 'the next guest stroke still paints');
+}
 owner.sync(); assert.equal(calls.at(-1).name, 'v2import'); assert.equal(calls.at(-1).opts.params.full, 0);
 const packer = createPacker(); const packet = await packer.pack(sim);
 assert.equal(calls.findLast(c => c.name === 'pack').opts.header.format, 2, 'actual host codec uses direct compact projection');
