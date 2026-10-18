@@ -22,6 +22,7 @@ m = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = m
 spec.loader.exec_module(m)
 ASSETS = ROOT / 'public/local-maps/noita-terrain'
+CONFIG = json.loads((ROOT / 'tools/noita-terrain-source.json').read_text())
 
 
 class UnitChecks(unittest.TestCase):
@@ -109,31 +110,40 @@ class PublishedChecks(unittest.TestCase):
 
     def test_all_hashes_shapes_palette_and_adjacent_context(self):
         route = self.route
-        self.assertEqual(len(route['regions']), 51)
+        top, bottom = CONFIG['sourceY']
+        self.assertEqual(len(route['regions']), -(-(bottom - top) // 256))
         self.assertEqual(route['palette'][0], dict(name='air', element=0))
         self.assertLessEqual(len(route['palette']), 255)
         for i, (r, a) in enumerate(zip(route['regions'], self.arrays)):
             self.assertEqual(a.shape, (320, 9216))
             self.assertEqual(m.sha(a.tobytes()), r['sha256'])
             self.assertEqual(r['sourceTop'], r['core'][0] - 32)
-            self.assertEqual(r['core'][0], 1024 + i * 256)
+            self.assertEqual(r['core'][0], top + i * 256)
             self.assertTrue(np.all((a < len(route['palette'])) | (a == 255)))
             if i:
                 self.assertTrue(np.array_equal(self.arrays[i - 1][-64:], a[:64]))
-        self.assertEqual(route['regions'][-1]['core'], [13824, 13888])
-        self.assertTrue(np.all(self.arrays[-1][96:] == 255))
+        last = route['regions'][-1]['core']
+        self.assertEqual(last[1], bottom)
+        self.assertTrue(np.all(self.arrays[-1][32 + last[1] - last[0]:] == 255))
 
     def test_start_portals_and_debug_spawn_diagnostics(self):
-        self.assertEqual(self.route['startScene'], 'noitaTerrain01')
-        self.assertEqual(self.route['startSource'], [-677, 1350, 0])
+        start = CONFIG['startSource']
+        self.assertEqual(self.route['startSource'], start)
+        scene = next(r for r in self.route['regions'] if r['core'][0] <= start[1] < r['core'][1])
+        self.assertEqual(self.route['startScene'], scene['key'])
         self.assertTrue(self.route['source']['startValidation']['bodyAir'])
-        self.assertEqual(len(self.route['nativePortals']), 60)
+        excluded = [g['origin'] for g in CONFIG['explicitExcludedGaps']]
+        rows = [*CONFIG['regularTempleRows'], 39]
+        cells = [((col - 35) * 512, (row - 14) * 512) for row in rows
+                 for col in range(CONFIG['rowEnvelopes'][str(row)][0], CONFIG['rowEnvelopes'][str(row)][1] + 1)]
+        self.assertEqual(len(self.route['nativePortals']), len([c for c in cells if list(c) not in excluded]))
         for p in self.route['nativePortals']:
             self.assertEqual(p['halfSize'], [15, 15])
             self.assertIsInstance(p['enabled'], bool)
             self.assertEqual(p['target'][1] - p['source'][1], 280)
             self.assertTrue(p['evidence']['targetBodyCollisionFree'])
-            self.assertNotEqual(p['id'], 'native-39-32')
+            if [-1536, 12800] in excluded:
+                self.assertNotEqual(p['id'], 'native-39-32')
         for r in self.route['regions']:
             self.assertTrue(r['sourceTop'] + 6 <= r['spawnSource'][1] < r['sourceTop'] + 320)
             a = self.arrays[self.route['regions'].index(r)]
@@ -158,12 +168,12 @@ class PublishedChecks(unittest.TestCase):
     def test_black_air_regression_exact_counts_and_debris_exceptions(self):
         proof = json.loads((ASSETS / 'black-air-regression.json').read_text())
         self.assertEqual(proof, self.route['source']['fixedScene']['blackAirProof'])
-        self.assertEqual(proof['blackPixels'], 455966)
-        self.assertEqual(proof['savedAirPixels'], 453229)
+        # Exact counts for the clean day-0 source (descent-clean-2026-10-17).
+        self.assertEqual(proof['blackPixels'], 612469)
+        self.assertEqual(proof['savedAirPixels'], 611991)
         pieces = {tuple(r['origin']): r for r in proof['pieces']}
         self.assertEqual(pieces[3072, 13312]['savedMaterialCounts'], {'air': 6656})
-        self.assertEqual(pieces[2048, 12800]['savedMaterialCounts']['bone'], 2204)
-        self.assertEqual(sum(sum(r['savedMaterialCounts'].values()) for r in proof['pieces']), 455966)
+        self.assertEqual(sum(sum(r['savedMaterialCounts'].values()) for r in proof['pieces']), 612469)
 
     def test_runtime_manifest_same_interface_without_provenance(self):
         small = json.loads((ROOT / 'src/world/scenes/descent/terrainRoute.json').read_text())
@@ -179,7 +189,11 @@ class PublishedChecks(unittest.TestCase):
         for entry in self.route['source']['chunks']:
             self.assertEqual(len(entry['sha256']), 64)
             self.assertEqual(len(entry['material_raster_sha256']), 64)
-        self.assertEqual(self.route['source']['gaps'][0]['origin'], [-1536, 12800])
+        excluded = [g['origin'] for g in CONFIG['explicitExcludedGaps']]
+        above = (int(min(CONFIG['rowEnvelopes'], key=int)) - 14) * 512 - 512
+        for gap in self.route['source']['gaps']:
+            self.assertTrue(gap['origin'] in excluded or gap['origin'][1] == above, gap)
+            self.assertIn('OUTSIDE', gap['disposition'])
 
     def test_fixed_gap_pixels_agree_with_authoritative_xml_and_original_plz(self):
         path = os.environ.get('NOITA_DECODER_PATH', str(ROOT / 'tools/noita-save-decode.py'))
@@ -219,7 +233,8 @@ class PublishedChecks(unittest.TestCase):
                 for index in np.unique(local[~reserved]):
                     self.assertTrue(np.all(published[(local == index) & ~reserved] == lookup[names[int(index)]]))
                 total += published.size
-        self.assertGreater(total, 1000000)
+        if any(p['suppliedPixels'] for p in self.route['source']['fixedScene']['pieces']):
+            self.assertGreater(total, 1000000)
         print(f'Fixed-source comparison: {total:,} published fallback cells (including overlap) match native XML/PLZ; only proved reserved black becomes air.')
 
     def test_every_published_primary_pixel_agrees_with_original_archive(self):

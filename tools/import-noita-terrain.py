@@ -196,10 +196,15 @@ class Compiler:
             if terrain is None:
                 raise ValueError(f'Missing main source chunk {(x, y)}')
         # Actual top neighbor context: only in the first selected row's columns.
-        for col in range(*[c['rowEnvelopes']['16'][0], c['rowEnvelopes']['16'][1] + 1]):
+        first = min(c['rowEnvelopes'], key=int)
+        above = (int(first) - 14) * 512 - 512
+        for col in range(c['rowEnvelopes'][first][0], c['rowEnvelopes'][first][1] + 1):
             x = (col - 35) * 512
-            if self.saved(x, 512) is None:
-                raise ValueError(f'Missing top context chunk {(x, 512)}')
+            if self.saved(x, above) is None:
+                # Sky never streamed above the crop: stays OUTSIDE, never inferred air.
+                self.gaps.append(dict(origin=[x, above], reason='Top context chunk not streamed',
+                                      disposition='OUTSIDE; not converted'))
+                continue
             self.selected[:c['context'], x - self.minx:x - self.minx + 512] = True
         self.fixed = []
         xml = self.source(c['fixedScene'])
@@ -322,9 +327,11 @@ class Compiler:
         a, b = lo - self.miny, min(hi - self.miny, len(self.raster) - 1)
         supports = np.isin(self.raster[a:b], support_ids)
         candidates = np.argwhere(supports & (self.raster[a - 1:b - 1] == 0))
-        # Prefer central native route, away from raster caps.
+        # Prefer central native route, away from raster caps: the player's start
+        # above the first Holy Mountain, its arrival column below.
+        anchor = self.c['startSource'][0] if lo < (self.c['regularTempleRows'][0] - 14) * 512 else -677
         if len(candidates):
-            score = np.abs(candidates[:, 1] + self.minx + 677)
+            score = np.abs(candidates[:, 1] + self.minx - anchor)
             ordered = np.argsort(score, kind='stable')
             # Debug starts/respawns prefer actual open rooms, not isolated
             # six-pixel pockets. Native arrivals and handoffs never use these.
@@ -473,12 +480,12 @@ class Compiler:
                                                   blackAirProof=self.proof),
                                   gaps=self.gaps, startValidation=start_evidence,
                                   wakEntries=sorted(self.sources.values(), key=lambda r: r['path']),
-                                  limitations=['Gameplay-modified generated save, not pristine seed regeneration.',
+                                  limitations=['Fresh day-0 vanilla world, streamed by a camera fly-through; the player never left the start.',
                                                'Opaque physics/rigid bodies and saved entities are not terrain; not rasterized.',
-                                               'One explicitly excluded missing ending wall cell is OUTSIDE, not inferred material.',
+                                               'Sky chunks above the crop that were never streamed are OUTSIDE top context, not inferred air.',
                                                'Portal variants inferred only when liquid template matches uniquely; unverified entries use labeled native default candidates.',
                                                'Portal entity survival, liquid-enabled state, relative-Y default not independently decoded.',
-                                               'Bottom domain stops at13888; guard context beyond is OUTSIDE. Top32 are actual neighboring saved pixels.'])
+                                               'Bottom domain stops at the arena; guard context beyond is OUTSIDE. Top context is actual saved sky where it was streamed.'])
         # Prepare everything first: incomplete/unknown inputs never publish partial maps.
         output.mkdir(parents=True, exist_ok=True)
         for name, data in assets.items():

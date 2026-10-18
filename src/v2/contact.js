@@ -7,6 +7,8 @@ import { PHYS, NOMINAL_STEP_RATE } from '../physics.js';
 import { fallVelocity } from './fall.js';
 import { CELL_M } from '../scale.js';
 import { EMITTERS } from '../rays.js';
+import { EDGE } from '../simModes.js';
+const EDGE_SOLID = EDGE.SOLID;
 
 import { FUEL_Q } from './layout.js';
 import { PHASE_ROWS, phaseTemperatureQ, phaseOffsetEnergy, phaseLatentEnergy, encodePhaseEnergy } from './phase.js';
@@ -22,6 +24,56 @@ export const DUST_MIN_FALL_AGE = Math.ceil(PHYS.DUST_LIFT_V * NOMINAL_STEP_RATE 
 const q = T => Math.round((T + 273.25) * 4);
 const cap = ELEMENTS.map(e => Math.max(1, Math.round(e.cap * 64)));
 const offsets = PHASE_ROWS.map(r => r.offset);
+
+// V1's per-step rules (shaders/react.js, physics.js) on the contact clock. V1
+// steps NOMINAL_STEP_RATE times a second, so one tick is STEPS_PER_TICK steps.
+// A rule V1 reads on every face reaches one of a cell's three block partners on
+// half the ticks: per partner and tick it is PARTNER_STEPS steps' worth (the
+// reactions' `** 8` correction below).
+const STEPS_PER_TICK = NOMINAL_STEP_RATE / CONTACT_HZ;
+const PARTNER_STEPS = 2 * STEPS_PER_TICK;
+// A per-step relaxation share r compounds to 1 - (1 - r)^STEPS_PER_TICK a tick.
+const perTick = r => 1 - (1 - r) ** STEPS_PER_TICK;
+// ln of the per-partner chance a per-step chance p does NOT fire in a tick, so
+// n partners fire with 1 - exp(n·log). p ≥ 1 is certain: a log far under f32's.
+const missLog = p => PARTNER_STEPS * Math.log(Math.max(1e-30, 1 - Math.min(1, p)));
+// Named rule constants, shared verbatim by the scalar kernel and its WGSL
+// (shaders/v2/contact.js emits each as a typed const).
+export const CONTACT_CONSTANTS = Object.freeze({
+  // the default scene's ambient (physics.js AMBIENT) for ctStep's standalone patch
+  CT_AMBIENT_Q: ['i32', q(PHYS.AMBIENT)],
+  CT_CODE_ZERO_C: ['f32', 273.25],   // the native ¼ K code's zero (q above)
+  // V1 react.js: evaporating cloud cools its air by CLOUD_EVAP_COOL °C (¼ K codes)
+  CT_CLOUD_EVAP_COOL_Q: ['i32', Math.round(PHYS.CLOUD_EVAP_COOL * 4)],
+  // Magnus saturation (physics.js CT_MAGNUS_A/B), against the scene's ambient as V1's airT()
+  CT_MAGNUS_A: ['f32', PHYS.MAGNUS_A],
+  CT_MAGNUS_B: ['f32', PHYS.MAGNUS_B],
+  // V1 react.js flames into air: FLAME_SPREAD per burning neighbour a step, into
+  // oxygen O2_PER_AIR times as often, at flameT·(CT_FLAME_T_MIN + CT_FLAME_T_SPREAD·rnd) °C
+  // (oxyFlameT in kelvin by CT_OXY_FLAME_GAIN, all oxygen).
+  CT_FLAME_MISS_LOG: ['f32', missLog(PHYS.FLAME_SPREAD)],
+  CT_OXY_FLAME_MISS_LOG: ['f32', missLog(PHYS.FLAME_SPREAD * PHYS.O2_PER_AIR)],
+  CT_FLAME_T_MIN: ['f32', PHYS.FLAME_T_MIN],
+  CT_FLAME_T_SPREAD: ['f32', PHYS.FLAME_T_SPREAD],
+  CT_OXY_FLAME_GAIN: ['f32', PHYS.OXY_FLAME_GAIN],
+  CT_KELVIN: ['f32', PHYS.KELVIN],
+  // V1 react.js flame life: FIRE_LIFE_MIN + FIRE_LIFE_SPREAD·rnd at birth, less
+  // FIRE_BURN + FIRE_BURN_SPREAD·rnd a step; smoke fades SMOKE_FADE a step.
+  // In native life units (FUEL_Q per 1.0) and per tick.
+  CT_FIRE_LIFE_MIN_Q: ['f32', PHYS.FIRE_LIFE_MIN * LIFE_SCALE],
+  CT_FIRE_LIFE_SPREAD_Q: ['f32', PHYS.FIRE_LIFE_SPREAD * LIFE_SCALE],
+  CT_FIRE_BURN_TICK: ['f32', PHYS.FIRE_BURN * STEPS_PER_TICK * LIFE_SCALE],
+  CT_FIRE_BURN_SPREAD_TICK: ['f32', PHYS.FIRE_BURN_SPREAD * STEPS_PER_TICK * LIFE_SCALE],
+  CT_SMOKE_FADE_TICK: ['f32', PHYS.SMOKE_FADE * STEPS_PER_TICK * LIFE_SCALE],
+  CT_FIRE_TO_SMOKE: ['f32', PHYS.FIRE_TO_SMOKE],   // share of dying flames that leave smoke
+  CT_FIRE_MIN_Q: ['i32', q(PHYS.FIRE_MIN_T)],      // flames cooler than FIRE_MIN_T go out
+  CT_BURNT_MIN_Q: ['i32', q(PHYS.BURNT_MIN_T)],    // a burnt-out cell is at least this hot
+  CT_ASH_SHARE: ['f32', PHYS.ASH_SHARE],
+});
+for (const key of Object.keys(CONTACT_CONSTANTS)) if (key.slice(3) in E) throw Error(`contact constant ${key} shadows an element id`);
+const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGNUS_B, CT_FLAME_MISS_LOG, CT_OXY_FLAME_MISS_LOG, CT_FLAME_T_MIN, CT_FLAME_T_SPREAD,
+  CT_OXY_FLAME_GAIN, CT_KELVIN, CT_FIRE_LIFE_MIN_Q, CT_FIRE_LIFE_SPREAD_Q, CT_FIRE_BURN_TICK, CT_FIRE_BURN_SPREAD_TICK, CT_SMOKE_FADE_TICK,
+  CT_FIRE_TO_SMOKE, CT_FIRE_MIN_Q, CT_BURNT_MIN_Q, CT_ASH_SHARE } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 
 const outSpecs = [];
 function spec(into = 'FIRE') {
@@ -61,6 +113,8 @@ export const CONTACT_ROWS = ELEMENTS.map(e => {
     fizz: +(e.fizz > 0), bed: +e.mossBed, rots: +e.rots, singFood: +(e.id !== E.EMPTY && !e.singProof),
     conductor: +CONDUCTS[e.id], cost: SPARK_COST[e.id], wire: +WIRE[e.id],
     emitter: (EMITTERS[e.key] ?? 0) * 4,
+    // V1 react.js: air relaxes to ambient by AIR_AMBIENT_PULL a step, gases by their rad
+    cool: Math.fround(perTick(e.id === E.EMPTY ? PHYS.AIR_AMBIENT_PULL : e.rad)),
   };
 });
 export const CONTACT_PRODUCTS = outSpecs;
@@ -126,18 +180,28 @@ export function ctDecay(input, id) {
   c.busy = 1;
   return ctRecordChange(c, ctEnergy(input));
 }
-export function ctExhaust(input, random) {
-  let id = E.CO2;
-  if (ctRow(input.id).ash !== 0 && random < 0.5) id = E.ASH;
+// V1 react.js: burnt out, a fuel leaves ash (CT_ASH_SHARE, if it leaves any) or a
+// flame, at least BURNT_MIN_T hot (a declared source).
+export function ctExhaust(input, seed) {
+  let id = E.FIRE;
+  if (ctRow(input.id).ash !== 0 && ctRoll(seed, 1) < CT_ASH_SHARE) id = E.ASH;
   let candidate = ctNew(id, input.tq, 65536);
   candidate.bank = input.bank;
   // A sub-cell fuel parcel cannot create a full-cell residue at the expense
   // of free heat. Below that mass/enthalpy budget it leaves carrier air.
   if (ctLess(ctEnergy(input), ctEnergy(candidate))) id = E.EMPTY;
   let out = ctDecay(input, id);
+  if (id !== E.EMPTY && out.tq < CT_BURNT_MIN_Q) {
+    const before = ctEnergy(out);
+    const warm = ctAdd(ctMul(ctCapacity(out), CT_BURNT_MIN_Q), ctOffset(out));
+    out = ctRecordChange(ctSetEnergy(out, warm), before);
+  }
+  if (id === E.FIRE) out.life = ctFlameLife(seed);
   out.request = out.request | 2;
   return out;
 }
+// V1 react.js: a new flame's life, FIRE_LIFE_MIN + FIRE_LIFE_SPREAD·rnd.
+export function ctFlameLife(seed) { return ctI(CT_FIRE_LIFE_MIN_Q + CT_FIRE_LIFE_SPREAD_Q * ctRoll(seed, 20)); }
 export function ctCreate(input, id, tq) {
   let c = ctInherit(ctNew(id, tq, 65536), input);
   c.busy = 1;
@@ -162,6 +226,8 @@ export const ctSub = (a, b) => a - b;
 export const ctSigned = n => BigInt(n);
 export const ctMul = (a, b) => BigInt(a) * BigInt(b);
 export const ctLess = (a, b) => a < b;
+// An energy difference known to fit an i32 (|d| ≤ a heat step).
+export const ctSmall = d => Number(d);
 export function ctSetEnergy(input, energy) {
   const c = ctCopy(input), phase = encodePhaseEnergy(c.id, ctAmount(c), energy);
   if (phase) { c.raw = phase.raw; c.tq = phaseTemperatureQ(c.id, c.raw); c.bank = phase.bank; return c; }
@@ -315,17 +381,26 @@ export function ctElectric(input, ns, random) {
 }
 
 export function ctStep(input, ns, seed) {
-  return ctStepAtmosphere(input, ns, seed, 0, 0, 0, 0);
+  return ctStepAtmosphere(input, ns, seed, 0, 0, 0, 0, 0, CT_AMBIENT_Q);
 }
 
 // Only atmosphere/exposure uses all six faces. Heat, reactions, phase and
 // sampled contacts retain the three owned partners and their calibration.
-export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas) {
+// onFloor: the cell lies on the box's solid floor, which V1 react.js counts as a
+// surface to condense onto (its sides and lid don't). ambientQ: the scene's
+// ambient air (V1 airT()).
+export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas, onFloor, ambientQ) {
   let c = ctCopy(input);
   if (c.done !== 0) return c;
   let air = 0;
+  let burnAir = 0;
   let oxygen = 0;
   let fire = 0;
+  let flames = 0;
+  let hotFuel = 0;
+  let flashFuel = 0;
+  let flameQ = 0;
+  let flashFlameQ = 0;
   let gas = 0;
   let co2 = 0;
   let surface = 0;
@@ -350,7 +425,15 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     const br = ctRow(b.id);
     if (b.id === E.EMPTY) air++;
     if (b.id === E.OXYGEN || (b.id === E.FIRE && b.ctype === E.OXYGEN)) oxygen++;
+    // V1 react.js: a flame is burning air to the fuel beside it (oxyShare,
+    // and a fuel burns touching air, oxygen or fire), oxygen when it burns in it.
+    if (b.id === E.EMPTY || (b.id === E.FIRE && b.ctype !== E.OXYGEN)) burnAir++;
     if (b.id === E.FIRE || (br.burn > 0 && b.burning !== 0)) fire++;
+    if (b.id === E.FIRE) flames++;
+    // V1 react.js nBurning: a fuel at its ignition point (explosives go off
+    // instead), and past its flash point one whose vapour carries a flame.
+    if (br.igniteQ < 65536 && br.blast === 0 && b.tq >= br.igniteQ) { hotFuel++; flameQ = Math.max(flameQ, br.flameQ); }
+    else if (br.flashQ < br.igniteQ && br.blast === 0 && b.tq >= br.flashQ) { flashFuel++; flashFlameQ = Math.max(flashFlameQ, br.flameQ); }
     // TPT FIRE.cpp separates contact ignition from bulk thermal transition
     // (upstream uses Flammable/1000). Our hot front uses existing igniteQ,
     // not a new rate; tq is decoded, post-pair/pre-self snapshot temperature.
@@ -373,7 +456,10 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (ctCloneable(b.id)) growOf = b.id;
     voidTouch = voidTouch || b.id === E.VOID;
   }
-  const fullAir = air + outAir;
+  // V1 react.js: past its flash point a fuel's vapour carries a flame along it,
+  // so air touching a flame and such a fuel catches as if the fuel burned.
+  if (flames > 0 && flashFuel > 0) { hotFuel = hotFuel + flashFuel; flameQ = Math.max(flameQ, flashFlameQ); }
+  const fullAir = burnAir + outAir;
   const fullOxygen = oxygen + outOxygen;
   const fullCo2 = co2 + outCo2;
   const fullGas = gas + outGas;
@@ -381,7 +467,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   const exposed = fullAir + fullOxygen > 0;
   const random = ctRoll(seed, 1);
   c = ctElectric(c, ns, ctRoll(seed, 2));
-  c = ctPhase(c, surface, ctRoll(seed, 3));
+  c = ctPhase(c, surface + onFloor, ctRoll(seed, 3));
   if (c.id !== input.id || c.pending >= 0) return c;
   if (voidTouch && c.id !== E.EMPTY && r.kind !== 1) return ctDecay(c, E.EMPTY);
   const emitter = ctRow(ctNuclearId(c)).emitter;
@@ -395,14 +481,19 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     return c;
   }
   if (c.id === E.FIRE || c.id === E.SMOKE || c.id === E.PLASMA) {
-    let decrement = 6;
-    if (c.id === E.FIRE) decrement = 46;
-    if (c.id === E.PLASMA) decrement = 69;
-    c.life = Math.max(0, c.life - decrement);
+    // V1 react.js lives (CONTACT_CONSTANTS); plasma keeps its native fade.
+    let fade = 69.0;
+    if (c.id === E.FIRE) fade = CT_FIRE_BURN_TICK + CT_FIRE_BURN_SPREAD_TICK * ctRoll(seed, 5);
+    if (c.id === E.SMOKE) fade = CT_SMOKE_FADE_TICK;
+    // Whole life units: the fraction is a draw, so the mean fade is exact.
+    c.life = Math.max(0, c.life - ctI(Math.floor(fade + ctRoll(seed, 6))));
     c.busy = 1;
-    if (c.life === 0 || (c.id === E.FIRE && (smothered || !exposed || c.tq < 2493))) {
+    // V1: a flame goes out spent, cooled under FIRE_MIN_T or smothered, and
+    // leaves smoke CT_FIRE_TO_SMOKE of the time; it needs no air face (it is
+    // burning gas: a fireball's core keeps burning).
+    if (c.life === 0 || (c.id === E.FIRE && (smothered || c.tq < CT_FIRE_MIN_Q))) {
       let id = E.EMPTY;
-      if (c.id === E.FIRE) id = E.SMOKE;
+      if (c.id === E.FIRE && ctRoll(seed, 7) < CT_FIRE_TO_SMOKE) id = E.SMOKE;
       return ctDecay(c, id);
     }
   }
@@ -415,7 +506,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
         // Noita/TPT flammability: 0.5/s per flame, at 60 Hz, face correction 2.
         if (c.burning !== 0 || c.tq >= r.igniteQ || (r.flashQ < r.igniteQ && c.tq >= r.flashQ && fire > 0) || (hotFront && (r.flashQ >= r.igniteQ || c.tq >= r.flashQ)) || random < ctF(fire) / 60) {
           c.burning = 1;
-          if (c.life === 0) return ctExhaust(c, random);
+          if (c.life === 0) return ctExhaust(c, seed);
           let oxy = 1.0;
           if (fullAir + fullOxygen > 0) oxy = (ctF(fullAir) + 4.77327 * ctF(fullOxygen)) / ctF(fullAir + fullOxygen);
           const spend = Math.min(c.life, Math.max(1, ctI(ctF(r.burn) * oxy * ctF(ctAmount(c)) / 65536)));
@@ -427,7 +518,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
           c = ctHeatTo(c, ceiling, gain);
           c.source = ctAdd(c.source, ctSub(ctEnergy(c), beforeHeat));
           c.request = c.request | 2;
-          if (c.life === 0) return ctExhaust(c, random);
+          if (c.life === 0) return ctExhaust(c, seed);
         }
       }
     }
@@ -458,6 +549,24 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (c.ctype !== previous) c.busy = 1;
   }
   if ((c.id === E.CLONE || c.id === E.PCLN) && c.ctype === 0 && growOf > 0) { c.ctype = growOf; c.busy = 1; }
+  // V1 react.js: flames lick out of anything burning into the air (or oxygen)
+  // beside it, on every face; oxygen catches O2_PER_AIR times as often, hotter.
+  if ((c.id === E.EMPTY || c.id === E.OXYGEN) && hotFuel > 0 && !smothered) {
+    c.busy = 1;
+    let miss = CT_FLAME_MISS_LOG;
+    if (c.id === E.OXYGEN) miss = CT_OXY_FLAME_MISS_LOG;
+    if (ctRoll(seed, 18) < 1.0 - Math.exp(ctF(hotFuel) * miss)) {
+      let flameC = ctF(flameQ) * 0.25 - CT_CODE_ZERO_C;
+      if (c.id === E.OXYGEN) flameC = (flameC + CT_KELVIN) * CT_OXY_FLAME_GAIN - CT_KELVIN;
+      const tq = Math.max(c.tq, ctI(Math.floor((flameC * (CT_FLAME_T_MIN + CT_FLAME_T_SPREAD * ctRoll(seed, 19)) + CT_CODE_ZERO_C) * 4.0 + 0.5)));
+      let flame = ctCreate(c, E.FIRE, tq);
+      // Air catching is not new gas: no puff (V1 burning's own BURN_P is the fuel's).
+      flame.request = c.request;
+      flame.life = ctFlameLife(seed);
+      if (c.id === E.OXYGEN) flame.ctype = E.OXYGEN;
+      return flame;
+    }
+  }
   if (c.id === E.EMPTY) {
     if (clone > 0 && clone < CONTACT_ELEMENT_COUNT) { c.busy = 1; if (random < 0.48) return ctCreate(c, clone, ctRow(clone).spawnQ); }
     if (moss > 0 && bed > 0) { c.busy = 1; if (random < 0.0008 * ctF(moss)) return ctCreate(c, E.MOSS, c.tq); }
@@ -466,9 +575,16 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (cloud >= 2 || air >= 2) {
       c.busy = 1;
       if (cloud >= 2 && random < 0.00032 * ctF(cloud * 2 - 3)) return ctConvert(c, E.WATER, 0);
-      const temp = ctF(c.tq) * 0.25 - 273.25;
-      const es = Math.exp(17.625 * (temp / Math.max(1, temp + 243.04) - 20 / 263.04));
-      if (air >= 2 && random < 0.00024 * ctF(air * 2 - 3) * es) return ctDecay(c, E.EMPTY);
+      const temp = ctF(c.tq) * 0.25 - CT_CODE_ZERO_C;
+      const ambient = ctF(ambientQ) * 0.25 - CT_CODE_ZERO_C;
+      const es = Math.exp(CT_MAGNUS_A * (temp / Math.max(1, temp + CT_MAGNUS_B) - ambient / Math.max(1, ambient + CT_MAGNUS_B)));
+      if (air >= 2 && random < 0.00024 * ctF(air * 2 - 3) * es) {
+        // V1 react.js: the evaporating cell's air cools by CLOUD_EVAP_COOL (a declared sink).
+        let gone = ctDecay(c, E.EMPTY);
+        const before = ctEnergy(gone);
+        gone = ctHeat(gone, -(ctCapacity(gone) * Math.min(CT_CLOUD_EVAP_COOL_Q, gone.tq)));
+        return ctRecordChange(gone, before);
+      }
     }
     // Use real stored speed: gravity changes must not rewrite contact inertia.
     for (let k = 0; k < 3; k++) {
@@ -493,12 +609,12 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
 // Function signatures are part of the checked JS→WGSL kernel ABI.
 export const CONTACT_KERNEL = [
   [ctInherit, ['CTCell', 'CTCell'], 'CTCell'], [ctRecordChange, ['CTCell', 'vec2u'], 'CTCell'],
-  [ctDecay, ['CTCell', 'i32'], 'CTCell'], [ctExhaust, ['CTCell', 'f32'], 'CTCell'], [ctCreate, ['CTCell', 'i32', 'i32'], 'CTCell'],
+  [ctDecay, ['CTCell', 'i32'], 'CTCell'], [ctExhaust, ['CTCell', 'i32'], 'CTCell'], [ctFlameLife, ['i32'], 'i32'], [ctCreate, ['CTCell', 'i32', 'i32'], 'CTCell'],
   [ctDensity, ['CTCell'], 'f32'], [ctAmount, ['CTCell'], 'i32'], [ctCapacity, ['CTCell'], 'i32'], [ctHeat, ['CTCell', 'i32'], 'CTCell'], [ctHeatTo, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctConvert, ['CTCell', 'i32', 'i32'], 'CTCell'],
   [ctTemperatureRemainder, ['CTCell'], 'f32'], [ctFlux, ['CTCell', 'CTCell'], 'i32'], [ctPhase, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctNuclearId, ['CTCell'], 'i32'], [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
   [ctElectric, ['CTCell', 'array<CTCell, 3>', 'f32'], 'CTCell'],
-  [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
+  [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
   [ctStep, ['CTCell', 'array<CTCell, 3>', 'i32'], 'CTCell'],
 ];
 
@@ -648,66 +764,12 @@ export function ctSwallow(a0, b0, seed) {
   if (pair.changed === 0) return ctPairValue(a0, b0, 0);
   return pair;
 }
-export function ctPlume(a0, b0, seed, up) {
-  let a = ctCopy(a0);
-  let b = ctCopy(b0);
-  if ((a.request & 5) !== 0 || ctRow(a.id).burn === 0 || a.burning === 0 || a.life === 0 || up === 0 || (b.id !== E.EMPTY && b.id !== E.OXYGEN)) return ctPairValue(a, b, 0);
-  a.busy = 1; b.busy = 1;
-  if (ctRoll(seed, 16) >= 0.25) return ctPairValue(a, b, 0);
-  let id = E.FIRE;
-  if (ctRoll(seed, 17) < 0.2) id = E.SMOKE;
-  else if (ctRoll(seed, 17) < 0.4) id = E.CO2;
-  const initial = ctAdd(ctEnergy(a), ctEnergy(b));
-  const oxy = b.id === E.OXYGEN;
-  const fuel = ctRow(a.id);
-  // Plume formation/heat is not free. Debit finite fuel at the same energy
-  // per fuel unit as this material's burnHeat/burnRate content ratio.
-  const perFuel = ctDiv(fuel.heat * 65536, Math.max(1, fuel.burn));
-  if (perFuel <= 0) return ctPairValue(a0, b0, 0);
-  const plumeQ = Math.min(fuel.flameQ, Math.max(2493, ctI(ctF(fuel.flameQ - 1093) * 0.85) + 1093));
-  b = ctInherit(ctNew(id, plumeQ, 65536), b);
-  if (oxy && id === E.FIRE) b.ctype = E.OXYGEN;
-  let wanted = ctAdd(ctEnergy(a), ctEnergy(b));
-  let spend = 0;
-  if (ctLess(initial, wanted)) spend = ctCeilEnergy(ctSub(wanted, initial), perFuel);
-  if (spend > a.life && id === E.FIRE) {
-    b = ctInherit(ctNew(id, 2493, 65536), b0);
-    if (oxy) b.ctype = E.OXYGEN;
-    wanted = ctAdd(ctEnergy(a), ctEnergy(b));
-    spend = 0;
-    if (ctLess(initial, wanted)) spend = ctCeilEnergy(ctSub(wanted, initial), perFuel);
-  }
-  spend = Math.min(spend, a.life);
-  a.life = a.life - spend;
-  const released = ctMul(spend, perFuel);
-  const total = ctAdd(initial, released);
-  // The gas burns above its fuel; do not instantly average their temperatures
-  // (that turns a whiskey vapour flame into sub-350 C smoke). The paid heat
-  // goes into the emitted gas, including the exact integer payment remainder.
-  if (ctLess(total, wanted)) {
-    // Vaporization may cool the fuel, but cannot mint heat or borrow energy
-    // below its zero-kelvin sensible bound. All remaining chemical fuel is
-    // spent before a terminal plume can borrow this existing thermal energy.
-    const donorEnergy = ctSub(total, ctEnergy(b));
-    if (ctLess(donorEnergy, ctOffset(a)) || !ctFits(a, donorEnergy)) return ctPairValue(a0, b0, 0);
-    a = ctSetEnergy(a, donorEnergy);
-  } else {
-    const gasEnergy = ctSub(total, ctEnergy(a));
-    if (!ctFits(b, gasEnergy)) return ctPairValue(a0, b0, 0);
-    b = ctSetEnergy(b, gasEnergy);
-  }
-  if (b.tq > fuel.flameQ) return ctPairValue(a0, b0, 0);
-  a.source = ctAdd(a.source, released);
-  b.request = b.request | 2; b.done = 1; b.busy = 1;
-  return ctPairValue(a, b, 1);
-}
 CONTACT_KERNEL.push(
   [ctBalance, ['CTCell', 'CTCell', 'vec2u', 'i32'], 'CTPair'],
   [ctResolvePhase, ['CTCell', 'CTCell'], 'CTPair'],
   [ctReaction, ['CTCell', 'CTCell', 'i32'], 'CTPair'],
   [ctAcid, ['CTCell', 'CTCell', 'i32'], 'CTPair'],
   [ctSwallow, ['CTCell', 'CTCell', 'i32'], 'CTPair'],
-  [ctPlume, ['CTCell', 'CTCell', 'i32', 'i32'], 'CTPair'],
 );
 
 export const CONTACT_FACES = Array.from({ length: 8 }, (_, i) => [i ^ 1, i ^ 2, i ^ 4]);
@@ -715,7 +777,11 @@ export const CONTACT_PAIRS = CONTACT_FACES.flatMap((ns, i) => ns.filter(j => j >
 export const CONTACT_POSITIONS = Array.from({ length: 8 }, (_, i) => [i & 1, (i >> 1) & 1, (i >> 2) & 1]);
 // Optional per-cell [air, oxygen, CO2, gas] counts must be frozen before any
 // block writes. The standalone eight-cell patch defaults to a closed outside.
-export function contactReference(cores, banks, tick = 0, positions = CONTACT_POSITIONS, pending = new Uint32Array(8), valid = Array(8).fill(true), outside = Array.from({ length: 8 }, () => [0, 0, 0, 0])) {
+// modes: the dispatch's ambient (°C), ambient heat and edge (simModes.js EDGE),
+// as the block pass reads them from its params.
+export const CONTACT_DEFAULT_MODES = Object.freeze({ ambient: PHYS.AMBIENT, ambientHeat: 1, edge: 0 });
+export function contactReference(cores, banks, tick = 0, positions = CONTACT_POSITIONS, pending = new Uint32Array(8), valid = Array(8).fill(true), outside = Array.from({ length: 8 }, () => [0, 0, 0, 0]), modes = CONTACT_DEFAULT_MODES) {
+  const ambientQ = contactAmbientQ(modes.ambient), airHeat = +!!modes.ambientHeat;
   let cells = cores.map((core, i) => {
     const c = unpackContact(core, banks[i]); c.request = pending[i]; c.valid = +!!valid[i];
     if (c.request & 5) { c.done = 1; c.busy = 1; }
@@ -725,7 +791,8 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
   const seedAt = i => (Math.imul(positions[i][0], 73856093) ^ Math.imul(positions[i][1], 19349663) ^ Math.imul(positions[i][2], 83492791) ^ Math.imul(tick, 2654435761)) | 0;
   for (const [i, j] of CONTACT_PAIRS) {
     if (!valid[i] || !valid[j]) continue;
-    const flux = ctFlux(cells[i], cells[j]);
+    let flux = ctConducts(cells[i], cells[j], airHeat) ? ctFlux(cells[i], cells[j]) : 0;
+    if (flux) flux = -ctHeatRoom(cells[j], -ctHeatRoom(cells[i], flux));
     if (flux) { cells[i] = ctHeat(cells[i], flux); cells[j] = ctHeat(cells[j], -flux); cells[i].busy = 1; cells[j].busy = 1; }
     let pair = ctReaction(cells[i], cells[j], seedAt(i) ^ j);
     if (!pair.changed) pair = ctAcid(pair.a, pair.b, seedAt(i) ^ j);
@@ -735,23 +802,18 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
     cells[i] = pair.a; cells[j] = pair.b;
   }
   const snapshot = cells.map(ctCopy);
-  cells = cells.map((c, i) => valid[i] ? ctStepAtmosphere(c, CONTACT_FACES[i].map(j => snapshot[j]), seedAt(i), ...outside[i]) : c);
+  // V1 react.js counts the box's solid floor as a surface (its sides and lid don't).
+  const floorAt = i => +(positions[i][1] === 0 && modes.edge === EDGE_SOLID);
+  cells = cells.map((c, i) => valid[i] ? ctStepAtmosphere(c, CONTACT_FACES[i].map(j => snapshot[j]), seedAt(i), ...outside[i], floorAt(i), ambientQ) : c);
   for (const [i, j] of CONTACT_PAIRS) {
     if (!valid[i] || !valid[j]) continue;
     let pair = ctResolvePhase(cells[i], cells[j]);
     if (!pair.changed) { const reverse = ctResolvePhase(pair.b, pair.a); pair = ctPairValue(reverse.b, reverse.a, reverse.changed); }
     cells[i] = pair.a; cells[j] = pair.b;
   }
-  // Emissions never cross disjoint block ownership. Burn state was evaluated
-  // against this block's snapshot, including oxygen and CO2, before emission.
-  for (const [i, j] of CONTACT_PAIRS) {
-    if (!valid[i] || !valid[j]) continue;
-    const up = +(positions[j][1] > positions[i][1]);
-    const pair = ctPlume(cells[i], cells[j], seedAt(i) ^ j, up);
-    cells[i] = pair.a; cells[j] = pair.b;
-  }
   for (let i = 0; i < 8; i++) {
     if (!valid[i]) continue;
+    cells[i] = ctAmbient(cells[i], ambientQ, airHeat);
     const out = packContact(cells[i], cores[i]);
     cores[i] = out.core; banks[i] = out.bank; requests[i] = cells[i].request;
     if (cells[i].busy) busy.push(i);
@@ -759,8 +821,52 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
   return { cores, banks, requests, busy, sources: cells.map(c => c.source), sinks: cells.map(c => c.sink) };
 }
 
-// R5 ambient exchange is a boundary condition, never a global pull. The owner
-// counts exposed open side/top faces (not the floor or closed/periodic edges).
+// V1 react.js: with ambient heat off, matter trades no heat with the air.
+export function ctConducts(a, b, airHeat) { return airHeat !== 0 || (a.id !== E.EMPTY && b.id !== E.EMPTY); }
+// V1 react.js: the open world above the box pulls air back to ambient
+// (AIR_AMBIENT_PULL) and gases radiate toward it by their rad, every cell, a
+// step: the row's `cool` per tick. Integer energy with the sensible remainder,
+// so a cell within a quantum of ambient moves nothing and rests. With ambient
+// heat off V1 holds air at ambient. Both are declared sources/sinks.
+export function ctAmbient(input, ambientQ, airHeat) {
+  let c = ctCopy(input);
+  if (c.id === E.EMPTY && airHeat === 0) {
+    if (c.raw === ambientQ && c.bank === 0) return c;
+    const before = ctEnergy(c);
+    c.tq = ambientQ; c.raw = ambientQ; c.bank = 0; c.busy = 1;
+    return ctRecordChange(c, before);
+  }
+  const cool = ctRow(c.id).cool;
+  if (cool <= 0.0) return c;
+  const dt = ctF(ctF(ambientQ - c.tq) - ctTemperatureRemainder(c));
+  const transfer = ctI(Math.max(-2147483000, Math.min(2147483000, ctF(ctCapacity(c)) * dt * cool)));
+  if (transfer === 0) return c;
+  const room = ctHeatRoom(c, transfer);
+  if (room === 0) return c;
+  const before = ctEnergy(c);
+  c = ctHeat(c, room);
+  c.busy = 1;
+  return ctRecordChange(c, before);
+}
+// The part of `gain` (signed) c can take without stepping a latent bank (steam
+// at 100 °C) past its transition, which it can't represent: it stops exactly
+// on the transition, and the next tick's phase rule converts it there.
+export function ctHeatRoom(c, gain) {
+  const now = ctEnergy(c);
+  if (ctFits(c, ctAdd(now, ctSigned(gain)))) return gain;
+  const r = ctRow(c.id);
+  const amount = ctAmount(c);
+  let edge = ctAdd(ctAdd(ctMul(ctCapacity(c), r.hotQ), ctOffset(c)), ctMul(r.hotL, amount));
+  if (gain < 0) edge = ctSub(ctAdd(ctMul(ctCapacity(c), r.coldQ), ctOffset(c)), ctMul(r.coldL, amount));
+  if (!ctFits(c, edge)) return 0;
+  return ctSmall(ctSub(edge, now));
+}
+// The ambient's ¼ K code, as the block pass encodes P.ambient.
+export const contactAmbientQ = ambient => Math.min(65535, Math.max(0, Math.round(Math.fround((Math.fround(ambient) + 273.25) * 4))));
+CONTACT_KERNEL.push([ctConducts, ['CTCell', 'CTCell', 'i32'], 'bool'], [ctAmbient, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctHeatRoom, ['CTCell', 'i32'], 'i32']);
+
+// R5 ambient exchange at the open box's faces. The owner counts exposed open
+// side/top faces (not the floor or closed/periodic edges).
 export function ctBoundary(input, openFaces, ambientQ) {
   let c = ctCopy(input);
   const perFace = ctDiv(ctFlux(c, ctNew(E.EMPTY, ambientQ, 65536)), 2);

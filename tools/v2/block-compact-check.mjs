@@ -50,7 +50,8 @@ const zero = new Int32Array(8);
 const air = q => Array.from({ length: 8 }, () => new Uint32Array([q << 8, 0, 0, 0]));
 const water = () => Array.from({ length: 8 }, () => new Uint32Array([(1173 << 8) | E.WATER, 65536, 0, 0]));
 const eligible = (cs, bs = zero, positions = ps, pending = zero, params = P, count = 8) => emittedPredicate(cs, bs, positions, pending, params, count, valid, ambientQ);
-for (let q = 0; q <= 41093; q++) assert(eligible(air(q)));
+// Uniform AIR is a classify skip exactly at the scene's ambient (V1's pull acts everywhere else: ctAmbient).
+for (let q = 0; q <= 41093; q++) { assert.equal(eligible(air(q)), q === 1173); assert(eligible(air(q), zero, ps, zero, { ...P, ambient: q / 4 - 273.25 })); }
 let seed = 77123;
 const random = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0);
 const shuffle = input => { const a = [...input]; for (let i = a.length - 1; i > 0; i--) { const j = random() % (i + 1); [a[i], a[j]] = [a[j], a[i]]; } return a; };

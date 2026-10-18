@@ -10,8 +10,8 @@ import { assertNaga } from './wgsl-grouping.mjs';
 
 const block=contactWGSL.slice(contactWGSL.indexOf('fn contactBlock('));
 assert(block.includes('let count=min(8u,arrayLength(&events));'));
-assert.equal((block.match(/for\(var i=0u;i<count;i\+\+\)/g)||[]).length,6);
-assert.equal((block.match(/axis<u32\(ctNeighborCount\(\)\)/g)||[]).length,3);
+assert.equal((block.match(/for\(var i=0u;i<count;i\+\+\)/g)||[]).length,5);
+assert.equal((block.match(/axis<u32\(ctNeighborCount\(\)\)/g)||[]).length,2);
 assert.equal((contactWGSL.match(/k < ctNeighborCount\(\);/g)||[]).length,3);
 for(const dims of [[16,8,8],[32,32,32],[32,16,24],[128,128,128]]) {
   const g=gridLayout(...dims);

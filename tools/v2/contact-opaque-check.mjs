@@ -13,13 +13,18 @@ cores[2][2] = 0x12340000;
 const original = new Uint32Array(cores[2]);
 const dead = C.ctStep(C.unpackContact(original), [cells[0], cells[3], cells[6]], 0);
 assert.equal(dead.id, E.EMPTY);
-const seed = (Math.imul(48, 2654435761) ^ 2) | 0;
-const plume = C.ctPlume(cells[0], dead, seed, 1);
-assert.equal(plume.b.id, E.SMOKE);
-assert.equal(C.packContact(plume.b, original).core[2], 0x12340000);
-assert.equal(C.packContact(plume.b, C.packContact(dead, original).core).core[2], 0,
+// V1 react.js has no in-block plume pass, so no single block call re-creates
+// a material it removed; the A→B→A history is the staged-pack property itself.
+const back = C.ctDecay(dead, E.SMOKE);
+assert.equal(back.id, E.SMOKE);
+assert.equal(C.packContact(back, original).core[2], 0x12340000);
+assert.equal(C.packContact(back, C.packContact(dead, original).core).core[2], 0,
   'intermediate canonical packing is not equivalent');
+const live = cores.map(c => new Uint32Array(c)); live[2][1] = (live[2][1] & 0xffff0000) | 2048;
 const out = C.contactReference(cores, new Int32Array(8), 48);
-assert.equal(out.cores[2][0] & 255, E.SMOKE);
-assert.equal(out.cores[2][2], 0x12340000);
-console.log('Contact opaque history: tick48 SMOKE→EMPTY→SMOKE retains original word2; staged packing counterexample covered');
+assert.equal(out.cores[2][0] & 255, E.EMPTY, 'spent smoke leaves air');
+assert.equal(out.cores[2][2], 0, 'a new material starts with clean payload words');
+const kept = C.contactReference(live, new Int32Array(8), 48);
+assert.equal(kept.cores[2][0] & 255, E.SMOKE);
+assert.equal(kept.cores[2][2], 0x12340000, 'a surviving cell keeps its opaque word2');
+console.log('Contact opaque history: SMOKE→EMPTY→SMOKE retains original word2; staged packing counterexample covered; block keeps a survivor\'s word2');

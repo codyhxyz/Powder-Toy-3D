@@ -17,7 +17,7 @@ const neighbors = source => [source, cell(E.EMPTY), cell(E.WALL)];
 const ledger = (before, after) => assert.equal(C.ctEnergy(after) + after.sink - after.source, C.ctEnergy(before), 'exact BigInt ledger');
 const step = (input, ns, seed = 1, outside = [0, 0, 0, 0]) => {
   const saved = ns.map(C.ctCopy);
-  const out = C.ctStepAtmosphere(input, ns, seed, ...outside);
+  const out = C.ctStepAtmosphere(input, ns, seed, ...outside, 0, q(20));
   assert.deepEqual(ns, saved, 'catalytic sources/neighbors are not mutated');
   ledger(input, out);
   return out;
@@ -81,10 +81,13 @@ test('source exclusions isolate the new route, while hit/miss fallback outputs r
 });
 
 test('six-face oxygen gates and actual CO2 fraction apply to deterministic activation', () => {
-  const input = cell(E.WOOD), closed = [flame(), cell(E.WALL), cell(E.WALL)];
+  // V1 react.js counts a flame as burning air to the fuel beside it, so the
+  // closed case's hot source is a burning fuel (no air, oxygen or flame face).
+  const input = cell(E.WOOD), closed = [burning(), cell(E.WALL), cell(E.WALL)];
   const blocked = step(input, closed);
+  assert.equal(step(input, [flame(), cell(E.WALL), cell(E.WALL)]).burning, 1, 'a flame face is burning air (V1 react.js)');
   assert.equal(blocked.burning, 0); assert.equal(blocked.life, input.life); assert.equal(blocked.source, 0n); assert.equal(blocked.request, 0);
-  assert.equal(step(input, neighbors(flame())).burning, 1, 'owned air');
+  assert.equal(step(input, neighbors(burning())).burning, 1, 'owned air');
   assert.equal(step(input, closed, 1, [1, 0, 0, 1]).burning, 1, 'outside-only air');
   assert.equal(step(input, closed, 1, [0, 1, 0, 1]).burning, 1, 'outside-only O2');
   const noLocalSource = step(input, [cell(E.WALL), cell(E.WALL), cell(E.WALL)], 1, [0, 3, 0, 3]);
@@ -139,14 +142,16 @@ test('water/saltwater/raw meat/inert recipients, pending phases and latent decod
 test('finite existing fuel, zero fuel, exact ledgers, unchanged sources and opaque/liquid payloads', () => {
   for (const life of [0, 1, 15, 16]) {
     const input = { ...cell(E.WOOD), life }, out = step(input, neighbors(flame()));
-    assert(out.source <= BigInt(life) * 13421772n);
-    if (life === 0) assert.equal(out.source, 0n, 'no zero-fuel minted heat');
+    // Fuel heat is finite; burnt out, V1 react.js lifts the residue to
+    // BURNT_MIN_T (600 °C), a declared source on top of it.
+    if (out.id === E.WOOD) assert(out.source <= BigInt(life) * 13421772n);
+    else { assert(out.tq >= q(600), 'burnt-out residue at least BURNT_MIN_T'); assert(out.id === E.FIRE || out.id === E.ASH); }
     if (life > 15) assert.equal(out.life, life - 15);
   }
   let fuel = cell(E.WOOD), released = 0n, calls = 0;
   while (fuel.id === E.WOOD && calls < 200) {
     const out = step({ ...fuel, source: 0n, sink: 0n }, neighbors(flame()));
-    released += out.source; fuel = out; calls++;
+    if (out.id === E.WOOD) released += out.source; fuel = out; calls++;
   }
   assert.equal(calls, 137); assert.notEqual(fuel.id, E.WOOD); assert(released <= 2048n * 13421772n);
   for (const id of [E.WOOD, E.OIL, E.WHISKEY]) {
@@ -184,7 +189,8 @@ test('actual post-pair single-contact witness ignites below bulk threshold; sour
   const { out, decoded } = block(cells, 1, positions, [true, true, false, false, false, false, false, false]);
   assert.equal(decoded[0].burning, 1); assert.equal(decoded[0].life, wood.life - 15); assert.equal(out.sources[0], 201326580n);
   const invalid = { ...cell(E.WALL), valid: 0 };
-  const expectedSource = step(postFire, [postWood, invalid, invalid], seedAt(positions[1], 1), [1, 0, 0, 1]);
+  // The block ends with V1's per-gas pull toward ambient (FIRE's rad): ctAmbient.
+  const expectedSource = C.ctAmbient(step(postFire, [postWood, invalid, invalid], seedAt(positions[1], 1), [1, 0, 0, 1]), q(20), 1);
   const sourcePacked = C.packContact(expectedSource, C.packContact(fire).core);
   assert.deepEqual(out.cores[1], sourcePacked.core); assert.equal(out.banks[1], sourcePacked.bank);
   assert.equal(out.sources[1], 0n, 'no catalytic debit/refund');
@@ -208,7 +214,9 @@ test('original static corner cube, production corner/pair order: 810–858 C sou
     assert(postPair[i].tq < C.ctRow(E.WOOD).igniteQ, 'bulk threshold not reached');
     assert.equal(decoded[i].burning, 1); assert.equal(decoded[i].life, 2033); assert.equal(out.sources[i], 201326580n);
   }
-  for (const i of [0, 4]) { assert.equal(decoded[i].life, 2002); assert.equal(out.sources[i], 0n); }
+  // V1 react.js flame life: FIRE_BURN + FIRE_BURN_SPREAD·rnd a step (per tick here).
+  const burn = C.CONTACT_CONSTANTS.CT_FIRE_BURN_TICK[1], spread = C.CONTACT_CONSTANTS.CT_FIRE_BURN_SPREAD_TICK[1];
+  for (const i of [0, 4]) { assert(decoded[i].life <= 2048 - Math.floor(burn) && decoded[i].life >= 2048 - Math.ceil(burn + spread)); assert.equal(out.sources[i], 0n); }
   for (const i of [3, 7]) assert.equal(decoded[i].burning, 0, 'no front cascade to next wood face on this call');
 });
 
@@ -245,10 +253,10 @@ test('shuffled disjoint production contact blocks replay identically with global
 test('real generator and snapshot/order/custom-contact contracts are unchanged', () => {
   assert.equal(contactKernelWGSL, C.CONTACT_KERNEL.map(([fn, args, result]) => emitContactKernel(fn, args, result)).join('\n'));
   const scalar = C.ctStepAtmosphere.toString();
-  assert.deepEqual([...scalar.matchAll(/ctRoll\(seed, (\d+)\)/g)].map(m => +m[1]), [1, 2, 3, 4], 'no extra RNG calls or changed salts');
+  assert.deepEqual([...scalar.matchAll(/ctRoll\(seed, (\d+)\)/g)].map(m => +m[1]), [1, 2, 3, 4, 5, 6, 7, 18, 19], 'no extra RNG calls or changed salts (5–7, 18–19: V1 flame life and flames into air)');
   assert(scalar.includes('random < ctF(fire) / 60'), 'original stochastic expression remains intact');
   const body = contactWGSL.slice(contactWGSL.indexOf('fn contactBlock('));
-  assert(body.indexOf('let snapshot=cells;') > body.indexOf('let flux=ctFlux('));
+  assert(body.indexOf('let snapshot=cells;') > body.indexOf('flux=ctFlux('));
   assert(body.includes('array<CTCell,3>(snapshot[i^1u],snapshot[i^2u],snapshot[i^4u])'));
   assert(!body.includes('loadCore('), 'no new live outside material reads');
   const g = gridLayout(16, 16, 16), original = v2BlockWGSL(g, contactWGSL), compact = v2BlockWGSL(g, contactWGSL, true);
