@@ -531,7 +531,7 @@ export function particlesWGSL(g, nativeHead, stage) {
   `);
   if (stage === 'react') {
     const rh = head(g, (grid, o) => withContactTable(nativeHead(grid, o)));
-    return rh + contactRulesWGSL() + airborneReactWGSL + /* wgsl */ `
+    return rh + contactRulesWGSL('i32(min(3u,arrayLength(&flight)))') + airborneReactWGSL + /* wgsl */ `
 // Is packet a after packet b in its cell's order (src/v2/airborne.js airborneOrder)?
 fn dReactAfter(a: u32, b: u32) -> bool {
   if (b == D_NONE) { return true; }
@@ -554,7 +554,8 @@ fn dReactOne(t: u32, s: u32, p: vec3i) -> bool {
   }
   var particle = particles[t];
   let onFloor = select(0, 1, p.y == 0 && P.edge == D_REACT_SOLID_EDGE);
-  let r = dReact(dMaterial(particle), before, faces, valid, dInBlock(p), dTrailing(particle.velocity), onFloor, bitcast<i32>(flight[t].destination.w));
+  let inBlock = dInBlock(p); let trailing = dTrailing(particle.velocity);
+  let r = dReact(dMaterial(particle), before, faces, valid, inBlock, trailing, onFloor, bitcast<i32>(flight[t].destination.w));
   if (r.state == D_REACT_REFUSED) { return true; }
   if (any(r.source != vec2u(0u))) { noteEnergySource(p,r.source); }
   if (any(r.sink != vec2u(0u))) { noteEnergySink(p,r.sink); }
@@ -566,9 +567,11 @@ fn dReactOne(t: u32, s: u32, p: vec3i) -> bool {
   else if (r.state == D_REACT_DISPLACED) { setParticleDeco(t,decoOf(s)); setDeco(s,paint); }
   else if (cid(before.core) != cid(r.host.core) && (cid(before.core) == 0u || cid(r.host.core) == 0u)) { setDeco(s,0u); }
   storeMaterial(s,before,r.host);
-  for (var f = 0u; f < 2u * dAxes(); f++) {
-    if (((valid >> f) & 1u) == 0u) { continue; }
-    let was = faces[f]; let now = r.faces[f];
+  // its partners beside it (the face its host stands in is the host's, written above)
+  for (var a = 0u; a < dAxes(); a++) {
+    let f = inBlock[a];
+    if (f == trailing || ((valid >> f) & 1u) == 0u) { continue; }
+    let was = faces[f]; let now = r.partners[a];
     if (all(was.core == now.core) && was.bank == now.bank) { continue; }
     if (cid(was.core) != cid(now.core) && (cid(was.core) == 0u || cid(now.core) == 0u)) { setDeco(slots[f],0u); }
     storeMaterial(slots[f],was,now);

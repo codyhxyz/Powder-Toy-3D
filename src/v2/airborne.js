@@ -51,7 +51,7 @@
 // colouring (AIRBORNE_COLOUR_TABLE) in which any two cells within two faces of each other differ,
 // across a looped edge too (every side is a multiple of 4: shaders/common.js gridDims).
 import { E, ELEMENTS, K } from '../elements.js';
-import { AIR_CAPACITY_Q, makeMaterial, cTq, energyOf, withEnergy, energyFits, withPacketEnergy, packetEnergyFits } from './layout.js';
+import { AIR_CAPACITY_Q, makeMaterial, cTq, cid, energyOf, withEnergy, energyFits, withPacketEnergy, packetEnergyFits } from './layout.js';
 import { unpackContact, packContact, ctNew, ctFlux, ctHeat, ctReaction, ctAcid, ctSwallow, ctStepAtmosphere,
   ctResolvePhase, ctLick, ctHotFuel, ctSmothered, ctRow, ctConducts, ctHeatRoom, ctAmbient, ctPairValue,
   contactAmbientQ, CONTACT_DEFAULT_MODES } from './contact.js';
@@ -153,16 +153,13 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
   const carrier0 = BigInt(AIR_CAPACITY_Q) * BigInt(cTq(packet.core));
   try {
     let v = unpackContact(packet.core, packet.bank);
-    let h = unpackContact(host.core, host.bank);
-    // the six contacts: the faces, but the one behind it holds its host
-    const n = faces.map((m, f) => (f === trailing || !m) ? null : unpackContact(m.core, m.bank));
-    const at = f => (f === trailing ? h : n[f]);
-    const put = (f, c) => { if (f === trailing) h = c; else n[f] = c; };
+    // its partners, one an axis: the host where it stands in the face, else the face (none outside the grid)
+    const ps = inBlock.map(f => (f === trailing ? unpackContact(host.core, host.bank) : faces[f] ? unpackContact(faces[f].core, faces[f].bank) : null));
     const ambientQ = contactAmbientQ(modes.ambient), airHeat = +!!modes.ambientHeat;
     // (its outside, frozen before any pair runs, as the support pass freezes a cell's)
     const outside = outsideOf(inBlock.map(f => (f ^ 1) === trailing ? host.core : faces[f ^ 1]?.core));
     for (let a = 0; a < 3; a++) {
-      const f = inBlock[a]; let b = at(f); if (!b) continue;
+      let b = ps[a]; if (!b) continue;
       const s = seed ^ (AIRBORNE.PAIR_SALT << a);
       let flux = ctConducts(v, b, airHeat) ? ctFlux(v, b) : 0;
       if (flux !== 0) flux = -ctHeatRoom(b, -ctHeatRoom(v, flux));
@@ -172,44 +169,48 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
       if (!pair.changed) { const rev = ctAcid(pair.b, pair.a, s); pair = ctPairValue(rev.b, rev.a, rev.changed); }
       if (!pair.changed) pair = ctSwallow(pair.a, pair.b, s);
       if (!pair.changed) { const rev = ctSwallow(pair.b, pair.a, s); pair = ctPairValue(rev.b, rev.a, rev.changed); }
-      v = pair.a; put(f, pair.b);
+      v = pair.a; ps[a] = pair.b;
     }
-    const ns = inBlock.map(f => at(f) ? { ...at(f) } : { ...ctNew(E.EMPTY, h.tq, 65536), valid: 0 });
+    const ns = ps.map(b => (b ? { ...b } : { ...ctNew(E.EMPTY, 0, 65536), valid: 0 }));
     v = ctStepAtmosphere(v, ns, seed, ...outside, onFloor, ambientQ);
     for (let a = 0; a < 3; a++) {
-      const f = inBlock[a]; const b = at(f); if (!b) continue;
-      let pair = ctResolvePhase(v, b);
+      if (!ps[a]) continue;
+      let pair = ctResolvePhase(v, ps[a]);
       if (!pair.changed) { const rev = ctResolvePhase(pair.b, pair.a); pair = ctPairValue(rev.b, rev.a, rev.changed); }
-      v = pair.a; put(f, pair.b);
+      v = pair.a; ps[a] = pair.b;
     }
     if (ctHotFuel(v)) {
-      // smothered as its own step saw the gas around it (ctStepAtmosphere fullCo2, fullGas)
+      // smothered as its own step saw the gas around it (ctStepAtmosphere fullCo2, fullGas: its partners then)
       let co2 = outside[2], gas = outside[3];
-      for (const b of ns) if (b.valid !== 0) { co2 += +(b.id === E.CO2); gas += +(ctRow(b.id).kind === C_AIR || ctRow(b.id).kind === C_GAS); }
+      for (const b of ps) if (b) { co2 += +(b.id === E.CO2); gas += +(ctRow(b.id).kind === C_AIR || ctRow(b.id).kind === C_GAS); }
       const smothered = ctSmothered(co2, gas);
-      for (let a = 0; a < 3; a++) {
-        const f = inBlock[a]; const b = at(f); if (!b) continue;
-        put(f, ctLick(b, 1, ctRow(v.id).flameQ, smothered, seed ^ (AIRBORNE.PLUME_SALT << a)));
-      }
+      for (let a = 0; a < 3; a++) if (ps[a]) ps[a] = ctLick(ps[a], 1, ctRow(v.id).flameQ, smothered, seed ^ (AIRBORNE.PLUME_SALT << a));
     }
     if (v.id !== E.EMPTY) v = ctAmbient(v, ambientQ, airHeat);
-    let source = v.source + h.source, sink = v.sink + h.sink, asked = (v.request | h.request) & AIRBORNE_LANDED_REQUESTS;
-    for (const c of n) if (c) { source += c.source; sink += c.sink; asked |= c.request & AIRBORNE_FACE_REQUESTS; }
+    let source = v.source, sink = v.sink, asked = v.request & AIRBORNE_LANDED_REQUESTS, hm = host;
+    const out = [...faces];
+    ps.forEach((b, a) => {
+      if (!b) return;
+      source += b.source; sink += b.sink;
+      const f = inBlock[a];
+      if (f === trailing) { hm = packContact(b, host.core); asked |= b.request & AIRBORNE_LANDED_REQUESTS; }
+      else { out[f] = packContact(b, faces[f].core); asked |= b.request & AIRBORNE_FACE_REQUESTS; }
+    });
     const requests = landed => asked & (landed ? AIRBORNE_LANDED_REQUESTS : AIRBORNE_FLYING_REQUESTS);
-    const out = faces.map((m, f) => (n[f] ? packContact(n[f], m.core) : m));
-    const vm = packContact(v, packet.core), hm = packContact(h, host.core);
+    const hostId = cid(hm.core);
+    const vm = packContact(v, packet.core);
     const ev = energyOf(vm), eh = energyOf(hm);
     if (v.id === E.EMPTY) {
       const he = eh + ev - carrier0;
       if (!energyFits(hm, he)) return refused;
       return { state: AIRBORNE.GONE, particle: packet, host: withEnergy(hm, he), faces: out, source, sink, requests: requests(false) };
     }
-    if ((v.request & 1) !== 0 && h.id === E.EMPTY) {
+    if ((v.request & 1) !== 0 && hostId === E.EMPTY) {
       const le = ev + eh - carrier0;
       if (!energyFits(vm, le)) return refused;
       return { state: AIRBORNE.LANDED, particle: packet, host: withEnergy(vm, le), faces: out, source, sink, requests: requests(true) };
     }
-    if ((v.request & 1) !== 0 && ELEMENTS[h.id].kind === K.GAS) {
+    if ((v.request & 1) !== 0 && ELEMENTS[hostId].kind === K.GAS) {
       // in a gas (a charge in the flames that set it off): it lands, and the gas it displaces flies
       // on in its place, as a gas packet that hands itself back to the next empty cell it crosses
       const hostCarrier = BigInt(AIR_CAPACITY_Q) * BigInt(cTq(hm.core));

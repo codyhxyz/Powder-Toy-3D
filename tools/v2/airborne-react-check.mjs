@@ -344,7 +344,8 @@ for (const dims of [[32, 32, 32], [48, 16, 32]]) {
   const react = particlesWGSL(g, nativeDynamicsHead, 'react');
   assert.match(react, new RegExp(`const EV = array<vec4u, ${Math.ceil(table / 4)}>`), 'the rule stage reads the contact rows (EV tail)');
   assert.doesNotMatch(react, /arrayLength\(&events\)/, 'no block storage in the particle family');
-  for (const rule of ['ctFlux(v, b)', 'ctReaction(v, b, s)', 'ctStepAtmosphere(v, ns,', 'ctResolvePhase(v, cs[k])', 'ctLick(cs[k], 1,', 'ctAmbient(v, ambientQ, airHeat)', 'ctConducts(v, b, airHeat)']) assert(react.includes(rule), `the packet runs ${rule}`);
+  for (const rule of ['ctFlux(v, b)', 'ctReaction(v, b, s)', 'ctStepAtmosphere(v, ps,', 'ctResolvePhase(v, ps[a])', 'ctLick(ps[a], 1,', 'ctAmbient(v, ambientQ, airHeat)', 'ctConducts(v, b, airHeat)']) assert(react.includes(rule), `the packet runs ${rule}`);
+  assert(react.includes('fn ctNeighborCount()->i32 { return i32(min(3u,arrayLength(&flight))); }'), 'the rules\' neighbour loops bound at run time, not unrolled');
   assert.match(react, /let q = mEdge\(p \+ face6\(i32\(f\)\)\);/, 'it reads its host\'s six faces');
   assert.match(react, /storeMaterial\(slots\[f\],was,now\);/, 'and writes back what changed there');
   assert.match(react, /dReactColour\(p\) != \(P\.airborne >> D_REACT_OFFSET_BITS\) \|\| atomicLoad\(&claims\[s\*4u\]\) != t\+1u/, 'one thread a cell, a colour at a time');
