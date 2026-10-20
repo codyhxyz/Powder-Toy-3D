@@ -1969,7 +1969,7 @@ async function renderWorldThumb(viewId,out) {
   const model=volume.matrixWorld.clone().multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray().map(v=>-v)));
   const style=frameUniformValues({camera:ownCamera,model,
     view:viewId,sourceStyle:selectedMode==='crueltySquad' && isMaterialView(view)});
-  const frozen=presentation.neutral(()=>freezeWorldView({camera:ownCamera,presentation,settings,post,pov},
+  const frozen=presentation.neutral(()=>freezeWorldView({camera:ownCamera,presentation,settings,post,pov,sim},
     {...frame.values,model:model.toArray(),view:style.view,materialStyle:style.materialStyle,sourceStyle:style.sourceStyle},
     {view,detail,curved:false}));
   frozen.settings.view=viewId;

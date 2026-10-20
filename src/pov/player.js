@@ -737,10 +737,11 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       g = sim.g;
       generation++; probe.valid = false;
     }
-    // sim steps since last frame → step rate (0 while paused). Under V2 `steps` are its ticks (sim.frame
-    // counts one a tick), and its rate is V1's steps a second while its clock runs (the kick, the gibs and
-    // the coupling convert cells/s at NOMINAL_STEP_RATE under V2): the ticks a frame happened to run made
-    // a kick, a gib or the body's coupling right after a frame without one do nothing.
+    // sim steps since last frame → step rate (0 while paused). Raw sim.frame on purpose: the engine's own
+    // steps (V1 steps, or V2 ticks), not game time (v2/host.js stepClock); a switch leaves sim.frame alone.
+    // Under V2 the rate is V1's steps a second while its clock runs (the kick, the gibs and the coupling
+    // convert cells/s at NOMINAL_STEP_RATE under V2): the ticks a frame happened to run made a kick, a gib
+    // or the body's coupling right after a frame without one do nothing.
     const steps = Math.max(0, sim.frame - lastFrame);
     lastFrame = sim.frame;
     if (dt > 0) dtSmooth += (dt - dtSmooth) * DT_EASE;

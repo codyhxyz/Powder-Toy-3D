@@ -18,7 +18,8 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { gridLayout } from '../../src/sim.js';
+import { gridLayout, Simulation } from '../../src/sim.js';
+import { SUPER_CELLS } from '../../src/shaders/common.js';
 import { E } from '../../src/elements.js';
 import { makeMaterial, withPayload } from '../../src/v2/layout.js';
 import { v2ImportWGSL } from '../../src/shaders/v2.js';
@@ -91,7 +92,7 @@ let checks = 0;
   const dispatched = [];
   const kernel = name => ({ name, groups: [null, null, 'leave layout'], pipeline: {}, dispatch: (f, size, opts) => dispatched.push({ name, opts }) });
   let format = 2;
-  const sim = { origin: { x: 16, y: 0, z: 0 }, gpu: { frame: { clear() {} }, bindGroup: () => ({}) }, tables: {}, bindRO: {}, readHeader: () => ({ format }) };
+  const sim = { origin: { x: 16, y: 0, z: 0 }, gpu: { frame: { clear() {} }, bindGroup: () => ({}) }, tables: {}, bindRO: {}, readHeader: () => ({ format }), header: () => ({ format: 0 }) };
   const gen = Object.assign(Object.create(WorldGenerator.prototype), {
     sim, scene: { key: 'fixture' }, res: { prepassFor() {}, entries: e => e },
     kernels: { diff: kernel('v1'), nativeDiff: kernel('v2') },
@@ -103,6 +104,17 @@ let checks = 0;
   assert.deepEqual(run({ native: true }), [false, 'v1'], 'until V2\'s kernel is built, V1\'s runs (and the window keeps every native brick)');
   gen.kernels.nativeDiff.pipeline = {}; format = 0;
   assert.deepEqual(run({ native: true }), [false, 'v1'], 'readers bound to the legacy projection (format 0) get V1\'s');
+  // A suspended owner (a World grid switched to V1 at runtime): V2's kernel over the owner's own cells,
+  // bound as V2's readers bind them, whatever V1's readers see (format 0 here); nothing until it is built.
+  const owner = { groups: { read: { ownerRead: true } } };
+  format = 0;
+  assert.deepEqual(run({ native: true, owner }), [true, 'v2'], 'the native diff of a suspended owner\'s cells');
+  assert.equal(dispatched[0].opts.bind[1], owner.groups.read, 'it binds the owner\'s read group, not V1\'s');
+  assert.equal(dispatched[0].opts.header.format, 2, 'at the native read format');
+  gen.kernels.nativeDiff.pipeline = null; dispatched.length = 0;
+  assert.equal(gen.diff(P, [0, 0, 0], [4, 8, 8], out, { native: true, owner }), false);
+  assert.equal(dispatched.length, 0, 'not built: nothing recorded (V1\'s diff already ran for V1\'s store)');
+  gen.kernels.nativeDiff.pipeline = {}; format = 2;
   delete gen.kernels.nativeDiff;
   assert.deepEqual(run({ native: true }), [false, 'v1']);
   checks++;
@@ -184,7 +196,8 @@ async function leave(win, base, bricks, natives, flagged, exact) {
   const win = Object.assign(windowFor(), { wb: bandWb, store: new BrickStore(bandWb), nativeStore: new NativeBrickStore(bandWb), loaded: true, capturing: false, readbackError: null, persistenceError: null, P: {} });
   win.renderSource.token = () => ({ revision: 1 });
   win.gpu.failure = null;
-  win.sim = { g, origin: { x: 0, y: 0, z: 0 }, compactOwner: {}, disposed: false, _retire() {}, prepareNative: async () => true,
+  const bandOwner = {};   // (V2 runs the band: the owner is the engine stepping it)
+  win.sim = { g, origin: { x: 0, y: 0, z: 0 }, compactOwner: bandOwner, compact: bandOwner, disposed: false, _retire() {}, prepareNative: async () => true,
     nativeIntegration: { captureSlab: (lo, bricks) => Promise.resolve(Array.from({ length: bricks[0] * bricks[1] * bricks[2] }, (_, i) => (editedAt.has(i) ? edited : pristine))) } };
   let natives = 0;
   win.gen = { diff(P, lo, bricks, out, { native }) {
@@ -202,5 +215,75 @@ async function leave(win, base, bricks, natives, flagged, exact) {
   cache.capture(region, win.store, 1, win.nativeStore);
   assert.equal(cache.native.size, win.nativeStore.size, 'the run\'s cache carries the edits alone');
   checks++;
+}
+// ---------------------------------------------------------------- a World grid switched to V1 at runtime
+// A runtime switch to V1 suspends the V2 owner, which keeps shadowing V1's window (it shifts with it and
+// imports V1's writes) so a switch back finds every brick V1 left alone exact. V1's readers see format 0,
+// so the leaving diff was V1's and the native store kept every brick that left the window under V1 (the
+// "until V2's kernel is built" rule). Now V1's diff keeps V1's store, as V1 alone does, and V2's diff of
+// the owner's cells keeps the native store: the edits and banked bricks, exact for the switch back.
+{
+  const g = gridLayout(32, 32, 32), bandWb = [16, g.ny / 4, 16], n = 4 * 8 * 8;
+  const nativeAt = new Set([5, 77]), v1At = new Set([5, 77, 90]), bankedAt = 100;   // slab-local bricks
+  const owner = { groups: { read: { ownerRead: true } } }, diffs = [];
+  const win = Object.assign(windowFor(), { wb: bandWb, store: new BrickStore(bandWb), nativeStore: new NativeBrickStore(bandWb), loaded: true, capturing: false,
+    readbackError: null, persistenceError: null, P: {}, maxBricks: n });
+  win.renderSource.token = () => ({ revision: 1 });
+  win.gpu.failure = null;
+  win.sim = { g, origin: { x: 0, y: 0, z: 0 }, compactOwner: owner, compact: null, disposed: false, _retire() {}, prepareNative: async () => true,
+    nativeIntegration: { captureSlab: (lo, bricks) => Promise.resolve(Array.from({ length: bricks[0] * bricks[1] * bricks[2] }, (_, i) => (nativeAt.has(i) ? edited : i === bankedAt ? banked : pristine))) } };
+  const fill = (out, keys) => {
+    out.head.data = new Uint8Array(Math.ceil(leaveHeadBytes(n) / 4) * 4);
+    const w = new Uint32Array(out.head.data.buffer); w[0] = keys.length; keys.forEach((k, i) => { w[1 + i] = k; });
+    out.cells.data = new Uint8Array(n * LEAVE_BRICK_BYTES);
+  };
+  win.gen = {
+    diffBuffers: () => ({ head: { data: null }, cells: { data: null } }),
+    diff(P, lo, bricks, out, { native = false, owner: o = null } = {}) {
+      diffs.push({ native, owner: o, out });
+      const at = o ? nativeAt : v1At, keys = [];
+      for (let i = 0; i < n; i++) if (at.has(i)) keys.push(win.store.key(lo[0] / 4 + i % bricks[0], Math.floor(i / bricks[0]) % bricks[1], Math.floor(i / (bricks[0] * bricks[1]))));
+      fill(out, keys);
+      return !!o;
+    },
+  };
+  await win.captureEdits();
+  const slabs = g.nx / 16;
+  assert.deepEqual(diffs.map(d => [d.native, d.owner]), Array.from({ length: slabs }, () => [[false, null], [true, owner]]).flat(),
+    'each slab: V1\'s diff for V1\'s store, then V2\'s over the suspended owner\'s cells');
+  assert(diffs.every(d => d.owner ? d.out === win.leaveNative : d.out === win.leave), 'into their own buffers');
+  assert.equal(win.store.size, v1At.size * slabs, 'V1\'s store keeps what V1\'s diff of V1\'s cells keeps');
+  assert.equal(win.nativeStore.size, (nativeAt.size + 1) * slabs, 'the native store keeps the owner\'s edited and banked bricks, not every brick');
+  for (const [, bytes] of win.nativeStore.map) assert(bytes === edited || bytes === banked, 'exact, for the switch back');
+  checks++;
+  console.log(`PASS V2 suspended (World switched to V1): native store ${win.nativeStore.size} bricks of ${n * slabs} that left`);
+}
+{
+  // Retained native bricks go into the suspended owner, never over V1's own cells: V1's store already put back
+  // V1's copy (an export marked every brick after a native shift, so it zeroed B and requantized A everywhere).
+  const exports = [], restored = [];
+  const owner = { sync() {}, exportLegacy() { exports.push('owner'); } };
+  const win = Object.assign(windowFor(), { wb: [8, 8, 8], nativeStore: new NativeBrickStore([8, 8, 8]) });
+  win.sim = { origin: { x: 0, y: 0, z: 0 }, compactOwner: owner, compact: null, nativeIntegration: { isReady: true, restoreBricks: (lo, bricks, entries) => restored.push(...entries) } };
+  win.nativeStore.put(win.nativeStore.key(1, 0, 0), edited);
+  assert.equal(WorldWindow.prototype.restoreNative.call(win, [0, 0, 0], [4, 8, 8]), 1);
+  assert.equal(restored.length, 1, 'the owner takes the exact brick');
+  assert.deepEqual(exports, [], 'and nothing is exported over V1\'s cells');
+  // Simulation.shift: only the running owner projects first (native.shift syncs a suspended one itself)
+  const shiftSim = (compact) => {
+    const calls = [];
+    const own = { isReady: true, exportLegacy() { calls.push('export'); } };
+    const fake = { compactOwner: own, compact: compact ? own : null, g: { slots: 64 }, origin: { x: 0, z: 0 }, cur: 0, version: 0, wholeWrites: 0,
+      nativeIntegration: { isReady: true, shift: () => calls.push('nativeShift'), shifted() {} },
+      pingPong() {}, gpu: { frame: { copy() {} } }, flow: { size: 8 }, flowTmp: {}, _flowShiftGroup: {}, passOf: () => ({}), _dispatch() {},
+      tables: {}, _bindRW: {}, header() { return {}; }, _shiftListeners: [], deco: null, shiftKeepsHistory: true, rays: { reset() {} },
+      derived: { shiftsBricks: true }, wake() {}, stillFlow() {} };
+    Simulation.prototype.shift.call(fake, SUPER_CELLS.x, 0);
+    return calls;
+  };
+  assert.deepEqual(shiftSim(true), ['export', 'nativeShift'], 'V2 running: project, then move both');
+  assert.deepEqual(shiftSim(false), ['nativeShift'], 'V2 suspended: V1\'s cells are V1\'s; nothing exported over them');
+  checks++;
+  console.log('PASS V2 suspended: retained bricks restore into the owner; no projection over V1\'s window');
 }
 console.log(`PASS ${checks} native store checks (CPU, fake device; no GPU/browser)`);

@@ -201,14 +201,12 @@ ${Object.entries(MENISCUS_PROPS).map(([k, p]) => `  if (id == E_${k}) { return v
 }`;
 
 /** Box programs always compile native compact foam (legacy detail switches still gate their effects).
- * WORLD reads no V2 state, so its switches decide what is compiled in, as before.
- * Under V1 the two draw the same foam (World reads the same aeration, copied into
- * its atlas). Under V2 they don't: the Box draws V2's foam byte, switch on or off;
- * World never sees that byte, since its atlas holds V2's legacy projection, which
- * carries none. Not a decided difference: an open question to the user (parity
- * audit 2026-10-20). */
+ * WORLD reads its own atlas, so its switches decide what is compiled in, as before, unless the
+ * atlas is V2's (WORLD_NATIVE: its live copies carry V2's foam, v2/nativeAeration.js): then it
+ * compiles native foam as Box's format-2 programs do. */
+export const WORLD_NATIVE = 'NATIVE_V2';   // the World view's detail key while V2 runs the box (wire/worldRenderFrame.js freezeWorldView)
 export const LIQ_DETAIL = (detail = {}, backend = 'box') => backend !== 'world'
-  || !!(detail.DETAIL_LIQ_RIPPLES || detail.DETAIL_LIQ_MENISCUS || detail.DETAIL_LIQ_FOAM);
+  || !!(detail.DETAIL_LIQ_RIPPLES || detail.DETAIL_LIQ_MENISCUS || detail.DETAIL_LIQ_FOAM || detail[WORLD_NATIVE]);
 
 export const liquidDetailGLSL = (detail = {}, { backend = 'box', fixedReadFormat } = {}) => {
   // WORLD reads its own atlas, never V2's packed state: its format is the legacy one.
@@ -218,7 +216,8 @@ export const liquidDetailGLSL = (detail = {}, { backend = 'box', fixedReadFormat
   const world = backend === 'world';
   // Intentional (V2 design, docs/v2.md §4.3 and §13.4): V2's foam is always on and every liquid
   // foams; V1's Whitewater foam stays behind its detail switch (the format test in liquidDetail below).
-  const foam = !world || !!detail.DETAIL_LIQ_FOAM; // native §4.3 foam is independent of the legacy Whitewater switch
+  // World draws V2's foam too while its atlas is V2's (WORLD_NATIVE): the same picture as Box.
+  const foam = !world || !!detail.DETAIL_LIQ_FOAM || !!detail[WORLD_NATIVE];
   return /* wgsl */ `
 // Which copy of the aeration buffer (binding 19: both copies, docs/webgpu.md
 // G4) is the current one, 0 or 1. The aeration's ping-pong isn't the state's,

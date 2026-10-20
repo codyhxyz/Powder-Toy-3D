@@ -1,5 +1,6 @@
 import { createNativeWeatherKernel } from './v2/nativeWeather.js';
 import { fold } from './gpu/kernels.js';
+import { stepClock } from './v2/host.js';
 import { E } from './elements.js';
 import {
   weatherRoofFrag, weatherUpdateWGSL, weatherDeclsWGSL, WeatherParams,
@@ -8,6 +9,10 @@ import {
 
 // TPT's material sources, four bounded pulses per simulation second (240 Hz).
 // Bands fit the active simulation height; no kilometre-high fake atmosphere.
+// cadence: V1 steps between pulses, timed on game time in V1 steps under either engine
+// (v2/host.js stepClock: a native tick is LEGACY_STEPS_PER_TICK of them), so a pulse due when
+// the grid switches engine comes when it would have on the old one. (Raw sim.frame counts a tick
+// under V2 and a step under V1: the interval spanning a switch ran up to 4× long or short.)
 export const ELEMENT_WEATHER = Object.freeze({ cadence: 60, cloudDepth: 12, cloudMargin: 4, fogDepth: 9 });
 const unit = v => Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
 
@@ -77,8 +82,10 @@ export function createElementWeather() {
   // its cells, V1's an edit; the one built for the other engine has no run).
   // The engine stepping the grid decides (sim.compact), not the owner kept
   // through a switch: a suspended V2 keeps its cells, but V1 reads its own.
+  // The same grid keeps its pulse clock across the switch (game time, stepClock).
   function ensure(sim) {
     if (current === sim && resources?.native === !!sim.compact) return;
+    const sameGrid = current === sim;
     release(); current = sim;
     const { gpu, g } = sim;
     const layout = gpu.layout('WEATHER_ROOF', WEATHER_ROOF_LAYOUT);
@@ -93,7 +100,7 @@ export function createElementWeather() {
     });
     resources = { roof, group, scan, source, native: !!sim.compact, ready: Promise.all([scan.ready, source.ready]) };
     resources.ready.catch(() => {}); // pipeline failures already go through gpu.fail
-    nextFrame = 0; lastFrame = -1;
+    if (!sameGrid) { nextFrame = 0; lastFrame = -1; }
   }
   const api = {
     get pulses() { return pulses; },
@@ -119,12 +126,12 @@ export function createElementWeather() {
       const policy = elementWeatherPolicy(state, context);
       if (!policy) return false;
       const { sim, world } = context;
-      const cadence = Math.max(1, Math.round(ELEMENT_WEATHER.cadence * (context.stepHz ?? 240) / 240));
+      const cadence = ELEMENT_WEATHER.cadence, now = stepClock(sim);
       ensure(sim);
-      if (worldKey !== world || epoch !== world?.epoch || sim.frame < lastFrame) {
+      if (worldKey !== world || epoch !== world?.epoch || now < lastFrame) {
         worldKey = world; epoch = world?.epoch; nextFrame = 0; lastFrame = -1;
       }
-      if (sim.frame === lastFrame || sim.frame < nextFrame) return false;
+      if (now === lastFrame || now < nextFrame) return false;
       const { scan, source, group, roof } = resources;
       if (scan.state !== 'ready' || source.main.state !== 'ready' || source.apply.state !== 'ready') return false;
       const read = sim.compact ? sim.bindPhysicalRO : sim.bindRO;
@@ -134,7 +141,7 @@ export function createElementWeather() {
       });
       sim.onPass?.(scan.name, { kind: 'compute', gpuMs: null });
       const { boxes, ...values } = policy;
-      values.pulse = Math.floor(sim.frame / cadence) >>> 0;
+      values.pulse = Math.floor(now / cadence) >>> 0;
       // Separate thin bands bound the shared scratch and avoid dispatching the
       // empty column between sea fog and high clouds. V1 uses two edit phases;
       // native commits properties/air and allocates only new snow sources.
@@ -142,7 +149,7 @@ export function createElementWeather() {
         if (resources.native) source.run(box, values, roof);
         else sim.edit(source, box, values, { bind: [{ buffer: roof }] });
       }
-      pulses++; lastFrame = sim.frame; nextFrame = sim.frame + cadence;
+      pulses++; lastFrame = now; nextFrame = now + cadence;
       return true;
     },
     reset() {
