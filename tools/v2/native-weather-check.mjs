@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createElementWeather } from '../../src/elementWeather.js';
 import { createOceanEvents } from '../../src/oceanEvents.js';
 import { createLightning } from '../../src/lightning.js';
+import { seedWaveDemo } from '../../src/world/waveDemo.js';
 import { STORM } from '../../src/bolt.js';
 import { createNativeWeatherKernel, WEATHER_SPEED_SI, WEATHER_SPEED_FLUX } from '../../src/v2/nativeWeather.js';
 import { LANE_HZ } from '../../src/shaders/v2.js';
@@ -187,6 +188,29 @@ assert.equal(pending.main.state,'ready');
   const k=createNativeWeatherKernel(suspended,'suspendedTest',oceanEventsEdit); await k.ready;
   suspended.compact=null;
   assert.equal(k.run({lo:[1,2,3],hi:[2,3,4]},{sea:18,time:1,chop:1,surge:0,wind:[1,0],source:[0,0],direction:[1,0]},{}),false);
+}
+// V1 scrubs the paint of what a surge or a wave floods or empties (src/oceanEvents.js step:
+// sim.edit { scrub: !!surge }; src/world/waveDemo.js: { scrub: true }; src/shaders/deco.js
+// decoScrubFrag); the native writer is asked for the same scrub (nativeWeather.js NATIVE_WEATHER_SCRUB),
+// and a chop pulse, as V1's, for none.
+{
+  const ss=fixture(), oc=createOceanEvents(), material=()=>calls.filter(c=>c.name==='oceanForceNativematerial');
+  gpu.readback.buffer=async b=>{ const d=new Float32Array(b.size/4); for(let i=0;i<d.length;i+=2) d.set([1,18],i); return d.buffer; };
+  const octx={sim:ss,seaLevel:18,groundHeight:x=>x<116?8:23,stepHz:60};
+  assert(await oc.trigger(octx),'a surge arms offshore of the fixture\'s beach');
+  calls.length=0; ss.frame+=OCEAN_EVENT.stepsPerSecond; assert(oc.step({ocean:0},octx));
+  assert(material().length>0 && material().every(c=>c.params.surge>0 && c.params.scrub===1),'a V2 surge scrubs, as V1\'s sim.edit { scrub: true }');
+  oc.cancel(); calls.length=0; ss.frame++; assert(oc.step({ocean:1},octx));
+  assert(material().length>0 && material().every(c=>c.params.surge===0 && c.params.scrub===0),'chop alone does not, as V1\'s');
+  oc.dispose(); delete gpu.readback.buffer;
+  const ws=fixture(); ws.snapshot=()=>{}; Object.assign(ws.origin,{clone(){return {...this};},equals(o){return o.x===this.x&&o.y===this.y&&o.z===this.z;}});
+  calls.length=0;
+  assert(await seedWaveDemo({sim:ws,loaded:true,pending:null,epoch:1,P:{sea:18}},'shore'));
+  const wave=calls.filter(c=>c.name==='waveDemoNativematerial');
+  assert(wave.length>0 && wave.every(c=>c.params.scrub===1),'the World\'s wave demo scrubs under V2 as under V1');
+  // and the plain writers (rain, snow, bolts) never do, under either engine
+  calls.length=0; force.run({lo:[1,2,3],hi:[2,3,4]},{sea:18,time:1,chop:1,surge:0,wind:[1,0],source:[0,0],direction:[1,0]},{});
+  assert.equal(calls.find(c=>c.name==='testOceanNativematerial').params.scrub,0);
 }
 // Storms keep their seconds on V2's 60 Hz ticks: STORM's step counts are
 // authored at 240 steps a second, so a native grid polls every quarter as many.

@@ -27,10 +27,19 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 let i=(wg.x+wg.y*nwg.x)*64u+li;
 ${body}
 }`;
+// scrub: V1's sim.edit { scrub: true } (src/sim.js edit, src/deco.js beforeWrite/scrub): the run's
+// box loses its paint where V1's decoScrubFrag takes it off (NATIVE_WEATHER_SCRUB below).
 export function nativeWeatherParams(name, spec) {
   const fields = spec.params?.fields ? Object.fromEntries(spec.params.fields.map(f => [f.name, f.type])) : spec.params;
-  return uniformStruct(`${name}NativeParams`, { ...EDIT_FIELDS, ...fields, tick: 'u32', ...MODE_FIELDS });
+  return uniformStruct(`${name}NativeParams`, { ...EDIT_FIELDS, ...fields, tick: 'u32', scrub: 'u32', ...MODE_FIELDS });
 }
+// V1's scrub around a writer that isn't a step (src/shaders/deco.js decoScrubFrag main: `if (plane[s]
+// != 0u && (id == E_EMPTY || id != i32(work[s]))) { plane[s] = 0u; }`, work holding the box's
+// elements from before the write, decoKeep): every cell of the box the write gave a new element, or
+// that is empty after it, loses its decoration; matter it left the same element keeps its paint.
+// V1 asks for it on an ocean surge (src/oceanEvents.js step: scrub: !!surge) and the World's wave
+// demo (src/world/waveDemo.js), as TPT's create_part/kill_part reset dcolour.
+export const NATIVE_WEATHER_SCRUB = `if(P.scrub!=0u && decoOf(s)!=0u && (cid(m.core)==0u || cid(m.core)!=cid(before.core))) { setDeco(s,0u); }`;
 // spec.speedSI: m/s per authored cell/step (default WEATHER_SPEED_SI, TPT's 240 Hz step).
 export function nativeWeatherEvaluateWGSL(g, spec, params) {
   const SI = spec.speedSI ?? WEATHER_SPEED_SI;
@@ -130,6 +139,8 @@ if(isLiq(m.core) && r.motion.w!=0.0) {
  let q=clamp(r.motion.xyz*${WEATHER_SPEED_FLUX},vec3f(-Q_MAX),vec3f(Q_MAX));
  m.core.z=pack2x16float(q.xy); m.core.w=(m.core.w&0xffff0000u)|(pack2x16float(vec2f(q.z,0))&65535u);
 }
+// V1's scrub, over every cell of the box (unchanged empty cells included, as decoScrubFrag's)
+${NATIVE_WEATHER_SCRUB}
 if(any(m.core!=before.core) || m.bank!=before.bank) {
  noteEnergySource(p,energySub(energyOf(m),energyOf(before)));
  // matter made in air is unpainted (V1's move left that cell 0); retyped matter keeps its paint, as V1's weather edit
@@ -158,7 +169,8 @@ export function createNativeWeatherKernel(sim, name, spec) {
   const built = () => evaluate.state==='ready' && Object.values(commits).every(k=>k.state==='ready') && d.isReady;
   const status = { get state() { return built() ? 'ready' : 'pending'; } };
   const kernel = { ready, main:status, apply:status,
-    run(box, values, source) {
+    // opts.scrub: V1's sim.edit { scrub } for this write (NATIVE_WEATHER_SCRUB)
+    run(box, values, source, { scrub = false } = {}) {
       // (a suspended owner's cells aren't the grid's: V1 steps its own, so its writers write those)
       if(!built() || sim.disposed || o.disposed || sim.compact!==o) return false;
       if(!box || box.lo.some((v,a)=>v>box.hi[a])) return false;
@@ -172,14 +184,14 @@ export function createNativeWeatherKernel(sim, name, spec) {
         if(cut<=box.lo[axis] || cut>box.hi[axis]) throw new RangeError('Native weather scratch exceeds device binding limit');
         const left={lo:[...box.lo],hi:[...box.hi]},right={lo:[...box.lo],hi:[...box.hi]};
         left.hi[axis]=cut-1;right.lo[axis]=cut;
-        return kernel.run(left,values,source) && kernel.run(right,values,source);
+        return kernel.run(left,values,source,{scrub}) && kernel.run(right,values,source,{scrub});
       }
       o.sync();
       const scratch=gpu.createBuffer({label:`${name} native results`,size:count*64,usage:0x80});
       const entries=(buffers,start=0)=>buffers.map((buffer,i)=>({binding:start+i,resource:{buffer}}));
       const evalGroup=gpu.bindGroup(evalLayout,[...(source?[{binding:0,resource:{buffer:source}}]:[]),...entries([scratch],1)],name);
       const commitGroup=gpu.bindGroup(commitLayout,entries([scratch,d.air[d.airIndex],d.plans]),name);
-      const p={...nativeModes(sim),...values,editLo:box.lo,editHi:box.hi,tick:o.tick+1};
+      const p={...nativeModes(sim),...values,editLo:box.lo,editHi:box.hi,tick:o.tick+1,scrub:+!!scrub};
       const dispatch=(k,n,bind,header)=>{ k.dispatch(gpu.frame,fold(Math.ceil(n/64)),{bind,header,params:p}); sim.onPass?.(k.name,{kind:'compute',gpuMs:null}); };
       dispatch(evaluate,count,[sim.tables,sim.bindPhysicalRO,evalGroup],sim.readHeader({physical:true}));
       dispatch(commits.material,count,[o.nativeDynamics.group,commitGroup],sim.header());

@@ -26,7 +26,7 @@ import { nativePaintWGSL, nativePaintParams } from '../../src/v2/nativePaint.js'
 import { nativeTransferWGSL } from '../../src/shaders/v2/transfer.js';
 import { airWGSL } from '../../src/shaders/v2/air.js';
 import { v2BoundaryWGSL } from '../../src/shaders/v2.js';
-import { nativeWeatherCommitWGSL, nativeWeatherParams } from '../../src/v2/nativeWeather.js';
+import { nativeWeatherCommitWGSL, nativeWeatherParams, NATIVE_WEATHER_SCRUB } from '../../src/v2/nativeWeather.js';
 import { validateDynamicState } from '../../src/v2/dynamics.js';
 import { emptyDynamicState } from '../../src/v2/dynamicState.js';
 import { NativeParticles } from '../../src/gfx/nativeParticles.js';
@@ -259,6 +259,27 @@ test('wind moves a gas with its paint; open edges and weather leave or make unpa
   assert.match(statements(airWGSL(g16, nativeDynamicsHead, 'gasBoundary')), /setDeco\(t,0u\);storeMaterial\(t,before,dCarrier\(before\)\)/);
   assert.match(statements(v2BoundaryWGSL(g16)), /setDeco\(s,0u\);\s*storeMaterial\(s,before,after\)/);
   assert.match(statements(nativeWeatherCommitWGSL(g16, nativeWeatherParams('decoCheck', { params: {} }), 'commit')), /if\(cid\(before\.core\)==0u && cid\(m\.core\)!=0u\) \{ setDeco\(s,0u\); \}\s*storeMaterial\(s,before,m\)/);
+});
+
+// V1's surge and wave scrub (src/oceanEvents.js step, src/world/waveDemo.js: sim.edit { scrub: true };
+// src/shaders/deco.js decoScrubFrag): executed from the native commit's emitted statement.
+test('an ocean surge or a wave scrubs as V1\'s does: retyped or empty cells of its box lose their paint, unchanged matter keeps it', () => {
+  const commit = statements(nativeWeatherCommitWGSL(g16, nativeWeatherParams('decoCheck', { params: {} }), 'material'));
+  const at = commit.indexOf(NATIVE_WEATHER_SCRUB);
+  assert.ok(at > 0, 'the commit emits the scrub');
+  assert.ok(at < commit.indexOf('if(any(m.core!=before.core) || m.bank!=before.bank)'), 'over every cell of the box, written or not (unchanged empty cells too, as V1\'s)');
+  const scrub = new Function('P', 's', 'm', 'before', 'decoOf', 'setDeco', 'cid', jsOf(NATIVE_WEATHER_SCRUB));
+  const id = e => ({ core: new Uint32Array([e, 0, 0, 0]) }), cid = c => c[0] & 255;
+  // [before, after, paint]: water the surge pushes, stale paint on air it leaves air, water a wave's
+  // trough empties, air the surge floods, wood a writer retypes to fire, unpainted air
+  const cases = [[E.WATER, E.WATER, BLUE], [0, 0, STALE], [E.WATER, 0, RED], [0, E.WATER, STALE], [E.WOOD, E.FIRE, GREEN], [0, 0, 0]];
+  const run = flag => cases.map(([b, a, paint]) => {
+    const plane = [paint];
+    scrub({ scrub: flag }, 0, id(a), id(b), s => plane[s], (s, d) => { plane[s] = d; }, cid);
+    return plane[0];
+  });
+  assert.deepEqual(run(1), [BLUE, 0, 0, 0, 0, 0], 'V1 decoScrubFrag: id == E_EMPTY || id != work[s] loses it');
+  assert.deepEqual(run(0), cases.map(c => c[2]), 'a write without scrub (rain, bolts, chop) leaves the plane to the commit\'s own rule');
 });
 
 // ---------------------------------------------------------------- (5) snapshots and drawing
