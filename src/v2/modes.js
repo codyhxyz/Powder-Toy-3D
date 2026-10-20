@@ -3,7 +3,8 @@ import { CELL_M } from '../scale.js';
 
 // The saved slider remains dimensionless relative to the shipped .025 default.
 // Native physics uses TF2's ~2g (docs/v2.md §5.1), consistently in every owner;
-// legacy cells/step² and the POV's separate 44g calibration are NOT SI units.
+// legacy cells/step² are NOT SI units. The first-person body is not a grid owner:
+// it falls at Noita's 5.4 g under both engines, along gravityAt (pov/player.js).
 const GRAVITY_SETTING_REFERENCE = 0.025;
 export const GRAVITY_MS2 = 19.6;
 export const MODE_FIELDS = { gravMode: 'u32', edge: 'u32', airMode: 'u32', ambientHeat: 'u32', gravity: 'f32', ambient: 'f32' };
@@ -41,8 +42,9 @@ export function edgeCell(position, dims, edge) {
   if (edge === EDGE.LOOP) return position.map((x, a) => ((x % dims[a]) + dims[a]) % dims[a]);
   return position.every((x, a) => x >= 0 && x < dims[a]) ? [...position] : null;
 }
-// POV positions and velocities use cells and cells/s, not metres. Body lane
-// consumes this same force vector; do not apply another legacy gravity scale.
+// The grid's own field in POV units (cells/s², not metres). The first-person
+// body takes only gravityAt's direction and keeps Noita's strength under both
+// engines (pov/player.js), so a jump is the same height under V1 and V2.
 export function nativeBodyGravity(sim, localPosition) {
   return gravityAt(localPosition, [sim.g.nx, sim.g.ny, sim.g.nz], nativeModes(sim)).map(x => x / CELL_M);
 }
