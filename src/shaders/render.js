@@ -758,6 +758,8 @@ const realistic = (detail, curved = false, backend = 'box', fixedReadFormat) => 
   const liq = LIQ_DETAIL(detail, backend);
   // Certified liquid interiors (passes.js brickFrag): only the Box's brick kernel writes the certificate.
   const interior = !curved && backend !== 'world';
+  // Intentional (V2 design, docs/v2.md §4.3): under V2 molten liquids (lava) carry foam as
+  // every liquid row does, so the format-2/3 branch below layers it; V1 has no foam on them.
   return /* wgsl */ `
 // Inside a liquid, sunlight fades with depth: the sun's visibility is read
 // where the ray got in (shadow map) and then attenuated by the liquid between

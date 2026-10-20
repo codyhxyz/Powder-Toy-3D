@@ -2819,6 +2819,8 @@ function tick(now, renderOnly = false) {
   let stepped = settings.steps;
   if (stepping && v2Box()) {
     // v2: a fixed 60 Hz tick on game time, Speed scaling it (4 steps a frame is 1×); none while it rests
+    // Intentional (V2 design, docs/v2.md §5.1): one 60 Hz game clock, so a slow or fast frame rate
+    // no longer changes the world's speed as V1's settings.steps a frame does; equal at 60 fps.
     stepped = 0;
     if (v2Active()) {
       if (!v2Running) { physicsV2.activate(); v2Running = true; }

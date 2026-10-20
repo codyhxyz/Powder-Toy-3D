@@ -215,6 +215,8 @@ export const liquidDetailGLSL = (detail = {}, { backend = 'box', fixedReadFormat
   const ripples = !!detail.DETAIL_LIQ_RIPPLES;
   const meniscus = !!detail.DETAIL_LIQ_MENISCUS;
   const world = backend === 'world';
+  // Intentional (V2 design, docs/v2.md §4.3 and §13.4): V2's foam is always on and every liquid
+  // foams; V1's Whitewater foam stays behind its detail switch (the format test in liquidDetail below).
   const foam = !world || !!detail.DETAIL_LIQ_FOAM; // native §4.3 foam is independent of the legacy Whitewater switch
   return /* wgsl */ `
 // Which copy of the aeration buffer (binding 19: both copies, docs/webgpu.md

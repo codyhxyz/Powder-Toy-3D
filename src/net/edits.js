@@ -15,8 +15,8 @@ export function applyGuestStroke(sim, s, { wind = null, edits = {}, minRadius = 
 }
 
 // A frame's queued guest strokes, taken off the queue before any is painted.
-// A stroke the host's engine refuses (V2 throws for a native tool it can't run
-// yet) is that guest's lost dab: the rest still paint, and the host's frame,
+// A stroke the host's engine refuses (V2 throws while a native kernel the tool
+// needs is still building) is that guest's lost dab: the rest still paint, and the host's frame,
 // its stream and every later stroke go on. Returns how many were refused.
 export function applyGuestStrokes(sim, queue, { valid = () => true, options = () => ({}) } = {}) {
   let refused = 0;

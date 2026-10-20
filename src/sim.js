@@ -952,6 +952,8 @@ export class Simulation {
   // cells read their partners, a two-phase one.
   paint({ center, radius, shape, tool, rate, replace, wind = null, end = center, grow = null, mask = null, filter = -1, erase = false, prop = null }) {
     if (this.nativeTransition || this.nativeTransitionError) return false;
+    // Under V2 the tools whose V1 rule moves cells, air or particles run natively (v2/interactions.js,
+    // below); the rest paint V1's cells, which V2 imports. Not a deviation: the same stroke either way.
     if (this.compact) {
       const routed = routeNativePaint(this, { center, radius, shape, tool, rate, replace, wind, end, grow, mask, filter, erase, prop });
       if (routed !== null) return routed;
