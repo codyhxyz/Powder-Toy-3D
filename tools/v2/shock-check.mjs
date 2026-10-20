@@ -81,13 +81,14 @@ test('only a hit V1 counts: not on its own pool, not on a liquid it outweighs, n
   assert.equal(w.events.reduce((n, v) => n + (v & 1), 0), 0);
 });
 
-test('the runs and pairs passes that land the runs still validate (Naga)', async () => {
+test('the runs and pairs passes that land the runs still validate (Naga, grouping)', async () => {
   const { V2_KERNELS } = await import('../../src/shaders/v2.js');
   const { gridLayout } = await import('../../src/sim.js');
-  const { assertNaga } = await import('./wgsl-grouping.mjs');
+  const { assertNaga, wgslGroupingErrors } = await import('./wgsl-grouping.mjs');
   for (const dims of [[32, 32, 32], [48, 16, 32]]) for (const name of ['v2runs', 'v2pairs']) {
     const code = V2_KERNELS.find(k => k.name === name).code(gridLayout(...dims));
     assert.match(code, /colShockLand\(x, z, r0 - d, v\)/);
     assertNaga(code, `${name} ${dims}`);
+    assert.deepEqual(wgslGroupingErrors(code), [], `${name}: mixed bitwise operators grouped (Chromium rejects them ungrouped)`);
   }
 });
