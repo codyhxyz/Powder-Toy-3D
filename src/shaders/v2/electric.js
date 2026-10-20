@@ -21,6 +21,42 @@ import { v2Head, ARGS2, V2_CONTACT_LAYOUT, V2_ARGS_LAYOUT } from '../v2.js';
 import { LAYOUT, gridDims } from '../common.js';
 import { fold } from '../../gpu/kernels.js';
 
+// The contact module's declarations this pass reaches, and nothing else: its structs, constants
+// and row tables, and the functions the electric rules call (transitively). The block's rules
+// (contactBlock and every rule only it calls) stay the block pass's alone, so this pass compiles
+// small and the contact module still compiles once, in the block pass.
+const ELECTRIC_ROOTS = ['ctElecMaterial', 'ctElecStep', 'ctElecApply', 'ctUnpack', 'ctPack', 'ctSeed', 'ctRoll', 'ctNew'];
+export function electricContactWGSL(contactWGSL) {
+  const parts = [], fns = new Map();
+  let at = 0;
+  const fnHead = /^fn\s+(\w+)\s*\(/;
+  // split into top-level declarations: a function ends at its matching brace, anything else at a line end
+  while (at < contactWGSL.length) {
+    const rest = contactWGSL.slice(at), m = rest.match(fnHead);
+    if (m && (at === 0 || contactWGSL[at - 1] === '\n')) {
+      let i = contactWGSL.indexOf('{', at), depth = 0;
+      for (; i < contactWGSL.length; i++) { if (contactWGSL[i] === '{') depth++; else if (contactWGSL[i] === '}' && --depth === 0) break; }
+      const text = contactWGSL.slice(at, i + 1);
+      fns.set(m[1], text); parts.push({ fn: m[1] });
+      at = i + 1;
+    } else {
+      const end = contactWGSL.indexOf('\n', at);
+      const stop = end < 0 ? contactWGSL.length : end + 1;
+      parts.push({ text: contactWGSL.slice(at, stop) });
+      at = stop;
+    }
+  }
+  const keep = new Set(), todo = ELECTRIC_ROOTS.filter(n => fns.has(n));
+  if (todo.length !== ELECTRIC_ROOTS.length) throw Error('electric pass: the contact module lacks its electric rules');
+  while (todo.length) {
+    const name = todo.pop();
+    if (keep.has(name)) continue;
+    keep.add(name);
+    for (const [other] of fns) if (!keep.has(other) && new RegExp(`\\b${other}\\s*\\(`).test(fns.get(name))) todo.push(other);
+  }
+  return parts.map(p => (p.fn ? (keep.has(p.fn) ? fns.get(p.fn) : '') : p.text)).join('');
+}
+
 const MAIN = '@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32)';
 
 // A listed brick: step 0 the awake list, later steps the electric list.
@@ -34,7 +70,7 @@ fn elecListed(e: u32, awake: bool) -> u32 {
 
 export const v2ElecGatherWGSL = (g, contactWGSL = productionContactWGSL) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
-${contactWGSL}
+${electricContactWGSL(contactWGSL)}
 ${listWGSL}
 var<workgroup> wgChanged: atomic<u32>;
 // List a brick for this tick's later steps, once.
@@ -88,7 +124,7 @@ fn main() {
 
 export const v2ElecCommitWGSL = (g, contactWGSL = productionContactWGSL) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
-${contactWGSL}
+${electricContactWGSL(contactWGSL)}
 ${listWGSL}
 ${MAIN} {
   let e = foldId(wg, nwg);
