@@ -30,6 +30,7 @@ import { previewCharacter, nextYouZoom } from '../pov/character.js';
 // the wheel, as on Skyrim's loading screen. It is the body you are about to
 // spawn as (pov/character.js previewCharacter), not a fixed wizard.
 //   loading(status, o)    the screen, with the game's line (src/main.js)
+//   flag(text)            a load stalled or failed (app.js loadWatch): its line, under the step
 //   progress(step, text)  a boot step began (STEPS keys; 'cold': the shaders are compiling
 //                         cold; 'match' with app.js's line for it)
 // 'stick' is the saved paper-bag choice; a new URL cannot reuse the old stickman still.
@@ -126,6 +127,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
   const loadName = h('h1.mm-load-name');
   const loadStatus = h('div.mm-load-status');
   const loadStep = h('div.mm-load-step');
+  const loadFlag = h('div.mm-load-flag');   // a stalled or failed load, said plainly (loadWatch.js)
   // (eager, at low priority: he must be there the moment Start is pressed, when the page is about to freeze compiling)
   const you = h('img', { src: YOU(character()), alt: '', decoding: 'async', fetchpriority: 'low', draggable: false });
   // decoded while the menu is up: a fast boot freezes the page (the map build, the shaders) before an
@@ -158,7 +160,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
         h('div.mm-pick', {}, h('div.mm-pick-line', {}, pickName, pickMeta), pickDesc),
         h('div.mm-actions', {}, exportBtn, deleteBtn, startBtn))),
     h('div.mm-load', { 'aria-live': 'polite' },
-      h('div.mm-load-copy', {}, loadMode, loadName, loadStatus, h('div.mm-load-bar', {}, h('i')), loadStep),
+      h('div.mm-load-copy', {}, loadMode, loadName, loadStatus, h('div.mm-load-bar', {}, h('i')), loadStep, loadFlag),
       youFig));
   document.body.append(el);
   // Skyrim's loading screen: the wheel zooms him, wherever the pointer is.
@@ -392,6 +394,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
         .map((s) => ({ key: s.key, label: s.text(pick) }));
       at = -1;
       cold = false;
+      loadFlag.textContent = '';
       renderStep();
       el.classList.add('open', 'loading');
       youLive.start(character(save));
@@ -405,6 +408,12 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
       if (text) steps[i].label = text;
       at = Math.max(at, i);   // (a step already past only changes its line)
       renderStep();
+    },
+    // a load flagged (app.js loadWatch): its line under the step; false when no loading screen is up
+    flag(text) {
+      if (!el.classList.contains('loading')) return false;
+      loadFlag.textContent = text;
+      return true;
     },
     get isOpen() { return el.classList.contains('open'); },
   };

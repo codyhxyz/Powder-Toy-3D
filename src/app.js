@@ -86,6 +86,7 @@ import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
 import { launch, mark } from './launch.js';
+import { createLoadWatch } from './loadWatch.js';
 import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z, HOME_ENTRY } from './pov/village/state.js';
 import { withCityBusFocus } from './pov/village/bus.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
@@ -390,6 +391,11 @@ let worldMode = null, win = null;
 let wired = false;   // the wires have booted (their invalidate hooks can run)
 
 let graphicsFailure = null;
+// A map load that stalls or errors is flagged: on the loading screen while it's up, else a
+// toast; and kept in this browser for the bug report (loadWatch.js). A cancelled start is
+// not a stall. build: this bundle's hashed name, which names the deploy.
+const loadWatch = createLoadWatch({ build: import.meta.url.split('/').pop(), alive: () => !graphicsFailure && !launch.startupError,
+  report: (record, text) => { if (!launch.flagLoad?.(text)) hud.toast(text, { kind: 'error' }); } });
 // What the page was doing when its GPU work stopped (gfx/gpuLoss.js), kept for the bug report.
 const gpuLoss = createGpuLossTracker(gpu);
 // Graphics stop once, for good (docs/webgpu.md B9): device loss, an uncaptured
@@ -399,6 +405,8 @@ const gpuLoss = createGpuLossTracker(gpu);
 // There is no restore: the state lived on the GPU.
 function stopGraphics(error) {
   if (!graphicsFailure) {
+    loadWatch.error(error);   // a load under way failing is flagged and recorded (loadWatch.js)
+    loadWatch.stop();
     graphicsFailure = error;
     gpuLoss.record({ kind: failureKind(error.message), message: error.message.slice(0, 2000), ...gpuLoss.snapshot() });
     invalidateGpuWork();
@@ -780,6 +788,7 @@ function openMap(key, mode = 'sandbox') {
   if (isWorld(m) && mp.role === 'host' && mode !== 'sandbox') { hud.toast('World co-op supports Sandbox exploration only.'); return false; }
   if (isWorld(m) && !wire('world')) { hud.toast(notYet(`${m.name} (World maps)`), { kind: 'error' }); return false; }
   if (!gridFits(dimsOf(m.size, m.scene))) return false;
+  loadWatch.start(m.key, { step: 'drawing the new map', onScreen: true });
   modeEpoch++;
   pov?.game?.end();   // cancel pending team loads before replacing their world
   pov?.mission?.end();
@@ -2862,7 +2871,11 @@ function tick(now, renderOnly = false) {
   }
   let runDerived=false, runView=false;
   if(win) {
-    const driver=wire('world').prepareRender(ctx);
+    // The WORLD renderer failing (e.g. a world over its book's binding limit) stops graphics with
+    // its message on screen, never a loading screen waiting on a frame that can't come.
+    let driver=null;
+    try{driver=wire('world').prepareRender(ctx);}
+    catch(error){stopGraphics(error);throw error;}
     if(driver) {
       runView=driver.tick({present,dt,
         reserve:()=>{
@@ -2968,6 +2981,8 @@ function tick(now, renderOnly = false) {
   }
   }
   gpu.endFrame();   // this tick's command buffer, if it recorded anything (B3)
+  // a map switched in-game is on screen: its load watch ends (loadWatch.js)
+  if (loadWatch.active && (win ? win.renderFrame?.driver?.displayedMainFrame : runView)) loadWatch.onScreen();
   if (runView) {
     if (wantShot) { wantShot = false; saveScreenshot(); }
     for (const fn of frameWaiters.splice(0)) fn();
@@ -3098,13 +3113,17 @@ function bootReady(pending = null) {
   const t0 = performance.now();
   let settled = !pending;   // (a save picked on the menu: it loads first)
   pending?.finally(() => { settled = true; });
+  loadWatch.start(bootMap?.key ?? settings.scene ?? settings.size, { step: 'building the map' });
   const check = async () => {
-    if (graphicsFailure || launch.startupError) return;
+    if (graphicsFailure || launch.startupError) return;   // (stopGraphics flagged a failure; a cancelled start isn't one)
     if(win&&!win.renderFrame?.driver?.displayedMainFrame){
+      // (its install failing is caught where the frame loop calls it: graphics stop, so this ends)
+      loadWatch.step('the World renderer\'s first frame');
       launch.progress?.('world');
       setTimeout(check,READY_POLL_MS);
       return;
     }
+    loadWatch.step('generating the world');
     if (((win && !win.loaded) || !settled) && performance.now() - t0 < READY_WAIT_MS) {
       if (win && !win.loaded) launch.progress?.('world');   // (the loading screen's step: its passes compile, then it generates)
       setTimeout(check, READY_POLL_MS);
@@ -3113,11 +3132,13 @@ function bootReady(pending = null) {
     mark('first-frame');
     if (bootMap && launch.mode && launch.mode !== 'sandbox' && pov?.game) {
       launch.status?.(launch.mode === 'noita' ? 'Dropping in' : 'Picking the teams');
+      loadWatch.step('starting the match');
       const match = startMode(launch.mode, { fresh: true }).catch((err) => console.error('The match failed to start', err));
       await Promise.race([match, new Promise((r) => setTimeout(r, MATCH_WAIT_MS))]);
     } else if (bootMap) startMode(params.get('mode') ?? launch.mode ?? 'sandbox');   // ?mode=, or Sandbox: its effect (Sandbox's none)
     if (graphicsFailure || launch.startupError) return;
     mark('ready');
+    loadWatch.done();
     launch.ready?.();
   };
   requestAnimationFrame(() => requestAnimationFrame(check));

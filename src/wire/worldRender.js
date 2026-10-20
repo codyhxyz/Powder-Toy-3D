@@ -20,6 +20,13 @@ function observedFeedback(gpu,options,wake) {
   return Object.freeze({...provider,get failure(){return provider.failure;},reserve(frame){const ticket=provider.reserve(frame);return {submitted:ticket.submitted,record(...args){try{return ticket.record(...args);}finally{if(provider.failure)wake();}}};}});
 }
 
+// The atlas feedback's Sun-request suffix: one bit per Sun tile that can cover the
+// world's diagonal. Shared with tools/check-world-fit.mjs, which builds the same atlas.
+export const worldFeedbackExtraWords = (size) => {
+  const bound=Math.ceil(Math.hypot(...size)/(256*WORLD_SUN_PITCH))+2;
+  return Math.ceil(bound*bound/32);
+};
+
 /** No production call site. Installs only when Parent explicitly opts in.
  * Native tables/external resources remain caller-owned, with explicit pins.
  * request() captures the active cut synchronously; newer requests coalesce.
@@ -29,8 +36,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   if(!source||!producer||source.win!==win||source.gpu!==gpu)throw new TypeError('actual WORLD Source/Producer required');
   if(!tables||Number.isInteger(tables.size)||!Number.isInteger(tableBuffer?.size)||tableBuffer.size<16)throw new TypeError('distinct TABLES bind group and native table buffer required');
   const size=[...win.size], dims=size.map(n=>n/4), g={nx:size[0],ny:size[1],nz:size[2],sourceAppearance:!!win.scene.appearanceWords};
-  const bound=Math.ceil(Math.hypot(...size)/(256*WORLD_SUN_PITCH))+2;
-  const atlas=new WorldRenderAtlas(gpu,{worldSize:size,feedbackExtraWords:Math.ceil(bound*bound/32)});
+  const atlas=new WorldRenderAtlas(gpu,{worldSize:size,feedbackExtraWords:worldFeedbackExtraWords(size)});
   while(atlas.epoch<source.epoch)atlas.reset();
   const cells=new WorldCellAtlasAdapter({gpu,source,producer,atlas,tables,worldBounds:{min:[0,0,0],max:size}});
   const metadataFeedback=observedFeedback(gpu,{},wake);

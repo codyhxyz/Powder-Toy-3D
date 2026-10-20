@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 import {gateVariants} from '../src/gfx/detailGate.js';
 import {DETAIL,settingKey} from '../src/gfx/detail.js';
 import {VIEWS,isMaterialView,isTestView} from '../src/views.js';
+import {createLoadWatch,LOAD_FLAG_MS} from '../src/loadWatch.js';
 const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
 function appFunction(name,env){
   const start=source.indexOf(`function ${name}(`),brace=source.indexOf('{',start);
@@ -131,12 +132,24 @@ test('WORLD frame detail uses all selected defines, never camera distance from p
 
 test('loading never declares WORLD ready before a confirmed MAIN, even past old timeout',async()=>{
   let time=0,ready=0;const queued=[],win={loaded:true,renderFrame:{driver:{displayedMainFrame:null}}};
-  const launch={progress(){},ready(){ready++;}},env={win,launch,graphicsFailure:null,
+  // the real load watch, on this test's clock: a World that never shows MAIN is flagged, not left spinning
+  const flags=[],timers=[];
+  const loadWatch=createLoadWatch({now:()=>time,store:null,report:r=>flags.push(r),
+    setTimer:(fn,ms)=>timers.push({fn,at:time+ms}),clearTimer:()=>{}});
+  const fire=()=>{for(const t of timers.splice(0))if(t.at<=time)t.fn();else timers.push(t);};
+  const launch={progress(){},ready(){ready++;}},env={win,launch,graphicsFailure:null,loadWatch,settings:{scene:'noitaTerrain05'},
     performance:{now:()=>time},requestAnimationFrame:fn=>queued.push(fn),setTimeout:fn=>queued.push(fn),
     READY_POLL_MS:100,READY_WAIT_MS:20000,MATCH_WAIT_MS:30000,mark(){},bootMap:null};
-  appFunction('bootReady',env)();
-  await queued.shift()();await queued.shift()();
-  assert.equal(ready,0);time=60000;await queued.shift()();assert.equal(ready,0);
-  win.renderFrame.driver.displayedMainFrame={frameIdentity:{}};
-  await queued.shift()();assert.equal(ready,1);
+  const quiet=console.error;console.error=()=>{};
+  try{
+    appFunction('bootReady',env)();
+    await queued.shift()();await queued.shift()();
+    assert.equal(ready,0);time=60000;await queued.shift()();assert.equal(ready,0);
+    fire();
+    assert.equal(flags.length,1,`past ${LOAD_FLAG_MS} ms without MAIN the load is flagged`);
+    assert.equal(flags[0].kind,'slow');assert.equal(flags[0].map,'noitaTerrain05');assert.match(flags[0].step,/World renderer/);
+    win.renderFrame.driver.displayedMainFrame={frameIdentity:{}};
+    await queued.shift()();assert.equal(ready,1);
+    assert.equal(loadWatch.active,false,'the screen coming down ends the watch');
+  }finally{console.error=quiet;}
 });

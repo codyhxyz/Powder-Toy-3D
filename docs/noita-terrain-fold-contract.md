@@ -27,6 +27,8 @@ Its world-coordinate conversion is `(pixel - [35,14]) * 512`.
 Start at the surface, where Noita starts the player: the start mountain, the giant tree and the Mines.
 Include the first Holy Mountain, the six main biomes, their Holy Mountains,
 and the final arena. Exclude side worlds and side biomes.
+The folded box must fit the WORLD renderer (`tools/check-world-fit.mjs`): about 2,560 cells wide at 320 tall.
+That is why the crop stops at x -3072 (Temple of the Art's western branch is left out) and the ring closes to ~352 degrees.
 Keep internal pockets inside the main-biome envelope.
 Keep original Holy Mountain portals; do not carve through their walls.
 
@@ -53,7 +55,7 @@ The source extent fields control the crop, not just the fold.
 ## Fold and streaming contract
 
 Keep gravity vertical. Bend horizontal source X around a smooth arc in XZ.
-The first configuration uses a 270-degree arc, not independently rotated rooms.
+The first configuration used a 270-degree arc, not independently rotated rooms; the current one closes to ~352 degrees to fit the renderer.
 Its radial thickness is 136 cells: 2 x (64-cell inflation + 4 cells of backdrop rock).
 One source pixel is one cell on the centerline.
 The radius is `sourceWidth * cellScale / angleSpan`.

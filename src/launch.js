@@ -7,6 +7,8 @@
 //   status(text) set by main.js: the loading screen's line, while app.js starts a match behind it
 //   progress(step)  set by main.js, called by app.js as the boot reaches a step
 //                (the loading screen's status lines, ui/menu.js STEPS)
+//   flagLoad(text)  set by main.js: a stalled or failed load's line on the loading screen (app.js
+//                loadWatch); false when the loading screen isn't up (app.js toasts it instead)
 //   ready()      set by main.js, called by app.js once the first map is on screen (and a match
 //                picked with it is running)
 //   failed(e)    records a fatal startup graphics failure; no automatic retry
@@ -22,7 +24,7 @@
 //   warm         set by preload.js: the menu's pipeline warm-up, for tools
 //                ({ grids, built, pending, settled: Promise })
 export const launch = {
-  map: null, mode: 'sandbox', save: null, openMenu: null, menuOpen: null, status: null, progress: null, ready: null,
+  map: null, mode: 'sandbox', save: null, openMenu: null, menuOpen: null, status: null, progress: null, flagLoad: null, ready: null,
   adapter: null, gpu: null, deviceError: null, warm: null, startupError: null, failed: null,
 };
 

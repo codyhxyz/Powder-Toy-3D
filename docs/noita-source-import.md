@@ -6,7 +6,8 @@ The previous room-collage conversion is removed.
 
 The crop starts in the sky above the start mountain and the giant tree, at Noita's own start.
 It includes the surface, the Mines, Coal Pits, Snowy Depths, Hiisi Base, Underground Jungle, Vault, Temple of the Art, and Kolmi's arena.
-Parallel worlds and distant side biomes are outside the crop.
+Parallel worlds, distant side biomes and Temple of the Art's western side branch (x < -3072) are outside the crop.
+The crop is x -3072..4144, so the folded world fits the WORLD renderer (below).
 
 ## Separate pipeline stages
 
@@ -23,7 +24,11 @@ Changing the bend, thickness, or material appearance does not change the native 
 Changing the source crop changes only the selected source pixels.
 The compiler produces deterministic gzip payloads with per-band hashes.
 
-The default fold bends horizontal source coordinates around a 270-degree arc.
+The fold bends horizontal source coordinates around a ~352-degree arc of radius 1176 cells.
+The folded world must fit the WORLD renderer at default WebGPU limits: its world book (one u32 per
+4-cell brick of the whole box) is one 128 MiB binding, so at 320 cells tall the box can be at most
+about 2,560 cells wide. The 4128-wide 270-degree ring of 2026-10-18 overflowed it and Descent never
+finished loading; `tools/check-world-fit.mjs` now fails the deploy for any World map that doesn't fit.
 Source Y stays vertical. The ribbon has configurable thickness.
 The inverse transform selects each voxel's original material pixel at depth 0.
 Away from the middle, open space is inflated into round caves with backdrop rock behind

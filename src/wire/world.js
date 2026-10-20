@@ -115,7 +115,8 @@ const world = {
     }
     if(!win.renderFrame) {
       const slot=win.renderFrame={epoch:win.renderSource.epoch,dead:false,driver:null,error:null,ready:null};
-      const data=installWorldRender(win,{wake:()=>app.wakeLoop()});
+      let data;
+      try{data=installWorldRender(win,{wake:()=>app.wakeLoop()});}catch(error){slot.error=error;throw error;}   // (app.js stops graphics on it)
       app.signs?.setWorldOwner(true);
       slot.ready=createWorldFrameState(app,data,createMediaNoise(app.gpu)).then(async state=>{
         if(slot.dead){await data.dispose();await disposeWorldFrame(state);return;}

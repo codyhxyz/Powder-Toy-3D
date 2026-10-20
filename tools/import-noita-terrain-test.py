@@ -23,6 +23,8 @@ sys.modules[spec.name] = m
 spec.loader.exec_module(m)
 ASSETS = ROOT / 'public/local-maps/noita-terrain'
 CONFIG = json.loads((ROOT / 'tools/noita-terrain-source.json').read_text())
+MINX, WIDTH = CONFIG['fold']['sourceMinX'], CONFIG['fold']['sourceWidth']
+OFF = -MINX
 
 
 class UnitChecks(unittest.TestCase):
@@ -173,7 +175,7 @@ class PublishedChecks(unittest.TestCase):
         self.assertEqual(route['palette'][0], dict(name='air', element=0))
         self.assertLessEqual(len(route['palette']), 255)
         for i, (r, a) in enumerate(zip(route['regions'], self.arrays)):
-            self.assertEqual(a.shape, (320, 9216))
+            self.assertEqual(a.shape, (320, WIDTH))
             self.assertEqual(len(self.payloads[i]), 2 * a.size + self.backdrops[i].size)
             self.assertEqual(m.sha(a.tobytes()), r['sha256'])
             self.assertEqual(m.sha(self.payloads[i][a.size:]), r['fieldsSha256'])
@@ -211,16 +213,16 @@ class PublishedChecks(unittest.TestCase):
             a = self.arrays[self.route['regions'].index(r)]
             x, y, _ = r['spawnSource']
             body = a[int(np.floor(y - 5.5)) - r['sourceTop']:int(np.ceil(y)) - r['sourceTop'],
-                     int(np.floor(x - .8)) + 4608:int(np.floor(x + .8)) + 4609]
+                     int(np.floor(x - .8)) + OFF:int(np.floor(x + .8)) + OFF + 1]
             self.assertGreater(body.size, 0)
             self.assertNotIn(255, body)
             if r['spawnSupported']:
                 self.assertTrue(np.all(body == 0))
                 depth = self.depths[self.route['regions'].index(r)][int(np.floor(y - 5.5)) - r['sourceTop']:int(np.ceil(y)) - r['sourceTop'],
-                                                                     int(np.floor(x - .8)) + 4608:int(np.floor(x + .8)) + 4609]
+                                                                     int(np.floor(x - .8)) + OFF:int(np.floor(x + .8)) + OFF + 1]
                 self.assertTrue(np.all(depth > 2 * m.BODY_RADIAL_REACH), 'debug starts are body-clear in 3D, not just in the native slice')
             if r.get('spawnOpenView'):
-                ix, iy = int(np.floor(x)) + 4608, int(y) - r['sourceTop']
+                ix, iy = int(np.floor(x)) + OFF, int(y) - r['sourceTop']
                 view = a[iy - 12:iy, ix - 2:ix + 21]
                 self.assertEqual(view.shape, (12, 23))
                 self.assertTrue(np.all(view == 0), 'debug camera uses an actual open room, never carved space')
@@ -242,8 +244,8 @@ class PublishedChecks(unittest.TestCase):
         half = self.route['inflation']['maxHalfDepth']
         halo, miny = 2 * (half + 2) + 2, self.route['regions'][0]['sourceTop']
         for sx, sy in [self.route['startSource'][:2], (0, 3800), (2000, 13000)]:
-            x0, y0 = int(sx) + 4608 - 256, int(sy) - miny - 256
-            y0, x0 = max(0, y0), max(0, min(x0, 9216 - 512))
+            x0, y0 = int(sx) + OFF - 256, int(sy) - miny - 256
+            y0, x0 = max(0, y0), max(0, min(x0, WIDTH - 512))
             a, b = max(0, y0 - halo), min(len(raster), y0 + 512 + halo)
             got = m.inflate_depth(is_open[a:b], half)
             self.assertTrue(np.array_equal(got[y0 - a:y0 - a + 512, x0:x0 + 512], depth[y0:y0 + 512, x0:x0 + 512]), (sx, sy))
@@ -324,7 +326,7 @@ class PublishedChecks(unittest.TestCase):
                 lo, hi = max(y, r['sourceTop']), min(y + h, r['sourceTop'] + 320, 13888)
                 if hi <= lo:
                     continue
-                published = raster[lo - r['sourceTop']:hi - r['sourceTop'], x + 4608:x + 4608 + w]
+                published = raster[lo - r['sourceTop']:hi - r['sourceTop'], x + OFF:x + OFF + w]
                 local, reserved = ids[lo - y:hi - y], black[lo - y:hi - y]
                 self.assertTrue(np.all(published[reserved] == 0))
                 for index in np.unique(local[~reserved]):
@@ -352,10 +354,10 @@ class PublishedChecks(unittest.TestCase):
             for r, raster in zip(self.route['regions'], self.arrays):
                 lo = max(y, r['sourceTop'])
                 hi = min(y + 512, r['sourceTop'] + 320, 13888)
-                left, right = max(x, -4608), min(x + 512, 4608)
+                left, right = max(x, MINX), min(x + 512, MINX + WIDTH)
                 if hi <= lo or right <= left:
                     continue
-                published = raster[lo - r['sourceTop']:hi - r['sourceTop'], left + 4608:right + 4608]
+                published = raster[lo - r['sourceTop']:hi - r['sourceTop'], left + OFF:right + OFF]
                 mask = published != 255
                 ids = terrain.indices[lo - y:hi - y, left - x:right - x]
                 for index in np.unique(ids[mask]):

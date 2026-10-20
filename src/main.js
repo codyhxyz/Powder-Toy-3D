@@ -104,6 +104,7 @@ launch.failed = (error) => {
 // download and the build's start here, then app.js's pipeline builds, world,
 // and a team mode's match being set up behind the screen (its status line).
 launch.progress = (step) => { if (!launch.startupError) menu.progress(step); };
+launch.flagLoad = (text) => menu.flag(text);
 launch.status = (text) => { if (!launch.startupError && menu.isOpen) menu.progress('match', text); };
 
 // The boot from the menu, its first two steps shown: the game's modules
