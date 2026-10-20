@@ -116,10 +116,16 @@ export function validateContactMaterials(elements = ELEMENTS) {
   }
 }
 validateContactMaterials();
+// V1 react.js phase puffs (Pr += ...), in Pa as a reaction's: water boiling to
+// steam STEAM_BOIL_PUFF (its own branch), cloud boiling none (its branch adds
+// nothing), and every table hot/cold change puffP(HOT/COLD.z) (elements.js
+// hot/cold puff; mercury, dry ice, liquid nitrogen...). 0: no gas set free.
+const phasePuffPa = t => t?.puff ? puffPa(puffP(t.puff)) : 0;
 export const CONTACT_ROWS = ELEMENTS.map(e => {
   let hot = e.hot, cold = e.cold;
   if (e.key === 'WATER' || e.key === 'CLOUD') {
-    hot = { T: 100, into: 'STEAM', latent: PHYS.L_BOIL, puff: 1700 };
+    // STEAM_EXPANSION volumes puff STEAM_BOIL_PUFF exactly (react.js puffP).
+    hot = { T: 100, into: 'STEAM', latent: PHYS.L_BOIL, puff: e.key === 'WATER' ? PHYS.STEAM_EXPANSION : 0 };
     cold = { T: 0, into: e.key === 'CLOUD' ? 'SNOW' : 'ICE', latent: PHYS.L_FUSE };
   }
   if (e.key === 'ICE' || e.key === 'SNOW') hot = { T: 0, into: 'WATER', latent: PHYS.L_FUSE };
@@ -128,7 +134,8 @@ export const CONTACT_ROWS = ELEMENTS.map(e => {
     kind: e.kind, capacity: cap[e.id], offset: offsets[e.id], cond: e.cond,
     density: e.dens, spawnQ: q(e.temp), spawnLife: e.id === E.SINGULARITY ? Math.round(e.life * 256) : Math.min(65535, Math.round(e.life * LIFE_SCALE)),
     hotQ: hot ? q(hot.T) : 65536, hotOut: hot ? spec(hot.into) : -1,
-    hotL: PHASE_ROWS[e.id].hotLatent, hotGas: +(!!hot?.puff), hotOf: E[hot?.of] ?? e.id,
+    // hotGas: the hot change's puff (Pa, phasePuffPa), with its GAS request; 0 none.
+    hotL: PHASE_ROWS[e.id].hotLatent, hotGas: phasePuffPa(hot), hotOf: E[hot?.of] ?? e.id,
     coldQ: cold ? q(cold.T) : -1, coldOut: cold ? spec(cold.into) : -1,
     coldL: PHASE_ROWS[e.id].coldLatent, coldOf: E[cold?.of] ?? e.id,
     meltQ: e.melt ? q(e.melt) : 65536, meltInto: E[e.meltInto] ?? e.id,
@@ -146,6 +153,8 @@ export const CONTACT_ROWS = ELEMENTS.map(e => {
     blastQ: e.blast ? q(e.blast.T) : 0, blastPuff: e.blast ? puffPa(e.blast.P) : 0,
     // V1 react.js: air relaxes to ambient by AIR_AMBIENT_PULL a step, gases by their rad
     cool: Math.fround(perTick(e.id === E.EMPTY ? PHYS.AIR_AMBIENT_PULL : e.rad)),
+    // the cold change's puff (Pa) as hotGas (react.js puffP(COLD(id).z)); 0 none.
+    coldGas: phasePuffPa(cold),
   };
 });
 export const CONTACT_PRODUCTS = outSpecs;
@@ -317,18 +326,26 @@ export function ctPhase(input, surface, random) {
   if (ctRow(input.id).kind === 3 && input.fill === 0) return ctConvert(input, E.EMPTY, 0);
   let c = ctSetEnergy(input, ctEnergy(input));
   const r = ctRow(c.id);
+  // V1 react.js: a change that sets gas free puffs its own pressure on the cell
+  // (the row's hotGas/coldGas, Pa): a GAS request carrying it (ctPuff), or, for a
+  // change waiting on its partner's heat, pendingGas (ctResolvePhase).
   if (r.hotOut >= 0 && ctPastPhase(c, true)) {
     c = ctConvert(c, ctProduct(r.hotOut, random), r.hotOf);
     if (r.hotGas !== 0) {
-      if (c.id !== input.id) c.request = c.request | 2;
-      else if (c.pending >= 0) c.pendingGas = 1;
+      if (c.id !== input.id) c.request = ctPuff(c.request, r.hotGas);
+      else if (c.pending >= 0) c.pendingGas = r.hotGas;
     }
     return c;
   }
   if (r.coldOut >= 0 && ctPastPhase(c, false)) {
     let id = ctProduct(r.coldOut, random);
     if (c.id === E.STEAM && surface === 0) id = E.CLOUD;
-    return ctConvert(c, id, r.coldOf);
+    c = ctConvert(c, id, r.coldOf);
+    if (r.coldGas !== 0) {
+      if (c.id !== input.id) c.request = ctPuff(c.request, r.coldGas);
+      else if (c.pending >= 0) c.pendingGas = r.coldGas;
+    }
+    return c;
   }
   if (c.tq > r.meltQ) return ctConvert(c, E.LAVA, r.meltInto);
   if (c.id === E.LAVA) {
@@ -761,7 +778,7 @@ export function ctResolvePhase(a0, b0) {
   const before = ctAdd(ctEnergy(a0), ctEnergy(b0));
   let pair = ctBalance(a, b0, before, 41093);
   if (pair.changed === 0) return ctPairValue(a0, b0, 0);
-  if (a0.pendingGas !== 0) pair.a.request = pair.a.request | 2;
+  if (a0.pendingGas !== 0) pair.a.request = ctPuff(pair.a.request, a0.pendingGas);
   return pair;
 }
 export function ctReaction(a0, b0, seed) {

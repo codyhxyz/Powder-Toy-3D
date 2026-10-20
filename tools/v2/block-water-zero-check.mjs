@@ -18,13 +18,14 @@ import { wgslGroupingErrors, assertNaga, importMinified } from './wgsl-grouping.
 // treating a new WATER rule/calibration as an identity.
 assert.deepEqual(C.CONTACT_ROWS[E.WATER], {
   kind: K.LIQUID, capacity: 64, offset: 0, cond: 0.03, density: 10, spawnQ: 1173, spawnLife: 0,
-  hotQ: 1493, hotOut: 1, hotL: 138240, hotGas: 1, hotOf: E.WATER,
+  hotQ: 1493, hotOut: 1, hotL: 138240, hotGas: 259, hotOf: E.WATER,   // V1 react.js boil puff STEAM_BOIL_PUFF, Pa
   coldQ: 1093, coldOut: 2, coldL: 20480, coldOf: E.WATER,
   meltQ: 65536, meltInto: E.WATER, igniteQ: 65536, flashQ: 65536,
   burn: 0, heat: 0, flameQ: 1093, ash: 1, blast: 0, blastAir: 0, blastChance: 0,
   acid: 0, edible: 0, fizz: 0, bed: 0, rots: 0, singFood: 1, conductor: 1, cost: 100, wire: 0, emitter: 0,
   blastInto: -1, blastOf: 0, blastQ: 0, blastPuff: 0,   // no blast: water's shortcut is unchanged
   cool: 0,   // V1 react.js: water has no rad, so no pull toward ambient
+  coldGas: 0,   // freezing sets no gas free
 });
 assert.deepEqual(PHASE_ROWS[E.WATER], {
   hot: { T: 100, into: 'STEAM', latent: 540, puff: 1700 }, cold: { T: 0, into: 'ICE', latent: 80 },
