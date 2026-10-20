@@ -7,7 +7,7 @@ import { lib, libLayouts } from './gfx/lib.js';
 import { ddaGLSL } from './gfx/core.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
-import { liquidDetailGLSL, LIQ_DETAIL } from './gfx/liquidDetail.js';
+import { liquidDetailGLSL, LIQ_DETAIL, WORLD_NATIVE } from './gfx/liquidDetail.js';
 import { mediaGLSL } from './gfx/media.js';
 import { grainsGLSL, GRAINS_ANY } from './gfx/grains.js';
 import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './farShared.js';
@@ -756,6 +756,8 @@ const realistic = (detail, curved = false, backend = 'box', fixedReadFormat) => 
   const format = backend === 'world' ? '0u' : readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
   const liq = LIQ_DETAIL(detail, backend);
+  // World's atlas while V2 runs the box carries V2's foam (liquidDetail.js WORLD_NATIVE): the molten
+  // liquids' native foam below is then compiled in as Box's format-2/3 programs compile it.
   // Certified liquid interiors (passes.js brickFrag): only the Box's brick kernel writes the certificate.
   const interior = !curved && backend !== 'world';
   return /* wgsl */ `
@@ -1258,10 +1260,10 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         s = gatherSurf(hitP, ns, hitCh);
       }
       decoSurf(&s);   // TPT's deco colour (gfx/deco.js)
-      c = shadeSurf(s, shadeRd);${backend === 'world' ? '' : `
+      c = shadeSurf(s, shadeRd);${backend === 'world' && !detail[WORLD_NATIVE] ? '' : `
       // Native molten liquids share compact foam, not water's refraction or
       // detail eligibility. Layer only reflected light; retain heat emission.
-      if ((${format} == 2u || ${format} == 3u) && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
+      if (${backend === 'world' ? 'true' : `(${format} == 2u || ${format} == 3u)`} && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
         var foamCol = vec3f(0.0);
         var foamTrans = vec3f(1.0);
         var foamN = s.n;
