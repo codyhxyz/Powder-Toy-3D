@@ -2747,7 +2747,9 @@ function syncRenderResolution(resolutionScale = post.settings.resolutionScale) {
 // A WORLD program's detail. Under Physics V2 it also compiles V2's foam (NATIVE_FOAM: the
 // World's atlas then holds it, world/renderSource.js), as every Box program does; V1 World
 // programs stay as they are. Not a deviation: the same foam in Box and World under V2.
-function worldDetail(d) { return sim.compact ? { ...d, [NATIVE_FOAM]: 1 } : d; }
+// Keyed on the engine chosen (v2Box), not on V2 being ready yet, so a V2 session builds its
+// heavy World program once, not a V1 one first while V2's own pipelines build.
+function worldDetail(d) { return v2Box() ? { ...d, [NATIVE_FOAM]: 1 } : d; }
 function updateFrameDetail() {
   volume.updateMatrixWorld();
   camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
