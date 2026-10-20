@@ -152,19 +152,25 @@ const V2_JET_GROUPS: u32 = ${v2ActLayout(g).jetGroups}u;`;
 // plive: a bit a particle-pool slot (unsaved, liveWords of them), set wherever a slot may be live:
 // every spawn sets it, retirements and the pool preparation clear it, restores set every bit. Pool
 // sweeps read only slots whose bit is set (a clear bit means the slot's record has ID 0).
-// jetGroups: unsaved, last; a word a group of BRICK_GROUP bricks, set with any of its bricks' jets words
+// jetGroups: unsaved; a word a group of BRICK_GROUP bricks, set with any of its bricks' jets words
 // (noteJet); the jets' count reads and clears it instead of the bricks' words. Zero between ticks, like them.
+// elecCount, elecFlag, elecList, elecScratch: unsaved, last; the electric pass's (shaders/v2/electric.js):
+// its list's [count, use], a brick's listed bit, the list, then a word a cell for a step's pending change.
+// All zero between ticks but the list itself and its use (the pass's last step clears the bits, every
+// step's commit its scratch words).
 export function v2ActLayout(g) {
   const { nbricks: nb, bx, bz } = gridDims(g);
   const ledger = 10 * nb + bx * bz + 8, plive = ledger + 8 + 6 * nb + bx * bz, liveWords = PARTICLE_CAP / 32, jetGroups = plive + liveWords;
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, jets: ledger + 8 + 4 * nb, colAwake: ledger + 8 + 5 * nb, summary: ledger + 8 + 5 * nb + bx * bz, plive, liveWords, jetGroups, allocated: jetGroups + brickGroups(g) };
+  const elecCount = jetGroups + brickGroups(g), elecFlag = elecCount + 2, elecList = elecFlag + nb, elecScratch = elecList + nb;
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, jets: ledger + 8 + 4 * nb, colAwake: ledger + 8 + 5 * nb, summary: ledger + 8 + 5 * nb + bx * bz, plive, liveWords, jetGroups, elecCount, elecFlag, elecList, elecScratch, allocated: elecScratch + 64 * nb };
 }
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
 // the indirect args and the stats the driver reads back (u32 words)
 // ACT, the activity pass's (v2actArgs), follows the saved words. Words 20-31 are reserved (the
 // retired liquid list's args): saves keep their length.
-export const ARGS2 = { COLS: 0, BRICKS: 3, BLOCKS: 6, COMPACT: 9, STATS: 12, words: 32, ACT: 32, allocated: 36 };
+// ELEC, the electric pass's (v2elecArgs), follows it.
+export const ARGS2 = { COLS: 0, BRICKS: 3, BLOCKS: 6, COMPACT: 9, STATS: 12, words: 32, ACT: 32, ELEC: 36, allocated: 40 };
 // jetMask: the pair stages' face demands, two words a cell (x, z)
 export const v2DemandWords = (g) => 2 * gridDims(g).slots;
 // Scratch's original slots*16 bytes are ALL live (including support atmosphere).
@@ -187,7 +193,8 @@ export const STATS = { TICK: 0, AWAKE: 1, BUSY: 2, QUIET: 3, LAST_BUSY: 4, COLS:
 
 // pairAxis, pairStage, pairParity: which of a tick's pair stages a v2pairs dispatch is (columns.js pairOrder)
 // deco: the moves carry the decoration plane (src/deco.js; V1's MoveParams deco: only while the layer may hold paint)
-export const V2Params = uniformStruct('V2Params', { tick: 'u32', busyIn: 'u32', busyOut: 'u32', full: 'u32', offset: 'vec3i', preserveLegacyMarks: 'u32', pairAxis: 'u32', pairStage: 'u32', pairParity: 'u32', ...MODE_FIELDS, deco: 'u32' });
+// elecStep: which of a tick's electric steps a v2elecGather/v2elecCommit dispatch is (shaders/v2/electric.js)
+export const V2Params = uniformStruct('V2Params', { tick: 'u32', busyIn: 'u32', busyOut: 'u32', full: 'u32', offset: 'vec3i', preserveLegacyMarks: 'u32', pairAxis: 'u32', pairStage: 'u32', pairParity: 'u32', ...MODE_FIELDS, deco: 'u32', elecStep: 'u32' });
 
 const buf = (binding, type) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type } });
 // group 2 of every v2 kernel: the cells, the activity words, the element rows (and for args, the args)
@@ -241,6 +248,10 @@ const V2_PLIST: u32 = ${a.plist}u;
 const V2_JETS: u32 = ${a.jets}u;
 const V2_COL_AWAKE: u32 = ${a.colAwake}u;
 const V2_SUMMARY: u32 = ${a.summary}u;
+const V2_ELEC_COUNT: u32 = ${a.elecCount}u;
+const V2_ELEC_FLAG: u32 = ${a.elecFlag}u;
+const V2_ELEC_LIST: u32 = ${a.elecList}u;
+const V2_ELEC_SCRATCH: u32 = ${a.elecScratch}u;
 // a brick summary's codes: all closed (solid, powder or gas), all air, all one liquid full and still
 const SUM_CLOSED: u32 = ${SUMMARY.CLOSED}u;
 const SUM_AIR: u32 = ${SUMMARY.AIR}u;

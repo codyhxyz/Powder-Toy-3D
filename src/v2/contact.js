@@ -2,7 +2,7 @@
 // A restricted scalar JS kernel is emitted as WGSL (shaders/v2/contact.js), so
 // CPU tests exercise the same branches, not an independently drifting port.
 import { ELEMENTS, E, K, REACTIONS, mechanisms } from '../elements.js';
-import { SPARK_COST, WIRE, CONDUCTS } from '../electricity.js';
+import { SPARK_COST, WIRE, CONDUCTS, ELEC, SPARK_BORN, SPARK_CYCLE, LAMP_DC } from '../electricity.js';
 import { PHYS, NOMINAL_STEP_RATE } from '../physics.js';
 import { fallVelocity } from './fall.js';
 import { CELL_M } from '../scale.js';
@@ -63,6 +63,17 @@ const perTick = r => 1 - (1 - r) ** STEPS_PER_TICK;
 // ln of the per-partner chance a per-step chance p does NOT fire in a tick, so
 // n partners fire with 1 - exp(n·log). p ≥ 1 is certain: a log far under f32's.
 const missLog = p => PARTNER_STEPS * Math.log(Math.max(1e-30, 1 - Math.min(1, p)));
+const CONTACT_CAP_UNITS = 64;   // ctCapacity's units of a cap (CONTACT_ROWS capacity: cap·64)
+const CONTACT_Q_PER_C = 4;      // the ¼ K temperature code
+export const CT_ENERGY_PER_CAP_C = CONTACT_Q_PER_C * CONTACT_FULL * CONTACT_CAP_UNITS;
+const JOULE_ENERGY = ELEC.JOULE_PER_LEVEL * CT_ENERGY_PER_CAP_C;
+const JOULE_MILLI = 1000;
+const ELEC_PENDING = 1 << 30;
+const ELEC_LIFE_UNIT = 4096;    // above the 12-bit spark (unpackContact)
+const ELEC_LIFE_MAX = 31;
+const ELEC_SPENT_MAX = 511;
+if (Math.abs(JOULE_ENERGY * JOULE_MILLI - Math.round(JOULE_ENERGY * JOULE_MILLI)) > 1e-6) throw Error('Joule energy is not a whole number of thousandths');
+if (ELEC.SPARK_V > ELEC_SPENT_MAX || SPARK_BORN + SPARK_CYCLE * ELEC.SPARK_V >= ELEC_LIFE_UNIT || ELEC.SWITCH_ON > ELEC_LIFE_MAX) throw Error('electric scratch word fields overflow');
 // Named rule constants, shared verbatim by the scalar kernel and its WGSL
 // (shaders/v2/contact.js emits each as a typed const).
 export const CONTACT_CONSTANTS = Object.freeze({
@@ -95,11 +106,44 @@ export const CONTACT_CONSTANTS = Object.freeze({
   CT_FIRE_MIN_Q: ['i32', q(PHYS.FIRE_MIN_T)],      // flames cooler than FIRE_MIN_T go out
   CT_BURNT_MIN_Q: ['i32', q(PHYS.BURNT_MIN_T)],    // a burnt-out cell is at least this hot
   CT_ASH_SHARE: ['f32', PHYS.ASH_SHARE],
+  // V1's spark automaton (electricity.js ELEC, electricReactGLSL electric), per
+  // step: the electric pass (shaders/v2/electric.js) runs CT_ELEC_STEPS of them
+  // a tick, so every number here is V1's own, never rescaled to the tick.
+  CT_ELEC_STEPS: ['i32', STEPS_PER_TICK],
+  CT_SPARK_REST: ['i32', ELEC.SPARK_REST],
+  CT_SPARK_BORN: ['i32', SPARK_BORN],
+  CT_SPARK_CYCLE: ['i32', SPARK_CYCLE],
+  CT_SPARK_V: ['i32', ELEC.SPARK_V],
+  CT_SWITCH_ON: ['f32', ELEC.SWITCH_ON],
+  CT_TSNS_FIRE: ['f32', ELEC.TSNS_FIRE],
+  CT_LAMP_HOLD: ['i32', ELEC.LAMP_HOLD],
+  CT_LAMP_DC_LEVEL: ['i32', LAMP_DC / SPARK_CYCLE],
+  // V1's Joule heat, JOULE_PER_LEVEL cap·°C a level spent, as native energy:
+  // CT_ENERGY_PER_CAP_C a cap·°C (ctCapacity: 1/64 cap units of a full cell's
+  // 65536, in ¼ K codes). It is not a whole number, so it is split into whole
+  // energy and thousandths, and spent·JOULE is floored in exact integers (the
+  // same on the CPU and in WGSL, where an f32 product would round).
+  CT_JOULE_WHOLE: ['i32', Math.floor(JOULE_ENERGY)],
+  CT_JOULE_MILLI: ['i32', Math.round((JOULE_ENERGY - Math.floor(JOULE_ENERGY)) * JOULE_MILLI)],
+  CT_JOULE_MILLI_UNIT: ['i32', JOULE_MILLI],
+  // The electric pass's scratch word for a cell whose state a step changes:
+  // CT_ELEC_PENDING, the new spark (below CT_ELEC_LIFE_UNIT), a powered element's
+  // or sensor's new life (V1 units, at most CT_ELEC_LIFE_MAX) and the levels the
+  // step spent in it (at most SPARK_V, under CT_ELEC_SPENT_MAX).
+  CT_ELEC_PENDING: ['i32', ELEC_PENDING],
+  CT_ELEC_LIFE_UNIT: ['i32', ELEC_LIFE_UNIT],
+  CT_ELEC_LIFE_MAX: ['i32', ELEC_LIFE_MAX],
+  CT_ELEC_SPENT_UNIT: ['i32', ELEC_LIFE_UNIT * (ELEC_LIFE_MAX + 1)],
+  CT_ELEC_SPENT_MAX: ['i32', ELEC_SPENT_MAX],
+  // ctRoll's salt for a step's spark-cost draw (CT_ELEC_SALT + the step)
+  CT_ELEC_SALT: ['i32', 40],
 });
 for (const key of Object.keys(CONTACT_CONSTANTS)) if (key.slice(3) in E) throw Error(`contact constant ${key} shadows an element id`);
 const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGNUS_B, CT_FLAME_MISS_LOG, CT_OXY_FLAME_MISS_LOG, CT_FLAME_T_MIN, CT_FLAME_T_SPREAD,
   CT_OXY_FLAME_GAIN, CT_KELVIN, CT_FIRE_LIFE_MIN_Q, CT_FIRE_LIFE_SPREAD_Q, CT_FIRE_BURN_TICK, CT_FIRE_BURN_SPREAD_TICK, CT_SMOKE_FADE_TICK,
-  CT_FIRE_TO_SMOKE, CT_FIRE_MIN_Q, CT_BURNT_MIN_Q, CT_ASH_SHARE } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
+  CT_FIRE_TO_SMOKE, CT_FIRE_MIN_Q, CT_BURNT_MIN_Q, CT_ASH_SHARE, CT_SPARK_REST, CT_SPARK_BORN, CT_SPARK_CYCLE, CT_SPARK_V, CT_SWITCH_ON, CT_TSNS_FIRE,
+  CT_LAMP_HOLD, CT_LAMP_DC_LEVEL, CT_JOULE_WHOLE, CT_JOULE_MILLI, CT_JOULE_MILLI_UNIT, CT_ELEC_PENDING, CT_ELEC_LIFE_UNIT, CT_ELEC_LIFE_MAX,
+  CT_ELEC_SPENT_UNIT, CT_ELEC_SPENT_MAX } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 
 const outSpecs = [];
 function spec(into = 'FIRE') {
@@ -137,7 +181,8 @@ export const CONTACT_ROWS = ELEMENTS.map(e => {
     ash: +e.ash, blast: +!!e.blast, blastAir: +!!e.blast?.air, blastChance: 1 - (1 - (e.blast?.flame ?? 0)) ** 8,
     acid: +e.acid, edible: +(e.kind !== K.EMPTY && e.kind !== K.GAS && !e.acidProof),
     fizz: +(e.fizz > 0), bed: +e.mossBed, rots: +e.rots, singFood: +(e.id !== E.EMPTY && !e.singProof),
-    conductor: +CONDUCTS[e.id], cost: SPARK_COST[e.id], wire: +WIRE[e.id],
+    // V1's spark cost at its table's 6 significant digits (electricity.js ELEC_FIELDS sparkCost)
+    conductor: +CONDUCTS[e.id], cost: +SPARK_COST[e.id].toPrecision(6), wire: +WIRE[e.id],
     emitter: (EMITTERS[e.key] ?? 0) * 4,
     // V1 react.js explosives: lit, it becomes pickOut(INTO[PH_BLAST]) at blast.T
     // with blast.P on its cell. A blast whose product is matter (thermite's
@@ -344,7 +389,7 @@ export function ctNuclearId(c) {
   if (c.id === E.LAVA && c.ctype > 0 && c.ctype < CONTACT_ELEMENT_COUNT) return c.ctype;
   return c.id;
 }
-export function ctLive(c) { return ctRow(c.id).conductor !== 0 && c.spark % 9 > 4; }
+export function ctLive(c) { return ctRow(c.id).conductor !== 0 && c.spark % CT_SPARK_CYCLE > CT_SPARK_REST; }
 export function ctConductsInto(from, to) {
   if (from === E.NSCN && to === E.PSCN) return false;
   if (to === E.SWITCH && (from === E.PSCN || from === E.NSCN)) return false;
@@ -352,64 +397,102 @@ export function ctConductsInto(from, to) {
   return true;
 }
 export function ctCloneable(id) { return id !== E.EMPTY && id !== E.WALL && id !== E.CLONE && id !== E.PCLN && id !== E.PSCN && id !== E.NSCN; }
-export function ctElectric(input, ns, random) {
-  let c = ctCopy(input);
+// What V1's electric step can change: a conductor's spark, a powered element's
+// (switch, powered clone: electricity.js powered) or a sensor's life.
+export function ctElecMaterial(id) { return ctRow(id).conductor !== 0 || id === E.SWITCH || id === E.PCLN || id === E.TSNS; }
+// One step of V1's spark automaton (electricity.js electricReactGLSL electric;
+// react.js runs it every step on all six faces, ui/tiles/engine.js is its CPU
+// twin), from the last step's states of the cell and its six face neighbours
+// (valid 0: past the box, which V1 shows as air or wall: neither conducts nor
+// is sensed). The electric pass (shaders/v2/electric.js) runs CT_ELEC_STEPS of
+// these a tick. Returns 0 when the step changes nothing, else the scratch word
+// (CT_ELEC_PENDING + spark + life + spent: CONTACT_CONSTANTS) ctElecApply writes.
+export function ctElecStep(c, ns, random) {
   const r = ctRow(c.id);
   const life0 = ctLife(c);
-  let off = false;
-  let on = false;
-  let p = false;
-  let n = false;
+  let life = life0;
+  let offNb = false;
+  let onNb = false;
+  let pOn = false;
+  let nOff = false;
   let hot = false;
   let dc = false;
   let best = 0;
-  for (let k = 0; k < 3; k++) {
+  for (let k = 0; k < 6; k++) {
     const b = ns[k];
     if (b.valid === 0) continue;
-    if (b.id === c.id) { off = off || (ctLife(b) > 0 && ctLife(b) < 10); on = on || ctLife(b) >= 10; }
-    if (ctLive(b)) { p = p || b.id === E.PSCN; n = n || b.id === E.NSCN; }
+    // electricity.js powered: on and off spread through touching cells
+    // with the same element (off wins), a live P switches on, a live N off
+    if (b.id === c.id) { offNb = offNb || (ctLife(b) > 0 && ctLife(b) < CT_SWITCH_ON); onNb = onNb || ctLife(b) >= CT_SWITCH_ON; }
+    if (ctLive(b)) { pOn = pOn || b.id === E.PSCN; nOff = nOff || b.id === E.NSCN; }
+    // a sensor reads neighbours but air, wires and sensors (tsnsSenses), hotter by MATTER_REST_T
     hot = hot || (b.id !== E.EMPTY && b.id !== E.TSNS && ctRow(b.id).wire === 0 && ctF(b.tq - c.tq) + ctTemperatureRemainder(b) - ctTemperatureRemainder(c) > CONTACT_TSNS_MARGIN_Q);
     dc = dc || b.id === E.BATTERY;
-    if (b.id === E.BATTERY || (b.id === E.TSNS && ctLife(b) >= 1)) best = 400;
-    else if (ctLive(b) && ctConductsInto(b.id, c.id)) best = Math.max(best, ctDiv(b.spark, 9));
+    if (b.id === E.BATTERY || (b.id === E.TSNS && ctLife(b) >= CT_TSNS_FIRE)) best = CT_SPARK_V;
+    else if (ctLive(b) && ctConductsInto(b.id, c.id)) best = Math.max(best, ctDiv(b.spark, CT_SPARK_CYCLE));
   }
-  if (c.id === E.SWITCH || c.id === E.PCLN) {
-    if (ctLife(c) > 0 && ctLife(c) !== 10) c = ctWithLife(c, ctLife(c) - 1);
-    if (life0 === 10 && off) c = ctWithLife(c, 9);
-    else if (life0 === 0 && on) c = ctWithLife(c, 10);
-    if (p && life0 < 10) c = ctWithLife(c, 10);
-    if (n) c = ctWithLife(c, 9);
-    if (ctLife(c) > 0 && ctLife(c) !== 10) c.busy = 1;
+  const switched = c.id === E.SWITCH || c.id === E.PCLN;
+  if (switched) {
+    if (life > 0 && life !== CT_SWITCH_ON) life = life - 1;
+    if (life0 === CT_SWITCH_ON && offNb) life = CT_SWITCH_ON - 1;
+    else if (life0 === 0 && onNb) life = CT_SWITCH_ON;
+    if (pOn && life0 < CT_SWITCH_ON) life = CT_SWITCH_ON;
+    if (nOff) life = CT_SWITCH_ON - 1;
   }
-  if (c.id === E.TSNS) { c = ctWithLife(c, 0); if (hot) c = ctWithLife(c, 1); if (ctLife(c) !== life0) c.busy = 1; }
-  if (r.conductor === 0) return c;
-  let ph = c.spark % 9;
-  let level = ctDiv(c.spark, 9);
-  if (c.id === E.LAMP) {
-    if (dc) { c.spark = 81; return c; }
-    if (level === 9) level = 8;
-  }
-  if (ph > 0) {
-    ph--;
-    if (ph <= 4) {
-      if (c.id !== E.LAMP) level = 0;
-      else if (ph === 4) level = 8;
-      else level = Math.max(0, level - 1);
+  if (c.id === E.TSNS) { life = 0; if (hot) life = CT_TSNS_FIRE; }
+  let spark = c.spark;
+  let spent = 0;
+  if (r.conductor !== 0) {
+    let ph = c.spark % CT_SPARK_CYCLE;
+    let level = ctDiv(c.spark, CT_SPARK_CYCLE);
+    if (c.id === E.LAMP && dc) {
+      // on a battery's direct current: lit and still (LAMP_DC)
+      ph = 0; level = CT_LAMP_DC_LEVEL;
+    } else {
+      if (c.id === E.LAMP && level === CT_LAMP_DC_LEVEL) level = CT_LAMP_HOLD;
+      if (ph > 0) {
+        ph--;
+        // the level only matters while live; a lamp keeps it as its light's hold
+        if (ph <= CT_SPARK_REST) {
+          if (c.id !== E.LAMP) level = 0;
+          else if (ph === CT_SPARK_REST) level = CT_LAMP_HOLD;
+          else level = Math.max(0, level - 1);
+        }
+      } else if (c.id !== E.SWITCH || life0 === CT_SWITCH_ON) {
+        if (c.id === E.LAMP) level = Math.max(0, level - 1);
+        if (best > 0) {
+          // the cost's fraction is spent at random (electricity.js SPARK_DROP)
+          let cost = ctI(r.cost);
+          if (random < r.cost - ctF(cost)) cost++;
+          spent = Math.min(cost, best);
+          if (best > spent) { ph = CT_SPARK_BORN; level = best - spent; }
+        }
+      }
     }
-  } else if (c.id !== E.SWITCH || life0 === 10) {
-    if (c.id === E.LAMP) level = Math.max(0, level - 1);
-    if (best > 0) {
-      let cost = ctI(r.cost);
-      if (random < r.cost - ctF(cost)) cost++;
-      cost = Math.min(cost, best);
-      const joule = ctI(ctF(cost) * 33554.432);
-      c = ctHeat(c, joule);
-      c.source = ctAdd(c.source, ctSigned(joule));
-      if (best > cost) { ph = 8; level = best - cost; }
-    }
+    spark = ph + CT_SPARK_CYCLE * level;
   }
-  c.spark = ph + 9 * level;
-  if (ph > 0 || (c.id === E.LAMP && level > 0)) c.busy = 1;
+  let lifeCode = 0;
+  if (switched || c.id === E.TSNS) lifeCode = Math.max(0, Math.min(CT_ELEC_LIFE_MAX, ctI(life)));
+  if (spark === c.spark && spent === 0 && (lifeCode === ctI(life0) || !(switched || c.id === E.TSNS))) return 0;
+  return CT_ELEC_PENDING + spark + CT_ELEC_LIFE_UNIT * lifeCode + CT_ELEC_SPENT_UNIT * spent;
+}
+// A step's scratch word (ctElecStep) on its cell: the spark, the life, and the
+// levels spent as V1's Joule heat (JOULE_PER_LEVEL cap·°C each), a declared
+// source, as much of it as the cell can hold short of a phase edge (ctHeatRoom:
+// the contact block converts it there next tick).
+export function ctElecApply(input, word) {
+  let c = ctCopy(input);
+  const spark = word % CT_ELEC_LIFE_UNIT;
+  const lifeCode = ctDiv(word, CT_ELEC_LIFE_UNIT) % (CT_ELEC_LIFE_MAX + 1);
+  const spent = ctDiv(word, CT_ELEC_SPENT_UNIT) % (CT_ELEC_SPENT_MAX + 1);
+  if (ctRow(c.id).conductor !== 0) c.spark = spark;
+  if (c.id === E.SWITCH || c.id === E.PCLN || c.id === E.TSNS) c = ctWithLife(c, ctF(lifeCode));
+  if (spent > 0) {
+    const joule = ctHeatRoom(c, spent * CT_JOULE_WHOLE + ctDiv(spent * CT_JOULE_MILLI, CT_JOULE_MILLI_UNIT));
+    c = ctHeat(c, joule);
+    c.source = ctAdd(c.source, ctSigned(joule));
+  }
+  c.busy = 1;
   return c;
 }
 
@@ -542,7 +625,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   const smothered = ctSmothered(fullCo2, fullGas);
   const exposed = fullAir + fullOxygen > 0;
   const random = ctRoll(seed, 1);
-  c = ctElectric(c, ns, ctRoll(seed, 2));
+  // Electricity is the electric pass's (shaders/v2/electric.js: V1's step, four a tick, six faces).
   c = ctPhase(c, surface + onFloor, ctRoll(seed, 3));
   if (c.id !== input.id || c.pending >= 0) return c;
   if (voidTouch && c.id !== E.EMPTY && r.kind !== 1) return ctDecay(c, E.EMPTY);
@@ -686,7 +769,6 @@ export const CONTACT_KERNEL = [
   [ctDensity, ['CTCell'], 'f32'], [ctAmount, ['CTCell'], 'i32'], [ctCapacity, ['CTCell'], 'i32'], [ctHeat, ['CTCell', 'i32'], 'CTCell'], [ctHeatTo, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctConvert, ['CTCell', 'i32', 'i32'], 'CTCell'],
   [ctTemperatureRemainder, ['CTCell'], 'f32'], [ctFlux, ['CTCell', 'CTCell'], 'i32'], [ctPhase, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctNuclearId, ['CTCell'], 'i32'], [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
-  [ctElectric, ['CTCell', 'array<CTCell, 3>', 'f32'], 'CTCell'],
   [ctGrowerDamp, ['i32', 'i32'], 'i32'], [ctPuff, ['i32', 'i32'], 'i32'],
   [ctHotFuel, ['CTCell'], 'bool'], [ctSmothered, ['i32', 'i32'], 'bool'], [ctLick, ['CTCell', 'i32', 'i32', 'bool', 'i32'], 'CTCell'],
   [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
@@ -939,6 +1021,7 @@ export function ctHeatRoom(c, gain) {
 // The ambient's ¼ K code, as the block pass encodes P.ambient.
 export const contactAmbientQ = ambient => Math.min(65535, Math.max(0, Math.round(Math.fround((Math.fround(ambient) + 273.25) * 4))));
 CONTACT_KERNEL.push([ctConducts, ['CTCell', 'CTCell', 'i32'], 'bool'], [ctAmbient, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctHeatRoom, ['CTCell', 'i32'], 'i32']);
+CONTACT_KERNEL.push([ctElecMaterial, ['i32'], 'bool'], [ctElecStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'], [ctElecApply, ['CTCell', 'i32'], 'CTCell']);
 
 // R5 ambient exchange at the open box's faces. The owner counts exposed open
 // side/top faces (not the floor or closed/periodic edges).
