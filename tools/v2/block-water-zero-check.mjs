@@ -164,10 +164,13 @@ for (const gravMode of Object.values(GRAV)) for (const edge of Object.values(EDG
 const noteSource = shader.slice(shader.indexOf('fn noteVisible('), shader.indexOf('\nfn noteState'));
 const noteBody = noteSource.slice(noteSource.indexOf('{') + 1, noteSource.lastIndexOf('}'))
   .replace('all(compactA(p, before) == compactA(p, after))', 'same(compactA(p, before), compactA(p, after))')
-  .replace(/atomicStore\(&act2\[V2_(VISIBLE|LEGACY) \+ b\], 1u\);/g, (_, name) => `mark('${name}');`).replaceAll('let ', 'const ');
+  .replace(/atomicStore\(&act2\[V2_(VISIBLE|LEGACY) \+ (?:b|brickOfCell\(p\))\], 1u\);/g, (_, name) => `mark('${name}');`).replaceAll('let ', 'const ');
 const ageExpression = shader.match(/fn cAge\([^]*?return ([^;]+);/)[1].replace('c.x', 'c[0]').replace(/(\d+)u/g, '$1');
 const age = new Function('c', `return ${ageExpression};`);
-const note = new Function('p', 'before', 'after', 'compactA', 'same', 'isLiq', 'cAge', 'brickOfCell', 'mark', noteBody);
+const noteWith = new Function('p', 'before', 'after', 'compactA', 'same', 'isLiq', 'cAge', 'brickOfCell', 'mark', 'compactProbeHolds', noteBody);
+// (equal cores: the edit projection holds as well)
+const note = (p, before, after, compactA, same, isLiq, cAge, brickOfCell, mark, holds = (_p, a, b) => same(a, b)) =>
+  noteWith(p, before, after, compactA, same, isLiq, cAge, brickOfCell, mark, holds);
 const storeBody = materialStorageWGSL.match(/fn storeMaterial\([^]*?\) \{([^]*)\}/)[1]
   .replace('any(before.core != after.core)', 'before.core.some((v,i)=>v!==after.core[i])');
 const store = new Function('slot', 'before', 'after', 'noteVisible', 'cellOf', 'noteState', 'storeCore', 'banks', storeBody);
@@ -190,6 +193,12 @@ const marked = [], original = water()[0], aerated = new Uint32Array(original); a
 note(positions[0], original, aerated, () => [E.WATER, 20, 0, 0],
   (a, b) => a.every((v, i) => v === b[i]), () => true, age, () => 0, name => marked.push(name));
 assert.deepEqual(marked, ['VISIBLE', 'LEGACY'], 'liquid age inequality must still reach the real visibility marks');
+// A partial fill the drawn dither hides arrives where the drawn projection doesn't change: only the
+// legacy cache (the edit projection) is marked, never the view.
+const hiddenMarks = [], film = new Uint32Array(original); film[1] = 1;
+note(positions[0], new Uint32Array([original[0] & ~255, 0, 0, 0]), film, () => [0, 20, 0, 0],
+  (a, b) => a.every((v, i) => v === b[i]), () => true, () => 0, () => 0, name => hiddenMarks.push(name), () => false);
+assert.deepEqual(hiddenMarks, ['LEGACY'], 'an edit-projection-only change marks the legacy cache alone');
 console.log('Strict negative domain, all modes/corner permutations, mechanical/boundary/custom ABI and actual liquid store/noteVisible guards passed');
 
 const minified = await importMinified('src/shaders/v2.js');
