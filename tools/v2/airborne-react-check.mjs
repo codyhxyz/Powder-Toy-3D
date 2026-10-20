@@ -340,7 +340,7 @@ for (const dims of [[32, 32, 32], [48, 16, 32]]) {
     assertNaga(code, `particles/${stage} ${dims}`); modules++;
   }
   const claim = particlesWGSL(g, nativeDynamicsHead, 'reactClaim');
-  assert.match(claim, /let next = atomicExchange\(&claims\[s\*4u\],t\+1u\);/, 'each packet joins its cell\'s list');
+  assert.match(claim, /let next = atomicExchange\(&claims\[s\*4u\],t\+1u\); atomicAdd\(&claims\[s\*4u\+1u\],1u\);/, 'each packet joins its cell\'s list, counted');
   const react = particlesWGSL(g, nativeDynamicsHead, 'react');
   assert.match(react, new RegExp(`const EV = array<vec4u, ${Math.ceil(table / 4)}>`), 'the rule stage reads the contact rows (EV tail)');
   assert.doesNotMatch(react, /arrayLength\(&events\)/, 'no block storage in the particle family');
@@ -348,7 +348,7 @@ for (const dims of [[32, 32, 32], [48, 16, 32]]) {
   assert.match(react, /let q = mEdge\(p \+ face6\(i32\(f\)\)\);/, 'it reads its host\'s six faces');
   assert.match(react, /storeMaterial\(slots\[f\],was,now\);/, 'and writes back what changed there');
   assert.match(react, /dReactColour\(p\) != \(P\.airborne >> D_REACT_OFFSET_BITS\) \|\| atomicLoad\(&claims\[s\*4u\]\) != t\+1u/, 'one thread a cell, a colour at a time');
-  assert.match(react, /while \(at != 0u\)/, 'which takes every packet in its cell\'s list');
+  assert.match(react, /for \(var k = 0u; k < count && at != 0u; k\+\+\)/, 'which takes every packet in its cell\'s list, and no more');
   assert.match(react, new RegExp(`const D_REACT_COLOURS = array<u32, 64>\\(${AIRBORNE_COLOUR_TABLE.map(c => `${c}u`).join(',')}\\);`), 'the CPU\'s colouring');
 }
 assert(PARTICLE_STAGES.includes('reactClaim') && PARTICLE_STAGES.includes('react'));

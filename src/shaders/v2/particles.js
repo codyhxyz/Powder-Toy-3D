@@ -510,8 +510,8 @@ export function particlesWGSL(g, nativeHead, stage) {
     particles[t]=p; let local=vec3i(floor(p.position))-P.origin; if (inGrid(local)) { dWake(local); }
   `);
   // ---- airborne matter takes part (src/v2/airborne.js): after the tick's landings, each flying
-  // packet joins its cell's list (the claim word holds the last to join, each flight record the one
-  // before it), and the react stage, once a colour (src/v2/airborne.js AIRBORNE_COLOURS: no two cells
+  // packet joins its cell's list (the claim's key word holds the last to join, its election word how
+  // many have, each flight record the one before it), and the react stage, once a colour (src/v2/airborne.js AIRBORNE_COLOURS: no two cells
   // of one colour share a footprint), has the list's head take the cell's packets in their order.
   if (stage === 'reactClaim') return h + airborneClaimWGSL + main64(/* wgsl */ `
     // the posted requests' count starts over (blasts.js airborneEvents read last tick's)
@@ -526,7 +526,7 @@ export function particlesWGSL(g, nativeHead, stage) {
     // only through air and gas: a packet inside other matter lands or strikes it this tick or the next
     if (kind != C_AIR && kind != C_GAS) { return; }
     // (impact freed every kind-0 word it elected on: the cell's word is free here)
-    let next = atomicExchange(&claims[s*4u],t+1u);
+    let next = atomicExchange(&claims[s*4u],t+1u); atomicAdd(&claims[s*4u+1u],1u);
     flight[t] = DFlight(vec4u(s,next,D_REACT_KIND,dKey(particle.id ^ D_REACT_SALT)),vec4f(f32(dReactHash(particle)),0,0,0));
   `);
   if (stage === 'react') {
@@ -592,12 +592,14 @@ fn dReactOne(t: u32, s: u32, p: vec3i) -> bool {
     let p = cellOf(s);
     // this dispatch's colour, and the cell's list's head: one thread a cell
     if (dReactColour(p) != (P.airborne >> D_REACT_OFFSET_BITS) || atomicLoad(&claims[s*4u]) != t+1u) { return; }
-    atomicStore(&claims[s*4u],0u);
+    // (the walk takes exactly as many as joined: nothing past this tick's list is ever read)
+    let count = atomicLoad(&claims[s*4u+1u]);
+    atomicStore(&claims[s*4u],0u); atomicStore(&claims[s*4u+1u],0u);
     // the cell's packets, each after the one before in their order (a pass over the list for each)
     var last = D_NONE;
     loop {
       var best = D_NONE; var at = t+1u;
-      while (at != 0u) {
+      for (var k = 0u; k < count && at != 0u; k++) {
         let i = at-1u;
         if (dReactAfter(i,last) && (best == D_NONE || dReactAfter(best,i))) { best = i; }
         at = flight[i].destination.y;
