@@ -148,6 +148,7 @@ function fixture({mode=0, edge=0, windowed=false,
 ['dHitKE',['mi','mj','jSolid','u2']],
 ['dShockHit',['t','s','p','hit']],
 ['dDustFaces',['s']],
+['dShockWall',['t','pid','energy','particleId']],
   ])ctx[name]=compile(ctx,S.integrate,name,args);
   const stages=Object.fromEntries(Object.entries(S).map(([s,c])=>[s,compile(ctx,c,'main',['t'])]));
   return {ctx,world,particles,claims,flight,stages,set:(p,m)=>world.set(slotOf(p),copy(m)),
@@ -454,6 +455,12 @@ test('a hit sets off C-4 and nitroglycerin, as V1\'s shock: the charge hit and t
   f=hit(wet(L.FULL,E.NITRO),-16,L.makeMaterial(E.STONE));assert.equal(f.ctx.control[A],0);
   // into its own pool it never does
   f=hit(wet(L.FULL/4,E.NITRO),-25,wet(L.FULL,E.NITRO));assert.equal(f.ctx.control[A],0);assert.equal(f.ctx.control[SET],0);
+  // onto the box's floor (its solid edge, a wall): the same landing goes off there too, and a gentle one rests
+  for(const [v,fired] of [[-16,true],[-12,false]]) {
+    const w=fixture({material:wet(L.FULL,E.NITRO),position:[18.8,0.5,15.5],velocity:[0,v,0]});w.tick();
+    assert.equal(w.particles[0].id,0,'landed on the floor');assert.equal(L.cid(at(w,start).core),E.NITRO);
+    assert.equal(w.ctx.control[A],fired?(w.ctx.slotOf(start)|DET)>>>0:0,`${-v} m/s onto the floor`);
+  }
   // a set-off charge that cannot land yet stays set off: the mark is its id, a later packet in the slot is not
   f=fixture({material:L.makeMaterial(E.C4),position:[18.8,1.1,15.5],velocity:[0,-6,0],held:3});
   f.set(start,L.makeMaterial(E.STONE));f.tick();

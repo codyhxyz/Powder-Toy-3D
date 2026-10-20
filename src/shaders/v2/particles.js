@@ -256,6 +256,12 @@ fn dShockHit(t: u32, s: u32, p: DParticle, hit: Material) {
     atomicStore(&control[D_SET_OFF + t], p.id);
   }
 }
+// A charge landing on the box's solid edge, a wall (V1 react.js counts the box's walls as solid faces):
+// the mover's own ½·m·u² (hitKE against a solid), the boundary landing's energy. Set off, it lands with its
+// detonation as from any hit (deposit, react).
+fn dShockWall(t: u32, pid: u32, energy: f32, particleId: u32) {
+  if (dShock(pid) > 0.0 && (cls(pid) != C_LIQUID || dShockLiquid(pid) != 0u) && energy >= dShock(pid)) { atomicStore(&control[D_SET_OFF + t], particleId); }
+}
 // A flying dust packet's dust faces (V1 react.js dust clouds: nFuel), read in elect, before react's winners
 // clear the notes: another dust packet in its own cell, and each face cell holding dust, settled or flying
 // (reactClaim notes a flying one in its host's kind-1 key word, free by then: deposit freed every one).
@@ -340,6 +346,7 @@ export function particlesWGSL(g, nativeHead, stage) {
           }
           boundary=true;let velocityAtHit=v+acceleration*(D_DT*entry);
           energy=0.5*dMass(id)*dAmount(m)*dot(velocityAtHit,velocityAtHit);
+          dShockWall(t,id,energy,particle.id);
           particle.velocity=vec3f(0); particle.position=vec3f(previous+P.origin)+0.5;
           if (cid(loadMaterial(slotOf(previous)).core)==0u) { deposit=slotOf(previous); }
         }
