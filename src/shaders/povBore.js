@@ -1,10 +1,11 @@
-import { prelude, editKernelWGSL, EDIT_FIELDS, LAYOUT, STATE_OPTS, gridDims } from './common.js';
+import { prelude, editKernelWGSL, EDIT_FIELDS, LAYOUT, STATE_OPTS, STAGE, gridDims } from './common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { STRIKE } from './povTrace.js';
 import { RING_LAYOUT, ringWGSL } from './povBody.js';
 import { ddaWalkWGSL } from './dda.js';
 import { glf as lit, consts } from '../glsl.js';
+import { FULL } from '../v2/layout.js';
 
 // GPU work for the two boring weapons: the burrower's drill and the laser
 // cannon (src/pov/tools/burrower.tool.js, laser.tool.js), on WebGPU
@@ -263,18 +264,21 @@ LASER.SHADOW_N = Math.ceil(LASER.RIM_RADIUS / LASER.SHADOW_STEP) + 1;   // looks
 // cells), and the ring slot the reach kernel answers the CPU in.
 export const LaserParams = uniformStruct('LaserParams', { muzzle: 'vec3f', slot: 'u32', dir: 'vec3f' });
 
-const laserWGSL = /* wgsl */ `
-${consts('LASER', LASER, ['STEPS_MAX', 'SHADOW_N'])}
-${LaserParams.wgsl}
-@group(3) @binding(1) var<uniform> P: LaserParams;
-// The shot: how far the beam got (cells from the muzzle), what stopped it (-1 if
+// (in parts, so V2's native beam, src/v2/interactions.js povLaser, runs the same rule under its own params)
+const laserConstsWGSL = consts('LASER', LASER, ['STEPS_MAX', 'SHADOW_N']);
+const laserBeamWGSL = /* wgsl */ `// The shot: how far the beam got (cells from the muzzle), what stopped it (-1 if
 // it ran out of energy or length), and the box the apply runs over (grid
 // cells, inclusive, clipped to the grid; empty: lo > hi). The reach kernel
 // writes it, the apply reads it (docs/webgpu.md G2).
 struct LaserBeam { lo: vec3i, reach: f32, hi: vec3i, stopId: i32 }
 
 // matter the beam can't touch: it neither breaks, melts nor burns
-fn laserProof(id: i32) -> bool { return KIND(id) == K_SOLID && BREAKINTO(id) < 0 && MELT(id) <= 0.0 && IGNITE(id) <= 0.0; }
+fn laserProof(id: i32) -> bool { return KIND(id) == K_SOLID && BREAKINTO(id) < 0 && MELT(id) <= 0.0 && IGNITE(id) <= 0.0; }`;
+const laserWGSL = /* wgsl */ `
+${laserConstsWGSL}
+${LaserParams.wgsl}
+@group(3) @binding(1) var<uniform> P: LaserParams;
+${laserBeamWGSL}
 `;
 
 // group 2 of the reach kernel: the shot (written), the apply's indirect args
@@ -289,15 +293,28 @@ export const LASER_APPLY_LAYOUT = [{ binding: 0, buffer: { type: 'read-only-stor
 export const LASER_BEAM_BYTES = 32;   // LaserBeam
 export const LASER_REACH_BYTES = 16;  // the ring's answer: (reach, stopId, 0, 1)
 
+// Under V2 (native: the reach over V2's own cells, src/pov/gpu.js laser) a liquid cell holds its
+// fill's share of a full cell's matter (src/v2/layout.js FULL: a thin film a fraction, a pressed
+// cell up to MAX_FILL), so the heat that takes it to VAPOR_T, the cost above, is that share of
+// V1's full cell's: "every cell it enters costs the heat that takes the core's slice of that
+// matter to VAPOR_T" (LASER). Anything else is one cell of its matter, as in V1.
+const laserFillWGSL = /* wgsl */ `
+fn laserFill(c: vec3i, id: i32) -> f32 {
+  let core = fetchNativeCore(c);
+  if (KIND(id) != K_LIQUID || all(core == vec4u(0u))) { return 1.0; }   // (a legacy read has no native core)
+  return f32(core.y & 0xffffffu) / ${lit(FULL)};
+}
+`;
+
 // The reach kernel: one thread walks the beam's axis from the muzzle, every
 // cell it enters costing the heat that takes the core's slice of it to VAPOR_T
 // (see LASER), writes how far it got and the apply's box and dispatch size,
 // and answers the CPU through the ring: its reach lands there 1–3 frames
 // later (the damage, the beam's look, lastShot), so nothing waits for it.
-export const laserReachFrag = (g) => /* wgsl */ `
+export const laserReachFrag = (g, native = false) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${ddaWalkWGSL}
-${laserWGSL}
+${laserWGSL}${native ? laserFillWGSL : ''}
 @group(2) @binding(0) var<storage, read_write> beam: LaserBeam;
 @group(2) @binding(1) var<storage, read_write> beamArgs: array<u32, 3>;
 @group(2) @binding(2) var<storage, read_write> ringOut: array<vec4f>;   // the result ring (B7)
@@ -325,7 +342,7 @@ fn laserReach(stopId: ptr<function, i32>) -> f32 {
       let id = eid(a);
       if (!isGasLike(id)) {
         if (laserProof(id)) { *stopId = id; return tEnter; }
-        let cost = CAP(id) * max(LASER_VAPOR_T - a.y, 0.0) * LASER_CORE_AREA;
+        let cost = CAP(id) * max(LASER_VAPOR_T - a.y, 0.0) * LASER_CORE_AREA${native ? ' * laserFill(c, id)' : ''};
         if (E < cost) { *stopId = id; return tEnter + E / cost; }
         E -= cost;
       }
@@ -360,19 +377,8 @@ fn main() {
 }
 `;
 
-// The beam (see LASER): an edit over the reach kernel's box, dispatched
-// indirectly from its args, in place. Each cell reads its own state and the
-// shot; the shadow test also reads the cells between the bore and it, but
-// only for whether they are proof against the beam, and this edit never
-// makes or unmakes such a cell (the core turns matter into gases, the rim
-// only heats it or spalls a solid into debris that melts), so every thread
-// sees the same answer whatever the others have written: exact in place.
-export const laserFrag = (g) => /* wgsl */ `
-${prelude(g, STATE_OPTS.STATE_RW)}
-${laserWGSL}
-@group(2) @binding(0) var<storage, read> beam: LaserBeam;
-
-// Whether a solid the beam can't touch stands between the bore's point q and
+// The beam's rule on one cell (V1's apply below; V2's native beam, laserNativeWGSL, runs it too).
+const laserRuleWGSL = /* wgsl */ `// Whether a solid the beam can't touch stands between the bore's point q and
 // the centre pc of cell p (p itself doesn't count): the heat doesn't get past it.
 fn laserShadowed(p: vec3i, q: vec3f, pc: vec3f) -> bool {
   let v = pc - q;
@@ -419,7 +425,21 @@ fn laser(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functio
     *oB = vec4f(0.0, 0.0, 0.0, b.w);
   }
   (*oA).y = max(a.y, T);
-}
+}`;
+
+// The beam (see LASER): an edit over the reach kernel's box, dispatched
+// indirectly from its args, in place. Each cell reads its own state and the
+// shot; the shadow test also reads the cells between the bore and it, but
+// only for whether they are proof against the beam, and this edit never
+// makes or unmakes such a cell (the core turns matter into gases, the rim
+// only heats it or spalls a solid into debris that melts), so every thread
+// sees the same answer whatever the others have written: exact in place.
+export const laserFrag = (g) => /* wgsl */ `
+${prelude(g, STATE_OPTS.STATE_RW)}
+${laserWGSL}
+@group(2) @binding(0) var<storage, read> beam: LaserBeam;
+
+${laserRuleWGSL}
 
 // editMain (shaders/common.js) over the shot's box instead of the params':
 // a 64-thread workgroup per brick, threads outside the box or the grid skip,
@@ -446,6 +466,28 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u,
   }
   workgroupBarrier();
   if (li == 0u && atomicLoad(&editChanged) != 0u) { markBrick(brickId(b)); }
+}
+`;
+
+// V2's beam (src/v2/interactions.js povLaser): the rule above, unchanged, as native forcing on V2's
+// own cells, after the same reach kernel (laserReachFrag native). The force adapter takes CPU boxes
+// and the reach is only known on the GPU, and one box round the whole of a slanting beam would be
+// ~134 MB of force scratch on a 128³ grid, so the beam's possible length (LENGTH + RIM_RADIUS) is
+// cut into LASER_SEGMENT-long stretches of its axis, each with the box round its own stretch. A cell is
+// the segment's whose stretch [segFrom, segTo) its centre projects onto, so every cell is evaluated,
+// heated and renamed once however the boxes overlap; the segments share one launch allocation.
+export const LASER_SEGMENT = 16;   // cells of axis a segment spans (4 bricks): ~11k cells a box on the long diagonal
+export const LaserNativeParams = uniformStruct('LaserNativeParams', { muzzle: 'vec3f', segFrom: 'f32', dir: 'vec3f', segTo: 'f32' });
+export const LASER_NATIVE_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } }];
+export const laserNativeWGSL = /* wgsl */ `
+${laserConstsWGSL}
+${laserBeamWGSL}
+@group(2) @binding(0) var<storage, read> beam: LaserBeam;   // the reach kernel's shot
+${laserRuleWGSL}
+fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
+  let along = dot(vec3f(p) + 0.5 - P.muzzle, P.dir);
+  if (along < P.segFrom || along >= P.segTo) { return; }   // another segment's cell
+  laser(p, a, b, oA, oB);
 }
 `;
 
