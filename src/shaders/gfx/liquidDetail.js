@@ -5,7 +5,7 @@ import { simModesGLSL, SIM_MODE_FIELDS } from '../../simModes.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { fold, MAX_WORKGROUPS } from '../../gpu/kernels.js';
 import { glf } from '../../glsl.js';
-import { RIPPLE_SLOPE, VNOISE_GRAD_VAR } from './liquid.js';
+import { VNOISE_GRAD_VAR } from './liquid.js';
 
 // Close-up liquid detail (gfx/detail.js switches): what a liquid surface shows
 // once a pixel is a few millimetres across. Each part compiles in only with
@@ -137,10 +137,6 @@ export const CAP_LAMBDA_MAX_M = CAP_LAMBDAS[0];
 // away the octaves are then a constant roughness, not a mirror or sparkles.
 // Per octave the slope is RIPPLE_SLOPE times value noise's gradient (mNoiseD):
 // mean square slope 2·VNOISE_GRAD_VAR·RIPPLE_SLOPE² (gfx/liquid.js), GGX α² per octave.
-// Every octave at full strength: the World's far field (shaders/far.js), which
-// draws none of them as normals, takes all of it as roughness, so its sea
-// carries the window's glint on with no seam at the window's edge.
-export const CAP_SLOPE_MS = CAP_OCTAVES * 2 * VNOISE_GRAD_VAR * RIPPLE_SLOPE ** 2;
 
 // ---- Whitewater (DETAIL_LIQ_FOAM) ----
 // Foam at a free surface decays exponentially as its bubbles burst: the
