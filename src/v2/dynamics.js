@@ -230,9 +230,11 @@ export class NativeDynamics {
     this._record('particles','clear',1,tick); this._hold(tick);
     for (const stage of ['integrate','elect','impact','deposit']) this._record('particles',stage,PARTICLE_CAP/64,tick);
     // what is still flying takes part, as V1's moving cells did (src/v2/airborne.js): each packet
-    // joins its cell's list, then the cells' lists run a colour at a time, so no two whose
-    // footprints overlap run together, with the block pass's partition offset this tick
+    // joins its cell's list (a dust packet counts its dust faces once all have), then the cells'
+    // lists run a colour at a time, so no two whose footprints overlap run together, with the block
+    // pass's partition offset this tick
     this._record('particles','reactClaim',PARTICLE_CAP/64,tick);
+    this._record('particles','reactDust',PARTICLE_CAP/64,tick); // a dust cloud's faces, before any walker clears its notes
     const offset=this.owner._params?.(tick)?.offset??[0,0,0];
     for (let colour=0;colour<AIRBORNE_COLOURS;colour++) this._record('particles','react',PARTICLE_CAP/64,tick,{airborne:packAirborne(offset,colour)});
     this._record('blasts','airborneEvents',PARTICLE_CAP/64,tick);

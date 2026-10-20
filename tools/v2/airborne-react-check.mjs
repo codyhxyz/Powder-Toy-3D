@@ -11,9 +11,10 @@ import { E, ELEMENTS, K } from '../../src/elements.js';
 import { gridLayout } from '../../src/sim.js';
 import { makeMaterial, packetOwnedEnergy, energyOf, cTq, cid, FULL } from '../../src/v2/layout.js';
 import { airborneReference, outsideOf, nearOf, openNear, inBlockFaces, trailingFace, colourOf, airborneOrder, packAirborne,
-  FACE6, AIRBORNE, AIRBORNE_COLOURS, AIRBORNE_COLOUR_TABLE } from '../../src/v2/airborne.js';
+  FACE6, AIRBORNE, AIRBORNE_COLOURS, AIRBORNE_COLOUR_TABLE, AIRBORNE_NO_CHARGE, dustFacesOf } from '../../src/v2/airborne.js';
+import { DUST_MIN_FALL_SPEED } from '../../src/v2/contact.js';
 import { offsetOf } from '../../src/v2/physics.js';
-import { particlesWGSL, PARTICLE_STAGES, airborneBase, heldBase, PARTICLE_CAP, DynamicParams } from '../../src/shaders/v2/particles.js';
+import { particlesWGSL, PARTICLE_STAGES, airborneBase, heldBase, shockPostBase, setOffBase, PARTICLE_CAP, DynamicParams } from '../../src/shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, externalBlastBase } from '../../src/shaders/v2/blasts.js';
 import { nativeDynamicsHead, v2Table } from '../../src/shaders/v2.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
@@ -183,6 +184,53 @@ assert.equal(key(fly(packet(E.LAVA, 1500, FULL / 4), () => air(20), 4000).p.core
   const out = fly(packet(E.GUNPOWDER, 20), fire, 600);
   assert.equal(out.r.state, AIRBORNE.DISPLACED); assert.equal(cid(out.r.host.core), E.GUNPOWDER); assert.equal(cid(out.r.particle.core), E.FIRE);
 }
+// 9b. Set off by a hit (particles.js dShockHit marks it): a C-4 lump lands with its detonation where it is,
+// in air or in a gas (the gas flying on); without the mark it flies on, inert.
+{
+  const lump = packet(E.C4, 20);
+  assert.equal(airborneReference(lump, air(20), 3, openNear()).state, AIRBORNE.FLYING);
+  const r = airborneReference(lump, air(20), 3, openNear(), undefined, { ...AIRBORNE_NO_CHARGE, setOff: true });
+  assert.equal(r.state, AIRBORNE.LANDED); assert.equal(cid(r.host.core), E.C4); assert.equal(r.requests & 1, 1);
+  const smoke = airborneReference(lump, makeMaterial(E.SMOKE, 20), 3, openNear(), undefined, { ...AIRBORNE_NO_CHARGE, setOff: true });
+  assert.equal(smoke.state, AIRBORNE.DISPLACED); assert.equal(cid(smoke.host.core), E.C4); assert.equal(cid(smoke.particle.core), E.SMOKE);
+  // the smoke flies on in the lump's slot, under its id: it is no charge, and react clears the mark there
+  assert.equal(airborneReference(smoke.particle, air(20), 3, openNear(), undefined, { ...AIRBORNE_NO_CHARGE, setOff: true }).requests & 1, 0);
+  assert.match(particlesWGSL(gridLayout(32, 32, 32), nativeDynamicsHead, 'react'), /if \(r\.state == D_REACT_LANDED \|\| r\.state == D_REACT_DISPLACED\) \{ atomicStore\(&control\[D_SET_OFF\+t\],0u\); \}/);
+}
+// 9c. A dust cloud (V1 react.js dust clouds, physics.js DUST_*): wind-blown dust, faster than DUST_LIFT_V,
+// with dust beside it and air enough, goes off as one when lit, landing with its detonation; lean, rich,
+// settling or unlit, it does not.
+{
+  const mote = packet(E.DUST, 20), fast = DUST_MIN_FALL_SPEED * 1.5;
+  const cloud = { ...AIRBORNE_NO_CHARGE, speed: fast, dust: 2, fire: 1 };
+  // rich: smoke on every face, so its host, behind it, is the only air among its six contacts
+  const rich = nearOf(six(() => makeMaterial(E.SMOKE, 20)), [0, 0, 0], [0, 0, 0], [1, 0, 0]);
+  const lit = airborneReference(mote, air(20), 5, openNear(), undefined, cloud);
+  assert.equal(lit.state, AIRBORNE.LANDED); assert.equal(cid(lit.host.core), E.DUST); assert.equal(lit.requests & 1, 1, 'a flame beside the cloud');
+  for (const [why, charge, outside] of [
+    ['settling (dust\'s own terminal speed, 3 m/s, is under the lift speed)', { ...cloud, speed: DUST_MIN_FALL_SPEED * 0.9 }, openNear()],
+    ['lean: no dust beside it', { ...cloud, dust: 0 }, openNear()],
+    ['rich: one air face', cloud, rich],
+    ['unlit', { ...cloud, fire: 0 }, openNear()],
+  ]) {
+    const r = airborneReference(mote, air(20), 5, outside, undefined, charge);
+    assert.equal(r.requests & 1, 0, why); assert.equal(r.state, AIRBORNE.FLYING, why);
+  }
+  // lit by matter at its ignition point beside it, by its own heat, or by the flame it flies through
+  assert.equal(airborneReference(mote, air(20), 5, openNear(), undefined, { ...cloud, fire: 0, hot: 1 }).requests & 1, 1);
+  // (its own heat past what a tick's exchange with the three air cells it pairs with takes: 5 °C over
+  // its ignition point it cools under it first, as V1's mover did with its six)
+  assert.equal(airborneReference(packet(E.DUST, ELEMENTS[E.DUST].ignite + 50), air(20), 5, openNear(), undefined, { ...cloud, fire: 0 }).requests & 1, 1);
+  const inFlame = airborneReference(mote, fire(), 5, openNear(), undefined, { ...cloud, fire: 0 });
+  assert.equal(inFlame.state, AIRBORNE.DISPLACED); assert.equal(cid(inFlame.host.core), E.DUST);
+  // the faces as react reads them (shaders/v2/airborne.js dReactDustFaces)
+  const faces = [fire().core, makeMaterial(E.STONE, ELEMENTS[E.DUST].ignite + 1).core, makeMaterial(E.STONE, 20).core, makeMaterial(E.SMOKE, 900).core, air().core, air().core];
+  assert.deepEqual(dustFacesOf(faces), [1, 1], 'a flame face; hot matter, not hot gas');
+  assert.deepEqual(dustFacesOf([...faces.slice(0, 5), null]), [1, 1], 'beyond the box: its wall, cold');
+  // with the six cells around it: a dust cloud's air is its six contacts', counted as its own step counts them
+  const airy = six(() => air()); airy[0] = makeMaterial(E.SMOKE, 20);
+  assert.equal(airborneReference(mote, air(20), 5, nearOf(airy, [0, 0, 0], [0, 0, 0], [1, 0, 0]), undefined, cloud).requests & 1, 1, 'five air contacts are air enough');
+}
 // 10. Smothered: no burning in CO2.
 {
   let burning = packet(E.SAWDUST, 400); burning.core[1] |= 1 << 24;
@@ -334,7 +382,7 @@ const table = new Uint32Array(v2Table().buffer).length;
 let modules = 0;
 for (const dims of [[32, 32, 32], [48, 16, 32]]) {
   const g = gridLayout(...dims);
-  for (const stage of ['reactClaim', 'react']) {
+  for (const stage of ['reactClaim', 'reactDust', 'react']) {
     const code = particlesWGSL(g, nativeDynamicsHead, stage);
     assert([...code.matchAll(/var<storage,/g)].length <= 8, `${stage} storage budget`);
     assertNaga(code, `particles/${stage} ${dims}`); modules++;
@@ -352,14 +400,15 @@ for (const dims of [[32, 32, 32], [48, 16, 32]]) {
   assert.match(react, /for \(var k = 0u; k < count && at != 0u; k\+\+\)/, 'which takes every packet in its cell\'s list, and no more');
   assert.match(react, new RegExp(`const D_REACT_COLOURS = array<u32, 64>\\(${AIRBORNE_COLOUR_TABLE.map(c => `${c}u`).join(',')}\\);`), 'the CPU\'s colouring');
 }
-assert(PARTICLE_STAGES.includes('reactClaim') && PARTICLE_STAGES.includes('react'));
+assert(['reactClaim', 'reactDust', 'react'].every(s => PARTICLE_STAGES.includes(s)));
 assert('airborne' in DynamicParams.offsets, 'the react stage\'s offset and colour ride its params');
 // the requests' posting stage (blasts family: it binds events) and its control words
 for (const dims of [[32, 32, 32], [48, 16, 32]]) {
   const g = gridLayout(...dims), code = blastsWGSL(g, nativeDynamicsHead, 'airborneEvents');
   assertNaga(code, `blasts/airborneEvents ${dims}`); modules++;
   assert.match(code, /events\[s\] \|= bits; noteEvents\(s, bits\);/, 'posted as the block pass posts a cell\'s requests');
-  assert.equal(airborneBase(g), heldBase(g) + PARTICLE_CAP); assert.equal(externalBlastBase(g), airborneBase(g) + 1 + PARTICLE_CAP, 'its words overlap no other range');
+  assert.equal(airborneBase(g), heldBase(g) + PARTICLE_CAP); assert.equal(shockPostBase(g), airborneBase(g) + 1 + PARTICLE_CAP);
+  assert.equal(setOffBase(g), shockPostBase(g) + 1 + PARTICLE_CAP); assert.equal(externalBlastBase(g), setOffBase(g) + PARTICLE_CAP, 'its words overlap no other range');
 }
 assert(BLAST_STAGES.includes('airborneEvents'));
 
@@ -382,6 +431,7 @@ assert(last('reactClaim') > last('deposit'), 'after this tick\'s landings');
 const reacts = calls.filter(c => c.name === 'v2particles_react');
 assert.deepEqual(reacts.map(c => c.airborne), Array.from({ length: AIRBORNE_COLOURS }, (_, c) => packAirborne(offsetOf(TICK), c)),
   'a react dispatch a colour, with the block pass\'s partition offset this tick');
-assert(names.indexOf('v2particles_react') > last('reactClaim') && !names.slice(last('reactClaim')).includes('v2particles_elect'), 'claim, then react: no election');
+assert(names.indexOf('v2particles_react') > last('reactDust') && last('reactDust') > last('reactClaim') && !names.slice(last('reactClaim')).includes('v2particles_elect'),
+  'claim, the dust clouds\' faces once every packet has claimed, then react: no election');
 assert(names.lastIndexOf('v2blasts_airborneEvents') > last('react'), 'then their requests are posted, before the grid passes read them');
 console.log(`airborne matter: conduction, boiling, melting, setting, burning, plume, reactions, smothering, detonation with its host and the six cells around it, all exact; every packet of a crowded cell, the same in any order; ${modules} stage modules validated; driver records them a colour at a time; no GPU`);

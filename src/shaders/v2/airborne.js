@@ -4,6 +4,7 @@ import { AIR_CAPACITY_Q } from '../../v2/layout.js';
 import { AIRBORNE, AIRBORNE_FLYING_REQUESTS, AIRBORNE_LANDED_REQUESTS, AIRBORNE_FACE_REQUESTS, AIRBORNE_OFFSET_BITS,
   AIRBORNE_COLOUR_TABLE } from '../../v2/airborne.js';
 import { EDGE } from '../../simModes.js';
+import { DUST_MIN_FALL_SPEED, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR } from '../../v2/contact.js';
 
 // Airborne matter takes part (docs/v2/native-contract.md "Contact module"): V1 had no flying
 // state, its splashes and ejecta were ordinary cells, so its react pass (shaders/react.js) heated,
@@ -66,10 +67,26 @@ const D_REACT_LANDED: u32 = ${AIRBORNE.LANDED}u;
 const D_REACT_DISPLACED: u32 = ${AIRBORNE.DISPLACED}u;
 const D_REACT_FLYING_REQUESTS: u32 = ${AIRBORNE_FLYING_REQUESTS}u;
 const D_REACT_LANDED_REQUESTS: u32 = ${AIRBORNE_LANDED_REQUESTS}u;
+const D_REACT_DUST_SPEED: f32 = ${DUST_MIN_FALL_SPEED};
+const D_REACT_DUST_MEC_NB: i32 = ${CONTACT_DUST_MEC_NB};
+const D_REACT_DUST_RICH_AIR: i32 = ${CONTACT_DUST_RICH_AIR};
 const D_REACT_FACE_REQUESTS: u32 = ${AIRBORNE_FACE_REQUESTS}u;
-const D_REACT_HOST: u32 = 6u;   // the contacts' host entry, after the six faces
 const D_REACT_SOLID_EDGE: u32 = ${EDGE.SOLID}u;
 struct DReact { particle: Material, host: Material, partners: array<Material, 3>, state: u32, source: vec2u, sink: vec2u, requests: u32 }
+// What sets a flying packet off besides its own rules (src/v2/airborne.js AIRBORNE_NO_CHARGE): a hit set it
+// off (particles.js dShockHit), and a dust packet's speed (cells a tick), dust, flame and hot faces.
+struct DReactCharge { setOff: bool, speed: f32, dust: i32, fire: i32, hot: i32 }
+// [flame faces, hot faces] among the host cell's six: V1 react.js dust clouds' nFire and hotTouch (matter,
+// not gas, at dust's ignition point or hotter). src/v2/airborne.js dustFacesOf.
+fn dReactDustFaces(p: vec3i) -> vec2i {
+  var out = vec2i(0);
+  for (var f = 0; f < 6; f++) {
+    let n = cellAt(mEdge(p + face6(f))); let kind = clsOf(n);
+    if (cid(n) == u32(CT_FIRE)) { out.x++; }
+    if (kind != C_AIR && kind != C_GAS && i32(cTq(n)) >= ctRow(CT_DUST).igniteQ) { out.y++; }
+  }
+  return out;
+}
 // Three, at run time, so the backend need not unroll the contact rules once for each axis
 // (contactBlock's ctNeighborCount).
 fn dAxes() -> u32 { return min(3u, arrayLength(&flight)); }
@@ -97,7 +114,7 @@ fn dReactCount(n: vec4u, present: bool) -> vec4i {
 // faces: its host's six (valid: a bit each, inside the grid); inBlock: its partners' faces, x y z;
 // trailing: the face its host stands in. Its partners come back in inBlock's order (the host's
 // own, where it is one, in host).
-fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u32, inBlock: vec3u, trailing: u32, onFloor: i32, seed: i32) -> DReact {
+fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u32, inBlock: vec3u, trailing: u32, onFloor: i32, seed: i32, charge: DReactCharge) -> DReact {
   let refused = DReact(packet, host, array<Material, 3>(faces[inBlock.x], faces[inBlock.y], faces[inBlock.z]), D_REACT_REFUSED, vec2u(0u), vec2u(0u), 0u);
   let carrier0 = energyMul(D_CARRIER_Q, cTq(packet.core));
   var v = ctUnpack(packet.core, packet.bank);
@@ -131,6 +148,11 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
     if (pair.changed == 0) { let rev = ctSwallow(pair.b, pair.a, s); pair = ctPairValue(rev.b, rev.a, rev.changed); }
     v = pair.a; ps[a] = pair.b;
   }
+  // the air among its six contacts, as its own step counts it (ctStepAtmosphere fullAir: burnAir)
+  var fullAir = outside.x;
+  for (var a = 0u; a < dAxes(); a++) {
+    if (ps[a].valid != 0 && (ps[a].id == CT_EMPTY || (ps[a].id == CT_FIRE && ps[a].ctype != CT_OXYGEN))) { fullAir++; }
+  }
   v = ctStepAtmosphere(v, ps, seed, outside.x, outside.y, outside.z, outside.w, onFloor, ambientQ);
   for (var a = 0u; a < dAxes(); a++) {
     if (ps[a].valid == 0) { continue; }
@@ -155,7 +177,7 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
   }
   if (v.id != 0) { v = ctAmbient(v, ambientQ, airHeat); }
   var source = v.source; var sink = v.sink;
-  var asked = u32(v.request) & D_REACT_LANDED_REQUESTS;
+  var asked = 0u;
   var hm = host; var partners = refused.partners;
   for (var a = 0u; a < dAxes(); a++) {
     if (ps[a].valid == 0) { continue; }
@@ -165,6 +187,15 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
     else { partners[a] = m; asked |= u32(ps[a].request) & D_REACT_FACE_REQUESTS; }
   }
   let hostId = i32(cid(hm.core));
+  // still the charge it was: set off by a hit, or a dust cloud lit (V1 react.js dust clouds), with the
+  // air among its six contacts as its own step counted it (fullAir)
+  let charge0 = i32(packet.core.x & 255u);
+  if (v.id == charge0 && ctRow(v.id).blast != 0 && charge.setOff) { v.request = v.request | 1; }
+  if (v.id == CT_DUST && charge0 == CT_DUST && charge.speed >= D_REACT_DUST_SPEED && charge.dust >= D_REACT_DUST_MEC_NB &&
+    fullAir >= D_REACT_DUST_RICH_AIR && (v.tq >= ctRow(CT_DUST).igniteQ || charge.hot > 0 || charge.fire > 0 || hostId == CT_FIRE)) {
+    v.request = v.request | 1;
+  }
+  asked |= u32(v.request) & D_REACT_LANDED_REQUESTS;
   let flyingRequests = asked & D_REACT_FLYING_REQUESTS;
   let vm = Material(ctPack(v, packet.core), v.bank);
   let ev = energyOf(vm); let eh = energyOf(hm);
