@@ -252,7 +252,9 @@ test('shuffled disjoint production contact blocks replay identically with global
 
 test('real generator and snapshot/order/custom-contact contracts are unchanged', () => {
   assert.equal(contactKernelWGSL, C.CONTACT_KERNEL.map(([fn, args, result]) => emitContactKernel(fn, args, result)).join('\n'));
-  const scalar = C.ctStepAtmosphere.toString();
+  // (flames into air are ctLick, called with the step's own seed)
+  const scalar = C.ctStepAtmosphere.toString() + C.ctLick.toString();
+  assert(C.ctStepAtmosphere.toString().includes('ctLick(c, hotFuel, flameQ, smothered, seed)'), 'the step lights air with its own seed');
   assert.deepEqual([...scalar.matchAll(/ctRoll\(seed, (\d+)\)/g)].map(m => +m[1]), [1, 2, 3, 4, 5, 6, 7, 18, 19], 'no extra RNG calls or changed salts (5–7, 18–19: V1 flame life and flames into air)');
   assert(scalar.includes('random < ctF(fire) / 60'), 'original stochastic expression remains intact');
   const body = contactWGSL.slice(contactWGSL.indexOf('fn contactBlock('));
