@@ -306,7 +306,7 @@ function fallKE(dens, drag, h) {
 }
 const NITRO_DENS = 15.9;        // 1.593 g/cm³
 const NITRO_DRAG = 0.02;
-const NITRO_FALL_M = 5;         // m: a fall that sets nitroglycerin off (game scale)
+export const NITRO_FALL_M = 5;  // m: a fall that sets nitroglycerin off (game scale)
 // Thermite's puff: its iron vapour, 78.4 g per kg (Wikipedia), at ~1.8 g/cm³
 // poured: 0.141 g = 2.5 mmol of Fe per cm³, ~62 cm³ of gas at ambient. Puffs
 // go as steam's (physics.js STEAM_BOIL_PUFF per STEAM_EXPANSION volumes).
