@@ -58,13 +58,21 @@ export const volumeShaderGrid = (g, world, sourceAppearance = false) => ({
   sourceAppearance: !!world && sourceAppearance === true,
 });
 
+// The data views that draw the air's pressure and velocity (Pressure, Flow: B's .w and .xyz).
+// V1 keeps both per cell in B; Physics V2 keeps them in its coarse air (per 4³ brick), which
+// only the physical readers bind (format 3: sim.readHeader({ physical }), sim.bindPhysicalRO;
+// format 2's B is empty, so these views drew still air under V2). Not a deviation: the same
+// views of the same quantities, in V1's units (shaders/common.js fetchBs), each read where its
+// engine keeps them.
+export const readsAir = (view) => view === 'pressure' || view === 'flow';
+
 // Compile the intended native representation before its initialization finishes.
 // Actual draw headers are checked separately, so legacy buffers are never read
-// through a forecast native pipeline.
-export function volumeReadFormat(sim, gpu, header) {
+// through a forecast native pipeline. physical: a view that reads the air (readsAir).
+export function volumeReadFormat(sim, gpu, header, physical = false) {
   const owner = sim.compact;
-  if (owner && !owner.disposed && !owner.isReady && !(owner.forceCompatibility && gpu.testMode)) return 2;
-  return (header ?? sim.readHeader()).format ?? 0;
+  if (owner && !owner.disposed && !owner.isReady && !(owner.forceCompatibility && gpu.testMode)) return physical ? 3 : 2;
+  return (header ?? sim.readHeader({ physical })).format ?? 0;
 }
 
 /**
@@ -221,9 +229,9 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      *   on a software adapter without SOFTWARE_UNDRAWABLE)
      * @param {'now' | 'idle' | 'manual'} [build] when to build it if it isn't yet
      * @param {boolean} [curved] the rolling log's variant
-     * @param {0 | 2 | 3} [format] draw's captured representation (otherwise volume.format)
+     * @param {0 | 2 | 3} [format] draw's captured representation (otherwise the view's: volumeReadFormat)
      */
-    pipeline(view, detail = {}, build = 'now', curved = false, format = volume.format) {
+    pipeline(view, detail = {}, build = 'now', curved = false, format = volumeReadFormat(sim, gpu, undefined, readsAir(view))) {
       if (!VOLUME_VIEWS.includes(view)) throw new Error(`volume: no view ${view}`);
     const d = isMaterialView(view) ? drawable(detail) : {};
       const key = `${view}|${detailKey(d)}${curved ? '|curved' : ''}|format${format}`;
@@ -260,14 +268,17 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      */
     draw(rp, { view = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, warp = null, indirect = null } = {}) {
       const curved = isCurved(warp);
-      const header = sim.readHeader(), format = volumeReadFormat(sim, gpu, header);
+      const physical = readsAir(view);
+      const header = sim.readHeader({ physical }), format = volumeReadFormat(sim, gpu, header, physical);
       if ((header.format ?? 0) !== format) return false;
+      const state = physical ? sim.bindPhysicalRO : sim.bindRO;
+      if (!state) return false;   // (V2's air is still building: sim.bindPhysicalRO)
       const pipe = volume.pipeline(view, detail, 'now', curved, format);
       if (pipe.state !== 'ready') return false;
       meshInv.multiplyMatrices(fu.last.viewProj, fu.last.model).invert();   // clip → grid, the jittered camera's
       const depth = meshDepth ?? dummy.depth;
       pipe.draw(rp, {
-        bind: [volumeFrameGroup(depth), sim.bindRO, lightingGroup(L.LIGHTING)], header,
+        bind: [volumeFrameGroup(depth), state, lightingGroup(L.LIGHTING)], header,
         params: {
           meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
           deco: decoShown(sim) && sim.decoPlane ? 1 : 0,
