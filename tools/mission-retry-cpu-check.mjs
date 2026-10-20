@@ -62,7 +62,7 @@ const lifecycle = {
   sim, win: world(), ctx: {}, mp: { role: 'solo', guard: () => false, guardWorld: () => false },
   graphicsFailure: null, mapByKey: key => key === map.key ? map : null, mapOf: () => map,
   isWorld, resolveMode, dimsOf: () => [64, 32, 64], gridFits: () => true,
-  wire: () => ({ moveWindow: () => false }), hud: { toast() {} },
+  wire: () => ({ moveWindow: () => false }), hud: { toast() {} }, loadWatch: { start() {} },
   scoreboard: { reset() {} }, presentation: { select() {} }, pacer: { wake() {} },
   viewForMode: (_chosen, view) => view, applyGravity() {},
   useMap(m) { assert.equal(m, map); },

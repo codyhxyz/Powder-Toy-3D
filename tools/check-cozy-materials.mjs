@@ -136,7 +136,7 @@ const useMapCode = app.slice(app.indexOf('function useMap('), app.indexOf('// Th
 const makeMapOpener = new Function('settings', 'mapByKey', 'resolveMode', 'viewForMode', 'isWorld', `
   const mp = { frozen: false, guard: () => false, guardWorld: () => false, role: 'solo' };
   const graphicsFailure = null, pov = null, wire = () => true, gridFits = () => true, dimsOf = () => [];
-  const hud = { toast() {} }, scoreboard = { reset() {} }, presentation = { select() {} };
+  const hud = { toast() {} }, scoreboard = { reset() {} }, presentation = { select() {} }, loadWatch = { start() {} };
   let modeEpoch = 0, selectedMode = 'sandbox', boxSize;
   const setView = id => { settings.view = id; }, setSize = size => { settings.size = size; };
   const loadPreset = preset => { settings.preset = preset; }, startMode = async () => {};

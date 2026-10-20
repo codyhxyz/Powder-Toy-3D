@@ -18,7 +18,7 @@ No game execution, save writes, GPU use, room assembly, or terrain repairs.
 
 `route.json` is full provenance; `src/world/scenes/descent/terrainRoute.json` is
 its runtime subset. Each binpack is deterministic, four-byte-padded gzip of
-320×9216 native-name palette IDs, row-major X-fastest. Hashes cover decompressed
+320×7216 (the crop x -3072..4144) native-name palette IDs, row-major X-fastest. Hashes cover decompressed
 bytes. Air is 0; OUTSIDE is 255, not air. Element IDs approximate physical roles;
 they do not collapse the distinct native material IDs stored in the raster.
 

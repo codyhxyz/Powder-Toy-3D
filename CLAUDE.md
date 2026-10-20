@@ -64,6 +64,16 @@ The user plays on this Mac while agents work. Headless tests can disrupt the gam
 - Direct browser URLs support `?test=manual|ui|preview|visual` and `&paused=1`. These flags are not persisted and normal gameplay is unchanged.
 - Existing worktrees and already-running scripts must adopt this revision before these defaults apply. See `docs/headless-testing-cost.md`; check with `node tools/headless-check.mjs --port YOUR_PORT`.
 
+## Same features in every world — all agents
+
+A feature, fix or look applies everywhere the player can meet it: every map and scene, both renderers (Box and World, including World's far field), both physics engines (V1 and V2), and every view.
+
+- Ship it everywhere in the same task. "Box only for now", "World later" and "V2 not yet" are unfinished work, not a scope choice, and the task isn't done until they're closed.
+- A difference is allowed only when the user asked for it or it belongs to a gamemode. Mark it at the branch with who decided and why: `// Intentional (user request, 2026-10-20): ...` or `// Intentional (gamemode: Halo): ...`.
+- Different code that looks and plays the same to the player (World reads its atlas, Box reads V2 state) isn't a deviation. Say so in a comment anyway, so the next agent doesn't take it for one.
+- If you find an undocumented difference, close it. If it might be wanted, ask the user. Never report it as a limitation and stop.
+- List every intentional deviation in your final report.
+
 # Design touchstones
 
 The game's major inspirations are Cruelty Squad, Minecraft, Noita, The Powder Toy, Team Fortress 2, Rust, Garry's Mod and Halo 3 (README, "Inspirations"). When a feature needs a rule, a number or a feel, borrow it from one of these first and cite it in a comment.
