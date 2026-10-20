@@ -10,6 +10,7 @@ import { gear } from './catalog.js';
 import { CELL_M } from '../../scale.js';
 import { rayTarget, PLAYER } from '../targets.js';
 import { povEvents } from '../events.js';
+import { legacySteps } from '../../v2/host.js';
 
 // Physgun: a force beam on loose matter (powders, liquids, gases). Press and
 // hold left-click to grab what's around the aim point: every frame one kernel
@@ -273,7 +274,8 @@ export default {
           // the hold point rides along with the eye, then chases the aim
           hold.add(tmpA.subVectors(ctx.eye, prevEye));
           prevEye.copy(ctx.eye);
-          chase(ctx.eye, CHASE * ENGINE.V_MAX * ctx.stepsPerFrame);
+          // (CHASE · V_MAX a V1 step, the steps the frame ran: under V2 its ticks are four V1 steps each)
+          chase(ctx.eye, CHASE * ENGINE.V_MAX * legacySteps(sim, ctx.stepsPerFrame));
           if (ctx.primaryPressed) prevHold.copy(hold);
           if (ctx.secondaryPressed) {
             if (run(ctx, PHYS_MODE.FLING) === false) return;

@@ -16,6 +16,7 @@ import { buildCruelty } from './figureCruelty.js';
 import { createWorldModel } from './ai/world.js';
 import { createNav } from './ai/nav.js';
 import { BODY_HEIGHT, RESPAWN_S } from './constants.js';
+import { nativeSeconds } from '../v2/host.js';
 
 export { createWorm } from './worm.js';
 
@@ -335,6 +336,8 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
       if (alive && it.tool) {
         pick();
         ctx.sim = sim; ctx.dt = dt; ctx.stepsPerFrame = w.stepsPerFrame; ctx.toolRate = body.perks.toolRate;
+        // (V2: its tools' clock is the ticks the frame ran, as the player's: pov/index.js ctx.nativeDt)
+        ctx.nativeDt = sim?.compact ? nativeSeconds(w.stepsPerFrame) : undefined;
         ctx.primary = it.primary; ctx.secondary = it.secondary;
         ctx.primaryPressed = it.primaryPressed; ctx.secondaryPressed = it.secondaryPressed;
         // its tools' hands at its eye, turned along its aim (the physgun's beam leaves from there)
