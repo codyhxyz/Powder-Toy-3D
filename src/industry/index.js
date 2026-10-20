@@ -36,7 +36,10 @@ export function createIndustry(app) {
   let inspectionKey = '', inspectionAt = 0, inspectionFlight = false, inspectionControlAt = 0, inspectionAnchor = null;
   let epoch = 0, pending = false, disposed = false, candidate = null, candidateResult = null;
   let probePending = false, probeKey = '', probeAt = 0, animation = 0, lastMode = app.gamemode, lastSim = app.sim;
-  // ponytail: box maps only; streamed worlds need persistent world-coordinate machinery.
+  // Intentional (gamemode: Factory): machines are built only in Factory, on the Quarry (factory() below), and
+  // Sandbox there keeps them running. The Quarry is a box map and no World map lists Factory (maps.js), so the
+  // !app.win guard never hides a machine a player could have built; a World Factory map would need
+  // world-coordinate machine records first.
   // Both engines run the machines: V2 natively on its own cells (physics.js, src/v2/industry.js).
   const active = () => !app.win && ['sandbox','factory'].includes(app.gamemode);
   // Keep machines running and preserve the build selection, but driving has no

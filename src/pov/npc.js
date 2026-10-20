@@ -233,6 +233,17 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
     get finished() { return oneShot && body.dead && deadTime >= RESPAWN_S; },
     get agent() { return agent; },
     get kit() { return kit; },
+    // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md D11): the body and its
+    // tools stay put in the world; its plans and sightings were in the old window's cells.
+    windowShifted(dx, dz) {
+      body.windowShifted(dx, dz);
+      for (const key of kit.keys) kit.tool(key)?.windowShifted?.(dx, dz);
+      agent.brain.clearSubgoals();
+      for (const entity of [agent.prey, ...agent.foes.values()]) {
+        const record = agent.memory.getRecord(entity);
+        if (record) { record.timeLastSensed = -Infinity; record.visible = false; }
+      }
+    },
     // what it's doing (checks): its goal, weapon, tool, pack
     get debug() {
       return {

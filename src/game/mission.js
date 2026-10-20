@@ -4,6 +4,12 @@ import { PLAYER } from '../pov/targets.js';
 import { povEvents } from '../pov/events.js';
 import { crueltyProfile } from './crueltyProfiles.js';
 
+// cells from a World window's edge an NPC must be inside to be simulated: its body's probe and the
+// AI's world model only hold the window's cells (a box's whole grid is resident)
+const RESIDENT_MARGIN = 2;
+export const residentIn = (p, g) => !g?.windowed
+  || (p.x >= RESIDENT_MARGIN && p.z >= RESIDENT_MARGIN && p.x < g.nx - RESIDENT_MARGIN && p.z < g.nz - RESIDENT_MARGIN);
+
 // Narrow adapter: existing NPC bodies/tools/combat, an authored mission, one attempt.
 // No random spawns, match respawn, automatic next round, or fabricated level geometry.
 export function createMission(shell) {
@@ -80,7 +86,7 @@ export function createMission(shell) {
       const g = shell.app.getSim().g;
       for (const n of actors.values()) {
         const p = n.body.pos;
-        const resident = !g?.windowed || (p.x >= 2 && p.z >= 2 && p.x < g.nx - 2 && p.z < g.nz - 2);
+        const resident = residentIn(p, g);
         n.setVisible(visible && resident);
         if (!resident) continue;
         shell.bind?.(n);
@@ -117,17 +123,7 @@ export function createMission(shell) {
     get actors() { return [...actors.values()]; },
     get state() { return attempt ? { ...attempt.state, id: manifest.id, map: mapKey } : null; },
     setVisible(v) { visible = v; for (const n of actors.values()) n.setVisible(v); shell.markers?.setVisible(v); updateHud(); },
-    windowShifted(dx, dz) {
-      for (const n of actors.values()) {
-        n.body.windowShifted(dx, dz);
-        for (const key of n.kit.keys) n.kit.tool(key)?.windowShifted?.(dx, dz);
-        // Navigation goals and sight records were in the previous window's local cells.
-        n.agent.brain.clearSubgoals();
-        for (const entity of [n.agent.prey, ...n.agent.foes.values()]) {
-          const record = n.agent.memory.getRecord(entity);
-          if (record) { record.timeLastSensed = -Infinity; record.visible = false; }
-        }
-      }
-    },
+    // (navigation goals and sight records were in the previous window's local cells: pov/npc.js)
+    windowShifted(dx, dz) { for (const n of actors.values()) n.windowShifted(dx, dz); },
   };
 }
