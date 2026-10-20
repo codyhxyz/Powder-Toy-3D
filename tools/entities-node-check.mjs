@@ -36,12 +36,13 @@ assert.ok(!sp.list[0].oneShot && sp.list[0].obj, 'flagless saves remain repeated
 sp.consume(sp.list[0]);
 assert.equal(sp.toJSON().length, 1, 'legacy deaths do not consume their home');
 sim.g.windowed = true;
-for (const kind of ['boat', 'jeep', 'hoverbike', 'enemy', 'gunner', 'worm', 'giantworm']) assert.equal(sp.place(kind, at), 'unsupported');
-assert.equal(sp.place('birds', at), 'added');
+for (const kind of ['boat', 'jeep', 'hoverbike']) assert.equal(sp.place(kind, at), 'unsupported');
+// NPCs live in a World's window as in a box (CLAUDE.md "Same features in every world")
+for (const kind of ['enemy', 'gunner', 'worm', 'giantworm', 'birds']) assert.equal(sp.place(kind, at), 'added');
 sim.g.windowed = false;
 sp.clear();
 for (const name of ['Boat', 'Jeep', 'Hoverbike', 'Axeman', 'Gunner', 'Worm', 'Giant worm', 'Bird flock']) assert.ok(TOOLS.some((t) => t.name === name));
-console.log('ok one-shot registry: no toggle/pad, cap, death/save, legacy and World rejection');
+console.log('ok one-shot registry: no toggle/pad, cap, death/save, legacy, World NPCs and World vehicle rejection');
 
 // Exercise production vehicle management with real Rapier bodies. Only GPU/UI
 // boundaries are mocked, not spawn, damage, homes, persistence or respawn logic.

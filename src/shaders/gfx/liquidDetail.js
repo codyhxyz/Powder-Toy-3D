@@ -5,7 +5,7 @@ import { simModesGLSL, SIM_MODE_FIELDS } from '../../simModes.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { fold, MAX_WORKGROUPS } from '../../gpu/kernels.js';
 import { glf } from '../../glsl.js';
-import { RIPPLE_SLOPE, VNOISE_GRAD_VAR } from './liquid.js';
+import { VNOISE_GRAD_VAR } from './liquid.js';
 
 // Close-up liquid detail (gfx/detail.js switches): what a liquid surface shows
 // once a pixel is a few millimetres across. Each part compiles in only with
@@ -137,10 +137,6 @@ export const CAP_LAMBDA_MAX_M = CAP_LAMBDAS[0];
 // away the octaves are then a constant roughness, not a mirror or sparkles.
 // Per octave the slope is RIPPLE_SLOPE times value noise's gradient (mNoiseD):
 // mean square slope 2·VNOISE_GRAD_VAR·RIPPLE_SLOPE² (gfx/liquid.js), GGX α² per octave.
-// Every octave at full strength: the World's far field (shaders/far.js), which
-// draws none of them as normals, takes all of it as roughness, so its sea
-// carries the window's glint on with no seam at the window's edge.
-export const CAP_SLOPE_MS = CAP_OCTAVES * 2 * VNOISE_GRAD_VAR * RIPPLE_SLOPE ** 2;
 
 // ---- Whitewater (DETAIL_LIQ_FOAM) ----
 // Foam at a free surface decays exponentially as its bubbles burst: the
@@ -205,7 +201,12 @@ ${Object.entries(MENISCUS_PROPS).map(([k, p]) => `  if (id == E_${k}) { return v
 }`;
 
 /** Box programs always compile native compact foam (legacy detail switches still gate their effects).
- * WORLD reads no V2 state, so its switches decide what is compiled in, as before. */
+ * WORLD reads no V2 state, so its switches decide what is compiled in, as before.
+ * Under V1 the two draw the same foam (World reads the same aeration, copied into
+ * its atlas). Under V2 they don't: the Box draws V2's foam byte, switch on or off;
+ * World never sees that byte, since its atlas holds V2's legacy projection, which
+ * carries none. Not a decided difference: an open question to the user (parity
+ * audit 2026-10-20). */
 export const LIQ_DETAIL = (detail = {}, backend = 'box') => backend !== 'world'
   || !!(detail.DETAIL_LIQ_RIPPLES || detail.DETAIL_LIQ_MENISCUS || detail.DETAIL_LIQ_FOAM);
 
@@ -215,6 +216,8 @@ export const liquidDetailGLSL = (detail = {}, { backend = 'box', fixedReadFormat
   const ripples = !!detail.DETAIL_LIQ_RIPPLES;
   const meniscus = !!detail.DETAIL_LIQ_MENISCUS;
   const world = backend === 'world';
+  // Intentional (V2 design, docs/v2.md §4.3 and §13.4): V2's foam is always on and every liquid
+  // foams; V1's Whitewater foam stays behind its detail switch (the format test in liquidDetail below).
   const foam = !world || !!detail.DETAIL_LIQ_FOAM; // native §4.3 foam is independent of the legacy Whitewater switch
   return /* wgsl */ `
 // Which copy of the aeration buffer (binding 19: both copies, docs/webgpu.md

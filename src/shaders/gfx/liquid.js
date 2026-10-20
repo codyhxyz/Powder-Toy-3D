@@ -346,7 +346,7 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
 // roughness: the wind ripples (liquidRipple) and the close-up ripples' octaves
 // (gfx/liquidDetail.js liquidCapillary) hand over to the glint's lobe as they
 // fade, so far water keeps their roughness instead of turning into a mirror.
-// The World's far field adds the same (shaders/far.js farLiquid). 0 where nothing set it.
+// 0 where nothing set it.
 var<private> gLiqSlopeMS: f32 = 0.0;
 var<private> gLiqSlopeAt: vec3f = vec3f(-1.0);
 // GGX roughness rough (α = rough²) widened by mean square slope ms: α² + ms.

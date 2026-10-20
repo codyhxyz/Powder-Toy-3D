@@ -29,6 +29,7 @@ async function setup() {
   state.noise={texture:f.gpu.createTexture({size:[1,1,1],format:'rgba8unorm'})};
   state.unused.createView=()=>({});state.opaque.recordReady=()=>{phases.push('pack');return true;};
   app.threeMeshes=(_p,transparent)=>{phases.push(transparent?'transparent':'opaque');return true;};
+  app.writeWorldFrame=()=>phases.push('frame');app.drawWorldSky=()=>phases.push('sky');
   app.prepareWorldAfter=()=>assert.fail('still must not prepare MAIN wires');
   app.drawWorldAfter=()=>assert.fail('still must not draw MAIN wires');
   app.drawWorldOverlay=()=>assert.fail('still must not draw MAIN gizmos');
@@ -209,12 +210,12 @@ test('actual App WORLD thumbnail hook executes own-camera queue, readback, unpre
   presentation.dispose();
 });
 
-test('actual shared native frame helper records opaque → pack → full volume → transparent STILL with real context/feedback/final retirement and no hands or overlays',async()=>{
+test('actual shared native frame helper records opaque → pack → sky → full volume → transparent STILL with real context/feedback/final retirement and no hands or overlays',async()=>{
   const t=await setup();await t.boot();t.controls.nativeStill=true;
   const display=t.driver.displayedMainFrame,offset=t.p.node._jitterIndex,vm=t.counts.vm;
   const target=t.p.gpu.createTexture({size:[320,200],format:'rgba8unorm'});let done=false;
   const job=t.driver.queueStill({view:t.view(12),target}).then(()=>{done=true;});t.tick();await t.pump(()=>done);await job;
-  assert.deepEqual(t.phases,['opaque','pack','volume','transparent']);
+  assert.deepEqual(t.phases,['frame','opaque','pack','sky','volume','transparent']);
   assert.equal(t.driver.displayedMainFrame,display);assert.equal(t.p.node._jitterIndex,offset);assert.equal(t.counts.vm,vm);
   assert.equal(t.state.uses.size,0);await t.close();
 });

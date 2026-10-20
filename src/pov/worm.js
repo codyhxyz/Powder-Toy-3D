@@ -514,6 +514,12 @@ export function createWorm({ env, ai, home = () => null, size: sizeKey = 'small'
     },
     get segments() { return segs; },
     get finished() { return oneShot && dead && deadTime >= CORPSE_S; },
+    // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md D11): the worm, its
+    // tunnel trail and every point it steers by stay put in the world (pov/npc.js windowShifted).
+    windowShifted(dx, dz) {
+      const back = (p) => { if (p) { p.x -= dx; p.z -= dz; } };
+      for (const p of [v.position, prey.position, seek.target, digAt, roamTo, noise, diveTo, ...trail, ...segs]) back(p);
+    },
     update(dt, w) {
       const sim = env.getSim();
       if (!sim) return;

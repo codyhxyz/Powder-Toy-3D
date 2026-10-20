@@ -30,7 +30,7 @@ import { KICK_KEY, createKickLeg } from './kick.js';
 import { createCombat } from './combat.js';
 import { viewmodelRig, HIT } from './viewmodel.js';
 import { createGame } from '../game/index.js';
-import { createMission } from '../game/mission.js';
+import { createMission, residentIn } from '../game/mission.js';
 import { createMissionHud } from '../game/missionHud.js';
 import { createMarkers } from '../game/markers.js';
 import { createDeathWatch } from './killfeed.js';
@@ -230,6 +230,8 @@ export function createPov(app) {
   const coop = () => app.mp.replica || (app.inWorld?.() && app.mp.role === 'host');
   const coopHint = () => hud.toast('Co-op exploration: walk, jump and jet. Use god view to edit; weapons, vehicles, perks and progression require solo play.');
   const canUse = () => !village.enabled && !coop() && (!mission.engaged || mission.active) && (isLocked() || touch.enabled);
+  // Intentional (gamemode: Cruelty Squad, Sandbox): E's grapple is Cruelty Squad's Grappendix (docs/grappendix.md),
+  // and Sandbox has every tool; Halo/team matches, Noita's wands-only run, Animal Crossing and Factory keep their own move sets.
   const canGrapple = () => !coop() && live() && !editing && canUse() && !vehicles.seated
     && !game.running && ['sandbox', 'crueltySquad'].includes(app.gamemode?.() ?? 'sandbox') && !app.industryBuilding?.();
   const village = createVillage({ app, getPlayer: () => player, live, camera: povCam, releaseInput, releaseActions,
@@ -733,11 +735,12 @@ export function createPov(app) {
     vol.updateMatrixWorld();
     worldToGrid.copy(vol.matrixWorld).invert();
     if (!vehiclesUpdated) vehicles.update(dt, { player: active() ? player : null, live: live() && mode === 'on', worldToGrid });
-    // the NPCs: one per enemy spawner, with every tool you have. Not in a world
-    // (g.windowed): the NPCs don't move with the window (windowShifted).
+    // the NPCs: one per enemy spawner, with every tool you have, in a box or a World. A World's
+    // NPC appears once the window covers its spawner, stays put in the world as the window moves
+    // (windowShifted below) and waits, unsimulated, while outside it, as a mission's does (game/mission.js).
     const sp = app.getSpawners?.();
     const npcFrame = { player: mode === 'on' || mode === 'entering' ? player : null, holding: toolbelt?.selectedKey ?? null, toWorld, worldToGrid, scale, stepsPerFrame: app.nativeToolSteps ?? (app.settings.paused ? 0 : app.settings.steps) };
-    const npcsWanted = !!sp && !g.windowed;
+    const npcsWanted = !!sp;
     const homes = npcsWanted && !mission.engaged ? ENEMY_KINDS.flatMap((k) => sp.of(k)).filter((s) => s.oneShot || !game.running) : [];   // a team game (src/game) has its own bots
     if (homes.some((s) => !s.consumed)) {
       ensureKernels();
@@ -747,7 +750,7 @@ export function createPov(app) {
     }
     if (npcMod) {
       for (const s of homes) {
-        if (npcs.has(s.id) || s.consumed) continue;
+        if (npcs.has(s.id) || s.consumed || (g.windowed && !sp.feet(s))) continue;   // (a World spawner outside the window: later)
         const spec = {
           env: { renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: npcBallistics },
           ai: npcAi, oneShot: s.oneShot,
@@ -776,7 +779,11 @@ export function createPov(app) {
       }
       if ((npcsWanted && (npcs.size || game.botCount)) || mission.active) npcAi.world.update(dt);
       if (npcsWanted && npcs.size) {
-        for (const n of npcs.values()) { n.bind(volumeLight(app.getVolume()), g); n.update(dt, npcFrame); }
+        for (const n of npcs.values()) {
+          const resident = residentIn(n.body.pos, g);
+          if (!resident) { n.setVisible(false); continue; }
+          n.bind(volumeLight(app.getVolume()), g); n.update(dt, npcFrame);
+        }
       } else for (const n of npcs.values()) n.setVisible(false);
     }
     if (npcBallistics && dt > 0) npcBallistics.update({ sim, dt, stepsPerFrame: npcFrame.stepsPerFrame });
@@ -1208,7 +1215,9 @@ export function createPov(app) {
     update,
     updateEntities,
     get entitiesPending() {
-      return vehicles.pending || (!app.getSim()?.g.windowed && app.getSpawners?.()?.list.some((s) => !s.consumed && (s.oneShot || !game.running) && ENEMY_KINDS.includes(s.kind) && !npcs.has(s.id)));
+      const sp = app.getSpawners?.();
+      return vehicles.pending || !!sp?.list.some((s) => !s.consumed && (s.oneShot || !game.running) && ENEMY_KINDS.includes(s.kind) && !npcs.has(s.id)
+        && (!app.getSim()?.g.windowed || sp.feet(s)));   // (a World's spawner outside the window waits for it)
     },
     // the world was replaced (undo, a scene load): tools drop what they carry from the old one
     worldReplaced: () => {
@@ -1227,6 +1236,8 @@ export function createPov(app) {
       dropPoint.z -= dz;
       player?.windowShifted(dx, dz);
     mission.windowShifted(dx, dz);
+      for (const n of npcs.values()) n.windowShifted(dx, dz);   // the sandbox's NPCs (updateEntities)
+      npcBallistics?.windowShifted(dx, dz);
     if (app.mp.replica && (dx || dz)) player?.invalidateProbe();
       toolbelt?.windowShifted(dx, dz);
       combat.windowShifted(dx, dz);

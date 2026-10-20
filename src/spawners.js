@@ -13,6 +13,7 @@ const COLOR = { enemy: 0xe0453a, gunner: 0xe08a2a, worm: 0xb0607a, giantworm: 0x
 const VEHICLE_GHOST = { jeep: [7.3, 6, 15], hoverbike: [3.3, 4, 8.3], boat: [6, 3, 12] };
 const VEHICLE_PAD_R = { jeep: 8, hoverbike: 4.5, boat: 6.5 };   // cells, the pad's radius under it
 const GHOSTLESS = new Set([SPAWNER.BIRDS]);   // kinds whose marker is only the pad
+const WINDOWLESS = new Set([SPAWNER.JEEP, SPAWNER.HOVERBIKE, SPAWNER.BOAT]);   // kinds a World's moving window can't carry (place)
 const TOGGLE_DIST = 3;        // cells: clicking this near an existing spawner of the kind removes it
 const PAD_R = 1.4;            // cells, the pad's radius
 const PAD_LIFT = 0.05;        // cells above the surface (no z-fighting)
@@ -79,7 +80,9 @@ export class Spawners {
   // Player spawn is intentionally still a toggleable marker.
   place(kind, feet) {
     if (kind === SPAWNER.PLAYER) return this.toggle(kind, feet);
-    if (this.getSim().g.windowed && kind !== SPAWNER.BIRDS) return 'unsupported';
+    // NPCs and birds live in a World's window as in a box (pov/index.js updateEntities, birds/index.js);
+    // vehicles' rigid bodies and voxel terrain don't follow the window yet (docs/vehicles.md, World mode).
+    if (this.getSim().g.windowed && WINDOWLESS.has(kind)) return 'unsupported';
     // Retire spent records before reusing their budget; repeated kills must not
     // accumulate an unbounded registry (or NPC corpses with their own probes).
     for (const s of this.of(kind)) if (s.oneShot && (s.consumed || s.snapshot?.().consumed)) this.remove(s);
