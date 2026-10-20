@@ -10,7 +10,9 @@ import { E, ELEMENTS } from '../../src/elements.js';
 import { PHYS } from '../../src/physics.js';
 import * as C from '../../src/v2/contact.js';
 import { dynamicsRows, LEGACY_PRESSURE_PA, EVENT, AIR } from '../../src/v2/dynamics-reference.js';
-import { makeMaterial, energyOf, cTq } from '../../src/v2/layout.js';
+import { makeMaterial, energyOf, cTq, cid, FULL } from '../../src/v2/layout.js';
+import { airborneReference, outsideOf, AIRBORNE, AIRBORNE_LANDED_REQUESTS } from '../../src/v2/airborne.js';
+import { particlesWGSL, airborneBase, airbornePuffBase, PARTICLE_CAP } from '../../src/shaders/v2/particles.js';
 import { blastsWGSL } from '../../src/shaders/v2/blasts.js';
 import { nativeDynamicsHead } from '../../src/shaders/v2.js';
 import { gridLayout } from '../../src/sim.js';
@@ -104,6 +106,28 @@ test('the block pass posts the puff (contactReference: a boiling cell among hot 
 });
 
 const g = gridLayout(16, 16, 16);
+test('a drop boiling in flight puffs the same (airborne.js: its host posts the puff)', () => {
+  // a water drop through flames, a tick at a time, until it boils (tools/v2/airborne-react-check.mjs 2)
+  const OPEN = outsideOf(Array.from({ length: 6 }, () => makeMaterial(E.EMPTY, 20, 0).core));
+  let p = makeMaterial(E.WATER, 20, FULL / 8), r = null;
+  for (let i = 0; i < 600 && cid(p.core) === E.WATER; i++) {
+    r = airborneReference(p, makeMaterial(E.FIRE, ELEMENTS[E.FIRE].temp), Math.imul(i + 1, 2654435761) | 0, OPEN);
+    if (r.state === AIRBORNE.FLYING) p = r.particle;
+  }
+  assert.equal(cid(p.core), E.STEAM, 'the drop boils in flight');
+  assert.ok(r.requests & EVENT.GAS);
+  assert.equal(puffOf(r.requests), 259, 'V1\'s boil puff, not one cell of gas');
+  // The GPU twin: dReact keeps the puff above the bits; the react stage posts the bits in the slot
+  // word and the puff in its own word; airborneEvents merges them into the host's request.
+  const react = particlesWGSL(g, nativeDynamicsHead, 'react');
+  assert.ok(react.includes('let puff = max(u32(v.request) / 256u, u32(h.request) / 256u) * 256u;'));
+  assert.ok(react.includes(`s|((r.requests&${AIRBORNE_LANDED_REQUESTS}u)<<28u)`));
+  assert.ok(react.includes(`atomicStore(&control[${airbornePuffBase(g)}u+t],r.requests/256u);`));
+  assert.equal(airbornePuffBase(g), airborneBase(g) + 1 + PARTICLE_CAP);
+  const post = blastsWGSL(g, nativeDynamicsHead, 'airborneEvents');
+  assert.ok(post.includes(`let puff = atomicExchange(&control[${airbornePuffBase(g)}u + t], 0u);`));
+});
+
 test('blast products come out at V1 blast.T (react.js T = BLAST(id).y), the difference declared', () => {
   // The product rows are V1's: each charge's blast.into at its blast.T (gunpowder's flame 2200 °C).
   for (const e of ELEMENTS.filter(e => e.blast && !e.blast.into)) {

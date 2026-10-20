@@ -1,5 +1,5 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
-import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase } from './particles.js';
+import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase } from './particles.js';
 import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { E } from '../../elements.js';
 import { RAYS } from '../../rays.js';
@@ -9,6 +9,7 @@ import { strokeDistanceWGSL, atlasIndexWGSL } from '../passes.js';
 import { atlasDims } from '../common.js';
 import { fold } from '../../gpu/kernels.js';
 import { AIRBORNE_SLOT_MASK, AIRBORNE_BITS_SHIFT } from '../../v2/airborne.js';
+import { CONTACT_PUFF_UNIT } from '../../v2/contact.js';
 export { DynamicParams };
 // Native cells/bank/activity3 + events, particles, air, control, plans5.
 export const BLASTS_LAYOUT = storageLayout(5);
@@ -19,8 +20,8 @@ export const CHILD_PREFIX = CONTROL.PREFIX;
 export const SPAWN_PREFIX = CHILD_PREFIX + PARTICLE_CAP;
 export const RAY_REQUEST_CAP = 64;
 export const rayRequestBase = g => SPAWN_PREFIX + g.nbricks * 3;
-// (after the airborne requests' count and per-slot words: particles.js airborneBase)
-export const externalBlastBase = g => airborneBase(g) + 1 + PARTICLE_CAP;
+// (after the airborne requests' count, per-slot words and puffs: particles.js airborneBase, airbornePuffBase)
+export const externalBlastBase = g => airbornePuffBase(g) + PARTICLE_CAP;
 export const externalParticleBase = g => externalBlastBase(g) + EXTERNAL_BLAST_CAP;
 export const externalAirBase = g => externalParticleBase(g) + PARTICLE_CAP*4;
 export const externalMaskBase = g => externalAirBase(g) + g.nbricks + 1;
@@ -461,7 +462,11 @@ export function blastsWGSL(g,nativeHead,stage) {
     if (t >= D_CAP || atomicLoad(&control[${A}u]) == 0u) { return; }
     let w = atomicExchange(&control[${A + 1}u + t], 0u); if (w == 0u) { return; }
     let s = w & ${AIRBORNE_SLOT_MASK}u; let bits = w >> ${AIRBORNE_BITS_SHIFT}u;
-    events[s] |= bits; noteEvents(s, bits); dWake(cellOf(s));
+    // the packet's puff with its GAS request: the larger of it and the host's unconsumed one
+    // (contact.js ctPuff; the block pass's ctMergeRequest)
+    let puff = atomicExchange(&control[${airbornePuffBase(g)}u + t], 0u);
+    let request = ((events[s] | bits) & ${CONTACT_PUFF_UNIT - 1}u) | (max(events[s] / ${CONTACT_PUFF_UNIT}u, puff) * ${CONTACT_PUFF_UNIT}u);
+    events[s] = request; noteEvents(s, request); dWake(cellOf(s));
   `); }
   // Bricks noted as holding a request (noteEvents), for the first select. Only clears follow
   // it until the next tick's grid passes, so later batches could use it too; they select

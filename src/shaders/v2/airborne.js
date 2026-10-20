@@ -2,6 +2,7 @@ import { contactWGSL, specialContactWGSL } from './contact.js';
 import { v2Table } from '../v2.js';
 import { AIR_CAPACITY_Q } from '../../v2/layout.js';
 import { AIRBORNE, AIRBORNE_FLYING_REQUESTS, AIRBORNE_LANDED_REQUESTS } from '../../v2/airborne.js';
+import { CONTACT_PUFF_UNIT } from '../../v2/contact.js';
 
 // Airborne matter takes part (docs/v2/native-contract.md "Contact module"): V1 had no flying
 // state, its splashes and ejecta were ordinary cells, so its react pass (shaders/react.js) heated,
@@ -90,8 +91,10 @@ fn dReact(packet: Material, host: Material, outside: vec4i, seed: i32) -> DReact
   if (ctHotFuel(v)) { h = ctLick(h, 1, ctRow(v.id).flameQ, ctSmothered(outside.z, outside.w), seed ^ D_REACT_PLUME_SALT); }
   if (v.id != 0) { v = ctAmbient(v, ambientQ, airHeat); }
   let source = energyAdd(v.source, h.source); let sink = energyAdd(v.sink, h.sink);
-  let asked = u32(v.request | h.request) & D_REACT_LANDED_REQUESTS;
-  let flyingRequests = asked & D_REACT_FLYING_REQUESTS;
+  // the GAS request's puff rides above the bits (contact.js ctPuff): the larger of the two
+  let puff = max(u32(v.request) / ${CONTACT_PUFF_UNIT}u, u32(h.request) / ${CONTACT_PUFF_UNIT}u) * ${CONTACT_PUFF_UNIT}u;
+  let asked = (u32(v.request | h.request) & D_REACT_LANDED_REQUESTS) | puff;
+  let flyingRequests = (asked & D_REACT_FLYING_REQUESTS) | puff;
   let vm = Material(ctPack(v, packet.core), v.bank);
   let hm = Material(ctPack(h, host.core), h.bank);
   let ev = energyOf(vm); let eh = energyOf(hm);

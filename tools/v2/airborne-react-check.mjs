@@ -9,7 +9,7 @@ import { E, ELEMENTS } from '../../src/elements.js';
 import { gridLayout } from '../../src/sim.js';
 import { makeMaterial, packetOwnedEnergy, energyOf, cTq, cid, FULL } from '../../src/v2/layout.js';
 import { airborneReference, outsideOf, AIRBORNE } from '../../src/v2/airborne.js';
-import { particlesWGSL, PARTICLE_STAGES, airborneBase, heldBase, PARTICLE_CAP } from '../../src/shaders/v2/particles.js';
+import { particlesWGSL, PARTICLE_STAGES, airborneBase, airbornePuffBase, heldBase, PARTICLE_CAP } from '../../src/shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, externalBlastBase } from '../../src/shaders/v2/blasts.js';
 import { nativeDynamicsHead, v2Table } from '../../src/shaders/v2.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
@@ -147,8 +147,8 @@ assert(PARTICLE_STAGES.includes('reactClaim') && PARTICLE_STAGES.includes('react
 for (const dims of [[32, 32, 32], [48, 16, 32]]) {
   const g = gridLayout(...dims), code = blastsWGSL(g, nativeDynamicsHead, 'airborneEvents');
   assertNaga(code, `blasts/airborneEvents ${dims}`); modules++;
-  assert.match(code, /events\[s\] \|= bits; noteEvents\(s, bits\);/, 'posted as the block pass posts a cell\'s requests');
-  assert.equal(airborneBase(g), heldBase(g) + PARTICLE_CAP); assert.equal(externalBlastBase(g), airborneBase(g) + 1 + PARTICLE_CAP, 'its words overlap no other range');
+  assert.match(code, /let request = \(\(events\[s\] \| bits\) & 255u\) \| \(max\(events\[s\] \/ 256u, puff\) \* 256u\);\n    events\[s\] = request; noteEvents\(s, request\);/, 'posted as the block pass posts a cell\'s requests (ctMergeRequest: flags together, the larger puff)');
+  assert.equal(airborneBase(g), heldBase(g) + PARTICLE_CAP); assert.equal(airbornePuffBase(g), airborneBase(g) + 1 + PARTICLE_CAP); assert.equal(externalBlastBase(g), airbornePuffBase(g) + PARTICLE_CAP, 'its words overlap no other range');
 }
 assert(BLAST_STAGES.includes('airborneEvents'));
 
