@@ -733,7 +733,10 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       g = sim.g;
       generation++; probe.valid = false;
     }
-    // sim steps since last frame → step rate (0 while paused)
+    // sim steps since last frame → step rate (0 while paused). Raw sim.frame on purpose: the engine's own
+    // steps (V1 steps, or V2 ticks), not game time (v2/host.js stepClock): V2's readers take them as ticks
+    // (nativeBodyPressureFactor) or swap the rate for V1's (bodyEditStepRate, NOMINAL_STEP_RATE). A switch
+    // leaves sim.frame alone, so a frame's count is the one engine's that stepped it.
     const steps = Math.max(0, sim.frame - lastFrame);
     lastFrame = sim.frame;
     if (dt > 0) dtSmooth += (dt - dtSmooth) * DT_EASE;
