@@ -12,7 +12,8 @@ const block=contactWGSL.slice(contactWGSL.indexOf('fn contactBlock('));
 assert(block.includes('let count=min(8u,arrayLength(&events));'));
 assert.equal((block.match(/for\(var i=0u;i<count;i\+\+\)/g)||[]).length,5);
 assert.equal((block.match(/axis<u32\(ctNeighborCount\(\)\)/g)||[]).length,2);
-assert.equal((contactWGSL.match(/k < ctNeighborCount\(\);/g)||[]).length,3);
+// (the atmosphere step's and the cloud's: electricity reads six faces in the electric pass)
+assert.equal((contactWGSL.match(/k < ctNeighborCount\(\);/g)||[]).length,2);
 for(const dims of [[16,8,8],[32,32,32],[32,16,24],[128,128,128]]) {
   const g=gridLayout(...dims);
   assert.equal(Math.min(8,g.slots),8,'every native block still processes all eight cells');

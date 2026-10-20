@@ -119,7 +119,8 @@ for (const [what, variant] of [['a mark that does not note its group', { silentM
 for (const g of [gridLayout(16, 8, 8), gridLayout(128, 128, 128)]) {
   const A = v2ActLayout(g), C = listControl(g), groups = brickGroups(g);
   assert.equal(groups, Math.ceil(g.nbricks / BRICK_GROUP));
-  assert.ok(A.jetGroups >= A.words && A.jetGroups === A.plive + A.liveWords && A.allocated === A.jetGroups + groups, 'the jets\' group words are unsaved and last');
+  // (then the electric pass's words, last: shaders/v2/electric.js)
+  assert.ok(A.jetGroups >= A.words && A.jetGroups === A.plive + A.liveWords && A.elecCount === A.jetGroups + groups && A.allocated > A.elecCount, 'the jets\' group words are unsaved, before the electric pass\'s');
   assert.ok(C.windGroups > C.jetTotal && C.words === C.windGroups + groups, 'windList\'s group words follow every other control run');
   const pairs = v2PairsWGSL(g);
   assert.match(pairs, /fn noteJet\(b: u32\) \{ atomicStore\(&act2\[V2_JETS \+ b\], 1u\); atomicStore\(&act2\[V2_JET_GROUPS \+ b \/ BRICK_GROUP\], 1u\); \}/);

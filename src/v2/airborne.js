@@ -10,6 +10,8 @@
 //                 phase point it can't hold (ctHeatRoom)
 //   reactions     ctReaction (elements.js REACTIONS: a water drop through caustic gas turns acid),
 //                 ctAcid, ctSwallow, both ways round
+//   electricity   ctElecAirborne: V1's spark, switch, sensor and fuse steps, four a tick, the host
+//                 its one neighbour (a spark runs down in flight, a lit fuse burns on)
 //   own step      ctStepAtmosphere: ignition and burning with the host as its flame and air (fuel
 //                 spent at burnRate, heat up to the flame ceiling, CO2/ASH exhaust), fire's and
 //                 smoke's life, phases (boil, melt, freeze, condense: phase.js latent heat)
@@ -27,7 +29,7 @@
 // Anything that cannot be represented leaves both exactly as they were for the next tick.
 import { E, ELEMENTS, K } from '../elements.js';
 import { AIR_CAPACITY_Q, cTq, energyOf, withEnergy, energyFits, withPacketEnergy, packetEnergyFits } from './layout.js';
-import { unpackContact, packContact, ctNew, ctFlux, ctHeat, ctReaction, ctAcid, ctSwallow, ctStepAtmosphere,
+import { unpackContact, packContact, ctNew, ctFlux, ctHeat, ctReaction, ctAcid, ctSwallow, ctStepAtmosphere, ctElecAirborne,
   ctResolvePhase, ctLick, ctHotFuel, ctSmothered, ctRow, ctConducts, ctHeatRoom, ctAmbient, ctPairValue,
   contactAmbientQ, CONTACT_DEFAULT_MODES, CONTACT_PUFF_UNIT } from './contact.js';
 
@@ -88,7 +90,9 @@ export function airborneReference(packet, host, seed, outside = [0, 0, 0, 0], mo
     if (!pair.changed) pair = ctSwallow(pair.a, pair.b, seed);
     if (!pair.changed) { const rev = ctSwallow(pair.b, pair.a, seed); pair = ctPairValue(rev.b, rev.a, rev.changed); }
     v = pair.a; h = pair.b;
-    // (a flying packet is on no floor)
+    // V1's electricity on the flying cell, its steps a tick (contact.js ctElecAirborne), then
+    // (a flying packet is on no floor) its own step
+    v = ctElecAirborne(v, [h, none, none, none, none, none], seed);
     v = ctStepAtmosphere(v, [h, none, none], seed, ...outside, 0, ambientQ);
     pair = ctResolvePhase(v, h);
     if (!pair.changed) { const rev = ctResolvePhase(pair.b, pair.a); pair = ctPairValue(rev.b, rev.a, rev.changed); }
