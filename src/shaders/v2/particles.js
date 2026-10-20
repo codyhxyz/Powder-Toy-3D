@@ -9,7 +9,7 @@ import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
 import { PHYS } from '../../physics.js';
 import { contactRulesWGSL, withContactTable, airborneReactWGSL, airborneClaimWGSL } from './airborne.js';
-import { AIRBORNE_BITS_SHIFT } from '../../v2/airborne.js';
+import { AIRBORNE_BITS_SHIFT, AIRBORNE } from '../../v2/airborne.js';
 export { PARTICLE_CAP };
 export const DynamicParams = uniformStruct('DynamicParams', {
   tick: 'u32', busyIn: 'u32', busyOut: 'u32', mode: 'u32', origin: 'vec3i', sequence: 'u32',
@@ -27,6 +27,10 @@ export const heldBase = g => shockBase(g) + g.nbricks;
 // the airborne requests (src/v2/airborne.js): a count, then a word a particle slot (the host slot
 // and its request bits), which the react stage writes and blasts.js airborneEvents posts to events
 export const airborneBase = g => heldBase(g) + PARTICLE_CAP;
+// a hit's shock (dShockHit): a count, then a word a particle slot for a charge it set off in the grid (posted
+// as airborneBase's are), then a word a slot holding the id of a flying charge it set off, until that lands
+export const shockPostBase = g => airborneBase(g) + 1 + PARTICLE_CAP;
+export const setOffBase = g => shockPostBase(g) + 1 + PARTICLE_CAP;
 const f = n => Number.isInteger(n) && Math.abs(n)<1e21 ? `${n}.0` : String(n);
 const table = (name, type, field, fallback) => `fn ${name}(id: u32) -> ${type} { switch id {\n${dynamicsRows.filter(r => r[field] !== fallback).map(r =>
   `case ${r.id}u: { return ${type === 'f32' ? f(r[field]) : `${r[field]}${type === 'u32' ? 'u' : 'i'}`}; }`).join('\n')}\ndefault: { return ${type === 'f32' ? f(fallback) : `${fallback}${type === 'u32' ? 'u' : 'i'}`}; } } }`;
@@ -52,12 +56,21 @@ const D_PREFIX: u32 = ${CONTROL.PREFIX}u;
 const D_COUNTS: u32 = D_PREFIX + D_BRICKS;
 const D_SHOCK: u32 = ${shockBase(g)}u;
 const D_HELD: u32 = ${heldBase(g)}u;
+const D_SHOCK_COUNT: u32 = ${shockPostBase(g)}u;
+const D_SET_OFF: u32 = ${setOffBase(g)}u;
+const D_AIRBORNE_POSTS: u32 = ${airborneBase(g) + 1}u;
+const D_REQUEST_SHIFT: u32 = ${AIRBORNE_BITS_SHIFT}u;
+const D_DUST: u32 = ${E.DUST}u;
 struct DParticle { position: vec3f, id: u32, velocity: vec3f, c0: u32, tail: vec4u }
 struct DAir { vp: vec4f, thermal: vec4f } // m/s, Pa; excess K, gas fraction, quiet ticks, reserved
 ${table('dMass', 'f32', 'mass', 0.001)}
 ${table('dToughness', 'f32', 'toughness', 1e30)}
 ${table('dStrength', 'f32', 'strength', 1e30)}
 ${table('dBreak', 'i32', 'breakInto', -1)}
+${table('dShock', 'f32', 'shock', 0)}
+${table('dShockLiquid', 'u32', 'shockLiquid', 1)}
+// V1 common.js hitKE: closing at speed² u2, the mover i's mass against a solid j, else the reduced mass
+fn dHitKE(mi: f32, mj: f32, jSolid: bool, u2: f32) -> f32 { return 0.5 * select(mi * mj / (mi + mj), mi, jSolid) * u2; }
 ${table('dTerminal', 'f32', 'terminal', 55)}
 ${table('dLift', 'f32', 'lift', 12)}
 fn dConductive(id: u32) -> bool { switch id {
@@ -223,6 +236,40 @@ fn dElect(s: u32,kind: u32,index: u32) {
     if(atomicCompareExchangeWeak(&claims[at],old,index+1u).exchanged) { return; }
   }
 }
+// V1 react.js shock: matter and a charge closing at speed u set it off with ½·μ·u² past its shock (dShock,
+// dynamics-reference.js; common.js hitKE: a solid charge takes the mover's own mass, a loose one its own
+// against a solid mover and the reduced mass otherwise), never by its own element or a gas (shockActs,
+// isGasLike). The charge hit is in the grid: its detonation is posted at s (blasts.js airborneEvents). The
+// charge hitting is in flight: it is set off until it lands, with its detonation, where it is (deposit,
+// react). u is the hit's speed, as fracture's energy reads it (integrate).
+fn dShockHit(t: u32, s: u32, p: DParticle, hit: Material) {
+  let m = dMaterial(p); let pid = cid(m.core); let tid = cid(hit.core);
+  if (pid == tid || cls(pid) == C_GAS || cls(tid) == C_GAS) { return; }
+  let u2 = dot(p.velocity, p.velocity);
+  let mp = dMass(pid) * dAmount(m); let mt = dMass(tid) * dAmount(hit);
+  let pSolid = cls(pid) == C_SOLID; let tSolid = cls(tid) == C_SOLID;
+  let liquid = cls(pid) == C_LIQUID || cls(tid) == C_LIQUID;
+  if (dShock(tid) > 0.0 && (!liquid || dShockLiquid(tid) != 0u) && select(dHitKE(mt, mp, pSolid, u2), dHitKE(mp, mt, true, u2), tSolid) >= dShock(tid)) {
+    atomicStore(&control[D_SHOCK_COUNT + 1u + t], s | (1u << D_REQUEST_SHIFT)); atomicAdd(&control[D_SHOCK_COUNT], 1u);
+  }
+  if (dShock(pid) > 0.0 && (!liquid || dShockLiquid(pid) != 0u) && select(dHitKE(mp, mt, tSolid, u2), dHitKE(mt, mp, true, u2), pSolid) >= dShock(pid)) {
+    atomicStore(&control[D_SET_OFF + t], p.id);
+  }
+}
+// A flying dust packet's dust faces (V1 react.js dust clouds: nFuel), read in elect, before react's winners
+// clear the notes: another dust packet in its own cell, and each face cell holding dust, settled or flying
+// (reactClaim notes a flying one in its host's kind-1 key word, free by then: deposit freed every one).
+fn dDustFaces(s: u32) -> i32 {
+  let p = cellOf(s);
+  var n = select(0, 1, atomicLoad(&claims[s * 4u + 2u]) > 1u);
+  for (var f = 0; f < 6; f++) {
+    let q = mEdge(p + face6(f));
+    if (!inGrid(q)) { continue; }
+    let r = slotOf(q);
+    if (cid(loadCore(r)) == D_DUST || atomicLoad(&claims[r * 4u + 2u]) != 0u) { n++; }
+  }
+  return n;
+}
 `;
 }
 export function particlesWGSL(g, nativeHead, stage) {
@@ -232,6 +279,7 @@ export function particlesWGSL(g, nativeHead, stage) {
   if (stage === 'clear') return h + main1(`
     flight[D_SWEEP] = DFlight(vec4u(atomicLoad(&control[0]),0u,0u,0u),vec4f(0));
     atomicStore(&control[0],0u); atomicStore(&control[18],0u);
+    atomicStore(&control[D_SHOCK_COUNT],0u); // this tick's shock posts (blasts.js airborneEvents drains them)
   `);
   if (stage === 'integrate') return h + main64(/* wgsl */ `
     // Later stages read flight only for live slots, so dead slots skip it.
@@ -356,6 +404,8 @@ export function particlesWGSL(g, nativeHead, stage) {
     for (var kind = 0u; kind < 2u; kind++) { let s = f.destination[kind];
       if (s != D_NONE && atomicLoad(&claims[s*4u+kind*2u]) == ~f.destination.w) { dElect(s,kind,t); }
     }
+    // a flying dust packet's dust faces, before react's winners clear the notes (dDustFaces)
+    if (f.destination.z == ${AIRBORNE.KIND}u && (particles[t].c0 & 255u) == D_DUST) { flight[t].effect.x = f32(dDustFaces(f.destination.x)); }
   `);
   // Impact reads only kind-0 election words and deposit only kind-1 words, so
   // a winner may free its claim at once: every other claimant loses either way.
@@ -365,6 +415,7 @@ export function particlesWGSL(g, nativeHead, stage) {
     dFree(s,0u);
     var p = particles[t]; let before = loadMaterial(s); var after = before;
     if (f.destination.z == 1u) {
+      dShockHit(t,s,p,before);
       let id = cid(before.core); let cost = dToughness(id);
       if (cls(p.c0 & 255u) != 3u && dBreak(id) >= 0 && f.effect.x >= cost) {
         after.core.x = (before.core.x & 0xffffff00u) | u32(dBreak(id));
@@ -446,6 +497,10 @@ export function particlesWGSL(g, nativeHead, stage) {
     // receiver keeps its paint, as a column move's does (columns.js colMove)
     if (cid(before.core)==0u) { setDeco(s,particleDecoOf(t)); }
     storeMaterial(s,before,admitted.material); dWake(cellOf(s));
+    // a charge a hit set off (dShockHit) lands with its detonation, posted as a flying packet's are
+    if (atomicLoad(&control[D_SET_OFF+t])==particles[t].id) {
+      atomicStore(&control[D_AIRBORNE_POSTS+t],s|(1u<<D_REQUEST_SHIFT)); atomicAdd(&control[D_SHOCK_COUNT],1u);
+    }
     particles[t].id = 0u; atomicSub(&control[0],1u); noteDead(t);
   `);
   if(stage==='bodyCouple') return h+main64(`
@@ -525,6 +580,8 @@ export function particlesWGSL(g, nativeHead, stage) {
     let key = dKey(particle.id ^ D_REACT_SALT);
     flight[t] = DFlight(vec4u(s,D_NONE,D_REACT_KIND,key),vec4f(0));
     dClaim(s,0u,key);
+    // a dust packet notes itself in its cell's kind-1 key word, for its neighbours' clouds (dDustFaces)
+    if ((particle.c0 & 255u) == D_DUST) { atomicAdd(&claims[s*4u+2u],1u); }
   `);
   if (stage === 'react') {
     const rh = head(g, (grid, o) => withContactTable(nativeHead(grid, o)));
@@ -532,10 +589,12 @@ export function particlesWGSL(g, nativeHead, stage) {
     if (t >= D_CAP || dPoolEmpty() || !slotLive(t) || particles[t].id == 0u) { return; }
     let f = flight[t]; let s = f.destination.x;
     if (f.destination.z != D_REACT_KIND || !dWon(s,0u,t)) { return; }
-    dFree(s,0u);
+    dFree(s,0u); dFree(s,1u); // the cell's claim, and its dust notes (read in elect)
     var particle = particles[t]; let p = cellOf(s);
     let before = loadMaterial(s);
-    let r = dReact(dMaterial(particle), before, dReactOutside(p), bitcast<i32>(dKey(particle.id ^ D_REACT_SALT)));
+    var charge = DReactCharge(atomicLoad(&control[D_SET_OFF+t]) == particle.id, length(particle.velocity) * D_DT / D_CELL, i32(f.effect.x), 0, 0);
+    if ((particle.c0 & 255u) == D_DUST) { let faces = dReactDustFaces(p); charge.fire = faces.x; charge.hot = faces.y; }
+    let r = dReact(dMaterial(particle), before, dReactOutside(p), bitcast<i32>(dKey(particle.id ^ D_REACT_SALT)), charge);
     if (r.state == D_REACT_REFUSED) { return; }
     if (any(r.source != vec2u(0u))) { noteEnergySource(p,r.source); }
     if (any(r.sink != vec2u(0u))) { noteEnergySink(p,r.sink); }

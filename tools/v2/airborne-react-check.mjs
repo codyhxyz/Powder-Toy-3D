@@ -8,8 +8,9 @@ import assert from 'node:assert/strict';
 import { E, ELEMENTS } from '../../src/elements.js';
 import { gridLayout } from '../../src/sim.js';
 import { makeMaterial, packetOwnedEnergy, energyOf, cTq, cid, FULL } from '../../src/v2/layout.js';
-import { airborneReference, outsideOf, AIRBORNE } from '../../src/v2/airborne.js';
-import { particlesWGSL, PARTICLE_STAGES, airborneBase, heldBase, PARTICLE_CAP } from '../../src/shaders/v2/particles.js';
+import { airborneReference, outsideOf, AIRBORNE, AIRBORNE_NO_CHARGE, dustFacesOf } from '../../src/v2/airborne.js';
+import { DUST_MIN_FALL_SPEED } from '../../src/v2/contact.js';
+import { particlesWGSL, PARTICLE_STAGES, airborneBase, heldBase, shockPostBase, setOffBase, PARTICLE_CAP } from '../../src/shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, externalBlastBase } from '../../src/shaders/v2/blasts.js';
 import { nativeDynamicsHead, v2Table } from '../../src/shaders/v2.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
@@ -120,6 +121,42 @@ assert.equal(key(fly(packet(E.LAVA, 1500, FULL / 4), () => air(20), 4000).p.core
   const out = fly(packet(E.GUNPOWDER, 20), fire, 600);
   assert.equal(out.r.state, AIRBORNE.DISPLACED); assert.equal(cid(out.r.host.core), E.GUNPOWDER); assert.equal(cid(out.r.particle.core), E.FIRE);
 }
+// 9b. Set off by a hit (particles.js dShockHit marks it): a C-4 lump lands with its detonation where it is,
+// in air or in a gas (the gas flying on); without the mark it flies on, inert.
+{
+  const lump = packet(E.C4, 20);
+  assert.equal(airborneReference(lump, air(20), 3, OPEN).state, AIRBORNE.FLYING);
+  const r = airborneReference(lump, air(20), 3, OPEN, undefined, { ...AIRBORNE_NO_CHARGE, setOff: true });
+  assert.equal(r.state, AIRBORNE.LANDED); assert.equal(cid(r.host.core), E.C4); assert.equal(r.requests & 1, 1);
+  const smoke = airborneReference(lump, makeMaterial(E.SMOKE, 20), 3, OPEN, undefined, { ...AIRBORNE_NO_CHARGE, setOff: true });
+  assert.equal(smoke.state, AIRBORNE.DISPLACED); assert.equal(cid(smoke.host.core), E.C4); assert.equal(cid(smoke.particle.core), E.SMOKE);
+}
+// 9c. A dust cloud (V1 react.js dust clouds, physics.js DUST_*): wind-blown dust, faster than DUST_LIFT_V,
+// with dust beside it and air enough, goes off as one when lit, landing with its detonation; lean, rich,
+// settling or unlit, it does not.
+{
+  const mote = packet(E.DUST, 20), fast = DUST_MIN_FALL_SPEED * 1.5;
+  const cloud = { ...AIRBORNE_NO_CHARGE, speed: fast, dust: 2, fire: 1 };
+  const lit = airborneReference(mote, air(20), 5, OPEN, undefined, cloud);
+  assert.equal(lit.state, AIRBORNE.LANDED); assert.equal(cid(lit.host.core), E.DUST); assert.equal(lit.requests & 1, 1, 'a flame beside the cloud');
+  for (const [why, charge, outside] of [
+    ['settling (dust\'s own terminal speed, 3 m/s, is under the lift speed)', { ...cloud, speed: DUST_MIN_FALL_SPEED * 0.9 }, OPEN],
+    ['lean: no dust beside it', { ...cloud, dust: 0 }, OPEN],
+    ['rich: one air face', cloud, [1, 0, 0, 1]],
+    ['unlit', { ...cloud, fire: 0 }, OPEN],
+  ]) {
+    const r = airborneReference(mote, air(20), 5, outside, undefined, charge);
+    assert.equal(r.requests & 1, 0, why); assert.equal(r.state, AIRBORNE.FLYING, why);
+  }
+  // lit by matter at its ignition point beside it, by its own heat, or by the flame it flies through
+  assert.equal(airborneReference(mote, air(20), 5, OPEN, undefined, { ...cloud, fire: 0, hot: 1 }).requests & 1, 1);
+  assert.equal(airborneReference(packet(E.DUST, ELEMENTS[E.DUST].ignite + 5), air(20), 5, OPEN, undefined, { ...cloud, fire: 0 }).requests & 1, 1);
+  const inFlame = airborneReference(mote, fire(), 5, OPEN, undefined, { ...cloud, fire: 0 });
+  assert.equal(inFlame.state, AIRBORNE.DISPLACED); assert.equal(cid(inFlame.host.core), E.DUST);
+  // the faces as react reads them (shaders/v2/airborne.js dReactDustFaces)
+  const faces = [fire().core, makeMaterial(E.STONE, ELEMENTS[E.DUST].ignite + 1).core, makeMaterial(E.STONE, 20).core, makeMaterial(E.SMOKE, 900).core, air().core, air().core];
+  assert.deepEqual(dustFacesOf(faces), [1, 1], 'a flame face; hot matter, not hot gas');
+}
 // 10. Smothered: no burning in CO2.
 {
   let burning = packet(E.SAWDUST, 400); burning.core[1] |= 1 << 24;
@@ -148,7 +185,8 @@ for (const dims of [[32, 32, 32], [48, 16, 32]]) {
   const g = gridLayout(...dims), code = blastsWGSL(g, nativeDynamicsHead, 'airborneEvents');
   assertNaga(code, `blasts/airborneEvents ${dims}`); modules++;
   assert.match(code, /events\[s\] \|= bits; noteEvents\(s, bits\);/, 'posted as the block pass posts a cell\'s requests');
-  assert.equal(airborneBase(g), heldBase(g) + PARTICLE_CAP); assert.equal(externalBlastBase(g), airborneBase(g) + 1 + PARTICLE_CAP, 'its words overlap no other range');
+  assert.equal(airborneBase(g), heldBase(g) + PARTICLE_CAP); assert.equal(shockPostBase(g), airborneBase(g) + 1 + PARTICLE_CAP);
+  assert.equal(setOffBase(g), shockPostBase(g) + 1 + PARTICLE_CAP); assert.equal(externalBlastBase(g), setOffBase(g) + PARTICLE_CAP, 'its words overlap no other range');
 }
 assert(BLAST_STAGES.includes('airborneEvents'));
 

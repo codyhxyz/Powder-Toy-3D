@@ -5,14 +5,15 @@ import { impactFoam } from '../../src/v2/foam.js';
 import { PHYS } from '../../src/physics.js';
 import { PHASE_ROWS, PHASE_NORMAL_MAX } from '../../src/v2/phase.js';
 import assert from 'node:assert/strict';
-import {particlesWGSL,heldBase} from '../../src/shaders/v2/particles.js';
+import {particlesWGSL,heldBase,shockPostBase,setOffBase,airborneBase} from '../../src/shaders/v2/particles.js';
+import {AIRBORNE} from '../../src/v2/airborne.js';
 import {nativeDynamicsHead} from '../../src/shaders/v2.js';
 import {E,ELEMENTS} from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
 import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY} from '../../src/v2/dynamics-reference.js';
 import { importMinified } from './wgsl-grouping.mjs';
 const floatBits=v=>{const b=new ArrayBuffer(4);new Float32Array(b)[0]=v;return new Uint32Array(b)[0];};
-const g={nx:32,ny:32,nz:32,nbx:8,nby:8,nbz:8,nbricks:512,slots:32768,windowed:false},NONE=0xffffffff,S=Object.fromEntries(['clear','integrate','elect','impact','deposit'].map(s=>[s,particlesWGSL(g,nativeDynamicsHead,s)]));
+const g={nx:32,ny:32,nz:32,nbx:8,nby:8,nbz:8,nbricks:512,slots:32768,windowed:false},NONE=0xffffffff,S=Object.fromEntries(['clear','integrate','elect','impact','deposit','reactClaim'].map(s=>[s,particlesWGSL(g,nativeDynamicsHead,s)]));
 const add=(a,b)=>a.map((v,i)=>v+(Array.isArray(b)?b[i]:b)),sub=(a,b)=>a.map((v,i)=>v-b[i]),mul=(a,b)=>a.map(v=>v*b),vec=(...v)=>v.flat().length===1?Array(3).fill(v[0]):v.flat(),copy=structuredClone;
 function body(s,name) {
   const at=s.indexOf(`fn ${name}(`);assert.ok(at>=0,name);
@@ -56,7 +57,8 @@ function syntax(s){for(const [a,b] of [
 ['vec3f(cell)+0.5','add(cell,0.5)'],
 ['all(down==vec3i(0))','down.every(v=>v===0)'],
 ['cell+down','add(cell,down)'],
-['p.velocity *= sqrt(max(0.0,1.0-cost/max(f.effect.x,0.000001)))','p.velocity=mul(p.velocity,sqrt(max(0,1-cost/max(f.effect.x,0.000001))))']])s=s.replaceAll(a,b);
+['p.velocity *= sqrt(max(0.0,1.0-cost/max(f.effect.x,0.000001)))','p.velocity=mul(p.velocity,sqrt(max(0,1-cost/max(f.effect.x,0.000001))))'],
+['mEdge(p + face6(f))','mEdge(add(p,face6(f)))']])s=s.replaceAll(a,b);
 return s.replace(/\/\/[^\n]*/g,'')
   .replace(/\bvar\b/g,'let')
   .replace(/\bloop\s*\{/g,'while(true){')
@@ -73,7 +75,7 @@ function fixture({mode=0, edge=0, windowed=false,
   position=[18.796724319458008,.5098053216934204,15.5], velocity=[0,0,0],
   material=L.makeMaterial(E.SAND), held=0, gravity=GRAVITY}={}) {
   const world=new Map(), claims=new Uint32Array(g.slots*4);
-  const control=new Uint32Array(heldBase(g)+65536), flight=[];
+  const control=new Uint32Array(setOffBase(g)+65536), flight=[];
   const particles=[{position:[...position],velocity:[...velocity],id:2487686783,
     c0:material.core[0],tail:[...material.core.slice(1),material.bank>>>0]}];
   control[heldBase(g)]=held;control[0]=particles.length;
@@ -93,6 +95,9 @@ function fixture({mode=0, edge=0, windowed=false,
     floatBits,floatBits3:v=>v.map(floatBits),
     P:{origin:[0,0,0],edge,tick:108,gravMode:mode,gravity},
     D_CAP:65536,D_SWEEP:65536,D_HELD:heldBase(g),D_NONE:NONE,D_PHOTON:254,D_NEUTRON:255,
+    D_SHOCK_COUNT:shockPostBase(g),D_SET_OFF:setOffBase(g),D_AIRBORNE_POSTS:airborneBase(g)+1,D_REQUEST_SHIFT:28,D_DUST:E.DUST,
+    D_REACT_KIND:AIRBORNE.KIND,D_REACT_SALT:AIRBORNE.SALT,
+    C_AIR:0,C_SOLID:1,C_POWDER:2,C_LIQUID:3,C_GAS:4,
     D_G:GRAVITY,D_DT:DT,D_CELL:CELL_M,D_SWEEP_MAX:99,NX:32,NY:32,NZ:32,
     D_WINDOWED:windowed,FULLU:L.FULL,particles,flight,control,claims,air:[{vp:[0,0,0,0]}],
     DFlight:(destination,effect)=>({destination,effect}),
@@ -108,6 +113,7 @@ function fixture({mode=0, edge=0, windowed=false,
     // particles.js dHeatEnergy: one legacy cap·°C is 256·FULL native energy units
     dHeatEnergy:(m,heat)=>L.energyOf(m)+BigInt(Math.round(Math.abs(heat)*256))*65536n*(heat<0?-1n:1n),
     dToughness:id=>dynamicsRows[id].toughness,dBreak:id=>dynamicsRows[id].breakInto,
+    dShock:id=>dynamicsRows[id].shock,dShockLiquid:id=>dynamicsRows[id].shockLiquid,
     MATERIAL_BURNS:ELEMENTS.map(e=>e.burnRate>0),conductsNative:L.isConductor,
     withPayload:(c,v)=>L.withPayload({core:c,bank:0},v).core,
     face6:f=>{const d=[0,0,0];d[f>>1]=1-2*(f&1);return d;},
@@ -139,6 +145,9 @@ function fixture({mode=0, edge=0, windowed=false,
 ['dPoolEmpty',[]],
 ['dWon',['s','kind','index']],
 ['dElect',['s','kind','index']],
+['dHitKE',['mi','mj','jSolid','u2']],
+['dShockHit',['t','s','p','hit']],
+['dDustFaces',['s']],
   ])ctx[name]=compile(ctx,S.integrate,name,args);
   const stages=Object.fromEntries(Object.entries(S).map(([s,c])=>[s,compile(ctx,c,'main',['t'])]));
   return {ctx,world,particles,claims,flight,stages,set:(p,m)=>world.set(slotOf(p),copy(m)),
@@ -408,4 +417,65 @@ test('an empty pool reads no packet record and writes no flight record',()=>{
   const flight=copy(f.flight);runTicks(f,[0],2);
   assert.equal(reads,0);assert.equal(f.flight[65536].destination[0],0);
   f.flight[65536]=flight[65536];assert.deepEqual(f.flight,flight);
+});
+
+// V1 react.js shock (elements.js blast.shock; dynamics-reference.js re-derives each in V2): a hit of
+// ½·μ·u² past a charge's shock sets it off, the charge hit (in the grid: its detonation posted at its
+// cell) or the charge hitting (in flight: set off, it lands with its detonation where it is).
+test('a hit sets off C-4 and nitroglycerin, as V1\'s shock: the charge hit and the charge hitting',()=>{
+  const S0=shockPostBase(g),SET=setOffBase(g),A=airborneBase(g)+1,DET=1<<28,start=[18,0,15],above=[18,1,15];
+  const hit=(material,velocity,target)=>{
+    const f=fixture({material,position:[18.8,1.1,15.5],velocity:[0,velocity,0]});
+    f.set(start,target);f.tick();return f;
+  };
+  // a grain onto C-4 at a pace that would smash wood: its detonation is posted at the C-4
+  let f=hit(L.makeMaterial(E.SAND),-6,L.makeMaterial(E.C4));
+  assert.equal(f.ctx.control[S0+1],(f.ctx.slotOf(start)|DET)>>>0);assert.equal(f.ctx.control[S0],1);
+  // ...and the same hit smashes wood: the C-4 derivation (WOOD's hard)
+  f=hit(L.makeMaterial(E.SAND),-6,L.makeMaterial(E.WOOD));assert.notEqual(L.cid(at(f,start).core),E.WOOD);
+  // a grain barely moving does not
+  f=hit(L.makeMaterial(E.SAND),-0.3,L.makeMaterial(E.C4));assert.equal(f.ctx.control[S0+1],0);assert.equal(f.ctx.control[S0],0);
+  // a splash fractures nothing in V2, so it sets off no C-4; nor does C-4 hit C-4 (its own element)
+  f=hit(wet(),-6,L.makeMaterial(E.C4));assert.equal(f.ctx.control[S0+1],0);
+  f=hit(L.makeMaterial(E.C4),-6,L.makeMaterial(E.C4));assert.equal(f.ctx.control[S0+1],0);assert.equal(f.ctx.control[SET],0);
+  // nitroglycerin hit by a grain: the reduced mass against a fall of NITRO_FALL_M's energy
+  f=hit(L.makeMaterial(E.SAND),-6,wet(L.FULL,E.NITRO));assert.equal(f.ctx.control[S0+1],0,'a 6 m/s grain does not');
+  f=hit(L.makeMaterial(E.SAND),-25,wet(L.FULL,E.NITRO));assert.equal(f.ctx.control[S0+1],(f.ctx.slotOf(start)|DET)>>>0,'a 25 m/s one does');
+  // the charge hitting: a C-4 lump dropped onto stone is set off, lands and its detonation is posted there
+  f=hit(L.makeMaterial(E.C4),-6,L.makeMaterial(E.STONE));
+  assert.equal(f.particles[0].id,0,'landed');assert.equal(L.cid(at(f,above).core),E.C4);
+  assert.equal(f.ctx.control[A],(f.ctx.slotOf(above)|DET)>>>0,'its detonation posted where it landed');assert.equal(f.ctx.control[S0],1);
+  // nitroglycerin landing on metal from a fall's speed goes off; from a gentler one it rests
+  f=hit(wet(L.FULL,E.NITRO),-16,L.makeMaterial(E.METAL));
+  assert.equal(L.cid(at(f,above).core),E.NITRO);assert.equal(f.ctx.control[A],(f.ctx.slotOf(above)|DET)>>>0);
+  f=hit(wet(L.FULL,E.NITRO),-12,L.makeMaterial(E.METAL));
+  assert.equal(L.cid(at(f,above).core),E.NITRO);assert.equal(f.ctx.control[A],0);assert.equal(f.ctx.control[S0],0);
+  // stone is a powder in V1 (loose matter): the reduced mass, so the same 16 m/s landing on it does not
+  f=hit(wet(L.FULL,E.NITRO),-16,L.makeMaterial(E.STONE));assert.equal(f.ctx.control[A],0);
+  // into its own pool it never does
+  f=hit(wet(L.FULL/4,E.NITRO),-25,wet(L.FULL,E.NITRO));assert.equal(f.ctx.control[A],0);assert.equal(f.ctx.control[SET],0);
+  // a set-off charge that cannot land yet stays set off: the mark is its id, a later packet in the slot is not
+  f=fixture({material:L.makeMaterial(E.C4),position:[18.8,1.1,15.5],velocity:[0,-6,0],held:3});
+  f.set(start,L.makeMaterial(E.STONE));f.tick();
+  assert.notEqual(f.particles[0].id,0,'held: no deposit');assert.equal(f.ctx.control[SET],f.particles[0].id);
+});
+
+// V1 react.js dust clouds count a dust cell's dust faces (nFuel). A wind-blown cloud flies as packets: each
+// notes itself in its cell (reactClaim: the kind-1 key word deposit freed), elect counts a dust packet's
+// faces, settled or flying, and react's winner of each cell clears its notes (dFree(s,1u)).
+test('a flying dust packet counts the dust beside it, settled or flying; the notes leave no claim behind',()=>{
+  const f=fixture({material:L.makeMaterial(E.DUST),position:[10.5,10.5,10.5],velocity:[0,0,0]});
+  const dust=L.makeMaterial(E.DUST),still=[0,0,0];
+  // a pair in one cell, a neighbour face away, a lone mote, and one beside settled dust
+  f.particles.push(packet(dust,11,[10.2,10.7,10.4],still),packet(dust,12,[11.5,10.5,10.5],still),
+    packet(dust,13,[20.5,20.5,20.5],still),packet(dust,14,[5.5,5.5,5.5],still),packet(L.makeMaterial(E.SAND),15,[25.5,5.5,5.5],still));
+  f.set([5,4,5],L.makeMaterial(E.DUST));f.ctx.control[0]=f.particles.length;
+  const all=[...f.particles.keys()];
+  for(const t of all) f.stages.reactClaim(t);
+  for(const t of all) f.stages.elect(t);
+  const faces=all.map(t=>f.flight[t].effect[0]);
+  assert.deepEqual(faces,[2,2,1,0,1,0],'its cell-mate and its face neighbour; the lone mote none; settled dust counts; sand counts nothing');
+  // the only kind-1 words set are dust hosts, each with a kind-0 winner, whose react clears it
+  for(let s=0;s<g.slots;s++) if(f.claims[s*4+2]) assert.notEqual(f.claims[s*4+1],0,`cell ${s} has a react winner`);
+  assert.match(particlesWGSL(g,nativeDynamicsHead,'react'),/dFree\(s,0u\); dFree\(s,1u\);/);
 });

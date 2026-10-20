@@ -2,6 +2,7 @@ import { contactWGSL, specialContactWGSL } from './contact.js';
 import { v2Table } from '../v2.js';
 import { AIR_CAPACITY_Q } from '../../v2/layout.js';
 import { AIRBORNE, AIRBORNE_FLYING_REQUESTS, AIRBORNE_LANDED_REQUESTS } from '../../v2/airborne.js';
+import { DUST_MIN_FALL_SPEED, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR } from '../../v2/contact.js';
 
 // Airborne matter takes part (docs/v2/native-contract.md "Contact module"): V1 had no flying
 // state, its splashes and ejecta were ordinary cells, so its react pass (shaders/react.js) heated,
@@ -47,7 +48,24 @@ const D_REACT_LANDED: u32 = ${AIRBORNE.LANDED}u;
 const D_REACT_DISPLACED: u32 = ${AIRBORNE.DISPLACED}u;
 const D_REACT_FLYING_REQUESTS: u32 = ${AIRBORNE_FLYING_REQUESTS}u;
 const D_REACT_LANDED_REQUESTS: u32 = ${AIRBORNE_LANDED_REQUESTS}u;
+const D_REACT_DUST_SPEED: f32 = ${DUST_MIN_FALL_SPEED};
+const D_REACT_DUST_MEC_NB: i32 = ${CONTACT_DUST_MEC_NB};
+const D_REACT_DUST_RICH_AIR: i32 = ${CONTACT_DUST_RICH_AIR};
 struct DReact { particle: Material, host: Material, state: u32, source: vec2u, sink: vec2u, requests: u32 }
+// What sets a flying packet off besides its own rules (src/v2/airborne.js AIRBORNE_NO_CHARGE): a hit set it
+// off (particles.js dShockHit), and a dust packet's speed (cells a tick), dust, flame and hot faces.
+struct DReactCharge { setOff: bool, speed: f32, dust: i32, fire: i32, hot: i32 }
+// [flame faces, hot faces] among the host cell's six: V1 react.js dust clouds' nFire and hotTouch (matter,
+// not gas, at dust's ignition point or hotter). src/v2/airborne.js dustFacesOf.
+fn dReactDustFaces(p: vec3i) -> vec2i {
+  var out = vec2i(0);
+  for (var f = 0; f < 6; f++) {
+    let n = cellAt(mEdge(p + face6(f))); let kind = clsOf(n);
+    if (cid(n) == u32(CT_FIRE)) { out.x++; }
+    if (kind != C_AIR && kind != C_GAS && i32(cTq(n)) >= ctRow(CT_DUST).igniteQ) { out.y++; }
+  }
+  return out;
+}
 // [air, oxygen, CO2, gas] among the host cell's six faces: the packet's outside, as the
 // support pass counts a cell's out-of-block faces for contactBlock (shaders/v2.js v2SupportWGSL).
 fn dReactOutside(p: vec3i) -> vec4i {
@@ -64,7 +82,7 @@ fn dReactOutside(p: vec3i) -> vec4i {
 // The packet seen as a cell: the same words, with a virtual air carrier at its own temperature
 // (a packet owns none: layout.js packetCapacityQ). What the carrier gains or loses meanwhile is the
 // air's, so it is the host's at the end; a packet that is used up leaves all it held there.
-fn dReact(packet: Material, host: Material, outside: vec4i, seed: i32) -> DReact {
+fn dReact(packet: Material, host: Material, outside: vec4i, seed: i32, charge: DReactCharge) -> DReact {
   let refused = DReact(packet, host, D_REACT_REFUSED, vec2u(0u), vec2u(0u), 0u);
   let carrier0 = energyMul(D_CARRIER_Q, cTq(packet.core));
   var v = ctUnpack(packet.core, packet.bank);
@@ -89,6 +107,13 @@ fn dReact(packet: Material, host: Material, outside: vec4i, seed: i32) -> DReact
   // the packet is in its host: a burning packet's flames lick into it (V1 react.js, ctLick)
   if (ctHotFuel(v)) { h = ctLick(h, 1, ctRow(v.id).flameQ, ctSmothered(outside.z, outside.w), seed ^ D_REACT_PLUME_SALT); }
   if (v.id != 0) { v = ctAmbient(v, ambientQ, airHeat); }
+  // still the charge it was: set off by a hit, or a dust cloud lit (V1 react.js dust clouds)
+  let charge0 = i32(packet.core.x & 255u);
+  if (v.id == charge0 && charge.setOff) { v.request = v.request | 1; }
+  if (v.id == CT_DUST && charge0 == CT_DUST && charge.speed >= D_REACT_DUST_SPEED && charge.dust >= D_REACT_DUST_MEC_NB &&
+    outside.x >= D_REACT_DUST_RICH_AIR && (v.tq >= ctRow(CT_DUST).igniteQ || charge.hot > 0 || charge.fire > 0 || h.id == CT_FIRE)) {
+    v.request = v.request | 1;
+  }
   let source = energyAdd(v.source, h.source); let sink = energyAdd(v.sink, h.sink);
   let asked = u32(v.request | h.request) & D_REACT_LANDED_REQUESTS;
   let flyingRequests = asked & D_REACT_FLYING_REQUESTS;

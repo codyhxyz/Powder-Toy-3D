@@ -24,12 +24,20 @@
 // are posted at the host slot (blasts.js airborneEvents): gas and neutrons from where it flies, and
 // a detonation once a charge set off in flight has landed where it is (displacing a gas there,
 // which flies on in its place), for this tick's blasts to set off.
+// A charge is set off in flight as V1's moving cells were (the charge argument):
+//   a hit      V1 react.js shock: a hit past its shock sets it off (particles.js dShockHit marks it);
+//              it lands with its detonation, here or at the deposit it lands in first
+//   dust       V1 react.js dust clouds (physics.js DUST_*): suspended dust (faster than DUST_LIFT_V,
+//              contact.js DUST_MIN_FALL_SPEED a tick) with DUST_MEC_NB dust faces and DUST_RICH_AIR air
+//              faces goes off as one when lit (its own heat, matter at its ignition point beside it, or
+//              a flame beside it or around it: DUST_FIRE, every step), as grid dust does (contact.js)
 // Anything that cannot be represented leaves both exactly as they were for the next tick.
 import { E, ELEMENTS, K } from '../elements.js';
 import { AIR_CAPACITY_Q, cTq, energyOf, withEnergy, energyFits, withPacketEnergy, packetEnergyFits } from './layout.js';
 import { unpackContact, packContact, ctNew, ctFlux, ctHeat, ctReaction, ctAcid, ctSwallow, ctStepAtmosphere,
   ctResolvePhase, ctLick, ctHotFuel, ctSmothered, ctRow, ctConducts, ctHeatRoom, ctAmbient, ctPairValue,
-  contactAmbientQ, CONTACT_DEFAULT_MODES } from './contact.js';
+  contactAmbientQ, CONTACT_DEFAULT_MODES, DUST_MIN_FALL_SPEED, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR } from './contact.js';
+import { PHYS } from '../physics.js';
 
 export const AIRBORNE = Object.freeze({
   // the flight record's kind for a react claim (particles.js kinds: 1 hit, 2-4 neutron, 5 photon)
@@ -51,6 +59,24 @@ export const AIRBORNE_SLOT_MASK = (1 << AIRBORNE_BITS_SHIFT) - 1;
 // has landed (bit 0), gas and neutron requests from wherever it is (bits 1, 2).
 export const AIRBORNE_FLYING_REQUESTS = 6, AIRBORNE_LANDED_REQUESTS = 7;
 
+// V1 react.js lights a dust cloud beside a flame with chance DUST_FIRE a step: every step, so every tick.
+if (PHYS.DUST_FIRE !== 1) throw new Error('airborne.js: a flame beside a dust cloud lights it every tick only while DUST_FIRE is 1');
+/** What sets a flying packet off besides its own rules (particles.js react): none by default. */
+export const AIRBORNE_NO_CHARGE = Object.freeze({ setOff: false, speed: 0, dust: 0, fire: 0, hot: 0 });
+// setOff: a hit set it off (particles.js dShockHit); speed: |v| in cells a tick; dust: its dust faces
+// (particles.js dDustFaces); fire, hot: its flame faces and hot faces (dustFacesOf)
+
+/** [flame faces, hot faces] among the host's six faces: V1 react.js dust clouds' nFire and hotTouch. */
+export function dustFacesOf(cores) {
+  const out = [0, 0];
+  for (const c of cores) {
+    const id = c[0] & 255, kind = ELEMENTS[id].kind;
+    if (id === E.FIRE) out[0]++;
+    if (kind !== K.EMPTY && kind !== K.GAS && cTq(c) >= ctRow(E.DUST).igniteQ) out[1]++;
+  }
+  return out;
+}
+
 /** The packet's outside as contactBlock counts it: [air, oxygen, CO2, gas] among the host's faces. */
 export function outsideOf(cores) {
   const out = [0, 0, 0, 0];
@@ -70,7 +96,7 @@ export function outsideOf(cores) {
  * @returns {{ state: number, particle: {core,bank}, host: {core,bank}, source: bigint, sink: bigint, requests: number }}
  *   requests: the host slot's request bits (native-contract.md: 1 detonate, 2 gas, 4 neutron)
  */
-export function airborneReference(packet, host, seed, outside = [0, 0, 0, 0], modes = CONTACT_DEFAULT_MODES) {
+export function airborneReference(packet, host, seed, outside = [0, 0, 0, 0], modes = CONTACT_DEFAULT_MODES, charge = AIRBORNE_NO_CHARGE) {
   const refused = { state: AIRBORNE.REFUSED, particle: packet, host, source: 0n, sink: 0n, requests: 0 };
   const carrier0 = BigInt(AIR_CAPACITY_Q) * BigInt(cTq(packet.core));
   try {
@@ -94,6 +120,11 @@ export function airborneReference(packet, host, seed, outside = [0, 0, 0, 0], mo
     v = pair.a; h = pair.b;
     if (ctHotFuel(v)) h = ctLick(h, 1, ctRow(v.id).flameQ, ctSmothered(outside[2], outside[3]), seed ^ AIRBORNE.PLUME_SALT);
     if (v.id !== E.EMPTY) v = ctAmbient(v, ambientQ, airHeat);
+    // still the charge it was: set off by a hit, or a dust cloud lit
+    const charge0 = packet.core[0] & 255;
+    if (v.id === charge0 && charge.setOff) v.request = v.request | 1;
+    if (v.id === E.DUST && charge0 === E.DUST && charge.speed >= DUST_MIN_FALL_SPEED && charge.dust >= CONTACT_DUST_MEC_NB &&
+      outside[0] >= CONTACT_DUST_RICH_AIR && (v.tq >= ctRow(E.DUST).igniteQ || charge.hot > 0 || charge.fire > 0 || h.id === E.FIRE)) v.request = v.request | 1;
     const source = v.source + h.source, sink = v.sink + h.sink, asked = (v.request | h.request) & AIRBORNE_LANDED_REQUESTS;
     const requests = landed => asked & (landed ? AIRBORNE_LANDED_REQUESTS : AIRBORNE_FLYING_REQUESTS);
     const vm = packContact(v, packet.core), hm = packContact(h, host.core);

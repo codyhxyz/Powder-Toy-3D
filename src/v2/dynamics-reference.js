@@ -52,7 +52,8 @@ export function particleFallSpeed(id, h) {
 // V1 derived each one from (elements.js, the C4 and NITRO rows):
 //   C-4            WOOD's hard, "a hit that would smash wood". V2 keeps hard as its fracture energy in J
 //                  (toughness above), so the number carries over as J: C-4 goes off under exactly the
-//                  hits that fracture wood (particles.js impact).
+//                  hits that fracture wood (particles.js impact), which a liquid's never are
+//                  (shockLiquid 0: V2's splashes fracture nothing).
 //   nitroglycerin  the kinetic energy of a NITRO_FALL_M fall on V1's step law (fallKE), so here that of a
 //                  V2 packet after the same fall on the particle lane's law (particleFallSpeed). A run of
 //                  it falls on the column law instead (shaders/v2/columns.js colShockSpeed: SHOCK_FALL_M).
@@ -61,14 +62,14 @@ export const SHOCK_FALL_M = Object.freeze({ [E.NITRO]: NITRO_FALL_M });
 const SHOCK_SMASHES = Object.freeze({ [E.C4]: E.WOOD });
 for (const e of ELEMENTS) {
   const row = dynamicsRows[e.id];
-  row.shock = 0;
+  row.shock = 0; row.shockLiquid = 1;
   if (!e.blast?.shock) continue;
   // the impact stage reads no air faces (react.js blastAir): a shock charge that needs air would need them
   if (e.blast.air) throw new Error(`dynamics-reference: ${e.key}'s shock needs air faces the impact stage does not read`);
   if (SHOCK_SMASHES[e.id] !== undefined) {
     const smashed = ELEMENTS[SHOCK_SMASHES[e.id]];
     if (e.blast.shock !== smashed.hard) throw new Error(`dynamics-reference: ${e.key}'s shock is no longer ${smashed.key}'s hard`);
-    row.shock = dynamicsRows[smashed.id].toughness;
+    row.shock = dynamicsRows[smashed.id].toughness; row.shockLiquid = 0;
   } else if (SHOCK_FALL_M[e.id] !== undefined) {
     row.shock = 0.5 * row.mass * particleFallSpeed(e.id, SHOCK_FALL_M[e.id]) ** 2;
   } else throw new Error(`dynamics-reference: no V2 derivation of ${e.key}'s blast.shock`);
