@@ -589,6 +589,9 @@ export class Simulation {
   }
   get nativeCapabilities() { return nativeCapabilities(this); }
   async prepareNative(owner = this.compactOwner) {
+    // The brush's kernels need only the owner's buffers: their builds start with the owner's, not
+    // after its readiness, which made them a serial tail of the loading screen (cold compile).
+    if (owner && owner === this.compactOwner && owner.dynamics && !owner.isReady) prepareNativeBrush(this).catch(() => {});
     await owner?.ready;
     if (!owner?.aux) return false;
     if (this.nativeIntegration?.owner !== owner) {
