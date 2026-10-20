@@ -35,7 +35,8 @@ function recorder() {
 
 test('a batch launches over its listed bricks: one mark a box, then count, prefix, apply over the list', async () => {
   const { g, d, calls, clears } = recorder(); await d.ready;
-  assert.equal(d.control.size, controlBufferWords(g) * 4, 'the control buffer holds the launch words');
+  // (dynamics.js make pads every buffer to 16 bytes)
+  assert.equal(d.control.size, Math.ceil(controlBufferWords(g) * 4 / 16) * 16, 'the control buffer holds the launch words');
   assert(launchControl(g).marks >= listControl(g).words, 'past every other stage\'s words');
   d.markLaunch(4, [8, 5, 0], [11, 5, 3]); d.markLaunch(4, [12, 5, 0], [15, 7, 7]);
   d.allocateLaunch(4);

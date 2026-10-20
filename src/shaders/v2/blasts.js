@@ -888,8 +888,7 @@ var<workgroup> childCounts: array<u32,64>;
         let incoming=select(vec3f(0,-fallVelocity(before.core),0),vec3f(0),forcing || (plan.flags&32u)!=0u);
         // (a cell launched whole leaves air, which holds no decoration: shaders/move.js)
         if (dSpawn(t,rank,packet,plan.velocity+incoming,P.sequence ^ 0x53504157u)) {
-          after=remainder;
-          if (cid(after.core)==0u) { setDeco(t,0u); }
+          after=remainder; if (cid(after.core)==0u) { setDeco(t,0u); }
           if (forcing && (plan.flags&${PLAN.SLIDE}u)!=0u && P.gravMode==0u) { particles[atomicLoad(&control[D_FREE+rank])].position=dSlideStart(t); }
         }
         else { atomicAdd(&control[7],1u); if(forcing) { dWake(cellOf(t)); return; } } // authoritative grid fallback, never erase a failed launch

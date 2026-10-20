@@ -27,6 +27,8 @@ import { sceneDiffFrag } from '../../src/shaders/generate.js';
 import { WORLD_SCENES } from '../../src/world/scenes/index.js';
 import { createImportedMapScene } from '../../src/world/scenes/importedMap.js';
 import { createTerrainScene } from '../../src/world/scenes/descent/terrainScenes.js';
+import { terrainLayout } from '../../src/world/scenes/descent/terrainRaster.js';
+import { createHash } from 'node:crypto';
 import { WorldGenerator } from '../../src/world/gpu.js';
 import { WorldWindow } from '../../src/world/window.js';
 import { BrickStore } from '../../src/world/store.js';
@@ -48,11 +50,19 @@ let checks = 0;
 }
 {
   const imported = createImportedMapScene(JSON.parse(readFileSync(new URL('../../public/local-maps/androgenAssault.json', import.meta.url), 'utf8')));
-  // a Descent band (scripts/check-terrain-raster.mjs's fixture route)
-  const foldConfig = { sourceMinX: -4608, sourceWidth: 9216, cellScale: 1, angleStart: -Math.PI / 2, angleSpan: Math.PI * 1.5, thickness: 48, shellThickness: 2, margin: 32 };
-  const region = { key: 'fixture', label: 'Snowy Depths', sourceTop: 992, sourceHeight: 320, core: [1024, 1280], sectionIndex: 0, file: 'fixture.binpack', sha256: '0'.repeat(64), spawnSource: [-677, 1200, 0] };
-  const route = { version: 1, encoding: 'noita-folded-raster-u8-v1', fold: foldConfig, palette: [{ name: 'air', element: E.EMPTY }, { name: 'rock_static', element: E.ROCK }], regions: [region], sections: [], startScene: 'fixture', startSource: region.spawnSource, nativePortals: [] };
-  const terrain = createTerrainScene(route, region, { fetchWords: async () => new Uint32Array(9216 * 320 / 4) });
+  // a Descent band (scripts/check-terrain-raster.mjs's v2 fixture route: all open air, the
+  // inflation depth plane open at every pixel, one backdrop block material)
+  const inflation = { maxHalfDepth: 64, backdropMargin: 4, backdropBlock: 8, backdropWindow: 9 };
+  const foldConfig = { sourceMinX: -4608, sourceWidth: 9216, cellScale: 1, angleStart: -Math.PI / 2, angleSpan: Math.PI * 1.5, thickness: 2 * (64 + 4), shellThickness: 2, margin: 32 };
+  const L = terrainLayout({ fold: foldConfig, inflation });
+  const bytes = new Uint8Array(L.words * 4);
+  for (let i = 0; i < L.pixels; i++) bytes[L.depthAt + i] = 1 + (i % (2 * inflation.maxHalfDepth));
+  bytes.fill(1, L.backdropAt, L.backdropAt + L.blocks);
+  const hash = a => createHash('sha256').update(a).digest('hex');
+  const region = { key: 'fixture', label: 'Snowy Depths', sourceTop: 992, sourceHeight: 320, core: [1024, 1280], sectionIndex: 0, file: 'fixture.binpack',
+    sha256: hash(bytes.subarray(0, L.pixels)), fieldsSha256: hash(bytes.subarray(L.pixels, L.bytes)), spawnSource: [-677, 1200, 0] };
+  const route = { version: 2, encoding: 'noita-folded-raster-u8-v2', fold: foldConfig, inflation, palette: [{ name: 'air', element: E.EMPTY }, { name: 'rock_static', element: E.ROCK }], regions: [region], sections: [], startScene: 'fixture', startSource: region.spawnSource, nativePortals: [] };
+  const terrain = createTerrainScene(route, region, { fetchWords: async () => new Uint32Array(bytes.buffer) });
   const dir = mkdtempSync(join(tmpdir(), 'native-leave-'));
   try {
     const cases = [
