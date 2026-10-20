@@ -130,6 +130,9 @@ assert.equal(key(fly(packet(E.LAVA, 1500, FULL / 4), () => air(20), 4000).p.core
   assert.equal(r.state, AIRBORNE.LANDED); assert.equal(cid(r.host.core), E.C4); assert.equal(r.requests & 1, 1);
   const smoke = airborneReference(lump, makeMaterial(E.SMOKE, 20), 3, OPEN, undefined, { ...AIRBORNE_NO_CHARGE, setOff: true });
   assert.equal(smoke.state, AIRBORNE.DISPLACED); assert.equal(cid(smoke.host.core), E.C4); assert.equal(cid(smoke.particle.core), E.SMOKE);
+  // the smoke flies on in the lump's slot, under its id: it is no charge, and react clears the mark there
+  assert.equal(airborneReference(smoke.particle, air(20), 3, OPEN, undefined, { ...AIRBORNE_NO_CHARGE, setOff: true }).requests & 1, 0);
+  assert.match(particlesWGSL(gridLayout(32, 32, 32), nativeDynamicsHead, 'react'), /if \(r\.state == D_REACT_LANDED \|\| r\.state == D_REACT_DISPLACED\) \{ atomicStore\(&control\[D_SET_OFF\+t\],0u\); \}/);
 }
 // 9c. A dust cloud (V1 react.js dust clouds, physics.js DUST_*): wind-blown dust, faster than DUST_LIFT_V,
 // with dust beside it and air enough, goes off as one when lit, landing with its detonation; lean, rich,

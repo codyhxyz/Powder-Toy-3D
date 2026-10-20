@@ -608,6 +608,8 @@ export function particlesWGSL(g, nativeHead, stage) {
     if (r.requests != 0u) {
       atomicStore(&control[${airborneBase(g) + 1}u+t],s|(r.requests<<${AIRBORNE_BITS_SHIFT}u)); atomicAdd(&control[${airborneBase(g)}u],1u);
     }
+    // a set-off charge has landed: the gas it displaced flies on in its slot, under the same id, not set off
+    if (r.state == D_REACT_LANDED || r.state == D_REACT_DISPLACED) { atomicStore(&control[D_SET_OFF+t],0u); }
     if (r.state == D_REACT_FLYING || r.state == D_REACT_DISPLACED) {
       particle.c0 = r.particle.core.x; particle.tail = vec4u(r.particle.core.yzw,bitcast<u32>(r.particle.bank));
       particles[t] = particle; return;

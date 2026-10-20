@@ -109,7 +109,7 @@ fn dReact(packet: Material, host: Material, outside: vec4i, seed: i32, charge: D
   if (v.id != 0) { v = ctAmbient(v, ambientQ, airHeat); }
   // still the charge it was: set off by a hit, or a dust cloud lit (V1 react.js dust clouds)
   let charge0 = i32(packet.core.x & 255u);
-  if (v.id == charge0 && charge.setOff) { v.request = v.request | 1; }
+  if (v.id == charge0 && ctRow(v.id).blast != 0 && charge.setOff) { v.request = v.request | 1; }
   if (v.id == CT_DUST && charge0 == CT_DUST && charge.speed >= D_REACT_DUST_SPEED && charge.dust >= D_REACT_DUST_MEC_NB &&
     outside.x >= D_REACT_DUST_RICH_AIR && (v.tq >= ctRow(CT_DUST).igniteQ || charge.hot > 0 || charge.fire > 0 || h.id == CT_FIRE)) {
     v.request = v.request | 1;

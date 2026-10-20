@@ -122,7 +122,7 @@ export function airborneReference(packet, host, seed, outside = [0, 0, 0, 0], mo
     if (v.id !== E.EMPTY) v = ctAmbient(v, ambientQ, airHeat);
     // still the charge it was: set off by a hit, or a dust cloud lit
     const charge0 = packet.core[0] & 255;
-    if (v.id === charge0 && charge.setOff) v.request = v.request | 1;
+    if (v.id === charge0 && ctRow(v.id).blast !== 0 && charge.setOff) v.request = v.request | 1;
     if (v.id === E.DUST && charge0 === E.DUST && charge.speed >= DUST_MIN_FALL_SPEED && charge.dust >= CONTACT_DUST_MEC_NB &&
       outside[0] >= CONTACT_DUST_RICH_AIR && (v.tq >= ctRow(E.DUST).igniteQ || charge.hot > 0 || charge.fire > 0 || h.id === E.FIRE)) v.request = v.request | 1;
     const source = v.source + h.source, sink = v.sink + h.sink, asked = (v.request | h.request) & AIRBORNE_LANDED_REQUESTS;
