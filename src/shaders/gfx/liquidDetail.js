@@ -205,7 +205,12 @@ ${Object.entries(MENISCUS_PROPS).map(([k, p]) => `  if (id == E_${k}) { return v
 }`;
 
 /** Box programs always compile native compact foam (legacy detail switches still gate their effects).
- * WORLD reads no V2 state, so its switches decide what is compiled in, as before. */
+ * WORLD reads no V2 state, so its switches decide what is compiled in, as before.
+ * Under V1 the two draw the same foam (World reads the same aeration, copied into
+ * its atlas). Under V2 they don't: the Box draws V2's foam byte, switch on or off;
+ * World never sees that byte, since its atlas holds V2's legacy projection, which
+ * carries none. Not a decided difference: an open question to the user (parity
+ * audit 2026-10-20). */
 export const LIQ_DETAIL = (detail = {}, backend = 'box') => backend !== 'world'
   || !!(detail.DETAIL_LIQ_RIPPLES || detail.DETAIL_LIQ_MENISCUS || detail.DETAIL_LIQ_FOAM);
 

@@ -366,6 +366,15 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
  * PER_GROUP probes a workgroup, over giProbeCount(g, parity) probes
  * (giGatherDispatch); the probes off this frame's checkerboard aren't
  * dispatched at all, and keep their history and textures.
+ *
+ * Box and World (parity audit 2026-10-20): the probe lists, the history and
+ * the sources' addressing differ only in where they live. Past the end of a
+ * ray, World takes beyond() at the world's real bounds, as a box does at its
+ * own; farBeyond is the Box window's far field, and FrameUniforms.far is 0
+ * everywhere now (the far field was retired in dc480f4f). GI_STEPS is NOT
+ * the same rule: a Box ray takes beyond() after GI.STEPS (18 bricks, 72
+ * cells) even inside the box, a World ray runs to the world's edge. Not a
+ * decided difference: an open question to the user.
  * @param {{ nx: number, ny: number, nz: number }} g
  * @param {{ world?: number[] }} [opts]
  */
