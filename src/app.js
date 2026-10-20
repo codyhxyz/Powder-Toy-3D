@@ -3036,7 +3036,9 @@ function tick(now, renderOnly = false) {
   gpu, three: renderer, renderer, pacer, canvas, post, presenter, cut, overlays, brush, scene, camera, controls, rig, settings, DEFAULTS, SIZES, WORLDS,
   hover, day, sun: SUN, keyLight: KEY_LIGHT, toolGun, camGrid, sceneByKey,
   threeMeshes,
-  prepareWorldAfter(values,cam) {
+  // The shared FrameUniforms at this WORLD frame's view (the sky, sprites and
+  // cursors read them), stills too: as a box's thumbnail writes its own (thumbnails).
+  writeWorldFrame(values,cam) {
     // Local sprites/cursors retain their existing coordinate ABI; source lamp
     // conversion remains based on data.frame.physicsOrigin, not this origin.
     const model=new THREE.Matrix4().fromArray(values.model).multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray()));
@@ -3044,8 +3046,11 @@ function tick(now, renderOnly = false) {
     const fu=frameUniformsOf(gpu);fu.uniforms.write(local);
     fu.last.viewProj.fromArray(values.viewProj);fu.last.model.copy(model);fu.last.invViewProj.fromArray(values.invViewProj);
     fu.last.eye.setFromMatrixPosition(cam.matrixWorld);fu.last.written=true;
-    wire('rays')?.beforeView(ctx);
   },
+  prepareWorldAfter(){wire('rays')?.beforeView(ctx);},
+  // A world stands under the sky that lights it, as a box does (drawScene's lit):
+  // the realistic views draw it first, behind the volume and meshes.
+  drawWorldSky(rp,view){if(isMaterialView(view))overlays.drawSky(rp);},
   drawWorldAfter(rp){for(const w of after)w.scene(ctx,rp);brush.draw(rp);},
   drawWorldOverlay(rp){for(const w of overlayWires)w.overlay(ctx,rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
