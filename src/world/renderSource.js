@@ -32,7 +32,9 @@ export function snapshotSource(sim, origin = sim.origin) {
 // A raw read of the live cells. Physics V2 owns its cells and keeps A/B as a
 // lazy projection (src/v2/physics.js exportLegacy): bring it up to date first.
 // The export converts only the bricks whose projection changed since the last
-// one, or all of them after a whole-grid write or a switch of projection.
+// one (all of them after a whole-grid write); a switch of projection (a stroke's
+// edit, then this copy, every frame) those and the bricks holding a partial
+// liquid fill, the only cells the two projections show differently.
 // The drawn projection by default; native: the edit projection, for a read
 // that is written back into physics. Without V2 (sim.compact unset) a no-op.
 export function liveSource(sim, origin = sim.origin, { native = false } = {}) {

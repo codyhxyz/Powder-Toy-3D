@@ -9,7 +9,7 @@ import { cellSlot, marksLayout } from '../shaders/common.js';
 import {
   v2BlockCompactLayout, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockWGSL, V2_BLOCK_FINALIZE_LAYOUT,
   V2_KERNELS, V2Params, nativeDynamicsHead, v2DemandWords, V2_DYNAMICS_LAYOUT, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_MATERIAL_LAYOUT, V2_LIQUID_LAYOUT, V2_CONTACT_LAYOUT, V2_IMPORT_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
-  TICK_HZ, FULL, V2, QUIET_TICKS,
+  TICK_HZ, FULL, V2, QUIET_TICKS, BRIDGE, LEGACY_WORD,
 } from '../shaders/v2.js';
 import { pairOrder } from '../shaders/v2/columns.js';
 import { auxLayout } from '../shaders/v2/state.js';
@@ -295,8 +295,12 @@ export class PhysicsV2 {
     const modeChanged = this.legacyNative !== native;
     if (!this.legacyPending && !modeChanged) return;
     const { sim, gpu } = this;
+    // What it converts (shaders/v2.js BRIDGE): the bricks changed since the last export; on a switch of
+    // projection those and the ones holding a partial liquid fill the drawn dither hides (the only cells
+    // the two projections show differently: every other brick's A/B hold both); before the first, all.
+    const full = this.legacyNative === undefined ? BRIDGE.ALL : modeChanged ? BRIDGE.FLIP : BRIDGE.CHANGED;
     this.kernels.v2bridge.dispatch(gpu.frame, fold(this.g.nbricks), {
-      bind: [sim.tables, this.groups.state, this.groups.v2], header: { ...sim.header(), capture: 0, format: native ? 3 : 0 }, params: { ...this._params(this.tick + 1), full: modeChanged ? 1 : 0 },
+      bind: [sim.tables, this.groups.state, this.groups.v2], header: { ...sim.header(), capture: 0, format: native ? 3 : 0 }, params: { ...this._params(this.tick + 1), full },
     });
     sim.onPass?.('v2bridge', { kind: 'compute', gpuMs: null });
     this.legacyPending = false;
@@ -355,7 +359,7 @@ export class PhysicsV2 {
     gpu.frame.clear(sim.marks, m.owned * 4, Math.ceil(g.slots / 32) * 4);
     gpu.write(this.act, this.layout.busy0 * 4, new Uint32Array(g.nbricks).fill(1));
     gpu.write(this.act, this.layout.busy1 * 4, new Uint32Array(g.nbricks).fill(1));
-    gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(1));
+    gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(LEGACY_WORD.STALE));
     this.noteAllCells(); // the copy above bypassed noteState; the requests are clear
     this.importFull = this.importMarked = false;
     this.seenVersion = sim.version;
@@ -488,7 +492,9 @@ export class PhysicsV2 {
     gpu.write(this.args, 0, state.args);
     // Legacy A/B loaded by saves/game is only a projection of these words.
     // Dirtiness is cache metadata, not physics state; rebuild that projection on demand.
-    gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(legacyCurrent ? 0 : 1));
+    // A current cache is the drawn projection (and a V1-mode save's velocities in B), its partial fills
+    // unknown: the first switch to the edit projection converts every brick, as a full export would.
+    gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(legacyCurrent ? LEGACY_WORD.DIFFERS : LEGACY_WORD.STALE));
     // The cells above bypassed noteState; the requests are clear until a dynamics restore.
     this.noteAllCells();
     const m = marksLayout(g);

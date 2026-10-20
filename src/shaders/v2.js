@@ -206,11 +206,40 @@ export const V2_IMPORT_LAYOUT = stateLayout(V2_IMPORT_OPTS);
 // ---------------------------------------------------------------- WGSL
 const f = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
 
+// The legacy word of a brick (act2[V2_LEGACY + b]). STALE: its A/B are behind its cells (every writer
+// of the cells sets it: noteVisible, the import, whole-grid writes). DIFFERS: set by the export, the
+// brick holds a cell the two projections show differently (a liquid's partial fill the drawn dither
+// hides: compact.js compactA against compactProbeA), so a switch of projection converts it again. A
+// writer's STALE drops DIFFERS: the next export converts the brick whole and finds it again.
+export const LEGACY_WORD = { STALE: 1, DIFFERS: 2 };
+// An export's scope (the bridge's P.full): the stale bricks; every brick (before the first export, when
+// the cache holds no projection yet); on a switch of projection, the stale bricks and the differing ones.
+export const BRIDGE = { CHANGED: 0, ALL: 1, FLIP: 2 };
+
+// With a store's drawn projection unchanged, whether its edit projection is too: they part only where
+// compactProbeCore lifts a partial liquid fill (noteVisible). Above V2_BUSY0: dynamics heads leave it out.
+const compactProbeHoldsWGSL = /* wgsl */ `
+fn compactProbeHolds(p: vec3i, before: vec4u, after: vec4u) -> bool {
+  let pb = compactProbeCore(before);
+  let pa = compactProbeCore(after);
+  if (all(pb == before) && all(pa == after)) { return true; }
+  return all(compactA(p, pb) == compactA(p, pa));
+}`;
+// noteVisible's early out: a store that changes neither the drawn projection nor a liquid's age redraws
+// nothing; one that still changes the edit projection (a partial fill the dither hides comes, goes or
+// changes) changes the legacy cache alone. nativeDynamicsHead replaces it whole (its stores note any change).
+const NOTE_UNSEEN = `if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after))) {
+    if (compactProbeHolds(p, before, after)) { return; }
+    atomicStore(&act2[V2_LEGACY + brickOfCell(p)], 1u);
+    return;
+  }`;
+
 export function v2Head(g, opts = { state: false }, family = 'base') {
   const a = v2ActLayout(g);
   return /* wgsl */ `
 ${prelude(g, opts).replace(/\bMaterial\b/g, 'LegacyMaterial')}
 ${opts.state === 'read' ? '' : compactDecodeWGSL}
+${compactProbeHoldsWGSL}
 ${nativeStateWGSL}
 ${family !== 'base' ? materialStorageWGSL + decoStorageWGSL : ''}
 ${family === 'contact' || family === 'liquid' ? '@group(2) @binding(5) var<storage, read_write> liquidScratch: array<vec4u>;' : ''}
@@ -278,7 +307,7 @@ fn loadCell(p: vec3i) -> vec4u { return loadCore(slotOf(p)); }
 // Keep redraws separate from activity: fall fractions, gas ages and sub-threshold
 // liquid flux can keep a rule busy without changing a pixel or the legacy cache.
 fn noteVisible(p: vec3i, before: vec4u, after: vec4u) {
-  if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after))) { return; }
+  ${NOTE_UNSEEN}
   let b = brickOfCell(p);
   atomicStore(&act2[V2_VISIBLE + b], 1u);
   atomicStore(&act2[V2_LEGACY + b], 1u);
@@ -1069,20 +1098,41 @@ export const V2_INVALIDATE_LAYOUT = stateLayout({ state: false, marks: true });
 
 // Lazy boundary export. Scan brick flags, never the current awake list: a brick
 // can have changed and gone to sleep long before a legacy reader/writer arrives.
+// A switch of projection (the edit's, then the World copy's, every frame of a stroke) converts only
+// the stale bricks and those holding a cell the two projections show differently (LEGACY_WORD): in
+// every other brick the two are the same, so its A/B hold the new one already.
 export const v2BridgeWGSL = (g) => /* wgsl */ `
 ${v2Head(g, V2_STATE_OPTS)}
 ${bridgeWGSL}
-var<workgroup> wgPending: u32;
+const LEGACY_STALE: u32 = ${LEGACY_WORD.STALE}u;
+const LEGACY_DIFFERS: u32 = ${LEGACY_WORD.DIFFERS}u;
+const BRIDGE_ALL: u32 = ${BRIDGE.ALL}u;
+const BRIDGE_FLIP: u32 = ${BRIDGE.FLIP}u;
+// Whether this export (its scope: P.full, BRIDGE) converts the brick whose legacy word this is.
+fn bridgeConverts(word: u32) -> bool {
+  return P.full == BRIDGE_ALL || (word & LEGACY_STALE) != 0u || (P.full == BRIDGE_FLIP && (word & LEGACY_DIFFERS) != 0u);
+}
+// Converts cell s into the projection H.format names (3: the edit projection, else the drawn one);
+// returns whether the two show it differently.
+fn bridgeCell(s: u32) -> bool {
+  let p = cellOf(s);
+  let c = cells[s];
+  let drawn = compactA(p, c);
+  var edit = drawn;
+  if (any(compactProbeCore(c) != c)) { edit = compactProbeA(p, c); }
+  writeCell(p, fetchAs(s), fetchBs(s), fetchFs(s), select(drawn, edit, H.format == 3u), vec4f(0.0));
+  return any(drawn != edit);
+}
+var<workgroup> wgConverts: u32;
+var<workgroup> wgDiffers: atomic<u32>;
 ${MAIN} {
   let b = foldId(wg, nwg);
   if (b >= NBRICKS) { return; }
-  if (li == 0u) { wgPending = P.full | atomicLoad(&act2[V2_LEGACY + b]); }
-  if (workgroupUniformLoad(&wgPending) == 0u) { return; }
-  let s = b * 64u + li;
-  let p = cellOf(s);
-  writeCell(p, fetchAs(s), fetchBs(s), fetchFs(s), select(compactA(p, cells[s]), compactProbeA(p, cells[s]), H.format == 3u), vec4f(0.0));
+  if (li == 0u) { wgConverts = select(0u, 1u, bridgeConverts(atomicLoad(&act2[V2_LEGACY + b]))); }
+  if (workgroupUniformLoad(&wgConverts) == 0u) { return; }
+  if (bridgeCell(b * 64u + li)) { atomicOr(&wgDiffers, 1u); }
   workgroupBarrier();
-  if (li == 0u) { atomicStore(&act2[V2_LEGACY + b], 0u); }
+  if (li == 0u) { atomicStore(&act2[V2_LEGACY + b], select(0u, LEGACY_DIFFERS, atomicLoad(&wgDiffers) != 0u)); }
 }
 `;
 
@@ -1130,7 +1180,8 @@ export function nativeDynamicsHead(g, { busyOut = false } = {}) {
   const layout = common.slice(common.indexOf('// ---- the header and the state'), common.indexOf('// ---- the state\'s accessors'));
   const random = common.slice(common.indexOf('// ---- random streams'), common.indexOf('// ---- the shared physics tests'));
   let shared = v2Head(g).slice(v2Head(g).indexOf('const V2_BUSY0:'));
-  shared = shared.replace('if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after)))', 'if (all(before == after))');
+  if (!shared.includes(NOTE_UNSEEN)) throw new Error('nativeDynamicsHead: noteVisible has no early out to replace');
+  shared = shared.replace(NOTE_UNSEEN, 'if (all(before == after)) { return; }');
   if (!busyOut) shared = shared.replace('P.busyOut', 'select(V2_BUSY0, V2_BUSY0 + NBRICKS, (P.tick & 1u) == 0u)');
   // Dynamics needs only the original finite-f32 prefix, never the contact tail.
   const rows = new Uint32Array(v2Table().buffer, 0, ELEMENTS.length * 8);
