@@ -74,6 +74,18 @@ function chaseOneFrame(sim, stepsPerFrame) {
   assert(Math.abs(chaseOneFrame(v2, 2) - 2 * want) < 1e-9, 'a frame of two ticks (48 fps) chases two ticks\' worth');
   assert.equal(chaseOneFrame(v2, 0), 0, 'a frame without a tick waits for the next');
   assert(holds.length > 0, 'the hold is native');
+  // V1's hold: toward the chased hold point (not the aim), at SPRING a step × V1's steps a second, carrying its motion
+  const last = holds.at(-1);
+  assert.deepEqual(last.target, last.position, 'the spring pulls toward the hold point as it chases the aim (it pulled toward the aim itself)');
+  assert.equal(last.strength, 0.25 * NOMINAL_STEP_RATE, "V1's SPRING (0.25 a step) at V1's 240 steps a second: 60/s");
+  assert(Math.hypot(...last.velocity) > 0, "with the hold point's own velocity as feed-forward (V1's carry)");
+  const { NativeDynamics } = await import('../../src/v2/dynamics.js');
+  const recorded = [], d = Object.assign(Object.create(NativeDynamics.prototype), { isReady: true, disposed: false, sequence: 0, owner: { tick: 5 },
+    g: { slots: 64 }, holdSession: null, _record: (family, stage, count, tick, params) => recorded.push({ stage, params }), _allocate() {}, _externalWork() {} });
+  d.applyPhysgun({ mode: 'hold', position: [1, 2, 3], target: [4, 5, 6], velocity: [7, 0, 0], strength: 60 });
+  d._hold(6);
+  const apply = recorded.findLast(r => r.stage === 'holdApply');
+  assert.deepEqual([apply.params.vector, apply.params.center, apply.params.strength], [[7, 0, 0], [4, 5, 6], 60], 'each tick the held clump springs toward the point with its velocity');
   assert.equal(legacySteps(v2, 3), 3 * LEGACY_STEPS_PER_TICK);
   assert.equal(legacySteps(v1, 3), 3);
   console.log(`PASS physgun chase: ${v2Arc.toFixed(2)} cells a V2 tick, as V1's ${v1Arc.toFixed(2)} a 4-step frame`);
