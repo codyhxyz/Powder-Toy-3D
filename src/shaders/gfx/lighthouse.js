@@ -3,6 +3,9 @@ import { glf } from '../../glsl.js';
 
 // One directional local light, using the current renderer's falloff and DDA.
 // It creates neither density nor an overlay. Only real surfaces/media call it.
+// far: the Box window's coarse far-grid occlusion past its edge. World passes
+// false (gfx/lighting.js): its exact DDA already crosses the whole world, the
+// same occlusion without the coarse stand-in (parity audit 2026-10-20).
 export const lighthouseGLSL = ({ far = false } = {}) => /* wgsl */ `
 fn beaconPosition() -> vec3f { return FU.beacon.xyz - vec3f(H.origin); }
 fn beaconPower(p: vec3f) -> vec3f {

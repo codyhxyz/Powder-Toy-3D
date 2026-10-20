@@ -1,4 +1,10 @@
 // Shared full optical walk: Box sun writer and world tangent-ray fallback.
+// Box and World cast the same shadows (parity audit 2026-10-20): World's walk
+// covers the whole world, so it needs no far casters (farCasterDepth, the Box
+// window's shade from outside it, and FU.far is 0 everywhere now: the far
+// field was retired in dc480f4f). Its floor guards (ro.y >= 0) and the
+// unfinished-walk latch only make a ray that starts anywhere in the world, or
+// misses resident data, safe; the Box writer's rays always start above its box.
 export const shadowOpticsWGSL = ({ backend = 'box' } = {}) => /* wgsl */ `
 // Texel encoding, decoded by sunMapShadow (gfx/lighting.js, which defines
 // SHADOW_TINT_ID_SCALE): w = tint element id * SHADOW_TINT_ID_SCALE + optical
