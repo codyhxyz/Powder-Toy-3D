@@ -13,6 +13,7 @@ import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M, EVENT } from './dynamics-reference.js';
 import { NATIVE_LAUNCH_MODE } from './nativeForcing.js';
 import { CONTACT_PUFF_UNIT as PUFF_UNIT } from './contact.js';   // a GAS request's puff rides above its flags
+import { AIRBORNE_COLOURS, packAirborne } from './airborne.js';
 // listArgs: control and the dispatch args, nothing else (it writes the args it publishes).
 export const LISTS_LAYOUT = storageLayout(2);
 
@@ -228,8 +229,12 @@ export class NativeDynamics {
     this._work(); this._rays(tick);
     this._record('particles','clear',1,tick); this._hold(tick);
     for (const stage of ['integrate','elect','impact','deposit']) this._record('particles',stage,PARTICLE_CAP/64,tick);
-    // what is still flying takes part, as V1's moving cells did (src/v2/airborne.js)
-    for (const stage of ['reactClaim','elect','react']) this._record('particles',stage,PARTICLE_CAP/64,tick);
+    // what is still flying takes part, as V1's moving cells did (src/v2/airborne.js): each packet
+    // joins its cell's list, then the cells' lists run a colour at a time, so no two whose
+    // footprints overlap run together, with the block pass's partition offset this tick
+    this._record('particles','reactClaim',PARTICLE_CAP/64,tick);
+    const offset=this.owner._params?.(tick)?.offset??[0,0,0];
+    for (let colour=0;colour<AIRBORNE_COLOURS;colour++) this._record('particles','react',PARTICLE_CAP/64,tick,{airborne:packAirborne(offset,colour)});
     this._record('blasts','airborneEvents',PARTICLE_CAP/64,tick);
   }
   applyExternalBlast(request) {

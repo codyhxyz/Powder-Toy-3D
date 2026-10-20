@@ -16,6 +16,8 @@ export const DynamicParams = uniformStruct('DynamicParams', {
   center: 'vec3f', radius: 'f32', vector: 'vec3f', strength: 'f32', shift: 'vec3i', substep: 'u32', nativeJets: 'u32', ...MODE_FIELDS,
   blastEnd:'vec3f', blastGrow:'vec3f', blastShape:'u32', blastFilter:'i32', blastMasked:'u32', blastMaskOrigin:'vec3i', blastFade:'u32', blastBounded:'u32', blastLo:'vec3i', blastHi:'vec3i',
   boxMax: 'vec3f', bodyPushPowder: 'f32', bodyAhead: 'vec2f', bodyLift: 'f32', bodyOnly: 'i32', boxStart: 'vec3i', boxSize: 'vec3u',
+  // the react stage's block partition offset and colour (src/v2/airborne.js packAirborne)
+  airborne: 'u32',
 });
 export const storageLayout = (count, readonly = []) => Array.from({ length: count }, (_, binding) =>
   ({ binding, visibility: STAGE.COMPUTE, buffer: { type: readonly.includes(binding) ? 'read-only-storage' : 'storage' } }));
@@ -508,8 +510,9 @@ export function particlesWGSL(g, nativeHead, stage) {
     particles[t]=p; let local=vec3i(floor(p.position))-P.origin; if (inGrid(local)) { dWake(local); }
   `);
   // ---- airborne matter takes part (src/v2/airborne.js): after the tick's landings, each flying
-  // packet claims the cell it is in, elect breaks ties as for impacts, and the winner runs the native
-  // contact rules on the pair. A loser waits a tick, as a cell whose block another owns does.
+  // packet joins its cell's list (the claim word holds the last to join, each flight record the one
+  // before it), and the react stage, once a colour (src/v2/airborne.js AIRBORNE_COLOURS: no two cells
+  // of one colour share a footprint), has the list's head take the cell's packets in their order.
   if (stage === 'reactClaim') return h + airborneClaimWGSL + main64(/* wgsl */ `
     // the posted requests' count starts over (blasts.js airborneEvents read last tick's)
     if (t == 0u) { atomicStore(&control[${airborneBase(g)}u],0u); }
@@ -522,39 +525,84 @@ export function particlesWGSL(g, nativeHead, stage) {
     let s = slotOf(vec3i(floor(local))); let kind = cls(cid(loadCore(s)));
     // only through air and gas: a packet inside other matter lands or strikes it this tick or the next
     if (kind != C_AIR && kind != C_GAS) { return; }
-    let key = dKey(particle.id ^ D_REACT_SALT);
-    flight[t] = DFlight(vec4u(s,D_NONE,D_REACT_KIND,key),vec4f(0));
-    dClaim(s,0u,key);
+    // (impact freed every kind-0 word it elected on: the cell's word is free here)
+    let next = atomicExchange(&claims[s*4u],t+1u);
+    flight[t] = DFlight(vec4u(s,next,D_REACT_KIND,dKey(particle.id ^ D_REACT_SALT)),vec4f(f32(dReactHash(particle)),0,0,0));
   `);
   if (stage === 'react') {
     const rh = head(g, (grid, o) => withContactTable(nativeHead(grid, o)));
-    return rh + contactRulesWGSL() + airborneReactWGSL + main64(/* wgsl */ `
+    return rh + contactRulesWGSL() + airborneReactWGSL + /* wgsl */ `
+// Is packet a after packet b in its cell's order (src/v2/airborne.js airborneOrder)?
+fn dReactAfter(a: u32, b: u32) -> bool {
+  if (b == D_NONE) { return true; }
+  let fa = flight[a]; let fb = flight[b];
+  if (fa.destination.w != fb.destination.w) { return fa.destination.w > fb.destination.w; }
+  if (fa.effect.x != fb.effect.x) { return fa.effect.x > fb.effect.x; }
+  return a > b;
+}
+// One packet of the cell at p (slot s), with the host and faces the one before it left. False once
+// the host is no longer air or gas: the rest land or strike it next tick.
+fn dReactOne(t: u32, s: u32, p: vec3i) -> bool {
+  let before = loadMaterial(s); let kind = cls(cid(before.core));
+  if (kind != C_AIR && kind != C_GAS) { return false; }
+  var faces: array<Material, 6>; var slots: array<u32, 6>; var valid = 0u;
+  for (var f = 0u; f < 2u * dAxes(); f++) {
+    let q = mEdge(p + face6(i32(f))); slots[f] = D_NONE;
+    if (inGrid(q)) { slots[f] = slotOf(q); faces[f] = loadMaterial(slots[f]); valid |= 1u << f; }
+  }
+  var particle = particles[t];
+  let onFloor = select(0, 1, p.y == 0 && P.edge == D_REACT_SOLID_EDGE);
+  let r = dReact(dMaterial(particle), before, faces, valid, dInBlock(p), dTrailing(particle.velocity), onFloor, bitcast<i32>(flight[t].destination.w));
+  if (r.state == D_REACT_REFUSED) { return true; }
+  if (any(r.source != vec2u(0u))) { noteEnergySource(p,r.source); }
+  if (any(r.sink != vec2u(0u))) { noteEnergySink(p,r.sink); }
+  // the decoration follows the matter (shaders/move.js): a charge that lands brings its paint, a gas it
+  // displaces takes the cell's into flight, and air, or matter made in air, holds none (the block
+  // pass's rule: shaders/v2.js v2BlockWGSL)
+  let paint = particleDecoOf(t);
+  if (r.state == D_REACT_LANDED) { setDeco(s,paint); }
+  else if (r.state == D_REACT_DISPLACED) { setParticleDeco(t,decoOf(s)); setDeco(s,paint); }
+  else if (cid(before.core) != cid(r.host.core) && (cid(before.core) == 0u || cid(r.host.core) == 0u)) { setDeco(s,0u); }
+  storeMaterial(s,before,r.host);
+  for (var f = 0u; f < 2u * dAxes(); f++) {
+    if (((valid >> f) & 1u) == 0u) { continue; }
+    let was = faces[f]; let now = r.faces[f];
+    if (all(was.core == now.core) && was.bank == now.bank) { continue; }
+    if (cid(was.core) != cid(now.core) && (cid(was.core) == 0u || cid(now.core) == 0u)) { setDeco(slots[f],0u); }
+    storeMaterial(slots[f],was,now);
+  }
+  dWake(p);
+  if (r.requests != 0u) {
+    atomicStore(&control[${airborneBase(g) + 1}u+t],s|(r.requests<<${AIRBORNE_BITS_SHIFT}u)); atomicAdd(&control[${airborneBase(g)}u],1u);
+  }
+  if (r.state == D_REACT_FLYING || r.state == D_REACT_DISPLACED) {
+    particle.c0 = r.particle.core.x; particle.tail = vec4u(r.particle.core.yzw,bitcast<u32>(r.particle.bank));
+    particles[t] = particle; return true;
+  }
+  // used up, or landed in air: the packet's death as the particle lane writes it, no hold surviving it
+  particles[t].id = 0u; atomicSub(&control[0],1u); noteDead(t); atomicStore(&control[D_HELD+t],0u);
+  return true;
+}
+` + main64(/* wgsl */ `
     if (t >= D_CAP || dPoolEmpty() || !slotLive(t) || particles[t].id == 0u) { return; }
     let f = flight[t]; let s = f.destination.x;
-    if (f.destination.z != D_REACT_KIND || !dWon(s,0u,t)) { return; }
-    dFree(s,0u);
-    var particle = particles[t]; let p = cellOf(s);
-    let before = loadMaterial(s);
-    let r = dReact(dMaterial(particle), before, dReactOutside(p), bitcast<i32>(dKey(particle.id ^ D_REACT_SALT)));
-    if (r.state == D_REACT_REFUSED) { return; }
-    if (any(r.source != vec2u(0u))) { noteEnergySource(p,r.source); }
-    if (any(r.sink != vec2u(0u))) { noteEnergySink(p,r.sink); }
-    // the decoration follows the matter (shaders/move.js): a charge that lands brings its paint, a gas it
-    // displaces takes the cell's into flight, and matter its plume makes in air holds none
-    let paint = particleDecoOf(t);
-    if (r.state == D_REACT_LANDED) { setDeco(s,paint); }
-    else if (r.state == D_REACT_DISPLACED) { setParticleDeco(t,decoOf(s)); setDeco(s,paint); }
-    else if (cid(before.core) == 0u && cid(r.host.core) != 0u) { setDeco(s,0u); }
-    storeMaterial(s,before,r.host); dWake(p);
-    if (r.requests != 0u) {
-      atomicStore(&control[${airborneBase(g) + 1}u+t],s|(r.requests<<${AIRBORNE_BITS_SHIFT}u)); atomicAdd(&control[${airborneBase(g)}u],1u);
+    if (f.destination.z != D_REACT_KIND || s == D_NONE) { return; }
+    let p = cellOf(s);
+    // this dispatch's colour, and the cell's list's head: one thread a cell
+    if (dReactColour(p) != (P.airborne >> D_REACT_OFFSET_BITS) || atomicLoad(&claims[s*4u]) != t+1u) { return; }
+    atomicStore(&claims[s*4u],0u);
+    // the cell's packets, each after the one before in their order (a pass over the list for each)
+    var last = D_NONE;
+    loop {
+      var best = D_NONE; var at = t+1u;
+      while (at != 0u) {
+        let i = at-1u;
+        if (dReactAfter(i,last) && (best == D_NONE || dReactAfter(best,i))) { best = i; }
+        at = flight[i].destination.y;
+      }
+      if (best == D_NONE || !dReactOne(best,s,p)) { break; }
+      last = best;
     }
-    if (r.state == D_REACT_FLYING || r.state == D_REACT_DISPLACED) {
-      particle.c0 = r.particle.core.x; particle.tail = vec4u(r.particle.core.yzw,bitcast<u32>(r.particle.bank));
-      particles[t] = particle; return;
-    }
-    // used up, or landed in air: the packet's death as the particle lane writes it, no hold surviving it
-    particles[t].id = 0u; atomicSub(&control[0],1u); noteDead(t); atomicStore(&control[D_HELD+t],0u);
   `);
   }
   throw new Error(`Unknown particles stage ${stage}`);
