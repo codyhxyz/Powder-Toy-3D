@@ -48,6 +48,12 @@ const D_REACT_DISPLACED: u32 = ${AIRBORNE.DISPLACED}u;
 const D_REACT_FLYING_REQUESTS: u32 = ${AIRBORNE_FLYING_REQUESTS}u;
 const D_REACT_LANDED_REQUESTS: u32 = ${AIRBORNE_LANDED_REQUESTS}u;
 struct DReact { particle: Material, host: Material, state: u32, source: vec2u, sink: vec2u, requests: u32 }
+// A one-sided pair rule both ways round (the packet on its host, then the host on the packet) as one
+// inlined copy of the rule: a loop of D_PAIR_ORDERS trips whose bound Metal can't fold, so it doesn't
+// unroll into two copies (cold compile, docs/webgpu.md B5; the block pass's contactBlock does the
+// same). The cells hold a whole grid, never fewer than two slots: the loop runs exactly twice.
+const D_PAIR_ORDERS: u32 = 2u;
+fn dPairOrders() -> u32 { return min(D_PAIR_ORDERS, arrayLength(&cells)); }
 // [air, oxygen, CO2, gas] among the host cell's six faces: the packet's outside, as the
 // support pass counts a cell's out-of-block faces for contactBlock (shaders/v2.js v2SupportWGSL).
 fn dReactOutside(p: vec3i) -> vec4i {
@@ -76,15 +82,29 @@ fn dReact(packet: Material, host: Material, outside: vec4i, seed: i32) -> DReact
   if (flux != 0) { flux = -ctHeatRoom(h, -ctHeatRoom(v, flux)); }
   if (flux != 0) { v = ctHeat(v, flux); h = ctHeat(h, -flux); v.busy = 1; h.busy = 1; }
   var pair = ctReaction(v, h, seed);
-  if (pair.changed == 0) { pair = ctAcid(pair.a, pair.b, seed); }
-  if (pair.changed == 0) { let rev = ctAcid(pair.b, pair.a, seed); pair = ctPairValue(rev.b, rev.a, rev.changed); }
-  if (pair.changed == 0) { pair = ctSwallow(pair.a, pair.b, seed); }
-  if (pair.changed == 0) { let rev = ctSwallow(pair.b, pair.a, seed); pair = ctPairValue(rev.b, rev.a, rev.changed); }
+  // acid, then swallow, each the packet on its host and then the host on the packet (dPairOrders)
+  for (var order = 0u; order < dPairOrders(); order++) {
+    if (pair.changed != 0) { continue; }
+    v = pair.a; h = pair.b; if (order == 1u) { v = pair.b; h = pair.a; }
+    let r = ctAcid(v, h, seed);
+    pair = r; if (order == 1u) { pair = ctPairValue(r.b, r.a, r.changed); }
+  }
+  for (var order = 0u; order < dPairOrders(); order++) {
+    if (pair.changed != 0) { continue; }
+    v = pair.a; h = pair.b; if (order == 1u) { v = pair.b; h = pair.a; }
+    let r = ctSwallow(v, h, seed);
+    pair = r; if (order == 1u) { pair = ctPairValue(r.b, r.a, r.changed); }
+  }
   v = pair.a; h = pair.b;
   // (a flying packet is on no floor)
   v = ctStepAtmosphere(v, array<CTCell, 3>(h, none, none), seed, outside.x, outside.y, outside.z, outside.w, 0, ambientQ);
-  pair = ctResolvePhase(v, h);
-  if (pair.changed == 0) { let rev = ctResolvePhase(pair.b, pair.a); pair = ctPairValue(rev.b, rev.a, rev.changed); }
+  pair = ctPairValue(v, h, 0);
+  for (var order = 0u; order < dPairOrders(); order++) {
+    if (pair.changed != 0) { continue; }
+    v = pair.a; h = pair.b; if (order == 1u) { v = pair.b; h = pair.a; }
+    let r = ctResolvePhase(v, h);
+    pair = r; if (order == 1u) { pair = ctPairValue(r.b, r.a, r.changed); }
+  }
   v = pair.a; h = pair.b;
   // the packet is in its host: a burning packet's flames lick into it (V1 react.js, ctLick)
   if (ctHotFuel(v)) { h = ctLick(h, 1, ctRow(v.id).flameQ, ctSmothered(outside.z, outside.w), seed ^ D_REACT_PLUME_SALT); }

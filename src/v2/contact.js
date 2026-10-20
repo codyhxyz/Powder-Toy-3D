@@ -313,30 +313,40 @@ export function ctFlux(a, b) {
   const flux = ctI(Math.max(-2147483000, Math.min(2147483000, k * dt * 33554432)));
   return Math.max(-lim, Math.min(lim, flux));
 }
+// The branches only pick what the cell becomes; one ctConvert and one ctProduct call do it. Every
+// call site is a copy of the helper once Metal inlines the contact rules into the block and
+// airborne kernels, and a copy a branch made them slow to compile cold (docs/webgpu.md B5).
 export function ctPhase(input, surface, random) {
-  if (ctRow(input.id).kind === 3 && input.fill === 0) return ctConvert(input, E.EMPTY, 0);
-  let c = ctSetEnergy(input, ctEnergy(input));
+  const empty = ctRow(input.id).kind === 3 && input.fill === 0;
+  let c = input;
+  if (!empty) c = ctSetEnergy(input, ctEnergy(input));
   const r = ctRow(c.id);
-  if (r.hotOut >= 0 && ctPastPhase(c, true)) {
-    c = ctConvert(c, ctProduct(r.hotOut, random), r.hotOf);
-    if (r.hotGas !== 0) {
-      if (c.id !== input.id) c.request = c.request | 2;
-      else if (c.pending >= 0) c.pendingGas = 1;
-    }
-    return c;
-  }
-  if (r.coldOut >= 0 && ctPastPhase(c, false)) {
-    let id = ctProduct(r.coldOut, random);
-    if (c.id === E.STEAM && surface === 0) id = E.CLOUD;
-    return ctConvert(c, id, r.coldOf);
-  }
-  if (c.tq > r.meltQ) return ctConvert(c, E.LAVA, r.meltInto);
-  if (c.id === E.LAVA) {
+  let subject = c;
+  let into = 0;
+  let intoOf = 0;
+  let convert = false;
+  let hot = false;
+  let product = -1;
+  if (empty) { subject = input; into = E.EMPTY; convert = true; }
+  else if (r.hotOut >= 0 && ctPastPhase(c, true)) { hot = true; product = r.hotOut; intoOf = r.hotOf; convert = true; }
+  else if (r.coldOut >= 0 && ctPastPhase(c, false)) { product = r.coldOut; intoOf = r.coldOf; convert = true; }
+  else if (c.tq > r.meltQ) { into = E.LAVA; intoOf = r.meltInto; convert = true; }
+  else if (c.id === E.LAVA) {
     let of = c.ctype;
     if (of <= 0 || of >= CONTACT_ELEMENT_COUNT) of = E.STONE;
-    if (c.tq < ctRow(of).meltQ - 600) return ctConvert(c, of, 0);
+    if (c.tq < ctRow(of).meltQ - 600) { into = of; convert = true; }
   }
-  return c;
+  if (!convert) return c;
+  if (product >= 0) {
+    into = ctProduct(product, random);
+    if (!hot && c.id === E.STEAM && surface === 0) into = E.CLOUD;
+  }
+  const next = ctConvert(subject, into, intoOf);
+  if (hot && r.hotGas !== 0) {
+    if (next.id !== input.id) next.request = next.request | 2;
+    else if (next.pending >= 0) next.pendingGas = 1;
+  }
+  return next;
 }
 export const ctLife = c => c.life / (c.id === E.SINGULARITY ? 256 : 2048);
 export function ctWithLife(c, value) { return { ...c, life: Math.round(value * (c.id === E.SINGULARITY ? 256 : 2048)) }; }
