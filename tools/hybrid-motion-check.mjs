@@ -37,7 +37,7 @@ const gpu={
   frame:{encoder:{},render(){return {end(){events.push(['end']);}};},
     direct(){return {copyTextureToTexture(){events.push(['copy']);}};}},
 };
-const sim={id:1,g:grid,L:{TABLES:{},STATE_RO:{}},tables:{},bindRO:{},origin:{x:0,y:0,z:0},header:()=>({})};
+const sim={id:1,g:grid,L:{TABLES:{},STATE_RO:{}},tables:{},bindRO:{},origin:{x:0,y:0,z:0},header:()=>({}),readHeader:()=>({format:0})};
 frameUniformsOf(gpu).last.written=true;
 const module=createHybridMotion(gpu,sim); await module.ready;
 const depth=resource({size:[1280,800],format:'depth32float'});

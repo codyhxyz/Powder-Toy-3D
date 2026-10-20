@@ -337,7 +337,7 @@ const gpu = {
   frame:{direct(){calls.push({name:'boundary'});return{};},
     render(desc){ calls.push({name:'render',desc}); return {ended:false,end(){this.ended=true;}}; }},
 };
-const sim = {g:grid,L:{TABLES:{},STATE_RO:{}},tables:{},bindRO:{},header:()=>({}),version:1,cur:0,origin:{x:0,y:0,z:0},
+const sim = {g:grid,L:{TABLES:{},STATE_RO:{}},tables:{},bindRO:{},header:()=>({}),readHeader:()=>({format:0}),version:1,cur:0,origin:{x:0,y:0,z:0},
   derived:{world:true,fieldSurf:{},fieldThin:{},views:{fieldSurf:{},fieldThin:{}}}};
 const optics = createHybridOptics(gpu,sim,{lighting:{hooks:{worldHit:'fn opticsWorldHit(h: OpticalHit) -> vec3f { return vec3f(1); }'}}});
 const frame = {color:fakeTexture({size:[16,16],format:'rgba16float',usage:4}),depth:fakeTexture({size:[16,16],format:'depth32float',usage:4})};

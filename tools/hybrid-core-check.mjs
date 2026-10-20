@@ -189,10 +189,13 @@ const semantic=spawnSync('naga',['--version'],{encoding:'utf8'}).status===0;
   new WgslReflect(code);
   if(semantic)execFileSync('naga',['--stdin-file-path','hybrid-full-check.wgsl'],{input:code,encoding:'utf8'});
 }
+const created=[],validated=new Set();
 const pipe = desc => {
   assert.equal(desc.optional, true, `${desc.name}: Test-owned compilation must not destroy the shared device`);
+  created.push(desc.name);
   const r=new WgslReflect(desc.code);
-  if(semantic)execFileSync('naga',['--stdin-file-path',desc.name+'.wgsl'],{input:desc.code,encoding:'utf8'});
+  if(semantic&&!validated.has(desc.code))execFileSync('naga',['--stdin-file-path',desc.name+'.wgsl'],{input:desc.code,encoding:'utf8'});
+  validated.add(desc.code);
   for(const stage of ['compute','vertex','fragment'])for(const entry of r.entry[stage]){
     const storageTextures=entry.resources.filter(v=>v.type.name.startsWith('texture_storage_'));
     assert(storageTextures.length<=4,`${desc.name} ${entry.name} storage textures`);
@@ -251,6 +254,7 @@ const gpu = {
 const sim = {
   id: 1, g, cur: 0, version: 1, state:{A:{},B:{}}, origin: { x: 0, y: 0, z: 0 }, tables: {}, bindRO: {},
   header() { return { origin: Object.values(this.origin), src: this.cur, dst: this.cur }; },
+  readHeader() { return { ...this.header(), format: 0 }; },
   derived: { views: { gi: [{}, {}, {}, {}], light: {} } },
 };
 const geometry = createHybridGeometry(gpu, sim);
@@ -361,4 +365,36 @@ assert.equal(renderer.prepare({view:'heat'}),true);
 assert.equal(renderer.enabled, false);
 assert.equal(sim.derived.particleSplit,false,'data view restores complete legacy fields');
 renderer.dispose();
-console.log(`PASS hybrid core @${gridName}: material bytes/mips/LOD, exact-change recording, actual entry/layout stage masks, allocation bounds, ALL scene producers/composition, transparent coverage, workload/pause timing metadata, thumbnail ownership and fallback/lifecycle; CPU only. Naga ${semantic?'passed':'unavailable'}.`);
+// Every pass that binds the box's read group gets the header that names its representation (V1: format 0).
+const stateCalls=(from,group)=>calls.slice(from).filter(c=>c.bind?.[1]===group);
+assert(stateCalls(0,sim.bindRO).length&&stateCalls(0,sim.bindRO).every(c=>c.header?.format===0),'V1 readers see format 0');
+assert(!created.some(n=>/format2/.test(n)),'a V1 box builds no V2 smooth draw');
+
+// Physics V2 owns the box: sim.bindRO is V2's own cells (src/sim.js), so every reader must be told
+// format 2 (sim.readHeader), and the smooth draw's vertex stage must read V2's cells, not V1's
+// legacy copies (only a cache under V2). Same producers, layouts and production shading, under Naga.
+{
+  const owner={isReady:true,cells:{label:'v2 cells'},sync(){}};
+  const v2Read={label:'v2 read group'};
+  const nativeSim={...sim,bindRO:v2Read,compact:owner,compactOwner:owner,state:{A:{label:'v1 A'},B:{label:'v1 B'}},
+    readHeader(){return {...this.header(),format:2};}};
+  const from=calls.length;
+  const native=createHybridRenderer(gpu,nativeSim,{post});
+  await native.ready;
+  assert(created.includes('hybrid.smooth.draw.format2')&&created.includes('hybrid.smooth.shadow.format2'),'a V2 box builds its smooth draw with the rest');
+  assert.equal(native.prepare(input),true);
+  assert(native.update(input));
+  assert(native.drawOpaque(post));
+  assert(native.compose(post));
+  assert(native.temporalFrame(post,input));
+  const readers=stateCalls(from,v2Read);
+  for(const pattern of [/geometry compare/,/geometry mesh/,/smooth.extract/,/smooth.build/,/particles.compact/,/optics/,/motion/])
+    assert(readers.some(c=>pattern.test(c.name)),`V2 reader missing: ${pattern}`);
+  for(const c of readers)assert.equal(c.header?.format,2,`${c.name} reads V2's cells as format 2`);
+  const draws=calls.slice(from).filter(c=>/^hybrid\.smooth\.(draw|shadow)/.test(c.name));
+  assert(draws.length&&draws.every(c=>/format2$/.test(c.name)&&c.header.format===2),'V2 smooth surfaces use the format-2 draw');
+  assert(draws.every(c=>c.bind[1].entries[0].resource.buffer===owner.cells&&c.bind[1].entries[1].resource.buffer===nativeSim.state.B),
+    'the smooth vertex stage reads V2 cells beside the legacy B, never the stale legacy A');
+  native.dispose();
+}
+console.log(`PASS hybrid core @${gridName}: material bytes/mips/LOD, exact-change recording, actual entry/layout stage masks, allocation bounds, ALL scene producers/composition, transparent coverage, workload/pause timing metadata, thumbnail ownership and fallback/lifecycle, V2 cells (format 2) in every state reader and the smooth draw; CPU only. Naga ${semantic?'passed':'unavailable'}.`);
