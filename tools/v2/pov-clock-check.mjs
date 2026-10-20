@@ -141,3 +141,7 @@ function chaseOneFrame(sim, stepsPerFrame) {
 // ---- 6. NPCs' tools: the same clock as the player's.
 assert(/ctx\.nativeDt = sim\?\.compact \? nativeSeconds\(w\.stepsPerFrame\) : undefined;/.test(src('pov/npc.js')), "an NPC's tools run on the V2 ticks too (toolDt read wall time)");
 console.log('PASS NPC tools read the V2 tick clock');
+
+// ---- 7. A wand's bolt flies the frame's game time from its cast (V2: the ticks', not the wall frame's).
+assert(/started: time - frameDt,/.test(src('pov/wands/runtime.js')) && /time \+= dt; frameDt = dt;/.test(src('pov/wands/runtime.js')), "a bolt is backdated by the frame's game time");
+console.log('PASS wand bolts start on the wand clock');
