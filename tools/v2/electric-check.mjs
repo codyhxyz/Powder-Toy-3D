@@ -19,9 +19,13 @@ import assert from 'node:assert/strict';
 import { E, ELEMENTS } from '../../src/elements.js';
 import { ELEC, SPARK_BORN, SPARK_CYCLE, CONDUCTS, packSpark, takesSpark, sparkPhase } from '../../src/electricity.js';
 import { NOMINAL_STEP_RATE } from '../../src/physics.js';
+const ns6 = (...cells) => [...cells, ...Array.from({ length: 6 }, () => ({ ...ctNew(E.EMPTY, Math.round(293.25 * 4), 65536), valid: 0 }))].slice(0, 6);
 import { World } from '../../src/ui/tiles/engine.js';
 import { electricGrid, setGridCell, gridCell, electricTick, ELEC_STEPS } from '../../src/v2/electric.js';
-import { ctNew, ctWithLife, ctEnergy, ctLife, CT_ENERGY_PER_CAP_C, CONTACT_ROWS } from '../../src/v2/contact.js';
+import { ctNew, ctWithLife, ctEnergy, ctLife, ctElecStep, ctElecApply, packContact, unpackContact, CT_ENERGY_PER_CAP_C, CONTACT_ROWS, CONTACT_CONSTANTS } from '../../src/v2/contact.js';
+import { PHYS } from '../../src/physics.js';
+import { airborneReference } from '../../src/v2/airborne.js';
+import { airborneReactWGSL as airborneWGSL } from '../../src/shaders/v2/airborne.js';
 import { TICK_HZ } from '../../src/shaders/v2.js';
 import { gridLayout } from '../../src/sim.js';
 import { WGSL_CHECK } from '../../src/shaders/v2/electric.js';
@@ -56,11 +60,13 @@ function circuit(nx, ny) {
     },
     setT(x, y, T) { w.T[w.idx(x, y)] = T; const c = gridCell(g, x, y, 0); c.tq = c.raw = q(T); c.bank = 0; setGridCell(g, x, y, 0, c); },
     // a V2 tick and V1's steps; then every electric cell must agree
-    tick(exact = true) {
+    // (ids false: V1's gases move, the twin's cells don't; the caller checks its own cells)
+    tick(exact = true, { ids = true } = {}) {
       for (let s = 0; s < ELEC_STEPS; s++) w.step();
       const out = electricTick(g, ++tick);
       for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
         const c = gridCell(g, x, y, 0), i = w.idx(x, y);
+        if (!ids) continue;
         assert.equal(c.id, w.id[i], `tick ${tick} (${x},${y}) id`);
         if (CONDUCTS[c.id]) {
           if (exact) assert.equal(c.spark, w.ctype[i], `tick ${tick} (${x},${y}) ${ELEMENTS[c.id].key} spark`);
@@ -236,7 +242,51 @@ await test('7. the driver runs four gather/commit steps after the block pass, ov
   assert.ok(!commands.some(c => c.name.startsWith('v2elec')));
 });
 
-await test('8. the pass\'s WGSL validates (Naga)', () => {
+await test('9. the fuse: lit, its front crosses each cell in V1\'s steps on any face, its end spits and flames', () => {
+  const N = 4, c = circuit(N + 2, 3);
+  for (let x = 1; x <= N; x++) c.put(x, 1, E.FUSE);
+  // lit by hand in both (V1: life 1 - FUSE_BURN, the lighting step's), so neither's heat lights it early
+  c.w.life[c.w.idx(1, 1)] = Math.fround(1 - PHYS.FUSE_BURN);
+  { const f = gridCell(c.g, 1, 1, 0); f.life = CONTACT_CONSTANTS.CT_FUSE_UNLIT[1] - 1; setGridCell(c.g, 1, 1, 0, f); }
+  const H = CONTACT_CONSTANTS.CT_FUSE_HANDOFF_Q[1], UNLIT = CONTACT_CONSTANTS.CT_FUSE_UNLIT[1];
+  const lit = Array(N + 1).fill(-1), out = Array(N + 1).fill(-1);
+  for (let t = 1; t <= 1200 && out[N] < 0; t++) {
+    c.tick(false, { ids: false });
+    for (let x = 1; x <= N; x++) {
+      const v1 = c.w.id[c.w.idx(x, 1)] === E.FUSE, v1life = c.w.life[c.w.idx(x, 1)], v2 = gridCell(c.g, x, 1, 0);
+      assert.equal(v2.id === E.FUSE, v1, `tick ${t} fuse ${x} still fuse`);
+      if (!v1) { if (out[x] < 0) out[x] = t; continue; }
+      assert.equal(v2.life < UNLIT, v1life < 1, `tick ${t} fuse ${x} lit`);
+      assert.equal(v2.life <= H, v1life <= PHYS.FUSE_HANDOFF, `tick ${t} fuse ${x} handed on`);
+      if (lit[x] < 0 && v2.life < UNLIT) lit[x] = t;
+    }
+  }
+  // the front: a cell every FUSE_STEPS_PER_CELL-odd steps, a quarter of that in ticks
+  for (let x = 2; x <= N; x++) assert.ok(Math.abs((lit[x] - lit[x - 1]) * ELEC_STEPS - PHYS.FUSE_STEPS_PER_CELL) <= ELEC_STEPS, `fuse ${x} lit at tick ${lit[x]}`);
+  // burnt out: smoke behind the front, a flame at its end (which spat gunpowder's heat first)
+  for (let x = 1; x < N; x++) assert.equal(gridCell(c.g, x, 1, 0).id, E.SMOKE, `fuse ${x} leaves smoke`);
+  assert.equal(gridCell(c.g, N, 1, 0).id, E.FIRE, 'the end leaves a flame');
+  assert.ok(gridCell(c.g, N, 1, 0).tq >= q(ELEMENTS[E.GUNPOWDER].blast.T), 'the end spat gunpowder\'s heat');
+  // a flame lights it at V1's chance a step (gunpowder's blast.flame); a lit fuse on the sixth face is no end
+  const fuse = ctNew(E.FUSE, q(20), 65536), fire = ctNew(E.FIRE, q(800), 65536);
+  const p = ELEMENTS[E.GUNPOWDER].blast.flame;
+  assert.notEqual(ctElecStep(fuse, ns6(fire), p - 0.01), 0);
+  assert.equal(ctElecStep(fuse, ns6(fire), p + 0.01), 0);
+  const burning = { ...fuse, life: H }, ahead = { ...fuse, life: H + 50 };
+  const endWord = ctElecStep(burning, ns6(), 0), notEnd = ctElecStep(burning, [...ns6().slice(0, 5), ahead], 0);
+  assert.ok(ctElecApply(burning, endWord, 1).tq >= q(ELEMENTS[E.GUNPOWDER].blast.T), 'alone, it is the end: it spits');
+  assert.equal(ctElecApply(burning, notEnd, 1).tq, burning.tq, 'a fuse that burns longer on the sixth face: not the end');
+});
+
+await test('10. a flying conductor\'s spark runs down at V1\'s steps a tick (its host its one neighbour)', () => {
+  const metal = ctNew(E.METAL, q(20), 65536); metal.spark = packSpark(SPARK_BORN, ELEC.SPARK_V);
+  const packet = packContact(metal), host = packContact(ctNew(E.EMPTY, q(20), 65536));
+  const r = airborneReference(packet, host, 7);
+  assert.equal(unpackContact(r.particle.core, r.particle.bank).spark, packSpark(SPARK_BORN - ELEC_STEPS, 0));
+  assert.match(airborneWGSL, /v = ctElecAirborne\(v, array<CTCell, 6>\(h, none, none, none, none, none\), seed\);/);
+});
+
+await test('11. the pass\'s WGSL validates (Naga)', () => {
   for (const k of WGSL_CHECK) assertNaga(k.code(gridLayout(32, 32, 32)), k.name);
 });
 

@@ -81,7 +81,8 @@ fn dReact(packet: Material, host: Material, outside: vec4i, seed: i32) -> DReact
   if (pair.changed == 0) { pair = ctSwallow(pair.a, pair.b, seed); }
   if (pair.changed == 0) { let rev = ctSwallow(pair.b, pair.a, seed); pair = ctPairValue(rev.b, rev.a, rev.changed); }
   v = pair.a; h = pair.b;
-  // (a flying packet is on no floor)
+  // V1's electricity on the flying cell (contact.js ctElecAirborne); (a flying packet is on no floor)
+  v = ctElecAirborne(v, array<CTCell, 6>(h, none, none, none, none, none), seed);
   v = ctStepAtmosphere(v, array<CTCell, 3>(h, none, none), seed, outside.x, outside.y, outside.z, outside.w, 0, ambientQ);
   pair = ctResolvePhase(v, h);
   if (pair.changed == 0) { let rev = ctResolvePhase(pair.b, pair.a); pair = ctPairValue(rev.b, rev.a, rev.changed); }

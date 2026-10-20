@@ -73,6 +73,24 @@ const ELEC_LIFE_UNIT = 4096;    // above the 12-bit spark (unpackContact)
 const ELEC_LIFE_MAX = 31;
 const ELEC_SPENT_MAX = 511;
 if (Math.abs(JOULE_ENERGY * JOULE_MILLI - Math.round(JOULE_ENERGY * JOULE_MILLI)) > 1e-6) throw Error('Joule energy is not a whole number of thousandths');
+// V1's fuse countdown as V1 runs it (life in f32, as the GPU's and the tiles engine's Float32Array
+// hold it): the step on which a lit cell's life first reaches FUSE_HANDOFF, and 0.
+function fuseCountdown() {
+  let life = Math.fround(1 - PHYS.FUSE_BURN), n = 1, handoff = 0;
+  for (; life > 0; n++) {
+    if (!handoff && life <= PHYS.FUSE_HANDOFF) handoff = n;
+    life = Math.fround(life - Math.fround(PHYS.FUSE_BURN));
+  }
+  return { handoff: handoff || n, out: n };
+}
+const FUSE_STEPS = fuseCountdown();
+const FUSE_UNLIT = 2048;   // ctLife's scale: V1's life 1
+// FUSE_BURN · FUSE_UNLIT as an exact fraction: (1 - FUSE_HANDOFF) · FUSE_UNLIT / FUSE_STEPS_PER_CELL
+const FUSE_HANDOFF_DEN = 100;
+const FUSE_BURN_NUM = Math.round((1 - PHYS.FUSE_HANDOFF) * FUSE_HANDOFF_DEN) * FUSE_UNLIT;
+const FUSE_BURN_DEN = FUSE_HANDOFF_DEN * PHYS.FUSE_STEPS_PER_CELL;
+if (Math.abs(FUSE_BURN_NUM / FUSE_BURN_DEN - PHYS.FUSE_BURN * FUSE_UNLIT) > 1e-9 || FUSE_BURN_NUM <= FUSE_BURN_DEN) throw Error('fuse burn is not an exact fraction above a unit a step');
+if (FUSE_STEPS.out * FUSE_BURN_NUM > 2147483647) throw Error('fuse countdown overflows i32');
 if (ELEC.SPARK_V > ELEC_SPENT_MAX || SPARK_BORN + SPARK_CYCLE * ELEC.SPARK_V >= ELEC_LIFE_UNIT || ELEC.SWITCH_ON > ELEC_LIFE_MAX) throw Error('electric scratch word fields overflow');
 // Named rule constants, shared verbatim by the scalar kernel and its WGSL
 // (shaders/v2/contact.js emits each as a typed const).
@@ -137,13 +155,29 @@ export const CONTACT_CONSTANTS = Object.freeze({
   CT_ELEC_SPENT_MAX: ['i32', ELEC_SPENT_MAX],
   // ctRoll's salt for a step's spark-cost draw (CT_ELEC_SALT + the step)
   CT_ELEC_SALT: ['i32', 40],
+  // V1's safety fuse (react.js FUSE; physics.js FUSE_*), the pass's too: its front's speed is a
+  // per-step rule on six faces. Its life in ctLife's 2048ths: CT_FUSE_UNLIT unlit (V1's 1); lit
+  // n steps, CT_FUSE_UNLIT - floor(n·CT_FUSE_BURN_NUM / CT_FUSE_BURN_DEN) (V1's 1 - n·FUSE_BURN, in
+  // exact integers), which is at most CT_FUSE_HANDOFF_Q from V1's handoff step on and 0 from its
+  // burnout step on (both found by V1's own f32 countdown: fuseCountdown).
+  CT_FUSE_UNLIT: ['i32', FUSE_UNLIT],
+  CT_FUSE_BURN_NUM: ['i32', FUSE_BURN_NUM],
+  CT_FUSE_BURN_DEN: ['i32', FUSE_BURN_DEN],
+  CT_FUSE_HANDOFF_Q: ['i32', FUSE_UNLIT - Math.floor(FUSE_STEPS.handoff * FUSE_BURN_NUM / FUSE_BURN_DEN)],
+  CT_FUSE_OUT_STEPS: ['i32', FUSE_STEPS.out],
+  // V1: a flame beside it lights it at gunpowder's blast.flame a step; its end spits as hot as gunpowder burns
+  CT_FUSE_FLAME_LIGHT: ['f32', ELEMENTS[E.GUNPOWDER].blast.flame],
+  CT_FUSE_SPIT_Q: ['i32', q(ELEMENTS[E.GUNPOWDER].blast.T)],
+  // a fuse's scratch word: its new life below CT_ELEC_LIFE_UNIT, and this bit when it is the end
+  CT_FUSE_END: ['i32', ELEC_LIFE_UNIT],
 });
 for (const key of Object.keys(CONTACT_CONSTANTS)) if (key.slice(3) in E) throw Error(`contact constant ${key} shadows an element id`);
 const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGNUS_B, CT_FLAME_MISS_LOG, CT_OXY_FLAME_MISS_LOG, CT_FLAME_T_MIN, CT_FLAME_T_SPREAD,
   CT_OXY_FLAME_GAIN, CT_KELVIN, CT_FIRE_LIFE_MIN_Q, CT_FIRE_LIFE_SPREAD_Q, CT_FIRE_BURN_TICK, CT_FIRE_BURN_SPREAD_TICK, CT_SMOKE_FADE_TICK,
   CT_FIRE_TO_SMOKE, CT_FIRE_MIN_Q, CT_BURNT_MIN_Q, CT_ASH_SHARE, CT_SPARK_REST, CT_SPARK_BORN, CT_SPARK_CYCLE, CT_SPARK_V, CT_SWITCH_ON, CT_TSNS_FIRE,
   CT_LAMP_HOLD, CT_LAMP_DC_LEVEL, CT_JOULE_WHOLE, CT_JOULE_MILLI, CT_JOULE_MILLI_UNIT, CT_ELEC_PENDING, CT_ELEC_LIFE_UNIT, CT_ELEC_LIFE_MAX,
-  CT_ELEC_SPENT_UNIT, CT_ELEC_SPENT_MAX } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
+  CT_ELEC_SPENT_UNIT, CT_ELEC_SPENT_MAX, CT_ELEC_STEPS, CT_ELEC_SALT, CT_FUSE_UNLIT, CT_FUSE_BURN_NUM, CT_FUSE_BURN_DEN, CT_FUSE_HANDOFF_Q,
+  CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 
 const outSpecs = [];
 function spec(into = 'FIRE') {
@@ -399,7 +433,38 @@ export function ctConductsInto(from, to) {
 export function ctCloneable(id) { return id !== E.EMPTY && id !== E.WALL && id !== E.CLONE && id !== E.PCLN && id !== E.PSCN && id !== E.NSCN; }
 // What V1's electric step can change: a conductor's spark, a powered element's
 // (switch, powered clone: electricity.js powered) or a sensor's life.
-export function ctElecMaterial(id) { return ctRow(id).conductor !== 0 || id === E.SWITCH || id === E.PCLN || id === E.TSNS; }
+export function ctElecMaterial(id) { return ctRow(id).conductor !== 0 || id === E.SWITCH || id === E.PCLN || id === E.TSNS || id === E.FUSE; }
+// A lit fuse's life n steps in, and the steps in a lit life (CONTACT_CONSTANTS CT_FUSE_*).
+export function ctFuseLife(n) {
+  if (n >= CT_FUSE_OUT_STEPS) return 0;
+  return Math.max(1, CT_FUSE_UNLIT - ctDiv(n * CT_FUSE_BURN_NUM, CT_FUSE_BURN_DEN));
+}
+export function ctFuseSteps(life) { return ctDiv((CT_FUSE_UNLIT - life) * CT_FUSE_BURN_DEN + CT_FUSE_BURN_NUM - 1, CT_FUSE_BURN_NUM); }
+// V1's fuse step (react.js FUSE): unlit, it lights at its ignition point, beside a fuse handing
+// on its front or anything not gas at its ignition point, or at CT_FUSE_FLAME_LIGHT beside a
+// flame; lit, it burns down a step, and it is the end while no fuse beside it burns longer.
+export function ctFuseStep(c, ns, random) {
+  const ignite = ctRow(c.id).igniteQ;
+  let light = c.tq >= ignite;
+  let fire = false;
+  let end = true;
+  for (let k = 0; k < 6; k++) {
+    const b = ns[k];
+    if (b.valid === 0) continue;
+    const kind = ctRow(b.id).kind;
+    fire = fire || b.id === E.FIRE;
+    light = light || (b.id === E.FUSE && b.life <= CT_FUSE_HANDOFF_Q) || (kind !== 0 && kind !== 4 && b.tq >= ignite);
+    end = end && !(b.id === E.FUSE && b.life > c.life);
+  }
+  if (c.life >= CT_FUSE_UNLIT) {
+    if (fire && random < CT_FUSE_FLAME_LIGHT) light = true;
+    if (!light) return 0;
+    return CT_ELEC_PENDING + ctFuseLife(1);
+  }
+  let word = CT_ELEC_PENDING + ctFuseLife(ctFuseSteps(c.life) + 1);
+  if (end) word = word + CT_FUSE_END;
+  return word;
+}
 // One step of V1's spark automaton (electricity.js electricReactGLSL electric;
 // react.js runs it every step on all six faces, ui/tiles/engine.js is its CPU
 // twin), from the last step's states of the cell and its six face neighbours
@@ -408,6 +473,7 @@ export function ctElecMaterial(id) { return ctRow(id).conductor !== 0 || id === 
 // these a tick. Returns 0 when the step changes nothing, else the scratch word
 // (CT_ELEC_PENDING + spark + life + spent: CONTACT_CONSTANTS) ctElecApply writes.
 export function ctElecStep(c, ns, random) {
+  if (c.id === E.FUSE) return ctFuseStep(c, ns, random);
   const r = ctRow(c.id);
   const life0 = ctLife(c);
   let life = life0;
@@ -480,8 +546,9 @@ export function ctElecStep(c, ns, random) {
 // levels spent as V1's Joule heat (JOULE_PER_LEVEL cap·°C each), a declared
 // source, as much of it as the cell can hold short of a phase edge (ctHeatRoom:
 // the contact block converts it there next tick).
-export function ctElecApply(input, word) {
+export function ctElecApply(input, word, seed) {
   let c = ctCopy(input);
+  if (c.id === E.FUSE) return ctFuseApply(c, word, seed);
   const spark = word % CT_ELEC_LIFE_UNIT;
   const lifeCode = ctDiv(word, CT_ELEC_LIFE_UNIT) % (CT_ELEC_LIFE_MAX + 1);
   const spent = ctDiv(word, CT_ELEC_SPENT_UNIT) % (CT_ELEC_SPENT_MAX + 1);
@@ -493,6 +560,44 @@ export function ctElecApply(input, word) {
     c.source = ctAdd(c.source, ctSigned(joule));
   }
   c.busy = 1;
+  return c;
+}
+
+// A fuse's step: its life; at its end from the handoff on, gunpowder's heat (V1: T = max(T,
+// BLAST(GUNPOWDER).T), a declared source); burnt out, smoke, or at its end a flame. A product
+// that can't hold the fuse's energy yet (ctConvert's pending) waits for the next step.
+export function ctFuseApply(input, word, seed) {
+  let c = ctCopy(input);
+  const life = word % CT_ELEC_LIFE_UNIT;
+  const end = ctDiv(word, CT_FUSE_END) % 2 !== 0;
+  c.life = life;
+  c.busy = 1;
+  if (end && life <= CT_FUSE_HANDOFF_Q && c.tq < CT_FUSE_SPIT_Q) {
+    const before = ctEnergy(c);
+    const spit = ctAdd(ctMul(ctCapacity(c), CT_FUSE_SPIT_Q), ctOffset(c));
+    if (ctFits(c, spit)) c = ctRecordChange(ctSetEnergy(c, spit), before);
+  }
+  if (life === 0) {
+    let id = E.SMOKE;
+    if (end) id = E.FIRE;
+    const out = ctConvert(c, id, 0);
+    if (out.pending < 0) {
+      c = out;
+      if (id === E.FIRE) c.life = ctFlameLife(seed);
+    }
+  }
+  return c;
+}
+// A flying packet's electricity (v2/airborne.js): V1's CT_ELEC_STEPS steps a tick, its host its
+// one neighbour (ns: the host and five absent faces).
+export function ctElecAirborne(input, ns, seed) {
+  let c = ctCopy(input);
+  if (!ctElecMaterial(c.id)) return c;
+  for (let step = 0; step < CT_ELEC_STEPS; step++) {
+    if (c.id !== input.id) return c;
+    const word = ctElecStep(c, ns, ctRoll(seed, CT_ELEC_SALT + step));
+    if (word !== 0) c = ctElecApply(c, word, seed);
+  }
   return c;
 }
 
@@ -571,8 +676,6 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   let dust = 0;
   let hotTouch = false;
   let hotFront = false;
-  let fuseTouch = false;
-  let fuseEnd = true;
   let clone = 0;
   let growOf = 0;
   let voidTouch = false;
@@ -609,8 +712,6 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (b.id === E.MOSS || b.id === E.FUNGUS) damp = Math.max(damp, ctGrowerDamp(b.id, b.ctype) - 1);
     if (b.id === E.DUST) dust++;
     hotTouch = hotTouch || (br.kind !== 0 && br.kind !== 4 && b.tq >= r.igniteQ);
-    fuseTouch = fuseTouch || (b.id === E.FUSE && b.life <= 102);
-    fuseEnd = fuseEnd && !(b.id === E.FUSE && b.life > c.life);
     if (b.id === E.CLONE || (b.id === E.PCLN && ctLife(b) === 10)) clone = Math.max(clone, b.ctype);
     if (ctCloneable(b.id)) growOf = b.id;
     voidTouch = voidTouch || b.id === E.VOID;
@@ -691,23 +792,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
       }
     }
   }
-  if (c.id === E.FUSE) {
-    if (c.life >= 2048 && (c.tq >= r.igniteQ || hotTouch || fuseTouch || fire > 0)) c.life = 2047;
-    if (c.life < 2048) {
-      c.busy = 1;
-      c.life = Math.max(0, c.life - 7);
-      if (fuseEnd && c.life <= 102) {
-        const beforeHeat = ctEnergy(c);
-        c = ctHeatTo(c, 9893, 2147483000);
-        c.source = ctAdd(c.source, ctSub(ctEnergy(c), beforeHeat));
-      }
-      if (c.life === 0) {
-        let id = E.SMOKE;
-        if (fuseEnd) id = E.FIRE;
-        return ctConvert(c, id, 0);
-      }
-    }
-  }
+  // The fuse is the electric pass's (ctFuseStep: V1's step, four a tick, six faces).
   if (c.id === E.WATER && plant > 0) { c.busy = 1; if (random < 0.048 * ctF(plant)) return ctCreate(c, E.PLANT, c.tq); }
   if (r.rots !== 0 && fungus > 0 && c.tq < CONTACT_DAMP_DRY_Q) { c.busy = 1; if (random < 0.0008 * ctF(fungus)) return ctCreate(c, E.FUNGUS, c.tq); }
   if (c.id === E.MOSS || c.id === E.FUNGUS) {
@@ -1021,7 +1106,9 @@ export function ctHeatRoom(c, gain) {
 // The ambient's ¼ K code, as the block pass encodes P.ambient.
 export const contactAmbientQ = ambient => Math.min(65535, Math.max(0, Math.round(Math.fround((Math.fround(ambient) + 273.25) * 4))));
 CONTACT_KERNEL.push([ctConducts, ['CTCell', 'CTCell', 'i32'], 'bool'], [ctAmbient, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctHeatRoom, ['CTCell', 'i32'], 'i32']);
-CONTACT_KERNEL.push([ctElecMaterial, ['i32'], 'bool'], [ctElecStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'], [ctElecApply, ['CTCell', 'i32'], 'CTCell']);
+CONTACT_KERNEL.push([ctElecMaterial, ['i32'], 'bool'], [ctFuseLife, ['i32'], 'i32'], [ctFuseSteps, ['i32'], 'i32'], [ctFuseStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'],
+  [ctElecStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'], [ctFuseApply, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctElecApply, ['CTCell', 'i32', 'i32'], 'CTCell'],
+  [ctElecAirborne, ['CTCell', 'array<CTCell, 6>', 'i32'], 'CTCell']);
 
 // R5 ambient exchange at the open box's faces. The owner counts exposed open
 // side/top faces (not the floor or closed/periodic edges).

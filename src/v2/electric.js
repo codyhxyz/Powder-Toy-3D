@@ -80,7 +80,7 @@ export function electricTick(grid, tick, { awake = null } = {}) {
     for (const [x, y, z, word] of words.values()) {
       // the GPU commits over the list only: a change outside it would be lost there
       if (!commit.has(brickOf(x, y, z))) throw Error(`electric change at ${x},${y},${z} outside the listed bricks`);
-      const c = ctElecApply(gridCell(grid, x, y, z), word);
+      const c = ctElecApply(gridCell(grid, x, y, z), word, elecSeed(x, y, z, tick) ^ step);
       setGridCell(grid, x, y, z, c);
       source += c.source;
       busy.add(brickOf(x, y, z));

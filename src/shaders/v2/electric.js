@@ -139,7 +139,7 @@ ${MAIN} {
   atomicStore(&act2[V2_ELEC_SCRATCH + s], 0u);
   let p = cellOf(s);
   let before = loadMaterial(s);
-  let c = ctElecApply(ctUnpack(before.core, before.bank), i32(word));
+  let c = ctElecApply(ctUnpack(before.core, before.bank), i32(word), ctSeed(p, P.tick) ^ i32(P.elecStep));
   storeMaterial(s, before, Material(ctPack(c, before.core), c.bank));
   if (any(c.source != vec2u(0u))) { noteEnergySource(p, c.source); }
   markBusy(p);

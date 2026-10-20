@@ -116,7 +116,7 @@ test('all 14 reaction rows dispatch real products, obey gates, and balance heat'
 });
 // V1's electric step on all six faces (contact.js ctElecStep, the electric pass's gather; ctElecApply its commit)
 const ns6 = (...cells) => [...cells, ...Array.from({length:6},()=>cell(E.EMPTY))].slice(0,6);
-const elec = (c, near, random) => { const word=C.ctElecStep(c,ns6(...near),random); return word?C.ctElecApply(c,word):c; };
+const elec = (c, near, random) => { const word=C.ctElecStep(c,ns6(...near),random); return word?C.ctElecApply(c,word,0):c; };
 test('all electric pairs obey TPT diode/switch direction, 3608 retained',()=>{
   for(const a of ELEMENTS)for(const b of ELEMENTS) assert.equal(C.ctConductsInto(a.id,b.id),conductsInto(a.id,b.id));
   for(const e of ELEMENTS.filter(e=>CONDUCTS[e.id])) {
@@ -165,7 +165,9 @@ test('blasts request source without consuming, fuse handoff, suspended dust and 
     const c=cell(e.id,Math.min(10000,e.ignite+50));const out=C.ctStep(c,ns(),0);
     assert.equal(out.id,c.id,e.key);assert.ok(out.request&1,e.key);
   }
-  const fuse=cell(E.FUSE),lit=cell(E.FUSE);lit.life=100;assert.ok(C.ctStep(fuse,ns(lit),0).life<2048);
+  // the fuse is the electric pass's (ctFuseStep: V1's step on six faces), not the contact block's
+  const fuse=cell(E.FUSE),lit=cell(E.FUSE);lit.life=100;assert.ok(elec(fuse,[lit],0).life<2048);
+  assert.equal(C.ctStep(fuse,ns(lit),0).life,2048);
   const dust=cell(E.DUST,500);dust.fallSpeed=C.DUST_MIN_FALL_SPEED;assert.ok(C.ctStep(dust,ns(cell(E.DUST)),0).request&1);
   let emitted=false;
   for(let seed=0;seed<100000;seed++)if(C.ctStep(cell(E.PLUTONIUM),ns(),seed).request&4){emitted=true;break;}
