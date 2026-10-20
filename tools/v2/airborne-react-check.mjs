@@ -72,13 +72,37 @@ assert.equal(key(fly(packet(E.LAVA, 1500, FULL / 4), () => air(20), 4000).p.core
   assert(out.log.some(r => r.source > 0n), 'burning releases its heat as a declared source');
   assert(['ASH', 'CO2'].includes(key(out.p.core)) || out.r.state === AIRBORNE.GONE, 'its fuel runs out: ash, CO2 or nothing');
 }
-// 6. Fire's own life: a flame packet fades to smoke in the air (ctStepAtmosphere's FIRE decrement).
-assert.equal(key(fly(packet(E.FIRE, 900), () => air(20), 600).p.core), 'SMOKE');
-// 7. A burning packet's plume goes into the air it flies through (ctPlume).
+// 6. Fire's own life: a flame packet burns out in about V1's flame life, leaving smoke
+// CT_FIRE_TO_SMOKE of the time or nothing (ctStepAtmosphere's FIRE decrement, V1 react.js).
+{
+  const out = fly(packet(E.FIRE, 900), () => air(20), 600);
+  assert(out.r.state === AIRBORNE.GONE || key(out.p.core) === 'SMOKE', 'a spent flame leaves smoke or nothing');
+  assert(out.tick < 60, `out within a second (${out.tick} ticks)`);
+}
+// 7. A burning packet's flames lick into the air it flies through (ctLick, V1 react.js).
 {
   let burning = packet(E.SAWDUST, 400); burning.core[1] |= 1 << 24;
   const out = fly(burning, () => air(20), 200);
   assert(out.log.some(r => [E.FIRE, E.SMOKE, E.CO2].includes(cid(r.host.core))), 'flame, smoke or CO2 left behind in its air');
+}
+// ...and not into air that CO2 smothers (ctSmothered: CO2 at 30% of the gas around it).
+{
+  let burning = packet(E.SAWDUST, 400); burning.core[1] |= 1 << 24;
+  const out = fly(burning, () => air(20), 200, [0, 0, 6, 6]);
+  assert(!out.log.some(r => cid(r.host.core) === E.FIRE), 'no flame licks into smothered air');
+}
+// 7b. Ambient heat off (V1 react.js): matter trades no heat with air, so a hot stone flies unchanged.
+{
+  const off = { ambient: 20, ambientHeat: 0 }, on = { ambient: 20, ambientHeat: 1 };
+  const stone = packet(E.STONE, 400);
+  assert.equal(T(airborneReference(stone, air(20), 7, OPEN, off).particle.core), 400, 'no exchange with air');
+  assert(T(airborneReference(stone, air(20), 7, OPEN, on).particle.core) < 400, 'with it on, the stone cools into the air');
+}
+// 7c. A flying gas radiates toward the scene's ambient by its rad (ctAmbient), even with no air to touch.
+{
+  const off = { ambient: 20, ambientHeat: 0 };
+  const steam = packet(E.STEAM, 300), r = airborneReference(steam, air(20), 7, OPEN, off);
+  assert(T(r.particle.core) < 300 && T(r.particle.core) > 20, 'steam cools toward ambient');
 }
 // 8. Reactions with what it passes through: a water drop through caustic gas absorbs it as acid (elements.js REACTIONS).
 {
@@ -116,7 +140,7 @@ for (const dims of [[32, 32, 32], [48, 16, 32]]) {
   const react = particlesWGSL(g, nativeDynamicsHead, 'react');
   assert.match(react, new RegExp(`const EV = array<vec4u, ${Math.ceil(table / 4)}>`), 'the rule stage reads the contact rows (EV tail)');
   assert.doesNotMatch(react, /arrayLength\(&events\)/, 'no block storage in the particle family');
-  for (const rule of ['ctFlux(v, h)', 'ctReaction(v, h, seed)', 'ctStepAtmosphere(v,', 'ctResolvePhase(v, h)', 'ctPlume(v, h,']) assert(react.includes(rule), `the pair runs ${rule}`);
+  for (const rule of ['ctFlux(v, h)', 'ctReaction(v, h, seed)', 'ctStepAtmosphere(v,', 'ctResolvePhase(v, h)', 'ctLick(h, 1,', 'ctAmbient(v, ambientQ, airHeat)', 'ctConducts(v, h, airHeat)']) assert(react.includes(rule), `the pair runs ${rule}`);
 }
 assert(PARTICLE_STAGES.includes('reactClaim') && PARTICLE_STAGES.includes('react'));
 // the requests' posting stage (blasts family: it binds events) and its control words

@@ -5,14 +5,18 @@
 // flying packet and the cell it is passing through run V2's native contact rules
 // (src/v2/contact.js, already converted from V1's per-step rates to per-tick ones) as one
 // in-block pair, in contactBlock's order:
-//   conduction    ctFlux, the harmonic-mean face exchange (4 legacy steps a tick, half the faces)
+//   conduction    ctFlux, the harmonic-mean face exchange (4 legacy steps a tick, half the faces),
+//                 none between matter and air with ambient heat off (ctConducts), and never past a
+//                 phase point it can't hold (ctHeatRoom)
 //   reactions     ctReaction (elements.js REACTIONS: a water drop through caustic gas turns acid),
 //                 ctAcid, ctSwallow, both ways round
 //   own step      ctStepAtmosphere: ignition and burning with the host as its flame and air (fuel
 //                 spent at burnRate, heat up to the flame ceiling, CO2/ASH exhaust), fire's and
 //                 smoke's life, phases (boil, melt, freeze, condense: phase.js latent heat)
 //   phases        ctResolvePhase, a change waiting on its partner's heat
-//   plume         ctPlume: a burning packet's flame and smoke go into the air it flies through
+//   flames        ctLick: a burning packet's flames lick into the air it flies through, as V1's
+//                 burning cell's did into the air beside it
+//   ambient       ctAmbient: a flying gas radiates toward the scene's ambient by its rad
 // Energy is exact. A packet owns no air carrier (layout.js packetCapacityQ), so it is seen as a
 // cell with a virtual carrier at its own temperature, and whatever that carrier gains or loses
 // meanwhile is the host air's at the end. A packet that is used up (burnt to nothing) leaves all
@@ -24,14 +28,15 @@
 import { E, ELEMENTS, K } from '../elements.js';
 import { AIR_CAPACITY_Q, cTq, energyOf, withEnergy, energyFits, withPacketEnergy, packetEnergyFits } from './layout.js';
 import { unpackContact, packContact, ctNew, ctFlux, ctHeat, ctReaction, ctAcid, ctSwallow, ctStepAtmosphere,
-  ctResolvePhase, ctPlume, ctPairValue } from './contact.js';
+  ctResolvePhase, ctLick, ctHotFuel, ctSmothered, ctRow, ctConducts, ctHeatRoom, ctAmbient, ctPairValue,
+  contactAmbientQ, CONTACT_DEFAULT_MODES } from './contact.js';
 
 export const AIRBORNE = Object.freeze({
   // the flight record's kind for a react claim (particles.js kinds: 1 hit, 2-4 neutron, 5 photon)
   KIND: 6,
   // the claim key's salt, so a react election never reuses an integrate one's order
   SALT: 0x52454143,
-  // contactBlock seeds a pair's plume with its partner's index; a packet's partner is its host
+  // contactBlock seeds a cell's flames with its partner's index; a packet's partner is its host
   PLUME_SALT: 1,
   // what became of a packet: unchanged (refused), still flying, used up, landed in its host's air,
   // landed in its host's gas (which flies on in the packet's place)
@@ -61,18 +66,20 @@ export function outsideOf(cores) {
 
 /**
  * One tick of a flying packet in its host cell. packet, host: { core, bank }; seed: i32;
- * outside: [air, oxygen, CO2, gas] among the host's six faces.
+ * outside: [air, oxygen, CO2, gas] among the host's six faces; modes: the scene's ambient and ambientHeat.
  * @returns {{ state: number, particle: {core,bank}, host: {core,bank}, source: bigint, sink: bigint, requests: number }}
  *   requests: the host slot's request bits (native-contract.md: 1 detonate, 2 gas, 4 neutron)
  */
-export function airborneReference(packet, host, seed, outside = [0, 0, 0, 0]) {
+export function airborneReference(packet, host, seed, outside = [0, 0, 0, 0], modes = CONTACT_DEFAULT_MODES) {
   const refused = { state: AIRBORNE.REFUSED, particle: packet, host, source: 0n, sink: 0n, requests: 0 };
   const carrier0 = BigInt(AIR_CAPACITY_Q) * BigInt(cTq(packet.core));
   try {
     let v = unpackContact(packet.core, packet.bank);
     let h = unpackContact(host.core, host.bank);
     const none = { ...ctNew(E.EMPTY, h.tq, 65536), valid: 0 };
-    const flux = ctFlux(v, h);
+    const ambientQ = contactAmbientQ(modes.ambient), airHeat = +!!modes.ambientHeat;
+    let flux = ctConducts(v, h, airHeat) ? ctFlux(v, h) : 0;
+    if (flux !== 0) flux = -ctHeatRoom(h, -ctHeatRoom(v, flux));
     if (flux !== 0) { v = ctHeat(v, flux); h = ctHeat(h, -flux); v.busy = 1; h.busy = 1; }
     let pair = ctReaction(v, h, seed);
     if (!pair.changed) pair = ctAcid(pair.a, pair.b, seed);
@@ -80,12 +87,13 @@ export function airborneReference(packet, host, seed, outside = [0, 0, 0, 0]) {
     if (!pair.changed) pair = ctSwallow(pair.a, pair.b, seed);
     if (!pair.changed) { const rev = ctSwallow(pair.b, pair.a, seed); pair = ctPairValue(rev.b, rev.a, rev.changed); }
     v = pair.a; h = pair.b;
-    v = ctStepAtmosphere(v, [h, none, none], seed, ...outside);
+    // (a flying packet is on no floor)
+    v = ctStepAtmosphere(v, [h, none, none], seed, ...outside, 0, ambientQ);
     pair = ctResolvePhase(v, h);
     if (!pair.changed) { const rev = ctResolvePhase(pair.b, pair.a); pair = ctPairValue(rev.b, rev.a, rev.changed); }
     v = pair.a; h = pair.b;
-    pair = ctPlume(v, h, seed ^ AIRBORNE.PLUME_SALT, 1);
-    v = pair.a; h = pair.b;
+    if (ctHotFuel(v)) h = ctLick(h, 1, ctRow(v.id).flameQ, ctSmothered(outside[2], outside[3]), seed ^ AIRBORNE.PLUME_SALT);
+    if (v.id !== E.EMPTY) v = ctAmbient(v, ambientQ, airHeat);
     const source = v.source + h.source, sink = v.sink + h.sink, asked = (v.request | h.request) & AIRBORNE_LANDED_REQUESTS;
     const requests = landed => asked & (landed ? AIRBORNE_LANDED_REQUESTS : AIRBORNE_FLYING_REQUESTS);
     const vm = packContact(v, packet.core), hm = packContact(h, host.core);

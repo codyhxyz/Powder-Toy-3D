@@ -434,6 +434,36 @@ export function ctStep(input, ns, seed) {
 // onFloor: the cell lies on the box's solid floor, which V1 react.js counts as a
 // surface to condense onto (its sides and lid don't). ambientQ: the scene's
 // ambient air (V1 airT()).
+// V1 react.js nBurning: a fuel at its ignition point (explosives go off instead).
+export function ctHotFuel(b) {
+  const br = ctRow(b.id);
+  return br.igniteQ < 65536 && br.blast === 0 && b.tq >= br.igniteQ;
+}
+// V1 react.js: CO2 at 30% of the gas around it puts flames out.
+export function ctSmothered(co2, gas) { return co2 > 0 && ctF(co2) >= 0.3 * ctF(gas); }
+// V1 react.js: flames lick out of anything burning into the air (or oxygen)
+// beside it, on every face; oxygen catches O2_PER_AIR times as often, hotter.
+// hotFuel: the burning fuels touching it (ctHotFuel), flameQ: their hottest flame.
+export function ctLick(input, hotFuel, flameQ, smothered, seed) {
+  let c = ctCopy(input);
+  if ((c.id === E.EMPTY || c.id === E.OXYGEN) && hotFuel > 0 && !smothered) {
+    c.busy = 1;
+    let miss = CT_FLAME_MISS_LOG;
+    if (c.id === E.OXYGEN) miss = CT_OXY_FLAME_MISS_LOG;
+    if (ctRoll(seed, 18) < 1.0 - Math.exp(ctF(hotFuel) * miss)) {
+      let flameC = ctF(flameQ) * 0.25 - CT_CODE_ZERO_C;
+      if (c.id === E.OXYGEN) flameC = (flameC + CT_KELVIN) * CT_OXY_FLAME_GAIN - CT_KELVIN;
+      const tq = Math.max(c.tq, ctI(Math.floor((flameC * (CT_FLAME_T_MIN + CT_FLAME_T_SPREAD * ctRoll(seed, 19)) + CT_CODE_ZERO_C) * 4.0 + 0.5)));
+      let flame = ctCreate(c, E.FIRE, tq);
+      // Air catching is not new gas: no puff (V1 burning's own BURN_P is the fuel's).
+      flame.request = c.request;
+      flame.life = ctFlameLife(seed);
+      if (c.id === E.OXYGEN) flame.ctype = E.OXYGEN;
+      return flame;
+    }
+  }
+  return c;
+}
 export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas, onFloor, ambientQ) {
   let c = ctCopy(input);
   if (c.done !== 0) return c;
@@ -477,7 +507,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (b.id === E.FIRE) flames++;
     // V1 react.js nBurning: a fuel at its ignition point (explosives go off
     // instead), and past its flash point one whose vapour carries a flame.
-    if (br.igniteQ < 65536 && br.blast === 0 && b.tq >= br.igniteQ) { hotFuel++; flameQ = Math.max(flameQ, br.flameQ); }
+    if (ctHotFuel(b)) { hotFuel++; flameQ = Math.max(flameQ, br.flameQ); }
     else if (br.flashQ < br.igniteQ && br.blast === 0 && b.tq >= br.flashQ) { flashFuel++; flashFlameQ = Math.max(flashFlameQ, br.flameQ); }
     // TPT FIRE.cpp separates contact ignition from bulk thermal transition
     // (upstream uses Flammable/1000). Our hot front uses existing igniteQ,
@@ -509,7 +539,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   const fullOxygen = oxygen + outOxygen;
   const fullCo2 = co2 + outCo2;
   const fullGas = gas + outGas;
-  const smothered = fullCo2 > 0 && ctF(fullCo2) >= 0.3 * ctF(fullGas);
+  const smothered = ctSmothered(fullCo2, fullGas);
   const exposed = fullAir + fullOxygen > 0;
   const random = ctRoll(seed, 1);
   c = ctElectric(c, ns, ctRoll(seed, 2));
@@ -607,24 +637,9 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (c.ctype !== previous) c.busy = 1;
   }
   if ((c.id === E.CLONE || c.id === E.PCLN) && c.ctype === 0 && growOf > 0) { c.ctype = growOf; c.busy = 1; }
-  // V1 react.js: flames lick out of anything burning into the air (or oxygen)
-  // beside it, on every face; oxygen catches O2_PER_AIR times as often, hotter.
-  if ((c.id === E.EMPTY || c.id === E.OXYGEN) && hotFuel > 0 && !smothered) {
-    c.busy = 1;
-    let miss = CT_FLAME_MISS_LOG;
-    if (c.id === E.OXYGEN) miss = CT_OXY_FLAME_MISS_LOG;
-    if (ctRoll(seed, 18) < 1.0 - Math.exp(ctF(hotFuel) * miss)) {
-      let flameC = ctF(flameQ) * 0.25 - CT_CODE_ZERO_C;
-      if (c.id === E.OXYGEN) flameC = (flameC + CT_KELVIN) * CT_OXY_FLAME_GAIN - CT_KELVIN;
-      const tq = Math.max(c.tq, ctI(Math.floor((flameC * (CT_FLAME_T_MIN + CT_FLAME_T_SPREAD * ctRoll(seed, 19)) + CT_CODE_ZERO_C) * 4.0 + 0.5)));
-      let flame = ctCreate(c, E.FIRE, tq);
-      // Air catching is not new gas: no puff (V1 burning's own BURN_P is the fuel's).
-      flame.request = c.request;
-      flame.life = ctFlameLife(seed);
-      if (c.id === E.OXYGEN) flame.ctype = E.OXYGEN;
-      return flame;
-    }
-  }
+  const lit = ctLick(c, hotFuel, flameQ, smothered, seed);
+  if (lit.id !== c.id) return lit;
+  c = lit;
   if (c.id === E.EMPTY) {
     if (clone > 0 && clone < CONTACT_ELEMENT_COUNT) { c.busy = 1; if (random < 0.48) return ctCreate(c, clone, ctRow(clone).spawnQ); }
     if (moss > 0 && bed > 0) { c.busy = 1; if (random < 0.0008 * ctF(moss)) return ctCreate(c, E.MOSS, c.tq); }
@@ -673,6 +688,7 @@ export const CONTACT_KERNEL = [
   [ctNuclearId, ['CTCell'], 'i32'], [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
   [ctElectric, ['CTCell', 'array<CTCell, 3>', 'f32'], 'CTCell'],
   [ctGrowerDamp, ['i32', 'i32'], 'i32'], [ctPuff, ['i32', 'i32'], 'i32'],
+  [ctHotFuel, ['CTCell'], 'bool'], [ctSmothered, ['i32', 'i32'], 'bool'], [ctLick, ['CTCell', 'i32', 'i32', 'bool', 'i32'], 'CTCell'],
   [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
   [ctStep, ['CTCell', 'array<CTCell, 3>', 'i32'], 'CTCell'],
 ];

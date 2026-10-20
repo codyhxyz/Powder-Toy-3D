@@ -70,7 +70,10 @@ fn dReact(packet: Material, host: Material, outside: vec4i, seed: i32) -> DReact
   var v = ctUnpack(packet.core, packet.bank);
   var h = ctUnpack(host.core, host.bank);
   var none = ctNew(0, h.tq, 65536); none.valid = 0;
-  let flux = ctFlux(v, h);
+  let ambientQ = i32(clamp(round((P.ambient + 273.25) * 4.0), 0.0, 65535.0)); let airHeat = i32(P.ambientHeat);
+  var flux = 0;
+  if (ctConducts(v, h, airHeat)) { flux = ctFlux(v, h); }
+  if (flux != 0) { flux = -ctHeatRoom(h, -ctHeatRoom(v, flux)); }
   if (flux != 0) { v = ctHeat(v, flux); h = ctHeat(h, -flux); v.busy = 1; h.busy = 1; }
   var pair = ctReaction(v, h, seed);
   if (pair.changed == 0) { pair = ctAcid(pair.a, pair.b, seed); }
@@ -78,13 +81,14 @@ fn dReact(packet: Material, host: Material, outside: vec4i, seed: i32) -> DReact
   if (pair.changed == 0) { pair = ctSwallow(pair.a, pair.b, seed); }
   if (pair.changed == 0) { let rev = ctSwallow(pair.b, pair.a, seed); pair = ctPairValue(rev.b, rev.a, rev.changed); }
   v = pair.a; h = pair.b;
-  v = ctStepAtmosphere(v, array<CTCell, 3>(h, none, none), seed, outside.x, outside.y, outside.z, outside.w);
+  // (a flying packet is on no floor)
+  v = ctStepAtmosphere(v, array<CTCell, 3>(h, none, none), seed, outside.x, outside.y, outside.z, outside.w, 0, ambientQ);
   pair = ctResolvePhase(v, h);
   if (pair.changed == 0) { let rev = ctResolvePhase(pair.b, pair.a); pair = ctPairValue(rev.b, rev.a, rev.changed); }
   v = pair.a; h = pair.b;
-  // the packet is in its host, so its plume rises into it (contactBlock's up test always holds)
-  pair = ctPlume(v, h, seed ^ D_REACT_PLUME_SALT, 1);
-  v = pair.a; h = pair.b;
+  // the packet is in its host: a burning packet's flames lick into it (V1 react.js, ctLick)
+  if (ctHotFuel(v)) { h = ctLick(h, 1, ctRow(v.id).flameQ, ctSmothered(outside.z, outside.w), seed ^ D_REACT_PLUME_SALT); }
+  if (v.id != 0) { v = ctAmbient(v, ambientQ, airHeat); }
   let source = energyAdd(v.source, h.source); let sink = energyAdd(v.sink, h.sink);
   let asked = u32(v.request | h.request) & D_REACT_LANDED_REQUESTS;
   let flyingRequests = asked & D_REACT_FLYING_REQUESTS;
