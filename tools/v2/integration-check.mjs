@@ -111,7 +111,7 @@ owner.aux ??= buffer({ size: g.slots * 4 });
 const adapter = owner.nativeDynamics;
 assert(adapter.head && adapter.layout && adapter.group, 'foundation nativeDynamics is the immutable shader adapter');
 owner.contactReady = true;
-owner.dynamics = { isReady: true, isIdle: true,
+owner.dynamics = { isReady: true, isIdle: true, air: [0, 1].map(() => buffer({ size: g.nbricks * 32 })), airIndex: 0,   // (its coarse air: two vec4s a brick, two copies)
   advanceParticles: () => calls.push({ name: 'native-particle-tick' }),
   consumeMaterialEvents: () => calls.push({ name: 'native-event-tick' }),
   advanceAir: () => calls.push({ name: 'native-air-tick' }), ready: Promise.resolve(), capabilities: { physicsReady: true, drawReady: true, impulse: true, photon: true, neutron: true },
@@ -459,6 +459,12 @@ assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouc
   assert.equal(calls.filter(c => c.name === 'v2bridge').length, 1);
   assert.equal(calls[bridge].opts.params.full, 0, 'only the bricks the tick changed');
   assert.equal(calls[bridge].opts.header.format, 0, 'the drawn projection, as the Box draws it');
+  // V2's air and foam (B, the aeration lane) come from the V2 aux export, through the physical readers.
+  const aux = calls.findIndex(c => c.name === 'worldNativeAux');
+  assert(aux >= 0 && aux < copy, 'the V2 aux export is recorded before the copy');
+  assert.equal(calls[aux].opts.header.format, 3); assert.equal(calls[aux].opts.bind[1], sim.bindPhysicalRO);
+  assert.equal(source.liveSnapshot.B, calls[aux].opts.bind[2].entries[0].resource.buffer, 'the drawn B is V2 air');
+  assert.equal(source.liveSnapshot.aeration, calls[aux].opts.bind[2].entries[1].resource.buffer, 'the drawn aeration is V2 foam');
   calls.length = 0;
   assert.equal(source.needsLiveCopy(), false);
   source.recordLiveCopy(gpu.frame);
