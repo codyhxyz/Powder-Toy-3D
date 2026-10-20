@@ -9,7 +9,8 @@ import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
 import { PHYS } from '../../physics.js';
 import { contactRulesWGSL, withContactTable, airborneReactWGSL, airborneClaimWGSL } from './airborne.js';
-import { AIRBORNE_BITS_SHIFT } from '../../v2/airborne.js';
+import { AIRBORNE_BITS_SHIFT, AIRBORNE_LANDED_REQUESTS } from '../../v2/airborne.js';
+import { CONTACT_PUFF_UNIT } from '../../v2/contact.js';
 export { PARTICLE_CAP };
 export const DynamicParams = uniformStruct('DynamicParams', {
   tick: 'u32', busyIn: 'u32', busyOut: 'u32', mode: 'u32', origin: 'vec3i', sequence: 'u32',
@@ -27,6 +28,9 @@ export const heldBase = g => shockBase(g) + g.nbricks;
 // the airborne requests (src/v2/airborne.js): a count, then a word a particle slot (the host slot
 // and its request bits), which the react stage writes and blasts.js airborneEvents posts to events
 export const airborneBase = g => heldBase(g) + PARTICLE_CAP;
+// then each slot's puff (Pa, contact.js ctPuff), beside its request word: the slot word keeps
+// only the request bits, and airborneEvents merges the two into the host's request
+export const airbornePuffBase = g => airborneBase(g) + 1 + PARTICLE_CAP;
 const f = n => Number.isInteger(n) && Math.abs(n)<1e21 ? `${n}.0` : String(n);
 const table = (name, type, field, fallback) => `fn ${name}(id: u32) -> ${type} { switch id {\n${dynamicsRows.filter(r => r[field] !== fallback).map(r =>
   `case ${r.id}u: { return ${type === 'f32' ? f(r[field]) : `${r[field]}${type === 'u32' ? 'u' : 'i'}`}; }`).join('\n')}\ndefault: { return ${type === 'f32' ? f(fallback) : `${fallback}${type === 'u32' ? 'u' : 'i'}`}; } } }`;
@@ -547,7 +551,8 @@ export function particlesWGSL(g, nativeHead, stage) {
     else if (cid(before.core) == 0u && cid(r.host.core) != 0u) { setDeco(s,0u); }
     storeMaterial(s,before,r.host); dWake(p);
     if (r.requests != 0u) {
-      atomicStore(&control[${airborneBase(g) + 1}u+t],s|(r.requests<<${AIRBORNE_BITS_SHIFT}u)); atomicAdd(&control[${airborneBase(g)}u],1u);
+      atomicStore(&control[${airborneBase(g) + 1}u+t],s|((r.requests&${AIRBORNE_LANDED_REQUESTS}u)<<${AIRBORNE_BITS_SHIFT}u)); atomicAdd(&control[${airborneBase(g)}u],1u);
+      atomicStore(&control[${airbornePuffBase(g)}u+t],r.requests/${CONTACT_PUFF_UNIT}u);
     }
     if (r.state == D_REACT_FLYING || r.state == D_REACT_DISPLACED) {
       particle.c0 = r.particle.core.x; particle.tail = vec4u(r.particle.core.yzw,bitcast<u32>(r.particle.bank));

@@ -44,7 +44,7 @@ for(const value of [-2147483648,-123456789,-1,0,2147483647]) {
 }
 
 // Independent ABI expectation: cost/emitter are f32, not integer channels.
-const rowIntegers=new Set('kind capacity offset spawnQ spawnLife hotQ hotOut hotL hotGas hotOf coldQ coldOut coldL coldOf meltQ meltInto igniteQ flashQ burn heat flameQ ash blast blastAir acid edible fizz bed rots singFood conductor wire blastInto blastOf blastQ blastPuff'.split(' '));
+const rowIntegers=new Set('kind capacity offset spawnQ spawnLife hotQ hotOut hotL hotGas hotOf coldQ coldOut coldL coldOf meltQ meltInto igniteQ flashQ burn heat flameQ ash blast blastAir acid edible fizz bed rots singFood conductor wire blastInto blastOf blastQ blastPuff coldGas'.split(' '));
 const scalar=new Float32Array(1), scalarBits=new Uint32Array(scalar.buffer);
 const declarations=[];
 for(const [name,struct,rows,schema,offset,stride,isInteger] of [

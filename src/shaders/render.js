@@ -751,13 +751,33 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 // The realistic view (0).
 // =====================================================================
 
+// Box and World in this view (CLAUDE.md "Same features in every world";
+// parity audit 2026-10-20). Every branch below but the last is the same
+// picture, by different code:
+// - interior: skips surface tests that cannot find a crossing (the brick and
+//   its 26 neighbours are certified inside liquid: docs/v2/liquid-interior-
+//   optimization.md), so it changes the cost, never the picture. Both brick
+//   kernels write the bit (passes.js brickFrag; World's: worldCellAdapter.js).
+//   World leaves out the neighbour test (core.js liquidInterior, a 27-trip
+//   loop) to keep its cold-built volume small, and marches those cells in full.
+// - LIQ_WINDOW_FADE, the edge fade after shadeSurf and the submerged tail
+//   after the march: the Box window's edge, with the far field drawing what
+//   lies past it (FU.far). World's volume is the whole world, with real cells
+//   where that edge was. Nothing sets FU.far now (world maps draw with the
+//   WORLD renderer, and the far field was retired in dc480f4f), so neither
+//   renderer runs them.
+// - format: World reads its own atlas, filled from the legacy A/B projection
+//   (V2's exportLegacy), never V2's packed state. The one thing that loses is
+//   V2's foam: the molten-foam layer after shadeSurf (and liquidDetail.js's
+//   foam) draw it in the Box only. Not a decided difference: an open question
+//   to the user (2026-10-20 audit).
 const realistic = (detail, curved = false, backend = 'box', fixedReadFormat) => {
-  // WORLD reads its own atlas, never V2's packed state: its format is the legacy one.
   const format = backend === 'world' ? '0u' : readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
   const liq = LIQ_DETAIL(detail, backend);
-  // Certified liquid interiors (passes.js brickFrag): only the Box's brick kernel writes the certificate.
   const interior = !curved && backend !== 'world';
+  // Intentional (V2 design, docs/v2.md §4.3): under V2 molten liquids (lava) carry foam as
+  // every liquid row does, so the format-2/3 branch below layers it; V1 has no foam on them.
   return /* wgsl */ `
 // Inside a liquid, sunlight fades with depth: the sun's visibility is read
 // where the ray got in (shadow map) and then attenuated by the liquid between

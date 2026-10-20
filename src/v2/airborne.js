@@ -29,7 +29,7 @@ import { E, ELEMENTS, K } from '../elements.js';
 import { AIR_CAPACITY_Q, cTq, energyOf, withEnergy, energyFits, withPacketEnergy, packetEnergyFits } from './layout.js';
 import { unpackContact, packContact, ctNew, ctFlux, ctHeat, ctReaction, ctAcid, ctSwallow, ctStepAtmosphere,
   ctResolvePhase, ctLick, ctHotFuel, ctSmothered, ctRow, ctConducts, ctHeatRoom, ctAmbient, ctPairValue,
-  contactAmbientQ, CONTACT_DEFAULT_MODES } from './contact.js';
+  contactAmbientQ, CONTACT_DEFAULT_MODES, CONTACT_PUFF_UNIT } from './contact.js';
 
 export const AIRBORNE = Object.freeze({
   // the flight record's kind for a react claim (particles.js kinds: 1 hit, 2-4 neutron, 5 photon)
@@ -68,7 +68,8 @@ export function outsideOf(cores) {
  * One tick of a flying packet in its host cell. packet, host: { core, bank }; seed: i32;
  * outside: [air, oxygen, CO2, gas] among the host's six faces; modes: the scene's ambient and ambientHeat.
  * @returns {{ state: number, particle: {core,bank}, host: {core,bank}, source: bigint, sink: bigint, requests: number }}
- *   requests: the host slot's request bits (native-contract.md: 1 detonate, 2 gas, 4 neutron)
+ *   requests: the host slot's request bits (native-contract.md: 1 detonate, 2 gas, 4 neutron), and
+ *   above them the GAS request's puff (contact.js ctPuff: the larger of the packet's and the host's)
  */
 export function airborneReference(packet, host, seed, outside = [0, 0, 0, 0], modes = CONTACT_DEFAULT_MODES) {
   const refused = { state: AIRBORNE.REFUSED, particle: packet, host, source: 0n, sink: 0n, requests: 0 };
@@ -95,7 +96,10 @@ export function airborneReference(packet, host, seed, outside = [0, 0, 0, 0], mo
     if (ctHotFuel(v)) h = ctLick(h, 1, ctRow(v.id).flameQ, ctSmothered(outside[2], outside[3]), seed ^ AIRBORNE.PLUME_SALT);
     if (v.id !== E.EMPTY) v = ctAmbient(v, ambientQ, airHeat);
     const source = v.source + h.source, sink = v.sink + h.sink, asked = (v.request | h.request) & AIRBORNE_LANDED_REQUESTS;
-    const requests = landed => asked & (landed ? AIRBORNE_LANDED_REQUESTS : AIRBORNE_FLYING_REQUESTS);
+    // a puff rides with its GAS request (bit 1, posted flying or landed): V1's pressure from gas a
+    // packet sets free in flight (a drop boiling, a reaction) is its cell's, as on the grid
+    const puff = Math.max(Math.floor(v.request / CONTACT_PUFF_UNIT), Math.floor(h.request / CONTACT_PUFF_UNIT)) * CONTACT_PUFF_UNIT;
+    const requests = landed => (asked & (landed ? AIRBORNE_LANDED_REQUESTS : AIRBORNE_FLYING_REQUESTS)) | puff;
     const vm = packContact(v, packet.core), hm = packContact(h, host.core);
     const ev = energyOf(vm), eh = energyOf(hm);
     if (v.id === E.EMPTY) {

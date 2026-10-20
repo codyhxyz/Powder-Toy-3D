@@ -20,6 +20,21 @@ export const NEUTRON_TAG = 255; // Particle-only, never a grid element.
 if (ELEMENTS.length >= PHOTON_TAG) throw new Error('Native neutron tag collides with a material');
 const SPECIFIC_J = { TNT: 4.184e6, C4: 5.858e6, NITRO: 6.28e6, GUNPOWDER: 3e6,
   THERMITE: 3.9e6, PROPANE: 46.4e6 };
+// V1 react.js crush (elements.js crush { P, into, of }): past P of air pressure on it (the
+// highest of its own, none for a solid, and its open neighbours') a cell becomes pickOut(into),
+// keeping its temperature, with its product's spawn life; a LAVA product's ctype is `of` (or the
+// cell's own element: react.js ctypeOf). pa: P in Pa; outs: [id, cumulative share] as
+// elements.js mechanisms() draws them ('SAME' stays itself); null without a crush.
+function crushPhaseOf(e) {
+  if (!e.crush) return null;
+  const list = typeof e.crush.into === 'string' ? [[e.crush.into, 1]] : e.crush.into;
+  const total = list.reduce((sum, [, w]) => sum + w, 0);
+  let at = 0;
+  const outs = list.map(([key, w]) => [key === 'SAME' ? e.id : E[key], at += w / total]);
+  outs[outs.length - 1][1] = 1;
+  if (outs.some(([id]) => !Number.isInteger(id))) throw new Error(`${e.key}.crush: unknown product`);
+  return { pa: e.crush.P * LEGACY_PRESSURE_PA, outs, of: e.crush.of ? E[e.crush.of] : e.id };
+}
 export const dynamicsRows = ELEMENTS.map(e => ({
   id: e.id, kind: e.kind, mass: Math.max(e.dens * 100 * CELL_M ** 3, 0.001),
   // TPT hardness is retained as the gameplay fracture energy, now explicitly J.
@@ -29,6 +44,7 @@ export const dynamicsRows = ELEMENTS.map(e => ({
   strength: e.breakInto ? e.hard * PHYS.P_BREAK_PER_HARD * LEGACY_PRESSURE_PA : 1e30,
   // V1 react.js: an explosive goes off under more than blast.crushP air pressure (Pa here).
   crush: e.blast?.crushP ? e.blast.crushP * LEGACY_PRESSURE_PA : 0,
+  crushPhase: crushPhaseOf(e),
   terminal: ({ ASH: 3, SNOW: 3, SAWDUST: 4, DUST: 3 })[e.key] ?? 55,
   lift: ({ ASH: 1, DUST: 1, SNOW: 2, SAWDUST: 2 })[e.key] ?? 12,
   energy: e.key==='DUST' ? specialBlastEnergy(PHYS.DUST_P) : e.blast ? Math.max(e.dens * 100 * CELL_M ** 3, 0.001) * (SPECIFIC_J[e.key] ?? 3e6) * BLAST_SCALE : 0,

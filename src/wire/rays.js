@@ -6,6 +6,8 @@
 // an E2 overlay pass: app.js opens that pass on every presented frame once a
 // ready wire has an overlay hook, and an empty pass that loads and stores the
 // scene target isn't free on a tiled GPU.
+// Under Physics V2 the photons and neutrons fly in V2's own particles (v2/dynamics.js), drawn by
+// gfx/nativeParticles.js; not a deviation: the same particles and sprites, another owner.
 import { Rays } from '../raysLayer.js';
 import { NativeParticles } from '../gfx/nativeParticles.js';
 

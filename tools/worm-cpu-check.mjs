@@ -62,5 +62,19 @@ try {
   single.reset(); single.update(0, god);
   check('one-shot corpse finishes without respawning in god view', single.finished && single.body.dead && !single.root.visible, 'runtime can retire it and idle');
 } finally { single.dispose(); }
+// a World's window moving under it (pov/index.js windowShifted): it stays put in the world
+const shifted = createWorm({ env: { getSim: () => sim }, ai: { world }, home: () => ({ x: 30, y: GROUND, z: 64 }), size, oneShot: true });
+try {
+  for (let f = 0; f < FPS; f++) shifted.update(1 / FPS, w);
+  const DX = 16, DZ = -8;
+  const head = { ...shifted.debug.head }, segs = shifted.segments.map((p) => p.clone());
+  shifted.windowShifted(DX, DZ);
+  const moved = shifted.debug.head;
+  check('a window shift moves it back in grid cells', Math.abs(moved.x - (head.x - DX)) < 1e-9 && Math.abs(moved.z - (head.z - DZ)) < 1e-9
+    && moved.y === head.y && shifted.segments.every((p, i) => Math.abs(p.x - (segs[i].x - DX)) < 1e-9 && Math.abs(p.z - (segs[i].z - DZ)) < 1e-9),
+    `head ${head.x.toFixed(1)},${head.z.toFixed(1)} -> ${moved.x.toFixed(1)},${moved.z.toFixed(1)}`);
+  shifted.update(1 / FPS, w);
+  check('it keeps moving after the shift', Number.isFinite(shifted.debug.head.x) && Number.isFinite(shifted.debug.head.z), 'finite head');
+} finally { shifted.dispose(); }
 console.log(fails ? `${fails} FAILED` : 'all ok');
 process.exit(fails ? 1 : 0);

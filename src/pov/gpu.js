@@ -138,6 +138,9 @@ class PovGpu {
    * @returns {boolean} false when nothing was recorded (no box, or the kernel is still building)
    */
   edit(name, box, values, opts) {
+    // V2: the families that push cells or air (kick, strike, field, rocket, couple) run as V2's own
+    // forces (v2/interactions.js routeNativePOV); the rest edit V1's cells, which V2 imports. Not a
+    // deviation: the same tool either way.
     if (this.sim.compact) {
       const routed = routeNativePOV(this.sim, name, box, values);
       if (routed !== null) return routed;

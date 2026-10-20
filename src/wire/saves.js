@@ -76,6 +76,8 @@ const savesWire = {
         app.physics.v2.restoreState(data, { legacyCurrent: state.mode === 'v1' });
         // Saved while V1 ran: its legacy cells are the current ones. A V1
         // session goes back to V1; a V2 session runs V2 on them, never V1.
+        // Intentional (user request, 2026-10-17: no V1 fallbacks for V2): a save made
+        // under V2 keeps V2 running after it loads, as V1 would get only its lossy projection.
         if (state.mode === 'v1') {
           if (session === 'v1') await app.setPhysics('v1');
           else app.physics.v2.resync();
