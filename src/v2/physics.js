@@ -9,9 +9,11 @@ import { cellSlot, marksLayout } from '../shaders/common.js';
 import {
   v2BlockCompactLayout, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockWGSL, V2_BLOCK_FINALIZE_LAYOUT,
   V2_KERNELS, V2Params, nativeDynamicsHead, v2DemandWords, V2_DYNAMICS_LAYOUT, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_MATERIAL_LAYOUT, V2_LIQUID_LAYOUT, V2_CONTACT_LAYOUT, V2_IMPORT_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
-  TICK_HZ, FULL, V2, QUIET_TICKS,
+  TICK_HZ, FULL, V2, QUIET_TICKS, BRIDGE, LEGACY_WORD,
 } from '../shaders/v2.js';
 import { pairOrder } from '../shaders/v2/columns.js';
+import { V2_ELECTRIC_KERNELS } from '../shaders/v2/electric.js';
+import { CONTACT_CONSTANTS } from './contact.js';
 import { auxLayout } from '../shaders/v2/state.js';
 import { PARTICLE_CAP } from './dynamics-reference.js';
 
@@ -28,6 +30,8 @@ import { PARTICLE_CAP } from './dynamics-reference.js';
 // Ticks a frame may run at Speed 1×, at most: past them time dilates rather than the frame stretching
 // (docs/v2.md 5.1: Minecraft's lag).
 const CATCH_UP = 2;
+// V1's electric steps a tick (v2/contact.js CT_ELEC_STEPS: NOMINAL_STEP_RATE / TICK_HZ)
+const ELEC_STEPS = CONTACT_CONSTANTS.CT_ELEC_STEPS[1];
 
 // The 8 partition offsets of the block pass, in a fresh order for each cycle of 8 ticks (lean-sim's
 // shuffle), from the cycle's number: every lower neighbour is reachable within a cycle (5.3).
@@ -131,13 +135,16 @@ export class PhysicsV2 {
     }
     this.nativeDynamics = { head: nativeDynamicsHead, layout: gpu.layout('V2_DYNAMICS', V2_DYNAMICS_LAYOUT) };
     this.nativeDynamics.group = gpu.bindGroup(this.nativeDynamics.layout, [b(0, this.cells), b(1, this.aux), b(2, this.act)], 'native dynamics state');
-    this.familyOf = name => ({ v2args: 'args', v2actArgs: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2support: 'contact', v2blockClassify: 'contact', v2blockFinalize: 'blockFinalize', v2block: 'contact', v2runs: 'liquid', v2pairs: 'liquid' }[name] ?? 'v2');
+    this.familyOf = name => ({ v2args: 'args', v2actArgs: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2support: 'contact', v2blockClassify: 'contact', v2blockFinalize: 'blockFinalize', v2block: 'contact', v2runs: 'liquid', v2pairs: 'liquid', v2elecGather: 'contact', v2elecArgs: 'args', v2elecCommit: 'contact' }[name] ?? 'v2');
     const familyLayouts = { v2: L.V2, args: L.ARGS, material: L.MATERIAL, liquid: L.LIQUID, contact: L.CONTACT };
     this.kernels = {};
     const specs = this.blockCompact ? [...V2_KERNELS,
       { name: 'v2blockClassify', code: v2BlockClassifyWGSL },
       { name: 'v2blockFinalize', code: v2BlockFinalizeWGSL, workgroupSize: [1, 1, 1] },
-    ] : V2_KERNELS;
+    ] : [...V2_KERNELS];
+    // The electric pass runs the contact module's electric rules: with contact installed, V1's
+    // electricity at V1's step rate (shaders/v2/electric.js); without it, no electricity at all.
+    if (/\bfn\s+ctElecStep\s*\(/.test(contactWGSL)) specs.push(...V2_ELECTRIC_KERNELS.map(k => ({ ...k, code: g => k.code(g, contactWGSL) })));
     for (const k of specs) {
       const withState = k.name === 'v2import' || k.name === 'v2bridge';
       const finalize = k.name === 'v2blockFinalize';
@@ -295,8 +302,12 @@ export class PhysicsV2 {
     const modeChanged = this.legacyNative !== native;
     if (!this.legacyPending && !modeChanged) return;
     const { sim, gpu } = this;
+    // What it converts (shaders/v2.js BRIDGE): the bricks changed since the last export; on a switch of
+    // projection those and the ones holding a partial liquid fill the drawn dither hides (the only cells
+    // the two projections show differently: every other brick's A/B hold both); before the first, all.
+    const full = this.legacyNative === undefined ? BRIDGE.ALL : modeChanged ? BRIDGE.FLIP : BRIDGE.CHANGED;
     this.kernels.v2bridge.dispatch(gpu.frame, fold(this.g.nbricks), {
-      bind: [sim.tables, this.groups.state, this.groups.v2], header: { ...sim.header(), capture: 0, format: native ? 3 : 0 }, params: { ...this._params(this.tick + 1), full: modeChanged ? 1 : 0 },
+      bind: [sim.tables, this.groups.state, this.groups.v2], header: { ...sim.header(), capture: 0, format: native ? 3 : 0 }, params: { ...this._params(this.tick + 1), full },
     });
     sim.onPass?.('v2bridge', { kind: 'compute', gpuMs: null });
     this.legacyPending = false;
@@ -355,7 +366,7 @@ export class PhysicsV2 {
     gpu.frame.clear(sim.marks, m.owned * 4, Math.ceil(g.slots / 32) * 4);
     gpu.write(this.act, this.layout.busy0 * 4, new Uint32Array(g.nbricks).fill(1));
     gpu.write(this.act, this.layout.busy1 * 4, new Uint32Array(g.nbricks).fill(1));
-    gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(1));
+    gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(LEGACY_WORD.STALE));
     this.noteAllCells(); // the copy above bypassed noteState; the requests are clear
     this.importFull = this.importMarked = false;
     this.seenVersion = sim.version;
@@ -398,6 +409,17 @@ export class PhysicsV2 {
       run(k.v2blockFinalize, [1, 1, 1], [gpu.emptyGroup, gpu.emptyGroup, groups.blockFinalize]);
       run(k.v2block, ind(ARGS2.COMPACT));
     } else run(k.v2block, ind(ARGS2.BLOCKS));
+    // Electricity at V1's rate (shaders/v2/electric.js): ELEC_STEPS steps a tick of V1's step on six
+    // faces, each a gather and a commit. Step 0 gathers the awake bricks and lists where it changed
+    // anything (and their 3³); the args publish that list; the rest run over it alone.
+    if (k.v2elecGather) {
+      for (let elecStep = 0; elecStep < ELEC_STEPS; elecStep++) {
+        const p = { ...params, elecStep };
+        run(k.v2elecGather, ind(elecStep === 0 ? ARGS2.BRICKS : ARGS2.ELEC), undefined, p);
+        if (elecStep === 0) run(k.v2elecArgs, [1, 1, 1], undefined, p);
+        run(k.v2elecCommit, ind(ARGS2.ELEC), undefined, p);
+      }
+    }
     this.dynamics?.consumeMaterialEvents(this.tick);
     // R13 as column runs (src/shaders/v2/columns.js), a thread an awake column: settle the runs, then
     // every face's flux and the four colours of transfers, one step a tick.
@@ -488,7 +510,9 @@ export class PhysicsV2 {
     gpu.write(this.args, 0, state.args);
     // Legacy A/B loaded by saves/game is only a projection of these words.
     // Dirtiness is cache metadata, not physics state; rebuild that projection on demand.
-    gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(legacyCurrent ? 0 : 1));
+    // A current cache is the drawn projection (and a V1-mode save's velocities in B), its partial fills
+    // unknown: the first switch to the edit projection converts every brick, as a full export would.
+    gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(legacyCurrent ? LEGACY_WORD.DIFFERS : LEGACY_WORD.STALE));
     // The cells above bypassed noteState; the requests are clear until a dynamics restore.
     this.noteAllCells();
     const m = marksLayout(g);

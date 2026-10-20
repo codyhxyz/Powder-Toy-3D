@@ -14,6 +14,7 @@ import { createKick } from './kick.js';
 import { createMeat, EAT_CELLS_MAX } from './meat.js';
 import { nativeBodyGravity } from '../v2/modes.js';
 import { bodyEditStepRate, nativeBodyPressureFactor } from '../v2/body.js';
+import { HOST_HZ } from '../v2/host.js';
 import { CRUELTY_GRAVITY, crueltyMove, pullGrappendix } from './grappendixPhysics.js';
 import { ladderVelocity } from './ladder.js';
 import { FLAP_SIGNAL_S } from './flapPose.js';
@@ -182,6 +183,9 @@ const PROBE_INFLIGHT = 3;               // readbacks in flight at once
 const LATENCY_INIT = 0.05;             // s, readback latency assumed before the first one lands
 const LATENCY_EASE = 0.2;              // share of each new latency sample in the running estimate
 const DT_EASE = 0.1;                   // share of each frame in the smoothed frame time (step rate)
+// Under V2 a frame runs 0, 1 or 2 of its 60 Hz ticks whatever the frame rate (v2/host.js), so a frame
+// without one is no pause: its clock runs while it ticked within this much wall time (two ticks')
+const NATIVE_CLOCK_GAP_S = 2 / HOST_HZ;
 const CONTACT_REACH = 0.5;             // cells beyond the body's faces that count as touching it
 const UNKNOWN = -2;                    // id of a cell outside the probed box
 
@@ -302,7 +306,7 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
   let latency = LATENCY_INIT;
   const shifted = [0, 0];   // grid cells (x, z) the window has moved over the world in all (windowShifted)
 
-  let lastSim = null, lastFrame = 0, dtSmooth = 1 / 60;
+  let lastSim = null, lastFrame = 0, dtSmooth = 1 / 60, sinceTick = Infinity;
 
   const contactId = new Int32Array(PN), contactT = new Float32Array(PN), contactSpark = new Float32Array(PN);
   const eatCells = [];   // cooked meat touching the body this frame ([x, y, z]), to eat (meat.js)
@@ -733,11 +737,16 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
       g = sim.g;
       generation++; probe.valid = false;
     }
-    // sim steps since last frame → step rate (0 while paused)
+    // sim steps since last frame → step rate (0 while paused). Raw sim.frame on purpose: the engine's own
+    // steps (V1 steps, or V2 ticks), not game time (v2/host.js stepClock); a switch leaves sim.frame alone.
+    // Under V2 the rate is V1's steps a second while its clock runs (the kick, the gibs and the coupling
+    // convert cells/s at NOMINAL_STEP_RATE under V2): the ticks a frame happened to run made a kick, a gib
+    // or the body's coupling right after a frame without one do nothing.
     const steps = Math.max(0, sim.frame - lastFrame);
     lastFrame = sim.frame;
     if (dt > 0) dtSmooth += (dt - dtSmooth) * DT_EASE;
-    const stepRate = steps / dtSmooth;
+    sinceTick = steps > 0 ? 0 : sinceTick + dt;
+    const stepRate = sim.compact ? (sinceTick < NATIVE_CLOCK_GAP_S ? NOMINAL_STEP_RATE : 0) : steps / dtSmooth;
     p.stepRate = stepRate;
 
     const ready = covered() && inGrid();

@@ -140,8 +140,27 @@ try {
   app.mp.isGuest = false;
   app.win = null; wire.afterStep(app);
   assert.equal(weather.tsunami.eligible, false);
+  // A box runs the same sky and rain (CLAUDE.md "Same features in every world"),
+  // with no sea: no fog band and no ocean forcing.
+  let boxCtx = null;
+  app.elementWeather.step = (state, ctx) => { boxCtx = ctx; calls.source++; };
+  weather.setPreset('rain');
+  const boxSources = calls.source, boxOcean = calls.ocean;
+  wire.step(app);
+  assert.equal(calls.source, boxSources + 1, 'a box emits weather sources');
+  assert.equal(boxCtx.world, null);
+  assert.equal(boxCtx.enabled, true, 'a box opts in to the element weather policy');
+  assert.ok(Number.isFinite(boxCtx.seaLevel), 'a box gives the policy a finite sea level');
+  assert.equal(boxCtx.fogEnabled, false, 'no sea fog without a sea');
+  assert.ok(weather.state.ocean > 0);
+  assert.equal(calls.ocean, boxOcean, "a box's Rain does no ocean work");
+  wire.afterStep(app);
+  assert.equal(weather.tsunami.eligible, false);
+  app.mp.isGuest = true; wire.step(app);
+  assert.equal(calls.source, boxSources + 1, 'box guests never emit weather');
+  app.mp.isGuest = false;
 } finally {
   weather.dispose();
   app.lighthouse.dispose();
 }
-console.log('Weather wire CPU checks passed: ocean controls/transforms, native 60Hz clock, render-only/guest/manual gating, reload cancellation, clear semantics and idle.');
+console.log('Weather wire CPU checks passed: box sky and rain, ocean controls/transforms, native 60Hz clock, render-only/guest/manual gating, reload cancellation, clear semantics and idle.');

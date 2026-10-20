@@ -128,7 +128,9 @@ for(const q of [0,1,1173,41093]) assert.equal(C.ctDensity(C.unpackContact(air(q)
 assert(materialStorageWGSL.includes('noteVisible(cellOf(slot), before.core, after.core);'));
 assert(materialStorageWGSL.includes('if (any(before.core != after.core) || before.bank != after.bank) { noteState(slot); }'));
 assert(materialStorageWGSL.includes('storeCore(slot, after.core); banks[slot] = after.bank;'));
-assert(shader.includes('if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after))) { return; }'));
+assert(shader.includes('if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after))) {\n    if (compactProbeHolds(p, before, after)) { return; }'));
+// (an equal store's edit projection holds too: it returns before any mark, compactProbeHolds)
+assert(shader.includes('if (all(pb == before) && all(pa == after)) { return true; }\n  return all(compactA(p, pb) == compactA(p, pa));'));
 assert(shader.includes('events[slot] = ctMergeRequest(pending[i], requests[i]);'));   // flags OR, the larger puff
 assert(v2SupportWGSL(g).includes('liquidScratch[s].x=(liquidScratch[s].x&0xffffff00u)|air|(oxygen<<2u)|(co2<<4u)|(gas<<6u);'));
 // Execute the real store helper with observable storage/mark hooks. Equal AIR

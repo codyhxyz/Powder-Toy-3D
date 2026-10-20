@@ -37,7 +37,7 @@ function fixture() {
     _retire(b) { retired.push(b); }, noteWrite() { this.version++; }, freshFlags() { this.refreshedFlags = true; this.noteWrite(); },
     header() { return { origin: [this.origin.x, 0, this.origin.z], src: this.cur, dst: this.cur }; }, readHeader() { return this.header(); }, pingPong() {} };
   const win = { sim, gpu, size: [128, 32, 128], epoch: 1, wb: [32, 8, 32], scene: { importManifest: { sourceStyle: true }, appearanceWords: new Uint32Array([0x12345678]) }, planted: new Uint8Array(32 * 32), candidates: new Map(),
-    _shiftCommitted: WorldWindow.prototype._shiftCommitted, restoreNative: WorldWindow.prototype.restoreNative };
+    _shiftCommitted: WorldWindow.prototype._shiftCommitted, restoreNative: WorldWindow.prototype.restoreNative, leaveDiff: WorldWindow.prototype.leaveDiff };
   win.store = new BrickStore(win.wb);
   const source = new WorldRenderSource(win); win.renderSource = source;
   return { sim, win, source, gpu, frame, flush, retired, owned };

@@ -1647,7 +1647,7 @@ const settingsPanel = createSettings({
       ...simModeRows({ change: setSimMode, locked: simModeLock }),
     ] },
     // a cost lever too: sim work grows with cells, ray marching with the grid's span
-    weatherSection(weather, { enabled: () => !!win?.loaded && !mp.isGuest }),
+    weatherSection(weather, { enabled: () => (!win || win.loaded) && !mp.isGuest }),   // every map: a box's too (wire/weather.js)
     { title: 'Lighting', rows: [
       // the day is held at this hour (DAY.running)
       { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,
@@ -1754,6 +1754,8 @@ function setSimMode(key, v, toast = false) {
 }
 function simModeLock(key) {
   if (mp.isGuest) return 'The host sets these';
+  // Not a deviation: a World's grid is a window, so its edges are the world's interior, not the map's
+  // boundary; void/loop there would delete or wrap terrain the player can walk to.
   if (key === 'edgeMode' && win) return 'World\'s edges stay solid: past them is the rest of the island, not the void';
   return false;
 }
@@ -1967,7 +1969,7 @@ async function renderWorldThumb(viewId,out) {
   const model=volume.matrixWorld.clone().multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray().map(v=>-v)));
   const style=frameUniformValues({camera:ownCamera,model,
     view:viewId,sourceStyle:selectedMode==='crueltySquad' && isMaterialView(view)});
-  const frozen=presentation.neutral(()=>freezeWorldView({camera:ownCamera,presentation,settings,post,pov},
+  const frozen=presentation.neutral(()=>freezeWorldView({camera:ownCamera,presentation,settings,post,pov,sim},
     {...frame.values,model:model.toArray(),view:style.view,materialStyle:style.materialStyle,sourceStyle:style.sourceStyle},
     {view,detail,curved:false}));
   frozen.settings.view=viewId;
@@ -2093,7 +2095,7 @@ function clickTool() {
     const r = spawners.place(kind, feetOnHit(hover));
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit', { kind: 'error' });   // GMod's LimitHit
-    else if (r === 'unsupported') hud.toast('Vehicles and NPCs are not supported in scrolling World maps; use a box map', { kind: 'error' });
+    else if (r === 'unsupported') hud.toast('Vehicles are not supported in scrolling World maps; use a box map', { kind: 'error' });
     else hud.toast(r === 'removed' ? 'Player spawn removed' : SPAWNER_SET[kind] ?? `${toolById(settings.tool).name} spawned`);
     return r !== 'full' && r !== 'unsupported';
   }
@@ -2436,7 +2438,6 @@ function frameValues(cam, view, jitter) {
     shadows: true, far: !!win?.far, sea: win?.P?.sea ?? 0, jitter,
     sourceAppearance: win?.far?.appearance.uniform ?? [0, 0, 0, 0],
     sourceStyle: selectedMode === 'crueltySquad' && isMaterialView(view),
-    liqRipples: !!frameDetail.DETAIL_LIQ_RIPPLES,   // the far field's water matches the window's (shaders/far.js)
   };
 }
 let frameDerived = false;   // this frame runs the derived passes (pacer.derived)
@@ -2819,6 +2820,8 @@ function tick(now, renderOnly = false) {
   let stepped = settings.steps;
   if (stepping && v2Box()) {
     // v2: a fixed 60 Hz tick on game time, Speed scaling it (4 steps a frame is 1×); none while it rests
+    // Intentional (V2 design, docs/v2.md §5.1): one 60 Hz game clock, so a slow or fast frame rate
+    // no longer changes the world's speed as V1's settings.steps a frame does; equal at 60 fps.
     stepped = 0;
     if (v2Active()) {
       if (!v2Running) { physicsV2.activate(); v2Running = true; }
@@ -3036,7 +3039,9 @@ function tick(now, renderOnly = false) {
   gpu, three: renderer, renderer, pacer, canvas, post, presenter, cut, overlays, brush, scene, camera, controls, rig, settings, DEFAULTS, SIZES, WORLDS,
   hover, day, sun: SUN, keyLight: KEY_LIGHT, toolGun, camGrid, sceneByKey,
   threeMeshes,
-  prepareWorldAfter(values,cam) {
+  // The shared FrameUniforms at this WORLD frame's view (the sky, sprites and
+  // cursors read them), stills too: as a box's thumbnail writes its own (thumbnails).
+  writeWorldFrame(values,cam) {
     // Local sprites/cursors retain their existing coordinate ABI; source lamp
     // conversion remains based on data.frame.physicsOrigin, not this origin.
     const model=new THREE.Matrix4().fromArray(values.model).multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray()));
@@ -3044,8 +3049,11 @@ function tick(now, renderOnly = false) {
     const fu=frameUniformsOf(gpu);fu.uniforms.write(local);
     fu.last.viewProj.fromArray(values.viewProj);fu.last.model.copy(model);fu.last.invViewProj.fromArray(values.invViewProj);
     fu.last.eye.setFromMatrixPosition(cam.matrixWorld);fu.last.written=true;
-    wire('rays')?.beforeView(ctx);
   },
+  prepareWorldAfter(){wire('rays')?.beforeView(ctx);},
+  // A world stands under the sky that lights it, as a box does (drawScene's lit):
+  // the realistic views draw it first, behind the volume and meshes.
+  drawWorldSky(rp,view){if(isMaterialView(view))overlays.drawSky(rp);},
   drawWorldAfter(rp){for(const w of after)w.scene(ctx,rp);brush.draw(rp);},
   drawWorldOverlay(rp){for(const w of overlayWires)w.overlay(ctx,rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },

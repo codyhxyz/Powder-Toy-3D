@@ -8,6 +8,7 @@ import { createNativeWorldMeshLightContext, guardMeshes } from '../gfx/meshLight
 import { renderViewmodels } from '../pov/viewmodel.js';
 import { queryWorldPick, worldPickNotReady } from './worldPick.js';
 import { READY } from '../world/renderAtlas.js';
+import { WORLD_NATIVE } from '../shaders/gfx/liquidDetail.js';
 
 const array = v => Array.from(v?.elements ?? (v?.toArray ? v.toArray() : v));
 const requireReady = (ok, message) => { if (!ok) throw new Error(message); };
@@ -142,7 +143,7 @@ function retireWorldUse(state,gpu,submitted,release) {
   return done;
 }
 
-/** Records real Three opaque -> pack -> full volume -> transparent -> overlays.
+/** Records real Three opaque -> pack -> sky -> full volume -> transparent -> overlays.
  * Caller supplies the real App threeMeshes/draw-overlay methods, not services
  * or readiness callbacks. Frozen view/settings, but then-current actors: this
  * entire SceneAttempt is synchronous after preparation. No pass yields.
@@ -151,7 +152,7 @@ function retireWorldUse(state,gpu,submitted,release) {
 export function recordWorldFrame(app, state, data, {camera, view, detail={}, curved=false,
   eye, identity, order, signRequest=null, dt=0, frozenView=null, preflight=null, stillTarget=null}) {
   requireReady(!state.dead && app.win?.loaded && app.win.render===state.data, 'live WORLD frame required');
-  requireReady(['threeMeshes','drawWorldAfter','drawWorldOverlay'].every(k=>typeof app[k]==='function'),
+  requireReady(['threeMeshes','writeWorldFrame','drawWorldSky','drawWorldAfter','drawWorldOverlay'].every(k=>typeof app[k]==='function'),
     'actual App opaque/after/overlay functions must be connected before recording');
   requireReady(stillTarget || (complete(eye.feedback) && eye.words.length===20 && eye.words[19]===1), 'complete native eye required before hands');
   if(stillTarget)signRequest=null;
@@ -184,6 +185,7 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
     sceneTicket=post.recordScene({
       prepare(p) {
         const fv=worldSceneValues(values,camera,p.jitter);
+        app.writeWorldFrame(fv,camera);
         if(!stillTarget)app.prepareWorldAfter(fv,camera);
         native=nativeCandidate(state,data,fv,worldSceneParams(params,fv,p.inSize),p.sceneTarget.packedOpaque.createView());
         context=meshContext(app,state,data,native,fv,state.noise.texture);context.bind();
@@ -200,7 +202,7 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
       opaque(p) {drew=app.threeMeshes(p,false,camera);return drew;},
       capture(p) {requireReady(state.opaque.recordReady(gpu.frame,{color:p.sceneTarget.color,depth:p.sceneTarget.depth,
         output:p.sceneTarget.packedOpaque,drew,submitted:ticket.submitted}), 'WORLD opaque capture not ready');},
-      draw(rp) {requireReady(native.recordDraw(rp,{view,detail,curved}), 'WORLD synchronous volume unavailable');if(!stillTarget)app.drawWorldAfter(rp);},
+      draw(rp) {app.drawWorldSky(rp,view);requireReady(native.recordDraw(rp,{view,detail,curved}), 'WORLD synchronous volume unavailable');if(!stillTarget)app.drawWorldAfter(rp);},
       meshes(p) {app.threeMeshes(p,true,camera);},
       overlay:stillTarget ? undefined : rp=>app.drawWorldOverlay(rp),
     },camera,{identity:data.identity,publication:postPublication,feedbackIdentity,submission:ticket,worldModel:model,cameraIdentity:frozenView?.cameraIdentity??camera,
@@ -318,6 +320,9 @@ export async function releaseWorldMeshPreflight(app,p) {
 
 // Capture VIEW only. Publication-owned time/lighting/artwork/physics-origin are
 // deliberately not copied from current globals after the point readback.
+// The view's detail, plus WORLD_NATIVE while V2 runs the box: its live copies then carry V2's foam
+// (world/renderSource.js liveSource), and the World programs compile native foam as Box's format-2 do.
+export const worldViewDetail=(sim,detail={})=>sim?.compact ? {...detail,[WORLD_NATIVE]:true} : {...detail};
 export function freezeWorldView(app,values,{view,detail={},curved=false}={}) {
   app.camera.updateMatrixWorld();
   const camera=app.camera.clone(false);camera.parent=null;
@@ -326,7 +331,7 @@ export function freezeWorldView(app,values,{view,detail={},curved=false}={}) {
   camera.matrix.decompose(camera.position,camera.quaternion,camera.scale);
   const v=worldSceneValues(values,camera,[0,0]);
   const p=app.presentation;
-  return {camera,cameraIdentity:app.camera,view,detail:{...detail},curved,values:{model:[...v.model],cam:[...v.cam],viewProj:[...v.viewProj],invViewProj:[...v.invViewProj],
+  return {camera,cameraIdentity:app.camera,view,detail:worldViewDetail(app.sim,detail),curved,values:{model:[...v.model],cam:[...v.cam],viewProj:[...v.viewProj],invViewProj:[...v.invViewProj],
       ...Object.fromEntries(['view','materialStyle','sourceStyle','bevel','glints','matDetail'].filter(k=>values[k]!==undefined).map(k=>[k,values[k]]))},
     params:{marchNear:app.pov?.marchNear??0,warpK:p.parameters.k,warpAnchor:[...p.parameters.anchor],warpDir:[...p.parameters.dir]},
     settings:{...app.settings},post:{...app.post.settings},presentation:{parameters:structuredClone(p.parameters),

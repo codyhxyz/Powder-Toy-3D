@@ -64,6 +64,7 @@ export function createWandRuntime(env) {
   let inventories = stores.get(key);
   let definition = null, compiled = null, current = null, selected = false;
   let sim = env.getSim?.() ?? null, generation = 0, disposed = false, time = 0;
+  let frameDt = 0;   // the game time this frame advanced `time` by (V2: its ticks')
   const offset = new THREE.Vector3().copy(sim?.origin ?? zero);
   let ctx = null, nodesLeft = 0, tracePending = 0, transferPending = 0, clearancePending = 0;
   let frameCommands = 0, frameTransfers = 0, frameNodes = 0, frameCasts = 0, frameRays = 0;
@@ -233,7 +234,7 @@ export function createWandRuntime(env) {
       // and the rest of the tip's offset (drawn only, `side`)
       const tip = tipOffset(cast), lead = tip ? Math.max(0, tip.dot(dir)) : 0;
       projectiles.push({ node, at: at.clone(), velocity: dir.clone().multiplyScalar(clamp(finite(p.speed, 60), 0, 1200)),
-        cast, cargo, age: 0, started: time - clamp(finite(ctx.dt), 0, WAND_LIMITS.dt),
+        cast, cargo, age: 0, started: time - frameDt,   // (it flies this frame's game time, as `time` advanced)
         ahead: lead > 0 ? dir.clone().multiplyScalar(lead) : null, side: tip?.clone().addScaledVector(dir, -lead) ?? null,
         flown: 0, drawn: null,
         pending: false, triggered: false, alive: true, traceFailures: 0,
@@ -463,7 +464,7 @@ export function createWandRuntime(env) {
     const dt = ctx.sim?.compact ? clamp(nativeSeconds(ctx.stepsPerFrame), 0, WAND_LIMITS.dt)
       : ctx.stepsPerFrame > 0 && !ctx.paused ? clamp(finite(ctx.dt), 0, WAND_LIMITS.dt) : 0;
     if (!sim || !dt) { draw(0); return; }
-    time += dt; nodesLeft = WAND_LIMITS.nodes;
+    time += dt; frameDt = dt; nodesLeft = WAND_LIMITS.nodes;
     // Cast delays and recharge count down on the tool clock: Faster Tools speeds
     // wands like Noita's Faster Wands (pov/perks.js). Mana regen stays on plain dt.
     const toolStep = toolDt({ dt, toolRate: ctx.toolRate });

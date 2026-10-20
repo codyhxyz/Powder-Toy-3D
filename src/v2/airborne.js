@@ -20,6 +20,9 @@
 //                 hold (ctHeatRoom): a stone flying past a hot wall warms, the wall cools
 //   reactions     ctReaction (elements.js REACTIONS: a water drop through caustic gas turns acid),
 //                 ctAcid (an acid drop eats the wall it passes), ctSwallow, both ways round
+//   electricity   ctElecAirborne: V1's spark, switch, sensor and fuse steps, four a tick, with its six
+//                 contacts as V1's mover's six neighbours (a spark runs down in flight or hops on from
+//                 a live wire it passes, a lit fuse burns on, an unlit one lights from a flame beside it)
 //   own step      ctStepAtmosphere with its partners as its neighbours: ignition from a flame
 //                 or a hot solid beside it (V1 react.js nFire, hotTouch), burning with the air
 //                 around it (fuel spent at burnRate, heat up to the flame ceiling, CO2/ASH
@@ -61,9 +64,9 @@
 // across a looped edge too (every side is a multiple of 4: shaders/common.js gridDims).
 import { E, ELEMENTS, K } from '../elements.js';
 import { AIR_CAPACITY_Q, makeMaterial, cTq, cid, energyOf, withEnergy, energyFits, withPacketEnergy, packetEnergyFits } from './layout.js';
-import { unpackContact, packContact, ctNew, ctFlux, ctHeat, ctReaction, ctAcid, ctSwallow, ctStepAtmosphere,
+import { unpackContact, packContact, ctNew, ctFlux, ctHeat, ctReaction, ctAcid, ctSwallow, ctStepAtmosphere, ctElecAirborne,
   ctResolvePhase, ctLick, ctHotFuel, ctSmothered, ctRow, ctConducts, ctHeatRoom, ctAmbient, ctPairValue,
-  contactAmbientQ, CONTACT_DEFAULT_MODES, DUST_MIN_FALL_SPEED, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR } from './contact.js';
+  contactAmbientQ, CONTACT_DEFAULT_MODES, DUST_MIN_FALL_SPEED, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR, CONTACT_PUFF_UNIT } from './contact.js';
 import { PHYS } from '../physics.js';
 
 export const AIRBORNE = Object.freeze({
@@ -174,7 +177,8 @@ export const openNear = (ambient = CONTACT_DEFAULT_MODES.ambient) =>
  * One tick of a flying packet in its host cell with the six cells around it. packet, host: { core, bank };
  * seed: i32; near: nearOf(...); modes: the scene's ambient and ambientHeat.
  * @returns {{ state: number, particle: {core,bank}, host: {core,bank}, faces: ({core,bank}|null)[], source: bigint, sink: bigint, requests: number }}
- *   requests: the host slot's request bits (native-contract.md: 1 detonate, 2 gas, 4 neutron)
+ *   requests: the host slot's request bits (native-contract.md: 1 detonate, 2 gas, 4 neutron), and
+ *   above them the GAS request's puff (contact.js ctPuff: the largest of the packet's and its partners')
  */
 export function airborneReference(packet, host, seed, near = openNear(), modes = CONTACT_DEFAULT_MODES, charge = AIRBORNE_NO_CHARGE) {
   const { faces, inBlock, trailing, onFloor = 0 } = near;
@@ -200,7 +204,18 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
       if (!pair.changed) { const rev = ctSwallow(pair.b, pair.a, s); pair = ctPairValue(rev.b, rev.a, rev.changed); }
       v = pair.a; ps[a] = pair.b;
     }
-    const ns = ps.map(b => (b ? { ...b } : { ...ctNew(E.EMPTY, 0, 65536), valid: 0 }));
+    // V1's electricity on the flying cell, its steps a tick (contact.js ctElecAirborne), with its six
+    // contacts as V1's mover's six neighbours: its partners as the pairs left them, its host in the face
+    // behind it, the other faces as they are (none beyond the box)
+    const none = { ...ctNew(E.EMPTY, 0, 65536), valid: 0 };
+    const contacts = FACE6.map((_, f) => {
+      const a = inBlock.indexOf(f);
+      if (a >= 0) return ps[a] ?? none;
+      if (f === trailing) return unpackContact(host.core, host.bank);
+      return faces[f] ? unpackContact(faces[f].core, faces[f].bank) : none;
+    });
+    v = ctElecAirborne(v, contacts, seed);
+    const ns = ps.map(b => (b ? { ...b } : none));
     v = ctStepAtmosphere(v, ns, seed, ...outside, onFloor, ambientQ);
     for (let a = 0; a < 3; a++) {
       if (!ps[a]) continue;
@@ -234,7 +249,11 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
     if (v.id === E.DUST && charge0 === E.DUST && charge.speed >= DUST_MIN_FALL_SPEED && charge.dust >= CONTACT_DUST_MEC_NB &&
       air >= CONTACT_DUST_RICH_AIR && (v.tq >= ctRow(E.DUST).igniteQ || charge.hot > 0 || charge.fire > 0 || hostId === E.FIRE)) v.request = v.request | 1;
     asked |= v.request & AIRBORNE_LANDED_REQUESTS;
-    const requests = landed => asked & (landed ? AIRBORNE_LANDED_REQUESTS : AIRBORNE_FLYING_REQUESTS);
+    // a puff rides with its GAS request (bit 1, posted flying or landed): V1's pressure from gas a
+    // packet sets free in flight (a drop boiling, a reaction at one of its faces) is its cell's, as on
+    // the grid, the largest of its own and its partners' (contact.js ctPuff, ctMergeRequest)
+    const puff = Math.max(...[v, ...ps.filter(Boolean)].map(c => Math.floor(c.request / CONTACT_PUFF_UNIT))) * CONTACT_PUFF_UNIT;
+    const requests = landed => (asked & (landed ? AIRBORNE_LANDED_REQUESTS : AIRBORNE_FLYING_REQUESTS)) | puff;
     const vm = packContact(v, packet.core);
     const ev = energyOf(vm), eh = energyOf(hm);
     if (v.id === E.EMPTY) {

@@ -7,7 +7,9 @@ rigid bodies in [Rapier](https://rapier.rs) (`@dimforge/rapier3d-simd`, the WASM
 The same palette rule applies to **Axeman**, **Gunner**, **Worm**, **Giant worm** and **Bird flock**:
 one click creates one creature (or flock), not a permanent spawner. Dead placements do not return on load.
 Flocks save only their surviving count. **Player spawn** remains a toggleable spawn marker.
-Scrolling World maps reject vehicles/NPCs with an error; bird flocks remain supported.
+Scrolling World maps reject vehicles with an error (see World mode below); NPCs and bird flocks work there as in a box.
+A World's NPC appears once the window covers its placement, stays put in the world as the window moves, and waits
+unsimulated while outside it, as a Cruelty Squad mission's actors do.
 
 ## Playing
 
@@ -106,9 +108,9 @@ vehicles and NPCs only while unpaused; zero-time frames can create/pose them wit
 
 ## Checks
 
-- `node tools/entities-node-check.mjs`: CPU registry/vehicle lifecycle: no toggle or marker, limits, unsupported World,
+- `node tools/entities-node-check.mjs`: CPU registry/vehicle lifecycle: no toggle or marker, limits, World NPCs and unsupported World vehicles,
   active pose/health saves, permanent one-shot death, camera reset preservation, legacy pads and arena respawn.
-- `node tools/entities-npc-node-check.mjs`: CPU NPC creation/death/reset decisions, legacy respawn and no god-view player target.
+- `node tools/entities-npc-node-check.mjs`: CPU NPC creation/death/reset decisions, legacy respawn, no god-view player target and World window shifts.
 - `node tools/entities-check.mjs --url <site>` (or `--port <yours>`): browser smoke for palette names, immediate god-view
   entities, pause, camera identity, permanent boat death/save-load and arena respawn. No dev-only page imports.
 

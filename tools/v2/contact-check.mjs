@@ -114,27 +114,34 @@ test('all 14 reaction rows dispatch real products, obey gates, and balance heat'
   assert.equal(C.ctRxAt(E.ANTIMATTER,E.WALL),0);
   assert.equal(C.ctRxAt(E.ANTIMATTER,E.EMPTY),0);
 });
+// V1's electric step on all six faces (contact.js ctElecStep, the electric pass's gather; ctElecApply its commit)
+const ns6 = (...cells) => [...cells, ...Array.from({length:6},()=>cell(E.EMPTY))].slice(0,6);
+const elec = (c, near, random) => { const word=C.ctElecStep(c,ns6(...near),random); return word?C.ctElecApply(c,word,0):c; };
 test('all electric pairs obey TPT diode/switch direction, 3608 retained',()=>{
   for(const a of ELEMENTS)for(const b of ELEMENTS) assert.equal(C.ctConductsInto(a.id,b.id),conductsInto(a.id,b.id));
   for(const e of ELEMENTS.filter(e=>CONDUCTS[e.id])) {
     const c=cell(e.id); if(e.id===E.SWITCH)c.life=20480;
-    const out=C.ctElectric(c,ns(cell(E.BATTERY)),0.999);
-    assert.equal(out.spark,e.id===E.LAMP?81:packSpark(8,400-Math.trunc(SPARK_COST[e.id])),e.key);
-    if(e.id!==E.LAMP)assert.equal(C.ctElectric(out,ns(),0).spark%9,7);
+    const out=elec(c,[cell(E.BATTERY)],0.999);
+    assert.equal(out.spark,e.id===E.LAMP?81:packSpark(8,400-Math.trunc(+SPARK_COST[e.id].toPrecision(6))),e.key);
+    if(e.id!==E.LAMP)assert.equal(elec(out,[],0).spark%9,7);
   }
 });
 test('switch off wins, powered clone controls, TSNS ignores wires, steady DC lamp sleeps',()=>{
   const p=cell(E.PSCN),n=cell(E.NSCN);p.spark=n.spark=3608;
   for(const id of [E.SWITCH,E.PCLN]) {
-    const c=cell(id);assert.equal(C.ctElectric(c,ns(p),0).life,20480);
-    c.life=20480;assert.equal(C.ctElectric(c,ns(p,n),0).life,18432);
+    const c=cell(id);assert.equal(elec(c,[p],0).life,20480);
+    c.life=20480;assert.equal(elec(c,[p,n],0).life,18432);
   }
-  const sensor=cell(E.TSNS,100);assert.equal(C.ctElectric(sensor,ns(cell(E.METAL,500)),0).life,0);
-  assert.equal(C.ctElectric(sensor,ns(cell(E.WOOD,500)),0).life,2048);
-  const lamp=C.ctElectric(cell(E.LAMP),ns(cell(E.BATTERY)),0);assert.equal(lamp.spark,81);assert.equal(lamp.busy,0);
-  assert.ok(C.ctElectric(lamp,ns(),0).spark>0);
+  const sensor=cell(E.TSNS,100);assert.equal(elec(sensor,[cell(E.METAL,500)],0).life,0);
+  assert.equal(elec(sensor,[cell(E.WOOD,500)],0).life,2048);
+  // the sixth face counts: V1 reads every face, not three
+  assert.equal(elec(sensor,[cell(E.EMPTY),cell(E.EMPTY),cell(E.EMPTY),cell(E.EMPTY),cell(E.EMPTY),cell(E.WOOD,500)],0).life,2048);
+  const lamp=elec(cell(E.LAMP),[cell(E.BATTERY)],0);assert.equal(lamp.spark,81);
+  assert.equal(C.ctElecStep(lamp,ns6(cell(E.BATTERY)),0),0,'a lamp on direct current changes nothing: it rests');
+  assert.ok(elec(lamp,[],0).spark>0);
   const ready=cell(E.METAL),front=cell(E.METAL);front.spark=3608;
-  assert.equal(C.ctElectric(ready,ns(front),0.99).spark,3608);
+  assert.equal(elec(ready,[front],0.99).spark,3608);
+  assert.equal(C.ctStep(front,ns(),0).spark,3608,'the contact block leaves sparks to the electric pass');
 });
 test('ignition certainty, flame ignition at room temperature, fuel consumption and smothering',()=>{
   const hot=cell(E.WOOD,400),burn=C.ctStep(hot,ns(),0);
@@ -158,7 +165,9 @@ test('blasts request source without consuming, fuse handoff, suspended dust and 
     const c=cell(e.id,Math.min(10000,e.ignite+50));const out=C.ctStep(c,ns(),0);
     assert.equal(out.id,c.id,e.key);assert.ok(out.request&1,e.key);
   }
-  const fuse=cell(E.FUSE),lit=cell(E.FUSE);lit.life=100;assert.ok(C.ctStep(fuse,ns(lit),0).life<2048);
+  // the fuse is the electric pass's (ctFuseStep: V1's step on six faces), not the contact block's
+  const fuse=cell(E.FUSE),lit=cell(E.FUSE);lit.life=100;assert.ok(elec(fuse,[lit],0).life<2048);
+  assert.equal(C.ctStep(fuse,ns(lit),0).life,2048);
   const dust=cell(E.DUST,500);dust.fallSpeed=C.DUST_MIN_FALL_SPEED;assert.ok(C.ctStep(dust,ns(cell(E.DUST)),0).request&1);
   let emitted=false;
   for(let seed=0;seed<100000;seed++)if(C.ctStep(cell(E.PLUTONIUM),ns(),seed).request&4){emitted=true;break;}

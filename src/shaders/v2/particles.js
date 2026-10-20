@@ -9,7 +9,8 @@ import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
 import { PHYS } from '../../physics.js';
 import { contactRulesWGSL, withContactTable, airborneReactWGSL, airborneClaimWGSL } from './airborne.js';
-import { AIRBORNE_BITS_SHIFT, AIRBORNE } from '../../v2/airborne.js';
+import { AIRBORNE_BITS_SHIFT, AIRBORNE, AIRBORNE_LANDED_REQUESTS } from '../../v2/airborne.js';
+import { CONTACT_PUFF_UNIT } from '../../v2/contact.js';
 export { PARTICLE_CAP };
 export const DynamicParams = uniformStruct('DynamicParams', {
   tick: 'u32', busyIn: 'u32', busyOut: 'u32', mode: 'u32', origin: 'vec3i', sequence: 'u32',
@@ -29,9 +30,12 @@ export const heldBase = g => shockBase(g) + g.nbricks;
 // the airborne requests (src/v2/airborne.js): a count, then a word a particle slot (the host slot
 // and its request bits), which the react stage writes and blasts.js airborneEvents posts to events
 export const airborneBase = g => heldBase(g) + PARTICLE_CAP;
+// then each slot's puff (Pa, contact.js ctPuff), beside its request word: the slot word keeps
+// only the request bits, and airborneEvents merges the two into the host's request
+export const airbornePuffBase = g => airborneBase(g) + 1 + PARTICLE_CAP;
 // a hit's shock (dShockHit): a count, then a word a particle slot for a charge it set off in the grid (posted
 // as airborneBase's are), then a word a slot holding the id of a flying charge it set off, until that lands
-export const shockPostBase = g => airborneBase(g) + 1 + PARTICLE_CAP;
+export const shockPostBase = g => airbornePuffBase(g) + PARTICLE_CAP;
 export const setOffBase = g => shockPostBase(g) + 1 + PARTICLE_CAP;
 const f = n => Number.isInteger(n) && Math.abs(n)<1e21 ? `${n}.0` : String(n);
 const table = (name, type, field, fallback) => `fn ${name}(id: u32) -> ${type} { switch id {\n${dynamicsRows.filter(r => r[field] !== fallback).map(r =>
@@ -653,7 +657,8 @@ fn dReactOne(t: u32, s: u32, p: vec3i) -> bool {
   }
   dWake(p);
   if (r.requests != 0u) {
-    atomicStore(&control[${airborneBase(g) + 1}u+t],s|(r.requests<<${AIRBORNE_BITS_SHIFT}u)); atomicAdd(&control[${airborneBase(g)}u],1u);
+    atomicStore(&control[${airborneBase(g) + 1}u+t],s|((r.requests&${AIRBORNE_LANDED_REQUESTS}u)<<${AIRBORNE_BITS_SHIFT}u)); atomicAdd(&control[${airborneBase(g)}u],1u);
+    atomicStore(&control[${airbornePuffBase(g)}u+t],r.requests/${CONTACT_PUFF_UNIT}u);
   }
   // a set-off charge has landed: the gas it displaced flies on in its slot, under the same id, not set off
   if (r.state == D_REACT_LANDED || r.state == D_REACT_DISPLACED) { atomicStore(&control[D_SET_OFF+t],0u); }

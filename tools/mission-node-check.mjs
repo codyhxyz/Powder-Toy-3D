@@ -122,6 +122,7 @@ function fixture({ defer = false } = {}) {
       brain: { clearSubgoals() {} }, memory: { getRecord: () => null } }, kit: { keys: [] }, disposed: false, updates: 0,
       body: { pos: options.home(), dead: false, on: (name, fn) => listeners.set(name, fn),
         windowShifted(dx, dz) { this.pos.x -= dx; this.pos.z -= dz; } },
+      windowShifted(dx, dz) { this.body.windowShifted(dx, dz); },   // (pov/npc.js: the body, its tools and its plans)
       update(dt) { this.updates++; if (dt > 1 && !options.oneShot) this.body.dead = false; },
       kill() { this.body.dead = true; listeners.get('death')?.(); },
       dispose() { this.disposed = true; }, setVisible() {}, options,

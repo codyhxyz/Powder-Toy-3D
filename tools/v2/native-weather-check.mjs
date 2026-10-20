@@ -5,6 +5,9 @@ import { createOceanEvents } from '../../src/oceanEvents.js';
 import { createLightning } from '../../src/lightning.js';
 import { seedWaveDemo } from '../../src/world/waveDemo.js';
 import { STORM } from '../../src/bolt.js';
+import { STORM_KEY } from '../../src/shaders/lightning.js';
+import { ELEMENT_WEATHER } from '../../src/elementWeather.js';
+import { stepClock, LEGACY_STEPS_PER_TICK } from '../../src/v2/host.js';
 import { createNativeWeatherKernel, WEATHER_SPEED_SI, WEATHER_SPEED_FLUX } from '../../src/v2/nativeWeather.js';
 import { LANE_HZ } from '../../src/shaders/v2.js';
 import { oceanEventsEdit, OCEAN_EVENT } from '../../src/shaders/oceanEvents.js';
@@ -40,7 +43,7 @@ const sim=fixture(), weather=createElementWeather();
 const state={preset:'storm',cloud:1,rain:1,storm:1,fog:1,wind:[3,4],time:4};
 const context={sim,enabled:true,advancing:true,host:true,seaLevel:18,stepHz:60};
 weather.step(state,context); await weather.ready;
-calls.length=0; sim.frame=15;
+calls.length=0; sim.frame=sim.nativeTicks=15;   // (15 native ticks: v2/host.js nativeHostTick advances both)
 assert(weather.step(state,context));
 assert.equal(calls.filter(c=>c.name==='elementWeatherNativeEvaluate').length,2);
 assert.equal(calls.filter(c=>c.name==='nativeAllocate').length,2);
@@ -130,19 +133,20 @@ assert.equal(pending.main.state,'ready');
   switched.compact=switched.compactOwner=null;
   switched.editKernel=(name)=>({name,state:'ready',ready:Promise.resolve(),main:{state:'ready'},apply:{state:'ready'}});
   switched.edit=(k)=>edits.push(k.name);
-  const w=createElementWeather(), wctx={sim:switched,enabled:true,advancing:true,host:true,seaLevel:18,stepHz:60};
-  w.step(state,wctx); await w.ready; switched.frame=15; calls.length=0;
+  const w=createElementWeather(), wctx={sim:switched,enabled:true,advancing:true,host:true,seaLevel:18,stepHz:240};
+  w.step(state,wctx); await w.ready; switched.frame=60; calls.length=0;
   assert(w.step(state,wctx)); assert(edits.includes('elementWeather'),'V1 weather is an edit');
-  switched.compact=switched.compactOwner=owner; w.step(state,wctx); await w.ready; switched.frame=30; calls.length=0;
-  assert(w.step(state,wctx),'V2 weather after the switch');
+  switched.compact=switched.compactOwner=owner; w.step(state,wctx); await w.ready;
+  switched.frame+=15; switched.nativeTicks=(switched.nativeTicks??0)+15; calls.length=0;   // (15 native ticks)
+  assert(w.step(state,{...wctx,stepHz:60}),'V2 weather after the switch');
   assert(calls.some(c=>c.name==='elementWeatherNativeEvaluate'),'the native writer runs, not the V1 edit');
   w.dispose();
   switched.compact=switched.compactOwner=null; edits.length=0;
   const oc=createOceanEvents(), octx={sim:switched,seaLevel:18,groundHeight:()=>0,stepHz:60};
-  oc.step({ocean:1},octx); await new Promise(resolve=>setImmediate(resolve)); switched.frame=31; oc.step({ocean:1},octx);
+  oc.step({ocean:1},octx); await new Promise(resolve=>setImmediate(resolve)); switched.frame++; oc.step({ocean:1},octx);
   assert(edits.includes('oceanForce'),'V1 ocean force is an edit');
   switched.compact=switched.compactOwner=owner; calls.length=0;
-  switched.frame=100; oc.step({ocean:1},octx); await new Promise(resolve=>setImmediate(resolve)); switched.frame=200;
+  switched.frame+=69; oc.step({ocean:1},octx); await new Promise(resolve=>setImmediate(resolve)); switched.frame+=100;
   assert(oc.step({ocean:1},octx),'V2 ocean chop after the switch');
   assert(calls.some(c=>c.name==='oceanForceNativeEvaluate'),'native ocean force after the switch');
   oc.dispose();
@@ -162,16 +166,16 @@ assert.equal(pending.main.state,'ready');
   suspended.editKernel=(name)=>({name,state:'ready',ready:Promise.resolve(),main:{state:'ready'},apply:{state:'ready'}});
   suspended.edit=(k)=>edits.push(k.name);
   const w=createElementWeather(), wctx={sim:suspended,enabled:true,advancing:true,host:true,seaLevel:18,stepHz:60};
-  w.step(state,wctx); await w.ready; suspended.frame=15; calls.length=0;
+  w.step(state,wctx); await w.ready; suspended.frame=suspended.nativeTicks=15; calls.length=0;
   assert(w.step(state,wctx)); assert(calls.some(c=>c.name==='elementWeatherNativeEvaluate'),'V2 active: the native writer');
   suspended.compact=null; edits.length=0; calls.length=0;   // (PhysicsV2.suspend: the owner is kept)
-  w.step(state,wctx); await w.ready; suspended.frame=30;
-  assert(w.step(state,wctx),'weather goes on under V1');
+  w.step(state,{...wctx,stepHz:240}); await w.ready; suspended.frame+=60;
+  assert(w.step(state,{...wctx,stepHz:240}),'weather goes on under V1');
   assert(edits.includes('elementWeather'),'V1 weather is a V1 edit while V2 is suspended');
   assert(!calls.some(c=>c.name==='elementWeatherNativeEvaluate'),'nothing writes the suspended owner\'s cells');
   w.dispose();
   const oc=createOceanEvents(), octx={sim:suspended,seaLevel:18,groundHeight:()=>0,stepHz:240};
-  oc.step({ocean:1},octx); await new Promise(resolve=>setImmediate(resolve)); suspended.frame=31; edits.length=0; calls.length=0;
+  oc.step({ocean:1},octx); await new Promise(resolve=>setImmediate(resolve)); suspended.frame++; edits.length=0; calls.length=0;
   oc.step({ocean:1},octx);
   assert(edits.includes('oceanForce'),'V1 ocean force while V2 is suspended');
   assert(!calls.some(c=>c.name==='oceanForceNativeEvaluate'));
@@ -216,11 +220,58 @@ assert.equal(pending.main.state,'ready');
 // authored at 240 steps a second, so a native grid polls every quarter as many.
 {
   const st=createLightning(), ss=fixture(), poll=STORM.POLL_STEPS*60/240;
-  st.update(ss,{stepHz:60}); await st.ready;
-  calls.length=0; ss.frame=poll-1; st.update(ss,{stepHz:60});
+  st.update(ss); await st.ready;
+  calls.length=0; ss.frame=ss.nativeTicks=poll-1; st.update(ss);
   assert(!calls.some(c=>c.name==='stormSearch'),'not before its quarter');
-  ss.frame=poll; st.update(ss,{stepHz:60});
+  ss.frame=ss.nativeTicks=poll; st.update(ss);
   assert(calls.some(c=>c.name==='stormSearch'),'a V2 storm polls after POLL_STEPS/4 ticks, as often in seconds as V1');
+  st.dispose();
+}
+// One host step of either engine, as the app runs them: a V1 step advances sim.frame by one (sim.js
+// step), a native tick sim.frame and nativeTicks by one each (v2/host.js nativeHostTick).
+const hostStep=(s)=>{ s.frame++; if(s.compact) s.nativeTicks=(s.nativeTicks??0)+1; };
+// Element weather's pulse and the storm's strike gap are game time (v2/host.js stepClock): the interval
+// that spans a runtime switch keeps its seconds. On raw sim.frame they ran up to 4x long or short, and the
+// rebuild at the switch forgot them (a pulse at once; a strike as soon as the next poll found charge).
+{
+  const sw=fixture(), owner=sw.compactOwner, edits=[];
+  sw.editKernel=(name)=>({name,state:'ready',ready:Promise.resolve(),main:{state:'ready'},apply:{state:'ready'}});
+  sw.edit=(k)=>edits.push(k.name);
+  const pulsed=()=>edits.includes('elementWeather')||calls.some(c=>c.name==='elementWeatherNativeEvaluate');
+  const w=createElementWeather(), wctx={sim:sw,enabled:true,advancing:true,host:true,seaLevel:18};
+  // V1 → V2, half way through a pulse's interval: the rest of it is 30 V1 steps, 7.5 ticks: the 8th
+  sw.compact=null; w.step(state,wctx); await w.ready;
+  sw.frame=60; edits.length=0; assert(w.step(state,wctx),'a V1 pulse'); assert(pulsed());
+  for(let i=0;i<30;i++){ hostStep(sw); edits.length=0; assert(!w.step(state,wctx)); }
+  sw.compact=owner; calls.length=0; w.step(state,wctx); await w.ready;   // (the switch builds V2's writer)
+  let ticks=0; do { hostStep(sw); ticks++; calls.length=0; w.step(state,wctx); } while(!pulsed() && ticks<60);
+  assert.equal(ticks,Math.ceil((ELEMENT_WEATHER.cadence-30)/LEGACY_STEPS_PER_TICK),'V1 → V2: the pulse comes when it is due, not at once');
+  // V2 → V1, five ticks (20 V1 steps) into an interval: 40 V1 steps to go
+  for(let i=0;i<5;i++){ hostStep(sw); calls.length=0; assert(!w.step(state,wctx)); }
+  sw.compact=null; edits.length=0; w.step(state,wctx); await w.ready;
+  let steps=0; do { hostStep(sw); steps++; edits.length=0; w.step(state,wctx); } while(!pulsed() && steps<240);
+  assert.equal(steps,ELEMENT_WEATHER.cadence-5*LEGACY_STEPS_PER_TICK,'V2 → V1: the pulse comes when it is due, not at once');
+  w.dispose();
+}
+{
+  // A storm that struck under V1 waits out STORM.MIN_STEPS (2 s) of game time after a switch to V2.
+  const sw=fixture(), owner=sw.compactOwner, edits=[];
+  sw.editKernel=(name)=>({name,state:'ready',ready:Promise.resolve(),main:{state:'ready'},apply:{state:'ready'}});
+  sw.edit=(k)=>edits.push(k.name);
+  // a charged cloud cell (the pick ring) over one column with matter at y=10 (the scan ring)
+  const rings={ 'storm pick':()=>new Uint32Array([STORM_KEY.SLOT_MAX-100]).buffer,
+    'storm scan':()=>{ const b=new Float32Array(STORM.CANDIDATES*4); b[0]=10; b[1]=E.STONE; b[2]=1; return b.buffer; } };
+  sw.gpu={...gpu,readback:{ring:(name)=>({buffer:{},next:()=>0,offset:()=>0,slotBytes:16,read:()=>Promise.resolve(rings[name]())})}};
+  const st=createLightning(), settle=()=>new Promise(r=>setImmediate(r));
+  sw.compact=null; st.update(sw); await st.ready;
+  let n=0; while(!st.strikes && n<STORM.POLL_STEPS*4){ hostStep(sw); st.update(sw); await settle(); n++; }
+  assert.equal(st.strikes,1,'a V1 storm strikes');
+  const struck=stepClock(sw);
+  sw.compact=owner;   // V1 → V2 at once
+  let ticks=0;
+  for(;;){ hostStep(sw); ticks++; calls.length=0; st.update(sw); await settle(); if(calls.some(c=>c.name==='stormSearch')||ticks>STORM.MIN_STEPS) break; }
+  assert(stepClock(sw)-struck>=STORM.MIN_STEPS,`the first poll after the switch waits out the strike gap (${ticks} ticks)`);
+  assert(ticks<=STORM.MIN_STEPS/LEGACY_STEPS_PER_TICK+STORM.POLL_STEPS/LEGACY_STEPS_PER_TICK,'and polls again once it has passed');
   st.dispose();
 }
 console.log('native producers: actual weather/ocean/bolt dispatch, physical reads, exact bounds/cadence, owner bindings; independent SI/property/particle oracles passed (no GPU execution)');

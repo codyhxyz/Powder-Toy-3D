@@ -12,7 +12,8 @@ const block=contactWGSL.slice(contactWGSL.indexOf('fn contactBlock('));
 assert(block.includes('let count=min(8u,arrayLength(&events));'));
 assert.equal((block.match(/for\(var i=0u;i<count;i\+\+\)/g)||[]).length,5);
 assert.equal((block.match(/axis<u32\(ctNeighborCount\(\)\)/g)||[]).length,2);
-assert.equal((contactWGSL.match(/k < ctNeighborCount\(\);/g)||[]).length,3);
+// (the atmosphere step's and the cloud's: electricity reads six faces in the electric pass)
+assert.equal((contactWGSL.match(/k < ctNeighborCount\(\);/g)||[]).length,2);
 for(const dims of [[16,8,8],[32,32,32],[32,16,24],[128,128,128]]) {
   const g=gridLayout(...dims);
   assert.equal(Math.min(8,g.slots),8,'every native block still processes all eight cells');
@@ -44,7 +45,7 @@ for(const value of [-2147483648,-123456789,-1,0,2147483647]) {
 }
 
 // Independent ABI expectation: cost/emitter are f32, not integer channels.
-const rowIntegers=new Set('kind capacity offset spawnQ spawnLife hotQ hotOut hotL hotGas hotOf coldQ coldOut coldL coldOf meltQ meltInto igniteQ flashQ burn heat flameQ ash blast blastAir acid edible fizz bed rots singFood conductor wire blastInto blastOf blastQ blastPuff'.split(' '));
+const rowIntegers=new Set('kind capacity offset spawnQ spawnLife hotQ hotOut hotL hotGas hotOf coldQ coldOut coldL coldOf meltQ meltInto igniteQ flashQ burn heat flameQ ash blast blastAir acid edible fizz bed rots singFood conductor wire blastInto blastOf blastQ blastPuff coldGas'.split(' '));
 const scalar=new Float32Array(1), scalarBits=new Uint32Array(scalar.buffer);
 const declarations=[];
 for(const [name,struct,rows,schema,offset,stride,isInteger] of [

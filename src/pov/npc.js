@@ -16,6 +16,7 @@ import { buildCruelty } from './figureCruelty.js';
 import { createWorldModel } from './ai/world.js';
 import { createNav } from './ai/nav.js';
 import { BODY_HEIGHT, RESPAWN_S } from './constants.js';
+import { nativeSeconds } from '../v2/host.js';
 
 export { createWorm } from './worm.js';
 
@@ -233,6 +234,17 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
     get finished() { return oneShot && body.dead && deadTime >= RESPAWN_S; },
     get agent() { return agent; },
     get kit() { return kit; },
+    // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md D11): the body and its
+    // tools stay put in the world; its plans and sightings were in the old window's cells.
+    windowShifted(dx, dz) {
+      body.windowShifted(dx, dz);
+      for (const key of kit.keys) kit.tool(key)?.windowShifted?.(dx, dz);
+      agent.brain.clearSubgoals();
+      for (const entity of [agent.prey, ...agent.foes.values()]) {
+        const record = agent.memory.getRecord(entity);
+        if (record) { record.timeLastSensed = -Infinity; record.visible = false; }
+      }
+    },
     // what it's doing (checks): its goal, weapon, tool, pack
     get debug() {
       return {
@@ -335,6 +347,8 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
       if (alive && it.tool) {
         pick();
         ctx.sim = sim; ctx.dt = dt; ctx.stepsPerFrame = w.stepsPerFrame; ctx.toolRate = body.perks.toolRate;
+        // (V2: its tools' clock is the ticks the frame ran, as the player's: pov/index.js ctx.nativeDt)
+        ctx.nativeDt = sim?.compact ? nativeSeconds(w.stepsPerFrame) : undefined;
         ctx.primary = it.primary; ctx.secondary = it.secondary;
         ctx.primaryPressed = it.primaryPressed; ctx.secondaryPressed = it.secondaryPressed;
         // its tools' hands at its eye, turned along its aim (the physgun's beam leaves from there)

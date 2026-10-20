@@ -4,7 +4,7 @@ import { AIR_CAPACITY_Q } from '../../v2/layout.js';
 import { AIRBORNE, AIRBORNE_FLYING_REQUESTS, AIRBORNE_LANDED_REQUESTS, AIRBORNE_FACE_REQUESTS, AIRBORNE_OFFSET_BITS,
   AIRBORNE_COLOUR_TABLE } from '../../v2/airborne.js';
 import { EDGE } from '../../simModes.js';
-import { DUST_MIN_FALL_SPEED, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR } from '../../v2/contact.js';
+import { DUST_MIN_FALL_SPEED, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR, CONTACT_PUFF_UNIT } from '../../v2/contact.js';
 
 // Airborne matter takes part (docs/v2/native-contract.md "Contact module"): V1 had no flying
 // state, its splashes and ejecta were ordinary cells, so its react pass (shaders/react.js) heated,
@@ -148,6 +148,20 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
     if (pair.changed == 0) { let rev = ctSwallow(pair.b, pair.a, s); pair = ctPairValue(rev.b, rev.a, rev.changed); }
     v = pair.a; ps[a] = pair.b;
   }
+  // V1's electricity on the flying cell, its steps a tick (contact.js ctElecAirborne), with its six
+  // contacts as V1's mover's six neighbours: its partners as the pairs left them, its host in the face
+  // behind it, the other faces as they are (none beyond the box)
+  if (ctElecMaterial(v.id)) {
+    var contacts: array<CTCell, 6>;
+    for (var f = 0u; f < 2u * dAxes(); f++) {
+      let a = f >> 1u;
+      if (inBlock[a] == f) { contacts[f] = ps[a]; }
+      else if (f == trailing) { contacts[f] = ctUnpack(host.core, host.bank); }
+      else if (((valid >> f) & 1u) != 0u) { contacts[f] = ctUnpack(faces[f].core, faces[f].bank); }
+      else { contacts[f] = ctNew(0, 0, 65536); contacts[f].valid = 0; }
+    }
+    v = ctElecAirborne(v, contacts, seed);
+  }
   // the air among its six contacts, as its own step counts it (ctStepAtmosphere fullAir: burnAir)
   var fullAir = outside.x;
   for (var a = 0u; a < dAxes(); a++) {
@@ -195,8 +209,13 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
     fullAir >= D_REACT_DUST_RICH_AIR && (v.tq >= ctRow(CT_DUST).igniteQ || charge.hot > 0 || charge.fire > 0 || hostId == CT_FIRE)) {
     v.request = v.request | 1;
   }
-  asked |= u32(v.request) & D_REACT_LANDED_REQUESTS;
-  let flyingRequests = asked & D_REACT_FLYING_REQUESTS;
+  // the GAS request's puff rides above the bits (contact.js ctPuff): the largest of its own and its
+  // partners' (ctMergeRequest)
+  var puff = u32(v.request) / ${CONTACT_PUFF_UNIT}u;
+  for (var a = 0u; a < dAxes(); a++) { if (ps[a].valid != 0) { puff = max(puff, u32(ps[a].request) / ${CONTACT_PUFF_UNIT}u); } }
+  puff = puff * ${CONTACT_PUFF_UNIT}u;
+  asked |= (u32(v.request) & D_REACT_LANDED_REQUESTS) | puff;
+  let flyingRequests = (asked & D_REACT_FLYING_REQUESTS) | puff;
   let vm = Material(ctPack(v, packet.core), v.bank);
   let ev = energyOf(vm); let eh = energyOf(hm);
   if (v.id == 0) {

@@ -12,6 +12,11 @@ export const projectileSeconds = (sim, dt, ticks) => (sim?.compact ? nativeSecon
 export const LEGACY_STEP_HZ = 240;
 // The game time of one native tick, in V1 steps.
 export const LEGACY_STEPS_PER_TICK = LEGACY_STEP_HZ / HOST_HZ;
+// The V1 steps a frame advanced the world by, for a tool rule authored per V1 step: V1's own
+// (ctx.stepsPerFrame: app.js runs settings.steps a frame), or under V2 the ticks the frame ran
+// (ctx.stepsPerFrame = app.nativeToolSteps) at LEGACY_STEPS_PER_TICK each. V2 ticks at 60 Hz
+// whatever the frame rate: counting its ticks as steps ran such a rule at a quarter of V1's speed.
+export const legacySteps = (sim, stepsPerFrame) => (sim?.compact ? stepsPerFrame * LEGACY_STEPS_PER_TICK : stepsPerFrame);
 
 // Game time in V1 steps (1/LEGACY_STEP_HZ s): what V1's sim.frame counts, one a step (sim.js step()).
 // A native tick, resting or not, advances sim.frame by one and this by LEGACY_STEPS_PER_TICK, so a
@@ -32,6 +37,21 @@ export function legacyStepCarry() {
     carry -= ticks * LEGACY_STEPS_PER_TICK;
     return ticks;
   };
+}
+
+// The native ticks a world ran between the calls of a loop that isn't the app's frame (a
+// requestAnimationFrame at the display's rate, pov/tools/index.js drive): each call is the ticks
+// since the last (sim.nativeTicks counts them), none for a new world; reset(sim) sets the count
+// from now. Reading the last app frame's tick count at every such call ran its ticks once a call.
+export function tickCounter() {
+  let of = null, seen = 0;
+  const since = (sim) => {
+    const t = sim?.nativeTicks ?? 0, n = sim && sim === of ? Math.max(0, t - seen) : 0;
+    of = sim; seen = t;
+    return n;
+  };
+  since.reset = (sim) => { of = sim ?? null; seen = sim?.nativeTicks ?? 0; };
+  return since;
 }
 
 export function nativeHostSteps(owner, dt, { speed = 1, once = false, before, after } = {}) {

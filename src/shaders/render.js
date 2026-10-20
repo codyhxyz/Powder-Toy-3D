@@ -7,7 +7,7 @@ import { lib, libLayouts } from './gfx/lib.js';
 import { ddaGLSL } from './gfx/core.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
-import { liquidDetailGLSL, LIQ_DETAIL } from './gfx/liquidDetail.js';
+import { liquidDetailGLSL, LIQ_DETAIL, WORLD_NATIVE } from './gfx/liquidDetail.js';
 import { mediaGLSL } from './gfx/media.js';
 import { grainsGLSL, GRAINS_ANY } from './gfx/grains.js';
 import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './farShared.js';
@@ -751,13 +751,35 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 // The realistic view (0).
 // =====================================================================
 
+// Box and World in this view (CLAUDE.md "Same features in every world";
+// parity audit 2026-10-20). Every branch below but the last is the same
+// picture, by different code:
+// - interior: skips surface tests that cannot find a crossing (the brick and
+//   its 26 neighbours are certified inside liquid: docs/v2/liquid-interior-
+//   optimization.md), so it changes the cost, never the picture. Both brick
+//   kernels write the bit (passes.js brickFrag; World's: worldCellAdapter.js).
+//   World leaves out the neighbour test (core.js liquidInterior, a 27-trip
+//   loop) to keep its cold-built volume small, and marches those cells in full.
+// - LIQ_WINDOW_FADE, the edge fade after shadeSurf and the submerged tail
+//   after the march: the Box window's edge, with the far field drawing what
+//   lies past it (FU.far). World's volume is the whole world, with real cells
+//   where that edge was. Nothing sets FU.far now (world maps draw with the
+//   WORLD renderer, and the far field was retired in dc480f4f), so neither
+//   renderer runs them.
+// - format: World reads its own atlas, filled from the legacy A/B projection
+//   (V2's exportLegacy), never V2's packed state, except V2's foam: while V2 runs,
+//   World's live copies carry it (v2/nativeAeration.js, liquidDetail.js WORLD_NATIVE),
+//   so the molten-foam layer after shadeSurf draws it as the Box does.
 const realistic = (detail, curved = false, backend = 'box', fixedReadFormat) => {
-  // WORLD reads its own atlas, never V2's packed state: its format is the legacy one.
   const format = backend === 'world' ? '0u' : readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
   const liq = LIQ_DETAIL(detail, backend);
+  // World's atlas while V2 runs the box carries V2's foam (liquidDetail.js WORLD_NATIVE): the molten
+  // liquids' native foam below is then compiled in as Box's format-2/3 programs compile it.
   // Certified liquid interiors (passes.js brickFrag): only the Box's brick kernel writes the certificate.
   const interior = !curved && backend !== 'world';
+  // Intentional (V2 design, docs/v2.md §4.3): under V2 molten liquids (lava) carry foam as
+  // every liquid row does, so the format-2/3 branch below layers it; V1 has no foam on them.
   return /* wgsl */ `
 // Inside a liquid, sunlight fades with depth: the sun's visibility is read
 // where the ray got in (shadow map) and then attenuated by the liquid between
@@ -1258,10 +1280,10 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         s = gatherSurf(hitP, ns, hitCh);
       }
       decoSurf(&s);   // TPT's deco colour (gfx/deco.js)
-      c = shadeSurf(s, shadeRd);${backend === 'world' ? '' : `
+      c = shadeSurf(s, shadeRd);${backend === 'world' && !detail[WORLD_NATIVE] ? '' : `
       // Native molten liquids share compact foam, not water's refraction or
       // detail eligibility. Layer only reflected light; retain heat emission.
-      if ((${format} == 2u || ${format} == 3u) && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
+      if (${backend === 'world' ? 'true' : `(${format} == 2u || ${format} == 3u)`} && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
         var foamCol = vec3f(0.0);
         var foamTrans = vec3f(1.0);
         var foamN = s.n;

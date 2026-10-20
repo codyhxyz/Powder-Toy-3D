@@ -152,19 +152,25 @@ const V2_JET_GROUPS: u32 = ${v2ActLayout(g).jetGroups}u;`;
 // plive: a bit a particle-pool slot (unsaved, liveWords of them), set wherever a slot may be live:
 // every spawn sets it, retirements and the pool preparation clear it, restores set every bit. Pool
 // sweeps read only slots whose bit is set (a clear bit means the slot's record has ID 0).
-// jetGroups: unsaved, last; a word a group of BRICK_GROUP bricks, set with any of its bricks' jets words
+// jetGroups: unsaved; a word a group of BRICK_GROUP bricks, set with any of its bricks' jets words
 // (noteJet); the jets' count reads and clears it instead of the bricks' words. Zero between ticks, like them.
+// elecCount, elecFlag, elecList, elecScratch: unsaved, last; the electric pass's (shaders/v2/electric.js):
+// its list's [count, use], a brick's listed bit, the list, then a word a cell for a step's pending change.
+// All zero between ticks but the list itself and its use (the pass's last step clears the bits, every
+// step's commit its scratch words).
 export function v2ActLayout(g) {
   const { nbricks: nb, bx, bz } = gridDims(g);
   const ledger = 10 * nb + bx * bz + 8, plive = ledger + 8 + 6 * nb + bx * bz, liveWords = PARTICLE_CAP / 32, jetGroups = plive + liveWords;
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, jets: ledger + 8 + 4 * nb, colAwake: ledger + 8 + 5 * nb, summary: ledger + 8 + 5 * nb + bx * bz, plive, liveWords, jetGroups, allocated: jetGroups + brickGroups(g) };
+  const elecCount = jetGroups + brickGroups(g), elecFlag = elecCount + 2, elecList = elecFlag + nb, elecScratch = elecList + nb;
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, jets: ledger + 8 + 4 * nb, colAwake: ledger + 8 + 5 * nb, summary: ledger + 8 + 5 * nb + bx * bz, plive, liveWords, jetGroups, elecCount, elecFlag, elecList, elecScratch, allocated: elecScratch + 64 * nb };
 }
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
 // the indirect args and the stats the driver reads back (u32 words)
 // ACT, the activity pass's (v2actArgs), follows the saved words. Words 20-31 are reserved (the
 // retired liquid list's args): saves keep their length.
-export const ARGS2 = { COLS: 0, BRICKS: 3, BLOCKS: 6, COMPACT: 9, STATS: 12, words: 32, ACT: 32, allocated: 36 };
+// ELEC, the electric pass's (v2elecArgs), follows it.
+export const ARGS2 = { COLS: 0, BRICKS: 3, BLOCKS: 6, COMPACT: 9, STATS: 12, words: 32, ACT: 32, ELEC: 36, allocated: 40 };
 // jetMask: the pair stages' face demands, two words a cell (x, z)
 export const v2DemandWords = (g) => 2 * gridDims(g).slots;
 // Scratch's original slots*16 bytes are ALL live (including support atmosphere).
@@ -187,7 +193,8 @@ export const STATS = { TICK: 0, AWAKE: 1, BUSY: 2, QUIET: 3, LAST_BUSY: 4, COLS:
 
 // pairAxis, pairStage, pairParity: which of a tick's pair stages a v2pairs dispatch is (columns.js pairOrder)
 // deco: the moves carry the decoration plane (src/deco.js; V1's MoveParams deco: only while the layer may hold paint)
-export const V2Params = uniformStruct('V2Params', { tick: 'u32', busyIn: 'u32', busyOut: 'u32', full: 'u32', offset: 'vec3i', preserveLegacyMarks: 'u32', pairAxis: 'u32', pairStage: 'u32', pairParity: 'u32', ...MODE_FIELDS, deco: 'u32' });
+// elecStep: which of a tick's electric steps a v2elecGather/v2elecCommit dispatch is (shaders/v2/electric.js)
+export const V2Params = uniformStruct('V2Params', { tick: 'u32', busyIn: 'u32', busyOut: 'u32', full: 'u32', offset: 'vec3i', preserveLegacyMarks: 'u32', pairAxis: 'u32', pairStage: 'u32', pairParity: 'u32', ...MODE_FIELDS, deco: 'u32', elecStep: 'u32' });
 
 const buf = (binding, type) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type } });
 // group 2 of every v2 kernel: the cells, the activity words, the element rows (and for args, the args)
@@ -206,11 +213,40 @@ export const V2_IMPORT_LAYOUT = stateLayout(V2_IMPORT_OPTS);
 // ---------------------------------------------------------------- WGSL
 const f = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
 
+// The legacy word of a brick (act2[V2_LEGACY + b]). STALE: its A/B are behind its cells (every writer
+// of the cells sets it: noteVisible, the import, whole-grid writes). DIFFERS: set by the export, the
+// brick holds a cell the two projections show differently (a liquid's partial fill the drawn dither
+// hides: compact.js compactA against compactProbeA), so a switch of projection converts it again. A
+// writer's STALE drops DIFFERS: the next export converts the brick whole and finds it again.
+export const LEGACY_WORD = { STALE: 1, DIFFERS: 2 };
+// An export's scope (the bridge's P.full): the stale bricks; every brick (before the first export, when
+// the cache holds no projection yet); on a switch of projection, the stale bricks and the differing ones.
+export const BRIDGE = { CHANGED: 0, ALL: 1, FLIP: 2 };
+
+// With a store's drawn projection unchanged, whether its edit projection is too: they part only where
+// compactProbeCore lifts a partial liquid fill (noteVisible). Above V2_BUSY0: dynamics heads leave it out.
+const compactProbeHoldsWGSL = /* wgsl */ `
+fn compactProbeHolds(p: vec3i, before: vec4u, after: vec4u) -> bool {
+  let pb = compactProbeCore(before);
+  let pa = compactProbeCore(after);
+  if (all(pb == before) && all(pa == after)) { return true; }
+  return all(compactA(p, pb) == compactA(p, pa));
+}`;
+// noteVisible's early out: a store that changes neither the drawn projection nor a liquid's age redraws
+// nothing; one that still changes the edit projection (a partial fill the dither hides comes, goes or
+// changes) changes the legacy cache alone. nativeDynamicsHead replaces it whole (its stores note any change).
+const NOTE_UNSEEN = `if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after))) {
+    if (compactProbeHolds(p, before, after)) { return; }
+    atomicStore(&act2[V2_LEGACY + brickOfCell(p)], 1u);
+    return;
+  }`;
+
 export function v2Head(g, opts = { state: false }, family = 'base') {
   const a = v2ActLayout(g);
   return /* wgsl */ `
 ${prelude(g, opts).replace(/\bMaterial\b/g, 'LegacyMaterial')}
 ${opts.state === 'read' ? '' : compactDecodeWGSL}
+${compactProbeHoldsWGSL}
 ${nativeStateWGSL}
 ${family !== 'base' ? materialStorageWGSL + decoStorageWGSL : ''}
 ${family === 'contact' || family === 'liquid' ? '@group(2) @binding(5) var<storage, read_write> liquidScratch: array<vec4u>;' : ''}
@@ -241,6 +277,10 @@ const V2_PLIST: u32 = ${a.plist}u;
 const V2_JETS: u32 = ${a.jets}u;
 const V2_COL_AWAKE: u32 = ${a.colAwake}u;
 const V2_SUMMARY: u32 = ${a.summary}u;
+const V2_ELEC_COUNT: u32 = ${a.elecCount}u;
+const V2_ELEC_FLAG: u32 = ${a.elecFlag}u;
+const V2_ELEC_LIST: u32 = ${a.elecList}u;
+const V2_ELEC_SCRATCH: u32 = ${a.elecScratch}u;
 // a brick summary's codes: all closed (solid, powder or gas), all air, all one liquid full and still
 const SUM_CLOSED: u32 = ${SUMMARY.CLOSED}u;
 const SUM_AIR: u32 = ${SUMMARY.AIR}u;
@@ -278,7 +318,7 @@ fn loadCell(p: vec3i) -> vec4u { return loadCore(slotOf(p)); }
 // Keep redraws separate from activity: fall fractions, gas ages and sub-threshold
 // liquid flux can keep a rule busy without changing a pixel or the legacy cache.
 fn noteVisible(p: vec3i, before: vec4u, after: vec4u) {
-  if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after))) { return; }
+  ${NOTE_UNSEEN}
   let b = brickOfCell(p);
   atomicStore(&act2[V2_VISIBLE + b], 1u);
   atomicStore(&act2[V2_LEGACY + b], 1u);
@@ -1069,20 +1109,41 @@ export const V2_INVALIDATE_LAYOUT = stateLayout({ state: false, marks: true });
 
 // Lazy boundary export. Scan brick flags, never the current awake list: a brick
 // can have changed and gone to sleep long before a legacy reader/writer arrives.
+// A switch of projection (the edit's, then the World copy's, every frame of a stroke) converts only
+// the stale bricks and those holding a cell the two projections show differently (LEGACY_WORD): in
+// every other brick the two are the same, so its A/B hold the new one already.
 export const v2BridgeWGSL = (g) => /* wgsl */ `
 ${v2Head(g, V2_STATE_OPTS)}
 ${bridgeWGSL}
-var<workgroup> wgPending: u32;
+const LEGACY_STALE: u32 = ${LEGACY_WORD.STALE}u;
+const LEGACY_DIFFERS: u32 = ${LEGACY_WORD.DIFFERS}u;
+const BRIDGE_ALL: u32 = ${BRIDGE.ALL}u;
+const BRIDGE_FLIP: u32 = ${BRIDGE.FLIP}u;
+// Whether this export (its scope: P.full, BRIDGE) converts the brick whose legacy word this is.
+fn bridgeConverts(word: u32) -> bool {
+  return P.full == BRIDGE_ALL || (word & LEGACY_STALE) != 0u || (P.full == BRIDGE_FLIP && (word & LEGACY_DIFFERS) != 0u);
+}
+// Converts cell s into the projection H.format names (3: the edit projection, else the drawn one);
+// returns whether the two show it differently.
+fn bridgeCell(s: u32) -> bool {
+  let p = cellOf(s);
+  let c = cells[s];
+  let drawn = compactA(p, c);
+  var edit = drawn;
+  if (any(compactProbeCore(c) != c)) { edit = compactProbeA(p, c); }
+  writeCell(p, fetchAs(s), fetchBs(s), fetchFs(s), select(drawn, edit, H.format == 3u), vec4f(0.0));
+  return any(drawn != edit);
+}
+var<workgroup> wgConverts: u32;
+var<workgroup> wgDiffers: atomic<u32>;
 ${MAIN} {
   let b = foldId(wg, nwg);
   if (b >= NBRICKS) { return; }
-  if (li == 0u) { wgPending = P.full | atomicLoad(&act2[V2_LEGACY + b]); }
-  if (workgroupUniformLoad(&wgPending) == 0u) { return; }
-  let s = b * 64u + li;
-  let p = cellOf(s);
-  writeCell(p, fetchAs(s), fetchBs(s), fetchFs(s), select(compactA(p, cells[s]), compactProbeA(p, cells[s]), H.format == 3u), vec4f(0.0));
+  if (li == 0u) { wgConverts = select(0u, 1u, bridgeConverts(atomicLoad(&act2[V2_LEGACY + b]))); }
+  if (workgroupUniformLoad(&wgConverts) == 0u) { return; }
+  if (bridgeCell(b * 64u + li)) { atomicOr(&wgDiffers, 1u); }
   workgroupBarrier();
-  if (li == 0u) { atomicStore(&act2[V2_LEGACY + b], 0u); }
+  if (li == 0u) { atomicStore(&act2[V2_LEGACY + b], select(0u, LEGACY_DIFFERS, atomicLoad(&wgDiffers) != 0u)); }
 }
 `;
 
@@ -1130,7 +1191,8 @@ export function nativeDynamicsHead(g, { busyOut = false } = {}) {
   const layout = common.slice(common.indexOf('// ---- the header and the state'), common.indexOf('// ---- the state\'s accessors'));
   const random = common.slice(common.indexOf('// ---- random streams'), common.indexOf('// ---- the shared physics tests'));
   let shared = v2Head(g).slice(v2Head(g).indexOf('const V2_BUSY0:'));
-  shared = shared.replace('if (all(compactA(p, before) == compactA(p, after)) && (!isLiq(after) || cAge(before) == cAge(after)))', 'if (all(before == after))');
+  if (!shared.includes(NOTE_UNSEEN)) throw new Error('nativeDynamicsHead: noteVisible has no early out to replace');
+  shared = shared.replace(NOTE_UNSEEN, 'if (all(before == after)) { return; }');
   if (!busyOut) shared = shared.replace('P.busyOut', 'select(V2_BUSY0, V2_BUSY0 + NBRICKS, (P.tick & 1u) == 0u)');
   // Dynamics needs only the original finite-f32 prefix, never the contact tail.
   const rows = new Uint32Array(v2Table().buffer, 0, ELEMENTS.length * 8);

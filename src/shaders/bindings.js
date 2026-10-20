@@ -78,7 +78,6 @@ export const FRAME_UNIFORMS = [
   ['materialStyle', 'f32', 'Artwork derived from view: 0 Realistic, 1 Cozy, 2 Noita'],
   ['sourceAppearance', 'vec4u', 'far grid appearance tail: first Y plane, word count, width, depth'],
   ['sourceStyle', 'u32', 'source appearance enabled for the Cruelty Squad material view'],
-  ['liqRipples', 'u32', 'the window draws the capillary ripples (DETAIL_LIQ_RIPPLES): the far field\'s water takes their roughness (shaders/far.js)'],
 ];
 // { name: type }, the field list src/gpu/params.js uniformStruct takes.
 export const FRAME_UNIFORM_FIELDS = Object.fromEntries(FRAME_UNIFORMS.map(([n, t]) => [n, t]));

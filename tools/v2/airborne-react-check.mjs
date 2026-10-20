@@ -12,9 +12,9 @@ import { gridLayout } from '../../src/sim.js';
 import { makeMaterial, packetOwnedEnergy, energyOf, cTq, cid, FULL } from '../../src/v2/layout.js';
 import { airborneReference, outsideOf, nearOf, openNear, inBlockFaces, trailingFace, colourOf, airborneOrder, packAirborne,
   FACE6, AIRBORNE, AIRBORNE_COLOURS, AIRBORNE_COLOUR_TABLE, AIRBORNE_NO_CHARGE, dustFacesOf } from '../../src/v2/airborne.js';
-import { DUST_MIN_FALL_SPEED } from '../../src/v2/contact.js';
+import { DUST_MIN_FALL_SPEED, CONTACT_PUFF_UNIT, ctNew, packContact, unpackContact } from '../../src/v2/contact.js';
 import { offsetOf } from '../../src/v2/physics.js';
-import { particlesWGSL, PARTICLE_STAGES, airborneBase, heldBase, shockPostBase, setOffBase, PARTICLE_CAP, DynamicParams } from '../../src/shaders/v2/particles.js';
+import { particlesWGSL, PARTICLE_STAGES, airborneBase, airbornePuffBase, heldBase, shockPostBase, setOffBase, PARTICLE_CAP, DynamicParams } from '../../src/shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, externalBlastBase } from '../../src/shaders/v2/blasts.js';
 import { nativeDynamicsHead, v2Table } from '../../src/shaders/v2.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
@@ -296,6 +296,30 @@ const nearX = (faces, offset = [0, 0, 0]) => nearOf(faces, CELL, offset, FALLING
   assert.equal(r.faces[3], null, 'nothing beyond the box');
 }
 
+// 18. Electricity with its six contacts (V1 react.js runs it on all six faces every step; contact.js
+// ctElecAirborne, its steps a tick): a metal packet flying past a battery is sparked, on a face it
+// pairs with this tick or not; in open air its spark only runs down. These fail with the host alone.
+{
+  const fresh = (id, t) => packContact(ctNew(id, Math.round((t + 273.25) * 4), 65536));
+  for (const f of [0, 1, 3]) {
+    const faces = openFaces(); faces[f] = makeMaterial(E.BATTERY, 20);
+    const r = airborneReference(fresh(E.METAL, 20), air(20), 21, nearX(faces));
+    assert(unpackContact(r.particle.core, r.particle.bank).spark > 0, `sparked by a battery on face ${f}`);
+  }
+  assert.equal(unpackContact(airborneReference(fresh(E.METAL, 20), air(20), 21, nearX(openFaces())).particle.core).spark, 0, 'in open air, nothing');
+  // an unlit fuse flying past stone at its ignition point lights (V1 react.js FUSE: anything not gas)
+  const fuse = fresh(E.FUSE, 20), hot = openFaces(); hot[1] = makeMaterial(E.STONE, ELEMENTS[E.FUSE].ignite + 50);
+  const lit = airborneReference(fuse, air(20), 23, nearX(hot));
+  assert(unpackContact(lit.particle.core).life < unpackContact(fuse.core).life, 'lit by the hot stone beside it');
+  assert.equal(unpackContact(airborneReference(fuse, air(20), 23, nearX(openFaces())).particle.core).life, unpackContact(fuse.core).life, 'in open air it stays unlit');
+}
+// 19. The puff of gas a reaction at one of its faces sets free rides its gas request to its host
+// (contact.js ctPuff; blasts.js airborneEvents posts it): lithium flying past water.
+{
+  const out = fly(packet(E.LITHIUM, 20), () => air(20), 600, withFace(0, () => makeMaterial(E.WATER, 20, FULL)));
+  assert(out.log.some(r => (r.requests & 2) && r.requests >= CONTACT_PUFF_UNIT), 'its gas and its puff are posted at its host');
+}
+
 // ---- every packet of a crowded cell, in an order no replay changes ----
 // The react stage's CPU twin (particles.js reactClaim, react): every packet in air or gas joins its
 // host's list in whatever order the GPU's claims land; then a colour at a time, each host of the
@@ -344,7 +368,7 @@ function scene(fill) {
 }
 const state = r => JSON.stringify({ cells: r.cells.map(m => m && [...m.core, m.bank]), packets: r.packets.map(q => q && [...q.material.core, q.material.bank]) });
 const rotate = k => xs => xs.slice(k).concat(xs.slice(0, k)), reverse = xs => [...xs].reverse();
-// 18. A dense spray: eight water drops in one flame cell all take part every tick (V1 had a cell for
+// 20. A dense spray: eight water drops in one flame cell all take part every tick (V1 had a cell for
 // each), each seeing the flame as the one before left it; one a cell, as before, boils one at a time.
 {
   const world = scene(p => (p[0] === 5 && p[1] === 4 && p[2] === 5 ? fire() : air(20)));
@@ -358,7 +382,7 @@ const rotate = k => xs => xs.slice(k).concat(xs.slice(0, k)), reverse = xs => [.
   console.log(`dense spray, 8 drops in one flame: all boiled in ${all} ticks with every packet taking part, ${single} with one a cell`);
   assert(all * 2 < single, 'crowding no longer slows them');
 }
-// 19. The same result in any order the GPU's claims land and its threads run, with neighbours shared:
+// 21. The same result in any order the GPU's claims land and its threads run, with neighbours shared:
 // drops in neighbouring cells along a hot wall and a flame (their footprints overlap).
 {
   const world = scene(p => (p[1] === 2 ? makeMaterial(E.STONE, 900) : p[0] === 7 && p[1] === 4 ? fire() : air(20)));
@@ -406,9 +430,10 @@ assert('airborne' in DynamicParams.offsets, 'the react stage\'s offset and colou
 for (const dims of [[32, 32, 32], [48, 16, 32]]) {
   const g = gridLayout(...dims), code = blastsWGSL(g, nativeDynamicsHead, 'airborneEvents');
   assertNaga(code, `blasts/airborneEvents ${dims}`); modules++;
-  assert.match(code, /events\[s\] \|= bits; noteEvents\(s, bits\);/, 'posted as the block pass posts a cell\'s requests');
-  assert.equal(airborneBase(g), heldBase(g) + PARTICLE_CAP); assert.equal(shockPostBase(g), airborneBase(g) + 1 + PARTICLE_CAP);
-  assert.equal(setOffBase(g), shockPostBase(g) + 1 + PARTICLE_CAP); assert.equal(externalBlastBase(g), setOffBase(g) + PARTICLE_CAP, 'its words overlap no other range');
+  assert.match(code, /let request = \(\(events\[s\] \| bits\) & 255u\) \| \(max\(events\[s\] \/ 256u, puff\) \* 256u\);\n\s*events\[s\] = request; noteEvents\(s, request\);/, 'posted as the block pass posts a cell\'s requests (ctMergeRequest: flags together, the larger puff)');
+  assert.equal(airborneBase(g), heldBase(g) + PARTICLE_CAP); assert.equal(airbornePuffBase(g), airborneBase(g) + 1 + PARTICLE_CAP);
+  assert.equal(shockPostBase(g), airbornePuffBase(g) + PARTICLE_CAP); assert.equal(setOffBase(g), shockPostBase(g) + 1 + PARTICLE_CAP);
+  assert.equal(externalBlastBase(g), setOffBase(g) + PARTICLE_CAP, 'its words overlap no other range');
 }
 assert(BLAST_STAGES.includes('airborneEvents'));
 

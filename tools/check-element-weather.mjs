@@ -162,7 +162,8 @@ assert.equal(sources.step(storm, context), true, 'world reload rebases');
 world.epoch++; sim.frame = 0;
 const nativeContext = { ...context, stepHz: 60 };
 const nativePulses = sources.pulses;
-for (let i = 0; i < 60; i++) { sim.frame = i; sources.step(storm, nativeContext); }
+// (a native host tick advances sim.frame and nativeTicks together: v2/host.js nativeHostTick)
+for (let i = 0; i < 60; i++) { sim.frame = sim.nativeTicks = i; sources.step(storm, nativeContext); }
 assert.equal(sources.pulses - nativePulses, 4, 'native weather retains four material pulses per second');
 const writes = calls.length;
 sources.reset();

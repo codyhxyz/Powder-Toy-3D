@@ -952,6 +952,8 @@ export class Simulation {
   // cells read their partners, a two-phase one.
   paint({ center, radius, shape, tool, rate, replace, wind = null, end = center, grow = null, mask = null, filter = -1, erase = false, prop = null }) {
     if (this.nativeTransition || this.nativeTransitionError) return false;
+    // Under V2 the tools whose V1 rule moves cells, air or particles run natively (v2/interactions.js,
+    // below); the rest paint V1's cells, which V2 imports. Not a deviation: the same stroke either way.
     if (this.compact) {
       const routed = routeNativePaint(this, { center, radius, shape, tool, rate, replace, wind, end, grow, mask, filter, erase, prop });
       if (routed !== null) return routed;
@@ -1258,7 +1260,9 @@ export class Simulation {
     if (this.compactOwner?.isReady && !native?.isReady) throw new Error('Native world shift is not ready');
     // Synchronize/project before moving either representation. Legacy shifting
     // is a cache move, never permission to reimport the entire native grid.
-    this.compactOwner?.exportLegacy();
+    // (Only the running owner projects: a suspended one, after a runtime switch to V1, shadows V1's cells,
+    // which are V1's own. native.shift syncs it first, importing V1's writes, as exportLegacy would.)
+    this.compact?.exportLegacy();
     native?.shift(dx, dz);
     this.pingPong(true);   // (out of place: a box the native engine owns holds one copy)
     const f = this.gpu.frame, size = fold(Math.ceil(this.g.slots / 64)), shift = [dx, 0, dz];
