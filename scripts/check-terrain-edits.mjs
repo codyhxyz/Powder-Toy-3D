@@ -8,6 +8,7 @@ import { TerrainEditCache } from '../src/world/terrainEditCache.js';
 import { createTerrainPersistence } from '../src/wire/descent.js';
 import { NativeBrickStore, encodeNativeBrick } from '../src/world/nativeStore.js';
 import { E } from '../src/elements.js';
+import { DESCENT_LEVELS } from '../src/world/scenes/descent/levels.js';
 const a={sourceTop:992,sourceHeight:320}, b={sourceTop:1248,sourceHeight:320};
 const wb=[1024,320/BRICK,1024], store=()=>new BrickStore(wb);
 const encoded=(id)=>encodeBrick(new Float32Array(BRICK_FLOATS).fill(id),0,new Float32Array(BRICK_FLOATS),0);
@@ -222,4 +223,8 @@ await runUndo({descent:{terrainPending:true}},{undo:()=>{undoWrites++;return fal
 assert.equal(undoWrites,0,'event-driven undo cannot race the frozen snapshot');
 await runUndo({descent:{terrainPending:false}},{undo:()=>{undoWrites++;return false;}});
 assert.equal(undoWrites,1,'ordinary undo remains available');
+// Edits replay onto the terrain they were made in: the persistence scope covers the
+// inflation planes too, so a re-published depth/backdrop never meets stale edits.
+assert.ok(DESCENT_LEVELS.length > 0 && DESCENT_LEVELS.every(l => /^[a-f0-9]{64}$/.test(l.sourceRegion.fieldsSha256)), 'every band carries its inflation hash');
+assert.match(readFileSync(new URL('../src/wire/descent.js', import.meta.url), 'utf8'), /sourceRegion\.fieldsSha256/, 'edit scope keys on inflation hashes');
 console.log('Terrain edits: down/up overlap + remote XZ, baseline deletion, V2 exact native bricks and shared uniform payloads, global-Y mapping, run reset, bounded capture/restore, failure retention, lifecycle and actual app writer gate passed');

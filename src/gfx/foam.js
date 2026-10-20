@@ -13,9 +13,10 @@
 // cells (onShift).
 //
 // It runs over a list of bricks, not every cell (docs/webgpu.md G4): each step
-// the list kernel picks the bricks that may hold foaming liquid within a
-// brick, or held a record in the last two steps (liquidDetail.js has the
-// argument that this is exact), the args kernel sizes the indirect dispatch,
+// the list kernel picks the bricks whose records may change: near a brick
+// that is drawn and may hold foaming liquid, at this step or the last, or
+// near one whose records changed at the last step (liquidDetail.js has the
+// argument that this is exact; a settled pool drops off it), the args kernel sizes the indirect dispatch,
 // and the aeration kernel writes the other copy over them. An idle world
 // (Simulation.step returns early) keeps stepping it, every cell held in
 // place, until no foam is visible (its count, read back every
@@ -54,6 +55,7 @@ class Aeration {
     this.idleSteps = AER_IDLE_STEPS + 1;   // idle steps run since the world went idle (nothing to burst yet)
     this.offAt = null;         // sim.version when it was switched off
     this.generation = 0;       // a real step or a reset: a foam count read before it is stale
+    this.steps = 0;            // its steps run: their parity picks nz's changed bit (liquidDetail.js, the AER list)
     // test only (tools/aeration-check.mjs): dropHistory lists a brick by the
     // foams words alone (the negative control: stale copies and wakes left behind)
     this.test = { dropHistory: false };
@@ -121,12 +123,13 @@ class Aeration {
     const sim = this.sim, { step, list, args } = this.kernels;
     const all = this.allSteps > 0;
     if (all) this.allSteps--;
-    const lp = { still, all: all ? 1 : 0, hist: this.test.dropHistory ? 0 : 3, wrap: sim.edgeMode === EDGE.LOOP ? 1 : 0 };
+    const tb = this.steps++ & 1;
+    const lp = { still, all: all ? 1 : 0, hist: this.test.dropHistory ? 0 : 1, wrap: sim.edgeMode === EDGE.LOOP ? 1 : 0, tb };
     const header = sim.header(src, src);
     const fd = this.field;
     this._dispatch(list, fold(Math.ceil(this.g.nbricks / 64)), { bind: [sim.tables, this.listState, fd.listGroup], header, params: lp });
     this._dispatch(args, [1, 1, 1], { bind: [sim.tables, this.listState, fd.listGroup], header, params: lp });
-    const params = { gravMode: sim.gravityMode, edge: sim.edgeMode, still, parity: sim.frame & 1, srcAt, cur: this.cur, all: 0 };
+    const params = { gravMode: sim.gravityMode, edge: sim.edgeMode, still, parity: sim.frame & 1, srcAt, cur: this.cur, all: 0, tb };
     this._dispatch(step, { indirect: sim.args, offset: ARGS.AER }, { bind: [sim.tables, sim.bindAct, this._group(fd, moveSrc)], header, params });
     // the reference: the same kernel over every brick, into its own field (I2.6)
     const ref = this.reference;

@@ -22,6 +22,7 @@ import { glf } from '../../glsl.js';
 //                        each octave fading in only once pixels resolve it
 //   DETAIL_LIQ_MENISCUS  the surface climbing walls and glass over its
 //                        capillary length (a few mm), box-filtered per pixel
+//                        and faded out by the footprint (a few metres away)
 //   DETAIL_LIQ_FOAM      whitewater: liquid white with entrained air where it
 //                        plunged or landed hard, or tore up falling; the foam
 //                        rides the flow and bursts over seconds (the
@@ -48,6 +49,19 @@ const MS_PER_CELL_STEP = Math.sqrt((G_REAL * CELL_M) / SIM_GRAVITY);   // m/s pe
 // screen; a slower Speed (or a real-time POV clock) shows it at its own pace.
 export const STEP_S = Math.sqrt((CELL_M * SIM_GRAVITY) / G_REAL);   // physical s per step
 
+// The foam raft's threshold (liquidFoam): the spread of the noise it is cut
+// from, and the normal quantile that cuts it. One octave of mNoiseD's value
+// is a trilinear blend of uniform hashes (variance 1/12) with smoothstep
+// weights s, so its variance is (1/12)·E[s² + (1 − s)²]³, E = 26/35 over a
+// cell (∫s² = 13/35): σ ≈ 0.185 (200k samples of the WGSL noise: 0.184).
+// Its quantiles are within 0.01 of a normal's, so a cover's threshold is
+// σ·Φ⁻¹(1 − cover), Φ⁻¹ by the logistic approximation Φ(x) ≈ 1/(1 + e^(−1.702x))
+// (Haley 1952; error < 0.01): the raft then covers what the far pixels show
+// as its mean (Dupuy & Bruneton 2012, "Real-time animation and rendering of
+// ocean whitecaps": coverage = ½ + ½·erf(threshold / √2σ)).
+const FOAM_NOISE_SD = Math.sqrt((26 / 35) ** 3 / 12);
+const PROBIT_LOGISTIC = 1.702;
+
 // Liquid properties at room temperature: surface tension σ (N/m), density ρ
 // (kg/m³), contact angle θ on ordinary solids and glass (degrees; water on
 // clean glass 0–20°, oils wet nearly everything). Acid is aqueous. Ice is
@@ -59,9 +73,33 @@ const LIQ_PROPS = {
 };
 // Capillary length lc = √(σ / ρg) (m): how far the meniscus reaches (2.7 mm
 // for water). Meniscus height at the wall h0 = lc·√(2(1 − sin θ)) (m), the
-// exact result for a flat wall (Landau & Lifshitz §61).
+// exact result for a flat vertical wall (Landau & Lifshitz §61; de Gennes,
+// Brochard-Wyart & Quéré, Capillarity and Wetting Phenomena §1.3), a rise for
+// θ < 90° and a dip for θ > 90° (mercury on glass, 140°).
 const capLen = (p) => Math.sqrt(p.sigma / (p.rho * G_REAL));
-const menH0 = (p) => capLen(p) * Math.sqrt(2 * (1 - Math.sin((p.theta * Math.PI) / 180)));
+const menH0 = (p) => Math.sign(Math.cos((p.theta * Math.PI) / 180))
+  * capLen(p) * Math.sqrt(2 * (1 - Math.sin((p.theta * Math.PI) / 180)));
+// The meniscus draws on more liquids than the foam models (LIQ_PROPS, which
+// the aeration pass and FOAMS share): every liquid of the liquid channel
+// whose real counterpart's σ, ρ and wetting are measured. The rest (Nitro,
+// Toxic, Slime, the potions) are made up, so they keep a flat edge.
+const MENISCUS_PROPS = {
+  ...LIQ_PROPS,
+  // Seawater, S = 35 g/kg at 20 °C: σ = σ_water·(1 + 3.766e-4·S + 2.347e-6·S·t)
+  // (Nayar, Panchanathan, McKinley & Lienhard 2014, J. Phys. Chem. Ref. Data
+  // 43, 043103); ρ 1025 kg/m³; wets like fresh water.
+  SALTWATER: { sigma: 0.0738, rho: 1025, theta: 20 },
+  // At 77 K: σ 8.9–9.05 mN/m (Jasper 1972; double capillary, Chin. J. Chem.
+  // Phys. 13, 378), ρ 807 kg/m³ (NIST WebBook); cryogens wet every cold solid.
+  LIQUID_NITROGEN: { sigma: 0.009, rho: 807, theta: 0 },
+  // 40 % ABV (34 % ethanol by mass): σ ≈ 31 mN/m, between 33 (30 wt%) and
+  // 30.2 (40 wt%) (Vázquez, Alvarez & Navaza 1995, J. Chem. Eng. Data 40,
+  // 611); ρ 948 kg/m³; ethanol solutions wet glass nearly fully, as oils do.
+  WHISKEY: { sigma: 0.031, rho: 948, theta: 10 },
+  // Whole blood: σ(t) = (70.105 − 0.473 t) mN/m, 59.7 at 22 °C (Rosina et al.
+  // 2007, Physiol. Res. 56 S93); ρ 1060 kg/m³; aqueous, so water's angle.
+  BLOOD: { sigma: 0.0597, rho: 1060, theta: 20 },
+};
 
 // Dispersion of gravity-capillary waves, ω² = gk + σk³/ρ (water), for the
 // time scale of each ripple octave.
@@ -87,6 +125,25 @@ const CAP_FREQS = CAP_LAMBDAS.map((l) => CELL_M / l);   // cycles/cell
 // Each octave evolves faster than the base octave by the ratio of their wave
 // frequencies, so the model's existing clock is kept, scaled physically.
 const CAP_DRIFTS = CAP_LAMBDAS.map((l) => (RIPPLE_BASE_DRIFT * omega(l)) / omega(CELL_M / RIPPLE_BASE_FREQ));
+// The longest octave, m: past a footprint of DETAIL_FADE_HI of it (gfx/detail.js) no octave is drawn as a normal.
+export const CAP_LAMBDA_MAX_M = CAP_LAMBDAS[0];
+// Specular anti-aliasing (the geometry -> normal -> BRDF hand-off of Bruneton,
+// Neyret & Holzschuch 2010): an octave lodFade draws at weight w shows w² of its
+// slope variance as normals; the rest, (1 − w²), is slope variance inside the
+// pixel, so it widens the sun's and lamps' GGX lobe instead of vanishing (LEAN
+// mapping, Olano & Baker 2010: second moments add under filtering; GGX
+// α² += 2σ², Tokuyoshi & Kaplanyan 2019, Unity HDRP's normal filtering). Far
+// away the octaves are then a constant roughness, not a mirror or sparkles.
+// Per octave the slope is RIPPLE_SLOPE times value noise's gradient (mNoiseD),
+// whose per-component variance is E[du²]·Var(Δ)·E[(1 − u)² + u²]² =
+// (6/5)·(1/6)·(26/35)² ≈ 0.110 (u the smoothstep fade, Δ the difference of two
+// uniform corner values; a Monte Carlo of the shader's hash13 gives 0.1105).
+// x and z together: the octave's mean square slope, GGX α² per octave.
+const VNOISE_GRAD_VAR = (6 / 5) * (1 / 6) * (26 / 35) ** 2;
+// The World's far field (shaders/far.js) draws its water without these
+// octaves or their variance, so the window's edge would show the hand-off as a
+// seam in the sun's glint: there the variance stays out until far.js has it too.
+const capHandoff = (backend) => backend !== 'world';
 
 // ---- Whitewater (DETAIL_LIQ_FOAM) ----
 // Foam at a free surface decays exponentially as its bubbles burst: the
@@ -124,6 +181,32 @@ ${Object.keys(LIQ_PROPS).map((k) => `  if (id == E_${k}) { return ${g(fn(LIQ_PRO
 }`;
 const wgslArray = (xs) => `array<f32, ${xs.length}>(${xs.map(g).join(', ')})`;
 
+// ---- Meniscus (DETAIL_LIQ_MENISCUS) ----
+// The linearised profile h(x) = h0·exp(−x/lc) is, as a feature, a low-pass
+// whose spectrum turns over at 1/(2π·lc): its wavelength λm = 2π·lc (1.7 cm
+// for water, the capillary crossover λc the ripples' last octave stops at).
+// By the material LOD rule (gfx/detail.js DETAIL_FADE_LO/HI, lodFade) it is
+// drawn whole while a pixel spans up to half of λm and gone once it spans
+// all of it. Within that the pixel box filter below is exact, so it never
+// aliases; past it what is left is a one-pixel rim whose tilt h0/fp is under
+// h0/λm (0.18 for water) and falling, at the cost of a neighbour lookup on
+// every pixel that straddles a cell face, most of which find no wall.
+export const meniscusLambdaM = (p) => 2 * Math.PI * capLen(p);   // m
+// The widest liquid's λm, which gfx/detail.js's fadeM mirrors.
+export const MENISCUS_LAMBDA_MAX_M = Math.max(...Object.values(MENISCUS_PROPS).map(meniscusLambdaM));
+// A wall face is looked up only while the pixel's near edge is within
+// MEN_REACH capillary lengths of it: past that the rise is under MEN_TAIL of
+// h0, and its slope (h0/lc·MEN_TAIL ≤ 0.005) under an 8-bit normal map's
+// step (2/255), the precision every game's normal maps have.
+const MEN_TAIL = 1 / 256;
+const MEN_REACH = -Math.log(MEN_TAIL);   // capillary lengths (5.5)
+// (h0 cells, lc cells, 1/λm cycles per cell) of each liquid that has one, as
+// one comparison chain (perLiquidFn's, three numbers at once).
+const meniscusFn = () => `fn MEN(id: i32) -> vec3f {
+${Object.entries(MENISCUS_PROPS).map(([k, p]) => `  if (id == E_${k}) { return vec3f(${[menH0(p) / CELL_M, capLen(p) / CELL_M, CELL_M / meniscusLambdaM(p)].map(g).join(', ')}); }`).join('\n')}
+  return vec3f(0.0);
+}`;
+
 /** Box programs always compile native compact foam (legacy detail switches still gate their effects).
  * WORLD reads no V2 state, so its switches decide what is compiled in, as before. */
 export const LIQ_DETAIL = (detail = {}, backend = 'box') => backend !== 'world'
@@ -153,25 +236,36 @@ ${ripples ? `
 // upward-facing surfaces (RIPPLE_UP_*), each its own value-noise height field
 // in (x, z, time). Equal slope per octave (the saturation range of wind-wave
 // spectra: slope variance flat per octave), the same slope as the wind
-// ripples'. Octaves fade in by the pixel footprint (lodFade), so far away
-// nothing changes. (Five entries each: private arrays, docs/webgpu.md C6.)
+// ripples'. Octaves fade in by the pixel footprint (lodFade); in the box the
+// variance of what is faded is the glint's roughness instead (capHandoff, the
+// JS above), so far away they widen the sun's lobe rather than vanish. (Five
+// entries each: private arrays, docs/webgpu.md C6.)
 const CAP_OCTAVES: i32 = ${CAP_OCTAVES};
 var<private> CAP_FREQ: array<f32, CAP_OCTAVES> = ${wgslArray(CAP_FREQS)};    // cycles/cell (λ ${CAP_LAMBDAS.map((l) => (l * 100).toFixed(1)).join(', ')} cm)
 var<private> CAP_DRIFT: array<f32, CAP_OCTAVES> = ${wgslArray(CAP_DRIFTS)};  // noise units/s, by dispersion
-const CAP_SHIFT: f32 = 13.7;   // lattice offset per octave (noise units), so octaves don't line up
+const CAP_SHIFT: f32 = 13.7;   // lattice offset per octave (noise units), so octaves don't line up${capHandoff(backend) ? `
+// mean square slope (x and z) of one octave at full strength: GGX α² (above)
+const CAP_OCT_MS: f32 = 2.0 * ${g(VNOISE_GRAD_VAR)} * RIPPLE_SLOPE * RIPPLE_SLOPE;` : ''}
 fn liquidCapillary(p: vec3f, n: vec3f) -> vec3f {
   let up = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y);
-  if (up <= 0.0) { return n; }
-  let fp = footprint(p);
-  let wq = worldPos(p).xz;   // anchored in the world, like the wind ripples
   var gr = vec2f(0.0);       // (x, z)
-  for (var i = 0; i < CAP_OCTAVES; i++) {
-    let w = lodFade(CAP_FREQ[i], fp);
-    if (w <= 0.0) { break; }
-    // d/d(noise xz) is the slope per unit noise gradient, as RIPPLE_SLOPE
-    let h = mNoiseD(vec3f(wq * CAP_FREQ[i] + CAP_SHIFT * f32(i + 1), FU.time * CAP_DRIFT[i]));
-    gr += h.yz * w;
-  }
+  var lost = 0.0;            // octaves' worth of slope variance not drawn as normals
+  if (up > 0.0) {
+    let fp = footprint(p);
+    let wq = worldPos(p).xz;   // anchored in the world, like the wind ripples
+    lost = f32(CAP_OCTAVES);
+    for (var i = 0; i < CAP_OCTAVES; i++) {
+      let w = lodFade(CAP_FREQ[i], fp);
+      if (w <= 0.0) { break; }
+      // d/d(noise xz) is the slope per unit noise gradient, as RIPPLE_SLOPE
+      let h = mNoiseD(vec3f(wq * CAP_FREQ[i] + CAP_SHIFT * f32(i + 1), FU.time * CAP_DRIFT[i]));
+      gr += h.yz * w;
+      lost -= w * w;
+    }
+  }${capHandoff(backend) ? `
+  // the rest is roughness at this point (liquid.js liquidInterface reads it)
+  gLiqSlopeMS = lost * CAP_OCT_MS * up * up;
+  gLiqSlopeAt = p;` : ''}
   return tiltNormal(n, vec3f(gr.x, 0.0, gr.y) * RIPPLE_SLOPE * up);
 }` : ''}
 ${meniscus ? `
@@ -179,36 +273,44 @@ ${meniscus ? `
 // (linearised Young–Laplace; d = distance to the wall). Its slope, averaged
 // over the pixel's footprint [d − fp/2, d + fp/2] (exactly: the height
 // difference across it over its width), tilts the normal away from the wall:
-// a thin bright or dark line where water meets glass, and nothing when a
-// pixel is much wider than lc.
-${perLiquidFn('MEN_LC', (p) => capLen(p) / CELL_M)}   // cells
-${perLiquidFn('MEN_H0', (p) => menH0(p) / CELL_M)}    // cells
+// a thin bright or dark line where water meets glass. It fades by the
+// footprint (lodFade at 1/λm, MENISCUS_LAMBDA_MAX_M above), so past a few
+// metres nothing is looked up.
+// Only the nearer face on each axis can be in reach (reach < half a cell
+// wherever the fade lets it draw), and only faces in reach are looked up,
+// nearer first, in a loop of 0-2 rounds: one wall lookup in the code (Metal
+// inlines it once, where four unrolled rounds made four), none on the open
+// surface or a distant pixel, and one exit.
+${meniscusFn()}
 const MEN_PROBE: f32 = 0.25;   // cells into the liquid (against n) where the wall cells are looked up
-fn menHeight(d: f32, lc: f32, h0: f32) -> f32 { return h0 * exp(-max(d, 0.0) / lc); }
+const MEN_REACH: f32 = ${g(MEN_REACH)};   // capillary lengths past the pixel's edge a wall is looked up within
 fn liquidMeniscus(p: vec3f, n: vec3f, id: i32) -> vec3f {
-  if (n.y < RIPPLE_UP_LO) { return n; }
-  let lc = MEN_LC(id);
-  let h0 = MEN_H0(id);
-  // A liquid without the model (h0 = 0) has no rise at all. (The GLSL went on
-  // and could form 0 · exp(-0 / 0) = NaN at a wall: lc is 0 there too.)
-  if (h0 <= 0.0) { return n; }
-  let half_ = 0.5 * footprint(p);
+  let m = MEN(id);   // (h0, lc, 1/λm); lc = 0: a liquid without the model
+  let fp = footprint(p);
+  let half_ = 0.5 * fp;
+  let w = lodFade(m.z, fp);
   let c = vec3i(floor(p - n * MEN_PROBE));
   let f = p.xz - vec2f(c.xz);
+  let hiSide = f >= vec2f(0.5);          // the nearer face is the cell's high one (x, z)
+  let d = select(f, 1.0 - f, hiSide);    // cells to it
+  let reach = half_ + MEN_REACH * m.y;
+  let first = select(0, 1, d.y < d.x);   // the nearer of the two: 0 x, 1 z
+  let on = m.y > 0.0 && n.y >= RIPPLE_UP_LO && w > 0.0;
+  let rounds = select(0, select(1, 2, max(d.x, d.y) < reach), on && min(d.x, d.y) < reach);
   var gr = vec2f(0.0);   // height gradient, xz
-  for (var k = 0; k < 4; k++) {
+  for (var k = 0; k < rounds; k++) {
+    let a = first ^ k;
+    let s = select(-1.0, 1.0, hiSide[a]);   // side the wall is on
     var q = c;
-    let ax = select(2, 0, k < 2);
-    let s = select(1.0, -1.0, (k & 1) == 0);   // side the wall is on
-    q[ax] += i32(s);
-    if (outside(q) || !isCrisp(eid(fetchA(q)))) { continue; }
-    let d = select(1.0 - f[ax >> 1u], f[ax >> 1u], s < 0.0);   // to the wall's face
-    let a = d - half_;
-    let b = d + half_;
-    let slope = (menHeight(a, lc, h0) - menHeight(b, lc, h0)) / max(b - max(a, 0.0), 1e-6);
-    gr[ax >> 1u] += s * slope;   // the surface rises toward the wall
+    q[a * 2] += i32(s);
+    if (!outside(q) && isCrisp(eid(fetchA(q)))) {
+      let lo = max(d[a] - half_, 0.0);   // the footprint's part over the liquid
+      let hi = d[a] + half_;
+      // the surface rises toward the wall
+      gr[a] += s * m.x * (exp(-lo / m.y) - exp(-hi / m.y)) / max(hi - lo, 1e-6);
+    }
   }
-  return tiltNormal(n, vec3f(gr.x, 0.0, gr.y));
+  return tiltNormal(n, vec3f(gr.x, 0.0, gr.y) * w);
 }` : ''}
 ${foam ? `
 // Whitewater, drawn from the aeration field (the aeration pass, stepped with
@@ -260,6 +362,16 @@ fn triNoiseD(p: vec3f, n: vec3f, f: f32, t: f32) -> vec4f {
   if (w.z > TRI_MIN) { let h = mNoiseD(vec3f(p.xy * f, t)); r += w.z * vec4f(h.x, h.yz * f, 0.0); }
   return r / max(w.x * step(TRI_MIN, w.x) + w.y * step(TRI_MIN, w.y) + w.z * step(TRI_MIN, w.z), 1e-6);
 }
+// Where triNoiseD blends planes it averages independent noises, which
+// narrows their spread (by 1/√2 on a 45° face). This factor widens it back,
+// Σw / √(Σw²) over the planes it read (variance-preserving blending: Heitz &
+// Neyret 2018, "High-Performance By-Example Noise using a Histogram-Preserving
+// Blending Operator"), so the foam threshold keeps its coverage on any face.
+fn triSpread(n: vec3f) -> f32 {
+  var w = pow(abs(n), vec3f(TRI_POW));
+  w *= step(vec3f(TRI_MIN * (w.x + w.y + w.z)), w);
+  return (w.x + w.y + w.z) / max(length(w), 1e-6);
+}
 
 // Aerated water is rough: breaking, churning surfaces carry slopes of
 // ~0.3 over ~15 cm (Cox & Munk's slope variance at gale force is ~0.05,
@@ -268,8 +380,9 @@ const ROUGH_LAMBDA_M: f32 = 0.15;    // m, size of the churned bumps
 const ROUGH_FREQ: f32 = CELL_M / ROUGH_LAMBDA_M;   // cycles/cell
 const ROUGH_SLOPE: f32 = 0.3;        // rms-ish slope at full aeration, per unit noise gradient
 const ROUGH_EVOLVE: f32 = ${g(ROUGH_RATE_S * STEP_S)};   // noise units per step: churn decorrelates in ~1/3 s
-// Foam: a bubble raft, patchy (two octaves of noise thresholded to the
-// covered fraction), white by multiple scattering: fresh foam reflects ~55%
+// Foam: a bubble raft, patchy (two octaves of noise thresholded at the
+// quantile that leaves the covered fraction white: FOAM_NOISE_SD, above, so
+// near and far pixels show the same amount of it), white by multiple scattering: fresh foam reflects ~55%
 // of light (Whitlock et al. 1982), scattered nearly diffusely and wrapping
 // past the terminator, since light goes in and out of the bubble layer. As
 // the aeration decays the covered fraction shrinks, so patches thin into the
@@ -286,6 +399,11 @@ const FOAM_FREQ2: f32 = CELL_M / FOAM_CLUSTER_M;   // cycles/cell
 const FOAM_OCT2_W: f32 = 0.4;        // its weight (first: 1 − this)
 const FOAM_EVOLVE: f32 = ${g(STEP_S / FOAM_TAU_S)};   // noise units per step (one per FOAM_TAU_S)
 const FOAM_EDGE: f32 = 0.08;         // threshold softness (noise units)
+const FOAM_NOISE_SD: f32 = ${g(FOAM_NOISE_SD)};   // one octave's spread (noise units)
+const FOAM_PROBIT_K: f32 = ${g(1 / PROBIT_LOGISTIC)};   // Φ⁻¹(p) ≈ ln(p / (1 − p)) / 1.702
+// A cover below this is under a ten-thousandth of the surface (invisible); it
+// keeps Φ⁻¹(1 − cover) finite.
+const FOAM_COVER_EPS: f32 = 1e-4;
 const FOAM_ALBEDO: f32 = 0.55;
 const FOAM_WRAP: f32 = 0.5;          // diffuse wrap (0 = Lambert)
 const FOAM_SHIFT: f32 = 29.3;        // lattice offset of the foam noise from the roughness noise
@@ -295,18 +413,33 @@ fn liquidFoam(p: vec3f, n: ptr<function, vec3f>, id: i32, col: ptr<function, vec
   if (ag <= 0.0) { return; }
   let fp = footprint(p);
   let wp = worldPos(p);   // the churn and foam are anchored in the world
+  // Each noise's weight is its lodFade: the churn's is 0 past ~106 m, the
+  // clusters' past ~28 m, the raft's past ~84 m at 1080p and 75° (gfx/
+  // detail.js, liquidFoam). The churn and the clusters are evaluated
+  // straight-line, as before, not behind tests of their weight: foam is
+  // only drawn within the live physics window, so skipping them past those
+  // distances saves little, and the branches would add control flow to every
+  // inlined copy of the World's cold-built shader (2026-10-17: Metal timings
+  // on a loaded machine could not tell the two apart, so the cheaper-to-
+  // compile shape stays).
   let r = triNoiseD(wp, *n, ROUGH_FREQ, FU.simClock * ROUGH_EVOLVE);
   *n = tiltNormal(*n, r.yzw * (ROUGH_SLOPE * ag * lodFade(ROUGH_FREQ, fp) / ROUGH_FREQ));
   // covered fraction: the pattern where pixels resolve it, its mean beyond
+  // (the coverage itself never fades: whitewater reads from any distance)
   let cover = mix(SPRAY_COVER_MAX, FOAM_COVER_MAX, aer.y) * ag;
   let pw = lodFade(FOAM_FREQ, fp);
   var c = cover;
   if (pw > 0.0) {
     let q = wp + FOAM_SHIFT;
     let t = FU.simClock * FOAM_EVOLVE;
-    let v = mix(triNoiseD(q, *n, FOAM_FREQ, t).x, triNoiseD(q, *n, FOAM_FREQ2, t).x,
-                FOAM_OCT2_W * lodFade(FOAM_FREQ2, fp));
-    c = mix(cover, smoothstep(1.0 - cover - FOAM_EDGE, 1.0 - cover + FOAM_EDGE, v), pw);
+    // the octaves about their mean, blended keeping one octave's spread
+    let w2 = FOAM_OCT2_W * lodFade(FOAM_FREQ2, fp);
+    let v = mix(triNoiseD(q, *n, FOAM_FREQ, t).x, triNoiseD(q, *n, FOAM_FREQ2, t).x, w2) - 0.5;
+    let vs = v * inverseSqrt((1.0 - w2) * (1.0 - w2) + w2 * w2) * triSpread(*n);
+    // white where the noise is past its (1 − cover) quantile: a share cover of the surface
+    let pc = clamp(1.0 - cover, FOAM_COVER_EPS, 1.0 - FOAM_COVER_EPS);
+    let z = FOAM_NOISE_SD * FOAM_PROBIT_K * log(pc / (1.0 - pc));
+    c = mix(cover, smoothstep(z - FOAM_EDGE, z + FOAM_EDGE, vs), pw);
   }
   if (c <= 0.0) { return; }
   var sunVis = vec3f(1.0);
@@ -429,27 +562,40 @@ const FOAM_V_FULL = 4.0;          // m/s
 // quiet-base block and a block that didn't run stayed put (q = p), as the
 // gather's slots said in the WebGL build.
 //
-// The AER list (docs/webgpu.md G4). The wakes live in air cells, so the
-// output isn't zero only where the source cell's pre-move content foams, and
-// the list doesn't count steps for them: it keeps what the field itself
-// says. A brick is listed at a step when
-//   - a brick within one brick of it (wrapped past loop edges) may hold a
-//     foaming liquid (marks.foams: react's word for the bricks it wrote, 1 from
-//     any writer; the pre-move content, since the move only changes DRAWN
-//     bricks, which react then rewrites): p's q is within a cell of p;
-//   - or its output was not all zero at either of the last two steps (nz, a
-//     word per brick: bit 0 the last step's, bit 1 the one before, which the
-//     aeration kernel sets and the list kernel shifts);
+// The AER list (docs/webgpu.md G4). Every liquid cell's record is nonzero
+// (y = 1), so listing the bricks whose output isn't zero ran the kernel over
+// every pool, settled or not, at every step (~0.4 ms a step on a 128³ grid
+// with a pool over the floor). It lists the bricks whose output may CHANGE
+// instead. A cell's output is a function of the records and the state within
+// a cell of it (q, the cells above and below q, its wakes), and the state
+// changes only in DRAWN bricks (the settle rule, shaders/activity.js: a unit
+// not DRAWN keeps its cells, and a write between steps forces it DRAWN). A
+// brick is listed at a step when
+//   - near: a brick within one brick of it (wrapped past loop edges) is
+//     DRAWN under this step's map and one may hold a foaming liquid
+//     (marks.foams: react's word for the DRAWN bricks it wrote, 1 from any
+//     writer; exact for the pre-move content, as a brick not DRAWN keeps its
+//     cells), on a real step (an idle one moves nothing);
+//   - or it was near at the last step (nz bit AER_NEAR_BIT): that step's
+//     move and react changed the state this step reads;
+//   - or a brick within one brick of it had a record changed by the last
+//     step (nz bit 1 − P.tb: the aeration kernel sets bit
+//     P.tb for a brick whose output differs from its previous record, and
+//     the list kernel clears it first, so a brick off the list reads as
+//     unchanged; the bits alternate so that neighbours read the last step's
+//     while each brick clears its own for this one);
 //   - or the field starts over (P.all: after a reset or a window shift, for
 //     two steps, as the foams words and the copies then say nothing).
-// Exact: a cell's output is nonzero only if its q's content foams (then its
-// brick is near a foams brick) or its previous record was nonzero (then its
-// brick's nz bit 0 is set). So a brick off the list has an all-zero output,
-// and the copy it would have written holds zeros too: that copy was last
-// written two steps ago, when its output (bit 1) was all zero, or the brick
-// was off the list then too (by induction from the zeroed start). The
-// reference runs the same kernel over every brick (P.all, I2.6: tools/
-// aeration-check.mjs compares the two bit for bit at every step).
+// Exact: off the list, nothing within a cell of the brick was drawn at this
+// step or the last, so the state its cells read is what the last step read,
+// with no moves (q = p); and the records within a cell are what the last
+// step read too. So its output is its last record, which both copies hold:
+// it did not change at the last step, so the copy written then and the one
+// before agree (by induction from the zeroed start). The reference runs the
+// same kernel over every brick (P.all, I2.6: tools/aeration-check.mjs
+// compares the two bit for bit at every step). A settled pool, foam burst,
+// costs only the list kernel (a thread per brick); foam bursting on it lists
+// its bricks while their records change.
 const AER_FOAMS_NOTE = 'FOAMS(id): the tables\' (gfx/materials.js FOAMS), which react lists by';
 export const AerParams = uniformStruct('AerParams', {
   ...SIM_MODE_FIELDS,   // gravMode, edge (src/simModes.js: edgeCell)
@@ -458,7 +604,11 @@ export const AerParams = uniformStruct('AerParams', {
   srcAt: 'u32',         // moveSrc's plane in its buffer (words)
   cur: 'u32',           // the aeration copy read; the other is written
   all: 'u32',           // every brick (the reference), not the list
+  tb: 'u32',            // this step's changed bit in nz (AER list, above): its aeration steps alternate 0, 1
 });
+// nz's bits per brick (the AER list, above): changed at an aeration step of
+// parity tb (bit tb), and near at the last step.
+const AER_NEAR_BIT = 4;
 // Group 2: moveSrc (sim.moveSrc), the aeration's two copies (vec2u: f16
 // pairs), the nz words.
 export const AER_LAYOUT = [
@@ -531,10 +681,17 @@ fn sourceOf(p: vec3i) -> vec3i {
   if (P.still != 0u) { return p; }
   let par = i32(P.parity);
   let base = ((p - par) >> vec3u(1u)) * 2 + par;
-  // a block that didn't run, or is based in a quiet brick, stayed put (shaders/move.js)
+  // a block that didn't run, or is based in a quiet brick, stayed put (shaders/move.js).
+  // Along an axis its two cells share a brick (and so a unit, and whether
+  // they are in the grid: its sides are brick faces) unless it is based on a
+  // brick's last layer, so each brick it spans is looked up once: 1 at
+  // parity 0, 3.4 on average at parity 1, not 8.
+  let span = select(vec3i(0), vec3i(1), (base & vec3i(BS - 1)) == vec3i(BS - 1));
   var ran = false;
   for (var i = 0; i < 8; i++) {
-    let c = edgeCell(base + vec3i(i & 1, (i >> 1u) & 1, (i >> 2u) & 1));
+    let o = vec3i(i & 1, (i >> 1u) & 1, (i >> 2u) & 1);
+    if (any(o > span)) { continue; }
+    let c = edgeCell(base + o);
     if (inGrid(c) && drawnUnit(unitOfCell(c))) { ran = true; }
   }
   if (!ran || quietCell(edgeCell(base))) { return p; }
@@ -596,9 +753,11 @@ fn aeration(p: vec3i) -> vec4f {
   return vec4f(min(F, 1.0), select(1.0, 2.0, pour), fall, select(0.0, 1.0, grounded));
 }
 // A workgroup per brick of the AER list (P.all: of the grid), a thread per
-// cell: the other copy's record, and the brick's nz bit 0; and the field's
-// count of visible foam (liquid at AER_VISIBLE_MIN or more) into the word
-// after the bricks' (gfx/foam.js reads it on idle steps).
+// cell: the other copy's record, and the brick's nz bit P.tb if any record
+// changed; and the field's count of visible foam (liquid at AER_VISIBLE_MIN
+// or more) into the word after the bricks' (gfx/foam.js reads it on idle
+// steps; a brick off the list holds no foam that is bursting, so none it
+// would count that matters).
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
   let k = foldId(wg, nwg);
@@ -612,13 +771,16 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     let s = b * 64u + li;
     let o = aeration(cellOf(s));
     let w = vec2u(pack2x16float(o.xy), pack2x16float(o.zw));
+    let prev = aer[P.cur * SLOTS + s];
     aer[(1u - P.cur) * SLOTS + s] = w;
-    if (any(w != vec2u(0u))) { atomicOr(&wgNz, 1u); }
+    if (any(w != prev)) { atomicOr(&wgNz, 1u); }
     if (o.y > 0.5 && o.x >= AER_VISIBLE_MIN) { atomicAdd(&wgFoam, 1u); }
   }
   workgroupBarrier();
   if (li == 0u && valid) {
-    atomicStore(&nz[b], (atomicLoad(&nz[b]) & 2u) | atomicLoad(&wgNz));
+    // (the list kernel cleared bit P.tb; nothing else in the word is this kernel's)
+    let changed = atomicLoad(&wgNz);
+    if (changed != 0u) { atomicOr(&nz[b], changed << P.tb); }
     let foam = atomicLoad(&wgFoam);
     if (foam != 0u) { atomicAdd(&nz[NBRICKS], foam); }
   }
@@ -632,10 +794,11 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 // the aeration's indirect arguments (ARGS.AER, fold()ed).
 export const AER_APPEND = 6;   // act's count words: ACT_COUNTS uses 0-5
 export const AerListParams = uniformStruct('AerListParams', {
-  still: 'u32',   // an idle step: a brick's own foams word is enough (nothing moves)
+  still: 'u32',   // an idle step: nothing is drawn, nothing moves
   all: 'u32',     // list every brick
-  hist: 'u32',    // the nz bits that list a brick: 3 (test only: 0, tools/aeration-check.mjs's negative control)
+  hist: 'u32',    // whether nz's history lists a brick: 1 (test only: 0, tools/aeration-check.mjs's negative control)
   wrap: 'u32',    // loop edges: the dilation wraps (edgeCell; 'loop' is reserved in WGSL)
+  tb: 'u32',      // this step's changed bit (AerParams.tb)
 });
 // group 1 (marks, act read_write: no state) and group 2 (args, nz)
 export const AER_LIST_STATE = { state: false, marks: true, act: 'read_write' };
@@ -648,30 +811,42 @@ ${prelude(grid, AER_LIST_STATE)}
 ${AerListParams.wgsl}
 @group(3) @binding(1) var<uniform> P: AerListParams;
 @group(2) @binding(0) var<storage, read_write> args: array<u32>;
-@group(2) @binding(1) var<storage, read_write> nz: array<u32>;
+@group(2) @binding(1) var<storage, read_write> nz: array<atomic<u32>>;   // (neighbours read a word while its brick's thread clears another bit of it)
 const AER_APPEND: u32 = ${AER_APPEND}u;
+const AER_NEAR_BIT: u32 = ${AER_NEAR_BIT}u;
 const ARGS_AER: u32 = ${ARGS.AER / 4}u;   // words
 const MAX_WG: u32 = ${MAX_WORKGROUPS}u;`;
 export const aerListFrag = (grid) => /* wgsl */ `
 ${aerListHead(grid)}
-fn foamsAt(c: vec3i) -> bool {
-  var n = c;
-  if (P.wrap != 0u) { n = (c + vec3i(BX, BY, BZ)) % vec3i(BX, BY, BZ); }
-  else if (any(n < vec3i(0)) || any(n >= vec3i(BX, BY, BZ))) { return false; }
-  return atomicLoad(&marks[MARK_FOAMS + brickId(n)]) != 0u;
-}
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
   let b = foldThread(wg, nwg, li);
   if (b >= NBRICKS) { return; }
-  let h = nz[b];
-  var on = P.all != 0u || (h & P.hist) != 0u;
+  let h = atomicLoad(&nz[b]);
   let c = brickCoord(b);
-  if (!on && P.still != 0u) { on = foamsAt(c); }
-  for (var i = 0; i < 27 && !on && P.still == 0u; i++) {
-    on = foamsAt(c + vec3i(i % 3, (i / 3) % 3, i / 9) - 1);
+  let last = 1u << (1u - P.tb);   // the last step's changed bit
+  // over the bricks within one (wrapped past loop edges): drawn, holding
+  // foaming liquid, changed at the last step (the AER list, above)
+  var drawn = false;
+  var wet = false;
+  var changed = false;
+  // (done once near is known true, or on an idle step, where nothing is near, once changed is)
+  for (var i = 0; i < 27 && !(drawn && wet) && !(P.still != 0u && changed); i++) {
+    var n = c + vec3i(i % 3, (i / 3) % 3, i / 9) - 1;
+    if (P.wrap != 0u) { n = (n + vec3i(BX, BY, BZ)) % vec3i(BX, BY, BZ); }
+    else if (any(n < vec3i(0)) || any(n >= vec3i(BX, BY, BZ))) { continue; }
+    let id = brickId(n);
+    if (P.still == 0u) {
+      drawn = drawn || drawnUnit(unitOfBrick(id));
+      wet = wet || atomicLoad(&marks[MARK_FOAMS + id]) != 0u;
+    }
+    changed = changed || (atomicLoad(&nz[id]) & last) != 0u;
   }
-  nz[b] = (h << 1u) & 2u;
+  let near = drawn && wet;
+  let on = P.all != 0u || near || (P.hist != 0u && (changed || (h & AER_NEAR_BIT) != 0u));
+  // this step's changed bit starts clear (the aeration kernel sets it), and the near bit is this step's
+  atomicAnd(&nz[b], ~((1u << P.tb) | AER_NEAR_BIT));
+  if (near) { atomicOr(&nz[b], AER_NEAR_BIT); }
   if (on) {
     let k = atomicAdd(&act[ACT_COUNT + AER_APPEND], 1u);
     atomicStore(&act[ACT_AERL + k], b);
@@ -685,7 +860,7 @@ fn main() {
   let n = atomicLoad(&act[ACT_COUNT + AER_APPEND]);
   atomicStore(&act[ACT_COUNT + CNT_AER], n);
   atomicStore(&act[ACT_COUNT + AER_APPEND], 0u);
-  nz[NBRICKS] = 0u;   // the visible foam's count, which this step's aeration adds up
+  atomicStore(&nz[NBRICKS], 0u);   // the visible foam's count, which this step's aeration adds up
   let y = max(1u, (n + MAX_WG - 1u) / MAX_WG);
   args[ARGS_AER] = (n + y - 1u) / y;
   args[ARGS_AER + 1u] = y;

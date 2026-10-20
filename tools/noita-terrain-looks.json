@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "note": "Which Noita material a Descent cell stands for, when several share one element: an src/appearance.js label carried in the cell's unused ctype (VARIANT_* only on non-conducting ROCK/SANDSTONE/NOITA_TEMPLE; WOOD reuses its LOG/PLANK labels). The Noita view (src/shaders/gfx/noita.js NOITA_ELEMENT_LOOKS) draws each label. Unlisted native materials take their element's default look. tools/check-noita-materials.mjs checks every entry.",
+  "nativeAppearance": {
+    "rock_hard": "variant-1",
+    "rock_box2d_hard": "variant-1",
+    "rock_static_grey": "variant-2",
+    "concrete_static": "variant-2",
+    "sand_static_rainforest": "variant-1",
+    "sand_static_rainforest_dark": "variant-1",
+    "soil_dead": "variant-2",
+    "soil": "variant-3",
+    "soil_dark": "variant-3",
+    "soil_lush_dark": "variant-3",
+    "fungisoil": "variant-3",
+    "templebrickdark_static": "variant-1",
+    "wood_tree": "log-y",
+    "root": "log-y",
+    "root_growth": "log-y",
+    "wood_static_vertical": "plank-y",
+    "wood_static": "plank-x",
+    "wood_prop": "plank-x"
+  }
+}

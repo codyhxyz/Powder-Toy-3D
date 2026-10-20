@@ -75,7 +75,7 @@ export const FRAME_UNIFORMS = [
   ['beacon', 'vec4f', 'uBeacon: world xyz, range in cells'],
   ['beaconDir', 'vec4f', 'uBeaconDir: unit direction, night gain'],
   ['beaconCell', 'vec4f', 'uBeaconCell: CRYSTAL switch world xyz'],
-  ['materialStyle', 'f32', 'Artwork derived from view: 0 Realistic, 1 Cozy'],
+  ['materialStyle', 'f32', 'Artwork derived from view: 0 Realistic, 1 Cozy, 2 Noita'],
   ['sourceAppearance', 'vec4u', 'far grid appearance tail: first Y plane, word count, width, depth'],
   ['sourceStyle', 'u32', 'source appearance enabled for the Cruelty Squad material view'],
 ];

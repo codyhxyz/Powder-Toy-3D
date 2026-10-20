@@ -1,6 +1,6 @@
 // One real-GPU smoke check, capped at 25 seconds including launch and cleanup.
 // Run npm run build first. The private preview server avoids dev-module overhead.
-// --section coal --out /tmp/noita-coal.png [--base https://tpt3d.codyh.xyz]
+// --section coal --out /tmp/noita-coal.png [--view noita] [--base https://tpt3d.codyh.xyz]
 // Without --section/--scene, checks the actual first native arrival.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -26,6 +26,7 @@ key ??= route.startScene;
 assert.ok(route.regions.some(r => r.key === key), `unknown source band: ${key}`);
 const out = arg('--out', `/tmp/${key}.png`);
 const base = arg('--base', null);
+const view = arg('--view', 'plain');
 const server = base ? null : await preview({ root: fileURLToPath(new URL('..', import.meta.url)),
   logLevel: 'warn', preview: { host: '127.0.0.1', port: 54937, strictPort: true } });
 let browser;
@@ -40,7 +41,7 @@ try {
   await page.routeWebSocket(/.*/, () => {});
   // ?mode=noita deliberately opens the map's first scene. Select the test
   // scene in Sandbox, then use the real mode seam without reloading the map.
-  await page.goto(`${base ?? 'http://127.0.0.1:54937'}/?size=world&scene=${key}&view=plain`);
+  await page.goto(`${base ?? 'http://127.0.0.1:54937'}/?size=world&scene=${key}&view=${view}`);
   await ready(page);
   await page.waitForFunction(() => window.__app.win?.loaded && window.__app.pov, null, { polling: 100, timeout: 18000 });
   await page.evaluate(() => window.__app.setMode('noita'));

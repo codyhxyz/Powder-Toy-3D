@@ -25,7 +25,8 @@
   "fixedShape": [2600, 1600],
   "regularTempleRows": [16, 19, 23, 26, 30, 34],
   "startSource": [227.5, -76, 0],
-  "fold": {"sourceMinX": -4608, "sourceWidth": 9216, "cellScale": 1, "angleStart": -1.5707963267948966, "angleSpan": 4.71238898038469, "thickness": 48, "shellThickness": 2, "margin": 32},
+  "fold": {"sourceMinX": -4608, "sourceWidth": 9216, "cellScale": 1, "angleStart": -1.5707963267948966, "angleSpan": 4.71238898038469, "thickness": 136, "shellThickness": 2, "margin": 32},
+  "inflation": {"maxHalfDepth": 64, "backdropMargin": 4, "backdropBlock": 8, "backdropWindow": 9},
   "sections": [
     {"key": "surface", "label": "Surface", "sourceRange": [-1536, 0]},
     {"key": "mines", "label": "Mines", "sourceRange": [0, 1024]},

@@ -1,6 +1,6 @@
 import { libChecks } from './lib.js';
 import { ddaWalk } from '../dda.js';
-import { CUBIC_FACET, CUBIC_PX_NONE, CUBIC_PX_FULL } from '../../gfx/detail.js';
+import { CUBIC_ERR, CUBIC_ERR_PX_NONE, CUBIC_ERR_PX_FULL } from '../../gfx/detail.js';
 import { glf as f } from '../../glsl.js';
 import { occupancyReadWGSL } from '../occupancy.js';
 import { renderBackend, worldOccupancyWGSL, worldFieldWGSL } from './worldCore.js';
@@ -114,7 +114,8 @@ fn skipEmpty(bc: vec3i, ro: vec3f, rd: vec3f, istp: vec3i,
 const SURF_ISO: f32 = 0.5;
 // Field t at grid point p, hardware trilinear (one tap; the 2D atlas took two
 // and a lerp). p is held to the edge cells' centres: the grid extends by its edge.
-${backend === 'world' ? worldFieldWGSL : `fn fieldTex(t: texture_3d<f32>, p: vec3f) -> vec4f {
+${backend === 'world' ? `${worldFieldWGSL}
+fn fieldCubicGrad(t: texture_2d_array<f32>, p: vec3f, ch: i32) -> vec3f { return worldFieldCubicGrad(t, p, ch); }` : `fn fieldTex(t: texture_3d<f32>, p: vec3f) -> vec4f {
   let q = clamp(p, vec3f(0.5), vec3f(GRID) - 0.5);
   return textureSampleLevel(t, linearClamp, q / vec3f(GRID), 0.0);
 }
@@ -125,9 +126,23 @@ fn mediaField(p: vec3f) -> vec4f { return fieldTex(tFM, p); }   // the media fie
 // Trilinear interpolation of a lone peak has octahedral isosurfaces, so drops
 // drawn from it are faceted gems; the B-spline's kernel is smooth (C²) and
 // nearly radial, so they come out round and their normals smooth. Sigg &
-// Hadwiger's trick folds each pair of taps along an axis into one linear
-// fetch: 2×2×2 trilinear fetches (the y-slice atlas needed 16). Taps are
-// clamped to the edge cells' centres, i.e. the grid is extended by its edge.
+// Hadwiger's trick (GPU Gems 2 ch. 20, "Fast Third-Order Texture Filtering")
+// folds each pair of taps along an axis into one linear fetch: 2×2×2
+// trilinear fetches (the y-slice atlas needed 16). Taps are clamped to the
+// edge cells' centres, i.e. the grid is extended by its edge.
+// cubicFetch8 is the fold's 8 fetches: along each axis the fetch at a (weight
+// ga) and at b (weight gb), texel coordinates already normalised.
+fn cubicFetch8(t: texture_3d<f32>, a: vec3f, b: vec3f, ga: vec3f, gb: vec3f) -> vec4f {
+  let za = ga.y * (ga.x * textureSampleLevel(t, linearClamp, vec3f(a.x, a.y, a.z), 0.0)
+                 + gb.x * textureSampleLevel(t, linearClamp, vec3f(b.x, a.y, a.z), 0.0))
+         + gb.y * (ga.x * textureSampleLevel(t, linearClamp, vec3f(a.x, b.y, a.z), 0.0)
+                 + gb.x * textureSampleLevel(t, linearClamp, vec3f(b.x, b.y, a.z), 0.0));
+  let zb = ga.y * (ga.x * textureSampleLevel(t, linearClamp, vec3f(a.x, a.y, b.z), 0.0)
+                 + gb.x * textureSampleLevel(t, linearClamp, vec3f(b.x, a.y, b.z), 0.0))
+         + gb.y * (ga.x * textureSampleLevel(t, linearClamp, vec3f(a.x, b.y, b.z), 0.0)
+                 + gb.x * textureSampleLevel(t, linearClamp, vec3f(b.x, b.y, b.z), 0.0));
+  return ga.z * za + gb.z * zb;
+}
 fn fieldCubic(t: texture_3d<f32>, p: vec3f) -> vec4f {
   let c = clamp(p, vec3f(0.5), vec3f(GRID) - 0.5) - 0.5;   // cell centres at integers
   let i = floor(c);
@@ -146,15 +161,42 @@ fn fieldCubic(t: texture_3d<f32>, p: vec3f) -> vec4f {
   let hi = vec3f(GRID) - 0.5;
   let a = clamp(i - 0.5 + w1 / g0, lo, hi) / vec3f(GRID);
   let b = clamp(i + 1.5 + w3 / g1, lo, hi) / vec3f(GRID);
-  let za = g0.y * (g0.x * textureSampleLevel(t, linearClamp, vec3f(a.x, a.y, a.z), 0.0)
-                 + g1.x * textureSampleLevel(t, linearClamp, vec3f(b.x, a.y, a.z), 0.0))
-         + g1.y * (g0.x * textureSampleLevel(t, linearClamp, vec3f(a.x, b.y, a.z), 0.0)
-                 + g1.x * textureSampleLevel(t, linearClamp, vec3f(b.x, b.y, a.z), 0.0));
-  let zb = g0.y * (g0.x * textureSampleLevel(t, linearClamp, vec3f(a.x, a.y, b.z), 0.0)
-                 + g1.x * textureSampleLevel(t, linearClamp, vec3f(b.x, a.y, b.z), 0.0))
-         + g1.y * (g0.x * textureSampleLevel(t, linearClamp, vec3f(a.x, b.y, b.z), 0.0)
-                 + g1.x * textureSampleLevel(t, linearClamp, vec3f(b.x, b.y, b.z), 0.0));
-  return g0.z * za + g1.z * zb;
+  return cubicFetch8(t, a, b, g0, g1);
+}
+// The B-spline's gradient (d/dx, d/dy, d/dz of fieldCubic) for channel ch,
+// analytically from the derivative kernel: the same fold works because the
+// derivative's weights at i-1, i are both <= 0 and at i+1, i+2 both >= 0
+// (Sigg & Hadwiger 2005, section 20.5; Hadwiger et al. 2005 shade their
+// isosurfaces' normals this way). Per component 8 fetches, derivative weights
+// along that axis and the value's along the others: 24 fetches, where central
+// differences of fieldCubic took 48 (the liquid's 6 samples) or 32 (4).
+fn fieldCubicGrad(t: texture_3d<f32>, p: vec3f, ch: i32) -> vec3f {
+  let c = clamp(p, vec3f(0.5), vec3f(GRID) - 0.5) - 0.5;
+  let i = floor(c);
+  let f = c - i;
+  let f2 = f * f;
+  let f3 = f2 * f;
+  let w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+  let w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+  let w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+  let w3 = f3 / 6.0;
+  let g0 = w0 + w1;
+  let g1 = w2 + w3;
+  // derivative weights: w0' = -(1 - f)²/2, w1' = 3f²/2 - 2f, w2' = -3f²/2 + f + 1/2,
+  // w3' = f²/2; their pair sums are dg and -dg (|dg| in [0.5, 0.75], never 0)
+  let d1 = 1.5 * f2 - 2.0 * f;
+  let d3 = 0.5 * f2;
+  let dg = f2 - f - 0.5;
+  let lo = vec3f(0.5);
+  let hi = vec3f(GRID) - 0.5;
+  let a = clamp(i - 0.5 + w1 / g0, lo, hi) / vec3f(GRID);
+  let b = clamp(i + 1.5 + w3 / g1, lo, hi) / vec3f(GRID);
+  let da = clamp(i - 0.5 + d1 / dg, lo, hi) / vec3f(GRID);
+  let db = clamp(i + 1.5 - d3 / dg, lo, hi) / vec3f(GRID);
+  let gx = cubicFetch8(t, vec3f(da.x, a.yz), vec3f(db.x, b.yz), vec3f(dg.x, g0.yz), vec3f(-dg.x, g1.yz));
+  let gy = cubicFetch8(t, vec3f(a.x, da.y, a.z), vec3f(b.x, db.y, b.z), vec3f(g0.x, dg.y, g0.z), vec3f(g1.x, -dg.y, g1.z));
+  let gz = cubicFetch8(t, vec3f(a.xy, da.z), vec3f(b.xy, db.z), vec3f(g0.xy, dg.z), vec3f(g1.xy, -dg.z));
+  return vec3f(gx[ch], gy[ch], gz[ch]);
 }`}
 
 // The cubic channels (gfx/materials.js CHANNELS cubic: liquids, powders) read
@@ -177,9 +219,10 @@ var<private> gThin: bool = true;
 var<private> gCubicEye: vec3f = vec3f(0.0);
 var<private> gCubicPixAng: f32 = 0.0;
 ${detail.DETAIL_CUBIC_CLOSE ? `
-// cells per pixel at which a trilinear facet (CUBIC_FACET cells) spans gfx/detail.js CUBIC_PX_NONE / _FULL pixels
-const CUBIC_FP_NONE: f32 = ${f(CUBIC_FACET)} / ${f(CUBIC_PX_NONE)};
-const CUBIC_FP_FULL: f32 = ${f(CUBIC_FACET)} / ${f(CUBIC_PX_FULL)};
+// cells per pixel at which the trilinear reading's shape error (CUBIC_ERR
+// cells) spans gfx/detail.js CUBIC_ERR_PX_NONE / _FULL pixels on screen
+const CUBIC_FP_NONE: f32 = ${f(CUBIC_ERR)} / ${f(CUBIC_ERR_PX_NONE)};
+const CUBIC_FP_FULL: f32 = ${f(CUBIC_ERR)} / ${f(CUBIC_ERR_PX_FULL)};
 fn cubicClose(p: vec3f) -> f32 {
   if (gCubicPixAng > 0.0) { return 1.0 - smoothstep(CUBIC_FP_FULL, CUBIC_FP_NONE, distance(p, gCubicEye) * gCubicPixAng); }
   return 0.0;
@@ -200,21 +243,28 @@ fn surfSample(p: vec3f) -> vec4f {
   let s = surfField(p);
   let band = CH_CUBIC * select(vec4f(0.0), vec4f(1.0), s > vec4f(CUBIC_LO)) * select(vec4f(0.0), vec4f(1.0), s < vec4f(CUBIC_HI));
   if (all(band == vec4f(0.0))) { return s; }
-  let thin = fieldTex(tFT, p);
-  let w = band * max(thin, vec4f(cubicClose(p)));
+  // fully close, the thin mask (in [0, 1]) can't raise the share: skip its read
+  let close = cubicClose(p);
+  var w = band * close;
+  if (close < 1.0) { w = band * max(fieldTex(tFT, p), vec4f(close)); }
   if (all(w == vec4f(0.0))) { return s; }
   return mix(s, fieldCubic(tFS, p), w);
 }
-// One channel, at the surface (root finding, normals).
+// One channel, at the surface (root finding). Each reading has one call site:
+// Metal inlines every call, and in the World a cubic reading is 64 page
+// lookups (shaders/worldAccess.js worldFieldCubic), so the two that the
+// full-weight and blended branches held were two copies of it. Surface fields
+// are finite (fields.js: floored normalisation and peak denominators), so at
+// full weight mix(0, cubic, 1) is the cubic reading exactly and needs no
+// trilinear one; at zero weight mix(v, v, 0) is v. surfSample still needs
+// that value for its band gate, even at full weight.
 fn surfChannel(p: vec3f, ch: i32) -> f32 {
   let w = cubicShare(p, ch);
-  // Surface fields are finite (fields.js: floored normalisation and peak
-  // denominators). At full weight mix(v, cubic, 1) needs no trilinear v.
-  // surfSample still needs that value for its band gate, even at full weight.
-  if (w == 1.0) { return fieldCubic(tFS, p)[ch]; }
-  let v = surfField(p)[ch];
-  if (w > 0.0) { return mix(v, fieldCubic(tFS, p)[ch], w); }
-  return v;
+  var v = 0.0;
+  if (w < 1.0) { v = surfField(p)[ch]; }
+  var c = v;
+  if (w > 0.0) { c = fieldCubic(tFS, p)[ch]; }
+  return mix(v, c, w);
 }
 
 // Root of φ_ch(t) = SURF_ISO bracketed by [ta, tb] (fa, fb = φ - SURF_ISO at
@@ -259,26 +309,38 @@ fn surfCross(ro: vec3f, rd: vec3f, ch: i32, into: bool, ta: f32, tm: f32, tb: f3
   return surfRoot(ro, rd, ch, select(tm, ta, first), select(tb, tm, first), select(m, a, first), select(b, m, first));
 }
 
-// Outward surface normal (−∇φ). Liquid uses opposite axis pairs: a tetrahedral
-// stencil leaks mixed derivatives into other axes (an xy slope gets a false
-// z normal), turning continuous water into lumpy reflections/refractions.
-// The wide step irons out trilinear lattice creases. Cubic features use a
-// smaller step next to a drop's radius; opaque channels keep four taps.
+// Outward surface normal (−∇φ). The trilinear reading's gradient comes from
+// differences over a wide step that irons out its lattice creases: liquid
+// uses opposite axis pairs (a tetrahedral stencil leaks mixed derivatives into
+// other axes: an xy slope gets a false z normal, turning continuous water into
+// lumpy reflections/refractions), opaque channels four tetrahedral taps. The
+// cubic reading's is analytic (fieldCubicGrad: the B-spline is C², so its
+// exact gradient is smooth, and costs one reading where differences took four
+// or six), and a channel's share blends the two gradients. (Differences of the
+// blended field would add (cubic - trilinear)·∇share: the thin mask's slope
+// across a blending feature's surface, which leans its normal no more than the
+// wide step's own smoothing does.)
 const NORMAL_STEP: f32 = 0.55;
-const NORMAL_STEP_CUBIC: f32 = 0.25;
+// differences over ±h (cells): both stencils' sums are 4h·∇φ
+const NORMAL_DIFF_SCALE: f32 = 1.0 / (4.0 * NORMAL_STEP);
 fn surfNormal(p: vec3f, ch: i32, fallback: vec3f) -> vec3f {
-  let h = mix(NORMAL_STEP, NORMAL_STEP_CUBIC, cubicShare(p, ch));
-  var gr: vec3f;
-  if (ch == CH_LIQUID) {
-    let e = vec2f(1.0, 0.0);
-    gr = 2.0 * vec3f(surfChannel(p + e.xyy * h, ch) - surfChannel(p - e.xyy * h, ch),
-                     surfChannel(p + e.yxy * h, ch) - surfChannel(p - e.yxy * h, ch),
-                     surfChannel(p + e.yyx * h, ch) - surfChannel(p - e.yyx * h, ch));
-  } else {
-    let k = vec2f(1.0, -1.0);
-    gr = k.xyy * surfChannel(p + k.xyy * h, ch) + k.yyx * surfChannel(p + k.yyx * h, ch)
-       + k.yxy * surfChannel(p + k.yxy * h, ch) + k.xxx * surfChannel(p + k.xxx * h, ch);
+  let w = cubicShare(p, ch);
+  var gr = vec3f(0.0);
+  if (w < 1.0) {
+    let h = NORMAL_STEP;
+    if (ch == CH_LIQUID) {
+      let e = vec2f(1.0, 0.0);
+      gr = 2.0 * vec3f(surfField(p + e.xyy * h)[ch] - surfField(p - e.xyy * h)[ch],
+                       surfField(p + e.yxy * h)[ch] - surfField(p - e.yxy * h)[ch],
+                       surfField(p + e.yyx * h)[ch] - surfField(p - e.yyx * h)[ch]);
+    } else {
+      let k = vec2f(1.0, -1.0);
+      gr = k.xyy * surfField(p + k.xyy * h)[ch] + k.yyx * surfField(p + k.yyx * h)[ch]
+         + k.yxy * surfField(p + k.yxy * h)[ch] + k.xxx * surfField(p + k.xxx * h)[ch];
+    }
+    gr *= NORMAL_DIFF_SCALE;
   }
+  if (w > 0.0) { gr = mix(gr, fieldCubicGrad(tFS, p, ch), w); }
   let l = length(gr);
   if (l > 1e-5) { return -gr / l; }
   return fallback;

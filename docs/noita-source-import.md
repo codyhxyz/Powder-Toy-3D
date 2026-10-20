@@ -25,7 +25,9 @@ The compiler produces deterministic gzip payloads with per-band hashes.
 
 The default fold bends horizontal source coordinates around a 270-degree arc.
 Source Y stays vertical. The ribbon has configurable thickness.
-The inverse transform selects each voxel's original material pixel.
+The inverse transform selects each voxel's original material pixel at depth 0.
+Away from the middle, open space is inflated into round caves with backdrop rock behind
+(docs/noita-terrain-fold-contract.md, Inflation); closed pixels hold at every depth.
 The fold does not add paths, stairs, platforms, reservoirs, or room connections.
 
 The runtime uses 256-pixel vertical cores with 32-pixel context on each side.

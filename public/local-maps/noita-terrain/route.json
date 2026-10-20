@@ -1,5 +1,5 @@
 {
-  "encoding": "noita-folded-raster-u8-v1",
+  "encoding": "noita-folded-raster-u8-v2",
   "fold": {
     "angleSpan": 4.71238898038469,
     "angleStart": -1.5707963267948966,
@@ -8,7 +8,13 @@
     "shellThickness": 2,
     "sourceMinX": -4608,
     "sourceWidth": 9216,
-    "thickness": 48
+    "thickness": 136
+  },
+  "inflation": {
+    "backdropBlock": 8,
+    "backdropMargin": 4,
+    "backdropWindow": 9,
+    "maxHalfDepth": 64
   },
   "nativePortals": [
     {
@@ -3608,6 +3614,7 @@
       "name": "coal_static"
     },
     {
+      "appearance": 12,
       "element": 20,
       "name": "concrete_static"
     },
@@ -3644,6 +3651,7 @@
       "name": "fungi"
     },
     {
+      "appearance": 13,
       "element": 27,
       "name": "fungisoil"
     },
@@ -3844,10 +3852,12 @@
       "name": "radioactive_liquid_fading"
     },
     {
+      "appearance": 11,
       "element": 20,
       "name": "rock_box2d_hard"
     },
     {
+      "appearance": 11,
       "element": 20,
       "name": "rock_hard"
     },
@@ -3864,6 +3874,7 @@
       "name": "rock_static_cursed"
     },
     {
+      "appearance": 12,
       "element": 20,
       "name": "rock_static_grey"
     },
@@ -3892,10 +3903,12 @@
       "name": "rock_vault"
     },
     {
+      "appearance": 4,
       "element": 14,
       "name": "root"
     },
     {
+      "appearance": 4,
       "element": 14,
       "name": "root_growth"
     },
@@ -3920,10 +3933,12 @@
       "name": "sand_static"
     },
     {
+      "appearance": 11,
       "element": 27,
       "name": "sand_static_rainforest"
     },
     {
+      "appearance": 11,
       "element": 27,
       "name": "sand_static_rainforest_dark"
     },
@@ -3960,14 +3975,17 @@
       "name": "snowrock_static"
     },
     {
+      "appearance": 13,
       "element": 27,
       "name": "soil"
     },
     {
+      "appearance": 13,
       "element": 27,
       "name": "soil_dark"
     },
     {
+      "appearance": 12,
       "element": 27,
       "name": "soil_dead"
     },
@@ -3976,6 +3994,7 @@
       "name": "soil_lush"
     },
     {
+      "appearance": 13,
       "element": 27,
       "name": "soil_lush_dark"
     },
@@ -4076,6 +4095,7 @@
       "name": "templebrick_thick_static_noedge"
     },
     {
+      "appearance": 11,
       "element": 93,
       "name": "templebrickdark_static"
     },
@@ -4100,18 +4120,22 @@
       "name": "water_swamp"
     },
     {
+      "appearance": 6,
       "element": 14,
       "name": "wood_prop"
     },
     {
+      "appearance": 6,
       "element": 14,
       "name": "wood_static"
     },
     {
+      "appearance": 7,
       "element": 14,
       "name": "wood_static_vertical"
     },
     {
+      "appearance": 4,
       "element": 14,
       "name": "wood_tree"
     }
@@ -4122,6 +4146,7 @@
         -1536,
         -1280
       ],
+      "fieldsSha256": "0b2b7205ff5627f50eede8257e1d2bd358417931047da4deb9de5f03720ed004",
       "file": "noitaTerrain00.binpack",
       "key": "noitaTerrain00",
       "label": "Surface",
@@ -4143,6 +4168,7 @@
         -1280,
         -1024
       ],
+      "fieldsSha256": "3e4d422ede70d0bc510e46f56a083b50349516ba5afa4156df6a9bd1612017b0",
       "file": "noitaTerrain01.binpack",
       "key": "noitaTerrain01",
       "label": "Surface",
@@ -4153,7 +4179,7 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        751.5,
+        752.5,
         -1147,
         0
       ],
@@ -4164,6 +4190,7 @@
         -1024,
         -768
       ],
+      "fieldsSha256": "7ec5825b1e0480c8b942f0d1c3214a899eb9342a5c1f1a05dd1bdd320534a55c",
       "file": "noitaTerrain02.binpack",
       "key": "noitaTerrain02",
       "label": "Surface",
@@ -4174,8 +4201,8 @@
       "spawnOpenView": false,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -1139.5,
-        -1004,
+        -1141.5,
+        -1021,
         0
       ],
       "spawnSupported": true
@@ -4185,6 +4212,7 @@
         -768,
         -512
       ],
+      "fieldsSha256": "9dd2b4d89544eeeb870fab1c3e3fab5f9975e6a505991168b6525405e8d28408",
       "file": "noitaTerrain03.binpack",
       "key": "noitaTerrain03",
       "label": "Surface",
@@ -4195,8 +4223,8 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -1518.5,
-        -738,
+        -1522.5,
+        -739,
         0
       ],
       "spawnSupported": true
@@ -4206,6 +4234,7 @@
         -512,
         -256
       ],
+      "fieldsSha256": "4638273a34b64712b04bfc682822068bb4d2e20f6e856439247a1c54501555f3",
       "file": "noitaTerrain04.binpack",
       "key": "noitaTerrain04",
       "label": "Surface",
@@ -4227,6 +4256,7 @@
         -256,
         0
       ],
+      "fieldsSha256": "9f586ac6bd60bfbe6edaeed266f1ba9c8d45c9c202184ca029a9fea45563eec4",
       "file": "noitaTerrain05.binpack",
       "key": "noitaTerrain05",
       "label": "Surface",
@@ -4248,6 +4278,7 @@
         0,
         256
       ],
+      "fieldsSha256": "729155e9523c05d0efaceb8f3626abd271fc50d8eb2e3da5af7599d0f562aed9",
       "file": "noitaTerrain06.binpack",
       "key": "noitaTerrain06",
       "label": "Mines",
@@ -4269,6 +4300,7 @@
         256,
         512
       ],
+      "fieldsSha256": "164924bd1027f6d84bf3f41bf2ed32dd89837c7d665a38f08edbadc93aa00e2d",
       "file": "noitaTerrain07.binpack",
       "key": "noitaTerrain07",
       "label": "Mines",
@@ -4279,8 +4311,8 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        209.5,
-        432,
+        300.5,
+        408,
         0
       ],
       "spawnSupported": true
@@ -4290,6 +4322,7 @@
         512,
         768
       ],
+      "fieldsSha256": "162332c3d111dd4598b83b9effe7d2593355206af9d0c075f3ed56161516746d",
       "file": "noitaTerrain08.binpack",
       "key": "noitaTerrain08",
       "label": "Mines",
@@ -4311,6 +4344,7 @@
         768,
         1024
       ],
+      "fieldsSha256": "067cecbbd76a25e2463be470b5474de14bff75e446251513112b495eb0c88581",
       "file": "noitaTerrain09.binpack",
       "key": "noitaTerrain09",
       "label": "Mines",
@@ -4332,6 +4366,7 @@
         1024,
         1280
       ],
+      "fieldsSha256": "c65cc94e4aaa2d0a90cc23a30f593d2b9067d907e2bbfa1dd323dbce044469e8",
       "file": "noitaTerrain10.binpack",
       "key": "noitaTerrain10",
       "label": "Holy Mountain",
@@ -4353,6 +4388,7 @@
         1280,
         1536
       ],
+      "fieldsSha256": "50f9c5b68dc51b3f07b76281bd937c180996af60d7d2d656d3b3a24b85590093",
       "file": "noitaTerrain11.binpack",
       "key": "noitaTerrain11",
       "label": "Holy Mountain",
@@ -4374,6 +4410,7 @@
         1536,
         1792
       ],
+      "fieldsSha256": "6f9a7abbfb5111fa013a036ad737e8fd6204270dd74d6a8034eefbbb145ebccc",
       "file": "noitaTerrain12.binpack",
       "key": "noitaTerrain12",
       "label": "Coal Pits",
@@ -4395,6 +4432,7 @@
         1792,
         2048
       ],
+      "fieldsSha256": "f5228e071cb7a331c943ac41e688aefc485d64249f726bea72b9ff665882462a",
       "file": "noitaTerrain13.binpack",
       "key": "noitaTerrain13",
       "label": "Coal Pits",
@@ -4416,6 +4454,7 @@
         2048,
         2304
       ],
+      "fieldsSha256": "6447596716263f52e250d1aebb1add12cc9066e2604683059b9d16a1aa18d665",
       "file": "noitaTerrain14.binpack",
       "key": "noitaTerrain14",
       "label": "Coal Pits",
@@ -4437,6 +4476,7 @@
         2304,
         2560
       ],
+      "fieldsSha256": "838ca2f5ed7ffa629f67a9536f46a8273eea330dce8085336673b5559358c509",
       "file": "noitaTerrain15.binpack",
       "key": "noitaTerrain15",
       "label": "Coal Pits",
@@ -4458,6 +4498,7 @@
         2560,
         2816
       ],
+      "fieldsSha256": "21b13b3df7a71c324768ee3f960fdf24d8089e9f6a5ef4e6b87fac9a5293d513",
       "file": "noitaTerrain16.binpack",
       "key": "noitaTerrain16",
       "label": "Holy Mountain",
@@ -4468,7 +4509,7 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -288.5,
+        -287.5,
         2640,
         0
       ],
@@ -4479,6 +4520,7 @@
         2816,
         3072
       ],
+      "fieldsSha256": "04a0155d02d3f750d289ad3adbb0978e939b5e305ea7f58a6c797877d0d58b66",
       "file": "noitaTerrain17.binpack",
       "key": "noitaTerrain17",
       "label": "Holy Mountain",
@@ -4500,6 +4542,7 @@
         3072,
         3328
       ],
+      "fieldsSha256": "71eb06b6e3f865fa0590758c229f9341d40d6a91ba0b1dd8ca04d9562907fd46",
       "file": "noitaTerrain18.binpack",
       "key": "noitaTerrain18",
       "label": "Snowy Depths",
@@ -4521,6 +4564,7 @@
         3328,
         3584
       ],
+      "fieldsSha256": "31aa14b464adfd4499ecf19a2789e113ea341825da7bca4e6724eb657a165982",
       "file": "noitaTerrain19.binpack",
       "key": "noitaTerrain19",
       "label": "Snowy Depths",
@@ -4531,8 +4575,8 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -858.5,
-        3437,
+        -900.5,
+        3433,
         0
       ],
       "spawnSupported": true
@@ -4542,6 +4586,7 @@
         3584,
         3840
       ],
+      "fieldsSha256": "69b080936dc5fabbf40305b092906a114aadff9bdb414454896d0aaa4b37fc41",
       "file": "noitaTerrain20.binpack",
       "key": "noitaTerrain20",
       "label": "Snowy Depths",
@@ -4552,7 +4597,7 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -490.5,
+        -489.5,
         3748,
         0
       ],
@@ -4563,6 +4608,7 @@
         3840,
         4096
       ],
+      "fieldsSha256": "758d7ccce532d9876e8541a2bb0f4b1ed79af4ef8c97539d132bc190fbe36c9b",
       "file": "noitaTerrain21.binpack",
       "key": "noitaTerrain21",
       "label": "Snowy Depths",
@@ -4584,6 +4630,7 @@
         4096,
         4352
       ],
+      "fieldsSha256": "015b532678210865857814ae433f436142602fd091c42a18b99947ac09d57f37",
       "file": "noitaTerrain22.binpack",
       "key": "noitaTerrain22",
       "label": "Snowy Depths",
@@ -4605,6 +4652,7 @@
         4352,
         4608
       ],
+      "fieldsSha256": "d02075fed1fb610c11de104f766e64c97469554cd3e99da3aad62bd58ea18465",
       "file": "noitaTerrain23.binpack",
       "key": "noitaTerrain23",
       "label": "Snowy Depths",
@@ -4615,7 +4663,7 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -561.5,
+        -559.5,
         4568,
         0
       ],
@@ -4626,6 +4674,7 @@
         4608,
         4864
       ],
+      "fieldsSha256": "9016dcf5cd438f44b0b2aa96c62eb7ea82e0af4ffd905ee032c90f7f4c67ce73",
       "file": "noitaTerrain24.binpack",
       "key": "noitaTerrain24",
       "label": "Holy Mountain",
@@ -4647,6 +4696,7 @@
         4864,
         5120
       ],
+      "fieldsSha256": "2820a9c9a37feab7d8f43698c0a6d4a5e36c784feda9dfb8d215408521824771",
       "file": "noitaTerrain25.binpack",
       "key": "noitaTerrain25",
       "label": "Holy Mountain",
@@ -4668,6 +4718,7 @@
         5120,
         5376
       ],
+      "fieldsSha256": "82a8109ca3656f33cfcdb3fb42670fa7603b39227e59356e3a3a3b0ff52fd4a1",
       "file": "noitaTerrain26.binpack",
       "key": "noitaTerrain26",
       "label": "Hiisi Base",
@@ -4689,6 +4740,7 @@
         5376,
         5632
       ],
+      "fieldsSha256": "fc96006a3c17c776de6eb97ea9619ef83d6d774075e0b1dae6871d5d94f3f3c0",
       "file": "noitaTerrain27.binpack",
       "key": "noitaTerrain27",
       "label": "Hiisi Base",
@@ -4710,6 +4762,7 @@
         5632,
         5888
       ],
+      "fieldsSha256": "bbba832cae752ecb12269c750227f1c6e12238526a8a121ea00a93338ee24355",
       "file": "noitaTerrain28.binpack",
       "key": "noitaTerrain28",
       "label": "Hiisi Base",
@@ -4731,6 +4784,7 @@
         5888,
         6144
       ],
+      "fieldsSha256": "e21af2d60d62436ded041223374662004aaaa43c34ea47be3ffb40be0e9a3c65",
       "file": "noitaTerrain29.binpack",
       "key": "noitaTerrain29",
       "label": "Hiisi Base",
@@ -4752,6 +4806,7 @@
         6144,
         6400
       ],
+      "fieldsSha256": "c1ca58fe9b7a1568687d104150ebf0123af17cef788a15d6c286575793da9fe8",
       "file": "noitaTerrain30.binpack",
       "key": "noitaTerrain30",
       "label": "Holy Mountain",
@@ -4762,7 +4817,7 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -288.5,
+        -287.5,
         6224,
         0
       ],
@@ -4773,6 +4828,7 @@
         6400,
         6656
       ],
+      "fieldsSha256": "87eec2604c3e267cb0554a7abdc976cb7244e25ed77f6898752a3c6f14fe8c26",
       "file": "noitaTerrain31.binpack",
       "key": "noitaTerrain31",
       "label": "Holy Mountain",
@@ -4794,6 +4850,7 @@
         6656,
         6912
       ],
+      "fieldsSha256": "677ce87c8b05a1b4144b82c24cbd89609011aede157c53c377e6f379ae24d33c",
       "file": "noitaTerrain32.binpack",
       "key": "noitaTerrain32",
       "label": "Underground Jungle",
@@ -4804,8 +4861,8 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -713.5,
-        6755,
+        -784.5,
+        6734,
         0
       ],
       "spawnSupported": true
@@ -4815,6 +4872,7 @@
         6912,
         7168
       ],
+      "fieldsSha256": "e2e03f1fb82a0b12880115695846df11ba07a5b504b8ae51f7eab3420db31d3d",
       "file": "noitaTerrain33.binpack",
       "key": "noitaTerrain33",
       "label": "Underground Jungle",
@@ -4836,6 +4894,7 @@
         7168,
         7424
       ],
+      "fieldsSha256": "6fbdeacc64cf9e76426c7bde3dc62b7ffc1716a70c5760b3aa116c047eca8c07",
       "file": "noitaTerrain34.binpack",
       "key": "noitaTerrain34",
       "label": "Underground Jungle",
@@ -4846,8 +4905,8 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -680.5,
-        7199,
+        -658.5,
+        7216,
         0
       ],
       "spawnSupported": true
@@ -4857,6 +4916,7 @@
         7424,
         7680
       ],
+      "fieldsSha256": "18113233cfd3adf219a2d3605cb196e6256b54f025774869bc1efcd92ec1e70a",
       "file": "noitaTerrain35.binpack",
       "key": "noitaTerrain35",
       "label": "Underground Jungle",
@@ -4878,6 +4938,7 @@
         7680,
         7936
       ],
+      "fieldsSha256": "20f69d659b53901bbbb603f3d74b1bf15e328539817e6fea6736ec2dd767e414",
       "file": "noitaTerrain36.binpack",
       "key": "noitaTerrain36",
       "label": "Underground Jungle",
@@ -4899,6 +4960,7 @@
         7936,
         8192
       ],
+      "fieldsSha256": "2df1d2680638cf3697b2a97c91091e0632c5cb4bfd67a8e64738481ab639a7ba",
       "file": "noitaTerrain37.binpack",
       "key": "noitaTerrain37",
       "label": "Underground Jungle",
@@ -4909,8 +4971,8 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -699.5,
-        8076,
+        -643.5,
+        7968,
         0
       ],
       "spawnSupported": true
@@ -4920,6 +4982,7 @@
         8192,
         8448
       ],
+      "fieldsSha256": "ea9b016fdae0e800a406a57f799588436580ab415d248271f14d00c99de76aa8",
       "file": "noitaTerrain38.binpack",
       "key": "noitaTerrain38",
       "label": "Holy Mountain",
@@ -4941,6 +5004,7 @@
         8448,
         8704
       ],
+      "fieldsSha256": "afc12a7278c5aa446a700babdc4da0a05c5e029cca215e41eafe0dd8f63dd411",
       "file": "noitaTerrain39.binpack",
       "key": "noitaTerrain39",
       "label": "Holy Mountain",
@@ -4962,6 +5026,7 @@
         8704,
         8960
       ],
+      "fieldsSha256": "419669c60af11e62484fb3acef77c2e0abd0ed71f1f06223e3c4c012e823bc71",
       "file": "noitaTerrain40.binpack",
       "key": "noitaTerrain40",
       "label": "Vault",
@@ -4983,6 +5048,7 @@
         8960,
         9216
       ],
+      "fieldsSha256": "8036109834d7feaa3b1bfe7e6dd6db49a3910c37f7e9d16ad75ff83889549e01",
       "file": "noitaTerrain41.binpack",
       "key": "noitaTerrain41",
       "label": "Vault",
@@ -5004,6 +5070,7 @@
         9216,
         9472
       ],
+      "fieldsSha256": "7b3dd9dbbf9f2260204469380eb61b66cf0c193431be3064351ca36e6741e1e6",
       "file": "noitaTerrain42.binpack",
       "key": "noitaTerrain42",
       "label": "Vault",
@@ -5025,6 +5092,7 @@
         9472,
         9728
       ],
+      "fieldsSha256": "3c7dc687d1688663512a533bb16bc72935c7533f83220b358fd6dc03febaf519",
       "file": "noitaTerrain43.binpack",
       "key": "noitaTerrain43",
       "label": "Vault",
@@ -5035,7 +5103,7 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -672.5,
+        -670.5,
         9679,
         0
       ],
@@ -5046,6 +5114,7 @@
         9728,
         9984
       ],
+      "fieldsSha256": "b3b61f94b84825e907adc8a4a650e3071f64e445c13f79e136952b2af57877a1",
       "file": "noitaTerrain44.binpack",
       "key": "noitaTerrain44",
       "label": "Vault",
@@ -5056,7 +5125,7 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -639.5,
+        -638.5,
         9777,
         0
       ],
@@ -5067,6 +5136,7 @@
         9984,
         10240
       ],
+      "fieldsSha256": "3f245e4017b601042c468c2854a3d2d3dd813211961a4fc5fa6ba2684ab43ebf",
       "file": "noitaTerrain45.binpack",
       "key": "noitaTerrain45",
       "label": "Vault",
@@ -5088,6 +5158,7 @@
         10240,
         10496
       ],
+      "fieldsSha256": "5a032f5a1e5443a2c6087cb7dd058f3c98f10a1e2fadc7f2dfd1e9a95c77757d",
       "file": "noitaTerrain46.binpack",
       "key": "noitaTerrain46",
       "label": "Holy Mountain",
@@ -5098,7 +5169,7 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        1247.5,
+        1248.5,
         10320,
         0
       ],
@@ -5109,6 +5180,7 @@
         10496,
         10752
       ],
+      "fieldsSha256": "15bab5652cd48a91ac71c7d6faa8494ce6f5852c9757a17b097aefaefbe231c4",
       "file": "noitaTerrain47.binpack",
       "key": "noitaTerrain47",
       "label": "Holy Mountain",
@@ -5130,6 +5202,7 @@
         10752,
         11008
       ],
+      "fieldsSha256": "8aca9200f75b983c1bd1e57e13d98c51a3c972b1a22a6b8cbcdc2c8950401b94",
       "file": "noitaTerrain48.binpack",
       "key": "noitaTerrain48",
       "label": "Temple of the Art",
@@ -5151,6 +5224,7 @@
         11008,
         11264
       ],
+      "fieldsSha256": "22542735f9ece194d9a2e2a02c67e142c77c286b950a68a844432b137d49e8f2",
       "file": "noitaTerrain49.binpack",
       "key": "noitaTerrain49",
       "label": "Temple of the Art",
@@ -5161,8 +5235,8 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -711.5,
-        11137,
+        -716.5,
+        11135,
         0
       ],
       "spawnSupported": true
@@ -5172,6 +5246,7 @@
         11264,
         11520
       ],
+      "fieldsSha256": "9e3ce7b7cae32c42a2693a1e5a058026fd8637c98a3d310707490cf399ee36b2",
       "file": "noitaTerrain50.binpack",
       "key": "noitaTerrain50",
       "label": "Temple of the Art",
@@ -5193,6 +5268,7 @@
         11520,
         11776
       ],
+      "fieldsSha256": "941ec1805301ed1a264d7bb5692afe42d3a167f1d81f5ffe8b826f1d00dd10b0",
       "file": "noitaTerrain51.binpack",
       "key": "noitaTerrain51",
       "label": "Temple of the Art",
@@ -5214,6 +5290,7 @@
         11776,
         12032
       ],
+      "fieldsSha256": "ba75bf2ddb517a5a063428d26763e7cf4fd329b644415bf3abb0400226bf2acb",
       "file": "noitaTerrain52.binpack",
       "key": "noitaTerrain52",
       "label": "Temple of the Art",
@@ -5235,6 +5312,7 @@
         12032,
         12288
       ],
+      "fieldsSha256": "1c3be9f54cacdc8f4d4586af582b0080f8788b5823d013ad692fa6d04b919d11",
       "file": "noitaTerrain53.binpack",
       "key": "noitaTerrain53",
       "label": "Temple of the Art",
@@ -5256,6 +5334,7 @@
         12288,
         12544
       ],
+      "fieldsSha256": "f9311ba62f81a42cb567d630f7adcc4576b434d49a733446988291dec64f50bf",
       "file": "noitaTerrain54.binpack",
       "key": "noitaTerrain54",
       "label": "Temple of the Art",
@@ -5277,6 +5356,7 @@
         12544,
         12800
       ],
+      "fieldsSha256": "d371621a6666f0a2bd4e4724c991c7523d55d0a150091cb0ed4080731531d152",
       "file": "noitaTerrain55.binpack",
       "key": "noitaTerrain55",
       "label": "Temple of the Art",
@@ -5287,7 +5367,7 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        -640.5,
+        -639.5,
         12597,
         0
       ],
@@ -5298,6 +5378,7 @@
         12800,
         13056
       ],
+      "fieldsSha256": "2209ff188ac23a88a9b87fec32c5abbf02e1684a4d25fa28618297776e23c2ff",
       "file": "noitaTerrain56.binpack",
       "key": "noitaTerrain56",
       "label": "Kolmi Arena",
@@ -5319,6 +5400,7 @@
         13056,
         13312
       ],
+      "fieldsSha256": "25cad5cdca2ea67db03daefe8b1063f342ce78703ce76db041d968e4b6f45bdf",
       "file": "noitaTerrain57.binpack",
       "key": "noitaTerrain57",
       "label": "Kolmi Arena",
@@ -5329,7 +5411,7 @@
       "spawnOpenView": true,
       "spawnPolicy": "native-floor",
       "spawnSource": [
-        1789.5,
+        1790.5,
         13145,
         0
       ],
@@ -5340,6 +5422,7 @@
         13312,
         13568
       ],
+      "fieldsSha256": "e221c698fbbb9de93a6d702d08dc2c5012dd658c272a34769a5388a83b6a2c35",
       "file": "noitaTerrain58.binpack",
       "key": "noitaTerrain58",
       "label": "Kolmi Arena",
@@ -5347,20 +5430,21 @@
       "sha256": "891e602ebe4f1def77379b360cf3c3c1da05bc170eda8e055431eebf97966c35",
       "sourceHeight": 320,
       "sourceTop": 13280,
-      "spawnOpenView": false,
-      "spawnPolicy": "native-floor",
+      "spawnPolicy": "hazardous-streaming-only",
       "spawnSource": [
-        4037.5,
+        2755.5,
         13286,
         0
       ],
-      "spawnSupported": true
+      "spawnSupported": false,
+      "warning": "Native lava band; entered by source-continuous streaming, not a safe starting scene"
     },
     {
       "core": [
         13568,
         13824
       ],
+      "fieldsSha256": "61e849582a04d5a26a230f7de9e84f03ff59849fee3978b8085f76dc365ccce6",
       "file": "noitaTerrain59.binpack",
       "key": "noitaTerrain59",
       "label": "Kolmi Arena",
@@ -5382,6 +5466,7 @@
         13824,
         13888
       ],
+      "fieldsSha256": "674aeaeb4a0629c67841903246843edf13dee4cb5111000911dc08e651f4aa1e",
       "file": "noitaTerrain60.binpack",
       "key": "noitaTerrain60",
       "label": "Kolmi Arena",
@@ -27283,15 +27368,19 @@
         "source_bytes": 1084
       }
     ],
-    "compiler_sha256": "9284cd9d7fa7e6acbc7e351ffd4247940dae22874120273ab7e22564fb0abab3",
+    "compiler_sha256": "4921fd29c956f1f21e8c2ba657b9f823c94d94be9646b2b7d97085ae9dcef08f",
     "configuration": [
       {
         "path": "noita-terrain-source.json",
-        "sha256": "377ba7aa11306cd6a494772e74fc7f9f941f2102327e6cd0e773439b2d16e456"
+        "sha256": "d96b9cdb4f53ef225241103f0cf6fc31fdb90b47ed715bca9a42a8ecb66655df"
       },
       {
         "path": "noita-terrain-materials.json",
-        "sha256": "c336b71f25607b8184a214d02b543906ae8e075d726592de23a4e81cbb15941c"
+        "sha256": "669ae6f1d762b6c541a17920032bff02bd67d66bf4e1984fe860c792323ec6a0"
+      },
+      {
+        "path": "noita-terrain-looks.json",
+        "sha256": "5999d74a175647360e25a6e2d7a2c16b1585c2684c00fe447fb19df6474e4477"
       }
     ],
     "decoder_sha256": "905f9c54b40110d3d29eef8417127ff0f63c50afef9bff085aeaaf7d87a3d563",
@@ -31066,5 +31155,5 @@
     -76,
     0
   ],
-  "version": 1
+  "version": 2
 }

@@ -15,7 +15,7 @@ import {createWorldVolume,worldFrameValues,decodeWorldFeedback} from '../src/gfx
 import {createWorldAppearance} from '../src/gfx/worldAppearance.js';
 import {WorldSunParams,WORLD_SUN_PITCH,worldSunProjection,worldSunTile,worldSunSlot,worldSunFeedbackWords,worldSunResolve} from '../src/world/worldSun.js';
 const hash=s=>createHash('sha256').update(s).digest('hex');
-test('136 independent production Box hashes plus Test aliases, explicit Box defaults and layouts remain identical',()=>{
+test('184 independent production Box hashes plus Test aliases, explicit Box defaults and layouts remain identical',()=>{
   const hashes=JSON.parse(readFileSync(new URL('./fixtures/world-backend-box-hashes.json',import.meta.url)));
   for(const sourceAppearance of [false,true])for(const size of [32,128]){
     const g={nx:size,ny:size,nz:size,sourceAppearance,sourceGrid:[384,16,128]};
@@ -33,7 +33,7 @@ test('136 independent production Box hashes plus Test aliases, explicit Box defa
   assert.deepEqual(VOLUME_LAYOUTS(),VOLUME_LAYOUTS({backend:'box'}));assert.deepEqual(PICK_LAYOUTS(),PICK_LAYOUTS({backend:'box'}));
   assert.throws(()=>volumeFrag({nx:32,ny:32,nz:32},{backend:'reduced'}));
 });
-test('180 actual world view/detail/curved/source/height/pick layouts and Naga modules including Test',()=>{
+test('228 actual world view/detail/curved/source/height/pick layouts and Naga modules including Test',()=>{
   const naga=spawnSync('naga',['--version'],{encoding:'utf8'}); assert.equal(naga.status,0,'install the CPU naga CLI for this gate');
   const dir=mkdtempSync('/tmp/tpt-world-backend-naga-');let n=0;
   try{for(const c of worldChecks()){
@@ -49,7 +49,7 @@ test('180 actual world view/detail/curved/source/height/pick layouts and Naga mo
     const result=spawnSync('naga',[path,`${dir}/out.spv`],{encoding:'utf8'});
     assert.equal(result.status,0,`${c.name}\n${result.stdout}\n${result.stderr}`);n++;
   }}finally{rmSync(dir,{recursive:true,force:true});}
-  assert.equal(n,180);console.log(`Naga: ${n} actual world modules passed`);
+  assert.equal(n,228);console.log(`Naga: ${n} actual world modules passed`);
 });
 test('one continuous full tracer, intrinsic budgets, exact optics and sticky secondary misses',()=>{
   const g={nx:3072,ny:384,nz:1024,maxSteps:128,sourceAppearance:true,sourceGrid:[128,0,128]};

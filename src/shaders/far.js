@@ -1353,7 +1353,7 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
   } else {
   sky = farSkyOpen(p + vec3f(0.0, FAR_SKY_LIFT, 0.0));
   // the ripples, as the window's water has them (liquid.js), so its sea carries on past the window
-  cartoon = FU.materialStyle > 0.5 && cozyWater(lid);
+  cartoon = FU.materialStyle == 1.0 && cozyWater(lid);
   var ripple = geometric;
   if (cartoon) { ripple = cozyWaterNormal(p, geometric, footprint(p)); }
   else { ripple = liquidRipple(p, geometric); }

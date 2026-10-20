@@ -90,6 +90,7 @@ jobs:
       - run: node tools/check-normal-mapped-surfaces.mjs
       - run: node tools/wood-endgrain-cpu-check.mjs
       - run: node tools/check-cozy-materials.mjs   # CPU artwork, shader-view selection and water scope
+      - run: node tools/check-noita-materials.mjs --validate-wgsl   # CPU Noita view: measured looks through the real WGSL, Descent variant labels, Naga
       - run: node tools/check-ready-volume-view.mjs   # keep terrain visible while a replacement shader compiles
       - run: node tools/check-appearance.mjs && node tools/check-far-appearance.mjs
       - run: node tools/check-island-appearance.mjs && node tools/check-construction-appearance.mjs && node tools/check-wang-appearance.mjs

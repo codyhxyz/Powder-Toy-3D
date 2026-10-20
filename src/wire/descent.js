@@ -49,7 +49,7 @@ export function createTerrainPersistence() {
   const cache = new TerrainEditCache();
   let observed=null, epoch=null, scope=null, pending=false, incomplete=null;
   const identity = (win) => JSON.stringify([win.scene.fold?.config, win.P.seed,
-    DESCENT_LEVELS.map(l=>l.sourceRegion.sha256)]);
+    DESCENT_LEVELS.map(l=>[l.sourceRegion.sha256,l.sourceRegion.fieldsSha256])]);
   const observe = (win) => { observed=win; epoch=win?.epoch; };
   return {
     cache,

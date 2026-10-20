@@ -7,6 +7,10 @@ python3 tools/import-noita-terrain.py --decoder tools/noita-save-decode.py
 NOITA_DECODER_PATH=tools/noita-save-decode.py python3 tools/import-noita-terrain-test.py
 ```
 
+Each binpack (v2) holds the native plane, the inflation
+depth plane and the per-block backdrop plane; `sha256` covers the native plane only,
+`fieldsSha256` the other two. The inflation pass takes about a minute on a laptop.
+
 Requires numpy and Pillow. The decoder is integrated separately; use `--decoder`
 and `NOITA_DECODER_PATH` to point to that file before integration. `--inventory`
 decodes and reports without publishing. `--world` / `--wak` override local paths.

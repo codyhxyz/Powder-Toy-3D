@@ -52,7 +52,8 @@ for r in route['regions']:
     a, b = max(origin[1], r['core'][0]), min(origin[1]+512, r['core'][1])
     if a >= b:
         continue
-    raw = gzip.decompress((ROOT / 'public/local-maps/noita-terrain' / r['file']).read_bytes())
+    # Native plane only: v2 packs append the inflation depth and backdrop planes.
+    raw = gzip.decompress((ROOT / 'public/local-maps/noita-terrain' / r['file']).read_bytes())[:r['sourceHeight'] * config['fold']['sourceWidth']]
     assert sha(raw) == r['sha256']
     cells = np.frombuffer(raw, np.uint8).reshape(r['sourceHeight'], config['fold']['sourceWidth'])
     x = origin[0]-config['fold']['sourceMinX']

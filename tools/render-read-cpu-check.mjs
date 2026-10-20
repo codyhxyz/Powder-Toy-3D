@@ -44,14 +44,17 @@ for (const code of variants) {
     let s = surfField(p);
     let band = CH_CUBIC * select(vec4f(0.0), vec4f(1.0), s > vec4f(CUBIC_LO)) * select(vec4f(0.0), vec4f(1.0), s < vec4f(CUBIC_HI));
     if (all(band == vec4f(0.0))) { return s; }
-    let thin = fieldTex(tFT, p);
-    let w = band * max(thin, vec4f(cubicClose(p)));
+    let close = cubicClose(p);
+    var w = band * close;
+    if (close < 1.0) { w = band * max(fieldTex(tFT, p), vec4f(close)); }
     if (all(w == vec4f(0.0))) { return s; }
     return mix(s, fieldCubic(tFS, p), w);
-  `), 'surfSample band gate and mixing must remain unchanged');
+  `), 'surfSample band gate and mixing must remain unchanged (the thin mask is in [0, 1], so fully close it is skipped)');
   assert.match(code, /const SURF_ROOT_STEPS: i32 = 5;/);
-  assert.equal((body(code, 'surfNormal').match(/surfChannel\(/g) ?? []).length, 10, 'six liquid + four opaque normal taps');
-  assert.equal((body(code, 'fieldCubic').match(/textureSampleLevel\(/g) ?? []).length, 8);
+  assert.equal((body(code, 'surfNormal').match(/surfField\(/g) ?? []).length, 10, 'six liquid + four opaque trilinear normal taps');
+  assert.equal((body(code, 'surfNormal').match(/fieldCubicGrad\(/g) ?? []).length, 1, 'the cubic share takes the B-spline\'s analytic gradient');
+  assert.match(body(code, 'fieldCubic'), /return cubicFetch8\(/);
+  assert.equal((body(code, 'cubicFetch8').match(/textureSampleLevel\(/g) ?? []).length, 8);
 }
 console.log(`PASS generated shader invariants: ${variants.length} base/near, straight/curved, cube/wide variants`);
 

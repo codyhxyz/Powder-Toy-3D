@@ -1,5 +1,6 @@
 import { liquidGLSL } from './liquid.js';
 import { cozySurfaceWGSL } from './cozy.js';
+import { noitaSurfaceWGSL } from './noita.js';
 import { sourceShadeWGSL, sourceShadeFallbackWGSL } from './sourceAppearance.js';
 import { SOURCE_APPEARANCE_ENABLED } from '../../gfx/sourceAppearance.js';
 import { liquidDetailGLSL } from './liquidDetail.js';
@@ -807,6 +808,7 @@ fn matFlat(id: i32, T: f32, ctype: f32) -> Mat {
 // The look of element id at world point p (grid units) on a surface with
 // normal n, temperature T (°C). fp = pixel footprint (grid units) for LOD.
 ${cozySurfaceWGSL}
+${noitaSurfaceWGSL}
 fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
   if (sourceEnabled()) {
     let original = sourceMaterial(id, p, n);
@@ -823,7 +825,8 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
   }
   // anything hot glows (hotEmit, once the texture is known); lava does its own thing
   if (FU.matDetail < 0.5) { return matFlat(id, T, ctype); }   // (no texture: the cells' own glow)
-  if (FU.materialStyle > 0.5 && cozySupported(id, ctype)) { return cozyMat(id, p, n, T, ctype, fp); }
+  if (FU.materialStyle == 2.0 && noitaSupported(id, ctype)) { return noitaMat(id, p, n, T, ctype, fp); }
+  if (FU.materialStyle == 1.0 && cozySupported(id, ctype)) { return cozyMat(id, p, n, T, ctype, fp); }
   var m = matBase(id);
 
   // Scale: a cell is CELL_M (src/scale.js). Frequencies below are cycles (or
@@ -946,6 +949,14 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     m.g = pm * (tilt + gEdge) + (1.0 - pm) * lw * GRIT_H * gt.yzw + PEB_MOTTLE_H * gr.yzw;
     m.cav = mix(MEAN, mix(PEB_VOID_CAV, (1.0 - EDGE_CAV * bev) * depth, pm), lw);
     m.rough += (PEB_ROUGH_VAR * (c.w - 0.5) - PEB_POLISH * pm) * lw;
+    // Specular AA (as for leaves): the chips' faces a pixel covers but can't
+    // show widen the highlight instead of vanishing as they fade (lw), here
+    // and where the pebbles drawn as geometry hand over (gfx/grains.js). Per
+    // axis: a uniform tilt of ±TILT (variance TILT² / 3) plus the ridge's
+    // RIDGE along a random direction within the surface (RIDGE² / 2); the
+    // narrow bevels are left out.
+    const CHIP_SLOPE_VAR: f32 = TILT * TILT / 3.0 + 0.5 * RIDGE * RIDGE;
+    m.slopeVar = CHIP_SLOPE_VAR * unresolvedShare(PEBBLE_F, lw, fp);
   } else if (id == E_SNOW) {
     // Old powder snow: soft drifts, clumps and (up close) a sugary crust of
     // crystals; the sparkle comes from the glints.
@@ -2198,8 +2209,15 @@ const realisticBody = (d) => /* wgsl */ `
   grainEvent(ci, id, a, ro, rd, s, s + 1.0, acc.xyz, vec3f(1.0), &ev, CH_GRANULAR, &tEv, &anyHit, &hitPos);
   if (ev == EV_GRAIN) { hitK = 3; hp = ro + rd * tEv; }
   acc += vec4f(hitPos, gAltW + select(0.0, 1.0, anyHit || gAltGeom) + gAltCol.x + gAltTrans.y + gAltRd.z + gAltP.x + f32(gAltA.x + gAltK));` : ''}
-  var sf: Surf;
-  if (hitK == 1) { sf = crispSurf(ci, id, a, hp, nh); }${GRAINS_ANY(d) ? `
+  var sf: Surf;${GRAINS_ANY(d) ? `
+  // as the tracer: a clod is shaded as a crisp grain (gfx/grains.js grainCrisp)
+  var cc = ci;
+  var cid = id;
+  var ca = a;
+  let clod = hitK == 3 && grainCrisp(gHitK, gHitA, hp, &cc, &cid, &ca, &nh);
+  if (clod) { hitK = 1; }
+  if (hitK == 1) { sf = crispSurf(cc, cid, ca, hp, nh); if (clod) { clodFinish(&sf); } }` : `
+  if (hitK == 1) { sf = crispSurf(ci, id, a, hp, nh); }`}${GRAINS_ANY(d) ? `
   else if (hitK == 3) { sf = grainSurf(gHitA, gHitK, hp, rd); }` : ''}
   else { sf = gatherSurf(hp, surfNormal(hp, CH_GRANULAR, -rd), CH_GRANULAR); }
   acc += vec4f(shadeSurf(sf, rd), 1.0);${GRAINS_ANY(d) ? `
