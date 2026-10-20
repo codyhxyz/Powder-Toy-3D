@@ -313,8 +313,8 @@ ${COLUMN_SHOCK.map(r => `  if (id == ${r.id}u) { return ${r.speed}; }`).join('\n
 // A run that landed at u cells/tick with its bottom cell at b: V1 react.js sets a charge off on a hit of
 // ½·μ·u² past its shock, μ the mover's own mass on a solid and the reduced mass on loose matter (common.js
 // hitKE: masses as V1's densities, a cell each), never on its own element or a gas (isGasLike). Its shock
-// is ½·m·colShockSpeed², so it goes off when (μ/m)·u² reaches colShockSpeed². The box's floor is a wall
-// only with solid edges.
+// is ½·m·colShockSpeed², so it goes off when (μ/m)·u² reaches colShockSpeed². Under the box's floor is a
+// WALL only with solid edges (V1 react.js: past a solid edge a face is WALL; past a void one, still air).
 fn colShockLand(x: i32, z: i32, b: i32, u: f32) {
   let id = cid(colCell(x, b, z));
   let shock = colShockSpeed(id);

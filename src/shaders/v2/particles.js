@@ -256,7 +256,7 @@ fn dShockHit(t: u32, s: u32, p: DParticle, hit: Material) {
     atomicStore(&control[D_SET_OFF + t], p.id);
   }
 }
-// A charge landing on the box's solid edge, a wall (V1 react.js counts the box's walls as solid faces):
+// A charge landing on the box's solid edge (V1 react.js: past a solid edge a face is WALL, a solid):
 // the mover's own ½·m·u² (hitKE against a solid), the boundary landing's energy. Set off, it lands with its
 // detonation as from any hit (deposit, react).
 fn dShockWall(t: u32, pid: u32, energy: f32, particleId: u32) {
