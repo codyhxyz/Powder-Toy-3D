@@ -132,6 +132,8 @@ if(isLiq(m.core) && r.motion.w!=0.0) {
 }
 if(any(m.core!=before.core) || m.bank!=before.bank) {
  noteEnergySource(p,energySub(energyOf(m),energyOf(before)));
+ // matter made in air is unpainted (V1's move left that cell 0); retyped matter keeps its paint, as V1's weather edit
+ if(cid(before.core)==0u && cid(m.core)!=0u) { setDeco(s,0u); }
  storeMaterial(s,before,m);
  for(var z=-1;z<=1;z++) { for(var y=-1;y<=1;y++) { for(var x=-1;x<=1;x++) { markBusy(p+4*vec3i(x,y,z)); } } }
 }

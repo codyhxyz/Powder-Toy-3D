@@ -12,6 +12,8 @@ import {
   TICK_HZ, FULL, V2, QUIET_TICKS,
 } from '../shaders/v2.js';
 import { pairOrder } from '../shaders/v2/columns.js';
+import { auxLayout } from '../shaders/v2/state.js';
+import { PARTICLE_CAP } from './dynamics-reference.js';
 
 // Opt-in box physics. Compact cells are authoritative; read-only presentation
 // consumes them directly. Legacy A/B are a lazy, lossy compatibility cache for
@@ -64,6 +66,8 @@ export class PhysicsV2 {
     this.sim = sim;
     this.modeSettings = nativeModes(sim);
     this.settingsSignature = modeSignature(this.modeSettings);
+    // the decoration V1 carried until now (src/sim.js decoPlane), taken before this owner holds it
+    const legacyPlane = sim.compact ? null : sim.decoPlane;
     sim.compact = sim.compactOwner = this;
     this.legacyPending = true;
     this.layout = v2ActLayout(g);
@@ -82,7 +86,10 @@ export class PhysicsV2 {
     const S = GPUBufferUsage.STORAGE, CS = GPUBufferUsage.COPY_SRC, CD = GPUBufferUsage.COPY_DST;
     const buf = (label, size, usage = S | CS | CD) => gpu.createBuffer({ label: `sim${sim.id} v2 ${label}`, size: Math.max(16, Math.ceil(size / 16) * 16), usage });
     this.cells = buf('cells', g.slots * 16);
-    this.aux = buf('energy banks', g.slots * 4);
+    // the banks, then the decoration V2 carries (shaders/v2/state.js auxLayout)
+    this.auxLayout = auxLayout(g.slots, PARTICLE_CAP);
+    this.aux = buf('energy banks + decoration', this.auxLayout.words * 4);
+    if (legacyPlane) this._takePlane(legacyPlane);
     this.liquidScratch = buf('liquid snapshots', this.blockCompact?.bytes ?? g.slots * 16);
     this.events = buf('material requests', g.slots * 4);
     this.jetMask = buf('liquid face demands', v2DemandWords(g) * 4);
@@ -253,7 +260,8 @@ export class PhysicsV2 {
   // The tick's params: its number, which busy words it reads (the last tick's) and writes, its offset.
   _params(t) {
     const A = this.layout;
-    return { ...nativeModes(this.sim), tick: t, busyIn: t & 1 ? A.busy0 : A.busy1, busyOut: t & 1 ? A.busy1 : A.busy0, full: 0, offset: offsetOf(t), preserveLegacyMarks: this.sim.compact === this ? 0 : 1 };
+    // deco: the moves carry the decoration plane (the layer may hold paint: src/sim.js decoCarried)
+    return { ...nativeModes(this.sim), deco: this.sim.decoCarried ? 1 : 0, tick: t, busyIn: t & 1 ? A.busy0 : A.busy1, busyOut: t & 1 ? A.busy1 : A.busy0, full: 0, offset: offsetOf(t), preserveLegacyMarks: this.sim.compact === this ? 0 : 1 };
   }
 
   // Records the import of what today's writers changed, if anything is pending (params: the next tick's).
@@ -295,8 +303,20 @@ export class PhysicsV2 {
     this.legacyNative = native;
   }
 
+  // ---- the decoration (src/deco.js) ----
+  // While this owner runs the box, the decoration plane is its own (aux, shaders/v2/state.js auxLayout):
+  // every V2 move carries it beside the banks. A switch of engines hands the plane over whole, once.
+  /** The decoration plane while V2 owns the box ({ buffer, offset, size } bytes: src/sim.js decoPlane). */
+  get decoPlane() { return { buffer: this.aux, offset: this.auxLayout.deco * 4, size: this.g.slots * 4 }; }
+  /** The particle pool's decoration words (one a pool slot), for the particle renderer. */
+  get particleDecoRange() { return { buffer: this.aux, offset: this.auxLayout.particleDeco * 4, size: (this.auxLayout.words - this.auxLayout.particleDeco) * 4 }; }
+  _takePlane(from) { const to = this.decoPlane; this.gpu.frame.copy(from.buffer, from.offset, to.buffer, to.offset, to.size); }
+  _givePlane(to) { const from = this.decoPlane; this.gpu.frame.copy(from.buffer, from.offset, to.buffer, to.offset, from.size); }
+
   activate() {
     if (this.sim.compact === this) return;
+    const legacyPlane = this.sim.compact ? null : this.sim.decoPlane;
+    if (legacyPlane) this._takePlane(legacyPlane);
     this.sim.compact = this;
     this.sim.pingPong?.(false);
     this.sync();
@@ -309,6 +329,8 @@ export class PhysicsV2 {
     if (this.sim.compact !== this) return;
     if (!this.gpu.failure) this.exportLegacy(false);
     this.sim.compact = null;
+    const legacyPlane = this.sim.decoPlane;
+    if (legacyPlane && !this.gpu.failure && !this.sim.disposed) this._givePlane(legacyPlane);
     // A presentation switch is not a state replacement. The retained owner
     // imports only sticky per-cell legacy writes, even after v1 activity consumes its marks.
     this.sim.noteWrite({ replaceState: false });
@@ -320,8 +342,9 @@ export class PhysicsV2 {
     const { sim, gpu, g } = this;
     if (aux && !this.aux) throw new Error('v2 state: auxiliary owner is unavailable');
     if (this.aux) {
+      // (the banks only: the decoration has its own undo, src/deco.js snapshot/restore)
       if (aux) gpu.frame.copy(aux, 0, this.aux, 0, g.slots * 4);
-      else gpu.frame.clear(this.aux);
+      else gpu.frame.clear(this.aux, 0, g.slots * 4);
     }
     gpu.frame.copy(snapshot, 0, this.cells, 0, g.slots * 16);
     gpu.frame.clear(this.liquidScratch);
@@ -442,7 +465,8 @@ export class PhysicsV2 {
     const { gpu, sim, g } = this;
     const meta = { dims: [g.nx, g.ny, g.nz], mode, tick: this.tick, acc: this.acc,
       frame: sim.frame, paints: sim.paints, certified: this.certified, writtenSinceTick: this.writtenSinceTick };
-    const reads = [this.cells, this.act, this.args, ...(this.aux ? [this.aux] : [])].map(b => gpu.readback.buffer(b, 0, b.size));
+    // (aux: its banks, the saved words; the decoration has its own save section, src/deco.js readDeco)
+    const reads = [this.cells, this.act, this.args, ...(this.aux ? [this.aux] : [])].map(b => gpu.readback.buffer(b, 0, b === this.aux ? g.slots * 4 : b.size));
     const [cells, activity, args, aux] = (await Promise.all(reads)).map(b => new Uint32Array(b));
     // GPU buffers may have alignment padding; the format owns only the logical words.
     return encodeV2State({ ...meta, cells: cells.subarray(0, g.slots * 4),

@@ -105,6 +105,8 @@ var<workgroup> wgMarked: array<u32,64>;
       let dest=atomicLoad(&control[D_FREE+rank]);
       particles[dest]=dParticle(vec3f(p+P.origin)+0.5-normalize(velocity)*0.499,velocity,dId(p,${JET_RULE}u),m); noteLive(dest);
       atomicStore(&control[D_HELD+dest],0u); atomicAdd(&control[0],1u);
+      // the whole cell flies, and its decoration with it; the air left behind holds none (shaders/move.js)
+      setParticleDeco(dest,decoOf(t)); setDeco(t,0u);
       storeMaterial(t,before,withEnergy(empty,rest));
     } else {
       // refused: the liquid stays and falls as a run, from rest

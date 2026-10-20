@@ -1,5 +1,5 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
-import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase } from './particles.js';
+import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase } from './particles.js';
 import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { E } from '../../elements.js';
 import { RAYS } from '../../rays.js';
@@ -8,6 +8,7 @@ import { EXTERNAL_BLAST_CAP, blastHeatBudgetWGSL } from '../../v2/externalBlast.
 import { strokeDistanceWGSL, atlasIndexWGSL } from '../passes.js';
 import { atlasDims } from '../common.js';
 import { fold } from '../../gpu/kernels.js';
+import { AIRBORNE_SLOT_MASK, AIRBORNE_BITS_SHIFT } from '../../v2/airborne.js';
 export { DynamicParams };
 // Native cells/bank/activity3 + events, particles, air, control, plans5.
 export const BLASTS_LAYOUT = storageLayout(5);
@@ -17,7 +18,8 @@ export const CHILD_PREFIX = CONTROL.PREFIX;
 export const SPAWN_PREFIX = CHILD_PREFIX + PARTICLE_CAP;
 export const RAY_REQUEST_CAP = 64;
 export const rayRequestBase = g => SPAWN_PREFIX + g.nbricks * 3;
-export const externalBlastBase = g => heldBase(g) + PARTICLE_CAP;
+// (after the airborne requests' count and per-slot words: particles.js airborneBase)
+export const externalBlastBase = g => airborneBase(g) + 1 + PARTICLE_CAP;
 export const externalParticleBase = g => externalBlastBase(g) + EXTERNAL_BLAST_CAP;
 export const externalAirBase = g => externalParticleBase(g) + PARTICLE_CAP*4;
 export const externalMaskBase = g => externalAirBase(g) + g.nbricks + 1;
@@ -393,6 +395,8 @@ fn dSpawn(slot: u32, rank: u32, m: Material, v: vec3f, rule: u32) -> bool {
   if (rank >= atomicLoad(&control[4])) { return false; }
   let dest = atomicLoad(&control[D_FREE+rank]); let p = cellOf(slot);
   particles[dest] = dParticle(vec3f(p+P.origin)+0.5,v,dId(p,rule),m); noteLive(dest);
+  // matter launched from a cell keeps that cell's decoration in flight (rays carry none)
+  setParticleDeco(dest,select(decoOf(slot),0u,cid(m.core)>=D_PHOTON));
   atomicStore(&control[D_HELD+dest],select(0u,P.sequence,P.mode==9u));
   atomicAdd(&control[0],1u); dWake(p); return true;
 }
@@ -413,6 +417,14 @@ export function blastsWGSL(g,nativeHead,stage) {
     }
   `);
   if (stage === 'reset') return h + main1(RESET_SELECTION);
+  // A flying packet's requests are its host cell's (native-contract.md requests): post what this
+  // tick's airborne react stage asked for (particles.js react), before the grid passes read them.
+  if (stage === 'airborneEvents') { const A = airborneBase(g); return h + main64(`
+    if (t >= D_CAP || atomicLoad(&control[${A}u]) == 0u) { return; }
+    let w = atomicExchange(&control[${A + 1}u + t], 0u); if (w == 0u) { return; }
+    let s = w & ${AIRBORNE_SLOT_MASK}u; let bits = w >> ${AIRBORNE_BITS_SHIFT}u;
+    events[s] |= bits; noteEvents(s, bits); dWake(cellOf(s));
+  `); }
   // Bricks noted as holding a request (noteEvents), for the first select. Only clears follow
   // it until the next tick's grid passes, so later batches could use it too; they select
   // through the previous batch's args instead (zero without work).
@@ -874,8 +886,10 @@ var<workgroup> childCounts: array<u32,64>;
         }
         // Bounded forcing supplies absolute velocity; ordinary impulses add to falling motion.
         let incoming=select(vec3f(0,-fallVelocity(before.core),0),vec3f(0),forcing || (plan.flags&32u)!=0u);
+        // (a cell launched whole leaves air, which holds no decoration: shaders/move.js)
         if (dSpawn(t,rank,packet,plan.velocity+incoming,P.sequence ^ 0x53504157u)) {
           after=remainder;
+          if (cid(after.core)==0u) { setDeco(t,0u); }
           if (forcing && (plan.flags&${PLAN.SLIDE}u)!=0u && P.gravMode==0u) { particles[atomicLoad(&control[D_FREE+rank])].position=dSlideStart(t); }
         }
         else { atomicAdd(&control[7],1u); if(forcing) { dWake(cellOf(t)); return; } } // authoritative grid fallback, never erase a failed launch
@@ -922,7 +936,7 @@ var<workgroup> childCounts: array<u32,64>;
       if (rank>=atomicLoad(&control[4])) { break; }
       let dest=atomicLoad(&control[D_FREE+rank]); let id=max(1u,dHash(parent.id ^ (P.tick*2654435761u) ^ ((child+1u)*0x9e3779b9u)));
       var born=parent; born.id=id; born.tail.z=0u; born.tail.x=${RAYS.NEUT_LIFE}u; born.velocity=dDir(id)*${f(RAYS.NEUT_V*60*CELL_M)};
-      particles[dest]=born; noteLive(dest); atomicStore(&control[D_HELD+dest],0u); atomicAdd(&control[0],1u); n--;
+      particles[dest]=born; noteLive(dest); setParticleDeco(dest,0u); atomicStore(&control[D_HELD+dest],0u); atomicAdd(&control[0],1u); n--;
     }
     particles[t].tail.z=n; atomicSub(&control[18],parent.tail.z-n);
   `);
@@ -941,7 +955,7 @@ var<workgroup> childCounts: array<u32,64>;
         m=Material(vec4u(D_PHOTON|(${RAYS.PHOTON_LIFE}u<<8u)|(medium<<24u),bitcast<u32>(1.0),bitcast<u32>(1.0),bitcast<u32>(1.0)),0i);
       }
       var velocity=P.vector; if (length(velocity)<0.000001) { velocity=dDir(seed)*${f(RAYS.NEUT_V*60*CELL_M)}; }
-      particles[slot]=dParticle(position,velocity,seed,m); noteLive(slot); atomicStore(&control[D_HELD+slot],0u); remaining--; atomicAdd(&control[0],1u);
+      particles[slot]=dParticle(position,velocity,seed,m); noteLive(slot); setParticleDeco(slot,0u); atomicStore(&control[D_HELD+slot],0u); remaining--; atomicAdd(&control[0],1u);
       let local=vec3i(floor(position))-P.origin; if (inGrid(local)) { dWake(local); }
       if (remaining==0u) { break; }
     }
@@ -985,7 +999,7 @@ var<workgroup> childCounts: array<u32,64>;
   `);
   throw new Error(`Unknown blast stage ${stage}`);
 }
-export const BLAST_STAGES = [...ALLOCATION_STAGES,'eventList','reset','select','pick','planCharges','normalizeCharges','damageCharges','finishCharges','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply','launchMark','launchCount','launchPrefix'];
+export const BLAST_STAGES = [...ALLOCATION_STAGES,'airborneEvents','eventList','reset','select','pick','planCharges','normalizeCharges','damageCharges','finishCharges','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply','launchMark','launchCount','launchPrefix'];
 
 export const WGSL_CHECK = BLAST_STAGES.map(stage => ({ name: `v2blasts_${stage}`, kind: 'compute',
   code: g => blastsWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,BLASTS_LAYOUT,'EMPTY'], tool: true }));

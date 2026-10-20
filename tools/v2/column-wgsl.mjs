@@ -54,11 +54,13 @@ const u = x => x >>> 0;
 
 /** A CPU grid running the emitted column passes. Cells are x + nx (z + nz y); bricks of 4³ for activity. */
 export class ColumnGrid {
-  constructor(nx, ny, nz, { gravity = 19.6, gravMode = 0, edge = 0, stillRadial = false } = {}) {
+  constructor(nx, ny, nz, { gravity = 19.6, gravMode = 0, edge = 0, stillRadial = false, deco = 0 } = {}) {
     // stillRadial: radial gravity as it was before columns.js RADIAL (liquids held still: the red variant)
     Object.assign(this, { nx, ny, nz, n: nx * ny * nz, tick: 0, stillRadial });
     this.cores = Array.from({ length: this.n }, () => new Uint32Array([L.makeMaterial(0, 20, 0).core[0], 0, 0, 0]));
     this.banks = new Int32Array(this.n);
+    // the decoration plane V2 keeps beside the banks (shaders/v2/state.js auxLayout: RGBA8 a cell)
+    this.deco = new Uint32Array(this.n);
     this.events = new Uint32Array(this.n);
     this.scratch = Array.from({ length: this.n }, () => new Uint32Array(4));
     this.demand = new Uint32Array(2 * this.n);
@@ -73,7 +75,7 @@ export class ColumnGrid {
     // the boundary ledger (open edges): what left the box, its mass and its exact carried energy
     this.boundary = { mass: 0, energy: 0n };
     this.jetBricks = new Uint8Array(this.nb); this.parts = []; this.poolCap = 65536; this.landed = 0;
-    this.P = { tick: 0, gravMode, gravity, edge, pairAxis: 0, pairParity: 0 };
+    this.P = { tick: 0, gravMode, gravity, edge, pairAxis: 0, pairParity: 0, deco };
     // loop edges (P.edge 2): mEdge wraps x and z (and y) around the box
     this.loop = edge === 2;
     this.ctx = this.#context();
@@ -123,6 +125,8 @@ export class ColumnGrid {
       min: Math.min, max: Math.max, abs: Math.abs, floor: Math.floor, ceil: Math.ceil, sqrt: Math.sqrt,
       clamp: (x, a, b) => Math.min(Math.max(x, a), b), select: (a, b, c) => (c ? b : a),
       slotOf, events: g.events,
+      // shaders/v2/state.js decoStorageWGSL's twins
+      decoOf: s => g.deco[s], setDeco: (s, d) => { g.deco[s] = d >>> 0; },
       loadCore: s => new Uint32Array(g.cores[s]), loadMaterial: s => ({ core: new Uint32Array(g.cores[s]), bank: g.banks[s] }),
       storeMaterial: (s, before, after) => {
         if (before.core.some((v, k) => v !== after.core[k]) || before.bank !== after.bank) g.touch(s);
@@ -360,7 +364,9 @@ export class ColumnGrid {
         if (this.parts.length < this.poolCap && speed > 0 && L.packetOwnedEnergy(m) === carried && L.energyFits(empty, rest)) {
           const out = L.withEnergy(empty, rest);
           this.cores[i] = new Uint32Array(out.core); this.banks[i] = out.bank; this.touch(i);
-          this.parts.push({ x: x + 0.5 - 0.499 * vx / speed, y: y + 0.5 - 0.499 * vy / speed, z: z + 0.5 - 0.499 * vz / speed, vx: vx / COLUMN.CELL_M, vy: vy / COLUMN.CELL_M, vz: vz / COLUMN.CELL_M, m });
+          // jets.js spawn: the cell's decoration flies with it, and the air it leaves holds none
+          const deco = this.P.deco ? this.deco[i] : 0; if (this.P.deco) this.deco[i] = 0;
+          this.parts.push({ x: x + 0.5 - 0.499 * vx / speed, y: y + 0.5 - 0.499 * vy / speed, z: z + 0.5 - 0.499 * vz / speed, vx: vx / COLUMN.CELL_M, vy: vy / COLUMN.CELL_M, vz: vz / COLUMN.CELL_M, m, deco });
         } else { this.cores[i] = ctx.zeroQ(c); this.touch(i); }
       }
     }
@@ -402,6 +408,8 @@ export class ColumnGrid {
     const e = L.energyOf(dst) + L.packetOwnedEnergy(q.m), next = { core, bank: dst.bank };
     if (!L.energyFits(next, e)) return false;
     const out = L.withEnergy(next, e);
+    // particles.js deposit: landing in air it brings its decoration back; into its own liquid the receiver keeps its
+    if (id === 0 && this.P.deco) this.deco[i] = q.deco ?? 0;
     this.cores[i] = new Uint32Array(out.core); this.banks[i] = out.bank; this.touch(i);
     this.markAt(x, y, z); this.landed++;
     return true;

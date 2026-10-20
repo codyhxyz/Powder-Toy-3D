@@ -200,6 +200,19 @@ fn makeMaterial(id: u32, temperature: f32, amount: u32, ct: u32) -> Material {
   return Material(withPayload(c, life), 0);
 }
 `;
+// The auxiliary buffer (PhysicsV2.aux), in u32 words: the signed energy banks (one a slot, the
+// saved state), then The Powder Toy's decoration as V2 carries it (src/deco.js: RGBA8 a slot, r in
+// the low byte; the plane sim.decoPlane names while V2 owns the box), then each particle-pool
+// slot's decoration (airborne matter keeps its paint: TPT's dcolour is the particle's own,
+// src/simulation/Particle.h). Paint rides every V2 move exactly as the bank does (V1's move,
+// shaders/move.js: a cell takes its content's source's word, and air holds none).
+export const auxLayout = (slots, particles) => ({ banks: 0, deco: slots, particleDeco: 2 * slots, words: 2 * slots + particles });
+export const decoStorageWGSL = /* wgsl */ `
+fn decoOf(slot: u32) -> u32 { return bitcast<u32>(banks[SLOTS + slot]); }
+fn setDeco(slot: u32, d: u32) { banks[SLOTS + slot] = bitcast<i32>(d); }
+fn particleDecoOf(i: u32) -> u32 { return bitcast<u32>(banks[2u * SLOTS + i]); }
+fn setParticleDeco(i: u32, d: u32) { banks[2u * SLOTS + i] = bitcast<i32>(d); }
+`;
 export const materialStorageWGSL = /* wgsl */ `
 @group(2) @binding(4) var<storage, read_write> banks: array<i32>;
 fn loadMaterial(slot: u32) -> Material { return Material(loadCore(slot), banks[slot]); }

@@ -131,7 +131,8 @@ assert.equal(sim.readHeader({ physical: true }).format, 3);
 assert.equal(sim.readHeader().format, 2, 'renderer and codec keep presentation semantics');
 
 owner.sync();
-const core = words(owner.cells), bank = words(owner.aux);
+// (the banks: aux's first slots words; the decoration planes follow, shaders/v2/state.js auxLayout)
+const core = words(owner.cells), bank = words(owner.aux).subarray(0, g.slots);
 for (let s = 0; s < g.slots; s++) {
   core.set([E.WATER | (1173 << 8), (s % 3 === 0 ? 1 : 0x12345) | ((s & 255) << 24), (0xbc003c00 ^ (s & 1023)) >>> 0, (0x80000000 | (s & 0x7bff)) >>> 0], s * 4);
   bank[s] = (0x80000000 + s * 997) >>> 0;

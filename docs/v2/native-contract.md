@@ -6,7 +6,14 @@ It preserves the smooth renderer and forbids a per-tick legacy conversion.
 ## State ownership
 
 - `PhysicsV2.cells`: 16 bytes per cell, existing brick-major slot order.
-- `PhysicsV2.aux`: one signed i32 energy bank per cell, stored in a GPUBuffer.
+- `PhysicsV2.aux`: one signed i32 energy bank per cell, stored in a GPUBuffer, followed by
+  TPT's decoration as V2 carries it (RGBA8 a cell, then RGBA8 a particle-pool slot:
+  `shaders/v2/state.js` `auxLayout`). Only the banks are saved here; the decoration keeps
+  its own save section and undo (`src/deco.js`), and `sim.decoPlane` names V2's plane while
+  V2 owns the box (taken from V1 at activation, handed back at suspend).
+- Decoration moves exactly as V1's move carries it (`shaders/move.js`): with every bank move
+  (column fall, block swaps, column water, jets, launches, deposits, wind), a receiver that
+  was air takes the source's paint, air holds none, and matter a reaction makes in air holds none.
 - `PhysicsV2.liquidScratch`: 16 transient bytes per cell. Never save this buffer.
 - `PhysicsV2.events`: one transient u32 request word per cell. Never save this buffer.
 - Core and bank are authoritative. Activity and clocks also require exact continuation snapshots.

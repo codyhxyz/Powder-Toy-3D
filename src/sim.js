@@ -1642,7 +1642,8 @@ export class Simulation {
     if (!this.deco && this.decoFactory) this.attachDeco(this.decoFactory(this));
     return this.deco;
   }
-  get decoPlane() { return this.sideDeco ? { buffer: this.moveSrc, offset: 0, size: this.g.slots * 4 } : null; }
+  // (while Physics V2 owns the box the plane is its own, which its moves carry: src/v2/physics.js decoPlane)
+  get decoPlane() { return this.sideDeco ? (this.compact?.decoPlane ?? { buffer: this.moveSrc, offset: 0, size: this.g.slots * 4 }) : null; }
   // Whether the move carries the plane this step: while the layer may hold
   // paint (deco.active; a layer without the flag always). An inactive
   // layer's plane is all 0, which the move would only permute.

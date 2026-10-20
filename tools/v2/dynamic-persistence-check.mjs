@@ -73,7 +73,7 @@ words(d.control)[shockBase(g)] = 73;
 owner.tick = 17; owner.acc = 0.375; sim.frame = 23; sim.paints = 11;
 const start = reads.length;
 const capture = captureNativeSnapshot(owner, 'v2');
-assert.equal(reads.length - start, 8, 'core/aux/activity/args and four dynamics copies enqueue before first await');
+assert.equal(reads.length - start, 9, 'core/aux/activity/args, four dynamics copies and the flying matter\'s decoration enqueue before first await');
 const oldCore = words(owner.cells).slice(), oldParticles = words(d.particles).slice();
 words(owner.cells).fill(0); words(d.particles).fill(0); d.airArchive.clear(); d.pendingOutside.clear(); d.rayRequests.clear();
 while (pending.length) pending.shift()();

@@ -31,7 +31,7 @@ import { STAGE } from '../../gpu/kernels.js';
 
 // Optical depth per cell of fully painted liquid or glass: a cell of it lets
 // e^-DECO_SIGMA (14%) through.
-const DECO_SIGMA = 2.0;
+export const DECO_SIGMA = 2.0;
 // Ceiling on how much brighter than the element's mean a textured point may
 // make its paint (the texture's highlights), and the luminance below which
 // a mean counts as black.
