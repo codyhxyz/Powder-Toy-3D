@@ -5,6 +5,7 @@ import { simModesGLSL, SIM_MODE_FIELDS } from '../../simModes.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { fold, MAX_WORKGROUPS } from '../../gpu/kernels.js';
 import { glf } from '../../glsl.js';
+import { RIPPLE_SLOPE, VNOISE_GRAD_VAR } from './liquid.js';
 
 // Close-up liquid detail (gfx/detail.js switches): what a liquid surface shows
 // once a pixel is a few millimetres across. Each part compiles in only with
@@ -134,16 +135,12 @@ export const CAP_LAMBDA_MAX_M = CAP_LAMBDAS[0];
 // mapping, Olano & Baker 2010: second moments add under filtering; GGX
 // α² += 2σ², Tokuyoshi & Kaplanyan 2019, Unity HDRP's normal filtering). Far
 // away the octaves are then a constant roughness, not a mirror or sparkles.
-// Per octave the slope is RIPPLE_SLOPE times value noise's gradient (mNoiseD),
-// whose per-component variance is E[du²]·Var(Δ)·E[(1 − u)² + u²]² =
-// (6/5)·(1/6)·(26/35)² ≈ 0.110 (u the smoothstep fade, Δ the difference of two
-// uniform corner values; a Monte Carlo of the shader's hash13 gives 0.1105).
-// x and z together: the octave's mean square slope, GGX α² per octave.
-const VNOISE_GRAD_VAR = (6 / 5) * (1 / 6) * (26 / 35) ** 2;
-// The World's far field (shaders/far.js) draws its water without these
-// octaves or their variance, so the window's edge would show the hand-off as a
-// seam in the sun's glint: there the variance stays out until far.js has it too.
-const capHandoff = (backend) => backend !== 'world';
+// Per octave the slope is RIPPLE_SLOPE times value noise's gradient (mNoiseD):
+// mean square slope 2·VNOISE_GRAD_VAR·RIPPLE_SLOPE² (gfx/liquid.js), GGX α² per octave.
+// Every octave at full strength: the World's far field (shaders/far.js), which
+// draws none of them as normals, takes all of it as roughness, so its sea
+// carries the window's glint on with no seam at the window's edge.
+export const CAP_SLOPE_MS = CAP_OCTAVES * 2 * VNOISE_GRAD_VAR * RIPPLE_SLOPE ** 2;
 
 // ---- Whitewater (DETAIL_LIQ_FOAM) ----
 // Foam at a free surface decays exponentially as its bubbles burst: the
@@ -237,15 +234,15 @@ ${ripples ? `
 // in (x, z, time). Equal slope per octave (the saturation range of wind-wave
 // spectra: slope variance flat per octave), the same slope as the wind
 // ripples'. Octaves fade in by the pixel footprint (lodFade); in the box the
-// variance of what is faded is the glint's roughness instead (capHandoff, the
-// JS above), so far away they widen the sun's lobe rather than vanish. (Five
+// variance of what is faded is the glint's roughness instead (the JS above),
+// so far away they widen the sun's lobe rather than vanish. (Five
 // entries each: private arrays, docs/webgpu.md C6.)
 const CAP_OCTAVES: i32 = ${CAP_OCTAVES};
 var<private> CAP_FREQ: array<f32, CAP_OCTAVES> = ${wgslArray(CAP_FREQS)};    // cycles/cell (λ ${CAP_LAMBDAS.map((l) => (l * 100).toFixed(1)).join(', ')} cm)
 var<private> CAP_DRIFT: array<f32, CAP_OCTAVES> = ${wgslArray(CAP_DRIFTS)};  // noise units/s, by dispersion
-const CAP_SHIFT: f32 = 13.7;   // lattice offset per octave (noise units), so octaves don't line up${capHandoff(backend) ? `
+const CAP_SHIFT: f32 = 13.7;   // lattice offset per octave (noise units), so octaves don't line up
 // mean square slope (x and z) of one octave at full strength: GGX α² (above)
-const CAP_OCT_MS: f32 = 2.0 * ${g(VNOISE_GRAD_VAR)} * RIPPLE_SLOPE * RIPPLE_SLOPE;` : ''}
+const CAP_OCT_MS: f32 = 2.0 * ${g(VNOISE_GRAD_VAR)} * RIPPLE_SLOPE * RIPPLE_SLOPE;
 fn liquidCapillary(p: vec3f, n: vec3f) -> vec3f {
   let up = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y);
   var gr = vec2f(0.0);       // (x, z)
@@ -262,10 +259,10 @@ fn liquidCapillary(p: vec3f, n: vec3f) -> vec3f {
       gr += h.yz * w;
       lost -= w * w;
     }
-  }${capHandoff(backend) ? `
-  // the rest is roughness at this point (liquid.js liquidInterface reads it)
-  gLiqSlopeMS = lost * CAP_OCT_MS * up * up;
-  gLiqSlopeAt = p;` : ''}
+  }
+  // the rest is roughness at this point, on top of the wind ripples' (liquid.js liquidInterface reads it)
+  gLiqSlopeMS = select(0.0, gLiqSlopeMS, all(gLiqSlopeAt == p)) + lost * CAP_OCT_MS * up * up;
+  gLiqSlopeAt = p;
   return tiltNormal(n, vec3f(gr.x, 0.0, gr.y) * RIPPLE_SLOPE * up);
 }` : ''}
 ${meniscus ? `

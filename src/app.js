@@ -2423,6 +2423,7 @@ function frameValues(cam, view, jitter) {
     shadows: true, far: !!win?.far, sea: win?.P?.sea ?? 0, jitter,
     sourceAppearance: win?.far?.appearance.uniform ?? [0, 0, 0, 0],
     sourceStyle: selectedMode === 'crueltySquad' && isMaterialView(view),
+    liqRipples: !!frameDetail.DETAIL_LIQ_RIPPLES,   // the far field's water matches the window's (shaders/far.js)
   };
 }
 let frameDerived = false;   // this frame runs the derived passes (pacer.derived)

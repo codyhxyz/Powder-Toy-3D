@@ -1,4 +1,14 @@
 import { cozyWaterWGSL } from './cozy.js';
+import { glf } from '../../glsl.js';
+
+// Ripple slope per unit noise gradient (the height field's, gfx/lighting.js rippleH).
+export const RIPPLE_SLOPE = 0.035;
+// Per-component variance of value noise's gradient (mNoiseD):
+// E[du²]·Var(Δ)·E[(1 − u)² + u²]² = (6/5)·(1/6)·(26/35)² ≈ 0.110 (u the
+// smoothstep fade, Δ the difference of two uniform corner values; a Monte
+// Carlo of the shader's hash13 gives 0.1105). A ripple octave's mean square
+// slope (x and z, GGX α²) is then 2·VNOISE_GRAD_VAR·slope².
+export const VNOISE_GRAD_VAR = (6 / 5) * (1 / 6) * (26 / 35) ** 2;
 // Transparent media: liquids (smooth surfaces) and crisp glass. WGSL (the
 // names are the GLSL version's, docs/webgpu.md W2), pasted after surfaceGLSL
 // (reflectTrace meets voxels with crispHit, the floor with floorAlb). The
@@ -155,12 +165,21 @@ fn liquidIdAt(p: vec3f, fallback: i32) -> i32 {
 // of the sky. Fades out before it would alias.
 // (The height field itself, rippleH, lives in gfx/lighting.js: the sun's
 // caustics are focused by the same ripples.)
-const RIPPLE_SLOPE: f32 = 0.035;     // height-field slope per unit noise gradient
+const RIPPLE_SLOPE: f32 = ${glf(RIPPLE_SLOPE)};     // height-field slope per unit noise gradient
 const RIPPLE_UP_LO: f32 = 0.6;       // n.y where ripples start ...
 const RIPPLE_UP_HI: f32 = 0.9;       // ... and reach full strength
+// Mean square slope (x and z: GGX α²) of both octaves at full strength.
+const RIPPLE_MS: f32 = 2.0 * ${glf(VNOISE_GRAD_VAR)} * RIPPLE_SLOPE * RIPPLE_SLOPE * (1.0 + RIPPLE_OCT2_AMP * RIPPLE_OCT2 * RIPPLE_OCT2_AMP * RIPPLE_OCT2);
 fn liquidRipple(p: vec3f, n: vec3f) -> vec3f {
-  // fades out with the finer octave, by the material LOD (lodFade)
-  let k = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y) * lodFade(RIPPLE_FREQ * RIPPLE_OCT2, footprint(p));
+  // fades out with the finer octave, by the material LOD (lodFade). What the
+  // fade takes from the normals stays as slope variance inside the pixel: the
+  // glint's roughness at p (gLiqSlopeMS, specular AA as gfx/liquidDetail.js's
+  // octaves hand theirs over), so far water widens the sun's lobe, not a mirror.
+  let up = smoothstep(RIPPLE_UP_LO, RIPPLE_UP_HI, n.y);
+  let w = lodFade(RIPPLE_FREQ * RIPPLE_OCT2, footprint(p));
+  gLiqSlopeMS = (1.0 - w * w) * RIPPLE_MS * up * up;
+  gLiqSlopeAt = p;
+  let k = up * w;
   if (k <= 0.0) { return n; }
   let q = worldPos(p).xz * RIPPLE_FREQ;   // anchored in the world
   let t = FU.time * RIPPLE_DRIFT;
@@ -324,9 +343,10 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
 
 // Slope variance (mean square slope, GGX α²) of ripples too fine for the
 // pixel at gLiqSlopeAt, which the interface there adds to the liquid's
-// roughness: the close-up ripples' octaves hand over to the glint's lobe as
-// they fade (gfx/liquidDetail.js liquidCapillary), so far water keeps their
-// roughness instead of turning into a mirror. 0 where nothing set it.
+// roughness: the wind ripples (liquidRipple) and the close-up ripples' octaves
+// (gfx/liquidDetail.js liquidCapillary) hand over to the glint's lobe as they
+// fade, so far water keeps their roughness instead of turning into a mirror.
+// The World's far field adds the same (shaders/far.js farLiquid). 0 where nothing set it.
 var<private> gLiqSlopeMS: f32 = 0.0;
 var<private> gLiqSlopeAt: vec3f = vec3f(-1.0);
 // GGX roughness rough (α = rough²) widened by mean square slope ms: α² + ms.

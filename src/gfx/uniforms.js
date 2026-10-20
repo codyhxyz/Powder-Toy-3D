@@ -163,7 +163,7 @@ const copyValue = v => ArrayBuffer.isView(v) ? v.slice() : Array.isArray(v) ? v.
  */
 // Pure value construction: the caller updates camera matrices first. Returned
 // matrices, vectors and arrays are owned snapshots; no GPU or shared-last write.
-export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1, time = 0, lightGain = 1, shadows = true, far = false, sea = 0, jitter = [0, 0], sourceAppearance = [0, 0, 0, 0], sourceStyle = false }) {
+export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1, time = 0, lightGain = 1, shadows = true, far = false, sea = 0, jitter = [0, 0], sourceAppearance = [0, 0, 0, 0], sourceStyle = false, liqRipples = false }) {
   const viewProj = new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
   const invViewProj = viewProj.clone().invert();
   const cam = new Vector3().setFromMatrixPosition(camera.matrixWorld).applyMatrix4(model.clone().invert());
@@ -172,7 +172,7 @@ export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1
     viewProj, invViewProj, model,
     lampPos: vec4s(u.uLampPos.value), lampCol: vec4s(u.uLampCol.value), lampShape: vec4s(u.uLampShape.value),
     wandLightPosition: u.uWandLightPosition.value, wandLightColor: u.uWandLightColor.value,
-    cam, time, sun, lightGain, sourceAppearance, sourceStyle: !!sourceStyle,
+    cam, time, sun, lightGain, sourceAppearance, sourceStyle: !!sourceStyle, liqRipples: !!liqRipples,
     sunExt: u.uSunExt.value, simClock: u.uSimClock.value, sunCol: u.uSunCol.value, pixScale: u.uPixScale.value,
     skyUp: u.uSkyUp.value, cloudSea: u.uCloudSea.value, ground: u.uGround.value, sea,
     keyLight: u.uKeyLight.value, matDetail: u.uMatDetail.value, materialStyle: materialStyleForView(view) ?? 0, jitter, cloudShift: u.uCloudShift.value,

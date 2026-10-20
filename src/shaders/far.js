@@ -3,6 +3,7 @@ import { lib, libLayouts } from './gfx/lib.js';
 import { RENDER_LAYOUT } from './bindings.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
+import { CAP_SLOPE_MS } from './gfx/liquidDetail.js';
 import { cloudsGLSL } from './gfx/clouds.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE, fold } from '../gpu/kernels.js';
@@ -1065,6 +1066,7 @@ const FAR_AO_K: f32 = ${glf(FAR_VIEW.AO_K)};
 const FAR_AO_MIN: f32 = ${glf(FAR_VIEW.AO_MIN)};
 const FAR_WATER_STEP: f32 = ${glf(FAR_VIEW.WATER_STEP)};
 const FAR_WATER_STEPS: i32 = ${FAR_VIEW.WATER_STEPS};
+const FAR_CAP_SLOPE_MS: f32 = ${glf(CAP_SLOPE_MS)};   // the capillary ripples' mean square slope (gfx/liquidDetail.js)
 const FAR_SUN_DISC: f32 = ${glf(FAR_VIEW.SUN_DISC)};
 const FAR_SUN_DISC_EDGE: f32 = ${glf(FAR_VIEW.SUN_DISC_EDGE)};
 const FAR_OCEAN_BED: i32 = E_${FAR_VIEW.OCEAN_ROCK};
@@ -1361,7 +1363,11 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
   F = fresnelSchlick(max(dot(-rd, n), 0.0), IOR(lid));
   var r = reflect(rd, n);
   r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
-  let rough = select(ROUGH(lid), COZY_WATER_ROUGH, cartoon);
+  // the ripples too fine for the pixel widen the glint (specular AA, liquid.js
+  // gLiqSlopeMS): the wind ripples' faded share, and every capillary octave the
+  // window draws (FU.liqRipples), none of which this far view draws as normals
+  let fine = gLiqSlopeMS + select(0.0, FAR_CAP_SLOPE_MS, FU.liqRipples != 0u);
+  let rough = select(roughWithSlope(ROUGH(lid), fine), COZY_WATER_ROUGH, cartoon);
   refl = (skyColor(r) + sunGlint(n, -rd, rough, vec3f(sunVis))) * sky;
   rt = refract(rd, n, 1.0 / IOR(lid));
   if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }
