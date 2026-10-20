@@ -9,15 +9,18 @@ const replacements = {
     pos: new THREE.Vector3(), vel: new THREE.Vector3(), status: { has: () => false }, perks: { toolRate: 1 }, size: 1,
     eyeHeight: 6, health: 1, spawns: 0, dead: false,
     spawn(at) { this.spawns++; this.pos.copy(at); this.dead = false; this.health = 1; }, update() {}, dispose() {},
+    windowShifted(dx, dz) { this.pos.x -= dx; this.pos.z -= dz; },
   });`,
   './figure.js': `const createFigure = () => ({ root: new THREE.Group(), bind() {}, compile: async () => {}, update() {}, setVisible() {}, dispose() {} });`,
   './figureCrasher.js': 'const CRASHER_COLORS = {}, buildCrasher = () => {};',
   './models.js': 'const attachModel = () => {};',
-  './tools/index.js': 'const createKit = () => ({ putAway() {}, dispose() {} });',
+  './tools/index.js': 'const createKit = () => ({ putAway() {}, dispose() {}, keys: [\'GUN\'], shifts: [], tool() { return { windowShifted: (dx, dz) => this.shifts.push([dx, dz]) }; } });',
   './tools/catalog.js': 'const gearByKey = () => ({ model: null });',
   './tools/transfer.js': "const pack = () => ({ cells: [] }), persistentLoad = pack, ownedKey = () => '';",
   './ai/brain.js': `class Agent {
-    constructor(npc) { this.npc = npc; this.position = new THREE.Vector3(); this.velocity = new THREE.Vector3(); this.record = {}; this.brain = { clearSubgoals() {} }; this.intent = {}; }
+    constructor(npc) { this.npc = npc; this.position = new THREE.Vector3(); this.velocity = new THREE.Vector3(); this.record = {}; this.intent = {};
+      this.cleared = 0; this.brain = { clearSubgoals: () => { this.cleared++; } };
+      this.prey = {}; this.foes = new Map([['foe', {}]]); this.seen = { timeLastSensed: 5, visible: true }; this.memory = { getRecord: (e) => (e === this.prey ? this.seen : null) }; }
     clearIntent() { this.intent = {}; }
     get target() { return this.npc.target(); }
   }
@@ -54,5 +57,16 @@ try {
       assert.equal(npc.body.spawns, oneShot ? 1 : 3);
     } finally { npc.dispose(); }
   }
-  console.log('ok NPC lifecycle: paused creation, absent god player, one-shot death/reset, legacy respawn');
+  // a World's window moving under it (pov/index.js windowShifted): it stays put in the world, its plans are dropped
+  const shifted = createNpc({ env: { renderer: {}, getSim: () => sim }, ai: { world: { ready: false } }, home: () => new THREE.Vector3(20, 4, 20), oneShot: true, style: 'gunner' });
+  try {
+    shifted.update(0, world);
+    const cleared = shifted.agent.cleared;
+    shifted.windowShifted(16, -8);
+    assert.deepEqual(shifted.body.pos.toArray(), [4, 4, 28], 'the body moves back in grid cells');
+    assert.deepEqual(shifted.kit.shifts, [[16, -8]], 'its tools shift with it');
+    assert.equal(shifted.agent.cleared, cleared + 1, 'its navigation goals were in the old window');
+    assert.equal(shifted.agent.seen.visible, false, 'its sightings were in the old window');
+  } finally { shifted.dispose(); }
+  console.log('ok NPC lifecycle: paused creation, absent god player, one-shot death/reset, legacy respawn, World window shift');
 } finally { hooks.deregister(); }

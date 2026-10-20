@@ -1647,7 +1647,7 @@ const settingsPanel = createSettings({
       ...simModeRows({ change: setSimMode, locked: simModeLock }),
     ] },
     // a cost lever too: sim work grows with cells, ray marching with the grid's span
-    weatherSection(weather, { enabled: () => !!win?.loaded && !mp.isGuest }),
+    weatherSection(weather, { enabled: () => (!win || win.loaded) && !mp.isGuest }),   // every map: a box's too (wire/weather.js)
     { title: 'Lighting', rows: [
       // the day is held at this hour (DAY.running)
       { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,
@@ -1754,6 +1754,8 @@ function setSimMode(key, v, toast = false) {
 }
 function simModeLock(key) {
   if (mp.isGuest) return 'The host sets these';
+  // Not a deviation: a World's grid is a window, so its edges are the world's interior, not the map's
+  // boundary; void/loop there would delete or wrap terrain the player can walk to.
   if (key === 'edgeMode' && win) return 'World\'s edges stay solid: past them is the rest of the island, not the void';
   return false;
 }
@@ -2093,7 +2095,7 @@ function clickTool() {
     const r = spawners.place(kind, feetOnHit(hover));
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit', { kind: 'error' });   // GMod's LimitHit
-    else if (r === 'unsupported') hud.toast('Vehicles and NPCs are not supported in scrolling World maps; use a box map', { kind: 'error' });
+    else if (r === 'unsupported') hud.toast('Vehicles are not supported in scrolling World maps; use a box map', { kind: 'error' });
     else hud.toast(r === 'removed' ? 'Player spawn removed' : SPAWNER_SET[kind] ?? `${toolById(settings.tool).name} spawned`);
     return r !== 'full' && r !== 'unsupported';
   }
