@@ -543,6 +543,8 @@ fn dReactAfter(a: u32, b: u32) -> bool {
 // One packet of the cell at p (slot s), with the host and faces the one before it left. False once
 // the host is no longer air or gas: the rest land or strike it next tick.
 fn dReactOne(t: u32, s: u32, p: vec3i) -> bool {
+  // (a list holds the packets live at the claim, and only this thread retires them)
+  if (!slotLive(t) || particles[t].id == 0u) { return true; }
   let before = loadMaterial(s); let kind = cls(cid(before.core));
   if (kind != C_AIR && kind != C_GAS) { return false; }
   var faces: array<Material, 6>; var slots: array<u32, 6>; var valid = 0u;

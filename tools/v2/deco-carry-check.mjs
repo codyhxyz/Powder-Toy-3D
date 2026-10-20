@@ -229,7 +229,9 @@ test('every particle spawn writes its slot\'s paint: a cell\'s own, none for ray
 
 test('airborne reactions: a charge landing in flight brings its paint; a displaced gas flies off with the cell\'s; plumes in air are unpainted', () => {
   const react = statements(particlesWGSL(g16, nativeDynamicsHead, 'react'));
-  assert.match(react, /let paint = particleDecoOf\(t\);\s*if \(r\.state == D_REACT_LANDED\) \{ setDeco\(s,paint\); \}\s*else if \(r\.state == D_REACT_DISPLACED\) \{ setParticleDeco\(t,decoOf\(s\)\); setDeco\(s,paint\); \}\s*else if \(cid\(before\.core\) == 0u && cid\(r\.host\.core\) != 0u\) \{ setDeco\(s,0u\); \}\s*storeMaterial\(s,before,r\.host\)/);
+  assert.match(react, /let paint = particleDecoOf\(t\);\s*if \(r\.state == D_REACT_LANDED\) \{ setDeco\(s,paint\); \}\s*else if \(r\.state == D_REACT_DISPLACED\) \{ setParticleDeco\(t,decoOf\(s\)\); setDeco\(s,paint\); \}\s*else if \(cid\(before\.core\) != cid\(r\.host\.core\) && \(cid\(before\.core\) == 0u \|\| cid\(r\.host\.core\) == 0u\)\) \{ setDeco\(s,0u\); \}\s*storeMaterial\(s,before,r\.host\)/);
+  // the cells beside it it changes: air, or matter made in air, holds no paint (the block pass's rule)
+  assert.match(react, /if \(cid\(was\.core\) != cid\(now\.core\) && \(cid\(was\.core\) == 0u \|\| cid\(now\.core\) == 0u\)\) \{ setDeco\(slots\[f\],0u\); \}\s*storeMaterial\(slots\[f\],was,now\);/);
 });
 
 test('a landing brings the paint back to the grid: into air the particle\'s, into its own liquid the receiver\'s', () => {
