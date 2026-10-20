@@ -1,5 +1,5 @@
 // Phase 1: raw source construction, not field derivation or a volume renderer.
-import { prelude, LAYOUT, stateLayout } from './common.js';
+import { prelude, LAYOUT, STATE_OPTS, stateLayout } from './common.js';
 import { stampLib } from './stamp.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE, fold } from '../gpu/kernels.js';
@@ -98,6 +98,25 @@ ${thread}
   if (writeCell(p, a, b, fetchF(p), bitcast<vec4f>(rawA[at]), bitcast<vec4f>(rawB[at]))) { markBrick(s >> 6u); }
 }`;
 
+// Physics V2's air and foam in the two lanes the World's source copies, for
+// the drawn projection (world/renderSource.js, the V2 aux export): B as V1
+// keeps it (velocity, pressure: the Pressure/Flow views, the hover readout)
+// and the aeration record (aeration, liquid, fall, grounded: liquidDetail.js
+// aerTap). Both through the physical readers (format 3: shaders/common.js
+// fetchBs, fetchNativeAeration), so these are the values the Box's views of
+// the air and its foam read from V2's own buffers. V2 holds no pours or wakes:
+// y is 1 in a liquid cell and 0 elsewhere, and fall (z) is unread there.
+export const NATIVE_AUX_LAYOUT = [storage(0, true), storage(1, true)];
+export const nativeAuxWGSL = (g) => /* wgsl */ `
+${prelude(g, { ...STATE_OPTS.STATE_RO, fixedReadFormat: 3 })}
+@group(2) @binding(0) var<storage, read_write> auxB: array<vec4f>;
+@group(2) @binding(1) var<storage, read_write> auxAer: array<vec2u>;
+${thread}
+  auxB[s] = fetchBs(s);
+  let f = fetchNativeAeration(p);   // (aeration, liquid, grounded)
+  auxAer[s] = vec2u(pack2x16float(f.xy), pack2x16float(vec2f(0.0, f.z)));
+}`;
+
 export const WGSL_CHECK = () => WORLD_SCENES.map((scene) => ({
   name: `${scene.key} raw source`, kind: 'compute', grids: ['128'], warm: false,
   code: (g) => rawGenerateWGSL(g, scene), layouts: () => [LAYOUT.TABLES, RAW_LAYOUT, sceneLayout({ data: !!scene.data })],
@@ -107,4 +126,6 @@ export const WGSL_CHECK = () => WORLD_SCENES.map((scene) => ({
     layouts: () => [LAYOUT.TABLES, RAW_LAYOUT], params: RawParams, dispatch: (g) => fold(Math.ceil(g.slots / 64)) },
   { name: 'raw source apply', kind: 'compute', grids: ['128'], warm: false, code: (g) => rawApplyWGSL(g, { ...g, nx: 64, nz: 64, slots: 64 * g.ny * 64 }),
     layouts: () => [LAYOUT.TABLES, stateLayout(APPLY_STATE), RAW_READ_LAYOUT], params: RawApplyParams, dispatch: (g) => fold(Math.ceil(g.slots / 64)) },
+  { name: 'world native aux', kind: 'compute', grids: ['128'], warm: false, code: nativeAuxWGSL,
+    layouts: () => [LAYOUT.TABLES, stateLayout(STATE_OPTS.STATE_RO), NATIVE_AUX_LAYOUT], dispatch: (g) => fold(Math.ceil(g.slots / 64)) },
 ]);

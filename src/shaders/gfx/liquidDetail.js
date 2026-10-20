@@ -200,15 +200,19 @@ ${Object.entries(MENISCUS_PROPS).map(([k, p]) => `  if (id == E_${k}) { return v
   return vec3f(0.0);
 }`;
 
+/** The detail key a WORLD program carries while Physics V2 runs its window (app.js
+ * worldDetail): its atlas then holds V2's foam (world/renderSource.js, the V2
+ * aux export), so it compiles the foam as a Box program always does, Whitewater
+ * switch on or off (docs/v2.md §4.3). V1 World programs never carry it. */
+export const NATIVE_FOAM = 'NATIVE_FOAM';
 /** Box programs always compile native compact foam (legacy detail switches still gate their effects).
- * WORLD reads no V2 state, so its switches decide what is compiled in, as before.
- * Under V1 the two draw the same foam (World reads the same aeration, copied into
- * its atlas). Under V2 they don't: the Box draws V2's foam byte, switch on or off;
- * World never sees that byte, since its atlas holds V2's legacy projection, which
- * carries none. Not a decided difference: an open question to the user (parity
- * audit 2026-10-20). */
+ * WORLD reads no V2 state, so its switches decide what is compiled in, and under
+ * V2 its NATIVE_FOAM key adds the foam. Not a deviation: the two draw the same
+ * foam by different code. Under V1 World reads the same aeration, copied into its
+ * atlas; under V2 the Box reads V2's foam byte from V2's cells and World reads the
+ * same byte from its atlas, which the V2 aux export fills. */
 export const LIQ_DETAIL = (detail = {}, backend = 'box') => backend !== 'world'
-  || !!(detail.DETAIL_LIQ_RIPPLES || detail.DETAIL_LIQ_MENISCUS || detail.DETAIL_LIQ_FOAM);
+  || !!(detail.DETAIL_LIQ_RIPPLES || detail.DETAIL_LIQ_MENISCUS || detail.DETAIL_LIQ_FOAM || detail[NATIVE_FOAM]);
 
 export const liquidDetailGLSL = (detail = {}, { backend = 'box', fixedReadFormat } = {}) => {
   // WORLD reads its own atlas, never V2's packed state: its format is the legacy one.
@@ -217,8 +221,9 @@ export const liquidDetailGLSL = (detail = {}, { backend = 'box', fixedReadFormat
   const meniscus = !!detail.DETAIL_LIQ_MENISCUS;
   const world = backend === 'world';
   // Intentional (V2 design, docs/v2.md §4.3 and §13.4): V2's foam is always on and every liquid
-  // foams; V1's Whitewater foam stays behind its detail switch (the format test in liquidDetail below).
-  const foam = !world || !!detail.DETAIL_LIQ_FOAM; // native §4.3 foam is independent of the legacy Whitewater switch
+  // foams; V1's Whitewater foam stays behind its detail switch (the format test in liquidDetail
+  // below; in World, NATIVE_FOAM).
+  const foam = !world || !!detail.DETAIL_LIQ_FOAM || !!detail[NATIVE_FOAM]; // native §4.3 foam is independent of the legacy Whitewater switch
   return /* wgsl */ `
 // Which copy of the aeration buffer (binding 19: both copies, docs/webgpu.md
 // G4) is the current one, 0 or 1. The aeration's ping-pong isn't the state's,

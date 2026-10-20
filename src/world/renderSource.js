@@ -2,6 +2,8 @@ import { BRICK, cellSlot, slotCell, gridDims } from '../shaders/common.js';
 import { decodeBrick, BRICK_FLOATS } from './store.js';
 import { aerationForSource, isProducerBoundedAeration } from '../gfx/foam.js';
 import { recordWorldSourceCut } from './sourceCut.js';
+import { nativeAuxWGSL, NATIVE_AUX_LAYOUT } from '../shaders/renderSource.js';
+import { fold } from '../gpu/kernels.js';
 
 export const SOURCE_CORE = 32;
 export const SOURCE_BRICK = BRICK;
@@ -19,14 +21,54 @@ export function intersectBounds(a, b) {
   const lo = a.lo.map((v, i) => Math.max(v, b.lo[i])), hi = a.hi.map((v, i) => Math.min(v, b.hi[i]));
   return lo.every((v, i) => v < hi[i]) ? { lo, hi } : null;
 }
-export function snapshotSource(sim, origin = sim.origin) {
+// The V2 aux export. Physics V2 keeps its air per 4³ brick and its foam byte in
+// its own cells (docs/v2.md §4.3), and its legacy projection (src/v2/physics.js
+// exportLegacy) carries neither: B = 0, no aeration. So while V2 runs a World
+// window, the drawn source takes B and the aeration lane from these two
+// per-slot buffers instead (one copy each: bCopy, aerCopy 0), which the
+// World's own live and leaving copies rewrite from V2's state just before they
+// copy (liveSource's aux; shaders/renderSource.js nativeAuxWGSL). Not a
+// deviation: the World then draws the air and foam the Box draws under V2,
+// read from its atlas instead of V2's buffers. The edit projection (native)
+// keeps the legacy lanes: it is written back into physics.
+const nativeAux = new WeakMap();   // sim → { kernel, group, B, aeration }
+function nativeAuxOf(sim, create = false) {
+  const owner = sim.compact;
+  if (!owner?.isReady || !owner.dynamics?.isReady || sim.disposed || sim.gpu?.failure) return null;
+  let aux = nativeAux.get(sim);
+  if (!aux && create) {
+    const { gpu, g } = sim, usage = USAGE;   // (STORAGE | COPY_DST | COPY_SRC)
+    const layout = gpu.layout('WORLD_NATIVE_AUX', NATIVE_AUX_LAYOUT);
+    const B = gpu.createBuffer({ label: 'world V2 air (B)', size: g.slots * 16, usage });
+    const aeration = gpu.createBuffer({ label: 'world V2 foam (aeration)', size: g.slots * 8, usage });
+    aux = { B, aeration, kernel: gpu.kernel({ name: 'worldNativeAux', code: nativeAuxWGSL(g), layouts: [sim.L.TABLES, sim.L.STATE_RO, layout] }),
+      group: gpu.bindGroup(layout, [{ binding: 0, resource: { buffer: B } }, { binding: 1, resource: { buffer: aeration } }], 'world V2 aux') };
+    nativeAux.set(sim, aux);
+  }
+  return aux?.kernel.state === 'ready' ? aux : null;
+}
+/** Free the V2 aux export's buffers (the window lets go of its sim: WorldWindow.dispose). */
+export function dropNativeWorldAux(sim) {
+  const aux = nativeAux.get(sim);
+  if (!aux) return;
+  nativeAux.delete(sim);
+  for (const b of [aux.B, aux.aeration]) (sim.disposed || !sim._retire ? b.destroy() : sim._retire(b));
+}
+// Rewrite the V2 aux export from V2's current cells and air, if V2 runs the window.
+function recordNativeAux(sim) {
+  const aux = nativeAuxOf(sim, true), state = aux && sim.bindPhysicalRO;
+  if (!state) return;
+  sim._dispatch(aux.kernel, fold(Math.ceil(sim.g.slots / 64)), { bind: [sim.tables, state, aux.group], header: sim.readHeader({ physical: true }) });
+}
+export function snapshotSource(sim, origin = sim.origin, { native = false } = {}) {
   // Never retain sim.header(), sim.origin, state.cur's getter or another
   // mutable descriptor across a shift. Copies encode immutable byte offsets.
-  const aer = aerationForSource(sim);
+  const aer = aerationForSource(sim), v2 = native ? null : nativeAuxOf(sim);
   return Object.freeze({ g: Object.freeze({ ...sim.g }), origin: Object.freeze(originOf(origin)), copy: sim.cur,
-    A: sim.state.A, B: sim.state.B, flow: sim.flow,
-    aeration: aer?.buffer ?? null, aerCopy: aer?.cur ?? 0, aerGeneration: aer?.generation ?? 0,
-    boundedWake: !aer || isProducerBoundedAeration(aer),
+    A: sim.state.A, B: v2?.B ?? sim.state.B, ...(v2 ? { bCopy: 0 } : {}), flow: sim.flow,
+    aeration: v2?.aeration ?? aer?.buffer ?? null, aerCopy: v2 ? 0 : aer?.cur ?? 0, aerGeneration: v2 ? 0 : aer?.generation ?? 0,
+    // (V2's export holds no wakes at all: its records' y is 0 or 1)
+    boundedWake: !!v2 || !aer || isProducerBoundedAeration(aer),
     deco: sim.decoPlane ? Object.freeze({ ...sim.decoPlane }) : null });
 }
 // A raw read of the live cells. Physics V2 owns its cells and keeps A/B as a
@@ -35,9 +77,12 @@ export function snapshotSource(sim, origin = sim.origin) {
 // one, or all of them after a whole-grid write or a switch of projection.
 // The drawn projection by default; native: the edit projection, for a read
 // that is written back into physics. Without V2 (sim.compact unset) a no-op.
-export function liveSource(sim, origin = sim.origin, { native = false } = {}) {
+// aux: also bring the V2 aux export (above) up to date, for a copy that keeps
+// B and the aeration lane (the World's live and leaving copies).
+export function liveSource(sim, origin = sim.origin, { native = false, aux = false } = {}) {
   sim.legacyState?.(native);
-  return snapshotSource(sim, origin);
+  if (aux && !native) recordNativeAux(sim);
+  return snapshotSource(sim, origin, { native });
 }
 
 // Exact native-copy plans. Both ends use the original brick/tile layout.
@@ -91,9 +136,11 @@ export function recordSourceCopies(frame, src, dst, runs, { aux = true } = {}) {
     if (ao < 0 || bo < 0 || ao + n > a.size || bo + n > b.size || [ao, bo, n].some(v => v % 4)) throw new Error('raw source copy exceeds its original buffer layout');
     frame.copy(a, ao, b, bo, n);
   };
+  // (B's copy is A's, but for the V2 aux export's single copy: bCopy)
+  const copyOf = (d, name) => (name === 'B' ? d.bCopy ?? d.copy : d.copy) ?? 0;
   for (const r of runs) {
-    for (const name of ['A', 'B']) native(src[name], ((src.copy ?? 0) * src.g.slots + r.src) * 16,
-      dst[name], ((dst.copy ?? 0) * dst.g.slots + r.dst) * 16, r.cells * 16);
+    for (const name of ['A', 'B']) native(src[name], (copyOf(src, name) * src.g.slots + r.src) * 16,
+      dst[name], (copyOf(dst, name) * dst.g.slots + r.dst) * 16, r.cells * 16);
     if (!aux) continue;
     if (src.flow && dst.flow) native(src.flow, r.src * 8, dst.flow, r.dst * 8, r.cells * 8);
     if (src.aeration && dst.aeration) native(src.aeration, ((src.aerCopy ?? 0) * src.g.slots + r.src) * 8,
@@ -334,7 +381,7 @@ export class WorldRenderSource {
   }
   recordLiveCopy(frame, sim = this.sim, bounds = sourceBounds(sim)) {
     if (this.ownedContext) throw new Error('A Source cut cannot read newer live state');
-    const revision = this.nextRevision(), src = liveSource(sim);
+    const revision = this.nextRevision(), src = liveSource(sim, sim.origin, { aux: true });
     this._record(frame, src, bounds, SOURCE_RANK.live, revision);
     this.liveVersion = sim.version; this.liveContentRevision = this.contentRevision; this.liveSnapshot = src;
     return revision;
@@ -342,13 +389,13 @@ export class WorldRenderSource {
   needsLiveCopy(sim = this.sim) {
     if (this.ownedContext) return false;
     const a = this.liveSnapshot, b = snapshotSource(sim);
-    return this.liveContentRevision !== this.contentRevision || this.liveVersion !== sim.version || !a || a.A !== b.A || a.B !== b.B || a.copy !== b.copy ||
+    return this.liveContentRevision !== this.contentRevision || this.liveVersion !== sim.version || !a || a.A !== b.A || a.B !== b.B || a.copy !== b.copy || a.bCopy !== b.bCopy ||
       a.origin.some((v, i) => v !== b.origin[i]) || a.flow !== b.flow || a.aeration !== b.aeration ||
       a.aerCopy !== b.aerCopy || a.aerGeneration !== b.aerGeneration || a.deco?.buffer !== b.deco?.buffer || a.deco?.offset !== b.deco?.offset;
   }
   recordLeavingCopy(frame, sim, bounds, oldOrigin = sim.origin) {
     if (this.ownedContext) throw new Error('A Source cut cannot transfer current authority');
-    const revision = this.nextRevision(), src = liveSource(sim, oldOrigin);
+    const revision = this.nextRevision(), src = liveSource(sim, oldOrigin, { aux: true });
     // Leaving live cells transfer ownership to captured; they are not stale
     // static data and must be allowed to replace the previous live revision.
     for (const c of this.chunks.values()) planSourceCopies(src, c, bounds,

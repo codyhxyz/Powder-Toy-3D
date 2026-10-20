@@ -65,6 +65,7 @@ import { displayedWorldRay, transportWorldRay, localWorldHover, worldPickNotRead
 import { cloudShift } from './shaders/gfx/clouds.js';
 import { DETAIL, settingKey, detailDefaults, detailRows } from './gfx/detail.js';
 import { createDetailGate, gateVariants } from './gfx/detailGate.js';
+import { NATIVE_FOAM } from './shaders/gfx/liquidDetail.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
 import { createGpuLossTracker, failureKind, lossDetails } from './gfx/gpuLoss.js';
 import { createPost, createAutoResolution, UPSCALE, UPSCALE_FLOOR } from './gfx/post.js';
@@ -1955,7 +1956,7 @@ async function renderWorldThumb(viewId,out) {
   const retired=()=>win!==world || world.renderFrame!==slot || slot.dead ||
     (world.renderSource && world.renderSource.epoch!==slot.epoch);
   if(graphicsFailure || !coreReady || slot?.dead || !driver?.accepted || !driver.displayedMainFrame || retired())return false;
-  const view=viewKeyOf(viewId),detail=isMaterialView(view) ? gateVariants(settings).base : {};
+  const view=viewKeyOf(viewId),detail=isMaterialView(view) ? worldDetail(gateVariants(settings).base) : {};
   const ownCamera=useWebGPUCamera(new THREE.PerspectiveCamera());
   camera.updateMatrixWorld();ownCamera.copy(camera,false);
   // Detach from any POV rig without turning its world pose into a local pose.
@@ -2743,11 +2744,15 @@ function syncRenderResolution(resolutionScale = post.settings.resolutionScale) {
   post.settings.floor = UPSCALE_FLOOR * DEVICE_RATIO / pixelRatio;
 }
 
+// A WORLD program's detail. Under Physics V2 it also compiles V2's foam (NATIVE_FOAM: the
+// World's atlas then holds it, world/renderSource.js), as every Box program does; V1 World
+// programs stay as they are. Not a deviation: the same foam in Box and World under V2.
+function worldDetail(d) { return sim.compact ? { ...d, [NATIVE_FOAM]: 1 } : d; }
 function updateFrameDetail() {
   volume.updateMatrixWorld();
   camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
   // WORLD enables every selected feature; the physics box is not a detail gate.
-  return win ? gateVariants(settings).near : detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
+  return win ? worldDetail(gateVariants(settings).near) : detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
 }
 
 // One tick: input, the steps, and, when due, a presented frame. Returns

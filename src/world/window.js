@@ -10,7 +10,7 @@ import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
 import { farLayout, farSceneLayout } from '../shaders/far.js';
-import { WorldRenderSource } from './renderSource.js';
+import { WorldRenderSource, dropNativeWorldAux } from './renderSource.js';
 import { RawWorldSourceProducer } from './renderSourceProducer.js';
 
 // The window over a massive world (docs/scaling.md D11, phases W1 and W2;
@@ -598,6 +598,7 @@ export class WorldWindow {
     if (this.sim.worldRenderSource === this.renderSource) this.sim.worldRenderSource = null;
     this.sourceProducer.dispose();
     this.renderSource.dispose();
+    dropNativeWorldAux(this.sim);   // (V2's air and foam as the World's source reads them)
     this.gen.dispose();
     // (destroyed once the frames that use them are submitted and done)
     for (const b of [this.leave.head, this.leave.cells, this.restoreBuf]) if (b) this.sim._retire(b);

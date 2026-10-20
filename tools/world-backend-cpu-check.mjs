@@ -33,7 +33,7 @@ test('184 independent production Box hashes plus Test aliases, explicit Box defa
   assert.deepEqual(VOLUME_LAYOUTS(),VOLUME_LAYOUTS({backend:'box'}));assert.deepEqual(PICK_LAYOUTS(),PICK_LAYOUTS({backend:'box'}));
   assert.throws(()=>volumeFrag({nx:32,ny:32,nz:32},{backend:'reduced'}));
 });
-test('228 actual world view/detail/curved/source/height/pick layouts and Naga modules including Test',()=>{
+test('240 actual world view/detail/curved/source/height/pick layouts and Naga modules including Test and Physics V2',()=>{
   const naga=spawnSync('naga',['--version'],{encoding:'utf8'}); assert.equal(naga.status,0,'install the CPU naga CLI for this gate');
   const dir=mkdtempSync('/tmp/tpt-world-backend-naga-');let n=0;
   try{for(const c of worldChecks()){
@@ -49,7 +49,7 @@ test('228 actual world view/detail/curved/source/height/pick layouts and Naga mo
     const result=spawnSync('naga',[path,`${dir}/out.spv`],{encoding:'utf8'});
     assert.equal(result.status,0,`${c.name}\n${result.stdout}\n${result.stderr}`);n++;
   }}finally{rmSync(dir,{recursive:true,force:true});}
-  assert.equal(n,228);console.log(`Naga: ${n} actual world modules passed`);
+  assert.equal(n,240);console.log(`Naga: ${n} actual world modules passed`);
 });
 test('one continuous full tracer, intrinsic budgets, exact optics and sticky secondary misses',()=>{
   const g={nx:3072,ny:384,nz:1024,maxSteps:128,sourceAppearance:true,sourceGrid:[128,0,128]};
