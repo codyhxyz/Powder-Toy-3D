@@ -1634,7 +1634,7 @@ const settingsPanel = createSettings({
       ...simModeRows({ change: setSimMode, locked: simModeLock }),
     ] },
     // a cost lever too: sim work grows with cells, ray marching with the grid's span
-    weatherSection(weather, { enabled: () => !!win?.loaded && !mp.isGuest }),
+    weatherSection(weather, { enabled: () => (!win || win.loaded) && !mp.isGuest }),   // every map: a box's too (wire/weather.js)
     { title: 'Lighting', rows: [
       // the day is held at this hour (DAY.running)
       { type: 'slider', key: 'time', label: 'Time of day', min: 0, max: HOURS - TIME_STEP, step: TIME_STEP, def: DAY.startPhase * HOURS,

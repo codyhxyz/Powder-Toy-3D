@@ -71,7 +71,7 @@ export function weatherSection(weather, { enabled = () => true } = {}) {
     // .btn's display overrides the browser's [hidden] rule, so hide explicitly.
     trigger.style.display = busy ? 'none' : '';
     cancel.style.display = busy ? '' : 'none';
-    status.textContent = !enabled() ? 'Weather sources require a local world session.'
+    status.textContent = !enabled() ? 'Weather sources are the host\'s, once the map has loaded.'
       : !event.eligible ? 'Sea effects are available on ocean maps.'
       : !event.available ? 'Tsunami unavailable in this build.'
       : event.pending ? 'Checking the active coastline…'

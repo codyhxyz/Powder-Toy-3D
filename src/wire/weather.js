@@ -15,7 +15,13 @@ let lastBolt = null;
 const thunderTimes = [];
 let clock = 0, world = null, epoch = -1, simulation = null;
 let terrainWorld = null, groundHeight = () => NaN;
-const enabled = app => !!app.win?.loaded && !app.mp.isGuest && !app.mp.replica;
+// Weather runs on every map, a box's as a world's (CLAUDE.md "Same features in
+// every world"): its clouds and rain are real elements in the top of whatever
+// grid is simulated. Only the sea's own effects (sea fog, chop, tsunamis) need
+// a world's sea level and the open ocean past its window (oceanEvents.js).
+const BOX_SEA_LEVEL = 0;   // cells: a box has no sea of its own here, so the cloud band sits under its lid (elementWeather.js)
+const enabled = app => (!app.win || app.win.loaded) && !app.mp.isGuest && !app.mp.replica;
+const hasSea = app => !!app.win && app.win.P.sea > 0;
 function oceanContext(app) {
   const { win, sim } = app;
   if (terrainWorld !== win) {
@@ -32,7 +38,7 @@ function oceanContext(app) {
   return {
     sim, stepHz: sim.compact ? 60 : WEATHER_STEPS_PER_SECOND, world: win, mapId: win ? `${win.scene.key}:${win.P.seed}` : null,
     seaLevel: win?.P.sea, target: [eye.x, eye.z],
-    oceanEligible: enabled(app) && win.P.sea > 0, isGuest: app.mp.isGuest || app.mp.replica,
+    oceanEligible: enabled(app) && hasSea(app), isGuest: app.mp.isGuest || app.mp.replica,
     groundHeight,
   };
 }
@@ -83,16 +89,17 @@ const wire = {
     weather.update(clock += 1 / hz);
     app.elementWeather.step(weather.state, {
       sim: app.sim, world: app.win, advancing: true, host: true, stepHz: hz,
-      fogEnabled: weather.selection.fog !== 'off',
+      enabled: true, seaLevel: app.win ? app.win.P.sea : BOX_SEA_LEVEL,
+      fogEnabled: weather.selection.fog !== 'off' && hasSea(app),
     });
     const active = app.oceanEvents.active;
-    if (active || weather.state.ocean > 0)
+    if (active || (weather.state.ocean > 0 && hasSea(app)))   // (a box's Rain keeps its ocean share idle: no sea)
       app.oceanEvents.step(weather.state, { ...oceanContext(app), paused: false, stepHz: hz });
     if (active && !app.oceanEvents.active) weather.finishTsunami();
   },
   afterStep(app) {
     observeWorld(app); // also catches reloads while paused
-    weather.setOceanEligible(enabled(app) && app.win.P.sea > 0);
+    weather.setOceanEligible(enabled(app) && hasSea(app));
     app.lighthouse.update({ time: clock }, {
       world: app.win, sim: app.sim, dayPhase: dayPhase(app.day.clock),
       enabled: enabled(app) && isMaterialView(app.renderView),
