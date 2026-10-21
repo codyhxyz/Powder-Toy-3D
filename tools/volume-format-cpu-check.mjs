@@ -12,33 +12,59 @@ import { Matrix4 } from 'three/webgpu';
 import { gridLayout } from '../src/sim.js';
 import { LEGACY_PRESSURE_PA } from '../src/v2/pressure.js';
 import { prelude, STATE_OPTS } from '../src/shaders/common.js';
+import { compactDecodeWGSL } from '../src/shaders/compact.js';
 import { moveBlockFrag } from '../src/shaders/move.js';
 import { volumeFrag, pickFrag, warmChecks, VOLUME_VIEWS, volumePipeline, VolumeParams, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES } from '../src/shaders/render.js';
-import { volumeReadFormat, detailKey, volumeShaderGrid } from '../src/gfx/volume.js';
+import { volumeReadFormat, readsAir, detailKey, volumeShaderGrid } from '../src/gfx/volume.js';
 import { createReadyVolumeView } from '../src/gfx/readyVolumeView.js';
 import { isMaterialView } from '../src/views.js';
 const g = gridLayout(32, 32, 32), hash = s => createHash('sha256').update(s).digest('hex');
+// Re-pinned 2026-10-20 against origin/main 6a056d8d (unpinned since f86a20c8, as this check wasn't in CI).
+// Every generic shader moved with intended work only, hashed at each first-parent commit between: the
+// prelude (ro, rw) with Descent's four exact-terrain elements (07f0ca91), the birds' removal (ea102f19, T_FLOCK)
+// and the Noita view's appearance variants (0da2ef45); move, pick and the volume with the V2 and render merges.
 const baseline = {
-  ro: 'e2a1e0d56d584d171e6acd19521d730d36910adbecc268aa4146e1f3e7e845a0',
-  rw: '7cace457fd34ae24250c20222ef0181d9e843d11bbfc0b9809715fef2d604683',
-  move: 'c630fbf8f7dd7a5fe0858cc661c873534ce73b1961ad796016d94ffb229b7c13',
-  pick: '4a9ce710be24487274c398f64c59475f606ffb31a67561a16ba63f8ff4bd33d2',
-  volume: 'e7276182d5e3018c105ed4ec9dad61188291c022a6754709c0dd5b72282f177e',
-  detail: 'fb12d4c0fe104295689dd0c0fdac69ccf3c308d9f326abc5ec9d8052120cb9bd',
+  ro: 'd92592ba9576e9c02a65919e3badf678beb30dc58576e8fa22d4bf520d9174ed',
+  rw: '338e904f3a7cce43eab8e931d3610b2e9c36d58ac2f7a4bc2d5a94acf39380ea',
+  move: '15befffbaa07f695efdc6970792bbc6f5bee4b25c3781fba3e2dbccc227e8026',
+  pick: 'debfa4a3adc9ee44fb37c263209b75fc88f1427fc1b35c298af82f1acfc370c9',
+  volume: 'de003c0ed617470e5f55488eee3a0cf939fdc6525f7d1af798293eb6e0816813',
+  detail: 'fee26e7ce828fe398e2c81dffc8d36344394699bad5e3de05c2553f440cf1c48',
 };
 const sources = { ro: prelude(g, STATE_OPTS.STATE_RO), rw: prelude(g, STATE_OPTS.STATE_RW), move: moveBlockFrag(g), pick: pickFrag(g),
   volume: volumeFrag(g), detail: volumeFrag(g, { detail: { DETAIL_LIQ_FOAM: 1, DETAIL_LIQ_RIPPLES: 1 }, curved: true }) };
 for (const [key, code] of Object.entries(sources)) assert.equal(hash(code), baseline[key], `unchanged generic ${key}`);
 for (const bad of [null, 1, 4, -1, '2', NaN]) assert.throws(() => volumeFrag(g, { fixedReadFormat: bad }), /fixedReadFormat/);
 for (const state of ['read_write', false]) assert.throws(() => prelude(g, { state, fixedReadFormat: 0 }), /readonly/);
+// The prelude's state readers: from their first line through fetchB, the last of them.
+const FETCH_B = 'fn fetchB(p: vec3i) -> vec4f { return fetchBs(slotOf(p)); }';
+function readers(code, first) {
+  const start = code.indexOf(first), end = code.indexOf(FETCH_B, start) + FETCH_B.length;
+  assert(start >= 0 && end > start, 'state readers found');
+  return { head: code.slice(0, start).trimEnd(), body: code.slice(start, end), tail: code.slice(end) };
+}
 for (const format of [0, 2, 3]) {
-  // Exact substitution of the header value is the oracle, not a second decoder.
-  assert.equal(prelude(g, { state: 'read', fixedReadFormat: format }), sources.ro.replaceAll('H.format', `${format}u`));
+  const fixed = prelude(g, { state: 'read', fixedReadFormat: format }), substituted = sources.ro.replaceAll('H.format', `${format}u`);
+  if (format === 0) {
+    // Committed to V1's read format: V1-only readers, no compact decoder or its tables (the Physics V2 merge,
+    // 8946dd2d: the Test view's smooth draw statically used a table its vertex stage can't bind). Outside
+    // the readers, still the header value substituted, exactly.
+    const own = readers(fixed, 'fn fetchAs('), generic = readers(substituted, compactDecodeWGSL);
+    assert.equal(own.head, generic.head); assert.equal(own.tail, generic.tail);
+    assert(!/compact/i.test(own.body), 'no compact decoder in V1-only readers');
+    assert(own.body.includes('return bitcast<vec4f>(A[H.src * SLOTS + s]);') && own.body.includes('return B[H.src * SLOTS + s];'), 'V1 ping-pong reads');
+  } else {
+    // Exact substitution of the header value is the oracle, not a second decoder.
+    assert.equal(fixed, substituted);
+  }
   const code = volumeFrag(g, { fixedReadFormat: format, detail: { DETAIL_LIQ_FOAM: 1 } });
   assert(!code.includes('H.format'), `all volume format switches specialize ${format}`);
   assert(code.includes('H.src * SLOTS + s'), 'legacy ping-pong retained');
-  assert(code.includes('core = compactProbeCore(core)'), 'physical one-quantum normalization retained');
-  assert(code.includes(`air.w / ${LEGACY_PRESSURE_PA}`), 'coarse-air conversion retained');
+  if (format === 0) assert(!code.includes('compactProbeCore'), 'format 0 carries no compact decoder');
+  else {
+    assert(code.includes('core = compactProbeCore(core)'), 'physical one-quantum normalization retained');
+    assert(code.includes(`air.w / ${LEGACY_PRESSURE_PA}`), 'coarse-air conversion retained');
+  }
 }
 function deferred() { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; }
 const sim = { compact: null, readHeader: () => ({ format: 0 }) }, gpuMode = { testMode: 'visual' };
@@ -68,7 +94,7 @@ function productionVolume() {
   } };
   const volume = { get format() { return volumeReadFormat(sim, gpu); } };
   const state = { volume, sim, gpu, pipes, g: volumeShaderGrid(g), VOLUME_VIEWS, isMaterialView, drawable: d => d,
-    detailKey, volumeReadFormat, volumeFrag, VolumeParams, volumePipeline, L: {}, Matrix4,
+    detailKey, volumeReadFormat, readsAir, volumeFrag, VolumeParams, volumePipeline, L: {}, Matrix4,
     isCurved: w => !!w?.k, meshInv: new Matrix4(), fu: { last: { viewProj: new Matrix4(), model: new Matrix4() } },
     dummy: { depth: { width: 1, height: 1 } }, volumeFrameGroup: () => ({}), lightingGroup: () => ({}),
     decoShown: () => false, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES };
@@ -114,6 +140,7 @@ c.sim.compact = { isReady: false };
 const context = { physicsV2: { ready: ready.promise, integrationReady: integration.promise }, coreWait: null, coreReady: false,
   s: { ready: Promise.resolve() }, derived: { ready: Promise.resolve() }, vol: Object.assign(c.volume, { ready: Promise.resolve(), noiseReady: Promise.resolve(), viewReady(v,d,b) { return this.pipeline(v,d,'now',b).ready; } }),
   post: { ready: Promise.resolve() }, overlays: { ready: Promise.resolve() }, brush: { ready: Promise.resolve() }, blocks: null,
+  hybridWait: Promise.resolve(), worldMode: false,   // (app.js since: the hybrid engine's load, and a World session draws no Box view)
   settings: { view: 'realistic' }, viewKeyOf: v => v, baseDetail: () => ({}), warpNow: () => null, wakeLoop() {} };
 const cp = makeCore(context)(); let done = false; cp.then(() => { done = true; });
 await Promise.resolve(); assert.equal(done, false); assert(c.descs.every(d => d.name.endsWith('format2')));
@@ -121,7 +148,7 @@ context.physicsV2 = null; ready.resolve(); await Promise.resolve(); assert.equal
 integration.resolve(); await cp; assert.equal(context.coreReady, true);
 const thumbGate = deferred(), thumbVol = { format: 2, viewReady: () => thumbGate.promise };
 const thumbState = { graphicsFailure: null, coreReady: true, viewKeyOf: v => v, isMaterialView, gateVariants: () => ({ base: {} }),
-  settings: {}, vol: thumbVol, blocks: null, viewShadows: () => false };
+  settings: {}, vol: thumbVol, blocks: null, viewShadows: () => false, win: null };   // (win: a Box session's thumbnail, not a World's)
 const thumb = new Function('state', `with(state) { return ${block(app, 'async function renderThumb(')}; }`)(thumbState);
 const tp = thumb('realistic', null); thumbVol.format = 0; thumbGate.resolve(); assert.equal(await tp, false, 'stale thumbnail cancels before GPU draw');
 assert.match(app, /curved: !!warpNow\(\)\?\.k, format/);

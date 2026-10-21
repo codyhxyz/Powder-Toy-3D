@@ -3,7 +3,7 @@ import { farGIGLSL, farLayout, WORLD_SIZE } from './farShared.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { glf } from '../glsl.js';
-import { prelude, gridDims } from './common.js';
+import { prelude, gridDims, BRICK } from './common.js';
 import { frameBindings, brickInfoWGSL, RENDER_LAYOUT, LAMP_MAX } from './bindings.js';
 import { dirtyListsWGSL } from './fields.js';
 import { DERIVED_LAYOUT, appendWGSL, foldArgsWGSL } from './passes.js';
@@ -75,12 +75,17 @@ export const GI = {
   METAL_DIFFUSE: 0.5,   // metals reflect specularly; this share of their F0 is counted as diffuse bounce
   SUN_LIFT: 0.9,        // cells toward the sun from an exposed cell's centre that its sunlight is looked up
   RAYS: 32,
-  // Steps a ray marches before it takes whatever lies beyond as open sky or
-  // ground: one brick each for the first NEAR_STEPS, then FAR_STRIDE bricks
-  // (distant blockers only need to be roughly right).
-  STEPS: 12,
+  // A ray marches until it leaves the grid, then takes whatever lies beyond as
+  // open sky or ground: one brick a step for the first NEAR_STEPS, then
+  // FAR_STRIDE bricks (distant blockers only need to be roughly right; a whole
+  // number, so a step lands a whole number of bricks along: giPast).
   NEAR_STEPS: 6,
   FAR_STRIDE: 2,
+  // The loop's count past the sum of the grid's sides in bricks (giSteps).
+  // A ray crosses at most the grid's diagonal, shorter than that sum, and every
+  // step goes a brick or more, so it leaves the grid before the count runs out:
+  // the count only bounds the loop. World's slack since 03591e37, now both's.
+  STEP_SLACK: 8,
   // A probe whose own and six neighbouring bricks all block more than this
   // along every axis is buried: no surface reads it, so it isn't traced.
   BURIED: 0.99,
@@ -102,8 +107,12 @@ function gatherShape() {
   if (!(Number.isInteger(RAYS) && RAYS > 0 && (RAYS & (RAYS - 1)) === 0 && RAYS * PER_GROUP === 64)) {
     throw new Error(`shaders/gi.js: GI.RAYS (${RAYS}) must be a power of two with GI.RAYS × GI.PER_GROUP (${PER_GROUP}) = 64`);
   }
+  if (!(Number.isInteger(GI.FAR_STRIDE) && GI.FAR_STRIDE >= 1)) throw new Error(`shaders/gi.js: GI.FAR_STRIDE (${GI.FAR_STRIDE}) must be a whole number of bricks (giPast)`);
 }
 gatherShape();
+
+/** The gather's step count on grid g, either backend: every ray leaves the grid first (GI.STEP_SLACK). */
+export const giSteps = (g) => Math.ceil((g.nx + g.ny + g.nz) / BRICK) + GI.STEP_SLACK;
 
 /**
  * The GI's params (group 3 binding 1 of both kernels): parity, the probes the
@@ -358,6 +367,24 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 }
 `;
 
+// The Box march's steps (giGatherFrag): where step k lands, q = pc + d ·
+// giAlong(k) from the probe (so a leap lands exactly where stepping would),
+// and the leap past the empty bricks around a sample.
+const giLeapWGSL = /* wgsl */ `
+const GI_STRIDE: i32 = ${GI.FAR_STRIDE};   // GI_FAR_STRIDE, a whole number (gatherShape)
+// How far step k takes a ray from its probe, in bricks.
+fn giAlong(k: i32) -> i32 { return min(k + 1, GI_NEAR_STEPS) + max(k + 1 - GI_NEAR_STEPS, 0) * GI_STRIDE; }
+// The first step whose sample lies more than r bricks along the ray past step
+// k's. The samples before it lie within r bricks of k's on every axis (a lattice
+// direction's components are all under 1, which also covers f32 rounding), in
+// the cube that brickDistAt(b) = r says holds no matter: zero giSrc, nothing to
+// gather, as reading each would find.
+fn giPast(k: i32, r: i32) -> i32 {
+  let t = giAlong(k) + r;
+  if (t < GI_NEAR_STEPS) { return t; }
+  return GI_NEAR_STEPS + (t - GI_NEAR_STEPS) / GI_STRIDE;
+}`;
+
 /**
  * GI gather for grid g. world: the size of the world the grid is a window of
  * (sim.world), whose far field a ray reads past its end while FrameUniforms.far
@@ -371,10 +398,14 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
  * the sources' addressing differ only in where they live. Past the end of a
  * ray, World takes beyond() at the world's real bounds, as a box does at its
  * own; farBeyond is the Box window's far field, and FrameUniforms.far is 0
- * everywhere now (the far field was retired in dc480f4f). GI_STEPS is NOT
- * the same rule: a Box ray takes beyond() after GI.STEPS (18 bricks, 72
- * cells) even inside the box, a World ray runs to the world's edge. Not a
- * decided difference: an open question to the user.
+ * everywhere now (the far field was retired in dc480f4f). And a ray runs to
+ * the edge of its grid on both (giSteps; user's decision, 2026-10-20: small
+ * maps bounce light as far as big maps do, where a Box ray used to stop at 18
+ * bricks, 72 cells, and take beyond() inside the box).
+ * The Box march also leaps the empty bricks brickDistAt vouches for (giPast):
+ * a brick without matter has a zero giSrc (giSource), so the leap gives the
+ * light and sky of reading each one, for fewer steps. World's march reads every
+ * brick still: different code, the same light (not a deviation).
  * @param {{ nx: number, ny: number, nz: number }} g
  * @param {{ world?: number[] }} [opts]
  */
@@ -386,13 +417,13 @@ ${backend === 'world' ? worldWGSL : paramsWGSL}
 ${backend === 'world' ? '' : giListsWGSL(g)}
 
 const GI_RAYS: i32 = ${GI.RAYS};   // a power of two (gatherShape)
-const GI_STEPS: i32 = ${backend === 'world' ? Math.ceil((g.nx + g.ny + g.nz) / 4) + 8 : GI.STEPS};
+const GI_STEPS: i32 = ${giSteps(g)};
 const GI_NEAR_STEPS: i32 = ${GI.NEAR_STEPS};
 const GI_FAR_STRIDE: f32 = ${glf(GI.FAR_STRIDE)};
 const GI_BURIED: f32 = ${glf(GI.BURIED)};
 const GI_T_MIN: f32 = ${glf(GI.T_MIN)};
 const GI_FACING: f32 = ${glf(GI.FACING)};
-const GI_PER_GROUP: u32 = ${GI.PER_GROUP}u;   // GI_RAYS × GI_PER_GROUP = 64, the workgroup
+const GI_PER_GROUP: u32 = ${GI.PER_GROUP}u;   // GI_RAYS × GI_PER_GROUP = 64, the workgroup${backend === 'world' ? '' : giLeapWGSL}
 
 // Ray i of GI_RAYS spread evenly over the sphere (Fibonacci lattice, y up).
 fn giDir(i: i32) -> vec3f {
@@ -489,9 +520,11 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     var q = pc;
     // the probe's own brick is skipped: surfaces read the probes from in front of them
     for (var k = 0; k < GI_STEPS; k++) {
-      if (k < GI_NEAR_STEPS) { q += d; } else { q += d * GI_FAR_STRIDE; }
+      ${backend === 'world' ? 'if (k < GI_NEAR_STEPS) { q += d; } else { q += d * GI_FAR_STRIDE; }' : 'q = pc + d * f32(giAlong(k));'}
       let b = vec3i(floor(q));
-      if (any(b < vec3i(0)) || any(b >= bmax)) { break; }
+      if (any(b < vec3i(0)) || any(b >= bmax)) { break; }${backend === 'world' ? '' : `
+      let r = brickDistAt(b);
+      if (r >= 0) { k = giPast(k, r) - 1; continue; }   // no matter within r bricks: on to the first step past them`}
       let s = ${backend === 'world' ? 'worldGISourceStaged(b)' : 'giSrc[brickId(b)]'};
       var a = dot(giSrcCov(s), d2);
       if (a <= 0.0) { continue; }
