@@ -43,10 +43,11 @@ export const CLOUD = {
   shadowSkip: 1e-3,     // sunlight through the deck below this skips the shadow map (it can't show)
   maxSpanM: 7000,       // m: the deck's stretch along grazing rays is clipped to this...
   maxDistM: 40000,      // m: ...and nothing farther is drawn (gone into the haze)
-  skyFadeM: 24000,      // m: the sky pass's deck fades out from here to maxDistM, near the horizon: twice the air's
-                        // 12 km visibility (farShared.js FAR_HAZE), where the haze has left under 1 % of a cloud's
-                        // contrast, so the fade never shows, while it ends what a grazing ray's slices read there
-                        // (the noise tile's texels below a pixel, shimmering) without a hard line at maxDistM
+  skyFadeM: 24000,      // m: the sky pass's deck fades out from here to maxDistM, near the horizon (2-5 degrees up):
+                        // twice the air's 12 km visibility (farShared.js FAR_HAZE), where the haze has hidden nearly
+                        // all of a cloud (about 1 % of its contrast left in green, under visibility's 2 % threshold),
+                        // so the fade hardly shows, while it ends what a grazing ray's slices read there (the noise
+                        // tile's texels below a pixel, shimmering) without a hard line at maxDistM
   lightSteps: 5,        // samples toward the sun, each segment twice the last...
   lightStep0M: 40,      // ...the first this long (~1.2 km in all)
   gFwd: 0.8,            // Henyey–Greenstein forward lobe (the silver lining)...
@@ -96,8 +97,8 @@ export const sliceDepth = (od, dirY) => `CLOUD_SIGMA * ${od} * CLOUD_THICK / (${
 // The deck itself and the sunlight through it, in every pipeline that lights
 // with the sun (lighting.js: sunShadow multiplies it in, so the window's
 // surfaces, media, figures and GI probes all lie in the clouds' shadows), on
-// over every map (app.js build; FU.clouds off: no shadows, no clouds). WGSL (the name is the GLSL version's, docs/webgpu.md
-// W2); reads the media noise (tMediaNoise, L.LIGHTING binding 10: r billows,
+// over every map (app.js build; FU.clouds off: no shadows, no clouds). WGSL
+// (the name is the GLSL version's, docs/webgpu.md W2); reads the media noise (tMediaNoise, L.LIGHTING binding 10: r billows,
 // g wisps, b flame tongues, a flicker; gfx/mediaNoise.js), which tiles, through
 // linearRepeat, and FrameUniforms' clouds, cloudShift (cells: the wind's drift
 // of the deck), cloudSea (world cells: the sea level the deck's height counts
