@@ -13,7 +13,21 @@ import { PROBE, PROBE_CELLS } from '../src/shaders/povBody.js';
 import { E } from '../src/elements.js';
 
 const tick = () => new Promise((r) => setImmediate(r));
-const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 1)); };
+// The net's frames go through the codec's CompressionStream/DecompressionStream (zlib off the main thread),
+// which finish when they finish: a slower runner's long after any fixed count of timer turns. So every
+// encode and decode the net starts is tracked (load() hands the net these wrappers of the real codec), and
+// settle() returns once none is in flight and a macrotask turn has run every promise chain after them.
+// SLOW_CODEC_MS holds each one back as a slow runner's would, past the 20 x 1 ms the timer-count wait gave
+// them, so a wait on anything but the work itself fails here as it did on CI.
+const SLOW_CODEC_MS = 100;
+const codecWork = new Set();
+const slowed = (fn) => (...args) => {
+  const work = fn(...args).then((out) => new Promise((r) => setTimeout(() => r(out), SLOW_CODEC_MS)));
+  codecWork.add(work);
+  work.then(() => codecWork.delete(work), () => codecWork.delete(work));
+  return work;
+};
+const settle = async () => { for (;;) { await tick(); if (!codecWork.size) return; await Promise.allSettled(codecWork); } };
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 const metadata = (origin = [0, 0, 0], id = 'session:world:1') => ({ v: 1, id, mode: 'world', scene: 'island', seed: 1,
   origin, size: [1024, 64, 1024], focus: [origin[0] + 32, 4, origin[2] + 32], away: false });
@@ -114,7 +128,8 @@ async function load(url) {
     mod = new vm.SourceTextModule(await readFile(url, 'utf8'), { context, identifier: url.href,
       initializeImportMeta(meta) { meta.env = { VITE_RELAY_URL: 'ws://test' }; } });
   } else {
-    const exports = await import(url.href);
+    let exports = await import(url.href);
+    if (url.pathname.endsWith('/src/net/codec.js')) exports = { ...exports, encodeFrame: slowed(exports.encodeFrame), decodeFrame: slowed(exports.decodeFrame) };
     mod = new vm.SyntheticModule(Object.keys(exports), function () { for (const [k, v] of Object.entries(exports)) this.setExport(k, v); }, { context });
   }
   modules.set(url.href, mod);
