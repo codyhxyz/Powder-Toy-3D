@@ -4,6 +4,9 @@
 //   of it; the Lab Complex and Descent have no sea.
 // - The sky shader's lookup (its JS twin, edgeSeaIndex) finds the sample a
 //   point past each side lies off, corners included.
+// - The sea fades into the horizon through the same air as the land: the sky
+//   shader carries the volume's haze (shaders/farShared.js farAirWGSL) and
+//   draws the sea through t cells of it.
 // - With Naga installed (CI: deploy.yml), the sky shader validates.
 //   node tools/check-edge-sea.mjs
 import assert from 'node:assert/strict';
@@ -15,6 +18,7 @@ import { edgeSeaMask, edgeSeaIndex, EDGE_SEA_SAMPLES, EDGE_SEA_SIDES, EDGE_SEA_V
 import { skyWGSL, SkyParams } from '../src/gfx/overlays.js';
 import { WORLD_SCENES } from '../src/world/scenes/index.js';
 import { MAPS } from '../src/maps.js';
+import { farAirWGSL, volumeHazeGLSL } from '../src/shaders/farShared.js';
 
 const ALL = EDGE_SEA_SIDES * EDGE_SEA_SAMPLES;
 const OUT = 40;   // cells past the edge a test point lies
@@ -57,7 +61,9 @@ for (let i = 0; i < EDGE_SEA_SAMPLES; i += 37) {
 assert.equal(edgeSeaIndex(foot, [x0 - OUT, z0 - 2 * OUT]), 0, 'past the corner, further past z min: its first sample');
 assert.equal(edgeSeaIndex(foot, [x1 + 2 * OUT, z1 + OUT]), 2 * EDGE_SEA_SAMPLES - 1, 'further past x max: its last sample');
 
-// 3. the shader: its params pack, and Naga validates it when installed
+// 3. the shader: its params pack, the land's haze on the sea, and Naga validates it when installed
+assert.ok(skyWGSL().includes(farAirWGSL) && volumeHazeGLSL.includes(farAirWGSL), 'the sky pass and the volume share one haze');
+assert.match(skyWGSL(), /edgeSea\(h\)\) \{ c = farHazeAir\(seaColor\(rd\), rd, t, SEA_AIR_LIT\); \}/, 'the sea is seen through t cells of air');
 assert.ok(SkyParams.size >= 16 * (2 + EDGE_SEA_VEC4), 'SkyParams holds the mask');
 SkyParams.pack({ foot, seaY: 18, sea: 1, mask: volcano.words });
 let naga = false;

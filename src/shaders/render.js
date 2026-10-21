@@ -10,7 +10,7 @@ import { liquidGLSL } from './gfx/liquid.js';
 import { liquidDetailGLSL, LIQ_DETAIL, WORLD_NATIVE } from './gfx/liquidDetail.js';
 import { mediaGLSL } from './gfx/media.js';
 import { grainsGLSL, GRAINS_ANY } from './gfx/grains.js';
-import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './farShared.js';
+import { volumeHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './farShared.js';
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY, meshCutGLSL } from '../gfx/meshCut.js';
 import { decoViewGLSL, decoViewWGSL, decoSurfGLSL, DECO_PLANE_ENTRY } from './gfx/deco.js';
 import { presentationNearWGSL } from './gfx/presentation.js';
@@ -48,8 +48,8 @@ import { BLOCK_PLAIN_ABSORB, BLOCK_PLAIN_ADD } from './blockPlainShared.js';
 // detail })), holding only that view's code: the realistic tracer's registers
 // and compile time aren't paid by the others. The close-up detail is a JS
 // template switch as its #ifdefs were (gfx/detail.js defines objects). The
-// world's far parts (the haze) are compiled in and switched by
-// FrameUniforms.far, so a box and a world share every view pipeline.
+// material views' haze (farShared.js volumeHazeGLSL) is on every map, a box's
+// and a world's alike.
 //
 // The pass (docs/webgpu.md F1, Sync log S1): the window box drawn as back faces
 // (cullMode 'front': one fragment per covered pixel, the camera inside the box
@@ -1340,7 +1340,12 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
   // linear HDR radiance, premultiplied; tone mapping happens in post (src/gfx/post.js)
   var rgb = col * select(0.0, 1.0, alpha > 0.0);
   let shown = ${curved ? 'warpGridPoint(hitPos)' : 'hitPos'};   // (curved: where the hit is displayed)
-  if (FU.far != 0u) { rgb = farHazePremul(rgb, alpha, FU.cam, shown); }   // a world: the air between the eye and the hit
+  // The air between the eye and the hit: far hills fade toward the sky's
+  // colour, as real air does (farShared.js volumeHaze: FAR_HAZE, 12 km of
+  // visibility). The same on every map, Box and World, V1 and V2: a small
+  // map's ~40 m fade it by about 1 %, a big map's far side (300-900 m) by a
+  // tenth to a quarter. (No haze in the data views or Plain: volumeFrag.)
+  rgb = volumeHaze(rgb, alpha, FU.cam, shown);
   o.color = vec4f(rgb, alpha);
   o.depth = volumeDepth(shown);
   return o;
@@ -1468,8 +1473,13 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
     grainsGLSL(d),
   ];
   if (backend === 'world') parts.push(shadowOpticsWGSL({ backend }));
+  // Intentional (no sky in these views, 2026-10-20): the haze is the sky's light
+  // on the air, and the data views and Plain draw no sky (app.js drawSky: the
+  // material views only; behind the rest is the page's painted gradient,
+  // gfx/post.js), so they keep no haze, on every map alike. The data views'
+  // colours are readings, not light.
   if (plain) parts.push(worldPlainWGSL({ curved }));
-  else if (lit) parts.push(farHazeGLSL, realistic(d, curved, backend, fixedReadFormat));
+  else if (lit) parts.push(volumeHazeGLSL, realistic(d, curved, backend, fixedReadFormat));
   else parts.push(DATA_COMMON, DATA_CODE[view](curved, backend), dataView(view));
   parts.push(volumeVertOf(curved), volumeEntry(view, lit || plain, curved, backend, plain));
   // Keep the heavier artwork out of Realistic's active shader path/registers.

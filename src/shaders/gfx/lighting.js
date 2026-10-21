@@ -15,6 +15,8 @@ export { WAND_LIGHTS };
 export const SH_Y0 = 0.282095;          // Y00
 export const SH_Y1 = 0.488603;          // Y1m = SH_Y1 * (x, y, z)
 export const SKYVIS_OPEN_DC = 0.5;      // SH_Y0 * c0.a of the open sky: the sphere's upper half
+// Surfaces read the probes this many cells out along their normal (GI_OFFSET below).
+export const GI_OFFSET_CELLS = 3;
 // The sun shadow map's layout and its test inside volumes (sunBasis, sunMapShadow
 // below), for CPU readers of the map too (pov/viewmodel.js: the sun on the hands).
 export const meanSigmaWGSL = 'fn meanSigma(id: i32) -> f32 { return dot(SIGMA(id), vec3f(1.0 / 3.0)); }';
@@ -52,7 +54,8 @@ const vogel = (n) => Array.from({ length: n }, (_, i) => {
  *   exact sun ray       smoothOpaque(p), sunRayClear(ro, tLim)
  *   GI probes (4-7)     probeTex(t, p), probeAt(p), surfProbe(p, n) -> Probe
  *   SH evaluation       giIrradiance(g, n), giRadiance(g, d, blur), giSkyVis(g, n)
- *   the air's sky       giAirSkyVis(p) (the probes: band 0's sky visibility)
+ *   the air's sky       giAirSkyVis(p) (the probes: band 0's sky visibility),
+ *                       giAirSkyHeld(p) -> vec2f (from the probes already in)
  *   glow volume (3)     sampleLight(gp) (with wandLight(p))
  *   AO                  occluder(c), faceAO(cell, n, hp), solidity(p), fieldAO(p, n)
  *   traced rays         nearSmoothIn, traceNear(ro, rd, tLim, opaqueOnly, selfSkip, &hc, &hn),
@@ -473,7 +476,7 @@ const SH_COS1: f32 = 2.0 / 3.0;   // band-1 clamped-cosine convolution / pi (ban
 // Surfaces read the probes this many cells out along their normal: past the
 // brick their own matter shares, into the light in front of them. Detail
 // closer than that comes from the near-field AO below.
-const GI_OFFSET: f32 = 3.0;
+const GI_OFFSET: f32 = ${GI_OFFSET_CELLS.toFixed(1)};
 const SKYVIS_MIN: f32 = 0.05;     // floor of the open-sky share used to normalise sky visibility
 
 // A probe's four bands.
@@ -519,6 +522,21 @@ const SKYVIS_OPEN_DC: f32 = ${SKYVIS_OPEN_DC.toFixed(6)};   // SH_Y0 * c0.a of t
 fn giAirSkyVis(p: vec3f) -> f32 {
   if (any(p < vec3f(0.0)) || any(p > vec3f(GRID))) { return 1.0; }
   return clamp(SH_Y0 * probeTex(tGI0, p).a / SKYVIS_OPEN_DC, 0.0, 1.0);
+}
+// The same share from the probes already in, for a reader that can do without
+// (the haze: shaders/farShared.js hazeAirLit): (share * weight, weight), the
+// weight being how much of p's probes are held. A box's window holds all of
+// its probes; a world holds the bricks something has asked for, and this
+// asks for none (worldAccess.js worldProbeHeld). Different code, the same
+// share wherever the probes are in.
+fn giAirSkyHeld(p: vec3f) -> vec2f {${backend === 'world' ? `
+  var s = vec2f(1.0);   // past the world, as giAirSkyVis: open
+  if (all(p >= vec3f(0.0)) && all(p <= vec3f(GRID))) {
+    let h = worldProbeAlphaHeld(tGI0, p);
+    s = vec2f(clamp(SH_Y0 * h.x / max(h.y, 1e-6) / SKYVIS_OPEN_DC, 0.0, 1.0) * h.y, h.y);
+  }
+  return s;` : `
+  return vec2f(giAirSkyVis(p), 1.0);`}
 }` : `
 // (no giAirSkyVis here: it samples the bands this pipeline writes)`}
 

@@ -253,6 +253,36 @@ fn worldProbeTex(t: texture_2d_array<f32>, p: vec3f, ready: u32) -> vec4f {
   } } }
   return value;
 }
+// For a reader that can do without (the haze's sky share, lighting.js
+// giAirSkyHeld): brick b's GI band alpha if the snapshot already holds it,
+// as (alpha, 1), else 0. It asks for nothing and leaves the query complete,
+// so it never adds bricks of air to the demand nor holds back a frame.
+fn worldProbeHeld(t: texture_2d_array<f32>, b: vec3i) -> vec2f {
+  let e = worldLightBook[worldBookIndex(b)]; let id = e & WORLD_BOOK_PAGE;
+  let known = id != 0u && id <= WA.light.y && WA.tiles.w == WORLD_ABI
+    && (((e >> WORLD_BOOK_READY) << WORLD_BOOK_LIGHT) & WORLD_GI) == WORLD_GI;
+  var held = vec2f(0.0);
+  if (known) {
+    let r = worldLightMeta(id - 1u, 1u).x;
+    if (r != 0u && r <= WA.probes.w) {
+      let a = worldLinearAddress(r - 1u, WA.probes.xy);
+      held = vec2f(textureLoad(t, a.xy, a.z, 0).a, 1.0);
+    }
+  }
+  return held;
+}
+// worldProbeTex's band alpha at p from the held probes alone: (sum of w * alpha,
+// sum of w) over its trilinear taps whose GI is in.
+fn worldProbeAlphaHeld(t: texture_2d_array<f32>, p: vec3f) -> vec2f {
+  let q = clamp(p/4.0 - 0.5, vec3f(0.0), vec3f(WA.bricks.xyz) - 1.0);
+  let base = vec3i(floor(q)); let f = fract(q);
+  var s = vec2f(0.0);
+  for (var z = 0; z < 2; z++) { for (var y = 0; y < 2; y++) { for (var x = 0; x < 2; x++) {
+    let w = select(1.0-f, f, vec3i(x,y,z) == vec3i(1));
+    s += worldProbeHeld(t, clamp(base + vec3i(x,y,z), vec3i(0), vec3i(WA.bricks.xyz) - 1)) * w.x * w.y * w.z;
+  } } }
+  return s;
+}
 struct WorldProbe { c0: vec4f, cx: vec4f, cy: vec4f, cz: vec4f }
 fn worldProbe(p: vec3f) -> WorldProbe {
   return WorldProbe(worldProbeTex(${gi[0]},p,WORLD_GI), worldProbeTex(${gi[1]},p,WORLD_GI), worldProbeTex(${gi[2]},p,WORLD_GI), worldProbeTex(${gi[3]},p,WORLD_GI));

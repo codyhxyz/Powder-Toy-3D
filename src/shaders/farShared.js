@@ -15,7 +15,8 @@ import { Appearance, appearanceOf, materialWord, materialId, materialAppearance 
 //   farLayoutGLSL(L)    its WGSL consts, the far grid's texel record (FarTexel,
 //                       farUnpack, farPackTexel) and the far shadow heights' constants
 //   FAR_SKY, farSkyGLSL the sky over the far field: farSkyOpen(p), none under the ground
-//   farHazeGLSL         aerial perspective (the volume's haze in a world, the far view's),
+//   farHazeGLSL         aerial perspective (the far view's; volumeHazeGLSL the volume's on
+//                       every map, farAirWGSL the sky pass's sea past a world's edge),
 //                       its in-scatter taken by the air's sky share (farHazeFor picks the reader)
 //   farCastersGLSL(L)   far casters in the window's sun shadow map
 //   farGIGLSL(L)        what a GI probe's ray sees past the window
@@ -240,32 +241,15 @@ const KOSCHMIEDER = 3.912;             // ln(1/0.02): the 2 % contrast threshold
 export const FAR_HAZE = KOSCHMIEDER / (FAR_HAZE_VISIBILITY_M / CELL_M);
 
 /**
- * Aerial perspective, for the far field and (world mode) the window's volume:
- * over d cells along rd, the air's extinction (the sky's spectral shape,
- * scaled to the haze's visibility) and its in-scatter, the sky's own radiance
- * toward rd, held at the horizon for rays going down, so distance fades into
- * the sky. The in-scatter is the sky's light on the air, so it takes the share
- * of the open sky the air on the way sees (the GI probes': farAirLit): a
- * cave's air, which no sky reaches, adds none, and the eyes adjusting to the
- * dark don't raise it into a blue fog. After lib() (skyRadiance, TAU_AIR,
- * GI_OFFSET and the sky reader).
- *   farAir(rd) -> vec3f                           the air's light toward unit rd
- *   farAirLit(a, b) -> f32                        share of the open sky's light on
- *                                                 the air from a to b (window cells)
- *   farHaze(col, rd, d, lit) -> vec3f             col seen through d cells of air
- *                                                 whose sky share is lit
- *   farHazePremul(col, alpha, eye, p) -> vec3f    premultiplied colour (the
- *                                                 volume's): the share alpha
- *                                                 covers takes the air's light
- * farHazeFor(airSky) names the function that reads the air's sky share at a
- * window point (the GLSL's FAR_AIR_SKY): giAirSkyVis, the probes (farHazeGLSL,
- * the volume's), or the far view's own reader, which takes the far field's sky
- * past the window. null leaves out farAirLit and farHazePremul, for a pipeline
- * that doesn't sample the probes (GI gather writes them): farAir and farHaze
- * need neither.
- * @param {string | null} [airSky]
+ * The air itself, after skyGLSL's TAU_AIR and skyViewGLSL's skyRadiance (no
+ * probes, no source artwork): what farHazeFor builds on, and the sky pass's
+ * sea past a world's edge (gfx/overlays.js), which fades into the horizon as
+ * the land does.
+ *   farAir(rd) -> vec3f                     the air's light toward unit rd
+ *   farHazeAir(col, rd, d, lit) -> vec3f    col seen through d cells of air
+ *                                           whose sky share is lit
  */
-export const farHazeFor = (airSky = 'giAirSkyVis') => /* wgsl */ `
+export const farAirWGSL = /* wgsl */ `
 const FAR_HAZE: f32 = ${FAR_HAZE.toExponential(4)};
 const FAR_HAZE_RGB: vec3f = FAR_HAZE * TAU_AIR / TAU_AIR.g;
 fn farAir(rd: vec3f) -> vec3f {
@@ -274,10 +258,48 @@ fn farAir(rd: vec3f) -> vec3f {
   if (dot(h, h) > 1e-8) { h = normalize(h); } else { h = vec3f(1.0, 0.0, 0.0); }
   return skyRadiance(h);
 }
-fn farHaze(col: vec3f, rd: vec3f, d: f32, lit: f32) -> vec3f {
-  if (sourceEnabled()) { return sourceFog(col, d); }
+fn farHazeAir(col: vec3f, rd: vec3f, d: f32, lit: f32) -> vec3f {
   let T = exp(-FAR_HAZE_RGB * d);
   return col * T + lit * farAir(rd) * (1.0 - T);
+}
+`;
+/**
+ * Aerial perspective, for the volume on every map (volumeHazeGLSL) and the far field:
+ * over d cells along rd, the air's extinction (the sky's spectral shape,
+ * scaled to the haze's visibility) and its in-scatter, the sky's own radiance
+ * toward rd, held at the horizon for rays going down, so distance fades into
+ * the sky. The in-scatter is the sky's light on the air, so it takes the share
+ * of the open sky the air on the way sees (the GI probes': farAirLit): a
+ * cave's air, which no sky reaches, adds none, and the eyes adjusting to the
+ * dark don't raise it into a blue fog. After lib() (skyRadiance, TAU_AIR,
+ * GI_OFFSET and the sky reader).
+ *   farAir, farHazeAir                            farAirWGSL's
+ *   farAirLit(a, b) -> f32                        share of the open sky's light on
+ *                                                 the air from a to b (window cells)
+ *   farHaze(col, rd, d, lit) -> vec3f             farHazeAir, or the source artwork's fog
+ *   farHazeSeen(col, alpha, eye, p, lit) -> vec3f premultiplied col at p seen from eye
+ *                                                 through air whose sky share is lit
+ *   farHazePremul(col, alpha, eye, p) -> vec3f    farHazeSeen with farAirLit
+ * farHazeFor(airSky) names the function that reads the air's sky share at a
+ * window point (the GLSL's FAR_AIR_SKY): giAirSkyVis, the probes (farHazeGLSL),
+ * or the far view's own reader, which takes the far field's sky
+ * past the window. null leaves out farAirLit and farHazePremul, for a pipeline
+ * that doesn't sample the probes (GI gather writes them): the rest need
+ * neither.
+ * @param {string | null} [airSky]
+ */
+export const farHazeFor = (airSky = 'giAirSkyVis') => /* wgsl */ `${farAirWGSL}
+fn farHaze(col: vec3f, rd: vec3f, d: f32, lit: f32) -> vec3f {
+  if (sourceEnabled()) { return sourceFog(col, d); }
+  return farHazeAir(col, rd, d, lit);
+}
+// Premultiplied col at p seen from eye through air whose sky share is lit:
+// the share alpha covers takes the air's light.
+fn farHazeSeen(col: vec3f, alpha: f32, eye: vec3f, p: vec3f, lit: f32) -> vec3f {
+  if (sourceEnabled()) { return sourceFog(col / max(alpha, 0.0001), distance(eye, p)) * alpha; }
+  let v = p - eye;
+  let d = length(v);
+  return farHazeAir(col, v / max(d, 1e-6), d, alpha * lit);
 }${airSky ? `
 // The air's sky share from a to b: ${airSky} at its ends and middle, by
 // Simpson's rule, the far end GI_OFFSET back out of the matter it lies on
@@ -289,15 +311,38 @@ fn farAirLit(a: vec3f, b: vec3f) -> f32 {
   return (${airSky}(a) + 4.0 * ${airSky}(0.5 * (a + bo)) + ${airSky}(bo)) / 6.0;
 }
 fn farHazePremul(col: vec3f, alpha: f32, eye: vec3f, p: vec3f) -> vec3f {
-  if (sourceEnabled()) { return sourceFog(col / max(alpha, 0.0001), distance(eye, p)) * alpha; }
-  let v = p - eye;
-  let d = length(v);
-  let T = exp(-FAR_HAZE_RGB * d);
-  return col * T + alpha * farAirLit(eye, p) * farAir(v / max(d, 1e-6)) * (1.0 - T);
+  return farHazeSeen(col, alpha, eye, p, farAirLit(eye, p));
 }` : ''}
 `;
-/** The haze with the probes' sky reader (giAirSkyVis): the volume's, in a world. */
+/** The haze with the probes' sky reader (giAirSkyVis). */
 export const farHazeGLSL = farHazeFor();
+
+/**
+ * The volume's haze, on every map (shaders/render.js, the material views):
+ * the air between the eye and what a pixel shows, as farHazePremul, with
+ * the air's sky share from the probes at the ray's two ends alone:
+ *   hazeAirLit(a, b) -> f32                   share of the open sky's light on
+ *                                             the air from a to b (grid cells)
+ *   volumeHaze(col, alpha, eye, p) -> vec3f   premultiplied col at p, seen from eye
+ * The ends: the eye, and the far end GI_OFFSET back out of the matter it lies
+ * on, beside the probe that matter's own shading reads. farAirLit's middle is
+ * a brick of open air that on a big map nothing else reads: asking for it
+ * would make the world light empty air behind every pixel, bricks that move
+ * with the eye. So the haze asks for nothing: only what the probes already
+ * hold counts (giAirSkyHeld; a box's window holds all of them), and with
+ * neither end held the air is open, as past the probes (giAirSkyVis).
+ */
+export const volumeHazeGLSL = /* wgsl */ `${farHazeGLSL}
+fn hazeAirLit(a: vec3f, b: vec3f) -> f32 {
+  let v = b - a;
+  let d = length(v);
+  let s = giAirSkyHeld(a) + giAirSkyHeld(b - v * (min(GI_OFFSET, d) / max(d, 1e-6)));
+  return select(1.0, s.x / max(s.y, 1e-6), s.y > 0.0);
+}
+fn volumeHaze(col: vec3f, alpha: f32, eye: vec3f, p: vec3f) -> vec3f {
+  return farHazeSeen(col, alpha, eye, p, hazeAirLit(eye, p));
+}
+`;
 
 // ---------------------------------------------------------------- casters
 // Far casters in the window's sun shadow map (the shadow kernel): where

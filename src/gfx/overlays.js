@@ -27,6 +27,7 @@ import { SKY, skyGLSL, skyViewGLSL, SUN_TAN_RADIUS, SUN_DISC, SUN_DISC_EDGE, glf
 import { LOOK } from './materials.js';
 import { E } from '../elements.js';
 import { EDGE_SEA_SAMPLES, EDGE_SEA_VEC4 } from './edgeSea.js';
+import { farAirWGSL } from '../shaders/farShared.js';
 
 // The floor grid: three's GridHelper(FLOOR_SPAN, FLOOR_SPAN, …), a line every
 // scene unit, the centre lines brighter; a world's is stretched over its footprint.
@@ -117,6 +118,8 @@ ${SkyParams.wgsl}
 const PI_L: f32 = 3.14159265;
 ${skyGLSL()}
 ${skyViewGLSL()}
+${farAirWGSL}
+const SEA_AIR_LIT: f32 = 1.0;   // the air out over the sea sees the open sky (past the probes: open, as giAirSkyVis)
 const SUN_TAN_RADIUS: f32 = ${glf(SUN_TAN_RADIUS)};
 const SKY_SUN_DISC: f32 = ${glf(SUN_DISC)};
 const SKY_SUN_DISC_EDGE: f32 = ${glf(SUN_DISC_EDGE)};
@@ -170,7 +173,9 @@ struct SkyOut {
   if (P.sea != 0u && rd.y < 0.0) {
     let t = (P.seaY - FU.cam.y) / rd.y;
     let h = FU.cam.xz + rd.xz * t;
-    if (t > 0.0 && (any(h < P.foot.xy) || any(h > P.foot.zw)) && edgeSea(h)) { c = seaColor(rd); }
+    // seen through t cells of air, as the land is (farShared.js farHazeAir),
+    // so the far sea fades into the horizon with it
+    if (t > 0.0 && (any(h < P.foot.xy) || any(h > P.foot.zw)) && edgeSea(h)) { c = farHazeAir(seaColor(rd), rd, t, SEA_AIR_LIT); }
   }
   return vec4f(c, 1.0);
 }`;
