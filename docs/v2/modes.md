@@ -7,6 +7,9 @@ validates modes and supplies the same per-dispatch values to grid and particle
 kernels. `nativeBodyGravity` gives the same vector in cells/s². The first-person
 body does not fall at it: under both engines it falls at Noita's gravity (5.4 g,
 scaled by the setting) along `gravityAt`'s direction (`src/pov/player.js`).
+Shots, throws, frags, wand bolts and the bots' aimed lobs read the same direction
+through `src/pov/gravityField.js`, each at its own strength; under radial gravity
+they fall toward the centre (`tools/check-radial-projectiles.mjs`).
 Radial gravity is constant magnitude toward the local box centre (TPT); gravity
 at the exact centre and in Off mode is zero. The native tick is 1/60 second;
 liquid substeps remain 1/180 second. No extra speed-slider multiplier belongs

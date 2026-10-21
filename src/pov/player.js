@@ -12,8 +12,7 @@ import { createStatusSet } from './status.js';
 import { wound, createBodyWorld } from './stains.js';
 import { createKick } from './kick.js';
 import { createMeat, EAT_CELLS_MAX } from './meat.js';
-import { gravityAt } from '../v2/modes.js';
-import { GRAV } from '../simModes.js';
+import { radialGravity, pullAt } from './gravityField.js';
 import { bodyEditStepRate, nativeBodyPressureFactor } from '../v2/body.js';
 import { HOST_HZ } from '../v2/host.js';
 import { CRUELTY_GRAVITY, crueltyMove, pullGrappendix } from './grappendixPhysics.js';
@@ -788,12 +787,13 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     // The body's pull is the same under both engines (V1 and V2): Noita's strength (GRAVITY at the
     // default setting, which scales it; the source game's in Cruelty Squad's flight) along the world's
     // own field. That is down, none (sim.gravity reads 0 with the mode off) or, in TPT's radial mode,
-    // toward the box's centre as the grid's matter falls (gravityAt: the field both engines use).
+    // toward the box's centre as the grid's matter falls (gravityField.js: the field both engines use,
+    // which the shots, throws and wand bolts fall along too).
     // docs/v2.md §5.1's 2 g is the grid's matter; the body keeps Noita's player.xml gravity, which the
     // user chose for its feel (2026-10-09, 27799db). Under V2 at 2 g a jump rose 2.7× as high and floated.
     const gravityScale = cruelty ? CRUELTY_GRAVITY / GRAVITY : 1;
     const grav = GRAVITY * gravityScale * sim.gravity / SIM_GRAVITY_REF;
-    const radialPull = sim.gravityMode === GRAV.RADIAL ? gravityAt(p.pos.toArray(), [g.nx, g.ny, g.nz], { gravMode: GRAV.RADIAL, gravity: grav }) : null;
+    const radialPull = radialGravity(sim) ? pullAt(sim, p.pos, grav) : null;
     if (rope?.grappendix && alive) pullGrappendix(v, vB.copy(p.pos).setY(p.pos.y + H / 2), rope.anchor, grav, dt);
 
     // the jump button's timing (the pogo's timed presses)

@@ -1,11 +1,12 @@
 import * as THREE from 'three';
 import { TRACE, TRACE_MISS, TRACE_ROUND, STRIKE } from '../shaders/povTrace.js';
 import { povGpu } from './gpu.js';
-import { projectileSeconds } from '../v2/host.js';
+import { projectileSeconds, HOST_HZ } from '../v2/host.js';
 import { ELEMENTS, K } from '../elements.js';
 import { CELL_METERS } from './vitals.js';
 import { povEvents } from './events.js';
 import { segmentTarget, dealtScale, PLAYER } from './targets.js';
+import { radialGravity, pullAt } from './gravityField.js';
 
 // Ballistic rounds: the guns' shots fly outside the sim, with real ballistics,
 // and touch the sim only where they strike, adding nothing to it.
@@ -20,7 +21,10 @@ import { segmentTarget, dealtScale, PLAYER } from './targets.js';
 // Each frame:
 //   1. Flight. A round's position is the closed form p0 + v0·t + ½·g·t² of its
 //      flight time t, which advances by the frame's dt while the sim runs
-//      (pausing the sim freezes rounds in the air).
+//      (pausing the sim freezes rounds in the air). g is the world's field
+//      (gravityField.js): straight down, or under TPT's radial gravity toward the
+//      box's centre, where it turns as the round flies, so the path is a chain of
+//      those parabolas, the pull read again every FIELD_HOLD_S of flight.
 //   2. Trace. One small GPU dispatch (shaders/povTrace.js traceFrag) marches each
 //      round's path a little ahead of it, LOOKAHEAD frames past the readback
 //      latency, through the grid and reports the first liquid, powder or solid
@@ -71,6 +75,9 @@ const SEGMENT_SAG_MAX = 0.1;            // cells: a traced chord strays at most 
 const TRACE_RGBA = 4;
 const MAX_FLIGHT = 30;                 // seconds: even a stalled GPU readback cannot keep a projectile forever
 const MAX_ROUND_FLIGHT = 2;            // a bullet crosses the active grid in a fraction of a second
+// s of flight the radial pull is held for before it is read again where the round has got to: one
+// V2 tick, as the grid's matter reads its field once a step (a thrown bomb moves a cell in it)
+const FIELD_HOLD_S = 1 / HOST_HZ;
 
 const KIND = ELEMENTS.map((e) => e.kind);
 const HARD = ELEMENTS.map((e) => e.hard);
@@ -90,17 +97,43 @@ export function createBallistics() {
   const starts = [...Array(TRACE.ROUNDS)].map(() => [0, 0, 0, 0]);
   const ends = [...Array(TRACE.ROUNDS)].map(() => [0, 0, 0, 0]);
 
+  let world = null;   // that world's sim: its field (gravityField.js)
   // A new world: rounds of a replaced one are gone with it.
   function ensureWorld(sim) {
+    world = sim;
     if (sim.id === simId) return;
     simId = sim.id;
     while (rounds.length) end(rounds[0]);
   }
 
+  // The stretch of round r's path at flight time t: { t0, p0, v0, g }, its start and the pull held
+  // over it. Straight down that is the round itself, one parabola from t0 = 0. Under radial gravity
+  // (`r.knots`, set on its first frame) it is the k-th stretch of FIELD_HOLD_S, each from where the
+  // last left off, under the field there (the world's now: a switch mid-flight is followed).
+  function stretch(r, t) {
+    const ks = r.knots;
+    if (!ks) return r;
+    const k = Math.max(0, Math.floor(t / FIELD_HOLD_S));
+    while (ks.length <= k) {
+      const last = ks[ks.length - 1], t0 = ks.length * FIELD_HOLD_S, u = t0 - last.t0;
+      const p0 = last.p0.clone().addScaledVector(last.v0, u).addScaledVector(last.g, 0.5 * u * u);
+      ks.push({ t0, p0, v0: last.v0.clone().addScaledVector(last.g, u), g: new THREE.Vector3(...pullAt(world, p0, r.pull)) });
+    }
+    return ks[k];
+  }
   // position and velocity of round r at flight time t
-  const posAt = (r, t, out = new THREE.Vector3()) =>
-    out.copy(r.p0).addScaledVector(r.v0, t).addScaledVector(r.g, 0.5 * t * t);
-  const velAt = (r, t, out = new THREE.Vector3()) => out.copy(r.v0).addScaledVector(r.g, t);
+  const posAt = (r, t, out = new THREE.Vector3()) => {
+    const s = stretch(r, t), u = t - s.t0;
+    return out.copy(s.p0).addScaledVector(s.v0, u).addScaledVector(s.g, 0.5 * u * u);
+  };
+  const velAt = (r, t, out = new THREE.Vector3()) => { const s = stretch(r, t); return out.copy(s.v0).addScaledVector(s.g, t - s.t0); };
+  // a round's field, once (as it's fired, or on its first frame if no world was known yet): under
+  // radial gravity its path turns (stretch)
+  function follow(sim, r) {
+    if (r.knots !== undefined) return;
+    r.knots = radialGravity(sim) && r.pull !== 0
+      ? [{ t0: 0, p0: r.p0.clone(), v0: r.v0.clone(), g: new THREE.Vector3(...pullAt(sim, r.p0, r.pull)) }] : null;
+  }
 
   function end(r) {
     const i = rounds.indexOf(r);
@@ -113,7 +146,7 @@ export function createBallistics() {
   // opts: speed (cells/s, default the round's), carry (cells/s added: the
   // thrower's own velocity), kind (named in the events; 'round' draws a
   // tracer), energy and depth (the strike's, see strikeFrag), damage (health
-  // taken from a body it hits), onStrike({ sim, hit, dir, normal }) to do
+  // taken from a body it hits), onStrike({ sim, hit, dir, normal, vel }) to do
   // something else where it lands, bodies (an onStrike projectile strikes
   // bodies too, hit.id −1 and hit.body the target; otherwise it flies through them).
   // Returns the round's id, or 0 if MAX_ROUNDS are already in flight.
@@ -127,8 +160,10 @@ export function createBallistics() {
     const r = {
       id: nextId++, alive: true, kind, onStrike, bodies: !onStrike || bodies, energy, depth: Math.min(depth, STRIKE.DEPTH_MAX), damage,
       actor: povEvents.actor,   // who fired it (null: the player): its events carry that, and it never hits them
-      p0: origin.clone(), v0,
+      p0: origin.clone(), v0, t0: 0,
       g: new THREE.Vector3(0, -ROUND_GRAVITY * gravityScale, 0),
+      pull: ROUND_GRAVITY * gravityScale,   // cells/s²: its strength, along the world's field (stretch)
+      knots: undefined,  // its path's stretches under radial gravity (null straight down): follow()
       t: 0,              // s of flight so far
       tShown: 0,         // s of flight round:move has shown
       tTraced: 0,        // s of path the traces requested cover
@@ -137,12 +172,13 @@ export function createBallistics() {
       hit: null,         // the earliest reported strike
       shown: origin.clone(),   // where round:move last left it
     };
+    if (world) follow(world, r);
     rounds.push(r);
     return r.id;
   }
 
   // the longest chord a trace may take: its sagitta g·T²/8 stays under SEGMENT_SAG_MAX
-  const chordTime = (r) => (r.g.y < 0 ? Math.sqrt(8 * SEGMENT_SAG_MAX / -r.g.y) : Infinity);
+  const chordTime = (r) => { const g = r.knots ? Math.abs(r.pull) : -r.g.y; return g > 0 ? Math.sqrt(8 * SEGMENT_SAG_MAX / g) : Infinity; };
 
   function inBox(p, g) { return p.x >= 0 && p.y >= 0 && p.z >= 0 && p.x < g.nx && p.y < g.ny && p.z < g.nz; }
 
@@ -218,9 +254,9 @@ export function createBallistics() {
     const h = r.hit;
     // (an answer that came late finds the round already past the hit: nothing left to show)
     if (h.t > r.tShown) povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: h.point.clone() });
-    const dir = velAt(r, h.t).normalize();
+    const vel = velAt(r, h.t), dir = vel.clone().normalize();
     const normal = new THREE.Vector3(...NORMALS[h.face]);
-    if (r.onStrike) { r.onStrike({ sim, hit: h, dir, normal }); end(r); return; }
+    if (r.onStrike) { r.onStrike({ sim, hit: h, dir, normal, vel }); end(r); return; }
     const id = h.id, energy = r.energy;
     const broke = KIND[id] === K.SOLID ? BREAKS[id] && energy >= HARD[id] : null;
     povEvents.emit('impact', { source: 'gun', point: h.point.clone(), normal, id, energy, broke });
@@ -251,9 +287,9 @@ export function createBallistics() {
     if (striking && !body) { strike(sim, r); return; }
     if (body) {
       povEvents.emit('round:move', { id: r.id, kind: r.kind, from: r.shown.clone(), to: body.point.clone() });
-      const dir = velAt(r, tAt).normalize();
+      const vel = velAt(r, tAt), dir = vel.clone().normalize();
       if (r.onStrike) {
-        r.onStrike({ sim, hit: { point: body.point.clone(), id: -1, body: body.target }, dir, normal: dir.clone().negate() });
+        r.onStrike({ sim, hit: { point: body.point.clone(), id: -1, body: body.target }, dir, normal: dir.clone().negate(), vel });
         end(r);
         return;
       }
@@ -284,6 +320,7 @@ export function createBallistics() {
       // are, as when paused, rather than strike or burst with no edit to do it
       if (!povGpu(sim).ready) return;
       frameTime = t;
+      for (const r of rounds) follow(sim, r);
       // each round's events are its shooter's (an NPC's carry by, events.js)
       for (const r of [...rounds]) povEvents.as(r.actor, () => fly(sim, r));
       if (rounds.length) requestTrace(sim);
@@ -296,6 +333,7 @@ export function createBallistics() {
       const back = (v) => { if (v) { v.x -= dx; v.z -= dz; } };
       for (const r of rounds) {
         back(r.p0);
+        for (const k of r.knots ?? []) back(k.p0);
         back(r.shown);
         if (r.hit) { back(r.hit.cell); back(r.hit.prev); back(r.hit.point); }
       }

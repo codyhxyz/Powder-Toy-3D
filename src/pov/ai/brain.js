@@ -13,6 +13,7 @@ import { CHARGE_S as LASER_CHARGE_S, REFIRE_S as LASER_REFIRE_S } from '../tools
 import { FRAG_SPEED, FRAG_GRAVITY } from '../frag.js';
 import { MELEE_LUNGE } from '../kick.js';
 import { haloMatch } from '../halo.js';
+import { radialGravity, upAt } from '../gravityField.js';
 
 // An NPC's mind, from Mat Buckland's "Programming Game AI by Example" as Yuka
 // implements it (github.com/Mugen87/yuka):
@@ -80,6 +81,7 @@ const FRAG_MAX = 45;                 // cells: the far edge of the fuzzy "medium
 const FRAG_COOLDOWN = 6;             // s between its frags (by eye: not both at once)
 const FRAG_ERROR = BOMB_ERROR;       // the same throwing arm
 const LOB_LOOK = 10;                 // cells out along a lob it looks at (only the direction counts)
+const BOMB_AIM_LIFT = 0.5;           // cells over the target's feet a bomb is aimed at (the middle of the cell it stands in)
 const PHYS_GRAB_S = 0.9;             // s it holds the beam on loose matter before flinging
 const PHYS_FIND = 12;                // cells: loose matter this near its eye can be grabbed
 const PHYS_COOLDOWN = 2.5;
@@ -825,34 +827,53 @@ export function takeAimAndShoot(a) {
   return true;
 }
 
-// Throw a bomb to land at p: the low arc of the projectile's launch angle
-// θ = atan((v² − √(v⁴ − g(g·x² + 2·y·v²))) / (g·x)). False if out of range.
-function throwBombAt(a, p, breach) {
-  const e = a.eye();
-  const dx = p.x - e.x, dz = p.z - e.z, x = Math.hypot(dx, dz), y = p.y + (breach ? 0 : 0.5) - e.y;
-  if (!breach && x < BOMB_MIN) return false;
-  const sim = a.npc.getSim();
-  const g = ROUND_GRAVITY * gravityScale(sim), v = THROW_SPEED;
+// The low arc that lands a throw at speed v (cells/s), pulled at g (cells/s²), from the eye e on p (lift
+// cells over it): the projectile's launch angle θ = atan((v² − √(v⁴ − g(g·x² + 2·y·v²))) / (g·x)), x
+// across and y up. Up is away from the world's pull at the eye (gravityField.js: straight up, or under
+// radial gravity away from the box's centre), as the throw falls (ballistics.js).
+// → { x, look }: look is LOB_LOOK cells out along the arc, null when p is out of reach.
+const upLob = new YVector3();
+export function lobArc(sim, e, p, v, g, lift = 0) {
+  const up = radialGravity(sim) ? upAt(sim, e, upLob) : null;
+  let dx, dz, x, y;
+  if (up) {
+    // the target in the pull's frame: y along up, the rest across
+    const tx = p.x + up.x * lift - e.x, ty = p.y + up.y * lift - e.y, tz = p.z + up.z * lift - e.z;
+    y = tx * up.x + ty * up.y + tz * up.z;
+    dx = tx - up.x * y; dz = tz - up.z * y;
+    const dy = ty - up.y * y;
+    x = Math.hypot(dx, dy, dz);
+    const disc = v ** 4 - g * (g * x * x + 2 * y * v * v);
+    if (disc < 0) return { x, look: null };
+    const th = Math.atan((v * v - Math.sqrt(disc)) / (g * x)), across = Math.cos(th) * LOB_LOOK / x, rise = Math.sin(th) * LOB_LOOK;
+    return { x, look: { x: e.x + dx * across + up.x * rise, y: e.y + dy * across + up.y * rise, z: e.z + dz * across + up.z * rise } };
+  }
+  dx = p.x - e.x; dz = p.z - e.z; x = Math.hypot(dx, dz); y = p.y + lift - e.y;
   const disc = v ** 4 - g * (g * x * x + 2 * y * v * v);
-  if (disc < 0) { a.chase(); return false; }   // too far: close in
-  const th = Math.atan((v * v - Math.sqrt(disc)) / (g * x));
-  const c = Math.cos(th);
+  if (disc < 0) return { x, look: null };
+  const th = Math.atan((v * v - Math.sqrt(disc)) / (g * x)), c = Math.cos(th);
+  return { x, look: { x: e.x + (dx / x) * c * LOB_LOOK, y: e.y + Math.sin(th) * LOB_LOOK, z: e.z + (dz / x) * c * LOB_LOOK } };
+}
+
+// Throw a bomb to land at p, on the low arc (lobArc). False if out of range.
+function throwBombAt(a, p, breach) {
+  const sim = a.npc.getSim();
+  const { x, look } = lobArc(sim, a.eye(), p, THROW_SPEED, ROUND_GRAVITY * gravityScale(sim), breach ? 0 : BOMB_AIM_LIFT);
+  if (!breach && x < BOMB_MIN) return false;
+  if (!look) { a.chase(); return false; }   // too far: close in
   a.hold('BOMB');
-  a.lookAt({ x: e.x + (dx / x) * c * 10, y: e.y + Math.sin(th) * 10, z: e.z + (dz / x) * c * 10 });
+  a.lookAt(look);
   a.intent.primaryPressed = true;
   return true;
 }
 
-// Look along the low arc that lands a throw at speed v (cells/s), falling at `share` of gravity, on p:
-// the bomb's formula (throwBombAt). False if p is out of its reach.
+// Look along the low arc that lands a throw at speed v (cells/s), falling at `share` of gravity, on p
+// (lobArc, the bomb's). False if p is out of its reach.
 function lobAt(a, p, v, share) {
-  const e = a.eye();
-  const dx = p.x - e.x, dz = p.z - e.z, x = Math.hypot(dx, dz), y = p.y - e.y;
-  const g = ROUND_GRAVITY * gravityScale(a.npc.getSim()) * share;
-  const disc = v ** 4 - g * (g * x * x + 2 * y * v * v);
-  if (disc < 0 || !(x > 0)) return false;
-  const th = Math.atan((v * v - Math.sqrt(disc)) / (g * x)), c = Math.cos(th);
-  a.lookAt({ x: e.x + (dx / x) * c * LOB_LOOK, y: e.y + Math.sin(th) * LOB_LOOK, z: e.z + (dz / x) * c * LOB_LOOK });
+  const sim = a.npc.getSim();
+  const { x, look } = lobArc(sim, a.eye(), p, v, ROUND_GRAVITY * gravityScale(sim) * share);
+  if (!look || !(x > 0)) return false;
+  a.lookAt(look);
   return true;
 }
 
