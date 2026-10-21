@@ -191,7 +191,7 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
   for (var a = 0u; a < dAxes(); a++) {
     if (ps[a].valid != 0 && (ps[a].id == CT_EMPTY || (ps[a].id == CT_FIRE && ps[a].ctype != CT_OXYGEN))) { fullAir++; }
   }
-  v = ctStepAtmosphere(v, ps, seed, outside.x, outside.y, outside.z, outside.w, onFloor, ambientQ, 0);
+  v = ctStepAtmosphere(v, ps, seed, outside.x, outside.y, outside.z, outside.w, onFloor, ambientQ, 0, 0);
   for (var a = 0u; a < dAxes(); a++) {
     if (ps[a].valid == 0) { continue; }
     var pair = ctPairValue(v, ps[a], 0);

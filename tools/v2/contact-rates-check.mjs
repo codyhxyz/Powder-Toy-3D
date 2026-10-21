@@ -44,6 +44,35 @@ test('clone: V1 react.js CLONE_RATE a step, one draw however many clones; a clon
   }
 });
 
+test('clone: exact for any number of clone faces, V1\'s one draw a step however many touch it', () => {
+  // V1 react.js: an empty cell beside n >= 1 clones (each with an element) misses a step's creation
+  // with 1 - CLONE_RATE, so an 8-tick cycle (32 steps) with (1 - CLONE_RATE)^32 whatever n is.
+  // V2 (physics.js offsetOf): a cycle visits each partner pattern, one face an axis, once; at each the cell
+  // sees k clone partners and the support pass counts the n - k outside (v2SupportWGSL).
+  const r = PHYS.CLONE_RATE, missLog = constant('CT_CLONE_MISS_LOG');
+  assert.equal(missLog, Math.fround(PARTNER * Math.log(1 - r)));
+  const clone = cell(E.CLONE); clone.ctype = E.SAND;
+  const chanceOf = (k, out) => (out === 0 ? constant('CT_CLONE_CHANCE') : 1 - Math.exp(missLog * k / (k + out)));
+  // the rule fires on a draw under its chance and misses past it, for each count
+  for (const [k, out] of [[1, 0], [1, 1], [1, 2], [2, 1], [1, 3], [2, 4], [3, 3]]) {
+    const chance = chanceOf(k, out), partners = [...Array(k).fill(clone), air(), air(), air()].slice(0, 3);
+    const step = s => C.ctStepAtmosphere(air(), partners, s, 0, 0, 0, 0, 0, C.contactAmbientQ(20), 0, out).id === E.SAND;
+    assert.ok(step(seedIn(chance * 0.98, chance)), `k ${k}, outside ${out}: fires under ${chance}`);
+    assert.ok(!step(seedIn(chance, chance * 1.02 + 1e-4)), `k ${k}, outside ${out}: misses past it`);
+  }
+  // every placement of 1 to 6 clone faces: the cycle's miss is V1's 32 steps' (before: 2x for two on one axis)
+  for (let faces = 1; faces < 64; faces++) {
+    const n = [0, 1, 2, 3, 4, 5].filter(f => faces >> f & 1).length;
+    let miss = 1;
+    for (let o = 0; o < 8; o++) {
+      // partner on axis a: face 2a + bit a of the pattern
+      const k = [0, 1, 2].filter(a => faces >> (2 * a + (o >> a & 1)) & 1).length;
+      if (k > 0) miss *= 1 - chanceOf(k, n - k);
+    }
+    assert.ok(Math.abs(miss - (1 - r) ** 32) < 2e-6, `clone faces ${faces.toString(2)}: a cycle misses with ${miss}, V1 ${(1 - r) ** 32}`);
+  }
+});
+
 test('plant, moss, fungus: V1 react.js RATE·n a step per neighbour, compounded per partner as the flames', () => {
   for (const [key, rate] of [['CT_PLANT_MISS_LOG', PHYS.PLANT_GROW], ['CT_MOSS_MISS_LOG', PHYS.MOSS_GROW], ['CT_FUNGUS_MISS_LOG', PHYS.FUNGUS_GROW]])
     assert.equal(constant(key), Math.fround(PARTNER * Math.log(1 - rate)), key);

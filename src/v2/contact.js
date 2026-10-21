@@ -175,6 +175,11 @@ export const CONTACT_CONSTANTS = Object.freeze({
   // a tick. A clone face is a block partner half the ticks: when it is, the chance is the two ticks'
   // worth, 1 - (1 - CLONE_RATE)^PARTNER_STEPS, the reactions' correction (CONTACT_REACTIONS chance).
   CT_CLONE_CHANCE: ['f32', 1 - (1 - PHYS.CLONE_RATE) ** PARTNER_STEPS],
+  // ...with clone faces outside its block too (the support pass's count, shaders/v2.js v2SupportWGSL),
+  // each partner clone carries its share of the PARTNER_STEPS: over an 8-tick cycle each of n clone faces
+  // is a partner 4 ticks (physics.js offsetOf), so k of n partnered compound PARTNER_STEPS·k/n steps,
+  // 32 a cycle for any n, as V1's one draw a step: 1 - exp(CT_CLONE_MISS_LOG·k/n).
+  CT_CLONE_MISS_LOG: ['f32', missLog(PHYS.CLONE_RATE)],
   // V1 react.js growers, each a chance per step per neighbour (rnd < RATE * n): water beside plant
   // becomes plant (PLANT_GROW), air on a mossSite beside damp moss becomes moss (MOSS_GROW), a fungus
   // food beside damp fungus rots to fungus (FUNGUS_GROW). Per present partner, PARTNER_STEPS steps'
@@ -214,7 +219,7 @@ const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGN
   CT_FIRE_TO_SMOKE, CT_FIRE_MIN_Q, CT_BURNT_MIN_Q, CT_ASH_SHARE, CT_SPARK_REST, CT_SPARK_BORN, CT_SPARK_CYCLE, CT_SPARK_V, CT_SWITCH_ON, CT_TSNS_FIRE,
   CT_LAMP_HOLD, CT_LAMP_DC_LEVEL, CT_JOULE_WHOLE, CT_JOULE_MILLI, CT_JOULE_MILLI_UNIT, CT_ELEC_PENDING, CT_ELEC_LIFE_UNIT, CT_ELEC_LIFE_MAX,
   CT_ELEC_SPENT_UNIT, CT_ELEC_SPENT_MAX, CT_ELEC_STEPS, CT_ELEC_SALT, CT_FUSE_UNLIT, CT_FUSE_BURN_NUM, CT_FUSE_BURN_DEN, CT_FUSE_HANDOFF_Q,
-  CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END, CT_CLONE_CHANCE, CT_PLANT_MISS_LOG, CT_MOSS_MISS_LOG, CT_FUNGUS_MISS_LOG,
+  CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END, CT_CLONE_CHANCE, CT_CLONE_MISS_LOG, CT_PLANT_MISS_LOG, CT_MOSS_MISS_LOG, CT_FUNGUS_MISS_LOG,
   CT_ACID_EAT, CT_ACID_SPENT, CT_CLOUD_RAIN, CT_CLOUD_RAIN_NB, CT_CLOUD_EVAP, CT_CLOUD_EVAP_NB, CT_STEPS_PER_TICK,
   CT_TOUCH_FIRE, CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_TOUCH_FRONT } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 
@@ -682,7 +687,7 @@ export function ctPerTick(p) {
   return 1.0 - keep;
 }
 export function ctStep(input, ns, seed) {
-  return ctStepAtmosphere(input, ns, seed, 0, 0, 0, 0, 0, CT_AMBIENT_Q, 0);
+  return ctStepAtmosphere(input, ns, seed, 0, 0, 0, 0, 0, CT_AMBIENT_Q, 0, 0);
 }
 
 // Only atmosphere/exposure uses all six faces. Heat, reactions, phase and
@@ -762,7 +767,8 @@ export function ctFuseTouch(c, touch, random) {
   if ((touch & CT_TOUCH_HOT) !== 0 || ((touch & CT_TOUCH_FLAME) !== 0 && random < CT_FUSE_FLAME_LIGHT)) return CT_ELEC_PENDING + ctFuseLife(1);
   return 0;
 }
-export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas, onFloor, ambientQ, touch) {
+// outClones: its out-of-block faces holding a clone (the support pass's count; CT_CLONE_MISS_LOG).
+export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas, onFloor, ambientQ, touch, outClones) {
   let c = ctCopy(input);
   if (c.done !== 0) return c;
   let air = 0;
@@ -787,6 +793,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   let hotTouch = false;
   let hotFront = false;
   let clone = 0;
+  let clones = 0;
   let growOf = 0;
   let voidTouch = false;
   const r = ctRow(c.id);
@@ -823,6 +830,8 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (b.id === E.DUST) dust++;
     hotTouch = hotTouch || (br.kind !== 0 && br.kind !== 4 && b.tq >= r.igniteQ);
     if (b.id === E.CLONE || (b.id === E.PCLN && ctLife(b) === 10)) clone = Math.max(clone, b.ctype);
+    // (V1 react.js cloneOf: a clone face counts once it has an element, na.w >= 1)
+    if ((b.id === E.CLONE || (b.id === E.PCLN && ctLife(b) === 10)) && b.ctype > 0) clones++;
     if (ctCloneable(b.id)) growOf = b.id;
     voidTouch = voidTouch || b.id === E.VOID;
   }
@@ -925,7 +934,14 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   if (lit.id !== c.id) return lit;
   c = lit;
   if (c.id === E.EMPTY) {
-    if (clone > 0 && clone < CONTACT_ELEMENT_COUNT) { c.busy = 1; if (random < CT_CLONE_CHANCE) return ctCreate(c, clone, ctRow(clone).spawnQ); }
+    if (clone > 0 && clone < CONTACT_ELEMENT_COUNT) {
+      c.busy = 1;
+      // V1: one draw a step however many clones touch it, so the partnered ones share the steps (CT_CLONE_MISS_LOG)
+      let chance = CT_CLONE_CHANCE;
+      const outside = outClones | 0;
+      if (outside > 0) chance = 1.0 - Math.exp(CT_CLONE_MISS_LOG * ctF(clones) / ctF(clones + outside));
+      if (random < chance) return ctCreate(c, clone, ctRow(clone).spawnQ);
+    }
     if (moss > 0 && bed > 0) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(moss) * CT_MOSS_MISS_LOG)) return ctCreate(c, E.MOSS, c.tq); }
   }
   if (c.id === E.CLOUD) {
@@ -973,7 +989,7 @@ export const CONTACT_KERNEL = [
   [ctGrowerDamp, ['i32', 'i32'], 'i32'], [ctPuff, ['i32', 'i32'], 'i32'], [ctPerTick, ['f32'], 'f32'],
   [ctHotFuel, ['CTCell'], 'bool'], [ctSmothered, ['i32', 'i32'], 'bool'], [ctLick, ['CTCell', 'i32', 'i32', 'bool', 'i32'], 'CTCell'],
   [ctHotFront, ['CTCell', 'i32'], 'bool'], [ctPacketTouch, ['CTCell', 'i32', 'i32', 'i32', 'i32'], 'i32'],
-  [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
+  [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
   [ctStep, ['CTCell', 'array<CTCell, 3>', 'i32'], 'CTCell'],
 ];
 
@@ -1169,7 +1185,8 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
   const snapshot = cells.map(ctCopy);
   // V1 react.js counts the box's solid floor as a surface (its sides and lid don't).
   const floorAt = i => +(positions[i][1] === 0 && modes.edge === EDGE_SOLID);
-  cells = cells.map((c, i) => valid[i] ? ctStepAtmosphere(c, CONTACT_FACES[i].map(j => snapshot[j]), seedAt(i), ...outside[i], floorAt(i), ambientQ, touch[i]) : c);
+  // (outside[i]: [air, oxygen, CO2, gas] and, optional, the clone faces: v2SupportWGSL's counts)
+  cells = cells.map((c, i) => valid[i] ? ctStepAtmosphere(c, CONTACT_FACES[i].map(j => snapshot[j]), seedAt(i), ...outside[i].slice(0, 4), floorAt(i), ambientQ, touch[i], outside[i][4] ?? 0) : c);
   for (const [i, j] of CONTACT_PAIRS) {
     if (!valid[i] || !valid[j]) continue;
     let pair = ctResolvePhase(cells[i], cells[j]);

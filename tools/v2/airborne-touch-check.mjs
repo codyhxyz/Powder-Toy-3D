@@ -140,7 +140,7 @@ test('the marks: an aux region of a word a cell, the touch under the tick\'s sta
 test('the block, react and electric stages carry the marks and validate (Naga)', () => {
   const g = gridLayout(32, 32, 32);
   const block = v2BlockWGSL(g, contactWGSL);
-  assert.match(block, /let touch=packetTouchNow\(slotOf\(positions\[i\]\)\);\n\s*cells\[i\]=ctStepAtmosphere\([^;]*,contactAmbientQ\(\),touch\);/);
+  assert.match(block, /let touch=packetTouchNow\(slotOf\(positions\[i\]\)\);\n\s*cells\[i\]=ctStepAtmosphere\([^;]*,contactAmbientQ\(\),touch,i32\(outside>>8u\)\);/);
   assertNaga(block, 'v2block');
   const react = particlesWGSL(g, nativeDynamicsHead, 'react');
   assert.ok(react.includes('notePacketTouch(slots[f], r.touch[f])'));
