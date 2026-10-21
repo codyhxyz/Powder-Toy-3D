@@ -28,7 +28,7 @@ const bendClip = Fn(([clip, k, anchor, dir, clipToWorld, worldToClip]) => {
 
 // Chain, do not replace, the material's own skinning/instancing/motion program:
 // the vertex stage's FINAL clip position (its own vertexNode if it has one, a
-// billboard's or a bird's, else three's modelViewProjection after skinning,
+// billboard's, else three's modelViewProjection after skinning,
 // instancing and positionNode) is what bends. Normals and lighting
 // deliberately remain flat. A node material's vertexNode change rebuilds its
 // pipeline (once, when an effect is selected or dropped).

@@ -85,7 +85,7 @@ frame (display rate, only if something changed on screen) [one render pass, MSAA
   post: bloom chain (compute, ≤ 1/2 res) → canvas (AgX, exposure, bloom, UI composite)
 ```
 
-When three.js has meshes visible (POV figures, birds, vehicles), it renders them first into its own colour and depth target.
+When three.js has meshes visible (POV figures, vehicles), it renders them first into its own colour and depth target.
 Our pass then composites them with one depth-tested full-screen draw that writes `frag_depth` (one triangle loses
 early-Z, nothing else does). Box mode has no three meshes, so a frame is one scene pass, one bloom compute pass and one
 canvas pass, in one command buffer.

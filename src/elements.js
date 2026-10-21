@@ -1258,9 +1258,6 @@ export const TOOLS = [
     desc: 'Warm air. Increases air temperature inside the brush, not the matter in it. Warm air rises.' },
   { id: -57, key: 'AMB_COOL', abbr: 'AMBM', name: 'Cool air', color: '#00ddff',
     desc: 'Cool air. Decreases air temperature inside the brush, not the matter in it. Cold air sinks.' },
-  // Magical birds (src/birds/): a flock that lives on this spot. (-30 to -32 are the creature spawners.)
-  { id: -33, key: 'FLOCK', abbr: 'BIRD', name: 'Bird flock', color: '#b58cff', spawner: true,
-    desc: 'Bird flock: click a surface to spawn one flock of magical birds. Each click adds a new entity, with no pad or respawn.' },
   // TPT's Property tool (src/gui/game/tool/PropertyTool.cpp, its colour): sets
   // one property of the matter under the brush (src/editing.js PROP_FIELDS).
   { id: -60, key: 'PROP', abbr: 'PROP', name: 'Property', color: '#fea900',
@@ -1388,7 +1385,7 @@ export const PALETTE = [
   { name: 'Radioactive', items: ['PHOTON', 'NEUTRON', 'URANIUM', 'PLUTONIUM'] },
   { name: 'Exotic', items: ['ANTIMATTER', 'SINGULARITY'] },
   { name: 'Tools', items: ['HEAT', 'COOL', 'ERASE', 'BLAST', 'VACUUM', 'WIND', 'CYCLONE', 'MIX', 'GRAV_IN', 'GRAV_OUT', 'AMB_HEAT', 'AMB_COOL', 'PROP', 'LIGHTNING', 'SIGN', ...GEAR_ITEMS.map((g) => g.key)] },   // (no starter wands: wands are the Noita gamemode's alone)
-  { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'BOATPAD', 'FLOCK'] },
+  { name: 'Entities', items: ['ENEMY', 'GUNNER', 'WORM', 'GIANTWORM', 'SPAWN', 'JEEPPAD', 'BIKEPAD', 'BOATPAD'] },
   // TPT's DECO menu (its tools in TPT's order)
   { name: 'Deco', items: DECO_TOOLS.map((t) => t.key) },
   // Sections under headers, as Garry's Mod's spawnlists split their props

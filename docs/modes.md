@@ -260,7 +260,7 @@ baked by `tools/medal-icons.mjs`; a multi-kill is Halo 3's red disc with a star 
 | Chain Reaction | your blast, then 2 more set off by something else (a vehicle, a Revenge, a charge), each within 1 s (`CHAIN_BLASTS`, `CHAIN_GAP_S`). Only povEvents `blast`s count: the sim's own TNT and gunpowder don't announce themselves | ours |
 
 **Outside a match** (first person in the sandbox) `src/pov/sandboxMedals.js` feeds a book of its own from the
-killfeed's `kill` (axemen, gunners, worms, birds) and `blast`, so multi-kills, sprees, Splatter and the chaos medals
+killfeed's `kill` (axemen, gunners, worms) and `blast`, so multi-kills, sprees, Splatter and the chaos medals
 work there too; the same stack shows the player's, without the tracker under it (no First Strike: there's no match).
 
 **The announcer** (`src/pov/announcer.js`): every line, key → words (each medal's name, the modes, Flag taken /

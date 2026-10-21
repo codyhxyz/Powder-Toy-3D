@@ -8,8 +8,8 @@
 //   box-settled   the lab at 128³, paused, the camera still: nothing changing
 //                 (deep idle: today's build makes no submits and no rAF here)
 //   lab-running   the lab at 128³ running (the default 4 steps a frame)
-//   island-still  the default World island scene, the camera still (birds,
-//                 Whitewater, the far field: whatever the build does unasked)
+//   island-still  the default World island scene, the camera still
+//                 (Whitewater, the far field: whatever the build does unasked)
 //   island-walk   the island in first person: W held, a quarter turn every 4 s
 //   world-flight  the island's god view flying a 60 s circle over the world
 //                 (~17 cells/s: the window shifts a slab about every second)

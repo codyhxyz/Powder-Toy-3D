@@ -1,6 +1,6 @@
-// Mesh-only frames (docs/webgpu.md K3): while only three's meshes move (the
-// default World scene's birds) with the camera, the simulation, the view's
-// settings and its lighting still, a view frame draws the scene the volume,
+// Mesh-only frames (docs/webgpu.md K3): while only three's meshes move with
+// the camera, the simulation, the view's settings and its lighting still, a
+// view frame draws the scene the volume,
 // the far field and our other scene-pass draws made once (kept here), then
 // only three's meshes over it and post, instead of marching every ray again.
 //
@@ -41,7 +41,7 @@
 // what the volume hit first occludes them. Where that is translucent (water,
 // glass, gas in front of a mesh) the mesh is hidden behind its surface instead
 // of tinted through it, as before S1; only during mesh motion with everything
-// else still, and the birds fly in the open air. The simulation clock's
+// else still. The simulation clock's
 // animation (clouds drifting, water rippling, gas rising) holds still in the
 // kept scene, as it does in a view that has gone to sleep (deep idle, F7):
 // app.js's viewClock holds the clock the view draws with meanwhile, so it

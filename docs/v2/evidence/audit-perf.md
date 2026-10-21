@@ -105,7 +105,6 @@ Counts per presented frame of the lab (budgets): sim 32 + derived 30 (9 indirect
 |---|---|---|---|
 | any step that ran (anything awake) | every frame, + 22 after | every frame (a derived frame forces the view) | `app.js:1700, 1961-1967` |
 | camera moved, world asleep | 0 | 109 with TAAU (77 with TAA) | `post.js:195, 202`, `pacing.js:29` `settleFrames` |
-| birds in the default World scene | 0 | **every frame, forever** (they `pacer.wake()` each tick) | `docs/webgpu.md` intro, F7 |
 
 So the cost model is nearly binary: **a world with one falling grain pays what a world on fire pays** for the
 shadow map, the GI, the nine full-grid brick passes, the view and post. Only the sim's lists and the field
@@ -343,7 +342,7 @@ derived pass, as on the Mac (scaling.md:586: 1.6-2.3 ms, "the brick pass is the 
   `threeMeshes` for the opaque and the transparent pass, `app.js:1792-1813`), three settings objects are
   compared field by field as JSON would print them (`pacing.js` `jsonValue`/`sameJSONEntry`), and a hover
   pick is recorded and mapped back every presented frame (`app.js:1989`). Cheap at today's object counts; it
-  grows with POV meshes, NPCs and birds.
+  grows with POV meshes and NPCs.
 
 ---
 
@@ -449,7 +448,7 @@ Each item: the change, what it saves (est), and where the idea comes from (CLAUD
   march, bounded to their bricks' screen footprint and started at the raster depth (the meshes-first
   `meshCut` already does this for three's meshes).
 - **Converge and stop**: when camera and world are still, 2-4 frames to a final image (e.g. one
-  un-jittered native-resolution frame), not 109. When only meshes move (the World's birds), re-composite
+  un-jittered native-resolution frame), not 109. When only meshes move, re-composite
   the cached scene colour and depth and draw the meshes (`docs/webgpu.md` K3 "mesh-only frames").
 - **Per-pixel budget**: no stochastic secondary DDAs that need 70-100 frames of TAA to converge; lighting
   comes from the (incremental) light/GI volumes. That is the render audit's subject; here it matters because

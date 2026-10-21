@@ -128,7 +128,6 @@ const savesWire = {
         if (app.win) app.placeVolume();
         app.post.reset();
         app.pov?.worldReplaced();
-        app.birds?.worldReplaced();
         app.toolbar.setUndoEnabled(app.gamemode !== 'factory' && app.sim.canUndo);
         app.dock.sync();
         app.hud.setPaused(settings.paused);

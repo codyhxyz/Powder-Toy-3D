@@ -125,7 +125,7 @@ export function createPacer({ derivedSettle, viewSettle, presentHz = MAX_FPS, on
     },
     // Input or an outside change: render until settled again.
     wake() { viewLeft = viewFrames(); wakes++; onWake?.(); },
-    // Only three's meshes moved (the birds' wings): render until settled
+    // Only three's meshes moved: render until settled
     // again, and what the volume and our other passes draw still holds
     // (app.js's mesh-only frames, gfx/meshFrames.js).
     wakeMeshes() { viewLeft = viewFrames(); meshWake = true; onWake?.(); },

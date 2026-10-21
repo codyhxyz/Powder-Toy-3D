@@ -38,11 +38,27 @@ assert.equal(sp.toJSON().length, 1, 'legacy deaths do not consume their home');
 sim.g.windowed = true;
 for (const kind of ['boat', 'jeep', 'hoverbike']) assert.equal(sp.place(kind, at), 'unsupported');
 // NPCs live in a World's window as in a box (CLAUDE.md "Same features in every world")
-for (const kind of ['enemy', 'gunner', 'worm', 'giantworm', 'birds']) assert.equal(sp.place(kind, at), 'added');
+for (const kind of ['enemy', 'gunner', 'worm', 'giantworm']) assert.equal(sp.place(kind, at), 'added');
 sim.g.windowed = false;
 sp.clear();
-for (const name of ['Boat', 'Jeep', 'Hoverbike', 'Axeman', 'Gunner', 'Worm', 'Giant worm', 'Bird flock']) assert.ok(TOOLS.some((t) => t.name === name));
-console.log('ok one-shot registry: no toggle/pad, cap, death/save, legacy, World NPCs and World vehicle rejection');
+for (const name of ['Boat', 'Jeep', 'Hoverbike', 'Axeman', 'Gunner', 'Worm', 'Giant worm']) assert.ok(TOOLS.some((t) => t.name === name));
+// Birds were removed (2026-10-20): no kind, no palette tool, and an old save's
+// Bird flock (kind 'birds', a one-shot with its survivors, or a flagless pad)
+// loads without it, the rest of the save as before.
+const OLD_BIRDS = 'birds';
+assert.ok(!Object.values(SPAWNER).includes(OLD_BIRDS), 'no bird spawner kind');
+assert.ok(!TOOLS.some((t) => /bird|flock/i.test(`${t.key} ${t.name}`)), 'no Bird flock tool');
+const oldSave = [
+  { kind: OLD_BIRDS, world: [12, 2, 12], oneShot: true, state: { birdCount: 9 } },
+  { kind: 'enemy', world: [20, 2, 20], oneShot: true, state: null },
+  { kind: OLD_BIRDS, world: [40, 2, 40] },
+  { kind: 'boat', world: [60, 2, 60] },
+];
+sp.fromJSON(oldSave);
+assert.deepEqual(sp.list.map((s) => s.kind), ['enemy', 'boat'], 'an old save loads with its flock dropped');
+assert.deepEqual(sp.toJSON(), oldSave.filter((s) => s.kind !== OLD_BIRDS), 'and saves again without it');
+sp.clear();
+console.log('ok one-shot registry: no toggle/pad, cap, death/save, legacy, World NPCs, World vehicle rejection and old saves with bird flocks');
 
 // Exercise production vehicle management with real Rapier bodies. Only GPU/UI
 // boundaries are mocked, not spawn, damage, homes, persistence or respawn logic.

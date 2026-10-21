@@ -4,10 +4,10 @@ Halo's Big Team Battle in the falling-sand world: a Warthog-style **jeep**, a dr
 rigid bodies in [Rapier](https://rapier.rs) (`@dimforge/rapier3d-simd`, the WASM SIMD build, pinned at
 0.21.0) that drive on the sim's own cells. Code: `src/pov/vehicles/`. Boxes only for now (not World's moving window).
 
-The same palette rule applies to **Axeman**, **Gunner**, **Worm**, **Giant worm** and **Bird flock**:
-one click creates one creature (or flock), not a permanent spawner. Dead placements do not return on load.
-Flocks save only their surviving count. **Player spawn** remains a toggleable spawn marker.
-Scrolling World maps reject vehicles with an error (see World mode below); NPCs and bird flocks work there as in a box.
+The same palette rule applies to **Axeman**, **Gunner**, **Worm** and **Giant worm**:
+one click creates one creature, not a permanent spawner. Dead placements do not return on load.
+**Player spawn** remains a toggleable spawn marker.
+Scrolling World maps reject vehicles with an error (see World mode below); NPCs work there as in a box.
 A World's NPC appears once the window covers its placement, stays put in the world as the window moves, and waits
 unsimulated while outside it, as a Cruelty Squad mission's actors do.
 
