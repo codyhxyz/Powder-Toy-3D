@@ -148,7 +148,7 @@ jobs:
       - run: npm run check:world-cells   # actual Source/Fields/classified CELL native transport + Naga, not GPU parity
       - run: npm run check:world-gi-glow   # shared world GI/glow producers, bounded history/native recording + Naga; NOT application activation
       - run: npm run check:world-gi-birth   # explicit native-history initialization/adoption; CPU fake transport, no app activation
-      - run: node tools/check-edge-sea.mjs   # CPU: the sea past a World's edge where its water reaches it; Naga validates the sky shader
+      - run: node tools/check-edge-sea.mjs   # CPU: the sea past a map's edge (big maps and small) where its water reaches it; Naga validates the sky and floor grid shaders
       - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
       - run: node tools/hybrid-check.mjs   # CPU/Naga: all hybrid producers, actual stage layouts and six grid shapes
       - run: node tools/hybrid-test-view-check.mjs   # CPU-only: explicit Test activation, teardown, and warning UI
