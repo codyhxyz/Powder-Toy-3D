@@ -3,6 +3,7 @@ import { E } from '../elements.js';
 import { CELL_M } from '../scale.js';
 import { libChecks } from './gfx/lib.js';
 import { glf } from '../glsl.js';
+import { tauAir } from '../gfx/sky.js';
 import { DataUtils } from 'three';
 import { Appearance, appearanceOf, materialWord, materialId, materialAppearance } from '../appearance.js';
 
@@ -239,6 +240,9 @@ const FAR_HAZE_VISIBILITY_M = 12000;   // m: meteorological range of the air (a 
 const KOSCHMIEDER = 3.912;             // ln(1/0.02): the 2 % contrast threshold of the visibility definition
 // extinction per cell of the air, green (blue and red follow the sky's): shaders/far.js FAR_VIEW.HAZE
 export const FAR_HAZE = KOSCHMIEDER / (FAR_HAZE_VISIBILITY_M / CELL_M);
+// ...per channel: the sky's spectral shape, scaled to green's (a literal, so
+// every WGSL reader, reflection parsers included, takes it as it is)
+const FAR_HAZE_RGB = tauAir.map((t) => FAR_HAZE * t / tauAir[1]);
 
 /**
  * The air itself, after skyGLSL's TAU_AIR and skyViewGLSL's skyRadiance (no
@@ -251,7 +255,7 @@ export const FAR_HAZE = KOSCHMIEDER / (FAR_HAZE_VISIBILITY_M / CELL_M);
  */
 export const farAirWGSL = /* wgsl */ `
 const FAR_HAZE: f32 = ${FAR_HAZE.toExponential(4)};
-const FAR_HAZE_RGB: vec3f = FAR_HAZE * TAU_AIR / TAU_AIR.g;
+const FAR_HAZE_RGB: vec3f = vec3f(${FAR_HAZE_RGB.map((x) => x.toExponential(6)).join(', ')});
 fn farAir(rd: vec3f) -> vec3f {
   if (rd.y > 0.0) { return skyRadiance(rd); }
   var h = vec3f(rd.x, 0.0, rd.z);

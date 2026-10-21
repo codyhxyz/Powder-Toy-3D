@@ -37,7 +37,8 @@ const IRR_RINGS = 16, IRR_STEPS = 32;
 // (their difference divides it).
 const AIRMASS_EQ_EPS = 1e-3;
 
-const tauAir = SKY.tauRayleigh.map((t) => t + SKY.tauAerosol);
+// the air's whole extinction per channel (TAU_AIR in the WGSL), for the haze's colour too (shaders/farShared.js)
+export const tauAir = SKY.tauRayleigh.map((t) => t + SKY.tauAerosol);
 
 export function airMass(cz) {
   const c = Math.max(cz, 0);
