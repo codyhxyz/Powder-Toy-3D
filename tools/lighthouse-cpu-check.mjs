@@ -79,7 +79,9 @@ for (const guard of ['origin', 'epoch', 'sim', 'world', 'dispose', 'reset', 'dis
   f.update(0); assert.equal(f.reads.length, 1, 're-enable captures');
   await f.resolve(); f.sim.origin.x = 128; f.update(1); assert.equal(f.power(), 1, 'verified departure can remain lit');
 }
-assert.deepEqual(FRAME_UNIFORMS.slice(-3).map(([n]) => n), ['beacon', 'beaconDir', 'beaconCell']);
+// The beacon's three fields, together and in order wherever they sit (later fields are appended after them).
+const beaconAt = FRAME_UNIFORMS.findIndex(([n]) => n === 'beacon');
+assert.deepEqual(FRAME_UNIFORMS.slice(beaconAt, beaconAt + 3).map(([n, type]) => [n, type]), [['beacon', 'vec4f'], ['beaconDir', 'vec4f'], ['beaconCell', 'vec4f']]);
 assert(FrameUniforms.size < 65536);
 const g = { nx: 64, ny: 64, nz: 64 };
 const checks = [...renderChecks(), ...farChecks().filter((c) => /^(far view|far detail$)/.test(c.name)), ...libChecks('lib'), ...libChecks('lighting')];
