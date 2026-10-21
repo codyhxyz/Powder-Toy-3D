@@ -104,7 +104,8 @@ assert.equal((entry.match(/i\s*<\s*blockCount/g)||[]).length,7);
 assert.equal((entry.match(/m\s*<\s*blockCount/g)||[]).length,1);
 assert.equal((entry.match(/c2?\s*<\s*columnCount/g)||[]).length,3);
 assert(!/for[^{]*<\s*[48]u/.test(entry),'no fixed wrapper bounds expand thermal calls');
-assert.equal((foundation.match(/var<storage,/g)||[]).length,7,'actual foundation+contact storage binding count');
+// (+1, 2026-10-20: group 1's flow field, where topples record their jump: v2/flow.js)
+assert.equal((foundation.match(/var<storage,/g)||[]).length,8,'actual foundation+contact storage binding count');
 assert.equal((foundation.match(/@group\(2\) @binding\(2\)/g)||[]).length,1,'EV binding reused exactly once');
 assert.ok(foundation.includes('var<storage, read> EV: array<vec4u>;'),'raw-u32 EV prevents integer NaN canonicalization');
 assert.ok(foundation.includes('fn e0(id: u32) -> vec4f { return bitcast<vec4f>(EV[2u * id]); }'));
