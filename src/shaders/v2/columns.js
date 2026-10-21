@@ -979,11 +979,17 @@ fn colSends(xa: i32, za: i32, xb: i32, zb: i32, axis: i32, floating: bool) {
       let t = colDemandAt(xa, s0, za, axis);
       let v = laneOf(colCell(xa, s0, za), axis);
       let head = colSentHeadAt(xa, s0, za, axis);
-      // a floating layer pours onto the denser surface (into the receiver's cells at the face rows)
-      if (t != 0u && v > 0.0 && floating) { colPour(xa, za, i, xb, zb, s0, s1, axis, 1.0, abs(v), head, u32(floor(f32(t) * recScratch(qa)))); }
-      if (t != 0u && v < 0.0 && floating) { colPour(xb, zb, j, xa, za, s0, s1, axis, -1.0, abs(v), head, u32(floor(f32(t) * recScratch(qb)))); }
-      if (t != 0u && v > 0.0 && !floating) { colSend(xa, za, i, xb, zb, j, s0, s1, axis, 1.0, v, head, u32(floor(f32(t) * recScratch(qa)))); }
-      if (t != 0u && v < 0.0 && !floating) { colSend(xb, zb, j, xa, za, i, s0, s1, axis, -1.0, v, head, u32(floor(f32(t) * recScratch(qb)))); }
+      // the lane's sender and receiver; a floating layer pours onto the denser surface (into the receiver's
+      // cells at the face rows), the rest as colSend sends it. One colPour and one colTransfer for both
+      // directions: Metal inlines each call, and a copy a direction made this pass slow to compile cold.
+      if (t != 0u && (v > 0.0 || v < 0.0)) {
+        let plus = v > 0.0;
+        let xs = select(xb, xa, plus); let zs = select(zb, za, plus); let is = select(j, i, plus);
+        let xd = select(xa, xb, plus); let zd = select(za, zb, plus); let id = select(i, j, plus);
+        let n = u32(floor(f32(t) * recScratch(select(qb, qa, plus))));
+        if (floating || colOver(colRec(xd, id, zd), s0)) { colPour(xs, zs, is, xd, zd, s0, s1, axis, select(-1.0, 1.0, plus), abs(v), head, n); }
+        else { colTransfer(xs, zs, is, xd, zd, id, n); }
+      }
     }
     // (transfers change a record's mass and end, never its y0, top or last flag)
     if (recTop(qa) < recTop(qb)) { if (recLast(qa)) { break; } i = i + 1; }
@@ -1318,12 +1324,16 @@ ${COLUMN_THREAD}
   }
   let axis = i32(P.pairAxis);
   let next = mEdge(here + axisV(axis)); let prev = mEdge(here - axisV(axis));
-  if (u32(select(z, x, axis == 0) & 1) == P.pairParity) {
-    if (inGrid(next)) { colTransfers(x, z, next.x, next.z, axis); }
-    // a side of the grid on this axis is open: this thread owns the column, so its face to the void too
-    if (P.edge == 1u && !inGrid(next)) { colEdges(x, z); }
-    if (P.edge == 1u && !inGrid(prev)) { colEdges(x, z); }
-  } else if (inGrid(prev) && !colAwake(prev.x, prev.z)) { colTransfers(prev.x, prev.z, x, z, axis); }
+  // the pair this thread owns: with the next column, or with a sleeping previous one; one colTransfers
+  // call for both (Metal inlines it whole at each call: cold compile, docs/webgpu.md B5)
+  let mine = u32(select(z, x, axis == 0) & 1) == P.pairParity;
+  var pair = false; var pa = vec2i(x, z); var pb = vec2i(x, z);
+  if (mine) { if (inGrid(next)) { pair = true; pb = next.xz; } }
+  else if (inGrid(prev) && !colAwake(prev.x, prev.z)) { pair = true; pa = prev.xz; }
+  if (pair) { colTransfers(pa.x, pa.y, pb.x, pb.y, axis); }
+  // a side of the grid on this axis is open: this thread owns the column, so its face to the void too
+  if (mine && P.edge == 1u && !inGrid(next)) { colEdges(x, z); }
+  if (mine && P.edge == 1u && !inGrid(prev)) { colEdges(x, z); }
 }
 `;
 
