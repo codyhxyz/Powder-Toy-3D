@@ -74,7 +74,7 @@ per presented frame
               (depth-tested) read colour + depth and write colour (the same render pass as 5 when none are visible)
   7 gas       only if gas bricks are visible: march at 1/4 internal res into a small rgba16f
   8 present   render pass at output res, MRT {canvas, history}: one triangle does TAAU + gas composite + bloom
-              (last frame's) + exposure + AgX + dither; then, canvas only, particles, flame sprites, birds, cursor,
+              (last frame's) + exposure + AgX + dither; then, canvas only, particles, flame sprites, cursor,
               brush and box edges, depth-tested by hand against the scene depth
   9 bloom     compute: bloom pyramid from the scene colour at 1/2 internal res (5 levels), histogram, adaptation
 ```
@@ -165,10 +165,10 @@ then fog toward skyRGB(view)
   per axis to hold the GPU budget. It reads timestamp queries where they exist and rAF lateness otherwise.
 - **TAAU:** Halton(2,3) 8-phase jitter and depth reprojection for the static world. Falling cells get per-face motion
   vectors from their fall age (their displacement this tick is known). It uses a 3×3 YCoCg clamp and Catmull-Rom
-  history, with the sharpen folded in. Sprites, particles, birds and the cursor are drawn after TAAU, so they don't
+  history, with the sharpen folded in. Sprites, particles and the cursor are drawn after TAAU, so they don't
   ghost, and moving the mouse costs one present pass (~0.3 ms), not a 109-frame re-converge (fixes perf P6).
 - **Converge and stop:** with the camera and the world still, the view is final after 8 frames, then 0 submits and 0
-  rAF (deep idle, kept). The World scene's birds now cost a present pass, not a full march (perf K3 "mesh-only
+  rAF (deep idle, kept). Meshes moving alone now cost a present pass, not a full march (perf K3 "mesh-only
   frames", for free).
 - **Crunch mode (Cruelty Squad):** 1/3 internal resolution, nearest-neighbour upscale, no TAAU. It's a style choice
   and also the cheapest phone setting.

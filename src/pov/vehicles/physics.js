@@ -24,6 +24,12 @@ import { E, K } from '../../elements.js';
 // drag, the hoverbike's springs). The box's side walls and floor (outside the
 // grid) are solid voxels too, as they are for the player's body.
 //
+// Coordinates are the world's (worldCells.js: a box's world is its grid), so
+// a World's window moving over the world moves no body, voxel or ground. The
+// mirror of the voxels covers the window the copy was read from; when a copy
+// of a moved window lands, the mirror moves with it (rebase): the regions'
+// cells it leaves are emptied, what both windows hold keeps its voxels.
+//
 // The sync is incremental (a Minecraft chunk's remesh, not the world's): a
 // region that moves only reads the cells entering it and empties the ones
 // that left every region; a new readback re-reads only regions with changed
@@ -58,6 +64,8 @@ const GHOST_GROUPS = 0x00020000;          // Rapier collision groups: member of 
 // dirt and rock, μ ≈ 0.6 (Engineering Toolbox, friction coefficients).
 const TERRAIN_FRICTION = 0.6;
 
+const BOX_ORIGIN = [0, 0, 0];             // a copy with no origin: a box's grid is the world
+
 let rapierPromise = null;
 // Rapier, initialised (its WASM compiled: the module's top-level await), once per page
 export function loadRapier() {
@@ -77,10 +85,12 @@ export function createPhysics(R, cells) {
   // ---- terrain
   let terrain = null;
   let dims = [0, 0, 0], seenVersion = -1;
-  // the mirror covers the grid plus one cell of wall on each side and the floor below
+  // the mirror covers the copy's window (world cells from its origin ox, oz;
+  // a box's is 0) plus one cell of wall on each side and the floor below
   const pad = 1;
-  let mx = 0, my = 0, mz = 0;
-  const mi = (x, y, z) => ((y + pad) * mz + (z + pad)) * mx + (x + pad);
+  let mx = 0, my = 0, mz = 0, ox = 0, oz = 0;
+  const mi = (x, y, z) => ((y + pad) * mz + (z - oz + pad)) * mx + (x - ox + pad);
+  const originOf = () => cells.origin ?? BOX_ORIGIN;
   // per mirror cell: is its voxel set in the collider, and how many regions cover it
   // (a voxel is set only where some region covers it: have[k] = 1 ⇒ cover[k] > 0)
   let have = null, cover = null;
@@ -94,6 +104,7 @@ export function createPhysics(R, cells) {
     terrain = world.createCollider(R.ColliderDesc.voxels(new Int32Array(0), { x: CELL_M, y: CELL_M, z: CELL_M })
       .setFriction(TERRAIN_FRICTION));
     dims = [...cells.dims];
+    [ox, , oz] = originOf();
     [mx, my, mz] = [dims[0] + 2 * pad, dims[1] + pad, dims[2] + 2 * pad];
     have = new Uint8Array(mx * my * mz);
     cover = new Uint8Array(mx * my * mz);   // ≤ 255 overlapping regions
@@ -176,12 +187,48 @@ export function createPhysics(R, cells) {
     const [nx, ny, nz] = dims;
     const c = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
     return {
-      x0: c(Math.floor(cx - REGION_HALF_XZ), -pad, nx), x1: c(Math.floor(cx + REGION_HALF_XZ), -pad, nx),
+      x0: c(Math.floor(cx - REGION_HALF_XZ), ox - pad, ox + nx), x1: c(Math.floor(cx + REGION_HALF_XZ), ox - pad, ox + nx),
       y0: c(Math.floor(cy - REGION_HALF_Y), -pad, ny - 1), y1: c(Math.floor(cy + REGION_HALF_Y), -pad, ny - 1),
-      z0: c(Math.floor(cz - REGION_HALF_XZ), -pad, nz), z1: c(Math.floor(cz + REGION_HALF_XZ), -pad, nz),
+      z0: c(Math.floor(cz - REGION_HALF_XZ), oz - pad, oz + nz), z1: c(Math.floor(cz + REGION_HALF_XZ), oz - pad, oz + nz),
       cx, cy, cz,
     };
   };
+  // The copy's window moved to (nox, noz): the mirror follows. The cells of the
+  // regions it leaves are emptied and the regions trimmed to it; a cell both
+  // windows hold keeps its voxel and its count (its index moves by
+  // d = sz·mx + sx, every cell alike); the cells it gains start empty.
+  function rebase(nox, noz) {
+    const sx = nox - ox, sz = noz - oz, [nx, , nz] = dims;
+    const xIn = (x) => x >= nox - pad && x <= nox + nx, zIn = (z) => z >= noz - pad && z <= noz + nz;
+    const kept = [];
+    for (const b of boxes) {
+      if (!(xIn(b.x0) && xIn(b.x1) && zIn(b.z0) && zIn(b.z1)))
+        for (let y = b.y0; y <= b.y1; y++)
+          for (let z = b.z0; z <= b.z1; z++) {
+            const zOut = !zIn(z);
+            for (let x = b.x0, k = mi(x, y, z); x <= b.x1; x++, k++)
+              if ((zOut || !xIn(x)) && --cover[k] === 0 && have[k] === 1) setVoxel(k, x, y, z, 0);
+          }
+      const t = { ...b, x0: Math.max(b.x0, nox - pad), x1: Math.min(b.x1, nox + nx), z0: Math.max(b.z0, noz - pad), z1: Math.min(b.z1, noz + nz) };
+      if (t.x0 <= t.x1 && t.z0 <= t.z1) kept.push(t);
+    }
+    if (Math.abs(sx) >= mx || Math.abs(sz) >= mz) { have.fill(0); cover.fill(0); }   // nothing in common (everything was just emptied)
+    else if (boxes.length) {   // (no regions: the mirror is empty already)
+      const d = sz * mx + sx;
+      for (const a of [have, cover]) {
+        if (d > 0) a.copyWithin(0, d); else if (d < 0) a.copyWithin(-d, 0, a.length + d);
+        for (let y = 0; y < my; y++)
+          for (let zi = 0; zi < mz; zi++) {
+            const row = (y * mz + zi) * mx, z = zi - pad + noz;
+            if (z < oz - pad || z > oz + nz) a.fill(0, row, row + mx);   // a row new to the mirror
+            else if (sx > 0) a.fill(0, row + mx - sx, row + mx);         // the cells new to this row
+            else if (sx < 0) a.fill(0, row, row - sx);
+          }
+      }
+    }
+    ox = nox; oz = noz;
+    boxes = kept;
+  }
   const sameCells = (a, b) => a.x0 === b.x0 && a.x1 === b.x1 && a.y0 === b.y0 && a.y1 === b.y1 && a.z0 === b.z0 && a.z1 === b.z1;
 
   // The voxels to toggle, queued (x, y, z, on) while the regions are walked and
@@ -251,17 +298,20 @@ export function createPhysics(R, cells) {
     if (!cells.ready) return false;
     const d = cells.dims;
     if (!terrain || d[0] !== dims[0] || d[1] !== dims[1] || d[2] !== dims[2]) resetTerrain();
+    const [nox, , noz] = originOf();
+    const rebased = nox !== ox || noz !== oz;
+    if (rebased) rebase(nox, noz);
     // a readback with new ids (only ids are read here: a model that counts them
     // apart from temperatures has idVersion, which a temperature-only one skips)
     const version = cells.idVersion ?? cells.version;
-    const fresh = force || version !== seenVersion;
+    const fresh = force || rebased || version !== seenVersion;
     let moved = centers.length !== boxes.length;
     for (let i = 0; !moved && i < centers.length; i++) {
       const c = centers[i], b = boxes[i];
       moved = Math.hypot(c.x - b.cx, c.y - b.cy, c.z - b.cz) > REGION_RESYNC;
     }
     if (!fresh && !moved) return false;
-    forced = force;
+    forced = force || rebased;   // (a moved copy's locality is all new)
     const next = centers.map((c) => clampBox(c.x, c.y, c.z));
     const dirty = fresh ? next.filter(localChange) : [];
     toggled = 0;

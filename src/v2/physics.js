@@ -1,6 +1,7 @@
 import { contactWGSL as productionContactWGSL } from '../shaders/v2/contact.js';
 import { nativeModes, modeSignature } from './modes.js';
 import { NativeJets } from './jets.js';
+import { NativeFlow } from './flow.js';
 import { fold } from '../gpu/kernels.js';
 import { fallVelocity } from './fall.js';
 import { cTq } from './layout.js';
@@ -157,6 +158,9 @@ export class PhysicsV2 {
     }
     this.dynamics = Dynamics ? new Dynamics(this) : null;
     this.jets = this.dynamics?.particles && this.dynamics?.control ? new NativeJets(this) : null;
+    // the renderer's flow field from V2's own motion (v2/flow.js): presentation, so not in ready below
+    // (every Simulation has the field; a CPU fixture's stand-in may not)
+    this.flowField = sim.flow ? new NativeFlow(this, L.V2) : null;
     // Publish native readiness only after legacy storage has its blank defaults.
     this.ready = Promise.all([sim.ready, ...Object.values(this.kernels).map((k) => k.ready), this.dynamics?.ready, this.jets?.ready]).then(() => this);
     this.isReady = false;
@@ -328,6 +332,7 @@ export class PhysicsV2 {
     if (this.sim.compact === this) return;
     const legacyPlane = this.sim.compact ? null : this.sim.decoPlane;
     if (legacyPlane) this._takePlane(legacyPlane);
+    this.flowField?.takeOver();
     this.sim.compact = this;
     this.sim.pingPong?.(false);
     this.sync();
@@ -428,6 +433,8 @@ export class PhysicsV2 {
     // R14: the cells the pair stages marked leave as particles (src/shaders/v2/jets.js)
     this.jets?.advance(this.tick);
     if (params.edge === 1) run(k.v2boundary, ind(ARGS2.BRICKS));
+    // the cells' motion, after every pass that moves them, into the renderer's flow field (v2/flow.js)
+    this.flowField?.record(ind(ARGS2.BRICKS));
     this.dynamics?.advanceAir(this.tick);
     run(k.v2invalidate, fold(Math.ceil(this.g.nbricks / 64)), invalidation);
     this.legacyPending = true;
@@ -571,6 +578,7 @@ export class PhysicsV2 {
     this.wake();
     if (!this.gpu.failure) this.gpu.flush('v2 dispose');
     this.jets?.dispose();
+    this.flowField?.dispose();
     this.dynamics?.dispose();
     for (const b of [this.cells, this.aux, this.liquidScratch, this.jetMask, this.events, this.act, this.args]) b.destroy();
   }

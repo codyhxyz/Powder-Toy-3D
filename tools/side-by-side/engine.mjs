@@ -47,9 +47,9 @@
 // it has (gfx/meshLight.js guardMeshes), for as long as the compile takes;
 // so every camera's first frame is drawn and thrown away, and every frame
 // that parks a mesh waits for it before the next, which shows it on both
-// sides at the same frame. Wires that run only in the app's own tick (birds,
-// lightning, the world's window following the camera) don't run, so no bird
-// flies and no storm strikes; a shrine's perks are rolled again from a seeded
+// sides at the same frame. Wires that run only in the app's own tick
+// (lightning, the world's window following the camera) don't run, so no
+// storm strikes; a shrine's perks are rolled again from a seeded
 // stream of their own. What still differs, or stands still, is listed in
 // describe().nondeterminism.
 

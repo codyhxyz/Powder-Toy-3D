@@ -74,8 +74,8 @@ test('seven independent production GI/key/select/args and glow emissions remain 
   // surfChannel, surfNormal, NORMAL_DIFF_SCALE for NORMAL_STEP_CUBIC), diffed function by
   // function against 40e1eb8c; the other five are unchanged.
   // Re-pinned 2026-10-20 (cold compile): source and gather changed only in lighting.js
-  // causticGain's taps (CAUSTIC_TAPS, causticTaps), diffed against a77e0893; the other five unchanged.
-  const hashes = ['c052933ad13e3cd8040780be763fbd35027526b21e1c29afdff437c6377bc01c', 'd81700e64e6d016aa292516b468395cb9ad1a8bf57b96b6233658c71c7547057', 'cd05e9601ab40b432f33e75b694890318bf3c21539b22a316b2691902a1dbdef', 'db11e39f8164b3ba8c0ec8a11bc19d6d198ba50286248545cfcf1135e6d97fc3', '6cda34448b472e59566eabc1884e5d0a1b7f0d95a8bbf2c7c7d867fbcb0b1fa7', '3b1edbb954ffedd0d046381e720f705b867a2f747d97fa6f8aa8cf600efdc7c7', '6ea4390df86678b91c303561a169955dbb1e176a4f80d2e56287dd2d184125d0'];
+  // causticGain's taps (CAUSTIC_TAPS, causticTaps), diffed against origin/main 7e5dc8a2; the other five unchanged.
+  const hashes = ['baec71a3f0f18792179ac5df380301ba03455be0fac9a0b650a66fcc11f84e2c', '8ea14143dbb381a3ee8ebb7707772e14535e4e681dcd129c8bb099fa0694de21', '1c1c1466266457d229a0f1ed0d59e5b054b3f6b3e4306dc23f695c656d4f63a8', '49c243e0fecd677ad02a487aace986634f1f43785e3626f74240ec2e2a40d28f', 'e57f139d63b575e2d8b5b7dee20033283e73efb40fc19e4f9b52f2645237e4e7', 'b7f2b431e07d44a6aeab03f55db2a30f28a3eff1643a6db5e6aaa0fe58e982c6', '8ebdc6e328ec9e086242a31194be0fd9e088fffe3f7cef3507552398c373796e'];
   [giSourceFrag(g), giGatherFrag(g), giKeyFrag(g), giSelectFrag(g), giArgsFrag(g), blurFrag(g), blurFrag(g, { last: true })].forEach((code, i) => assert.equal(createHash('sha256').update(code).digest('hex'), hashes[i]));
 });
 test('actual eight world GI/two glow modules validate Naga and default budgets', () => {
@@ -112,8 +112,8 @@ test('world gather is the original generated module minus unused texture mirrors
   // 40e1eb8c, nothing else moved.
   // Then (2026-10-20) liquid.js's ripple roughness hand-off.
   // Then (2026-10-20, cold compile) lighting.js causticGain's five taps in a loop (causticTaps);
-  // diffed against a77e0893, nothing else moved.
-  const hashes = ['e7ffdcb46d9cf2a955933197652b1d587450d5e20b90e62a0e81526613092b8a', 'f50857ada300290f599181fd98b68869872761b010825b24214ee28b71e59e85', '0597a0e500ecb0f5683bcfcb9116206748cc0dd17b671e62001451b688b0bc74', '11ade85c38ffc0921e186abe89eb570b7a92c1fc52d47a87994a00ac9888f8ca'];
+  // diffed against origin/main 7e5dc8a2, nothing else moved.
+  const hashes = ['dd184638dc13801878673f268746ec12ddaf50e74a86f1f1a141f8f9e7564da2', 'a35e6caa070ae1da2fe0a549c8c254eec6134cdfd1ceece0a910154ae29d7cb1', '5ab7d78f9d76953c40945dd1002992d0070163aa302e5a7a6cd4bed529ef638f', '2ce1b7c488188e8033d4744ae171970d4dc2cd5cce4ba071f9b184bb853a4162'];
   const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
   gathers.forEach((c, i) => {
     const code = c.code(), groups = c.layouts();

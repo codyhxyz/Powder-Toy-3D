@@ -32,7 +32,6 @@ import { createFlame } from '/src/pov/flame.js';
 import { viewmodelRig, renderViewmodels, VIEWMODEL_GLOW_LAYER } from '/src/pov/viewmodel.js';
 import { createVfx } from '/src/pov/vfx.js';
 import { povEvents } from '/src/pov/events.js';
-import { createBirdView } from '/src/birds/render.js';
 import { createBillboards } from '/src/gfx/billboards.js';
 import { Constructions } from '/src/constructions.js';
 import { bake, runGenerator } from '/src/constructions/runtime.js';
@@ -415,22 +414,21 @@ test('viewmodel', async () => {
   return { ...out, failures: h.failures };
 });
 
-// The particles: splash mist, sparks off metal, a tracer, a muzzle flash,
-// and the birds' motes.
+// The particles: splash mist, sparks off metal, a tracer, a muzzle flash
+// and a jet's exhaust.
 test('particles', async () => {
   await load(ROOFED);
   lookFrom(new THREE.Vector3(9, 4, 11), new THREE.Vector3(0, 1.5, 0));
   const vfx = createVfx({ scene, camera, getVolume: () => volume, getScale: () => SCALE, isActive: () => true });
-  const birds = createBirdView({ scene, sun: SUN, getScale: () => SCALE });
   const before = syncPipelines;
-  await until(() => vfx.batch.parent === scene && birds.batch.parent === scene, 20000, 'the pools compiled');
+  await until(() => vfx.batch.parent === scene, 20000, 'the pools compiled');
   // the frame just before the bursts (their spawn points show the sky, which doesn't change)
   const pre = await frame({});
   const V = (x, y, z) => new THREE.Vector3(x, y, z), up = V(0, 1, 0);
   // grid points (the box's cells, or past them) whose pixels show the sky
   // behind, not the settling floor; the sparks' streaks (0.09 cells wide)
   // near the camera, where they span pixels
-  const SPAWN = { flash: [10, 6, 10], sparks: [34, 12, 40], mist: [30, 14, 36], tracer: [14, 4, 12], jet: [24, 9, 30.6], feathers: [16, 10, 16] };
+  const SPAWN = { flash: [10, 6, 10], sparks: [34, 12, 40], mist: [30, 14, 36], tracer: [14, 4, 12], jet: [24, 9, 30.6] };
   povEvents.emit('impact', { point: V(...SPAWN.mist), id: E.WATER, source: 'gun', normal: up, broke: true });
   povEvents.emit('impact', { point: V(...SPAWN.sparks), id: E.METAL, source: 'gun', normal: up, broke: false });
   povEvents.emit('round:move', { kind: 'round', from: V(4, 6, 4), to: V(24, 2, 20) });   // (SPAWN.tracer: its middle)
@@ -442,23 +440,20 @@ test('particles', async () => {
     return nozzle;
   });
   vfx.jet(nozzles, 0.1);
-  birds.feathers(SPAWN.feathers, (p, o) => o.copy(toScene(p[0], p[1], p[2])));
   vfx.update(1 / 60);
-  birds.update(1 / 60, [], (p, o) => o.copy(toScene(p.x, p.y, p.z)), { glow: 1, camera, span: 3 });
   const counts = vfx.counts();
   const cap = await frame({});
-  const r = { counts, motes: birds.motes, syncAtFirstDraw: syncPipelines - before, syncLabels: syncLabels.slice(before), changed: changed(cap, pre) };
+  const r = { counts, syncAtFirstDraw: syncPipelines - before, syncLabels: syncLabels.slice(before), changed: changed(cap, pre) };
   // at each spawn point on screen, the most a pixel near it brightened
   r.lift = {};
   for (const [k, p] of Object.entries(SPAWN)) r.lift[k] = +lift(cap, pre, project(toScene(...p)), 5).toFixed(1);
   // a second later they have moved and faded; after their lives, gone
-  for (let i = 0; i < 6; i++) { vfx.update(0.5); birds.update(0.5, [], (p, o) => o, { glow: 1, camera, span: 3 }); }
+  for (let i = 0; i < 6; i++) vfx.update(0.5);
   const late = await frame({});
   r.changedAfter3s = changed(late, pre);
-  r.countsAfter3s = Object.values(vfx.counts()).reduce((a, b) => a + b, 0) + birds.motes;
+  r.countsAfter3s = Object.values(vfx.counts()).reduce((a, b) => a + b, 0);
   r.shots = { pre: await png(pre), burst: await png(cap), late: await png(late) };
   vfx.dispose();
-  birds.dispose();
   return { ...r, failures: h.failures };
 });
 

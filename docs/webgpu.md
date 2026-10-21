@@ -11,9 +11,8 @@ agents). The **Review log** at the end records every finding and what became of 
 The user's goal: "Port from WebGL2 to WebGPU. Our goal: insane performance-per-watt, fully optimized for Apple Silicon
 and similar modern devices."
 
-**What the user's machine actually runs.** The default desktop session is World mode on the island (`app.js:104`).
-Its birds call `pacer.wake()` every tick (`app.js:1412-1415`), so the full view frame is presented at 60 Hz all the
-time, and Whitewater is on by default on desktop (`gfx/detail.js:32, 93-99`). The per-frame scene and post passes, the
+**What the user's machine actually runs.** The default desktop session is World mode on the island (`app.js:104`),
+and Whitewater is on by default on desktop (`gfx/detail.js:32, 93-99`). The per-frame scene and post passes, the
 window-move costs and aeration are what that session pays; the sim's sleeping and the settled-scene path are what a
 box session and a quiet world pay. Both matter, and the targets below name both.
 
@@ -51,7 +50,7 @@ box session and a quiet world pay. Both matter, and the targets below name both.
 **W1. Raw WebGPU and hand-written WGSL for all simulation, derived, volume, world, POV/tool, post and codec work;
 three.js only for meshes.** One `GPUDevice`, created by `src/gpu/device.js`. three.js r186 `WebGPURenderer`
 (constructed with `{ device }`) draws the mesh scene only: figures (stickman, GLTF skinned mannequin, NPC wizards,
-worms), viewmodels, vehicles, birds, markers, constructions ghost, billboards. The floor grid, the box edges and the
+worms), viewmodels, vehicles, markers, constructions ghost, billboards. The floor grid, the box edges and the
 brush cursor are small pipelines of ours in the scene pass (F1), so a box-mode frame never needs three. Its materials
 become TSL node materials. three.quarks goes (no WebGPU path; misc-three map 7.12). The raymarcher, post and sim stay
 hand-written because TSL adds nothing to 13k lines of branchy GLSL and would hide them behind three's node builder and
@@ -1109,7 +1108,7 @@ shares, so two modules never declare the same binding and numbers can't disagree
   (`gfx/core.js:8-26`; `gfx/lighting.js:20-40, 84, 419-421`; `gfx/clouds.js`, `gfx/surface.js`, `gfx/liquidDetail.js`;
   `render.js`; the far snippets' `uSea`), plus `viewProj`, `invViewProj`, `cam`, `jitter`, `far: u32`. Each field
   names its `gfxUniforms` source key. `gfx/uniforms.js` keeps `gfxUniforms` as CPU-side `{ value }` objects (lamps,
-  wand lights and birds already write and read them) and writes FrameUniforms from them (B3's rule).
+  wand lights already write and read them) and writes FrameUniforms from them (B3's rule).
 - **`L.LIGHTING`** (group 2 of render kernels), fixed binding numbers:
 
   | b | Resource | Type |
@@ -1180,12 +1179,11 @@ by the volume, shadow (writer variant), GI gather (writer variant), GI source, s
   `app.js:1434-1438`) with a counter that changes exactly when that string would have. The `pacer.view(key, …)`
   contract doesn't change.
 - **Deep idle.** When the view is settled, the sim is idle-certified or paused, nothing is pending (pipelines,
-  readbacks, eye adaptation, auto-resolution recovery, a derived frame) and nothing animates (no birds, POV,
+  readbacks, eye adaptation, auto-resolution recovery, a derived frame) and nothing animates (no POV,
   multiplayer, rays), app.js stops scheduling `requestAnimationFrame`. `pacer.wake()`, every input listener, resize,
   `requestRender`, `sim.wake()`/`sim.edit`, a settings change and a resolving readback or pipeline restart it. A
-  settled box scene then costs no CPU at all. The default World scene never settles: its birds wake the view every
-  tick and the full march re-runs at 60 Hz for a few small bird meshes. That is its dominant idle cost, left for K3
-  (now K3's mesh-only frames: the march's scene is kept while only the birds move).
+  settled box scene then costs no CPU at all. While only three's meshes move, K3's mesh-only frames keep the march's
+  scene instead of re-running the full march at 60 Hz.
 
 ### F8. Mesh materials (three, TSL)
 
@@ -1198,7 +1196,7 @@ by the volume, shadow (writer variant), GI gather (writer variant), GI source, s
   pipeline.
 - Figure materials stop baking the grid size; one material per albedo, not per grid.
 - Every new mesh kind is compiled with `gpu.three.prepare(object)` before it joins the scene (B5).
-- `gfx/billboards.js` replaces three.quarks for `pov/vfx.js` and `birds/render.js`: fixed pools, one instanced draw
+- `gfx/billboards.js` replaces three.quarks for `pov/vfx.js`: fixed pools, one instanced draw
   per (texture, blend, mode); each spawn writes one record (p0, v0, g, drag, size0, colour0, birth, life); the vertex
   stage evaluates the ballistic path with linear drag analytically (misc-three map 7.12). Keep `vfx.js`'s event API
   and a `burst(n, init)` call shape.
@@ -1274,13 +1272,11 @@ appends live indices and writes `drawIndirect` args, so a nearly empty list cost
 every view frame while active). Instanced quads (no point size in WebGPU), `size = clamp(uPointPx·0.7/viewZ, 1.5,
 24)` px, disc mask in the fragment.
 
-### G4. Lightning, signs, birds' probe, codec, constructions, foam
+### G4. Lightning, signs, codec, constructions, foam
 - **Lightning (`lightning.js`, `src/bolt.js`):** the bolt is an edit; the storm search is one dispatch reducing per
   workgroup, then `atomicMax` of a packed (charge, inverted scan index) key, then the 16-column scan; both read back
   through the ring.
 - **Signs:** one workgroup of 64 threads (a sign each), sign data via `writeBuffer`, results through the ring.
-- **Birds' probe:** a thread per probed column, results through the ring; `isContextLost()` becomes the gpu's
-  `lost` flag.
 - **Codec:** `pack` writes atlas-order RGBA8 (C2); up to 3 captures in flight; `unpack` = `writeBuffer` + kernel.
   **`readCells` (draft PR #5, not on main):** `readCells(renderer, sim)` is a thin wrapper over the pack and the
   readback service: `null` when no buffer is free, else `Promise<{ bytes, g, dims, release }>` with bytes in atlas
@@ -1599,7 +1595,7 @@ caught. **M1** (after U2 and U3): `npm run harness` → the sim bench page (ms p
 
 ### I5. Performance per watt (`tools/power.mjs`, new, Mac only)
 Scenarios of 60 s each per build, the same seed: a settled box scene (nothing changing), the lab running at 4 steps
-per frame, the default World island scene (birds, Whitewater on) with the camera still, an island POV walk, a world
+per frame, the default World island scene (Whitewater on) with the camera still, an island POV walk, a world
 camera flight; the lab and island with Whitewater on and off. Samples `sudo powermetrics --samplers
 gpu_power,cpu_power -i 500` (the tool prints the command when `sudo -n` isn't allowed) and the `IOAccelerator`
 utilization. Reports mean GPU, CPU and package mW, mJ per sim step, mJ per presented frame, submits/s and rAF
@@ -1628,8 +1624,8 @@ gates before handing back. "GLSL" is the GLSL being replaced (measured from the 
 | **U9 GI** (GPU) | `src/shaders/gi.js`, `src/derived.js` (updateGI; takes over from U4) | U4, U6 | ~110 | probes converge in a lit test scene; checkerboard parity; buffer and textures agree; GI gather within 4 storage textures (`L.LIGHTING_GI`) |
 | **U10 World** (GPU) | `src/world/**`, `src/shaders/far.js`, `generate.js`, `stamp.js`, `window.js` (stage, edit, gather, giShift; from U2), `src/wire/world.js`, world tools (`world-check`, `gen-check`, `island-dump`, `caves-check`, `landforms-gpu`, `scene-check`, `far-check`, `far-regress`, `far-lod-check`, `world-detail-check`), `tools/budgets/world.mjs` | U8, U9 | ~1530 + emitter for ~1400 subset lines | twins exact; world-check 1–3; world scenes in smoke at `?win=64`; world-move budget (no `syncCopies`, derived shift instead of `changedAll`) |
 | **U11 POV compute** (GPU) | `src/pov/**` except the U13 files below, `src/shaders/povBody.js`, `povBore.js`, `povKick.js`, `povTools.js`, `povTrace.js`, `transfer.js`, `wands.js`, `src/wire/pov.js`, POV tools (`pov-tools-a/b`, `burrower-laser-check`, `pov-engine-check`, `pov-player-check`, `perks-cpu-check`, `kick-hook-check`, `flask-check`, `gibs-check`), `scripts/check-wand-*.mjs`, `tools/budgets/pov.mjs` | U8 | ~820 | conservation checks exact; laser without sync read; one dispatch per edit; POV in smoke |
-| **U12 Small compute subsystems** | `src/raysLayer.js`, `src/rays.js`, `src/shaders/rays.js`, `src/lightning.js`, `src/bolt.js`, `src/shaders/lightning.js`, `src/signs.js`, `src/shaders/probe.js`, `src/birds/probe.js`, `src/birds/index.js`, `src/net/codec.js`, `src/net/multiplayer.js`, `src/gfx/foam.js`, `src/shaders/gfx/liquidDetail.js` (aeration part; from U5), `src/wire/{rays,lightning,signs,birds,mp,foam}.js`, `tools/rays-gpu.mjs`, `rays-check.mjs`, `elec-gpu-check.mjs`, `nt-mat-gpu.mjs`, `gpu-readback-check.mjs` | U8 | ~630 | rays-gpu (overlay through `drawIndirect`); codec round trip; lightning strike in a test scene; aeration determinism and I2.6 (list == every brick) |
-| **U13 Mesh layer** | `src/pov/figure.js`, `figureReal.js`, `flame.js`, `models.js`, `viewmodel.js`, `vfx.js`, `classPortraits.js`, `vehicles/look.js`, `worm.js` (material; from U11), `src/pov/tools/physgun.tool.js` (rim; from U11), `src/pov/tools/hotbar.js`, `src/pov/classPicker.js`, `src/ui/dock.js`, `src/birds/render.js`, `src/net/cursors.js`, `src/constructions.js`, `src/gfx/billboards.js` (new), `src/wire/mesh.js`; `src/spawners.js`, `src/perkOrbs.js`, `src/game/markers.js`, `src/arenas/markers.js` only if their built-in materials need a change; `package.json` and `package-lock.json` (remove three.quarks), `tools/bake-icons.mjs` (new), `public/icons/*` (new), `tools/pov-character.mjs`, `pov-viewmodels.mjs`, `torch-look.mjs`, `birds-shots.mjs` | U8, U11 | ~550 → TSL | figures lit, viewmodel composited, particles and ghost in smoke shots; every new mesh kind compiled through `prepare`; icons baked and `bake-icons --check` clean; no three.quarks import; the smoke allowlist emptied |
+| **U12 Small compute subsystems** | `src/raysLayer.js`, `src/rays.js`, `src/shaders/rays.js`, `src/lightning.js`, `src/bolt.js`, `src/shaders/lightning.js`, `src/signs.js`, `src/shaders/probe.js`, `src/net/codec.js`, `src/net/multiplayer.js`, `src/gfx/foam.js`, `src/shaders/gfx/liquidDetail.js` (aeration part; from U5), `src/wire/{rays,lightning,signs,mp,foam}.js`, `tools/rays-gpu.mjs`, `rays-check.mjs`, `elec-gpu-check.mjs`, `nt-mat-gpu.mjs`, `gpu-readback-check.mjs` | U8 | ~630 | rays-gpu (overlay through `drawIndirect`); codec round trip; lightning strike in a test scene; aeration determinism and I2.6 (list == every brick) |
+| **U13 Mesh layer** | `src/pov/figure.js`, `figureReal.js`, `flame.js`, `models.js`, `viewmodel.js`, `vfx.js`, `classPortraits.js`, `vehicles/look.js`, `worm.js` (material; from U11), `src/pov/tools/physgun.tool.js` (rim; from U11), `src/pov/tools/hotbar.js`, `src/pov/classPicker.js`, `src/ui/dock.js`, `src/net/cursors.js`, `src/constructions.js`, `src/gfx/billboards.js` (new), `src/wire/mesh.js`; `src/spawners.js`, `src/perkOrbs.js`, `src/game/markers.js`, `src/arenas/markers.js` only if their built-in materials need a change; `package.json` and `package-lock.json` (remove three.quarks), `tools/bake-icons.mjs` (new), `public/icons/*` (new), `tools/pov-character.mjs`, `pov-viewmodels.mjs`, `torch-look.mjs` | U8, U11 | ~550 → TSL | figures lit, viewmodel composited, particles and ghost in smoke shots; every new mesh kind compiled through `prepare`; icons baked and `bake-icons --check` clean; no three.quarks import; the smoke allowlist emptied |
 | **U14a Async tools** | `tools/page-gpu.mjs` (new), `tools/check-async-reads.mjs` (new), and the ~25 ASYNC-only tools no other unit owns (the codemod list in the tools-tests map 8) | U0 (API in this doc) | 0 | check-async-reads clean over `tools/` and `scripts/`; converted tools use page-gpu; those runnable in the container at that point run, the rest say why |
 | **U14b Cross-build and performance tools** | `bench.mjs` (build-agnostic through page-gpu), `state-hash.mjs` (from U2's sim API), `headless-cost`, `lod-frame-bench`, `world-load-time`, `preload-check`, `check-browser-launch` LEGACY list, `program-bench`/`app-compile-probe` (retire), `check-shaders`/`check-scenes` (delete), `tools/power.mjs` (new), `tools/cold-start.mjs` (new) | U8, U14a; U10, U11 for their scenarios | 0 | every tool runs in the container or says why it is Mac-only; a cross-build dry run (the legacy build here stops at its known GL failure, but page-gpu must pick the legacy path); no `readRenderTargetPixels`, `getContext()` or GLSL left in `tools/` |
 | **U15 Deploy and docs** (done) | `.github/workflows/deploy.yml`, `docs/scaling.md` (D1 note), `docs/headless-testing-cost.md`, `docs/world-lod.md`, `docs/particles.md` (where they describe WebGL); a local branch against `main` for `blankState`'s own PRNG (K2.4) | — | 0 | Landed with a `/legacy/` build step; the user then chose no fallback (W5), so the deploy is back to building `dist/` alone. The docs notes and the PRNG branch stand |
@@ -1671,7 +1667,7 @@ wave's worktrees branch from the merged result.
   table.
 - **`src/app.js`**: U8 rewrites it once against the APIs in this document and **moves every subsystem's wiring out of
   it** into `src/wire/<name>.js` (today's code moved verbatim, unreachable until ported): `world`, `pov`, `rays`,
-  `lightning`, `signs`, `birds`, `mp`, `mesh`, `foam`. `src/wire/index.js` (U8) lists them; app.js calls each one's
+  `lightning`, `signs`, `mp`, `mesh`, `foam`. `src/wire/index.js` (U8) lists them; app.js calls each one's
   hooks at fixed points and never names a subsystem again. Each wire module then belongs to its subsystem's unit
   (J1), so U10–U13 boot and test their subsystem in the real app without editing app.js:
   ```js
@@ -1681,7 +1677,7 @@ wave's worktrees branch from the merged result.
     ready: false,                 // true when its unit lands; app.js greys out what a not-ready wire serves
     attach(app) {},               // after build(); app = { gpu, three, sim, derived, scene, camera, settings, pacer, post }
     beforeStep(app, dt) {},       // POV edits, window move
-    afterStep(app, dt) {},        // lightning, birds' probe
+    afterStep(app, dt) {},        // lightning
     beforeView(app, dt) {},       // signs, far upkeep, figures' uniforms, external textures
     scene(app, rp) {},            // draws into our scene pass, in the wire's `order` (far before volume, detail…)
     order: 0,
@@ -1752,9 +1748,9 @@ a second code path (subgroups, `shader-f16`) has to be a clear win to earn its t
   time or on memory without losing the D7 statistics.
 - **GPU-side diffs instead of whole-world snapshots**: the multiplayer host diffs 8.4 MB in JS at 10 Hz today; diff
   bricks on the GPU and read back only changed ones. No zero-copy access is needed for this (W6 stands).
-- **Mesh-only frames.** When only three's meshes move (the default World scene's birds, with camera and sim still),
-  keep the converged pre-mesh scene (colour and depth) and re-run only the mesh layer and post instead of the volume
-  and far march at 60 Hz: the dominant power cost of the default scene. Render-only. Landed (`src/gfx/meshFrames.js`):
+- **Mesh-only frames.** When only three's meshes move (with camera and sim still), keep the converged pre-mesh
+  scene (colour and depth) and re-run only the mesh layer and post instead of the volume and far march at 60 Hz.
+  Render-only. Landed (`src/gfx/meshFrames.js`):
   a capture of the TAA settle count accumulates the uncut scene at output size, as TAAU reconstructs it, and later
   frames restore it at their jitter, three's meshes depth-tested over it (behind translucent water they are hidden
   rather than tinted: S1's cut only on full frames); the sim clock's animation holds meanwhile, as in deep idle.
@@ -1865,7 +1861,7 @@ the doc now says what the item asked, in the section named.
 | P-I7 indirect validation dispatches | Adopted | B3 (stats count ×2), E and D1 (direct where CPU-known; counts stated) |
 | P-I8 16-byte shadow taps | Adopted | E, F5, F6: `r32float` copy written in the same dispatch; PCSS reads it |
 | P-I9 cold start | Adopted | W18, B5, F2: only the current mode at boot; per-view modules (not `override`); three `compileAsync`; `idle()` fallback; Mac checkpoints M1/M2 |
-| P-I10 deep idle and view key | Adopted | A goal 3, F7, I5: rAF stops when settled; createViewKey in v1; settled scene judged in mW; birds named as the default scene's idle cost (K3) |
+| P-I10 deep idle and view key | Adopted | A goal 3, F7, I5: rAF stops when settled; createViewKey in v1; settled scene judged in mW; the mesh-only idle cost left for K3 |
 | P-I11 no container budget | Adopted | I1 `budget-check` + `tools/budgets/*`, J4; Mac harness page at M1 |
 | P-I12 powerPreference, frames in flight | Adopted | B2, B3, W22: no `powerPreference` (opt-in `?gpu=high`); 1 frame in flight on WebKit; one command buffer when three has nothing |
 | P-M toroidal windows | Deferred to K3 | It touches every render sampler and needs a drift decision; W10's rule (physical indices only via four functions, enforced) keeps it as cheap later as now |

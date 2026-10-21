@@ -2,14 +2,15 @@
 
 Halo's Big Team Battle in the falling-sand world: a Warthog-style **jeep**, a drifty **hoverbike**, and a small **motorboat**,
 rigid bodies in [Rapier](https://rapier.rs) (`@dimforge/rapier3d-simd`, the WASM SIMD build, pinned at
-0.21.0) that drive on the sim's own cells. Code: `src/pov/vehicles/`. Boxes only for now (not World's moving window).
+0.21.0) that drive on the sim's own cells. Code: `src/pov/vehicles/`. Every map has them: the boxes and the scrolling
+World maps (Island, Volcano Isles, Lab Complex, Giant Volcano, Tinker Creek, Descent; see World maps below).
 
-The same palette rule applies to **Axeman**, **Gunner**, **Worm**, **Giant worm** and **Bird flock**:
-one click creates one creature (or flock), not a permanent spawner. Dead placements do not return on load.
-Flocks save only their surviving count. **Player spawn** remains a toggleable spawn marker.
-Scrolling World maps reject vehicles with an error (see World mode below); NPCs and bird flocks work there as in a box.
-A World's NPC appears once the window covers its placement, stays put in the world as the window moves, and waits
-unsimulated while outside it, as a Cruelty Squad mission's actors do.
+The same palette rule applies to **Axeman**, **Gunner**, **Worm** and **Giant worm**:
+one click creates one creature, not a permanent spawner. Dead placements do not return on load.
+**Player spawn** remains a toggleable spawn marker.
+Vehicles and NPCs work in scrolling World maps as in a box. A World's vehicle or NPC appears once the
+window covers its placement, stays put in the world as the window moves, and waits unsimulated while outside it, as a
+Cruelty Squad mission's actors do.
 
 ## Playing
 
@@ -49,6 +50,28 @@ unsimulated while outside it, as a Cruelty Squad mission's actors do.
 | Matter | hull sample points: Archimedes in liquids (ρ = elements.js dens × 100 kg/m³: a jeep sinks in deep water and floats on denser lava), quadratic drag in them (C_d 1.05, a cube's), heat damage above 300 °C; under each wheel, rolling resistance and grip by surface | `matter.js`, `jeep.js` |
 | Look | chunky primitives lit like the Castle Crashers wizard (`figure.js` `figureFrag` with `FIG_TOON`: the volume's sun, shadows, GI) with black inverted-hull outlines; team stripe red/blue; a seated wizard drives | `look.js`, `jeep.js`, `hoverbike.js`, `boat.js` |
 | Spawning, seats, run-overs, blasts, wrecks, HUD | | `index.js`, `vehicles.css` |
+
+### World maps
+
+A World simulates a 128-cell window that follows you over a bigger world (`docs/scaling.md` D11). The vehicles
+live in the world's coordinates, as Minecraft's entities keep theirs while chunks load and unload around the player:
+
+- Rapier's bodies, the Voxels collider and the wheels' heightfields are in world cells' metres (`worldCells.js`
+  shifts each query by the origin of the window the cells' copy was read from), so the window moving moves nothing
+  in Rapier. What the vehicles meet in the window's grid (the seated body, targets, blasts, the sim's cells for the
+  wreck's gunpowder and fire, the meshes, the chase camera) is converted at the edge (`toWin` / `fromWin`, `index.js`).
+  A box's world is its grid (origin 0), so a box runs exactly as before.
+- The voxel mirror covers the copy's window. When a copy of a moved window lands it rebases: the regions' cells it
+  leaves are emptied, what both windows hold keeps its voxels, and each region is re-read once (~4 ms with two vehicles,
+  `vehicles-terrain-check`).
+- A moved window asks for its copy at once (`ai/world.js` `update(dt, soon)`) instead of waiting out the 0.5 s
+  refresh, so a boosted jeep (37 m/s) doesn't outrun the cells ahead of it. Past the copy's window the cells are open
+  air (never a phantom wall), except the world's own edge and the floor, which are solid as the sim's are.
+- A vehicle whose hull isn't 2 cells inside both the window and the copy (the NPCs' `RESIDENT_MARGIN`) is
+  **parked**: its body is disabled in Rapier (its velocities kept), hidden, and out of the terrain sync, run-overs,
+  blasts and E. It resumes as it was once the window covers it again. The one you drive never parks: the window
+  follows you. A placement or a loaded save outside the window waits to appear.
+- Saves store world cells (`world`) and world metres (`state.position`).
 
 ### Tuning, and where it comes from
 
@@ -108,8 +131,11 @@ vehicles and NPCs only while unpaused; zero-time frames can create/pose them wit
 
 ## Checks
 
-- `node tools/entities-node-check.mjs`: CPU registry/vehicle lifecycle: no toggle or marker, limits, World NPCs and unsupported World vehicles,
-  active pose/health saves, permanent one-shot death, camera reset preservation, legacy pads and arena respawn.
+- `node tools/entities-node-check.mjs`: CPU registry/vehicle lifecycle: no toggle or marker, limits, World NPCs and vehicles,
+  active pose/health saves, permanent one-shot death, camera reset preservation, legacy pads and arena respawn. Then a
+  jeep in a World: placed on a plateau, it stays put in the world (and is drawn and hit where it is) as the window moves
+  twice, drops to the floor when the plateau's world cells are dug, parks (held still, unseen, its terrain let go)
+  when the window leaves it and resumes when it comes back, and saves and loads at its world position.
 - `node tools/entities-npc-node-check.mjs`: CPU NPC creation/death/reset decisions, legacy respawn, no god-view player target and World window shifts.
 - `node tools/entities-check.mjs --url <site>` (or `--port <yours>`): browser smoke for palette names, immediate god-view
   entities, pause, camera identity, permanent boat death/save-load and arena respawn. No dev-only page imports.
@@ -124,7 +150,8 @@ vehicles and NPCs only while unpaused; zero-time frames can create/pose them wit
 - `node tools/vehicles-terrain-check.mjs`: CPU only, Dam Valley with six vehicles driving, circling and
   parked while the cells are dug, walled, sanded and flooded: after every sync the incremental collider
   equals a from-scratch one (voxels, through a shadow of the `setVoxel` calls, and every ray ground), with
-  no wasted `setVoxel`; then times the syncs. Both node checks load the game's Rapier package through
+  no wasted `setVoxel`; then the same through a World's window moving after a driving jeep (copies landing a few
+  frames late, a pit dug ahead), also against the world's own cells; then times the syncs. Both node checks load the game's Rapier package through
   `tools/rapier-node.mjs` (node hooks for its bundler-style imports and `.wasm` module).
 - `node tools/vehicles-check.mjs --port <yours> [--shot prefix]`: the real app on the GPU (a dev server; AC
   power). A test yard (a stone run into a rock ramp, a sand lane, a walled lake); E in and out; W drives;
@@ -136,7 +163,6 @@ vehicles and NPCs only while unpaused; zero-time frames can create/pose them wit
 ## Not yet
 
 - The gunner seat and turret on the jeep (the model has the turret), passengers, multiplayer sync, NPC drivers.
-- World mode: the window moves under the vehicles (needs `windowShifted` to move the bodies and the voxels).
 - The body only meets a hull by being pushed back out sideways (`shoveOut`): you can't stand on a jeep's
   roof. Vehicles don't push cells (sand isn't ploughed, water isn't splashed by them).
 - Boats respond to actual liquid cells (the CPU copy can lag by 0.5 s), not decorative rendered waves.

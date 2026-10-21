@@ -16,6 +16,8 @@ import { JEEP } from '../src/pov/vehicles/jeep.js';
 import { HOVERBIKE } from '../src/pov/vehicles/hoverbike.js';
 import { buildDamValley, groundAt, ARENA_SIZE } from '../src/arenas/damValley.js';
 import { E, K, ELEMENTS } from '../src/elements.js';
+import { CELL_M } from '../src/scale.js';
+import { worldCells } from '../src/pov/vehicles/worldCells.js';
 
 let fails = 0;
 const check = (name, ok, info = '') => { if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${info ? `  ${info}` : ''}`); };
@@ -59,7 +61,7 @@ const cells = copyOf(ids);
 // listing, coVoxelData, leaves out the voxels at index 119 and 239 of any axis
 // at this voxel size, though they collide; it's checked against the shadow.)
 const cellKey = (x, y, z) => ((y + 1) * (N[2] + 2) + z + 1) * (N[0] + 2) + x + 1;
-function shadowed(source = cells) {
+function shadowed(source = cells, key = cellKey) {
   const p = createPhysics(RAPIER, source);
   const on = new Set(), create = p.world.createCollider.bind(p.world);
   p.voxels = on;
@@ -70,7 +72,7 @@ function shadowed(source = cells) {
     on.clear();
     const set = c.setVoxel.bind(c);
     c.setVoxel = (x, y, z, v) => {
-      const k = cellKey(x, y, z);
+      const k = key(x, y, z);
       if (v === on.has(k)) p.redundant++;
       if (v) on.add(k); else on.delete(k);
       set(x, y, z, v);
@@ -80,9 +82,9 @@ function shadowed(source = cells) {
   return p;
 }
 const sorted = (keys) => Float64Array.from(keys).sort();
-const listed = (phys) => {   // Rapier's own listing
+const listed = (phys, key = cellKey) => {   // Rapier's own listing
   const d = phys.terrain.colliderSet.raw.coVoxelData(phys.terrain.handle), out = new Float64Array(d.length / 3);
-  for (let i = 0; i < out.length; i++) out[i] = cellKey(d[3 * i], d[3 * i + 1], d[3 * i + 2]);
+  for (let i = 0; i < out.length; i++) out[i] = key(d[3 * i], d[3 * i + 1], d[3 * i + 2]);
   return out.sort();
 };
 // a ground's corner and heights, read from Rapier's side (a collider's .shape
@@ -224,6 +226,140 @@ check('models without locality metadata conservatively reread', local.reads > 0)
 verify('fallback model matches full rebuild', high);
 p.world.free();
 phys.world.free();
+
+// ---- a World (docs/scaling.md D11): the copy is of a 128-cell window moving
+// over a bigger world in 16-cell steps (world/window.js WIN_STEP) after a jeep
+// driving across it, each new window's copy landing a few frames after the
+// move (as a readback does), through the vehicles' world-cells view
+// (worldCells.js). The regions and grounds are in world cells; when a copy of
+// a moved window lands, the mirror rebases. After every sync the collider must
+// equal a from-scratch one, and be exactly the world's cells that stop a
+// vehicle in the regions (past the copy: open air, but the world's edge and
+// the floor solid), checked against the world itself, not through the view.
+const WORLD = [512, 64, 384], WIN = [128, 64, 128], WIN_STEP = 16, WIN_SLACK = 4, LAND_FRAMES = 3;
+const RESIDENT_REACH = 10;   // cells: a jeep's half length (7.2) plus index.js's RESIDENT_MARGIN (2), rounded up
+const wAt = (x, y, z) => (y * WORLD[2] + z) * WORLD[0] + x;
+const truth = new Uint8Array(WORLD[0] * WORLD[1] * WORLD[2]);
+const heightAt = (x, z) => 18 + Math.floor(6 * Math.sin(x / 13) + 5 * Math.cos(z / 19)) + ((x * 7 + z * 13) % 11 === 0 ? 3 : 0);   // hills, and rocks on them
+for (let z = 0; z < WORLD[2]; z++) for (let x = 0; x < WORLD[0]; x++) {
+  const h = heightAt(x, z);
+  for (let y = 0; y < h; y++) truth[wAt(x, y, z)] = y < h - 2 ? E.ROCK : E.SAND;
+  for (let y = h; y < 14; y++) truth[wAt(x, y, z)] = E.WATER;   // the dips are ponds
+}
+const truthStops = (x, y, z) => {
+  if (y < 0 || x < 0 || z < 0 || x >= WORLD[0] || z >= WORLD[2]) return true;   // the floor, the world's edge
+  if (y >= WORLD[1]) return false;
+  const i = truth[wAt(x, y, z)];
+  return i !== E.EMPTY && (KIND[i] === K.SOLID || KIND[i] === K.POWDER);
+};
+// ai/world.js's model as the vehicles use it, of the window at `origin` (its frame, `at`)
+function windowModel() {
+  let origin = [0, 0, 0], frame = { origin, world: [...WORLD] }, reset = 1;
+  const edits = [];
+  return {
+    ready: true, version: 1, idVersion: 1, dims: WIN,
+    get at() { return frame; },
+    id(x, y, z) {
+      x = Math.floor(x); y = Math.floor(y); z = Math.floor(z);
+      if (y >= WIN[1]) return E.EMPTY;
+      if (x < 0 || z < 0 || y < 0 || x >= WIN[0] || z >= WIN[2]) return -1;
+      return truth[wAt(x + origin[0], y, z + origin[2])];
+    },
+    kind: (i) => (i === -1 ? K.SOLID : KIND[i]),
+    T: () => 20,
+    // window cells; a capture of another window resets the locality (ai/world.js resetVersion)
+    hasIdChanges(b, since) {
+      if (since < reset) return true;
+      return edits.some((c) => c.version > since && c.x0 - origin[0] <= b.x1 && c.x1 - origin[0] >= b.x0 && c.y0 <= b.y1 && c.y1 >= b.y0 && c.z0 - origin[2] <= b.z1 && c.z1 - origin[2] >= b.z0);
+    },
+    land(o) { origin = [...o]; frame = { origin, world: [...WORLD] }; this.version++; this.idVersion = this.version; reset = this.version; },
+    // world cells [x0, x1) × [y0, y1) × [z0, z1); the next capture brings it
+    fill(x0, y0, z0, x1, y1, z1, id) {
+      for (let y = y0; y < y1; y++) for (let z = z0; z < z1; z++) for (let x = x0; x < x1; x++) truth[wAt(x, y, z)] = id;
+      this.version++; this.idVersion = this.version;
+      edits.push({ x0, x1: x1 - 1, y0, y1: y1 - 1, z0, z1: z1 - 1, version: this.version });
+    },
+  };
+}
+const worldKey = (x, y, z) => ((y + 1) * (WORLD[2] + 2) + z + 1) * (WORLD[0] + 2) + x + 1;
+function worldExpected(phys, view) {
+  const [ox, , oz] = view.origin, set = new Set();
+  for (const b of phys.boxes)
+    for (let y = b.y0; y <= b.y1; y++) for (let z = b.z0; z <= b.z1; z++) for (let x = b.x0; x <= b.x1; x++) {
+      const known = x >= ox && z >= oz && x < ox + WIN[0] && z < oz + WIN[2];
+      if (known ? truthStops(x, y, z) : (y < 0 || x < 0 || z < 0 || x >= WORLD[0] || z >= WORLD[2])) set.add(worldKey(x, y, z));
+    }
+  return sorted(set);
+}
+{
+  const model = windowModel(), view = worldCells(model);
+  const phys = shadowed(view, worldKey);
+  const snap = (n) => Math.round(n / WIN_STEP) * WIN_STEP;
+  let win = [snap(112 - WIN[0] / 2), 0, snap(200 - WIN[2] / 2)];   // the sim's window: on the jeep
+  model.land(win);
+  const landings = [];                                                // [frame it lands, origin]
+  const groundY = (x, z) => Math.max(heightAt(Math.floor(x), Math.floor(z)), 14);
+  const fleet = [
+    { key: 'jeep', x: 112, z: 200, ...JEEP.GROUND, vx: 40 },          // 12 m/s along +x: the window follows it
+    { key: 'bike', x: 120, z: 190, ...HOVERBIKE.GROUND, circle: true }, // circling near it
+    { key: 'left', x: 90, z: 220, ...JEEP.GROUND },                    // parked where the jeep set off: the window leaves it
+  ];
+  const R_ = RESIDENT_REACH;
+  const resident = (v) => view.knows(Math.floor(v.x - R_), Math.floor(v.z - R_), Math.floor(v.x + R_), Math.floor(v.z + R_))
+    && v.x - R_ >= win[0] && v.z - R_ >= win[2] && v.x + R_ < win[0] + WIN[0] && v.z + R_ < win[2] + WIN[2];
+  let syncs = 0, firstBad = null, parkedSeen = false, worst = 0;
+  const FRAMES_W = 420;
+  for (let f = 0; f < FRAMES_W; f++) {
+    const t = f * STEP;
+    fleet[0].x = 112 + fleet[0].vx * t;
+    fleet[1].x = fleet[0].x + 8 + 9 * Math.cos(1.5 * t); fleet[1].z = 190 + 9 * Math.sin(1.5 * t);
+    // the window follows the jeep (world/window.js update: WIN_STEP at a time, past WIN_STEP + slack from its middle)
+    if (fleet[0].x - (win[0] + WIN[0] / 2) > WIN_STEP + WIN_SLACK) { win = [win[0] + WIN_STEP, 0, win[2]]; landings.push([f + LAND_FRAMES, win]); }
+    while (landings.length && landings[0][0] <= f) model.land(landings.shift()[1]);
+    if (f > 0 && f % 45 === 0) {   // a pit dug ahead of the jeep, in world cells
+      const gx = Math.floor(fleet[0].x) + 12, gz = Math.floor(fleet[0].z);
+      model.fill(gx, groundY(gx, gz) - 3, gz - 3, gx + 4, groundY(gx, gz) + 1, gz + 3, E.EMPTY);
+    }
+    const live = fleet.filter(resident);
+    if (live.length < fleet.length) parkedSeen = true;
+    const centers = live.map((v) => ({ key: v.key, x: v.x, y: groundY(v.x, v.z) + MIDDLE.jeep, z: v.z, r: v.r, liquid: v.liquid }));
+    if (!phys.syncTerrain(centers)) continue;
+    syncs++;
+    const ref = shadowed(view, worldKey);
+    ref.syncTerrain(centers);
+    const got = sorted(phys.voxels), want = sorted(ref.voxels), list = listed(phys, worldKey);
+    const bad = [];
+    if (!same(got, want)) bad.push(`voxels (${got.length}, from scratch ${want.length})`);
+    if (!same(got, worldExpected(phys, view))) bad.push("voxels against the world's cells");
+    if (!same(list, listed(ref, worldKey)) || list.some((k) => !phys.voxels.has(k))) bad.push("Rapier's voxels");
+    if (phys.redundant) bad.push(`${phys.redundant} setVoxel calls that changed nothing`);
+    for (const c of centers) if (!sameGround(groundOf(phys, c.key), groundOf(ref, c.key))) bad.push(`${c.key}'s ground`);
+    if (bad.length && firstBad === null) { firstBad = f; console.log(`     World frame ${f}: ${bad.join(', ')} differ`); }
+    worst = Math.max(worst, got.length);
+    ref.world.free();
+  }
+  check('World: through a moving window, incremental sync equals a from-scratch one and the world\'s own cells', firstBad === null,
+    `${syncs} syncs, window moved ${(win[0] - snap(112 - WIN[0] / 2)) / WIN_STEP} times, up to ${worst} voxels`);
+  check('World: a vehicle the window left behind drops out of the sync (parked)', parkedSeen && !phys.ground('left'));
+  // the jeep's ground is centred on its column in world cells, on that column's top in the world
+  // (raised by the tyre's dilation at most its radius), not on the cells the window had there before
+  const jg = groundOf(phys, 'jeep'), half = Math.sqrt(jg?.h.length ?? 0) >> 1;
+  const cx = Math.round(jg.t[0] / CELL_M - 0.5), cz = Math.round(jg.t[2] / CELL_M - 0.5);
+  let top = 0;
+  for (let y = WORLD[1] - 1; y >= 0; y--) if (truthStops(cx, y, cz)) { top = y + 1; break; }
+  const h = jg.h[half * (2 * half + 1) + half] / CELL_M;
+  check("World: the jeep's ray ground is in world cells, on the world's ground under it", Math.abs(cx - fleet[0].x) < 8 && h >= top - 1e-6 && h <= top + JEEP.GROUND.r / CELL_M + 1e-6,
+    `centre column x ${cx} (jeep at ${fleet[0].x.toFixed(0)}), its height ${h.toFixed(2)} on a top at ${top}`);
+  // a sync on a moved copy: the rebase keeps what both windows hold
+  const before = phys.voxels.size;
+  model.land([win[0] + WIN_STEP, 0, win[2]]);
+  const t0 = performance.now();
+  phys.syncTerrain(fleet.filter(resident).map((v) => ({ key: v.key, x: v.x, y: groundY(v.x, v.z) + MIDDLE.jeep, z: v.z, r: v.r, liquid: v.liquid })));
+  const ms = performance.now() - t0;
+  check('World: a moved copy rebases without refilling what both windows hold', phys.toggled < before / 2 && same(sorted(phys.voxels), worldExpected(phys, view)),
+    `${phys.toggled} of ${before} voxels toggled, ${ms.toFixed(2)} ms`);
+  phys.world.free();
+}
 
 // ---- time: syncs with six vehicles
 function timeIt(label, { readback, drive }) {

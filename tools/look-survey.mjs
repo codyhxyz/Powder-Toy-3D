@@ -59,7 +59,7 @@ try {
         a.requestRender?.();
       }, [home, zoom, orbit]);
       await p.waitForTimeout(zoom ? MOVE_MS : 500);
-      // an animated scene (waves, birds) never settles: its settle-limit frames are converged enough
+      // an animated scene (waves) never settles: its settle-limit frames are converged enough
       const tr = Date.now();
       if (USE_RENDER) await render(p).catch((e) => { if (!/did not converge/.test(e.message)) throw e; });
       console.log(m, name, 'render ms', Date.now() - tr);

@@ -6,7 +6,7 @@
 //   2. a script's sim.step(n) counts V1 steps (legacyStepCarry), and its
 //      beforesim/aftersim fire LEGACY_STEPS_PER_TICK times a native tick;
 //   3. a resting box keeps its clock and hooks and records nothing, so a busy
-//      presentation wire (World's birds) no longer keeps V2 awake.
+//      presentation wire (the far field, the session) no longer keeps V2 awake.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { Simulation, gridLayout } from '../../src/sim.js';
@@ -90,7 +90,7 @@ assert.equal(owner.tick, woke + 1, 'a write in before() records that tick');
 // explicit steps (scripts' sim.step, tests) always record, as before
 owner.certified = true;
 const explicit = owner.tick; nativeHostTick(owner); assert.equal(owner.tick, explicit + 1);
-// The app no longer keeps V2 awake for wires that only animate (birds, the far field, the session):
+// The app no longer keeps V2 awake for wires that only animate (the far field, the session):
 // nothing but the rest above gates the host (the busy wires keep the frame loop, not the physics).
 const app = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
 const hostCall = app.slice(app.indexOf('stepped = nativeHostSteps('), app.indexOf('});', app.indexOf('stepped = nativeHostSteps(')));

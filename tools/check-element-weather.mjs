@@ -40,33 +40,8 @@ const makeSim = () => ({
   _retire(buffer) { buffer.retired = true; },
 });
 const sim = makeSim(), world = { loaded: true, epoch: 0, P: { sea: 18 } };
-// Off uses the already-ready filtered brush, with no step/readback/compilation.
-{
-  const fog = createElementWeather(), edits = [];
-  const fixture = { ...sim, paint: args => edits.push(args) };
-  assert.equal(fog.clearFog({ sim: fixture, world }), false);
-  assert.equal(fog.clearFog({ sim: fixture, world: { ...world, loaded: false }, host: true }), false);
-  for (const y of [-8, 0, 32]) {
-    fixture.origin = { ...sim.origin, y };
-    assert.equal(fog.clearFog({ sim: fixture, world, host: true }), true);
-    const edit = edits.at(-1);
-    assert.equal(edit.filter, E.CLOUD);
-    assert.equal(edit.erase, true);
-    assert.equal(edit.shape, 1);
-    const top = edit.center.y + edit.radius;
-    const skyBottom = Math.max(y + 2, world.P.sea + 14,
-      y + sim.g.ny - ELEMENT_WEATHER.cloudMargin - ELEMENT_WEATHER.cloudDepth);
-    assert.equal(top + y, skyBottom);
-    assert(edit.center.y - edit.radius < 0);
-    assert(edit.center.x - edit.radius < 0 && edit.center.x + edit.radius > sim.g.nx);
-    assert(edit.center.z - edit.radius < 0 && edit.center.z + edit.radius > sim.g.nz);
-  }
-  fog.dispose();
-  assert.equal(fog.clearFog({ sim: fixture, world, host: true }), false);
-  assert.equal(edits.length, 3);
-}
-const context = { sim, world, advancing: true, host: true, fogEnabled: true };
-const storm = { preset: 'storm', cloud: 1, rain: 1, storm: 1, fog: 1, wind: [3, 4], time: 10 };
+const context = { sim, world, advancing: true, host: true };
+const storm = { preset: 'storm', cloud: 1, rain: 1, storm: 1, wind: [3, 4], time: 10 };
 const clear = { ...storm, preset: 'clear' };
 for (const c of [{ ...context, advancing: false }, { ...context, advancing: undefined },
   { ...context, host: false }, { ...context, host: undefined }, { ...context, enabled: false },
@@ -77,39 +52,39 @@ for (const c of [{ ...context, advancing: false }, { ...context, advancing: unde
 }
 assert.equal(elementWeatherPolicy(null, context), null);
 const p = elementWeatherPolicy(storm, context);
-assert.deepEqual(p.source, [1, 1, 1, 1]);
+assert.deepEqual(p.source, [1, 1, 1]);
 assert.deepEqual(p.wind, [0.6, 0.8]);
-assert.deepEqual(p.bands, [112, 124, 19, 28]);
-assert.deepEqual(p.boxes, [
-  { lo: [0, 112, 0], hi: [127, 123, 127] }, { lo: [0, 19, 0], hi: [127, 27, 127] },
-]);
-assert.equal(elementWeatherPolicy(clear, { ...context, fogEnabled: false }), null, 'clear gates fading storm values');
-assert.deepEqual(elementWeatherPolicy(clear, context).source, [0, 0, 0, 1], 'independent fog under clear sky');
-assert.deepEqual(elementWeatherPolicy({ ...storm, preset: 'overcast' }, context).source, [1, 0, 0, 1]);
-assert.deepEqual(elementWeatherPolicy({ ...storm, preset: 'rain' }, context).source, [1, 1, 0, 1]);
-assert.deepEqual(elementWeatherPolicy(storm, { ...context, cloudEnabled: false }).source, [0, 0, 0, 1]);
+assert.deepEqual(p.bands, [112, 124]);
+assert.deepEqual(p.boxes, [{ lo: [0, 112, 0], hi: [127, 123, 127] }], 'one sky band: no sea fog band over the water');
+assert.equal(elementWeatherPolicy(clear, context), null, 'clear gates fading storm values');
+// Sea fog and ocean chop were removed (user request, 2026-10-20): a state that still carries them changes nothing.
+assert.equal(elementWeatherPolicy({ ...clear, fog: 1, ocean: 1 }, { ...context, fogEnabled: true }), null, 'old sea fog/chop values are ignored');
+assert.deepEqual(elementWeatherPolicy({ ...storm, fog: 1, ocean: 1 }, { ...context, fogEnabled: true }), p);
+assert.deepEqual(elementWeatherPolicy({ ...storm, preset: 'overcast' }, context).source, [1, 0, 0]);
+assert.deepEqual(elementWeatherPolicy({ ...storm, preset: 'rain' }, context).source, [1, 1, 0]);
+assert.equal(elementWeatherPolicy(storm, { ...context, cloudEnabled: false }), null);
 assert.deepEqual(elementWeatherPolicy({ ...storm, wind: [NaN, 4] }, context).wind, [0.8, 0.6]);
-assert.deepEqual(elementWeatherPolicy({ ...storm, cloud: 10, rain: -1, storm: NaN, fog: -2 }, context).source, [1, 0, 0, 0]);
-assert.equal(elementWeatherPolicy({ ...storm, cloud: NaN, fog: NaN }, context), null);
+assert.deepEqual(elementWeatherPolicy({ ...storm, cloud: 10, rain: -1, storm: NaN }, context).source, [1, 0, 0]);
+assert.equal(elementWeatherPolicy({ ...storm, cloud: NaN }, context), null);
 assert.equal(elementWeatherPolicy(storm, { ...context, seaLevel: 200 }), null);
 assert.equal(elementWeatherPolicy(storm, { ...context, world: null }), null);
 assert(elementWeatherPolicy(storm, { ...context, world: null, seaLevel: 18, enabled: true }));
 
 // Height and scratch budget on production/test grids, including shifted Y
-// and fractional sea levels. No gap between thin bands is ever edited.
+// and fractional sea levels. Only the sky band's own cells are edited.
 const dims = [[32, 32, 32], [64, 64, 64], [128, 128, 128], [160, 96, 160], [256, 96, 128], [128, 384, 128]];
 let maxScratch = 0;
 for (const size of dims) for (const y of [-8, 0, 32]) for (const sea of [18, 18.5, 19.1, 200]) {
   const fixture = { ...sim, g: gridLayout(...size), origin: { ...sim.origin, y } };
   const policy = elementWeatherPolicy(storm, { ...context, sim: fixture, seaLevel: sea });
   if (!policy) continue;
-  assert(policy.boxes.length <= 2);
+  assert.equal(policy.boxes.length, 1);
   for (const box of policy.boxes) {
     assert(box.lo[1] >= 0 && box.hi[1] < size[1]);
     assert(box.hi[1] - box.lo[1] + 1 <= ELEMENT_WEATHER.cloudDepth);
     for (let cy = box.lo[1]; cy <= box.hi[1]; cy++) {
       const wy = y + cy + 0.5, b = policy.bands;
-      assert((policy.source[0] && wy >= b[0] && wy < b[1]) || (policy.source[3] && wy >= b[2] && wy < b[3]));
+      assert(policy.source[0] && wy >= b[0] && wy < b[1]);
     }
     const alignedHeight = ((box.hi[1] >> 2) - (box.lo[1] >> 2) + 1) * 4;
     const bytes = size[0] * size[2] * alignedHeight * 32;
@@ -125,21 +100,21 @@ assert.equal(sources.step(storm, context), false, 'lazy kernels are not ready');
 assert.equal(calls.length, 0);
 assert.equal(kernels.length, 3, 'one scan and shared edit main/apply, compiled only on first permitted use');
 const firstReady = sources.ready;
-assert.equal(sources.step(clear, { ...context, fogEnabled: false }), false);
+assert.equal(sources.step(clear, context), false);
 kernels.forEach(k => k.finish());
 await firstReady;
 await Promise.resolve();
 assert.equal(calls.length, 0, 'readiness must never asynchronously emit (cancel/pause safe)');
 assert.equal(sources.step(storm, { ...context, advancing: false }), false);
 assert.equal(sources.step(storm, context), true);
-assert.deepEqual(calls.map(c => c.op), ['scan', 'edit', 'edit']);
+assert.deepEqual(calls.map(c => c.op), ['scan', 'edit']);
 assert.deepEqual(calls[0].size, [256, 1, 1]);
 assert.equal(calls[0].opts.bind[1], sim.bindRO);
 assert.deepEqual(calls[0].opts.header.origin, [160, 0, 256]);
 for (const edit of calls.slice(1)) {
   assert.equal(edit.kernel.reads, 'neighbours', 'rain reads a stable neighbour snapshot');
   assert.equal(edit.opts.bind[0].buffer, buffers[0]);
-  assert.deepEqual(edit.values.source, [1, 1, 1, 1]);
+  assert.deepEqual(edit.values.source, [1, 1, 1]);
   assert.equal(edit.values.pulse, 0);
 }
 assert.equal(sources.step(storm, context), false);
@@ -150,7 +125,7 @@ assert.equal(sources.step(storm, context), true);
 assert.equal(sources.pulses, 2);
 const count = calls.length;
 sim.frame += ELEMENT_WEATHER.cadence;
-assert.equal(sources.step(clear, { ...context, fogEnabled: false }), false);
+assert.equal(sources.step(clear, context), false);
 assert.equal(calls.length, count, 'clear never edits or erases previously emitted cells');
 sim.origin.x += 32;
 assert.equal(sources.step(storm, context), true);
