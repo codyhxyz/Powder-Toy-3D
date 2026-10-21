@@ -166,7 +166,7 @@ struct GridOut {
 // horizon (skyColor), and the key light's disc, opaque, under everything,
 // behind the cloud deck. The sea continues past the edge where the map's
 // water reaches it (gfx/edgeSea.js): a big map's footprint, or a small map's
-// box, mirroring the deck too.
+// box.
 export const skyWGSL = () => /* wgsl */ `
 ${frameBindings()}
 ${SkyParams.wgsl}
@@ -183,14 +183,11 @@ const SEA_AIR_LIT: f32 = 1.0;   // the air out over the sea sees the open sky (p
 // The eye in the world, cells: FrameUniforms' cam is in the grid's (the deck's
 // lookups are the world's, as its shadows' are: lighting.js worldPos).
 fn skyEye() -> vec3f { return FU.cam + P.origin.xyz; }
-// The sky the sea mirrors toward unit d (going down), with the deck: seen
-// along the reflected ray from the eye's mirror image under the surface, so
-// the deck is met where the reflected ray meets it, at the whole path's distance.
-fn mirroredSky(d: vec3f) -> vec3f {
-  let r = reflect(d, vec3f(0.0, 1.0, 0.0));
-  let e = skyEye();
-  return cloudOver(skyColor(r), vec3f(e.x, 2.0 * (P.seaY + P.origin.y) - e.y, e.z), r);
-}
+// The sky the sea mirrors toward unit d (going down), without the deck, as
+// the water inside the map mirrors it (its reflections don't see the deck): the
+// same water past the edge and inside it, no bright cloud mirrored on a
+// flat-calm sea where the waves inside would scatter it.
+fn mirroredSky(d: vec3f) -> vec3f { return skyColor(reflect(d, vec3f(0.0, 1.0, 0.0))); }
 const SUN_TAN_RADIUS: f32 = ${glf(SUN_TAN_RADIUS)};
 const SKY_SUN_DISC: f32 = ${glf(SUN_DISC)};
 const SKY_SUN_DISC_EDGE: f32 = ${glf(SUN_DISC_EDGE)};
