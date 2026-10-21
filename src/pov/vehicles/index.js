@@ -147,7 +147,7 @@ export function createVehicles(env) {
     return side(x0, x1, o.x, g.nx, world?.[0]) && side(z0, z1, o.z, g.nz, world?.[2]) && !!cells?.knows(Math.floor(x0), Math.floor(z0), Math.floor(x1), Math.floor(z1));
   }
   const rmin = new THREE.Vector3(), rmax = new THREE.Vector3();
-  const resident = (v) => { boxWorld(v, rmin, rmax); return residentBox(rmin, rmax); };
+  const resident = (v) => !env.getSim().g.windowed || (boxWorld(v, rmin, rmax), residentBox(rmin, rmax));
   // Park a World's vehicle outside the window, or bring it back: a parked body
   // is out of Rapier's step (its velocities kept for when it comes back) and unseen.
   function park(v, on) {
