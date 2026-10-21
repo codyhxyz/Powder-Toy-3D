@@ -25,17 +25,21 @@ try {
     const e = createEngine(window.__harness.gpu);
     window.__shock = { e, async count(name) { const g = await e.read(), id = e.id(name); let n = 0; for (let i = 0; i < g.id.length; i++) if (g.id[i] === id) n++; return n; } };
   });
-  // nitroglycerin: a block resting a cell over the floor, then one dropped from 42 cells (12.6 m)
+  // nitroglycerin: a block resting a cell over the floor, one dropped from 16 cells (4.8 m: past R1's run
+  // speed, short of NITRO_FALL_M), then one dropped from 42 cells (12.6 m)
   const nitro = await page.evaluate(async () => {
     const { e, count } = window.__shock, out = {};
     await e.create([32, 48, 32]);
     e.box([22, 1, 22], [25, 3, 25], 'NITRO');
     await e.advance(0.05); out.gentle0 = await count('NITRO'); await e.advance(1); out.gentle1 = await count('NITRO');
+    e.box([22, 16, 4], [25, 18, 7], 'NITRO');
+    await e.advance(0.05); out.short0 = await count('NITRO'); await e.advance(1.5); out.short1 = await count('NITRO');
     e.box([4, 42, 4], [7, 44, 7], 'NITRO');
     await e.advance(0.05); out.high0 = await count('NITRO'); await e.advance(2); out.high1 = await count('NITRO');
     return out;
   });
   ok(nitro.gentle0 > 10 && nitro.gentle1 === nitro.gentle0, `nitroglycerin poured gently rests: ${nitro.gentle0} → ${nitro.gentle1} cells`);
+  ok(nitro.short0 > nitro.gentle1 && nitro.short1 >= nitro.short0, `dropped 4.8 m, past the run speed, it lands and rests: ${nitro.short0} → ${nitro.short1} cells`);
   ok(nitro.high0 > 10 && nitro.high1 < nitro.high0 / 2, `dropped from 12.6 m it goes off where it lands: ${nitro.high0} → ${nitro.high1} cells`);
   // C-4 on the floor; sand thrown down at it at 25 m/s (a body-coupled launch: engine-v2.js box { v })
   const c4 = await page.evaluate(async () => {
