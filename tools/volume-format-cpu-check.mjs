@@ -23,13 +23,14 @@ const g = gridLayout(32, 32, 32), hash = s => createHash('sha256').update(s).dig
 // Every generic shader moved with intended work only, hashed at each first-parent commit between: the
 // prelude (ro, rw) with Descent's four exact-terrain elements (07f0ca91), the birds' removal (ea102f19, T_FLOCK)
 // and the Noita view's appearance variants (0da2ef45); move, pick and the volume with the V2 and render merges.
+// Then (wave 4, 2026-10-20) the volume and its detail variant: the distance haze (farShared.js volumeHaze), over origin/main bb37db6e.
 const baseline = {
   ro: 'd92592ba9576e9c02a65919e3badf678beb30dc58576e8fa22d4bf520d9174ed',
   rw: '338e904f3a7cce43eab8e931d3610b2e9c36d58ac2f7a4bc2d5a94acf39380ea',
   move: '15befffbaa07f695efdc6970792bbc6f5bee4b25c3781fba3e2dbccc227e8026',
   pick: 'debfa4a3adc9ee44fb37c263209b75fc88f1427fc1b35c298af82f1acfc370c9',
-  volume: 'de003c0ed617470e5f55488eee3a0cf939fdc6525f7d1af798293eb6e0816813',
-  detail: 'fee26e7ce828fe398e2c81dffc8d36344394699bad5e3de05c2553f440cf1c48',
+  volume: '5e115f6448b125deb1c1152babfe01ae93807e20cb697ca84781195bd4dd4969',
+  detail: '82bc5cef6cb15fe1b8c6b3b235d16a4ab2719524d03a905cfa0605be25ac8d26',
 };
 const sources = { ro: prelude(g, STATE_OPTS.STATE_RO), rw: prelude(g, STATE_OPTS.STATE_RW), move: moveBlockFrag(g), pick: pickFrag(g),
   volume: volumeFrag(g), detail: volumeFrag(g, { detail: { DETAIL_LIQ_FOAM: 1, DETAIL_LIQ_RIPPLES: 1 }, curved: true }) };
