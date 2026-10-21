@@ -3,6 +3,7 @@ import { Vector3 } from 'three';
 import { createMultiplayer } from '../net/multiplayer.js';
 import { createRemotePlayers } from '../net/players.js';
 import { leash } from '../net/protocol.js';
+import { TEXEL_BYTES } from '../net/codec.js';
 
 export const offline = Object.freeze({
   isGuest: false, replica: false, joining: false, players: [], chatAvailable: false, panelOpen: false,
@@ -36,8 +37,9 @@ const mp = {
         app.pov?.exit(true); app.pov?.worldReplaced();
         if (role === 'guest' && app.win) app.win.epoch++; // cancel outstanding local generator work
       },
-      commitFrame(meta) {
-        if (!meta) return;
+      commitFrame(meta, bytes) {
+        // a box host's frame: the sea past the walls where its water reaches them (app.js boxSeaFrom)
+        if (!meta) { if (bytes) app.boxSeaFrom((x, y, z) => bytes[app.sim.cellTexel(x, y, z) * TEXEL_BYTES]); return; }
         const old = app.sim.origin.clone();
         const moved = old.x !== meta.origin[0] || old.z !== meta.origin[2];
         const replaced = map !== meta.id;

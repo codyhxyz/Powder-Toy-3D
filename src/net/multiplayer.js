@@ -72,6 +72,8 @@ const sameDims = (g, dims) => g.nx === dims[0] && g.ny === dims[1] && g.nz === d
 //   setGrid(dims, metadata) rebuild only when the received map changes; false if unsupported
 //   inWorld()               the grid is World's host-led window (docs/scaling.md D11)
 //   score()                 your [kills, deaths] on the scoreboard (the host sends its own to the guests)
+//   commitFrame(meta, bytes) a guest's frame landed: the host's metadata (null for a box) and its
+//                           cells (codec.js: TEXEL_BYTES a texel in cellTexel order, the element id first)
 // gpu: the device (src/gpu), for the remote cursors' brushes (a pipeline of
 // ours, brush.js); the stream's kernels use each simulation's own.
 export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, setGrid, inWorld = () => false, score = () => null,
@@ -535,7 +537,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
         const generation = epoch, meta = receivedMeta, bytes = world.slice();
         unpacker.unpack(sim, bytes, {
           valid: () => epoch === generation && role === 'guest' && getSim() === sim,
-          commit: () => { commitFrame(meta); committedMeta = meta; lastReceived = performance.now(); },
+          commit: () => { commitFrame(meta, bytes); committedMeta = meta; lastReceived = performance.now(); },
         }).catch((err) => console.error('multiplayer: could not unpack the world', err));
         worldDirty = false;
       }
