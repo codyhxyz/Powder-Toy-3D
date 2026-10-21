@@ -17,7 +17,7 @@
 //            flow), at the image centre for cameras at several elevations
 //            and headings and across the screen (edges, corners) of 60° and
 //            90° views; the same through a plane mirror (floorFwidthMirror,
-//            reflectTrace's floor); surfView's pixel angle against each
+//            reflectHit's floor); surfView's pixel angle against each
 //            pixel's own; controls: the no-derivative fallback (the ray's
 //            heading) holds at the centre and drifts off it, and an
 //            isotropic footprint is off everywhere, both by more than the
@@ -290,7 +290,7 @@ ${(await src('gpu/wgsl.js')).fullscreenVert('vs')}
   io[4u + i] = vec4f(fw, floorFwidth(hp, rd));
   let fallback = floorFwidthRay(distance(hp, eye), rd, vec3f(0.0), vec3f(0.0));
   io[20u + i] = vec4f(gPixAng, fallback, footprint(hp) / max(abs(rd.y), 1e-3));
-  // a plane mirror between the eye and the floor, as reflectTrace starts off it
+  // a plane mirror between the eye and the floor, as reflectHit starts off it
   let nm = io[3].xyz;
   let tm = (io[3].w - dot(nm, eye)) / dot(nm, rd);
   let m = eye + rd * tm;
@@ -381,7 +381,7 @@ ${(await src('gpu/wgsl.js')).fullscreenVert('vs')}
       // about a pixel's change of the derivative, most at grazing views
       check(`${ran}/${runs.length} runs (${skipped} patches near the horizon left out): floorFwidth/fwidth within ${pct(on)} at the image centre (${on.n} pixels: elevation 8-89°, four headings, eye 5-300 cells up) and ${pct(offAxis)} off it (${offAxis.n} pixels: edges and corners of 60° and 90° views) (≤ 3%)`,
         ran === runs.length && on.n > 0 && offAxis.n > 0 && on.worst <= 0.03 && offAxis.worst <= 0.03, bad.join('; '));
-      check(`through a plane mirror (reflectTrace's floor): floorFwidthMirror/fwidth within ${pct(mirror)} (${mirror.n} pixels, ${mirrorRuns} patches) (≤ 3%)`, mirrorRuns >= 20 && mirror.worst <= 0.03, `worst at ${mirror.at}`);
+      check(`through a plane mirror (reflectHit's floor): floorFwidthMirror/fwidth within ${pct(mirror)} (${mirror.n} pixels, ${mirrorRuns} patches) (≤ 3%)`, mirrorRuns >= 20 && mirror.worst <= 0.03, `worst at ${mirror.at}`);
       check(`surfView's pixel angle within ${(ang.worst * 100).toFixed(2)}% of each pixel's own (≤ 1%)`, ang.worst <= 0.01, `worst at ${ang.at}`);
       // controls: the fallback (no derivatives, surfViewAng) takes the screen's
       // axes as across and along the ray's heading, true only near the image

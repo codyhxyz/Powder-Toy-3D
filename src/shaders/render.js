@@ -801,7 +801,7 @@ const GLASS_IN_LIQUID_F: f32 = 0.3;
 // the sky's reflection lies over the sky behind the pane and the pane vanishes;
 // the room's floor and contents reflected in it are what show it is there.
 // The first this many panes along the eye ray trace their reflection
-// (reflectTrace, gfx/liquid.js); panes past them reflect the sky.
+// (reflectDefer, gfx/liquid.js); panes past them reflect the sky.
 const GLASS_TRACED_PANES: i32 = 2;
 const MAX_BENDS: i32 = 6;
 ${backend === 'world' ? '' : `// Fade unresolved underwater scenery over two bricks at the simulation edge.
@@ -855,6 +855,7 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var panes = 0;              // glass runs entered so far
   var paneEnv = vec3f(0.0);   // what the current pane's front face reflects ...
   var paneAx = -1;            // ... and the axis of that face
+  var paneRefl = false;       // ... and whether that is the pixel's traced reflection (reflectDefer)
   var mediumLight = vec3f(1.0);
   // sun visibility inside liquid: read at a reference point (where the ray
   // got in), then faded with depth below it
@@ -874,6 +875,19 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var meshBudget = MESH_CUT_NONE;
   if (tCut < MESH_CUT_NONE) { meshBudget = warpArc(walk.ray, 0.0, max(tCut, 0.0)); }` : ''}
   var cut = false;
+  // A liquid surface the ray refracts at (liquidInterface), handled at the top
+  // of the march's next step: the box wall the ray enters liquid through and
+  // every bend share its one call site (a GPU compiler inlines each call).
+  var ifPend = false;
+  var ifEntry = false;   // (the box wall: its restart keeps the march's brick and axis)
+  var ifP = vec3f(0.0);
+  var ifN = vec3f(0.0);
+  var ifG = vec3f(0.0);
+  var ifEnter = false;
+  var ifLid = E_EMPTY;
+  var ifMirror = false;
+  var ifT = 0.0;${grains ? `
+  var altRefl = false;   // the hand-off band's stored path (gAltCol) came after a traced reflection` : ''}
 
   var lastB = vec3i(-1);
   var flags = 0u;
@@ -917,10 +931,8 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           liq = liquidIdAt(hp, lid);
           gSkyIn = skyInAt(probeAt(hp));
         } else {
-          if (liquidInterface(hp, n0, n0, true, lid, false, &ro, &rd, &col, &trans, &mediumLight)) { liq = lid; }
-          tCut -= tEnter;
-          rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
-          tEnter = 0.0; phiA = surfSample(ro);
+          // refracted in at the march's first step (liquidInterface(hp, n0, n0, true, lid, false, ...))
+          ifPend = true; ifEntry = true; ifP = hp; ifN = n0; ifG = n0; ifEnter = true; ifLid = lid; ifMirror = false; ifT = tEnter;
         }
         lightRef = vec3f(1.0);
         if (FU.shadows != 0u) { lightRef = sunShadowAt(select(hp - n0 * IFACE_PROBE, hp, t0 > bh.x)); }   // inside: the map carries the liquid above
@@ -929,7 +941,35 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     }
   }
 `}
-  for (var i = 0; i < ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'} + BEND_EXTRA_STEPS; i++) {${curved ? `
+  // (one trip more than the march's steps: a surface met on the last step still refracts)
+  for (var i = 0; i <= ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'} + BEND_EXTRA_STEPS; i++) {
+    if (ifPend) {
+      ifPend = false;
+      // the scene shows in the reflection only off the first surface the eye ray meets (ifMirror)
+      let inside = liquidInterface(ifP, ifN, ifG, ifEnter, ifLid, ifMirror, &ro, &rd, &col, &trans, &mediumLight);
+      tCut -= ifT;
+      rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
+      tEnter = 0.0;
+      phiA = surfSample(ro);${curved ? '' : `
+      if (ifEntry) {
+        if (inside) { liq = ifLid; }
+      } else {`}
+        liq = select(E_EMPTY, ifLid, inside);
+        if (ifEnter) { lightRef = mediumLight; lightY = ifP.y; }
+        lastB = vec3i(-1); ax = 1;
+        gThin = brickThin(brickInfo(clamp(cell, vec3i(0), GRID - 1) / BS));
+        phiStale = false;${curved ? `
+        meshBudget = tCut;
+        warpRestart(&walk, ro, rd);` : ''}
+        // restarted inside something opaque (sand under the water line)
+        let oc = surfInsideOpaque(phiA);
+        if (oc > 0) {
+          hitK = HIT_SMOOTH; stop = true; hitP = ro; hitN = vec3f(0.0); hitCh = oc;
+          break;
+        }${curved ? '' : `
+      }`}
+    }
+    if (i == ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'} + BEND_EXTRA_STEPS) { break; }${curved ? `
     // the next chord, as a ray of its own from its start (t restarts there, as at a bend)
     var fp: vec3f;
     var ft: f32;
@@ -1052,10 +1092,11 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           gSkyIn = skyInAt(gi);
           let r = reflect(rd, nFace);
           paneEnv = envReflectGI(gi, nFace, -rd, ROUGH(id), mediumLight);
-          if (panes < GLASS_TRACED_PANES) { paneEnv = reflectTrace(hp + nFace * REFL_START, r, paneEnv); }
+          paneRefl = panes < GLASS_TRACED_PANES && reflectDefer(hp + nFace * REFL_START, r, paneEnv);
           paneAx = ax;
           panes++;
           col += trans * F * paneEnv;
+          if (paneRefl) { gReflK += trans * F; }
           trans *= 1.0 - F;
         }
         absorbDeco(id, cell, hp, min(tExit, tCut) - tEnter, mediumLight, fetchA(cell).y, &col, &trans);   // (stained glass: gfx/deco.js)
@@ -1076,6 +1117,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           let r = reflect(rd, nX);
           var env = paneEnv;
           if (xa != paneAx) { env = envSky(surfProbe(hx, -nX), r); }   // (inside the pane: no sun highlight, as liquid.js's exit)
+          else if (paneRefl) { gReflK += trans * F; }   // (the front face's traced reflection again)
           col += trans * F * env;
           trans *= 1.0 - F;
         }
@@ -1154,7 +1196,9 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       // (grainEvent reads the cell's state only for a grain element's cell: its cand)
       var ga = vec4f(0.0);
       if (grainElement(id)) { ga = fetchA(cell); }
+      let altOpen = gAltW < 0.0;
       grainEvent(cell, id, ga, ro, rd, tEnter, min(tExit, tCut), col, trans, &ev, evCh, &tEv, &anyHit, &hitPos);
+      if (altOpen && gAltW >= 0.0) { altRefl = gReflPend; }   // (the stored path's colour owes it too: reflectResolve)
       cut = ev == EV_NONE && tEv >= tCut;` : ''}
 
       // ---- what lies along [tEnter, tEv] ----
@@ -1200,23 +1244,8 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           n = liquidDetail(hp, n, lid, &col, &trans);   // close-up detail (gfx/liquidDetail.js)` : ''}
           if (bends < MAX_BENDS) {
             bends++;
-            // the scene shows in the reflection only off the first surface the eye ray meets
-            let inside = liquidInterface(hp, n, geometric, ev == EV_ENTER, lid, bends == 1, &ro, &rd, &col, &trans, &mediumLight);
-            tCut -= tEv;
-            liq = select(E_EMPTY, lid, inside);
-            if (ev == EV_ENTER) { lightRef = mediumLight; lightY = hp.y; }
-            rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
-            tEnter = 0.0; lastB = vec3i(-1); ax = 1;
-            gThin = brickThin(brickInfo(clamp(cell, vec3i(0), GRID - 1) / BS));
-            phiA = surfSample(ro); phiStale = false;${curved ? `
-            meshBudget = tCut;
-            warpRestart(&walk, ro, rd);` : ''}
-            // restarted inside something opaque (sand under the water line)
-            let oc = surfInsideOpaque(phiA);
-            if (oc > 0) {
-              hitK = HIT_SMOOTH; stop = true; hitP = ro; hitN = vec3f(0.0); hitCh = oc;
-              break;
-            }
+            // refract here, at the top of the next step (the loop's head: ifPend), and restart there
+            ifPend = true; ifEntry = false; ifP = hp; ifN = n; ifG = geometric; ifEnter = ev == EV_ENTER; ifLid = lid; ifMirror = bends == 1; ifT = tEv;
             continue;
           }
           // out of bends: switch medium, keep straight
@@ -1254,6 +1283,11 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     ax = ddaStep(istp, tDelta, &cell, &tMax);`}
   }
 
+  // ---- the pixel's traced reflection, marched once for whichever surface asked (gfx/liquid.js reflectDefer) ----
+  let owed = reflectResolve();
+  col += owed;${grains ? `
+  if (altRefl) { gAltCol += owed; }` : ''}
+
   // ---- shading, one call site for every kind of hit ----
   // Pass 0 shades the hit that ended the ray, then the floor if the ray got
   // there. With grains, pass 1 shades the hand-off band's path not taken and
@@ -1265,32 +1299,57 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       hitK = select(HIT_SMOOTH, HIT_GRAIN, gAltGeom); stop = true; hitP = gAltP; hitN = vec3f(0.0); hitCh = CH_GRANULAR;
       gHitA = gAltA; gHitK = gAltK; shadeRd = gAltRd;
     }` : ''}
-    var c = vec3f(0.0);
-    if (stop) {
-      var s: Surf;${grains ? `
-      // a clod is shaded as the crisp grain it is: one inlined matOf (gfx/grains.js
-      // grainCrisp). A local flag, not a hitK write: the kind stays loop-invariant
-      // here (tools/check-opaque-surface.mjs)
-      let clod = hitK == HIT_GRAIN && grainCrisp(gHitK, gHitA, hitP, &hitCell, &hitId, &hitA, &hitN);` : ''}
-      if (hitK == HIT_CRISP${grains ? ' || clod' : ''}) { s = crispSurf(hitCell, hitId, hitA, hitP, hitN);${grains ? ' if (clod) { clodFinish(&s); }' : ''} }${grains ? `
-      else if (hitK == HIT_GRAIN) { s = grainSurf(gHitA, gHitK, hitP, shadeRd); }` : ''}
-      else {
-        var ns = hitN;
-        if (dot(hitN, hitN) == 0.0) { ns = surfNormal(hitP, hitCh, -shadeRd); }
-        s = gatherSurf(hitP, ns, hitCh);
+    // the floor of the box, if the ray got there (the first pass): shaded
+    // through the hit's one shadeHit call (gfx/surface.js; it meets one or the other)
+    var floorLit = false;
+    var floorHp = vec3f(0.0);
+    var floorFw = vec2f(0.0);
+    if (sp == 0 && !stop) {${curved ? `
+      var floorP: vec3f;
+      var floorT: f32;
+      let onFloor = warpFloor(walk, &floorP, &floorT)
+        && (meshBudget >= MESH_CUT_NONE || warpArc(walk.ray, 0.0, floorT) < meshBudget);` : ''}
+      if (!cut && max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && ${curved ? 'onFloor' : 'cell.y < 0 && rd.y < 0.0'}) {
+        let tf = ${curved ? 'floorT' : '-ro.y / rd.y'};
+        floorHp = ${curved ? 'floorP' : 'ro + rd * tf'};${curved ? `
+        rd = normalize(warpSlope(walk.ray, tf));` : ''}
+        if (!anyHit) { anyHit = true; hitPos = floorHp; }
+        floorLit = true;
+        floorFw = floorFwidth(floorHp, rd);
       }
-      decoSurf(&s);   // TPT's deco colour (gfx/deco.js)
-      c = shadeSurf(s, shadeRd);${backend === 'world' && !detail[WORLD_NATIVE] ? '' : `
+    }
+    var c = vec3f(0.0);
+    if (stop || floorLit) {
+      var s = floorHit();
+      if (stop) {
+        // every kind of hit's material through one matOf call (gfx/surface.js MatPlan):
+        // a crisp voxel's, a smooth surface's blend of its cells${grains ? `, and a clod, shaded as the
+        // crisp grain it is (gfx/grains.js grainCrisp). A local flag, not a hitK write: the kind
+        // stays loop-invariant here (tools/check-opaque-surface.mjs)
+        let clod = hitK == HIT_GRAIN && grainCrisp(gHitK, gHitA, hitP, &hitCell, &hitId, &hitA, &hitN);` : ''}
+        var pl: MatPlan;
+        if (hitK == HIT_CRISP${grains ? ' || clod' : ''}) { s = crispPlan(hitCell, hitId, hitA, hitP, hitN, &pl); }${grains ? `
+        else if (hitK == HIT_GRAIN) { s = grainSurf(gHitA, gHitK, hitP, shadeRd); }` : ''}
+        else {
+          var ns = hitN;
+          if (dot(hitN, hitN) == 0.0) { ns = surfNormal(hitP, hitCh, -shadeRd); }
+          s = gatherPlan(hitP, ns, hitCh, &pl);
+        }
+        if (pl.count > 0) { applyMat(&s, planMat(pl)); }${grains ? `
+        if (clod) { clodFinish(&s); }` : ''}
+        decoSurf(&s);   // TPT's deco colour (gfx/deco.js)
+      }
+      c = shadeHit(s, shadeRd, floorLit, floorHp, floorFw);${backend === 'world' && !detail[WORLD_NATIVE] ? '' : `
       // Native molten liquids share compact foam, not water's refraction or
       // detail eligibility. Layer only reflected light; retain heat emission.
-      if (${backend === 'world' ? 'true' : `(${format} == 2u || ${format} == 3u)`} && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
+      if (stop && ${backend === 'world' ? 'true' : `(${format} == 2u || ${format} == 3u)`} && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
         var foamCol = vec3f(0.0);
         var foamTrans = vec3f(1.0);
         var foamN = s.n;
         liquidFoam(s.p, &foamN, s.id, &foamCol, &foamTrans);
         c = foamCol + foamTrans * (c - s.emit) + s.emit;
       }`}${grains ? `
-      gGrainSun = 1.0;   // (grainSurf set it for this shadeSurf)` : ''}
+      gGrainSun = 1.0;   // (grainSurf set it for this shadeHit; the floor's is 1 already)` : ''}
     }
     if (sp == 0) {
       if (stop) {
@@ -1302,19 +1361,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         }`}
         col += trans * c; trans = vec3f(0.0);
       }
-      // floor of the box${curved ? `
-      var floorP: vec3f;
-      var floorT: f32;
-      let onFloor = warpFloor(walk, &floorP, &floorT)
-        && (meshBudget >= MESH_CUT_NONE || warpArc(walk.ray, 0.0, floorT) < meshBudget);` : ''}
-      if (!cut && max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && ${curved ? 'onFloor' : 'cell.y < 0 && rd.y < 0.0'}) {
-        let tf = ${curved ? 'floorT' : '-ro.y / rd.y'};
-        let hp = ${curved ? 'floorP' : 'ro + rd * tf'};${curved ? `
-        rd = normalize(warpSlope(walk.ray, tf));` : ''}
-        if (!anyHit) { anyHit = true; hitPos = hp; }
-        col += trans * shadeFloor(hp, rd);
-        trans = vec3f(0.0);
-      }
+      if (floorLit) { col += trans * c; trans = vec3f(0.0); }
     }${grains ? ` else {
       let w = select(1.0 - gAltW, gAltW, gAltGeom);   // weight of the stored path
       col = mix(col, gAltCol + gAltTrans * c, w);

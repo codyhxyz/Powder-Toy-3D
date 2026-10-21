@@ -125,7 +125,7 @@ test('(3) the World view carries WORLD_NATIVE under V2 only; its programs then c
   const native = volumeFrag(world, { backend: 'world', view: 'realistic', detail: { [WORLD_NATIVE]: true } });
   assert.doesNotMatch(plain, /liquidFoam\(/, 'V1 World without Whitewater: no foam compiled, as before');
   assert.match(native, /\n  liquidFoam\(hp, &n, id, col, trans\);/, 'V2 World: foam whatever the Whitewater switch, as Box format 2');
-  assert.match(native, /if \(true && hitK == HIT_SMOOTH && s\.ch == CH_MOLTEN && KIND\(s\.id\) == K_LIQUID\) \{/, 'molten liquids take native foam, as Box format 2/3');
+  assert.match(native, /if \(stop && true && hitK == HIT_SMOOTH && s\.ch == CH_MOLTEN && KIND\(s\.id\) == K_LIQUID\) \{/, 'molten liquids take native foam, as Box format 2/3 (a hit, not the floor: shadeHit)');
   assert.match(native, /let f = worldAeration\(c\);/, 'from World\'s atlas (V2\'s packed foam)');
   const whitewater = volumeFrag(world, { backend: 'world', view: 'realistic', detail: { DETAIL_LIQ_FOAM: 1 } });
   assert.doesNotMatch(whitewater, /CH_MOLTEN && KIND\(s\.id\) == K_LIQUID\) \{/, 'V1 World keeps its programs');

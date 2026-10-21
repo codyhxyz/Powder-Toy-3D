@@ -51,6 +51,36 @@ for (const dims of [[32, 32, 32], [128, 128, 128]]) {
   }
 }
 
+// 1c. the realistic volume's tracer (render.js traceView; the Box and World volume shaders, every material
+// view, detail level and the curved twin): one inlined copy of each big helper. matOf through planMat's one
+// call (gfx/surface.js MatPlan), the reflection march through reflectResolve's (gfx/liquid.js reflectDefer),
+// one liquidInterface for the box wall and every bend, one shadeHit for a hit or the floor, and World's
+// probes read their four bands per tap lookup (worldAccess.js worldProbe). Cold Metal compile, CPU-timed
+// 2026-10-20 (medians of 3): World base 23.4 -> 9.9 s, Box base 5.3 -> 3.3 s.
+{
+  const { volumeFrag, REALISTIC_LEVELS } = await import('../../src/shaders/render.js');
+  for (const backend of ['box', 'world']) for (const view of ['realistic', 'cozy']) for (const level of ['off', 'base', 'full']) for (const curved of [false, true]) {
+    const tag = `${backend} ${view} ${level}${curved ? ' curved' : ''}`;
+    const g = backend === 'world' ? { nx: 3072, ny: 384, nz: 1024 } : { nx: 32, ny: 32, nz: 32 };
+    const code = volumeFrag(g, { backend, view, detail: REALISTIC_LEVELS[level](), curved }).replace(/\/\/[^\n]*/g, '');   // (calls, not comments)
+    const trace = body(code, 'traceView');
+    assert.equal(calls(trace, 'planMat'), 1, `${tag}: traceView evaluates materials at one planMat call`);
+    for (const f of ['crispSurf', 'gatherSurf', 'shadeSurf', 'shadeFloor', 'shadeFloorFw']) assert.equal(calls(trace, f), 0, `${tag}: traceView calls no ${f}`);
+    assert.equal(calls(body(code, 'planMat'), 'matOf'), 1, `${tag}: planMat's one matOf`);
+    assert.equal(calls(trace, 'shadeHit'), 1, `${tag}: one shadeHit for a hit or the floor`);
+    assert.equal(calls(trace, 'liquidInterface'), 1, `${tag}: one liquidInterface for the box wall and every bend`);
+    assert.equal(calls(trace, 'reflectResolve'), 1, `${tag}: the reflection is marched once`);
+    assert.equal(calls(code, 'reflectHit'), 1, `${tag}: reflectHit's one call is reflectResolve's`);
+    for (const f of ['liquidInterface', 'crystalInterface']) assert.equal(calls(body(code, f), 'reflectHit'), 0, `${tag}: ${f} defers its reflection`);
+    if (backend === 'world') {
+      const probe = body(code, 'probeAt');
+      assert.equal(calls(probe, 'worldProbe'), 1, `${tag}: probeAt reads the four bands together`);
+      assert.equal(calls(probe, 'probeTex'), 0, `${tag}: probeAt does no lookup per band`);
+      assert.equal(calls(body(code, 'worldProbe'), 'worldLightDescriptor'), 1, `${tag}: one descriptor lookup per tap`);
+    }
+  }
+}
+
 // 2. ctPhase as it was (one ctConvert a branch, with phase-blast's puffs), against today's
 function ctPhaseBefore(input, surface, random) {
   if (ctRow(input.id).kind === 3 && input.fill === 0) return ctConvert(input, E.EMPTY, 0);
