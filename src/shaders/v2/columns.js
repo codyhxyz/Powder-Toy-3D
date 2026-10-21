@@ -2,6 +2,7 @@ import { CELL_M } from '../../scale.js';
 import { E, ELEMENTS, K } from '../../elements.js';
 import { FOAM_ROWS } from '../../v2/foam.js';
 import { SHOCK_FALL_M, SHOCK_LANDINGS } from '../../v2/dynamics-reference.js';
+import { PHYS } from '../../physics.js';
 
 // Column-run water (docs/v2/water-cost-first-principles.md; the CPU prototype it ports is
 // tools/v2/column-water.mjs). Water is stored exactly as before (16 B core + 4 B bank) and read per (x, z)
@@ -18,7 +19,8 @@ import { SHOCK_FALL_M, SHOCK_LANDINGS } from '../../v2/dynamics-reference.js';
 //            al.'s (2004) hydrostatic reconstruction of the wet depth at the face, so a lake at rest over any
 //            floor is exactly at rest. It lives in the f16 face lane of the segment's bottom cell in the -side
 //            column (x: low16 of core.z, z: low16 of core.w); a falling run's bottom cell keeps its fall speed
-//            in the y lane (high16 of core.z) and its fall fraction in the x lane. Interior lanes are free.
+//            in the y lane (high16 of core.z) and its fall fraction in the x lane (past R1's run speed, a run
+//            whose landing reads its fall keeps there what the fall carries: colFall). Interior lanes are free.
 // One step a 60 Hz tick. Mass leaves and arrives at run surfaces only; interior cells are never written.
 //
 // Two passes, both a thread an (x, z) column of the awake brick columns (ARGS2.COLS):
@@ -106,28 +108,23 @@ export const RADIAL = {
 };
 
 // V1's shock on landing (react.js: an explosive landing with ½·μ·u² of at least its blast.shock goes off,
-// common.js hitKE). A liquid charge's shock is a fall (dynamics-reference.js SHOCK_FALL_M: nitroglycerin's
-// NITRO_FALL_M), and a run falls on R1's column law (colFall: v += g to the run speed, a cell a tick at v), so
-// it is the speed (cells/tick) a run reaches falling that far, stepped as V1's fallKE steps V1's own law.
-export function columnFallSpeed(h, g = COLUMN.G) {
-  let v = 0, y = 0;
-  while (y < h / CELL_M) { v = Math.min(v + g, COLUMN.VT); y += v; }
-  return v;
-}
-export const COLUMN_SHOCK = Object.freeze(Object.entries(SHOCK_FALL_M).map(([id, h]) => ({ id: +id, speed: columnFallSpeed(h) })));
-// A run landing ON a charge (dynamics-reference.js SHOCK_LANDINGS: V1's fall past which a cell of the run's
-// liquid landing on that charge sets it off, V1 react.js shock, common.js hitKE): the speed the column law
-// reaches falling more than that (cells/tick). Past R1's run speed every longer fall lands the same, so a
-// fall V1 needs more than the ~3.7 m to the run speed for (lava and mud on nitroglycerin) sets it off from there.
-// COLUMN_SHOCK_SLACK: the GPU's f32 sums of a fall's ticks may land a quantum under the f64 law's speed.
-export const COLUMN_SHOCK_SLACK = 1 - 2 ** -16;
-export function columnLandingSpeed(cells, g = COLUMN.G) {
-  let v = 0, y = 0;
-  while (y <= cells) { v = Math.min(v + g, COLUMN.VT); y += v; }
-  return v;
-}
-export const COLUMN_SHOCK_ON = Object.freeze(SHOCK_LANDINGS.filter(r => ELEMENTS[r.faller].kind === K.LIQUID)
-  .map(r => ({ ...r, speed: Math.fround(columnLandingSpeed(r.cells) * COLUMN_SHOCK_SLACK) })));
+// common.js hitKE), by height. A liquid charge's shock is a fall (dynamics-reference.js SHOCK_FALL_M:
+// nitroglycerin's NITRO_FALL_M), and a run landing ON a charge sets it off past V1's own fall (SHOCK_LANDINGS).
+// So a run's landing reads how far it has fallen (colFall's fallen): R1's run speed caps how fast a run falls
+// (from ~3.8 m on), not how far, and ½u² = g·h, capped or not. Heights are cells of fall at the reference
+// pull (colFall counts each tick's at P.gravity's share of it), so V1's falls are the tables.
+// cap: V1's hit is at its own speed, which PHYS.V_MAX caps (react.js forces): past the fall that reaches it,
+// h·(V_MAX / v1)² for v1 V1's speed of the shock (½·dens·v1² = blast.shock), a longer fall hits no harder, so
+// a liquid it outweighs too much never sets it off (nitroglycerin onto water or oil).
+export const COLUMN_SHOCK = Object.freeze(Object.entries(SHOCK_FALL_M).map(([id, h]) => {
+  const e = ELEMENTS[+id], cells = h / CELL_M, v1 = Math.sqrt(2 * e.blast.shock / e.dens);
+  return { id: +id, cells, cap: cells * (PHYS.V_MAX / v1) ** 2 };
+}));
+export const COLUMN_SHOCK_ON = Object.freeze(SHOCK_LANDINGS.filter(r => ELEMENTS[r.faller].kind === K.LIQUID));
+// the liquids whose landing reads their fall: a liquid charge, a liquid that sets one off
+export const COLUMN_KEEPS_FALL = Object.freeze([...new Set([...COLUMN_SHOCK.map(r => r.id), ...COLUMN_SHOCK_ON.map(r => r.faller)])]);
+// the y lane's value for R1's run speed, as pack2x16float stores it (f16, round to nearest)
+const laneValue = x => { const ulp = 2 ** (Math.floor(Math.log2(x)) - 10); return Math.round(x / ulp) * ulp; };
 
 // record flags, in the mass word (a run's mass stays under 2^30: 16 383 cells of FULL, or 1 023 of MAX_FILL)
 const REC_FALLING = 0x80000000, REC_LAST = 0x40000000, REC_MASS = 0x3fffffff;
@@ -149,6 +146,7 @@ const COL_DEADQ: f32 = ${f(COLUMN.DEADQ)};
 const COL_STALL: f32 = ${f(COLUMN.STALL)};
 const COL_Q_MAX: f32 = ${f(COLUMN.Q_MAX)};
 const COL_VT: f32 = ${COLUMN.VT};
+const COL_VT_LANE: f32 = ${laneValue(COLUMN.VT)};
 const COL_FULL: f32 = ${f(COLUMN.FULL)};
 const COL_FOAM_ARRIVAL: f32 = ${f(COLUMN.FOAM_ARRIVAL)};
 const COL_TICK_HZ: f32 = ${f(COLUMN.TICK_HZ)};
@@ -318,29 +316,37 @@ fn colMarkJet(x: i32, y: i32, z: i32, axis: i32, v: f32) {
   noteJet(brickOfCell(p));
 }
 fn colGravity() -> f32 { if (P.gravMode != 0u) { return 0.0; } return COL_G * P.gravity / COL_G_MS2; }
-// a liquid charge's shock as a landing speed, cells/tick (COLUMN_SHOCK); 0 for every other liquid
-fn colShockSpeed(id: u32) -> f32 {
-${COLUMN_SHOCK.map(r => `  if (id == ${r.id}u) { return ${r.speed}; }`).join('\n')}
+// a liquid charge's shock as a fall, cells (COLUMN_SHOCK); 0 for every other liquid
+fn colShockFall(id: u32) -> f32 {
+${COLUMN_SHOCK.map(r => `  if (id == ${r.id}u) { return ${f(r.cells)}; }`).join('\n')}
   return 0.0;
 }
-// the landing speed (cells/tick) past which a run of liquid faller sets off the charge it lands on (COLUMN_SHOCK_ON); 0 never
-fn colShockOnSpeed(faller: u32, charge: u32) -> f32 {
-${COLUMN_SHOCK_ON.map(r => `  if (faller == ${r.faller}u && charge == ${r.charge}u) { return ${r.speed}; }`).join('\n')}
+// the fall past which that charge's own hit is no harder (COLUMN_SHOCK cap: V1's V_MAX)
+fn colShockCap(id: u32) -> f32 {
+${COLUMN_SHOCK.map(r => `  if (id == ${r.id}u) { return ${f(r.cap)}; }`).join('\n')}
   return 0.0;
 }
-// A run that landed at u cells/tick with its bottom cell at b: V1 react.js sets a charge off on a hit of
-// ½·μ·u² past its shock, μ the mover's own mass on a solid and the reduced mass on loose matter (common.js
-// hitKE: masses as V1's densities, a cell each), never on its own element or a gas (isGasLike). Its shock
-// is ½·m·colShockSpeed², so it goes off when (μ/m)·u² reaches colShockSpeed². Under the box's floor is a
-// WALL only with solid edges (V1 react.js: past a solid edge a face is WALL; past a void one, still air).
-fn colShockLand(x: i32, z: i32, b: i32, u: f32) {
+// the fall (cells) past which a run of liquid faller sets off the charge it lands on (COLUMN_SHOCK_ON); 0 never
+fn colShockOnFall(faller: u32, charge: u32) -> f32 {
+${COLUMN_SHOCK_ON.map(r => `  if (faller == ${r.faller}u && charge == ${r.charge}u) { return ${f(r.cells)}; }`).join('\n')}
+  return 0.0;
+}
+// whether a run of the liquid keeps its fall past the run speed: its landing reads it (COLUMN_KEEPS_FALL)
+fn colKeepsFall(id: u32) -> bool { return ${COLUMN_KEEPS_FALL.map(id => `id == ${id}u`).join(' || ')}; }
+// A run that landed with its bottom cell at b, having fallen h (colFall's fallen): V1 react.js sets a charge off
+// on a hit of ½·μ·u² past its shock, μ the mover's own mass on a solid and the reduced mass on loose matter
+// (common.js hitKE: masses as V1's densities, a cell each), never on its own element or a gas (isGasLike).
+// ½u² is g·h and its shock a fall of colShockFall, so it goes off when (μ/m)·h, h to V1's cap (colShockCap),
+// reaches colShockFall. Under the box's floor is a WALL only with solid edges (V1 react.js: past a solid edge
+// a face is WALL; past a void one, still air).
+fn colShockLand(x: i32, z: i32, b: i32, h: f32) {
   let id = cid(colCell(x, b, z));
-  // landing on a charge at u: V1 sets it off past a fall (COLUMN_SHOCK_ON, colShockOnSpeed)
+  // landing on a charge: V1 sets it off past its fall (COLUMN_SHOCK_ON, colShockOnFall)
   if (b > 0) {
-    let on = colShockOnSpeed(id, cid(colCell(x, b - 1, z)));
-    if (on > 0.0 && u >= on) { colDetonate(x, b - 1, z); }
+    let on = colShockOnFall(id, cid(colCell(x, b - 1, z)));
+    if (on > 0.0 && h > on) { colDetonate(x, b - 1, z); }
   }
-  let shock = colShockSpeed(id);
+  let shock = colShockFall(id);
   if (shock <= 0.0) { return; }
   var share = 0.0;
   if (b == 0) {
@@ -352,7 +358,7 @@ fn colShockLand(x: i32, z: i32, b: i32, u: f32) {
     if (kind == C_SOLID) { share = 1.0; }
     if ((kind == C_POWDER || kind == C_LIQUID) && j != id) { share = densOfE(j) / (densOfE(id) + densOfE(j)); }
   }
-  if (share * u * u >= shock * shock) { colDetonate(x, b, z); }
+  if (share * min(h, colShockCap(id)) >= shock) { colDetonate(x, b, z); }
 }
 fn colDampTick(liq: u32) -> f32 { let keep = 1.0 - dampOf(liq); return 1.0 - keep * keep * keep; }
 
@@ -640,6 +646,10 @@ fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
   var v0 = laneOf(b, 1); var a0 = laneOf(b, 0);
   if (v0 <= 0.0) { v0 = 0.0; a0 = 0.0; }
   a0 = clamp(a0, 0.0, 1.0);
+  // past R1's run speed a run whose landing reads its fall keeps in the lane the speed that fall carries
+  // (½u² = g·h, below), and moves at the run speed's lane, as every run does: the cap holds the move, not the fall
+  let carried = v0;
+  v0 = min(v0, COL_VT_LANE);
   let v = min(v0 + colGravity(), COL_VT);
   var a = a0 + v;
   var d = i32(floor(a));
@@ -655,13 +665,23 @@ fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
   // cell) closes at once, not from rest, or the layer and the surface it rests on trade the cell forever
   if (r0 - fl == 1 && fl > o0 && colClass(x, fl - 1, z) == C_LIQUID && v0 == 0.0) { d = 1; }
   if (d >= r0 - fl) { d = r0 - fl; speed = 0.0; a = 0.0; landed = true; }
+  // how far it has fallen, in cells at the reference pull (½u² = g·h at any pull): what it carried in (the
+  // column law's fall to v0 from rest, v += g a cell a tick at v), and this tick's fall (v, or to the floor it
+  // lands on) at P.gravity's share of it. Its landing reads it (colShockLand).
+  var fallen = (v0 * v0 + colGravity() * v0) / (2.0 * COL_G);
+  if (carried > COL_VT_LANE) { fallen = carried * carried / (2.0 * COL_G); }
+  var drop = v;
+  if (landed) { drop = f32(r0 - fl) - a0; }
+  fallen = fallen + drop * colGravity() / COL_G;
+  var lane = speed;
+  if (!landed && v >= COL_VT_LANE && colKeepsFall(cid(b))) { lane = max(speed, sqrt(2.0 * COL_G * fallen)); }
   colBusy(x, r0, z);
   if (d > 0) {
     for (var k = r0; k < r1; k++) { colSwap(x, k, k - d, z); }
     colBusy(x, r0 - d, z); colBusy(x, r1 - 1, z);
   }
-  colSetLanes(x, r0 - d, z, speed, a);
-  if (landed) { colShockLand(x, z, r0 - d, v); }
+  colSetLanes(x, r0 - d, z, lane, a);
+  if (landed) { colShockLand(x, z, r0 - d, fallen); }
   let impact = v * COL_TICK_HZ * COL_CELL_M;
   if (landed && d > 0 && r0 - d > o0 && colClass(x, r0 - d - 1, z) == C_LIQUID && impact > COL_CROWN_SPEED) {
     colCrown(x, z, r0 - d, r1 - d, d, impact);
