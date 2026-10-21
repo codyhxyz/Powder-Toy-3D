@@ -170,6 +170,30 @@ export const CONTACT_CONSTANTS = Object.freeze({
   CT_FUSE_SPIT_Q: ['i32', q(ELEMENTS[E.GUNPOWDER].blast.T)],
   // a fuse's scratch word: its new life below CT_ELEC_LIFE_UNIT, and this bit when it is the end
   CT_FUSE_END: ['i32', ELEC_LIFE_UNIT],
+  // V1 react.js clone: an empty cell beside a clone (or a powered clone, on) becomes its element with
+  // chance CLONE_RATE a step, one draw a step however many clones touch it, so 1 - (1 - CLONE_RATE)^4
+  // a tick. A clone face is a block partner half the ticks: when it is, the chance is the two ticks'
+  // worth, 1 - (1 - CLONE_RATE)^PARTNER_STEPS, the reactions' correction (CONTACT_REACTIONS chance).
+  CT_CLONE_CHANCE: ['f32', 1 - (1 - PHYS.CLONE_RATE) ** PARTNER_STEPS],
+  // V1 react.js growers, each a chance per step per neighbour (rnd < RATE * n): water beside plant
+  // becomes plant (PLANT_GROW), air on a mossSite beside damp moss becomes moss (MOSS_GROW), a fungus
+  // food beside damp fungus rots to fungus (FUNGUS_GROW). Per present partner, PARTNER_STEPS steps'
+  // worth compounded, as the flames' CT_FLAME_MISS_LOG: n partners fire with 1 - exp(n * missLog).
+  CT_PLANT_MISS_LOG: ['f32', missLog(PHYS.PLANT_GROW)],
+  CT_MOSS_MISS_LOG: ['f32', missLog(PHYS.MOSS_GROW)],
+  CT_FUNGUS_MISS_LOG: ['f32', missLog(PHYS.FUNGUS_GROW)],
+  // V1 react.js acid: what it eats dissolves with chance ACID_USE a step per acid neighbour; per
+  // present partner pair, PARTNER_STEPS steps' worth compounded.
+  CT_ACID_EAT: ['f32', 1 - (1 - PHYS.ACID_USE) ** PARTNER_STEPS],
+  // V1 react.js cloud: it rains with chance CLOUD_RAIN a step per cloud neighbour past CLOUD_RAIN_NB,
+  // and evaporates with CLOUD_EVAP a step per air neighbour past CLOUD_EVAP_NB (times its saturation).
+  // Its own rule, run every tick on its six faces' counts as twice its three partners' (an unbiased
+  // estimate), so a tick is STEPS_PER_TICK of V1's steps, compounded (ctPerTick).
+  CT_CLOUD_RAIN: ['f32', PHYS.CLOUD_RAIN],
+  CT_CLOUD_RAIN_NB: ['i32', PHYS.CLOUD_RAIN_NB],
+  CT_CLOUD_EVAP: ['f32', PHYS.CLOUD_EVAP],
+  CT_CLOUD_EVAP_NB: ['i32', PHYS.CLOUD_EVAP_NB],
+  CT_STEPS_PER_TICK: ['i32', STEPS_PER_TICK],
 });
 for (const key of Object.keys(CONTACT_CONSTANTS)) if (key.slice(3) in E) throw Error(`contact constant ${key} shadows an element id`);
 const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGNUS_B, CT_FLAME_MISS_LOG, CT_OXY_FLAME_MISS_LOG, CT_FLAME_T_MIN, CT_FLAME_T_SPREAD,
@@ -177,7 +201,8 @@ const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGN
   CT_FIRE_TO_SMOKE, CT_FIRE_MIN_Q, CT_BURNT_MIN_Q, CT_ASH_SHARE, CT_SPARK_REST, CT_SPARK_BORN, CT_SPARK_CYCLE, CT_SPARK_V, CT_SWITCH_ON, CT_TSNS_FIRE,
   CT_LAMP_HOLD, CT_LAMP_DC_LEVEL, CT_JOULE_WHOLE, CT_JOULE_MILLI, CT_JOULE_MILLI_UNIT, CT_ELEC_PENDING, CT_ELEC_LIFE_UNIT, CT_ELEC_LIFE_MAX,
   CT_ELEC_SPENT_UNIT, CT_ELEC_SPENT_MAX, CT_ELEC_STEPS, CT_ELEC_SALT, CT_FUSE_UNLIT, CT_FUSE_BURN_NUM, CT_FUSE_BURN_DEN, CT_FUSE_HANDOFF_Q,
-  CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
+  CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END, CT_CLONE_CHANCE, CT_PLANT_MISS_LOG, CT_MOSS_MISS_LOG, CT_FUNGUS_MISS_LOG,
+  CT_ACID_EAT, CT_CLOUD_RAIN, CT_CLOUD_RAIN_NB, CT_CLOUD_EVAP, CT_CLOUD_EVAP_NB, CT_STEPS_PER_TICK } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 
 const outSpecs = [];
 function spec(into = 'FIRE') {
@@ -636,6 +661,12 @@ export function ctPuff(request, pressure) {
   return (request - held * CONTACT_PUFF_UNIT) | 2 | (Math.max(held, pressure) * CONTACT_PUFF_UNIT);
 }
 
+// A per-step chance p of V1's, run on each of a tick's CT_STEPS_PER_TICK steps: the tick's chance.
+export function ctPerTick(p) {
+  let keep = 1.0;
+  for (let step = 0; step < CT_STEPS_PER_TICK; step++) { keep = keep * (1.0 - p); }
+  return 1.0 - keep;
+}
 export function ctStep(input, ns, seed) {
   return ctStepAtmosphere(input, ns, seed, 0, 0, 0, 0, 0, CT_AMBIENT_Q);
 }
@@ -816,8 +847,8 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     }
   }
   // The fuse is the electric pass's (ctFuseStep: V1's step, four a tick, six faces).
-  if (c.id === E.WATER && plant > 0) { c.busy = 1; if (random < 0.048 * ctF(plant)) return ctCreate(c, E.PLANT, c.tq); }
-  if (r.rots !== 0 && fungus > 0 && c.tq < CONTACT_DAMP_DRY_Q) { c.busy = 1; if (random < 0.0008 * ctF(fungus)) return ctCreate(c, E.FUNGUS, c.tq); }
+  if (c.id === E.WATER && plant > 0) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(plant) * CT_PLANT_MISS_LOG)) return ctCreate(c, E.PLANT, c.tq); }
+  if (r.rots !== 0 && fungus > 0 && c.tq < CONTACT_DAMP_DRY_Q) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(fungus) * CT_FUNGUS_MISS_LOG)) return ctCreate(c, E.FUNGUS, c.tq); }
   if (c.id === E.MOSS || c.id === E.FUNGUS) {
     const previous = c.ctype;
     let own = 0;
@@ -832,17 +863,17 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   if (lit.id !== c.id) return lit;
   c = lit;
   if (c.id === E.EMPTY) {
-    if (clone > 0 && clone < CONTACT_ELEMENT_COUNT) { c.busy = 1; if (random < 0.48) return ctCreate(c, clone, ctRow(clone).spawnQ); }
-    if (moss > 0 && bed > 0) { c.busy = 1; if (random < 0.0008 * ctF(moss)) return ctCreate(c, E.MOSS, c.tq); }
+    if (clone > 0 && clone < CONTACT_ELEMENT_COUNT) { c.busy = 1; if (random < CT_CLONE_CHANCE) return ctCreate(c, clone, ctRow(clone).spawnQ); }
+    if (moss > 0 && bed > 0) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(moss) * CT_MOSS_MISS_LOG)) return ctCreate(c, E.MOSS, c.tq); }
   }
   if (c.id === E.CLOUD) {
     if (cloud >= 2 || air >= 2) {
       c.busy = 1;
-      if (cloud >= 2 && random < 0.00032 * ctF(cloud * 2 - 3)) return ctConvert(c, E.WATER, 0);
+      if (cloud >= 2 && random < ctPerTick(CT_CLOUD_RAIN * ctF(cloud * 2 - CT_CLOUD_RAIN_NB))) return ctConvert(c, E.WATER, 0);
       const temp = ctF(c.tq) * 0.25 - CT_CODE_ZERO_C;
       const ambient = ctF(ambientQ) * 0.25 - CT_CODE_ZERO_C;
       const es = Math.exp(CT_MAGNUS_A * (temp / Math.max(1, temp + CT_MAGNUS_B) - ambient / Math.max(1, ambient + CT_MAGNUS_B)));
-      if (air >= 2 && random < 0.00024 * ctF(air * 2 - 3) * es) {
+      if (air >= 2 && random < ctPerTick(CT_CLOUD_EVAP * ctF(air * 2 - CT_CLOUD_EVAP_NB) * es)) {
         // V1 react.js: the evaporating cell's air cools by CLOUD_EVAP_COOL (a declared sink).
         let gone = ctDecay(c, E.EMPTY);
         const before = ctEnergy(gone);
@@ -877,7 +908,7 @@ export const CONTACT_KERNEL = [
   [ctDensity, ['CTCell'], 'f32'], [ctAmount, ['CTCell'], 'i32'], [ctCapacity, ['CTCell'], 'i32'], [ctHeat, ['CTCell', 'i32'], 'CTCell'], [ctHeatTo, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctConvert, ['CTCell', 'i32', 'i32'], 'CTCell'],
   [ctTemperatureRemainder, ['CTCell'], 'f32'], [ctFlux, ['CTCell', 'CTCell'], 'i32'], [ctPhase, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctNuclearId, ['CTCell'], 'i32'], [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
-  [ctGrowerDamp, ['i32', 'i32'], 'i32'], [ctPuff, ['i32', 'i32'], 'i32'],
+  [ctGrowerDamp, ['i32', 'i32'], 'i32'], [ctPuff, ['i32', 'i32'], 'i32'], [ctPerTick, ['f32'], 'f32'],
   [ctHotFuel, ['CTCell'], 'bool'], [ctSmothered, ['i32', 'i32'], 'bool'], [ctLick, ['CTCell', 'i32', 'i32', 'bool', 'i32'], 'CTCell'],
   [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
   [ctStep, ['CTCell', 'array<CTCell, 3>', 'i32'], 'CTCell'],
@@ -1000,7 +1031,7 @@ export function ctAcid(a0, b0, seed) {
   let b = ctCopy(b0);
   if (ctRow(a.id).acid === 0 || ctRow(b.id).edible === 0 || a.done !== 0 || b.done !== 0) return ctPairValue(a, b, 0);
   a.busy = 1; b.busy = 1;
-  if (ctRoll(seed, 13) >= 0.24) return ctPairValue(a, b, 0);
+  if (ctRoll(seed, 13) >= CT_ACID_EAT) return ctPairValue(a, b, 0);
   const energy = ctAdd(ctEnergy(a), ctEnergy(b));
   const fizz = ctRow(b.id).fizz;
   a.life = Math.max(0, a.life - 246);
