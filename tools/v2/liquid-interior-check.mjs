@@ -32,7 +32,7 @@ assert.match(render, /if \(brickMixed\(flags\)\)/);
 // the box wall's refraction goes through the march's one liquidInterface call (its head: ifPend)
 assert.match(strip(render), /ifPend = true; ifEntry = true; ifP = hp; ifN = n0; ifG = n0; ifEnter = true;/);
 assert.match(strip(render), /let inside = liquidInterface\(ifP, ifN, ifG, ifEnter, ifLid, ifMirror,/);
-assert.match(render, /phiA = surfSample\(ro\); phiStale = false/);
+assert.match(strip(render), /tEnter = 0\.0;\s*phiA = surfSample\(ro\);[\s\S]*?phiStale = false;/, 'a refraction restart samples the fields at its origin, fresh');
 
 const bit = BRICK_INFO.LIQUID_INTERIOR;
 assert.equal(bit, 65536);

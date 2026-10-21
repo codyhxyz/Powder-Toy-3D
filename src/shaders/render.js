@@ -949,16 +949,16 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       let inside = liquidInterface(ifP, ifN, ifG, ifEnter, ifLid, ifMirror, &ro, &rd, &col, &trans, &mediumLight);
       tCut -= ifT;
       rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
-      tEnter = 0.0;${curved ? '' : `
+      tEnter = 0.0;
+      phiA = surfSample(ro);${curved ? '' : `
       if (ifEntry) {
         if (inside) { liq = ifLid; }
-        phiA = surfSample(ro);
       } else {`}
         liq = select(E_EMPTY, ifLid, inside);
         if (ifEnter) { lightRef = mediumLight; lightY = ifP.y; }
         lastB = vec3i(-1); ax = 1;
         gThin = brickThin(brickInfo(clamp(cell, vec3i(0), GRID - 1) / BS));
-        phiA = surfSample(ro); phiStale = false;${curved ? `
+        phiStale = false;${curved ? `
         meshBudget = tCut;
         warpRestart(&walk, ro, rd);` : ''}
         // restarted inside something opaque (sand under the water line)
