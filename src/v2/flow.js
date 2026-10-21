@@ -48,7 +48,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   let c = cells[s];
   let liquid = FLOW_LIQUID[c.x & 255u] && (c.y & 0xffffffu) != 0u;
   let flux = vec3f(unpack2x16float(c.z), unpack2x16float(c.w & 65535u).x) / FLOW_SPEED_FLUX;
-  let v = select(vec3f(0.0, -fallVelocity(c) / FLOW_SPEED_SI, 0.0), flux, liquid);   // fallVelocity: 0 but for a powder
+  let v = select(vec3f(0.0, 0.0 - fallVelocity(c) / FLOW_SPEED_SI, 0.0), flux, liquid);   // fallVelocity: 0 but for a powder (0 - 0 is +0: still reads as the cleared field)
   let w = vec2u(pack2x16float(v.xy), pack2x16float(vec2f(v.z, 0.0)));
   if (any(flow[s] != w)) { flow[s] = w; }
 }
