@@ -752,8 +752,8 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 // =====================================================================
 
 // Box and World in this view (CLAUDE.md "Same features in every world";
-// parity audit 2026-10-20). Every branch below but the last is the same
-// picture, by different code:
+// parity audit 2026-10-20). Every branch below is the same picture, by
+// different code:
 // - interior: skips surface tests that cannot find a crossing (the brick and
 //   its 26 neighbours are certified inside liquid: docs/v2/liquid-interior-
 //   optimization.md), so it changes the cost, never the picture. Both brick
@@ -767,9 +767,11 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 //   WORLD renderer, and the far field was retired in dc480f4f), so neither
 //   renderer runs them.
 // - format: World reads its own atlas, filled from the legacy A/B projection
-//   (V2's exportLegacy), never V2's packed state, except V2's foam: while V2 runs,
-//   World's live copies carry it (v2/nativeAeration.js, liquidDetail.js WORLD_NATIVE),
-//   so the molten-foam layer after shadeSurf draws it as the Box does.
+//   (V2's exportLegacy), never V2's packed state, except V2's foam and air:
+//   while V2 runs, World's live copies carry its foam (v2/nativeAeration.js,
+//   liquidDetail.js WORLD_NATIVE), so the molten-foam layer after shadeSurf
+//   draws it as the Box does, and its air (B: the Pressure and Flow views,
+//   world/renderSource.js, the V2 air export).
 const realistic = (detail, curved = false, backend = 'box', fixedReadFormat) => {
   const format = backend === 'world' ? '0u' : readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);

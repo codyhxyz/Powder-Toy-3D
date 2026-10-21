@@ -1,7 +1,7 @@
 // CPU command/authority tests. No browser, GPU, shader interpreter or speed claim.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { WorldRenderSource, SOURCE_GRID, SOURCE_RANK, snapshotSource, sourceBounds, planSourceCopies, recordSourceCopies, decodeSourceBrick } from '../src/world/renderSource.js';
+import { WorldRenderSource, SOURCE_GRID, SOURCE_RANK, snapshotSource, liveSource, dropNativeWorldAir, sourceBounds, planSourceCopies, recordSourceCopies, decodeSourceBrick } from '../src/world/renderSource.js';
 import { rawSourceGrid, treeColumnMask, sourceTrees, RawWorldSourceProducer } from '../src/world/renderSourceProducer.js';
 import { gridDims, cellSlot, slotCell } from '../src/shaders/common.js';
 import { BrickStore, encodeBrick } from '../src/world/store.js';
@@ -157,6 +157,56 @@ check('complete A/B capture preserves all original words and auxiliary planes', 
     assert.equal(wordView(out.chunk.aeration)[out.slot * 2], wordView(live.aeration)[(live.aerCopy * live.g.slots + s) * 2]);
     assert.equal(wordView(out.chunk.deco.buffer)[out.slot], wordView(live.deco.buffer)[s]);
   }
+});
+check('Physics V2: the drawn source takes B from the V2 air export and V2 foam, the edit projection keeps the legacy B', () => {
+  const f = fixture(); fillState(f);
+  const previousUsage = globalThis.GPUBufferUsage;
+  globalThis.GPUBufferUsage ??= { STORAGE: 0x80, COPY_SRC: 0x04, COPY_DST: 0x08 };   // (v2/nativeAeration.js's buffer)
+  const dispatches = [], kernel = f.gpu.kernel;
+  // The kernels' stand-in writes words that name their buffer and dispatch, as the real ones write V2's air and foam.
+  f.gpu.kernel = (desc) => ({ ...kernel.call(f.gpu, desc), state: 'ready', dispatch(_frame, size, opts) {
+    dispatches.push({ name: desc.name, size, opts });
+    opts.bind[2].entries.forEach((e, j) => wordView(e.resource.buffer).forEach((_v, i, a) => { a[i] = (0x5b000000 + (j << 20) + i + dispatches.length) >>> 0; }));
+  } });
+  const exports = [];
+  Object.assign(f.sim, { compact: { isReady: true, dynamics: { isReady: true }, tick: 5, sync() {}, groups: { read: { read: true } } }, bindPhysicalRO: { physical: true },
+    legacyState(native) { exports.push(native); }, _dispatch(k, size, opts) { k.dispatch(f.frame, size, opts); },
+    readHeader({ physical = false } = {}) { return { ...this.header(), format: physical ? 3 : 2 }; } });
+  f.sim.L.STATE_RO = [];
+  try {
+    // (the air kernel builds on first use; until it is ready the legacy B stands in)
+    assert.equal(snapshotSource(f.sim).B, f.sim.state.B, 'no export before the first live read');
+    const revision = f.source.recordLiveCopy(f.frame, f.sim); f.flush();
+    assert(revision > 0); assert.deepEqual(exports, [false]);
+    assert.deepEqual(dispatches.map((d) => d.name), ['worldNativeAir', 'nativeAeration'], 'V2 air and foam, both before the copy');
+    assert.equal(dispatches[0].opts.bind[1], f.sim.bindPhysicalRO); assert.equal(dispatches[0].opts.header.format, 3);
+    const live = f.source.liveSnapshot;
+    assert.notEqual(live.B, f.sim.state.B); assert.equal(live.bCopy, 0); assert.equal(live.copy, 1);
+    assert.equal(live.B.size, f.sim.g.slots * 16); assert.equal(live.B, dispatches[0].opts.bind[2].entries[0].resource.buffer);
+    assert.equal(live.aeration, dispatches[1].opts.bind[2].entries[0].resource.buffer, 'the drawn aeration is V2 foam');
+    assert.equal(live.aerCopy, 0); assert.equal(live.aerGeneration, 5); assert.equal(live.boundedWake, true);
+    for (let s = 0; s < live.g.slots; s += 37) {
+      const p = slotCell(live.g, s).map((v, i) => v + live.origin[i]), out = f.source.getSource(p);
+      assert.equal(out.kind, 'live'); assert.equal(out.aux & 2, 2);
+      assert.deepEqual(stateWords(out.chunk, 'A', p), stateWords(live, 'A', p), 'A stays the legacy projection (copy cur)');
+      assert.deepEqual([...wordView(out.chunk.B).subarray(out.slot * 4, out.slot * 4 + 4)], [...wordView(live.B).subarray(s * 4, s * 4 + 4)]);
+      assert.deepEqual([...wordView(out.chunk.aeration).subarray(out.slot * 2, out.slot * 2 + 2)], [...wordView(live.aeration).subarray(s * 2, s * 2 + 2)]);
+    }
+    assert(!f.source.needsLiveCopy(), 'the export is the same buffer every read: no copy without a change');
+    assert.doesNotThrow(() => f.source.assertBoundedWake([{ lo: [32, 0, 32], hi: [64, 32, 64] }]), 'V2 records hold no wakes');
+    // The edit projection (written back into physics) reads the legacy B and runs no air export.
+    const edit = liveSource(f.sim, undefined, { native: true });
+    assert.equal(edit.B, f.sim.state.B); assert.equal(edit.bCopy, undefined); assert.deepEqual(exports, [false, true]);
+    // A read that copies A alone (the raw producer's tree support) runs no air export either.
+    assert.equal(liveSource(f.sim).B, live.B);
+    assert.equal(dispatches.filter((d) => d.name === 'worldNativeAir').length, 1);
+    // A switch back to V1 hands the lanes back.
+    f.sim.compact = null;
+    assert(f.source.needsLiveCopy()); assert.equal(snapshotSource(f.sim).B, f.sim.state.B);
+    dropNativeWorldAir(f.sim);
+    assert(f.retired.includes(live.B), 'the window lets go of the air buffer');
+    f.source.dispose();
+  } finally { if (previousUsage === undefined) delete globalThis.GPUBufferUsage; else globalThis.GPUBufferUsage = previousUsage; }
 });
 check('bulk LIVE metadata never bypasses a newer partial source revision', () => {
   const f = fixture(); fillState(f);
