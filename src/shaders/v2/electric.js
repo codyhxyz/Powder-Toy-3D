@@ -15,7 +15,9 @@
 // without a neighbour read. A brick where step 0 changed anything lists its 3³
 // neighbourhood (a front moves at most CT_ELEC_STEPS ≤ BS cells a tick: at most
 // one brick on each axis), and steps 1-3 and every commit run over that list
-// only. With no live electricity the list is empty and those dispatches do nothing.
+// only, as does a brick holding an unlit fuse beside a flame (V1 draws its light
+// every step: ctFuseFlameNear). With no live electricity the list is empty and
+// those dispatches do nothing.
 import { contactWGSL as productionContactWGSL } from './contact.js';
 import { v2Head, ARGS2, V2_CONTACT_LAYOUT, V2_ARGS_LAYOUT } from '../v2.js';
 import { LAYOUT, gridDims } from '../common.js';
@@ -27,6 +29,8 @@ import { fold } from '../../gpu/kernels.js';
 // small and the contact module still compiles once, in the block pass.
 const ELECTRIC_ROOTS = ['ctElecMaterial', 'ctElecStep', 'ctElecApply', 'ctUnpack', 'ctPack', 'ctSeed', 'ctRoll', 'ctNew'];
 const PACKET_TOUCH_ROOTS = ['ctFuseTouch', 'packetTouchNow'];
+// the gather's own: an unlit fuse with a flame beside it, listed for the later steps' draws
+const GATHER_ROOTS = ['ctFuseFlameNear'];
 // touch: keep the flying packets' marks for a fuse (the gather's step; the commit applies its word)
 export function electricContactWGSL(contactWGSL, touch = false) {
   const parts = [], fns = new Map();
@@ -51,7 +55,7 @@ export function electricContactWGSL(contactWGSL, touch = false) {
   const keep = new Set(), todo = ELECTRIC_ROOTS.filter(n => fns.has(n));
   if (todo.length !== ELECTRIC_ROOTS.length) throw Error('electric pass: the contact module lacks its electric rules');
   // a fuse lit by a flying packet beside it (ctFuseTouch), where the contact module has the packets' marks
-  if (touch) for (const n of PACKET_TOUCH_ROOTS) if (fns.has(n)) todo.push(n);
+  if (touch) for (const n of [...PACKET_TOUCH_ROOTS, ...GATHER_ROOTS]) if (fns.has(n)) todo.push(n);
   while (todo.length) {
     const name = todo.pop();
     if (keep.has(name)) continue;
@@ -102,8 +106,13 @@ ${MAIN} {
     let roll = ctRoll(ctSeed(p, P.tick), CT_ELEC_SALT + i32(P.elecStep));
     var word = ctElecStep(c, ns, roll);
     ${/\bfn ctFuseTouch\(/.test(contactWGSL) ? `// a flying packet on a face, as V1's fuse step saw a moving neighbour (the react stage's mark), on the step's draw
-    if (word == 0 && id == CT_FUSE) { word = ctFuseTouch(c, packetTouchNow(s), roll); }` : ''}
-    if (word != 0) { atomicStore(&act2[V2_ELEC_SCRATCH + s], u32(word)); atomicStore(&wgChanged, 1u); }
+    var touch = 0;
+    if (id == CT_FUSE) { touch = packetTouchNow(s); }
+    if (word == 0 && id == CT_FUSE) { word = ctFuseTouch(c, touch, roll); }` : 'let touch = 0;'}
+    if (word != 0) { atomicStore(&act2[V2_ELEC_SCRATCH + s], u32(word)); atomicStore(&wgChanged, 1u); }${/\bfn ctFuseFlameNear\(/.test(contactWGSL) ? `
+    // an unlit fuse whose flame draw missed: V1 draws again each step (react.js FUSE), so step 0 lists
+    // its 3³ for steps 1-3 as for a change (their draws, the fuse's own; a front it lights moves on in them)
+    if (awake && word == 0 && ctFuseFlameNear(c, ns, touch)) { atomicStore(&wgChanged, 1u); }` : ''}
   }
   if (!awake) { return; }
   workgroupBarrier();

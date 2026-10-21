@@ -746,6 +746,17 @@ export function ctPacketTouch(p, faceId, hostFire, axisBit, partner) {
 // V1 react.js FUSE, unlit: matter (not gas) at its ignition point beside it lights it, a flame beside it
 // does at CT_FUSE_FLAME_LIGHT a step; from a flying packet on any face (ctPacketTouch), on the electric
 // pass's step with that step's one draw (ctFuseStep's). Its scratch word, or 0.
+// An unlit fuse with a flame beside it, on a face or as a flying packet's flame mark (ctFuseStep,
+// ctFuseTouch): V1 react.js FUSE draws CT_FUSE_FLAME_LIGHT for it every step, so the electric pass
+// lists it for the tick's later steps even when step 0's draw misses (shaders/v2/electric.js).
+export function ctFuseFlameNear(c, ns, touch) {
+  if (c.id !== E.FUSE || c.life < CT_FUSE_UNLIT) return false;
+  let fire = (touch & CT_TOUCH_FLAME) !== 0;
+  for (let k = 0; k < 6; k++) {
+    if (ns[k].valid !== 0 && ns[k].id === E.FIRE) fire = true;
+  }
+  return fire;
+}
 export function ctFuseTouch(c, touch, random) {
   if (c.id !== E.FUSE || c.life < CT_FUSE_UNLIT) return 0;
   if ((touch & CT_TOUCH_HOT) !== 0 || ((touch & CT_TOUCH_FLAME) !== 0 && random < CT_FUSE_FLAME_LIGHT)) return CT_ELEC_PENDING + ctFuseLife(1);
@@ -1220,7 +1231,8 @@ export const contactAmbientQ = ambient => Math.min(65535, Math.max(0, Math.round
 CONTACT_KERNEL.push([ctConducts, ['CTCell', 'CTCell', 'i32'], 'bool'], [ctAmbient, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctHeatRoom, ['CTCell', 'i32'], 'i32']);
 CONTACT_KERNEL.push([ctElecMaterial, ['i32'], 'bool'], [ctFuseLife, ['i32'], 'i32'], [ctFuseSteps, ['i32'], 'i32'], [ctFuseStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'],
   [ctElecStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'], [ctFuseApply, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctElecApply, ['CTCell', 'i32', 'i32'], 'CTCell'],
-  [ctElecAirborne, ['CTCell', 'array<CTCell, 6>', 'i32'], 'CTCell'], [ctFuseTouch, ['CTCell', 'i32', 'f32'], 'i32']);
+  [ctElecAirborne, ['CTCell', 'array<CTCell, 6>', 'i32'], 'CTCell'], [ctFuseTouch, ['CTCell', 'i32', 'f32'], 'i32'],
+  [ctFuseFlameNear, ['CTCell', 'array<CTCell, 6>', 'i32'], 'bool']);
 
 // R5 ambient exchange at the open box's faces. The owner counts exposed open
 // side/top faces (not the floor or closed/periodic edges).
