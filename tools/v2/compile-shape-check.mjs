@@ -56,7 +56,7 @@ for (const dims of [[32, 32, 32], [128, 128, 128]]) {
 // call (gfx/surface.js MatPlan), the reflection march through reflectResolve's (gfx/liquid.js reflectDefer),
 // one liquidInterface for the box wall and every bend, one shadeHit for a hit or the floor, and World's
 // probes read their four bands per tap lookup (worldAccess.js worldProbe). Cold Metal compile, CPU-timed
-// 2026-10-20: World base 22.2 -> 8.6 s, Box base 5.1 -> 3.2 s.
+// 2026-10-20 (medians of 3): World base 23.4 -> 9.9 s, Box base 5.3 -> 3.3 s.
 {
   const { volumeFrag, REALISTIC_LEVELS } = await import('../../src/shaders/render.js');
   for (const backend of ['box', 'world']) for (const view of ['realistic', 'cozy']) for (const level of ['off', 'base', 'full']) for (const curved of [false, true]) {
