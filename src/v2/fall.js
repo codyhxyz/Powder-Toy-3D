@@ -38,6 +38,16 @@ export function stepFall(core, gravity) {
   const cells = Math.floor(distance);
   return { core: setFall(core, velocity, Math.fround(distance - cells)), cells };
 }
+// The powder law's landing speed (m/s) after a fall of more than `cells` from rest at FALL_GRAVITY, on
+// stepFall's own f32 steps (gravity / FALL_HZ a tick to the element's terminal speed, velocity /
+// (CELL_M·FALL_HZ) cells a tick): a powder's shock trigger on landing (shaders/v2.js v2ColumnWGSL).
+export function powderLandingSpeed(id, cells) {
+  const terminal = fallTerminal(id), dv = Math.fround(FALL_GRAVITY / FALL_HZ);
+  if (!(terminal > 0)) return 0;
+  let v = 0, y = 0;
+  while (y <= cells) { v = Math.fround(Math.min(Math.fround(v + dv), terminal)); y = Math.fround(y + Math.fround(v / (CELL_M * FALL_HZ))); }
+  return v;
+}
 export function validateFall(core) {
   const value = toFloat(core[2]);
   if (!Number.isFinite(value) || (!hasFallVelocity(core) && (value < 0 || value >= 1))) throw new Error('Invalid native fall state');

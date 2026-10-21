@@ -1,4 +1,4 @@
-import { fallTerminal } from '../v2/fall.js';
+import { fallTerminal, powderLandingSpeed } from '../v2/fall.js';
 import { LEGACY_STEPS_PER_TICK } from '../v2/host.js';
 import { fallWGSL } from './v2/fall.js';
 import { FOAM_ROWS } from '../v2/foam.js';
@@ -15,7 +15,7 @@ import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
 import { contactWGSL as productionContactWGSL, requestMergeWGSL } from './v2/contact.js';
 import { v2RunsKernel, v2PairsKernel, COLUMN } from './v2/columns.js';
-import { PARTICLE_CAP } from '../v2/dynamics-reference.js';
+import { PARTICLE_CAP, SHOCK_LANDINGS } from '../v2/dynamics-reference.js';
 
 // Physics v2, the fast version (docs/v2.md 2, 4.1, 5.1-5.6; the rules are
 // tools/v2/lean-sim.mjs's, the CPU prototype that validated them, ported to
@@ -647,8 +647,27 @@ fn main() {
 // sub-cell displacement; gravity changes acceleration, never prior momentum.
 // Landing on a falling run inherits its velocity and fraction, so the
 // two move as one (5.3). Liquids and solids are floors (powders sink into liquids in the block pass).
+// A grain landing on a charge sets it off as V1's did (dynamics-reference.js SHOCK_LANDINGS: V1 react.js
+// shock, the fall past which a cell of the grain's element landing on that charge carries its blast.shock
+// as common.js hitKE counts it): at the speed the powder law reaches over that fall (fall.js
+// powderLandingSpeed; at most its terminal speed, so past it every longer fall lands the same).
+// POWDER_SHOCK_SLACK: the GPU's f32 sums of a fall's ticks may land a quantum under the CPU law's speed.
+const POWDER_SHOCK_SLACK = 1 - 2 ** -16;
+const POWDER_SHOCK_ON = SHOCK_LANDINGS.filter(r => ELEMENTS[r.faller].kind === K.POWDER)
+  .map(r => ({ ...r, speed: Math.fround(powderLandingSpeed(r.faller, r.cells) * POWDER_SHOCK_SLACK) }));
 export const v2ColumnWGSL = (g) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
+// the landing speed (m/s) past which a grain of faller sets off the charge it lands on (POWDER_SHOCK_ON); 0 never
+fn shockOnSpeed(faller: u32, charge: u32) -> f32 {
+${POWDER_SHOCK_ON.map(r => `  if (faller == ${r.faller}u && charge == ${r.charge}u) { return ${r.speed}; }`).join('\n')}
+  return 0.0;
+}
+// a grain of faller landing at speed (m/s) on the cell at p: its detonation request, as columns.js colDetonate's
+fn shockLand(p: vec3i, faller: u32, speed: f32) {
+  let s = slotOf(p);
+  let on = shockOnSpeed(faller, cid(loadCore(s)));
+  if (on > 0.0 && speed >= on) { events[s] = events[s] | 1u; noteEvents(s, events[s]); markBusy(p); }
+}
 ${MAIN} {
   if (P.gravMode == 2u || P.edge != 0u) { return; }
   let k = foldThread(wg, nwg, li);
@@ -692,6 +711,8 @@ ${MAIN} {
     var to = y - d;
     var velocity = v;
     if (to <= fl) {
+      // it lands on its floor at v (a falling run under it is no floor it hits)
+      if (fl > 0 && !runFalling) { shockLand(vec3i(x, fl - 1, z), cid(c), v); }
       if (to < fl) {
         if (runFalling) { velocity = runVelocity; a = runFrac; } else { velocity = 0.0; a = 0.0; }
       }

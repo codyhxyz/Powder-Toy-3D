@@ -2,7 +2,7 @@
 // seconds, m/s, J and Pa. No legacy state is read by the native kernels.
 import { ELEMENTS, E, K, NITRO_FALL_M } from '../elements.js';
 import { CELL_M } from '../scale.js';
-import { PHYS } from '../physics.js';
+import { PHYS, SIM_GRAVITY } from '../physics.js';
 import { contactVacuum, specialExplosion } from './contact.js';
 import { impactFoam } from './foam.js';
 import { energyOf, withEnergy, energyFits, makeMaterial, cTq, withPayload, payloadOf, share, packetOwnedEnergy, withPacketEnergy, packetEnergyFits } from './layout.js';
@@ -92,6 +92,38 @@ for (const e of ELEMENTS) {
 }
 /** V1 common.js hitKE: closing at speed² u2, the mover i's mass against a solid j, else the reduced mass. */
 export const hitKE = (mi, mj, jSolid, u2) => 0.5 * (jSolid ? mi : mi * mj / (mi + mj)) * u2;
+// V1's shock on a grid landing. V1 react.js sets an explosive off when matter closes on it with ½·μ·u²
+// of at least its blast.shock, a cell landing on it included (the move pass leaves the lander's speed for
+// the react pass to see: common.js impactActs, shockActs), μ the lander's own mass on a solid charge and
+// the reduced mass on a loose one (common.js hitKE: each a cell of its density), never by its own element
+// or a gas (shockActs, isGasLike). The lander's speed is its fall on V1's own law (react.js forces: a step
+// adds gravity·GRAV, then drag takes DRAG of it, except from a liquid in free fall, and V_MAX caps it: as
+// elements.js fallKE steps it). So the rule is a fall: the cells past which a cell of `faller` landing on
+// `charge` sets it off, or null where V1's fall never carries that much. In V1 that is the very heavy
+// powders (scrap, uranium, plutonium, gold nuggets, singularity) and the liquids heavy enough near V1's
+// terminal speed (mercury on C-4; mercury, lava and mud on nitroglycerin). Sand, stone, water never do.
+// (A packet's hit is particles.js dShockHit's, re-derived in J above; this is the grid's landings'.)
+const V1_FALL_STEPS_MAX = 100000;
+export function v1ShockFall(faller, charge) {
+  const j = ELEMENTS[faller], k = ELEMENTS[charge], shock = k.blast?.shock ?? 0;
+  if (!(shock > 0) || faller === charge || (j.kind !== K.POWDER && j.kind !== K.LIQUID) || !(j.grav > 0)) return null;
+  const mu = k.kind === K.SOLID ? j.dens : j.dens * k.dens / (j.dens + k.dens);
+  const drag = j.kind === K.LIQUID ? 0 : j.drag ?? 0;
+  // V1's terminal speed on this law: a fall that never carries the shock is no trigger at any height
+  const vt = drag > 0 ? Math.min(PHYS.V_MAX, SIM_GRAVITY * j.grav * (1 - drag) / drag) : PHYS.V_MAX;
+  if (0.5 * mu * vt * vt < shock) return null;
+  let v = 0, y = 0;
+  for (let n = 0; n < V1_FALL_STEPS_MAX; n++) {
+    const before = y;
+    v = Math.min(PHYS.V_MAX, (v + SIM_GRAVITY * j.grav) * (1 - drag)); y += v;
+    if (0.5 * mu * v * v >= shock) return before;
+  }
+  return null;
+}
+/** Every V1 shock trigger a grid landing can make: { faller, charge, cells } (v1ShockFall), for the
+ * column passes (shaders/v2.js v2ColumnWGSL for powders, shaders/v2/columns.js colShockLand for liquids). */
+export const SHOCK_LANDINGS = Object.freeze(ELEMENTS.filter(k => k.blast?.shock).flatMap(k => ELEMENTS
+  .map(j => ({ faller: j.id, charge: k.id, cells: v1ShockFall(j.id, k.id) })).filter(r => r.cells !== null)));
 export function hash32(x) {
   x = Math.imul(x ^ (x >>> 16), 0x7feb352d);
   x = Math.imul(x ^ (x >>> 15), 0x846ca68b);
