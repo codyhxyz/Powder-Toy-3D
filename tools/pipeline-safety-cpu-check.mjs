@@ -683,3 +683,25 @@ await test('at the scaled bound, foreground and idle builds share its slots, and
   assert.equal(f.reports.length, 1, 'one failure, surfaced once');
   stopped(f);
 });
+
+await test('a build made outside the cache (the World volume) counts against the bound while it compiles, never under the floor', async (t) => {
+  const f = await fixture(t, { concurrency: PIPELINE_CONCURRENCY_MAX });
+  const outsideBuild = deferred();
+  assert.equal(f.gpu.pipelines.outside(outsideBuild.promise), outsideBuild.promise);
+  const pipes = Array.from({ length: 6 }, (_, i) => pipe(f.gpu, 300 + i));
+  await drain();
+  assert.equal(f.calls.length, PIPELINE_CONCURRENCY_MAX - 1, 'one slot is the outside build\'s');
+  outsideBuild.resolve({});
+  await drain();
+  assert.equal(f.calls.length, PIPELINE_CONCURRENCY_MAX, 'its slot returns when it settles');
+  const many = Array.from({ length: 4 }, () => deferred());
+  for (const d of many) f.gpu.pipelines.outside(d.promise);
+  for (const c of f.calls) c.resolve({});
+  await drain();
+  assert.ok(f.counts.active >= PIPELINE_CONCURRENCY_MIN, 'outside builds never take the cache under the floor');
+  for (const d of many) d.reject(new Error('outside failure is its owner\'s to report'));
+  for (let i = 0; i < 4; i++) { for (const c of f.calls) c.resolve({}); await drain(); }
+  await Promise.all(pipes.map((p) => p.ready));
+  assert.equal(f.gpu.pipelines.outsideBuilds, 0);
+  liveAndDrained(f);
+});

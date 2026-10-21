@@ -117,6 +117,8 @@ export class PipelineCache {
     this.idleJobs = new Map();
     /** native compilations at once, foreground and idle builds alike (pipelineConcurrency) */
     this.concurrency = PIPELINE_CONCURRENCY;
+    /** native builds made outside this cache and still compiling (outside()) */
+    this.outsideBuilds = 0;
     /** @type {Map<string, number>} ms each named pipeline took to create */
     this.times = new Map();
   }
@@ -261,8 +263,26 @@ export class PipelineCache {
     }
   }
 
+  /**
+   * The cache's slots now: its bound less the builds made outside it (the World's volume:
+   * src/gfx/worldVolume.js), so the compiles at once stay within the bound; never under the floor.
+   */
+  get slots() { return Math.max(PIPELINE_CONCURRENCY_MIN, this.concurrency - this.outsideBuilds); }
+
+  /**
+   * Counts a native build made outside this cache against its bound while it compiles (a World
+   * volume's ~24 s cold build would otherwise share the performance cores with a full bound's).
+   * @template T @param {Promise<T>} promise @returns {Promise<T>} the same promise
+   */
+  outside(promise) {
+    this.outsideBuilds++;
+    const done = () => { this.outsideBuilds--; this.pump(); this.pumpIdle(); };
+    Promise.resolve(promise).then(done, done);
+    return promise;
+  }
+
   pump() {
-    while (!this.failure && !this.gpu.failure && this.running < this.concurrency && this.queue.length) {
+    while (!this.failure && !this.gpu.failure && this.running < this.slots && this.queue.length) {
       const job = this.queue.shift();
       this.active.add(job);
       this.running = this.active.size;
@@ -329,7 +349,7 @@ export class PipelineCache {
   }
 
   pumpIdle() {
-    while (!this.failure && this.idleJobs.size < this.concurrency && this.idleQueue.length) {
+    while (!this.failure && this.idleJobs.size < this.slots && this.idleQueue.length) {
       const job = this.idleQueue.shift();
       this.idleJobs.set(job, idleCallback(() => {
         if (this.failure || !this.idleJobs.has(job)) return;
