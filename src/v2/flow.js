@@ -1,6 +1,6 @@
-import { prelude, STAGE } from '../shaders/common.js';
+import { prelude, STAGE, LAYOUT } from '../shaders/common.js';
 import { fallWGSL } from '../shaders/v2/fall.js';
-import { v2ActLayout, CNT } from '../shaders/v2.js';
+import { v2ActLayout, CNT, V2_LAYOUT } from '../shaders/v2.js';
 import { WEATHER_SPEED_SI, WEATHER_SPEED_FLUX } from './nativeWeather.js';
 import { ELEMENTS, K } from '../elements.js';
 
@@ -84,3 +84,6 @@ export class NativeFlow {
   }
   dispose() { this.disposed = true; this.isReady = false; }
 }
+
+/** tools/check-wgsl.mjs, tools/check-sampler-budget.mjs (src/gpu/checks.js): built only with ?physics=v2. */
+export const WGSL_CHECK = [{ name: 'v2flow', kind: 'compute', code: v2FlowWGSL, layouts: () => [LAYOUT.TABLES, FLOW_LAYOUT, V2_LAYOUT], tool: true }];
