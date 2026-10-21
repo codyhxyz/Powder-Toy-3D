@@ -8,7 +8,7 @@ import { cTq } from './layout.js';
 import { encodeV2State, decodeV2State } from './state.js';
 import { cellSlot, marksLayout } from '../shaders/common.js';
 import {
-  v2BlockCompactLayout, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockWGSL, V2_BLOCK_FINALIZE_LAYOUT,
+  v2BlockCompactLayout, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockWGSL, V2_BLOCK_FINALIZE_LAYOUT, V2_BLOCK_FLOW_LAYOUT,
   V2_KERNELS, V2Params, nativeDynamicsHead, v2DemandWords, V2_DYNAMICS_LAYOUT, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_MATERIAL_LAYOUT, V2_LIQUID_LAYOUT, V2_CONTACT_LAYOUT, V2_IMPORT_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
   TICK_HZ, FULL, V2, QUIET_TICKS, BRIDGE, LEGACY_WORD,
 } from '../shaders/v2.js';
@@ -126,6 +126,8 @@ export class PhysicsV2 {
       args: gpu.bindGroup(L.ARGS, [...own, b(3, this.args)], 'v2 args'),
     };
     L.BLOCK_FINALIZE = gpu.layout('V2_BLOCK_FINALIZE', V2_BLOCK_FINALIZE_LAYOUT);
+    // the block pass's topples into the renderer's flow field (shaders/v2.js FLOW_TOPPLE_MARK; v2/flow.js's layout)
+    L.BLOCK_FLOW = gpu.layout('V2_FLOW', V2_BLOCK_FLOW_LAYOUT);
     this.legacyLayouts = { read: sim.L.STATE_RO, import: L.IMPORT, state: L.STATE };
     this.bindLegacy();
     // Only the current legacy copy is ours to use: a box lets V1's other go
@@ -153,7 +155,7 @@ export class PhysicsV2 {
       // graphics, not behind the idle queue; the shared build bound (pipelineConcurrency) remains.
       this.kernels[k.name] = gpu.kernel({
         name: k.name, build: k.name === 'v2block' ? 'now' : 'idle', code: k.name === 'v2block' ? v2BlockWGSL(g, contactWGSL, !!this.blockCompact) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
-        layouts: [finalize ? gpu.L.EMPTY : sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : (k.name === 'v2invalidate' || k.name === 'v2externalEvents') ? L.INVALIDATE : gpu.L.EMPTY, finalize ? L.BLOCK_FINALIZE : familyLayouts[this.familyOf(k.name)]],
+        layouts: [finalize ? gpu.L.EMPTY : sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : (k.name === 'v2invalidate' || k.name === 'v2externalEvents') ? L.INVALIDATE : k.name === 'v2block' ? L.BLOCK_FLOW : gpu.L.EMPTY, finalize ? L.BLOCK_FINALIZE : familyLayouts[this.familyOf(k.name)]],
       });
     }
     this.dynamics = Dynamics ? new Dynamics(this) : null;
@@ -161,6 +163,7 @@ export class PhysicsV2 {
     // the renderer's flow field from V2's own motion (v2/flow.js): presentation, so not in ready below
     // (every Simulation has the field; a CPU fixture's stand-in may not)
     this.flowField = sim.flow ? new NativeFlow(this, L.V2) : null;
+    this.groups.flow = this.flowField?.group ?? gpu.bindGroup(L.BLOCK_FLOW, [b(0, buf('flow stand-in', 16))], 'v2 flow stand-in');
     // Publish native readiness only after legacy storage has its blank defaults.
     this.ready = Promise.all([sim.ready, ...Object.values(this.kernels).map((k) => k.ready), this.dynamics?.ready, this.jets?.ready]).then(() => this);
     this.isReady = false;
@@ -412,8 +415,8 @@ export class PhysicsV2 {
       // count starts each tick at 0: finalize restarts it after publishing it (v2BlockFinalizeWGSL).
       run(k.v2blockClassify, ind(ARGS2.BLOCKS));
       run(k.v2blockFinalize, [1, 1, 1], [gpu.emptyGroup, gpu.emptyGroup, groups.blockFinalize]);
-      run(k.v2block, ind(ARGS2.COMPACT));
-    } else run(k.v2block, ind(ARGS2.BLOCKS));
+      run(k.v2block, ind(ARGS2.COMPACT), [sim.tables, groups.flow, groups.contact]);
+    } else run(k.v2block, ind(ARGS2.BLOCKS), [sim.tables, groups.flow, groups.contact]);
     // Electricity at V1's rate (shaders/v2/electric.js): ELEC_STEPS steps a tick of V1's step on six
     // faces, each a gather and a commit. Step 0 gathers the awake bricks and lists where it changed
     // anything (and their 3³); the args publish that list; the rest run over it alone.

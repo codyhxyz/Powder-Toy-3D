@@ -38,8 +38,10 @@ ${fallWGSL}
 const FLOW_LIST: u32 = ${a.list}u;                                  // the awake bricks (v2ActLayout list)
 const FLOW_USE_AWAKE: u32 = ${a.count + CNT.USE_AWAKE}u;  // ... and how many this tick's passes use
 const FLOW_LIQUID = array<bool, ${ELEMENTS.length}>(${ELEMENTS.map(e => String(e.kind === K.LIQUID)).join(',')});
+const FLOW_POWDER = array<bool, ${ELEMENTS.length}>(${ELEMENTS.map(e => String(e.kind === K.POWDER)).join(',')});   // only grains topple
 const FLOW_SPEED_SI: f32 = ${WEATHER_SPEED_SI};     // m/s per cell per V1 step
 const FLOW_SPEED_FLUX: f32 = ${WEATHER_SPEED_FLUX};  // face flux per cell per V1 step
+const FLOW_TOPPLE_MARK: f32 = 1.0;                   // a topple's record (shaders/v2.js, the block pass)
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
   let e = foldId(wg, nwg);
@@ -49,7 +51,11 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   let liquid = FLOW_LIQUID[c.x & 255u] && (c.y & 0xffffffu) != 0u;
   let flux = vec3f(unpack2x16float(c.z), unpack2x16float(c.w & 65535u).x) / FLOW_SPEED_FLUX;
   let v = select(vec3f(0.0, 0.0 - fallVelocity(c) / FLOW_SPEED_SI, 0.0), flux, liquid);   // fallVelocity: 0 but for a powder (0 - 0 is +0: still reads as the cleared field)
-  let w = vec2u(pack2x16float(v.xy), pack2x16float(vec2f(v.z, 0.0)));
+  var w = vec2u(pack2x16float(v.xy), pack2x16float(vec2f(v.z, 0.0)));
+  // a grain the block pass toppled here this tick (shaders/v2.js FLOW_TOPPLE_MARK): its jump, for this tick
+  let old = flow[s];
+  let oldZ = unpack2x16float(old[1]);
+  if (FLOW_POWDER[c.x & 255u] && oldZ.y == FLOW_TOPPLE_MARK) { w = vec2u(old[0], pack2x16float(vec2f(oldZ.x, 0.0))); }
   if (any(flow[s] != w)) { flow[s] = w; }
 }
 `;

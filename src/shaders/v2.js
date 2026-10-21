@@ -1,4 +1,5 @@
 import { fallTerminal } from '../v2/fall.js';
+import { LEGACY_STEPS_PER_TICK } from '../v2/host.js';
 import { fallWGSL } from './v2/fall.js';
 import { FOAM_ROWS } from '../v2/foam.js';
 import { nativeStateWGSL, materialStorageWGSL, decoStorageWGSL } from './v2/state.js';
@@ -848,6 +849,17 @@ fn motionDensity(c: vec4u) -> f32 {
 }
 // share of positions whose grains may topple diagonally (lean-sim MOORE 0.5: an octagon, not a square or diamond)
 const MOORE_U: u32 = 0x80000000u;
+// The renderer's flow field (v2/flow.js): a topple is a one-cell jump that leaves no fall speed, so it
+// is written where the grain lands, in V1's units (cells per V1 step: the jump over the tick's
+// LEGACY_STEPS_PER_TICK steps, as V1's move.js blendFlow takes a hop's displacement), with
+// FLOW_TOPPLE_MARK in the slot's spare half: v2flow keeps it for this tick, then the grain's own motion.
+@group(1) @binding(0) var<storage, read_write> flow: array<vec2u>;
+const FLOW_TOPPLE_STEPS: f32 = ${Number(LEGACY_STEPS_PER_TICK).toFixed(6)};
+const FLOW_TOPPLE_MARK: f32 = 1.0;
+fn noteTopple(to: vec3i, top: u32, into: u32, down: vec3i) {
+  let moveD = vec3f(mBlockOffset(off8(into), down) - mBlockOffset(off8(top), down)) / FLOW_TOPPLE_STEPS;
+  flow[slotOf(to)] = vec2u(pack2x16float(moveD.xy), pack2x16float(vec2f(moveD.z, FLOW_TOPPLE_MARK)));
+}
 // powder sinking through a fluid: this share of (1 - ρ_fluid/ρ_powder) a tick its pair is in one block
 const SINK_RATE: f32 = 0.6;
 const LIQ_SWAP: f32 = 0.3;   // a denser liquid over a lighter one
@@ -937,6 +949,7 @@ ${MAIN} {
     let request = pending[pick]; pending[pick] = pending[ti]; pending[ti] = request;
     let came = fromCell[pick]; fromCell[pick] = fromCell[ti]; fromCell[ti] = came;
     markBusy(positions[pick]);
+    noteTopple(positions[pick], ti, pick, down);
   }
   // R3 sink and float, R4 buoyancy: a denser movable over a lighter fluid swaps down
   for (var c = 0u; c < columnCount && gravityOn; c++) {
@@ -1154,6 +1167,9 @@ const withState = () => [LAYOUT.TABLES, V2_STATE_LAYOUT, V2_LAYOUT];
 const material = () => [LAYOUT.TABLES, 'EMPTY', V2_MATERIAL_LAYOUT];
 const liquid = () => [LAYOUT.TABLES, 'EMPTY', V2_LIQUID_LAYOUT];
 const contact = () => [LAYOUT.TABLES, 'EMPTY', V2_CONTACT_LAYOUT];
+// the block pass's group 1: the renderer's flow field (v2/flow.js FLOW_LAYOUT, gpu.layout 'V2_FLOW'), for topples
+export const V2_BLOCK_FLOW_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
+const block = () => [LAYOUT.TABLES, V2_BLOCK_FLOW_LAYOUT, V2_CONTACT_LAYOUT];
 /** Every v2 kernel: name, WGSL, group layouts (as WGSL_CHECK lists them), a sample dispatch. */
 export const V2_KERNELS = [
   { name: 'v2externalEvents', code: v2ExternalEventsWGSL, layouts: () => [LAYOUT.TABLES, V2_INVALIDATE_LAYOUT, V2_CONTACT_LAYOUT], dispatch: (g) => fold(gridDims(g).nbricks) },
@@ -1166,7 +1182,7 @@ export const V2_KERNELS = [
   { name: 'v2boundary', code: v2BoundaryWGSL, layouts: contact, dispatch: perBrick },
   { name: 'v2column', code: v2ColumnWGSL, layouts: contact, dispatch: perBrick },
   { name: 'v2support', code: v2SupportWGSL, layouts: contact, dispatch: perBrick },
-  { name: 'v2block', code: v2BlockWGSL, layouts: contact, dispatch: perBrick },
+  { name: 'v2block', code: v2BlockWGSL, layouts: block, dispatch: perBrick },
   { name: 'v2runs', code: v2RunsWGSL, layouts: liquid, dispatch: perBrick },
   { name: 'v2pairs', code: v2PairsWGSL, layouts: liquid, dispatch: perBrick },
   { name: 'v2invalidate', code: v2InvalidateWGSL, layouts: () => [LAYOUT.TABLES, V2_INVALIDATE_LAYOUT, V2_LAYOUT], dispatch: perBrick },
@@ -1214,7 +1230,7 @@ const CONTACT_ABI_PROBE = `fn contactBlock(cores: ptr<function, array<vec4u, 8>>
   (*cores)[0] = n.core; (*banksIn)[0] = n.bank;
   if (inGrid(positions[0])) { markBusy(positions[0]); (*requests)[0] |= 1u; }
 }`;
-WGSL_CHECK.push({ name: 'v2contactABI', kind: 'compute', code: g => v2BlockWGSL(g, CONTACT_ABI_PROBE), layouts: contact, dispatch: perBrick, tool: true });
+WGSL_CHECK.push({ name: 'v2contactABI', kind: 'compute', code: g => v2BlockWGSL(g, CONTACT_ABI_PROBE), layouts: block, dispatch: perBrick, tool: true });
 WGSL_CHECK.push({ name: 'v2dynamicsABI', kind: 'compute', code: g => `${nativeDynamicsHead(g)}
 ${V2Params.wgsl}
 @group(3) @binding(1) var<uniform> P: V2Params;
@@ -1226,5 +1242,5 @@ ${V2Params.wgsl}
 WGSL_CHECK.push(
   { name: 'v2blockClassify', kind: 'compute', code: v2BlockClassifyWGSL, layouts: contact, dispatch: perBrick, tool: true },
   { name: 'v2blockFinalize', kind: 'compute', code: v2BlockFinalizeWGSL, layouts: () => ['EMPTY', 'EMPTY', V2_BLOCK_FINALIZE_LAYOUT], dispatch: () => [1, 1, 1], tool: true },
-  { name: 'v2blockCompact', kind: 'compute', code: g => v2BlockWGSL(g, productionContactWGSL, true), layouts: contact, dispatch: perBrick, tool: true },
+  { name: 'v2blockCompact', kind: 'compute', code: g => v2BlockWGSL(g, productionContactWGSL, true), layouts: block, dispatch: perBrick, tool: true },
 );

@@ -62,6 +62,7 @@ const FLOW_LIQUID = liquidRow[1].split(',').map(v => v === 'true');
 assert.deepEqual(FLOW_LIQUID, ELEMENTS.map(e => e.kind === K.LIQUID));
 const ctx = {
   FLOW_LIST: act.list, FLOW_USE_AWAKE: act.count + CNT.USE_AWAKE, FLOW_SPEED_SI: WEATHER_SPEED_SI, FLOW_SPEED_FLUX: WEATHER_SPEED_FLUX, FLOW_LIQUID,
+  FLOW_TOPPLE_MARK: constOf(flowCode, 'FLOW_TOPPLE_MARK'), FLOW_POWDER: flowCode.match(/const FLOW_POWDER = array<bool, \d+>\(([^)]*)\);/)[1].split(',').map(v => v === 'true'),
   fallVelocity: c => fallVelocity(c),   // the CPU twin of fallWGSL's (tools/v2/fall-check.mjs holds them together)
   vec3f: (a, b, c) => (typeof a === 'object' ? vec3(a.x, a.y, b) : vec3(a, b, c)), vec2f: (x, y) => ({ x, y }), vec2u: (x, y) => [x >>> 0, y >>> 0],
   unpack2x16float: u => { const h = halves(u); return { x: h[0], y: h[1] }; },
@@ -73,7 +74,7 @@ const mainText = rewrite(scalar(body(flowCode, 'main')), [
   ['foldId(wg, nwg)', 'wg'], ['atomicLoad(&act2[FLOW_USE_AWAKE])', 'act2[FLOW_USE_AWAKE]'], ['atomicLoad(&act2[FLOW_LIST + e])', 'act2[FLOW_LIST + e]'],
   ['cells[s]', 'cellAt(s)'],
   ['vec3f(unpack2x16float(c[2]), unpack2x16float(c[3] & 65535).x) / FLOW_SPEED_FLUX', 'div3(vec3f(unpack2x16float(c[2]), unpack2x16float(c[3] & 65535).x), FLOW_SPEED_FLUX)'],
-  ['any(flow[s] != w)', 'differ(flowAt(s), w)'], ['flow[s] = w;', 'setFlow(s, w);'],
+  ['let old = flow[s];', 'let old = flowAt(s);'], ['any(flow[s] != w)', 'differ(flowAt(s), w)'], ['flow[s] = w;', 'setFlow(s, w);'],
 ]);
 const flowMain = new Function('ctx', 'io', 'wg', 'li', `with (ctx) { with (io) { ${mainText} } }`);
 let flowRuns = 0;
@@ -167,6 +168,32 @@ put(falling, setFall(fallingCore, 0, 0));
 owner.ticks(1);
 assert.deepEqual(flowAt(falling), [0, 0, 0], 'a landed grain stops its texture');
 
+// a topple (shaders/v2.js, the block pass): a one-cell jump with no fall speed, recorded where the grain
+// landed with FLOW_TOPPLE_MARK in the spare half. v2flow keeps the jump for that tick (cells per V1 step),
+// mark cleared, then the grain's own motion: its texture slides one cell, as V1's hop moves it.
+{
+  const block = calls.find(c => c.name === 'v2block');
+  assert.equal(block.opts.bind[1], owner.groups.flow, 'the block pass writes into the renderer\'s field');
+  assert.equal(owner.groups.flow.entries[0].resource.buffer, sim.flow);
+  const blockCode = (await import('../../src/shaders/v2.js')).v2BlockWGSL(g, (await import('../../src/shaders/v2/contact.js')).contactWGSL, true);
+  assert.match(blockCode, /noteTopple\(positions\[pick\], ti, pick, down\);/, 'each topple records its jump');
+  assert.match(blockCode, /flow\[slotOf\(to\)\] = vec2u\(pack2x16float\(moveD\.xy\), pack2x16float\(vec2f\(moveD\.z, FLOW_TOPPLE_MARK\)\)\);/, '... where it lands, marked');
+  assert.equal(constOf(blockCode, 'FLOW_TOPPLE_MARK'), ctx.FLOW_TOPPLE_MARK, 'the same mark');
+  assert.equal(constOf(blockCode, 'FLOW_TOPPLE_STEPS'), 4, 'V1 steps a tick (host.js LEGACY_STEPS_PER_TICK)');
+  assertNaga(blockCode, 'v2block with the flow field');
+  const toppled = [5, 1, 7], jump = [1 / 4, -1 / 4, -1 / 4];
+  put(toppled, setFall(L.makeMaterial(E.SAND).core, 0, 0));
+  const pack = (a, b) => new Uint32Array(new Float16Array([a, b]).buffer)[0];
+  flowWords.set([pack(jump[0], jump[1]), pack(jump[2], ctx.FLOW_TOPPLE_MARK)], at(toppled) * 2);
+  owner.ticks(1);
+  assert.deepEqual(flowAt(toppled), jump.map(f16), 'the toppled grain\'s jump, for its tick');
+  assert.equal(halves(flowWords[at(toppled) * 2 + 1])[1], 0, '... its mark cleared');
+  owner.ticks(1);
+  assert.deepEqual(flowAt(toppled), [0, 0, 0], 'then its own motion: at rest, 0');
+  flowWords.set([pack(1, 1), pack(1, ctx.FLOW_TOPPLE_MARK)], at(water) * 2);
+  owner.ticks(1);
+  assert.deepEqual(flowAt(water), flux.map(q => f16(q / WEATHER_SPEED_FLUX)), 'a mark under anything but a grain is not a topple\'s');
+}
 // a runtime switch: V1 ran the box meanwhile and left motion; V2 activated again clears it
 owner.suspend();
 assert.equal(sim.compact, null);
