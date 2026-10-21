@@ -149,7 +149,7 @@ export class PhysicsV2 {
       const withState = k.name === 'v2import' || k.name === 'v2bridge';
       const finalize = k.name === 'v2blockFinalize';
       // Contact is required and the long compile pole. Enqueue it before
-      // graphics, not behind the idle queue; the shared two-build bound remains.
+      // graphics, not behind the idle queue; the shared build bound (pipelineConcurrency) remains.
       this.kernels[k.name] = gpu.kernel({
         name: k.name, build: k.name === 'v2block' ? 'now' : 'idle', code: k.name === 'v2block' ? v2BlockWGSL(g, contactWGSL, !!this.blockCompact) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
         layouts: [finalize ? gpu.L.EMPTY : sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : (k.name === 'v2invalidate' || k.name === 'v2externalEvents') ? L.INVALIDATE : gpu.L.EMPTY, finalize ? L.BLOCK_FINALIZE : familyLayouts[this.familyOf(k.name)]],

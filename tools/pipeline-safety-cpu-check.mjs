@@ -4,7 +4,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createGpu } from '../src/gpu/device.js';
 import { GraphicsFailure } from '../src/gpu/errors.js';
-import { OptionalShaderFailure, PIPELINE_BUDGET_MS, PIPELINE_CONCURRENCY } from '../src/gpu/kernels.js';
+import { OptionalShaderFailure, PIPELINE_BUDGET_MS, PIPELINE_CONCURRENCY, PIPELINE_CONCURRENCY_MIN, PIPELINE_CONCURRENCY_MAX, pipelineConcurrency } from '../src/gpu/kernels.js';
+// The fixtures below count slots as a weak machine has them (pipelineConcurrency's floor); the
+// scaled bound has its own tests at the end.
+const SLOTS = PIPELINE_CONCURRENCY_MIN;
 
 const deferred = () => {
   let resolve, reject;
@@ -14,7 +17,7 @@ const deferred = () => {
 const drain = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
 const sameFailure = (promise, failure) => assert.rejects(promise, (e) => e === failure);
 
-async function fixture(t, { layout = 'ok', diagnosticsHang = false, moduleError = null, moduleHang = false, destroyThrows = false } = {}) {
+async function fixture(t, { layout = 'ok', diagnosticsHang = false, moduleError = null, moduleHang = false, destroyThrows = false, concurrency = SLOTS } = {}) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const oldUsage = globalThis.GPUBufferUsage;
   globalThis.GPUBufferUsage = { UNIFORM: 64, COPY_DST: 8 };
@@ -77,6 +80,7 @@ async function fixture(t, { layout = 'ok', diagnosticsHang = false, moduleError 
   const adapter = { info: {}, features: device.features, limits: device.limits,
     async requestDevice() { counts.requests++; return device; } };
   const gpu = await createGpu({ adapter });
+  gpu.pipelines.concurrency = concurrency;
   const reports = [];
   gpu.onFailure((error) => reports.push(error));
   t.after(() => {
@@ -119,7 +123,7 @@ await test('all now/manual/idle compute+render builds share two slots; pending a
   const alias = pipe(gpu, 0, { name: 'alias' });
   const queuedAlias = pipe(gpu, 4, { name: 'queued-alias' });
   await drain();
-  assert.equal(f.calls.length, PIPELINE_CONCURRENCY);
+  assert.equal(f.calls.length, SLOTS);
   assert.equal(gpu.stats.pipelinesPending, 6);
   assert.equal(f.counts.modules, 1);
   assert.equal(f.counts.layouts, 1);
@@ -137,7 +141,7 @@ await test('all now/manual/idle compute+render builds share two slots; pending a
       resolved++;
     }
     await drain();
-    assert.ok(f.counts.maxActive <= PIPELINE_CONCURRENCY);
+    assert.ok(f.counts.maxActive <= SLOTS);
   }
   await Promise.all(pipes.map((p) => p.ready));
   await alias.ready;
@@ -399,7 +403,7 @@ for (const kind of ['render', 'compute']) {
     assert.equal(optional.pipeline, null);
     assert.equal(optional.state, 'failed');
     assert.equal(f.gpu.stats.pipelinesCreated, 3);
-    assert.equal(f.counts.maxActive, PIPELINE_CONCURRENCY);
+    assert.equal(f.counts.maxActive, SLOTS);
     liveAndDrained(f);
   });
 }
@@ -635,3 +639,46 @@ for (const stage of ['module', 'layout', 'native']) {
     liveAndDrained(f);
   });
 }
+
+// The scaled bound (user request, 2026-10-20: "MAKE IT LOAD FAST"): from the CPU's cores, never
+// under two, never over the cap, and every guarantee above holds at it.
+await test('pipeline concurrency scales with the cores: a floor of two, a cap, the machine\'s own', () => {
+  assert.equal(PIPELINE_CONCURRENCY_MIN, 2);
+  for (const [cores, slots] of [[null, 2], [NaN, 2], [0, 2], [1, 2], [4, 2], [6, 2], [8, 4], [10, 6], [12, 8], [64, PIPELINE_CONCURRENCY_MAX]]) {
+    assert.equal(pipelineConcurrency(cores), slots, `${cores} cores: ${slots} at once`);
+  }
+  assert.equal(PIPELINE_CONCURRENCY, pipelineConcurrency(globalThis.navigator?.hardwareConcurrency));
+});
+
+await test('at a scaled bound, foreground and idle builds share its slots, and a failure still stops all of them', async (t) => {
+  const slots = 6;
+  const f = await fixture(t, { concurrency: slots });
+  const now = Array.from({ length: 8 }, (_, i) => pipe(f.gpu, i, { kind: i % 2 ? 'render' : 'compute' }));
+  const idle = Array.from({ length: 8 }, (_, i) => pipe(f.gpu, 100 + i, { build: 'idle' }));
+  f.runIdle();
+  await drain();
+  assert.equal(f.calls.length, slots, 'exactly the bound start at once');
+  assert.ok(f.gpu.pipelines.idleJobs.size <= slots, 'idle jobs in flight stay within the bound');
+  for (let done = 0; done < 10; done++) {
+    f.calls[done].resolve({});
+    await drain();
+    f.runIdle();
+    await drain();
+    assert.ok(f.counts.maxActive <= slots);
+  }
+  await Promise.all(now.map((p) => p.ready));
+  // each active build keeps its own unchanged budget at the higher bound
+  t.mock.timers.tick(PIPELINE_BUDGET_MS);
+  await drain();
+  const failure = f.gpu.failure;
+  assert.equal(failure?.name, 'GraphicsFailure');
+  assert.match(failure.message, /30000 ms/);
+  const started = f.calls.length;
+  await Promise.all(idle.map((p) => p.ready.catch(() => {})));
+  t.mock.timers.tick(PIPELINE_BUDGET_MS);
+  f.runIdle();
+  await drain();
+  assert.equal(f.calls.length, started, 'a failure starts nothing more, at any bound');
+  assert.equal(f.reports.length, 1, 'one failure, surfaced once');
+  stopped(f);
+});

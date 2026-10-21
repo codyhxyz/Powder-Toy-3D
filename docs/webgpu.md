@@ -371,9 +371,16 @@ react.dispatch(f, { indirect: sim.args, offset: ARGS.REACT }, { bind, header, pa
   (`detailGate`'s prefetch). Everything else builds on first use, with the existing toast: another view, the world's
   kernels on entering a world, the POV families on entering POV, a POV tool on first equip. Background work is
   scheduled with `detailGate.js:64`'s `idle()` (`requestIdleCallback`, else `setTimeout`: Safari 26 has no
-  `requestIdleCallback`), at most `PIPELINE_CONCURRENCY` (2) at a time; a mode the player just entered builds all of
+  `requestIdleCallback`), at most `PIPELINE_CONCURRENCY` at a time; a mode the player just entered builds all of
   its pipelines at once. A pipeline still pending when needed: the view keeps the previous variant or draws without
   the volume and keeps `pacer.wake()`ing; a POV tool's use waits.
+- **Concurrency.** `PIPELINE_CONCURRENCY` (src/gpu/kernels.js `pipelineConcurrency`) is the logical cores less four
+  (`PIPELINE_SPARE_CORES`: the main thread, the GPU process, the compositor), at least two and at most eight. The user
+  chose speed on 2026-10-20 ("MAKE IT LOAD FAST"): it was two everywhere until then. A cold pipeline compiles on one
+  core in Metal's compiler service, and separate builds scale almost linearly: on an M5 (10 cores) the 139 V2 kernels
+  take 10.6 s two at a time, 6.2 s four, 5.2 s six and 5.3 s eight, where the longest kernels are the floor. Every
+  start-up guarantee holds at any bound (docs/gpu-startup-safety.md): each active build's 30 s deadline, the first
+  fatal error stopping queued and active work, failures surfaced.
 - **three's pipelines.** three creates a mesh's pipeline synchronously at its first draw (`WebGPUPipelineUtils.js:262`)
   unless it was compiled with `compileAsync` (`:291`). Every module that adds a new kind of mesh to the scene
   (figure, vehicle, billboard pool, ghost, marker) first awaits `three.compileAsync(object, camera, scene)`
