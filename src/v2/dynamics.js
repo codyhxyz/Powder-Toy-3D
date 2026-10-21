@@ -5,7 +5,7 @@ import { fold } from '../gpu/kernels.js';
 import { ELEMENTS, K } from '../elements.js';
 import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
-import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase, storageLayout } from '../shaders/v2/particles.js';
+import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase, setOffBase, storageLayout } from '../shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, COUPLE_MODE,
   COUPLE_ARGS, listControl, LIST_ARGS, DISPATCH_ARGS_BYTES, LISTS_STAGES, listsStageWGSL, controlBufferWords, LAUNCH_MODE } from '../shaders/v2/blasts.js';
 import { AIR as AIR_MODE, EDGE } from '../simModes.js';
@@ -48,7 +48,11 @@ export function validateDynamicState(snapshot,g) {
     !Array.isArray(s.pendingEvents) || !Array.isArray(s.airArchive) || !Number.isInteger(s.sequence) || s.sequence<0 || s.sequence>0xfffffffe ||
     !Number.isInteger(s.blastBatch) || s.blastBatch<1 || s.blastBatch>64 ||
     // each pool slot's decoration (src/v2/physics.js particleDecoRange); saves from before it have none
-    (s.particleDeco!==undefined && (!(s.particleDeco instanceof Uint32Array) || s.particleDeco.length!==PARTICLE_CAP))) throw new Error('Invalid native dynamics snapshot');
+    (s.particleDeco!==undefined && (!(s.particleDeco instanceof Uint32Array) || s.particleDeco.length!==PARTICLE_CAP)) ||
+    // each pool slot's set-off mark (particles.js setOffBase); saves from before it have none, so none are set off
+    (s.setOff!==undefined && (!(s.setOff instanceof Uint32Array) || s.setOff.length!==PARTICLE_CAP))) throw new Error('Invalid native dynamics snapshot');
+  // a set-off mark is the id of the flying charge in its slot (snapshotDynamicState drops the stale ones)
+  if(s.setOff) for(let i=0;i<PARTICLE_CAP;i++) if(s.setOff[i] && s.setOff[i]!==s.particles[i*12+3]) throw new Error('Invalid native set-off mark');
   if(s.holdSession && (!Number.isInteger(s.holdSession.token) || s.holdSession.token<1 || s.holdSession.token>s.sequence ||
     !finiteVector(s.holdSession.position) || !finiteVector(s.holdSession.target) || !safeDynamicNumber(s.holdSession.radius) || s.holdSession.radius<0 ||
     !safeDynamicNumber(s.holdSession.strength) || s.holdSession.strength<0 || !Number.isInteger(s.holdSession.lastTick))) throw new Error('Invalid native physgun state');
@@ -461,7 +465,12 @@ export class NativeDynamics {
     const externalBlastDone=control.slice(externalBlastBase(g),externalBlastBase(g)+EXTERNAL_BLAST_CAP);
     const owned=new Set(metadata.externalBlasts.map(r=>r.slot));
     for(let i=0;i<externalBlastDone.length;i++) if(!owned.has(i)) externalBlastDone[i]=0;
-    return {...metadata,...(particleDeco?{particleDeco}:{}),externalBlastDone,particles,air,control:control.slice(0,32),held:control.slice(heldBase(g),heldBase(g)+PARTICLE_CAP),shocks:control.slice(shockBase(g),shockBase(g)+g.nbricks),rayRemaining:control.slice(rayRequestBase(g),rayRequestBase(g)+RAY_REQUEST_CAP),serial};
+    // a charge a hit set off in flight (particles.js dShockHit) keeps its mark until it lands: a save
+    // between that tick and its landing holds it, or the restored charge would land without going off.
+    // A mark is its slot's flying charge's id; one left by a slot's earlier packet is stale, dropped.
+    const setOff=control.slice(setOffBase(g),setOffBase(g)+PARTICLE_CAP);
+    for(let i=0;i<PARTICLE_CAP;i++) if(setOff[i]!==particles[i*12+3]) setOff[i]=0;
+    return {...metadata,...(particleDeco?{particleDeco}:{}),externalBlastDone,setOff,particles,air,control:control.slice(0,32),held:control.slice(heldBase(g),heldBase(g)+PARTICLE_CAP),shocks:control.slice(shockBase(g),shockBase(g)+g.nbricks),rayRemaining:control.slice(rayRequestBase(g),rayRequestBase(g)+RAY_REQUEST_CAP),serial};
   }
   restoreDynamicState(snapshot) {
     this._check(); const g=this.g,s=snapshot;
@@ -478,6 +487,7 @@ export class NativeDynamics {
     this.gpu.write(this.control,rayRequestBase(g)*4,s.rayRemaining);
     this.gpu.write(this.control,externalBlastBase(g)*4,external.done);this.externalBlasts=external.requests;
     this.gpu.write(this.control,heldBase(g)*4,s.held); this.gpu.write(this.control,shockBase(g)*4,s.shocks);
+    if(s.setOff) this.gpu.write(this.control,setOffBase(g)*4,s.setOff);
     this.gpu.write(this.owner.events,0,events); this.gpu.frame.clear(this.flight); this.gpu.frame.clear(this.claims); this.gpu.frame.clear(this.plans);
     this.owner.noteAllCells?.({events:true}); // requests written behind noteEvents: every brick may hold one
     this.airIndex=0; this.origin=[...s.origin]; this.sequence=s.sequence; this.blastBatch=s.blastBatch;

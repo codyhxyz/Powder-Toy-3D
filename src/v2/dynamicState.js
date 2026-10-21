@@ -83,7 +83,7 @@ export function emptyDynamicState(dims, origin = [0, 0, 0]) {
   for (let b = 0; b < g.nbricks; b++) floats[b * 8 + 6] = AIR.quietTicks;
   return { version: 1, dims: [...dims], origin: [...origin], sequence: 0, blastBatch: 8, isIdle: true,
     particles: new Uint32Array(PARTICLE_CAP * 12), air, control: new Uint32Array(32), held: new Uint32Array(PARTICLE_CAP),
-    holdSession: null, shocks: new Uint32Array(g.nbricks), rayRemaining: new Uint32Array(RAY_REQUEST_CAP), requests: [], pendingEvents: [], airArchive: [] };
+    holdSession: null, shocks: new Uint32Array(g.nbricks), setOff: new Uint32Array(PARTICLE_CAP), rayRemaining: new Uint32Array(RAY_REQUEST_CAP), requests: [], pendingEvents: [], airArchive: [] };
 }
 
 // Preflight BOTH owners before either mutates; callers have already selected
