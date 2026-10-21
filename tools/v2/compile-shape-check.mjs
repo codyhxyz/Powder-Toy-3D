@@ -32,6 +32,25 @@ for (const dims of [[32, 32, 32], [128, 128, 128]]) {
   }
 }
 
+// 1b. v2pairs (src/shaders/v2/columns.js): one colTransfers for the pair a thread owns, and colSends' one
+// colPour and one colTransfer for both lane directions (2026-10-20: 4.75 M -> 1.43 M chars inlined, 3.3 -> 1.4 s);
+// the volume shaders' caustic taps in one rippleH call (lighting.js causticGain, Box and World)
+{
+  const { v2PairsWGSL } = await import('../../src/shaders/v2.js');
+  const { volumeFrag } = await import('../../src/shaders/render.js');
+  const pairs = v2PairsWGSL(gridLayout(32, 32, 32));
+  const main = pairs.slice(pairs.lastIndexOf('fn main('));
+  assert.equal(calls(main, 'colTransfers'), 1, 'v2pairs main: one colTransfers');
+  const sends = body(pairs, 'colSends');
+  assert.equal(calls(sends, 'colPour'), 1, 'colSends: one colPour');
+  assert.equal(calls(sends, 'colTransfer'), 1, 'colSends: one colTransfer');
+  assert.equal(calls(sends, 'colSend'), 0, 'colSends: colSend\'s rule inline, not a second colPour');
+  for (const backend of ['box', 'world']) {
+    const caustic = body(volumeFrag({ nx: 32, ny: 32, nz: 32 }, { backend, view: 'realistic', detail: {} }), 'causticGain');
+    assert.equal(calls(caustic, 'rippleH'), 1, `${backend} causticGain: one rippleH in its taps' loop`);
+  }
+}
+
 // 2. ctPhase as it was (one ctConvert a branch, with phase-blast's puffs), against today's
 function ctPhaseBefore(input, surface, random) {
   if (ctRow(input.id).kind === 3 && input.fill === 0) return ctConvert(input, E.EMPTY, 0);
