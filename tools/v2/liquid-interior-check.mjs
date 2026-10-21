@@ -29,7 +29,9 @@ assert.match(crossing, /phiStale = false;\s*} else {\s*phiStale = true;/, 'skipp
 assert(render.indexOf('absorbDeco(liq,') > render.indexOf('if (tCut < tEv)'));
 assert.match(render, /thinBodySeg\(pm, tEv - tEnter\)/);
 assert.match(render, /if \(brickMixed\(flags\)\)/);
-assert.match(render, /liquidInterface\(hp, n0, n0, true/);
+// the box wall's refraction goes through the march's one liquidInterface call (its head: ifPend)
+assert.match(strip(render), /ifPend = true; ifEntry = true; ifP = hp; ifN = n0; ifG = n0; ifEnter = true;/);
+assert.match(strip(render), /let inside = liquidInterface\(ifP, ifN, ifG, ifEnter, ifLid, ifMirror,/);
 assert.match(render, /phiA = surfSample\(ro\); phiStale = false/);
 
 const bit = BRICK_INFO.LIQUID_INTERIOR;

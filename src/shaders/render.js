@@ -874,7 +874,19 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   // Keep the remaining budget across chords, brick skips and optical restarts.
   var meshBudget = MESH_CUT_NONE;
   if (tCut < MESH_CUT_NONE) { meshBudget = warpArc(walk.ray, 0.0, max(tCut, 0.0)); }` : ''}
-  var cut = false;${grains ? `
+  var cut = false;
+  // A liquid surface the ray refracts at (liquidInterface), handled at the top
+  // of the march's next step: the box wall the ray enters liquid through and
+  // every bend share its one call site (a GPU compiler inlines each call).
+  var ifPend = false;
+  var ifEntry = false;   // (the box wall: its restart keeps the march's brick and axis)
+  var ifP = vec3f(0.0);
+  var ifN = vec3f(0.0);
+  var ifG = vec3f(0.0);
+  var ifEnter = false;
+  var ifLid = E_EMPTY;
+  var ifMirror = false;
+  var ifT = 0.0;${grains ? `
   var altRefl = false;   // the hand-off band's stored path (gAltCol) came after a traced reflection` : ''}
 
   var lastB = vec3i(-1);
@@ -919,10 +931,8 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           liq = liquidIdAt(hp, lid);
           gSkyIn = skyInAt(probeAt(hp));
         } else {
-          if (liquidInterface(hp, n0, n0, true, lid, false, &ro, &rd, &col, &trans, &mediumLight)) { liq = lid; }
-          tCut -= tEnter;
-          rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
-          tEnter = 0.0; phiA = surfSample(ro);
+          // refracted in at the march's first step (liquidInterface(hp, n0, n0, true, lid, false, ...))
+          ifPend = true; ifEntry = true; ifP = hp; ifN = n0; ifG = n0; ifEnter = true; ifLid = lid; ifMirror = false; ifT = tEnter;
         }
         lightRef = vec3f(1.0);
         if (FU.shadows != 0u) { lightRef = sunShadowAt(select(hp - n0 * IFACE_PROBE, hp, t0 > bh.x)); }   // inside: the map carries the liquid above
@@ -931,7 +941,35 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     }
   }
 `}
-  for (var i = 0; i < ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'} + BEND_EXTRA_STEPS; i++) {${curved ? `
+  // (one trip more than the march's steps: a surface met on the last step still refracts)
+  for (var i = 0; i <= ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'} + BEND_EXTRA_STEPS; i++) {
+    if (ifPend) {
+      ifPend = false;
+      // the scene shows in the reflection only off the first surface the eye ray meets (ifMirror)
+      let inside = liquidInterface(ifP, ifN, ifG, ifEnter, ifLid, ifMirror, &ro, &rd, &col, &trans, &mediumLight);
+      tCut -= ifT;
+      rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
+      tEnter = 0.0;${curved ? '' : `
+      if (ifEntry) {
+        if (inside) { liq = ifLid; }
+        phiA = surfSample(ro);
+      } else {`}
+        liq = select(E_EMPTY, ifLid, inside);
+        if (ifEnter) { lightRef = mediumLight; lightY = ifP.y; }
+        lastB = vec3i(-1); ax = 1;
+        gThin = brickThin(brickInfo(clamp(cell, vec3i(0), GRID - 1) / BS));
+        phiA = surfSample(ro); phiStale = false;${curved ? `
+        meshBudget = tCut;
+        warpRestart(&walk, ro, rd);` : ''}
+        // restarted inside something opaque (sand under the water line)
+        let oc = surfInsideOpaque(phiA);
+        if (oc > 0) {
+          hitK = HIT_SMOOTH; stop = true; hitP = ro; hitN = vec3f(0.0); hitCh = oc;
+          break;
+        }${curved ? '' : `
+      }`}
+    }
+    if (i == ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'} + BEND_EXTRA_STEPS) { break; }${curved ? `
     // the next chord, as a ray of its own from its start (t restarts there, as at a bend)
     var fp: vec3f;
     var ft: f32;
@@ -1206,23 +1244,8 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           n = liquidDetail(hp, n, lid, &col, &trans);   // close-up detail (gfx/liquidDetail.js)` : ''}
           if (bends < MAX_BENDS) {
             bends++;
-            // the scene shows in the reflection only off the first surface the eye ray meets
-            let inside = liquidInterface(hp, n, geometric, ev == EV_ENTER, lid, bends == 1, &ro, &rd, &col, &trans, &mediumLight);
-            tCut -= tEv;
-            liq = select(E_EMPTY, lid, inside);
-            if (ev == EV_ENTER) { lightRef = mediumLight; lightY = hp.y; }
-            rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
-            tEnter = 0.0; lastB = vec3i(-1); ax = 1;
-            gThin = brickThin(brickInfo(clamp(cell, vec3i(0), GRID - 1) / BS));
-            phiA = surfSample(ro); phiStale = false;${curved ? `
-            meshBudget = tCut;
-            warpRestart(&walk, ro, rd);` : ''}
-            // restarted inside something opaque (sand under the water line)
-            let oc = surfInsideOpaque(phiA);
-            if (oc > 0) {
-              hitK = HIT_SMOOTH; stop = true; hitP = ro; hitN = vec3f(0.0); hitCh = oc;
-              break;
-            }
+            // refract here, at the top of the next step (the loop's head: ifPend), and restart there
+            ifPend = true; ifEntry = false; ifP = hp; ifN = n; ifG = geometric; ifEnter = ev == EV_ENTER; ifLid = lid; ifMirror = bends == 1; ifT = tEv;
             continue;
           }
           // out of bends: switch medium, keep straight
