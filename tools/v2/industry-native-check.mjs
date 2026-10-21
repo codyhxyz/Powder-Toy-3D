@@ -19,7 +19,7 @@ import { kickWGSL, KickParams } from '../../src/shaders/povKick.js';
 import { gateWGSL, GATE_OWNER_MARKER, GATE_OWNER_MARKER_NATIVE } from '../../src/industry/gates.js';
 import { constructionWGSL, PUMP_BACKPLATE_TAG_NATIVE } from '../../src/industry/construction.js';
 import { PUMP_BACKPLATE_TAG } from '../../src/industry/pumpStructure.js';
-import { nativeReadiness, HOST_HZ } from '../../src/v2/host.js';
+import { nativeReadiness, HOST_HZ, LEGACY_STEP_HZ, LEGACY_STEPS_PER_TICK } from '../../src/v2/host.js';
 import { nativeLife } from '../../src/v2/layout.js';
 import { GRAVITY } from '../../src/v2/dynamics-reference.js';
 import { SIM_GRAVITY } from '../../src/physics.js';
@@ -191,7 +191,8 @@ console.log('PASS V2 pump carries a part-full liquid cell inlet → outlet with 
 // Hearth draft: per native tick, real seconds (1/HOST_HZ), heat/life only (no launch).
 const hearth = machines.find(d => d.type === 'hearth');
 mark = calls.length; const before = allocations.length;
-sim.frame += 2; physics.nativeStep(machines);
+// (a native host tick advances sim.frame and nativeTicks together: v2/host.js nativeHostTick)
+sim.frame += 2; sim.nativeTicks = (sim.nativeTicks ?? 0) + 2; physics.nativeStep(machines);
 const draft = calls.slice(mark).filter(c => c.name === 'industryNativeEvaluate');
 assert.equal(draft.length, 1);
 assert.equal(draft[0].opts.params.kind, INDUSTRY_KIND.hearthHeat);
@@ -201,6 +202,18 @@ assert.equal(allocations.length, before, 'heat and fuel commits launch nothing')
 assert(!calls.slice(mark).some(c => c.name === 'clear' && c.buffer === plans), 'a heat-only batch leaves plans alone');
 assert.equal(marks.filter(m => m.at >= mark).length, 0, 'and lists nothing to launch');
 console.log('PASS V2 hearth draft runs per native tick in real seconds without a launch');
+// The draft's seconds are game time (v2/host.js stepClock), so a span holding both engines' steps is right:
+// four V1 steps nothing drafted after (a console sim.step under V1), a switch back, one native tick.
+// On raw sim.frame those five counts all read as native ticks: 5/60 s, not 2/60.
+{
+  sim.compact = null; sim.frame += 4;            // V1: one a step (sim.js step)
+  sim.compact = owner; sim.frame += 1; sim.nativeTicks += 1;
+  mark = calls.length; physics.nativeStep(machines);
+  const span = calls.slice(mark).filter(c => c.name === 'industryNativeEvaluate');
+  assert.equal(span.length, 1);
+  assert.equal(span[0].opts.params.dt, (4 + LEGACY_STEPS_PER_TICK) / LEGACY_STEP_HZ, 'four V1 steps and a tick are 2/60 s of draft');
+  console.log('PASS hearth draft across a runtime switch counts game time, not raw sim.frame');
+}
 
 // Saves under V2: machine state is registrations and cargo; native cargo validates.
 const snapshot = physics.toJSON();

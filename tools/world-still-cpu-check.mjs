@@ -201,11 +201,10 @@ test('actual App WORLD thumbnail hook executes own-camera queue, readback, unpre
   const win={renderFrame:{driver}},target={destroy(){events.push('destroy');}},gpu={createTexture:()=>target,
     readback:{async texture(t){assert.equal(t,target);events.push('read');return new Uint8Array([20,10,5,128]);}},
     device:{queue:{async onSubmittedWorkDone(){events.push('fence');}}}};
-  const run=new Function('win','graphicsFailure','coreReady','THREE','useWebGPUCamera','camera','THUMB_SIZE','viewKeyOf','isMaterialView','gateVariants','settings','post','selectedMode','frameUniformValues','presentation','freezeWorldView','pov','gpu','GPUTextureUsage','volume','sim','worldDetail',
-    `${extract(source,'renderWorldThumb')};return renderWorldThumb;`)(win,false,true,THREE,useWebGPUCamera,camera,[1,1],()=> 'realistic',()=>true,()=>({base:{}}),settings,post,'sandbox',frameUniformValues,presentation,freezeWorldView,null,gpu,{RENDER_ATTACHMENT:16,COPY_SRC:1},{matrixWorld:model},{origin:new THREE.Vector3()},
-    (d)=>({...d,engineDetail:1}));   // (app.js worldDetail: a V2 World program's detail)
+  const run=new Function('win','graphicsFailure','coreReady','THREE','useWebGPUCamera','camera','THUMB_SIZE','viewKeyOf','isMaterialView','gateVariants','settings','post','selectedMode','frameUniformValues','presentation','freezeWorldView','pov','gpu','GPUTextureUsage','volume','sim',
+    `${extract(source,'renderWorldThumb')};return renderWorldThumb;`)(win,false,true,THREE,useWebGPUCamera,camera,[1,1],()=> 'realistic',()=>true,()=>({base:{}}),settings,post,'sandbox',frameUniformValues,presentation,freezeWorldView,null,gpu,{RENDER_ATTACHMENT:16,COPY_SRC:1},{matrixWorld:model},{origin:new THREE.Vector3()});
   let image;const out={dataset:{},getContext:()=>({createImageData:()=>({data:new Uint8ClampedArray(4)}),putImageData:i=>image=i})};
-  const result=run(0,out);assert.deepEqual(events,['queue']);assert.notEqual(job.view.camera,camera);assert.equal(job.view.camera.children.length,0);assert.equal(job.view.curved,false);assert.deepEqual(job.view.detail,{engineDetail:1},'the thumbnail draws the WORLD program the frame draws');assert.equal(job.view.values.cam[0],20,'detached thumbnail retains POV rig world pose');
+  const result=run(0,out);assert.deepEqual(events,['queue']);assert.notEqual(job.view.camera,camera);assert.equal(job.view.camera.children.length,0);assert.equal(job.view.curved,false);assert.equal(job.view.values.cam[0],20,'detached thumbnail retains POV rig world pose');
   gate.resolve(true);assert.equal(await result,true);assert.deepEqual(events,['queue','read','fence','destroy']);assert.equal(out.dataset.rendered,'1');assert.deepEqual([...image.data],[40,20,10,128]);
   assert.match(extract(source,'renderThumb'),/if\(win\)return renderWorldThumb\(viewId,out\)/);
   presentation.dispose();

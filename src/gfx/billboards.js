@@ -1,7 +1,7 @@
 // Billboards: small analytic particle pools that replace three.quarks
 // (docs/webgpu.md F8, misc-three map 7.12: it has no WebGPU path) for the POV
-// effects (pov/vfx.js) and the birds' motes (birds/render.js). A pool is one
-// instanced draw per (texture, blend, mode), as quarks batched them. A spawn
+// effects (pov/vfx.js). A pool is one instanced draw per (texture, blend,
+// mode), as quarks batched them. A spawn
 // writes one record and uploads only it; the vertex stage then evaluates the
 // particle's whole life from it: a ballistic path under gravity with linear
 // drag, solved exactly, its size over life (a grow factor through quarks's

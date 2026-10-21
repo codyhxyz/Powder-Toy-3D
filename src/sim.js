@@ -589,6 +589,9 @@ export class Simulation {
   }
   get nativeCapabilities() { return nativeCapabilities(this); }
   async prepareNative(owner = this.compactOwner) {
+    // The brush's kernels need only the owner's buffers: their builds start with the owner's, not
+    // after its readiness, which made them a serial tail of the loading screen (cold compile).
+    if (owner && owner === this.compactOwner && owner.dynamics && !owner.isReady) prepareNativeBrush(this).catch(() => {});
     await owner?.ready;
     if (!owner?.aux) return false;
     if (this.nativeIntegration?.owner !== owner) {
@@ -1260,7 +1263,9 @@ export class Simulation {
     if (this.compactOwner?.isReady && !native?.isReady) throw new Error('Native world shift is not ready');
     // Synchronize/project before moving either representation. Legacy shifting
     // is a cache move, never permission to reimport the entire native grid.
-    this.compactOwner?.exportLegacy();
+    // (Only the running owner projects: a suspended one, after a runtime switch to V1, shadows V1's cells,
+    // which are V1's own. native.shift syncs it first, importing V1's writes, as exportLegacy would.)
+    this.compact?.exportLegacy();
     native?.shift(dx, dz);
     this.pingPong(true);   // (out of place: a box the native engine owns holds one copy)
     const f = this.gpu.frame, size = fold(Math.ceil(this.g.slots / 64)), shift = [dx, 0, dz];

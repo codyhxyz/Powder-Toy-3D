@@ -1,6 +1,6 @@
 import { worldPosition, legacyVelocityToMS } from '../../v2/tools.js';
 import * as THREE from 'three';
-import { PHYS as ENGINE } from '../../physics.js';
+import { PHYS as ENGINE, NOMINAL_STEP_RATE } from '../../physics.js';
 import { PHYS, PHYS_MODE, BLAST, glowTexture, disposeTree } from '../../shaders/povTools.js';
 import { povGpu } from '../gpu.js';
 import { attachModel } from '../models.js';
@@ -10,6 +10,7 @@ import { gear } from './catalog.js';
 import { CELL_M } from '../../scale.js';
 import { rayTarget, PLAYER } from '../targets.js';
 import { povEvents } from '../events.js';
+import { legacySteps } from '../../v2/host.js';
 
 // Physgun: a force beam on loose matter (powders, liquids, gases). Press and
 // hold left-click to grab what's around the aim point: every frame one kernel
@@ -167,12 +168,21 @@ export default {
       if (sim.compact) {
         // (a world shift freezes native tools; the hold resumes after it)
         if (sim.nativeTransition || sim.nativeTransitionError || !sim.nativeCapabilities.physgun) return false;
+        // V1's hold (shaders/povTools.js physgunWGSL): the ball moves at carry + (hold − com)·SPRING a step,
+        // toward the hold point as it chases the aim (chase: round the eye, no faster than the matter can
+        // follow), carrying that point's own velocity. Natively the COM spring pulls toward the same point
+        // at V1's rate, SPRING a step × V1's steps a second (60/s: dynamics.js holdApply's ω), with the
+        // point's velocity over the frame's game time as its feed-forward (m/s). It pulled toward the aim
+        // itself at 12/s with none: the ball cut the chord through the body and trailed a turning view.
+        const t = ctx.nativeDt ?? 0;
+        if (t > 0) carry.subVectors(hold, prevHold).multiplyScalar(CELL_M / t).clampLength(0, legacyVelocityToMS(ENGINE.V_MAX));
+        else carry.set(0, 0, 0);
         const result = sim.compact.dynamics.applyPhysgun({ mode: mode === PHYS_MODE.FLING ? 'fling' : 'hold',
-          position: worldPosition(sim, hold), target: worldPosition(sim, aimPt), direction: ctx.dir.toArray(),
-          radius: PHYS.RADIUS, dt: ctx.nativeDt ?? 0,
-          // Fling is m/s; hold uses the owner's default spring frequency, NOT
-          // the legacy fling speed mistakenly treated as stiffness.
-          strength: mode === PHYS_MODE.FLING ? legacyVelocityToMS(PHYS.FLING) : undefined,
+          position: worldPosition(sim, hold), target: worldPosition(sim, hold), direction: ctx.dir.toArray(),
+          radius: PHYS.RADIUS, dt: t,
+          // Fling is m/s (V1's cells/step); hold is the spring's rate (1/s), not a speed.
+          strength: mode === PHYS_MODE.FLING ? legacyVelocityToMS(PHYS.FLING) : PHYS.SPRING * NOMINAL_STEP_RATE,
+          velocity: mode === PHYS_MODE.FLING ? undefined : carry.toArray(),
         });
         if (result.status !== 'queued' && result.status !== 'accepted') { console.warn('physgun:', result.reason); return false; }
         return true;
@@ -273,7 +283,8 @@ export default {
           // the hold point rides along with the eye, then chases the aim
           hold.add(tmpA.subVectors(ctx.eye, prevEye));
           prevEye.copy(ctx.eye);
-          chase(ctx.eye, CHASE * ENGINE.V_MAX * ctx.stepsPerFrame);
+          // (CHASE · V_MAX a V1 step, the steps the frame ran: under V2 its ticks are four V1 steps each)
+          chase(ctx.eye, CHASE * ENGINE.V_MAX * legacySteps(sim, ctx.stepsPerFrame));
           if (ctx.primaryPressed) prevHold.copy(hold);
           if (ctx.secondaryPressed) {
             if (run(ctx, PHYS_MODE.FLING) === false) return;

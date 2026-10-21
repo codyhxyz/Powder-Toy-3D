@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { paintUpdateWGSL } from '../../src/shaders/passes.js';
 import { stampEdit } from '../../src/shaders/stamp.js';
 import { prelude, STATE_OPTS } from '../../src/shaders/common.js';
-import { v2ImportWGSL, v2BridgeWGSL } from '../../src/shaders/v2.js';
+import { v2ImportWGSL, v2BridgeWGSL, BRIDGE } from '../../src/shaders/v2.js';
 import { Simulation, gridLayout } from '../../src/sim.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
 import { E, K, ELEMENTS, TOOLS } from '../../src/elements.js';
@@ -98,16 +98,18 @@ for(const amount of [1,12345,L.FULL*3]) for(const bank of [-73,177]) {
  assert.equal(L.cFill(hot.core),amount);assert.equal(L.energyOf(hot)-L.energyOf(m),BigInt(L.capacityQ(m.core))*4n);
  const ct=partial(mergeCtx,vec(),m,{...a,w:7});assert.equal(ct.bank,bank);assert.equal(L.cFill(ct.core),amount);assert.equal(L.isConductor(E.WATER) ? (ct.core[3] >>> 16) & 4095 : L.ctypeOf(ct.core),7);
 }
-// Real export cache/protocol spies: transitions refresh all, never claim/import.
+// Real export cache/protocol spies: the first export refreshes all, a switch of projection the stale and
+// differing bricks (tools/v2/legacy-flip-check.mjs runs it); never claim/import.
 const calls=[];const sim={compact:null,gpu:{frame:{},testMode:true},g,tables:{},header:()=>({capture:2}),onPass(){}};
 const engine=Object.assign(Object.create(PhysicsV2.prototype),{sim,gpu:sim.gpu,g,isReady:true,groups:{state:{},v2:{}},
  sync(){calls.push(['sync']);},_params:()=>({}),kernels:{v2bridge:{dispatch(_f,_n,o){calls.push(['bridge',o]);}}}});
 sim.compact=engine;
 engine.exportLegacy();engine.exportLegacy();engine.exportLegacy(false);engine.exportLegacy(false);engine.exportLegacy(true);
 const bridges=calls.filter(c=>c[0]==='bridge').map(c=>c[1]);assert.equal(bridges.length,3);
-assert.deepEqual(bridges.map(o=>o.header.format),[3,0,3]);assert(bridges.every(o=>o.header.capture===0&&o.params.full===1));
-const projection=body(v2BridgeWGSL(g),'main');
-assert.match(projection,/select\(compactA\(p, cells\[s\]\), compactProbeA\(p, cells\[s\]\), H.format == 3u\)/,'visual compatibility uses exactly renderer compactA, including partial-fill dither');
+assert.deepEqual(bridges.map(o=>o.header.format),[3,0,3]);assert(bridges.every(o=>o.header.capture===0));
+assert.deepEqual(bridges.map(o=>o.params.full),[BRIDGE.ALL,BRIDGE.FLIP,BRIDGE.FLIP]);
+const projection=body(v2BridgeWGSL(g),'bridgeCell');
+assert.match(projection,/let c = cells\[s\];\n  let drawn = compactA\(p, c\);[^]*edit = compactProbeA\(p, c\);[^]*select\(drawn, edit, H.format == 3u\)/,'visual compatibility uses exactly renderer compactA, including partial-fill dither');
 const simSpy=Object.assign(Object.create(Simulation.prototype),{compact:{isReady:true,forceCompatibility:true,groups:{read:{}},sync(){},exportLegacy(native){calls.push(['mode',native]);}},gpu:{testMode:true},_bindRW:{},_bindRO:{}});
 void simSpy.bindRW;void simSpy.bindRO;simSpy.legacyState();assert.deepEqual(calls.filter(c=>c[0]==='mode').map(c=>c[1]),[true,false,false]);
 // Real importer dispatch protocol: only the actual dense editing cache enables

@@ -10,7 +10,7 @@ import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
 import { farLayout, farSceneLayout } from '../shaders/far.js';
-import { WorldRenderSource, dropNativeWorldAux } from './renderSource.js';
+import { WorldRenderSource, dropNativeWorldAir } from './renderSource.js';
 import { RawWorldSourceProducer } from './renderSourceProducer.js';
 
 // The window over a massive world (docs/scaling.md D11, phases W1 and W2;
@@ -312,8 +312,8 @@ export class WorldWindow {
         // Nothing moves: the store takes the resident cells at the source's current revision.
         const capture = this.renderSource.token();
         const nativeRead = native ? this.sim.nativeIntegration.captureSlab(lo, bricks) : null;
-        const exact = this.gen.diff(this.P,lo,bricks,this.leave,{ native }) === true;
-        this.readBack([origin.x/BRICK+x/BRICK,0,origin.z/BRICK],bricks,capture,this.leave,nativeRead,exact);
+        const { exact, nativeOut } = this.leaveDiff(lo, bricks, this.leave, !!nativeRead);
+        this.readBack([origin.x/BRICK+x/BRICK,0,origin.z/BRICK],bricks,capture,this.leave,nativeRead,exact,nativeOut);
         await this.pending;
         check();
       }
@@ -386,9 +386,9 @@ export class WorldWindow {
     // 1.
     const nativeRead = sim.nativeIntegration?.captureSlab(leaveLo, bricks);
     const out = this.pending ? this.gen.diffBuffers(this.maxBricks) : this.leave;
-    const exact = this.gen.diff(this.P, leaveLo, bricks, out, { native: !!nativeRead }) === true;
+    const { exact, nativeOut } = this.leaveDiff(leaveLo, bricks, out, !!nativeRead);
     const leaveB = [before.x / BRICK + leaveLo[0] / BRICK, 0, before.z / BRICK + leaveLo[2] / BRICK];
-    this.readBack(leaveB, bricks, capture, out, nativeRead, exact);
+    this.readBack(leaveB, bricks, capture, out, nativeRead, exact, nativeOut);
     // the decoration of the slab that leaves goes into its own store (src/deco.js)
     sim.deco?.leave(leaveLo, bricks, (x, y, z) => this.store.key(leaveB[0] + x, leaveB[1] + y, leaveB[2] + z));
     this.far?.summarize(leaveLo, bricks);
@@ -420,6 +420,22 @@ export class WorldWindow {
     this.last = { dx, dz, ms: performance.now() - t0, restored, trees, ...this.plantCost, readbackMs: null, kept: null };
   }
 
+  // The leaving slab's diff (step 1), into out. native: the window reads the slab's native bricks too.
+  // V2 running: one diff, V2's (its head picks what both stores keep). V2 suspended (a World grid
+  // switched to V1 at runtime keeps its owner shadowing V1's window, so a switch back finds every
+  // brick V1 didn't change exact): V1's diff of V1's cells, which is what V1's store keeps as V1 alone
+  // does, and V2's diff of the owner's cells into nativeOut, which is what the native store keeps.
+  // Without that second head the native store kept every brick that left the window under V1.
+  leaveDiff(lo, bricks, out, native) {
+    const sim = this.sim;
+    if (!native || sim.compact || !sim.compactOwner) return { exact: this.gen.diff(this.P, lo, bricks, out, { native }) === true, nativeOut: null };
+    this.gen.diff(this.P, lo, bricks, out, { native: false });
+    const nativeOut = out === this.leave ? (this.leaveNative ??= this.gen.diffBuffers(this.maxBricks)) : this.gen.diffBuffers(this.maxBricks);
+    if (this.gen.diff(this.P, lo, bricks, nativeOut, { native: true, owner: sim.compactOwner }) === true) return { exact: false, nativeOut };
+    if (nativeOut !== this.leaveNative) for (const b of [nativeOut.head, nativeOut.cells]) sim._retire(b);
+    return { exact: false, nativeOut: null };   // (V2's kernel not built yet: every native brick stays, as before it is)
+  }
+
   // Read the leaving slab back (its kernel recorded just before): the count,
   // the kept bricks' keys and a prefix of their cells, one round trip unless
   // more bricks differ than the estimate (then a second for the rest). The
@@ -431,15 +447,17 @@ export class WorldWindow {
   // keeps those and any with a nonzero energy bank, and lets the rest go as V1's
   // store lets a matching brick go: coming back, it is generated and imported
   // again, bit for bit (shaders/v2/leave.js). Without it every native brick stays.
-  readBack(base, bricks, capture, out = this.leave, nativeRead = null, exact = false) {
+  // nativeOut: V2's diff of a suspended owner's cells (leaveDiff); its head, not out's, picks the native bricks kept.
+  readBack(base, bricks, capture, out = this.leave, nativeRead = null, exact = false, nativeOut = null) {
     const n = bricks[0] * bricks[1] * bricks[2], rb = this.gpu.readback, epoch = this.epoch;
     const est = Math.min(n, Math.max(READ_MIN, Math.ceil(this.lastKept * READ_AHEAD)));
     const t0 = performance.now(), last = () => this.last;
     // (both copies are recorded now, at the request: docs/webgpu.md B7)
     const head = rb.buffer(out.head, 0, Math.ceil(leaveHeadBytes(n) / 4) * 4);
     const cells = rb.buffer(out.cells, 0, est * LEAVE_BRICK_BYTES);
+    const nativeHead = nativeOut ? rb.buffer(nativeOut.head, 0, Math.ceil(leaveHeadBytes(n) / 4) * 4) : null;
     let t1 = 0, kept = 0;
-    const pending = Promise.all([head, cells, nativeRead]).then(async ([h, c, native]) => {
+    const pending = Promise.all([head, cells, nativeRead, nativeHead]).then(async ([h, c, native, nh]) => {
       if (epoch !== this.epoch) return;
       t1 = performance.now();
       const words = new Uint32Array(h), count = Math.min(words[0], n);
@@ -454,6 +472,8 @@ export class WorldWindow {
         floats = all;
       }
       const keep = new Set();
+      const nativeWords = nh ? new Uint32Array(nh) : null;
+      const nativeKeep = nativeWords ? new Set(nativeWords.subarray(1, 1 + Math.min(nativeWords[0], n))) : null;
       for (let s = 0; s < count; s++) {
         const key = words[1 + s];
         keep.add(key);
@@ -467,7 +487,8 @@ export class WorldWindow {
         if (!keep.has(key) && (this.storeRevisions.get(key) ?? -1) <= capture.revision) {
           this.store.drop(key); this.storeRevisions.set(key, capture.revision);
         }
-        if (native && (!exact || keep.has(key) || nativeBrickBanked(native[i]))) this.nativeStore.put(key, native[i]);
+        const differs = nativeKeep ? nativeKeep.has(key) : !exact || keep.has(key);
+        if (native && (differs || nativeBrickBanked(native[i]))) this.nativeStore.put(key, native[i]);
         else this.nativeStore.drop(key);
       }
       const keys = [];
@@ -485,6 +506,7 @@ export class WorldWindow {
       this.storeReads.delete(pending);
       this.pending = this.storeReads.values().next().value ?? null;
       if (out !== this.leave) for (const b of [out.head, out.cells]) this.sim._retire(b);
+      if (nativeOut && nativeOut !== this.leaveNative) for (const b of [nativeOut.head, nativeOut.cells]) this.sim._retire(b);
     });
     this.storeReads.add(pending);
     this.pending = pending;
@@ -542,7 +564,11 @@ export class WorldWindow {
     }
     native.restoreBricks(lo, bricks, entries);
     for (const key of keys) this.nativeStore.drop(key);
-    if (!sim.compact) sim.compactOwner.exportLegacy();
+    // V2 suspended (a runtime switch to V1): the bricks go into the owner V1 shadows, never over V1's own
+    // cells. V1's store already put back V1's copy of every brick V1 can tell from the generator (readBack
+    // keeps one wherever V2's diff differs); a native brick only V2 holds differs in its energy bank alone,
+    // which V1 has no word for. Exporting here wrote V2's projection over V1's whole window (A as V2
+    // quantizes it, B zeroed) at every shift, since a native shift marks every brick (integration.changed).
     return keys.length;
   }
 
@@ -598,10 +624,10 @@ export class WorldWindow {
     if (this.sim.worldRenderSource === this.renderSource) this.sim.worldRenderSource = null;
     this.sourceProducer.dispose();
     this.renderSource.dispose();
-    dropNativeWorldAux(this.sim);   // (V2's air and foam as the World's source reads them)
+    dropNativeWorldAir(this.sim);   // (V2's air as the World's source reads it)
     this.gen.dispose();
     // (destroyed once the frames that use them are submitted and done)
-    for (const b of [this.leave.head, this.leave.cells, this.restoreBuf]) if (b) this.sim._retire(b);
+    for (const b of [this.leave.head, this.leave.cells, this.leaveNative?.head, this.leaveNative?.cells, this.restoreBuf]) if (b) this.sim._retire(b);
     this.scene.dispose?.();
   }
 }

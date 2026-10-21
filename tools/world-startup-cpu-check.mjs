@@ -6,7 +6,6 @@ import {gateVariants} from '../src/gfx/detailGate.js';
 import {DETAIL,settingKey} from '../src/gfx/detail.js';
 import {VIEWS,isMaterialView,isTestView} from '../src/views.js';
 import {createLoadWatch,LOAD_FLAG_MS} from '../src/loadWatch.js';
-import {NATIVE_FOAM} from '../src/shaders/gfx/liquidDetail.js';
 const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
 function appFunction(name,env){
   const start=source.indexOf(`function ${name}(`),brace=source.indexOf('{',start);
@@ -122,16 +121,12 @@ test('WORLD frame detail uses all selected defines, never camera distance from p
   const settings=Object.fromEntries(DETAIL.map(f=>[settingKey(f),true])),all=gateVariants(settings).near;
   assert(Object.keys(all).length>0);
   const detailGate={update(){throw Error('WORLD must not query the local detail gate');}};
-  // Under Physics V2 a World program also compiles V2's foam (NATIVE_FOAM), as every Box program does.
-  for(const v2 of [false,true]){
-    const worldDetail=appFunction('worldDetail',{v2Box:()=>v2,NATIVE_FOAM});
-    const actual=new Function('win','gateVariants','settings','detailGate','camera','camGrid','sim','canvas','post','worldDetail',
-      `let frameDetail;${code}return frameDetail;`)({},gateVariants,settings,detailGate,null,null,null,null,null,worldDetail);
-    assert.deepEqual(actual,v2?{...all,[NATIVE_FOAM]:1}:all);
-  }
-  const box={legacy:1},worldDetail=()=>{throw Error('a BOX frame has no WORLD detail');};
-  const result=new Function('win','gateVariants','settings','detailGate','camera','camGrid','sim','canvas','post','worldDetail',
-    `let frameDetail;${code}return frameDetail;`)(null,gateVariants,settings,{update:()=>box},null,null,{g:{nx:128,ny:128,nz:128}},{height:200},{renderScale:1},worldDetail);
+  const actual=new Function('win','gateVariants','settings','detailGate','camera','camGrid','sim','canvas','post',
+    `let frameDetail;${code}return frameDetail;`)({},gateVariants,settings,detailGate);
+  assert.deepEqual(actual,all);
+  const box={legacy:1};
+  const result=new Function('win','gateVariants','settings','detailGate','camera','camGrid','sim','canvas','post',
+    `let frameDetail;${code}return frameDetail;`)(null,gateVariants,settings,{update:()=>box},null,null,{g:{nx:128,ny:128,nz:128}},{height:200},{renderScale:1});
   assert.equal(result,box);
 });
 

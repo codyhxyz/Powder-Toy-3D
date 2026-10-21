@@ -7,7 +7,7 @@ import { lib, libLayouts } from './gfx/lib.js';
 import { ddaGLSL } from './gfx/core.js';
 import { surfaceGLSL } from './gfx/surface.js';
 import { liquidGLSL } from './gfx/liquid.js';
-import { liquidDetailGLSL, LIQ_DETAIL, NATIVE_FOAM } from './gfx/liquidDetail.js';
+import { liquidDetailGLSL, LIQ_DETAIL, WORLD_NATIVE } from './gfx/liquidDetail.js';
 import { mediaGLSL } from './gfx/media.js';
 import { grainsGLSL, GRAINS_ANY } from './gfx/grains.js';
 import { farHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './farShared.js';
@@ -767,19 +767,21 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 //   WORLD renderer, and the far field was retired in dc480f4f), so neither
 //   renderer runs them.
 // - format: World reads its own atlas, filled from the legacy A/B projection
-//   (V2's exportLegacy), never V2's packed state. V2's foam and air reach it
-//   through the V2 aux export (world/renderSource.js), and a World program
-//   built while V2 runs carries NATIVE_FOAM (gfx/liquidDetail.js), so the
-//   molten-foam layer after shadeSurf and liquidDetail.js's foam draw in both.
+//   (V2's exportLegacy), never V2's packed state, except V2's foam and air:
+//   while V2 runs, World's live copies carry its foam (v2/nativeAeration.js,
+//   liquidDetail.js WORLD_NATIVE), so the molten-foam layer after shadeSurf
+//   draws it as the Box does, and its air (B: the Pressure and Flow views,
+//   world/renderSource.js, the V2 air export).
 const realistic = (detail, curved = false, backend = 'box', fixedReadFormat) => {
   const format = backend === 'world' ? '0u' : readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
   const liq = LIQ_DETAIL(detail, backend);
+  // World's atlas while V2 runs the box carries V2's foam (liquidDetail.js WORLD_NATIVE): the molten
+  // liquids' native foam below is then compiled in as Box's format-2/3 programs compile it.
+  // Certified liquid interiors (passes.js brickFrag): only the Box's brick kernel writes the certificate.
   const interior = !curved && backend !== 'world';
   // Intentional (V2 design, docs/v2.md §4.3): under V2 molten liquids (lava) carry foam as
   // every liquid row does, so the format-2/3 branch below layers it; V1 has no foam on them.
-  // World knows its engine when it is built (NATIVE_FOAM), so it compiles the layer only then.
-  const moltenFoam = backend !== 'world' ? `(${format} == 2u || ${format} == 3u) && ` : detail[NATIVE_FOAM] ? '' : null;
   return /* wgsl */ `
 // Inside a liquid, sunlight fades with depth: the sun's visibility is read
 // where the ray got in (shadow map) and then attenuated by the liquid between
@@ -1280,10 +1282,10 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         s = gatherSurf(hitP, ns, hitCh);
       }
       decoSurf(&s);   // TPT's deco colour (gfx/deco.js)
-      c = shadeSurf(s, shadeRd);${moltenFoam === null ? '' : `
+      c = shadeSurf(s, shadeRd);${backend === 'world' && !detail[WORLD_NATIVE] ? '' : `
       // Native molten liquids share compact foam, not water's refraction or
       // detail eligibility. Layer only reflected light; retain heat emission.
-      if (${moltenFoam}hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
+      if (${backend === 'world' ? 'true' : `(${format} == 2u || ${format} == 3u)`} && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
         var foamCol = vec3f(0.0);
         var foamTrans = vec3f(1.0);
         var foamN = s.n;

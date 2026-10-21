@@ -31,7 +31,7 @@ try {
   }, { id: E.WATER, temp: ELEMENTS[E.WATER].temp, life: ELEMENTS[E.WATER].life });
   await page.keyboard.press('t');
   await page.getByRole('button', { name: 'Entities', exact: true }).click();
-  for (const name of ['Boat', 'Jeep', 'Hoverbike', 'Axeman', 'Gunner', 'Worm', 'Giant worm', 'Bird flock']) {
+  for (const name of ['Boat', 'Jeep', 'Hoverbike', 'Axeman', 'Gunner', 'Worm', 'Giant worm']) {
     assert.equal(await page.getByRole('button', { name, exact: true }).count(), 1, `truthful palette: ${name}`);
   }
   await page.getByRole('button', { name: 'Boat', exact: true }).click();
@@ -47,7 +47,7 @@ try {
   await page.evaluate(() => {
     const a = window.__app;
     a.test.park();
-    for (const [i, kind] of ['jeep', 'hoverbike', 'enemy', 'gunner', 'worm', 'giantworm', 'birds'].entries()) a.spawners.place(kind, new a.THREE.Vector3(20 + i * 13, 24, 30));
+    for (const [i, kind] of ['jeep', 'hoverbike', 'enemy', 'gunner', 'worm', 'giantworm'].entries()) a.spawners.place(kind, new a.THREE.Vector3(20 + i * 13, 24, 30));
   });
   async function converge(test) {
     const until = Date.now() + 30000;
@@ -60,7 +60,7 @@ try {
   }
   await converge(() => {
     const a = window.__app;
-    return a.pov.vehicles.list.length === 4 && a.pov.npcs.length === 4 && a.birds.count > 0;
+    return a.pov.vehicles.list.length === 4 && a.pov.npcs.length === 4;
   });
   assert.deepEqual(await page.evaluate(() => {
     const a = window.__app;
@@ -107,7 +107,7 @@ try {
   assert.equal(death.respawned, false); assert.equal(death.consumed, true); assert.ok(death.savedBoats < 2);
   const roundtrip = await page.evaluate(() => {
     const a = window.__app, saved = a.spawners.toJSON();
-    a.spawners.fromJSON(saved); a.pov.worldReplaced(); a.birds.worldReplaced(); a.pov.updateEntities(0);
+    a.spawners.fromJSON(saved); a.pov.worldReplaced(); a.pov.updateEntities(0);
     return { expected: saved.filter((s) => s.kind === 'boat').length, actual: a.pov.vehicles.list.filter((v) => v.kind === 'boat').length };
   });
   assert.equal(roundtrip.actual, roundtrip.expected, 'dead boats do not return on load');

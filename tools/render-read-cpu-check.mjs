@@ -34,7 +34,11 @@ for (const code of variants) {
   assert(!/gThin\s*=/.test(refl), 'reflection must inherit gThin');
   assert.match(refl, /let id = occCellId\(occM, bid, cell\);/);
   assert.match(refl, /if \(id == E_EMPTY && \(flags & \(BRICK_SURF \| BRICK_MEDIA\)\) == 0u\) \{ stale = true; tEnter = tExit; ax = ddaStep\(istp, tDelta, &cell, &tMax\); continue; \}/);
-  assert.match(refl, /if \(crispHit\(cell, id, ro, rd, tEnter, tExit, &th, &nh\)\) \{ return reflShade\(fetchA\(cell\), ro \+ rd \* th, nh\); \}/);
+  // the hit is recorded and shaded once after the march (one inlined reflShade: cold compile, 2026-10-20)
+  assert.match(refl, /if \(crispHit\(cell, id, ro, rd, tEnter, tExit, &th, &nh\)\) \{ hitA = fetchA\(cell\); hitP = ro \+ rd \* th; hitN = nh; hit = true; break; \}/);
+  assert.match(refl, /hitA = ah; hitP = hp; hitN = n; hit = true; break; \}/);
+  assert.match(refl, /\} if \(hit\) \{ return reflShade\(hitA, hitP, hitN\); \}/);
+  assert.equal((refl.match(/reflShade\(/g) ?? []).length, 1, 'one reflShade');
   assert.equal((refl.match(/fetchA\(cell\)/g) ?? []).length, 1);
   assert.equal((refl.match(/fetchA\(/g) ?? []).length, 3, 'keep both smooth material probes');
   assert.match(refl, /else if \(brickSurf\(flags\)\) \{ if \(stale\) \{ phiA = surfField\(ro \+ rd \* tEnter\); \}/);

@@ -24,6 +24,9 @@ const pov = {
     const p = app.pov = createPov({
       renderer: app.renderer, scene: app.scene, camera: app.camera, controls: app.controls, canvas: app.canvas, hud: app.hud,
       settings: app.settings, mp: app.mp, isTyping: app.isTyping, post: app.post,
+      // V2: the ticks this frame runs (app.js sets it before the hooks), the POV tools' clock
+      // (pov/index.js ctx.stepsPerFrame, ctx.nativeDt). Without it every V2 tool clock read 0.
+      get nativeToolSteps() { return app.nativeToolSteps; },
       coopMove: (after) => app.coopMove?.(after),
       getSim: () => app.sim, getVolume: () => app.volume, getScale: () => app.scale,
       hover: app.hover, pointerHover: () => app.pointerInside && !app.uiHover, pickRay: app.pickRay,

@@ -1,6 +1,7 @@
 import { phaseWGSL } from './phase.js';
 import { ELEMENTS } from '../../elements.js';
 import { capacityPerQuantum, AIR_CAPACITY_Q, FULL, MAX_FILL, FUEL_Q, lifeScale } from '../../v2/layout.js';
+import { CONTACT_CONSTANTS } from '../../v2/contact.js';
 
 // No additional table binding: these immutable format tables are shared by every family.
 export const nativeStateWGSL = /* wgsl */ `
@@ -206,7 +207,29 @@ fn makeMaterial(id: u32, temperature: f32, amount: u32, ct: u32) -> Material {
 // slot's decoration (airborne matter keeps its paint: TPT's dcolour is the particle's own,
 // src/simulation/Particle.h). Paint rides every V2 move exactly as the bank does (V1's move,
 // shaders/move.js: a cell takes its content's source's word, and air holds none).
-export const auxLayout = (slots, particles) => ({ banks: 0, deco: slots, particleDeco: 2 * slots, words: 2 * slots + particles });
+// Then each cell's flying-packet touch this tick (v2/contact.js ctPacketTouch: the airborne react stage's
+// mark on a cell beside a packet, read by the block pass for the cell's own step and by the electric pass
+// for a fuse): the CT_TOUCH bits under the tick's stamp, so a mark another tick left reads as none and
+// nothing need clear it. Restores clear them, as a restored tick may repeat a stamp.
+export const auxLayout = (slots, particles) => ({ banks: 0, deco: slots, particleDeco: 2 * slots, touch: 2 * slots + particles, words: 3 * slots + particles });
+// a touch's stamp: the tick's low PACKET_TOUCH_STAMP_BITS above its CT_TOUCH bits (13 days at 60 Hz before one repeats)
+export const PACKET_TOUCH_STAMP_SHIFT = Math.log2(CONTACT_CONSTANTS.CT_TOUCH_STAMP[1]);
+export const PACKET_TOUCH_STAMP_BITS = 32 - PACKET_TOUCH_STAMP_SHIFT;
+if (!Number.isInteger(PACKET_TOUCH_STAMP_SHIFT)) throw new Error('shaders/v2/state.js: CT_TOUCH_STAMP is not a power of two');
+// The marks' WGSL for a module with the banks bound and a P holding this tick: this tick's touch on the cell
+// at a slot (0 if none), and a touch merged into it.
+export const packetTouchWGSL = particles => /* wgsl */ `
+const PACKET_TOUCH: u32 = 2u * SLOTS + ${particles}u;
+fn packetTouchStamp() -> u32 { return (P.tick & ${2 ** PACKET_TOUCH_STAMP_BITS - 1}u) << ${PACKET_TOUCH_STAMP_SHIFT}u; }
+fn packetTouchNow(slot: u32) -> i32 {
+  let w = bitcast<u32>(banks[PACKET_TOUCH + slot]);
+  if ((w & ~${2 ** PACKET_TOUCH_STAMP_SHIFT - 1}u) != packetTouchStamp()) { return 0; }
+  return i32(w & ${2 ** PACKET_TOUCH_STAMP_SHIFT - 1}u);
+}
+fn notePacketTouch(slot: u32, touch: i32) {
+  if (touch == 0) { return; }
+  banks[PACKET_TOUCH + slot] = bitcast<i32>(u32(packetTouchNow(slot) | touch) | packetTouchStamp());
+}`;
 export const decoStorageWGSL = /* wgsl */ `
 fn decoOf(slot: u32) -> u32 { return bitcast<u32>(banks[SLOTS + slot]); }
 fn setDeco(slot: u32, d: u32) { banks[SLOTS + slot] = bitcast<i32>(d); }

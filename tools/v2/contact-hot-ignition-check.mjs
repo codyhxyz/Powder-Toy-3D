@@ -255,7 +255,8 @@ test('real generator and snapshot/order/custom-contact contracts are unchanged',
   // (flames into air are ctLick, called with the step's own seed)
   const scalar = C.ctStepAtmosphere.toString() + C.ctLick.toString();
   assert(C.ctStepAtmosphere.toString().includes('ctLick(c, hotFuel, flameQ, smothered, seed)'), 'the step lights air with its own seed');
-  assert.deepEqual([...scalar.matchAll(/ctRoll\(seed, (\d+)\)/g)].map(m => +m[1]), [1, 2, 3, 4, 5, 6, 7, 18, 19], 'no extra RNG calls or changed salts (5–7, 18–19: V1 flame life and flames into air)');
+  // (2 was the spark cost's draw: electricity is the electric pass's now, its own salts CT_ELEC_SALT + step)
+  assert.deepEqual([...scalar.matchAll(/ctRoll\(seed, (\d+)\)/g)].map(m => +m[1]), [1, 3, 4, 5, 6, 7, 18, 19], 'no extra RNG calls or changed salts (5–7, 18–19: V1 flame life and flames into air)');
   assert(scalar.includes('random < ctF(fire) / 60'), 'original stochastic expression remains intact');
   const body = contactWGSL.slice(contactWGSL.indexOf('fn contactBlock('));
   assert(body.indexOf('let snapshot=cells;') > body.indexOf('flux=ctFlux('));

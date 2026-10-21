@@ -6,7 +6,7 @@ import { createMedalHud } from '../game/medalHud.js';
 
 // Halo 3's medals in first person outside a match: the same book (src/game/medals.js)
 // and the same stack (src/game/medalHud.js) as a Halo match, fed by the killfeed's
-// 'kill' (pov/killfeed.js: axemen, gunners, worms, birds) and by 'blast'. Every
+// 'kill' (pov/killfeed.js: axemen, gunners, worms) and by 'blast'. Every
 // body is booked, so an axeman's spree is there for a Killjoy, but only the
 // player's medals show, sound (audio.js's stings, from 'game:medal') and are said
 // (announcer.js). A match's medals are game/feel.js's: this stands down while one

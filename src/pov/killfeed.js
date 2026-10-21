@@ -48,7 +48,7 @@ export const KF_COLOR = {
 // ---- ours
 const KILL_CREDIT_S = 8;       // s a blow still earns the kill (src/game/rules.js KILL_CREDIT_S, TF2's "finished off")
 const BLAST_CREDIT_R = 10;     // cells: a blast this near a body marks its thrower (src/game/rules.js BLAST_CREDIT_R)
-const NAMES = { [PLAYER]: 'You', axeman: 'Axeman', gunner: 'Gunner', worm: 'Worm', bird: 'Bird' };   // 'You': the scoreboard's name for the player
+const NAMES = { [PLAYER]: 'You', axeman: 'Axeman', gunner: 'Gunner', worm: 'Worm' };   // 'You': the scoreboard's name for the player
 
 // the icon for a death: the killer's held tool when it explains the cause, else the cause's
 const GUNS = ['GUN', 'SMG', 'SNIPER'];
@@ -156,15 +156,6 @@ export function createDeathWatch({ heldBy, bodies, quiet }) {
   povEvents.on('body:hit', (e) => {
     const by = e.by ?? PLAYER;
     if (by === e.id) return;
-    if (String(e.id).startsWith('bird:')) {   // a bird dies to any blow (birds/index.js): its notice now
-      if (quiet() || last.has(e.id)) return;
-      last.set(e.id, { by, at: now(), held: null });
-      setTimeout(() => last.delete(e.id), HOLD_S * 1000);
-      const icon = iconFor(e.cause, heldBy(by));
-      deathNotice({ attacker: nameOf(by), attackerColor: color(by, bodyOf.get(by)), icon, victim: NAMES.bird, victimColor: KF_COLOR.npc });
-      povEvents.emit('kill', { id: e.id, victim: NAMES.bird, by, killer: nameOf(by), cause: e.cause ?? '', icon, held: heldBy(by), self: false, team: false });
-      return;
-    }
     mark(e.id, by);
   });
   // a blast marks every body near it, its thrower too (a suicide: GMod's skull)

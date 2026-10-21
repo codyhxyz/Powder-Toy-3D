@@ -8,6 +8,7 @@ import { createNativeWorldMeshLightContext, guardMeshes } from '../gfx/meshLight
 import { renderViewmodels } from '../pov/viewmodel.js';
 import { queryWorldPick, worldPickNotReady } from './worldPick.js';
 import { READY } from '../world/renderAtlas.js';
+import { WORLD_NATIVE } from '../shaders/gfx/liquidDetail.js';
 
 const array = v => Array.from(v?.elements ?? (v?.toArray ? v.toArray() : v));
 const requireReady = (ok, message) => { if (!ok) throw new Error(message); };
@@ -319,6 +320,9 @@ export async function releaseWorldMeshPreflight(app,p) {
 
 // Capture VIEW only. Publication-owned time/lighting/artwork/physics-origin are
 // deliberately not copied from current globals after the point readback.
+// The view's detail, plus WORLD_NATIVE while V2 runs the box: its live copies then carry V2's foam
+// (world/renderSource.js liveSource), and the World programs compile native foam as Box's format-2 do.
+export const worldViewDetail=(sim,detail={})=>sim?.compact ? {...detail,[WORLD_NATIVE]:true} : {...detail};
 export function freezeWorldView(app,values,{view,detail={},curved=false}={}) {
   app.camera.updateMatrixWorld();
   const camera=app.camera.clone(false);camera.parent=null;
@@ -327,7 +331,7 @@ export function freezeWorldView(app,values,{view,detail={},curved=false}={}) {
   camera.matrix.decompose(camera.position,camera.quaternion,camera.scale);
   const v=worldSceneValues(values,camera,[0,0]);
   const p=app.presentation;
-  return {camera,cameraIdentity:app.camera,view,detail:{...detail},curved,values:{model:[...v.model],cam:[...v.cam],viewProj:[...v.viewProj],invViewProj:[...v.invViewProj],
+  return {camera,cameraIdentity:app.camera,view,detail:worldViewDetail(app.sim,detail),curved,values:{model:[...v.model],cam:[...v.cam],viewProj:[...v.viewProj],invViewProj:[...v.invViewProj],
       ...Object.fromEntries(['view','materialStyle','sourceStyle','bevel','glints','matDetail'].filter(k=>values[k]!==undefined).map(k=>[k,values[k]]))},
     params:{marchNear:app.pov?.marchNear??0,warpK:p.parameters.k,warpAnchor:[...p.parameters.anchor],warpDir:[...p.parameters.dir]},
     settings:{...app.settings},post:{...app.post.settings},presentation:{parameters:structuredClone(p.parameters),

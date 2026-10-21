@@ -5,7 +5,7 @@ import { fold } from '../gpu/kernels.js';
 import { ELEMENTS, K } from '../elements.js';
 import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
-import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase, storageLayout } from '../shaders/v2/particles.js';
+import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase, setOffBase, storageLayout } from '../shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, COUPLE_MODE,
   COUPLE_ARGS, listControl, LIST_ARGS, DISPATCH_ARGS_BYTES, LISTS_STAGES, listsStageWGSL, controlBufferWords, LAUNCH_MODE } from '../shaders/v2/blasts.js';
 import { AIR as AIR_MODE, EDGE } from '../simModes.js';
@@ -13,6 +13,7 @@ import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M, EVENT } from './dynamics-reference.js';
 import { NATIVE_LAUNCH_MODE } from './nativeForcing.js';
 import { CONTACT_PUFF_UNIT as PUFF_UNIT } from './contact.js';   // a GAS request's puff rides above its flags
+import { AIRBORNE_COLOURS, packAirborne } from './airborne.js';
 // listArgs: control and the dispatch args, nothing else (it writes the args it publishes).
 export const LISTS_LAYOUT = storageLayout(2);
 
@@ -47,7 +48,11 @@ export function validateDynamicState(snapshot,g) {
     !Array.isArray(s.pendingEvents) || !Array.isArray(s.airArchive) || !Number.isInteger(s.sequence) || s.sequence<0 || s.sequence>0xfffffffe ||
     !Number.isInteger(s.blastBatch) || s.blastBatch<1 || s.blastBatch>64 ||
     // each pool slot's decoration (src/v2/physics.js particleDecoRange); saves from before it have none
-    (s.particleDeco!==undefined && (!(s.particleDeco instanceof Uint32Array) || s.particleDeco.length!==PARTICLE_CAP))) throw new Error('Invalid native dynamics snapshot');
+    (s.particleDeco!==undefined && (!(s.particleDeco instanceof Uint32Array) || s.particleDeco.length!==PARTICLE_CAP)) ||
+    // each pool slot's set-off mark (particles.js setOffBase); saves from before it have none, so none are set off
+    (s.setOff!==undefined && (!(s.setOff instanceof Uint32Array) || s.setOff.length!==PARTICLE_CAP))) throw new Error('Invalid native dynamics snapshot');
+  // a set-off mark is the id of the flying charge in its slot (snapshotDynamicState drops the stale ones)
+  if(s.setOff) for(let i=0;i<PARTICLE_CAP;i++) if(s.setOff[i] && s.setOff[i]!==s.particles[i*12+3]) throw new Error('Invalid native set-off mark');
   if(s.holdSession && (!Number.isInteger(s.holdSession.token) || s.holdSession.token<1 || s.holdSession.token>s.sequence ||
     !finiteVector(s.holdSession.position) || !finiteVector(s.holdSession.target) || !safeDynamicNumber(s.holdSession.radius) || s.holdSession.radius<0 ||
     !safeDynamicNumber(s.holdSession.strength) || s.holdSession.strength<0 || !Number.isInteger(s.holdSession.lastTick))) throw new Error('Invalid native physgun state');
@@ -228,8 +233,14 @@ export class NativeDynamics {
     this._work(); this._rays(tick);
     this._record('particles','clear',1,tick); this._hold(tick);
     for (const stage of ['integrate','elect','impact','deposit']) this._record('particles',stage,PARTICLE_CAP/64,tick);
-    // what is still flying takes part, as V1's moving cells did (src/v2/airborne.js)
-    for (const stage of ['reactClaim','elect','react']) this._record('particles',stage,PARTICLE_CAP/64,tick);
+    // what is still flying takes part, as V1's moving cells did (src/v2/airborne.js): each packet
+    // joins its cell's list (a dust packet counts its dust faces once all have), then the cells'
+    // lists run a colour at a time, so no two whose footprints overlap run together, with the block
+    // pass's partition offset this tick
+    this._record('particles','reactClaim',PARTICLE_CAP/64,tick);
+    this._record('particles','reactDust',PARTICLE_CAP/64,tick); // a dust cloud's faces, before any walker clears its notes
+    const offset=this.owner._params?.(tick)?.offset??[0,0,0];
+    for (let colour=0;colour<AIRBORNE_COLOURS;colour++) this._record('particles','react',PARTICLE_CAP/64,tick,{airborne:packAirborne(offset,colour)});
     this._record('blasts','airborneEvents',PARTICLE_CAP/64,tick);
   }
   applyExternalBlast(request) {
@@ -374,8 +385,8 @@ export class NativeDynamics {
     if (!this.isReady || this.disposed) return {status:'rejected',reason:'native dynamics not ready'};
     const mode=request?.mode,position=finiteVector(request?.position),destination=finiteVector(request?.target??request?.position);
     const direction=finiteVector(request?.direction??[0,0,0]),radius=request?.radius??1,dt=request?.dt??1/60;
-    const strength=request?.strength??12;
-    if (!['hold','fling','punt'].includes(mode) || !position || !destination || !direction ||
+    const strength=request?.strength??12,carried=finiteVector(request?.velocity??[0,0,0]);
+    if (!['hold','fling','punt'].includes(mode) || !position || !destination || !direction || !carried ||
       !safeDynamicNumber(radius) || radius<0 || !safeDynamicNumber(strength) || strength<0 || !safeDynamicNumber(dt) || dt<0 || dt>0.25)
       return {status:'rejected',reason:'invalid native physgun request'};
     if(this.sequence>=0xfffffffe) return {status:'rejected',reason:'native tool sequence exhausted'};
@@ -388,7 +399,8 @@ export class NativeDynamics {
         this._record('particles','holdSelect',PARTICLE_CAP/64,tick,params);
         this._record('blasts','toolPlan',Math.ceil(this.g.slots/64),tick,params);this._allocate(tick,params);
       }
-      this.holdSession.target=[...destination];this.holdSession.strength=strength;this.holdSession.lastTick=tick;
+      // velocity: the target's own (m/s), the spring's feed-forward (pov physgun: V1's carry, the hold point's motion)
+      this.holdSession.target=[...destination];this.holdSession.strength=strength;this.holdSession.lastTick=tick;this.holdSession.velocity=carried;
       return {status:'queued',requestId:this.holdSession.token,controller:'critically-damped COM',clockHz:60};
     }
     const token=this.holdSession?.token??0,norm=Math.hypot(...direction),velocity=direction.map(v=>norm?v/norm*strength:0);
@@ -400,7 +412,7 @@ export class NativeDynamics {
   _hold(tick) {
     const hold=this.holdSession;if(!hold) return;
     if(tick-hold.lastTick>8) { this.releasePhysgun();return; }
-    const params={mode:9,sequence:hold.token,center:hold.target,strength:hold.strength,radius:1/60};
+    const params={mode:9,sequence:hold.token,center:hold.target,strength:hold.strength,radius:1/60,vector:hold.velocity??[0,0,0]};
     this._record('particles','holdCOM',1,tick,params);
     this._record('particles','holdApply',PARTICLE_CAP/64,tick,params);
   }
@@ -453,7 +465,12 @@ export class NativeDynamics {
     const externalBlastDone=control.slice(externalBlastBase(g),externalBlastBase(g)+EXTERNAL_BLAST_CAP);
     const owned=new Set(metadata.externalBlasts.map(r=>r.slot));
     for(let i=0;i<externalBlastDone.length;i++) if(!owned.has(i)) externalBlastDone[i]=0;
-    return {...metadata,...(particleDeco?{particleDeco}:{}),externalBlastDone,particles,air,control:control.slice(0,32),held:control.slice(heldBase(g),heldBase(g)+PARTICLE_CAP),shocks:control.slice(shockBase(g),shockBase(g)+g.nbricks),rayRemaining:control.slice(rayRequestBase(g),rayRequestBase(g)+RAY_REQUEST_CAP),serial};
+    // a charge a hit set off in flight (particles.js dShockHit) keeps its mark until it lands: a save
+    // between that tick and its landing holds it, or the restored charge would land without going off.
+    // A mark is its slot's flying charge's id; one left by a slot's earlier packet is stale, dropped.
+    const setOff=control.slice(setOffBase(g),setOffBase(g)+PARTICLE_CAP);
+    for(let i=0;i<PARTICLE_CAP;i++) if(setOff[i]!==particles[i*12+3]) setOff[i]=0;
+    return {...metadata,...(particleDeco?{particleDeco}:{}),externalBlastDone,setOff,particles,air,control:control.slice(0,32),held:control.slice(heldBase(g),heldBase(g)+PARTICLE_CAP),shocks:control.slice(shockBase(g),shockBase(g)+g.nbricks),rayRemaining:control.slice(rayRequestBase(g),rayRequestBase(g)+RAY_REQUEST_CAP),serial};
   }
   restoreDynamicState(snapshot) {
     this._check(); const g=this.g,s=snapshot;
@@ -470,6 +487,7 @@ export class NativeDynamics {
     this.gpu.write(this.control,rayRequestBase(g)*4,s.rayRemaining);
     this.gpu.write(this.control,externalBlastBase(g)*4,external.done);this.externalBlasts=external.requests;
     this.gpu.write(this.control,heldBase(g)*4,s.held); this.gpu.write(this.control,shockBase(g)*4,s.shocks);
+    if(s.setOff) this.gpu.write(this.control,setOffBase(g)*4,s.setOff);
     this.gpu.write(this.owner.events,0,events); this.gpu.frame.clear(this.flight); this.gpu.frame.clear(this.claims); this.gpu.frame.clear(this.plans);
     this.owner.noteAllCells?.({events:true}); // requests written behind noteEvents: every brick may hold one
     this.airIndex=0; this.origin=[...s.origin]; this.sequence=s.sequence; this.blastBatch=s.blastBatch;

@@ -189,8 +189,9 @@ await engine.ready;
 assert.equal(engine.isReady, true);
 assert.equal(sim.version, 1);
 for (const [name, bytes] of [['cells', 16], ['liquidScratch', 16], ['events', 4]]) assert.equal(engine[name].size, g.slots * bytes);
-// the banks, then the decoration V2 carries: a word a cell and a word a particle-pool slot (shaders/v2/state.js auxLayout)
-assert.equal(engine.aux.size, (2 * g.slots + PARTICLE_CAP) * 4);
+// the banks, then the decoration V2 carries: a word a cell and a word a particle-pool slot, then the flying
+// packets' touch marks, a word a cell (shaders/v2/state.js auxLayout)
+assert.equal(engine.aux.size, (3 * g.slots + PARTICLE_CAP) * 4);
 assert.equal(engine.jetMask.size, v2DemandWords(g) * 4, 'the face demands, two words a cell');
 assert.equal(engine.contactReady, false); assert.equal(engine.dynamics, null); assert.equal(engine.jets, null);
 assert.equal(engine.groups.liquid.entries.length, 7); // plus one shared table = eight

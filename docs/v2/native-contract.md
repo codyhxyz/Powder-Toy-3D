@@ -225,8 +225,11 @@ transfer and construction branches explicitly call `ownLegacy`. Generic
 
 Native edits export `compactProbeA` so hidden fractional liquids participate in
 material filters and property predicates. The compatibility cache tracks this
-physical edit projection separately from visual `compactA`; mode transitions
-refresh the entire projection with capture disabled. Legacy snapshots/readback,
+physical edit projection separately from visual `compactA`; a mode transition
+converts, with capture disabled, the stale bricks and the bricks holding a cell
+the two projections show differently (a partial liquid fill the dither hides:
+`LEGACY_WORD.DIFFERS`, recorded by the bridge). Every other brick's cache already
+holds both. The first export and a load convert every brick. Legacy snapshots/readback,
 v1 suspension and forced compatibility rendering request the visual projection.
 Native authoritative snapshots are unchanged.
 

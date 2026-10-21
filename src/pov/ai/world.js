@@ -129,11 +129,15 @@ function createModel(renderer) {
   let busy = false, epoch = 0, version = 0, idVersion = 0, packed = null;
   let rows = null, rowsKey = '';
   let worker = null, workerFailed = false, sentKey = '', spare = null, inflight = null;
+  // where the cells are in the world: the origin of the window they were read from (a box's is
+  // 0), and the world's size when it is a World's window (null: the grid is its whole world)
+  let at = { origin: [0, 0, 0], world: null }, behind = '';
   const rowsFor = (g) => { const key = gridKey(g); if (key !== rowsKey) { rows = atlasRows(g); rowsKey = key; } return rows; };
 
   // A capture has landed: the cells it made, what changed (deswizzle.js), the sim state it was of.
-  function take(next, key, dims, diff, state, nextTops, idChanges) {
+  function take(next, key, dims, diff, state, nextTops, idChanges, frame) {
     const fresh = key !== cellsKey;
+    at = frame;
     words = next; cells = new Uint16Array(next.buffer); cellsKey = key;
     if (nextTops) tops = nextTops;   // (none: nothing changed, the last ones hold)
     [nx, ny, nz] = dims;
@@ -160,7 +164,7 @@ function createModel(renderer) {
     return false;
   }
 
-  function ingestHere({ bytes, g, dims, release }, state, identity) {
+  function ingestHere({ bytes, g, dims, release }, state, identity, frame) {
     const key = `${gridKey(g)}:${identity}`, fresh = key !== cellsKey;
     const next = fresh ? new Uint32Array((dims[0] * dims[1] * dims[2]) / 2) : words;
     const rows = rowsFor(g), idChanges = new Uint8Array(rows.table.length);
@@ -171,7 +175,7 @@ function createModel(renderer) {
       const cols = dims[0] * dims[2];
       nextTops = columnTops(new Uint16Array(next.buffer), dims, STANDS, new Uint16Array(cols));
     }
-    take(next, key, dims, fresh ? ~0 : diff, state, nextTops, idChanges);
+    take(next, key, dims, fresh ? ~0 : diff, state, nextTops, idChanges, frame);
   }
 
   function startWorker() {
@@ -185,7 +189,7 @@ function createModel(renderer) {
       inflight = null;
       job.release(data.bytes);
       if (words?.length === data.out.length) spare = words;   // the cells nothing queries any more: the next capture's out
-      take(data.out, job.key, data.dims, data.diff, job.state, data.tops, data.idChanges);
+      take(data.out, job.key, data.dims, data.diff, job.state, data.tops, data.idChanges, job.frame);
       busy = false;
     };
     worker.onerror = worker.onmessageerror = (err) => { err.preventDefault?.(); fail(err); };
@@ -198,19 +202,19 @@ function createModel(renderer) {
     worker = null; workerFailed = true; spare = null;
     if (inflight) { inflight.release(new Uint8Array(inflight.length)); inflight = null; busy = false; }
   }
-  function send(r, state, identity) {
+  function send(r, state, identity, frame) {
     const { bytes, g, dims, release } = r;
     const key = `${gridKey(g)}:${identity}`, n = (dims[0] * dims[1] * dims[2]) / 2;
     const msg = { dims, bytes, out: spare?.length === n ? spare : new Uint32Array(n) };
     spare = null;
     if (key !== sentKey) { msg.rows = rowsFor(g); msg.stands = STANDS; sentKey = key; }
-    const job = { key, state, release, length: bytes.byteLength };   // (bytes is detached once sent)
+    const job = { key, state, frame, release, length: bytes.byteLength };   // (bytes is detached once sent)
     try {
       worker.postMessage(msg, [bytes.buffer, msg.out.buffer]);
       inflight = job;
     } catch (err) {   // nothing was transferred
       fail(err);
-      ingestHere(r, state, identity);
+      ingestHere(r, state, identity, frame);
       busy = false;
     }
   }
@@ -226,11 +230,15 @@ function createModel(renderer) {
     const job = cellsSource.read(renderer, sim);
     if (!job) return;
     busy = true;
+    behind = identity;
+    const frame = { origin, world: sim.g.windowed && sim.world ? [...sim.world] : null };
     job.then((r) => {
-      if (startWorker()) send(r, state, identity);        // busy until the worker answers
-      else { ingestHere(r, state, identity); busy = false; }
-    }).catch((err) => { busy = false; console.error('NPC world readback failed', err); });
+      if (startWorker()) send(r, state, identity, frame);        // busy until the worker answers
+      else { ingestHere(r, state, identity, frame); busy = false; }
+    }).catch((err) => { busy = false; console.error('NPC world readback failed', err); });   // (retried at the refresh's pace)
   }
+  // Is the last readback asked for of another window than the sim's? (a World's window moved since)
+  const stale = (sim) => !!sim && behind !== `${sim.id}:${sim.origin.toArray()}`;
 
   const inBox = (x, y, z) => x >= 0 && z >= 0 && y >= 0 && x < nx && y < ny && z < nz;
   function id(x, y, z) {
@@ -314,6 +322,8 @@ function createModel(renderer) {
 
   return {
     refresh,
+    stale,
+    get at() { return at; },
     get epoch() { return epoch; },
     get ready() { return !!cells; },
     get version() { return version; },
@@ -331,12 +341,17 @@ export function createWorldModel({ renderer, getSim }) {
   let age = 0, seen = -1;   // s since a capture landed, as this view's update() has counted them
   return {
     // call every frame: starts a readback when the last landed REFRESH_S ago
-    // (any view's; until the first lands, at once)
-    update(dt) {
+    // (any view's; until the first lands, at once). soon: also as soon as the
+    // window has moved since the last was asked for (a World's: what drives
+    // through it can't wait REFRESH_S for the cells ahead)
+    update(dt, soon = false) {
       if (seen !== model.epoch) { seen = model.epoch; age = 0; }
       age += dt;
-      if (model.epoch === 0 || age >= REFRESH_S) model.refresh(getSim);
+      if (model.epoch === 0 || age >= REFRESH_S || (soon && model.stale(getSim()))) model.refresh(getSim);
     },
+    // the cells' window in the world: { origin: [x, y, z] of its cell (0, 0, 0), world: the
+    // World's size, or null for a box }; queries are in its grid cells
+    get at() { return model.at; },
     get ready() { return model.ready; },
     get version() { return model.version; },       // bumps when a readback finds any cell's id or temperature changed
     get idVersion() { return model.idVersion; },   // bumps when it finds any cell's id changed (what blocks a body or a vehicle)

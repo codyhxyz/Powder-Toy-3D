@@ -62,7 +62,7 @@ ${prelude(sim.g, STATE_OPTS.STATE_RO)}
     const stats = await a.physics.v2.readStats();
     check(stats.awake === 0, 'sand settles before the delayed compatibility read');
     const pending = new Uint32Array(await gpu.readback.buffer(a.physics.v2.act, a.physics.v2.layout.legacy * 4, sim.g.nbricks * 4));
-    check(pending.some(Boolean), 'legacy dirty bricks survive sleeping');
+    check(pending.some(w => w & 1), 'legacy dirty bricks survive sleeping'); // (bit 0: stale, shaders/v2.js LEGACY_WORD)
     const marks = marksLayout(sim.g);
     const dirty = new Uint32Array(await gpu.readback.buffer(sim.marks, marks.derived * 4, Math.ceil(sim.g.nbricks / 32) * 4));
     check(dirty.some(Boolean), 'settled movement remains marked for presentation');

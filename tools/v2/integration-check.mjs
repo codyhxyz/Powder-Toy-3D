@@ -459,12 +459,13 @@ assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouc
   assert.equal(calls.filter(c => c.name === 'v2bridge').length, 1);
   assert.equal(calls[bridge].opts.params.full, 0, 'only the bricks the tick changed');
   assert.equal(calls[bridge].opts.header.format, 0, 'the drawn projection, as the Box draws it');
-  // V2's air and foam (B, the aeration lane) come from the V2 aux export, through the physical readers.
-  const aux = calls.findIndex(c => c.name === 'worldNativeAux');
-  assert(aux >= 0 && aux < copy, 'the V2 aux export is recorded before the copy');
-  assert.equal(calls[aux].opts.header.format, 3); assert.equal(calls[aux].opts.bind[1], sim.bindPhysicalRO);
-  assert.equal(source.liveSnapshot.B, calls[aux].opts.bind[2].entries[0].resource.buffer, 'the drawn B is V2 air');
-  assert.equal(source.liveSnapshot.aeration, calls[aux].opts.bind[2].entries[1].resource.buffer, 'the drawn aeration is V2 foam');
+  // V2's air (B) comes from the V2 air export, through the physical reader; its foam from v2/nativeAeration.js.
+  const air = calls.findIndex(c => c.name === 'worldNativeAir'), foam = calls.findIndex(c => c.name === 'nativeAeration');
+  assert(air >= 0 && air < copy, 'the V2 air export is recorded before the copy');
+  assert(foam >= 0 && foam < copy, 'the V2 foam pack is recorded before the copy');
+  assert.equal(calls[air].opts.header.format, 3); assert.equal(calls[air].opts.bind[1], sim.bindPhysicalRO);
+  assert.equal(source.liveSnapshot.B, calls[air].opts.bind[2].entries[0].resource.buffer, 'the drawn B is V2 air');
+  assert.equal(source.liveSnapshot.aeration, calls[foam].opts.bind[2].entries[0].resource.buffer, 'the drawn aeration is V2 foam');
   calls.length = 0;
   assert.equal(source.needsLiveCopy(), false);
   source.recordLiveCopy(gpu.frame);
