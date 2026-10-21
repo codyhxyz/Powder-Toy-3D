@@ -92,6 +92,7 @@ jobs:
       - run: node tools/check-cozy-materials.mjs   # CPU artwork, shader-view selection and water scope
       - run: node tools/check-noita-materials.mjs --validate-wgsl   # CPU Noita view: measured looks through the real WGSL, Descent variant labels, Naga
       - run: node tools/check-ready-volume-view.mjs   # keep terrain visible while a replacement shader compiles
+      - run: node tools/volume-format-cpu-check.mjs   # CPU: read-format specializations against the generic volume shaders, startup and thumbnail gates + Naga
       - run: node tools/check-appearance.mjs && node tools/check-far-appearance.mjs
       - run: node tools/check-island-appearance.mjs && node tools/check-construction-appearance.mjs && node tools/check-wang-appearance.mjs
       - run: node tools/check-map-appearance.mjs
@@ -121,6 +122,8 @@ jobs:
       - run: node --experimental-vm-modules tools/world-coop-cpu-check.mjs   # host window, guest bodies and leash
       - run: node tools/jetpack-figure-check.mjs   # CPU rigs/GLB: visible packs, animated nozzle origins and exhaust
       - run: node tools/check-village-jump.mjs   # CPU charged jump, half gravity, cancellations and Three.js clips
+      - run: node tools/check-body-gravity.mjs   # CPU: the body's jump, jet, pogo, swim and gravity modes match under V1 and V2 (Noita's gravity)
+      - run: node tools/check-radial-projectiles.mjs   # CPU: shots, throws, frags, wand bolts and bot lobs fall toward the centre under radial gravity; normal gravity's paths bit for bit
       - run: node tools/enemy-aim-cpu-check.mjs   # persistent tracking, bursts, cover, real firearm spread
       - run: node tools/check-village.mjs && node tools/check-village-shapes.mjs && node tools/check-village-actions.mjs && node tools/check-village-punch.mjs && node tools/check-village-speech.mjs && node tools/check-village-residents.mjs   # character shapes, peaceful punches, tools, furniture and neighbor dialogue
       - run: node tools/check-village-crook.mjs && node tools/check-village-debt-badge.mjs   # CPU doorstep dialogue, persistent debt and shrink/glide HUD
@@ -133,6 +136,7 @@ jobs:
       - run: node tools/shrine-interact-cpu-check.mjs
       - run: node tools/hotbar-cpu-check.mjs
       - run: node tools/check-weather-wire.mjs && node tools/check-weather.mjs
+      - run: node tools/lighthouse-cpu-check.mjs --wgsl   # CPU: the island lighthouse's lamp lifecycle, beacon uniforms and its shader variants + Naga
       - run: node tools/check-sprint-blur.mjs && node tools/check-sprint-music.mjs
       - run: node --test tools/world-atlas-cpu-check.mjs   # sparse world ABI v2: independent LIGHT/pools, typed feedback, publication/copy + Naga (no GPU)
       - run: npm run check:world-backend   # shared full world shader/assembly + actual Naga; NOT application activation
@@ -148,7 +152,8 @@ jobs:
       - run: npm run check:world-cells   # actual Source/Fields/classified CELL native transport + Naga, not GPU parity
       - run: npm run check:world-gi-glow   # shared world GI/glow producers, bounded history/native recording + Naga; NOT application activation
       - run: npm run check:world-gi-birth   # explicit native-history initialization/adoption; CPU fake transport, no app activation
-      - run: node tools/check-edge-sea.mjs   # CPU: the sea past a World's edge where its water reaches it; Naga validates the sky shader
+      - run: node tools/check-edge-sea.mjs   # CPU: the sea past a map's edge (big maps and small) where its water reaches it; Naga validates the sky and floor grid shaders
+      - run: node tools/check-sky-clouds.mjs   # CPU: the sky's cloud deck is its shadows' (same field, slices, constants, switch), on over every map; Naga validates the sky shader
       - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
       - run: node tools/hybrid-check.mjs   # CPU/Naga: all hybrid producers, actual stage layouts and six grid shapes
       - run: node tools/hybrid-test-view-check.mjs   # CPU-only: explicit Test activation, teardown, and warning UI

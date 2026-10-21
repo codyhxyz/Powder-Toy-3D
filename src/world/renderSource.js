@@ -2,6 +2,8 @@ import { BRICK, cellSlot, slotCell, gridDims } from '../shaders/common.js';
 import { decodeBrick, BRICK_FLOATS } from './store.js';
 import { aerationForSource, isProducerBoundedAeration } from '../gfx/foam.js';
 import { recordWorldSourceCut } from './sourceCut.js';
+import { nativeAirWGSL, NATIVE_AIR_LAYOUT } from '../shaders/renderSource.js';
+import { fold } from '../gpu/kernels.js';
 import { nativeAerationFor } from '../v2/nativeAeration.js';
 
 export const SOURCE_CORE = 32;
@@ -20,21 +22,56 @@ export function intersectBounds(a, b) {
   const lo = a.lo.map((v, i) => Math.max(v, b.lo[i])), hi = a.hi.map((v, i) => Math.min(v, b.hi[i]));
   return lo.every((v, i) => v < hi[i]) ? { lo, hi } : null;
 }
-export function snapshotSource(sim, origin = sim.origin) {
+// The V2 air export. Physics V2 keeps its air per 4³ brick (docs/v2.md §4.3),
+// and its legacy projection (src/v2/physics.js exportLegacy) carries B = 0. So
+// while V2 runs a World window, the drawn source takes B from this per-slot
+// buffer instead (one copy: bCopy 0), which the World's own live and leaving
+// copies rewrite from V2's air just before they copy (liveSource's aux;
+// shaders/renderSource.js nativeAirWGSL). Not a deviation: the World's Pressure
+// and Flow views (and the hover readout) then draw the air the Box's draw under
+// V2, read from its atlas instead of V2's buffers. The edit projection (native)
+// keeps the legacy B: it is written back into physics. (V2's foam reaches the
+// source by v2/nativeAeration.js.)
+const nativeAir = new WeakMap();   // sim → { kernel, group, B }
+const AIR_BYTES = 16;              // a slot's B: vec4f (velocity, pressure), as V1 keeps it
+function nativeAirOf(sim, create = false) {
+  const owner = sim.compact;
+  if (!owner?.isReady || !owner.dynamics?.isReady || sim.disposed || sim.gpu?.failure) return null;
+  let air = nativeAir.get(sim);
+  if (!air && create) {
+    const { gpu, g } = sim, usage = USAGE;   // (STORAGE | COPY_DST | COPY_SRC)
+    const layout = gpu.layout('WORLD_NATIVE_AIR', NATIVE_AIR_LAYOUT);
+    const B = gpu.createBuffer({ label: 'world V2 air (B)', size: g.slots * AIR_BYTES, usage });
+    air = { B, kernel: gpu.kernel({ name: 'worldNativeAir', code: nativeAirWGSL(g), layouts: [sim.L.TABLES, sim.L.STATE_RO, layout] }),
+      group: gpu.bindGroup(layout, [{ binding: 0, resource: { buffer: B } }], 'world V2 air') };
+    nativeAir.set(sim, air);
+  }
+  return air?.kernel.state === 'ready' ? air : null;
+}
+/** Free the V2 air export's buffer (the window lets go of its sim: WorldWindow.dispose). */
+export function dropNativeWorldAir(sim) {
+  const air = nativeAir.get(sim);
+  if (!air) return;
+  nativeAir.delete(sim);
+  (sim.disposed || !sim._retire ? air.B.destroy() : sim._retire(air.B));
+}
+// Rewrite the V2 air export from V2's current air, if V2 runs the window.
+function recordNativeAir(sim) {
+  const air = nativeAirOf(sim, true), state = air && sim.bindPhysicalRO;
+  if (!state) return;
+  sim._dispatch(air.kernel, fold(Math.ceil(sim.g.slots / 64)), { bind: [sim.tables, state, air.group], header: sim.readHeader({ physical: true }) });
+}
+export function snapshotSource(sim, origin = sim.origin, { native = false } = {}) {
   // Never retain sim.header(), sim.origin, state.cur's getter or another
   // mutable descriptor across a shift. Copies encode immutable byte offsets.
   // While V2 runs the box its foam is in its cores (v2/nativeAeration.js), as Box's volume reads it;
   // V1's field doesn't step under V2. (Its records hold no air wakes: bounded by construction.)
-  const native = nativeAerationFor(sim);
-  if (native) return Object.freeze({ g: Object.freeze({ ...sim.g }), origin: Object.freeze(originOf(origin)), copy: sim.cur,
-    A: sim.state.A, B: sim.state.B, flow: sim.flow,
-    aeration: native.buffer, aerCopy: 0, aerGeneration: native.generation, boundedWake: true,
-    deco: sim.decoPlane ? Object.freeze({ ...sim.decoPlane }) : null });
-  const aer = aerationForSource(sim);
+  // Its air is in its coarse air (the V2 air export above), for the drawn projection only.
+  const v2Foam = nativeAerationFor(sim), aer = v2Foam ? null : aerationForSource(sim), air = native ? null : nativeAirOf(sim);
   return Object.freeze({ g: Object.freeze({ ...sim.g }), origin: Object.freeze(originOf(origin)), copy: sim.cur,
-    A: sim.state.A, B: sim.state.B, flow: sim.flow,
-    aeration: aer?.buffer ?? null, aerCopy: aer?.cur ?? 0, aerGeneration: aer?.generation ?? 0,
-    boundedWake: !aer || isProducerBoundedAeration(aer),
+    A: sim.state.A, B: air?.B ?? sim.state.B, ...(air ? { bCopy: 0 } : {}), flow: sim.flow,
+    aeration: v2Foam?.buffer ?? aer?.buffer ?? null, aerCopy: v2Foam ? 0 : aer?.cur ?? 0, aerGeneration: v2Foam?.generation ?? aer?.generation ?? 0,
+    boundedWake: !!v2Foam || !aer || isProducerBoundedAeration(aer),
     deco: sim.decoPlane ? Object.freeze({ ...sim.decoPlane }) : null });
 }
 // A raw read of the live cells. Physics V2 owns its cells and keeps A/B as a
@@ -45,10 +82,13 @@ export function snapshotSource(sim, origin = sim.origin) {
 // liquid fill, the only cells the two projections show differently.
 // The drawn projection by default; native: the edit projection, for a read
 // that is written back into physics. Without V2 (sim.compact unset) a no-op.
-export function liveSource(sim, origin = sim.origin, { native = false } = {}) {
+// aux: also bring the V2 air export (above) up to date, for a copy that keeps
+// the B lane (the World's live and leaving copies).
+export function liveSource(sim, origin = sim.origin, { native = false, aux = false } = {}) {
   sim.legacyState?.(native);
+  if (aux && !native) recordNativeAir(sim);
   nativeAerationFor(sim)?.record();   // (V2: its foam packed from the cores now, before the copies read it)
-  return snapshotSource(sim, origin);
+  return snapshotSource(sim, origin, { native });
 }
 
 // Exact native-copy plans. Both ends use the original brick/tile layout.
@@ -102,9 +142,11 @@ export function recordSourceCopies(frame, src, dst, runs, { aux = true } = {}) {
     if (ao < 0 || bo < 0 || ao + n > a.size || bo + n > b.size || [ao, bo, n].some(v => v % 4)) throw new Error('raw source copy exceeds its original buffer layout');
     frame.copy(a, ao, b, bo, n);
   };
+  // (B's copy is A's, but for the V2 air export's single copy: bCopy)
+  const copyOf = (d, name) => (name === 'B' ? d.bCopy ?? d.copy : d.copy) ?? 0;
   for (const r of runs) {
-    for (const name of ['A', 'B']) native(src[name], ((src.copy ?? 0) * src.g.slots + r.src) * 16,
-      dst[name], ((dst.copy ?? 0) * dst.g.slots + r.dst) * 16, r.cells * 16);
+    for (const name of ['A', 'B']) native(src[name], (copyOf(src, name) * src.g.slots + r.src) * 16,
+      dst[name], (copyOf(dst, name) * dst.g.slots + r.dst) * 16, r.cells * 16);
     if (!aux) continue;
     if (src.flow && dst.flow) native(src.flow, r.src * 8, dst.flow, r.dst * 8, r.cells * 8);
     if (src.aeration && dst.aeration) native(src.aeration, ((src.aerCopy ?? 0) * src.g.slots + r.src) * 8,
@@ -345,7 +387,7 @@ export class WorldRenderSource {
   }
   recordLiveCopy(frame, sim = this.sim, bounds = sourceBounds(sim)) {
     if (this.ownedContext) throw new Error('A Source cut cannot read newer live state');
-    const revision = this.nextRevision(), src = liveSource(sim);
+    const revision = this.nextRevision(), src = liveSource(sim, sim.origin, { aux: true });
     this._record(frame, src, bounds, SOURCE_RANK.live, revision);
     this.liveVersion = sim.version; this.liveContentRevision = this.contentRevision; this.liveSnapshot = src;
     return revision;
@@ -353,13 +395,13 @@ export class WorldRenderSource {
   needsLiveCopy(sim = this.sim) {
     if (this.ownedContext) return false;
     const a = this.liveSnapshot, b = snapshotSource(sim);
-    return this.liveContentRevision !== this.contentRevision || this.liveVersion !== sim.version || !a || a.A !== b.A || a.B !== b.B || a.copy !== b.copy ||
+    return this.liveContentRevision !== this.contentRevision || this.liveVersion !== sim.version || !a || a.A !== b.A || a.B !== b.B || a.copy !== b.copy || a.bCopy !== b.bCopy ||
       a.origin.some((v, i) => v !== b.origin[i]) || a.flow !== b.flow || a.aeration !== b.aeration ||
       a.aerCopy !== b.aerCopy || a.aerGeneration !== b.aerGeneration || a.deco?.buffer !== b.deco?.buffer || a.deco?.offset !== b.deco?.offset;
   }
   recordLeavingCopy(frame, sim, bounds, oldOrigin = sim.origin) {
     if (this.ownedContext) throw new Error('A Source cut cannot transfer current authority');
-    const revision = this.nextRevision(), src = liveSource(sim, oldOrigin);
+    const revision = this.nextRevision(), src = liveSource(sim, oldOrigin, { aux: true });
     // Leaving live cells transfer ownership to captured; they are not stale
     // static data and must be allowed to replace the previous live revision.
     for (const c of this.chunks.values()) planSourceCopies(src, c, bounds,

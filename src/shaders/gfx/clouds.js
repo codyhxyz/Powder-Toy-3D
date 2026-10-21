@@ -1,7 +1,10 @@
-// Fair-weather cumulus over the world (World mode's sky, shaders/far.js).
+// Fair-weather cumulus over every map, small and big: drawn in the sky pass
+// (cloudSkyGLSL, gfx/overlays.js), its shadows in every sun lookup. Once the
+// far view's (shaders/far.js cloudLayer, retired with the far field).
 //
 // A deck of cumulus between CLOUD.baseM and baseM + thickM above the sea,
-// raymarched on sky pixels only. Shapes come from the tileable media noise
+// read on sky pixels only (cloudSkyGLSL: where the view ray crosses its
+// slices; far.js's cloudLayer marched through it). Shapes come from the tileable media noise
 // (gfx/mediaNoise.js): its billows (inverted Worley fBm, the cauliflower puffs
 // of steam) and wisps, read as a 2D coverage map at two non-commensurate
 // scales so the tile doesn't repeat visibly, then eroded by the billows in 3D
@@ -40,6 +43,11 @@ export const CLOUD = {
   shadowSkip: 1e-3,     // sunlight through the deck below this skips the shadow map (it can't show)
   maxSpanM: 7000,       // m: the deck's stretch along grazing rays is clipped to this...
   maxDistM: 40000,      // m: ...and nothing farther is drawn (gone into the haze)
+  skyFadeM: 24000,      // m: the sky pass's deck fades out from here to maxDistM, near the horizon (2-5 degrees up):
+                        // twice the air's 12 km visibility (farShared.js FAR_HAZE), where the haze has hidden nearly
+                        // all of a cloud (about 1 % of its contrast left in green, under visibility's 2 % threshold),
+                        // so the fade hardly shows, while it ends what a grazing ray's slices read there (the noise
+                        // tile's texels below a pixel, shimmering) without a hard line at maxDistM
   lightSteps: 5,        // samples toward the sun, each segment twice the last...
   lightStep0M: 40,      // ...the first this long (~1.2 km in all)
   gFwd: 0.8,            // Henyey–Greenstein forward lobe (the silver lining)...
@@ -74,11 +82,23 @@ export function cloudShift(steps, out) {
 
 const cells = (m) => glf(m / CELL_M);
 
+// What the deck's shadows (cloudShadow) and the sky's view of it (cloudSkyGLSL)
+// both read, written once so the two can't drift apart: the switch (FrameUniforms'
+// clouds: no shadows, no clouds drawn), and the CLOUD_SHADOW_N slices the deck
+// is read at. Slice k's height (world cells)...
+export const CLOUDS_OFF = 'FU.clouds == 0u';
+export const sliceY = (k) => `FU.cloudSea + CLOUD_BASE + (f32(${k}) + 0.5) / f32(CLOUD_SHADOW_N) * CLOUD_THICK`;
+// ...the point where the ray from w along dir (dir.y > 0) reaches height y...
+export const slicePoint = (w, dir, y) => `${w} + ${dir} * ((${y} - ${w}.y) / ${dir}.y)`;
+// ...and the optical depth along dir of od, the slices' summed density (each
+// slice CLOUD_THICK / CLOUD_SHADOW_N deep, crossed at dirY to the vertical).
+export const sliceDepth = (od, dirY) => `CLOUD_SIGMA * ${od} * CLOUD_THICK / (${dirY} * f32(CLOUD_SHADOW_N))`;
+
 // The deck itself and the sunlight through it, in every pipeline that lights
 // with the sun (lighting.js: sunShadow multiplies it in, so the window's
-// surfaces, media, figures and GI probes all lie in the clouds' shadows), off
-// in a box (FU.clouds). WGSL (the name is the GLSL version's, docs/webgpu.md
-// W2); reads the media noise (tMediaNoise, L.LIGHTING binding 10: r billows,
+// surfaces, media, figures and GI probes all lie in the clouds' shadows), on
+// over every map (app.js build; FU.clouds off: no shadows, no clouds). WGSL
+// (the name is the GLSL version's, docs/webgpu.md W2); reads the media noise (tMediaNoise, L.LIGHTING binding 10: r billows,
 // g wisps, b flame tongues, a flicker; gfx/mediaNoise.js), which tiles, through
 // linearRepeat, and FrameUniforms' clouds, cloudShift (cells: the wind's drift
 // of the deck), cloudSea (world cells: the sea level the deck's height counts
@@ -129,23 +149,19 @@ fn cloudDensity(p: vec3f, detail: f32) -> f32 {
 // along the sun, read at CLOUD_SHADOW_N heights through it (the shapes without
 // their fine detail, which the sun's penumbra at that height, ~10 m, blurs).
 fn cloudShadow(w: vec3f) -> f32 {
-  if (FU.clouds == 0u) { return 1.0; }
+  if (${CLOUDS_OFF}) { return 1.0; }
   var od = 0.0;
   for (var k = 0; k < CLOUD_SHADOW_N; k++) {
-    let y = FU.cloudSea + CLOUD_BASE + (f32(k) + 0.5) / f32(CLOUD_SHADOW_N) * CLOUD_THICK;
-    od += cloudDensity(w + FU.sun * ((y - w.y) / FU.sun.y), 0.0);   // (the key light stays above DAY.keyElMin)
+    let y = ${sliceY('k')};
+    od += cloudDensity(${slicePoint('w', 'FU.sun', 'y')}, 0.0);   // (the key light stays above DAY.keyElMin)
   }
-  return exp(-CLOUD_SIGMA * od * CLOUD_THICK / (FU.sun.y * f32(CLOUD_SHADOW_N)));
+  return exp(-${sliceDepth('od', 'FU.sun.y')});
 }
 `;
 
-// The deck seen in World's sky (the far view, shaders/far.js farSky). Needs,
-// before it: lib() (the deck, lighting.js's sky, hash33, gFragCoord) and the
-// far field's haze (shaders/farShared.js farHazeGLSL: farAir, FAR_HAZE_RGB).
-//   cloudLayer(ro, rd) -> vec4f     the deck seen from ro along rd: rgb the light it
-//                                   sends toward the eye (premultiplied, hazed), a how
-//                                   much of what lies behind it still shows
-export const cloudsGLSL = /* wgsl */ `
+// How the deck is lit and hazed as the eye sees it (cloudsGLSL's march, and
+// the sky pass's view, cloudSkyGLSL).
+const cloudLookGLSL = /* wgsl */ `
 const CLOUD_STEPS: i32 = ${CLOUD.steps};
 const CLOUD_MAX_SPAN: f32 = ${cells(CLOUD.maxSpanM)};
 const CLOUD_MAX_DIST: f32 = ${cells(CLOUD.maxDistM)};
@@ -162,7 +178,15 @@ const CLOUD_AMB_BASE: f32 = ${glf(CLOUD.ambBase)};
 const CLOUD_T_MIN: f32 = ${glf(CLOUD.tMin)};
 const CLOUD_HAZE_H: f32 = ${cells(CLOUD.hazeScaleM)};
 const CLOUD_FLAT_EPS: f32 = 1e-4;   // height differences below this count as level (the haze's scale-height factor)
+`;
 
+// The deck seen in World's sky (the far view, shaders/far.js farSky). Needs,
+// before it: lib() (the deck, lighting.js's sky, hash33, gFragCoord) and the
+// far field's haze (shaders/farShared.js farHazeGLSL: farAir, FAR_HAZE_RGB).
+//   cloudLayer(ro, rd) -> vec4f     the deck seen from ro along rd: rgb the light it
+//                                   sends toward the eye (premultiplied, hazed), a how
+//                                   much of what lies behind it still shows
+export const cloudsGLSL = cloudLookGLSL + /* wgsl */ `
 fn cloudLayer(ro: vec3f, rd: vec3f) -> vec4f {
   if (rd.y <= 0.0) { return vec4f(0.0, 0.0, 0.0, 1.0); }
   let lo = FU.cloudSea + CLOUD_BASE;
@@ -228,6 +252,87 @@ fn cloudLayer(ro: vec3f, rd: vec3f) -> vec4f {
   let Th = exp(-FAR_HAZE_RGB * dist * k);
   S = S * Th + farAir(rd) * (1.0 - Th) * (1.0 - T);
   return vec4f(S, T);
+}
+`;
+
+// The deck in the sky pass (gfx/overlays.js skyWGSL), on every map, small and
+// big: the same field its shadows fall from (cloudDensity, read at cloudShadow's
+// slices, with its switch, drift, cover and sea level), so a shadow lies under
+// each cloud. Not a march (the pass runs once per pixel at the far plane): the
+// view ray reads each slice where it crosses it, as the shadows read the sun's
+// ray; each slice is lit by far.js's shading of the deck (cloudLayer above:
+// the sunlight through the slices above it toward the sun, its scattering
+// octaves and phase, sky and ground light by height) and hazed by the same
+// air, then faded out near the horizon (CLOUD.skyFadeM). The fine billows
+// erode the outlines up close, as in cloudLayer; the shadows go without them,
+// the sun's penumbra at that height blurring them (cloudShadow). Needs, before
+// it: cloudDeckGLSL (with tMediaNoise and linearRepeat bound), gfx/sky.js's
+// skyGLSL and skyViewGLSL (TAU_AIR, hgPhase, analyticSkyRadiance), PI_L, FU.
+// haze: the air's extinction per cell, green (farShared.js FAR_HAZE).
+//   cloudSky(ro, rd) -> vec4f      the deck seen from world point ro (cells)
+//                                  along unit rd: rgb the light it sends toward
+//                                  the eye (premultiplied, hazed), a how much
+//                                  of the sky behind it still shows
+//   cloudOver(c, ro, rd) -> vec3f  sky radiance c behind the deck, seen so
+export const cloudSkyGLSL = (haze) => /* wgsl */ `${cloudLookGLSL}
+const CLOUD_SKY_FADE: f32 = ${cells(CLOUD.skyFadeM)};
+const CLOUD_SKY_HAZE_RGB: vec3f = ${glf(+haze.toExponential(4))} * TAU_AIR / TAU_AIR.g;   // the air's extinction per cell (the sky's spectral shape)
+const CLOUD_SKY_SELF: f32 = 0.5;   // a slice's sample lies mid-way through it: sunlight crosses half its depth
+
+fn cloudSky(ro: vec3f, rd: vec3f) -> vec4f {
+  if (${CLOUDS_OFF} || rd.y <= 0.0) { return vec4f(0.0, 0.0, 0.0, 1.0); }
+  let mu = dot(rd, FU.sun);
+  let lv = min(CLOUD_THICK / (rd.y * f32(CLOUD_SHADOW_N)), CLOUD_MAX_SPAN / f32(CLOUD_SHADOW_N));   // a slice's depth along the ray
+  var S = vec3f(0.0);
+  var T = 1.0;    // transmittance
+  var tw = 0.0;   // the in-scatter's mean distance (for the haze): its weighted sum ...
+  var ww = 0.0;   // ... and its weight
+  for (var k = 0; k < CLOUD_SHADOW_N; k++) {
+    let t = (${sliceY('k')} - ro.y) / rd.y;
+    if (t < 0.0 || t > CLOUD_MAX_DIST) { continue; }
+    let p = ro + rd * t;
+    let d = cloudDensity(p, 1.0 - smoothstep(CLOUD_DETAIL_NEAR, CLOUD_DETAIL_FAR, t));
+    if (d <= 0.0) { continue; }
+    // sunlight reaching p: through the rest of its slice, then the slices above along the sun (cloudShadow's)
+    var od = CLOUD_SKY_SELF * d;
+    for (var j = k + 1; j < CLOUD_SHADOW_N; j++) {
+      let y = ${sliceY('j')};
+      od += cloudDensity(${slicePoint('p', 'FU.sun', 'y')}, 0.0);
+    }
+    od = ${sliceDepth('od', 'FU.sun.y')};
+    var sun = 0.0;
+    var a = 1.0;
+    var b = 1.0;
+    var c = 1.0;
+    for (var o = 0; o < CLOUD_MS_OCTAVES; o++) {
+      sun += b * mix(hgPhase(mu, CLOUD_G_BACK * c), hgPhase(mu, CLOUD_G_FWD * c), CLOUD_G_MIX) * exp(-a * od);   // (lighting.js hgPhase2)
+      a *= CLOUD_MS_A;
+      b *= CLOUD_MS_B;
+      c *= CLOUD_MS_C;
+    }
+    let h = (f32(k) + 0.5) / f32(CLOUD_SHADOW_N);
+    let L = PI_L * FU.sunCol * sun + mix(FU.ground, FU.skyUp, mix(CLOUD_AMB_BASE, 1.0, h));
+    let a0 = 1.0 - exp(-CLOUD_SIGMA * d * lv);   // this slice's opacity (albedo 1: what it stops, it scatters)
+    let wgt = T * a0;
+    S += wgt * L;
+    tw += wgt * t;
+    ww += wgt;
+    T *= 1.0 - a0;
+  }
+  if (ww <= 0.0) { return vec4f(0.0, 0.0, 0.0, 1.0); }
+  // the haze in front: the air, thinning with height over its scale height (cloudLayer's)
+  let dist = tw / ww;
+  let dy = dist * rd.y;
+  var kh = 1.0;
+  if (dy > CLOUD_FLAT_EPS) { kh = CLOUD_HAZE_H / dy * (1.0 - exp(-dy / CLOUD_HAZE_H)); }
+  let Th = exp(-CLOUD_SKY_HAZE_RGB * dist * kh);
+  S = S * Th + analyticSkyRadiance(rd) * (1.0 - Th) * (1.0 - T);
+  let f = 1.0 - smoothstep(CLOUD_SKY_FADE, CLOUD_MAX_DIST, dist);
+  return vec4f(S * f, mix(1.0, T, f));
+}
+fn cloudOver(c: vec3f, ro: vec3f, rd: vec3f) -> vec3f {
+  let cl = cloudSky(ro, rd);
+  return c * cl.a + cl.rgb;
 }
 `;
 

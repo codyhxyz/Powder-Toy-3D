@@ -22,6 +22,8 @@ import terrainRoute from './world/scenes/descent/terrainRoute.json' with { type:
 import { createFold } from './world/scenes/descent/terrainFold.js';
 
 export const WORLD_DIMS = [1024, 128, 1024];   // shaders/far.js WORLD_SIZE (app.js checks)
+// Intentional (gamemode: team modes are built for their own maps; user decision 2026-10-20): only the
+// small maps built for them (Lab, Dam Valley) list them; no big map does, and co-op there runs only Sandbox.
 const TEAM_MODES = ['slayer', 'ctf', 'koth', 'infection', 'siege'];
 
 export const MAPS = [

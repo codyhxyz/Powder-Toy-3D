@@ -71,13 +71,13 @@ export function createHybridMotion(gpu, sim, { gate: providedGate = null } = {})
         view:t.createView(),loadOp:'clear',storeOp:'store',clearValue:[0,0,0,0],
       })) },'hybrid motion and reactive');
       try {
-        pipe.draw(rp,{ bind:[fu.group,sim.bindRO,bind],header:sim.header(),params:{
+        pipe.draw(rp,{ bind:[fu.group,sim.bindRO,bind],header:sim.readHeader(),params:{
           clipToGrid:jittered.clone().invert(),current,previous,previousJittered,size:[w,h],
           valid:valid?1:0,changed:fieldRevision!==lastFields||revision!==lastRevision?1:0,untracked:externalAnimated?1:0,world:world?1:0,
         },count:3 });
       } finally { rp.end(); }
       if (!valid || revision !== lastRevision) {
-        capture.dispatch(gpu.frame,fold(sim.g.nbricks),{ bind:[sim.tables,sim.bindRO,captureBind],header:sim.header() });
+        capture.dispatch(gpu.frame,fold(sim.g.nbricks),{ bind:[sim.tables,sim.bindRO,captureBind],header:sim.readHeader() });
         stats.captures++;
       }
       gpu.frame.direct().copyTextureToTexture({ texture:depth },{ texture:textures.depth },[w,h]);

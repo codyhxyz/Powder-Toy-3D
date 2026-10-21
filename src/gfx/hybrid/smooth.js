@@ -10,6 +10,8 @@ export { smoothAcceptanceWGSL } from '../../shaders/hybrid/smooth.js';
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 const STORAGE = 0x80, INDIRECT = 0x100;
+// The cells sim.bindRO and sim.readHeader() hand readers (src/sim.js): V1's legacy copies (0) or V2's own (2).
+const LEGACY_FORMAT = 0, NATIVE_FORMAT = 2;
 
 /** createHybridSmooth(gpu,sim,{maxVertices=2**21,shader={wgsl,layout,bind,
  * handlesAppearance},onRead}). shader.wgsl defines shadeSmooth(gridPosition,normal,
@@ -56,10 +58,14 @@ export function createHybridSmooth(gpu, sim, { maxVertices = 2 ** 21, shader = {
   const ring = gpu.readback.ring(label('status results'), 16, 16);
   const b = (binding, buffer) => ({ binding, resource: { buffer } });
   const vertexStateLayout = gpu.layout('HYBRID_SMOOTH_STATE_RO', SMOOTH_STATE_LAYOUT);
-  // Rebound whenever the box's legacy copies are replaced (Simulation.pingPong under native physics).
+  // The vertex stage reads state through its own layout (sim.L.STATE_RO has no vertex visibility),
+  // so it binds the cells itself: V1's legacy copies, or under V2 V2's own cells beside the legacy B,
+  // as V2's read group does (v2/physics.js bindLegacy). Under V2 the legacy copies are only a cache
+  // exported at legacy boundaries; drawing from them showed stale matter. Rebound whenever those
+  // buffers are replaced (Simulation.pingPong under native physics) or the engine changes.
   let vertexState = null;
-  const vertexStateBind = () => {
-    const { A, B } = sim.state;
+  const vertexStateBind = (format) => {
+    const { B } = sim.state, A = format === NATIVE_FORMAT ? sim.compact.cells : sim.state.A;
     if (vertexState?.A !== A || vertexState.B !== B) {
       vertexState = { A, B, group: gpu.bindGroup(vertexStateLayout, [b(0, A), b(1, B)], label('vertex state')) };
     }
@@ -82,13 +88,30 @@ export function createHybridSmooth(gpu, sim, { maxVertices = 2 ** 21, shader = {
   const extract = gpu.kernel({ optional: true, name: 'hybrid.smooth.extract', ...meshDesc, entry: 'extract', workgroupSize: [128, 1, 1] });
   const finish = gpu.kernel({ optional: true, name: 'hybrid.smooth.finish', ...meshDesc, layouts: [sim.L.TABLES, sim.L.STATE_RO, prefixLayout], entry: 'finish', workgroupSize: [1, 1, 1] });
   const build = gpu.kernel({ optional: true, name: 'hybrid.smooth.build', ...meshDesc, entry: 'build', workgroupSize: [128, 1, 1] });
-  const drawCode = smoothDrawWGSL(g, { shadingWGSL: shader.wgsl });
-  const drawDesc = { code: drawCode, layouts: [fu.layout, vertexStateLayout, drawLayout], params: SmoothParams,
+  const drawDesc = { layouts: [fu.layout, vertexStateLayout, drawLayout], params: SmoothParams,
     primitive: { topology: 'triangle-list', cullMode: 'none' },
     depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' } };
-  const drawPipe = gpu.renderPipeline({ optional: true, name: 'hybrid.smooth.draw', ...drawDesc, fragment: { targets: [{ format: 'rgba16float' }] } });
-  const shadowPipe = gpu.renderPipeline({ optional: true, name: 'hybrid.smooth.shadow', ...drawDesc, code: smoothDrawWGSL(g), layouts: [fu.layout, vertexStateLayout, shadowLayout], vertex: { entry: 'shadowVS' }, fragment: null });
-  const pipes = [extract, finish, build, drawPipe, shadowPipe];
+  // One draw/shadow pair per read format. V1's keeps its names and text; V2's is built with the rest
+  // when the box has a V2 owner, else the first time V2 owns it (isReady holds the hybrid off meanwhile).
+  const variants = new Map();
+  const variantFor = (format) => {
+    if (!variants.has(format)) {
+      const suffix = format === LEGACY_FORMAT ? '' : `.format${format}`;
+      variants.set(format, {
+        draw: gpu.renderPipeline({ optional: true, name: `hybrid.smooth.draw${suffix}`, ...drawDesc,
+          code: smoothDrawWGSL(g, { shadingWGSL: shader.wgsl, fixedReadFormat: format }), fragment: { targets: [{ format: 'rgba16float' }] } }),
+        shadow: gpu.renderPipeline({ optional: true, name: `hybrid.smooth.shadow${suffix}`, ...drawDesc,
+          code: smoothDrawWGSL(g, { fixedReadFormat: format }), layouts: [fu.layout, vertexStateLayout, shadowLayout], vertex: { entry: 'shadowVS' }, fragment: null }),
+      });
+    }
+    return variants.get(format);
+  };
+  variantFor(LEGACY_FORMAT);
+  if (sim.compactOwner) variantFor(NATIVE_FORMAT);
+  // sim.readHeader()'s format without its sync (a getter may run outside a frame)
+  const readFormat = () => (sim.compact?.isReady && !(sim.compact.forceCompatibility && gpu.testMode) ? NATIVE_FORMAT : LEGACY_FORMAT);
+  const variantReady = (v) => v.draw.state === 'ready' && v.shadow.state === 'ready';
+  const pipes = [extract, finish, build, ...[...variants.values()].flatMap((v) => [v.draw, v.shadow])];
   let disposed = false, key = null, lastRevision, lastOrigin, lastSplit, generation = 0, frameState = {};
   const stats = { builds: 0, maxVertices: capacity, count: 0, flags: 0, requiredVertices: 0,
     rebuiltBricks: 0, pending: false, fallbackRequired: true, fallbackReason: 'not-built', readbackError: null };
@@ -103,7 +126,7 @@ export function createHybridSmooth(gpu, sim, { maxVertices = 2 ** 21, shader = {
   const params = (matrix = IDENTITY) => ({ capacity, full: 0, unsupported: 0, slot: 0, matrix, particleSplit: derived.particleSplit ? 1 : 0, world: derived.world ? 1 : 0 });
   const api = {
     ready: Promise.all(pipes.map((p) => p.ready)).then(() => api),
-    get isReady() { return !disposed && !gpu.failure && pipes.every((p) => p.state === 'ready'); },
+    get isReady() { return !disposed && !gpu.failure && pipes.every((p) => p.state === 'ready') && variantReady(variantFor(readFormat())); },
     get revision() { return `${generation}|${key}|${stats.fallbackReason}`; },
     capabilities: Object.freeze({ particleSplit: true, channels: [2, 3], thinGranular: true }),
     stats,
@@ -134,7 +157,7 @@ export function createHybridSmooth(gpu, sim, { maxVertices = 2 ** 21, shader = {
       stats.pending = true; stats.readbackError = null;
       stats.flags = 0;
       fallback('');
-      const bind = [sim.tables, sim.bindRO, extractBind], header = sim.header();
+      const bind = [sim.tables, sim.bindRO, extractBind], header = sim.readHeader();
       const p = { ...params(), full: full ? 1 : 0, unsupported: 0 };
       extract.dispatch(gpu.frame, fold(g.nbricks), { bind, header, params: p });
       const slot = ring.next();
@@ -155,13 +178,15 @@ export function createHybridSmooth(gpu, sim, { maxVertices = 2 ** 21, shader = {
       return true;
     },
     draw(rp) {
-      if (!canDraw()) return false;
-      drawPipe.draw(rp, { bind: [fu.group, vertexStateBind(), drawBind], header: sim.header(), params: params(), indirect: { buffer: args } });
+      const header = sim.readHeader(), v = variants.get(header.format);
+      if (!v || !variantReady(v) || !canDraw()) return false;
+      v.draw.draw(rp, { bind: [fu.group, vertexStateBind(header.format), drawBind], header, params: params(), indirect: { buffer: args } });
       return true;
     },
     drawShadow(rp, { matrix } = {}) {
-      if (!matrix || !canDraw()) return false;
-      shadowPipe.draw(rp, { bind: [fu.group, vertexStateBind(), shadowBind], header: sim.header(), params: params(matrix), indirect: { buffer: args } });
+      const header = sim.readHeader(), v = variants.get(header.format);
+      if (!matrix || !v || !variantReady(v) || !canDraw()) return false;
+      v.shadow.draw(rp, { bind: [fu.group, vertexStateBind(header.format), shadowBind], header, params: params(matrix), indirect: { buffer: args } });
       return true;
     },
     invalidate() { key = null; generation++; stats.pending = false; fallback('invalidated'); },

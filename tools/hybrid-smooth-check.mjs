@@ -36,7 +36,7 @@ export function fixture(split = false) {
     flush() {},
   };
   const derived = { particleSplit: split, world: null, dlist: {}, fieldSurf: {}, fieldThin: {}, views: { fieldSurf: {}, fieldThin: {} } };
-  const sim = { id: 1, g, state:{A:{},B:{}}, derived, fieldSurf: derived.fieldSurf, fieldThin: derived.fieldThin, L: { TABLES: [], STATE_RO: [] }, origin: { x: 0, y: 0, z: 0 }, version: 0, cur: 0, header: () => ({}) };
+  const sim = { id: 1, g, state:{A:{},B:{}}, derived, fieldSurf: derived.fieldSurf, fieldThin: derived.fieldThin, L: { TABLES: [], STATE_RO: [] }, origin: { x: 0, y: 0, z: 0 }, version: 0, cur: 0, header: () => ({}), readHeader: () => ({ format: 0 }) };
   return { gpu, sim, log, buffers, rings, reads, pipelines };
 }
 
@@ -235,7 +235,22 @@ assert(sf.log.filter(x=>x.name.endsWith('draw')||x.name.endsWith('shadow')).ever
 sr.dispose();
 sf.reads.at(-1).resolve(new Uint32Array([0,1,3,1]).buffer); await Promise.resolve();
 assert.equal(sr.stats.fallbackReason,'disposed');
+// A box V2 takes over after the Test view was made: its format-2 draw is built then (isReady holds
+// the hybrid off until it is), and its vertex state is V2's own cells, not the legacy copies.
+const nf=fixture(), nr=createHybridSmooth(nf.gpu,nf.sim);
+assert(!nf.pipelines.some(p=>/format2/.test(p.name)),'a V1 box builds no V2 draw');
+assert(nr.update({revision:1}) && nr.draw({}));
+assert.equal(nf.log.at(-1).name,'hybrid.smooth.draw'); assert.equal(nf.log.at(-1).bind[1][0].resource.buffer,nf.sim.state.A);
+Object.assign(nf.sim,{compact:{isReady:true,cells:{label:'v2 cells'}},readHeader:()=>({format:2})});
+assert(nr.isReady && nf.pipelines.some(p=>p.name==='hybrid.smooth.draw.format2') && nf.pipelines.some(p=>p.name==='hybrid.smooth.shadow.format2'));
+assert(nr.update({revision:2}) && nr.draw({}) && nr.drawShadow({},{matrix:Array(16).fill(0)}));
+for (const c of nf.log.slice(-2)) {
+  assert.match(c.name,/format2$/); assert.equal(c.header.format,2);
+  assert.equal(c.bind[1][0].resource.buffer,nf.sim.compact.cells,'V2 surfaces read V2 cells');
+}
+assert.equal(nf.log.filter(c=>/extract|build/.test(c.name)).at(-1).header.format,2,'extraction reads V2 cells as format 2');
+nr.dispose();
 const limited=fixture(); limited.gpu.device.limits.maxStorageBufferBindingSize=65536;
 const lr=createHybridSmooth(limited.gpu,limited.sim); assert.equal(lr.resources.maxVertices,4096); lr.dispose();
 console.log(`PASS smooth packing: 4096 records, max position error ${maxPositionError.toFixed(7)}, min normal dot ${minNormalDot.toFixed(7)}, exact u32 slots`);
-console.log('PASS smooth CPU: field ABI/default-zero, reset, split/history/jet guards, reflection/layout <=8 storage, tetra cases/seams, source selection, prefix relocation/copy/no-change, overflow zero draw/recovery, base-only shadow, footprint-before-discard, same-frame draw, revision continuity, diagnostics wake, device limit, disposal');
+console.log('PASS smooth CPU: field ABI/default-zero, reset, split/history/jet guards, reflection/layout <=8 storage, tetra cases/seams, source selection, prefix relocation/copy/no-change, overflow zero draw/recovery, base-only shadow, footprint-before-discard, same-frame draw, revision continuity, diagnostics wake, device limit, disposal, V2 takeover (format-2 draw on V2 cells)');

@@ -5,6 +5,9 @@ import { fullscreenVert } from '../../gpu/wgsl.js';
 import { frameBindings } from '../bindings.js';
 import { MEDIA, MEDIA_FLOOR, HEAT_RANGE, MEDIA_NOISE_CELLS } from '../../gfx/materials.js';
 import { INCAND, INCAND_KNOTS } from '../../gfx/incandescence.js';
+import { skyGLSL, skyViewGLSL } from '../../gfx/sky.js';
+import { farAirWGSL } from '../farShared.js';
+import { SH_Y0, SKYVIS_OPEN_DC, GI_OFFSET_CELLS } from '../gfx/lighting.js';
 
 export const HybridMediaParams = uniformStruct('HybridMediaParams', {
   clipToGrid: 'mat4x4f', grid: 'vec3f', step: 'f32', size: 'vec2f', lowSize: 'vec2f',
@@ -245,6 +248,29 @@ ${screenLibrary()}
 @group(2) @binding(1) var sceneColor: texture_2d<f32>;
 @group(2) @binding(2) var lowMedia: texture_2d<f32>;
 @group(2) @binding(3) var lowGuide: texture_2d<f32>;
+// The air between the eye and the scene behind the media, as the volume's
+// haze on every map (shaders/farShared.js volumeHaze): FAR_HAZE's extinction
+// and the sky's light on the air, by the air's sky share at the ray's two ends
+// (the far one GI_OFFSET back out of what it hit), from the GI's band 0 as
+// lighting.js giAirSkyVis reads it; without GI, or past the grid, open.
+const PI_L: f32 = 3.14159265;
+${skyGLSL()}
+${skyViewGLSL()}
+${farAirWGSL}
+const HAZE_SH_Y0: f32 = ${SH_Y0.toFixed(6)};
+const HAZE_OPEN_DC: f32 = ${SKYVIS_OPEN_DC.toFixed(6)};
+const HAZE_GI_OFFSET: f32 = ${GI_OFFSET_CELLS.toFixed(1)};
+fn hazeAirSky(p: vec3f) -> f32 {
+  var s = 1.0;
+  if (P.hasGI != 0u && all(p >= vec3f(0.0)) && all(p <= P.grid)) {
+    s = clamp(HAZE_SH_Y0 * textureSampleLevel(giDC, linearClamp, p / P.grid, 0.0).a / HAZE_OPEN_DC, 0.0, 1.0);
+  }
+  return s;
+}
+fn hazeScene(col: vec3f, ray: Ray) -> vec3f {
+  let lit = 0.5 * (hazeAirSky(ray.origin) + hazeAirSky(ray.origin + ray.dir * max(ray.limit - HAZE_GI_OFFSET, 0.0)));
+  return farHazeAir(col, ray.dir, ray.limit, lit);
+}
 @fragment fn fs(in: FullScreen) -> @location(0) vec4f {
   let pixel = vec2i(in.position.xy);
   let ray = rayAt(pixel);
@@ -262,6 +288,7 @@ ${screenLibrary()}
   var media = vec4f(0.0);
   if (weights > 1e-5) { media = sum / weights; }
   else { media = integrate(ray); } // Thin foreground/background edges never turn into depth holes.
-  let behind = textureLoad(sceneColor, pixel, 0);
+  var behind = textureLoad(sceneColor, pixel, 0);
+  if (ray.limit < SKY * 0.5) { behind = vec4f(hazeScene(behind.rgb, ray), behind.a); }   // the sky itself is the air's light already
   return media + behind * (1.0 - media.a); // premultiplied linear HDR, including coverage alpha
 }`);

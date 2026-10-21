@@ -75,7 +75,11 @@ test('seven independent production GI/key/select/args and glow emissions remain 
   // function against 40e1eb8c; the other five are unchanged.
   // Re-pinned 2026-10-20 (cold compile): source and gather changed only in lighting.js
   // causticGain's taps (CAUSTIC_TAPS, causticTaps), diffed against origin/main 7e5dc8a2; the other five unchanged.
-  const hashes = ['baec71a3f0f18792179ac5df380301ba03455be0fac9a0b650a66fcc11f84e2c', '8ea14143dbb381a3ee8ebb7707772e14535e4e681dcd129c8bb099fa0694de21', '1c1c1466266457d229a0f1ed0d59e5b054b3f6b3e4306dc23f695c656d4f63a8', '49c243e0fecd677ad02a487aace986634f1f43785e3626f74240ec2e2a40d28f', 'e57f139d63b575e2d8b5b7dee20033283e73efb40fc19e4f9b52f2645237e4e7', 'b7f2b431e07d44a6aeab03f55db2a30f28a3eff1643a6db5e6aaa0fe58e982c6', '8ebdc6e328ec9e086242a31194be0fd9e088fffe3f7cef3507552398c373796e'];
+  // Re-pinned 2026-10-20 (bounce light to the box's edge): only the gather changed, in GI_STEPS (12 → giSteps, 104
+  // here), giAlong/giPast and the march's two lines that use them, diffed against origin/main 6a056d8d.
+  // Re-pinned 2026-10-20 (distance haze): the source gained lighting.js giAirSkyHeld only,
+  // diffed against origin/main 6a056d8d; the other six unchanged.
+  const hashes = ['67c3d7d0442ec4d1430fc21d0ed0291b43e08c4d0a81b4df7238bc5b4af2dfda', 'e42add413933739b32692df5c94478dfc6056fe1cd7a37d932c0624d704b6538', '1c1c1466266457d229a0f1ed0d59e5b054b3f6b3e4306dc23f695c656d4f63a8', '49c243e0fecd677ad02a487aace986634f1f43785e3626f74240ec2e2a40d28f', 'e57f139d63b575e2d8b5b7dee20033283e73efb40fc19e4f9b52f2645237e4e7', 'b7f2b431e07d44a6aeab03f55db2a30f28a3eff1643a6db5e6aaa0fe58e982c6', '8ebdc6e328ec9e086242a31194be0fd9e088fffe3f7cef3507552398c373796e'];
   [giSourceFrag(g), giGatherFrag(g), giKeyFrag(g), giSelectFrag(g), giArgsFrag(g), blurFrag(g), blurFrag(g, { last: true })].forEach((code, i) => assert.equal(createHash('sha256').update(code).digest('hex'), hashes[i]));
 });
 test('actual eight world GI/two glow modules validate Naga and default budgets', () => {
@@ -115,7 +119,9 @@ test('world gather is the original generated module minus unused texture mirrors
   // diffed against origin/main 7e5dc8a2, nothing else moved.
   // Then (2026-10-20, cold compile) worldAccess.js worldProbe's four bands share each tap's
   // lookup (unused here); diffed against origin/main 46ee20fe, nothing else moved.
-  const hashes = ['c316e7a2d70583500a77a18daf3f912b7b8579a33d51726b2ccc04a6c049af2a', '623137bb024f1ec03c7981efccc4f1aebf003c975977a9e61b8dd3a681585984', '167cb6d7b69bd1e4b2d779e981b73f56bf1b1535e299e4c0e493ba1d938a46af', 'b4ed6a514293fda5a42a372a256209715a8a2fa65843175c1040dd198c388a15'];
+  // Then (2026-10-20, distance haze) worldAccess.js's worldProbeHeld / worldProbeAlphaHeld
+  // (unused here); diffed against origin/main 6a056d8d, nothing else moved.
+  const hashes = ['97d63747811bd469dcc37366232163d9445e763c8e53833403ad7171b29f0951', 'e5ff3fce767e30583ff55ee1e231fd5fa8a4730d1544d99b9b137c657a65486f', '76029bca7d0f9e8a2fa450933c5e478774de1d7e3bb0dd9844383f2cdaf47211', '30a7e095684fd0e934f965f15083f14e3adfc2afc375665d14b69eefe495f81b'];
   const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
   gathers.forEach((c, i) => {
     const code = c.code(), groups = c.layouts();
@@ -179,6 +185,83 @@ out[gid.x]=vec4f(L,T);status[gid.x]=select(0u,1u,worldIncomplete);
     assert.equal(flags[mode * 32 + ray], missing ? 1 : 0); if (missing) misses++; if (hit && hitStep > 12) distantHits++;
   }
   assert.ok(distantHits > 0 && misses > 0); console.log(`CPU production GI march: 96 rays, ${distantHits} real far-source hits, ${misses} sticky unknown rays`);
+});
+test('executed production Box march runs to the box edge, and its empty-brick leaps give the light of reading every brick', () => {
+  // User's decision (2026-10-20): a small map's bounce rays reach the box's edge, as a big map's
+  // reach the world's; they used to stop after 18 bricks (6 + 6 strides of 2) and take the sky.
+  const B = [40, 16, 40], g = { nx: B[0] * 4, ny: B[1] * 4, nz: B[2] * 4 }, production = giGatherFrag(g);
+  const start = production.indexOf('    let pc = vec3f(bc) + 0.5;'), end = production.indexOf('    var vis = 0.0;', start);
+  assert.ok(start > 0 && end > start);
+  // The far field's branch never runs (FrameUniforms.far is 0 everywhere since dc480f4f): the box's miss alone.
+  const far = 'if (FU.far != 0u) { L += T * farBeyond(pc * f32(BS), q * f32(BS), d, &open); } else { L += T * beyond(pc * f32(BS), d); }';
+  const trace = production.slice(start, end); assert.ok(trace.includes(far));
+  const constants = ['GI_RAYS', 'GI_STEPS', 'GI_NEAR_STEPS', 'GI_FAR_STRIDE', 'GI_T_MIN', 'GI_FACING', 'GOLDEN_ANGLE', 'GI_STRIDE'].map(name => production.match(new RegExp(`const ${name}:[^;]+;`))?.[0]).join('\n');
+  assert.match(constants, new RegExp(`GI_STEPS: i32 = ${B[0] + B[1] + B[2] + 8};`));
+  // A floor, a lit far wall 36 bricks from the near probes, and scattered partly blocking bricks (half-exact values).
+  const nb = B[0] * B[1] * B[2], id = (x, y, z) => x + B[0] * (y + B[1] * z), src = new Uint32Array(nb * 4), cells = new Map();
+  const put = (x, y, z, rad, cov) => { const i = id(x, y, z); cells.set(i, { rad, cov }); src.set([pair(rad[0], rad[1]), pair(rad[2], cov[0]), pair(cov[1], cov[2]), 0x1ff7fdff], 4 * i); };
+  for (let z = 0; z < B[2]; z++) for (let x = 0; x < B[0]; x++) put(x, 0, z, [.25, .25, .25], [1, 1, 1]);
+  for (let z = 0; z < B[2]; z++) for (let y = 1; y < B[1]; y++) put(38, y, z, [3, 2, 1], [1, 1, 1]);
+  let s = 11; const rnd = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32;
+  for (let k = 0; k < 60; k++) put(1 + Math.floor(rnd() * 36), 1 + Math.floor(rnd() * 14), Math.floor(rnd() * B[2]), [.5, .125, 2], [.25, .375, .625]);
+  // brickDist as shaders/passes.js brickDistFrag leaves it: the Chebyshev distance to matter, capped at 8 (brickDistAt: less one)
+  const dist = new Uint32Array(nb);
+  for (let z = 0; z < B[2]; z++) for (let y = 0; y < B[1]; y++) for (let x = 0; x < B[0]; x++) {
+    let d = 8;
+    for (const i of cells.keys()) { const c = [i % B[0], Math.floor(i / B[0]) % B[1], Math.floor(i / (B[0] * B[1]))]; d = Math.min(d, Math.max(Math.abs(c[0] - x), Math.abs(c[1] - y), Math.abs(c[2] - z))); }
+    dist[id(x, y, z)] = d;
+  }
+  const probes = [[2, 8, 20], [3, 2, 8], [2, 4, 30], [20, 12, 20], [36, 1, 1]];
+  const code = `${giSrcWGSL}\n${constants}\nconst BS: i32 = 4; struct FrameU { far: u32 } const FU = FrameU(0u);
+@group(0) @binding(0) var<storage, read> giSrc: array<vec4u>;
+@group(0) @binding(1) var<storage, read> brickDist: array<u32>;
+@group(0) @binding(2) var<storage, read> probes: array<vec4i>;
+@group(0) @binding(3) var<storage, read_write> out: array<vec4f>;
+@group(0) @binding(4) var<storage, read_write> visits: array<u32>;
+var<private> seen: u32;
+fn brickId(b: vec3i) -> u32 { return u32(b.x + ${B[0]} * (b.y + ${B[1]} * b.z)); }
+fn brickDistAt(b: vec3i) -> i32 { seen++; return i32(brickDist[brickId(b)]) - 1; }
+fn beyond(p: vec3f, d: vec3f) -> vec3f { return select(vec3f(0.05, 0.1, 0.2), vec3f(0.3, 0.4, 0.6), d.y >= 0.0); }
+${fnBody(production, 'giDir')}
+${fnBody(production, 'giAlong')}
+${fnBody(production, 'giPast')}
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid: vec3u) {
+let ray = gid.x % 32u; let bc = probes[gid.x / 32u].xyz; let bmax = vec3i(${B.join(', ')}); seen = 0u;
+${trace.replace(far, 'L += T * beyond(pc * f32(BS), d);')}
+out[gid.x] = vec4f(L, T); visits[gid.x] = seen;
+}`;
+  naga(code, 'box.gi.leap');
+  const n = probes.length * 32, run = (distances) => {
+    const out = new Float32Array(n * 4), seen = new Uint32Array(n);
+    new ShaderExec(new WgslParser().parse(code)).dispatchWorkgroups('main', n, { 0: { 0: src, 1: distances, 2: new Int32Array(probes.flatMap(p => [...p, 0])), 3: out, 4: seen } });
+    return { out, seen: seen.reduce((a, v) => a + v, 0) };
+  };
+  // every brick read: brickDist as zero-filled (brickDistAt -1, "none stored", as before the derived passes ran)
+  const leap = run(dist), every = run(new Uint32Array(nb));
+  assert.deepEqual([...leap.out], [...every.out], 'the leaps change no ray\'s light or transmittance');
+  assert.ok(leap.seen < every.seen, `leaps visit fewer bricks (${leap.seen} of ${every.seen})`);
+  // and both against an independent JS march to the box's edge
+  const tOf = k => (k < 6 ? k + 1 : 6 + (k + 1 - 6) * 2);
+  let distantHits = 0;
+  probes.forEach((bc, p) => { for (let ray = 0; ray < 32; ray++) {
+    const y = f(1 - f(f(2 * ray + 1) / 32)), radius = f(Math.sqrt(Math.max(f(1 - f(y * y)), 0))), angle = f(ray * f(2.399963229728653)), d = [f(radius * f(Math.cos(angle))), y, f(radius * f(Math.sin(angle)))];
+    const pc = bc.map(v => v + .5), d2 = d.map(v => v * v), L = [0, 0, 0]; let T = 1, wall = false;
+    for (let k = 0; k < B[0] + B[1] + B[2] + 8; k++) {
+      const t = tOf(k), b = pc.map((v, a) => Math.floor(f(v + f(d[a] * t))));
+      if (b.some((v, a) => v < 0 || v >= B[a])) break;
+      const c = cells.get(id(...b)); if (!c) continue;
+      let a = c.cov[0] * d2[0] + c.cov[1] * d2[1] + c.cov[2] * d2[2]; if (a <= 0) continue;
+      if (k >= 6) a = 1 - (1 - a) ** 2;
+      for (let j = 0; j < 3; j++) L[j] += T * a * c.rad[j];
+      if (b[0] === 38 && t > 18 && T > .5) wall = true;
+      T *= 1 - a; if (T < .02) break;
+    }
+    if (T >= .02) for (let j = 0; j < 3; j++) L[j] += T * (d[1] >= 0 ? [.3, .4, .6] : [.05, .1, .2])[j];
+    const at = (p * 32 + ray) * 4; for (let j = 0; j < 3; j++) near(leap.out[at + j], L[j], 2e-5); near(leap.out[at + 3], T, 2e-5);
+    if (wall) distantHits++;
+  } });
+  assert.ok(distantHits > 0, 'some rays light their probe from the wall past the old 18-brick cap');
+  console.log(`CPU production Box GI march: ${n} rays, leaps read ${leap.seen} of ${every.seen} bricks for identical light; ${distantHits} rays lit from 18+ bricks away`);
 });
 test('executed private source overlay resolves global keys independent of physical IDs and retains nonselected dependencies', () => {
   const production = worldGIGather({ nx: 3072, ny: 384, nz: 1024 });

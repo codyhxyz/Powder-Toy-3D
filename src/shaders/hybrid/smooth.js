@@ -228,10 +228,16 @@ fn shadeSmooth(cellPosition: vec3f, normal: vec3f, elementId: i32, stateA: vec4f
  * (physical world = cellPosition + vec3f(H.origin)), outward grid normal, exact
  * element id, current source state A, and derivative footprint. Returns unpremultiplied linear HDR
  * radiance; opaque coverage is 1. No tone mapping. */
-export function smoothDrawWGSL(g, { shadingWGSL = baselineShade } = {}) {
+export function smoothDrawWGSL(g, { shadingWGSL = baselineShade, fixedReadFormat = 0 } = {}) {
   gridDims(g);
-  // The draw reads the bound legacy copies (gfx/hybrid/smooth.js rebinds them), never V2's packed cells.
-  return `${prelude(g, { ...STATE_OPTS.STATE_RO, fixedReadFormat: 0 })}
+  // The draw reads the cells gfx/hybrid/smooth.js binds for it: V1's legacy copies (format 0), or
+  // under V2 its own cells (format 2), decoded as the main volume decodes them (gfx/volume.js). The
+  // same surfaces read where each engine keeps its cells: not a deviation. V2's decode looks up the
+  // element table (KIND), which group 0 binds for the fragment stage only, so its vertices carry the
+  // source slot and the fragment decodes the cell; V1's text is unchanged.
+  if (fixedReadFormat !== 0 && fixedReadFormat !== 2) throw new RangeError(`smooth draw reads format 0 or 2, not ${fixedReadFormat}`);
+  const native = fixedReadFormat === 2;
+  return `${prelude(g, { ...STATE_OPTS.STATE_RO, fixedReadFormat })}
 ${frameBindings()}
 ${materialsGLSL()}
 ${SmoothParams.wgsl}
@@ -244,8 +250,8 @@ struct SmoothVertex {
   @builtin(position) clip: vec4f,
   @location(0) cellPosition: vec3f,
   @location(1) normal: vec3f,
-  @location(2) @interpolate(flat) stateA: vec4f,
-  @location(3) @interpolate(flat) elementId: i32,
+${native ? `  @location(2) @interpolate(flat) source: u32,` : `  @location(2) @interpolate(flat) stateA: vec4f,
+  @location(3) @interpolate(flat) elementId: i32,`}
 }
 fn vertex(vi: u32, shadow: bool) -> SmoothVertex {
   var rec: vec4u;
@@ -255,8 +261,8 @@ fn vertex(vi: u32, shadow: bool) -> SmoothVertex {
   var o: SmoothVertex;
   o.cellPosition = vec3f(cellOf(rec.w))+vec3f(xy,zn.x);
   o.normal = octDecode(vec2f(zn.y,ny));
-  o.stateA = fetchA(cellOf(rec.w));
-  o.elementId = eid(o.stateA);
+${native ? `  o.source = rec.w;` : `  o.stateA = fetchA(cellOf(rec.w));
+  o.elementId = eid(o.stateA);`}
   o.clip = FU.viewProj * FU.model * vec4f(o.cellPosition,1.0);
   // Caster matrix maps GRID coordinates directly to WebGPU [0,1] depth.
   if (shadow) { o.clip = P.matrix * vec4f(o.cellPosition,1.0); }
@@ -268,6 +274,7 @@ ${shadingWGSL}
 @fragment fn fs(v: SmoothVertex) -> @location(0) vec4f {
   let footprint = max(length(dpdx(v.cellPosition)), length(dpdy(v.cellPosition)));
   if (status[0] != 0u) { discard; }
-  return vec4f(shadeSmooth(v.cellPosition, normalize(v.normal), v.elementId, v.stateA, footprint), 1.0);
+${native ? `  let stateA = fetchA(cellOf(v.source));
+  return vec4f(shadeSmooth(v.cellPosition, normalize(v.normal), eid(stateA), stateA, footprint), 1.0);` : `  return vec4f(shadeSmooth(v.cellPosition, normalize(v.normal), v.elementId, v.stateA, footprint), 1.0);`}
 }`;
 }

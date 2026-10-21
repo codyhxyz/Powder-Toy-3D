@@ -12,7 +12,7 @@ import { createStatusSet } from './status.js';
 import { wound, createBodyWorld } from './stains.js';
 import { createKick } from './kick.js';
 import { createMeat, EAT_CELLS_MAX } from './meat.js';
-import { nativeBodyGravity } from '../v2/modes.js';
+import { radialGravity, pullAt } from './gravityField.js';
 import { bodyEditStepRate, nativeBodyPressureFactor } from '../v2/body.js';
 import { HOST_HZ } from '../v2/host.js';
 import { CRUELTY_GRAVITY, crueltyMove, pullGrappendix } from './grappendixPhysics.js';
@@ -40,6 +40,9 @@ import { FLAP_SIGNAL_S } from './flapPose.js';
 // steps/s, with V_MAX = 1 cell/step (240 cells/s) and gravity 0.025 cells/step²
 // (≈ 1440 cells/s², 44× this body's). Where the body meets the sim (pressure,
 // the coupling pass) it converts with the measured step rate.
+// Under V2 (sim.compact) those conversions read V2's own clock and pressure units
+// (v2/body.js: the gib, coupling and pressure branches below). That is the same
+// push in other units, not a deviation; the body's gravity is one rule for both.
 
 // ---- body ----
 // Its size is the body's own (the Shrink perk scales it): createPlayer keeps H (height), HW (half
@@ -781,11 +784,16 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     const climbing = alive && !swimming && !rope && !!input.ladder;
     p.climbing = climbing;
     const cruelty = !swimming && !climbing && (!!input.cruelty || !!rope?.grappendix || crueltyFlight);
-    // Preserve native gravity direction/off modes and the equipment's
-    // relative gravity adjustment. Body velocities remain in cells/s.
+    // The body's pull is the same under both engines (V1 and V2): Noita's strength (GRAVITY at the
+    // default setting, which scales it; the source game's in Cruelty Squad's flight) along the world's
+    // own field. That is down, none (sim.gravity reads 0 with the mode off) or, in TPT's radial mode,
+    // toward the box's centre as the grid's matter falls (gravityField.js: the field both engines use,
+    // which the shots, throws and wand bolts fall along too).
+    // docs/v2.md §5.1's 2 g is the grid's matter; the body keeps Noita's player.xml gravity, which the
+    // user chose for its feel (2026-10-09, 27799db). Under V2 at 2 g a jump rose 2.7× as high and floated.
     const gravityScale = cruelty ? CRUELTY_GRAVITY / GRAVITY : 1;
-    const nativeGravity = sim.compact ? nativeBodyGravity(sim, p.pos.toArray()).map(g => g * gravityScale) : null;
-    const grav = nativeGravity ? Math.hypot(...nativeGravity) : GRAVITY * gravityScale * sim.gravity / SIM_GRAVITY_REF;
+    const grav = GRAVITY * gravityScale * sim.gravity / SIM_GRAVITY_REF;
+    const radialPull = radialGravity(sim) ? pullAt(sim, p.pos, grav) : null;
     if (rope?.grappendix && alive) pullGrappendix(v, vB.copy(p.pos).setY(p.pos.y + H / 2), rope.anchor, grav, dt);
 
     // the jump button's timing (the pogo's timed presses)
@@ -939,9 +947,9 @@ export function createPlayer({ renderer, getSim, quiet = false, perks = createPe
     if (jet !== p.jetting) { p.jetting = jet; if (!quiet) povEvents.emit('player:jet', { on: jet }); }
 
     // gravity and buoyancy (Archimedes over the submerged share)
-    if (nativeGravity) {
+    if (radialPull) {
       const weight = (1 - thrust - env2.buoy) * dt; // Noita jet support and Archimedes oppose the actual gravity vector
-      v.x += nativeGravity[0] * weight; v.y += nativeGravity[1] * weight; v.z += nativeGravity[2] * weight;
+      v.x += radialPull[0] * weight; v.y += radialPull[1] * weight; v.z += radialPull[2] * weight;
     } else v.y += (env2.buoy - (1 - thrust)) * grav * dt;
     // Slow Fall: the canopy's drag on the way down, taken implicitly (v' = v − k·v'·|v'|·dt, solved
     // for v'), so it settles on √(g/k) exactly at any frame rate

@@ -1,5 +1,5 @@
 // Phase 1: raw source construction, not field derivation or a volume renderer.
-import { prelude, LAYOUT, stateLayout } from './common.js';
+import { prelude, LAYOUT, STATE_OPTS, stateLayout } from './common.js';
 import { stampLib } from './stamp.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE, fold } from '../gpu/kernels.js';
@@ -98,6 +98,20 @@ ${thread}
   if (writeCell(p, a, b, fetchF(p), bitcast<vec4f>(rawA[at]), bitcast<vec4f>(rawB[at]))) { markBrick(s >> 6u); }
 }`;
 
+// Physics V2's air in the B lane the World's source copies, for the drawn
+// projection (world/renderSource.js, the V2 air export): B as V1 keeps it
+// (velocity, pressure: the Pressure/Flow views, the hover readout), through the
+// physical reader (format 3: shaders/common.js fetchBs), so these are the values
+// the Box's views of the air read from V2's own buffers. (V2's foam reaches the
+// source by v2/nativeAeration.js.)
+export const NATIVE_AIR_LAYOUT = [storage(0, true)];
+export const nativeAirWGSL = (g) => /* wgsl */ `
+${prelude(g, { ...STATE_OPTS.STATE_RO, fixedReadFormat: 3 })}
+@group(2) @binding(0) var<storage, read_write> airB: array<vec4f>;
+${thread}
+  airB[s] = fetchBs(s);
+}`;
+
 export const WGSL_CHECK = () => WORLD_SCENES.map((scene) => ({
   name: `${scene.key} raw source`, kind: 'compute', grids: ['128'], warm: false,
   code: (g) => rawGenerateWGSL(g, scene), layouts: () => [LAYOUT.TABLES, RAW_LAYOUT, sceneLayout({ data: !!scene.data })],
@@ -107,4 +121,6 @@ export const WGSL_CHECK = () => WORLD_SCENES.map((scene) => ({
     layouts: () => [LAYOUT.TABLES, RAW_LAYOUT], params: RawParams, dispatch: (g) => fold(Math.ceil(g.slots / 64)) },
   { name: 'raw source apply', kind: 'compute', grids: ['128'], warm: false, code: (g) => rawApplyWGSL(g, { ...g, nx: 64, nz: 64, slots: 64 * g.ny * 64 }),
     layouts: () => [LAYOUT.TABLES, stateLayout(APPLY_STATE), RAW_READ_LAYOUT], params: RawApplyParams, dispatch: (g) => fold(Math.ceil(g.slots / 64)) },
+  { name: 'world native air', kind: 'compute', grids: ['128'], warm: false, code: nativeAirWGSL,
+    layouts: () => [LAYOUT.TABLES, stateLayout(STATE_OPTS.STATE_RO), NATIVE_AIR_LAYOUT], dispatch: (g) => fold(Math.ceil(g.slots / 64)) },
 ]);

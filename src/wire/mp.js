@@ -3,6 +3,7 @@ import { Vector3 } from 'three';
 import { createMultiplayer } from '../net/multiplayer.js';
 import { createRemotePlayers } from '../net/players.js';
 import { leash } from '../net/protocol.js';
+import { TEXEL_BYTES } from '../net/codec.js';
 
 export const offline = Object.freeze({
   isGuest: false, replica: false, joining: false, players: [], chatAvailable: false, panelOpen: false,
@@ -30,14 +31,16 @@ const mp = {
       gpu: app.gpu, scene: app.scene, camera: app.camera, hud: app.hud,
       getSim: () => app.sim, getVolume: () => app.volume, setGrid: app.setGrid,
       inWorld: () => !!app.win, score: () => app.scoreboard.mine, getMetadata: metadata,
+      // Intentional (gamemode: team modes are built for their own maps; user decision 2026-10-20): a big map is hosted in Sandbox only
       canHost: () => !app.win || app.gamemode === 'sandbox', canStream: () => !app.win || app.win.loaded, avatars,
       sessionChanged(role) {
         session++; map = ''; warp++;
         app.pov?.exit(true); app.pov?.worldReplaced();
         if (role === 'guest' && app.win) app.win.epoch++; // cancel outstanding local generator work
       },
-      commitFrame(meta) {
-        if (!meta) return;
+      commitFrame(meta, bytes) {
+        // a box host's frame: the sea past the walls where its water reaches them (app.js boxSeaFrom)
+        if (!meta) { if (bytes) app.boxSeaFrom((x, y, z) => bytes[app.sim.cellTexel(x, y, z) * TEXEL_BYTES]); return; }
         const old = app.sim.origin.clone();
         const moved = old.x !== meta.origin[0] || old.z !== meta.origin[2];
         const replaced = map !== meta.id;

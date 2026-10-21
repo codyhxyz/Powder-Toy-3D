@@ -26,7 +26,7 @@ export async function run() {
     const views = { gi: Array.from({ length: 4 }, () => gi.createView()), light: gi.createView() };
     const sim = { id: 'hybrid-test', g, tables, bindRO, cur: 0, version: 1, frame: 0,
       origin: { x: 0, y: 0, z: 0 }, derived: { views },
-      header() { return { origin: [0, 0, 0], src: 0, dst: 0 }; } };
+      header() { return { origin: [0, 0, 0], src: 0, dst: 0 }; }, readHeader() { return { ...this.header(), format: 0 }; } };
     const write = (x, id, temperature = 20) => gpu.queue.writeBuffer(A, cellSlot(g, x, 63, 63) * 16, new Float32Array([id, temperature, 0, 0.5]));
     assert(ELEMENTS[E.WALL].kind === K.SOLID, 'fixture must be crisp solid, not falling stone');
     write(63, E.WALL); write(64, E.WALL);

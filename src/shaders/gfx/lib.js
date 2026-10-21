@@ -12,7 +12,7 @@ import { crystalGLSL } from './crystal.js';
 import { sourceAppearanceWGSL, sourceAppearanceFallbackWGSL } from './sourceAppearance.js';
 import { SOURCE_APPEARANCE_ENABLED } from '../../gfx/sourceAppearance.js';
 import { cloudsGLSL } from './clouds.js';
-import { farLayout, farLayoutGLSL, farSkyGLSL, farHazeFor, farCastersGLSL, farGIGLSL, WORLD_SIZE } from '../farShared.js';
+import { farLayout, farLayoutGLSL, farSkyGLSL, farHazeFor, volumeHazeGLSL, farCastersGLSL, farGIGLSL, WORLD_SIZE } from '../farShared.js';
 
 // The render library (docs/webgpu.md F2, F6): the WGSL every render kernel
 // starts with, assembled in the order the GLSL's lib(g) was (shaders/render.js):
@@ -159,7 +159,7 @@ const PROBE_CALLS = {
   acc += vec4f(sunMapShadow(p, n) + sunMapShadowAt(p) + sunShadow(p, n) + sunShadowAt(p), 0.0);` : ''}${probes ? `
   let qg = surfProbe(p, n);
   acc += probeTex(tGI0, p) + qg.c0 + probeAt(p).cx;
-  acc.w += giAirSkyVis(p);` : ''}
+  acc.w += giAirSkyVis(p) + giAirSkyHeld(p).x;` : ''}
   let qp = Probe(vec4f(p, s), vec4f(d, s), vec4f(n, s), vec4f(s));
   acc += vec4f(giIrradiance(qp, n) + giRadiance(qp, d, s), giSkyVis(qp, n));
   acc += vec4f(wandLight(p) + sampleLight(p), 0.0);
@@ -195,8 +195,9 @@ const PROBE_CALLS = {
   farShared: ({ casters = true, gi = true, probes = true } = {}) => `
   let qft = farUnpack(vec4u(vec3u(ci), u32(ni.y)));
   acc += vec4f(farPackTexel(qft)) + vec4f(f32(qft.s + qft.l + qft.glow + qft.id + qft.liquid), select(0.0, 1.0, qft.open), 0.0, 0.0);
-  acc += vec4f(farAir(d) + farHaze(p, d, s, n.y), farSkyOpen(p * 8.0));${probes ? `
-  acc += vec4f(farHazePremul(p, s, p, n), farAirLit(p, n * s));` : ''}${casters ? `
+  acc += vec4f(farAir(d) + farHaze(p, d, s, n.y) + farHazeAir(p, d, s, n.y), farSkyOpen(p * 8.0));${probes ? `
+  acc += vec4f(farHazePremul(p, s, p, n), farAirLit(p, n * s));
+  acc += vec4f(volumeHaze(p, s, p, n) + farHazeSeen(p, s, p, n, d.x), hazeAirLit(p, n * s));` : ''}${casters ? `
   acc.x += select(0.0, 1.0, farUnder(p)) + farCasterDepth(p, d, 0.0, s);` : ''}${gi ? `
   var qOpenSky = 1.0;
   acc += vec4f(farGround(p, s) + farSea(d) + farPlain() + farBeyond(p, p, d, &qOpenSky), qOpenSky);
@@ -283,7 +284,7 @@ ${gisrc ? '' : '@group(3) @binding(2) var<storage, read_write> probeIO: array<ve
     `// probe ${name}: calls ${modules.join(', ')} (${bare ? 'no lighting group' : variant}, ${stage})`,
     bare ? bareHead(g) : lib(g, { variant, far: true, detail }),
     // the haze's air reads the probes (giAirSkyVis), which GI gather writes
-    haze ? farHazeFor(v.probes ? 'giAirSkyVis' : null) : '',
+    haze ? (v.probes ? volumeHazeGLSL : farHazeFor(null)) : '',
     modules.includes('clouds') ? cloudsGLSL : '',
     far ? farLayoutGLSL(L) + farSkyGLSL : '',
     far && casters ? farCastersGLSL(L, { layout: false }) : '',

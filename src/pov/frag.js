@@ -9,6 +9,7 @@ import { muzzleCell } from './tools/transfer.js';
 import { heldMaterial } from './viewmodel.js';
 import { wu, points, CAUSE } from './halo.js';
 import { gridSpace } from './space.js';
+import { radialGravity, upAt } from './gravityField.js';
 
 // The frag grenade: Halo 3's M9 (Halopedia, "H3:Frag Grenade"), thrown on G in
 // a Halo match (combat.js for the player; ai/brain.js FRAG for the bots, through
@@ -17,7 +18,9 @@ import { gridSpace } from './space.js';
 // off what it strikes (cells and bodies) and rolls to a stop, and goes off on
 // Halo 3's fuse: half a second after its first bounce, never sooner than 1.3 s
 // after the throw. So one thrown at a wall goes off on the rebound, in the air,
-// as Halo 2's and 3's do.
+// as Halo 2's and 3's do. It falls along the world's field (gravityField.js):
+// under radial gravity toward the box's centre, so "a floor" it lies on is a face
+// turned away from the centre, and off a wall it drops toward the centre.
 //
 // Going off is two things:
 // - the sim's own blast: the rocket's edit (shaders/povTools.js rocketWGSL: a
@@ -65,7 +68,7 @@ export const FRAG_CARRY = 2;                  // "Reserve ammo capacity: 2 grena
 const RESTITUTION = 0.3;                      // share of the speed into a face it bounces back out with
 const FRICTION = 0.35;                        // share of the speed along the face it keeps per bounce
 const REST_SPEED = 4;                         // cells/s: slower than this off a bounce, it lies still
-const UP_FACE = 0.5;                          // a face whose normal's y is above this is a floor it can lie on
+const UP_FACE = 0.5;                          // a face whose normal's share of "up" is above this is a floor it can lie on
 const BOUNCES_MAX = 12;                       // bounces before it lies still wherever it is
 const LIFT = 0.3;                             // cells off the face a bounce leaves from (not inside it)
 const STANDOFF = 1;                           // cells off the face the blast is centred (rocket.tool.js STANDOFF)
@@ -134,7 +137,7 @@ export function createFrags({ scene, getSim, getVolume, getScale, ballistics, wo
     }));
     if (!id) return false;
     g.round = id; g.resting = false;
-    g.v0.copy(vel); g.gy = -ROUND_GRAVITY * gs;
+    g.v0.copy(vel); g.gy = -ROUND_GRAVITY * gs; g.radial = radialGravity(sim);
     byRound.set(id, g);
     return true;
   }
@@ -147,14 +150,17 @@ export function createFrags({ scene, getSim, getVolume, getScale, ballistics, wo
   }
 
   // it struck a cell or a body: bounce off, or lie still
-  const v = new THREE.Vector3(), n = new THREE.Vector3(), out = new THREE.Vector3(), from = new THREE.Vector3();
-  function bounce(g, round, { hit, dir, normal }) {
+  const v = new THREE.Vector3(), n = new THREE.Vector3(), out = new THREE.Vector3(), from = new THREE.Vector3(), upV = new THREE.Vector3();
+  function bounce(g, round, { hit, dir, normal, vel }) {
     if (g.round !== round) return;
     byRound.delete(round);
     g.round = 0;   // its round:end is a landing, not a loss
-    // the speed it arrives with: its launch plus gravity over the flight (a body's strike has no flight time: the launch speed)
-    if (hit.t != null) v.copy(g.v0).setY(g.v0.y + g.gy * hit.t);
+    // the speed it arrives with: its launch plus gravity over the flight (a body's strike has no flight
+    // time: the launch speed). Under radial gravity the pull turned on the way: the flight's own (ballistics.js).
+    if (hit.t != null) { if (g.radial) v.copy(vel); else v.copy(g.v0).setY(g.v0.y + g.gy * hit.t); }
     else v.copy(dir).multiplyScalar(g.v0.length());
+    // up where it struck: away from the world's pull (null straight down: the y-only rules below)
+    const up = g.radial ? upAt(getSim(), hit.point, upV) : null;
     n.copy(normal);
     g.pos.copy(hit.point);
     g.bounces++;
@@ -163,10 +169,11 @@ export function createFrags({ scene, getSim, getVolume, getScale, ballistics, wo
     const vn = v.dot(n);
     out.copy(v).addScaledVector(n, -vn).multiplyScalar(FRICTION).addScaledVector(n, -vn * RESTITUTION);
     from.copy(hit.point).addScaledVector(n, LIFT);
-    const floor = n.y > UP_FACE;
+    const floor = (up ? n.dot(up) : n.y) > UP_FACE;
     if (g.bounces < BOUNCES_MAX && fly(g, from, out)) return;
     // too slow to hop on: on a floor it lies there; off a wall or a ceiling it drops
-    if (floor || g.bounces >= BOUNCES_MAX || !fly(g, from, out.set(0, -REST_SPEED, 0))) rest(g, hit.point, floor ? n : out.set(0, 1, 0));
+    const drop = up ? out.copy(up).multiplyScalar(-REST_SPEED) : out.set(0, -REST_SPEED, 0);
+    if (floor || g.bounces >= BOUNCES_MAX || !fly(g, from, drop)) rest(g, hit.point, floor ? n : up ? out.copy(up) : out.set(0, 1, 0));
   }
 
   function spawn(body, eye, dir, { armed = true, speed = FRAG_SPEED, carry = null } = {}) {
