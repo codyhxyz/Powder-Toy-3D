@@ -266,6 +266,12 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
   var occM = vec2u(0u);
   var phiA = surfField(ro);
   var stale = false;
+  // the hit, shaded once after the march: one inlined reflShade, not one a return (cold compile,
+  // docs/webgpu.md B5; Metal inlines this at every reflectTrace)
+  var hit = false;
+  var hitA = vec4f(0.0);
+  var hitP = vec3f(0.0);
+  var hitN = vec3f(0.0);
   for (var i = 0; i < REFL_MAX_STEPS; i++) {
     if (outside(cell)) { break; }
     let bc = cell / BS;
@@ -300,7 +306,7 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
         var nh = vec3f(0.0);
         nh[ax] = -f32(istp[ax]);
         var th = tEnter;
-        if (crispHit(cell, id, ro, rd, tEnter, tExit, &th, &nh)) { return reflShade(fetchA(cell), ro + rd * th, nh); }
+        if (crispHit(cell, id, ro, rd, tEnter, tExit, &th, &nh)) { hitA = fetchA(cell); hitP = ro + rd * th; hitN = nh; hit = true; break; }
       }
       stale = true;
     } else if (brickSurf(flags)) {
@@ -322,7 +328,7 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
         let c1 = clamp(vec3i(floor(hp - n * REFL_PROBE)), vec3i(0), GRID - 1);
         var ah = fetchA(c1);
         if (SURFCH(eid(ah)) != ch) { ah = fetchA(clamp(vec3i(floor(hp - n * (2.0 * REFL_PROBE))), vec3i(0), GRID - 1)); }
-        return reflShade(ah, hp, n);
+        hitA = ah; hitP = hp; hitN = n; hit = true; break;
       }
       phiA = phiB;
       stale = false;
@@ -332,6 +338,7 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
     tEnter = tExit;
     ax = ddaStep(istp, tDelta, &cell, &tMax);
   }
+  if (hit) { return reflShade(hitA, hitP, hitN); }
   if (cell.y < 0 && rd.y < 0.0) {
     // the floor, its grid lines as wide as the whole path from the eye makes
     // them, lit as every other reflected hit is (hitLight), not as the view lights it
