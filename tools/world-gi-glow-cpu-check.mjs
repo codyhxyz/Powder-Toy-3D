@@ -113,7 +113,9 @@ test('world gather is the original generated module minus unused texture mirrors
   // Then (2026-10-20) liquid.js's ripple roughness hand-off.
   // Then (2026-10-20, cold compile) lighting.js causticGain's five taps in a loop (causticTaps);
   // diffed against origin/main 7e5dc8a2, nothing else moved.
-  const hashes = ['dd184638dc13801878673f268746ec12ddaf50e74a86f1f1a141f8f9e7564da2', 'a35e6caa070ae1da2fe0a549c8c254eec6134cdfd1ceece0a910154ae29d7cb1', '5ab7d78f9d76953c40945dd1002992d0070163aa302e5a7a6cd4bed529ef638f', '2ce1b7c488188e8033d4744ae171970d4dc2cd5cce4ba071f9b184bb853a4162'];
+  // Then (2026-10-20, cold compile) worldAccess.js worldProbe's four bands share each tap's
+  // lookup (unused here); diffed against origin/main 46ee20fe, nothing else moved.
+  const hashes = ['c316e7a2d70583500a77a18daf3f912b7b8579a33d51726b2ccc04a6c049af2a', '623137bb024f1ec03c7981efccc4f1aebf003c975977a9e61b8dd3a681585984', '167cb6d7b69bd1e4b2d779e981b73f56bf1b1535e299e4c0e493ba1d938a46af', 'b4ed6a514293fda5a42a372a256209715a8a2fa65843175c1040dd198c388a15'];
   const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
   gathers.forEach((c, i) => {
     const code = c.code(), groups = c.layouts();
