@@ -1953,35 +1953,52 @@ fn digMark(s: ptr<function, Surf>) {
 }
 
 ${SOURCE_APPEARANCE_ENABLED && sourceAppearance === true ? sourceShadeWGSL : sourceShadeFallbackWGSL}
-fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
+// Lighting of a hit (shadeSurf), or (onFloor) of the box's floor at fhp, its
+// grid lines fw wide (shadeFloorFw): one call site of each light the two take
+// (the sun's shadow, the probes, the near field, AO, the glow volume, the
+// lamps), since a GPU compiler inlines every call and the view's shading pass
+// meets one or the other (render.js traceView). Each light reads the floor's
+// own arguments there; what only a surface takes is left out for it.
+fn shadeHit(s0: Surf, rd: vec3f, onFloor: bool, fhp: vec3f, fw: vec2f) -> vec3f {
   var s = s0;
-  digMark(&s);
-  if (s.sourceKind != 0u) {
-    return sourceShade(worldPos(s.p), normalize(s.sourceNormal), rd, s.albedo, s.rough, s.metal, s.f0, s.sourceKind, s.sourceFlags) + s.emit
-      + s.albedo * (sampleLight(s.p) * FU.lightGain + wandLight(s.p));
+  if (!onFloor) {
+    digMark(&s);
+    if (s.sourceKind != 0u) {
+      return sourceShade(worldPos(s.p), normalize(s.sourceNormal), rd, s.albedo, s.rough, s.metal, s.f0, s.sourceKind, s.sourceFlags) + s.emit
+        + s.albedo * (sampleLight(s.p) * FU.lightGain + wandLight(s.p));
+    }
   }
+  let up = vec3f(0.0, 1.0, 0.0);
+  let pf = vec3f(fhp.x, 0.0, fhp.z);   // (the floor's point its probes, near field and lamps take)
   let v = -rd;
-  let ng = s.ng;
-  // AO, unless the traced near field replaces it below (FU.nearGI: it brings its own occlusion)
+  let ng = select(s.ng, up, onFloor);
+  // AO, unless the traced near field replaces it below (FU.nearGI: it brings its own occlusion):
+  // a smooth surface's field AO, a crisp face's corners; the floor takes the lower of both
   var ao = 1.0;
   if (FU.nearGI == 0u) {
-    if (s.ch >= 0) { ao = fieldAO(s.p, ng); } else { ao = faceAO(s.cell, s.face, s.p); }
+    var aFace = 1.0;
+    var aField = 1.0;
+    if (onFloor || s.ch < 0) {
+      aFace = faceAO(select(s.cell, vec3i(i32(floor(fhp.x)), -1, i32(floor(fhp.z))), onFloor), select(s.face, vec3i(0, 1, 0), onFloor), select(s.p, fhp, onFloor));
+    }
+    if (onFloor || s.ch >= 0) { aField = fieldAO(select(s.p, pf, onFloor), ng); }
+    ao = select(select(aFace, aField, s.ch >= 0), min(aFace, aField), onFloor);
   }
-  var local = sampleLight(s.p + ng * LOCAL_PROBE_LIFT) * FU.lightGain;
+  var local = sampleLight(select(s.p + ng * LOCAL_PROBE_LIFT, vec3f(fhp.x, 0.5, fhp.z), onFloor)) * FU.lightGain;
   // keep the bumped normal on the visible side
-  let n = faceView(s.n, v);
+  let n = select(faceView(s.n, v), up, onFloor);
   let nv = clamp(dot(n, v), 1e-4, 1.0);
   let l = FU.sun;
   let nl = dot(n, l);
   let ngl = dot(ng, l);
   let w = s.sss;
   var sh = vec3f(0.0);
-  if (max(nl, ngl) + w > 0.0) {
+  if (onFloor || max(nl, ngl) + w > 0.0) {
     sh = vec3f(1.0);
-    if (FU.shadows != 0u) { sh = sunShadow(s.p, ng); }
+    if (FU.shadows != 0u) { sh = sunShadow(select(s.p, fhp, onFloor), ng); }
   }${grains ? `
-  sh *= gGrainSun;   // a grain shaded by the grains next to it (gfx/grains.js)` : ''}
-  var aoT = ao * s.cav;
+  if (!onFloor) { sh *= gGrainSun; }   // a grain shaded by the grains next to it (gfx/grains.js)` : ''}
+  var aoT = ao * s.cav;   // (the floor: cav 1, shadeFloorFw)
 
   // specular layer (F0) and the energy it takes from the diffuse one
   // (multiple-scattering GGX after Fdez-Agüera 2019)
@@ -2017,34 +2034,38 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
     c += s.trans * FU.sunCol * shT * (s.albedo * s.sssCol * LEAF_TRANS_GAIN) * (-ngl) * exp(-LEAF_EXT * th);
   }
 
+  // (fetched here, after the shadow loops, so the probe isn't held across them)
+  let gi = surfProbe(select(s.p, pf, onFloor), ng);
+  let irr = giIrradiance(gi, n);
   // environment: specular (anisotropic lobes bend the lookup normal, rough
   // lobes reflect toward the normal), horizon- and AO-occluded. The probes'
   // light toward r (sky + bounce, already occluded), blurrier for rough lobes.
-  var nb = n;
-  if (s.aniso > 0.0) {
-    let at = cross(s.tang, v);
-    nb = normalize(mix(n, cross(at, s.tang), s.aniso * clamp(ANISO_BEND_RATE * s.rough, 0.0, 1.0)));
+  var hor = 0.0;
+  var envL = vec3f(0.0);
+  if (!onFloor) {
+    var nb = n;
+    if (s.aniso > 0.0) {
+      let at = cross(s.tang, v);
+      nb = normalize(mix(n, cross(at, s.tang), s.aniso * clamp(ANISO_BEND_RATE * s.rough, 0.0, 1.0)));
+    }
+    var r = reflect(rd, nb);
+    r = normalize(mix(r, nb, s.rough * s.rough));
+    hor = clamp(1.0 + dot(r, ng), 0.0, 1.0);
+    // L1 probes are far too blurry for a polished surface: smooth lobes see the
+    // clear sky itself as far as the probes say it is open toward r, and the
+    // probes' light (bounce, nearby matter) for the rest.
+    let blur = smoothstep(ENV_SHARP_ROUGH, ENV_BLUR_ROUGH, s.rough);
+    let envSharp = mix(giRadiance(gi, r, 0.0), skyColor(r), giSkyVis(gi, r));
+    envL = mix(envSharp, giRadiance(gi, r, blur), blur);
   }
-  var r = reflect(rd, nb);
-  r = normalize(mix(r, nb, s.rough * s.rough));
-  let hor = clamp(1.0 + dot(r, ng), 0.0, 1.0);
-  // (fetched here, after the shadow loops, so the probe isn't held across them)
-  let gi = surfProbe(s.p, ng);
-  let irr = giIrradiance(gi, n);
-  // L1 probes are far too blurry for a polished surface: smooth lobes see the
-  // clear sky itself as far as the probes say it is open toward r, and the
-  // probes' light (bounce, nearby matter) for the rest.
-  let blur = smoothstep(ENV_SHARP_ROUGH, ENV_BLUR_ROUGH, s.rough);
-  let envSharp = mix(giRadiance(gi, r, 0.0), skyColor(r), giSkyVis(gi, r));
-  let envL = mix(envSharp, giRadiance(gi, r, blur), blur);
   // indirect diffuse: the probes' light times AO, or the traced near field
   var ind = irr * aoT;
   if (FU.nearGI != 0u) {
     var vis: f32;
-    ind = nearField(s.p, ng, n, irr, &vis) * s.cav;
+    ind = nearField(select(s.p, pf, onFloor), ng, n, irr, &vis) * s.cav;
     aoT = vis * s.cav;
   }
-  if (glowWorthIt(local, irr)) { local *= glowLightScale(s.p, ng, n); }
+  if (glowWorthIt(local, irr)) { local *= glowLightScale(select(s.p, pf, onFloor), ng, n); }
   // specular occlusion (Lagarde & de Rousiers 2014)
   let specAO = clamp(pow(nv + aoT, exp2(-16.0 * s.rough - 1.0)) - 1.0 + aoT, 0.0, 1.0);
   c += (envL * FssEss * hor * hor + irr * Fms * Ems) * specAO;
@@ -2057,12 +2078,22 @@ fn shadeSurf(s0: Surf, rd: vec3f) -> vec3f {
   // a torch or lantern (traced shadows, so no AO); it has a direction and a
   // size too, so it also reflects as the sun does (lighting.js lampShade:
   // Karis 2013's tube light), with the same multiple-scattering compensation
+  var lamps = vec3f(0.0);   // (the floor's: lampLight, diffuse only)
   if (FU.lampCount > 0 || FU.beaconDir.w > 0.0) {
-    let lit = lampShade(s.p, ng, n, true, LampSpecIn(v, s.rough, F0, s.tang, s.aniso, true));
+    var spin = LampSpecIn(v, s.rough, F0, s.tang, s.aniso, true);
+    if (onFloor) { spin = LampSpecIn(vec3f(0.0), 1.0, vec3f(0.0), vec3f(1.0, 0.0, 0.0), 0.0, false); }
+    let lit = lampShade(select(s.p, pf, onFloor), ng, n, true, spin);
     c += kL * lit.diff + lit.spec * msK;
+    lamps = lit.diff;
   }
-  return c + s.emit;
+  var shaded = c + s.emit;
+  if (onFloor) {
+    // the floor: its grid's albedo, lit by the sun from straight overhead's share and the rest as above
+    shaded = floorAlb(fhp, fw) * (FU.sunCol * max(FU.sun.y, 0.0) * sh + ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * aoT) + lamps);
+  }
+  return shaded;
 }
+fn shadeSurf(s: Surf, rd: vec3f) -> vec3f { return shadeHit(s, rd, false, vec3f(0.0), vec2f(0.0)); }
 
 // The size of a pixel on the floor (y = 0) at hp, seen along rd: world cells
 // per pixel along x and z, what fwidth(worldPos(hp).xz) * uPixScale was in
@@ -2129,29 +2160,14 @@ fn floorAlb(hp: vec3f, fw: vec2f) -> vec3f {
   let line = 1.0 - min(min(gq.x, gq.y), 1.0);
   return mix(GROUND_ALB, FLOOR_LINE_ALB, line);
 }
-fn shadeFloorFw(hp: vec3f, fw: vec2f) -> vec3f {
-  let alb = floorAlb(hp, fw);
-  let n = vec3f(0.0, 1.0, 0.0);
-  let ndl = max(FU.sun.y, 0.0);
-  var sh = vec3f(1.0);
-  if (FU.shadows != 0u) { sh = sunShadow(hp, n); }
-  var local = sampleLight(vec3f(hp.x, 0.5, hp.z)) * FU.lightGain;
-  let irr = giIrradiance(surfProbe(vec3f(hp.x, 0.0, hp.z), n), n);
-  let pf = vec3f(hp.x, 0.0, hp.z);
-  // indirect: the traced near field, which brings its own occlusion, or the
-  // probes' light times AO (worked out only when it is used)
-  var ao: f32;
-  var ind: vec3f;
-  if (FU.nearGI != 0u) { ind = nearField(pf, n, n, irr, &ao); }
-  else {
-    ao = min(faceAO(vec3i(i32(floor(hp.x)), -1, i32(floor(hp.z))), vec3i(0, 1, 0), hp), fieldAO(pf, n));
-    ind = irr * ao;
-  }
-  if (glowWorthIt(local, irr)) { local *= glowLightScale(pf, n, n); }
-  var lamps = vec3f(0.0);
-  if (FU.lampCount > 0 || FU.beaconDir.w > 0.0) { lamps = lampLight(pf, n, n); }
-  return alb * (FU.sunCol * ndl * sh + ind + local * (LOCAL_AO_MIN + LOCAL_AO_GAIN * ao) + lamps);
+// The floor of the box at hp, its grid lines fw wide: Lambert, its own probes
+// and lights at hp (shadeHit, onFloor). The view's tracer calls shadeHit itself.
+fn floorHit() -> Surf {
+  var s: Surf;
+  s.cav = 1.0;
+  return s;
 }
+fn shadeFloorFw(hp: vec3f, fw: vec2f) -> vec3f { return shadeHit(floorHit(), vec3f(0.0, -1.0, 0.0), true, hp, fw); }
 `;
 };
 

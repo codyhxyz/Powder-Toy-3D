@@ -1299,36 +1299,57 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       hitK = select(HIT_SMOOTH, HIT_GRAIN, gAltGeom); stop = true; hitP = gAltP; hitN = vec3f(0.0); hitCh = CH_GRANULAR;
       gHitA = gAltA; gHitK = gAltK; shadeRd = gAltRd;
     }` : ''}
-    var c = vec3f(0.0);
-    if (stop) {
-      var s: Surf;
-      // every kind of hit's material through one matOf call (gfx/surface.js MatPlan):
-      // a crisp voxel's, a smooth surface's blend of its cells${grains ? `, and a clod, shaded as the
-      // crisp grain it is (gfx/grains.js grainCrisp). A local flag, not a hitK write: the kind
-      // stays loop-invariant here (tools/check-opaque-surface.mjs)
-      let clod = hitK == HIT_GRAIN && grainCrisp(gHitK, gHitA, hitP, &hitCell, &hitId, &hitA, &hitN);` : ''}
-      var pl: MatPlan;
-      if (hitK == HIT_CRISP${grains ? ' || clod' : ''}) { s = crispPlan(hitCell, hitId, hitA, hitP, hitN, &pl); }${grains ? `
-      else if (hitK == HIT_GRAIN) { s = grainSurf(gHitA, gHitK, hitP, shadeRd); }` : ''}
-      else {
-        var ns = hitN;
-        if (dot(hitN, hitN) == 0.0) { ns = surfNormal(hitP, hitCh, -shadeRd); }
-        s = gatherPlan(hitP, ns, hitCh, &pl);
+    // the floor of the box, if the ray got there (the first pass): shaded
+    // through the hit's one shadeHit call (gfx/surface.js; it meets one or the other)
+    var floorLit = false;
+    var floorHp = vec3f(0.0);
+    var floorFw = vec2f(0.0);
+    if (sp == 0 && !stop) {${curved ? `
+      var floorP: vec3f;
+      var floorT: f32;
+      let onFloor = warpFloor(walk, &floorP, &floorT)
+        && (meshBudget >= MESH_CUT_NONE || warpArc(walk.ray, 0.0, floorT) < meshBudget);` : ''}
+      if (!cut && max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && ${curved ? 'onFloor' : 'cell.y < 0 && rd.y < 0.0'}) {
+        let tf = ${curved ? 'floorT' : '-ro.y / rd.y'};
+        floorHp = ${curved ? 'floorP' : 'ro + rd * tf'};${curved ? `
+        rd = normalize(warpSlope(walk.ray, tf));` : ''}
+        if (!anyHit) { anyHit = true; hitPos = floorHp; }
+        floorLit = true;
+        floorFw = floorFwidth(floorHp, rd);
       }
-      if (pl.count > 0) { applyMat(&s, planMat(pl)); }${grains ? `
-      if (clod) { clodFinish(&s); }` : ''}
-      decoSurf(&s);   // TPT's deco colour (gfx/deco.js)
-      c = shadeSurf(s, shadeRd);${backend === 'world' && !detail[WORLD_NATIVE] ? '' : `
+    }
+    var c = vec3f(0.0);
+    if (stop || floorLit) {
+      var s = floorHit();
+      if (stop) {
+        // every kind of hit's material through one matOf call (gfx/surface.js MatPlan):
+        // a crisp voxel's, a smooth surface's blend of its cells${grains ? `, and a clod, shaded as the
+        // crisp grain it is (gfx/grains.js grainCrisp). A local flag, not a hitK write: the kind
+        // stays loop-invariant here (tools/check-opaque-surface.mjs)
+        let clod = hitK == HIT_GRAIN && grainCrisp(gHitK, gHitA, hitP, &hitCell, &hitId, &hitA, &hitN);` : ''}
+        var pl: MatPlan;
+        if (hitK == HIT_CRISP${grains ? ' || clod' : ''}) { s = crispPlan(hitCell, hitId, hitA, hitP, hitN, &pl); }${grains ? `
+        else if (hitK == HIT_GRAIN) { s = grainSurf(gHitA, gHitK, hitP, shadeRd); }` : ''}
+        else {
+          var ns = hitN;
+          if (dot(hitN, hitN) == 0.0) { ns = surfNormal(hitP, hitCh, -shadeRd); }
+          s = gatherPlan(hitP, ns, hitCh, &pl);
+        }
+        if (pl.count > 0) { applyMat(&s, planMat(pl)); }${grains ? `
+        if (clod) { clodFinish(&s); }` : ''}
+        decoSurf(&s);   // TPT's deco colour (gfx/deco.js)
+      }
+      c = shadeHit(s, shadeRd, floorLit, floorHp, floorFw);${backend === 'world' && !detail[WORLD_NATIVE] ? '' : `
       // Native molten liquids share compact foam, not water's refraction or
       // detail eligibility. Layer only reflected light; retain heat emission.
-      if (${backend === 'world' ? 'true' : `(${format} == 2u || ${format} == 3u)`} && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
+      if (stop && ${backend === 'world' ? 'true' : `(${format} == 2u || ${format} == 3u)`} && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND(s.id) == K_LIQUID) {
         var foamCol = vec3f(0.0);
         var foamTrans = vec3f(1.0);
         var foamN = s.n;
         liquidFoam(s.p, &foamN, s.id, &foamCol, &foamTrans);
         c = foamCol + foamTrans * (c - s.emit) + s.emit;
       }`}${grains ? `
-      gGrainSun = 1.0;   // (grainSurf set it for this shadeSurf)` : ''}
+      gGrainSun = 1.0;   // (grainSurf set it for this shadeHit; the floor's is 1 already)` : ''}
     }
     if (sp == 0) {
       if (stop) {
@@ -1340,19 +1361,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         }`}
         col += trans * c; trans = vec3f(0.0);
       }
-      // floor of the box${curved ? `
-      var floorP: vec3f;
-      var floorT: f32;
-      let onFloor = warpFloor(walk, &floorP, &floorT)
-        && (meshBudget >= MESH_CUT_NONE || warpArc(walk.ray, 0.0, floorT) < meshBudget);` : ''}
-      if (!cut && max(trans.x, max(trans.y, trans.z)) >= RAY_MIN_TRANS && ${curved ? 'onFloor' : 'cell.y < 0 && rd.y < 0.0'}) {
-        let tf = ${curved ? 'floorT' : '-ro.y / rd.y'};
-        let hp = ${curved ? 'floorP' : 'ro + rd * tf'};${curved ? `
-        rd = normalize(warpSlope(walk.ray, tf));` : ''}
-        if (!anyHit) { anyHit = true; hitPos = hp; }
-        col += trans * shadeFloor(hp, rd);
-        trans = vec3f(0.0);
-      }
+      if (floorLit) { col += trans * c; trans = vec3f(0.0); }
     }${grains ? ` else {
       let w = select(1.0 - gAltW, gAltW, gAltGeom);   // weight of the stored path
       col = mix(col, gAltCol + gAltTrans * c, w);
