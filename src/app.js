@@ -120,6 +120,9 @@ const worldOf = (w, s) => (s.size ? { size: s.size, win: [w.win[0], s.size[1], w
 // WASD in a world: no faster than the window can follow the orbit target
 // (one WIN_STEP move every few frames), in scene units per second
 const WORLD_CAM_SPEED_MAX = 9;
+// cells: the level a box's cloud deck counts its height from (shaders/gfx/clouds.js
+// CLOUD.baseM above it): its floor, a box having no sea of its own (wire/weather.js BOX_SEA_LEVEL)
+const BOX_CLOUD_SEA = 0;
 const SIGN_TOOL = -5;
 const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE, [-22]: SPAWNER.BOAT,
   [-30]: SPAWNER.GUNNER, [-31]: SPAWNER.WORM, [-32]: SPAWNER.GIANT_WORM };   // the Spawners tools' kinds
@@ -611,7 +614,11 @@ function build(savedWorldSize = null) {
   floorGrid.position.z = win ? (win.size[2] / 2 - anchor.y) * scale : 0;
   floorGrid.updateMatrixWorld();
   placeVolume();
-  gfxUniforms.uClouds.value = false;   // a box has no sky of its own (a world's far field turns its clouds on)
+  // The cumulus deck over every map, small and big: the sky pass draws it
+  // (gfx/overlays.js), and its shadows fall in every sun lookup. Its height
+  // counts from a world's sea (wire/world.js attach, above) or a box's floor.
+  gfxUniforms.uClouds.value = true;
+  if (!win) gfxUniforms.uCloudSea.value = BOX_CLOUD_SEA;
   applyDetail();
 
   const h = ny * scale;
@@ -3063,7 +3070,7 @@ function tick(now, renderOnly = false) {
   // A world stands under the sky that lights it, as a box does (drawScene's lit):
   // the realistic views draw it first, behind the volume and meshes, with the
   // sea past the edge where the world's water reaches it (worldSea).
-  drawWorldSky(rp,view){if(isMaterialView(view))overlays.drawSky(rp,worldSea());},
+  drawWorldSky(rp,view){if(isMaterialView(view))overlays.drawSky(rp,worldSea(),sim.origin.toArray());},
   drawWorldAfter(rp){for(const w of after)w.scene(ctx,rp);brush.draw(rp);},
   drawWorldOverlay(rp){for(const w of overlayWires)w.overlay(ctx,rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
