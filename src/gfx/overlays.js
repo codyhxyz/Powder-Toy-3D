@@ -30,7 +30,7 @@ import { LOOK } from './materials.js';
 import { E } from '../elements.js';
 import { EDGE_SEA_SAMPLES, EDGE_SEA_VEC4 } from './edgeSea.js';
 import { cloudDeckGLSL, cloudSkyGLSL } from '../shaders/gfx/clouds.js';
-import { FAR_HAZE } from '../shaders/farShared.js';
+import { FAR_HAZE, farAirWGSL } from '../shaders/farShared.js';
 import { createMediaNoise } from './mediaNoise.js';
 import { STAGE } from '../shaders/common.js';
 
@@ -178,6 +178,8 @@ ${skyGLSL()}
 ${skyViewGLSL()}
 ${cloudDeckGLSL}
 ${cloudSkyGLSL(FAR_HAZE)}
+${farAirWGSL}
+const SEA_AIR_LIT: f32 = 1.0;   // the air out over the sea sees the open sky (past the probes: open, as giAirSkyVis)
 // The eye in the world, cells: FrameUniforms' cam is in the grid's (the deck's
 // lookups are the world's, as its shadows' are: lighting.js worldPos).
 fn skyEye() -> vec3f { return FU.cam + P.origin.xyz; }
@@ -228,7 +230,9 @@ struct SkyOut {
   if (P.sea != 0u && rd.y < 0.0) {
     let t = (P.seaY - FU.cam.y) / rd.y;
     let h = FU.cam.xz + rd.xz * t;
-    if (t > 0.0 && pastEdge(h) && edgeSea(h)) { c = seaColor(rd); }
+    // seen through t cells of air, as the land is (farShared.js farHazeAir),
+    // so the far sea fades into the horizon with it
+    if (t > 0.0 && pastEdge(h) && edgeSea(h)) { c = farHazeAir(seaColor(rd), rd, t, SEA_AIR_LIT); }
   }
   return vec4f(c, 1.0);
 }`;

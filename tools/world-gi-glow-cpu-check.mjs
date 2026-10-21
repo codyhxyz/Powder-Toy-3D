@@ -77,7 +77,9 @@ test('seven independent production GI/key/select/args and glow emissions remain 
   // causticGain's taps (CAUSTIC_TAPS, causticTaps), diffed against origin/main 7e5dc8a2; the other five unchanged.
   // Re-pinned 2026-10-20 (bounce light to the box's edge): only the gather changed, in GI_STEPS (12 → giSteps, 104
   // here), giAlong/giPast and the march's two lines that use them, diffed against origin/main 6a056d8d.
-  const hashes = ['baec71a3f0f18792179ac5df380301ba03455be0fac9a0b650a66fcc11f84e2c', 'e42add413933739b32692df5c94478dfc6056fe1cd7a37d932c0624d704b6538', '1c1c1466266457d229a0f1ed0d59e5b054b3f6b3e4306dc23f695c656d4f63a8', '49c243e0fecd677ad02a487aace986634f1f43785e3626f74240ec2e2a40d28f', 'e57f139d63b575e2d8b5b7dee20033283e73efb40fc19e4f9b52f2645237e4e7', 'b7f2b431e07d44a6aeab03f55db2a30f28a3eff1643a6db5e6aaa0fe58e982c6', '8ebdc6e328ec9e086242a31194be0fd9e088fffe3f7cef3507552398c373796e'];
+  // Re-pinned 2026-10-20 (distance haze): the source gained lighting.js giAirSkyHeld only,
+  // diffed against origin/main 6a056d8d; the other six unchanged.
+  const hashes = ['67c3d7d0442ec4d1430fc21d0ed0291b43e08c4d0a81b4df7238bc5b4af2dfda', 'e42add413933739b32692df5c94478dfc6056fe1cd7a37d932c0624d704b6538', '1c1c1466266457d229a0f1ed0d59e5b054b3f6b3e4306dc23f695c656d4f63a8', '49c243e0fecd677ad02a487aace986634f1f43785e3626f74240ec2e2a40d28f', 'e57f139d63b575e2d8b5b7dee20033283e73efb40fc19e4f9b52f2645237e4e7', 'b7f2b431e07d44a6aeab03f55db2a30f28a3eff1643a6db5e6aaa0fe58e982c6', '8ebdc6e328ec9e086242a31194be0fd9e088fffe3f7cef3507552398c373796e'];
   [giSourceFrag(g), giGatherFrag(g), giKeyFrag(g), giSelectFrag(g), giArgsFrag(g), blurFrag(g), blurFrag(g, { last: true })].forEach((code, i) => assert.equal(createHash('sha256').update(code).digest('hex'), hashes[i]));
 });
 test('actual eight world GI/two glow modules validate Naga and default budgets', () => {
@@ -117,7 +119,9 @@ test('world gather is the original generated module minus unused texture mirrors
   // diffed against origin/main 7e5dc8a2, nothing else moved.
   // Then (2026-10-20, cold compile) worldAccess.js worldProbe's four bands share each tap's
   // lookup (unused here); diffed against origin/main 46ee20fe, nothing else moved.
-  const hashes = ['c316e7a2d70583500a77a18daf3f912b7b8579a33d51726b2ccc04a6c049af2a', '623137bb024f1ec03c7981efccc4f1aebf003c975977a9e61b8dd3a681585984', '167cb6d7b69bd1e4b2d779e981b73f56bf1b1535e299e4c0e493ba1d938a46af', 'b4ed6a514293fda5a42a372a256209715a8a2fa65843175c1040dd198c388a15'];
+  // Then (2026-10-20, distance haze) worldAccess.js's worldProbeHeld / worldProbeAlphaHeld
+  // (unused here); diffed against origin/main 6a056d8d, nothing else moved.
+  const hashes = ['97d63747811bd469dcc37366232163d9445e763c8e53833403ad7171b29f0951', 'e5ff3fce767e30583ff55ee1e231fd5fa8a4730d1544d99b9b137c657a65486f', '76029bca7d0f9e8a2fa450933c5e478774de1d7e3bb0dd9844383f2cdaf47211', '30a7e095684fd0e934f965f15083f14e3adfc2afc375665d14b69eefe495f81b'];
   const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
   gathers.forEach((c, i) => {
     const code = c.code(), groups = c.layouts();

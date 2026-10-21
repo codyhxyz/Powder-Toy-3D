@@ -10,6 +10,9 @@
 //   have none there. The sea's footprint is the box and its surface the top
 //   of the water in the box's edge columns, in the box's grid cells, and a
 //   ray past the wall meets it there (no step at the wall).
+// - The sea fades into the horizon through the same air as the land: the sky
+//   shader carries the volume's haze (shaders/farShared.js farAirWGSL) and
+//   draws the sea through t cells of it.
 // - With Naga installed (CI: deploy.yml), the sky and floor grid shaders validate.
 //   node tools/check-edge-sea.mjs
 import assert from 'node:assert/strict';
@@ -24,6 +27,7 @@ import { worldParams } from '../src/world/generator.js';
 import { buildPreset } from '../src/presets.js';
 import { E, K, ELEMENTS } from '../src/elements.js';
 import { MAPS } from '../src/maps.js';
+import { farAirWGSL, volumeHazeGLSL } from '../src/shaders/farShared.js';
 
 const ALL = EDGE_SEA_SIDES * EDGE_SEA_SAMPLES;
 const OUT = 40;   // cells past the edge a test point lies
@@ -155,7 +159,9 @@ assert.equal(seas.islet.sea, isletP(isletMap).sea, 'Islet: its sea level is the 
   for (const c of [[f[0], 0, f[1]], [f[2], 0, f[3]]]) assert.deepEqual(toCell(toScene(c)).map((v) => v + 0), [c[0], c[2]], 'the floor grid finds the box\'s corners');
 }
 
-// 4. the shaders: their params pack, and Naga validates them when installed
+// 4. the shaders: their params pack, the land's haze on the sea, and Naga validates them when installed
+assert.ok(skyWGSL().includes(farAirWGSL) && volumeHazeGLSL.includes(farAirWGSL), 'the sky pass and the volume share one haze');
+assert.match(skyWGSL(), /edgeSea\(h\)\) \{ c = farHazeAir\(seaColor\(rd\), rd, t, SEA_AIR_LIT\); \}/, 'the sea is seen through t cells of air');
 assert.ok(SkyParams.size >= 16 * (2 + EDGE_SEA_VEC4), 'SkyParams holds the mask');
 SkyParams.pack({ foot, seaY: 18, sea: 1, mask: volcano.words });
 GridParams.pack({ model: new Array(16).fill(0), half: 1, step: 1, divisions: 2, lit: 1, ...edgeSeaParams(seas.volcano, volcanoMap.dims, ORIGIN), sea: 1 });
