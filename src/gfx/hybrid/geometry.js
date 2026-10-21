@@ -68,7 +68,7 @@ export function createHybridGeometry(gpu, sim, { world = false, facesPerBrick = 
       }
       const force = !key || frame.force || origin !== nextOrigin;
       key = nextKey; origin = nextOrigin;
-      const token = ++serial, header = sim.header(), slot = ring.next();
+      const token = ++serial, header = sim.readHeader(), slot = ring.next();
       const params = { capacity: cap.capacity, force: force ? 1 : 0, world: world ? 1 : 0, slot };
       const dispatch = fold(g.nbricks), f = gpu.frame;
       const meshArgs = { bind: [sim.tables, sim.bindRO, meshGroup], header, params };
@@ -97,7 +97,7 @@ export function createHybridGeometry(gpu, sim, { world = false, facesPerBrick = 
     },
     drawOpaque(rp) {
       if (!api.isReady || !key || !drawGroup || blocked(frame) || stats.fallbackRequired) return false;
-      opaque.draw(rp, { bind: [fu.group, sim.bindRO, drawGroup], header: sim.header(), indirect: { buffer: args } });
+      opaque.draw(rp, { bind: [fu.group, sim.bindRO, drawGroup], header: sim.readHeader(), indirect: { buffer: args } });
       return true;
     },
     drawShadow(rp, { matrix } = {}) {

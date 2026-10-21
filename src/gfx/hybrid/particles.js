@@ -119,7 +119,7 @@ export function createHybridParticles(gpu, sim, {
       stats.overflow = false;
       stats.readbackError = null;
       fallback('');
-      const bind = [sim.tables, sim.bindRO, meshGroup], header = sim.header();
+      const bind = [sim.tables, sim.bindRO, meshGroup], header = sim.readHeader();
       const params = { capacity, slot: 0, world: world ? 1 : 0 };
       mesh.dispatch(gpu.frame, fold(g.nbricks), { bind, header, params });
       const slot = ring.next();

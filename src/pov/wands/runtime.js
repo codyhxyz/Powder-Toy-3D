@@ -10,6 +10,7 @@ import { povEvents } from '../events.js';
 import { toolDt } from '../tools/action.js';
 import { nativeSeconds } from '../../v2/host.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../constants.js';
+import { fallSegment } from '../gravityField.js';
 
 export const WAND_LIMITS = Object.freeze({
   casts: 4, nodes: 128, events: 512, projectiles: 256, fields: 64,
@@ -337,8 +338,8 @@ export function createWandRuntime(env) {
         if (target) velocity.lerp(absolute(target.point).sub(r.at).setLength(velocity.length()), clamp(p.homing * step, 0, 1));
       }
       const to = r.at.clone().addScaledVector(velocity, step);
-      to.y -= finite(p.gravity) * step * step / 2;
-      velocity.y -= finite(p.gravity) * step;
+      // its own gravity (an arcing shot's), along the world's field: under radial gravity toward the centre
+      fallSegment(sim, grid(r.at), finite(p.gravity), step, to, velocity);
       if (r.ahead) to.add(r.ahead);   // the first segment runs from the eye out past the tip
       r.pending = true;
       jobs.push({ flight: r, from: r.at.clone(), to, velocity, dir: velocity.clone().normalize(), dt: step, cast: r.cast,

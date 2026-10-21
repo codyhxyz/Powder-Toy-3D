@@ -13,6 +13,12 @@ import { createHybridShading,HybridControls } from './shading.js';
 import { shadowReceiverWGSL,shadowModel } from '../../shaders/hybrid/shadows.js';
 import { MEDIA_FIELD_LAYOUT,hybridMediaSegmentWGSL } from '../../shaders/hybrid/media.js';
 
+// Every producer that reads the box's cells binds sim.bindRO with sim.readHeader() (as gfx/volume.js
+// and derived.js do): under Physics V2 that group is V2's own cells (format 2), which the prelude's
+// fetchA decodes as the main volume does; under V1 it is V1's copies (format 0). The smooth draw's
+// vertex stage binds its cells itself and has a draw per format (smooth.js). Same picture from
+// where each engine keeps its cells: not a deviation.
+
 // These are exceptional presentation/appearance fallbacks, not matter owners.
 // Ordinary granular, organic, optical and gaseous matter NEVER selects legacy.
 export function hybridEligibility({ sourceAppearance=false,decoration=false,view='realistic',

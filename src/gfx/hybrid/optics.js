@@ -266,7 +266,7 @@ export function createHybridOptics(gpu, sim, options = {}) {
     const o = sim.origin ?? {};
     const key = `${sim.version}|${sim.cur}|${o.x},${o.y},${o.z}|${frame.revision ?? ''}`;
     if (key === boundsKey) return true;
-    const args = { bind: [sim.tables, sim.bindRO, boundsGroup], header: sim.header() };
+    const args = { bind: [sim.tables, sim.bindRO, boundsGroup], header: sim.readHeader() };
     reduce.dispatch(gpu.frame, fold(sim.g.nbricks), args);
     finish.dispatch(gpu.frame, [1,1,1], args);
     boundsKey = key; stats.boundsBuilds++; return true;
@@ -342,7 +342,7 @@ export function createHybridOptics(gpu, sim, options = {}) {
         // Isolate optical transport from physics/extraction for timing attribution.
         gpu.frame.direct();
         pipe.dispatch(gpu.frame, [Math.ceil(color.width/8), Math.ceil(color.height/8), 1], {
-          bind: [fu.group, sim.bindRO, computeGroup], header: sim.header(), params,
+          bind: [fu.group, sim.bindRO, computeGroup], header: sim.readHeader(), params,
         });
         gpu.frame.direct();
       } else {
@@ -350,7 +350,7 @@ export function createHybridOptics(gpu, sim, options = {}) {
           view: t.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0],
         })) }, 'hybrid optics');
         try {
-          pipe.draw(rp, { bind: [fu.group, sim.bindRO, group], header: sim.header(), params, count: 3 });
+          pipe.draw(rp, { bind: [fu.group, sim.bindRO, group], header: sim.readHeader(), params, count: 3 });
         } finally { rp.end(); }
       }
       if (particles) {
@@ -365,7 +365,7 @@ export function createHybridOptics(gpu, sim, options = {}) {
           colorAttachments: Object.values(output).map(t => ({ view: t.createView(), loadOp: 'load', storeOp: 'store' })),
           depthStencilAttachment: { ...attachment, depthLoadOp: 'load' },
         }, 'hybrid droplets');
-        try { dropPipe.draw(drops, { bind: [fu.group, sim.bindRO, group], header: sim.header(), params,
+        try { dropPipe.draw(drops, { bind: [fu.group, sim.bindRO, group], header: sim.readHeader(), params,
           indirect: { buffer: particles.opticalArgs, offset: 16 } }); }
         finally { drops.end(); }
       }
