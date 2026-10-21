@@ -246,8 +246,12 @@ test('a run counts all its fall past R1\'s run speed: each landing goes off past
 
 test('the fall lives in the run\'s cells: it moves as every run does, and carries its fall through a save, an undo or a shift', () => {
   assert.deepEqual([...COLUMN_KEEPS_FALL].sort((a, b) => a - b), [E.LAVA, E.MERCURY, E.MUD, E.NITRO].sort((a, b) => a - b));
-  // 24 cells copied away 50 ticks in (past the run speed, 6 cells short of the floor): it still goes off
-  for (const dx of [0, 2]) assert.equal(drop(E.NITRO, E.WALL, 30, { moveAt: 50, dx }), 1, `moved ${dx} cells`);
+  // an 18-cell drop copied away 42 ticks in, 16 cells down: it still goes off (counted on from the run speed's
+  // 12.6 cells it would not), and short of NITRO_FALL_M it still does not
+  for (const dx of [0, 2]) {
+    assert.equal(drop(E.NITRO, E.WALL, 18, { moveAt: 42, dx }), 1, `moved ${dx} cells`);
+    assert.equal(drop(E.NITRO, E.WALL, 16, { moveAt: 40, dx }), 0, `moved ${dx} cells`);
+  }
   // a nitroglycerin slab and a water slab dropped 40 cells move cell for cell alike (the cap holds the move)
   // until they land; past the run speed the nitroglycerin's lane is the speed its fall carries, ½u² = g·h, the
   // water's R1's run speed as before
