@@ -35,7 +35,7 @@ import { createVolume, detailKey } from './gfx/volume.js';
 import { createBlocks } from './gfx/blocks.js';
 import { viewShadows } from './shaders/render.js';
 import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
-import { edgeSeaMask } from './gfx/edgeSea.js';
+import { sceneEdgeSea, boxEdgeSea, edgeSeaParams } from './gfx/edgeSea.js';
 import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool, isDecoTool } from './elements.js';
 import { rayKindOfTool, RAY_KIND } from './rays.js';
 import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
@@ -534,6 +534,15 @@ const readySims = new WeakSet();   // simulations whose own pipelines are ready 
 let viewTime = 0;   // s the scene's animations have run (FrameUniforms.time: it runs with the simulation)
 
 let replicaMap = null;
+// The sea past a small map's walls where its water reaches them (gfx/edgeSea.js
+// boxEdgeSea): { words, count, sea } or null. It is found from the cells each
+// whole-grid load brings (build: a map's scene, a save, the Clear; the Islet's
+// from its scene's twin, loadPreset; a box host's frames on a guest, boxSeaFrom).
+// Every undo snapshot keeps the one it was taken under, so undoing a load
+// takes its sea back too (undo). What the water does after the load leaves it
+// as it was, as a big map's (worldSea) is its scene's.
+let boxSea = null;
+const STATE_RGBA = 4;   // floats a texel of a CPU-built state: id, °C, life, ctype (sim.js load)
 function build(savedWorldSize = null) {
   if (!mp.replica) { replicaMap = null; mp.resumeSolo?.(); }
   if (graphicsFailure) throw graphicsFailure;
@@ -589,6 +598,14 @@ function build(savedWorldSize = null) {
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
   const s = sim, simWake = s.wake.bind(s);
   s.wake = () => { simWake(); wakeLoop(); };
+  // a box's sea past its walls (boxSea) comes with each CPU-built load (state A's
+  // ids, cellTexel order: sim.load) and goes with each undo snapshot
+  boxSea = null;
+  if (!worldMode) {
+    const simLoad = s.load.bind(s), simSnapshot = s.snapshot.bind(s);
+    s.load = (A, B) => { simLoad(A, B); boxSea = boxEdgeSea((x, y, z) => A[s.cellTexel(x, y, z) * STATE_RGBA], [nx, ny, nz]); };
+    s.snapshot = (...args) => { simSnapshot(...args); s.history.at(-1).edgeSea = boxSea; };
+  }
   applyGravity();
   sim.airT = worldMode ? sceneByKey(settings.scene).airT ?? PHYS.AMBIENT : PHYS.AMBIENT;   // (a box: room temperature)
   applySimModes(sim, settings);
@@ -641,6 +658,8 @@ function whenSimReady(fn) {
 
 function ensureHybrid() {
   // The optional hybrid uses local Simulation buffers, not the WORLD data wire.
+  // Intentional (experimental Test view; user decision 2026-10-20): on a big map it
+  // falls back to the normal look (the Realistic renderer), as it does on the cases hybridEligibility lists.
   if (worldMode || (!hybridOptIn && !isTestView(settings.view))) {
     if (hybrid) {
       releaseHybrid(); hybridWait = Promise.resolve();
@@ -792,6 +811,8 @@ function openMap(key, mode = 'sandbox') {
   if (graphicsFailure) throw graphicsFailure;
   const m = mapByKey(key);
   if (!m || mp.guard() || (isWorld(m) && mp.guardWorld())) return false;
+  // Intentional (gamemode: team modes are built for their own maps; user decision 2026-10-20): co-op on a big map
+  // runs only Sandbox; Halo, Big Team Battle and the other team modes stay on their own maps.
   if (isWorld(m) && mp.role === 'host' && mode !== 'sandbox') { hud.toast('World co-op supports Sandbox exploration only.'); return false; }
   if (isWorld(m) && !wire('world')) { hud.toast(notYet(`${m.name} (World maps)`), { kind: 'error' }); return false; }
   if (!gridFits(dimsOf(m.size, m.scene))) return false;
@@ -833,6 +854,7 @@ function currentMap() {
 // first drop-in builds it), while the bots' module loads beside it; a map loaded just now (fresh)
 // isn't loaded again for the match. Resolves true once it runs.
 async function startMode(mode, { fresh = false } = {}) {
+  // Intentional (gamemode: team modes are built for their own maps; user decision 2026-10-20): co-op on a big map runs only Sandbox
   if (mode !== 'sandbox' && win && mp.role && mp.role !== 'solo') { hud.toast('World co-op supports Sandbox exploration, not matches or progression.'); return; }
   const epoch = ++modeEpoch;
   villageFocus = null;
@@ -954,7 +976,9 @@ function loadPreset(name, undoable = true) {
     if (mp.replica) return;
     if (win) wire('world').loadScene(ctx);
     else if (name === 'empty') sim.clear();
-    else if (name === 'island') wire('world').loadIsland(ctx);
+    // (the Islet fills on the GPU, from the island scene: world/gpu.js loadIsland's world P. Its sea past
+    // the walls comes from that scene's CPU twin, as a big map's does, once the cells land)
+    else if (name === 'island') wire('world').loadIsland(ctx)?.then((P) => { if (P && !win) boxSea = sceneEdgeSea(sceneByKey('island'), P); });
     else arenaLayout = buildPreset(name, sim);
     if (win || !(name in ARENA_GRID)) arenaLayout = null;
     resetSimModes();
@@ -1842,11 +1866,12 @@ async function undo() {
   if (selectedMode === 'factory') { hud.toast('Use Build → Dismantle to remove machines.'); return; }
   if (ctx.industry?.pending) { hud.toast('Wait for the machine transfer before undoing.'); return; }
   if (mp.guard()) return;
-  const { note, label } = sim.history?.at(-1) ?? {};
+  const entry = sim.history?.at(-1), { note, label } = entry ?? {};
   const shrine = note?.shrine;
   let restored;
   try { restored = await sim.undo(); } catch (error) { hud.toast(error.message, { kind: 'error' }); return; }
   if (restored) {
+    if (entry && 'edgeSea' in entry) boxSea = entry.edgeSea;   // (a box's: the sea past its walls when it was taken, build)
     if (shrine) perkOrbs?.removeShrine(shrine);
     if (note?.scene) wire('saves')?.restoreSceneExtras(ctx, note.scene);   // a loaded save taken back: the box's signs, spawners and orbs too
     if (note?.industry) {
@@ -1920,9 +1945,9 @@ async function renderThumb(viewId, out) {
       // the meshes too, as a frame draws them (the stills' target is post's still one)
       opaque: (p) => (threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false),
       draw(rp) {
-        const lit = !win && isMaterialView(view);   // under the sky that lights it (gfx/overlays.js drawSky)
-        if (lit) overlays.drawSky(rp);
-        if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1, lit });
+        const lit = !win && isMaterialView(view), sea = lit ? boxSeaParams() : null;   // under the sky that lights it (gfx/overlays.js drawSky), the sea past its walls
+        if (lit) overlays.drawSky(rp, sea);
+        if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1, lit, sea });
         if (b) {
           b.drawOpaque(rp, { marchNear: pov?.marchNear ?? 0, floor: !win });
           b.drawTranslucent(rp, { marchNear: pov?.marchNear ?? 0 });
@@ -2571,19 +2596,23 @@ let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame withou
 const edgeSeas = new WeakMap();
 function worldSea() {
   if (!win?.P || !sim) return null;
-  if (!edgeSeas.has(win.P)) edgeSeas.set(win.P, edgeSeaMask(win.scene, win.P));
-  const m = edgeSeas.get(win.P);
-  if (!m) return null;
-  const o = sim.origin, [sx, , sz] = win.P.size;
-  return { foot: [-o.x, -o.z, sx - o.x, sz - o.z], seaY: win.P.sea - o.y, mask: m.words };
+  if (!edgeSeas.has(win.P)) edgeSeas.set(win.P, sceneEdgeSea(win.scene, win.P));
+  return edgeSeaParams(edgeSeas.get(win.P), win.P.size, sim.origin);
+}
+// A small map's sea past its walls (boxSea, build), for the sky pass, in the
+// box's grid cells (its origin is 0: one window over its whole grid).
+function boxSeaParams() {
+  if (win || !sim) return null;
+  return edgeSeaParams(boxSea, [sim.g.nx, sim.g.ny, sim.g.nz], sim.origin);
 }
 function drawScene(rp) {
   const g = sim.g, view = viewKeyOf(renderView);
   // the realistic view's box stands under the sky that lights it (B1: the page's navy gradient behind a
   // daylit scene disagreed with what its water and metal mirrored); the data views keep the page's sky
-  const lit = !win && isMaterialView(view);
-  if (lit) overlays.drawSky(rp);
-  if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: Math.min(1, post.renderScale * pixelRatio), lit });   // one scene pixel wide: fade as it widens past a CSS pixel
+  // (and the sea past its walls where its water reaches them: boxSeaParams; the floor's seams don't show through it)
+  const lit = !win && isMaterialView(view), sea = lit ? boxSeaParams() : null;
+  if (lit) overlays.drawSky(rp, sea);
+  if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: Math.min(1, post.renderScale * pixelRatio), lit, sea });   // one scene pixel wide: fade as it widens past a CSS pixel
   for (const w of before) w.scene(ctx, rp);
   if (blocks) {
     // the blocks renderer (gfx/blocks.js): the opaque faces and a box's floor,
@@ -3078,6 +3107,15 @@ function tick(now, renderOnly = false) {
   get scale() { return scale; }, get anchor() { return anchor; }, get worldMode() { return worldMode; },
   get win() { return win; }, set win(v) { win = v; },
   get worldSeed() { return worldSeed; }, set worldSeed(v) { worldSeed = v; },
+  // A box host's frame on a guest (wire/mp.js commitFrame): the sea past the
+  // walls from the cells it brings, idAt(x, y, z) their ids. The guest sees
+  // what the host's load found (boxSea): a new one only when the water's level
+  // at the edge changes (another map), not as waves lift a cell of it.
+  boxSeaFrom(idAt) {
+    if (win) return;
+    const found = boxEdgeSea(idAt, [sim.g.nx, sim.g.ny, sim.g.nz]);
+    if (!found || !boxSea || found.sea !== boxSea.sea) boxSea = found;
+  },
   get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
   get villageFocus() { return villageFocus; },
   villageSpawn,

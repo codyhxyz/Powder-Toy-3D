@@ -24,9 +24,12 @@ import { MEDIA_FIELD_LAYOUT,hybridMediaSegmentWGSL } from '../../shaders/hybrid/
 export function hybridEligibility({ sourceAppearance=false,decoration=false,view='realistic',
   warp=null,disabled=false,model }={}) {
   if(disabled)return 'disabled';
+  // Intentional (experimental Test view; user decision 2026-10-20): imported-map artwork
+  // and painted decoration fall back to the normal look
   if(sourceAppearance)return 'source artwork integration pending';
   if(decoration)return 'decoration integration pending';
   if(view!=='realistic'&&view!=='test')return 'non-realistic view';
+  // Intentional (experimental Test view; user decision 2026-10-20): the curved view falls back to the normal look
   if(warp?.k)return 'curved presentation';
   if(model)try{shadowModel(model);}catch(e){return e.message;}
   return null;

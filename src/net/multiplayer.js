@@ -53,6 +53,8 @@ const HOST_BACK = 'The host is back';
 const STOPPED_HOSTING = 'Stopped hosting';
 const LEFT_WORLD = 'You left the host\'s world';
 // World co-op shares one host-led loaded area, not independent streaming.
+// Intentional (gamemode: team modes are built for their own maps; user decision 2026-10-20): co-op on a
+// big map runs only Sandbox; Halo, Big Team Battle and the other team modes stay on their own maps.
 const COOP_ONLY = 'World co-op uses Sandbox exploration. Switch to Sandbox to host.';
 const CLOSE_NORMAL = 1000; // WebSocket close code for a deliberate disconnect
 
@@ -72,6 +74,8 @@ const sameDims = (g, dims) => g.nx === dims[0] && g.ny === dims[1] && g.nz === d
 //   setGrid(dims, metadata) rebuild only when the received map changes; false if unsupported
 //   inWorld()               the grid is World's host-led window (docs/scaling.md D11)
 //   score()                 your [kills, deaths] on the scoreboard (the host sends its own to the guests)
+//   commitFrame(meta, bytes) a guest's frame landed: the host's metadata (null for a box) and its
+//                           cells (codec.js: TEXEL_BYTES a texel in cellTexel order, the element id first)
 // gpu: the device (src/gpu), for the remote cursors' brushes (a pipeline of
 // ours, brush.js); the stream's kernels use each simulation's own.
 export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, setGrid, inWorld = () => false, score = () => null,
@@ -535,7 +539,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
         const generation = epoch, meta = receivedMeta, bytes = world.slice();
         unpacker.unpack(sim, bytes, {
           valid: () => epoch === generation && role === 'guest' && getSim() === sim,
-          commit: () => { commitFrame(meta); committedMeta = meta; lastReceived = performance.now(); },
+          commit: () => { commitFrame(meta, bytes); committedMeta = meta; lastReceived = performance.now(); },
         }).catch((err) => console.error('multiplayer: could not unpack the world', err));
         worldDirty = false;
       }

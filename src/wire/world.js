@@ -156,9 +156,10 @@ const world = {
   // latest, the box still shows the Islet on the same grid, and its undo
   // snapshot (loadPreset's, the top of the history now) hasn't been undone.
   // Another scene, a Clear or an Undo meanwhile wins; cancelIsland is for the
-  // other whole-grid writers (a save's load, a session's frame).
+  // other whole-grid writers (a save's load, a session's frame). Returns the
+  // load's promise (loadIsland's: its world P once it landed, else null).
   loadIsland(app) {
-    if (app.mp.replica) return;
+    if (app.mp.replica) return null;
     const sim = app.sim, t = world._islandLoad = { sim, mark: sim.history.at(-1) ?? null };
     t.done = loadIsland(sim, {
       seed: app.worldSeed,
@@ -166,6 +167,7 @@ const world = {
         && (t.mark === null || sim.history.includes(t.mark)),
     });
     t.done.catch(() => {});   // (a pipeline that fails stops graphics: stopGraphics says why)
+    return t.done.catch(() => null);
   },
   // A pending Island load (above) is dropped.
   cancelIsland() { world._islandLoad = null; },
