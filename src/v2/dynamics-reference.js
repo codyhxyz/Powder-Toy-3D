@@ -35,10 +35,10 @@ function crushPhaseOf(e) {
   if (outs.some(([id]) => !Number.isInteger(id))) throw new Error(`${e.key}.crush: unknown product`);
   return { pa: e.crush.P * LEGACY_PRESSURE_PA, outs, of: e.crush.of ? E[e.crush.of] : e.id };
 }
-// A cell's mass (kg) per unit of V1's density (elements.js dens: water 10, g/cm³ × 10).
+// A cell's mass (kg) per unit of V1's density (elements.js dens: water 10, g/cm³ × 10): mass below.
 export const MASS_PER_DENS = 100 * CELL_M ** 3;
 export const dynamicsRows = ELEMENTS.map(e => ({
-  id: e.id, kind: e.kind, mass: Math.max(e.dens * MASS_PER_DENS, 0.001),
+  id: e.id, kind: e.kind, mass: Math.max(e.dens * 100 * CELL_M ** 3, 0.001),
   // TPT hardness is retained as the gameplay fracture energy, now explicitly J.
   toughness: e.breakInto ? e.hard : 1e30, breakInto: e.breakInto ? E[e.breakInto] : -1,
   // V1 react.js breaking: the air pressure difference across a solid past
