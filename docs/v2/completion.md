@@ -58,7 +58,7 @@ The source changes preserve calibration:
   Support snapshots and liquid passes still execute. Mixed blocks, other temperatures and pending requests retain the full path.
 - Gather skips strict dry-AIR and balanced homogeneous-liquid identities. Phase endpoints retain the full transport path.
 - Read-only cell sampling shares one decode instead of expanding three decoder call paths.
-- Required contact compilation enters the bounded queue before graphics. The two-build concurrency limit remains unchanged.
+- Required contact compilation enters the bounded queue before graphics. The shared concurrency bound applies (src/gpu/kernels.js pipelineConcurrency: two until the user chose speed on 2026-10-20, now the cores less four, two to four).
 
 Two scalar contact-row experiments passed CPU checks but exceeded Metal's startup allowance.
 Both were reverted. Full row snapshots remain.

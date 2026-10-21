@@ -28,8 +28,31 @@ export class OptionalShaderFailure extends Error {
 export const STAGE = Object.freeze({ VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 });
 /** A kernel must build on the test device (SwiftShader) within this many ms, or be split (W23). */
 export const PIPELINE_BUDGET_MS = 30000;
-/** Native pipeline compilations running at once, including foreground builds (B5). */
-export const PIPELINE_CONCURRENCY = 2;
+/** The fewest native pipeline compilations running at once (B5): a weak machine's, and every machine's before 2026-10-20. */
+export const PIPELINE_CONCURRENCY_MIN = 2;
+/**
+ * The most. Past four at once each compile slows sharply (an M5, four performance cores of ten, one
+ * cold v2block each: +6% two at once, +13% four, +50% six, +86% eight), and that stretches the longest
+ * pipeline, the World's volume (~24 s cold), which is a World load's floor and has a 30 s deadline.
+ */
+export const PIPELINE_CONCURRENCY_MAX = 4;
+/** Cores left to the page's main thread, the browser's GPU process and the compositor while shaders compile. */
+export const PIPELINE_SPARE_CORES = 4;
+/**
+ * Native pipeline compilations running at once, including foreground builds (B5), from the CPU's
+ * logical cores. Metal compiles a pipeline on one core and separate builds scale almost linearly up
+ * to the performance cores (an M5, the 139 V2 kernels: 10.6 s two at a time, 6.2 s four).
+ * Intentional (user request, 2026-10-20: "MAKE IT LOAD FAST"): speed on a cold start, after every
+ * deploy, over the two-build bound's lighter load; a machine with few cores keeps two.
+ * @param {number} [cores] navigator.hardwareConcurrency
+ * @returns {number}
+ */
+export function pipelineConcurrency(cores = globalThis.navigator?.hardwareConcurrency) {
+  if (!Number.isFinite(cores) || cores < 1) return PIPELINE_CONCURRENCY_MIN;
+  return Math.max(PIPELINE_CONCURRENCY_MIN, Math.min(PIPELINE_CONCURRENCY_MAX, Math.floor(cores) - PIPELINE_SPARE_CORES));
+}
+/** This machine's (pipelineConcurrency); each PipelineCache starts with it as its `concurrency`. */
+export const PIPELINE_CONCURRENCY = pipelineConcurrency();
 /** The spec's maxComputeWorkgroupsPerDimension: fold() keeps every dimension within it. */
 export const MAX_WORKGROUPS = 65535;
 // test mode keeps at most this many recent indirect dispatches in gpu.indirectLog
@@ -92,6 +115,10 @@ export class PipelineCache {
     this.pipes = new Set();
     this.idleQueue = [];
     this.idleJobs = new Map();
+    /** native compilations at once, foreground and idle builds alike (pipelineConcurrency) */
+    this.concurrency = PIPELINE_CONCURRENCY;
+    /** native builds made outside this cache and still compiling (outside()) */
+    this.outsideBuilds = 0;
     /** @type {Map<string, number>} ms each named pipeline took to create */
     this.times = new Map();
   }
@@ -236,8 +263,26 @@ export class PipelineCache {
     }
   }
 
+  /**
+   * The cache's slots now: its bound less the builds made outside it (the World's volume:
+   * src/gfx/worldVolume.js), so the compiles at once stay within the bound; never under the floor.
+   */
+  get slots() { return Math.max(PIPELINE_CONCURRENCY_MIN, this.concurrency - this.outsideBuilds); }
+
+  /**
+   * Counts a native build made outside this cache against its bound while it compiles (a World
+   * volume's ~24 s cold build would otherwise share the performance cores with a full bound's).
+   * @template T @param {Promise<T>} promise @returns {Promise<T>} the same promise
+   */
+  outside(promise) {
+    this.outsideBuilds++;
+    const done = () => { this.outsideBuilds--; this.pump(); this.pumpIdle(); };
+    Promise.resolve(promise).then(done, done);
+    return promise;
+  }
+
   pump() {
-    while (!this.failure && !this.gpu.failure && this.running < PIPELINE_CONCURRENCY && this.queue.length) {
+    while (!this.failure && !this.gpu.failure && this.running < this.slots && this.queue.length) {
       const job = this.queue.shift();
       this.active.add(job);
       this.running = this.active.size;
@@ -304,7 +349,7 @@ export class PipelineCache {
   }
 
   pumpIdle() {
-    while (!this.failure && this.idleJobs.size < PIPELINE_CONCURRENCY && this.idleQueue.length) {
+    while (!this.failure && this.idleJobs.size < this.slots && this.idleQueue.length) {
       const job = this.idleQueue.shift();
       this.idleJobs.set(job, idleCallback(() => {
         if (this.failure || !this.idleJobs.has(job)) return;
@@ -444,7 +489,7 @@ export class Kernel extends Pipe {
    *   constants?: Record<string, number>, workgroupSize?: number[], build?: 'now' | 'idle' | 'manual', optional?: boolean }} desc
    *   optional: true isolates attributed shader failures, not device loss or timeout.
    *   build: 'now' starts at once (boot and a mode just entered), 'idle' queues it
-   *   behind PIPELINE_CONCURRENCY, 'manual' waits for build()
+   *   behind the cache's concurrency (pipelineConcurrency), 'manual' waits for build()
    */
   constructor(gpu, desc) {
     super(gpu, desc, 'compute');

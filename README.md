@@ -471,7 +471,7 @@ so export the ones you want to keep elsewhere.
 A save is exact: every cell's element, temperature, life, ctype and colour seed, its velocity and pressure, as the
 GPU holds them. It also keeps the signs, entity placements (legacy spawners included) and perk orbs, the fast particles in flight, the time of day,
 gravity and speed, and where the god camera was. What derives from the cells (activity, render fields, light) is
-rebuilt on load. The body, NPCs, birds and vehicles are left out: you come back in the god view.
+rebuilt on load. The body, NPCs and vehicles are left out: you come back in the god view.
 
 In a box, loading is a scene change, so ⌘Z takes it back (as TPT snapshots its history before opening a local save).
 In a World, a save holds the seed and scene, the window as it was and every edited brick the island keeps, so loading

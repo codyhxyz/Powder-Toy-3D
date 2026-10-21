@@ -12,13 +12,13 @@ import { v2Rows, SUMMARY } from '../../src/shaders/v2.js';
 import { FOAM_ROWS } from '../../src/v2/foam.js';
 
 export const TRANSLATED = ['colMove', 'colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colPack', 'colFall',
-  'colFinish', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
+  'colFinish', 'colShockLand', 'colShockSpeed', 'colShockOnSpeed', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
   'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colCrown', 'colLayer', 'colDepthAt', 'colFloats', 'colFloor', 'colSends', 'colStratify',
   // radial gravity (columns.js RADIAL)
   'colRadInside', 'colRadPull', 'colRadAxis', 'colRadSign', 'colRadMass', 'colRadHead', 'colRadWetBelow', 'colRadCovered', 'colRadDemand',
   'colRadNote', 'colRadRuns', 'colRadTowardPlus', 'colRadColumn', 'colRadPairs', 'colRadPair', 'colRadFace', 'colRadPackAmount', 'colRadSendAmount'];
 // the f32 functions (division allowed: never on integers)
-export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown', 'colLayer', 'colDepthAt', 'colSends',
+export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colShockLand', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown', 'colLayer', 'colDepthAt', 'colSends',
   'colRadPull', 'colRadHead', 'colRadDemand'];
 
 export function wgslFunction(code, name) {
@@ -119,7 +119,7 @@ export class ColumnGrid {
     const g = this, code = columnWaterWGSL;
     const slotOf = p => g.at(p[0], p[1], p[2]);
     const ctx = {
-      ...constants(code), NX: g.nx, NY: g.ny, NZ: g.nz, FULLU: L.FULL, MAX_FILL: L.MAX_FILL, C_AIR: C.AIR, C_LIQUID: C.LIQUID, P: g.P,
+      ...constants(code), NX: g.nx, NY: g.ny, NZ: g.nz, FULLU: L.FULL, MAX_FILL: L.MAX_FILL, C_AIR: C.AIR, C_SOLID: C.SOLID, C_POWDER: C.POWDER, C_LIQUID: C.LIQUID, C_GAS: C.GAS, P: g.P,
       vec3i: (x, y, z) => [x, y, z], Material: (core, bank) => ({ core, bank }),
       u32: x => Math.max(0, Math.trunc(x)), i32: Math.trunc, f32: Math.fround,
       min: Math.min, max: Math.max, abs: Math.abs, floor: Math.floor, ceil: Math.ceil, sqrt: Math.sqrt,
@@ -232,6 +232,7 @@ export class ColumnGrid {
       colCrownAzimuth: (x, y, z) => { let h = Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791) ^ Math.imul(g.P.tick, 2654435761) ^ COLUMN.CROWN_SALT; h = Math.imul(h ^ (h >>> 16), 0x7feb352d); h = Math.imul(h ^ (h >>> 15), 0x846ca68b); return ((h ^ (h >>> 16)) >>> 8) / 16777216; },
       cos: Math.cos, sin: Math.sin,
       colPending: (x, y, z) => (g.events[slotOf([x, y, z])] & 1) !== 0,
+      colDetonate: (x, y, z) => { g.events[slotOf([x, y, z])] |= 1; g.markAt(x, y, z); },
       colAwake: (x, z) => { for (let by = 0; by < g.by; by++) if (g.awake[(x >> 2) + g.bx * ((z >> 2) + g.bz * by)]) return true; return false; },
       colSetDemand: (x, y, z, axis, t, head) => { g.demand[2 * slotOf([x, y, z]) + (axis >> 1)] = (Math.min(t, COLUMN.DEMAND_MAX) | (Math.min(255, Math.max(0, Math.round(head * COLUMN.HEAD_Q))) << 24)) >>> 0; },
       colDemandAt: (x, y, z, axis) => g.demand[2 * slotOf([x, y, z]) + (axis >> 1)] & COLUMN.DEMAND_MAX,

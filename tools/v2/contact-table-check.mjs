@@ -12,7 +12,8 @@ const block=contactWGSL.slice(contactWGSL.indexOf('fn contactBlock('));
 assert(block.includes('let count=min(8u,arrayLength(&events));'));
 assert.equal((block.match(/for\(var i=0u;i<count;i\+\+\)/g)||[]).length,5);
 assert.equal((block.match(/axis<u32\(ctNeighborCount\(\)\)/g)||[]).length,2);
-assert.equal((contactWGSL.match(/k < ctNeighborCount\(\);/g)||[]).length,3);
+// (the atmosphere step's and the cloud's: electricity reads six faces in the electric pass)
+assert.equal((contactWGSL.match(/k < ctNeighborCount\(\);/g)||[]).length,2);
 for(const dims of [[16,8,8],[32,32,32],[32,16,24],[128,128,128]]) {
   const g=gridLayout(...dims);
   assert.equal(Math.min(8,g.slots),8,'every native block still processes all eight cells');
@@ -44,7 +45,7 @@ for(const value of [-2147483648,-123456789,-1,0,2147483647]) {
 }
 
 // Independent ABI expectation: cost/emitter are f32, not integer channels.
-const rowIntegers=new Set('kind capacity offset spawnQ spawnLife hotQ hotOut hotL hotGas hotOf coldQ coldOut coldL coldOf meltQ meltInto igniteQ flashQ burn heat flameQ ash blast blastAir acid edible fizz bed rots singFood conductor wire blastInto blastOf blastQ blastPuff'.split(' '));
+const rowIntegers=new Set('kind capacity offset spawnQ spawnLife hotQ hotOut hotL hotGas hotOf coldQ coldOut coldL coldOf meltQ meltInto igniteQ flashQ burn heat flameQ ash blast blastAir acid edible fizz bed rots singFood conductor wire blastInto blastOf blastQ blastPuff coldGas'.split(' '));
 const scalar=new Float32Array(1), scalarBits=new Uint32Array(scalar.buffer);
 const declarations=[];
 for(const [name,struct,rows,schema,offset,stride,isInteger] of [
@@ -103,7 +104,8 @@ assert.equal((entry.match(/i\s*<\s*blockCount/g)||[]).length,7);
 assert.equal((entry.match(/m\s*<\s*blockCount/g)||[]).length,1);
 assert.equal((entry.match(/c2?\s*<\s*columnCount/g)||[]).length,3);
 assert(!/for[^{]*<\s*[48]u/.test(entry),'no fixed wrapper bounds expand thermal calls');
-assert.equal((foundation.match(/var<storage,/g)||[]).length,7,'actual foundation+contact storage binding count');
+// (+1, 2026-10-20: group 1's flow field, where topples record their jump: v2/flow.js)
+assert.equal((foundation.match(/var<storage,/g)||[]).length,8,'actual foundation+contact storage binding count');
 assert.equal((foundation.match(/@group\(2\) @binding\(2\)/g)||[]).length,1,'EV binding reused exactly once');
 assert.ok(foundation.includes('var<storage, read> EV: array<vec4u>;'),'raw-u32 EV prevents integer NaN canonicalization');
 assert.ok(foundation.includes('fn e0(id: u32) -> vec4f { return bitcast<vec4f>(EV[2u * id]); }'));

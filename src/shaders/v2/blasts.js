@@ -1,5 +1,5 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
-import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase } from './particles.js';
+import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase, shockPostBase, setOffBase } from './particles.js';
 import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { E } from '../../elements.js';
 import { RAYS } from '../../rays.js';
@@ -9,17 +9,20 @@ import { strokeDistanceWGSL, atlasIndexWGSL } from '../passes.js';
 import { atlasDims } from '../common.js';
 import { fold } from '../../gpu/kernels.js';
 import { AIRBORNE_SLOT_MASK, AIRBORNE_BITS_SHIFT } from '../../v2/airborne.js';
+import { CONTACT_PUFF_UNIT } from '../../v2/contact.js';
 export { DynamicParams };
 // Native cells/bank/activity3 + events, particles, air, control, plans5.
 export const BLASTS_LAYOUT = storageLayout(5);
 // SLIDE: a Factory deck's carry (src/v2/industry.js): the cell leaves from its contact with the deck.
-export const PLAN = Object.freeze({ SPAWN: 1, BREAK: 2, SOURCE: 4, NEUTRON: 8, SLIDE: 64 });
+// CRUSH: a crush phase change (V1 react.js crush), its product in bits 8..15 as BREAK's.
+export const PLAN = Object.freeze({ SPAWN: 1, BREAK: 2, SOURCE: 4, NEUTRON: 8, SLIDE: 64, CRUSH: 128 });
 export const CHILD_PREFIX = CONTROL.PREFIX;
 export const SPAWN_PREFIX = CHILD_PREFIX + PARTICLE_CAP;
 export const RAY_REQUEST_CAP = 64;
 export const rayRequestBase = g => SPAWN_PREFIX + g.nbricks * 3;
-// (after the airborne requests' count and per-slot words: particles.js airborneBase)
-export const externalBlastBase = g => airborneBase(g) + 1 + PARTICLE_CAP;
+// (after the airborne requests' count, per-slot words and puffs, then the shock posts' and the set-off
+// charges': particles.js airborneBase, airbornePuffBase, shockPostBase, setOffBase)
+export const externalBlastBase = g => setOffBase(g) + PARTICLE_CAP;
 export const externalParticleBase = g => externalBlastBase(g) + EXTERNAL_BLAST_CAP;
 export const externalAirBase = g => externalParticleBase(g) + PARTICLE_CAP*4;
 export const externalMaskBase = g => externalAirBase(g) + g.nbricks + 1;
@@ -216,6 +219,35 @@ const MIN_BREAK_STRENGTH = Math.min(...dynamicsRows.filter(r => r.breakInto >= 0
 // The most sensitive explosive's crush pressure (V1 blast.crushP, Pa): at or under it none goes off.
 const MIN_CRUSH = Math.min(...dynamicsRows.filter(r => r.crush > 0).map(r => r.crush));
 const crushTable = dynamicsRows.filter(r => r.crush > 0).map(r => `case ${r.id}u: { return ${f(r.crush)}; }`).join('\n');
+// V1 react.js crush (elements.js crush; dynamics-reference.js crushPhase): the rows that have one.
+// V1 ships none today, but the rule is the table's: a row that adds one is crushed here as in V1.
+const crushPhaseRows = dynamicsRows.filter(r => r.crushPhase);
+// The weakest crush: a cell under no more pressure than it changes nothing (none: no bound).
+const MIN_CRUSH_PHASE = Math.min(...crushPhaseRows.map(r => r.crushPhase.pa));
+const D_NO_CRUSH = 3.4e38;   // dCrushPa's "no crush": no f32 pressure exceeds it
+const CRUSH_SALT = 0x43525348;   // 'CRSH': the crush product's own draw
+const crushPhaseWGSL = /* wgsl */ `
+const D_NO_CRUSH: f32 = ${D_NO_CRUSH};
+fn dCrushPa(id: u32) -> f32 { switch id { ${crushPhaseRows.map(r => `case ${r.id}u: { return ${f(r.crushPhase.pa)}; }`).join(' ')} default: { return D_NO_CRUSH; } } }
+// V1 pickOut(INTO(id)[PH_CRUSH]): the product drawn with r in [0, 1).
+fn dCrushInto(id: u32, r: f32) -> u32 { switch id {
+${crushPhaseRows.map(r => `  case ${r.id}u: { ${r.crushPhase.outs.slice(0, -1).map(([o, at]) => `if (r<${f(at)}) { return ${o}u; } `).join('')}return ${r.crushPhase.outs.at(-1)[0]}u; }`).join('\n')}
+  default: { return id; } } }
+fn dCrushOf(id: u32) -> u32 { switch id { ${crushPhaseRows.map(r => `case ${r.id}u: { return ${r.crushPhase.of}u; }`).join(' ')} default: { return id; } } }
+// V1 react.js pOn: the highest air pressure on a cell, its own (a solid holds none) or an open neighbour's.
+fn dPressureOn(p: vec3i, k: u32) -> f32 {
+  var on=-1e30; if (k!=1u) { on=dPressureCell(p); }
+  for (var a=0u;a<3u;a++) { on=max(on,max(dOpenPressure(p+dAxis(a)),dOpenPressure(p-dAxis(a)))); }
+  return on;
+}
+// The crushed cell: its product at its own temperature (V1 keeps T) with the product's spawn life,
+// a LAVA product's ctype its crush.of (react.js ctypeOf); a liquid into a liquid keeps its fill and
+// anything else is a whole cell (contact.js ctConvert). The energy it differs by is a declared source.
+fn dCrushed(m: Material, into: u32) -> Material {
+  let id=cid(m.core); var amount=65536u; if (cls(id)==3u && cls(into)==3u) { amount=cFill(m.core); }
+  return makeMaterial(into,f32(cTq(m.core))*0.25-273.25,amount,select(0u,dCrushOf(id),into==${E.LAVA}u));
+}
+`;
 const blastTables = dynamicsRows.filter(r => r.energy > 0 || r.id===E.SINGULARITY).map(r => `case ${r.id}u: { return DExplosive(${f(r.energy)},${r.product}u,${f(r.productT)},${r.productCtype}u); }`).join('\n');
 function head(g, nativeHead) {
   return /* wgsl */ `${dynamicsCommon(g,nativeHead)}
@@ -271,11 +303,13 @@ fn dProduct(m: Material) -> Material {
   let e=dExplosive(cid(m.core));return makeMaterial(e.product,e.temperature,65536u,e.ctype);
 }
 fn dProductEnergy(m: Material) -> vec2u {
-  // cap=1 is a 27-litre water cell: 27kg *4184J/(kg K). The reserved
-  // quarter of scaled chemical energy heats products; all old energy remains.
+  // V1 react.js: a charge going off becomes its product at its blast.T outright (T = BLAST(id).y:
+  // gunpowder's flame 2200 °C), dust's at max(T, DUST_FLAME_T), a burst singularity's at
+  // SING_BURST_T: dProduct's temperature (dynamics-reference.js productT). What that differs from
+  // the charge by is the blast's declared heat (finish notes it). An evaporating singularity
+  // leaves its carrier air.
   if (dEvaporates(m)) { return energyOf(dCarrier(m)); }
-  let nativePerJ=16777216.0/${f(1000*CELL_M**3*4184)};
-  return energyAdd(energyOf(m),vec2u(u32(round(dChargeEnergy(m)*0.25*nativePerJ)),0u));
+  return energyOf(dProduct(m));
 }
 fn dShielded(source: vec3i, destination: vec3i) -> bool {
   let delta = vec3f(destination-source);
@@ -322,6 +356,11 @@ fn dChargeShare(source: u32, p: vec3i) -> vec3f {
 }
 fn dPressureAt(p0: vec3i) -> f32 { let p=mEdge(p0); if (!inGrid(p) || !mAirPressure()) { return 0.0; } return air[brickOfCell(p)].vp.w; }
 fn dCrush(id: u32) -> f32 { switch id { ${crushTable} default: { return 0.0; } } }
+fn dNoteEnergyChange(p: vec3i, before: vec2u, after: vec2u) {
+  let gained=energySub(after,before);
+  if ((gained.y&0x80000000u)==0u) { if (any(gained!=vec2u(0u))) { noteEnergySource(p,gained); } }
+  else { noteEnergySink(p,energyNeg(gained)); }
+}
 // V1 keeps pressure per cell (react.js b.w); v2 keeps it per 4³ brick. A cell's
 // pressure is the brick field read trilinearly between brick centres, as V1's
 // own pressure sampler reads its field (render.js pressureAt), with V1's local
@@ -349,6 +388,7 @@ fn dOpenPressure(p0: vec3i) -> f32 {
   let p=mEdge(p0); if (!inGrid(p) || !mAirPressure() || cls(cid(loadMaterial(slotOf(p)).core))==1u) { return 0.0; }
   return dPressureCell(p);
 }
+${crushPhaseWGSL}
 // A superset of the bricks where couplePlan can flag anything. The powder-fall
 // and jet-less lip rules read cells, so their modes keep every brick. Otherwise
 // a cell needs wind in its own brick (every lift is >0) or a face-neighbour
@@ -365,7 +405,7 @@ fn dCoupleActive(b: u32) -> bool {
   for (var z=-1;z<=1;z++) { for (var y=-1;y<=1;y++) { for (var x=-1;x<=1;x++) {
     let pr=dPressureAt(base+4*vec3i(x,y,z)); most=max(most,abs(pr)); if (pr<0.0) { return true; }
   } } }
-  return !(2.0*most<=${f(MIN_BREAK_STRENGTH)} && most<=${f(MIN_CRUSH)});
+  return !(2.0*most<=${f(MIN_BREAK_STRENGTH)} && most<=${f(MIN_CRUSH)}${crushPhaseRows.length ? ` && most<=${f(MIN_CRUSH_PHASE)}` : ''});
 }
 fn dUnsupported(start: vec3i) -> bool {
   var p=start;
@@ -418,12 +458,20 @@ export function blastsWGSL(g,nativeHead,stage) {
   `);
   if (stage === 'reset') return h + main1(RESET_SELECTION);
   // A flying packet's requests are its host cell's (native-contract.md requests): post what this
-  // tick's airborne react stage asked for (particles.js react), before the grid passes read them.
-  if (stage === 'airborneEvents') { const A = airborneBase(g); return h + main64(`
-    if (t >= D_CAP || atomicLoad(&control[${A}u]) == 0u) { return; }
-    let w = atomicExchange(&control[${A + 1}u + t], 0u); if (w == 0u) { return; }
-    let s = w & ${AIRBORNE_SLOT_MASK}u; let bits = w >> ${AIRBORNE_BITS_SHIFT}u;
-    events[s] |= bits; noteEvents(s, bits); dWake(cellOf(s));
+  // tick's airborne react stage asked for (particles.js react), with their puffs, before the grid passes
+  // read them, and what this tick's hits set off (particles.js dShockHit: a charge hit, in shockPostBase's
+  // words; a charge hitting that landed in deposit, in the airborne words, counted with the shock posts).
+  if (stage === 'airborneEvents') { const A = airborneBase(g), S = shockPostBase(g); return h + main64(`
+    if (t >= D_CAP || (atomicLoad(&control[${A}u]) == 0u && atomicLoad(&control[${S}u]) == 0u)) { return; }
+    for (var k = 0u; k < 2u; k++) {
+      let w = atomicExchange(&control[select(${A + 1}u, ${S + 1}u, k == 1u) + t], 0u); if (w == 0u) { continue; }
+      let s = w & ${AIRBORNE_SLOT_MASK}u; let bits = w >> ${AIRBORNE_BITS_SHIFT}u;
+      // a flying packet's puff with its GAS request: the larger of it and the host's unconsumed one
+      // (contact.js ctPuff; the block pass's ctMergeRequest). A hit's detonation carries none.
+      var puff = 0u; if (k == 0u) { puff = atomicExchange(&control[${airbornePuffBase(g)}u + t], 0u); }
+      let request = ((events[s] | bits) & ${CONTACT_PUFF_UNIT - 1}u) | (max(events[s] / ${CONTACT_PUFF_UNIT}u, puff) * ${CONTACT_PUFF_UNIT}u);
+      events[s] = request; noteEvents(s, request); dWake(cellOf(s));
+    }
   `); }
   // Bricks noted as holding a request (noteEvents), for the first select. Only clears follow
   // it until the next tick's grid passes, so later batches could use it too; they select
@@ -584,11 +632,11 @@ var<workgroup> wgCharges: u32;
         else { noteEnergySource(cellOf(s),energyNeg(removed)); }
         storeMaterial(s,before,after); events[s]&=~1u; dWake(cellOf(s)); continue;
       }
-      noteEnergySource(cellOf(s),energySub(productEnergy,energyOf(before)));
+      dNoteEnergyChange(cellOf(s),energyOf(before),productEnergy);
       storeMaterial(s,before,after);
       let b=brickOfCell(cellOf(s)); var a=air[b];
-      // 1/4 blast energy enters acoustic compression, 1/2 bounded damage/KE,
-      // 1/4 hot products. Pressure energy p² V / (2 rho c²), not an arbitrary kick.
+      // 1/4 blast energy enters acoustic compression, 1/2 bounded damage/KE; the
+      // products are at V1's blast.T (dProductEnergy). Pressure energy p² V / (2 rho c²), not an arbitrary kick.
       let addedP2=2.0*${f(AIR.rho*AIR.sound**2)}*dChargeEnergy(before)*0.25/${f(AIR.edge**3)};
       if(mAirPressure()) { a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2); } a.thermal.z=0.0; air[b]=a; noteAir(b);
       events[s]&=~1u; dWake(cellOf(s));
@@ -693,6 +741,13 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
             if (amount>0u) { plan.flags=17u|(amount<<8u); plan.velocity=velocity; }
           }
         }
+      }
+      // V1 react.js crush (elements.js crush): a cell that didn't break (breaking wins in V1), under
+      // more than its crush P of air pressure (dPressureOn), becomes its crush product; it changes
+      // in place this tick rather than fly.
+      if ((plan.flags&2u)==0u && dCrushPa(id)<D_NO_CRUSH && mAirPressure() && dPressureOn(p,k)>dCrushPa(id)) {
+        let into=dCrushInto(id,dRandom(dId(p,${CRUSH_SALT}u),1u));
+        if (into!=id) { plan=DPlan(vec3f(0),${PLAN.CRUSH}u|(into<<8u)); }
       }
     }
     plans[t]=plan;
@@ -859,6 +914,10 @@ var<workgroup> childCounts: array<u32,64>;
       if (!energyFits(after,energyOf(before))) { dWake(cellOf(t)); return; }
       after=withEnergy(after,energyOf(before));
     }
+    if ((plan.flags&${PLAN.CRUSH}u)!=0u) {
+      after=dCrushed(before,(plan.flags>>8u)&255u);
+      dNoteEnergyChange(cellOf(t),energyOf(before),energyOf(after));
+    }
     if ((plan.flags&1u)!=0u) {
       let rank=dRank(t);
       if ((plan.flags&8u)!=0u) {
@@ -987,11 +1046,11 @@ var<workgroup> childCounts: array<u32,64>;
       else { noteEnergySource(cellOf(s),energyNeg(removed)); }
       storeMaterial(s,before,after); events[s]&=~1u; dWake(cellOf(s)); return;
     }
-    noteEnergySource(cellOf(s),energySub(productEnergy,energyOf(before)));
+    dNoteEnergyChange(cellOf(s),energyOf(before),productEnergy);
     storeMaterial(s,before,after);
     let b=brickOfCell(cellOf(s)); var a=air[b];
-    // 1/4 blast energy enters acoustic compression, 1/2 bounded damage/KE,
-    // 1/4 hot products. Pressure energy p² V / (2 rho c²), not an arbitrary kick.
+    // 1/4 blast energy enters acoustic compression, 1/2 bounded damage/KE; the
+    // products are at V1's blast.T (dProductEnergy). Pressure energy p² V / (2 rho c²), not an arbitrary kick.
     let addedP2=2.0*${f(AIR.rho*AIR.sound**2)}*dChargeEnergy(before)*0.25/${f(AIR.edge**3)};
     if(mAirPressure()) { a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2); } a.thermal.z=0.0; air[b]=a; noteAir(b);
     events[s]&=~1u; dWake(cellOf(s));

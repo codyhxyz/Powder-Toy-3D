@@ -1,4 +1,4 @@
-import { routeNativePOV, prepareNativePOVForces, nativePOVForcesReady } from '../v2/interactions.js';
+import { routeNativePOV, prepareNativePOVForces, nativePOVForcesReady, nativeLaser, nativeLaserReady } from '../v2/interactions.js';
 import { NativeTransfer } from '../v2/transfer.js';
 import { coupleNativeBody } from '../v2/body.js';
 // The first person's GPU work on WebGPU (docs/webgpu.md G2): every write to
@@ -252,15 +252,17 @@ class PovGpu {
    * One laser shot (G2): the reach kernel walks the beam's axis and writes
    * its reach, the box it may change and the apply's indirect args; the
    * apply, dispatched from those args, burns the beam in place. Nothing waits
-   * for the reach: it comes back through the ring.
+   * for the reach: it comes back through the ring. Under V2 the reach walks V2's own cells and the
+   * beam is native forcing on them (v2/interactions.js nativeLaser), never this apply's V1 cells:
+   * V2 importing those would make a thin film a full cell of steam.
    * @param {number[]} muzzle grid cells
    * @param {number[]} dir unit aim
    * @returns {Promise<{ reach: number, stopId: number }> | null} null while the kernels are building
    */
   laser(muzzle, dir) {
-    const sim = this.sim, d = this.d;
-    const [reach, apply] = this._laserKernels();
-    if (!ready(reach) || !ready(apply)) return null;
+    const sim = this.sim, d = this.d, native = !!sim.compact;
+    const [reach, apply] = native ? [this._laserReachNative(), null] : this._laserKernels();
+    if (!ready(reach) || (native ? !nativeLaserReady(sim) : !ready(apply))) return null;
     const state = sim.bindPhysicalRO;
     if (!state) return null;
     const { ring } = ringOf(this.gpu, 'laser', LASER_RING);
@@ -269,14 +271,29 @@ class PovGpu {
     ], 'pov laser reach');
     d.laserApplyGroup ??= this.gpu.bindGroup(d.layouts.laserApply, [{ binding: 0, resource: { buffer: d.beam } }], 'pov laser apply');
     const slot = ring.next();
-    const header = sim.header();
-    sim._dispatch(reach, [1, 1, 1], { bind: [sim.tables, state, d.laserReachGroup], header: sim.readHeader({ physical: true }), params: { muzzle, dir, slot } });
-    sim._dispatch(apply, { indirect: d.beamArgs, offset: 0 }, { bind: [sim.tables, sim.bindRW, d.laserApplyGroup], header, params: { muzzle, dir, slot } });
-    this._wrote();
+    if (native) {
+      sim._dispatch(reach, [1, 1, 1], { bind: [sim.tables, state, d.laserReachGroup], header: sim.readHeader({ physical: true }), params: { muzzle, dir, slot } });
+      nativeLaser(sim, muzzle, dir, d.beam);   // (version and wake: the force driver's; World's source, as _wrote tells it)
+      sim.worldRenderSource?.noteContentChange();
+    } else {
+      const header = sim.header();
+      sim._dispatch(reach, [1, 1, 1], { bind: [sim.tables, state, d.laserReachGroup], header: sim.readHeader({ physical: true }), params: { muzzle, dir, slot } });
+      sim._dispatch(apply, { indirect: d.beamArgs, offset: 0 }, { bind: [sim.tables, sim.bindRW, d.laserApplyGroup], header, params: { muzzle, dir, slot } });
+      this._wrote();
+    }
     return ring.read(slot).then((bytes) => {
       const f = new Float32Array(bytes);
       return { reach: f[0], stopId: Math.round(f[1]) };
     });
+  }
+
+  // V2's reach: V1's walk, a liquid costing its fill's share of a full cell (shaders/povBore.js laserFill)
+  _laserReachNative() {
+    const sim = this.sim, L = sim.L, d = this.d;
+    return this._kernel('povLaserReachNative', () => this.gpu.kernel({
+      name: 'povLaserReachNative', code: laserReachFrag(sim.g, true), params: LaserParams, layouts: [L.TABLES, L.STATE_RO, d.layouts.laserReach],
+      workgroupSize: [1, 1, 1],
+    }));
   }
 
   _laserKernels() {
@@ -301,7 +318,7 @@ class PovGpu {
   prepare() {
     if (!this.prepared) {
       this.prepared = Promise.all([
-        ...(this.sim.compact ? [prepareNativePOVForces(this.sim)] : []),
+        ...(this.sim.compact ? [prepareNativePOVForces(this.sim), this._laserReachNative().ready] : []),
         ...Object.keys(POV_EDITS).map((n) => this.editKernel(n).ready),
         ...Object.keys(PROBES).map((n) => this._probeKernel(n).ready),
         ...[this._comKernel(), this._transferKernel(), ...this._laserKernels()].map((k) => k.ready),

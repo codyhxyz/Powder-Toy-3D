@@ -17,7 +17,7 @@ import { nativeHostSteps, nativeHostTick, nativeReadiness, stepClock, HOST_HZ, L
 // starts it again.
 //
 // What hooks into the game (the world, first person, rays, lightning, signs,
-// birds, multiplayer, the meshes, whitewater, decoration, the console, saves)
+// multiplayer, the meshes, whitewater, decoration, the console, saves)
 // is wired in src/wire/*.js, one module per subsystem (J3). A wire whose
 // unit hasn't ported it to WebGPU yet isn't called, and what it serves is
 // greyed out (its tools, the first-person camera, Save, the World maps).
@@ -35,6 +35,7 @@ import { createVolume, detailKey } from './gfx/volume.js';
 import { createBlocks } from './gfx/blocks.js';
 import { viewShadows } from './shaders/render.js';
 import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
+import { edgeSeaMask } from './gfx/edgeSea.js';
 import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool, isDecoTool } from './elements.js';
 import { rayKindOfTool, RAY_KIND } from './rays.js';
 import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
@@ -121,7 +122,7 @@ const worldOf = (w, s) => (s.size ? { size: s.size, win: [w.win[0], s.size[1], w
 const WORLD_CAM_SPEED_MAX = 9;
 const SIGN_TOOL = -5;
 const SPAWNER_KIND = { [-6]: SPAWNER.ENEMY, [-7]: SPAWNER.PLAYER, [-20]: SPAWNER.JEEP, [-21]: SPAWNER.HOVERBIKE, [-22]: SPAWNER.BOAT,
-  [-30]: SPAWNER.GUNNER, [-31]: SPAWNER.WORM, [-32]: SPAWNER.GIANT_WORM, [-33]: SPAWNER.BIRDS };   // the Spawners tools' kinds
+  [-30]: SPAWNER.GUNNER, [-31]: SPAWNER.WORM, [-32]: SPAWNER.GIANT_WORM };   // the Spawners tools' kinds
 const SPAWNER_SET = { [SPAWNER.PLAYER]: 'Player spawn set: V drops you in here' };
 // the lab's own enemy spawner: its open south floor, as shares of the grid (the old lab NPC's arena)
 const LAB_ENEMY_AT = [0.555, 0.86];
@@ -138,7 +139,6 @@ const notYet = (what) => `${what}: not in this WebGPU version yet`;
 function toolWire(id) {
   if (id === LIGHTNING_TOOL) return 'lightning';
   if (id === SIGN_TOOL) return 'signs';
-  if (SPAWNER_KIND[id] === SPAWNER.BIRDS) return 'birds';
   if (isSpawnerTool(id) || isBuild(id)) return 'mesh';
   if (isDecoTool(id)) return 'deco';
   if (rayKindOfTool(id) !== RAY_KIND.NONE) return 'rays';
@@ -504,7 +504,7 @@ const rig = createCameraRig(camera, controls, isTyping);
 
 // the subsystems the wires fill in (src/wire), null while theirs isn't ready
 let pov = null, mp = OFFLINE, signs = null, builds = null, spawners = null, perkOrbs = null, arenaMarkers = null;
-let birds = null, lightning = null, scripts = null, descent = null;
+let lightning = null, scripts = null, descent = null;
 let lastShrine = 0;    // the shrine id the last placement's orbs got (0: it set none)
 // Stop work that would read back a world the GPU no longer has.
 function invalidateGpuWork() {
@@ -965,7 +965,6 @@ function loadPreset(name, undoable = true) {
 // own. An arena sets its shrines' perk orbs, its team banners, and player
 // spawners at red's spawn points (V drops you into the red base).
 function resetSpawners(name) {
-  birds?.worldReplaced();
   perkOrbs?.clear();
   arenaMarkers?.clear();
   pov?.vehicles.spawnLayout(arenaLayout);   // an arena's jeeps and hoverbikes (null clears the last arena's)
@@ -1969,7 +1968,7 @@ async function renderWorldThumb(viewId,out) {
   const model=volume.matrixWorld.clone().multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray().map(v=>-v)));
   const style=frameUniformValues({camera:ownCamera,model,
     view:viewId,sourceStyle:selectedMode==='crueltySquad' && isMaterialView(view)});
-  const frozen=presentation.neutral(()=>freezeWorldView({camera:ownCamera,presentation,settings,post,pov},
+  const frozen=presentation.neutral(()=>freezeWorldView({camera:ownCamera,presentation,settings,post,pov,sim},
     {...frame.values,model:model.toArray(),view:style.view,materialStyle:style.materialStyle,sourceStyle:style.sourceStyle},
     {view,detail,curved:false}));
   frozen.settings.view=viewId;
@@ -2095,9 +2094,8 @@ function clickTool() {
     const r = spawners.place(kind, feetOnHit(hover));
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit', { kind: 'error' });   // GMod's LimitHit
-    else if (r === 'unsupported') hud.toast('Vehicles are not supported in scrolling World maps; use a box map', { kind: 'error' });
     else hud.toast(r === 'removed' ? 'Player spawn removed' : SPAWNER_SET[kind] ?? `${toolById(settings.tool).name} spawned`);
-    return r !== 'full' && r !== 'unsupported';
+    return r !== 'full';
   }
   if (isBuild(settings.tool)) {
     if (mp.guard()) return false;
@@ -2561,6 +2559,17 @@ function drawVolumeFirst(p) {
   volumeFirst = true;
 }
 let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
+// The sea past a World's edge where its water reaches it (gfx/edgeSea.js), for
+// the sky pass, in the window's grid cells; the edge's mask is found once a world.
+const edgeSeas = new WeakMap();
+function worldSea() {
+  if (!win?.P || !sim) return null;
+  if (!edgeSeas.has(win.P)) edgeSeas.set(win.P, edgeSeaMask(win.scene, win.P));
+  const m = edgeSeas.get(win.P);
+  if (!m) return null;
+  const o = sim.origin, [sx, , sz] = win.P.size;
+  return { foot: [-o.x, -o.z, sx - o.x, sz - o.z], seaY: win.P.sea - o.y, mask: m.words };
+}
 function drawScene(rp) {
   const g = sim.g, view = viewKeyOf(renderView);
   // the realistic view's box stands under the sky that lights it (B1: the page's navy gradient behind a
@@ -2666,7 +2675,7 @@ const frameHooks = {
 // Mesh-only frames (gfx/meshFrames.js; docs/webgpu.md K3): this view frame's
 // kind. Only while three's meshes are what moved, there are meshes, the
 // derived passes didn't run, and no wire animates anything but meshes (the
-// POV body, a session, particles, foam: wire `meshesOnly` marks the birds);
+// POV body, a session, particles, foam: wire `meshesOnly` marks one that animates only meshes);
 // the kept scene goes with any change of the view key but its meshes, a
 // wake, the detail variant or the grid.
 let viewSeen = -1, stillSeen = -1, meshesMoved = false, lastFrameMode = 'full';
@@ -2850,7 +2859,7 @@ function tick(now, renderOnly = false) {
   if (!renderOnly && stepping && stepped > 0) { nativeRayStroke = null; releaseHeldNativeRays(sim); }
   if (!renderOnly && !mp.replica) scripts?.endFrame();
   updateSun();
-  if (!ctx.descent?.terrainPending) for (const w of live) if (!mp.replica || ['pov', 'mp'].includes(w.name)) w.afterStep?.(ctx, dt);   // lightning, birds, the session, the meshes
+  if (!ctx.descent?.terrainPending) for (const w of live) if (!mp.replica || ['pov', 'mp'].includes(w.name)) w.afterStep?.(ctx, dt);   // lightning, the session, the meshes
   if (settings.time !== timeShown) {
     timeShown = settings.time;
     if (settingsPanel.isOpen) settingsPanel.sync();
@@ -3052,8 +3061,9 @@ function tick(now, renderOnly = false) {
   },
   prepareWorldAfter(){wire('rays')?.beforeView(ctx);},
   // A world stands under the sky that lights it, as a box does (drawScene's lit):
-  // the realistic views draw it first, behind the volume and meshes.
-  drawWorldSky(rp,view){if(isMaterialView(view))overlays.drawSky(rp);},
+  // the realistic views draw it first, behind the volume and meshes, with the
+  // sea past the edge where the world's water reaches it (worldSea).
+  drawWorldSky(rp,view){if(isMaterialView(view))overlays.drawSky(rp,worldSea());},
   drawWorldAfter(rp){for(const w of after)w.scene(ctx,rp);brush.draw(rp);},
   drawWorldOverlay(rp){for(const w of overlayWires)w.overlay(ctx,rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
@@ -3079,7 +3089,6 @@ function tick(now, renderOnly = false) {
   get spawners() { return spawners; }, set spawners(v) { spawners = v; },
   get perkOrbs() { return perkOrbs; }, set perkOrbs(v) { perkOrbs = v; },
   get arenaMarkers() { return arenaMarkers; }, set arenaMarkers(v) { arenaMarkers = v; },
-  get birds() { return birds; }, set birds(v) { birds = v; },
   get lightning() { return lightning; }, set lightning(v) { lightning = v; },
   get scripts() { return scripts; }, set scripts(v) { scripts = v; },
   get descent() { return descent; }, set descent(v) { descent = v; },
@@ -3109,7 +3118,7 @@ function tick(now, renderOnly = false) {
   updateSun, save, camState, onNextFrame,
   requestRender: () => pacer.wake(),
   wakeLoop, // Completion wakes do not refill temporal settling.
-  // only three's meshes changed (the birds): a frame, which may keep the volume's scene (gfx/meshFrames.js)
+  // only three's meshes changed (the NPCs: wire/pov.js): a frame, which may keep the volume's scene (gfx/meshFrames.js)
   requestMeshFrame: () => pacer.wakeMeshes(),
 };
 
@@ -3209,7 +3218,7 @@ async function allReady() {
 }
 
 try {
-  for (const w of live) w.boot?.(ctx);   // the subsystems that outlive a grid (a session, birds, signs, spawners)
+  for (const w of live) w.boot?.(ctx);   // the subsystems that outlive a grid (a session, signs, spawners)
   wired = true;
   // a guest gets the host's box (multiplayer.js): opening an invite in World starts in a box, not the world
   if (mp.joining && settings.size in WORLDS) settings.size = boxSize;
@@ -3239,13 +3248,11 @@ try {
     get pov() { return pov; },
     get descent() { return descent; },   // Descent's level switch (pov/descent/switch.js): level, index, inside, busy
     get spawners() { return spawners; },
-    get birds() { return birds; },
     get perkOrbs() { return perkOrbs; },
     get scripts() { return scripts; },   // the console (src/console): .setOpen, .world
     get lightning() { return lightning; },   // the Lightning tool's and storms' bolts (src/lightning.js)
     weather,
     get elementWeather() { return ctx.elementWeather; },
-    get oceanEvents() { return ctx.oceanEvents; },
     get lighthouse() { return ctx.lighthouse; },
     // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null
     get arena() { return arenaLayout; },

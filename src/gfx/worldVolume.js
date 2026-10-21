@@ -60,6 +60,8 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
   const alive=()=>{if(dead)throw new Error('world volume disposed');};
   const module=(code,label)=>device.createShaderModule({code,label});
   function compiled(promise) {
+    // counted against the pipeline cache's bound while it compiles (src/gpu/kernels.js outside)
+    gpu.pipelines?.outside?.(promise);
     let state='pending', pipeline=null, error=null;
     const ready=Promise.resolve(promise).then(p=>{pipeline=p;state='ready';return p;},e=>{error=e;state='failed';throw e;});
     ready.catch(()=>{});

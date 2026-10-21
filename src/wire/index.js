@@ -13,7 +13,7 @@
 //                 before it (the far field, the world's detail meshes), from
 //                 0 after it, before the box's edges and the brush
 //   boot(app)     once, before the first grid (subsystems that outlive a grid:
-//                 the multiplayer session, birds, signs, spawners)
+//                 the multiplayer session, signs, spawners)
 //   attach(app)   in build(), once the grid's sim, derived passes and volume
 //                 exist and before its scene loads (a world's window sets
 //                 sim.origin here)
@@ -25,7 +25,7 @@
 //                 only while the body isn't active), before the steps: the
 //                 world's window following the focus
 //   afterStep(app, dt)    each tick, after them (app.stepping: whether it stepped;
-//                         lightning, birds and their probe, multiplayer)
+//                         lightning, multiplayer)
 //   compute(app)  in a presented frame, after FrameUniforms is written: E1
 //                 work that reads it (far-field upkeep, probes; post's compute hook).
 //                 A mesh-only frame (gfx/meshFrames.js) keeps what the wires drew
@@ -37,10 +37,10 @@
 //   overlay(app, rp)      draws into E2's overlay pass (the rays' sprites; F1)
 //   detail(app)   the detail switches changed (Whitewater's field)
 //   busy(app)     true while it animates or waits on something the frame
-//                 loop must keep ticking for (birds, POV, a session, rays):
+//                 loop must keep ticking for (POV, a session, rays):
 //                 otherwise a settled app stops its loop (deep idle, F7)
-//   meshesOnly    true when what busy() animates is three's meshes alone (the
-//                 birds), which it signals with app.requestMeshFrame(): the
+//   meshesOnly    true when what busy() animates is three's meshes alone,
+//                 which it signals with app.requestMeshFrame(): the
 //                 frames may then keep the volume's scene (gfx/meshFrames.js);
 //                 any other busy wire makes every frame a full one
 //   invalidate(app)   graphics stopped: reject its outstanding reads
@@ -60,7 +60,6 @@ import descent from './descent.js';
 import rays from './rays.js';
 import lightning from './lightning.js';
 import signs from './signs.js';
-import birds from './birds.js';
 import mp from './mp.js';
 import mesh from './mesh.js';
 import foam from './foam.js';
@@ -76,7 +75,7 @@ import weather from './weather.js';
  * window follows the focus in `follow`, so a tick keeps the old one's order:
  * the body, Descent, the god camera, the window, the brush.
  */
-export const WIRES = [world, pov, descent, rays, lightning, signs, birds, mp, mesh, foam, deco, console_, industry, saves, weather];
+export const WIRES = [world, pov, descent, rays, lightning, signs, mp, mesh, foam, deco, console_, industry, saves, weather];
 
 /** A wire by name, or null. */
 export const wireNamed = (name) => WIRES.find((w) => w.name === name) ?? null;

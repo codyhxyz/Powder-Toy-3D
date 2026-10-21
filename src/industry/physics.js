@@ -5,9 +5,8 @@ import { INDUSTRY_EDIT, INDUSTRY_KIND } from '../shaders/industry.js';
 import { createTransfer, Load } from '../pov/tools/transfer.js';
 import { povGpu } from '../pov/gpu.js';
 import { deviceHeight } from './validation.js';
-import { NOMINAL_STEP_RATE } from '../physics.js';
 import { nativeIndustry } from '../v2/industry.js';
-import { HOST_HZ } from '../v2/host.js';
+import { stepClock, LEGACY_STEP_HZ } from '../v2/host.js';
 
 // Ports are integer local cells, rotated exactly like construction geometry.
 export const controlCell = d => deviceCell(d, -1, 0, 1);
@@ -100,7 +99,11 @@ const machineState = device => ({ device: { ...device }, load: new Load(16), clo
 export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = () => {}, onError = console.error }) {
   let sim = null, kernel = null, transfer = null, epoch = 0, disposed = false;
   let ready = Promise.resolve(), built = false, cursor = 0;
+  // nativeFrame: the hearths' draft clock, game time in V1 steps (v2/host.js stepClock), so the seconds
+  // between two calls are right under either engine, a span holding steps of both after a runtime switch too
+  // (raw sim.frame counts a tick under V2 and a step under V1). guidedFrame: any step since, either engine.
   let nativeFrame = null, guidedFrame = null;
+  const draftClock = s => (s && Number.isFinite(s.frame) ? stepClock(s) : null);
   const states = new Map();
   function confirmedTransfer(device, event) {
     try { onTransfer({ device: { ...device }, confirmed: true, ...event }); }
@@ -120,7 +123,8 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = 
     reset();
     if (!next) return;
     sim = next;
-    nativeFrame = guidedFrame = Number.isFinite(sim.frame) ? sim.frame : null;
+    nativeFrame = draftClock(sim);
+    guidedFrame = Number.isFinite(sim.frame) ? sim.frame : null;
     const generation = epoch;
     try {
       kernel = sim.editKernel('industry', INDUSTRY_EDIT);
@@ -218,22 +222,21 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = 
     if (disposed) return;
     const list = (Array.isArray(devices) ? devices : []).slice(0, INDUSTRY_LIMIT);
     if (!list.some(d => d?.type === 'hearth')) {
-      if (sim && sim === getSim()) nativeFrame = Number.isFinite(sim.frame) ? sim.frame : null;
+      if (sim && sim === getSim()) nativeFrame = draftClock(sim);
       return;
     }
     bind();
-    const frame = sim && Number.isFinite(sim.frame) ? sim.frame : null;
-    const ticks = frame !== null && nativeFrame !== null ? Math.max(0, frame - nativeFrame) : 0;
-    nativeFrame = frame;
-    if (!sim || !built || ticks <= 0) return;
+    const clock = draftClock(sim);
+    const steps = clock !== null && nativeFrame !== null ? Math.max(0, clock - nativeFrame) : 0;
+    nativeFrame = clock;
+    if (!sim || !built || steps <= 0) return;
     const seen = new Set();
-    // A native host tick is 1/HOST_HZ s; V1's is one of NOMINAL_STEP_RATE a second.
-    const tickRate = sim.compact ? HOST_HZ : NOMINAL_STEP_RATE;
+    // V1 steps of game time, LEGACY_STEP_HZ a second (a native host tick is LEGACY_STEPS_PER_TICK of them)
     nativePass(() => {
       for (const d of list) {
         if (!validMachine(d, sim.g) || seen.has(d.id)) continue;
         seen.add(d.id);
-        if (d.type === 'hearth') editDevice(d, ticks / tickRate, false, INDUSTRY_KIND.hearthHeat);
+        if (d.type === 'hearth') editDevice(d, steps / LEGACY_STEP_HZ, false, INDUSTRY_KIND.hearthHeat);
       }
     }, false);
   }

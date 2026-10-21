@@ -61,8 +61,11 @@ test('row 20: the temperature sensor fires past V1 MATTER_REST_T, sub-quantum he
   // same quarter-kelvin, but half a quantum hotter in its bank: V1 fires (> 0.01 K)
   stone.bank = Math.floor(C.ctCapacity(stone) / 2);
   assert.ok(C.ctTemperatureRemainder(stone) * 0.25 > PHYS.MATTER_REST_T);
-  assert.ok(C.ctLife(C.ctStep(sensor, ns(stone), 0)) >= 1, 'fires on a sub-quantum excess');
-  assert.equal(C.ctLife(C.ctStep(sensor, ns(cell(E.STONE, 50)), 0)), 0, 'equal: no fire');
+  // (the sensor is the electric pass's: V1's step on six faces, contact.js ctElecStep/ctElecApply)
+  const ns6 = (...cells) => [...cells, ...Array.from({ length: 6 }, () => cell(E.EMPTY))].slice(0, 6);
+  const step = (c, near) => { const word = C.ctElecStep(c, ns6(...near), 0); return word ? C.ctElecApply(c, word, 0) : c; };
+  assert.ok(C.ctLife(step(sensor, [stone])) >= 1, 'fires on a sub-quantum excess');
+  assert.equal(C.ctLife(step(sensor, [cell(E.STONE, 50)])), 0, 'equal: no fire');
 });
 
 test('row 16: thermite turns into its LAVA of METAL at blast.T with its puff, not a charge', () => {

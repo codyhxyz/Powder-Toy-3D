@@ -6,6 +6,8 @@ import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, DU
   CONTACT_DAMP_REACH, CONTACT_DAMP_DRY_Q, CONTACT_CEDAR_BASE, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR, CONTACT_TSNS_MARGIN_Q, CONTACT_PUFF_UNIT } from '../../v2/contact.js';
 import { EDGE } from '../../simModes.js';
 import { CONTACT_ROW_SCHEMA, CONTACT_RX_SCHEMA, contactTableLayout } from '../../v2/contactTable.js';
+import { packetTouchWGSL } from './state.js';
+import { PARTICLE_CAP } from '../../v2/dynamics-reference.js';
 
 const float = n => Number.isInteger(n) ? `${n}.0` : `${n}`;
 const layout = contactTableLayout(CONTACT_ROWS.length, CONTACT_REACTIONS.length);
@@ -215,6 +217,8 @@ fn ctPack(c:CTCell,original:vec4u)->vec4u {
  return core;
 }
 ${specialContactWGSL}
+// a flying packet's touch on a cell this tick (v2/contact.js ctPacketTouch; the airborne react stage's mark)
+${packetTouchWGSL(PARTICLE_CAP)}
 fn contactDensity(core:vec4u)->f32 {
  let id=i32(core.x&255u);let row=ctRow(id);
  if(row.kind==0 || row.kind==4){return row.density*f32(row.spawnQ)/max(4.0,f32(phaseTq(u32(id),(core.x>>8u)&65535u)));}
@@ -234,6 +238,12 @@ fn contactAmbientQ()->i32 { return i32(clamp(round((P.ambient+273.25)*4.0),0.0,6
 fn ctSeed(position:vec3i,tick:u32)->i32 {
  return bitcast<i32>((u32(position.x)*73856093u) ^ (u32(position.y)*19349663u) ^ (u32(position.z)*83492791u) ^ (tick*2654435761u));
 }
+// A one-sided pair rule both ways round (i on j, then j on i) as one inlined copy of the rule: a loop
+// of CT_PAIR_ORDERS trips whose bound Metal can't fold, so it doesn't unroll into two copies (cold
+// compile, docs/webgpu.md B5; the airborne stage's dReact does the same). Events hold at least one
+// 64-cell brick: the loop runs exactly twice.
+const CT_PAIR_ORDERS:u32=2u;
+fn ctPairOrders()->u32 { return min(CT_PAIR_ORDERS,arrayLength(&events)); }
 fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,8>>,positions:array<vec3i,8>,requests:ptr<function,array<u32,8>>) {
  var cells:array<CTCell,8>;
  // Native event storage has at least one 64-cell brick. Keep the bound
@@ -252,10 +262,17 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
    if(flux!=0){cells[i]=ctHeat(cells[i],flux);cells[j]=ctHeat(cells[j],-flux);cells[i].busy=1;cells[j].busy=1;}
    let seed=ctSeed(positions[i],P.tick)^i32(j);
    var pair=ctReaction(cells[i],cells[j],seed);
-   if(pair.changed==0){pair=ctAcid(pair.a,pair.b,seed);}
-   if(pair.changed==0){let rev=ctAcid(pair.b,pair.a,seed);pair=ctPairValue(rev.b,rev.a,rev.changed);}
-   if(pair.changed==0){pair=ctSwallow(pair.a,pair.b,seed);}
-   if(pair.changed==0){let rev=ctSwallow(pair.b,pair.a,seed);pair=ctPairValue(rev.b,rev.a,rev.changed);}
+   // acid, then swallow, each i on j and then j on i (ctPairOrders)
+   for(var order=0u;order<ctPairOrders();order++){
+    if(pair.changed!=0){continue;}
+    var a=pair.a;var b=pair.b;if(order==1u){a=pair.b;b=pair.a;}
+    let r=ctAcid(a,b,seed);pair=r;if(order==1u){pair=ctPairValue(r.b,r.a,r.changed);}
+   }
+   for(var order=0u;order<ctPairOrders();order++){
+    if(pair.changed!=0){continue;}
+    var a=pair.a;var b=pair.b;if(order==1u){a=pair.b;b=pair.a;}
+    let r=ctSwallow(a,b,seed);pair=r;if(order==1u){pair=ctPairValue(r.b,r.a,r.changed);}
+   }
    cells[i]=pair.a;cells[j]=pair.b;
   }
  }
@@ -267,13 +284,19 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
   let outside=liquidScratch[slotOf(positions[i])].x&255u;
   // V1 react.js counts the box's solid floor as a surface (its sides and lid don't).
   let onFloor=select(0,1,positions[i].y==0 && P.edge==${EDGE.SOLID}u);
-  cells[i]=ctStepAtmosphere(cells[i],ns,ctSeed(positions[i],P.tick),i32(outside&3u),i32((outside>>2u)&3u),i32((outside>>4u)&3u),i32((outside>>6u)&3u),onFloor,contactAmbientQ());
+  // a flying packet in a partner's cell, as V1's react saw a moving neighbour: the react stage's mark here
+  let touch=packetTouchNow(slotOf(positions[i]));
+  cells[i]=ctStepAtmosphere(cells[i],ns,ctSeed(positions[i],P.tick),i32(outside&3u),i32((outside>>2u)&3u),i32((outside>>4u)&3u),i32((outside>>6u)&3u),onFloor,contactAmbientQ(),touch);
  }
  for(var i=0u;i<count;i++){
   for(var axis=0u;axis<u32(ctNeighborCount());axis++){
    let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
-   var pair=ctResolvePhase(cells[i],cells[j]);
-   if(pair.changed==0){let rev=ctResolvePhase(pair.b,pair.a);pair=ctPairValue(rev.b,rev.a,rev.changed);}
+   var pair=ctPairValue(cells[i],cells[j],0);
+   for(var order=0u;order<ctPairOrders();order++){
+    if(pair.changed!=0){continue;}
+    var a=pair.a;var b=pair.b;if(order==1u){a=pair.b;b=pair.a;}
+    let r=ctResolvePhase(a,b);pair=r;if(order==1u){pair=ctPairValue(r.b,r.a,r.changed);}
+   }
    cells[i]=pair.a;cells[j]=pair.b;
   }
  }

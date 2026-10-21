@@ -9,6 +9,7 @@ import { nearestTarget, PLAYER } from '../targets.js';
 import { trigger, launchFrom } from './action.js';
 import { gear } from './catalog.js';
 import { gridSpace } from '../space.js';
+import { projectileSeconds } from '../../v2/host.js';
 
 // Burrower: Cruelty Squad's Cerebral Bore, without the health cost. It fires a
 // drill straight along the crosshair at launch, with no homing, and bores a
@@ -225,7 +226,8 @@ export default {
       tick(ctx) {
         if (!drills.length) return;
         const sim = ctx.sim ?? env.getSim();
-        const dt = ctx.stepsPerFrame === 0 ? 0 : ctx.dt;
+        // (V2: the ticks this frame ran, v2/host.js projectileSeconds: a frame without one bores nothing, the next its two)
+        const dt = ctx.stepsPerFrame === 0 ? 0 : projectileSeconds(sim, ctx.dt, ctx.stepsPerFrame);
         // (the POV kernels still building, B5: the drills hold, as when paused, rather than fly on without boring)
         if (!(dt > 0) || !sim || !povGpu(sim).ready) return;
         for (const d of [...drills]) { flyDrill(sim, d, dt); if (d.alive) draw(d, dt); }

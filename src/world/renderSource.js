@@ -2,6 +2,7 @@ import { BRICK, cellSlot, slotCell, gridDims } from '../shaders/common.js';
 import { decodeBrick, BRICK_FLOATS } from './store.js';
 import { aerationForSource, isProducerBoundedAeration } from '../gfx/foam.js';
 import { recordWorldSourceCut } from './sourceCut.js';
+import { nativeAerationFor } from '../v2/nativeAeration.js';
 
 export const SOURCE_CORE = 32;
 export const SOURCE_BRICK = BRICK;
@@ -22,6 +23,13 @@ export function intersectBounds(a, b) {
 export function snapshotSource(sim, origin = sim.origin) {
   // Never retain sim.header(), sim.origin, state.cur's getter or another
   // mutable descriptor across a shift. Copies encode immutable byte offsets.
+  // While V2 runs the box its foam is in its cores (v2/nativeAeration.js), as Box's volume reads it;
+  // V1's field doesn't step under V2. (Its records hold no air wakes: bounded by construction.)
+  const native = nativeAerationFor(sim);
+  if (native) return Object.freeze({ g: Object.freeze({ ...sim.g }), origin: Object.freeze(originOf(origin)), copy: sim.cur,
+    A: sim.state.A, B: sim.state.B, flow: sim.flow,
+    aeration: native.buffer, aerCopy: 0, aerGeneration: native.generation, boundedWake: true,
+    deco: sim.decoPlane ? Object.freeze({ ...sim.decoPlane }) : null });
   const aer = aerationForSource(sim);
   return Object.freeze({ g: Object.freeze({ ...sim.g }), origin: Object.freeze(originOf(origin)), copy: sim.cur,
     A: sim.state.A, B: sim.state.B, flow: sim.flow,
@@ -32,11 +40,14 @@ export function snapshotSource(sim, origin = sim.origin) {
 // A raw read of the live cells. Physics V2 owns its cells and keeps A/B as a
 // lazy projection (src/v2/physics.js exportLegacy): bring it up to date first.
 // The export converts only the bricks whose projection changed since the last
-// one, or all of them after a whole-grid write or a switch of projection.
+// one (all of them after a whole-grid write); a switch of projection (a stroke's
+// edit, then this copy, every frame) those and the bricks holding a partial
+// liquid fill, the only cells the two projections show differently.
 // The drawn projection by default; native: the edit projection, for a read
 // that is written back into physics. Without V2 (sim.compact unset) a no-op.
 export function liveSource(sim, origin = sim.origin, { native = false } = {}) {
   sim.legacyState?.(native);
+  nativeAerationFor(sim)?.record();   // (V2: its foam packed from the cores now, before the copies read it)
   return snapshotSource(sim, origin);
 }
 

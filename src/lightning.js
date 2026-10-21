@@ -5,6 +5,7 @@ import {
 import { BOLT, STORM, boltPath, boltStart, toolStrikeR, stormColumns, pickStrike } from './bolt.js';
 import { slotCell } from './sim.js';
 import { fold } from './gpu/kernels.js';
+import { stepClock } from './v2/host.js';
 
 // Lightning on the GPU: the Lightning tool's strikes and storms' (src/bolt.js
 // has the shape and the rules, shaders/lightning.js the kernels;
@@ -26,14 +27,16 @@ import { fold } from './gpu/kernels.js';
 const RESULT_SLOTS = 4;   // storm reads in flight at most (one a poll, POLL_STEPS steps apart)
 const VEC4 = 4;
 export const STORM_HZ = 240;     // the steps a second STORM's step counts are authored at (V1's 4 steps a frame)
-// STORM's step count n for a grid stepping hz times a second (V2 ticks 60 a
-// second): the same seconds between polls and strikes on either engine
-const stormSteps = (n, hz) => Math.max(1, Math.round(n * hz / STORM_HZ));
+// The storm's clock: game time in those steps under either engine (v2/host.js stepClock, which counts
+// LEGACY_STEP_HZ = STORM_HZ a second), so the poll and the strike gap keep their seconds on V2's 60 Hz
+// ticks and across a runtime switch. (Raw sim.frame counts one a tick under V2 and one a step under V1:
+// a gap begun on one engine ran up to 4× long or short on the other.)
+const stormNow = sim => stepClock(sim);
 
 // gpu: unused (each simulation's device is its own gpu); kept for the wire's call
 export function createLightning({ onReady = () => {} } = {}) {
   let k = null, simId = -1, frame = 0;
-  let nextPoll = 0, lastStrike = -Infinity, job = null, generation = 0, hz = STORM_HZ;
+  let nextPoll = 0, lastStrike = -Infinity, job = null, generation = 0;
   const rng = Math.random;
   const api = {
     strikes: 0,             // natural strikes so far (tools/mat-check)
@@ -47,9 +50,11 @@ export function createLightning({ onReady = () => {} } = {}) {
   // The kernels for sim's grid (pipelines are cached by source, so a rebuilt
   // grid of the same size builds nothing) and the storm's result rings.
   // (rebuilt across a physics switch: V2's bolt writer and V1's are different kernels;
-  // the engine stepping the grid picks, sim.compact, not a suspended owner: elementWeather.js)
+  // the engine stepping the grid picks, sim.compact, not a suspended owner: elementWeather.js.
+  // The same grid keeps its last strike: the gap is game time, which a switch doesn't reset.)
   function ensure(sim) {
     if (sim.id === simId && k?.native === !!sim.compact) return;
+    const sameGrid = sim.id === simId;
     const gpu = sim.gpu, g = sim.g;
     if (g.slots - 1 > STORM_KEY.SLOT_MAX) throw new Error(`lightning: a ${g.nx}×${g.ny}×${g.nz} grid has more slots than a storm key holds`);
     const L = gpu.layout('STORM', STORM_LAYOUT);
@@ -67,8 +72,8 @@ export function createLightning({ onReady = () => {} } = {}) {
     k.native = !!sim.compact;
     k.ready = Promise.all([k.bolt.ready, k.search.ready, k.scan.ready]);
     simId = sim.id;
-    nextPoll = sim.frame + stormSteps(STORM.POLL_STEPS, hz);
-    lastStrike = -Infinity;
+    nextPoll = stormNow(sim) + STORM.POLL_STEPS;
+    if (!sameGrid) lastStrike = -Infinity;
     job = null;
   }
   const built = (kernel) => kernel.state === 'ready';
@@ -131,10 +136,8 @@ export function createLightning({ onReady = () => {} } = {}) {
 
   // Call only during allowed host steps (including explicit manual stepping).
   // Readback callbacks deposit results; only this entry point scans or strikes.
-  // context.stepHz: the grid's steps a second (STORM_HZ unless said)
   function update(sim, context = {}) {
     if (sim.disposed || sim.gpu.failure) { job = null; return; }
-    hz = context.stepHz ?? STORM_HZ;
     ensure(sim);
     if (job && !current(sim, job.capture, context)) { job = null; nextPoll = 0; }
     if (job) {
@@ -142,17 +145,18 @@ export function createLightning({ onReady = () => {} } = {}) {
       const finished = job; job = null;
       if (finished.stage === 'poll') {
         if (finished.result) scan(sim, finished.result, context);
-      } else if (finished.result && sim.frame - lastStrike >= stormSteps(STORM.MIN_STEPS, hz)) {
-        lastStrike = sim.frame; api.strikes++;
+      } else if (finished.result && stormNow(sim) - lastStrike >= STORM.MIN_STEPS) {
+        lastStrike = stormNow(sim); api.strikes++;
         strike(sim, finished.origin, finished.result.to, {
           strikeR: STORM.STRIKE_R, dischargeR: STORM.DISCHARGE_R, id: finished.result.id,
         });
       }
       return;
     }
-    if (sim.frame < nextPoll || !built(k.search) || !built(k.scan) || !built(k.bolt.main)) return;
-    nextPoll = sim.frame + stormSteps(STORM.POLL_STEPS, hz);
-    if (sim.frame - lastStrike < stormSteps(STORM.MIN_STEPS, hz)) return;
+    const now = stormNow(sim);
+    if (now < nextPoll || !built(k.search) || !built(k.scan) || !built(k.bolt.main)) return;
+    nextPoll = now + STORM.POLL_STEPS;
+    if (now - lastStrike < STORM.MIN_STEPS) return;
     const kernels = k, f = sim.gpu.frame;
     const slot = kernels.pick.next();
     f.clear(kernels.pick.buffer, kernels.pick.offset(slot), kernels.pick.slotBytes);   // (its key is an atomicMax)

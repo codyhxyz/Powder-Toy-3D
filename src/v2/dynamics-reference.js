@@ -1,8 +1,8 @@
 // CPU specification and shared constants for native dynamics. Units: world cells,
 // seconds, m/s, J and Pa. No legacy state is read by the native kernels.
-import { ELEMENTS, E, K } from '../elements.js';
+import { ELEMENTS, E, K, NITRO_FALL_M } from '../elements.js';
 import { CELL_M } from '../scale.js';
-import { PHYS } from '../physics.js';
+import { PHYS, SIM_GRAVITY } from '../physics.js';
 import { contactVacuum, specialExplosion } from './contact.js';
 import { impactFoam } from './foam.js';
 import { energyOf, withEnergy, energyFits, makeMaterial, cTq, withPayload, payloadOf, share, packetOwnedEnergy, withPacketEnergy, packetEnergyFits } from './layout.js';
@@ -20,6 +20,21 @@ export const NEUTRON_TAG = 255; // Particle-only, never a grid element.
 if (ELEMENTS.length >= PHOTON_TAG) throw new Error('Native neutron tag collides with a material');
 const SPECIFIC_J = { TNT: 4.184e6, C4: 5.858e6, NITRO: 6.28e6, GUNPOWDER: 3e6,
   THERMITE: 3.9e6, PROPANE: 46.4e6 };
+// V1 react.js crush (elements.js crush { P, into, of }): past P of air pressure on it (the
+// highest of its own, none for a solid, and its open neighbours') a cell becomes pickOut(into),
+// keeping its temperature, with its product's spawn life; a LAVA product's ctype is `of` (or the
+// cell's own element: react.js ctypeOf). pa: P in Pa; outs: [id, cumulative share] as
+// elements.js mechanisms() draws them ('SAME' stays itself); null without a crush.
+function crushPhaseOf(e) {
+  if (!e.crush) return null;
+  const list = typeof e.crush.into === 'string' ? [[e.crush.into, 1]] : e.crush.into;
+  const total = list.reduce((sum, [, w]) => sum + w, 0);
+  let at = 0;
+  const outs = list.map(([key, w]) => [key === 'SAME' ? e.id : E[key], at += w / total]);
+  outs[outs.length - 1][1] = 1;
+  if (outs.some(([id]) => !Number.isInteger(id))) throw new Error(`${e.key}.crush: unknown product`);
+  return { pa: e.crush.P * LEGACY_PRESSURE_PA, outs, of: e.crush.of ? E[e.crush.of] : e.id };
+}
 export const dynamicsRows = ELEMENTS.map(e => ({
   id: e.id, kind: e.kind, mass: Math.max(e.dens * 100 * CELL_M ** 3, 0.001),
   // TPT hardness is retained as the gameplay fracture energy, now explicitly J.
@@ -29,6 +44,7 @@ export const dynamicsRows = ELEMENTS.map(e => ({
   strength: e.breakInto ? e.hard * PHYS.P_BREAK_PER_HARD * LEGACY_PRESSURE_PA : 1e30,
   // V1 react.js: an explosive goes off under more than blast.crushP air pressure (Pa here).
   crush: e.blast?.crushP ? e.blast.crushP * LEGACY_PRESSURE_PA : 0,
+  crushPhase: crushPhaseOf(e),
   terminal: ({ ASH: 3, SNOW: 3, SAWDUST: 4, DUST: 3 })[e.key] ?? 55,
   lift: ({ ASH: 1, DUST: 1, SNOW: 2, SAWDUST: 2 })[e.key] ?? 12,
   energy: e.key==='DUST' ? specialBlastEnergy(PHYS.DUST_P) : e.blast ? Math.max(e.dens * 100 * CELL_M ** 3, 0.001) * (SPECIFIC_J[e.key] ?? 3e6) * BLAST_SCALE : 0,
@@ -36,6 +52,78 @@ export const dynamicsRows = ELEMENTS.map(e => ({
   productCtype: e.blast?.of ? E[e.blast.of] : 0,
   productT: e.key==='DUST' ? PHYS.DUST_FLAME_T : e.key==='SINGULARITY' ? PHYS.SING_BURST_T : e.blast?.T ?? 20,
 }));
+/**
+ * The speed (m/s) a packet reaches falling h metres from rest in still air at reference gravity, on
+ * the particle lane's own step (particles.js integrate: implicit quadratic drag toward the element's
+ * terminal speed, then the tick's gravity), stepped as V1's fallKE steps V1's (elements.js fallKE).
+ */
+export function particleFallSpeed(id, h) {
+  const drag = GRAVITY / dynamicsRows[id].terminal ** 2;
+  let v = 0, y = 0;
+  while (y < h) { v = v / (1 + drag * v * DT); y += v * DT + 0.5 * GRAVITY * DT * DT; v += GRAVITY * DT; }
+  return v;
+}
+// V1's shock (elements.js blast.shock: react.js sets an explosive off under a hit of at least that
+// kinetic energy, ½·μ·u², common.js hitKE and shockActs), re-derived in V2's own mechanics from what
+// V1 derived each one from (elements.js, the C4 and NITRO rows):
+//   C-4            WOOD's hard, "a hit that would smash wood". V2 keeps hard as its fracture energy in J
+//                  (toughness above), so the number carries over as J: C-4 goes off under exactly the
+//                  hits that fracture wood (particles.js impact), which a liquid's never are
+//                  (shockLiquid 0: V2's splashes fracture nothing).
+//   nitroglycerin  the kinetic energy of a NITRO_FALL_M fall on V1's step law (fallKE), so here that of a
+//                  V2 packet after the same fall on the particle lane's law (particleFallSpeed). A run of
+//                  it falls on the column law instead (shaders/v2/columns.js colShockSpeed: SHOCK_FALL_M).
+// A shock V2 has no derivation for is an error here, never a silent zero.
+export const SHOCK_FALL_M = Object.freeze({ [E.NITRO]: NITRO_FALL_M });
+const SHOCK_SMASHES = Object.freeze({ [E.C4]: E.WOOD });
+for (const e of ELEMENTS) {
+  const row = dynamicsRows[e.id];
+  row.shock = 0; row.shockLiquid = 1;
+  if (!e.blast?.shock) continue;
+  // the impact stage reads no air faces (react.js blastAir): a shock charge that needs air would need them
+  if (e.blast.air) throw new Error(`dynamics-reference: ${e.key}'s shock needs air faces the impact stage does not read`);
+  if (SHOCK_SMASHES[e.id] !== undefined) {
+    const smashed = ELEMENTS[SHOCK_SMASHES[e.id]];
+    if (e.blast.shock !== smashed.hard) throw new Error(`dynamics-reference: ${e.key}'s shock is no longer ${smashed.key}'s hard`);
+    row.shock = dynamicsRows[smashed.id].toughness; row.shockLiquid = 0;
+  } else if (SHOCK_FALL_M[e.id] !== undefined) {
+    row.shock = 0.5 * row.mass * particleFallSpeed(e.id, SHOCK_FALL_M[e.id]) ** 2;
+  } else throw new Error(`dynamics-reference: no V2 derivation of ${e.key}'s blast.shock`);
+}
+/** V1 common.js hitKE: closing at speed² u2, the mover i's mass against a solid j, else the reduced mass. */
+export const hitKE = (mi, mj, jSolid, u2) => 0.5 * (jSolid ? mi : mi * mj / (mi + mj)) * u2;
+// V1's shock on a grid landing. V1 react.js sets an explosive off when matter closes on it with ½·μ·u²
+// of at least its blast.shock, a cell landing on it included (the move pass leaves the lander's speed for
+// the react pass to see: common.js impactActs, shockActs), μ the lander's own mass on a solid charge and
+// the reduced mass on a loose one (common.js hitKE: each a cell of its density), never by its own element
+// or a gas (shockActs, isGasLike). The lander's speed is its fall on V1's own law (react.js forces: a step
+// adds gravity·GRAV, then drag takes DRAG of it, except from a liquid in free fall, and V_MAX caps it: as
+// elements.js fallKE steps it). So the rule is a fall: the cells past which a cell of `faller` landing on
+// `charge` sets it off, or null where V1's fall never carries that much. In V1 that is the very heavy
+// powders (scrap, uranium, plutonium, gold nuggets, singularity) and the liquids heavy enough near V1's
+// terminal speed (mercury on C-4; mercury, lava and mud on nitroglycerin). Sand, stone, water never do.
+// (A packet's hit is particles.js dShockHit's, re-derived in J above; this is the grid's landings'.)
+const V1_FALL_STEPS_MAX = 100000;
+export function v1ShockFall(faller, charge) {
+  const j = ELEMENTS[faller], k = ELEMENTS[charge], shock = k.blast?.shock ?? 0;
+  if (!(shock > 0) || faller === charge || (j.kind !== K.POWDER && j.kind !== K.LIQUID) || !(j.grav > 0)) return null;
+  const mu = k.kind === K.SOLID ? j.dens : j.dens * k.dens / (j.dens + k.dens);
+  const drag = j.kind === K.LIQUID ? 0 : j.drag ?? 0;
+  // V1's terminal speed on this law: a fall that never carries the shock is no trigger at any height
+  const vt = drag > 0 ? Math.min(PHYS.V_MAX, SIM_GRAVITY * j.grav * (1 - drag) / drag) : PHYS.V_MAX;
+  if (0.5 * mu * vt * vt < shock) return null;
+  let v = 0, y = 0;
+  for (let n = 0; n < V1_FALL_STEPS_MAX; n++) {
+    const before = y;
+    v = Math.min(PHYS.V_MAX, (v + SIM_GRAVITY * j.grav) * (1 - drag)); y += v;
+    if (0.5 * mu * v * v >= shock) return before;
+  }
+  return null;
+}
+/** Every V1 shock trigger a grid landing can make: { faller, charge, cells } (v1ShockFall), for the
+ * column passes (shaders/v2.js v2ColumnWGSL for powders, shaders/v2/columns.js colShockLand for liquids). */
+export const SHOCK_LANDINGS = Object.freeze(ELEMENTS.filter(k => k.blast?.shock).flatMap(k => ELEMENTS
+  .map(j => ({ faller: j.id, charge: k.id, cells: v1ShockFall(j.id, k.id) })).filter(r => r.cells !== null)));
 export function hash32(x) {
   x = Math.imul(x ^ (x >>> 16), 0x7feb352d);
   x = Math.imul(x ^ (x >>> 15), 0x846ca68b);

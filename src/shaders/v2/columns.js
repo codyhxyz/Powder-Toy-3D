@@ -1,6 +1,7 @@
 import { CELL_M } from '../../scale.js';
-import { E } from '../../elements.js';
+import { E, ELEMENTS, K } from '../../elements.js';
 import { FOAM_ROWS } from '../../v2/foam.js';
+import { SHOCK_FALL_M, SHOCK_LANDINGS } from '../../v2/dynamics-reference.js';
 
 // Column-run water (docs/v2/water-cost-first-principles.md; the CPU prototype it ports is
 // tools/v2/column-water.mjs). Water is stored exactly as before (16 B core + 4 B bank) and read per (x, z)
@@ -103,6 +104,30 @@ export const RADIAL = {
   // a face's demand word: its quanta, the direction, and each side's cover (frozen with the demand)
   DEMAND_MAX: 0x1fffffff, BACK: 0x80000000, COVERED_MINUS: 0x40000000, COVERED_PLUS: 0x20000000,
 };
+
+// V1's shock on landing (react.js: an explosive landing with ½·μ·u² of at least its blast.shock goes off,
+// common.js hitKE). A liquid charge's shock is a fall (dynamics-reference.js SHOCK_FALL_M: nitroglycerin's
+// NITRO_FALL_M), and a run falls on R1's column law (colFall: v += g to the run speed, a cell a tick at v), so
+// it is the speed (cells/tick) a run reaches falling that far, stepped as V1's fallKE steps V1's own law.
+export function columnFallSpeed(h, g = COLUMN.G) {
+  let v = 0, y = 0;
+  while (y < h / CELL_M) { v = Math.min(v + g, COLUMN.VT); y += v; }
+  return v;
+}
+export const COLUMN_SHOCK = Object.freeze(Object.entries(SHOCK_FALL_M).map(([id, h]) => ({ id: +id, speed: columnFallSpeed(h) })));
+// A run landing ON a charge (dynamics-reference.js SHOCK_LANDINGS: V1's fall past which a cell of the run's
+// liquid landing on that charge sets it off, V1 react.js shock, common.js hitKE): the speed the column law
+// reaches falling more than that (cells/tick). Past R1's run speed every longer fall lands the same, so a
+// fall V1 needs more than the ~3.7 m to the run speed for (lava and mud on nitroglycerin) sets it off from there.
+// COLUMN_SHOCK_SLACK: the GPU's f32 sums of a fall's ticks may land a quantum under the f64 law's speed.
+export const COLUMN_SHOCK_SLACK = 1 - 2 ** -16;
+export function columnLandingSpeed(cells, g = COLUMN.G) {
+  let v = 0, y = 0;
+  while (y <= cells) { v = Math.min(v + g, COLUMN.VT); y += v; }
+  return v;
+}
+export const COLUMN_SHOCK_ON = Object.freeze(SHOCK_LANDINGS.filter(r => ELEMENTS[r.faller].kind === K.LIQUID)
+  .map(r => ({ ...r, speed: Math.fround(columnLandingSpeed(r.cells) * COLUMN_SHOCK_SLACK) })));
 
 // record flags, in the mass word (a run's mass stays under 2^30: 16 383 cells of FULL, or 1 023 of MAX_FILL)
 const REC_FALLING = 0x80000000, REC_LAST = 0x40000000, REC_MASS = 0x3fffffff;
@@ -217,6 +242,8 @@ fn colFill(x: i32, y: i32, z: i32) -> u32 { return cFill(loadCore(slotOf(vec3i(x
 fn colClass(x: i32, y: i32, z: i32) -> u32 { return clsOf(loadCore(slotOf(vec3i(x, y, z)))); }
 fn colCell(x: i32, y: i32, z: i32) -> vec4u { return loadCore(slotOf(vec3i(x, y, z))); }
 fn colPending(x: i32, y: i32, z: i32) -> bool { return (events[slotOf(vec3i(x, y, z))] & 1u) != 0u; }
+// a detonation request on the cell (native-contract.md requests: 1), for this tick's blasts
+fn colDetonate(x: i32, y: i32, z: i32) { let s = slotOf(vec3i(x, y, z)); events[s] = events[s] | 1u; noteEvents(s, events[s]); markBusy(vec3i(x, y, z)); }
 fn colBusy(x: i32, y: i32, z: i32) { markBusy(vec3i(x, y, z)); }
 // any brick of the brick column holding (x, z) is awake: its column was in this tick's runs pass (v2cols's
 // per-column word, one read)
@@ -291,6 +318,42 @@ fn colMarkJet(x: i32, y: i32, z: i32, axis: i32, v: f32) {
   noteJet(brickOfCell(p));
 }
 fn colGravity() -> f32 { if (P.gravMode != 0u) { return 0.0; } return COL_G * P.gravity / COL_G_MS2; }
+// a liquid charge's shock as a landing speed, cells/tick (COLUMN_SHOCK); 0 for every other liquid
+fn colShockSpeed(id: u32) -> f32 {
+${COLUMN_SHOCK.map(r => `  if (id == ${r.id}u) { return ${r.speed}; }`).join('\n')}
+  return 0.0;
+}
+// the landing speed (cells/tick) past which a run of liquid faller sets off the charge it lands on (COLUMN_SHOCK_ON); 0 never
+fn colShockOnSpeed(faller: u32, charge: u32) -> f32 {
+${COLUMN_SHOCK_ON.map(r => `  if (faller == ${r.faller}u && charge == ${r.charge}u) { return ${r.speed}; }`).join('\n')}
+  return 0.0;
+}
+// A run that landed at u cells/tick with its bottom cell at b: V1 react.js sets a charge off on a hit of
+// ½·μ·u² past its shock, μ the mover's own mass on a solid and the reduced mass on loose matter (common.js
+// hitKE: masses as V1's densities, a cell each), never on its own element or a gas (isGasLike). Its shock
+// is ½·m·colShockSpeed², so it goes off when (μ/m)·u² reaches colShockSpeed². Under the box's floor is a
+// WALL only with solid edges (V1 react.js: past a solid edge a face is WALL; past a void one, still air).
+fn colShockLand(x: i32, z: i32, b: i32, u: f32) {
+  let id = cid(colCell(x, b, z));
+  // landing on a charge at u: V1 sets it off past a fall (COLUMN_SHOCK_ON, colShockOnSpeed)
+  if (b > 0) {
+    let on = colShockOnSpeed(id, cid(colCell(x, b - 1, z)));
+    if (on > 0.0 && u >= on) { colDetonate(x, b - 1, z); }
+  }
+  let shock = colShockSpeed(id);
+  if (shock <= 0.0) { return; }
+  var share = 0.0;
+  if (b == 0) {
+    if (P.edge == 0u) { share = 1.0; }
+  } else {
+    let below = colCell(x, b - 1, z);
+    let j = cid(below);
+    let kind = clsOf(below);
+    if (kind == C_SOLID) { share = 1.0; }
+    if ((kind == C_POWDER || kind == C_LIQUID) && j != id) { share = densOfE(j) / (densOfE(id) + densOfE(j)); }
+  }
+  if (share * u * u >= shock * shock) { colDetonate(x, b, z); }
+}
 fn colDampTick(liq: u32) -> f32 { let keep = 1.0 - dampOf(liq); return 1.0 - keep * keep * keep; }
 
 // ---- custody: n of the fill at a moves to b (both air or the same liquid), with its exact share
@@ -598,6 +661,7 @@ fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
     colBusy(x, r0 - d, z); colBusy(x, r1 - 1, z);
   }
   colSetLanes(x, r0 - d, z, speed, a);
+  if (landed) { colShockLand(x, z, r0 - d, v); }
   let impact = v * COL_TICK_HZ * COL_CELL_M;
   if (landed && d > 0 && r0 - d > o0 && colClass(x, r0 - d - 1, z) == C_LIQUID && impact > COL_CROWN_SPEED) {
     colCrown(x, z, r0 - d, r1 - d, d, impact);
@@ -938,11 +1002,17 @@ fn colSends(xa: i32, za: i32, xb: i32, zb: i32, axis: i32, floating: bool) {
       let t = colDemandAt(xa, s0, za, axis);
       let v = laneOf(colCell(xa, s0, za), axis);
       let head = colSentHeadAt(xa, s0, za, axis);
-      // a floating layer pours onto the denser surface (into the receiver's cells at the face rows)
-      if (t != 0u && v > 0.0 && floating) { colPour(xa, za, i, xb, zb, s0, s1, axis, 1.0, abs(v), head, u32(floor(f32(t) * recScratch(qa)))); }
-      if (t != 0u && v < 0.0 && floating) { colPour(xb, zb, j, xa, za, s0, s1, axis, -1.0, abs(v), head, u32(floor(f32(t) * recScratch(qb)))); }
-      if (t != 0u && v > 0.0 && !floating) { colSend(xa, za, i, xb, zb, j, s0, s1, axis, 1.0, v, head, u32(floor(f32(t) * recScratch(qa)))); }
-      if (t != 0u && v < 0.0 && !floating) { colSend(xb, zb, j, xa, za, i, s0, s1, axis, -1.0, v, head, u32(floor(f32(t) * recScratch(qb)))); }
+      // the lane's sender and receiver; a floating layer pours onto the denser surface (into the receiver's
+      // cells at the face rows), the rest as colSend sends it. One colPour and one colTransfer for both
+      // directions: Metal inlines each call, and a copy a direction made this pass slow to compile cold.
+      if (t != 0u && (v > 0.0 || v < 0.0)) {
+        let plus = v > 0.0;
+        let xs = select(xb, xa, plus); let zs = select(zb, za, plus); let is = select(j, i, plus);
+        let xd = select(xa, xb, plus); let zd = select(za, zb, plus); let id = select(i, j, plus);
+        let n = u32(floor(f32(t) * recScratch(select(qb, qa, plus))));
+        if (floating || colOver(colRec(xd, id, zd), s0)) { colPour(xs, zs, is, xd, zd, s0, s1, axis, select(-1.0, 1.0, plus), abs(v), head, n); }
+        else { colTransfer(xs, zs, is, xd, zd, id, n); }
+      }
     }
     // (transfers change a record's mass and end, never its y0, top or last flag)
     if (recTop(qa) < recTop(qb)) { if (recLast(qa)) { break; } i = i + 1; }
@@ -1277,12 +1347,16 @@ ${COLUMN_THREAD}
   }
   let axis = i32(P.pairAxis);
   let next = mEdge(here + axisV(axis)); let prev = mEdge(here - axisV(axis));
-  if (u32(select(z, x, axis == 0) & 1) == P.pairParity) {
-    if (inGrid(next)) { colTransfers(x, z, next.x, next.z, axis); }
-    // a side of the grid on this axis is open: this thread owns the column, so its face to the void too
-    if (P.edge == 1u && !inGrid(next)) { colEdges(x, z); }
-    if (P.edge == 1u && !inGrid(prev)) { colEdges(x, z); }
-  } else if (inGrid(prev) && !colAwake(prev.x, prev.z)) { colTransfers(prev.x, prev.z, x, z, axis); }
+  // the pair this thread owns: with the next column, or with a sleeping previous one; one colTransfers
+  // call for both (Metal inlines it whole at each call: cold compile, docs/webgpu.md B5)
+  let mine = u32(select(z, x, axis == 0) & 1) == P.pairParity;
+  var pair = false; var pa = vec2i(x, z); var pb = vec2i(x, z);
+  if (mine) { if (inGrid(next)) { pair = true; pb = next.xz; } }
+  else if (inGrid(prev) && !colAwake(prev.x, prev.z)) { pair = true; pa = prev.xz; }
+  if (pair) { colTransfers(pa.x, pa.y, pb.x, pb.y, axis); }
+  // a side of the grid on this axis is open: this thread owns the column, so its face to the void too
+  if (mine && P.edge == 1u && !inGrid(next)) { colEdges(x, z); }
+  if (mine && P.edge == 1u && !inGrid(prev)) { colEdges(x, z); }
 }
 `;
 

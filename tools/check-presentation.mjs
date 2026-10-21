@@ -126,7 +126,7 @@ const reach = (node) => {
 let wakes=0;
 const p=createPresentation(()=>wakes++);
 const mat=new THREE.MeshBasicNodeMaterial(), own=vec4(1,2,3,1);
-mat.vertexNode=own;   // a material's own vertex stage (a billboard's, a bird's)
+mat.vertexNode=own;   // a material's own vertex stage (a billboard's)
 mat.customProgramCacheKey=()=>'custom-key';
 const undo=installPresentation(mat,p.uniforms), key=mat.customProgramCacheKey();
 assert.notEqual(mat.vertexNode,own);

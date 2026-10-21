@@ -202,15 +202,30 @@ fn underPool(sm: vec4f, d: f32, tid: i32) -> bool {
   let lenL = (sm.w - f32(tid) * SHADOW_TINT_ID_SCALE) / max(meanSigma(tid), 1e-4);
   return lenL >= CAUSTIC_FILL * (min(d, sm.z) - sm.y);
 }
+// The Laplacian's taps: the centre and four neighbours. Every caller asks only with FU.caustics set
+// (1), so the bound is exactly CAUSTIC_TAPS; read from the uniform, Metal can't fold it and unroll.
+const CAUSTIC_TAPS: u32 = 5u;
+fn causticTaps() -> u32 { return min(CAUSTIC_TAPS, CAUSTIC_TAPS * FU.caustics); }
 // The light the ripples focus on grid point p lying D cells under the surface (along the sun).
 fn causticGain(p: vec3f, D: f32) -> f32 {
   let s = p + FU.sun * D;   // where the light entered the liquid
   let q = worldPos(s).xz * RIPPLE_FREQ;   // the ripples are anchored in the world (gfx/liquid.js)
   let t = ${time} * RIPPLE_DRIFT;
-  let h0 = rippleH(q, t);
-  let lapQ = (rippleH(q + vec2f(CAUSTIC_EPS, 0.0), t) + rippleH(q - vec2f(CAUSTIC_EPS, 0.0), t)
-            + rippleH(q + vec2f(0.0, CAUSTIC_EPS), t) + rippleH(q - vec2f(0.0, CAUSTIC_EPS), t) - 4.0 * h0)
-            / (CAUSTIC_EPS * CAUSTIC_EPS);
+  // the centre and its four neighbours, one rippleH a tap in a loop Metal can't unroll (each
+  // inlined copy is two value noises, and the sun lookups inline this at every call: cold
+  // compile, docs/webgpu.md B5); the neighbours add in the order the Laplacian always summed them
+  var h0 = 0.0;
+  var around = 0.0;
+  for (var k = 0u; k < causticTaps(); k++) {
+    var qk = q;
+    if (k == 1u) { qk = q + vec2f(CAUSTIC_EPS, 0.0); }
+    else if (k == 2u) { qk = q - vec2f(CAUSTIC_EPS, 0.0); }
+    else if (k == 3u) { qk = q + vec2f(0.0, CAUSTIC_EPS); }
+    else if (k == 4u) { qk = q - vec2f(0.0, CAUSTIC_EPS); }
+    let h = rippleH(qk, t);
+    if (k == 0u) { h0 = h; } else if (k == 1u) { around = h; } else { around += h; }
+  }
+  let lapQ = (around - 4.0 * h0) / (CAUSTIC_EPS * CAUSTIC_EPS);
   let lap = CAUSTIC_SLOPE * RIPPLE_FREQ * lapQ;   // per cell
   let I = clamp(1.0 / max(1.0 + D * CAUSTIC_BEND * lap, 1e-3), CAUSTIC_MIN, CAUSTIC_MAX);
   let blur = D * SUN_TAN_RADIUS * RIPPLE_FREQ * 2.0 * PI_L;

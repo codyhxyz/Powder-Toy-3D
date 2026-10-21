@@ -5,7 +5,7 @@ import { povGpu } from '../../src/pov/gpu.js';
 import { WorldWindow } from '../../src/world/window.js';
 import { BrickStore, encodeBrick, BRICK_FLOATS } from '../../src/world/store.js';
 import { NativeBrickStore, encodeNativeBrick } from '../../src/world/nativeStore.js';
-import { heldBase, shockBase } from '../../src/shaders/v2/particles.js';
+import { heldBase, shockBase, setOffBase } from '../../src/shaders/v2/particles.js';
 // CPU-only: actual foundation/contact/dynamics constructors and save/undo
 // orchestration. GPU commands copy mock bytes; WGSL execution is NOT emulated.
 import assert from 'node:assert/strict';
@@ -70,6 +70,9 @@ assert.equal(d.applyToolImpulse({ kind: 'neutron', position: [2, 3, 4], directio
 assert.equal(d.applyPhysgun({ mode: 'hold', position: [2, 3, 4], target: [6, 7, 8], radius: 3, strength: 12 }).status, 'queued');
 words(d.control)[heldBase(g)] = d.holdSession.token;
 words(d.control)[shockBase(g)] = 73;
+// a charge a hit set off this tick (particles.js dShockHit: its slot's id until it lands), and a stale
+// mark left in slot 1 by an earlier packet
+words(d.control)[setOffBase(g)] = 101; words(d.control)[setOffBase(g) + 1] = 999;
 owner.tick = 17; owner.acc = 0.375; sim.frame = 23; sim.paints = 11;
 const start = reads.length;
 const capture = captureNativeSnapshot(owner, 'v2');
@@ -82,6 +85,8 @@ assert.deepEqual(decodeV2State(snapshot.core).cells, oldCore);
 assert.deepEqual(snapshot.dynamic.particles, oldParticles);
 assert.equal(snapshot.dynamic.held[0], snapshot.dynamic.holdSession.token);
 assert.equal(snapshot.dynamic.shocks[0], 73);
+assert.equal(snapshot.dynamic.setOff[0], 101, 'a set-off mark is saved with its flying charge');
+assert.equal(snapshot.dynamic.setOff[1], 0, 'a stale mark (not its slot\'s id) is dropped');
 assert.deepEqual(snapshot.dynamic.holdSession.target, [6, 7, 8]);
 assert.equal(snapshot.dynamic.requests.length, 1); assert.equal(snapshot.dynamic.airArchive.length, 1);
 assert.equal(snapshot.dynamic.pendingEvents.length, 2);
@@ -104,6 +109,16 @@ assert.deepEqual(words(owner.cells), oldCore); assert.deepEqual(words(d.particle
 assert.equal(owner.tick, 17); assert.equal(owner.acc, 0.375); assert.equal(d.rayRequests.size, 1);
 assert.equal(words(owner.events)[3], 7); assert.equal(d.pendingOutside.get('129,2,3'), 5);
 assert(d.airArchive.has('128,0,0'));
+assert.equal(words(d.control)[setOffBase(g)], 101, 'the restored charge is still set off: it goes off where it lands');
+assert.equal(words(d.control)[setOffBase(g) + 1], 0);
+// a save from before the marks were saved restores with none set off; a mark naming another slot's id is corrupt
+const beforeMarks = { ...decoded }; delete beforeMarks.setOff;
+restoreNativeSnapshot(owner, { ...snapshot, dynamic: decodeDynamicState(encodeDynamicState(beforeMarks), { dims: [32, 32, 32], origin: [0, 0, 0] }) });
+assert.equal(words(d.control)[setOffBase(g)], 0);
+const wrongMark = { ...decoded, setOff: decoded.setOff.slice() }; wrongMark.setOff[2] = 7;
+assert.throws(() => restoreNativeSnapshot(owner, { ...snapshot, dynamic: wrongMark }), /set-off/);
+restoreNativeSnapshot(owner, snapshot);
+assert.equal(words(d.control)[setOffBase(g)], 101);
 
 // Actual Simulation history waits for the same-batch readback, then restores
 // all authoritative sections. A shifted dynamic undo preserves/rejects entry.
