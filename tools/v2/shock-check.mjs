@@ -7,25 +7,29 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ELEMENTS, E, NITRO_FALL_M } from '../../src/elements.js';
-import { dynamicsRows, particleFallSpeed, SHOCK_FALL_M, hitKE, GRAVITY } from '../../src/v2/dynamics-reference.js';
+import { dynamicsRows, SHOCK_FALL_M, hitKE, GRAVITY, MASS_PER_DENS, particleLandingSpeed, packetShock, SHOCK_THROW_MS } from '../../src/v2/dynamics-reference.js';
+import { legacyVelocityToMS } from '../../src/v2/tools.js';
 import { COLUMN, COLUMN_SHOCK, columnFallSpeed, columnWaterWGSL } from '../../src/shaders/v2/columns.js';
 import * as L from '../../src/v2/layout.js';
 import { ColumnGrid } from './column-wgsl.mjs';
 
-test('each charge\'s shock, re-derived in V2 from what V1 derived it from', () => {
-  // C-4: "a hit that would smash wood" (shock = WOOD's hard); V2 keeps hard as J (toughness)
+test('each charge\'s shock, in V1\'s units on a packet\'s hit, its fall re-derived on V2\'s laws', () => {
+  // C-4: "a hit that would smash wood" (shock = WOOD's hard), now V1's own number in V1's units: the
+  // packet's hit is V1's (V1 densities a cell each, dMass = dens·MASS_PER_DENS), not a joule threshold
   assert.equal(ELEMENTS[E.C4].blast.shock, ELEMENTS[E.WOOD].hard);
-  assert.equal(dynamicsRows[E.C4].shock, dynamicsRows[E.WOOD].toughness);
+  for (const e of ELEMENTS) assert.equal(dynamicsRows[e.id].shockKE, (e.blast?.shock ?? 0) * MASS_PER_DENS, e.key);
+  assert.equal(dynamicsRows[E.C4].shockFall, 0, 'C-4 is solid: V1 never drops it');
   // nitroglycerin: a NITRO_FALL_M fall, on the particle lane's law: about free fall's speed at that height
   assert.equal(SHOCK_FALL_M[E.NITRO], NITRO_FALL_M);
-  const v = particleFallSpeed(E.NITRO, NITRO_FALL_M), free = Math.sqrt(2 * GRAVITY * NITRO_FALL_M);
+  const v = particleLandingSpeed(E.NITRO, NITRO_FALL_M), free = Math.sqrt(2 * GRAVITY * NITRO_FALL_M);
   assert.ok(v < free * 1.03 && v > free * 0.9, `a ${NITRO_FALL_M} m fall lands at ${v.toFixed(2)} m/s (free fall ${free.toFixed(2)})`);
-  assert.equal(dynamicsRows[E.NITRO].shock, 0.5 * dynamicsRows[E.NITRO].mass * v ** 2);
-  // poured gently it is safe: a 1 m fall carries a fifth of it, a 6 m one more than all of it
-  assert.ok(0.5 * dynamicsRows[E.NITRO].mass * particleFallSpeed(E.NITRO, 1) ** 2 < dynamicsRows[E.NITRO].shock / 4);
-  assert.ok(0.5 * dynamicsRows[E.NITRO].mass * particleFallSpeed(E.NITRO, 6) ** 2 > dynamicsRows[E.NITRO].shock);
-  // every V1 shock has a V2 one, and nothing else has one
-  for (const e of ELEMENTS) assert.equal(dynamicsRows[e.id].shock > 0, !!e.blast?.shock, e.key);
+  // its landing maps that speed onto the V1 speed that carries its shock on a solid (½·dens·v² = shock)
+  assert.ok(Math.abs(0.5 * ELEMENTS[E.NITRO].dens * (v * dynamicsRows[E.NITRO].shockFall) ** 2 - ELEMENTS[E.NITRO].blast.shock) < 1e-9);
+  // poured gently it is safe: a 1 m fall onto metal is not, a 6 m one is
+  assert.equal(packetShock(E.NITRO, E.METAL, particleLandingSpeed(E.NITRO, 1), true).mover, false);
+  assert.equal(packetShock(E.NITRO, E.METAL, particleLandingSpeed(E.NITRO, 6), true).mover, true);
+  // V1's throws: SHOCK_THROW_MS m/s a cell/step (v2/tools.js legacyVelocityToMS, the throws' own map)
+  assert.equal(SHOCK_THROW_MS, legacyVelocityToMS(1));
   // V1 hitKE: the mover's mass on a solid, the reduced mass otherwise
   assert.equal(hitKE(2, 6, true, 9), 9); assert.equal(hitKE(2, 6, false, 9), 0.5 * 1.5 * 9);
 });

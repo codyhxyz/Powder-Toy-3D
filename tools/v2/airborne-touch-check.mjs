@@ -146,7 +146,7 @@ test('the block, react and electric stages carry the marks and validate (Naga)',
   assert.ok(react.includes('notePacketTouch(slots[f], r.touch[f])'));
   assertNaga(react, 'v2particles_react');
   const gather = v2ElecGatherWGSL(g);
-  assert.ok(gather.includes('word = ctFuseTouch(c, packetTouchNow(s), roll);'));
+  assert.ok(gather.includes('if (id == CT_FUSE) { touch = packetTouchNow(s); }') && gather.includes('word = ctFuseTouch(c, touch, roll);'));
   assertNaga(gather, 'v2elecGather');
 });
 
