@@ -147,13 +147,16 @@ export function createVehicles(env) {
     const armor = [];
     spartan.traverse((o) => { if (o.isMesh) armor.push(o); });
     for (const m of armor) {
-      look.part(m.parent, m.geometry, new THREE.Color(...m.userData.albedo), { edge: false }).name = m.name;
+      const parent = m.parent;
       m.removeFromParent();
+      // the jetpack's exhaust flames (unlit, no albedo) only show when it fires: never in the seat
+      if (!m.userData.albedo) { m.geometry.dispose(); m.material.dispose(); continue; }
+      look.part(parent, m.geometry, new THREE.Color(...m.userData.albedo), { edge: false }).name = m.name;
     }
     impl.driver.add(wizard, spartan);
     const v = {
       id, kind: home.kind, spec: k.spec, team: home.team, home: home.key,
-      impl, look, wizard, spartan, health: k.spec.HEALTH, alive: true, driver: null, wreckT: 0, fireWait: 0,
+      impl, look, wizard, spartan, health: k.spec.HEALTH, alive: true, driver: null, wreckT: 0, fireWait: 0, parked: false,
       lastHit: new Map(), removeTarget: null,
     };
     v.removeTarget = addTarget({
