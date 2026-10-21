@@ -5,15 +5,13 @@ import { BODY_HEIGHT, BODY_WIDTH } from './pov/constants.js';
 // one-shot entity instead, like Garry's Mod's spawn menu (no pad or toggle).
 // An absent oneShot flag deliberately retains old saved-spawner semantics.
 
-export const SPAWNER = { ENEMY: 'enemy', GUNNER: 'gunner', WORM: 'worm', GIANT_WORM: 'giantworm', PLAYER: 'player', JEEP: 'jeep', HOVERBIKE: 'hoverbike', BOAT: 'boat', BIRDS: 'birds' };
+export const SPAWNER = { ENEMY: 'enemy', GUNNER: 'gunner', WORM: 'worm', GIANT_WORM: 'giantworm', PLAYER: 'player', JEEP: 'jeep', HOVERBIKE: 'hoverbike', BOAT: 'boat' };
 // the kinds that keep a creature alive (pov/index.js); old spawners are 'enemy': axemen
 export const ENEMY_KINDS = [SPAWNER.ENEMY, SPAWNER.GUNNER, SPAWNER.WORM, SPAWNER.GIANT_WORM];
-const COLOR = { enemy: 0xe0453a, gunner: 0xe08a2a, worm: 0xb0607a, giantworm: 0x7a3550, player: 0x3fa7ff, jeep: 0x8fa04a, hoverbike: 0x5fd0e0, boat: 0xd69042, birds: 0xb58cff };
+const COLOR = { enemy: 0xe0453a, gunner: 0xe08a2a, worm: 0xb0607a, giantworm: 0x7a3550, player: 0x3fa7ff, jeep: 0x8fa04a, hoverbike: 0x5fd0e0, boat: 0xd69042 };
 // A vehicle pad's ghost: footprint in cells (0.3 m each), including the 3.6 × 1.8 m boat.
 const VEHICLE_GHOST = { jeep: [7.3, 6, 15], hoverbike: [3.3, 4, 8.3], boat: [6, 3, 12] };
 const VEHICLE_PAD_R = { jeep: 8, hoverbike: 4.5, boat: 6.5 };   // cells, the pad's radius under it
-const GHOSTLESS = new Set([SPAWNER.BIRDS]);   // kinds whose marker is only the pad
-const WINDOWLESS = new Set([SPAWNER.JEEP, SPAWNER.HOVERBIKE, SPAWNER.BOAT]);   // kinds a World's moving window can't carry (place)
 const TOGGLE_DIST = 3;        // cells: clicking this near an existing spawner of the kind removes it
 const PAD_R = 1.4;            // cells, the pad's radius
 const PAD_LIFT = 0.05;        // cells above the surface (no z-fighting)
@@ -44,9 +42,9 @@ function marker(kind) {
     new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1, depthWrite: false }));
   const r = BODY_WIDTH / 2;
   const v = VEHICLE_GHOST[kind];
-  const ghost = GHOSTLESS.has(kind) ? null : new THREE.Mesh(v ? new THREE.BoxGeometry(...v).translate(0, v[1] / 2, 0) : new THREE.CapsuleGeometry(r, BODY_HEIGHT - 2 * r, 4, 12).translate(0, BODY_HEIGHT / 2, 0),
+  const ghost = new THREE.Mesh(v ? new THREE.BoxGeometry(...v).translate(0, v[1] / 2, 0) : new THREE.CapsuleGeometry(r, BODY_HEIGHT - 2 * r, 4, 12).translate(0, BODY_HEIGHT / 2, 0),
     new THREE.MeshBasicMaterial({ color, transparent: true, opacity: GHOST_OPACITY, depthWrite: false }));
-  for (const m of [pad, ring, ghost]) if (m) { m.renderOrder = 1; g.add(m); }   // after the volume, tested against its depth
+  for (const m of [pad, ring, ghost]) { m.renderOrder = 1; g.add(m); }   // after the volume, tested against its depth
   g.userData.ghost = ghost;
   return g;
 }
@@ -80,9 +78,8 @@ export class Spawners {
   // Player spawn is intentionally still a toggleable marker.
   place(kind, feet) {
     if (kind === SPAWNER.PLAYER) return this.toggle(kind, feet);
-    // NPCs and birds live in a World's window as in a box (pov/index.js updateEntities, birds/index.js);
-    // vehicles' rigid bodies and voxel terrain don't follow the window yet (docs/vehicles.md, World mode).
-    if (this.getSim().g.windowed && WINDOWLESS.has(kind)) return 'unsupported';
+    // NPCs and vehicles live in a World's window as in a box (pov/index.js updateEntities,
+    // pov/vehicles/index.js): they keep world positions as the window moves.
     // Retire spent records before reusing their budget; repeated kills must not
     // accumulate an unbounded registry (or NPC corpses with their own probes).
     for (const s of this.of(kind)) if (s.oneShot && (s.consumed || s.snapshot?.().consumed)) this.remove(s);
@@ -126,6 +123,8 @@ export class Spawners {
   }
   fromJSON(arr) {
     this.clear();
+    // A kind not in SPAWNER is skipped: an old save's Bird flock ('birds', removed
+    // 2026-10-20) loads without it, and the rest of the save as before.
     const kinds = new Set(Object.values(SPAWNER)), origin = this.getSim().origin;
     for (const s of arr ?? []) {
       if (!kinds.has(s?.kind) || !Array.isArray(s.world) || s.world.length !== 3 || !s.world.every(Number.isFinite) || (s.oneShot === true && s.consumed) || this.of(s.kind).length >= MAX_PER_KIND) continue;

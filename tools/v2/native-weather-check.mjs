@@ -1,19 +1,16 @@
 // CPU only. Production driver recording + independent packed-state/force oracle.
 import assert from 'node:assert/strict';
 import { createElementWeather } from '../../src/elementWeather.js';
-import { createOceanEvents } from '../../src/oceanEvents.js';
 import { createLightning } from '../../src/lightning.js';
-import { seedWaveDemo } from '../../src/world/waveDemo.js';
+import { seedWaveDemo, waveDemoEdit } from '../../src/world/waveDemo.js';
 import { STORM } from '../../src/bolt.js';
 import { STORM_KEY } from '../../src/shaders/lightning.js';
 import { ELEMENT_WEATHER } from '../../src/elementWeather.js';
 import { stepClock, LEGACY_STEPS_PER_TICK } from '../../src/v2/host.js';
 import { createNativeWeatherKernel, WEATHER_SPEED_SI, WEATHER_SPEED_FLUX } from '../../src/v2/nativeWeather.js';
 import { LANE_HZ } from '../../src/shaders/v2.js';
-import { oceanEventsEdit, OCEAN_EVENT } from '../../src/shaders/oceanEvents.js';
 import { gridLayout } from '../../src/sim.js';
 import { makeMaterial, cFill, energyOf, capacityQ, withEnergy, withPayload, payloadOf, ctypeOf } from '../../src/v2/layout.js';
-import { legacyPressureToPa } from '../../src/v2/pressure.js';
 import { gravityAt, nativeModes, ballisticModes } from '../../src/v2/modes.js';
 import { allocateSources, packParticle, unpackParticle } from '../../src/v2/dynamics-reference.js';
 import { E } from '../../src/elements.js';
@@ -40,13 +37,13 @@ function fixture() {
  sim.compact=sim.compactOwner=o; return sim;
 }
 const sim=fixture(), weather=createElementWeather();
-const state={preset:'storm',cloud:1,rain:1,storm:1,fog:1,wind:[3,4],time:4};
+const state={preset:'storm',cloud:1,rain:1,storm:1,wind:[3,4],time:4};
 const context={sim,enabled:true,advancing:true,host:true,seaLevel:18,stepHz:60};
 weather.step(state,context); await weather.ready;
 calls.length=0; sim.frame=sim.nativeTicks=15;   // (15 native ticks: v2/host.js nativeHostTick advances both)
 assert(weather.step(state,context));
-assert.equal(calls.filter(c=>c.name==='elementWeatherNativeEvaluate').length,2);
-assert.equal(calls.filter(c=>c.name==='nativeAllocate').length,2);
+assert.equal(calls.filter(c=>c.name==='elementWeatherNativeEvaluate').length,1,'one sky band (no sea fog band)');
+assert.equal(calls.filter(c=>c.name==='nativeAllocate').length,1);
 for(const c of calls.filter(c=>c.name==='elementWeatherNativeEvaluate')) {
  assert.equal(c.header.format,3); assert.equal(c.bind[1],sim.bindPhysicalRO);
  assert.deepEqual(c.params.wind,[0.6,0.8]); assert.equal(c.params.pulse,1);
@@ -58,30 +55,23 @@ assert.equal(weather.step(state,{...context,host:false}),false);
 assert.equal(weather.step(state,{...context,advancing:false}),false);
 assert.equal(calls.length,count);
 weather.dispose();
-const ocean=createOceanEvents(), oceanSim=fixture(), oceanContext={sim:oceanSim,seaLevel:18,groundHeight:()=>0,stepHz:60};
-ocean.step({ocean:1},oceanContext); await new Promise(resolve=>setImmediate(resolve)); oceanSim.frame=oceanSim.nativeTicks=1; // (one native host tick: v2/host.js)
-calls.length=0; assert(ocean.step({ocean:1},oceanContext));
-const oce=calls.find(c=>c.name==='oceanForceNativeEvaluate'); assert(oce);
-assert.deepEqual(oce.params.editLo,[0,12,0]); assert.deepEqual(oce.params.editHi,[31,22,31]);
-assert.equal(oce.params.time,1/60); assert.equal(calls[0].name,'oceanColumns');
-assert.equal(calls[0].header.format,3); ocean.dispose();
 const bolt=createLightning(), boltSim=fixture(); calls.length=0;
 bolt.strike(boltSim,[10,50,10],[10,10,10],{strikeR:2});
 assert(calls.some(c=>c.name==='boltNativeEvaluate')); assert(!calls.some(c=>c.name==='nativeAllocate')); bolt.dispose();
-// Direct producer uses the ACTUAL dynamics owner, never the 3-buffer adapter.
+// Direct producer uses the ACTUAL dynamics owner, never the 3-buffer adapter
+// (the World's wave demo: a real liquid writer with no source buffer).
 calls.length=0;
-const force=createNativeWeatherKernel(sim,'testOcean',oceanEventsEdit); await force.ready;
-assert(force.run({lo:[1,2,3],hi:[2,3,4]},{sea:18,time:1,chop:1,surge:0,wind:[1,0],source:[0,0],direction:[1,0]},{}));
-assert.deepEqual(calls.filter(c=>c.name.startsWith('testOcean')).map(c=>c.name),['testOceanNativeEvaluate','testOceanNativematerial','testOceanNativeair']);
+const waveValues={direction:[1,0],center:4,amplitude:2,width:3,sea:18,waterTemp:20,waterLife:0};
+const force=createNativeWeatherKernel(sim,'testWave',waveDemoEdit); await force.ready;
+assert(force.run({lo:[1,2,3],hi:[2,3,4]},waveValues,null));
+assert.deepEqual(calls.filter(c=>c.name.startsWith('testWave')).map(c=>c.name),['testWaveNativeEvaluate','testWaveNativematerial','testWaveNativeair']);
 assert.equal(calls.at(-1).bind[1].entries[1].resource.buffer,sim.compactOwner.dynamics.air[1]);
 assert.equal(retired.at(-1).size,8*64);
 // Independent numerical oracle: calibrated SI pulse, not a 60Hz reinterpretation.
 close(WEATHER_SPEED_SI,72); close(WEATHER_SPEED_FLUX,65536*4); // 240 Hz source cells into lanes of quanta a 60 Hz tick
-const surge=0.5, old=[0.01,-0.02,0.03], direction=[0.6,0.8];
-const target=[direction[0]*OCEAN_EVENT.speed,OCEAN_EVENT.lift,direction[1]*OCEAN_EVENT.speed];
-const q=old.map((v,a)=>(v+(target[a]-v)*surge)*WEATHER_SPEED_FLUX);
-q.forEach((v,a)=>close(v/65536*LANE_HZ*CELL_M,(old[a]+(target[a]-old[a])*surge)*240*CELL_M));
-close(legacyPressureToPa(OCEAN_EVENT.pressure*surge)/64*64,legacyPressureToPa(0.25));
+// (a liquid's authored velocity, cells a 240 Hz step, reaches its native lanes as the same m/s)
+const authored=[0.01,-0.02,0.03];
+authored.map(v=>v*WEATHER_SPEED_FLUX).forEach((v,a)=>close(v/65536*LANE_HZ*CELL_M,authored[a]*240*CELL_M));
 // Coarse-air volume integral preserves a bounded pulse; untouched cells add zero.
 const wind=[0.6*0.025*72,0,0.8*0.025*72], emitted=7;
 wind.forEach(v=>close(v*emitted/64*(4*CELL_M)**3,v*emitted*CELL_M**3));
@@ -107,20 +97,20 @@ allocateSources([source],[],1); assert.equal(source.retry,false); assert.equal(s
 // Frozen/disabled air selectors and radial/off gravity are packed into actual dispatches.
 for(const gravityMode of [GRAV.OFF,GRAV.RADIAL]) for(const airMode of Object.values(AIR)) {
  sim.gravityMode=gravityMode;sim.airMode=airMode;
- force.run({lo:[1,2,3],hi:[2,3,4]},{sea:18,time:1,chop:1,surge:0,wind:[1,0],source:[0,0],direction:[1,0]},{});
+ force.run({lo:[1,2,3],hi:[2,3,4]},waveValues,null);
  assert.equal(calls.at(-1).params.gravMode,gravityMode);assert.equal(calls.at(-1).params.airMode,airMode);
 }
 // Small mock device proves brick-safe tiling honors binding byte limits.
 gpu.limits={maxStorageBufferBindingSize:4096,maxBufferSize:4096};
 const start=retired.length;
-force.run({lo:[0,0,0],hi:[7,3,7]},{sea:18,time:1,chop:1,surge:0,wind:[1,0],source:[0,0],direction:[1,0]},{});
+force.run({lo:[0,0,0],hi:[7,3,7]},waveValues,null);
 assert.equal(retired.length-start,4);assert(retired.slice(start).every(b=>b.size<=4096));
 delete gpu.limits;
 // Composite readiness must not drop strikes while a later commit stage compiles.
 const pendingSim=fixture(); let release;
 pendingSim.compactOwner.dynamics.isReady=false;
 pendingSim.compactOwner.dynamics.ready=new Promise(resolve=>{release=resolve;});
-const pending=createNativeWeatherKernel(pendingSim,'pendingOcean',oceanEventsEdit);
+const pending=createNativeWeatherKernel(pendingSim,'pendingWave',waveDemoEdit);
 assert.equal(pending.main.state,'pending');
 assert.equal(pending.run({lo:[0,0,0],hi:[0,0,0]},{}),false);
 pendingSim.compactOwner.dynamics.isReady=true;release();await pending.ready;
@@ -141,15 +131,6 @@ assert.equal(pending.main.state,'ready');
   assert(w.step(state,{...wctx,stepHz:60}),'V2 weather after the switch');
   assert(calls.some(c=>c.name==='elementWeatherNativeEvaluate'),'the native writer runs, not the V1 edit');
   w.dispose();
-  switched.compact=switched.compactOwner=null; edits.length=0;
-  const oc=createOceanEvents(), octx={sim:switched,seaLevel:18,groundHeight:()=>0,stepHz:60};
-  oc.step({ocean:1},octx); await new Promise(resolve=>setImmediate(resolve)); switched.frame++; oc.step({ocean:1},octx);
-  assert(edits.includes('oceanForce'),'V1 ocean force is an edit');
-  switched.compact=switched.compactOwner=owner; calls.length=0;
-  switched.frame+=69; oc.step({ocean:1},octx); await new Promise(resolve=>setImmediate(resolve)); switched.frame+=100;
-  assert(oc.step({ocean:1},octx),'V2 ocean chop after the switch');
-  assert(calls.some(c=>c.name==='oceanForceNativeEvaluate'),'native ocean force after the switch');
-  oc.dispose();
   switched.compact=switched.compactOwner=null; edits.length=0;
   const lb=createLightning();
   lb.strike(switched,[10,50,10],[10,10,10],{strikeR:2}); await lb.ready;
@@ -174,12 +155,6 @@ assert.equal(pending.main.state,'ready');
   assert(edits.includes('elementWeather'),'V1 weather is a V1 edit while V2 is suspended');
   assert(!calls.some(c=>c.name==='elementWeatherNativeEvaluate'),'nothing writes the suspended owner\'s cells');
   w.dispose();
-  const oc=createOceanEvents(), octx={sim:suspended,seaLevel:18,groundHeight:()=>0,stepHz:240};
-  oc.step({ocean:1},octx); await new Promise(resolve=>setImmediate(resolve)); suspended.frame++; edits.length=0; calls.length=0;
-  oc.step({ocean:1},octx);
-  assert(edits.includes('oceanForce'),'V1 ocean force while V2 is suspended');
-  assert(!calls.some(c=>c.name==='oceanForceNativeEvaluate'));
-  oc.dispose();
   edits.length=0; calls.length=0;
   const lb=createLightning();
   lb.strike(suspended,[10,50,10],[10,10,10],{strikeR:2}); await lb.ready;
@@ -189,32 +164,22 @@ assert.equal(pending.main.state,'ready');
   lb.dispose();
   // the native writer itself refuses a suspended owner's cells (built while V2 ran, run after the switch)
   suspended.compact=owner;
-  const k=createNativeWeatherKernel(suspended,'suspendedTest',oceanEventsEdit); await k.ready;
+  const k=createNativeWeatherKernel(suspended,'suspendedTest',waveDemoEdit); await k.ready;
   suspended.compact=null;
-  assert.equal(k.run({lo:[1,2,3],hi:[2,3,4]},{sea:18,time:1,chop:1,surge:0,wind:[1,0],source:[0,0],direction:[1,0]},{}),false);
+  assert.equal(k.run({lo:[1,2,3],hi:[2,3,4]},waveValues,null),false);
 }
-// V1 scrubs the paint of what a surge or a wave floods or empties (src/oceanEvents.js step:
-// sim.edit { scrub: !!surge }; src/world/waveDemo.js: { scrub: true }; src/shaders/deco.js
-// decoScrubFrag); the native writer is asked for the same scrub (nativeWeather.js NATIVE_WEATHER_SCRUB),
-// and a chop pulse, as V1's, for none.
+// V1 scrubs the paint of what a wave floods or empties (src/world/waveDemo.js: { scrub: true };
+// src/shaders/deco.js decoScrubFrag); the native writer is asked for the same scrub
+// (nativeWeather.js NATIVE_WEATHER_SCRUB).
 {
-  const ss=fixture(), oc=createOceanEvents(), material=()=>calls.filter(c=>c.name==='oceanForceNativematerial');
-  gpu.readback.buffer=async b=>{ const d=new Float32Array(b.size/4); for(let i=0;i<d.length;i+=2) d.set([1,18],i); return d.buffer; };
-  const octx={sim:ss,seaLevel:18,groundHeight:x=>x<116?8:23,stepHz:60};
-  assert(await oc.trigger(octx),'a surge arms offshore of the fixture\'s beach');
-  calls.length=0; ss.frame+=OCEAN_EVENT.stepsPerSecond; assert(oc.step({ocean:0},octx));
-  assert(material().length>0 && material().every(c=>c.params.surge>0 && c.params.scrub===1),'a V2 surge scrubs, as V1\'s sim.edit { scrub: true }');
-  oc.cancel(); calls.length=0; ss.frame++; assert(oc.step({ocean:1},octx));
-  assert(material().length>0 && material().every(c=>c.params.surge===0 && c.params.scrub===0),'chop alone does not, as V1\'s');
-  oc.dispose(); delete gpu.readback.buffer;
   const ws=fixture(); ws.snapshot=()=>{}; Object.assign(ws.origin,{clone(){return {...this};},equals(o){return o.x===this.x&&o.y===this.y&&o.z===this.z;}});
   calls.length=0;
   assert(await seedWaveDemo({sim:ws,loaded:true,pending:null,epoch:1,P:{sea:18}},'shore'));
   const wave=calls.filter(c=>c.name==='waveDemoNativematerial');
   assert(wave.length>0 && wave.every(c=>c.params.scrub===1),'the World\'s wave demo scrubs under V2 as under V1');
   // and the plain writers (rain, snow, bolts) never do, under either engine
-  calls.length=0; force.run({lo:[1,2,3],hi:[2,3,4]},{sea:18,time:1,chop:1,surge:0,wind:[1,0],source:[0,0],direction:[1,0]},{});
-  assert.equal(calls.find(c=>c.name==='testOceanNativematerial').params.scrub,0);
+  calls.length=0; force.run({lo:[1,2,3],hi:[2,3,4]},waveValues,null);
+  assert.equal(calls.find(c=>c.name==='testWaveNativematerial').params.scrub,0);
 }
 // Storms keep their seconds on V2's 60 Hz ticks: STORM's step counts are
 // authored at 240 steps a second, so a native grid polls every quarter as many.
@@ -274,4 +239,4 @@ const hostStep=(s)=>{ s.frame++; if(s.compact) s.nativeTicks=(s.nativeTicks??0)+
   assert(ticks<=STORM.MIN_STEPS/LEGACY_STEPS_PER_TICK+STORM.POLL_STEPS/LEGACY_STEPS_PER_TICK,'and polls again once it has passed');
   st.dispose();
 }
-console.log('native producers: actual weather/ocean/bolt dispatch, physical reads, exact bounds/cadence, owner bindings; independent SI/property/particle oracles passed (no GPU execution)');
+console.log('native producers: actual weather/wave/bolt dispatch, physical reads, exact bounds/cadence, owner bindings; independent SI/property/particle oracles passed (no GPU execution)');

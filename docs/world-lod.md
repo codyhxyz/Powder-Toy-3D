@@ -58,12 +58,11 @@ WebGPU port: a lost device, an uncaptured WebGPU error or a pipeline that fails 
 A lost WebGPU device has no restore at all (see docs/webgpu.md B9).
 The app therefore requires an explicit reload instead of continuing with invalid state.
 Pending results cannot overwrite surviving CPU edits, and failed uploads retain their stored edits.
-An optional bird probe stops after one readback failure instead of retrying indefinitely.
 These safeguards do not identify the cause of a driver reset.
 
 A dead GPU process first shows up as a link failure with empty logs, not as a lost context.
 The context-lost event arrives a task later, and whichever program is linked next takes the blame.
-The October 2026 birdProbe report was this case.
+An October 2026 report that blamed a small probe pass was this case.
 Chrome's exit code 512 is the raw wait status of exit(2), the hung-GPU code.
 At the time, the react pass's cold pipeline build took 62 s on ANGLE/Metal (c0a65ed).
 `src/gfx/gpuLoss.js` reports such a failure as a lost GPU process.

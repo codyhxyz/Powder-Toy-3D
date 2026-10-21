@@ -132,7 +132,7 @@ jobs:
       - run: node tools/npc-held-check.mjs
       - run: node tools/shrine-interact-cpu-check.mjs
       - run: node tools/hotbar-cpu-check.mjs
-      - run: node tools/check-weather-wire.mjs && node tools/check-weather.mjs && node tools/check-ocean-events.mjs
+      - run: node tools/check-weather-wire.mjs && node tools/check-weather.mjs
       - run: node tools/check-sprint-blur.mjs && node tools/check-sprint-music.mjs
       - run: node --test tools/world-atlas-cpu-check.mjs   # sparse world ABI v2: independent LIGHT/pools, typed feedback, publication/copy + Naga (no GPU)
       - run: npm run check:world-backend   # shared full world shader/assembly + actual Naga; NOT application activation

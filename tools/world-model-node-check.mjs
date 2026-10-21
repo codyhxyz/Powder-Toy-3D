@@ -13,6 +13,8 @@
 //   a sim nobody writes isn't read;
 // - while the worker holds a capture, queries read the previous one;
 // - a consumer gone leaves the others reading; one made later starts no read;
+// - a World's moved window is read at once for a view that asks soon (the
+//   vehicles'), and only then; the copy carries its window's origin and world;
 // - a new sim's grid; a worker that breaks mid-capture (the main thread takes over);
 // - standAt() (the column tops, deswizzle.js columnTops) answers as the cell-by-cell
 //   scan it replaced, for every column and at random heights, in and out of the box.
@@ -220,6 +222,28 @@ async function suite(useWorker) {
       npc.idVersion > before && npc.hasIdChanges(boxAt(777), before));
     check(`${how}: reset invalidates all-air and outside-only regions`,
       npc.hasIdChanges(emptyBrick, before) && npc.hasIdChanges(outside, before));
+  }
+  // A World's window moves (the vehicles' view asks soon, vehicles/index.js): read at once, not
+  // REFRESH_S after the last; the copy says which window of which world it is (vehicles/worldCells.js).
+  {
+    const tick = async (soon) => { for (const v of views) v.update(DT, soon && v === veh); r.frame(); await settle(); };
+    const landed = async () => { const n = r.reads; sim.write(); for (let i = 0; i < 60 && r.reads === n; i++) await tick(false); for (let i = 0; i < 4; i++) await tick(false); };
+    const SOON_FRAMES = 6;   // 0.1 s: well inside the 0.5 s refresh
+    sim.g.windowed = true; sim.world = [256, 32, 256];
+    await landed();
+    sim.origin = { toArray: () => [32, 0, 16] };
+    let reads = r.reads;
+    for (let i = 0; i < SOON_FRAMES; i++) await tick(false);
+    check(`${how}: a moved window waits for the refresh when no view asks soon`, r.reads === reads, `${r.reads - reads} reads`);
+    await landed();
+    sim.origin = { toArray: () => [48, 0, 16] };
+    reads = r.reads;
+    for (let i = 0; i < SOON_FRAMES; i++) await tick(true);
+    check(`${how}: a moved window is read at once for a view that asks soon`, r.reads === reads + 1 && veh.at.origin.join() === '48,0,16' && veh.at.world.join() === '256,32,256',
+      `${r.reads - reads} reads, at ${veh.at.origin}`);
+    sim.g.windowed = false; sim.world = null; sim.origin = { toArray: () => [0, 0, 0] };
+    await landed();
+    check(`${how}: a box's copy has no world`, veh.at.world === null && veh.at.origin.join() === '0,0,0');
   }
 
   if (useWorker) {

@@ -37,8 +37,8 @@ export function nativeWeatherParams(name, spec) {
 // != 0u && (id == E_EMPTY || id != i32(work[s]))) { plane[s] = 0u; }`, work holding the box's
 // elements from before the write, decoKeep): every cell of the box the write gave a new element, or
 // that is empty after it, loses its decoration; matter it left the same element keeps its paint.
-// V1 asks for it on an ocean surge (src/oceanEvents.js step: scrub: !!surge) and the World's wave
-// demo (src/world/waveDemo.js), as TPT's create_part/kill_part reset dcolour.
+// V1 asks for it on the World's wave demo (src/world/waveDemo.js), as TPT's create_part/kill_part
+// reset dcolour.
 export const NATIVE_WEATHER_SCRUB = `if(P.scrub!=0u && decoOf(s)!=0u && (cid(m.core)==0u || cid(m.core)!=cid(before.core))) { setDeco(s,0u); }`;
 // spec.speedSI: m/s per authored cell/step (default WEATHER_SPEED_SI, TPT's 240 Hz step).
 export function nativeWeatherEvaluateWGSL(g, spec, params) {
@@ -96,7 +96,7 @@ ${boxWGSL}
 `;
   if (stage === 'sourcePlan') return head + weatherMain(`if(i>=weatherCount()) { return; }
 let r=results[i]; let p=weatherCell(i);
-// Only snow emitted by THIS pulse; no existing powder, fog, or neighbours.
+// Only snow emitted by THIS pulse; no existing powder, cloud, or neighbours.
 if(r.before.x==0.0 && u32(r.after.x)==${E.SNOW}u) {
  plans[slotOf(p)]=WeatherPlan(r.motion.xyz*${WEATHER_SPEED_SI},1u);
 }

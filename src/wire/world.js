@@ -184,7 +184,6 @@ const world = {
       app.placeVolume();
       app.post.reset();
       app.pov?.worldReplaced();
-      app.birds?.worldReplaced();
       world.worldShrine(app);
     }, (err) => console.error('world: its passes failed to compile, or its scene to prepare', err));
     app.toolbar.setUndoEnabled(false);

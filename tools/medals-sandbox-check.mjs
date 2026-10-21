@@ -107,8 +107,6 @@ for (const [cause, h, want] of [
 }
 held = 'GUN';
 skip += 10; takeMedals();
-npcDies('Shot', { kind: 'bird' }); skip += 1; npcDies('Shot', { kind: 'bird' });
-check(takeMedals().includes('DOUBLE_KILL'), 'birds count too');
 // an axeman's spree, ended by you
 skip += 10;
 const ax = 'axeman-killer';

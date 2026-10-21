@@ -83,7 +83,7 @@ const mesh = {
     const { spawners, pov } = app;
     spawners.setGhosts(!pov?.active);   // the crosshair cell stays fresh for the tools
     spawners.update();
-    // they hold still with the world, like the birds: on wall-clock time they moved every
+    // they hold still with the world, like the NPCs: on wall-clock time they moved every
     // frame, so the view key never settled and a paused scene redrew at full rate
     app.perkOrbs.update(app.animTime);
     app.arenaMarkers.update(app.animTime);

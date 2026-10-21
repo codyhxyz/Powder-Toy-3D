@@ -1,7 +1,6 @@
 import { createNativeWeatherKernel } from './v2/nativeWeather.js';
 import { fold } from './gpu/kernels.js';
 import { stepClock } from './v2/host.js';
-import { E } from './elements.js';
 import {
   weatherRoofFrag, weatherUpdateWGSL, weatherDeclsWGSL, WeatherParams,
   WEATHER_ROOF_LAYOUT, WEATHER_SOURCE_LAYOUT,
@@ -13,7 +12,7 @@ import {
 // (v2/host.js stepClock: a native tick is LEGACY_STEPS_PER_TICK of them), so a pulse due when
 // the grid switches engine comes when it would have on the old one. (Raw sim.frame counts a tick
 // under V2 and a step under V1: the interval spanning a switch ran up to 4× long or short.)
-export const ELEMENT_WEATHER = Object.freeze({ cadence: 60, cloudDepth: 12, cloudMargin: 4, fogDepth: 9 });
+export const ELEMENT_WEATHER = Object.freeze({ cadence: 60, cloudDepth: 12, cloudMargin: 4 });
 const unit = v => Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
 
 // Pure policy. Only an explicitly permitted host simulation step can emit.
@@ -28,42 +27,31 @@ export function elementWeatherPolicy(state, context = {}) {
   const cloud = cloudOn ? unit(state.cloud) : 0;
   const rain = ['rain', 'storm'].includes(state.preset) ? unit(state.rain) : 0;
   const storm = state.preset === 'storm' ? unit(state.storm) : 0;
-  const fog = context.fogEnabled === false ? 0 : unit(state.fog);
-  if (cloud + fog <= 0) return null;
+  if (cloud <= 0) return null;
   const ceiling = origin[1] + sim.g.ny - ELEMENT_WEATHER.cloudMargin;
   const bottom = Math.max(origin[1] + 2, sea + 14, ceiling - ELEMENT_WEATHER.cloudDepth);
-  const fogBottom = Math.max(origin[1] + 1, sea + 1);
-  const fogTop = Math.min(origin[1] + sim.g.ny - 1, sea + 1 + ELEMENT_WEATHER.fogDepth);
-  const boxes = [];
-  const band = (on, low, high) => {
-    if (!on || low >= high) return false;
-    // Inclusive indices whose centres lie in [low, high), not padded bounds.
-    const lo = Math.max(0, Math.ceil(low - origin[1] - 0.5));
-    const hi = Math.min(sim.g.ny - 1, Math.ceil(high - origin[1] - 0.5) - 1);
-    if (lo > hi) return false;
-    boxes.push({ lo: [0, lo, 0], hi: [sim.g.nx - 1, hi, sim.g.nz - 1] });
-    return true;
-  };
-  const high = band(cloud > 0, bottom, ceiling);
-  const low = band(fog > 0, fogBottom, fogTop);
-  if (!high && !low) return null;
+  if (bottom >= ceiling) return null;
+  // Inclusive indices whose centres lie in [bottom, ceiling), not padded bounds.
+  const lo = Math.max(0, Math.ceil(bottom - origin[1] - 0.5));
+  const hi = Math.min(sim.g.ny - 1, Math.ceil(ceiling - origin[1] - 0.5) - 1);
+  if (lo > hi) return null;
   const wind = state.wind;
   const length = Array.isArray(wind) && wind.length === 2 && wind.every(Number.isFinite) ? Math.hypot(...wind) : 0;
   return {
-    source: [high ? cloud : 0, high ? rain : 0, high ? storm : 0, low ? fog : 0],
-    bands: [bottom, ceiling, fogBottom, fogTop],
+    source: [cloud, rain, storm],
+    bands: [bottom, ceiling],
     wind: length > 0 ? wind.map(v => v / length) : [0.8, 0.6],
     time: Number.isFinite(state.time) ? Math.max(0, state.time) : 0,
-    boxes,
+    boxes: [{ lo: [0, lo, 0], hi: [sim.g.nx - 1, hi, sim.g.nz - 1] }],
   };
 }
 
 /**
  * Call BEFORE sim.step(), including manual test stepping:
- *   sources.step(state, { sim, world, advancing: true, host: !mp.isGuest, fogEnabled });
+ *   sources.step(state, { sim, world, advancing: true, host: !mp.isGuest });
  * The first permitted call lazily prepares kernels; await sources.ready in a
  * fixture, then call step again. Readiness callbacks NEVER write simulation.
- * Clear/reset stop sources; clearFog explicitly erases the low cloud layer.
+ * Clear/reset stop sources; clouds and rain already made stay to physics.
  * Box fixtures may explicitly opt in with enabled:true and seaLevel.
  */
 export function createElementWeather() {
@@ -105,22 +93,6 @@ export function createElementWeather() {
   const api = {
     get pulses() { return pulses; },
     get ready() { return resources?.ready ?? Promise.resolve(); },
-    clearFog({ sim, world, host = false } = {}) {
-      if (disposed || !host || !world?.loaded || !sim || sim.disposed || sim.gpu?.failure || sim.gpu?.lost) return false;
-      const sea = world.P?.sea;
-      if (!Number.isFinite(sea) || !Number.isFinite(sim.origin.y)) return false;
-      const { nx, ny, nz } = sim.g;
-      const cloudBottom = Math.max(sim.origin.y + 2, sea + 14,
-        sim.origin.y + ny - ELEMENT_WEATHER.cloudMargin - ELEMENT_WEATHER.cloudDepth);
-      const top = Math.min(ny, cloudBottom - sim.origin.y);
-      const radius = Math.max(nx, ny, nz);
-      // Fog drifts out of its source band. Erase low CLOUD, not sky clouds or rain.
-      sim.paint({
-        center: { x: nx / 2, y: top - radius, z: nz / 2 }, radius,
-        shape: 1, tool: E.EMPTY, rate: 1, replace: false, filter: E.CLOUD, erase: true,
-      });
-      return true;
-    },
     step(state, context = {}) {
       if (disposed) return false;
       const policy = elementWeatherPolicy(state, context);
@@ -142,8 +114,7 @@ export function createElementWeather() {
       sim.onPass?.(scan.name, { kind: 'compute', gpuMs: null });
       const { boxes, ...values } = policy;
       values.pulse = Math.floor(now / cadence) >>> 0;
-      // Separate thin bands bound the shared scratch and avoid dispatching the
-      // empty column between sea fog and high clouds. V1 uses two edit phases;
+      // A thin band bounds the shared scratch. V1 uses two edit phases;
       // native commits properties/air and allocates only new snow sources.
       for (const box of boxes) {
         if (resources.native) source.run(box, values, roof);

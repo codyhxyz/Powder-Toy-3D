@@ -8,8 +8,8 @@
 // the GI lifting the shaded one, the crasher; the GLTF body skinned and lit),
 // viewmodel (the held tool's MSAA pass composited by post, its glow layer
 // added), particles (a pool's uploads however updates and draws interleave;
-// the effects' billboard pools and the birds' motes, each read at its spawn
-// point), construction (the ghost; a house stamped with its footing), guard (a
+// the effects' billboard pools, each read at its spawn point), construction
+// (the ghost; a house stamped with its footing), guard (a
 // mesh added without prepare waits, then draws; and again when a light comes,
 // which changes every program). Every one counts three's synchronous pipeline
 // builds at first draws: none. Shots and each test's JSON go to --out
@@ -84,10 +84,10 @@ const CHECKS = {
   ],
   particles: (r) => [
     ...noSync(r),
-    ...need(sum(r.counts) > 0 && r.motes > 0, `nothing burst (${sum(r.counts)} effects, ${r.motes} motes)`),
+    ...need(sum(r.counts) > 0, `nothing burst (${sum(r.counts)} effects)`),
     // each effect's own pixels against the frame just before the bursts: the
-    // four pools (star, streak, normal and additive dots) and the birds' motes
-    ...['flash', 'sparks', 'mist', 'tracer', 'jet', 'feathers'].flatMap((k) => need(r.lift[k] > 30, `the ${k} isn't drawn at its spawn point (lift ${r.lift[k]})`)),
+    // four pools (star, streak, normal and additive dots)
+    ...['flash', 'sparks', 'mist', 'tracer', 'jet'].flatMap((k) => need(r.lift[k] > 30, `the ${k} isn't drawn at its spawn point (lift ${r.lift[k]})`)),
     ...need(r.countsAfter3s === 0, `${r.countsAfter3s} particles outlived their lives`),
   ],
   uploads: (r) => [
