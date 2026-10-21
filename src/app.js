@@ -2095,9 +2095,8 @@ function clickTool() {
     const r = spawners.place(kind, feetOnHit(hover));
     pacer.wake();
     if (r === 'full') hud.toast('That many is the limit', { kind: 'error' });   // GMod's LimitHit
-    else if (r === 'unsupported') hud.toast('Vehicles are not supported in scrolling World maps; use a box map', { kind: 'error' });
     else hud.toast(r === 'removed' ? 'Player spawn removed' : SPAWNER_SET[kind] ?? `${toolById(settings.tool).name} spawned`);
-    return r !== 'full' && r !== 'unsupported';
+    return r !== 'full';
   }
   if (isBuild(settings.tool)) {
     if (mp.guard()) return false;

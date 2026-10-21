@@ -7,6 +7,7 @@ import { buildSpartan } from '../figureSpartan.js';
 import { povEvents } from '../events.js';
 import { addTarget, targetsInBox, PLAYER } from '../targets.js';
 import { createWorldModel } from '../ai/world.js';
+import { worldCells } from './worldCells.js';
 import { sharedTransfer, Load, cellsNear, ballRadius } from '../tools/transfer.js';
 import { volumeLight } from '../gpu.js';
 import { loadRapier, createPhysics } from './physics.js';
@@ -24,6 +25,16 @@ import './vehicles.css';
 // Sandbox placements are one-shot entities, visible in god view too. Legacy
 // pads and spawnLayout arena homes alone replenish after RESPAWN_S.
 // Rapier and the cells' copy load lazily when either kind of home exists.
+//
+// Every map has them, a box or a World. The bodies live in world cells'
+// metres (worldCells.js; a box's world is its grid), so a World's window
+// moving over the world moves none of them; what they meet in the window's
+// grid (the player, targets, the sim's cells, the meshes) is converted at the
+// edge (toWin, fromWin). A World's vehicle is simulated while its hull is
+// inside the window and the cells' copy; else it waits, parked: held still,
+// unsimulated and unseen, and comes back as it was once the window covers it
+// again, as an NPC outside the window does (pov/index.js, game/mission.js
+// residentIn). The one you drive never parks: the window follows you.
 //
 // The shell (pov/index.js) calls, each POV frame:
 //   vehicles.beforeBody(player)  // seated: the body sits in the seat
@@ -73,8 +84,10 @@ const EMBER = [0.12, 0.035, 0.008];      // linear HDR glow of a freshly burning
 const EMBER_FLICKER = 0.35;              // share of it that flickers frame to frame
 const MS = 3.6;                          // km/h per m/s (the speedometer)
 const STATS_EASE = 0.05;                 // share of each frame in the eased update time
+const RESIDENT_MARGIN = 2;               // cells from a World window's edge a hull must keep to be simulated (game/mission.js's for NPCs)
 
 const IDLE = { throttle: 0, steer: 0, brake: false, boost: false, parked: true, dead: false };
+const ZERO = new THREE.Vector3();
 const DEAD = { ...IDLE, dead: true };
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -100,11 +113,15 @@ export function createVehicles(env) {
   const rotQ = (v, out = q) => { const r = v.impl.body.rotation(); return out.set(r.x, r.y, r.z, r.w); };
   const velM = (v, out = new THREE.Vector3()) => { const l = v.impl.body.linvel(); return out.set(l.x, l.y, l.z); };
   const local = (v, x, y, z, out = new THREE.Vector3()) => out.set(x, y, z).applyQuaternion(rotQ(v)).add(posM(v, tmp2));
-  const toGrid = (m, out = new THREE.Vector3()) => out.copy(m).divideScalar(CELL_M);
+  const toGrid = (m, out = new THREE.Vector3()) => out.copy(m).divideScalar(CELL_M);   // world cells
+  // the bodies' world metres ↔ the window's grid cells (the sim's origin: 0 in a box)
+  const origin = () => env.getSim().origin;
+  const toWin = (m, out = new THREE.Vector3()) => toGrid(m, out).sub(origin());
+  const fromWin = (p, out = new THREE.Vector3()) => out.copy(p).add(origin()).multiplyScalar(CELL_M);
 
-  // the hull's box in grid cells, axis-aligned around its turned extents
+  // the hull's box in world cells, axis-aligned around its turned extents
   const corner = new THREE.Vector3();
-  function boxGrid(v, min, max, pad = 0) {
+  function boxWorld(v, min, max, pad = 0) {
     const [hx, hy, hz] = v.spec.HALF;
     min.set(Infinity, Infinity, Infinity); max.set(-Infinity, -Infinity, -Infinity);
     for (let i = 0; i < 8; i++) {
@@ -113,6 +130,32 @@ export function createVehicles(env) {
     }
     min.subScalar(pad); max.addScalar(pad);
   }
+  // ... and in the window's grid cells
+  function boxGrid(v, min, max, pad = 0) {
+    boxWorld(v, min, max, pad);
+    min.sub(origin()); max.sub(origin());
+  }
+  // Is the world-cell box [min, max] (x and z) where a World's vehicle can be
+  // simulated: RESIDENT_MARGIN inside the window and the cells' copy (past
+  // either's edge only where it is the world's own)? A box's always is.
+  function residentBox(min, max) {
+    const g = env.getSim().g;
+    if (!g.windowed) return true;
+    const o = origin(), world = env.getSim().world;
+    const x0 = min.x - RESIDENT_MARGIN, x1 = max.x + RESIDENT_MARGIN, z0 = min.z - RESIDENT_MARGIN, z1 = max.z + RESIDENT_MARGIN;
+    const side = (lo, hi, at, n, size) => (lo >= at || at <= 0) && (hi < at + n || (!!size && at + n >= size));
+    return side(x0, x1, o.x, g.nx, world?.[0]) && side(z0, z1, o.z, g.nz, world?.[2]) && !!cells?.knows(Math.floor(x0), Math.floor(z0), Math.floor(x1), Math.floor(z1));
+  }
+  const rmin = new THREE.Vector3(), rmax = new THREE.Vector3();
+  const resident = (v) => { boxWorld(v, rmin, rmax); return residentBox(rmin, rmax); };
+  // Park a World's vehicle outside the window, or bring it back: a parked body
+  // is out of Rapier's step (its velocities kept for when it comes back) and unseen.
+  function park(v, on) {
+    if (v.parked === on) return;
+    v.parked = on;
+    v.impl.body.setEnabled(!on);
+    v.impl.root.visible = !on;
+  }
 
   // ---- loading (Rapier and the cells' copy, once)
   function ensure() {
@@ -120,7 +163,7 @@ export function createVehicles(env) {
     loading = true;
     loadRapier().then((rapier) => {
       R = rapier;
-      cells = createWorldModel({ renderer: env.renderer, getSim: env.getSim });
+      cells = worldCells(createWorldModel({ renderer: env.renderer, getSim: env.getSim }));
       phys = createPhysics(R, cells);
     }).catch((err) => { failed = true; console.error('Vehicles: Rapier failed to load', err); })
       .finally(() => { loading = false; env.requestRender?.(); });
@@ -131,7 +174,7 @@ export function createVehicles(env) {
   function spawn(home) {
     const k = KINDS[home.kind];
     const look = createLook();
-    const at = home.at.clone().multiplyScalar(CELL_M);
+    const at = home.world.clone().multiplyScalar(CELL_M);
     const id = `vehicle:${nextId++}`;
     const impl = k.build(R, phys, look, { at, yaw: home.yaw, team: home.team, key: id });
     const wizard = new THREE.Group();
@@ -167,6 +210,7 @@ export function createVehicles(env) {
       box: (min, max) => boxGrid(v, min, max),
       hurt(amount, cause, d) { damage(v, amount, cause); if (d) push(v, d, amount); },
       shove(dv) {
+        if (v.parked) return;                  // held still outside the window
         const j = impl.body.mass() * CELL_M;   // target Δv is cells/s; Rapier takes kg·m/s
         impl.body.applyImpulse({ x: dv.x * j, y: dv.y * j, z: dv.z * j }, true);
       },
@@ -187,7 +231,7 @@ export function createVehicles(env) {
       }
       if (Number.isFinite(saved?.health)) v.health = Math.max(0.001, Math.min(k.spec.HEALTH, saved.health));
       placement.snapshot = () => ({ consumed: !v.alive,
-        world: toGrid(posM(v)).add(env.getSim().origin).toArray(),
+        world: toGrid(posM(v)).toArray(),   // (world cells: the body's frame)
         state: { position: posM(v).toArray(), rotation: rotQ(v).toArray(), health: v.health } });
     }
     return v;
@@ -213,6 +257,7 @@ export function createVehicles(env) {
   }
   const ROUND_SHOVE = 600;               // N·s a round's blow shoves a hull (an 8 g slug at 400 m/s is 3; this is felt, not real)
   function push(v, d, amount) {
+    if (v.parked) return;
     const j = ROUND_SHOVE * amount;
     v.impl.body.applyImpulse({ x: d.x * j, y: d.y * j, z: d.z * j }, true);
   }
@@ -235,7 +280,7 @@ export function createVehicles(env) {
       home.vehicle = null; home.wait = RESPAWN_S;
       if (home.placement?.oneShot) env.getSpawners()?.consume(home.placement);
     }
-    const center = toGrid(posM(v));
+    const center = toWin(posM(v));
     if (seated === v) {
       const player = frameInfo?.player;
       dismount(player);
@@ -270,7 +315,7 @@ export function createVehicles(env) {
     const fire = ELEMENTS[E.FIRE];
     const load = new Load(WRECK_FIRE_CELLS);
     for (let i = 0; i < WRECK_FIRE_CELLS; i++) load.cells.push([E.FIRE, fire.temp, fire.life, Math.random() * SEED_MAX]);
-    const top = toGrid(local(v, 0, v.spec.HALF[1] + CELL_M, 0));
+    const top = toWin(local(v, 0, v.spec.HALF[1] + CELL_M, 0));
     sharedTransfer(env).put(load, { cells: cellsNear(top, WRECK_FIRE_R, sim.g), vel: new THREE.Vector3() });
     return false;
   }
@@ -278,8 +323,9 @@ export function createVehicles(env) {
   // ---- blasts: every vehicle within reach is shoved, the live ones hurt
   function onBlast({ point }) {
     if (!phys || !point) return;
-    const p = tmp.copy(point).multiplyScalar(CELL_M);
+    const p = fromWin(point, tmp);
     for (const v of [...vehicles]) {
+      if (v.parked) continue;
       const c = posM(v);
       const d = c.distanceTo(p);
       if (d > BLAST_RADIUS) continue;
@@ -302,14 +348,12 @@ export function createVehicles(env) {
     const want = new Map();
     const sp = env.getSpawners?.();
     const g = sim.g;
-    const towardMiddle = (at) => Math.atan2(g.nx / 2 - at.x, g.nz / 2 - at.z);   // yaw that faces the box's middle (+z forward)
-    if (sp && !g.windowed) {
-      for (const kind of VEHICLE_KINDS) for (const s of sp.of(kind)) {
-        const at = sp.feet(s);
-        if (!at) continue;
-        want.set(`pad:${s.id}`, { kind, team: s.team ?? null, at: at.clone(), yaw: towardMiddle(at), placement: s });
-      }
-    }
+    const o = sim.origin;
+    // yaw that faces the box's middle (a World's window's, where you are; +z forward)
+    const towardMiddle = (world) => Math.atan2(g.nx / 2 - (world.x - o.x), g.nz / 2 - (world.z - o.z));
+    // (a World's pad outside the window keeps its home: its vehicle waits for the window, parked)
+    if (sp) for (const kind of VEHICLE_KINDS) for (const s of sp.of(kind))
+      want.set(`pad:${s.id}`, { kind, team: s.team ?? null, world: s.world, yaw: towardMiddle(s.world), placement: s });
     layout.forEach((e, i) => want.set(`layout:${i}`, e));
     for (const [key, h] of homes) {
       if (want.has(key)) continue;
@@ -318,18 +362,18 @@ export function createVehicles(env) {
     }
     for (const [key, e] of want) {
       const h = homes.get(key);
-      if (h) { h.at.copy(e.at); continue; }
-      homes.set(key, { key, kind: e.kind, team: e.team, at: e.at.clone(), yaw: e.yaw, placement: e.placement, vehicle: null, wait: 0 });
+      if (h) { h.world.copy(e.world); continue; }
+      homes.set(key, { key, kind: e.kind, team: e.team, world: e.world.clone(), yaw: e.yaw, placement: e.placement, vehicle: null, wait: 0 });
     }
   }
 
   const bmin = new THREE.Vector3(), bmax = new THREE.Vector3(), tmin = new THREE.Vector3(), tmax = new THREE.Vector3(), sweep = new THREE.Vector3();
   // Nothing parked on the pad: a live vehicle there makes it wait; a wreck there is cleared away.
   function padClear(home) {
-    const r = KINDS[home.kind].spec.LENGTH / CELL_M / 2;
+    const r = KINDS[home.kind].spec.LENGTH / CELL_M / 2, at = home.world;
     for (const v of [...vehicles]) {
-      boxGrid(v, bmin, bmax);
-      if (!(bmax.x > home.at.x - r && bmin.x < home.at.x + r && bmax.z > home.at.z - r && bmin.z < home.at.z + r && bmin.y < home.at.y + r)) continue;
+      boxWorld(v, bmin, bmax);
+      if (!(bmax.x > at.x - r && bmin.x < at.x + r && bmax.z > at.z - r && bmin.z < at.z + r && bmin.y < at.y + r)) continue;
       if (v.alive) return false;
       remove(v);
     }
@@ -347,7 +391,7 @@ export function createVehicles(env) {
     const back = sweep.copy(vel).multiplyScalar(-dt / CELL_M);
     bmin.min(tmin.copy(bmin).add(back)); bmax.max(tmax.copy(bmax).add(back));
     const driverTeam = v.driver ? (player?.team ?? v.team) : v.team;
-    const center = toGrid(posM(v)).add(back);   // where it was: what it's driving into is ahead of that
+    const center = toWin(posM(v)).add(back);   // where it was: what it's driving into is ahead of that
     for (const t of targetsInBox(bmin, bmax, v.id, hits)) {
       if (String(t.id).startsWith('vehicle:')) continue;            // hulls meet in Rapier
       if (t.id === PLAYER && seated) continue;                      // the driver sits inside it
@@ -368,13 +412,13 @@ export function createVehicles(env) {
   // ---- seats
   function seatFeet(v, out) {
     const s = v.spec.SEAT;
-    local(v, s[0], s[1] - SEAT_DROP, s[2], out);
-    return out.divideScalar(CELL_M);
+    return toWin(local(v, s[0], s[1] - SEAT_DROP, s[2], out), out);
   }
   function nearest(player) {
     const p = tmp.copy(player.pos).setY(player.pos.y + BODY_HEIGHT / 2);
     let best = null, bd = Infinity;
     for (const v of vehicles) {
+      if (v.parked) continue;
       boxGrid(v, bmin, bmax);
       const d = Math.hypot(Math.max(bmin.x - p.x, 0, p.x - bmax.x), Math.max(bmin.y - p.y, 0, p.y - bmax.y), Math.max(bmin.z - p.z, 0, p.z - bmax.z)) * CELL_M;
       if (d < bd) { bd = d; best = v; }
@@ -408,7 +452,7 @@ export function createVehicles(env) {
     const feet = new THREE.Vector3();
     let placed = false;
     for (const [x, y, z] of spots) {
-      local(v, x, y - hy, z, feet).divideScalar(CELL_M);
+      toWin(local(v, x, y - hy, z, feet), feet);
       for (let up = 0; up <= EXIT_RISE && !placed; up++) {
         feet.y = Math.max(feet.y, 0);
         if (roomFor(feet)) { placed = true; break; }
@@ -416,17 +460,17 @@ export function createVehicles(env) {
       }
       if (placed) break;
     }
-    if (!placed) local(v, 0, hy + EXIT_GAP, 0, feet).divideScalar(CELL_M);
+    if (!placed) toWin(local(v, 0, hy + EXIT_GAP, 0, feet), feet);
     player.pos.copy(feet);
     player.vel.copy(velM(v)).divideScalar(CELL_M);   // you keep the vehicle's momentum
   }
   function roomFor(feet) {
     if (!cells?.ready) return true;
-    const hw = BODY_WIDTH / 2;
+    const hw = BODY_WIDTH / 2, o = origin();
     for (let y = Math.floor(feet.y); y < feet.y + BODY_HEIGHT; y++)
       for (let z = Math.floor(feet.z - hw); z < feet.z + hw; z++)
         for (let x = Math.floor(feet.x - hw); x < feet.x + hw; x++)
-          if (cells.blocks(x, y, z)) return false;
+          if (cells.blocks(x + o.x, y, z + o.z)) return false;   // (the copy's queries are in world cells)
     // and not inside another hull
     for (const v of vehicles) {
       boxGrid(v, bmin, bmax);
@@ -441,13 +485,14 @@ export function createVehicles(env) {
     if (!player || player.dead) return;
     const hw = BODY_WIDTH / 2 * CELL_M, hh = BODY_HEIGHT / 2 * CELL_M;
     for (const v of vehicles) {
+      if (v.parked) continue;
       const [hx, hy, hz] = v.spec.HALF;
       iq.copy(rotQ(v)).invert();
-      lp.copy(player.pos).setY(player.pos.y + BODY_HEIGHT / 2).multiplyScalar(CELL_M).sub(posM(v)).applyQuaternion(iq);
+      fromWin(lp.copy(player.pos).setY(player.pos.y + BODY_HEIGHT / 2), lp).sub(posM(v)).applyQuaternion(iq);
       const ox = hx + hw - Math.abs(lp.x), oz = hz + hw - Math.abs(lp.z), oy = hy + v.spec.BELOW / 2 + hh - Math.abs(lp.y + v.spec.BELOW / 2);
       if (ox <= 0 || oz <= 0 || oy <= 0) continue;
       if (ox < oz) lp.x += Math.sign(lp.x || 1) * ox; else lp.z += Math.sign(lp.z || 1) * oz;
-      lp.applyQuaternion(rotQ(v)).add(posM(v)).divideScalar(CELL_M);
+      toWin(lp.applyQuaternion(rotQ(v)).add(posM(v)), lp);
       player.pos.x = lp.x; player.pos.z = lp.z;
     }
   }
@@ -481,31 +526,34 @@ export function createVehicles(env) {
     const sim = env.getSim();
     if (!sim) return;
     const g = sim.g;
-    if (g.windowed && !vehicles.length) { hud.show(null); return; }   // boxes only for now: a world's window would have to carry them
     if (!phys) {
       if (wanted()) ensure();
       hud.show(null);
       return;
     }
     syncHomes();
-    cells.update(dt);
+    // a moved World window's copy at once, while there are vehicles: a driven one can't wait for the cells ahead
+    cells.update(dt, g.windowed && homes.size > 0);
     if (!cells.ready) return;
     for (const h of homes.values()) {
       if (h.vehicle || h.placement?.consumed) continue;
       h.wait -= dt;
       // GMod permits overlapping placements; pads alone wait for their space.
-      if (h.wait <= 0 && (h.placement?.oneShot || padClear(h))) spawn(h);
+      // A World's home outside the window waits for it (its footprint inside the window and the copy).
+      if (h.wait <= 0 && homeResident(h) && (h.placement?.oneShot || padClear(h))) spawn(h);
     }
+    // a World's vehicles outside the window wait, parked; the driven one never does
+    for (const v of vehicles) park(v, v !== seated && !resident(v));
     centers.length = 0;
-    for (const v of vehicles) centers.push(Object.assign(toGrid(posM(v)), { key: v.id, ...v.spec.GROUND }));
+    for (const v of vehicles) if (!v.parked) centers.push(Object.assign(toGrid(posM(v)), { key: v.id, ...v.spec.GROUND }));
     phys.syncTerrain(centers);
     if (dt > 0) phys.step(dt, (h) => {
-      for (const v of vehicles) v.impl.step(h, !v.alive ? DEAD : v === seated ? drive : IDLE, cells);
+      for (const v of vehicles) if (!v.parked) v.impl.step(h, !v.alive ? DEAD : v === seated ? drive : IDLE, cells);
     });
     const now = performance.now() / 1000;
     let moving = false;
     for (const v of [...vehicles]) {
-      if (dt <= 0) continue;
+      if (dt <= 0 || v.parked) continue;
       if (v.alive && v.impl.state.hot) damage(v, HEAT_DAMAGE * dt, 'Burned');
       if (posM(v).y < FALL_OUT) { if (v.alive) explode(v); remove(v); continue; }
       if (v.alive) runOver(v, now, f.player, dt);
@@ -515,8 +563,9 @@ export function createVehicles(env) {
     // the meshes, in the scene
     const vol = env.getVolume(), scale = env.getScale();
     for (const v of vehicles) {
+      if (v.parked) continue;
       const r = v.impl.root;
-      toGrid(posM(v), worldPos).multiplyScalar(scale).add(vol.position);
+      toWin(posM(v), worldPos).multiplyScalar(scale).add(vol.position);
       r.position.copy(worldPos);
       r.quaternion.copy(rotQ(v));
       r.scale.setScalar(scale / CELL_M);
@@ -543,8 +592,14 @@ export function createVehicles(env) {
   // before Rapier loads: does anything want a vehicle?
   function wanted() {
     const sp = env.getSpawners?.();
-    const g = env.getSim()?.g;
-    return layout.length > 0 || (!!sp && !g?.windowed && VEHICLE_KINDS.some((k) => sp.of(k).length));
+    return layout.length > 0 || (!!sp && VEHICLE_KINDS.some((k) => sp.of(k).length));
+  }
+  // a home's footprint (its kind's length square, from its feet up) where it can be simulated
+  const hmin = new THREE.Vector3(), hmax = new THREE.Vector3();
+  function homeResident(h) {
+    const r = KINDS[h.kind].spec.LENGTH / CELL_M / 2;
+    hmin.set(h.world.x - r, h.world.y, h.world.z - r); hmax.set(h.world.x + r, h.world.y + r, h.world.z + r);
+    return residentBox(hmin, hmax);
   }
 
   return {
@@ -601,15 +656,17 @@ export function createVehicles(env) {
         if (hit.valid) dist = Math.max(1, Math.min(dist, hit.dist * CELL_M - CHASE_WALL_GAP));
       }
       const camM = target.clone().addScaledVector(dir, -dist);
-      camera.position.copy(toGrid(camM)).multiplyScalar(scale).add(vol.position);
-      camera.lookAt(toGrid(target).multiplyScalar(scale).add(vol.position));
+      camera.position.copy(toWin(camM)).multiplyScalar(scale).add(vol.position);
+      camera.lookAt(toWin(target).multiplyScalar(scale).add(vol.position));
       return true;
     },
     // An arena's vehicles: layout.vehicles = [{ kind: 'jeep'|'hoverbike'|'boat', team: 'red'|'blue', at: [x, y, z] (grid cells, the ground under it), yaw (rad, 0 faces +z) }].
     // Each is kept alive and comes back RESPAWN_S after it's destroyed. spawnLayout(null) clears them.
+    // (In a World, `at` is the window's grid cells when it's called: the homes stay there in the world.)
     spawnLayout(l) {
+      const o = env.getSim()?.origin;
       layout = (l?.vehicles ?? []).filter((e) => KINDS[e.kind]).map((e) => ({
-        kind: e.kind, team: e.team ?? null, at: new THREE.Vector3(...e.at), yaw: e.yaw ?? 0,
+        kind: e.kind, team: e.team ?? null, world: new THREE.Vector3(...e.at).add(o ?? ZERO), yaw: e.yaw ?? 0,
       }));
       // a new layout replaces the old one's vehicles
       for (const [key, h] of homes) if (key.startsWith('layout:')) { if (h.vehicle && h.vehicle !== seated) remove(h.vehicle); homes.delete(key); }
