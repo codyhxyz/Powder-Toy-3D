@@ -35,6 +35,7 @@ import { createVolume, detailKey } from './gfx/volume.js';
 import { createBlocks } from './gfx/blocks.js';
 import { viewShadows } from './shaders/render.js';
 import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
+import { edgeSeaMask } from './gfx/edgeSea.js';
 import { ELEMENTS, E, TOOLS, toolById, isBuild, isSpawnerTool, isGearTool, LIGHTNING_TOOL, PROP_TOOL, wandPresetForTool, isDecoTool } from './elements.js';
 import { rayKindOfTool, RAY_KIND } from './rays.js';
 import { propIndex, parseProp, boxFromCorners, runFill, oneShotRate, FILL_AIR, FLOOD_MAX_CELLS } from './editing.js';
@@ -2558,6 +2559,17 @@ function drawVolumeFirst(p) {
   volumeFirst = true;
 }
 let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
+// The sea past a World's edge where its water reaches it (gfx/edgeSea.js), for
+// the sky pass, in the window's grid cells; the edge's mask is found once a world.
+const edgeSeas = new WeakMap();
+function worldSea() {
+  if (!win?.P || !sim) return null;
+  if (!edgeSeas.has(win.P)) edgeSeas.set(win.P, edgeSeaMask(win.scene, win.P));
+  const m = edgeSeas.get(win.P);
+  if (!m) return null;
+  const o = sim.origin, [sx, , sz] = win.P.size;
+  return { foot: [-o.x, -o.z, sx - o.x, sz - o.z], seaY: win.P.sea - o.y, mask: m.words };
+}
 function drawScene(rp) {
   const g = sim.g, view = viewKeyOf(renderView);
   // the realistic view's box stands under the sky that lights it (B1: the page's navy gradient behind a
@@ -3049,8 +3061,9 @@ function tick(now, renderOnly = false) {
   },
   prepareWorldAfter(){wire('rays')?.beforeView(ctx);},
   // A world stands under the sky that lights it, as a box does (drawScene's lit):
-  // the realistic views draw it first, behind the volume and meshes.
-  drawWorldSky(rp,view){if(isMaterialView(view))overlays.drawSky(rp);},
+  // the realistic views draw it first, behind the volume and meshes, with the
+  // sea past the edge where the world's water reaches it (worldSea).
+  drawWorldSky(rp,view){if(isMaterialView(view))overlays.drawSky(rp,worldSea());},
   drawWorldAfter(rp){for(const w of after)w.scene(ctx,rp);brush.draw(rp);},
   drawWorldOverlay(rp){for(const w of overlayWires)w.overlay(ctx,rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
