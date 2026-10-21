@@ -274,8 +274,8 @@ export class Derived {
   // copies, array<vec2u>), cur }; the groups follow its buffer.
   // Intentional (V2 design, docs/v2.md §4.3: no aeration pass, wakes or pour parcels): under
   // Physics V2 the field doesn't step (sim.step's native path), so what it holds is V1's from
-  // before a switch; the fields read no pours then, as World's under V2 (its V2 aux export
-  // holds none: world/renderSource.js).
+  // before a switch; the fields read no pours then, as World's under V2 (V2's foam records
+  // hold none: v2/nativeAeration.js).
   _jet() {
     const aer = this.sim.aeration;
     const on = Boolean(!this.sim.compact && aer?.active && aer.buffer);

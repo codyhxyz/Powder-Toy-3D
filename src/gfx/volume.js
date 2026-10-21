@@ -63,7 +63,7 @@ export const volumeShaderGrid = (g, world, sourceAppearance = false) => ({
 // only the physical readers bind (format 3: sim.readHeader({ physical }), sim.bindPhysicalRO;
 // format 2's B is empty, so these views drew still air under V2). Not a deviation: the same
 // views of the same quantities, in V1's units (shaders/common.js fetchBs), each read where its
-// engine keeps them. (World draws the same: its atlas's B, which world/renderSource.js's V2 aux
+// engine keeps them. (World draws the same: its atlas's B, which world/renderSource.js's V2 air
 // export fills through the same reader.)
 export const readsAir = (view) => view === 'pressure' || view === 'flow';
 

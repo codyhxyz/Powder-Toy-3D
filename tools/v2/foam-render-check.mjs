@@ -37,7 +37,7 @@ test('actual realistic renderer compiles both liquid channels at off/default/ful
 });
 
 test('WORLD under V2 draws the same foam and air: its programs compile the foam and the molten layer, its source carries V2 air',()=>{
-  const g={nx:3072,ny:128,nz:1024,sourceAppearance:false,sourceGrid:[128,0,128]}, molten=/if \(true && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND\(s.id\) == K_LIQUID\)/;
+  const g={nx:3072,ny:128,nz:1024,sourceAppearance:false,sourceGrid:[128,0,128]}, molten=/if \(stop && true && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND\(s.id\) == K_LIQUID\)/;
   for(const enabled of [false,true]) {
     const v1=volumeFrag(g,{backend:'world',detail:{DETAIL_LIQ_FOAM:+enabled}});
     const v2=volumeFrag(g,{backend:'world',detail:{DETAIL_LIQ_FOAM:+enabled,[WORLD_NATIVE]:true}});
