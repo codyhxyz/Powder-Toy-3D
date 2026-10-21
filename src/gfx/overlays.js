@@ -15,6 +15,8 @@
 // ground below the horizon, as a world's far view draws it (shaders/far.js
 // farSky), so what water, glass and metal mirror is what is on screen; the
 // grid's lines are then the floor's own seams continued over that ground.
+// The cumulus deck crosses that sky on every map, where its shadows fall
+// (shaders/gfx/clouds.js cloudSkyGLSL).
 //
 //   const overlays = createOverlays(gpu);
 //   draw(rp) { overlays.drawSky(rp); overlays.drawGrid(rp, { model, opacity, lit }); volume.draw(rp, …); overlays.drawEdges(rp, { size, opacity }); }
@@ -27,6 +29,10 @@ import { SKY, skyGLSL, skyViewGLSL, SUN_TAN_RADIUS, SUN_DISC, SUN_DISC_EDGE, glf
 import { LOOK } from './materials.js';
 import { E } from '../elements.js';
 import { EDGE_SEA_SAMPLES, EDGE_SEA_VEC4 } from './edgeSea.js';
+import { cloudDeckGLSL, cloudSkyGLSL } from '../shaders/gfx/clouds.js';
+import { FAR_HAZE } from '../shaders/farShared.js';
+import { createMediaNoise } from './mediaNoise.js';
+import { STAGE } from '../shaders/common.js';
 
 // The floor grid: three's GridHelper(FLOOR_SPAN, FLOOR_SPAN, …), a line every
 // scene unit, the centre lines brighter; a world's is stretched over its footprint.
@@ -67,7 +73,15 @@ export const SkyParams = uniformStruct('SkyParams', {
   seaY: 'f32',          // the sea's surface, grid cells
   sea: 'u32',           // 1: draw the sea past the edge where the mask says
   mask: `array<vec4u, ${EDGE_SEA_VEC4}>`,   // edgeSeaMask's words
+  origin: 'vec4f',      // the grid's origin in the world, cells (xyz: sim.origin, 0 in a box): the cloud deck is the world's
 });
+// The sky pass's group 1: the media noise the cloud deck is made of
+// (gfx/mediaNoise.js) and its repeating sampler, under the names the deck's
+// WGSL reads (shaders/gfx/clouds.js cloudDensity; L.LIGHTING's 10 and 15).
+export const SKY_CLOUD_LAYOUT = [
+  { binding: 0, visibility: STAGE.FRAGMENT, texture: { sampleType: 'float', viewDimension: '3d' } },
+  { binding: 1, visibility: STAGE.FRAGMENT, sampler: { type: 'filtering' } },
+];
 // Water's own look (gfx/materials.js LOOK): its reflectance face on, from its
 // index of refraction ((n - 1) / (n + 1))², and its single-scattering albedo,
 // the light its body sends back.
@@ -107,16 +121,31 @@ ${GridParams.wgsl}
 }`;
 
 // The box's backdrop: the sky toward the pixel's ray, the ground below the
-// horizon (skyColor), and the key light's disc, opaque, under everything.
-// In a world, the sea continues past the edge where the world's water reaches
-// it (gfx/edgeSea.js).
+// horizon (skyColor), and the key light's disc, opaque, under everything,
+// behind the cloud deck. In a world, the sea continues past the edge where
+// the world's water reaches it (gfx/edgeSea.js), mirroring the deck too.
 export const skyWGSL = () => /* wgsl */ `
 ${frameBindings()}
 ${SkyParams.wgsl}
 @group(3) @binding(1) var<uniform> P: SkyParams;
+@group(1) @binding(0) var tMediaNoise: texture_3d<f32>;
+@group(1) @binding(1) var linearRepeat: sampler;
 const PI_L: f32 = 3.14159265;
 ${skyGLSL()}
 ${skyViewGLSL()}
+${cloudDeckGLSL}
+${cloudSkyGLSL(FAR_HAZE)}
+// The eye in the world, cells: FrameUniforms' cam is in the grid's (the deck's
+// lookups are the world's, as its shadows' are: lighting.js worldPos).
+fn skyEye() -> vec3f { return FU.cam + P.origin.xyz; }
+// The sky the sea mirrors toward unit d (going down), with the deck: seen
+// along the reflected ray from the eye's mirror image under the surface, so
+// the deck is met where the reflected ray meets it, at the whole path's distance.
+fn mirroredSky(d: vec3f) -> vec3f {
+  let r = reflect(d, vec3f(0.0, 1.0, 0.0));
+  let e = skyEye();
+  return cloudOver(skyColor(r), vec3f(e.x, 2.0 * (P.seaY + P.origin.y) - e.y, e.z), r);
+}
 const SUN_TAN_RADIUS: f32 = ${glf(SUN_TAN_RADIUS)};
 const SKY_SUN_DISC: f32 = ${glf(SUN_DISC)};
 const SKY_SUN_DISC_EDGE: f32 = ${glf(SUN_DISC_EDGE)};
@@ -143,7 +172,7 @@ fn edgeSea(h: vec2f) -> bool {
 // (shaders/farShared.js farSea).
 fn seaColor(d: vec3f) -> vec3f {
   let F = SEA_F0 + (1.0 - SEA_F0) * pow(1.0 - clamp(-d.y, 0.0, 1.0), 5.0);
-  return F * skyColor(reflect(d, vec3f(0.0, 1.0, 0.0))) + (1.0 - F) * SEA_BODY * FU.skyUp;
+  return F * mirroredSky(d) + (1.0 - F) * SEA_BODY * FU.skyUp;
 }
 struct SkyOut {
   @builtin(position) position: vec4f,
@@ -162,7 +191,7 @@ struct SkyOut {
   let rd = normalize(b.xyz / b.w - a.xyz / a.w);
   let r = SUN_TAN_RADIUS;
   let disc = smoothstep(cos(r * (1.0 + SKY_SUN_DISC_EDGE)), cos(r * (1.0 - SKY_SUN_DISC_EDGE)), dot(rd, FU.sun));
-  var c = skyColor(rd) + disc * FU.sunCol * SKY_SUN_DISC * step(0.0, rd.y);
+  var c = cloudOver(skyColor(rd) + disc * FU.sunCol * SKY_SUN_DISC * step(0.0, rd.y), skyEye(), rd);
   // The sea past the edge, where the ray meets its surface outside the
   // footprint. The eye is FrameUniforms' cam (grid cells), and the ray keeps
   // its direction in the grid: FrameUniforms.model is a uniform scale and an
@@ -206,6 +235,7 @@ const lines = (depthWriteEnabled) => ({
   depthStencil: { format: SCENE_FORMATS.depth, depthWriteEnabled, depthCompare: 'less-equal' },
 });
 const LAYOUTS = () => [RENDER_LAYOUT.FRAME];
+const SKY_LAYOUTS = () => [RENDER_LAYOUT.FRAME, SKY_CLOUD_LAYOUT];
 // Drawn after opaque meshes: far-plane sky must not overwrite their colors.
 const SKY_PIPE = {
   vertex: { entry: 'vs' },
@@ -218,7 +248,7 @@ const SKY_PIPE = {
 export const WGSL_CHECK = [
   { name: 'floorGrid', kind: 'render', grids: false, code: gridWGSL, layouts: LAYOUTS, layoutNames: ['FRAME'], params: GridParams, ...lines(false) },
   { name: 'boxEdges', kind: 'render', grids: false, code: edgesWGSL, layouts: LAYOUTS, layoutNames: ['FRAME'], params: EdgeParams, ...lines(true) },
-  { name: 'boxSky', kind: 'render', grids: false, code: skyWGSL, layouts: LAYOUTS, layoutNames: ['FRAME'], params: SkyParams, ...SKY_PIPE },
+  { name: 'boxSky', kind: 'render', grids: false, code: skyWGSL, layouts: SKY_LAYOUTS, layoutNames: ['FRAME', 'SKY_CLOUDS'], params: SkyParams, ...SKY_PIPE },
 ];
 
 /**
@@ -227,23 +257,31 @@ export const WGSL_CHECK = [
  */
 export function createOverlays(gpu) {
   const fu = frameUniformsOf(gpu);
+  // (each group under the name its WGSL_CHECK entry gives it, so the menu's warm-up builds the very pipeline: src/preload.js)
   const pipe = (e) => gpu.renderPipeline({
-    name: e.name, code: e.code(), layouts: [fu.layout], params: e.params,
+    name: e.name, code: e.code(), layouts: e.layouts().map((entries, i) => (i ? gpu.layout(e.layoutNames[i], entries) : fu.layout)), params: e.params,
     vertex: e.vertex, fragment: e.fragment, primitive: e.primitive, depthStencil: e.depthStencil,
   });
   const [grid, edges, sky] = WGSL_CHECK.map(pipe);
+  // the cloud deck's noise (the device's one, the volume's too: neutral, so no deck and no shadows, until its tile is in)
+  const clouds = gpu.bindGroup(gpu.layout('SKY_CLOUDS', SKY_CLOUD_LAYOUT), [
+    { binding: 0, resource: createMediaNoise(gpu).view },
+    { binding: 1, resource: gpu.device.createSampler({ label: 'sky clouds', magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', addressModeW: 'repeat' }) },
+  ], 'sky clouds');
   const center = linear(FLOOR_COLOR_CENTER), line = linear(FLOOR_COLOR_LINE), edge = linear(EDGE_COLOR), edgeLit = linear(EDGE_LIT_COLOR);
   return {
     ready: Promise.all([grid.ready, edges.ready, sky.ready]),
     /**
      * The box's backdrop (first, realistic view): the sky that lights it.
      * sea: a world's sea past its edge, { foot, seaY, mask } (app.js
-     * worldSea, gfx/edgeSea.js), or none.
+     * worldSea, gfx/edgeSea.js), or none. origin: the grid's in the world,
+     * cells (a world's window: sim.origin; a box's is 0), where the deck is.
      */
-    drawSky(rp, sea = null) {
+    drawSky(rp, sea = null, origin = [0, 0, 0]) {
       if (sky.state !== 'ready') return false;
       const params = sea ? { foot: sea.foot, seaY: sea.seaY, sea: 1, mask: sea.mask } : { sea: 0 };
-      sky.draw(rp, { bind: [fu.group], count: 3, params });
+      params.origin = [origin[0], origin[1], origin[2], 0];
+      sky.draw(rp, { bind: [fu.group, clouds], count: 3, params });
       return true;
     },
     /**
