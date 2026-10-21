@@ -6,8 +6,8 @@ export const WEATHER_ROOF_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buf
 export const WEATHER_SOURCE_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } }];
 export const WeatherParams = uniformStruct('WeatherParams', {
   ...EDIT_FIELDS,
-  source: 'vec4f', // cloud, rain, storm, fog
-  bands: 'vec4f', // cloud bottom/top, fog bottom/top, world cells
+  source: 'vec3f', // cloud, rain, storm
+  bands: 'vec2f', // cloud bottom/top, world cells
   wind: 'vec2f', time: 'f32', pulse: 'u32',
 });
 
@@ -41,9 +41,7 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   // Never replace existing material, including gas, fire or floodwater.
   if (eid(a) != E_EMPTY) { return; }
   let w = vec3f(p + H.origin) + 0.5;
-  let high = w.y >= P.bands.x && w.y < P.bands.y && P.source.x > 0.0;
-  let low = w.y >= P.bands.z && w.y < P.bands.w && P.source.w > 0.0;
-  if (!high && !low) { return; }
+  if (w.y < P.bands.x || w.y >= P.bands.y || P.source.x <= 0.0) { return; }
   let roof = weatherRoof[u32(p.x + NX * p.z)] + f32(H.origin.y);
   if (w.y <= roof) { return; }
   // Dedicated weather stream, distinct from common.js SALT's existing streams.
@@ -56,24 +54,20 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
   var temperature = 12.0;
   var charge = 0.0;
   var velocity = vec3f(P.wind.x, 0.0, P.wind.y) * 0.025;
-  if (high) {
-    if (w.y < P.bands.x + 1.0) {
-      // Two-phase edit: this neighbour is actual CLOUD from before the pulse,
-      // never another invocation's concurrent write. Normal CLOUD coalesces too.
-      if (p.y + 1 < NY && eid(fetchA(p + vec3i(0, 1, 0))) == E_CLOUD && rnd(&rng) < P.source.y * 0.18) {
-        id = E_WATER; velocity.y = SPAWN_DROP_V;
-      }
-    } else if (bank > mix(0.67, 0.2, P.source.x) && rnd(&rng) < 0.16 * P.source.x) {
-      id = E_CLOUD;
-      if (P.source.z > 0.0) {
-        temperature = 0.0;
-        velocity.y = 0.025;
-        if (rnd(&rng) < 0.035 * P.source.z) { id = E_SNOW; velocity.y = SPAWN_DROP_V; }
-        else if (rnd(&rng) < 0.0015 * P.source.z) { charge = CHARGE_BREAKDOWN; }
-      }
+  if (w.y < P.bands.x + 1.0) {
+    // Two-phase edit: this neighbour is actual CLOUD from before the pulse,
+    // never another invocation's concurrent write. Normal CLOUD coalesces too.
+    if (p.y + 1 < NY && eid(fetchA(p + vec3i(0, 1, 0))) == E_CLOUD && rnd(&rng) < P.source.y * 0.18) {
+      id = E_WATER; velocity.y = SPAWN_DROP_V;
     }
-  } else if (low && bank > 0.3 && rnd(&rng) < 0.08 * P.source.w) {
-    id = E_CLOUD; temperature = 10.0; velocity *= 0.32;
+  } else if (bank > mix(0.67, 0.2, P.source.x) && rnd(&rng) < 0.16 * P.source.x) {
+    id = E_CLOUD;
+    if (P.source.z > 0.0) {
+      temperature = 0.0;
+      velocity.y = 0.025;
+      if (rnd(&rng) < 0.035 * P.source.z) { id = E_SNOW; velocity.y = SPAWN_DROP_V; }
+      else if (rnd(&rng) < 0.0015 * P.source.z) { charge = CHARGE_BREAKDOWN; }
+    }
   }
   if (id == E_EMPTY) { return; }
   *oA = vec4f(f32(id), temperature, SPAWNLIFE(id), charge + rnd(&rng) * SEED_MAX);

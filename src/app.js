@@ -3241,7 +3241,6 @@ try {
     get lightning() { return lightning; },   // the Lightning tool's and storms' bolts (src/lightning.js)
     weather,
     get elementWeather() { return ctx.elementWeather; },
-    get oceanEvents() { return ctx.oceanEvents; },
     get lighthouse() { return ctx.lighthouse; },
     // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null
     get arena() { return arenaLayout; },
