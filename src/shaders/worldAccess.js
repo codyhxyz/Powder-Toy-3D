@@ -253,9 +253,34 @@ fn worldProbeTex(t: texture_2d_array<f32>, p: vec3f, ready: u32) -> vec4f {
   } } }
   return value;
 }
+// The four GI bands at p: worldProbeTex of each, with each tap's descriptor
+// and probe address looked up once for all four (the bands share them), so a
+// probe is 8 lookups, not 32; the volume shader inlines ~16 probes.
 struct WorldProbe { c0: vec4f, cx: vec4f, cy: vec4f, cz: vec4f }
 fn worldProbe(p: vec3f) -> WorldProbe {
-  return WorldProbe(worldProbeTex(${gi[0]},p,WORLD_GI), worldProbeTex(${gi[1]},p,WORLD_GI), worldProbeTex(${gi[2]},p,WORLD_GI), worldProbeTex(${gi[3]},p,WORLD_GI));
+  let q = clamp(p/4.0 - 0.5, vec3f(0.0), vec3f(WA.bricks.xyz) - 1.0);
+  let base = vec3i(floor(q)); let f = fract(q);
+  var o = WorldProbe(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));
+  for (var z = 0; z < 2; z++) { for (var y = 0; y < 2; y++) { for (var x = 0; x < 2; x++) {
+    let w = select(1.0-f, f, vec3i(x,y,z) == vec3i(1));
+    // worldProbeLoad's lookup, for all four bands
+    let b = clamp(base + vec3i(x,y,z), vec3i(0), vec3i(WA.bricks.xyz) - 1);
+    let id = worldLightDescriptor(b, WORLD_GI);
+    var a = vec3i(0); var ok = false;
+    if (id >= 0) {
+      let e = worldLightMeta(u32(id), 1u).x;
+      if (e == 0u || e > WA.probes.w) { worldRequest(worldBookIndex(b), WORLD_GI, 0u); }
+      else { a = worldLinearAddress(e - 1u, WA.probes.xy); ok = true; }
+    }
+    var t0 = vec4f(0.0); var t1 = vec4f(0.0); var t2 = vec4f(0.0); var t3 = vec4f(0.0);
+    if (ok) {
+      t0 = textureLoad(${gi[0]}, a.xy, a.z, 0); t1 = textureLoad(${gi[1]}, a.xy, a.z, 0);
+      t2 = textureLoad(${gi[2]}, a.xy, a.z, 0); t3 = textureLoad(${gi[3]}, a.xy, a.z, 0);
+    }
+    o.c0 += t0 * w.x * w.y * w.z; o.cx += t1 * w.x * w.y * w.z;
+    o.cy += t2 * w.x * w.y * w.z; o.cz += t3 * w.x * w.y * w.z;
+  } } }
+  return o;
 }
 fn worldLight(p: vec3f) -> vec3f { return worldProbeTex(${glow},p,WORLD_GLOW).rgb; }
 struct WorldMesh { color: vec4f, depth: f32, coverageFlags: u32 }

@@ -157,7 +157,11 @@ assert(support.includes('let j=li/8u; let i=li%8u;'));
 assert(support.includes('let c0=brickCoord(b)*BS+P.offset+2*vec3i(i32(j&1u),i32((j>>1u)&1u),i32(j>>2u))-vec3i(1);'));
 assert(support.includes('let local=vec3i(i32(i&1u),i32(i>>2u),i32((i>>1u)&1u));'));
 assert(support.includes('let p=mEdge(c0+local);'));
-assert(support.includes('liquidScratch[s].x=(liquidScratch[s].x&0xffffff00u)'));
+assert(support.includes('liquidScratch[s].x=(liquidScratch[s].x&0xfffffc00u)'));
+// its clone faces outside the block, for the clone rule's share (contact.js CT_CLONE_MISS_LOG), and the block reads them
+assert(support.includes(`if((id==${E.CLONE}u || (id==${E.PCLN}u && payloadOf(n)==${10 * 2048}u)) && ctypeOf(n)>0u){clone++;}`));
+assert(support.includes('|(gas<<6u)|(clone<<8u);'));
+assert(contactWGSL.includes('let outside=liquidScratch[slotOf(positions[i])].x&1023u;') && contactWGSL.includes(',touch,i32(outside>>8u));'));
 assert(!contactWGSL.slice(contactWGSL.indexOf('fn contactBlock(')).includes('loadCore('));
 assert(contactWGSL.includes('ctStepAtmosphere(cells[i],ns,'));
 assert.equal(V2_KERNELS.find(k=>k.name==='v2support').layouts()[2],V2_CONTACT_LAYOUT);

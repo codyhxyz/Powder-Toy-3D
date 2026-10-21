@@ -3,9 +3,10 @@
 // functions) in the same order, over a small grid of native cores. Each tick
 // is ELEC_STEPS of V1's steps (src/electricity.js; react.js electric), each a
 // gather of every listed cell from the last step's cores and six faces, then a
-// commit; step 0 gathers the awake bricks and lists the 3³ of those it changed,
-// later steps run over that list alone, as the GPU's do.
-import { CONTACT_CONSTANTS, ctElecMaterial, ctElecStep, ctElecApply, ctNew, ctRoll, unpackContact, packContact } from './contact.js';
+// commit; step 0 gathers the awake bricks and lists the 3³ of those it changed
+// (or holding an unlit fuse beside a flame: ctFuseFlameNear), later steps run
+// over that list alone, as the GPU's do.
+import { CONTACT_CONSTANTS, ctElecMaterial, ctElecStep, ctElecApply, ctFuseFlameNear, ctNew, ctRoll, unpackContact, packContact } from './contact.js';
 import { E } from '../elements.js';
 
 export const ELEC_STEPS = CONTACT_CONSTANTS.CT_ELEC_STEPS[1];
@@ -62,8 +63,10 @@ export function electricTick(grid, tick, { awake = null } = {}) {
         if (inside(qx, qy, qz)) return gridCell(grid, qx, qy, qz);
         const out = ctNew(E.EMPTY, 0, 65536); out.valid = 0; return out;
       });
-      const word = ctElecStep(gridCell(grid, x, y, z), ns, ctRoll(elecSeed(x, y, z, tick), ELEC_SALT + step));
+      const c = gridCell(grid, x, y, z), word = ctElecStep(c, ns, ctRoll(elecSeed(x, y, z, tick), ELEC_SALT + step));
       if (word !== 0) { words.set(i, [x, y, z, word]); touched.add(b); }
+      // an unlit fuse whose flame draw missed draws again in steps 1-3 (V1 react.js FUSE, every step)
+      else if (step === 0 && ctFuseFlameNear(c, ns, 0)) touched.add(b);
     }
     if (step === 0) {
       const claim = new Set();

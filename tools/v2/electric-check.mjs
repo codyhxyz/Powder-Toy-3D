@@ -291,4 +291,35 @@ await test('11. the pass\'s WGSL validates (Naga)', () => {
   for (const k of WGSL_CHECK) assertNaga(k.code(gridLayout(32, 32, 32)), k.name);
 });
 
+await test('12. an unlit fuse beside a flame gets V1\'s draw every step: four a tick, though nothing else is live', async () => {
+  // V1 react.js FUSE: beside a flame it lights with gunpowder's blast.flame a step, so a tick (four
+  // steps) lights it unless all four draws miss. Each fuse here is alone (two bricks from the next),
+  // so only its own flame can list its bricks for steps 1-3 (ctFuseFlameNear), not a neighbour's change.
+  const flame = ELEMENTS[E.GUNPOWDER].blast.flame, UNLIT = CONTACT_CONSTANTS.CT_FUSE_UNLIT[1];
+  const SALT = CONTACT_CONSTANTS.CT_ELEC_SALT[1];
+  const { elecSeed } = await import('../../src/v2/electric.js');
+  const { ctRoll } = await import('../../src/v2/contact.js');
+  const at = [];
+  for (let z = 2; z < 64; z += 12) for (let x = 2; x < 64; x += 12) at.push([x, z]);
+  let lit = 0, trials = 0, late = 0;
+  for (let tick = 1; tick <= 24; tick++) {
+    const g = electricGrid(64, 8, 64);
+    for (let z = 0; z < 64; z++) for (let y = 0; y < 8; y++) for (let x = 0; x < 64; x++) setGridCell(g, x, y, z, ctNew(E.EMPTY, q(20), 65536));
+    for (const [x, z] of at) { setGridCell(g, x, 1, z, ctNew(E.FUSE, q(20), 65536)); setGridCell(g, x, 2, z, ctNew(E.FIRE, q(800), 65536)); }
+    electricTick(g, tick);
+    for (const [x, z] of at) {
+      const draws = Array.from({ length: ELEC_STEPS }, (_, step) => ctRoll(elecSeed(x, 1, z, tick), SALT + step));
+      const v1 = draws.some(r => r < flame), on = gridCell(g, x, 1, z).life < UNLIT;
+      assert.equal(on, v1, `tick ${tick} fuse (${x}, ${z}): lit as V1's four draws ${draws.map(r => r.toFixed(2))}`);
+      trials++; lit += +on; late += +(on && !(draws[0] < flame));
+    }
+  }
+  // V1's tick: 1 - (1 - flame)^4 ≈ 0.99, against one draw's 0.7
+  assert.ok(lit / trials > 0.95 && late > 0, `${lit} of ${trials} lit, ${late} after step 0's draw missed`);
+  // the GPU's gather lists such a fuse's bricks at step 0, as the twin does
+  const gather = WGSL_CHECK.find(k => k.name === 'v2elecGather').code(gridLayout(32, 32, 32));
+  assert.match(gather, /if \(awake && word == 0 && ctFuseFlameNear\(c, ns, touch\)\) \{ atomicStore\(&wgChanged, 1u\); \}/);
+  assert.match(gather, /fn ctFuseFlameNear\(/);
+});
+
 console.log(`${checks} electric checks passed; no GPU launched`);

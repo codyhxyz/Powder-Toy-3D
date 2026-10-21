@@ -38,12 +38,13 @@ const sum = ms => ms.reduce((s, m) => s + energy(m), 0n);
 // offset of each tick (physics.js offsetOf), checking exact energy every tick: packet, host and
 // faces before, plus declared sources, minus sinks, is what they all hold after. facesAt(i, last)
 // gives a tick's faces (last: what the tick before left of them).
-function fly(p, hostAt, ticks, facesAt = openFaces, { velocity = FALLING, modes, cell = CELL, onFloor = 0 } = {}) {
+// (t0: the tick it sets out on, for its draws and the block offsets)
+function fly(p, hostAt, ticks, facesAt = openFaces, { velocity = FALLING, modes, cell = CELL, onFloor = 0, t0 = 0 } = {}) {
   const log = []; let faces = null;
   for (let i = 0; i < ticks; i++) {
     const host = hostAt(i); faces = facesAt(i, faces);
     const before = packetOwnedEnergy(p) + energyOf(host) + sum(faces);
-    const r = airborneReference(p, host, Math.imul(i + 1, 2654435761) | 0, nearOf(faces, cell, offsetOf(i), velocity, onFloor), modes);
+    const r = airborneReference(p, host, Math.imul(i + t0 + 1, 2654435761) | 0, nearOf(faces, cell, offsetOf(i + t0), velocity, onFloor), modes);
     const flying = r.state === AIRBORNE.FLYING || r.state === AIRBORNE.DISPLACED;
     if (r.state !== AIRBORNE.REFUSED) {
       assert.equal((flying ? packetOwnedEnergy(r.particle) : 0n) + energyOf(r.host) + sum(r.faces), before + r.source - r.sink, `exact energy, tick ${i}`);
@@ -275,8 +276,14 @@ const nearX = (faces, offset = [0, 0, 0]) => nearOf(faces, CELL, offset, FALLING
 {
   const out = fly(packet(E.WATER, 20, FULL / 4), () => air(20), 600, withFace(0, () => makeMaterial(E.CAUSTIC_GAS, 20)));
   assert.equal(key(out.p.core), 'ACID', 'it reacts with the gas beside it');
-  const eaten = fly(packet(E.ACID, 20, FULL / 4), () => air(20), 600, withFace(0, () => makeMaterial(E.STONE, 20), true));
-  assert(eaten.log.some(r => [E.EMPTY, E.SMOKE].includes(cid(r.faces[0].core))), 'the acid eats the wall it flies along');
+  // A drop spends its life on the wall, eaten or not (ctAcid; V1 react.js ACIDIC), so as V1's cell
+  // (1 - ACID_USE)^34 ≈ a third of drops are used up first: of eight drops, some eat it.
+  const drops = Array.from({ length: 8 }, (_, d) => fly(packet(E.ACID, 20, FULL), () => air(20), 600, withFace(0, () => makeMaterial(E.STONE, 20), true), { t0: 97 * d }));
+  const ate = d => d.log.some(r => [E.EMPTY, E.SMOKE].includes(cid(r.faces[0].core)));
+  assert(drops.some(ate), 'the acid eats the wall it flies along');
+  // the rest are used up on it: in the partnered tick holding V1's 34th step, 5 of its partnered ticks
+  assert(drops.some(d => !ate(d)), 'some are used up first');
+  for (const d of drops) if (!ate(d)) assert.ok(d.tick < 12 && (d.r.state === AIRBORNE.GONE || [E.EMPTY, E.SMOKE].includes(cid(d.p.core))), `used up on the wall by tick ${d.tick}`);
 }
 // 15. An acid pool beside it eats a packet flying low over it.
 {

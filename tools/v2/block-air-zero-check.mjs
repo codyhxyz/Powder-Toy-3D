@@ -132,7 +132,7 @@ assert(shader.includes('if (all(compactA(p, before) == compactA(p, after)) && (!
 // (an equal store's edit projection holds too: it returns before any mark, compactProbeHolds)
 assert(shader.includes('if (all(pb == before) && all(pa == after)) { return true; }\n  return all(compactA(p, pb) == compactA(p, pa));'));
 assert(shader.includes('events[slot] = ctMergeRequest(pending[i], requests[i]);'));   // flags OR, the larger puff
-assert(v2SupportWGSL(g).includes('liquidScratch[s].x=(liquidScratch[s].x&0xffffff00u)|air|(oxygen<<2u)|(co2<<4u)|(gas<<6u);'));
+assert(v2SupportWGSL(g).includes('liquidScratch[s].x=(liquidScratch[s].x&0xfffffc00u)|air|(oxygen<<2u)|(co2<<4u)|(gas<<6u)|(clone<<8u);'));
 // Execute the real store helper with observable storage/mark hooks. Equal AIR
 // has equal deterministic compactA projections and is not liquid, so the exact
 // noteVisible guard above returns before its atomics. No mark is cleared.

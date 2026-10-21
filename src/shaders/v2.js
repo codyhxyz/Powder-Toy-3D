@@ -8,6 +8,8 @@ import { prelude, gridDims, LAYOUT, stateLayout, SEED_MAX, STAGE, BRICK } from '
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { E, ELEMENTS, K } from '../elements.js';
+import { ELEC } from '../electricity.js';
+import { lifeScale } from '../v2/layout.js';
 import { CELL_M } from '../scale.js';
 import { MODE_FIELDS } from '../v2/modes.js';
 import { modeWGSL } from './v2/modes.js';
@@ -804,7 +806,7 @@ ${MAIN} {
   let local=vec3i(i32(i&1u),i32(i>>2u),i32((i>>1u)&1u));
   let p=mEdge(c0+local);
   if (!inGrid(p)) { return; }
-  var air=0u; var oxygen=0u; var co2=0u; var gas=0u;
+  var air=0u; var oxygen=0u; var co2=0u; var gas=0u; var clone=0u;
   for(var axis=0;axis<3;axis++) {
     let sign=select(-1,1,local[axis]!=0);
     let n=cellAt(mEdge(p+axisV(axis)*sign)); let id=cid(n); let kind=clsOf(n);
@@ -813,11 +815,14 @@ ${MAIN} {
     if(id==${E.OXYGEN}u || (id==${E.FIRE}u && ctypeOf(n)==${E.OXYGEN}u)){oxygen++;}
     if(id==${E.CO2}u){co2++;}
     if(kind==C_AIR || kind==C_GAS){gas++;}
+    // a clone with an element (or a powered one: V1 react.js cloneOf), for the clone rule's share (contact.js CT_CLONE_MISS_LOG)
+    if((id==${E.CLONE}u || (id==${E.PCLN}u && payloadOf(n)==${ELEC.SWITCH_ON * lifeScale(E.PCLN)}u)) && ctypeOf(n)>0u){clone++;}
   }
-  // Transient low byte only; Limit fully overwrites active cells before jets
+  // Transient low bits only (the clone count in bits 8-9, as the low byte the runs' records rebuild
+  // before any read); Limit fully overwrites active cells before jets
   // or gather. Sleeping faces are rejected before reading limiter bits.
   let s=slotOf(p);
-  liquidScratch[s].x=(liquidScratch[s].x&0xffffff00u)|air|(oxygen<<2u)|(co2<<4u)|(gas<<6u);
+  liquidScratch[s].x=(liquidScratch[s].x&0xfffffc00u)|air|(oxygen<<2u)|(co2<<4u)|(gas<<6u)|(clone<<8u);
 }
 `;
 

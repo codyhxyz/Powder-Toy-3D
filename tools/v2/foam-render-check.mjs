@@ -29,7 +29,7 @@ test('actual realistic renderer compiles both liquid channels at off/default/ful
     const source=volumeFrag(gridLayout(...dims),{detail,curved});
     assert.match(source,/n = liquidDetail\(hp, n, lid, &col, &trans\)/,'CH_LIQUID smooth interface');
     assert.match(source,/s.ch == CH_MOLTEN && KIND\(s.id\) == K_LIQUID/,'native molten only');
-    assert.match(source,/c = shadeSurf\(s, shadeRd\)/,'base material optics retained');
+    assert.match(source,/c = shadeHit\(s, shadeRd, floorLit, floorHp, floorFw\)/,'base material optics retained (shadeSurf\'s, through the hit or floor\'s one shadeHit)');
     assert.match(source,/foamTrans \* \(c - s.emit\) \+ s.emit/,'incandescence retained');
     assert.match(source,/f32\(core.x >> 24u\) \/ 255.0/,'no legacy foam conversion');
     assertNaga(source,name);

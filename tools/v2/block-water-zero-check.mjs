@@ -134,7 +134,7 @@ assert(shader.includes('k1 == C_GAS && k0 == C_AIR'));
 assert(shader.includes('if (clsOf(cs[i]) == C_GAS && cAge(cs[i]) < DIFFUSE_AGE)'));
 assert(shader.indexOf('if (zeroWater) { return; }') < shader.indexOf('  // R2 topple'));
 assert(shader.includes('events[slot] = ctMergeRequest(pending[i], requests[i]);'));   // flags OR, the larger puff
-assert(v2SupportWGSL(g).includes('liquidScratch[s].x=(liquidScratch[s].x&0xffffff00u)|air|(oxygen<<2u)|(co2<<4u)|(gas<<6u);'));
+assert(v2SupportWGSL(g).includes('liquidScratch[s].x=(liquidScratch[s].x&0xfffffc00u)|air|(oxygen<<2u)|(co2<<4u)|(gas<<6u)|(clone<<8u);'));
 assert(!v2SupportWGSL(g).includes('zeroWater'), 'support snapshots remain unconditional for AIR/WATER and halo targets');
 for (const code of ['', contactWGSL + '\n', 'fn contactBlock() {}']) assert(!v2BlockWGSL(g, code).includes('var zeroWater'));
 const probe = WGSL_CHECK.find(k => k.name === 'v2contactABI').code(g);

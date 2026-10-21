@@ -487,8 +487,10 @@ ${backend === 'world' ? `fn probeTex(t: texture_2d_array<f32>, p: vec3f) -> vec4
   return textureSampleLevel(t, linearClamp, q / B, 0.0);
 }`}
 // The probe at grid point p.
-fn probeAt(p: vec3f) -> Probe {
-  return Probe(probeTex(tGI0, p), probeTex(tGI1, p), probeTex(tGI2, p), probeTex(tGI3, p));
+fn probeAt(p: vec3f) -> Probe {${backend === 'world' ? `
+  let w = worldProbe(p);   // (the four bands' taps share their lookups: worldAccess.js)
+  return Probe(w.c0, w.cx, w.cy, w.cz);` : `
+  return Probe(probeTex(tGI0, p), probeTex(tGI1, p), probeTex(tGI2, p), probeTex(tGI3, p));`}
 }
 // Probe for a surface at p with geometric normal n.
 fn surfProbe(p: vec3f, n: vec3f) -> Probe { return probeAt(p + n * GI_OFFSET); }` : `

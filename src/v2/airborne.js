@@ -222,7 +222,8 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
     });
     v = ctElecAirborne(v, contacts, seed);
     const ns = ps.map(b => (b ? { ...b } : none));
-    v = ctStepAtmosphere(v, ns, seed, ...outside, onFloor, ambientQ, 0);
+    // (no clone share: a packet is never the air a clone fills)
+    v = ctStepAtmosphere(v, ns, seed, ...outside, onFloor, ambientQ, 0, 0);
     for (let a = 0; a < 3; a++) {
       if (!ps[a]) continue;
       let pair = ctResolvePhase(v, ps[a]);

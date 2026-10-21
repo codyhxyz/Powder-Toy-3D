@@ -4,7 +4,7 @@ import { specialContactWGSL } from './contact.js';
 import { impactFoamWGSL } from '../../v2/foam.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { STAGE } from '../../gpu/kernels.js';
-import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG } from '../../v2/dynamics-reference.js';
+import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS } from '../../v2/dynamics-reference.js';
 import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
 import { PHYS } from '../../physics.js';
@@ -74,10 +74,17 @@ ${table('dMass', 'f32', 'mass', 0.001)}
 ${table('dToughness', 'f32', 'toughness', 1e30)}
 ${table('dStrength', 'f32', 'strength', 1e30)}
 ${table('dBreak', 'i32', 'breakInto', -1)}
-${table('dShock', 'f32', 'shock', 0)}
-${table('dShockLiquid', 'u32', 'shockLiquid', 1)}
+${table('dShockKE', 'f32', 'shockKE', 0)}
+${table('dShockFall', 'f32', 'shockFall', 0)}
 // V1 common.js hitKE: closing at speed² u2, the mover i's mass against a solid j, else the reduced mass
 fn dHitKE(mi: f32, mj: f32, jSolid: bool, u2: f32) -> f32 { return 0.5 * select(mi * mj / (mi + mj), mi, jSolid) * u2; }
+// V1's cap on a speed (cells/step), and its cells/step per m/s of a throw (dynamics-reference.js SHOCK_THROW_MS)
+const D_V_MAX: f32 = ${f(PHYS.V_MAX)};
+const D_SHOCK_THROW: f32 = ${f(1 / SHOCK_THROW_MS)};
+// a packet of matter landing on a charge: the speed (m/s) past which it sets it off (PACKET_SHOCK_LANDINGS); 0 never
+fn dShockLand(mover: u32, charge: u32) -> f32 { switch (mover * 256u + charge) {
+${PACKET_SHOCK_LANDINGS.map(r => `case ${r.faller * 256 + r.charge}u: { return ${f(r.speed)}; }`).join('\n')}
+default: { return 0.0; } } }
 ${table('dTerminal', 'f32', 'terminal', 55)}
 ${table('dLift', 'f32', 'lift', 12)}
 fn dConductive(id: u32) -> bool { switch id {
@@ -243,31 +250,51 @@ fn dElect(s: u32,kind: u32,index: u32) {
     if(atomicCompareExchangeWeak(&claims[at],old,index+1u).exchanged) { return; }
   }
 }
-// V1 react.js shock: matter and a charge closing at speed u set it off with ½·μ·u² past its shock (dShock,
-// dynamics-reference.js; common.js hitKE: a solid charge takes the mover's own mass, a loose one its own
-// against a solid mover and the reduced mass otherwise), never by its own element or a gas (shockActs,
-// isGasLike). The charge hit is in the grid: its detonation is posted at s (blasts.js airborneEvents). The
-// charge hitting is in flight: it is set off until it lands, with its detonation, where it is (deposit,
-// react). u is the hit's speed, as fracture's energy reads it (integrate).
-fn dShockHit(t: u32, s: u32, p: DParticle, hit: Material) {
-  let m = dMaterial(p); let pid = cid(m.core); let tid = cid(hit.core);
+// V1 react.js shock from the charge's side (me): it and the matter j closing at V1's v (cells/step) set it
+// off with hitKE past its blast.shock, a solid charge taking the mover's mass, a loose one its own against
+// a solid and the reduced mass otherwise (common.js hitKE: V1's densities a cell each, dShockKE in dMass's
+// units, dynamics-reference.js).
+fn dShockActs(me: u32, j: u32, v: f32) -> bool {
+  let m = dMass(me); let mj = dMass(j);
+  return select(dHitKE(m, mj, cls(j) == C_SOLID, v * v), dHitKE(mj, m, true, v * v), cls(me) == C_SOLID) >= dShockKE(me);
+}
+// A hit on the face across axis of cell c at velocity: a landing when it moves down the pull's axis there
+// (modes.js mDown; none without gravity), else a throw (dynamics-reference.js: the speed maps).
+fn dLanding(c: vec3i, axis: u32, velocity: vec3f) -> bool {
+  let down = mDown(vec3f(c)+0.5);
+  return down[axis] != 0 && velocity[axis] * f32(down[axis]) > 0.0;
+}
+// V1 react.js shock on a packet's hit (dynamics-reference.js packetShock is its CPU twin): matter and a
+// charge closing at u (m/s, the packet's speed across the face it hits, axis) set it off as V1's hit at
+// the V1 speed the same motion had, never by its own element or a gas (shockActs, isGasLike). A throw is
+// V2's throws' map (D_SHOCK_THROW, V1's cap D_V_MAX); a landing is a fall: matter onto a charge past the
+// pair's fall speed (dShockLand), a charge by its own fall (dShockFall), a solid's a throw. The charge
+// hit is in the grid: its detonation is posted at s (blasts.js airborneEvents). The charge hitting is in
+// flight: it is set off until it lands, with its detonation, where it is (deposit, react).
+fn dShockHit(t: u32, s: u32, p: DParticle, hit: Material, axis: u32) {
+  let pid = cid(dMaterial(p).core); let tid = cid(hit.core);
   if (pid == tid || cls(pid) == C_GAS || cls(tid) == C_GAS) { return; }
-  let u2 = dot(p.velocity, p.velocity);
-  let mp = dMass(pid) * dAmount(m); let mt = dMass(tid) * dAmount(hit);
-  let pSolid = cls(pid) == C_SOLID; let tSolid = cls(tid) == C_SOLID;
-  let liquid = cls(pid) == C_LIQUID || cls(tid) == C_LIQUID;
-  if (dShock(tid) > 0.0 && (!liquid || dShockLiquid(tid) != 0u) && select(dHitKE(mt, mp, pSolid, u2), dHitKE(mp, mt, true, u2), tSolid) >= dShock(tid)) {
-    atomicStore(&control[D_SHOCK_COUNT + 1u + t], s | (1u << D_REQUEST_SHIFT)); atomicAdd(&control[D_SHOCK_COUNT], 1u);
+  let u = abs(p.velocity[axis]);
+  let landing = dLanding(cellOf(s), axis, p.velocity);
+  let thrown = min(D_V_MAX, u * D_SHOCK_THROW);
+  if (dShockKE(tid) > 0.0) {
+    var fires = dShockActs(tid, pid, thrown);
+    if (landing && (cls(pid) == C_POWDER || cls(pid) == C_LIQUID)) { let on = dShockLand(pid, tid); fires = on > 0.0 && u >= on; }
+    if (fires) { atomicStore(&control[D_SHOCK_COUNT + 1u + t], s | (1u << D_REQUEST_SHIFT)); atomicAdd(&control[D_SHOCK_COUNT], 1u); }
   }
-  if (dShock(pid) > 0.0 && (!liquid || dShockLiquid(pid) != 0u) && select(dHitKE(mp, mt, tSolid, u2), dHitKE(mt, mp, true, u2), pSolid) >= dShock(pid)) {
-    atomicStore(&control[D_SET_OFF + t], p.id);
+  if (dShockKE(pid) > 0.0) {
+    var v = thrown;
+    if (landing && dShockFall(pid) > 0.0) { v = min(D_V_MAX, u * dShockFall(pid)); }
+    if (dShockActs(pid, tid, v)) { atomicStore(&control[D_SET_OFF + t], p.id); }
   }
 }
-// A charge landing on the box's solid edge (V1 react.js: past a solid edge a face is WALL, a solid):
-// the mover's own ½·m·u² (hitKE against a solid), the boundary landing's energy. Set off, it lands with its
-// detonation as from any hit (deposit, react).
-fn dShockWall(t: u32, pid: u32, energy: f32, particleId: u32) {
-  if (dShock(pid) > 0.0 && (cls(pid) != C_LIQUID || dShockLiquid(pid) != 0u) && energy >= dShock(pid)) { atomicStore(&control[D_SET_OFF + t], particleId); }
+// A charge landing on the box's solid edge (V1 react.js: past a solid edge a face is WALL, a solid), at u
+// across it: as any hit on a WALL (dShockHit). Set off, it lands with its detonation as from any hit.
+fn dShockWall(t: u32, pid: u32, u: f32, landing: bool, particleId: u32) {
+  if (dShockKE(pid) <= 0.0) { return; }
+  var v = min(D_V_MAX, u * D_SHOCK_THROW);
+  if (landing && dShockFall(pid) > 0.0) { v = min(D_V_MAX, u * dShockFall(pid)); }
+  if (dShockActs(pid, ${E.WALL}u, v)) { atomicStore(&control[D_SET_OFF + t], particleId); }
 }
 // A flying dust packet's dust faces (V1 react.js dust clouds: nFuel), read in reactDust, before react's
 // walkers clear the notes: another dust packet in its own cell, and each face cell holding dust, settled or flying
@@ -353,7 +380,7 @@ export function particlesWGSL(g, nativeHead, stage) {
           }
           boundary=true;let velocityAtHit=v+acceleration*(D_DT*entry);
           energy=0.5*dMass(id)*dAmount(m)*dot(velocityAtHit,velocityAtHit);
-          dShockWall(t,id,energy,particle.id);
+          dShockWall(t,id,abs(velocityAtHit[entryAxis]),dLanding(previous,entryAxis,velocityAtHit),particle.id);
           particle.velocity=vec3f(0); particle.position=vec3f(previous+P.origin)+0.5;
           if (cid(loadMaterial(slotOf(previous)).core)==0u) { deposit=slotOf(previous); }
         }
@@ -382,7 +409,7 @@ export function particlesWGSL(g, nativeHead, stage) {
           energy = mix(n.nuT,n.nuF,fast); break;
         }
       } else if (targetId != 0u && cls(targetId) != 4u && !dLiquidStreamPasses(cell,m.core,destination.core)) {
-        hit = slot; hitT = entry; kind = 1u;
+        hit = slot; hitT = entry; kind = 1u; optical.x = f32(entryAxis); // the face it hits (dShockHit)
         particle.velocity=v+acceleration*(D_DT*entry);
         energy = 0.5*dMass(id)*dAmount(m)*dot(particle.velocity,particle.velocity);
         if (inGrid(previous) && cid(loadMaterial(slotOf(previous)).core) == 0u) { deposit = slotOf(previous); }
@@ -427,7 +454,7 @@ export function particlesWGSL(g, nativeHead, stage) {
     dFree(s,0u);
     var p = particles[t]; let before = loadMaterial(s); var after = before;
     if (f.destination.z == 1u) {
-      dShockHit(t,s,p,before);
+      dShockHit(t,s,p,before,u32(f.effect.y));
       let id = cid(before.core); let cost = dToughness(id);
       if (cls(p.c0 & 255u) != 3u && dBreak(id) >= 0 && f.effect.x >= cost) {
         after.core.x = (before.core.x & 0xffffff00u) | u32(dBreak(id));

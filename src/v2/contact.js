@@ -175,6 +175,11 @@ export const CONTACT_CONSTANTS = Object.freeze({
   // a tick. A clone face is a block partner half the ticks: when it is, the chance is the two ticks'
   // worth, 1 - (1 - CLONE_RATE)^PARTNER_STEPS, the reactions' correction (CONTACT_REACTIONS chance).
   CT_CLONE_CHANCE: ['f32', 1 - (1 - PHYS.CLONE_RATE) ** PARTNER_STEPS],
+  // ...with clone faces outside its block too (the support pass's count, shaders/v2.js v2SupportWGSL),
+  // each partner clone carries its share of the PARTNER_STEPS: over an 8-tick cycle each of n clone faces
+  // is a partner 4 ticks (physics.js offsetOf), so k of n partnered compound PARTNER_STEPS·k/n steps,
+  // 32 a cycle for any n, as V1's one draw a step: 1 - exp(CT_CLONE_MISS_LOG·k/n).
+  CT_CLONE_MISS_LOG: ['f32', missLog(PHYS.CLONE_RATE)],
   // V1 react.js growers, each a chance per step per neighbour (rnd < RATE * n): water beside plant
   // becomes plant (PLANT_GROW), air on a mossSite beside damp moss becomes moss (MOSS_GROW), a fungus
   // food beside damp fungus rots to fungus (FUNGUS_GROW). Per present partner, PARTNER_STEPS steps'
@@ -185,6 +190,10 @@ export const CONTACT_CONSTANTS = Object.freeze({
   // V1 react.js acid: what it eats dissolves with chance ACID_USE a step per acid neighbour; per
   // present partner pair, PARTNER_STEPS steps' worth compounded.
   CT_ACID_EAT: ['f32', 1 - (1 - PHYS.ACID_USE) ** PARTNER_STEPS],
+  // ...and the acid spends ACID_USE of its life a step per victim beside it (react.js ACIDIC:
+  // life -= ACID_USE * victims), whether or not it dissolves one: per present victim partner,
+  // PARTNER_STEPS steps' worth, in life's LIFE_SCALE units.
+  CT_ACID_SPENT: ['i32', Math.round(PHYS.ACID_USE * PARTNER_STEPS * LIFE_SCALE)],
   // V1 react.js cloud: it rains with chance CLOUD_RAIN a step per cloud neighbour past CLOUD_RAIN_NB,
   // and evaporates with CLOUD_EVAP a step per air neighbour past CLOUD_EVAP_NB (times its saturation).
   // Its own rule, run every tick on its six faces' counts as twice its three partners' (an unbiased
@@ -210,8 +219,8 @@ const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGN
   CT_FIRE_TO_SMOKE, CT_FIRE_MIN_Q, CT_BURNT_MIN_Q, CT_ASH_SHARE, CT_SPARK_REST, CT_SPARK_BORN, CT_SPARK_CYCLE, CT_SPARK_V, CT_SWITCH_ON, CT_TSNS_FIRE,
   CT_LAMP_HOLD, CT_LAMP_DC_LEVEL, CT_JOULE_WHOLE, CT_JOULE_MILLI, CT_JOULE_MILLI_UNIT, CT_ELEC_PENDING, CT_ELEC_LIFE_UNIT, CT_ELEC_LIFE_MAX,
   CT_ELEC_SPENT_UNIT, CT_ELEC_SPENT_MAX, CT_ELEC_STEPS, CT_ELEC_SALT, CT_FUSE_UNLIT, CT_FUSE_BURN_NUM, CT_FUSE_BURN_DEN, CT_FUSE_HANDOFF_Q,
-  CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END, CT_CLONE_CHANCE, CT_PLANT_MISS_LOG, CT_MOSS_MISS_LOG, CT_FUNGUS_MISS_LOG,
-  CT_ACID_EAT, CT_CLOUD_RAIN, CT_CLOUD_RAIN_NB, CT_CLOUD_EVAP, CT_CLOUD_EVAP_NB, CT_STEPS_PER_TICK,
+  CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END, CT_CLONE_CHANCE, CT_CLONE_MISS_LOG, CT_PLANT_MISS_LOG, CT_MOSS_MISS_LOG, CT_FUNGUS_MISS_LOG,
+  CT_ACID_EAT, CT_ACID_SPENT, CT_CLOUD_RAIN, CT_CLOUD_RAIN_NB, CT_CLOUD_EVAP, CT_CLOUD_EVAP_NB, CT_STEPS_PER_TICK,
   CT_TOUCH_FIRE, CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_TOUCH_FRONT } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 
 const outSpecs = [];
@@ -678,7 +687,7 @@ export function ctPerTick(p) {
   return 1.0 - keep;
 }
 export function ctStep(input, ns, seed) {
-  return ctStepAtmosphere(input, ns, seed, 0, 0, 0, 0, 0, CT_AMBIENT_Q, 0);
+  return ctStepAtmosphere(input, ns, seed, 0, 0, 0, 0, 0, CT_AMBIENT_Q, 0, 0);
 }
 
 // Only atmosphere/exposure uses all six faces. Heat, reactions, phase and
@@ -742,12 +751,24 @@ export function ctPacketTouch(p, faceId, hostFire, axisBit, partner) {
 // V1 react.js FUSE, unlit: matter (not gas) at its ignition point beside it lights it, a flame beside it
 // does at CT_FUSE_FLAME_LIGHT a step; from a flying packet on any face (ctPacketTouch), on the electric
 // pass's step with that step's one draw (ctFuseStep's). Its scratch word, or 0.
+// An unlit fuse with a flame beside it, on a face or as a flying packet's flame mark (ctFuseStep,
+// ctFuseTouch): V1 react.js FUSE draws CT_FUSE_FLAME_LIGHT for it every step, so the electric pass
+// lists it for the tick's later steps even when step 0's draw misses (shaders/v2/electric.js).
+export function ctFuseFlameNear(c, ns, touch) {
+  if (c.id !== E.FUSE || c.life < CT_FUSE_UNLIT) return false;
+  let fire = (touch & CT_TOUCH_FLAME) !== 0;
+  for (let k = 0; k < 6; k++) {
+    if (ns[k].valid !== 0 && ns[k].id === E.FIRE) fire = true;
+  }
+  return fire;
+}
 export function ctFuseTouch(c, touch, random) {
   if (c.id !== E.FUSE || c.life < CT_FUSE_UNLIT) return 0;
   if ((touch & CT_TOUCH_HOT) !== 0 || ((touch & CT_TOUCH_FLAME) !== 0 && random < CT_FUSE_FLAME_LIGHT)) return CT_ELEC_PENDING + ctFuseLife(1);
   return 0;
 }
-export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas, onFloor, ambientQ, touch) {
+// outClones: its out-of-block faces holding a clone (the support pass's count; CT_CLONE_MISS_LOG).
+export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas, onFloor, ambientQ, touch, outClones) {
   let c = ctCopy(input);
   if (c.done !== 0) return c;
   let air = 0;
@@ -772,6 +793,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   let hotTouch = false;
   let hotFront = false;
   let clone = 0;
+  let clones = 0;
   let growOf = 0;
   let voidTouch = false;
   const r = ctRow(c.id);
@@ -808,6 +830,8 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (b.id === E.DUST) dust++;
     hotTouch = hotTouch || (br.kind !== 0 && br.kind !== 4 && b.tq >= r.igniteQ);
     if (b.id === E.CLONE || (b.id === E.PCLN && ctLife(b) === 10)) clone = Math.max(clone, b.ctype);
+    // (V1 react.js cloneOf: a clone face counts once it has an element, na.w >= 1)
+    if ((b.id === E.CLONE || (b.id === E.PCLN && ctLife(b) === 10)) && b.ctype > 0) clones++;
     if (ctCloneable(b.id)) growOf = b.id;
     voidTouch = voidTouch || b.id === E.VOID;
   }
@@ -910,7 +934,14 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   if (lit.id !== c.id) return lit;
   c = lit;
   if (c.id === E.EMPTY) {
-    if (clone > 0 && clone < CONTACT_ELEMENT_COUNT) { c.busy = 1; if (random < CT_CLONE_CHANCE) return ctCreate(c, clone, ctRow(clone).spawnQ); }
+    if (clone > 0 && clone < CONTACT_ELEMENT_COUNT) {
+      c.busy = 1;
+      // V1: one draw a step however many clones touch it, so the partnered ones share the steps (CT_CLONE_MISS_LOG)
+      let chance = CT_CLONE_CHANCE;
+      const outside = outClones | 0;
+      if (outside > 0) chance = 1.0 - Math.exp(CT_CLONE_MISS_LOG * ctF(clones) / ctF(clones + outside));
+      if (random < chance) return ctCreate(c, clone, ctRow(clone).spawnQ);
+    }
     if (moss > 0 && bed > 0) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(moss) * CT_MOSS_MISS_LOG)) return ctCreate(c, E.MOSS, c.tq); }
   }
   if (c.id === E.CLOUD) {
@@ -958,7 +989,7 @@ export const CONTACT_KERNEL = [
   [ctGrowerDamp, ['i32', 'i32'], 'i32'], [ctPuff, ['i32', 'i32'], 'i32'], [ctPerTick, ['f32'], 'f32'],
   [ctHotFuel, ['CTCell'], 'bool'], [ctSmothered, ['i32', 'i32'], 'bool'], [ctLick, ['CTCell', 'i32', 'i32', 'bool', 'i32'], 'CTCell'],
   [ctHotFront, ['CTCell', 'i32'], 'bool'], [ctPacketTouch, ['CTCell', 'i32', 'i32', 'i32', 'i32'], 'i32'],
-  [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
+  [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
   [ctStep, ['CTCell', 'array<CTCell, 3>', 'i32'], 'CTCell'],
 ];
 
@@ -1079,17 +1110,21 @@ export function ctAcid(a0, b0, seed) {
   let b = ctCopy(b0);
   if (ctRow(a.id).acid === 0 || ctRow(b.id).edible === 0 || a.done !== 0 || b.done !== 0) return ctPairValue(a, b, 0);
   a.busy = 1; b.busy = 1;
-  if (ctRoll(seed, 13) >= CT_ACID_EAT) return ctPairValue(a, b, 0);
+  // V1 react.js ACIDIC: the victim beside it spends its life every step, eaten or not (CT_ACID_SPENT)
+  a.life = Math.max(0, a.life - CT_ACID_SPENT);
+  const eats = ctRoll(seed, 13) < CT_ACID_EAT;
+  if (!eats && a.life > 0) return ctPairValue(a, b, 0);
   const energy = ctAdd(ctEnergy(a), ctEnergy(b));
   const fizz = ctRow(b.id).fizz;
-  a.life = Math.max(0, a.life - 246);
   let product = E.EMPTY;
   if (ctRoll(seed, 14) < 0.3) product = E.SMOKE;
-  b = ctInherit(ctNew(product, b.tq, 65536), b);
+  if (eats) b = ctInherit(ctNew(product, b.tq, 65536), b);
+  // used up (react.js: life <= 0), it leaves smoke or air, eating or not
   if (a.life === 0) a = ctInherit(ctNew(product, a.tq, 65536), a);
   let pair = ctBalance(a, b, energy, 41093);
+  // (no room for the change: nothing changes this tick)
   if (pair.changed === 0) return ctPairValue(a0, b0, 0);
-  if (fizz !== 0) pair.b.request = pair.b.request | 2;
+  if (eats && fizz !== 0) pair.b.request = pair.b.request | 2;
   return pair;
 }
 export function ctSwallow(a0, b0, seed) {
@@ -1149,7 +1184,8 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
   const snapshot = cells.map(ctCopy);
   // V1 react.js counts the box's solid floor as a surface (its sides and lid don't).
   const floorAt = i => +(positions[i][1] === 0 && modes.edge === EDGE_SOLID);
-  cells = cells.map((c, i) => valid[i] ? ctStepAtmosphere(c, CONTACT_FACES[i].map(j => snapshot[j]), seedAt(i), ...outside[i], floorAt(i), ambientQ, touch[i]) : c);
+  // (outside[i]: [air, oxygen, CO2, gas] and, optional, the clone faces: v2SupportWGSL's counts)
+  cells = cells.map((c, i) => valid[i] ? ctStepAtmosphere(c, CONTACT_FACES[i].map(j => snapshot[j]), seedAt(i), ...outside[i].slice(0, 4), floorAt(i), ambientQ, touch[i], outside[i][4] ?? 0) : c);
   for (const [i, j] of CONTACT_PAIRS) {
     if (!valid[i] || !valid[j]) continue;
     let pair = ctResolvePhase(cells[i], cells[j]);
@@ -1211,7 +1247,8 @@ export const contactAmbientQ = ambient => Math.min(65535, Math.max(0, Math.round
 CONTACT_KERNEL.push([ctConducts, ['CTCell', 'CTCell', 'i32'], 'bool'], [ctAmbient, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctHeatRoom, ['CTCell', 'i32'], 'i32']);
 CONTACT_KERNEL.push([ctElecMaterial, ['i32'], 'bool'], [ctFuseLife, ['i32'], 'i32'], [ctFuseSteps, ['i32'], 'i32'], [ctFuseStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'],
   [ctElecStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'], [ctFuseApply, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctElecApply, ['CTCell', 'i32', 'i32'], 'CTCell'],
-  [ctElecAirborne, ['CTCell', 'array<CTCell, 6>', 'i32'], 'CTCell'], [ctFuseTouch, ['CTCell', 'i32', 'f32'], 'i32']);
+  [ctElecAirborne, ['CTCell', 'array<CTCell, 6>', 'i32'], 'CTCell'], [ctFuseTouch, ['CTCell', 'i32', 'f32'], 'i32'],
+  [ctFuseFlameNear, ['CTCell', 'array<CTCell, 6>', 'i32'], 'bool']);
 
 // R5 ambient exchange at the open box's faces. The owner counts exposed open
 // side/top faces (not the floor or closed/periodic edges).

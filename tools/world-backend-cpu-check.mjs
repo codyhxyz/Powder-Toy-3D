@@ -56,7 +56,7 @@ test('one continuous full tracer, intrinsic budgets, exact optics and sticky sec
   const code=volumeFrag(g,{backend:'world',detail:REALISTIC_LEVELS.full()});
   assert.match(code,/MAX_STEPS: i32 = 4488/);assert.match(code,/return worldFlow\(c\)/);assert.match(code,/let f = worldAeration\(c\)/);
   assert.match(code,/return worldFieldCubic\(t, p\)/);assert.match(code,/unpack4x8unorm\(worldDeco\(c\)\)/);
-  for(const name of ['gatherSurf','crispSurf','grainSurf','decoSurf','shadeSurf','liquidInterface','reflectTrace','shadowTexel','worldSunExact','giIrradiance'])assert.ok(new RegExp(`fn ${name}\\(`).test(code),name);
+  for(const name of ['gatherSurf','gatherPlan','crispSurf','crispPlan','planMat','grainSurf','decoSurf','shadeSurf','shadeHit','liquidInterface','reflectDefer','reflectResolve','shadowTexel','worldSunExact','giIrradiance'])assert.ok(new RegExp(`fn ${name}\\(`).test(code),name);
   assert.equal((code.match(/worldBeginQuery\(\);/g)||[]).length,1);
   assert.equal((code.match(/worldIncomplete = false/g)||[]).length,1);
   assert.match(code,/worldEndQuery\(\); if \(worldQueryIncomplete\(\)\)/);
@@ -73,7 +73,7 @@ test('one continuous full tracer, intrinsic budgets, exact optics and sticky sec
     while(depth&&++end<text.length){if(text[end]==='{')depth++;else if(text[end]==='}')depth--;}
     assert.equal(depth,0,name);return text.slice(start,end+1);
   };
-  for(const name of ['gatherSurf','crispSurf','grainSurf','decoSurf','shadeSurf','liquidInterface','reflectTrace','reflectHit','mediaSegment','surfRoot','surfCross','faceAO','fieldAO','ggxSpecA','envBRDF','envReflectGI','glintSpec','shadowTexelAtt','underPool','causticGain','sourceShade'])assert.equal(body(code,name),body(box,name),name);
+  for(const name of ['gatherSurf','gatherPlan','crispSurf','crispPlan','planMat','grainSurf','decoSurf','shadeSurf','shadeHit','liquidInterface','reflectDefer','reflectResolve','reflectHit','mediaSegment','surfRoot','surfCross','faceAO','fieldAO','ggxSpecA','envBRDF','envReflectGI','glintSpec','shadowTexelAtt','underPool','causticGain','sourceShade'])assert.equal(body(code,name),body(box,name),name);
   const native=volumeFrag({...g,sourceAppearance:false},{backend:'world'});assert.doesNotMatch(native,/fn sourcePair/);
   assert.match(pickFrag(g,{backend:'world'}),/r = Pick\(vec4f\(0.0,0.0,0.0,-2.0\)/);
 });
