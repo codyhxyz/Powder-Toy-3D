@@ -53,6 +53,8 @@ const HOST_BACK = 'The host is back';
 const STOPPED_HOSTING = 'Stopped hosting';
 const LEFT_WORLD = 'You left the host\'s world';
 // World co-op shares one host-led loaded area, not independent streaming.
+// Intentional (gamemode: team modes are built for their own maps; user decision 2026-10-20): co-op on a
+// big map runs only Sandbox; Halo, Big Team Battle and the other team modes stay on their own maps.
 const COOP_ONLY = 'World co-op uses Sandbox exploration. Switch to Sandbox to host.';
 const CLOSE_NORMAL = 1000; // WebSocket close code for a deliberate disconnect
 

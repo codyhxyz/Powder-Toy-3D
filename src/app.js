@@ -651,6 +651,8 @@ function whenSimReady(fn) {
 
 function ensureHybrid() {
   // The optional hybrid uses local Simulation buffers, not the WORLD data wire.
+  // Intentional (experimental Test view; user decision 2026-10-20): on a big map it
+  // falls back to the normal look (the Realistic renderer), as it does on the cases hybridEligibility lists.
   if (worldMode || (!hybridOptIn && !isTestView(settings.view))) {
     if (hybrid) {
       releaseHybrid(); hybridWait = Promise.resolve();
@@ -802,6 +804,8 @@ function openMap(key, mode = 'sandbox') {
   if (graphicsFailure) throw graphicsFailure;
   const m = mapByKey(key);
   if (!m || mp.guard() || (isWorld(m) && mp.guardWorld())) return false;
+  // Intentional (gamemode: team modes are built for their own maps; user decision 2026-10-20): co-op on a big map
+  // runs only Sandbox; Halo, Big Team Battle and the other team modes stay on their own maps.
   if (isWorld(m) && mp.role === 'host' && mode !== 'sandbox') { hud.toast('World co-op supports Sandbox exploration only.'); return false; }
   if (isWorld(m) && !wire('world')) { hud.toast(notYet(`${m.name} (World maps)`), { kind: 'error' }); return false; }
   if (!gridFits(dimsOf(m.size, m.scene))) return false;
@@ -843,6 +847,7 @@ function currentMap() {
 // first drop-in builds it), while the bots' module loads beside it; a map loaded just now (fresh)
 // isn't loaded again for the match. Resolves true once it runs.
 async function startMode(mode, { fresh = false } = {}) {
+  // Intentional (gamemode: team modes are built for their own maps; user decision 2026-10-20): co-op on a big map runs only Sandbox
   if (mode !== 'sandbox' && win && mp.role && mp.role !== 'solo') { hud.toast('World co-op supports Sandbox exploration, not matches or progression.'); return; }
   const epoch = ++modeEpoch;
   villageFocus = null;

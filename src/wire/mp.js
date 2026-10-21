@@ -31,6 +31,7 @@ const mp = {
       gpu: app.gpu, scene: app.scene, camera: app.camera, hud: app.hud,
       getSim: () => app.sim, getVolume: () => app.volume, setGrid: app.setGrid,
       inWorld: () => !!app.win, score: () => app.scoreboard.mine, getMetadata: metadata,
+      // Intentional (gamemode: team modes are built for their own maps; user decision 2026-10-20): a big map is hosted in Sandbox only
       canHost: () => !app.win || app.gamemode === 'sandbox', canStream: () => !app.win || app.win.loaded, avatars,
       sessionChanged(role) {
         session++; map = ''; warp++;
