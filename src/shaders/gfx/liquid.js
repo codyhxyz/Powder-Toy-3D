@@ -11,7 +11,7 @@ export const RIPPLE_SLOPE = 0.035;
 export const VNOISE_GRAD_VAR = (6 / 5) * (1 / 6) * (26 / 35) ** 2;
 // Transparent media: liquids (smooth surfaces) and crisp glass. WGSL (the
 // names are the GLSL version's, docs/webgpu.md W2), pasted after surfaceGLSL
-// (reflectTrace meets voxels with crispHit, the floor with floorAlb). The
+// (reflectHit meets voxels with crispHit, the floor with floorAlb). The
 // GLSL's inout parameters are pointers; sunShadow(p) of a point inside a
 // volume is lighting.js's sunShadowAt.
 export const liquidGLSL = /* wgsl */ `
@@ -242,14 +242,36 @@ fn reflCross(ro: vec3f, rd: vec3f, ch: i32, ta0: f32, tb0: f32, phiA: f32, phiB:
   return mix(ta, tb, clamp(fa / (fa - fb), 0.0, 1.0));
 }
 
-// env: what the ray sees if it meets nothing (envReflectGI at the interface).
-// The pixel's first traced reflection (gReflTraced); later ones, and those far
-// from the eye, return env.
-fn reflectTrace(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
+// The pixel's one traced reflection, marched once after the view's march
+// (reflectResolve): a GPU compiler inlines every call, and a pane, a crystal
+// and a liquid surface (twice in the tracer) each reflect, so the march is
+// called from one place. Its value R = mix(env, reflectHit(ro, rd, env), wf)
+// enters the colour linearly: a surface adds K·env at once, as if nothing
+// were traced, and K to gReflK; reflectResolve then adds gReflK·(R − env).
+var<private> gReflPend: bool = false;   // a reflection waits for reflectResolve ...
+var<private> gReflRo: vec3f = vec3f(0.0);   // ... from ro along rd
+var<private> gReflRd: vec3f = vec3f(0.0);
+var<private> gReflEnv: vec3f = vec3f(0.0);  // what it sees if it meets nothing
+var<private> gReflWf: f32 = 0.0;            // its weight over env (near the eye 1)
+var<private> gReflK: vec3f = vec3f(0.0);    // the weight its value has in the colour so far
+// A reflection from ro along rd0 (env: what the ray sees if it meets nothing,
+// envReflectGI at the interface). The pixel's first one near enough the eye is
+// traced (gReflTraced): true, and the caller adds R's weight to gReflK; later
+// ones, and those far from the eye, are env.
+fn reflectDefer(ro: vec3f, rd0: vec3f, env: vec3f) -> bool {
   let wf = 1.0 - smoothstep(REFL_FP_LO, REFL_FP_HI, footprint(ro));
-  if (gReflTraced || wf <= 0.0) { return env; }
-  gReflTraced = true;
-  return mix(env, reflectHit(ro, rd0, env), wf);
+  let traced = !gReflTraced && wf > 0.0;
+  if (traced) {
+    gReflTraced = true;
+    gReflPend = true; gReflRo = ro; gReflRd = rd0; gReflEnv = env; gReflWf = wf;
+  }
+  return traced;
+}
+// What the pixel's colour still owes its traced reflection: gReflK·(R − env).
+fn reflectResolve() -> vec3f {
+  var owed = vec3f(0.0);
+  if (gReflPend) { owed = gReflK * (mix(gReflEnv, reflectHit(gReflRo, gReflRd, gReflEnv), gReflWf) - gReflEnv); }
+  return owed;
 }
 fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
   let rd = safeDir(rd0);
@@ -267,7 +289,7 @@ fn reflectHit(ro: vec3f, rd0: vec3f, env: vec3f) -> vec3f {
   var phiA = surfField(ro);
   var stale = false;
   // the hit, shaded once after the march: one inlined reflShade, not one a return (cold compile,
-  // docs/webgpu.md B5; Metal inlines this at every reflectTrace)
+  // docs/webgpu.md B5; Metal inlines this wherever it is called: reflectResolve, once)
   var hit = false;
   var hitA = vec4f(0.0);
   var hitP = vec3f(0.0);
@@ -404,7 +426,8 @@ fn liquidInterface(hp: vec3f, n0: vec3f, geometric: vec3f, entering: bool, id: i
     }
     var wr = 0.0;
     if (mirror && !cartoon) { wr = smoothstep(REFL_F_LO, REFL_F_HI, F); }
-    if (wr > 0.0) { env = mix(env, reflectTrace(hp + n * REFL_START, r, env), wr); }
+    // (mix(env, R, wr): R's weight is wr; env stands in for it until reflectResolve)
+    if (wr > 0.0 && reflectDefer(hp + n * REFL_START, r, env)) { gReflK += *trans * F * wr; }
     *col += *trans * F * env;
     // a torch or lantern's highlight (lighting.js lampSpec: its own Fresnel, from the IOR's F0)
     if (FU.lampCount > 0) {
@@ -457,7 +480,7 @@ fn crystalInterface(s: Shard, hp: vec3f, n: vec3f, rd: vec3f, inside: bool, liqu
   if (FU.shadows != 0u) { sunVis = sunShadowAt(hp + n * IFACE_PROBE); }
   if (path.frontF > 0.0) {
     var env = envReflectGI(gi, n, -rd, ROUGH(E_CRYSTAL), sunVis);
-    env = reflectTrace(hp + n * REFL_START, reflect(rd, n), env);
+    if (reflectDefer(hp + n * REFL_START, reflect(rd, n), env)) { gReflK += *trans * path.frontF; }
     *col += *trans * path.frontF * env;
     if (FU.lampCount > 0) {
       let f0 = pow((eta - 1.0) / (eta + 1.0), 2.0);

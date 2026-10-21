@@ -801,7 +801,7 @@ const GLASS_IN_LIQUID_F: f32 = 0.3;
 // the sky's reflection lies over the sky behind the pane and the pane vanishes;
 // the room's floor and contents reflected in it are what show it is there.
 // The first this many panes along the eye ray trace their reflection
-// (reflectTrace, gfx/liquid.js); panes past them reflect the sky.
+// (reflectDefer, gfx/liquid.js); panes past them reflect the sky.
 const GLASS_TRACED_PANES: i32 = 2;
 const MAX_BENDS: i32 = 6;
 ${backend === 'world' ? '' : `// Fade unresolved underwater scenery over two bricks at the simulation edge.
@@ -855,6 +855,7 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var panes = 0;              // glass runs entered so far
   var paneEnv = vec3f(0.0);   // what the current pane's front face reflects ...
   var paneAx = -1;            // ... and the axis of that face
+  var paneRefl = false;       // ... and whether that is the pixel's traced reflection (reflectDefer)
   var mediumLight = vec3f(1.0);
   // sun visibility inside liquid: read at a reference point (where the ray
   // got in), then faded with depth below it
@@ -873,7 +874,8 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   // Keep the remaining budget across chords, brick skips and optical restarts.
   var meshBudget = MESH_CUT_NONE;
   if (tCut < MESH_CUT_NONE) { meshBudget = warpArc(walk.ray, 0.0, max(tCut, 0.0)); }` : ''}
-  var cut = false;
+  var cut = false;${grains ? `
+  var altRefl = false;   // the hand-off band's stored path (gAltCol) came after a traced reflection` : ''}
 
   var lastB = vec3i(-1);
   var flags = 0u;
@@ -1052,10 +1054,11 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           gSkyIn = skyInAt(gi);
           let r = reflect(rd, nFace);
           paneEnv = envReflectGI(gi, nFace, -rd, ROUGH(id), mediumLight);
-          if (panes < GLASS_TRACED_PANES) { paneEnv = reflectTrace(hp + nFace * REFL_START, r, paneEnv); }
+          paneRefl = panes < GLASS_TRACED_PANES && reflectDefer(hp + nFace * REFL_START, r, paneEnv);
           paneAx = ax;
           panes++;
           col += trans * F * paneEnv;
+          if (paneRefl) { gReflK += trans * F; }
           trans *= 1.0 - F;
         }
         absorbDeco(id, cell, hp, min(tExit, tCut) - tEnter, mediumLight, fetchA(cell).y, &col, &trans);   // (stained glass: gfx/deco.js)
@@ -1076,6 +1079,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           let r = reflect(rd, nX);
           var env = paneEnv;
           if (xa != paneAx) { env = envSky(surfProbe(hx, -nX), r); }   // (inside the pane: no sun highlight, as liquid.js's exit)
+          else if (paneRefl) { gReflK += trans * F; }   // (the front face's traced reflection again)
           col += trans * F * env;
           trans *= 1.0 - F;
         }
@@ -1154,7 +1158,9 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       // (grainEvent reads the cell's state only for a grain element's cell: its cand)
       var ga = vec4f(0.0);
       if (grainElement(id)) { ga = fetchA(cell); }
+      let altOpen = gAltW < 0.0;
       grainEvent(cell, id, ga, ro, rd, tEnter, min(tExit, tCut), col, trans, &ev, evCh, &tEv, &anyHit, &hitPos);
+      if (altOpen && gAltW >= 0.0) { altRefl = gReflPend; }   // (the stored path's colour owes it too: reflectResolve)
       cut = ev == EV_NONE && tEv >= tCut;` : ''}
 
       // ---- what lies along [tEnter, tEv] ----
@@ -1254,6 +1260,11 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     ax = ddaStep(istp, tDelta, &cell, &tMax);`}
   }
 
+  // ---- the pixel's traced reflection, marched once for whichever surface asked (gfx/liquid.js reflectDefer) ----
+  let owed = reflectResolve();
+  col += owed;${grains ? `
+  if (altRefl) { gAltCol += owed; }` : ''}
+
   // ---- shading, one call site for every kind of hit ----
   // Pass 0 shades the hit that ended the ray, then the floor if the ray got
   // there. With grains, pass 1 shades the hand-off band's path not taken and
@@ -1267,18 +1278,22 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     }` : ''}
     var c = vec3f(0.0);
     if (stop) {
-      var s: Surf;${grains ? `
-      // a clod is shaded as the crisp grain it is: one inlined matOf (gfx/grains.js
-      // grainCrisp). A local flag, not a hitK write: the kind stays loop-invariant
-      // here (tools/check-opaque-surface.mjs)
+      var s: Surf;
+      // every kind of hit's material through one matOf call (gfx/surface.js MatPlan):
+      // a crisp voxel's, a smooth surface's blend of its cells${grains ? `, and a clod, shaded as the
+      // crisp grain it is (gfx/grains.js grainCrisp). A local flag, not a hitK write: the kind
+      // stays loop-invariant here (tools/check-opaque-surface.mjs)
       let clod = hitK == HIT_GRAIN && grainCrisp(gHitK, gHitA, hitP, &hitCell, &hitId, &hitA, &hitN);` : ''}
-      if (hitK == HIT_CRISP${grains ? ' || clod' : ''}) { s = crispSurf(hitCell, hitId, hitA, hitP, hitN);${grains ? ' if (clod) { clodFinish(&s); }' : ''} }${grains ? `
+      var pl: MatPlan;
+      if (hitK == HIT_CRISP${grains ? ' || clod' : ''}) { s = crispPlan(hitCell, hitId, hitA, hitP, hitN, &pl); }${grains ? `
       else if (hitK == HIT_GRAIN) { s = grainSurf(gHitA, gHitK, hitP, shadeRd); }` : ''}
       else {
         var ns = hitN;
         if (dot(hitN, hitN) == 0.0) { ns = surfNormal(hitP, hitCh, -shadeRd); }
-        s = gatherSurf(hitP, ns, hitCh);
+        s = gatherPlan(hitP, ns, hitCh, &pl);
       }
+      if (pl.count > 0) { applyMat(&s, planMat(pl)); }${grains ? `
+      if (clod) { clodFinish(&s); }` : ''}
       decoSurf(&s);   // TPT's deco colour (gfx/deco.js)
       c = shadeSurf(s, shadeRd);${backend === 'world' && !detail[WORLD_NATIVE] ? '' : `
       // Native molten liquids share compact foam, not water's refraction or

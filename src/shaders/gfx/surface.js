@@ -1457,22 +1457,32 @@ const MAT_BORDER_EDGE: vec2f = vec2f(0.25, 0.75);   // share of the second eleme
 const MAT_BORDER_F: f32 = 1.7;      // frequency of the noise breaking up that border, per cell
 const MAT_BORDER_SALT: f32 = 2.9;   // its noise offset
 const MAT_BORDER_AMP: f32 = 0.6;    // how far it shifts the share
-// The material of a two-element mix at texture point p (r: share of id2).
-// matOf is huge and a GPU compiler inlines every call to it: the two
-// materials are one call in a loop, not two calls.
 // The second element's share at texture point p, r its share of the cells.
 fn matBorder(r: f32, p: vec3f) -> f32 {
   return smoothstep(MAT_BORDER_EDGE.x, MAT_BORDER_EDGE.y, r + (vnoise(M_ROT * p * MAT_BORDER_F + MAT_BORDER_SALT) - 0.5) * MAT_BORDER_AMP);
 }
-fn gatherMat(id1: i32, id2: i32, ct1: f32, ct2: f32, r: f32, p: vec3f, n: vec3f, T: f32, fp: f32) -> Mat {
-  var k = 0.0;
-  if (id2 >= 0) { k = matBorder(r, p); }
+// What a Surf's material is made of (applyMat takes planMat's result): count
+// matOf evaluations (1 or 2: element id0 at p0, then id1 at p1, blended in by
+// w), then element flatId untextured (matFlat) blended in by flatK where it is
+// above 0. matOf is huge and a GPU compiler inlines every call to it, so every
+// kind of hit builds a plan (crispPlan, gatherPlan) and the view's one shading
+// site (render.js traceView) evaluates it with planMat's one matOf call.
+struct MatPlan {
+  count: i32,
+  id0: i32, id1: i32,
+  ct0: f32, ct1: f32,
+  p0: vec3f, p1: vec3f,
+  w: f32,
+  n: vec3f, T: f32, fp: f32,
+  flatId: i32, flatCt: f32, flatK: f32,
+}
+fn planMat(pl: MatPlan) -> Mat {
   var m: Mat;
-  let count = select(1, 2, k > 0.0);
-  for (var j = 0; j < count; j++) {
-    let mj = matOf(select(id2, id1, j == 0), p, n, T, select(ct2, ct1, j == 0), fp);
-    if (j == 0) { m = mj; } else { m = mixMat(m, mj, k); }
+  for (var j = 0; j < pl.count; j++) {
+    let mj = matOf(select(pl.id1, pl.id0, j == 0), select(pl.p1, pl.p0, j == 0), pl.n, pl.T, select(pl.ct1, pl.ct0, j == 0), pl.fp);
+    if (j == 0) { m = mj; } else { m = mixMat(m, mj, pl.w); }
   }
+  if (pl.flatK > 0.0) { m = mixMat(m, matFlat(pl.flatId, pl.T, pl.flatCt), pl.flatK); }
   return m;
 }
 
@@ -1494,7 +1504,7 @@ const FLOW_MIN_TRAVEL: f32 = 0.01;  // cells a layer must travel in a cycle to c
 // phase of the first layer at p, in [0, 1); the second is half a cycle on
 fn flowPhase(p: vec3f) -> f32 { return fract(FU.simClock / FLOW_PERIOD + vnoise(M_ROT * worldPos(p) * FLOW_PHASE_F)); }
 
-fn gatherSurf(hp: vec3f, n: vec3f, ch: i32) -> Surf {
+fn gatherPlan(hp: vec3f, n: vec3f, ch: i32, pl: ptr<function, MatPlan>) -> Surf {
   var s: Surf;
   s.p = hp; s.tp = hp; s.tp1 = hp; s.flowW = 0.0; s.n = n; s.ng = n; s.ch = ch; s.id = E_EMPTY; s.cell = vec3i(floor(hp - n * 0.5)); s.seed = 0.0;
   s.face = vec3i(0, 1, 0);
@@ -1566,24 +1576,29 @@ fn gatherSurf(hp: vec3f, n: vec3f, ch: i32) -> Surf {
     s.tp -= travel * (ph - 0.5);
     s.flowW = abs(2.0 * ph - 1.0);   // 0 while the second layer resets, 1 while the first does
   }
-  // the texture is anchored in the world (tp, tp1 stay grid points: footprints and glints take them);
-  // the flow layers: one gatherMat call in a loop (see gatherMat). Flowing,
-  // the layers are the dominant element's, and a second element where it
-  // meets another is blended in untextured (matFlat, its border unmoved), so
-  // no pixel evaluates more than two materials (it was four: two elements in
-  // each layer).
-  var m: Mat;
-  let layers = select(1, 2, s.flowW > 0.0);
-  let id2t = select(id2, -1, layers == 2);
-  for (var j = 0; j < layers; j++) {
-    let mj = gatherMat(id1, id2t, ct1, ct2, r, worldPos(select(s.tp1, s.tp, j == 0)), n, s.T, fp);
-    if (j == 0) { m = mj; } else { m = mixMat(m, mj, s.flowW); }
+  // the texture is anchored in the world (tp, tp1 stay grid points: footprints and glints take them).
+  // Still, the two most common elements at tp, the second's border broken up
+  // with noise (matBorder). Flowing, the two layers are the dominant
+  // element's, and a second element where it meets another is blended in
+  // untextured (matFlat, its border unmoved), so no pixel evaluates more than
+  // two materials (it was four: two elements in each layer).
+  (*pl).n = n; (*pl).T = s.T; (*pl).fp = fp;
+  (*pl).id0 = id1; (*pl).ct0 = ct1; (*pl).p0 = worldPos(s.tp);
+  (*pl).flatId = id2; (*pl).flatCt = ct2; (*pl).flatK = 0.0;
+  if (s.flowW > 0.0) {
+    (*pl).count = 2; (*pl).id1 = id1; (*pl).ct1 = ct1; (*pl).p1 = worldPos(s.tp1); (*pl).w = s.flowW;
+    if (id2 >= 0) { (*pl).flatK = matBorder(r, worldPos(hp)); }
+  } else {
+    var k = 0.0;
+    if (id2 >= 0) { k = matBorder(r, (*pl).p0); }
+    (*pl).count = select(1, 2, k > 0.0); (*pl).id1 = id2; (*pl).ct1 = ct2; (*pl).p1 = (*pl).p0; (*pl).w = k;
   }
-  if (layers == 2 && id2 >= 0) {
-    let k = matBorder(r, worldPos(hp));
-    if (k > 0.0) { m = mixMat(m, matFlat(id2, s.T, ct2), k); }
-  }
-  applyMat(&s, m);
+  return s;
+}
+fn gatherSurf(hp: vec3f, n: vec3f, ch: i32) -> Surf {
+  var pl: MatPlan;
+  var s = gatherPlan(hp, n, ch, &pl);
+  applyMat(&s, planMat(pl));
   return s;
 }
 
@@ -1725,7 +1740,7 @@ fn crispT(cell: vec3i, T: f32, hp: vec3f, face: vec3i) -> f32 {
 }
 
 // Surface record for a crisp voxel, or (with ch set by the caller) a grain.
-fn crispSurf(cell: vec3i, id: i32, a: vec4f, hp: vec3f, n: vec3f) -> Surf {
+fn crispPlan(cell: vec3i, id: i32, a: vec4f, hp: vec3f, n: vec3f, pl: ptr<function, MatPlan>) -> Surf {
   var s: Surf;
   s.p = hp; s.tp = hp; s.tp1 = hp; s.flowW = 0.0; s.n = n; s.ng = n; s.ch = -1; s.id = id; s.cell = cell; s.seed = fract(a.w);
   // a crystal inside its cell: the corner AO of the side it points out of
@@ -1741,7 +1756,14 @@ fn crispSurf(cell: vec3i, id: i32, a: vec4f, hp: vec3f, n: vec3f) -> Surf {
   const GRAIN_TEX_SPREAD: f32 = 61.0;   // cells of texture space the seed spreads grains over
   var tp = worldPos(hp);
   if (SURFCH(id) >= 0) { tp = hp - vec3f(cell) + s.seed * GRAIN_TEX_SPREAD; }
-  applyMat(&s, matOf(id, tp, n, s.T, floor(a.w), footprint(hp)));
+  (*pl).count = 1; (*pl).id0 = id; (*pl).p0 = tp; (*pl).n = n; (*pl).T = s.T; (*pl).ct0 = floor(a.w); (*pl).fp = footprint(hp);
+  (*pl).flatK = 0.0;
+  return s;
+}
+fn crispSurf(cell: vec3i, id: i32, a: vec4f, hp: vec3f, n: vec3f) -> Surf {
+  var pl: MatPlan;
+  var s = crispPlan(cell, id, a, hp, n, &pl);
+  applyMat(&s, planMat(pl));
   return s;
 }
 
@@ -2234,6 +2256,7 @@ const realisticBody = (d) => /* wgsl */ `
   var nl = liquidRipple(p, n);
   nl = liquidDetail(p, nl, lid, &col, &trans);
   let inside = liquidInterface(p, nl, n, s > 0.5, lid, true, &lro, &lrd, &col, &trans, &ml);
+  col += reflectResolve();   // (its traced reflection, as the tracer's after its march)
   absorbSegment(lid, lro, thinBodySeg(p, s), ml, AMBIENT, &col, &trans);   // (drops and pours show their colour, as the tracer)
   acc += vec4f(col + trans + lro + lrd, select(0.0, 1.0, inside));
   acc.w += fresnelSchlick(s, IOR(lid)) + skyInAt(probeAt(p)) + gSkyIn + envReflect(p, nl, -rd, ROUGH(lid), ml).x;
