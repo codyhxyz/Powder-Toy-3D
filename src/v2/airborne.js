@@ -64,7 +64,7 @@
 // across a looped edge too (every side is a multiple of 4: shaders/common.js gridDims).
 import { E, ELEMENTS, K } from '../elements.js';
 import { AIR_CAPACITY_Q, makeMaterial, cTq, cid, energyOf, withEnergy, energyFits, withPacketEnergy, packetEnergyFits } from './layout.js';
-import { unpackContact, packContact, ctNew, ctFlux, ctHeat, ctReaction, ctAcid, ctSwallow, ctStepAtmosphere, ctElecAirborne,
+import { unpackContact, packContact, ctNew, ctFlux, ctHeat, ctReaction, ctAcid, ctSwallow, ctStepAtmosphere, ctElecAirborne, ctPacketTouch,
   ctResolvePhase, ctLick, ctHotFuel, ctSmothered, ctRow, ctConducts, ctHeatRoom, ctAmbient, ctPairValue,
   contactAmbientQ, CONTACT_DEFAULT_MODES, DUST_MIN_FALL_SPEED, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR, CONTACT_PUFF_UNIT } from './contact.js';
 import { PHYS } from '../physics.js';
@@ -176,13 +176,19 @@ export const openNear = (ambient = CONTACT_DEFAULT_MODES.ambient) =>
 /**
  * One tick of a flying packet in its host cell with the six cells around it. packet, host: { core, bank };
  * seed: i32; near: nearOf(...); modes: the scene's ambient and ambientHeat.
- * @returns {{ state: number, particle: {core,bank}, host: {core,bank}, faces: ({core,bank}|null)[], source: bigint, sink: bigint, requests: number }}
+ * @returns {{ state: number, particle: {core,bank}, host: {core,bank}, faces: ({core,bank}|null)[], source: bigint, sink: bigint, requests: number, touch: number[] }}
+ *   touch: its touch on each of the six faces (contact.js ctPacketTouch), the react stage's marks there
  *   requests: the host slot's request bits (native-contract.md: 1 detonate, 2 gas, 4 neutron), and
  *   above them the GAS request's puff (contact.js ctPuff: the largest of the packet's and its partners')
  */
 export function airborneReference(packet, host, seed, near = openNear(), modes = CONTACT_DEFAULT_MODES, charge = AIRBORNE_NO_CHARGE) {
   const { faces, inBlock, trailing, onFloor = 0 } = near;
-  const refused = { state: AIRBORNE.REFUSED, particle: packet, host, faces, source: 0n, sink: 0n, requests: 0 };
+  // what it is, as it comes into the tick, to each face but the one its host stands in: V1's moving cell
+  // to its neighbours (react.js nFire, hotTouch), for their own steps after it (contact.js ctPacketTouch;
+  // particles.js react marks each, the block pass and the electric pass read them)
+  const v0 = unpackContact(packet.core, packet.bank), hostFire = +((host.core[0] & 255) === E.FIRE);
+  const touch = FACE6.map((_, f) => (f === trailing || !faces[f] ? 0 : ctPacketTouch(v0, faces[f].core[0] & 255, hostFire, 1 << (f >> 1), +(inBlock[f >> 1] === f))));
+  const refused = { state: AIRBORNE.REFUSED, particle: packet, host, faces, source: 0n, sink: 0n, requests: 0, touch };
   const carrier0 = BigInt(AIR_CAPACITY_Q) * BigInt(cTq(packet.core));
   try {
     let v = unpackContact(packet.core, packet.bank);
@@ -216,7 +222,7 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
     });
     v = ctElecAirborne(v, contacts, seed);
     const ns = ps.map(b => (b ? { ...b } : none));
-    v = ctStepAtmosphere(v, ns, seed, ...outside, onFloor, ambientQ);
+    v = ctStepAtmosphere(v, ns, seed, ...outside, onFloor, ambientQ, 0);
     for (let a = 0; a < 3; a++) {
       if (!ps[a]) continue;
       let pair = ctResolvePhase(v, ps[a]);
@@ -259,12 +265,12 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
     if (v.id === E.EMPTY) {
       const he = eh + ev - carrier0;
       if (!energyFits(hm, he)) return refused;
-      return { state: AIRBORNE.GONE, particle: packet, host: withEnergy(hm, he), faces: out, source, sink, requests: requests(false) };
+      return { state: AIRBORNE.GONE, particle: packet, host: withEnergy(hm, he), faces: out, source, sink, requests: requests(false), touch };
     }
     if ((v.request & 1) !== 0 && hostId === E.EMPTY) {
       const le = ev + eh - carrier0;
       if (!energyFits(vm, le)) return refused;
-      return { state: AIRBORNE.LANDED, particle: packet, host: withEnergy(vm, le), faces: out, source, sink, requests: requests(true) };
+      return { state: AIRBORNE.LANDED, particle: packet, host: withEnergy(vm, le), faces: out, source, sink, requests: requests(true), touch };
     }
     if ((v.request & 1) !== 0 && ELEMENTS[hostId].kind === K.GAS) {
       // in a gas (a charge in the flames that set it off): it lands, and the gas it displaces flies
@@ -272,12 +278,12 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
       const hostCarrier = BigInt(AIR_CAPACITY_Q) * BigInt(cTq(hm.core));
       const le = ev - carrier0 + hostCarrier, ge = eh - hostCarrier;
       if (!energyFits(vm, le) || !packetEnergyFits(hm, ge)) return refused;
-      return { state: AIRBORNE.DISPLACED, particle: withPacketEnergy(hm, ge), host: withEnergy(vm, le), faces: out, source, sink, requests: requests(true) };
+      return { state: AIRBORNE.DISPLACED, particle: withPacketEnergy(hm, ge), host: withEnergy(vm, le), faces: out, source, sink, requests: requests(true), touch };
     }
     const carrier1 = BigInt(AIR_CAPACITY_Q) * BigInt(cTq(vm.core));
     const pe = ev - carrier1, he = eh + carrier1 - carrier0;
     if (!packetEnergyFits(vm, pe) || !energyFits(hm, he)) return refused;
-    return { state: AIRBORNE.FLYING, particle: withPacketEnergy(vm, pe), host: withEnergy(hm, he), faces: out, source, sink, requests: requests(false) };
+    return { state: AIRBORNE.FLYING, particle: withPacketEnergy(vm, pe), host: withEnergy(hm, he), faces: out, source, sink, requests: requests(false), touch };
   } catch (error) {
     if (error instanceof RangeError || /unrepresentable|overflow/.test(error?.message ?? '')) return refused;
     throw error;

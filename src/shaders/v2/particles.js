@@ -11,6 +11,7 @@ import { PHYS } from '../../physics.js';
 import { contactRulesWGSL, withContactTable, airborneReactWGSL, airborneClaimWGSL } from './airborne.js';
 import { AIRBORNE_BITS_SHIFT, AIRBORNE, AIRBORNE_LANDED_REQUESTS } from '../../v2/airborne.js';
 import { CONTACT_PUFF_UNIT } from '../../v2/contact.js';
+import { packetTouchWGSL } from './state.js';
 export { PARTICLE_CAP };
 export const DynamicParams = uniformStruct('DynamicParams', {
   tick: 'u32', busyIn: 'u32', busyOut: 'u32', mode: 'u32', origin: 'vec3i', sequence: 'u32',
@@ -606,7 +607,7 @@ export function particlesWGSL(g, nativeHead, stage) {
   `);
   if (stage === 'react') {
     const rh = head(g, (grid, o) => withContactTable(nativeHead(grid, o)));
-    return rh + contactRulesWGSL('i32(min(3u,arrayLength(&flight)))') + airborneReactWGSL + /* wgsl */ `
+    return rh + contactRulesWGSL('i32(min(3u,arrayLength(&flight)))') + airborneReactWGSL + packetTouchWGSL(PARTICLE_CAP) + /* wgsl */ `
 // Is packet a after packet b in its cell's order (src/v2/airborne.js airborneOrder)?
 fn dReactAfter(a: u32, b: u32) -> bool {
   if (b == D_NONE) { return true; }
@@ -635,6 +636,9 @@ fn dReactOne(t: u32, s: u32, p: vec3i) -> bool {
   var charge = DReactCharge(atomicLoad(&control[D_SET_OFF+t]) == particle.id, length(particle.velocity) * D_DT / D_CELL, i32(flight[t].effect.y), 0, 0);
   if ((particle.c0 & 255u) == D_DUST) { let dust = dReactDustFaces(p); charge.fire = dust.x; charge.hot = dust.y; }
   let r = dReact(dMaterial(particle), before, faces, valid, inBlock, trailing, onFloor, bitcast<i32>(flight[t].destination.w), charge);
+  // the cells beside it see it this tick, as V1's react saw a moving neighbour: its touch on each, for
+  // its own step in the block pass and, a fuse's, in the electric pass (contact.js ctPacketTouch)
+  for (var f = 0u; f < 2u * dAxes(); f++) { if (r.touch[f] != 0) { notePacketTouch(slots[f], r.touch[f]); } }
   if (r.state == D_REACT_REFUSED) { return true; }
   if (any(r.source != vec2u(0u))) { noteEnergySource(p,r.source); }
   if (any(r.sink != vec2u(0u))) { noteEnergySink(p,r.sink); }

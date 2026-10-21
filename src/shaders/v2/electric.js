@@ -26,6 +26,7 @@ import { fold } from '../../gpu/kernels.js';
 // (contactBlock and every rule only it calls) stay the block pass's alone, so this pass compiles
 // small and the contact module still compiles once, in the block pass.
 const ELECTRIC_ROOTS = ['ctElecMaterial', 'ctElecStep', 'ctElecApply', 'ctUnpack', 'ctPack', 'ctSeed', 'ctRoll', 'ctNew'];
+const PACKET_TOUCH_ROOTS = ['ctFuseTouch', 'packetTouchNow'];
 export function electricContactWGSL(contactWGSL) {
   const parts = [], fns = new Map();
   let at = 0;
@@ -48,6 +49,8 @@ export function electricContactWGSL(contactWGSL) {
   }
   const keep = new Set(), todo = ELECTRIC_ROOTS.filter(n => fns.has(n));
   if (todo.length !== ELECTRIC_ROOTS.length) throw Error('electric pass: the contact module lacks its electric rules');
+  // a fuse lit by a flying packet beside it (ctFuseTouch), where the contact module has the packets' marks
+  for (const n of PACKET_TOUCH_ROOTS) if (fns.has(n)) todo.push(n);
   while (todo.length) {
     const name = todo.pop();
     if (keep.has(name)) continue;
@@ -95,7 +98,10 @@ ${MAIN} {
       if (inGrid(q)) { let t = slotOf(q); ns[k] = ctUnpack(cells[t], banks[t]); }
       else { ns[k] = ctNew(CT_EMPTY, 0, 65536); ns[k].valid = 0; }
     }
-    let word = ctElecStep(c, ns, ctRoll(ctSeed(p, P.tick), CT_ELEC_SALT + i32(P.elecStep)));
+    let roll = ctRoll(ctSeed(p, P.tick), CT_ELEC_SALT + i32(P.elecStep));
+    var word = ctElecStep(c, ns, roll);
+    ${/\bfn ctFuseTouch\(/.test(contactWGSL) ? `// a flying packet on a face, as V1's fuse step saw a moving neighbour (the react stage's mark), on the step's draw
+    if (word == 0 && id == CT_FUSE) { word = ctFuseTouch(c, packetTouchNow(s), roll); }` : ''}
     if (word != 0) { atomicStore(&act2[V2_ELEC_SCRATCH + s], u32(word)); atomicStore(&wgChanged, 1u); }
   }
   if (!awake) { return; }

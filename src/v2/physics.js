@@ -327,7 +327,10 @@ export class PhysicsV2 {
   /** The decoration plane while V2 owns the box ({ buffer, offset, size } bytes: src/sim.js decoPlane). */
   get decoPlane() { return { buffer: this.aux, offset: this.auxLayout.deco * 4, size: this.g.slots * 4 }; }
   /** The particle pool's decoration words (one a pool slot), for the particle renderer. */
-  get particleDecoRange() { return { buffer: this.aux, offset: this.auxLayout.particleDeco * 4, size: (this.auxLayout.words - this.auxLayout.particleDeco) * 4 }; }
+  get particleDecoRange() { return { buffer: this.aux, offset: this.auxLayout.particleDeco * 4, size: (this.auxLayout.touch - this.auxLayout.particleDeco) * 4 }; }
+  // the flying packets' touch marks (auxLayout touch): stamped by tick, so a restore that sets the tick
+  // back, or replaces the cells, clears them, lest an old mark carry a stamp the next ticks repeat
+  _clearPacketTouch() { if (this.aux) this.gpu.frame.clear(this.aux, this.auxLayout.touch * 4, this.g.slots * 4); }
   _takePlane(from) { const to = this.decoPlane; this.gpu.frame.copy(from.buffer, from.offset, to.buffer, to.offset, to.size); }
   _givePlane(to) { const from = this.decoPlane; this.gpu.frame.copy(from.buffer, from.offset, to.buffer, to.offset, from.size); }
 
@@ -365,6 +368,7 @@ export class PhysicsV2 {
       if (aux) gpu.frame.copy(aux, 0, this.aux, 0, g.slots * 4);
       else gpu.frame.clear(this.aux, 0, g.slots * 4);
     }
+    this._clearPacketTouch();
     gpu.frame.copy(snapshot, 0, this.cells, 0, g.slots * 16);
     gpu.frame.clear(this.liquidScratch);
     gpu.frame.clear(this.jetMask);
@@ -512,6 +516,7 @@ export class PhysicsV2 {
     const state = decodeV2State(bytes, [g.nx, g.ny, g.nz]);
     if (!this.aux && state.aux.some(word => word !== 0)) throw new Error('v2 state: auxiliary owner is unavailable');
     if (this.aux) gpu.write(this.aux, 0, state.aux);
+    this._clearPacketTouch();
     gpu.write(this.cells, 0, state.cells);
     gpu.frame.clear(this.liquidScratch);
     gpu.frame.clear(this.jetMask);

@@ -72,7 +72,8 @@ const D_REACT_DUST_MEC_NB: i32 = ${CONTACT_DUST_MEC_NB};
 const D_REACT_DUST_RICH_AIR: i32 = ${CONTACT_DUST_RICH_AIR};
 const D_REACT_FACE_REQUESTS: u32 = ${AIRBORNE_FACE_REQUESTS}u;
 const D_REACT_SOLID_EDGE: u32 = ${EDGE.SOLID}u;
-struct DReact { particle: Material, host: Material, partners: array<Material, 3>, state: u32, source: vec2u, sink: vec2u, requests: u32 }
+// touch: what it is to each of its host's faces this tick (contact.js ctPacketTouch), for the react stage's marks
+struct DReact { particle: Material, host: Material, partners: array<Material, 3>, state: u32, source: vec2u, sink: vec2u, requests: u32, touch: array<i32, 6> }
 // What sets a flying packet off besides its own rules (src/v2/airborne.js AIRBORNE_NO_CHARGE): a hit set it
 // off (particles.js dShockHit), and a dust packet's speed (cells a tick), dust, flame and hot faces.
 struct DReactCharge { setOff: bool, speed: f32, dust: i32, fire: i32, hot: i32 }
@@ -121,9 +122,17 @@ fn dReactCount(n: vec4u, present: bool) -> vec4i {
 // trailing: the face its host stands in. Its partners come back in inBlock's order (the host's
 // own, where it is one, in host).
 fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u32, inBlock: vec3u, trailing: u32, onFloor: i32, seed: i32, charge: DReactCharge) -> DReact {
-  let refused = DReact(packet, host, array<Material, 3>(faces[inBlock.x], faces[inBlock.y], faces[inBlock.z]), D_REACT_REFUSED, vec2u(0u), vec2u(0u), 0u);
-  let carrier0 = energyMul(D_CARRIER_Q, cTq(packet.core));
   var v = ctUnpack(packet.core, packet.bank);
+  // what it is, as it comes into the tick, to each face but the one its host stands in (V1's moving cell
+  // to its neighbours: react.js nFire, hotTouch), for their own steps after it (ctPacketTouch)
+  var touch: array<i32, 6>;
+  let hostFire = select(0, 1, cid(host.core) == u32(CT_FIRE));
+  for (var f = 0u; f < 2u * dAxes(); f++) {
+    if (f == trailing || ((valid >> f) & 1u) == 0u) { continue; }
+    touch[f] = ctPacketTouch(v, i32(cid(faces[f].core)), hostFire, i32(1u << (f >> 1u)), select(0, 1, inBlock[f >> 1u] == f));
+  }
+  let refused = DReact(packet, host, array<Material, 3>(faces[inBlock.x], faces[inBlock.y], faces[inBlock.z]), D_REACT_REFUSED, vec2u(0u), vec2u(0u), 0u, touch);
+  let carrier0 = energyMul(D_CARRIER_Q, cTq(packet.core));
   // its partners, one an axis: the host where it stands in the face, else the face (none outside the grid)
   var ps: array<CTCell, 3>; var originals: array<vec4u, 3>;
   for (var a = 0u; a < dAxes(); a++) {
@@ -182,7 +191,7 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
   for (var a = 0u; a < dAxes(); a++) {
     if (ps[a].valid != 0 && (ps[a].id == CT_EMPTY || (ps[a].id == CT_FIRE && ps[a].ctype != CT_OXYGEN))) { fullAir++; }
   }
-  v = ctStepAtmosphere(v, ps, seed, outside.x, outside.y, outside.z, outside.w, onFloor, ambientQ);
+  v = ctStepAtmosphere(v, ps, seed, outside.x, outside.y, outside.z, outside.w, onFloor, ambientQ, 0);
   for (var a = 0u; a < dAxes(); a++) {
     if (ps[a].valid == 0) { continue; }
     var pair = ctPairValue(v, ps[a], 0);
@@ -241,14 +250,14 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
   if (v.id == 0) {
     let he = energyAdd(eh, energySub(ev, carrier0));
     if (!energyFits(hm, he)) { return refused; }
-    return DReact(packet, withEnergy(hm, he), partners, D_REACT_GONE, source, sink, flyingRequests);
+    return DReact(packet, withEnergy(hm, he), partners, D_REACT_GONE, source, sink, flyingRequests, touch);
   }
   // A detonation is a cell's event (requests bit 0): a charge set off in flight lands in the air it
   // is in, one carrier for the two, and the block pass after this sets it off there.
   if ((v.request & 1) != 0 && hostId == 0) {
     let le = energySub(energyAdd(ev, eh), carrier0);
     if (!energyFits(vm, le)) { return refused; }
-    return DReact(packet, withEnergy(vm, le), partners, D_REACT_LANDED, source, sink, asked);
+    return DReact(packet, withEnergy(vm, le), partners, D_REACT_LANDED, source, sink, asked, touch);
   }
   if ((v.request & 1) != 0 && ctRow(hostId).kind == 4) {
     // in a gas (a charge in the flames that set it off): it lands, and the gas it displaces flies
@@ -256,12 +265,12 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
     let hostCarrier = energyMul(D_CARRIER_Q, cTq(hm.core));
     let le = energyAdd(energySub(ev, carrier0), hostCarrier); let ge = energySub(eh, hostCarrier);
     if (!energyFits(vm, le) || !packetEnergyFits(hm, ge)) { return refused; }
-    return DReact(withPacketEnergy(hm, ge), withEnergy(vm, le), partners, D_REACT_DISPLACED, source, sink, asked);
+    return DReact(withPacketEnergy(hm, ge), withEnergy(vm, le), partners, D_REACT_DISPLACED, source, sink, asked, touch);
   }
   let carrier1 = energyMul(D_CARRIER_Q, cTq(vm.core));
   let pe = energySub(ev, carrier1);
   let he = energyAdd(eh, energySub(carrier1, carrier0));
   if (!packetEnergyFits(vm, pe) || !energyFits(hm, he)) { return refused; }
-  return DReact(withPacketEnergy(vm, pe), withEnergy(hm, he), partners, D_REACT_FLYING, source, sink, flyingRequests);
+  return DReact(withPacketEnergy(vm, pe), withEnergy(hm, he), partners, D_REACT_FLYING, source, sink, flyingRequests, touch);
 }
 `;

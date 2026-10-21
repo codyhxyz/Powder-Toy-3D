@@ -6,6 +6,8 @@ import { CONTACT_ROWS, CONTACT_PRODUCTS, CONTACT_REACTIONS, CONTACT_RX_INDEX, DU
   CONTACT_DAMP_REACH, CONTACT_DAMP_DRY_Q, CONTACT_CEDAR_BASE, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR, CONTACT_TSNS_MARGIN_Q, CONTACT_PUFF_UNIT } from '../../v2/contact.js';
 import { EDGE } from '../../simModes.js';
 import { CONTACT_ROW_SCHEMA, CONTACT_RX_SCHEMA, contactTableLayout } from '../../v2/contactTable.js';
+import { packetTouchWGSL } from './state.js';
+import { PARTICLE_CAP } from '../../v2/dynamics-reference.js';
 
 const float = n => Number.isInteger(n) ? `${n}.0` : `${n}`;
 const layout = contactTableLayout(CONTACT_ROWS.length, CONTACT_REACTIONS.length);
@@ -215,6 +217,8 @@ fn ctPack(c:CTCell,original:vec4u)->vec4u {
  return core;
 }
 ${specialContactWGSL}
+// a flying packet's touch on a cell this tick (v2/contact.js ctPacketTouch; the airborne react stage's mark)
+${packetTouchWGSL(PARTICLE_CAP)}
 fn contactDensity(core:vec4u)->f32 {
  let id=i32(core.x&255u);let row=ctRow(id);
  if(row.kind==0 || row.kind==4){return row.density*f32(row.spawnQ)/max(4.0,f32(phaseTq(u32(id),(core.x>>8u)&65535u)));}
@@ -280,7 +284,9 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
   let outside=liquidScratch[slotOf(positions[i])].x&255u;
   // V1 react.js counts the box's solid floor as a surface (its sides and lid don't).
   let onFloor=select(0,1,positions[i].y==0 && P.edge==${EDGE.SOLID}u);
-  cells[i]=ctStepAtmosphere(cells[i],ns,ctSeed(positions[i],P.tick),i32(outside&3u),i32((outside>>2u)&3u),i32((outside>>4u)&3u),i32((outside>>6u)&3u),onFloor,contactAmbientQ());
+  // a flying packet in a partner's cell, as V1's react saw a moving neighbour: the react stage's mark here
+  let touch=packetTouchNow(slotOf(positions[i]));
+  cells[i]=ctStepAtmosphere(cells[i],ns,ctSeed(positions[i],P.tick),i32(outside&3u),i32((outside>>2u)&3u),i32((outside>>4u)&3u),i32((outside>>6u)&3u),onFloor,contactAmbientQ(),touch);
  }
  for(var i=0u;i<count;i++){
   for(var axis=0u;axis<u32(ctNeighborCount());axis++){

@@ -194,6 +194,15 @@ export const CONTACT_CONSTANTS = Object.freeze({
   CT_CLOUD_EVAP: ['f32', PHYS.CLOUD_EVAP],
   CT_CLOUD_EVAP_NB: ['i32', PHYS.CLOUD_EVAP_NB],
   CT_STEPS_PER_TICK: ['i32', STEPS_PER_TICK],
+  // A flying packet's touch on a cell beside it (ctPacketTouch, the react stage's mark for the cell's own
+  // step): a flame or burning fuel on its block partner along an axis (CT_TOUCH_FIRE times the axis's bit,
+  // 1 2 4), a flame on a block partner, matter at its ignition point on one, a burning front on one. A
+  // stored mark is these bits under the tick's stamp, CT_TOUCH_STAMP above them (shaders/v2/state.js).
+  CT_TOUCH_FIRE: ['i32', 1],
+  CT_TOUCH_FLAME: ['i32', 8],
+  CT_TOUCH_HOT: ['i32', 16],
+  CT_TOUCH_FRONT: ['i32', 32],
+  CT_TOUCH_STAMP: ['i32', 64],
 });
 for (const key of Object.keys(CONTACT_CONSTANTS)) if (key.slice(3) in E) throw Error(`contact constant ${key} shadows an element id`);
 const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGNUS_B, CT_FLAME_MISS_LOG, CT_OXY_FLAME_MISS_LOG, CT_FLAME_T_MIN, CT_FLAME_T_SPREAD,
@@ -202,7 +211,8 @@ const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGN
   CT_LAMP_HOLD, CT_LAMP_DC_LEVEL, CT_JOULE_WHOLE, CT_JOULE_MILLI, CT_JOULE_MILLI_UNIT, CT_ELEC_PENDING, CT_ELEC_LIFE_UNIT, CT_ELEC_LIFE_MAX,
   CT_ELEC_SPENT_UNIT, CT_ELEC_SPENT_MAX, CT_ELEC_STEPS, CT_ELEC_SALT, CT_FUSE_UNLIT, CT_FUSE_BURN_NUM, CT_FUSE_BURN_DEN, CT_FUSE_HANDOFF_Q,
   CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END, CT_CLONE_CHANCE, CT_PLANT_MISS_LOG, CT_MOSS_MISS_LOG, CT_FUNGUS_MISS_LOG,
-  CT_ACID_EAT, CT_CLOUD_RAIN, CT_CLOUD_RAIN_NB, CT_CLOUD_EVAP, CT_CLOUD_EVAP_NB, CT_STEPS_PER_TICK } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
+  CT_ACID_EAT, CT_CLOUD_RAIN, CT_CLOUD_RAIN_NB, CT_CLOUD_EVAP, CT_CLOUD_EVAP_NB, CT_STEPS_PER_TICK,
+  CT_TOUCH_FIRE, CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_TOUCH_FRONT } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 
 const outSpecs = [];
 function spec(into = 'FIRE') {
@@ -668,7 +678,7 @@ export function ctPerTick(p) {
   return 1.0 - keep;
 }
 export function ctStep(input, ns, seed) {
-  return ctStepAtmosphere(input, ns, seed, 0, 0, 0, 0, 0, CT_AMBIENT_Q);
+  return ctStepAtmosphere(input, ns, seed, 0, 0, 0, 0, 0, CT_AMBIENT_Q, 0);
 }
 
 // Only atmosphere/exposure uses all six faces. Heat, reactions, phase and
@@ -706,7 +716,38 @@ export function ctLick(input, hotFuel, flameQ, smothered, seed) {
   }
   return c;
 }
-export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas, onFloor, ambientQ) {
+// TPT FIRE.cpp's contact ignition (ctStepAtmosphere hotFront): a flame at 350 °C or hotter, or a burning
+// fuel, still alight, at least igniteQ hot, settled this tick (no pair or phase still pending on it).
+export function ctHotFront(b, igniteQ) {
+  const br = ctRow(b.id);
+  return b.done === 0 && b.pending < 0 && (b.request & 5) === 0 && b.tq >= igniteQ && b.life > 0 && ((b.id === E.FIRE && b.tq >= 2493) || (br.burn > 0 && b.burning !== 0));
+}
+// What a flying packet p, as it comes into its tick, is to a cell of faceId on its host's face (v2/airborne.js):
+// a cell like any other, as V1's moving cell was to its neighbours (react.js nFire, hotTouch, nBurning). Its
+// touch (CT_TOUCH_*), for the cell's own step (ctStepAtmosphere: its block partner's, as a cell sees its
+// partners') and, on a fuse, the electric pass's (ctFuseTouch: any face, as V1's fuse step reads six).
+// hostFire: the host cell is itself a flame the cell counts on that face; axisBit: 1, 2, 4 for the face's
+// axis; partner: the face is the cell's block partner this tick (v2/airborne.js inBlockFaces).
+export function ctPacketTouch(p, faceId, hostFire, axisBit, partner) {
+  const pr = ctRow(p.id);
+  const fr = ctRow(faceId);
+  if (partner === 0 && faceId !== E.FUSE) return 0;
+  let touch = 0;
+  if (partner !== 0 && hostFire === 0 && (p.id === E.FIRE || (pr.burn > 0 && p.burning !== 0))) touch = touch + CT_TOUCH_FIRE * axisBit;
+  if (hostFire === 0 && p.id === E.FIRE) touch = touch | CT_TOUCH_FLAME;
+  if (pr.kind !== 0 && pr.kind !== 4 && p.tq >= fr.igniteQ) touch = touch | CT_TOUCH_HOT;
+  if (partner !== 0 && ctHotFront(p, fr.igniteQ)) touch = touch | CT_TOUCH_FRONT;
+  return touch;
+}
+// V1 react.js FUSE, unlit: matter (not gas) at its ignition point beside it lights it, a flame beside it
+// does at CT_FUSE_FLAME_LIGHT a step; from a flying packet on any face (ctPacketTouch), on the electric
+// pass's step with that step's one draw (ctFuseStep's). Its scratch word, or 0.
+export function ctFuseTouch(c, touch, random) {
+  if (c.id !== E.FUSE || c.life < CT_FUSE_UNLIT) return 0;
+  if ((touch & CT_TOUCH_HOT) !== 0 || ((touch & CT_TOUCH_FLAME) !== 0 && random < CT_FUSE_FLAME_LIGHT)) return CT_ELEC_PENDING + ctFuseLife(1);
+  return 0;
+}
+export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas, onFloor, ambientQ, touch) {
   let c = ctCopy(input);
   if (c.done !== 0) return c;
   let air = 0;
@@ -752,7 +793,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     // TPT FIRE.cpp separates contact ignition from bulk thermal transition
     // (upstream uses Flammable/1000). Our hot front uses existing igniteQ,
     // not a new rate; tq is decoded, post-pair/pre-self snapshot temperature.
-    hotFront = hotFront || (b.done === 0 && b.pending < 0 && (b.request & 5) === 0 && b.tq >= r.igniteQ && b.life > 0 && ((b.id === E.FIRE && b.tq >= 2493) || (br.burn > 0 && b.burning !== 0)));
+    hotFront = hotFront || ctHotFront(b, r.igniteQ);
     if (br.kind === 0 || br.kind === 4) gas++;
     else surface++;
     if (b.id === E.CO2) co2++;
@@ -770,6 +811,12 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (ctCloneable(b.id)) growOf = b.id;
     voidTouch = voidTouch || b.id === E.VOID;
   }
+  // A flying packet in a partner's cell (ctPacketTouch: the react stage's mark), as V1's react saw a
+  // moving neighbour: a cell like the rest, its flame or burning (nFire), its heat (hotTouch), its front.
+  fire = fire + (touch & CT_TOUCH_FIRE) + ctDiv(touch & (2 * CT_TOUCH_FIRE), 2 * CT_TOUCH_FIRE) + ctDiv(touch & (4 * CT_TOUCH_FIRE), 4 * CT_TOUCH_FIRE);
+  if ((touch & CT_TOUCH_FLAME) !== 0) flames = flames + 1;
+  hotTouch = hotTouch || (touch & CT_TOUCH_HOT) !== 0;
+  hotFront = hotFront || (touch & CT_TOUCH_FRONT) !== 0;
   // V1 react.js: past its flash point a fuel's vapour carries a flame along it,
   // so air touching a flame and such a fuel catches as if the fuel burned.
   if (flames > 0 && flashFuel > 0) { hotFuel = hotFuel + flashFuel; flameQ = Math.max(flameQ, flashFlameQ); }
@@ -910,7 +957,8 @@ export const CONTACT_KERNEL = [
   [ctNuclearId, ['CTCell'], 'i32'], [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
   [ctGrowerDamp, ['i32', 'i32'], 'i32'], [ctPuff, ['i32', 'i32'], 'i32'], [ctPerTick, ['f32'], 'f32'],
   [ctHotFuel, ['CTCell'], 'bool'], [ctSmothered, ['i32', 'i32'], 'bool'], [ctLick, ['CTCell', 'i32', 'i32', 'bool', 'i32'], 'CTCell'],
-  [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
+  [ctHotFront, ['CTCell', 'i32'], 'bool'], [ctPacketTouch, ['CTCell', 'i32', 'i32', 'i32', 'i32'], 'i32'],
+  [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
   [ctStep, ['CTCell', 'array<CTCell, 3>', 'i32'], 'CTCell'],
 ];
 
@@ -1076,7 +1124,8 @@ export const CONTACT_POSITIONS = Array.from({ length: 8 }, (_, i) => [i & 1, (i 
 // modes: the dispatch's ambient (°C), ambient heat and edge (simModes.js EDGE),
 // as the block pass reads them from its params.
 export const CONTACT_DEFAULT_MODES = Object.freeze({ ambient: PHYS.AMBIENT, ambientHeat: 1, edge: 0 });
-export function contactReference(cores, banks, tick = 0, positions = CONTACT_POSITIONS, pending = new Uint32Array(8), valid = Array(8).fill(true), outside = Array.from({ length: 8 }, () => [0, 0, 0, 0]), modes = CONTACT_DEFAULT_MODES) {
+// touch: each cell's flying-packet touch this tick (ctPacketTouch; the react stage's mark), none by default.
+export function contactReference(cores, banks, tick = 0, positions = CONTACT_POSITIONS, pending = new Uint32Array(8), valid = Array(8).fill(true), outside = Array.from({ length: 8 }, () => [0, 0, 0, 0]), modes = CONTACT_DEFAULT_MODES, touch = Array(8).fill(0)) {
   const ambientQ = contactAmbientQ(modes.ambient), airHeat = +!!modes.ambientHeat;
   let cells = cores.map((core, i) => {
     const c = unpackContact(core, banks[i]); c.request = pending[i]; c.valid = +!!valid[i];
@@ -1100,7 +1149,7 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
   const snapshot = cells.map(ctCopy);
   // V1 react.js counts the box's solid floor as a surface (its sides and lid don't).
   const floorAt = i => +(positions[i][1] === 0 && modes.edge === EDGE_SOLID);
-  cells = cells.map((c, i) => valid[i] ? ctStepAtmosphere(c, CONTACT_FACES[i].map(j => snapshot[j]), seedAt(i), ...outside[i], floorAt(i), ambientQ) : c);
+  cells = cells.map((c, i) => valid[i] ? ctStepAtmosphere(c, CONTACT_FACES[i].map(j => snapshot[j]), seedAt(i), ...outside[i], floorAt(i), ambientQ, touch[i]) : c);
   for (const [i, j] of CONTACT_PAIRS) {
     if (!valid[i] || !valid[j]) continue;
     let pair = ctResolvePhase(cells[i], cells[j]);
@@ -1162,7 +1211,7 @@ export const contactAmbientQ = ambient => Math.min(65535, Math.max(0, Math.round
 CONTACT_KERNEL.push([ctConducts, ['CTCell', 'CTCell', 'i32'], 'bool'], [ctAmbient, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctHeatRoom, ['CTCell', 'i32'], 'i32']);
 CONTACT_KERNEL.push([ctElecMaterial, ['i32'], 'bool'], [ctFuseLife, ['i32'], 'i32'], [ctFuseSteps, ['i32'], 'i32'], [ctFuseStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'],
   [ctElecStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'], [ctFuseApply, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctElecApply, ['CTCell', 'i32', 'i32'], 'CTCell'],
-  [ctElecAirborne, ['CTCell', 'array<CTCell, 6>', 'i32'], 'CTCell']);
+  [ctElecAirborne, ['CTCell', 'array<CTCell, 6>', 'i32'], 'CTCell'], [ctFuseTouch, ['CTCell', 'i32', 'f32'], 'i32']);
 
 // R5 ambient exchange at the open box's faces. The owner counts exposed open
 // side/top faces (not the floor or closed/periodic edges).
