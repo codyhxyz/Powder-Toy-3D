@@ -1,6 +1,7 @@
 import { CELL_M } from '../../scale.js';
 import { E } from '../../elements.js';
 import { FOAM_ROWS } from '../../v2/foam.js';
+import { SHOCK_FALL_M } from '../../v2/dynamics-reference.js';
 
 // Column-run water (docs/v2/water-cost-first-principles.md; the CPU prototype it ports is
 // tools/v2/column-water.mjs). Water is stored exactly as before (16 B core + 4 B bank) and read per (x, z)
@@ -103,6 +104,17 @@ export const RADIAL = {
   // a face's demand word: its quanta, the direction, and each side's cover (frozen with the demand)
   DEMAND_MAX: 0x1fffffff, BACK: 0x80000000, COVERED_MINUS: 0x40000000, COVERED_PLUS: 0x20000000,
 };
+
+// V1's shock on landing (react.js: an explosive landing with ½·μ·u² of at least its blast.shock goes off,
+// common.js hitKE). A liquid charge's shock is a fall (dynamics-reference.js SHOCK_FALL_M: nitroglycerin's
+// NITRO_FALL_M), and a run falls on R1's column law (colFall: v += g to the run speed, a cell a tick at v), so
+// it is the speed (cells/tick) a run reaches falling that far, stepped as V1's fallKE steps V1's own law.
+export function columnFallSpeed(h, g = COLUMN.G) {
+  let v = 0, y = 0;
+  while (y < h / CELL_M) { v = Math.min(v + g, COLUMN.VT); y += v; }
+  return v;
+}
+export const COLUMN_SHOCK = Object.freeze(Object.entries(SHOCK_FALL_M).map(([id, h]) => ({ id: +id, speed: columnFallSpeed(h) })));
 
 // record flags, in the mass word (a run's mass stays under 2^30: 16 383 cells of FULL, or 1 023 of MAX_FILL)
 const REC_FALLING = 0x80000000, REC_LAST = 0x40000000, REC_MASS = 0x3fffffff;
@@ -217,6 +229,8 @@ fn colFill(x: i32, y: i32, z: i32) -> u32 { return cFill(loadCore(slotOf(vec3i(x
 fn colClass(x: i32, y: i32, z: i32) -> u32 { return clsOf(loadCore(slotOf(vec3i(x, y, z)))); }
 fn colCell(x: i32, y: i32, z: i32) -> vec4u { return loadCore(slotOf(vec3i(x, y, z))); }
 fn colPending(x: i32, y: i32, z: i32) -> bool { return (events[slotOf(vec3i(x, y, z))] & 1u) != 0u; }
+// a detonation request on the cell (native-contract.md requests: 1), for this tick's blasts
+fn colDetonate(x: i32, y: i32, z: i32) { let s = slotOf(vec3i(x, y, z)); events[s] = events[s] | 1u; noteEvents(s, events[s]); markBusy(vec3i(x, y, z)); }
 fn colBusy(x: i32, y: i32, z: i32) { markBusy(vec3i(x, y, z)); }
 // any brick of the brick column holding (x, z) is awake: its column was in this tick's runs pass (v2cols's
 // per-column word, one read)
@@ -291,6 +305,32 @@ fn colMarkJet(x: i32, y: i32, z: i32, axis: i32, v: f32) {
   noteJet(brickOfCell(p));
 }
 fn colGravity() -> f32 { if (P.gravMode != 0u) { return 0.0; } return COL_G * P.gravity / COL_G_MS2; }
+// a liquid charge's shock as a landing speed, cells/tick (COLUMN_SHOCK); 0 for every other liquid
+fn colShockSpeed(id: u32) -> f32 {
+${COLUMN_SHOCK.map(r => `  if (id == ${r.id}u) { return ${r.speed}; }`).join('\n')}
+  return 0.0;
+}
+// A run that landed at u cells/tick with its bottom cell at b: V1 react.js sets a charge off on a hit of
+// ½·μ·u² past its shock, μ the mover's own mass on a solid and the reduced mass on loose matter (common.js
+// hitKE: masses as V1's densities, a cell each), never on its own element or a gas (isGasLike). Its shock
+// is ½·m·colShockSpeed², so it goes off when (μ/m)·u² reaches colShockSpeed². Under the box's floor is a
+// WALL only with solid edges (V1 react.js: past a solid edge a face is WALL; past a void one, still air).
+fn colShockLand(x: i32, z: i32, b: i32, u: f32) {
+  let id = cid(colCell(x, b, z));
+  let shock = colShockSpeed(id);
+  if (shock <= 0.0) { return; }
+  var share = 0.0;
+  if (b == 0) {
+    if (P.edge == 0u) { share = 1.0; }
+  } else {
+    let below = colCell(x, b - 1, z);
+    let j = cid(below);
+    let kind = clsOf(below);
+    if (kind == C_SOLID) { share = 1.0; }
+    if ((kind == C_POWDER || kind == C_LIQUID) && j != id) { share = densOfE(j) / (densOfE(id) + densOfE(j)); }
+  }
+  if (share * u * u >= shock * shock) { colDetonate(x, b, z); }
+}
 fn colDampTick(liq: u32) -> f32 { let keep = 1.0 - dampOf(liq); return 1.0 - keep * keep * keep; }
 
 // ---- custody: n of the fill at a moves to b (both air or the same liquid), with its exact share
@@ -598,6 +638,7 @@ fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
     colBusy(x, r0 - d, z); colBusy(x, r1 - 1, z);
   }
   colSetLanes(x, r0 - d, z, speed, a);
+  if (landed) { colShockLand(x, z, r0 - d, v); }
   let impact = v * COL_TICK_HZ * COL_CELL_M;
   if (landed && d > 0 && r0 - d > o0 && colClass(x, r0 - d - 1, z) == C_LIQUID && impact > COL_CROWN_SPEED) {
     colCrown(x, z, r0 - d, r1 - d, d, impact);

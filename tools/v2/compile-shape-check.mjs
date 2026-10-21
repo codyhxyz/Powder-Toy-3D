@@ -13,7 +13,7 @@ import { particlesWGSL } from '../../src/shaders/v2/particles.js';
 import { nativeDynamicsHead, v2BlockWGSL } from '../../src/shaders/v2.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { marksLayout } from '../../src/shaders/common.js';
-import { ctPhase, ctRow, ctConvert, ctSetEnergy, ctEnergy, ctPastPhase, ctProduct, ctNew, CONTACT_ELEMENT_COUNT } from '../../src/v2/contact.js';
+import { ctPhase, ctRow, ctConvert, ctSetEnergy, ctEnergy, ctPastPhase, ctProduct, ctNew, ctPuff, CONTACT_ELEMENT_COUNT } from '../../src/v2/contact.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 
 // 1. call sites in the generated kernels (a definition is not a call)
@@ -32,7 +32,7 @@ for (const dims of [[32, 32, 32], [128, 128, 128]]) {
   }
 }
 
-// 2. ctPhase as it was (one ctConvert a branch), against today's
+// 2. ctPhase as it was (one ctConvert a branch, with phase-blast's puffs), against today's
 function ctPhaseBefore(input, surface, random) {
   if (ctRow(input.id).kind === 3 && input.fill === 0) return ctConvert(input, E.EMPTY, 0);
   let c = ctSetEnergy(input, ctEnergy(input));
@@ -40,15 +40,20 @@ function ctPhaseBefore(input, surface, random) {
   if (r.hotOut >= 0 && ctPastPhase(c, true)) {
     c = ctConvert(c, ctProduct(r.hotOut, random), r.hotOf);
     if (r.hotGas !== 0) {
-      if (c.id !== input.id) c.request = c.request | 2;
-      else if (c.pending >= 0) c.pendingGas = 1;
+      if (c.id !== input.id) c.request = ctPuff(c.request, r.hotGas);
+      else if (c.pending >= 0) c.pendingGas = r.hotGas;
     }
     return c;
   }
   if (r.coldOut >= 0 && ctPastPhase(c, false)) {
     let id = ctProduct(r.coldOut, random);
     if (c.id === E.STEAM && surface === 0) id = E.CLOUD;
-    return ctConvert(c, id, r.coldOf);
+    c = ctConvert(c, id, r.coldOf);
+    if (r.coldGas !== 0) {
+      if (c.id !== input.id) c.request = ctPuff(c.request, r.coldGas);
+      else if (c.pending >= 0) c.pendingGas = r.coldGas;
+    }
+    return c;
   }
   if (c.tq > r.meltQ) return ctConvert(c, E.LAVA, r.meltInto);
   if (c.id === E.LAVA) {

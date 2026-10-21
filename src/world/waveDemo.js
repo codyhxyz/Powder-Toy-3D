@@ -70,7 +70,8 @@ export async function seedWaveDemo(win, kind) {
   const box = { lo: [0, 2, 0], hi: [sim.g.nx - 1, Math.min(sim.g.ny - 1, sea + preset.amplitude + 1), sim.g.nz - 1] };
   const values = { ...preset, sea, waterTemp: ELEMENTS[E.WATER].temp, waterLife: ELEMENTS[E.WATER].life };
   sim.snapshot(kind === 'shore' ? 'Shore wave' : 'Offshore wave');
-  if (native) return kernel.run(box, values);
+  // the wave scrubs the paint of the water it moves under either engine (v2/nativeWeather.js NATIVE_WEATHER_SCRUB)
+  if (native) return kernel.run(box, values, undefined, { scrub: true });
   sim.edit(kernel, box, values, { scrub: true });
   return true;
 }

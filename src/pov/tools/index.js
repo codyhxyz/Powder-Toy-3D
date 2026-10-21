@@ -19,6 +19,7 @@ import { ELEMENTS } from '../../elements.js';
 import { povGpu } from '../gpu.js';
 import { gridSpace } from '../space.js';
 import { createGrappendix } from '../grappendix.js';
+import { tickCounter, nativeSeconds } from '../../v2/host.js';
 
 export { emptyLoads };
 
@@ -192,14 +193,19 @@ export function createToolbelt(env) {
   const ballistics = createBallistics({ renderer: env.renderer });
   ballistics.prepare(env.getSim());
   // Hidden (out of POV, dead) the toolbelt isn't updated, but what's in the air
-  // keeps flying until it lands, at the last frame's step rate.
+  // keeps flying until it lands, at the last frame's step rate; under V2 by the
+  // ticks the world ran since the last call (this loop runs at the display's
+  // rate, not the app's paced frames: the app frame's tick count, read at
+  // every call, flew them twice as fast at 120 Hz).
   let shown = false, lastSteps = 0, raf = 0, rafAt = 0, lastCtx = null;
+  const ticksRun = tickCounter();
   function drive(now) {
     raf = 0;
     if (shown || (!ballistics.count && !wandRuntime.active)) return;
     const dt = rafAt ? (now - rafAt) / MS_PER_S : 0;
     rafAt = now;
-    const ctx = { ...lastCtx, sim: env.getSim(), dt, stepsPerFrame: env.getStepsPerFrame?.() ?? lastSteps,
+    const sim = env.getSim(), stepsPerFrame = sim?.compact ? ticksRun(sim) : env.getStepsPerFrame?.() ?? lastSteps;
+    const ctx = { ...lastCtx, sim, dt, stepsPerFrame, nativeDt: sim?.compact ? nativeSeconds(stepsPerFrame) : undefined,
       primary: false, secondary: false, primaryPressed: false, secondaryPressed: false, wheel: 0 };
     ballistics.update(ctx);
     if (lastCtx) wandRuntime.tick(ctx);
@@ -578,7 +584,7 @@ export function createToolbelt(env) {
       shown = v;
       if (v && wandSelected && wandRuntime.definition) wandRuntime.equip(wandRuntime.definition);
       if (v && raf) { cancelAnimationFrame(raf); raf = 0; }
-      if (!v && (ballistics.count || wandRuntime.active) && !raf) { rafAt = 0; raf = requestAnimationFrame(drive); }
+      if (!v && (ballistics.count || wandRuntime.active) && !raf) { rafAt = 0; ticksRun.reset(env.getSim()); raf = requestAnimationFrame(drive); }
       if (!v) { grapple.release(); editor.close(); putAway(); readout = null; }
     },
     // The window moved over the world by (dx, 0, dz) cells (docs/scaling.md

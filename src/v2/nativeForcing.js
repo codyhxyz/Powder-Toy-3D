@@ -21,8 +21,28 @@ export const NATIVE_LAUNCH_MODE=15;
 //   debris on the grid where V1's take found it.
 // opts.motion: { decls, velocity, flags }: WGSL for the plan's velocity (m/s) from p and r, and a
 // statement adding plan flags (src/v2/industry.js: a deck's carry and a machine's throw differ).
+// opts.vaporise: a change of element into a gas (the laser's core: water to steam, rock to its smoke,
+//   wood to fire) is V1's change in the share of a full cell the cell holds. V1's cells are all full,
+//   and V1's rule makes the gas at its temperature; a V2 liquid holds its fill's share of that cell,
+//   so it takes that share of the energy V1's change gives a full cell, and a thin film carries only
+//   its own share into its steam (a full cell's result is V1's gas exactly). The gas is a fresh cell,
+//   as V2's own boiling makes it (contact.js ctPhase -> ctConvert: ctNew, then the input's energy):
+//   the update's life, no ctype, the cell's seed. A cell whose energy can't be the gas yet keeps its
+//   element with it, for V2's phase to convert, as ctConvert waits (pending) when it can't fit.
 export function nativeForceCommitWGSL(g,params,stage,opts={}) {
   const SI=opts.speedSI ?? WEATHER_SPEED_SI;
+  const vaporise=opts.vaporise ? `
+if(r.before.x!=r.after.x && cls(u32(r.after.x))==C_GAS) {
+ var gas=makeMaterial(u32(r.after.x),r.after.y,FULLU,0u);
+ gas.core=withLife(gas.core,r.after.z);gas.core.w=u32(fract(r.after.w)/${SEED_MAX / 65536})<<16u;
+ var whole=before;var share=FULLU;
+ if(isLiq(before.core)) { share=cFill(before.core);whole.core.y=(before.core.y&0xff000000u)|FULLU; }
+ let e=energyAdd(energyOf(before),energyScale(energySub(energyOf(gas),energyOf(whole)),share,FULLU));
+ var out=before;
+ if(energyFits(gas,e)) { out=withEnergy(gas,e); } else if(energyFits(before,e)) { out=withEnergy(before,e); }
+ if(any(out.core!=before.core) || out.bank!=before.bank) { noteEnergySource(p,energySub(energyOf(out),energyOf(before)));storeMaterial(s,before,out);markBusy(p); }
+ return;
+}` : '';
   const sources=opts.sources ? `
 if(r.before.x!=r.after.x) {
  let made=u32(r.after.x);
@@ -82,7 +102,7 @@ fn forcePacketHeat(m: Material, r: WeatherResult) -> Material {
 `;
   if(stage==='plan') return head+weatherMain(`if(i>=weatherCount()) { return; }
 let p=weatherCell(i);let s=slotOf(p);let r=results[i];let before=loadMaterial(s);
-let id=cid(before.core);let k=cls(id);var flags=0u;${sources}${renameNow}
+let id=cid(before.core);let k=cls(id);var flags=0u;${sources}${renameNow}${vaporise}
 if(r.before.x!=r.after.x) { flags=2u|(u32(r.after.x)<<8u); }
 if((k==2u || k==3u || flags!=0u) && r.motion.w!=0.0) { flags|=1u; }
 ${opts.motion?.flags ?? ''}${opts.sparse?'if(flags!=0u) { ':''}plans[s]=ForcePlan(${opts.motion?.velocity ?? `r.motion.xyz*${SI}`},flags);${opts.sparse?' }':''}
@@ -121,36 +141,47 @@ export function createNativeForceKernel(sim,name,spec) {
   const kernels=[evaluate,particles,plan,commit,air],ready=Promise.all(kernels.map(k=>k.ready));ready.catch(()=>{});
   // defer: leave the launches planned for the caller's flush (dynamics.flushLaunch) after the take
   // it records next: V1's melee took its chips before any step could move them (tools/melee.js).
-  return {ready,get isReady(){return kernels.every(k=>k.state==='ready') && d.isReady;},run(box,values,source,{defer=false}={}) {
+  // parts: [{ box, values }], one writer's boxes in place of `box` (the laser's beam segments:
+  // shaders/povBore.js LASER_SEGMENT), each evaluated with its own values over its own box, all on
+  // the same frozen grid, then planned in turn into one plan clear and one allocation. Their rule
+  // must leave every cell to one part (it changes nothing elsewhere) and the commit must be sparse,
+  // or a later part's empty plans would clear an earlier part's. `box` is then their union, the
+  // particles' (each particle is evaluated once, with `values` alone).
+  return {ready,get isReady(){return kernels.every(k=>k.state==='ready') && d.isReady;},run(box,values,source,{defer=false,parts=null}={}) {
     if(kernels.some(k=>k.state!=='ready') || !d.isReady || sim.disposed || sim.compactOwner!==o || !box) return false;
-    const dims=[sim.g.nx,sim.g.ny,sim.g.nz];box={lo:box.lo.map(v=>Math.max(0,Math.ceil(v))),hi:box.hi.map((v,a)=>Math.min(dims[a]-1,Math.floor(v)))};
-    if(box.lo.some((v,a)=>v>box.hi[a])) return false;
+    if(parts && !spec.commit?.sparse) throw Error(`${name}: parts need a sparse commit`);
+    const dims=[sim.g.nx,sim.g.ny,sim.g.nz],clip=b=>({lo:b.lo.map(v=>Math.max(0,Math.ceil(v))),hi:b.hi.map((v,a)=>Math.min(dims[a]-1,Math.floor(v)))});
+    const empty=b=>b.lo.some((v,a)=>v>b.hi[a]);
+    box=clip(box);
+    if(empty(box)) return false;
     const limit=Math.min(gpu.limits?.maxStorageBufferBindingSize??128*1024*1024,gpu.limits?.maxBufferSize??Infinity);
     const chunks=[];
-    function split(b) {
+    function split(b,own) {
       const count=b.hi.reduce((n,v,a)=>n*(v-b.lo[a]+1),1);
-      if(count*64<=limit) {chunks.push({box:b,count});return;}
+      if(count*64<=limit) {chunks.push({box:b,count,own});return;}
       const a=b.hi.map((v,a)=>v-b.lo[a]).indexOf(Math.max(...b.hi.map((v,a)=>v-b.lo[a])));
       const cut=Math.floor((b.lo[a]+b.hi[a]+1)/8)*4;
       if(cut<=b.lo[a] || cut>b.hi[a]) throw Error('Native force scratch cannot fit binding limit');
-      const left={lo:[...b.lo],hi:[...b.hi]},right={lo:[...b.lo],hi:[...b.hi]};left.hi[a]=cut-1;right.lo[a]=cut;split(left);split(right);
+      const left={lo:[...b.lo],hi:[...b.hi]},right={lo:[...b.lo],hi:[...b.hi]};left.hi[a]=cut-1;right.lo[a]=cut;split(left,own);split(right,own);
     }
-    split(box);if(65536*64>limit) return false;
+    if(!parts) split(box,null);
+    else for(const part of parts) { const b=clip(part.box); if(!empty(b)) split(b,part.values); }
+    if(!chunks.length || 65536*64>limit) return false;
     o.sync();
     const buffer=n=>gpu.createBuffer({label:name+' force results',size:n*64,usage:0x80});
     const entries=(buffers,start=0)=>buffers.map((buffer,i)=>({binding:start+i,resource:{buffer}}));
     const group=(layout,scratch,particle=false)=>gpu.bindGroup(layout,[...(source?[{binding:0,resource:{buffer:source}}]:[]),...entries([scratch,...(particle?[d.particles]:[])],1)],name);
     const commitGroup=scratch=>gpu.bindGroup(commitLayout,entries([scratch,d.air[d.airIndex],d.plans,d.particles]),name);
-    const p=b=>({...nativeModes(sim),...values,editLo:b.lo,editHi:b.hi,tick:o.tick+1,origin:[sim.origin.x,sim.origin.y,sim.origin.z]});
-    const dispatch=(k,n,bind,b,physical=false)=>k.dispatch(gpu.frame,fold(Math.ceil(n/64)),{bind,header:physical?sim.readHeader({physical:true}):sim.header(),params:p(b)});
+    const p=(b,own)=>({...nativeModes(sim),...values,...own,editLo:b.lo,editHi:b.hi,tick:o.tick+1,origin:[sim.origin.x,sim.origin.y,sim.origin.z]});
+    const dispatch=(k,n,bind,b,physical=false,own=null)=>k.dispatch(gpu.frame,fold(Math.ceil(n/64)),{bind,header:physical?sim.readHeader({physical:true}):sim.header(),params:p(b,own)});
     // Every predicate, including strike's neighbour walk, sees the SAME frozen grid.
-    for(const c of chunks) { c.scratch=buffer(c.count);dispatch(evaluate,c.count,[sim.tables,sim.bindPhysicalRO,group(evalLayout,c.scratch)],c.box,true); }
+    for(const c of chunks) { c.scratch=buffer(c.count);dispatch(evaluate,c.count,[sim.tables,sim.bindPhysicalRO,group(evalLayout,c.scratch)],c.box,true,c.own); }
     const particleScratch=buffer(65536);dispatch(particles,65536,[sim.tables,sim.bindPhysicalRO,group(particleLayout,particleScratch,true)],box,true);
     d.flushLaunch?.(); // (a launch left for an earlier take: these plans are the next)
     gpu.frame.clear(d.plans);
     for(const c of chunks) {
-      const bind=[o.nativeDynamics.group,commitGroup(c.scratch)];dispatch(plan,c.count,bind,c.box);
-      const bricks=c.box.hi.reduce((n,v,a)=>n*(Math.floor(v/4)-Math.floor(c.box.lo[a]/4)+1),1);dispatch(air,bricks,bind,c.box);
+      const bind=[o.nativeDynamics.group,commitGroup(c.scratch)];dispatch(plan,c.count,bind,c.box,false,c.own);
+      const bricks=c.box.hi.reduce((n,v,a)=>n*(Math.floor(v/4)-Math.floor(c.box.lo[a]/4)+1),1);dispatch(air,bricks,bind,c.box,false,c.own);
     }
     if(defer) d.deferLaunch(o.tick+1); else d._allocate(o.tick+1,{mode:NATIVE_LAUNCH_MODE});
     dispatch(commit,65536,[o.nativeDynamics.group,commitGroup(particleScratch)],box);

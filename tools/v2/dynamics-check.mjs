@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { E } from '../../src/elements.js';
 import { gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
+import { AIRBORNE_COLOURS } from '../../src/v2/airborne.js';
 import { PARTICLE_CAP, DT, CELL_M, AIR, packParticle, unpackParticle, ballistic, sweep,
   stableId, resolveDeposits, allocateSources, impact, blastPlan, exchangeScalar, airSource, airQuiet } from '../../src/v2/dynamics-reference.js';
 const close=(a,b,e=1e-9)=>assert.ok(Math.abs(a-b)<=e,`${a} != ${b}`);
@@ -119,7 +120,7 @@ test('particle tick: one-invocation clear samples the live count before hold; re
   d.holdSession={token:1,position:[0,0,0],target:[0,0,0],radius:1,strength:1,lastTick:1};
   calls.length=0;d.advanceParticles(1);
   assert.deepEqual(calls.map(c=>[c.name,c.size]),[['v2particles_clear',[1,1,1]],['v2particles_holdCOM',[1,1,1]],
-    ['v2particles_holdApply',[1024,1,1]],...['integrate','elect','impact','deposit','reactClaim','elect','react'].map(s=>[`v2particles_${s}`,[1024,1,1]]),['v2blasts_airborneEvents',[1024,1,1]]]);
+    ['v2particles_holdApply',[1024,1,1]],...['integrate','elect','impact','deposit','reactClaim','reactDust',...Array(AIRBORNE_COLOURS).fill('react')].map(s=>[`v2particles_${s}`,[1024,1,1]]),['v2blasts_airborneEvents',[1024,1,1]]]);
   assert.equal(d.flight.size,(PARTICLE_CAP+1)*32,'one flight record per slot, then the sweep record');
   const snapshot=await d.snapshotDynamicState();d.holdSession=null;snapshot.holdSession=null;
   for(const slot of [0,7,PARTICLE_CAP-1]) snapshot.particles.set(new Uint32Array(packParticle({id:slot+1,position:[1,2,3],velocity:[0,0,0],...matter()})),slot*12);

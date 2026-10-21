@@ -1263,7 +1263,9 @@ export class Simulation {
     if (this.compactOwner?.isReady && !native?.isReady) throw new Error('Native world shift is not ready');
     // Synchronize/project before moving either representation. Legacy shifting
     // is a cache move, never permission to reimport the entire native grid.
-    this.compactOwner?.exportLegacy();
+    // (Only the running owner projects: a suspended one, after a runtime switch to V1, shadows V1's cells,
+    // which are V1's own. native.shift syncs it first, importing V1's writes, as exportLegacy would.)
+    this.compact?.exportLegacy();
     native?.shift(dx, dz);
     this.pingPong(true);   // (out of place: a box the native engine owns holds one copy)
     const f = this.gpu.frame, size = fold(Math.ceil(this.g.slots / 64)), shift = [dx, 0, dz];

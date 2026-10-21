@@ -208,7 +208,8 @@ export function createOceanEvents() {
         sea, time: frame / C.stepsPerSecond, chop, surge, wind,
         source: event?.source ?? [0, 0], direction: event?.direction ?? [1, 0],
       };
-      if (r.native) r.force.run({ lo, hi }, values, r.columns);
+      // a surge scrubs the paint of what it floods under either engine (v2/nativeWeather.js NATIVE_WEATHER_SCRUB)
+      if (r.native) r.force.run({ lo, hi }, values, r.columns, { scrub: !!surge });
       else sim.edit(r.force, { lo, hi }, values, { bind: [{ buffer: r.columns }], scrub: !!surge });
       // Keep the original phase when 60Hz ticks straddle a 240Hz-authored
       // pulse boundary (30 old ticks = 7.5 native ticks). Skip missed pulses

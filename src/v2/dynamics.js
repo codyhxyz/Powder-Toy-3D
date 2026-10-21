@@ -13,6 +13,7 @@ import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M, EVENT } from './dynamics-reference.js';
 import { NATIVE_LAUNCH_MODE } from './nativeForcing.js';
 import { CONTACT_PUFF_UNIT as PUFF_UNIT } from './contact.js';   // a GAS request's puff rides above its flags
+import { AIRBORNE_COLOURS, packAirborne } from './airborne.js';
 // listArgs: control and the dispatch args, nothing else (it writes the args it publishes).
 export const LISTS_LAYOUT = storageLayout(2);
 
@@ -228,8 +229,14 @@ export class NativeDynamics {
     this._work(); this._rays(tick);
     this._record('particles','clear',1,tick); this._hold(tick);
     for (const stage of ['integrate','elect','impact','deposit']) this._record('particles',stage,PARTICLE_CAP/64,tick);
-    // what is still flying takes part, as V1's moving cells did (src/v2/airborne.js)
-    for (const stage of ['reactClaim','elect','react']) this._record('particles',stage,PARTICLE_CAP/64,tick);
+    // what is still flying takes part, as V1's moving cells did (src/v2/airborne.js): each packet
+    // joins its cell's list (a dust packet counts its dust faces once all have), then the cells'
+    // lists run a colour at a time, so no two whose footprints overlap run together, with the block
+    // pass's partition offset this tick
+    this._record('particles','reactClaim',PARTICLE_CAP/64,tick);
+    this._record('particles','reactDust',PARTICLE_CAP/64,tick); // a dust cloud's faces, before any walker clears its notes
+    const offset=this.owner._params?.(tick)?.offset??[0,0,0];
+    for (let colour=0;colour<AIRBORNE_COLOURS;colour++) this._record('particles','react',PARTICLE_CAP/64,tick,{airborne:packAirborne(offset,colour)});
     this._record('blasts','airborneEvents',PARTICLE_CAP/64,tick);
   }
   applyExternalBlast(request) {
@@ -374,8 +381,8 @@ export class NativeDynamics {
     if (!this.isReady || this.disposed) return {status:'rejected',reason:'native dynamics not ready'};
     const mode=request?.mode,position=finiteVector(request?.position),destination=finiteVector(request?.target??request?.position);
     const direction=finiteVector(request?.direction??[0,0,0]),radius=request?.radius??1,dt=request?.dt??1/60;
-    const strength=request?.strength??12;
-    if (!['hold','fling','punt'].includes(mode) || !position || !destination || !direction ||
+    const strength=request?.strength??12,carried=finiteVector(request?.velocity??[0,0,0]);
+    if (!['hold','fling','punt'].includes(mode) || !position || !destination || !direction || !carried ||
       !safeDynamicNumber(radius) || radius<0 || !safeDynamicNumber(strength) || strength<0 || !safeDynamicNumber(dt) || dt<0 || dt>0.25)
       return {status:'rejected',reason:'invalid native physgun request'};
     if(this.sequence>=0xfffffffe) return {status:'rejected',reason:'native tool sequence exhausted'};
@@ -388,7 +395,8 @@ export class NativeDynamics {
         this._record('particles','holdSelect',PARTICLE_CAP/64,tick,params);
         this._record('blasts','toolPlan',Math.ceil(this.g.slots/64),tick,params);this._allocate(tick,params);
       }
-      this.holdSession.target=[...destination];this.holdSession.strength=strength;this.holdSession.lastTick=tick;
+      // velocity: the target's own (m/s), the spring's feed-forward (pov physgun: V1's carry, the hold point's motion)
+      this.holdSession.target=[...destination];this.holdSession.strength=strength;this.holdSession.lastTick=tick;this.holdSession.velocity=carried;
       return {status:'queued',requestId:this.holdSession.token,controller:'critically-damped COM',clockHz:60};
     }
     const token=this.holdSession?.token??0,norm=Math.hypot(...direction),velocity=direction.map(v=>norm?v/norm*strength:0);
@@ -400,7 +408,7 @@ export class NativeDynamics {
   _hold(tick) {
     const hold=this.holdSession;if(!hold) return;
     if(tick-hold.lastTick>8) { this.releasePhysgun();return; }
-    const params={mode:9,sequence:hold.token,center:hold.target,strength:hold.strength,radius:1/60};
+    const params={mode:9,sequence:hold.token,center:hold.target,strength:hold.strength,radius:1/60,vector:hold.velocity??[0,0,0]};
     this._record('particles','holdCOM',1,tick,params);
     this._record('particles','holdApply',PARTICLE_CAP/64,tick,params);
   }

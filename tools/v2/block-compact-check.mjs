@@ -13,6 +13,7 @@ import { setFall } from '../../src/v2/fall.js';
 import * as C from '../../src/v2/contact.js';
 import { modeWGSL } from '../../src/shaders/v2/modes.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
+import { V2_ELECTRIC_KERNELS } from '../../src/shaders/v2/electric.js';
 import { ARGS2, V2_KERNELS, WGSL_CHECK, v2BlockWGSL, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockCompactLayout, v2Rows, v2Table } from '../../src/shaders/v2.js';
 import { buildFixture } from './frame-bench.mjs';
 import { wgslGroupingErrors, assertNaga, importMinified } from './wgsl-grouping.mjs';
@@ -234,7 +235,8 @@ async function record(contact, limits = {}, expectCompact = contact === contactW
     assert.deepEqual(commands.slice(supportAt, supportAt + 2).map(c => c.name), ['v2support', 'v2block']);
     assert.equal(commands[supportAt + 1].size.offset, 24);
     assert.equal(engine.liquidScratch.size, g.slots * 16);
-    assert.equal(compiled.length, V2_KERNELS.length);
+    // (and the electric pass's, wherever the contact module carries the electric rules)
+    assert.equal(compiled.length, V2_KERNELS.length + (/\bfn\s+ctElecStep\s*\(/.test(contact) ? V2_ELECTRIC_KERNELS.length : 0));
     assert.equal(engine.kernels.v2block.code, v2BlockWGSL(g, contact));
   }
 }
