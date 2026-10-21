@@ -273,7 +273,7 @@ As implemented (`sim.updateDirty`, `shaders/passes.js` dirtyFrag, `gfx/regions.j
     projects to. Too little left untouched to pay for the bookkeeping, so it isn't done.
   - GI blends its probes every frame, each traced every other frame, and its sources read the previous probes for
     bounce light, so its values keep moving everywhere the blend hasn't settled in half floats, and a change
-    reaches every probe whose rays (up to about 18 bricks) cross it. Nothing local stays fixed to skip.
+    reaches every probe whose rays (to the box's edge since 2026-10-20; about 18 bricks then) cross it. Nothing local stays fixed to skip.
 - **Proofs:**
   - `tools/regress.mjs`, settled, `--motion` and `--motion --detail on`: AE 0 on all 21 views, both for the D9 branch
     against the `scale` it came from and for `scale` after the merge (with the D7 flags and the D11 window) against

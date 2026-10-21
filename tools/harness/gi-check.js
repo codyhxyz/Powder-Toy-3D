@@ -47,7 +47,7 @@ import { E, ELEMENTS, R } from '/src/elements.js';
 import { brickIdOf } from '/src/shaders/common.js';
 import { LOOK, LAMP_GLOW } from '/src/gfx/materials.js';
 import { LAMP_DC } from '/src/electricity.js';
-import { GI, giGatherFrag, giProbeCount, giGatherDispatch } from '/src/shaders/gi.js';
+import { GI, giGatherFrag, giProbeCount, giGatherDispatch, giSteps } from '/src/shaders/gi.js';
 import { SH_Y0, SH_Y1, SKYVIS_OPEN_DC } from '/src/shaders/gfx/lighting.js';
 import { SKY, skyState, airMass } from '/src/gfx/sky.js';
 import { GI_BLEND } from '/src/sim.js';
@@ -231,11 +231,13 @@ function refProbe(g, bc, src, dirs, beyond) {
   for (let i = 0; i < GI.RAYS; i++) {
     const d = dirs[i], d2 = d.map((x) => x * x);
     let T = 1;
-    const L = [0, 0, 0], q = bc.map((v) => v + 0.5);
-    for (let k = 0; k < GI.STEPS; k++) {
-      const stride = k < GI.NEAR_STEPS ? 1 : GI.FAR_STRIDE;
+    const L = [0, 0, 0], pc = bc.map((v) => v + 0.5), q = [...pc];
+    // to the grid's edge (giSteps); the Box march leaps the bricks without matter, whose giSrc is zero, so it
+    // reads what this reads; step k lands giAlong(k) bricks from the probe
+    for (let k = 0; k < giSteps(g); k++) {
+      const along = Math.min(k + 1, GI.NEAR_STEPS) + Math.max(k + 1 - GI.NEAR_STEPS, 0) * GI.FAR_STRIDE;
       for (let j = 0; j < 3; j++) {
-        q[j] = f(q[j] + f(d[j] * stride));
+        q[j] = f(pc[j] + f(d[j] * along));
         const fr = q[j] - Math.floor(q[j]);
         if (Math.min(fr, 1 - fr) > 0 && Math.min(fr, 1 - fr) < AMB) amb = true;
       }
