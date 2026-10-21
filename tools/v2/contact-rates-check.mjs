@@ -67,6 +67,32 @@ test('acid: V1 react.js ACID_USE a step per acid neighbour, compounded per partn
   boundary(chance, PHYS.ACID_USE * PARTNER, s => C.ctAcid(cell(E.ACID), cell(E.STONE), s).changed !== 0, 13);
 });
 
+test('acid: V1 react.js spends ACID_USE of its life a step per victim, eaten or not', () => {
+  // V1 (react.js ACIDIC): life -= ACID_USE · victims every step; at life <= 0 it is smoke or air.
+  // One victim face: dead at the first step whose f32 countdown from its spawn life reaches 0.
+  let life = Math.fround(ELEMENTS[E.ACID].life ?? 1), v1Steps = 0;
+  while (life > 0) { life = Math.fround(life - Math.fround(PHYS.ACID_USE)); v1Steps++; }
+  // V2: that face is a block partner every other tick (PARTNER_STEPS steps a time), and each time
+  // it spends PARTNER_STEPS steps' worth, whether or not its draw dissolves the victim
+  assert.equal(C.CONTACT_CONSTANTS.CT_ACID_SPENT[1], Math.round(PHYS.ACID_USE * PARTNER * 2048));
+  const miss = seedIn(constant('CT_ACID_EAT'), 1, 13);
+  let acid = cell(E.ACID), times = 0;
+  const full = acid.life;
+  while (acid.id === E.ACID && times < 1000) {
+    const r = C.ctAcid(acid, cell(E.STONE), miss); times++;
+    assert.equal(r.b.id, E.STONE, 'a missed draw leaves its victim');
+    if (r.a.id === E.ACID) assert.equal(r.a.life, Math.max(0, full - times * C.CONTACT_CONSTANTS.CT_ACID_SPENT[1]), `partnered ${times}: life spent though nothing dissolved`);
+    acid = r.a;
+  }
+  assert.ok(acid.id === E.EMPTY || acid.id === E.SMOKE, 'used up, smoke or air');
+  // it runs out in the partnered tick that holds V1's last step (V2's ~9x longer life before)
+  assert.equal(times, Math.ceil(v1Steps / PARTNER), `${times} partnered ticks for V1's ${v1Steps} steps`);
+  // eating, it spends the same (and leaves smoke or air where the victim was)
+  const hit = seedIn(0, constant('CT_ACID_EAT'), 13), r = C.ctAcid(cell(E.ACID), cell(E.STONE), hit);
+  assert.equal(r.a.life, full - C.CONTACT_CONSTANTS.CT_ACID_SPENT[1]);
+  assert.ok(r.b.id === E.EMPTY || r.b.id === E.SMOKE);
+});
+
 test('cloud: its own rule on its six faces every tick, STEPS_PER_TICK of V1 react.js steps, not a partner correction', () => {
   // V1: r < CLOUD_RAIN·max(nCloud - CLOUD_RAIN_NB, 0) a step, nCloud of six; V2 counts three partners
   // and doubles them (an unbiased estimate of six), so its tick is STEPS steps, not PARTNER_STEPS

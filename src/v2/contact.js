@@ -185,6 +185,10 @@ export const CONTACT_CONSTANTS = Object.freeze({
   // V1 react.js acid: what it eats dissolves with chance ACID_USE a step per acid neighbour; per
   // present partner pair, PARTNER_STEPS steps' worth compounded.
   CT_ACID_EAT: ['f32', 1 - (1 - PHYS.ACID_USE) ** PARTNER_STEPS],
+  // ...and the acid spends ACID_USE of its life a step per victim beside it (react.js ACIDIC:
+  // life -= ACID_USE * victims), whether or not it dissolves one: per present victim partner,
+  // PARTNER_STEPS steps' worth, in life's LIFE_SCALE units.
+  CT_ACID_SPENT: ['i32', Math.round(PHYS.ACID_USE * PARTNER_STEPS * LIFE_SCALE)],
   // V1 react.js cloud: it rains with chance CLOUD_RAIN a step per cloud neighbour past CLOUD_RAIN_NB,
   // and evaporates with CLOUD_EVAP a step per air neighbour past CLOUD_EVAP_NB (times its saturation).
   // Its own rule, run every tick on its six faces' counts as twice its three partners' (an unbiased
@@ -211,7 +215,7 @@ const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGN
   CT_LAMP_HOLD, CT_LAMP_DC_LEVEL, CT_JOULE_WHOLE, CT_JOULE_MILLI, CT_JOULE_MILLI_UNIT, CT_ELEC_PENDING, CT_ELEC_LIFE_UNIT, CT_ELEC_LIFE_MAX,
   CT_ELEC_SPENT_UNIT, CT_ELEC_SPENT_MAX, CT_ELEC_STEPS, CT_ELEC_SALT, CT_FUSE_UNLIT, CT_FUSE_BURN_NUM, CT_FUSE_BURN_DEN, CT_FUSE_HANDOFF_Q,
   CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END, CT_CLONE_CHANCE, CT_PLANT_MISS_LOG, CT_MOSS_MISS_LOG, CT_FUNGUS_MISS_LOG,
-  CT_ACID_EAT, CT_CLOUD_RAIN, CT_CLOUD_RAIN_NB, CT_CLOUD_EVAP, CT_CLOUD_EVAP_NB, CT_STEPS_PER_TICK,
+  CT_ACID_EAT, CT_ACID_SPENT, CT_CLOUD_RAIN, CT_CLOUD_RAIN_NB, CT_CLOUD_EVAP, CT_CLOUD_EVAP_NB, CT_STEPS_PER_TICK,
   CT_TOUCH_FIRE, CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_TOUCH_FRONT } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 
 const outSpecs = [];
@@ -1079,17 +1083,22 @@ export function ctAcid(a0, b0, seed) {
   let b = ctCopy(b0);
   if (ctRow(a.id).acid === 0 || ctRow(b.id).edible === 0 || a.done !== 0 || b.done !== 0) return ctPairValue(a, b, 0);
   a.busy = 1; b.busy = 1;
-  if (ctRoll(seed, 13) >= CT_ACID_EAT) return ctPairValue(a, b, 0);
+  // V1 react.js ACIDIC: the victim beside it spends its life every step, eaten or not (CT_ACID_SPENT)
+  a.life = Math.max(0, a.life - CT_ACID_SPENT);
+  const eats = ctRoll(seed, 13) < CT_ACID_EAT;
+  if (!eats && a.life > 0) return ctPairValue(a, b, 0);
+  const spent = ctCopy(a);
   const energy = ctAdd(ctEnergy(a), ctEnergy(b));
   const fizz = ctRow(b.id).fizz;
-  a.life = Math.max(0, a.life - 246);
   let product = E.EMPTY;
   if (ctRoll(seed, 14) < 0.3) product = E.SMOKE;
-  b = ctInherit(ctNew(product, b.tq, 65536), b);
+  if (eats) b = ctInherit(ctNew(product, b.tq, 65536), b);
+  // used up (react.js: life <= 0), it leaves smoke or air, eating or not
   if (a.life === 0) a = ctInherit(ctNew(product, a.tq, 65536), a);
   let pair = ctBalance(a, b, energy, 41093);
-  if (pair.changed === 0) return ctPairValue(a0, b0, 0);
-  if (fizz !== 0) pair.b.request = pair.b.request | 2;
+  // (no room for the change: it waits, its life spent, as V1's ran out regardless)
+  if (pair.changed === 0) return ctPairValue(spent, ctCopy(b0), 0);
+  if (eats && fizz !== 0) pair.b.request = pair.b.request | 2;
   return pair;
 }
 export function ctSwallow(a0, b0, seed) {
