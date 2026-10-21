@@ -27,7 +27,8 @@ import { fold } from '../../gpu/kernels.js';
 // small and the contact module still compiles once, in the block pass.
 const ELECTRIC_ROOTS = ['ctElecMaterial', 'ctElecStep', 'ctElecApply', 'ctUnpack', 'ctPack', 'ctSeed', 'ctRoll', 'ctNew'];
 const PACKET_TOUCH_ROOTS = ['ctFuseTouch', 'packetTouchNow'];
-export function electricContactWGSL(contactWGSL) {
+// touch: keep the flying packets' marks for a fuse (the gather's step; the commit applies its word)
+export function electricContactWGSL(contactWGSL, touch = false) {
   const parts = [], fns = new Map();
   let at = 0;
   const fnHead = /^fn\s+(\w+)\s*\(/;
@@ -50,7 +51,7 @@ export function electricContactWGSL(contactWGSL) {
   const keep = new Set(), todo = ELECTRIC_ROOTS.filter(n => fns.has(n));
   if (todo.length !== ELECTRIC_ROOTS.length) throw Error('electric pass: the contact module lacks its electric rules');
   // a fuse lit by a flying packet beside it (ctFuseTouch), where the contact module has the packets' marks
-  for (const n of PACKET_TOUCH_ROOTS) if (fns.has(n)) todo.push(n);
+  if (touch) for (const n of PACKET_TOUCH_ROOTS) if (fns.has(n)) todo.push(n);
   while (todo.length) {
     const name = todo.pop();
     if (keep.has(name)) continue;
@@ -73,7 +74,7 @@ fn elecListed(e: u32, awake: bool) -> u32 {
 
 export const v2ElecGatherWGSL = (g, contactWGSL = productionContactWGSL) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
-${electricContactWGSL(contactWGSL)}
+${electricContactWGSL(contactWGSL, true)}
 ${listWGSL}
 var<workgroup> wgChanged: atomic<u32>;
 // List a brick for this tick's later steps, once.
