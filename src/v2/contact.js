@@ -1114,7 +1114,6 @@ export function ctAcid(a0, b0, seed) {
   a.life = Math.max(0, a.life - CT_ACID_SPENT);
   const eats = ctRoll(seed, 13) < CT_ACID_EAT;
   if (!eats && a.life > 0) return ctPairValue(a, b, 0);
-  const spent = ctCopy(a);
   const energy = ctAdd(ctEnergy(a), ctEnergy(b));
   const fizz = ctRow(b.id).fizz;
   let product = E.EMPTY;
@@ -1123,8 +1122,8 @@ export function ctAcid(a0, b0, seed) {
   // used up (react.js: life <= 0), it leaves smoke or air, eating or not
   if (a.life === 0) a = ctInherit(ctNew(product, a.tq, 65536), a);
   let pair = ctBalance(a, b, energy, 41093);
-  // (no room for the change: it waits, its life spent, as V1's ran out regardless)
-  if (pair.changed === 0) return ctPairValue(spent, ctCopy(b0), 0);
+  // (no room for the change: nothing changes this tick)
+  if (pair.changed === 0) return ctPairValue(a0, b0, 0);
   if (eats && fizz !== 0) pair.b.request = pair.b.request | 2;
   return pair;
 }
