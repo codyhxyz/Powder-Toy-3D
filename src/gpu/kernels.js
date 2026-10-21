@@ -30,14 +30,18 @@ export const STAGE = Object.freeze({ VERTEX: 1, FRAGMENT: 2, COMPUTE: 4 });
 export const PIPELINE_BUDGET_MS = 30000;
 /** The fewest native pipeline compilations running at once (B5): a weak machine's, and every machine's before 2026-10-20. */
 export const PIPELINE_CONCURRENCY_MIN = 2;
-/** The most: past six a cold set gains nothing on an M5 (10 cores), its longest kernels being its floor. */
-export const PIPELINE_CONCURRENCY_MAX = 8;
+/**
+ * The most. Past four at once each compile slows sharply (an M5, four performance cores of ten, one
+ * cold v2block each: +6% two at once, +13% four, +50% six, +86% eight), and that stretches the longest
+ * pipeline, the World's volume (~24 s cold), which is a World load's floor and has a 30 s deadline.
+ */
+export const PIPELINE_CONCURRENCY_MAX = 4;
 /** Cores left to the page's main thread, the browser's GPU process and the compositor while shaders compile. */
 export const PIPELINE_SPARE_CORES = 4;
 /**
  * Native pipeline compilations running at once, including foreground builds (B5), from the CPU's
- * logical cores. Metal compiles a pipeline on one core and separate builds scale almost linearly
- * (an M5, a 139-kernel set: 10.6 s two at a time, 6.2 s four, 5.2 s six, 5.3 s eight).
+ * logical cores. Metal compiles a pipeline on one core and separate builds scale almost linearly up
+ * to the performance cores (an M5, the 139 V2 kernels: 10.6 s two at a time, 6.2 s four).
  * Intentional (user request, 2026-10-20: "MAKE IT LOAD FAST"): speed on a cold start, after every
  * deploy, over the two-build bound's lighter load; a machine with few cores keeps two.
  * @param {number} [cores] navigator.hardwareConcurrency

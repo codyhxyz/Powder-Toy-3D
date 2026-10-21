@@ -12,10 +12,11 @@ An unavailable adapter alone does not prove a particular browser or driver fault
   Imported source maps retain the optimized original-art renderer.
 - Our pipeline cache permits a bounded number of active builds per device,
   across foreground and idle work: the logical cores less four, at least two
-  and at most eight (`pipelineConcurrency`, src/gpu/kernels.js). The user chose
+  and at most four (`pipelineConcurrency`, src/gpu/kernels.js). The user chose
   speed on 2026-10-20 ("MAKE IT LOAD FAST"): until then it was always two, and
-  Metal's compiles scale almost linearly with cores. A machine with six cores
-  or fewer keeps two. Three.js manages its own pipelines separately.
+  Metal's compiles scale almost linearly up to the performance cores (past four
+  each slows sharply, which would stretch the World volume toward its 30 s
+  deadline). A machine with six cores or fewer keeps two. Three.js manages its own pipelines separately.
 - Each active pipeline build has a 30-second deadline. This includes layout
   error-scope responses, but excludes queue time.
 - The first fatal error rejects queued and pending builds, cancels idle jobs,

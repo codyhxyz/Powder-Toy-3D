@@ -375,12 +375,14 @@ react.dispatch(f, { indirect: sim.args, offset: ARGS.REACT }, { bind, header, pa
   its pipelines at once. A pipeline still pending when needed: the view keeps the previous variant or draws without
   the volume and keeps `pacer.wake()`ing; a POV tool's use waits.
 - **Concurrency.** `PIPELINE_CONCURRENCY` (src/gpu/kernels.js `pipelineConcurrency`) is the logical cores less four
-  (`PIPELINE_SPARE_CORES`: the main thread, the GPU process, the compositor), at least two and at most eight. The user
+  (`PIPELINE_SPARE_CORES`: the main thread, the GPU process, the compositor), at least two and at most four. The user
   chose speed on 2026-10-20 ("MAKE IT LOAD FAST"): it was two everywhere until then. A cold pipeline compiles on one
-  core in Metal's compiler service, and separate builds scale almost linearly: on an M5 (10 cores) the 139 V2 kernels
-  take 10.6 s two at a time, 6.2 s four, 5.2 s six and 5.3 s eight, where the longest kernels are the floor. Every
-  start-up guarantee holds at any bound (docs/gpu-startup-safety.md): each active build's 30 s deadline, the first
-  fatal error stopping queued and active work, failures surfaced.
+  core in Metal's compiler service, and separate builds scale almost linearly up to the performance cores: on an M5
+  (four of its ten cores) the 139 V2 kernels take 10.6 s two at a time and 6.2 s four. Past four each compile slows
+  sharply (one cold v2block: +13% four at once, +50% six, +86% eight), which would stretch the longest pipeline, the
+  World's volume (~24 s cold: a World load's floor, under a 30 s deadline). Every start-up guarantee holds at any
+  bound (docs/gpu-startup-safety.md): each active build's 30 s deadline, the first fatal error stopping queued and
+  active work, failures surfaced.
 - **three's pipelines.** three creates a mesh's pipeline synchronously at its first draw (`WebGPUPipelineUtils.js:262`)
   unless it was compiled with `compileAsync` (`:291`). Every module that adds a new kind of mesh to the scene
   (figure, vehicle, billboard pool, ghost, marker) first awaits `three.compileAsync(object, camera, scene)`

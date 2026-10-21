@@ -644,14 +644,15 @@ for (const stage of ['module', 'layout', 'native']) {
 // under two, never over the cap, and every guarantee above holds at it.
 await test('pipeline concurrency scales with the cores: a floor of two, a cap, the machine\'s own', () => {
   assert.equal(PIPELINE_CONCURRENCY_MIN, 2);
-  for (const [cores, slots] of [[null, 2], [NaN, 2], [0, 2], [1, 2], [4, 2], [6, 2], [8, 4], [10, 6], [12, 8], [64, PIPELINE_CONCURRENCY_MAX]]) {
+  assert.equal(PIPELINE_CONCURRENCY_MAX, 4);
+  for (const [cores, slots] of [[null, 2], [NaN, 2], [0, 2], [1, 2], [4, 2], [5, 2], [6, 2], [7, 3], [8, 4], [10, 4], [64, 4]]) {
     assert.equal(pipelineConcurrency(cores), slots, `${cores} cores: ${slots} at once`);
   }
   assert.equal(PIPELINE_CONCURRENCY, pipelineConcurrency(globalThis.navigator?.hardwareConcurrency));
 });
 
-await test('at a scaled bound, foreground and idle builds share its slots, and a failure still stops all of them', async (t) => {
-  const slots = 6;
+await test('at the scaled bound, foreground and idle builds share its slots, and a failure still stops all of them', async (t) => {
+  const slots = PIPELINE_CONCURRENCY_MAX;
   const f = await fixture(t, { concurrency: slots });
   const now = Array.from({ length: 8 }, (_, i) => pipe(f.gpu, i, { kind: i % 2 ? 'render' : 'compute' }));
   const idle = Array.from({ length: 8 }, (_, i) => pipe(f.gpu, 100 + i, { build: 'idle' }));
