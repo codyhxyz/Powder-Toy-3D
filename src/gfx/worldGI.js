@@ -1,5 +1,6 @@
 // Disabled continuous-world GI producer. Inputs/history/publication are explicit;
 // this is not the application's scheduler, cold-history replay, or frame gate.
+import { cachedPipelines } from './pipelineCache.js';
 import { GiParams, giBgBlend } from '../shaders/gi.js';
 import { worldGISource, worldGIGather, worldGILayouts, WORLD_GI_PARAMS_BYTES, WORLD_GI_GROUND_PER_WORD } from '../shaders/worldGI.js';
 import { validateWorldGIInitialization } from '../world/worldLightingHistory.js';
@@ -10,10 +11,13 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
     !snapshotProvider?.acquire || !snapshotProvider.isCurrent || typeof readerBindingProvider !== 'function' || !feedbackProvider?.layout || !feedbackProvider.reserve) throw new TypeError('explicit world GI providers required');
   const device = gpu.device ?? gpu, queue = device.queue, size = [g.nx, g.ny, g.nz];
   const resources = createLightingResources(device), transport = createLightingTransport(device);
-  const sourceLayouts = worldGILayouts().map(entries => device.createBindGroupLayout({ entries }));
-  const gatherLayouts = [...sourceLayouts.slice(0, 3), device.createBindGroupLayout({ entries: worldGILayouts({ gather: true })[3] })];
-  const pipeline = (code, layouts, label) => device.createComputePipelineAsync({ label, layout: device.createPipelineLayout({ bindGroupLayouts: layouts }), compute: { module: device.createShaderModule({ code }), entryPoint: 'main' } });
-  const ready = Promise.all([pipeline(worldGISource(g), sourceLayouts, 'world GI source'), pipeline(worldGIGather(g), gatherLayouts, 'world GI gather')]);
+  // (one set per device and grid: gfx/pipelineCache.js)
+  const { sourceLayouts, gatherLayouts, ready } = cachedPipelines(device, `world GI ${JSON.stringify(g)}`, () => {
+    const sourceLayouts = worldGILayouts().map(entries => device.createBindGroupLayout({ entries }));
+    const gatherLayouts = [...sourceLayouts.slice(0, 3), device.createBindGroupLayout({ entries: worldGILayouts({ gather: true })[3] })];
+    const pipeline = (code, layouts, label) => device.createComputePipelineAsync({ label, layout: device.createPipelineLayout({ bindGroupLayouts: layouts }), compute: { module: device.createShaderModule({ code }), entryPoint: 'main' } });
+    return { sourceLayouts, gatherLayouts, ready: Promise.all([pipeline(worldGISource(g), sourceLayouts, 'world GI source'), pipeline(worldGIGather(g), gatherLayouts, 'world GI gather')]) };
+  });
   let dead = false, serial = 0, active = null;
   const pending = new Set();
   // Every handle's output, for carry(): a published one, or an incomplete

@@ -1,4 +1,5 @@
 // Disabled phase-4 producer, not an application scheduler or frame gate.
+import { cachedPipelines } from './pipelineCache.js';
 import { worldSunWriter, worldSunWriterLayouts } from '../shaders/worldSunWriter.js';
 import { worldSunCoarse, worldSunCoarseLayouts } from '../shaders/worldSunCoarse.js';
 import { WorldSunParams, worldSunProjection, WORLD_SUN_PITCH } from '../world/worldSun.js';
@@ -38,13 +39,17 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
   const device=gpu.device??gpu, queue=device.queue;
   if(!g||![g.nx,g.ny,g.nz].every(n=>Number.isInteger(n)&&n>0)||!sourceFieldSnapshotProvider?.acquire||!sourceFieldSnapshotProvider.isCurrent||typeof readerBindingProvider!=='function'||!feedbackProvider?.layout||!feedbackProvider.reserve) throw new TypeError('explicit world metadata, pinned snapshot, bindings and feedback providers required');
   const grid=Object.freeze({...g}), size=[g.nx,g.ny,g.nz], descriptors=worldSunWriterLayouts();
-  const layouts=descriptors.map((entries,i)=>device.createBindGroupLayout({label:`world sun ${i}`,entries}));
-  const ready=device.createComputePipelineAsync({label:'full world optical sun',layout:device.createPipelineLayout({bindGroupLayouts:layouts}),compute:{module:device.createShaderModule({code:worldSunWriter(grid)}),entryPoint:'main'}});
-  // Far tiles' coarse writer (world/worldSunRings.js): its own small module, so
-  // the full writer's and the view's stay as they were. It shares the job and
-  // feedback group layouts, so one job/feedback bind group serves either.
-  const coarseLayouts=worldSunCoarseLayouts().map((entries,i)=>i>=2?layouts[i]:device.createBindGroupLayout({label:`world coarse sun ${i}`,entries}));
-  const coarseReady=Promise.resolve(device.createComputePipelineAsync({label:'world coarse sun',layout:device.createPipelineLayout({bindGroupLayouts:coarseLayouts}),compute:{module:device.createShaderModule({code:worldSunCoarse(grid)}),entryPoint:'main'}}));
+  // (one set per device and grid: gfx/pipelineCache.js)
+  const {layouts,ready,coarseLayouts,coarseReady}=cachedPipelines(device,`world sun ${JSON.stringify(grid)}`,()=>{
+    const layouts=descriptors.map((entries,i)=>device.createBindGroupLayout({label:`world sun ${i}`,entries}));
+    const ready=device.createComputePipelineAsync({label:'full world optical sun',layout:device.createPipelineLayout({bindGroupLayouts:layouts}),compute:{module:device.createShaderModule({code:worldSunWriter(grid)}),entryPoint:'main'}});
+    // Far tiles' coarse writer (world/worldSunRings.js): its own small module, so
+    // the full writer's and the view's stay as they were. It shares the job and
+    // feedback group layouts, so one job/feedback bind group serves either.
+    const coarseLayouts=worldSunCoarseLayouts().map((entries,i)=>i>=2?layouts[i]:device.createBindGroupLayout({label:`world coarse sun ${i}`,entries}));
+    const coarseReady=Promise.resolve(device.createComputePipelineAsync({label:'world coarse sun',layout:device.createPipelineLayout({bindGroupLayouts:coarseLayouts}),compute:{module:device.createShaderModule({code:worldSunCoarse(grid)}),entryPoint:'main'}}));
+    return {layouts,ready,coarseLayouts,coarseReady};
+  });
   coarseReady.catch(()=>{});
   // GPU copies of coarse heightfields (worldCoarseCasters), by identity.
   const coarseSources=new Map();let coarseSerial=0;

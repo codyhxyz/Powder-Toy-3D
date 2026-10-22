@@ -1,4 +1,5 @@
 // Full original six-pass glow on a bounded construction core, no app switch.
+import { cachedPipelines } from './pipelineCache.js';
 import { worldGlow, worldGlowLayouts, WORLD_GLOW_AXES, WORLD_GLOW_SUPPORT } from '../shaders/worldGlow.js';
 import { BU, TU, uint, frozenArray, worldLightingIndex, validateLightingInput, sameLightingProvenance, createLightingResources, completeLightingBatch, createLightingTransport } from './worldLightingBatch.js';
 const product = a => a.reduce((n, v) => n * v, 1);
@@ -19,8 +20,11 @@ export function createWorldGlow(gpu, { g, emissionProvider, submissionProvider }
   if (!g || !emissionProvider?.acquire || !emissionProvider.isCurrent || !submissionProvider?.reserve) throw new TypeError('explicit complete emission/submission providers required');
   const device = gpu.device ?? gpu, queue = device.queue, size = [g.nx, g.ny, g.nz], resources = createLightingResources(device);
   const transport = createLightingTransport(device);
-  const layouts = [false, true].map(last => device.createBindGroupLayout({ entries: worldGlowLayouts({ last })[0] }));
-  const ready = Promise.all(layouts.map((layout, i) => device.createComputePipelineAsync({ label: `world glow ${i ? 'half' : 'float'}`, layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }), compute: { module: device.createShaderModule({ code: worldGlow({ last: i === 1 }) }), entryPoint: 'main' } })));
+  // (one set per device and grid: gfx/pipelineCache.js)
+  const { layouts, ready } = cachedPipelines(device, `world glow ${JSON.stringify(g)}`, () => {
+    const layouts = [false, true].map(last => device.createBindGroupLayout({ entries: worldGlowLayouts({ last })[0] }));
+    return { layouts, ready: Promise.all(layouts.map((layout, i) => device.createComputePipelineAsync({ label: `world glow ${i ? 'half' : 'float'}`, layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }), compute: { module: device.createShaderModule({ code: worldGlow({ last: i === 1 }) }), entryPoint: 'main' } }))) };
+  });
   let dead = false, serial = 0, active = null;
   const pending = new Set(), alive = () => { if (dead) throw new Error('world glow disposed'); };
   const drop = p => { if (p && --p.refs === 0) p.owned.forEach(r => r.destroy()); };
