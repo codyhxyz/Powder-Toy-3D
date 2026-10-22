@@ -968,7 +968,7 @@ export class Simulation {
   }
 
   /**
-   * Whole-grid shift kernels registered by the derived passes and whitewater
+   * Whole-grid shift kernels registered by the derived passes
    * (docs/webgpu.md E: every shift kernel runs out of place, D8.12): fn(dx, dz, frame).
    * @param {(dx: number, dz: number, f: object) => void} fn
    */
@@ -978,13 +978,11 @@ export class Simulation {
   // cells, whole supertiles: cell p takes the state of p + (dx, 0, dz), so the
   // content moves the other way and stays put in the world. Cells shifted in
   // from outside are still air until the caller fills them (world/window.js:
-  // the generator, then stored edits, both edits over the slab). Out of place,
-  // into the other copy with fresh flags; the next map draws every unit
-  // (forceAll), so its first step's react rewrites the other copy before
-  // anything reads it and no syncCopies is needed (docs/webgpu.md D6, G1). The
-  // flow field moves with the cells; the derived passes and whitewater move
-  // their own (onShift). Undo snapshots keep the window where they were taken
-  // (undo maps them across).
+  // the generator, then stored edits, both edits over the slab). V2 moves its
+  // own cells (v2/integration.js shift); the V1-format cache moves out of place
+  // only before the owner presents the window. The flow field moves with the
+  // cells; the derived passes move their own (onShift). Undo snapshots keep the
+  // window where they were taken (undo maps them across).
   shift(dx, dz) {
     if (dx % SUPER_CELLS.x || dz % SUPER_CELLS.z) {
       throw new Error(`shift ${dx}, ${dz}: must be whole supertiles (${SUPER_CELLS.x} × ${SUPER_CELLS.z} cells)`);
@@ -1027,17 +1025,6 @@ export class Simulation {
     // only the slab and the edges (docs/webgpu.md E); without that, all of it
     if (!this.derived?.shiftsBricks) this.changedAll = true;
     this.wake();
-  }
-
-  /**
-   * A shift kernel for a field of two words per slot (the flow field's; whitewater
-   * shifts its aeration halves with it): records src → dst shifted by (dx, 0, dz).
-   * @param {GPUBindGroup} group L.FLOW_SHIFT: src (read) at 0, dst (read_write) at 1
-   */
-  shiftField(group, dx, dz) {
-    this._dispatch(this.passOf('flowShift'), fold(Math.ceil(this.g.slots / 64)), {
-      bind: [this.tables, this.gpu.emptyGroup, group], params: { shift: [dx, 0, dz] },
-    });
   }
 
   blankState() {
@@ -1336,17 +1323,14 @@ export class Simulation {
    * with the open frame and the box it writes ({ lo, hi }: inclusive grid
    * cells, clipped): the layer copies what it needs of the box's cells (their
    * element ids) in the first and clears the decoration of each cell whose
-   * element changed in the second. The move carries its plane, a u32 per
-   * slot (0: none), with the cells (shaders/move.js): sim.decoPlane says
-   * where it is ({ buffer, offset, size } in bytes; it moves when whitewater
-   * comes or goes, keeping its words: bind it again then). Only blocks that
-   * run write it: a block that empties a cell clears its word, and air in a
-   * skipped block keeps the word it had (main's gather rewrote every cell
-   * each step). null detaches it. (Attach through here, not by setting
-   * sim.deco: the plane is made here. Once attached, every running block of
-   * the move reads and writes 8 more words while the layer's `active` isn't
-   * false (decoCarried: an inactive layer keeps its plane all 0), so make it
-   * on first use: decoFactory, ensureDeco.)
+   * element changed in the second. V2's passes carry its plane, a u32 per
+   * slot (0: none), with the cells (v2/physics.js decoPlane, in its aux):
+   * sim.decoPlane says where it is ({ buffer, offset, size } in bytes: the
+   * owner's once it presents the grid, this sim's own buffer before). null
+   * detaches it. (Attach through here, not by setting sim.deco: the plane is
+   * made here. While the layer's `active` isn't false the passes carry it
+   * (decoCarried: an inactive layer keeps its plane all 0), so make it on
+   * first use: decoFactory, ensureDeco.)
    */
   attachDeco(deco) {
     this.deco = deco ?? null;
