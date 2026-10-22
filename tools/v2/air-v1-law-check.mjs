@@ -128,4 +128,30 @@ for (const sign of [1, -1]) {
   close(momentum, dv * keep, 0.1, 'a wind stroke\'s draft after 0.1 s');
   assert.ok(V1_AIR.vMax === PHYS.V_MAX * LEGACY_STEP_HZ * CELL_M, 'air speed caps at V_MAX');
 }
+// 4. EL-8: a bolt's strike (src/shaders/lightning.js: the open cells within strikeR + STRIKE_P_REACH take
+//    STRIKE_P) cracks the rock under it in V1 (react.js: dP 160 > ROCK's hard·P_BREAK_PER_HARD 150). Folded
+//    into V2's bricks as a mean (nativeWeather.js air) it never reaches that; read per cell at the commit
+//    (V1_PRESSURE_BREAK_WGSL), as V1's next step reads it, it does.
+{
+  const { BOLT, STORM } = await import('../../src/bolt.js');
+  const { V1_PRESSURE_BREAK_WGSL, nativeWeatherCommitWGSL, nativeWeatherParams } = await import('../../src/v2/nativeWeather.js');
+  const { nativeForceCommitWGSL } = await import('../../src/v2/nativeForcing.js');
+  const { gridLayout } = await import('../../src/sim.js');
+  const rock = ELEMENTS[E.ROCK], floor = 10, strike = [16.5, floor + 0.5, 16.5], reach = STORM.STRIKE_R + BOLT.STRIKE_P_REACH;   // a natural strike
+  const struck = new Map(); // open cells the strike sets, by brick
+  for (let y = floor; y < N; y++) for (let z = 0; z < N; z++) for (let x = 0; x < N; x++) {
+    if (Math.hypot(x + 0.5 - strike[0], y + 0.5 - strike[1], z + 0.5 - strike[2]) >= reach) continue;
+    const b = brick(x >> 2, y >> 2, z >> 2); struck.set(b, (struck.get(b) ?? 0) + 1);
+  }
+  const strength = rock.hard * PHYS.P_BREAK_PER_HARD, brickMax = Math.max(...struck.values()) * BOLT.STRIKE_P / AIR_CELLS ** 3;
+  assert.ok(brickMax < strength, `a strike folded into bricks stays under rock's ${strength} (${brickMax.toFixed(1)}): the gap EL-8 found`);
+  // V1's rule on the strike's own cells: the rock cell under the strike, open above at STRIKE_P, rock below
+  assert.ok(BOLT.STRIKE_P - 0 > strength, 'V1 cracks the rock under a strike');
+  const breakP = new RegExp(`case ${E.ROCK}u: \\{ return ${strength.toFixed(4)}; \\}`);
+  assert.match(V1_PRESSURE_BREAK_WGSL, breakP, 'the commit breaks rock at V1\'s hard·P_BREAK_PER_HARD');
+  assert.match(V1_PRESSURE_BREAK_WGSL, new RegExp(`case ${E.ROCK}u: \\{ return ${E[rock.breakInto]}; \\}`), 'into its V1 debris');
+  const g = gridLayout(16, 16, 16), params = nativeWeatherParams('bolt', { params: { strikeR: 'f32' } });
+  assert.match(nativeWeatherCommitWGSL(g, params, 'material'), /let broke=wPressureBreak\(p,r\);/, 'the weather commit (a bolt) breaks per cell');
+  assert.match(nativeForceCommitWGSL(g, params, 'plan'), /let broke=wPressureBreak\(p,r\); if\(broke>=0\) \{ flags=2u/, 'the force commit (a wand, the Pressure tool) plans the fracture');
+}
 console.log('air V1 law CPU: sealed and open blast decay, held Pressure and Vacuum, wind draft drag match V1 react.js (no GPU)');
