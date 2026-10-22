@@ -20,6 +20,7 @@ import { WorldRenderAtlas, READY } from '../src/world/renderAtlas.js';
 import { BrickStore } from '../src/world/store.js';
 import { gridDims } from '../src/shaders/common.js';
 import { worldClassifyBatches, WORLD_CLASSIFY_BRICKS, WORLD_CLASSIFY_COLUMNS } from '../src/wire/worldRender.js';
+import { HistoryCopies } from '../src/world/fieldHistory.js';
 
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? +args[i + 1] : d; };
 const VERBOSE = args.includes('--verbose');
@@ -83,17 +84,32 @@ const perRow = batches.length / ROWS;
 assert(Number.isInteger(perRow) && batches.every((b) => b.length === batches[0].length), 'fixture rows split into equal whole-core batches');
 assert(batches[0].length <= WORLD_CLASSIFY_BRICKS, 'fixture batches are classify-sized');
 
-const rows = [], gpuTotal = () => Object.values(gpu.counts).reduce((a, b) => a + b, 0);
+// The field history copies a batch's pages in a dispatch a copy run and pool
+// slab, with a bind group a slab (world/fieldHistory.js HistoryCopies): a run
+// across a slab's edge takes a dispatch more, and the batch that fills a slab
+// makes the next. Where the edges fall is the pool's size, not a batch's work,
+// so those count apart, bounded below; every other command must match its
+// twin's exactly.
+const history = cells.fields.history, copy = { dispatches: 0, runs: 0, groups: 0 }, copyKernel = cells.fields.historyCopy.kernel, dispatch = copyKernel.dispatch;
+copyKernel.dispatch = function (...a) { copy.dispatches++; return dispatch.apply(this, a); };
+const begin = HistoryCopies.prototype.begin, bindGroup = gpu.bindGroup;
+HistoryCopies.prototype.begin = function (...a) { copy.runs++; return begin.apply(this, a); };
+gpu.bindGroup = function (layout, entries, name) { if (layout === cells.fields.historyCopy.layout) copy.groups++; return bindGroup.call(this, layout, entries, name); };
+const rows = [], gpuTotal = () => Object.values(gpu.counts).reduce((a, b) => a + b, 0) - copy.dispatches - copy.groups - history.slabs.length;
 for (const [k, requirements] of batches.entries()) {
   if (k) await new Promise((r) => setTimeout(r, 0));
-  const e0 = counter.entries, g0 = gpuTotal(), t0 = performance.now(), options = { fieldTick: 0, requirements, smoothing: 1 };
+  const e0 = counter.entries, g0 = gpuTotal(), d0 = copy.dispatches, r0 = copy.runs, s0 = history.slabs.length, t0 = performance.now(), options = { fieldTick: 0, requirements, smoothing: 1 };
   // As a load's classify does: the batch's source columns a task at a time.
   while (cells.recordSourceColumns(gpu.frame, options, WORLD_CLASSIFY_COLUMNS)) gpu.flush();
   const h = cells.record(gpu.frame, options);
   gpu.flush();
   const p = cells.commitAfterSourceFlush(h); p.previousLightingSnapshot.release();
   const ms = performance.now() - t0;
-  rows.push({ k, row: Math.floor(k / perRow), slot: k % perRow, n: requirements.length, resident: atlas.live.cell.size, entries: counter.entries - e0, gpu: gpuTotal() - g0, ms });
+  rows.push({ k, row: Math.floor(k / perRow), slot: k % perRow, n: requirements.length, resident: atlas.live.cell.size, entries: counter.entries - e0, gpu: gpuTotal() - g0, ms,
+    copyDispatches: copy.dispatches - d0, copyRuns: copy.runs - r0, slabs: history.slabs.length - s0 });
+  // A run's copies are pages allocated together (a load's): at most one slab edge apart.
+  const last = rows.at(-1);
+  assert(last.copyDispatches <= 2 * last.copyRuns, `batch ${k}: ${last.copyDispatches} history copy dispatches for ${last.copyRuns} copy runs`);
   if (VERBOSE) console.log(JSON.stringify(rows.at(-1)));
 }
 assert.equal(atlas.live.cell.size, bricks.length, 'every requested brick has a CELL page');
@@ -110,5 +126,5 @@ for (let slot = 0; slot < perRow; slot++) {
 }
 const early = rows.filter((r) => r.row === EARLY_ROW), late = rows.filter((r) => r.row === LATE_ROW);
 const us = (list) => (1000 * list.reduce((a, r) => a + r.ms, 0) / list.reduce((a, r) => a + r.n, 0)).toFixed(1);
-console.log(`PASS a CELL batch's operations do not grow with resident pages: row ${EARLY_ROW} (${early[0].resident} resident) vs row ${LATE_ROW} (${late[0].resident}), Map/Set entries ${early.map((r) => r.entries).join('/')} vs ${late.map((r) => r.entries).join('/')} (+${(100 * worst).toFixed(2)}%), GPU commands ${early[0].gpu} each`);
+console.log(`PASS a CELL batch's operations do not grow with resident pages: row ${EARLY_ROW} (${early[0].resident} resident) vs row ${LATE_ROW} (${late[0].resident}), Map/Set entries ${early.map((r) => r.entries).join('/')} vs ${late.map((r) => r.entries).join('/')} (+${(100 * worst).toFixed(2)}%), GPU commands ${early[0].gpu} each, and ${early[0].copyDispatches} history copy dispatches for ${early[0].copyRuns} copy runs`);
 console.log(`(info, not checked) ${us(early)} vs ${us(late)} us a brick; ${bricks.length} bricks in ${batches.length} batches`);

@@ -1,5 +1,5 @@
 // Delayed CPU native-command fake, NOT WGSL execution or GPU parity.
-import { FieldTestGPU } from './field-test-gpu.mjs';
+import { FieldTestGPU, FIELD_HISTORY_KERNEL, fieldHistoryCopy } from './field-test-gpu.mjs';
 import { gridDims, cellSlot, brickIdOf } from '../src/shaders/common.js';
 import { worldSlotCell, auxTexel, pageTexel } from '../src/world/renderAtlas.js';
 const bytes=b=>new Uint8Array(b.bytes);
@@ -43,7 +43,7 @@ export class CellTestGPU extends FieldTestGPU {
   kernel(desc){
     const k={...desc,state:'ready',ready:Promise.resolve(),dispatch:(frame,size,opts={})=>{
       desc.params?.pack(opts.params);const frozen={...opts,params:opts.params?structuredClone(opts.params):undefined,header:opts.header?structuredClone(opts.header):undefined};
-      this._push(()=>{this.onExecute?.(k,frozen);if(desc.name==='fieldEma')this._ema(desc,frozen);else if(desc.name==='fieldPeak')this._peak(frozen);else if(desc.name==='world owned classifier')this._classify(frozen);else if(desc.name.endsWith(' raw source'))this._generate(frozen);},{name:desc.name,opts:frozen});
+      this._push(()=>{this.onExecute?.(k,frozen);if(desc.name==='fieldEma')this._ema(desc,frozen);else if(desc.name==='fieldPeak')this._peak(frozen);else if(desc.name==='world owned classifier')this._classify(frozen);else if(desc.name.endsWith(' raw source'))this._generate(frozen);else if(desc.name===FIELD_HISTORY_KERNEL&&this.emulateCopies)fieldHistoryCopy(desc,frozen);},{name:desc.name,opts:frozen});
       this.onDispatch?.(k,frozen);
     }};this.kernels.push(k);return k;
   }

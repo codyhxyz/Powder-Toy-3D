@@ -156,6 +156,7 @@ jobs:
       - run: npm run check:world-native-preflight   # actual Three cache/native-backend completion; CPU stubs, no GPU claims
       - run: npm run check:world-cells   # actual Source/Fields/classified CELL native transport + Naga, not GPU parity
       - run: node tools/world-cell-cost-cpu-check.mjs   # a World load's CELL batch counts the same Map/Set work and GPU commands at 8x the resident pages (CPU, counting fake GPU)
+      - run: node tools/world-field-copies-cpu-check.mjs   # a big map's field-history page copies: O(1) dispatches a batch, no native copy a page, every bit moved (CPU-executed WGSL + Naga, fake GPU)
       - run: node tools/world-tick-repack-cpu-check.mjs   # a big map's next field tick packs only the CELL pages that changed: none with no change, never past the page cap (CPU, counting fake GPU)
       - run: npm run check:world-gi-glow   # shared world GI/glow producers, bounded history/native recording + Naga; NOT application activation
       - run: npm run check:world-gi-birth   # explicit native-history initialization/adoption; CPU fake transport, no app activation
