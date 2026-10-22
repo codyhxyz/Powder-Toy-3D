@@ -49,22 +49,62 @@ export function nativeWeatherParams(name, spec) {
 // other at its brick's. Only a write that moved pressure next to the cell can break it (the brick field
 // alone is couplePlan's), and only a cell the writer left as it was. Returns the debris or -1.
 const breakable = ELEMENTS.filter(e => e.kind === K.SOLID && e.breakInto && E[e.breakInto] !== undefined);
+// V1's front goes on through the solids it breaks (react.js): a broken solid is debris, which holds air from the
+// step after it broke (Pr is 0 the step a solid breaks), taking P_FRONT of its strongest open neighbour and P_DECAY
+// a step. So the layer behind a broken one reads WRITER_LAYER_KEEP of the front on it, a layer a step later: a
+// rocket's PULSE_P (140) breaks wood (100) two layers deep, brick (60) five. writerLayersBroken is the walk's CPU
+// twin (tools/v2/air-v1-law-check.mjs holds it to V1's per-cell law); WRITER_LAYERS bounds it where P_MAX's front
+// passes the weakest breakable solid.
+export const WRITER_LAYER_KEEP = PHYS.P_FRONT * PHYS.P_DECAY ** 2;
+const WEAKEST_BREAK = Math.min(...breakable.map(e => e.hard * PHYS.P_BREAK_PER_HARD));
+export const WRITER_LAYERS = (() => { let n = 1; while (PHYS.P_MAX * WRITER_LAYER_KEEP ** n > WEAKEST_BREAK) n++; return n; })();
+/** The layers a writer's pressure `open` (legacy) on the open face of a wall breaks: strengths (hard·P_BREAK_PER_HARD) nearest first. */
+export function writerLayersBroken(open, strengths) {
+  let n = 0; while (n < strengths.length && n < WRITER_LAYERS && open * WRITER_LAYER_KEEP ** n > strengths[n]) n++;
+  return n;
+}
 export const V1_PRESSURE_BREAK_WGSL = `
+const W_LAYERS: i32 = ${WRITER_LAYERS};
+const W_LAYER_KEEP: f32 = ${WRITER_LAYER_KEEP};
+const W_NONE: f32 = 3e38;   // wLayerP's none: no strength reaches it
 fn wBreakInto(id: u32) -> i32 { switch id { ${breakable.map(e => `case ${e.id}u: { return ${E[e.breakInto]}; }`).join(' ')} default: { return -1; } } }
 fn wBreakP(id: u32) -> f32 { switch id { ${breakable.map(e => `case ${e.id}u: { return ${(e.hard * PHYS.P_BREAK_PER_HARD).toFixed(4)}; }`).join(' ')} default: { return 3e38; } } }
+fn wInBox(q: vec3i) -> bool { return all(q>=P.editLo) && all(q<=P.editHi); }
+// A cell's element as the writer leaves it: its result in the box (frozen: never a cell this dispatch writes;
+// debris the writer broke holds the pressure it wrote, as V1's rule writes it there), else the grid's.
+fn wIdAfter(q: vec3i) -> u32 { if(wInBox(q)) { return u32(results[weatherIndex(q)].after.x); } return cid(loadMaterial(slotOf(q)).core); }
 fn wCellPressure(q0: vec3i, moved: ptr<function, bool>) -> f32 {
- let q=mEdge(q0); if(!inGrid(q) || cls(cid(loadMaterial(slotOf(q)).core))==1u) { return 0.0; }
+ let q=mEdge(q0); if(!inGrid(q) || cls(wIdAfter(q))==1u) { return 0.0; }
  var pa=air[brickId(q>>vec3u(2u))].vp.w;
- if(all(q>=P.editLo) && all(q<=P.editHi)) { let d=results[weatherIndex(q)].airDelta.w; if(d!=0.0) { *moved=true; } pa+=d; }
+ if(wInBox(q)) { let d=results[weatherIndex(q)].airDelta.w; if(d!=0.0) { *moved=true; } pa+=d; }
  return pa/${LEGACY_PRESSURE_PA};
+}
+// A solid of the box the update left as it was, which wPressureBreak may break (its strength), else none.
+fn wLayerP(q: vec3i) -> f32 {
+ if(!wInBox(q)) { return W_NONE; } let r=results[weatherIndex(q)]; let id=u32(r.before.x);
+ if(r.after.x!=r.before.x || r.motion.w!=0.0 || cls(id)!=1u || wBreakInto(id)<0) { return W_NONE; }
+ return wBreakP(id);
 }
 fn wPressureBreak(p: vec3i, r: WeatherResult) -> i32 {
  let id=u32(r.before.x); if(r.after.x!=r.before.x || r.motion.w!=0.0 || cls(id)!=1u) { return -1; }
  let into=wBreakInto(id); if(into<0 || !mAirPressure()) { return -1; }
  var moved=r.airDelta.w!=0.0; var dP=0.0;
  for(var a=0u;a<3u;a++) { var e=vec3i(0); e[a]=1; dP=max(dP,abs(wCellPressure(p+e,&moved)-wCellPressure(p-e,&moved))); }
- if(!moved || dP<=wBreakP(id)) { return -1; }
- return into;
+ if(moved && dP>wBreakP(id)) { return into; }
+ // deeper: the open cell the writer moved, j cells along a face, past j-1 solids its front breaks first
+ // (writerLayersBroken), against what this cell's far side holds
+ for(var f=0u;f<6u;f++) {
+  var d=vec3i(0); d[f>>1u]=select(1,-1,(f&1u)!=0u);
+  var j=1; var q=mEdge(p+d);
+  while(j<=W_LAYERS && inGrid(q) && wLayerP(q)<W_NONE) { j++; q=mEdge(p+d*j); }
+  if(j<2 || j>W_LAYERS || !inGrid(q) || !wInBox(q) || cls(wIdAfter(q))==1u) { continue; }
+  var wrote=false; let open=wCellPressure(q,&wrote); if(!wrote) { continue; }
+  var through=true;
+  for(var k=1;k<j;k++) { through=through && open*pow(W_LAYER_KEEP,f32(j-1-k))>wLayerP(mEdge(p+d*k)); }
+  var far=false;
+  if(through && abs(open*pow(W_LAYER_KEEP,f32(j-1))-wCellPressure(p-d,&far))>wBreakP(id)) { return into; }
+ }
+ return -1;
 }
 `;
 export const NATIVE_WEATHER_SCRUB = `if(P.scrub!=0u && decoOf(s)!=0u && (cid(m.core)==0u || cid(m.core)!=cid(before.core))) { setDeco(s,0u); }`;

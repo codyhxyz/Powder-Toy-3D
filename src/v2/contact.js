@@ -1450,8 +1450,27 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
   return { cores, banks, requests, busy, sources: cells.map(c => c.source), sinks: cells.map(c => c.sink) };
 }
 
+// V1 react.js lit: an explosive at its ignition point, or touching matter (not gas) that hot, goes off the
+// step it is, after one step's conduction. A block pair trades PARTNER_STEPS steps of heat (CT_COND_FLUX)
+// before the cell's own step reads its temperature, so a hot charge beside cold matter (a C-4 block's lit
+// corner, nitroglycerin poured hot on a metal floor) would cool past its point first and never go off. Such
+// a pair trades none: the charge goes off this tick on the heat it came in with, as V1's does on its first
+// step (V1's step of conduction before it is one step's, the most this differs by). Only an explosive that
+// needs no air (blast.air: V1 blastAir) is lit outright; one that does waits on its exposure, so it trades.
+// Intentional (decided under the user's delegation, 2026-10-22): its partner misses the one step of V1's heat it
+// would trade first; the charge becomes its blast product at blast.T the same tick either way.
+export function ctLitHot(c, b) {
+  const r = ctRow(c.id);
+  if (r.blast === 0 || r.blastAir !== 0 || r.igniteQ >= 65536) return false;
+  if (c.tq >= r.igniteQ) return true;
+  const kb = ctRow(b.id).kind;
+  return kb !== 0 && kb !== 4 && b.tq >= r.igniteQ;
+}
 // V1 react.js: with ambient heat off, matter trades no heat with the air.
-export function ctConducts(a, b, airHeat) { return airHeat !== 0 || (a.id !== E.EMPTY && b.id !== E.EMPTY); }
+export function ctConducts(a, b, airHeat) {
+  if (ctLitHot(a, b) || ctLitHot(b, a)) return false;
+  return airHeat !== 0 || (a.id !== E.EMPTY && b.id !== E.EMPTY);
+}
 // V1 react.js: the open world above the box pulls air back to ambient
 // (AIR_AMBIENT_PULL) and gases radiate toward it by their rad, every cell, a
 // step: the row's `cool` per tick. Integer energy with the sensible remainder,
@@ -1492,7 +1511,7 @@ export function ctHeatRoom(c, gain) {
 }
 // The ambient's ¼ K code, as the block pass encodes P.ambient.
 export const contactAmbientQ = ambient => Math.min(65535, Math.max(0, Math.round(Math.fround((Math.fround(ambient) + 273.25) * 4))));
-CONTACT_KERNEL.push([ctConducts, ['CTCell', 'CTCell', 'i32'], 'bool'], [ctAmbient, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctHeatRoom, ['CTCell', 'i32'], 'i32']);
+CONTACT_KERNEL.push([ctLitHot, ['CTCell', 'CTCell'], 'bool'], [ctConducts, ['CTCell', 'CTCell', 'i32'], 'bool'], [ctAmbient, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctHeatRoom, ['CTCell', 'i32'], 'i32']);
 CONTACT_KERNEL.push([ctElecMaterial, ['i32'], 'bool'], [ctFuseLife, ['i32'], 'i32'], [ctFuseSteps, ['i32'], 'i32'], [ctFuseStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'],
   [ctElecStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'], [ctFuseApply, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctElecApply, ['CTCell', 'i32', 'i32'], 'CTCell'],
   [ctElecAirborne, ['CTCell', 'array<CTCell, 6>', 'i32'], 'CTCell'], [ctFuseTouch, ['CTCell', 'i32', 'f32'], 'i32'],
