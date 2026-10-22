@@ -51,7 +51,8 @@ test('WORLD under V2 draws the same foam and air: its programs compile the foam 
   }
   // (its foam: v2/nativeAeration.js, tools/v2/world-native-foam-check.mjs)
   const air=nativeAirWGSL(gridLayout(32,32,32));
-  assert.match(air,/airB\[s\] = fetchBs\(s\);/);
+  // V1's B as V2 holds it: a grain's fall and a liquid's flux in their cells, the air elsewhere (shaders/v2/viewRead.js)
+  assert.match(air,/airB\[s\] = nativeMotionB\(A\[s\], fetchBs\(s\)\);/);
   assert.match(air,/let air = B\[\(s >> 6u\) \* 2u\];/,'coarse air in V1 units, as the Box Pressure/Flow views read it');
   assertNaga(air,'world v2 air export');
 });
