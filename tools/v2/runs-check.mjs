@@ -40,7 +40,7 @@ test('MV-13: a spill beads a cell deep as V1\'s whole cells do, and still pours 
   run(w, 120);
   const { peak, cols } = columns(w, E.WATER);
   // (V2's fills level where V1's whole cells bead: columns.js FILM_DRY's Intentional note)
-  assert.ok(cols <= 200 && peak >= 0.35, `water: ${cols} columns, ${peak.toFixed(2)} deep (V1 64 columns, 1 deep; a 1/8-cell film was 572)`);
+  assert.ok(cols <= 220 && peak >= 0.3, `water: ${cols} columns, ${peak.toFixed(2)} deep (V1 64 columns, 1 deep; a 1/8-cell film was 572)`);
   // half a cell of water on a shelf by its edge pours off it (the dry film holds only at its own level)
   const s = new ColumnGrid(12, 8, 4);
   block(s, E.WALL, [0, 0, 0], [5, 3, 3]);
@@ -212,4 +212,23 @@ test('the flow runs at V1\'s speed: a dam break\'s front and a spill\'s reach by
     const drained = 7 * 6 * 18 - tank();
     assert.ok(Math.abs(drained / v1.drained[k] - 1) <= drainTol, `drained by ${t} s: ${drained.toFixed(1)} cells (V1 ${v1.drained[k]})`);
   });
+});
+
+test('BL-9: a mercury flow running into C-4 or nitroglycerin sets it off as V1\'s, water\'s never', () => {
+  // V1 (runs-browser-check --v1 sideways, 2026-10-22): mercury 4 wide and h tall a cell of floor from a wall of C-4
+  // (h 8, 14) or a nitroglycerin pool (h 14) sets it off within a second (react.js shock: ½·μ·u², u its flow's
+  // FLOW-capped orifice speed); water's ½·μ·u² is under either's shock at any speed
+  const COLUMN_HIT_IDS = [E.C4, E.NITRO];
+  for (const id of COLUMN_HIT_IDS) assert.ok(ELEMENTS[id].blast.shock > 0);
+  const side = (liq, charge, h) => {
+    const w = new ColumnGrid(20, 16, 24);
+    const x1 = charge === E.C4 ? 10 : 14, y1 = charge === E.C4 ? h - 1 : 1;
+    block(w, liq, [4, 0, 10], [7, h - 1, 13]); block(w, charge, [9, 0, 6], [x1, y1, 17]);
+    for (let t = 0; t < 30; t++) { w.step(); if (w.events.some((e, i) => (e & 1) && L.cid(w.cores[i]) === charge)) return true; }
+    return false;
+  };
+  assert.ok(side(E.MERCURY, E.C4, 8), 'mercury 8 tall into C-4');
+  assert.ok(side(E.MERCURY, E.NITRO, 14), 'mercury 14 tall into nitroglycerin');
+  assert.ok(!side(E.WATER, E.NITRO, 14), 'water 14 tall into nitroglycerin rests');
+  assert.ok(!side(E.WATER, E.C4, 14), 'water 14 tall into C-4 rests');
 });

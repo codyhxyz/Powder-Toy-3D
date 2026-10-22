@@ -74,7 +74,7 @@ export const COLUMN = (() => {
     // (or a layer on another liquid: V1's pool surface keeps flowing) the dry tolerance holds.
     // Intentional (decided under the user's delegation, 2026-10-22): V1's lone droplets wander for ever (react.js
     // DROPLET_WANDER, FILM_COHESION) and its spill beads into whole cells; V2's films stop here and its fills level
-    // (a 4³ spill rests 0.4 deep over 170 columns, V1's a cell deep over 64), so a spill rests and certifies idle
+    // (a 4³ spill rests a third of a cell deep over 200 columns, V1's a cell deep over 64), so a spill rests and certifies idle
     // (wandering would cost the rest certification and frame time)
     FILM_DRY: FULL,
     DEADQ: 2,                  // dead band, in fill quanta of the stiffer side (lean-sim)
@@ -175,6 +175,12 @@ export const COLUMN_FLOW = Object.freeze(ELEMENTS.map(e => {
   return { q: Math.min(COLUMN.Q_MAX, Math.floor(v1PaceRate(flow) * COLUMN.STEPS / COLUMN.SUB * COLUMN.FULL)), ms: Number((flow * V1_STEP_MS).toPrecision(7)),
     keep: e.kind === K.LIQUID ? Math.fround(1 - (e.drag ?? 0)) : 1 };
 }));
+
+// V1's shock from a flow (react.js: a charge goes off when a neighbour closing on it at u carries ½·μ·u² past its
+// blast.shock, μ the mover's density on a solid charge, the reduced mass on a loose one; common.js hitKE; never its
+// own element, a gas, or a charge that needs air: BL-9): the charges a liquid's flow can set off, by their shock
+export const COLUMN_HIT = Object.freeze(ELEMENTS.filter(e => e.blast?.shock > 0 && !e.blast.air && e.kind !== K.GAS && e.kind !== K.EMPTY)
+  .map(e => ({ id: e.id, shock: e.blast.shock, dens: e.dens, solid: e.kind === K.SOLID })));
 
 // V1's landing break (react.js: a projectile breaks a breakable solid it hits with ½·ρ·u² of at least its hard, a
 // landing included: move.js vertical leaves it unlanded for the react pass to see, common.js impactActs; BL-8): the
@@ -488,6 +494,25 @@ ${COLUMN_BREAKS.map(r => `  if (j == ${r.id}u) { into = ${r.into}; hard = ${f(r.
   storeMaterial(s, before, after);
   markBusy(p);
 }
+// The cells a flow of liq at v (quanta a pair step, paced) runs on into past the receiver (x, z), rows [y0, y1),
+// along the axis toward toward (±1): a charge there takes V1's hit (COLUMN_HIT, react.js shock) at V1's own speed
+// for that pace (v2/gravity.js v1PaceRate's inverse: u = 2r/(1 + r)), as V1's moving cell hits the charge it
+// arrives beside (BL-9)
+fn colHitAhead(x: i32, z: i32, axis: i32, toward: i32, v: f32, y0: i32, y1: i32, liq: u32) {
+  let n = colNeighbour(x, z, select(0, 2, axis == 2) + select(1, 0, toward > 0));
+  if (!colInside(n)) { return; }
+  let r = v / COL_FULL;
+  let u = 2.0 * r / (1.0 + r);
+  let mj = densOfE(liq);
+  for (var y = max(y0, 0); y < min(y1, NY); y++) {
+    let id = cid(colCell(n.x, y, n.y));
+    var shock = 0.0; var solid = false;
+${COLUMN_HIT.map(r => `    if (id == ${r.id}u) { shock = ${f(r.shock)}; solid = ${r.solid}; }`).join('\n')}
+    var mu = mj;
+    if (!solid) { mu = densOfE(id) * mj / (densOfE(id) + mj); }
+    if (shock > 0.0 && id != liq && 0.5 * mu * u * u >= shock) { colDetonate(n.x, y, n.y); }
+  }
+}
 // V1's flow caps of a liquid (COLUMN_FLOW): a face's flux (quanta a tick per cell of wet face), a jet's speed (m/s)
 fn colFlowCap(liq: u32) -> f32 { return COL_FLOW_Q[liq]; }
 fn colFlowSpeed(liq: u32) -> f32 { return COL_FLOW_MS[liq]; }
@@ -646,6 +671,15 @@ fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, l
   if (drive > 0.0 || (drive == 0.0 && v > 0.0)) { hUp = ha; }
   v = v + acc * drive * min(1.0, COL_H_CAP / max(hUp, 1.0)) - colAdvect(u, up);
   if (drive == 0.0) { v = v * 0.5; }
+  // V1's head-driven speed: a liquid with a cell or more of level over its neighbour leaves at least at V1's
+  // orifice speed for the head over the face's bottom row (react.js forces: ORIFICE_CV·√(2gh) to its FLOW, set at
+  // once, not built up), at V1's pace (v2/gravity.js v1PaceRate)
+  if (abs(drive) >= 1.0) {
+    let h = max(select(hb, ha, drive > 0.0) - 0.5, 0.0);
+    let want = min(COL_ORIFICE_CV * sqrt(2.0 * colStepGravity() * h), colFlowSpeed(liq) / COL_STEP_MS);
+    let paced = want / (2.0 - min(want, 1.0)) * COL_FULL;
+    if (drive > 0.0) { v = max(v, paced); } else { v = min(v, 0.0 - paced); }
+  }
   if ((v > 0.0 && ha == 0.0) || (v < 0.0 && hb == 0.0)) { v = 0.0; }
   // the film rule as the dry tolerance: a face whose upwind wet depth is under FILM carries no flux, and onto dry
   // ground at its level none from under \`film\` (FILM_DRY: V1's films; a floating layer's FILM)
@@ -1144,6 +1178,19 @@ fn colFluxes(xa: i32, za: i32, xb: i32, zb: i32, axis: i32) {
   loop {
     let qa = colRec(xa, i, za); let qb = colRec(xb, j, zb);
     let floats = colFloats(qa, qb);
+    // a denser liquid beside a lighter one is pushed into it (V1 react.js: a lighter liquid is open to it, canMove's
+    // displacement) at its head's speed over the rows they share, V1's orifice speed for its head over the bottom
+    // one: a charge it presses on takes that hit (BL-9)
+    if (floats != 0) {
+      let plus = floats == 2;
+      let rs = select(qb, qa, plus);
+      let lo = max(recY0(qa), recY0(qb));
+      let h = colEta(rs) - (f32(lo) + 0.5);
+      if (h >= 1.0) {
+        let want = min(COL_ORIFICE_CV * sqrt(2.0 * colStepGravity() * h), colFlowSpeed(recLiq(rs)) / COL_STEP_MS);
+        colHitAhead(select(xb, xa, plus), select(zb, za, plus), axis, select(-1, 1, plus), want / (2.0 - min(want, 1.0)) * COL_FULL, lo, min(recR1(qa), recR1(qb)), recLiq(rs));
+      }
+    }
     var ra = qa; var rb = qb; var la = colLayer(xa, za, i); var lb = colLayer(xb, zb, j);
     // a floating face's floor is the denser run's surface, inside the cell under its dry floor
     if (floats == 1) { rb = colFloor(qb); lb = vec2f(min(colEta(qb) - f32(recR1(qb)), 0.0), 0.0); }
@@ -1226,8 +1273,12 @@ fn colSends(xa: i32, za: i32, xb: i32, zb: i32, axis: i32, floating: bool) {
         let xs = select(xb, xa, plus); let zs = select(zb, za, plus); let is = select(j, i, plus);
         let xd = select(xa, xb, plus); let zd = select(za, zb, plus); let id = select(i, j, plus);
         let n = u32(floor(f32(t) * recScratch(select(qb, qa, plus))));
+        let rsend = select(rb, ra, plus);
+        let wet = s0 + i32(ceil(colDepth(rsend, s0, s1)));
         if (floating || colOver(colRec(xd, id, zd), s0)) { colPour(xs, zs, is, xd, zd, s0, s1, axis, select(-1.0, 1.0, plus), abs(v), head, n); }
         else { colTransfer(xs, zs, is, xd, zd, id, n); }
+        // what crossed runs on into the cell past the receiver at the face's wet rows (BL-9)
+        colHitAhead(xd, zd, axis, select(-1, 1, plus), abs(v), s0, wet, recLiq(rsend));
       }
     }
     // (transfers change a record's mass and end, never its y0, top or last flag)
