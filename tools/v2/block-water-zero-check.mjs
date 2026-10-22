@@ -8,7 +8,7 @@ import { GRAV, AIR, EDGE } from '../../src/simModes.js';
 import { edgeCell } from '../../src/v2/modes.js';
 import { offsetOf } from '../../src/v2/physics.js';
 import { gridLayout } from '../../src/sim.js';
-import { v2BlockWGSL, v2Rows, WGSL_CHECK, v2SupportWGSL } from '../../src/shaders/v2.js';
+import { v2BlockWGSL, v2Rows, WGSL_CHECK, v2SupportWGSL, v1DriftPerMS2 } from '../../src/shaders/v2.js';
 import { materialStorageWGSL } from '../../src/shaders/v2/state.js';
 import { modeWGSL } from '../../src/shaders/v2/modes.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
@@ -31,7 +31,7 @@ assert.deepEqual(PHASE_ROWS[E.WATER], {
   hot: { T: 100, into: 'STEAM', latent: 540, puff: 1700 }, cold: { T: 0, into: 'ICE', latent: 80 },
   hotQ: 1493, coldQ: 1093, hotLatent: 138240, coldLatent: 20480, offset: 0,
 });
-assert.deepEqual(v2Rows()[E.WATER], { key: 'WATER', cls: 3, drop: 0, vt: 0, dens: 10, yieldHead: 0, damp: 0.01, fade: 0 });
+assert.deepEqual(v2Rows()[E.WATER], { key: 'WATER', cls: 3, drop: 0, jitter: 0, dens: 10, yieldHead: 0, damp: 0.01, fade: 0, drift: v1DriftPerMS2(ELEMENTS[E.WATER]) });
 assert.equal(C.CONTACT_RX_INDEX[E.WATER * ELEMENTS.length + E.WATER], 0);
 
 const g = gridLayout(16, 16, 16), dims = [16, 16, 16], shader = v2BlockWGSL(g, contactWGSL);
@@ -122,16 +122,17 @@ for (const ambient of [-273.25, 0, 19.999, 20.001, 20.125, 100, NaN, Infinity])
   assert(!eligible(water(), banks, positions, pending, { ...modes, ambient: Math.fround(ambient) }));
 
 // Mechanical equivalence is source-checked, NOT an independent block simulator.
-const r2 = shader.slice(shader.indexOf('  // R2 topple'), shader.indexOf('  // R3 sink'));
-const r3 = shader.slice(shader.indexOf('  // R3 sink'), shader.indexOf('  // R4 gas:'));
+const r2 = shader.slice(shader.indexOf('  // R2 topple'), shader.indexOf('  // R3: V1'));
+const r3 = shader.slice(shader.indexOf('  // R3: V1'), shader.indexOf('  // R4a'));
 assert(r2.includes('if (clsOf(gr) != C_POWDER) { continue; }'));
 assert.equal(v2Rows()[E.WATER].cls, 3);
-assert(r3.indexOf('if (dU <= dL) { continue; }') < r3.indexOf('markBusy(pU);'));
-assert(r3.indexOf('if (dU <= dL) { continue; }') < r3.indexOf('var rs = seed3'));
-assert(shader.includes('if (!young) { continue; }'));
-assert(shader.includes('k0 == C_GAS && k1 == C_AIR'));
-assert(shader.includes('k1 == C_GAS && k0 == C_AIR'));
-assert(shader.includes('if (clsOf(cs[i]) == C_GAS && cAge(cs[i]) < DIFFUSE_AGE)'));
+// (one element never trades places with itself, V1 canMove: water over water skips before any draw or mark)
+const same = 'if (cid(lo) == cid(hi) && cid(lo) != 0u) { continue; }';
+assert(r3.indexOf(same) >= 0 && r3.indexOf(same) < r3.indexOf('markBusy(pU);'));
+assert(r3.indexOf(same) < r3.indexOf('var rs = seed3'));
+assert(shader.includes("if ((k0 != C_GAS && k0 != C_AIR) || (k1 != C_GAS && k1 != C_AIR) || cid(a0) == cid(a1)) { continue; }"));
+assert(shader.includes('if (clsOf(gs) != C_GAS || fromCell[c] != c || !inGrid(positions[c])) { continue; }'));
+assert(!shader.includes('cAge(cs[i]) <'), 'no gas ageing: V1 jitters gases without end');
 assert(shader.indexOf('if (zeroWater) { return; }') < shader.indexOf('  // R2 topple'));
 assert(shader.includes('events[slot] = ctMergeRequest(pending[i], requests[i]);'));   // flags OR, the larger puff
 assert(v2SupportWGSL(g).includes('liquidScratch[s].x=(liquidScratch[s].x&0xfffffc00u)|air|(oxygen<<2u)|(co2<<4u)|(gas<<6u)|(clone<<8u);'));

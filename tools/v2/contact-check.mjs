@@ -7,6 +7,7 @@ import { contactKernelWGSL } from '../../src/shaders/v2/contact-kernel.js';
 import { emitContactKernel } from '../../src/shaders/v2/contact.js';
 import { E, ELEMENTS, K, REACTIONS } from '../../src/elements.js';
 import { PHYS } from '../../src/physics.js';
+import * as V1Tiles from '../../src/ui/tiles/engine.js';
 import { CONDUCTS, SPARK_COST, conductsInto, packSpark } from '../../src/electricity.js';
 import * as C from '../../src/v2/contact.js';
 import * as F from '../../src/v2/phase.js';
@@ -396,7 +397,8 @@ test('reserved spark flags, independent fall velocity and burn flags survive nat
 test('temperature-aware gas density and boundary-only ambient exchange preserve rest',()=>{
   for(const e of ELEMENTS.filter(e=>e.kind===K.GAS||e.kind===K.EMPTY)) {
     assert.ok(C.contactDensity(e.id,q(500))<C.contactDensity(e.id,q(20)),e.key);
-    assert.equal(C.ctDensity(cell(e.id,20)),C.contactDensity(e.id,q(20)),e.key);
+    // the motion's density is V1's (common.js densityOf, the tiles' CPU port of it), against the scene's ambient
+    for(const t of [-30,20,110,700]) assert.ok(Math.abs(C.contactDensity(e.id,q(t))-V1Tiles.densityOf(e.id,t))<1e-5,`${e.key} ${t}`);
   }
   const hot=cell(E.METAL,200),closed=C.ctBoundary(hot,0,q(20));assert.equal(energy(closed),energy(hot));assert.equal(closed.busy,0);
   const cooled=C.ctBoundary(hot,1,q(20));assert.ok(energy(cooled)<energy(hot));assert.equal(energy(cooled)+cooled.sink-cooled.source,energy(hot));

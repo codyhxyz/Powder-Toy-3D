@@ -899,8 +899,9 @@ fn dV1Push(p: vec3i, id: u32) -> vec3f {
           // unallocated source exact and busy for deterministic retry.
           plan.flags=1u;plan.velocity=vec3f(0);
         }
-        if (exposed && length(wind)>dLift(id)) { plan.flags=1u; plan.velocity=wind; }
-        // V1's push down the pressure gradient (dV1Push), V1's speed for V1's matter, over the wind's.
+        // (No wind saltation: V1 never lifts a loose cell off by a draft past a threshold. Its wind and pressure push
+        // every loose cell a little, all the time: react.js forces, the air field's coupling.)
+        // V1's push down the pressure gradient (dV1Push), V1's speed for V1's matter.
         if (exposed && mAirPressure()) { let push=dV1Push(p,id); if (any(push!=vec3f(0))) { plan.flags=1u; plan.velocity=push; } }
         // §4.2: flux over an unsupported lip faster than 1m/s becomes a droplet.
 if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {

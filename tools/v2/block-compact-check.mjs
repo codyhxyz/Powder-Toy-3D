@@ -17,6 +17,7 @@ import { V2_ELECTRIC_KERNELS } from '../../src/shaders/v2/electric.js';
 import { ARGS2, V2_KERNELS, WGSL_CHECK, v2BlockWGSL, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockCompactLayout, v2Rows, v2Table } from '../../src/shaders/v2.js';
 import { buildFixture } from './frame-bench.mjs';
 import { wgslGroupingErrors, assertNaga, importMinified } from './wgsl-grouping.mjs';
+import { exchangeHelpers, motionSource } from './block-motion.mjs';
 
 const g = gridLayout(16, 16, 16), dims = [16, 16, 16];
 const original = v2BlockWGSL(g, contactWGSL), heavy = v2BlockWGSL(g, contactWGSL, true), scan = v2BlockClassifyWGSL(g);
@@ -271,11 +272,7 @@ console.log('Real driver: support -> original indirect classify -> DIRECT finali
 
 // Full production contact replay; include actual emitted motion (not a sorted
 // material simulation). Syntax-only translation, with CPU storage helpers.
-let motion = original.slice(original.indexOf('  // R2 topple'), original.indexOf('  // Obligations follow'));
-motion = motion.replace(/\/\/[^\n]*/g, '').replaceAll('var ', 'let ')
-  .replace(/array<u32, 3>\(([^)]+)\)/g, '[$1]').replace(/array<f32, 3>\(([^)]+)\)/g, '[$1]')
-  .replace(/\b(\d+)u\b/g, '$1').replaceAll('pt + down*i32(dd)', 'add(pt,down.map(v=>v*dd))')
-  .replaceAll('rnd(&rs)', '(rs=pcg(rs), unit(rs))');
+const motion = motionSource(original);
 const rows = v2Rows(), clsOf = c => rows[c[0] & 255].cls;
 const withAge = (c, age) => new Uint32Array([(c[0] & 0xffffff) | (Math.min(age, 255) << 24), c[1], c[2], c[3]]);
 const zeroQ = c => [0, 3].includes(clsOf(c)) ? new Uint32Array([c[0], c[1], 0, c[3] & 0xffff0000]) : c;
@@ -283,9 +280,8 @@ const helpers = { add, pcg, seed3, unit: s => f(f(f(s >>> 8) * 256) + f(s & 255)
   clsOf, inGrid: valid, fluidC: c => [0, 3, 4].includes(clsOf(c)), dropOfE: id => rows[id].drop,
   cid: c => c[0] & 255, cAge: c => c[0] >>> 24, withAge, zeroQ, setFall,
   resetMotionAge: c => clsOf(c) === 3 ? c : clsOf(c) === 2 ? setFall(c, 0, 0) : withAge(c, 0),
-  motionDensity: c => C.ctDensity(C.unpackContact(c)), select: (a, b, yes) => yes ? b : a,
-  C_SOLID: 1, C_POWDER: 2, C_LIQUID: 3, C_AIR: 0, C_GAS: 4,
-  MOORE_U: 0x80000000, SINK_RATE: 0.6, LIQ_SWAP: 0.3, GAS_SWAP: 0.5, DIFFUSE: 0.25, DIFFUSE_AGE: 120,
+  motionDensity: c => C.contactDensity(c[0] & 255, (c[0] >>> 8) & 0xffff, P.ambient),
+  MOORE_U: 0x80000000, ...exchangeHelpers(original, P),
   noteTopple: () => {} };   // (the renderer's flow field: presentation, tools/v2/flow-field-check.mjs)
 const move = new Function(...Object.keys(helpers), 'cs', 'bs', 'positions', 'pending', 'P', 'down', 'supportAt', 'markBusy', `const gravityOn=down.some(v=>v!==0),blockCount=8,columnCount=4;let fromCell=[0,1,2,3,4,5,6,7];${motion}`);
 const clone = a => a.map(c => new Uint32Array(c));

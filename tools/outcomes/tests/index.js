@@ -12,8 +12,9 @@ import blasts from './blasts.js';
 import world from './world.js';
 import census from './census.js';
 import radial from './radial.js';
+import movement from './movement.js';
 
-export const TESTS = [...liquids, ...solids, ...fire, ...blasts, ...world, ...census, ...radial];
+export const TESTS = [...liquids, ...solids, ...fire, ...blasts, ...world, ...census, ...radial, ...movement];
 
 export const GROUPS = {};
 for (const t of TESTS) (GROUPS[t.group] ??= []).push(t.name);
