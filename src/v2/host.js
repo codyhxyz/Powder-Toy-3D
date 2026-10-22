@@ -92,7 +92,12 @@ export function nativeReadiness(sim, { world = false, pov = false, guest = false
   if (sim.nativeTransition || sim.nativeTransitionError) return { ready: false, reason: 'native world transition pending or failed' };
   const c = sim.nativeCapabilities;
   if (!c?.state) return { ready: false, reason: 'native state integration unavailable' };
-  if (world && !c.world) return { ready: false, reason: 'native world dynamics shift unavailable' };
-  if (pov && !c.pov) return { ready: false, reason: 'native POV tools unavailable' };
-  return { ready: true, reason: null };
+  // While the flying matter's kernels build (PhysicsV2.dynamicsReady) the grid steps: the window waits
+  // to move (world/window.js update) and the tools' requests wait in order (sim.nativePending), so
+  // neither stops the world. Once they are built, a capability still missing is a real gap.
+  // Intentional (user request, 2026-10-21: "MAKE IT LOAD FAST"; the world steps the whole time).
+  const d = sim.compactOwner.dynamics, building = !!d && !d.disposed && d.isReady !== true;
+  if (world && !c.world && !building) return { ready: false, reason: 'native world dynamics shift unavailable' };
+  if (pov && !c.pov && !building) return { ready: false, reason: 'native POV tools unavailable' };
+  return { ready: true, reason: null, ...(building ? { building: 'native dynamics' } : {}) };
 }

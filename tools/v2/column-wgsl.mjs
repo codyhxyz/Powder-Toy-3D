@@ -10,15 +10,16 @@ import { ELEMENTS, E, K } from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
 import { v2Rows, SUMMARY } from '../../src/shaders/v2.js';
 import { FOAM_ROWS } from '../../src/v2/foam.js';
+import { PACE } from '../../src/shaders/move.js';
 
 export const TRANSLATED = ['colMove', 'colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colPack', 'colFall',
-  'colFinish', 'colShockLand', 'colShockSpeed2', 'colV1FallSpeed', 'colShockOnFall', 'colShockOnPhased', 'colV1Fall', 'colKeepsFall', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
+  'colFinish', 'colShockLand', 'colShockSpeed2', 'colV1FallSpeed', 'colShockOnFall', 'colShockOnPhased', 'colShockOnSpeed', 'colV1Fall', 'colV1Hit', 'colV1Age', 'colStepGravity', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
   'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colCrown', 'colLayer', 'colDepthAt', 'colFloats', 'colFloor', 'colSends', 'colStratify',
   // radial gravity (columns.js RADIAL)
   'colRadInside', 'colRadPull', 'colRadAxis', 'colRadSign', 'colRadMass', 'colRadHead', 'colRadWetBelow', 'colRadCovered', 'colRadDemand',
   'colRadNote', 'colRadRuns', 'colRadTowardPlus', 'colRadColumn', 'colRadPairs', 'colRadPair', 'colRadFace', 'colRadPackAmount', 'colRadSendAmount'];
 // the f32 functions (division allowed: never on integers)
-export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colShockLand', 'colV1FallSpeed', 'colV1Fall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown', 'colLayer', 'colDepthAt', 'colSends',
+export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colStepGravity', 'colV1Age', 'colV1Hit', 'colShockOnSpeed', 'colDampTick', 'colLimit', 'colFall', 'colShockLand', 'colV1FallSpeed', 'colV1Fall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown', 'colLayer', 'colDepthAt', 'colSends',
   'colRadPull', 'colRadHead', 'colRadDemand'];
 
 export function wgslFunction(code, name) {
@@ -54,7 +55,7 @@ const u = x => x >>> 0;
 
 /** A CPU grid running the emitted column passes. Cells are x + nx (z + nz y); bricks of 4³ for activity. */
 export class ColumnGrid {
-  constructor(nx, ny, nz, { gravity = 19.6, gravMode = 0, edge = 0, stillRadial = false, deco = 0 } = {}) {
+  constructor(nx, ny, nz, { gravity = COLUMN.G_MS2, gravMode = 0, edge = 0, stillRadial = false, deco = 0 } = {}) {
     // stillRadial: radial gravity as it was before columns.js RADIAL (liquids held still: the red variant)
     Object.assign(this, { nx, ny, nz, n: nx * ny * nz, tick: 0, stillRadial });
     this.cores = Array.from({ length: this.n }, () => new Uint32Array([L.makeMaterial(0, 20, 0).core[0], 0, 0, 0]));
@@ -229,6 +230,8 @@ export class ColumnGrid {
         g.jetBricks[g.brickOf(x, y, z)] = 1;
       },
       // seed3/rnd's role: any deterministic hash of position and tick (the twin need not match its bits)
+      // V1's paced draw (move.js draw: n·PACE.Y's fixed-point fraction, common.js u32ToF32 · UINT_TO_UNIT): its bits
+      colV1Draw: (n) => { const s = Math.imul(n >>> 0, PACE.Y) >>> 0; return Math.fround(Math.fround(Math.fround((s >>> 8) * 256) + (s & 255)) * 2 ** -32); },
       colCrownAzimuth: (x, y, z) => { let h = Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791) ^ Math.imul(g.P.tick, 2654435761) ^ COLUMN.CROWN_SALT; h = Math.imul(h ^ (h >>> 16), 0x7feb352d); h = Math.imul(h ^ (h >>> 15), 0x846ca68b); return ((h ^ (h >>> 16)) >>> 8) / 16777216; },
       cos: Math.cos, sin: Math.sin,
       colPending: (x, y, z) => (g.events[slotOf([x, y, z])] & 1) !== 0,

@@ -1,6 +1,10 @@
+import { GRAVITY_MS2 } from '../../v2/gravity.js';
+
 // Shared native per-dispatch modes. P must include MODE_FIELDS; coordinates are
-// local cells, force is m/s². TPT radial gravity has constant magnitude.
+// local cells, force is m/s². TPT radial gravity has constant magnitude. Potentials are
+// cells of height at the reference pull (v2/gravity.js GRAVITY_MS2: V1's).
 export const modeWGSL = /* wgsl */ `
+const M_GRAVITY_REF: f32 = ${Number.isInteger(GRAVITY_MS2) ? `${GRAVITY_MS2}.0` : GRAVITY_MS2};
 fn mEdge(p: vec3i) -> vec3i {
   if (P.edge == 2u) { let n=vec3i(NX,NY,NZ); return ((p%n)+n)%n; }
   return p;
@@ -14,14 +18,14 @@ fn mGravity(p: vec3f) -> vec3f {
 }
 fn mPotential(p: vec3f) -> f32 {
   if (P.gravMode == 1u) { return 0.0; }
-  if (P.gravMode == 2u) { return length(p-0.5*vec3f(f32(NX),f32(NY),f32(NZ)))*P.gravity/19.6; }
-  return p.y*P.gravity/19.6;
+  if (P.gravMode == 2u) { return length(p-0.5*vec3f(f32(NX),f32(NY),f32(NZ)))*P.gravity/M_GRAVITY_REF; }
+  return p.y*P.gravity/M_GRAVITY_REF;
 }
 // Oriented local face potential difference. A periodic seam is adjacent, not
 // an artificial height jump of NY cells in uniform vertical gravity.
 fn mFaceDrive(p: vec3i, axis: i32) -> f32 {
   var d=vec3f(0); d[axis]=1.0;
-  if (P.gravMode != 2u) { return mGravity(vec3f(p)+0.5)[axis]/19.6; }
+  if (P.gravMode != 2u) { return mGravity(vec3f(p)+0.5)[axis]/M_GRAVITY_REF; }
   return mPotential(vec3f(p)+0.5)-mPotential(vec3f(mEdge(p+vec3i(d)))+0.5);
 }
 fn mDown(p: vec3f) -> vec3i {

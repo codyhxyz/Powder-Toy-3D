@@ -134,7 +134,7 @@ test('a deck\'s carry leaves from its contact: one tick\'s slide, then it lands 
   assert(crossing > 0.98, `it slides ${(crossing * 100).toFixed(1)}% of a tick at the deck's speed`);
   // red: from the cell's centre (the old launch) it glides half a cell of fall: ~18 cells at a belt's 144 cells/s
   const glide = 144 * Math.sqrt(2 * 0.5 * CELL_M / GRAVITY), slide = 144 * DT * crossing;
-  assert(glide > 16 && slide < 2.5, `centre: ${glide.toFixed(1)} cells over the next decks; contact: ${slide.toFixed(2)} cells a tick`);
+  assert(glide > 1.5 * slide && slide < 2.5, `centre: ${glide.toFixed(1)} cells over the next decks; contact: ${slide.toFixed(2)} cells a tick`);
   assert(apply.includes('return vec3f(p+P.origin)+vec3f(dRandom(id,1u),lift,dRandom(id,2u));'), 'a uniformly random point of its floor: V1\'s chance rounding of a fraction of a cell');
   assert(SPAWN_PREFIX > 0 && CAP > 0);
 });

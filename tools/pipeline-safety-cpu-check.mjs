@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createGpu } from '../src/gpu/device.js';
 import { GraphicsFailure } from '../src/gpu/errors.js';
-import { OptionalShaderFailure, PIPELINE_BUDGET_MS, PIPELINE_CONCURRENCY, PIPELINE_CONCURRENCY_MIN, PIPELINE_CONCURRENCY_MAX, pipelineConcurrency } from '../src/gpu/kernels.js';
+import { OptionalShaderFailure, PIPELINE_BUDGET_MS, PIPELINE_CONCURRENCY, PIPELINE_CONCURRENCY_MIN, PIPELINE_CONCURRENCY_MAX, pipelineConcurrency, BUILD_RANK } from '../src/gpu/kernels.js';
 // The fixtures below count slots as a weak machine has them (pipelineConcurrency's floor); the
 // scaled bound has its own tests at the end.
 const SLOTS = PIPELINE_CONCURRENCY_MIN;
@@ -94,8 +94,8 @@ async function fixture(t, { layout = 'ok', diagnosticsHang = false, moduleError 
     runIdle() { const callbacks = [...idle.values()]; idle.clear(); for (const fn of callbacks) fn(); } };
 }
 
-function pipe(gpu, i, { kind = 'compute', build = 'now', name = `pipe-${i}`, optional, code = 'shared WGSL' } = {}) {
-  return gpu[kind === 'compute' ? 'kernel' : 'renderPipeline']({ name, code, constants: { i }, build, optional });
+function pipe(gpu, i, { kind = 'compute', build = 'now', name = `pipe-${i}`, optional, code = 'shared WGSL', first } = {}) {
+  return gpu[kind === 'compute' ? 'kernel' : 'renderPipeline']({ name, code, constants: { i }, build, optional, first });
 }
 
 function stopped(f) {
@@ -704,4 +704,39 @@ await test('a build made outside the cache (the World volume) counts against the
   await Promise.all(pipes.map((p) => p.ready));
   assert.equal(f.gpu.pipelines.outsideBuilds, 0);
   liveAndDrained(f);
+});
+
+// V2's boot (src/v2/physics.js, src/v2/dynamics.js): the long poles start first, the rest of what
+// the first frame waits for next, and an idle build never ahead of either, whenever it arrived.
+await test('queued builds start by rank: first, now, then idle ones; a demand moves a queued idle build up', async (t) => {
+  const f = await fixture(t, { concurrency: SLOTS });
+  const started = () => f.calls.map((c) => c.descriptor.label);
+  const blockers = Array.from({ length: SLOTS }, (_, i) => pipe(f.gpu, 400 + i, { name: `busy-${i}` }));
+  await drain();
+  assert.deepEqual(started(), blockers.map((p) => p.name), 'the slots are full');
+  // idle builds: SLOTS whose callbacks fire, then two waiting for theirs, the long pole (first) ahead of the other
+  const idle = [...Array.from({ length: SLOTS }, (_, i) => pipe(f.gpu, 410 + i, { name: `idle-${i}`, build: 'idle' })),
+    pipe(f.gpu, 418, { name: 'idle-late', build: 'idle' }), pipe(f.gpu, 419, { name: 'idle-react', build: 'idle', first: true })];
+  assert.deepEqual(f.gpu.pipelines.idleQueue.map((p) => p.name), ['idle-react', 'idle-late'], 'a first idle build leads the idle queue');
+  f.runIdle(); await drain();
+  const admitted = idle.slice(0, SLOTS).map((p) => p.name);
+  assert.deepEqual(f.gpu.pipelines.queue.map((j) => j.name), admitted, 'idle callbacks keep within the bound');
+  // then foreground builds, a long pole last of all: they queue ahead of the idle builds that came first
+  const now = [pipe(f.gpu, 420, { name: 'now-a' }), pipe(f.gpu, 421, { name: 'now-b' })];
+  const pole = pipe(f.gpu, 422, { name: 'pole', first: true });
+  assert.deepEqual(f.gpu.pipelines.queue.map((j) => [j.name, j.rank]),
+    [['pole', BUILD_RANK.FIRST], ['now-a', BUILD_RANK.NOW], ['now-b', BUILD_RANK.NOW], ...admitted.map((n) => [n, BUILD_RANK.BACKGROUND])]);
+  // a demand for a queued idle build (a view drawn now that was prefetched) moves it up, once
+  idle[1].build();
+  assert.deepEqual(f.gpu.pipelines.queue.map((j) => j.name), ['pole', 'now-a', 'now-b', admitted[1], admitted[0]]);
+  idle[1].build(BUILD_RANK.BACKGROUND);
+  assert.equal(f.gpu.pipelines.queue.find((j) => j.name === admitted[1]).rank, BUILD_RANK.NOW, 'never moved back down');
+  const finishOne = async () => { f.calls.find((c) => !c.done && (c.done = true)).resolve({}); await drain(); f.runIdle(); await drain(); };
+  while (f.calls.length < SLOTS + 5) await finishOne();
+  assert.deepEqual(started().slice(SLOTS, SLOTS + 5), ['pole', 'now-a', 'now-b', admitted[1], admitted[0]], 'they start in that order');
+  while (f.calls.length < SLOTS + 7) await finishOne();
+  assert.deepEqual(started().slice(SLOTS + 5), ['idle-react', 'idle-late'], 'the long idle pole before the later idle build');
+  while (f.calls.some((c) => !c.done)) await finishOne();
+  await Promise.all([...blockers, ...idle, ...now, pole].map((p) => p.ready));
+  assert.equal(f.gpu.pipelines.queued.size, 0);
 });

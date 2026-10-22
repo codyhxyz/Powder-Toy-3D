@@ -7,7 +7,7 @@ import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { AIRBORNE_COLOURS } from '../../src/v2/airborne.js';
 import { windowMoveReference } from './window-move-reference.mjs';
 import { brickIdOf } from '../../src/shaders/common.js';
-import { PARTICLE_CAP, DT, CELL_M, AIR, packParticle, unpackParticle, ballistic, sweep,
+import { PARTICLE_CAP, DT, CELL_M, AIR, GRAVITY, packParticle, unpackParticle, ballistic, sweep,
   stableId, resolveDeposits, allocateSources, impact, blastPlan, exchangeScalar, airSource, airQuiet } from '../../src/v2/dynamics-reference.js';
 const close=(a,b,e=1e-9)=>assert.ok(Math.abs(a-b)<=e,`${a} != ${b}`);
 const matter=(id=E.SAND)=>({core:[id|(1173<<8)|0xaa000000,0xfedcba98,0x3f400000,0xcdefabcd].map(x=>x>>>0),bank:-123456789});
@@ -18,10 +18,11 @@ test('48B particle preserves every material word, signed bank and stable ID',()=
   assert.equal(stableId([-20,2,4],123,9),stableId([-20,2,4],123,9));
   assert.notEqual(stableId([-20,2,4],123,9),stableId([-20,2,4],124,9));
 });
-test('closed-form 2g ballistic range at 60Hz, no displacement cap',()=>{
-  let p=[0,0,0],v=[40,19.6,0];
+test('closed-form ballistic range at 60Hz under V1\'s pull (GRAVITY), no displacement cap',()=>{
+  // thrown up at GRAVITY·1 s it comes back down at that speed 2 s later, 2 s of its 40 m/s along
+  let p=[0,0,0],v=[40,GRAVITY,0];
   for(let i=0;i<120;i++) ({position:p,velocity:v}=ballistic(p,v));
-  close(p[0]*CELL_M,80,1e-10); close(p[1],0,1e-10); close(v[1],-19.6,1e-10);
+  close(p[0]*CELL_M,80,1e-10); close(p[1],0,1e-8); close(v[1],-GRAVITY,1e-10);
   assert.ok(ballistic([0,0,0],[360,0,0]).position[0]>1);
 });
 test('swept DDA hits one-cell wall at arbitrarily high speed, including negative axes',()=>{
@@ -105,13 +106,13 @@ function mockOwner() {
   owner.events=gpu.createBuffer({size:g.slots*4,label:'events'});
   return {owner,calls,buffers};
 }
-test('driver records real pipeline families, batch8, and separate draw capability',async()=>{
+test('driver records real pipeline families, one batch of up to 64 bricks, and separate draw capability',async()=>{
   const {owner,calls,buffers}=mockOwner(),d=new NativeDynamics(owner); await d.ready;
   assert.equal(d.capabilities.physicsReady,true); assert.equal(d.capabilities.drawReady,false);
   d.advanceParticles(1); d.consumeMaterialEvents(1); d.advanceAir(1);
-  // one batch a tick serves up to blastBatch (8) charges together
+  // one batch a tick serves every charge of up to blastBatch (64) bricks together (V1 react.js: no cap)
   assert.equal(calls.filter(c=>c.name==='v2blasts_finishCharges').length,1);
-  assert.equal(calls.filter(c=>c.name==='v2blasts_pick').length,1); assert.equal(d.blastBatch,8);
+  assert.equal(calls.filter(c=>c.name==='v2blasts_pick').length,1); assert.equal(d.blastBatch,64);
   assert.equal(calls.filter(c=>c.name==='v2air_step').length,8);
   assert.equal(calls.filter(c=>c.name==='v2particles_integrate').length,1);
   assert.equal(d.renderState.particleBytes,48); assert.equal(d.renderState.particles,d.particles);
@@ -157,6 +158,8 @@ test('window shift preserves world-space particles, exact archived air and oblig
 test('a window move is made in the call; its leaving slab lands later, and a snapshot taken meanwhile holds it',async()=>{
   const {owner}=mockOwner(),d=new NativeDynamics(owner);await d.ready;const g=d.g;
   const a=new Float32Array(d.air[0].bytes);a[brickIdOf(g,0,0,0)*8]=5;a[brickIdOf(g,1,0,0)*8]=9;
+  // the move runs on the buffers and its own kernel, built with the grid: also while the rest still build
+  d.isReady=false;assert.equal(d.windowReady,true);
   const moved=d.shiftWindow([4,0,0]);
   assert.equal(new Float32Array(d.air[0].bytes)[brickIdOf(g,0,0,0)*8],9,'the air moves with its cells at once');
   assert.equal(new Float32Array(d.air[1].bytes)[brickIdOf(g,0,0,0)*8],9);
@@ -167,6 +170,7 @@ test('a window move is made in the call; its leaving slab lands later, and a sna
   assert((await snapshot).airArchive.some(e=>e.worldCell.join(',')==='0,0,0'),'a snapshot taken before the landing holds it');
   await d.shiftWindow([-4,0,0]).settled;
   assert.equal(new Float32Array(d.air[0].bytes)[brickIdOf(g,0,0,0)*8],5,'and it comes back');assert.equal(d.airArchive.size,0);
+  d.windowReady=false;assert.throws(()=>d.shiftWindow([4,0,0]),/not built/,'not before its own kernel is');
 });
 test('one particle, even outside the window, prevents false idle',async()=>{
   const {owner}=mockOwner(),d=new NativeDynamics(owner);await d.ready;
@@ -320,7 +324,7 @@ test('native gravity/air/edge modes and exact-jets gate reach every dynamics dis
   const {owner,calls}=mockOwner();owner.sim.gravityMode=2;owner.sim.airMode=4;owner.sim.edgeMode=2;owner.sim._gravity=.05;owner.sim.ambientHeat=false;
   owner.jets={isReady:true};const d=new NativeDynamics(owner);await d.ready;d.advanceParticles(1);d.advanceAir(1);
   for(const c of calls.filter(c=>c.opts)) {
-    assert.equal(c.opts.params.gravity,39.2);assert.equal(c.opts.params.gravMode,2);assert.equal(c.opts.params.airMode,4);
+    assert.equal(c.opts.params.gravity,2*GRAVITY);assert.equal(c.opts.params.gravMode,2);assert.equal(c.opts.params.airMode,4);
     assert.equal(c.opts.params.edge,2);assert.equal(c.opts.params.ambientHeat,0);assert.equal(c.opts.params.nativeJets,1);
   }
   const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');

@@ -335,7 +335,14 @@ Smothered fuel spends no fuel and emits no plume. FIRE requires oxygenated
 exposure; CO2 extinguishes it. Durable STEAM, CAUSTIC_GAS and CO2 never disappear
 through an arbitrary prototype lifetime.
 
-Heat uses harmonic conductivity and pairwise integer transfers. The sensible
+Heat uses V1's conductance, `min(cond_a, cond_b)·ΔT` a step for the PARTNER_STEPS steps a
+partnered tick carries, in pairwise integer transfers bounded by the pair's own equilibrium
+(`|ΔT|·CaCb/(Ca+Cb)`: no overshoot). V1 caps a step at 1/6 of `min(C)·ΔT` because it sums six faces
+at once; a pair trades alone, so its bound is the equilibrium (TH-01, 2026-10-22). Phase changes,
+reactions, acid, the singularity and the void keep each cell's own temperature as V1 react.js does
+(reaction heat `heat/(CAP(oa)+CAP(ob))` on each product); the energy a product differs by is a
+declared source or sink, never pooled with its partner. A part-filled liquid becomes a whole cell
+(ice, steam, clay, smoke, plant) with its fill's chance, else carrier air. The sensible
 bank remainder participates in the sub-quarter temperature gradient; tagged
 latent energy does not. Ignoring that distinction produced a two-tick heat
 limit cycle. With the corrected rule the checked closed metal block sleeps

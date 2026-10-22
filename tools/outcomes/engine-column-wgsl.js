@@ -8,10 +8,11 @@ import { ColumnGrid } from '../v2/column-wgsl.mjs';
 import { E, ELEMENTS, K } from '../../src/elements.js';
 import { FULL, cid, cFill, isLiquid } from '../../src/v2/layout.js';
 import { stepClock } from './engine.js';
+import { COLUMN } from '../../src/shaders/v2/columns.js';
 import { tally } from './lib.js';
 import { columnLiquidVelocity } from './native-grid.js';
 
-const TICK_HZ = 60, CELL_M = 0.3, G_MS2 = 19.6;
+const TICK_HZ = 60, CELL_M = 0.3, G_MS2 = COLUMN.G_MS2;
 const IDS = { AIR: E.EMPTY, WALL: E.WALL, WATER: E.WATER, MUD: E.MUD, OIL: E.OIL };
 const NAMES = Object.fromEntries(Object.entries(IDS).map(([k, v]) => [v, k]));
 const kind = (id) => ({ [K.EMPTY]: 'air', [K.SOLID]: 'solid', [K.POWDER]: 'powder', [K.LIQUID]: 'liquid', [K.GAS]: 'gas' }[ELEMENTS[id]?.kind] ?? 'solid');
@@ -22,7 +23,7 @@ export function createEngine({ stillRadial = false } = {}) {
   return {
     name: 'column-wgsl',
     info: {
-      label: 'column-run water, emitted WGSL bodies on the CPU (60 Hz, 2 g, one step a tick)', stepsPerSecond: TICK_HZ, clock: `${TICK_HZ} ticks a game second (Speed 1×)`,
+      label: 'column-run water, emitted WGSL bodies on the CPU (60 Hz, V1\'s pull, one step a tick)', stepsPerSecond: TICK_HZ, clock: `${TICK_HZ} ticks a game second (Speed 1×)`,
       gravity: G_MS2, cellM: CELL_M, fillQuantum: 1 / FULL, velocity: true, pressure: false, airCell: null, burning: false,
     },
     id: (name) => IDS[name] ?? null,

@@ -74,6 +74,7 @@ function trackLanding(win, landing) {
   win.pending ??= pending;
 }
 
+const FRAME_MS = 1000 / 60;            // a frame at 60 Hz: what a streaming loop waits when nothing else says when to look again
 export const WIN_STEP = 16;          // cells: how far the window moves at a time (whole supertiles along x and z)
 export const WIN_HYSTERESIS = 4;     // cells past WIN_STEP from the centre the focus goes before a move
 const BAKED_KEEP = 256;              // baked trees kept: a tree straddling slabs is stamped once per slab
@@ -226,10 +227,17 @@ export class WorldWindow {
   // still be building after the world loads. A streaming loop (the city bus, a mode's drop-in:
   // wire/world.js streamToFocus) waits on it, so a move that can't be made yet is never taken for
   // the window having arrived.
+  // (The move needs its own kernel, built with the grid, not the rest of the dynamics, which build
+  // behind it; a request held for their build is in window cells, so a move waits for them to take it,
+  // a frame after they are built: sim.nativePending.)
   blocker() {
     if (!this.loaded || this.persistenceError || this.capturing) return null;
     const sim = this.sim, waits = [this.pending, sim.deco?.pending];
-    if (sim.compactOwner && (sim.nativeTransition || !sim.nativeCapabilities.world)) waits.push(sim.nativeTransition ?? sim.prepareNative());
+    if (sim.compactOwner && (sim.nativeTransition || !sim.nativeCapabilities.world)) {
+      const owner = sim.compactOwner;
+      waits.push(sim.nativeTransition ?? Promise.all([sim.prepareNative(), owner.dynamics?.windowBuilt,
+        sim.nativePending?.length ? owner.dynamicsReady : null]).then(() => new Promise((r) => setTimeout(r, FRAME_MS))));
+    }
     const pending = waits.filter(Boolean);
     return pending.length ? Promise.all(pending).then(() => {}, () => {}) : null;
   }

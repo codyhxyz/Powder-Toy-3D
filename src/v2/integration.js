@@ -16,12 +16,18 @@ export function nativeCapabilities(sim) {
   const particles = tools;
   return {
     state,
-    world: state && owner.contactReady === true && tools && typeof d?.recordWindowShift === 'function',
+    // The window follows on the buffers and the move's own kernel (built with the grid), so it moves while
+    // the rest of the dynamics still build and the grid steps (src/v2/dynamics.js windowReady); nothing
+    // held for their build may be waiting, since those requests are in window cells (sim.nativePending).
+    world: state && owner.contactReady === true && d?.windowReady === true && !d.disposed && !sim.nativePending?.length && typeof d?.recordWindowShift === 'function',
     pov: state && owner.contactReady === true && tools && typeof d?.applyToolImpulse === 'function',
     physgun: tools && d?.capabilities?.physgun === true && typeof d?.applyPhysgun === 'function',
     impulse: tools && typeof d?.applyToolImpulse === 'function' && (d?.capabilities?.impulse === true || d?.supportsToolKind?.('impulse') === true),
     photon: particles && typeof d?.applyToolImpulse === 'function' && (d?.capabilities?.photon === true || d?.supportsToolKind?.('photon') === true),
     neutron: particles && typeof d?.applyToolImpulse === 'function' && (d?.capabilities?.neutron === true || d?.supportsToolKind?.('neutron') === true),
+    // the writers sim.deferNative holds while the dynamics build: an external blast, a force kernel's launch
+    externalBlast: tools && typeof d?.applyExternalBlast === 'function',
+    force: tools,
   };
 }
 
@@ -98,7 +104,7 @@ export class NativeIntegration {
     let zero;
     if (!bank) { zero = this.buffer('old undo zero banks', sim.g.slots * 4); bank = zero; }
     this.run('shift', sim.g.slots, this.group(core, bank, ...this.scratch), { shift: [dx, 0, dz], preserve: 1 });
-    const merge = dynamic && o.dynamics?.isReady ? o.dynamics.recordUndoMerge(dynamic, [dx, 0, dz]) : null;
+    const merge = dynamic && o.dynamics?.windowReady ? o.dynamics.recordUndoMerge(dynamic, [dx, 0, dz]) : null;
     o.restore(...this.scratch);
     merge?.commit();
     if (zero) sim._retire(zero);
