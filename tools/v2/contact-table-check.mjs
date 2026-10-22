@@ -62,8 +62,9 @@ for(const [name,struct,rows,schema,offset,stride,isInteger] of [
     const load=`EV[base+${Math.floor(i/4)}u].${'xyzw'[i%4]}`;
     return `bitcast<${isInteger(key)?'i32':'f32'}>(${load})`;
   });
-  const accessor=`fn ${name}(id:i32)->${struct} {\n if(id<0 || id>=${rows.length}){return ${struct}(${zeros.join(',')});}\n let base=${offset/4}u+u32(id)*${stride/4}u;\n return ${struct}(${loads.join(',')});\n}`;
-  assert.ok(contactWGSL.includes(accessor),`${name}: signed guard before EV indexing; exact zero default/channel ABI`);
+  // (one exit, B5: the read is clamped inside the table, then a signed guard gives the zero row)
+  const accessor=`fn ${name}(id:i32)->${struct} {\n let base=${offset/4}u+u32(clamp(id,0,${rows.length-1}))*${stride/4}u;\n var row=${struct}(${loads.join(',')});\n if(id<0 || id>=${rows.length}){row=${struct}(${zeros.join(',')});}\n return row;\n}`;
+  assert.ok(contactWGSL.includes(accessor),`${name}: clamped EV indexing, signed guard; exact zero default/channel ABI`);
   assert.ok(!contactWGSL.includes(`${name}Table`),'no constant struct arrays');
   assert.ok(!contactWGSL.includes(`fn ${name}(id:i32)->${struct} { switch`),'no switch struct copies');
   // Model the asserted accessor over the actual packed bytes.

@@ -740,12 +740,12 @@ fn dReactOne(t: u32, s: u32, p: vec3i) -> bool {
     // through one dPressureCell call site (cold compile)
     var on = -1e30;
     for (var k = 0u; k < 1u + 2u * dAxes(); k++) {
-      var q = p; var read = cls(chargeId) != C_SOLID; var value = -1e30;
+      var q = p; var holds = cls(chargeId) != C_SOLID; var value = -1e30;
       if (k > 0u) {
         q = mEdge(p + face6(i32(k) - 1)); value = 0.0;
-        read = inGrid(q) && cls(cid(loadMaterial(slotOf(q)).core)) != 1u;
+        holds = inGrid(q) && cls(cid(loadMaterial(slotOf(q)).core)) != 1u;
       }
-      if (read) { value = dPressureCell(q); }
+      if (holds) { value = dPressureCell(q); }
       on = max(on, value);
     }
     charge.pressure = on;

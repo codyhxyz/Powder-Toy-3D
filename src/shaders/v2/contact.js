@@ -13,13 +13,17 @@ const float = n => Number.isInteger(n) ? `${n}.0` : `${n}`;
 const layout = contactTableLayout(CONTACT_ROWS.length, CONTACT_REACTIONS.length);
 // Read the immutable tail of the existing EV buffer. No constant struct arrays
 // for the backend to inline; signed bounds/defaults and field precision persist.
+// One exit: a row read inlines at hundreds of sites in the contact kernels, and an early return there
+// is what makes Metal's cold compile slow (docs/webgpu.md B5). Past the table the row is all zero, as
+// before; the read stays inside it.
 const table = (name, struct, count, schema, offset, stride) => `fn ${name}(id:i32)->${struct} {
- if(id<0 || id>=${count}){return ${struct}(${schema.map(([, type]) => type === 'i32' ? '0' : '0.0').join(',')});}
- let base=${offset / 4}u+u32(id)*${stride / 4}u;
- return ${struct}(${schema.map(([, type], i) => {
+ let base=${offset / 4}u+u32(clamp(id,0,${Math.max(0, count - 1)}))*${stride / 4}u;
+ var row=${struct}(${schema.map(([, type], i) => {
    const load = `EV[base+${Math.floor(i / 4)}u].${'xyzw'[i % 4]}`;
    return `bitcast<${type}>(${load})`;
  }).join(',')});
+ if(id<0 || id>=${count}){row=${struct}(${schema.map(([, type]) => type === 'i32' ? '0' : '0.0').join(',')});}
+ return row;
 }`;
 
 // These functions use an intentionally restricted source subset: no JS object

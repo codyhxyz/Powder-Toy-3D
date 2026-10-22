@@ -14,7 +14,7 @@ const MAX_FILL: u32 = ${MAX_FILL}u;
 const FUEL_Q: f32 = ${FUEL_Q}.0;
 struct Material { core: vec4u, bank: i32 }
 ${phaseWGSL}
-fn materialAmount(c: vec4u) -> u32 { if (cid(c) == 0u) { return 0u; } if (isLiq(c)) { return cFill(c); } return 65536u; }
+fn materialAmount(c: vec4u) -> u32 { return select(select(65536u, cFill(c), isLiq(c)), 0u, cid(c) == 0u); }
 fn capacityPerQuantum(id: u32) -> u32 { return MATERIAL_CAP[id]; }
 fn conductsNative(id: u32) -> bool { return MATERIAL_CONDUCTS[id]; }
 fn capacityQ(c: vec4u) -> u32 {
@@ -35,48 +35,53 @@ fn energyMul(a: u32, b: u32) -> vec2u {
 }
 // Positive dividend, divisor <= 2^31; returns quotient low word and exact remainder.
 fn energyDivExact(a: vec2u, d: u32) -> vec2u {
-  if (d == 0u) { return vec2u(0xffffffffu, a.x); }
   var r = 0u; var q = 0u;
   // Leading zero bits contribute nothing; a data-dependent bound also avoids
   // expanding 64 rounds at each inlined thermal conversion during compilation.
   var top = 31 - i32(countLeadingZeros(a.x));
   if (a.y != 0u) { top = 63 - i32(countLeadingZeros(a.y)); }
+  if (d == 0u) { top = -1; } // (a zero divisor: no rounds, its sentinel below; one exit, B5)
   for (var i = top; i >= 0; i--) {
     var bit = 0u;
     if (i >= 32) { bit = (a.y >> u32(i - 32)) & 1u; } else { bit = (a.x >> u32(i)) & 1u; }
     r = (r << 1u) | bit;
     if (r >= d) { r -= d; if (i < 32) { q |= 1u << u32(i); } }
   }
-  return vec2u(q, r);
+  return select(vec2u(q, r), vec2u(0xffffffffu, a.x), d == 0u);
 }
 // Unsigned limb comparison (phaseLess is signed).
 fn energyLess(a: vec2u, b: vec2u) -> bool { return a.y < b.y || (a.y == b.y && a.x < b.x); }
 fn energyDiv(a: vec2u, d: u32) -> vec2u {
   // Preserve the original low-word quotient contract, including d==0, outside
   // the bounded-quotient domain. The exact fallback supports d <= 2^31.
-  if (d == 0u || a.y >= d) { return energyDivExact(a, d); }
-  if (a.y == 0u) { return vec2u(a.x / d, a.x % d); }
-  if ((d & (d - 1u)) == 0u) {
+  // (One exit: the exact fallback's call site is the last statement, B5.)
+  var out = vec2u(0u); var exact = false;
+  if (d == 0u || a.y >= d) { exact = true; }
+  else if (a.y == 0u) { out = vec2u(a.x / d, a.x % d); }
+  else if ((d & (d - 1u)) == 0u) {
     let shift = firstTrailingBit(d); // hi<d and hi!=0 imply 1<=shift<=31.
-    return vec2u((a.x >> shift) | (a.y << (32u - shift)), a.x & (d - 1u));
-  }
-  // A float is only a candidate, NEVER the result. Clamp below 2^32 before
-  // conversion (the greatest f32 below 2^32 is 2^32-256). Four corrections
-  // bound work even with backend rounding/FMA differences or huge quotients.
-  var q = u32(clamp((f32(a.y) * 4294967296.0 + f32(a.x)) / f32(d), 0.0, 4294967040.0));
-  var product = energyMul(q, d); // u32*u32 always fits u64.
-  for (var attempt = 0u; attempt < 4u; attempt++) {
-    if (energyLess(a, product)) {
-      if (q == 0u) { break; }
-      q--; product = energySub(product, vec2u(d, 0u));
-    } else {
-      let r = energySub(a, product);
-      if (r.y == 0u && r.x < d) { return vec2u(q, r.x); }
-      if (q == 0xffffffffu) { break; }
-      q++; product = energyAdd(product, vec2u(d, 0u));
+    out = vec2u((a.x >> shift) | (a.y << (32u - shift)), a.x & (d - 1u));
+  } else {
+    // A float is only a candidate, NEVER the result. Clamp below 2^32 before
+    // conversion (the greatest f32 below 2^32 is 2^32-256). Four corrections
+    // bound work even with backend rounding/FMA differences or huge quotients.
+    exact = true;
+    var q = u32(clamp((f32(a.y) * 4294967296.0 + f32(a.x)) / f32(d), 0.0, 4294967040.0));
+    var product = energyMul(q, d); // u32*u32 always fits u64.
+    for (var attempt = 0u; attempt < 4u; attempt++) {
+      if (energyLess(a, product)) {
+        if (q == 0u) { break; }
+        q--; product = energySub(product, vec2u(d, 0u));
+      } else {
+        let r = energySub(a, product);
+        if (r.y == 0u && r.x < d) { out = vec2u(q, r.x); exact = false; break; }
+        if (q == 0xffffffffu) { break; }
+        q++; product = energyAdd(product, vec2u(d, 0u));
+      }
     }
   }
-  return energyDivExact(a, d);
+  if (exact) { out = energyDivExact(a, d); }
+  return out;
 }
 // Scale signed energy by n/d (0 <= n <= d), retaining all wide bits.
 // The quotient is bounded by source energy per fill quantum (u32 here).
@@ -181,7 +186,7 @@ fn energyPacketFits(src: Material, dst: Material, packet: vec2u, n: u32) -> bool
   if (phaseLess(vec2u(0u), excessHi) && phaseLess(roomHi, phaseMulSmall(excessHi, 6u))) { return false; }
   return true;
 }
-fn ctypeOf(c: vec4u) -> u32 { if (isLiq(c)) { return (c.y >> 24u) & select(255u, 127u, MATERIAL_BURNS[cid(c)]); } return (c.y >> 16u) & 255u; }
+fn ctypeOf(c: vec4u) -> u32 { return select((c.y >> 16u) & 255u, (c.y >> 24u) & select(255u, 127u, MATERIAL_BURNS[cid(c)]), isLiq(c)); }
 fn withCtype(c: vec4u, ct: u32) -> vec4u { var o = c; if (isLiq(c)) {
   let mask = select(255u, 127u, MATERIAL_BURNS[cid(c)]);
   o.y = (c.y & ~(mask << 24u)) | ((ct & mask) << 24u);

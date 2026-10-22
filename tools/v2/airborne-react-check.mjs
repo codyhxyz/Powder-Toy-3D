@@ -238,9 +238,9 @@ assert.equal(key(fly(packet(E.LAVA, 1500), () => air(20), 4000).p.core), 'STONE'
   const react = particlesWGSL(gridLayout(32, 32, 32), nativeDynamicsHead, 'react');
   // (V1 react.js pOn: its own cell's unless a solid, then each face's open pressure, as dOpenPressure reads
   // it, all through one dPressureCell call site)
-  for (const read of ['if (dCrush(chargeId) > 0.0 && mAirPressure()) {\n', 'var q = p; var read = cls(chargeId) != C_SOLID; var value = -1e30;',
-    'q = mEdge(p + face6(i32(k) - 1)); value = 0.0;', 'read = inGrid(q) && cls(cid(loadMaterial(slotOf(q)).core)) != 1u;',
-    'if (read) { value = dPressureCell(q); }', 'on = max(on, value);', 'charge.pressure = on;']) assert.ok(react.includes(read), `react reads the pressure on a charge: ${read}`);
+  for (const read of ['if (dCrush(chargeId) > 0.0 && mAirPressure()) {\n', 'var q = p; var holds = cls(chargeId) != C_SOLID; var value = -1e30;',
+    'q = mEdge(p + face6(i32(k) - 1)); value = 0.0;', 'holds = inGrid(q) && cls(cid(loadMaterial(slotOf(q)).core)) != 1u;',
+    'if (holds) { value = dPressureCell(q); }', 'on = max(on, value);', 'charge.pressure = on;']) assert.ok(react.includes(read), `react reads the pressure on a charge: ${read}`);
   const walker = react.slice(react.indexOf('fn dReactOne('));
   assert.ok(walker.match(/dPressureCell\(/g).length === 1 && !walker.includes('dOpenPressure('), 'one pressure call site in the react stage');
   assert.ok(react.includes('let crushed = dCrush(u32(v.id)) > 0.0 && charge.pressure > dCrush(u32(v.id));'), 'dReact sets it off past its crushP');
