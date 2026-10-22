@@ -1,7 +1,7 @@
 // CPU-only scalar phase lookup regression. No browser, device or GPU.
 import assert from 'node:assert/strict';
 import { ELEMENTS, E } from '../../src/elements.js';
-import { PHASE_ROWS, phaseOffsetPerQuantum } from '../../src/v2/phase.js';
+import { PHASE_ROWS, phaseOffsetPerQuantum, phaseOffsetRemainder, phaseCapacityDelta } from '../../src/v2/phase.js';
 import { phaseWGSL } from '../../src/shaders/v2/phase.js';
 import { wgslGroupingErrors, assertNaga } from './wgsl-grouping.mjs';
 
@@ -74,10 +74,13 @@ const expected = {
   phaseHotLatent: PHASE_ROWS.map(row => row.hotLatent),
   phaseColdLatent: PHASE_ROWS.map(row => row.coldLatent),
   phaseOffsetPerQuantum: PHASE_ROWS.map(row => row.offset),
-  phaseCapacityPerQuantum: ELEMENTS.map(element => Math.max(1, Math.round(element.cap * 64))),
+  phaseOffsetRemainder: PHASE_ROWS.map(row => row.offsetRem),
+  // format 3 (TH-06): a whole cell's cap over the air carrier, in 1/(64·FULL) cap
+  phaseCapacityDelta: ELEMENTS.map(element => phaseCapacityDelta(element.id)),
   phaseLavaOffsetPerQuantum: PHASE_ROWS.map((_, id) => phaseOffsetPerQuantum(E.LAVA, id)),
+  phaseLavaOffsetRemainder: PHASE_ROWS.map((_, id) => phaseOffsetRemainder(E.LAVA, id)),
 };
-assert.equal(Object.keys(expected).length, 7);
+assert.equal(Object.keys(expected).length, 9);
 assert.deepEqual(wgslGroupingErrors(phaseWGSL), [], 'Chromium-compatible expression grouping');
 assert.ok(!/\b(?:enable|requires|switch)\b|@(?:group|binding)\(/.test(phaseWGSL), 'no extensions, switches or bindings');
 const functions = []; let zeroCount = 0, negativeCount = 0;

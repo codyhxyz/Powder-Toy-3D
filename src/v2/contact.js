@@ -13,7 +13,7 @@ import { EDGE } from '../simModes.js';
 const EDGE_SOLID = EDGE.SOLID;
 
 import { FUEL_Q } from './layout.js';
-import { PHASE_ROWS, PHASE_NORMAL_MAX, phaseTemperatureQ, phaseOffsetEnergy, phaseLatentEnergy, encodePhaseEnergy } from './phase.js';
+import { PHASE_ROWS, PHASE_NORMAL_MAX, phaseTemperatureQ, phaseOffsetEnergy, phaseLatentEnergy, encodePhaseEnergy, phaseCapacity } from './phase.js';
 const CONTACT_FULL = 65536;
 export const CONTACT_ELEMENT_COUNT = ELEMENTS.length;
 const LIFE_SCALE = FUEL_Q;
@@ -24,7 +24,9 @@ export const CONTACT_G_TICK = 19.6 / CELL_M / CONTACT_HZ ** 2;
 export const DUST_MIN_FALL_SPEED = PHYS.DUST_LIFT_V * NOMINAL_STEP_RATE / CONTACT_HZ; // cells/tick
 export const DUST_MIN_FALL_AGE = Math.ceil(PHYS.DUST_LIFT_V * NOMINAL_STEP_RATE / CONTACT_HZ / CONTACT_G_TICK);
 const q = T => Math.round((T + 273.25) * 4);
-const cap = ELEMENTS.map(e => Math.max(1, Math.round(e.cap * 64)));
+// V1's caps in 1/CONTACT_RX_CAP_UNITS (CONTACT_ROWS capacity): a reaction's rxT = heat / (CAP(oa) + CAP(ob))
+const CONTACT_RX_CAP_UNITS = 4096;
+const cap = ELEMENTS.map(e => Math.round(e.cap * CONTACT_RX_CAP_UNITS));
 const offsets = PHASE_ROWS.map(r => r.offset);
 // V1's moss and fungus damp (physics.js DAMP_REACH, DAMP_DRY_T; shaders/activity.js
 // dampOf): DAMP_REACH beside liquid water, else one less than the dampest
@@ -68,7 +70,7 @@ const RX_PAIRINGS_PER_PARTNER_TICK = PARTNER_STEPS / V1_RX_PAIRINGS;
 // ln of the per-partner chance a per-step chance p does NOT fire in a tick, so
 // n partners fire with 1 - exp(n·log). p ≥ 1 is certain: a log far under f32's.
 const missLog = p => PARTNER_STEPS * Math.log(Math.max(1e-30, 1 - Math.min(1, p)));
-const CONTACT_CAP_UNITS = 64;   // ctCapacity's units of a cap (CONTACT_ROWS capacity: cap·64)
+const CONTACT_CAP_UNITS = 64;   // ctCapacity's units of a cap a quantum (phase.js PHASE_CAP_SCALE: 64·FULL a whole cell)
 const CONTACT_RX_HEAT_UNIT = 256;   // a reaction row's heat, in 1/256 cap·°C (CONTACT_REACTIONS heat)
 const CONTACT_Q_PER_C = 4;      // the ¼ K temperature code
 export const CT_ENERGY_PER_CAP_C = CONTACT_Q_PER_C * CONTACT_FULL * CONTACT_CAP_UNITS;
@@ -106,9 +108,9 @@ const CONTACT_ENERGY_CONSTANTS = {
   // ...one step's of it a unit of cond (ctFluxTick), and V1's per-face cap, COND_FLUX_SHARE of min(cap)
   CT_COND_STEP: ['f32', CT_ENERGY_PER_CAP_C / CONTACT_Q_PER_C],
   CT_COND_SHARE: ['f32', PHYS.COND_FLUX_SHARE],
-  // ctCapacity's units of a cap (CONTACT_ROWS capacity: cap·64) and ¼ K codes per °C: a
+  // CONTACT_ROWS capacity's units of a cap (V1's cap·CONTACT_RX_CAP_UNITS) and ¼ K codes per °C: a
   // reaction's heat (row.heat, 1/256 cap·°C) over its products' caps as V1 react.js rxT does.
-  CT_CAP_UNITS: ['i32', CONTACT_CAP_UNITS],
+  CT_CAP_UNITS: ['i32', CONTACT_RX_CAP_UNITS],
   CT_Q_PER_C: ['i32', CONTACT_Q_PER_C],
   // A whole cell's amount (ctAmount): a liquid's fill is its share of one.
   CT_FULL: ['i32', CONTACT_FULL],
@@ -487,7 +489,8 @@ export function ctDensity(c) {
   if (row.kind === 0 || row.kind === 4) return row.density * ctF(row.spawnQ) / Math.max(4, ctF(c.tq));
   return row.density;
 }
-export function ctCapacity(c) { return 65536 + ctAmount(c) * ctRow(c.id).capacity; }
+// (the cell's format capacity, layout.js capacityQ; hand-written in WGSL: shaders/v2/contact.js)
+export function ctCapacity(c) { return phaseCapacity(c.id, ctAmount(c)); }
 export function ctAmount(c) { if (c.id === E.EMPTY) return 0; if (ctRow(c.id).kind === 3) return c.fill; return 65536; }
 export function ctOffset(c) { return phaseOffsetEnergy(c.id, ctAmount(c), c.ctype); }
 export function ctEnergy(c) { return BigInt(ctCapacity(c)) * BigInt(c.tq) + ctOffset(c) + phaseLatentEnergy(c.id, c.raw, ctAmount(c)) + BigInt(c.bank); }
@@ -1183,7 +1186,7 @@ export const CONTACT_KERNEL = [
   [ctInherit, ['CTCell', 'CTCell'], 'CTCell'], [ctRecordChange, ['CTCell', 'vec2u'], 'CTCell'],
   [ctDecay, ['CTCell', 'i32'], 'CTCell'], [ctExhaust, ['CTCell', 'i32'], 'CTCell'], [ctFlameLife, ['i32'], 'i32'], [ctCreate, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctDrain, ['CTCell', 'i32'], 'CTCell'],
   [ctGrow, ['CTCell', 'i32', 'f32'], 'CTCell'],
-  [ctDensity, ['CTCell'], 'f32'], [ctAmount, ['CTCell'], 'i32'], [ctCapacity, ['CTCell'], 'i32'], [ctHeat, ['CTCell', 'i32'], 'CTCell'], [ctHeatTo, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctConvert, ['CTCell', 'i32', 'i32'], 'CTCell'],
+  [ctDensity, ['CTCell'], 'f32'], [ctAmount, ['CTCell'], 'i32'], [ctHeat, ['CTCell', 'i32'], 'CTCell'], [ctHeatTo, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctConvert, ['CTCell', 'i32', 'i32'], 'CTCell'],
   [ctTemperatureRemainder, ['CTCell'], 'f32'], [ctFlux, ['CTCell', 'CTCell'], 'i32'], [ctFluxTick, ['CTCell', 'CTCell'], 'vec2u'], [ctPhase, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctNuclearId, ['CTCell'], 'i32'], [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
   [ctGrowerDamp, ['i32', 'i32'], 'i32'], [ctPuff, ['i32', 'i32'], 'i32'], [ctPerTick, ['f32'], 'f32'],

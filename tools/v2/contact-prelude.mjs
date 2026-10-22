@@ -30,7 +30,7 @@ fn payloadOf(c:vec4u)->u32{if(fixtureLiquid(c.x&255u)){return c.w>>16u;}return c
 fn lifeOf(c:vec4u)->f32{return f32(payloadOf(c))/select(2048.0,256.0,(c.x&255u)==63u);}
 fn withLife(c:vec4u,value:f32)->vec4u{var out=c;let payload=u32(round(value*select(2048.0,256.0,(c.x&255u)==63u)));if(fixtureLiquid(c.x&255u)){out.w=(c.w&65535u)|(payload<<16u);}else{out.y=(c.y&0xffff0000u)|payload;}return out;}
 fn fixtureCtype(c:vec4u)->u32{if(fixtureLiquid(c.x&255u)){return c.y>>24u;}return (c.y>>16u)&255u;}
-fn capacityQ(c:vec4u)->u32{return 65536u+fixtureAmount(c)*u32(phaseCapacityPerQuantum(c.x&255u));}
+fn capacityQ(c:vec4u)->u32{return phaseCapacity(c.x&255u,fixtureAmount(c));}
 fn energyOf(m:Material)->vec2u {
  let id=m.core.x&255u;let raw=(m.core.x>>8u)&65535u;let amount=fixtureAmount(m.core);
  return energyAdd(energyAdd(energyMul(capacityQ(m.core),phaseTq(id,raw)),phaseMaterialOffsetEnergy(id,amount,fixtureCtype(m.core))),energyAdd(phaseLatentEnergy(id,raw,amount),energySigned(m.bank)));

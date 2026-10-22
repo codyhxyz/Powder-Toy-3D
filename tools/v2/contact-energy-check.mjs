@@ -9,6 +9,9 @@ import { PHYS, NOMINAL_STEP_RATE } from '../../src/physics.js';
 import * as C from '../../src/v2/contact.js';
 import { offsetOf } from '../../src/v2/physics.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
+import { PHASE_AIR_CAPACITY, PHASE_CAP_SCALE } from '../../src/v2/phase.js';
+import { capacityOf, makeMaterial } from '../../src/v2/layout.js';
+import { stateLengths, decodeV2State } from '../../src/v2/state.js';
 
 const q = T => Math.round((T + 273.25) * 4);
 const celsius = c => c.tq / 4 - 273.25;
@@ -237,6 +240,56 @@ test('the block pass declares its energy once: deferred, the block\'s net change
     assert(deferred.sources.every(x => x === 0n) && deferred.sinks.every(x => x === 0n), 'no rule records while deferred');
   }
   assert.match(contactWGSL, /ctLedgerDeferred=true;[\s\S]*ctLedgerDeferred=false;[\s\S]*noteEnergySource\(positions\[0\],net\)/, 'contactBlock notes the block\'s net once');
+});
+
+test('TH-06: a whole cell holds its element\'s V1 heat capacity (air 0.02, not a 1/64 carrier and caps to 1/64)', () => {
+  const floor = PHASE_AIR_CAPACITY / PHASE_CAP_SCALE + 1 / 1024;
+  for (const e of ELEMENTS) {
+    const amount = e.id === E.EMPTY ? 0 : 65536, held = capacityOf(e.id, amount) / PHASE_CAP_SCALE;
+    // (gases at or under air's cap keep air's plus 1/1024: phase.js PHASE_MIN_CAPACITY_DELTA)
+    const want = e.id !== E.EMPTY && e.cap < floor ? floor : e.cap;
+    assert(Math.abs(held - want) < 1e-6, `${e.key}: a whole cell holds ${held} cap, V1 ${e.cap}`);
+  }
+  // V1 react.js: T += dE / CAP. Ten cap·°C into a whole cell warms it 10/cap °C (to the quarter-kelvin code)
+  for (const id of [E.EMPTY, E.CO2, E.PROPANE, E.INSULATOR, E.WOOD, E.METAL, E.WATER, E.STEAM]) {
+    const c = cell(id, id === E.STEAM ? 300 : 20), warmed = C.ctHeat(c, 10 * C.CT_ENERGY_PER_CAP_C);
+    const rise = (warmed.tq - c.tq + C.ctTemperatureRemainder(warmed)) / 4;
+    assert(Math.abs(rise - 10 / ELEMENTS[id].cap) < 0.01, `${ELEMENTS[id].key}: 10 cap·°C warm it ${rise.toFixed(3)} °C, V1 ${(10 / ELEMENTS[id].cap).toFixed(3)} °C`);
+  }
+});
+
+test('TH-06: a format-2 save loads at the temperatures it was saved at (state.js migrateCapacity)', () => {
+  const dims = [16, 8, 8], lengths = stateLengths(dims, true);
+  const snap = { dims, tick: 3, acc: 0, frame: 3, paints: 0, certified: true, writtenSinceTick: false, mode: 'v2',
+    ...Object.fromEntries(Object.entries(lengths).map(([name, n]) => [name, new Uint32Array(n)])) };
+  // format 2's capacity: a 1/64 carrier and the cap to 1/64 (layout.js before TH-06)
+  const cap2 = (id, amount) => 65536 + amount * Math.max(1, Math.round(ELEMENTS[id].cap * 64));
+  const saved = [[E.WATER, 20.1, 65536], [E.METAL, 500.2, 65536], [E.EMPTY, 37.05, 0], [E.WATER, 80.15, 17003], [E.SMOKE, 300.1, 65536], [E.LAVA, 1180.2, 65536]];
+  const wantT = [];
+  saved.forEach(([id, T, fill], s) => {
+    const m = makeMaterial(id, Math.floor(T * 4) / 4, ELEMENTS[id].kind === 3 ? fill : 65536), tq = (m.core[0] >>> 8) & 65535;
+    const amount = id === E.EMPTY ? 0 : ELEMENTS[id].kind === 3 ? fill : 65536, bank = Math.floor((T * 4 - Math.floor(T * 4)) * cap2(id, amount));
+    snap.cells.set(m.core, 4 * s); snap.aux[s] = bank; wantT.push(tq + bank / cap2(id, amount));
+  });
+  // a steam cell on its condensing plateau: its latent bank is latent heat, the same in both formats
+  const steam = C.ctSetEnergy(cell(E.STEAM, 100), C.ctEnergy(cell(E.STEAM, 100)) - BigInt(C.ctRow(E.STEAM).coldL) * 65536n / 3n);
+  const packedSteam = C.packContact(steam); snap.cells.set(packedSteam.core, 4 * saved.length); snap.aux[saved.length] = packedSteam.bank >>> 0;
+  const { cells, activity, args, aux, ...meta } = snap;
+  const json = new TextEncoder().encode(JSON.stringify({ ...meta, version: 2, hasAux: true, energyLedger: true }));
+  const bytes = new Uint8Array(12 + json.length + [cells, activity, args, aux].reduce((n, a) => n + a.byteLength, 0));
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0x32545054, true); view.setUint32(4, 2, true); view.setUint32(8, json.length, true); bytes.set(json, 12);
+  let at = 12 + json.length;
+  for (const array of [cells, activity, args, aux]) for (const word of array) { view.setUint32(at, word, true); at += 4; }
+  const loaded = decodeV2State(bytes);
+  assert.equal(loaded.migratedFrom, 2); assert.equal(loaded.version, 3);
+  assert.deepEqual(loaded.cells, snap.cells, 'codes, ids and payloads unchanged');
+  saved.forEach(([id], s) => {
+    const c = C.unpackContact(loaded.cells.subarray(4 * s, 4 * s + 4), loaded.aux[s] | 0);
+    const T = c.tq + c.bank / C.ctCapacity(c);
+    assert(Math.abs(T - wantT[s]) < 1e-5, `${ELEMENTS[id].key}: loads at code ${T}, saved at ${wantT[s]}`);
+  });
+  assert.equal(loaded.aux[saved.length] | 0, packedSteam.bank, 'a latent bank stays');
 });
 
 console.log(`${groups} V2 contact energy groups passed against V1 react.js (CPU only)`);

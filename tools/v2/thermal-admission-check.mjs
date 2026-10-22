@@ -3,8 +3,8 @@
 // Do not use CPU withEnergy: it throws instead of modeling overflowing banks.
 import assert from 'node:assert/strict';
 import { ELEMENTS, E } from '../../src/elements.js';
-import { FULL, MAX_FILL, AIR_CAPACITY_Q, capacityPerQuantum, isLiquid } from '../../src/v2/layout.js';
-import { PHASE_ROWS, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, PHASE_NORMAL_MAX, phaseOffsetPerQuantum } from '../../src/v2/phase.js';
+import { FULL, MAX_FILL, AIR_CAPACITY_Q, capacityOf, capacityDelta, isLiquid } from '../../src/v2/layout.js';
+import { PHASE_ROWS, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, PHASE_NORMAL_MAX, phaseOffsetPerQuantum, phaseOffsetRemainder, phaseOffsetEnergy } from '../../src/v2/phase.js';
 import { nativeStateWGSL } from '../../src/shaders/v2/state.js';
 
 const U32 = 0xffffffffn, U64 = (1n << 64n) - 1n;
@@ -30,10 +30,10 @@ assert.equal(PHASE_COLD_BASE + PHASE_STEPS, 65535);
 
 function state(id, fill, ct) {
   const amount = id === E.EMPTY ? 0 : isLiquid(id) ? fill : FULL;
-  const capacity = BigInt(AIR_CAPACITY_Q + amount * capacityPerQuantum(id));
+  const capacity = BigInt(capacityOf(id, amount));
   return { id, fill, ct, amount, capacity, row: PHASE_ROWS[id],
-    offset: wrap(BigInt(phaseOffsetPerQuantum(id, ct)) * BigInt(amount)),
-    offset0: wrap(BigInt(phaseOffsetPerQuantum(id, 0)) * BigInt(amount)) };
+    offset: wrap(phaseOffsetEnergy(id, amount, ct)),
+    offset0: wrap(phaseOffsetEnergy(id, amount, 0)) };
 }
 
 // Compute, don't assume, the domain facts needed to remove the round trip.
@@ -48,7 +48,7 @@ for (const element of ELEMENTS) for (const fill of fills) {
     assert(Number.isInteger(per) && per >= 0 && per <= 0x7fffffff);
     if (!per) continue;
     assert.notEqual(element.id, E.LAVA, 'LAVA must have no latent side');
-    for (const ct of ctypes) assert.equal(phaseOffsetPerQuantum(element.id, ct), phaseOffsetPerQuantum(element.id, 0), `${element.key}: ctype-independent latent offset`);
+    for (const ct of ctypes) assert.equal(phaseOffsetPerQuantum(element.id, ct) * FULL + phaseOffsetRemainder(element.id, ct), phaseOffsetPerQuantum(element.id, 0) * FULL + phaseOffsetRemainder(element.id, 0), `${element.key}: ctype-independent latent offset`);
     const latent = BigInt(per) * BigInt(s.amount);
     const bucket = (latent + STEPS - 1n) / STEPS;
     assert(bucket < (1n << 31n), `${element.key}: latent residual`);
@@ -63,10 +63,12 @@ assert.equal(PHASE_ROWS[E.LAVA].coldLatent, 0);
 
 // Verify models' input tables are exactly the tables used by production WGSL.
 for (const [name, values] of [
-  ['MATERIAL_CAP', ELEMENTS.map(e => capacityPerQuantum(e.id))],
+  ['phaseCapacityDeltaTable', ELEMENTS.map(e => capacityDelta(e.id))],
   ...['hotQ', 'coldQ', 'hotLatent', 'coldLatent', 'offset'].map(key => [
     `phase${key === 'offset' ? 'OffsetPerQuantum' : key[0].toUpperCase() + key.slice(1)}Table`, PHASE_ROWS.map(r => r[key])]),
   ['phaseLavaOffsetPerQuantumTable', ELEMENTS.map(e => phaseOffsetPerQuantum(E.LAVA, e.id))],
+  ['phaseOffsetRemainderTable', PHASE_ROWS.map(r => r.offsetRem)],
+  ['phaseLavaOffsetRemainderTable', ELEMENTS.map(e => phaseOffsetRemainder(E.LAVA, e.id))],
 ]) {
   const match = nativeStateWGSL.match(new RegExp(`const ${name} = array<[^>]+>\\(([^)]*)\\);`));
   assert(match, name);

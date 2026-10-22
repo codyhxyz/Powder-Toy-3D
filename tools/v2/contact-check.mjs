@@ -87,12 +87,16 @@ test('uniform-temperature liquid advection leaves persistent carrier energy',()=
   for(const id of ELEMENTS.filter(e=>e.kind===K.LIQUID).map(e=>e.id)) {
     for(const amount of [1,17,32768,65536]) {
       const a=cell(id,20),b=cell(E.EMPTY,20),before=energy(a)+energy(b);
-      const parcel=(BigInt(C.ctRow(id).capacity)*BigInt(a.tq)+BigInt(F.phaseOffsetPerQuantum(id,a.ctype)))*BigInt(amount);
+      // (format 3, TH-06: a cell's capacity is the carrier and ceil(amount·delta/FULL) over it, its offset
+      // floor(amount·offset/FULL), so a parcel is the matter's energy and the parts land within a
+      // thousandth of a code of the cell's temperature, not on it)
       const na=amount===65536?cell(E.EMPTY,20):cell(id,20,65536-amount);
       const nb=cell(id,20,amount);
+      const parcel=energy(nb)-energy(b);
       const ea=energy(a)-parcel,eb=energy(b)+parcel;
-      assert.equal(energy(na),ea);assert.equal(energy(nb),eb);assert.equal(ea+eb,before);
-      assert.equal(C.ctSetEnergy(na,ea).tq,a.tq);assert.equal(C.ctSetEnergy(nb,eb).tq,b.tq);
+      assert.equal(energy(nb),eb);assert.equal(ea+eb,before);
+      const T=c=>c.tq+C.ctTemperatureRemainder(c)-(c.bank<0?Number(-c.bank)/C.ctCapacity(c):0);
+      assert(Math.abs(T(C.ctSetEnergy(na,ea))-a.tq)<0.02,'the part left behind keeps its temperature');assert.equal(C.ctSetEnergy(nb,eb).tq,b.tq);
     }
   }
 });

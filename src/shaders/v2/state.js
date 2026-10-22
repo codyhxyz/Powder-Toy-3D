@@ -1,11 +1,10 @@
 import { phaseWGSL } from './phase.js';
 import { ELEMENTS } from '../../elements.js';
-import { capacityPerQuantum, AIR_CAPACITY_Q, FULL, MAX_FILL, FUEL_Q, lifeScale } from '../../v2/layout.js';
+import { AIR_CAPACITY_Q, FULL, MAX_FILL, FUEL_Q, lifeScale } from '../../v2/layout.js';
 import { CONTACT_CONSTANTS } from '../../v2/contact.js';
 
 // No additional table binding: these immutable format tables are shared by every family.
 export const nativeStateWGSL = /* wgsl */ `
-const MATERIAL_CAP = array<u32, ${ELEMENTS.length}>(${ELEMENTS.map(e => `${capacityPerQuantum(e.id)}u`).join(',')});
 const MATERIAL_LIFE = array<u32, ${ELEMENTS.length}>(${ELEMENTS.map(e => `${Math.round((e.life ?? 0) * lifeScale(e.id))}u`).join(',')});
 const MATERIAL_LIFE_SCALE = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => `${lifeScale(e.id)}.0`).join(',')});
 const MATERIAL_CONDUCTS = array<bool, ${ELEMENTS.length}>(${ELEMENTS.map(e => String(e.elec > 0)).join(',')});
@@ -15,12 +14,11 @@ const FUEL_Q: f32 = ${FUEL_Q}.0;
 struct Material { core: vec4u, bank: i32 }
 ${phaseWGSL}
 fn materialAmount(c: vec4u) -> u32 { if (cid(c) == 0u) { return 0u; } if (isLiq(c)) { return cFill(c); } return 65536u; }
-fn capacityPerQuantum(id: u32) -> u32 { return MATERIAL_CAP[id]; }
 fn conductsNative(id: u32) -> bool { return MATERIAL_CONDUCTS[id]; }
 fn capacityQ(c: vec4u) -> u32 {
   var n = ${FULL}u;
   if (cid(c) == 0u) { n = 0u; } else if (isLiq(c)) { n = cFill(c); }
-  return ${AIR_CAPACITY_Q}u + n * capacityPerQuantum(cid(c));
+  return phaseCapacity(cid(c), n);
 }
 // Signed 64-bit energy in two u32 limbs (WebGPU has no portable i64).
 fn energyAdd(a: vec2u, b: vec2u) -> vec2u { let lo = a.x + b.x; return vec2u(lo, a.y + b.y + select(0u, 1u, lo < a.x)); }
@@ -113,8 +111,8 @@ fn energyOf(m: Material) -> vec2u {
   return energyAdd(sensible, energyAdd(phaseMaterialOffsetEnergy(id, amount, ctypeOf(m.core)), phaseLatentEnergy(id, cRawTq(m.core), amount)));
 }
 fn withEnergy(m: Material, e: vec2u) -> Material { return encodeMaterialEnergy(m,e,capacityQ(m.core),0u); }
-fn packetCapacityQ(c: vec4u) -> u32 { return capacityQ(c) - 65536u; }
-fn packetOwnedEnergy(m: Material) -> vec2u { return energySub(energyOf(m),energyMul(65536u,cTq(m.core))); }
+fn packetCapacityQ(c: vec4u) -> u32 { return capacityQ(c) - ${AIR_CAPACITY_Q}u; }
+fn packetOwnedEnergy(m: Material) -> vec2u { return energySub(energyOf(m),energyMul(${AIR_CAPACITY_Q}u,cTq(m.core))); }
 fn withPacketEnergy(m: Material, e: vec2u) -> Material { return encodeMaterialEnergy(m,e,packetCapacityQ(m.core),ctypeOf(m.core)); }
 fn packetEnergyFits(m: Material, e: vec2u) -> bool { return all(packetOwnedEnergy(withPacketEnergy(m,e)) == e); }
 fn encodeMaterialEnergy(m: Material, e: vec2u, capacity: u32, phaseCtype: u32) -> Material {
@@ -157,7 +155,7 @@ struct EnergyBounds { lo: vec2u, hi: vec2u }
 // This affine interval contains all supported liquid plateaus. Restricting
 // a tagged receiver to its plateau incorrectly dams hot/cold arrivals.
 fn energyBounds(c: vec4u, amount: u32) -> EnergyBounds {
-  let id = cid(c); let capacity = 65536u + amount * capacityPerQuantum(id);
+  let id = cid(c); let capacity = phaseCapacity(id, amount);
   let offset = phaseMaterialOffsetEnergy(id, amount, ctypeOf(c));
   return EnergyBounds(energyAdd(offset, energySigned(-2147483648)),
     energyAdd(energyAdd(offset, energyMul(capacity, 41093u)), energySigned(2147483647)));
@@ -167,7 +165,7 @@ fn energyPacketFits(src: Material, dst: Material, packet: vec2u, n: u32) -> bool
   if (cid(receiver) == 0u) { receiver.x = (receiver.x & 0xffffff00u) | cid(src.core); receiver.y = ctypeOf(src.core) << 24u; }
   let amount = materialAmount(dst.core);
   let b = energyBounds(receiver, amount); let next = energyBounds(receiver, amount + n);
-  let dry = energyBounds(receiver, 0u); let carrier = energyMul(65536u, cTq(dst.core));
+  let dry = energyBounds(receiver, 0u); let carrier = energyMul(${AIR_CAPACITY_Q}u, cTq(dst.core));
   let e = energyOf(dst);
   // Other faces may drain the receiver this pass. Reserve only headroom that
   // exists both before and after complete drainage, not outgoing heat twice.

@@ -1,4 +1,4 @@
-import { PHASE_ROWS, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, phaseOffsetPerQuantum } from '../../v2/phase.js';
+import { PHASE_ROWS, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, phaseOffsetPerQuantum, phaseOffsetRemainder, PHASE_AIR_CAPACITY, phaseCapacityDelta } from '../../v2/phase.js';
 import { ELEMENTS } from '../../elements.js';
 const field = (name, get) => {
   // Small scalar tables avoid switch-return fanout without adding GPU bindings.
@@ -16,7 +16,14 @@ ${field('phaseColdQ', r => r.coldQ)}
 ${field('phaseHotLatent', r => r.hotLatent)}
 ${field('phaseColdLatent', r => r.coldLatent)}
 ${field('phaseOffsetPerQuantum', r => r.offset)}
-${field('phaseCapacityPerQuantum', (_, i) => Math.max(1, Math.round(ELEMENTS[i].cap * 64)))}
+${field('phaseOffsetRemainder', r => r.offsetRem)}
+${field('phaseCapacityDelta', (_, i) => phaseCapacityDelta(i))}
+// v2/phase.js phaseCapacity: the air carrier and ceil(amount·delta / FULL) of the element's cap over it
+const PHASE_AIR_CAPACITY:u32=${PHASE_AIR_CAPACITY}u;
+fn phaseCapacity(id:u32,amount:u32)->u32 {
+ let p=energyAdd(energyMul(amount,u32(phaseCapacityDelta(id))),vec2u(65535u,0u));
+ return PHASE_AIR_CAPACITY+((p.x>>16u)|(p.y<<16u));
+}
 fn phaseTq(id:u32,raw:u32)->u32 {
  if(raw<=41093u){return raw;}
  if(raw<PHASE_COLD_BASE){return u32(phaseHotQ(id));}
@@ -88,17 +95,22 @@ fn phaseDiv(a:vec2u,b:vec2u)->vec2u {
  }
  return phaseDivExact(a,b);
 }
+// v2/phase.js phaseOffsetEnergy: floor(amount·offset / FULL), the whole energy a quantum and the rest a FULL
+fn phaseOffsetOf(offset:i32,rest:i32,amount:u32)->vec2u {
+ var magnitude=energyMul(u32(abs(offset)),amount);
+ if(offset<0){magnitude=energySub(vec2u(0u),magnitude);}
+ let r=energyMul(amount,u32(rest));
+ return energyAdd(magnitude,vec2u((r.x>>16u)|(r.y<<16u),r.y>>16u));
+}
 fn phaseOffsetEnergy(id:u32,amount:u32)->vec2u {
- let offset=phaseOffsetPerQuantum(id); let magnitude=energyMul(u32(abs(offset)),amount);
- if(offset<0){return energySub(vec2u(0u),magnitude);}return magnitude;
+ return phaseOffsetOf(phaseOffsetPerQuantum(id),phaseOffsetRemainder(id),amount);
 }
 ${field('phaseLavaOffsetPerQuantum', (_, i) => phaseOffsetPerQuantum(10, i))}
+${field('phaseLavaOffsetRemainder', (_, i) => phaseOffsetRemainder(10, i))}
 fn phaseMaterialOffsetEnergy(id:u32,amount:u32,ctype:u32)->vec2u {
  if(id!=10u){return phaseOffsetEnergy(id,amount);}
  var source=ctype;if(source>=${ELEMENTS.length}u){source=3u;}
- let offset=phaseLavaOffsetPerQuantum(source);
- let magnitude=energyMul(u32(abs(offset)),amount);
- if(offset<0){return energySub(vec2u(0u),magnitude);}return magnitude;
+ return phaseOffsetOf(phaseLavaOffsetPerQuantum(source),phaseLavaOffsetRemainder(source),amount);
 }
 fn phaseLatentEnergy(id:u32,raw:u32,amount:u32)->vec2u {
  if(raw<=41093u){return vec2u(0u);}
@@ -111,7 +123,7 @@ fn phaseLatentEnergy(id:u32,raw:u32,amount:u32)->vec2u {
 }
 // raw=0xffffffff is not in a latent interval. y is bitcast<i32>(residual).
 fn phaseEncode(id:u32,amount:u32,energy:vec2u)->vec2u {
- return phaseEncodeCapacity(id,amount,energy,65536u+amount*u32(phaseCapacityPerQuantum(id)),0u);
+ return phaseEncodeCapacity(id,amount,energy,phaseCapacity(id,amount),0u);
 }
 fn phaseEncodeCapacity(id:u32,amount:u32,energy:vec2u,capacity:u32,ctype:u32)->vec2u {
  let sensible=energySub(energy,phaseMaterialOffsetEnergy(id,amount,ctype));

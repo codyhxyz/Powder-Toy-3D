@@ -35,7 +35,8 @@ for(const id of [E.OIL,E.WATER,E.MERCURY,E.LAVA,E.PLANT]) for(const fill of [1,1
 // Three independently proved production regressions.
 const oil=makeMaterial(E.OIL,100,1),cooled=heat(oil,-80);
 assert.equal(cTq(oil.core),1493);assert.equal(cTq(cooled.core),1413);
-assert.equal(packetOwnedEnergy(cooled)-packetOwnedEnergy(oil),-2320n);
+// (one quantum of oil's capacity over the carrier: 29 energy a code in format 2, ceil(delta/FULL) = 28 in format 3)
+assert.equal(packetOwnedEnergy(cooled)-packetOwnedEnergy(oil),-80n*BigInt(packetCapacityQ(oil.core)));assert.equal(packetCapacityQ(oil.core),28);
 const plant=makeMaterial(E.PLANT,20),converted={core:new Uint32Array(plant.core),bank:plant.bank};converted.core[0]=(converted.core[0]&0xffffff00)|E.SAWDUST;
 assert(packetEnergyFits(converted,packetOwnedEnergy(plant)));
 const sawdust=withPacketEnergy(converted,packetOwnedEnergy(plant));assert.equal(packetOwnedEnergy(sawdust),packetOwnedEnergy(plant));

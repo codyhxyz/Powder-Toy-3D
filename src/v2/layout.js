@@ -1,24 +1,27 @@
-import { phaseTemperatureQ, phaseOffsetEnergy, phaseLatentEnergy, encodePhaseEnergy, phaseAmount, PHASE_NORMAL_MAX } from './phase.js';
+import { phaseTemperatureQ, phaseOffsetEnergy, phaseLatentEnergy, encodePhaseEnergy, phaseAmount, PHASE_NORMAL_MAX, PHASE_AIR_CAPACITY, phaseCapacity, phaseCapacityDelta } from './phase.js';
 import { E, ELEMENTS, K } from '../elements.js';
 
-// Native v2 format 2. Capacity is measured in 1/(64*FULL) water-cell units;
-// one integer energy quantum is that capacity heated by one quarter kelvin.
-// The ever-present air capacity makes uniform-temperature drainage leave warm air.
-export const MATERIAL_VERSION = 2;
+// Native v2 format 3. Capacity is measured in 1/(64*FULL) cap units; one integer energy quantum is
+// that capacity heated by one quarter kelvin. The ever-present air carrier (V1's air cap) makes
+// uniform-temperature drainage leave warm air; matter adds its cap over it (phase.js phaseCapacity).
+// Format 2 rounded caps to 1/64 over a 1/64 carrier: state.js migrates its banks (TH-06).
+export const MATERIAL_VERSION = 3;
 export const FULL = 65536;
 export const MAX_FILL = 16 * FULL;
-export const AIR_CAPACITY_Q = FULL;
+export const AIR_CAPACITY_Q = PHASE_AIR_CAPACITY;
 export const FUEL_Q = 2048; // total fuel, not concentration; 16 full cells fit u16.
 export const lifeScale = id => ELEMENTS[id]?.key === 'SINGULARITY' ? 256 : FUEL_Q;
 // A non-liquid's life as V2 keeps it: the 16-bit payload withLife writes and compactA reads back.
 export const nativeLife = (id, life) => Math.min(65535, Math.max(0, Math.round(life * lifeScale(id)))) / lifeScale(id);
-export const capacityPerQuantum = id => Math.max(1, Math.round((ELEMENTS[id]?.cap ?? 1) * 64));
+// a whole cell's capacity over the carrier, and a cell's holding `amount` (phase.js)
+export const capacityDelta = phaseCapacityDelta;
+export const capacityOf = phaseCapacity;
 export const isLiquid = id => ELEMENTS[id]?.kind === K.LIQUID;
 export const isConductor = id => (ELEMENTS[id]?.elec ?? 0) > 0;
 export function validateMaterialTable(elements = ELEMENTS) {
   for (const e of elements) {
     if (e.kind === K.LIQUID && e.elec > 0 && (e.burnRate || e.burn || e.flammable || e.fuel || e.life > 0)) throw new Error(`native liquid payload collision: ${e.key}`);
-    if (Math.max(1, Math.round((e.cap ?? 1) * 64)) * MAX_FILL + AIR_CAPACITY_Q > 0x7fffffff) throw new Error(`native capacity overflow: ${e.key}`);
+    if (capacityOf(e.id, MAX_FILL) > 0x7fffffff) throw new Error(`native capacity overflow: ${e.key}`);
   }
 }
 validateMaterialTable();
@@ -30,7 +33,7 @@ export const payloadOf = c => isLiquid(cid(c)) ? c[3] >>> 16 : c[1] & 65535;
 export const ctypeOf = c => isLiquid(cid(c)) ? (c[1] >>> 24) & ((ELEMENTS[cid(c)]?.burnRate ?? 0) > 0 ? 127 : 255) : (c[1] >>> 16) & 255;
 export function capacityQ(c) {
   const id = cid(c);
-  return AIR_CAPACITY_Q + (id === 0 ? 0 : isLiquid(id) ? cFill(c) : FULL) * capacityPerQuantum(id);
+  return capacityOf(id, id === 0 ? 0 : isLiquid(id) ? cFill(c) : FULL);
 }
 export const energyOf = m => BigInt(capacityQ(m.core)) * BigInt(cTq(m.core)) + phaseOffsetEnergy(cid(m.core), phaseAmount(m.core), ctypeOf(m.core)) + phaseLatentEnergy(cid(m.core), cRawTq(m.core), phaseAmount(m.core)) + BigInt(m.bank);
 export function withEnergy(m, energy) { return encodeMaterialEnergy(m, energy, capacityQ(m.core)); }
@@ -71,7 +74,7 @@ export function withPayload(m, payload) {
 export const share = (total, before, amount, fill) => fill ? BigInt(total) * BigInt(before + amount) / BigInt(fill) - BigInt(total) * BigInt(before) / BigInt(fill) : 0n;
 export function energyFits(m, e) { try { return energyOf(withEnergy(m, e)) === e; } catch { return false; } }
 export function energyBounds(core, amount) {
-  const id = cid(core), cap = BigInt(AIR_CAPACITY_Q + amount * capacityPerQuantum(id)), offset = phaseOffsetEnergy(id, amount, ctypeOf(core));
+  const id = cid(core), cap = BigInt(capacityOf(id, amount)), offset = phaseOffsetEnergy(id, amount, ctypeOf(core));
   // Every current liquid plateau lies inside this representable interval.
   // Restricting a tagged receiver to its plateau makes its drained headroom
   // zero and incorrectly dams ordinary hot/cold arrivals.

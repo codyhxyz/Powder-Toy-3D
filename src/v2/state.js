@@ -3,7 +3,8 @@
 // Arrays are little-endian raw u32 words; no float conversion may touch them.
 import { validateMaterialCore } from './materialValidation.js';
 import { ELEMENTS } from '../elements.js';
-import { MATERIAL_VERSION, FULL, MAX_FILL, FUEL_Q, lifeScale, isLiquid, isConductor } from './layout.js';
+import { MATERIAL_VERSION, FULL, MAX_FILL, FUEL_Q, lifeScale, isLiquid, isConductor, capacityOf } from './layout.js';
+import { phaseAmount, PHASE_NORMAL_MAX } from './phase.js';
 import { gridDims } from '../shaders/common.js';
 import { v2ActLayout, ARGS2 } from '../shaders/v2.js';
 
@@ -60,7 +61,7 @@ export function decodeV2State(bytes, dims) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   if (view.getUint32(0, true) !== MAGIC) fail('invalid magic');
   const version = view.getUint32(4, true);
-  if (version !== 1 && version !== V2_STATE_VERSION) fail('unsupported version');
+  if (version !== 1 && version !== 2 && version !== V2_STATE_VERSION) fail('unsupported version');
   const n = view.getUint32(8, true);
   if (n > MAX_META || n > bytes.length - PREFIX) fail('invalid metadata length');
   let meta;
@@ -78,7 +79,8 @@ export function decodeV2State(bytes, dims) {
   // Before the auxiliary owner existed, its state was the all-zero initial state.
   state.aux ??= new Uint32Array(lengths.cells / 4);
   if (version === 1) migratePrototype(state);
-  else if (!state.energyLedger) {
+  else if (version === 2) migrateCapacity(state);
+  if (version !== 1 && !state.energyLedger) {
     const activity = new Uint32Array(stateLengths(state.dims, true).activity);
     activity.set(state.activity);
     state.activity = activity;
@@ -91,6 +93,23 @@ export function decodeV2State(bytes, dims) {
   return state;
 }
 
+// Format 2's capacity (layout.js before TH-06): a 1/64-cap carrier and the cap rounded to 1/64.
+const format2Capacity = (id, amount) => FULL + amount * Math.max(1, Math.round((ELEMENTS[id]?.cap ?? 1) * 64));
+// Format 2 -> 3: a cell's code is its temperature in both; its bank, the sensible remainder over the code,
+// is that share of the old capacity, so it becomes the same share of the new (to the nearest unit) and
+// the cell loads at the temperature it was saved at. A latent bank (a plateau's code) is latent heat, the
+// same in both, and stays.
+function migrateCapacity(state) {
+  for (let s = 0; s < state.aux.length; s++) {
+    const core = state.cells.subarray(4 * s, 4 * s + 4), bank = state.aux[s] | 0;
+    if (bank === 0 || ((core[0] >>> 8) & 65535) > PHASE_NORMAL_MAX || !ELEMENTS[core[0] & 255]) continue;
+    const amount = phaseAmount(core), was = BigInt(format2Capacity(core[0] & 255, amount)), now = BigInt(capacityOf(core[0] & 255, amount));
+    const scaled = BigInt(bank) * now, sign = scaled < 0n ? -1n : 1n;
+    state.aux[s] = Number((2n * scaled + sign * was) / (2n * was)) | 0;
+  }
+  state.version = V2_STATE_VERSION;
+  state.migratedFrom = 2;
+}
 function halfFloat(bits) {
   const sign = bits & 32768 ? -1 : 1, exp = (bits >>> 10) & 31, mantissa = bits & 1023;
   return sign * (exp === 0 ? mantissa * 2 ** -24 : exp === 31 ? Infinity : (1 + mantissa / 1024) * 2 ** (exp - 15));

@@ -206,6 +206,7 @@ fn ctSigned(n:i32)->vec2u{return energySigned(n);}
 fn ctMul(a:i32,b:i32)->vec2u{return energyMul(u32(a),u32(b));}
 fn ctLess(a:vec2u,b:vec2u)->bool{return phaseLess(a,b);}
 fn ctSmall(d:vec2u)->i32{return bitcast<i32>(d.x);}
+fn ctCapacity(c:CTCell)->i32{return i32(phaseCapacity(u32(c.id),u32(ctAmount(c))));}
 fn ctWide(x:f32)->vec2u{let m=abs(x);let hi=floor(m/4294967296.0);let v=vec2u(u32(m-hi*4294967296.0),u32(hi));return select(v,energyNeg(v),x<0.0);}
 fn ctNeg(d:vec2u)->vec2u{return energyNeg(d);}
 fn ctNonzero(d:vec2u)->bool{return any(d!=vec2u(0u));}

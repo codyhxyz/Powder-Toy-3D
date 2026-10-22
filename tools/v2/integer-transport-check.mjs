@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { ELEMENTS } from '../../src/elements.js';
 import { columnWaterWGSL } from '../../src/shaders/v2/columns.js';
-import { FULL, MAX_FILL, capacityPerQuantum, isLiquid, share } from '../../src/v2/layout.js';
+import { FULL, MAX_FILL, AIR_CAPACITY_Q, capacityOf, isLiquid, share } from '../../src/v2/layout.js';
+import { phaseOffsetEnergy } from '../../src/v2/phase.js';
 import { PHASE_ROWS, PHASE_STEPS, PHASE_NORMAL_MAX } from '../../src/v2/phase.js';
 import { limbs, wide, signed, mul, mulSmall, energyDiv, energyDivExact, phaseDiv, phaseDivExact, highestBit, energyScale, energyShare, shareUnsigned } from './integer-transport-reference.mjs';
 const U32 = 0xffffffffn, U64 = (1n << 64n) - 1n;
@@ -104,16 +105,17 @@ const stats = {}, perturbedStats = {};
 let samples = 0, phaseSamples = 0, maxCapacity = 0, maxLatentProduct = 0n, maxOffset = 0n;
 const banks = [-2147483648, -1, 0, 1, 2147483647];
 for (const material of ELEMENTS) {
-  const row = PHASE_ROWS[material.id], cap = capacityPerQuantum(material.id);
+  // (format 3: a cell's capacity is the carrier and ceil(amount·delta/FULL), its offset floor(amount·offset/FULL))
+  const row = PHASE_ROWS[material.id];
   for (let i = 0; i < 256; i++) {
     const amount = material.id === 0 ? 0 : isLiquid(material.id) ? [1, 2, 3, FULL - 1, FULL, FULL + 1, MAX_FILL - 1, MAX_FILL, rnd() % MAX_FILL + 1][i % 9] : FULL;
     const tq = [0, 1, PHASE_NORMAL_MAX - 1, PHASE_NORMAL_MAX, rnd() % (PHASE_NORMAL_MAX + 1)][i % 5];
-    const capacity = FULL + amount * cap; maxCapacity = Math.max(maxCapacity, capacity);
-    const offset = BigInt(row.offset) * BigInt(amount); maxOffset = maxOffset > (offset < 0n ? -offset : offset) ? maxOffset : (offset < 0n ? -offset : offset);
+    const capacity = capacityOf(material.id, amount), cap = capacity - AIR_CAPACITY_Q; maxCapacity = Math.max(maxCapacity, capacity);
+    const offset = phaseOffsetEnergy(material.id, amount); maxOffset = maxOffset > (offset < 0n ? -offset : offset) ? maxOffset : (offset < 0n ? -offset : offset);
     const sensible = BigInt(capacity) * BigInt(tq) + BigInt(banks[i % banks.length]);
     if (sensible >= 0n) checkEnergy(sensible, capacity, { stats });
     if (isLiquid(material.id)) {
-      const e = BigInt(amount * cap) * BigInt(tq) + offset + BigInt(banks[i % banks.length]);
+      const e = BigInt(cap) * BigInt(tq) + offset + BigInt(banks[i % banks.length]);
       const n = [0, 1, amount, rnd() % (amount + 1)][i % 4], prefix = rnd() % (amount - n + 1);
       checkShare(e, prefix, n, amount, { stats });
       checkShare(e, prefix, n, amount, { stats: perturbedStats, perturb: i % 2 ? -2 : 2 });
@@ -133,7 +135,7 @@ for (const material of ELEMENTS) {
       checkPhase(progress * BigInt(PHASE_STEPS), latent, { stats: perturbedStats, perturb: i % 2 ? -2 : 2 });
       checkPhase(latent * BigInt(index), BigInt(PHASE_STEPS), { stats: perturbedStats, perturb: i % 2 ? -2 : 2 });
       if (isLiquid(material.id)) {
-        const e = BigInt(amount * cap) * BigInt(hot ? row.hotQ : row.coldQ) + offset + (hot ? encoded : -encoded) + BigInt(banks[i % banks.length]);
+        const e = BigInt(cap) * BigInt(hot ? row.hotQ : row.coldQ) + offset + (hot ? encoded : -encoded) + BigInt(banks[i % banks.length]);
         checkShare(e, 0, Math.floor(amount / 2), amount, { stats });
         checkShare(e, 0, Math.floor(amount / 2), amount, { stats: perturbedStats, perturb: i % 2 ? -2 : 2 });
       }
@@ -151,14 +153,14 @@ for (let i = 0; i < 1000; i++) {
 // Cartesian extremes independently combine every liquid's temperature, fill,
 // bank and phase endpoint (the seeded census above supplies interior values).
 for (const material of ELEMENTS.filter(e => isLiquid(e.id))) {
-  const row = PHASE_ROWS[material.id], cap = capacityPerQuantum(material.id);
+  const row = PHASE_ROWS[material.id];
   for (const amount of [1, 3, FULL, MAX_FILL]) for (const tq of [0, PHASE_NORMAL_MAX]) for (const bank of [-2147483648, 2147483647]) {
-    const e = BigInt(amount) * (BigInt(cap * tq) + BigInt(row.offset)) + BigInt(bank);
+    const e = BigInt(capacityOf(material.id, amount) - AIR_CAPACITY_Q) * BigInt(tq) + phaseOffsetEnergy(material.id, amount) + BigInt(bank);
     checkShare(e, 0, Math.floor(amount / 2), amount, { stats });
     for (const hot of [true, false]) {
       const per = hot ? row.hotLatent : row.coldLatent;
       if (per <= 0) continue;
-      const threshold = BigInt(amount) * (BigInt(cap * (hot ? row.hotQ : row.coldQ)) + BigInt(row.offset));
+      const threshold = BigInt(capacityOf(material.id, amount) - AIR_CAPACITY_Q) * BigInt(hot ? row.hotQ : row.coldQ) + phaseOffsetEnergy(material.id, amount);
       const end = threshold + BigInt(amount * per) * (hot ? 1n : -1n) + BigInt(bank);
       checkShare(end, 0, Math.floor(amount / 2), amount, { stats });
     }
