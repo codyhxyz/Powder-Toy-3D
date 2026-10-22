@@ -32,11 +32,11 @@ assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:0,tool:blast}),
 assert.equal(d.externalBlasts.size,1);
 assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:1,tool:blast}),true);
 assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:0,tool:blast,filter:E.SAND}),true);
-assert.equal(povGpu(sim).edit('povRocket',{lo:[-10,-10,-10],hi:[20,20,20]},{center:[4,4,4]}),true);
+// (the rocket is V1's own blast rule as native forcing, not an external blast: native-force-check.mjs)
 assert.equal(d.applyExternalBlast({position:[200,0,0],radius:2,energy:100}).status,'queued');
 const mask=new Uint8Array(g.width*g.height);mask[12]=255;
 assert.equal(sim.paint({center:new Vector3(4,4,4),end:new Vector3(9,4,4),grow:[2,1,0],radius:2,shape:1,tool:blast,filter:E.SAND,mask:{lo:[1,1,1],hi:[6,6,6],data:mask}}),true);
-mask[12]=0;const selection=d.externalBlasts.get(5).selection;
+mask[12]=0;const selection=d.externalBlasts.get(4).selection;
 assert.equal(new Uint8Array(selection.maskWords.buffer)[12],255,'queued masks own immutable bytes');
 assert.deepEqual(selection.end,[9,4,4]);assert.deepEqual(selection.grow,[2,1,0]);assert.equal(selection.filter,E.SAND);
 assert.deepEqual(selection.lo,[1,1,1]);assert.deepEqual(selection.hi,[6,6,6]);
@@ -56,19 +56,19 @@ const flags=new Uint32Array(d.control.bytes);flags[externalBlastBase(g)]=1;
 d.consumeMaterialEvents(1);d.consumeMaterialEvents(2);
 assert.equal(flags[externalBlastBase(g)],1,'recording must not reset completion');
 const snapshot=await d.snapshotDynamicState(),saved=decodeDynamicState(encodeDynamicState(snapshot));
-assert.equal(saved.externalBlasts.length,6);assert.equal(saved.externalBlastDone[0],1);assert.deepEqual(saved.externalBlasts[5].selection,selection);
+assert.equal(saved.externalBlasts.length,5);assert.equal(saved.externalBlastDone[0],1);assert.deepEqual(saved.externalBlasts[4].selection,selection);
 d.restoreDynamicState(saved);assert.equal(flags[externalBlastBase(g)],1);
-await d.shiftWindow([4,0,0]);assert.deepEqual(d.externalBlasts.get(5).selection.maskOrigin,[0,0,0]);
-assert.deepEqual(d.externalBlasts.get(5).selection.lo,[1,1,1]);assert.equal(d.externalBlasts.get(5).selection.maskWords[3],255);
+await d.shiftWindow([4,0,0]);assert.deepEqual(d.externalBlasts.get(4).selection.maskOrigin,[0,0,0]);
+assert.deepEqual(d.externalBlasts.get(4).selection.lo,[1,1,1]);assert.equal(d.externalBlasts.get(4).selection.maskWords[3],255);
 d.restoreDynamicState(saved);
-assert.deepEqual(d.externalBlasts.get(4).position,[200,0,0],'out-of-window obligation survives');
+assert.deepEqual(d.externalBlasts.get(3).position,[200,0,0],'out-of-window obligation survives');
 const before=writes.length,bad=structuredClone(saved);bad.externalBlasts[0].energy=NaN;
 assert.throws(()=>d.restoreDynamicState(bad),/external blast/);assert.equal(writes.length,before);
-for(const mutate of [s=>s.externalBlasts[5].selection.maskWords=null,s=>s.externalBlasts[5].selection.maskOrigin=null,s=>s.externalBlasts[5].selection.lo=[9,9,9],s=>s.externalBlastDone=null,s=>s.externalBlasts=null,s=>delete s.externalBlastDone,s=>s.externalBlastDone[63]=1,s=>s.externalBlastDone[0]=2,s=>s.externalBlasts.push({...s.externalBlasts[0]}),s=>s.externalBlasts[0].requestId=s.sequence+1]) {
+for(const mutate of [s=>s.externalBlasts[4].selection.maskWords=null,s=>s.externalBlasts[4].selection.maskOrigin=null,s=>s.externalBlasts[4].selection.lo=[9,9,9],s=>s.externalBlastDone=null,s=>s.externalBlasts=null,s=>delete s.externalBlastDone,s=>s.externalBlastDone[63]=1,s=>s.externalBlastDone[0]=2,s=>s.externalBlasts.push({...s.externalBlasts[0]}),s=>s.externalBlasts[0].requestId=s.sequence+1]) {
   const invalid=structuredClone(saved);mutate(invalid);assert.throws(()=>validateExternalBlasts(invalid));
   assert.throws(()=>encodeDynamicState(invalid));const prior=writes.length;assert.throws(()=>d.restoreDynamicState(invalid));assert.equal(writes.length,prior);
 }
-const ack=d.readActivity();d._work();await ack;assert.equal(d.externalBlasts.size,5,'completed requests acknowledged only after GPU flag read');
+const ack=d.readActivity();d._work();await ack;assert.equal(d.externalBlasts.size,4,'completed requests acknowledged only after GPU flag read');
 const acknowledged=await d.snapshotDynamicState();assert.equal(acknowledged.externalBlastDone[0],0,'retired slots cannot create orphan save flags');
 for(let i=d.externalBlasts.size;i<64;i++) assert.equal(d.applyExternalBlast({position:[200,0,0],radius:1,energy:1}).status,'queued');
 assert.equal(d.applyExternalBlast({position:[1,1,1],radius:1,energy:1}).status,'rejected');
