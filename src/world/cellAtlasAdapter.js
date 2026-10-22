@@ -3,6 +3,8 @@ import { WorldFields } from './fields.js';
 import { brickKey } from './fieldHistory.js';
 import { SOURCE_GRID } from './renderSource.js';
 import { gridDims, brickIdOf, LAYOUT } from '../shaders/common.js';
+// One classified brick's metadata row: four u32 (shaders/worldCellAdapter.js).
+const CLASSIFICATION_RECORD_BYTES = 16;
 import { FIELD_TEXTURES } from '../gfx/fieldDeriver.js';
 import { fold } from '../gpu/kernels.js';
 import { READY, bookPage, worldBrickIndex } from './renderAtlas.js';
@@ -89,6 +91,12 @@ export class WorldCellAtlasAdapter {
         records.push(Object.freeze({brick:Object.freeze([...brick]),index,buffer:c.classification,byteOffset:brickIdOf(SOURCE_GRID,...local)*16}));captures.add(c);
       }
       for(const c of captures)this.capturePins.set(c,(this.capturePins.get(c)??0)+1);
+      // Rows in capture order, then slot order, so recordMetadata copies each run of
+      // neighbouring records once: a copy per 16-byte record was ~40k GPU copies a
+      // lighting tick on Island (real Chrome, 2026-10-22: 5.6 s of every 20). Every
+      // reader finds a row by its index (worldLightingRecords, recordEmission).
+      const order=new Map();for(const r of records)if(!order.has(r.buffer))order.set(r.buffer,order.size);
+      records.sort((a,b)=>order.get(a.buffer)-order.get(b.buffer)||a.byteOffset-b.byteOffset);
     }catch(error){publication.release();throw error;}
     let released=false;const owned=[];
     const retire=()=>{
@@ -106,7 +114,10 @@ export class WorldCellAtlasAdapter {
       recordMetadata:(frame=this.gpu.frame)=>{
         live();if(frame!==this.gpu.frame)throw new Error('Normal Frame required');
         const buffer=make('submitted world classification metadata',Math.max(16,records.length*16));
-        for(let i=0;i<records.length;i++)frame.copy(records[i].buffer,records[i].byteOffset,buffer,i*16,16);
+        for(let i=0;i<records.length;){
+          let j=i+1;while(j<records.length&&records[j].buffer===records[i].buffer&&records[j].byteOffset===records[i].byteOffset+(j-i)*CLASSIFICATION_RECORD_BYTES)j++;
+          frame.copy(records[i].buffer,records[i].byteOffset,buffer,i*CLASSIFICATION_RECORD_BYTES,(j-i)*CLASSIFICATION_RECORD_BYTES);i=j;
+        }
         return buffer;
       },
       recordEmission:(frame,{min,size})=>{

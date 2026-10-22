@@ -128,3 +128,17 @@ test('a restart\'s metadata cost is proportional to new bricks; carried records 
   two.commit();assert.deepEqual(f.records.records(ids,{derivedTick:1}),reference.records);
   a.release();b.release();await f.close();
 });
+
+// A classification's metadata copies one run of neighbouring records at a time, not one
+// 16-byte record per GPU copy (~40k copies a lighting tick on Island, real Chrome 2026-10-22).
+test('classification metadata: one GPU copy per run of neighbouring records, rows exact by index',async()=>{
+  const f=await setup({size:[32,8,8]});const a=cut(f);
+  const all=[];for(let z=0;z<2;z++)for(let y=0;y<2;y++)for(let x=0;x<8;x++)all.push([x,y,z]);
+  const shuffled=all.map((b,i)=>[b,(i*7919)%all.length]).sort((p,q)=>p[1]-q[1]).map(([b])=>b);
+  const classification=await f.publish(a,0,shuffled);
+  const frame=f.gpu.frame,copy=frame.copy.bind(frame);let copies=0;frame.copy=(...args)=>{copies++;return copy(...args);};
+  try{classification.recordMetadata(frame);}finally{frame.copy=copy;}
+  assert(copies<=2,`one core's ${all.length} records took ${copies} copies`);
+  assert.deepEqual(new Set(classification.records.map(r=>r.index)).size,all.length,'every brick keeps its row');
+  classification.release();await f.close();
+});
