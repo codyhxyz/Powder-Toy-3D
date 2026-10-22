@@ -118,7 +118,7 @@ async function tick(fieldTick) {
   } finally { atlas.allocate = seen; }
   gpu.flush();
   const out = { fieldTick, packed: counts.packed, reserved: counts.reserved, grew: atlas.resources.layout.capacity - capacity, newIDs: atlas.cell.nextID - nextID,
-    unsettled: [...cells.fields.history.unsettled.values()].reduce((n, s) => n + s.size, 0), ms: performance.now() - t0 };
+    unsettled: cells.fields.history.unsettledCount(), ms: performance.now() - t0 };
   if (VERBOSE) console.log(JSON.stringify(out));
   return out;
 }
@@ -158,7 +158,7 @@ for (let k = 0; k <= FIELD_EMA_SETTLE; k++) {
   assert(packedBricks.every((b) => reach.has(b.join(','))), 'settling packed a brick its change did not reach');
 }
 assert.equal(settling.at(-1), 0, `a change's owners settle in ${FIELD_EMA_SETTLE} ticks (packed ${settling.join('/')})`);
-assert.equal(cells.fields.history.unsettled.size, 0);
+assert.equal(cells.fields.history.unsettledCount(), 0);
 
 // Tick near the page cap: the pool may hold the demand and half of it again.
 // Packing every page again (the old rule) needs room for a second copy of
