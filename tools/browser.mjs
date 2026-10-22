@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { MAX_SLOT_MS, CLEANUP_MS, budgetMs, processTable } from './gpu-deadline.mjs';
+import { MAX_SLOT_MS, CLEANUP_MS, budgetMs, slotCeiling, processTable } from './gpu-deadline.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -269,7 +269,8 @@ function hookBrowserLog(fn) {
 /**
  * Launches headless Chromium with GPU_ARGS plus `options.args`, closed on
  * uncaught failures and signals. `lifetimeMs` includes the entire slot:
- * player check, launch, compilation, assertions and cleanup; maximum 25s.
+ * player check, launch, compilation, assertions and cleanup; maximum 25s
+ * (LEAD_SLOT_MS with TPT_LEAD_LONG_SLOT=1: gpu-deadline.mjs, the lead session only).
  * `browserLog(line)` receives the browser's stderr, GPU process included
  * (adds --enable-logging=stderr).
  * @param {{ lifetimeMs?: number, args?: string[], browserLog?: (line: string) => void } & object} [options] Playwright launch options
@@ -305,7 +306,7 @@ export async function launchBrowser(options = {}) {
   browsers.add(browser);
   launching = false;
   watchdog?.stdin.write('capture\n');
-  const timer = setTimeout(() => stop(1, new Error(`GPU slot budget exhausted; closing within the ${MAX_SLOT_MS / 1000}s total cap`)),
+  const timer = setTimeout(() => stop(1, new Error(`GPU slot budget exhausted; closing within the ${slotCeiling() / 1000}s total cap`)),
     Math.max(1, Math.min(lifetimeMs - CLEANUP_MS, slotDeadline - Date.now() - CLEANUP_MS)));
   timer.unref();
   browser.once('disconnected', () => {

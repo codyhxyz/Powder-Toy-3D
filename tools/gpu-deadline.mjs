@@ -6,14 +6,21 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const MAX_SLOT_MS = 25000;
+// The user's exemption for the lead session they talk to (2026-10-22: "dont remove
+// the cap for everybody, just for you!"): a big map's whole load to its first frame
+// runs 30-120 s, past every 25 s slot. Only with TPT_LEAD_LONG_SLOT=1, set by that
+// session on its own full-load timing run; never in an agent brief or a deploy gate.
+export const LEAD_SLOT_MS = 5 * 60 * 1000;
+export const LEAD_SLOT_ENV = 'TPT_LEAD_LONG_SLOT';
+export const slotCeiling = (env = process.env) => env[LEAD_SLOT_ENV] === '1' ? LEAD_SLOT_MS : MAX_SLOT_MS;
 // Each capture can spend 1000 ms on the table plus 250 ms on orphan
 // environments. Reserve a delayed observer, the hard kill's fresh capture,
 // and exit verification (3 * 1250 ms + the 100 ms poll), without moving the
 // absolute slot deadline. More inspection allowance means earlier cleanup.
 export const CLEANUP_MS = 4000;
-export function budgetMs(value) {
-  if (!Number.isFinite(value) || value <= CLEANUP_MS || value > MAX_SLOT_MS)
-    throw new RangeError(`GPU slot budget must be > ${CLEANUP_MS} and <= ${MAX_SLOT_MS} ms, including startup and cleanup`);
+export function budgetMs(value, ceiling = slotCeiling()) {
+  if (!Number.isFinite(value) || value <= CLEANUP_MS || value > ceiling)
+    throw new RangeError(`GPU slot budget must be > ${CLEANUP_MS} and <= ${ceiling} ms, including startup and cleanup`);
   return value;
 }
 export function processTable() {

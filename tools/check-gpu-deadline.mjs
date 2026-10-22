@@ -10,9 +10,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import vm from 'node:vm';
-import { MAX_SLOT_MS, CLEANUP_MS, budgetMs, ownedTree, processTable, inspectionFailure } from './gpu-deadline.mjs';
+import { MAX_SLOT_MS, LEAD_SLOT_MS, LEAD_SLOT_ENV, CLEANUP_MS, budgetMs, slotCeiling, ownedTree, processTable, inspectionFailure } from './gpu-deadline.mjs';
 
 assert.equal(MAX_SLOT_MS, 25000);
+// The lead session's opt-in (user, 2026-10-22) and nothing else lifts the 25 s ceiling.
+assert.equal(slotCeiling({}), MAX_SLOT_MS); assert.equal(slotCeiling({ [LEAD_SLOT_ENV]: '0' }), MAX_SLOT_MS);
+assert.equal(slotCeiling({ [LEAD_SLOT_ENV]: '1' }), LEAD_SLOT_MS); assert.equal(LEAD_SLOT_MS, 300000);
+assert.equal(budgetMs(180000, LEAD_SLOT_MS), 180000); assert.throws(() => budgetMs(180000, MAX_SLOT_MS), RangeError);
 assert.equal(CLEANUP_MS, 4000);
 assert(CLEANUP_MS >= 3 * (1000 + 250) + 100, 'reserve delayed observation, fresh kill verification, and exit verification');
 for (const n of [5000, 6000, 10000, 25000]) assert.equal(budgetMs(n), n);
