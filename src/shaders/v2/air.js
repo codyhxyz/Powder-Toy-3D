@@ -2,6 +2,7 @@ import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
 import { dynamicsCommon, storageLayout, main64 } from './particles.js';
 import { listControl, listWGSL, windGroupsWGSL } from './blasts.js';
 import { AIR, DT, GRAVITY, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
+import { V1_AIR } from '../../v2/pressure.js';
 import { PHYS } from '../../physics.js';
 import { E } from '../../elements.js';
 import { CONTACT_PUFF_UNIT, CONTACT_PUFF_MAX_PA } from '../../v2/contact.js';
@@ -29,9 +30,16 @@ function head(g,nativeHead) {
 ${listWGSL(g)}
 const A_DT: f32 = ${f(DT/AIR.substeps)};
 const A_DX: f32 = ${f(AIR.edge)};
-const A_C: f32 = ${f(AIR.sound)};
-const A_RHO: f32 = ${f(AIR.rho)};
 const A_DIFF: f32 = ${f(AIR.diffusion)};
+// V1's air law on bricks (src/v2/pressure.js V1_AIR; V1 react.js "air pressure", "forces" on EMPTY).
+const A_FRONT: f32 = ${f(V1_AIR.front)};
+const A_DECAY: f32 = ${f(V1_AIR.decay)};
+const A_PDIFF: f32 = ${f(V1_AIR.diffuse)};
+const A_PMIN: f32 = ${f(V1_AIR.pMin)};
+const A_PMAX: f32 = ${f(V1_AIR.pMax)};
+const A_ACCEL: f32 = ${f(V1_AIR.accel)};
+const A_KEEP: f32 = ${f(V1_AIR.keep)};
+const A_VMAX: f32 = ${f(V1_AIR.vMax)};
 const A_PQ: f32 = ${f(AIR.pQuantum)};
 const A_VQ: f32 = ${f(AIR.vQuantum)};
 const A_SQ: f32 = ${f(AIR.scalarQuantum)};
@@ -65,24 +73,20 @@ fn aRest(a: DAir) -> bool {
 // aFlux zeroes each scalar delta under A_SQ, and |r-l| equals |l-r| exactly.
 fn aLevel(a: DAir, b: DAir) -> bool { return all(abs(a.thermal.xy-b.thermal.xy)<vec2f(A_SQ)); }
 // Oriented finite-volume flux; the adjacent cell evaluates the SAME face in
-// canonical order, then subtracts instead of adds. Acoustic Rusanov (TPT's
-// slowed sound, R12) plus bounded upwind transport, not nonconservative sampling.
+// canonical order, then subtracts instead of adds: bounded upwind transport of
+// the air's momentum (V1's air cells carry their velocity as they move) and of
+// passive heat/gas. Pressure is V1's front law (step), not a transported quantity.
 fn aFlux(left: DAir, right: DAir, axis: u32) -> DAir {
-  let l=vec4f(select(vec3f(0),left.vp.xyz,mAirVelocity()),select(0.0,left.vp.w,mAirPressure()));
-  let r=vec4f(select(vec3f(0),right.vp.xyz,mAirVelocity()),select(0.0,right.vp.w,mAirPressure())); let delta=r-l;
-  var acoustic=vec4f(0); acoustic[axis]=(l.w+r.w)/(2.0*A_RHO);
-  acoustic.w=A_RHO*A_C*A_C*(l[axis]+r[axis])*0.5;
-  acoustic-=0.5*A_C*delta;
+  let l=select(vec3f(0),left.vp.xyz,mAirVelocity()); let r=select(vec3f(0),right.vp.xyz,mAirVelocity());
   let courant=clamp((l[axis]+r[axis])*0.5*A_DT/A_DX,-1.0/12.0,1.0/12.0);
   let donor=select(r,l,courant>=0.0);
-  // Pressure is an acoustic variable, not a mass density. Only velocity and
-  // passive heat/gas use the upwind flux; each direction has a 1/12 budget.
-  let momentum=vec4f(donor.xyz*courant,0.0);
+  // Each direction has a 1/12 budget.
+  let momentum=vec4f(donor*courant,0.0);
   var scalarDelta=right.thermal.xy-left.thermal.xy;
   scalarDelta=select(scalarDelta,vec2f(0),abs(scalarDelta)<vec2f(A_SQ));
   var scalar=courant*select(right.thermal.xy,left.thermal.xy,courant>=0.0)-A_DIFF*A_DT/(A_DX*A_DX)*scalarDelta;
   scalar.x=select(0.0,scalar.x,mAirHeat());scalar.y=select(0.0,scalar.y,mAirPressure()||mAirVelocity());
-  return DAir(acoustic*A_DT/A_DX+momentum,vec4f(scalar,0,0));
+  return DAir(momentum,vec4f(scalar,0,0));
 }
 `;
 }
@@ -151,7 +155,8 @@ var<workgroup> wgWind: atomic<u32>;
       var pins=vec4f(0.0); var buoyancy=0.0;
       for (var s=t*64u;s<(t+1u)*64u;s++) {
         let core=loadMaterial(s).core;
-        if (cls(cid(core))==4u) { buoyancy+=(f32(cTq(core))*0.25-273.25-P.ambient)/64.0; }
+        // Gas, and air by its own temperature (V1 react.js lifts EMPTY and CLOUD by T - airT).
+        if (cls(cid(core))==4u || cid(core)==0u) { buoyancy+=(f32(cTq(core))*0.25-273.25-P.ambient)/64.0; }
         if (cid(core)==${E.SINGULARITY}u) { pins.x+=aVacuum(core); pins.y+=1.0; continue; }
         if (cls(cid(core))==1u) { continue; }   // a solid holds no air
         let p=cellOf(s); var ring=0.0;
@@ -236,6 +241,11 @@ var<workgroup> wgWind: atomic<u32>;
     if ((atomicLoad(&control[A_REACH+t])&${REACH_STEP}u)==0u) { return; }
     let before=airIn[t]; var next=before;
     var quiet=aStill(before); var gradient=false;
+    // V1 react.js air pressure, over the six faces: pn is the neighbour's pressure through the
+    // face's open share, the brick's own through the rest (walls reflect pressure); front the
+    // strongest neighbour reached through any open share; lap the Laplacian.
+    let own=select(0.0,before.vp.w,mAirPressure()); var pn=array<f32,6>(own,own,own,own,own,own);
+    var lap=0.0; var front=own;
     for (var axis=0u;axis<3u;axis++) { for (var side=-1;side<=1;side+=2) {
       let q=aNeighbor(t,axis,side); if (q==D_NONE && P.edge!=1u) { continue; }
       var other=DAir(vec4f(0),vec4f(0,0,${f(AIR.quietTicks)},0));if(q!=D_NONE) { other=airIn[q]; }
@@ -245,11 +255,17 @@ var<workgroup> wgWind: atomic<u32>;
       var flux: DAir;
       if (side>0) { flux=aFlux(before,other,axis); } else { flux=aFlux(other,before,axis); }
       next.vp-=f32(side)*open*flux.vp;
-      // Closed fractions exert wall pressure too. Subtracting the cell's
-      // pressure baseline makes uniform pressure a rest state even at walls.
-      next.vp[axis]+=f32(side)*open*before.vp.w/A_RHO*A_DT/A_DX;
       next.thermal-=f32(side)*open*flux.thermal;
+      let theirs=select(0.0,other.vp.w,mAirPressure());
+      pn[axis*2u+select(1u,0u,side>0)]=own+open*(theirs-own); lap+=open*(theirs-own); front=max(front,theirs);
     } }
+    // Pressure, once a tick: V1's spread (src/v2/pressure.js V1_AIR), clamped to [P_MIN, P_MAX].
+    if (P.substep==0u && mAirPressure()) {
+      next.vp.w=clamp(max(own+A_PDIFF*lap,front*A_FRONT)*A_DECAY,A_PMIN,A_PMAX);
+    }
+    // Velocity, a V1 step a substep: pushed down the pressure gradient (V1's gradP from pn), then
+    // EMPTY's drag (buoyancy below joins it first, as V1's lift does), each component to V_MAX.
+    for (var axis=0u;axis<3u;axis++) { next.vp[axis]-=(pn[axis*2u]-pn[axis*2u+1u])*A_ACCEL; }
     // Thermal expansion and gas buoyancy. No permanent acceleration in a
     // fully sealed brick: vertical open faces alone couple the two layers.
     let excess=before.thermal.x+faces[t].w;
@@ -261,7 +277,7 @@ var<workgroup> wgWind: atomic<u32>;
         if(open>0.0 && gravity[axis]!=0.0) { quiet=false; }
       }
     }
-    next.vp*=pow(${f(AIR.loss)},1.0/${f(AIR.substeps)});
+    next.vp=vec4f(clamp(next.vp.xyz*A_KEEP,vec3f(-A_VMAX),vec3f(A_VMAX)),next.vp.w);
     if(P.airMode==4u) { next.vp=before.vp; }
     if(!mAirVelocity()) { next.vp=vec4f(0,0,0,next.vp.w); }
     if(!mAirPressure()) { next.vp.w=0.0; }
@@ -313,7 +329,11 @@ var<workgroup> wgWind: atomic<u32>;
     let sa=slotOf(p); let sb=slotOf(q); if((events[sa]&1u)!=0u || (events[sb]&1u)!=0u) { return; }
     let a=loadMaterial(sa); let b=loadMaterial(sb);
     let ka=cls(cid(a.core)); let kb=cls(cid(b.core));
-    let movable=(wind>0.0 && ka==4u && cid(b.core)==0u) || (wind<0.0 && kb==4u && cid(a.core)==0u);
+    // Gas drifts into air with the wind, and air carries its own heat along it (V1's EMPTY cells move
+    // with their velocity, their temperature with them: a draft, warm air rising). Two air cells at
+    // one temperature are one core: nothing to move.
+    let airs=cid(a.core)==0u && cid(b.core)==0u && any(a.core!=b.core);
+    let movable=(wind>0.0 && (ka==4u || airs) && cid(b.core)==0u) || (wind<0.0 && (kb==4u || airs) && cid(a.core)==0u);
     if(movable && probability>0.0) { dWake(p);dWake(q); }
     if (movable && dRandom(dId(p,0x474153u),0u)<probability) {
       // the gas takes its decoration along; the air it leaves holds none (shaders/move.js)

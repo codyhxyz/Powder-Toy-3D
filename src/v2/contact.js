@@ -60,6 +60,11 @@ const STEPS_PER_TICK = NOMINAL_STEP_RATE / CONTACT_HZ;
 const PARTNER_STEPS = 2 * STEPS_PER_TICK;
 // A per-step relaxation share r compounds to 1 - (1 - r)^STEPS_PER_TICK a tick.
 const perTick = r => 1 - (1 - r) ** STEPS_PER_TICK;
+// V1 react.js RX_PAIRINGS: a reaction's pair are partners one step in every 3 axes × 2 parities (restated:
+// the V1 shader module isn't imported here; contact-rates-check compares them). PARTNER_STEPS steps a
+// partnered tick hold PARTNER_STEPS / V1_RX_PAIRINGS of its pairings (4/3).
+export const V1_RX_PAIRINGS = 3 * 2;
+const RX_PAIRINGS_PER_PARTNER_TICK = PARTNER_STEPS / V1_RX_PAIRINGS;
 // ln of the per-partner chance a per-step chance p does NOT fire in a tick, so
 // n partners fire with 1 - exp(n·log). p ≥ 1 is certain: a log far under f32's.
 const missLog = p => PARTNER_STEPS * Math.log(Math.max(1e-30, 1 - Math.min(1, p)));
@@ -210,12 +215,15 @@ export const CONTACT_CONSTANTS = Object.freeze({ ...CONTACT_ENERGY_CONSTANTS,
   // 32 a cycle for any n, as V1's one draw a step: 1 - exp(CT_CLONE_MISS_LOG·k/n).
   CT_CLONE_MISS_LOG: ['f32', missLog(PHYS.CLONE_RATE)],
   // V1 react.js growers, each a chance per step per neighbour (rnd < RATE * n): water beside plant
-  // becomes plant (PLANT_GROW), air on a mossSite beside damp moss becomes moss (MOSS_GROW), a fungus
-  // food beside damp fungus rots to fungus (FUNGUS_GROW). Per present partner, PARTNER_STEPS steps'
-  // worth compounded, as the flames' CT_FLAME_MISS_LOG: n partners fire with 1 - exp(n * missLog).
+  // becomes plant (PLANT_GROW), a fungus food beside damp fungus rots to fungus (FUNGUS_GROW). Per
+  // present partner, PARTNER_STEPS steps' worth compounded, as the flames' CT_FLAME_MISS_LOG: n partners
+  // fire with 1 - exp(n * missLog).
   CT_PLANT_MISS_LOG: ['f32', missLog(PHYS.PLANT_GROW)],
-  CT_MOSS_MISS_LOG: ['f32', missLog(PHYS.MOSS_GROW)],
   CT_FUNGUS_MISS_LOG: ['f32', missLog(PHYS.FUNGUS_GROW)],
+  // ...and air on a mossSite (damp moss and bare rock on faces of different axes, react.js mossSite) beside
+  // damp moss becomes moss with MOSS_GROW per damp moss face a step. The site is a test over all six faces
+  // (its partners and the support pass's outside word), so the chance is the tick's steps (ctPerTick).
+  CT_MOSS_GROW: ['f32', PHYS.MOSS_GROW],
   // V1 react.js acid: what it eats dissolves with chance ACID_USE a step per acid neighbour; per
   // present partner pair, PARTNER_STEPS steps' worth compounded.
   CT_ACID_EAT: ['f32', 1 - (1 - PHYS.ACID_USE) ** PARTNER_STEPS],
@@ -225,22 +233,56 @@ export const CONTACT_CONSTANTS = Object.freeze({ ...CONTACT_ENERGY_CONSTANTS,
   CT_ACID_SPENT: ['i32', Math.round(PHYS.ACID_USE * PARTNER_STEPS * LIFE_SCALE)],
   // V1 react.js cloud: it rains with chance CLOUD_RAIN a step per cloud neighbour past CLOUD_RAIN_NB,
   // and evaporates with CLOUD_EVAP a step per air neighbour past CLOUD_EVAP_NB (times its saturation).
-  // Its own rule, run every tick on its six faces' counts as twice its three partners' (an unbiased
-  // estimate), so a tick is STEPS_PER_TICK of V1's steps, compounded (ctPerTick).
+  // Its own rule, run every tick on its six faces' counts (its partners and the support pass's outside
+  // word), so a tick is STEPS_PER_TICK of V1's steps, compounded (ctPerTick).
   CT_CLOUD_RAIN: ['f32', PHYS.CLOUD_RAIN],
   CT_CLOUD_RAIN_NB: ['i32', PHYS.CLOUD_RAIN_NB],
   CT_CLOUD_EVAP: ['f32', PHYS.CLOUD_EVAP],
   CT_CLOUD_EVAP_NB: ['i32', PHYS.CLOUD_EVAP_NB],
   CT_STEPS_PER_TICK: ['i32', STEPS_PER_TICK],
   // A flying packet's touch on a cell beside it (ctPacketTouch, the react stage's mark for the cell's own
-  // step): a flame or burning fuel on its block partner along an axis (CT_TOUCH_FIRE times the axis's bit,
-  // 1 2 4), a flame on a block partner, matter at its ignition point on one, a burning front on one. A
-  // stored mark is these bits under the tick's stamp, CT_TOUCH_STAMP above them (shaders/v2/state.js).
-  CT_TOUCH_FIRE: ['i32', 1],
+  // step): a flame on any of its faces (V1 react.js nFire reads six), matter at its ignition point on a
+  // block partner. A stored mark is these bits under the tick's stamp, CT_TOUCH_STAMP above them
+  // (shaders/v2/state.js).
   CT_TOUCH_FLAME: ['i32', 8],
   CT_TOUCH_HOT: ['i32', 16],
-  CT_TOUCH_FRONT: ['i32', 32],
   CT_TOUCH_STAMP: ['i32', 64],
+  // A cell's outside word (contactOutsideWord; the support pass's, shaders/v2.js v2SupportWGSL): what V1
+  // react.js reads on all six faces that its three block partners don't show it, from its three
+  // out-of-block faces frozen before any block runs. Counts of 0-3 at these units: non-gas faces inside
+  // the grid (V1's surface to condense onto), flames (V1 nFire), air (nAir), cloud (nCloud), dust (the
+  // dust cloud's nFuel); the dampest face's damp for a grower (V1 dampOf, 0-DAMP_REACH, CT_OUT_DAMP_MAX
+  // above it); a bit an axis (x 1, y 2, z 4) for damp moss and for a moss bed (V1 mossSite's wet, bed).
+  // CT_OUT_UP is the block's, not the support pass's: 1 + which partner lies upstream along gravity (the
+  // block's corner order, shaders/v2.js mBlockOffset), 0 none, for snow falling onto a cloud.
+  CT_OUT_SURFACE: ['i32', 1],
+  CT_OUT_FIRE: ['i32', 4],
+  CT_OUT_EMPTY: ['i32', 16],
+  CT_OUT_CLOUD: ['i32', 64],
+  CT_OUT_DUST: ['i32', 256],
+  CT_OUT_DAMP: ['i32', 1024],
+  CT_OUT_DAMP_MAX: ['i32', 8],
+  CT_OUT_WET_MOSS: ['i32', 8192],
+  CT_OUT_BED: ['i32', 65536],
+  CT_OUT_UP: ['i32', 524288],
+  // V1 react.js storm charge (physics.js CHARGE_*): cloud at CHARGE_T_MAX or colder gains a unit of charge,
+  // up to CHARGE_MAX, with chance CHARGE_RATE·closing a step, closing the speed in cells a step that snow
+  // beside it closes on it: CT_CHARGE_STEP a step per cell a tick of closing. The face is a block partner
+  // half the ticks, so a partnered tick carries PARTNER_STEPS of V1's steps (ctStormCharge), drawn with its salt.
+  CT_CHARGE_T_MAX_Q: ['i32', q(PHYS.CHARGE_T_MAX)],
+  CT_CHARGE_MAX: ['i32', PHYS.CHARGE_MAX],
+  CT_CHARGE_STEP: ['f32', PHYS.CHARGE_RATE / STEPS_PER_TICK],
+  CT_PARTNER_STEPS: ['i32', PARTNER_STEPS],
+  CT_CHARGE_SALT: ['i32', 24],
+  // V1 react.js: a burning fuel adds BURN_P to its cell's pressure a step, as a GAS request's puff (Pa, ctPuff)
+  // a tick: STEPS_PER_TICK steps of it.
+  CT_BURN_PUFF_PA: ['i32', puffPa(PHYS.BURN_P * STEPS_PER_TICK)],
+  // V1 react.js singularity: it evaporates SING_EVAP / max(m², SING_MASS_MIN) of its mass m a step (f32),
+  // its tick's STEPS_PER_TICK steps compounded, into its life's 1/256 mass units with the fraction a draw
+  // (salt CT_SING_SALT), so the mean is exact.
+  CT_SING_EVAP: ['f32', PHYS.SING_EVAP],
+  CT_SING_MASS_MIN: ['f32', PHYS.SING_MASS_MIN],
+  CT_SING_SALT: ['i32', 21],
 });
 for (const key of Object.keys(CONTACT_CONSTANTS)) if (key.slice(3) in E) throw Error(`contact constant ${key} shadows an element id`);
 const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGNUS_B, CT_FLAME_MISS_LOG, CT_OXY_FLAME_MISS_LOG, CT_FLAME_T_MIN, CT_FLAME_T_SPREAD,
@@ -248,9 +290,11 @@ const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGN
   CT_FIRE_TO_SMOKE, CT_FIRE_MIN_Q, CT_BURNT_MIN_Q, CT_ASH_SHARE, CT_SPARK_REST, CT_SPARK_BORN, CT_SPARK_CYCLE, CT_SPARK_V, CT_SWITCH_ON, CT_TSNS_FIRE,
   CT_LAMP_HOLD, CT_LAMP_DC_LEVEL, CT_JOULE_WHOLE, CT_JOULE_MILLI, CT_JOULE_MILLI_UNIT, CT_ELEC_PENDING, CT_ELEC_LIFE_UNIT, CT_ELEC_LIFE_MAX,
   CT_ELEC_SPENT_UNIT, CT_ELEC_SPENT_MAX, CT_ELEC_STEPS, CT_ELEC_SALT, CT_FUSE_UNLIT, CT_FUSE_BURN_NUM, CT_FUSE_BURN_DEN, CT_FUSE_HANDOFF_Q,
-  CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END, CT_CLONE_CHANCE, CT_CLONE_MISS_LOG, CT_PLANT_MISS_LOG, CT_MOSS_MISS_LOG, CT_FUNGUS_MISS_LOG,
+  CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END, CT_CLONE_CHANCE, CT_CLONE_MISS_LOG, CT_PLANT_MISS_LOG, CT_MOSS_GROW, CT_FUNGUS_MISS_LOG,
   CT_ACID_EAT, CT_ACID_SPENT, CT_CLOUD_RAIN, CT_CLOUD_RAIN_NB, CT_CLOUD_EVAP, CT_CLOUD_EVAP_NB, CT_STEPS_PER_TICK,
-  CT_TOUCH_FIRE, CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_TOUCH_FRONT, CT_SPAWN_DROP } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
+  CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_OUT_SURFACE, CT_OUT_FIRE, CT_OUT_EMPTY, CT_OUT_CLOUD, CT_OUT_DUST, CT_OUT_DAMP, CT_OUT_DAMP_MAX,
+  CT_OUT_WET_MOSS, CT_OUT_BED, CT_OUT_UP, CT_CHARGE_T_MAX_Q, CT_CHARGE_MAX, CT_CHARGE_STEP, CT_PARTNER_STEPS, CT_CHARGE_SALT,
+  CT_BURN_PUFF_PA, CT_SING_EVAP, CT_SING_MASS_MIN, CT_SING_SALT, CT_SPAWN_DROP } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 const { CT_COND_FLUX, CT_CAP_UNITS, CT_Q_PER_C, CT_FULL, CT_FILL_SALT, CT_ROLL_UNIT, CT_PAIR_FILL_SALT, CT_Q_MAX, CT_RX_HEAT_UNIT, CT_SHARE_LO, CT_SHARE_HI } = Object.fromEntries(Object.entries(CONTACT_ENERGY_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 
 const outSpecs = [];
@@ -293,9 +337,12 @@ export const CONTACT_ROWS = ELEMENTS.map(e => {
     meltQ: e.melt ? q(e.melt) : 65536, meltInto: E[e.meltInto] ?? e.id,
     igniteQ: e.ignite ? q(e.ignite) : 65536, flashQ: e.flash ? q(e.flash) : 65536,
     burn: Math.round(e.burnRate * LIFE_SCALE * 4), heat: Math.round(e.burnHeat * 256 * 4), flameQ: q(e.flameT),
-    ash: +e.ash, blast: +!!e.blast, blastAir: +!!e.blast?.air, blastChance: 1 - (1 - (e.blast?.flame ?? 0)) ** 8,
+    // V1 react.js: a flame on any of its six faces (nFire > 0) sets an explosive off with blast.flame a
+    // step, so its tick's STEPS_PER_TICK draws (the six faces are read every tick: ctStepAtmosphere fire).
+    ash: +e.ash, blast: +!!e.blast, blastAir: +!!e.blast?.air, blastChance: 1 - (1 - (e.blast?.flame ?? 0)) ** STEPS_PER_TICK,
     acid: +e.acid, edible: +(e.kind !== K.EMPTY && e.kind !== K.GAS && !e.acidProof),
-    fizz: +(e.fizz > 0), bed: +e.mossBed, rots: +e.rots, singFood: +(e.id !== E.EMPTY && !e.singProof),
+    // fizz: the puff (Pa) of the gas it sets free as acid eats it (V1 react.js puffP(FIZZ); ctAcidFizz), 0 none
+    fizz: puffPa(puffP(e.fizz ?? 0)), bed: +e.mossBed, rots: +e.rots, singFood: +(e.id !== E.EMPTY && !e.singProof),
     // V1's spark cost at its table's 6 significant digits (electricity.js ELEC_FIELDS sparkCost)
     conductor: +CONDUCTS[e.id], cost: +SPARK_COST[e.id].toPrecision(6), wire: +WIRE[e.id],
     emitter: (EMITTERS[e.key] ?? 0) * 4,
@@ -313,9 +360,10 @@ export const CONTACT_ROWS = ELEMENTS.map(e => {
 export const CONTACT_PRODUCTS = outSpecs;
 export const CONTACT_REACTIONS = REACTIONS.map(r => ({
   a: E[r.a], b: E[r.b] ?? -1, aOut: spec(r.into[0]), bOut: spec(r.into[1]),
-  // Legacy probabilities per 240 Hz tick → hazard/second, corrected for a
-  // face present half the 60 Hz ticks. Never multiply the heat by pairing.
-  chance: 1 - (1 - (r.chance ?? 1)) ** 8, minQ: q(r.minT ?? -273.25), maxQ: q(r.maxT ?? 10000),
+  // V1 react.js pairs a touching pair once every RX_PAIRINGS steps and reacts with min(1, chance·RX_PAIRINGS)
+  // a pairing; a face is a block partner half the 60 Hz ticks, so a partnered tick carries
+  // RX_PAIRINGS_PER_PARTNER_TICK of V1's pairings. Never multiply the heat by pairing.
+  chance: 1 - (1 - Math.min(1, (r.chance ?? 1) * V1_RX_PAIRINGS)) ** RX_PAIRINGS_PER_PARTNER_TICK, minQ: q(r.minT ?? -273.25), maxQ: q(r.maxT ?? 10000),
   heat: Math.round((r.heat ?? 0) * CONTACT_RX_HEAT_UNIT), gas: +(!!r.puff),
   // V1 react.js has no reaction ceiling, only its 10000 °C clamp (ctReaction: products at their
   // own T plus rxT, hydrogen's 2254/2800 °C flame from ambient reactants as elements.js sets its heat).
@@ -358,7 +406,8 @@ export function ctInherit(input, original) {
   let c = ctCopy(input);
   c.source = original.source; c.sink = original.sink; c.request = original.request;
   c.busy = original.busy; c.done = original.done;
-  if (ctRow(c.id).kind === 4 && ctRow(original.id).kind !== 4) c.request = c.request | 2;
+  // (no GAS request of its own when matter becomes gas: V1 react.js adds pressure only where a change
+  // sets gas free, its row's puff, which its rule adds with ctPuff)
   return c;
 }
 export function ctRecordChange(input, before) {
@@ -393,7 +442,8 @@ export function ctExhaust(input, seed) {
     out = ctRecordChange(ctSetEnergy(out, warm), before);
   }
   if (id === E.FIRE) out.life = ctFlameLife(seed);
-  out.request = out.request | 2;
+  // (its last step's burning puff, V1 react.js BURN_P)
+  out.request = ctPuff(out.request, CT_BURN_PUFF_PA);
   return out;
 }
 // V1 react.js: a new flame's life, FIRE_LIFE_MIN + FIRE_LIFE_SPREAD·rnd.
@@ -753,7 +803,7 @@ export function ctPerTick(p) {
   return 1.0 - keep;
 }
 export function ctStep(input, ns, seed) {
-  return ctStepAtmosphere(input, ns, seed, 0, 0, 0, 0, 0, CT_AMBIENT_Q, 0, 0);
+  return ctStepAtmosphere(input, ns, seed, 0, 0, 0, 0, 0, CT_AMBIENT_Q, 0, 0, 0);
 }
 
 // Only atmosphere/exposure uses all six faces. Heat, reactions, phase and
@@ -791,28 +841,33 @@ export function ctLick(input, hotFuel, flameQ, smothered, seed) {
   }
   return c;
 }
-// TPT FIRE.cpp's contact ignition (ctStepAtmosphere hotFront): a flame at 350 °C or hotter, or a burning
-// fuel, still alight, at least igniteQ hot, settled this tick (no pair or phase still pending on it).
-export function ctHotFront(b, igniteQ) {
-  const br = ctRow(b.id);
-  return b.done === 0 && b.pending < 0 && (b.request & 5) === 0 && b.tq >= igniteQ && b.life > 0 && ((b.id === E.FIRE && b.tq >= 2493) || (br.burn > 0 && b.burning !== 0));
-}
 // What a flying packet p, as it comes into its tick, is to a cell of faceId on its host's face (v2/airborne.js):
-// a cell like any other, as V1's moving cell was to its neighbours (react.js nFire, hotTouch, nBurning). Its
-// touch (CT_TOUCH_*), for the cell's own step (ctStepAtmosphere: its block partner's, as a cell sees its
-// partners') and, on a fuse, the electric pass's (ctFuseTouch: any face, as V1's fuse step reads six).
-// hostFire: the host cell is itself a flame the cell counts on that face; axisBit: 1, 2, 4 for the face's
-// axis; partner: the face is the cell's block partner this tick (v2/airborne.js inBlockFaces).
-export function ctPacketTouch(p, faceId, hostFire, axisBit, partner) {
+// a cell like any other, as V1's moving cell was to its neighbours (react.js nFire, hotTouch). Its touch
+// (CT_TOUCH_*), for the cell's own step (ctStepAtmosphere) and, on a fuse, the electric pass's (ctFuseTouch:
+// any face, as V1's fuse step reads six): a flame on any face (V1 nFire counts FIRE cells on all six; a
+// burning fuel is no flame to it), matter at the cell's ignition point on its block partner or a fuse.
+// hostFire: the host cell is itself a flame the cell counts on that face; partner: the face is the cell's
+// block partner this tick (v2/airborne.js inBlockFaces).
+export function ctPacketTouch(p, faceId, hostFire, partner) {
   const pr = ctRow(p.id);
   const fr = ctRow(faceId);
-  if (partner === 0 && faceId !== E.FUSE) return 0;
   let touch = 0;
-  if (partner !== 0 && hostFire === 0 && (p.id === E.FIRE || (pr.burn > 0 && p.burning !== 0))) touch = touch + CT_TOUCH_FIRE * axisBit;
   if (hostFire === 0 && p.id === E.FIRE) touch = touch | CT_TOUCH_FLAME;
-  if (pr.kind !== 0 && pr.kind !== 4 && p.tq >= fr.igniteQ) touch = touch | CT_TOUCH_HOT;
-  if (partner !== 0 && ctHotFront(p, fr.igniteQ)) touch = touch | CT_TOUCH_FRONT;
+  if ((partner !== 0 || faceId === E.FUSE) && pr.kind !== 0 && pr.kind !== 4 && p.tq >= fr.igniteQ) touch = touch | CT_TOUCH_HOT;
   return touch;
+}
+// V1 react.js storm charge (physics.js CHARGE_*, CT_CHARGE_*): a cloud at CHARGE_T_MAX or colder, with snow
+// closing on it at `closing` cells a tick on a block partner's face (half the ticks), gains a unit of charge
+// with chance CHARGE_RATE·closing on each of the PARTNER_STEPS steps that face stands for, up to CHARGE_MAX:
+// their expected sum, the fraction a draw, so the mean is V1's (one draw, not a loop of them: each inlined
+// copy is compile time). Snow in the grid (ctStepAtmosphere) and flying snow (v2/airborne.js) alike.
+export function ctStormCharge(input, closing, seed) {
+  let c = ctCopy(input);
+  if (c.id !== E.CLOUD || c.tq > CT_CHARGE_T_MAX_Q || closing <= 0.0) return c;
+  c.busy = 1;
+  const units = ctF(CT_PARTNER_STEPS) * Math.min(1.0, CT_CHARGE_STEP * closing);
+  c.ctype = Math.min(CT_CHARGE_MAX, c.ctype + ctI(Math.floor(units + ctRoll(seed, CT_CHARGE_SALT))));
+  return c;
 }
 // V1 react.js FUSE, unlit: matter (not gas) at its ignition point beside it lights it, a flame beside it
 // does at CT_FUSE_FLAME_LIGHT a step; from a flying packet on any face (ctPacketTouch), on the electric
@@ -833,15 +888,16 @@ export function ctFuseTouch(c, touch, random) {
   if ((touch & CT_TOUCH_HOT) !== 0 || ((touch & CT_TOUCH_FLAME) !== 0 && random < CT_FUSE_FLAME_LIGHT)) return CT_ELEC_PENDING + ctFuseLife(1);
   return 0;
 }
-// outClones: its out-of-block faces holding a clone (the support pass's count; CT_CLONE_MISS_LOG).
-export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas, onFloor, ambientQ, touch, outClones) {
+// ns: its three block partners, ns[k] along axis k (x y z). outClones: its out-of-block faces holding a
+// clone (the support pass's count; CT_CLONE_MISS_LOG). outFaces: the rest of what V1 react.js reads on its
+// other three faces (the support pass's outside word, CT_OUT_*; contactOutsideWord) and CT_OUT_UP.
+export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas, onFloor, ambientQ, touch, outClones, outFaces) {
   let c = ctCopy(input);
   if (c.done !== 0) return c;
   let air = 0;
   let burnAir = 0;
   let oxygen = 0;
   let fire = 0;
-  let flames = 0;
   let hotFuel = 0;
   let flashFuel = 0;
   let flameQ = 0;
@@ -853,11 +909,11 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   let plant = 0;
   let fungus = 0;
   let moss = 0;
-  let bed = 0;
+  let wetAxes = 0;
+  let bedAxes = 0;
   let damp = 0;
   let dust = 0;
   let hotTouch = false;
-  let hotFront = false;
   let clone = 0;
   let clones = 0;
   let growOf = 0;
@@ -865,6 +921,10 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   const r = ctRow(c.id);
   for (let k = 0; k < 3; k++) {
     const b = ns[k];
+    // (its axis's bit, as the outside word's: x 1, y 2, z 4)
+    let axisBit = 1;
+    if (k === 1) axisBit = 2;
+    if (k === 2) axisBit = 4;
     if (b.valid === 0) continue;
     const br = ctRow(b.id);
     if (b.id === E.EMPTY) air++;
@@ -872,24 +932,20 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     // V1 react.js: a flame is burning air to the fuel beside it (oxyShare,
     // and a fuel burns touching air, oxygen or fire), oxygen when it burns in it.
     if (b.id === E.EMPTY || (b.id === E.FIRE && b.ctype !== E.OXYGEN)) burnAir++;
-    if (b.id === E.FIRE || (br.burn > 0 && b.burning !== 0)) fire++;
-    if (b.id === E.FIRE) flames++;
+    // V1 react.js nFire: flames (FIRE cells); a burning fuel is none.
+    if (b.id === E.FIRE) fire++;
     // V1 react.js nBurning: a fuel at its ignition point (explosives go off
     // instead), and past its flash point one whose vapour carries a flame.
     if (ctHotFuel(b)) { hotFuel++; flameQ = Math.max(flameQ, br.flameQ); }
     else if (br.flashQ < br.igniteQ && br.blast === 0 && b.tq >= br.flashQ) { flashFuel++; flashFlameQ = Math.max(flashFlameQ, br.flameQ); }
-    // TPT FIRE.cpp separates contact ignition from bulk thermal transition
-    // (upstream uses Flammable/1000). Our hot front uses existing igniteQ,
-    // not a new rate; tq is decoded, post-pair/pre-self snapshot temperature.
-    hotFront = hotFront || ctHotFront(b, r.igniteQ);
     if (br.kind === 0 || br.kind === 4) gas++;
     else surface++;
     if (b.id === E.CO2) co2++;
     if (b.id === E.CLOUD) cloud++;
     if (b.id === E.PLANT) plant++;
     if (b.id === E.FUNGUS && ctGrowerDamp(b.id, b.ctype) > 0) fungus++;
-    if (b.id === E.MOSS && ctGrowerDamp(b.id, b.ctype) > 0) moss++;
-    if (br.bed !== 0) bed++;
+    if (b.id === E.MOSS && ctGrowerDamp(b.id, b.ctype) > 0) { moss++; wetAxes = wetAxes | axisBit; }
+    if (br.bed !== 0) bedAxes = bedAxes | axisBit;
     // V1 dampOf: liquid water wets a grower (saltwater does not); a grower passes one less on.
     if (b.id === E.WATER) damp = CONTACT_DAMP_REACH;
     if (b.id === E.MOSS || b.id === E.FUNGUS) damp = Math.max(damp, ctGrowerDamp(b.id, b.ctype) - 1);
@@ -901,15 +957,25 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (ctCloneable(b.id)) growOf = b.id;
     voidTouch = voidTouch || b.id === E.VOID;
   }
-  // A flying packet in a partner's cell (ctPacketTouch: the react stage's mark), as V1's react saw a
-  // moving neighbour: a cell like the rest, its flame or burning (nFire), its heat (hotTouch), its front.
-  fire = fire + (touch & CT_TOUCH_FIRE) + ctDiv(touch & (2 * CT_TOUCH_FIRE), 2 * CT_TOUCH_FIRE) + ctDiv(touch & (4 * CT_TOUCH_FIRE), 4 * CT_TOUCH_FIRE);
-  if ((touch & CT_TOUCH_FLAME) !== 0) flames = flames + 1;
+  // Its other three faces, as V1 react.js reads all six (the support pass's outside word, CT_OUT_*).
+  const out = outFaces | 0;
+  surface = surface + ctDiv(out, CT_OUT_SURFACE) % 4;
+  fire = fire + ctDiv(out, CT_OUT_FIRE) % 4;
+  const empty = air + ctDiv(out, CT_OUT_EMPTY) % 4;
+  cloud = cloud + ctDiv(out, CT_OUT_CLOUD) % 4;
+  dust = dust + ctDiv(out, CT_OUT_DUST) % 4;
+  damp = Math.max(damp, ctDiv(out, CT_OUT_DAMP) % CT_OUT_DAMP_MAX);
+  const outWet = ctDiv(out, CT_OUT_WET_MOSS) % 8;
+  wetAxes = wetAxes | outWet;
+  bedAxes = bedAxes | (ctDiv(out, CT_OUT_BED) % 8);
+  const wetMoss = moss + outWet % 2 + ctDiv(outWet, 2) % 2 + ctDiv(outWet, 4);
+  // A flying packet beside it (ctPacketTouch: the react stage's mark), as V1's react saw a moving
+  // neighbour: a cell like the rest, its flame (nFire), its heat on a partner (hotTouch).
+  if ((touch & CT_TOUCH_FLAME) !== 0) fire = fire + 1;
   hotTouch = hotTouch || (touch & CT_TOUCH_HOT) !== 0;
-  hotFront = hotFront || (touch & CT_TOUCH_FRONT) !== 0;
   // V1 react.js: past its flash point a fuel's vapour carries a flame along it,
   // so air touching a flame and such a fuel catches as if the fuel burned.
-  if (flames > 0 && flashFuel > 0) { hotFuel = hotFuel + flashFuel; flameQ = Math.max(flameQ, flashFlameQ); }
+  if (fire > 0 && flashFuel > 0) { hotFuel = hotFuel + flashFuel; flameQ = Math.max(flameQ, flashFlameQ); }
   const fullAir = burnAir + outAir;
   const fullOxygen = oxygen + outOxygen;
   const fullCo2 = co2 + outCo2;
@@ -940,11 +1006,11 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     }
     return c;
   }
-  if (c.id === E.FIRE || c.id === E.SMOKE || c.id === E.PLASMA) {
-    // V1 react.js lives (CONTACT_CONSTANTS); plasma keeps its native fade.
-    let fade = 69.0;
+  // (V1 react.js gives plasma no life rule: it leaves only by cooling past its cold change, ctPhase above)
+  if (c.id === E.FIRE || c.id === E.SMOKE) {
+    // V1 react.js lives (CONTACT_CONSTANTS).
+    let fade = CT_SMOKE_FADE_TICK;
     if (c.id === E.FIRE) fade = CT_FIRE_BURN_TICK + CT_FIRE_BURN_SPREAD_TICK * ctRoll(seed, 5);
-    if (c.id === E.SMOKE) fade = CT_SMOKE_FADE_TICK;
     // Whole life units: the fraction is a draw, so the mean fade is exact.
     c.life = Math.max(0, c.life - ctI(Math.floor(fade + ctRoll(seed, 6))));
     c.busy = 1;
@@ -958,29 +1024,29 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     }
   }
   if (r.burn > 0 && c.id !== E.FUSE) {
-    if (!exposed || smothered) c.burning = 0;
-    else {
-      const canLight = c.burning !== 0 || c.tq >= r.igniteQ || fire > 0;
-      if (canLight) {
-        c.busy = 1;
-        // Noita/TPT flammability: 0.5/s per flame, at 60 Hz, face correction 2.
-        if (c.burning !== 0 || c.tq >= r.igniteQ || (r.flashQ < r.igniteQ && c.tq >= r.flashQ && fire > 0) || (hotFront && (r.flashQ >= r.igniteQ || c.tq >= r.flashQ)) || random < ctF(fire) / 60) {
-          c.burning = 1;
-          if (c.life === 0) return ctExhaust(c, seed);
-          let oxy = 1.0;
-          if (fullAir + fullOxygen > 0) oxy = (ctF(fullAir) + 4.77327 * ctF(fullOxygen)) / ctF(fullAir + fullOxygen);
-          const spend = Math.min(c.life, Math.max(1, ctI(ctF(r.burn) * oxy * ctF(ctAmount(c)) / 65536)));
-          c.life = c.life - spend;
-          const ceiling = ctI(ctF(r.flameQ) * (1 + 0.32 * ctF(fullOxygen) / ctF(Math.max(1, fullAir + fullOxygen))));
-          const perFuel = ctDiv(r.heat * 65536, Math.max(1, r.burn));
-          const gain = ctI(Math.min(2147483000, ctF(perFuel) * ctF(spend)));
-          const beforeHeat = ctEnergy(c);
-          c = ctHeatTo(c, ceiling, gain);
-          c.source = ctAdd(c.source, ctSub(ctEnergy(c), beforeHeat));
-          c.request = c.request | 2;
-          if (c.life === 0) return ctExhaust(c, seed);
-        }
-      }
+    // V1 react.js combustion, re-tested every step (cooling it, or taking its air, puts it out): at its
+    // ignition point, or past its flash point with a flame on a face (nFire), touching air, oxygen or a
+    // flame, and not smothered. Thermal only: no flame lights it by touch (V1 has no contact ignition).
+    let lit = 0;
+    if ((c.tq >= r.igniteQ || (fire > 0 && c.tq >= r.flashQ)) && exposed && !smothered) lit = 1;
+    if (c.burning !== lit) c.busy = 1;
+    c.burning = lit;
+    if (lit !== 0) {
+      c.busy = 1;
+      if (c.life === 0) return ctExhaust(c, seed);
+      let oxy = 1.0;
+      if (fullAir + fullOxygen > 0) oxy = (ctF(fullAir) + 4.77327 * ctF(fullOxygen)) / ctF(fullAir + fullOxygen);
+      const spend = Math.min(c.life, Math.max(1, ctI(ctF(r.burn) * oxy * ctF(ctAmount(c)) / 65536)));
+      c.life = c.life - spend;
+      const ceiling = ctI(ctF(r.flameQ) * (1 + 0.32 * ctF(fullOxygen) / ctF(Math.max(1, fullAir + fullOxygen))));
+      const perFuel = ctDiv(r.heat * 65536, Math.max(1, r.burn));
+      const gain = ctI(Math.min(2147483000, ctF(perFuel) * ctF(spend)));
+      const beforeHeat = ctEnergy(c);
+      c = ctHeatTo(c, ceiling, gain);
+      c.source = ctAdd(c.source, ctSub(ctEnergy(c), beforeHeat));
+      // V1 react.js: Pr += BURN_P a step
+      c.request = ctPuff(c.request, CT_BURN_PUFF_PA);
+      if (c.life === 0) return ctExhaust(c, seed);
     }
   }
   // The fuse is the electric pass's (ctFuseStep: V1's step, four a tick, six faces).
@@ -1012,16 +1078,18 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
         return made;
       }
     }
-    if (moss > 0 && bed > 0) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(moss) * CT_MOSS_MISS_LOG)) return ctCreate(c, E.MOSS, c.tq); }
+    // V1 react.js mossSite: damp moss and a bed on faces of different axes (only one axis holding both fails)
+    const site = wetAxes !== 0 && bedAxes !== 0 && !(wetAxes === bedAxes && (wetAxes === 1 || wetAxes === 2 || wetAxes === 4));
+    if (wetMoss > 0 && site) { c.busy = 1; if (random < ctPerTick(CT_MOSS_GROW * ctF(wetMoss))) return ctCreate(c, E.MOSS, c.tq); }
   }
   if (c.id === E.CLOUD) {
-    if (cloud >= 2 || air >= 2) {
+    if (cloud > CT_CLOUD_RAIN_NB || empty > CT_CLOUD_EVAP_NB) {
       c.busy = 1;
-      if (cloud >= 2 && random < ctPerTick(CT_CLOUD_RAIN * ctF(cloud * 2 - CT_CLOUD_RAIN_NB))) return ctConvert(c, E.WATER, 0);
+      if (cloud > CT_CLOUD_RAIN_NB && random < ctPerTick(CT_CLOUD_RAIN * ctF(cloud - CT_CLOUD_RAIN_NB))) return ctConvert(c, E.WATER, 0);
       const temp = ctF(c.tq) * 0.25 - CT_CODE_ZERO_C;
       const ambient = ctF(ambientQ) * 0.25 - CT_CODE_ZERO_C;
       const es = Math.exp(CT_MAGNUS_A * (temp / Math.max(1, temp + CT_MAGNUS_B) - ambient / Math.max(1, ambient + CT_MAGNUS_B)));
-      if (air >= 2 && random < ctPerTick(CT_CLOUD_EVAP * ctF(air * 2 - CT_CLOUD_EVAP_NB) * es)) {
+      if (empty > CT_CLOUD_EVAP_NB && random < ctPerTick(CT_CLOUD_EVAP * ctF(empty - CT_CLOUD_EVAP_NB) * es)) {
         // V1 react.js: the evaporating cell's air cools by CLOUD_EVAP_COOL (a declared sink).
         let gone = ctDecay(c, E.EMPTY);
         const before = ctEnergy(gone);
@@ -1029,21 +1097,28 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
         return ctRecordChange(gone, before);
       }
     }
-    // Use real stored speed: gravity changes must not rewrite contact inertia.
-    for (let k = 0; k < 3; k++) {
-      if (c.tq <= 1093 && ns[k].valid !== 0 && ns[k].id === E.SNOW && ns[k].fallSpeed > 0.0) {
-        c.busy = 1;
-        if (random < Math.min(ns[k].fallSpeed, 1.0 / 6.0)) c.ctype = Math.min(60, c.ctype + 1);
-      }
+    // V1 react.js storm charge: snow closing on it. Grid snow moves only along gravity, so only the
+    // partner upstream of it (CT_OUT_UP) can close on it, at its stored fall speed (cells a tick): snow
+    // beside it or falling away below it closes at none. (Flying snow: v2/airborne.js.)
+    const up = ctDiv(out, CT_OUT_UP) % 4;
+    if (up > 0) {
+      const above = ns[up - 1];
+      if (above.valid !== 0 && above.id === E.SNOW) c = ctStormCharge(c, above.fallSpeed, seed);
     }
   }
-  if (c.id === E.DUST && c.fallSpeed >= DUST_MIN_FALL_SPEED && dust >= CONTACT_DUST_MEC_NB && fullAir >= CONTACT_DUST_RICH_AIR && (c.tq >= r.igniteQ || hotTouch || fire > 0)) { c.request = c.request | 1; c.busy = 1; }
+  // V1 react.js dust clouds: suspended (faster than DUST_LIFT_V, any direction: grid dust moves only as it
+  // falls), DUST_MEC_NB dust and DUST_RICH_AIR air faces of six, lit by its own heat, a hot touch or a
+  // flame face (DUST_FIRE 1: every step).
+  if (c.id === E.DUST && Math.abs(c.fallSpeed) > DUST_MIN_FALL_SPEED && dust >= CONTACT_DUST_MEC_NB && empty >= CONTACT_DUST_RICH_AIR && (c.tq >= r.igniteQ || hotTouch || fire > 0)) { c.request = c.request | 1; c.busy = 1; }
   if (c.id === E.SINGULARITY) {
     // Mass has 1/256 cell units; unlike normalized fuel it reaches 200 cells.
     c.busy = 1;
     if (c.life >= 51200) { c.request = c.request | 1; return c; }
     const mass = ctF(c.life) / 256;
-    c.life = Math.max(0, c.life - Math.max(1, ctI(614.4 / Math.max(1, mass * mass))));
+    // V1 react.js: m -= SING_EVAP / max(m², SING_MASS_MIN) a step, the tick's steps; the fraction a draw
+    let m = mass;
+    for (let step = 0; step < CT_STEPS_PER_TICK; step++) { m = ctF(m - ctF(CT_SING_EVAP / Math.max(ctF(m * m), CT_SING_MASS_MIN))); }
+    c.life = Math.max(0, c.life - ctI(Math.floor(ctF(ctF(mass - m) * 256.0) + ctRoll(seed, CT_SING_SALT))));
     if (c.life < 256 || c.life >= 51200) c.request = c.request | 1;
   }
   return c;
@@ -1059,8 +1134,8 @@ export const CONTACT_KERNEL = [
   [ctNuclearId, ['CTCell'], 'i32'], [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
   [ctGrowerDamp, ['i32', 'i32'], 'i32'], [ctPuff, ['i32', 'i32'], 'i32'], [ctPerTick, ['f32'], 'f32'],
   [ctHotFuel, ['CTCell'], 'bool'], [ctSmothered, ['i32', 'i32'], 'bool'], [ctLick, ['CTCell', 'i32', 'i32', 'bool', 'i32'], 'CTCell'],
-  [ctHotFront, ['CTCell', 'i32'], 'bool'], [ctPacketTouch, ['CTCell', 'i32', 'i32', 'i32', 'i32'], 'i32'],
-  [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
+  [ctPacketTouch, ['CTCell', 'i32', 'i32', 'i32'], 'i32'], [ctStormCharge, ['CTCell', 'f32', 'i32'], 'CTCell'],
+  [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
   [ctStep, ['CTCell', 'array<CTCell, 3>', 'i32'], 'CTCell'],
 ];
 
@@ -1250,10 +1325,41 @@ CONTACT_KERNEL.push(
   [ctAcid, ['CTCell', 'CTCell', 'i32'], 'CTPair'],
   [ctSwallow, ['CTCell', 'CTCell', 'i32', 'i32'], 'CTPair'],
 );
+// ctAcid as the block pass and flying packets run it: V1 react.js sets the gas of what fizzes (limestone)
+// free as acid eats it, puffP(FIZZ) on the eaten cell, so its GAS request carries that puff (CONTACT_ROWS fizz).
+export function ctAcidFizz(a0, b0, seed) {
+  let pair = ctAcid(a0, b0, seed);
+  if (pair.changed !== 0 && pair.b.id !== b0.id && ctRow(b0.id).fizz !== 0) pair.b.request = ctPuff(pair.b.request, ctRow(b0.id).fizz);
+  return pair;
+}
+CONTACT_KERNEL.push([ctAcidFizz, ['CTCell', 'CTCell', 'i32'], 'CTPair']);
 
 export const CONTACT_FACES = Array.from({ length: 8 }, (_, i) => [i ^ 1, i ^ 2, i ^ 4]);
 export const CONTACT_PAIRS = CONTACT_FACES.flatMap((ns, i) => ns.filter(j => j > i).map(j => [i, j]));
 export const CONTACT_POSITIONS = Array.from({ length: 8 }, (_, i) => [i & 1, (i >> 1) & 1, (i >> 2) & 1]);
+// A cell's outside word (CT_OUT_*), as the support pass builds it from its three out-of-block faces
+// (shaders/v2/contact.js outsideFacesWGSL; flying packets' too): faces[a] the core on its face along axis a
+// (x y z), null beyond the grid (the box's wall, cellAt's sentinel: none of these, not even a surface).
+export function contactOutsideWord(faces) {
+  let word = 0, damp = 0;
+  faces.forEach((core, axis) => {
+    if (!core) return;
+    const n = unpackContact(core), kind = ctRow(n.id).kind;
+    if (kind !== K.EMPTY && kind !== K.GAS) word += CT_OUT_SURFACE;
+    if (n.id === E.FIRE) word += CT_OUT_FIRE;
+    if (n.id === E.EMPTY) word += CT_OUT_EMPTY;
+    if (n.id === E.CLOUD) word += CT_OUT_CLOUD;
+    if (n.id === E.DUST) word += CT_OUT_DUST;
+    // V1 dampOf: liquid water gives DAMP_REACH, a grower one less than its own
+    if (n.id === E.WATER) damp = Math.max(damp, CONTACT_DAMP_REACH);
+    if (n.id === E.MOSS || n.id === E.FUNGUS) {
+      const d = ctGrowerDamp(n.id, n.ctype);
+      if (d >= 1) { damp = Math.max(damp, d - 1); if (n.id === E.MOSS) word += CT_OUT_WET_MOSS << axis; }
+    }
+    if (ctRow(n.id).bed !== 0) word += CT_OUT_BED << axis;
+  });
+  return word + damp * CT_OUT_DAMP;
+}
 // Optional per-cell [air, oxygen, CO2, gas] counts must be frozen before any
 // block writes. The standalone eight-cell patch defaults to a closed outside.
 // modes: the dispatch's ambient (°C), ambient heat and edge (simModes.js EDGE),
@@ -1275,8 +1381,8 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
     if (flux) flux = -ctHeatRoom(cells[j], -ctHeatRoom(cells[i], flux));
     if (flux) { cells[i] = ctHeat(cells[i], flux); cells[j] = ctHeat(cells[j], -flux); cells[i].busy = 1; cells[j].busy = 1; }
     let pair = ctReaction(cells[i], cells[j], seedAt(i) ^ j);
-    if (!pair.changed) pair = ctAcid(pair.a, pair.b, seedAt(i) ^ j);
-    if (!pair.changed) { const reverse = ctAcid(pair.b, pair.a, seedAt(i) ^ j); pair = ctPairValue(reverse.b, reverse.a, reverse.changed); }
+    if (!pair.changed) pair = ctAcidFizz(pair.a, pair.b, seedAt(i) ^ j);
+    if (!pair.changed) { const reverse = ctAcidFizz(pair.b, pair.a, seedAt(i) ^ j); pair = ctPairValue(reverse.b, reverse.a, reverse.changed); }
     if (!pair.changed) pair = ctSwallow(pair.a, pair.b, seedAt(i) ^ j, ambientQ);
     if (!pair.changed) { const reverse = ctSwallow(pair.b, pair.a, seedAt(i) ^ j, ambientQ); pair = ctPairValue(reverse.b, reverse.a, reverse.changed); }
     cells[i] = pair.a; cells[j] = pair.b;
@@ -1284,8 +1390,10 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
   const snapshot = cells.map(ctCopy);
   // V1 react.js counts the box's solid floor as a surface (its sides and lid don't).
   const floorAt = i => +(positions[i][1] === 0 && modes.edge === EDGE_SOLID);
-  // (outside[i]: [air, oxygen, CO2, gas] and, optional, the clone faces: v2SupportWGSL's counts)
-  cells = cells.map((c, i) => valid[i] ? ctStepAtmosphere(c, CONTACT_FACES[i].map(j => snapshot[j]), seedAt(i), ...outside[i].slice(0, 4), floorAt(i), ambientQ, touch[i], outside[i][4] ?? 0) : c);
+  // (outside[i]: [air, oxygen, CO2, gas] and, optional, the clone faces and the outside word
+  // (contactOutsideWord): v2SupportWGSL's. A lower corner's y partner (CONTACT_POSITIONS) is upstream.)
+  const upOf = i => (i & 2) === 0 ? 2 * CT_OUT_UP : 0;
+  cells = cells.map((c, i) => valid[i] ? ctStepAtmosphere(c, CONTACT_FACES[i].map(j => snapshot[j]), seedAt(i), ...outside[i].slice(0, 4), floorAt(i), ambientQ, touch[i], outside[i][4] ?? 0, (outside[i][5] ?? 0) + upOf(i)) : c);
   for (const [i, j] of CONTACT_PAIRS) {
     if (!valid[i] || !valid[j]) continue;
     let pair = ctResolvePhase(cells[i], cells[j]);
@@ -1350,12 +1458,13 @@ CONTACT_KERNEL.push([ctElecMaterial, ['i32'], 'bool'], [ctFuseLife, ['i32'], 'i3
   [ctElecAirborne, ['CTCell', 'array<CTCell, 6>', 'i32'], 'CTCell'], [ctFuseTouch, ['CTCell', 'i32', 'f32'], 'i32'],
   [ctFuseFlameNear, ['CTCell', 'array<CTCell, 6>', 'i32'], 'bool']);
 
-// R5 ambient exchange at the open box's faces. The owner counts exposed open
-// side/top faces (not the floor or closed/periodic edges).
+// R5 ambient exchange at the open box's faces. The owner counts the cell's faces past a void edge, the
+// floor's too: V1 react.js reads every face beyond the grid as still air at ambient there (VOID_AIR_A),
+// and closed or periodic edges as none.
 export function ctBoundary(input, openFaces, ambientQ) {
   let c = ctCopy(input);
   const perFace = ctDiv(ctFlux(c, ctNew(E.EMPTY, ambientQ, 65536)), 2);
-  const transfer = perFace * Math.max(0, Math.min(5, openFaces));
+  const transfer = perFace * Math.max(0, Math.min(6, openFaces));
   if (transfer === 0) return c;
   const before = ctEnergy(c);
   c = ctHeat(c, transfer);

@@ -12,7 +12,7 @@ import { gridLayout } from '../../src/sim.js';
 import { makeMaterial, packetOwnedEnergy, energyOf, cTq, cid, FULL } from '../../src/v2/layout.js';
 import { airborneReference, outsideOf, nearOf, openNear, inBlockFaces, trailingFace, colourOf, airborneOrder, packAirborne,
   FACE6, AIRBORNE, AIRBORNE_COLOURS, AIRBORNE_COLOUR_TABLE, AIRBORNE_NO_CHARGE, dustFacesOf } from '../../src/v2/airborne.js';
-import { DUST_MIN_FALL_SPEED, CONTACT_PUFF_UNIT, ctNew, packContact, unpackContact } from '../../src/v2/contact.js';
+import { DUST_MIN_FALL_SPEED, CONTACT_PUFF_UNIT, ctNew, packContact, unpackContact, ctSetEnergy, ctEnergy } from '../../src/v2/contact.js';
 import { offsetOf } from '../../src/v2/physics.js';
 import { particlesWGSL, PARTICLE_STAGES, airborneBase, airbornePuffBase, heldBase, shockPostBase, setOffBase, PARTICLE_CAP, DynamicParams,
   pressureCellWGSL, pressureOnWGSL, crushWGSL } from '../../src/shaders/v2/particles.js';
@@ -21,6 +21,7 @@ import { nativeDynamicsHead, v2Table } from '../../src/shaders/v2.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 import { dynamicsRows } from '../../src/v2/dynamics-reference.js';
+import { PHYS } from '../../src/physics.js';
 
 const T = core => cTq(core) / 4 - 273.25;
 const key = core => ELEMENTS[cid(core)].key;
@@ -303,7 +304,8 @@ const nearX = (faces, offset = [0, 0, 0]) => nearOf(faces, CELL, offset, FALLING
   const later = six(() => air()); later[1] = makeMaterial(E.STONE, 1000);
   assert.equal(T(airborneReference(packet(E.STONE, 20), air(20), 11, nearX(later)).particle.core), 20, 'no exchange with a face out of its block');
 }
-// 12. Ignition from a flame beside it: sawdust flying along a flame catches (V1 react.js nFire; contact.js hotFront).
+// 12. Ignition from a flame beside it: sawdust flying along a flame catches once the flame heats it past its
+// ignition point (V1 react.js combustion: thermal only, re-tested every step).
 {
   const out = fly(packet(E.SAWDUST, 20), () => air(20), 120, withFace(0, fire));
   assert(out.log.some(r => cid(r.particle.core) === E.SAWDUST && ((r.particle.core[1] >>> 24) & 1)), 'it catches from the flame beside it');
@@ -488,6 +490,50 @@ for (const dims of [[32, 32, 32], [48, 16, 32]]) {
   assert.equal(externalBlastBase(g), setOffBase(g) + PARTICLE_CAP, 'its words overlap no other range');
 }
 assert(BLAST_STAGES.includes('airborneEvents'));
+
+// Flying snow charges a freezing cloud it closes on (V1 react.js storm charge: CHARGE_RATE·closing a step,
+// closing its speed onto that face, cells a step): falling onto a cloud partner below it, at V1's rate over
+// the partnered tick's PARTNER_STEPS steps; moving past or away from it, none.
+{
+  const STEPS = 4, PARTNER = 8, cloudCold = () => makeMaterial(E.CLOUD, PHYS.CHARGE_T_MAX);
+  // the -y face a block partner (inBlockFaces: p + offset even on y), the +y face behind it its host
+  const at = [5, 4, 5], down = 3;
+  assert.equal(inBlockFaces(at, [0, 0, 0])[1], down); assert.equal(trailingFace([0, -1, 0]), 2);
+  const charge = v => ({ ...AIRBORNE_NO_CHARGE, speed: Math.hypot(...v), velocity: v });
+  for (const fall of [0.1, 0.4]) {
+    let gained = 0; const n = 4000;
+    for (let s = 1; s <= n; s++) {
+      const faces = openFaces(); faces[down] = cloudCold();
+      const r = airborneReference(packet(E.SNOW, -5), air(-5), s * 2654435761 | 0, nearOf(faces, at, [0, 0, 0], [0, -fall, 0]), undefined, charge([0, -fall, 0]));
+      gained += unpackContact(r.faces[down].core).ctype;
+    }
+    const v1 = PARTNER * Math.min(1, PHYS.CHARGE_RATE * fall / STEPS);
+    assert(Math.abs(gained / n - v1) < 0.05 * v1 + 0.02, `snow falling ${fall} cells a tick onto cloud: ${gained / n} a partnered tick, V1 ${v1}`);
+  }
+  // rising away from it, or a cloud too warm: none
+  for (const [v, cloud] of [[[0, 0.4, 0], cloudCold()], [[0, -0.4, 0], makeMaterial(E.CLOUD, PHYS.CHARGE_T_MAX + 5)]]) for (let s = 1; s < 300; s++) {
+    const faces = openFaces(); faces[down] = cloud;
+    const r = airborneReference(packet(E.SNOW, -5), air(-5), s, nearOf(faces, at, [0, 0, 0], v), undefined, charge(v));
+    assert.equal(unpackContact(r.faces[down].core).ctype, 0);
+  }
+}
+// Flying steam condensing beside a lid out of its block (V1 react.js: any of its six faces non-gas is a
+// surface): water, not cloud (the outside word, contact.js CT_OUT_SURFACE).
+{
+  // steam that has banked its whole latent heat: on its cold transition (contact-v1-heat-check row 7)
+  let banked = ctNew(E.STEAM, Math.round((100 + 273.25) * 4), FULL);
+  banked = ctSetEnergy(banked, ctEnergy(banked) - BigInt(Math.round(PHYS.L_BOIL * 256)) * 65536n);
+  const steam = packContact(banked), lid = makeMaterial(E.METAL, 20);
+  assert.equal(cid(airborneReference(steam, air(20), 1).particle.core), E.CLOUD, 'in open air it turns cloud');
+  const near = nearOf(openFaces(), CELL, [0, 0, 0], [1, 0, 0]), outsideFace = near.inBlock[1] ^ 1;
+  const faces = openFaces(); faces[outsideFace] = lid;
+  let water = 0, cloud = 0;
+  for (let s = 1; s < 400; s++) {
+    const id = cid(airborneReference(steam, air(20), s, nearOf(faces, CELL, [0, 0, 0], [1, 0, 0])).particle.core);
+    if (id === E.WATER) water++; if (id === E.CLOUD) cloud++;
+  }
+  assert(cloud === 0 && water > 0, `beside a lid it turns water, never cloud (${water} water, ${cloud} cloud)`);
+}
 
 // ---- the real driver records them every tick, after the landings, a colour at a time ----
 globalThis.GPUBufferUsage = { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, INDIRECT: 8 };

@@ -147,19 +147,28 @@ test('switch off wins, powered clone controls, TSNS ignores wires, steady DC lam
   assert.equal(elec(ready,[front],0.99).spark,3608);
   assert.equal(C.ctStep(front,ns(),0).spark,3608,'the contact block leaves sparks to the electric pass');
 });
-test('ignition certainty, flame ignition at room temperature, fuel consumption and smothering',()=>{
+test('ignition certainty, V1 thermal-only ignition, fuel consumption, smothering and cooling',()=>{
   const hot=cell(E.WOOD,400),burn=C.ctStep(hot,ns(),0);
   assert.ok(burn.life<hot.life);assert.ok(burn.burning===1);assert.ok(burn.request&2);
+  // V1 react.js: Pr += BURN_P a step, the tick's as the GAS request's puff
+  assert.equal(Math.floor(burn.request/C.CONTACT_PUFF_UNIT),C.CONTACT_CONSTANTS.CT_BURN_PUFF_PA[1]);
   for(const neighbors of [ns(cell(E.CO2),cell(E.CO2)),ns(cell(E.WALL),cell(E.WALL),cell(E.WALL))]) {
     const out=C.ctStep(burn,neighbors,0);assert.equal(out.life,burn.life);assert.equal(out.burning,0);
   }
-  let lit=false;
-  for(let seed=0;seed<1000;seed++)if(C.ctStep(cell(E.WOOD),ns(cell(E.FIRE,1000)),seed).burning===1){lit=true;break;}
-  assert.ok(lit,'room-temperature fuel can ignite probabilistically');
+  // V1 react.js has no contact ignition: a flame beside room-temperature fuel never lights it (only heat does)
+  for(let seed=0;seed<1000;seed++)assert.equal(C.ctStep(cell(E.WOOD),ns(cell(E.FIRE,1000)),seed).burning,0,'no flame-touch ignition');
+  // ...but past its flash point a flame on a face lights it (whiskey's vapour), and without one it doesn't
+  assert.equal(C.ctStep(cell(E.WHISKEY,30),ns(cell(E.FIRE,1000)),0).burning,1,'flash point with a flame');
+  assert.equal(C.ctStep(cell(E.WHISKEY,30),ns(),0).burning,0,'flash point, no flame');
+  // V1 re-tests every step: a lit fuel cooled below its ignition point goes out, air or not
+  const cooled={...burn,tq:q(250),raw:q(250),bank:0};
+  const out=C.ctStep(cooled,ns(),0);assert.equal(out.burning,0,'cooled under ignite: out');assert.equal(out.life,cooled.life,'no fuel spent');
   const falling=cell(E.SAWDUST);falling.age=30;assert.equal(C.ctStep(falling,ns(),0).life,falling.life);
 });
-test('fire/smoke/plasma life ends, steam/caustic gas do not fade as prototype',()=>{
-  for(const id of [E.FIRE,E.SMOKE,E.PLASMA]) {const c=cell(id);c.life=1;assert.notEqual(C.ctStep(c,ns(),0).id,id);}
+test('fire/smoke life ends, plasma/steam/caustic gas do not fade as prototype',()=>{
+  for(const id of [E.FIRE,E.SMOKE]) {const c=cell(id);c.life=1;assert.notEqual(C.ctStep(c,ns(),0).id,id);}
+  // V1 react.js gives plasma no life rule: kept hot it lasts (it leaves by cooling past 4700 °C)
+  const plasma=cell(E.PLASMA,10000);plasma.life=1;assert.equal(C.ctStep(plasma,ns(),0).id,E.PLASMA);
   const steam=cell(E.STEAM,110);assert.equal(C.ctStep(steam,ns(steam,steam,steam),0).id,E.STEAM);
   const acid=cell(E.CAUSTIC_GAS);assert.equal(C.ctStep(acid,ns(),0).life,acid.life);
 });
@@ -172,7 +181,9 @@ test('blasts request source without consuming, fuse handoff, suspended dust and 
   // the fuse is the electric pass's (ctFuseStep: V1's step on six faces), not the contact block's
   const fuse=cell(E.FUSE),lit=cell(E.FUSE);lit.life=100;assert.ok(elec(fuse,[lit],0).life<2048);
   assert.equal(C.ctStep(fuse,ns(lit),0).life,2048);
-  const dust=cell(E.DUST,500);dust.fallSpeed=C.DUST_MIN_FALL_SPEED;assert.ok(C.ctStep(dust,ns(cell(E.DUST)),0).request&1);
+  const dust=cell(E.DUST,500);dust.fallSpeed=C.DUST_MIN_FALL_SPEED*1.01;assert.ok(C.ctStep(dust,ns(cell(E.DUST)),0).request&1);
+  // V1 react.js: suspended past DUST_LIFT_V, strictly
+  dust.fallSpeed=C.DUST_MIN_FALL_SPEED;assert.equal(C.ctStep(dust,ns(cell(E.DUST)),0).request&1,0);
   let emitted=false;
   for(let seed=0;seed<100000;seed++)if(C.ctStep(cell(E.PLUTONIUM),ns(),seed).request&4){emitted=true;break;}
   assert.ok(emitted);assert.equal(C.ctStep(cell(E.URANIUM),ns(),0).request&4,0);
@@ -330,16 +341,24 @@ test('growth/rot witness each biological rule at actual temperature with explici
   const dry=cell(E.MOSS);assert.equal(C.ctStep(cell(E.EMPTY),ns(dry,cell(E.ROCK)),0).busy,0,'dry moss does not keep air awake');
 });
 test('cloud rain/evaporation/storm charge, clone emit/control and singularity lifecycle execute',()=>{
+  // V1 react.js reads its six faces: three partners and the outside word (four cloud faces rain, four air faces evaporate)
+  const atmo=(c,partners,word,seed)=>C.ctStepAtmosphere(c,partners,seed,0,0,0,0,0,C.contactAmbientQ(PHYS.AMBIENT),0,0,word);
   const cloud=cell(E.CLOUD,20);let rain,evap;
+  const outCloud=C.contactOutsideWord([C.packContact(cloud).core,null,null]),outAir=C.contactOutsideWord([C.packContact(cell(E.EMPTY)).core,null,null]);
   for(let seed=0;seed<100000;seed++){
-    if(!rain){const out=C.ctStep(cloud,ns(cloud,cloud,cloud),seed);if(out.id===E.WATER)rain=out;}
-    if(!evap){const out=C.ctStep(cloud,ns(),seed);if(out.id===E.EMPTY)evap=out;}
+    if(!rain){const out=atmo(cloud,ns(cloud,cloud,cloud),outCloud,seed);if(out.id===E.WATER)rain=out;}
+    if(!evap){const out=atmo(cloud,ns(),outAir,seed);if(out.id===E.EMPTY)evap=out;}
     if(rain&&evap)break;
   }
   assert.ok(rain);assert.equal(energy(rain),energy(cloud));assert.ok(evap);assert.equal(energy(evap)+evap.sink-evap.source,energy(cloud));
+  for(let seed=0;seed<100000;seed++)assert.equal(C.ctStep(cloud,ns(cloud,cloud,cloud),seed).id,E.CLOUD,'three cloud faces of six: no rain');
+  // storm charge: snow on the partner upstream of it (CT_OUT_UP: 1 + its index), falling onto it
   const cold=cell(E.CLOUD,0),snow=cell(E.SNOW);snow.fallSpeed=40*C.CONTACT_G_TICK;let charged=false;
-  for(let seed=0;seed<100;seed++)if(C.ctStep(cold,ns(snow),seed).ctype>0){charged=true;break;}
-  assert.ok(charged);snow.fallSpeed=0;assert.equal(C.ctStep(cold,ns(snow),0).ctype,0,'stationary snow cannot charge cloud');
+  const up=2*C.CONTACT_CONSTANTS.CT_OUT_UP[1];
+  for(let seed=0;seed<100;seed++)if(atmo(cold,ns(cell(E.EMPTY),snow),up,seed).ctype>0){charged=true;break;}
+  assert.ok(charged);
+  for(let seed=0;seed<100;seed++)assert.equal(atmo(cold,ns(snow),up,seed).ctype,0,'snow beside it, not above, closes on it at none');
+  snow.fallSpeed=0;assert.equal(atmo(cold,ns(cell(E.EMPTY),snow),up,0).ctype,0,'stationary snow cannot charge cloud');
   for(const id of [E.CLONE,E.PCLN]) {
     const clone=cell(id);clone.ctype=E.WATER;clone.life=id===E.PCLN?20480:0;
     let out;for(let seed=0;seed<100;seed++){out=C.ctStep(cell(E.EMPTY),ns(clone),seed);if(out.id===E.WATER)break;}

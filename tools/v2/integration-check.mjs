@@ -20,6 +20,8 @@ import { createPacker, createUnpacker, encodeFrame, decodeFrame, nativeSection, 
 import { nativeHostSteps as hostSteps } from '../../src/v2/host.js';
 import { E, K, TOOLS, ELEMENTS } from '../../src/elements.js';
 import { readFileSync } from 'node:fs';
+import { v2ActLayout, LEGACY_WORD } from '../../src/shaders/v2.js';
+import { resetNativeDynamics } from '../../src/v2/dynamicState.js';
 import { physicsEngine } from '../../src/launch.js';
 
 const g = gridLayout(32, 32, 32), calls = [], shifts = [], requests = [], builds = [];
@@ -87,6 +89,12 @@ function referenceDispatch(name, opts) {
     } else {
       const j = p.preserve ? otherBank[p.count + Math.floor(i / 64)] * 64 + i % 64 : i;
       const to = slot(slabCell(j)); core.set(other.subarray(i * 4, i * 4 + 4), to * 4); bank[to] = otherBank[i];
+      // the bricks it wrote, and only those (shaders/v2/window.js scatter)
+      const act = opts.bind[2].entries[4] && words(opts.bind[2].entries[4].resource.buffer), A = v2ActLayout(g);
+      if (act && i % 64 === 0) {
+        const b = Math.floor(to / 64);
+        act[A.legacy + b] = LEGACY_WORD.STALE; act[A.busy0 + b] = act[A.busy1 + b] = act[A.state + b] = act[A.air + b] = 1; act[A.summary + b] = 0;
+      }
     }
   }
 }
@@ -126,15 +134,33 @@ owner.aux ??= buffer({ size: g.slots * 4 });
 const adapter = owner.nativeDynamics;
 assert(adapter.head && adapter.layout && adapter.group, 'foundation nativeDynamics is the immutable shader adapter');
 owner.contactReady = true;
-owner.dynamics = { isReady: true, isIdle: true, air: [0, 1].map(() => buffer({ size: g.nbricks * 32 })), airIndex: 0,   // (its coarse air: two vec4s a brick, two copies)
+owner.dynamics = { isReady: true, windowReady: true, isIdle: true, air: [0, 1].map(() => buffer({ size: g.nbricks * 32 })), airIndex: 0,   // (its coarse air: two vec4s a brick, two copies)
   advanceParticles: () => calls.push({ name: 'native-particle-tick' }),
   consumeMaterialEvents: () => calls.push({ name: 'native-event-tick' }),
   advanceAir: () => calls.push({ name: 'native-air-tick' }), ready: Promise.resolve(), capabilities: { physicsReady: true, drawReady: true, impulse: true, photon: true, neutron: true },
-  readActivity: async () => ({}), shiftWindow: delta => { shifts.push(delta); return Promise.resolve(); }, applyToolImpulse: r => { requests.push(r); return 'accepted'; } };
+  readActivity: async () => ({}), applyToolImpulse: r => { requests.push(r); return 'accepted'; },
+  // (what the native force kernels commit into: V1's paint rule for Wind, Pressure, Vacuum, Cyclone)
+  plans: buffer({ size: g.slots * 16 }), particles: buffer({ size: 64 }), _allocate: () => calls.push({ name: 'native-force-allocate' }), _externalWork() {},
+  // a World move's dynamics (NativeDynamics.recordWindowShift): recorded before the cores' restore, committed after it
+  recordWindowShift: (delta, opts) => { shifts.push(delta); moveOrder.push(['record', opts?.legacy]); return { commit: () => moveOrder.push(['commit']), landed: Promise.resolve() }; } };
 await sim.prepareNative(owner);
-const shiftNative = (dx, dz) => sim.nativeIntegration.beginShift(dx, dz, () => sim.shift(dx, dz));
+const moveOrder = [];
+// The move is made in the frame, as V1's (src/sim.js shift): nothing to await.
+const shiftNative = (dx, dz) => { const restore = owner.restore; owner.restore = function (...a) { moveOrder.push(['restore']); return restore.apply(this, a); };
+  try { sim.shift(dx, dz); } finally { owner.restore = restore; } };
 assert.equal(owner.nativeDynamics, adapter, 'application does not overwrite foundation adapter');
 assert.equal(nativeCapabilities(sim).world, true);
+// While the rest of the dynamics build (deferred behind the grid: physics.js dynamicsReady) the grid
+// steps, so the window follows it: its move needs the buffers and its own kernel, built with the grid.
+// A request held for their build (sim.nativePending) is in window cells: the window waits for it.
+owner.dynamics.isReady = false;
+assert.equal(nativeCapabilities(sim).world, true, 'the window moves while the dynamics build');
+sim.nativePending = [{ kind: 'impulse' }];
+assert.equal(nativeCapabilities(sim).world, false, 'not with a request in window cells held for them');
+sim.nativePending = null;
+owner.dynamics.windowReady = false;
+assert.equal(nativeCapabilities(sim).world, false, 'nor before its own kernel is built');
+owner.dynamics.windowReady = true; owner.dynamics.isReady = true;
 assert.equal(nativeReadiness(sim, { pov: true }).ready, true);
 assert.equal(nativeReadiness(sim, { world: true, pov: true }).ready, true, "the World renderer's copy gets V2's cells (src/world/renderSource.js liveSource)");
 assert.equal(nativeReadiness(sim, { industry: true }).ready, true, 'Factory machines run natively (src/v2/industry.js): no engine refusal');
@@ -168,8 +194,9 @@ const duplicate = encoded.slice(); new DataView(duplicate.buffer).setUint32(4 + 
 assert.throws(() => validateNativeWorldStore(encoded, null));
 
 calls.length = 0;
-await shiftNative(16, 0);
+shiftNative(16, 0);
 assert.deepEqual(shifts, [[16, 0, 0]], 'only dynamics local fields reindex; world particle positions belong to dynamics');
+assert.deepEqual(moveOrder, [['record', true], ['restore'], ['commit']], 'dynamics and legacy words move with the cores, around their restore');
 for (let s = 0; s < g.slots; s++) {
   const q = slotCell(g, s); q[0] += 16;
   if (inside(q)) {
@@ -179,7 +206,7 @@ for (let s = 0; s < g.slots; s++) {
 }
 owner.sync();
 assert(!calls.some(c => c.name === 'v2import' && c.opts.params.full === 1), 'a residency shift never reimports projected whole-grid state');
-await shiftNative(-16, 0);
+shiftNative(-16, 0);
 const window = Object.assign(Object.create(WorldWindow.prototype), { sim, nativeStore: stored });
 assert.equal(window.restoreNative([0, 0, 0], [4, 8, 8]), 256);
 assert.equal(stored.size, 0);
@@ -191,32 +218,84 @@ for (const [dx, dz] of [[-16, 0], [0, 16], [0, -16]]) {
   const lo = [dx < 0 ? 16 : 0, 0, dz < 0 ? 16 : 0];
   const bricks = [dx ? 4 : 8, 8, dz ? 4 : 8];
   const leaving = await sim.nativeIntegration.captureSlab(lo, bricks);
-  await shiftNative(dx, dz); await shiftNative(-dx, -dz);
+  shiftNative(dx, dz); shiftNative(-dx, -dz);
   sim.nativeIntegration.restoreBricks(lo, bricks, leaving.map((bytes, index) => ({ index, bytes })));
   assert.deepEqual(core, originalCore); assert.deepEqual(bank, originalBank);
 }
 
-// Real asynchronous boundary: no core shift, origin movement, tools or ticks
-// until dynamics has rebased its local air/claims. World particle words remain its own.
-const oldShift = owner.dynamics.shiftWindow;
-let finishShift;
-owner.dynamics.shiftWindow = () => new Promise(resolve => { finishShift = resolve; });
-const oldOrigin = sim.origin.x, oldTick = owner.tick, oldCore = core.slice();
-const inFlightShift = shiftNative(16, 0);
-assert(sim.nativeTransition);
-assert.equal(nativeHostSteps(owner, 1), 0);
-assert.equal(nativeReadiness(sim, { world: true }).ready, false);
-assert.equal(sim.applyNativeTool({ kind: 'impulse' }), false);
-assert.equal(sim.origin.x, oldOrigin); assert.equal(owner.tick, oldTick); assert.deepEqual(core, oldCore);
-finishShift(); await inFlightShift;
-assert.equal(sim.nativeTransition, null); assert.equal(sim.origin.x, oldOrigin + 16);
-owner.dynamics.shiftWindow = oldShift;
-await shiftNative(-16, 0);
+// No transition: the world keeps stepping and its tools keep working through a move (S1). V2 used
+// to hold every tick, tool and stroke for a dynamics readback at each 16 cells of travel.
+const oldOrigin = sim.origin.x, oldTick = owner.tick;
+shiftNative(16, 0);
+assert.equal(sim.nativeTransition ?? null, null); assert.equal(sim.origin.x, oldOrigin + 16, 'the move is made at once');
+assert.equal(nativeReadiness(sim, { world: true }).ready, true);
+assert.equal(nativeHostSteps(owner, 1 / 60, { once: true }), 1, 'the world ticks in the frame of a move');
+assert(owner.tick > oldTick);
+assert.notEqual(sim.applyNativeTool({ kind: 'impulse', position: [1, 2, 3], direction: [1, 0, 0], radius: 1, strength: 1 }), false, 'tools work in the frame of a move');
+shiftNative(-16, 0);
 sim.nativeIntegration.restoreBricks([0, 0, 0], [4, 8, 8], slab.map((bytes, index) => ({ index, bytes })));
 assert.deepEqual(core, originalCore); assert.deepEqual(bank, originalBank);
 
 // Sparse restoration touches only selected bricks (raw slab order differs
 // from the compact brick's internal y/z bit order).
+// A scatter (a stored brick coming back) notes only the bricks it wrote: their projection is stale and
+// they wake. It used to mark every brick of the window stale, so each move converted the whole window again.
+{
+  const act = words(owner.act), A = v2ActLayout(g);
+  act.fill(0, A.legacy, A.legacy + g.nbricks);
+  sim.nativeIntegration.restoreBricks([0, 0, 0], [1, 1, 1], [{ index: 0, bytes: encodeNativeBrick(originalCore.slice(0, 256), new Int32Array(64)) }]);
+  const stale = [...act.subarray(A.legacy, A.legacy + g.nbricks)].map((w, b) => w ? b : -1).filter(b => b >= 0);
+  assert.deepEqual(stale, [Math.floor(slot([0, 0, 0]) / 64)], 'one brick restored, one brick stale');
+  sim.nativeIntegration.restoreBricks([0, 0, 0], [4, 8, 8], slab.map((bytes, index) => ({ index, bytes })));
+}
+// A dynamics that fails to build stops what needs it (World streaming, native tools: their capabilities
+// stay off), never every gate: the grid keeps ticking (C4). It used to set nativeTransitionError, which
+// nothing cleared, and every tick, tool, stroke and undo stayed shut until the map was rebuilt.
+{
+  const dynamics = owner.dynamics, error = console.error;
+  // a reset writes the buffers alone, so it never waits on the build (v2f/load), even one that fails
+  let restored = 0;
+  const failed = Promise.reject(new Error('pipeline failed')); failed.catch(() => {});
+  owner.dynamics = { isReady: false, disposed: false, ready: failed, restoreDynamicState() { restored++; } };
+  assert.equal(resetNativeDynamics(owner), undefined); assert.equal(restored, 1);
+  assert.equal(sim.nativeTransition ?? null, null, 'no transition held for the build');
+  // a dynamics with no buffers left to write (disposed) waits for its build; a failed one sets nothing for good
+  owner.dynamics.disposed = true;
+  console.error = () => {};
+  try { await resetNativeDynamics(owner); } finally { console.error = error; }
+  owner.dynamics.disposed = false;
+  assert.equal(sim.nativeTransition, null); assert.equal(sim.nativeTransitionError ?? null, null, 'no permanent error');
+  assert.equal(nativeCapabilities(sim).world, false, 'the window stops following (as V1 freezes only the window)');
+  assert.notEqual(nativeReadiness(sim).reason, 'native world transition pending or failed', 'nothing else is shut');
+  owner.dynamics = dynamics;
+  assert.equal(nativeCapabilities(sim).world, true);
+  assert.equal(nativeHostSteps(owner, 1 / 60, { once: true }), 1, 'the grid keeps ticking');
+}
+// A failed leaving read of a move's dynamics freezes the window (as a failed cell read does), not the world.
+{
+  const win = Object.assign(Object.create(WorldWindow.prototype), { sim, gpu: { failure: null }, epoch: 3, pending: null, storeReads: new Set(), loaded: true });
+  const error = console.error; console.error = () => {};
+  win._trackDynamics(Promise.reject(new Error('lost read')));
+  await win.pending; console.error = error;
+  assert.match(win.persistenceError?.message ?? '', /lost read/); assert.equal(win.update(0, 0), null);
+  assert.equal(nativeHostSteps(owner, 1 / 60, { once: true }), 1);
+}
+// An Islet box scene over another box starts V2's flying matter, air and requests over, as a load of
+// any scene does (sim.load), in the same task as its fill (M5). The actual wire/world.js loadIsland.
+{
+  const source = readFileSync(new URL('../../src/wire/world.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  loadIsland(app) {'), brace = source.indexOf('{', start); let depth = 1, end = brace + 1;
+  for (; depth; end++) { if (source[end] === '{') depth++; else if (source[end] === '}') depth--; }
+  const wireWorld = { _islandLoad: null }, order = [];
+  wireWorld.loadIsland = new Function('loadIsland', 'world', `return ({${source.slice(start, end)}}).loadIsland;`)(
+    async (_sim, { still }) => { await null; if (!still()) return null; order.push('fill'); return { size: [32, 32, 32] }; }, wireWorld);
+  const islet = { history: [], resetNativeDynamics() { order.push('reset'); } };
+  const app = { mp: { replica: false }, sim: islet, worldSeed: 1, settings: { preset: 'island' }, win: null };
+  assert.deepEqual((await wireWorld.loadIsland(app)).size, [32, 32, 32]);
+  assert.deepEqual(order, ['fill', 'reset'], "the old box's dynamics go with its cells");
+  order.length = 0; app.settings.preset = 'empty';
+  assert.equal(await wireWorld.loadIsland(app), null); assert.deepEqual(order, [], 'an overtaken load resets nothing');
+}
 const sparse = encodeNativeBrick(Uint32Array.from({ length: 256 }, (_, i) => [E.WATER | (1173 << 8), 123, 0xbc003c00, 0xffff3800][i % 4]), new Int32Array(64).fill(-123));
 sim.nativeIntegration.restoreBricks([0, 0, 0], [2, 2, 2], [{ index: 5, bytes: sparse }]);
 for (let z = 0; z < 8; z++) for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
@@ -226,6 +305,15 @@ for (let z = 0; z < 8; z++) for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x
 }
 assert.deepEqual(decodeNativeBrick(sparse).bank, new Int32Array(64).fill(-123));
 
+// An undo entry's words are read as storage by the merge across a move (a real GPU refused a bind
+// group over copy-only buffers there: graphics stopped at the first undo after a move).
+{
+  sim.snapshot('storage');
+  const t = sim.history.at(-1);
+  assert(t.compact.usage & GPUBufferUsage.STORAGE, 'the entry\'s cores bind as storage');
+  assert(!t.aux || t.aux.usage & GPUBufferUsage.STORAGE, 'and its banks');
+  sim.dropHistory();
+}
 // Shifted undo preserves the part outside the old snapshot, never imports
 // legacy whole cells before the native merge.
 const snapCore = buffer({ size: bytes }), snapBank = buffer({ size: g.slots * 4 });
@@ -277,16 +365,15 @@ const fullBefore = sim.wholeWrites;
 applyGuestStroke(sim, { c: [3, 4, 5], r: 999, shape: 0, tool: E.SAND, rate: 1, replace: false });
 assert.equal(edits.at(-1).values.radius, 24); assert.equal(sim.compact, owner);
 assert.equal(sim.wholeWrites, fullBefore);
-// A guest's wind before the host's impulse is built waits for it (sim.nativePending), it is not refused.
+// A guest's wind is V1's paint rule on the host's native grid (nativePaintForce, built with the native
+// owner: v2/interactions.js NATIVE_BRUSH_KERNELS), never a legacy edit or an impulse.
 {
-  const wind = TOOLS.find(t => t.key === 'WIND').id, impulse = owner.dynamics.capabilities.impulse;
-  owner.dynamics.capabilities.impulse = false;
+  const wind = TOOLS.find(t => t.key === 'WIND').id;
   const queue = [{ c: [3, 4, 5], r: 2, shape: 0, tool: wind, rate: 1 }, { c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }];
-  const painted = edits.length, held = sim.nativePending?.length ?? 0;
-  try { assert.equal(applyGuestStrokes(sim, queue, { options: () => ({ wind: [1, 0, 0] }) }), 0, 'the unbuilt wind is held, not refused'); }
-  finally { owner.dynamics.capabilities.impulse = impulse; }
-  assert.equal(sim.nativePending.length, held + 1, 'the wind waits for its impulse');
-  sim.nativePending.length = held;
+  const painted = edits.length, asked = requests.length, from = calls.length;
+  assert.equal(applyGuestStrokes(sim, queue, { options: () => ({ wind: [1, 0, 0] }) }), 0, 'the guest wind is not refused');
+  assert(calls.slice(from).some(c => c.name === 'nativePaintForceForceEvaluate'), 'the guest wind runs V1 pushed() natively');
+  assert.equal(requests.length, asked, 'no impulse');
   assert.equal(queue.length, 0, 'the frame takes its strokes off the queue');
   assert.equal(edits.length, painted + 1, 'the next guest stroke still paints');
 }
@@ -412,8 +499,7 @@ owner.dynamics.capabilities.drawReady = true;
   requests.length = 0;
   owner.dynamics.capabilities.physicsReady = false;
   assert.equal(sim.nativeCapabilities.impulse, false);
-  const wind = TOOLS.find(t => t.key === 'WIND').id;
-  assert.equal(sim.paint({ center: { x: 1, y: 2, z: 3 }, radius: 2, tool: wind, wind: [0, 0, 2] }), true, 'wind before the dynamics are ready is held, not thrown');
+  assert.equal(nativeImpulse(sim, { position: [1, 2, 3], direction: [0, 0, 2], radius: 2, deltaV: 1 }), true, 'an impulse before the dynamics are ready is held, not thrown');
   sim.nativeEmission = undefined;
   assert(emitNativeRay(sim, { ...stroke, radius: 6, rate: 1 }), 'a held photon brush is held too');
   assert.equal(requests.length, 0); assert.equal(sim.nativePending.length, 2);
@@ -422,14 +508,16 @@ owner.dynamics.capabilities.drawReady = true;
   assert.equal(sim.nativePending.length, accepted + 2, 'the wait is bounded');
   owner.dynamics.capabilities.physicsReady = true;
   assert.equal(sim.flushNativeTools(), accepted + 2); assert.equal(sim.nativePending.length, 0);
-  assert.equal(requests[0].kind, 'impulse'); assert.deepEqual(requests[0].direction, [0, 0, 1], 'the wind went first, as painted');
+  assert.equal(requests[0].kind, 'impulse'); assert.deepEqual(requests[0].direction, [0, 0, 1], 'the impulse went first, as asked');
   assert.equal(requests[1].kind, 'photon');
   requests.length = 0;
 }
-const nativeEdits = edits.length;
-sim.paint({ center: { x: 1, y: 2, z: 3 }, radius: 2, tool: TOOLS.find(t => t.key === 'WIND').id, wind: [1, 0, 0] });
+const nativeEdits = edits.length, windFrom = calls.length, windAsked = requests.length;
+assert(sim.paint({ center: { x: 1, y: 2, z: 3 }, radius: 2, tool: TOOLS.find(t => t.key === 'WIND').id, wind: [1, 0, 0] }));
 assert.equal(edits.length, nativeEdits, 'live native wind never writes legacy velocity or reimports liquid cells');
-assert.deepEqual(requests.at(-1).position, [129, 2, 259]);
+assert(calls.slice(windFrom).some(c => c.name === 'nativePaintForceForceAir'), 'the draft goes into the native air');
+assert.equal(requests.length, windAsked, 'and is not a uniform impulse');
+assert(sim.paint({ center: { x: 1, y: 2, z: 3 }, radius: 2, tool: TOOLS.find(t => t.key === 'WIND').id, wind: [0, 0, 0] }), 'no drag: nothing to push, not refused');
 
 // Exact cargo payloads survive CPU readback, JSON persistence and re-upload.
 const raw = new Uint32Array(9); new Float32Array(raw.buffer).set([E.WATER, 22, 0, 0]);

@@ -5,7 +5,8 @@ import { nativeDynamicsHead, LANE_HZ, FULL } from '../shaders/v2.js';
 import { MODE_FIELDS, nativeModes } from './modes.js';
 import { modeWGSL } from '../shaders/v2/modes.js';
 import { fallWGSL } from '../shaders/v2/fall.js';
-import { E } from '../elements.js';
+import { E, ELEMENTS, K } from '../elements.js';
+import { PHYS } from '../physics.js';
 import { CELL_M } from '../scale.js';
 import { LEGACY_PRESSURE_PA } from './pressure.js';
 
@@ -39,6 +40,33 @@ export function nativeWeatherParams(name, spec) {
 // that is empty after it, loses its decoration; matter it left the same element keeps its paint.
 // V1 asks for it on the World's wave demo (src/world/waveDemo.js), as TPT's create_part/kill_part
 // reset dcolour.
+// V1 react.js breaking by a blast: a breakable solid breaks when the air pressure difference across it,
+// along any axis, exceeds hard·P_BREAK_PER_HARD (a solid neighbour, or one past the box, holds none).
+// V1's writers set pressure per cell (a bolt's STRIKE_P on the open cells around the strike, a wand's
+// pressure, the Pressure tool), and V1's next step breaks what that difference cracks; V2's air holds
+// one pressure a 4³ brick, so the writer's own per-cell pressure is read here, at its commit, before
+// the air stage folds it into the bricks: a cell of the box at its brick's pressure plus its delta, any
+// other at its brick's. Only a write that moved pressure next to the cell can break it (the brick field
+// alone is couplePlan's), and only a cell the writer left as it was. Returns the debris or -1.
+const breakable = ELEMENTS.filter(e => e.kind === K.SOLID && e.breakInto && E[e.breakInto] !== undefined);
+export const V1_PRESSURE_BREAK_WGSL = `
+fn wBreakInto(id: u32) -> i32 { switch id { ${breakable.map(e => `case ${e.id}u: { return ${E[e.breakInto]}; }`).join(' ')} default: { return -1; } } }
+fn wBreakP(id: u32) -> f32 { switch id { ${breakable.map(e => `case ${e.id}u: { return ${(e.hard * PHYS.P_BREAK_PER_HARD).toFixed(4)}; }`).join(' ')} default: { return 3e38; } } }
+fn wCellPressure(q0: vec3i, moved: ptr<function, bool>) -> f32 {
+ let q=mEdge(q0); if(!inGrid(q) || cls(cid(loadMaterial(slotOf(q)).core))==1u) { return 0.0; }
+ var pa=air[brickId(q>>vec3u(2u))].vp.w;
+ if(all(q>=P.editLo) && all(q<=P.editHi)) { let d=results[weatherIndex(q)].airDelta.w; if(d!=0.0) { *moved=true; } pa+=d; }
+ return pa/${LEGACY_PRESSURE_PA};
+}
+fn wPressureBreak(p: vec3i, r: WeatherResult) -> i32 {
+ let id=u32(r.before.x); if(r.after.x!=r.before.x || r.motion.w!=0.0 || cls(id)!=1u) { return -1; }
+ let into=wBreakInto(id); if(into<0 || !mAirPressure()) { return -1; }
+ var moved=r.airDelta.w!=0.0; var dP=0.0;
+ for(var a=0u;a<3u;a++) { var e=vec3i(0); e[a]=1; dP=max(dP,abs(wCellPressure(p+e,&moved)-wCellPressure(p-e,&moved))); }
+ if(!moved || dP<=wBreakP(id)) { return -1; }
+ return into;
+}
+`;
 export const NATIVE_WEATHER_SCRUB = `if(P.scrub!=0u && decoOf(s)!=0u && (cid(m.core)==0u || cid(m.core)!=cid(before.core))) { setDeco(s,0u); }`;
 // spec.speedSI: m/s per authored cell/step (default WEATHER_SPEED_SI, TPT's 240 Hz step).
 export function nativeWeatherEvaluateWGSL(g, spec, params) {
@@ -114,10 +142,18 @@ if(!mAirVelocity()) { delta=vec4f(0,0,0,delta.w); }
 if(!mAirPressure()) { delta.w=0.0; }
 if(any(delta!=vec4f(0))) { let k=brickId(b); air[k].vp+=delta; air[k].thermal.z=0.0; noteAir(k); markBusy(b*4); }
 `);
-  return head + weatherMain(`if(i>=weatherCount()) { return; }
+  return head + V1_PRESSURE_BREAK_WGSL + weatherMain(`if(i>=weatherCount()) { return; }
 let p=weatherCell(i); let s=slotOf(p); let r=results[i];
 let before=loadMaterial(s); var m=before;
 let id=u32(r.after.x);
+// V1's pressure break (V1_PRESSURE_BREAK_WGSL): the debris, energy-exact, at rest where it broke
+let broke=wPressureBreak(p,r);
+if(broke>=0) {
+ var debris=before; debris.core.x=(debris.core.x&0xffffff00u)|u32(broke);
+ if(cls(u32(broke))==2u) { debris.core=setFall(debris.core,0.0,0.0); }
+ if(energyFits(debris,energyOf(before))) { storeMaterial(s,before,withEnergy(debris,energyOf(before)));markBusy(p); }
+ return;
+}
 if(r.before.x!=r.after.x) {
  // Only a genuinely new source cell gets fresh fill/bank/seed.
  m=makeMaterial(id,r.after.y,FULLU,u32(floor(r.after.w)));

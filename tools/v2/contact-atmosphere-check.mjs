@@ -8,14 +8,25 @@ import { offsetOf } from '../../src/v2/physics.js';
 import { edgeCell } from '../../src/v2/modes.js';
 import { EDGE } from '../../src/simModes.js';
 import { gridLayout } from '../../src/sim.js';
-import { V2_KERNELS, V2_CONTACT_LAYOUT, V2Params, v2SupportWGSL, v2ActLayout } from '../../src/shaders/v2.js';
-import { contactWGSL } from '../../src/shaders/v2/contact.js';
+import { V2_KERNELS, V2_CONTACT_LAYOUT, V2Params, v2SupportWGSL, v2ActLayout, v2BlockWGSL } from '../../src/shaders/v2.js';
+import { contactWGSL, outsideFacesWGSL } from '../../src/shaders/v2/contact.js';
+import { PHYS } from '../../src/physics.js';
+import { legacyPressureToPa } from '../../src/v2/pressure.js';
 import { LAYOUT } from '../../src/shaders/common.js';
 import { modeWGSL } from '../../src/shaders/v2/modes.js';
 const cell = (id, T = ELEMENTS[id].temp) => C.ctNew(id, Math.round((T + 273.25) * 4), 65536);
 const owned = (...ids) => ids.map(id => cell(id));
 const wood = cell(E.WOOD, 450); wood.burning = 1;
 const closed = owned(E.WOOD, E.WOOD, E.WOOD);
+// V1 react.js re-tests combustion every step: below its ignition point a lit fuel goes out, air or no air,
+// and without a flame face past its flash point it never lights (no flame-touch or hot-front ignition)
+{
+  const cooled = cell(E.WOOD, 280); cooled.burning = 1;
+  const out = C.ctStepAtmosphere(cooled, owned(E.EMPTY, E.EMPTY, E.EMPTY), 1, 3, 0, 0, 3, 0, C.contactAmbientQ(20));
+  assert.equal(out.burning, 0, 'cooled under ignition: out'); assert.equal(out.life, cooled.life, 'cooled: no fuel spent');
+  for (const source of [cell(E.FIRE, 1000), Object.assign(cell(E.WOOD, 1000), { burning: 1 }), Object.assign(cell(E.OIL, 1000), { burning: 1 })])
+    for (let seed = 0; seed < 2000; seed++) assert.equal(C.ctStepAtmosphere(cell(E.WOOD, 20), [source, cell(E.EMPTY), cell(E.WALL)], seed, 3, 0, 0, 3, 0, C.contactAmbientQ(20)).burning, 0, 'cold wood beside a flame or burning fuel');
+}
 const step = (ns, out, input = wood) => C.ctStepAtmosphere(input, ns, 1, ...out, 0, C.contactAmbientQ(20));
 const extinguished=C.ctStep(wood, closed, 1);
 assert.equal(extinguished.burning, 0, 'closed six faces extinguish');
@@ -44,6 +55,78 @@ for (const id of [E.CLOUD,E.PLANT,E.FUNGUS,E.MOSS,E.ICE,E.WATER,E.DUST]) {
   assert.deepEqual(step(closed,[3,0,0,3],c), C.ctStep(c,closed,1), ELEMENTS[id].key);
 }
 console.log('Atmosphere: six-face extinction, true CO2 fraction, O2/FIRE-O2, unchanged sampled rules');
+
+// The outside word (contact.js CT_OUT_*, the support pass's): what V1 react.js reads on the three faces a
+// cell's block partners don't show it, so its six-face rules see six faces every tick.
+const outWord = (...ids) => C.contactOutsideWord(ids.map(id => (id === null ? null : C.packContact(typeof id === 'number' ? cell(id) : id).core)));
+const atmo = (input, partners, word, seed = 1, outside = [0, 0, 0, 0]) => C.ctStepAtmosphere(input, partners, seed, ...outside, 0, C.contactAmbientQ(20), 0, 0, word);
+{
+  // RX-2: V1 dampOf over six faces, every step. A grower's damp is DAMP_REACH beside water and one less than its
+  // dampest grower neighbour, wherever they are: for every split of its six faces into partners and outside
+  // (every block offset), the damp is V1's. Before: partners only, so it flickered (damp.mjs: wet 0.62 at 1 cell).
+  const reach = C.CONTACT_DAMP_REACH, mossAt = d => { const m = cell(E.MOSS, 20); m.ctype = d; return m; };
+  const v1Damp = faces => Math.max(0, ...faces.map(f => (f.id === E.WATER ? reach : f.id === E.MOSS || f.id === E.FUNGUS ? C.ctGrowerDamp(f.id, f.ctype) - 1 : 0)));
+  const sets = [[cell(E.WATER), cell(E.STONE), cell(E.EMPTY), cell(E.EMPTY), cell(E.STONE), cell(E.STONE)],
+    [mossAt(3), cell(E.STONE), cell(E.EMPTY), mossAt(1), cell(E.STONE), cell(E.STONE)],
+    [mossAt(2), mossAt(4), cell(E.EMPTY), cell(E.EMPTY), cell(E.STONE), cell(E.SALTWATER)]];
+  for (const six of sets) for (let o = 0; o < 8; o++) {
+    // axis a: its partner the face 2a + bit a of the pattern, the other one outside
+    const partners = [0, 1, 2].map(a => six[2 * a + ((o >> a) & 1)]), outside = [0, 1, 2].map(a => six[2 * a + 1 - ((o >> a) & 1)]);
+    const word = C.contactOutsideWord(outside.map(c => C.packContact(c).core));
+    assert.equal(atmo(mossAt(0), partners, word).ctype, v1Damp(six), `moss damp, pattern ${o}`);
+    const f = cell(E.FUNGUS, 20);
+    assert.equal(atmo(f, partners, word).ctype, v1Damp(six), `fungus damp, pattern ${o}`);
+  }
+  // dry above DAMP_DRY_T, whatever the outside holds
+  assert.equal(atmo(mossAt(4), [cell(E.STONE), cell(E.STONE), cell(E.STONE)], outWord(E.WATER, null, null), 1).ctype, 4, 'cool moss beside water');
+  assert.equal(atmo({ ...mossAt(4), tq: C.CONTACT_DAMP_DRY_Q, raw: C.CONTACT_DAMP_DRY_Q }, [cell(E.STONE), cell(E.STONE), cell(E.STONE)], outWord(E.WATER, null, null)).ctype, 0, 'hot moss dries');
+  // cedar-leaf moss keeps its look outside too (appearance.js: CEDAR_BASE + damp)
+  const cedar = mossAt(C.CONTACT_CEDAR_BASE + 3);
+  assert.equal(atmo(mossAt(0), [cell(E.STONE), cell(E.STONE), cell(E.STONE)], outWord(cedar, null, null)).ctype, 2);
+}
+{
+  // BL-14: a dust cloud's dust and air faces are six (V1 react.js nFuel >= DUST_MEC_NB, nAir >= DUST_RICH_AIR)
+  const dust = cell(E.DUST, 500); dust.fallSpeed = C.DUST_MIN_FALL_SPEED * 2;
+  const goes = (partners, word) => (atmo(dust, partners, word).request & 1) !== 0;
+  assert.ok(goes([cell(E.EMPTY), cell(E.EMPTY), cell(E.STONE)], outWord(E.DUST, null, null)), 'its dust face outside its block');
+  assert.ok(!goes([cell(E.EMPTY), cell(E.EMPTY), cell(E.STONE)], 0), 'no dust face: no cloud');
+  assert.ok(goes([cell(E.DUST), cell(E.EMPTY), cell(E.STONE)], outWord(E.EMPTY, null, null)) && !goes([cell(E.DUST), cell(E.STONE), cell(E.STONE)], outWord(E.STONE, null, null)), 'two air faces of six');
+  assert.ok(goes([cell(E.DUST), cell(E.STONE), cell(E.STONE)], outWord(E.EMPTY, E.EMPTY, null)), 'both air faces outside');
+  // a flame face is no air to it (V1 nAir counts air cells), though it lights it
+  const cool = cell(E.DUST, 20); cool.fallSpeed = dust.fallSpeed;
+  assert.ok(!(atmo(cool, [cell(E.DUST), cell(E.FIRE, 900), cell(E.STONE)], outWord(E.EMPTY, null, null)).request & 1), 'one air face and a flame: not rich enough');
+  assert.ok(atmo(cool, [cell(E.DUST), cell(E.FIRE, 900), cell(E.EMPTY)], outWord(E.EMPTY, null, null)).request & 1, 'two air faces and a flame: it goes');
+}
+{
+  // RX-10: V1 react.js adds pressure only where its rule sets gas free. Acid eating limestone: puffP(FIZZ) on the
+  // eaten cell (CONTACT_ROWS fizz, Pa), as its GAS request's puff; eating stone, none; matter becoming gas
+  // with no puff of its own (acid's smoke, a reaction's smoke), none (before: a plain GAS request, 47.85 Pa).
+  const eat = victim => {
+    for (let seed = 0; seed < 4000; seed++) { const r = C.ctAcidFizz(cell(E.ACID), cell(victim), seed); if (r.changed && r.b.id !== victim) return r.b; }
+    throw Error('never ate');
+  };
+  const lime = eat(E.LIMESTONE);
+  assert.equal(lime.request & 2, 2); assert.equal(Math.floor(lime.request / C.CONTACT_PUFF_UNIT), C.ctRow(E.LIMESTONE).fizz);
+  assert.equal(C.ctRow(E.LIMESTONE).fizz, Math.max(1, Math.round(legacyPressureToPa(PHYS.STEAM_BOIL_PUFF * ELEMENTS[E.LIMESTONE].fizz / PHYS.STEAM_EXPANSION))));
+  for (let k = 0; k < 20; k++) assert.equal(eat(E.STONE).request, 0, 'stone eaten: no pressure');
+  const smoke = C.ctInherit(C.ctNew(E.SMOKE, cell(E.WOOD).tq, 65536), cell(E.WOOD));
+  assert.equal(smoke.request, 0, 'matter turned gas: no request of its own');
+}
+{
+  // TH-13: with a void edge every face past the grid is still air at ambient (V1 react.js VOID_AIR_A), the
+  // floor's too: the block pass's open-face count, run as JS, and ctBoundary taking up to six.
+  const block = v2BlockWGSL(gridLayout(16, 16, 16), contactWGSL);
+  const expr = block.match(/let open=([^;]+);/)[1].replace(/u32\(([^()]+)\)/g, 'Number($1)').replace(/==/g, '===');
+  const open = new Function('p', 'NX', 'NY', 'NZ', `return ${expr};`);
+  const N = 16, P = (x, y, z) => ({ x, y, z });
+  assert.equal(open(P(5, 0, 5), N, N, N), 1, 'the floor is open past a void edge');
+  assert.equal(open(P(0, 0, 0), N, N, N), 3); assert.equal(open(P(5, N - 1, 5), N, N, N), 1); assert.equal(open(P(5, 5, 5), N, N, N), 0);
+  assert.ok(block.includes('if (P.edge==1u && mAirHeat()) {'), 'void edges only');
+  const hot = cell(E.STONE, 500), one = C.ctBoundary(hot, 1, C.contactAmbientQ(20));
+  const six = C.ctBoundary(hot, 6, C.contactAmbientQ(20));
+  assert.equal(C.ctEnergy(hot) - C.ctEnergy(six), 6n * (C.ctEnergy(hot) - C.ctEnergy(one)), 'six open faces: six faces of exchange');
+}
+console.log('Outside word: six-face damp (every offset), dust faces, puffs only where V1 sets gas free, void floor open');
 
 const off8 = i => [i&1,i>>2,(i>>1)&1];
 const plus = (a,b) => a.map((x,i)=>x+b[i]);
@@ -129,10 +212,12 @@ function replay(reverse=false) {
     }
     assert.equal(totalEnergy()+sinks-sources,energyBefore,`tick ${tick} exact ledger`);
     const burning=hot.map(s=>(cores[s][1]>>>24)&1);
-    if(tick===3)tick3=burning;
+    if(tick===1)tick3=burning;
     burningTicks+=burning.reduce((n,v)=>n+v,0);
   }
-  assert.deepEqual(tick3,[1,1,1,1],'all four hot edge cells remain burning on tick 3');
+  // V1 react.js re-tests burning every step: a hot edge cell burns from its first tick, and one its cold
+  // neighbours cool under the ignition point goes out until its burning neighbours heat it back
+  assert.deepEqual(tick3,[1,1,1,1],'all four hot edge cells burn on tick 1');
   for(let i=0;i<4;i++)assert((cores[hot[i]][1]&65535)<initialLife[i],'fuel spent');
   // This replay runs contact alone: no R4 gas motion lifts the flames' smoke
   // (V1 FIRE_TO_SMOKE, SMOKE_FADE ~1.4 s), so it takes a fuel cell's air faces
@@ -161,7 +246,28 @@ assert(support.includes('liquidScratch[s].x=(liquidScratch[s].x&0xfffffc00u)'));
 // its clone faces outside the block, for the clone rule's share (contact.js CT_CLONE_MISS_LOG), and the block reads them
 assert(support.includes(`if((id==${E.CLONE}u || (id==${E.PCLN}u && payloadOf(n)==${10 * 2048}u)) && ctypeOf(n)>0u){clone++;}`));
 assert(support.includes('|(gas<<6u)|(clone<<8u);'));
-assert(contactWGSL.includes('let outside=liquidScratch[slotOf(positions[i])].x&1023u;') && contactWGSL.includes(',touch,i32(outside>>8u));'));
+assert(contactWGSL.includes('let outside=liquidScratch[slotOf(positions[i])].x&1023u;') && contactWGSL.includes(',touch,i32(outside>>8u),faces);'));
+// the outside word (contact.js CT_OUT_*): support writes .y whole from its three outside faces, the block reads it
+assert(support.includes('faces=ctOutsideFace(faces,n,inGrid(q),u32(axis));') && support.includes('liquidScratch[s].y=faces;'));
+assert(contactWGSL.includes('let faces=i32(liquidScratch[slotOf(positions[i])].y)+up*CT_OUT_UP;'));
+// The emitted ctOutsideFace, run as JS over every element and ctype, is the CPU twin's contactOutsideWord.
+{
+  const text = outsideFacesWGSL.slice(outsideFacesWGSL.indexOf('fn ctOutsideFace('));
+  const js = text.replace(/^fn ctOutsideFace\(word:u32,n:vec4u,present:bool,axis:u32\)->u32 \{/, 'return (word,n,present,axis)=>{')
+    .replace(/\/\/[^\n]*/g, '').replace(/\b(let|var) /g, 'let ').replace(/(\d+)u\b/g, '$1')
+    .replace(/\(w\/(\d+)\)%(\d+)/g, '(Math.floor(w/$1)%$2)').replace(/w\|=(\d+)<<axis/g, 'w=(w|($1<<axis))>>>0');
+  const face = new Function('cid', 'clsOf', 'ctypeOf', 'C_AIR', 'C_GAS', js)(n => n[0] & 255, n => ELEMENTS[n[0] & 255].kind, n => C.unpackContact(n).ctype, K.EMPTY, K.GAS);
+  let compared = 0;
+  for (const e of ELEMENTS) for (const ctype of [0, 1, 2, 3, 4, 5, C.CONTACT_CEDAR_BASE, C.CONTACT_CEDAR_BASE + 2, C.CONTACT_CEDAR_BASE + 4]) for (let axis = 0; axis < 3; axis++) {
+    if (ctype && e.kind === K.EMPTY) continue;
+    const core = C.packContact({ ...cell(e.id), ctype }).core, faces = [null, null, null]; faces[axis] = core;
+    const prior = C.contactOutsideWord([null, null, null].map((_, a) => (a === (axis + 1) % 3 ? makeMaterial(E.WATER).core : null)));
+    assert.equal(face(prior, core, true, axis), C.contactOutsideWord(faces.map((f, a) => f ?? (a === (axis + 1) % 3 ? makeMaterial(E.WATER).core : null))), `${e.key} ctype ${ctype} axis ${axis}`);
+    assert.equal(face(prior, core, false, axis), prior, 'beyond the grid: nothing');
+    compared++;
+  }
+  assert(compared > 1000);
+}
 assert(!contactWGSL.slice(contactWGSL.indexOf('fn contactBlock(')).includes('loadCore('));
 assert(contactWGSL.includes('ctStepAtmosphere(cells[i],ns,'));
 assert.equal(V2_KERNELS.find(k=>k.name==='v2support').layouts()[2],V2_CONTACT_LAYOUT);

@@ -1,7 +1,7 @@
 import { fold } from '../gpu/kernels.js';
 import { nativeDynamicsHead } from '../shaders/v2.js';
 import { nativeModes } from './modes.js';
-import { nativeWeatherParams, nativeWeatherEvaluateWGSL, nativeWeatherCommitWGSL, NATIVE_WEATHER_COMMIT_LAYOUT, scratchWGSL, boxWGSL, weatherMain, WEATHER_SPEED_SI } from './nativeWeather.js';
+import { nativeWeatherParams, nativeWeatherEvaluateWGSL, nativeWeatherCommitWGSL, NATIVE_WEATHER_COMMIT_LAYOUT, scratchWGSL, boxWGSL, weatherMain, WEATHER_SPEED_SI, V1_PRESSURE_BREAK_WGSL } from './nativeWeather.js';
 import { STAGE } from '../gpu/kernels.js';
 import { SEED_MAX } from '../shaders/common.js';
 const binding=(n,read=false)=>({binding:n,visibility:STAGE.COMPUTE,buffer:{type:read?'read-only-storage':'storage'}});
@@ -102,10 +102,13 @@ fn forcePacketHeat(m: Material, r: WeatherResult) -> Material {
  if(!packetEnergyFits(m,e)) { return m; }return withPacketEnergy(m,e);
 }
 `;
-  if(stage==='plan') return head+weatherMain(`if(i>=weatherCount()) { return; }
+  // (V1's pressure break: a solid the update left as it was, cracked by the pressure it wrote beside it,
+  // nativeWeather.js V1_PRESSURE_BREAK_WGSL, a fracture as apply renames one)
+  if(stage==='plan') return head+V1_PRESSURE_BREAK_WGSL+weatherMain(`if(i>=weatherCount()) { return; }
 let p=weatherCell(i);let s=slotOf(p);let r=results[i];let before=loadMaterial(s);
 let id=cid(before.core);let k=cls(id);var flags=0u;${sources}${renameNow}${vaporise}
 if(r.before.x!=r.after.x) { flags=2u|(u32(r.after.x)<<8u); }
+else { let broke=wPressureBreak(p,r); if(broke>=0) { flags=2u|(u32(broke)<<8u); } }
 if((k==2u || k==3u || flags!=0u) && r.motion.w!=0.0) { flags|=1u; }
 ${opts.motion?.flags ?? ''}${opts.sparse?'if(flags!=0u) { ':''}plans[s]=ForcePlan(${opts.motion?.velocity ?? `r.motion.xyz*${SI}`},flags);${opts.sparse?' }':''}
 ${opts.life?'var':'let'} after=forceHeat(before,r);${life}

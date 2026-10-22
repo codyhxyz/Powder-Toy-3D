@@ -29,6 +29,7 @@ let js=branch.replace(/\/\/[^\n]*/g,'').replaceAll(ambientExpression,'ambientQ(P
   .replace('cs[0].x','cs[0][0]').replace('vec4u(rawTq << 8u, 0u, 0u, 0u)','[rawTq << 8u, 0u, 0u, 0u]')
   .replace('any(cs[k] != canonicalAir)','cs[k].some((v,j)=>v!==canonicalAir[j])')
   .replaceAll('mAirHeat()','airHeat(P)').replaceAll('inGrid(positions[k])','valid(positions[k])')
+  .replaceAll('ctOutsideMossSite(ctOutsideAt(slotOf(positions[k])))','site(k)')
   .replaceAll('var ','let ').replace(/\b(\d+)u\b/g,'$1').replace('if (zeroWork) { return; }','return zeroWork;');
 // WGSL round permits either result at a half-integer: prove BOTH, not Math.round.
 const f=Math.fround;
@@ -42,12 +43,12 @@ const heatSource=modeWGSL.match(/fn mAirHeat\(\) -> bool \{ return ([^;]+); \}/)
 assert(heatSource,'use actual production air-heat mode gate');
 const airHeat=new Function('P',`return ${heatSource.replace(/\b(\d+)u\b/g,'$1')};`);
 const valid=p=>p.every((x,a)=>x>=0&&x<dims[a]);
-const predicate=new Function('cs','bs','positions','pending','P','blockCount','tie','ambientQ','airHeat','valid',js);
+const predicate=new Function('cs','bs','positions','pending','P','blockCount','tie','ambientQ','airHeat','valid','site',js);
 const positions=Array.from({length:8},(_,i)=>[6+(i&1),6+(i>>2),6+((i>>1)&1)]);
 const air=q=>Array.from({length:8},()=>new Uint32Array([q<<8,0,0,0]));
 const modes={edge:EDGE.SOLID,airMode:AIR.ON,ambientHeat:1,ambient:20};
 const zero=new Uint32Array(8), banks=new Int32Array(8);
-const eligible=(cores=air(1173),bs=banks,ps=positions,pending=zero,P=modes,count=8,tie=0)=>predicate(cores,bs,ps,pending,P,count,tie,ambientQ,airHeat,valid);
+const eligible=(cores=air(1173),bs=banks,ps=positions,pending=zero,P=modes,count=8,tie=0,site=()=>false)=>predicate(cores,bs,ps,pending,P,count,tie,ambientQ,airHeat,valid,site);
 assert(eligible()); assert(!eligible(air(1173),banks,positions,zero,modes,7));
 assert.equal(E.EMPTY,0); assert.equal(ELEMENTS[E.EMPTY].kind,K.EMPTY);
 
@@ -210,4 +211,15 @@ assert.equal(minified.v2BlockWGSL(g,contactWGSL),shader,'production minification
 assert(!minified.v2BlockWGSL(g,contactWGSL+'\n').includes('var zeroWork'));
 assert.deepEqual(wgslGroupingErrors(shader),[]);
 assertNaga(shader,'block');
+// The support pass's outside word (contact.js CT_OUT_*): uniform air with any word but a moss site is still
+// zero work (V1's moss creeps into air from damp moss and a bed on faces of different axes; nothing else in it
+// moves air whose partners are air), and with one it is not: the predicate's site(k) guard.
+{
+  const K=C.CONTACT_CONSTANTS, wet=K.CT_OUT_WET_MOSS[1], bedU=K.CT_OUT_BED[1];
+  const words=[0, K.CT_OUT_FIRE[1]*3, K.CT_OUT_EMPTY[1]*3, K.CT_OUT_CLOUD[1]*2+K.CT_OUT_DUST[1], K.CT_OUT_DAMP[1]*4, K.CT_OUT_SURFACE[1]*3, wet, bedU*7, wet*2+bedU*2];
+  for(const w of words) proveContact(1173,5,positions,Array(8).fill(true),Array.from({length:8},()=>[3,0,0,3,0,w]),atAmbient(1173));
+  const grows=C.contactReference(air(1173),new Int32Array(8),5,positions,zero,Array(8).fill(true),Array.from({length:8},(_,i)=>i===3?[3,0,0,3,0,wet*1+bedU*2]:[3,0,0,3]),atAmbient(1173));
+  assert(grows.busy.includes(3),'an air cell beside damp moss and rock outside its block is awake: moss may creep into it');
+  assert(branch.includes('ctOutsideMossSite(ctOutsideAt(slotOf(positions[k])))'),'the identity reads the site');
+}
 console.log('Full minified production block byte-identical; CPU Naga and Chromium expression grouping valid; no GPU');

@@ -60,13 +60,6 @@ const world = {
     startWorldFrameView(app, scene);
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene });
     sim.origin.fromArray(world.worldStart(app));
-    sim.onWorldHistoryRestore = (dx, dz) => {
-      if (app.sim !== sim || app.win !== win) return;
-      app.placeVolume(); app.pov?.windowShifted(dx, dz);
-      app.hover.cell.x -= dx; app.hover.cell.z -= dz;
-      if (app.hover.valid && !app.inWindow(app.hover.cell)) app.hover.valid = false;
-      app.pacer?.wake();
-    };
     sim.resetNativeDynamics(); // initial native air coordinates match the world before any tick
     // Preserve the original cumulus deck and its optical shadows without
     // constructing the retired Far textures, kernels or detail queue.
@@ -79,7 +72,6 @@ const world = {
     far.buildView().then(() => app.pacer?.wake(), () => {});
   },
   detach(app) {
-    app.sim.onWorldHistoryRestore = null;
     releaseGenerator(app.sim);   // the Island scene's, made for this grid
     const win=app.win;
     app.win = null;
@@ -166,11 +158,14 @@ const world = {
   loadIsland(app) {
     if (app.mp.replica) return null;
     const sim = app.sim, t = world._islandLoad = { sim, mark: sim.history.at(-1) ?? null };
+    // A new scene over the box's cells, as sim.load replaces them: V2's flying matter, air and
+    // pending requests start over with it (V1's moving state is in the cells the fill replaced).
+    // In the same task as the fill, so no tick runs between them.
     t.done = loadIsland(sim, {
       seed: app.worldSeed,
       still: () => world._islandLoad === t && app.sim === sim && app.settings.preset === 'island' && !app.win
         && (t.mark === null || sim.history.includes(t.mark)),
-    });
+    }).then((P) => { if (P) sim.resetNativeDynamics(); return P; });
     t.done.catch(() => {});   // (a pipeline that fails stops graphics: stopGraphics says why)
     return t.done.catch(() => null);
   },
@@ -305,8 +300,32 @@ const world = {
       app.pacer?.wake();
       return [dx, dz];
     };
-    if (move.then) { move.then(committed, error => app.hud?.toast?.(error.message, { kind: 'error' })); return null; }
+    // (a move that commits later, if a window ever makes one, is returned as its promise: a streaming
+    // loop waits for it instead of taking it for the window having arrived)
+    if (move.then) {
+      const done = move.then(committed);
+      done.catch(error => app.hud?.toast?.(error.message, { kind: 'error' }));
+      return done;
+    }
     return committed(move);
+  },
+
+  // Stream the window onto the focus the caller has set (villageFocus, worldFocus) before a body drops
+  // in there: each move commits in the frame, under either engine; the next waits for the last one's
+  // leaving slab and, under V2, for the window's pipelines (WorldWindow.blocker), so a move that can't
+  // be made yet is never taken for arrival (Animal Crossing's home, Cruelty Squad's spawn). Bounded:
+  // a finite world crosses in a known number of moves. Resolves once no move is left (or alive() fails).
+  async streamToFocus(app, alive = () => true) {
+    const win = app.win;
+    if (!win) return;
+    const limit = Math.ceil((win.size[0] + win.size[2]) / WIN_STEP) + 4;
+    for (let i = 0; i < limit && alive() && app.win === win; i++) {
+      for (let n = 0, wait; n < limit && (wait = win.blocker?.()); n++) await wait;
+      if (!alive() || app.win !== win) return;
+      const moved = world.moveWindow(app);
+      if (!moved) return;
+      await moved;
+    }
   },
 };
 

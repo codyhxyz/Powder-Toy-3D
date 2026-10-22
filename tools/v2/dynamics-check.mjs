@@ -5,7 +5,9 @@ import { E } from '../../src/elements.js';
 import { gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { AIRBORNE_COLOURS } from '../../src/v2/airborne.js';
-import { PARTICLE_CAP, DT, CELL_M, AIR, GRAVITY, packParticle, unpackParticle, ballistic, sweep,
+import { windowMoveReference } from './window-move-reference.mjs';
+import { brickIdOf } from '../../src/shaders/common.js';
+import { PARTICLE_CAP, DT, CELL_M, AIR, V1_AIR, GRAVITY, packParticle, unpackParticle, ballistic, sweep,
   stableId, resolveDeposits, allocateSources, impact, blastPlan, exchangeScalar, airSource, airQuiet } from '../../src/v2/dynamics-reference.js';
 const close=(a,b,e=1e-9)=>assert.ok(Math.abs(a-b)<=e,`${a} != ${b}`);
 const matter=(id=E.SAND)=>({core:[id|(1173<<8)|0xaa000000,0xfedcba98,0x3f400000,0xcdefabcd].map(x=>x>>>0),bank:-123456789});
@@ -72,9 +74,9 @@ test('conservative face diffusion/advection retains gas and heat and stays posit
     assert.ok(values.every(v=>Number.isFinite(v)&&v>=-1e-12)); close(values.reduce((s,v)=>s+v,0),100,1e-9);
   }
 });
-test('air acoustic+transport CFL is stable with fixed substeps; sources are finite',()=>{
-  const acoustic=3*AIR.sound*(DT/AIR.substeps)/AIR.edge;
-  assert.ok(acoustic+6/12+6*AIR.diffusion*(DT/AIR.substeps)/AIR.edge**2<1);
+test('air transport CFL and V1 pressure diffusion are stable with fixed substeps; sources are finite',()=>{
+  assert.ok(6/12+6*AIR.diffusion*(DT/AIR.substeps)/AIR.edge**2<1);
+  assert.ok(6*V1_AIR.diffuse<1,'V1 pressure diffusion on bricks is a weighted mean');
   let a={pressure:0,gas:0,velocity:[0,0,0],quiet:8}; a=airSource(a,1);
   close(a.pressure,AIR.gasPressure); close(a.gas,1/64); assert.equal(a.quiet,0);
   assert.deepEqual(airSource(a,0),a);
@@ -93,7 +95,9 @@ function mockOwner() {
   const copy=(b,offset,src)=>{ const u=src instanceof ArrayBuffer?new Uint8Array(src):new Uint8Array(src.buffer,src.byteOffset,src.byteLength);new Uint8Array(b.bytes).set(u,offset); };
   const gpu={createBuffer:({size,label})=>{const b={size,label,bytes:new ArrayBuffer(size),destroy(){this.destroyed=true;}};buffers.push(b);return b;},
     queue:{writeBuffer:copy},write:copy,layout:(_name,l)=>l,bindGroup:(_l,b)=>b,
-    kernel:d=>({name:d.name,ready:Promise.resolve(),dispatch:(frame,size,opts)=>{d.params.pack(opts.params);calls.push({name:d.name,size,opts});}}),
+    kernel:d=>({name:d.name,ready:Promise.resolve(),dispatch:(frame,size,opts)=>{d.params.pack(opts.params);calls.push({name:d.name,size,opts});
+      // a World window move's dynamics (shaders/v2/windowMove.js) runs its independent CPU reference
+      if(d.name==='v2window_move') windowMoveReference(g,b=>new Uint32Array(b.bytes),opts.bind,opts.params);}}),
     frame:{clear:(b,offset=0,size=b.size-offset)=>new Uint8Array(b.bytes,offset,size).fill(0),
       copy:(src,offset,dest,to,size)=>new Uint8Array(dest.bytes,to,size).set(new Uint8Array(src.bytes,offset,size))},
     readback:{buffer:(b,offset,size)=>{calls.push({read:b.label});return Promise.resolve(b.bytes.slice(offset,offset+size));}}};
@@ -109,7 +113,7 @@ test('driver records real pipeline families, one batch of up to 64 bricks, and s
   // one batch a tick serves every charge of up to blastBatch (64) bricks together (V1 react.js: no cap)
   assert.equal(calls.filter(c=>c.name==='v2blasts_finishCharges').length,1);
   assert.equal(calls.filter(c=>c.name==='v2blasts_pick').length,1); assert.equal(d.blastBatch,64);
-  assert.equal(calls.filter(c=>c.name==='v2air_step').length,8);
+  assert.equal(calls.filter(c=>c.name==='v2air_step').length,AIR.substeps,'one air substep a V1 step');
   assert.equal(calls.filter(c=>c.name==='v2particles_integrate').length,1);
   assert.equal(d.renderState.particleBytes,48); assert.equal(d.renderState.particles,d.particles);
   assert.equal(d.applyToolImpulse({kind:'nonsense',position:[0,0,0]}).status,'rejected');
@@ -144,12 +148,29 @@ test('window shift preserves world-space particles, exact archived air and oblig
   const p={id:53,position:[1,2,3],velocity:[0,0,0],...matter()};owner.gpu.write(d.particles,0,packParticle(p));
   const a=new Float32Array(d.air[0].bytes);a[0]=3;a[4]=321;
   new Uint32Array(owner.events.bytes)[0]=4;
-  await d.shiftWindow([16,0,0]);
+  await d.shiftWindow([16,0,0]).settled;
   assert.deepEqual(unpackParticle(d.particles.bytes),p);assert.equal(d.pendingOutside.size,1);
-  await d.shiftWindow([-16,0,0]);
+  await d.shiftWindow([-16,0,0]).settled;
   assert.equal(new Float32Array(d.air[0].bytes)[0],3);assert.equal(new Float32Array(d.air[0].bytes)[4],321);
   assert.equal(new Uint32Array(owner.events.bytes)[0],4);assert.equal(d.pendingOutside.size,0);
-  await assert.rejects(d.shiftWindow([1,0,0]),/brick-aligned/);
+  assert.throws(()=>d.shiftWindow([1,0,0]),/brick-aligned/);
+});
+test('a window move is made in the call; its leaving slab lands later, and a snapshot taken meanwhile holds it',async()=>{
+  const {owner}=mockOwner(),d=new NativeDynamics(owner);await d.ready;const g=d.g;
+  const a=new Float32Array(d.air[0].bytes);a[brickIdOf(g,0,0,0)*8]=5;a[brickIdOf(g,1,0,0)*8]=9;
+  // the move runs on the buffers and its own kernel, built with the grid: also while the rest still build
+  d.isReady=false;assert.equal(d.windowReady,true);
+  const moved=d.shiftWindow([4,0,0]);
+  assert.equal(new Float32Array(d.air[0].bytes)[brickIdOf(g,0,0,0)*8],9,'the air moves with its cells at once');
+  assert.equal(new Float32Array(d.air[1].bytes)[brickIdOf(g,0,0,0)*8],9);
+  assert.equal(new Float32Array(d.air[0].bytes)[brickIdOf(g,3,0,0)*8+6],AIR.quietTicks,'an uncovered brick is quiet');
+  assert.deepEqual(d.origin,[4,0,0]);assert.equal(d.airArchive.size,0,'(its leaving slab is still being read)');
+  const snapshot=d.snapshotDynamicState();
+  await moved.settled;assert.equal(d.airArchive.size,1,'only air that differs from quiet is archived');assert(d.airArchive.has('0,0,0'));
+  assert((await snapshot).airArchive.some(e=>e.worldCell.join(',')==='0,0,0'),'a snapshot taken before the landing holds it');
+  await d.shiftWindow([-4,0,0]).settled;
+  assert.equal(new Float32Array(d.air[0].bytes)[brickIdOf(g,0,0,0)*8],5,'and it comes back');assert.equal(d.airArchive.size,0);
+  d.windowReady=false;assert.throws(()=>d.shiftWindow([4,0,0]),/not built/,'not before its own kernel is');
 });
 test('one particle, even outside the window, prevents false idle',async()=>{
   const {owner}=mockOwner(),d=new NativeDynamics(owner);await d.ready;
@@ -209,7 +230,8 @@ test('actual generated shaders carry the reference conservation and numeric guar
   assert.match(blastsWGSL(g,nativeDynamicsHead,'select'),/energyFits\(dProduct\(m\),dProductEnergy\(m\)\)/);
   assert.match(particlesWGSL(g,nativeDynamicsHead,'integrate'),/crossedLimit/);
   const tool=airWGSL(g,nativeDynamicsHead,'tool');assert.doesNotMatch(tool,/P\.strength\*D_DT/);
-  assert.match(airWGSL(g,nativeDynamicsHead,'step'),/open\*before\.vp\.w\/A_RHO\*A_DT\/A_DX/);
+  // V1's air law (pressure.js V1_AIR): the front spread once a tick, walls reflecting, clamped to [P_MIN, P_MAX]
+  assert.match(airWGSL(g,nativeDynamicsHead,'step'),/clamp\(max\(own\+A_PDIFF\*lap,front\*A_FRONT\)\*A_DECAY,A_PMIN,A_PMAX\)/);
 });
 test('API rejects f32-overflow inputs; invalid particle and air words cannot partially restore',async()=>{
   const {owner}=mockOwner(),d=new NativeDynamics(owner);await d.ready;
@@ -291,7 +313,7 @@ test('3D air shock remains finite, closed-volume scalars conserve, and uniform p
   const uniform=airStepReference(initial,dims);assert.ok(uniform.every(a=>a.velocity.every(v=>Math.abs(v)<1e-12)));
   let state=initial.map((a,i)=>({...a,pressure:i===62?3000:0,heat:i===62?100:0,gas:i===62?1:0}));
   for(let n=0;n<600;n++) {
-    state=airStepReference(state,dims);
+    state=airStepReference(state,dims,{substep:n%AIR.substeps});
     assert.ok(state.every(a=>[...a.velocity,a.pressure,a.heat,a.gas].every(Number.isFinite)));
     assert.ok(state.every(a=>a.gas>=-1e-12));
   }

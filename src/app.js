@@ -887,8 +887,7 @@ async function startMode(mode, { fresh = false } = {}) {
       const homeFocus = [world.P.size[0] / 2 + VILLAGE_HOMES[0], world.P.size[2] / 2 + VILLAGE_Z];
       villageFocus = homeFocus;
       try {
-        await world.pending;
-        while (epoch === modeEpoch && win === world && wire('world')?.moveWindow(ctx)) await world.pending;
+        await wire('world')?.streamToFocus(ctx, () => epoch === modeEpoch && win === world);
         if (epoch !== modeEpoch || win !== world) return false;
         pov.village.setEnabled(true, world.P);
         if (!pov.active) await pov.enter({ valid: () => epoch === modeEpoch });
@@ -910,8 +909,7 @@ async function startMode(mode, { fresh = false } = {}) {
       villageFocus = focus;
       try {
         await world.whenReady();
-        await world.pending;
-        while (epoch === modeEpoch && win === world && wire('world')?.moveWindow(ctx)) await world.pending;
+        await wire('world')?.streamToFocus(ctx, () => epoch === modeEpoch && win === world);
         if (epoch !== modeEpoch || win !== world) return false;
       } finally { if (villageFocus === focus) villageFocus = null; }
     }

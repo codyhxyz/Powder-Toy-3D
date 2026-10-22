@@ -16,8 +16,10 @@ export function nativeCapabilities(sim) {
   const particles = tools;
   return {
     state,
-    // (and nothing held for the dynamics' build: its requests are in window cells, sim.nativePending)
-    world: state && owner.contactReady === true && tools && !sim.nativePending?.length && (typeof d?.shiftWindow === 'function' || typeof d?.shiftOrigin === 'function'),
+    // The window follows on the buffers and the move's own kernel (built with the grid), so it moves while
+    // the rest of the dynamics still build and the grid steps (src/v2/dynamics.js windowReady); nothing
+    // held for their build may be waiting, since those requests are in window cells (sim.nativePending).
+    world: state && owner.contactReady === true && d?.windowReady === true && !d.disposed && !sim.nativePending?.length && typeof d?.recordWindowShift === 'function',
     pov: state && owner.contactReady === true && tools && typeof d?.applyToolImpulse === 'function',
     physgun: tools && d?.capabilities?.physgun === true && typeof d?.applyPhysgun === 'function',
     impulse: tools && typeof d?.applyToolImpulse === 'function' && (d?.capabilities?.impulse === true || d?.supportsToolKind?.('impulse') === true),
@@ -47,7 +49,7 @@ export class NativeIntegration {
     return this.gpu.createBuffer({ label: `native ${label}`, size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
   }
   group(core, bank, other, otherBank) {
-    return this.gpu.bindGroup(this.layout, [core, bank, other, otherBank].map((buffer, binding) => ({ binding, resource: { buffer } })), 'native window');
+    return this.gpu.bindGroup(this.layout, [core, bank, other, otherBank, this.owner.act].map((buffer, binding) => ({ binding, resource: { buffer } })), 'native window');
   }
   run(name, count, group, params) {
     if (!this.isReady) throw new Error('native window pipelines are not ready');
@@ -58,47 +60,42 @@ export class NativeIntegration {
   }
   // Publish a native mutation without claiming any legacy coordinates. The
   // owner imports external edits BEFORE this call, never the lossy projection.
-  changed() {
+  // all: every brick's activity and legacy word is noted (a writer that does not note its own bricks);
+  // otherwise the writer noted them (the scatter, a restore's copy). derived: the derived passes re-age
+  // every brick (a shift's are moved by whole bricks instead: src/sim.js shift).
+  changed({ all = true, derived = true } = {}) {
     const { owner: o, sim, gpu } = this, g = sim.g;
-    const ones = new Uint32Array(g.nbricks).fill(1);
-    for (const field of ['busy0', 'busy1', 'legacy']) gpu.write(o.act, o.layout[field] * 4, ones);
-    o.noteAllCells?.(); // the scatter wrote cores behind noteState
+    if (all) {
+      const ones = new Uint32Array(g.nbricks).fill(1);
+      for (const field of ['busy0', 'busy1', 'legacy']) gpu.write(o.act, o.layout[field] * 4, ones);
+      o.noteAllCells?.(); // the scatter wrote cores behind noteState
+    }
     o.importFull = o.importMarked = false;
     o.legacyPending = o.writtenSinceTick = true;
-    sim.version++; sim.changedAll = true;
+    sim.version++; if (derived) sim.changedAll = true;
     o.seenVersion = sim.version; o.seenWhole = sim.wholeWrites;
     o.wake(); sim.wake();
   }
-  beginShift(dx, dz, commit) {
-    const { sim, owner } = this;
-    if (sim.nativeTransition) throw new Error('Native transition already pending');
-    if (!nativeCapabilities(sim).world) throw new Error('Native world dynamics unavailable');
-    owner.sync();
-    const pending = owner.dynamics.shiftWindow([dx, 0, dz]);
-    const transition = Promise.resolve(pending).then(() => {
-      if (sim.disposed || owner.disposed) throw new Error('Native world replaced during shift');
-      this.preparedShift = [dx, dz];
-      sim.nativeCommitting = true;
-      try { return commit(); } finally { sim.nativeCommitting = false; }
-    }).catch(error => { sim.nativeTransitionError = error; throw error; }).finally(() => {
-      if (sim.nativeTransition === transition) { sim.nativeTransition = null; sim.nativeTransitionKind = null; }
-      sim.wake();
-    });
-    sim.nativeTransitionKind = 'shift';
-    sim.nativeTransition = transition;
-    return transition;
-  }
+  // A World window move, recorded into the frame as V1's is (src/sim.js shift), never awaited: no tick,
+  // tool or stroke waits on it. The cores and banks move out of place; the dynamics' requests, air and
+  // shocks and the bricks' legacy words move with them (NativeDynamics.recordWindowShift), so only the
+  // bricks the move uncovers are converted again. Returns the leaving slab's landing (the window holds
+  // its next move until it has: world/window.js).
   shift(dx, dz) {
     const { owner: o, sim } = this;
     if (!nativeCapabilities(sim).world) throw new Error('native world dynamics shift is unavailable');
     o.sync();
     this.scratch ??= [this.buffer('shift cores', sim.g.slots * 16), this.buffer('shift banks', sim.g.slots * 4)];
-    if (this.preparedShift?.[0] !== dx || this.preparedShift?.[1] !== dz) throw new Error('Await native dynamics before moving core/origin');
     this.run('shift', sim.g.slots, this.group(o.cells, o.aux, ...this.scratch), { shift: [dx, 0, dz] });
+    const moved = o.dynamics.recordWindowShift([dx, 0, dz], { legacy: true });
     o.restore(...this.scratch);
-    this.preparedShift = null;
+    moved.commit();
+    return (this.landing = moved.landed);
   }
-  undo(core, bank, dx, dz) {
+  // An undo entry across a move (src/sim.js undo, V1's undoShift): the shared cells take the entry's
+  // words, the rest keep theirs; with the entry's dynamics (NativeDynamics.captureUndo), its requests,
+  // air and flying matter over them too.
+  undo(core, bank, dx, dz, dynamic = null) {
     const { owner: o, sim, gpu } = this;
     o.sync();
     this.scratch ??= [this.buffer('shift cores', sim.g.slots * 16), this.buffer('shift banks', sim.g.slots * 4)];
@@ -107,7 +104,9 @@ export class NativeIntegration {
     let zero;
     if (!bank) { zero = this.buffer('old undo zero banks', sim.g.slots * 4); bank = zero; }
     this.run('shift', sim.g.slots, this.group(core, bank, ...this.scratch), { shift: [dx, 0, dz], preserve: 1 });
+    const merge = dynamic && o.dynamics?.windowReady ? o.dynamics.recordUndoMerge(dynamic, [dx, 0, dz]) : null;
     o.restore(...this.scratch);
+    merge?.commit();
     if (zero) sim._retire(zero);
   }
   captureSlab(lo, bricks) {
@@ -137,17 +136,16 @@ export class NativeIntegration {
     const core = this.buffer('returning cores', cores.byteLength), bank = this.buffer('returning banks', banks.byteLength);
     gpu.write(core, 0, cores); gpu.write(bank, 0, banks);
     this.run('scatter', count, this.group(o.cells, o.aux, core, bank), { lo, bricks, preserve: 1 });
-    this.changed();
+    this.changed({ all: false }); // (the scatter noted the bricks it wrote: shaders/v2/window.js)
     sim._retire(core); sim._retire(bank);
   }
   // Called after Simulation.shift advanced legacy bookkeeping. The projected
   // legacy shift is not an edit; discard its ownership bits, not native state.
+  // The move noted its bricks (shift: the restore wakes them all, the legacy words moved with them).
   shifted() {
-    const { owner: o, sim, gpu } = this, m = marksLayout(sim.g);
+    const { sim, gpu } = this, m = marksLayout(sim.g);
     gpu.frame.clear(sim.marks, m.owned * 4, Math.ceil(sim.g.slots / 32) * 4);
-    o.seenWhole = sim.wholeWrites; o.seenVersion = sim.version;
-    o.importFull = o.importMarked = false;
-    this.changed();
+    this.changed({ all: false, derived: false });
   }
   dispose() { this.isReady = false; for (const b of this.scratch ?? []) this.sim._retire(b); }
 }

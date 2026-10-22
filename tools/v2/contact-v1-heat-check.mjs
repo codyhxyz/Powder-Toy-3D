@@ -79,12 +79,14 @@ test('row 2: ambient heat off holds air at ambient and stops matter trading heat
 
 test('row 6: evaporating cloud cools its air by CLOUD_EVAP_COOL; saturation reads the scene ambient', () => {
   const cloud = cell(E.CLOUD, 20);
+  // V1 react.js: four air faces of six (CLOUD_EVAP_NB stay): its three partners and one outside (the support pass's word)
+  const outAir = C.contactOutsideWord([C.packContact(cell(E.EMPTY, 20)).core, null, null]);
   let evaporated = null;
-  for (let seed = 0; seed < 200000 && !evaporated; seed++) { const out = C.ctStep(cloud, air(), seed); if (out.id === E.EMPTY) evaporated = out; }
+  for (let seed = 0; seed < 200000 && !evaporated; seed++) { const out = C.ctStepAtmosphere(cloud, air(), seed, 0, 0, 0, 0, 0, q(20), 0, 0, outAir); if (out.id === E.EMPTY) evaporated = out; }
   assert(evaporated, 'edge cloud evaporates');
   assert.equal(evaporated.tq, cloud.tq - Math.round(PHYS.CLOUD_EVAP_COOL * 4), 'V1: T -= CLOUD_EVAP_COOL'); ledger(cloud, evaporated);
   // Magnus e_s(T)/e_s(airT): at the scene's own ambient the rate is the base rate, colder ambient makes 20 °C mist go faster.
-  const rate = ambientQ => { let n = 0; for (let seed = 0; seed < 400000; seed++) if (C.ctStepAtmosphere(cloud, air(), seed, 0, 0, 0, 0, 0, ambientQ).id === E.EMPTY) n++; return n; };
+  const rate = ambientQ => { let n = 0; for (let seed = 0; seed < 400000; seed++) if (C.ctStepAtmosphere(cloud, air(), seed, 0, 0, 0, 0, 0, ambientQ, 0, 0, outAir).id === E.EMPTY) n++; return n; };
   const warm = rate(q(20)), cold = rate(q(-10));
   const v1 = Math.exp(PHYS.MAGNUS_A * (20 / (20 + PHYS.MAGNUS_B) - -10 / (-10 + PHYS.MAGNUS_B)));
   assert(Math.abs(cold / warm - v1) / v1 < 0.15, `cold-scene speedup ${cold / warm} vs V1 ${v1}`);
@@ -96,6 +98,17 @@ test('row 7: steam condensing on the box floor becomes water, in open air cloud 
   steam = C.ctSetEnergy(steam, energy(steam) - BigInt(Math.round(PHYS.L_BOIL * 256)) * 65536n);
   assert.equal(C.ctStep(steam, air(), 0).id, E.CLOUD, 'open air: cloud');
   assert.equal(C.ctStepAtmosphere(steam, air(), 0, 0, 0, 0, 0, 1, q(20)).id, E.WATER, 'on the floor: water');
+  // V1 react.js: a non-gas face of any of its six inside the grid (a lid, a wall, a cold pipe) is a surface:
+  // one outside its block (the support pass's word) too; past the grid's edge is none
+  for (const id of [E.METAL, E.WATER, E.SAND, E.GLASS]) {
+    const lid = C.contactOutsideWord([null, C.packContact(cell(id, 20)).core, null]);
+    assert.equal(C.ctStepAtmosphere(steam, air(), 0, 0, 0, 0, 0, 0, q(20), 0, 0, lid).id, E.WATER, `outside ${ELEMENTS[id].key}: water`);
+  }
+  for (const id of [E.EMPTY, E.STEAM, E.CO2]) {
+    const gas = C.contactOutsideWord([C.packContact(cell(id, 20)).core, null, null]);
+    assert.equal(C.ctStepAtmosphere(steam, air(), 0, 0, 0, 0, 0, 0, q(20), 0, 0, gas).id, E.CLOUD, `outside ${ELEMENTS[id].key}: cloud`);
+  }
+  assert.equal(C.contactOutsideWord([null, null, null]), 0, 'beyond the grid: no surface');
   // In blocks: positions on y = 0 with a solid edge count the floor; a void edge (open air past it) and y > 0 do not.
   const block = (y, edge) => {
     const cells = Array.from({ length: 8 }, () => cell(E.EMPTY, 20)); cells[0] = steam;

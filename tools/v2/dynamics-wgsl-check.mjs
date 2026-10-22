@@ -6,6 +6,7 @@ import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js'
 import { particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT } from '../../src/shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, listsStageWGSL, LISTS_STAGES } from '../../src/shaders/v2/blasts.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../../src/shaders/v2/air.js';
+import { windowWGSL, WINDOW_STAGES, WINDOW_LAYOUT } from '../../src/shaders/v2/windowMove.js';
 import { wgslGroupingErrors, nagaErrors } from './wgsl-grouping.mjs';
 let count=0; const failures=[];
 for (const [name,generate,stages,layout] of [
@@ -24,6 +25,16 @@ for (const [name,generate,stages,layout] of [
       if (errors) failures.push(`${name}/${stage}/${dims}: ${errors}`);
     }
   }
+}
+// A World window move's dynamics (shaders/v2/windowMove.js): the family's five beside the state's three;
+// it declares only what it reads of the state (aux, activity).
+assert.equal(V2_DYNAMICS_LAYOUT.length+WINDOW_LAYOUT.length,8);
+for (const dims of [[32,32,32],[48,16,32],[128,128,128]]) for (const stage of WINDOW_STAGES) {
+  const source=windowWGSL(gridLayout(...dims),nativeDynamicsHead,stage);
+  assert.deepEqual(wgslGroupingErrors(source),[],`window/${stage} mixed operators require explicit grouping`);
+  assert.equal([...source.matchAll(/var<storage,/g)].length,7,`window/${stage} storage count`);
+  const errors=nagaErrors(source); count++;
+  if (errors) failures.push(`window/${stage}/${dims}: ${errors}`);
 }
 // The lists layout's one-thread stages: two storage buffers (control, dispatch args).
 for (const dims of [[32,32,32],[48,16,32]]) for (const name of LISTS_STAGES) {

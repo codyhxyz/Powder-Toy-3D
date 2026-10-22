@@ -1,7 +1,8 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
 import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase, shockPostBase, setOffBase, crushWGSL, pressureCellWGSL, pressureOnWGSL } from './particles.js';
 import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA, V1_FRONT, frontPerRootJ, BLAST_FRONT_FLOOR_PA, BLAST_CHAIN_STEPS, v1BlastReach, v1FlameChainOdds } from '../../v2/dynamics-reference.js';
-import { E, ELEMENTS } from '../../elements.js';
+import { E, ELEMENTS, K } from '../../elements.js';
+import { LEGACY_STEPS_PER_TICK, LEGACY_STEP_HZ } from '../../v2/host.js';
 import { RAYS } from '../../rays.js';
 import { PHYS } from '../../physics.js';
 import { EXTERNAL_BLAST_CAP, blastHeatBudgetWGSL } from '../../v2/externalBlast.js';
@@ -849,7 +850,25 @@ var<workgroup> wgNear: u32;
     }
     plans[t]=plan;
   `,'dPlanSlot(dThread(wg,nwg,li))');
-  if (stage === 'couplePlan') return h + main64(/* wgsl */ `
+  // V1 react.js forces on a loose cell (MV-6): a = -∇P·P_ACCEL/ρ a step, ρ = max(dens·RHO_SCALE, RHO_MIN),
+  // pn an open neighbour's pressure or the cell's own through a solid (walls reflect), then drag; V1's
+  // move pass moves it a cell along each axis with chance |v| a step. A resident cell here launches at
+  // V1's speed under that push (its terminal a·(1-drag)/drag, to V_MAX) with V1's chance of moving this
+  // tick, LEGACY_STEPS_PER_TICK·|v|; one held by what is under it isn't pushed down.
+  if (stage === 'couplePlan') return h + `
+fn dV1Loose(id: u32) -> vec2f { switch id { ${ELEMENTS.filter(e => e.kind === K.POWDER || e.kind === K.LIQUID).map(e => `case ${e.id}u: { return vec2f(${f(Math.max(e.dens * PHYS.RHO_SCALE, PHYS.RHO_MIN))},${f(Math.max(e.drag ?? 0, 1e-3))}); }`).join(' ')} default: { return vec2f(0.0); } } }
+fn dPushP(q: vec3i, own: f32) -> f32 { let r=mEdge(q); if (!inGrid(r) || cls(cid(loadMaterial(slotOf(r)).core))==1u) { return own; } return dPressureCell(r); }
+fn dV1Push(p: vec3i, id: u32) -> vec3f {
+  let row=dV1Loose(id); if (row.x<=0.0) { return vec3f(0); }
+  let own=dPressureCell(p); var a=vec3f(0);
+  for (var k=0u;k<3u;k++) { a[k]=-(dPushP(p+dAxis(k),own)-dPushP(p-dAxis(k),own))*0.5/${f(LEGACY_PRESSURE_PA)}*${f(PHYS.P_ACCEL)}/row.x; }
+  let down=mDown(vec3f(p)+0.5); let dn=vec3f(down);
+  if (any(down!=vec3i(0)) && !dOpen(p+down) && dot(a,dn)>0.0) { a-=dn*dot(a,dn)/dot(dn,dn); }
+  let v=clamp(a*(1.0-row.y)/row.y,vec3f(-${f(PHYS.V_MAX)}),vec3f(${f(PHYS.V_MAX)}));
+  if (dRandom(dId(p,0x56315055u),2u)>=min(1.0,${f(LEGACY_STEPS_PER_TICK)}*(abs(v.x)+abs(v.y)+abs(v.z)))) { return vec3f(0); }
+  return v*${f(LEGACY_STEP_HZ * CELL_M)};
+}
+` + main64(/* wgsl */ `
     // A quiet brick's plans would all be empty; count and apply skip it too.
     // A workgroup a wind-listed brick (dWindListed holds wherever dCoupleActive does).
     if (t >= D_SLOTS || !dCoupleActive(t/64u)) { return; }
@@ -870,6 +889,7 @@ var<workgroup> wgNear: u32;
         for (var a=0u;a<3u;a++) { difference = max(difference,abs(dOpenPressure(p+dAxis(a))-dOpenPressure(p-dAxis(a)))); }
         if (difference > dStrength(id)) { plan.flags=2u|(u32(dBreak(id))<<8u); }
       } else if (k==2u || k==3u) {
+        var exposed = false; for (var a=0u;a<3u;a++) { exposed = exposed || dOpen(p+dAxis(a)) || dOpen(p-dAxis(a)); }
         // Column-run water has no radial columns (columns.js): there a liquid cell over open space
         // drips the same way, so liquids fall toward the centre instead of freezing (no spreading yet).
         let radialDrip = k==3u && P.gravMode==2u && P.gravity>0.0 && dUnsupported(p);
@@ -881,6 +901,8 @@ var<workgroup> wgNear: u32;
         }
         // (No wind saltation: V1 never lifts a loose cell off by a draft past a threshold. Its wind and pressure push
         // every loose cell a little, all the time: react.js forces, the air field's coupling.)
+        // V1's push down the pressure gradient (dV1Push), V1's speed for V1's matter.
+        if (exposed && mAirPressure()) { let push=dV1Push(p,id); if (any(push!=vec3f(0))) { plan.flags=1u; plan.velocity=push; } }
         // §4.2: flux over an unsupported lip faster than 1m/s becomes a droplet.
 if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
           let q=vec3f(unpack2x16float(m.core.z),unpack2x16float(m.core.w&65535u).x);
