@@ -37,6 +37,7 @@ export function createIndustry(app) {
   let inspectionKey = '', inspectionAt = 0, inspectionFlight = false, inspectionControlAt = 0, inspectionAnchor = null;
   let epoch = 0, pending = false, disposed = false, candidate = null, candidateResult = null;
   let probePending = false, probeKey = '', probeAt = 0, animation = 0, lastMode = app.gamemode, lastSim = app.sim;
+  let heldDt = 0; // V2: a running frame's wall time that no tick went with yet (update)
   // Intentional (gamemode: Factory): machines are built only in Factory, on the Quarry (factory() below), and
   // Sandbox there keeps them running. The Quarry is a box map and no World map lists Factory (maps.js), so the
   // !app.win guard never hides a machine a player could have built; a World Factory map would need
@@ -69,7 +70,7 @@ export function createIndustry(app) {
   });
   const controlParts = createFactoryControlParts({ getSim: () => app.sim });
   const engineTags = createEngineRetag({ getSim: () => app.sim });
-  const physics = createIndustryPhysics({ getSim: () => app.sim,
+  const physics = createIndustryPhysics({ getSim: () => app.sim, legacySteps: () => app.settings.steps,
     onShip: shipment => {
       if (disposed || !factory() || !progression) return;
       const before = progression.snapshot();
@@ -425,15 +426,22 @@ export function createIndustry(app) {
     }
     syncToolbar();
   }
-  function update(dt, stepping) {
+  // dt: the frame's wall time (V1's machine clock); stepping: the world stepped this frame; running: it runs,
+  // a V2 frame that ran no tick included (wire/industry.js afterStep).
+  function update(dt, stepping, running = stepping) {
     if (disposed) return;
     modeChanged();
     if (!active() || !factory()) { building = false; dismantling = false; if (part || inspectMode) clearCompetingModes(); }
     // A switch to V1 gives the machines' cells V1's ownership tags first (engineSwitch.js).
     const tagged = engineTags.update(devices);
-    // Native machines and shutters advance only beside real simulation steps.
+    // Native machines and shutters advance only beside real simulation steps, on V1's clock: each running
+    // frame's wall time, capped at 0.05 s (a slower frame loses the rest). Under V2 the time of a frame that
+    // ran no tick goes with the next frame that does; under V1 every running frame steps (running === stepping).
+    if (running && active() && !pending && tagged) heldDt += Math.min(Math.max(dt, 0), .05);
+    else if (!running) heldDt = 0;
     if (stepping && active() && !pending && tagged) {
-      const stepDt = Math.min(Math.max(dt, 0), .05);
+      const stepDt = heldDt;
+      heldDt = 0;
       physics.step(stepDt, devices); gatePhysics.step(stepDt, devices); animation += stepDt;
     }
     candidate = null; candidateResult = null; partCandidate = null; partCandidateResult = null;

@@ -24,7 +24,7 @@ assert.equal(CONTACT_REACTIONS.length,14);
 const layout=contactTableLayout(CONTACT_ROWS.length,CONTACT_REACTIONS.length);
 // Independent prefix and stride expectations: all original EV offsets persist.
 const prefix=new Float32Array(CONTACT_ROWS.length*8);
-v2Rows().forEach((r,i)=>prefix.set([r.cls,r.drop,r.vt,r.dens,r.yieldHead,r.damp,r.fade,0],i*8));
+v2Rows().forEach((r,i)=>prefix.set([r.cls,r.drop,r.jitter,r.dens,r.yieldHead,r.damp,r.fade,r.drift],i*8));
 const memory=v2Table(), bits=new Uint32Array(memory.buffer), signed=new Int32Array(memory.buffer);
 assert.equal(layout.rowOffset,prefix.length);
 assert.equal(layout.rowStride,44);   // + blastInto, blastOf, blastQ, blastPuff (V1 blast into matter)
@@ -62,8 +62,9 @@ for(const [name,struct,rows,schema,offset,stride,isInteger] of [
     const load=`EV[base+${Math.floor(i/4)}u].${'xyzw'[i%4]}`;
     return `bitcast<${isInteger(key)?'i32':'f32'}>(${load})`;
   });
-  const accessor=`fn ${name}(id:i32)->${struct} {\n if(id<0 || id>=${rows.length}){return ${struct}(${zeros.join(',')});}\n let base=${offset/4}u+u32(id)*${stride/4}u;\n return ${struct}(${loads.join(',')});\n}`;
-  assert.ok(contactWGSL.includes(accessor),`${name}: signed guard before EV indexing; exact zero default/channel ABI`);
+  // (one exit, B5: the read is clamped inside the table, then a signed guard gives the zero row)
+  const accessor=`fn ${name}(id:i32)->${struct} {\n let base=${offset/4}u+u32(clamp(id,0,${rows.length-1}))*${stride/4}u;\n var row=${struct}(${loads.join(',')});\n if(id<0 || id>=${rows.length}){row=${struct}(${zeros.join(',')});}\n return row;\n}`;
+  assert.ok(contactWGSL.includes(accessor),`${name}: clamped EV indexing, signed guard; exact zero default/channel ABI`);
   assert.ok(!contactWGSL.includes(`${name}Table`),'no constant struct arrays');
   assert.ok(!contactWGSL.includes(`fn ${name}(id:i32)->${struct} { switch`),'no switch struct copies');
   // Model the asserted accessor over the actual packed bytes.
@@ -100,9 +101,10 @@ const entry=foundation.slice(foundation.indexOf('@compute @workgroup_size(64)'))
 assert(entry.includes('let blockCount=min(8u,arrayLength(&events));'));
 assert(entry.includes('let columnCount=blockCount/2u;'));
 // (+2: the decoration's read-all-then-write loops, v2BlockWGSL's P.deco carry)
-assert.equal((entry.match(/i\s*<\s*blockCount/g)||[]).length,7);
+assert.equal((entry.match(/i\s*<\s*blockCount/g)||[]).length,6);
 assert.equal((entry.match(/m\s*<\s*blockCount/g)||[]).length,1);
-assert.equal((entry.match(/c2?\s*<\s*columnCount/g)||[]).length,3);
+// (R2 topple and its targets, R2b's landing scatter, R3, R4a's diagonal escape)
+assert.equal((entry.match(/c2?\s*<\s*columnCount/g)||[]).length,5);
 assert(!/for[^{]*<\s*[48]u/.test(entry),'no fixed wrapper bounds expand thermal calls');
 // (+1, 2026-10-20: group 1's flow field, where topples record their jump: v2/flow.js)
 assert.equal((foundation.match(/var<storage,/g)||[]).length,8,'actual foundation+contact storage binding count');

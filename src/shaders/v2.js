@@ -1,5 +1,6 @@
-import { fallTerminal, powderLandingSpeed, stepFall, setFall, fallFraction, FALL_GRAVITY } from '../v2/fall.js';
-import { GRAVITY_MS2 } from '../v2/gravity.js';
+import { fallTerminal, stepFall, setFall, fallFraction, fallVelocity, FALL_GRAVITY, FALL_G_PER_MS2 } from '../v2/fall.js';
+import { GRAVITY_MS2, STEPS_PER_TICK, V1_STEP_MS } from '../v2/gravity.js';
+import { PHYS } from '../physics.js';
 import { LEGACY_STEPS_PER_TICK } from '../v2/host.js';
 import { fallWGSL, fallStepWGSL } from './v2/fall.js';
 import { FOAM_ROWS } from '../v2/foam.js';
@@ -18,7 +19,7 @@ import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
 import { contactWGSL as productionContactWGSL, requestMergeWGSL, outsideFacesWGSL, outsideSiteWGSL } from './v2/contact.js';
 import { v2RunsKernel, v2PairsKernel, COLUMN } from './v2/columns.js';
-import { PARTICLE_CAP, SHOCK_LANDINGS } from '../v2/dynamics-reference.js';
+import { PARTICLE_CAP, SHOCK_LANDINGS, v1GrainOddsTable } from '../v2/dynamics-reference.js';
 
 // Physics v2, the fast version (docs/v2.md 2, 4.1, 5.1-5.6; the rules are
 // tools/v2/lean-sim.mjs's, the CPU prototype that validated them, ported to
@@ -59,8 +60,6 @@ export const QUIET_TICKS = 8;
 export const QUIET_CAP = 255;
 // a brick summary's codes (v2ActLayout summary): a liquid's code carries its id and lava subtype above it
 export const SUMMARY = { CLOSED: 1, AIR: 2, LIQUID: 3 };
-// gases diffuse by random swaps only this long after they last moved (R4: diffusionAge, so a still pool rests)
-const DIFFUSE_AGE = 120;
 // ¼ K steps from -273.25 °C: 20 °C is 1173 exactly
 export const T_OFFSET = 273.25;
 
@@ -94,21 +93,48 @@ const YIELD = {};
 // frames at 60 fps is 2-3 s, faster here so a flame doesn't outlast its fuel, which this version doesn't
 // burn); smoke thins away; steam stands in for condensing (no heat yet). The rest persist and come to rest.
 // Only the import reads it now (a fading gas comes in with life): contact owns the lives (v2/contact.js), and
-// plasma has none in V1 (react.js: it leaves only by cooling), so it isn't one.
-const FADE_S = { FIRE: 0.75, SMOKE: 6, STEAM: 10, CAUSTIC_GAS: 10 };
+// plasma has none in V1 (react.js: it leaves only by cooling), so it isn't one. Nor is STEAM: V1 spawns it at
+// life 0, its latent bank (elements.js mechanisms lifeBank), so the import's life-1 floor never applies to it.
+const FADE_S = { FIRE: 0.75, SMOKE: 6, CAUSTIC_GAS: 10 };
 
-/** The v2 row of every element: { cls, drop, vt (cells/tick), dens, yieldHead, damp, fade (life a tick) }. */
+// V1's drift: the terminal speed (cells/step) a cell reaches per m/s² of P.gravity, signed along the pull (+ down).
+// V1 react.js forces add SIM_GRAVITY·GRAV a step at the reference pull (fall.js FALL_G_PER_MS2 of P.gravity) and
+// take DRAG of the velocity, so it settles at g·GRAV·(1 - DRAG)/DRAG (move.js caps it at V_MAX). Air and cloud
+// have no GRAV: they rise or sink by their temperature (react.js lift), so their rows hold a unit GRAV's drift
+// and the block pass scales it (v1Drift). A cell with no drag never settles: V1 caps it at V_MAX.
+const DRIFT_UNBOUNDED = 1e6;
+const BUOYANT_BY_HEAT = new Set(['EMPTY', 'CLOUD']);
+export function v1DriftPerMS2(e) {
+  const keep = 1 - (e.drag ?? 0), grav = BUOYANT_BY_HEAT.has(e.key) ? 1 : (e.grav ?? 0);
+  if (!(keep < 1)) return Math.sign(grav) * DRIFT_UNBOUNDED;
+  return FALL_G_PER_MS2 * grav * keep / (1 - keep);
+}
+// V1's Brownian jitter (react.js: JITTER added a step, uniform in ±JITTER/2 on each axis, then DRAG takes its
+// share): the velocity settles to a spread σ² = keep²·(JITTER²/12)/(1 - keep²) over a correlation of 1/DRAG
+// steps, and a cell trading places on a share |v| of its pairings (move.js horizontal) spreads by σ²/DRAG cells² a
+// step on each axis (the tiles' CPU port of move.js and react.js, src/ui/tiles/engine.js, measures CO2 0.91 cells²
+// a tick, this law 0.89). V2 trades a pair at most once a tick, a ±1 step: its chance a tick is that spread.
+export function v1JitterChance(e) {
+  const keep = 1 - (e.drag ?? 0), j = e.jitter ?? 0;
+  if (!(j > 0) || !(keep < 1)) return 0;
+  const sigma2 = keep * keep * (j * j / 12) / (1 - keep * keep);
+  return Math.min(1, STEPS_PER_TICK * sigma2 / (1 - keep));
+}
+
+/** The v2 row of every element: { cls, drop, jitter (V1's lateral trade chance a tick), dens, yieldHead, damp,
+ * fade (life a tick), drift (V1's terminal cells/step per m/s² of pull, + down) }. */
 export function v2Rows() {
   return ELEMENTS.map((e) => {
     const cls = KIND_CLASS[e.kind] ?? V2.SOLID;
     return {
       key: e.key, cls,
       drop: cls === V2.POWDER ? dropOf(REPOSE[e.key] ?? 34) : 0,
-      vt: cls === V2.POWDER ? fallTerminal(e.id) / CELL_M / TICK_HZ : 0,
+      jitter: cls === V2.GAS || cls === V2.AIR ? v1JitterChance(e) : 0,
       dens: e.dens,
       yieldHead: cls === V2.LIQUID ? YIELD[e.key] ?? 0 : 0,
       damp: cls === V2.LIQUID ? Math.min(Math.max(e.drag ?? 0.01, 0.005), 0.3) : 0,
       fade: cls === V2.GAS && FADE_S[e.key] ? 1 / (FADE_S[e.key] * TICK_HZ) : 0,
+      drift: cls === V2.SOLID ? 0 : v1DriftPerMS2(e),
     };
   });
 }
@@ -116,7 +142,7 @@ export function v2Rows() {
 /** EV: unchanged two-vec4f element prefix, then immutable contact metadata. */
 export function v2Table() {
   const rows = v2Rows(), out = new Float32Array(rows.length * 8);
-  rows.forEach((r, i) => out.set([r.cls, r.drop, r.vt, r.dens, r.yieldHead, r.damp, r.fade, 0], i * 8));
+  rows.forEach((r, i) => out.set([r.cls, r.drop, r.jitter, r.dens, r.yieldHead, r.damp, r.fade, r.drift], i * 8));
   return appendContactTable(out, CONTACT_ROWS, CONTACT_REACTIONS);
 }
 
@@ -301,7 +327,6 @@ const CNT_USE_AWAKE: u32 = ${CNT.USE_AWAKE}u;
 const CNT_USE_COLS: u32 = ${CNT.USE_COLS}u;
 const QUIET_TICKS: u32 = ${QUIET_TICKS}u;
 const FOAM_GAIN = array<f32, ${FOAM_ROWS.length}>(${FOAM_ROWS.map(r => `${r.gain}.0`).join(',')});
-const DIFFUSE_AGE: u32 = ${DIFFUSE_AGE}u;
 const G_TICK: f32 = ${G_TICK};
 const FULLU: u32 = ${FULL}u;
 const FULLF: f32 = ${f(FULL)};
@@ -392,11 +417,12 @@ fn e1(id: u32) -> vec4f { return bitcast<vec4f>(EV[2u * id + 1u]); }
 fn cls(id: u32) -> u32 { return u32(e0(id).x); }
 fn clsOf(c: vec4u) -> u32 { return cls(cid(c)); }
 fn dropOfE(id: u32) -> u32 { return u32(e0(id).y); }
-fn vtOf(id: u32) -> f32 { return e0(id).z; }
+fn jitterOf(id: u32) -> f32 { return e0(id).z; }
 fn densOfE(id: u32) -> f32 { return e0(id).w; }
 fn yieldOf(id: u32) -> f32 { return e1(id).x; }
 fn dampOf(id: u32) -> f32 { return e1(id).y; }
 fn fadeOf(id: u32) -> f32 { return e1(id).z; }
+fn driftOf(id: u32) -> f32 { return e1(id).w; }
 fn isLiq(c: vec4u) -> bool { return clsOf(c) == C_LIQUID; }
 fn isOpenC(c: vec4u) -> bool { let k = clsOf(c); return k == C_AIR || k == C_LIQUID; }
 fn fluidC(c: vec4u) -> bool { let k = clsOf(c); return k == C_AIR || k == C_GAS || k == C_LIQUID; }
@@ -489,7 +515,11 @@ ${MAIN} {
   let mask = 1u << (s & 31u);
   let owned = atomicAnd(&marks[MARK_OWNED + (s >> 5u)], ~mask) & mask;
   if (P.full != 0u || owned != 0u) {
-    let n = importA(a);
+    var n = importA(a);
+    // V1's velocity along the pull, where it has one: a painted grain starts falling (passes.js: the brush gives
+    // loose matter B.y = SPAWN_DROP_V), and a loaded one keeps its fall (react.js forces read B)
+    let vy = fetchBs(s).y;
+    if (clsOf(n) == C_POWDER && vy < 0.0) { n = setFall(n, min(-vy, ${f(PHYS.V_MAX)}) * ${V1_STEP_MS}, 0.0); }
     let oldBank = banks[s];
     banks[s] = 0; // explicit ownership resets even when the imported core compares equal
     if (any(n != c) || oldBank != 0) {
@@ -651,28 +681,188 @@ fn main() {
 // sub-cell displacement; gravity changes acceleration, never prior momentum.
 // Landing on a falling run inherits its velocity and fraction, so the
 // two move as one (5.3). Liquids and solids are floors (powders sink into liquids in the block pass).
-// A grain landing on a charge sets it off as V1's did (dynamics-reference.js SHOCK_LANDINGS: V1 react.js
-// shock, the fall past which a cell of the grain's element landing on that charge carries its blast.shock
-// as common.js hitKE counts it): at the speed the powder law reaches over that fall (fall.js
-// powderLandingSpeed; at most its terminal speed, so past it every longer fall lands the same).
-// POWDER_SHOCK_SLACK: the GPU's f32 sums of a fall's ticks may land a quantum under the CPU law's speed.
-const POWDER_SHOCK_SLACK = 1 - 2 ** -16;
-const POWDER_SHOCK_ON = SHOCK_LANDINGS.filter(r => ELEMENTS[r.faller].kind === K.POWDER)
-  .map(r => ({ ...r, speed: Math.fround(powderLandingSpeed(r.faller, r.cells) * POWDER_SHOCK_SLACK) }));
+// A grain's landing (grainLands), V1's three outcomes of a hit on what is under it:
+//   - BL-7: on a charge, its own odds of setting it off, by its fall (dynamics-reference.js v1GrainOddsTable: V1's
+//     random stream, react.js shock), a roll a grain; its fall is the cells it had fallen before this tick (from rest,
+//     on the powder law: GRAIN_FALLS) plus this tick's to its floor;
+//   - BL-8: on a breakable solid, past V1's hardness (react.js breaking: ½·dens·u² ≥ hard, u its speed in V1's
+//     cells/step to V_MAX), the solid becomes its debris, which takes the fracture work as heat (KE_TO_HEAT
+//     cap·°C per unit of hardness, a declared source, as packets' fracture: particles.js);
+//   - TH-10: on a solid it doesn't break, faster than COLLIDE_V, the kinetic energy it loses (½·dens·u²) becomes
+//     heat shared by capacity, so both warm alike (move.js impactHeat: ΔT = E·KE_TO_HEAT/cap; the box's floor is a
+//     wall cell, whose share leaves).
+// In V1 a hit that sets a charge off neither breaks nor heats (move.js leaves it to the react pass).
+const GRAIN_LANDINGS = SHOCK_LANDINGS.filter(r => ELEMENTS[r.faller].kind === K.POWDER).map(r => ({ ...r, odds: v1GrainOddsTable(r.faller, r.charge) }));
+const GRAIN_FALLS = [...new Set(GRAIN_LANDINGS.map(r => r.faller))].map(id => {
+  // (speed before a tick, cells fallen by then) from rest at the reference pull, to its terminal speed
+  const seq = []; let core = setFall(new Uint32Array([id, 0, 0, 0]), 0, 0), cells = 0;
+  for (let n = 0; n < 400; n++) {
+    const u = fallVelocity(core); seq.push([Math.fround(u), cells]);
+    const st = stepFall(core, FALL_GRAVITY); if (fallVelocity(st.core) === u) break; core = st.core; cells += st.cells;
+  }
+  return { id, seq };
+});
+// one legacy cap·°C in native energy units (particles.js dHeatEnergy: FULL·64·4)
+const LEGACY_HEAT_UNIT = 256;
+const grainLandWGSL = () => {
+  let at = 0;
+  const pairs = GRAIN_LANDINGS.map(r => { const o = { ...r, at }; at += r.odds.length; return o; });
+  return /* wgsl */ `
+const V1_GRAIN_ODDS = array<f32, ${Math.max(1, at)}>(${pairs.flatMap(r => r.odds.map(o => f(Math.fround(o)))).join(',') || '0.0'});
+const V1_BREAK_INTO = array<i32, ${ELEMENTS.length}>(${ELEMENTS.map(e => (e.breakInto ? E[e.breakInto] : -1)).join(',')});
+const V1_HARD = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => f(e.hard ?? 0)).join(',')});
+const V1_CAP = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => f(e.cap ?? 0)).join(',')});
+const V1_KE_TO_HEAT: f32 = ${f(PHYS.KE_TO_HEAT)};
+const V1_COLLIDE_V: f32 = ${PHYS.COLLIDE_V};
+// the cells a grain of id fell before a tick it starts at speed u (m/s), from rest on the powder law (GRAIN_FALLS)
+fn grainFallen(id: u32, u: f32) -> i32 {
+  var cells = 0;
+${GRAIN_FALLS.map(g => `  if (id == ${g.id}u) {
+    cells = ${g.seq.at(-1)[1]};
+${g.seq.map(([u, c], n) => `    ${n ? 'else ' : ''}if (u <= ${f(u)} * 1.0001 + 0.000001) { cells = ${c}; }`).join('\n')}
+  }`).join('\n')}
+  return cells;
+}
+// V1's odds a grain of faller landing on charge after h cells sets it off (V1_GRAIN_ODDS; past its table, its last)
+fn grainOdds(faller: u32, charge: u32, h: i32) -> f32 {
+  var at = -1;
+  var n = 0;
+${pairs.map(r => `  if (faller == ${r.faller}u && charge == ${r.charge}u) { at = ${r.at}; n = ${r.odds.length}; }`).join('\n')}
+  var odds = 0.0;
+  if (at >= 0 && h >= 1) { odds = V1_GRAIN_ODDS[at + min(h, n) - 1]; }
+  return odds;
+}
+fn grainHeat(heat: f32) -> vec2u { return energyMul(u32(round(heat * ${LEGACY_HEAT_UNIT}.0)), FULLU); }
+// a grain (its core before the tick) landing at speed v (m/s) on the cell at q after a fall of h cells: the charge
+// it sets off, the solid it breaks, or the heat it makes there; returns its own share of the heat (legacy cap·°C)
+fn grainLands(q: vec3i, grain: vec4u, v: f32, h: i32) -> f32 {
+  let faller = cid(grain);
+  let u = min(v / V1_STEP_MS, V1_V_MAX);
+  let ke = 0.5 * densOfE(faller) * u * u;
+  var under = ${E.WALL}u;
+  var hits = true;
+  if (inGrid(q)) {
+    let s = slotOf(q);
+    let before = loadMaterial(s);
+    under = cid(before.core);
+    let odds = grainOdds(faller, under, h);
+    var rs = seed3(q, P.tick, 83u);
+    if (odds > 0.0 && rnd(&rs) < odds) { events[s] = events[s] | 1u; noteEvents(s, events[s]); markBusy(q); hits = false; }
+    let into = V1_BREAK_INTO[under];
+    if (hits && into >= 0 && ke >= V1_HARD[under]) {
+      hits = false;
+      let after = Material(setFall(vec4u((before.core.x & 0xffffff00u) | u32(into), before.core.y, before.core.z, before.core.w), 0.0, 0.0), before.bank);
+      let warm = energyAdd(energyOf(before), grainHeat(V1_HARD[under] * V1_KE_TO_HEAT));
+      if (energyFits(after, warm)) {
+        storeMaterial(s, before, withEnergy(after, warm)); noteEnergySource(q, energySub(warm, energyOf(before))); markBusy(q);
+      }
+    }
+    if (cls(under) != C_SOLID) { hits = false; }
+    if (hits && u > V1_COLLIDE_V) {
+      let heat = ke * V1_KE_TO_HEAT * V1_CAP[under] / max(V1_CAP[faller] + V1_CAP[under], 0.000001);
+      let warm = energyAdd(energyOf(before), grainHeat(heat));
+      if (energyFits(before, warm)) { storeMaterial(s, before, withEnergy(before, warm)); noteEnergySource(q, energySub(warm, energyOf(before))); }
+    }
+  }
+  var mine = 0.0;
+  if (hits && u > V1_COLLIDE_V) { mine = ke * V1_KE_TO_HEAT * V1_CAP[faller] / max(V1_CAP[faller] + V1_CAP[under], 0.000001); }
+  return mine;
+}
+`;
+};
+// ---- R1b: V1's fast movers, past the block pass's reach. The block pass trades a pair at most once a paired tick
+// (BLOCK_PACE: A + B cells a tick at chance 1, ~34 cells/s); V1 moves a cell whose drift through its medium is
+// faster up to a cell a step (240 cells/s: uranium through water, hydrogen rising, fire and steam plumes, sand
+// in water at 77). The column pass moves such a cell the rest of V1's rate, a column at a time: sinkers bottom up
+// (a grain into a lighter liquid, a full liquid cell into a lighter full one, a gas into lighter gas or air), then
+// risers top down (a buoyant gas into anything V1's canMove lets it rise into). The cells it passes shift one
+// cell back, order kept, each with its bank, request and paint (the swaps' carry, shaders/move.js). Air rises by
+// its warmth in the air field and the block pass, not here.
+const colMoverWGSL = () => /* wgsl */ `
+${blockExchangeWGSL}
+const BLOCK_CAP: f32 = ${f(BLOCK_PACE.A + BLOCK_PACE.B)};
+const V1_AIR_DENS_SPAN: f32 = ${f(PHYS.AIR_DENS_SPAN)};
+const V1_AIR_DENS_LO: f32 = ${PHYS.AIR_DENS_LO};
+const V1_AIR_DENS_HI: f32 = ${PHYS.AIR_DENS_HI};
+// a gas's spawn temperature (°C), as the contact rows' ¼ K codes hold it (v2/contact.js contactDensity)
+const V1_SPAWN_C = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => f(Math.round((e.temp + T_OFFSET) * 4) * 0.25 - T_OFFSET)).join(',')});
+fn colTemp(c: vec4u) -> f32 { return f32(cTq(c)) * 0.25 - T_OFFSET; }
+fn colAirDensity(t: f32) -> f32 { return 1.0 - clamp((t - P.ambient) / V1_AIR_DENS_SPAN, V1_AIR_DENS_LO, V1_AIR_DENS_HI); }
+// V1 common.js densityOf (the block pass's motionDensity: v2/contact.js contactDensity)
+fn colDensity(c: vec4u) -> f32 {
+  let k = clsOf(c);
+  var d = densOfE(cid(c));
+  if (k == C_AIR) { d = colAirDensity(colTemp(c)); }
+  if (k == C_GAS) { d = d * colAirDensity(colTemp(c)) / colAirDensity(V1_SPAWN_C[cid(c)]); }
+  return d;
+}
+fn colGasLike(k: u32) -> bool { return k == C_AIR || k == C_GAS; }
+// V1's share of steps mover m falls into n under it (0 where this pass doesn't move it)
+fn colSinkP(m: vec4u, n: vec4u) -> f32 {
+  let km = clsOf(m);
+  let kn = clsOf(n);
+  let g = v1Drift(cid(m), colTemp(m));
+  if (g <= 0.0 || cid(m) == cid(n)) { return 0.0; }
+  let dm = colDensity(m);
+  let dn = colDensity(n);
+  var p = 0.0;
+  if (km == C_POWDER && kn == C_LIQUID && dm > dn) { p = g * v1DragF(km, kn, dm, dn); }
+  if (km == C_LIQUID && kn == C_LIQUID && dm > dn && cFill(m) == FULLU && cFill(n) == FULLU) { p = g * v1DragF(km, kn, dm, dn); }
+  if (km == C_GAS && colGasLike(kn) && dm > dn - V1_GAS_TOL) { p = g; }
+  return min(p, V1_V_MAX);
+}
+// V1's share of steps a buoyant gas m rises into n over it (canMove up: within the gas tolerance, else any fluid
+// or grain of another density; dragF is 1 beside a gas)
+fn colRiseP(m: vec4u, n: vec4u) -> f32 {
+  let kn = clsOf(n);
+  let g = v1Drift(cid(m), colTemp(m));
+  if (clsOf(m) != C_GAS || g >= 0.0 || kn == C_SOLID || cid(m) == cid(n)) { return 0.0; }
+  let dm = colDensity(m);
+  let dn = colDensity(n);
+  if (colGasLike(kn) && !(dm < dn + V1_GAS_TOL)) { return 0.0; }
+  if (!colGasLike(kn) && dm == dn) { return 0.0; }
+  if (kn == C_LIQUID && cFill(n) != FULLU) { return 0.0; }
+  return min(-g, V1_V_MAX);
+}
+// the cells a tick past the block pass's reach at V1's share p (gravity.js v1PaceRate, LEGACY_STEPS_PER_TICK steps)
+fn colExcess(p: f32) -> f32 { return max(V1_STEPS * p / (2.0 - p) - BLOCK_CAP, 0.0); }
+// whole cells of an excess this tick: its integer part and its fraction's chance
+fn colCells(excess: f32, p: vec3i, salt: u32) -> i32 {
+  var rs = seed3(p, P.tick, salt);
+  return i32(floor(excess)) + select(0, 1, rnd(&rs) < fract(excess));
+}
+// The content of (x, fromY, z) moves to (x, toY, z); the cells between move one cell back toward it, order kept,
+// each with its bank, request and paint; a moved air or liquid cell's face fluxes stay where they were (zeroQ)
+fn colShift(x: i32, z: i32, fromY: i32, toY: i32) {
+  let step = select(-1, 1, toY > fromY);
+  let s0 = slotOf(vec3i(x, fromY, z));
+  let mover = loadMaterial(s0);
+  let moverEvents = events[s0];
+  var moverDeco = 0u;
+  if (P.deco != 0u) { moverDeco = decoOf(s0); }
+  var y = fromY;
+  for (var n = 0; n < NY && y != toY; n++) {
+    let a = slotOf(vec3i(x, y, z));
+    let b = slotOf(vec3i(x, y + step, z));
+    let next = loadMaterial(b);
+    storeMaterial(a, loadMaterial(a), Material(zeroQ(next.core), next.bank));
+    events[a] = events[b]; noteEvents(a, events[a]);
+    if (P.deco != 0u) { setDeco(a, select(decoOf(b), 0u, cid(next.core) == 0u)); }
+    markBusy(vec3i(x, y, z));
+    y += step;
+  }
+  let st = slotOf(vec3i(x, toY, z));
+  storeMaterial(st, loadMaterial(st), Material(zeroQ(mover.core), mover.bank));
+  events[st] = moverEvents; noteEvents(st, moverEvents);
+  if (P.deco != 0u) { setDeco(st, moverDeco); }
+  markBusy(vec3i(x, toY, z));
+}
+`;
 export const v2ColumnWGSL = (g) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
 ${fallStepWGSL}
-// the landing speed (m/s) past which a grain of faller sets off the charge it lands on (POWDER_SHOCK_ON); 0 never
-fn shockOnSpeed(faller: u32, charge: u32) -> f32 {
-${POWDER_SHOCK_ON.map(r => `  if (faller == ${r.faller}u && charge == ${r.charge}u) { return ${r.speed}; }`).join('\n')}
-  return 0.0;
-}
-// a grain of faller landing at speed (m/s) on the cell at p: its detonation request, as columns.js colDetonate's
-fn shockLand(p: vec3i, faller: u32, speed: f32) {
-  let s = slotOf(p);
-  let on = shockOnSpeed(faller, cid(loadCore(s)));
-  if (on > 0.0 && speed >= on) { events[s] = events[s] | 1u; noteEvents(s, events[s]); markBusy(p); }
-}
+${colMoverWGSL()}
+${grainLandWGSL()}
 ${MAIN} {
   if (P.gravMode == 2u || P.edge != 0u) { return; }
   let k = foldThread(wg, nwg, li);
@@ -716,12 +906,15 @@ ${MAIN} {
     a = a - f32(d);
     var to = y - d;
     var velocity = v;
+    var landHeat = 0.0;
     if (to <= fl) {
-      // it lands on its floor at v (a falling run under it is no floor it hits)
-      if (fl > 0 && !runFalling) { shockLand(vec3i(x, fl - 1, z), cid(c), v); }
+      // it lands on its floor at v (a falling run under it is no floor it hits): grainLands
+      if (!runFalling) { landHeat = grainLands(vec3i(x, fl - 1, z), c, v, grainFallen(cid(c), fallVelocity(c)) + y - fl); }
       if (to < fl) {
         if (runFalling) { velocity = runVelocity; a = runFrac; } else { velocity = 0.0; a = 0.0; }
       }
+      // on a solid (or the box's floor) it keeps its landing speed for this tick: the block pass scatters it (R2b)
+      if (!runFalling && (fl == 0 || clsOf(loadCell(vec3i(x, fl - 1, z))) == C_SOLID)) { velocity = v; a = 0.0; }
       to = fl;
     }
     c = setFall(c, velocity, a);
@@ -740,10 +933,52 @@ ${MAIN} {
     } else {
       storeCell(p, c);
     }
+    if (landHeat > 0.0) {
+      // (its share of its landing's heat, where it rests: TH-10)
+      let r = vec3i(x, to, z);
+      let m = loadMaterial(slotOf(r));
+      let warm = energyAdd(energyOf(m), grainHeat(landHeat));
+      if (energyFits(m, warm)) { storeMaterial(slotOf(r), m, withEnergy(m, warm)); noteEnergySource(r, energySub(warm, energyOf(m))); }
+    }
     fl = to + 1;
     runFalling = velocity != 0.0;
     runVelocity = velocity;
     runFrac = a;
+  }
+  // R1b sinkers, bottom up (colMoverWGSL): a brick all air or all one still liquid holds none
+  for (var y = 1; y < NY; y++) {
+    if ((y & 3) == 0) {
+      let code = atomicLoad(&act2[V2_SUMMARY + brickOfCell(vec3i(x, y, z))]) & 255u;
+      if (code == SUM_AIR || code == SUM_LIQUID) { y += 3; continue; }
+    }
+    let m = loadCell(vec3i(x, y, z));
+    let km = clsOf(m);
+    if (km != C_POWDER && km != C_LIQUID && km != C_GAS) { continue; }
+    let excess = colExcess(colSinkP(m, loadCell(vec3i(x, y - 1, z))));
+    if (excess <= 0.0) { continue; }
+    let n = colCells(excess, vec3i(x, y, z), 81u);
+    var to = y;
+    for (var j = 1; j <= n && to == y - j + 1 && y - j >= 0; j++) {
+      if (colSinkP(m, loadCell(vec3i(x, y - j, z))) > 0.0) { to = y - j; }
+    }
+    if (to != y) { colShift(x, z, y, to); }
+  }
+  // R1b risers, top down
+  for (var y = NY - 2; y >= 0; y--) {
+    if ((y & 3) == 3) {
+      let code = atomicLoad(&act2[V2_SUMMARY + brickOfCell(vec3i(x, y, z))]) & 255u;
+      if (code == SUM_AIR || code == SUM_LIQUID) { y -= 3; continue; }
+    }
+    let m = loadCell(vec3i(x, y, z));
+    if (clsOf(m) != C_GAS) { continue; }
+    let excess = colExcess(colRiseP(m, loadCell(vec3i(x, y + 1, z))));
+    if (excess <= 0.0) { continue; }
+    let n = colCells(excess, vec3i(x, y, z), 82u);
+    var to = y;
+    for (var j = 1; j <= n && to == y + j - 1 && y + j < NY; j++) {
+      if (colRiseP(m, loadCell(vec3i(x, y + j, z))) > 0.0) { to = y + j; }
+    }
+    if (to != y) { colShift(x, z, y, to); }
   }
 }
 `;
@@ -874,6 +1109,84 @@ const blockIdentityWGSL = /* wgsl */ `
   if (zeroWork) { return; }
   `;
 
+// ---- R3/R4: V1's exchange (move.js vertical and horizontal, on react.js forces and JITTER), a tick at a time.
+// V1 trades a pair on a share p of the steps they share a block: p the larger of the upper cell's fall and the
+// lower's rise, each where canMove lets it (common.js: a gas pair within GAS_DENS_TOL of each other's density,
+// else the denser over the lighter; grains never into grains), times dragF (through a liquid, slower by its
+// density contrast). A falling cell falls at its drift (v1DriftPerMS2: GRAV against DRAG, at P.gravity), which it
+// keeps as it trades places; two exceptions: a liquid over gas falls free (react.js `flying`: no drag, to V_MAX),
+// and a liquid over a lighter powder (the grains float up) starts from rest at every trade, which V1 runs at
+// V1_FLOAT_CELLS_S (measured on the tiles' CPU port of move.js and react.js, src/ui/tiles/engine.js: sawdust and
+// dust in water 4.2-4.3 cells/s, sawdust and sand in mercury 4.6-4.7, ash and sawdust in oil 6.7-6.8), a fall
+// from rest's, so as the pull's square root. Below REST_V (physics.js: V1's creep that stops dead) nothing moves.
+// V1's pairs share a block every other step (its partition shifts each step), so p moves a cell p/(2-p) a step
+// (gravity.js v1PaceRate). V2's pairs share one on half the ticks in a shuffled order (physics.js offsetOf), which
+// moves a cell PACE_A·c + PACE_B·c² a tick at a chance c (tools/v2/exchange-check.mjs replays offsetOf): the
+// chance is the root that gives V1's rate, at most 1 (a cell at most a cell a tick, PACE_A + PACE_B).
+export const V1_FLOAT_CELLS_S = 4.5;
+export const BLOCK_PACE = { A: 0.52, B: 0.045 };
+const v1FloatP = (() => { const r = V1_FLOAT_CELLS_S / (TICK_HZ * STEPS_PER_TICK); return 2 * r / (1 + r); })();
+const blockExchangeWGSL = /* wgsl */ `
+const V1_STEPS: f32 = ${f(STEPS_PER_TICK)};
+const V1_STEP_MS: f32 = ${f(V1_STEP_MS)};
+const V1_G_REF: f32 = ${f(GRAVITY_MS2)};
+const V1_V_MAX: f32 = ${f(PHYS.V_MAX)};
+const V1_REST_V: f32 = ${PHYS.REST_V};
+const V1_FLOAT: f32 = ${v1FloatP};
+const V1_KELVIN: f32 = ${PHYS.KELVIN};
+const V1_GAS_TOL: f32 = ${PHYS.GAS_DENS_TOL};
+const V1_DRAG_LIQUID_MIN: f32 = ${PHYS.DRAG_LIQUID_MIN};
+const V1_DRAG_LIQUID_SPAN: f32 = ${PHYS.DRAG_LIQUID_SPAN};
+const V1_DRAG_LIQUID_DENS: f32 = ${f(PHYS.DRAG_LIQUID_DENS)};
+const V1_AIR_BUOY_LO: f32 = ${PHYS.AIR_BUOY_LO};
+const V1_AIR_BUOY_HI: f32 = ${f(PHYS.AIR_BUOY_HI)};
+const PACE_A: f32 = ${BLOCK_PACE.A};
+const PACE_B: f32 = ${BLOCK_PACE.B};
+// V1's drift (cells/step, + down) of a cell of id at temperature t (°C): react.js forces, air and cloud by heat (lift)
+fn v1Drift(id: u32, t: f32) -> f32 {
+  var grav = 1.0;
+  if (id == ${E.EMPTY}u || id == ${E.CLOUD}u) { grav = -clamp((t - P.ambient) / (P.ambient + V1_KELVIN), V1_AIR_BUOY_LO, V1_AIR_BUOY_HI); }
+  return clamp(driftOf(id) * grav * P.gravity, -V1_V_MAX, V1_V_MAX);
+}
+// move.js dragF: moving through a liquid is slower than through air
+fn v1DragF(kU: u32, kL: u32, dU: f32, dL: f32) -> f32 {
+  let gasU = kU == C_AIR || kU == C_GAS;
+  let gasL = kL == C_AIR || kL == C_GAS;
+  var drag = 1.0;
+  if ((kU == C_LIQUID && !gasL) || (kL == C_LIQUID && !gasU)) {
+    drag = V1_DRAG_LIQUID_MIN + V1_DRAG_LIQUID_SPAN * clamp(V1_DRAG_LIQUID_DENS * abs(dU - dL) / max(dU, dL), 0.0, 1.0);
+  }
+  return drag;
+}
+// V1's share of steps an upper cell U and the lower L under it trade places (above), from classes, densities, drifts
+fn v1Exchange(kU: u32, kL: u32, dU: f32, dL: f32, gU: f32, gL: f32) -> f32 {
+  let gasU = kU == C_AIR || kU == C_GAS;
+  let gasL = kL == C_AIR || kL == C_GAS;
+  var p = 0.0;
+  if (gasU && gasL) {
+    if (gU > 0.0 && dU > dL - V1_GAS_TOL) { p = gU; }
+    if (gL < 0.0 && dL < dU + V1_GAS_TOL) { p = max(p, -gL); }
+  } else if (kU != C_POWDER || kL != C_POWDER) {
+    var fall = gU;
+    if (kU == C_LIQUID && gasL) { fall = V1_V_MAX; }
+    if (kU == C_LIQUID && kL == C_POWDER) { fall = V1_FLOAT * sqrt(max(P.gravity, 0.0) / V1_G_REF); }
+    if (fall > 0.0 && dU > dL) { p = fall; }
+    if (gL < 0.0 && dL != dU) { p = max(p, -gL); }
+    p = min(p * v1DragF(kU, kL, dU, dL), V1_V_MAX);
+  }
+  return select(p, 0.0, p < V1_REST_V);
+}
+// the chance a tick that moves a pair at V1's rate for its share of steps p (above)
+fn v2Chance(p: f32) -> f32 {
+  let rate = V1_STEPS * p / (2.0 - p);
+  return min(1.0, (sqrt(PACE_A * PACE_A + 4.0 * PACE_B * rate) - PACE_A) / (2.0 * PACE_B));
+}
+`;
+// V1's landing scatter (move.js land, react.js friction and drag): a grain landing at u cells/step goes sideways at
+// LAND_POWDER_SCATTER·u, which each step's friction and drag keep r = (1 - FRICTION)(1 - DRAG) of, moving on a share
+// of about half its speed's steps (gravity.js v1PaceRate): u·SCATTER/(2(1 - r)) cells in all.
+export const v1ScatterPerSpeed = e => (e.kind === K.POWDER ? PHYS.LAND_POWDER_SCATTER / (2 * (1 - (1 - (e.friction ?? 0)) * (1 - (e.drag ?? 0)))) : 0);
+const blockScatterWGSL = `const V1_SCATTER = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => f(Math.fround(v1ScatterPerSpeed(e)))).join(',')});`;
 export const v2BlockWGSL = (g, contactWGSL = '', compact = false) => {
   // Only exact production contact has the disjoint/frozen-read identity proof.
   compact = compact && contactWGSL === productionContactWGSL;
@@ -899,11 +1212,8 @@ fn noteTopple(to: vec3i, top: u32, into: u32, down: vec3i) {
   let moveD = vec3f(mBlockOffset(off8(into), down) - mBlockOffset(off8(top), down)) / FLOW_TOPPLE_STEPS;
   flow[slotOf(to)] = vec2u(pack2x16float(moveD.xy), pack2x16float(vec2f(moveD.z, FLOW_TOPPLE_MARK)));
 }
-// powder sinking through a fluid: this share of (1 - ρ_fluid/ρ_powder) a tick its pair is in one block
-const SINK_RATE: f32 = 0.6;
-const LIQ_SWAP: f32 = 0.3;   // a denser liquid over a lighter one
-const GAS_SWAP: f32 = 0.5;   // gas rising or sinking through air or gas, or bubbling up through a liquid
-const DIFFUSE: f32 = 0.25;   // a young gas's lateral swap with air
+${blockExchangeWGSL}
+${blockScatterWGSL}
 fn off8(i: u32) -> vec3i { return vec3i(i32(i & 1u), i32(i >> 2u), i32((i >> 1u) & 1u)); }
 fn supportAt(position: vec3i) -> bool {
   let p=mEdge(position);
@@ -990,21 +1300,55 @@ ${MAIN} {
     markBusy(positions[pick]);
     noteTopple(positions[pick], ti, pick, down);
   }
-  // R3 sink and float, R4 buoyancy: a denser movable over a lighter fluid swaps down
+  // R2b: V1's landing scatter (move.js land): a grain landing on a solid keeps LAND_POWDER_SCATTER of its impact
+  // speed sideways, which friction and drag then spend (V1_SCATTER: the cells it travels per V1 cell/step of landing
+  // speed, on average). The column pass leaves such a grain its landing speed for the tick; this pass sees it where
+  // it tops its block, over the solid in it (half the ticks: twice the chance), and moves it a cell sideways, x or z,
+  // into a lighter fluid (canMove sideways), all within the block.
+  for (var c = 0u; c < columnCount && gravityOn; c++) {
+    let gr = cs[4u + c];
+    if (clsOf(gr) != C_POWDER || clsOf(cs[c]) != C_SOLID || fromCell[4u + c] != 4u + c || !inGrid(positions[4u + c])) { continue; }
+    let landed = fallVelocity(gr);
+    if (landed <= 0.0) { continue; }
+    let pTop = positions[4u + c];
+    markBusy(pTop);
+    var rs = seed3(pTop, P.tick, 84u);
+    let side = 4u + (c ^ (1u + u32(rnd(&rs) * 2.0)));
+    let t = cs[side];
+    let chance = min(1.0, 2.0 * V1_SCATTER[cid(gr)] * min(landed / V1_STEP_MS, V1_V_MAX));
+    if (rnd(&rs) < chance && inGrid(positions[side]) && fromCell[side] == side && fluidC(t) && motionDensity(t) < motionDensity(gr)) {
+      cs[side] = setFall(gr, 0.0, 0.0);
+      cs[4u + c] = zeroQ(t);
+      let bank = bs[side]; bs[side] = bs[4u + c]; bs[4u + c] = bank;
+      let request = pending[side]; pending[side] = pending[4u + c]; pending[4u + c] = request;
+      let came = fromCell[side]; fromCell[side] = fromCell[4u + c]; fromCell[4u + c] = came;
+      markBusy(positions[side]);
+    }
+  }
+  // R3: V1's vertical exchange (blockExchangeWGSL): sinking, floating up, buoyant rise, and Brownian jitter
+  // across gas pairs (react.js JITTER). A fall into air (and a grain's
+  // into gas, while the column pass runs) is the column pass's, or the runs' flux.
+  let columnFalls = P.gravMode != 2u && P.edge == 0u;
   for (var c = 0u; c < columnCount && gravityOn; c++) {
     let lo = cs[c];
     let hi = cs[4u + c];
     let kL = clsOf(lo);
     let kU = clsOf(hi);
-    if (!inGrid(positions[c]) || !inGrid(positions[4u + c]) || kU == C_SOLID || !fluidC(lo)) { continue; }
-    if ((kU == C_POWDER || kU == C_LIQUID) && kL == C_AIR) { continue; }   // a fall: the column pass, the flux
+    if (!inGrid(positions[c]) || !inGrid(positions[4u + c]) || kU == C_SOLID || kL == C_SOLID) { continue; }
+    if ((kU == C_POWDER || kU == C_LIQUID) && kL == C_AIR) { continue; }
+    if (kU == C_POWDER && kL == C_GAS && columnFalls) { continue; }
+    if (cid(lo) == cid(hi) && cid(lo) != 0u) { continue; }   // (V1 canMove: never one element with itself)
     let dU = motionDensity(hi);
     let dL = motionDensity(lo);
-    if (dU <= dL) { continue; }
+    var chance = v2Chance(v1Exchange(kU, kL, dU, dL, v1Drift(cid(hi), f32(cTq(hi)) * 0.25 - T_OFFSET), v1Drift(cid(lo), f32(cTq(lo)) * 0.25 - T_OFFSET)));
+    // (jitter: a random walk only between gases canMove lets past each other both ways, within its tolerance;
+    // past it, V1's noise only rounds the drift off, E[(drift + noise)+] ≈ drift)
+    if ((kU == C_GAS || kL == C_GAS) && kU != C_LIQUID && kU != C_POWDER && kL != C_LIQUID && kL != C_POWDER && abs(dU - dL) < V1_GAS_TOL) {
+      chance = max(chance, max(jitterOf(cid(hi)), jitterOf(cid(lo))));
+    }
+    if (chance <= 0.0) { continue; }
     let pU = positions[4u + c];
     markBusy(pU);
-    var chance = GAS_SWAP;
-    if (kU == C_POWDER) { chance = SINK_RATE * (1.0 - dL / dU); } else if (kU == C_LIQUID && kL == C_LIQUID) { chance = LIQ_SWAP; }
     var rs = seed3(pU, P.tick, 78u);
     if (rnd(&rs) < chance) {
       cs[c] = resetMotionAge(zeroQ(hi));
@@ -1015,7 +1359,46 @@ ${MAIN} {
       markBusy(positions[c]);
     }
   }
-  // R4 gas: lateral swaps with air while young (x pairs, then z pairs)
+  // R4a: V1's diagonal escape (move.js diagonal): a buoyant gas held under what it can't rise into slides up a
+  // diagonal of its block where the cell beside it is fluid and the one above that takes it (canMove up)
+  for (var c = 0u; c < columnCount && gravityOn; c++) {
+    let gs = cs[c];
+    if (clsOf(gs) != C_GAS || fromCell[c] != c || !inGrid(positions[c])) { continue; }
+    let dG = motionDensity(gs);
+    if (v1Drift(cid(gs), f32(cTq(gs)) * 0.25 - T_OFFSET) >= 0.0) { continue; }
+    let above = cs[4u + c];
+    let kA = clsOf(above);
+    var held = kA == C_SOLID || !inGrid(positions[4u + c]) || cid(above) == cid(gs) || fromCell[4u + c] != 4u + c;
+    if ((kA == C_AIR || kA == C_GAS) && !(dG < motionDensity(above) + V1_GAS_TOL)) { held = true; }
+    if (!held) { continue; }
+    var rs = seed3(positions[c], P.tick, 80u);
+    let first = u32(rnd(&rs) * 3.0);
+    var pick = 4u;
+    for (var n = 0u; n < 3u; n++) {
+      let c2 = c ^ (1u + (first + n) % 3u);
+      let side = cs[c2];
+      let t = cs[4u + c2];
+      let kS = clsOf(side);
+      let kT = clsOf(t);
+      if (pick != 4u || !inGrid(positions[c2]) || !inGrid(positions[4u + c2]) || fromCell[4u + c2] != 4u + c2) { continue; }
+      if (kS == C_SOLID || kS == C_POWDER || kT == C_SOLID || cid(t) == cid(gs)) { continue; }
+      if ((kT == C_AIR || kT == C_GAS) && !(dG < motionDensity(t) + V1_GAS_TOL)) { continue; }
+      if (kT != C_AIR && kT != C_GAS && dG == motionDensity(t)) { continue; }
+      pick = c2;
+    }
+    if (pick == 4u) { continue; }
+    let ti = 4u + pick;
+    markBusy(positions[c]);
+    let moved = cs[ti];
+    cs[ti] = zeroQ(gs);
+    cs[c] = resetMotionAge(zeroQ(moved));
+    let bank = bs[c]; bs[c] = bs[ti]; bs[ti] = bank;
+    let request = pending[c]; pending[c] = pending[ti]; pending[ti] = request;
+    let came = fromCell[c]; fromCell[c] = fromCell[ti]; fromCell[ti] = came;
+    markBusy(positions[ti]);
+  }
+  // R4b: V1's jitter mixes gases sideways with air and with each other, without end (react.js JITTER, move.js
+  // horizontal: canMove lets any two gas-like cells trade sideways), at the faster of the pair's jitter chances
   for (var m = 0u; m < blockCount; m++) {
     var i0 = 0u;
     var i1 = 0u;
@@ -1025,26 +1408,19 @@ ${MAIN} {
     let a1 = cs[i1];
     let k0 = clsOf(a0);
     let k1 = clsOf(a1);
-    var young = false;
-    if (k0 == C_GAS && k1 == C_AIR && cAge(a0) < DIFFUSE_AGE) { young = true; }
-    if (k1 == C_GAS && k0 == C_AIR && cAge(a1) < DIFFUSE_AGE) { young = true; }
-    if (!young) { continue; }
+    if ((k0 != C_GAS && k0 != C_AIR) || (k1 != C_GAS && k1 != C_AIR) || cid(a0) == cid(a1)) { continue; }
+    let chance = max(jitterOf(cid(a0)), jitterOf(cid(a1)));
+    if (chance <= 0.0) { continue; }
     let p0 = positions[i0];
     markBusy(p0);
     var rs = seed3(p0, P.tick, 79u + m);
-    if (rnd(&rs) < DIFFUSE) {
+    if (rnd(&rs) < chance) {
       cs[i0] = zeroQ(a1);
       cs[i1] = zeroQ(a0);
       let bank = bs[i0]; bs[i0] = bs[i1]; bs[i1] = bank;
       let request = pending[i0]; pending[i0] = pending[i1]; pending[i1] = request;
       let came = fromCell[i0]; fromCell[i0] = fromCell[i1]; fromCell[i1] = came;
       markBusy(positions[i1]);
-    }
-  }
-  // Gas ageing is motion state; reaction/lifetime changes belong to contact.
-  for (var i = 0u; i < blockCount; i++) {
-    if (clsOf(cs[i]) == C_GAS && cAge(cs[i]) < DIFFUSE_AGE) {
-      cs[i] = withAge(cs[i], cAge(cs[i]) + 1u); markBusy(positions[i]);
     }
   }
   // Obligations follow the moved material, not its old position. Loading these

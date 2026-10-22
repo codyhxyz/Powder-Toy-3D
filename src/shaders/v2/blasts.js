@@ -1,6 +1,7 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
 import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase, shockPostBase, setOffBase, crushWGSL, pressureCellWGSL, pressureOnWGSL } from './particles.js';
-import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA, V1_FRONT, frontPerRootJ, BLAST_FRONT_FLOOR_PA, BLAST_CHAIN_STEPS, v1BlastReach, v1FlameChainOdds } from '../../v2/dynamics-reference.js';
+import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA, V1_FRONT, frontPerRootJ, BLAST_FRONT_FLOOR_PA, BLAST_CHAIN_STEPS, v1BlastReach, v1FlameChainOdds, RAY_PHOTON_MS, RAY_NEUTRON_FAST_MS, PACKET_KEEP, packetFlight } from '../../v2/dynamics-reference.js';
+import { STEP_S } from '../../v2/gravity.js';
 import { E, ELEMENTS, K } from '../../elements.js';
 import { LEGACY_STEPS_PER_TICK, LEGACY_STEP_HZ } from '../../v2/host.js';
 import { RAYS } from '../../rays.js';
@@ -54,6 +55,8 @@ export const LIST_NAMES = ['source', 'step', 'wind', 'events', 'jets', 'reachX',
 // serviceable charge in it (V1 react.js has no cap: every charge that meets its trigger goes off that
 // step, so a tick serves every charge of up to CHARGES_MAX bricks, 4,096 cells, together).
 export const CHARGES_MAX = 64;
+// frontFlood's passes, D_FLOOD_STEPS cells each: as far as V1's front from P_MAX passes the floor (v1BlastReach).
+export const FLOOD_PASSES = Math.ceil(v1BlastReach(V1_FRONT.P_MAX) / 2);
 // A source's words: its brick's two charge masks, its charges' box in the brick (2 bits an axis, lo
 // then hi) with its reach (cells) above, their energy (J), the mean of their cells (grid cells, x y z)
 // and the legacy pressure V1's front leaves it with (dynamics-reference.js v1FrontSource).
@@ -103,13 +106,30 @@ const D_LAUNCH_COUNTS: u32 = ${L.counts}u;
 // floor (V1's chance rounding) just under one tick's fall from rest above it: it slides one tick at
 // the deck's speed and lands back on the deck where the next pass carries it on. Off a deck's end
 // nothing is under it, and it flies on at that speed.
-const SLIDE_CONTACT = 0.98;          // of one tick's fall: the landing comes inside the tick
+// The tick's fall is the packet flight's (particles.js dPacketFlight, dynamics-reference.js packetFlight: V1's
+// steps, each moving it pace(|u|) = |u|/(2-|u|), then adding the pull and taking its drag), so from rest a grain
+// falls only a share of a free fall's tick: started under the free fall, a slide landed ticks late and its deck
+// kicked it every second or third tick (half V1's belt speed on the GPU). Each axis keeps its own steps, so a
+// carry's speed doesn't change its fall: the start is SLIDE_CONTACT of that tick's fall, the landing comes at
+// SLIDE_CONTACT of the tick (the sweep is straight), and the next tick's pass kicks it again.
+export const SLIDE_CONTACT = 0.98;   // of one tick's fall: the landing comes inside the tick
 const SLIDE_SALT = 0x534c4944;       // 'SLID': the contact point's own random stream
+// the cells a packet of id falls in its first tick from rest (V1's steps at pull m/s²)
+export const slideTickFall = (id, gravity = GRAVITY) => -packetFlight(id, [0, 0, 0], [0, -gravity, 0]).moved[1];
+export const slideLift = (id, gravity = GRAVITY) => SLIDE_CONTACT * slideTickFall(id, gravity);
+const slideKeep = () => {
+  const by = new Map();
+  for (const e of ELEMENTS) if (e?.kind === K.POWDER && PACKET_KEEP[e.id] !== 1) by.set(PACKET_KEEP[e.id], [...(by.get(PACKET_KEEP[e.id]) ?? []), e.id]);
+  return `fn dSlideKeep(id: u32) -> f32 { switch id { ${[...by].map(([k, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(k)}; }`).join(' ')} default: { return 1.0; } } }`;
+};
 const slideWGSL = () => /* wgsl */ `
-fn dSlideStart(slot: u32) -> vec3f {
-  let p=cellOf(slot); let id=dId(p,${SLIDE_SALT}u);
-  let lift=${f(SLIDE_CONTACT * 0.5 * DT * DT / CELL_M)}*P.gravity;
-  return vec3f(p+P.origin)+vec3f(dRandom(id,1u),lift,dRandom(id,2u));
+${slideKeep()}
+fn dSlideStart(slot: u32, id: u32) -> vec3f {
+  let p=cellOf(slot); let seed=dId(p,${SLIDE_SALT}u);
+  // packetFlight's first tick from rest along the pull: V1's steps (pace, then the pull and the drag)
+  let g=P.gravity*${f(STEP_S * STEP_S / CELL_M)}; let keep=dSlideKeep(id); var u=0.0; var fall=0.0;
+  for (var k=0u;k<${LEGACY_STEPS_PER_TICK}u;k++) { let a=min(u,${f(PHYS.V_MAX)}); fall+=a/(2.0-a); u=min((u+g)*keep,${f(PHYS.V_MAX)}); }
+  return vec3f(p+P.origin)+vec3f(dRandom(seed,1u),${f(SLIDE_CONTACT)}*fall,dRandom(seed,2u));
 }
 `;
 // windList's group words, for the two stages that write and read them (air.js windList, count here).
@@ -119,7 +139,10 @@ const D_WIND_GROUPS: u32 = ${listControl(g).windGroups}u;`;
 export const LIST_ARGS = { source: COUPLE_ARGS + 32, step: COUPLE_ARGS + 48, wind: COUPLE_ARGS + 64, windCells: COUPLE_ARGS + 80, eventCells: COUPLE_ARGS + 96,
   jetCells: COUPLE_ARGS + 112, reachX: COUPLE_ARGS + 128, reachY: COUPLE_ARGS + 144,
   launchBricks: COUPLE_ARGS + 160, launchCells: COUPLE_ARGS + 176 };
-export const DISPATCH_ARGS_BYTES = COUPLE_ARGS + 192;
+// The ray gate's [work, CAP/64 folded, 1] (lists rayGate): the particle stages of a tick's later V1 steps, over the
+// pool when a ray flies this tick (dynamics.js advanceParticles), else none.
+export const RAY_ARGS = COUPLE_ARGS + 192;
+export const DISPATCH_ARGS_BYTES = COUPLE_ARGS + 208;
 // Which args each list writes: [byte offset, per-cell (a workgroup a brick) or a thread a brick].
 export const LIST_DISPATCH = { source: [[LIST_ARGS.source, false]], step: [[LIST_ARGS.step, false]],
   wind: [[LIST_ARGS.wind, false], [LIST_ARGS.windCells, true]], events: [[LIST_ARGS.eventCells, true]],
@@ -160,7 +183,7 @@ fn dWindListed(b: u32) -> bool {
 }
 // The one-thread stages that write indirect args, in listArgs' two-buffer layout (control, dispatch
 // args): each writes the args it decides directly, so no copy splits the tick's compute pass.
-export const LISTS_STAGES = [...LIST_NAMES, 'workArgs', 'coupleGate', 'publishCouple', 'launch'];
+export const LISTS_STAGES = [...LIST_NAMES, 'workArgs', 'coupleGate', 'publishCouple', 'launch', 'rayGate'];
 const listsHead = `${DynamicParams.wgsl}
 @group(3) @binding(1) var<uniform> P: DynamicParams;
 @group(1) @binding(0) var<storage, read_write> control: array<u32>;
@@ -193,7 +216,14 @@ export function listsStageWGSL(g, name) {
   args[${COUPLE_ARGS / 4}u]=work; args[${COUPLE_ARGS / 4 + 1}u]=1u; args[${COUPLE_ARGS / 4 + 2}u]=1u; args[${COUPLE_ARGS / 4 + 4}u]=work;
 }
 `;
-  // The jets' gate words ([work, 1, 1, 0, work] at coupleArgsBase) into the couple args.
+  // V1 steps its rays RAY_STEPS_PER_TICK times a tick (shaders/rays.js): the particle stages of the tick's later
+  // steps run over the pool only when the first counted a ray (control RAYS, particles.js integrate).
+  if (name === 'rayGate') { const [x, y] = fold(PARTICLE_CAP / 64); return `${listsHead}
+@compute @workgroup_size(1) fn main() {
+  let work=control[${CONTROL.RAYS}u]>0u;
+  args[${RAY_ARGS / 4}u]=select(0u,${x}u,work); args[${RAY_ARGS / 4 + 1}u]=${y}u; args[${RAY_ARGS / 4 + 2}u]=1u;
+}
+`; }
   // The jets' gate words ([work, 1, 1, 0, work] at coupleArgsBase) into the couple args, and the jets'
   // brick list (their count appended it) with spawn's args: a workgroup a listed brick.
   if (name === 'publishCouple') { const jets = listControl(g).lists.jets; return `${listsHead}
@@ -513,6 +543,28 @@ fn dSrcSees(k: u32, p: vec3i) -> bool {
   }
   return false;
 }
+// The flood (frontFlood): the front (legacy) a cell holds after round-1 passes: a source cell its source's
+// pressure (round 1 reads the sources, later ones the last round's plans), past the grid none.
+const D_FLOOD_PASSES: u32 = ${FLOOD_PASSES}u;
+const D_FLOOD_UNIT: f32 = ${f(V1_FRONT.P_MAX / 16383)};   // a quantum of the front planCharges keeps (14 bits to P_MAX)
+const D_FLOOD_SHIFT: u32 = 16u;
+fn dFace(f: u32) -> vec3i { var d=vec3i(0); d[f>>1u]=select(1,-1,(f&1u)!=0u); return d; }
+fn dFloodHeld(c0: vec3i, round: u32) -> f32 {
+  let c=mEdge(c0); if (!inGrid(c)) { return 0.0; }
+  if (round<=1u) { if (!dIsSourceCell(c)) { return 0.0; } let s=slotOf(c); return dSrcPressure(atomicLoad(&control[D_SOURCE_OF+s/64u])-1u); }
+  return plans[slotOf(c)].velocity[(round-1u)&1u];
+}
+// Does cell c round the front on (legacy) reaching it steps cells out (dSrcPasses, as the flood reads it)?
+fn dFloodPasses(c0: vec3i, on: f32, steps: i32) -> bool {
+  let c=mEdge(c0); if (!inGrid(c)) { return false; }
+  let id=cid(loadMaterial(slotOf(c)).core);
+  if (cls(id)!=1u || dIsSourceCell(c)) { return true; }
+  return dCrush(id)>0.0 && steps<=D_CHAIN && on*${f(LEGACY_PRESSURE_PA)}>dCrush(id);
+}
+// The flood's front on this cell (Pa), as planCharges keeps it in its plan's flags, and the flags without it.
+fn dFloodFront(flags: u32) -> f32 { return f32((flags>>D_FLOOD_SHIFT)&16383u)*D_FLOOD_UNIT*${f(LEGACY_PRESSURE_PA)}; }
+fn dFloodKeep(front: f32) -> u32 { return u32(clamp(round(front/D_FLOOD_UNIT),0.0,16383.0))<<D_FLOOD_SHIFT; }
+const D_FLOOD_BITS: u32 = 16383u<<16u;
 // Source k's share at p (direction times J), p in its sight: plan's expressions, from its charges' mean cell.
 fn dSrcShare(k: u32, p: vec3i) -> vec3f {
   let delta=vec3f(p)-dSrcCentre(k); let r2 = max(0.25,dot(delta,delta));
@@ -656,6 +708,44 @@ var<workgroup> wgSources: u32;
   // normalize scales each source to its own budget, damage adds the sources' scaled shares. One source of
   // one charge is the old plan's expressions (tools/v2/blast-batch-check.mjs).
   // External blasts (mode 14) keep plan/sum/normalize/damagePlan/finish.
+  // BL-11: V1's front goes around corners (react.js: each open cell takes P_FRONT of its strongest open
+  // neighbour a step), so a cell's front is its source's pressure kept V1_FRONT.KEEP a cell along the shortest
+  // path of cells that pass it (dSrcPasses: open cells, the sources, an explosive the front sets off within the
+  // tick's steps), not only along a straight sight line. A bounded flood over the cells within the batch's
+  // reach: pass i (P.substep, 1..FLOOD_PASSES) takes the front two cells further, the largest of every
+  // source's (V1's max), in plans' velocity x/y in turn; pass 0 leaves each cell the front on it (an
+  // explosive's pOn; a solid's difference across it, V1's breaking test) in its velocity z, which
+  // planCharges keeps in its plan's flags for damageCharges (dFloodFront). The sight-line front stays the
+  // throw's and the flame chain's.
+  if (stage === 'frontFlood') return h + chargeSourcesWGSL + main64(/* wgsl */ `
+    if (t >= D_SLOTS) { return; }
+    let p=cellOf(t); let round=P.substep; let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
+    var near=false; for (var k=0u;k<n;k++) { near=near || dSrcNearBrick(k,t/64u); }
+    if (round==0u) {
+      // an explosive's pOn: its open neighbours' largest; any other cell's V1 breaking difference: along an axis
+      // the nearer side's front, the far side not yet reached (a side the same path away peaks with it: none)
+      var front=0.0; let last=D_FLOOD_PASSES+1u;
+      if (near && dCrush(cid(loadMaterial(t).core))>0.0) { for (var f=0u;f<6u;f++) { front=max(front,dFloodHeld(p+dFace(f),last)); } }
+      else if (near) { for (var a=0u;a<3u;a++) {
+        let up=dFloodHeld(p+dAxis(a),last); let down=dFloodHeld(p-dAxis(a),last); if (up!=down) { front=max(front,max(up,down)); } } }
+      plans[t].velocity.z=front; return;
+    }
+    var held=0.0;
+    if (near) {
+      held=dFloodHeld(p,round); var on=0.0;
+      for (var f=0u;f<6u;f++) {
+        let q=mEdge(p+dFace(f)); if (!inGrid(q)) { continue; }
+        // q's front: what it holds, or one cell on from its neighbours' if it passes it (two cells a pass)
+        var reach=dFloodHeld(q,round); var into=0.0;
+        for (var g=0u;g<6u;g++) { into=max(into,dFloodHeld(q+dFace(g),round)); }
+        if (dFloodPasses(q,into,2*i32(round)-1)) { reach=max(reach,into*${f(V1_FRONT.KEEP)}); }
+        on=max(on,reach);
+      }
+      // (a cell keeps what it held: an explosive passed it on once it went off within the tick's steps)
+      if (dFloodPasses(p,on,2*i32(round))) { held=max(held,on*${f(V1_FRONT.KEEP)}); }
+    }
+    plans[t].velocity[round&1u]=held;
+  `);
   if (stage === 'planCharges') return h + chargeSourcesWGSL + `
 var<workgroup> wgEnergy: array<f32,64>;
 var<workgroup> wgCharges: u32;
@@ -668,6 +758,7 @@ var<workgroup> wgNear: u32;
     if (live) {
       p=cellOf(t); let id=cid(loadMaterial(t).core);
       if ((events[t]&4u)!=0u) { plan.flags = 9u; } // neutron request has its own immutable source
+      plan.flags|=dFloodKeep(plans[t].velocity.z); // (frontFlood's front on it, for damageCharges)
       eligible=id != 0u && (events[t]&1u)==0u;
       if (dIsSourceCell(p)) { plan.flags |= 4u; eligible=false; }
     }
@@ -719,7 +810,7 @@ var<workgroup> wgNear: u32;
     if (t >= D_SLOTS) { return; } var plan=plans[t]; let m=loadMaterial(t); let id=cid(m.core); let k=cls(id); let p=cellOf(t);
     let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
     var energy=length(plan.velocity)*bitcast<f32>(atomicLoad(&control[6]));
-    var combined=vec3f(0); var front=0.0; var flameSteps=D_CHAIN+1;
+    var combined=vec3f(0); var front=dFloodFront(plan.flags); var flameSteps=D_CHAIN+1; plan.flags&=~D_FLOOD_BITS;
     let open=id!=0u && (events[t]&1u)==0u && (plan.flags&4u)==0u;
     if (open) {
       // every source this cell is in reach and sight of: V1's front on it (its largest), and with several
@@ -865,8 +956,13 @@ fn dV1Push(p: vec3i, id: u32) -> vec3f {
   let down=mDown(vec3f(p)+0.5); let dn=vec3f(down);
   if (any(down!=vec3i(0)) && !dOpen(p+down) && dot(a,dn)>0.0) { a-=dn*dot(a,dn)/dot(dn,dn); }
   let v=clamp(a*(1.0-row.y)/row.y,vec3f(-${f(PHYS.V_MAX)}),vec3f(${f(PHYS.V_MAX)}));
-  if (dRandom(dId(p,0x56315055u),2u)>=min(1.0,${f(LEGACY_STEPS_PER_TICK)}*(abs(v.x)+abs(v.y)+abs(v.z)))) { return vec3f(0); }
-  return v*${f(LEGACY_STEP_HZ * CELL_M)};
+  // V1's move takes a cell a cell along an axis with chance |v| there, into air or gas: one walled in by matter
+  // along an axis moves none that way (a bed of sand under a blast's pressure, its surface pushed along itself,
+  // stays as V1's does; it had launched the whole surface a tick, stripping the bed)
+  var free=vec3f(0);
+  for (var k=0u;k<3u;k++) { if (v[k]!=0.0 && dOpen(p+dAxis(k)*select(-1,1,v[k]>0.0))) { free[k]=v[k]; } }
+  if (dRandom(dId(p,0x56315055u),2u)>=min(1.0,${f(LEGACY_STEPS_PER_TICK)}*(abs(free.x)+abs(free.y)+abs(free.z)))) { return vec3f(0); }
+  return free*${f(LEGACY_STEP_HZ * CELL_M)};
 }
 ` + main64(/* wgsl */ `
     // A quiet brick's plans would all be empty; count and apply skip it too.
@@ -899,8 +995,9 @@ fn dV1Push(p: vec3i, id: u32) -> vec3f {
           // unallocated source exact and busy for deterministic retry.
           plan.flags=1u;plan.velocity=vec3f(0);
         }
-        if (exposed && length(wind)>dLift(id)) { plan.flags=1u; plan.velocity=wind; }
-        // V1's push down the pressure gradient (dV1Push), V1's speed for V1's matter, over the wind's.
+        // (No wind saltation: V1 never lifts a loose cell off by a draft past a threshold. Its wind and pressure push
+        // every loose cell a little, all the time: react.js forces, the air field's coupling.)
+        // V1's push down the pressure gradient (dV1Push), V1's speed for V1's matter.
         if (exposed && mAirPressure()) { let push=dV1Push(p,id); if (any(push!=vec3f(0))) { plan.flags=1u; plan.velocity=push; } }
         // §4.2: flux over an unsupported lip faster than 1m/s becomes a droplet.
 if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
@@ -1103,7 +1200,7 @@ var<workgroup> childCounts: array<u32,64>;
       let rank=dRank(t);
       if ((plan.flags&8u)!=0u) {
         let neutron=Material(vec4u(D_NEUTRON,${RAYS.NEUT_LIFE}u,bitcast<u32>(${f(RAYS.NEUT_E_FAST)}),0u),0i);
-        if (dSpawn(t,rank,neutron,dDir(dId(cellOf(t),4u))*${f(RAYS.NEUT_V*60*CELL_M)},4u)) { events[t]&=~4u; }
+        if (dSpawn(t,rank,neutron,dDir(dId(cellOf(t),4u))*${f(RAY_NEUTRON_FAST_MS)},4u)) { events[t]&=~4u; }
         else { atomicAdd(&control[7],1u); }
       } else {
         var packet=after; var remainder=dCarrier(after);
@@ -1129,7 +1226,7 @@ var<workgroup> childCounts: array<u32,64>;
         // (a cell launched whole leaves air, which holds no decoration: shaders/move.js)
         if (dSpawn(t,rank,packet,plan.velocity+incoming,P.sequence ^ 0x53504157u)) {
           after=remainder; if (cid(after.core)==0u) { setDeco(t,0u); }
-          if (forcing && (plan.flags&${PLAN.SLIDE}u)!=0u && P.gravMode==0u) { particles[atomicLoad(&control[D_FREE+rank])].position=dSlideStart(t); }
+          if (forcing && (plan.flags&${PLAN.SLIDE}u)!=0u && P.gravMode==0u) { particles[atomicLoad(&control[D_FREE+rank])].position=dSlideStart(t,cid(packet.core)); }
         }
         else { atomicAdd(&control[7],1u); if(forcing) { dWake(cellOf(t)); return; } } // authoritative grid fallback, never erase a failed launch
       }
@@ -1174,26 +1271,38 @@ var<workgroup> childCounts: array<u32,64>;
       let rank=atomicLoad(&control[5])+offset+child;
       if (rank>=atomicLoad(&control[4])) { break; }
       let dest=atomicLoad(&control[D_FREE+rank]); let id=max(1u,dHash(parent.id ^ (P.tick*2654435761u) ^ ((child+1u)*0x9e3779b9u)));
-      var born=parent; born.id=id; born.tail.z=0u; born.tail.x=${RAYS.NEUT_LIFE}u; born.velocity=dDir(id)*${f(RAYS.NEUT_V*60*CELL_M)};
+      var born=parent; born.id=id; born.tail.z=0u; born.tail.x=${RAYS.NEUT_LIFE}u; born.velocity=dDir(id)*${f(RAY_NEUTRON_FAST_MS)};
       particles[dest]=born; noteLive(dest); setParticleDeco(dest,0u); atomicStore(&control[D_HELD+dest],0u); atomicAdd(&control[0],1u); n--;
     }
     particles[t].tail.z=n; atomicSub(&control[18],parent.tail.z-n);
   `);
-  if (stage === 'rayEmit') return h + main1(/* wgsl */ `
+  // V1 keeps its rays in a list of their own (src/rays.js RAY_TEX: 65,536 slots); V2's rays take the particle pool's
+  // free slots, beside the flying matter.
+  // Intentional (decided under the user's delegation, 2026-10-22): rays share the pool; only binds past ~60k packets
+  if (stage === 'rayEmit') return h + `
+const D_RAY_GRID_INSET: f32 = 0.001; // V1 shaders/rays.js GRID_INSET
+const D_RAY_DIRECTION_SALT: u32 = 0x5bd1e995u;
+` + main1(/* wgsl */ `
     let index=${rayRequestBase(g)}u+P.substep; var remaining=atomicLoad(&control[index]);
     if (remaining==0u) { return; }
     for (var slot=0u;slot<D_CAP;slot++) {
       if (slotLive(slot) && particles[slot].id!=0u) { continue; }
       let emitted=u32(P.strength)-remaining;
       let seed=max(1u,dHash(P.sequence ^ (emitted*2654435761u) ^ P.tick));
-      let position=P.center+dDir(seed)*P.radius*pow(dRandom(seed,11u),1.0/3.0);
+      // V1 shaders/rays.js raysPaintFrag: a place in the brush, its sphere (blastShape 0) or its cube, clamped into
+      // the grid (GRID_INSET: a ray outside it is gone)
+      var offset=dDir(seed)*P.radius*pow(dRandom(seed,11u),1.0/3.0);
+      if (P.blastShape!=0u) { offset=(vec3f(dRandom(seed,12u),dRandom(seed,13u),dRandom(seed,14u))*2.0-1.0)*P.radius; }
+      let position=vec3f(P.origin)+clamp(P.center-vec3f(P.origin)+offset,vec3f(0.0),vec3f(f32(NX),f32(NY),f32(NZ))-D_RAY_GRID_INSET);
       var m=Material(vec4u(D_NEUTRON,${RAYS.NEUT_LIFE}u,bitcast<u32>(${f(RAYS.NEUT_E_FAST)}),0u),0i);
       if (P.mode==7u) {
         let local=vec3i(floor(position))-P.origin; var medium=0u;
         if (inGrid(local)) { medium=cid(loadMaterial(slotOf(local)).core); }
         m=Material(vec4u(D_PHOTON|(${RAYS.PHOTON_LIFE}u<<8u)|(medium<<24u),bitcast<u32>(1.0),bitcast<u32>(1.0),bitcast<u32>(1.0)),0i);
       }
-      var velocity=P.vector; if (length(velocity)<0.000001) { velocity=dDir(seed)*${f(RAYS.NEUT_V*60*CELL_M)}; }
+      // its own direction (V1: randDir, a draw apart from its place's) at V1's speed for the kind, for the zero vector
+      var velocity=P.vector;
+      if (length(velocity)<0.000001) { velocity=dDir(dHash(seed ^ D_RAY_DIRECTION_SALT))*select(${f(RAY_NEUTRON_FAST_MS)},${f(RAY_PHOTON_MS)},P.mode==7u); }
       particles[slot]=dParticle(position,velocity,seed,m); noteLive(slot); setParticleDeco(slot,0u); atomicStore(&control[D_HELD+slot],0u); remaining--; atomicAdd(&control[0],1u);
       let local=vec3i(floor(position))-P.origin; if (inGrid(local)) { dWake(local); }
       if (remaining==0u) { break; }
@@ -1238,7 +1347,7 @@ var<workgroup> childCounts: array<u32,64>;
   `);
   throw new Error(`Unknown blast stage ${stage}`);
 }
-export const BLAST_STAGES = [...ALLOCATION_STAGES,'airborneEvents','eventList','reset','select','pick','planCharges','normalizeCharges','damageCharges','finishCharges','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply','launchMark','launchCount','launchPrefix'];
+export const BLAST_STAGES = [...ALLOCATION_STAGES,'airborneEvents','eventList','reset','select','pick','frontFlood','planCharges','normalizeCharges','damageCharges','finishCharges','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply','launchMark','launchCount','launchPrefix'];
 
 export const WGSL_CHECK = BLAST_STAGES.map(stage => ({ name: `v2blasts_${stage}`, kind: 'compute',
   code: g => blastsWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,BLASTS_LAYOUT,'EMPTY'], tool: true }));

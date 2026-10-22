@@ -28,8 +28,20 @@ for (const dims of [[32, 32, 32], [128, 128, 128]]) {
     assert.equal(calls(phase, 'ctConvert'), 1, `${kernel}: ctPhase converts at one call`);
     assert.equal(calls(phase, 'ctProduct'), 1, `${kernel}: ctPhase picks a product at one call`);
     assert.match(code, /for ?\(var order ?= ?0u; ?order ?< ?(dPairOrders|ctPairOrders)\(\); ?order\+\+\)/, `${kernel}: the orders' loop has a runtime bound`);
-    assertNaga(code, `${kernel} ${dims}`);
+    // the energy reads every contact rule inlines, and the contact row read: one exit each (2026-10-22:
+    // react 4.0 -> 2.6 s, block 2.8 -> 2.3 s, v2runs 2.0 -> 1.7 s cold, docs/webgpu.md B5). The divisions
+    // keep their early returns: one exit there made v2runs and v2pairs 1.2-1.5 s slower.
+    for (const f of ['phaseTq', 'phaseOffsetEnergy', 'phaseMaterialOffsetEnergy', 'phaseLatentEnergy', 'phaseEncodeCapacity', 'materialAmount', 'ctypeOf', 'ctRow', 'ctRx', 'phaseHotQ', 'phaseColdLatent'])
+      assert.equal((body(code, f).match(/\breturn\b/g) ?? []).length, 1, `${kernel}: ${f} has one exit`);
+    assert.equal(calls(body(code, 'phaseEncodeCapacity'), 'phaseDiv'), 2, `${kernel}: phaseEncodeCapacity divides once, after its side is found`);
   }
+  // dReact (src/shaders/v2/airborne.js): one unpack, one heat room, one heat, one fit test and encode of
+  // each kind, and the react stage's pressure through one dPressureCell call
+  const react = kernels.react, dReact = body(react, 'dReact');
+  for (const [f, n] of [['ctUnpack', 3], ['ctHeatRoom', 1], ['ctHeat', 1], ['energyFits', 1], ['withEnergy', 1], ['withPacketEnergy', 1], ['packetEnergyFits', 0], ['ctNew', 1]])
+    assert.equal(calls(dReact, f), n, `react: dReact calls ${f} at ${n} site(s)`);
+  assert.equal((dReact.match(/\breturn\b/g) ?? []).length, 2, 'react: dReact returns refused or its one outcome');
+  assert.equal(calls(body(react, 'dReactOne'), 'dPressureCell'), 1, 'react: one pressure read for a charge');
 }
 
 // 1b. v2pairs (src/shaders/v2/columns.js): one colTransfers for the pair a thread owns, and colSends' one

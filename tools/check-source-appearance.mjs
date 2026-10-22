@@ -17,6 +17,7 @@ import { crueltyFrameSettings } from '../src/gfx/crueltyDisplay.js';
 import { FrameUniformsStruct, writeFrameUniforms } from '../src/gfx/uniforms.js';
 import { volumeShaderGrid } from '../src/gfx/volume.js';
 import { Matrix4, Vector3, PerspectiveCamera } from 'three/webgpu';
+import { nagaSpawn } from './naga.mjs';
 // Match CI's pinned native WGSL validator. Reflection alone cannot validate
 // these full shaders (wgsl_reflect currently rejects valid vector constants).
 const naga = spawnSync('naga', ['--version'], { encoding: 'utf8' });
@@ -161,7 +162,7 @@ test('source near/far variants preserve the optimized original reader, lighting 
 for (const { name, ordinary, source } of variants) {
   for (const [capability, code] of [['ordinary', ordinary], ['source', source]]) {
     test(`Naga validates ${name} ${capability} (CPU only)`, () => {
-      const result = spawnSync('naga', ['--stdin-file-path', `${name}-${capability}.wgsl`], { input: code, encoding: 'utf8', timeout: 30000 });
+      const result = nagaSpawn(code, `${name}-${capability}.wgsl`, {encoding: 'utf8', timeout: 30000});
       assert.equal(result.status, 0, result.stderr || result.error?.message);
     });
   }

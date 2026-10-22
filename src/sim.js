@@ -3,7 +3,7 @@ import { resetNativeDynamics } from './v2/dynamicState.js';
 import { nativeHostTick } from './v2/host.js';
 import { emitNativeRay, nativeRayKind } from './v2/tools.js';
 import { NativeIntegration, nativeCapabilities } from './v2/integration.js';
-import { nativeRectToAtlasWGSL } from './v2/nativeRead.js';
+import { nativeRectToAtlasWGSL, nativeIdsWGSL, NATIVE_ID_ROWS } from './v2/nativeRead.js';
 import {
   BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, LAYOUT, STATE_OPTS, gridDims, atlasDims, sleepUnitOf,
   marksLayout, actLayout, ACT_COUNTS, ACT_MAP, tablesBuffer, tablesAirTOffset, cellSlot, slotCell, brickIdOf, brickCoordOf,
@@ -383,6 +383,8 @@ export class Simulation {
       toAtlas: () => kernel('toAtlas', toAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], ConvertParams),
       rectToAtlas: () => kernel('rectToAtlas', rectToAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], RectParams),
       nativeRectToAtlas: () => kernel('nativeRectToAtlas', nativeRectToAtlasWGSL(g), [L.STATE_RO, L.CONVERT], RectParams),
+      nativeIds: () => kernel('nativeIds', nativeIdsWGSL(g), [L.STATE_RO, L.CONVERT]),
+      nativeDrawnToAtlas: () => kernel('nativeDrawnToAtlas', nativeRectToAtlasWGSL(g, { drawn: true }), [L.STATE_RO, L.CONVERT], RectParams),
       copy: () => kernel('copy', copyFrag(g, dbg), [L.STATE_RW]),
       fresh: () => kernel('fresh', freshFrag(g, dbg), [L.STATE_RW]),
       inertRef: () => kernel('inertRef', inertRefFrag(g), [L.STATE_RO, L.REF]),
@@ -457,7 +459,8 @@ export class Simulation {
    */
   pingPong(on) {
     const n = on ? PING_PONG : ONE_COPY;
-    if (n === this.copies || (!on && this.g.windowed !== false) || this.gpu.failure) return;
+    // (a window under V2 holds one too: its move is V2's, and V1's copy then only a cache: shift below)
+    if (n === this.copies || (!on && this.g.windowed !== false && !(this.g.windowed === true && this.compact)) || this.gpu.failure) return;
     const f = this.gpu.frame, state = this.state, next = this._stateBuffers(n), slots = this.g.slots;
     for (const k of Object.keys(STATE_BYTES)) {
       f.copy(state[k], this.cur * slots * STATE_BYTES[k], next[k], 0, slots * STATE_BYTES[k]);
@@ -995,8 +998,9 @@ export class Simulation {
   // cells read their partners, a two-phase one.
   paint({ center, radius, shape, tool, rate, replace, wind = null, end = center, grow = null, mask = null, filter = -1, erase = false, prop = null }) {
     if (this.nativeTransition || this.nativeTransitionError) return false;
-    // Under V2 the tools whose V1 rule moves cells, air or particles run natively (v2/interactions.js,
-    // below); the rest paint V1's cells, which V2 imports. Not a deviation: the same stroke either way.
+    // Under V2 every tool runs natively (v2/interactions.js routeNativePaint): V1's rule on V2's own
+    // cells, air and particles, never V1's cells for V2 to import; photons and neutrons and the
+    // decoration below have their own native owners. Not a deviation: the same stroke either way.
     if (this.compact) {
       const routed = routeNativePaint(this, { center, radius, shape, tool, rate, replace, wind, end, grow, mask, filter, erase, prop });
       if (routed !== null) return routed;
@@ -1284,12 +1288,20 @@ export class Simulation {
     // is a cache move, never permission to reimport the entire native grid.
     // (Only the running owner projects: a suspended one, after a runtime switch to V1, shadows V1's cells,
     // which are V1's own. native.shift syncs it first, importing V1's writes, as exportLegacy would.)
-    this.compact?.exportLegacy();
+    // Under V2 (running) the move is V2's alone: V1's state is only the cache its legacy writers and
+    // readbacks go through, kept in one copy, so it isn't moved; the next export rewrites all of it
+    // (exportLegacy with no projection current: BRIDGE.ALL) before anything reads it. Moving it cost
+    // a second copy of V1's state (36 B a slot) and a whole-window copy of it every move.
+    const v2 = this.compact?.isReady ? this.compact : null;
+    if (!v2) this.compact?.exportLegacy();
     native?.shift(dx, dz);
-    this.pingPong(true);   // (out of place: a box the native engine owns holds one copy)
     const f = this.gpu.frame, size = fold(Math.ceil(this.g.slots / 64)), shift = [dx, 0, dz];
-    this._dispatch(this.passOf('shift'), size, { bind: [this.tables, this._bindRW], header: { ...this.header(this.cur, 1 - this.cur), capture: 0 }, params: { shift } });
-    this.cur = 1 - this.cur;
+    if (v2) v2.legacyNative = undefined;
+    else {
+      this.pingPong(true);   // (out of place: a box the native engine owns holds one copy)
+      this._dispatch(this.passOf('shift'), size, { bind: [this.tables, this._bindRW], header: { ...this.header(this.cur, 1 - this.cur), capture: 0 }, params: { shift } });
+      this.cur = 1 - this.cur;
+    }
     // the flow field: into a scratch, then back
     this.flowTmp ??= this.gpu.createBuffer({ label: `sim${this.id} flow shift`, size: this.flow.size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
     this._flowShiftGroup ??= this.gpu.bindGroup(this.L.FLOW_SHIFT, [
@@ -1398,7 +1410,8 @@ export class Simulation {
    * the first: that read waits for it, and reads the state then).
    * @returns {Promise<void>}
    */
-  readStateRect(x, y, w, h, a, b, async = false) {
+  // drawn (V2 only: readSaveState): A as the drawn projection, B the motion V2 holds.
+  readStateRect(x, y, w, h, a, b, async = false, { drawn = false } = {}) {
     if (!async) throw new Error('readStateRect: synchronous reads removed in the WebGPU port: docs/webgpu.md W6 (pass async = true)');
     const { width, height } = this.g;
     if (!(x >= 0 && y >= 0 && w > 0 && h > 0 && x + w <= width && y + h <= height)) {
@@ -1406,7 +1419,7 @@ export class Simulation {
     }
     // V2: the native cells and the motion V2 holds (v2/nativeRead.js), once its readers are built
     const native = !!this.compact?.isReady && !!this.compact.dynamics;
-    const pass = native ? 'nativeRectToAtlas' : 'rectToAtlas';
+    const pass = native ? (drawn ? 'nativeDrawnToAtlas' : 'nativeRectToAtlas') : 'rectToAtlas';
     const read = () => {
       const n = w * h, scratch = this._rectScratch(n * 32);
       const state = native ? this.bindPhysicalRO : this.bindFlagsRO;
@@ -1428,6 +1441,64 @@ export class Simulation {
     // (the physical readers bind the dynamics' air buffers, not their kernels: bindPhysicalRO)
     const wait = this._readyFor(pass);
     return wait ? wait.then(read) : read();
+  }
+
+  /**
+   * A save's `cells` (saves/game.js capture): [A, B] in readState's layout. V1: readState. V2: its own
+   * cells as builds that read only `cells` take them (the drawn projection, B the motion and air V2
+   * holds in V1's units: v2/nativeRead.js), read straight from the native cells: no export of V1's
+   * projection, no conversion of V1's state. (V2's exact state is the physicsV2 section's.)
+   * @returns {Promise<[Float32Array, Float32Array]>}
+   */
+  async readSaveState() {
+    if (!this.compact?.isReady || !this.compact.dynamics) return this.readState();
+    const { width, height } = this.g, a = new Float32Array(width * height * 4), b = new Float32Array(width * height * 4);
+    await this.readStateRect(0, 0, width, height, a, b, true, { drawn: true });
+    return [a, b];
+  }
+  // The pass readSaveState records (saves/game.js builds it before its moment).
+  get saveStatePass() { return this.compact?.isReady && this.compact.dynamics ? 'nativeDrawnToAtlas' : 'toAtlas'; }
+
+  /**
+   * A whole-grid load whose cells V2 restores itself (a V2 save's physicsV2 section: wire/saves.js
+   * nativeLoad): sim.load's resets (the derived fields, the activity, the flow, the dynamics, the
+   * particles and decoration that come after) without writing V1's cells for V2 to replace.
+   */
+  loadNative() {
+    if (this.nativeTransitionKind === 'shift') throw new Error('Cannot load during a native world shift');
+    if (!this.compact?.isReady) throw new Error('loadNative: no native cells');
+    this.noteWrite({ replaceState: false });
+    this.compact.seenVersion = this.version;   // (nothing written to V1's cells: nothing to import)
+    this.fieldReset = true;
+    this.giReset = true;
+    this.stillFlow();
+    this.resetNativeDynamics();
+    this.rays?.reset?.();
+    this.deco?.reset?.();
+  }
+
+  /**
+   * V2: each atlas texel's element id as it is at this call, a byte a texel (cellTexel finds a
+   * cell's), from the native cells in the physical view (a quantum of liquid is liquid: the native
+   * brush's evaluate reads the same, v2/nativeRead.js nativeIdsWGSL). The flood fill's read
+   * (editing.js runFill) and the city bus's (pov/village/bus.js), in place of readState's 32 bytes
+   * a texel of V1's projection (and its export): about 2 MB at 128³, not 67.
+   * @returns {Promise<Uint8Array>}
+   */
+  async readNativeIds() {
+    const wait = this._readyFor('nativeIds');
+    if (wait) await wait;
+    const v2 = this.compact;
+    if (!v2?.isReady) throw new Error('readNativeIds: no native cells');
+    // (the ids read the cells alone: the physical group's B, the dynamics' air, isn't read)
+    const state = this.bindPhysicalRO ?? v2.readGroup(), bytes = this.g.width * this.g.height;
+    const out = this.gpu.createBuffer({ label: `sim${this.id} native ids`, size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    this._dispatch(this.passOf('nativeIds'), fold(Math.ceil(this.g.nbricks * NATIVE_ID_ROWS / 64)), {
+      bind: [this.tables, state, this.gpu.bindGroup(this.L.CONVERT, [{ binding: 0, resource: { buffer: out } }], 'native ids')], header: this.readHeader({ physical: true }),
+    });
+    const read = this.gpu.readback.buffer(out, 0, bytes);
+    this._retire(out);
+    return new Uint8Array(await read);
   }
 
   // readStateRect's scratch (A then B, 32 bytes a texel), grown as needed and
@@ -1502,6 +1573,8 @@ export class Simulation {
    * @returns {Promise<{ inert: Uint8Array, quiet: Uint8Array, awake: Uint8Array, drawn: Uint8Array, run: Uint8Array }>}
    */
   async readMaps() {
+    const v2 = this.compact;
+    if (v2?.isReady && v2.act && v2.layout) return this._readNativeMaps(v2);
     const g = this.g, L = this.actLayout, n = g.nbricks;
     const w = new Uint32Array(await this.gpu.readback.buffer(this.act, 0, L.aerSeen * 4));
     const out = { inert: new Uint8Array(n), quiet: new Uint8Array(n), awake: new Uint8Array(n), drawn: new Uint8Array(n), run: new Uint8Array(n) };
@@ -1514,6 +1587,25 @@ export class Simulation {
       out.awake[i] = m & ACT_MAP.AWAKE ? 1 : 0;
       out.drawn[i] = m & ACT_MAP.DRAWN ? 1 : 0;
       out.run[i] = m >>> ACT_MAP.RUN_SHIFT;
+    }
+    return out;
+  }
+
+  // V2's maps in readMaps's layout (the profiler's awake and drawn shares, gfx/profiler.js): V1's map
+  // is never built under V2, so it would read as it was when V2 took over. awake: the bricks V2's
+  // passes visit (its awake words); drawn: those whose cells changed in its last two ticks (its busy
+  // words, both parities: what its view's invalidation and the derived passes redraw); quiet: its
+  // quiet ticks; inert and run: V1's alone (0).
+  async _readNativeMaps(v2) {
+    const g = this.g, L = v2.layout, n = g.nbricks, words = Math.max(L.busy0, L.busy1, L.quiet, L.awake) + n;
+    const w = new Uint32Array(await this.gpu.readback.buffer(v2.act, 0, words * 4));
+    const out = { inert: new Uint8Array(n), quiet: new Uint8Array(n), awake: new Uint8Array(n), drawn: new Uint8Array(n), run: new Uint8Array(n) };
+    for (let id = 0; id < n; id++) {
+      const [bx, by, bz] = brickCoordOf(g, id);
+      const i = bx + g.bx * (by + g.by * bz);
+      out.quiet[i] = Math.min(255, w[L.quiet + id]);
+      out.awake[i] = w[L.awake + id] ? 1 : 0;
+      out.drawn[i] = w[L.busy0 + id] || w[L.busy1 + id] ? 1 : 0;
     }
     return out;
   }

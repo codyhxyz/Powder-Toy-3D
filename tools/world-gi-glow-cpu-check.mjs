@@ -14,6 +14,7 @@ import { createWorldGlow, worldGlowPlan } from '../src/gfx/worldGlow.js';
 import { createWorldLightingHistory, selectWorldGI } from '../src/world/worldLightingHistory.js';
 import { checkPipeline } from './check-sampler-budget.mjs';
 import { lightingFixture } from './world-gi-glow-fixture.mjs';
+import { nagaSpawn } from './naga.mjs';
 
 class ShaderExec extends WgslExec {
   _dispatchWorkgroup(fn, id, context) {
@@ -50,7 +51,7 @@ class ShaderExec extends WgslExec {
     fn.node.args.forEach((arg, i) => scope.createVariable(arg.name, values[i], arg)); this._execStatements(fn.node.body, scope);
   }
 }
-function naga(code, label) { const r = spawnSync('naga', ['--stdin-file-path', `${label}.wgsl`], { input: code, encoding: 'utf8' }); assert.equal(r.status, 0, `${label}: ${r.stdout}\n${r.stderr}`); }
+function naga(code, label) { const r = nagaSpawn(code, `${label}.wgsl`, {encoding: 'utf8'}); assert.equal(r.status, 0, `${label}: ${r.stdout}\n${r.stderr}`); }
 const f = Math.fround, near = (a, b, e = 2e-6) => assert.ok(Math.abs(a - b) <= e * Math.max(1, Math.abs(b)), `${a} != ${b}`);
 function fnBody(code, name) { const at = code.indexOf(`fn ${name}(`); assert.ok(at >= 0); let end = code.indexOf('{', at), depth = 1; while (depth && ++end < code.length) { if (code[end] === '{') depth++; if (code[end] === '}') depth--; } return code.slice(at, end + 1); }
 // Independent IEEE binary16 conversion, round-to-nearest ties-to-even.

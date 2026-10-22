@@ -9,7 +9,8 @@
 //           wall: the glass each breaks (V1: blast.P 148 against 183, about level)
 //   block   a 6×6×6 C-4 block lit at a corner: its C-4 left each 1/60 s (V1: a layer a step, 240 steps/s)
 //   rocket  the rocket (shaders/povTools.js rocketWGSL; V2: native forcing) 1.5 cells off a rock wall, a wood wall
-//           and a sand floor: the rock and wood it breaks, the fire it leaves, the sand it moves
+//           and a sand floor: the rock and wood it breaks, the fire it leaves, the sand it moves (V1: none, its
+//           shove walled in by the bed)
 //
 //   node tools/v2/blast-damage-browser-check.mjs --part walls|block|rocket [--engine v1|v2 [--v1 '<v1 json>']]
 import { launchBrowser } from '../browser.mjs';
@@ -53,7 +54,7 @@ async function chargeScene(key) {
   e.box([4, 0, 4], [27, 0, 27], 'METAL'); const wall = [[20, 1, 8], [20, 12, 23]]; e.box(...wall, 'GLASS');
   await e.advance(0.05); const glass0 = await count('GLASS', ...wall);
   e.box([15, 1, 14], [17, 1, 16], key, { T: key === 'TNT' ? 300 : 250 });
-  await e.advance(0.5); return { glass: glass0 - await count('GLASS', ...wall), left: await count(key) };
+  await e.advance(0.5); return { glass: glass0 - await count('GLASS', ...wall), left: await count(key), shards: await count('SHARDS'), lava: await count('LAVA') };
 }
 async function block() {
   const { e, count } = window.__blast, out = [];
@@ -126,7 +127,7 @@ try {
     ok(v2.rock.fire > 0 && v1.rock.fire > 0, `fire at the blast: V1 ${v1.rock.fire}, V2 ${v2.rock.fire}`);
     for (const key of ['rock', 'wood']) ok(near(v2[key].before - v2[key].left, v1[key].before - v1[key].left, Math.max(3, (v1[key].before - v1[key].left) * 0.4)),
       `${key} broken: V1 ${v1[key].before - v1[key].left}, V2 ${v2[key].before - v2[key].left}`);
-    ok(v2.sand.crater > 0 && near(v2.sand.crater, v1.sand.crater, Math.max(4, v1.sand.crater * 0.5)), `sand moved from the crater: V1 ${v1.sand.crater}, V2 ${v2.sand.crater}`);
+    ok(near(v2.sand.crater, v1.sand.crater, Math.max(4, v1.sand.crater * 0.5)), `sand moved from the crater: V1 ${v1.sand.crater}, V2 ${v2.sand.crater}`);
   }
   ok(!errors.length, `no page errors${errors.length ? `:\n  ${errors.join('\n  ')}` : ''}`);
 } finally {

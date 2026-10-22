@@ -144,6 +144,7 @@ jobs:
       - run: node --test tools/world-view-early-cpu-check.mjs   # one World view module for every world size, started with the map's build and reused by its first frame (CPU/Naga)
       - run: npm run check:world-signs   # native global sign endpoint + accepted frozen DOM; CPU/Naga, not App activation
       - run: npm run check:world-opaque   # actual HDR/depth packing, leased destinations; CPU/Naga, not GPU parity
+      - run: node tools/naga-file-check.mjs   # CPU: every check hands naga a file with a deadline, never its stdin (a stdin pipe can hang on macOS)
       - run: npm run check:world-plain   # original voxel look/global rays, native three-phase blends + Naga; NOT app activation
       - run: node --test tools/world-ray-shadow-cpu-check.mjs   # production DDA/PCSS CPU arithmetic + Naga, not GPU parity
       - run: npm run check:world-sun   # CPU references/native recording + actual full optical Naga; NOT application activation

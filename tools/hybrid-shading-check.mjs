@@ -13,6 +13,7 @@ import { smoothDrawWGSL } from '../src/shaders/hybrid/smooth.js';
 import { particleDrawWGSL } from '../src/shaders/hybrid/particles.js';
 import { hybridReflectionsWGSL } from '../src/shaders/hybrid/reflections.js';
 import { ddaGLSL } from '../src/shaders/gfx/core.js';
+import { nagaExec } from './naga.mjs';
 const semantic=spawnSync('naga',['--version'],{encoding:'utf8'}).status===0;
 const g=gridDims({nx:128,ny:128,nz:128});
 const materials={shader:hybridMaterialsWGSL,layoutEntries:hybridMaterialLayoutEntries,
@@ -30,7 +31,7 @@ for (const binding of [0,1,4]) for (const reflections of [false,true]) {
   if (binding===0&&!reflections) sources.push(particleDrawWGSL(g,{shadeWGSL:shader.wgsl,shadeState:true}));
   for (const source of sources) {
     new WgslReflect(source);
-    if (semantic) execFileSync('naga',['--stdin-file-path','hybrid-shading.wgsl'],{input:source,encoding:'utf8'});
+    if (semantic) nagaExec(source, 'hybrid-shading.wgsl', {encoding:'utf8'});
   }
   assert.match(code,/hybridShadeSpecular/);
   assert.match(code,/m\.f0/,'direct and reflected energy use same material F0');

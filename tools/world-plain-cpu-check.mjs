@@ -16,6 +16,7 @@ import { blockLookHelpersWGSL, blockLookWGSL } from '../src/shaders/blockPlainSh
 import { checkPipeline } from './check-sampler-budget.mjs';
 import { E, ELEMENTS } from '../src/elements.js';
 import { isLive, packSpark, SPARK_BORN } from '../src/electricity.js';
+import { nagaSpawn } from './naga.mjs';
 const hash=s=>createHash('sha256').update(s).digest('hex');
 const near=(a,b,e=3e-6)=>assert.ok(Math.abs(a-b)<=e*Math.max(1,Math.abs(b)),`${a} != ${b}`);
 // CPU model of the actual fixed-function target descriptors, not Plain shading.
@@ -24,7 +25,7 @@ function blendTarget(blend,src,dst){
   const factor=(name,k)=>({zero:0,one:1,src:src[k],'one-minus-src-alpha':1-src[3]})[name];
   return Array.from({length:4},(_,k)=>{const b=k===3?blend.alpha:blend.color;assert.equal(b.operation??'add','add');return src[k]*factor(b.srcFactor,k)+dst[k]*factor(b.dstFactor,k);});
 }
-function naga(code,name){const r=spawnSync('naga',['--stdin-file-path',`${name}.wgsl`],{input:code,encoding:'utf8'});assert.equal(r.status,0,`${name}: ${r.stdout}\n${r.stderr}`);}
+function naga(code,name){const r=nagaSpawn(code, `${name}.wgsl`, {encoding:'utf8'});assert.equal(r.status,0,`${name}: ${r.stdout}\n${r.stderr}`);}
 function fn(code,name){const start=code.indexOf(`fn ${name}(`);assert.ok(start>=0,name);let end=code.indexOf('{',start),d=1;while(d&&++end<code.length){if(code[end]==='{')d++;if(code[end]==='}')d--;}return code.slice(start,end+1);}
 // IEEE binary16 RNE. wgsl_reflect1.6.0 truncates pack2x16float instead.
 function half(v){const b=new ArrayBuffer(4),d=new DataView(b);d.setFloat32(0,v,true);const x=d.getUint32(0,true),sign=x>>>16&0x8000,e=(x>>>23&255)-127,m=x&0x7fffff;if(e>15)return sign|0x7c00;if(e< -25)return sign;const sig=e< -14?m|0x800000:m,shift=e< -14?-e-1:13;let q=sig>>>shift,tail=sig-q*2**shift,mid=2**(shift-1);if(tail>mid||tail===mid&&(q&1))q++;return sign|(e< -14?q:(e+15)*1024+q);}

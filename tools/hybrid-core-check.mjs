@@ -15,6 +15,7 @@ import { LOOK } from '../src/gfx/materials.js';
 import { withVisibility } from '../src/gpu/kernels.js';
 import { checkReadbackAfterRender } from './hybrid-readback-cpu-check.mjs';
 import { probeWGSL,forceOverflowWGSL,producerProbeWGSL,readbackSentinelWGSL,motionWriteSentinelWGSL,motionProbeWGSL,watchFailures,resetFixture,checkedRead,verifyReadback,withFreshStaging,fixturePaintRate,sceneReadbackControl,validateFixture,renderCompleteFrames,paintFixture,GLOSSY_FIXTURE,FIXTURE_COMPONENTS } from './harness/hybrid-full.js';
+import { nagaExec } from './naga.mjs';
 
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_DST: 8 };
 globalThis.GPUTextureUsage = { TEXTURE_BINDING: 4, COPY_DST: 2 };
@@ -187,14 +188,14 @@ const resource = (desc, list) => {
 const semantic=spawnSync('naga',['--version'],{encoding:'utf8'}).status===0;
   for(const code of [probeWGSL(g),forceOverflowWGSL,producerProbeWGSL,readbackSentinelWGSL,motionWriteSentinelWGSL,motionProbeWGSL]){
   new WgslReflect(code);
-  if(semantic)execFileSync('naga',['--stdin-file-path','hybrid-full-check.wgsl'],{input:code,encoding:'utf8'});
+  if(semantic)nagaExec(code, 'hybrid-full-check.wgsl', {encoding:'utf8'});
 }
 const created=[],validated=new Set();
 const pipe = desc => {
   assert.equal(desc.optional, true, `${desc.name}: Test-owned compilation must not destroy the shared device`);
   created.push(desc.name);
   const r=new WgslReflect(desc.code);
-  if(semantic&&!validated.has(desc.code))execFileSync('naga',['--stdin-file-path',desc.name+'.wgsl'],{input:desc.code,encoding:'utf8'});
+  if(semantic&&!validated.has(desc.code))nagaExec(desc.code, desc.name+'.wgsl', {encoding:'utf8'});
   validated.add(desc.code);
   for(const stage of ['compute','vertex','fragment'])for(const entry of r.entry[stage]){
     const storageTextures=entry.resources.filter(v=>v.type.name.startsWith('texture_storage_'));

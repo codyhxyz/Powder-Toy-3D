@@ -17,9 +17,11 @@ export const PARTICLE_WORDS = 12;
 // grid: the window's cells (xyz) and whether its coarse air is bound (w: group 2, the
 // Pressure view's paint and the pick's P); supers: its supertiles along x and z (the
 // brick numbering, shaders/common.js brickId), for the particle's brick's air
+// lag: how far behind its record a particle is drawn, cells per m/s of its velocity (the seconds
+// behind over CELL_M: gfx/nativeParticles.js nativeParticleView, v2/host.js particleLagSeconds)
 export const NativeParticleParams = uniformStruct('NativeParticleParams', {
   inverseModel: 'mat4x4f', origin: 'vec3f', scale: 'f32', eye: 'vec3f', sample: 'u32',
-  viewport: 'vec2f', capacity: 'u32', deco: 'u32', grid: 'vec4u', supers: 'vec4u',
+  viewport: 'vec2f', capacity: 'u32', deco: 'u32', grid: 'vec4u', supers: 'vec4u', lag: 'f32',
 });
 const ro = (binding, visibility) => ({ binding, visibility, buffer: { type: 'read-only-storage' } });
 // 1: each pool slot's decoration, RGBA8 (src/v2/physics.js particleDecoRange)
@@ -190,7 +192,10 @@ struct Out {
   if (p.positionId.w == 0u || ${rays ? '(id != 254u && id != 255u)' : `(id == 0u || id >= ${ELEMENTS.length}u)`}) { return o; }
   o.id = id; o.stableId = p.positionId.w;
   if (P.deco != 0u && ii < arrayLength(&particleDeco)) { o.paint = unpack4x8unorm(particleDeco[ii]); }
-  o.center = bitcast<vec3f>(p.positionId.xyz) - P.origin;
+  // Between ticks: where the record was the share of a tick before its position (Minecraft's
+  // lerp(prev, pos, partialTicks), prev = pos - velocity × a tick: the tick's own step), so flying
+  // matter and rays move every frame when a frame runs no tick (Speed under 1×), as V1's do a step a frame.
+  o.center = bitcast<vec3f>(p.positionId.xyz) - P.origin - bitcast<vec3f>(p.velocityCore.xyz) * P.lag;
   ${rays ? `
   // Existing TPT ray-layer colours/diameter, not matter volume.
   o.radius = ${f(RAY_LOOK.POINT_CELLS / 2)};
@@ -316,7 +321,10 @@ const PICK_THREADS = 64;
 const PICK_FACE_FLOOR = 2;    // render.js pickFrag PICK_FACE_FLOOR
 export const ParticlePickParams = uniformStruct('ParticlePickParams', {
   ro: `array<vec4f, ${PICK_RAYS}>`, rd: `array<vec4f, ${PICK_RAYS}>`, slot: `array<vec4u, ${PICK_RAYS / 4}>`,
-  origin: 'vec3f', n: 'u32', grid: 'vec4u', supers: 'vec4u', capacity: 'u32',
+  origin: 'vec3f', n: 'u32', grid: 'vec4u', supers: 'vec4u', capacity: 'u32', lag: 'f32',
+  // the rays' frame less the window's cells: 0 for the Box pick (window cells), the window's origin
+  // for World's (wire/worldPick.js: world cells, as its grid pick reports them)
+  shift: 'vec3f',
 });
 export const PARTICLE_PICK_LAYOUT = [ro(0, STAGE.COMPUTE), { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
 export const particlePickWGSL = () => /* wgsl */ `
@@ -329,6 +337,8 @@ struct Particle { positionId: vec4u, velocityCore: vec4u, payloadBank: vec4u }
 ${particleCommonWGSL()}
 ${particleViewsWGSL()}
 ${particleAirWGSL}
+// Where the draw puts the particle this frame (nativeParticleWGSL's centre, P.lag): the pick picks what is seen.
+fn particleDrawn(p: Particle) -> vec3f { return bitcast<vec3f>(p.positionId.xyz) - P.origin - bitcast<vec3f>(p.velocityCore.xyz) * P.lag; }
 // Entry t of ray (ro, rd) into the box [lo, hi], or -1 for a miss; *nrm: the entered face's normal.
 fn pickBox(ro: vec3f, rd: vec3f, lo: vec3f, hi: vec3f, nrm: ptr<function, vec3f>) -> f32 {
   let inv = 1.0 / select(rd, vec3f(1e-20), abs(rd) < vec3f(1e-20));
@@ -366,7 +376,7 @@ fn pickParticle(i: u32, ro: vec3f, rd: vec3f, skipLiquids: bool, nrm: ptr<functi
   var amount = 1.0;
   if (kind == ${K.LIQUID}u) { amount = f32(p.payloadBank.x & 0xffffffu) / 65536.0; }
   if (amount <= 0.0) { return -1.0; }
-  let c = bitcast<vec3f>(p.positionId.xyz) - P.origin;
+  let c = particleDrawn(p) + P.shift;
   if (blockyView(FU.view)) {
     let h = vec3f(0.5 * pow(amount, 1.0 / 3.0));
     return pickBox(ro, rd, c - h, c + h, nrm);
@@ -403,6 +413,8 @@ var<workgroup> wgI: array<u32, ${PICK_THREADS}>;
   let s = P.slot[r / 4u][r % 4u] * 2u;
   // the grid's hit: its cell's entry, the floor (cell y -1), or a miss (face -1)
   let at = picks[s];
+  // (World's grid pick still loading the ray's pages, face -2: the pick waits for them, particles too)
+  if (at.w < -1.5) { return; }
   var tGrid = 1e30;
   if (at.w >= 0.0 && at.y < 0.0 && rd.y < 0.0) { tGrid = -ro.y / rd.y; }
   else if (at.w >= 0.0) { var n0: vec3f; tGrid = max(pickBox(ro, rd, at.xyz, at.xyz + 1.0, &n0), 0.0); }
@@ -413,8 +425,8 @@ var<workgroup> wgI: array<u32, ${PICK_THREADS}>;
   let id = p.velocityCore.w & 255u;
   let core = vec4u(p.velocityCore.w, p.payloadBank.xyz);
   // its own cell, as the grid pick reports a V1 flying cell's (its surface can reach past it)
-  let c = bitcast<vec3f>(p.positionId.xyz) - P.origin;
-  let cell = clamp(vec3i(floor(c)), vec3i(0), vec3i(P.grid.xyz) - 1);
+  let c = particleDrawn(p);
+  let cell = clamp(vec3i(floor(c)), vec3i(0), vec3i(P.grid.xyz) - 1) + vec3i(P.shift);
   let an = abs(nrm);
   var axis = 0;
   if (an.y >= an.x && an.y >= an.z) { axis = 1; } else if (an.z >= an.x && an.z >= an.y) { axis = 2; }

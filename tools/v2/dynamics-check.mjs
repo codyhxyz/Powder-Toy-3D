@@ -5,6 +5,7 @@ import { E } from '../../src/elements.js';
 import { gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { AIRBORNE_COLOURS } from '../../src/v2/airborne.js';
+import { RAY_ARGS } from '../../src/shaders/v2/blasts.js';
 import { windowMoveReference } from './window-move-reference.mjs';
 import { brickIdOf } from '../../src/shaders/common.js';
 import { PARTICLE_CAP, DT, CELL_M, AIR, V1_AIR, GRAVITY, packParticle, unpackParticle, ballistic, sweep,
@@ -44,12 +45,22 @@ test('64K full-capacity fallback keeps source material and deterministic retries
   pool[42]=null; allocateSources(sources,pool); assert.equal(pool[42].id,101);
   assert.equal(sources.filter(s=>s.material===null).length,1); assert.deepEqual(pool[42].core,matter().core);
 });
-test('liquid impact never breaks a solid and solid fracture spends KE',()=>{
-  const metal=[E.METAL,0,0,0];
-  assert.equal(impact([E.WATER,0,0,0],[10000,0,0],metal).broken,false);
-  assert.equal(impact([E.NUGGETS,0,0,0],[0.01,0,0],metal).broken,false);
-  const fast=impact([E.NUGGETS,0,0,0],[10,0,0],metal);
-  assert.equal(fast.broken,true); assert.ok(fast.remaining>=0&&fast.remaining<fast.energy);
+test('a packet breaks a solid as V1\'s flying cell does: ½·dens·vn² past hard, in V1\'s units (BL-3)',()=>{
+  const at=(a,b,v,amount=1)=>impact([E[a],0,0,0],[v,0,0],[E[b],0,0,0],amount);
+  assert.equal(at('WATER','METAL',10000).broken,false);
+  // V1 react.js: sand needs V_MAX (72 m/s) for glass and never breaks wood, rock or metal (V2 broke them at 0.61,
+  // 0.96 and 1.67 m/s, its J against hard)
+  assert.equal(at('SAND','GLASS',71).broken,false); assert.equal(at('SAND','GLASS',72).broken,true);
+  for (const solid of ['WOOD','ROCK','METAL','BRICK']) assert.equal(at('SAND',solid,1e4).broken,false,solid);
+  assert.equal(at('SAND','GLASS',0.61).broken,false); assert.equal(at('SAND','METAL',1.67).broken,false);
+  // its closing speed across the face it hits: a graze along a wall breaks nothing
+  assert.equal(impact([E.SAND,0,0,0],[0.5,72,0],[E.GLASS,0,0,0],1,0).broken,false);
+  // a heavy grain: nuggets break metal from √(2·60/193) cells/step (56.8 m/s); the fracture spends hard, then the
+  // debris takes RESTITUTION's share (react.js shatter)
+  assert.equal(at('NUGGETS','METAL',56).broken,false); const fast=at('NUGGETS','METAL',57);
+  assert.equal(fast.broken,true); assert.ok(fast.remaining>=0&&fast.remaining<fast.energy&&fast.speed>0&&fast.speed<57);
+  // a liquid breaks as V1's moving cell did: water at V_MAX a lamp (½·10 ≥ 3), not as a half-full film
+  assert.equal(at('WATER','LAMP',72).broken,true); assert.equal(at('WATER','LAMP',72,0.5).broken,false);
 });
 test('blast LOS shields rear targets and total allocated energy is bounded',()=>{
   const targets=Array.from({length:100},(_,i)=>[i+1,0,0]);
@@ -114,18 +125,58 @@ test('driver records real pipeline families, one batch of up to 64 bricks, and s
   assert.equal(calls.filter(c=>c.name==='v2blasts_finishCharges').length,1);
   assert.equal(calls.filter(c=>c.name==='v2blasts_pick').length,1); assert.equal(d.blastBatch,64);
   assert.equal(calls.filter(c=>c.name==='v2air_step').length,AIR.substeps,'one air substep a V1 step');
-  assert.equal(calls.filter(c=>c.name==='v2particles_integrate').length,1);
+  // V1 steps rays four times a tick (RAY_STEPS_PER_TICK): the ray stages' later steps over the ray gate's args
+  const integrate=calls.filter(c=>c.name==='v2particles_integrate');
+  assert.equal(integrate.length,4); assert.ok(integrate.slice(1).every((c,i)=>c.size.indirect&&c.opts.params.substep===i+1));
   assert.equal(d.renderState.particleBytes,48); assert.equal(d.renderState.particles,d.particles);
   assert.equal(d.applyToolImpulse({kind:'nonsense',position:[0,0,0]}).status,'rejected');
   assert.equal(d.applyToolImpulse({kind:'photon',position:[1,2,3],direction:[1,0,0],count:3}).status,'queued');
   d.dispose(); assert.ok(buffers.filter(b=>b!==owner.events).every(b=>b.destroyed));
+});
+test('a painted ray flies its own random way at V1\'s speed, in its brush\'s sphere or cube (EL-1)',async()=>{
+  const {RAY_PHOTON_MS,RAY_NEUTRON_FAST_MS}=await import('../../src/v2/dynamics-reference.js');
+  const {RAYS}=await import('../../src/rays.js');
+  const {blastsWGSL}=await import('../../src/shaders/v2/blasts.js');
+  const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');
+  // V1: 2 cells a step (PHOTON_V, NEUT_V at NEUT_E_FAST) at 240 steps/s, not V2's tick
+  close(RAY_PHOTON_MS,RAYS.PHOTON_V*240*CELL_M); close(RAY_NEUTRON_FAST_MS,RAYS.NEUT_V*240*CELL_M);
+  const {owner,calls}=mockOwner(),d=new NativeDynamics(owner);await d.ready;calls.length=0;
+  assert.equal(d.applyToolImpulse({kind:'photon',position:[4,4,4],direction:[0,0,0],radius:2,shape:1,count:5}).status,'queued');
+  assert.equal(d.applyToolImpulse({kind:'neutron',position:[4,4,4],direction:[0,2,0],radius:2,count:5}).status,'queued');
+  const [brush,beam]=calls.filter(c=>c.name==='v2blasts_rayEmit').map(c=>c.opts.params);
+  assert.deepEqual(brush.vector,[0,0,0],'the brush asks for a direction each'); assert.equal(brush.blastShape,1,'in its cube');
+  assert.deepEqual(beam.vector,[0,RAY_NEUTRON_FAST_MS,0],'a directed ray at V1\'s speed'); assert.equal(beam.blastShape,0);
+  const snapshot=await d.snapshotDynamicState(); assert.deepEqual(snapshot.requests.map(r=>r.shape),[1,0],'the shape survives a save');
+  d.restoreDynamicState(snapshot); assert.equal(d.rayRequests.get(0).shape,1);
+  const emit=blastsWGSL(gridLayout(16,8,8),nativeDynamicsHead,'rayEmit');
+  // its direction is a draw of its own (V1 randDir), not its place's (which put every ray flying straight out of the centre)
+  assert.match(emit,/velocity=dDir\(dHash\(seed \^ D_RAY_DIRECTION_SALT\)\)\*select\(144\.0,144\.0,P\.mode==7u\)/);
+  assert.match(emit,/if \(P\.blastShape!=0u\) \{ offset=\(vec3f\(dRandom\(seed,12u\)/);
+  assert.match(emit,/clamp\(P\.center-vec3f\(P\.origin\)\+offset,vec3f\(0\.0\)/,'clamped into the grid as V1\'s');
+});
+test('a fission adds V1\'s FISSION_P to its brick as Pa, as a puff does (EL-6)',async()=>{
+  const {FISSION_PA,SHOCK_UNIT_PA,particlesWGSL}=await import('../../src/shaders/v2/particles.js');
+  const {airWGSL}=await import('../../src/shaders/v2/air.js');
+  const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');
+  const {RAYS}=await import('../../src/rays.js');
+  const {legacyPressureToPa}=await import('../../src/v2/dynamics-reference.js');
+  const {CONTACT_PUFF_MAX_PA}=await import('../../src/v2/contact.js');
+  // V1 rays.js FISSION_P: 20 legacy units on its cell (react.js Pr += rayDep.y), 3459 Pa, not 20 Pa
+  close(FISSION_PA,legacyPressureToPa(RAYS.FISSION_P)); assert.ok(FISSION_PA>3400&&FISSION_PA<3500);
+  const g=gridLayout(16,8,8),impactStage=particlesWGSL(g,nativeDynamicsHead,'impact'),source=airWGSL(g,nativeDynamicsHead,'source');
+  const added=+impactStage.match(/atomicAdd\(&control\[D_SHOCK\+brickOfCell\(cellOf\(s\)\)\],(\d+)u\)/)[1];
+  close(added*SHOCK_UNIT_PA,FISSION_PA,0.5);
+  // the air source adds the words as Pa (SHOCK_UNIT_PA a count), to V1's P_MAX as a puff's
+  assert.match(source,new RegExp(`a\\.vp\\.w\\+=clamp\\(f32\\(shock\\)\\*${SHOCK_UNIT_PA}\\.0,0\\.0,max\\(0\\.0,${CONTACT_PUFF_MAX_PA}\\.0-a\\.vp\\.w\\)\\)`));
 });
 test('particle tick: one-invocation clear samples the live count before hold; restore recounts it from the records',async()=>{
   const {owner,calls}=mockOwner(),d=new NativeDynamics(owner);await d.ready;
   d.holdSession={token:1,position:[0,0,0],target:[0,0,0],radius:1,strength:1,lastTick:1};
   calls.length=0;d.advanceParticles(1);
   assert.deepEqual(calls.map(c=>[c.name,c.size]),[['v2particles_clear',[1,1,1]],['v2particles_holdCOM',[1,1,1]],
-    ['v2particles_holdApply',[1024,1,1]],...['integrate','elect','impact','deposit','reactClaim','reactDust',...Array(AIRBORNE_COLOURS).fill('react')].map(s=>[`v2particles_${s}`,[1024,1,1]]),['v2blasts_airborneEvents',[1024,1,1]]]);
+    ['v2particles_holdApply',[1024,1,1]],...['integrate','elect','impact','deposit'].map(s=>[`v2particles_${s}`,[1024,1,1]]),['v2lists_rayGate',[1,1,1]],
+    ...[1,2,3].flatMap(()=>['integrate','elect','impact','deposit'].map(s=>[`v2particles_${s}`,'rays'])),
+    ...['reactClaim','reactDust',...Array(AIRBORNE_COLOURS).fill('react')].map(s=>[`v2particles_${s}`,[1024,1,1]]),['v2blasts_airborneEvents',[1024,1,1]]].map(([n,size])=>[n,size==='rays'?{indirect:d.dispatchArgs,offset:RAY_ARGS}:size]));
   assert.equal(d.flight.size,(PARTICLE_CAP+1)*32,'one flight record per slot, then the sweep record');
   const snapshot=await d.snapshotDynamicState();d.holdSession=null;snapshot.holdSession=null;
   for(const slot of [0,7,PARTICLE_CAP-1]) snapshot.particles.set(new Uint32Array(packParticle({id:slot+1,position:[1,2,3],velocity:[0,0,0],...matter()})),slot*12);
@@ -208,12 +259,9 @@ test('same-brick blast pressure adds exactly the declared acoustic energy withou
     close(pressureEnergy(p)-pressureEnergy(start),100*500*0.25,1e-8);
   }
 });
-test('photon slab exit refracts back, total internal reflection stays inside',async()=>{
-  const {refractDirection}=await import('../../src/v2/dynamics-reference.js');
-  const incoming=[0.6,-0.8,0],inside=refractDirection(incoming,[0,1,0],1/1.5);
-  const exit=refractDirection(inside,[0,1,0],1.5);
-  exit.forEach((x,i)=>close(x,incoming[i]));
-  assert.ok(refractDirection([0.9,Math.sqrt(1-.9**2),0],[0,-1,0],1.5)[1]<0);
+test('photons do not refract: V1 has no refraction (EL-4; behaviour in particle-deposition-check)',async()=>{
+  const {particlesWGSL}=await import('../../src/shaders/v2/particles.js');const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');
+  for(const stage of ['integrate','impact']) assert.doesNotMatch(particlesWGSL(gridLayout(16,8,8),nativeDynamicsHead,stage),/refract\(|dIOR/);
 });
 test('actual generated shaders carry the reference conservation and numeric guards',async()=>{
   const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');
@@ -223,7 +271,6 @@ test('actual generated shaders carry the reference conservation and numeric guar
   const impact=particlesWGSL(g,nativeDynamicsHead,'impact'),deposit=particlesWGSL(g,nativeDynamicsHead,'deposit');
   assert.match(impact,/flight\[t\]\.destination\.y=D_NONE/);
   assert.match(impact,/energyFits\(before,dHeatEnergy/);
-  assert.match(impact,/p\.tail\.w=\(u32\(f\.effect\.y\)>>2u\)&3u/);
   assert.match(deposit,/energyAdd\(energyOf\(before\),dParticleEnergy\(incoming\)\)/);
   assert.match(blastsWGSL(g,nativeDynamicsHead,'apply'),/remainder=dCarrier\(after\)/);
   assert.match(blastsWGSL(g,nativeDynamicsHead,'finish'),/sqrt\(a\.vp\.w\*a\.vp\.w\+addedP2\)/);

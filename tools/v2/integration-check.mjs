@@ -20,7 +20,7 @@ import { createPacker, createUnpacker, encodeFrame, decodeFrame, nativeSection, 
 import { nativeHostSteps as hostSteps } from '../../src/v2/host.js';
 import { E, K, TOOLS, ELEMENTS } from '../../src/elements.js';
 import { readFileSync } from 'node:fs';
-import { v2ActLayout, LEGACY_WORD } from '../../src/shaders/v2.js';
+import { v2ActLayout, LEGACY_WORD, BRIDGE } from '../../src/shaders/v2.js';
 import { resetNativeDynamics } from '../../src/v2/dynamicState.js';
 import { physicsEngine } from '../../src/launch.js';
 
@@ -194,7 +194,18 @@ const duplicate = encoded.slice(); new DataView(duplicate.buffer).setUint32(4 + 
 assert.throws(() => validateNativeWorldStore(encoded, null));
 
 calls.length = 0;
+// A window V2 runs holds one copy of V1's state, and its move is V2's alone: V1's cache isn't moved
+// (no second copy, no whole-window copy of it); the next export rewrites all of it (BRIDGE.ALL).
+sim.g.windowed = true; sim.pingPong(true); assert.equal(sim.copies, 2); sim.pingPong(false);
+assert.equal(sim.copies, 1, 'a window under V2 drops V1\'s second copy');
+const curBefore = sim.cur;
 shiftNative(16, 0);
+assert(!calls.some(c => c.name === 'shift'), 'V1\'s cache is not moved'); assert.equal(sim.copies, 1); assert.equal(sim.cur, curBefore);
+assert(!calls.some(c => c.name === 'v2bridge'), 'nor exported before the move');
+assert.equal(owner.legacyNative, undefined, 'the cache is stale everywhere');
+calls.length = 0; owner.exportLegacy(true);
+assert.equal(calls.find(c => c.name === 'v2bridge').opts.params.full, BRIDGE.ALL, 'the next export rewrites all of it');
+calls.length = 0; delete sim.g.windowed;
 assert.deepEqual(shifts, [[16, 0, 0]], 'only dynamics local fields reindex; world particle positions belong to dynamics');
 assert.deepEqual(moveOrder, [['record', true], ['restore'], ['commit']], 'dynamics and legacy words move with the cores, around their restore');
 for (let s = 0; s < g.slots; s++) {
@@ -362,20 +373,24 @@ assert.equal(nativeHostSteps(owner, 0, { once: true }), 1, 'manual step works at
 // Real host paint entrypoint routes a guest intent into its current owner,
 // bounded edits only. No guest simulation and no protocol migration.
 const fullBefore = sim.wholeWrites;
+// (an element stroke is V1's rule on V2's own cells: v2/interactions.js routeNativePaint, nativePaint.js)
+const strokes = () => edits.length + calls.filter(c => c.name === 'nativePaintCommit').length;
+const editsAt = strokes();
 applyGuestStroke(sim, { c: [3, 4, 5], r: 999, shape: 0, tool: E.SAND, rate: 1, replace: false });
-assert.equal(edits.at(-1).values.radius, 24); assert.equal(sim.compact, owner);
+assert.equal(calls.filter(c => c.name === 'nativePaintEvaluate').at(-1).opts.params.radius, 24); assert.equal(sim.compact, owner);
+assert.equal(edits.length, editsAt, 'a guest\'s element stroke never writes V1\'s cells for V2 to import');
 assert.equal(sim.wholeWrites, fullBefore);
 // A guest's wind is V1's paint rule on the host's native grid (nativePaintForce, built with the native
 // owner: v2/interactions.js NATIVE_BRUSH_KERNELS), never a legacy edit or an impulse.
 {
   const wind = TOOLS.find(t => t.key === 'WIND').id;
   const queue = [{ c: [3, 4, 5], r: 2, shape: 0, tool: wind, rate: 1 }, { c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }];
-  const painted = edits.length, asked = requests.length, from = calls.length;
+  const painted = strokes(), asked = requests.length, from = calls.length;
   assert.equal(applyGuestStrokes(sim, queue, { options: () => ({ wind: [1, 0, 0] }) }), 0, 'the guest wind is not refused');
   assert(calls.slice(from).some(c => c.name === 'nativePaintForceForceEvaluate'), 'the guest wind runs V1 pushed() natively');
   assert.equal(requests.length, asked, 'no impulse');
   assert.equal(queue.length, 0, 'the frame takes its strokes off the queue');
-  assert.equal(edits.length, painted + 1, 'the next guest stroke still paints');
+  assert.equal(strokes(), painted + 1, 'the next guest stroke still paints');
 }
 // A stroke the host can't take yet (a kernel it needs still building throws, or its run refuses) waits
 // for it (C10): the next stroke still paints, the held one goes back on the queue and paints on a later
@@ -386,14 +401,14 @@ assert.equal(sim.wholeWrites, fullBefore);
   sim.paint = function (stroke) { if (building-- > 0) throw new Error('nativePaint used before its pipeline was ready (await .ready first)'); return paint.call(this, stroke); };
   console.warn = () => {};
   const queue = [{ c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }, { c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }];
-  const painted = edits.length;
+  const painted = strokes();
   try {
     assert.equal(applyGuestStrokes(sim, queue, { now: 1000 }), 0, 'a stroke the host cannot take yet is held, not refused');
     assert.equal(queue.length, 1, 'the held stroke goes back on the queue');
-    assert.equal(edits.length, painted + 1, 'the next guest stroke still paints');
+    assert.equal(strokes(), painted + 1, 'the next guest stroke still paints');
     assert.equal(applyGuestStrokes(sim, queue, { now: 1016 }), 0);
     assert.equal(queue.length, 0, 'once its kernel is built the held stroke paints');
-    assert.equal(edits.length, painted + 2, 'the guest\'s first dab is not lost');
+    assert.equal(strokes(), painted + 2, 'the guest\'s first dab is not lost');
     building = Infinity;
     queue.push({ c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 });
     assert.equal(applyGuestStrokes(sim, queue, { now: 2000 }), 0);
@@ -401,7 +416,7 @@ assert.equal(sim.wholeWrites, fullBefore);
     assert.equal(queue.length, 0);
   } finally { sim.paint = paint; console.warn = warn; }
 }
-owner.sync(); assert.equal(calls.at(-1).name, 'v2import'); assert.equal(calls.at(-1).opts.params.full, 0);
+{ const from = calls.length; owner.sync(); assert(!calls.slice(from).some(c => c.name === 'v2import'), 'guest element strokes are native: nothing of V1\'s to import'); }
 const packer = createPacker(); const packet = await packer.pack(sim);
 assert.equal(calls.findLast(c => c.name === 'packNative').opts.header.format, 2, 'actual host codec uses direct compact projection');
 assert.equal(packer.native(sim), true, 'a V2 host streams native frames');
@@ -472,6 +487,9 @@ requests.length = 0; sim.nativeEmission = undefined;
 for (let i = 0; i < 120; i++) assert(emitNativeRay(sim, stroke, 1 / 120));
 assert.equal(requests.reduce((n, r) => n + r.count, 0), emitted);
 assert(requests.every(r => r.count > 0 && Number.isInteger(r.count)));
+// V1 paints each ray at a random place in the brush's sphere or cube, in its own random direction (shaders/rays.js
+// raysPaintFrag: randDir(&rs) * speed), never all one way: the zero direction asks rayEmit for that draw (EL-1)
+assert(requests.every(r => r.direction.every(v => v === 0) && r.shape === 1), 'a held cube brush asks for isotropic rays in its cube');
 assert.equal(sim.nativeCapabilities.physgun, false, 'generic impulse cannot advertise working physgun hold');
 owner.dynamics.capabilities.drawReady = false;
 assert.equal(sim.nativeCapabilities.photon, true, 'photons are physics: their sprites building never refuses the tool');
@@ -490,6 +508,7 @@ owner.dynamics.capabilities.drawReady = true;
   assert(dabs.length > 1);
   assert.deepEqual(requests.map(r => r.position[0]), dabs.map(c => c.x + sim.origin.x), 'one request a dab, along the whole line');
   assert(requests.every(r => r.count === each && r.kind === 'photon'));
+  assert(requests.every(r => r.direction.every(v => v === 0) && r.shape === 0), 'a line of photons asks for isotropic rays in each dab\'s sphere');
   requests.length = 0;
   assert(Simulation.prototype.paint.call(sim, { ...line, tool: TOOLS.find(t => t.key === 'NEUTRON').id }), 'sim.paint keeps the line too');
   assert.equal(requests.length, dabs.length); assert(requests.every(r => r.kind === 'neutron'));
@@ -594,13 +613,13 @@ assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouc
   assert.equal(cache.native.size, 0);
 }
 
-// main's World renderer keeps its own copy of the cells, from the live A/B
-// (src/world/renderSource.js). On a V2 world those are V2's lazy projection:
-// a tick reaches the copy through an export of only the bricks it changed,
-// recorded before the copy reads A/B. Nothing ticked: nothing exported.
+// main's World renderer keeps its own copy of the cells (src/world/renderSource.js). On a V2
+// world it reads V2's cells natively: each tick's copy packs the window's cores, air and foam
+// through V2's read group straight into the source (renderSource.js nativePack), and exports
+// nothing to V1's state (v2/physics.js exportLegacy) and copies none of it.
 {
   const realCopy = gpu.frame.copy;
-  gpu.frame.copy = function (...args) { calls.push({ name: 'copy' }); return realCopy.apply(this, args); };
+  gpu.frame.copy = function (...args) { calls.push({ name: 'copy', args }); return realCopy.apply(this, args); };
   const win = { sim, gpu, epoch: 1, size: [sim.origin.x + g.nx, g.ny, sim.origin.z + g.nz], scene: {} };
   const source = sim.worldRenderSource = new WorldRenderSource(win);
   source.recordLiveCopy(gpu.frame);
@@ -609,22 +628,17 @@ assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouc
   assert(source.needsLiveCopy(), 'a V2 tick is a live content change');
   calls.length = 0;
   source.recordLiveCopy(gpu.frame);
-  const bridge = calls.findIndex(c => c.name === 'v2bridge'), copy = calls.findIndex(c => c.name === 'copy');
-  assert(bridge >= 0 && bridge < copy, 'the export is recorded before the copy');
-  assert.equal(calls.filter(c => c.name === 'v2bridge').length, 1);
-  assert.equal(calls[bridge].opts.params.full, 0, 'only the bricks the tick changed');
-  assert.equal(calls[bridge].opts.header.format, 0, 'the drawn projection, as the Box draws it');
-  // V2's air (B) comes from the V2 air export, through the physical reader; its foam from v2/nativeAeration.js.
-  const air = calls.findIndex(c => c.name === 'worldNativeAir'), foam = calls.findIndex(c => c.name === 'nativeAeration');
-  assert(air >= 0 && air < copy, 'the V2 air export is recorded before the copy');
-  assert(foam >= 0 && foam < copy, 'the V2 foam pack is recorded before the copy');
-  assert.equal(calls[air].opts.header.format, 3); assert.equal(calls[air].opts.bind[1], sim.bindPhysicalRO);
-  assert.equal(source.liveSnapshot.B, calls[air].opts.bind[2].entries[0].resource.buffer, 'the drawn B is V2 air');
-  assert.equal(source.liveSnapshot.aeration, calls[foam].opts.bind[2].entries[0].resource.buffer, 'the drawn aeration is V2 foam');
+  assert(!calls.some(c => ['v2bridge', 'worldNativeAir', 'nativeAeration'].includes(c.name)), 'no export to V1\'s state, no window-sized air or foam pass');
+  const packs = calls.filter(c => c.name === 'worldNativePack');
+  assert(packs.length > 0, 'the source packs V2\'s cells');
+  assert(packs.every(c => c.opts.bind[1] === owner.readGroup() && c.opts.header.format === 2), 'through V2\'s read group, format 2 (the Box draw\'s)');
+  assert.equal(packs.reduce((n, c) => n + c.opts.params.hi.reduce((m, v, i) => m * (v - c.opts.params.lo[i]), 1), 0), g.slots, 'every window cell, once');
+  for (const name of ['A', 'B']) assert(!calls.some(c => c.name === 'copy' && c.args[0] === sim.state[name]), `V1's ${name} is never read`);
+  assert(calls.some(c => c.name === 'copy' && c.args[0] === sim.flow), 'V2\'s flow field is copied as before');
   calls.length = 0;
   assert.equal(source.needsLiveCopy(), false);
   source.recordLiveCopy(gpu.frame);
-  assert(!calls.some(c => c.name === 'v2bridge'), 'nothing ticked: nothing to export');
+  assert(!calls.some(c => c.name === 'v2bridge'), 'nothing exported');
   // Planted trees are a bounded write: V2 imports the marked bricks, not the window.
   const whole = sim.wholeWrites, version = sim.version;
   const planter = { sim, gpu, wb: [win.size[0] / 4, 1, win.size[2] / 4], planted: new Uint8Array(win.size[0] * win.size[2] / 16), plantCost: null,

@@ -81,8 +81,10 @@ calls.length = 0;
 assert(Simulation.prototype.paint.call(sim, { center, radius: 2, shape: 1, tool: PROP_TOOL, rate: 1, prop: { field: PROP.TYPE, value: E.OIL } }));
 ev = calls.filter(c => c.name === 'nativePaintEvaluate');
 assert.equal(ev.length, 1); assert.equal(ev[0].args.params.prop, PROP.TYPE); assert.equal(ev[0].args.params.propValue, E.OIL);
-assert.throws(() => Simulation.prototype.paint.call(sim, { center, radius: 2, shape: 1, tool: PROP_TOOL, rate: 1, prop: { field: PROP.TEMP, value: 300 } }),
-  /legacy edit forbidden/, 'temperature merges as sensible heat through the edit intent (edit-intent-check), not this kernel');
+calls.length = 0;
+assert(Simulation.prototype.paint.call(sim, { center, radius: 2, shape: 1, tool: PROP_TOOL, rate: 1, prop: { field: PROP.TEMP, value: 300 } }),
+  'temperature merges as sensible heat on the native cells (nativePaint.js nativeEditCommit), never through V1\'s cells');
+assert(calls.some(c => c.name === 'nativePaintCommit'));
 // Erase and specific delete empty V2's flying matter too (V1 kept it in the grid), before the grid's own edit.
 for (const stroke of [{ tool: TOOLS.find(t => t.key === 'ERASE').id }, { tool: E.SAND, erase: true }, { tool: PROP_TOOL, prop: { field: PROP.TYPE, value: E.EMPTY } }]) {
   calls.length = 0;
@@ -93,13 +95,13 @@ for (const stroke of [{ tool: TOOLS.find(t => t.key === 'ERASE').id }, { tool: E
   const erase = calls.find(c => c.name === 'nativePaintParticleCommit');
   assert.deepEqual(erase.args.bind[1].map(e => e.resource.buffer), [erase.args.bind[1][0].resource.buffer, d.particles, d.control], 'the erase writes the particle list and its live count');
   assert.equal(erase.size[0] * 64, 65536);
-  if (stroke.tool === PROP_TOOL) { assert.equal(threw, null); assert(names.includes('nativePaintCommit'), 'type none: the grid cells go natively too'); }
-  else assert.match(threw?.message ?? '', /legacy edit forbidden/, 'the grid cells still take the exact edit-intent replacement, after the particles');
+  assert.equal(threw, null, 'the grid cells are emptied natively too, never through V1\'s cells');
+  assert(names.indexOf('nativePaintCommit') >= 0 && names.indexOf('nativePaintCommit') < names.indexOf('nativePaintParticleEvaluate'), 'the grid first, then the flying matter');
 }
 const erase = nativePaintWGSL(g, nativePaintParams(), 'particleCommit');
 assert.match(erase, /paintParticles\[i\]\.id=0u; atomicSub\(&paintControl\[0\],1u\); noteDead\(i\);/, 'a particle dies as the particle lane kills one');
 // Heat, Cool, Spark and the Property tool's type, temperature, life and ctype reach flying matter too
-// (V1's flying matter was grid cells): the particle pass runs, and the grid keeps its own route.
+// (V1's flying matter was grid cells): the particle pass runs after the grid's native commit.
 const ids = Object.fromEntries(TOOLS.map(t => [t.key, t.id]));
 for (const stroke of [{ tool: ids.HEAT }, { tool: ids.COOL }, { tool: ids.SPARK }, { tool: PROP_TOOL, prop: { field: PROP.TEMP, value: 300 } },
   { tool: PROP_TOOL, prop: { field: PROP.LIFE, value: 5 } }, { tool: PROP_TOOL, prop: { field: PROP.CTYPE, value: E.WATER } }, { tool: PROP_TOOL, prop: { field: PROP.TYPE, value: E.OIL } }]) {
@@ -109,8 +111,8 @@ for (const stroke of [{ tool: ids.HEAT }, { tool: ids.COOL }, { tool: ids.SPARK 
   const names = calls.filter(c => c.name).map(c => c.name);
   const label = stroke.prop ? `Property ${Object.keys(PROP).find(k => PROP[k] === stroke.prop.field)}` : TOOLS.find(t => t.id === stroke.tool).key;
   assert(names.indexOf('nativePaintParticleEvaluate') >= 0 && names.indexOf('nativePaintParticleEvaluate') < names.indexOf('nativePaintParticleCommit'), `${label} reaches flying matter`);
-  if (stroke.prop?.field === PROP.TYPE) { assert.equal(threw, null); assert(names.includes('nativePaintCommit'), 'Property type: grid cells natively too'); }
-  else assert.match(threw?.message ?? '', /legacy edit forbidden/, `${label}: grid cells keep the edit-intent merge, after the particles`);
+  assert.equal(threw, null, `${label}: grid cells natively too, never through V1's cells`);
+  assert(names.includes('nativePaintCommit'), `${label}: the grid's commit`);
 }
 // The flying cell's change is V1's own rule's result, merged as V2's importProperties merges a grid cell's,
 // in packet energy (a particle owns no air carrier): sensible heat by packet capacity, a declared source.

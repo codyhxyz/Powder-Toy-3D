@@ -1,5 +1,5 @@
 import { emitNativeRay, isRayShape, emitHeldNativeRays, releaseHeldNativeRays } from './v2/tools.js';
-import { nativeHostSteps, nativeHostTick, nativeReadiness, stepClock, HOST_HZ, LEGACY_STEPS_PER_TICK } from './v2/host.js';
+import { nativeHostSteps, nativeHostTick, nativeReadiness, viewStepClock, frameTicks, partialTick, legacyStepHooks, brushPace, HOST_HZ, LEGACY_STEPS_PER_TICK } from './v2/host.js';
 // The game (docs/webgpu.md J1 U8): the settings, the grid and its scene, the
 // UI and input, and the frame loop, on one WebGPU device (src/gpu, B1).
 //
@@ -1300,6 +1300,17 @@ function brushStroke(tool) {
 const paintStroke = (stroke) => (mp.replica && !mp.isGuest ? undefined : mp.isGuest ? mp.paint(stroke)   // a guest's goes to the host
   : v2Box() && rayKindOfTool(stroke.tool) !== RAY_KIND.NONE ? paintNativeRay(stroke)
     : sim.paint(stroke));
+// The held brush's paints this frame. V1 paints it once a frame, before the frame's settings.steps steps
+// (tick below); a running V2 box paints it at that rate a game step, whatever ticks the frame runs
+// (v2/host.js brushPace): a paint a frame painted less a game step under 60 fps, where a frame runs two
+// ticks, and more on a 120 Hz display, where it runs one every other frame. Paused, while V2 builds, a
+// guest's (the host paints it) and a particle brush (held per tick, paintNativeRay): once a frame, as V1's.
+const strokePace = brushPace();
+function brushPaints() {
+  if (!strokePainted) strokePace.start();
+  const paced = v2Box() && v2Active() && !settings.paused && !mp.isGuest && rayKindOfTool(strokeTool) === RAY_KIND.NONE;
+  return paced ? strokePace.frame(ctx.nativeToolSteps * LEGACY_STEPS_PER_TICK, settings.steps) : 1;
+}
 function paintNativeRay(stroke) {
   physicsV2?.wake();
   // A line or box is one paint of each of its dabs, as V1's (v2/tools.js).
@@ -1309,10 +1320,12 @@ function paintNativeRay(stroke) {
   return true;
 }
 // A native tick is LEGACY_STEPS_PER_TICK of V1's steps: the console's beforesim and aftersim
-// fire that many times around it, as V1's loop fires them around each of its steps (below),
-// so a script counting steps keeps V1's rate (TPT's event.beforesim / event.aftersim).
+// fire that many times around it, in the order V1's loop fires them around each of its steps
+// (below): B A B A B A B, the tick, A (v2/host.js legacyStepHooks). A script counting steps keeps
+// V1's rate, and one pairing or alternating them V1's sequence (TPT's event.beforesim / aftersim).
+const scriptSteps = legacyStepHooks(() => scripts?.beforeStep(), () => scripts?.afterStep());
 function nativeBeforeStep() {
-  for (let i = 0; i < LEGACY_STEPS_PER_TICK; i++) scripts?.beforeStep();
+  scriptSteps.before();
   weatherWire.step(ctx, { hz: HOST_HZ });
   sim.flushNativeTools();
   if (nativeRayStroke) emitNativeRay(sim, nativeRayStroke, 1 / HOST_HZ);
@@ -1321,7 +1334,7 @@ function nativeBeforeStep() {
 // As the V1 loop runs the hearths' paid draft beside each sim step.
 function nativeAfterStep() {
   ctx.industry?.nativeStep();
-  for (let i = 0; i < LEGACY_STEPS_PER_TICK; i++) scripts?.afterStep();
+  scriptSteps.after();
 }
 
 function editModeText() {
@@ -1610,7 +1623,11 @@ const scoreboard = createScoreboard({
   dead: () => !!(pov?.active && pov.player?.dead),
 });
 
-const fmtSpeed = (v) => `${v}×`;
+// The Speed slider stores V1's steps a frame (settings.steps, 1 to 12) and shows the game's speed they
+// give, 1× at the default: V2 runs settings.steps / DEFAULTS.steps × HOST_HZ ticks a second (v2/host.js
+// frameTicks), V1 that share of its 4 steps a 60 Hz frame. It showed the steps as "n×" under a "steps
+// per frame" label: under V2, which ticks on game time whatever the frame rate, its "1×" was 0.25×.
+const fmtSpeed = (v) => `${+(v / DEFAULTS.steps).toFixed(2)}×`;
 // the drawer's Map row: the map's name and size, and Change map (the start menu)
 function mapRow() {
   const name = h('span.map-name'), tag = h('span.map-tag');
@@ -1671,7 +1688,7 @@ const settingsPanel = createSettings({
     { title: 'Map', rows: [mapRow()] },
     { title: 'Simulation', rows: [
       waveDemoRow(),
-      { type: 'slider', key: 'steps', label: 'Speed (steps per frame)', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
+      { type: 'slider', key: 'steps', label: 'Speed', min: 1, max: 12, step: 1, def: DEFAULTS.steps, fmt: fmtSpeed, onChange: save },
       { type: 'slider', key: 'gravity', label: 'Gravity', min: 0, max: 0.06, step: 0.005, def: DEFAULTS.gravity,
         fmt: (v) => `${(v / DEFAULTS.gravity).toFixed(1)} g`, onChange: () => { applyGravity(); save(); } },
       // TPT's Simulation Options: gravity, air, ambient heat and edge modes (simModes.js)
@@ -2734,9 +2751,9 @@ function planMeshFrame(runDerived) {
 // there, so nothing jumps forward when the view is drawn in full again.
 const SIM_CLOCK_WRAP = 1 << 20;   // (gfx/uniforms.js's)
 let clockSim = null, clockAt = 0, clockLag = 0;
-// (in V1 steps under either engine: v2/host.js stepClock)
+// (in V1 steps under either engine, and the partial tick a V2 frame between ticks has reached: v2/host.js viewStepClock)
 function viewClock(held) {
-  const now = stepClock(sim);
+  const now = viewStepClock(sim);
   if (sim !== clockSim) { clockSim = sim; clockAt = now; clockLag = 0; }
   if (held) clockLag += Math.max(0, now - clockAt);
   clockAt = now;
@@ -2840,7 +2857,8 @@ function tick(now, renderOnly = false) {
     const cam = camState();
     if (cam !== camShown) toolbar.setCamera(camShown = cam);
     const nativeSpeed = settings.steps / DEFAULTS.steps;
-    ctx.nativeToolSteps = v2Box() ? (!v2Active() || settings.paused ? 0 : Math.min(Math.floor((physicsV2.acc ?? 0) + dt * 60 * nativeSpeed), Math.max(1, Math.ceil(2 * nativeSpeed))))
+    // (the ticks nativeHostSteps will run below: v2/host.js frameTicks)
+    ctx.nativeToolSteps = v2Box() ? (!v2Active() || settings.paused ? 0 : frameTicks(physicsV2.acc ?? 0, dt, nativeSpeed).n)
       : v2Replica() ? replicaToolSteps(dt, nativeSpeed) : null;
     for (const w of live) {
       if (ctx.descent?.terrainPending) break;
@@ -2861,12 +2879,17 @@ function tick(now, renderOnly = false) {
     prof.phase('paint');
     if (selectedMode === 'factory' || ctx.industry?.building) painting = false;
   if (painting && brushValid && (!win || (inWindow(brushCenter) && worldMutationReady()))) {
-      tmpV.copy(brushCenter).add(sim.origin);   // world cells
-      const wind = windFromValid ? [tmpV.x - windFrom.x, tmpV.y - windFrom.y, tmpV.z - windFrom.z] : null;
-      windFrom.copy(tmpV);
-      windFromValid = true;
-      paintStroke({ ...brushStroke(strokeTool), wind });   // (a guest's: the host paints it)
-      strokePainted = true;
+      const paints = brushPaints();
+      if (paints > 0) {
+        tmpV.copy(brushCenter).add(sim.origin);   // world cells
+        // (the brush's motion since its last paint, shared by this frame's paints: the push a game step V1's gives)
+        const wind = windFromValid ? [(tmpV.x - windFrom.x) / paints, (tmpV.y - windFrom.y) / paints, (tmpV.z - windFrom.z) / paints] : null;
+        windFrom.copy(tmpV);
+        windFromValid = true;
+        const stroke = { ...brushStroke(strokeTool), wind };
+        for (let i = 0; i < paints; i++) paintStroke(stroke);   // (a guest's: the host paints it)
+        strokePainted = true;
+      }
     } else windFromValid = false;
     if (releasePending) painting = releasePending = false;   // (the button went up before this tick: its one paint)
     }
@@ -2885,6 +2908,7 @@ function tick(now, renderOnly = false) {
     // Intentional (V2 design, docs/v2.md §5.1): one 60 Hz game clock, so a slow or fast frame rate
     // no longer changes the world's speed as V1's settings.steps a frame does; equal at 60 fps.
     stepped = 0;
+    const accFrom = physicsV2?.acc ?? 0;
     if (v2Active()) {
       if (!v2Running) { physicsV2.activate(); v2Running = true; }
       // (a resting box ticks its clock and hooks and records nothing, as V1's idle steps: v2/host.js)
@@ -2894,7 +2918,9 @@ function tick(now, renderOnly = false) {
       });
     }
     if (DAY.running) day.clock += stepped * LEGACY_STEPS_PER_TICK; // the day is tuned in V1 steps
-    animTime += stepped / HOST_HZ;
+    // the scene's animations (perk orbs, arena banners) on game time with the partial tick, as the
+    // view's clock (v2/host.js partialTick): every frame at any Speed, not a jump each tick
+    animTime += Math.max(0, stepped + (physicsV2?.acc ?? 0) - accFrom) / HOST_HZ;
     stepOnce = false;
   } else if (stepping) {
       if (v2Running) { physicsV2.suspend(); v2Running = false; }
@@ -2907,6 +2933,18 @@ function tick(now, renderOnly = false) {
     animTime += dt;
     stepOnce = false;
   } else if (!renderOnly && mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
+  // The V1 steps this frame ran, a native tick being LEGACY_STEPS_PER_TICK of them: the HUD's steps/s
+  // and the profiler's per-step costs count V1's steps under either engine (V2's ticks read ~60 for
+  // V1's ~240, the sim seemingly at a quarter rate).
+  const legacyStepped = !stepping ? 0 : v2Box() ? stepped * LEGACY_STEPS_PER_TICK : settings.steps;
+  // A frame between two ticks of an awake box (Speed under 1×: a tick every 2nd to 4th frame) is still
+  // drawn: its clock and its flying matter move on the partial tick (v2/host.js viewStepClock,
+  // particleLagSeconds), as V1's frame of steps moves its world (it drew the same image until the tick).
+  // Intentional (decided under the user's delegation, 2026-10-22): the grid's own cells still change once
+  // a tick, 15 times a second at Speed 1: a V2 tick is the smallest unit of cell motion (one block-pass
+  // offset, whole-cell column falls, one pair cycle: v2/physics.js _tick), so there is no state between two
+  // to draw, and a sub-tick of game time would change what the physics does.
+  const betweenTicks = v2Box() && v2Running && stepping && stepped === 0 && !physicsV2.asleep;
   ctx.nativeStepped = v2Box() ? (stepping ? stepped : 0) : null;
   ctx.stepping = stepping && (!v2Box() || stepped > 0);
   if (!renderOnly && stepping && stepped > 0) { nativeRayStroke = null; releaseHeldNativeRays(sim); }
@@ -2952,7 +2990,7 @@ function tick(now, renderOnly = false) {
         reserve:()=>{
           const derived=pacer.derived(`${sim.id}:${sim.version}|${SUN.toArray()}|${KEY_LIGHT}|${renderView}|${JSON.stringify(gfx)}|${settings.nearGI}:${settings.glowLights}:${settings.caustics}|${detailVersion}`);
           const key=viewKey(camera,scene,pixelRatio,innerWidth,innerHeight,`${brushKey(brush,toolById(settings.tool).color)}|${presentation.key}`,viewSettings,gfx,post.settings);
-          return {runDerived:derived,runView:pacer.view(key,derived||wantFrame())};
+          return {runDerived:derived,runView:pacer.view(key,derived||wantFrame()||betweenTicks)};
         },capture:(reservation,state)=>captureWorldRequest(reservation,state,dt,driver.accepted)});
       if(present || runView)driver.presentLast();
       if(runView)viewClock(false); // Only an accepted WORLD transaction advances presentation clocks.
@@ -2972,7 +3010,7 @@ function tick(now, renderOnly = false) {
     `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}|${vol.format}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
     viewSettings, gfx, post.settings) : viewSeen;
   const viewChanged = viewV !== viewSeen;
-  runView = present && pacer.view(viewV, runDerived || wantFrame());
+  runView = present && pacer.view(viewV, runDerived || wantFrame() || betweenTicks);
   // Adaptation is scheduled separately below: forcing the view here would
   // restart TAA settling on every exposure update, forever until eyes settle.
   // three's meshes moved, and nothing else in the key (gfx/meshFrames.js), since the last view frame
@@ -3006,7 +3044,7 @@ function tick(now, renderOnly = false) {
     }
     if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
     stepTime += dt;
-    if (stepping) stepCount += stepped;
+    stepCount += legacyStepped;
     if (stepTime > FPS_WINDOW) { stepRate = stepCount / stepTime; stepTime = stepCount = 0; }
     idleTime = runView ? 0 : idleTime + dt;
     renderedLast = runView;
@@ -3088,7 +3126,7 @@ function tick(now, renderOnly = false) {
     cellsV: `${millions([g.nx, g.ny, g.nz])}${win ? ` of ${millions(win.size)}` : ''}`,
     resV: autoRes.enabled ? `${Math.round(post.renderScale * pixelRatio / DEVICE_RATIO * 100)}% res` : '',   // of the screen's pixels across, as the presets
   });
-  prof.endFrame(stepping ? settings.steps : 0);
+  prof.endFrame(legacyStepped);
   lastIdle = !runView && !stepping && performance.now() - t0 < CAP_IDLE_MS;
   return !settledSleep;
 }
@@ -3120,6 +3158,8 @@ function tick(now, renderOnly = false) {
   drawWorldAfter(rp){for(const w of after)w.scene(ctx,rp);brush.draw(rp);},
   drawWorldOverlay(rp){for(const w of overlayWires)w.overlay(ctx,rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
+  // the engine, as __app reports and switches it (src/wire/saves.js captures and restores it)
+  get physics() { return window.__app?.physics; }, setPhysics: (mode) => window.__app.setPhysics(mode),
   get renderView() { return renderView; },
   get scale() { return scale; }, get anchor() { return anchor; }, get worldMode() { return worldMode; },
   get win() { return win; }, set win(v) { win = v; },

@@ -35,10 +35,11 @@ assert.equal(payloadOf(advectReference(wet, [{ from: 0, to: 1, amount: 1 }])[1].
 
 const g = gridLayout(32, 32, 32);
 const block = v2BlockWGSL(g, contactWGSL);
-assert(block.indexOf('requests[i] = pending[i]') > block.indexOf('// Gas ageing'), 'pending events must move before contact sees them');
+assert(block.indexOf('requests[i] = pending[i]') > block.indexOf('// R4b'), 'pending events must move before contact sees them');
 assert(block.includes('let dU = motionDensity(hi)'));
 assert(block.includes('return contactDensity(c)'));
-assert(!block.includes('cid(lo) == cid(hi)'), 'same gas with different temperatures can convect');
+// V1 common.js canMove: an element never trades places with itself, but air does (it convects by its warmth)
+assert(block.includes('if (cid(lo) == cid(hi) && cid(lo) != 0u) { continue; }'), 'one gas never trades with itself; air convects');
 // runs are single-subtype and two runs of different subtypes never share a segment
 assert(columnWaterWGSL.includes('let grows = id != 0u && liq == id && sub == probeSub(probe) && r1 == y;'), 'a subtype change ends a run');
 assert(columnWaterWGSL.includes('(liquidSub(c) << 16u)'), 'the scan reads a cell\'s subtype'); assert(columnWaterWGSL.includes('(code & 0xffff00u)'), 'a summary keeps its subtype');

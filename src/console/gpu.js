@@ -1,6 +1,7 @@
 import { SUPER_TEX } from '../shaders/common.js';
 import { ScriptEditParams, SCRIPT_EDIT_LAYOUT, scriptEditUpdateWGSL, scriptEditDeclsWGSL } from '../shaders/script.js';
 import { nativeScriptKernel } from '../v2/interactions.js';
+import { PARTICLE_BYTES, PHOTON_TAG } from '../v2/dynamics-reference.js';
 
 // The console's GPU backend for ScriptWorld (console/world.js): reads blocks
 // of the state back and applies queued edits with the script edit
@@ -28,6 +29,23 @@ const ROW_READ_MIN_BLOCKS = 8;
 const ROW_READ_SPARE = 4;
 // The edits' storage buffer starts this big (bytes) and doubles as needed.
 const EDIT_BUFFER_MIN = 64 * 1024;
+
+// V2's matter in flight (the dynamics pool, src/shaders/v2/particles.js DParticle: position in world
+// cells, id, velocity, the core's first word, ...): the element id of each live packet in the grid.
+// A V1 flying cell is a grid cell, so this is the matter V1's census counted that V2's grid doesn't
+// hold. Photons and neutrons are not matter (V1 keeps them in its ray list, not in cells).
+const PARTICLE_WORDS = PARTICLE_BYTES / 4;
+export function flyingMatterIds(bytes, origin, dims) {
+  const u = new Uint32Array(bytes), f = new Float32Array(bytes), ids = [];
+  for (let o = 0; o + PARTICLE_WORDS <= u.length; o += PARTICLE_WORDS) {
+    const element = u[o + 7] & 255;
+    if (u[o + 3] === 0 || element === 0 || element >= PHOTON_TAG) continue;
+    let inside = true;
+    for (let a = 0; a < 3; a++) { const x = Math.floor(f[o + a] - origin[a]); if (!(x >= 0 && x < dims[a])) inside = false; }
+    if (inside) ids.push(element);
+  }
+  return ids;
+}
 
 export function createGpuBackend(getSim) {
   let kernel = null, kernelSim = null, buffer = null, bufferGpu = null;
@@ -107,29 +125,41 @@ export function createGpuBackend(getSim) {
 
   // The blocks in `list`, read now (recorded at this call, or once the edit
   // kernel is built and the edits queued for it are in): a promise of a Map.
-  function read(list) {
+  // flying: and V2's matter in flight (flyingMatterIds) as map.flying, its read recorded with the
+  // blocks', so the two see the same tick.
+  function read(list, flying = false) {
     const s = getSim(), g = s.g;
     const out = new Map();
-    if (!list.length) return Promise.resolve(out);
+    if (!list.length && !flying) return Promise.resolve(out);
     const record = () => {
       if (s.disposed) throw new Error('console: the grid changed while reading it');
-      const rows = list.map((i) => Math.floor(i / g.stw));
-      const r0 = Math.min(...rows), r1 = Math.max(...rows);
-      if (list.length >= ROW_READ_MIN_BLOCKS && (r1 - r0 + 1) * g.stw <= list.length * ROW_READ_SPARE) {
-        const h = (r1 - r0 + 1) * T;
-        const a = new Float32Array(g.width * h * 4), b = new Float32Array(g.width * h * 4);
-        return s.readStateRect(0, r0 * T, g.width, h, a, b, true).then(() => {
-          for (const i of list) out.set(i, extract(i, a, b, g, r0));
-          return out;
-        });
-      }
-      return Promise.all(list.map((i) => {
-        const d = { a: new Float32Array(BLOCK_FLOATS), b: new Float32Array(BLOCK_FLOATS) };
-        out.set(i, d);
-        return s.readStateRect((i % g.stw) * T, Math.floor(i / g.stw) * T, T, T, d.a, d.b, true);
-      })).then(() => out);
+      const pool = flying ? s.compact?.dynamics?.particles : null;
+      const packets = pool ? s.gpu.readback.buffer(pool, 0, pool.size) : null;
+      const origin = [s.origin.x, s.origin.y, s.origin.z], dims = [g.nx, g.ny, g.nz];
+      const blocks = readList(s, g, list, out);
+      if (!flying) return blocks;
+      return Promise.all([blocks, packets]).then(([map, bytes]) => { map.flying = bytes ? flyingMatterIds(bytes, origin, dims) : []; return map; });
     };
     return built(kernelFor(s)) ? record() : settled(s).then(record);
+  }
+  // the blocks' rectangles (sim.readStateRect), into out
+  function readList(s, g, list, out) {
+    if (!list.length) return Promise.resolve(out);
+    const rows = list.map((i) => Math.floor(i / g.stw));
+    const r0 = Math.min(...rows), r1 = Math.max(...rows);
+    if (list.length >= ROW_READ_MIN_BLOCKS && (r1 - r0 + 1) * g.stw <= list.length * ROW_READ_SPARE) {
+      const h = (r1 - r0 + 1) * T;
+      const a = new Float32Array(g.width * h * 4), b = new Float32Array(g.width * h * 4);
+      return s.readStateRect(0, r0 * T, g.width, h, a, b, true).then(() => {
+        for (const i of list) out.set(i, extract(i, a, b, g, r0));
+        return out;
+      });
+    }
+    return Promise.all(list.map((i) => {
+      const d = { a: new Float32Array(BLOCK_FLOATS), b: new Float32Array(BLOCK_FLOATS) };
+      out.set(i, d);
+      return s.readStateRect((i % g.stw) * T, Math.floor(i / g.stw) * T, T, T, d.a, d.b, true);
+    })).then(() => out);
   }
 
   const backend = {
@@ -149,17 +179,18 @@ export function createGpuBackend(getSim) {
 
     // sync: a typed command's read. Its blocks if a retry brought them in;
     // else it throws, and the error's retry() reads them (see the top).
-    readBlocks(list, sync) {
-      if (!sync) return read(list);
+    readBlocks(list, sync, flying = false) {
+      if (!sync) return read(list, flying);
       const epoch = backend.epoch();
-      if (fetched?.epoch === epoch && list.every((i) => fetched.map.has(i))) {
+      if (fetched?.epoch === epoch && list.every((i) => fetched.map.has(i)) && (!flying || fetched.map.flying)) {
         const out = new Map(list.map((i) => [i, fetched.map.get(i)]));
+        if (flying) out.flying = fetched.map.flying;
         fetched = null;
         return out;
       }
       fetched = null;
       const err = new Error('console: this read waits for the GPU (a typed command reads as a coroutine: console/lua.js)');
-      err.retry = () => read(list).then((map) => { fetched = { epoch, map }; });
+      err.retry = () => read(list, flying).then((map) => { fetched = { epoch, map }; });
       throw err;
     },
 

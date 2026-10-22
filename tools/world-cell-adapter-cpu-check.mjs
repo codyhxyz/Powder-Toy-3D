@@ -14,6 +14,7 @@ import { gridDims, brickIdOf, cellSlot } from '../src/shaders/common.js';
 import { brickFrag } from '../src/shaders/passes.js';
 import { worldCellClassifierWGSL, worldCellPackWGSL, WORLD_CELL_PACK_LAYOUTS, worldFieldPackWGSL, WORLD_FIELD_PACK_LAYOUT, copyCapturedFieldPage } from '../src/shaders/worldCellAdapter.js';
 import { setAeration, aerationForSource, isProducerBoundedAeration } from '../src/gfx/foam.js';
+import { nagaExec } from './naga.mjs';
 const u32=b=>new Uint32Array(b.bytes), f32=b=>new Float32Array(b.bytes);
 // The Box brickFrag the world classifier matches: 9cdee27b's plus only V2's liquid-interior
 // certificate bit (7c893f14), as merged into main from 7f9b2f1c.
@@ -369,7 +370,7 @@ test('actual shared classifier Box emission unchanged at32/64/128; world classif
     assert(rewritten.includes('export const brickFrag'));assert(brickFrag(gridDims({nx:n,ny:n,nz:n})).includes('wgEm[li] += wgEm[li + w]'));
   }
   assertWorldLayout(WORLD_CELL_PACK_LAYOUTS);assert.equal(WORLD_CELL_PACK_LAYOUTS[0].filter(e=>e.buffer?.type==='read-only-storage').length,7);
-  for(const [name,code] of [['classifier',worldCellClassifierWGSL(gridDims({nx:64,ny:64,nz:64}))],['raw',worldCellPackWGSL],['fields',worldFieldPackWGSL]])execFileSync('naga',['--stdin-file-path',name+'.wgsl'],{input:code,stdio:['pipe','pipe','pipe'],timeout:10000});
+  for(const [name,code] of [['classifier',worldCellClassifierWGSL(gridDims({nx:64,ny:64,nz:64}))],['raw',worldCellPackWGSL],['fields',worldFieldPackWGSL]])nagaExec(code, name+'.wgsl', {timeout:10000});
 });
 
 test('actual historical Box brickFrag text remains byte-identical, not merely equivalent arithmetic',async()=>{
@@ -396,7 +397,7 @@ fn eid(a:vec4f)->i32{return i32(floor(a.x+0.5));}
 fn fetchA(q:vec3i)->vec4f{var k=0;if(q.x!=C.x){k=select(0,1,q.x>C.x);}else if(q.y!=C.y){k=select(2,3,q.y>C.y);}else{k=select(4,5,q.z>C.z);}return vec4f(f32(ids[k]),0.0,0.0,0.0);}
 ${leaf}
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid:vec3u){let i=gid.x*6u;P.scratchOrigin=input[i].xyz;P.worldMin=input[i+1u].xyz;P.worldMax=input[i+2u].xyz;C=input[i+3u].xyz;ids[0]=input[i+4u].x;ids[1]=input[i+4u].y;ids[2]=input[i+4u].z;ids[3]=input[i+4u].w;ids[4]=input[i+5u].x;ids[5]=input[i+5u].y;output[gid.x]=openFaces(C);}`;
-  execFileSync('naga',['--stdin-file-path','leaf.wgsl'],{input:code,stdio:['pipe','pipe','pipe'],timeout:10000});
+  nagaExec(code, 'leaf.wgsl', {timeout:10000});
   new WgslExec(new WgslParser().parse(code)).dispatchWorkgroups('main',cases.length,{0:{0:input,1:output}});
   cases.forEach((c,i)=>{let expected=0;for(let k=0;k<6;k++){const q=c.p.map((v,a)=>v+c.origin[a]);q[k>>1]+=k&1?1:-1;if(q[1]<0)continue;if(q.some((v,a)=>v<0||v>=[96,384,96][a])||![1,2].includes(c.ids[k]))expected++;}assert.equal(output[i],expected);});
   // Exact unchanged shared reduction/air/liquid/film/emission paths are proven

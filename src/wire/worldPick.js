@@ -40,6 +40,11 @@ export function queryWorldPick(app,state,displayed,{ray,skipLiquids=false},isCur
       output=gpu.device.createBuffer({label:'WORLD visual pick output',size:32,usage:128|4});
       combined=gpu.device.createBuffer({label:'WORLD visual pick whole feedback and output',size:native.feedback.size+32,usage:4|8});
       if(!native.recordPickReady(gpu.frame,{params,output,view:view.view}))throw Error('WORLD pick pipeline unavailable');
+      // V2's flying matter (a V1 flying cell is a cell the march finds), as the Box pick finds it
+      // (gfx/volume.js recordPicks): the nearer of the two, in world cells (shift: the window's origin)
+      const sim=app.sim,o=sim?.origin;
+      if(o)sim.compact?.dynamics?.drawAdapter?.recordPick?.(gpu.frame,{ring:output,ro:params.ro,rd:params.rd,slot:params.slot,n:1,
+        origin:o,shift:[o.x,o.y,o.z],transient:true});
       const encoder=gpu.frame.direct();
       encoder.copyBufferToBuffer(native.feedback,0,combined,0,native.feedback.size);
       encoder.copyBufferToBuffer(output,0,combined,native.feedback.size,32);

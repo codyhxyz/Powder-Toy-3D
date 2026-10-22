@@ -12,6 +12,7 @@ import { shadowBindingDescriptors } from '../src/shaders/hybrid/shadows.js';
 import { createHybridShading } from '../src/gfx/hybrid/shading.js';
 import { launchBrowser, newTestPage } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
+import { nagaExec } from './naga.mjs';
 
 const variants = ['full', 'no-reflections'];
 const variant = process.argv.find(a => a.startsWith('--variant='))?.split('=')[1] ?? 'full';
@@ -47,7 +48,7 @@ try {
     for (const r of [...reflected.uniforms, ...reflected.storage, ...reflected.textures, ...reflected.samplers]) {
       assert(source.layouts[r.group]?.some(e => e.binding === r.binding), `missing layout for ${r.name}`);
     }
-    execFileSync('naga', ['--stdin-file-path', `${name}.wgsl`], { input: source.code, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    nagaExec(source.code, `${name}.wgsl`, {encoding: 'utf8'});
     console.log(`PASS CPU ${name}: production 128³ opaque WGSL/layouts; Naga validated`);
   }
   if (!cpu) {

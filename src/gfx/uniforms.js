@@ -19,7 +19,7 @@ import { tablesBuffer } from '../shaders/common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { decoShown } from '../deco.js';
 import { materialStyleForView } from '../views.js';
-import { stepClock } from '../v2/host.js';
+import { viewStepClock } from '../v2/host.js';
 export { WAND_LIGHTS };
 
 // The media detail clock (simulation steps) wraps here, seamlessly for the
@@ -90,8 +90,9 @@ export function updateGfxUniforms(sim, sun, light) {
   }
   sim.smoothing = gfx.smoothing;
   gfxUniforms.uFrame.value = (gfxUniforms.uFrame.value + 1) % FRAME_WRAP;
-  // (V1 steps under either engine: a native tick is several of them, v2/host.js stepClock)
-  const steps = stepClock(sim);
+  // (V1 steps under either engine: a native tick is several of them, v2/host.js stepClock; and the
+  // partial tick between two, so a V2 box's media drift moves every frame at any Speed: viewStepClock)
+  const steps = viewStepClock(sim);
   gfxUniforms.uSimClock.value = steps % SIM_CLOCK_WRAP;
   cloudShift(steps, gfxUniforms.uCloudShift.value);
   gfxUniforms.uMatDetail.value = gfx.materials;

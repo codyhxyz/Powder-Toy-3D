@@ -22,6 +22,7 @@ import { createDetailGate, gateVariants } from '../src/gfx/detailGate.js';
 import { detailDefaults } from '../src/gfx/detail.js';
 import { VOLUME_VIEWS, viewShadows, warmChecks, WGSL_CHECK as renderChecks } from '../src/shaders/render.js';
 import { WGSL_CHECK as giChecks } from '../src/shaders/gi.js';
+import { nagaSpawn } from './naga.mjs';
 
 const source = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 assert.equal(gfx.materialStyle, undefined, 'artwork is not a second renderer setting');
@@ -403,7 +404,7 @@ for (const [name, code] of modules) {
   }
   if (name.startsWith('far.')) assert.match(code, /cozyWaterPaint\(p, footprint\(p\), cozyFarShore\(p\)\)/);
   if (process.argv.includes('--validate-wgsl')) {
-    const result = spawnSync('naga', ['--stdin-file-path', `${name}.wgsl`], { input: code, encoding: 'utf8' });
+    const result = nagaSpawn(code, `${name}.wgsl`, {encoding: 'utf8'});
     if (result.error) throw result.error;
     assert.equal(result.status, 0, `${name}: ${result.stdout}\n${result.stderr}`);
     console.log(`${name}: Naga CPU validation passed`);

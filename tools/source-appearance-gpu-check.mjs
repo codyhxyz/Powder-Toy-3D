@@ -7,6 +7,7 @@ import { launchBrowser, newTestPage } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { E } from '../src/elements.js';
 import { spawnSync } from 'node:child_process';
+import { nagaSpawn } from './naga.mjs';
 
 const words = new Uint32Array(160);
 words.set(appearanceFixture().words);
@@ -135,7 +136,7 @@ try {
 }
 }
 if (process.argv.includes('--cpu')) {
-  const result = spawnSync('naga', ['--stdin-file-path', 'appearance-fixture.wgsl'], { input: code, encoding: 'utf8' });
+  const result = nagaSpawn(code, 'appearance-fixture.wgsl', {encoding: 'utf8'});
   assert.equal(result.status, 0, result.stderr || result.error?.message);
   console.log('PASS numerical source fixture Naga validation (CPU only)');
 } else await checkGPU();

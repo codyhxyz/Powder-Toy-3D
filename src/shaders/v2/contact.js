@@ -13,13 +13,17 @@ const float = n => Number.isInteger(n) ? `${n}.0` : `${n}`;
 const layout = contactTableLayout(CONTACT_ROWS.length, CONTACT_REACTIONS.length);
 // Read the immutable tail of the existing EV buffer. No constant struct arrays
 // for the backend to inline; signed bounds/defaults and field precision persist.
+// One exit: a row read inlines at hundreds of sites in the contact kernels, and an early return there
+// is what makes Metal's cold compile slow (docs/webgpu.md B5). Past the table the row is all zero, as
+// before; the read stays inside it.
 const table = (name, struct, count, schema, offset, stride) => `fn ${name}(id:i32)->${struct} {
- if(id<0 || id>=${count}){return ${struct}(${schema.map(([, type]) => type === 'i32' ? '0' : '0.0').join(',')});}
- let base=${offset / 4}u+u32(id)*${stride / 4}u;
- return ${struct}(${schema.map(([, type], i) => {
+ let base=${offset / 4}u+u32(clamp(id,0,${Math.max(0, count - 1)}))*${stride / 4}u;
+ var row=${struct}(${schema.map(([, type], i) => {
    const load = `EV[base+${Math.floor(i / 4)}u].${'xyzw'[i % 4]}`;
    return `bitcast<${type}>(${load})`;
  }).join(',')});
+ if(id<0 || id>=${count}){row=${struct}(${schema.map(([, type]) => type === 'i32' ? '0' : '0.0').join(',')});}
+ return row;
 }`;
 
 // These functions use an intentionally restricted source subset: no JS object
@@ -256,14 +260,21 @@ fn ctPack(c:CTCell,original:vec4u)->vec4u {
   core.y=(core.y&0xfe000000u)|(u32(c.burning)<<24u)|u32(c.life)|(u32(c.ctype)<<16u);
   if(row.conductor!=0){core.w=(core.w&0xfffff000u)|u32(c.spark);}
  }
+ // a new grain takes the fall its maker gave it (the clone's spawn drop: V1 react.js), V2's fall format (fall.js)
+ if(row.kind==2 && c.id!=i32(original.x&255u) && c.fallSpeed>0.0){core=setFall(core,c.fallSpeed*${float(CELL_M * CONTACT_HZ)},0.0);}
  return core;
 }
 ${specialContactWGSL}
 // a flying packet's touch on a cell this tick (v2/contact.js ctPacketTouch; the airborne react stage's mark)
 ${packetTouchWGSL(PARTICLE_CAP)}
+// V1 common.js densityOf (the motion's, v2/contact.js contactDensity): air thins as it warms against the scene's
+// ambient (airDensity: AIR_DENS_SPAN, clamped to AIR_DENS_LO..HI); a gas as air does from its spawn temperature
+fn contactAirDensity(t:f32)->f32 { return 1.0-clamp((t-P.ambient)/${float(PHYS.AIR_DENS_SPAN)},${float(PHYS.AIR_DENS_LO)},${float(PHYS.AIR_DENS_HI)}); }
 fn contactDensity(core:vec4u)->f32 {
  let id=i32(core.x&255u);let row=ctRow(id);
- if(row.kind==0 || row.kind==4){return row.density*f32(row.spawnQ)/max(4.0,f32(phaseTq(u32(id),(core.x>>8u)&65535u)));}
+ let air=contactAirDensity(f32(phaseTq(u32(id),(core.x>>8u)&65535u))*0.25-273.25);
+ if(row.kind==0){return air;}
+ if(row.kind==4){return row.density*air/contactAirDensity(f32(row.spawnQ)*0.25-273.25);}
  return row.density;
 }
 fn contactBoundary(material:Material,openFaces:u32,ambientQ:u32,position:vec3i)->Material {

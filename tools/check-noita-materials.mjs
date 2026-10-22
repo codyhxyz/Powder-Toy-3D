@@ -18,6 +18,7 @@ import { VOLUME_VIEWS, viewShadows, WGSL_CHECK as renderChecks } from '../src/sh
 import { farFrag } from '../src/shaders/far.js';
 import { farLayout, WORLD_SIZE } from '../src/shaders/farShared.js';
 import { gridLayout } from '../src/sim.js';
+import { nagaSpawn } from './naga.mjs';
 
 const source = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const json = (path) => JSON.parse(source(path));
@@ -182,7 +183,7 @@ const modules = [...renderChecks().filter((e) => e.view === 'noita').map((e) => 
 for (const [name, code] of modules) {
   assert.equal((code.match(/fn noitaMat\(/g) || []).length, 1, `${name}: helper defined once`);
   if (process.argv.includes('--validate-wgsl')) {
-    const result = spawnSync('naga', ['--stdin-file-path', `${name}.wgsl`], { input: code, encoding: 'utf8' });
+    const result = nagaSpawn(code, `${name}.wgsl`, {encoding: 'utf8'});
     if (result.error) throw result.error;
     assert.equal(result.status, 0, `${name}: ${result.stdout}\n${result.stderr}`);
   }

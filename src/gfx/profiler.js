@@ -110,9 +110,22 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
   const watch = (pass) => { pass.phase = cur; recordOf(frameTag()).passes.push(pass); };
 
   // Brick shares from the sim's maps (docs/webgpu.md G5: brick level), read
-  // asynchronously; a sample shows the latest that has landed.
+  // asynchronously; a sample shows the latest that has landed. Under V2 its own
+  // activity (v2/physics.js readStats, after the last tick): the bricks its passes
+  // ran over (V1's DRAWN: "the steps run it") and those a rule was busy in (V1's
+  // AWAKE), over its bricks. V1's maps aren't rebuilt while V2 runs the box: they
+  // showed the shares V1 last left.
   function readShares(sim) {
-    if (mapsReading || typeof sim?.readMaps !== 'function') return;
+    if (mapsReading) return;
+    const v2 = sim?.compact;
+    if (typeof v2?.readStats === 'function') {
+      mapsReading = true;
+      v2.readStats().then((s) => {
+        maps = s.units > 0 ? { awake: s.busy / s.units, drawn: s.awake / s.units } : { awake: null, drawn: null };
+      }).catch(() => {}).finally(() => { mapsReading = false; });
+      return;
+    }
+    if (typeof sim?.readMaps !== 'function') return;
     mapsReading = true;
     sim.readMaps().then((m) => {
       const share = (a) => { if (!a?.length) return null; let n = 0; for (let i = 0; i < a.length; i++) if (a[i]) n++; return n / a.length; };
@@ -254,7 +267,7 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
     /** Kept for the old pass hooks (sim.onPass, post.onPass): gpu.timing times passes now. */
     pass() {},
 
-    /** End of the frame; frameSteps: sim steps it ran. */
+    /** End of the frame; frameSteps: the V1 steps it ran (under V2, its ticks × LEGACY_STEPS_PER_TICK: app.js legacyStepped). */
     endFrame(frameSteps) {
       if (!on) return;
       const t = performance.now();

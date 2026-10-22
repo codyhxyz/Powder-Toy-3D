@@ -31,6 +31,21 @@ export const NATIVE_LAUNCH_MODE=15;
 //   as V2's own boiling makes it (contact.js ctPhase -> ctConvert: ctNew, then the input's energy):
 //   the update's life, no ctype, the cell's seed. A cell whose energy can't be the gas yet keeps its
 //   element with it, for V2's phase to convert, as ctConvert waits (pending) when it can't fit.
+// opts.blocked: V1's move pass moves a loose cell its velocity points out of a face into air or gas (move.js), and
+//   leaves one walled in by matter where it is: the rule's motion launches only a cell with such a face along it
+//   (the rocket's shove on a buried bed of sand, its chips driven into the wall behind them, stay put as V1's do),
+//   a past-the-grid face counting free under void edges. Others keep its fracture or stay on the grid at rest.
+const FORCE_MOVE_FREE_WGSL=`
+fn forceMoveFree(p: vec3i, v: vec3f) -> bool {
+ for(var a=0u;a<3u;a++) {
+  if(v[a]==0.0) { continue; }
+  var q=p; q[a]+=select(-1,1,v[a]>0.0); q=mEdge(q);
+  if(!inGrid(q)) { if(P.edge==1u) { return true; } continue; }
+  let k=cls(wIdAfter(q)); if(k==0u || k==4u) { return true; }
+ }
+ return false;
+}
+`;
 export function nativeForceCommitWGSL(g,params,stage,opts={}) {
   const SI=opts.speedSI ?? WEATHER_SPEED_SI;
   const vaporise=opts.vaporise ? `
@@ -104,12 +119,13 @@ fn forcePacketHeat(m: Material, r: WeatherResult) -> Material {
 `;
   // (V1's pressure break: a solid the update left as it was, cracked by the pressure it wrote beside it,
   // nativeWeather.js V1_PRESSURE_BREAK_WGSL, a fracture as apply renames one)
-  if(stage==='plan') return head+V1_PRESSURE_BREAK_WGSL+weatherMain(`if(i>=weatherCount()) { return; }
+  if(stage==='plan') return head+V1_PRESSURE_BREAK_WGSL+(opts.blocked ? FORCE_MOVE_FREE_WGSL : '')+weatherMain(`if(i>=weatherCount()) { return; }
 let p=weatherCell(i);let s=slotOf(p);let r=results[i];let before=loadMaterial(s);
 let id=cid(before.core);let k=cls(id);var flags=0u;${sources}${renameNow}${vaporise}
 if(r.before.x!=r.after.x) { flags=2u|(u32(r.after.x)<<8u); }
 else { let broke=wPressureBreak(p,r); if(broke>=0) { flags=2u|(u32(broke)<<8u); } }
-if((k==2u || k==3u || flags!=0u) && r.motion.w!=0.0) { flags|=1u; }
+if((k==2u || k==3u || flags!=0u) && r.motion.w!=0.0) { flags|=1u; }${opts.blocked ? `
+if((flags&1u)!=0u && !forceMoveFree(p,r.motion.xyz)) { flags&=~1u; }` : ''}
 ${opts.motion?.flags ?? ''}${opts.sparse?'if(flags!=0u) { ':''}plans[s]=ForcePlan(${opts.motion?.velocity ?? `r.motion.xyz*${SI}`},flags);${opts.sparse?' }':''}
 ${opts.life?'var':'let'} after=forceHeat(before,r);${life}
 if(any(after.core!=before.core) || after.bank!=before.bank) {
