@@ -256,7 +256,9 @@ console.log('ok production multiplayer: join-before-frame, shift metadata, stale
   assert.equal(ng.net.role, 'guest');
   // The old build itself (the base commit's net modules, run as they shipped) meets this host: it fails a native
   // frame (its key loop) and the outdated frame then ends its session with a reason, instead of looping.
-  const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'origin/main'], { cwd: new URL('..', import.meta.url).pathname }).toString().trim();
+  // the last main build before the version handshake (tagged v1-oracle): fixed, so the check holds on main itself,
+  // where a merge-base with origin/main is this build (the deploy checks out full history: deploy.yml fetch-depth 0)
+  const base = '19a98c9e';
   const old = (f) => execFileSync('/usr/bin/git', ['show', `${base}:src/net/${f}`], { cwd: new URL('..', import.meta.url).pathname }).toString();
   const netDir = new URL('../src/net/', import.meta.url), oldModules = new Map();
   async function loadOld(name, from) {
