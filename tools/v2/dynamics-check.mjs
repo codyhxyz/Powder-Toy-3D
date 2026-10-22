@@ -102,13 +102,13 @@ function mockOwner() {
   owner.events=gpu.createBuffer({size:g.slots*4,label:'events'});
   return {owner,calls,buffers};
 }
-test('driver records real pipeline families, batch8, and separate draw capability',async()=>{
+test('driver records real pipeline families, one batch of up to 64 bricks, and separate draw capability',async()=>{
   const {owner,calls,buffers}=mockOwner(),d=new NativeDynamics(owner); await d.ready;
   assert.equal(d.capabilities.physicsReady,true); assert.equal(d.capabilities.drawReady,false);
   d.advanceParticles(1); d.consumeMaterialEvents(1); d.advanceAir(1);
-  // one batch a tick serves up to blastBatch (8) charges together
+  // one batch a tick serves every charge of up to blastBatch (64) bricks together (V1 react.js: no cap)
   assert.equal(calls.filter(c=>c.name==='v2blasts_finishCharges').length,1);
-  assert.equal(calls.filter(c=>c.name==='v2blasts_pick').length,1); assert.equal(d.blastBatch,8);
+  assert.equal(calls.filter(c=>c.name==='v2blasts_pick').length,1); assert.equal(d.blastBatch,64);
   assert.equal(calls.filter(c=>c.name==='v2air_step').length,8);
   assert.equal(calls.filter(c=>c.name==='v2particles_integrate').length,1);
   assert.equal(d.renderState.particleBytes,48); assert.equal(d.renderState.particles,d.particles);

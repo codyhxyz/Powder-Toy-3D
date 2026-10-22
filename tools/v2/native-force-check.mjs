@@ -51,6 +51,27 @@ for(const field of [PROP.VX,PROP.VY,PROP.VZ,PROP.PRESSURE]) {
  assert.equal(calls.find(c=>c.name==='nativePaintForceForceEvaluate').args.params.masked,1);
 }
 for(const name of ['povKick','povStrike','povField']) assert(povGpu(sim).edit(name,{lo:[1,1,1],hi:[4,4,4]},{}));
+// T5: the rocket and the frag grenade run V1's own blast (shaders/povTools.js rocketWGSL) as native forcing,
+// not an energy-split external blast: its solid breaks are fractures (apply renames them energy-exactly and
+// launches the debris at the rule's speed), only air or a gas becomes a new cell (the fire), loose matter is
+// shoved, and the air takes the rule's pressure (the air stage).
+{
+ calls.length=0;const before=modules.length;
+ assert.equal(povGpu(sim).edit('povRocket',{lo:[0,0,0],hi:[17,17,17]},{center:{x:8.5,y:8.5,z:8.5},frame:7}),true,'the rocket runs natively');
+ const names=calls.filter(x=>x.name).map(x=>x.name);
+ assert.deepEqual(names.slice(0,2),['povRocketForceEvaluate','povRocketForceParticleEvaluate']);
+ assert.ok(names.includes('povRocketForcePlan') && names.includes('povRocketForceAir') && names.at(-1)==='povRocketForceParticleCommit',names.join(' '));
+ assert.deepEqual(calls.find(x=>x.name==='povRocketForceEvaluate').args.params.center,{x:8.5,y:8.5,z:8.5});
+ assert.deepEqual(calls.find(x=>x.allocate).allocate,{mode:15},'its launches are bounded forcing (absolute speeds)');
+ const made=modules.slice(before),code=n=>made.find(m=>m.name===n).code;
+ for(const m of made) assertNaga(m.code,m.name);
+ // V1's rule, as V1 runs it: break by ENERGY against HARD, FIRE_SPAWN of the air within FIRE_RADIUS, the shove, P = max(p, PULSE_P·fade)
+ for(const rule of ['let E = ROCKET_ENERGY * (1.0 - x * x);','rnd(&rs) < ROCKET_FIRE_SPAWN','*oA = vec4f(f32(E_FIRE), ROCKET_FIRE_T, SPAWNLIFE(E_FIRE), seed);','ROCKET_IMPULSE / DENS(id)','(*oB).w = max((*oB).w, ROCKET_PULSE_P * rocketFade(r / ROCKET_PULSE_RADIUS));'])
+  assert.ok(code('povRocketForceEvaluate').includes(rule),rule);
+ // a new cell only from air or a gas; a solid's change is a fracture with its debris launched
+ assert.match(code('povRocketForcePlan'),/if\(r\.before\.x!=r\.after\.x && \(k==0u \|\| k==4u\)\) \{/);
+ assert.match(code('povRocketForcePlan'),/if\(r\.before\.x!=r\.after\.x\) \{ flags=2u\|\(u32\(r\.after\.x\)<<8u\); \}/);
+}
 // Independent packed-state/SI oracle: velocity properties replace only one
 // component; force dV keeps incoming flight; packet conversion preserves banks.
 const material=withPayload(makeMaterial(E.OIL,20,17003,27),54321);material.bank=-173;
