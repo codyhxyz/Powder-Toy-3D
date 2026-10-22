@@ -5,7 +5,7 @@ import { E } from '../../src/elements.js';
 import { gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { AIRBORNE_COLOURS } from '../../src/v2/airborne.js';
-import { PARTICLE_CAP, DT, CELL_M, AIR, packParticle, unpackParticle, ballistic, sweep,
+import { PARTICLE_CAP, DT, CELL_M, AIR, V1_AIR, packParticle, unpackParticle, ballistic, sweep,
   stableId, resolveDeposits, allocateSources, impact, blastPlan, exchangeScalar, airSource, airQuiet } from '../../src/v2/dynamics-reference.js';
 const close=(a,b,e=1e-9)=>assert.ok(Math.abs(a-b)<=e,`${a} != ${b}`);
 const matter=(id=E.SAND)=>({core:[id|(1173<<8)|0xaa000000,0xfedcba98,0x3f400000,0xcdefabcd].map(x=>x>>>0),bank:-123456789});
@@ -71,9 +71,9 @@ test('conservative face diffusion/advection retains gas and heat and stays posit
     assert.ok(values.every(v=>Number.isFinite(v)&&v>=-1e-12)); close(values.reduce((s,v)=>s+v,0),100,1e-9);
   }
 });
-test('air acoustic+transport CFL is stable with fixed substeps; sources are finite',()=>{
-  const acoustic=3*AIR.sound*(DT/AIR.substeps)/AIR.edge;
-  assert.ok(acoustic+6/12+6*AIR.diffusion*(DT/AIR.substeps)/AIR.edge**2<1);
+test('air transport CFL and V1 pressure diffusion are stable with fixed substeps; sources are finite',()=>{
+  assert.ok(6/12+6*AIR.diffusion*(DT/AIR.substeps)/AIR.edge**2<1);
+  assert.ok(6*V1_AIR.diffuse<1,'V1 pressure diffusion on bricks is a weighted mean');
   let a={pressure:0,gas:0,velocity:[0,0,0],quiet:8}; a=airSource(a,1);
   close(a.pressure,AIR.gasPressure); close(a.gas,1/64); assert.equal(a.quiet,0);
   assert.deepEqual(airSource(a,0),a);
@@ -108,7 +108,7 @@ test('driver records real pipeline families, batch8, and separate draw capabilit
   // one batch a tick serves up to blastBatch (8) charges together
   assert.equal(calls.filter(c=>c.name==='v2blasts_finishCharges').length,1);
   assert.equal(calls.filter(c=>c.name==='v2blasts_pick').length,1); assert.equal(d.blastBatch,8);
-  assert.equal(calls.filter(c=>c.name==='v2air_step').length,8);
+  assert.equal(calls.filter(c=>c.name==='v2air_step').length,AIR.substeps,'one air substep a V1 step');
   assert.equal(calls.filter(c=>c.name==='v2particles_integrate').length,1);
   assert.equal(d.renderState.particleBytes,48); assert.equal(d.renderState.particles,d.particles);
   assert.equal(d.applyToolImpulse({kind:'nonsense',position:[0,0,0]}).status,'rejected');
@@ -208,7 +208,8 @@ test('actual generated shaders carry the reference conservation and numeric guar
   assert.match(blastsWGSL(g,nativeDynamicsHead,'select'),/energyFits\(dProduct\(m\),dProductEnergy\(m\)\)/);
   assert.match(particlesWGSL(g,nativeDynamicsHead,'integrate'),/crossedLimit/);
   const tool=airWGSL(g,nativeDynamicsHead,'tool');assert.doesNotMatch(tool,/P\.strength\*D_DT/);
-  assert.match(airWGSL(g,nativeDynamicsHead,'step'),/open\*before\.vp\.w\/A_RHO\*A_DT\/A_DX/);
+  // V1's air law (pressure.js V1_AIR): the front spread once a tick, walls reflecting, clamped to [P_MIN, P_MAX]
+  assert.match(airWGSL(g,nativeDynamicsHead,'step'),/clamp\(max\(own\+A_PDIFF\*lap,front\*A_FRONT\)\*A_DECAY,A_PMIN,A_PMAX\)/);
 });
 test('API rejects f32-overflow inputs; invalid particle and air words cannot partially restore',async()=>{
   const {owner}=mockOwner(),d=new NativeDynamics(owner);await d.ready;
@@ -290,7 +291,7 @@ test('3D air shock remains finite, closed-volume scalars conserve, and uniform p
   const uniform=airStepReference(initial,dims);assert.ok(uniform.every(a=>a.velocity.every(v=>Math.abs(v)<1e-12)));
   let state=initial.map((a,i)=>({...a,pressure:i===62?3000:0,heat:i===62?100:0,gas:i===62?1:0}));
   for(let n=0;n<600;n++) {
-    state=airStepReference(state,dims);
+    state=airStepReference(state,dims,{substep:n%AIR.substeps});
     assert.ok(state.every(a=>[...a.velocity,a.pressure,a.heat,a.gas].every(Number.isFinite)));
     assert.ok(state.every(a=>a.gas>=-1e-12));
   }

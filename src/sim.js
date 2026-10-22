@@ -1,7 +1,7 @@
 import { routeNativePaint, prepareNativeBrush } from './v2/interactions.js';
 import { captureNativeSnapshot, restoreNativeSnapshot, validateNativeSnapshot, resetNativeDynamics } from './v2/dynamicState.js';
 import { nativeHostTick } from './v2/host.js';
-import { emitNativeRay, nativeRayKind, nativeImpulse, legacyVelocityToMS } from './v2/tools.js';
+import { emitNativeRay, nativeRayKind } from './v2/tools.js';
 import { NativeIntegration, nativeCapabilities } from './v2/integration.js';
 import { nativeRectToAtlasWGSL } from './v2/nativeRead.js';
 import {
@@ -960,16 +960,6 @@ export class Simulation {
     if (this.compact) {
       const routed = routeNativePaint(this, { center, radius, shape, tool, rate, replace, wind, end, grow, mask, filter, erase, prop });
       if (routed !== null) return routed;
-    }
-    if (this.compact && tool === TOOLS.find(t => t.key === 'WIND').id) {
-      // (no drag, no wind: V1's paint pass pushes by P.wind, zero then)
-      if (!wind || !Math.hypot(...wind)) return true;
-      // TPT's wind drag is an input displacement, not a per-frame force.
-      // Its accumulated delta-v is independent of presentation frequency.
-      // (applyNativeTool holds it while the dynamics finish building.)
-      return nativeImpulse(this, { position: center, direction: wind, radius,
-        deltaV: legacyVelocityToMS(Math.hypot(...wind) * PHYS.TOOL_WIND),
-      });
     }
     // a line or box of particles: V1's dabs, each painted once (v2/tools.js)
     if (this.compact && nativeRayKind(tool)) return emitNativeRay(this, { center, radius, shape, tool, rate, end, grow });

@@ -115,7 +115,9 @@ owner.dynamics = { isReady: true, isIdle: true, air: [0, 1].map(() => buffer({ s
   advanceParticles: () => calls.push({ name: 'native-particle-tick' }),
   consumeMaterialEvents: () => calls.push({ name: 'native-event-tick' }),
   advanceAir: () => calls.push({ name: 'native-air-tick' }), ready: Promise.resolve(), capabilities: { physicsReady: true, drawReady: true, impulse: true, photon: true, neutron: true },
-  readActivity: async () => ({}), shiftWindow: delta => { shifts.push(delta); return Promise.resolve(); }, applyToolImpulse: r => { requests.push(r); return 'accepted'; } };
+  readActivity: async () => ({}), shiftWindow: delta => { shifts.push(delta); return Promise.resolve(); }, applyToolImpulse: r => { requests.push(r); return 'accepted'; },
+  // (what the native force kernels commit into: V1's paint rule for Wind, Pressure, Vacuum, Cyclone)
+  plans: buffer({ size: g.slots * 16 }), particles: buffer({ size: 64 }), _allocate: () => calls.push({ name: 'native-force-allocate' }), _externalWork() {} };
 await sim.prepareNative(owner);
 const shiftNative = (dx, dz) => sim.nativeIntegration.beginShift(dx, dz, () => sim.shift(dx, dz));
 assert.equal(owner.nativeDynamics, adapter, 'application does not overwrite foundation adapter');
@@ -262,16 +264,15 @@ const fullBefore = sim.wholeWrites;
 applyGuestStroke(sim, { c: [3, 4, 5], r: 999, shape: 0, tool: E.SAND, rate: 1, replace: false });
 assert.equal(edits.at(-1).values.radius, 24); assert.equal(sim.compact, owner);
 assert.equal(sim.wholeWrites, fullBefore);
-// A guest's wind before the host's impulse is built waits for it (sim.nativePending), it is not refused.
+// A guest's wind is V1's paint rule on the host's native grid (nativePaintForce, built with the native
+// owner: v2/interactions.js NATIVE_BRUSH_KERNELS), never a legacy edit or an impulse.
 {
-  const wind = TOOLS.find(t => t.key === 'WIND').id, impulse = owner.dynamics.capabilities.impulse;
-  owner.dynamics.capabilities.impulse = false;
+  const wind = TOOLS.find(t => t.key === 'WIND').id;
   const queue = [{ c: [3, 4, 5], r: 2, shape: 0, tool: wind, rate: 1 }, { c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }];
-  const painted = edits.length, held = sim.nativePending?.length ?? 0;
-  try { assert.equal(applyGuestStrokes(sim, queue, { options: () => ({ wind: [1, 0, 0] }) }), 0, 'the unbuilt wind is held, not refused'); }
-  finally { owner.dynamics.capabilities.impulse = impulse; }
-  assert.equal(sim.nativePending.length, held + 1, 'the wind waits for its impulse');
-  sim.nativePending.length = held;
+  const painted = edits.length, asked = requests.length, from = calls.length;
+  assert.equal(applyGuestStrokes(sim, queue, { options: () => ({ wind: [1, 0, 0] }) }), 0, 'the guest wind is not refused');
+  assert(calls.slice(from).some(c => c.name === 'nativePaintForceForceEvaluate'), 'the guest wind runs V1 pushed() natively');
+  assert.equal(requests.length, asked, 'no impulse');
   assert.equal(queue.length, 0, 'the frame takes its strokes off the queue');
   assert.equal(edits.length, painted + 1, 'the next guest stroke still paints');
 }
@@ -345,8 +346,7 @@ owner.dynamics.capabilities.drawReady = true;
   requests.length = 0;
   owner.dynamics.capabilities.physicsReady = false;
   assert.equal(sim.nativeCapabilities.impulse, false);
-  const wind = TOOLS.find(t => t.key === 'WIND').id;
-  assert.equal(sim.paint({ center: { x: 1, y: 2, z: 3 }, radius: 2, tool: wind, wind: [0, 0, 2] }), true, 'wind before the dynamics are ready is held, not thrown');
+  assert.equal(nativeImpulse(sim, { position: [1, 2, 3], direction: [0, 0, 2], radius: 2, deltaV: 1 }), true, 'an impulse before the dynamics are ready is held, not thrown');
   sim.nativeEmission = undefined;
   assert(emitNativeRay(sim, { ...stroke, radius: 6, rate: 1 }), 'a held photon brush is held too');
   assert.equal(requests.length, 0); assert.equal(sim.nativePending.length, 2);
@@ -355,14 +355,16 @@ owner.dynamics.capabilities.drawReady = true;
   assert.equal(sim.nativePending.length, accepted + 2, 'the wait is bounded');
   owner.dynamics.capabilities.physicsReady = true;
   assert.equal(sim.flushNativeTools(), accepted + 2); assert.equal(sim.nativePending.length, 0);
-  assert.equal(requests[0].kind, 'impulse'); assert.deepEqual(requests[0].direction, [0, 0, 1], 'the wind went first, as painted');
+  assert.equal(requests[0].kind, 'impulse'); assert.deepEqual(requests[0].direction, [0, 0, 1], 'the impulse went first, as asked');
   assert.equal(requests[1].kind, 'photon');
   requests.length = 0;
 }
-const nativeEdits = edits.length;
-sim.paint({ center: { x: 1, y: 2, z: 3 }, radius: 2, tool: TOOLS.find(t => t.key === 'WIND').id, wind: [1, 0, 0] });
+const nativeEdits = edits.length, windFrom = calls.length, windAsked = requests.length;
+assert(sim.paint({ center: { x: 1, y: 2, z: 3 }, radius: 2, tool: TOOLS.find(t => t.key === 'WIND').id, wind: [1, 0, 0] }));
 assert.equal(edits.length, nativeEdits, 'live native wind never writes legacy velocity or reimports liquid cells');
-assert.deepEqual(requests.at(-1).position, [129, 2, 259]);
+assert(calls.slice(windFrom).some(c => c.name === 'nativePaintForceForceAir'), 'the draft goes into the native air');
+assert.equal(requests.length, windAsked, 'and is not a uniform impulse');
+assert(sim.paint({ center: { x: 1, y: 2, z: 3 }, radius: 2, tool: TOOLS.find(t => t.key === 'WIND').id, wind: [0, 0, 0] }), 'no drag: nothing to push, not refused');
 
 // Exact cargo payloads survive CPU readback, JSON persistence and re-upload.
 const raw = new Uint32Array(9); new Float32Array(raw.buffer).set([E.WATER, 22, 0, 0]);

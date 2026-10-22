@@ -7,8 +7,8 @@ import { contactVacuum, specialExplosion } from './contact.js';
 import { impactFoam } from './foam.js';
 import { PACE } from '../shaders/move.js';
 import { energyOf, withEnergy, energyFits, makeMaterial, cTq, withPayload, payloadOf, share, packetOwnedEnergy, withPacketEnergy, packetEnergyFits } from './layout.js';
-import { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy } from './pressure.js';
-export { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy };
+import { AIR, V1_AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy } from './pressure.js';
+export { AIR, V1_AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy };
 export { CELL_M };
 export const PARTICLE_CAP = 65536;
 export const PARTICLE_BYTES = 48;
@@ -483,19 +483,18 @@ export function holdVelocities(particles, destination, strength=12, dt=DT) {
 }
 
 // Scalar/pressure/velocity twin of one air substep in a closed rectangular
-// fixture. Faces are evaluated in canonical order, just like air.js aFlux.
-export function airStepReference(cells,dims,{airMode=0,ambientHeat=true}={}) {
+// fixture (air.js step, one V1 step a substep: pressure.js V1_AIR). Faces are
+// evaluated in canonical order, as air.js aFlux. substep 0 runs V1's pressure
+// spread for the tick. No buoyancy (no gravity in the fixture).
+export function airStepReference(cells,dims,{airMode=0,ambientHeat=true,substep=0}={}) {
   const [nx,ny,nz]=dims,dt=DT/AIR.substeps,dx=AIR.edge;
   const vOn=[0,1,4].includes(airMode),pOn=[0,2,4].includes(airMode);
   const input=cells.map(a=>({...a,velocity:vOn?[...a.velocity]:[0,0,0],pressure:pOn?a.pressure:0,heat:ambientHeat?a.heat:0}));
-  const idx=(x,y,z)=>x+nx*(z+nz*y),loss=AIR.loss**(1/AIR.substeps);
+  const idx=(x,y,z)=>x+nx*(z+nz*y);
   const flux=(l,r,axis)=>{
-    const lv=[...l.velocity,l.pressure],rv=[...r.velocity,r.pressure];
-    const acoustic=lv.map((v,i)=>-0.5*AIR.sound*(rv[i]-v));
-    acoustic[axis]+=(lv[3]+rv[3])/(2*AIR.rho);acoustic[3]+=AIR.rho*AIR.sound**2*(lv[axis]+rv[axis])/2;
-    const courant=Math.max(-1/12,Math.min(1/12,(lv[axis]+rv[axis])*0.5*dt/dx));
+    const courant=Math.max(-1/12,Math.min(1/12,(l.velocity[axis]+r.velocity[axis])*0.5*dt/dx));
     const donor=courant>=0?l:r;
-    const vp=acoustic.map((v,i)=>v*dt/dx+(i<3?donor.velocity[i]*courant:0));
+    const vp=[0,1,2].map(i=>donor.velocity[i]*courant);
     const scalars=['heat','gas'].map((field,i)=>{
       if(i===0&&!ambientHeat || i===1&&!pOn&&!vOn) return 0;
       const gradient=r[field]-l[field];
@@ -504,15 +503,20 @@ export function airStepReference(cells,dims,{airMode=0,ambientHeat=true}={}) {
   };
   const out=input.map(a=>({...a,velocity:[...a.velocity]}));
   for(let y=0;y<ny;y++)for(let z=0;z<nz;z++)for(let x=0;x<nx;x++) {
-    const i=idx(x,y,z),before=input[i],vp=[...before.velocity,before.pressure],scalar=[before.heat,before.gas];
+    const i=idx(x,y,z),before=input[i],v=[...before.velocity],scalar=[before.heat,before.gas];
+    const own=before.pressure,pn=[own,own,own,own,own,own];let lap=0,front=own;
     for(let axis=0;axis<3;axis++)for(const sign of [-1,1]) {
-      const q=[x,y,z];q[axis]+=sign;if(q.some((v,a)=>v<0||v>=dims[a]))continue;
+      const q=[x,y,z];q[axis]+=sign;if(q.some((c,a)=>c<0||c>=dims[a]))continue;
       const other=input[idx(...q)],f=sign>0?flux(before,other,axis):flux(other,before,axis);
-      for(let a=0;a<4;a++)vp[a]-=sign*f.vp[a];vp[axis]+=sign*before.pressure/AIR.rho*dt/dx;
+      for(let a=0;a<3;a++)v[a]-=sign*f.vp[a];
       for(let a=0;a<2;a++)scalar[a]-=sign*f.scalars[a];
+      pn[axis*2+(sign>0?0:1)]=other.pressure;lap+=other.pressure-own;front=Math.max(front,other.pressure);
     }
-    out[i].velocity=vOn?(airMode===4?[...before.velocity]:vp.slice(0,3).map(v=>v*loss)):[0,0,0];
-    out[i].pressure=pOn?(airMode===4?before.pressure:vp[3]*loss):0;
+    let pressure=own;
+    if(substep===0&&pOn) pressure=Math.min(V1_AIR.pMax,Math.max(V1_AIR.pMin,Math.max(own+V1_AIR.diffuse*lap,front*V1_AIR.front)*V1_AIR.decay));
+    for(let a=0;a<3;a++) v[a]=Math.min(V1_AIR.vMax,Math.max(-V1_AIR.vMax,(v[a]-(pn[a*2]-pn[a*2+1])*V1_AIR.accel)*V1_AIR.keep));
+    out[i].velocity=vOn?(airMode===4?[...before.velocity]:v):[0,0,0];
+    out[i].pressure=pOn?(airMode===4?before.pressure:pressure):0;
     out[i].heat=ambientHeat?scalar[0]:0;out[i].gas=scalar[1];
   }return out;
 }

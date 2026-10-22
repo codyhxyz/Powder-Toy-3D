@@ -6,7 +6,6 @@ import { strikeWGSL, StrikeParams } from '../shaders/povTrace.js';
 import { povFieldWGSL, FieldParams } from '../shaders/povBody.js';
 import { TOOLS, PROP_TOOL, E } from '../elements.js';
 import { PROP } from '../editing.js';
-import { PHYS } from '../physics.js';
 import { ROCKET, blowWGSL, BlowParams, flameWGSL, FlameParams } from '../shaders/povTools.js';
 import { burrowWGSL, BurrowParams, laserNativeWGSL, LaserNativeParams, LASER_NATIVE_LAYOUT, LASER, LASER_SEGMENT } from '../shaders/povBore.js';
 import { wandApplyWGSL, WandParams } from '../shaders/wands.js';
@@ -15,7 +14,12 @@ import { specialBlastEnergy } from './pressure.js';
 import { worldPosition } from './tools.js';
 
 const ids = Object.fromEntries(TOOLS.map(t => [t.key, t.id]));
-const pendingPaint = new Set(['VACUUM', 'CYCLONE', 'GRAV_IN', 'GRAV_OUT'].map(k => ids[k]));
+// V1's air tools (passes.js update) run as V1's rule on the frozen native grid (nativePaintForce):
+// Pressure (BLAST) adds TOOL_PRESSURE·falloff to each cell's pressure a paint, Vacuum takes it off to P_MIN,
+// Wind and Cyclone push each cell by V1's pushed() (dv·RHO_MIN/ρ, the air in full, so the draft is
+// the air's wind), all with V1's smoothstep falloff, brush shape, line, box, fill mask and filter.
+// The pressure becomes the air's (Pa) and the pushes launches or wind (nativeWeather.js air).
+const pendingPaint = new Set(['VACUUM', 'CYCLONE', 'GRAV_IN', 'GRAV_OUT', 'WIND', 'BLAST'].map(k => ids[k]));
 // Tools whose V1 rule moves or retypes whole cells: the native paint kernel (nativePaint.js).
 const nativeCellPaint = stroke => stroke.tool === ids.MIX || (stroke.tool === PROP_TOOL && stroke.prop?.field === PROP.TYPE);
 // Tools whose V1 rule changes what a cell is or holds (passes.js update: Heat, Cool, Spark and the
@@ -102,6 +106,8 @@ export function routeNativePaint(sim, stroke) {
     sim.nativeInteractionResult=accepted?{status:'queued'}:{status:'rejected',reason:'native paint kernel not ready or empty bounds'};
     return accepted;
   }
+  // (no drag, no wind: V1's paint pass pushes by P.wind, zero then, and changes nothing)
+  if (tool === ids.WIND && !(stroke.wind && Math.hypot(...stroke.wind))) return true;
   if (pendingPaint.has(tool) || (tool === PROP_TOOL && [PROP.VX, PROP.VY, PROP.VZ, PROP.PRESSURE].includes(prop?.field)))
   {
     const a=[center.x,center.y,center.z],b=[end.x,end.y,end.z],reach=a.map((_,k)=>radius+Math.max(grow?.[k]??0,0));
@@ -109,15 +115,7 @@ export function routeNativePaint(sim, stroke) {
     return force(sim,'nativePaintForce',box,{center:a,end:b,radius,shape,tool,rate:stroke.rate??1,replace:+!!stroke.replace,
       frame:++sim.paints,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},mask?sim._paintMask(mask.data):sim.noMask);
   }
-  if (tool !== ids.BLAST) return null;
-  const selection={shape,end:worldPosition(sim,end),grow:grow??[0,0,0],filter,fade:true};
-  if(mask) {
-    const bytes=new Uint8Array(Math.ceil(sim.g.width*sim.g.height/4)*4);
-    bytes.set(mask.data.subarray(0,bytes.length));selection.maskWords=new Uint32Array(bytes.buffer);
-    selection.maskOrigin=[sim.origin.x,sim.origin.y,sim.origin.z];
-    selection.lo=mask.lo.map((v,a)=>Math.ceil(v)+selection.maskOrigin[a]);selection.hi=mask.hi.map((v,a)=>Math.floor(v)+selection.maskOrigin[a]);
-  }
-  return blast(sim, center, radius, PHYS.TOOL_PRESSURE, selection);
+  return null;
 }
 export function routeNativePOV(sim, name, box, values) {
   if (forceSpecs[name]) return force(sim,name,box,values,undefined,{defer:deferred.has(name)});
