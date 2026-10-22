@@ -44,6 +44,8 @@ async function open(browser) {
   const errors = [];
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errors.push(`console: ${m.text()}`); });
+  // (progress from the page, so a part that runs out of its slot says where it was)
+  page.on('console', (m) => { if (m.type() === 'log' && m.text().startsWith('info ')) console.log(m.text()); });
   await page.goto(vite.url('/?size=64&preset=empty&view=plain&physics=v2'));
   await page.waitForFunction(() => window.__app?.sim, null, { polling: 250, timeout: 150000 });
   // (TAA off: its history converging keeps a live loop presenting: tools/idle-check.mjs does the same)
@@ -177,15 +179,18 @@ async function rest(page) {
     // Stepped ticks never certify (frame() does, in the live loop below): step until quiet by
     // tools/outcomes/engine-v2.js activity()'s rule. The dynamics' idle word refreshes only on its own readback.
     let ticks = 0, quiet = false;
+    const started = performance.now();
     while (!quiet && ticks < 3600) {
       a.test.step(30); ticks += 30;
       const [s] = await Promise.all([v2.readStats(), v2.dynamics.readActivity()]);
       quiet = s.awake === 0 && v2.unwrittenSinceTick && v2.dynamics.isIdle;
+      if (ticks % 600 === 0 || quiet) console.log(`info rest: ${ticks} ticks, ${s.awake} bricks awake, dynamics ${v2.dynamics.isIdle ? 'idle' : 'busy'} (${((performance.now() - started) / 1000).toFixed(1)} s)`);
     }
     a.test.resume();
     a.settings.paused = false;   // (manual mode boots paused)
     const t0 = performance.now();
     while (!a.loop.asleep && performance.now() - t0 < 10000) await sleep(250);
+    console.log(`info rest: the loop ${a.loop.asleep ? 'asleep' : 'still awake'} after ${((performance.now() - t0) / 1000).toFixed(1)} s`);
     // Drain work recorded before the loop slept, rather than charging its final
     // submission to the subsequent idle interval.
     await v2.idleRead;

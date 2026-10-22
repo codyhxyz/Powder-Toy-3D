@@ -1,9 +1,25 @@
 // Real-GPU integration checks; run only when the shared launcher permits it.
-// node tools/v2/compact-browser-check.mjs --port 5197
+// Two parts, each its own process and GPU slot under the 25 s cap (tools/browser.mjs allows one launch a
+// process), as tools/v2/app-check.mjs runs its parts: `readers` (the compact readers, the delayed bridge,
+// presentation, the picker, Plain's mesh and an exact undo) and `toggles` (exact history across V1/V2
+// switches: four engine switches, on a box of its own). Without --part both run, one after the other.
+// node tools/v2/compact-browser-check.mjs [--port 5197] [--part readers|toggles]
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { launchBrowser, newTestPage, ready, render } from '../browser.mjs';
 import { startVite } from '../vite-server.mjs';
 
+const argv = process.argv.slice(2);
+const PARTS = ['readers', 'toggles'];
+const part = argv.includes('--part') ? argv[argv.indexOf('--part') + 1] : null;
+if (!part) {
+  let code = 0;
+  for (const name of PARTS) code |= spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...argv, '--part', name], { stdio: 'inherit' }).status ?? 1;
+  process.exit(code);
+}
+if (!PARTS.includes(part)) throw new Error(`--part ${PARTS.join(' or ')}`);
+const t0 = Date.now();
 const vite = await startVite();
 let browser;
 try {
@@ -12,6 +28,8 @@ try {
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', m => {
+    // (each check's line as it passes, so a run that stops says how far it got)
+    if (m.type() === 'log' && m.text().startsWith('ok ')) { console.log(`${m.text()} [${((Date.now() - t0) / 1000).toFixed(1)} s]`); return; }
     if (m.type() !== 'error') return;
     if (/^http:\/\/(?:localhost|127\.0\.0\.1):8787\//.test(m.location().url) && /ERR_CONNECTION_REFUSED/.test(m.text())) return;
     errors.push(m.text());
@@ -50,8 +68,32 @@ ${prelude(sim.g, STATE_OPTS.STATE_RO)}
       kernel.dispatch(gpu.frame, fold(Math.ceil(sim.g.slots / 64)), { bind: [sim.tables, sim.bindRO, group], header: sim.readHeader() });
       return new Uint32Array(await gpu.readback.buffer(out, 0, bytes * 2));
     };
-    window.__compactTest = { check, equal, raw, paint, passes, decoded, E, VIEWS, cellSlot, marksLayout, out, prev };
+    // Exact undo fixture: a fractional liquid cell with nonzero signed face flux.
+    const exactFixture = async () => {
+      const words = await raw(), at = cellSlot(sim.g, 20, 5, 20) * 4;
+      words.set([E.WATER | (1173 << 8), 12345, 0xbc003800, 0xffff3400], at);
+      const seed = gpu.createBuffer({ label: 'exact compact undo fixture', size: bytes, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+      gpu.write(seed, 0, words);
+      sim.noteWrite(); a.physics.v2.restore(seed);
+      await sim.prepare('fresh');
+      sim.airT = 19;
+      a.physics.v2.sync();
+      check(equal(words, await raw()), 'ambient flag refresh preserves fractional fill and flux');
+      return { words, seed };
+    };
+    window.__compactTest = { check, equal, raw, paint, passes, decoded, exactFixture, E, VIEWS, cellSlot, marksLayout, out, prev };
+  });
+  if (part === 'readers') await readers(page); else await toggles(page);
+  assert.deepEqual(errors, []);
+  console.log(`compact browser checks passed (${part})`);
+} finally {
+  await browser?.close();
+  await vite.close();
+}
 
+async function readers(page) {
+  await page.evaluate(async () => {
+    const a = __app, { check, equal, paint, passes, decoded, E, cellSlot, marksLayout } = __compactTest, sim = a.sim, gpu = a.gpu;
     paint(32, 40, 32, E.SAND);
     a.physics.v2.sync();
     check((await a.physics.v2.readCells()).id.some(id => id === E.SAND), 'sand fixture really contains painted grains');
@@ -119,46 +161,41 @@ ${prelude(sim.g, STATE_OPTS.STATE_RO)}
     h.check(directMesh.opaque === a.blocks.stats.opaque && directMesh.translucent === a.blocks.stats.translucent, 'Plain mesh face counts match compatibility path');
     a.physics.v2.forceCompatibility = false;
 
-    // Exact undo fixture: a fractional liquid cell with nonzero signed face flux.
-    const sim = a.sim, gpu = a.gpu, bytes = sim.g.slots * 16;
-    const words = await h.raw(), at = h.cellSlot(sim.g, 20, 5, 20) * 4;
-    words.set([h.E.WATER | (1173 << 8), 12345, 0xbc003800, 0xffff3400], at);
-    const seed = gpu.createBuffer({ label: 'exact compact undo fixture', size: bytes, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
-    gpu.write(seed, 0, words);
-    sim.noteWrite(); a.physics.v2.restore(seed);
-    await sim.prepare('fresh');
-    sim.airT = 19;
-    a.physics.v2.sync();
-    h.check(h.equal(words, await h.raw()), 'ambient flag refresh preserves fractional fill and flux');
+    const sim = a.sim, gpu = a.gpu;
+    const { words, seed } = await h.exactFixture();
     sim.snapshot('fractional fill and flux');
     h.paint(20, 5, 20, h.E.STONE);
     a.test.step(1);
-    sim.undo();
+    // (a V2 snapshot's capture is a readback, so an undo right after it waits for it: await it, as the app does)
+    await sim.undo();
     h.check(h.equal(words, await h.raw()), 'v2 undo restores exact fill and all flux words');
     const direct = await h.decoded(false), compat = await h.decoded(true);
     h.check(h.equal(direct, compat), 'fractional liquid direct decode equals projected bridge');
     a.physics.v2.forceCompatibility = false;
+    gpu.flush('compact tests done'); seed.destroy(); h.out.destroy();
+    sim.onPass = h.prev;
+  });
+}
 
+async function toggles(page) {
+  await page.evaluate(async () => {
+    const a = __app, h = __compactTest, sim = a.sim, gpu = a.gpu;
+    const { words, seed } = await h.exactFixture();
     sim.snapshot('compact history across toggles');
     await a.setPhysics('v1');
     h.check(sim.history.at(-1).format === 'v2' && sim.readHeader().format === 0, 'v1 transition exports and retains compact history tag');
     a.test.step(1);
     await a.setPhysics('v2');
-    sim.undo();
+    await sim.undo();
     h.check(h.equal(words, await h.raw()), 'compact history restores exactly after v1/v2 toggles');
     await a.setPhysics('v1');
     sim.snapshot('v1 history');
     h.check(sim.history.at(-1).format === 'v1', 'legacy history tagged');
     await a.setPhysics('v2');
-    sim.undo(); a.physics.v2.sync();
+    await sim.undo(); a.physics.v2.sync();
     h.check(h.equal(await h.decoded(false), await h.decoded(true)), 'v1 history imports consistently when undone in v2');
     a.physics.v2.forceCompatibility = false;
     gpu.flush('compact tests done'); seed.destroy(); h.out.destroy();
     sim.onPass = h.prev;
   });
-  assert.deepEqual(errors, []);
-  console.log('compact browser checks passed');
-} finally {
-  await browser?.close();
-  await vite.close();
 }

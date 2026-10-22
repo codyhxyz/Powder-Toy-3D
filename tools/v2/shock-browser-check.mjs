@@ -14,11 +14,17 @@
 // tools/v2/shock-check.mjs, particle-deposition-check.mjs, blast-batch-check.mjs (V1's front); a chain under its
 // own blast's pressure (V1 react.js setOff, crushP): airborne-react-check.mjs 9b'.
 // One launch, one GPU slot, one part a launch (each builds its engines: --part nitro, --part c4, --part c4land: V2
-// builds its particle and column kernels cold once per box size, so the C-4 scenes are two launches). --v1 also
-// runs the part on V1 (tools/outcomes/engine-v1.js, the same launch) and holds V2 to what V1 does there;
-// without it V2 is held to V1's outcomes below.
+// builds its particle and column kernels cold once per box size and launch, so the C-4 scenes are two launches).
+// --part nitro runs its scenes NITRO_SCENES_PER_LAUNCH at a time, each batch its own process and launch
+// (--scenes FROM-TO, as tools/v2/app-check.mjs runs its parts): the first box of a launch waits for V2's cold
+// build (its longest pole, v2particles_react, about 10 s on an M-series Mac, measured 2026-10-22), and each
+// further fresh box for its dynamics' idle builds again (about 0.85 s), so eight fresh boxes and V1's run
+// don't fit one 25 s slot. --v1 also runs the part on V1 (tools/outcomes/engine-v1.js, the same launch) and
+// holds V2 to what V1 does there; without it V2 is held to V1's outcomes below.
 //
-//   node tools/v2/shock-browser-check.mjs --part nitro|c4|c4land [--v1]
+//   node tools/v2/shock-browser-check.mjs --part nitro|c4|c4land [--v1] [--scenes FROM-TO]
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { launchBrowser } from '../browser.mjs';
 import { startVite } from '../vite-server.mjs';
 import { openHarness } from '../harness/open.mjs';
@@ -29,6 +35,7 @@ const arg = (name) => { const i = process.argv.indexOf(name); return i < 0 ? nul
 const part = arg('--part');
 if (!['nitro', 'c4', 'c4land'].includes(part)) { console.error('usage: node tools/v2/shock-browser-check.mjs --part nitro|c4|c4land [--v1]'); process.exit(2); }
 const withV1 = process.argv.includes('--v1');
+const NITRO_SCENES_PER_LAUNCH = 4;
 let failures = 0;
 const t0 = Date.now(), at = () => `${((Date.now() - t0) / 1000).toFixed(1)} s`;
 const ok = (cond, what) => { if (!cond) failures++; console.log(`${cond ? 'ok  ' : 'FAIL'} ${what} [${at()}]`); };
@@ -61,13 +68,30 @@ const NITRO_SCENES = [
   ['the chain: a block dropped 4.8 m 15 cells from a resting one', [[[22, 1, 22], [25, 3, 25], 'NITRO'], [[22, 16, 4], [25, 18, 7], 'NITRO']], 1.6, 'off'],
   ['a block dropped 12.6 m', [[[14, 42, 14], [17, 44, 17], 'NITRO']], 2.2, 'off'],
 ];
-async function nitroScenes(scenes) {
+// --part nitro without --scenes: each batch in a process of its own (one launch a process: tools/browser.mjs)
+const sceneArg = arg('--scenes');
+if (part === 'nitro' && !sceneArg) {
+  let code = 0;
+  for (let from = 0; from < NITRO_SCENES.length; from += NITRO_SCENES_PER_LAUNCH) {
+    const to = Math.min(from + NITRO_SCENES_PER_LAUNCH, NITRO_SCENES.length) - 1;
+    code |= spawnSync(process.execPath, [fileURLToPath(import.meta.url), ...process.argv.slice(2), '--scenes', `${from}-${to}`], { stdio: 'inherit' }).status ?? 1;
+  }
+  process.exit(code);
+}
+const [sceneFrom, sceneTo] = sceneArg ? sceneArg.split('-').map(Number) : [0, NITRO_SCENES.length - 1];
+if (!(sceneFrom >= 0 && sceneTo >= sceneFrom && sceneTo < NITRO_SCENES.length)) { console.error(`--scenes FROM-TO within 0-${NITRO_SCENES.length - 1}`); process.exit(2); }
+const scenes = NITRO_SCENES.slice(sceneFrom, sceneTo + 1);
+async function nitroScenes([scenes, first]) {
   const { e, amount } = window.__shock, out = [];
-  for (const [, boxes, seconds] of scenes) {
+  for (const [k, [, boxes, seconds]] of scenes.entries()) {
+    const t = performance.now();
     await e.create([32, 48, 32]);
+    const built = performance.now();
     for (const [lo, hi, key] of boxes) e.box(lo, hi, key);
     await e.advance(0.05); const before = await amount('NITRO');
     await e.advance(seconds); out.push([+before.toFixed(2), +(await amount('NITRO')).toFixed(2)]);
+    // (progress, so a slot that runs out still says where its time went)
+    console.log(`info ${e.name} nitro scene ${first + k}: ${JSON.stringify(out.at(-1))}, built in ${(built - t).toFixed(0)} ms, ran in ${(performance.now() - built).toFixed(0)} ms`);
   }
   await e.dispose();
   return out;
@@ -121,8 +145,9 @@ try {
   const errors = [];
   const run = async (engine) => {
     const page = await openHarness(browser, vite, `/tools/harness/outcomes.html?engine=${engine}`, { errors, timeout: 20000 });
+    page.on('console', m => { if (m.text().startsWith('info ')) console.log(`${m.text()} [${at()}]`); });
     await page.evaluate(setup, engine);
-    const out = part === 'nitro' ? await page.evaluate(nitroScenes, NITRO_SCENES) : await page.evaluate(c4Scene, part === 'c4land');
+    const out = part === 'nitro' ? await page.evaluate(nitroScenes, [scenes, sceneFrom]) : await page.evaluate(c4Scene, part === 'c4land');
     await page.close();
     console.log(`${engine}: ${JSON.stringify(out)} [${at()}]`);
     return out;
@@ -134,7 +159,7 @@ try {
   if (part === 'nitro') {
     for (const [name, o] of [['V1', v1], ['V2', v2]]) {
       if (!o) continue;
-      NITRO_SCENES.forEach(([label, , , outcome], k) => {
+      scenes.forEach(([label, , , outcome], k) => {
         const [before, after] = o[k], v1After = v1 ? v1[k][1] : null;
         // rest: all of it left; off: none of it, or no more than V1 leaves (its chain's reach)
         const pass = outcome === 'rest' ? before > 10 && same(after, before) : before > 10 && after < before / 2 && after <= (v1After ?? 0) + V1_MATCH_CELLS;
