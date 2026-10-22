@@ -12,6 +12,17 @@ export function packetShadowSource(sim) {
   return s?.ready === true && s.particles && Number.isInteger(s.capacity) ? { dynamics: d, state: s } : null;
 }
 
+/**
+ * The derived passes' key part for the packets (gfx/volume.js packetShadowKey): the packet kernel's state, and the
+ * owner's tick while any matter may be in flight (the dynamics awake with live particles), '-' once it has landed.
+ */
+export function packetShadowKey(sim, state) {
+  const source = packetShadowSource(sim);
+  if (!source) return '';
+  const d = source.dynamics, flying = d.isIdle !== true && (d.stats?.particles ?? 1) > 0;
+  return `${state}:${flying ? d.owner?.tick ?? 0 : '-'}`;
+}
+
 export function createPacketShadow(gpu, { g, res, world, layouts, derived }) {
   const words = packetShadowWords(res);
   const buffer = gpu.createBuffer({ label: 'packet shadow', size: words * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });

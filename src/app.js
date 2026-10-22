@@ -3019,7 +3019,7 @@ function tick(now, renderOnly = false) {
   });
   if (hybridScale != null) post.settings.resolutionScale = hybridScale;
   runDerived = present && pacer.derived(
-    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}|${vol.format}`);
+    `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}|${vol.format}|${vol.packetShadowKey}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
     `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}|${vol.format}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
     viewSettings, gfx, post.settings) : viewSeen;

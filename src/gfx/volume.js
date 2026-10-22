@@ -44,7 +44,7 @@ import { DETAIL, SOFTWARE_UNDRAWABLE, drawableDetail } from './detail.js';
 import { decoShown } from '../deco.js';
 import { isMaterialView } from '../views.js';
 import { RENDER_LAYOUT } from '../shaders/bindings.js';
-import { createPacketShadow, packetShadowSource } from './packetShadow.js';
+import { createPacketShadow, packetShadowSource, packetShadowKey } from './packetShadow.js';
 
 // slots of the pick ring: a hover pick every frame plus a few one-off rays in flight
 const PICK_RING_SLOTS = 64;
@@ -242,6 +242,12 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
     shadowReady() { return shadowKernel.build(); },
     /** V2's packets in the map (gfx/packetShadow.js): 'none' (not wanted yet), 'building' or 'ready'. */
     get packetShadowState() { return packets ? (packets.ready ? 'ready' : 'building') : 'none'; },
+    /**
+     * For the derived passes' key (app.js): changes each tick while V2's matter may fly, and once more as it lands,
+     * so the map takes the packets where they are now. A V1 flying cell changes the grid every step, and the
+     * grid's version moves that key; a V2 packet flies in the dynamics pool and moves no grid version.
+     */
+    get packetShadowKey() { return packetShadowKey(sim, this.packetShadowState); },
     /** The shadow kernel's state: 'idle' (not wanted yet), 'pending', 'ready' or 'failed'. */
     get shadowState() { return shadowKernel.state; },
 

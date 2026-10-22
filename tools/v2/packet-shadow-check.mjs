@@ -11,6 +11,8 @@ import { packetShadowFrag, packetShadowSplatWGSL, packetShadowWords, PACKET_SHAD
 import { nativeParticleWGSL, NATIVE_PARTICLE_LIGHT_LAYOUT } from '../../src/shaders/v2/particleRender.js';
 import { NativeParticles, boxParticleLight } from '../../src/gfx/nativeParticles.js';
 import raysWire from '../../src/wire/rays.js';
+import { packetShadowKey } from '../../src/gfx/packetShadow.js';
+import { readFileSync } from 'node:fs';
 import { SHADOW_TILES_MAX } from '../../src/shaders/passes.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 
@@ -107,4 +109,18 @@ test('the matter draw lights its sphere with the Box volume\'s map and GI where 
   assert.equal(got[0]?.map, volume.shadowTextures.map, 'the Box draw lights its packets with the volume\'s map');
   raysWire.scene({ ...app, worldMode: {} }, { frame: g.frame });
   assert.equal(got[1], null, 'World: its own readers');
+});
+
+test('the derived passes run again each tick packets fly (V1\'s flying cells move the grid version; packets do not)', () => {
+  const owner = { tick: 7 }, dynamics = { owner, isIdle: false, stats: { particles: 3 }, disposed: false,
+    renderState: { ready: true, particles: {}, capacity: 65536 } };
+  const sim = { compact: {}, compactOwner: { dynamics } };
+  const a = packetShadowKey(sim, 'ready'); owner.tick++;
+  assert.notEqual(packetShadowKey(sim, 'ready'), a, 'a tick of flight moves the key');
+  dynamics.isIdle = true; const landed = packetShadowKey(sim, 'ready'); owner.tick++;
+  assert.equal(packetShadowKey(sim, 'ready'), landed, 'landed: still (one more pass took the last shadow away)');
+  assert.notEqual(packetShadowKey(sim, 'building'), packetShadowKey(sim, 'ready'), 'the kernel turning ready runs it');
+  assert.equal(packetShadowKey({ compact: null }, 'none'), '', 'V1: nothing');
+  const app = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
+  assert.match(app, /runDerived = present && pacer\.derived\(\n\s+`[^`]*\|\$\{vol\.packetShadowKey\}`\);/, 'the box\'s derived key holds it');
 });
