@@ -10,15 +10,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import vm from 'node:vm';
-import { DEFAULT_SLOT_MS, MAX_SLOT_MS, CLEANUP_MS, budgetMs, ownedTree, processTable, inspectionFailure } from './gpu-deadline.mjs';
+import { MAX_SLOT_MS, CLEANUP_MS, budgetMs, ownedTree, processTable, inspectionFailure } from './gpu-deadline.mjs';
 
-assert.equal(DEFAULT_SLOT_MS, 25000); assert.equal(MAX_SLOT_MS, 600000);
-// A simulated suspend: the clock jumps past even the longest slot's deadline.
-const CLOCK_JUMP_MS = 2 * MAX_SLOT_MS;
+assert.equal(MAX_SLOT_MS, 25000);
 assert.equal(CLEANUP_MS, 4000);
 assert(CLEANUP_MS >= 3 * (1000 + 250) + 100, 'reserve delayed observation, fresh kill verification, and exit verification');
-for (const n of [5000, 6000, 10000, 25000, 180000, MAX_SLOT_MS]) assert.equal(budgetMs(n), n);
-for (const n of [0, -1, NaN, Infinity, 1000, 1500, 2000, 4000, MAX_SLOT_MS + 1]) assert.throws(() => budgetMs(n), RangeError);
+for (const n of [5000, 6000, 10000, 25000]) assert.equal(budgetMs(n), n);
+for (const n of [0, -1, NaN, Infinity, 1000, 1500, 2000, 4000, 25001, 180000]) assert.throws(() => budgetMs(n), RangeError);
 const table = [
   { pid: 100, ppid: 1, start: 'ours' }, { pid: 101, ppid: 100, start: 'driver' },
   { pid: 102, ppid: 101, start: 'browser' }, { pid: 103, ppid: 102, start: 'gpu' },
@@ -244,7 +242,7 @@ for (const scenario of ['normal', 'orphan', 'tagless', 'ps-failure', 'closed-pip
     const clockArgs=[];
     if(clockJump){
       const file=join(dir,'clock-jump.cjs');
-      writeFileSync(file,'const now=Date.now;let offset=0;Date.now=()=>now()+offset;setTimeout(()=>{offset='+CLOCK_JUMP_MS+';},400);');
+      writeFileSync(file,'const now=Date.now;let offset=0;Date.now=()=>now()+offset;setTimeout(()=>{offset=300000;},400);');
       clockArgs.push('--require',file);
     }
     const budget = budgetMs(clockJump?MAX_SLOT_MS:6000), start = Date.now(), deadline = start + budget;
@@ -273,7 +271,7 @@ for (const scenario of ['normal', 'orphan', 'tagless', 'ps-failure', 'closed-pip
       assert.equal(report.status,'released');
       assert.equal(Date.parse(report.deadlineAt),deadline,'resume must not extend the original deadline');
       assert.equal(report.deadlineMet,false,'suspend overrun must remain visible in the durable report');
-      assert(report.deadlineOverrunMs>=CLOCK_JUMP_MS-budget);
+      assert(report.deadlineOverrunMs>=300000-budget);
       assert(Date.now()-start<5000,'wake must trigger cleanup before relative timers would fire');
     }else checkReport(report, scenario, budget, start, deadline);
     if (slowPs) {
