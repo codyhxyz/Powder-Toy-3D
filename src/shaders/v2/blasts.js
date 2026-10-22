@@ -870,7 +870,6 @@ var<workgroup> wgNear: u32;
         for (var a=0u;a<3u;a++) { difference = max(difference,abs(dOpenPressure(p+dAxis(a))-dOpenPressure(p-dAxis(a)))); }
         if (difference > dStrength(id)) { plan.flags=2u|(u32(dBreak(id))<<8u); }
       } else if (k==2u || k==3u) {
-        var exposed = false; for (var a=0u;a<3u;a++) { exposed = exposed || dOpen(p+dAxis(a)) || dOpen(p-dAxis(a)); }
         // Column-run water has no radial columns (columns.js): there a liquid cell over open space
         // drips the same way, so liquids fall toward the centre instead of freezing (no spreading yet).
         let radialDrip = k==3u && P.gravMode==2u && P.gravity>0.0 && dUnsupported(p);
@@ -880,7 +879,8 @@ var<workgroup> wgNear: u32;
           // unallocated source exact and busy for deterministic retry.
           plan.flags=1u;plan.velocity=vec3f(0);
         }
-        if (exposed && length(wind)>dLift(id)) { plan.flags=1u; plan.velocity=wind; }
+        // (No wind saltation: V1 never lifts a loose cell off by a draft past a threshold. Its wind and pressure push
+        // every loose cell a little, all the time: react.js forces, the air field's coupling.)
         // §4.2: flux over an unsupported lip faster than 1m/s becomes a droplet.
 if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
           let q=vec3f(unpack2x16float(m.core.z),unpack2x16float(m.core.w&65535u).x);

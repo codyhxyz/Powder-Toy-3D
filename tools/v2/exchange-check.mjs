@@ -198,3 +198,11 @@ console.log('exchange-check: ok');
   console.log(`spawn drop: painted (import) and cloned grains start at ${drop.toFixed(1)} m/s; powder terminals are V1's in both lanes (DUST ${fallTerminal(E.DUST).toFixed(1)}, SAND ${fallTerminal(E.SAND).toFixed(1)} m/s)`);
 }
 console.log('exchange-check: spawn drop ok');
+
+// ---- 5. no wind saltation (V1 never launches a loose cell on a draft past a threshold)
+{
+  const { readFileSync } = await import('node:fs');
+  const blasts = readFileSync(new URL('../../src/shaders/v2/blasts.js', import.meta.url), 'utf8');
+  assert(!/length\(wind\)\s*>\s*dLift\(id\)/.test(blasts), 'couplePlan launches loose cells on a draft past their lift');
+  console.log('wind: no saltation launch in couplePlan');
+}
