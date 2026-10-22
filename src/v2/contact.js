@@ -892,8 +892,21 @@ export function ctFuseTouch(c, touch, random) {
 // clone (the support pass's count; CT_CLONE_MISS_LOG). outFaces: the rest of what V1 react.js reads on its
 // other three faces (the support pass's outside word, CT_OUT_*; contactOutsideWord) and CT_OUT_UP.
 export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas, onFloor, ambientQ, touch, outClones, outFaces) {
+  // One exit (its result, once exited is set): the block pass inlines this rule, and early returns in an inlined
+  // helper are what blow Metal's cold compile up (docs/webgpu.md B5). Each rule below runs only while none has
+  // given the result, in V1's order.
+  // The makers (ctCreate, ctDecay, ctExhaust) each run at one place, after the rules: a rule that makes a cell
+  // names it (made, decayed, exhausted) and exits, so each maker's body is inlined once.
   let c = ctCopy(input);
-  if (c.done !== 0) return c;
+  let result = ctCopy(input);
+  let exited = 0;
+  let made = -1;
+  let madeQ = 0;
+  let madeDrop = 0;
+  let decayed = -1;
+  let decayCools = 0;
+  let exhausted = 0;
+  if (c.done !== 0) exited = 1;
   let air = 0;
   let burnAir = 0;
   let oxygen = 0;
@@ -984,30 +997,36 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   const exposed = fullAir + fullOxygen > 0;
   const random = ctRoll(seed, 1);
   // Electricity is the electric pass's (shaders/v2/electric.js: V1's step, four a tick, six faces).
-  c = ctPhase(c, surface + onFloor, ctRoll(seed, 3));
-  if (c.id !== input.id || c.pending >= 0) return c;
-  if (voidTouch && c.id !== E.EMPTY && r.kind !== 1) return ctDrain(c, ambientQ);
-  const emitter = ctRow(ctNuclearId(c)).emitter;
-  if (emitter > 0) { c.busy = 1; if (ctRoll(seed, 4) < emitter) c.request = c.request | 4; }
-  if (r.blast !== 0) {
+  if (exited === 0) {
+    c = ctPhase(c, surface + onFloor, ctRoll(seed, 3));
+    if (c.id !== input.id || c.pending >= 0) { result = c; exited = 1; }
+  }
+  if (exited === 0 && voidTouch && c.id !== E.EMPTY && r.kind !== 1) { result = ctDrain(c, ambientQ); exited = 1; }
+  if (exited === 0) {
+    const emitter = ctRow(ctNuclearId(c)).emitter;
+    if (emitter > 0) { c.busy = 1; if (ctRoll(seed, 4) < emitter) c.request = c.request | 4; }
+  }
+  if (exited === 0 && r.blast !== 0) {
     const canBlast = r.blastAir === 0 || exposed || fire > 0;
     if (canBlast && (c.tq >= r.igniteQ || hotTouch || (fire > 0 && r.blastChance > 0))) {
       c.busy = 1;
       if (c.tq >= r.igniteQ || hotTouch || random < r.blastChance) {
-        if (r.blastInto < 0) { c.request = c.request | 1; return c; }
-        // V1: the product at blast.T, its ctype blast.of, and blast.P on the cell.
-        let out = ctInherit(ctNew(r.blastInto, r.blastQ, 65536), c);
-        out.ctype = r.blastOf;
-        out.busy = 1;
-        out = ctRecordChange(out, ctEnergy(c));
-        out.request = ctPuff(out.request, r.blastPuff);
-        return out;
+        if (r.blastInto < 0) { c.request = c.request | 1; result = c; exited = 1; }
+        if (exited === 0) {
+          // V1: the product at blast.T, its ctype blast.of, and blast.P on the cell.
+          let out = ctInherit(ctNew(r.blastInto, r.blastQ, 65536), c);
+          out.ctype = r.blastOf;
+          out.busy = 1;
+          out = ctRecordChange(out, ctEnergy(c));
+          out.request = ctPuff(out.request, r.blastPuff);
+          result = out; exited = 1;
+        }
       }
     }
-    return c;
+    if (exited === 0) { result = c; exited = 1; }
   }
   // (V1 react.js gives plasma no life rule: it leaves only by cooling past its cold change, ctPhase above)
-  if (c.id === E.FIRE || c.id === E.SMOKE) {
+  if (exited === 0 && (c.id === E.FIRE || c.id === E.SMOKE)) {
     // V1 react.js lives (CONTACT_CONSTANTS).
     let fade = CT_SMOKE_FADE_TICK;
     if (c.id === E.FIRE) fade = CT_FIRE_BURN_TICK + CT_FIRE_BURN_SPREAD_TICK * ctRoll(seed, 5);
@@ -1020,10 +1039,10 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (c.life === 0 || (c.id === E.FIRE && (smothered || c.tq < CT_FIRE_MIN_Q))) {
       let id = E.EMPTY;
       if (c.id === E.FIRE && ctRoll(seed, 7) < CT_FIRE_TO_SMOKE) id = E.SMOKE;
-      return ctDecay(c, id);
+      decayed = id; exited = 1;
     }
   }
-  if (r.burn > 0 && c.id !== E.FUSE) {
+  if (exited === 0 && r.burn > 0 && c.id !== E.FUSE) {
     // V1 react.js combustion, re-tested every step (cooling it, or taking its air, puts it out): at its
     // ignition point, or past its flash point with a flame on a face (nFire), touching air, oxygen or a
     // flame, and not smothered. Thermal only: no flame lights it by touch (V1 has no contact ignition).
@@ -1031,9 +1050,9 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if ((c.tq >= r.igniteQ || (fire > 0 && c.tq >= r.flashQ)) && exposed && !smothered) lit = 1;
     if (c.burning !== lit) c.busy = 1;
     c.burning = lit;
-    if (lit !== 0) {
-      c.busy = 1;
-      if (c.life === 0) return ctExhaust(c, seed);
+    if (lit !== 0) c.busy = 1;
+    if (lit !== 0 && c.life === 0) { exhausted = 1; exited = 1; }
+    if (lit !== 0 && exited === 0) {
       let oxy = 1.0;
       if (fullAir + fullOxygen > 0) oxy = (ctF(fullAir) + 4.77327 * ctF(fullOxygen)) / ctF(fullAir + fullOxygen);
       const spend = Math.min(c.life, Math.max(1, ctI(ctF(r.burn) * oxy * ctF(ctAmount(c)) / 65536)));
@@ -1046,13 +1065,14 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
       c.source = ctAdd(c.source, ctSub(ctEnergy(c), beforeHeat));
       // V1 react.js: Pr += BURN_P a step
       c.request = ctPuff(c.request, CT_BURN_PUFF_PA);
-      if (c.life === 0) return ctExhaust(c, seed);
+      if (c.life === 0) { exhausted = 1; exited = 1; }
     }
   }
   // The fuse is the electric pass's (ctFuseStep: V1's step, four a tick, six faces).
-  if (c.id === E.WATER && plant > 0) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(plant) * CT_PLANT_MISS_LOG)) return ctGrow(c, E.PLANT, ctRoll(seed, CT_FILL_SALT)); }
-  if (r.rots !== 0 && fungus > 0 && c.tq < CONTACT_DAMP_DRY_Q) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(fungus) * CT_FUNGUS_MISS_LOG)) return ctCreate(c, E.FUNGUS, c.tq); }
-  if (c.id === E.MOSS || c.id === E.FUNGUS) {
+  // (ctGrow's rule: a part-filled water cell grows into a whole plant with its fill's chance, else it is taken up)
+  if (exited === 0 && c.id === E.WATER && plant > 0) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(plant) * CT_PLANT_MISS_LOG)) { made = E.PLANT; if (ctRoll(seed, CT_FILL_SALT) >= ctShare(c)) made = E.EMPTY; madeQ = c.tq; exited = 1; } }
+  if (exited === 0 && r.rots !== 0 && fungus > 0 && c.tq < CONTACT_DAMP_DRY_Q) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(fungus) * CT_FUNGUS_MISS_LOG)) { made = E.FUNGUS; madeQ = c.tq; exited = 1; } }
+  if (exited === 0 && (c.id === E.MOSS || c.id === E.FUNGUS)) {
     const previous = c.ctype;
     let own = 0;
     if (c.tq < CONTACT_DAMP_DRY_Q) own = Math.max(0, damp);
@@ -1061,11 +1081,13 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     c.ctype = own;
     if (c.ctype !== previous) c.busy = 1;
   }
-  if ((c.id === E.CLONE || c.id === E.PCLN) && c.ctype === 0 && growOf > 0) { c.ctype = growOf; c.busy = 1; }
-  const lit = ctLick(c, hotFuel, flameQ, smothered, seed);
-  if (lit.id !== c.id) return lit;
-  c = lit;
-  if (c.id === E.EMPTY) {
+  if (exited === 0 && (c.id === E.CLONE || c.id === E.PCLN) && c.ctype === 0 && growOf > 0) { c.ctype = growOf; c.busy = 1; }
+  if (exited === 0) {
+    const licked = ctLick(c, hotFuel, flameQ, smothered, seed);
+    if (licked.id !== c.id) { result = licked; exited = 1; }
+    else c = licked;
+  }
+  if (exited === 0 && c.id === E.EMPTY) {
     if (clone > 0 && clone < CONTACT_ELEMENT_COUNT) {
       c.busy = 1;
       // V1: one draw a step however many clones touch it, so the partnered ones share the steps (CT_CLONE_MISS_LOG)
@@ -1073,35 +1095,31 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
       const outside = outClones | 0;
       if (outside > 0) chance = 1.0 - Math.exp(CT_CLONE_MISS_LOG * ctF(clones) / ctF(clones + outside));
       if (random < chance) {
-        let made = ctCreate(c, clone, ctRow(clone).spawnQ);
-        if (ctRow(clone).kind !== 4) made.fallSpeed = CT_SPAWN_DROP;
-        return made;
+        made = clone; madeQ = ctRow(clone).spawnQ; exited = 1;
+        if (ctRow(clone).kind !== 4) madeDrop = 1;
       }
     }
     // V1 react.js mossSite: damp moss and a bed on faces of different axes (only one axis holding both fails)
     const site = wetAxes !== 0 && bedAxes !== 0 && !(wetAxes === bedAxes && (wetAxes === 1 || wetAxes === 2 || wetAxes === 4));
-    if (wetMoss > 0 && site) { c.busy = 1; if (random < ctPerTick(CT_MOSS_GROW * ctF(wetMoss))) return ctCreate(c, E.MOSS, c.tq); }
+    if (exited === 0 && wetMoss > 0 && site) { c.busy = 1; if (random < ctPerTick(CT_MOSS_GROW * ctF(wetMoss))) { made = E.MOSS; madeQ = c.tq; exited = 1; } }
   }
-  if (c.id === E.CLOUD) {
+  if (exited === 0 && c.id === E.CLOUD) {
     if (cloud > CT_CLOUD_RAIN_NB || empty > CT_CLOUD_EVAP_NB) {
       c.busy = 1;
-      if (cloud > CT_CLOUD_RAIN_NB && random < ctPerTick(CT_CLOUD_RAIN * ctF(cloud - CT_CLOUD_RAIN_NB))) return ctConvert(c, E.WATER, 0);
+      if (cloud > CT_CLOUD_RAIN_NB && random < ctPerTick(CT_CLOUD_RAIN * ctF(cloud - CT_CLOUD_RAIN_NB))) { result = ctConvert(c, E.WATER, 0); exited = 1; }
       const temp = ctF(c.tq) * 0.25 - CT_CODE_ZERO_C;
       const ambient = ctF(ambientQ) * 0.25 - CT_CODE_ZERO_C;
       const es = Math.exp(CT_MAGNUS_A * (temp / Math.max(1, temp + CT_MAGNUS_B) - ambient / Math.max(1, ambient + CT_MAGNUS_B)));
-      if (empty > CT_CLOUD_EVAP_NB && random < ctPerTick(CT_CLOUD_EVAP * ctF(empty - CT_CLOUD_EVAP_NB) * es)) {
-        // V1 react.js: the evaporating cell's air cools by CLOUD_EVAP_COOL (a declared sink).
-        let gone = ctDecay(c, E.EMPTY);
-        const before = ctEnergy(gone);
-        gone = ctHeat(gone, -(ctCapacity(gone) * Math.min(CT_CLOUD_EVAP_COOL_Q, gone.tq)));
-        return ctRecordChange(gone, before);
+      if (exited === 0 && empty > CT_CLOUD_EVAP_NB && random < ctPerTick(CT_CLOUD_EVAP * ctF(empty - CT_CLOUD_EVAP_NB) * es)) {
+        // V1 react.js: the evaporating cell's air cools by CLOUD_EVAP_COOL (a declared sink; below).
+        decayed = E.EMPTY; decayCools = 1; exited = 1;
       }
     }
     // V1 react.js storm charge: snow closing on it. Grid snow moves only along gravity, so only the
     // partner upstream of it (CT_OUT_UP) can close on it, at its stored fall speed (cells a tick): snow
     // beside it or falling away below it closes at none. (Flying snow: v2/airborne.js.)
     const up = ctDiv(out, CT_OUT_UP) % 4;
-    if (up > 0) {
+    if (exited === 0 && up > 0) {
       const above = ns[up - 1];
       if (above.valid !== 0 && above.id === E.SNOW) c = ctStormCharge(c, above.fallSpeed, seed);
     }
@@ -1109,19 +1127,35 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   // V1 react.js dust clouds: suspended (faster than DUST_LIFT_V, any direction: grid dust moves only as it
   // falls), DUST_MEC_NB dust and DUST_RICH_AIR air faces of six, lit by its own heat, a hot touch or a
   // flame face (DUST_FIRE 1: every step).
-  if (c.id === E.DUST && Math.abs(c.fallSpeed) > DUST_MIN_FALL_SPEED && dust >= CONTACT_DUST_MEC_NB && empty >= CONTACT_DUST_RICH_AIR && (c.tq >= r.igniteQ || hotTouch || fire > 0)) { c.request = c.request | 1; c.busy = 1; }
-  if (c.id === E.SINGULARITY) {
+  if (exited === 0 && c.id === E.DUST && Math.abs(c.fallSpeed) > DUST_MIN_FALL_SPEED && dust >= CONTACT_DUST_MEC_NB && empty >= CONTACT_DUST_RICH_AIR && (c.tq >= r.igniteQ || hotTouch || fire > 0)) { c.request = c.request | 1; c.busy = 1; }
+  if (exited === 0 && c.id === E.SINGULARITY) {
     // Mass has 1/256 cell units; unlike normalized fuel it reaches 200 cells.
     c.busy = 1;
-    if (c.life >= 51200) { c.request = c.request | 1; return c; }
-    const mass = ctF(c.life) / 256;
-    // V1 react.js: m -= SING_EVAP / max(m², SING_MASS_MIN) a step, the tick's steps; the fraction a draw
-    let m = mass;
-    for (let step = 0; step < CT_STEPS_PER_TICK; step++) { m = ctF(m - ctF(CT_SING_EVAP / Math.max(ctF(m * m), CT_SING_MASS_MIN))); }
-    c.life = Math.max(0, c.life - ctI(Math.floor(ctF(ctF(mass - m) * 256.0) + ctRoll(seed, CT_SING_SALT))));
-    if (c.life < 256 || c.life >= 51200) c.request = c.request | 1;
+    if (c.life >= 51200) { c.request = c.request | 1; result = c; exited = 1; }
+    if (exited === 0) {
+      const mass = ctF(c.life) / 256;
+      // V1 react.js: m -= SING_EVAP / max(m², SING_MASS_MIN) a step, the tick's steps; the fraction a draw
+      let m = mass;
+      for (let step = 0; step < CT_STEPS_PER_TICK; step++) { m = ctF(m - ctF(CT_SING_EVAP / Math.max(ctF(m * m), CT_SING_MASS_MIN))); }
+      c.life = Math.max(0, c.life - ctI(Math.floor(ctF(ctF(mass - m) * 256.0) + ctRoll(seed, CT_SING_SALT))));
+      if (c.life < 256 || c.life >= 51200) c.request = c.request | 1;
+    }
   }
-  return c;
+  if (exited === 0) result = c;
+  if (made >= 0) {
+    result = ctCreate(c, made, madeQ);
+    if (madeDrop !== 0) result.fallSpeed = CT_SPAWN_DROP;
+  }
+  if (decayed >= 0) {
+    result = ctDecay(c, decayed);
+    if (decayCools !== 0) {
+      const before = ctEnergy(result);
+      result = ctHeat(result, -(ctCapacity(result) * Math.min(CT_CLOUD_EVAP_COOL_Q, result.tq)));
+      result = ctRecordChange(result, before);
+    }
+  }
+  if (exhausted !== 0) result = ctExhaust(c, seed);
+  return result;
 }
 
 // Function signatures are part of the checked JS→WGSL kernel ABI.
