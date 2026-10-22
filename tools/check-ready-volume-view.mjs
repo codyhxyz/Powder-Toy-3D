@@ -171,7 +171,7 @@ const worldSplit = app.indexOf('  let runDerived=false, runView=false;', schedul
 const localBegin = app.indexOf('  const hybridScale = hybrid?.adapt(', worldSplit);
 assert(scheduleBegin>=0&&worldSplit>scheduleBegin&&localBegin>worldSplit);
 const scheduleCode = app.slice(scheduleBegin,worldSplit)+'  let runDerived=false, runView=false;\n'+app.slice(localBegin,app.indexOf('  const viewV = present ?'));
-const viewScheduleCode = app.match(/  runView = present && pacer\.view\(viewV, runDerived \|\| wantFrame\(\)\);/)[0];
+const viewScheduleCode = app.match(/  runView = present && pacer\.view\(viewV, runDerived \|\| wantFrame\(\) \|\| betweenTicks\);/)[0];
 const wakeCode = app.slice(app.indexOf('const waited = new WeakSet();'), app.indexOf('// the wires that draw into the scene pass'));
 assert.equal((scheduleCode.match(/selectRenderView\(\);/g) ?? []).length, 1, 'select exactly once before scheduling');
 assert.equal((app.match(/\bselectRenderView\(\);/g) ?? []).length, 1, 'no second selection after scheduling');
@@ -207,7 +207,7 @@ const paused = new Function('helpers', `
   const volume = { matrixWorld: new Matrix4(), updateMatrixWorld() {} };
   const camGrid = new Vector3(), invVol = new Matrix4(), canvas = { height: 600 };
   const presetOf = () => 1, DEVICE_RATIO = 1, pixelRatio = 1, UPSCALE_FLOOR = 0.5;
-  const selectedMode = 'sandbox', renderOnly = false, wantFrame = () => false;
+  const selectedMode = 'sandbox', renderOnly = false, wantFrame = () => false, betweenTicks = false;   // (a V2 frame between ticks: app.js)
   const SUN = new Vector3(0, 1, 0), KEY_LIGHT = [1, 1, 1], gfx = { smoothing: 1 }, detailVersion = 0, giBuilt = 1;
   const frameValues = (cam, view) => ({ camera: cam, model: new Matrix4(), sun: SUN, view });
   ${resolutionCode}\n${wakeCode}\n${setCode}\n${selectCode}\n${hooksCode}

@@ -163,7 +163,7 @@ assert.equal(fullFrames, 9, 'derived and TAA retain full convergence frames');
 pacer.wake(); assert(pacer.view('view', false), 'wake restores full draws');
 assert(pacer.view('new camera/world/settings key', false), 'key changes restore full draws');
 const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
-assert.match(app, /pacer.view\(viewV, runDerived \|\| wantFrame\(\)\)/);
+assert.match(app, /pacer.view\(viewV, runDerived \|\| wantFrame\(\) \|\| betweenTicks\)/);
 assert.match(app, /if \(runView && !postOnly\)/);
 assert.match(app, /pointerPickDirty \|\| \(!postOnly && \(runView \|\| pov\?\.active \|\| testMode === 'preview'\)\)/);
 assert.match(app, /wantFrame\(\) \|\| post.adapting/); // deep idle cannot stop moving exposure
