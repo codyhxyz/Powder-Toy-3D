@@ -206,6 +206,9 @@ export const CONTACT_CONSTANTS = Object.freeze({ ...CONTACT_ENERGY_CONSTANTS,
   // is a partner 4 ticks (physics.js offsetOf), so k of n partnered compound PARTNER_STEPS·k/n steps,
   // 32 a cycle for any n, as V1's one draw a step: 1 - exp(CT_CLONE_MISS_LOG·k/n).
   CT_CLONE_MISS_LOG: ['f32', missLog(PHYS.CLONE_RATE)],
+  // V1 react.js clone: what it makes (but a gas) starts falling at SPAWN_DROP_V cells/step; a liquid's fall is
+  // its column lane, cells a tick (shaders/v2/columns.js colFall: STEPS_PER_TICK of V1's cells/step; RX-7)
+  CT_SPAWN_DROP_TICK: ['f32', -PHYS.SPAWN_DROP_V * STEPS_PER_TICK],
   // V1 react.js growers, each a chance per step per neighbour (rnd < RATE * n): water beside plant
   // becomes plant (PLANT_GROW), air on a mossSite beside damp moss becomes moss (MOSS_GROW), a fungus
   // food beside damp fungus rots to fungus (FUNGUS_GROW). Per present partner, PARTNER_STEPS steps'
@@ -245,7 +248,7 @@ const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGN
   CT_FIRE_TO_SMOKE, CT_FIRE_MIN_Q, CT_BURNT_MIN_Q, CT_ASH_SHARE, CT_SPARK_REST, CT_SPARK_BORN, CT_SPARK_CYCLE, CT_SPARK_V, CT_SWITCH_ON, CT_TSNS_FIRE,
   CT_LAMP_HOLD, CT_LAMP_DC_LEVEL, CT_JOULE_WHOLE, CT_JOULE_MILLI, CT_JOULE_MILLI_UNIT, CT_ELEC_PENDING, CT_ELEC_LIFE_UNIT, CT_ELEC_LIFE_MAX,
   CT_ELEC_SPENT_UNIT, CT_ELEC_SPENT_MAX, CT_ELEC_STEPS, CT_ELEC_SALT, CT_FUSE_UNLIT, CT_FUSE_BURN_NUM, CT_FUSE_BURN_DEN, CT_FUSE_HANDOFF_Q,
-  CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END, CT_CLONE_CHANCE, CT_CLONE_MISS_LOG, CT_PLANT_MISS_LOG, CT_MOSS_MISS_LOG, CT_FUNGUS_MISS_LOG,
+  CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END, CT_CLONE_CHANCE, CT_CLONE_MISS_LOG, CT_SPAWN_DROP_TICK, CT_PLANT_MISS_LOG, CT_MOSS_MISS_LOG, CT_FUNGUS_MISS_LOG,
   CT_ACID_EAT, CT_ACID_SPENT, CT_CLOUD_RAIN, CT_CLOUD_RAIN_NB, CT_CLOUD_EVAP, CT_CLOUD_EVAP_NB, CT_STEPS_PER_TICK,
   CT_TOUCH_FIRE, CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_TOUCH_FRONT } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 const { CT_COND_FLUX, CT_CAP_UNITS, CT_Q_PER_C, CT_FULL, CT_FILL_SALT, CT_ROLL_UNIT, CT_PAIR_FILL_SALT, CT_Q_MAX, CT_RX_HEAT_UNIT, CT_SHARE_LO, CT_SHARE_HI } = Object.fromEntries(Object.entries(CONTACT_ENERGY_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
@@ -1003,7 +1006,11 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
       let chance = CT_CLONE_CHANCE;
       const outside = outClones | 0;
       if (outside > 0) chance = 1.0 - Math.exp(CT_CLONE_MISS_LOG * ctF(clones) / ctF(clones + outside));
-      if (random < chance) return ctCreate(c, clone, ctRow(clone).spawnQ);
+      if (random < chance) {
+        const made = ctCreate(c, clone, ctRow(clone).spawnQ);
+        if (ctRow(clone).kind === 3) made.fallSpeed = CT_SPAWN_DROP_TICK;
+        return made;
+      }
     }
     if (moss > 0 && bed > 0) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(moss) * CT_MOSS_MISS_LOG)) return ctCreate(c, E.MOSS, c.tq); }
   }

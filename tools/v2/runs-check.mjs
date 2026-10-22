@@ -152,3 +152,29 @@ test('BL-8: a heavy liquid landing hard breaks the solid it lands on, as V1\'s (
   assert.equal(drop(E.WATER, E.GLASS, 24).broke, 0, 'water never breaks glass');
   assert.equal(drop(E.WATER, E.LAMP, 24).broke, 4, 'water from far breaks a lamp');
 });
+
+test('RX-7, the liquid half: a cloned liquid starts falling at V1\'s SPAWN_DROP_V in its column lane', async () => {
+  const C = await import('../../src/v2/contact.js');
+  const { contactWGSL } = await import('../../src/shaders/v2/contact.js');
+  // V1 react.js clone: the product (but a gas) starts with v.y = SPAWN_DROP_V cells/step
+  const made = (id) => {
+    const clone = C.ctNew(E.CLONE, 1172, 65536); clone.ctype = id;
+    const air = () => C.ctNew(E.EMPTY, 1172, 65536);
+    for (let s = 0; s < 4096; s++) { const c = C.ctStep(air(), [clone, air(), air()], s); if (c.id === id) return c; }
+    throw new Error(`no ${ELEMENTS[id].key} made`);
+  };
+  assert.equal(made(E.WATER).fallSpeed, Math.fround(-PHYS.SPAWN_DROP_V * COLUMN.STEPS));
+  assert.equal(made(E.MERCURY).fallSpeed, Math.fround(-PHYS.SPAWN_DROP_V * COLUMN.STEPS));
+  // the WGSL packs it into a new liquid's y lane (the column pass's fall, cells a tick)
+  assert.match(contactWGSL, /if\(c\.fallSpeed>0\.0 && c\.id!=i32\(original\.x&255u\)\)\{core\.z=\(core\.z&65535u\)\|\(pack2x16float\(vec2f\(0\.0,c\.fallSpeed\)\)&0xffff0000u\);\}/);
+  // and the column pass falls it from that speed: further in its first tick than a cell from rest
+  const fall = (lane) => {
+    const w = new ColumnGrid(4, 16, 4);
+    w.set(1, 12, 1, E.WATER);
+    if (lane) w.cores[w.at(1, 12, 1)] = w.ctx.withLane(w.cores[w.at(1, 12, 1)], 1, lane);
+    run(w, 2);
+    let y = 0; while (L.cid(w.cores[w.at(1, y, 1)]) !== E.WATER) y++;
+    return 12 - y;
+  };
+  assert.ok(fall(-PHYS.SPAWN_DROP_V * COLUMN.STEPS) > fall(0), `from V1's spawn speed ${fall(1.2)} cells in 2 ticks, from rest ${fall(0)}`);
+});
