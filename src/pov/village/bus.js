@@ -21,10 +21,14 @@ export async function withCityBusFocus({ world, at, valid, getFocus, setFocus, m
     // Finite world, 16-cell shifts: this bound is ample for either supported size.
     const limit = Math.ceil((world.P.size[0] + world.P.size[2]) / 16) + 4;
     for (let i = 0; i < limit; i++) {
-      await world.pending;
+      // the last move's leaving slab, and under V2 the window's pipelines (WorldWindow.blocker): a move
+      // that can't be made yet must not be taken for arrival, or the arrival lands outside the window
+      for (let n = 0, wait; n < limit && (wait = world.blocker ? world.blocker() : world.pending); n++) await wait;
       await world.sim?.deco?.pending;
       if (!current()) return false;
-      if (!move()) return visit ? await visit(current) : true;
+      const moved = move();
+      if (moved?.then) { await moved; continue; }   // a move that commits later: wait for it, then look again
+      if (!moved) return visit ? await visit(current) : true;
     }
     throw new Error('Bus streaming did not converge');
   } finally { if (getFocus() === focus) setFocus(null); }

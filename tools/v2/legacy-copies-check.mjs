@@ -95,10 +95,10 @@ const zeros = bytes => bytes.every(v => v === 0);
   owner.ticks(3);
   sim.bindRW; sim.bindRO; sim.bindFlagsRO;   // (the legacy boundaries)
   fill(sim, 0, 7);
-  // Undo under the native owner takes the one copy there is.
+  // Undo under the native owner keeps V2's own words, not a copy of the legacy projection (src/sim.js snapshot).
   sim.snapshot('native');
-  assert.deepEqual(sim.history.at(-1).A.data, copyOf(sim, 0).A);
-  assert.deepEqual(sim.history.at(-1).B.data, copyOf(sim, 0).B);
+  assert.equal(sim.history.at(-1).A ?? null, null); assert.equal(sim.history.at(-1).B ?? null, null);
+  assert.deepEqual(sim.history.at(-1).compact.data, owner.cells.data);
   dispatchesValid(dispatches, sim.g);
 
   // V2 → V1: the boundary builds kernels; the first step brings the other copy back zeroed, as a new grid's.

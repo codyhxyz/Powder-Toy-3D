@@ -1,5 +1,5 @@
 import { routeNativePaint, prepareNativeBrush } from './v2/interactions.js';
-import { captureNativeSnapshot, restoreNativeSnapshot, validateNativeSnapshot, resetNativeDynamics } from './v2/dynamicState.js';
+import { resetNativeDynamics } from './v2/dynamicState.js';
 import { nativeHostTick } from './v2/host.js';
 import { emitNativeRay, nativeRayKind } from './v2/tools.js';
 import { NativeIntegration, nativeCapabilities } from './v2/integration.js';
@@ -1141,57 +1141,60 @@ export class Simulation {
   }
 
   // ---- undo history: GPU copies of the state, newest last ----
-  // Each snapshot keeps legacy A/B (~67 MB at 128³); v2 entries additionally
-  // keep exact compact words (~34 MB). The projection is only for undo in v1.
+  // A V1 entry keeps A/B (~67 MB at 128³). A V2 entry keeps V2's own words
+  // instead (the compact cores, their banks, and its dynamics' flying matter,
+  // air and requests: NativeDynamics.captureUndo), GPU copies recorded with the
+  // stroke and never read back, so a stroke's start costs what V1's does and an
+  // undo right after it waits for nothing.
   // Each remembers the window's origin it was taken at (t.origin): after the
   // window moves (docs/scaling.md D11) it still holds the cells where they were,
   // and what it was taken before (t.label: 'Sand', 'House'), for the undo
   // notice's "Undone Sand" (Garry's Mod's "Undone Prop").
   snapshot(label = null, limit = UNDO_LIMIT) {
-    if (this.nativeTransition || this.nativeTransitionError) throw new Error('Cannot snapshot during a native world transition');
-    this.legacyState();
-    const f = this.gpu.frame, bytes = this.g.slots * 16, { A, B } = this.state;
-    let t = this.history.length >= limit ? this.history.shift() : null;
-    if (!t) {
-      const mk = (n) => this.gpu.createBuffer({ label: `sim${this.id} undo ${n}`, size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-      t = { A: mk('A'), B: mk('B') };
-      t.group = this.gpu.bindGroup(this.L.UNDO, [{ binding: 0, resource: { buffer: t.A } }, { binding: 1, resource: { buffer: t.B } }], 'undo snapshot');
-    }
-    t.nativeSnapshot = t.nativeError = t.nativePending = t.worldHistory = null;
-    const snapshotEpoch = t.snapshotEpoch = (t.snapshotEpoch ?? 0) + 1;
+    const f = this.gpu.frame, bytes = this.g.slots * 16;
+    const t = (this.history.length >= limit ? this.history.shift() : null) ?? {};
     t.format = this.compact?.isReady ? 'v2' : 'v1';
-    if (t.format === 'v2' && this.compact.dynamics) {
-      // Calls enqueue all core/aux/activity/dynamics copies in this task,
-      // alongside the GPU undo buffers below, before any user edit can run.
-      const native = captureNativeSnapshot(this.compact, 'v2');
-      const world = this.worldWindow?.captureHistory();
-      t.nativePending = Promise.all([native, world]).then(([snapshot, history]) => {
-        if (t.snapshotEpoch === snapshotEpoch && this.history.includes(t)) { t.nativeSnapshot = snapshot; t.worldHistory = history ?? null; }
-      }, error => { if (t.snapshotEpoch === snapshotEpoch) t.nativeError = error; }).finally(() => {
-        if (t.snapshotEpoch === snapshotEpoch) t.nativePending = null;
-      });
-    }
     if (t.format === 'v2') {
-      t.compact ??= this.gpu.createBuffer({ label: `sim${this.id} undo compact`, size: bytes,
-        usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+      // (storage too: an undo across a move reads them in the native window's merge, v2/integration.js undo)
+      const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
+      t.compact ??= this.gpu.createBuffer({ label: `sim${this.id} undo compact`, size: bytes, usage });
       f.copy(this.compact.cells, 0, t.compact, 0, bytes);
       if (this.compact.aux) {
-        t.aux ??= this.gpu.createBuffer({ label: `sim${this.id} undo aux`, size: this.g.slots * 4,
-          usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+        t.aux ??= this.gpu.createBuffer({ label: `sim${this.id} undo aux`, size: this.g.slots * 4, usage });
         f.copy(this.compact.aux, 0, t.aux, 0, this.g.slots * 4);
       } else if (t.aux) { this._retire(t.aux); t.aux = null; }
+        const d = this.compact.dynamics;
+      if (d && !d.disposed && d.captureUndo && !this.nativeTransition) t.dynamic = d.captureUndo(t.dynamic);   // (buffers alone: while its kernels build too)
+      else this._retireUndoDynamic(t);
+      if (t.A) { this._retire(t.A); this._retire(t.B); t.A = t.B = t.group = null; }
     } else {
+      this.legacyState();
+      if (!t.A) {
+        const mk = (n) => this.gpu.createBuffer({ label: `sim${this.id} undo ${n}`, size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        t.A = mk('A'); t.B = mk('B');
+        t.group = this.gpu.bindGroup(this.L.UNDO, [{ binding: 0, resource: { buffer: t.A } }, { binding: 1, resource: { buffer: t.B } }], 'undo snapshot');
+      }
       if (t.compact) { this._retire(t.compact); t.compact = null; }
       if (t.aux) { this._retire(t.aux); t.aux = null; }
+      this._retireUndoDynamic(t);
+      const { A, B } = this.state;
+      f.copy(A, this.cur * bytes, t.A, 0, bytes);
+      f.copy(B, this.cur * bytes, t.B, 0, bytes);
     }
-    f.copy(A, this.cur * bytes, t.A, 0, bytes);
-    f.copy(B, this.cur * bytes, t.B, 0, bytes);
     t.deco = null;
     this.deco?.snapshot?.(t);   // and the decoration (src/deco.js)
     t.origin = this.origin.clone();
     t.label = label;
     t.note = null;   // the app's tag for what undoing this takes back besides cells (app.js: a shrine's orbs)
     this.history.push(t);
+  }
+  _retireUndoDynamic(t) {
+    for (const b of t.dynamic?.buffers ?? []) this._retire(b);
+    t.dynamic = null;
+  }
+  _retireUndo(t) {
+    for (const b of [t.A, t.B, t.compact, t.aux]) if (b) this._retire(b);
+    this._retireUndoDynamic(t);
   }
 
   get canUndo() { return this.history.length > 0; }
@@ -1207,35 +1210,25 @@ export class Simulation {
   // they hold now (the cells that left the window are stored edits, out of
   // its reach). If the two don't overlap at all it does nothing and keeps the
   // snapshot for when the window comes back: returns false then, and when
-  // there is none.
+  // there is none. The same under either engine: a V2 entry brings back its
+  // own words over the shared cells, with the flying matter, air and requests
+  // over them (v2/integration.js undo).
   undo() {
     const t = this.history.at(-1);
     if (!t) return false;
-    if (this.nativeTransition || this.nativeTransitionError) throw new Error('Cannot undo during a native world transition');
-    if (t.nativePending) return t.nativePending.then(() => this.history.at(-1) === t ? this.undo() : false);
-    if (t.nativeError) throw t.nativeError;
     const [dx, dz] = this.undoShift;
-    if (t.nativeSnapshot && (dx || dz) && !t.worldHistory) throw new Error('Native world undo across a shift requires matching retained-world history; entry preserved');
-    if (t.worldHistory && (this.worldWindow?.pending || this.deco?.pending)) {
-      return Promise.all([this.worldWindow?.pending, this.deco?.pending]).then(() => this.history.at(-1) === t ? this.undo() : false);
-    }
-    if (!t.worldHistory && (Math.abs(dx) >= this.g.nx || Math.abs(dz) >= this.g.nz)) return false;
-    if (!t.worldHistory && t.format === 'v2' && this.compact && (dx || dz) && !this.nativeIntegration?.isReady) throw new Error('Native shifted undo is not ready');
-    let worldDelta = null;
-    if (t.format === 'v2' && this.compactOwner && t.nativeSnapshot) {
-      const owner = this.compactOwner;
-      if (t.worldHistory) {
-        const commitWorld = this.worldWindow?.prepareHistoryRestore(t.worldHistory);
-        if (!commitWorld) throw new Error('Native world history owner is unavailable');
-        validateNativeSnapshot(owner, t.nativeSnapshot, t.worldHistory.origin);
-        worldDelta = commitWorld();
-      }
-      restoreNativeSnapshot(owner, t.nativeSnapshot);
-      if (!this.compact) owner.exportLegacy();
-    } else if (t.format === 'v2' && this.compact) {
-      if (dx || dz) this.nativeIntegration.undo(t.compact, t.aux, dx, dz);
-      else this.compact.restore(t.compact, t.aux);
-      this.nativeIntegration?.changed();
+    if (Math.abs(dx) >= this.g.nx || Math.abs(dz) >= this.g.nz) return false;
+    if (t.format === 'v2') {
+      const owner = this.compactOwner, native = this.nativeIntegration;
+      if (!owner?.isReady || owner.disposed) throw new Error('Cannot undo that: the physics it was made under is gone');
+      if ((dx || dz) && !native?.isReady) throw new Error('Native shifted undo is not ready');
+      const d = owner.dynamics, dynamic = t.dynamic && d && !d.disposed && !this.nativeTransition ? t.dynamic : null;
+      if (dx || dz) native.undo(t.compact, t.aux, dx, dz, dynamic);
+      else { owner.restore(t.compact, t.aux); if (dynamic) d.restoreUndo(dynamic); }
+      if (native?.isReady) native.changed({ all: false });   // (the restore noted its bricks)
+      else { this.version++; this.changedAll = true; owner.seenVersion = this.version; }
+      // V2 suspended (a runtime switch to V1): V1's cells are the restored words' projection
+      if (!this.compact) { owner.exportLegacy(); this.noteWrite({ replaceState: false }); owner.seenVersion = this.version; }
     } else {
       this._dispatch(this.passOf('undoShift'), fold(Math.ceil(this.g.slots / 64)), {
         bind: [this.tables, this.bindRW, t.group], header: this.header(), params: { shift: [dx, 0, dz] },
@@ -1243,20 +1236,16 @@ export class Simulation {
       this.noteWrite();
     }
     this.history.pop();
-    this.deco?.restore?.(t, worldDelta ? 0 : dx, worldDelta ? 0 : dz);
-    if (worldDelta) this.worldWindow.finishHistoryRestore(worldDelta);
+    this.deco?.restore?.(t, dx, dz);
     this.stillFlow();
     this.rays.wake();   // it may bring plutonium back
-    this._retire(t.A);
-    this._retire(t.B);
-    if (t.compact) this._retire(t.compact);
-    if (t.aux) this._retire(t.aux);
+    this._retireUndo(t);
     return true;
   }
 
   // Forget the undo snapshots (they hold a window that has moved or been replaced).
   dropHistory() {
-    for (const t of this.history) { this._retire(t.A); this._retire(t.B); if (t.compact) this._retire(t.compact); if (t.aux) this._retire(t.aux); }
+    for (const t of this.history) this._retireUndo(t);
     this.history = [];
   }
 
@@ -1749,7 +1738,7 @@ export class Simulation {
     for (const b of [A, B, F, this.flow, this.moveSrc, this.marks, this.act, this.args, this.noDeposit, this.noRayBricks, this.noMask,
       this.paintMask, this.flowTmp, this.atlasScratch, this.rectScratch, this.editScratch, this.refInert]) b?.destroy();
     this.counts.close();
-    for (const t of this.history) { t.A.destroy(); t.B.destroy(); }
+    for (const t of this.history) for (const b of [t.A, t.B, t.compact, t.aux, ...(t.dynamic?.buffers ?? [])]) b?.destroy();   // (an entry holds V1's copies or V2's)
     this.history = [];
   }
 }

@@ -10,6 +10,7 @@ import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, 
   COUPLE_ARGS, listControl, LIST_ARGS, DISPATCH_ARGS_BYTES, LISTS_STAGES, listsStageWGSL, controlBufferWords, LAUNCH_MODE } from '../shaders/v2/blasts.js';
 import { AIR as AIR_MODE, EDGE } from '../simModes.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
+import { windowWGSL, WINDOW_STAGES, WINDOW_LAYOUT, WINDOW_MODE, windowWork } from '../shaders/v2/windowMove.js';
 import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M, EVENT } from './dynamics-reference.js';
 import { NATIVE_LAUNCH_MODE } from './nativeForcing.js';
 import { CONTACT_PUFF_UNIT as PUFF_UNIT } from './contact.js';   // a GAS request's puff rides above its flags
@@ -35,6 +36,10 @@ const IMPULSE_KINDS=['impulse','photon','neutron','wind','pressure','vacuum','cy
 // modes.js mAirVelocity: the air modes that keep wind.
 const AIR_VELOCITY_MODES=[AIR_MODE.ON,AIR_MODE.PRESSURE_OFF,AIR_MODE.NO_UPDATE];
 const cloneRequest = r => ({ ...r, position:[...r.position], direction:[...r.direction] });
+// A brick's air before anything moved it (the constructor's and emptyDynamicState's): an archive
+// keeps only the bricks that differ, since one that comes back without an entry is this, bit for bit.
+const QUIET_AIR=(()=>{ const f=new Float32Array(8); f[6]=AIR.quietTicks; return new Uint32Array(f.buffer); })();
+const quietAir = words => words.every((w,k)=>w===QUIET_AIR[k]);
 // The dynamics' longest cold compile (dawn.node, Metal, cache-busted: v2particles_react 4.7 s, the
 // airborne contact table; the next is under 0.5 s): it starts ahead of their other idle builds.
 const DYNAMICS_LONG_POLES = new Set(['v2particles_react']);
@@ -129,8 +134,13 @@ export class NativeDynamics {
     this.plans=make('plans',g.slots*16);
     const initial=new Float32Array(g.nbricks*8); for (let b=0;b<g.nbricks;b++) initial[b*8+6]=AIR.quietTicks;
     for (const b of this.air) gpu.queue.writeBuffer(b,0,initial);
-    const L={ particles:gpu.layout('V2_PARTICLES',PARTICLES_LAYOUT), blasts:gpu.layout('V2_BLASTS',BLASTS_LAYOUT), air:gpu.layout('V2_AIR',AIR_LAYOUT), lists:gpu.layout('V2_LISTS',LISTS_LAYOUT) };
+    const L={ particles:gpu.layout('V2_PARTICLES',PARTICLES_LAYOUT), blasts:gpu.layout('V2_BLASTS',BLASTS_LAYOUT), air:gpu.layout('V2_AIR',AIR_LAYOUT), lists:gpu.layout('V2_LISTS',LISTS_LAYOUT),
+      window:gpu.layout('V2_WINDOW',WINDOW_LAYOUT) };
+    this.L=L;
     const bg=(layout,buffers,label) => gpu.bindGroup(layout,buffers.map((buffer,binding)=>({binding,resource:{buffer}})),label);
+    this.bg=bg;
+    // a window move's work buffer (shaders/v2/windowMove.js windowWork), made on the first move
+    this.windowLayout=windowWork(g); this.work=null; this.windowEpoch=0; this.leaving=new Set();
     this.groups={
       particles:this.air.map(a=>bg(L.particles,[this.particles,this.flight,this.claims,a,this.control],'native particles')),
       blasts:this.air.map(a=>bg(L.blasts,[owner.events,this.particles,a,this.control,this.plans],'native blasts')),
@@ -151,6 +161,13 @@ export class NativeDynamics {
     }
     this.ready=Promise.all(Object.values(this.kernels).map(k=>k.ready)).then(()=>{ if(!this.disposed) this.isReady=true; return this; });
     this.ready.catch(()=>{});
+    // A World window's move (shaders/v2/windowMove.js) runs on the buffers alone, so it is built with the
+    // grid, not behind it: the window follows while the grid steps and the rest of these still build.
+    this.windowKernel=gpu.kernel({name:'v2window_move',build:'now',code:windowWGSL(g,owner.nativeDynamics.head,'move'),
+      params:DynamicParams,workgroupSize:[64,1,1],layouts:[owner.nativeDynamics.layout,L.window]});
+    this.windowReady=false;
+    this.windowBuilt=Promise.resolve(this.windowKernel.ready).then(()=>{ if(!this.disposed) this.windowReady=true; return this; });
+    this.windowBuilt.catch(()=>{});
   }
   get capabilities() {
     const ready=this.isReady&&!this.disposed;
@@ -176,6 +193,8 @@ export class NativeDynamics {
   // Reads and writes of the buffers alone (snapshot, restore, a window's shift) need no kernel: they
   // run while the kernels build too, so a load, an undo or a save never waits for them.
   _checkState() { if (this.disposed) throw new Error('NativeDynamics is disposed'); }
+  // A window's move and an undo's merge across one: the buffers and the move's own kernel, built with the grid.
+  _checkWindow() { this._checkState(); if (!this.windowReady) throw new Error('Native window move is not built yet'); }
   /** Its kernels are still building (not ready, not disposed): requests wait in their queues. */
   get building() { return !this.isReady && !this.disposed; }
   _prepareAllocation(tick,params={},count) {
@@ -470,11 +489,18 @@ export class NativeDynamics {
       requests:[...this.rayRequests].map(([slot,r])=>({slot,...cloneRequest(r)})),
       airArchive:[...this.airArchive].map(([worldCell,words])=>({worldCell:worldCell.split(',').map(Number),words:new Uint32Array(words)})),
       pendingEvents:[...this.pendingOutside].map(([worldCell,bits])=>({worldCell:worldCell.split(',').map(Number),bits}))};
+    // a leaving slab still being read back is the archive's and the obligations' as of now (shiftWindow)
+    const leaving=[...this.leaving];
     const reads=[this.particles,this.air[this.airIndex],this.control,this.owner.events].map(b=>this.gpu.readback.buffer(b,0,b.size));
     // the flying matter's decoration, beside its records (recorded with them, before any await)
     const paint=this.owner.particleDecoRange, decoRead=paint ? this.gpu.readback.buffer(paint.buffer,paint.offset,PARTICLE_CAP*4) : null;
     const [particles,air,control,events]=(await Promise.all(reads)).map(b=>new Uint32Array(b));
     const particleDeco=decoRead ? new Uint32Array(await decoRead) : undefined;
+    const archived=new Set(metadata.airArchive.map(a=>key(a.worldCell)));
+    for(const out of await Promise.all(leaving)) {
+      for(const [k,words] of out.air) if(!archived.has(k)) { archived.add(k); metadata.airArchive.push({worldCell:k.split(',').map(Number),words:new Uint32Array(words)}); }
+      for(const [k,bits] of out.events) metadata.pendingEvents.push({worldCell:k.split(',').map(Number),bits});
+    }
     for(let s=0;s<g.slots;s++) if(events[s]) metadata.pendingEvents.push({worldCell:slotCell(g,s).map((v,a)=>v+origin[a]),bits:events[s]});
     const externalBlastDone=control.slice(externalBlastBase(g),externalBlastBase(g)+EXTERNAL_BLAST_CAP);
     const owned=new Set(metadata.externalBlasts.map(r=>r.slot));
@@ -507,27 +533,199 @@ export class NativeDynamics {
     this.airIndex=0; this.origin=[...s.origin]; this.sequence=s.sequence; // (blastBatch is this engine's own: a save from before sources were bricks holds 8 charges, not a cap)
     this.rayRequests=requests; this.airArchive=archive; this.pendingOutside=outside;
     this.holdSession=s.holdSession?structuredClone(s.holdSession):null;
+    this.windowEpoch++; // a leaving slab still being read back belongs to the replaced state
     this._externalWork(); this.stats=null; // establish idle only from an epoch-checked read
   }
-  /** Explicit world/persistence boundary; brick-aligned windows preserve exact
-   * air words in a sparse world-coordinate archive. No particle coordinate is
-   * rewritten. Call/await with the app paused, before resuming the new window. */
-  async shiftWindow(delta) {
-    this._checkState(); delta=finiteVector(delta);
-    if(!delta || !delta.every(v=>Number.isInteger(v)&&v%4===0)) throw new Error('Native air window shifts must be brick-aligned integer cells');
-    const old=[...this.origin],next=old.map((v,a)=>v+delta[a]);
-    const snapshot=await this.snapshotDynamicState(),g=this.g;
-    const archive=new Map(this.airArchive);
-    for(let b=0;b<g.nbricks;b++) archive.set(key(brickCoordOf(g,b).map((v,a)=>old[a]+v*4)),snapshot.air.slice(b*8,b*8+8));
-    const air=new Uint32Array(g.nbricks*8),floats=new Float32Array(air.buffer);
-    for(let b=0;b<g.nbricks;b++) {
-      const k=key(brickCoordOf(g,b).map((v,a)=>next[a]+v*4)); const words=archive.get(k);
-      if(words) { air.set(words,b*8); archive.delete(k); } else floats[b*8+6]=AIR.quietTicks;
+  /** A World window move (V1 moves its cells in the frame: src/sim.js shift), recorded now and never
+   * awaited: the world keeps stepping and its tools keep working through it. Particles keep their world
+   * coordinates; requests, air and shocks move with the cells (shaders/v2/windowMove.js), the slab that
+   * leaves going to the world-keyed archive and the outside obligations once its readback lands (settled).
+   * Brick-aligned, any axes (one at a time). */
+  shiftWindow(delta) {
+    this._checkWindow(); const d=this._windowDelta(delta);
+    for(let a=0;a<3;a++) if(d[a]) this.recordWindowShift(d.map((v,b)=>b===a?v:0)).commit();
+    return {status:'preserved',particles:'unchanged world coordinates',archivedAir:this.airArchive.size,pendingOutside:this.pendingOutside.size,
+      settled:Promise.all([...this.leaving]).then(()=>this)};
+  }
+  _windowDelta(delta) {
+    const d=finiteVector(delta);
+    if(!d || !d.every(v=>Number.isInteger(v)&&v%4===0)) throw new Error('Native air window shifts must be brick-aligned integer cells');
+    return d;
+  }
+  // The move's work buffer, at least `words` long (made on the first move; a larger slab or request list
+  // grows it, the old one kept to dispose: queued work may still read it), and its bind groups.
+  _windowWork(words) {
+    if(!this.work || this.work.size<words*4) {
+      this.work=this.gpu.createBuffer({label:'v2 dynamics window work',size:Math.ceil(words/4)*16,
+        usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST});
+      this.buffers.push(this.work); this.workUse=undefined;
+      this.groups.window=this.air.map(a=>this.bg(this.L.window,[this.owner.events,a,this.control,this.work,this.particles],'native window move'));
     }
-    snapshot.origin=next; snapshot.air=air;
-    snapshot.airArchive=[...archive].map(([worldCell,words])=>({worldCell:worldCell.split(',').map(Number),words}));
-    this.restoreDynamicState(snapshot);
-    return {status:'preserved',particles:'unchanged world coordinates',archivedAir:archive.size,pendingOutside:this.pendingOutside.size};
+    return this.work;
+  }
+  // An upload into work: unordered unless a move recorded in the open encoder still reads it (a tool's two
+  // moves in one frame), as the World window's restore upload is (world/window.js restore).
+  _writeWork(offset,data) {
+    const flushes=this.gpu.stats?.flushes;
+    this.gpu.write(this.work,offset,data,{ordered:flushes===undefined || this.workUse===flushes});
+  }
+  _recordWindow(group,threads,params) {
+    this._checkWindow();
+    const k=this.windowKernel;
+    k.dispatch(this.gpu.frame,fold(Math.ceil(threads/64)),{bind:[this.owner.nativeDynamics.group,group],
+      header:this.owner.sim.header?.(),params:this._params(this.owner.tick,{blastBounded:0,boxStart:[0,0,0],boxSize:[0,0,0],shift:[0,0,0],substep:0,...params})});
+    this.owner.sim.onPass?.(k.name,{kind:'compute',gpuMs:null});
+    this.workUse=this.gpu.stats?.flushes;
+  }
+  /** One axis of a window move, recorded into the frame. Before the cores move: the slab that leaves is
+   * gathered and read back, and the moved requests, air, shocks and legacy words written into work.
+   * commit(), after the cores' move (src/v2/integration.js shift: its restore clears the requests and
+   * the activity), copies them in. legacy: the bricks' legacy words move with them (the integrated move:
+   * V1's shift moves A/B with the cells, so only the uncovered bricks' projection is stale). */
+  recordWindowShift(delta,{legacy=false}={}) {
+    this._checkWindow(); const d=this._windowDelta(delta),g=this.g,dims=[g.nx,g.ny,g.nz];
+    const axis=d.findIndex(v=>v!==0);
+    if(axis<0) return {commit(){},landed:Promise.resolve()};
+    if(d.some((v,a)=>v && a!==axis)) throw new Error('Native window moves are one axis at a time');
+    const old=[...this.origin],next=old.map((v,a)=>v+d[a]),width=Math.min(Math.abs(d[axis]),dims[axis]);
+    const bricks=dims.map((n,a)=>(a===axis?width:n)/4),n=bricks[0]*bricks[1]*bricks[2];
+    const leaveLo=dims.map((m,a)=>a===axis && d[a]<0 ? m-width : 0),enterLo=dims.map((m,a)=>a===axis && d[a]>0 ? m-width : 0);
+    const brickAt=(lo,e)=>[e%bricks[0],Math.floor(e/bricks[0])%bricks[1],Math.floor(e/(bricks[0]*bricks[1]))].map((v,a)=>lo[a]+v*4);
+    // what comes in: the archived air of the uncovered bricks (quiet without an entry), in the slab's
+    // order, and the outside obligations now inside
+    const incoming=new Uint32Array(n*8);
+    for(let e=0;e<n;e++) {
+      const k=key(brickAt(enterLo,e).map((v,a)=>v+next[a])),words=this.airArchive.get(k);
+      if(words) { incoming.set(words,e*8); this.airArchive.delete(k); } else incoming.set(QUIET_AIR,e*8);
+    }
+    const list=[];
+    for(const [k,bits] of this.pendingOutside) {
+      const p=k.split(',').map((v,a)=>Number(v)-next[a]);
+      if(isInside(p,g)) { list.push(cellSlot(g,...p),bits); this.pendingOutside.delete(k); }
+    }
+    const W=this.windowLayout,slab=W.slab(n),work=this._windowWork(W.words(n,list.length/2));
+    this._writeWork(slab.incoming*4,incoming);
+    const group=this.groups.window[this.airIndex],p={shift:d,boxSize:bricks};
+    this._recordWindow(group,n*64,{...p,mode:WINDOW_MODE.GATHER,boxStart:leaveLo});
+    const epoch=this.windowEpoch,read=this.gpu.readback.buffer(work,slab.leaveEvents*4,n*72*4);
+    this._recordWindow(group,g.slots,{...p,mode:WINDOW_MODE.SHIFT,boxStart:enterLo});
+    // what left, once it lands: air that differs from quiet into the archive, requests outside
+    const landed=Promise.resolve(read).then(buf=>{
+      const w=new Uint32Array(buf),out={air:[],events:[]};
+      for(let e=0;e<n;e++) {
+        const words=w.slice(64*n+e*8,64*n+e*8+8);
+        if(!quietAir(words)) out.air.push([key(brickAt(leaveLo,e).map((v,a)=>v+old[a])),words]);
+      }
+      for(let i=0;i<64*n;i++) if(w[i]) {
+        const b=Math.floor(i/64),l=i%64,at=brickAt(leaveLo,b);
+        out.events.push([key([at[0]+l%4,at[1]+Math.floor(l/4)%4,at[2]+Math.floor(l/16)].map((v,a)=>v+old[a])),w[i]]);
+      }
+      if(epoch===this.windowEpoch && !this.disposed) this._land(out);
+      return out;
+    });
+    this.leaving.add(landed);
+    landed.then(()=>this.leaving.delete(landed),()=>this.leaving.delete(landed));
+    const commit=()=>{
+      const f=this.gpu.frame,owner=this.owner;
+      f.copy(work,W.events*4,owner.events,0,g.slots*4);
+      for(const b of this.air) f.copy(work,W.air*4,b,0,g.nbricks*32);
+      if(legacy && owner.act && owner.layout) f.copy(work,W.legacy*4,owner.act,owner.layout.legacy*4,g.nbricks*4);
+      f.copy(work,W.shocks*4,this.control,shockBase(g)*4,g.nbricks*4);
+      if(list.length) {
+        this._writeWork(slab.list*4,Uint32Array.from(list));
+        this._recordWindow(this.groups.window[0],list.length/2,{mode:WINDOW_MODE.EVENTS,boxSize:bricks,substep:list.length/2});
+      }
+      this._moved(next);
+    };
+    return {commit,landed};
+  }
+  // A leaving slab's readback merged into the archive and the outside obligations.
+  // A cell back inside the window by then (never, while the window waits for its slab: world/window.js) is the grid's.
+  _land(out,into=this) {
+    const inside=k=>isInside(k.split(',').map((v,a)=>Number(v)-into.origin[a]),this.g);
+    for(const [k,words] of out.air) if(!inside(k)) into.airArchive.set(k,words);
+    for(const [k,bits] of out.events) if(!inside(k)) into.pendingOutside.set(k,(into.pendingOutside.get(k)??0)|bits);
+  }
+  // After a move's or a merge's copies: per-tick scratch starts over (restoreDynamicState's), the
+  // derived brick caches are read again (the air source's faces, the event census).
+  _moved(origin) {
+    const f=this.gpu.frame;
+    f.clear(this.flight); f.clear(this.claims); f.clear(this.plans);
+    this.airIndex=0; this.origin=[...origin];
+    this.owner.noteAllCells?.({events:true});
+    this._externalWork(); this.stats=null;
+  }
+  /** An undo entry's dynamics (src/sim.js snapshot): GPU copies recorded beside the cores', no readback,
+   * so a stroke's start costs what V1's A/B copy does and an undo right after waits for nothing. `t`: an
+   * earlier entry's copies, reused. A leaving slab still being read back lands in the entry's archive too. */
+  captureUndo(t=null) {
+    this._checkState(); const g=this.g,f=this.gpu.frame,owner=this.owner,paint=owner.particleDecoRange;
+    const usage=GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC|GPUBufferUsage.COPY_DST;
+    const mk=(label,size)=>this.gpu.createBuffer({label:`v2 undo ${label}`,size,usage});
+    t??={particles:mk('particles',this.particles.size),air:mk('air',this.air[0].size),events:mk('events',owner.events.size),
+      control:mk('control',this.control.size),deco:mk('particle deco',PARTICLE_CAP*4)};
+    f.copy(this.particles,0,t.particles,0,this.particles.size);
+    f.copy(this.air[this.airIndex],0,t.air,0,this.air[0].size);
+    f.copy(owner.events,0,t.events,0,owner.events.size);
+    f.copy(this.control,0,t.control,0,this.control.size);
+    if(paint) f.copy(paint.buffer,paint.offset,t.deco,0,PARTICLE_CAP*4); else f.clear(t.deco);
+    const meta=t.meta={origin:[...this.origin],sequence:this.sequence,blastBatch:this.blastBatch,
+      holdSession:this.holdSession?structuredClone(this.holdSession):null,
+      externalBlasts:new Map([...this.externalBlasts].map(([slot,r])=>[slot,cloneExternalBlast(r)])),
+      rayRequests:new Map([...this.rayRequests].map(([slot,r])=>[slot,cloneRequest(r)])),
+      // (archived words are never written in place: a move replaces or drops an entry)
+      airArchive:new Map(this.airArchive),pendingOutside:new Map(this.pendingOutside),leaving:new Set(this.leaving)};
+    for(const l of meta.leaving) l.then(out=>{ if(t.meta===meta) { this._land(out,meta); meta.leaving.delete(l); } },()=>{});
+    t.buffers=[t.particles,t.air,t.events,t.control,t.deco];
+    return t;
+  }
+  /** An undo entry taken where the window is now (src/sim.js undo): every dynamic word back. After the
+   * cores' restore (it clears the requests). */
+  restoreUndo(t) {
+    this._checkState(); const f=this.gpu.frame,owner=this.owner,paint=owner.particleDecoRange,m=t.meta;
+    f.copy(t.particles,0,this.particles,0,this.particles.size);
+    for(const b of this.air) f.copy(t.air,0,b,0,this.air[0].size);
+    f.copy(t.events,0,owner.events,0,owner.events.size);
+    f.copy(t.control,0,this.control,0,this.control.size);
+    if(paint) f.copy(t.deco,0,paint.buffer,paint.offset,PARTICLE_CAP*4);
+    this.windowEpoch++;   // a leaving slab read since lands in the entry's archive, not over it
+    this.sequence=m.sequence; this.blastBatch=m.blastBatch;
+    this.holdSession=m.holdSession?structuredClone(m.holdSession):null;
+    this.externalBlasts=new Map([...m.externalBlasts].map(([slot,r])=>[slot,cloneExternalBlast(r)]));
+    this.rayRequests=new Map([...m.rayRequests].map(([slot,r])=>[slot,cloneRequest(r)]));
+    this.airArchive=new Map(m.airArchive); this.pendingOutside=new Map(m.pendingOutside);
+    const epoch=this.windowEpoch;
+    for(const l of m.leaving) l.then(out=>{ if(epoch===this.windowEpoch && !this.disposed) this._land(out); },()=>{});
+    this._moved(m.origin);
+  }
+  /** An undo entry taken before the window moved (src/sim.js undo, V1's undoShift): the cells its window
+   * shares with this one take its requests, air and flying matter, every other cell keeps what it holds,
+   * as V1 restores the shared cells and keeps the rest. shift: [dx, 0, dz], this origin less the entry's.
+   * Recorded before the cores' merge; commit() after it (src/v2/integration.js undo). */
+  recordUndoMerge(t,shift) {
+    this._checkWindow(); const g=this.g,f=this.gpu.frame,owner=this.owner,W=this.windowLayout,paint=owner.particleDecoRange;
+    const work=this._windowWork(W.words(0,0));
+    // the current requests, air and legacy words where the entry's window holds nothing
+    f.copy(owner.events,0,work,W.events*4,g.slots*4);
+    f.copy(this.air[this.airIndex],0,work,W.air*4,g.nbricks*32);
+    const legacy=owner.act && owner.layout;
+    if(legacy) f.copy(owner.act,owner.layout.legacy*4,work,W.legacy*4,g.nbricks*4);
+    const from=this.bg(this.L.window,[t.events,t.air,this.control,work,this.particles],'native undo merge');
+    this._recordWindow(from,g.slots,{mode:WINDOW_MODE.SHIFT,shift,blastBounded:1});
+    // the flying matter over the shared cells: the entry's records, set-off marks and decoration
+    f.copy(t.particles,0,work,W.pool.particles*4,PARTICLE_CAP*48);
+    f.copy(t.control,setOffBase(g)*4,work,W.pool.setOff*4,PARTICLE_CAP*4);
+    f.copy(t.deco,0,work,W.pool.deco*4,PARTICLE_CAP*4);
+    f.clear(this.control,0,4);   // (the live count, recounted by the merge)
+    const o=this.origin,e=t.meta.origin,dims=[g.nx,g.ny,g.nz];
+    this._recordWindow(this.groups.window[this.airIndex],PARTICLE_CAP,{mode:WINDOW_MODE.PARTICLES,
+      blastLo:dims.map((_,a)=>Math.max(o[a],e[a])),blastHi:dims.map((n,a)=>Math.min(o[a],e[a])+n)});
+    return {commit:()=>{
+      f.copy(work,W.events*4,owner.events,0,g.slots*4);
+      for(const b of this.air) f.copy(work,W.air*4,b,0,g.nbricks*32);
+      if(legacy) f.copy(work,W.legacy*4,owner.act,owner.layout.legacy*4,g.nbricks*4);
+      this._moved(this.origin);
+    }};
   }
   shiftOrigin(delta) { return this.shiftWindow(delta); }
   dispose() {
