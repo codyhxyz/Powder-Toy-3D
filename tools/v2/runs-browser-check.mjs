@@ -13,7 +13,7 @@
 //   mercury  a 2×1×2 mercury slab onto a nitroglycerin pool 2 deep, 0, 1 and 2 cells over it
 //   outcomes the outcome bench's tests named by --outcomes (tools/outcomes/tests), their status and numbers
 // Without --v1 or --v2 both run (one launch, one GPU slot each: --v1 and --v2 split them).
-//   node tools/v2/runs-browser-check.mjs [--v1] [--v2] [--scenes spread,drain,...] [--outcomes hole,yield,...]
+//   node tools/v2/runs-browser-check.mjs [--v1] [--v2] [--scenes spread,drain,...] [--outcomes hole,yield,...] [--side C4:1:8,...]
 import { launchBrowser } from '../browser.mjs';
 import { startVite } from '../vite-server.mjs';
 import { openHarness } from '../harness/open.mjs';
@@ -26,7 +26,9 @@ if (outcomes.length && !scenes.includes('outcomes')) scenes.push('outcomes');
 // [cells from the wall, cells dropped] (the slab's row is its drop: its phase is the row's parity)
 const WALL_CASES = [[3, 4], [3, 6], [3, 8], [3, 9], [3, 12], [3, 20], [1, 9], [1, 12], [6, 20]];
 // [charge, cells of floor between the mercury and it, the mercury's height]
-const SIDE_CASES = [['C4', 1, 4], ['C4', 1, 8], ['C4', 1, 14], ['C4', 3, 14], ['C4', 0, 14], ['NITRO', 1, 6], ['NITRO', 1, 14], ['NITRO', 0, 14], ['NITRO', 3, 24]];
+// (--side C4:1:8,NITRO:1:14 picks some)
+const SIDE_CASES = arg('--side')?.split(',').map(c => c.split(':').map((v, k) => (k ? +v : v))) ??
+  [['C4', 1, 4], ['C4', 1, 8], ['C4', 1, 14], ['C4', 3, 14], ['C4', 0, 14], ['NITRO', 1, 6], ['NITRO', 1, 14], ['NITRO', 0, 14], ['NITRO', 3, 24]];
 // the fronts' times (s): every tick early, then sparser
 const FRONT_T = [1 / 30, 0.05, 1 / 15, 0.1, 0.15, 0.2, 0.3, 0.4, 0.8, 1.6];
 const engines = ['v1', 'v2'].filter(e => process.argv.includes(`--${e}`));
