@@ -135,12 +135,13 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
   let refused = DReact(packet, host, array<Material, 3>(faces[inBlock.x], faces[inBlock.y], faces[inBlock.z]), D_REACT_REFUSED, vec2u(0u), vec2u(0u), 0u, touch);
   let carrier0 = energyMul(D_CARRIER_Q, cTq(packet.core));
   // its partners, one an axis: the host where it stands in the face, else the face (none outside the grid)
+  // (one unpack of a cell and one empty cell for all of them, each inlined once: cold compile)
+  var none = ctNew(0, 0, 65536); none.valid = 0;
   var ps: array<CTCell, 3>; var originals: array<vec4u, 3>;
   for (var a = 0u; a < dAxes(); a++) {
-    let f = inBlock[a];
-    if (f == trailing) { ps[a] = ctUnpack(host.core, host.bank); originals[a] = host.core; }
-    else if (((valid >> f) & 1u) != 0u) { ps[a] = ctUnpack(faces[f].core, faces[f].bank); originals[a] = faces[f].core; }
-    else { ps[a] = ctNew(0, 0, 65536); ps[a].valid = 0; }
+    let f = inBlock[a]; var m = faces[f]; if (f == trailing) { m = host; }
+    ps[a] = none;
+    if (f == trailing || ((valid >> f) & 1u) != 0u) { ps[a] = ctUnpack(m.core, m.bank); originals[a] = m.core; }
   }
   let ambientQ = i32(clamp(round((P.ambient + 273.25) * 4.0), 0.0, 65535.0)); let airHeat = i32(P.ambientHeat);
   // its outside, frozen before any pair runs, as the support pass freezes a cell's
@@ -155,8 +156,18 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
     var b = ps[a];
     var flux = 0;
     if (ctConducts(v, b, airHeat)) { flux = ctFlux(v, b); }
-    if (flux != 0) { flux = -ctHeatRoom(b, -ctHeatRoom(v, flux)); }
-    if (flux != 0) { v = ctHeat(v, flux); b = ctHeat(b, -flux); v.busy = 1; b.busy = 1; }
+    // the room the packet has for it, then its partner's for what the packet takes; then the packet
+    // gains it and the partner loses it: each a dPairOrders loop, so each rule is one inlined copy
+    if (flux != 0) {
+      for (var order = 0u; order < dPairOrders(); order++) { var c = v; if (order == 1u) { c = b; } flux = -ctHeatRoom(c, flux); }
+    }
+    if (flux != 0) {
+      for (var order = 0u; order < dPairOrders(); order++) {
+        var c = v; var gain = flux; if (order == 1u) { c = b; gain = -flux; }
+        c = ctHeat(c, gain); c.busy = 1;
+        if (order == 0u) { v = c; } else { b = c; }
+      }
+    }
     var pair = ctReaction(v, b, s);
     // acid, then swallow, each the packet on its partner and then the partner on the packet (dPairOrders)
     for (var order = 0u; order < dPairOrders(); order++) {
@@ -179,11 +190,9 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
   if (ctElecMaterial(v.id)) {
     var contacts: array<CTCell, 6>;
     for (var f = 0u; f < 2u * dAxes(); f++) {
-      let a = f >> 1u;
+      let a = f >> 1u; contacts[f] = none;
       if (inBlock[a] == f) { contacts[f] = ps[a]; }
-      else if (f == trailing) { contacts[f] = ctUnpack(host.core, host.bank); }
-      else if (((valid >> f) & 1u) != 0u) { contacts[f] = ctUnpack(faces[f].core, faces[f].bank); }
-      else { contacts[f] = ctNew(0, 0, 65536); contacts[f].valid = 0; }
+      else if (f == trailing || ((valid >> f) & 1u) != 0u) { var m = faces[f]; if (f == trailing) { m = host; } contacts[f] = ctUnpack(m.core, m.bank); }
     }
     v = ctElecAirborne(v, contacts, seed);
   }
@@ -250,30 +259,30 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
   let flyingRequests = (asked & D_REACT_FLYING_REQUESTS) | puff;
   let vm = Material(ctPack(v, packet.core), v.bank);
   let ev = energyOf(vm); let eh = energyOf(hm);
+  // Each outcome is the cell it leaves in the grid (gm, at gEnergy) and, while something flies on, the
+  // packet (pm, at pEnergy): one fit test and one encode of each, each inlined once (cold compile).
+  // Still flying, by default: the packet keeps its own energy past its new carrier, its host the rest.
+  var state = D_REACT_FLYING; var requests = flyingRequests; var gm = hm; var pm = vm;
+  let carrier1 = energyMul(D_CARRIER_Q, cTq(vm.core));
+  var gEnergy = energyAdd(eh, energySub(carrier1, carrier0)); var pEnergy = energySub(ev, carrier1);
   if (v.id == 0) {
-    let he = energyAdd(eh, energySub(ev, carrier0));
-    if (!energyFits(hm, he)) { return refused; }
-    return DReact(packet, withEnergy(hm, he), partners, D_REACT_GONE, source, sink, flyingRequests, touch);
-  }
-  // A detonation is a cell's event (requests bit 0): a charge set off in flight lands in the air it
-  // is in, one carrier for the two, and the block pass after this sets it off there.
-  if ((v.request & 1) != 0 && hostId == 0) {
-    let le = energySub(energyAdd(ev, eh), carrier0);
-    if (!energyFits(vm, le)) { return refused; }
-    return DReact(packet, withEnergy(vm, le), partners, D_REACT_LANDED, source, sink, asked, touch);
-  }
-  if ((v.request & 1) != 0 && ctRow(hostId).kind == 4) {
+    // used up: what it held is its host's
+    state = D_REACT_GONE; gEnergy = energyAdd(eh, energySub(ev, carrier0));
+  } else if ((v.request & 1) != 0 && hostId == 0) {
+    // A detonation is a cell's event (requests bit 0): a charge set off in flight lands in the air it
+    // is in, one carrier for the two, and the block pass after this sets it off there.
+    state = D_REACT_LANDED; requests = asked; gm = vm; gEnergy = energySub(energyAdd(ev, eh), carrier0);
+  } else if ((v.request & 1) != 0 && ctRow(hostId).kind == 4) {
     // in a gas (a charge in the flames that set it off): it lands, and the gas it displaces flies
     // on in its place, as a gas packet that hands itself back to the next empty cell it crosses
     let hostCarrier = energyMul(D_CARRIER_Q, cTq(hm.core));
-    let le = energyAdd(energySub(ev, carrier0), hostCarrier); let ge = energySub(eh, hostCarrier);
-    if (!energyFits(vm, le) || !packetEnergyFits(hm, ge)) { return refused; }
-    return DReact(withPacketEnergy(hm, ge), withEnergy(vm, le), partners, D_REACT_DISPLACED, source, sink, asked, touch);
+    state = D_REACT_DISPLACED; requests = asked; gm = vm; pm = hm;
+    gEnergy = energyAdd(energySub(ev, carrier0), hostCarrier); pEnergy = energySub(eh, hostCarrier);
   }
-  let carrier1 = energyMul(D_CARRIER_Q, cTq(vm.core));
-  let pe = energySub(ev, carrier1);
-  let he = energyAdd(eh, energySub(carrier1, carrier0));
-  if (!packetEnergyFits(vm, pe) || !energyFits(hm, he)) { return refused; }
-  return DReact(withPacketEnergy(vm, pe), withEnergy(hm, he), partners, D_REACT_FLYING, source, sink, flyingRequests, touch);
+  let flies = state == D_REACT_FLYING || state == D_REACT_DISPLACED;
+  // (packetEnergyFits: the packet encodes its energy exactly)
+  var particle = packet; if (flies) { particle = withPacketEnergy(pm, pEnergy); }
+  if (!energyFits(gm, gEnergy) || (flies && any(packetOwnedEnergy(particle) != pEnergy))) { return refused; }
+  return DReact(particle, withEnergy(gm, gEnergy), partners, state, source, sink, requests, touch);
 }
 `;
