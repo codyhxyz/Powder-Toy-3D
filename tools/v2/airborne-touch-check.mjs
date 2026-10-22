@@ -4,9 +4,10 @@
 // airborneReference: its touch on each face, contact.js ctPacketTouch), which marks each face cell; the
 // cell's side is its own step in the block pass (contact.js ctStepAtmosphere's touch: contactReference's
 // twin of contactBlock) and, for a fuse, the electric pass's (ctFuseTouch). Checks the two CPU twins end
-// to end (an explosive set off by a hot packet's touch or by a flame's at its blast.flame chance, a fuel lit
-// by a burning packet's front, air catching from a flame past a fuel's flash point, a fuse lit from any
-// face), the marks' layout and stamp, and that the block, react and electric stages carry the marks (Naga).
+// to end (an explosive set off by a hot packet's touch or by a flame's at its blast.flame chance, a fuel NOT
+// lit by a burning packet beside it (V1 has no contact ignition), air catching from a flame past a fuel's flash
+// point, a fuse lit from any face), the marks' layout and stamp, and that the block, react and electric
+// stages carry the marks (Naga).
 import assert from 'node:assert/strict';
 import { E, ELEMENTS } from '../../src/elements.js';
 import { gridLayout } from '../../src/sim.js';
@@ -22,7 +23,7 @@ import { v2ElecGatherWGSL } from '../../src/shaders/v2/electric.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 
 const K = C.CONTACT_CONSTANTS, bit = key => K[key][1];
-const FIRE_BIT = bit('CT_TOUCH_FIRE'), FLAME = bit('CT_TOUCH_FLAME'), HOT = bit('CT_TOUCH_HOT'), FRONT = bit('CT_TOUCH_FRONT');
+const FLAME = bit('CT_TOUCH_FLAME'), HOT = bit('CT_TOUCH_HOT');
 const q = T => Math.round((T + 273.25) * 4);
 const cell = (id, T = ELEMENTS[id].temp) => C.ctNew(id, q(T), 65536);
 const air = (t = 20) => makeMaterial(E.EMPTY, t, 0);
@@ -58,16 +59,18 @@ test('a packet is to the cells beside it what V1\'s moving cell was: its flame, 
   // a cold stone touches nothing; neither does a hot one beside stone, which doesn't burn
   assert.equal(touchOn(makeMaterial(E.STONE, 20, FULL), f => (f === PX ? makeMaterial(E.C4, 20, FULL) : null))[PX], 0);
   assert.equal(touchOn(hotStone(), f => (f === PX ? makeMaterial(E.STONE, 20, FULL) : null))[PX], 0);
-  // a flame: fire on the face's axis (x: CT_TOUCH_FIRE · 1, z: · 4) and a flame
+  // a flame: a flame on every face but its host's (V1 react.js nFire counts FIRE on all six), partner or not
   const flame = makeMaterial(E.FIRE, 900, FULL);
-  const ft = touchOn(flame, f => (f === PX || f === PZ ? makeMaterial(E.WOOD, 20, FULL) : null));
-  assert.equal(ft[PX] & (FIRE_BIT * 7), FIRE_BIT * 1); assert.equal(ft[PZ] & (FIRE_BIT * 7), FIRE_BIT * 4);
-  assert.ok(ft[PX] & FLAME && ft[PX] & FRONT, 'a 900 °C flame is a burning front at wood\'s ignition point');
+  const ft = touchOn(flame, f => (f === PX || f === PZ || f === MX ? makeMaterial(E.WOOD, 20, FULL) : null));
+  for (const f of [PX, PZ, MX]) assert.equal(ft[f], FLAME, `face ${f}: a flame, nothing else (no burning front)`);
   // in a flame's own cell the face already sees a flame there: no second one
-  assert.equal(touchOn(flame, f => (f === PX ? makeMaterial(E.WOOD, 20, FULL) : null), makeMaterial(E.FIRE, 900, FULL))[PX] & (FIRE_BIT * 7 | FLAME), 0);
+  assert.equal(touchOn(flame, f => (f === PX ? makeMaterial(E.WOOD, 20, FULL) : null), makeMaterial(E.FIRE, 900, FULL))[PX] & FLAME, 0);
+  // a burning ember is no flame to it (V1 nFire), only its heat to what goes off by heat
+  const ember = makeMaterial(E.WOOD, 600, FULL); ember.core[1] |= 1 << 24;
+  assert.equal(touchOn(ember, f => (f === PX ? makeMaterial(E.WOOD, 20, FULL) : null))[PX], HOT);
   // a fuse reads all six faces (the electric pass): the -x face too
   const fuse = touchOn(flame, f => (f === MX ? makeMaterial(E.FUSE, 20, FULL) : null));
-  assert.ok(fuse[MX] & FLAME); assert.equal(fuse[MX] & (FIRE_BIT * 7), 0, 'not a block partner: no fire count');
+  assert.ok(fuse[MX] & FLAME);
 });
 
 test('an explosive beside a hot packet goes off by its touch (V1 react.js explosives: hotTouch)', () => {
@@ -81,7 +84,7 @@ test('an explosive beside a hot packet goes off by its touch (V1 react.js explos
 test('an explosive beside a flying flame goes off at its blast.flame chance a step (V1 react.js nFire, BLAST_LIT)', () => {
   const flame = makeMaterial(E.FIRE, 900, FULL);
   const t = touchOn(flame, f => (f === PX ? makeMaterial(E.GUNPOWDER, 20, FULL) : null))[PX];
-  assert.ok(t & FIRE_BIT);
+  assert.ok(t & FLAME);
   const chance = C.ctRow(E.GUNPOWDER).blastChance;
   assert.ok(chance > 0 && chance < 1);
   // ticks whose draw lies under the chance: set off with the flame beside it, never without
@@ -94,14 +97,12 @@ test('an explosive beside a flying flame goes off at its blast.flame chance a st
   assert.ok(Math.abs(fired / tried - chance) < 0.05, `${fired}/${tried} against ${chance}`);
 });
 
-test('a fuel beside a burning packet catches from its front; air beside a flame past a fuel\'s flash point catches', () => {
-  // a burning wood ember flying past a wood wall (TPT FIRE.cpp contact ignition: the hot front)
+test('a cold fuel beside a burning packet does not catch (V1: heat, not touch); air beside a flame past a fuel\'s flash point catches', () => {
+  // a burning wood ember flying past a wood wall: V1 react.js lights a fuel only at its ignition point (or its
+  // flash point with a flame face); the ember's heat reaches it by conduction, its flames by the air between
   const ember = makeMaterial(E.WOOD, 600, FULL); ember.core[1] |= 1 << 24; // burning
   const t = touchOn(ember, f => (f === PX ? makeMaterial(E.WOOD, 20, FULL) : null))[PX];
-  assert.ok(t & FIRE_BIT && t & FRONT);
-  const lit = C.unpackContact(gridStep(E.WOOD, 20, t).cores[1]);
-  assert.equal(lit.burning, 1, 'the wood lights');
-  assert.equal(C.unpackContact(gridStep(E.WOOD, 20, 0).cores[1]).burning, 0);
+  for (let tick = 0; tick < 200; tick++) assert.equal(C.unpackContact(gridStep(E.WOOD, 20, t, tick).cores[1]).burning, 0, 'the wood stays unlit');
   // air with a flying flame on its x partner and whiskey past its flash point on its y partner (cell 3): V1's
   // vapour flame (react.js nFlash) lights it, as a flame cell there would
   const oil = C.ctRow(E.WHISKEY), oilC = (oil.flashQ + oil.igniteQ) / 2 / 4 - 273.25;
@@ -131,7 +132,7 @@ test('a fuse lights from a flying packet on any face (V1 react.js FUSE, its step
 test('the marks: an aux region of a word a cell, the touch under the tick\'s stamp', () => {
   const g = gridLayout(32, 32, 32), a = auxLayout(g.slots, PARTICLE_CAP);
   assert.deepEqual([a.banks, a.deco, a.particleDeco, a.touch, a.words], [0, g.slots, 2 * g.slots, 2 * g.slots + PARTICLE_CAP, 3 * g.slots + PARTICLE_CAP]);
-  for (const b of [FIRE_BIT * 7, FLAME, HOT, FRONT]) assert.ok(b < 2 ** PACKET_TOUCH_STAMP_SHIFT);
+  for (const b of [FLAME, HOT]) assert.ok(b < 2 ** PACKET_TOUCH_STAMP_SHIFT);
   assert.equal(2 ** PACKET_TOUCH_STAMP_SHIFT, bit('CT_TOUCH_STAMP'));
   assert.ok(2 ** PACKET_TOUCH_STAMP_BITS / 60 / 86400 > 7, 'a stamp repeats after more than a week of ticks');
   assert.ok(packetTouchWGSL(PARTICLE_CAP).includes(`const PACKET_TOUCH: u32 = 2u * SLOTS + ${PARTICLE_CAP}u;`));
@@ -140,7 +141,7 @@ test('the marks: an aux region of a word a cell, the touch under the tick\'s sta
 test('the block, react and electric stages carry the marks and validate (Naga)', () => {
   const g = gridLayout(32, 32, 32);
   const block = v2BlockWGSL(g, contactWGSL);
-  assert.match(block, /let touch=packetTouchNow\(slotOf\(positions\[i\]\)\);\n\s*cells\[i\]=ctStepAtmosphere\([^;]*,contactAmbientQ\(\),touch,i32\(outside>>8u\)\);/);
+  assert.match(block, /let touch=packetTouchNow\(slotOf\(positions\[i\]\)\);\n\s*cells\[i\]=ctStepAtmosphere\([^;]*,contactAmbientQ\(\),touch,i32\(outside>>8u\),faces\);/);
   assertNaga(block, 'v2block');
   const react = particlesWGSL(g, nativeDynamicsHead, 'react');
   assert.ok(react.includes('notePacketTouch(slots[f], r.touch[f])'));
