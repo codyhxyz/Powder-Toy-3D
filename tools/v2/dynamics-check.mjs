@@ -5,6 +5,7 @@ import { E } from '../../src/elements.js';
 import { gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { AIRBORNE_COLOURS } from '../../src/v2/airborne.js';
+import { RAY_ARGS } from '../../src/shaders/v2/blasts.js';
 import { PARTICLE_CAP, DT, CELL_M, AIR, GRAVITY, packParticle, unpackParticle, ballistic, sweep,
   stableId, resolveDeposits, allocateSources, impact, blastPlan, exchangeScalar, airSource, airQuiet } from '../../src/v2/dynamics-reference.js';
 const close=(a,b,e=1e-9)=>assert.ok(Math.abs(a-b)<=e,`${a} != ${b}`);
@@ -120,7 +121,9 @@ test('driver records real pipeline families, one batch of up to 64 bricks, and s
   assert.equal(calls.filter(c=>c.name==='v2blasts_finishCharges').length,1);
   assert.equal(calls.filter(c=>c.name==='v2blasts_pick').length,1); assert.equal(d.blastBatch,64);
   assert.equal(calls.filter(c=>c.name==='v2air_step').length,8);
-  assert.equal(calls.filter(c=>c.name==='v2particles_integrate').length,1);
+  // V1 steps rays four times a tick (RAY_STEPS_PER_TICK): the ray stages' later steps over the ray gate's args
+  const integrate=calls.filter(c=>c.name==='v2particles_integrate');
+  assert.equal(integrate.length,4); assert.ok(integrate.slice(1).every((c,i)=>c.size.indirect&&c.opts.params.substep===i+1));
   assert.equal(d.renderState.particleBytes,48); assert.equal(d.renderState.particles,d.particles);
   assert.equal(d.applyToolImpulse({kind:'nonsense',position:[0,0,0]}).status,'rejected');
   assert.equal(d.applyToolImpulse({kind:'photon',position:[1,2,3],direction:[1,0,0],count:3}).status,'queued');
@@ -167,7 +170,9 @@ test('particle tick: one-invocation clear samples the live count before hold; re
   d.holdSession={token:1,position:[0,0,0],target:[0,0,0],radius:1,strength:1,lastTick:1};
   calls.length=0;d.advanceParticles(1);
   assert.deepEqual(calls.map(c=>[c.name,c.size]),[['v2particles_clear',[1,1,1]],['v2particles_holdCOM',[1,1,1]],
-    ['v2particles_holdApply',[1024,1,1]],...['integrate','elect','impact','deposit','reactClaim','reactDust',...Array(AIRBORNE_COLOURS).fill('react')].map(s=>[`v2particles_${s}`,[1024,1,1]]),['v2blasts_airborneEvents',[1024,1,1]]]);
+    ['v2particles_holdApply',[1024,1,1]],...['integrate','elect','impact','deposit'].map(s=>[`v2particles_${s}`,[1024,1,1]]),['v2lists_rayGate',[1,1,1]],
+    ...[1,2,3].flatMap(()=>['integrate','elect','impact','deposit'].map(s=>[`v2particles_${s}`,'rays'])),
+    ...['reactClaim','reactDust',...Array(AIRBORNE_COLOURS).fill('react')].map(s=>[`v2particles_${s}`,[1024,1,1]]),['v2blasts_airborneEvents',[1024,1,1]]].map(([n,size])=>[n,size==='rays'?{indirect:d.dispatchArgs,offset:RAY_ARGS}:size]));
   assert.equal(d.flight.size,(PARTICLE_CAP+1)*32,'one flight record per slot, then the sweep record');
   const snapshot=await d.snapshotDynamicState();d.holdSession=null;snapshot.holdSession=null;
   for(const slot of [0,7,PARTICLE_CAP-1]) snapshot.particles.set(new Uint32Array(packParticle({id:slot+1,position:[1,2,3],velocity:[0,0,0],...matter()})),slot*12);
@@ -233,12 +238,9 @@ test('same-brick blast pressure adds exactly the declared acoustic energy withou
     close(pressureEnergy(p)-pressureEnergy(start),100*500*0.25,1e-8);
   }
 });
-test('photon slab exit refracts back, total internal reflection stays inside',async()=>{
-  const {refractDirection}=await import('../../src/v2/dynamics-reference.js');
-  const incoming=[0.6,-0.8,0],inside=refractDirection(incoming,[0,1,0],1/1.5);
-  const exit=refractDirection(inside,[0,1,0],1.5);
-  exit.forEach((x,i)=>close(x,incoming[i]));
-  assert.ok(refractDirection([0.9,Math.sqrt(1-.9**2),0],[0,-1,0],1.5)[1]<0);
+test('photons do not refract: V1 has no refraction (EL-4; behaviour in particle-deposition-check)',async()=>{
+  const {particlesWGSL}=await import('../../src/shaders/v2/particles.js');const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');
+  for(const stage of ['integrate','impact']) assert.doesNotMatch(particlesWGSL(gridLayout(16,8,8),nativeDynamicsHead,stage),/refract\(|dIOR/);
 });
 test('actual generated shaders carry the reference conservation and numeric guards',async()=>{
   const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');
@@ -248,7 +250,6 @@ test('actual generated shaders carry the reference conservation and numeric guar
   const impact=particlesWGSL(g,nativeDynamicsHead,'impact'),deposit=particlesWGSL(g,nativeDynamicsHead,'deposit');
   assert.match(impact,/flight\[t\]\.destination\.y=D_NONE/);
   assert.match(impact,/energyFits\(before,dHeatEnergy/);
-  assert.match(impact,/p\.tail\.w=\(u32\(f\.effect\.y\)>>2u\)&3u/);
   assert.match(deposit,/energyAdd\(energyOf\(before\),dParticleEnergy\(incoming\)\)/);
   assert.match(blastsWGSL(g,nativeDynamicsHead,'apply'),/remainder=dCarrier\(after\)/);
   assert.match(blastsWGSL(g,nativeDynamicsHead,'finish'),/sqrt\(a\.vp\.w\*a\.vp\.w\+addedP2\)/);

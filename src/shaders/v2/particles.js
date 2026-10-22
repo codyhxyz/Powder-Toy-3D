@@ -5,7 +5,9 @@ import { impactFoamWGSL } from '../../v2/foam.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { STAGE } from '../../gpu/kernels.js';
 import { TERMINAL_MS } from '../../v2/gravity.js';
-import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS, LEGACY_PRESSURE_PA, legacyPressureToPa } from '../../v2/dynamics-reference.js';
+import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS, LEGACY_PRESSURE_PA, legacyPressureToPa,
+  RAY_STEPS_PER_TICK, RAY_NEUTRON_FAST_MS } from '../../v2/dynamics-reference.js';
+import { V1_STEP_MS } from '../../v2/gravity.js';
 import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
 import { PHYS } from '../../physics.js';
@@ -25,8 +27,9 @@ export const DynamicParams = uniformStruct('DynamicParams', {
 export const storageLayout = (count, readonly = []) => Array.from({ length: count }, (_, binding) =>
   ({ binding, visibility: STAGE.COMPUTE, buffer: { type: readonly.includes(binding) ? 'read-only-storage' : 'storage' } }));
 export const PARTICLES_LAYOUT = storageLayout(5, [3]);
+// RAYS: the rays the tick's first V1 step moved (integrate), for the gate of its later steps (blasts.js rayGate)
 export const CONTROL = Object.freeze({ LIVE: 0, AIR: 1, PENDING: 2, BLAST: 3, FREE: 4, SPAWNS: 5, ENERGY: 6,
-  OUTFLOW: 16, FREE_LIST: 32, PREFIX: 32 + PARTICLE_CAP });
+  OUTFLOW: 16, RAYS: 31, FREE_LIST: 32, PREFIX: 32 + PARTICLE_CAP });
 export const shockBase = g => 32 + 2 * PARTICLE_CAP + 3 * g.nbricks + 64;
 // The shock words' unit: Pa a count, added to the brick's pressure by the air source (air.js), as a puff's Pa is.
 export const SHOCK_UNIT_PA = 1;
@@ -122,6 +125,9 @@ const D_DT: f32 = ${f(DT)};
 const D_G: f32 = ${f(GRAVITY)};
 const D_NEUTRON: u32 = ${NEUTRON_TAG}u;
 const D_PHOTON: u32 = 254u;
+// a ray's flight a stage runs: one V1 step (src/v2/dynamics-reference.js RAY_STEPS_PER_TICK a tick)
+const D_RAY_DT: f32 = ${f(DT / RAY_STEPS_PER_TICK)};
+const D_RAYS: u32 = ${CONTROL.RAYS}u;
 const D_FREE: u32 = ${CONTROL.FREE_LIST}u;
 const D_PREFIX: u32 = ${CONTROL.PREFIX}u;
 const D_COUNTS: u32 = D_PREFIX + D_BRICKS;
@@ -218,10 +224,17 @@ fn dNuclear(id: u32) -> DNuclear { switch id { ${nuclear} default: { return DNuc
 fn dOptical(id: u32) -> vec4f { switch id {
 ${ELEMENTS.map(e => `case ${e.id}u: { return vec4f(${(e.sigma ?? [0,0,0]).map(f).join(',')},${f(e.render === R.OPAQUE ? -(1+(e.reflect ?? 0)) : 0)}); }`).join('\n')}
 default: { return vec4f(0); } } }
-fn dIOR(id: u32) -> f32 { switch id {
-case ${E.GLASS}u: { return 1.5; } case ${E.WATER}u: { return 1.333; } case ${E.ICE}u: { return 1.31; }
-default: { return 1.0; } } }
 fn dPhotonEnergy(p: DParticle) -> vec3f { return bitcast<vec3f>(p.tail.xyz); }
+// A photon after its V1 step: travelled, the share of its step's flight it made (short of a face it stops at);
+// flip, the axis it reflects across (3: none); light, its RGB.
+fn dPhotonMoved(p: DParticle, light: vec3f, travelled: f32, flip: u32) -> DParticle {
+  var q = p; let delta = p.velocity * D_RAY_DT / D_CELL;
+  if (travelled >= 1.0) { q.position = p.position + delta; }
+  else { q.position = p.position + delta * max(0.0, travelled - 0.00001 / max(length(delta), 0.00001)); }
+  if (flip < 3u) { q.velocity[flip] = -p.velocity[flip]; }
+  q.tail = vec4u(bitcast<vec3u>(light), p.tail.w);
+  return q;
+}
 fn dLiquidStreamPasses(cell: vec3i, incoming: vec4u, resident: vec4u) -> bool {
   if (!dSameLiquid(incoming,resident)) { return false; }
   let down = mDown(vec3f(cell)+0.5);
@@ -386,39 +399,113 @@ fn dDustFaces(s: u32) -> i32 {
 }
 `;
 }
+// V1 shaders/rays.js raysAdvanceFrag, a photon's step (a stage runs one V1 step: D_RAY_DT). It flies straight on
+// through clear matter (V1 has no refraction: EL-4), losing exp(-sigma·path) of its light to it (Beer-Lambert with the
+// renderer's extinction; by a liquid's fill, EL-9), and stops at opaque matter: a metal keeps its reflectance share and
+// reflects off the face it came in across, anything else takes it all. Its step's heat goes to the last cell it lost
+// light to (V1's dep). Out of the grid it is gone, past a loop edge too (V1 !inGrid: EL-5). It fades at the end of its
+// life, its light taking no cell. A step that heats a cell is that cell's one winner's to make (impact); a loser
+// makes it the next step.
+const photonStepWGSL = /* wgsl */ `
+const D_PHOTON_HEAT: f32 = ${f(RAYS.PHOTON_HEAT / 3)};
+const D_PHOTON_E_MIN: f32 = ${f(RAYS.PHOTON_E_MIN)};
+// the cells a V1 step's flight (RAY_V_MAX cells) crosses at most, with the one it starts in
+const D_PHOTON_CELLS: u32 = ${3 * Math.ceil(RAYS.RAY_V_MAX) + 1}u;
+struct DPhotonStep { light: vec3f, heat: f32, cell: u32, travelled: f32, flip: u32, gone: bool }
+fn dPhotonStep(local: vec3f, delta: vec3f, light0: vec3f) -> DPhotonStep {
+  var out = DPhotonStep(light0, 0.0, D_NONE, 1.0, 3u, false);
+  var cell = vec3i(floor(local)); var next = vec3f(1e30); var stride = vec3f(1e30); let step = vec3i(sign(delta));
+  for (var a = 0u; a < 3u; a++) { if (delta[a] != 0.0) {
+    stride[a] = abs(1.0 / delta[a]); next[a] = (f32(cell[a] + select(0,1,delta[a]>0.0)) - local[a]) / delta[a];
+  } }
+  let len = length(delta); var entry = 0.0; var entryAxis = 3u; var done = false;
+  for (var crossed = 0u; crossed < D_PHOTON_CELLS && !done; crossed++) {
+    var axis = 0u; if (next.y < next.x) { axis = 1u; } if (next.z < next[axis]) { axis = 2u; }
+    if (!inGrid(cell)) { out.gone = true; out.travelled = entry; done = true; }
+    else {
+      let slot = slotOf(cell); let m = loadMaterial(slot); let optics = dOptical(cid(m.core));
+      if (optics.w < 0.0) {
+        let r = max(0.0, -optics.w - 1.0);
+        out.heat += dot(out.light, vec3f(D_PHOTON_HEAT)) * (1.0 - r); out.light *= r; out.cell = slot; out.travelled = entry;
+        if (max(out.light.x, max(out.light.y, out.light.z)) < D_PHOTON_E_MIN) {
+          out.heat += dot(out.light, vec3f(D_PHOTON_HEAT)); out.light = vec3f(0); out.gone = true;
+        } else { out.flip = entryAxis; }
+        done = true;
+      } else {
+        let exit = min(1.0, next[axis]);
+        if (any(optics.xyz > vec3f(0))) {
+          let left = out.light * exp(-optics.xyz * dAmount(m) * max(0.0, exit - entry) * len);
+          out.heat += dot(out.light - left, vec3f(D_PHOTON_HEAT)); out.light = left; out.cell = slot;
+          if (max(left.x, max(left.y, left.z)) < D_PHOTON_E_MIN) {
+            out.heat += dot(left, vec3f(D_PHOTON_HEAT)); out.light = vec3f(0); out.gone = true; out.travelled = exit; done = true;
+          }
+        }
+        if (!done && next[axis] > 1.0) { done = true; }
+        if (!done) { entry = next[axis]; entryAxis = axis; cell[axis] += step[axis]; next[axis] += stride[axis]; }
+      }
+    }
+  }
+  return out;
+}
+fn dPhotonIntegrate(t: u32, particle0: DParticle, local: vec3f) {
+  if (particle0.id == 0u) { return; } // (integrate calls it on a live record alone: particle-live-check's rule)
+  var particle = particle0;
+  let life = (particle.c0 >> 8u) & 65535u;
+  if (life <= 1u) { particles[t].id = 0u; atomicSub(&control[0],1u); noteDead(t); return; }
+  particle.c0 = (particle.c0 & 0xff0000ffu) | ((life - 1u) << 8u);
+  let s = dPhotonStep(local, particle.velocity * D_RAY_DT / D_CELL, dPhotonEnergy(particle));
+  if (s.heat > 0.0 && s.cell != D_NONE) {
+    particles[t] = particle;
+    let packed = 5u | (min(s.flip, 3u) << 8u) | (select(0u, 1u, s.gone) << 10u) | (u32(round(clamp(s.travelled, 0.0, 1.0) * 65535.0)) << 16u);
+    flight[t] = DFlight(vec4u(s.cell, D_NONE, packed, dKey(particle.id)), vec4f(s.light, s.heat));
+    dClaim(s.cell, 0u, dKey(particle.id));
+    return;
+  }
+  if (s.gone) { particles[t].id = 0u; atomicSub(&control[0],1u); noteDead(t); return; }
+  particles[t] = dPhotonMoved(particle, s.light, s.travelled, min(s.flip, 3u));
+}
+`;
 export function particlesWGSL(g, nativeHead, stage) {
   const h = head(g, nativeHead);
   // control[0] counts live slots exactly (spawns add, retirements subtract,
   // restore recounts); the particle renderer already gates on it.
   if (stage === 'clear') return h + main1(`
     flight[D_SWEEP] = DFlight(vec4u(atomicLoad(&control[0]),0u,0u,0u),vec4f(0));
-    atomicStore(&control[0],0u); atomicStore(&control[18],0u);
+    atomicStore(&control[0],0u); atomicStore(&control[18],0u); atomicStore(&control[D_RAYS],0u);
     atomicStore(&control[D_SHOCK_COUNT],0u); // this tick's shock posts (blasts.js airborneEvents drains them)
   `);
-  if (stage === 'integrate') return h + main64(/* wgsl */ `
+  if (stage === 'integrate') return h + photonStepWGSL + main64(/* wgsl */ `
     // Later stages read flight only for live slots, so dead slots skip it.
     if (t >= D_CAP || dPoolEmpty() || !slotLive(t) || particles[t].id == 0u) { return; }
     var particle = particles[t]; flight[t] = DFlight(vec4u(D_NONE,D_NONE,0u,0u),vec4f(0));
-    atomicAdd(&control[0],1u);
+    // V1 steps a ray RAY_STEPS_PER_TICK times a tick, at most one interaction a step (shaders/rays.js): the ray stages
+    // run once a V1 step (P.substep, dynamics.js advanceParticles); matter moves once a tick, at sub-step 0. The
+    // first counts the live slots and the rays, which open the later steps' gate (blasts.js rayGate).
+    let ray = (particle.c0 & 255u) >= D_PHOTON;
+    if (P.substep != 0u && !ray) { return; }
+    if (P.substep == 0u) { atomicAdd(&control[0],1u); if (ray) { atomicAdd(&control[D_RAYS],1u); } }
     let local = dWrap(particle.position - vec3f(P.origin));
     // Test in float BEFORE the i32 conversion: high-speed outflow may exceed
     // i32 coordinates, and conversion must not wrap it back into the grid.
-    if (any(local<vec3f(0)) || any(local>=vec3f(${g.nx}.0,${g.ny}.0,${g.nz}.0))) { return; }
+    if (any(local<vec3f(0)) || any(local>=vec3f(${g.nx}.0,${g.ny}.0,${g.nz}.0))) {
+      // (a ray out of the grid is gone: V1 shaders/rays.js !inGrid, a window's edge too)
+      if (ray) { particles[t].id=0u; atomicSub(&control[0],1u); noteDead(t); }
+      return;
+    }
     let startCell = vec3i(floor(local));
     // World-window exits are retained, not deleted. A later shift can bring them back.
     dWake(startCell);
     let m = dMaterial(particle); let id = cid(m.core); let neutron = id == D_NEUTRON; let photon = id == D_PHOTON;
     var v = particle.velocity; var acceleration = mGravity(local);
-    if (photon) {
-      let life = (particle.c0 >> 8u)&65535u; particle.c0 = (particle.c0&0xff0000ffu) | ((max(1u,life)-1u)<<8u);
-      acceleration = vec3f(0);
-    } else if (neutron) {
+    if (photon) { dPhotonIntegrate(t, particle, local); return; }
+    if (neutron) {
       if ((particle.c0>>8u)!=0u) {
         let slot=slotOf(startCell); let pendingKind=particle.c0>>8u;
         flight[t]=DFlight(vec4u(slot,D_NONE,pendingKind,dKey(particle.id)),vec4f(f32(particle.tail.z+1u),0,0,0));
         dClaim(slot,0u,dKey(particle.id)); return; // exact deferred capture/fission, no re-roll or ageing
       }
-      if (particle.tail.z > 0u) { atomicAdd(&control[18],particle.tail.z); return; } // pending children: allocator must account for every one
+      // pending children: the allocator must account for every one, once a tick
+      if (particle.tail.z > 0u) { if (P.substep == 0u) { atomicAdd(&control[18],particle.tail.z); } return; }
       if (particle.tail.x == 0u) { particles[t].id = 0u; atomicSub(&control[0],1u); noteDead(t); return; }
       particle.tail.x -= 1u; acceleration = vec3f(0);
     } else {
@@ -434,7 +521,9 @@ export function particlesWGSL(g, nativeHead, stage) {
       let after = wind + relative / (1.0 + drag * length(relative) * D_DT);
       acceleration = (after - v) / D_DT;
     }
-    let end = local + (v * D_DT + 0.5 * acceleration * D_DT * D_DT) / D_CELL;
+    // (a neutron's flight is its V1 step's, D_RAY_DT; matter's the tick's)
+    var dt = D_DT; if (neutron) { dt = D_RAY_DT; }
+    let end = local + (v * dt + 0.5 * acceleration * dt * dt) / D_CELL;
     particle.velocity = v + acceleration * D_DT;
     let delta = end - local; var cell = startCell; var previous = startCell;
     var next = vec3f(1e30); var stride = vec3f(1e30); let step = vec3i(sign(delta));
@@ -443,18 +532,20 @@ export function particlesWGSL(g, nativeHead, stage) {
       next[a] = (f32(cell[a] + select(0,1,delta[a]>0.0)) - local[a]) / delta[a];
     } }
     var hit = D_NONE; var deposit = D_NONE; var hitT = 1.0; var kind = 0u; var energy = 0.0;
-    var entry = 0.0; var entryAxis = select(1u,particle.tail.w&3u,photon); var optical = vec3f(0);
+    var entry = 0.0; var entryAxis = 1u; var optical = vec3f(0);
     var boundary=false; var crossed=0u;
     loop {
       // A straight segment crosses at most nx+ny+nz faces inside this box.
       // The bound detects non-progress; it never skips a wall or clips speed.
       let crossedLimit=select(f32(D_SWEEP_MAX),ceil(abs(delta.x))+ceil(abs(delta.y))+ceil(abs(delta.z))+6.0,P.edge==2u);
       if (f32(crossed)>crossedLimit || crossed==0xffffffffu) { atomicAdd(&control[19],1u); return; } crossed++;
-      if (P.edge==2u) { cell=mEdge(cell); }
+      // (a neutron leaving the box is gone, past a loop edge too: V1 shaders/rays.js !inGrid)
+      if (P.edge==2u && !neutron) { cell=mEdge(cell); }
       if (!inGrid(cell)) {
+        if (neutron) { particles[t].id=0u; atomicSub(&control[0],1u); noteDead(t); atomicAdd(&control[16],1u); return; }
         if (!D_WINDOWED) {
-          if (neutron || photon || P.edge==1u) {
-            if (!neutron && !photon) { dOutflow(previous,m); }
+          if (P.edge==1u) {
+            dOutflow(previous,m);
             particles[t].id=0u; atomicSub(&control[0],1u); noteDead(t); atomicAdd(&control[16],1u); return;
           }
           boundary=true;let velocityAtHit=v+acceleration*(D_DT*entry);
@@ -468,14 +559,7 @@ export function particlesWGSL(g, nativeHead, stage) {
       let slot = slotOf(cell); let destination = loadMaterial(slot); let targetId = cid(destination.core);
       var axis = 0u; if (next.y < next.x) { axis = 1u; } if (next.z < next[axis]) { axis = 2u; }
       let exit = min(1.0,next[axis]);
-      if (photon) {
-        let optics = dOptical(targetId); let segment = max(0.0,exit-entry)*length(delta);
-        let priorId = select(cid(loadMaterial(slotOf(previous)).core),particle.c0>>24u,entry==0.0);
-        if (((particle.c0>>8u)&65535u)==0u || optics.w<0.0 || any(optics.xyz>vec3f(0)) || dIOR(priorId)!=dIOR(targetId)) {
-          hit=slot; hitT=entry; energy=segment; kind=5u;
-          optical=vec3f(f32(entryAxis+axis*4u),dIOR(priorId)/dIOR(targetId),f32(step[entryAxis])); break;
-        }
-      } else if (neutron) {
+      if (neutron) {
         let materialId = contactNuclearMaterial(destination.core);
         let n = dNuclear(materialId); let e = bitcast<f32>(particle.tail.y);
         let fast = clamp(log(max(e,${f(RAYS.NEUT_E_THERMAL)})/${f(RAYS.NEUT_E_THERMAL)}) / log(${f(RAYS.NEUT_E_FAST/RAYS.NEUT_E_THERMAL)}),0.0,1.0);
@@ -508,7 +592,7 @@ export function particlesWGSL(g, nativeHead, stage) {
     if (hit == D_NONE) {
       if (!boundary) { particle.position = end + vec3f(P.origin); }
       // Gas packets hand back to an empty destination after each cell crossing.
-      if (!neutron && !photon && cls(id) == 4u && inGrid(cell) && any(cell != startCell) && cid(loadMaterial(slotOf(cell)).core) == 0u) { deposit = slotOf(cell); }
+      if (!neutron && cls(id) == 4u && inGrid(cell) && any(cell != startCell) && cid(loadMaterial(slotOf(cell)).core) == 0u) { deposit = slotOf(cell); }
     } else {
       particle.position = local + delta * max(0.0,hitT - 0.00001 / max(length(delta),0.00001)) + vec3f(P.origin);
     }
@@ -559,38 +643,21 @@ export function particlesWGSL(g, nativeHead, stage) {
         if (dWon(f.destination.y,1u,t)) { dFree(f.destination.y,1u); } // deposit will not see it
         flight[t].destination.y=D_NONE; // fracture is not a landing: retain unspent KE
       } else { p.velocity = vec3f(0); }
-    } else if (f.destination.z == 5u) {
-      let old = dPhotonEnergy(p); let optics = dOptical(cid(before.core)); var left = old;
-      let direction = p.velocity/max(length(p.velocity),0.000001); var normal = vec3f(0); normal[u32(f.effect.y)&3u] = -f.effect.w;
-      if (((p.c0>>8u)&65535u)==0u) { left=vec3f(0); }
-      else if (optics.w<0.0) {
-        left *= max(0.0,-optics.w-1.0); p.velocity=reflect(p.velocity,normal); p.position-=direction*0.0002;
-      } else if (f.effect.z!=1.0) {
-        // Snell's law, with total internal reflection; TPT GLASS/WATR optics.
-        let bent=refract(direction,normal,f.effect.z);
-        if (dot(bent,bent)<0.000001) { p.velocity=reflect(p.velocity,normal); p.position-=direction*0.0002; }
-        else {
-          p.velocity=normalize(bent)*length(p.velocity); p.position+=normalize(p.velocity)*0.0002;
-          p.c0=(p.c0&0x00ffffffu)|(cid(before.core)<<24u);
-        }
-      } else {
-        left *= exp(-optics.xyz*f.effect.x); p.position+=direction*(f.effect.x+0.0001);
-        // Remember the medium AND crossed exit face: the next sweep must
-        // refract on exit, even though attenuation advanced across that face.
-        p.c0=(p.c0&0x00ffffffu)|(cid(before.core)<<24u); p.tail.w=(u32(f.effect.y)>>2u)&3u;
-      }
-      if (max(left.x,max(left.y,left.z))<${f(RAYS.PHOTON_E_MIN)}) { left=vec3f(0); }
-      let heat=dot(old-left,vec3f(${f(RAYS.PHOTON_HEAT/3)}));
-      if (!energyFits(before,dHeatEnergy(before,heat))) { return; } // retain all RGB energy for retry
-      after=dAddHeat(before,heat);
-      p.tail=vec4u(bitcast<vec3u>(left),p.tail.w);
-      if (all(left==vec3f(0))) { p.id=0u; atomicSub(&control[0],1u); noteDead(t); }
+    } else if ((f.destination.z & 255u) == 5u) {
+      // a photon's V1 step with heat for this cell (dPhotonIntegrate): the cell takes its heat (V1 raysDepositFrag, a
+      // declared source; past what its energy holds the rest is lost, as V1 clamps a cell's T at CELL_TEMP_MAX), the
+      // photon its step
+      let heat = f.effect.w;
+      if (energyFits(before,dHeatEnergy(before,heat))) { after = dAddHeat(before,heat); }
+      p = dPhotonMoved(p, f.effect.xyz, f32(f.destination.z >> 16u) / 65535.0, (f.destination.z >> 8u) & 3u);
+      if (((f.destination.z >> 10u) & 1u) != 0u) { p.id=0u; atomicSub(&control[0],1u); noteDead(t); }
     } else if (f.destination.z == 2u) {
       let id = contactNuclearMaterial(before.core);
       let n = dNuclear(id); let alpha = pow((n.A-1.0)/(n.A+1.0),2.0);
       let r = dRandom(p.id,415u); let keep = select(alpha+(1.0-alpha)*r,r,dRandom(p.id,416u)<n.h);
       let e = max(${f(RAYS.NEUT_E_THERMAL)},bitcast<f32>(p.tail.y)*keep); p.tail.y = bitcast<u32>(e);
-      let speed = D_CELL * 60.0 * clamp(${f(RAYS.NEUT_V)}*sqrt(e/${f(RAYS.NEUT_E_FAST)}),${f(RAYS.NEUT_V_THERMAL)},${f(RAYS.NEUT_V)});
+      // V1 shaders/rays.js neutSpeed (cells/step, to RAY_V_MAX), in m/s at V1's step rate (dynamics-reference.js rayNeutronMS)
+      let speed = ${f(V1_STEP_MS)} * clamp(${f(RAYS.NEUT_V)}*sqrt(e/${f(RAYS.NEUT_E_FAST)}),${f(RAYS.NEUT_V_THERMAL)},${f(RAYS.RAY_V_MAX)});
       p.velocity = dDir(p.id)*speed;
     } else {
       // Native energy-bank helper is supplied by the thermal foundation.
@@ -608,7 +675,7 @@ export function particlesWGSL(g, nativeHead, stage) {
         atomicAdd(&control[D_SHOCK+brickOfCell(cellOf(s))],${Math.round(FISSION_PA / SHOCK_UNIT_PA)}u);
         p.tail.z = u32(floor(f.effect.x-1.0)) + select(0u,1u,dRandom(p.id,761u)<fract(f.effect.x-1.0));
         atomicAdd(&control[18],p.tail.z);
-        p.velocity = dDir(p.id)*${f(RAYS.NEUT_V*60*CELL_M)};
+        p.velocity = dDir(p.id)*${f(RAY_NEUTRON_FAST_MS)};
       } else { p.id = 0u; atomicSub(&control[0],1u); noteDead(t); }
     }
     if (f.destination.z>=3u) { noteEnergySource(cellOf(s),energySub(energyOf(after),energyOf(before))); }

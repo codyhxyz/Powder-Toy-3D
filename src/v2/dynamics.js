@@ -7,10 +7,13 @@ import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
 import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase, setOffBase, storageLayout } from '../shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, COUPLE_MODE,
-  COUPLE_ARGS, listControl, LIST_ARGS, DISPATCH_ARGS_BYTES, LISTS_STAGES, listsStageWGSL, controlBufferWords, LAUNCH_MODE } from '../shaders/v2/blasts.js';
+  COUPLE_ARGS, RAY_ARGS, listControl, LIST_ARGS, DISPATCH_ARGS_BYTES, LISTS_STAGES, listsStageWGSL, controlBufferWords, LAUNCH_MODE } from '../shaders/v2/blasts.js';
 import { AIR as AIR_MODE, EDGE } from '../simModes.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
-import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M, EVENT, RAY_PHOTON_MS, RAY_NEUTRON_FAST_MS } from './dynamics-reference.js';
+import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M, EVENT, RAY_PHOTON_MS, RAY_NEUTRON_FAST_MS, RAY_STEPS_PER_TICK } from './dynamics-reference.js';
+// the particle stages a V1 step of a ray takes (particles.js: integrate moves, elect and impact take the hits,
+// deposit lands matter)
+const RAY_STAGES=['integrate','elect','impact','deposit'];
 import { NATIVE_LAUNCH_MODE } from './nativeForcing.js';
 import { CONTACT_PUFF_UNIT as PUFF_UNIT } from './contact.js';   // a GAS request's puff rides above its flags
 import { AIRBORNE_COLOURS, packAirborne } from './airborne.js';
@@ -248,7 +251,12 @@ export class NativeDynamics {
     // Rays spawn before clear samples the live count; hold neither spawns nor counts.
     this._work(); this._rays(tick);
     this._record('particles','clear',1,tick); this._hold(tick);
-    for (const stage of ['integrate','elect','impact','deposit']) this._record('particles',stage,PARTICLE_CAP/64,tick);
+    for (const stage of RAY_STAGES) this._record('particles',stage,PARTICLE_CAP/64,tick);
+    // V1 steps a ray RAY_STEPS_PER_TICK times a tick, at most one interaction a step (shaders/rays.js): the stages
+    // again for the tick's later V1 steps, the rays alone, over the pool only when the first moved a ray (rayGate)
+    this._record('lists','rayGate',1,tick);
+    for (let step=1;step<RAY_STEPS_PER_TICK;step++) for (const stage of RAY_STAGES)
+      this._record('particles',stage,{indirect:this.dispatchArgs,offset:RAY_ARGS},tick,{substep:step});
     // what is still flying takes part, as V1's moving cells did (src/v2/airborne.js): each packet
     // joins its cell's list (a dust packet counts its dust faces once all have), then the cells'
     // lists run a colour at a time, so no two whose footprints overlap run together, with the block

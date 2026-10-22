@@ -582,11 +582,6 @@ export function chargeEnergy(material) {
 }
 export const pressureEnergy = p => p*p*AIR.edge**3/(2*AIR.rho*AIR.sound**2);
 export const addBlastPressure = (p,energy) => Math.sqrt(p*p+2*AIR.rho*AIR.sound**2*energy*0.25/AIR.edge**3);
-export function refractDirection(direction,normal,ratio) {
-  const dot=direction.reduce((s,x,i)=>s+x*normal[i],0),k=1-ratio*ratio*(1-dot*dot);
-  if(k<0) return direction.map((x,i)=>x-2*dot*normal[i]);
-  return direction.map((x,i)=>ratio*x-(ratio*dot+Math.sqrt(k))*normal[i]);
-}
 
 export function holdVelocities(particles, destination, strength=12, dt=DT) {
   let mass=0;const offset=[0,0,0],mean=[0,0,0];

@@ -118,7 +118,10 @@ const D_WIND_GROUPS: u32 = ${listControl(g).windGroups}u;`;
 export const LIST_ARGS = { source: COUPLE_ARGS + 32, step: COUPLE_ARGS + 48, wind: COUPLE_ARGS + 64, windCells: COUPLE_ARGS + 80, eventCells: COUPLE_ARGS + 96,
   jetCells: COUPLE_ARGS + 112, reachX: COUPLE_ARGS + 128, reachY: COUPLE_ARGS + 144,
   launchBricks: COUPLE_ARGS + 160, launchCells: COUPLE_ARGS + 176 };
-export const DISPATCH_ARGS_BYTES = COUPLE_ARGS + 192;
+// The ray gate's [work, CAP/64 folded, 1] (lists rayGate): the particle stages of a tick's later V1 steps, over the
+// pool when a ray flies this tick (dynamics.js advanceParticles), else none.
+export const RAY_ARGS = COUPLE_ARGS + 192;
+export const DISPATCH_ARGS_BYTES = COUPLE_ARGS + 208;
 // Which args each list writes: [byte offset, per-cell (a workgroup a brick) or a thread a brick].
 export const LIST_DISPATCH = { source: [[LIST_ARGS.source, false]], step: [[LIST_ARGS.step, false]],
   wind: [[LIST_ARGS.wind, false], [LIST_ARGS.windCells, true]], events: [[LIST_ARGS.eventCells, true]],
@@ -159,7 +162,7 @@ fn dWindListed(b: u32) -> bool {
 }
 // The one-thread stages that write indirect args, in listArgs' two-buffer layout (control, dispatch
 // args): each writes the args it decides directly, so no copy splits the tick's compute pass.
-export const LISTS_STAGES = [...LIST_NAMES, 'workArgs', 'coupleGate', 'publishCouple', 'launch'];
+export const LISTS_STAGES = [...LIST_NAMES, 'workArgs', 'coupleGate', 'publishCouple', 'launch', 'rayGate'];
 const listsHead = `${DynamicParams.wgsl}
 @group(3) @binding(1) var<uniform> P: DynamicParams;
 @group(1) @binding(0) var<storage, read_write> control: array<u32>;
@@ -192,7 +195,14 @@ export function listsStageWGSL(g, name) {
   args[${COUPLE_ARGS / 4}u]=work; args[${COUPLE_ARGS / 4 + 1}u]=1u; args[${COUPLE_ARGS / 4 + 2}u]=1u; args[${COUPLE_ARGS / 4 + 4}u]=work;
 }
 `;
-  // The jets' gate words ([work, 1, 1, 0, work] at coupleArgsBase) into the couple args.
+  // V1 steps its rays RAY_STEPS_PER_TICK times a tick (shaders/rays.js): the particle stages of the tick's later
+  // steps run over the pool only when the first counted a ray (control RAYS, particles.js integrate).
+  if (name === 'rayGate') { const [x, y] = fold(PARTICLE_CAP / 64); return `${listsHead}
+@compute @workgroup_size(1) fn main() {
+  let work=control[${CONTROL.RAYS}u]>0u;
+  args[${RAY_ARGS / 4}u]=select(0u,${x}u,work); args[${RAY_ARGS / 4 + 1}u]=${y}u; args[${RAY_ARGS / 4 + 2}u]=1u;
+}
+`; }
   // The jets' gate words ([work, 1, 1, 0, work] at coupleArgsBase) into the couple args, and the jets'
   // brick list (their count appended it) with spawn's args: a workgroup a listed brick.
   if (name === 'publishCouple') { const jets = listControl(g).lists.jets; return `${listsHead}
