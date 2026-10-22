@@ -223,7 +223,7 @@ ${atlasWGSL(g).replace('${ACCESS}', 'read_write')}
 ${v2.helpers}
 ${v2.importA}
 ${guestTexelWGSL}
-struct NativeRecords { count: atomic<u32>, words: array<u32> }
+struct NativeRecords { count: atomic<u32>, head: array<u32, 3>, words: array<u32> }   // (words at RECORD_HEAD_BYTES)
 @group(2) @binding(1) var<storage, read_write> rec: NativeRecords;
 @group(2) @binding(2) var<storage, read> banks: array<i32>;   // PhysicsV2.aux: the banks first
 fn sentMask(c: vec4u) -> vec4u {
@@ -262,7 +262,7 @@ ${slotMain}
 `;
 // packParticles: the pool's flying records, listed (a thread a pool slot)
 const packParticlesFrag = (capacity) => /* wgsl */ `
-struct Flying { count: atomic<u32>, words: array<u32> }
+struct Flying { count: atomic<u32>, head: array<u32, 3>, words: array<u32> }   // (words at RECORD_HEAD_BYTES)
 @group(0) @binding(0) var<storage, read> pool: array<u32>;   // ${PARTICLE_RECORD_WORDS} words a record
 @group(0) @binding(1) var<storage, read_write> out: Flying;
 @compute @workgroup_size(64)
@@ -303,7 +303,7 @@ const PACK_NATIVE_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { t
   { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }, { binding: 2, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } }];
 const PACK_PARTICLES_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } },
   { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
-const RECORD_HEAD_BYTES = 16;   // the count (an atomic word), padded
+const RECORD_HEAD_BYTES = 16;   // the count (an atomic word), padded: the kernels' structs spell the padding out
 const PACK_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
 const UNPACK_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } }];
 const perSlot = (g) => fold(Math.ceil(g.slots / 64));
