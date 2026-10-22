@@ -17,6 +17,14 @@ const COPY_JOBS_MIN = 1024;
 // The same text as p.join(','), several times faster: a World load makes ~20
 // million of these (every field halo brick, 2026-10-22).
 export const brickKey = (p) => `${p[0]},${p[1]},${p[2]}`;
+// Bricks a 32-cell core holds a side, and in all.
+export const CORE_BRICKS = 8, CORE_SLOTS = CORE_BRICKS ** 3;
+// The key of the core holding brick [x, y, z] (brickKey of its cell origin),
+// and the brick's slot in it.
+export const coreKeyOf = (x, y, z) => `${Math.floor(x / CORE_BRICKS) * 32},${Math.floor(y / CORE_BRICKS) * 32},${Math.floor(z / CORE_BRICKS) * 32}`;
+export const ownerSlot = (x, y, z) => (x & 7) + 8 * ((y & 7) + 8 * (z & 7));
+// Whether an entry of history.unsettled's list for tick still counts.
+export const unsettledLive = (owner, tick) => owner.lastTick === tick && owner.age < FIELD_EMA_SETTLE;
 
 // Sparse world-identity ownership. No physics-origin/atlas residency clock.
 // Pages are copied whole, bit for bit, preserving the three packed planes and
@@ -28,8 +36,15 @@ export class WorldFieldHistory {
     Object.assign(this, { gpu, pagesPerSlab, maxPagesPerSlab });
     this.epoch = 0;
     this.owners = new Map();
-    // Keys of the owners that can still advance (not yet settled), by the tick
-    // they last advanced at: a plan visits these, not every owner (fields.js).
+    // The same owners by 32-cell core (its brickKey) and brick within it
+    // (ownerSlot): a plan and a recording find a brick's owner with integer
+    // arithmetic, not a string key a brick (fields.js).
+    this.cores = new Map();
+    // The owners that can still advance (not yet settled), by the tick they
+    // last advanced at: a plan visits these, not every owner (fields.js). An
+    // entry is live while its owner's lastTick is still that tick and it has
+    // not settled (unsettledLive); later ticks leave dead entries behind, and
+    // a plan's visit drops them: one push an advance, no keyed delete.
     this.unsettled = new Map();
     // Owners in the order they were first asked for (WorldFields._plan ensure).
     this.order = 0;
@@ -69,29 +84,49 @@ export class WorldFieldHistory {
    * @param {{ kernel: object, layout: object, ema: object }} target
    */
   copies(target) { return new HistoryCopies(this, target); }
-  // A published batch's advanced owners. Their changed flags are this batch's
-  // only: every plan starts from unchanged owners (WorldFields._plan).
-  commit(updated) {
-    for (const [key, owner] of updated) {
-      const old = this.owners.get(key), keys = old && this.unsettled.get(old.lastTick);
-      if (keys) { keys.delete(key); if (!keys.size) this.unsettled.delete(old.lastTick); }
-      owner.changed = false;
-      this.owners.set(key, owner);
-      if (owner.age < FIELD_EMA_SETTLE) {
-        if (!this.unsettled.has(owner.lastTick)) this.unsettled.set(owner.lastTick, new Set());
-        this.unsettled.get(owner.lastTick).add(key);
+  // The owner of brick [x, y, z], or undefined.
+  ownerAt(x, y, z) {
+    const slots = this.cores.get(coreKeyOf(x, y, z));
+    return slots && slots[ownerSlot(x, y, z)];
+  }
+  // A published batch's advanced owners (fields.js record), applied in place:
+  // owners[i] takes pages[i] and ages[i] at tick, from source. One that had no
+  // page is new, and joins the owners.
+  commit({ owners, pages, ages, tick, source }) {
+    const settle = FIELD_EMA_SETTLE;
+    let list = null;
+    for (let i = 0; i < owners.length; i++) {
+      const owner = owners[i], fresh = !owner.page;
+      owner.page = pages[i]; owner.age = ages[i]; owner.lastTick = tick; owner.sourceVersion = source;
+      if (fresh) this._insert(owner);
+      if (owner.age < settle) {
+        list ??= this.unsettled.get(tick) ?? this.unsettled.set(tick, []).get(tick);
+        list.push(owner);
       }
     }
+  }
+  _insert(owner) {
+    const [x, y, z] = owner.brick, key = coreKeyOf(x, y, z);
+    this.owners.set(brickKey(owner.brick), owner);
+    let slots = this.cores.get(key);
+    if (!slots) this.cores.set(key, (slots = new Array(CORE_SLOTS)));
+    slots[ownerSlot(x, y, z)] = owner;
+  }
+  // How many owners can still advance.
+  unsettledCount() {
+    let n = 0;
+    for (const [tick, list] of this.unsettled) for (const owner of list) if (unsettledLive(owner, tick)) n++;
+    return n;
   }
   // Old encoded commands must never target current-epoch pages. Keep old slabs
   // alive until dispose (caller retires this adapter after queue completion).
   reset(epoch) {
     if (!Number.isSafeInteger(epoch) || epoch <= this.epoch) throw new Error('World field epoch must increase');
     this.epoch = epoch;
-    this.owners.clear(); this.unsettled.clear();
+    this.owners.clear(); this.cores.clear(); this.unsettled.clear();
     this.free = []; this.capacity = 0;
   }
-  dispose() { for (const buffer of this.slabs) buffer.destroy(); this.slabs = []; this.free = []; this.quarantined.clear(); this.owners.clear(); this.unsettled.clear(); }
+  dispose() { for (const buffer of this.slabs) buffer.destroy(); this.slabs = []; this.free = []; this.quarantined.clear(); this.owners.clear(); this.cores.clear(); this.unsettled.clear(); }
 }
 
 /**
