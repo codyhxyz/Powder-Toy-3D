@@ -4,7 +4,7 @@ import { FOAM_ROWS } from '../../v2/foam.js';
 import { SHOCK_FALL_CELLS, SHOCK_LANDINGS, V1_FALL_CELLS_MAX, v1LiquidHit, v1LiquidArrival } from '../../v2/dynamics-reference.js';
 import { PHYS, SIM_GRAVITY } from '../../physics.js';
 import { PACE } from '../move.js';
-import { GRAVITY_MS2, STEPS_PER_TICK, V1_STEP_MS } from '../../v2/gravity.js';
+import { GRAVITY_MS2, STEPS_PER_TICK, V1_STEP_MS, v1PaceRate } from '../../v2/gravity.js';
 
 // Column-run water (docs/v2/water-cost-first-principles.md; the CPU prototype it ports is
 // tools/v2/column-water.mjs). Water is stored exactly as before (16 B core + 4 B bank) and read per (x, z)
@@ -59,6 +59,12 @@ export const COLUMN = (() => {
     COMP: 3 * G,
     QMIN: 0.5,                 // a segment flux under this snaps to 0 (lean-sim)
     FILM: FULL >> 3,           // the shallow-water dry tolerance (GeoClaw's dry_tolerance, Berger et al. 2011)
+    // V1's liquid is whole cells: on dry ground a cell with no liquid over it is a film whose flow is spent (react.js:
+    // FILM_KEEP of its speed a step), so a spill spreads until it is a cell deep and beads there (MV-13; measured on V1
+    // 2026-10-22, tools/v2/runs-browser-check.mjs: a 4³ block of water or of mud is one cell deep over 64 columns).
+    // A face onto dry ground at its own level carries nothing from under this; over an edge it pours, into liquid
+    // (or a layer on another liquid: V1's pool surface keeps flowing) the dry tolerance holds.
+    FILM_DRY: FULL,
     DEADQ: 2,                  // dead band, in fill quanta of the stiffer side (lean-sim)
     // the rows' damping is per substep of the 180 Hz model it calibrated (v2Rows: drag); per tick it is
     // 1 - (1 - damp)^3, the same damping a second
@@ -72,16 +78,16 @@ export const COLUMN = (() => {
     STEPS: STEPS_PER_TICK, G_STEP: SIM_GRAVITY, V_MAX: PHYS.V_MAX,
     // R14's birth gate: an overfall faster than this leaves as particles (lean-sim V_JET), m/s
     JET_SPEED: 1,
+    // V1's orifice (react.js: a liquid under a head leaves an opening at ORIFICE_CV·√(2gh), to its FLOW)
+    ORIFICE_CV: PHYS.ORIFICE_CV,
     // a deposited cell to launch: its y lane holds this, less its upward launch speed (a falling run's own
     // y lane is never negative)
     JET_MARK: -1,
-    // The crown (Worthington, A Study of Splashes, 1908): a run that lands on liquid harder than V1's splash
-    // speed (PHYS.LAND_SPLASH_V, m/s: move.js land) throws this share of its mass up out of its column at V1's
-    // splash share of its impact speed (PHYS.LAND_SPLASH_GAIN: V1 turns that much of it sideways), CROWN_ANGLE
-    // from the vertical, at a hashed azimuth (docs/v2.md 4.4's 0.3 bound on the energy it carries). Slower
-    // landings (a pour's one-cell drop) merge inelastically.
-    CROWN_SHARE: 0.15, CROWN_SPEED: PHYS.LAND_SPLASH_V * V1_STEP_MS, CROWN_GAIN: PHYS.LAND_SPLASH_GAIN,
-    CROWN_ANGLE: Math.PI / 4, CROWN_SALT: 0x63726f77,
+    // V1's landing splash (move.js land, MV-5): a liquid that lands faster than LAND_SPLASH_V (cells/step), on
+    // anything, turns sideways at its FLOW plus LAND_SPLASH_GAIN of its impact speed, in a random direction, each
+    // component to V_MAX: every cell of it that lands. A run throws the cells it lands this tick (the rows it
+    // vacated) from its top, each at a hashed azimuth. Slower landings (a pour's one-cell drop) merge.
+    SPLASH_V: PHYS.LAND_SPLASH_V, SPLASH_GAIN: PHYS.LAND_SPLASH_GAIN, STEP_MS: V1_STEP_MS, CROWN_SALT: 0x63726f77,
     // a liquid this thin under a pour still leaves it open below (lean-sim openBelow: FULL/16)
     THIN: FULL >> 4,
     // a face's demand word: what it carries in the low 24 bits, its launch head in the byte above, in
@@ -139,6 +145,22 @@ export const COLUMN_SHOCK = Object.freeze(Object.entries(SHOCK_FALL_CELLS).map((
 }));
 export const COLUMN_SHOCK_ON = Object.freeze(SHOCK_LANDINGS.filter(r => ELEMENTS[r.faller].kind === K.LIQUID));
 
+// V1's flow cap (react.js forces: a liquid's head-driven flow is at most its FLOW, cells/step; move.js moves a cell at
+// u cells/step u/(2-u) cells a step on average, v2/gravity.js v1PaceRate): a face carries at most FLOW's paced
+// cells a step, STEPS a tick (under the lane's Q_MAX: water's 3.3 cells a tick is past it, mud's 0.44 is not), and
+// an orifice's jet leaves at most at FLOW (m/s). Non-liquids 0.
+export const COLUMN_FLOW = Object.freeze(ELEMENTS.map(e => {
+  const flow = e.kind === K.LIQUID ? e.flow ?? 0 : 0;
+  // (keep: V1's drag a step on it once it has landed, react.js forces: 1 - DRAG)
+  return { q: Math.min(COLUMN.Q_MAX, Math.floor(v1PaceRate(flow) * COLUMN.STEPS * COLUMN.FULL)), ms: Number((flow * V1_STEP_MS).toPrecision(7)),
+    keep: e.kind === K.LIQUID ? Math.fround(1 - (e.drag ?? 0)) : 1 };
+}));
+
+// V1's landing break (react.js: a projectile breaks a breakable solid it hits with ½·ρ·u² of at least its hard, a
+// landing included: move.js vertical leaves it unlanded for the react pass to see, common.js impactActs; BL-8): the
+// solids a landing can break, their debris and hardness (V1's units: density, cells/step)
+export const COLUMN_BREAKS = Object.freeze(ELEMENTS.filter(e => e.breakInto && E[e.breakInto] !== undefined).map(e => ({ id: e.id, into: E[e.breakInto], hard: e.hard })));
+
 // record flags, in the mass word (a run's mass stays under 2^30: 16 383 cells of FULL, or 1 023 of MAX_FILL)
 const REC_FALLING = 0x80000000, REC_LAST = 0x40000000, REC_MASS = 0x3fffffff;
 const f = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
@@ -155,6 +177,7 @@ const COL_H_CAP: f32 = ${f(COLUMN.H_CAP)};
 const COL_COMP: f32 = ${COLUMN.COMP};
 const COL_QMIN: f32 = ${f(COLUMN.QMIN)};
 const COL_FILM: f32 = ${f(COLUMN.FILM)};
+const COL_FILM_DRY: f32 = ${f(COLUMN.FILM_DRY)};
 const COL_DEADQ: f32 = ${f(COLUMN.DEADQ)};
 const COL_STALL: f32 = ${f(COLUMN.STALL)};
 const COL_Q_MAX: f32 = ${f(COLUMN.Q_MAX)};
@@ -167,12 +190,11 @@ const COL_FOAM_ARRIVAL: f32 = ${f(COLUMN.FOAM_ARRIVAL)};
 const COL_TICK_HZ: f32 = ${f(COLUMN.TICK_HZ)};
 const COL_CELL_M: f32 = ${COLUMN.CELL_M};
 const COL_JET_SPEED: f32 = ${f(COLUMN.JET_SPEED)};
+const COL_ORIFICE_CV: f32 = ${COLUMN.ORIFICE_CV};
 const COL_JET_MARK: f32 = ${f(COLUMN.JET_MARK)};
-const COL_CROWN_SHARE: f32 = ${COLUMN.CROWN_SHARE};
-const COL_CROWN_SPEED: f32 = ${f(COLUMN.CROWN_SPEED)};
-const COL_CROWN_GAIN: f32 = ${f(COLUMN.CROWN_GAIN)};
-const COL_CROWN_SIN: f32 = ${Math.sin(COLUMN.CROWN_ANGLE)};
-const COL_CROWN_COS: f32 = ${Math.cos(COLUMN.CROWN_ANGLE)};
+const COL_SPLASH_V: f32 = ${COLUMN.SPLASH_V};
+const COL_SPLASH_GAIN: f32 = ${COLUMN.SPLASH_GAIN};
+const COL_STEP_MS: f32 = ${f(COLUMN.STEP_MS)};
 const COL_TAU: f32 = ${2 * Math.PI};
 const COL_THIN: u32 = ${COLUMN.THIN}u;
 const COL_DEMAND_MAX: u32 = ${COLUMN.DEMAND_MAX}u;
@@ -192,6 +214,10 @@ const RAD_BACK: u32 = ${RADIAL.BACK >>> 0}u;
 const RAD_COVERED_MINUS: u32 = ${RADIAL.COVERED_MINUS}u;
 const RAD_COVERED_PLUS: u32 = ${RADIAL.COVERED_PLUS}u;
 const COL_FOAM_GAIN = array<f32, ${FOAM_ROWS.length}>(${FOAM_ROWS.map(r => `${r.gain}.0`).join(',')});
+// V1's flow cap a liquid (COLUMN_FLOW): a face's flux at most (quanta a tick per cell of wet face), its jet at most (m/s)
+const COL_FLOW_Q = array<f32, ${COLUMN_FLOW.length}>(${COLUMN_FLOW.map(r => f(r.q)).join(',')});
+const COL_FLOW_MS = array<f32, ${COLUMN_FLOW.length}>(${COLUMN_FLOW.map(r => f(r.ms)).join(',')});
+const COL_FLOW_KEEP = array<f32, ${COLUMN_FLOW.length}>(${COLUMN_FLOW.map(r => f(r.keep)).join(',')});
 
 // ---- records: a column's domains bottom up, record k in the liquidScratch slot of the column's cell at
 // height k (k < the domains' count <= NY). x = y0 | top << 16, y = r1 | liquid << 16 | lava subtype << 24,
@@ -317,7 +343,7 @@ fn colLaunchHead(xs: i32, zs: i32, xt: i32, zt: i32, rs: vec4u, y: i32) -> f32 {
   }
   return eta;
 }
-// a crown droplet to launch at (vx, vy, vz) m/s, vy upward: the jets' mark with the rise in its y lane
+// a splash droplet to launch at (vx, vy, vz) m/s, vy upward: the jets' mark with the rise in its y lane
 fn colMarkCrown(x: i32, y: i32, z: i32, vx: f32, vy: f32, vz: f32) {
   let p = vec3i(x, y, z); let s = slotOf(p); let before = loadMaterial(s);
   storeMaterial(s, before, Material(withLane(withLane(withLane(zeroQ(before.core), 0, vx), 2, vz), 1, COL_JET_MARK - vy), before.bank));
@@ -356,10 +382,11 @@ fn colV1FallSpeed(id: u32, h: i32) -> f32 {
 ${COLUMN_SHOCK.map(r => r.hits.slice(1, -1).map((u, k) => `  if (id == ${r.id}u && h == ${k + 1}) { return ${f(u)}; }`).join('\n') + `\n  if (id == ${r.id}u) { return ${f(r.hits.at(-1))}; }`).join('\n')}
   return 0.0;
 }
-// the fall (cells) from which a run of liquid faller sets off the charge it lands on (COLUMN_SHOCK_ON fall); 0 never
+// the fall (cells) from which a run of liquid faller sets off the charge it lands on (COLUMN_SHOCK_ON fall): 0 any
+// landing at all (and any touch from above: colScan), -1 never
 fn colShockOnFall(faller: u32, charge: u32) -> i32 {
 ${COLUMN_SHOCK_ON.map(r => `  if (faller == ${r.faller}u && charge == ${r.charge}u) { return ${r.fall}; }`).join('\n')}
-  return 0;
+  return -1;
 }
 // whether that fall is a liquid's law, by phase (COLUMN_SHOCK_ON phased), not a measured fall at any phase
 fn colShockOnPhased(faller: u32, charge: u32) -> bool {
@@ -395,10 +422,14 @@ fn colShockLand(x: i32, z: i32, b: i32, h: f32, n: i32, u1: f32) {
   if (b > 0) {
     let charge = cid(colCell(x, b - 1, z));
     let on = colShockOnFall(id, charge);
-    var off = on > 0 && colV1Fall(h, n) >= on;
+    var off = on >= 0 && colV1Fall(h, n) >= on;
     if (on > 0 && n == 1 && colShockOnPhased(id, charge)) { off = u1 >= colShockOnSpeed(id, charge); }
     if (off) { colDetonate(x, b - 1, z); }
   }
+  // V1's hit at its landing (dynamics-reference.js v1LandingHit: the larger of its arrival speed and the next step's)
+  let hit = max(u1, min(COL_V_MAX, (u1 + colStepGravity()) * colV1Keep(id)));
+  // a breakable solid under it breaks, unless it is a charge it set off (V1: a charge goes off rather than break)
+  if (b > 0 && !colPending(x, b - 1, z)) { colBreak(x, b - 1, z, densOfE(id), hit); }
   let shock = colShockSpeed2(id);
   if (shock <= 0.0) { return; }
   var share = 0.0;
@@ -416,6 +447,40 @@ fn colShockLand(x: i32, z: i32, b: i32, h: f32, n: i32, u1: f32) {
   if (share * u * u >= shock) { colDetonate(x, b, z); }
 }
 fn colDampTick(liq: u32) -> f32 { let keep = 1.0 - dampOf(liq); return 1.0 - keep * keep * keep; }
+// A breakable solid (COLUMN_BREAKS) at (x, y, z) hit by a liquid of density dens at u cells/step breaks into its
+// debris when ½·dens·u² reaches its hard (V1's), the fracture work KE_TO_HEAT·hard its heat, a declared source (as
+// a packet's fracture: particles.js impact)
+fn colBreak(x: i32, y: i32, z: i32, dens: f32, u: f32) {
+  let p = vec3i(x, y, z); let s = slotOf(p); let before = loadMaterial(s); let j = cid(before.core);
+  var into = -1; var hard = 0.0;
+${COLUMN_BREAKS.map(r => `  if (j == ${r.id}u) { into = ${r.into}; hard = ${f(r.hard)}; }`).join('\n')}
+  if (into < 0 || 0.5 * dens * u * u < hard || (events[s] & 1u) != 0u) { return; }
+  var after = before;
+  after.core.x = (before.core.x & 0xffffff00u) | u32(into);
+  if (clsOf(after.core) == C_POWDER) { after.core = setFall(after.core, 0.0, 0.0); }
+  let warm = energyAdd(energyOf(before), energyMul(u32(round(hard * ${f(PHYS.KE_TO_HEAT)} * 256.0)), 65536u));
+  if (!energyFits(after, warm)) { return; }
+  after = withEnergy(after, warm);
+  noteEnergySource(p, energySub(warm, energyOf(before)));
+  storeMaterial(s, before, after);
+  markBusy(p);
+}
+// V1's flow caps of a liquid (COLUMN_FLOW): a face's flux (quanta a tick per cell of wet face), a jet's speed (m/s)
+fn colFlowCap(liq: u32) -> f32 { return COL_FLOW_Q[liq]; }
+fn colFlowSpeed(liq: u32) -> f32 { return COL_FLOW_MS[liq]; }
+fn colV1Keep(liq: u32) -> f32 { return COL_FLOW_KEEP[liq]; }
+
+// The paint of a receiver holding fd quanta under paint d that takes n quanta under paint s (RGBA8, unpainted 0):
+// the mixture's, alpha-weighted (premultiplied colour, mean alpha by fill), so a painted liquid's colour carries
+// into the liquid it joins, diluted by what was there
+fn colPaintMix(d: u32, s: u32, fd: u32, n: u32) -> u32 {
+  if (fd == 0u || d == s) { return s; }
+  let a = unpack4x8unorm(d); let b = unpack4x8unorm(s);
+  let wa = f32(fd) * a.w; let wb = f32(n) * b.w;
+  let alpha = (wa + wb) / f32(fd + n);
+  if (wa + wb <= 0.0) { return 0u; }
+  return pack4x8unorm(vec4f((a.xyz * wa + b.xyz * wb) / (wa + wb), alpha));
+}
 
 // ---- custody: n of the fill at a moves to b (both air or the same liquid), with its exact share
 // of the carried energy (all but the stationary air carrier) and of the fuel; refused, nothing moves
@@ -439,16 +504,20 @@ fn colMove(xa: i32, ya: i32, za: i32, xb: i32, yb: i32, zb: i32, n: u32, agitate
   if (have > n && !conducts) { sent = withPayload(sent, payloadOf(src.core) - fuel); }
   var got = receivedCore(dst.core, src.core, fill);
   var payload = payloadOf(dst.core) + fuel;
-  if (conducts) { payload = max(payloadOf(dst.core), payloadOf(src.core)); }
+  // a conductor's spark is the cell's (shaders/move.js swaps whole cells): it goes with the fill only when the
+  // whole cell's goes (the source drains to air), never copied into the receiver of a part (EL-10)
+  if (conducts && have == n) { payload = max(payloadOf(dst.core), payloadOf(src.core)); }
+  if (conducts && have > n) { payload = payloadOf(dst.core); }
   if (payload > 65535u) { colBusy(xa, ya, za); return false; }
   got = withAge(withPayload(got, payload), foamAgeOf(dst.core, src.core, n, fill, agitate));
   let sentEnergy = energySub(energyOf(src), heat);
   let gotEnergy = energyAdd(energyOf(dst), heat);
   if (!energyFits(Material(sent, src.bank), sentEnergy) || !energyFits(Material(got, dst.bank), gotEnergy)) { colBusy(xa, ya, za); return false; }
-  // the decoration goes with the fill, as its ctype does (receivedCore): a receiver that was air takes the
-  // source's paint, one that holds liquid keeps its own, and a source drained to air holds none (shaders/move.js)
+  // the decoration goes with the fill (shaders/move.js moves a painted cell's paint with it): a receiver that was
+  // air takes the source's paint, one that holds liquid the fill-weighted mix of both (colPaintMix: painted water
+  // poured into a pool keeps its colour there, RX-3), and a source drained to air holds none
   if (P.deco != 0u) {
-    if (cid(dst.core) == 0u) { setDeco(ts, decoOf(fs)); }
+    setDeco(ts, colPaintMix(decoOf(ts), decoOf(fs), materialAmount(dst.core), n));
     if (have == n) { setDeco(fs, 0u); }
   }
   storeMaterial(fs, src, withEnergy(Material(sent, src.bank), sentEnergy));
@@ -522,7 +591,7 @@ fn colDepth(r: vec4u, s0: i32, s1: i32) -> f32 {
 
 // ---- the segment rule (prototype segment()): the new flux of [s0, s1) between a (-side) and b, from u.
 // Positive flows a to b. Falling runs, two dry floors and two different liquids exchange nothing.
-fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, lb: vec2f, bed: f32) -> f32 {
+fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, lb: vec2f, bed: f32, film: f32) -> f32 {
   let dryA = recLiq(ra) == 0u; let dryB = recLiq(rb) == 0u;
   if (recFalling(ra) || recFalling(rb) || (dryA && dryB)) { return 0.0; }
   if (!dryA && !dryB && (recLiq(ra) != recLiq(rb) || recSub(ra) != recSub(rb))) { return 0.0; }
@@ -536,10 +605,12 @@ fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, l
   // the layers' heads: each run's own surface (its base an interface inside the cell below when it floats on
   // another liquid) plus the weight of the layers it carries
   var drive = (colEta(ra) + la.x + la.y) - (colEta(rb) + lb.x + lb.y);
-  // lean-sim's dead band (DEADQ quanta of the stiffer side, the yield), and never below the drive whose
-  // damped steady flow v·h moves under one quantum a tick: 1.5·damp/(ACC·h), lean-sim's 1.5·damp/ACC at h = 1
+  // lean-sim's dead band (DEADQ quanta of the stiffer side), and never below the drive whose damped steady
+  // flow v·h moves under one quantum a tick: 1.5·damp/(ACC·h), lean-sim's 1.5·damp/ACC at h = 1. No yield
+  // stress: V1 has none (react.js liquids flow until the level evens out; measured on V1 2026-10-22,
+  // tools/v2/runs-browser-check.mjs: a 4³ block of mud is a cell deep over 64 columns within 1 s; MV-8)
   let hFace = max(max(ha, hb), 1.0 / COL_FULL);
-  let band = max(max(COL_DEADQ * max(colStiff(ra), colStiff(rb)), COL_STALL * damp / (acc * min(hFace, 1.0))), yieldOf(liq));
+  let band = max(COL_DEADQ * max(colStiff(ra), colStiff(rb)), COL_STALL * damp / (acc * min(hFace, 1.0)));
   if (abs(drive) < band) { drive = 0.0; }
   var v = u;
   if (ha == 0.0) { v = min(v, 0.0); }   // a dry side's stale outflow is dropped
@@ -549,12 +620,16 @@ fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, l
   v = v + acc * drive * min(1.0, COL_H_CAP / max(hUp, 1.0)) - colAdvect(u, up);
   if (drive == 0.0) { v = v * 0.5; }
   if ((v > 0.0 && ha == 0.0) || (v < 0.0 && hb == 0.0)) { v = 0.0; }
-  // the film rule as the dry tolerance: a face whose upwind wet depth is under FILM carries no flux
+  // the film rule as the dry tolerance: a face whose upwind wet depth is under FILM carries no flux, and onto dry
+  // ground at its level none from under \`film\` (FILM_DRY: V1's films; a floating layer's FILM)
   if (v > 0.0 && ha * COL_FULL < COL_FILM) { v = 0.0; }
   if (v < 0.0 && hb * COL_FULL < COL_FILM) { v = 0.0; }
+  if (v > 0.0 && hb == 0.0 && !colOver(rb, s0) && ha * COL_FULL < film) { v = 0.0; }
+  if (v < 0.0 && ha == 0.0 && !colOver(ra, s0) && hb * COL_FULL < film) { v = 0.0; }
   v = v * (1.0 - damp);
   if (abs(v) < COL_QMIN) { v = 0.0; }
-  return clamp(v, -COL_Q_MAX, COL_Q_MAX);
+  let cap = colFlowCap(liq);
+  return clamp(v, -cap, cap);
 }
 // what the flux v carries a tick (quanta): v times the upwind wet depth
 fn colDemand(ra: vec4u, rb: vec4u, s0: i32, s1: i32, v: f32) -> u32 {
@@ -577,11 +652,11 @@ fn colEdgeFlux(r: vec4u) -> f32 {
   if (h * COL_FULL < COL_FILM) { return 0.0; }
   let damp = colDampTick(recLiq(r));
   let drive = colEta(r) - f32(s0);
-  let band = max(max(COL_DEADQ * colStiff(r), COL_STALL * damp / (acc * min(h, 1.0))), yieldOf(recLiq(r)));
+  let band = max(COL_DEADQ * colStiff(r), COL_STALL * damp / (acc * min(h, 1.0)));
   if (drive < band) { return 0.0; }
   let v = acc * drive * min(1.0, COL_H_CAP / max(h, 1.0)) * (1.0 - damp);
   if (v < COL_QMIN) { return 0.0; }
-  return min(v, COL_Q_MAX);
+  return min(v, colFlowCap(recLiq(r)));
 }
 // every run of a column against the void on one side
 fn colEdges(x: i32, z: i32) {
@@ -699,7 +774,8 @@ fn colPack(x: i32, z: i32, r0: i32, top: i32, mass: u32) -> i32 {
 // even, as V1's frames run four to a tick) and its paced draw at its fall age (its speed over g, PACE.Y) falls under
 // its speed (at V_MAX always); then gravity adds g to its speed (no drag on a liquid in free fall), to V_MAX.
 // Arriving over what it lands on ends the fall, at the speed it had. Whole cells: the bottom cell's y lane holds its
-// speed (cells/tick: COL_STEPS of V1's cells/step), its x lane the cells it has fallen. Returns its new bottom.
+// speed (cells/tick: COL_STEPS of V1's cells/step), its x lane the cells it has fallen. Returns its new bottom: under
+// 0 past an open floor, its cells under row 0 gone.
 fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
   let b = colCell(x, r0, z);
   let g = colStepGravity();
@@ -715,6 +791,9 @@ fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
     if (fl - 1 < o0 || colClass(x, fl - 1, z) != C_AIR) { break; }
     fl = fl - 1;
   }
+  // past an open floor (P.edge 1) is still air (V1 react.js: a void edge's face): with air all the way down the run
+  // falls on through it on the same law, accelerating from rest, and what passes row 0 leaves the box
+  let bottomless = P.edge == 1u && fl == 0;
   var d = 0;
   var landed = false;
   var hit = u;
@@ -728,50 +807,49 @@ fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
     let top = row - 2.0 * floor(row * 0.5) == 0.0;
     if (u > 0.0 && top && (u >= COL_V_MAX || colV1Draw(colV1Age(u, g, k)) < u)) {
       d = d + 1;
-      if (r0 - d == fl) { landed = true; hit = u; }
+      if (r0 - d == fl && !bottomless) { landed = true; hit = u; }
     }
     u = min(u + g, COL_V_MAX);
   }
   fallen = fallen + f32(d);
   colBusy(x, r0, z);
   if (d > 0) {
-    for (var k = r0; k < r1; k++) { colSwap(x, k, k - d, z); }
-    colBusy(x, r0 - d, z); colBusy(x, r1 - 1, z);
+    // (a cell whose row would be under 0 is past an open floor: it leaves the box, the boundary ledger takes it)
+    for (var k = r0; k < r1; k++) {
+      if (k - d < 0) { colRemove(x, k, z, colFill(x, k, z)); } else { colSwap(x, k, k - d, z); }
+    }
+    colBusy(x, max(r0 - d, 0), z); colBusy(x, r1 - 1, z);
   }
-  if (landed) { colSetLanes(x, r0 - d, z, 0.0, 0.0); } else { colSetLanes(x, r0 - d, z, u * COL_STEPS, fallen); }
+  if (landed) { colSetLanes(x, r0 - d, z, 0.0, 0.0); } else if (r1 - d > 0) { colSetLanes(x, max(r0 - d, 0), z, u * COL_STEPS, fallen); }
   if (landed) { colShockLand(x, z, r0 - d, fallen, r1 - r0, hit); }
-  let impact = hit * COL_STEPS * COL_TICK_HZ * COL_CELL_M;
-  if (landed && d > 0 && r0 - d > o0 && colClass(x, r0 - d - 1, z) == C_LIQUID && impact > COL_CROWN_SPEED) {
-    colCrown(x, z, r0 - d, r1 - d, d, impact * COL_CROWN_GAIN);
-  }
+  // V1's landing (move.js land) sees the speed it has the step after it arrives: a step more of gravity, and its
+  // drag now it is no longer in free fall (react.js forces), to V_MAX
+  let impact = min(COL_V_MAX, (hit + g) * colV1Keep(cid(colCell(x, r0 - d, z))));
+  if (landed && d > 0 && impact > COL_SPLASH_V) { colSplash(x, z, r0 - d, r1 - d, d, impact); }
   return r0 - d;
 }
-// The crown of a run [b0, b1) that just landed, thrown at impact m/s (V1's splash share of its landing speed):
-// CROWN_SHARE of its mass, cut from its top down, into the cells it vacated above it (rows of them), each marked
-// to launch up and out.
-fn colCrown(x: i32, z: i32, b0: i32, b1: i32, rows: i32, impact: f32) {
-  var mass = 0u;
-  for (var k = b0; k < b1; k++) { mass = mass + colFill(x, k, z); }
-  var left = u32(floor(f32(mass) * COL_CROWN_SHARE));
+// V1's splash (move.js land) of a run [b0, b1) that just landed at impact cells/step: the cells it landed this tick
+// (rows of them, the rows it vacated above it), cut from its top down into those rows, each marked to launch
+// sideways at its liquid's FLOW plus LAND_SPLASH_GAIN of the impact, at a hashed azimuth, each component to V_MAX
+fn colSplash(x: i32, z: i32, b0: i32, b1: i32, rows: i32, impact: f32) {
+  let speed = colFlowSpeed(cid(colCell(x, b0, z))) + COL_SPLASH_GAIN * impact * COL_STEP_MS;
+  let most = COL_V_MAX * COL_STEP_MS;
   var giver = b1 - 1;
   for (var r = 0; r < rows; r++) {
-    if (left == 0u) { break; }
     let y = b1 + r;
-    let share = min(left, FULLU);
     var put = 0u;
     loop {
-      if (put >= share || giver < b0) { break; }
+      if (put >= FULLU || giver < b0) { break; }
       let have = colFill(x, giver, z);
       if (have == 0u) { giver = giver - 1; continue; }
-      let m = min(share - put, have);
+      let m = min(FULLU - put, have);
       if (!colMove(x, giver, z, x, y, z, m, false)) { break; }
       put = put + m;
       if (m == have) { giver = giver - 1; }
     }
     if (put == 0u) { break; }
-    left = left - put;
     let azimuth = colCrownAzimuth(x, y, z) * COL_TAU;
-    colMarkCrown(x, y, z, impact * COL_CROWN_SIN * cos(azimuth), impact * COL_CROWN_COS, impact * COL_CROWN_SIN * sin(azimuth));
+    colMarkCrown(x, y, z, clamp(speed * cos(azimuth), -most, most), 0.0, clamp(speed * sin(azimuth), -most, most));
   }
 }
 
@@ -782,15 +860,26 @@ fn colFinish(x: i32, z: i32, k: i32, y0: i32, top: i32, r1: i32, liq: u32, sub: 
   var bottom = y0;
   var end = r1;
   var falling = y0 > o0 && colClass(x, y0 - 1, z) == C_AIR;
-  if (settle && falling) {
-    bottom = colFall(x, z, o0, y0, r1);
-    end = r1 - (y0 - bottom);
-    falling = bottom > o0 && colClass(x, bottom - 1, z) == C_AIR;
+  // an open floor under the run: it falls on through it (colFall), from rest on V1's law
+  let out = P.edge == 1u && y0 == 0;
+  var run = liq;
+  var held = mass;
+  if (settle && (falling || out)) {
+    let fell = colFall(x, z, o0, y0, r1);
+    bottom = max(fell, 0);
+    end = max(r1 - (y0 - fell), 0);
+    falling = (bottom > o0 && colClass(x, bottom - 1, z) == C_AIR) || (P.edge == 1u && bottom == 0);
+    // what passed row 0 left the box: the run holds what is left
+    if (fell < 0) {
+      held = 0u;
+      for (var j = 0; j < end; j++) { held = held + colFill(x, j, z); }
+      if (held == 0u) { run = 0u; end = 0; falling = false; }
+    }
     // the domain under it ends where it now starts (a dry floor it reached is gone)
     if (bottom != y0) {
       let below = colRec(x, k - 1, z);
       if (recLiq(below) == 0u && recY0(below) == bottom) {
-        colPut(x, k - 1, z, recMake(bottom, top, end, liq, sub, mass, falling, false));
+        colPut(x, k - 1, z, recMake(bottom, top, end, run, select(0u, sub, run != 0u), held, falling, false));
         return k;
       }
       colPut(x, k - 1, z, withRecTop(below, bottom));
@@ -800,9 +889,7 @@ fn colFinish(x: i32, z: i32, k: i32, y0: i32, top: i32, r1: i32, liq: u32, sub: 
     if (laneOf(colCell(x, y0, z), 1) != 0.0) { colSetLanes(x, y0, z, 0.0, 0.0); }
     if (loose) { end = colPack(x, z, y0, top, mass); }
   }
-  colPut(x, k, z, recMake(bottom, top, end, liq, sub, mass, falling, false));
-  // an open floor holds nothing: the run falls out of the box at R1's bulk run speed
-  if (settle && P.edge == 1u && bottom == 0 && !falling) { colDrain(x, z, k, min(mass, u32(COL_V_MAX * COL_STEPS * COL_FULL)), true); }
+  colPut(x, k, z, recMake(bottom, top, end, run, select(0u, sub, run != 0u), held, falling, false));
   return k + 1;
 }
 // the run's end after a refused move: one past its highest cell holding any fill
@@ -816,38 +903,55 @@ fn colExtent(x: i32, z: i32, r0: i32, top: i32) -> i32 {
 }
 fn colScan(x: i32, z: i32, settle: bool) -> i32 {
   if (settle) { colStratify(x, z); }
+  // Open stretches [o0, o1) bottom up: a dry floor, then runs each with the air above them. A run is loose (it
+  // packs) when a cell under another is not full, or a compressed cell is not its domain's top. A domain ends at a
+  // new liquid, a closed cell or the column's top; one colFinish call site (Metal inlines each call: compile time).
   var k = 0;
   var y = 0;
+  var open = false;
+  var o0 = 0; var y0 = 0; var r1 = 0; var liq = 0u; var sub = 0u; var mass = 0u;
+  var loose = false; var over = -1; var below = 0u;
   loop {
-    if (y >= NY) { break; }
-    var probe = colProbe(x, y, z);
-    if (!probeOpen(probe)) { y = y + 1; continue; }
-    // an open stretch [o0, o1): a dry floor, then runs each with the air above them. A run is loose (it
-    // packs) when a cell under another is not full, or a compressed cell is not its domain's top.
-    let o0 = y;
-    var y0 = y; var r1 = y; var liq = 0u; var sub = 0u; var mass = 0u;
-    var loose = false; var over = -1; var below = 0u;
-    loop {
-      if (y >= NY) { break; }
-      probe = colProbe(x, y, z);
-      if (!probeOpen(probe)) { break; }
-      if (settle && probeRead(probe)) { foamDecay(x, y, z); }
-      let id = probeLiquid(probe);
-      if (id != 0u) {
-        let fill = probeFill(probe);
-        if (liq == id && sub == probeSub(probe) && r1 == y) {
-          if (below < FULLU || over >= 0) { loose = true; }
-          r1 = y + 1; mass = mass + fill;
-        } else {
-          if (liq != 0u || y > o0) { k = colFinish(x, z, k, y0, y, r1, liq, sub, mass, o0, settle, loose || (over >= 0 && over != y - 1)); }
-          y0 = y; r1 = y + 1; liq = id; sub = probeSub(probe); mass = fill; loose = false; over = -1;
-        }
-        if (fill > FULLU) { over = y; }
-        below = fill;
-      }
-      y = y + 1;
+    let inside = y < NY;
+    let probe = colProbe(x, min(y, NY - 1), z);
+    let here = inside && probeOpen(probe);
+    if (!open) {
+      if (!inside) { break; }
+      if (!here) { y = y + 1; continue; }
+      open = true; o0 = y; y0 = y; r1 = y; liq = 0u; sub = 0u; mass = 0u; loose = false; over = -1; below = 0u;
     }
-    k = colFinish(x, z, k, y0, y, r1, liq, sub, mass, o0, settle, loose || (over >= 0 && over != y - 1));
+    var id = 0u;
+    if (here) {
+      if (settle && probeRead(probe)) { foamDecay(x, y, z); }
+      id = probeLiquid(probe);
+    }
+    let grows = id != 0u && liq == id && sub == probeSub(probe) && r1 == y;
+    let starts = id != 0u && !grows;
+    // a liquid that sets a charge off from any fall does so the moment it rests on it: V1 measured mercury laid on
+    // nitroglycerin, or dropped 1 or 2 cells, goes off (2026-10-22, tools/v2/runs-browser-check.mjs: it sinks into
+    // it and gains speed while it presses on it, dynamics-reference.js V1_SINKING_FALLS; BL-10)
+    if (settle && starts && liq != 0u && r1 == y && colShockOnFall(id, liq) == 0) { colDetonate(x, y - 1, z); }
+    if (!here || (starts && (liq != 0u || y > o0))) {
+      k = colFinish(x, z, k, y0, y, r1, liq, sub, mass, o0, settle, loose || (over >= 0 && over != y - 1));
+    }
+    if (!here) {
+      open = false;
+      if (!inside) { break; }
+      y = y + 1;
+      continue;
+    }
+    if (id != 0u) {
+      let fill = probeFill(probe);
+      if (grows) {
+        if (below < FULLU || over >= 0) { loose = true; }
+        r1 = y + 1; mass = mass + fill;
+      } else {
+        y0 = y; r1 = y + 1; liq = id; sub = probeSub(probe); mass = fill; loose = false; over = -1;
+      }
+      if (fill > FULLU) { over = y; }
+      below = fill;
+    }
+    y = y + 1;
   }
   if (k == 0) { colPut(x, 0, z, recMake(0, 0, 0, 0u, 0u, 0u, false, true)); return 1; }
   colPut(x, k - 1, z, withRecLast(colRec(x, k - 1, z), true));
@@ -921,8 +1025,8 @@ fn colOver(rd: vec4u, s0: i32) -> bool { return (recLiq(rd) == 0u && s0 > recY0(
 // The prototype's deposit rule: the source's wet rows at the face [s0, s0 + rows) each take a share, cut
 // from its surface down, into the receiver's cell at that row. A cell that was air and is left faster
 // than R14's gate over open space is marked to launch (the jets pass makes it a particle at that speed);
-// any other falls as a run. The launch speed is R14's sqrt(2 g H), H the exact launch head (colLaunchHead,
-// cells over s0) over the row's centre: an orifice's jet leaves at sqrt(2 g h) of its reservoir.
+// any other falls as a run. The launch speed is V1's orifice law (react.js: ORIFICE_CV·√(2gh), to the liquid's
+// FLOW), H the exact launch head (colLaunchHead, cells over s0) over the row's centre.
 fn colPour(xs: i32, zs: i32, is: i32, xd: i32, zd: i32, s0: i32, s1: i32, axis: i32, toward: f32, v: f32, head: f32, n: u32) {
   let rs = colRec(xs, is, zs);
   let h = max(colDepth(rs, s0, s1), 1.0 / COL_FULL);
@@ -956,7 +1060,7 @@ fn colPour(xs: i32, zs: i32, is: i32, xd: i32, zd: i32, s0: i32, s1: i32, axis: 
     if (put == 0u) { break; }
     left = left - put; mass = mass - put;
     if (wasAir && open && fast) {
-      let speed = sqrt(2.0 * g * COL_CELL_M * max(head - (f32(r) + 0.5), 0.0));
+      let speed = min(COL_ORIFICE_CV * sqrt(2.0 * g * COL_CELL_M * max(head - (f32(r) + 0.5), 0.0)), colFlowSpeed(recLiq(rs)));
       colMarkJet(xd, y, zd, axis, toward * speed);
     }
   }
@@ -1022,7 +1126,7 @@ fn colFluxes(xa: i32, za: i32, xb: i32, zb: i32, axis: i32) {
       // lanes hold last tick's fluxes all stage long (only the transfers write them), so the face
       // upwind is read race-free
       let u = laneOf(colCell(xa, s0, za), axis);
-      let v = colFlux(ra, rb, s0, s1, u, colUpwind(xa, za, xb, zb, s0, axis, u), la, lb, bed);
+      let v = colFlux(ra, rb, s0, s1, u, colUpwind(xa, za, xb, zb, s0, axis, u), la, lb, bed, select(COL_FILM_DRY, COL_FILM, floats != 0));
       // and R14's launch head, while every record is frozen: the sender's exact head, or a same-liquid
       // neighbour's that feeds it (an orifice's reservoir), over the segment's bottom
       // (only a face that pours needs one: its bottom over the receiver's surface or dry floor)
@@ -1064,9 +1168,9 @@ fn colTransfers(xa: i32, za: i32, xb: i32, zb: i32, axis: i32) {
     else { if (recLast(qb)) { break; } j = j + 1; }
   }
   colLimit(xa, za); colLimit(xb, zb);
-  // the floating faces first, while every floor is where the flux stage saw it; then the rest bottom up
-  colSends(xa, za, xb, zb, axis, true);
-  colSends(xa, za, xb, zb, axis, false);
+  // the floating faces first, while every floor is where the flux stage saw it; then the rest bottom up (one
+  // colSends call site: Metal inlines each call)
+  for (var round = 0; round < 2; round++) { colSends(xa, za, xb, zb, axis, round == 0); }
 }
 fn colSends(xa: i32, za: i32, xb: i32, zb: i32, axis: i32, floating: bool) {
   var i = 0; var j = 0;
@@ -1136,7 +1240,7 @@ fn colSentHeadAt(x: i32, y: i32, z: i32, axis: i32) -> f32 { return f32(atomicLo
 
 // ---- radial gravity (RADIAL above). Three stages a tick on the column passes' threads and ownership:
 //   v2runs         every face's demand from the frozen cells (reads only; writes its words): colRadRuns
-//   v2pairs 0      each column's y faces, its own cells only: colRadColumn
+//   v2pairs 0      each column's y faces, its own cells only: colRadPairs
 //   v2pairs 1      the x and z faces of the pairs a thread owns, as the transfers: colRadPairs
 // A face's demand word lives in the liquidScratch slot of its -side cell, where the runs keep their records
 // under vertical gravity (none exist under radial; support's air byte in .x is untouched): .y its +x face,
@@ -1230,8 +1334,8 @@ fn colRadCovered(x: i32, y: i32, z: i32) -> bool {
 }
 // The demand (quanta, + from the cell to its +axis neighbour) of a face across both sides' pulls. Only a wet
 // side gives, into air or the same liquid with room (an interior face carries nothing and reads no column);
-// a face along either side's pull packs instead. As colFlux: lean-sim's dead band (DEADQ quanta) or the
-// liquid's yield, and the dry tolerance (a liquid thinner than FILM spreads onto no dry ground).
+// a face along either side's pull packs instead. As colFlux: lean-sim's dead band (DEADQ quanta), and the dry
+// tolerance (a liquid thinner than FILM spreads onto no dry ground).
 fn colRadDemand(x: i32, y: i32, z: i32, axis: i32) -> f32 {
   var bx = x; var by = y; var bz = z;
   if (axis == 0) { bx = x + 1; }
@@ -1258,7 +1362,7 @@ fn colRadDemand(x: i32, y: i32, z: i32, axis: i32) -> f32 {
   }
   var liq = cid(ca);
   if (!wa) { liq = cid(cb); }
-  if (abs(drive) < max(COL_DEADQ / COL_FULL, yieldOf(liq))) { return 0.0; }
+  if (abs(drive) < COL_DEADQ / COL_FULL) { return 0.0; }
   if (drive > 0.0 && (!wa || cFill(cb) >= FULLU)) { return 0.0; }
   if (drive < 0.0 && (!wb || cFill(ca) >= FULLU)) { return 0.0; }
   if (drive > 0.0 && !wb && ma < COL_FILM && !colRadWetBelow(bx, by, bz, ab, sb)) { return 0.0; }
@@ -1300,29 +1404,34 @@ fn colRadRuns(x: i32, z: i32) {
   }
 }
 fn colRadTowardPlus(x: i32, y: i32, z: i32) -> bool { let a = colRadAxis(x, y, z); return a == 1 && colRadSign(x, y, z, a) > 0; }
-// v2pairs stage 0: the column's foam (colScan's, which does not run), then its y faces: those that pack
-// toward -y bottom up, so a hole rises through a stack in one sweep, then those toward +y top down
-fn colRadColumn(x: i32, z: i32) {
-  for (var y = 0; y < NY; y++) { foamDecay(x, y, z); }
-  // one sweep of 2 (NY - 1) steps, the ascending faces then the descending ones (one call site)
-  for (var k = 0; k < 2 * (NY - 1); k++) {
-    var y = k; var plus = false;
-    if (k >= NY - 1) { y = 2 * (NY - 1) - 1 - k; plus = true; }
-    if (colRadTowardPlus(x, y, z) == plus) { colRadFace(x, y, z, 1); }
+// v2pairs' radial stages, one colRadFace call site (each inlined copy is Metal compile time). Stage 0: the
+// column's foam (colScan's, which does not run), then its y faces: those that pack toward -y bottom up, so a
+// hole rises through a stack in one sweep, then those toward +y top down (2 (NY - 1) steps). Stage 1: the x or z
+// faces of the pair this thread owns along P.pairAxis (v2PairsKernel's ownership, without loop edges), bottom up.
+fn colRadPairs(x: i32, z: i32) {
+  var fx = x; var fz = z; var axis = 1; var faces = 0;
+  if (P.pairStage == 0u) {
+    for (var y = 0; y < NY; y++) { foamDecay(x, y, z); }
+    faces = 2 * (NY - 1);
+  } else {
+    axis = i32(P.pairAxis);
+    var own = z; var xn = x; var zn = z + 1; var xp = x; var zp = z - 1;
+    if (axis == 0) { own = x; xn = x + 1; zn = z; xp = x - 1; zp = z; }
+    let odd = floor(f32(own) * 0.5) * 2.0 != f32(own);
+    if (select(0u, 1u, odd) == P.pairParity) {
+      if (xn < NX && zn < NZ) { faces = NY; }
+    } else if (xp >= 0 && zp >= 0 && !colAwake(xp, zp)) { fx = xp; fz = zp; faces = NY; }
+  }
+  for (var k = 0; k < faces; k++) {
+    var y = k; var go = true;
+    if (P.pairStage == 0u) {
+      var plus = false;
+      if (k >= NY - 1) { y = 2 * (NY - 1) - 1 - k; plus = true; }
+      go = colRadTowardPlus(x, y, z) == plus;
+    }
+    if (go) { colRadFace(fx, y, fz, axis); }
   }
 }
-// v2pairs stage 1: the pairs this thread owns along P.pairAxis (v2PairsKernel's ownership, without loop edges)
-fn colRadPairs(x: i32, z: i32) {
-  if (P.pairStage == 0u) { colRadColumn(x, z); return; }
-  let axis = i32(P.pairAxis);
-  var own = z; var xn = x; var zn = z + 1; var xp = x; var zp = z - 1;
-  if (axis == 0) { own = x; xn = x + 1; zn = z; xp = x - 1; zp = z; }
-  let odd = floor(f32(own) * 0.5) * 2.0 != f32(own);
-  if (select(0u, 1u, odd) == P.pairParity) {
-    if (xn < NX && zn < NZ) { colRadPair(x, z, axis); }
-  } else if (xp >= 0 && zp >= 0 && !colAwake(xp, zp)) { colRadPair(xp, zp, axis); }
-}
-fn colRadPair(x: i32, z: i32, axis: i32) { for (var y = 0; y < NY; y++) { colRadFace(x, y, z, axis); } }
 // a face at its stage: along a side's pull it packs, across both it carries its demand (never more than the
 // giver holds, less RAD_KEEP when covered, nor more than the receiver has room for). One move a face, from
 // one colMove call site (each inlined copy is Metal compile time).
@@ -1378,6 +1487,56 @@ fn colRadSendAmount(cs: vec4u, cd: vec4u, t: f32, covered: bool) -> i32 {
   if (isLiq(cd)) { room = FULLU - min(cFill(cd), FULLU); }
   return i32(min(u32(t), min(have, room)));
 }
+// the column one step along side (0 +x, 1 -x, 2 +z, 3 -z: face6's order) from (x, z), past a loop edge
+// wrapped (mEdge), as (x, z); and whether it is in the grid
+fn colNeighbour(x: i32, z: i32, side: i32) -> vec2i { return mEdge(vec3i(x, 0, z) + face6(select(side, side + 2, side >= 2))).xz; }
+fn colInside(n: vec2i) -> bool { return n.x >= 0 && n.y >= 0 && n.x < NX && n.y < NZ; }
+// v2runs: settle the column's runs and write its domain records, then the records of each sleeping neighbour
+// (read only: the pair stages' halo; identical concurrent builds write equal words). One colScan call site.
+fn colRunsColumn(x: i32, z: i32) {
+  // radial gravity has no runs: the column's face demands instead (RADIAL)
+  if (P.gravMode == 2u) { colRadRuns(x, z); return; }
+  for (var side = -1; side < 4; side++) {
+    var cx = x; var cz = z;
+    if (side >= 0) {
+      let n = colNeighbour(x, z, side);
+      if (!colInside(n) || colAwake(n.x, n.y)) { continue; }
+      cx = n.x; cz = n.y;
+    }
+    colScan(cx, cz, side < 0);
+  }
+}
+// v2pairs. P.pairStage 0: every face's flux, both axes (a face is its -side column's, or its +side's when the
+// -side sleeps: one colFluxes call site); 1: the transfers of the pairs along P.pairAxis (0 or 2) whose -side
+// column has parity P.pairParity (owned the same way), and this column's faces to the void past an open side.
+fn colPairsColumn(x: i32, z: i32) {
+  if (P.gravMode == 2u) { colRadPairs(x, z); return; }
+  if (P.pairStage == 0u) {
+    for (var axis = 0; axis <= 2; axis += 2) {
+      let next = colNeighbour(x, z, axis); let prev = colNeighbour(x, z, axis + 1);
+      if (colInside(next)) { colFluxes(x, z, next.x, next.y, axis); }
+      if (colInside(prev) && !colAwake(prev.x, prev.y)) { colFluxes(prev.x, prev.y, x, z, axis); }
+    }
+    return;
+  }
+  let axis = i32(P.pairAxis);
+  let side = select(2, 0, axis == 0);
+  let next = colNeighbour(x, z, side); let prev = colNeighbour(x, z, side + 1);
+  // the pair this thread owns: with the next column, or with a sleeping previous one; one colTransfers
+  // call for both (Metal inlines it whole at each call: cold compile, docs/webgpu.md B5)
+  let own = select(z, x, axis == 0);
+  let mine = select(0u, 1u, floor(f32(own) * 0.5) * 2.0 != f32(own)) == P.pairParity;
+  var pair = false; var xa = x; var za = z; var xb = x; var zb = z;
+  if (mine && colInside(next)) { pair = true; xb = next.x; zb = next.y; }
+  if (!mine && colInside(prev) && !colAwake(prev.x, prev.y)) { pair = true; xa = prev.x; za = prev.y; }
+  if (pair) { colTransfers(xa, za, xb, zb, axis); }
+  // a side of the grid on this axis is open: this thread owns the column, so its face to the void too (one
+  // colEdges call site; both sides open, both faces)
+  var edges = 0;
+  if (mine && P.edge == 1u && !colInside(next)) { edges = edges + 1; }
+  if (mine && P.edge == 1u && !colInside(prev)) { edges = edges + 1; }
+  for (var e = 0; e < edges; e++) { colEdges(x, z); }
+}
 `;
 
 // The column the thread of an awake brick column's column list handles (v2column's indexing).
@@ -1390,52 +1549,23 @@ const COLUMN_THREAD = /* wgsl */ `
   let z = i32(col / u32(BX)) * BS + i32(t >> 2u);`;
 
 /** v2runs: settle every awake column's runs and write its domain records, and the records of its
- * sleeping neighbours (read only: the pair stages' halo; identical concurrent builds write equal words). */
+ * sleeping neighbours (columns.js colRunsColumn). */
 export const v2RunsKernel = (head, MAIN) => /* wgsl */ `
 ${head}
 ${columnWaterWGSL}
 ${MAIN} {
 ${COLUMN_THREAD}
-  // radial gravity has no runs: the column's face demands instead (RADIAL)
-  if (P.gravMode == 2u) { colRadRuns(x, z); return; }
-  colScan(x, z, true);
-  for (var side = 0; side < 4; side++) {
-    let n = mEdge(vec3i(x, 0, z) + face6(select(side, side + 2, side >= 2)));
-    if (inGrid(n) && !colAwake(n.x, n.z)) { colScan(n.x, n.z, false); }
-  }
+  colRunsColumn(x, z);
 }
 `;
 
-/** v2pairs. P.pairStage 0: every face's flux, both axes (a face is its -side column's, or its +side's
- * when the -side sleeps); 1: the transfers of the pairs along P.pairAxis (0 or 2) whose -side column has
- * parity P.pairParity (owned the same way). */
+/** v2pairs: the flux stage, or a parity of an axis's transfers (columns.js colPairsColumn). */
 export const v2PairsKernel = (head, MAIN) => /* wgsl */ `
 ${head}
 ${columnWaterWGSL}
 ${MAIN} {
 ${COLUMN_THREAD}
-  if (P.gravMode == 2u) { colRadPairs(x, z); return; }
-  let here = vec3i(x, 0, z);
-  if (P.pairStage == 0u) {
-    for (var axis = 0; axis <= 2; axis += 2) {
-      let next = mEdge(here + axisV(axis)); let prev = mEdge(here - axisV(axis));
-      if (inGrid(next)) { colFluxes(x, z, next.x, next.z, axis); }
-      if (inGrid(prev) && !colAwake(prev.x, prev.z)) { colFluxes(prev.x, prev.z, x, z, axis); }
-    }
-    return;
-  }
-  let axis = i32(P.pairAxis);
-  let next = mEdge(here + axisV(axis)); let prev = mEdge(here - axisV(axis));
-  // the pair this thread owns: with the next column, or with a sleeping previous one; one colTransfers
-  // call for both (Metal inlines it whole at each call: cold compile, docs/webgpu.md B5)
-  let mine = u32(select(z, x, axis == 0) & 1) == P.pairParity;
-  var pair = false; var pa = vec2i(x, z); var pb = vec2i(x, z);
-  if (mine) { if (inGrid(next)) { pair = true; pb = next.xz; } }
-  else if (inGrid(prev) && !colAwake(prev.x, prev.z)) { pair = true; pa = prev.xz; }
-  if (pair) { colTransfers(pa.x, pa.y, pb.x, pb.y, axis); }
-  // a side of the grid on this axis is open: this thread owns the column, so its face to the void too
-  if (mine && P.edge == 1u && !inGrid(next)) { colEdges(x, z); }
-  if (mine && P.edge == 1u && !inGrid(prev)) { colEdges(x, z); }
+  colPairsColumn(x, z);
 }
 `;
 

@@ -299,7 +299,7 @@ test('a run counts all its fall: each landing goes off from its own fall, at its
     assert.equal(drop(E.NITRO, under, 10 - tall, { tall }), 1, `${tall} tall, its top falling 9, onto ${ELEMENTS[under].key}`);
   }
   // lava and mud onto nitroglycerin (a layer at row 1: they land at row 2) from their own falls (13 and 15 at
-  // phase 0), both past the run speed's; mercury from 2 at any phase (V1_SINKING_FALLS)
+  // phase 0), both past the run speed's; mercury from any fall (V1_SINKING_FALLS: V1 measured 0, 1, 2 to 9 cells)
   for (const liquid of [E.LAVA, E.MUD]) {
     const r = COLUMN_SHOCK_ON.find(r => r.faller === liquid && r.charge === E.NITRO);
     assert.ok(r.fall > 12 && r.phased, `${ELEMENTS[liquid].key}: V1's fall is past the run speed's`);
@@ -309,7 +309,7 @@ test('a run counts all its fall: each landing goes off from its own fall, at its
   }
   assert.equal(drop(E.MUD, E.NITRO, 15), 0, 'mud from 15 at phase 1');
   assert.equal(drop(E.MUD, E.NITRO, 16), 1, 'mud from 16 at phase 0');
-  assert.equal(drop(E.MERCURY, E.NITRO, 1), 0);
+  assert.equal(drop(E.MERCURY, E.NITRO, 1), 1);
   assert.equal(drop(E.MERCURY, E.NITRO, 2), 1);
   assert.equal(drop(E.MERCURY, E.NITRO, 3), 1);
   // nitroglycerin onto a liquid it does not outweigh much: the reduced mass, from V1's own fall for it (mercury:
@@ -358,7 +358,8 @@ test('a run falls on V1\'s fall: it arrives in the tick V1\'s cell does, at V1\'
     for (;;) {
       w.step(); tick++;
       const c = w.cores[w.at(1, 1, 1)];
-      if (L.cid(c) === E.WATER) break;
+      // (it lands, or its landing splashes it aside at once: V1's move.js land, columns.js colSplash)
+      if (L.cid(c) === E.WATER || w.parts.length) break;
       let y = 1; while (L.cid(w.cores[w.at(1, y, 1)]) !== E.WATER) y++;
       before = lane(w.cores[w.at(1, y, 1)]) / COLUMN.STEPS;
       assert.ok(tick < 100, `${fall} cells: no landing`);

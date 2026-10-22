@@ -85,11 +85,10 @@ const dropOf = (deg) => (deg <= 50 ? 1 : deg <= 67 ? 2 : 3);
 // 12 m/s (lean-sim's VT_SAND); flakes drift down at 3 m/s (a snowflake's ~1 m/s, read from the god view's
 // 30 m away at 2 g: Minecraft's snow and Noita's ash fall slow enough to watch).
 
-// Liquids: yield (5.4: "rest and yield are one knob") as a dead band in cells of head, so mud, slime and
-// lava hold a slope; viscosity as the flux damping, from today's rows' drag (water 0.01: lean-sim's DAMP).
-// Mud is a Bingham plastic of tens of Pa (Coussot, Mudflow Rheology and Dynamics, 1997: today's MUD row),
-// a game multiplier on which holds a mound you can see from the god view.
-const YIELD = { MUD: 0.4, LAVA: 0.3, SLIME: 0.25 };
+// Liquids: viscosity as the flux damping, from today's rows' drag (water 0.01: lean-sim's DAMP). No yield: V1's
+// liquids have none (react.js: they flow until the level evens out), so mud, slime and lava level as V1's do
+// (MV-8, the V2 finish push's "match V1": measured on V1 2026-10-22, tools/v2/runs-browser-check.mjs).
+const YIELD = {};
 
 // Gases that fade (R4, R8): life spent in this many seconds. FIRE lives ~0.5-1 s (R8; TPT's FIRE 120-169
 // frames at 60 fps is 2-3 s, faster here so a flame doesn't outlast its fuel, which this version doesn't

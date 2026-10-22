@@ -29,6 +29,11 @@ export const LEVEL_CM = 1;
 // round footprint reads 1: squares read 1.18-1.41, diamonds 0.70-0.84.
 export const ROUND_TOL = 0.15;
 
+// V1's hole (the bench's own test on V1, GPU, 2026-10-22): no read unbroken, its worst reach 20.19 % past the
+// parabola, its stream's reach at the three checkpoints; the cells its tank had drained then (the same tank in a 32³
+// box, tools/v2/runs-browser-check.mjs drain: by mass, since V1's draining tank holds voids under its surface)
+const V1_HOLE = { unbroken: 0, offParabola: 0.2019, drained: [76.9, 128.1, 173.0], reach: [23.714, 23.384, 21.696] };
+
 export const OUTCOMES = {
   // ---- liquids (docs/v2.md 4.4, 5.6) ----
   utube: {
@@ -86,6 +91,13 @@ export const OUTCOMES = {
     window: 0.25,
     // unbroken from the hole to the floor in this share of a window's reads (one stray read is not a break)
     unbroken: 0.9,
+    // V1's own hole, which V2 is held to (the V2 finish push: V1 too breaks into gaps at 60 Hz with its pull, so the
+    // outcome compares with V1, not the ideal stream): measured on V1 (tools/v2/runs-browser-check.mjs --outcomes
+    // hole, 2026-10-22): its unbroken share and its worst reach off the parabola, and at each checkpoint its tank's
+    // drained cells and its stream's mass-weighted reach on rows 6-8 (cells past the hole's outer face)
+    v1: V1_HOLE,
+    drainTol: 0.25,     // V2's tank has drained within this share of V1's drained depth at each checkpoint
+    reachV1Tol: 0.25,   // and its stream reaches within this share of V1's
   },
   splash: {
     phase: 'P3',   // docs/v2.md 4.2 and 4.4 ("splash KE ≤ 0.3 × incoming"), P3's exit
@@ -97,15 +109,12 @@ export const OUTCOMES = {
   },
   yield: {
     phase: 'P2',
-    // "slope rises with yield" (docs/v2.md 4.4): from a 4³ block, mud stands taller than water by more than
-    // the bench's level tolerance, and water spreads to a layer or less. How tall mud stands is v2's dead band
-    // (5.4: "rest and yield are one knob", re-tuned on the motion sheet in P3), not a number the bench can
-    // derive: real mud (a Bingham plastic of tens of Pa, Coussot, Mudflow Rheology and Dynamics, 1997, which
-    // today's MUD row cites) would hold a mound of only ~0.1 m (a third of a cell) from this block at 2 g;
-    // a game mud that reads as mud from the god view is a game multiplier on that. No prototype number (lean
-    // has one liquid).
+    // MV-8 (the V2 finish push, "match V1"): V1 has no yield stress (react.js), so a 4³ block of mud levels as
+    // water does, to V1's whole cells: measured on V1 (2026-10-22, tools/v2/runs-browser-check.mjs, and the bench's
+    // own run: mud and water each a cell deep over 64 columns at 5 s). V2's liquid is fills, not cells: mud stands
+    // no taller than V1's cell, and water spreads to a layer or less.
     seconds: 5,
-    tallerCm: LEVEL_CM,
+    mudPeak: 1,
     waterPeak: 1,
   },
   // ---- solids (docs/v2.md 5.3, 5.5 R1-R2) ----

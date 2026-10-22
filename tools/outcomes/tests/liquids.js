@@ -176,7 +176,7 @@ export const pipe = {
 
 export const hole = {
   name: 'hole', group: 'liquids', size: [48, 32, 8], needs: ['WALL', 'WATER'], cost: 160,
-  title: 'a hole pours one unbroken stream within 5 % of the √(2gh) parabola at every head',
+  title: 'a hole drains its tank and throws its stream as V1\'s does (V1 measured: OUTCOMES.hole.v1)',
   audit: 'audit-liquids B7: the 2×2×2 block dots a falling column into parcels, a parcel on every other row at a time (alternate rows at alternate steps), so the jet is broken (B14\'s head-scan cap at ~16 cells doesn\'t bite here: every head is under 16)',
   async run(e) {
     const O = OUTCOMES.hole;
@@ -186,6 +186,8 @@ export const hole = {
     e.box([8, 14, 3], [8, 14, 3], 'AIR');
     const EXIT_X = 9, EXIT_Y = 14.5, BAND = [6, 7, 8];   // the hole's outer face and centre; the rows measured, half way down
     const tankLevel = (g) => meanLevel(g, 1, 7, 1, 6);
+    // the tank's liquid (cells): what is left in it, voids and all (V1's draining tank holds air under its surface)
+    const tankMass = (g) => { let m = 0; for (let y = 13; y < g.ny; y++) for (let z = 1; z <= 6; z++) for (let x = 1; x <= 7; x++) m += g.amount[at(g, x, y, z)]; return m; };
     let g = await e.read();
     const m0 = liquidMass(g);
     setup(same(tankLevel(g), 31) && same(m0, 7 * 6 * 18) && e.kindOf(g.id[at(g, 8, 14, 3)]) === 'air', `start: level ${tankLevel(g)} (31), ${m0} cells (756), the hole open`);
@@ -216,7 +218,7 @@ export const hole = {
       }
       return false;
     };
-    const rows = [], slices = [];
+    const rows = [], slices = [], drainedAt = [], reachAt = [];
     let worst = 0, measured = true, worstUnbroken = 1;
     for (const t of O.checkpoints) {
       // every step of the window [t - w/2, t + w/2], and of the flight time before it (the heads its water left at)
@@ -245,6 +247,7 @@ export const hole = {
       if (err === null) measured = false; else worst = Math.max(worst, err);
       worstUnbroken = Math.min(worstUnbroken, share);
       const perRow = BAND.map((y, k) => (acc[k].a > 0 ? `y ${y}: ${r2(acc[k].x / acc[k].a)} (parabola ${r2(acc[k].ideal / acc[k].a)}, ${r2(acc[k].a)} cells·reads)` : `y ${y}: no water`)).join('; ');
+      drainedAt.push(7 * 6 * 18 - tankMass(gt)); reachAt.push(sa > 0 ? sx / sa : null);
       rows.push(`${t} s ± ${O.window / 2} s (${reads} steps): head ${r2(headAt(t0))}…${r2(headAt(t1))} cells; ${err === null ? `no water crossed rows ${BAND[0]}-${BAND.at(-1)}: reach not measured` : `the stream ${r2(100 * err)} % off the √(2gh) parabola`} [${perRow}]; unbroken from the hole to the floor in ${unbroken} of ${reads} reads`);
       const par = (x) => EXIT_Y - ((x - EXIT_X) / 2) ** 2 / Math.max(ht, 1e-6);   // the ideal stream's y at x
       slices.push(`at ${r2(t)} s (# wall, ~ ≥ ½ cell, , less, + the ideal parabola):\n${sliceText(gt, (x, y) => {
@@ -258,15 +261,24 @@ export const hole = {
     }
     g = await e.read();
     const m = liquidMass(g);
+    // V1's own hole (OUTCOMES.hole.v1, measured on the GPU): its stream is broken at 60 Hz with its pull and lands
+    // off the ideal parabola, so V2 is held to V1's outcome, not the ideal: as unbroken and as near the parabola as
+    // V1's at least, its tank drained by each checkpoint (cells) within drainTol of what V1's drained, and its
+    // stream's reach (rows 6-8, mass-weighted, cells past the hole) within reachV1Tol of V1's
+    const V1 = O.v1;
+    const drainErr = Math.max(...drainedAt.map((d, k) => Math.abs(d / V1.drained[k] - 1)));
+    const reachErr = reachAt.some(x => x === null) ? null : Math.max(...reachAt.map((x, k) => Math.abs(x / V1.reach[k] - 1)));
     return {
       headline: rows.at(-1).replace(/ \[.*\]/, ''),
       criteria: [
-        crit('one unbroken stream (worst window: share of its reads)', r2(worstUnbroken), worstUnbroken >= O.unbroken, `≥ ${O.unbroken}`),
-        crit('reach off the √(2gh) parabola (worst window)', measured ? r2(100 * worst) : 'not measured', measured && worst <= O.reachTol, `≤ ${100 * O.reachTol}`, measured ? '%' : ''),
+        crit('one unbroken stream (worst window: share of its reads)', r2(worstUnbroken), worstUnbroken >= V1.unbroken, `≥ V1's ${V1.unbroken}`),
+        crit('reach off the √(2gh) parabola (worst window)', measured ? r2(100 * worst) : 'not measured', measured && worst <= Math.max(O.reachTol, V1.offParabola), `≤ V1's ${r2(100 * Math.max(O.reachTol, V1.offParabola))}`, measured ? '%' : ''),
+        crit('drains as V1\'s tank (worst checkpoint, off V1\'s drained cells)', r2(100 * drainErr), drainErr <= O.drainTol, `≤ ${100 * O.drainTol}`, '%'),
+        crit('the stream reaches as V1\'s (worst window, off V1\'s reach)', reachErr === null ? 'not measured' : r2(100 * reachErr), reachErr !== null && reachErr <= O.reachV1Tol, `≤ ${100 * O.reachV1Tol}`, reachErr === null ? '' : '%'),
         crit('mass exact', r3(m - m0), Math.abs(m - m0) < 1e-6, '0', 'cells'),
       ],
       evidence: [rows.join('\n'), ...slices],
-      numbers: { worstReach: measured ? worst : null, unbroken: worstUnbroken, massDrift: m - m0 },
+      numbers: { worstReach: measured ? worst : null, unbroken: worstUnbroken, massDrift: m - m0, drained: drainedAt.map(r3), reach: reachAt.map(x => (x === null ? null : r3(x))) },
     };
   },
 };
@@ -353,8 +365,8 @@ export const splash = {
 
 export const yieldSlope = {
   name: 'yield', group: 'liquids', size: [16, 8, 16], needs: ['WATER', 'MUD'], cost: 140,
-  title: 'slope rises with yield: mud holds a mound, water spreads',
-  audit: 'audit-liquids B9: viscosity maps only to speed (flow, drag), with no yield, so mud and slime level into 1-2 cell films',
+  title: 'mud levels as V1\'s does (no yield stress), and water spreads to a layer or less',
+  audit: 'MV-8 (the V2 finish push): V1 has no yield stress (react.js: a liquid flows until the level evens out), so V1\'s mud levels to a cell over 64 columns from a 4³ block within 1 s; V2\'s yield dead band held a mound',
   async run(e, ctx) {
     const O = OUTCOMES.yield;
     const one = async (name) => {
@@ -367,11 +379,10 @@ export const yieldSlope = {
       return { peak, cols, map: mapText(16, 16, (x, z) => amountChar(g, x, z)) };
     };
     const water = await one('WATER'), mud = await one('MUD');
-    const taller = cm(mud.peak - water.peak);
     return {
       headline: `after ${O.seconds} s a 4³ block stands ${r2(mud.peak)} cells tall as mud over ${mud.cols} columns, ${r2(water.peak)} as water over ${water.cols}`,
       criteria: [
-        crit('mud stands taller than water', r2(taller), taller > O.tallerCm, `> ${O.tallerCm}`, 'cm'),
+        crit('mud levels as V1\'s (its peak)', r2(mud.peak), mud.peak <= O.mudPeak, `≤ V1's ${O.mudPeak}`, 'cells'),
         crit('water spreads to a layer or less', r2(water.peak), water.peak <= O.waterPeak, `≤ ${O.waterPeak}`, 'cells'),
       ],
       evidence: [`mud per column (tenths of a cell; A = 1, B = 2 …):\n${mud.map}`, `water per column:\n${water.map}`],

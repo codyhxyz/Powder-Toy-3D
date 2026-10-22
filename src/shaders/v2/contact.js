@@ -244,6 +244,8 @@ fn ctPack(c:CTCell,original:vec4u)->vec4u {
   if(row.burn>0 && c.burning!=0){core.y|=0x80000000u;}
   if(row.conductor!=0){core.w=(core.w&0xf000ffffu)|(u32(c.spark&4095)<<16u);}
   else{core.w=(core.w&65535u)|(u32(c.life)<<16u);}
+  // a new liquid that starts falling (a clone's: v2/contact.js CT_SPAWN_DROP_TICK): its column lane, cells a tick
+  if(c.fallSpeed>0.0 && c.id!=i32(original.x&255u)){core.z=(core.z&65535u)|(pack2x16float(vec2f(0.0,c.fallSpeed))&0xffff0000u);}
  }else{
   core.y=(core.y&0xfe000000u)|(u32(c.burning)<<24u)|u32(c.life)|(u32(c.ctype)<<16u);
   if(row.conductor!=0){core.w=(core.w&0xfffff000u)|u32(c.spark);}

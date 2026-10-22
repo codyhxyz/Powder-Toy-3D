@@ -555,6 +555,8 @@ test('a packet dropped onto C-4 or nitroglycerin goes off from V1\'s fall, not s
       return f.ctx.control[shockPostBase(g)]===1;
     };
     const m=r.cells*CELL_M;
+    // a law from any fall (V1 measured mercury on nitroglycerin from 0 cells: dynamics-reference.js V1_SINKING_FALLS)
+    if(r.fall===0){assert.ok(drop(0.05),`${ELEMENTS[r.faller].key} on ${ELEMENTS[r.charge].key} from any fall`);continue;}
     assert.ok(drop(m*1.08+0.05),`${ELEMENTS[r.faller].key} on ${ELEMENTS[r.charge].key} from past ${m.toFixed(2)} m`);
     assert.ok(!drop(m*0.92-0.05),`${ELEMENTS[r.faller].key} on ${ELEMENTS[r.charge].key} from short of ${m.toFixed(2)} m`);
   }
