@@ -103,6 +103,9 @@ const CONTACT_ENERGY_CONSTANTS = {
   // V1 react.js condFlux, min(cond)·ΔT cap·°C a step, as native energy a partnered tick for ΔT in
   // ¼ K codes: PARTNER_STEPS steps of CT_ENERGY_PER_CAP_C per cap·°C, a quarter of it per code.
   CT_COND_FLUX: ['f32', PARTNER_STEPS * CT_ENERGY_PER_CAP_C / CONTACT_Q_PER_C],
+  // ...one step's of it a unit of cond (ctFluxTick), and V1's per-face cap, COND_FLUX_SHARE of min(cap)
+  CT_COND_STEP: ['f32', CT_ENERGY_PER_CAP_C / CONTACT_Q_PER_C],
+  CT_COND_SHARE: ['f32', PHYS.COND_FLUX_SHARE],
   // ctCapacity's units of a cap (CONTACT_ROWS capacity: cap·64) and ¼ K codes per °C: a
   // reaction's heat (row.heat, 1/256 cap·°C) over its products' caps as V1 react.js rxT does.
   CT_CAP_UNITS: ['i32', CONTACT_CAP_UNITS],
@@ -295,7 +298,9 @@ const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGN
   CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_OUT_SURFACE, CT_OUT_FIRE, CT_OUT_EMPTY, CT_OUT_CLOUD, CT_OUT_DUST, CT_OUT_DAMP, CT_OUT_DAMP_MAX,
   CT_OUT_WET_MOSS, CT_OUT_BED, CT_OUT_UP, CT_CHARGE_T_MAX_Q, CT_CHARGE_MAX, CT_CHARGE_STEP, CT_PARTNER_STEPS, CT_CHARGE_SALT,
   CT_BURN_PUFF_PA, CT_SING_EVAP, CT_SING_MASS_MIN, CT_SING_SALT } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
-const { CT_COND_FLUX, CT_CAP_UNITS, CT_Q_PER_C, CT_FULL, CT_FILL_SALT, CT_ROLL_UNIT, CT_PAIR_FILL_SALT, CT_Q_MAX, CT_RX_HEAT_UNIT, CT_SHARE_LO, CT_SHARE_HI } = Object.fromEntries(Object.entries(CONTACT_ENERGY_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
+// ctFluxTick raises a step's share to STEPS_PER_TICK by squaring twice
+if (STEPS_PER_TICK !== 4) throw Error('ctFluxTick assumes 4 V1 steps a tick');
+const { CT_COND_FLUX, CT_COND_STEP, CT_COND_SHARE, CT_CAP_UNITS, CT_Q_PER_C, CT_FULL, CT_FILL_SALT, CT_ROLL_UNIT, CT_PAIR_FILL_SALT, CT_Q_MAX, CT_RX_HEAT_UNIT, CT_SHARE_LO, CT_SHARE_HI } = Object.fromEntries(Object.entries(CONTACT_ENERGY_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 
 const outSpecs = [];
 function spec(into = 'FIRE') {
@@ -488,6 +493,10 @@ export const ctMul = (a, b) => BigInt(a) * BigInt(b);
 export const ctLess = (a, b) => a < b;
 // An energy difference known to fit an i32 (|d| ≤ a heat step).
 export const ctSmall = d => Number(d);
+// A whole energy from an f32 (truncated), its negation, and whether it is any at all.
+export const ctWide = x => BigInt(Math.trunc(x));
+export const ctNeg = d => -d;
+export const ctNonzero = d => d !== 0n;
 export function ctSetEnergy(input, energy) {
   const c = ctCopy(input), phase = encodePhaseEnergy(c.id, ctAmount(c), energy);
   if (phase) { c.raw = phase.raw; c.tq = phaseTemperatureQ(c.id, c.raw); c.bank = phase.bank; return c; }
@@ -551,6 +560,47 @@ export function ctFlux(a, b) {
   const lim = ctI(Math.min(2147483000, Math.abs(dt) * (ca * cb / (ca + cb))));
   const flux = ctI(Math.max(-2147483000, Math.min(2147483000, k * dt * CT_COND_FLUX)));
   return Math.max(-lim, Math.min(lim, flux));
+}
+// A face the grid trades on every tick, once: a block pass partner, or else the heat pass's
+// (shaders/v2/heat.js, the block pass's cubes one cell over on every axis). V1 react.js condFlux on
+// it for the tick's STEPS_PER_TICK steps: min(cond_a, cond_b)·ΔT a step, at most COND_FLUX_SHARE of
+// min(cap)·ΔT (react.js clamp), solved for the pair alone, so ΔT keeps (1 - g(1/Ca + 1/Cb))^4 of
+// itself and the energy moved is ΔT·CaCb/(Ca+Cb) times the rest: never past the pair's equilibrium
+// (no overshoot, no flicker), and with every face traded each tick, metal's V1 rate along a bar
+// (one trade a face every two ticks can't carry it: tools/v2/contact-conduction-check.mjs).
+export function ctFluxTick(a, b) {
+  const k = Math.min(ctRow(a.id).cond, ctRow(b.id).cond);
+  if (k === 0) return ctSigned(0);
+  const dt = ctF(ctF(b.tq - a.tq) + ctTemperatureRemainder(b) - ctTemperatureRemainder(a));
+  const ca = ctF(ctCapacity(a));
+  const cb = ctF(ctCapacity(b));
+  const g = ctF(Math.min(k * CT_COND_STEP, CT_COND_SHARE * Math.min(ca, cb)));
+  const keep = ctF(1.0 - g * (1.0 / ca + 1.0 / cb));
+  const keep2 = ctF(keep * keep);
+  // (wide: a metal pair 1000 °C apart moves more in a tick than an i32 holds, ctFlux's ceiling)
+  return ctWide(ctF(dt * (ca * cb / (ca + cb)) * (1.0 - keep2 * keep2)));
+}
+// The part of a wide `gain` (signed) c can take short of a latent bank's transition (ctHeatRoom's).
+export function ctRoomWide(c, gain) {
+  const now = ctEnergy(c);
+  if (ctFits(c, ctAdd(now, gain))) return gain;
+  const r = ctRow(c.id);
+  const amount = ctAmount(c);
+  let edge = ctAdd(ctAdd(ctMul(ctCapacity(c), r.hotQ), ctOffset(c)), ctMul(r.hotL, amount));
+  if (ctLess(gain, ctSigned(0))) edge = ctSub(ctAdd(ctMul(ctCapacity(c), r.coldQ), ctOffset(c)), ctMul(r.coldL, amount));
+  if (!ctFits(c, edge)) return ctSigned(0);
+  return ctSub(edge, now);
+}
+// A face's tick of conduction (ctFluxTick), as much as both cells can hold (ctRoomWide); changed when any moved.
+export function ctConduct(a0, b0, airHeat) {
+  if (!ctConducts(a0, b0, airHeat)) return ctPairValue(a0, b0, 0);
+  let flux = ctFluxTick(a0, b0);
+  if (ctNonzero(flux)) flux = ctNeg(ctRoomWide(b0, ctNeg(ctRoomWide(a0, flux))));
+  if (!ctNonzero(flux)) return ctPairValue(a0, b0, 0);
+  let a = ctSetEnergy(a0, ctAdd(ctEnergy(a0), flux));
+  let b = ctSetEnergy(b0, ctSub(ctEnergy(b0), flux));
+  a.busy = 1; b.busy = 1;
+  return ctPairValue(a, b, 1);
 }
 // The branches only pick what the cell becomes; one ctConvert and one ctProduct call do it. Every
 // call site is a copy of the helper once Metal inlines the contact rules into the block and
@@ -1130,7 +1180,7 @@ export const CONTACT_KERNEL = [
   [ctDecay, ['CTCell', 'i32'], 'CTCell'], [ctExhaust, ['CTCell', 'i32'], 'CTCell'], [ctFlameLife, ['i32'], 'i32'], [ctCreate, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctDrain, ['CTCell', 'i32'], 'CTCell'],
   [ctGrow, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctDensity, ['CTCell'], 'f32'], [ctAmount, ['CTCell'], 'i32'], [ctCapacity, ['CTCell'], 'i32'], [ctHeat, ['CTCell', 'i32'], 'CTCell'], [ctHeatTo, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctConvert, ['CTCell', 'i32', 'i32'], 'CTCell'],
-  [ctTemperatureRemainder, ['CTCell'], 'f32'], [ctFlux, ['CTCell', 'CTCell'], 'i32'], [ctPhase, ['CTCell', 'i32', 'f32'], 'CTCell'],
+  [ctTemperatureRemainder, ['CTCell'], 'f32'], [ctFlux, ['CTCell', 'CTCell'], 'i32'], [ctFluxTick, ['CTCell', 'CTCell'], 'vec2u'], [ctPhase, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctNuclearId, ['CTCell'], 'i32'], [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
   [ctGrowerDamp, ['i32', 'i32'], 'i32'], [ctPuff, ['i32', 'i32'], 'i32'], [ctPerTick, ['f32'], 'f32'],
   [ctHotFuel, ['CTCell'], 'bool'], [ctSmothered, ['i32', 'i32'], 'bool'], [ctLick, ['CTCell', 'i32', 'i32', 'bool', 'i32'], 'CTCell'],
@@ -1365,9 +1415,8 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
   const seedAt = i => (Math.imul(positions[i][0], 73856093) ^ Math.imul(positions[i][1], 19349663) ^ Math.imul(positions[i][2], 83492791) ^ Math.imul(tick, 2654435761)) | 0;
   for (const [i, j] of CONTACT_PAIRS) {
     if (!valid[i] || !valid[j]) continue;
-    let flux = ctConducts(cells[i], cells[j], airHeat) ? ctFlux(cells[i], cells[j]) : 0;
-    if (flux) flux = -ctHeatRoom(cells[j], -ctHeatRoom(cells[i], flux));
-    if (flux) { cells[i] = ctHeat(cells[i], flux); cells[j] = ctHeat(cells[j], -flux); cells[i].busy = 1; cells[j].busy = 1; }
+    const heat = ctConduct(cells[i], cells[j], airHeat);
+    cells[i] = heat.a; cells[j] = heat.b;
     let pair = ctReaction(cells[i], cells[j], seedAt(i) ^ j);
     if (!pair.changed) pair = ctAcidFizz(pair.a, pair.b, seedAt(i) ^ j);
     if (!pair.changed) { const reverse = ctAcidFizz(pair.b, pair.a, seedAt(i) ^ j); pair = ctPairValue(reverse.b, reverse.a, reverse.changed); }
@@ -1398,6 +1447,24 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
   return { cores, banks, requests, busy, sources: cells.map(c => c.source), sinks: cells.map(c => c.sink) };
 }
 
+// The heat pass (shaders/v2/heat.js) on one of its cubes, the block pass's one cell over on every
+// axis: the faces the block pass left outside its cubes this tick trade V1's tick of conduction
+// (ctFluxTick), the block pass's own order, and nothing else. busy: the cells that changed.
+export function contactHeatReference(cores, banks, valid = Array(8).fill(true), modes = CONTACT_DEFAULT_MODES) {
+  const airHeat = +!!modes.ambientHeat;
+  const cells = cores.map((core, i) => unpackContact(core, banks[i])), busy = [];
+  for (const [i, j] of CONTACT_PAIRS) {
+    if (!valid[i] || !valid[j]) continue;
+    const heat = ctConduct(cells[i], cells[j], airHeat);
+    cells[i] = heat.a; cells[j] = heat.b;
+  }
+  for (let i = 0; i < 8; i++) {
+    if (!valid[i] || !cells[i].busy) continue;
+    const out = packContact(cells[i], cores[i]);
+    cores[i] = out.core; banks[i] = out.bank; busy.push(i);
+  }
+  return { cores, banks, busy };
+}
 // V1 react.js: with ambient heat off, matter trades no heat with the air.
 export function ctConducts(a, b, airHeat) { return airHeat !== 0 || (a.id !== E.EMPTY && b.id !== E.EMPTY); }
 // V1 react.js: the open world above the box pulls air back to ambient
@@ -1441,6 +1508,7 @@ export function ctHeatRoom(c, gain) {
 // The ambient's ¼ K code, as the block pass encodes P.ambient.
 export const contactAmbientQ = ambient => Math.min(65535, Math.max(0, Math.round(Math.fround((Math.fround(ambient) + 273.25) * 4))));
 CONTACT_KERNEL.push([ctConducts, ['CTCell', 'CTCell', 'i32'], 'bool'], [ctAmbient, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctHeatRoom, ['CTCell', 'i32'], 'i32']);
+CONTACT_KERNEL.push([ctRoomWide, ['CTCell', 'vec2u'], 'vec2u'], [ctConduct, ['CTCell', 'CTCell', 'i32'], 'CTPair']);
 CONTACT_KERNEL.push([ctElecMaterial, ['i32'], 'bool'], [ctFuseLife, ['i32'], 'i32'], [ctFuseSteps, ['i32'], 'i32'], [ctFuseStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'],
   [ctElecStep, ['CTCell', 'array<CTCell, 6>', 'f32'], 'i32'], [ctFuseApply, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctElecApply, ['CTCell', 'i32', 'i32'], 'CTCell'],
   [ctElecAirborne, ['CTCell', 'array<CTCell, 6>', 'i32'], 'CTCell'], [ctFuseTouch, ['CTCell', 'i32', 'f32'], 'i32'],

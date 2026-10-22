@@ -206,6 +206,9 @@ fn ctSigned(n:i32)->vec2u{return energySigned(n);}
 fn ctMul(a:i32,b:i32)->vec2u{return energyMul(u32(a),u32(b));}
 fn ctLess(a:vec2u,b:vec2u)->bool{return phaseLess(a,b);}
 fn ctSmall(d:vec2u)->i32{return bitcast<i32>(d.x);}
+fn ctWide(x:f32)->vec2u{let m=abs(x);let hi=floor(m/4294967296.0);let v=vec2u(u32(m-hi*4294967296.0),u32(hi));return select(v,energyNeg(v),x<0.0);}
+fn ctNeg(d:vec2u)->vec2u{return energyNeg(d);}
+fn ctNonzero(d:vec2u)->bool{return any(d!=vec2u(0u));}
 fn ctFits(c:CTCell,energy:vec2u)->bool {return energyFits(ctMaterial(c),energy);}
 fn ctSetEnergy(input:CTCell,energy:vec2u)->CTCell {
  var c=input; let m=withEnergy(ctMaterial(c),energy);
@@ -293,9 +296,7 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
  for(var i=0u;i<count;i++){
   for(var axis=0u;axis<u32(ctNeighborCount());axis++){
    let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
-   var flux=0;if(ctConducts(cells[i],cells[j],i32(P.ambientHeat))){flux=ctFlux(cells[i],cells[j]);}
-   if(flux!=0){flux=-ctHeatRoom(cells[j],-ctHeatRoom(cells[i],flux));}
-   if(flux!=0){cells[i]=ctHeat(cells[i],flux);cells[j]=ctHeat(cells[j],-flux);cells[i].busy=1;cells[j].busy=1;}
+   let heat=ctConduct(cells[i],cells[j],i32(P.ambientHeat));cells[i]=heat.a;cells[j]=heat.b;
    let seed=ctSeed(positions[i],P.tick)^i32(j);
    var pair=ctReaction(cells[i],cells[j],seed);
    // acid, then swallow, each i on j and then j on i (ctPairOrders)

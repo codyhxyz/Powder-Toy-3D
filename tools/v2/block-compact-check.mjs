@@ -255,7 +255,8 @@ async function record(contact, limits = {}, expectCompact = contact === contactW
     assert.equal(commands[supportAt + 1].size.offset, 24);
     assert.equal(engine.liquidScratch.size, g.slots * 16);
     // (and the electric pass's, wherever the contact module carries the electric rules)
-    assert.equal(compiled.length, V2_KERNELS.length + (/\bfn\s+ctElecStep\s*\(/.test(contact) ? V2_ELECTRIC_KERNELS.length : 0));
+    // (and the heat pass, shaders/v2/heat.js, with a contact module that has its conduction)
+    assert.equal(compiled.length, V2_KERNELS.length + (/\bfn\s+ctElecStep\s*\(/.test(contact) ? V2_ELECTRIC_KERNELS.length : 0) + (/\bfn\s+ctFluxTick\s*\(/.test(contact) ? 1 : 0));
     assert.equal(engine.kernels.v2block.code, v2BlockWGSL(g, contact));
   }
 }

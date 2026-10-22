@@ -33,6 +33,13 @@ const PACKET_TOUCH_ROOTS = ['ctFuseTouch', 'packetTouchNow'];
 const GATHER_ROOTS = ['ctFuseFlameNear'];
 // touch: keep the flying packets' marks for a fuse (the gather's step; the commit applies its word)
 export function electricContactWGSL(contactWGSL, touch = false) {
+  if (!ELECTRIC_ROOTS.every(n => new RegExp(`(^|\\n)fn\\s+${n}\\s*\\(`).test(contactWGSL))) throw Error('electric pass: the contact module lacks its electric rules');
+  // a fuse lit by a flying packet beside it (ctFuseTouch), where the contact module has the packets' marks
+  return contactSubsetWGSL(contactWGSL, touch ? [...ELECTRIC_ROOTS, ...PACKET_TOUCH_ROOTS, ...GATHER_ROOTS] : ELECTRIC_ROOTS);
+}
+// The contact module's declarations a pass of its own reaches from `roots` (those it has), and nothing
+// else: every non-function line, and each function the roots call, transitively (the heat pass's too).
+export function contactSubsetWGSL(contactWGSL, roots) {
   const parts = [], fns = new Map();
   let at = 0;
   const fnHead = /^fn\s+(\w+)\s*\(/;
@@ -52,10 +59,7 @@ export function electricContactWGSL(contactWGSL, touch = false) {
       at = stop;
     }
   }
-  const keep = new Set(), todo = ELECTRIC_ROOTS.filter(n => fns.has(n));
-  if (todo.length !== ELECTRIC_ROOTS.length) throw Error('electric pass: the contact module lacks its electric rules');
-  // a fuse lit by a flying packet beside it (ctFuseTouch), where the contact module has the packets' marks
-  if (touch) for (const n of [...PACKET_TOUCH_ROOTS, ...GATHER_ROOTS]) if (fns.has(n)) todo.push(n);
+  const keep = new Set(), todo = roots.filter(n => fns.has(n));
   while (todo.length) {
     const name = todo.pop();
     if (keep.has(name)) continue;

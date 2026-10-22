@@ -14,6 +14,7 @@ import {
 } from '../shaders/v2.js';
 import { pairOrder } from '../shaders/v2/columns.js';
 import { V2_ELECTRIC_KERNELS } from '../shaders/v2/electric.js';
+import { V2_HEAT_KERNEL } from '../shaders/v2/heat.js';
 import { CONTACT_CONSTANTS } from './contact.js';
 import { auxLayout } from '../shaders/v2/state.js';
 import { PARTICLE_CAP } from './dynamics-reference.js';
@@ -141,7 +142,7 @@ export class PhysicsV2 {
     }
     this.nativeDynamics = { head: nativeDynamicsHead, layout: gpu.layout('V2_DYNAMICS', V2_DYNAMICS_LAYOUT) };
     this.nativeDynamics.group = gpu.bindGroup(this.nativeDynamics.layout, [b(0, this.cells), b(1, this.aux), b(2, this.act)], 'native dynamics state');
-    this.familyOf = name => ({ v2args: 'args', v2actArgs: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2support: 'contact', v2blockClassify: 'contact', v2blockFinalize: 'blockFinalize', v2block: 'contact', v2runs: 'liquid', v2pairs: 'liquid', v2elecGather: 'contact', v2elecArgs: 'args', v2elecCommit: 'contact' }[name] ?? 'v2');
+    this.familyOf = name => ({ v2args: 'args', v2actArgs: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2support: 'contact', v2blockClassify: 'contact', v2blockFinalize: 'blockFinalize', v2block: 'contact', v2runs: 'liquid', v2pairs: 'liquid', v2elecGather: 'contact', v2elecArgs: 'args', v2elecCommit: 'contact', v2heat: 'contact' }[name] ?? 'v2');
     const familyLayouts = { v2: L.V2, args: L.ARGS, material: L.MATERIAL, liquid: L.LIQUID, contact: L.CONTACT };
     this.kernels = {};
     const specs = this.blockCompact ? [...V2_KERNELS,
@@ -151,6 +152,8 @@ export class PhysicsV2 {
     // The electric pass runs the contact module's electric rules: with contact installed, V1's
     // electricity at V1's step rate (shaders/v2/electric.js); without it, no electricity at all.
     if (/\bfn\s+ctElecStep\s*\(/.test(contactWGSL)) specs.push(...V2_ELECTRIC_KERNELS.map(k => ({ ...k, code: g => k.code(g, contactWGSL) })));
+    // ...and the faces the block pass's cubes cut trade V1's conduction too (shaders/v2/heat.js), with it
+    if (/\bfn\s+ctFluxTick\s*\(/.test(contactWGSL)) specs.push({ ...V2_HEAT_KERNEL, code: g => V2_HEAT_KERNEL.code(g, contactWGSL) });
     for (const k of specs) {
       const withState = k.name === 'v2import' || k.name === 'v2bridge';
       const finalize = k.name === 'v2blockFinalize';
@@ -468,6 +471,8 @@ export class PhysicsV2 {
       run(k.v2blockFinalize, [1, 1, 1], [gpu.emptyGroup, gpu.emptyGroup, groups.blockFinalize]);
       run(k.v2block, ind(ARGS2.COMPACT), [sim.tables, groups.flow, groups.contact]);
     } else run(k.v2block, ind(ARGS2.BLOCKS), [sim.tables, groups.flow, groups.contact]);
+    // the faces the block's cubes cut, on the cubes one cell over (shaders/v2/heat.js): every face trades heat each tick
+    if (k.v2heat) run(k.v2heat, ind(ARGS2.BLOCKS));
     // Electricity at V1's rate (shaders/v2/electric.js): ELEC_STEPS steps a tick of V1's step on six
     // faces, each a gather and a commit. Step 0 gathers the awake bricks and lists where it changed
     // anything (and their 3³); the args publish that list; the rest run over it alone.
