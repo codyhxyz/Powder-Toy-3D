@@ -134,7 +134,11 @@ export class WorldCellAtlasAdapter {
       normalized.push(Object.freeze({brick:Object.freeze([...brick]),channels}));
       if(channels&READY.CELL){const core=coreFor(brick);cores.set(brickKey(core),core);}
     }
-    const delta=this.source.changesSince(this.lastSourceToken), changed=new Map(changedBricks.map(b=>[brickKey(b),[...b]]));
+    const delta=this.source.changesSince(this.lastSourceToken);
+    // The source's own frozen list as it stands when nothing joins it: a V2 step
+    // changes the whole window, every brick of it keyed and copied per demand.
+    if(!delta.global&&!changedBricks.length)return Object.freeze({fieldTick,requirements:Object.freeze(normalized),wantedCores:Object.freeze([...cores.values()].map(c=>Object.freeze(c))),changedBricks:delta.changedBricks,smoothing,full});
+    const changed=new Map(changedBricks.map(b=>[brickKey(b),[...b]]));
     if(delta.global){
       for(const owner of this.fields.history.owners.values())changed.set(brickKey(owner.brick),owner.brick);
       for(const core of cores.values())for(let z=core[2]/4;z<Math.min((core[2]+32)/4,this.bounds.max[2]/4);z++)for(let y=core[1]/4;y<Math.min((core[1]+32)/4,this.bounds.max[1]/4);y++)for(let x=core[0]/4;x<Math.min((core[0]+32)/4,this.bounds.max[0]/4);x++)changed.set(`${x},${y},${z}`,[x,y,z]);
@@ -200,7 +204,7 @@ export class WorldCellAtlasAdapter {
       batch.source=source;batch.contentToken=this.source.contentToken();batch.plan=plan;
       batch.result=this.fields.record(frame,plan);batch.state='captured';this.lastSourceToken=batch.contentToken;
       for(const key of batch.invalidated)this.unpublishedInvalidations.add(key);
-      for(const brick of batch.options.changedBricks)this.unpublishedChanges.set(brickKey(brick),Object.freeze([...brick]));
+      for(const brick of batch.options.changedBricks)this.unpublishedChanges.set(brickKey(brick),Object.isFrozen(brick)?brick:Object.freeze([...brick]));
       this.lightingDirty ||= !same(this.publication?.source,batch.contentToken) || plan.advancing.length>0 || batch.result.outputs.length>0 || batch.invalidated.length>0;
       return batch.handle;
     }catch(error){
