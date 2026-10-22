@@ -36,11 +36,21 @@ for (const dims of [[32, 32, 32], [128, 128, 128]]) {
 // colPour and one colTransfer for both lane directions (2026-10-20: 4.75 M -> 1.43 M chars inlined, 3.3 -> 1.4 s);
 // the volume shaders' caustic taps in one rippleH call (lighting.js causticGain, Box and World)
 {
-  const { v2PairsWGSL } = await import('../../src/shaders/v2.js');
+  const { v2PairsWGSL, v2RunsWGSL } = await import('../../src/shaders/v2.js');
   const { volumeFrag } = await import('../../src/shaders/render.js');
-  const pairs = v2PairsWGSL(gridLayout(32, 32, 32));
-  const main = pairs.slice(pairs.lastIndexOf('fn main('));
+  const pairs = v2PairsWGSL(gridLayout(32, 32, 32)), runs = v2RunsWGSL(gridLayout(32, 32, 32));
+  // (the kernels' mains are their column threads, columns.js colPairsColumn and colRunsColumn; 2026-10-22, WS-D:
+  // one call site each for colTransfers, colSends, colEdges, colRadFace, colScan and colFinish, Metal cold compile
+  // v2runs 2.26 -> 1.54 s, v2pairs 1.67 -> 1.06 s with WS-D's rules)
+  const main = body(pairs, 'colPairsColumn');
+  assert.equal(calls(pairs.slice(pairs.lastIndexOf('fn main(')), 'colPairsColumn'), 1, 'v2pairs main: its column thread');
   assert.equal(calls(main, 'colTransfers'), 1, 'v2pairs main: one colTransfers');
+  assert.equal(calls(main, 'colEdges'), 1, 'v2pairs main: one colEdges');
+  assert.equal(calls(body(pairs, 'colTransfers'), 'colSends'), 1, 'colTransfers: one colSends');
+  assert.equal(calls(body(pairs, 'colRadPairs'), 'colRadFace'), 1, 'colRadPairs: one colRadFace');
+  assert.equal(calls(body(runs, 'colRunsColumn'), 'colScan'), 1, 'v2runs main: one colScan');
+  assert.equal(calls(body(runs, 'colScan'), 'colFinish'), 1, 'colScan: one colFinish');
+  assert.equal(calls(body(runs, 'colFinish'), 'colFall'), 1, 'colFinish: one colFall');
   const sends = body(pairs, 'colSends');
   assert.equal(calls(sends, 'colPour'), 1, 'colSends: one colPour');
   assert.equal(calls(sends, 'colTransfer'), 1, 'colSends: one colTransfer');

@@ -51,8 +51,10 @@ assert.equal(cFill(after[1].core),12345,'periodic claimant must actually receive
 // Open ledger is in previously reserved count words, NOT an ABI/save resize.
 const layout=v2ActLayout(g); assert.equal(layout.boundaryMass,layout.count+6); assert.equal(layout.boundaryMass+2,layout.legacy);
 // a column's pair partners and halo cross periodic seams through mEdge
-assert.match(v2PairsWGSL(g),/let next = mEdge\(here \+ axisV\(axis\)\); let prev = mEdge\(here - axisV\(axis\)\);/);
-assert.match(v2RunsWGSL(g),/let n = mEdge\(vec3i\(x, 0, z\) \+ face6/);
+// (columns.js colNeighbour: a column's neighbour along a side, past a loop edge wrapped)
+assert.match(v2PairsWGSL(g),/fn colNeighbour\(x: i32, z: i32, side: i32\) -> vec2i \{ return mEdge\(vec3i\(x, 0, z\) \+ face6/);
+assert.match(v2PairsWGSL(g),/let next = colNeighbour\(x, z, side\); let prev = colNeighbour\(x, z, side \+ 1\);/);
+assert.match(v2RunsWGSL(g),/let n = colNeighbour\(x, z, side\);/);
 assert.match(v2BoundaryWGSL(g),/noteBoundaryMass\(amount\); noteEnergySink/);
 const block=v2BlockWGSL(g,contactWGSL);assert.match(block,/P.edge==1u && mAirHeat\(\)/);assert.match(block,/p.y==NY-1/);
 // Real recorder proves certified-rest mode changes wake without importing cells,
