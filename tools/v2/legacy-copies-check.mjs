@@ -192,7 +192,8 @@ const zeros = bytes => bytes.every(v => v === 0);
   dispatchesValid(dispatches, sim.g);
 }
 
-// ---- windows and V1 never drop a copy ----
+// ---- V1 never drops a copy; a window drops one only while V2 runs it ----
+// (a World window's move under V2 is V2's alone, and V1's state its legacy writers' cache: src/sim.js shift)
 for (const opts of [{ nativeStartup: true, windowed: true }, { windowed: true }, {}]) {
   const { gpu } = device();
   const sim = new Simulation(gpu, N, N, N, opts);
@@ -202,12 +203,18 @@ for (const opts of [{ nativeStartup: true, windowed: true }, { windowed: true },
   if (opts.windowed) {
     const owner = new PhysicsV2(sim);
     await owner.ready;
+    // (identity tests by ===: an assert of buffers holding bytes would format megabytes on a failure)
+    assert.equal(sim.copies, 1, `${JSON.stringify(opts)}: V2 running the window, one copy`);
+    for (const k of Object.keys(BYTES)) assert(sim.state[k] !== first[k], `${JSON.stringify(opts)}: ${k} remade`);
+    const one = { ...sim.state };
     owner.suspend(); owner.activate();
+    assert.equal(sim.copies, 1);
+    for (const k of Object.keys(BYTES)) assert(sim.state[k] === one[k], `${JSON.stringify(opts)}: ${k} kept across a switch back`);
   } else {
     sim.step();
     sim.syncCopies();
+    for (const k of Object.keys(BYTES)) assert(sim.state[k] === first[k], `${JSON.stringify(opts)}: ${k} is never remade`);
   }
-  for (const k of Object.keys(BYTES)) assert.equal(sim.state[k], first[k], `${JSON.stringify(opts)}: ${k} is never remade`);
 }
 
 await submitAll();

@@ -1,4 +1,4 @@
-// CPU-only: World's writers under Physics V2 write V2's cells natively (shaders/v2/worldWrite.js), never
+// CPU-only: World's writers under Physics V2 write V2's cells natively (shaders/worldWrite.js), never
 // V1's state for V2 to import. The production methods run on stand-ins that record their dispatches.
 //   (1) the generator's fill, while V2 runs the window, is one native fill over its box: no V1 edit
 //       (so no export of V1's cache before it, no import after it), noted as an edit;
@@ -16,7 +16,7 @@ import { WorldWindow } from '../../src/world/window.js';
 import { BrickStore, encodeBrick, BRICK_FLOATS } from '../../src/world/store.js';
 import { NativeBrickStore } from '../../src/world/nativeStore.js';
 import { gridDims } from '../../src/shaders/common.js';
-import { WGSL_CHECK } from '../../src/shaders/v2/worldWrite.js';
+import { WGSL_CHECK } from '../../src/shaders/worldWrite.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 
 globalThis.GPUBufferUsage ??= { STORAGE: 0x80, COPY_SRC: 0x04, COPY_DST: 0x08 };

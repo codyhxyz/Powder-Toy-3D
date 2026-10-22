@@ -3,7 +3,7 @@ import { MAX_FOOT } from '../shaders/stamp.js';
 import { fold } from '../gpu/kernels.js';
 import { rawGenerateWGSL, rawStampWGSL, rawApplyWGSL, RAW_LAYOUT, RAW_READ_LAYOUT, APPLY_STATE, RawParams, RawApplyParams } from '../shaders/renderSource.js';
 import { TREE } from './generator.js';
-import { nativeApplyWGSL, NATIVE_WRITE_LAYOUT } from '../shaders/v2/worldWrite.js';
+import { nativeApplyWGSL, NATIVE_WRITE_LAYOUT } from '../shaders/worldWrite.js';
 import { nativeWriteGroup, nativeWritten } from './gpu.js';
 import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
@@ -70,7 +70,7 @@ export class RawWorldSourceProducer {
     this.generate = gpu.kernel({ name: `${win.scene.key} raw source`, code: rawGenerateWGSL(this.g, win.scene), layouts, params: RawParams });
     this.stamp = gpu.kernel({ name: 'raw source stamp', code: rawStampWGSL(this.g), layouts: [sim.L.TABLES, this.rawL], params: RawParams });
     this.apply = gpu.kernel({ name: 'raw source apply', code: rawApplyWGSL(sim.g, this.g), layouts: [sim.L.TABLES, this.applyStateL, this.readL], params: RawApplyParams });
-    // V2's apply (shaders/v2/worldWrite.js), when a V2 owner exists: the stamps into V2's cores
+    // V2's apply (shaders/worldWrite.js), when a V2 owner exists: the stamps into V2's cores
     this.nativeApply = sim.compactOwner ? gpu.kernel({ name: 'raw source native apply', code: nativeApplyWGSL(sim.g, this.g),
       layouts: [sim.L.TABLES, gpu.layout('NATIVE_WORLD_WRITE', NATIVE_WRITE_LAYOUT), this.readL], params: RawApplyParams }) : null;
     this.ready = Promise.all([win.gen.ready, this.generate.ready, this.stamp.ready, this.apply.ready, this.nativeApply?.ready]).then(() => {

@@ -1,11 +1,11 @@
-import { prelude, STAGE, LAYOUT } from '../common.js';
-import { uniformStruct } from '../../gpu/params.js';
-import { fold } from '../../gpu/kernels.js';
-import { v2ActLayout, LEGACY_WORD } from '../v2.js';
-import { nativeImportHelpersWGSL, importAWGSL } from './leave.js';
-import { RawApplyParams, RAW_READ_LAYOUT } from '../renderSource.js';
-import { sceneLayout } from '../../world/scenes/sceneGpu.js';
-import { WORLD_SCENES } from '../../world/scenes/index.js';
+import { prelude, STAGE, LAYOUT } from './common.js';
+import { uniformStruct } from '../gpu/params.js';
+import { fold } from '../gpu/kernels.js';
+import { v2ActLayout, LEGACY_WORD } from './v2.js';
+import { nativeImportHelpersWGSL, importAWGSL } from './v2/leave.js';
+import { RawApplyParams, RAW_READ_LAYOUT } from './renderSource.js';
+import { sceneLayout } from '../world/scenes/sceneGpu.js';
+import { WORLD_SCENES } from '../world/scenes/index.js';
 
 // World's writers of Physics V2's cells: the generator's fill (world/gpu.js WorldGenerator.fill:
 // a world's load, the slab a move uncovers) and the planted trees' apply (world/renderSourceProducer.js),

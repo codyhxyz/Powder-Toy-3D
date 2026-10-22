@@ -2,7 +2,7 @@ import {
   fillEdit, sceneFillFrag, FillParams, sceneDiffFrag, leaveLayout, leaveDispatch, LeaveParams, leaveHeadBytes, LEAVE_BRICK_BYTES, LEAVE_BINDING,
 } from '../shaders/generate.js';
 import { sceneNativeDiffFrag } from '../shaders/v2/leave.js';
-import { nativeFillWGSL, nativeFillSize, NATIVE_WRITE_LAYOUT, NativeFillParams } from '../shaders/v2/worldWrite.js';
+import { nativeFillWGSL, nativeFillSize, NATIVE_WRITE_LAYOUT, NativeFillParams } from '../shaders/worldWrite.js';
 import { stampEdit, MAX_FOOT } from '../shaders/stamp.js';
 import { BRICK, LAYOUT } from '../shaders/common.js';
 import { fold } from '../gpu/kernels.js';
@@ -247,7 +247,7 @@ export class Stamper {
 }
 
 // ---------------------------------------------------------------- V2's world writers
-// The group V2's world writers bind (shaders/v2/worldWrite.js): the owner's cores, banks and activity.
+// The group V2's world writers bind (shaders/worldWrite.js): the owner's cores, banks and activity.
 const writeGroups = new WeakMap();   // owner → { cells, group }
 export function nativeWriteGroup(sim) {
   const owner = sim.compact, gpu = sim.gpu;
@@ -332,7 +332,7 @@ export class WorldGenerator {
     this.sim.edit(this.kernels.fill, { lo: min, hi: hi.map((v) => v - 1) }, { origin }, { bind: this.res.resources, residency });
   }
 
-  /** V2's fill kernel (shaders/v2/worldWrite.js; made on the first call); resolves when it is built. */
+  /** V2's fill kernel (shaders/worldWrite.js; made on the first call); resolves when it is built. */
   prepareNativeFill() {
     const { sim, scene } = this, gpu = sim.gpu;
     this.kernels.nativeFill ??= gpu.kernel({ name: `${scene.key} native fill`, code: nativeFillWGSL(sim.g, this.code), params: NativeFillParams,
@@ -342,7 +342,7 @@ export class WorldGenerator {
   /** Whether a fill of a window V2 runs can record now (the window's moves wait for it: world/window.js). */
   get nativeReady() { return !this.sim.compact?.isReady || this.kernels.nativeFill?.state === 'ready'; }
 
-  // While V2 runs the grid the scene's cells go straight into V2's cores (shaders/v2/worldWrite.js): the
+  // While V2 runs the grid the scene's cells go straight into V2's cores (shaders/worldWrite.js): the
   // import of the V1 edit's cells, without the edit (the edit, an export of V1's cache before it, and
   // the import after it). The same cores either way: V2's terrain is importA of the scene's cell.
   _nativeFill(origin, lo, hi, { residency }) {

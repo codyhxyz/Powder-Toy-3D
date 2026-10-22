@@ -458,7 +458,7 @@ export class Simulation {
   pingPong(on) {
     const n = on ? PING_PONG : ONE_COPY;
     // (a window under V2 holds one too: its move is V2's, and V1's copy then only a cache: shift below)
-    if (n === this.copies || (!on && this.g.windowed !== false && !this.compact) || this.gpu.failure) return;
+    if (n === this.copies || (!on && this.g.windowed !== false && !(this.g.windowed === true && this.compact)) || this.gpu.failure) return;
     const f = this.gpu.frame, state = this.state, next = this._stateBuffers(n), slots = this.g.slots;
     for (const k of Object.keys(STATE_BYTES)) {
       f.copy(state[k], this.cur * slots * STATE_BYTES[k], next[k], 0, slots * STATE_BYTES[k]);

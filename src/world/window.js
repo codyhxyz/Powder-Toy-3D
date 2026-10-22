@@ -241,7 +241,7 @@ export class WorldWindow {
     if (!this.loaded || this.persistenceError || this.capturing) return null;
     const sim = this.sim, waits = [this.pending, sim.deco?.pending];
     if (sim.compact && !nativeSourceReady(sim)) waits.push(nativePackOf(sim)?.kernel.ready);
-    if (!this.gen.nativeReady) waits.push(this.gen.prepareNativeFill());
+    if (this.gen.nativeReady === false) waits.push(this.gen.prepareNativeFill());
     if (sim.compactOwner && (sim.nativeTransition || !sim.nativeCapabilities.world)) {
       const owner = sim.compactOwner;
       waits.push(sim.nativeTransition ?? Promise.all([sim.prepareNative(), owner.dynamics?.windowBuilt,
@@ -261,7 +261,7 @@ export class WorldWindow {
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) return null;
     // (V2: the leaving slab's copy reads its cells natively: renderSource.js nativePackOf)
     if (this.sim.compact && !nativeSourceReady(this.sim)) return null;
-    if (!this.gen.nativeReady) { this.gen.prepareNativeFill(); return null; }   // (and its fill writes V2's cells)
+    if (this.gen.nativeReady === false) { this.gen.prepareNativeFill(); return null; }   // (and its fill writes V2's cells)
     // V2's leaving slab keeps what differs from the generator (readBack); a
     // grid V2 came to after load builds it now, keeping everything meanwhile
     if (this.sim.compactOwner) this.gen.prepareNativeDiff?.();
@@ -352,7 +352,7 @@ export class WorldWindow {
     if (this.historyReaders) throw new Error('World history capture is pending');
     if (this.sim.compactOwner && this.pending) throw new Error('World shift while leaving slab is pending');
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) throw new Error('Native world shift is not ready');
-    if (this.sim.compact && (!nativeSourceReady(this.sim) || !this.gen.nativeReady)) throw new Error('Native world source is not ready');
+    if (this.sim.compact && (!nativeSourceReady(this.sim) || this.gen.nativeReady === false)) throw new Error('Native world source is not ready');
     return this._shiftCommitted(dx, dz);
   }
   // A V2 move's leaving slab of dynamics (its air and requests: NativeDynamics.recordWindowShift) is
