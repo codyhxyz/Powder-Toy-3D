@@ -19,6 +19,8 @@ function nativeLayer(app) {
     app.nativeParticles?.dispose();
     const layer = app.nativeParticles = new NativeParticles(app.sim.gpu, source);
     layer.ready.then(() => app.pacer?.wake(), () => {});
+    // (a layer made while a World runs builds World's pipe at once: prewarmWorldFrame waited for the last one's)
+    if (app.worldMode) layer.worldReady()?.then(() => app.pacer?.wake(), () => {});
   }
   return app.nativeParticles;
 }
