@@ -369,15 +369,25 @@ const D_STEPS: u32 = ${STEPS_PER_TICK}u;
 // it is in (react.js forces), to V_MAX on each component. In V1's cells/step; m/s and m/s² in and out. keep: its
 // drag a step along the pull's axis (along: 3 for none), across: across it (a liquid's, off free fall: a splash
 // sliding over its pool slows as V1's does; along the pull V1's landing hit is its free-fall speed, max(u1, u2)).
+// V1's block solves its vertical phase first and moves matter across only if it didn't move this step (move.js
+// horizontal: !m), so matter crosses with the chance the fall left it: pace((1 - pace(|u_down|))·|u|) a step (a
+// liquid jet is exempt, as there). The vertical is the pull's dominant axis (the block's gravity frame), y without one.
+// (Paced matter has one keep on every axis, so the fall it tracks, ud, takes keep.)
 struct DPacketFlight { moved: vec3f, velocity: vec3f }
 fn dPacketFlight(v0: vec3f, wind: vec3f, pull: vec3f, keep: f32, across: f32, along: u32, paced: bool) -> DPacketFlight {
   var out = DPacketFlight(vec3f(0), vec3f(0));
+  let q = abs(pull); var down = 1u;
+  if (q.x > q.y && q.x >= q.z) { down = 0u; } else if (q.z > q.y && q.z > q.x) { down = 2u; }
+  let wd = wind[down] * D_V1_STEP; let gd = pull[down] * D_PULL_STEP;
   for (var a = 0u; a < 3u; a++) {
-    let w = wind[a] * D_V1_STEP; let g = pull[a] * D_PULL_STEP; var u = v0[a] * D_V1_STEP; var d = 0.0;
+    let w = wind[a] * D_V1_STEP; let g = pull[a] * D_PULL_STEP; var u = v0[a] * D_V1_STEP; var d = 0.0; var ud = v0[down] * D_V1_STEP;
     let ka = select(across, keep, a == along);
     for (var k = 0u; k < D_STEPS; k++) {
-      let pace = min(abs(u), D_V_MAX); d += sign(u) * select(pace, pace / (2.0 - pace), paced);
+      var pace = min(abs(u), D_V_MAX);
+      if (paced && a != down) { let fall = min(abs(ud), D_V_MAX); pace *= 1.0 - fall / (2.0 - fall); }
+      d += sign(u) * select(pace, pace / (2.0 - pace), paced);
       u = clamp(w + (u - w + g) * ka, -D_V_MAX, D_V_MAX);
+      ud = clamp(wd + (ud - wd + gd) * keep, -D_V_MAX, D_V_MAX);
     }
     out.moved[a] = d; out.velocity[a] = u / D_V1_STEP;
   }

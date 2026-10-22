@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { createImportedMapScene } from '../src/world/scenes/importedMap.js';
 import { WORLD_SCENES } from '../src/world/scenes/index.js';
 import { rawSourceGrid } from '../src/world/renderSourceProducer.js';
-import { rawGenerateWGSL, rawStampWGSL, rawApplyWGSL, nativeAirWGSL } from '../src/shaders/renderSource.js';
+import { rawGenerateWGSL, rawStampWGSL, rawApplyWGSL, nativePackWGSL } from '../src/shaders/renderSource.js';
 import { sceneDiffFrag } from '../src/shaders/generate.js';
 import { nagaSpawn } from './naga.mjs';
 const imported = createImportedMapScene(JSON.parse(readFileSync(new URL('../public/local-maps/androgenAssault.json', import.meta.url), 'utf8')));
@@ -14,7 +14,7 @@ let count = 0;
 for (const height of [128, 384]) {
   const raw = rawSourceGrid(height), sim = { nx: 128, ny: height, nz: 128 };
   const modules = [
-    ['stamp', rawStampWGSL(raw)], ['apply', rawApplyWGSL(sim, raw)], ['v2-air', nativeAirWGSL(sim)],
+    ['stamp', rawStampWGSL(raw)], ['apply', rawApplyWGSL(sim, raw)], ['v2-pack', nativePackWGSL(sim)],
     ...scenes.flatMap(scene => [[`${scene.key}-generate`, rawGenerateWGSL(raw, scene)], [`${scene.key}-persist`, sceneDiffFrag(sim, scene.glsl(sim))]]),
   ];
   for (const [name, code] of modules) {
