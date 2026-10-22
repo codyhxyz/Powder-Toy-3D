@@ -124,7 +124,8 @@ await test('all now/manual/idle compute+render builds share two slots; pending a
   const queuedAlias = pipe(gpu, 4, { name: 'queued-alias' });
   await drain();
   assert.equal(f.calls.length, SLOTS);
-  assert.equal(gpu.stats.pipelinesPending, 6);
+  // (the idle build waits behind the four foreground ones: it starts once none is queued)
+  assert.equal(gpu.stats.pipelinesPending, 5);
   assert.equal(f.counts.modules, 1);
   assert.equal(f.counts.layouts, 1);
   const firstPromise = gpu.pipelines.pipelines.values().next().value;
@@ -289,35 +290,36 @@ await test('module scope validation failure stops all builds and preserves compi
   stopped(f);
 });
 
-await test('first failure cancels queued and already scheduled idle callbacks plus manual pipes', async (t) => {
+await test('first failure cancels queued idle builds plus manual pipes', async (t) => {
   const f = await fixture(t);
   const pipes = Array.from({ length: 5 }, (_, i) => pipe(f.gpu, i, { build: 'idle' }));
   pipes.push(pipe(f.gpu, 6, { build: 'manual' }));
-  assert.equal(f.idle.size, 2);
-  const staleCallbacks = [...f.idle.values()];
+  await drain();
+  assert.equal(f.calls.length, SLOTS, 'idle builds start at once in free slots, no idle callback');
+  assert.equal(f.idle.size, 0);
   const failure = f.gpu.fail(new Error('startup aborted'));
   await Promise.all(pipes.map((p) => sameFailure(p.ready, failure)));
-  assert.equal(f.canceled.length, 2);
-  assert.equal(f.idle.size, 0);
-  for (const fn of staleCallbacks) fn(); // cancellation racing a dispatched callback
   for (const p of pipes) await sameFailure(p.build(), failure);
-  await drain();
-  assert.equal(f.counts.modules, 0);
-  assert.equal(f.calls.length, 0);
+  f.runIdle(); await drain();
+  assert.equal(f.calls.length, SLOTS, 'the queued idle builds never start');
   assert.equal(f.reports.length, 1);
   await f.gpu.settled();
   stopped(f);
 });
 
-await test('setTimeout idle fallback is canceled on failure too', async (t) => {
+await test('a queued idle build behind full slots never starts after a failure', async (t) => {
   const f = await fixture(t);
   delete globalThis.requestIdleCallback;
+  const busy = Array.from({ length: SLOTS }, (_, i) => pipe(f.gpu, 50 + i));
   const p = pipe(f.gpu, 0, { build: 'idle' });
-  const failure = f.gpu.fail(new Error('abort before idle timer'));
+  await drain();
+  assert.equal(f.calls.length, SLOTS);
+  const failure = f.gpu.fail(new Error('abort before the idle build'));
   t.mock.timers.tick(0);
   await sameFailure(p.ready, failure);
+  await Promise.all(busy.map((b) => sameFailure(b.ready, failure)));
   await drain();
-  assert.equal(f.counts.modules, 0);
+  assert.equal(f.calls.length, SLOTS);
   stopped(f);
 });
 
@@ -575,18 +577,18 @@ for (const kind of ['render', 'compute']) {
   });
 }
 
-await test('optional idle failure releases idle scheduling and manual build remains usable', async (t) => {
+await test('optional idle failure frees its slot for the next idle build, and a manual build remains usable', async (t) => {
   const f = await fixture(t);
   const pipes = [0, 1, 2].map((i) => pipe(f.gpu, i, { optional: true, build: 'idle' }));
   const manual = pipe(f.gpu, 3, { build: 'manual' });
-  f.runIdle();
   await drain();
+  assert.equal(f.calls.length, SLOTS);
   f.calls[0].reject(new Error('optional idle failed'));
   f.calls[1].resolve({});
   await drain();
   await assert.rejects(pipes[0].ready, OptionalShaderFailure);
-  assert.equal(f.idle.size, 1, 'next idle build scheduled after local rejection');
-  f.runIdle();
+  assert.equal(f.calls.length, 3, 'the next idle build started in the freed slot');
+  assert.equal(f.idle.size, 0, 'with no idle callback');
   manual.build();
   await drain();
   for (const call of f.calls.slice(2)) call.resolve({});
@@ -714,29 +716,26 @@ await test('queued builds start by rank: first, now, then idle ones; a demand mo
   const blockers = Array.from({ length: SLOTS }, (_, i) => pipe(f.gpu, 400 + i, { name: `busy-${i}` }));
   await drain();
   assert.deepEqual(started(), blockers.map((p) => p.name), 'the slots are full');
-  // idle builds: SLOTS whose callbacks fire, then two waiting for theirs, the long pole (first) ahead of the other
+  // idle builds behind the full slots: the long pole (first) leads them, the rest in arrival order
   const idle = [...Array.from({ length: SLOTS }, (_, i) => pipe(f.gpu, 410 + i, { name: `idle-${i}`, build: 'idle' })),
     pipe(f.gpu, 418, { name: 'idle-late', build: 'idle' }), pipe(f.gpu, 419, { name: 'idle-react', build: 'idle', first: true })];
-  assert.deepEqual(f.gpu.pipelines.idleQueue.map((p) => p.name), ['idle-react', 'idle-late'], 'a first idle build leads the idle queue');
-  f.runIdle(); await drain();
-  const admitted = idle.slice(0, SLOTS).map((p) => p.name);
-  assert.deepEqual(f.gpu.pipelines.queue.map((j) => j.name), admitted, 'idle callbacks keep within the bound');
-  // then foreground builds, a long pole last of all: they queue ahead of the idle builds that came first
+  const waiting = ['idle-react', ...idle.slice(0, SLOTS).map((p) => p.name), 'idle-late'];
+  assert.deepEqual(f.gpu.pipelines.idleQueue.map((p) => p.name), waiting, 'a first idle build leads the idle queue');
+  assert.equal(f.gpu.pipelines.queue.length, 0, 'no idle build queues a native build while every slot is busy');
+  // then foreground builds, a long pole last of all: they start ahead of every idle build
   const now = [pipe(f.gpu, 420, { name: 'now-a' }), pipe(f.gpu, 421, { name: 'now-b' })];
   const pole = pipe(f.gpu, 422, { name: 'pole', first: true });
-  assert.deepEqual(f.gpu.pipelines.queue.map((j) => [j.name, j.rank]),
-    [['pole', BUILD_RANK.FIRST], ['now-a', BUILD_RANK.NOW], ['now-b', BUILD_RANK.NOW], ...admitted.map((n) => [n, BUILD_RANK.BACKGROUND])]);
-  // a demand for a queued idle build (a view drawn now that was prefetched) moves it up, once
+  assert.deepEqual(f.gpu.pipelines.queue.map((j) => [j.name, j.rank]), [['pole', BUILD_RANK.FIRST], ['now-a', BUILD_RANK.NOW], ['now-b', BUILD_RANK.NOW]]);
+  // a demand for an idle build (a view drawn now that was prefetched) queues it now, at its rank
   idle[1].build();
-  assert.deepEqual(f.gpu.pipelines.queue.map((j) => j.name), ['pole', 'now-a', 'now-b', admitted[1], admitted[0]]);
+  assert.deepEqual(f.gpu.pipelines.queue.map((j) => j.name), ['pole', 'now-a', 'now-b', 'idle-1']);
   idle[1].build(BUILD_RANK.BACKGROUND);
-  assert.equal(f.gpu.pipelines.queue.find((j) => j.name === admitted[1]).rank, BUILD_RANK.NOW, 'never moved back down');
-  const finishOne = async () => { f.calls.find((c) => !c.done && (c.done = true)).resolve({}); await drain(); f.runIdle(); await drain(); };
-  while (f.calls.length < SLOTS + 5) await finishOne();
-  assert.deepEqual(started().slice(SLOTS, SLOTS + 5), ['pole', 'now-a', 'now-b', admitted[1], admitted[0]], 'they start in that order');
-  while (f.calls.length < SLOTS + 7) await finishOne();
-  assert.deepEqual(started().slice(SLOTS + 5), ['idle-react', 'idle-late'], 'the long idle pole before the later idle build');
-  while (f.calls.some((c) => !c.done)) await finishOne();
+  assert.equal(f.gpu.pipelines.queue.find((j) => j.name === 'idle-1').rank, BUILD_RANK.NOW, 'never moved back down');
+  const finishOne = async () => { f.calls.find((c) => !c.done && (c.done = true)).resolve({}); await drain(); };
+  while (f.calls.length < SLOTS + 4) await finishOne();
+  assert.deepEqual(started().slice(SLOTS, SLOTS + 4), ['pole', 'now-a', 'now-b', 'idle-1'], 'the waited-for builds first');
+  while (f.calls.some((c) => !c.done) || f.gpu.pipelines.idleQueue.length) await finishOne();
+  assert.deepEqual(started().slice(SLOTS + 4), waiting.filter((n) => n !== 'idle-1'), 'then the idle ones, the long pole first');
   await Promise.all([...blockers, ...idle, ...now, pole].map((p) => p.ready));
   assert.equal(f.gpu.pipelines.queued.size, 0);
 });
@@ -774,4 +773,29 @@ await test('ranked queue: random demands, promotions, idle callbacks and complet
   assert.deepEqual(states.filter((s) => s !== 'ready'), [], 'every ready settled');
   assert.equal(f.gpu.pipelines.queue.length, 0); assert.equal(f.gpu.pipelines.queued.size, 0);
   assert.equal(f.gpu.pipelines.pending.size, 0); assert.equal(f.gpu.stats.pipelinesPending, 0);
+});
+
+// The deferred dynamics (src/v2/dynamics.js: 65+ idle builds) are ready in their compile time, not
+// the page's idle time: a 60 fps frame loop leaves little, and one idle callback per few builds held
+// them for up to ~18 s after the first frame (scratchpad model, 2026-10-22). Here the page never idles
+// and no timer runs: every idle build must still start as slots free up.
+await test('idle builds finish in their compile time with no idle time at all (a busy frame loop)', async (t) => {
+  const f = await fixture(t, { concurrency: PIPELINE_CONCURRENCY_MAX });
+  globalThis.requestIdleCallback = () => { throw new Error('an idle build waited for idle time'); };
+  const now = Array.from({ length: 6 }, (_, i) => pipe(f.gpu, 500 + i, { name: `core-${i}` }));
+  const idle = Array.from({ length: 65 }, (_, i) => pipe(f.gpu, 600 + i, { name: `dyn-${i}`, build: 'idle', first: i === 40 }));
+  await drain();
+  assert.deepEqual(f.calls.map((c) => c.descriptor.label), now.slice(0, PIPELINE_CONCURRENCY_MAX).map((p) => p.name), 'the first frame\'s builds hold the slots');
+  // each compile completes in turn, no timer advanced, no idle callback
+  let rounds = 0;
+  while (f.calls.some((c) => !c.done)) {
+    for (const c of f.calls) if (!c.done) { c.done = true; c.resolve({}); }
+    await drain(); rounds++;
+    assert.ok(f.counts.maxActive <= PIPELINE_CONCURRENCY_MAX);
+  }
+  await Promise.all([...now, ...idle].map((p) => p.ready));
+  assert.ok(rounds <= Math.ceil((now.length + idle.length) / PIPELINE_CONCURRENCY_MAX) + 1, `bounded by compiles: ${rounds} rounds`);
+  const order = f.calls.map((c) => c.descriptor.label);
+  assert.ok(order.indexOf('dyn-40') < order.indexOf('dyn-0'), 'the long idle pole first');
+  assert.ok(Math.max(...now.map((p) => order.indexOf(p.name))) < Math.min(...idle.map((p) => order.indexOf(p.name))), 'every first-frame build before any idle one');
 });
