@@ -2750,7 +2750,7 @@ function viewClock(held) {
 }
 
 // A native host never falls back to v1 while dependencies are building or unavailable.
-  // Remote replicas use legacy presentation without running either engine.
+  // Remote replicas run neither engine; a V2 replica presents its owner's native cells (v2Replica).
 // (declarations: the tool picker asks before this line has run)
 function v2Box() { return physicsMode === 'v2' && !mp.replica; }
 // A V2 guest's replica: its owner holds the host's frames (net/codec.js unpack) for the renderer, active
