@@ -45,6 +45,10 @@
 // A charge is set off in flight as V1's moving cells were (the charge argument):
 //   a hit      V1 react.js shock: a hit past its shock sets it off (particles.js dShockHit marks it);
 //              it lands with its detonation, here or at the deposit it lands in first
+//   pressure   V1 react.js setOff: an explosive under more than its blast.crushP of air pressure goes off,
+//              the pressure on it the highest of its cell's and its open faces' (blasts.js dPressureOn, as
+//              couplePlan reads it on a resident cell: particles.js react passes it in its host cell); it
+//              lands with its detonation where it is
 //   dust       V1 react.js dust clouds (physics.js DUST_*): suspended dust (faster than DUST_LIFT_V,
 //              contact.js DUST_MIN_FALL_SPEED a tick) with DUST_MEC_NB dust faces and DUST_RICH_AIR air
 //              faces goes off as one when lit (its own heat, matter at its ignition point beside it, or
@@ -68,6 +72,7 @@ import { unpackContact, packContact, ctNew, ctFlux, ctHeat, ctReaction, ctAcid, 
   ctResolvePhase, ctLick, ctHotFuel, ctSmothered, ctRow, ctConducts, ctHeatRoom, ctAmbient, ctPairValue,
   contactAmbientQ, CONTACT_DEFAULT_MODES, DUST_MIN_FALL_SPEED, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR, CONTACT_PUFF_UNIT } from './contact.js';
 import { PHYS } from '../physics.js';
+import { dynamicsRows } from './dynamics-reference.js';
 
 export const AIRBORNE = Object.freeze({
   // the flight record's kind for a react claim (particles.js kinds: 1 hit, 2-4 neutron, 5 photon)
@@ -130,9 +135,13 @@ const C_AIR = K.EMPTY, C_GAS = K.GAS;
 // V1 react.js lights a dust cloud beside a flame with chance DUST_FIRE a step: every step, so every tick.
 if (PHYS.DUST_FIRE !== 1) throw new Error('airborne.js: a flame beside a dust cloud lights it every tick only while DUST_FIRE is 1');
 /** What sets a flying packet off besides its own rules (particles.js react): none by default. */
-export const AIRBORNE_NO_CHARGE = Object.freeze({ setOff: false, speed: 0, dust: 0, fire: 0, hot: 0 });
+export const AIRBORNE_NO_CHARGE = Object.freeze({ setOff: false, speed: 0, dust: 0, fire: 0, hot: 0, pressure: 0 });
 // setOff: a hit set it off (particles.js dShockHit); speed: |v| in cells a tick; dust: its dust faces
-// (particles.js dDustFaces); fire, hot: its flame faces and hot faces (dustFacesOf)
+// (particles.js dDustFaces); fire, hot: its flame faces and hot faces (dustFacesOf); pressure: the highest
+// air pressure on it (Pa, f32: particles.js react reads it for a charge with a crushP, blasts.js dPressureOn)
+/** V1 react.js setOff by pressure: a charge with a crushP (elements.js blast.crushP; dynamics-reference.js
+ * crush, Pa) under more than it. In f32, as the react stage compares them (particles.js dCrush). */
+export const crushedBy = (id, pressure) => dynamicsRows[id].crush > 0 && Math.fround(pressure) > Math.fround(dynamicsRows[id].crush);
 
 /** [flame faces, hot faces] among the host's six faces (null beyond the box): V1 react.js dust clouds' nFire and hotTouch. */
 export function dustFacesOf(cores) {
@@ -248,10 +257,11 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
       else { out[f] = packContact(b, faces[f].core); asked |= b.request & AIRBORNE_FACE_REQUESTS; }
     });
     const hostId = cid(hm.core);
-    // still the charge it was: set off by a hit, or a dust cloud lit, with the air among its six
-    // contacts as its own step counted it (ctStepAtmosphere fullAir: its partners then, its outside)
+    // still the charge it was: set off by a hit or by the pressure on it, or a dust cloud lit, with the
+    // air among its six contacts as its own step counted it (ctStepAtmosphere fullAir: its partners then,
+    // its outside)
     const charge0 = packet.core[0] & 255;
-    if (v.id === charge0 && ctRow(v.id).blast !== 0 && charge.setOff) v.request = v.request | 1;
+    if (v.id === charge0 && ctRow(v.id).blast !== 0 && (charge.setOff || crushedBy(v.id, charge.pressure ?? 0))) v.request = v.request | 1;
     const air = outside[0] + ns.filter(b => b.valid !== 0 && (b.id === E.EMPTY || (b.id === E.FIRE && b.ctype !== E.OXYGEN))).length;
     if (v.id === E.DUST && charge0 === E.DUST && charge.speed >= DUST_MIN_FALL_SPEED && charge.dust >= CONTACT_DUST_MEC_NB &&
       air >= CONTACT_DUST_RICH_AIR && (v.tq >= ctRow(E.DUST).igniteQ || charge.hot > 0 || charge.fire > 0 || hostId === E.FIRE)) v.request = v.request | 1;

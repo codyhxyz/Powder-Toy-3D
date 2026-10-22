@@ -75,8 +75,9 @@ const D_REACT_SOLID_EDGE: u32 = ${EDGE.SOLID}u;
 // touch: what it is to each of its host's faces this tick (contact.js ctPacketTouch), for the react stage's marks
 struct DReact { particle: Material, host: Material, partners: array<Material, 3>, state: u32, source: vec2u, sink: vec2u, requests: u32, touch: array<i32, 6> }
 // What sets a flying packet off besides its own rules (src/v2/airborne.js AIRBORNE_NO_CHARGE): a hit set it
-// off (particles.js dShockHit), and a dust packet's speed (cells a tick), dust, flame and hot faces.
-struct DReactCharge { setOff: bool, speed: f32, dust: i32, fire: i32, hot: i32 }
+// off (particles.js dShockHit), a dust packet's speed (cells a tick), dust, flame and hot faces, and the
+// highest air pressure on it (Pa: particles.js react, for an explosive's crushP, dCrush).
+struct DReactCharge { setOff: bool, speed: f32, dust: i32, fire: i32, hot: i32, pressure: f32 }
 // [flame faces, hot faces] among the host cell's six: V1 react.js dust clouds' nFire and hotTouch (matter,
 // not gas, at dust's ignition point or hotter). src/v2/airborne.js dustFacesOf.
 fn dReactDustFaces(p: vec3i) -> vec2i {
@@ -230,10 +231,12 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
     else { partners[a] = m; asked |= u32(ps[a].request) & D_REACT_FACE_REQUESTS; }
   }
   let hostId = i32(cid(hm.core));
-  // still the charge it was: set off by a hit, or a dust cloud lit (V1 react.js dust clouds), with the
-  // air among its six contacts as its own step counted it (fullAir)
+  // still the charge it was: set off by a hit or by more than its crushP of pressure on it (V1 react.js
+  // setOff: src/v2/airborne.js crushedBy), or a dust cloud lit (V1 react.js dust clouds), with the air
+  // among its six contacts as its own step counted it (fullAir)
   let charge0 = i32(packet.core.x & 255u);
-  if (v.id == charge0 && ctRow(v.id).blast != 0 && charge.setOff) { v.request = v.request | 1; }
+  let crushed = dCrush(u32(v.id)) > 0.0 && charge.pressure > dCrush(u32(v.id));
+  if (v.id == charge0 && ctRow(v.id).blast != 0 && (charge.setOff || crushed)) { v.request = v.request | 1; }
   if (v.id == CT_DUST && charge0 == CT_DUST && charge.speed >= D_REACT_DUST_SPEED && charge.dust >= D_REACT_DUST_MEC_NB &&
     fullAir >= D_REACT_DUST_RICH_AIR && (v.tq >= ctRow(CT_DUST).igniteQ || charge.hot > 0 || charge.fire > 0 || hostId == CT_FIRE)) {
     v.request = v.request | 1;

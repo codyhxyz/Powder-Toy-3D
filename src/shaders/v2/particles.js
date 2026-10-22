@@ -4,7 +4,7 @@ import { specialContactWGSL } from './contact.js';
 import { impactFoamWGSL } from '../../v2/foam.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { STAGE } from '../../gpu/kernels.js';
-import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS } from '../../v2/dynamics-reference.js';
+import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
 import { PHYS } from '../../physics.js';
@@ -41,6 +41,50 @@ export const setOffBase = g => shockPostBase(g) + 1 + PARTICLE_CAP;
 const f = n => Number.isInteger(n) && Math.abs(n)<1e21 ? `${n}.0` : String(n);
 const table = (name, type, field, fallback) => `fn ${name}(id: u32) -> ${type} { switch id {\n${dynamicsRows.filter(r => r[field] !== fallback).map(r =>
   `case ${r.id}u: { return ${type === 'f32' ? f(r[field]) : `${r[field]}${type === 'u32' ? 'u' : 'i'}`}; }`).join('\n')}\ndefault: { return ${type === 'f32' ? f(fallback) : `${fallback}${type === 'u32' ? 'u' : 'i'}`}; } } }`;
+// V1 react.js setOff counts blast.air (BLAST_LIT) with the crush: an explosive that needs air goes off
+// only touching it. No explosive with a crushP needs air (elements.js: propane, the one that does, has
+// none), so the crush reads here and in src/v2/airborne.js are V1's whole rule.
+if (ELEMENTS.some(e => e.blast?.crushP && e.blast.air)) throw new Error('particles.js: an explosive with a crushP that needs air needs V1\'s blastAir in its crush');
+const crushTable = dynamicsRows.filter(r => r.crush > 0).map(r => `case ${r.id}u: { return ${f(r.crush)}; }`).join('\n');
+// The air pressure on a cell as V1 reads it, for an explosive's crushP (V1 react.js setOff): on a
+// resident cell (blasts.js couplePlan, damageCharges) and on a flying packet in its host cell (the
+// react stage: src/v2/airborne.js charge.pressure). It reads its family's air binding.
+export const airPressureWGSL = /* wgsl */ `
+fn dCrush(id: u32) -> f32 { switch id { ${crushTable} default: { return 0.0; } } }
+// V1 keeps pressure per cell (react.js b.w); v2 keeps it per 4³ brick. A cell's
+// pressure is the brick field read trilinearly between brick centres, as V1's
+// own pressure sampler reads its field (render.js pressureAt), with V1's local
+// singularity rule on top: its cell holds its vacuum, an open cell touching one
+// SING_RING of it (air.js source holds the brick at those cells' mean).
+fn dBrickPressure(b0: vec3i) -> f32 {
+  let p=clamp(mEdge(b0*4),vec3i(0),vec3i(NX-1,NY-1,NZ-1)); return air[brickOfCell(p)].vp.w;
+}
+fn dPressureCell(p: vec3i) -> f32 {
+  let x=(vec3f(p)+0.5)*0.25-0.5; let i0=vec3i(floor(x)); let w1=x-vec3f(i0); var s=0.0;
+  for (var k=0u;k<8u;k++) {
+    let o=vec3i(i32(k&1u),i32((k>>1u)&1u),i32((k>>2u)&1u)); let w=mix(1.0-w1,w1,vec3f(o));
+    s+=dBrickPressure(i0+o)*w.x*w.y*w.z;
+  }
+  let core=loadMaterial(slotOf(p)).core;
+  if (cid(core)==${E.SINGULARITY}u) { return contactVacuum(core)*${f(LEGACY_PRESSURE_PA)}; }
+  for (var a=0u;a<3u;a++) { for (var side=-1;side<=1;side+=2) {
+    let q=mEdge(p+dAxis(a)*side);
+    if (inGrid(q)) { s=min(s,${f(PHYS.SING_RING)}*contactVacuum(loadMaterial(slotOf(q)).core)*${f(LEGACY_PRESSURE_PA)}); }
+  } }
+  return s;
+}
+// What V1 reads as a neighbour's pressure (react.js): 0 past the grid and in a solid (it holds no air).
+fn dOpenPressure(p0: vec3i) -> f32 {
+  let p=mEdge(p0); if (!inGrid(p) || !mAirPressure() || cls(cid(loadMaterial(slotOf(p)).core))==1u) { return 0.0; }
+  return dPressureCell(p);
+}
+// V1 react.js pOn: the highest air pressure on a cell, its own (a solid holds none) or an open neighbour's.
+fn dPressureOn(p: vec3i, k: u32) -> f32 {
+  var on=-1e30; if (k!=1u) { on=dPressureCell(p); }
+  for (var a=0u;a<3u;a++) { on=max(on,max(dOpenPressure(p+dAxis(a)),dOpenPressure(p-dAxis(a)))); }
+  return on;
+}
+`;
 export function dynamicsCommon(g, nativeHead) {
   return /* wgsl */ `
 ${DynamicParams.wgsl}
@@ -634,7 +678,7 @@ export function particlesWGSL(g, nativeHead, stage) {
   `);
   if (stage === 'react') {
     const rh = head(g, (grid, o) => withContactTable(nativeHead(grid, o)));
-    return rh + contactRulesWGSL('i32(min(3u,arrayLength(&flight)))') + airborneReactWGSL + packetTouchWGSL(PARTICLE_CAP) + /* wgsl */ `
+    return rh + contactRulesWGSL('i32(min(3u,arrayLength(&flight)))') + airborneReactWGSL + packetTouchWGSL(PARTICLE_CAP) + airPressureWGSL + /* wgsl */ `
 // Is packet a after packet b in its cell's order (src/v2/airborne.js airborneOrder)?
 fn dReactAfter(a: u32, b: u32) -> bool {
   if (b == D_NONE) { return true; }
@@ -660,8 +704,18 @@ fn dReactOne(t: u32, s: u32, p: vec3i) -> bool {
   let inBlock = dInBlock(p); let trailing = dTrailing(particle.velocity);
   // what sets it off besides its own rules: a hit's mark (dShockHit), a dust cloud's speed, dust, flame
   // and hot faces (reactDust, dReactDustFaces)
-  var charge = DReactCharge(atomicLoad(&control[D_SET_OFF+t]) == particle.id, length(particle.velocity) * D_DT / D_CELL, i32(flight[t].effect.y), 0, 0);
+  var charge = DReactCharge(atomicLoad(&control[D_SET_OFF+t]) == particle.id, length(particle.velocity) * D_DT / D_CELL, i32(flight[t].effect.y), 0, 0, 0.0);
   if ((particle.c0 & 255u) == D_DUST) { let dust = dReactDustFaces(p); charge.fire = dust.x; charge.hot = dust.y; }
+  // and the air pressure on a charge with a crushP (dReact compares them): V1 react.js pOn, the highest of
+  // its cell's (it flies in its host's air; a solid holds none) and its host's open faces' (dOpenPressure),
+  // as couplePlan reads a resident cell's (dPressureOn). The faces in a loop bound at run time (dAxes), so
+  // the cell read is inlined once there.
+  let chargeId = particle.c0 & 255u;
+  if (dCrush(chargeId) > 0.0 && mAirPressure()) {
+    var on = -1e30; if (cls(chargeId) != C_SOLID) { on = dPressureCell(p); }
+    for (var f = 0u; f < 2u * dAxes(); f++) { on = max(on, dOpenPressure(p + face6(i32(f)))); }
+    charge.pressure = on;
+  }
   let r = dReact(dMaterial(particle), before, faces, valid, inBlock, trailing, onFloor, bitcast<i32>(flight[t].destination.w), charge);
   // the cells beside it see it this tick, as V1's react saw a moving neighbour: its touch on each, for
   // its own step in the block pass and, a fuse's, in the electric pass (contact.js ctPacketTouch)

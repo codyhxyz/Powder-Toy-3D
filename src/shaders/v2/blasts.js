@@ -1,5 +1,5 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
-import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase, shockPostBase, setOffBase } from './particles.js';
+import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase, shockPostBase, setOffBase, airPressureWGSL } from './particles.js';
 import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { E } from '../../elements.js';
 import { RAYS } from '../../rays.js';
@@ -218,7 +218,6 @@ export const RESET_SELECTION = 'atomicStore(&control[2],0u); atomicStore(&contro
 const MIN_BREAK_STRENGTH = Math.min(...dynamicsRows.filter(r => r.breakInto >= 0).map(r => r.strength));
 // The most sensitive explosive's crush pressure (V1 blast.crushP, Pa): at or under it none goes off.
 const MIN_CRUSH = Math.min(...dynamicsRows.filter(r => r.crush > 0).map(r => r.crush));
-const crushTable = dynamicsRows.filter(r => r.crush > 0).map(r => `case ${r.id}u: { return ${f(r.crush)}; }`).join('\n');
 // V1 react.js crush (elements.js crush; dynamics-reference.js crushPhase): the rows that have one.
 // V1 ships none today, but the rule is the table's: a row that adds one is crushed here as in V1.
 const crushPhaseRows = dynamicsRows.filter(r => r.crushPhase);
@@ -234,12 +233,6 @@ fn dCrushInto(id: u32, r: f32) -> u32 { switch id {
 ${crushPhaseRows.map(r => `  case ${r.id}u: { ${r.crushPhase.outs.slice(0, -1).map(([o, at]) => `if (r<${f(at)}) { return ${o}u; } `).join('')}return ${r.crushPhase.outs.at(-1)[0]}u; }`).join('\n')}
   default: { return id; } } }
 fn dCrushOf(id: u32) -> u32 { switch id { ${crushPhaseRows.map(r => `case ${r.id}u: { return ${r.crushPhase.of}u; }`).join(' ')} default: { return id; } } }
-// V1 react.js pOn: the highest air pressure on a cell, its own (a solid holds none) or an open neighbour's.
-fn dPressureOn(p: vec3i, k: u32) -> f32 {
-  var on=-1e30; if (k!=1u) { on=dPressureCell(p); }
-  for (var a=0u;a<3u;a++) { on=max(on,max(dOpenPressure(p+dAxis(a)),dOpenPressure(p-dAxis(a)))); }
-  return on;
-}
 // The crushed cell: its product at its own temperature (V1 keeps T) with the product's spawn life,
 // a LAVA product's ctype its crush.of (react.js ctypeOf); a liquid into a liquid keeps its fill and
 // anything else is a whole cell (contact.js ctConvert). The energy it differs by is a declared source.
@@ -355,39 +348,12 @@ fn dChargeShare(source: u32, p: vec3i) -> vec3f {
   return vec3f(0);
 }
 fn dPressureAt(p0: vec3i) -> f32 { let p=mEdge(p0); if (!inGrid(p) || !mAirPressure()) { return 0.0; } return air[brickOfCell(p)].vp.w; }
-fn dCrush(id: u32) -> f32 { switch id { ${crushTable} default: { return 0.0; } } }
 fn dNoteEnergyChange(p: vec3i, before: vec2u, after: vec2u) {
   let gained=energySub(after,before);
   if ((gained.y&0x80000000u)==0u) { if (any(gained!=vec2u(0u))) { noteEnergySource(p,gained); } }
   else { noteEnergySink(p,energyNeg(gained)); }
 }
-// V1 keeps pressure per cell (react.js b.w); v2 keeps it per 4³ brick. A cell's
-// pressure is the brick field read trilinearly between brick centres, as V1's
-// own pressure sampler reads its field (render.js pressureAt), with V1's local
-// singularity rule on top: its cell holds its vacuum, an open cell touching one
-// SING_RING of it (air.js source holds the brick at those cells' mean).
-fn dBrickPressure(b0: vec3i) -> f32 {
-  let p=clamp(mEdge(b0*4),vec3i(0),vec3i(NX-1,NY-1,NZ-1)); return air[brickOfCell(p)].vp.w;
-}
-fn dPressureCell(p: vec3i) -> f32 {
-  let x=(vec3f(p)+0.5)*0.25-0.5; let i0=vec3i(floor(x)); let w1=x-vec3f(i0); var s=0.0;
-  for (var k=0u;k<8u;k++) {
-    let o=vec3i(i32(k&1u),i32((k>>1u)&1u),i32((k>>2u)&1u)); let w=mix(1.0-w1,w1,vec3f(o));
-    s+=dBrickPressure(i0+o)*w.x*w.y*w.z;
-  }
-  let core=loadMaterial(slotOf(p)).core;
-  if (cid(core)==${E.SINGULARITY}u) { return contactVacuum(core)*${f(LEGACY_PRESSURE_PA)}; }
-  for (var a=0u;a<3u;a++) { for (var side=-1;side<=1;side+=2) {
-    let q=mEdge(p+dAxis(a)*side);
-    if (inGrid(q)) { s=min(s,${f(PHYS.SING_RING)}*contactVacuum(loadMaterial(slotOf(q)).core)*${f(LEGACY_PRESSURE_PA)}); }
-  } }
-  return s;
-}
-// What V1 reads as a neighbour's pressure (react.js): 0 past the grid and in a solid (it holds no air).
-fn dOpenPressure(p0: vec3i) -> f32 {
-  let p=mEdge(p0); if (!inGrid(p) || !mAirPressure() || cls(cid(loadMaterial(slotOf(p)).core))==1u) { return 0.0; }
-  return dPressureCell(p);
-}
+${airPressureWGSL}
 ${crushPhaseWGSL}
 // A superset of the bricks where couplePlan can flag anything. The powder-fall
 // and jet-less lip rules read cells, so their modes keep every brick. Otherwise

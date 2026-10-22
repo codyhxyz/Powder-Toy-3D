@@ -19,6 +19,7 @@ import { blastsWGSL, BLAST_STAGES, externalBlastBase } from '../../src/shaders/v
 import { nativeDynamicsHead, v2Table } from '../../src/shaders/v2.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { assertNaga } from './wgsl-grouping.mjs';
+import { dynamicsRows } from '../../src/v2/dynamics-reference.js';
 
 const T = core => cTq(core) / 4 - 273.25;
 const key = core => ELEMENTS[cid(core)].key;
@@ -197,6 +198,37 @@ assert.equal(key(fly(packet(E.LAVA, 1500, FULL / 4), () => air(20), 4000).p.core
   // the smoke flies on in the lump's slot, under its id: it is no charge, and react clears the mark there
   assert.equal(airborneReference(smoke.particle, air(20), 3, openNear(), undefined, { ...AIRBORNE_NO_CHARGE, setOff: true }).requests & 1, 0);
   assert.match(particlesWGSL(gridLayout(32, 32, 32), nativeDynamicsHead, 'react'), /if \(r\.state == D_REACT_LANDED \|\| r\.state == D_REACT_DISPLACED\) \{ atomicStore\(&control\[D_SET_OFF\+t\],0u\); \}/);
+}
+// 9b'. Set off by the pressure on it (V1 react.js setOff: more than its blast.crushP of the highest air
+// pressure on it, its own and its open neighbours'): a flying explosive goes off as a resident one does
+// (blasts.js couplePlan), landing with its detonation where it is; at its crushP or under it flies on, and
+// matter with no crushP never does. A blast's ejecta can't carry its explosive out past its own pressure.
+{
+  for (const [name, host] of [['NITRO', air(20)], ['NITRO', makeMaterial(E.SMOKE, 20)], ['C4', air(20)], ['TNT', air(20)]]) {
+    const crush = dynamicsRows[E[name]].crush, charge = p => ({ ...AIRBORNE_NO_CHARGE, pressure: p });
+    assert.ok(crush > 0, `${name} has a crushP`);
+    const lump = packet(E[name], 20);
+    const over = airborneReference(lump, host, 3, openNear(), undefined, charge(crush * 1.01));
+    assert.equal(over.requests & 1, 1, `${name} under more than its crushP: its detonation`);
+    assert.equal(cid(over.host.core), E[name], `${name} lands in its host cell to go off there`);
+    assert.equal(over.state, cid(host.core) === E.EMPTY ? AIRBORNE.LANDED : AIRBORNE.DISPLACED, `${name} in ${key(host.core)}`);
+    for (const p of [crush, crush * 0.99, 0, -crush * 2]) {
+      const r = airborneReference(lump, host, 3, openNear(), undefined, charge(p));
+      assert.equal(r.requests & 1, 0, `${name} at ${p} Pa (its crushP ${crush}) is not set off`); assert.equal(r.state, AIRBORNE.FLYING);
+    }
+  }
+  // a partial fill of nitroglycerin is as sensitive as a full one (its crushP is the element's)
+  assert.equal(airborneReference(packet(E.NITRO, 20, FULL >> 3), air(20), 3, openNear(), undefined, { ...AIRBORNE_NO_CHARGE, pressure: dynamicsRows[E.NITRO].crush * 2 }).requests & 1, 1);
+  // matter with no crushP flies on through any pressure (water, and gunpowder: V1 sets it off by heat alone)
+  for (const id of [E.WATER, E.GUNPOWDER, E.SAND]) assert.equal(airborneReference(packet(id, 20), air(20), 3, openNear(), undefined, { ...AIRBORNE_NO_CHARGE, pressure: 1e9 }).requests & 1, 0, ELEMENTS[id].key);
+  // the react stage reads that pressure for a charge with a crushP, as couplePlan reads a resident cell's,
+  // and dReact compares it with the same table
+  const react = particlesWGSL(gridLayout(32, 32, 32), nativeDynamicsHead, 'react');
+  assert.ok(react.includes('if (dCrush(chargeId) > 0.0 && mAirPressure()) {\n    var on = -1e30; if (cls(chargeId) != C_SOLID) { on = dPressureCell(p); }\n    for (var f = 0u; f < 2u * dAxes(); f++) { on = max(on, dOpenPressure(p + face6(i32(f)))); }\n    charge.pressure = on;'), 'react reads the pressure on a charge');
+  assert.ok(react.includes('let crushed = dCrush(u32(v.id)) > 0.0 && charge.pressure > dCrush(u32(v.id));'), 'dReact sets it off past its crushP');
+  assert.ok(react.includes('(charge.setOff || crushed)'), 'as a hit does');
+  assert.equal(react.match(/fn dPressureCell\(/g).length, 1, 'the blasts\' own pressure read');
+  assert.ok(blastsWGSL(gridLayout(32, 32, 32), nativeDynamicsHead, 'couplePlan').includes(react.slice(react.indexOf('fn dBrickPressure('), react.indexOf('fn dPressureOn('))), 'one pressure read for resident cells and flying ones');
 }
 // 9c. A dust cloud (V1 react.js dust clouds, physics.js DUST_*): wind-blown dust, faster than DUST_LIFT_V,
 // with dust beside it and air enough, goes off as one when lit, landing with its detonation; lean, rich,
