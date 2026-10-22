@@ -14,7 +14,7 @@ import { v2ColumnWGSL, SUMMARY } from '../../src/shaders/v2.js';
 import { gridDims } from '../../src/shaders/common.js';
 import { makeMaterial } from '../../src/v2/layout.js';
 import { K } from '../../src/elements.js';
-import { columnMoverHelpers } from './block-motion.mjs';
+import { grainLandingHelpers } from './block-motion.mjs';
 
 const word = value => new Uint32Array(new Float32Array([value]).buffer)[0];
 const vec = (...v) => { const a = Uint32Array.from(v); for (const [i, k] of ['x', 'y', 'z', 'w'].entries()) Object.defineProperty(a, k, { get: () => a[i] }); return a; };
@@ -45,10 +45,11 @@ function run(start, summaries, main = body) {
     storeMaterial: (s, b, a) => { cells[s] = vec(...a.core); }, C_LIQUID: 3,
   };
   // the column pass's fast movers (R1b), executed from the emitted WGSL on these cells (tools/v2/block-motion.mjs)
-  const movers = columnMoverHelpers(emitted, { P: env.P, NY, events, slotOf: env.slotOf, vec3i: env.vec3i, loadCell: env.loadCell,
+  const movers = grainLandingHelpers(emitted, { inGrid: p => p.y >= 0 && p.y < NY, noteEnergySource: () => {}, P: env.P, NY, events, slotOf: env.slotOf, vec3i: env.vec3i, loadCell: env.loadCell,
     loadMaterial: env.loadMaterial, storeMaterial: env.storeMaterial, noteEvents: () => {}, markBusy: env.markBusy, decoOf: () => 0, setDeco: () => {},
     zeroQ: c => c, cFill: c => c[1] & 0xffffff });
-  for (const name of ['colExcess', 'colSinkP', 'colRiseP', 'colCells', 'colShift']) env[name] = movers[name];
+  for (const name of ['colExcess', 'colSinkP', 'colRiseP', 'colCells', 'colShift', 'grainFallen', 'grainLands', 'grainHeat', 'energyAdd', 'energyOf', 'energySub', 'energyFits', 'withEnergy']) env[name] = movers[name];
+  env.cid = c => c[0] & 255; env.noteEnergySource = () => {};
   Function(...Object.keys(env), helpers + scalar(main))(...Object.values(env));
   return JSON.stringify([cells.map(c => Array.from(c)), Array.from(events), [...busy].sort((a, b) => a - b)]);
 }

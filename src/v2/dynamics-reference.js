@@ -247,6 +247,22 @@ export function v1ShockLaw(faller, charge) {
   if (sinking) return landingLaw(sinking.fall, sinking.phased);
   return v1FallLaw(j, k.kind === K.SOLID ? j.dens : j.dens * k.dens / (j.dens + k.dens), shock);
 }
+// A grain rolls its own odds on each landing (V1's random stream: v1GrainOdds), so a slab of n grains dropped h
+// cells goes off at 1 - (1 - odds)^n: V2's grid grains roll these (shaders/v2.js v2ColumnWGSL grainOdds), by fall.
+// GRAIN_ODDS_FULL: past these odds a fall always does (the table's last height).
+export const GRAIN_ODDS_FULL = 0.999;
+/** V1's odds a grain of `faller` landing on `charge` after h cells from rest sets it off (0 where V1 never does). */
+export function v1GrainLandingOdds(faller, charge, h) {
+  const j = ELEMENTS[faller], k = ELEMENTS[charge], shock = k.blast?.shock ?? 0;
+  if (!(shock > 0) || faller === charge || j.kind !== K.POWDER || !(j.grav > 0) || h < 1) return 0;
+  return v1GrainOdds(j, k.kind === K.SOLID ? j.dens : j.dens * k.dens / (j.dens + k.dens), shock, h);
+}
+/** The odds by fall, h = 1, 2, ..., to the first at GRAIN_ODDS_FULL (V1_GRAIN_FALL_MAX at most). */
+export function v1GrainOddsTable(faller, charge) {
+  const out = [];
+  for (let h = 1; h <= V1_GRAIN_FALL_MAX; h++) { const o = v1GrainLandingOdds(faller, charge, h); out.push(o); if (o >= GRAIN_ODDS_FULL) break; }
+  return out;
+}
 /** The fall (cells) a continuous fall onto the charge is held to (landingLaw cells), or null: v1ShockLaw's. */
 export const v1ShockFall = (faller, charge) => v1ShockLaw(faller, charge)?.cells ?? null;
 /** Every V1 shock trigger a grid landing can make: { faller, charge, fall, phased, cells } (v1ShockLaw), for the

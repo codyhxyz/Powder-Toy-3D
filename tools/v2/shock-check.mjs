@@ -149,7 +149,7 @@ test('the runs and pairs passes that land the runs still validate (Naga, groupin
 
 // ---- grid landings ON a charge (dynamics-reference.js SHOCK_LANDINGS): V1's own trigger, a fall height
 // per lander and charge, on V2's laws (shaders/v2.js v2ColumnWGSL for grains, columns.js colShockLand for runs)
-import { SHOCK_LANDINGS, v1ShockFall } from '../../src/v2/dynamics-reference.js';
+import { SHOCK_LANDINGS, v1ShockFall, v1GrainOddsTable, GRAIN_ODDS_FULL } from '../../src/v2/dynamics-reference.js';
 import { COLUMN_SHOCK_ON } from '../../src/shaders/v2/columns.js';
 import { PACE } from '../../src/shaders/move.js';
 import { powderLandingSpeed, stepFall, fallVelocity, fallTerminal } from '../../src/v2/fall.js';
@@ -204,28 +204,25 @@ test('V1 sets a charge off under a landing only from the very heavy powders and 
   assert.equal(v1ShockFall(E.NITRO, E.NITRO), null, 'never its own element');
 });
 
-test('a grain lands at the powder law\'s speed for its fall: past V1\'s fall it carries the trigger, short of it not', () => {
+test('a grain rolls V1\'s own odds by its fall on each landing (BL-7; behaviour: tools/v2/grain-landing-check.mjs)', () => {
   const code = columnCode([32, 32, 32]);
   for (const r of SHOCK_LANDINGS.filter(r => ELEMENTS[r.faller].kind === K.POWDER)) {
-    const on = Number(code.match(new RegExp(`if \\(faller == ${r.faller}u && charge == ${r.charge}u\\) \\{ return ([0-9.e-]+); \\}`))[1]);
-    assert.ok(on > 0 && Math.abs(on - powderLandingSpeed(r.faller, r.cells)) < 1e-3, name(r));
-    // the column pass's grain (fall.js stepFall, its CPU twin) dropped from rest into a gap of h cells: the
-    // speed it lands with (v2ColumnWGSL: the tick its fall reaches its floor)
-    const lands = h => { let c = new Uint32Array([r.faller, 0, 0, 0]), y = 0;
-      for (;;) { const s = stepFall(c, GRAVITY); c = s.core; y += s.cells; if (y >= h) return fallVelocity(c); } };
-    const terminal = fallTerminal(r.faller);
-    if (on < terminal * 0.999) assert.ok(lands(Math.floor(r.cells) - 1) < on, `${name(r)}: short of V1's fall`);
-    assert.ok(lands(Math.ceil(r.cells) + 2) >= on, `${name(r)}: past V1's fall`);
+    // the pair's odds table, by fall, is V1's (v1GrainOdds) to the first fall that always sets it off
+    assert.match(code, new RegExp(`if \\(faller == ${r.faller}u && charge == ${r.charge}u\\) \\{ at = \\d+; n = \\d+; \\}`), name(r));
+    const table = v1GrainOddsTable(r.faller, r.charge);
+    assert.ok(table.at(-1) >= GRAIN_ODDS_FULL && table.every((o, i) => i === 0 || o >= table[i - 1]), name(r));
+    // the V1 fall where the odds pass a half is the old single height's (v1ShockLaw)
+    assert.equal(table.findIndex(o => o >= 0.5) + 1, r.fall, name(r));
   }
   // sand, the commonest grain, has no trigger on either charge
   assert.doesNotMatch(code, new RegExp(`faller == ${E.SAND}u`));
 });
 
-test('the column pass emits the grains\' triggers in its landing branch and validates', async () => {
+test('the column pass lands its grains through grainLands and validates', async () => {
   const { assertNaga, wgslGroupingErrors } = await import('./wgsl-grouping.mjs');
   for (const dims of [[32, 32, 32], [48, 16, 32]]) {
     const code = columnCode(dims);
-    assert.match(code, /if \(to <= fl\) \{\n\s*\/\/[^\n]*\n\s*if \(fl > 0 && !runFalling\) \{ shockLand\(vec3i\(x, fl - 1, z\), cid\(c\), v\); \}/);
+    assert.match(code, /if \(to <= fl\) \{\n\s*\/\/[^\n]*\n\s*if \(!runFalling\) \{ landHeat = grainLands\(vec3i\(x, fl - 1, z\), c, v, grainFallen\(cid\(c\), fallVelocity\(c\)\) \+ y - fl\); \}/);
     assertNaga(code, `v2column ${dims}`);
     assert.deepEqual(wgslGroupingErrors(code), []);
   }

@@ -15,7 +15,7 @@ import { unpackContact, packContact, ctHeat, ctPhase } from '../../src/v2/contac
 import { validateMaterialCore } from '../../src/v2/materialValidation.js';
 import { stateLengths, encodeV2State, decodeV2State } from '../../src/v2/state.js';
 import { encodeNativeBrick, decodeNativeBrick } from '../../src/world/nativeStore.js';
-import { columnMoverHelpers } from './block-motion.mjs';
+import { grainLandingHelpers } from './block-motion.mjs';
 const close = (a,b,e=2e-6) => assert.ok(Math.abs(a-b)<=e,`${a} != ${b} (bound ${e})`);
 const word = value => new Uint32Array(new Float32Array([value]).buffer)[0];
 const vec = (...v) => { const a=Uint32Array.from(v); for(const [i,k] of ['x','y','z','w'].entries()) Object.defineProperty(a,k,{get:()=>a[i]}); return a; };
@@ -50,10 +50,11 @@ function column(core, gravity, gravMode=0, obstacle=null) {
     C_LIQUID:3,
   };
   // the column pass's fast movers (R1b), executed from the emitted WGSL on these cells (tools/v2/exchange-check.mjs)
-  const movers=columnMoverHelpers(emitted,{ P:env.P, NY:128, events:env.events, slotOf:p=>p.y, vec3i:env.vec3i, loadCell:env.loadCell,
+  const movers=grainLandingHelpers(emitted,{ inGrid:p=>p.y>=0&&p.y<128, noteEnergySource:()=>{}, P:env.P, NY:128, events:env.events, slotOf:p=>p.y, vec3i:env.vec3i, loadCell:env.loadCell,
     loadMaterial:env.loadMaterial, storeMaterial:env.storeMaterial, noteEvents:()=>{}, markBusy:()=>{}, decoOf:()=>0, setDeco:()=>{},
     zeroQ:c=>c, cFill:c=>c[1]&0xffffff });
-  for (const name of ['colExcess','colSinkP','colRiseP','colCells','colShift']) env[name]=movers[name];
+  for (const name of ['colExcess','colSinkP','colRiseP','colCells','colShift','grainFallen','grainLands','grainHeat','energyAdd','energyOf','energySub','energyFits','withEnergy']) env[name]=movers[name];
+  env.cid=c=>c[0]&255; env.noteEnergySource=()=>{};
   Function(...Object.keys(env),helpers+scalar(main))(...Object.values(env));
   const y=cells.findIndex(c=>(c[0]&255)===E.SAND);
   return {core:cells[y],cells:100-y};

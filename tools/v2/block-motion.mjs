@@ -52,3 +52,27 @@ export function columnMoverHelpers(code, env) {
   }
   return ctx;
 }
+
+// ---- the column pass's grain landing (v2.js grainLandWGSL: BL-7 odds, BL-8 breaking, TH-10 heat), executed from
+// the emitted WGSL. `env` as columnMoverHelpers', plus inGrid; energies are BigInt (src/v2/layout.js twins).
+import * as Layout from '../../src/v2/layout.js';
+import { setFall as fallSet } from '../../src/v2/fall.js';
+export function constArrays(code) {
+  const out = {};
+  for (const m of code.matchAll(/const (\w+) = array<\w+, \d+>\(([^)]*)\);/g)) out[m[1]] = m[2].split(',').map(v => Number(v.replace(/u$/, '')));
+  return out;
+}
+export function grainLandingHelpers(code, env) {
+  const ctx = columnMoverHelpers(code, env);
+  Object.assign(ctx, constArrays(code), {
+    energyOf: m => Layout.energyOf(m), energyAdd: (a, b) => a + b, energySub: (a, b) => a - b, energyMul: (a, b) => BigInt(a) * BigInt(b),
+    energyFits: (m, e) => Layout.energyFits(m, e), withEnergy: (m, e) => Layout.withEnergy(m, e),
+    setFall: (c, v, a) => fallSet(Uint32Array.from(c), v, a), vec4u: (...v) => Uint32Array.from(v), cls: id => v2Rows()[id].cls,
+    round: Math.round, densOfE: id => f(v2Rows()[id].dens),
+  });
+  for (const name of ['grainFallen', 'grainOdds', 'grainHeat', 'grainLands']) {
+    const { args, body } = wgslFunction(code, name);
+    ctx[name] = new Function('ctx', ...args, `with (ctx) { ${motionJS(body).replace(/\bround\(/g, 'Math.round(').replaceAll('rnd(&rs)', '(rs=pcg(rs), unit(rs))')} }`).bind(null, ctx);
+  }
+  return ctx;
+}

@@ -1,4 +1,4 @@
-import { fallTerminal, powderLandingSpeed, stepFall, setFall, fallFraction, FALL_GRAVITY, FALL_G_PER_MS2 } from '../v2/fall.js';
+import { fallTerminal, stepFall, setFall, fallFraction, fallVelocity, FALL_GRAVITY, FALL_G_PER_MS2 } from '../v2/fall.js';
 import { GRAVITY_MS2, STEPS_PER_TICK, V1_STEP_MS } from '../v2/gravity.js';
 import { PHYS } from '../physics.js';
 import { LEGACY_STEPS_PER_TICK } from '../v2/host.js';
@@ -19,7 +19,7 @@ import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
 import { contactWGSL as productionContactWGSL, requestMergeWGSL, outsideFacesWGSL, outsideSiteWGSL } from './v2/contact.js';
 import { v2RunsKernel, v2PairsKernel, COLUMN } from './v2/columns.js';
-import { PARTICLE_CAP, SHOCK_LANDINGS } from '../v2/dynamics-reference.js';
+import { PARTICLE_CAP, SHOCK_LANDINGS, v1GrainOddsTable } from '../v2/dynamics-reference.js';
 
 // Physics v2, the fast version (docs/v2.md 2, 4.1, 5.1-5.6; the rules are
 // tools/v2/lean-sim.mjs's, the CPU prototype that validated them, ported to
@@ -682,14 +682,96 @@ fn main() {
 // sub-cell displacement; gravity changes acceleration, never prior momentum.
 // Landing on a falling run inherits its velocity and fraction, so the
 // two move as one (5.3). Liquids and solids are floors (powders sink into liquids in the block pass).
-// A grain landing on a charge sets it off as V1's did (dynamics-reference.js SHOCK_LANDINGS: V1 react.js
-// shock, the fall past which a cell of the grain's element landing on that charge carries its blast.shock
-// as common.js hitKE counts it): at the speed the powder law reaches over that fall (fall.js
-// powderLandingSpeed; at most its terminal speed, so past it every longer fall lands the same).
-// POWDER_SHOCK_SLACK: the GPU's f32 sums of a fall's ticks may land a quantum under the CPU law's speed.
-const POWDER_SHOCK_SLACK = 1 - 2 ** -16;
-const POWDER_SHOCK_ON = SHOCK_LANDINGS.filter(r => ELEMENTS[r.faller].kind === K.POWDER)
-  .map(r => ({ ...r, speed: Math.fround(powderLandingSpeed(r.faller, r.cells) * POWDER_SHOCK_SLACK) }));
+// A grain's landing (grainLands), V1's three outcomes of a hit on what is under it:
+//   - BL-7: on a charge, its own odds of setting it off, by its fall (dynamics-reference.js v1GrainOddsTable: V1's
+//     random stream, react.js shock), a roll a grain; its fall is the cells it had fallen before this tick (from rest,
+//     on the powder law: GRAIN_FALLS) plus this tick's to its floor;
+//   - BL-8: on a breakable solid, past V1's hardness (react.js breaking: ½·dens·u² ≥ hard, u its speed in V1's
+//     cells/step to V_MAX), the solid becomes its debris, which takes the fracture work as heat (KE_TO_HEAT
+//     cap·°C per unit of hardness, a declared source, as packets' fracture: particles.js);
+//   - TH-10: on a solid it doesn't break, faster than COLLIDE_V, the kinetic energy it loses (½·dens·u²) becomes
+//     heat shared by capacity, so both warm alike (move.js impactHeat: ΔT = E·KE_TO_HEAT/cap; the box's floor is a
+//     wall cell, whose share leaves).
+// In V1 a hit that sets a charge off neither breaks nor heats (move.js leaves it to the react pass).
+const GRAIN_LANDINGS = SHOCK_LANDINGS.filter(r => ELEMENTS[r.faller].kind === K.POWDER).map(r => ({ ...r, odds: v1GrainOddsTable(r.faller, r.charge) }));
+const GRAIN_FALLS = [...new Set(GRAIN_LANDINGS.map(r => r.faller))].map(id => {
+  // (speed before a tick, cells fallen by then) from rest at the reference pull, to its terminal speed
+  const seq = []; let core = setFall(new Uint32Array([id, 0, 0, 0]), 0, 0), cells = 0;
+  for (let n = 0; n < 400; n++) {
+    const u = fallVelocity(core); seq.push([Math.fround(u), cells]);
+    const st = stepFall(core, FALL_GRAVITY); if (fallVelocity(st.core) === u) break; core = st.core; cells += st.cells;
+  }
+  return { id, seq };
+});
+// one legacy cap·°C in native energy units (particles.js dHeatEnergy: FULL·64·4)
+const LEGACY_HEAT_UNIT = 256;
+const grainLandWGSL = () => {
+  let at = 0;
+  const pairs = GRAIN_LANDINGS.map(r => { const o = { ...r, at }; at += r.odds.length; return o; });
+  return /* wgsl */ `
+const V1_GRAIN_ODDS = array<f32, ${Math.max(1, at)}>(${pairs.flatMap(r => r.odds.map(o => f(Math.fround(o)))).join(',') || '0.0'});
+const V1_BREAK_INTO = array<i32, ${ELEMENTS.length}>(${ELEMENTS.map(e => (e.breakInto ? E[e.breakInto] : -1)).join(',')});
+const V1_HARD = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => f(e.hard ?? 0)).join(',')});
+const V1_CAP = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => f(e.cap ?? 0)).join(',')});
+const V1_KE_TO_HEAT: f32 = ${f(PHYS.KE_TO_HEAT)};
+const V1_COLLIDE_V: f32 = ${PHYS.COLLIDE_V};
+const V1_STEP_MS: f32 = ${f(V1_STEP_MS)};
+// the cells a grain of id fell before a tick it starts at speed u (m/s), from rest on the powder law (GRAIN_FALLS)
+fn grainFallen(id: u32, u: f32) -> i32 {
+  var cells = 0;
+${GRAIN_FALLS.map(g => `  if (id == ${g.id}u) {
+    cells = ${g.seq.at(-1)[1]};
+${g.seq.map(([u, c], n) => `    ${n ? 'else ' : ''}if (u <= ${f(u)} * 1.0001 + 0.000001) { cells = ${c}; }`).join('\n')}
+  }`).join('\n')}
+  return cells;
+}
+// V1's odds a grain of faller landing on charge after h cells sets it off (V1_GRAIN_ODDS; past its table, its last)
+fn grainOdds(faller: u32, charge: u32, h: i32) -> f32 {
+  var at = -1;
+  var n = 0;
+${pairs.map(r => `  if (faller == ${r.faller}u && charge == ${r.charge}u) { at = ${r.at}; n = ${r.odds.length}; }`).join('\n')}
+  var odds = 0.0;
+  if (at >= 0 && h >= 1) { odds = V1_GRAIN_ODDS[at + min(h, n) - 1]; }
+  return odds;
+}
+fn grainHeat(heat: f32) -> vec2u { return energyMul(u32(round(heat * ${LEGACY_HEAT_UNIT}.0)), FULLU); }
+// a grain (its core before the tick) landing at speed v (m/s) on the cell at q after a fall of h cells: the charge
+// it sets off, the solid it breaks, or the heat it makes there; returns its own share of the heat (legacy cap·°C)
+fn grainLands(q: vec3i, grain: vec4u, v: f32, h: i32) -> f32 {
+  let faller = cid(grain);
+  let u = min(v / V1_STEP_MS, V1_V_MAX);
+  let ke = 0.5 * densOfE(faller) * u * u;
+  var under = ${E.WALL}u;
+  var hits = true;
+  if (inGrid(q)) {
+    let s = slotOf(q);
+    let before = loadMaterial(s);
+    under = cid(before.core);
+    let odds = grainOdds(faller, under, h);
+    var rs = seed3(q, P.tick, 83u);
+    if (odds > 0.0 && rnd(&rs) < odds) { events[s] = events[s] | 1u; noteEvents(s, events[s]); markBusy(q); hits = false; }
+    let into = V1_BREAK_INTO[under];
+    if (hits && into >= 0 && ke >= V1_HARD[under]) {
+      hits = false;
+      let after = Material(setFall(vec4u((before.core.x & 0xffffff00u) | u32(into), before.core.y, before.core.z, before.core.w), 0.0, 0.0), before.bank);
+      let warm = energyAdd(energyOf(before), grainHeat(V1_HARD[under] * V1_KE_TO_HEAT));
+      if (energyFits(after, warm)) {
+        storeMaterial(s, before, withEnergy(after, warm)); noteEnergySource(q, energySub(warm, energyOf(before))); markBusy(q);
+      }
+    }
+    if (cls(under) != C_SOLID) { hits = false; }
+    if (hits && u > V1_COLLIDE_V) {
+      let heat = ke * V1_KE_TO_HEAT * V1_CAP[under] / max(V1_CAP[faller] + V1_CAP[under], 0.000001);
+      let warm = energyAdd(energyOf(before), grainHeat(heat));
+      if (energyFits(before, warm)) { storeMaterial(s, before, withEnergy(before, warm)); noteEnergySource(q, energySub(warm, energyOf(before))); }
+    }
+  }
+  var mine = 0.0;
+  if (hits && u > V1_COLLIDE_V) { mine = ke * V1_KE_TO_HEAT * V1_CAP[faller] / max(V1_CAP[faller] + V1_CAP[under], 0.000001); }
+  return mine;
+}
+`;
+};
 // ---- R1b: V1's fast movers, past the block pass's reach. The block pass trades a pair at most once a paired tick
 // (BLOCK_PACE: A + B cells a tick at chance 1, ~34 cells/s); V1 moves a cell whose drift through its medium is
 // faster up to a cell a step (240 cells/s: uranium through water, hydrogen rising, fire and steam plumes, sand
@@ -782,17 +864,7 @@ export const v2ColumnWGSL = (g) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
 ${fallStepWGSL}
 ${colMoverWGSL()}
-// the landing speed (m/s) past which a grain of faller sets off the charge it lands on (POWDER_SHOCK_ON); 0 never
-fn shockOnSpeed(faller: u32, charge: u32) -> f32 {
-${POWDER_SHOCK_ON.map(r => `  if (faller == ${r.faller}u && charge == ${r.charge}u) { return ${r.speed}; }`).join('\n')}
-  return 0.0;
-}
-// a grain of faller landing at speed (m/s) on the cell at p: its detonation request, as columns.js colDetonate's
-fn shockLand(p: vec3i, faller: u32, speed: f32) {
-  let s = slotOf(p);
-  let on = shockOnSpeed(faller, cid(loadCore(s)));
-  if (on > 0.0 && speed >= on) { events[s] = events[s] | 1u; noteEvents(s, events[s]); markBusy(p); }
-}
+${grainLandWGSL()}
 ${MAIN} {
   if (P.gravMode == 2u || P.edge != 0u) { return; }
   let k = foldThread(wg, nwg, li);
@@ -836,9 +908,10 @@ ${MAIN} {
     a = a - f32(d);
     var to = y - d;
     var velocity = v;
+    var landHeat = 0.0;
     if (to <= fl) {
-      // it lands on its floor at v (a falling run under it is no floor it hits)
-      if (fl > 0 && !runFalling) { shockLand(vec3i(x, fl - 1, z), cid(c), v); }
+      // it lands on its floor at v (a falling run under it is no floor it hits): grainLands
+      if (!runFalling) { landHeat = grainLands(vec3i(x, fl - 1, z), c, v, grainFallen(cid(c), fallVelocity(c)) + y - fl); }
       if (to < fl) {
         if (runFalling) { velocity = runVelocity; a = runFrac; } else { velocity = 0.0; a = 0.0; }
       }
@@ -859,6 +932,13 @@ ${MAIN} {
       markBusy(q);
     } else {
       storeCell(p, c);
+    }
+    if (landHeat > 0.0) {
+      // (its share of its landing's heat, where it rests: TH-10)
+      let r = vec3i(x, to, z);
+      let m = loadMaterial(slotOf(r));
+      let warm = energyAdd(energyOf(m), grainHeat(landHeat));
+      if (energyFits(m, warm)) { storeMaterial(slotOf(r), m, withEnergy(m, warm)); noteEnergySource(r, energySub(warm, energyOf(m))); }
     }
     fl = to + 1;
     runFalling = velocity != 0.0;
