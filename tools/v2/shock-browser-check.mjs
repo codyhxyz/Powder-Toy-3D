@@ -13,11 +13,12 @@
 // phase 0 goes off, from 4 at phase 1 and from 3 it rests (columns.js colShockOnFall). The rules' CPU checks:
 // tools/v2/shock-check.mjs, particle-deposition-check.mjs, blast-batch-check.mjs (V1's front); a chain under its
 // own blast's pressure (V1 react.js setOff, crushP): airborne-react-check.mjs 9b'.
-// One launch, one GPU slot, one part a launch (each builds its engines: --part nitro, --part c4). --v1 also
+// One launch, one GPU slot, one part a launch (each builds its engines: --part nitro, --part c4, --part c4land: V2
+// builds its particle and column kernels cold once per box size, so the C-4 scenes are two launches). --v1 also
 // runs the part on V1 (tools/outcomes/engine-v1.js, the same launch) and holds V2 to what V1 does there;
 // without it V2 is held to V1's outcomes below.
 //
-//   node tools/v2/shock-browser-check.mjs --part nitro|c4 [--v1]
+//   node tools/v2/shock-browser-check.mjs --part nitro|c4|c4land [--v1]
 import { launchBrowser } from '../browser.mjs';
 import { startVite } from '../vite-server.mjs';
 import { openHarness } from '../harness/open.mjs';
@@ -26,7 +27,7 @@ import { openHarness } from '../harness/open.mjs';
 const V1_MATCH_CELLS = 1;
 const arg = (name) => { const i = process.argv.indexOf(name); return i < 0 ? null : process.argv[i + 1]; };
 const part = arg('--part');
-if (!['nitro', 'c4'].includes(part)) { console.error('usage: node tools/v2/shock-browser-check.mjs --part nitro|c4 [--v1]'); process.exit(2); }
+if (!['nitro', 'c4', 'c4land'].includes(part)) { console.error('usage: node tools/v2/shock-browser-check.mjs --part nitro|c4|c4land [--v1]'); process.exit(2); }
 const withV1 = process.argv.includes('--v1');
 let failures = 0;
 const t0 = Date.now(), at = () => `${((Date.now() - t0) / 1000).toFixed(1)} s`;
@@ -78,11 +79,22 @@ async function nitroScenes(scenes) {
 // own law, V1 measured: from 4 cells at phase 0 it goes off, from 4 at phase 1 and 3 at phase 0 it rests): a
 // 2×2 slab onto a 4×4 C-4 layer at row 0 (it lands at row 1) from rows 5 (phase 1) and 4 (phase 0, 3 cells),
 // 24 cells apart; then onto a C-4 layer two tall (it lands at row 2) from row 6 (phase 0, 4 cells).
-async function c4Scene() {
+async function c4Scene(land) {
   const { e } = window.__shock, out = {};
   const block = async (x0, z0, h = 2) => { const g = await e.read(), id = e.id('C4'); let n = 0;
     for (let y = 0; y < h; y++) for (let z = z0; z < z0 + 4; z++) for (let x = x0; x < x0 + 4; x++) if (g.id[x + g.nx * (z + g.nz * y)] === id) n++; return n; };
   const at = async (x, y, z) => { const g = await e.read(); return e.nameOf(g.id[x + g.nx * (z + g.nz * y)]); };
+  if (land) {
+    await e.create([32, 32, 32]);
+    e.box([2, 0, 2], [5, 0, 5], 'C4'); e.box([26, 0, 26], [29, 0, 29], 'C4');
+    e.box([3, 5, 3], [4, 5, 4], 'MERCURY'); e.box([27, 4, 27], [28, 4, 28], 'MERCURY');
+    await e.advance(1.0); out.mercuryRest = [await block(2, 2, 1), await block(26, 26, 1)];
+    await e.create([32, 32, 32]);
+    e.box([14, 0, 14], [17, 1, 17], 'C4'); e.box([15, 6, 15], [16, 6, 16], 'MERCURY');
+    await e.advance(1.0); out.mercuryOff = await block(14, 14);
+    await e.dispose();
+    return out;
+  }
   await e.create([32, 32, 32]);
   e.box([10, 0, 10], [13, 1, 13], 'C4'); e.box([2, 0, 24], [5, 1, 27], 'C4');
   await e.advance(0.05); out.rest0 = await block(10, 10); await e.advance(0.5); out.rest1 = await block(10, 10); out.other = await block(2, 24);
@@ -98,13 +110,6 @@ async function c4Scene() {
   e.box([2, 0, 24], [5, 1, 27], 'C4'); await e.advance(0.05); out.uranium0 = await block(2, 24);
   e.box([2, 20, 24], [5, 22, 27], 'URANIUM', { v: [0, -25, 0] });
   await e.advance(0.75); out.uranium = await block(2, 24);
-  await e.create([32, 32, 32]);
-  e.box([2, 0, 2], [5, 0, 5], 'C4'); e.box([26, 0, 26], [29, 0, 29], 'C4');
-  e.box([3, 5, 3], [4, 5, 4], 'MERCURY'); e.box([27, 4, 27], [28, 4, 28], 'MERCURY');
-  await e.advance(1.0); out.mercuryRest = [await block(2, 2, 1), await block(26, 26, 1)];
-  await e.create([32, 32, 32]);
-  e.box([14, 0, 14], [17, 1, 17], 'C4'); e.box([15, 6, 15], [16, 6, 16], 'MERCURY');
-  await e.advance(1.0); out.mercuryOff = await block(14, 14);
   await e.dispose();
   return out;
 }
@@ -117,7 +122,7 @@ try {
   const run = async (engine) => {
     const page = await openHarness(browser, vite, `/tools/harness/outcomes.html?engine=${engine}`, { errors, timeout: 20000 });
     await page.evaluate(setup, engine);
-    const out = part === 'nitro' ? await page.evaluate(nitroScenes, NITRO_SCENES) : await page.evaluate(c4Scene);
+    const out = part === 'nitro' ? await page.evaluate(nitroScenes, NITRO_SCENES) : await page.evaluate(c4Scene, part === 'c4land');
     await page.close();
     console.log(`${engine}: ${JSON.stringify(out)} [${at()}]`);
     return out;
@@ -136,6 +141,13 @@ try {
         ok(pass, `${name}: ${label}: ${before} → ${after} cells of it (V1 ${outcome}${v1After === null ? '' : `, leaves ${v1After}`})`);
       });
     }
+  } else if (part === 'c4land') {
+    for (const [name, o] of [['V1', v1], ['V2', v2]]) {
+      if (!o) continue;
+      ok(o.mercuryRest.every(n => n === 16), `${name}: mercury landing on C-4 from 4 cells at phase 1, and from 3, rests on it: ${o.mercuryRest.join(', ')} of 16 cells`);
+      ok(o.mercuryOff < 16, `${name}: mercury landing on C-4 from 4 cells at phase 0 sets it off: ${o.mercuryOff} of 32 cells`);
+    }
+    if (v1) ok(JSON.stringify([v1.mercuryRest, v1.mercuryOff < 16]) === JSON.stringify([v2.mercuryRest, v2.mercuryOff < 16]), `V2's mercury landings are V1's: ${JSON.stringify(v1.mercuryRest)}/${JSON.stringify(v2.mercuryRest)}`);
   } else {
     for (const [name, o] of [['V1', v1], ['V2', v2]]) {
       if (!o) continue;
@@ -147,11 +159,8 @@ try {
       // ½·16·1² = 8 never; uranium's ½·191·u² past 20 from u = 0.46 cells/step (33 m/s), which its fall reaches
       ok(o.sand0 > 10 && o.sand === o.sand0, `${name}: sand thrown down at it at 25 m/s rests on it (V1: never past ½·16·V_MAX²): ${o.sand0} → ${o.sand} cells`);
       ok(o.uranium0 > 10 && o.uranium < o.uranium0 / 2, `${name}: uranium thrown at 25 m/s sets it off: ${o.uranium0} → ${o.uranium} cells`);
-      ok(o.mercuryRest.every(n => n === 16), `${name}: mercury landing on C-4 from 4 cells at phase 1, and from 3, rests on it: ${o.mercuryRest.join(', ')} of 16 cells`);
-      ok(o.mercuryOff < 16, `${name}: mercury landing on C-4 from 4 cells at phase 0 sets it off: ${o.mercuryOff} of 32 cells`);
     }
     if (v1) ok(v1.source === v2.source && v1.near === v2.near && v1.far === v2.far, `V2 sets off what V1 does: ${v1.near}/${v2.near}, ${v1.far}/${v2.far}`);
-    if (v1) ok(JSON.stringify([v1.mercuryRest, v1.mercuryOff < 16]) === JSON.stringify([v2.mercuryRest, v2.mercuryOff < 16]), `V2's mercury landings are V1's: ${JSON.stringify(v1.mercuryRest)}/${JSON.stringify(v2.mercuryRest)}`);
   }
   ok(!errors.length, `no page errors${errors.length ? `:\n  ${errors.join('\n  ')}` : ''}`);
 } finally {
