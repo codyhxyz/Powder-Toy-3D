@@ -20,7 +20,8 @@ const BASE_Y = 2, GRAIN_Y = BASE_Y + 1;
 
 async function scene(name, dims, devices, grains, steps) {
   const engine = engines[name];
-  await engine.create(dims);
+  // (V2's dynamics build behind its grid, v2/physics.js dynamicsReady: engine-v2's create refuses before them)
+  try { await engine.create(dims); } catch (e) { if (name !== 'v2' || !engine.sim?.compactOwner) throw e; await engine.sim.compactOwner.dynamicsReady; }
   for (const d of devices) engine.box([d.x, d.y, d.z], [d.x + 3, d.y, d.z + 3], 'INSULATOR');
   for (const [x, y, z] of grains) engine.box([x, y, z], [x, y, z], 'NUGGETS');
   const sim = engine.sim, errors = [];
