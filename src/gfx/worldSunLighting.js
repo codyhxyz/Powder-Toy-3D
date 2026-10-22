@@ -81,7 +81,10 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
   // coarseTiles: tiles of the request drawn from coarseCasters' heightfield
   // instead of their CELL casters (world/worldSunRings.js). A tile changes kind
   // only by being written again: a copy never turns coarse into full detail.
-  async function prepare({direction,basisRevision,configVersion,sceneToken,receiverBounds=[],requestedTiles,changedWorldBounds,changeBaseToken,coarseTiles=[],coarseCasters=null}={}) {
+  // viewAir: the view's far-air floors (world/worldViewRing.js worldViewAirWords),
+  // appended to the SunBook, which every World view already binds; a new set
+  // (id) publishes a new book over the same tiles.
+  async function prepare({direction,basisRevision,configVersion,sceneToken,receiverBounds=[],requestedTiles,changedWorldBounds,changeBaseToken,coarseTiles=[],coarseCasters=null,viewAir=null}={}) {
     alive(); const id=++serial, owned=[], candidatesTextures=[];let input=null,old=null,recorded=false,finished=false,retained=false;
     const releaseInputs=()=>{input?.release();input=null;if(old){drop(old);old=null;}owned.splice(0).forEach(b=>b.destroy());};
     const destroyOutputs=()=>candidatesTextures.splice(0).forEach(t=>t.destroy());
@@ -105,11 +108,11 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
       if(![input.dependencySetID,input.dependencyVersion].every(n=>Number.isInteger(n)&&n>=0&&n<=0xffffffff))throw new TypeError('explicit dependency closure reference/version required');
       const key=[sceneToken,input.epoch,basisRevision,configVersion,...projection.basis.sun];
       const content=[input.source.contentToken,input.field.publishedToken,input.field.sourceRevision,input.field.logicalFieldTick,input.dependencySetID,input.dependencyVersion];
-      if(active&&equal(key,active.key)&&equal(content,active.content)&&equal(wanted,[...active.slots.keys()])&&wanted.every(i=>active.kinds.get(i)===kinds.get(i))&&(!coarseInput||coarseInput.id===active.coarseId)) {releaseInputs();return Object.freeze({status:'cached',snapshot:snapshot()});}
+      if(active&&equal(key,active.key)&&equal(content,active.content)&&equal(wanted,[...active.slots.keys()])&&wanted.every(i=>active.kinds.get(i)===kinds.get(i))&&(!coarseInput||coarseInput.id===active.coarseId)&&(viewAir?.id??0)===active.viewAirId) {releaseInputs();return Object.freeze({status:'cached',snapshot:snapshot()});}
       const layers=Math.max(1,Math.ceil(wanted.length/64)), limit=device.limits?.maxTextureArrayLayers??256;
       if(layers>limit||(device.limits?.maxTextureDimension2D??8192)<2048)throw new RangeError('sun coverage exceeds legal physical array capacity; never lower texel density');
       const tileCount=projection.tiles[2]*projection.tiles[3];
-      if(tileCount*32>maxBuffer)throw new RangeError('SunBook exceeds storage binding limit');
+      if(tileCount*32+(viewAir?.words.byteLength??0)>maxBuffer)throw new RangeError('SunBook exceeds storage binding limit');
       const fb=feedbackProvider.layout({snapshot:input,tileCount:wanted.length,sunTileCount:tileCount});
       if(!Number.isInteger(fb?.wordCount)||fb.wordCount<1||fb.wordCount*4>maxBuffer||!Number.isInteger(fb.requestWordOffset)||fb.requestWordOffset<0||fb.requestWordOffset+Math.ceil(tileCount/32)>fb.wordCount||!Number.isInteger(fb.jobStatusWordOffset)||fb.jobStatusWordOffset<0||fb.jobStatusWordOffset+wanted.length>fb.wordCount||!(fb.jobStatusWordOffset+wanted.length<=fb.requestWordOffset||fb.jobStatusWordOffset>=fb.requestWordOffset+Math.ceil(tileCount/32))||typeof fb.decode!=='function')throw new TypeError('explicit non-overlapping feedback suffix/status layout required');
       const revision=++publication;
@@ -193,11 +196,12 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
             const failures=jobs.filter(j=>words[fb.jobStatusWordOffset+j.slot]!==1).map(j=>j.index);
             if(decoded.incomplete||failures.length){status='incomplete';return Object.freeze({status,failedTiles:freeze(failures),feedback:decoded,retry:true});}
             if(dead||id!==serial||!sourceFieldSnapshotProvider.isCurrent(input)){status='stale';return Object.freeze({status,retry:true});}
-            const bookWords=new Uint32Array(tileCount*8);
+            const bookWords=new Uint32Array(tileCount*8+(viewAir?.words.length??0));
             for(const [index,slot] of slots)bookWords.set([slot,input.epoch,basisRevision,revision,input.dependencySetID,input.dependencyVersion,1,0],index*8);
+            if(viewAir)bookWords.set(viewAir.words,tileCount*8);
             const book=buffer('immutable SunBook',bookWords,BU.STORAGE|BU.COPY_DST);
             const token=Object.freeze({epoch:input.epoch,basisRevision,publishRevision:revision,sceneToken,configVersion,sourceContentToken:input.source.contentToken,fieldPublishedToken:input.field.publishedToken,logicalFieldTick:input.field.logicalFieldTick});
-            const next={refs:1,book,sun0,sun1,view0,view1,slots,kinds,coarseId:coarseInput?.id??active?.coarseId??0,params,token,key,content};
+            const next={refs:1,book,sun0,sun1,view0,view1,slots,kinds,coarseId:coarseInput?.id??active?.coarseId??0,viewAirId:viewAir?.id??0,params,token,key,content};
             const previous=active;active=next;retained=true;candidatesTextures.length=0;drop(previous);status='published';
             return Object.freeze({status,token});
           }).catch(e=>{status='failed';return Object.freeze({status,error:String(e.message??e),retry:true});}).finally(()=>{finished=true;pending.delete(candidate);releaseInputs();if(!retained)destroyOutputs();});

@@ -64,7 +64,7 @@ export const LIB_VARIANTS = {
  * @param {{ nx: number, ny: number, nz: number, maxSteps?: number }} g
  * @param {{ variant?: string, far?: boolean, aeration?: boolean, debug?: boolean, detail?: object, fixedReadFormat?: 0 | 2 | 3 }} [opts]
  */
-export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debug = false, detail = {}, backend = 'box', fixedReadFormat } = {}) {
+export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debug = false, detail = {}, backend = 'box', fixedReadFormat, viewRing = false } = {}) {
   renderBackend(backend);
   if (backend === 'world' && variant === 'LIGHTING_SHADOW') {
     // Optical compute has no dependency on GI, sun readers, appearance, mesh,
@@ -82,7 +82,8 @@ export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debu
   return [
     prelude(g, world ? { state: false, backend } : { ...STATE_OPTS.STATE_RO, debug, fixedReadFormat }),
     frameBindings({ backend }),
-    world ? worldAccessWGSL({ backend }) + worldCoreBindingsWGSL + worldQueryWGSL : lightingBindings({ far, aeration, variant }),
+    // viewRing: the World volume's views only (world/worldViewRing.js)
+    world ? worldAccessWGSL({ backend, viewRing: viewRing && variant === 'LIGHTING' }) + worldCoreBindingsWGSL + worldQueryWGSL : lightingBindings({ far, aeration, variant }),
     glslMod,
     materialsGLSL(),
     coreGLSL(g, { flow: v.flow, detail, backend }),

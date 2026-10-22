@@ -97,12 +97,17 @@ export function worldPoolMax(kind, layout, deviceLimits = {}) {
   if (kind === 'light') return Math.min(Math.floor((auxMax - layout.capacity * AUX_RECORDS) / LIGHT_RECORDS), BOOK_PAGE_MASK);
   check(kind === 'probe', 'invalid pool'); return Math.min(U32_MAX, texels);
 }
-export function worldPoolGrowth(kind, layout, deviceLimits = {}, needed) {
+// budget: the owner's page budget for this pool (wire/worldRender.js,
+// world/worldViewRing.js worldPageBudget): a growth never passes it, and a
+// demand past it is refused (WORLD_PAGE_BUDGET), never allocated.
+export const WORLD_PAGE_BUDGET = 'WORLD page budget';
+export function worldPoolGrowth(kind, layout, deviceLimits = {}, needed, budget = Infinity) {
   const current = layout[kind === 'cell' ? 'capacity' : kind + 'Capacity'];
   needed ??= current + 1;
   const max = worldPoolMax(kind, layout, deviceLimits);
   check(integer(needed, current + 1, max), 'pool exhausted legal address capacity');
-  return Math.min(max, Math.max(needed, Math.max(1, current * 2)));
+  check(needed <= budget, `${WORLD_PAGE_BUDGET}: ${kind} pool of ${needed} pages past ${budget}`);
+  return Math.min(max, budget, Math.max(needed, Math.max(1, current * 2)));
 }
 export function lightTexel(id, record, layout) {
   check(integer(id, 0, layout.lightCapacity - 1) && integer(record, 0, LIGHT_RECORDS - 1), 'light descriptor address outside capacity');
@@ -471,7 +476,7 @@ export class WorldRenderAtlas {
   }
   _take(kind) {
     const p = this[kind], key = kind === 'cell' ? 'capacity' : kind + 'Capacity';
-    if (!p.free.length && p.nextID >= this.resources.layout[key]) this.growPool(kind, worldPoolGrowth(kind, this.resources.layout, this.limits));
+    if (!p.free.length && p.nextID >= this.resources.layout[key]) this.growPool(kind, worldPoolGrowth(kind, this.resources.layout, this.limits, undefined, this.pageBudget?.[kind]));
     return p.free.length ? p.free.pop() : p.nextID++;
   }
   // Room for count more pages in one growth, not a doubling per overflow
@@ -480,8 +485,11 @@ export class WorldRenderAtlas {
   reserve(kind, count) {
     this._alive(); const p = this[kind], l = this.resources.layout, key = kind === 'cell' ? 'capacity' : kind + 'Capacity';
     const needed = Math.min(worldPoolMax(kind, l, this.limits), p.nextID + Math.max(0, count - p.free.length));
-    if (needed > l[key]) this.growPool(kind, worldPoolGrowth(kind, l, this.limits, needed));
+    if (needed > l[key]) this.growPool(kind, worldPoolGrowth(kind, l, this.limits, needed, this.pageBudget?.[kind]));
   }
+  // The owner's GPU memory budget per pool ({ cell, light, probe } pages):
+  // growth stops at it (worldPoolGrowth). Pools already past it are kept.
+  setPageBudget(budget) { this.pageBudget = budget ? Object.freeze({ cell: budget.cell, light: budget.light, probe: budget.probe }) : null; }
   allocate(brick, { sourceRevision, fieldTick = 0, readyBits = READY.CELL } = {}) {
     this._alive(); check(integer(sourceRevision) && integer(fieldTick) && integer(readyBits, 1, READY.CELL), 'invalid cell version/readiness');
     return this._allocate('cell', brick, { sourceRevision, fieldTick, readyBits });
@@ -673,10 +681,11 @@ export class WorldRenderAtlas {
   }
   _cancelPage(p) { p.pending = false; this[p.kind].pending.delete(p.index); this._releaseResources(p.resources); this._collect(p); }
   cancel(job) { this._cancelPage(this._job(job)); }
-  grow(capacity = worldPoolGrowth('cell', this.resources.layout, this.limits)) { return this.growPool('cell', capacity); }
-  growPool(kind, capacity = worldPoolGrowth(kind, this.resources.layout, this.limits)) {
+  grow(capacity = worldPoolGrowth('cell', this.resources.layout, this.limits, undefined, this.pageBudget?.cell)) { return this.growPool('cell', capacity); }
+  growPool(kind, capacity = worldPoolGrowth(kind, this.resources.layout, this.limits, undefined, this.pageBudget?.[kind])) {
     this._alive(); const old = this.resources, l = old.layout, key = kind === 'cell' ? 'capacity' : kind + 'Capacity';
     check(['cell', 'light', 'probe'].includes(kind) && integer(capacity, l[key] + 1, worldPoolMax(kind, l, this.limits)), 'grow must increase capacity within legal address limit');
+    check(capacity <= (this.pageBudget?.[kind] ?? Infinity), `${WORLD_PAGE_BUDGET}: ${kind} pool of ${capacity} pages past ${this.pageBudget?.[kind]}`);
     const sizes = { capacity: l.capacity, lightCapacity: l.lightCapacity, probeCapacity: l.probeCapacity, [key]: capacity };
     // Descriptor base movement must COW aux even when rounded dimensions stay the same.
     const share = kind === 'cell' ? { ...old, owners: { ...old.owners, aux: null } } : old;

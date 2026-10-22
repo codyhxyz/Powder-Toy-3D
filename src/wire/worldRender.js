@@ -13,6 +13,7 @@ import { worldSunProjection, WORLD_SUN_PITCH } from '../world/worldSun.js';
 import { worldColumnTops, forecastSunCasters, forecastViewTiles, worldViewRays, forecastGatherSources, forecastSourceTiles } from '../world/worldSunForecast.js';
 import { worldSunRings, worldCoarseCasters, WORLD_SUN_SHARPEN_TILES } from '../world/worldSunRings.js';
 import { WORLD_GI_NEAR_RADIUS } from '../world/worldGIRing.js';
+import { worldViewAirFloors, worldViewAirWords, worldPageBudget, worldBudgetDemand } from '../world/worldViewRing.js';
 import { worldGIGroundWords } from '../shaders/worldGI.js';
 
 const copy = v => v?.elements ? Array.from(v.elements) : typeof v?.toArray === 'function' ? v.toArray() : ArrayBuffer.isView(v) ? Array.from(v) : Array.isArray(v) ? v.map(copy) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k,x]) => [k,copy(x)])) : v;
@@ -102,6 +103,16 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   let giGround=null;
   const giRing=t=>{const eye=t.frame.values?.cam;return tops&&eye&&Array.from(eye).length===3&&Array.from(eye).every(Number.isFinite)?{eye:Array.from(eye),radius:WORLD_GI_NEAR_RADIUS}:null;};
   const giGroundFor=async()=>{if(!tops)return null;coarseBuild??=worldCoarseCasters({size,tops});giGround??=coarseBuild.then(c=>Object.freeze({words:worldGIGroundWords(c.heights),columns:[...c.dims]}));return giGround;};
+  // The view's far-air floors (world/worldViewRing.js), from the same ground
+  // twin, on the SunBook; the GPU memory budget lowers them where it drops
+  // bricks (viewAir.id: a new set publishes a new book).
+  let viewAir=null,viewAirBuild=null,viewAirId=0;
+  const viewAirFor=async()=>{if(viewAir)return viewAir;if(tops){coarseBuild??=worldCoarseCasters({size,tops});viewAirBuild??=coarseBuild.then(casters=>worldViewAirFloors({size,tops,casters}));}const air=await(viewAirBuild??worldViewAirFloors({size,tops:null}));viewAir??={air,id:++viewAirId};return viewAir;};
+  // The atlas's page budget for this device (world/worldViewRing.js): no load
+  // allocates past it (renderAtlas.js setPageBudget); past it the farthest
+  // requested bricks are dropped (attempt(), worldBudgetDemand).
+  const budget=worldPageBudget({deviceMemoryGB:globalThis.navigator?.deviceMemory,limits:gpu.device?.limits??{}});
+  atlas.setPageBudget?.(budget);
   const ownedSources=new Set(),ownedProbes=new Set(),ownedGlow=new Set();
   const brick=i=>[i%dims[0],Math.floor(i/dims[0])%dims[1],Math.floor(i/(dims[0]*dims[1]))];
   const index=b=>worldBrickIndex(atlas.bookLayout,b);
@@ -116,9 +127,12 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   }
   // support: asked for by a stage that reads cells only to light a SOURCE or
   // write the sun map (WORLD_SUPPORT_STAGES); any other ask makes it demand.
-  function add(t,requirements=[],sun=[],support=false) {
+  // shell: a coarse sun tile's surface forecast, which nothing but the view
+  // reads; every other support brick (a full-detail tile's casters, a SOURCE's
+  // neighbours) is pinned: the GPU memory budget never drops it.
+  function add(t,requirements=[],sun=[],support=false,shell=false) {
     let changed=false;
-    for(const r of requirements){const i=index(r.brick??brick(r.index)),bits=r.channels;if(!Number.isInteger(bits)||bits<1||bits>READY.ALL||r.index!=null&&r.index!==i)throw new TypeError('canonical WORLD requirements required');const old=t.requirements.get(i);if(old===undefined&&support)t.support.add(i);else if(!support)t.support.delete(i);if(((old??0)|bits)!==old){t.requirements.set(i,(old??0)|bits);changed=true;}}
+    for(const r of requirements){const i=index(r.brick??brick(r.index)),bits=r.channels;if(!Number.isInteger(bits)||bits<1||bits>READY.ALL||r.index!=null&&r.index!==i)throw new TypeError('canonical WORLD requirements required');if(t.dropped.has(i))continue;if(support&&!shell)t.pinned.add(i);const old=t.requirements.get(i);if(old===undefined&&support)t.support.add(i);else if(!support)t.support.delete(i);if(((old??0)|bits)!==old){t.requirements.set(i,(old??0)|bits);changed=true;}}
     const projection=worldSunProjection(size,t.frame.sun.direction),n=projection.tiles[2]*projection.tiles[3];
     for(const i of sun){if(!Number.isInteger(i)||i<0||i>=n)throw new RangeError('WORLD Sun tile');if(!t.sunTiles.has(i)){t.sunTiles.add(i);changed=true;}}
     return changed;
@@ -202,6 +216,25 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     }
     return feedback.length?mergeWorldFeedback(feedback):null;
   }
+  // The GPU memory budget (world/worldViewRing.js worldPageBudget): a demand
+  // over it drops its farthest requested bricks past the view's near ring (never
+  // a page the owner already holds), and lowers their columns' floors so the
+  // view reads them, and everything over them, as air. Logged: it is the
+  // degraded picture instead of a lost GPU device. Pages the atlas already
+  // holds for bricks outside this demand count against it.
+  async function budgetDemand(t,ids) {
+    let outside=0;for(const i of atlas.live?.cell?.keys()??[])if(!ids.has(i))outside++;
+    const limit=Math.max(0,budget.cell-outside);
+    if(ids.size<=limit)return;
+    const eye=t.frame.values?.cam,cam=eye&&Array.from(eye).length===3&&Array.from(eye).every(Number.isFinite)?Array.from(eye):null;
+    // only bricks this load asked for may go: never a held page, a glow core's region, a record's brick or a pinned support brick
+    const current=await viewAirFor(),held=new Set([...ids].filter(i=>!t.requirements.has(i)||t.pinned.has(i)||ownedSources.has(i)||ownedProbes.has(i)||ownedGlow.has(i)));
+    const r=worldBudgetDemand(ids,{budget:limit,eye:cam,brick,held,air:current.air});
+    if(!r.dropped.length)return;
+    for(const i of r.dropped){ids.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);}
+    viewAir={air:r.air,id:++viewAirId};t.budgetDropped=t.dropped.size;
+    console.warn(`WORLD load over its GPU page budget (${budget.cell} pages): ${r.dropped.length} farthest bricks read as air`);
+  }
   // A SOURCE job reads its own brick's previous probe (gi.js giSourceFrag), so
   // the SOURCE phase's only GI demand is births of its own bricks: the restart
   // it used to take would rebuild the same records, plan and Sun and add them as
@@ -269,7 +302,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       await forecastSunCasters({size,direction:t.frame.sun.direction,tiles:list,tops,shell,mark:i=>bricks.add(i)});
       for(const i of list)done.add(i);
       t.forecastBricks=(t.forecastBricks??0)+bricks.size;
-      add(t,[...bricks].map(i=>({brick:brick(i),channels:READY.CELL})),[],true);
+      add(t,[...bricks].map(i=>({brick:brick(i),channels:READY.CELL})),[],true,shell);
     }
   }
   async function attempt(t) {
@@ -282,6 +315,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     for(const [i,bits]of t.requirements)if(bits&READY.GLOW){const core=brick(i).map(n=>Math.floor(n/8));glowCores.set(core.join(','),core);}
     for(const core of glowCores.values()){const region=worldGlowPlan(size,core).input;for(let z=0;z<region.size[2];z++)for(let y=0;y<region.size[1];y++)for(let x=0;x<region.size[0];x++)ids.add(index([x+region.min[0],y+region.min[1],z+region.min[2]]));}
     if(!ids.size)throw new Error('WORLD requires explicit initial CELL demand');
+    await budgetDemand(t,ids);
     await classify(t,ids);
     t.stage='metadata';
     // Only the bricks the last attempt's records lack: the cut, clock and
@@ -315,7 +349,8 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     // A tile the feedback added after this attempt's forecast (none is, with
     // the view's tiles forecast) is full detail, its casters asked for by its pass.
     const coarseTiles=[...(t.coarseTiles??[])].filter(i=>t.sunTiles.has(i)),coarseCasters=coarseTiles.length?await coarseBuild:null;
-    const sun=await result(t,t.sun,await t.sun.prepare({direction:t.frame.sun.direction,basisRevision:t.frame.sun.basisRevision,configVersion:t.frame.configVersion,sceneToken:t.frame.sceneVersion,receiverBounds:[],requestedTiles:[...t.sunTiles],coarseTiles,coarseCasters,changedWorldBounds:t.batch.changes.changedBricks.map(b=>({min:b.map(n=>n*4),max:b.map(n=>n*4+4)}))}));
+    const air=await viewAirFor();
+    const sun=await result(t,t.sun,await t.sun.prepare({direction:t.frame.sun.direction,basisRevision:t.frame.sun.basisRevision,configVersion:t.frame.configVersion,sceneToken:t.frame.sceneVersion,receiverBounds:[],requestedTiles:[...t.sunTiles],coarseTiles,coarseCasters,viewAir:{words:worldViewAirWords(air.air),id:air.id},changedWorldBounds:t.batch.changes.changedBricks.map(b=>({min:b.map(n=>n*4),max:b.map(n=>n*4+4)}))}));
     if(sun.feedback)return sun.feedback;t.sunHandle=sun.output;
     const sources=t.plan.sourceBricks;
     // GLOBAL barrier: all SOURCE slabs are submitted and staged before ANY gather.
@@ -409,8 +444,9 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     if(same&&(!accepted||JSON.stringify(frame.globalKey)!==JSON.stringify(accepted.frame.globalKey)||frame.configVersion!==accepted.frame.configVersion))throw new Error('camera-only births require the accepted lighting settings/cut');
     const cut=same?accepted.cut.retain():source.recordCut(gpu.frame,{previousCut:accepted?.cut,sceneVersion:frame.sceneVersion,configVersion:frame.schemaVersion});
     if(!history)history=createWorldLightingHistory({worldSize:size,epoch:source.epoch,sourceOwner:source,configuration:cut.configuration});
-    const t={id:++serial,frame,cut,tick:same?history.lightingTick:history.lightingTick+1,fieldTick:same?accepted.fieldTick:(cells.fields.lastTick??-1)+1,state:'building',stage:'initializing',requirements:new Map(),support:new Set(),forecastProbes:new Set(),sunTiles:new Set(),outputs:[],glows:[],privateJobs:[],bundle:null,bundlePins:0,retired:false,cleaned:false};
+    const t={id:++serial,frame,cut,tick:same?history.lightingTick:history.lightingTick+1,fieldTick:same?accepted.fieldTick:(cells.fields.lastTick??-1)+1,state:'building',stage:'initializing',requirements:new Map(),support:new Set(),dropped:new Set(),pinned:new Set(),forecastProbes:new Set(),sunTiles:new Set(),outputs:[],glows:[],privateJobs:[],bundle:null,bundlePins:0,retired:false,cleaned:false};
     try{add(t,requirements);}catch(e){cut.release();throw e;}
+    viewAir=null;   // a transaction's budget drops are its own: the next starts from the scene's floors
     active=t;t.work=run(t);t.work.catch(()=>{});return t.work;
   }
   async function retire(t) {
@@ -419,7 +455,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   function next() {if(queued&&!dead){const q=queued;queued=null;try{start(q.frame,q.requirements).then(q.resolve,q.reject);}catch(e){releaseFrame(q.frame);q.reject(e);}}wake();}
   const api={atlas,cells,metadata,
     // Passive counters only: inspecting readiness must never advance work.
-    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,support:t.support.size,sunTiles:t.sunTiles.size,coarseTiles:t.coarseTiles?.size??0,forecastBricks:t.forecastBricks??0,sourcePasses:t.sourcePasses??0,metadataBricks:t.metadataBricks??0,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
+    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,support:t.support.size,sunTiles:t.sunTiles.size,coarseTiles:t.coarseTiles?.size??0,budgetDropped:t.budgetDropped??0,pageBudget:budget.cell,forecastBricks:t.forecastBricks??0,sourcePasses:t.sourcePasses??0,metadataBricks:t.metadataBricks??0,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
     get busy(){return !!active||!!queued;},get failure(){return failure??metadataFeedback.failure??active?.feedback?.failure??active?.error??null;},get state(){return dead?'disposed':resetting?'resetting':metadataFeedback.failure||active?.feedback?.failure?'blocked':active?.state??'idle';},
     request(frame,requirements=[]){live();const f=captureFrame(frame);if(active){if(queued){releaseFrame(queued.frame);queued.resolve(null);}return new Promise((resolve,reject)=>{queued={frame:f,requirements:frozen(requirements),resolve,reject};});}try{return start(f,requirements);}catch(e){releaseFrame(f);throw e;}},
     probe(){live();return active?.state==='probe-ready'?active.bundle.retain():null;},
@@ -437,7 +473,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       resetWork=(async()=>{
         if(queued){releaseFrame(queued.frame);queued.resolve(null);queued=null;}
         const t=active;active=null;if(t){await t.work.catch(()=>{});await retire(t);}await fence();
-        accepted?.bundle.release();accepted?.cut.release();accepted=null;history?.dispose();history=null;metadata.reset();ownedSources.clear();ownedProbes.clear();ownedGlow.clear();forecastTiles.clear();shellTiles.clear();forecastGrid=null;
+        accepted?.bundle.release();accepted?.cut.release();accepted=null;history?.dispose();history=null;metadata.reset();ownedSources.clear();ownedProbes.clear();ownedGlow.clear();forecastTiles.clear();shellTiles.clear();forecastGrid=null;viewAir=null;
         const cut=source.recordCut(gpu.frame,{sceneVersion,configVersion:schemaVersion});
         try{gpu.flush('WORLD reset cut capture');await fence();cells.bindCut(cut);cells.reset();}finally{cut.release();}
         failure=null;wake();

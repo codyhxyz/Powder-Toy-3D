@@ -31,6 +31,7 @@ import { worldCoarseCasters, coarseSunDepth, WORLD_SUN_COARSE_NO_HIT } from '../
 import { worldColumnTops } from '../src/world/worldSunForecast.js';
 import { WORLD_SUN_PITCH, WORLD_SUN_TILE } from '../src/world/worldSun.js';
 import { WORLD_GI_NEAR_RADIUS, worldGIBrickNear } from '../src/world/worldGIRing.js';
+import { worldPageBudget, worldViewFarAir, worldViewProbeFar } from '../src/world/worldViewRing.js';
 
 const ROOT = new URL('../public', import.meta.url).pathname;
 const localFetch = async (url) => new Response(await readFile(ROOT + String(url).split('?')[0]));
@@ -38,7 +39,7 @@ const SUN = [0.55, 0.62, 0.32];          // a mid-morning sun, ~46 degrees up (w
 const EYE_LIFT = 6;                      // cells: a player's eye over the ground (1.8 m at 0.3 m a cell)
 const PITCH = -8 * Math.PI / 180;        // looking a little down, inland
 const VFOV = 70;                         // degrees
-const VIEW = [256, 144];                 // model pixels: a brick at the far shore still spans one
+const VIEW = (process.env.WORLD_MODEL_VIEW ?? '256x144').split('x').map(Number);   // model pixels: a brick at the far shore still spans one (--report may ask for more)
 // The goal (2026-10-22): the eye's demand, its sun tiles' casters, the gathers'
 // SOURCES and their tiles' casters: a first attempt, one for what the view and
 // the gathers find, one for the sun those SOURCES need.
@@ -63,6 +64,8 @@ export const WORLD_HELD_BRICKS = 449215;
 const HILL_GRID = 16;
 // The hill's load is modelled to completion within this many attempts (it settles in 4; b48dd7e4's in 5).
 const HILL_ATTEMPTS = 6;
+// The page budget of the user's Mac (navigator.deviceMemory 8, Chrome's cap).
+const VIEW_BUDGET = worldPageBudget({ deviceMemoryGB: 8 });
 
 // where: 'start' (the scene's start, looking at its centre) or 'hill' (its
 // highest ground, looking at its start: most of the map in view).
@@ -116,12 +119,22 @@ const picked = ['island', DESCENT_START].map((k) => scenes.find((s) => s.key ===
 // sun tiles its grazing view finds that forecastViewTiles misses: the next
 // fix, view-side; gated under what Chrome held, not settled in 3 yet.
 const CAMERAS = { island: { start: { settle: true }, hill: { settle: false } } };
+// The view's own feedback (world/worldViewRing.js): with the scene's round
+// (the model's view stage, its glow lookups included) every load must fit the
+// GPU page budget of the user's Mac without dropping a brick, and its light
+// bounce stay at the gathers the load's own demand reached on Island's start
+// before the view had rings (2,936 at 18a914b0): the view's far pixels add
+// none. Fails on 18a914b0: from Island's hill the view packed 486k bricks
+// (glow regions included) and asked for 12k gathers (real Chrome: 481k
+// bricks, 49k gathers, then out of GPU memory, 2026-10-22).
+export const WORLD_VIEW_LOAD_GATHERS = 3000;
 const POLICIES = {
   'before forecast (fceb7605)': { forecast: 'none', sources: 'all', resetBirths: false },
   'casters forecast (186cefd7)': { forecast: 'eye', sources: 'all', resetBirths: false },
   'demand chain (aeef0d0c)': { forecast: 'view', sources: 'eligible', resetBirths: true },
   'sun rings (b48dd7e4)': { forecast: 'view', sources: 'eligible', resetBirths: true, rings: true },
-  'this fix': { forecast: 'view', sources: 'eligible', resetBirths: true, rings: true, giRing: WORLD_GI_NEAR_RADIUS },
+  'near bounce (18a914b0)': { forecast: 'view', sources: 'eligible', resetBirths: true, rings: true, giRing: WORLD_GI_NEAR_RADIUS, glow: true },
+  'this fix': { forecast: 'view', sources: 'eligible', resetBirths: true, rings: true, giRing: WORLD_GI_NEAR_RADIUS, glow: true, viewRing: true, budget: VIEW_BUDGET.cell },
 };
 // Every brick the light bounce asked for lies inside its near ring of the eye.
 const farAsked = (r) => [...r.giAsked].filter((i) => !worldGIBrickNear(r.cam, r.w.brick(i)));
@@ -132,8 +145,8 @@ if (process.argv.includes('--report')) {
   const where = process.argv.includes('--camera') ? process.argv[process.argv.indexOf('--camera') + 1] : 'start';
   for (const scene of picked.filter((s) => !only || s.key === only)) for (const [name, policy] of Object.entries(POLICIES).filter(([n]) => !policyOnly || n === policyOnly)) {
     const t0 = performance.now();
-    const r = await load(scene, { ...policy, maxAttempts: 30 }, (row) => console.log(`  ${scene.key} ${where} | ${name} | att ${row.attempt} ${row.stage}: req ${row.requirements} (support ${row.support}) sun ${row.sunTiles} coarse ${row.coarseTiles} sources ${row.sources} gathers ${row.gathers}`), where);
-    console.log(`${scene.key} ${where} | ${name}: ${r.done ? 'complete' : 'NOT complete'} after ${r.attempts} attempts, ${r.requirements} bricks, ${r.sunTiles} sun tiles (${r.coarseTiles} coarse), ${r.sources} sources, ${r.gathers} gathers, view-found tiles ${r.viewTiles} (${((performance.now() - t0) / 1000).toFixed(1)} s)`);
+    const r = await load(scene, { ...policy, maxAttempts: 30 }, (row) => console.log(`  ${scene.key} ${where} | ${name} | att ${row.attempt} ${row.stage}: req ${row.requirements} classified ${row.classified} (support ${row.support}, glow cores ${row.glowCores}, dropped ${row.dropped}) sun ${row.sunTiles} coarse ${row.coarseTiles} sources ${row.sources} gathers ${row.gathers}`), where);
+    console.log(`${scene.key} ${where} | ${name}: ${r.done ? 'complete' : 'NOT complete'} after ${r.attempts} attempts, ${r.requirements} bricks (${r.classified} packed, ${r.glowCores} glow cores, ${r.dropped} dropped), ${r.sunTiles} sun tiles (${r.coarseTiles} coarse), ${r.sources} sources, ${r.gathers} gathers, view-found tiles ${r.viewTiles} (${((performance.now() - t0) / 1000).toFixed(1)} s)`);
   }
 } else {
   for (const scene of picked) for (const [where, { settle }] of Object.entries(CAMERAS[scene.key] ?? { start: { settle: true } })) test(`${scene.key} from its ${where}: ${settle ? `a load settles within ${WORLD_LOAD_ATTEMPTS} attempts and ${WORLD_LOAD_BRICKS} bricks, ` : `a load stays under the ${WORLD_HELD_BRICKS} bricks Chrome held, `}its first attempt under ${WORLD_FIRST_ATTEMPT_BRICKS} bricks, its light bounce asks for nothing past its near ring, every sun tile shadowed`, async () => {
@@ -144,6 +157,9 @@ if (process.argv.includes('--report')) {
     if (settle) assert(r.attempts <= WORLD_LOAD_ATTEMPTS, `${r.attempts} attempts`);
     assert(r.done, `not complete after ${r.attempts} attempts`);
     assert(r.requirements <= (settle ? WORLD_LOAD_BRICKS : WORLD_HELD_BRICKS), `the load asks for ${r.requirements} bricks`);
+    assert(r.classified <= VIEW_BUDGET.cell, `the load packs ${r.classified} bricks, past the ${VIEW_BUDGET.cell}-page budget`);
+    assert.equal(r.dropped, 0, 'the load had to drop bricks to fit the budget');
+    assert(r.gathers <= WORLD_VIEW_LOAD_GATHERS, `the load gathers ${r.gathers} probes`);
     assert.deepEqual(farAsked(r), [], 'the light bounce asked for bricks past its near ring');
     assert(rows[0].requirements <= WORLD_FIRST_ATTEMPT_BRICKS, `first attempt asks for ${rows[0].requirements} bricks`);
     // the view's own sun set is known up front: the scene's feedback adds no tile
@@ -160,6 +176,19 @@ if (process.argv.includes('--report')) {
       const t = coarseSunDepth(casters, o, sun.map((n) => -n));
       assert(Number.isFinite(t) && t > 0 && t <= WORLD_SUN_COARSE_NO_HIT, `coarse tile ${tile}: depth ${t}`);
     }
+  });
+  test('the view before its rings is what this check catches: Island from its hill (18a914b0) packs past the page budget and gathers far probes', async () => {
+    const island = picked.find((s) => s.key === 'island');
+    const r = await load(island, { ...POLICIES['near bounce (18a914b0)'], maxAttempts: HILL_ATTEMPTS }, null, 'hill');
+    assert(r.classified > VIEW_BUDGET.cell, `18a914b0's hill load packed only ${r.classified} bricks`);
+    assert(r.gathers > WORLD_VIEW_LOAD_GATHERS, `18a914b0's hill load gathered only ${r.gathers} probes`);
+  });
+  test('a demand over the GPU page budget never packs past it: the farthest bricks go, and the view reads them as air', async () => {
+    const island = picked.find((s) => s.key === 'island'), budget = 150000;
+    const r = await load(island, { ...POLICIES['this fix'], budget, maxAttempts: HILL_ATTEMPTS }, null, 'hill');
+    assert(r.done, 'a load over its budget did not finish');
+    assert(r.dropped > 0, 'the small budget dropped nothing');
+    assert(r.classified <= budget, `packed ${r.classified} bricks past the ${budget}-page budget`);
   });
   test('the light bounce before its ring is what this check catches: Island from its hill (b48dd7e4) asks for SOURCES across the island, past what Chrome held', async () => {
     const island = picked.find((s) => s.key === 'island');

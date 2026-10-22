@@ -19,10 +19,16 @@
 //   neighbours, then marches its 32 rays reading every brick's SOURCE until the
 //   light is spent (GI.T_MIN) or the ray leaves the world; a missing SOURCE is
 //   asked for and read as nothing, so the ray walks on.
-// - view (the eye probe and the scene): each pixel's ray walks through bricks it
-//   has no page for (CELL) to its first hit; there it reads the cells around the
-//   hit (the cubic field's support), the 8 GI probes in front of it and the sun
-//   map's taps at it.
+// - view (the eye probe and the scene's own feedback, worldRender.js extend()):
+//   each pixel's ray walks through bricks it has no page for (CELL) to its first
+//   hit; there it reads the cells around the hit (the cubic field's support),
+//   the 8 GI probes in front of it, the sun map's taps at it and (glow: true)
+//   the 8 glow taps of its local light (surface.js sampleLight), each asking for
+//   its 32-cell core's glow, whose blur reads that core's whole input region
+//   (gfx/worldGlow.js worldGlowPlan: 16^3 bricks; attempt() classifies them).
+//   With viewRing (world/worldViewRing.js) a far missing brick over its
+//   column's floor is walked through unasked, and a far probe or glow lookup
+//   asks for nothing.
 // The matter is the twin's heightfield (solid under scene.ground, water counted
 // as its surface): caves, overhangs and trees are not modelled, so the counts
 // are the loop's shape on the real terrain, not the GPU's exact numbers.
@@ -35,12 +41,15 @@ import { worldSourceEligible, WORLD_SUPPORT_STAGES } from '../src/wire/worldRend
 import { selectWorldGI } from '../src/world/worldLightingHistory.js';
 import { worldSunRings } from '../src/world/worldSunRings.js';
 import { worldGIBrickNear, worldGIProxyCoverage } from '../src/world/worldGIRing.js';
+import { worldViewAirFloors, worldViewFarAir, worldViewProbeFar, worldBudgetDemand, WORLD_VIEW_GI_RADIUS } from '../src/world/worldViewRing.js';
+import { worldGlowPlan } from '../src/gfx/worldGlow.js';
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const CUBIC_SUPPORT = 2;          // cells a cubic field tap reaches past a hit (worldFieldCubic)
 const PROBE_FRONT = BRICK / 2;    // cells in front of a hit its probes are read at (surfaces read probes from in front)
 const VIEW_SAMPLE = 0.5;          // cells between a view ray's matter tests inside a resident brick
 const SUN_SPACING = BRICK / Math.SQRT2 / 2;   // model sun rays: twice the forecast's density (worldSunForecast.js)
+const LOCAL_PROBE_LIFT = 1;       // cells off a hit its glow lookup is read at (surface.js sampleLight at s.p + ng * LOCAL_PROBE_LIFT)
 
 export function demandWorld({ size, scene, P, sun }) {
   const dims = size.map((n) => n / BRICK), heights = new Float32Array(size[0] * size[2]).fill(-1), water = new Uint8Array(size[0] * size[2]);
@@ -173,9 +182,20 @@ export function viewRays({ cam, target, width, height, vfov }) {
 // giRing: the light bounce's near ring radius (cells; world/worldGIRing.js):
 // a gather asks for a missing SOURCE only inside it, and past it reads the
 // ground twin's stand-in (null: every read asks, as before 2026-10-22's ring).
-export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', sources: sourcePolicy = 'eligible', resetBirths = true, rings = false, giRing = null, sharp = new Set(), sharpen = 0, maxAttempts = 40, log = null }) {
+// glow: the view's glow lookups ask for their cores (false: not modelled, as
+// before 2026-10-22's view rings). viewRing: the view's rings. budget: the GPU
+// page budget (worldViewRing.js worldPageBudget's cell pages; null: none).
+export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', sources: sourcePolicy = 'eligible', resetBirths = true, rings = false, giRing = null, sharp = new Set(), sharpen = 0, maxAttempts = 40, log = null, glow = false, viewRing = false, budget = null }) {
   const { size, dims, index, brick, info } = w;
   const req = new Map(), support = new Set(), sunTiles = new Set(), forecastTiles = new Set(sharp), forecastProbes = new Set(), ownedSources = new Set();
+  const glowCores = new Map(), dropped = new Set();
+  let air = viewRing || budget != null ? worldViewAirFloors({ size, tops: worldColumnTops({ size, scene: w.scene, P: w.P }) }) : null;
+  // every brick the CELL stage packs: the demand plus each glow core's input region (worldRender.js attempt())
+  const classified = () => {
+    const ids = new Set(req.keys());
+    for (const core of glowCores.values()) { const r = worldGlowPlan(size, core).input; for (let z = r.min[2]; z < r.max[2]; z++) for (let y = r.min[1]; y < r.max[1]; y++) for (let x = r.min[0]; x < r.max[0]; x++) ids.add(index(x, y, z)); }
+    return ids;
+  };
   let coarse = new Set(), sharpened = false, fineTiles = [];
   const shellTiles = new Set();
   let stage = 'cell';
@@ -184,6 +204,8 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
   // forecast) asked for: the light bounce's own demand (world/worldGIRing.js)
   const byStage = {}, giAsked = new Set();
   const add = (i, bits) => {
+    if (dropped.has(i)) return false;
+    if (bits & READY.GLOW) { const core = brick(i).map((n) => Math.floor(n / 8)); glowCores.set(core.join(','), core); }
     const old = req.get(i), sup = WORLD_SUPPORT_STAGES.has(stage);
     if (old === undefined) byStage[stage] = (byStage[stage] ?? 0) + 1;
     if (stage === 'gather' || stage === 'gather forecast') giAsked.add(i);
@@ -237,6 +259,15 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
         tiles.forEach((i) => forecastTiles.add(i));
       }
     }
+    // the GPU page budget (worldRender.js budgetDemand)
+    if (budget != null) {
+      const ids = classified();
+      if (ids.size > budget) {
+        const r = worldBudgetDemand(ids, { budget, eye: cam, brick, air, held: new Set([...ids].filter((i) => !req.has(i))) });
+        for (const i of r.dropped) { req.delete(i); support.delete(i); dropped.add(i); }
+        air = r.air;
+      }
+    }
     const resident = new Set(req.keys());
     // worldRender.js attempt(): records, then history.begin's mode-2 selection
     // plus the typed SOURCE requests; probes are the typed GI recipients.
@@ -245,7 +276,7 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
     const selection = selectWorldGI({ records, lightingTick: 0, mode: 2 });
     const sources = new Set(selection.sourceBricks.map((b) => index(...b))), probes = new Set(selection.gatherBricks.map((g) => index(...g.brick)));
     for (const [i, bits] of req) if (bits & READY.GI_SOURCE) sources.add(i);
-    const row = { attempt: attempts, requirements: req.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, support: support.size, sources: sources.size, gathers: probes.size };
+    const row = { attempt: attempts, requirements: req.size, classified: glowCores.size || budget != null ? classified().size : req.size, glowCores: glowCores.size, dropped: dropped.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, support: support.size, sources: sources.size, gathers: probes.size };
     history.push(row);
     stage = 'sun';
     let grew = false;
@@ -339,11 +370,12 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
           for (let x = Math.floor((p[0] - CUBIC_SUPPORT) / BRICK); x <= Math.floor((p[0] + CUBIC_SUPPORT) / BRICK); x++)
             if (x >= 0 && y >= 0 && z >= 0 && x < dims[0] && y < dims[1] && z < dims[2]) grew = add(index(x, y, z), READY.CELL) || grew;
     };
-    const wantProbes = (p) => {
+    const wantProbes = (p, bits = READY.GI) => {
+      if (viewRing && worldViewProbeFar(cam, p, WORLD_VIEW_GI_RADIUS)) return;   // past the ring: the open sky's light, no ask
       const q = p.map((n, k) => Math.max(0, Math.min(dims[k] - 1, n / BRICK - 0.5))), base = q.map(Math.floor);
       for (let k = 0; k < 8; k++) {
         const b = [0, 1, 2].map((m) => Math.min(dims[m] - 1, base[m] + ((k >> m) & 1)));
-        grew = add(index(...b), READY.GI) || grew;
+        grew = add(index(...b), bits) || grew;
       }
     };
     const wantSun = (p) => { const t = new Set(); w.tilesAt(p, t); for (const i of t) if (!sunTiles.has(i)) { sunTiles.add(i); grew = true; viewTiles++; } };
@@ -351,17 +383,21 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
     for (const d of rays) {
       march(size, cam, d, (x, y, z, t0, t1) => {
         const i = index(x, y, z);
-        if (!resident.has(i)) { grew = add(i, READY.CELL) || grew; return false; }
+        if (!resident.has(i)) {
+          if (air && (viewRing || dropped.size) && worldViewFarAir(cam, [x, y, z], air)) return false;   // far air: walked through unasked
+          grew = add(i, READY.CELL) || grew; return false;
+        }
         if (!info(i).any && !(y * BRICK < w.seen(x * BRICK + 2, z * BRICK + 2))) return false;
         const t = firstMatter(w, cam, d, t0, t1, w.seen);
         if (t < 0) return false;
         const p = cam.map((n, k) => n + d[k] * t);
         wantCell(p); wantSun(p); wantProbes([p[0], p[1] + PROBE_FRONT, p[2]]);
+        if (glow) wantProbes([p[0], p[1] + LOCAL_PROBE_LIFT, p[2]], READY.GLOW);
         return true;
       });
     }
     row.stage = stage; log?.(row);
     if (!grew) { done = true; break; }
   }
-  return { attempts, done, history, byStage, giAsked, requirements: req.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, fineTiles, coarse: [...coarse], forecastTiles: [...forecastTiles], sources: history.at(-1)?.sources ?? 0, gathers: history.at(-1)?.gathers ?? 0, viewTiles, sourceTiles };
+  return { attempts, done, history, byStage, giAsked, requirements: req.size, classified: classified().size, glowCores: glowCores.size, dropped: dropped.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, fineTiles, coarse: [...coarse], forecastTiles: [...forecastTiles], sources: history.at(-1)?.sources ?? 0, gathers: history.at(-1)?.gathers ?? 0, viewTiles, sourceTiles };
 }
