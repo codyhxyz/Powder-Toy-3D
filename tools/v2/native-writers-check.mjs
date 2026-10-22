@@ -377,7 +377,7 @@ for (const [name, desc, opts] of [['importedDoor', IMPORTED_DOOR_EDIT, {}], ['im
   const game = readFileSync(new URL('../../src/saves/game.js', import.meta.url), 'utf8'), wire = readFileSync(new URL('../../src/wire/saves.js', import.meta.url), 'utf8');
   assert.match(game, /const reads = \[sim\.readSaveState \? sim\.readSaveState\(\) : sim\.readState\(\)\];/, 'the capture reads V2\'s cells');
   assert.match(game, /if \(native\) fill = \(\) => sim\.loadNative\(\);/, 'a V2 save in V2 skips V1\'s cells');
-  assert.match(wire, /nativeLoad: \(h, sections\) => \{/); checks++; }
+  assert.match(wire, /nativeLoad: nativeSaveLoad\(app\),/); checks++; }
 // 10. The profiler's awake/drawn shares: V2's activity, not V1's map (never built under V2).
 { readbacks.length = 0;
   const act = words(owner.act), A = owner.layout;

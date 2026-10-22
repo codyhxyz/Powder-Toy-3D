@@ -111,13 +111,7 @@ const savesWire = {
     saves = createSaves({
       settings, getSim: () => app.sim, getWin: () => app.win,
       prepareCapture: () => app.physics.v2?.ready,
-      // A V2-mode save opened while V2 presents a ready owner: its physicsV2 section restores V2's
-      // exact words (restoreState above), so its V1 cells needn't be written first (saves/game.js).
-      nativeLoad: (h, sections) => {
-        const v2 = app.physics.v2, data = sections.get('physicsV2');
-        if (app.physics.mode !== 'v2' || !v2?.isReady || v2 !== app.sim?.compact || data === undefined) return false;
-        try { return decodeV2State(data, h.dims).mode === 'v2'; } catch { return false; }
-      },
+      nativeLoad: nativeSaveLoad(app),
       header: () => {
         const m = mapOf(settings);
         return {
@@ -245,6 +239,13 @@ function takeSaveThumbnail(app) {
 
 // Get the grid ready for a save: its map and size (a rebuild if they differ),
 // else an undo snapshot. Resolves false to refuse.
+// A V2-mode save opened while V2 presents a ready owner: its physicsV2 section restores V2's exact
+// words (restoreState), so its V1 cells needn't be written first (saves/game.js apply, sim.loadNative).
+export const nativeSaveLoad = app => (h, sections) => {
+  const v2 = app.physics.v2, data = sections.get('physicsV2');
+  if (app.physics.mode !== 'v2' || !v2?.isReady || v2 !== app.sim?.compact || data === undefined) return false;
+  try { return decodeV2State(data, h.dims).mode === 'v2'; } catch { return false; }
+};
 export async function prepareSave(app, h) {
   const { settings } = app;
   if (app.graphicsFailure) throw app.graphicsFailure;

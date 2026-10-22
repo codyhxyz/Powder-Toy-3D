@@ -1464,7 +1464,7 @@ export class Simulation {
     this.giReset = true;
     this.stillFlow();
     this.resetNativeDynamics();
-    this.rays.reset();
+    this.rays?.reset?.();
     this.deco?.reset?.();
   }
 
