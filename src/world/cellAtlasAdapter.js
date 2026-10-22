@@ -247,7 +247,12 @@ export class WorldCellAtlasAdapter {
     // No GPU submission or irreversible Atlas mutation in this callback.
     batch.invalidated=[...invalidatedCoreKeys];batch.fieldToken=token;
   }
-  commitAfterSourceFlush(handle,{lightJobs=[],invalidations=[],dependencyToken,sunManifest}={}){
+  // previousLighting: false when the caller has no use for the snapshot of
+  // the book before this commit (wire/worldRender.js recordCells): held
+  // through the publish, it kept the atlas from patching its CELL book in
+  // place, a new 8 MiB book and its copy per Island classify batch
+  // (renderAtlas.js _books, 2026-10-22).
+  commitAfterSourceFlush(handle,{lightJobs=[],invalidations=[],dependencyToken,sunManifest,previousLighting:keepPrevious=true}={}){
     this._alive();const batch=this.pending;if(!batch||handle!==batch.handle||batch.state!=='captured')throw new Error('Invalid CELL batch');
     if(this.gpu.frame.open)throw new Error('Flush Source/Fields captures before CELL Atlas packing');
     if(!batch.source.isCurrent()||batch.plan.epoch!==this.fields.history.epoch)throw new Error('Stale CELL source/field batch');
@@ -331,7 +336,7 @@ export class WorldCellAtlasAdapter {
       };
       this.atlas.recordPageWrites(writes);writes.length=0;fieldBatch={pages:[]};rawBatch=[];
     };
-    const previousLighting=this.atlas.snapshot();
+    const previousLighting=keepPrevious?this.atlas.snapshot():null;
     try{
       const derivedChanged = this.lightingDirty;
       // Without a proven lighting dependency closure, no old channel may be
@@ -393,7 +398,7 @@ export class WorldCellAtlasAdapter {
       return {generation:publication,token:this.publication.identity,previousLightingSnapshot:previousLighting,previousPublication:old};
     }catch(error){
       for(const job of jobs)try{this.atlas.cancel(job);}catch{}
-      previousLighting.release();for(const b of ephemeral)this._retire(b);
+      previousLighting?.release();for(const b of ephemeral)this._retire(b);
       // Keep captures and Fields tick: packing retries do not advance EMA.
       throw error;
     }

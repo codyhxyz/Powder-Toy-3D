@@ -101,7 +101,9 @@ async function recordCells(gpu,cells,options,label) {
   // record() uses actual sourceDemand and cut.producer on the normal Frame.
   const h=cells.record(gpu.frame,options);
   gpu.flush(label);
-  cells.commitAfterSourceFlush(h).previousLightingSnapshot.release();
+  // No snapshot of the book before it: none is read, and one held through
+  // the publish keeps the atlas from patching the book in place.
+  cells.commitAfterSourceFlush(h,{previousLighting:false});
 }
 // A transaction's field tick, first: its cut's changes and the tick's
 // advancing field owners reach the fields, and the CELL book drops every page
