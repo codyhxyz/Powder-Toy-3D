@@ -8,7 +8,7 @@ import { gridLayout } from '../../src/sim.js';
 import { shadowFrag, shadowRes } from '../../src/shaders/render.js';
 import { RENDER_LAYOUT } from '../../src/shaders/bindings.js';
 import { packetShadowFrag, packetShadowSplatWGSL, packetShadowWords, PACKET_SHADOW_EMPTY, PACKET_RETRACE_WORDS } from '../../src/shaders/v2/packetShadow.js';
-import { nativeParticleWGSL, NATIVE_PARTICLE_LIGHT_LAYOUT, NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT, PARTICLE_SHADOW_LIFT, particleWorldLightWGSL, NativeParticleParams } from '../../src/shaders/v2/particleRender.js';
+import { nativeParticleWGSL, NATIVE_PARTICLE_LIGHT_LAYOUT, NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT, PARTICLE_SHADOW_LIFT, particleWorldLightWGSL, NativeParticleParams, ParticleWorldLight } from '../../src/shaders/v2/particleRender.js';
 import { SHADOW_LIFT, meshLightWGSL } from '../../src/gfx/meshLight.js';
 import { frameBindings } from '../../src/shaders/bindings.js';
 import { worldMeshSunWGSL, worldMeshAmbientWGSL } from '../../src/shaders/worldMeshLight.js';
@@ -125,15 +125,15 @@ test('World lights its packets with its atlas and paged sun, as its figures (not
   assert.equal(PARTICLE_SHADOW_LIFT, SHADOW_LIFT, 'the figures\' lift toward the sun');
   // wmlSun's taps and wmlAmbient's probes (shaders/worldMeshLight.js), in world cells
   assert.match(wgsl, /let p = hp \+ P\.origin \+ FU\.sun \* PARTICLE_SHADOW_LIFT;/);
-  assert.match(wgsl, /wmlSunTap\(i0 \+ o, particleWorldSun, P\.wWorld/);
+  assert.match(wgsl, /wmlSunTap\(i0 \+ o, particleWorldSun, PW\.world/);
   assert.match(wgsl, /wmlProbe\(particleGI0, at, PARTICLE_GI_READY, particleWorldAux/);
   assert.doesNotMatch(nativeParticleWGSL(false), /wmlSunTap/, 'the Box pipe reads the Box volume\'s');
   const calls = [], g = { frame: {}, _frameUniforms: { layout: {}, group: {} }, layout: (_n, l) => l, bindGroup: (l, entries) => ({ l, entries }),
     createBuffer: d => buffer(d.size), flush() {}, createTexture: d => ({ ...d, createView: () => ({ texture: d.label }) }),
-    device: { createSampler: d => ({ sampler: d?.label }) },
+    device: { createSampler: d => ({ sampler: d?.label }) }, writes: [], write(b, o, d) { this.writes.push({ b, o, d }); },
     renderPipeline(d) { return { state: 'ready', ready: Promise.resolve(), draw(_rp, o) { calls.push({ name: d.name, o }); } }; },
     kernel() { return { state: 'ready', ready: Promise.resolve(), dispatch() {} }; } };
-  globalThis.GPUBufferUsage ??= { STORAGE: 128, INDIRECT: 256 };
+  globalThis.GPUBufferUsage ??= { STORAGE: 128, INDIRECT: 256 }; globalThis.GPUBufferUsage.UNIFORM ??= 64; globalThis.GPUBufferUsage.COPY_DST ??= 8;
   const s = { isIdle: false, particles: buffer(65536 * 48), control: buffer(16), attachDrawAdapter() {}, get ready() { return Promise.resolve(); },
     get renderState() { return { version: 1, particleBytes: 48, capacity: 65536, position: 'world cells', particleIdOffset: 12, coreOffsets: [28, 32, 36, 40], bankOffset: 44, liveCountOffset: 0, particles: this.particles, control: this.control, ready: true }; } };
   const a = new NativeParticles(g, s); a.updateView(camera(), 720, new Matrix4(), [0, 0, 0]);
@@ -141,17 +141,24 @@ test('World lights its packets with its atlas and paged sun, as its figures (not
   a.prepareDraw(g.frame);
   const tex = name => ({ texture: { createView: d => ({ view: name, ...d }) } });
   const light = { world: true, aux: tex('aux'), gi: ['g0', 'g1', 'g2', 'g3'].map(tex), sun: tex('sun'), noise: tex('noise'),
-    book: buffer(16), sunBook: buffer(16), requests: buffer(16), params: { wWorld: [9, 9, 9, 1], wProjection: Array(16).fill(1) } };
+    book: buffer(16), sunBook: buffer(16), requests: buffer(16), params: { world: [9, 9, 9, 1], projection: Array(16).fill(1) } };
   a.draw({ frame: g.frame }, { width: 640, height: 360 }, light);
   const matter = calls.find(c => c.name === 'nativeParticleMatterWorld');
   assert.ok(matter, 'World draws its packets with its own pipe');
   assert.ok(!calls.some(c => c.name === 'nativeParticleMatter'), 'not the open sky\'s');
-  assert.equal(matter.o.params.light, 1); assert.deepEqual(matter.o.params.wWorld, [9, 9, 9, 1]);
+  assert.equal(matter.o.params.light, 1);
+  assert.ok(NativeParticleParams.size <= 256, 'P still fits one ring slot: World\'s values are their own uniform');
   assert.equal(matter.o.bind[2].l, NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT);
   const e = Object.fromEntries(matter.o.bind[2].entries.map(x => [x.binding, x.resource]));
   assert.deepEqual([1, 2, 3, 4, 5, 6].map(b => e[b].view), ['aux', 'g0', 'g1', 'g2', 'g3', 'sun']);
   assert.equal(e[6].dimension, '2d-array'); assert.equal(e[7].view, 'noise');
   assert.equal(e[9].buffer, light.book); assert.equal(e[10].buffer, light.sunBook); assert.equal(e[11].buffer, light.requests);
+  // binding 12: the values, packed once for a set (the next frame's same values: the same buffer and group)
+  assert.equal(e[12].buffer.size, ParticleWorldLight.size);
+  const w = g.writes.find((x) => x.b === e[12].buffer), u32 = new Uint32Array(w.d.buffer, w.d.byteOffset, 4);
+  assert.deepEqual(Array.from(u32), [9, 9, 9, 1], 'its book\'s bricks and epoch');
+  a.prepareDraw(g.frame); a.draw({ frame: g.frame }, { width: 640, height: 360 }, { ...light, params: { ...light.params } });
+  assert.equal(calls.filter(c => c.name === 'nativeParticleMatterWorld').at(-1).o.bind[2], matter.o.bind[2], 'equal values, equal sources: the group kept');
   // the World frame hands its mesh context's light to the after wires, and waits for the pipe before its frames
   const frame = readFileSync(new URL('../../src/wire/worldRenderFrame.js', import.meta.url), 'utf8');
   assert.match(frame, /app\.drawWorldAfter\(rp,context\.particleLight\)/);
@@ -202,24 +209,24 @@ ${worldMeshAmbientWGSL}
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3u) {
   FU.shadows = 1u; FU.view = 0; FU.sun = vec3f(0.0, 0.0, 1.0); FU.clouds = 0u; FU.caveAmbient = vec3f(0.1, 0.2, 0.3);
   P.light = ${light}u; P.origin = vec3f(${origin.join(',')});
-  P.wWorld = vec4u(18u, 2u, 2u, 1u); P.wLight = vec4u(132u, ${count}u, ${count}u, 7u); P.wGeometry = vec4u(${auxW}u, ${auxH}u, ${probeW}u, ${probeH}u);
-  P.wFeedback = vec4u(${plane}u, ${status}u, ${status + 1}u, 2u);
-  P.wProjection = mat4x4f(vec4f(1.0, 0.0, 0.0, 0.0), vec4f(0.0, 1.0, 0.0, 0.0), vec4f(0.0, 0.0, 1.0, 0.0), vec4f(0.0, 0.0, 0.0, 1.0));
-  P.wDepth = vec4f(0.0, 0.0, ${WORLD_SUN_PITCH}, 2.4); P.wTiles = vec4i(0, 0, 2, 1); P.wPhysical = vec4u(256u, 8u, 64u, 1u); P.wVersion = vec4u(1u, 1u, 1u, ${status + 1}u);
   let w = pts[id.x].xyz; let n = normalize(vec3f(0.3, 0.4, 0.8)); let q = vec3f(4.0 + f32(id.x) * 20.0, 3.0, 3.0);
   // the packet's draw (window cells) and the figures' readers (world cells: the lift toward the sun, GI_OFFSET out)
   outv[id.x * 4u] = vec4f(particleSun(w - P.origin, n), 0.0);
-  outv[id.x * 4u + 1u] = vec4f(wmlSun(w + FU.sun * ${PARTICLE_SHADOW_LIFT.toFixed(1)}, particleWorldSun, sig, tMediaNoise, linearRepeat, P.wWorld, P.wFeedback, P.wProjection,
-    P.wDepth, P.wTiles, P.wPhysical, P.wVersion, vec4f(FU.sun, 1.0), vec4f(1.0), vec4f(0.0), vec4f(FU.caveAmbient, 0.0), vec4f(0.0)), 0.0);
+  outv[id.x * 4u + 1u] = vec4f(wmlSun(w + FU.sun * ${PARTICLE_SHADOW_LIFT.toFixed(1)}, particleWorldSun, sig, tMediaNoise, linearRepeat, PW.world, PW.feedback, PW.projection,
+    PW.depth, PW.tiles, PW.physical, PW.version, vec4f(FU.sun, 1.0), vec4f(1.0), vec4f(0.0), vec4f(FU.caveAmbient, 0.0), vec4f(0.0)), 0.0);
   outv[id.x * 4u + 2u] = vec4f(particleGI(q - P.origin, n), 0.0);
   outv[id.x * 4u + 3u] = vec4f(wmlAmbient(q, q + n * ${GI_OFFSET_CELLS.toFixed(1)}, n, particleGI0, particleGI1, particleGI2, particleGI3, particleGI0, particleWorldAux,
-    P.wWorld, P.wLight, P.wGeometry, P.wFeedback, wand, 0.0, vec4f(1.0, 1.0, 1.0, 0.0), vec4f(FU.caveAmbient, 0.0)), 0.0);
+    PW.world, PW.light, PW.geometry, PW.feedback, wand, 0.0, vec4f(1.0, 1.0, 1.0, 0.0), vec4f(FU.caveAmbient, 0.0)), 0.0);
 }`;
     const out = new Float32Array(2 * 4 * 4), requests = new Uint32Array(status + 6), tex = (d, w, h) => texBinding(d, [w, h, 1]);
+    // the values as the draw packs them (gfx/nativeParticles.js worldParams)
+    const values = new Uint8Array(ParticleWorldLight.pack({ world: [18, 2, 2, 1], light: [132, count, count, 7], geometry: [auxW, auxH, probeW, probeH],
+      feedback: [plane, status, status + 1, 2], projection: new Matrix4().elements, depth: [0, 0, WORLD_SUN_PITCH, 2.4], tiles: [0, 0, 2, 1],
+      physical: [256, 8, 64, 1], version: [1, 1, 1, status + 1] }));
     new Exec(new WgslParser().parse(src)).dispatchWorkgroups('main', 2, {
       0: { 0: new Float32Array([...pIn, 0, ...pOut, 0]), 1: out, 2: tex(new Float32Array(64 * 4), 64, 1), 3: tex(new Float32Array(16 * 4), 8, 2) },
       2: { 1: texBinding(aux, [auxW, auxH, 1], 'rgba32uint'), 2: tex(band, probeW, probeH), 3: tex(band, probeW, probeH), 4: tex(band, probeW, probeH), 5: tex(band, probeW, probeH),
-        6: tex(optical, 2048, 2048), 7: texBinding(new Float32Array([.8, .8, .8, .8]), [1, 1, 1], 'rgba32float', '3d'), 8: { sampler: {} }, 9: book, 10: sunBook, 11: requests } });
+        6: tex(optical, 2048, 2048), 7: texBinding(new Float32Array([.8, .8, .8, .8]), [1, 1, 1], 'rgba32float', '3d'), 8: { sampler: {} }, 9: book, 10: sunBook, 11: requests, 12: values } });
     const v = (k) => Array.from(out.subarray(k * 4, k * 4 + 3)).map((x) => +x.toFixed(4));
     return { inSun: v(0), inFig: v(1), inGI: v(2), inFigGI: v(3), outSun: v(4), outFig: v(5), outGI: v(6), outFigGI: v(7), requests };
   };

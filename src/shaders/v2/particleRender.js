@@ -33,10 +33,13 @@ export const NativeParticleParams = uniformStruct('NativeParticleParams', {
   // light: 1 when the Box volume's sun map, GI probes and noise are bound (NATIVE_PARTICLE_LIGHT_LAYOUT), or World's
   // atlas and sun (NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT, the World pipe)
   light: 'u32',
-  // World's (the World pipe only): its book's bricks and epoch, the atlas's light and geometry, the feedback's words, the
-  // sun's projection and pages (gfx/worldMeshLight.js createWorldMeshLightContext's owned, the figures' same values)
-  wWorld: 'vec4u', wLight: 'vec4u', wGeometry: 'vec4u', wFeedback: 'vec4u', wProjection: 'mat4x4f', wDepth: 'vec4f',
-  wTiles: 'vec4i', wPhysical: 'vec4u', wVersion: 'vec4u',
+});
+// World's light's values (the World pipe's group 2 binding 12, not P: P fits one 256 B ring slot): its book's bricks and
+// epoch, the atlas's light and geometry, the feedback's words, the sun's projection and pages (gfx/worldMeshLight.js
+// createWorldMeshLightContext's owned: the figures' same values)
+export const ParticleWorldLight = uniformStruct('ParticleWorldLight', {
+  world: 'vec4u', light: 'vec4u', geometry: 'vec4u', feedback: 'vec4u', projection: 'mat4x4f', depth: 'vec4f',
+  tiles: 'vec4i', physical: 'vec4u', version: 'vec4u',
 });
 const ro = (binding, visibility) => ({ binding, visibility, buffer: { type: 'read-only-storage' } });
 // 1: each pool slot's decoration, RGBA8 (src/v2/physics.js particleDecoRange)
@@ -52,12 +55,12 @@ export const NATIVE_PARTICLE_LIGHT_LAYOUT = [ro(0, STAGE.FRAGMENT | STAGE.COMPUT
   tex(2, 'float', '3d'), tex(3, 'float', '3d'), tex(4, 'float', '3d'), tex(5, 'float', '3d'), tex(6, 'float', '3d'), smp(7), smp(8)];
 // The World pipe's group 2: the air, and World's light as its figures read it (gfx/worldMeshLight.js): the atlas's aux
 // records and GI bands, the sun's pages (textureLoad), the media noise (the clouds' shadow) and its sampler, the light
-// and sun books, and the frame's feedback words its misses request pages through (the figures' wmlMiss)
+// and sun books, the frame's feedback words its misses request pages through (the figures' wmlMiss), and their values
 const arr = (binding, sampleType) => ({ binding, visibility: STAGE.FRAGMENT, texture: { sampleType, viewDimension: '2d-array' } });
 export const NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT = [ro(0, STAGE.FRAGMENT | STAGE.COMPUTE), arr(1, 'uint'),
   arr(2, 'unfilterable-float'), arr(3, 'unfilterable-float'), arr(4, 'unfilterable-float'), arr(5, 'unfilterable-float'),
   arr(6, 'unfilterable-float'), tex(7, 'float', '3d'), smp(8), ro(9, STAGE.FRAGMENT), ro(10, STAGE.FRAGMENT),
-  { binding: 11, visibility: STAGE.FRAGMENT, buffer: { type: 'storage' } }];
+  { binding: 11, visibility: STAGE.FRAGMENT, buffer: { type: 'storage' } }, { binding: 12, visibility: STAGE.FRAGMENT, buffer: { type: 'uniform' } }];
 export const NATIVE_PARTICLE_ARGS_LAYOUT = [ro(0, STAGE.COMPUTE),
   { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
 export const nativeParticleArgsWGSL = () => `
@@ -220,6 +223,8 @@ export const particleWorldLightWGSL = () => /* wgsl */ `
 @group(2) @binding(9) var<storage, read> particleWorldBook: array<u32>;
 @group(2) @binding(10) var<storage, read> particleWorldSunBook: array<u32>;
 @group(2) @binding(11) var<storage, read_write> particleWorldRequests: array<atomic<u32>>;
+${ParticleWorldLight.wgsl}
+@group(2) @binding(12) var<uniform> PW: ParticleWorldLight;
 const PARTICLE_SIGMA = array<vec3f, ${ELEMENTS.length}>(${ELEMENTS.map(e => v(e.sigma ?? [0, 0, 0])).join(',')});
 const SHADOW_TINT_ID_SCALE: f32 = ${f(SHADOW_TINT_ID_SCALE)};
 const PARTICLE_SHADOW_LIFT: f32 = ${f(PARTICLE_SHADOW_LIFT)};   // meshLight.js SHADOW_LIFT (the figures')
@@ -246,12 +251,12 @@ fn particleSun(hp: vec3f, n: vec3f) -> vec3f {
   let p = hp + P.origin + FU.sun * PARTICLE_SHADOW_LIFT;
   let cloud = cloudShadow(p);
   if (cloud <= CLOUD_SHADOW_SKIP) { return vec3f(0.0); }
-  let q = (P.wProjection * vec4f(p, 1.0)).xyz;
+  let q = (PW.projection * vec4f(p, 1.0)).xyz;
   let i0 = vec2i(floor(q.xy - 0.5)); let w = fract(q.xy - 0.5);
   var acc = vec3f(0.0);
   for (var k = 0; k < 4; k++) {
     let o = vec2i(k & 1, k >> 1u);
-    let m = wmlSunTap(i0 + o, particleWorldSun, P.wWorld, P.wFeedback, P.wDepth, P.wTiles, P.wPhysical, P.wVersion);
+    let m = wmlSunTap(i0 + o, particleWorldSun, PW.world, PW.feedback, PW.depth, PW.tiles, PW.physical, PW.version);
     let wk = select(1.0 - w.x, w.x, o.x == 1) * select(1.0 - w.y, w.y, o.y == 1);
     acc += select(0.0, 1.0, q.z < m.x + PARTICLE_VOLUME_SHADOW_BIAS) * particleTexelAtt(m, q.z) * wk;
   }
@@ -260,10 +265,10 @@ fn particleSun(hp: vec3f, n: vec3f) -> vec3f {
 // wmlAmbient's GI (with the scene's cave ambient) on a surface at hp facing n, from the probe GI_OFFSET out along it
 fn particleGI(hp: vec3f, n: vec3f) -> vec3f {
   let at = hp + P.origin + n * GI_OFFSET;
-  let c0 = wmlProbe(particleGI0, at, PARTICLE_GI_READY, particleWorldAux, P.wWorld, P.wLight, P.wGeometry, P.wFeedback).rgb;
-  let cx = wmlProbe(particleGI1, at, PARTICLE_GI_READY, particleWorldAux, P.wWorld, P.wLight, P.wGeometry, P.wFeedback).rgb;
-  let cy = wmlProbe(particleGI2, at, PARTICLE_GI_READY, particleWorldAux, P.wWorld, P.wLight, P.wGeometry, P.wFeedback).rgb;
-  let cz = wmlProbe(particleGI3, at, PARTICLE_GI_READY, particleWorldAux, P.wWorld, P.wLight, P.wGeometry, P.wFeedback).rgb;
+  let c0 = wmlProbe(particleGI0, at, PARTICLE_GI_READY, particleWorldAux, PW.world, PW.light, PW.geometry, PW.feedback).rgb;
+  let cx = wmlProbe(particleGI1, at, PARTICLE_GI_READY, particleWorldAux, PW.world, PW.light, PW.geometry, PW.feedback).rgb;
+  let cy = wmlProbe(particleGI2, at, PARTICLE_GI_READY, particleWorldAux, PW.world, PW.light, PW.geometry, PW.feedback).rgb;
+  let cz = wmlProbe(particleGI3, at, PARTICLE_GI_READY, particleWorldAux, PW.world, PW.light, PW.geometry, PW.feedback).rgb;
   return max(SH_Y0 * c0 + SH_COS1 * SH_Y1 * (cx * n.x + cy * n.y + cz * n.z), vec3f(0.0)) + FU.caveAmbient;
 }`;
 

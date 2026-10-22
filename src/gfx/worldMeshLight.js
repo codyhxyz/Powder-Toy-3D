@@ -85,8 +85,8 @@ export function createWorldMeshLightContext(gpu,{publication,worldSize,frameValu
     // V2's packet draw (gfx/nativeParticles.js worldLightGroup, particleRender.js particleWorldLightWGSL): the same
     // publication's native resources and values, as its own pipeline binds them (not three's nodes)
     const particleLight=Object.freeze({world:true,aux:textures.aux,gi:[...textures.gi],sun:nativeSun,noise,book:A.lightBook,sunBook:S.book,requests:feedback,
-      params:Object.freeze({wWorld:owned.world,wLight:owned.light,wGeometry:owned.geometry,wFeedback:owned.feedback,wProjection:owned.projection,
-        wDepth:owned.depth,wTiles:owned.tiles,wPhysical:owned.physical,wVersion:owned.version})});
+      params:Object.freeze({world:owned.world,light:owned.light,geometry:owned.geometry,feedback:owned.feedback,projection:owned.projection,
+        depth:owned.depth,tiles:owned.tiles,physical:owned.physical,version:owned.version})});
     const context=Object.freeze({identity:publication.identity??A,epoch:A.epoch,particleLight,
       bind(){check(!released&&!retiring,'retired world mesh context');check(isCompatible(publication)===true,'incompatible world mesh scene/epoch/config');used=true;install(owned,context);},
       cancel(){check(!used,'used context requires final submission fence');release();},

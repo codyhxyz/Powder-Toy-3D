@@ -2,7 +2,7 @@ import { Matrix4, Vector3 } from 'three';
 import { frameUniformsOf } from './uniforms.js';
 import {
   PARTICLE_BYTES, NativeParticleParams, NATIVE_PARTICLE_LAYOUT, NATIVE_PARTICLE_ARGS_LAYOUT, NATIVE_PARTICLE_AIR_LAYOUT, NATIVE_PARTICLE_LIGHT_LAYOUT,
-  NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT,
+  NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT, ParticleWorldLight,
   nativeParticleWGSL, nativeParticlePipeline, nativeParticleArgsWGSL,
   ParticlePickParams, PARTICLE_PICK_LAYOUT, PICK_RAYS, particlePickWGSL,
 } from '../shaders/v2/particleRender.js';
@@ -139,10 +139,29 @@ export class NativeParticles {
     return this._worldPipe;
   }
   worldReady() { return this.worldPipe()?.ready; }
-  // World's group 2 for this frame's light (gfx/worldMeshLight.js context.particleLight): the air and its resources,
-  // kept while the same ones come again (a new publication makes a new group)
+  // The World light's values (particleRender.js ParticleWorldLight) in a buffer of their own, made when they change (a
+  // new publication's epoch or pages: nothing recorded reads a new buffer, so its write needs no flush); the one it
+  // replaces goes once the frames that read it are done (sim.js _retire's rule)
+  worldParams(params) {
+    const key = JSON.stringify(params);
+    if (this.worldParamsBuffer?.key === key) return this.worldParamsBuffer.buffer;
+    const gpu = this.gpu, old = this.worldParamsBuffer?.buffer;
+    const buffer = gpu.createBuffer({ label: 'native particle world light', size: ParticleWorldLight.size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    gpu.write(buffer, 0, new Uint8Array(ParticleWorldLight.pack(params)), { ordered: false });
+    this.worldParamsBuffer = { key, buffer };
+    if (old) {
+      const done = () => gpu.queue.onSubmittedWorkDone().then(() => old.destroy(), () => old.destroy());
+      const flushes = gpu.stats?.flushes;
+      const wait = () => (!gpu.frame?.open || gpu.stats?.flushes !== flushes || gpu.failure ? done() : setTimeout(wait, 0));
+      queueMicrotask(wait);
+    }
+    return buffer;
+  }
+  // World's group 2 for this frame's light (gfx/worldMeshLight.js context.particleLight): the air, its resources and
+  // values, kept while the same ones come again (a new publication makes a new group)
   worldLightGroup(air, light) {
-    const key = [air.target, light.aux, ...light.gi, light.sun, light.noise, light.book, light.sunBook, light.requests];
+    const values = this.worldParams(light.params);
+    const key = [air.target, light.aux, ...light.gi, light.sun, light.noise, light.book, light.sunBook, light.requests, values];
     if (this.worldGroup?.key.every((x, i) => x === key[i])) return this.worldGroup.group;
     const arr = t => (t?.texture ?? t).createView({ dimension: '2d-array' });
     // (the volume's linearRepeat where a box made it, else the same sampler: the clouds' noise)
@@ -153,7 +172,7 @@ export class NativeParticles {
       ...light.gi.map((t, i) => ({ binding: 2 + i, resource: arr(t) })), { binding: 6, resource: arr(light.sun) },
       { binding: 7, resource: (light.noise?.texture ?? light.noise).createView({ dimension: '3d' }) }, { binding: 8, resource: repeat },
       { binding: 9, resource: { buffer: light.book } }, { binding: 10, resource: { buffer: light.sunBook } },
-      { binding: 11, resource: { buffer: light.requests } },
+      { binding: 11, resource: { buffer: light.requests } }, { binding: 12, resource: { buffer: values } },
     ], 'native particle world light');
     this.worldGroup = { key, group };
     return group;
@@ -221,7 +240,7 @@ export class NativeParticles {
     if (light?.world) {
       // (World: its pipe, built before its frames start; until then, as the pick, the packets wait for it)
       const pipe = this.worldPipe();
-      if (pipe?.state === 'ready') pipe.draw(rp,{ ...options, bind: [this.fu.group,this.group,this.worldLightGroup(air,light)], params: { ...options.params, ...light.params } });
+      if (pipe?.state === 'ready') pipe.draw(rp,{ ...options, bind: [this.fu.group,this.group,this.worldLightGroup(air,light)] });
     } else matter.draw(rp,{ ...options, bind: [this.fu.group,this.group,this.lightGroup(air,light)] });
     rays.draw(rp,options);
     return true; // Recorded, not a claim of a nonzero GPU count.
@@ -262,5 +281,6 @@ export class NativeParticles {
     this.args.destroy();
     this.group = this.countGroup = this.view = null;
     this.pickGroups.clear(); this.airGroups.clear(); this.lightGroups.clear(); this.worldGroup = null;
+    this.worldParamsBuffer?.buffer.destroy(); this.worldParamsBuffer = null;
   }
 }
