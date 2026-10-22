@@ -5,7 +5,8 @@ import { Vector3 } from 'three';
 import { Simulation, gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
-import { externalBlastBase, blastsWGSL, rayRequestBase } from '../../src/shaders/v2/blasts.js';
+import { externalBlastBase, blastsWGSL, rayRequestBase, PLAN } from '../../src/shaders/v2/blasts.js';
+import { FULL } from '../../src/v2/layout.js';
 import { encodeDynamicState, decodeDynamicState } from '../../src/v2/dynamicState.js';
 import { externalBlastPressure, externalBlastBudget, validateExternalBlasts, externalBlastVelocity } from '../../src/v2/externalBlast.js';
 import { blastPlan, pressureEnergy, dynamicsRows } from '../../src/v2/dynamics-reference.js';
@@ -108,6 +109,26 @@ assert.match(shader('externalParticlePlan'),/dExternalShieldedPosition\(particle
 assert.match(shader('normalize'),/D_EXTERNAL_PARTICLES/);
 assert.match(shader('externalParticleApply'),/atomicLoad\(&control\[3\]\)==D_NONE/);
 assert.match(shader('finish'),/weight\/total/);
+// V1 react.js setOff: an explosive under more than its crushP goes off rather than fly. The external blast
+// adds its pressure once it is sure (finish, past externalGate), so damagePlan reads the field it will
+// leave, brick by brick with finish's own expression (a brick it doesn't reach keeps its pressure, a
+// vacuum its sign), and apply sets the explosive off in place past the gate.
+{
+  const damage=shader('damagePlan'),finish=shader('finish'),apply=shader('apply');
+  const added=/let addedP2=([\d.e+]+)\*P\.strength\*weight\/total;/.exec(finish)[1];
+  assert.ok(damage.includes(`return ${added}*P.strength*weight/total;`),'the pressure finish adds');
+  assert.ok(damage.includes('if (P.mode!=14u || !mAirPressure() || total<=0.0 || weight<=0.0) { return 0.0; }'),'where finish adds it');
+  assert.ok(damage.includes('let b=brickOfCell(p); let w=air[b].vp.w; let added=dExternalAddedP2(b); return select(w,sqrt(w*w+added),added>0.0);'));
+  assert.ok(damage.includes('fn dPressureOnAfterExternal(p: vec3i, k: u32) -> f32 {'),'V1\'s pOn on that field');
+  const setOff=damage.indexOf('if (P.mode==14u && energy>0.0 && dCrush(id)>0.0 && mAirPressure() && dPressureOnAfterExternal(cellOf(t),k)>dCrush(id)) {');
+  assert.ok(setOff>0 && setOff<damage.indexOf('var kinetic=energy;'),'set off before the break and the throw');
+  assert.ok(damage.includes(`plans[t]=DPlan(vec3f(0),${PLAN.SET_OFF}u); return;`));
+  const gate=apply.indexOf('if(P.mode==14u && atomicLoad(&control[3])==D_NONE) { return; }'),mark=apply.indexOf(`if ((plan.flags&${PLAN.SET_OFF}u)!=0u) { events[t]|=1u; noteEvents(t,events[t]); }`);
+  assert.ok(gate>0 && mark>gate,'apply sets it off, only once the gate has passed');
+  // its own bit: above the products (8..15) and a partial launch's amount (a full cell's at most, from bit 8)
+  assert.ok(PLAN.SET_OFF>FULL*256*2 && PLAN.SET_OFF<2**32 && Object.values(PLAN).filter(v=>v&PLAN.SET_OFF).length===1);
+  assert.ok(!/fn dPressureOnAfterExternal/.test(apply),'only damagePlan carries the field read');
+}
 // Codec corruption must not interpret explicit null as a backwards-compatible omission.
 const encoded=encodeDynamicState(saved),view=new DataView(encoded.buffer),oldLength=view.getUint32(8,true),oldAt=Math.ceil((16+oldLength)/4)*4;
 const metadata=JSON.parse(new TextDecoder().decode(encoded.subarray(16,16+oldLength)));

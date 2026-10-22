@@ -1,5 +1,5 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
-import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase, shockPostBase, setOffBase, airPressureWGSL } from './particles.js';
+import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase, shockPostBase, setOffBase, airPressureWGSL, pressureReadsWGSL } from './particles.js';
 import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { E } from '../../elements.js';
 import { RAYS } from '../../rays.js';
@@ -15,7 +15,9 @@ export { DynamicParams };
 export const BLASTS_LAYOUT = storageLayout(5);
 // SLIDE: a Factory deck's carry (src/v2/industry.js): the cell leaves from its contact with the deck.
 // CRUSH: a crush phase change (V1 react.js crush), its product in bits 8..15 as BREAK's.
-export const PLAN = Object.freeze({ SPAWN: 1, BREAK: 2, SOURCE: 4, NEUTRON: 8, SLIDE: 64, CRUSH: 128 });
+// SET_OFF: an external blast's pressure sets the explosive off (V1 react.js setOff, crushP) once the blast is
+// sure (apply runs past externalGate), above every bit a product or a partial launch's amount uses.
+export const PLAN = Object.freeze({ SPAWN: 1, BREAK: 2, SOURCE: 4, NEUTRON: 8, SLIDE: 64, CRUSH: 128, SET_OFF: 1 << 30 });
 export const CHILD_PREFIX = CONTROL.PREFIX;
 export const SPAWN_PREFIX = CHILD_PREFIX + PARTICLE_CAP;
 export const RAY_REQUEST_CAP = 64;
@@ -422,6 +424,15 @@ fn dSpawn(slot: u32, rank: u32, m: Material, v: vec3f, rule: u32) -> bool {
 }
 `;
 }
+// An external blast's pressure in brick b as finish adds it (mode 14: the brick's share of the blast's air
+// weight), and the pressure on a cell read from the field that leaves (particles.js pressureReadsWGSL).
+const externalAfterWGSL = g => /* wgsl */ `
+fn dExternalAddedP2(b: u32) -> f32 {
+  let total=bitcast<f32>(atomicLoad(&control[${externalAirBase(g)+g.nbricks}u])); let weight=bitcast<f32>(atomicLoad(&control[${externalAirBase(g)}u+b]));
+  if (P.mode!=14u || !mAirPressure() || total<=0.0 || weight<=0.0) { return 0.0; }
+  return ${f(AIR.rho*AIR.sound**2/AIR.edge**3)}*P.strength*weight/total;
+}
+${pressureReadsWGSL('AfterExternal', 'let b=brickOfCell(p); let w=air[b].vp.w; let added=dExternalAddedP2(b); return select(w,sqrt(w*w+added),added>0.0);')}`;
 export function blastsWGSL(g,nativeHead,stage) {
   const h = head(g,nativeHead);
   if (stage === 'externalBegin') return h + main1(`
@@ -772,9 +783,15 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
     }
     atomicStore(&control[6],bitcast<u32>(scale));
   `);
-  if (stage === 'damagePlan') return h + main64(`
+  if (stage === 'damagePlan') return h + externalAfterWGSL(g) + main64(`
     if (t >= D_SLOTS) { return; } var plan=plans[t]; let m=loadMaterial(t); let id=cid(m.core); let k=cls(id);
     let energy=length(plan.velocity)*bitcast<f32>(atomicLoad(&control[6]));
+    // V1 react.js setOff: an explosive under more than its crushP goes off rather than break or fly. An
+    // external blast adds its pressure once it is sure (finish, past externalGate), so this reads the
+    // field it will leave (dPressureOnAfterExternal); apply sets it off then, in place.
+    if (P.mode==14u && energy>0.0 && dCrush(id)>0.0 && mAirPressure() && dPressureOnAfterExternal(cellOf(t),k)>dCrush(id)) {
+      plans[t]=DPlan(vec3f(0),${PLAN.SET_OFF}u); return;
+    }
     var kinetic=energy;
     if (energy>0.0 && k==1u) {
       var broken=m; broken.core.x=(broken.core.x&0xffffff00u)|u32(max(0,dBreak(id)));
@@ -908,6 +925,7 @@ var<workgroup> childCounts: array<u32,64>;
       after=dCrushed(before,(plan.flags>>8u)&255u);
       dNoteEnergyChange(cellOf(t),energyOf(before),energyOf(after));
     }
+    if ((plan.flags&${PLAN.SET_OFF}u)!=0u) { events[t]|=1u; noteEvents(t,events[t]); }
     if ((plan.flags&1u)!=0u) {
       let rank=dRank(t);
       if ((plan.flags&8u)!=0u) {
