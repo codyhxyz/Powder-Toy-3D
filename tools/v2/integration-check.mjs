@@ -115,9 +115,14 @@ owner.dynamics = { isReady: true, isIdle: true, air: [0, 1].map(() => buffer({ s
   advanceParticles: () => calls.push({ name: 'native-particle-tick' }),
   consumeMaterialEvents: () => calls.push({ name: 'native-event-tick' }),
   advanceAir: () => calls.push({ name: 'native-air-tick' }), ready: Promise.resolve(), capabilities: { physicsReady: true, drawReady: true, impulse: true, photon: true, neutron: true },
-  readActivity: async () => ({}), shiftWindow: delta => { shifts.push(delta); return Promise.resolve(); }, applyToolImpulse: r => { requests.push(r); return 'accepted'; } };
+  readActivity: async () => ({}), applyToolImpulse: r => { requests.push(r); return 'accepted'; },
+  // a World move's dynamics (NativeDynamics.recordWindowShift): recorded before the cores' restore, committed after it
+  recordWindowShift: (delta, opts) => { shifts.push(delta); moveOrder.push(['record', opts?.legacy]); return { commit: () => moveOrder.push(['commit']), landed: Promise.resolve() }; } };
 await sim.prepareNative(owner);
-const shiftNative = (dx, dz) => sim.nativeIntegration.beginShift(dx, dz, () => sim.shift(dx, dz));
+const moveOrder = [];
+// The move is made in the frame, as V1's (src/sim.js shift): nothing to await.
+const shiftNative = (dx, dz) => { const restore = owner.restore; owner.restore = function (...a) { moveOrder.push(['restore']); return restore.apply(this, a); };
+  try { sim.shift(dx, dz); } finally { owner.restore = restore; } };
 assert.equal(owner.nativeDynamics, adapter, 'application does not overwrite foundation adapter');
 assert.equal(nativeCapabilities(sim).world, true);
 assert.equal(nativeReadiness(sim, { pov: true }).ready, true);
@@ -153,8 +158,9 @@ const duplicate = encoded.slice(); new DataView(duplicate.buffer).setUint32(4 + 
 assert.throws(() => validateNativeWorldStore(encoded, null));
 
 calls.length = 0;
-await shiftNative(16, 0);
+shiftNative(16, 0);
 assert.deepEqual(shifts, [[16, 0, 0]], 'only dynamics local fields reindex; world particle positions belong to dynamics');
+assert.deepEqual(moveOrder, [['record', true], ['restore'], ['commit']], 'dynamics and legacy words move with the cores, around their restore');
 for (let s = 0; s < g.slots; s++) {
   const q = slotCell(g, s); q[0] += 16;
   if (inside(q)) {
@@ -164,7 +170,7 @@ for (let s = 0; s < g.slots; s++) {
 }
 owner.sync();
 assert(!calls.some(c => c.name === 'v2import' && c.opts.params.full === 1), 'a residency shift never reimports projected whole-grid state');
-await shiftNative(-16, 0);
+shiftNative(-16, 0);
 const window = Object.assign(Object.create(WorldWindow.prototype), { sim, nativeStore: stored });
 assert.equal(window.restoreNative([0, 0, 0], [4, 8, 8]), 256);
 assert.equal(stored.size, 0);
@@ -176,27 +182,21 @@ for (const [dx, dz] of [[-16, 0], [0, 16], [0, -16]]) {
   const lo = [dx < 0 ? 16 : 0, 0, dz < 0 ? 16 : 0];
   const bricks = [dx ? 4 : 8, 8, dz ? 4 : 8];
   const leaving = await sim.nativeIntegration.captureSlab(lo, bricks);
-  await shiftNative(dx, dz); await shiftNative(-dx, -dz);
+  shiftNative(dx, dz); shiftNative(-dx, -dz);
   sim.nativeIntegration.restoreBricks(lo, bricks, leaving.map((bytes, index) => ({ index, bytes })));
   assert.deepEqual(core, originalCore); assert.deepEqual(bank, originalBank);
 }
 
-// Real asynchronous boundary: no core shift, origin movement, tools or ticks
-// until dynamics has rebased its local air/claims. World particle words remain its own.
-const oldShift = owner.dynamics.shiftWindow;
-let finishShift;
-owner.dynamics.shiftWindow = () => new Promise(resolve => { finishShift = resolve; });
-const oldOrigin = sim.origin.x, oldTick = owner.tick, oldCore = core.slice();
-const inFlightShift = shiftNative(16, 0);
-assert(sim.nativeTransition);
-assert.equal(nativeHostSteps(owner, 1), 0);
-assert.equal(nativeReadiness(sim, { world: true }).ready, false);
-assert.equal(sim.applyNativeTool({ kind: 'impulse' }), false);
-assert.equal(sim.origin.x, oldOrigin); assert.equal(owner.tick, oldTick); assert.deepEqual(core, oldCore);
-finishShift(); await inFlightShift;
-assert.equal(sim.nativeTransition, null); assert.equal(sim.origin.x, oldOrigin + 16);
-owner.dynamics.shiftWindow = oldShift;
-await shiftNative(-16, 0);
+// No transition: the world keeps stepping and its tools keep working through a move (S1). V2 used
+// to hold every tick, tool and stroke for a dynamics readback at each 16 cells of travel.
+const oldOrigin = sim.origin.x, oldTick = owner.tick;
+shiftNative(16, 0);
+assert.equal(sim.nativeTransition ?? null, null); assert.equal(sim.origin.x, oldOrigin + 16, 'the move is made at once');
+assert.equal(nativeReadiness(sim, { world: true }).ready, true);
+assert.equal(nativeHostSteps(owner, 1 / 60, { once: true }), 1, 'the world ticks in the frame of a move');
+assert(owner.tick > oldTick);
+assert.notEqual(sim.applyNativeTool({ kind: 'impulse', position: [1, 2, 3], direction: [1, 0, 0], radius: 1, strength: 1 }), false, 'tools work in the frame of a move');
+shiftNative(-16, 0);
 sim.nativeIntegration.restoreBricks([0, 0, 0], [4, 8, 8], slab.map((bytes, index) => ({ index, bytes })));
 assert.deepEqual(core, originalCore); assert.deepEqual(bank, originalBank);
 

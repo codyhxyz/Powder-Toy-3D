@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { Vector3, Scene } from 'three';
 import { registerHooks } from 'node:module';
+import { readFileSync } from 'node:fs';
 import { E } from '../src/elements.js';
 import { CITY_FOLK_CITY as C } from '../src/world/scenes/cityFolk/city.js';
 import { compileShared, jsConstants, definesTypes } from '../src/world/scenes/themedShared.js';
@@ -132,6 +133,41 @@ for(const replacement of ['mode','world','epoch','disposed','hidden','dead']) {
   assert.equal(f.bus.holding,false,'other modes/replacements must never freeze their body');
   gate.resolve();assert.equal((await first).ok,false,replacement);
   assert.equal(f.player.teleports,0);assert.equal(f.focus,null);assert.equal(f.bus.busy,false);
+}
+// The app's actual move (wire/world.js moveWindow) over a window whose moves land later (M1): the way a
+// V2 move once committed (a native transition) and any window may. Each move is waited for, the next waits
+// for its leaving slab (WorldWindow.blocker), and the arrival is checked only once the window is there.
+// Before: moveWindow returned null for a move in flight, the bus took that for arrival, and every ride
+// was "The bus arrival is blocked".
+for (const asynchronous of [true,false]) {
+  const source=readFileSync(new URL('../src/wire/world.js',import.meta.url),'utf8');
+  const start=source.indexOf('  moveWindow(app) {'),brace=source.indexOf('{',start);let depth=1,end=brace+1;
+  for(;depth;end++){if(source[end]==='{')depth++;else if(source[end]==='}')depth--;}
+  const moveWindow=new Function(`return ({${source.slice(start,end)}}).moveWindow;`)();
+  const f=fixture(),later=()=>new Promise(r=>setTimeout(r,1));let focus=null,moving=0,arrivedInside=null;
+  // a window that streams 16 cells a move once 20 past its centre (world/window.js update), one move at a time
+  const win=Object.assign(f.world,{blocker(){return this.pending;},update(fx,fz){
+    if(this.pending)return null;
+    for(const [axis,at] of [['x',fx],['z',fz]]){
+      const excess=at-(f.sim.origin[axis]+f.sim.g[axis==='x'?'nx':'nz']/2);
+      if(Math.abs(excess)<=20)continue;
+      const d=Math.sign(excess)*16,move=axis==='x'?[d,0]:[0,d];
+      const commit=()=>{f.sim.origin[axis]+=d;moving--;f.moves.push([axis,d]);};
+      moving++;
+      if(!asynchronous){commit();this.pending=later().then(()=>{this.pending=null;});return move;}
+      return (this.pending=later().then(()=>{commit();this.pending=null;return move;}));
+    }
+    return null;
+  }});
+  const app={mp:{replica:false},win,sim:f.sim,get villageFocus(){return focus;},worldFocus:null,hover:{cell:new Vector3()},
+    pov:{active:true,player:f.player,windowShifted(dx,dz){f.player.pos.x-=dx;f.player.pos.z-=dz;}},
+    controls:{target:new Vector3()},scale:1,anchor:{x:0,y:0},placeVolume(){},inWindow:()=>true,pacer:{wake(){}}};
+  f.adapter.withVillageFocus=(at,valid,visit)=>withCityBusFocus({world:win,at,valid,getFocus:()=>focus,setFocus:v=>focus=v,
+    move:()=>moveWindow(app),visit:async current=>{arrivedInside=moving===0;return visit(current);}});
+  const bus=createCityBus(f.adapter);
+  assert.equal((await bus.board()).ok,true,`a ride over ${asynchronous?'asynchronous':'in-frame'} moves arrives`);
+  assert.deepEqual(absolute(f),[1536,48,208]);assert.equal(arrivedInside,true,'no move was in flight at the arrival check');
+  assert(f.moves.length>10);assert.equal(focus,null);
 }
 {
   const f=fixture();f.player.pos.set(1300-f.sim.origin.x,48,396-f.sim.origin.z);

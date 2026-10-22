@@ -207,59 +207,17 @@ export class WorldWindow {
     return () => { if (!released) { released = true; this.historyReaders--; } };
   }
 
-  // COW history: stored byte strings are immutable after put(); snapshots copy
-  // only Map indices, never all retained material. Existing sim history limit
-  // bounds the retained versions. A previous leaving readback must land first.
-  captureHistory() {
-    const identity = this.historyIdentity, origin = this.sim.origin.toArray(), planted = this.planted.slice();
-    this.historyReaders++;
-    const capture = () => {
-      if (identity !== this.historyIdentity || this.sim.disposed || this.persistenceError) throw new Error('World changed or failed during history capture');
-      return { window: this, identity, origin, planted, store: new Map(this.store.map), storeBytes: this.store.bytes,
-        nativeStore: new Map(this.nativeStore.map), nativeBytes: this.nativeStore.bytes,
-        decoStore: this.sim.deco ? new Map(this.sim.deco.store) : null };
-    };
-    const pending = [this.pending, this.sim.deco?.pending].filter(Boolean);
-    if (!pending.length) {
-      try { return Promise.resolve(capture()); } finally { this.historyReaders--; }
-    }
-    return Promise.all(pending).then(capture).finally(() => { this.historyReaders--; });
-  }
-  prepareHistoryRestore(h) {
-    if (!h || h.window !== this || h.identity !== this.historyIdentity || this.pending || this.sim.deco?.pending || this.historyReaders)
-      throw new Error('Native world history is not ready for this window');
-    const g = this.sim.g;
-    if (!Array.isArray(h.origin) || h.origin.length !== 3 || h.origin.some((n, i) => !Number.isInteger(n) || n < 0 || (i === 1 ? n !== 0 : n % WIN_STEP !== 0) || n + [g.nx, g.ny, g.nz][i] > this.size[i]) ||
-      !(h.planted instanceof Uint8Array) || h.planted.length !== this.planted.length || !(h.store instanceof Map) || !(h.nativeStore instanceof Map))
-      throw new Error('Invalid native world history');
-    const max = this.wb.reduce((a, b) => a * b, 1), A = new Float32Array(BRICK_FLOATS), B = new Float32Array(BRICK_FLOATS);
-    let legacyBytes = 0, nativeBytes = 0;
-    for (const [key, bytes] of h.store) {
-      if (!Number.isInteger(key) || key < 0 || key >= max || !(bytes instanceof Uint8Array)) throw new Error('Invalid legacy world history brick');
-      decodeBrick(bytes, A, 0, B, 0); legacyBytes += bytes.length;
-    }
-    const native = new NativeBrickStore(this.wb);
-    for (const [key, bytes] of h.nativeStore) { native.put(key, bytes); nativeBytes += bytes.length; }
-    if (legacyBytes !== h.storeBytes || nativeBytes !== h.nativeBytes) throw new Error('Invalid world history byte counts');
-    if (h.decoStore !== null && (!(h.decoStore instanceof Map) || [...h.decoStore].some(([key, bytes]) => !Number.isInteger(key) || key < 0 || key >= max || !(bytes instanceof Uint8Array) || bytes.length !== 256))) throw new Error('Invalid decoration world history');
-    // Allocate all new indices before the commit. Byte payloads remain shared,
-    // future store.put/drop changes only the current Map, not this history.
-    const legacy = new Map(h.store), deco = h.decoStore && new Map(h.decoStore);
-    return () => {
-      const o = this.sim.origin, delta = [h.origin[0] - o.x, h.origin[2] - o.z];
-      this.epoch++;
-      this.store.map = legacy; this.store.bytes = legacyBytes;
-      this.nativeStore.map = native.map; this.nativeStore.bytes = nativeBytes;
-      this.planted.set(h.planted); o.fromArray(h.origin);
-      if (this.sim.deco) { this.sim.deco.epoch++; this.sim.deco.store = deco ?? new Map(); }
-      this.sim.fieldReset = this.sim.giReset = this.sim.changedAll = true;
-      this.sim.forceAll = this.sim.actFull = true;
-      return delta;
-    };
-  }
-  finishHistoryRestore(delta) {
-    this.far?.build();
-    this.sim.onWorldHistoryRestore?.(...delta);
+  // What a move toward the focus waits for now, or null when update() decides: the last move's
+  // leaving slab (and the decoration's), and under V2 the window's pipelines and dynamics, which may
+  // still be building after the world loads. A streaming loop (the city bus, a mode's drop-in:
+  // wire/world.js streamToFocus) waits on it, so a move that can't be made yet is never taken for
+  // the window having arrived.
+  blocker() {
+    if (!this.loaded || this.persistenceError || this.capturing) return null;
+    const sim = this.sim, waits = [this.pending, sim.deco?.pending];
+    if (sim.compactOwner && (sim.nativeTransition || !sim.nativeCapabilities.world)) waits.push(sim.nativeTransition ?? sim.prepareNative());
+    const pending = waits.filter(Boolean);
+    return pending.length ? Promise.all(pending).then(() => {}, () => {}) : null;
   }
 
   // Keep the window centred on the focus (world cells, x and z). Returns the
@@ -284,8 +242,8 @@ export class WorldWindow {
     }
     if (!best) return null;
     const move = best.axis ? [0, best.d] : [best.d, 0];
-    const result = this.shift(...move);
-    return result?.then ? result.then(() => move) : move;
+    this.shift(...move);
+    return move;
   }
 
   // Capture every resident brick through the existing bounded slab diff/readback,
@@ -350,22 +308,33 @@ export class WorldWindow {
   }
 
   // Move the window by (dx, 0, dz) world cells (one of them 0): steps 1–4 above.
+  // Under either engine the move is made in the frame, as V1's always was: V2's
+  // dynamics move with its cells in the same encoder (v2/integration.js shift),
+  // so the world, the body and the tools never wait on it. What can refuse a
+  // move is checked before anything moves.
   shift(dx, dz) {
     if (this.capturing) throw new Error('Cannot shift a window during edit capture');
     if (this.persistenceError) throw this.persistenceError;
     if (this.historyReaders) throw new Error('World history capture is pending');
     if (this.sim.compactOwner && this.pending) throw new Error('World shift while leaving slab is pending');
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) throw new Error('Native world shift is not ready');
-    if (this.sim.compactOwner) {
-      const transition = this.sim.nativeIntegration.beginShift(dx, dz, () => {
-        this.pending = null;
-        this._shiftCommitted(dx, dz);
-      });
-      this.pending = transition;
-      transition.catch(error => { this.persistenceError = error; });
-      return transition;
-    }
     return this._shiftCommitted(dx, dz);
+  }
+  // A V2 move's leaving slab of dynamics (its air and requests: NativeDynamics.recordWindowShift) is
+  // read back beside the cells' (readBack): the next move waits for both, and a failed read freezes
+  // the window as a failed cell read does, never the world.
+  _trackDynamics(landing) {
+    if (!landing) return;
+    const epoch = this.epoch;
+    const pending = Promise.resolve(landing).catch((err) => {
+      if (epoch === this.epoch) this.persistenceError = this.readbackError = err;
+      if (!this.gpu.failure) console.error('world window: leaving slab readback failed; native streaming/saving is blocked', err);
+    }).finally(() => {
+      this.storeReads.delete(pending);
+      this.pending = this.storeReads.values().next().value ?? null;
+    });
+    this.storeReads.add(pending);
+    this.pending ??= pending;
   }
   _shiftCommitted(dx, dz) {
     const t0 = performance.now();
@@ -394,6 +363,7 @@ export class WorldWindow {
     this.far?.summarize(leaveLo, bricks);
     // 2.
     sim.shift(dx, dz);
+    if (sim.compactOwner) this._trackDynamics(sim.nativeIntegration?.landing);
     // 3.
     const o = sim.origin;
     this.gen.fill(this.P, [o.x, o.y, o.z], enterLo, enterHi, { residency: true });
@@ -568,7 +538,7 @@ export class WorldWindow {
     // cells. V1's store already put back V1's copy of every brick V1 can tell from the generator (readBack
     // keeps one wherever V2's diff differs); a native brick only V2 holds differs in its energy bank alone,
     // which V1 has no word for. Exporting here wrote V2's projection over V1's whole window (A as V2
-    // quantizes it, B zeroed) at every shift, since a native shift marks every brick (integration.changed).
+    // quantizes it, B zeroed) at every shift. (The scatter notes only the bricks it wrote.)
     return keys.length;
   }
 

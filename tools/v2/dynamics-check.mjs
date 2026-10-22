@@ -5,6 +5,7 @@ import { E } from '../../src/elements.js';
 import { gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { AIRBORNE_COLOURS } from '../../src/v2/airborne.js';
+import { windowMoveReference } from './window-move-reference.mjs';
 import { PARTICLE_CAP, DT, CELL_M, AIR, packParticle, unpackParticle, ballistic, sweep,
   stableId, resolveDeposits, allocateSources, impact, blastPlan, exchangeScalar, airSource, airQuiet } from '../../src/v2/dynamics-reference.js';
 const close=(a,b,e=1e-9)=>assert.ok(Math.abs(a-b)<=e,`${a} != ${b}`);
@@ -92,7 +93,9 @@ function mockOwner() {
   const copy=(b,offset,src)=>{ const u=src instanceof ArrayBuffer?new Uint8Array(src):new Uint8Array(src.buffer,src.byteOffset,src.byteLength);new Uint8Array(b.bytes).set(u,offset); };
   const gpu={createBuffer:({size,label})=>{const b={size,label,bytes:new ArrayBuffer(size),destroy(){this.destroyed=true;}};buffers.push(b);return b;},
     queue:{writeBuffer:copy},write:copy,layout:(_name,l)=>l,bindGroup:(_l,b)=>b,
-    kernel:d=>({name:d.name,ready:Promise.resolve(),dispatch:(frame,size,opts)=>{d.params.pack(opts.params);calls.push({name:d.name,size,opts});}}),
+    kernel:d=>({name:d.name,ready:Promise.resolve(),dispatch:(frame,size,opts)=>{d.params.pack(opts.params);calls.push({name:d.name,size,opts});
+      // a World window move's dynamics (shaders/v2/windowMove.js) runs its independent CPU reference
+      if(d.name==='v2window_move') windowMoveReference(g,b=>new Uint32Array(b.bytes),opts.bind,opts.params);}}),
     frame:{clear:(b,offset=0,size=b.size-offset)=>new Uint8Array(b.bytes,offset,size).fill(0),
       copy:(src,offset,dest,to,size)=>new Uint8Array(dest.bytes,to,size).set(new Uint8Array(src.bytes,offset,size))},
     readback:{buffer:(b,offset,size)=>{calls.push({read:b.label});return Promise.resolve(b.bytes.slice(offset,offset+size));}}};
@@ -143,12 +146,12 @@ test('window shift preserves world-space particles, exact archived air and oblig
   const p={id:53,position:[1,2,3],velocity:[0,0,0],...matter()};owner.gpu.write(d.particles,0,packParticle(p));
   const a=new Float32Array(d.air[0].bytes);a[0]=3;a[4]=321;
   new Uint32Array(owner.events.bytes)[0]=4;
-  await d.shiftWindow([16,0,0]);
+  await d.shiftWindow([16,0,0]).settled;
   assert.deepEqual(unpackParticle(d.particles.bytes),p);assert.equal(d.pendingOutside.size,1);
-  await d.shiftWindow([-16,0,0]);
+  await d.shiftWindow([-16,0,0]).settled;
   assert.equal(new Float32Array(d.air[0].bytes)[0],3);assert.equal(new Float32Array(d.air[0].bytes)[4],321);
   assert.equal(new Uint32Array(owner.events.bytes)[0],4);assert.equal(d.pendingOutside.size,0);
-  await assert.rejects(d.shiftWindow([1,0,0]),/brick-aligned/);
+  assert.throws(()=>d.shiftWindow([1,0,0]),/brick-aligned/);
 });
 test('one particle, even outside the window, prevents false idle',async()=>{
   const {owner}=mockOwner(),d=new NativeDynamics(owner);await d.ready;

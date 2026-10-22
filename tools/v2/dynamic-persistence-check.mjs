@@ -6,12 +6,13 @@ import { WorldWindow } from '../../src/world/window.js';
 import { BrickStore, encodeBrick, BRICK_FLOATS } from '../../src/world/store.js';
 import { NativeBrickStore, encodeNativeBrick } from '../../src/world/nativeStore.js';
 import { heldBase, shockBase, setOffBase } from '../../src/shaders/v2/particles.js';
+import { windowMoveReference } from './window-move-reference.mjs';
 // CPU-only: actual foundation/contact/dynamics constructors and save/undo
 // orchestration. GPU commands copy mock bytes; WGSL execution is NOT emulated.
 import assert from 'node:assert/strict';
 import { Vector3 } from 'three';
 import { Simulation, gridLayout } from '../../src/sim.js';
-import { marksLayout } from '../../src/shaders/common.js';
+import { marksLayout, cellSlot, brickIdOf } from '../../src/shaders/common.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { NativeDynamics, validateDynamicState } from '../../src/v2/dynamics.js';
@@ -38,7 +39,8 @@ const gpu = {
   queue: { writeBuffer: write }, write, flush() {},
   frame: { clear(b, at = 0, n = b.size - at) { new Uint8Array(b.bytes, at, n).fill(0); },
     copy(a, at, b, to, n) { new Uint8Array(b.bytes).set(new Uint8Array(a.bytes, at, n), to); } },
-  kernel: ({ name, code }) => ({ name, code, state: 'ready', ready: Promise.resolve(), dispatch(_f, _n, opts) { dispatches.push({ name, opts }); } }),
+  kernel: ({ name, code }) => ({ name, code, state: 'ready', ready: Promise.resolve(), dispatch(_f, _n, opts) { dispatches.push({ name, opts });
+    if (name === 'v2window_move') windowMoveReference(g, words, opts.bind, opts.params); } }),
   readback: { buffer(b, at, n) {
     reads.push(b.label); const bytes = b.bytes.slice(at, at + n);
     return delayed ? new Promise(resolve => pending.push(() => resolve(bytes))) : Promise.resolve(bytes);
@@ -120,65 +122,79 @@ assert.throws(() => restoreNativeSnapshot(owner, { ...snapshot, dynamic: wrongMa
 restoreNativeSnapshot(owner, snapshot);
 assert.equal(words(d.control)[setOffBase(g)], 101);
 
-// Actual Simulation history waits for the same-batch readback, then restores
-// all authoritative sections. A shifted dynamic undo preserves/rejects entry.
-sim.snapshot('mixed native');
-words(owner.cells).fill(0); words(d.particles).fill(0); d.pendingOutside.clear();
-const undo = sim.undo(); assert(undo?.then, 'pending undo is an explicit asynchronous operation');
-while (pending.length) pending.shift()();
-assert.equal(await undo, true); assert.deepEqual(words(owner.cells), oldCore); assert.deepEqual(words(d.particles), oldParticles);
-assert.equal(d.pendingOutside.get('129,2,3'), 5);
-sim.snapshot('shift guard'); while (pending.length) pending.shift()(); await sim.history.at(-1).nativePending;
-sim.origin.x = 16; assert.throws(() => sim.undo(), /retained-world history/); assert.equal(sim.history.length, 1); sim.origin.x = 0;
+// A V2 undo entry is GPU copies taken with the stroke (C9): no readback, no legacy projection, no
+// A/B copy, and an undo right after it waits for nothing. It brings every dynamic word back.
+delayed = true;
+{
+  const readsBefore = reads.length, bridges = dispatches.filter(x => x.name === 'v2bridge').length;
+  sim.snapshot('mixed native');
+  assert.equal(reads.length, readsBefore, 'a stroke start reads nothing back');
+  assert.equal(dispatches.filter(x => x.name === 'v2bridge').length, bridges, 'nor exports the legacy projection');
+  assert.equal(sim.history.at(-1).A ?? null, null, 'nor copies the A/B projection');
+  const air = words(d.air[d.airIndex]).slice();
+  words(owner.cells).fill(0); words(d.particles).fill(0); words(owner.events).fill(0); words(d.air[d.airIndex]).fill(0);
+  d.pendingOutside.clear(); d.airArchive.clear(); d.rayRequests.clear();
+  assert.equal(sim.undo(), true, 'an undo right after the stroke takes it back at once');
+  assert.deepEqual(words(owner.cells), oldCore); assert.deepEqual(words(d.particles), oldParticles);
+  assert.deepEqual(words(d.air[0]), air); assert.deepEqual(words(d.air[1]), air);
+  assert.equal(words(owner.events)[3], 7); assert.equal(d.pendingOutside.get('129,2,3'), 5);
+  assert(d.airArchive.has('128,0,0')); assert.equal(d.rayRequests.size, 1);
+  assert.equal(sim.history.length, 0);
+}
+// An undo across a move is V1's (M4: sim.js undo, undoShift): the cells the entry's window shares with
+// this one come back, with the flying matter, air and requests over them; everything else keeps what it
+// holds and the window stays where it is. Without a shared cell it does nothing and keeps the entry.
+await sim.prepareNative(owner);
+delayed = false;
+{
+  const fbits = n => new Uint32Array(new Float32Array([n]).buffer)[0];
+  const grain = (x, id) => new Uint32Array(packParticle({ position: [x, 3, 4], velocity: [0, -1, 0], id, core: [...m.core], bank: -73 }));
+  const P = words(d.particles), A = () => new Float32Array(d.air[d.airIndex].bytes), slotAt = (x, y, z) => cellSlot(g, x, y, z);
+  P.fill(0); P.set(grain(20.5, 201), 0); P.set(grain(5.5, 202), 12);         // shared (world x 16..31) and old-only
+  words(owner.events).fill(0); words(owner.events)[slotAt(20, 3, 4)] = 4; words(owner.events)[slotAt(5, 3, 4)] = 2;
+  A().fill(0); A()[brickIdOf(g, 5, 0, 1) * 8] = 11; A()[brickIdOf(g, 1, 0, 1) * 8] = 22;   // world bricks x 20 and x 4
+  sim.snapshot('before the walk');
+  // the walk: the window moves 16 cells east (its cells and dynamics as a move leaves them)
+  sim.origin.x = 16; d.origin = [16, 0, 0];
+  P.fill(0); P.set(grain(25.5, 301), 0); P.set(grain(40.5, 302), 24);          // over the shared cells, and past them
+  words(owner.events).fill(0); words(owner.events)[slotAt(9, 3, 4)] = 8; words(owner.events)[slotAt(26, 3, 4)] = 1;
+  A().fill(0); A()[brickIdOf(g, 2, 0, 1) * 8] = 33; A()[brickIdOf(g, 6, 0, 1) * 8] = 44;  // world bricks x 24 and x 40
+  assert.equal(sim.undo(), true);
+  assert.equal(sim.origin.x, 16, 'the window stays where it is'); assert.deepEqual(d.origin, [16, 0, 0]);
+  const ids = [0, 1, 2].map(i => P[i * 12 + 3]);
+  assert.deepEqual(ids, [201, 0, 302], 'the shared cells\' flying matter is the entry\'s; past them it is today\'s');
+  assert.equal(words(d.control)[0], 2, 'the live count matches the records');
+  assert.equal(words(owner.events)[slotAt(4, 3, 4)], 4, 'a shared cell\'s request comes back where its cell is now');
+  assert.equal(words(owner.events)[slotAt(9, 3, 4)], 0, 'and one made there since goes');
+  assert.equal(words(owner.events)[slotAt(26, 3, 4)], 1, 'a cell the entry never held keeps its request');
+  assert.equal(A()[brickIdOf(g, 1, 0, 1) * 8], 11, 'a shared brick\'s air is the entry\'s'); assert.equal(A()[brickIdOf(g, 2, 0, 1) * 8], 0);
+  assert.equal(A()[brickIdOf(g, 6, 0, 1) * 8], 44, 'past the shared cells the air is today\'s');
+  sim.snapshot('far away'); sim.origin.x = 64; d.origin = [64, 0, 0];
+  assert.equal(sim.undo(), false, 'no shared cell: nothing happens'); assert.equal(sim.history.length, 1, 'and the entry waits');
+  sim.origin.x = 0; d.origin = [0, 0, 0]; sim.dropHistory();
+  restoreNativeSnapshot(owner, snapshot);   // (the state the save checks below expect)
+}
 
-// Full shifted world history: rewind the complete old window AND its COW
-// retained stores before restoring global particles. Deposits made after the
-// snapshot outside the old overlap cannot survive beside the old flight copy.
-const wb = [32, 8, 32], notified = [];
+// The World window's state for the save checks below.
+const wb = [32, 8, 32];
 const world = Object.assign(Object.create(WorldWindow.prototype), { sim, gpu, scene: {}, size: [128, 32, 128], wb,
   historyIdentity: {}, historyReaders: 0, epoch: 1, pending: null, loaded: true,
   store: new BrickStore(wb), nativeStore: new NativeBrickStore(wb), planted: new Uint8Array(wb[0] * wb[2]),
-  far: { build() { notified.push('far rebuilt'); } },
+  far: { build() {} },
   // main's World render source (src/world/renderSource.js): not under test here
   renderSource: { reset() {}, recordLiveCopy() {}, needsLiveCopy() { return false; }, commitStoreRevision() {} }, storeRevisions: new Map(), storeReads: new Set(),
 });
-sim.worldWindow = world;
-sim.onWorldHistoryRestore = (...delta) => notified.push(delta);
 const rawBrick = encodeNativeBrick(Uint32Array.from({ length: 256 }, (_, i) => m.core[i % 4]), new Int32Array(64).fill(-456));
-const legacyBrick = encodeBrick(new Float32Array(BRICK_FLOATS), 0, new Float32Array(BRICK_FLOATS), 0);
-world.nativeStore.put(12, rawBrick); world.store.put(12, legacyBrick); world.planted[4] = 1;
-sim.snapshot('whole world'); while (pending.length) pending.shift()(); await sim.history.at(-1).nativePending;
-const entry = sim.history.at(-1), h = entry.worldHistory;
-assert.equal(h.nativeStore.get(12), rawBrick, 'COW shares immutable byte payloads, not deep copies');
-sim.origin.x = 64; d.origin = [64, 0, 0]; words(owner.cells).fill(0); words(d.particles).fill(0);
-world.nativeStore.put(0, rawBrick); world.nativeStore.drop(12); world.store.clear(); world.planted.fill(0);
-const currentMap = world.nativeStore.map, beforeWrites = writes.length;
-h.origin = [16, 0, 0];
-assert.throws(() => sim.undo(), /origin/);
-assert.equal(sim.origin.x, 64); assert.equal(world.nativeStore.map, currentMap); assert.equal(writes.length, beforeWrites);
-assert.equal(sim.history.at(-1), entry, 'failed full-world preflight preserves entry and current world');
-h.origin = [0, 0, 0];
-assert.equal(await sim.undo(), true);
-assert.equal(sim.origin.x, 0); assert.deepEqual(d.origin, [0, 0, 0]);
-assert.equal(world.nativeStore.map.get(12), rawBrick); assert(!world.nativeStore.has(0), 'post-snapshot deposit cannot duplicate restored particle');
-assert.deepEqual(world.store.map.get(12), legacyBrick); assert.equal(world.planted[4], 1);
-assert.deepEqual(words(owner.cells), oldCore); assert.deepEqual(words(d.particles), oldParticles);
-assert.deepEqual(notified, ['far rebuilt', [-64, 0]]);
-assert(sim.fieldReset && sim.giReset);
-// A capture during an earlier leaving readback locks shifts until the store
-// epoch has committed. The global dynamics/core capture itself never waits.
-let land;
-world.pending = new Promise(resolve => { land = resolve; });
-const worldCapture = world.captureHistory();
-assert.equal(world.historyReaders, 1); assert.throws(() => world.shift(16, 0), /history capture/);
-world.nativeStore.put(13, rawBrick); land();
-const landed = await worldCapture; world.pending = null;
-assert(landed.nativeStore.has(13)); assert.equal(world.historyReaders, 0);
-// Existing three-entry undo budget bounds COW versions and dynamic captures.
-delayed = false;
-for (let i = 0; i < 5; i++) { sim.snapshot(`bounded ${i}`); await sim.history.at(-1).nativePending; assert(sim.history.length <= 3); }
-sim.worldWindow = null;
-
+// A World move under V2 is made in the frame, as V1's (S1): update() returns the move, not a promise to wait on.
+{
+  let shifted = null;
+  const moving = Object.assign(Object.create(world), { _shiftCommitted(dx, dz) { shifted = [dx, dz]; },
+    gen: { prepareNativeDiff() {} }, far: { tick() {} } });
+  sim.deco = null;
+  const move = moving.update(sim.origin.x + 16 + 40, sim.origin.z + 16);
+  assert.deepEqual(move, [16, 0], 'the window moves in this frame'); assert.deepEqual(shifted, [16, 0]);
+  assert.equal(sim.nativeTransition ?? null, null, 'and nothing waits on it');
+}
 // Real strict save registrations and game preflight: malformed dynamics must
 // fail before app.prepare, legacy cells, or core state are touched.
 delayed = false;
@@ -362,4 +378,4 @@ const boundaryStore = new NativeBrickStore(wb); boundaryStore.put(0, boundaryByt
 const boundaryRestored = new NativeBrickStore(wb); boundaryRestored.fromBytes(boundaryStore.toBytes());
 assert.deepEqual(boundaryRestored.map.get(0), boundaryBytes);
 console.log('adversarial persistence: coherent lock before await through sections; prior real readBack completes; new shifts blocked; transactional legacy/native/deco/core/dynamic/origin rejection before prepare, epoch, stores or GPU writes');
-console.log('dynamic persistence CPU: actual contact+dynamics constructors; synchronous mixed-state capture; exact binary/save/undo restoration; pre-mutation corruption/origin rejection; full shifted COW world history; physgun held/shock/controller fields; actual-air probe/body SI boundaries and lossless refusal passed');
+console.log('dynamic persistence CPU: actual contact+dynamics constructors; synchronous mixed-state capture; exact binary/save restoration; readback-free undo entries; V1 undo across a move (shared cells, their flying matter, air and requests); pre-mutation corruption/origin rejection; physgun held/shock/controller fields; actual-air probe/body SI boundaries and lossless refusal passed');
