@@ -91,6 +91,7 @@ function fake() {
   const calls = [];
   const gpu = { frame: {}, _frameUniforms: { layout: {}, group: { fu: true } }, layout: (_n, l) => l, bindGroup: (l, entries) => ({ l, entries }),
     createBuffer: (d) => buffer(d.size), flush() {},
+    createTexture: (d) => ({ ...d, createView: () => ({ texture: d.label }) }), device: { createSampler: (d) => ({ sampler: d?.label }) },
     renderPipeline: (d) => ({ state: 'ready', ready: Promise.resolve(), draw: (_rp, o) => calls.push({ kind: 'draw', name: d.name, o }) }),
     kernel: (d) => ({ state: 'ready', ready: Promise.resolve(), desc: d, dispatch: (frame, n, o) => calls.push({ kind: 'kernel', name: d.name, n, o }) }) };
   const air = [buffer(32 * 64), buffer(32 * 64)];

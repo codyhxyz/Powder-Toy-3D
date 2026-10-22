@@ -1,7 +1,7 @@
 import { Matrix4, Vector3 } from 'three';
 import { frameUniformsOf } from './uniforms.js';
 import {
-  PARTICLE_BYTES, NativeParticleParams, NATIVE_PARTICLE_LAYOUT, NATIVE_PARTICLE_ARGS_LAYOUT, NATIVE_PARTICLE_AIR_LAYOUT,
+  PARTICLE_BYTES, NativeParticleParams, NATIVE_PARTICLE_LAYOUT, NATIVE_PARTICLE_ARGS_LAYOUT, NATIVE_PARTICLE_AIR_LAYOUT, NATIVE_PARTICLE_LIGHT_LAYOUT,
   nativeParticleWGSL, nativeParticlePipeline, nativeParticleArgsWGSL,
   ParticlePickParams, PARTICLE_PICK_LAYOUT, PICK_RAYS, particlePickWGSL,
 } from '../shaders/v2/particleRender.js';
@@ -9,6 +9,18 @@ import { decoView } from '../deco.js';
 import { CELL_M } from '../scale.js';
 
 const vector = p => Array.isArray(p) || ArrayBuffer.isView(p) ? Array.from(p) : [p?.x ?? 0,p?.y ?? 0,p?.z ?? 0];
+
+/**
+ * The Box volume's light for the matter draw (particleRender.js particleLightWGSL): its sun map, the derived GI
+ * probes' four bands, its media noise and samplers, or null where none is bound (World: its own readers).
+ * @param {object} volume gfx/volume.js createVolume's (shadowTextures, mediaNoiseView)
+ * @param {object} derived src/derived.js's (views.gi)
+ */
+export function boxParticleLight(volume, derived, gpu) {
+  const map = volume?.shadowTextures?.map, gi = derived?.views?.gi, noise = volume?.mediaNoiseView, samplers = gpu?._volumeSamplers;
+  if (!map || !noise || !samplers || gi?.length !== 4) return null;
+  return { map, gi, noise, clamp: samplers.clamp, repeat: samplers.repeat };
+}
 
 /** CPU view data only: physics world coordinates are never rebased or copied.
  * lagSeconds: how far behind its record each particle is drawn (v2/host.js particleLagSeconds). */
@@ -57,12 +69,13 @@ export class NativeParticles {
     this.layout = gpu.layout('NATIVE_PARTICLES_DRAW',NATIVE_PARTICLE_LAYOUT);
     this.argsLayout = gpu.layout('NATIVE_PARTICLES_ARGS',NATIVE_PARTICLE_ARGS_LAYOUT);
     this.airLayout = gpu.layout('NATIVE_PARTICLES_AIR',NATIVE_PARTICLE_AIR_LAYOUT);
-    this.airGroups = new Map();
+    this.lightLayout = gpu.layout('NATIVE_PARTICLES_LIGHT',NATIVE_PARTICLE_LIGHT_LAYOUT);
+    this.airGroups = new Map(); this.lightGroups = new Map();
     this.args = gpu.createBuffer({ label: 'native particles draw args', size: 16,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT });
     this.pipes = [false,true].map(rays => gpu.renderPipeline({
       name: rays ? 'nativeParticleRays' : 'nativeParticleMatter', code: nativeParticleWGSL(rays),
-      layouts: [this.fu.layout,this.layout,this.airLayout], params: NativeParticleParams, ...nativeParticlePipeline(rays),
+      layouts: [this.fu.layout,this.layout,rays ? this.airLayout : this.lightLayout], params: NativeParticleParams, ...nativeParticlePipeline(rays),
     }));
     this.countPipe = gpu.kernel({ name: 'nativeParticleArgs', code: nativeParticleArgsWGSL(),
       layouts: [this.argsLayout], params: NativeParticleParams });
@@ -92,7 +105,7 @@ export class NativeParticles {
     this.source = source;
     this.group = this.countGroup = null;
     this.boundParticles = this.boundControl = this.boundDeco = null;
-    this.airGroups = new Map();
+    this.airGroups = new Map(); this.lightGroups = new Map();
     this.preparedFrame = null;
     source?.attachDrawAdapter?.(this);
     return this;
@@ -108,7 +121,33 @@ export class NativeParticles {
     let group = this.airGroups.get(target);
     if (!group) this.airGroups.set(target, group = this.gpu.bindGroup(this.airLayout,[{ binding: 0, resource: { buffer: target } }],'native particle air'));
     const grid = g ? [g.nx, g.ny, g.nz, buffer ? 1 : 0] : [0, 0, 0, 0];
-    return { group, params: { grid, supers: g ? [g.stx, g.stz, 0, 0] : [0, 0, 0, 0] } };
+    return { group, target, params: { grid, supers: g ? [g.stx, g.stz, 0, 0] : [0, 0, 0, 0] } };
+  }
+  /**
+   * The matter draw's group 2: the air (air()) and the volume's light (boxParticleLight), or stand-ins never
+   * read (P.light 0) without it, per air buffer and light.
+   */
+  lightGroup(air, light) {
+    const target = air.target, key = light ? [light.map, light.noise, ...light.gi] : null;
+    const byAir = this.lightGroups.get(target) ?? new Map();
+    this.lightGroups.set(target, byAir);
+    const k = key ? key[0] : null;
+    let entry = byAir.get(k);
+    if (entry && (!key || entry.key.every((x, i) => x === key[i]))) return entry.group;
+    const gpu = this.gpu, view = (t, d) => (typeof t?.createView === 'function' ? t.createView(d) : t);
+    const none = gpu._particleLightNone ??= {
+      map: gpu.createTexture({ label: 'particle light map (none)', size: [1, 1], format: 'rgba32float', usage: 4 }),
+      vol: gpu.createTexture({ label: 'particle light volume (none)', size: [1, 1, 1], dimension: '3d', format: 'rgba16float', usage: 4 }),
+      sampler: gpu.device.createSampler({ label: 'particle light (none)' }),
+    };
+    const l = light ?? { map: none.map, gi: [none.vol, none.vol, none.vol, none.vol], noise: none.vol, clamp: none.sampler, repeat: none.sampler };
+    const group = gpu.bindGroup(this.lightLayout, [
+      { binding: 0, resource: { buffer: target } }, { binding: 1, resource: view(l.map, {}) },
+      ...l.gi.map((t, i) => ({ binding: 2 + i, resource: view(t, { dimension: '3d' }) })),
+      { binding: 6, resource: view(l.noise, { dimension: '3d' }) }, { binding: 7, resource: l.clamp }, { binding: 8, resource: l.repeat },
+    ], 'native particle light');
+    byAir.set(k, { key: key ?? [], group });
+    return group;
   }
   updateView(camera, targetHeight, volumeMatrix = null, origin = [0,0,0], { sample = 0, lagSeconds = 0 } = {}) {
     this.view = nativeParticleView(camera,targetHeight,volumeMatrix,origin,sample,lagSeconds);
@@ -132,7 +171,8 @@ export class NativeParticles {
     this.preparedFrame = frame;
     return true;
   }
-  draw(rp, { width, height }) {
+  // light: the Box volume's (boxParticleLight), lighting the matter as V1's flying cells are lit; null: the open sky's
+  draw(rp, { width, height }, light = null) {
     if (!this.isReady || !this.view || this.preparedFrame !== rp.frame || !this.preparedFrame
       || this.source.isIdle === true || this.source.active === false) return false;
     const s = this.state;
@@ -140,8 +180,10 @@ export class NativeParticles {
     if (!(width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height))) throw new RangeError('invalid particle viewport');
     const air = this.air();
     const options = { bind: [this.fu.group,this.group,air.group], indirect: { buffer: this.args, offset: 0 },
-      params: { ...this.view, ...air.params, capacity: s.capacity, viewport: [width,height], deco: s.deco && s.decoActive && decoView.show ? 1 : 0 } };
-    for (const pipe of this.pipes) pipe.draw(rp,options);
+      params: { ...this.view, ...air.params, capacity: s.capacity, viewport: [width,height], deco: s.deco && s.decoActive && decoView.show ? 1 : 0, light: light ? 1 : 0 } };
+    const [matter, rays] = this.pipes;
+    matter.draw(rp,{ ...options, bind: [this.fu.group,this.group,this.lightGroup(air,light)] });
+    rays.draw(rp,options);
     return true; // Recorded, not a claim of a nonzero GPU count.
   }
   /**
@@ -179,6 +221,6 @@ export class NativeParticles {
     if (!this.gpu.failure) this.gpu.flush('native particles dispose');
     this.args.destroy();
     this.group = this.countGroup = this.view = null;
-    this.pickGroups.clear(); this.airGroups.clear();
+    this.pickGroups.clear(); this.airGroups.clear(); this.lightGroups.clear();
   }
 }

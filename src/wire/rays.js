@@ -9,7 +9,7 @@
 // Under Physics V2 the photons and neutrons fly in V2's own particles (v2/dynamics.js), drawn by
 // gfx/nativeParticles.js; not a deviation: the same particles and sprites, another owner.
 import { Rays } from '../raysLayer.js';
-import { NativeParticles } from '../gfx/nativeParticles.js';
+import { NativeParticles, boxParticleLight } from '../gfx/nativeParticles.js';
 import { particleLagSeconds } from '../v2/host.js';
 
 function nativeLayer(app) {
@@ -53,7 +53,8 @@ const rays = {
   // parameters app.presentation holds while active: U12's.)
   scene(app, rp) {
     const t = app.post.sceneTarget;
-    if (app.sim.compact) { if (app.nativeParticles?.isReady) app.nativeParticles.draw(rp, t); }
+    // (the Box volume's light, as V1's flying cells take it: its sun map and GI; World draws them in the open sky's)
+    if (app.sim.compact) { if (app.nativeParticles?.isReady) app.nativeParticles.draw(rp, t, app.worldMode ? null : boxParticleLight(app.volume, app.sim.derived, app.sim.gpu)); }
     else app.sim.rays.draw?.(rp, { width: t.width, height: t.height });
   },
   // particles fly between frames: the loop keeps ticking while any may be
