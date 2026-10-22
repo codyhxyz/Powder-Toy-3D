@@ -2940,6 +2940,10 @@ function tick(now, renderOnly = false) {
   // A frame between two ticks of an awake box (Speed under 1×: a tick every 2nd to 4th frame) is still
   // drawn: its clock and its flying matter move on the partial tick (v2/host.js viewStepClock,
   // particleLagSeconds), as V1's frame of steps moves its world (it drew the same image until the tick).
+  // Intentional (decided under the user's delegation, 2026-10-22): the grid's own cells still change once
+  // a tick, 15 times a second at Speed 1: a V2 tick is the smallest unit of cell motion (one block-pass
+  // offset, whole-cell column falls, one pair cycle: v2/physics.js _tick), so there is no state between two
+  // to draw, and a sub-tick of game time would change what the physics does.
   const betweenTicks = v2Box() && v2Running && stepping && stepped === 0 && !physicsV2.asleep;
   ctx.nativeStepped = v2Box() ? (stepping ? stepped : 0) : null;
   ctx.stepping = stepping && (!v2Box() || stepped > 0);

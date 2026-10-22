@@ -71,8 +71,10 @@ export const particleLagSeconds = (sim, ticking = true) => (ticking && sim?.comp
  * order around it, B A B A B A B [tick] A. Every write a beforesim makes reaches the tick that runs its
  * step, an aftersim's the tick after its step, and a script that counts, pairs or alternates them (a flag
  * set before and read after, a write every other step) sees V1's sequence, each call's writes applied
- * in order rather than merged with the next call's. What no hook order can give: the world's own motion
- * between those calls, a tick's four steps being one GPU pass sequence (v2/physics.js _tick).
+ * in order rather than merged with the next call's.
+ * Intentional (decided under the user's delegation, 2026-10-22): the world doesn't move between those
+ * calls, a tick's four steps being one GPU pass sequence (v2/physics.js _tick): a script that writes the
+ * same cell each step sets what the tick sees by its last write, as V1's last step does.
  * @param {() => void} beforeStep one V1 step's beforesim (scripts.beforeStep)
  * @param {() => void} afterStep one V1 step's aftersim (scripts.afterStep)
  * @returns {{ before: () => void, after: () => void }} a tick's: before it, after it
