@@ -25,7 +25,7 @@
 // while the menu is up (no game on it yet) is dropped: the next warm-up, or
 // Start, makes a new one.
 import { BODY_MODEL_URL } from './pov/bodyModel.js';
-import { launch } from './launch.js';
+import { launch, physicsEngine } from './launch.js';
 import { mapByKey, isWorld, resolveMode } from './maps.js';
 import { refreshBootFiles } from './bootRecovery.js';
 import { sceneByKey } from './world/scenes/index.js';
@@ -181,7 +181,7 @@ async function startWarmer() {
   }
   const [sim, render, post, overlays, brush, detail, views, ...lists] = mods;
   const names = await layoutNames();
-  const { volumeShaderGrid } = await import('./gfx/volume.js');
+  const { volumeShaderGrid, sessionVolumeFormat } = await import('./gfx/volume.js');
   if (device !== made) return;   // (lost meanwhile: the next warmMap starts over)
   const settings = savedSettings(detail);
   const fallback = gpu.adapterInfo.isFallbackAdapter;
@@ -229,8 +229,9 @@ async function startWarmer() {
           if (TWO_PHASE.has(e.name)) build({ ...e, name: `${e.name} apply`, entry: 'apply' }, g);
         }
       }
-      // the view's module (realistic: the detail gate's base variant, its near one last), the shadow kernel if it reads it, pick
-      const volume = render.warmChecks(view, settings, { fallback, curved, fixedReadFormat: 0 });
+      // the view's module (realistic: the detail gate's base variant, its near one last), the shadow kernel if it reads it, pick,
+      // in the read format the session's engine draws it in: V2's packed cells (2, or 3 for the air views), not V1's A/B (0)
+      const volume = render.warmChecks(view, settings, { fallback, curved, fixedReadFormat: sessionVolumeFormat(view, physicsEngine() === 'v2') });
       const own = (e) => (e.name === 'shadow' ? { ...e, code: (gg) => render.shadowFrag(gg, world ? { world } : {}) } : e);
       // Match createVolume's specialization so menu warm-up is reused, not
       // a second, expensive variable-division version of the same shader.

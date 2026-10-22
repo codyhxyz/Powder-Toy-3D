@@ -15,7 +15,8 @@ import { prelude, STATE_OPTS } from '../src/shaders/common.js';
 import { compactDecodeWGSL } from '../src/shaders/compact.js';
 import { moveBlockFrag } from '../src/shaders/move.js';
 import { volumeFrag, pickFrag, warmChecks, VOLUME_VIEWS, volumePipeline, VolumeParams, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES } from '../src/shaders/render.js';
-import { volumeReadFormat, readsAir, detailKey, volumeShaderGrid } from '../src/gfx/volume.js';
+import { volumeReadFormat, readsAir, detailKey, volumeShaderGrid, sessionVolumeFormat } from '../src/gfx/volume.js';
+import { physicsEngine } from '../src/launch.js';
 import { createReadyVolumeView } from '../src/gfx/readyVolumeView.js';
 import { isMaterialView } from '../src/views.js';
 const g = gridLayout(32, 32, 32), hash = s => createHash('sha256').update(s).digest('hex');
@@ -157,7 +158,20 @@ assert.match(app, /curved: !!warpNow\(\)\?\.k, format/);
 assert.match(app, /volumeFormat !== format\) \{ post.reset\(\); meshFrames.drop\(\); sim.resetGI\(\)/);
 assert.match(app, /\$\{giBuilt\}\|\$\{blocksOn\}\|\$\{vol.format\}/);
 assert.match(app, /\$\{presentation.key\}\|\$\{vol.format\}/);
-assert.match(readFileSync(new URL('../src/preload.js', import.meta.url), 'utf8'), /warmChecks\(view, settings, \{ fallback, curved, fixedReadFormat: 0 \}\)/);
+// The start menu's warm-up builds the variants the session's engine draws (src/preload.js): V2's
+// packed cells (format 2, the air views 3), never V1's format 0 under V2; and they are what the
+// volume forecasts for an owner still building (volumeReadFormat), so Start finds them built.
+assert.match(readFileSync(new URL('../src/preload.js', import.meta.url), 'utf8'),
+  /warmChecks\(view, settings, \{ fallback, curved, fixedReadFormat: sessionVolumeFormat\(view, physicsEngine\(\) === 'v2'\) \}\)/);
+for (const view of VOLUME_VIEWS) {
+  const forecast = volumeReadFormat({ compact: { isReady: false, disposed: false } }, { testMode: null }, undefined, readsAir(view));
+  assert.equal(sessionVolumeFormat(view, true), forecast, `${view}: V2's warm-up builds the format its first frame draws`);
+  assert.equal(sessionVolumeFormat(view, false), 0, `${view}: V1's warm-up keeps format 0`);
+  for (const e of warmChecks(view, {}, { fixedReadFormat: sessionVolumeFormat(view, true) }).filter(x => x.name.startsWith('volume.')))
+    assert(e.name.endsWith(`.format${forecast}`) && !e.name.endsWith('.format0'), `${e.name}: V2's warm-up names its format, never format 0`);
+}
+assert.deepEqual(VOLUME_VIEWS.filter(v => sessionVolumeFormat(v, true) === 3), ['pressure', 'flow'].filter(v => VOLUME_VIEWS.includes(v)), 'the air views read the coarse air');
+assert.equal(physicsEngine('?physics=v2'), 'v2'); assert.equal(physicsEngine(''), 'v1');
 
 const dir = mkdtempSync(join(tmpdir(), 'volume-format-'));
 try {

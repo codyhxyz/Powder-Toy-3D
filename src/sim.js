@@ -362,14 +362,24 @@ export class Simulation {
     // writes with (the brush, load, undo, the derived passes' note) built now
     // too, so a write never waits; the rest on first use (passOf, prepare)
     const brush = { update: paintUpdateWGSL, params: PaintParams, decls: paintDeclsWGSL(g), layout: PAINT_LAYOUT };
+    // V1's edit passes a native host never records: its Mix runs natively (v2/interactions.js
+    // nativeCellPaint) and its undo across a shift too (v2/integration.js undo). They build on first
+    // use there (prepareLegacy builds them with V1's stepping), so the first frame never waits for them.
+    const v1Edits = {
+      paintMix: () => this.editKernel('paintMix', { ...brush, reads: 'neighbours' }),   // TPT's Mix tool reads its partner cell
+      undoShift: () => kernel('undoShift', undoShiftFrag(g, dbg), [L.STATE_RW, L.UNDO], ShiftParams),
+    };
+    this._legacyEdits = nativeStartup ? Object.keys(v1Edits) : [];
+    const v1Edit = (name) => (nativeStartup ? {} : { [name]: v1Edits[name]() });   // (V1's: built now, in its order)
     this.passes = {
       paint: this.editKernel('paint', { ...brush, reads: 'own' }),
-      paintMix: this.editKernel('paintMix', { ...brush, reads: 'neighbours' }),   // TPT's Mix tool reads its partner cell
+      ...v1Edit('paintMix'),
       fromAtlas: kernel('fromAtlas', fromAtlasFrag(g, dbg), [L.STATE_RW, L.CONVERT], ConvertParams),
-      undoShift: kernel('undoShift', undoShiftFrag(g, dbg), [L.STATE_RW, L.UNDO], ShiftParams),
+      ...v1Edit('undoShift'),
       awake: kernel('awake', awakeFrag(g), [L.STATE_BUILD], AwakeParams),
     };
     this._lazy = {
+      ...v1Edits,
       toAtlas: () => kernel('toAtlas', toAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], ConvertParams),
       rectToAtlas: () => kernel('rectToAtlas', rectToAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], RectParams),
       nativeRectToAtlas: () => kernel('nativeRectToAtlas', nativeRectToAtlasWGSL(g), [L.STATE_RO, L.CONVERT], RectParams),
@@ -486,7 +496,7 @@ export class Simulation {
   // Explicit engine-switch boundary. Build once, await every legacy step/activity
   // kernel and the initial clear; a failure leaves legacy stepping disabled.
   async prepareLegacy() {
-    await Promise.all([this.ready, ...Object.values(this.kernels).map((k) => k.build())]);
+    await Promise.all([this.ready, ...Object.values(this.kernels).map((k) => k.build()), ...this._legacyEdits.map((n) => this.passOf(n).ready)]);
     this._legacyDeferred = false;
     return this;
   }
@@ -1025,7 +1035,7 @@ export class Simulation {
       const a = [center.x, center.y, center.z], b = [end.x, end.y, end.z], reach = [0, 1, 2].map((k) => radius + Math.max(grow?.[k] ?? 0, 0));
       box = this.touchCentres(a.map((x, k) => Math.min(x, b[k]) - reach[k]), a.map((x, k) => Math.max(x, b[k]) + reach[k]));
     }
-    this.edit(tool === MIX_TOOL ? this.passes.paintMix : this.passes.paint, box, {
+    this.edit(tool === MIX_TOOL ? this.passOf('paintMix') : this.passes.paint, box, {
       center: [center.x, center.y, center.z], radius, shape, tool, rate, replace: Boolean(replace), frame: this.paints,
       wind: wind ? [wind[0], wind[1], wind[2]] : [0, 0, 0], end: [end.x, end.y, end.z], grow: grow ?? [0, 0, 0],
       masked: Boolean(mask), filter_: filter, del: Boolean(erase), prop: prop?.field ?? 0, propValue: prop?.value ?? 0,
@@ -1235,7 +1245,7 @@ export class Simulation {
       else this.compact.restore(t.compact, t.aux);
       this.nativeIntegration?.changed();
     } else {
-      this._dispatch(this.passes.undoShift, fold(Math.ceil(this.g.slots / 64)), {
+      this._dispatch(this.passOf('undoShift'), fold(Math.ceil(this.g.slots / 64)), {
         bind: [this.tables, this.bindRW, t.group], header: this.header(), params: { shift: [dx, 0, dz] },
       });
       this.noteWrite();

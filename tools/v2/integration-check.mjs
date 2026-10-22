@@ -19,6 +19,7 @@ import { applyGuestStroke, applyGuestStrokes } from '../../src/net/edits.js';
 import { createPacker, createUnpacker, encodeFrame, decodeFrame, FRAME_KEY } from '../../src/net/codec.js';
 import { E, K, TOOLS, ELEMENTS } from '../../src/elements.js';
 import { readFileSync } from 'node:fs';
+import { physicsEngine } from '../../src/launch.js';
 
 const g = gridLayout(32, 32, 32), calls = [], shifts = [], requests = [], builds = [];
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_SRC: 4, COPY_DST: 8, INDIRECT: 0x100 };
@@ -485,7 +486,9 @@ assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouc
 }
 
 const app = readFileSync('src/app.js', 'utf8');
-assert(app.includes("let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1'"), 'v1 remains default');
+// (one decision, src/launch.js physicsEngine, which the start menu's warm-up reads too: src/preload.js)
+assert(app.includes('let physicsMode = physicsEngine(location.search);'), 'the app takes the engine from launch.js');
+assert.equal(physicsEngine(''), 'v1', 'v1 remains default'); assert.equal(physicsEngine('?physics=v2'), 'v2');
 assert(!app.includes("if (mode === 'v2' && !physicsV2 && !worldMode)"), 'no world-only v1 fallback');
 assert(app.includes('before: nativeBeforeStep'), 'automatic and manual native steps retain weather hooks');
 assert(readFileSync('src/gfx/volume.js', 'utf8').includes('pickGroup], header: sim.readHeader({ physical: true })'));

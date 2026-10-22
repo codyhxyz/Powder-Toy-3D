@@ -86,7 +86,7 @@ import { inventory } from './pov/tools/inventory.js';
 import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
-import { launch, mark } from './launch.js';
+import { launch, mark, physicsEngine } from './launch.js';
 import { createLoadWatch } from './loadWatch.js';
 import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z, HOME_ENTRY } from './pov/village/state.js';
 import { withCityBusFocus } from './pov/village/bus.js';
@@ -291,7 +291,7 @@ settings.paused = params.get('paused') === '1' || testMode === 'manual' || testM
 // Experimental native physics remains opt-in until measured parity/performance
 // acceptance. Worlds/POV use explicit readiness, never a silent v1 fallback.
 // Multiplayer guests are deliberately render-only, irrespective of host engine.
-  let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
+  let physicsMode = physicsEngine(location.search);
   let physicsChanging = false;
   let ctx; // Readiness also runs during picker construction, before wires attach.
 async function loadNativePhysics() {

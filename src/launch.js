@@ -28,6 +28,11 @@ export const launch = {
   adapter: null, gpu: null, deviceError: null, warm: null, startupError: null, failed: null,
 };
 
+// The physics engine a page's session runs (app.js physicsMode), from its URL: one decision, which
+// the start menu's diagnostic warm-up (src/preload.js) reads too, so it warms the volume variants
+// that engine draws (gfx/volume.js sessionVolumeFormat).
+export const physicsEngine = (search = globalThis.location?.search ?? '') => (new URLSearchParams(search).get('physics') === 'v2' ? 'v2' : 'v1');
+
 // Timing marks from a click on the start menu to having control in a match,
 // for tools/join-check.mjs (performance.getEntriesByType('mark'), names
 // 'join:<step>'): click, app, first-frame, entered, bots, match, ready, control.
