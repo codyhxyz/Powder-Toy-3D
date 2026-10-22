@@ -33,6 +33,9 @@ import { PARTICLE_CAP } from './dynamics-reference.js';
 const CATCH_UP = 2;
 // V1's electric steps a tick (v2/contact.js CT_ELEC_STEPS: NOMINAL_STEP_RATE / TICK_HZ)
 const ELEC_STEPS = CONTACT_CONSTANTS.CT_ELEC_STEPS[1];
+// The grid's longest cold compiles (dawn.node, Metal, cache-busted: v2block 3.2 s, v2runs 1.9 s, v2pairs
+// 1.6 s; the next is under 0.3 s), started ahead of the other builds (gpu/kernels.js BUILD_RANK.FIRST).
+const LONG_POLES = new Set(['v2block', 'v2runs', 'v2pairs']);
 
 // The 8 partition offsets of the block pass, in a fresh order for each cycle of 8 ticks (lean-sim's
 // shuffle), from the cycle's number: every lower neighbour is reachable within a cycle (5.3).
@@ -151,10 +154,11 @@ export class PhysicsV2 {
     for (const k of specs) {
       const withState = k.name === 'v2import' || k.name === 'v2bridge';
       const finalize = k.name === 'v2blockFinalize';
-      // Contact is required and the long compile pole. Enqueue it before
-      // graphics, not behind the idle queue; the shared build bound (pipelineConcurrency) remains.
+      // The grid's own passes are what a resting world steps and draws with, so the first frame waits
+      // for them: built now, never behind the idle queue. The longest poles start first (LONG_POLES;
+      // the shared build bound, pipelineConcurrency, remains). The dynamics build behind them (below).
       this.kernels[k.name] = gpu.kernel({
-        name: k.name, build: k.name === 'v2block' ? 'now' : 'idle', code: k.name === 'v2block' ? v2BlockWGSL(g, contactWGSL, !!this.blockCompact) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
+        name: k.name, build: 'now', first: LONG_POLES.has(k.name), code: k.name === 'v2block' ? v2BlockWGSL(g, contactWGSL, !!this.blockCompact) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
         layouts: [finalize ? gpu.L.EMPTY : sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : (k.name === 'v2invalidate' || k.name === 'v2externalEvents') ? L.INVALIDATE : k.name === 'v2block' ? L.BLOCK_FLOW : gpu.L.EMPTY, finalize ? L.BLOCK_FINALIZE : familyLayouts[this.familyOf(k.name)]],
       });
     }
@@ -164,8 +168,14 @@ export class PhysicsV2 {
     // (every Simulation has the field; a CPU fixture's stand-in may not)
     this.flowField = sim.flow ? new NativeFlow(this, L.V2) : null;
     this.groups.flow = this.flowField?.group ?? gpu.bindGroup(L.BLOCK_FLOW, [b(0, buf('flow stand-in', 16))], 'v2 flow stand-in');
-    // Publish native readiness only after legacy storage has its blank defaults.
-    this.ready = Promise.all([sim.ready, ...Object.values(this.kernels).map((k) => k.ready), this.dynamics?.ready, this.jets?.ready]).then(() => this);
+    // Publish native readiness only after legacy storage has its blank defaults. `ready` is the
+    // grid's: what draws and steps a world (the app's first frame waits for it). The flying matter's
+    // (dynamics: particles, blasts, air; jets) builds behind it, `dynamicsReady`: until then every tick
+    // steps the grid, and what the dynamics would serve waits where it is kept (dynamicsBuilt, _tick).
+    // Intentional (user request, 2026-10-21: "MAKE IT LOAD FAST"; deferred, never dropped).
+    this.ready = Promise.all([sim.ready, ...Object.values(this.kernels).map((k) => k.ready)]).then(() => this);
+    this.dynamicsReady = Promise.all([this.ready, this.dynamics?.ready, this.jets?.ready]).then(() => this);
+    this.dynamicsReady.catch(() => {});
     this.isReady = false;
     this.ready.then(() => {
       if (this.disposed) return;
@@ -174,7 +184,15 @@ export class PhysicsV2 {
       sim.version++;
       sim.changedAll = true;
     }, () => {});
+    // the dynamics' first tick wakes the box, in case it rested meanwhile (a certified idle read
+    // waits for them: _readIdle)
+    this.dynamicsReady.then(() => { if (!this.disposed) { this.wake(); sim.wake?.(); } }, () => {});
   }
+
+  /** The flying matter's kernels are built (NativeDynamics; its stages run in _tick from then on). */
+  get dynamicsBuilt() { return !this.dynamics || (this.dynamics.isReady === true && !this.dynamics.disposed); }
+  /** The liquid jets' kernels are built (NativeJets: R14's launches run from then on). */
+  get jetsBuilt() { return !this.jets || (this.jets.isReady === true && this.dynamicsBuilt); }
 
   // The groups holding the simulation's legacy state: the import of today's
   // writers, the boundary bridge and the readers' B. Made again whenever the
@@ -257,8 +275,9 @@ export class PhysicsV2 {
   }
 
   // The counts after the ticks recorded so far: certifies idle when no brick is awake and nothing wrote since.
+  // (Not while the dynamics build: what they hold for later, a material request, keeps the box awake.)
   _readIdle() {
-    if (this.idleRead || this.certified || this.disposed) return;
+    if (this.idleRead || this.certified || this.disposed || !this.dynamicsBuilt) return;
     const epoch = this.epoch;
     this.idleRead = Promise.all([
       this.gpu.readback.buffer(this.args, ARGS2.STATS * 4, STATS.words * 4),
@@ -387,11 +406,23 @@ export class PhysicsV2 {
     this.wake();
   }
 
-  /** Records one tick (docs/v2.md 5.4) into the open frame. */
+  /**
+   * Records one tick (docs/v2.md 5.4) into the open frame. While the dynamics build (dynamicsBuilt)
+   * the grid's passes run alone: what the dynamics serve waits where it is kept, in order, for their
+   * first tick. A material request (an explosion, a launch) stays in `events`: only the dynamics and a
+   * replacing write clear it. A queued external blast or ray stays in its queue (NativeDynamics
+   * externalBlasts, rayRequests), a tool request in the simulation's (sim.nativePending). A liquid
+   * jet's mark is a deposit whose launch the jets haven't taken: it falls from rest as a run
+   * (columns.js colFall), as a refused launch does, until the jets are built.
+   */
   _tick() {
     this._noteWrites();
+    const dynamics = this.dynamicsBuilt ? this.dynamics : null, jets = this.jetsBuilt ? this.jets : null;
+    // the requests held while they built, oldest first, before this tick moves anything (the app's
+    // nativeBeforeStep runs them first; any other driver's ticks here)
+    if (dynamics && this.sim.nativePending?.length) this.sim.flushNativeTools?.();
     // a writer's launches held for a take (nativeForcing.js defer) go before anything else moves
-    this.dynamics?.flushLaunch?.();
+    dynamics?.flushLaunch?.();
     const { gpu, sim, kernels: k, groups } = this;
     const f = gpu.frame;
     const params = this._params(++this.tick);
@@ -411,7 +442,7 @@ export class PhysicsV2 {
     run(k.v2activity, ind(ARGS2.ACT));
     run(k.v2cols, fold(Math.ceil((this.g.bx * this.g.bz) / 64)));
     run(k.v2args, [1, 1, 1], [sim.tables, gpu.emptyGroup, groups.args]);
-    this.dynamics?.advanceParticles(this.tick);
+    dynamics?.advanceParticles(this.tick);
     run(k.v2column, ind(ARGS2.COLS));
     run(k.v2support, ind(ARGS2.BRICKS));
     if (this.blockCompact) {
@@ -432,17 +463,17 @@ export class PhysicsV2 {
         run(k.v2elecCommit, ind(ARGS2.ELEC), undefined, p);
       }
     }
-    this.dynamics?.consumeMaterialEvents(this.tick);
+    dynamics?.consumeMaterialEvents(this.tick);
     // R13 as column runs (src/shaders/v2/columns.js), a thread an awake column: settle the runs, then
     // every face's flux and the four colours of transfers, one step a tick.
     run(k.v2runs, ind(ARGS2.COLS));
     for (const [pairAxis, pairStage, pairParity] of pairOrder(this.tick)) run(k.v2pairs, ind(ARGS2.COLS), undefined, { ...params, pairAxis, pairStage, pairParity });
     // R14: the cells the pair stages marked leave as particles (src/shaders/v2/jets.js)
-    this.jets?.advance(this.tick);
+    jets?.advance(this.tick);
     if (params.edge === 1) run(k.v2boundary, ind(ARGS2.BRICKS));
     // the cells' motion, after every pass that moves them, into the renderer's flow field (v2/flow.js)
     this.flowField?.record(ind(ARGS2.BRICKS));
-    this.dynamics?.advanceAir(this.tick);
+    dynamics?.advanceAir(this.tick);
     run(k.v2invalidate, fold(Math.ceil(this.g.nbricks / 64)), invalidation);
     this.legacyPending = true;
     // A test-only same-physics baseline for full-frame direct/compat comparisons.

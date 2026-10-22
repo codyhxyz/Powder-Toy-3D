@@ -35,6 +35,9 @@ const IMPULSE_KINDS=['impulse','photon','neutron','wind','pressure','vacuum','cy
 // modes.js mAirVelocity: the air modes that keep wind.
 const AIR_VELOCITY_MODES=[AIR_MODE.ON,AIR_MODE.PRESSURE_OFF,AIR_MODE.NO_UPDATE];
 const cloneRequest = r => ({ ...r, position:[...r.position], direction:[...r.direction] });
+// The dynamics' longest cold compile (dawn.node, Metal, cache-busted: v2particles_react 4.7 s, the
+// airborne contact table; the next is under 0.5 s): it starts ahead of their other idle builds.
+const DYNAMICS_LONG_POLES = new Set(['v2particles_react']);
 
 /** Pure validation: callers may preflight a save before ANY app/GPU mutation. */
 export function validateDynamicState(snapshot,g) {
@@ -135,13 +138,16 @@ export class NativeDynamics {
     };
     const lists=bg(L.lists,[this.control,this.dispatchArgs],'native list args'); this.groups.lists=[lists,lists];
     this.kernels={};
-    for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES],['lists',(g,_head,name)=>listsStageWGSL(g,name),LISTS_STAGES]]) {
-      for (const stage of stages) {
-        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','externalBegin','externalGate','launchMark','launchPrefix'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage)) || family==='lists';
-        const name=`v2${family}_${stage}`;
-        this.kernels[`${family}/${stage}`]=gpu.kernel({name,build:'idle',code:generate(g,owner.nativeDynamics.head,stage),
-          params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
-      }
+    const specs=[];
+    for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES],['lists',(g,_head,name)=>listsStageWGSL(g,name),LISTS_STAGES]])
+      for (const stage of stages) specs.push({family,generate,stage,name:`v2${family}_${stage}`});
+    // Built behind the grid's kernels, which the first frame waits for (physics.js dynamicsReady); the
+    // longest of them (DYNAMICS_LONG_POLES) made first, so its idle build is the first to start.
+    specs.sort((a,b)=>DYNAMICS_LONG_POLES.has(b.name)-DYNAMICS_LONG_POLES.has(a.name));
+    for (const {family,generate,stage,name} of specs) {
+      const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','externalBegin','externalGate','launchMark','launchPrefix'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage)) || family==='lists';
+      this.kernels[`${family}/${stage}`]=gpu.kernel({name,build:'idle',first:DYNAMICS_LONG_POLES.has(name),code:generate(g,owner.nativeDynamics.head,stage),
+        params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
     }
     this.ready=Promise.all(Object.values(this.kernels).map(k=>k.ready)).then(()=>{ if(!this.disposed) this.isReady=true; return this; });
     this.ready.catch(()=>{});
@@ -167,6 +173,11 @@ export class NativeDynamics {
     return {busyIn,busyOut,...nativeModes(this.owner.sim),tick,nativeJets:+(this.owner.jets?.isReady===true),origin:vector(this.owner.sim.origin),sequence:this.sequence,...extra};
   }
   _check() { if (!this.isReady || this.disposed) throw new Error('NativeDynamics is not ready'); }
+  // Reads and writes of the buffers alone (snapshot, restore, a window's shift) need no kernel: they
+  // run while the kernels build too, so a load, an undo or a save never waits for them.
+  _checkState() { if (this.disposed) throw new Error('NativeDynamics is disposed'); }
+  /** Its kernels are still building (not ready, not disposed): requests wait in their queues. */
+  get building() { return !this.isReady && !this.disposed; }
   _prepareAllocation(tick,params={},count) {
     this._check();
     // Match the kernel descriptor protocol: vectors are direct dispatches.
@@ -244,13 +255,15 @@ export class NativeDynamics {
     this._record('blasts','airborneEvents',PARTICLE_CAP/64,tick);
   }
   applyExternalBlast(request) {
-    if(!this.isReady || this.disposed || !validExternalBlast(request,this.g)) return {status:'rejected',reason:'invalid or unavailable external blast'};
+    if(this.disposed || !validExternalBlast(request,this.g)) return {status:'rejected',reason:'invalid or unavailable external blast'};
     if(this.sequence>=0xfffffffe) return {status:'rejected',reason:'native tool sequence exhausted'};
     let slot=0;while(this.externalBlasts.has(slot)) slot++;
     if(slot>=EXTERNAL_BLAST_CAP) return {status:'rejected',reason:'external blast queue full; retry explicitly'};
     const r=cloneExternalBlast({position:request.position,energy:request.energy,radius:request.radius,requestId:++this.sequence,...(request.selection?{selection:request.selection}:{})});
     this.externalBlasts.set(slot,r);this.gpu.write(this.control,(externalBlastBase(this.g)+slot)*4,new Uint32Array([0]));
-    this._externalWork();this._recordExternalBlast(slot,r,this.owner.tick);
+    // (while the kernels build it waits in its queue, which every tick from their first records:
+    // consumeMaterialEvents, in the order the blasts came)
+    this._externalWork();if(this.isReady) this._recordExternalBlast(slot,r,this.owner.tick);
     return {status:'queued',requestId:r.requestId};
   }
   _recordExternalBlast(slot,r,tick) {
@@ -450,7 +463,7 @@ export class NativeDynamics {
   /** Every GPU copy is queued before the first await, alongside core/bank reads
    * made by the owner's persistence boundary. Transient plans/claims are absent. */
   async snapshotDynamicState() {
-    this._check(); const g=this.g,origin=[...this.origin],serial=this.serial;
+    this._checkState(); const g=this.g,origin=[...this.origin],serial=this.serial;
     const metadata={version:1,dims:[g.nx,g.ny,g.nz],origin,sequence:this.sequence,blastBatch:this.blastBatch,isIdle:this.isIdle,
       holdSession:this.holdSession?structuredClone(this.holdSession):null,
       externalBlasts:[...this.externalBlasts].map(([slot,r])=>({slot,...cloneExternalBlast(r)})),
@@ -474,7 +487,7 @@ export class NativeDynamics {
     return {...metadata,...(particleDeco?{particleDeco}:{}),externalBlastDone,setOff,particles,air,control:control.slice(0,32),held:control.slice(heldBase(g),heldBase(g)+PARTICLE_CAP),shocks:control.slice(shockBase(g),shockBase(g)+g.nbricks),rayRemaining:control.slice(rayRequestBase(g),rayRequestBase(g)+RAY_REQUEST_CAP),serial};
   }
   restoreDynamicState(snapshot) {
-    this._check(); const g=this.g,s=snapshot;
+    this._checkState(); const g=this.g,s=snapshot;
     const { requests, archive, outside, events, external } = validateDynamicState(s, g);
     // All validation precedes all writes. Bad saves never partially replace state.
     this.gpu.write(this.particles,0,s.particles);
@@ -500,7 +513,7 @@ export class NativeDynamics {
    * air words in a sparse world-coordinate archive. No particle coordinate is
    * rewritten. Call/await with the app paused, before resuming the new window. */
   async shiftWindow(delta) {
-    this._check(); delta=finiteVector(delta);
+    this._checkState(); delta=finiteVector(delta);
     if(!delta || !delta.every(v=>Number.isInteger(v)&&v%4===0)) throw new Error('Native air window shifts must be brick-aligned integer cells');
     const old=[...this.origin],next=old.map((v,a)=>v+delta[a]);
     const snapshot=await this.snapshotDynamicState(),g=this.g;

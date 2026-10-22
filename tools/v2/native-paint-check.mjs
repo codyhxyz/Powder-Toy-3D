@@ -120,8 +120,15 @@ assert.match(erase, /let heat=energyMul\(packetCapacityQ\(m\.core\),u32\(abs\(dq
 assert.match(erase, /if\(packetEnergyFits\(m,edited\)\) \{ m=withPacketEnergy\(m,edited\); \}/, 'unrepresentable heat stays out, never wraps');
 assert.match(erase, /noteEnergySource\(p,energySub\(packetOwnedEnergy\(m\),packetOwnedEnergy\(before\)\)\)/, 'the tool\'s energy is a declared source');
 assert.match(erase, /if\(isLiq\(before\.core\) && cls\(id\)==C_LIQUID\) \{ amount=cFill\(before\.core\); \}/, 'a retyped liquid droplet keeps its fill');
-// Not ready: refused explicitly (prepareNative builds it before the first frame), never a V1 edit.
+// The dynamics' kernels still building (the first frame no longer waits for them: src/v2/physics.js
+// dynamicsReady): the brush records only its own, so it paints natively from the first frame.
+const building = Object.assign(Object.create(Simulation.prototype), { ...sim, compactOwner: { ...owner }, compact: null });
+building.compact = building.compactOwner; building.compactOwner.dynamics = { ...d, isReady: false, disposed: false };
+calls.length = 0;
+assert.equal(Simulation.prototype.paint.call(building, { center, radius: 4, shape: 0, tool: mix, rate: 1 }), true, 'paints while the dynamics build');
+assert(calls.some(c => c.name === 'nativePaintCommit') && !calls.some(c => /^v2(particles|blasts|air|lists|jets)_/.test(c.name ?? '')), 'its own kernels only');
+// Gone (disposed): refused explicitly, never a V1 edit.
 const notReady = Object.assign(Object.create(Simulation.prototype), { ...sim, compactOwner: { ...owner }, compact: null });
-notReady.compact = notReady.compactOwner; notReady.compactOwner.dynamics = { ...d, isReady: false };
+notReady.compact = notReady.compactOwner; notReady.compactOwner.dynamics = { ...d, isReady: false, disposed: true };
 assert.equal(Simulation.prototype.paint.call(notReady, { center, radius: 4, shape: 0, tool: mix, rate: 1 }), false);
 console.log(`${modules} native paint modules validated; Mix and Property type run V1's rule on native cells (exact swap, fill kept), evaluate-before-commit, built with the owner; no GPU`);

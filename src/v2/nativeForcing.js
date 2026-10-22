@@ -149,7 +149,8 @@ export function createNativeForceKernel(sim,name,spec) {
   // must leave every cell to one part (it changes nothing elsewhere) and the commit must be sparse,
   // or a later part's empty plans would clear an earlier part's. `box` is then their union, the
   // particles' (each particle is evaluated once, with `values` alone).
-  return {ready,get isReady(){return kernels.every(k=>k.state==='ready') && d.isReady;},run(box,values,source,{defer=false,parts=null}={}) {
+  // ownReady: its own kernels are built (isReady: and the dynamics', whose stages its launches record)
+  return {ready,get ownReady(){return kernels.every(k=>k.state==='ready');},get isReady(){return kernels.every(k=>k.state==='ready') && d.isReady;},run(box,values,source,{defer=false,parts=null}={}) {
     if(kernels.some(k=>k.state!=='ready') || !d.isReady || sim.disposed || sim.compactOwner!==o || !box) return false;
     if(parts && !spec.commit?.sparse) throw Error(`${name}: parts need a sparse commit`);
     const dims=[sim.g.nx,sim.g.ny,sim.g.nz],clip=b=>({lo:b.lo.map(v=>Math.max(0,Math.ceil(v))),hi:b.hi.map((v,a)=>Math.min(dims[a]-1,Math.floor(v)))});

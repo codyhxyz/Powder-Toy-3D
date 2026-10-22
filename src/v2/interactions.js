@@ -70,7 +70,18 @@ export const NATIVE_BRUSH_KERNELS=['nativePaintForce','nativePaint'];
 export const prepareNativeBrush=sim=>Promise.all(NATIVE_BRUSH_KERNELS.map(name=>forceKernel(sim,name).ready));
 export const nativePOVForcesReady=sim=>Object.keys(forceSpecs).every(name=>forces.get(sim)?.owner===sim.compactOwner && forces.get(sim).kernels.get(name)?.isReady);
 function force(sim,name,box,values,source,opts) {
-  const accepted=forceKernel(sim,name).run(box,values,source,opts);
+  const kernel=forceKernel(sim,name);
+  // A force kernel built while the dynamics' kernels build (its launches record theirs): it waits for
+  // them in order with the other native requests (sim.deferNative), its source bytes copied now.
+  // (A force kernel still building itself records nothing, as V1's POV edits do: src/pov/gpu.js edit.)
+  // source: its bound buffer, or a function making it (the brush's fill mask: made when it runs)
+  const bound=()=>typeof source==='function'?source():source;
+  if(!kernel.isReady && kernel.ownReady && sim.compactOwner?.dynamics?.building && sim.deferNative) {
+    const accepted=sim.deferNative('force',()=>forceKernel(sim,name).run(box,values,bound(),opts));
+    sim.nativeInteractionResult=accepted?{status:'queued',deferred:'native dynamics building'}:{status:'rejected',reason:'native request queue full'};
+    return accepted;
+  }
+  const accepted=kernel.run(box,values,bound(),opts);
   sim.nativeInteractionResult=accepted?{status:'queued',fallback:'capacity-limited packets remain exact on grid; capacityFallbacks counts refused launches'}:{status:'rejected',reason:'native force kernel not ready or empty bounds'};
   return accepted;
 }
@@ -80,15 +91,26 @@ function refused(sim, reason) {
 }
 function blast(sim, center, radius, pressure, selection) {
   const d = sim.compactOwner?.dynamics;
-  if (!d?.isReady || sim.nativeTransition || sim.nativeTransitionError) return refused(sim, 'native external blast unavailable');
+  if (!d || d.disposed || sim.nativeTransition || sim.nativeTransitionError) return refused(sim, 'native external blast unavailable');
   // Powder Toy pressure calibration, same acoustic J/Pa conversion as native
   // voxel charges. External sources allocate half (not quarter) to air, hence /2.
-  sim.compactOwner.sync();
-  const result = d.applyExternalBlast({ position: worldPosition(sim, center), radius, energy: specialBlastEnergy(pressure) / 2, ...(selection?{selection}:{}) });
-  sim.nativeInteractionResult = result;
-  if (result.status !== 'queued') return false;
-  sim.wake();
-  return true;
+  // (world cells: a held request stays where it was asked for)
+  const request = { position: worldPosition(sim, center), radius, energy: specialBlastEnergy(pressure) / 2, ...(selection?{selection}:{}) };
+  const apply = () => {
+    const owner = sim.compactOwner;
+    if (!owner?.dynamics) return refused(sim, 'native external blast unavailable');
+    owner.sync();
+    const result = owner.dynamics.applyExternalBlast(request);
+    sim.nativeInteractionResult = result;
+    if (result.status !== 'queued') return false;
+    sim.wake();
+    return true;
+  };
+  // while the dynamics' kernels build it waits, in order with the other native requests (sim.deferNative)
+  if (!d.building || !sim.deferNative) return apply();
+  const accepted = sim.deferNative('externalBlast', apply);
+  sim.nativeInteractionResult = accepted ? { status: 'queued', deferred: 'native dynamics building' } : { status: 'rejected', reason: 'native request queue full' };
+  return accepted;
 }
 // null means this router does not own the tool. false is an explicit refusal:
 // never run a legacy B writer and report success when native import ignores it.
@@ -112,7 +134,9 @@ export function routeNativePaint(sim, stroke) {
     const a=[center.x,center.y,center.z],b=[end.x,end.y,end.z],reach=a.map((_,k)=>radius+Math.max(grow?.[k]??0,0));
     const box=mask?{lo:mask.lo,hi:mask.hi}:sim.touchCentres(a.map((x,k)=>Math.min(x,b[k])-reach[k]),a.map((x,k)=>Math.max(x,b[k])+reach[k]));
     return force(sim,'nativePaintForce',box,{center:a,end:b,radius,shape,tool,rate:stroke.rate??1,replace:+!!stroke.replace,
-      frame:++sim.paints,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},mask?sim._paintMask(mask.data):sim.noMask);
+      frame:++sim.paints,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},
+      // (the fill's mask is one shared buffer each fill rewrites: a stroke held for the dynamics' build keeps its own bytes)
+      mask?(bytes=>()=>sim._paintMask(bytes))(mask.data.slice()):sim.noMask);
   }
   if (tool !== ids.BLAST) return null;
   const selection={shape,end:worldPosition(sim,end),grow:grow??[0,0,0],filter,fade:true};

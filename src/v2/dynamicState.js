@@ -93,7 +93,8 @@ export function validateNativeSnapshot(owner, snapshot, origin = [owner.sim.orig
   decodeV2State(snapshot.core, dims);
   if (snapshot.dynamic) {
     validateDynamicSnapshot(snapshot.dynamic, { dims, origin });
-    if (!owner.dynamics?.isReady) fail('restore owner unavailable');
+    // (its buffers: a restore writes them alone, so it needs no kernel built: NativeDynamics _checkState)
+    if (!owner.dynamics || owner.dynamics.disposed) fail('restore owner unavailable');
   }
 }
 export function restoreNativeSnapshot(owner, snapshot) {
@@ -110,11 +111,17 @@ export function resetNativeDynamics(owner) {
   if (!d) return;
   if (sim.nativeTransitionKind === 'shift') throw new Error('Cannot replace a world during its native shift');
   const token = owner.dynamicResetToken = {};
+  // A replaced world takes the requests made of the old one with it: the dynamics' own queues (the
+  // empty state below) and, while their kernels build, the ones waiting for them (sim.deferNative),
+  // which a built dynamics would have run on the old world before this write replaced it.
+  if (sim.nativePending?.length) sim.nativePending.length = 0;
   const snapshot = emptyDynamicState([sim.g.nx, sim.g.ny, sim.g.nz], [sim.origin.x, sim.origin.y, sim.origin.z]);
   const apply = () => {
     if (!owner.disposed && sim.compactOwner === owner && owner.dynamicResetToken === token) d.restoreDynamicState(snapshot);
   };
-  if (d.isReady) { apply(); return; }
+  // (a restore writes the dynamics' buffers alone: while their kernels build it needs none of them,
+  // so a load at boot never holds the world in a transition until they are built)
+  if (d.isReady || !d.disposed) { apply(); return; }
   const pending = d.ready.then(apply).catch(error => { sim.nativeTransitionError = error; throw error; }).finally(() => {
     if (sim.nativeTransition === pending) sim.nativeTransition = null;
     sim.wake();

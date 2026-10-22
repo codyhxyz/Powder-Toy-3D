@@ -67,6 +67,16 @@ export const volumeShaderGrid = (g, world, sourceAppearance = false) => ({
 // export fills through the same reader.)
 export const readsAir = (view) => view === 'pressure' || view === 'flow';
 
+/**
+ * The read format a session's volume draws `view` in (shaders/render.js fixedReadFormat): V2's
+ * packed cells (2), with its coarse air for the views that draw the air (3: readsAir); V1's A/B (0).
+ * What volumeReadFormat forecasts for an owner still building, for the start menu's warm-up
+ * (src/preload.js), which has no simulation yet.
+ * @param {string} view @param {boolean} native the session runs Physics V2 (launch.js physicsEngine)
+ * @returns {0 | 2 | 3}
+ */
+export const sessionVolumeFormat = (view, native) => (native ? (readsAir(view) ? 3 : 2) : 0);
+
 // Compile the intended native representation before its initialization finishes.
 // Actual draw headers are checked separately, so legacy buffers are never read
 // through a forecast native pipeline. physical: a view that reads the air (readsAir).
@@ -239,12 +249,14 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
       let p = pipes.get(key);
       if (!p) {
       const name = isMaterialView(view) ? `volume.${view}(${detailKey(d) || 'off'})` : `volume.${view}`;
+        // (a view drawn now is a long pole of the frame waiting for it: it starts ahead of the short
+        // builds, gpu/kernels.js BUILD_RANK.FIRST; a prefetch stays behind them)
         pipes.set(key, p = gpu.renderPipeline({
           name: `${curved ? `${name}.curved` : name}.format${format}`,
           code: volumeFrag(g, { view, detail: d, curved, fixedReadFormat: format }), layouts: [L.VOLUME_FRAME, L.STATE_RO, L.LIGHTING],
-          params: VolumeParams, ...volumePipeline(), build,
+          params: VolumeParams, ...volumePipeline(), build, first: build === 'now',
         }));
-      } else if (build === 'now' && p.state === 'idle') p.build();
+      } else if (build === 'now' && (p.state === 'idle' || p.state === 'pending')) p.build();   // (a queued prefetch moves up: BUILD_RANK)
       return p;
     },
     /** Queues a view's pipeline for idle time (B5); resolves with it when it is ready. */

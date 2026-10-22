@@ -57,9 +57,12 @@ function watch(promise) {
   return () => settled;
 }
 
-// Native startup skips exactly eight builds, not initial edits/import/window passes.
+// Native startup skips exactly eight builds, not initial edits/import/window passes; V1's edit
+// passes a native host never records (Mix, undo across a shift: both native there) build with V1's
+// stepping (prepareLegacy) or on first use, so the first frame never waits for them.
 const native = fixture({ nativeStartup: true, windowed: true }, 'all');
-const initial = ['paint', 'paintMix', 'paintMix apply', 'fromAtlas', 'undoShift', 'awake', 'shift', 'flowShift', 'copy', 'toAtlas'];
+const initial = ['paint', 'fromAtlas', 'awake', 'shift', 'flowShift', 'copy', 'toAtlas'];
+const V1_EDITS = ['paintMix', 'paintMix apply', 'undoShift'];
 assert.deepEqual(native.builds, initial);
 assert.deepEqual(Object.keys(native.sim.kernels), LEGACY);
 for (const name of LEGACY) {
@@ -106,7 +109,8 @@ function appState(sim) {
 const state = appState(native.sim);
 const switchLegacy = setter(state)('v1');
 const switched = watch(switchLegacy);
-assert.deepEqual(native.builds.slice(initial.length), LEGACY, 'activation starts all eight builds');
+assert.deepEqual(native.builds.slice(initial.length), [...LEGACY, ...V1_EDITS], 'activation starts all eight builds, and V1\'s edit passes');
+for (const name of V1_EDITS) native.gate(name).resolve({});
 for (const name of LEGACY.slice(0, -1)) {
   native.gate(name).resolve({});
   await turn();
@@ -134,6 +138,7 @@ assert.equal(native.builds.length, built, 'repeated preparation never rebuilds')
 for (const opts of [{}, { nativeStartup: false }]) {
   const old = fixture(opts, ['args']);
   assert.deepEqual(old.builds.slice(0, 8), LEGACY);
+  assert.deepEqual(old.builds.slice(8, 14), ['paint', 'paintMix', 'paintMix apply', 'fromAtlas', 'undoShift', 'awake'], 'V1 builds its edit passes now, in its order');
   assert(LEGACY.every(name => old.kernels.get(name).when === 'now'));
   const ready = watch(old.sim.ready);
   await turn();
@@ -155,7 +160,7 @@ replaced.sim = second.sim;
 for (const name of LEGACY) first.gate(name).resolve({});
 await turn();
 assert.equal(replaced.physicsMode, 'v2');
-assert.deepEqual(second.builds.slice(-8), LEGACY);
+assert.deepEqual(second.builds.slice(-(LEGACY.length + V1_EDITS.length)), [...LEGACY, ...V1_EDITS]);
 for (const name of LEGACY) second.gate(name).resolve({});
 await replaceSwitch;
 assert.equal(replaced.physicsMode, 'v1');

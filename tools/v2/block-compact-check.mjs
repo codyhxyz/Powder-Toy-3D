@@ -210,7 +210,10 @@ async function record(contact, limits = {}, expectCompact = contact === contactW
   assert.equal(engine.kernels.v2block.layouts.length, 3);
   assert.equal(engine.kernels.v2block.layouts[1].name, 'V2_FLOW', 'group 1: the renderer\'s flow field, for topples (v2/flow.js)');
   assert.equal(engine.kernels.v2block.layouts[2].name, 'V2_CONTACT', 'existing contact binding family');
-  assert.equal(compiled.filter(k => k.build === 'now').length, 1); assert.equal(compiled.filter(k => k.code.includes('fn contactBlock(')).length, contact ? 1 : 0);
+  // the grid's passes build now (the first frame waits for them), the long poles first (gpu/kernels.js BUILD_RANK)
+  assert(compiled.every(k => k.build === 'now'), 'no grid pass waits behind the idle queue');
+  assert.deepEqual(compiled.filter(k => k.first).map(k => k.name).sort(), ['v2block', 'v2pairs', 'v2runs']);
+  assert.equal(compiled.filter(k => k.code.includes('fn contactBlock(')).length, contact ? 1 : 0);
   for (const k of compiled) {
     const storage = k.layouts.flatMap(l => l.entries ?? []).filter(e => e?.buffer?.type?.includes('storage')).length;
     assert(storage <= 8, `${k.name}: ${storage}`);

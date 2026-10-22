@@ -19,6 +19,7 @@ import { applyGuestStroke, applyGuestStrokes } from '../../src/net/edits.js';
 import { createPacker, createUnpacker, encodeFrame, decodeFrame, FRAME_KEY } from '../../src/net/codec.js';
 import { E, K, TOOLS, ELEMENTS } from '../../src/elements.js';
 import { readFileSync } from 'node:fs';
+import { physicsEngine } from '../../src/launch.js';
 
 const g = gridLayout(32, 32, 32), calls = [], shifts = [], requests = [], builds = [];
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_SRC: 4, COPY_DST: 8, INDIRECT: 0x100 };
@@ -84,8 +85,8 @@ const gpu = {
   queue: { writeBuffer(b, at, data) { b.data.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), at); } },
   write(b, at, data) { this.queue.writeBuffer(b, at, data); },
   frame: { copy(a, at, b, to, n) { b.data.set(a.data.subarray(at, at + n), to); }, clear(b, at = 0, n = b.size - at) { b.data.fill(0, at, at + n); } },
-  kernel: ({ name, build }) => {
-    builds.push({ name, build });
+  kernel: ({ name, build, first }) => {
+    builds.push({ name, build, first });
     return { name, state: 'ready', ready: Promise.resolve(), dispatch(f, size, opts) { calls.push({ name, size, opts }); referenceDispatch(name, opts); } };
   },
   readback: { buffer: (b, at, n, opts) => { const copy = b.data.slice(at, at + n); if (opts?.into) new Uint8Array(opts.into).set(copy); return Promise.resolve(copy.buffer); } },
@@ -102,9 +103,12 @@ const sim = Object.assign(Object.create(Simulation.prototype), {
   passOf: name => gpu.kernel({ name }), passes: { paint: {}, undoShift: gpu.kernel({ name: 'undoShift' }) },
 });
 const owner = new PhysicsV2(sim); await owner.ready;
+// The grid's passes are what the first frame waits for: built now, never behind the idle queue, the
+// longest poles first (gpu/kernels.js BUILD_RANK.FIRST); the dynamics build behind them.
 for (const name of Object.keys(owner.kernels)) {
   const desc = builds.find(b => b.name === name);
-  assert.equal(desc.build, name === 'v2block' ? 'now' : 'idle', 'required contact must not wait behind idle graphics builds');
+  assert.equal(desc.build, 'now', `${name}: the grid's passes must not wait behind idle builds`);
+  assert.equal(desc.first, ['v2block', 'v2runs', 'v2pairs'].includes(name), `${name}: the long poles start first`);
 }
 // The foundation lane owns allocation; this fixture supplies it on old bases.
 owner.aux ??= buffer({ size: g.slots * 4 });
@@ -482,7 +486,9 @@ assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouc
 }
 
 const app = readFileSync('src/app.js', 'utf8');
-assert(app.includes("let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1'"), 'v1 remains default');
+// (one decision, src/launch.js physicsEngine, which the start menu's warm-up reads too: src/preload.js)
+assert(app.includes('let physicsMode = physicsEngine(location.search);'), 'the app takes the engine from launch.js');
+assert.equal(physicsEngine(''), 'v1', 'v1 remains default'); assert.equal(physicsEngine('?physics=v2'), 'v2');
 assert(!app.includes("if (mode === 'v2' && !physicsV2 && !worldMode)"), 'no world-only v1 fallback');
 assert(app.includes('before: nativeBeforeStep'), 'automatic and manual native steps retain weather hooks');
 assert(readFileSync('src/gfx/volume.js', 'utf8').includes('pickGroup], header: sim.readHeader({ physical: true })'));
