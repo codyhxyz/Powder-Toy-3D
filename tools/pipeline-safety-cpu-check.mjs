@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createGpu } from '../src/gpu/device.js';
 import { GraphicsFailure } from '../src/gpu/errors.js';
-import { OptionalShaderFailure, PIPELINE_BUDGET_MS, PIPELINE_CONCURRENCY, PIPELINE_CONCURRENCY_MIN, PIPELINE_CONCURRENCY_MAX, pipelineConcurrency } from '../src/gpu/kernels.js';
+import { OptionalShaderFailure, PIPELINE_BUDGET_MS, PIPELINE_CONCURRENCY, PIPELINE_CONCURRENCY_MIN, PIPELINE_CONCURRENCY_MAX, pipelineConcurrency, OUTSIDE_VIEW_SLOTS } from '../src/gpu/kernels.js';
 // The fixtures below count slots as a weak machine has them (pipelineConcurrency's floor); the
 // scaled bound has its own tests at the end.
 const SLOTS = PIPELINE_CONCURRENCY_MIN;
@@ -701,6 +701,44 @@ await test('a build made outside the cache (the World volume) counts against the
   assert.ok(f.counts.active >= PIPELINE_CONCURRENCY_MIN, 'outside builds never take the cache under the floor');
   for (const d of many) d.reject(new Error('outside failure is its owner\'s to report'));
   for (let i = 0; i < 4; i++) { for (const c of f.calls) c.resolve({}); await drain(); }
+  await Promise.all(pipes.map((p) => p.ready));
+  assert.equal(f.gpu.pipelines.outsideBuilds, 0);
+  liveAndDrained(f);
+});
+
+// A big map's step kernels (sim.js windowed: build 'later') queue behind every build asked for
+// now, its World load's and first frame's, even those asked for after them (2026-10-22).
+await test("'later' builds start at once but behind every 'now' build, and a 'now' request moves one up", async (t) => {
+  const f = await fixture(t, { concurrency: PIPELINE_CONCURRENCY_MIN });
+  const later = Array.from({ length: 3 }, (_, i) => pipe(f.gpu, 400 + i, { build: 'later', name: `step-${i}` }));
+  const now = Array.from({ length: 3 }, (_, i) => pipe(f.gpu, 410 + i, { name: `first-${i}` }));
+  await drain();
+  assert.deepEqual(f.calls.map((c) => c.descriptor.label), ['step-0', 'step-1'], 'an idle cache starts them at once');
+  for (const c of f.calls.splice(0)) c.resolve({});
+  await drain();
+  assert.deepEqual(f.calls.map((c) => c.descriptor.label), ['first-0', 'first-1'], 'then every now build before the last later one');
+  // the same pipeline asked for now (a shared module): it moves up beside the now builds
+  const shared = f.gpu.kernel({ name: 'step-2', code: 'shared WGSL', constants: { i: 402 } });
+  for (const c of f.calls.splice(0)) c.resolve({});
+  await drain();
+  assert.deepEqual(f.calls.map((c) => c.descriptor.label).sort(), ['first-2', 'step-2']);
+  for (const c of f.calls.splice(0)) c.resolve({});
+  await Promise.all([...later, ...now, shared].map((p) => p.ready));
+  liveAndDrained(f);
+});
+
+await test('a World view build takes OUTSIDE_VIEW_SLOTS of the bound while it compiles, never under the floor', async (t) => {
+  assert.ok(Number.isInteger(OUTSIDE_VIEW_SLOTS) && OUTSIDE_VIEW_SLOTS >= 1);
+  const f = await fixture(t, { concurrency: PIPELINE_CONCURRENCY_MAX });
+  const view = deferred();
+  f.gpu.pipelines.outside(view.promise, OUTSIDE_VIEW_SLOTS);
+  const pipes = Array.from({ length: 6 }, (_, i) => pipe(f.gpu, 500 + i));
+  await drain();
+  assert.equal(f.calls.length, Math.max(PIPELINE_CONCURRENCY_MIN, PIPELINE_CONCURRENCY_MAX - OUTSIDE_VIEW_SLOTS));
+  view.resolve({});
+  await drain();
+  assert.equal(f.calls.length, PIPELINE_CONCURRENCY_MAX, 'its slots return when it settles');
+  for (let i = 0; i < 3; i++) { for (const c of f.calls) c.resolve({}); await drain(); }
   await Promise.all(pipes.map((p) => p.ready));
   assert.equal(f.gpu.pipelines.outsideBuilds, 0);
   liveAndDrained(f);
