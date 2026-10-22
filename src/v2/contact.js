@@ -1398,6 +1398,8 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
 // a pair trades none: the charge goes off this tick on the heat it came in with, as V1's does on its first
 // step (V1's step of conduction before it is one step's, the most this differs by). Only an explosive that
 // needs no air (blast.air: V1 blastAir) is lit outright; one that does waits on its exposure, so it trades.
+// Intentional (decided under the user's delegation, 2026-10-22): its partner misses the one step of V1's heat it
+// would trade first; the charge becomes its blast product at blast.T the same tick either way.
 export function ctLitHot(c, b) {
   const r = ctRow(c.id);
   if (r.blast === 0 || r.blastAir !== 0 || r.igniteQ >= 65536) return false;
