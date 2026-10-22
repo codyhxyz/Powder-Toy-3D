@@ -10,6 +10,7 @@ import { RENDER_LAYOUT } from '../../src/shaders/bindings.js';
 import { packetShadowFrag, packetShadowSplatWGSL, packetShadowWords, PACKET_SHADOW_EMPTY, PACKET_RETRACE_WORDS } from '../../src/shaders/v2/packetShadow.js';
 import { nativeParticleWGSL, NATIVE_PARTICLE_LIGHT_LAYOUT } from '../../src/shaders/v2/particleRender.js';
 import { NativeParticles, boxParticleLight } from '../../src/gfx/nativeParticles.js';
+import raysWire from '../../src/wire/rays.js';
 import { SHADOW_TILES_MAX } from '../../src/shaders/passes.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 
@@ -97,4 +98,13 @@ test('the matter draw lights its sphere with the Box volume\'s map and GI where 
   calls.length = 0; a.prepareDraw(g.frame); a.draw({ frame: g.frame }, { width: 640, height: 360 }, null);
   assert.equal(calls.find(c => c.name === 'nativeParticleMatter').o.params.light, 0, 'no light bound: the open sky');
   assert.equal(PACKET_SHADOW_EMPTY, 0xffffffff);
+  // the wire hands the draw the GPU volume's light (app.vol), not the three Object3D (app.volume: its matrix only),
+  // which left every packet in the open sky's light (the first GPU check: 168 in the plate's shadow, 170 in the sun)
+  const got = [];
+  const app = { post: { sceneTarget: { width: 640, height: 360 } }, sim: { compact: {}, gpu: g }, worldMode: null,
+    nativeParticles: { isReady: true, draw: (_rp, _t, l) => got.push(l) }, volume: { matrixWorld: new Matrix4() }, vol: volume, derived };
+  raysWire.scene(app, { frame: g.frame });
+  assert.equal(got[0]?.map, volume.shadowTextures.map, 'the Box draw lights its packets with the volume\'s map');
+  raysWire.scene({ ...app, worldMode: {} }, { frame: g.frame });
+  assert.equal(got[1], null, 'World: its own readers');
 });
