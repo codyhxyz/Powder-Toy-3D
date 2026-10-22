@@ -160,8 +160,13 @@ export class PhysicsV2 {
       // The grid's own passes are what a resting world steps and draws with, so the first frame waits
       // for them: built now, never behind the idle queue. The longest poles start first (LONG_POLES;
       // the shared build bound, pipelineConcurrency, remains). The dynamics build behind them (below).
+      // A big map's window builds them `later` (gpu/kernels.js BUILD_RANK.LATER: at once, behind every
+      // build asked for now, its long poles first): its World load (the window's passes, the blank
+      // state's load: wire/world.js WORLD_LOAD_PASSES) and the view start first, as V1's step kernels
+      // did there (main's World load split, 2026-10-22). What the world writes before the owner is
+      // built goes into the V1-format cache, which the owner imports when it first presents the grid.
       this.kernels[k.name] = gpu.kernel({
-        name: k.name, build: 'now', first: LONG_POLES.has(k.name), code: k.name === 'v2block' ? v2BlockWGSL(g, contactWGSL, !!this.blockCompact) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
+        name: k.name, build: sim.g.windowed ? 'later' : 'now', first: LONG_POLES.has(k.name), code: k.name === 'v2block' ? v2BlockWGSL(g, contactWGSL, !!this.blockCompact) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
         layouts: [finalize ? gpu.L.EMPTY : sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : (k.name === 'v2invalidate' || k.name === 'v2externalEvents') ? L.INVALIDATE : k.name === 'v2block' ? L.BLOCK_FLOW : gpu.L.EMPTY, finalize ? L.BLOCK_FINALIZE : familyLayouts[this.familyOf(k.name)]],
       });
     }

@@ -17,6 +17,9 @@ import { isMaterialView } from '../views.js';
 import '../world/bakeClient.js';   // the World's build-time bake (world/bake.js), before any world is made
 
 const torchLights = createTorchLights();
+// The simulation's passes a world's load records beyond its window's own (WorldWindow.whenReady):
+// the blank state it fills (sim.clear: sim.load's). Never a step kernel (sim.kernels).
+export const WORLD_LOAD_PASSES = Object.freeze(['fromAtlas']);
 const NO_AMBIENT = [0, 0, 0];   // a scene without an ambient floor (world scene `ambient`)
 
 // God view over a world: the orbit target on the ground, the camera this far
@@ -58,6 +61,9 @@ const world = {
     // once the world has generated and streamed in: cold (after a deploy) it is a big map's
     // longest single build, ~10 s (wire/worldRenderFrame.js startWorldFrameView).
     startWorldFrameView(app, scene);
+    // ...and its media noise (one per device), which the World frame state awaits
+    // (worldRenderFrame.js createWorldFrameState): it is made in idle slices, a boot's scarcest time.
+    createMediaNoise(app.gpu);
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene });
     sim.origin.fromArray(world.worldStart(app));
     sim.resetNativeDynamics(); // initial native air coordinates match the world before any tick
@@ -176,12 +182,14 @@ const world = {
   // A world has one scene, its own: loading starts it over (and can't be
   // undone). Its passes compile in the background first (the first time):
   // till then the window is empty air, and the world fills in when they're done.
+  // What it waits for is the window's passes and the blank state's (WORLD_LOAD_PASSES), never the
+  // simulation's step kernels (move, react): the World load starts from this load (app.js loadPreset).
   loadScene(app) {
     if (app.mp.replica) return;
-    const w = app.win, epoch = w.epoch;
-    if (!w.loaded) app.sim.clear();
-    w.whenReady().then(() => {
-      if (app.mp.replica || app.win !== w || w.epoch !== epoch) return;   // rebuilt or loaded meanwhile (load bumps the epoch)
+    const w = app.win, epoch = w.epoch, sim = app.sim;
+    Promise.all([w.whenReady(), sim.prepare(...WORLD_LOAD_PASSES)]).then(() => {
+      if (app.mp.replica || app.win !== w || app.sim !== sim || w.epoch !== epoch) return;   // rebuilt or loaded meanwhile (load bumps the epoch)
+      if (!w.loaded) sim.clear();   // (the blank window it fills, as a box's load starts from)
       w.load(world.worldStart(app));
       app.placeVolume();
       app.post.reset();

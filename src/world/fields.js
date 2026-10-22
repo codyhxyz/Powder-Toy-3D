@@ -52,6 +52,13 @@ function upload(gpu, label, data) {
   return buffer;
 }
 
+// A plan's owners: the ones it changed or added, over history's (unchanged).
+class FieldOwners {
+  constructor(base, overlay) { this.base = base; this.overlay = overlay; }
+  get(key) { return this.overlay.get(key) ?? this.base.get(key); }
+  has(key) { return this.overlay.has(key) || this.base.has(key); }
+}
+
 /**
  * Phase-2 numerical writer only: no draws, local-field proxies, or physics.
  *
@@ -107,6 +114,9 @@ export class WorldFields {
     this.smoothing = null;
     this.aerationActive = null;
     this.published = new Set();
+    // When each published core was added, for invalidation in published order
+    // without a pass over every published core per batch (record).
+    this.publishedAt = new Map(); this.publishedSeq = 0;
     this.publishedToken = null;
   }
   _lists(ids) {
@@ -117,9 +127,14 @@ export class WorldFields {
     }
     return words;
   }
-  plan(options) { return this._plan(options, true); }
-  requiredSourceRegions(options) { return this._plan(options, false).regions; }
-  _plan({ fieldTick, sourceSnapshot, wantedCores = [], changedBricks = [], smoothing = 1, full = false }, preflight) {
+  // prior: the source plan (sourcePlan) of these same options, from before the
+  // source was completed for it. Its owners and jobs do not depend on source
+  // data, so plan() reuses them while nothing it read has changed: planning
+  // each CELL batch twice was a sixth of a World load's CELL JS (2026-10-22).
+  plan(options, prior = null) { return this._plan(options, true, prior); }
+  sourcePlan(options) { return this._plan(options, false); }
+  requiredSourceRegions(options) { return this.sourcePlan(options).regions; }
+  _plan({ fieldTick, sourceSnapshot, wantedCores = [], changedBricks = [], smoothing = 1, full = false }, preflight, prior = null) {
     const source = sourceSnapshot, epoch = this.history.epoch;
     if (!Number.isSafeInteger(fieldTick) || fieldTick < 0 || (this.lastTick !== null && fieldTick < this.lastTick)) throw new Error('Stale field tick');
     if (!Number.isFinite(smoothing) || smoothing < 0) throw new Error('Invalid field smoothing');
@@ -128,20 +143,37 @@ export class WorldFields {
     if (fieldTick === this.lastTick && source.sourceRevision !== this.tickSource) throw new Error('Source changed within a committed field tick');
     const aerationActive = source.aerationActive !== false;
     const jetToggle = this.aerationActive !== null && aerationActive !== this.aerationActive;
+    // Everything the source-independent part reads: the options, and fields
+    // state that only a commit, reset or cut switch changes.
+    const inputs = { wantedCores, changedBricks, fieldTick, smoothing, full, jetToggle, epoch, version: this.version,
+      publishedToken: this.publishedToken, publishedSize: this.published.size, lastSmoothing: this.smoothing };
+    const reuse = prior?.inputs && Object.keys(inputs).every((k) => prior.inputs[k] === inputs[k]);
+    const { owners, advancing, nearAdvancing, nearChanged, jobs, batches, regions } = reuse ? prior : this._owners(inputs);
+    if (preflight) assertComplete(source, regions); // exact same demand calculation before population
+    return { epoch, fieldTick, sourceRevision: source.sourceRevision, source, version: this.version, smoothing, inputs,
+      owners, advancing, changedBricks, nearAdvancing, nearChanged, aerationActive, batches, jobs, regions };
+  }
+  // A plan's owners, advancing owners, spatial jobs and source regions.
+  _owners({ wantedCores, changedBricks, fieldTick, smoothing, full, jetToggle }) {
     const cores = new Map();
     for (const core of wantedCores) {
       if (!Array.isArray(core) || core.length !== 3 || core.some((v) => !Number.isSafeInteger(v) || v % 32)) throw new Error('World field cores must be 32-cell aligned');
       if (boxBricks(core, core.map((v) => v + 32), this.bounds).length) cores.set(brickKey(core), [...core]);
     }
-    // History owners are shared, never written: a plan copies an owner only to
-    // change it. A copy of every owner (one a brick) per plan was most of a
-    // batched World load's field planning and its garbage (2026-10-21).
-    const owners = new Map(this.history.owners);
-    for (const [k, v] of owners) if (v.changed !== jetToggle) owners.set(k, { ...v, changed: jetToggle });
+    // History owners are shared, never written: a plan keeps only the owners it
+    // changes or adds (plan.owners reads them over history's). A copy of every
+    // owner (one a brick) per plan was most of a batched World load's field
+    // planning and its garbage (2026-10-21); a pass over every owner per plan
+    // still grew a load's batches with all it had loaded: Island's last CELL
+    // batches cost 2-3x its first (2026-10-22). Only owners that can advance
+    // are visited: this plan's own, and history's unsettled ones of other ticks.
+    const base = this.history.owners, overlay = new Map(), history = this.history;
+    // An aeration toggle changes every owner: the one whole pass left, and rare.
+    if (jetToggle) for (const [k, v] of base) overlay.set(k, { ...v, changed: true });
     const ensure = (brick, changed = false) => {
-      const key = brickKey(brick), owner = owners.get(key);
-      if (!owner) owners.set(key, changed ? { brick, page: null, lastTick: null, age: 0, sourceVersion: null, changed: true } : { brick, page: null, lastTick: null, age: 0, sourceVersion: null });
-      else if (changed && !owner.changed) owners.set(key, { ...owner, changed: true });
+      const key = brickKey(brick), owner = overlay.get(key) ?? base.get(key);
+      if (!owner) overlay.set(key, changed ? { brick, page: null, lastTick: null, age: 0, sourceVersion: null, changed: true, order: history.order++ } : { brick, page: null, lastTick: null, age: 0, sourceVersion: null, order: history.order++ });
+      else if (changed && !owner.changed) overlay.set(key, { ...owner, changed: true });
     };
     // Include all required authoritative EMA halos, not only visible owners.
     for (const core of cores.values()) for (const b of boxBricks(core.map((v) => v - 4), core.map((v) => v + 36), this.bounds)) ensure(b);
@@ -151,8 +183,13 @@ export class WorldFields {
       if (!Array.isArray(b) || b.length !== 3 || b.some((v) => !Number.isSafeInteger(v))) throw new Error('Invalid changed world brick');
       for (const n of boxBricks(b.map((v) => v * 4 - 4), b.map((v) => v * 4 + 8), this.bounds)) ensure(n, true);
     }
+    const owners = new FieldOwners(base, overlay), candidates = [...overlay.values()];
+    if (!jetToggle) for (const [tick, keys] of history.unsettled) if (tick !== fieldTick) for (const key of keys) if (!overlay.has(key)) candidates.push(base.get(key));
+    // In history's order, then new owners in the order they were asked for: the
+    // order a pass over every owner visited them.
+    candidates.sort((a, b) => a.order - b.order);
     const advancing = [];
-    for (const owner of owners.values()) {
+    for (const owner of candidates) {
       if (owner.lastTick === fieldTick) {
         if (jetToggle) throw new Error('Aeration changed within a committed field tick');
         continue;
@@ -173,17 +210,16 @@ export class WorldFields {
       const origin = core.map((v) => v - 16);
       return { origin, lo: origin.map((v, i) => Math.max(v, this.bounds.min[i])), hi: origin.map((v, i) => Math.min(v + 64, this.bounds.max[i])) };
     });
-    if (preflight) assertComplete(source, regions); // exact same demand calculation before population
-    return { epoch, fieldTick, sourceRevision: source.sourceRevision, source, version: this.version, smoothing,
-      owners, advancing, changedBricks, nearAdvancing, nearChanged, aerationActive, batches: [...batches.values()], jobs, regions };
+    return { owners, advancing, nearAdvancing, nearChanged, jobs, batches: [...batches.values()], regions };
   }
   record(frame, plan) {
     if (plan.epoch !== this.history.epoch || plan.version !== this.version || plan.source.isCurrent() !== true) throw new Error('Stale world field plan');
     if (Object.values(this.kernels).some((k) => k.state !== 'ready')) throw new Error('World field kernels not ready');
     assertComplete(plan.source, plan.regions);
     const r = this.scratch, uploads = [], allocated = [], outputs = [], replaced = [];
-    // Shared owners again: an advancing one is copied before it changes.
-    const owners = new Map(plan.owners);
+    // Shared owners again: an advancing one is copied before it changes, and
+    // history takes the copies only once the batch is published.
+    const updated = new Map(), ownerOf = (key) => updated.get(key) ?? plan.owners.get(key);
     const header = { src: 0, dst: 0, origin: [0, 0, 0] };
     const domain = (origin, interval) => ({ worldMin: this.bounds.min, worldMax: this.bounds.max, scratchOrigin: origin, ...interval });
     const gatherRaw = (origin) => synchronous(plan.source.recordGatherRaw(frame, { resources: { A: r.A, B: r.B, aeration: r.aeration },
@@ -196,7 +232,7 @@ export class WorldFields {
         const origin = batch.core.map((v) => v - 16), ids = [], ages = new Uint32Array(this.g.nbricks);
         gatherRaw(origin);
         for (const planned of batch.owners) {
-          const owner = owners.get(brickKey(planned.brick));
+          const owner = ownerOf(brickKey(planned.brick));
           const local = owner.brick.map((v, i) => v - origin[i] / 4), id = brickIdOf(this.g, ...local);
           ids.push(id);
           if (owner.page) this.history.copy(frame, r, origin, owner.brick, owner.page);
@@ -209,12 +245,22 @@ export class WorldFields {
         this.deriver.recordEMA(frame, { sourceGroup: this.sourceGroup, header,
           size: fold(ids.length), domain: domain(origin, { lo: [16, 16, 16], hi: [48, 48, 48] }) });
         for (const planned of batch.owners) {
-          const key = brickKey(planned.brick), owner = { ...owners.get(key) }; owners.set(key, owner);
+          const key = brickKey(planned.brick), owner = { ...ownerOf(key) }; updated.set(key, owner);
           const page = this.history.allocate(); allocated.push(page);
           this.history.copy(frame, r, origin, owner.brick, page, true);
+          // A brick with no history starts over at its target (AGE.FRESH above),
+          // and that is the blend's 8-bit fixed point: blending toward the same
+          // target rounds back to it, for every channel's weight
+          // (tools/world-tick-repack-cpu-check.mjs proves it). So it is born settled,
+          // as an owner FIELD_EMA_SETTLE ticks past its last change is: only a
+          // change makes it advance again. Born unsettled, every brick of a big
+          // map's load advanced for FIELD_EMA_SETTLE more ticks, the same bytes
+          // each time, and every core of it was derived and packed again
+          // (Island's second tick: 400k owners, a 9.75 s stall, 2026-10-22).
+          const fresh = !owner.page;
           if (owner.page) replaced.push(owner.page);
           owner.page = page;
-          owner.age = owner.changed || owner.lastTick === null ? 0 : Math.min(FIELD_EMA_SETTLE, owner.age + 1);
+          owner.age = fresh ? FIELD_EMA_SETTLE : owner.changed ? 0 : Math.min(FIELD_EMA_SETTLE, owner.age + 1);
           owner.lastTick = plan.fieldTick;
           owner.sourceVersion = plan.sourceRevision;
         }
@@ -225,7 +271,7 @@ export class WorldFields {
         gatherRaw(origin);
         const interval = fieldInterval('ema');
         for (const brick of boxBricks(add(origin, interval.lo), add(origin, interval.hi), this.bounds)) {
-          const owner = owners.get(brickKey(brick));
+          const owner = ownerOf(brickKey(brick));
           if (!owner?.page) throw new Error('Missing authoritative world EMA neighbor');
           this.history.copy(frame, r, origin, brick, owner.page);
         }
@@ -241,11 +287,14 @@ export class WorldFields {
       // A throwing publisher must leave its retained snapshot unchanged.
       if (plan.epoch !== this.history.epoch || plan.version !== this.version || plan.source.isCurrent() !== true) throw new Error('World field source/epoch changed during recording');
       const token = this._token(plan);
-      const invalidatedCoreKeys = [...this.published].filter(key => this.smoothing !== plan.smoothing || plan.nearAdvancing.has(key) || plan.nearChanged.has(key));
+      const invalidatedCoreKeys = this._invalidated(plan);
       synchronous(this.publisher.publish({ token, outputs, invalidatedCoreKeys }), 'publish');
       if (plan.epoch !== this.history.epoch || plan.version !== this.version || plan.source.isCurrent() !== true) throw new Error('World field source/epoch changed during publication');
-      this.history.owners = owners;
-      this.history.free.push(...replaced);
+      this.history.commit(updated);
+      // One push per page, not push(...replaced): a big map's second field tick
+      // replaces every owner (~400k on Island), past V8's argument limit
+      // ("Maximum call stack size exceeded", 2026-10-22).
+      for (const page of replaced) this.history.free.push(page);
       this.lastTick = plan.fieldTick;
       this.tickSource = plan.sourceRevision;
       this.version++;
@@ -257,7 +306,7 @@ export class WorldFields {
       this.publishedToken = token;
       this.publishedSource = plan.source;
       this.smoothing = plan.smoothing;
-      for (const core of plan.jobs) this.published.add(brickKey(core));
+      for (const core of plan.jobs) { const key = brickKey(core); if (!this.published.has(key)) { this.published.add(key); this.publishedAt.set(key, this.publishedSeq++); } }
       this.generation++;
       // Caller retires uploads ONLY after frame submission + queue completion.
       return { token, outputs, retire: () => { for (const b of uploads) b.destroy(); } };
@@ -271,6 +320,16 @@ export class WorldFields {
       throw error;
     }
   }
+  // The published cores a plan invalidates, in the order they were published:
+  // every one after a smoothing change, else those near its advancing owners or
+  // changed bricks. Filtering every published core per batch grew a load's
+  // batches with what it had loaded (2026-10-22).
+  _invalidated(plan) {
+    if (this.smoothing !== plan.smoothing) return [...this.published];
+    const keys = new Set();
+    for (const near of [plan.nearAdvancing, plan.nearChanged]) for (const key of near) if (this.published.has(key)) keys.add(key);
+    return [...keys].sort((a, b) => this.publishedAt.get(a) - this.publishedAt.get(b));
+  }
   _token(plan) { return Object.freeze({ epoch: plan.epoch, fieldTick: plan.fieldTick, sourceRevision: plan.sourceRevision,
     historyVersion: plan.version + 1, smoothing: plan.smoothing, generation: this.generation }); }
   isCurrent(token) {
@@ -282,7 +341,7 @@ export class WorldFields {
     this.history.reset(epoch);
     this.publishedToken = null; this.publishedSource = null;
     this.version++;
-    this.lastTick = null; this.tickSource = null; this.smoothing = null; this.aerationActive = null; this.published.clear(); this.generation++;
+    this.lastTick = null; this.tickSource = null; this.smoothing = null; this.aerationActive = null; this.published.clear(); this.publishedAt.clear(); this.generation++;
   }
   // Caller must finish its own queued work before disposal.
   dispose() {

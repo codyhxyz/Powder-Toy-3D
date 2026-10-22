@@ -296,3 +296,25 @@ test('sparse virtual IDs, empty UNKNOWN bootstrap, exact selection/dependency/ba
   await assert.rejects(f.lighting.prepare({...options,requestedTiles:[1.5]}),/tile IDs/);
   f.lighting.dispose();
 });
+
+test('coarse far tiles (world/worldSunRings.js): their own pipeline, never a brick request, copied only to a coarse slot',async()=>{
+  const f=fixture(),labels=[],compute=f.frame.compute;f.frame.compute=(label,o)=>{labels.push(label);return compute(label,o);};
+  const dims=[8,8],coarseCasters={heights:new Float32Array(64).fill(10),dims,maxTop:10,size:[3072,384,1024]};
+  const options={...f.options,receiverBounds:[],requestedTiles:[2,17],coarseTiles:[17],coarseCasters};
+  await assert.rejects(f.lighting.prepare({...options,coarseCasters:null}),/coarse casters/);
+  const first=await f.lighting.prepare(options);assert.deepEqual(first.coarse,[17]);
+  assert.equal((await f.complete(first)).status,'published');assert.deepEqual(labels.sort(),['world coarse sun','world optical sun']);
+  const cached=await f.lighting.prepare(options);assert.equal(cached.status,'cached');cached.snapshot.release();
+  // 17 sharpens: written again in full detail, never copied from its coarse slot
+  labels.length=0;f.events.length=0;
+  const sharp=await f.lighting.prepare({...options,coarseTiles:[]});assert.equal(sharp.status,'prepared');
+  assert.equal((await f.complete(sharp)).status,'published');assert.deepEqual(labels,['world optical sun']);assert.equal(f.events.filter(e=>e==='copy-texture').length,2);
+  // back to coarse after an edit: the full tile 2 is rewritten (no dirty set), 17 coarse anew
+  f.edit();labels.length=0;
+  const again=await f.lighting.prepare(options);assert.equal((await f.complete(again)).status,'published');assert.deepEqual(labels.sort(),['world coarse sun','world optical sun']);
+  // and an edit leaves a coarse tile's slot copyable (the heightfield is static)
+  f.edit();labels.length=0;f.events.length=0;const h=f.lighting.snapshot();
+  const edited=await f.lighting.prepare({...options,changedWorldBounds:[],changeBaseToken:h.token});h.release();
+  assert.equal((await f.complete(edited)).status,'published');assert.deepEqual(labels,[]);assert.equal(f.events.filter(e=>e==='copy-texture').length,4);
+  f.lighting.dispose();
+});

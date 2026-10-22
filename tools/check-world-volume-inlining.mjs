@@ -11,6 +11,12 @@
 //     lamps' specular, cost ~0.4 s on its own (2026-10-21);
 //   - the trilinear field read (worldFieldLinear, eight page lookups): a
 //     single load in its place saves ~1.3 s.
+//   - the view's far-air test (worldViewFarAir, world/worldViewRing.js): it
+//     lives inside worldPage, the one request helper, so it has exactly
+//     worldPage's copies and no call site of its own. It costs ~1 s at
+//     balanced detail (6.4 -> 7.4 s, medians of 8 interleaved runs, noise
+//     +-1 s, 2026-10-22); as a separate helper for the brick readers only it
+//     cost ~0.2 s, but then a cell or field read beside a hit still asked.
 // This check fails when a change adds copies of those, so a new call site is
 // a decision (raise the ceiling here and say why) instead of a silent slower
 // load after a deploy.
@@ -82,10 +88,16 @@ for (const g of WORLD_SHADER_GRIDS) for (const curved of [false, true]) for (con
   for (const [f, max] of Object.entries(ceiling)) {
     assert((copies.get(f) ?? 0) <= max, `${tag}: ${copies.get(f)} inlined copies of ${f} (ceiling ${max}; see this file's header before raising it)`);
   }
+  // The far-air test is the request helper's: only worldPage calls it.
+  const fns = functions(code);
+  assert.equal(copies.get('worldViewFarAir') ?? 0, copies.get('worldPage') ?? 0, `${tag}: worldViewFarAir must be inlined only through worldPage`);
+  for (const [f, body] of fns) if (f !== 'worldPage') assert(!/\bworldViewFarAir\s*\(/.test(body), `${tag}: ${f} calls worldViewFarAir; keep the far-air test inside worldPage`);
   // A crystal face reads only the lamps' specular: the beam (diffuse only)
   // must stay out of its call, or its whole-window ray runs in the march.
-  const crystal = functions(code).get('crystalInterface');
+  const crystal = fns.get('crystalInterface');
   assert(crystal && /lampLights\([^;]*,\s*false\)\s*;/.test(crystal), `${tag}: crystalInterface must call lampLights(..., beamOn = false)`);
   checked++;
 }
+// Small maps (Box) hold their whole window and ask for nothing: no view ring there.
+for (const level of Object.keys(CEILINGS)) assert(!volumeFrag({ nx: 128, ny: 128, nz: 128 }, { view: 'realistic', detail: REALISTIC_LEVELS[level]() }).includes('worldViewFarAir'), `Box ${level}: the World view's far-air ring leaked into the small maps' shader`);
 console.log(`world volume inlining: ${checked} variants within their inlined-copy ceilings (traceNearSteps, field reads, page lookups)`);

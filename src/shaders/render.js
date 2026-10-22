@@ -1562,7 +1562,8 @@ export const volumeFrag = (grid, { view = 'realistic', detail = {}, curved = fal
   const nativeIds = !debug && (fixedReadFormat === 2 || fixedReadFormat === 3);
   const parts = [
     `// volume: ${view}${lit ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}`,
-    lib(plain ? { ...g, sourceAppearance: false } : g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d, backend, fixedReadFormat }),
+    // the view's rings (world/worldViewRing.js): what its far pixels ask for; Box asks for nothing
+    lib(plain ? { ...g, sourceAppearance: false } : g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d, backend, fixedReadFormat, viewRing: backend === 'world' }),
     ...(nativeIds ? [volumeIdWGSL(fixedReadFormat)] : []),
     tracerWGSL(backend),
     curved ? presentationNearWGSL() : '',

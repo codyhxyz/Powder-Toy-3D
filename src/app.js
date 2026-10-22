@@ -527,6 +527,8 @@ povEvents.on('game:end', () => {
 });
 // the grid's pipelines (B5): coreReady once the ones a frame draws with are built
 let coreReady = false, coreWait = Promise.resolve();
+// a big map's: what its frame draws with is built, the simulation's step kernels maybe not yet (build)
+let worldDrawReady = false, worldDrawWait = Promise.resolve();
 const readySims = new WeakSet();   // simulations whose own pipelines are ready (a load can be recorded)
 let viewTime = 0;   // s the scene's animations have run (FrameUniforms.time: it runs with the simulation)
 
@@ -611,13 +613,22 @@ function build(savedWorldSize = null) {
   volume.scale.setScalar(scale);
   // the pipelines a frame needs (warm from the start menu, or building now)
   coreReady = false;
+  worldDrawReady = false;
   s.ready.then(() => readySims.add(s), () => {});
   const nativeOwner = physicsV2;
-  const core = coreWait = Promise.all([...(nativeOwner ? [nativeOwner.ready, nativeOwner.integrationReady] : []), s.ready, derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready, hybridWait,
-    worldMode ? null : blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())]).then(() => {
+  // What a frame draws with. V2's native owner holds the cells a big map's renderer reads, so it is
+  // one of them; V1's step kernels (s.ready: move, react) are not, only stepping is (worldDrawReady).
+  const draw = [...(nativeOwner ? [nativeOwner.ready, nativeOwner.integrationReady] : []), derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready, hybridWait,
+    worldMode ? null : blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())];
+  const core = coreWait = Promise.all([s.ready, ...draw]).then(() => {
     if (coreWait === core) { coreReady = true; wakeLoop(); }
   });
   core.catch(() => {});   // (a pipeline that fails stops graphics: stopGraphics says why)
+  // A big map's World load and first frame go on while the simulation's step kernels build
+  // (cold, move alone took 5.4 s in Chrome and the World load waited for it: 2026-10-22, Island):
+  // the loop ticks render-only till coreReady (tick), as during a Descent terrain handoff.
+  worldDrawWait = worldMode ? Promise.all(draw) : core;
+  if (worldMode) worldDrawWait.then(() => { if (coreWait === core && !coreReady) { worldDrawReady = true; wakeLoop(); } }, () => {});
   prepareGI();
   for (const w of live) w.attach?.(ctx);   // (a world's window sets sim.origin)
   // the grid starts centred on the scene's origin
@@ -967,10 +978,13 @@ function loadPreset(name, undoable = true) {
   }
   settings.preset = name;
   if (resolveMode(mapOf(settings), selectedMode).key !== selectedMode) startMode('sandbox');   // (not the gamemode's map now)
+  // A big map's world goes in once the passes it is written with are built (wire/world.js
+  // loadScene), not behind the simulation's step kernels: its World load starts from it.
+  if (win && !mp.replica) wire('world').loadScene(ctx);
   // (the cells go in once the simulation's pipelines are built: at boot, behind the loading screen)
   whenSimReady(() => {
     if (mp.replica) return;
-    if (win) wire('world').loadScene(ctx);
+    if (win) { /* loaded above */ }
     else if (name === 'empty') sim.clear();
     // (the Islet fills on the GPU, from the island scene: world/gpu.js loadIsland's world P. Its sea past
     // the walls comes from that scene's CPU twin, as a big map's does, once the cells land)
@@ -2452,6 +2466,13 @@ function saveScreenshot() {
   });
 }
 
+// A World owner's scene never changes under it: a new map builds a new window
+// and owner (wire/world.js attach), and a gamemode's look is render-only
+// (gfx/presentation.js). So its scene version is one constant per window, not
+// modeEpoch: Sandbox starting after the first frame bumped modeEpoch, and the
+// owner then refused every later frame ("reset WORLD owner before changing
+// scene", never called by the app), freezing Island after it loaded (2026-10-22).
+const WORLD_SCENE_VERSION = 1;
 // A WORLD request captures source/lighting once, independently of the view.
 function captureWorldRequest(reservation,state,dt,accepted) {
   updateGfxUniforms(sim,SUN,KEY_LIGHT);
@@ -2476,7 +2497,7 @@ function captureWorldRequest(reservation,state,dt,accepted) {
     col:[...values.lampCol[i]],shape:[...values.lampShape[i]]}));
   const frame={values,physicsOrigin:origin,params:{marchNear:pov?.marchNear??0,warpK:warp.k,warpAnchor:warp.anchor,warpDir:warp.dir},
     globalKey:key,lamps,sun:{direction:[...values.sun],basisRevision:1},
-    sceneVersion:modeEpoch,schemaVersion:1,configVersion:1,advance:reservation.runDerived||!accepted,
+    sceneVersion:WORLD_SCENE_VERSION,schemaVersion:1,configVersion:1,advance:reservation.runDerived||!accepted,
     external:{mediaNoise:state.noise.view,packedMesh:state.unused.createView(),sourceAppearance:state.emptyArtwork.createView()}};
   // Reuse source settings only when they really remain compatible. Camera or
   // physics-origin changes alone must not turn a new light setting into stale data.
@@ -2842,12 +2863,16 @@ function tick(now, renderOnly = false) {
   // run meanwhile (paused alone still allows tools, scripts and stepOnce).
   renderOnly ||= !!ctx.descent?.terrainPending;
   settledSleep = false;
-  if (!coreReady) return false;   // (the grid's pipelines wake the loop when they are built)
+  if (!coreReady && !(win && worldDrawReady)) return false;   // (the grid's pipelines wake the loop when they are built)
+  // A big map before its simulation's step kernels are built (build: worldDrawReady): its World
+  // load and first frame go on, and nothing writes the state till they are (no step, stroke or hook).
+  const simPending = !coreReady;
+  renderOnly ||= simPending;
   if (!renderOnly && capCheck.feed(now, lastIdle)) hud.toast(CAP_NOTICE, { kind: 'hint', ms: CAP_NOTICE_MS });
   const t0 = performance.now();
   lastIdle = false;
   // not due: too soon after the last (MAX_FPS), or the GPU still has its frames in flight (B3)
-  if ((!renderOnly || ctx.descent?.terrainPending) && (gpu.inFlight >= gpu.maxFramesInFlight || !pacer.due(now))) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return true; }
+  if ((!renderOnly || ctx.descent?.terrainPending || simPending) && (gpu.inFlight >= gpu.maxFramesInFlight || !pacer.due(now))) { lastIdle = performance.now() - t0 < CAP_IDLE_MS; return true; }
   if (prof.on !== settings.profiler) applyProfiler();
   applyOutputRatio();
   prof.beginFrame(now);
@@ -2947,7 +2972,7 @@ function tick(now, renderOnly = false) {
   if (!renderOnly && stepping && stepped > 0) { nativeRayStroke = null; releaseHeldNativeRays(sim); }
   if (!renderOnly && !mp.replica) scripts?.endFrame();
   updateSun();
-  if (!ctx.descent?.terrainPending) for (const w of live) if (!mp.replica || ['pov', 'mp'].includes(w.name)) w.afterStep?.(ctx, dt);   // lightning, the session, the meshes
+  if (!ctx.descent?.terrainPending && !simPending) for (const w of live) if (!mp.replica || ['pov', 'mp'].includes(w.name)) w.afterStep?.(ctx, dt);   // lightning, the session, the meshes
   if (settings.time !== timeShown) {
     timeShown = settings.time;
     if (settingsPanel.isOpen) settingsPanel.sync();
@@ -3228,7 +3253,8 @@ function bootReady(pending = null) {
   loadWatch.start(bootMap?.key ?? settings.scene ?? settings.size, { step: 'building the map' });
   const check = async () => {
     if (graphicsFailure || launch.startupError) return;   // (stopGraphics flagged a failure; a cancelled start isn't one)
-    if(win&&!win.renderFrame?.driver?.displayedMainFrame){
+    // (and, a big map's, the simulation's step kernels: till then its loop ticks render-only)
+    if(win&&(!win.renderFrame?.driver?.displayedMainFrame||!coreReady)){
       // (its install failing is caught where the frame loop calls it: graphics stop, so this ends)
       loadWatch.step('the World renderer\'s first frame');
       launch.progress?.('world');
@@ -3326,7 +3352,8 @@ try {
   // The pipelines this session draws with: warm from the start menu
   // (src/preload.js), or building now behind its loading screen.
   launch.progress?.('compile');
-  await coreWait;
+  // (a big map's loop starts without the simulation's step kernels: its World load goes on, tick)
+  await worldDrawWait;
   if (graphicsFailure) throw graphicsFailure;
   window.__app = {
     get sim() { return sim; }, get derived() { return derived; }, get scale() { return scale; }, get signs() { return signs; }, get builds() { return builds; },

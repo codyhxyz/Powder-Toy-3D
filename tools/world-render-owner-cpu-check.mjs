@@ -43,7 +43,7 @@ let head=array<u32,7>(${kind==='opaque'?'1':'0'}u,0u,0u,0u,0u,0u,${kind==='cryst
   return miss[0]===READY.GI;
 }
 async function settle(gpu,promise){let done=false,error,result;promise.then(r=>{done=true;result=r;},e=>{done=true;error=e;});for(let i=0;i<2000&&!done;i++){gpu.finish();await tick();}assert(done,'native final boundary failed to settle');if(error)throw error;return result;}
-export async function setup({size=[16,8,8],feedback=true,sourceKinds=null,ground=null}={}) {
+export async function setup({size=[16,8,8],feedback=true,sourceKinds=null,ground=null,ownerOptions={}}={}) {
   const f=await fixture({size}),gpu=f.gpu,events=[],sources=[],histories=[],tablesUsed=[],giJobs=[];
   const tableBuffer=gpu.createBuffer({label:'real fixture tables',size:tableLayout().Tables.size,usage:128|4|8});
   const tableGroup=gpu.bindGroup(f.sim.L.TABLES,[{binding:0,resource:{buffer:tableBuffer}}],'fixture TABLES');
@@ -104,7 +104,7 @@ export async function setup({size=[16,8,8],feedback=true,sourceKinds=null,ground
   gpu.frame.compute=()=>{let pipe;const groups=[];return {setPipeline:p=>pipe=p,setBindGroup:(i,g)=>groups[i]=g,dispatchWorkgroups:n=>dispatch(pipe,groups,n,fn=>gpu._push(fn))};};
   // A ground twin (world/scenes/index.js ground) turns on the sun-caster forecast.
   if(ground)f.win.scene.ground=ground;
-  owner=installWorldRender(f.win);
+  owner=installWorldRender(f.win,ownerOptions);
   const frame={sceneVersion:'scene',schemaVersion:1,configVersion:1,values:{cam:[0,0,0]},physicsOrigin:[0,0,0],globalKey:[1],sun:{direction:[1,1,1],basisRevision:1},external:Object.fromEntries(['mediaNoise','packedMesh','sourceAppearance'].map(name=>[name,{name}]))};
   return {...f,owner,events,sources,histories,tablesUsed,giJobs,frame,async close(){await settle(gpu,owner.dispose());await f.finish();}};
 }
@@ -134,11 +134,21 @@ test('mode2 keeps SOURCE/data dependencies without invented probes; typed air GI
   c.release();await f.close();
 });
 
-for(const kind of ['opaque','crystal'])test(`${kind} SOURCE actual self-read feedback requires full birth before admission`,async()=>{
+// At the original reset every previous probe is the ledger's zero seed, read as
+// a birth (gfx/worldGI.js): a SOURCE asks for no probe of its own, which was a
+// chain (each such probe's gather asked for more SOURCES). Past the reset the
+// self-read still requires a full birth before admission.
+for(const kind of ['opaque','crystal'])test(`${kind} SOURCE actual self-read: none at the reset, full birth before admission after it`,async()=>{
   const f=await setup({feedback:false,sourceKinds:{0:kind}});
-  const c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE}]));
+  let c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE}]));
+  assert(!f.events.includes('typed GI self-miss'));
+  assert(f.giJobs.filter(j=>j.phase==='world GI source').every(j=>j.flags&2),'reset SOURCE jobs read the zero seed as births');
+  assert.deepEqual(f.giJobs.filter(j=>j.phase==='world GI gather'),[]);
+  await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
+  f.giJobs.length=0;f.events.length=0;
+  c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE}]));
   assert(f.events.includes('typed GI self-miss'));
-  const gathers=f.giJobs.filter(j=>j.phase==='world GI gather');assert.deepEqual(gathers.map(j=>j.index),[0]);
+  const gathers=f.giJobs.filter(j=>j.phase==='world GI gather');assert.deepEqual([...new Set(gathers.map(j=>j.index))],[0]);
   assert.equal(gathers[0].flags&2,2);assert.equal(f.owner.atlas.lookup([0,0,0],READY.GI).known,true);
   await settle(f.gpu,f.owner.accept(c,post(c)));c.release();await f.close();
 });
@@ -295,7 +305,8 @@ test('actual owner captures original 384-height boundary and pins external resou
 });
 
 test('two actual SOURCE core slabs precede ANY gather; retained GI crosses R+1 with original mixed compute tokens',async()=>{
-  const f=await setup({size:[48,8,8],feedback:false});const demand=[0,8].map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE|READY.GI}));
+  // A one-job bound: each core is its own slab (WORLD_GI_SLAB_JOBS packs both into one).
+  const f=await setup({size:[48,8,8],feedback:false,ownerOptions:{giSlabJobs:1}});const demand=[0,8].map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE|READY.GI}));
   let c=await settle(f.gpu,f.owner.request(f.frame,demand));
   const phases=f.events.filter(x=>x==='world GI source'||x==='world GI gather');assert.deepEqual(phases,['world GI source','world GI source','world GI gather','world GI gather']);
   await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
@@ -353,4 +364,148 @@ for(const forecast of [false,true])test(`sun casters ${forecast?'forecast from t
   if(forecast)assert(p.forecastBricks>0&&f.owner.atlas.lookup([3,0,0],READY.CELL).known,'caster brick forecast and resident');
   else assert.equal(p.forecastBricks,0);
   await settle(f.gpu,f.owner.accept(c,post(c)));c.release();await f.close();
+});
+
+// GI demand that the SOURCE phase discovers (each opaque SOURCE job reads its own
+// brick's previous probe) resolves inside the attempt: every slab runs and the
+// births join the same plan. An Island load restarted once per 32-cell core,
+// ~64 probes a time, for 19+ attempts of ~3.5 s from its SOURCE stage (2026-10-22).
+for(const giSlabJobs of [1,undefined])test(`GI gather demand resolves without restarting the attempt (${giSlabJobs?'a slab per core':'packed slabs'})`,async()=>{
+  const cores=[0,8,16],kinds=Object.fromEntries(cores.map(x=>[x,'opaque']));
+  const run=async channels=>{
+    const f=await setup({size:[96,8,8],feedback:false,sourceKinds:kinds,ownerOptions:giSlabJobs?{giSlabJobs}:{}});
+    // Past the reset: at it every previous probe is the zero seed, read as a
+    // birth (gfx/worldGI.js), so its SOURCE jobs ask for none.
+    const c0=await settle(f.gpu,f.owner.request(f.frame,cores.map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE}))));
+    await settle(f.gpu,f.owner.accept(c0,post(c0)));c0.release();f.giJobs.length=0;
+    const c=await settle(f.gpu,f.owner.request(f.frame,cores.map(x=>({brick:[x,0,0],channels}))));
+    const p=f.owner.progress,last=new Map();
+    for(const j of f.giJobs)last.set(`${j.phase} ${j.index}`,j.flags);
+    const gi=cores.map(x=>f.owner.atlas.lookup([x,0,0],READY.GI).known);
+    await settle(f.gpu,f.owner.discard(c));c.release();await f.close();
+    return {p,last,gi};
+  };
+  const found=await run(READY.GI_SOURCE),declared=await run(READY.GI_SOURCE|READY.GI);
+  assert.equal(found.p.attempts,1,`attempts ${found.p.attempts}`);
+  assert.equal(found.p.sourcePasses,1,'one SOURCE pass found every core\'s births');
+  assert.equal(found.p.gathers,cores.length);
+  // Exact: the same jobs, birth flags and probes as a load that asked for them.
+  assert.equal(declared.p.attempts,1);assert.equal(declared.p.sourcePasses,0);
+  assert.deepEqual([...found.last].sort(),[...declared.last].sort());
+  assert.deepEqual(found.gi,cores.map(()=>true));assert.deepEqual(declared.gi,found.gi);
+});
+
+// Each restart records metadata for the bricks it adds, not for the whole
+// demand again (Island: 2.3-2.5 s of every restart at 449k bricks, 2026-10-22).
+test('a restart\'s metadata cost is proportional to new bricks',async()=>{
+  const f=await setup(),counts=[],acquire=f.owner.cells.acquireClassification.bind(f.owner.cells);
+  f.owner.cells.acquireClassification=o=>{counts.push(o.bricks.map(b=>b.join(',')));return acquire(o);};
+  const c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.CELL}]));
+  const p=f.owner.progress;assert.equal(p.attempts,3);
+  const once=counts.flat();assert.equal(new Set(once).size,once.length,'every brick\'s metadata is recorded once');
+  assert.equal(once.length,p.requirements,'and every required brick\'s');
+  assert.equal(p.metadataBricks,counts.at(-1)?.length??0);
+  await settle(f.gpu,f.owner.accept(c,post(c)));
+  assert.deepEqual(new Set(f.owner.metadata.indices.map(String)),new Set([...f.owner.atlas.bookPages('cell')].map(pg=>String(pg.brick[0]+4*(pg.brick[1]+2*pg.brick[2])))));
+  c.release();await f.close();
+});
+
+// A big map's second tick packed every resident brick again on top of its old
+// page (Island 400k, Descent 650k past the page cap, 2026-10-22): a tick packs
+// only the CELL pages its changes reach (tools/world-tick-repack-cpu-check.mjs at scale).
+test('a field tick alone packs no CELL page; a far change packs none of the near core, whose page pairs with this revision\'s LIGHT',async()=>{
+  const f=await setup({size:[64,8,8],feedback:false}),atlas=f.owner.atlas,demand=[{brick:[0,0,0],channels:READY.GI_SOURCE|READY.GI}];
+  let c=await settle(f.gpu,f.owner.request(f.frame,demand));await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
+  const packed=[],allocate=atlas.allocate.bind(atlas);atlas.allocate=(b,v)=>{packed.push(b);return allocate(b,v);};
+  const pages=new Map(atlas.live.cell);assert(pages.size>0);
+  f.sim.version++;c=await settle(f.gpu,f.owner.request(f.frame,demand));
+  assert.equal(c.logicalFieldTick,1);assert.deepEqual(packed,[],'a field tick with no change packed CELL pages again');
+  assert([...atlas.live.cell].every(([i,p])=>pages.get(i)===p),'every CELL page is the load\'s');
+  await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
+  // the far core (x >= 32 cells): past the near core's 8-cell field reach
+  f.source.noteContentChange({lo:[56,0,0],hi:[64,8,8]});
+  c=await settle(f.gpu,f.owner.request(f.frame,demand));
+  assert(packed.every(b=>b[0]*4>=32),'a far change packed a near-core CELL page');
+  const cell=atlas.live.cell.get(0),light=atlas.light.pages.get(bookPage(atlas.lightEntries[0]));
+  assert.equal(cell,pages.get(0));assert(cell.sourceRevision<c.cut.sourceRevision);assert.equal(light.sourceRevision,c.cut.sourceRevision);
+  atlas.allocate=allocate;await settle(f.gpu,f.owner.accept(c,post(c)));c.release();await f.close();
+});
+
+// A restart re-ran every SOURCE job of the load: Island's scene round restarted
+// a probe-ready load twice with ~78k SOURCES each time, then took 20-28 s to
+// publish them (2026-10-22). Same cut, field tick, clock, config and sun: a
+// restart carries them (gfx/worldGI.js carry), byte for byte what it computed.
+const sourceRuns=f=>f.giJobs.filter(j=>j.phase==='world GI source');
+// a SOURCE's published bytes, read back through the history a camera-only load restores
+async function sourceBytes(f,bricks){
+  const c=await settle(f.gpu,f.owner.request({...f.frame,advance:false},[{brick:bricks[0],channels:READY.CELL}]));
+  const out=bricks.map(b=>{const s=c.snapshot.lightingProvenance(b).source;return [...words(s.nativeBuffer).subarray(s.ranges[0].from/4,s.ranges[0].from/4+4)];});
+  await settle(f.gpu,f.owner.discard(c));c.release();return out;
+}
+test('a restart with unchanged inputs runs no SOURCE job again, and publishes the same SOURCE bytes',async()=>{
+  const demand=[0,1,2].map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE|READY.GI})),bricks=demand.map(r=>r.brick);
+  const f=await setup({feedback:false});
+  const c=await settle(f.gpu,f.owner.request(f.frame,demand));
+  const first=sourceRuns(f).length;assert.equal(first,3);
+  // the scene asks for a glow (as its round does): the same SOURCES, nothing they read changed
+  const extended=await settle(f.gpu,f.owner.extend(c,{incomplete:true,requirements:[{brick:[0,0,0],channels:READY.GLOW}],sun:[]}));c.release();
+  const p=f.owner.progress;assert.equal(p.attempts,2);
+  assert.equal(sourceRuns(f).length-first,0,'the restart ran SOURCE jobs again');
+  assert.equal(p.carriedSources,3);assert.equal(p.sourceJobs,3);
+  await settle(f.gpu,f.owner.accept(extended,post(extended)));extended.release();
+  const carried=await sourceBytes(f,bricks);await f.close();
+  // what a load that asked for the glow up front publishes
+  const g=await setup({feedback:false});
+  const fresh=await settle(g.gpu,g.owner.request(g.frame,[...demand,{brick:[0,0,0],channels:READY.GLOW}]));
+  assert.equal(g.owner.progress.carriedSources,0);
+  await settle(g.gpu,g.owner.accept(fresh,post(fresh)));fresh.release();
+  assert.deepEqual(carried,await sourceBytes(g,bricks));await g.close();
+});
+// A SOURCE job's light depends on none of its slab's other jobs: a pass whose
+// slab had one job ask for its own probe (a birth, past the reset) keeps the
+// jobs that completed, and the next pass runs only the birth again.
+test('a SOURCE pass after births runs again only the jobs that asked for something, with the same result',async()=>{
+  const cores=[0,8,16],run=async kinds=>{
+    const f=await setup({size:[96,8,8],feedback:false,sourceKinds:kinds});
+    const c0=await settle(f.gpu,f.owner.request(f.frame,cores.map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE}))));
+    await settle(f.gpu,f.owner.accept(c0,post(c0)));c0.release();f.giJobs.length=0;
+    const c=await settle(f.gpu,f.owner.request(f.frame,cores.map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE}))));
+    const p=f.owner.progress,jobs=sourceRuns(f).map(j=>j.index);
+    await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
+    const bytes=await sourceBytes(f,cores.map(x=>[x,0,0]));await f.close();
+    return {p,jobs,bytes};
+  };
+  const r=await run({0:'opaque',8:'air',16:'air'});
+  assert.equal(r.p.attempts,1);assert.equal(r.p.sourcePasses,1);
+  assert.deepEqual(r.jobs,[0,8,16,0],'the second pass ran a completed job again');
+  assert.equal(r.p.carriedSources,2);
+  // each carried job's own bytes (the fixture's SOURCE writes its index and clock), none moved to another slot
+  assert.deepEqual(r.bytes,cores.map(x=>[x,1,101,202]));
+});
+// A load's final publish writes every SOURCE, probe and glow page in one
+// submission with one wait: a wait per page was 20-28 s on Island (2026-10-22).
+test('the final publish writes all of its light pages in one Atlas submission',async()=>{
+  const f=await setup({feedback:false}),calls=[],batch=f.owner.atlas.recordLightWrites.bind(f.owner.atlas);
+  f.owner.atlas.recordLightWrites=writes=>{calls.push(writes.map(w=>w.kind));return batch(writes);};
+  const c=await settle(f.gpu,f.owner.request(f.frame,[0,1,2].map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE|READY.GI}))));
+  const final=calls.at(-1);
+  assert.equal(final.filter(k=>k==='source').length,3);assert.equal(final.filter(k=>k==='gi').length,3);
+  assert.equal(calls.filter(k=>k.length>1).length,1,'one batched publish');
+  await settle(f.gpu,f.owner.discard(c));c.release();await f.close();
+});
+// Only the bricks a gather reads at full detail are SOURCES: the eye's ring
+// and every probe's (world/worldGIRing.js worldGIReach). A brick the view asked
+// for past them was a SOURCE before (Island: ~78k a restart, 2026-10-22).
+test('SOURCE jobs are only bricks within a gather\'s reach: a far brick the view asked for is no SOURCE',async()=>{
+  const {worldGIReach,WORLD_GI_NEAR_RADIUS}=await import('../src/world/worldGIRing.js');
+  const f=await setup({size:[192,8,8],feedback:false,ground:()=>2});
+  const far=[40,0,0],probe=[0,0,0];
+  const c=await settle(f.gpu,f.owner.request(f.frame,[{brick:probe,channels:READY.GI},{brick:far,channels:READY.CELL},{brick:[2,0,0],channels:READY.CELL}]));
+  const reach=worldGIReach(f.frame.values.cam,[probe],WORLD_GI_NEAR_RADIUS),dims=[48,2,2];
+  const at=j=>[j.index%dims[0],Math.floor(j.index/dims[0])%dims[1],Math.floor(j.index/dims[0]/dims[1])];
+  const sources=sourceRuns(f).map(at);
+  assert(sources.some(b=>b[0]===2),'a brick inside the reach the view asked for is a SOURCE');
+  assert(sources.every(b=>reach(b)),`SOURCE jobs past every gather's reach: ${JSON.stringify(sources.filter(b=>!reach(b)))}`);
+  assert(f.owner.atlas.lookup(far,READY.CELL).known,'the far brick is still loaded for the view');
+  await settle(f.gpu,f.owner.discard(c));c.release();await f.close();
 });

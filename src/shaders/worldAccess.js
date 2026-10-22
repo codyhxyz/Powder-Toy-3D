@@ -1,10 +1,15 @@
 // Explicit sparse world ABI, not a rewrite of the local shader library.
 import { AUX_RECORDS, BOOK_LIGHT_SHIFT, BOOK_READY_SHIFT, LIGHT_RECORDS, READY, WORLD_ATLAS_ABI, WRITER_CHANNELS, PAGE_CHANNELS, worldReaderLayouts, worldWriterLayouts } from '../world/renderAtlas.js';
+import { WORLD_VIEW_NEAR_RADIUS, WORLD_VIEW_GI_RADIUS, WORLD_VIEW_GI_FADE } from '../world/worldViewRing.js';
+import { SH_Y0, SH_Y1, SKYVIS_OPEN_DC } from './gfx/lighting.js';
 
 /** Caller MUST worldBeginQuery(), perform the WHOLE dependent ray/shading
  * query, then test worldQueryIncomplete(). Placeholder zeros are unusable
  * when incomplete: discard/withhold the entire production frame and service
- * the feedback bitset. Never turn a miss into AIR, sky, or an early ray exit.
+ * the feedback bitset. Never turn a miss into AIR, sky, or an early ray exit,
+ * except where the view's rings say so (viewRing: world/worldViewRing.js):
+ * past its near ring a missing brick over its column's floor is air, and past
+ * its light-bounce ring the probes are the open sky's.
  * Out-of-world raw queries also mark incomplete (no request bit): callers own
  * the genuine world exterior policy. Field/probe filters extend world edges.
  * Feedback must be cleared before the query dispatch, and read after its
@@ -14,6 +19,10 @@ export function worldAccessWGSL(layout = {}) {
   worldReaderLayouts(layout.limits);
   const integrated = layout.backend === 'world';
   const opticalWriter = layout.opticalWriter === true;
+  // The view's rings (world/worldViewRing.js): only the World volume's views
+  // (render.js volumeFrag), which declare FU and the SunBook its floors ride on.
+  // Every other reader (GI, sun writer, eye probe, picks) asks as before.
+  const viewRing = integrated && !opticalWriter && layout.viewRing === true;
   const field = integrated ? ['tFS', 'tFM', 'tFT'] : ['worldField0', 'worldField1', 'worldField2'];
   const gi = integrated ? ['tGI0', 'tGI1', 'tGI2', 'tGI3'] : ['worldGI0', 'worldGI1', 'worldGI2', 'worldGI3'];
   const glow = integrated ? 'tLight' : 'worldGlow';
@@ -58,7 +67,15 @@ ${opticalWriter ? '' : `@group(2) @binding(0) var ${gi[0]}: texture_2d_array<f32
 @group(2) @binding(9) var worldPackedMesh: texture_2d<u32>;`}
 @group(3) @binding(${integrated ? 1 : 0}) var<storage, read_write> worldRequests: array<atomic<u32>>;
 var<private> worldIncomplete: bool;
-fn worldBeginQuery() { worldIncomplete = false; }
+${viewRing ? `// The view's far-air floors (worldViewFarAir): the SunBook word of column
+// 0's floor, or 0 when the book carries none. Read once per query, not at
+// each of worldPage's inlined copies.
+var<private> worldViewFloors: u32;
+fn worldViewRingBegin() {
+  let n = arrayLength(&SunBook); let cols = WA.bricks.x * WA.bricks.z;
+  worldViewFloors = select(0u, n - 1u - cols, n > cols && SunBook[n - 1u] == cols);
+}
+` : ''}fn worldBeginQuery() { worldIncomplete = false;${viewRing ? ' worldViewRingBegin();' : ''} }
 fn worldQueryIncomplete() -> bool { return worldIncomplete; }
 fn worldInBounds(c: vec3i) -> bool { return all(c >= vec3i(0)) && all(c < vec3i(WA.world.xyz)); }
 fn worldBrickInBounds(b: vec3i) -> bool { return all(b >= vec3i(0)) && all(b < vec3i(WA.bricks.xyz)); }
@@ -95,13 +112,29 @@ fn worldPageMeta(pid: u32, record: u32) -> vec4u {
 // one request: the volume shader inlines ~380 copies of this. The entry holds
 // the page's channels (renderAtlas.js bookEntry); a snapshot's book only ever
 // names pages of its own epoch, which their aux metadata repeats.
-fn worldPage(b: vec3i, ready: u32) -> i32 {
+${viewRing ? `// A missing brick past the view's near ring that starts over its column's
+// floor (the ground twin's top plus the trees' clearance, or lower where the
+// GPU memory budget dropped bricks) is air to the view: every reader of it
+// (brick info, cells, fields, media) reads the empty placeholder without
+// asking, so its march walks on and the query stays complete. A resident page
+// is read as before, and inside the ring nothing changes. The floors ride at
+// the end of the SunBook, one brick row per brick column, then the column
+// count (the sign they are there). Straight-line, no short circuit: it is
+// inlined into each of worldPage's ~180 copies (~1 s of a cold build,
+// tools/check-world-volume-inlining.mjs). CPU twin: world/worldViewRing.js worldViewFarAir.
+const WORLD_VIEW_NEAR_R2: f32 = ${(WORLD_VIEW_NEAR_RADIUS ** 2).toFixed(1)};
+fn worldViewFarAir(b: vec3i) -> bool {
+  let d = vec3f(b * 4 + 2) - FU.cam;
+  let floor = SunBook[worldViewFloors + u32(b.x) + WA.bricks.x * u32(b.z)];
+  return (worldViewFloors != 0u) & (dot(d, d) > WORLD_VIEW_NEAR_R2) & (u32(b.y) >= floor);
+}
+` : ''}fn worldPage(b: vec3i, ready: u32) -> i32 {
   if (!worldBrickInBounds(b)) { worldIncomplete = true; return -1; }
   let i = worldBookIndex(b);
   let e = worldBook[i]; let page = e & WORLD_BOOK_PAGE;
   let known = page != 0u && page <= WA.tiles.z && WA.tiles.w == WORLD_ABI;
   let have = select(0u, e >> WORLD_BOOK_READY, known);   // the channels the page holds
-  if (!known || (have & ready) != ready) { worldRequest(i, ready, have); return -1; }
+  if (!known || (have & ready) != ready) { ${viewRing ? 'if (!worldViewFarAir(b)) { worldRequest(i, ready, have); }' : 'worldRequest(i, ready, have);'} return -1; }
   return i32(page - 1u);
 }
 fn worldCellTexel(pid: u32, c: vec3i) -> vec3i {
@@ -243,14 +276,32 @@ fn worldProbeLoad(t: texture_2d_array<f32>, brick: vec3i, ready: u32) -> vec4f {
   return textureLoad(t, a.xy, a.z, 0);
 }
 // Global SH/glow phase: probes at (4*b + 2), NEVER chunk-local or page-local.
-fn worldProbeTex(t: texture_2d_array<f32>, p: vec3f, ready: u32) -> vec4f {
+${viewRing ? `// The view's light-bounce ring (world/worldViewRing.js): 0 inside
+// WORLD_VIEW_GI_RADIUS - WORLD_VIEW_GI_FADE of the eye, 1 from the radius on,
+// where a probe or glow lookup asks for nothing and reads the open sky's light.
+const WORLD_VIEW_GI_FROM: f32 = ${(WORLD_VIEW_GI_RADIUS - WORLD_VIEW_GI_FADE).toFixed(3)};
+const WORLD_VIEW_GI_TO: f32 = ${WORLD_VIEW_GI_RADIUS.toFixed(3)};
+// The open sky's band-0 alpha and band-1 y alpha: sky visibility 1 for every
+// normal (lighting.js giSkyVis), no bounce light.
+const WORLD_VIEW_SKY_C0: f32 = ${(SKYVIS_OPEN_DC / SH_Y0).toFixed(6)};
+const WORLD_VIEW_SKY_CY: f32 = ${(SKYVIS_OPEN_DC / (2 / 3 * SH_Y1)).toFixed(6)};
+// One exit, no early return past the ring: Metal inlines this into the view's
+// main ~16 times, and early returns in inlined helpers are what made its cold
+// builds blow up (memory: cold-shader-compile, 2026-10-11).
+fn worldViewGIFar(p: vec3f) -> f32 { return smoothstep(WORLD_VIEW_GI_FROM, WORLD_VIEW_GI_TO, distance(p, FU.cam)); }
+` : ''}fn worldProbeTex(t: texture_2d_array<f32>, p: vec3f, ready: u32) -> vec4f {
   let q = clamp(p/4.0 - 0.5, vec3f(0.0), vec3f(WA.bricks.xyz) - 1.0);
   let base = vec3i(floor(q)); let f = fract(q);
-  var value = vec4f(0.0);
+  var value = vec4f(0.0);${viewRing ? `
+  // past the ring: the open sky's band 0 (tGI0, the only band read here) or no glow
+  let far = worldViewGIFar(p);
+  if (far < 1.0) {` : ''}
   for (var z = 0; z < 2; z++) { for (var y = 0; y < 2; y++) { for (var x = 0; x < 2; x++) {
     let w = select(1.0-f, f, vec3i(x,y,z) == vec3i(1));
     value += worldProbeLoad(t, base + vec3i(x,y,z), ready) * w.x * w.y * w.z;
-  } } }
+  } } }${viewRing ? `
+  }
+  value = mix(value, select(vec4f(0.0, 0.0, 0.0, WORLD_VIEW_SKY_C0), vec4f(0.0), ready == WORLD_GLOW), far);` : ''}
   return value;
 }
 // For a reader that can do without (the haze's sky share, lighting.js
@@ -289,8 +340,11 @@ fn worldProbeAlphaHeld(t: texture_2d_array<f32>, p: vec3f) -> vec2f {
 struct WorldProbe { c0: vec4f, cx: vec4f, cy: vec4f, cz: vec4f }
 fn worldProbe(p: vec3f) -> WorldProbe {
   let q = clamp(p/4.0 - 0.5, vec3f(0.0), vec3f(WA.bricks.xyz) - 1.0);
-  let base = vec3i(floor(q)); let f = fract(q);
-  var o = WorldProbe(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));
+  let base = vec3i(floor(q)); let f = fract(q);${viewRing ? `
+  let sky = WorldProbe(vec4f(0.0, 0.0, 0.0, WORLD_VIEW_SKY_C0), vec4f(0.0), vec4f(0.0, 0.0, 0.0, WORLD_VIEW_SKY_CY), vec4f(0.0));
+  let far = worldViewGIFar(p);` : ''}
+  var o = WorldProbe(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));${viewRing ? `
+  if (far < 1.0) {` : ''}
   for (var z = 0; z < 2; z++) { for (var y = 0; y < 2; y++) { for (var x = 0; x < 2; x++) {
     let w = select(1.0-f, f, vec3i(x,y,z) == vec3i(1));
     // worldProbeLoad's lookup, for all four bands
@@ -309,7 +363,9 @@ fn worldProbe(p: vec3f) -> WorldProbe {
     }
     o.c0 += t0 * w.x * w.y * w.z; o.cx += t1 * w.x * w.y * w.z;
     o.cy += t2 * w.x * w.y * w.z; o.cz += t3 * w.x * w.y * w.z;
-  } } }
+  } } }${viewRing ? `
+  }
+  o = WorldProbe(mix(o.c0, sky.c0, far), mix(o.cx, sky.cx, far), mix(o.cy, sky.cy, far), mix(o.cz, sky.cz, far));` : ''}
   return o;
 }
 fn worldLight(p: vec3f) -> vec3f { return worldProbeTex(${glow},p,WORLD_GLOW).rgb; }

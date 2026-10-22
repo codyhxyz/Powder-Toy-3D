@@ -11,6 +11,7 @@ import { Header } from '../shaders/common.js';
 import { WorldSunParams, worldSunFeedbackWords } from '../world/worldSun.js';
 import { requestedBricks, requestedChannels, READY, WORLD_ATLAS_ABI } from '../world/renderAtlas.js';
 import { worldBricksFit } from '../shaders/common.js';
+import { OUTSIDE_VIEW_SLOTS } from '../gpu/kernels.js';
 const BU={COPY_SRC:4,COPY_DST:8,UNIFORM:64,STORAGE:128};
 const WorldFrameStruct = uniformStruct('FrameUniforms', FRAME_UNIFORM_FIELDS);
 const vec = v => Array.from(v?.elements ?? (v?.toArray ? v.toArray() : v));
@@ -54,9 +55,10 @@ function viewPipelines(device) {
   }
   return s;
 }
-// One native build: counted against the pipeline cache's bound while it compiles (src/gpu/kernels.js outside).
-function nativeBuild(gpu, promise) {
-  gpu.pipelines?.outside?.(promise);
+// One native build: counted against the pipeline cache's bound while it compiles (src/gpu/kernels.js outside),
+// a view's as OUTSIDE_VIEW_SLOTS.
+function nativeBuild(gpu, promise, slots=1) {
+  gpu.pipelines?.outside?.(promise, slots);
   let state='pending', pipeline=null, error=null;
   const ready=Promise.resolve(promise).then(p=>{pipeline=p;state='ready';return p;},e=>{error=e;state='failed';throw e;});
   ready.catch(()=>{});
@@ -71,7 +73,7 @@ function viewBuilds(gpu, grid, view, detail, curved) {
     const label=`world ${JSON.stringify([view,Object.keys(detail).filter(k=>detail[k]).sort(),curved])}`;
     const shader=device.createShaderModule({code,label});
     const compile=({vertex,fragment,...desc})=>nativeBuild(gpu,device.createRenderPipelineAsync({label:`${label} ${fragment.entry}`,layout:shared.pipelineLayout,...desc,
-      vertex:{module:shader,entryPoint:vertex.entry},fragment:{module:shader,entryPoint:fragment.entry,targets:fragment.targets}}));
+      vertex:{module:shader,entryPoint:vertex.entry},fragment:{module:shader,entryPoint:fragment.entry,targets:fragment.targets}}),OUTSIDE_VIEW_SLOTS);
     if (view==='plain') { const phases=worldPlainPipelines({curved}); builds=WORLD_PLAIN_PHASES.map(phase=>compile(phases[phase])); }
     else builds=[compile(volumePipeline())];
     shared.states.set(key,builds);

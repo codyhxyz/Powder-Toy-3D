@@ -97,12 +97,17 @@ export function worldPoolMax(kind, layout, deviceLimits = {}) {
   if (kind === 'light') return Math.min(Math.floor((auxMax - layout.capacity * AUX_RECORDS) / LIGHT_RECORDS), BOOK_PAGE_MASK);
   check(kind === 'probe', 'invalid pool'); return Math.min(U32_MAX, texels);
 }
-export function worldPoolGrowth(kind, layout, deviceLimits = {}, needed) {
+// budget: the owner's page budget for this pool (wire/worldRender.js,
+// world/worldViewRing.js worldPageBudget): a growth never passes it, and a
+// demand past it is refused (WORLD_PAGE_BUDGET), never allocated.
+export const WORLD_PAGE_BUDGET = 'WORLD page budget';
+export function worldPoolGrowth(kind, layout, deviceLimits = {}, needed, budget = Infinity) {
   const current = layout[kind === 'cell' ? 'capacity' : kind + 'Capacity'];
   needed ??= current + 1;
   const max = worldPoolMax(kind, layout, deviceLimits);
   check(integer(needed, current + 1, max), 'pool exhausted legal address capacity');
-  return Math.min(max, Math.max(needed, Math.max(1, current * 2)));
+  check(needed <= budget, `${WORLD_PAGE_BUDGET}: ${kind} pool of ${needed} pages past ${budget}`);
+  return Math.min(max, budget, Math.max(needed, Math.max(1, current * 2)));
 }
 export function lightTexel(id, record, layout) {
   check(integer(id, 0, layout.lightCapacity - 1) && integer(record, 0, LIGHT_RECORDS - 1), 'light descriptor address outside capacity');
@@ -349,14 +354,28 @@ export class WorldRenderAtlas {
     this.retire = retire ?? (fn => { this.queue.onSubmittedWorkDone().then(fn, fn); });
     this.onChange = onChange; this.epoch = 1; this.generation = 0; this.required = new Set(); this.dead = false; this.recording = false;
     this.snapshotStates = new WeakMap(); this.bookUsers = new Map();
+    // Snapshot states not yet retired: the ones a superseded page may still be
+    // read through (_supersede).
+    this.states = new Set();
     this.cell = pool(); this.light = pool(); this.probe = pool();
     // Compatibility for cell-provider inspection; no light pages in this map.
     this.pages = this.cell.pages; this.pending = this.cell.pending;
     this.resources = createResources(this.device, worldAtlasLayout(initialCapacity, this.limits, initialLightCapacity, initialProbeCapacity));
     this.entries = new Uint32Array(this.bookLayout.count); this.lightEntries = new Uint32Array(this.bookLayout.count);
-    // index -> page for every nonzero entry: a commit pins and checks these,
-    // never a scan of the books (33M entries each on Descent, 2026-10-21).
+    // index -> page for every nonzero entry: a commit checks these, never a
+    // scan of the books (33M entries each on Descent, 2026-10-21).
     this.live = { cell: new Map(), light: new Map() };
+    // The source revision through which every live CELL page is current: a
+    // pack of its brick at any revision from its own up to this one writes the
+    // same page, so a LIGHT page of a revision in that span pairs with it
+    // (publish). Declared by the CELL adapter's publications
+    // (world/cellAtlasAdapter.js), which clear a page as soon as its brick's
+    // cells or its core's fields change; null (unknown) after any other CELL
+    // publication. A big map's field tick or a physics step then keeps the
+    // pages that did not change instead of packing every one again: Island's
+    // and Descent's second tick packed all 400k-650k on top of the old ones
+    // (Descent past the 2^20 page cap, 2026-10-22).
+    this.cellRevision = null;
     try { this._commit(NO_CHANGE); } catch (e) { this._releaseResources(this.resources); throw e; }
   }
   _alive() { if (this.dead) throw new Error('world atlas disposed'); check(!this.recording, 'non-reentrant synchronous atlas writer'); }
@@ -375,7 +394,7 @@ export class WorldRenderAtlas {
     check(this.generation < U32_MAX, 'world generation overflow');
     const previous=this.current,generation=this.generation+1;
     this.current=this._snapshotState(this.entries,this.lightEntries,{cell:{base:base?.book,changed:changed.cell},light:{base:base?.lightBook,changed:changed.light}},
-      [...this.live.cell.values(),...this.live.light.values()],r,epoch,dependencies,sun,generation);
+      [],r,epoch,dependencies,sun,generation);
     this.generation=generation;this.epoch=epoch;
     if(previous)this._releaseSnapshot(previous);
   }
@@ -420,8 +439,14 @@ export class WorldRenderAtlas {
   }
   _ownBook(b) { this.bookUsers.set(b, 1); return b; }
   _dropBook(b) { const n = this.bookUsers.get(b) - 1; if (n > 0) this.bookUsers.set(b, n); else { this.bookUsers.delete(b); b.destroy(); } }
-  // pages: every page the two books hold, each pinned once.
-  _snapshotState(entries,lightEntries,books,pages,r,epoch,dependencies,sun,generation) {
+  // A state holds the pages its books name without pinning each: a page is
+  // public from p.since until the commit that supersedes it, and only then
+  // pinned by the live states whose generation lies in that span
+  // (_supersede). Pinning every live page per commit grew a World load's
+  // CELL batches with all it had loaded (Island: half a million pages,
+  // 2026-10-22). pages: pinned explicitly (a private closure's own LIGHT).
+  // cellGeneration: the public generation whose CELL pages the state reads.
+  _snapshotState(entries,lightEntries,books,pages,r,epoch,dependencies,sun,generation,cellGeneration=generation) {
     const [book, lightBook] = this._books([['world immutable book', entries, books.cell.base, books.cell.changed], ['world immutable light book', lightEntries, books.light.base, books.light.changed]]);
     let params;
     try { params = this._buffer('world immutable params', 112, BU.UNIFORM | BU.COPY_DST, paramWords(this.bookLayout, r.layout, epoch, generation, dependencies.version)); }
@@ -432,13 +457,38 @@ export class WorldRenderAtlas {
       if (p.kind === 'light' && p.probeID !== null) this.probe.pages.get(p.probeID).pins++;
     }
     r.refs++;
-    return { book, lightBook, params, r, pins, refs: 1, epoch, generation, dependencies, sunManifest: sun };
+    const state = { book, lightBook, params, r, pins, late: [], refs: 1, epoch, generation, cellGeneration, dependencies, sunManifest: sun };
+    this.states.add(state);
+    return state;
+  }
+  // The generation whose books a state reads p through, or -1: a private
+  // closure reads public CELL pages only, its LIGHT pages are its own pins.
+  _readGeneration(s, p) { return s.producerOnly ? (p.kind === 'cell' ? s.cellGeneration : -1) : s.generation; }
+  // p leaves the books at generation `until`: every live state that reads it
+  // pins it until that state retires, as a pin per state per page did.
+  _supersede(p, until) {
+    p.until = until;
+    for (const s of this.states) {
+      const g = this._readGeneration(s, p);
+      if (g < p.since || g >= until) continue;
+      p.pins++;
+      if (p.kind === 'light' && p.probeID !== null) this.probe.pages.get(p.probeID).pins++;
+      s.late.push(p);
+    }
+  }
+  // The pages a state's books name, of one kind (index order not kept).
+  * _statePages(s, kind) {
+    if (s.producerOnly && kind === 'light') { for (const p of s.pins) if (p.kind === 'light') yield p; return; }
+    for (const p of s.late) if (p.kind === kind) yield p;
+    const g = this._readGeneration(s, { kind });
+    for (const p of this.live[kind].values()) if (p.since <= g) yield p;
   }
   _releaseSnapshot(s) {
     if (--s.refs) return;
     this.retire(() => {
       this._dropBook(s.book); this._dropBook(s.lightBook); s.params.destroy(); this._releaseResources(s.r);
-      for (const p of s.pins) {
+      this.states.delete(s);
+      for (const p of [...s.pins, ...s.late]) {
         p.pins--;
         if (p.kind === 'light' && p.probeID !== null) this.probe.pages.get(p.probeID).pins--;
         this._collect(p);
@@ -471,7 +521,7 @@ export class WorldRenderAtlas {
   }
   _take(kind) {
     const p = this[kind], key = kind === 'cell' ? 'capacity' : kind + 'Capacity';
-    if (!p.free.length && p.nextID >= this.resources.layout[key]) this.growPool(kind, worldPoolGrowth(kind, this.resources.layout, this.limits));
+    if (!p.free.length && p.nextID >= this.resources.layout[key]) this.growPool(kind, worldPoolGrowth(kind, this.resources.layout, this.limits, undefined, this.pageBudget?.[kind]));
     return p.free.length ? p.free.pop() : p.nextID++;
   }
   // Room for count more pages in one growth, not a doubling per overflow
@@ -480,8 +530,11 @@ export class WorldRenderAtlas {
   reserve(kind, count) {
     this._alive(); const p = this[kind], l = this.resources.layout, key = kind === 'cell' ? 'capacity' : kind + 'Capacity';
     const needed = Math.min(worldPoolMax(kind, l, this.limits), p.nextID + Math.max(0, count - p.free.length));
-    if (needed > l[key]) this.growPool(kind, worldPoolGrowth(kind, l, this.limits, needed));
+    if (needed > l[key]) this.growPool(kind, worldPoolGrowth(kind, l, this.limits, needed, this.pageBudget?.[kind]));
   }
+  // The owner's GPU memory budget per pool ({ cell, light, probe } pages):
+  // growth stops at it (worldPoolGrowth). Pools already past it are kept.
+  setPageBudget(budget) { this.pageBudget = budget ? Object.freeze({ cell: budget.cell, light: budget.light, probe: budget.probe }) : null; }
   allocate(brick, { sourceRevision, fieldTick = 0, readyBits = READY.CELL } = {}) {
     this._alive(); check(integer(sourceRevision) && integer(fieldTick) && integer(readyBits, 1, READY.CELL), 'invalid cell version/readiness');
     return this._allocate('cell', brick, { sourceRevision, fieldTick, readyBits });
@@ -547,12 +600,15 @@ export class WorldRenderAtlas {
     return job;
   }
   updateLight(job, data) { this._job(job, 'light'); return this.update(job, data); }
-  recordLightWrite(job, kind, options) {
-    const p=this._job(job,'light'),lease=options.restoreDeclaration;
-    if(lease)validateWorldLightingRestore(lease,{job,kind});
-    const result=this.recordPageWrite(job,kind,options);
-    if(lease){p.restoreDeclarations??={};p.restoreDeclarations[kind]=lease;p.provenance=frozen({...p.provenance,[kind]:lease.provenance});}
-    else if(p.provenance?.[kind]){const next={...p.provenance};delete next[kind];p.provenance=frozen(next);delete p.restoreDeclarations[kind];}
+  recordLightWrite(job, kind, options) { return this.recordLightWrites([{ ...options, job, kind }])[0]; }
+  // Many light pages' writes in one submission (gfx/worldLightingBatch.js writeAll):
+  // a submission and a wait per page was 20-28 s for an Island load (2026-10-22).
+  recordLightWrites(writes) {
+    const ps=writes.map(({job,kind,restoreDeclaration:lease})=>{const p=this._job(job,'light');if(lease)validateWorldLightingRestore(lease,{job,kind});return p;});
+    const result=this.recordPageWrites(writes.map(({job,kind,auxMetadata,record})=>({job,kind,auxMetadata,record})));
+    writes.forEach(({kind,restoreDeclaration:lease},k)=>{const p=ps[k];
+      if(lease){p.restoreDeclarations??={};p.restoreDeclarations[kind]=lease;p.provenance=frozen({...p.provenance,[kind]:lease.provenance});}
+      else if(p.provenance?.[kind]){const next={...p.provenance};delete next[kind];p.provenance=frozen(next);delete p.restoreDeclarations[kind];}});
     return result;
   }
   writerBindings(job, kind) {
@@ -618,6 +674,9 @@ export class WorldRenderAtlas {
     check(!sun || !oldSun || sun.basisRevision > oldSun.basisRevision || (sun.basisRevision === oldSun.basisRevision && sun.publishRevision >= oldSun.publishRevision), 'sun publication regression');
     if (sun && oldSun && sun.basisRevision === oldSun.basisRevision && sun.publishRevision === oldSun.publishRevision) check(
       ['book','sun0','sun1','dependencySetID','dependencyVersion'].every(k => sun[k] === oldSun[k]) && JSON.stringify(sun.params) === JSON.stringify(oldSun.params), 'changed sun publication requires new version');
+    const cellPages = ps.filter(p => p.kind === 'cell'), declared = explicit && Object.hasOwn(input, 'cellRevision');
+    check(!declared || input.cellRevision === null || (integer(input.cellRevision) && cellPages.every(p => p.sourceRevision === input.cellRevision)), 'CELL book revision must be its new pages\' source revision');
+    const cellRevision = declared ? input.cellRevision : cellPages.length ? null : this.cellRevision;
     const invalidations = explicit ? input.invalidations ?? [] : [];
     const cleared = invalidations.map(({ brick, channels }) => {
       check([READY.CELL, READY.LIGHT, READY.ALL].includes(channels), 'invalidation must clear complete pool domains');
@@ -638,10 +697,14 @@ export class WorldRenderAtlas {
       // Only a changed index can pair anew: every other pair passed its own commit.
       for (const i of new Set([...tx.changed.cell, ...tx.changed.light])) {
         const light = this.live.light.get(i), cell = this.live.cell.get(i);
-        if (light && cell) check(light.sourceRevision === cell.sourceRevision, 'incompatible cell/light source revision');
+        if (light && cell) check(light.sourceRevision === cell.sourceRevision || (cellRevision !== null && cell.sourceRevision < light.sourceRevision && light.sourceRevision <= cellRevision), 'incompatible cell/light source revision');
       }
-      // Revalidate retained descriptors too: a new manifest cannot silently mix old dependencies.
-      for (const p of this.live.light.values()) {
+      // Revalidate retained descriptors too: a new manifest cannot silently mix
+      // old dependencies. Under the same manifest every retained one passed its
+      // last commit (only a publish changes it), so only this commit's pages:
+      // a pass over every LIGHT page per publish grew with all that was loaded.
+      const revalidated = dependencies === this.current.dependencies || dependencies.version === this.current.dependencies.version ? ps.filter(p => p.kind === 'light') : this.live.light.values();
+      for (const p of revalidated) {
         for (const [channel, bit] of [['source', READY.GI_SOURCE], ['gi', READY.GI], ['glow', READY.GLOW]]) if (p.readyBits & bit) {
           const d = p.dependencies[channel];
           const retained=p.provenance?.[channel];
@@ -658,8 +721,9 @@ export class WorldRenderAtlas {
       }
       this._commit(tx.changed, this.resources, this.epoch, dependencies, sun);
     } catch (e) { this._rollback(tx); throw e; }
-    for (const p of tx.oldPages) { p.public = false; this._collect(p); }
-    for (const p of ps) { p.public = true; p.pending = false; this[p.kind].pending.delete(p.index); this._releaseResources(p.resources); }
+    this.cellRevision = cellRevision;
+    for (const p of tx.oldPages) { this._supersede(p, this.generation); p.public = false; this._collect(p); }
+    for (const p of ps) { p.public = true; p.since = this.generation; p.pending = false; this[p.kind].pending.delete(p.index); this._releaseResources(p.resources); }
     this.onChange({ epoch: this.epoch, generation: this.generation }); return this.generation;
   }
   remove(bricks, channels = READY.ALL) {
@@ -668,15 +732,16 @@ export class WorldRenderAtlas {
     const tx = { undo: [], oldPages: [], changed: { cell: [], light: [] } };
     for (const [kind, mask] of [['cell', READY.CELL], ['light', READY.LIGHT]]) if (channels & mask) for (const i of indices) this._put(tx, kind, i, null);
     try { this._commit(tx.changed); } catch (e) { this._rollback(tx); throw e; }
-    for (const p of tx.oldPages) { p.public = false; this._collect(p); }
+    for (const p of tx.oldPages) { this._supersede(p, this.generation); p.public = false; this._collect(p); }
     this.onChange({ epoch: this.epoch, generation: this.generation });
   }
   _cancelPage(p) { p.pending = false; this[p.kind].pending.delete(p.index); this._releaseResources(p.resources); this._collect(p); }
   cancel(job) { this._cancelPage(this._job(job)); }
-  grow(capacity = worldPoolGrowth('cell', this.resources.layout, this.limits)) { return this.growPool('cell', capacity); }
-  growPool(kind, capacity = worldPoolGrowth(kind, this.resources.layout, this.limits)) {
+  grow(capacity = worldPoolGrowth('cell', this.resources.layout, this.limits, undefined, this.pageBudget?.cell)) { return this.growPool('cell', capacity); }
+  growPool(kind, capacity = worldPoolGrowth(kind, this.resources.layout, this.limits, undefined, this.pageBudget?.[kind])) {
     this._alive(); const old = this.resources, l = old.layout, key = kind === 'cell' ? 'capacity' : kind + 'Capacity';
     check(['cell', 'light', 'probe'].includes(kind) && integer(capacity, l[key] + 1, worldPoolMax(kind, l, this.limits)), 'grow must increase capacity within legal address limit');
+    check(capacity <= (this.pageBudget?.[kind] ?? Infinity), `${WORLD_PAGE_BUDGET}: ${kind} pool of ${capacity} pages past ${this.pageBudget?.[kind]}`);
     const sizes = { capacity: l.capacity, lightCapacity: l.lightCapacity, probeCapacity: l.probeCapacity, [key]: capacity };
     // Descriptor base movement must COW aux even when rounded dimensions stay the same.
     const share = kind === 'cell' ? { ...old, owners: { ...old.owners, aux: null } } : old;
@@ -699,7 +764,10 @@ export class WorldRenderAtlas {
       lightingProvenance: brick => {
         if(released)throw new Error('snapshot released');
         check(s.epoch===this.epoch,'stale world snapshot epoch');
-        return s.pins.find(p=>p.kind==='light'&&p.index===worldBrickIndex(this.bookLayout,brick))?.provenance??null;
+        const index=worldBrickIndex(this.bookLayout,brick);
+        if(s.producerOnly)return s.pins.find(p=>p.kind==='light'&&p.index===index)?.provenance??null;
+        const live=this.live.light.get(index);
+        return (live&&live.since<=s.generation?live:s.late.find(p=>p.kind==='light'&&p.index===index))?.provenance??null;
       },
       retain: () => {
         if (released) throw new Error('snapshot released');
@@ -752,8 +820,8 @@ export class WorldRenderAtlas {
     check(probes?.every(i=>probeCovered.has(i)),'private closure omits requested previous GI records');
     // This is a private reader generation, not a public commit. Descriptors
     // use the same N+1 stamp; public books/counter remain at N.
-    const s=this._snapshotState(this.entries,lights,{cell:{base:this.current.book,changed:[]},light:{base:null,changed:seen}},[...this.live.cell.values(),...pages],
-      this.resources,this.epoch,dependencyToken?manifest(dependencyToken):this.current.dependencies,this.current.sunManifest,this.generation+1);
+    const s=this._snapshotState(this.entries,lights,{cell:{base:this.current.book,changed:[]},light:{base:null,changed:seen}},pages,
+      this.resources,this.epoch,dependencyToken?manifest(dependencyToken):this.current.dependencies,this.current.sunManifest,this.generation+1,this.generation);
     s.producerOnly=true;
     for(const job of lightJobs)this._job(job,'light').producerOnly=true;
     const out=this._snapshot(s);this._releaseSnapshot(s);return out;
@@ -768,7 +836,7 @@ export class WorldRenderAtlas {
       (b.s.producerOnly ? a.s.generation===this.generation&&b.s.generation===this.generation+1 : a.s.generation>=b.s.generation), 'producer snapshot epoch/generation mismatch');
     check(a.s.r === this.resources, 'producer CELL snapshot must use current pool prefix');
     if(b.s.producerOnly)check(b.s.r===this.resources,'private LIGHT pool changed; rebuild closure');
-    for (const p of b.s.pins) if (p.kind === 'light') check(p.pins > 0 && this.light.pages.get(p.id) === p, 'previous LIGHT pool lifetime mismatch');
+    for (const p of this._statePages(b.s, 'light')) check((p.public || p.pins > 0) && this.light.pages.get(p.id) === p, 'previous LIGHT pool lifetime mismatch');
     const groups = cellSnapshot.bindings(external, feedback);
     if(b.s.producerOnly)groups[0][0]={binding:0,resource:{buffer:b.s.params}};
     groups[0][2] = { binding: 2, resource: { buffer: b.s.lightBook } };
@@ -789,6 +857,8 @@ export class WorldRenderAtlas {
     this.entries = new Uint32Array(this.bookLayout.count); this.lightEntries = new Uint32Array(this.bookLayout.count); this.live = { cell: new Map(), light: new Map() };
     try { this._commit(NO_CHANGE, this.resources, this.epoch + 1, manifest(), null, null); }
     catch (e) { [this.entries, this.lightEntries, this.live] = kept; throw e; }
+    this.cellRevision = null;
+    for (const live of Object.values(kept[2])) for (const p of live.values()) this._supersede(p, this.generation);
     for (const pool of [this.cell, this.light]) {
       for (const p of [...pool.pending.values()]) this._cancelPage(p);
       for (const p of pool.pages.values()) { p.public = false; this._collect(p); }
@@ -799,6 +869,7 @@ export class WorldRenderAtlas {
     if (this.dead) return; this._alive();
     for (const pool of [this.cell, this.light]) for (const p of [...pool.pending.values()]) this._cancelPage(p);
     this.dead = true;
+    for (const live of Object.values(this.live)) for (const p of live.values()) this._supersede(p, this.generation + 1);
     this._releaseSnapshot(this.current); this._releaseResources(this.resources);
     for (const pool of [this.cell, this.light]) for (const p of pool.pages.values()) { p.public = false; this._collect(p); }
   }

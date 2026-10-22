@@ -36,6 +36,15 @@ export const PIPELINE_CONCURRENCY_MIN = 2;
  * pipeline, the World's volume (~24 s cold), which is a World load's floor and has a 30 s deadline.
  */
 export const PIPELINE_CONCURRENCY_MAX = 4;
+/**
+ * The bound's slots a World view pipeline's build takes while it compiles (outside), the longest
+ * single build of a big map's load, its first frame's floor. Metal compiles a pipeline on one core,
+ * and Chrome's copy of it (Tint's MSL, 8.8 s alone on an M5, 2026-10-22) slows with the compiles
+ * beside it: 9.9 s three at once, 11.0 s four, 14.2 s six. A boot's main thread and the GPU
+ * process take cores too (the user's cold Island: 20.2 s beside the boot's builds), so the
+ * view's build leaves one slot more free: three compiles at once with it on a four-slot machine.
+ */
+export const OUTSIDE_VIEW_SLOTS = 2;
 /** Cores left to the page's main thread, the browser's GPU process and the compositor while shaders compile. */
 export const PIPELINE_SPARE_CORES = 4;
 /**
@@ -59,12 +68,17 @@ export const PIPELINE_CONCURRENCY = pipelineConcurrency();
  *               volume), started before the short builds it would otherwise queue behind: with
  *               PIPELINE_CONCURRENCY slots the longest build last decides the wait (list scheduling)
  *   NOW         every other build something waits for (`build: 'now'`, or a build() asked for)
+ *   LATER       a `later` build: started at once, but behind every build asked for now (a big map's
+ *               simulation step kernels: its World load and first frame's builds go first,
+ *               2026-10-22); a `first` one ahead of the other later builds; a demand moves it up
  *   BACKGROUND  an `idle` build: started as soon as a slot is free and nothing above is queued (never
  *               on the page's idle time), never ahead of a build something waits for, whenever it
  *               arrived; a later demand (build()) moves it up
  * Intentional (user request, 2026-10-21: "MAKE IT LOAD FAST"): V2's 101 boot kernels.
  */
-export const BUILD_RANK = Object.freeze({ FIRST: 0, NOW: 1, BACKGROUND: 2 });
+export const BUILD_RANK = Object.freeze({ FIRST: 0, NOW: 1, LATER: 2, BACKGROUND: 3 });
+/** A Pipe's `build` options. */
+const BUILD_WHEN = Object.freeze(['now', 'later', 'idle', 'manual']);
 /** The spec's maxComputeWorkgroupsPerDimension: fold() keeps every dimension within it. */
 export const MAX_WORKGROUPS = 65535;
 // test mode keeps at most this many recent indirect dispatches in gpu.indirectLog
@@ -234,8 +248,9 @@ export class PipelineCache {
   /**
    * Creates (or reuses) a pipeline; every native build goes through pump().
    * @param {number} [rank] BUILD_RANK: where it queues (a reused one still queued moves up to it)
+   * @param {boolean} [first] a long pole: ahead of the other builds of its rank
    */
-  pipeline(kind, name, key, groups, module, descriptor, optional = false, rank = BUILD_RANK.NOW) {
+  pipeline(kind, name, key, groups, module, descriptor, optional = false, rank = BUILD_RANK.NOW, first = false) {
     if (this.failure || this.gpu.failure) return this.rejected(this.failure || this.gpu.failure);
     const full = `${optional}|${kind}|${idOf(module)}|${groups.map(idOf).join(',')}|${key}`;
     const cached = this.pipelines.get(full);
@@ -246,7 +261,7 @@ export class PipelineCache {
     // Public failure cannot cancel a native compilation already in the driver.
     p.settled = new Promise(resolve => { settle = resolve; });
     p.key = full;
-    const job = { kind, name, full, groups, module, descriptor, optional, p, resolve, reject, settle, work: null, done: false, timer: null, rank };
+    const job = { kind, name, full, groups, module, descriptor, optional, p, resolve, reject, settle, work: null, done: false, timer: null, rank, first };
     this.gpu.stats.pipelinesPending++;
     this.pending.add(p);
     this.pipelines.set(full, p);
@@ -256,16 +271,17 @@ export class PipelineCache {
     return p;
   }
 
-  // Behind every queued job of its rank or a lower one, ahead of every higher rank's.
+  // Behind every queued job of its rank or a lower one, ahead of every higher rank's; a long pole
+  // (`first`) ahead of the other jobs of its rank.
   enqueue(job) {
-    const at = this.queue.findIndex((j) => j.rank > job.rank);
+    const at = this.queue.findIndex((j) => j.rank > job.rank || (job.first && j.rank === job.rank && !j.first));
     if (at < 0) this.queue.push(job); else this.queue.splice(at, 0, job);
     this.queued.set(job.full, job);
   }
 
   /**
-   * A queued build asked for at a lower rank (an idle build something now waits for) moves up to it;
-   * one already started, or at that rank or lower, stays where it is.
+   * A queued build asked for at a lower rank (an idle or later build something now waits for) moves up
+   * to it; one already started, or at that rank or lower, stays where it is.
    * @param {string} full a pipeline's key (its promise's `key`) @param {number} rank BUILD_RANK
    */
   promote(full, rank) {
@@ -310,11 +326,12 @@ export class PipelineCache {
   /**
    * Counts a native build made outside this cache against its bound while it compiles (a World
    * volume's ~24 s cold build would otherwise share the performance cores with a full bound's).
-   * @template T @param {Promise<T>} promise @returns {Promise<T>} the same promise
+   * `slots`: the bound's slots it takes (OUTSIDE_VIEW_SLOTS for a World view's).
+   * @template T @param {Promise<T>} promise @param {number} [slots] @returns {Promise<T>} the same promise
    */
-  outside(promise) {
-    this.outsideBuilds++;
-    const done = () => { this.outsideBuilds--; this.pump(); };
+  outside(promise, slots = 1) {
+    this.outsideBuilds += slots;
+    const done = () => { this.outsideBuilds -= slots; this.pump(); };
     Promise.resolve(promise).then(done, done);
     return promise;
   }
@@ -464,13 +481,14 @@ class Pipe {
     this.ready.catch(() => {});
     this._settle = { resolve, reject };
     this.when = desc.build ?? 'now';
-    if (!['now', 'idle', 'manual'].includes(this.when)) throw new Error(`${desc.name}: build is 'now', 'idle' or 'manual'`);
+    if (!BUILD_WHEN.includes(this.when)) throw new Error(`${desc.name}: build is 'now', 'later', 'idle' or 'manual'`);
     gpu.pipelines.track(this);
   }
 
   // called at the end of each subclass constructor, once key() can run
   schedule() {
     if (this.when === 'now') this.build();
+    else if (this.when === 'later') this.build(BUILD_RANK.LATER);
     else if (this.when === 'idle') this.gpu.pipelines.idle(this);
     return this;
   }
@@ -487,7 +505,7 @@ class Pipe {
       this.gpu.pipelines.check();
       this.state = 'pending';
       const module = this.gpu.pipelines.module(this.desc.code, this.name, this.optional);
-      const compilation = this.gpu.pipelines.pipeline(this.kind, this.name, this.key(), this.groups, module, () => this.descriptor(module), this.optional, rank);
+      const compilation = this.gpu.pipelines.pipeline(this.kind, this.name, this.key(), this.groups, module, () => this.descriptor(module), this.optional, rank, !!this.desc.first);
       this._key = compilation.key;
       this._compilationSettled = compilation.settled;
       this._started = compilation
@@ -542,12 +560,13 @@ export class Kernel extends Pipe {
   /**
    * @param {object} gpu
    * @param {{ name: string, code: string, entry?: string, layouts?: GPUBindGroupLayout[], params?: object,
-   *   constants?: Record<string, number>, workgroupSize?: number[], build?: 'now' | 'idle' | 'manual', optional?: boolean, first?: boolean }} desc
+   *   constants?: Record<string, number>, workgroupSize?: number[], build?: 'now' | 'later' | 'idle' | 'manual', optional?: boolean, first?: boolean }} desc
    *   optional: true isolates attributed shader failures, not device loss or timeout.
-   *   build: 'now' starts at once (boot and a mode just entered), 'idle' queues it
-   *   behind every build something waits for, started as soon as a slot of the cache's
-   *   concurrency (pipelineConcurrency) is free, 'manual' waits for build()
-   *   first: a long pole, started ahead of the builds of its kind (BUILD_RANK.FIRST; an idle one ahead of the idle queue)
+   *   build: 'now' starts at once (boot and a mode just entered), 'later' at once behind every build
+   *   something waits for (BUILD_RANK.LATER), 'idle' queues it behind every build something waits for,
+   *   started as soon as a slot of the cache's concurrency (pipelineConcurrency) is free, 'manual'
+   *   waits for build()
+   *   first: a long pole, started ahead of the builds of its rank (BUILD_RANK.FIRST for 'now'; an idle one ahead of the idle queue)
    */
   constructor(gpu, desc) {
     super(gpu, desc, 'compute');
@@ -611,7 +630,7 @@ export class RenderPipe extends Pipe {
    *   vertex?: { entry?: string, buffers?: GPUVertexBufferLayout[] },
    *   fragment?: { entry?: string, targets: GPUColorTargetState[] } | null,
    *   primitive?: GPUPrimitiveState, depthStencil?: GPUDepthStencilState, multisample?: GPUMultisampleState,
-   *   constants?: Record<string, number>, build?: 'now' | 'idle' | 'manual', optional?: boolean, first?: boolean }} desc
+   *   constants?: Record<string, number>, build?: 'now' | 'later' | 'idle' | 'manual', optional?: boolean, first?: boolean }} desc
    *   optional: true isolates attributed shader failures, not device loss or timeout.
    *   first: a long pole (Kernel's)
    */

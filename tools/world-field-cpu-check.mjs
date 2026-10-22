@@ -57,6 +57,12 @@ for (const id of [E.EMPTY, E.WATER, E.SAND, E.WOOD, E.SMOKE, E.FIRE]) for (const
     for (let tick = 0; tick < FIELD_EMA_SETTLE; tick++) history = emaWords(a, false, history);
     assert.deepEqual(emaWords(a, false, history), history, 'settled skip differs from quantized recurrence');
   }
+  // A fresh owner starts at its target, already the recurrence's fixed point:
+  // WorldFields births it settled (fields.js), so skipping it is exact.
+  for (const jet of [false, true]) {
+    const born = emaWords([id, 1729, life, 0.319], jet);
+    assert.deepEqual(emaWords([id, 1729, life, 0.319], jet, born), born, 'a born owner is not at its fixed point');
+  }
 }
 const seen = new Set();
 const ids = [E.WATER, E.OIL, E.ICE, E.LAVA, E.SAND, E.STONE, E.WOOD, E.PLANT, E.SMOKE, E.STEAM, E.CLOUD, E.FIRE, E.METAL, E.EMPTY];
@@ -253,7 +259,8 @@ record(a, a.plan(0, { smoothing: 0.5, full: true })); assert.deepEqual(wordsOf(a
 for (const physicsOrigin of [[1536, 0, 512], [1552, 0, 512]]) record(a, a.plan(0, { physicsOrigin, full: true }));
 assert.deepEqual(wordsOf(a.fields), saved); assert.equal(JSON.stringify(a.published[0]), published, 'publication snapshots survive scratch reuse');
 assert.throws(() => a.fields.record(a.gpu.frame, initial), /Stale/);
-assert.throws(() => a.plan(2), /Missing dynamic field ticks/);
+// Born settled: a load's owners skip a tick and advance nothing.
+assert.equal(a.plan(2, { wantedCores: [] }).advancing.length, 0, 'a fresh owner is born settled');
 // Copy-on-write transaction retries the SAME plan without advancing partial
 // owner scatters twice. Freeze actual source revision per snapshot.
 a.state.revision = b.state.revision = 1;
@@ -266,11 +273,15 @@ a.state.failAt = -1;
 record(a, retryPlan); record(b, b.plan(1, { changedBricks: [[8, 0, 0]], full: true }));
 assert.deepEqual(wordsOf(a.fields), wordsOf(b.fields), 'retry/reversed owner+job order changed packed history');
 assert.notDeepEqual(wordsOf(a.fields), saved);
+// A changed owner settles over the next ticks, and skipping one is refused.
+assert.throws(() => a.plan(3), /Missing dynamic field ticks/);
 assert.throws(() => { a.state.revision++; return a.plan(1); }, /Source changed within/); a.state.revision--;
 // Invisible owners keep settling; no missed dynamic history catch-up.
 for (let tick = 2; tick <= FIELD_EMA_SETTLE + 1; tick++) record(a, a.plan(tick, { wantedCores: [] }));
 assert([...a.fields.history.owners.values()].every((o) => o.age === FIELD_EMA_SETTLE));
-assert.equal(a.fields.published.size, 0, 'unseen settling must invalidate previously published spatial fields');
+// Only the cores the settling owners reach (the change at brick [8,0,0] and
+// its 4-cell halo): the one past them keeps its fields, which never changed.
+assert.deepEqual([...a.fields.published], ['64,0,0'], 'unseen settling must invalidate previously published spatial fields');
 record(a, a.plan(14, { full: true }));
 const settled = a.plan(20, { wantedCores: [] }); assert.equal(settled.advancing.length, 0); record(a, settled);
 const incremental = a.plan(21, { changedBricks: [[0, 0, 0]] });

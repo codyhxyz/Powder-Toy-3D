@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import * as A from '../src/world/renderAtlas.js';
+import * as V from '../src/world/worldViewRing.js';
 import { worldAccessWGSL, worldPageWriterWGSL, worldPackedMeshWriterWGSL, worldShadowWriterWGSL, WGSL_CHECK } from '../src/shaders/worldAccess.js';
 import { checkPipeline } from './check-sampler-budget.mjs';
 import { giSrcWGSL } from '../src/shaders/gi.js';
@@ -572,6 +573,46 @@ test('CPU allocation accounting, independent rounded capacities and legal near-c
   const l=A.worldAtlasLayout(0,{},1000,0), bytes=A.worldAllocationBytes(l);
   assert.equal(bytes.cells,64*64*(16*2+8*3));assert.equal(bytes.probes,64*40); // minimum bound geometry only
   assert.ok(bytes.aux>=1000*A.LIGHT_RECORDS*16);
+});
+// The GPU memory budget (world/worldViewRing.js worldPageBudget): a growth
+// stops at it, and a demand past it is refused, never allocated.
+test('a pool never grows past the owner\'s page budget: growth clamps to it, a demand past it is refused',()=>{
+  const l=A.worldAtlasLayout(1000,{},1,1), budget=1500;
+  assert.equal(A.worldPoolGrowth('cell',l,{},1001,budget),budget);   // a doubling (2000) clamps to the budget
+  assert.equal(A.worldPoolGrowth('cell',l,{},1400,budget),budget);
+  assert.throws(()=>A.worldPoolGrowth('cell',l,{},budget+1,budget),new RegExp(A.WORLD_PAGE_BUDGET));
+  assert.equal(A.worldPoolGrowth('cell',l,{},1001),2000);              // no budget: the old doubling
+  const R=V.worldPageBudget({deviceMemoryGB:8});
+  assert.equal(R.cell,Math.floor(8*1024**3*V.WORLD_GPU_MEMORY_SHARE/(V.WORLD_CELL_PAGE_BYTES+V.WORLD_LIGHT_PAGE_BYTES)));
+  assert.equal(V.WORLD_CELL_PAGE_BYTES,64*(16*2+8*3)+A.AUX_RECORDS*16);
+  assert.ok(R.cell>200000&&R.cell<449215,`the user's Mac budget ${R.cell} must sit under what Chrome held`);
+  assert.equal(V.worldPageBudget({}).deviceMemoryGB,V.WORLD_DEVICE_MEMORY_FALLBACK_GB);
+  assert.ok(V.worldPageBudget({deviceMemoryGB:8,limits:{maxBufferSize:2**20}}).cell<=2**20/1024);
+  // the owner's demand cut: never more kept than the budget, the farthest go, their columns read as air
+  const size=[256,64,256],dims=size.map(n=>n/4),brick=i=>[i%dims[0],Math.floor(i/dims[0])%dims[1],Math.floor(i/(dims[0]*dims[1]))];
+  const tops={top:()=>8,sea:0},air=V.worldViewAirFloors({size,tops}),eye=[8,12,8],ids=new Set();
+  for(let x=0;x<dims[0];x++)ids.add(x+dims[0]*(1+dims[1]*2));
+  // (a near-ring brick is never dropped: 29 of the row lie within it)
+  const r=V.worldBudgetDemand(ids,{budget:40,eye,brick,air});
+  assert.equal(r.keep.size,40);assert.equal(r.dropped.length,ids.size-40);
+  assert.equal(V.worldBudgetDemand(ids,{budget:10,eye,brick,air}).keep.size,[...ids].filter(i=>Math.hypot(...brick(i).map((n,k)=>(n+0.5)*4-eye[k]))<=V.WORLD_VIEW_NEAR_RADIUS).length);
+  const far=Math.min(...r.dropped.map(i=>brick(i)[0])),kept=Math.max(...[...r.keep].map(i=>brick(i)[0]));
+  assert.ok(far>kept,'the farthest bricks go first');
+  for(const i of r.dropped)assert.ok(V.worldViewFarAir(eye,brick(i),r.air),'a dropped brick is air to the view');
+  for(const i of r.keep)assert.ok(!V.worldViewFarAir(eye,brick(i),r.air)||!ids.has(i));
+  // the pool caps hold a re-pack's copies: twice the demand, never more
+  assert.equal(R.pool.cell,R.cell*V.WORLD_PAGE_COPIES);
+  // a pool short of room for the new pages drops only new pages, the farthest first; a held brick keeps its page and its column's floor
+  const fresh=new Set([...ids].filter(i=>brick(i)[0]%2===0)),resident=new Set([...ids].filter(i=>!fresh.has(i))),room=fresh.size-5;
+  const c=V.worldBudgetDemand(ids,{budget:ids.size,eye,brick,air,fresh,room,resident});
+  assert.equal(c.dropped.length,5);assert.ok(c.dropped.every(i=>fresh.has(i)),'only a new page frees pool room');
+  assert.ok(Math.min(...c.dropped.map(i=>brick(i)[0]))>Math.max(...[...fresh].filter(i=>!c.dropped.includes(i)).map(i=>brick(i)[0])),'the farthest new pages go first');
+  const held=V.worldBudgetDemand(ids,{budget:ids.size-3,eye,brick,air,resident:ids});
+  assert.equal(held.dropped.length,3);assert.equal(held.air,air,'a resident dropped brick keeps its page: no floor is lowered');
+  // floors are brick rows over the twin plus the trees' clearance; no twin: never air
+  assert.equal(air.floors[0],Math.ceil((8+V.WORLD_VIEW_AIR_CLEARANCE)/4));
+  assert.ok(!V.worldViewFarAir([0,0,0],[60,30,60],V.worldViewAirFloors({size,tops:null})),'without a ground twin nothing is air');
+  const words=V.worldViewAirWords(air);assert.equal(words.length,air.floors.length+1);assert.equal(words.at(-1),air.floors.length);
 });
 test('canonical original GI-source packing fixtures survive source-only descriptor transport, not reserved cell record3',()=>{
   // Inputs are already reduced giSourceFrag outputs, NOT material/profile aliases.
