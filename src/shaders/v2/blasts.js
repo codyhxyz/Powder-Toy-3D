@@ -304,6 +304,20 @@ fn dProductEnergy(m: Material) -> vec2u {
   if (dEvaporates(m)) { return energyOf(dCarrier(m)); }
   return energyOf(dProduct(m));
 }
+// A picked charge the batch serves (finishCharges; normalizeCharges adds its pressure first): still set off
+// and a charge, its product's energy representable.
+fn dChargeServed(s: u32, m: Material) -> bool {
+  if ((dChargeEnergy(m)<=0.0 && !dEvaporates(m)) || (events[s]&1u)==0u) { return false; }
+  return energyFits(dProduct(m),dProductEnergy(m));
+}
+// A served charge's pressure into its brick's air.
+fn dChargePressure(s: u32, m: Material) {
+  let b=brickOfCell(cellOf(s)); var a=air[b];
+  // 1/4 blast energy enters acoustic compression, 1/2 bounded damage/KE; the
+  // products are at V1's blast.T (dProductEnergy). Pressure energy p² V / (2 rho c²), not an arbitrary kick.
+  let addedP2=2.0*${f(AIR.rho*AIR.sound**2)}*dChargeEnergy(m)*0.25/${f(AIR.edge**3)};
+  if(mAirPressure()) { a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2); } a.thermal.z=0.0; air[b]=a; noteAir(b);
+}
 fn dShielded(source: vec3i, destination: vec3i) -> bool {
   let delta = vec3f(destination-source);
   var cell = source; var next = vec3f(1e30); var stride = vec3f(1e30); let step = vec3i(sign(delta));
@@ -547,6 +561,14 @@ var<workgroup> wgCharges: u32;
     }
     // control[6] is the first charge's scale (one charge: normalize's), 1 without one
     atomicStore(&control[6],select(bitcast<u32>(1.0),atomicLoad(&control[D_CHARGE_SCALES]),n>0u));
+    // The batch's pressure goes into the air now, before its damage (finishCharges serves the rest, the
+    // same charges in the same order): V1's charge adds its blast.P as it goes off, so the explosive beside
+    // it is under that pressure before anything moves it (V1 react.js setOff; damageCharges reads it).
+    for (var c=0u;c<n;c++) {
+      let s=atomicLoad(&control[D_CHARGES+c]); let before=loadMaterial(s);
+      if (!dChargeServed(s,before) || dEvaporates(before)) { continue; }
+      dChargePressure(s,before);
+    }
   `);
   if (stage === 'damageCharges') return h + main64(`
     if (t >= D_SLOTS) { return; } var plan=plans[t]; let m=loadMaterial(t); let id=cid(m.core); let k=cls(id);
@@ -560,6 +582,13 @@ var<workgroup> wgCharges: u32;
         let share=dChargeShare(atomicLoad(&control[D_CHARGES+c]),p)*bitcast<f32>(atomicLoad(&control[D_CHARGE_SCALES+c]));
         energy+=length(share); combined+=share;
       }
+    }
+    // V1 react.js setOff: an explosive under more than its crushP goes off rather than break or fly ("a hit
+    // or pressure that sets it off wins over breaking it"). The batch's pressure is in the air already
+    // (normalizeCharges), so the explosive beside a charge is set off by it where it is, not thrown first,
+    // and goes off with the next tick's batch (The Powder Toy: a chain spreads one step a frame).
+    if (energy>0.0 && dCrush(id)>0.0 && mAirPressure() && dPressureOn(cellOf(t),k)>dCrush(id)) {
+      events[t]|=1u; noteEvents(t,events[t]); dWake(cellOf(t)); plan.velocity=vec3f(0); plans[t]=plan; return;
     }
     var kinetic=energy;
     if (energy>0.0 && k==1u) {
@@ -587,10 +616,9 @@ var<workgroup> wgCharges: u32;
     for (var c=0u;c<n;c++) {
       let s=atomicLoad(&control[D_CHARGES+c]);
       let before=loadMaterial(s);
-      if ((dChargeEnergy(before)<=0.0 && !dEvaporates(before)) || (events[s]&1u)==0u) { continue; }
-      let product=dProduct(before); let productEnergy=dProductEnergy(before);
       // select() gated this BEFORE any damage: retry cannot duplicate a blast.
-      if (!energyFits(product,productEnergy)) { continue; }
+      if (!dChargeServed(s,before)) { continue; }
+      let product=dProduct(before); let productEnergy=dProductEnergy(before);
       let after=withEnergy(product,productEnergy);
       if (dEvaporates(before)) {
         let removed=energySub(energyOf(before),productEnergy);
@@ -599,12 +627,8 @@ var<workgroup> wgCharges: u32;
         storeMaterial(s,before,after); events[s]&=~1u; dWake(cellOf(s)); continue;
       }
       dNoteEnergyChange(cellOf(s),energyOf(before),productEnergy);
+      // (its pressure went into the air before the damage: normalizeCharges)
       storeMaterial(s,before,after);
-      let b=brickOfCell(cellOf(s)); var a=air[b];
-      // 1/4 blast energy enters acoustic compression, 1/2 bounded damage/KE; the
-      // products are at V1's blast.T (dProductEnergy). Pressure energy p² V / (2 rho c²), not an arbitrary kick.
-      let addedP2=2.0*${f(AIR.rho*AIR.sound**2)}*dChargeEnergy(before)*0.25/${f(AIR.edge**3)};
-      if(mAirPressure()) { a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2); } a.thermal.z=0.0; air[b]=a; noteAir(b);
       events[s]&=~1u; dWake(cellOf(s));
     }
   `);

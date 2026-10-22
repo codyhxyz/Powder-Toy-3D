@@ -162,4 +162,28 @@ test('an idle tick records 17 blast dispatches, not 115, and no copies', () => {
   assert.match(listsStageWGSL(g, 'workArgs'), /let hasWork=control\[3\]!=D_NONE/);
   assert.match(pickCode, /The Powder Toy/);
 });
+// V1 react.js setOff: a charge adds its blast.P as it goes off, and the explosive beside it, under more than
+// its crushP, goes off rather than move ("a hit or pressure that sets it off wins over breaking it"). So the
+// batch's pressure enters the air before its damage plans, and damage sets such an explosive off in place
+// instead of throwing it (its ejecta in flight: tools/v2/airborne-react-check.mjs 9b').
+test('the batch\'s pressure is in the air before its damage, which sets an explosive past its crushP off in place', () => {
+  commands.length = 0; d.blastBatch = BATCH_DEFAULT; d.consumeMaterialEvents(11);
+  const order = commands.filter(c => !c.copy).map(c => c.stage);
+  const at = name => order.indexOf(name);
+  assert.ok(at('normalizeCharges') < at('damageCharges') && at('damageCharges') < at('apply') && at('apply') < at('finishCharges'), order.join(' '));
+  const norm = body(blastsWGSL(g, nativeDynamicsHead, 'normalizeCharges'));
+  const finish = body(blastsWGSL(g, nativeDynamicsHead, 'finishCharges'));
+  const damage = body(blastsWGSL(g, nativeDynamicsHead, 'damageCharges'));
+  // every charge finish serves, in its order, puts its pressure in first; finish no longer does
+  assert.match(norm, /for \(var c=0u;c<n;c\+\+\) \{\n\s*let s=atomicLoad\(&control\[D_CHARGES\+c\]\); let before=loadMaterial\(s\);\n\s*if \(!dChargeServed\(s,before\) \|\| dEvaporates\(before\)\) \{ continue; \}\n\s*dChargePressure\(s,before\);/);
+  assert.match(finish, /if \(!dChargeServed\(s,before\)\) \{ continue; \}/);
+  assert.ok(!/air\[|dChargePressure/.test(finish), 'finishCharges adds no pressure of its own');
+  // the pressure is what finish added before (the charge's energy, a quarter of it acoustic)
+  const head = blastsWGSL(g, nativeDynamicsHead, 'normalizeCharges');
+  assert.match(head, /let addedP2=2\.0\*[\d.e+]+\*dChargeEnergy\(m\)\*0\.25\/[\d.e+]+;\n\s*if\(mAirPressure\(\)\) \{ a\.vp\.w=sqrt\(a\.vp\.w\*a\.vp\.w\+addedP2\); \} a\.thermal\.z=0\.0; air\[b\]=a; noteAir\(b\);/);
+  // damage: past its crushP, set off (served next tick) and not planned to break or fly, before either
+  const setOff = damage.indexOf('if (energy>0.0 && dCrush(id)>0.0 && mAirPressure() && dPressureOn(cellOf(t),k)>dCrush(id)) {');
+  assert.ok(setOff > 0 && setOff < damage.indexOf('var kinetic=energy;'), 'the set-off comes before the break and the throw');
+  assert.ok(damage.includes('events[t]|=1u; noteEvents(t,events[t]); dWake(cellOf(t)); plan.velocity=vec3f(0); plans[t]=plan; return;'));
+});
 test.after(() => d.dispose());
