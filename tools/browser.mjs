@@ -14,18 +14,18 @@ import { createRequire } from 'node:module';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_SLOT_MS, MAX_SLOT_MS, CLEANUP_MS, budgetMs, processTable } from './gpu-deadline.mjs';
+import { MAX_SLOT_MS, CLEANUP_MS, budgetMs, processTable } from './gpu-deadline.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 const browsers = new Set();
 const MODES = ['manual', 'preview', 'ui', 'visual'];
-const DEFAULT_TIMEOUT_MS = DEFAULT_SLOT_MS;
+const DEFAULT_TIMEOUT_MS = MAX_SLOT_MS;
 // Headless GPU budget. The user plays on this same GPU while agents test, so a
 // headless browser (1) never runs beside another one; (2) releases its slot
-// if the player uses the GPU; and (3) occupies a slot for its lifetimeMs TOTAL
-// (25 s unless the test asks for more, MAX_SLOT_MS at most), compilation and cleanup included. macOS reports utilization in the IO
+// if the player uses the GPU; and (3) occupies a slot for <=25s TOTAL,
+// including compilation and cleanup. macOS reports utilization in the IO
 // Registry ("Device Utilization %", no permissions needed); its median over
 // BUSY_WINDOW_MS discounts the desktop's own spikes (a window drag, a video).
 // Off macOS (CI, the Linux container) there is no player and no reading.
@@ -269,8 +269,7 @@ function hookBrowserLog(fn) {
 /**
  * Launches headless Chromium with GPU_ARGS plus `options.args`, closed on
  * uncaught failures and signals. `lifetimeMs` includes the entire slot:
- * player check, launch, compilation, assertions and cleanup; 25 s unless asked,
- * at most MAX_SLOT_MS (10 min, a hung-test guard).
+ * player check, launch, compilation, assertions and cleanup; maximum 25s.
  * `browserLog(line)` receives the browser's stderr, GPU process included
  * (adds --enable-logging=stderr).
  * @param {{ lifetimeMs?: number, args?: string[], browserLog?: (line: string) => void } & object} [options] Playwright launch options
