@@ -10,6 +10,7 @@ import { uniformStruct } from '../gpu/params.js';
 import { Header } from '../shaders/common.js';
 import { WorldSunParams, worldSunFeedbackWords } from '../world/worldSun.js';
 import { requestedBricks, requestedChannels, READY, WORLD_ATLAS_ABI } from '../world/renderAtlas.js';
+import { worldBricksFit } from '../shaders/common.js';
 const BU={COPY_SRC:4,COPY_DST:8,UNIFORM:64,STORAGE:128};
 const WorldFrameStruct = uniformStruct('FrameUniforms', FRAME_UNIFORM_FIELDS);
 const vec = v => Array.from(v?.elements ?? (v?.toArray ? v.toArray() : v));
@@ -38,20 +39,73 @@ export function decodeWorldFeedback(words, book, sunTileCount) {
   const sun=requestedBricks(words.subarray(at+1),sunTileCount);
   return Object.freeze({incomplete:words[at]!==0||requirements.length!==0||sun.length!==0,status:words[at],geometry,requirements,sun});
 }
+// The World's view pipelines, one set per device, shared by every World load on it. The
+// module reads its world's size at run time (shaders/common.js WORLD_RUNTIME_GRID), so the
+// pipeline startWorldView starts as soon as a big map is picked, beside its generation, is
+// the one that map's first frame draws with (and the next map's): its cold compile (~10 s in
+// Chrome after a deploy) used to start only once the world had generated and streamed in.
+const sharedViews = new WeakMap();   // device -> { layouts, pipelineLayout, states: Map(module key -> state) }
+function viewPipelines(device) {
+  let s = sharedViews.get(device);
+  if (!s) {
+    const layouts = VOLUME_LAYOUTS({backend:'world'}).map((entries,i)=>device.createBindGroupLayout({label:`world view ${i}`,entries}));
+    s = {layouts, pipelineLayout:device.createPipelineLayout({bindGroupLayouts:layouts}), states:new Map()};
+    sharedViews.set(device, s);
+  }
+  return s;
+}
+// One native build: counted against the pipeline cache's bound while it compiles (src/gpu/kernels.js outside).
+function nativeBuild(gpu, promise) {
+  gpu.pipelines?.outside?.(promise);
+  let state='pending', pipeline=null, error=null;
+  const ready=Promise.resolve(promise).then(p=>{pipeline=p;state='ready';return p;},e=>{error=e;state='failed';throw e;});
+  ready.catch(()=>{});
+  return Object.freeze({get state(){return state;},get pipeline(){return pipeline;},get error(){return error;},ready});
+}
+// The view's native builds (Plain: its three phases) for grid's module, started once per device.
+function viewBuilds(gpu, grid, view, detail, curved) {
+  const device=gpu.device ?? gpu, shared=viewPipelines(device);
+  const code=volumeFrag(grid,{backend:'world',view,detail,curved}), key=`${view==='plain'}|${curved}|${code}`;
+  let builds=shared.states.get(key);
+  if (!builds) {
+    const label=`world ${JSON.stringify([view,Object.keys(detail).filter(k=>detail[k]).sort(),curved])}`;
+    const shader=device.createShaderModule({code,label});
+    const compile=({vertex,fragment,...desc})=>nativeBuild(gpu,device.createRenderPipelineAsync({label:`${label} ${fragment.entry}`,layout:shared.pipelineLayout,...desc,
+      vertex:{module:shader,entryPoint:vertex.entry},fragment:{module:shader,entryPoint:fragment.entry,targets:fragment.targets}}));
+    if (view==='plain') { const phases=worldPlainPipelines({curved}); builds=WORLD_PLAIN_PHASES.map(phase=>compile(phases[phase])); }
+    else builds=[compile(volumePipeline())];
+    shared.states.set(key,builds);
+  }
+  return builds;
+}
+/**
+ * Starts building the World view pipeline a big map's first frame will draw, before its world
+ * exists (wire/world.js attach, in the map's build): view and detail as the frame asks for them
+ * (wire/worldRenderFrame.js worldViewOf), and the map's source artwork switch. The world's size
+ * is not an input: the module is the same for every world. Returns its readiness.
+ * @param {object} gpu
+ * @param {{ sourceAppearance?: boolean, sourceGrid?: number[], view?: string, detail?: object, curved?: boolean }} [opts]
+ * @returns {Promise<unknown>}
+ */
+export function startWorldView(gpu, {sourceAppearance=false,sourceGrid,view='realistic',detail={},curved=false} = {}) {
+  const ready=Promise.all(viewBuilds(gpu,{sourceAppearance,sourceGrid},view,detail,curved).map(b=>b.ready));
+  ready.catch(()=>{});
+  return ready;
+}
 export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}) {
   const device=gpu.device ?? gpu, queue=device.queue;
   if (!g || !atlas || !tables) throw new Error('world volume requires metadata g, atlas and tables (not a Simulation)');
   if ([g.nx,g.ny,g.nz].some((n,i)=>n!==atlas.bookLayout.worldSize[i])) throw new Error('world metadata/atlas bounds differ');
+  if (!worldBricksFit([g.nx,g.ny,g.nz])) throw new RangeError(`world ${g.nx}×${g.ny}×${g.nz} is past the view's packed brick numbers (shaders/common.js WORLD_BRICK_BITS)`);
   const grid=Object.freeze({...g,sourceAppearance:g.sourceAppearance===true,sourceGrid:appearance?.sourceGrid??g.sourceGrid});
   const descriptors=VOLUME_LAYOUTS({backend:'world'}), pickDescriptors=PICK_LAYOUTS({backend:'world'});
   const storageLimit=Math.min(128*1024**2,device.limits?.maxStorageBufferBindingSize??128*1024**2);
   if (tables.size<descriptors[0][0].buffer.minBindingSize || tables.size>storageLimit) throw new RangeError('world tables binding size');
-  const layouts=descriptors.map((entries,i)=>device.createBindGroupLayout({label:`world view ${i}`,entries}));
+  const {layouts}=viewPipelines(device);   // (shared with startWorldView's builds)
   const pickLayouts=[...layouts.slice(0,3),device.createBindGroupLayout({label:'world pick 3',entries:pickDescriptors[3]})];
   const pointLayouts=[...layouts.slice(0,3),device.createBindGroupLayout({label:'world point 3',entries:worldPointLayouts()[3]})];
   const signsLayouts=[...layouts.slice(0,3),device.createBindGroupLayout({label:'world signs 3',entries:worldSignsLayouts()[3]})];
   const signsLayout=device.createPipelineLayout({bindGroupLayouts:signsLayouts});
-  const pipelineLayout=device.createPipelineLayout({bindGroupLayouts:layouts});
   const pickLayout=device.createPipelineLayout({bindGroupLayouts:pickLayouts});
   const pointLayout=device.createPipelineLayout({bindGroupLayouts:pointLayouts});
   const linear=device.createSampler({minFilter:'linear',magFilter:'linear'});
@@ -59,15 +113,9 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
   const pipes=new Map(), compilations=[]; let dead=false;
   const alive=()=>{if(dead)throw new Error('world volume disposed');};
   const module=(code,label)=>device.createShaderModule({code,label});
-  function compiled(promise) {
-    // counted against the pipeline cache's bound while it compiles (src/gpu/kernels.js outside)
-    gpu.pipelines?.outside?.(promise);
-    let state='pending', pipeline=null, error=null;
-    const ready=Promise.resolve(promise).then(p=>{pipeline=p;state='ready';return p;},e=>{error=e;state='failed';throw e;});
-    ready.catch(()=>{});
-    compilations.push(ready);
-    return Object.freeze({get state(){return state;},get pipeline(){return pipeline;},get error(){return error;},ready});
-  }
+  // (a shared build, too, is this volume's to drain before disposal: compilationSettled)
+  const own=build=>{compilations.push(build.ready);return build;};
+  const compiled=promise=>own(nativeBuild(gpu,promise));
   const makePick=view=>compiled(device.createComputePipelineAsync({label:`world pick${view==='plain'?' plain':''}`,layout:pickLayout,
     compute:{module:module(pickFrag(grid,{backend:'world',view}),'world pick'),entryPoint:'main'}}));
   const pickState=makePick('realistic'), plainPickState=makePick('plain');
@@ -90,13 +138,8 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
   function pipelineState(view='realistic',detail={},curved=false) {
     alive(); const key=JSON.stringify([view,Object.keys(detail).filter(k=>detail[k]).sort(),curved]);
     if (!pipes.has(key)) {
-      const shader=module(volumeFrag(grid,{backend:'world',view,detail,curved}),`world ${key}`);
-      const compile=({vertex,fragment,...desc})=>compiled(device.createRenderPipelineAsync({label:`world ${key} ${fragment.entry}`,layout:pipelineLayout,...desc,
-        vertex:{module:shader,entryPoint:vertex.entry},fragment:{module:shader,entryPoint:fragment.entry,targets:fragment.targets}}));
-      if(view==='plain') {
-        const phases=worldPlainPipelines({curved});
-        pipes.set(key,aggregate(WORLD_PLAIN_PHASES.map(phase=>compile(phases[phase])),plainPickState));
-      } else pipes.set(key,compile(volumePipeline()));
+      const builds=viewBuilds(gpu,grid,view,detail,curved).map(own);
+      pipes.set(key,view==='plain'?aggregate(builds,plainPickState):builds[0]);
     }
     return pipes.get(key);
   }

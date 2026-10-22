@@ -1,7 +1,9 @@
 // WORLD native/Post recording and the single pending normal-tick App driver.
 import { Matrix4 } from 'three/webgpu';
 import { frameUniformValues } from '../gfx/uniforms.js';
-import { createWorldVolume, worldFrameValues } from '../gfx/worldVolume.js';
+import { createWorldVolume, worldFrameValues, startWorldView } from '../gfx/worldVolume.js';
+import { SOURCE_APPEARANCE_ENABLED } from '../gfx/sourceAppearance.js';
+import { WORLD_APPEARANCE_GRID } from '../gfx/worldAppearance.js';
 import { createWorldOpaqueCapture } from '../gfx/worldOpaque.js';
 import { createWorldFeedbackProvider } from '../gfx/worldLightingInputs.js';
 import { createNativeWorldMeshLightContext, guardMeshes } from '../gfx/meshLight.js';
@@ -9,6 +11,8 @@ import { renderViewmodels } from '../pov/viewmodel.js';
 import { queryWorldPick, worldPickNotReady } from './worldPick.js';
 import { READY } from '../world/renderAtlas.js';
 import { WORLD_NATIVE } from '../shaders/gfx/liquidDetail.js';
+import { viewKey } from '../views.js';
+import { gateVariants } from '../gfx/detailGate.js';
 
 const array = v => Array.from(v?.elements ?? (v?.toArray ? v.toArray() : v));
 const requireReady = (ok, message) => { if (!ok) throw new Error(message); };
@@ -323,6 +327,24 @@ export async function releaseWorldMeshPreflight(app,p) {
 // The view's detail, plus WORLD_NATIVE while V2 runs the box: its live copies then carry V2's foam
 // (world/renderSource.js liveSource), and the World programs compile native foam as Box's format-2 do.
 export const worldViewDetail=(sim,detail={})=>sim?.compact ? {...detail,[WORLD_NATIVE]:true} : {...detail};
+// The view a World frame asks for, as app.js captureWorldRequest freezes it (the settings'
+// view, every detail feature they switch on: updateFrameDetail; the gamemode's bend:
+// warpNow), for gfx/worldVolume.js startWorldView before the world exists.
+export const worldViewOf=app=>({view:viewKey(app.settings.view),detail:worldViewDetail(app.sim,gateVariants(app.settings).near),
+  curved:!!(app.presentation?.active && app.presentation.parameters?.k)});
+/** Starts the World view pipeline a big map of `scene` draws first (gfx/worldVolume.js
+ * startWorldView), before its world exists: wire/world.js attach, in the map's build, so the
+ * cold compile runs beside the world's generation and streaming. Its module is the same for
+ * every world size. A wrong guess (the view changed meanwhile) only costs a build, and a
+ * failure here only the head start: the first frame's own request still builds and reports.
+ * @returns {Promise<unknown> | null} its readiness
+ */
+export function startWorldFrameView(app, scene) {
+  try {
+    return startWorldView(app.gpu, {...worldViewOf(app), sourceGrid:WORLD_APPEARANCE_GRID,
+      sourceAppearance:SOURCE_APPEARANCE_ENABLED && !!scene?.importManifest?.appearance});
+  } catch(error) {console.warn('World view pipeline could not start early',error);return null;}
+}
 export function freezeWorldView(app,values,{view,detail={},curved=false}={}) {
   app.camera.updateMatrixWorld();
   const camera=app.camera.clone(false);camera.parent=null;

@@ -93,15 +93,20 @@ test('actual Plain facade compiles exact three descriptors and gates one-pass or
     assert.ok(f.log.filter(x=>x[0]==='pipeline').every(x=>x[1].primitive.topology==='triangle-list'));
     assert.equal(f.log.filter(x=>x[0]==='begin').length,0,'no hidden pass or async callback');
     const failed=f.volume.pipelineState('plain',{},false);assert.equal(failed,state);
-    const failure=f.volume.pipelineState('plain',{different:true});
-    f.settle(d=>d.fragment?.entryPoint==='fsAbsorb',new Error('absorb failed'));
-    await assert.rejects(failure.ready,/absorb failed/);assert.equal(failure.state,'failed');assert.match(failure.error.message,/absorb/);
-    let drained=false;const drainedWork=f.volume.compilationSettled.then(()=>{drained=true;});
-    await tick();assert.equal(drained,false,'failed Plain aggregate does not settle sibling native leaves');
-    const before=f.log.length;assert.equal(f.candidate.recordDraw(f.pass,{view:'plain',detail:{different:true}}),false);assert.equal(f.log.length,before);
-    f.settle();
-    await drainedWork;assert.equal(drained,true);
+    // Plain ignores detail: the same module's native builds serve it (one compile per module, gfx/worldVolume.js viewBuilds)
+    const builds=f.render.length,same=f.volume.pipelineState('plain',{different:true});
+    assert.equal(f.render.length,builds);assert.equal(same.state,'ready');
   } finally {f.release();}
+  const h=fixture();try {
+    const failure=h.volume.pipelineState('plain',{different:true});
+    h.settle(d=>d.fragment?.entryPoint==='fsAbsorb',new Error('absorb failed'));
+    await assert.rejects(failure.ready,/absorb failed/);assert.equal(failure.state,'failed');assert.match(failure.error.message,/absorb/);
+    let drained=false;const drainedWork=h.volume.compilationSettled.then(()=>{drained=true;});
+    await tick();assert.equal(drained,false,'failed Plain aggregate does not settle sibling native leaves');
+    const before=h.log.length;assert.equal(h.candidate.recordDraw(h.pass,{view:'plain',detail:{different:true}}),false);assert.equal(h.log.length,before);
+    h.settle();
+    await drainedWork;assert.equal(drained,true);
+  } finally {h.release();}
 });
 
 test('Plain/default picking caches actual different WGSL and freezes view/n/slots/all packed bytes before await',async()=>{

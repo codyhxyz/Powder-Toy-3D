@@ -11,6 +11,7 @@ import { worldFeedbackExtraWords } from '../src/wire/worldRender.js';
 import { worldSunProjection, WORLD_SUN_BOOK_WORDS } from '../src/world/worldSun.js';
 import { WORLD_SCENES } from '../src/world/scenes/index.js';
 import { WORLD_SIZE } from '../src/shaders/farShared.js';
+import { worldBricksFit } from '../src/shaders/common.js';
 
 const MIB = 1024 ** 2;
 // worldSunLighting.js: the Sun book is one binding, capped at the default 128 MiB.
@@ -48,6 +49,7 @@ for (const { size, keys } of worlds.values()) {
   const name = `${size.join('×')} (${keys.length > 3 ? `${keys.slice(0, 3).join(', ')} and ${keys.length - 3} more` : keys.join(', ')})`;
   try {
     const atlas = new WorldRenderAtlas(deviceDouble(), { worldSize: size, feedbackExtraWords: worldFeedbackExtraWords(size) });
+    assert.ok(worldBricksFit(size), 'past the World view\'s packed brick numbers (shaders/common.js WORLD_BRICK_BITS)');
     for (const direction of SUN_DIRECTIONS) {
       const { tiles } = worldSunProjection(size, direction);
       assert.ok(tiles[2] * tiles[3] * WORLD_SUN_BOOK_WORDS * 4 <= SUN_BINDING, `Sun book over its binding for sun ${direction}`);

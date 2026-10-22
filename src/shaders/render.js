@@ -1,4 +1,4 @@
-import { STATE_OPTS, LAYOUT, prelude, readFormatWGSL } from './common.js';
+import { STATE_OPTS, LAYOUT, prelude, readFormatWGSL, WORLD_RUNTIME_GRID, worldRuntimeGrid } from './common.js';
 import { RENDER_LAYOUT } from './bindings.js';
 import { ELEMENTS } from '../elements.js';
 import { COLORMAPS, VIEWS, xrayDensity, isMaterialView, materialStyleForView } from '../views.js';
@@ -1500,9 +1500,12 @@ fn volumeId(p: vec3i) -> i32 {
  * @param {{ view?: string, detail?: object, curved?: boolean, debug?: boolean, fixedReadFormat?: 0 | 2 | 3 }} [opts]
  * @returns {string}
  */
-export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false, backend = 'box', fixedReadFormat } = {}) => {
+export const volumeFrag = (grid, { view = 'realistic', detail = {}, curved = false, debug = false, backend = 'box', fixedReadFormat } = {}) => {
   renderBackend(backend);
   readFormatWGSL(fixedReadFormat);
+  // The World's module reads its world's size at run time, so every world shares it
+  // (shaders/common.js WORLD_RUNTIME_GRID): only its source artwork's switch is the grid's.
+  const g = backend === 'world' ? { ...WORLD_RUNTIME_GRID, sourceAppearance: grid.sourceAppearance === true, sourceGrid: grid.sourceGrid } : grid;
   const plain = backend === 'world' && view === 'plain';
   if (!plain && !VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
   const lit = isMaterialView(view), d = lit ? detail : {};
@@ -1532,7 +1535,8 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
   else parts.push(DATA_COMMON, DATA_CODE[view](curved, backend), dataView(view));
   parts.push(volumeVertOf(curved), volumeEntry(view, lit || plain, curved, backend, plain));
   // Keep the heavier artwork out of Realistic's active shader path/registers.
-  const code = parts.join('\n').replaceAll('FU.materialStyle', `${materialStyleForView(view) ?? 0}.0`);
+  const joined = parts.join('\n').replaceAll('FU.materialStyle', `${materialStyleForView(view) ?? 0}.0`);
+  const code = backend === 'world' ? worldRuntimeGrid(joined) : joined;
   // Literal cell identifiers only, not a general WGSL expression rewrite.
   return nativeIds ? code.replace(/\beid\(fetchA\((cell|c|lc|oc|q|nc|cj)\)\)/g, 'volumeId($1)') : code;
 };

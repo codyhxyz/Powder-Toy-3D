@@ -266,7 +266,10 @@ ${fn(pickProduction,'plainFlatPick')}${fn(pickProduction,'plainCurvePick')}
 test('executed production Plain traces agree with original face passes through covered HDR meshes, opaque cells and unknown AO',()=>{
   for(const curved of [false,true]){
   const production=volumeFrag(g,{backend:'world',view:'plain',curved});
+  // (the production module reads its world's size at run time, shaders/common.js WORLD_RUNTIME_GRID: here g's)
   const code=`${rawPreamble}
+fn worldMaxSteps()->i32{return MAX_STEPS;}
+fn worldGrid()->vec3i{return GRID;}
 struct TestFrame {sun:vec3f,sunCol:vec3f,skyUp:vec3f,ground:vec3f,caveAmbient:vec3f,time:f32,shadows:u32}var<private> FU:TestFrame;
 struct Sun {depth:vec4f}var<private> WS:Sun;
 struct Params {meshCut:u32,marchNear:f32}var<private> P:Params;
