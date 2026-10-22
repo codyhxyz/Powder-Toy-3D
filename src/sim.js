@@ -62,10 +62,11 @@ const TOUCH_MARGIN = 1;
 // Undo snapshots kept, at most (each is the current A and B: ~67 MB at 128³).
 const UNDO_LIMIT = 3;
 
-// The legacy state's copies (docs/webgpu.md C1; Simulation.pingPong): a window's V1-format shift
-// before its native owner is ready runs out of place into a second; the native engine
-// (src/v2/physics.js) keeps only the current one, the cache its edits and readbacks go through. Bytes a slot in each copy: A and B
-// a vec4f each, F a u32 (a copy is 36 B a slot: 75.5 MB at 128³).
+// The legacy state's copies (docs/webgpu.md C1; Simulation.pingPong): every grid starts with one, the
+// cache the native engine's V1-format writers, loads and readbacks go through (src/v2/physics.js); a
+// window's V1-format shift before its native owner is ready runs out of place into a second, which
+// the owner's activation drops. Bytes a slot in each copy: A and B a vec4f each, F a u32 (a copy is
+// 36 B a slot: 72 MiB at 128³; V1's step kept two in every window from its start).
 const PING_PONG = 2, ONE_COPY = 1;
 const STATE_BYTES = { A: 16, B: 16, F: 4 };
 
@@ -225,7 +226,7 @@ export class Simulation {
    *   windowed: the grid is a window of a larger world (docs/scaling.md D11);
    *   world: that world's size (the GI's far layout, src/derived.js);
    *   debug: every state access tests its cell and counts misses (readDebug; I2.8).
-   *   A box keeps one legacy copy; a window two until its owner is ready (pingPong)
+   *   Every grid keeps one legacy copy (a window's pre-owner shift grows a second: pingPong)
    */
   constructor(gpu, nx, ny, nz, { windowed = false, world = null, debug = gpu.debug } = {}) {
     this.gpu = gpu;
@@ -274,7 +275,7 @@ export class Simulation {
     const buf = (label, size, usage = S | CS | CD) => gpu.createBuffer({ label: `sim${this.id} ${label}`, size: Math.max(16, Math.ceil(size / 16) * 16), usage });
     const slots = g.slots;
     this.cur = 0;
-    const { A, B, F } = this._stateBuffers(windowed ? PING_PONG : ONE_COPY);
+    const { A, B, F } = this._stateBuffers(ONE_COPY);
     this.flow = buf('flow', slots * 8);
     // the decoration's plane until the native owner takes it (_side, PhysicsV2.activate)
     this.moveSrc = buf('moveSrc (none)', 16);

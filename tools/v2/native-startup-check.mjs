@@ -83,9 +83,21 @@ assert(native.clears.some(name => name.endsWith('flow')));
 assert.deepEqual(native.builds, initial, 'ready starts no further builds');
 assert.throws(() => native.sim.step(), /no ready native owner/, 'no owner: a step is an error, never V1');
 assert.equal(native.sim.frame, 0, 'failed early step does not advance time');
-// A box keeps one legacy copy (the import/export format's), a window two until its owner is ready.
-assert.equal(native.sim.copies, 2);
-assert.equal(fixture({}, []).sim.copies, 1);
+// Every grid keeps one legacy copy (the import/export format's): a window too, from its start (V1's step
+// kept two in every window); a V1-format shift before its owner is ready grows a second (sim.shift's
+// out-of-place move), which the owner's activation drops again (PhysicsV2.activate: pingPong(false)).
+assert.equal(native.sim.copies, 1, 'a window boots with one legacy copy');
+assert.equal(fixture({}, []).sim.copies, 1, 'a box too');
+const slotBytes = 16 + 16 + 4;
+assert.equal(native.sim.state.A.size + native.sim.state.B.size + native.sim.state.F.size, native.sim.g.slots * slotBytes);
+native.sim.pingPong(true);
+assert.equal(native.sim.copies, 2, 'a pre-owner V1-format shift takes a second copy');
+native.sim.pingPong(false);
+assert.equal(native.sim.copies, 2, 'a window without an owner keeps it (its shift is out of place)');
+native.sim.compact = { isReady: true };
+native.sim.pingPong(false);
+assert.equal(native.sim.copies, 1, 'the owner presenting the window drops it');
+native.sim.compact = null;
 
 const badInit = fixture({}, ['fromAtlas']);
 const initError = new Error('initial import compile failed');
@@ -109,4 +121,4 @@ const saves = readFileSync(new URL('../../src/wire/saves.js', import.meta.url), 
 // (a save made under V1 imports into V2: tools/v2/saves-check.mjs)
 assert(!saves.includes('setPhysics'), 'the save loader never switches engines');
 assert.match(saves, /if \(state\.mode === 'v1'\) v2\.resync\(\);/);
-console.log('native startup CPU: V2-only builds (no V1 step kernels), retained initialization, one legacy copy a box, failure propagation and V2-only wiring passed');
+console.log('native startup CPU: V2-only builds (no V1 step kernels), retained initialization, one legacy copy a grid (a second only for a window\'s pre-owner shift), failure propagation and V2-only wiring passed');
