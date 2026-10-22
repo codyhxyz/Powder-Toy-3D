@@ -208,6 +208,8 @@ fn ctPack(c:CTCell,original:vec4u)->vec4u {
   core.y=(core.y&0xfe000000u)|(u32(c.burning)<<24u)|u32(c.life)|(u32(c.ctype)<<16u);
   if(row.conductor!=0){core.w=(core.w&0xfffff000u)|u32(c.spark);}
  }
+ // a new grain takes the fall its maker gave it (the clone's spawn drop: V1 react.js), V2's fall format (fall.js)
+ if(row.kind==2 && c.id!=i32(original.x&255u) && c.fallSpeed>0.0){core=setFall(core,c.fallSpeed*${float(CELL_M * CONTACT_HZ)},0.0);}
  return core;
 }
 ${specialContactWGSL}

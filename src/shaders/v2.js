@@ -1,5 +1,5 @@
 import { fallTerminal, powderLandingSpeed, stepFall, setFall, fallFraction, FALL_GRAVITY, FALL_G_PER_MS2 } from '../v2/fall.js';
-import { GRAVITY_MS2, STEPS_PER_TICK } from '../v2/gravity.js';
+import { GRAVITY_MS2, STEPS_PER_TICK, V1_STEP_MS } from '../v2/gravity.js';
 import { PHYS } from '../physics.js';
 import { LEGACY_STEPS_PER_TICK } from '../v2/host.js';
 import { fallWGSL, fallStepWGSL } from './v2/fall.js';
@@ -515,7 +515,11 @@ ${MAIN} {
   let mask = 1u << (s & 31u);
   let owned = atomicAnd(&marks[MARK_OWNED + (s >> 5u)], ~mask) & mask;
   if (P.full != 0u || owned != 0u) {
-    let n = importA(a);
+    var n = importA(a);
+    // V1's velocity along the pull, where it has one: a painted grain starts falling (passes.js: the brush gives
+    // loose matter B.y = SPAWN_DROP_V), and a loaded one keeps its fall (react.js forces read B)
+    let vy = fetchBs(s).y;
+    if (clsOf(n) == C_POWDER && vy < 0.0) { n = setFall(n, min(-vy, ${f(PHYS.V_MAX)}) * ${V1_STEP_MS}, 0.0); }
     let oldBank = banks[s];
     banks[s] = 0; // explicit ownership resets even when the imported core compares equal
     if (any(n != c) || oldBank != 0) {

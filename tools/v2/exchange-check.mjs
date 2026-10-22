@@ -171,3 +171,30 @@ console.log(`rates (cells/s, block pass): ${lines.join(', ')}`);
   console.log(`overhang: hydrogen escaped from under a ledge in ${escaped}/8 runs within 0.5 s`);
 }
 console.log('exchange-check: ok');
+
+// ---- 4. the spawn drop (T11, RX-7): painted and cloned grains start falling at V1's SPAWN_DROP_V; MV-7: every
+// powder falls at V1's own terminal speed in both lanes (the column runs' and the packets')
+{
+  const { v2ImportWGSL } = await import('../../src/shaders/v2.js');
+  const { fallTerminal, fallVelocity } = await import('../../src/v2/fall.js');
+  const { dynamicsRows } = await import('../../src/v2/dynamics-reference.js');
+  const { v1TerminalMS, V1_STEP_MS } = await import('../../src/v2/gravity.js');
+  const imp = v2ImportWGSL(gridLayout(16, 16, 16));
+  assert(imp.includes('let vy = fetchBs(s).y;') && imp.includes('if (clsOf(n) == C_POWDER && vy < 0.0) { n = setFall(n, min(-vy, 1.0) *'), 'the import keeps V1\'s fall');
+  const drop = -PHYS.SPAWN_DROP_V * V1_STEP_MS;
+  let made = null;
+  for (let tick = 0; tick < 400 && !made; tick++) {
+    const cores = Array.from({ length: 8 }, (_, i) => makeMaterial(i === 0 ? E.CLONE : E.EMPTY, 20, undefined, i === 0 ? E.SAND : 0).core);
+    const out = C.contactReference(cores, new Int32Array(8), tick);
+    const at = out.cores.findIndex(c => (c[0] & 255) === E.SAND);
+    if (at >= 0) made = out.cores[at];
+  }
+  assert(made, 'the clone made sand');
+  assert(Math.abs(fallVelocity(made) - drop) < 1e-3, `a cloned grain falls from ${fallVelocity(made)} m/s, V1 ${drop}`);
+  for (const e of ELEMENTS.filter(e => e.kind === K.POWDER)) {
+    assert.equal(fallTerminal(e.id), v1TerminalMS(e), e.key);
+    assert.equal(dynamicsRows[e.id].terminal, v1TerminalMS(e), `${e.key}'s packet terminal`);
+  }
+  console.log(`spawn drop: painted (import) and cloned grains start at ${drop.toFixed(1)} m/s; powder terminals are V1's in both lanes (DUST ${fallTerminal(E.DUST).toFixed(1)}, SAND ${fallTerminal(E.SAND).toFixed(1)} m/s)`);
+}
+console.log('exchange-check: spawn drop ok');

@@ -4,7 +4,7 @@
 import { ELEMENTS, E, K, REACTIONS, mechanisms } from '../elements.js';
 import { SPARK_COST, WIRE, CONDUCTS, ELEC, SPARK_BORN, SPARK_CYCLE, LAMP_DC } from '../electricity.js';
 import { PHYS, NOMINAL_STEP_RATE } from '../physics.js';
-import { fallVelocity } from './fall.js';
+import { fallVelocity, setFall } from './fall.js';
 import { CELL_M } from '../scale.js';
 import { EMITTERS } from '../rays.js';
 import { CEDAR_BASE } from '../appearance.js';
@@ -123,6 +123,9 @@ const CONTACT_ENERGY_CONSTANTS = {
 export const CONTACT_CONSTANTS = Object.freeze({ ...CONTACT_ENERGY_CONSTANTS,
   // the default scene's ambient (physics.js AMBIENT) for ctStep's standalone patch
   CT_AMBIENT_Q: ['i32', q(PHYS.AMBIENT)],
+  // V1 react.js: a clone's product starts falling at SPAWN_DROP_V (cells/step), gases excepted: V2's fall speed in
+  // cells a tick (CTCell.fallSpeed's unit, V1's NOMINAL_STEP_RATE steps a second)
+  CT_SPAWN_DROP: ['f32', -PHYS.SPAWN_DROP_V * NOMINAL_STEP_RATE / CONTACT_HZ],
   CT_CODE_ZERO_C: ['f32', 273.25],   // the native ¼ K code's zero (q above)
   // V1 react.js: evaporating cloud cools its air by CLOUD_EVAP_COOL °C (¼ K codes)
   CT_CLOUD_EVAP_COOL_Q: ['i32', Math.round(PHYS.CLOUD_EVAP_COOL * 4)],
@@ -247,7 +250,7 @@ const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGN
   CT_ELEC_SPENT_UNIT, CT_ELEC_SPENT_MAX, CT_ELEC_STEPS, CT_ELEC_SALT, CT_FUSE_UNLIT, CT_FUSE_BURN_NUM, CT_FUSE_BURN_DEN, CT_FUSE_HANDOFF_Q,
   CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END, CT_CLONE_CHANCE, CT_CLONE_MISS_LOG, CT_PLANT_MISS_LOG, CT_MOSS_MISS_LOG, CT_FUNGUS_MISS_LOG,
   CT_ACID_EAT, CT_ACID_SPENT, CT_CLOUD_RAIN, CT_CLOUD_RAIN_NB, CT_CLOUD_EVAP, CT_CLOUD_EVAP_NB, CT_STEPS_PER_TICK,
-  CT_TOUCH_FIRE, CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_TOUCH_FRONT } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
+  CT_TOUCH_FIRE, CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_TOUCH_FRONT, CT_SPAWN_DROP } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 const { CT_COND_FLUX, CT_CAP_UNITS, CT_Q_PER_C, CT_FULL, CT_FILL_SALT, CT_ROLL_UNIT, CT_PAIR_FILL_SALT, CT_Q_MAX, CT_RX_HEAT_UNIT, CT_SHARE_LO, CT_SHARE_HI } = Object.fromEntries(Object.entries(CONTACT_ENERGY_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 
 const outSpecs = [];
@@ -1003,7 +1006,11 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
       let chance = CT_CLONE_CHANCE;
       const outside = outClones | 0;
       if (outside > 0) chance = 1.0 - Math.exp(CT_CLONE_MISS_LOG * ctF(clones) / ctF(clones + outside));
-      if (random < chance) return ctCreate(c, clone, ctRow(clone).spawnQ);
+      if (random < chance) {
+        let made = ctCreate(c, clone, ctRow(clone).spawnQ);
+        if (ctRow(clone).kind !== 4) made.fallSpeed = CT_SPAWN_DROP;
+        return made;
+      }
     }
     if (moss > 0 && bed > 0) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(moss) * CT_MOSS_MISS_LOG)) return ctCreate(c, E.MOSS, c.tq); }
   }
@@ -1080,6 +1087,8 @@ export function packContact(c, original = new Uint32Array(4)) {
     core[1] = (core[1] & 0xfe000000) | (c.burning << 24) | c.life | (c.ctype << 16);
     if (CONDUCTS[c.id]) core[3] = (core[3] & 0xfffff000) | c.spark;
   }
+  // a new grain takes the fall its maker gave it (the clone's spawn drop: V1 react.js), V2's fall format (fall.js)
+  if (changed && ELEMENTS[c.id].kind === K.POWDER && c.fallSpeed > 0) return { core: setFall(core, c.fallSpeed * CELL_M * CONTACT_HZ, 0), bank: c.bank };
   return { core, bank: c.bank };
 }
 export const materialEnergy = (core, bank = 0) => ctEnergy(unpackContact(core, bank));
