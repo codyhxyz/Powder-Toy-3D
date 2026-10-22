@@ -68,8 +68,9 @@ fn volumeA(p: vec3i) -> vec4f {
   let s = slotOf(p);
   let c = ${physical ? 'compactProbeCore(A[s])' : 'A[s]'};
   let id = i32(c.x & 255u);
-  let k = KIND(id);
   let T = ${T_OF};
+  if (id == E_EMPTY) { return vec4f(0.0, T, 0.0, 0.0); }   // (air, most reads: no table lookup)
+  let k = KIND(id);
   if (k == K_EMPTY) { return vec4f(0.0, T, 0.0, 0.0); }
   if (k == K_LIQUID) {
     let q = cellOf(s);

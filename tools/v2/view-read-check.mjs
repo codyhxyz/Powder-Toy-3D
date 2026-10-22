@@ -105,8 +105,8 @@ function check(c, threshold, override = null) {
     decodes++;
   }
 }
-for (let id = 0; id < 256; id++)
-  for (const kind of [null, K.EMPTY, K.LIQUID, ELEMENTS[E.WALL].kind, K.POWDER])
+for (let id = 0; id < 256; id++)   // (arbitrary kinds only for invalid IDs: a catalog element's kind is its own)
+  for (const kind of id < ELEMENTS.length ? [null] : [null, K.EMPTY, K.LIQUID, ELEMENTS[E.WALL].kind, K.POWDER])
     for (const threshold of [0, 1, 32767, 65534, 65535])
       for (const fill of [0, 1, Math.max(0, threshold - 1), threshold, threshold + 1, 65535, 65536, 65537, 0xffffff])
         check({ x: ((random() & 0xffffff00) | id) >>> 0, y: ((random() & 0xff000000) | fill) >>> 0, z: random(), w: random() }, threshold, kind);

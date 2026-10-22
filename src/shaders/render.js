@@ -1488,6 +1488,7 @@ const volumeIdWGSL = format => /* wgsl */ `
 fn volumeId(p: vec3i) -> i32 {
   let c = fetchNativeCore(p);
   let id = i32(c.x & 255u);
+  if (id == E_EMPTY) { return E_EMPTY; }   // (air, most probes: no table lookup)
   let k = KIND(id);
   if (k == K_EMPTY) { return E_EMPTY; }
   if (k == K_LIQUID && ${format === 3 ? '(c.y & 0xffffffu) == 0u' : '(c.y & 0xffffffu) < 65536u && (c.y & 0xffffffu) <= (seed3(cellOf(slotOf(p)), 0u, 4243u) >> 16u)'}) { return E_EMPTY; }
