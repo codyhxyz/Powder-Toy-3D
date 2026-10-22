@@ -358,7 +358,8 @@ test('a run falls on V1\'s fall: it arrives in the tick V1\'s cell does, at V1\'
     for (;;) {
       w.step(); tick++;
       const c = w.cores[w.at(1, 1, 1)];
-      if (L.cid(c) === E.WATER) break;
+      // (it lands, or its landing splashes it aside at once: V1's move.js land, columns.js colSplash)
+      if (L.cid(c) === E.WATER || w.parts.length) break;
       let y = 1; while (L.cid(w.cores[w.at(1, y, 1)]) !== E.WATER) y++;
       before = lane(w.cores[w.at(1, y, 1)]) / COLUMN.STEPS;
       assert.ok(tick < 100, `${fall} cells: no landing`);

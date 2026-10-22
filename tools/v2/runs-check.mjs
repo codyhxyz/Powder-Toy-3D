@@ -133,3 +133,22 @@ test('TH-10, the liquid half: a liquid\'s landing makes no heat, as V1\'s (move.
   assert.equal(w.totals().energy, e0);
   for (let i = 0; i < w.n; i++) if (L.cid(w.cores[i]) === E.WATER) assert.ok(Math.abs(L.cTq(w.cores[i]) * 0.25 - 273.25 - 20) < 0.5, 'still 20 °C');
 });
+
+test('BL-8: a heavy liquid landing hard breaks the solid it lands on, as V1\'s (½·ρ·u² past its hard), its debris warmed', () => {
+  // V1 react.js (a landing included: common.js impactActs): mercury breaks glass (hard 8) from a few cells, water
+  // never (½·10·V_MAX² = 5) but a lamp (3) from far enough; the debris takes KE_TO_HEAT·hard of heat
+  const drop = (liquid, solid, fall) => {
+    const w = new ColumnGrid(8, 32, 8);
+    block(w, solid, [2, 0, 2], [5, 0, 5]);
+    block(w, liquid, [3, 1 + fall, 3], [4, 1 + fall, 4]);
+    run(w, 60);
+    let broke = 0; for (let z = 3; z <= 4; z++) for (let x = 3; x <= 4; x++) if (L.cid(w.cores[w.at(x, 0, z)]) !== solid) broke++;
+    return { broke, heat: w.sources ?? 0n };
+  };
+  const hard = drop(E.MERCURY, E.GLASS, 12);
+  assert.equal(hard.broke, 4, 'mercury from 12 cells breaks the glass under it');
+  assert.ok(hard.heat === 4n * BigInt(Math.round(ELEMENTS[E.GLASS].hard * PHYS.KE_TO_HEAT * 256)) * 65536n, 'each piece KE_TO_HEAT·hard warmer, declared');
+  assert.equal(drop(E.MERCURY, E.GLASS, 1).broke, 0, 'mercury set down a cell over it does not');
+  assert.equal(drop(E.WATER, E.GLASS, 24).broke, 0, 'water never breaks glass');
+  assert.equal(drop(E.WATER, E.LAMP, 24).broke, 4, 'water from far breaks a lamp');
+});

@@ -5,7 +5,9 @@
 // division in them); the codec helpers they call (records, lanes, the moved cores, foam, atomics) are JS
 // twins of the bit layouts they name. f32 expressions run in f64 (integer custody does not depend on it).
 // No GPU, browser or World variant of the application.
-import { columnWaterWGSL, pairOrder, COLUMN, RADIAL, COLUMN_FLOW } from '../../src/shaders/v2/columns.js';
+import { columnWaterWGSL, pairOrder, COLUMN, RADIAL, COLUMN_FLOW, COLUMN_BREAKS } from '../../src/shaders/v2/columns.js';
+import { setFall } from '../../src/v2/fall.js';
+import { PHYS } from '../../src/physics.js';
 import { ELEMENTS, E, K } from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
 import { v2Rows, SUMMARY } from '../../src/shaders/v2.js';
@@ -153,6 +155,17 @@ export class ColumnGrid {
       isOpenC: c => { const k = CLS[L.cid(c)]; return k === C.AIR || k === C.LIQUID; },
       materialAmount: c => (L.cid(c) === 0 ? 0 : L.isLiquid(L.cid(c)) ? L.cFill(c) : L.FULL),
       // V1's flow caps (columns.js COLUMN_FLOW) and the paint mix of a receiver (columns.js colPaintMix, RGBA8 unorm)
+      // columns.js colBreak: a breakable solid hit past its hard becomes its debris, KE_TO_HEAT·hard warmer
+      colBreak: (x, y, z, dens, u) => {
+        const s = slotOf([x, y, z]), before = g.material(s), j = L.cid(before.core), r = COLUMN_BREAKS.find(b => b.id === j);
+        if (!r || 0.5 * dens * u * u < r.hard || (g.events[s] & 1)) return;
+        let core = new Uint32Array(before.core); core[0] = ((core[0] & 0xffffff00) | r.into) >>> 0;
+        if (CLS[r.into] === C.POWDER) core = setFall(core, 0, 0);
+        const warm = L.energyOf(before) + BigInt(Math.round(r.hard * PHYS.KE_TO_HEAT * 256)) * 65536n, next = { core, bank: before.bank };
+        if (!L.energyFits(next, warm)) return;
+        const out = L.withEnergy(next, warm);
+        g.cores[s] = new Uint32Array(out.core); g.banks[s] = out.bank; g.touch(s); g.markAt(x, y, z); g.sources = (g.sources ?? 0n) + (warm - L.energyOf(before));
+      },
       colFlowCap: id => COLUMN_FLOW[id].q, colFlowSpeed: id => COLUMN_FLOW[id].ms, colV1Keep: id => COLUMN_FLOW[id].keep,
       colPaintMix: (d, s, fd, n) => {
         if (fd === 0 || d === s) return s >>> 0;

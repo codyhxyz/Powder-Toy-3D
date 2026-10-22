@@ -156,6 +156,11 @@ export const COLUMN_FLOW = Object.freeze(ELEMENTS.map(e => {
     keep: e.kind === K.LIQUID ? Math.fround(1 - (e.drag ?? 0)) : 1 };
 }));
 
+// V1's landing break (react.js: a projectile breaks a breakable solid it hits with ½·ρ·u² of at least its hard, a
+// landing included: move.js vertical leaves it unlanded for the react pass to see, common.js impactActs; BL-8): the
+// solids a landing can break, their debris and hardness (V1's units: density, cells/step)
+export const COLUMN_BREAKS = Object.freeze(ELEMENTS.filter(e => e.breakInto && E[e.breakInto] !== undefined).map(e => ({ id: e.id, into: E[e.breakInto], hard: e.hard })));
+
 // record flags, in the mass word (a run's mass stays under 2^30: 16 383 cells of FULL, or 1 023 of MAX_FILL)
 const REC_FALLING = 0x80000000, REC_LAST = 0x40000000, REC_MASS = 0x3fffffff;
 const f = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
@@ -421,6 +426,10 @@ fn colShockLand(x: i32, z: i32, b: i32, h: f32, n: i32, u1: f32) {
     if (on > 0 && n == 1 && colShockOnPhased(id, charge)) { off = u1 >= colShockOnSpeed(id, charge); }
     if (off) { colDetonate(x, b - 1, z); }
   }
+  // V1's hit at its landing (dynamics-reference.js v1LandingHit: the larger of its arrival speed and the next step's)
+  let hit = max(u1, min(COL_V_MAX, (u1 + colStepGravity()) * colV1Keep(id)));
+  // a breakable solid under it breaks, unless it is a charge it set off (V1: a charge goes off rather than break)
+  if (b > 0 && !colPending(x, b - 1, z)) { colBreak(x, b - 1, z, densOfE(id), hit); }
   let shock = colShockSpeed2(id);
   if (shock <= 0.0) { return; }
   var share = 0.0;
@@ -438,6 +447,24 @@ fn colShockLand(x: i32, z: i32, b: i32, h: f32, n: i32, u1: f32) {
   if (share * u * u >= shock) { colDetonate(x, b, z); }
 }
 fn colDampTick(liq: u32) -> f32 { let keep = 1.0 - dampOf(liq); return 1.0 - keep * keep * keep; }
+// A breakable solid (COLUMN_BREAKS) at (x, y, z) hit by a liquid of density dens at u cells/step breaks into its
+// debris when ½·dens·u² reaches its hard (V1's), the fracture work KE_TO_HEAT·hard its heat, a declared source (as
+// a packet's fracture: particles.js impact)
+fn colBreak(x: i32, y: i32, z: i32, dens: f32, u: f32) {
+  let p = vec3i(x, y, z); let s = slotOf(p); let before = loadMaterial(s); let j = cid(before.core);
+  var into = -1; var hard = 0.0;
+${COLUMN_BREAKS.map(r => `  if (j == ${r.id}u) { into = ${r.into}; hard = ${f(r.hard)}; }`).join('\n')}
+  if (into < 0 || 0.5 * dens * u * u < hard || (events[s] & 1u) != 0u) { return; }
+  var after = before;
+  after.core.x = (before.core.x & 0xffffff00u) | u32(into);
+  if (clsOf(after.core) == C_POWDER) { after.core = setFall(after.core, 0.0, 0.0); }
+  let warm = energyAdd(energyOf(before), energyMul(u32(round(hard * ${f(PHYS.KE_TO_HEAT)} * 256.0)), 65536u));
+  if (!energyFits(after, warm)) { return; }
+  after = withEnergy(after, warm);
+  noteEnergySource(p, energySub(warm, energyOf(before)));
+  storeMaterial(s, before, after);
+  markBusy(p);
+}
 // V1's flow caps of a liquid (COLUMN_FLOW): a face's flux (quanta a tick per cell of wet face), a jet's speed (m/s)
 fn colFlowCap(liq: u32) -> f32 { return COL_FLOW_Q[liq]; }
 fn colFlowSpeed(liq: u32) -> f32 { return COL_FLOW_MS[liq]; }
