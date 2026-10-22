@@ -64,10 +64,17 @@ export const dynamicsRows = ELEMENTS.map(e => ({
  * the particle lane's own step (particles.js integrate: implicit quadratic drag toward the element's
  * terminal speed, then the tick's gravity), stepped as V1's fallKE steps V1's (elements.js fallKE).
  */
+// A packet's tick along the pull in still air (particles.js integrate): the tick's gravity, then implicit quadratic
+// drag whose fixed point is the element's terminal speed; the velocity goes linearly from v to the result across
+// the tick. Returns its speed after (m/s, downward) and the metres it fell.
+export function packetStep(id, v, gravity = GRAVITY) {
+  const vt = dynamicsRows[id].terminal, drag = GRAVITY / (vt * (vt + GRAVITY * DT)), rel = v + gravity * DT;
+  const after = rel / (1 + drag * Math.abs(rel) * DT);
+  return { v: after, fell: 0.5 * (v + after) * DT };
+}
 export function particleFallSpeed(id, h) {
-  const drag = GRAVITY / dynamicsRows[id].terminal ** 2;
   let v = 0, y = 0;
-  while (y < h) { v = v / (1 + drag * v * DT); y += v * DT + 0.5 * GRAVITY * DT * DT; v += GRAVITY * DT; }
+  while (y < h) { const s = packetStep(id, v); y += s.fell; v = s.v; }
   return v;
 }
 // V1's shock (elements.js blast.shock: react.js sets an explosive off under a hit of at least that
@@ -250,18 +257,16 @@ export const SHOCK_LANDINGS = Object.freeze(ELEMENTS.filter(k => k.blast?.shock)
  * both laws (V1's and this), so these speeds hold at any gravity.
  */
 export function particleLandingSpeed(id, h) {
-  const drag = GRAVITY / dynamicsRows[id].terminal ** 2;
   let v = 0, y = 0;
   for (;;) {
-    v = v / (1 + drag * v * DT);
-    const step = v * DT + 0.5 * GRAVITY * DT * DT;
-    if (y + step >= h) {
-      // the share of the tick at which it has fallen h: y + v·DT·s + ½·g·DT²·s² = h
-      const a = 0.5 * GRAVITY * DT * DT, b = v * DT, c = y - h;
-      const share = (-b + Math.sqrt(b * b - 4 * a * c)) / (2 * a);
-      return v + GRAVITY * DT * share;
+    const s = packetStep(id, v), a = (s.v - v) / DT;
+    if (y + s.fell >= h) {
+      // the share of the tick at which it has fallen h: y + v·DT·s + ½·a·DT²·s² = h (a the tick's own change)
+      const qa = 0.5 * a * DT * DT, b = v * DT, c = y - h;
+      const share = Math.abs(qa) < 1e-12 ? -c / b : (-b + Math.sqrt(b * b - 4 * qa * c)) / (2 * qa);
+      return v + a * DT * share;
     }
-    y += step; v += GRAVITY * DT;
+    y += s.fell; v = s.v;
   }
 }
 // PACKET_SHOCK_SLACK: the GPU's f32 sums of a fall's ticks may land a quantum under the f64 law's speed.

@@ -30,7 +30,7 @@ test('each charge\'s shock, in V1\'s units on a packet\'s hit, its fall re-deriv
   assert.ok(ke(9) >= nitroE.blast.shock && ke(8) < nitroE.blast.shock);
   assert.ok(h1 * CELL_M < NITRO_FALL_M, `V1's own fall ${(h1 * CELL_M).toFixed(2)} m`);
   const v = particleLandingSpeed(E.NITRO, h1 * CELL_M), free = Math.sqrt(2 * GRAVITY * h1 * CELL_M);
-  assert.ok(v < free * 1.03 && v > free * 0.9, `a ${(h1 * CELL_M).toFixed(2)} m fall lands at ${v.toFixed(2)} m/s (free fall ${free.toFixed(2)})`);
+  assert.ok(v < free * 1.03 && v > free * 0.85, `a ${(h1 * CELL_M).toFixed(2)} m fall lands at ${v.toFixed(2)} m/s (free fall ${free.toFixed(2)})`);
   // its landing maps that speed onto the V1 speed that carries its shock on a solid (½·dens·v² = shock)
   assert.ok(Math.abs(0.5 * ELEMENTS[E.NITRO].dens * (v * dynamicsRows[E.NITRO].shockFall) ** 2 - ELEMENTS[E.NITRO].blast.shock) < 1e-9);
   // poured gently it is safe: a 1 m or 2.4 m (8 cells) fall onto metal is not, a 3.0 m (10 cells) or 6 m one is

@@ -407,10 +407,15 @@ export function particlesWGSL(g, nativeHead, stage) {
     } else {
       let wind = select(vec3f(0),air[brickOfCell(startCell)].vp.xyz,mAirVelocity());
       if (cls(id) == 4u || atomicLoad(&control[D_HELD+t])!=0u) { acceleration = vec3f(0); }
-      let relative = v - wind;
-      // Implicit quadratic drag is stable at any speed; it is NOT a displacement cap.
-      let drag = D_G / (dTerminal(id) * dTerminal(id));
-      v = wind + relative / (1.0 + drag * length(relative) * D_DT);
+      // The tick's pull, then implicit quadratic drag (V1's order, react.js forces: gravity, then drag), stable at
+      // any speed and NOT a displacement cap; its coefficient puts the fixed point at the element's terminal speed
+      // (dynamics-reference.js packetStep). Across the tick the velocity goes linearly from v to that (the hit's
+      // speed at its share of the tick, below), so a fall's landing speed grows with its height.
+      let relative = v + acceleration * D_DT - wind;
+      let vt = dTerminal(id);
+      let drag = D_G / (vt * (vt + D_G * D_DT));
+      let after = wind + relative / (1.0 + drag * length(relative) * D_DT);
+      acceleration = (after - v) / D_DT;
     }
     let end = local + (v * D_DT + 0.5 * acceleration * D_DT * D_DT) / D_CELL;
     particle.velocity = v + acceleration * D_DT;

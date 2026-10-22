@@ -89,7 +89,9 @@ test('the launch head is the reservoir\'s exact head; jets leave at sqrt(2gh) an
     const jet = w.parts.filter(p => p.x < 9.2).map(p => Math.hypot(p.vx, p.vz) * CELL_M);
     assert.ok(jet.length > 0);
     for (const v of jet) assert.ok(Math.abs(v / torricelli - 1) < 0.02, `launch ${v} vs ${torricelli}`);
-    const now = tankMass(w), discharge = (prev - now) / L.FULL * 2, ideal = torricelli / CELL_M;   // cells/s over 0.5 s
+    // cells/s over 0.5 s: Torricelli's, to what one explicit face carries a tick (COLUMN.Q_MAX, a cell of fill a cell
+    // of wet face): at V1's pull a 4.5 m head's jet (√(2gh) ≈ 60 m/s) is past it
+    const now = tankMass(w), discharge = (prev - now) / L.FULL * 2, ideal = Math.min(torricelli / CELL_M, COLUMN.Q_MAX / L.FULL * COLUMN.TICK_HZ);
     prev = now;
     assert.ok(discharge / ideal > 0.9 && discharge / ideal <= 1, `discharge ${discharge.toFixed(2)} vs A sqrt(2gh) ${ideal.toFixed(2)}`);
   }

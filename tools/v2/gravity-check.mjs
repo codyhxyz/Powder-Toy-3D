@@ -11,7 +11,7 @@ import { CELL_M } from '../../src/scale.js';
 import { GRAVITY_MS2, TERMINAL_MS, STEPS_PER_TICK, v1PaceRate, v1TerminalMS } from '../../src/v2/gravity.js';
 import { nativeModes, GRAVITY_MS2 as MODES_GRAVITY } from '../../src/v2/modes.js';
 import { modeWGSL } from '../../src/shaders/v2/modes.js';
-import { GRAVITY, dynamicsRows, particleFallSpeed } from '../../src/v2/dynamics-reference.js';
+import { GRAVITY, dynamicsRows, particleFallSpeed, particleLandingSpeed, packetStep } from '../../src/v2/dynamics-reference.js';
 import { FALL_GRAVITY, fallTerminal, setFall, stepFall, fallVelocity, fallFraction } from '../../src/v2/fall.js';
 import { G_MS2, fallCells } from '../../src/shaders/v2.js';
 import { COLUMN } from '../../src/shaders/v2/columns.js';
@@ -38,14 +38,18 @@ test('every V2 owner pulls with V1\'s gravity and stops at V1\'s terminal speed'
     if (e.kind === K.LIQUID) close(dynamicsRows[e.id].terminal, TERMINAL_MS, e.key);
     if (e.kind === K.POWDER) close(dynamicsRows[e.id].terminal, v1TerminalMS(e), e.key);
   }
-  // a packet falls at its terminal speed (particles.js integrate: implicit drag, then the tick's gravity, so the speed
-  // it keeps is a tick's gravity past the speed it moves at over the tick, which is V1's terminal speed)
-  for (const id of [E.SAND, E.ASH, E.WATER, E.SNOW]) {
-    const drag = GRAVITY / dynamicsRows[id].terminal ** 2, DT = 1 / 60;
-    let v = 0, moved = 0;
-    for (let t = 0; t < 600; t++) { v = v / (1 + drag * v * DT); moved = v * DT + 0.5 * GRAVITY * DT * DT; v += GRAVITY * DT; }
-    close(moved / DT, dynamicsRows[id].terminal, `${ELEMENTS[id].key} packet`, 0.05 * dynamicsRows[id].terminal);
-    close(particleFallSpeed(id, 400), v, `${ELEMENTS[id].key} packet's kept speed`, 1e-6);
+  // a packet falls to its terminal speed (particles.js integrate: the tick's gravity, then implicit drag whose fixed
+  // point is it; dynamics-reference.js packetStep, its twin), and keeps it
+  for (const id of [E.SAND, E.ASH, E.WATER, E.SNOW, E.SCRAP]) {
+    let v = 0;
+    for (let t = 0; t < 600; t++) v = packetStep(id, v).v;
+    close(v, dynamicsRows[id].terminal, `${ELEMENTS[id].key} packet`, 1e-6);
+    close(particleFallSpeed(id, 400), dynamicsRows[id].terminal, `${ELEMENTS[id].key} packet after 400 m`, 1e-3);
+  }
+  // a fall's landing speed grows with its height (the velocity changes linearly across a tick)
+  for (const id of [E.SCRAP, E.URANIUM, E.MERCURY, E.NITRO]) {
+    let last = 0;
+    for (let h = 0.05; h < 12; h += 0.05) { const u = particleLandingSpeed(id, h); assert.ok(u >= last - 1e-9, `${ELEMENTS[id].key} at ${h.toFixed(2)} m`); last = u; }
   }
 });
 function close(a, b, what, eps = 1e-6) { assert.ok(Math.abs(a - b) <= eps, `${what}: ${a} vs ${b}`); }
