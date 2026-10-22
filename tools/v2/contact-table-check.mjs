@@ -24,7 +24,7 @@ assert.equal(CONTACT_REACTIONS.length,14);
 const layout=contactTableLayout(CONTACT_ROWS.length,CONTACT_REACTIONS.length);
 // Independent prefix and stride expectations: all original EV offsets persist.
 const prefix=new Float32Array(CONTACT_ROWS.length*8);
-v2Rows().forEach((r,i)=>prefix.set([r.cls,r.drop,r.vt,r.dens,r.yieldHead,r.damp,r.fade,0],i*8));
+v2Rows().forEach((r,i)=>prefix.set([r.cls,r.drop,r.jitter,r.dens,r.yieldHead,r.damp,r.fade,r.drift],i*8));
 const memory=v2Table(), bits=new Uint32Array(memory.buffer), signed=new Int32Array(memory.buffer);
 assert.equal(layout.rowOffset,prefix.length);
 assert.equal(layout.rowStride,44);   // + blastInto, blastOf, blastQ, blastPuff (V1 blast into matter)
@@ -100,9 +100,10 @@ const entry=foundation.slice(foundation.indexOf('@compute @workgroup_size(64)'))
 assert(entry.includes('let blockCount=min(8u,arrayLength(&events));'));
 assert(entry.includes('let columnCount=blockCount/2u;'));
 // (+2: the decoration's read-all-then-write loops, v2BlockWGSL's P.deco carry)
-assert.equal((entry.match(/i\s*<\s*blockCount/g)||[]).length,7);
+assert.equal((entry.match(/i\s*<\s*blockCount/g)||[]).length,6);
 assert.equal((entry.match(/m\s*<\s*blockCount/g)||[]).length,1);
-assert.equal((entry.match(/c2?\s*<\s*columnCount/g)||[]).length,3);
+// (R2 topple and its targets, R3, R4a's diagonal escape)
+assert.equal((entry.match(/c2?\s*<\s*columnCount/g)||[]).length,4);
 assert(!/for[^{]*<\s*[48]u/.test(entry),'no fixed wrapper bounds expand thermal calls');
 // (+1, 2026-10-20: group 1's flow field, where topples record their jump: v2/flow.js)
 assert.equal((foundation.match(/var<storage,/g)||[]).length,8,'actual foundation+contact storage binding count');

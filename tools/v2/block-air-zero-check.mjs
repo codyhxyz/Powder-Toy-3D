@@ -21,7 +21,7 @@ const branch=shader.slice(start,end), ambientExpression='u32(clamp(round((P.ambi
 assert.equal(shader.split(ambientExpression).length-1,2,'predicate and boundary use identical WGSL ambient encoding');
 assert(branch.includes('blockCount == 8u'));
 assert(branch.includes('k < blockCount'),'runtime bound checks exactly eight cells on any eligible block');
-for(const work of ['// R2 topple','// R3 sink','// R4 gas','contactBlock(&cs','contactBoundary(Material(cs','storeMaterial(slot, Material(orig']) {
+for(const work of ['// R2 topple','// R3: V1','// R4b','contactBlock(&cs','contactBoundary(Material(cs','storeMaterial(slot, Material(orig']) {
   assert(shader.indexOf(work,end)>shader.indexOf('if (zeroWork) { return; }',start),work);
 }
 // Compile the actual production predicate, changing syntax only. No second predicate.
@@ -121,9 +121,11 @@ console.log('Negative domain: each slot/bank/core bit/request bit/invalid positi
 // Source-checked mechanical equivalence: no powder, no density difference, no
 // GAS. Hence no motion, pending swaps, gas age, RNG or activity on this domain.
 assert(shader.includes('if (clsOf(gr) != C_POWDER) { continue; }'));
-assert(shader.includes('if (dU <= dL) { continue; }'));
-assert(shader.includes('if (!young) { continue; }'));
-assert(shader.includes('if (clsOf(cs[i]) == C_GAS && cAge(cs[i]) < DIFFUSE_AGE)'));
+// (uniform air at the ambient: no drift (v1Drift's lift is 0 there), no density step, no jitter between one id)
+assert(shader.includes('if (chance <= 0.0) { continue; }'));
+assert(shader.includes("if ((k0 != C_GAS && k0 != C_AIR) || (k1 != C_GAS && k1 != C_AIR) || cid(a0) == cid(a1)) { continue; }"));
+assert(shader.includes('if (clsOf(gs) != C_GAS || fromCell[c] != c || !inGrid(positions[c])) { continue; }'));
+assert(!shader.includes('cAge(cs[i]) <'), 'no gas ageing: V1 jitters gases without end');
 for(const q of [0,1,1173,41093]) assert.equal(C.ctDensity(C.unpackContact(air(q)[0])),C.ctDensity(C.unpackContact(air(q)[7])));
 assert(materialStorageWGSL.includes('noteVisible(cellOf(slot), before.core, after.core);'));
 assert(materialStorageWGSL.includes('if (any(before.core != after.core) || before.bank != after.bank) { noteState(slot); }'));

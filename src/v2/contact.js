@@ -1083,9 +1083,19 @@ export function packContact(c, original = new Uint32Array(4)) {
   return { core, bank: c.bank };
 }
 export const materialEnergy = (core, bank = 0) => ctEnergy(unpackContact(core, bank));
-export function contactDensity(id, temperatureQ) {
-  const e = ELEMENTS[id];
-  return e.kind === K.GAS || e.kind === K.EMPTY ? e.dens * (e.temp + 273.25) / Math.max(1, temperatureQ / 4) : e.dens;
+// The motion's density (shaders/v2/contact.js contactDensity; the block pass's motionDensity): V1 common.js
+// densityOf, f32 op for op. Air thins as it warms against the scene's ambient (airDensity), a gas as air does from
+// its spawn temperature; `ambient` is P.ambient (°C).
+const f32 = Math.fround;
+export function contactAirDensity(t, ambient = PHYS.AMBIENT) {
+  return f32(1 - Math.min(f32(PHYS.AIR_DENS_HI), Math.max(f32(PHYS.AIR_DENS_LO), f32(f32(t - ambient) / PHYS.AIR_DENS_SPAN))));
+}
+export function contactDensity(id, temperatureQ, ambient = PHYS.AMBIENT) {
+  const e = ELEMENTS[id], row = CONTACT_ROWS[id];
+  const air = contactAirDensity(f32(f32(temperatureQ * 0.25) - 273.25), ambient);
+  if (e.kind === K.EMPTY) return air;
+  if (e.kind === K.GAS) return f32(f32(f32(row.density) * air) / contactAirDensity(f32(f32(row.spawnQ * 0.25) - 273.25), ambient));
+  return f32(row.density);
 }
 
 export const ctPairValue = (a, b, changed) => ({ a, b, changed });
