@@ -343,7 +343,9 @@ export class Simulation {
     const dbg = { debug: this.debug };
     const kernel = (name, code, layouts, params, extra = {}) => gpu.kernel({ name, code, layouts: [this.L.TABLES, ...layouts], params, ...extra });
     const build = (name, frag, extra = {}) => kernel(name, frag(g), [L.STATE_BUILD, L.BUILD], BuildParams, extra);
-    const legacy = nativeStartup ? { build: 'manual' } : {};
+    // A big map's window (windowed) builds its step kernels behind every build asked for now
+    // (gpu/kernels.js BUILD_RANK 'later'): its World load and first frame don't step (app.js tick).
+    const legacy = nativeStartup ? { build: 'manual' } : windowed ? { build: 'later' } : {};
     this._legacyDeferred = nativeStartup;
     this.kernels = {
       move: kernel('move', moveBlockFrag(g, { form, ...dbg }), [L.STATE_RW, L.MOVE], MoveParams, legacy),
