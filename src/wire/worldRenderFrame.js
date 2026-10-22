@@ -260,7 +260,9 @@ export async function finishWorldFrame(app, state, recorded, eyeFeedback) {
   try {
     const words=await recorded.read, count=native.feedback.size/4;
     if(state.dead || retiredStill()) {app.post.discardScene(sceneTicket);return {accepted:false,feedback:{incomplete:false,requirements:[],sun:[]},restage:true};}
-    const feedback=mergeWorldFrameFeedback(eyeFeedback,native.decodeFeedback(words.subarray(0,count)));
+    const merged=mergeWorldFrameFeedback(eyeFeedback,native.decodeFeedback(words.subarray(0,count)));
+    // (budget-dropped misses are settled before the signs' own readiness: worldRender.js settle)
+    const feedback={...(state.data.settle?.(merged)??merged)};
     const signs=signRequest ? new Float32Array(words.slice(count).buffer).slice(0,signRequest.count*8) : null;
     if(signs)for(let i=0;i<signRequest.count;i++)if(signs[i*8+4]!==1)feedback.incomplete=true;
     if(!complete(feedback)) {app.post.discardScene(sceneTicket);return {accepted:false,feedback};}
@@ -442,6 +444,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
         if(dead || failure || pending!==p)return;
         p.eye=await probe(app,state,data,p.view);
         if(dead || failure || pending!==p)return;
+        p.eye={...p.eye,feedback:state.data.settle?.(p.eye.feedback)??p.eye.feedback};   // (budget-dropped misses: worldRender.js settle)
         if(!complete(p.eye.feedback)){data=await extend(p,p.eye.feedback);continue;}
       }
       await p.preparing;return;

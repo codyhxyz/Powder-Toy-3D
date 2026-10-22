@@ -136,6 +136,15 @@ export async function worldClassify(gpu,cells,atlas,ids,{fieldTick,smoothing=1},
   }
   return stale.length;
 }
+// A frame's feedback whose only misses are budget-dropped bricks (and Sun tiles it
+// already has), settled as complete; any other feedback unchanged (owner.settle).
+export function worldSettleFeedback(feedback,{dropped,sunTiles,index}) {
+  const req=feedback?.requirements??[],sun=feedback?.sun??[];
+  if(!feedback||feedback.incomplete===false||!dropped?.size||!(req.length||sun.length))return feedback;
+  for(const r of req)if(!dropped.has(index(r)))return feedback;
+  for(const i of sun)if(!sunTiles.has(i))return feedback;
+  return Object.freeze({...feedback,incomplete:false,requirements:Object.freeze([]),sun:Object.freeze([])});
+}
 export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,producer=win.sourceProducer,tables=win.sim.tables,tableBuffer=gpu._simTables?.buffer,wake=()=>{},giSlabJobs=WORLD_GI_SLAB_JOBS}={}) {
   if(win.render)throw new Error('WORLD data owner already installed');
   if(!source||!producer||source.win!==win||source.gpu!==gpu)throw new TypeError('actual WORLD Source/Producer required');
@@ -547,6 +556,12 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     request(frame,requirements=[]){live();const f=captureFrame(frame);if(active){if(queued){releaseFrame(queued.frame);queued.resolve(null);}return new Promise((resolve,reject)=>{queued={frame:f,requirements:frozen(requirements),resolve,reject};});}try{return start(f,requirements);}catch(e){releaseFrame(f);throw e;}},
     probe(){live();return active?.state==='probe-ready'?active.bundle.retain():null;},
     current(){live();return accepted?.bundle.retain()??null;},
+    // A frame whose only misses are bricks the GPU page budget dropped (they read
+    // as air in the view) is as complete as the budget allows: settled, it is
+    // accepted instead of extend() refusing it for making no progress (Descent,
+    // real Chrome 2026-10-22: "WORLD scene feedback made no dependency progress"
+    // every frame once over budget). Any other miss, or a new Sun tile, stays.
+    settle(feedback){const t=active;return t?worldSettleFeedback(feedback,{dropped:t.dropped,sunTiles:t.sunTiles,index:r=>index(r.brick??brick(r.index))}):feedback;},
     async extend(candidate,feedback){live();const t=active;if(!t||t.state!=='probe-ready'||candidate.identity!==t.bundle.identity)throw new Error('foreign/out-of-order WORLD feedback');if(complete(feedback))return t.bundle.retain();if(!add(t,feedback.requirements,feedback.sun,false,false,true))throw new Error('WORLD scene feedback made no dependency progress');t.state='building';t.work=runRetry(t);t.work.catch(()=>{});return t.work;},
     async accept(candidate,{feedback,feedbackIdentity,postTicket}={}){live();const t=active;if(!t||t.state!=='probe-ready'||candidate.identity!==t.bundle.identity||!complete(feedback)||!postTicket?.confirmation||postTicket.publication?.identity!==candidate.identity||feedbackIdentity==null||postTicket.feedbackIdentity!==feedbackIdentity||['epoch','sceneToken','configVersion'].some(k=>postTicket.identity?.[k]!==candidate.identity[k]))throw new Error('exact complete scene/native feedback and final Post ticket required');t.state='accepting';const confirmed=await postTicket.confirmation;if(active!==t||dead)return false;if(confirmed!==true||postTicket.status!=='committed'){t.state='probe-ready';wake();return false;}if(candidate.identity!==t.bundle.identity)throw new Error('WORLD publication changed during final Post');
       t.plan.seal({cutToken:t.cut.contentToken,feedback});t.plan.commit();t.plan=null;metadataChanges(t);

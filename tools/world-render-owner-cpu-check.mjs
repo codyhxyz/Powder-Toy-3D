@@ -509,3 +509,15 @@ test('SOURCE jobs are only bricks within a gather\'s reach: a far brick the view
   assert(f.owner.atlas.lookup(far,READY.CELL).known,'the far brick is still loaded for the view');
   await settle(f.gpu,f.owner.discard(c));c.release();await f.close();
 });
+
+// Over the GPU page budget the view reads dropped bricks as air; a frame whose only misses are
+// such bricks is settled as complete instead of extend() refusing it every frame (Descent,
+// real Chrome 2026-10-22: "WORLD scene feedback made no dependency progress").
+test('feedback missing only budget-dropped bricks settles as complete; any other miss stays',async()=>{
+  const {worldSettleFeedback}=await import('../src/wire/worldRender.js');
+  const dropped=new Set([5,9]),sunTiles=new Set([2]),index=r=>r.index,miss=(req,sun=[])=>({incomplete:true,requirements:req.map(i=>({index:i,channels:1})),sun});
+  const settled=worldSettleFeedback(miss([5,9],[2]),{dropped,sunTiles,index});
+  assert.equal(settled.incomplete,false);assert.deepEqual([...settled.requirements],[]);assert.deepEqual([...settled.sun],[]);
+  for(const f of [miss([5,7]),miss([5],[3]),miss([]),{incomplete:false,requirements:[],sun:[]}])assert.equal(worldSettleFeedback(f,{dropped,sunTiles,index}),f);
+  assert.equal(worldSettleFeedback(miss([5]),{dropped:new Set(),sunTiles,index}).incomplete,true,'nothing dropped: nothing settles');
+});
