@@ -180,7 +180,7 @@ async function rest(page) {
     await a.gpu.fence();
     const asleep = a.loop.asleep && v2.asleep, tick0 = v2.tick, s0 = a.gpu.stats.submits;
     await sleep(1000);
-    const out = { ticks, quiet, certified: v2.certified, asleep: asleep && a.loop.asleep && v2.asleep, waited: (performance.now() - t0) / 1000 - 1, run: v2.tick - tick0, submits: a.gpu.stats.submits - s0, why: { loop: a.loop.asleep, v2: v2.asleep, adapting: a.post.adapting, busy: a.loop.busy, rays: { active: a.sim.rays.active, holds: a.sim.rays.holds, live: a.sim.rays.live, seen: a.sim.rays.seen }, foam: a.sim.aeration?.bursting } };
+    const out = { ticks, quiet, certified: v2.certified, asleep: asleep && a.loop.asleep && v2.asleep, waited: (performance.now() - t0) / 1000 - 1, run: v2.tick - tick0, submits: a.gpu.stats.submits - s0, why: { loop: a.loop.asleep, v2: v2.asleep, adapting: a.post.adapting, busy: a.loop.busy, rays: a.sim.rays ? { active: a.sim.rays.active, holds: a.sim.rays.holds, live: a.sim.rays.live, seen: a.sim.rays.seen } : null, foam: a.sim.aeration?.bursting } };
     a.test.park();
     a.settings.paused = true;
     return out;
