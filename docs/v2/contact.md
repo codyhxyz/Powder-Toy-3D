@@ -83,7 +83,10 @@ Out-of-grid faces retain `cellAt`'s WALL sentinel even at open outflow edges.
 
 One proven zero-work domain lets R5 return before motion/contact: all eight
 resolved positions are in-grid, all cores are exactly `vec4u(rawTq << 8, 0, 0, 0)`
-with the same normal `rawTq <= 41093`, and every bank and pending request is zero.
+with the same normal `rawTq <= 41093`, every bank and pending request is zero, and no
+cell's outside word holds a moss site on its own (V1's moss creeps into air from damp
+moss and a bed on faces of different axes: `ctOutsideMossSite`, read through each
+kernel's `ctOutsideAt`).
 This excludes opaque history, high flags, life, velocity, latent codes and heat
 gradients; it is **not** a generic all-AIR skip. Open edges with ambient heat also
 require equality with the boundary wrapper's identical f32 round/clamp ambient
