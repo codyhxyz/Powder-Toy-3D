@@ -15,8 +15,9 @@ import { Stamper } from '../../src/world/gpu.js';
 import { cellSlot, slotCell, marksLayout } from '../../src/shaders/common.js';
 import { cellOf, Load, createTransfer } from '../../src/pov/tools/transfer.js';
 import { decodeNativeTransfer, nativeCargo, NativeTransfer } from '../../src/v2/transfer.js';
-import { applyGuestStroke, applyGuestStrokes } from '../../src/net/edits.js';
-import { createPacker, createUnpacker, encodeFrame, decodeFrame, FRAME_KEY } from '../../src/net/codec.js';
+import { applyGuestStroke, applyGuestStrokes, GUEST_STROKE_HOLD_MS } from '../../src/net/edits.js';
+import { createPacker, createUnpacker, encodeFrame, decodeFrame, nativeSection, FRAME_NATIVE_KEY, NATIVE_RECORD_WORDS, NATIVE_PARTICLE_WORDS } from '../../src/net/codec.js';
+import { nativeHostSteps as hostSteps } from '../../src/v2/host.js';
 import { E, K, TOOLS, ELEMENTS } from '../../src/elements.js';
 import { readFileSync } from 'node:fs';
 import { physicsEngine } from '../../src/launch.js';
@@ -28,6 +29,16 @@ const words = b => new Uint32Array(b.data.buffer);
 const inside = p => p.every((v, i) => v >= 0 && v < [g.nx, g.ny, g.nz][i]);
 const slot = p => cellSlot(g, ...p);
 function referenceDispatch(name, opts) {
+  // Independent CPU specification of a guest's exact native records (net/codec.js nativeRecordsFrag):
+  // each record's core and bank land at its slot, bit for bit.
+  if (name === 'nativeRecords') {
+    const [core, bank] = opts.bind[1].entries.map(e => e.resource.buffer).map(words), rec = words(opts.bind[2].entries[0].resource.buffer);
+    for (let i = 0; i < opts.params.count; i++) {
+      const o = i * 6, s = rec[o];
+      if (s < g.slots) { core.set(rec.subarray(o + 1, o + 5), s * 4); bank[s] = rec[o + 5]; }
+    }
+    return;
+  }
   if (name === 'nativeTransfer') {
     const [core, bank, result, items] = opts.bind[2].entries.map(e => e.resource.buffer).map(words), p = opts.params;
     const f = new Float32Array(result.buffer), candidates = [];
@@ -279,29 +290,81 @@ assert.equal(sim.wholeWrites, fullBefore);
   assert.equal(queue.length, 0, 'the frame takes its strokes off the queue');
   assert.equal(edits.length, painted + 1, 'the next guest stroke still paints');
 }
-// A stroke that throws on the host (e.g. a load mid-shift) drops that dab only: the queue
-// empties and the next stroke paints, where the throw used to escape the host's frame every frame.
+// A stroke the host can't take yet (a kernel it needs still building throws, or its run refuses) waits
+// for it (C10): the next stroke still paints, the held one goes back on the queue and paints on a later
+// frame. One still refused after GUEST_STROKE_HOLD_MS is that guest's lost dab, counted, never thrown.
 {
   const paint = sim.paint, warn = console.warn;
-  let first = true;
-  sim.paint = function (stroke) { if (first) { first = false; throw new Error('refused'); } return paint.call(this, stroke); };
+  let building = 1;
+  sim.paint = function (stroke) { if (building-- > 0) throw new Error('nativePaint used before its pipeline was ready (await .ready first)'); return paint.call(this, stroke); };
   console.warn = () => {};
   const queue = [{ c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }, { c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }];
   const painted = edits.length;
-  try { assert.equal(applyGuestStrokes(sim, queue), 1, 'the refused stroke is counted, not thrown'); }
-  finally { sim.paint = paint; console.warn = warn; }
-  assert.equal(queue.length, 0, 'the frame takes its strokes off the queue');
-  assert.equal(edits.length, painted + 1, 'the next guest stroke still paints');
+  try {
+    assert.equal(applyGuestStrokes(sim, queue, { now: 1000 }), 0, 'a stroke the host cannot take yet is held, not refused');
+    assert.equal(queue.length, 1, 'the held stroke goes back on the queue');
+    assert.equal(edits.length, painted + 1, 'the next guest stroke still paints');
+    assert.equal(applyGuestStrokes(sim, queue, { now: 1016 }), 0);
+    assert.equal(queue.length, 0, 'once its kernel is built the held stroke paints');
+    assert.equal(edits.length, painted + 2, 'the guest\'s first dab is not lost');
+    building = Infinity;
+    queue.push({ c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 });
+    assert.equal(applyGuestStrokes(sim, queue, { now: 2000 }), 0);
+    assert.equal(applyGuestStrokes(sim, queue, { now: 2000 + GUEST_STROKE_HOLD_MS }), 1, 'a stroke refused past its hold is dropped and counted');
+    assert.equal(queue.length, 0);
+  } finally { sim.paint = paint; console.warn = warn; }
 }
 owner.sync(); assert.equal(calls.at(-1).name, 'v2import'); assert.equal(calls.at(-1).opts.params.full, 0);
 const packer = createPacker(); const packet = await packer.pack(sim);
-assert.equal(calls.findLast(c => c.name === 'pack').opts.header.format, 2, 'actual host codec uses direct compact projection');
-const frame = await encodeFrame(FRAME_KEY, 9, packet.dims, packet.bytes), decoded = await decodeFrame(frame);
-assert.equal(decoded.kind, FRAME_KEY); assert.deepEqual(decoded.body, packet.bytes); packet.release();
-const unpacker = createUnpacker(); const tickBeforeGuest = owner.tick;
-await unpacker.unpack(sim, decoded.body);
-assert.equal(sim.compact, null, 'render-only unpack suspends a retained native owner');
+assert.equal(calls.findLast(c => c.name === 'packNative').opts.header.format, 2, 'actual host codec uses direct compact projection');
+assert.equal(packer.native(sim), true, 'a V2 host streams native frames');
+assert.ok(packet.native?.records instanceof Uint32Array && packet.native.particles.length === 0, 'its capture lists the native records (an idle pool: no flying matter)');
+// The guest's frame: the host's texels, plus one exact record (a half-full water cell, foam, flux and a bank)
+// and a flying sand packet.
+const exact = [cellSlot(g, 5, 6, 7), E.WATER | (1200 << 8) | (17 << 24), 32768, 0x3c003c00, 0x3c00, (-12345) >>> 0];
+const sand = new Uint32Array(NATIVE_PARTICLE_WORDS); sand[0] = 42; sand[4] = 7;   // pool slot 42, id 7
+new Float32Array(sand.buffer).set([3.5, 9.25, 4.5], 1); new Float32Array(sand.buffer).set([0, -2, 0], 5); sand[8] = E.SAND | (1173 << 8);
+const section = { records: new Uint32Array(exact), particles: sand };
+const frame = await encodeFrame(FRAME_NATIVE_KEY, 9, packet.dims, packet.bytes, null, nativeSection(section)), decoded = await decodeFrame(frame);
+assert.equal(decoded.kind, FRAME_NATIVE_KEY); assert.deepEqual(decoded.body, packet.bytes); packet.release();
+assert.deepEqual([...decoded.native.records], exact, 'the native section round-trips'); assert.deepEqual([...decoded.native.particles], [...sand]);
+// The guest's pool (its owner's dynamics while it presents the box: wire/rays.js draws it)
+const pool = { isReady: true, isIdle: true, disposed: false, particles: buffer({ size: 64 * 48 }), control: buffer({ size: 64 }), flight: buffer({ size: 64 * 32 }),
+  renderState: { capacity: 64 } };
+const hostDynamics = owner.dynamics; owner.dynamics = Object.assign(Object.create(hostDynamics), pool);
+words(pool.particles)[5 * 12 + 3] = 99;   // (a packet the guest's own physics left in flight before it joined)
+const unpacker = createUnpacker(); const tickBeforeGuest = owner.tick, wholeBefore = sim.wholeWrites;
+owner.importFull = true;   // (a stale V1 load the guest's owner would import over the frame: build()'s preset)
+await unpacker.unpack(sim, decoded.body, { native: decoded.native });
+assert.equal(sim.compact, owner, 'a V2 guest keeps its owner presenting: the frame is its native cells, not V1 state');
+assert.ok(calls.some(c => c.name === 'unpackNative'), 'the texels become native cores (codec.js unpackNativeFrag)');
+assert.equal(calls.findLast(c => c.name === 'nativeRecords').opts.params.count, 1);
+const guestCore = words(owner.cells).subarray(exact[0] * 4, exact[0] * 4 + 4);
+assert.deepEqual([...guestCore], exact.slice(1, 5), 'the host\'s exact cell (fill, foam, flux) is the guest\'s, bit for bit');
+assert.equal(new Int32Array(owner.aux.data.buffer)[exact[0]], -12345, '...with its bank');
+assert.equal(sim.wholeWrites, wholeBefore, 'the frame is no whole V1 write');
+assert.equal(owner.importFull || owner.importMarked, false, 'nothing of V1\'s is imported over the frame');
+assert.equal(owner.seenWhole, sim.wholeWrites); assert.equal(owner.seenVersion, sim.version);
+const busy = words(owner.act).subarray(owner.layout.busy0, owner.layout.busy0 + g.nbricks);
+assert.ok(busy.every(v => v === 1), 'every brick wakes for the first tick that runs the frame');
+assert.equal(words(pool.control)[0], 1, 'the flying sand is live in the guest\'s pool');
+assert.deepEqual([...words(pool.particles).subarray(42 * 12, 43 * 12)], [...sand.subarray(1)], '...at its host slot, record for record');
+assert.equal(owner.dynamics.isIdle, false, 'a pool in flight keeps the replica drawing it');
+assert.equal(words(pool.particles)[5 * 12 + 3], 0, 'the replica\'s pool is the host\'s alone');
+await unpacker.unpack(sim, decoded.body, { native: { records: new Uint32Array(0), particles: new Uint32Array(0) } });
+assert.equal(words(pool.control)[0], 0, 'landed matter leaves the pool'); assert.equal(owner.dynamics.isIdle, true);
+owner.dynamics.isIdle = false;
+await unpacker.unpack(sim, decoded.body, { native: null });
+assert.equal(owner.dynamics.isIdle, true, 'an empty replica pool lets the guest\'s loop rest (wire/rays.js busy)');
 assert.equal(owner.tick, tickBeforeGuest, 'guest decoder never steps');
+// C1: the session ends; the guest's own box steps on from the frame (app.js v2Replica, then v2Box).
+{
+  owner.dynamics = hostDynamics;
+  const imports = calls.filter(c => c.name === 'v2import').length, frameCells = words(owner.cells).slice();
+  assert.equal(hostSteps(owner, 1 / 60), 1, 'the ex-guest\'s owner ticks');
+  assert.equal(calls.filter(c => c.name === 'v2import').length, imports, 'its first tick imports no V1 state over the host\'s cells');
+  assert.deepEqual(words(owner.cells).subarray(exact[0] * 4, exact[0] * 4 + 4), frameCells.subarray(exact[0] * 4, exact[0] * 4 + 4));
+}
 owner.activate();
 
 // Native requests use WORLD cells, SI delta-v and deterministic tick counts.

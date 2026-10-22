@@ -1,5 +1,14 @@
 // A versioned envelope keeps old clients from treating a moving window as a box.
 export const PROTOCOL = 1;
+// The session's build version, sent by a guest when the relay welcomes it ({ t: 'hello', v }). Builds
+// before it sent none and know only FRAME_KEY/FRAME_DELTA: a host whose stream they can't read (a V2
+// host's native frames, net/codec.js) sends them codec.outdatedFrame, which ends their session with
+// "this version cannot load" instead of a keyframe-request loop. A guest below MIN_GUEST_VERSION is
+// told to update ({ t: 'version', peer, need }); a guest meeting a newer host's frame ends with UPDATE.
+// 2: native frames (net/codec.js FRAME_NATIVE_KEY/DELTA).
+export const NET_VERSION = 2;
+export const MIN_GUEST_VERSION = 2;
+export const UPDATE_GAME = 'The host is on a newer version of the game. Reload the page to update it, then join again';
 export const finite3 = (v) => Array.isArray(v) && v.length === 3 && v.every((n) => Number.isFinite(n) && Math.abs(n) <= 1e7);
 export function validMetadata(m) {
   return m && m.v === PROTOCOL && typeof m.id === 'string' && m.id.length > 0 && m.id.length <= 100

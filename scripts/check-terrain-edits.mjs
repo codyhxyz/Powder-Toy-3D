@@ -201,7 +201,7 @@ let stepOnce=true,camShown='on',releasePending=false,painting=false,windFromVali
 const camState=()=> 'on',toolbar={},pov={active:false},rig={update:()=>log.push('rig')},controls={update:()=>log.push('controls')};
 const updatePresentation=()=>{},updateBrush=()=>log.push('brush'),prof={phase:()=>{}},selectedMode='noita';
 const scripts={tick:()=>log.push('script'),endFrame:()=>log.push('scriptEnd')},sim={step:()=>log.push('step')};
-const v2Box=()=>false,weatherWire={step:()=>log.push('weather')},DAY={running:false},updateSun=()=>{};
+const v2Box=()=>false,v2Replica=()=>false,weatherWire={step:()=>log.push('weather')},DAY={running:false},updateSun=()=>{};
 ${source.slice(start,end)} ${after}
 return {renderOnly,stepOnce};`);
 const logs=[], state={descent:{terrainPending:false}};
