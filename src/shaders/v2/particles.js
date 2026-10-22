@@ -415,6 +415,8 @@ fn dImpactHeat(pid: u32, tid: u32, velocity: vec3f, axis: u32, c: vec3i) -> vec2
 // it, rests where it was (lands in the cell before: its slot flies the struck grain on, its cell keeps its carrier,
 // energy exact as a whole-cell launch's). Only a hit whose landing this thread also won (deposit's claim), never a
 // charge's (dShockHit) nor a held packet. dynamics-reference.js packetKnock is its twin.
+// Intentional (decided under the user's delegation, 2026-10-22): the mover rests rather than keeping V1's
+// (m_i-R·m_j)/(m_i+m_j) of its speed, and liquids flow on as runs rather than knock: a packet slot holds one cell.
 struct DKnock { done: bool, packet: DParticle, cell: Material }
 fn dKnock(t: u32, s: u32, p: DParticle, before: Material, axis: u32, landing: u32) -> DKnock {
   var out = DKnock(false, p, before);
@@ -600,6 +602,8 @@ export function particlesWGSL(g, nativeHead, stage) {
         dClaim(slot,0u,dKey(particle.id)); return; // exact deferred capture/fission, no re-roll or ageing
       }
       // pending children: the allocator must account for every one, once a tick
+      // Intentional (decided under the user's delegation, 2026-10-22): a parent waits for its children, born at the
+      // tick's allocation, so it skips the rest of that tick's V1 steps (V1 spawns them the same step)
       if (particle.tail.z > 0u) { if (P.substep == 0u) { atomicAdd(&control[18],particle.tail.z); } return; }
       if (particle.tail.x == 0u) { particles[t].id = 0u; atomicSub(&control[0],1u); noteDead(t); return; }
       particle.tail.x -= 1u; acceleration = vec3f(0);
