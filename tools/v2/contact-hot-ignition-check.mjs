@@ -1,8 +1,10 @@
-// CPU-only ignition regression: V2's fuel and explosive ignition is V1's (react.js combustion, explosives),
-// thermal only. V1 lights a fuel at its ignition point, or past its flash point with a flame (a FIRE cell) on
-// one of its six faces, re-tested every step; it has no contact ignition, no random flame-touch chance and no
-// "hot front", and a burning fuel is no flame to its neighbours (nFire counts FIRE). Executes the production
-// scalar kernel and contactReference; WGSL is checked through its real generator, not a port.
+// CPU-only ignition regression. V2 lights a fuel as V1 does (react.js combustion, explosives): at its ignition
+// point, or past its flash point with a flame (a FIRE cell, nFire) on one of its six faces, re-tested every step.
+// And fire lights fuel by touch (design decision, 2026-10-22, delegated by the user: The Powder Toy, Minecraft):
+// a burning front on a block partner (ctHotFront) lights it outright, a flame or burning fuel on one with
+// CT_TOUCH_LIGHT a tick, and the fuel lit so takes the flame's heat to its ignition point (a declared source), so
+// the thermal rule holds it alight and cooling still puts it out. Explosives keep V1's flame roll. Executes the
+// production scalar kernel and contactReference; WGSL is checked through its real generator, not a port.
 import assert from 'node:assert/strict';
 import { E, ELEMENTS } from '../../src/elements.js';
 import { PHYS, NOMINAL_STEP_RATE } from '../../src/physics.js';
@@ -28,22 +30,58 @@ const step = (input, ns, seed = 1, outside = [0, 0, 0, 0], faces = 0, touch = 0)
   return out;
 };
 const SEEDS = 4000;
+const T = C.CONTACT_CONSTANTS;
 let checks = 0;
 function test(name, fn) { fn(); checks++; console.log(`ok ${name}`); }
 
-test('no contact ignition: cold fuel beside a live hot flame, burning fuel or burning oil never lights', () => {
-  for (const id of [E.WOOD, E.COAL, E.PLANT, E.SAWDUST, E.OIL, E.DIAMOND])
+test('a burning front lights cold fuel outright: a hot flame, burning fuel or burning oil on a partner', () => {
+  for (const id of [E.WOOD, E.COAL, E.PLANT, E.SAWDUST, E.OIL, E.MOSS])
     for (const source of [flame(), cell(E.FIRE, 3000), burning(), burning(E.OIL)])
-      for (let seed = 0; seed < SEEDS; seed++) {
+      for (const seed of [0, 1, 2, 3]) {
         const input = cell(id), out = step(input, neighbors(source), seed);
-        assert.equal(out.burning, 0, `${ELEMENTS[id].key} beside ${ELEMENTS[source.id].key}, seed ${seed}`);
-        assert.equal(out.life, input.life); assert.equal(out.source, 0n);
+        assert.equal(out.burning, 1, `${ELEMENTS[id].key} beside ${ELEMENTS[source.id].key}, seed ${seed}`);
+        // the pilot: the flame's heat to its ignition point, then a tick's burn; both a declared source
+        assert(out.tq >= C.ctRow(id).igniteQ, `${ELEMENTS[id].key} at its ignition point`);
+        assert(out.life < input.life); assert(out.source > 0n);
       }
-  // the flame outside its block (the support pass's word) or flying beside it (a packet's touch) the same
-  for (let seed = 0; seed < SEEDS; seed++) {
-    assert.equal(step(cell(E.WOOD), [cell(E.EMPTY), cell(E.WALL), cell(E.WALL)], seed, [1, 0, 0, 1], word(C.packContact(flame()).core, null, null)).burning, 0);
-    assert.equal(step(cell(E.WOOD), neighbors(cell(E.EMPTY)), seed, [0, 0, 0, 0], 0, C.CONTACT_CONSTANTS.CT_TOUCH_FLAME[1]).burning, 0);
+  // a front no hotter than the fuel's ignition point, a cold or dying flame, and inert hot matter are none
+  for (const [name, source] of [['a 300 °C flame', cell(E.FIRE, 300)], ['a dead flame', { ...flame(), life: 0 }],
+    ['smouldering wood under coal\'s point', burning(E.WOOD, q(400))], ['hot stone', cell(E.STONE, 1000)]]) {
+    const out = step(cell(E.COAL), neighbors(source), 1);
+    if (source.id !== E.STONE) assert.equal(C.ctHotFront(source, C.ctRow(E.COAL).igniteQ), false, name);
+    assert.equal(out.burning, 0, `${name} (seed 1 misses the touch chance)`);
   }
+  // no air, oxygen or flame face: nothing to burn in
+  assert.equal(step(cell(E.WOOD), [burning(), cell(E.WALL), cell(E.WALL)]).burning, 0, 'closed in');
+  // a flying burning packet on a partner (ctPacketTouch: its fire on the axis and its front)
+  const touch = C.ctPacketTouch(burning(), E.WOOD, 0, 2, 1);
+  assert.equal(touch & 7, T.CT_TOUCH_FIRE[1] * 2, 'its fire, on the y axis');
+  assert.notEqual(touch & T.CT_TOUCH_FRONT[1], 0, 'its front');
+  assert.equal(C.ctPacketTouch(burning(), E.WOOD, 0, 2, 0) & (7 | T.CT_TOUCH_FRONT[1]), 0, 'not on a partner: none');
+  assert.equal(step(cell(E.WOOD), neighbors(cell(E.EMPTY)), 1, [0, 0, 0, 0], 0, touch).burning, 1, 'a flying front lights it');
+});
+
+test('a flame or burning fuel on a partner lights fuel with CT_TOUCH_LIGHT a tick each (TPT, Minecraft)', () => {
+  // a 300 °C flame is no front (ctHotFront: 350 °C), so its touch is the chance alone
+  const rate = (ns, outside, touch = 0) => {
+    let lit = 0;
+    for (let seed = 0; seed < SEEDS; seed++) lit += step(cell(E.WOOD), ns, seed, outside, 0, touch).burning;
+    return lit / SEEDS;
+  };
+  const chance = T.CT_TOUCH_LIGHT[1];
+  for (const n of [1, 2]) {
+    const ns = [...Array(n).fill(cell(E.FIRE, 300)), cell(E.EMPTY), cell(E.EMPTY)].slice(0, 3);
+    const r = rate(ns, [0, 0, 0, 0]);
+    assert(Math.abs(r - n * chance) < 0.008, `${n} flame partners: ${r} vs ${n * chance}`);
+  }
+  // a flying flame's fire mark on one axis counts once; on two, twice
+  const one = rate(neighbors(cell(E.EMPTY)), [0, 0, 0, 0], T.CT_TOUCH_FIRE[1]);
+  const two = rate(neighbors(cell(E.EMPTY)), [0, 0, 0, 0], T.CT_TOUCH_FIRE[1] * 5);
+  assert(Math.abs(one - chance) < 0.008 && Math.abs(two - 2 * chance) < 0.008, `flying: ${one}, ${two}`);
+  // a flame outside its block lights it only on the ticks it is a partner (half of them): the outside word is
+  // nFire's, for V1's flash-point rule, not a touch
+  for (let seed = 0; seed < SEEDS; seed++)
+    assert.equal(step(cell(E.WOOD), [cell(E.EMPTY), cell(E.WALL), cell(E.WALL)], seed, [1, 0, 0, 1], word(C.packContact(cell(E.FIRE, 300)).core, null, null)).burning, 0);
 });
 
 test('thermal ignition at its own ignition point -1/equal/+1, exposed', () => {
@@ -54,7 +92,7 @@ test('thermal ignition at its own ignition point -1/equal/+1, exposed', () => {
   }
 });
 
-test('flash point: a flame face (partner, outside or flying) lights it; a burning fuel face does not (V1 nFire)', () => {
+test('flash point: a flame face (partner, outside or flying) lights it; a burning fuel face only by touch', () => {
   const flash = C.ctRow(E.WHISKEY).flashQ;
   assert(flash < C.ctRow(E.WHISKEY).igniteQ);
   for (const delta of [-1, 0, 1]) {
@@ -62,7 +100,9 @@ test('flash point: a flame face (partner, outside or flying) lights it; a burnin
     assert.equal(step(input, neighbors(flame())).burning, lights, 'flame partner');
     assert.equal(step(input, neighbors(cell(E.EMPTY)), 1, [1, 0, 0, 1], word(C.packContact(flame()).core, null, null)).burning, lights, 'flame outside its block');
     assert.equal(step(input, neighbors(cell(E.EMPTY)), 1, [0, 0, 0, 0], 0, C.CONTACT_CONSTANTS.CT_TOUCH_FLAME[1]).burning, lights, 'flame flying beside it');
-    for (let seed = 0; seed < 200; seed++) assert.equal(step(input, neighbors(burning()), seed).burning, 0, 'burning wood is no flame');
+    // burning wood is no flame (nFire) to the flash point's rule: past its flash point it is a burning front,
+    // under it a touch at CT_TOUCH_LIGHT (seed 1 misses it)
+    assert.equal(step(input, neighbors(burning())).burning, lights, 'burning wood: a front past its flash point');
   }
 });
 
@@ -122,13 +162,21 @@ const block = (cells, tick = 1, positions = C.CONTACT_POSITIONS, valid = Array(8
   return { out, decoded };
 };
 
-test('a block: wood a flame heats but leaves under its ignition point stays unlit (V1: heat, not touch)', () => {
-  const cells = Array.from({ length: 8 }, () => cell(E.WALL)); cells[0] = cell(E.WOOD); cells[1] = flame();
-  const positions = C.CONTACT_POSITIONS.map(p => p.map(v => v + 6));
-  for (let tick = 1; tick <= 40; tick++) {
-    const { decoded } = block(cells, tick, positions, [true, true, false, false, false, false, false, false]);
-    if (decoded[0].tq < C.ctRow(E.WOOD).igniteQ) assert.equal(decoded[0].burning, 0, `tick ${tick}: under its ignition point`);
+// The behaviour (design decision, 2026-10-22, delegated by the user): a flame lights the wood it touches, as
+// fire spreads to wood in The Powder Toy and Minecraft, and the wood burns on after the flame is gone.
+test('a block: a flame lights the cold wood beside it, which burns on after the flame is gone', () => {
+  let cells = Array.from({ length: 8 }, () => cell(E.WALL)); cells[0] = cell(E.WOOD); cells[1] = flame();
+  const positions = C.CONTACT_POSITIONS.map(p => p.map(v => v + 6)), valid = [true, true, false, false, false, false, false, false];
+  let litAt = null;
+  for (let tick = 1; tick <= 60; tick++) {
+    const { decoded } = block(cells, tick, positions, valid);
+    cells = decoded.map(c => ({ ...c, source: 0n, sink: 0n, busy: 0, request: 0 }));
+    if (litAt === null && decoded[0].burning) litAt = tick;
+    if (litAt !== null) assert.equal(decoded[0].burning, 1, `tick ${tick}: still burning`);
   }
+  assert.equal(litAt, 1, 'lit on its first tick (the flame is a burning front)');
+  assert.notEqual(cells[1].id, E.FIRE, 'the flame is gone');
+  assert(cells[0].id === E.WOOD && cells[0].tq > C.ctRow(E.WOOD).igniteQ, 'the wood burns on, past its ignition point');
 });
 
 // V1 react.js lit tests an explosive's temperature the step it is (one step's conduction before it): a charge at
@@ -177,8 +225,8 @@ test('real generator and snapshot/order/custom-contact contracts', () => {
   const scalar = C.ctStepAtmosphere.toString() + C.ctLick.toString();
   assert(C.ctStepAtmosphere.toString().includes('ctLick(c, hotFuel, flameQ, smothered, seed)'), 'the step lights air with its own seed');
   assert.deepEqual([...scalar.matchAll(/ctRoll\(seed, (\d+)\)/g)].map(m => +m[1]), [1, 3, 4, 5, 6, 7, 18, 19], 'salts (5–7, 18–19: V1 flame life and flames into air)');
-  assert(!/\/ 60\b/.test(C.ctStepAtmosphere.toString()), 'no random flame-touch ignition');
-  assert(!('ctHotFront' in C), 'no hot front');
+  // touch ignition is in the emitted kernel and the flying packets' marks carry the face's axis
+  assert(/fn ctHotFront\(/.test(contactKernelWGSL) && contactKernelWGSL.includes('CT_TOUCH_LIGHT'), 'the touch rules are emitted');
   const body = contactWGSL.slice(contactWGSL.indexOf('fn contactBlock('));
   assert(body.indexOf('let snapshot=cells;') > body.indexOf('flux=ctFlux('));
   assert(body.includes('ns[axis]=snapshot[j];'), 'partners in axis order (x y z), as the outside word');
@@ -194,4 +242,4 @@ test('real generator and snapshot/order/custom-contact contracts', () => {
     assert(out.sources.every(n => n === 0n)); assert(out.sinks.every(n => n === 0n));
   }
 });
-console.log(`${checks} V1 ignition CPU groups passed; no GPU/runtime acceptance claimed`);
+console.log(`${checks} ignition CPU groups passed; no GPU/runtime acceptance claimed`);

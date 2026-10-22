@@ -220,12 +220,49 @@ console.log('exchange-check: ok');
 }
 console.log('exchange-check: spawn drop ok');
 
-// ---- 5. no wind saltation (V1 never launches a loose cell on a draft past a threshold)
+// ---- 5. saltation (design decision, 2026-10-22): a strong draft lifts a loose surface cell off its bed at the wind's
+// velocity past its lift (dynamics-reference.js lift), as wind lifts sand off a dune; a gentle one leaves it to MV-6's
+// push. EXECUTES the emitted couplePlan body (blasts.js) as JS on one cell, its reads stubbed: fails with the launch removed.
 {
-  const { readFileSync } = await import('node:fs');
-  const blasts = readFileSync(new URL('../../src/shaders/v2/blasts.js', import.meta.url), 'utf8');
-  assert(!/length\(wind\)\s*>\s*dLift\(id\)/.test(blasts), 'couplePlan launches loose cells on a draft past their lift');
-  console.log('wind: no saltation launch in couplePlan');
+  const { blastsWGSL } = await import('../../src/shaders/v2/blasts.js');
+  const { nativeDynamicsHead } = await import('../../src/shaders/v2.js');
+  const { dynamicsRows } = await import('../../src/v2/dynamics-reference.js');
+  const plan = blastsWGSL(gridLayout(16, 16, 16), nativeDynamicsHead, 'couplePlan');
+  const main = plan.slice(plan.indexOf('fn main('));
+  let body = main.slice(main.indexOf('{', main.indexOf(') {')) + 1, main.lastIndexOf('}'));
+  body = body.replace(/^\s*let t = dListedCell\([^\n]*\n/, '');
+  for (const [a, b] of [['any(push!=vec3f(0))', 'push.some(v => v !== 0)'], ['p+mDown(vec3f(p)+0.5)', 'add(p, mDown(p))']]) body = body.replaceAll(a, b);
+  body = body.replace(/\/\/[^\n]*/g, '').replace(/\bvar\b/g, 'let').replace(/\b(0x[\da-f]+|\d+)u\b/gi, '$1')
+    .replace(/\bp([+-])dAxis\((\w+)\)/g, (_, s, a) => `${s === '+' ? 'add' : 'sub'}(p, dAxis(${a}))`)
+    .replace(/\.xyz\b/g, '.slice(0, 3)').replace(/\.(x|y|z|w)\b/g, (_, v) => `[${'xyzw'.indexOf(v)}]`);
+  assert(/length\(wind\)>dLift\(id\)/.test(body), 'couplePlan reads the draft against the lift');
+  const run = (id, wind, { buried = false, push = [0, 0, 0], pressure = false } = {}) => {
+    const plans = [], cell = [8, 1, 8];
+    const ctx = {
+      D_SLOTS: 4096, D_NO_CRUSH: Infinity, P: { gravMode: 0, edge: 0, gravity: GRAVITY_MS2, nativeJets: 1 },
+      dCoupleActive: () => true, cellOf: () => cell, loadMaterial: () => ({ core: [id, 0, 0, 0] }), cid: c => c[0],
+      cls: i => rows[i].cls, events: [0], plans, air: [{ vp: [...wind, 0] }], brickOfCell: () => 0, mAirVelocity: () => true,
+      mAirPressure: () => pressure, dCrush: () => 0, dBreak: () => -1, dCrushPa: () => Infinity, dUnsupported: () => false, fallVelocity: () => 0,
+      // the cell's bed: matter on every side but the one above it (none when buried)
+      dOpen: q => !buried && q[1] > cell[1], dV1Push: () => push, dLift: i => dynamicsRows[i].lift,
+      dAxis: a => [0, 1, 2].map(k => +(k === a)), add: (a, b) => a.map((v, k) => v + b[k]), sub: (a, b) => a.map((v, k) => v - b[k]),
+      mDown: () => [0, -1, 0], vec3f: (...v) => (v.length === 1 ? [v[0], v[0], v[0]] : v), length: v => Math.hypot(...v),
+      select: (a, b, c) => (c ? b : a), DPlan: (velocity, flags) => ({ velocity, flags }), noteEvents() {}, dWake() {},
+    };
+    new Function('ctx', 't', `with (ctx) { ${body} }`)(ctx, 0);
+    return plans[0];
+  };
+  const gale = [15, 3, 0], breeze = [5, 0, 0];
+  const lifted = run(E.SAND, gale);
+  assert.equal(lifted.flags, 1, 'a 15 m/s draft lifts surface sand');
+  assert.deepEqual(lifted.velocity, gale, 'at the wind\'s velocity');
+  assert.equal(run(E.SAND, breeze).flags, 0, 'a 5 m/s breeze leaves sand (its lift is 12 m/s)');
+  assert.equal(run(E.ASH, breeze).flags, 1, 'and lifts ash (1 m/s)');
+  assert.equal(run(E.SAND, gale, { buried: true }).flags, 0, 'buried sand stays');
+  // alongside MV-6's push: a gentle draft leaves the push's speed, a strong one wins over it
+  assert.deepEqual(run(E.SAND, breeze, { pressure: true, push: [0.5, 0, 0] }).velocity, [0.5, 0, 0]);
+  assert.deepEqual(run(E.SAND, gale, { pressure: true, push: [0.5, 0, 0] }).velocity, gale);
+  console.log(`wind: saltation lifts surface sand past ${dynamicsRows[E.SAND].lift} m/s, ash past ${dynamicsRows[E.ASH].lift}; buried sand stays; a gentle draft leaves MV-6's push`);
 }
 
 // ---- 6. MV-14: steam imports at V1's life 0 (its latent bank), never the fading gases' floor of 1

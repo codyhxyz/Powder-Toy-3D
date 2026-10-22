@@ -860,7 +860,9 @@ const defs = [
   // (1.2·0.92 + 0.54·4.18)/4.18 ≈ 0.8, conducting like wet soil (~1.2 W/(m·K),
   // water's 0.03). A clay slurry this thick is a Bingham plastic, viscous like
   // lava (Coussot, Mudflow Rheology and Dynamics, 1997); its yield stress
-  // holds only a few cm, under a cell, so here it creeps level. TPT's paste
+  // holds only a few cm, under a cell, so the game scales it up into a mound
+  // you can see (shaders/v2.js YIELD, a design decision of 2026-10-22, as
+  // Noita's lava heaps; V1's mud crept level). TPT's paste
   // hardens under pressure, as cornstarch in water does (shear thickening); a
   // clay slurry thins as it's worked instead, so ours doesn't. Past 100 °C its
   // water boils off, taking that share of water's latent heat and setting the

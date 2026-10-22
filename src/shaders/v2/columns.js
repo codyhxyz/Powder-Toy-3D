@@ -67,16 +67,18 @@ export const COLUMN = (() => {
     COMP: 3 * G_SUB,
     QMIN: 0.5,                 // a segment flux under this (quanta a step) snaps to 0 (lean-sim)
     FILM: FULL >> 3,           // the shallow-water dry tolerance (GeoClaw's dry_tolerance, Berger et al. 2011)
-    // V1's liquid is whole cells: on dry ground a cell with no liquid over it is a film whose flow is spent (react.js:
-    // FILM_KEEP of its speed a step), so a spill spreads until it is a cell deep and beads there (MV-13; measured on V1
-    // 2026-10-22, tools/v2/runs-browser-check.mjs: a 4³ block of water or of mud is one cell deep over 64 columns).
-    // A face onto dry ground at its own level carries nothing from under this; over an edge it pours, into liquid
-    // (or a layer on another liquid: V1's pool surface keeps flowing) the dry tolerance holds.
-    // Intentional (decided under the user's delegation, 2026-10-22): V1's lone droplets wander for ever (react.js
-    // DROPLET_WANDER, FILM_COHESION) and its spill beads into whole cells; V2's films stop here and its fills level
-    // (a 4³ spill rests a third of a cell deep over 200 columns, V1's a cell deep over 64), so a spill rests and certifies idle
-    // (wandering would cost the rest certification and frame time)
-    FILM_DRY: FULL,
+    // The dry tolerance onto dry ground at its own level: a face there carries nothing from under this; over an edge
+    // it pours, and into liquid (or a layer on another liquid) FILM holds.
+    // Design decision (2026-10-22, delegated by the user): a spill keeps spreading as a thin film, as Noita's water
+    // runs out thin across a floor, then rests and certifies idle: its front runs onto dry ground down to FILM, an
+    // eighth of a cell deep (docs/v2.md 5.4 "Films": the art knob between an eighth and a quarter; V2's film before
+    // the finish push), so the puddle outcome's spill rests with an edge (6 cells from the walls, idle at 0.8 s, with
+    // the landing crown restored: colCrown); a 4³ spill is an eighth of a cell deep over 560 columns at 1 s. V1's
+    // liquid is whole cells, so its spill beads a cell deep over 64 columns (its films spend their flow, react.js
+    // FILM_KEEP) and its lone droplets wander for ever (DROPLET_WANDER, FILM_COHESION); the finish push matched the
+    // beading with FILM_DRY = FULL (MV-13: a third of a cell over 172 columns), which this reverts. V2's films don't
+    // wander: wandering would cost the rest certification and frame time.
+    FILM_DRY: FULL >> 3,
     DEADQ: 2,                  // dead band, in fill quanta of the stiffer side (lean-sim)
     // the rows' damping is per substep of the 180 Hz model it calibrated (v2Rows: drag); per pair step (240 Hz)
     // it is 1 - (1 - damp)^(3/4), the same damping a second (colDampStep)
@@ -101,11 +103,15 @@ export const COLUMN = (() => {
     // a deposited cell to launch: its y lane holds this, less its upward launch speed (a falling run's own
     // y lane is never negative)
     JET_MARK: -1,
-    // V1's landing splash (move.js land, MV-5): a liquid that lands faster than LAND_SPLASH_V (cells/step), on
-    // anything, turns sideways at its FLOW plus LAND_SPLASH_GAIN of its impact speed, in a random direction, each
-    // component to V_MAX: every cell of it that lands. A run throws the cells it lands this tick (the rows it
-    // vacated) from its top, each at a hashed azimuth. Slower landings (a pour's one-cell drop) merge.
-    SPLASH_V: PHYS.LAND_SPLASH_V, SPLASH_GAIN: PHYS.LAND_SPLASH_GAIN, STEP_MS: V1_STEP_MS, CROWN_SALT: 0x63726f77,
+    // The crown (Worthington, A Study of Splashes, 1908). Design decision (2026-10-22, delegated by the user): a run
+    // that lands harder than V1's splash speed (PHYS.LAND_SPLASH_V, cells/step: move.js land), on a pool or a floor,
+    // throws CROWN_SHARE of its mass up and out of its column, CROWN_ANGLE from the vertical at a hashed azimuth, at
+    // V1's splash share of its impact speed (PHYS.LAND_SPLASH_GAIN: V1 turns that much of it sideways), as a real
+    // splash crowns and Noita's liquids spray up where something lands in them; within docs/v2.md 4.4's 0.3 bound on
+    // the energy it carries. Slower landings (a pour's one-cell drop) merge. (The finish push, MV-5, had thrown every
+    // landed cell level instead, only to match V1's move.js land.)
+    SPLASH_V: PHYS.LAND_SPLASH_V, STEP_MS: V1_STEP_MS, CROWN_SHARE: 0.15, CROWN_GAIN: PHYS.LAND_SPLASH_GAIN,
+    CROWN_ANGLE: Math.PI / 4, CROWN_SALT: 0x63726f77,
     // a liquid this thin under a pour still leaves it open below (lean-sim openBelow: FULL/16)
     THIN: FULL >> 4,
     // a face's demand word: what it carries in the low 24 bits, its launch head in the byte above, in
@@ -233,7 +239,10 @@ const COL_JET_SPEED: f32 = ${f(COLUMN.JET_SPEED)};
 const COL_ORIFICE_CV: f32 = ${COLUMN.ORIFICE_CV};
 const COL_JET_MARK: f32 = ${f(COLUMN.JET_MARK)};
 const COL_SPLASH_V: f32 = ${COLUMN.SPLASH_V};
-const COL_SPLASH_GAIN: f32 = ${COLUMN.SPLASH_GAIN};
+const COL_CROWN_SHARE: f32 = ${COLUMN.CROWN_SHARE};
+const COL_CROWN_GAIN: f32 = ${COLUMN.CROWN_GAIN};
+const COL_CROWN_SIN: f32 = ${Math.sin(COLUMN.CROWN_ANGLE)};
+const COL_CROWN_COS: f32 = ${Math.cos(COLUMN.CROWN_ANGLE)};
 const COL_STEP_MS: f32 = ${f(COLUMN.STEP_MS)};
 const COL_TAU: f32 = ${2 * Math.PI};
 const COL_THIN: u32 = ${COLUMN.THIN}u;
@@ -381,7 +390,7 @@ fn colLaunchHead(xs: i32, zs: i32, xt: i32, zt: i32, rs: vec4u, y: i32) -> f32 {
   }
   return eta;
 }
-// a splash droplet to launch at (vx, vy, vz) m/s, vy upward: the jets' mark with the rise in its y lane
+// a crown droplet to launch at (vx, vy, vz) m/s, vy upward: the jets' mark with the rise in its y lane
 fn colMarkCrown(x: i32, y: i32, z: i32, vx: f32, vy: f32, vz: f32) {
   let p = vec3i(x, y, z); let s = slotOf(p); let before = loadMaterial(s);
   storeMaterial(s, before, Material(withLane(withLane(withLane(zeroQ(before.core), 0, vx), 2, vz), 1, COL_JET_MARK - vy), before.bank));
@@ -657,7 +666,8 @@ fn colDepth(r: vec4u, s0: i32, s1: i32) -> f32 {
 
 // ---- the segment rule (prototype segment()): the new flux of [s0, s1) between a (-side) and b, from u.
 // Positive flows a to b. Falling runs, two dry floors and two different liquids exchange nothing.
-fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, lb: vec2f, bed: f32, film: f32, lid: bool, shut: i32) -> f32 {
+// layer: the face is a floating layer's (on a denser liquid's surface), not one onto dry ground at its level
+fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, lb: vec2f, bed: f32, layer: bool, lid: bool, shut: i32) -> f32 {
   let dryA = recLiq(ra) == 0u; let dryB = recLiq(rb) == 0u;
   if (recFalling(ra) || recFalling(rb) || (dryA && dryB)) { return 0.0; }
   if (!dryA && !dryB && (recLiq(ra) != recLiq(rb) || recSub(ra) != recSub(rb))) { return 0.0; }
@@ -671,12 +681,13 @@ fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, l
   // the layers' heads: each run's own surface (its base an interface inside the cell below when it floats on
   // another liquid) plus the weight of the layers it carries
   var drive = (colEta(ra) + la.x + la.y) - (colEta(rb) + lb.x + lb.y);
-  // lean-sim's dead band (DEADQ quanta of the stiffer side), and never below the drive whose damped steady
-  // flow v·h moves under one quantum a tick: 1.5·damp/(ACC·h), lean-sim's 1.5·damp/ACC at h = 1. No yield
-  // stress: V1 has none (react.js liquids flow until the level evens out; measured on V1 2026-10-22,
-  // tools/v2/runs-browser-check.mjs: a 4³ block of mud is a cell deep over 64 columns within 1 s; MV-8)
+  // lean-sim's dead band (DEADQ quanta of the stiffer side, the yield), and never below the drive whose damped
+  // steady flow v·h moves under one quantum a tick: 1.5·damp/(ACC·h), lean-sim's 1.5·damp/ACC at h = 1.
+  // Design decision (2026-10-22, delegated by the user): the liquid's yield (shaders/v2.js YIELD, cells of head)
+  // is the dead band's floor, so mud, lava and slime hold a mound as Noita's lava and real mud do; water and oil
+  // have none and level. (The V2 finish push had removed it, MV-8, only because V1's liquids have none.)
   let hFace = max(max(ha, hb), 1.0 / COL_FULL);
-  let band = max(COL_DEADQ * max(colStiff(ra), colStiff(rb)), COL_STALL * damp / (acc * min(hFace, 1.0)));
+  let band = max(max(COL_DEADQ * max(colStiff(ra), colStiff(rb)), COL_STALL * damp / (acc * min(hFace, 1.0))), yieldOf(liq));
   if (abs(drive) < band) { drive = 0.0; }
   var v = u;
   if (ha == 0.0) { v = min(v, 0.0); }   // a dry side's stale outflow is dropped
@@ -684,9 +695,9 @@ fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, l
   // a new front onto dry ground (a face at rest, its receiver dry at its level) takes the flow arriving behind it
   // (momentum carried into the new face: V1's moving cell keeps its speed into the cell it moves on to, react.js
   // forces), so a front runs at the flow's speed. Only a new one onto dry ground: a face already flowing keeps its
-  // own momentum, and a floating layer's edge on a denser surface (its \`film\` FILM) is no dry front: fed the
-  // flow behind it each step, a layered pool's edge sloshes for ever and never rests
-  let front = u == 0.0 && film >= COL_FILM_DRY;
+  // own momentum, and a floating layer's edge on a denser surface (\`layer\`) is no dry front: fed the flow
+  // behind it each step, a layered pool's edge sloshes for ever and never rests
+  let front = u == 0.0 && !layer;
   if (front && hb == 0.0 && !colOver(rb, s0) && up > v) { v = up; }
   if (front && ha == 0.0 && !colOver(ra, s0) && up < v) { v = up; }
   var hUp = hb;
@@ -695,7 +706,8 @@ fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, l
   if (drive == 0.0) { v = v * 0.5; }
   if ((v > 0.0 && ha == 0.0) || (v < 0.0 && hb == 0.0)) { v = 0.0; }
   // the film rule as the dry tolerance: a face whose upwind wet depth is under FILM carries no flux, and onto dry
-  // ground at its level none from under \`film\` (FILM_DRY: V1's films; a floating layer's FILM)
+  // ground at its level none from under \`film\` (FILM_DRY; a floating layer's FILM)
+  let film = select(COL_FILM_DRY, COL_FILM, layer);
   if (v > 0.0 && ha * COL_FULL < COL_FILM) { v = 0.0; }
   if (v < 0.0 && hb * COL_FULL < COL_FILM) { v = 0.0; }
   if (v > 0.0 && hb == 0.0 && !colOver(rb, s0) && ha * COL_FULL < film) { v = 0.0; }
@@ -731,7 +743,8 @@ fn colEdgeFlux(r: vec4u) -> f32 {
   if (h * COL_FULL < COL_FILM) { return 0.0; }
   let damp = colDampStep(recLiq(r));
   let drive = colEta(r) - f32(s0);
-  let band = max(COL_DEADQ * colStiff(r), COL_STALL * damp / (acc * min(h, 1.0)));
+  // (the yield as at any face: colFlux's design decision)
+  let band = max(max(COL_DEADQ * colStiff(r), COL_STALL * damp / (acc * min(h, 1.0))), yieldOf(recLiq(r)));
   if (drive < band) { return 0.0; }
   let v = acc * drive * min(1.0, COL_H_CAP / max(h, 1.0)) * (1.0 - damp);
   if (v < COL_QMIN) { return 0.0; }
@@ -904,31 +917,35 @@ fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
   // V1's landing (move.js land) sees the speed it has the step after it arrives: a step more of gravity, and its
   // drag now it is no longer in free fall (react.js forces), to V_MAX
   let impact = min(COL_V_MAX, (hit + g) * colV1Keep(cid(colCell(x, r0 - d, z))));
-  if (landed && d > 0 && impact > COL_SPLASH_V) { colSplash(x, z, r0 - d, r1 - d, d, impact); }
+  if (landed && d > 0 && impact > COL_SPLASH_V) { colCrown(x, z, r0 - d, r1 - d, d, impact * COL_STEP_MS * COL_CROWN_GAIN); }
   return r0 - d;
 }
-// V1's splash (move.js land) of a run [b0, b1) that just landed at impact cells/step: the cells it landed this tick
-// (rows of them, the rows it vacated above it), cut from its top down into those rows, each marked to launch
-// sideways at its liquid's FLOW plus LAND_SPLASH_GAIN of the impact, at a hashed azimuth, each component to V_MAX
-fn colSplash(x: i32, z: i32, b0: i32, b1: i32, rows: i32, impact: f32) {
-  let speed = colFlowSpeed(cid(colCell(x, b0, z))) + COL_SPLASH_GAIN * impact * COL_STEP_MS;
-  let most = COL_V_MAX * COL_STEP_MS;
+// The crown of a run [b0, b1) that just landed, thrown at speed m/s (V1's splash share of its landing speed: the
+// crown's design decision, COLUMN): CROWN_SHARE of its mass, cut from its top down, into the cells it vacated above it
+// (rows of them), each marked to launch up and out.
+fn colCrown(x: i32, z: i32, b0: i32, b1: i32, rows: i32, speed: f32) {
+  var mass = 0u;
+  for (var k = b0; k < b1; k++) { mass = mass + colFill(x, k, z); }
+  var left = u32(floor(f32(mass) * COL_CROWN_SHARE));
   var giver = b1 - 1;
   for (var r = 0; r < rows; r++) {
+    if (left == 0u) { break; }
     let y = b1 + r;
+    let share = min(left, FULLU);
     var put = 0u;
     loop {
-      if (put >= FULLU || giver < b0) { break; }
+      if (put >= share || giver < b0) { break; }
       let have = colFill(x, giver, z);
       if (have == 0u) { giver = giver - 1; continue; }
-      let m = min(FULLU - put, have);
+      let m = min(share - put, have);
       if (!colMove(x, giver, z, x, y, z, m, false)) { break; }
       put = put + m;
       if (m == have) { giver = giver - 1; }
     }
     if (put == 0u) { break; }
+    left = left - put;
     let azimuth = colCrownAzimuth(x, y, z) * COL_TAU;
-    colMarkCrown(x, y, z, clamp(speed * cos(azimuth), -most, most), 0.0, clamp(speed * sin(azimuth), -most, most));
+    colMarkCrown(x, y, z, speed * COL_CROWN_SIN * cos(azimuth), speed * COL_CROWN_COS, speed * COL_CROWN_SIN * sin(azimuth));
   }
 }
 
@@ -1228,7 +1245,7 @@ fn colFluxes(xa: i32, za: i32, xb: i32, zb: i32, axis: i32) {
       let lid = s1 < NY && (colLidAt(xa, s1, za) || colLidAt(xb, s1, zb));
       // (a side full under another liquid: colTransfer gives it nothing)
       let shut = select(0, 1, colShut(xb, zb, rb)) + select(0, 2, colShut(xa, za, ra));
-      let v = colFlux(ra, rb, s0, s1, u, colUpwind(xa, za, xb, zb, s0, axis, select(u, colEta(ra) - colEta(rb), u == 0.0)), la, lb, bed, select(COL_FILM_DRY, COL_FILM, floats != 0), lid, shut);
+      let v = colFlux(ra, rb, s0, s1, u, colUpwind(xa, za, xb, zb, s0, axis, select(u, colEta(ra) - colEta(rb), u == 0.0)), la, lb, bed, floats != 0, lid, shut);
       // and R14's launch head, while every record is frozen: the sender's exact head, or a same-liquid
       // neighbour's that feeds it (an orifice's reservoir), over the segment's bottom
       // (only a face that pours needs one: its bottom over the receiver's surface or dry floor)
@@ -1441,8 +1458,9 @@ fn colRadCovered(x: i32, y: i32, z: i32) -> bool {
 }
 // The demand (quanta, + from the cell to its +axis neighbour) of a face across both sides' pulls. Only a wet
 // side gives, into air or the same liquid with room (an interior face carries nothing and reads no column);
-// a face along either side's pull packs instead. As colFlux: lean-sim's dead band (DEADQ quanta), and the dry
-// tolerance (a liquid thinner than FILM spreads onto no dry ground).
+// a face along either side's pull packs instead. As colFlux: lean-sim's dead band (DEADQ quanta) or the
+// liquid's yield (colFlux's design decision: mud, lava and slime hold a mound under radial gravity too), and the
+// dry tolerance (a liquid thinner than FILM spreads onto no dry ground).
 fn colRadDemand(x: i32, y: i32, z: i32, axis: i32) -> f32 {
   var bx = x; var by = y; var bz = z;
   if (axis == 0) { bx = x + 1; }
@@ -1469,7 +1487,7 @@ fn colRadDemand(x: i32, y: i32, z: i32, axis: i32) -> f32 {
   }
   var liq = cid(ca);
   if (!wa) { liq = cid(cb); }
-  if (abs(drive) < COL_DEADQ / COL_FULL) { return 0.0; }
+  if (abs(drive) < max(COL_DEADQ / COL_FULL, yieldOf(liq))) { return 0.0; }
   if (drive > 0.0 && (!wa || cFill(cb) >= FULLU)) { return 0.0; }
   if (drive < 0.0 && (!wb || cFill(ca) >= FULLU)) { return 0.0; }
   if (drive > 0.0 && !wb && ma < COL_FILM && !colRadWetBelow(bx, by, bz, ab, sb)) { return 0.0; }

@@ -89,18 +89,22 @@ const dropOf = (deg) => (deg <= 50 ? 1 : deg <= 67 ? 2 : 3);
 // 12 m/s (lean-sim's VT_SAND); flakes drift down at 3 m/s (a snowflake's ~1 m/s, read from the god view's
 // 30 m away at 2 g: Minecraft's snow and Noita's ash fall slow enough to watch).
 
-// Liquids: viscosity as the flux damping, from today's rows' drag (water 0.01: lean-sim's DAMP). No yield: V1's
-// liquids have none (react.js: they flow until the level evens out), so mud, slime and lava level as V1's do
-// (MV-8, the V2 finish push's "match V1": measured on V1 2026-10-22, tools/v2/runs-browser-check.mjs).
-const YIELD = {};
+// Liquids: yield (5.4: "rest and yield are one knob") as a dead band in cells of head, so mud, slime and
+// lava hold a slope; viscosity as the flux damping, from today's rows' drag (water 0.01: lean-sim's DAMP).
+// Mud is a Bingham plastic of tens of Pa (Coussot, Mudflow Rheology and Dynamics, 1997: today's MUD row),
+// a game multiplier on which holds a mound you can see from the god view. Water, oil and the rest have none.
+// Design decision (2026-10-22, delegated by the user): mud, lava and slime stand in mounds, as Noita's lava
+// heaps where it pours and real mud slumps into a pile; they don't level like water. (The V2 finish push had
+// removed this yield, MV-8, only because V1's liquids have none.)
+const YIELD = { MUD: 0.4, LAVA: 0.3, SLIME: 0.25 };
 
 // Gases that fade (R4, R8): life spent in this many seconds. FIRE lives ~0.5-1 s (R8; TPT's FIRE 120-169
 // frames at 60 fps is 2-3 s, faster here so a flame doesn't outlast its fuel, which this version doesn't
 // burn); smoke thins away; steam stands in for condensing (no heat yet). The rest persist and come to rest.
-// Only the import reads it now (a fading gas comes in with life): contact owns the lives (v2/contact.js), and
-// plasma has none in V1 (react.js: it leaves only by cooling), so it isn't one. Nor is STEAM: V1 spawns it at
-// life 0, its latent bank (elements.js mechanisms lifeBank), so the import's life-1 floor never applies to it.
-const FADE_S = { FIRE: 0.75, SMOKE: 6, CAUSTIC_GAS: 10 };
+// Only the import reads it now (a fading gas comes in with life): contact owns the lives (v2/contact.js
+// CT_PLASMA_FADE_TICK for plasma's half second). STEAM isn't one: V1 spawns it at life 0, its latent bank
+// (elements.js mechanisms lifeBank), so the import's life-1 floor never applies to it.
+const FADE_S = { FIRE: 0.75, PLASMA: 0.5, SMOKE: 6, CAUSTIC_GAS: 10 };
 
 // V1's drift: the terminal speed (cells/step) a cell reaches per m/s² of P.gravity, signed along the pull (+ down).
 // V1 react.js forces add SIM_GRAVITY·GRAV a step at the reference pull (fall.js FALL_G_PER_MS2 of P.gravity) and

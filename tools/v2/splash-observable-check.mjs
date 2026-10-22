@@ -9,7 +9,7 @@ import { runTest } from '../outcomes/run.js';
 import { at, stepClock } from '../outcomes/engine.js';
 import { OUTCOMES } from '../outcomes/thresholds.js';
 
-function fake({ ratio = OUTCOMES.splash.v1, legacy = false, overlay = false, level = false, resident, packet } = {}) {
+function fake({ ratio = .25, legacy = false, overlay = false, level = false, resident, packet } = {}) {
   const clock = stepClock(60), boxes = [];
   const e = {
     name: 'fake-observer', info: { velocity: true, stepsPerSecond: 60, gravity: 19.6 },
@@ -50,16 +50,17 @@ function fake({ ratio = OUTCOMES.splash.v1, legacy = false, overlay = false, lev
   return e;
 }
 
-test('unchanged fixture and timing; V1\'s ratio passes, a quarter off it fails; legacy complete vectors work', async () => {
+test('unchanged fixture, timing and criteria: a .25 crown passes, >.3 or none fails, legacy complete vectors work', async () => {
   assert.deepEqual(splash.size,[32,16,32]);
-  assert.equal(OUTCOMES.splash.v1,2.48); assert.equal(OUTCOMES.splash.keTol,.25); assert.equal(OUTCOMES.splash.seconds,.75);
+  assert.equal(OUTCOMES.splash.keRatio,.3); assert.equal(OUTCOMES.splash.seconds,.75);
   for (const legacy of [false,true]) {
     const r=await runTest(splash,fake({legacy}));
-    assert.equal(r.status,'pass'); assert.ok(Math.abs(r.numbers.ratio-2.48)<1e-6);
+    assert.equal(r.status,'pass'); assert.ok(Math.abs(r.numbers.ratio-.25)<1e-6);
     assert.equal(r.numbers.incoming,128); assert.equal(r.gameSeconds,.783); assert.equal(r.steps,47);
     assert.equal(r.criteria[1].ok,true);
   }
-  for (const ratio of [.25,3.2]) {
+  // (V1's level throw, 2.48 of the incoming, is past the crown's bound; no splash at all throws no crown)
+  for (const ratio of [.36,2.48,0]) {
     const r=await runTest(splash,fake({ratio}));
     assert.equal(r.status,'fail'); assert.equal(r.criteria[1].ok,true);
   }
@@ -67,7 +68,7 @@ test('unchanged fixture and timing; V1\'s ratio passes, a quarter off it fails; 
 
 test('a drop thrown level counts its throw though it already falls (V2\'s crown a tick after it left), as V1\'s sliding cell', async () => {
   const r=await runTest(splash,fake({level:true}));
-  assert.equal(r.status,'pass'); assert.ok(Math.abs(r.numbers.ratio-2.48)<1e-6);
+  assert.equal(r.status,'pass'); assert.ok(Math.abs(r.numbers.ratio-.25)<1e-6);
 });
 
 test('unknown finite resident vectors and every nonfinite component are setup errors postcontact', async () => {
@@ -90,7 +91,7 @@ test('matter packets validate all position/velocity/mass components before class
 
 test('pure binned flight overlay with zero resident mass ignores unknown cell mask and NaNs', async () => {
   const r=await runTest(splash,fake({overlay:true}));
-  assert.equal(r.status,'pass'); assert.ok(Math.abs(r.numbers.ratio-2.48)<1e-6); assert.equal(r.criteria[1].ok,true);
+  assert.equal(r.status,'pass'); assert.ok(Math.abs(r.numbers.ratio-.25)<1e-6); assert.equal(r.criteria[1].ok,true);
 });
 
 test('finite packet inputs cannot overflow energy into a false pass', async () => {

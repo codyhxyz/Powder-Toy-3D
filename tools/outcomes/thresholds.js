@@ -100,24 +100,31 @@ export const OUTCOMES = {
     reachV1Tol: 0.25,   // and its stream reaches within this share of V1's
   },
   splash: {
-    phase: 'P3',
+    phase: 'P3',   // docs/v2.md 4.2 and 4.4 ("splash KE ≤ 0.3 × incoming"), P3's exit
     // a 4×4×2 block of water dropped 6 cells into a pool 3 deep: the kinetic energy the impact throws up or
     // sideways out of the pool (liquid at or above its surface: its sideways and upward speed), at its peak over
-    // `seconds` after contact, over the block's at contact. Held to V1's (the V2 finish push: match V1), not
-    // docs/v2.md 4.4's ≤ 0.3: V1's landing turns its fall sideways (move.js land, MV-5), 2.48 of the incoming
-    // (measured on V1, 2026-10-22: tools/v2/runs-browser-check.mjs --v1 --outcomes splash), within keTol of it
-    v1: 2.48,
-    keTol: 0.25,
+    // `seconds` after contact, over the block's at contact: some (a crown is thrown), at most keRatio.
+    // Design decision (2026-10-22, delegated by the user): V2's up-and-out crown (columns.js COLUMN), not V1's level
+    // throw of every landed cell (move.js land: 2.48 of the incoming, measured on V1 2026-10-22,
+    // tools/v2/runs-browser-check.mjs --v1 --outcomes splash), which the finish push had held V2 to (MV-5).
+    keRatio: 0.3,
     seconds: 0.75,
   },
   yield: {
     phase: 'P2',
-    // MV-8 (the V2 finish push, "match V1"): V1 has no yield stress (react.js), so a 4³ block of mud levels as
-    // water does, to V1's whole cells: measured on V1 (2026-10-22, tools/v2/runs-browser-check.mjs, and the bench's
-    // own run: mud and water each a cell deep over 64 columns at 5 s). V2's liquid is fills, not cells: mud stands
-    // no taller than V1's cell, and water spreads to a layer or less.
+    // "slope rises with yield" (docs/v2.md 4.4): from a 4³ block, mud stands taller than water by more than
+    // the bench's level tolerance and holds a mound well over V1's one-cell layer, and water spreads to a layer
+    // or less. How tall mud stands is v2's dead band (5.4: "rest and yield are one knob"; shaders/v2.js YIELD),
+    // not a number the bench can derive: real mud (a Bingham plastic of tens of Pa, Coussot, Mudflow Rheology
+    // and Dynamics, 1997, which today's MUD row cites) would hold a mound of only ~0.1 m (a third of a cell)
+    // from this block at 2 g; a game mud that reads as mud from the god view is a game multiplier on that.
+    // Design decision (2026-10-22, delegated by the user): mud holds a mound, as Noita's lava and real mud do.
+    // V1's mud levels to a cell over 64 columns (measured 2026-10-22, tools/v2/runs-browser-check.mjs), which the
+    // finish push matched (MV-8) and this reverts. The column passes' CPU twin stands it 1.95 cells tall at 5 s
+    // (tools/v2/runs-check.mjs).
     seconds: 5,
-    mudPeak: 1,
+    tallerCm: LEVEL_CM,
+    moundPeak: 1.5,
     waterPeak: 1,
   },
   // ---- solids (docs/v2.md 5.3, 5.5 R1-R2) ----
@@ -150,14 +157,17 @@ export const OUTCOMES = {
   // ---- fire (docs/v2.md 5.5 R8) ----
   flameWood: {
     phase: 'P2',
-    // "Two 1,000 °C flames now light a wooden block within a second or two" (R8). R8 makes ignition a
-    // chance (flammability per second per flame) and FIRE short-lived (~0.5-1 s) and buoyant, so one trial
-    // proves little: the scene is `trials` blocks in walled bays, each with its own two flames, and at least
-    // `lit` of them must light within `seconds`. A design that lights 19 times in 20 passes 97 % of the time,
-    // 9 in 10 89 %, a coin flip 11 %. TPT's touchstone: FIRE lives 120-169 frames and lights a neighbour
-    // with chance Flammable/1000 a frame (WOOD's Flammable is 20: 2 % a frame per touching flame at 60 fps),
-    // so two flames light wood within 2 s 99 % of the time
+    // "Fire lights a wooden block within a second or two" (R8): the fire brush held to its corner for `held`
+    // s, as a player lights wood (tests/fire.js). Ignition is partly a chance and FIRE short-lived and
+    // buoyant, so one trial proves little: the scene is `trials` blocks in walled bays, each with its own
+    // brush, and at least `lit` of them must light within `seconds`. A design that lights 19 times in 20
+    // passes 97 % of the time, 9 in 10 89 %, a coin flip 11 %. TPT's touchstone: FIRE lives 120-169 frames
+    // and lights a neighbour with chance Flammable/1000 a frame (WOOD's Flammable is 20: 2 % a frame per
+    // touching flame at 60 fps), so a held flame lights wood within 2 s 99 % of the time. Design decision
+    // (2026-10-22, delegated by the user): V2 lights fuel by touch too (contact.js CT_TOUCH_LIGHT, ctHotFront:
+    // TPT, Minecraft), so most bays light within the brush's first ticks.
     seconds: 2,
+    held: 1,
     trials: 6,
     lit: 5,
   },

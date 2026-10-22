@@ -33,6 +33,20 @@ export const RAY_PHOTON_MS = Math.min(RAYS.PHOTON_V, RAYS.RAY_V_MAX) * V1_STEP_M
 // a neutron of energy e (MeV): shaders/rays.js neutSpeed, NEUT_V·√(e/NEUT_E_FAST) to [NEUT_V_THERMAL, RAY_V_MAX]
 export const rayNeutronMS = e => Math.min(RAYS.RAY_V_MAX, Math.max(RAYS.NEUT_V_THERMAL, RAYS.NEUT_V * Math.sqrt(e / RAYS.NEUT_E_FAST))) * V1_STEP_MS;
 export const RAY_NEUTRON_FAST_MS = rayNeutronMS(RAYS.NEUT_E_FAST);
+// Design decision (2026-10-22, delegated by the user): light refracts. A photon bends by Snell's law where it
+// crosses into clear matter of another refractive index, and past the critical angle it reflects (total internal
+// reflection), as The Powder Toy's photons bend in GLAS (its GLASS_IOR) and real light does: glass 1.5, water
+// 1.333, ice 1.31, all else 1 (particles.js dPhotonStep). (The finish push had removed it, EL-4, only because V1's
+// rays have none.) Its class k (1 + its row here, 0 for 1) packs into a photon's step.
+export const PHOTON_IOR = Object.freeze([[E.GLASS, 1.5], [E.WATER, 1.333], [E.ICE, 1.31]]);
+/** Snell's law for a unit direction across a face of unit normal (pointing back into the medium it leaves),
+ * ratio n1/n2: the refracted direction, or the reflection past the critical angle (CPU reference of the photon
+ * step's bend: particles.js dPhotonMoved). */
+export function refractDirection(direction,normal,ratio) {
+  const dot=direction.reduce((s,x,i)=>s+x*normal[i],0),k=1-ratio*ratio*(1-dot*dot);
+  if(k<0) return direction.map((x,i)=>x-2*dot*normal[i]);
+  return direction.map((x,i)=>ratio*x-(ratio*dot+Math.sqrt(k))*normal[i]);
+}
 // A charge's blast energy (J) from V1's blast.P alone (elements.js EXPLOSIVE_P: C-4 200, nitroglycerin 183,
 // TNT 148, gunpowder 60), on the one calibration V2's pressure takes (pressure.js specialBlastEnergy: gunpowder's
 // energy per its blast.P², so a charge's acoustic quarter comes out at its blast.P). V1 never sizes a blast by

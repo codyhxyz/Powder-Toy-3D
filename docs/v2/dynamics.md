@@ -226,8 +226,13 @@ memory grows with explored active air; compression/eviction is not implemented.
   Material heat from products and accepted rays uses foundation source ledgers.
 - Photon core0 bits8..23 are life (V1 steps), bits24..31 the medium it was
   emitted in; its reserved bank word is 0. Rays run once a V1 step (the ray
-  stages' sub-steps, gated by lists rayGate), fly through clear matter dimming
-  by Beer-Lambert and do not refract (V1 shaders/rays.js; WS-F 2026-10-22).
+  stages' sub-steps, gated by lists rayGate) and fly through clear matter
+  dimming by Beer-Lambert (V1 shaders/rays.js; WS-F 2026-10-22). A photon
+  bends by Snell's law where the refractive index changes (glass 1.5, water
+  1.333, ice 1.31: dynamics-reference.js PHOTON_IOR), and reflects past the
+  critical angle, the bend its step's one interaction (design decision,
+  2026-10-22, delegated by the user: The Powder Toy's photons bend in glass;
+  the finish push had removed it, EL-4, to match V1's straight rays).
 - DDA has an analytical nx+ny+nz+3 bound for in-box crossings; non-progress
   retains the packet (or shields a blast), never skips a wall. Closed boxes
   land matter at boundaries; ray outflow is explicitly counted at control[16].

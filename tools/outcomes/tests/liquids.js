@@ -285,7 +285,7 @@ export const hole = {
 
 export const splash = {
   name: 'splash', group: 'liquids', size: [32, 16, 32], needs: ['WATER'], cost: 70,
-  title: 'a block dropped into a pool splashes as much of its kinetic energy out of it as V1\'s (V1 measured: OUTCOMES.splash.v1)',
+  title: 'a block dropped into a pool throws a crown, at most 0.3 of its kinetic energy out of it',
   audit: 'audit-liquids B5, B6: a liquid cell that lands gets a random sideways speed of 0.9 cells/step plus 0.3·|vy| (per component up to V_MAX), so a landing makes kinetic energy, not spends it (×160-210 from a 1-cell drop)',
   expressible: (e) => (e.info.velocity ? null : `${e.name} reports no complete cell velocities`),
   async run(e) {
@@ -297,7 +297,7 @@ export const splash = {
     // the ratio is the energies'), all of it, and of what is at or above the surface going sideways or up: the
     // splash. Its fall back is not counted (the downward part of its speed), so a drop thrown level counts its throw
     // whether it is a cell sliding on the surface (V1 move.js land: v.y = 0, the throw sideways) or a packet already
-    // falling a tick after it left (V2's crown, columns.js colSplash)
+    // falling a tick after it left (V2's crown, columns.js colCrown)
     const water = e.id('WATER');
     const thrown = (vx, vy, vz) => vx * vx + vz * vz + Math.max(vy, 0) ** 2;
     const energy = (g) => {
@@ -358,8 +358,9 @@ export const splash = {
     return {
       headline: `the block met the pool at ${r2(vIn)} m/s (free fall: ${r2(vIdeal)}); at its peak, ${r2(peakAt)} s after contact, the splash carried ${r2(ratio)} of that energy (${peakCells} cells); all liquid at most ${r2(peakAll / incoming)}`,
       criteria: [
-        crit('splash kinetic energy / incoming (peak), off V1\'s', r2(ratio), Math.abs(ratio / O.v1 - 1) <= O.keTol, `V1's ${O.v1} ± ${100 * O.keTol} %`),
+        crit('splash kinetic energy / incoming (peak)', r2(ratio), ratio <= O.keRatio, `≤ ${O.keRatio}`),
         crit('mass exact', r3(m - m0), Math.abs(m - m0) < 1e-6, '0', 'cells'),
+        crit('a crown is thrown (splash energy out of the pool)', r2(ratio), ratio > 0, '> 0'),
       ],
       evidence: [`fell ${r2(fallTime)} s to contact at ${r2(contact)} s; after contact:\n${hist.join('\n')}`],
       numbers: { ratio, incoming, vIn, vIdeal, peakAll: peakAll / incoming, peakAt },
@@ -369,8 +370,8 @@ export const splash = {
 
 export const yieldSlope = {
   name: 'yield', group: 'liquids', size: [16, 8, 16], needs: ['WATER', 'MUD'], cost: 140,
-  title: 'mud levels as V1\'s does (no yield stress), and water spreads to a layer or less',
-  audit: 'MV-8 (the V2 finish push): V1 has no yield stress (react.js: a liquid flows until the level evens out), so V1\'s mud levels to a cell over 64 columns from a 4³ block within 1 s; V2\'s yield dead band held a mound',
+  title: 'slope rises with yield: mud holds a mound, water spreads',
+  audit: 'audit-liquids B9: viscosity maps only to speed (flow, drag), with no yield, so mud and slime level into 1-2 cell films (V1 does: a 4³ block of mud is a cell deep over 64 columns). Design decision (2026-10-22, delegated by the user): V2 keeps its yield, mounds as Noita\'s lava and real mud',
   async run(e, ctx) {
     const O = OUTCOMES.yield;
     const one = async (name) => {
@@ -383,10 +384,12 @@ export const yieldSlope = {
       return { peak, cols, map: mapText(16, 16, (x, z) => amountChar(g, x, z)) };
     };
     const water = await one('WATER'), mud = await one('MUD');
+    const taller = cm(mud.peak - water.peak);
     return {
       headline: `after ${O.seconds} s a 4³ block stands ${r2(mud.peak)} cells tall as mud over ${mud.cols} columns, ${r2(water.peak)} as water over ${water.cols}`,
       criteria: [
-        crit('mud levels as V1\'s (its peak)', r2(mud.peak), mud.peak <= O.mudPeak, `≤ V1's ${O.mudPeak}`, 'cells'),
+        crit('mud stands taller than water', r2(taller), taller > O.tallerCm, `> ${O.tallerCm}`, 'cm'),
+        crit('mud holds a mound (its peak)', r2(mud.peak), mud.peak >= O.moundPeak, `≥ ${O.moundPeak}`, 'cells'),
         crit('water spreads to a layer or less', r2(water.peak), water.peak <= O.waterPeak, `≤ ${O.waterPeak}`, 'cells'),
       ],
       evidence: [`mud per column (tenths of a cell; A = 1, B = 2 …):\n${mud.map}`, `water per column:\n${water.map}`],

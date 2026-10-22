@@ -194,10 +194,11 @@ export const openNear = (ambient = CONTACT_DEFAULT_MODES.ambient) =>
 export function airborneReference(packet, host, seed, near = openNear(), modes = CONTACT_DEFAULT_MODES, charge = AIRBORNE_NO_CHARGE) {
   const { faces, inBlock, trailing, onFloor = 0 } = near;
   // what it is, as it comes into the tick, to each face but the one its host stands in: V1's moving cell
-  // to its neighbours (react.js nFire, hotTouch), for their own steps after it (contact.js ctPacketTouch;
-  // particles.js react marks each, the block pass and the electric pass read them)
+  // to its neighbours (react.js nFire, hotTouch; its fire and burning front on a partner), for their own
+  // steps after it (contact.js ctPacketTouch, the face's axis bit; particles.js react marks each, the block
+  // pass and the electric pass read them)
   const v0 = unpackContact(packet.core, packet.bank), hostFire = +((host.core[0] & 255) === E.FIRE);
-  const touch = FACE6.map((_, f) => (f === trailing || !faces[f] ? 0 : ctPacketTouch(v0, faces[f].core[0] & 255, hostFire, +(inBlock[f >> 1] === f))));
+  const touch = FACE6.map((_, f) => (f === trailing || !faces[f] ? 0 : ctPacketTouch(v0, faces[f].core[0] & 255, hostFire, 1 << (f >> 1), +(inBlock[f >> 1] === f))));
   const refused = { state: AIRBORNE.REFUSED, particle: packet, host, faces, source: 0n, sink: 0n, requests: 0, touch };
   const carrier0 = BigInt(AIR_CAPACITY_Q) * BigInt(cTq(packet.core));
   try {

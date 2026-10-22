@@ -41,9 +41,11 @@ Required foundation declarations: `Material`, `P.tick`, `inGrid`, `markBusy`,
   at ambient there, `VOID_AIR_A`), with its ambient-heat setting. Closed sides and
   periodic seams must not silently exchange with an ambient reservoir.
 - Motion must use `contactDensity`, or an equivalent shared ideal-gas rule,
-  and own gas diffusion age. Contact owns FIRE/SMOKE life; PLASMA has no life rule
-  (V1 react.js: it leaves only by cooling past its 4700 °C cold change), and the old
-  prototype fade for STEAM/CAUSTIC_GAS/PLASMA must not run.
+  and own gas diffusion age. Contact owns FIRE/SMOKE/PLASMA life: plasma fades in
+  about 0.5 s (`CT_PLASMA_FADE_TICK`; design decision 2026-10-22, delegated by the
+  user: TPT's PLSM burns out as its life runs down; V1 has no life rule for it) and
+  still leaves by cooling past its 4700 °C cold change. The old prototype fade for
+  STEAM/CAUSTIC_GAS must not run.
 
 CPU `contactReference(cores, banks, tick, positions, pending, valid, outside)`
 accepts optional eight-entry valid and outside-count arrays. Each outside entry
@@ -282,23 +284,40 @@ retry; no gas request is emitted before conversion succeeds.
 
 ### Fuel, devices and burning
 
-Ignition is V1's (react.js combustion), **thermal only**, re-tested every tick: a
-fuel burns while it is at its ignition point, or past its flash point with a flame
-(a FIRE cell, `nFire`) on one of its six faces, touching air, oxygen or a flame,
-and not smothered (CO₂ at 30% of its gas). Cooling it under its ignition point
-(water, ice, a cold heat sink, LN₂) or taking its air puts it out; the `burning`
-flag says it burned this tick. There is no contact ignition: no random
-`fire/60` flame-touch chance, no deterministic "hot front" from a burning
-neighbour, and a burning fuel is no flame to its neighbours (V1's `nFire` counts
-FIRE). Heat reaches a fuel by conduction and flames lick into the air beside a
-burning one (`ctLick`), as in V1. An explosive's flame roll is `blast.flame` a
-step, the tick's four steps, when any of its six faces holds a flame.
+Ignition is V1's (react.js combustion) plus **fire lighting fuel by touch**. V1's
+rule, re-tested every tick: a fuel burns while it is at its ignition point, or
+past its flash point with a flame (a FIRE cell, `nFire`) on one of its six faces,
+touching air, oxygen or a flame, and not smothered (CO₂ at 30% of its gas). Cooling
+it under its ignition point (water, ice, a cold heat sink, LN₂) or taking its air
+puts it out; the `burning` flag says it burned this tick. And fire lights the fuel
+it touches, on its block partners (each face is one half the ticks): a burning
+front (`ctHotFront`: a flame at 350 °C or hotter, or a burning fuel, at least the
+fuel's ignition point hot and settled this tick) lights it outright (a fuel whose
+flash point is under its ignition point only once past its flash point), and a
+flame or burning fuel lights it with `CT_TOUCH_LIGHT` (1/60) a tick each, 0.5/s
+per touching flame. A flying packet marks the same (`CT_TOUCH_FIRE` an axis,
+`CT_TOUCH_FRONT`). A fuel lit by touch takes the flame's heat up to its ignition
+point (a declared source, in the burn's one energy write), so V1's thermal rule
+holds it alight and cooling still puts it out. Heat also reaches a fuel by
+conduction, and flames lick into the air beside a burning one (`ctLick`), as in
+V1. An explosive's flame roll is V1's: `blast.flame` a step, the tick's four
+steps, when any of its six faces holds a flame (a burning fuel is no flame to it,
+`nFire`).
 
-*Decision record (2026-10-21, V2 finish push):* the hot front (added at
-`9e027c71` to pass the six-bay `flameWood` GPU gate) and the `fire/60` chance were
-an agent's design additions; no record of the user approving them was found in
-docs, code or history. The finish push matches V1 wherever no user approval is
-recorded, so both are gone.
+*Decision record (TH-04).* The hot front (added at `9e027c71`) and the `fire/60`
+flame-touch chance were removed in the V2 finish push (2026-10-21) to make
+ignition thermal only, because no user approval was recorded for them. That
+record also said V1 lights none of the outcome bench's six `flameWood` bays; it
+was wrong about the game: the bench's scene put two flames down once, a one-frame
+dab that lives about 0.15 s, while a player holds the fire brush, and held fire
+lights wood in V1 too (V1's heat alone does it). The scene is now the held brush
+(tools/outcomes/tests/fire.js). *Design decision (2026-10-22, delegated by the
+user):* fire lights fuel by touch again, as in The Powder Toy (a flame lights a
+flammable neighbour, which burns at the flame's heat) and Minecraft (fire spreads
+to the wood beside it): the hot front and the touch chance are back, now with the
+six-face counts, V1's re-tested burning and the pilot heat that keeps a touch-lit
+fuel alight under that re-test. `flameWood` is held to lighting at least 5 of its
+6 bays within 2 s.
 
 Burning adds V1's `BURN_P` a step to its cell, the tick's as its GAS request's puff
 (`CT_BURN_PUFF_PA`), its burnout step too. Matter becoming gas adds no pressure of
@@ -376,7 +395,7 @@ future action; static latent banks and steady DC lamps can sleep.
 | 26 melt rows, LAVA identity | every melt; iron/glass/gold heating–cooling–remelting cycles |
 | All 14 reaction rows, wildcard exclusions | actual products, temperature gates, energy/caps |
 | All 13 ordinary fuels | actual burn or low-flash ignition; extensive fuel; finite plume debit; burnout |
-| FIRE, SMOKE, PLASMA | FIRE/SMOKE finite life, carrier/residual-preserving sink; PLASMA lasts while hot |
+| FIRE, SMOKE, PLASMA | finite life (plasma's ~0.5 s), carrier/residual-preserving sink; PLASMA also cools out |
 | WATER/PLANT, MOSS, FUNGUS/rots rows | actual growth/rot witnesses, six-face damp and moss site, drying, explicit ledger |
 | CLOUD | boiling/freezing, six-face rain and evaporation, charge from snow falling onto it (grid and flying) |
 | ACID, CAUSTIC_GAS | generic acidic pair dispatch, victim eligibility, finite acid life, fizz |
@@ -418,8 +437,9 @@ The first check currently has 31 passing groups, including 250 mixed-block
 source/sink property cases, all phase products, edge valid-mask conservation,
 requests, and finite thermal rest. Naga validates both an explicit shared ABI
 fixture and the actual foundation `v2BlockWGSL` with contact installed.
-The hot-ignition check covers V1's thermal-only ignition: no flame-touch or
-hot-front ignition from any source (partner, outside, flying), ignition-point and
+The hot-ignition check covers ignition: the burning front and the touch chance
+(partner and flying; an outside flame is no touch), the pilot heat, a flame
+lighting cold wood in a block that burns on after it, ignition-point and
 flash-point boundaries, burning re-tested (cooling and smothering put it out),
 explosives' per-tick flame roll, finite fuel and the burning puff, exact ledgers,
 shuffled disjoint-block replay, custom contacts and AIR/WATER identities.

@@ -18,14 +18,18 @@ const cell = (id, T = ELEMENTS[id].temp) => C.ctNew(id, Math.round((T + 273.25) 
 const owned = (...ids) => ids.map(id => cell(id));
 const wood = cell(E.WOOD, 450); wood.burning = 1;
 const closed = owned(E.WOOD, E.WOOD, E.WOOD);
-// V1 react.js re-tests combustion every step: below its ignition point a lit fuel goes out, air or no air,
-// and without a flame face past its flash point it never lights (no flame-touch or hot-front ignition)
+// V1 react.js re-tests combustion every step: below its ignition point a lit fuel goes out, air or no air.
+// A flame or burning fuel on a partner lights cold fuel by touch (contact.js CT_TOUCH_LIGHT's design decision,
+// 2026-10-22: a burning front outright), its heat to its ignition point, so it burns on.
 {
   const cooled = cell(E.WOOD, 280); cooled.burning = 1;
   const out = C.ctStepAtmosphere(cooled, owned(E.EMPTY, E.EMPTY, E.EMPTY), 1, 3, 0, 0, 3, 0, C.contactAmbientQ(20));
   assert.equal(out.burning, 0, 'cooled under ignition: out'); assert.equal(out.life, cooled.life, 'cooled: no fuel spent');
   for (const source of [cell(E.FIRE, 1000), Object.assign(cell(E.WOOD, 1000), { burning: 1 }), Object.assign(cell(E.OIL, 1000), { burning: 1 })])
-    for (let seed = 0; seed < 2000; seed++) assert.equal(C.ctStepAtmosphere(cell(E.WOOD, 20), [source, cell(E.EMPTY), cell(E.WALL)], seed, 3, 0, 0, 3, 0, C.contactAmbientQ(20)).burning, 0, 'cold wood beside a flame or burning fuel');
+    for (let seed = 0; seed < 200; seed++) {
+      const lit = C.ctStepAtmosphere(cell(E.WOOD, 20), [source, cell(E.EMPTY), cell(E.WALL)], seed, 3, 0, 0, 3, 0, C.contactAmbientQ(20));
+      assert.equal(lit.burning, 1, 'cold wood beside a flame or burning fuel catches'); assert.ok(lit.tq >= C.ctRow(E.WOOD).igniteQ);
+    }
 }
 const step = (ns, out, input = wood) => C.ctStepAtmosphere(input, ns, 1, ...out, 0, C.contactAmbientQ(20));
 const extinguished=C.ctStep(wood, closed, 1);
@@ -229,6 +233,34 @@ function replay(reverse=false) {
 const forward=replay(), reverse=replay(true);
 assert.deepEqual(reverse,forward,'frozen outside snapshot is independent of block list order');
 console.log('16^3 woodBurns, actual offsetOf ticks 1–60, forward/reverse list:',JSON.stringify({tick3:forward.tick3,burningTicks:forward.burningTicks,hot:forward.hot}));
+
+// The outcome bench's flameWood corner (tools/outcomes/tests/fire.js) on the contact alone: two 1,000 °C flames
+// against a cold 4³ wooden block's edge, on the real block offsets. Fire lights the wood it touches (contact.js
+// CT_TOUCH_LIGHT's design decision, 2026-10-22, delegated by the user: The Powder Toy, Minecraft), and the wood
+// burns on after the flames are gone. (No gas motion here: the flames stay where they are put until they die.)
+{
+  let cores=airGrid.map(c=>new Uint32Array(c)),banks=Array(4096).fill(0);
+  for(let z=6;z<=9;z++)for(let y=0;y<=3;y++)for(let x=6;x<=9;x++)cores[index([x,y,z])]=makeMaterial(E.WOOD,20).core;
+  for(const y of [0,1])cores[index([5,y,6])]=makeMaterial(E.FIRE,1000).core;
+  const woodCells=[];for(let z=6;z<=9;z++)for(let y=0;y<=3;y++)for(let x=6;x<=9;x++)woodCells.push(index([x,y,z]));
+  let litAt=null, flamesGoneAt=null;
+  for(let tick=1;tick<=60;tick++) {
+    const before=cores.map(c=>new Uint32Array(c));
+    for(const c0 of blocks(offsetOf(tick))) {
+      const positions=Array.from({length:8},(_,i)=>plus(c0,off8(i)));
+      const valid=positions.map(p=>edgeCell(p,dims,EDGE.SOLID)!==null);
+      const outside=positions.map((p,i)=>counts(before,p,off8(i),EDGE.SOLID));
+      const out=C.contactReference(positions.map((p,i)=>valid[i]?cores[index(p)]:wall),positions.map((p,i)=>valid[i]?banks[index(p)]:0),tick,positions,new Uint32Array(8),valid,outside);
+      for(let i=0;i<8;i++)if(valid[i]){cores[index(positions[i])]=out.cores[i];banks[index(positions[i])]=out.banks[i];}
+    }
+    const burning=woodCells.filter(s=>(cores[s][0]&255)===E.WOOD&&((cores[s][1]>>>24)&1)).length;
+    if(litAt===null&&burning>0)litAt=tick;
+    if(flamesGoneAt===null&&[0,1].every(y=>(cores[index([5,y,6])][0]&255)!==E.FIRE))flamesGoneAt=tick;
+    if(tick===60)console.log(`flameWood corner on the CPU: lit at tick ${litAt}, flames gone at tick ${flamesGoneAt}, ${burning} wood cells burning at 1 s`);
+    if(tick===60)assert(burning>0,'the wood burns on after the flames are gone');
+  }
+  assert(litAt!==null&&flamesGoneAt!==null&&litAt<flamesGoneAt,'the flames light the wood before they die');
+}
 
 // Opaque native bits must never pass through the known lossy canonical stage pack.
 const opaque=makeMaterial(E.SMOKE).core; opaque[2]=0xaabbccdd;opaque[3]=0x12345678;

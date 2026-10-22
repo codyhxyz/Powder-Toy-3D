@@ -126,12 +126,13 @@ fn dReactCount(n: vec4u, present: bool) -> vec4i {
 fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u32, inBlock: vec3u, trailing: u32, onFloor: i32, seed: i32, charge: DReactCharge) -> DReact {
   var v = ctUnpack(packet.core, packet.bank);
   // what it is, as it comes into the tick, to each face but the one its host stands in (V1's moving cell
-  // to its neighbours: react.js nFire, hotTouch), for their own steps after it (ctPacketTouch)
+  // to its neighbours: react.js nFire, hotTouch; its fire and burning front on a partner, the face's axis bit),
+  // for their own steps after it (ctPacketTouch)
   var touch: array<i32, 6>;
   let hostFire = select(0, 1, cid(host.core) == u32(CT_FIRE));
   for (var f = 0u; f < 2u * dAxes(); f++) {
     if (f == trailing || ((valid >> f) & 1u) == 0u) { continue; }
-    touch[f] = ctPacketTouch(v, i32(cid(faces[f].core)), hostFire, select(0, 1, inBlock[f >> 1u] == f));
+    touch[f] = ctPacketTouch(v, i32(cid(faces[f].core)), hostFire, i32(1u << (f >> 1u)), select(0, 1, inBlock[f >> 1u] == f));
   }
   let refused = DReact(packet, host, array<Material, 3>(faces[inBlock.x], faces[inBlock.y], faces[inBlock.z]), D_REACT_REFUSED, vec2u(0u), vec2u(0u), 0u, touch);
   let carrier0 = energyMul(D_CARRIER_Q, cTq(packet.core));

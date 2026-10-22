@@ -6,7 +6,7 @@ import { uniformStruct } from '../../gpu/params.js';
 import { STAGE } from '../../gpu/kernels.js';
 import { TERMINAL_MS } from '../../v2/gravity.js';
 import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS, PACKET_GRAIN_ODDS, LEGACY_PRESSURE_PA, legacyPressureToPa,
-  RAY_STEPS_PER_TICK, RAY_NEUTRON_FAST_MS, PACKET_KEEP, PACKET_SUPPORTED_KEEP } from '../../v2/dynamics-reference.js';
+  RAY_STEPS_PER_TICK, RAY_NEUTRON_FAST_MS, PACKET_KEEP, PACKET_SUPPORTED_KEEP, PHOTON_IOR } from '../../v2/dynamics-reference.js';
 import { V1_STEP_MS, STEPS_PER_TICK, STEP_S } from '../../v2/gravity.js';
 import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
@@ -218,13 +218,29 @@ fn dOptical(id: u32) -> vec4f { switch id {
 ${ELEMENTS.map(e => `case ${e.id}u: { return vec4f(${(e.sigma ?? [0,0,0]).map(f).join(',')},${f(e.render === R.OPAQUE ? -(1+(e.reflect ?? 0)) : 0)}); }`).join('\n')}
 default: { return vec4f(0); } } }
 fn dPhotonEnergy(p: DParticle) -> vec3f { return bitcast<vec3f>(p.tail.xyz); }
+// A photon's refractive index class (dynamics-reference.js PHOTON_IOR: 1 + its row, 0 for an index of 1) and the
+// index of a class.
+fn dIORClass(id: u32) -> u32 { return ${PHOTON_IOR.reduceRight((acc, [id], k) => `select(${acc}, ${k + 1}u, id == ${id}u)`, '0u')}; }
+fn dIOR(k: u32) -> f32 { return ${PHOTON_IOR.reduceRight((acc, [, n], k) => `select(${acc}, ${f(n)}, k == ${k + 1}u)`, '1.0')}; }
 // A photon after its V1 step: travelled, the share of its step's flight it made (short of a face it stops at);
-// flip, the axis it reflects across (3: none); light, its RGB.
-fn dPhotonMoved(p: DParticle, light: vec3f, travelled: f32, flip: u32) -> DParticle {
+// flip, the axis of the face it stops at (3: none); bend, 0 to reflect across it, else 1 | its index class
+// before << 1 | after << 3 to refract across it (dPhotonStep); light, its RGB.
+fn dPhotonMoved(p: DParticle, light: vec3f, travelled: f32, flip: u32, bend: u32) -> DParticle {
   var q = p; let delta = p.velocity * D_RAY_DT / D_CELL;
   if (travelled >= 1.0) { q.position = p.position + delta; }
   else { q.position = p.position + delta * max(0.0, travelled - 0.00001 / max(length(delta), 0.00001)); }
-  if (flip < 3u) { q.velocity[flip] = -p.velocity[flip]; }
+  if (flip < 3u && bend == 0u) { q.velocity[flip] = -p.velocity[flip]; }
+  if (flip < 3u && bend != 0u) {
+    // Snell's law across the face (dPhotonStep ruled out total internal reflection): the velocity along the face
+    // scales by n1/n2, the part across it keeps its sign and the speed its size (dynamics-reference.js
+    // refractDirection); the photon goes on from just past the face, in the new medium
+    let eta = dIOR((bend >> 1u) & 3u) / dIOR(bend >> 3u);
+    let v = p.velocity; let speed2 = dot(v, v); let across = v[flip];
+    q.velocity = v * eta;
+    q.velocity[flip] = sign(across) * sqrt(max(0.0, speed2 - eta * eta * (speed2 - across * across)));
+    q.position = p.position + delta * travelled;
+    q.position[flip] = round(q.position[flip]) + sign(across) * 0.001;
+  }
   q.tail = vec4u(bitcast<vec3u>(light), p.tail.w);
   return q;
 }
@@ -512,8 +528,12 @@ fn dShockWall(t: u32, pid: u32, u: f32, landing: bool, particleId: u32) {
   if (dShockActs(pid, ${E.WALL}u, v)) { atomicStore(&control[D_SET_OFF + t], particleId); }
 }
 `;
-// V1 shaders/rays.js raysAdvanceFrag, a photon's step (a stage runs one V1 step: D_RAY_DT). It flies straight on
-// through clear matter (V1 has no refraction: EL-4), losing exp(-sigma·path) of its light to it (Beer-Lambert with the
+// Design decision (2026-10-22, delegated by the user): light refracts, as The Powder Toy's photons bend in GLAS and
+// real light does (dynamics-reference.js PHOTON_IOR); the finish push had removed it (EL-4) only to match V1.
+// V1 shaders/rays.js raysAdvanceFrag, a photon's step (a stage runs one V1 step: D_RAY_DT). It flies on through
+// clear matter, bending where the refractive index changes (Snell's law, past the critical angle a reflection; the
+// bend is its step's one interaction, as a reflection is), losing
+// exp(-sigma·path) of its light to it (Beer-Lambert with the
 // renderer's extinction; by a liquid's fill, EL-9), and stops at opaque matter: a metal keeps its reflectance share and
 // reflects off the face it came in across, anything else takes it all. Its step's heat goes to the last cell it lost
 // light to (V1's dep). Out of the grid it is gone, past a loop edge too (V1 !inGrid: EL-5). It fades at the end of its
@@ -524,19 +544,20 @@ const D_PHOTON_HEAT: f32 = ${f(RAYS.PHOTON_HEAT / 3)};
 const D_PHOTON_E_MIN: f32 = ${f(RAYS.PHOTON_E_MIN)};
 // the cells a V1 step's flight (RAY_V_MAX cells) crosses at most, with the one it starts in
 const D_PHOTON_CELLS: u32 = ${3 * Math.ceil(RAYS.RAY_V_MAX) + 1}u;
-struct DPhotonStep { light: vec3f, heat: f32, cell: u32, travelled: f32, flip: u32, gone: bool }
+struct DPhotonStep { light: vec3f, heat: f32, cell: u32, travelled: f32, flip: u32, gone: bool, bend: u32 }
 fn dPhotonStep(local: vec3f, delta: vec3f, light0: vec3f) -> DPhotonStep {
-  var out = DPhotonStep(light0, 0.0, D_NONE, 1.0, 3u, false);
+  var out = DPhotonStep(light0, 0.0, D_NONE, 1.0, 3u, false, 0u);
   var cell = vec3i(floor(local)); var next = vec3f(1e30); var stride = vec3f(1e30); let step = vec3i(sign(delta));
   for (var a = 0u; a < 3u; a++) { if (delta[a] != 0.0) {
     stride[a] = abs(1.0 / delta[a]); next[a] = (f32(cell[a] + select(0,1,delta[a]>0.0)) - local[a]) / delta[a];
   } }
-  let len = length(delta); var entry = 0.0; var entryAxis = 3u; var done = false;
+  let len = length(delta); var entry = 0.0; var entryAxis = 3u; var done = false; var medium = 0u;
   for (var crossed = 0u; crossed < D_PHOTON_CELLS && !done; crossed++) {
     var axis = 0u; if (next.y < next.x) { axis = 1u; } if (next.z < next[axis]) { axis = 2u; }
     if (!inGrid(cell)) { out.gone = true; out.travelled = entry; done = true; }
     else {
-      let slot = slotOf(cell); let m = loadMaterial(slot); let optics = dOptical(cid(m.core));
+      let slot = slotOf(cell); let m = loadMaterial(slot); let optics = dOptical(cid(m.core)); let ior = dIORClass(cid(m.core));
+      if (crossed == 0u) { medium = ior; }
       if (optics.w < 0.0) {
         let r = max(0.0, -optics.w - 1.0);
         out.heat += dot(out.light, vec3f(D_PHOTON_HEAT)) * (1.0 - r); out.light *= r; out.cell = slot; out.travelled = entry;
@@ -544,6 +565,12 @@ fn dPhotonStep(local: vec3f, delta: vec3f, light0: vec3f) -> DPhotonStep {
           out.heat += dot(out.light, vec3f(D_PHOTON_HEAT)); out.light = vec3f(0); out.gone = true;
         } else { out.flip = entryAxis; }
         done = true;
+      } else if (ior != medium) {
+        // into clear matter of another index: it stops at the face and bends across it (dPhotonMoved), or past
+        // the critical angle reflects off it, still in the medium it was in
+        let eta = dIOR(medium) / dIOR(ior); let cosi = abs(delta[entryAxis]) / len;
+        out.travelled = entry; out.flip = entryAxis; done = true;
+        if (1.0 - eta * eta * (1.0 - cosi * cosi) >= 0.0) { out.bend = 1u | (medium << 1u) | (ior << 3u); }
       } else {
         let exit = min(1.0, next[axis]);
         if (any(optics.xyz > vec3f(0))) {
@@ -569,13 +596,13 @@ fn dPhotonIntegrate(t: u32, particle0: DParticle, local: vec3f) {
   let s = dPhotonStep(local, particle.velocity * D_RAY_DT / D_CELL, dPhotonEnergy(particle));
   if (s.heat > 0.0 && s.cell != D_NONE) {
     particles[t] = particle;
-    let packed = 5u | (min(s.flip, 3u) << 8u) | (select(0u, 1u, s.gone) << 10u) | (u32(round(clamp(s.travelled, 0.0, 1.0) * 65535.0)) << 16u);
+    let packed = 5u | (min(s.flip, 3u) << 8u) | (select(0u, 1u, s.gone) << 10u) | (s.bend << 11u) | (u32(round(clamp(s.travelled, 0.0, 1.0) * 65535.0)) << 16u);
     flight[t] = DFlight(vec4u(s.cell, D_NONE, packed, dKey(particle.id)), vec4f(s.light, s.heat));
     dClaim(s.cell, 0u, dKey(particle.id));
     return;
   }
   if (s.gone) { particles[t].id = 0u; atomicSub(&control[0],1u); noteDead(t); return; }
-  particles[t] = dPhotonMoved(particle, s.light, s.travelled, min(s.flip, 3u));
+  particles[t] = dPhotonMoved(particle, s.light, s.travelled, min(s.flip, 3u), s.bend);
 }
 `;
 export function particlesWGSL(g, nativeHead, stage) {
@@ -787,7 +814,7 @@ export function particlesWGSL(g, nativeHead, stage) {
       // photon its step
       let heat = f.effect.w;
       if (energyFits(before,dHeatEnergy(before,heat))) { after = dAddHeat(before,heat); }
-      p = dPhotonMoved(p, f.effect.xyz, f32(f.destination.z >> 16u) / 65535.0, (f.destination.z >> 8u) & 3u);
+      p = dPhotonMoved(p, f.effect.xyz, f32(f.destination.z >> 16u) / 65535.0, (f.destination.z >> 8u) & 3u, (f.destination.z >> 11u) & 31u);
       if (((f.destination.z >> 10u) & 1u) != 0u) { p.id=0u; atomicSub(&control[0],1u); noteDead(t); }
     } else if (f.destination.z == 2u) {
       let id = contactNuclearMaterial(before.core);

@@ -310,8 +310,8 @@ const nearX = (faces, offset = [0, 0, 0]) => nearOf(faces, CELL, offset, FALLING
   const later = six(() => air()); later[1] = makeMaterial(E.STONE, 1000);
   assert.equal(T(airborneReference(packet(E.STONE, 20), air(20), 11, nearX(later)).particle.core), 20, 'no exchange with a face out of its block');
 }
-// 12. Ignition from a flame beside it: sawdust flying along a flame catches once the flame heats it past its
-// ignition point (V1 react.js combustion: thermal only, re-tested every step).
+// 12. Ignition from a flame beside it: sawdust flying along a flame catches (V1 react.js combustion, re-tested
+// every step, and fire's touch: contact.js CT_TOUCH_LIGHT's design decision, 2026-10-22).
 {
   const out = fly(packet(E.SAWDUST, 20), () => air(20), 120, withFace(0, fire));
   assert(out.log.some(r => cid(r.particle.core) === E.SAWDUST && ((r.particle.core[1] >>> 24) & 1)), 'it catches from the flame beside it');

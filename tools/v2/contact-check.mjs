@@ -151,7 +151,7 @@ test('switch off wins, powered clone controls, TSNS ignores wires, steady DC lam
   assert.equal(elec(ready,[front],0.99).spark,3608);
   assert.equal(C.ctStep(front,ns(),0).spark,3608,'the contact block leaves sparks to the electric pass');
 });
-test('ignition certainty, V1 thermal-only ignition, fuel consumption, smothering and cooling',()=>{
+test('ignition certainty, V1 thermal ignition and touch ignition, fuel consumption, smothering and cooling',()=>{
   const hot=cell(E.WOOD,400),burn=C.ctStep(hot,ns(),0);
   assert.ok(burn.life<hot.life);assert.ok(burn.burning===1);assert.ok(burn.request&2);
   // V1 react.js: Pr += BURN_P a step, the tick's as the GAS request's puff
@@ -159,8 +159,11 @@ test('ignition certainty, V1 thermal-only ignition, fuel consumption, smothering
   for(const neighbors of [ns(cell(E.CO2),cell(E.CO2)),ns(cell(E.WALL),cell(E.WALL),cell(E.WALL))]) {
     const out=C.ctStep(burn,neighbors,0);assert.equal(out.life,burn.life);assert.equal(out.burning,0);
   }
-  // V1 react.js has no contact ignition: a flame beside room-temperature fuel never lights it (only heat does)
-  for(let seed=0;seed<1000;seed++)assert.equal(C.ctStep(cell(E.WOOD),ns(cell(E.FIRE,1000)),seed).burning,0,'no flame-touch ignition');
+  // a hot flame beside room-temperature fuel lights it by touch (contact.js CT_TOUCH_LIGHT's design decision,
+  // 2026-10-22: TPT, Minecraft), V1 lit it by heat alone; a cold one (no burning front) only at its chance
+  for(let seed=0;seed<100;seed++)assert.equal(C.ctStep(cell(E.WOOD),ns(cell(E.FIRE,1000)),seed).burning,1,'flame-touch ignition');
+  let caught=0;for(let seed=0;seed<4000;seed++)caught+=C.ctStep(cell(E.WOOD),ns(cell(E.FIRE,300)),seed).burning;
+  assert.ok(Math.abs(caught/4000-C.CONTACT_CONSTANTS.CT_TOUCH_LIGHT[1])<0.008,`a 300 °C flame: ${caught}/4000`);
   // ...but past its flash point a flame on a face lights it (whiskey's vapour), and without one it doesn't
   assert.equal(C.ctStep(cell(E.WHISKEY,30),ns(cell(E.FIRE,1000)),0).burning,1,'flash point with a flame');
   assert.equal(C.ctStep(cell(E.WHISKEY,30),ns(),0).burning,0,'flash point, no flame');
@@ -169,10 +172,15 @@ test('ignition certainty, V1 thermal-only ignition, fuel consumption, smothering
   const out=C.ctStep(cooled,ns(),0);assert.equal(out.burning,0,'cooled under ignite: out');assert.equal(out.life,cooled.life,'no fuel spent');
   const falling=cell(E.SAWDUST);falling.age=30;assert.equal(C.ctStep(falling,ns(),0).life,falling.life);
 });
-test('fire/smoke life ends, plasma/steam/caustic gas do not fade as prototype',()=>{
+test('fire/smoke life ends, plasma fades in half a second, steam/caustic gas do not fade as prototype',()=>{
   for(const id of [E.FIRE,E.SMOKE]) {const c=cell(id);c.life=1;assert.notEqual(C.ctStep(c,ns(),0).id,id);}
-  // V1 react.js gives plasma no life rule: kept hot it lasts (it leaves by cooling past 4700 °C)
-  const plasma=cell(E.PLASMA,10000);plasma.life=1;assert.equal(C.ctStep(plasma,ns(),0).id,E.PLASMA);
+  // design decision (2026-10-22, delegated by the user): plasma kept at 10,000 °C still fades, in ~0.5 s
+  // (CT_PLASMA_FADE_TICK; V1 gives it no life rule, so kept hot it would last)
+  let plasma=cell(E.PLASMA,10000),ticks=0;
+  while(plasma.id===E.PLASMA&&ticks<600){const before=C.ctEnergy(plasma),out=C.ctStep(plasma,ns(),ticks);
+    assert.equal(C.ctEnergy(out)+out.sink-out.source,before,'exact ledger');plasma={...out,busy:0,source:0n,sink:0n};ticks++;}
+  assert.equal(plasma.id,E.EMPTY,'plasma fades to air');
+  assert.ok(ticks>=28&&ticks<=32,`plasma lasts ${ticks} ticks (0.5 s is 30)`);
   const steam=cell(E.STEAM,110);assert.equal(C.ctStep(steam,ns(steam,steam,steam),0).id,E.STEAM);
   const acid=cell(E.CAUSTIC_GAS);assert.equal(C.ctStep(acid,ns(),0).life,acid.life);
 });

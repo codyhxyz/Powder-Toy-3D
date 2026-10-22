@@ -259,9 +259,15 @@ test('same-brick blast pressure adds exactly the declared acoustic energy withou
     close(pressureEnergy(p)-pressureEnergy(start),100*500*0.25,1e-8);
   }
 });
-test('photons do not refract: V1 has no refraction (EL-4; behaviour in particle-deposition-check)',async()=>{
+test('photon slab exit refracts back, total internal reflection stays inside (PHOTON_IOR; behaviour in particle-deposition-check)',async()=>{
+  const {refractDirection}=await import('../../src/v2/dynamics-reference.js');
+  const incoming=[0.6,-0.8,0],inside=refractDirection(incoming,[0,1,0],1/1.5);
+  const exit=refractDirection(inside,[0,1,0],1.5);
+  exit.forEach((x,i)=>close(x,incoming[i]));
+  assert.ok(refractDirection([0.9,Math.sqrt(1-.9**2),0],[0,-1,0],1.5)[1]<0);
+  // the emitted step bends at an index change (both stages: the move and the claimed move)
   const {particlesWGSL}=await import('../../src/shaders/v2/particles.js');const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');
-  for(const stage of ['integrate','impact']) assert.doesNotMatch(particlesWGSL(gridLayout(16,8,8),nativeDynamicsHead,stage),/refract\(|dIOR/);
+  for(const stage of ['integrate','impact']) assert.match(particlesWGSL(gridLayout(16,8,8),nativeDynamicsHead,stage),/fn dIOR\(/);
 });
 test('actual generated shaders carry the reference conservation and numeric guards',async()=>{
   const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');

@@ -18,6 +18,8 @@ const CONTACT_FULL = 65536;
 export const CONTACT_ELEMENT_COUNT = ELEMENTS.length;
 const LIFE_SCALE = FUEL_Q;
 export const CONTACT_HZ = 60;
+// plasma's life, seconds (CT_PLASMA_FADE_TICK)
+const PLASMA_FADE_S = 0.5;
 // Historical age constants remain for old fixtures; contacts use stored speed
 // in cells/tick, never age times the currently configured gravity.
 export const CONTACT_G_TICK = 19.6 / CELL_M / CONTACT_HZ ** 2;
@@ -159,6 +161,11 @@ export const CONTACT_CONSTANTS = Object.freeze({ ...CONTACT_ENERGY_CONSTANTS,
   CT_FIRE_BURN_TICK: ['f32', PHYS.FIRE_BURN * STEPS_PER_TICK * LIFE_SCALE],
   CT_FIRE_BURN_SPREAD_TICK: ['f32', PHYS.FIRE_BURN_SPREAD * STEPS_PER_TICK * LIFE_SCALE],
   CT_SMOKE_FADE_TICK: ['f32', PHYS.SMOKE_FADE * STEPS_PER_TICK * LIFE_SCALE],
+  // Design decision (2026-10-22, delegated by the user): plasma is a flash, not a lasting gas: it fades in about
+  // PLASMA_FADE_S (its life of 1 spent), as TPT's PLSM burns out when its life runs down and Noita's plasma
+  // bolts flare and are gone. V1 gives it no life rule (it leaves only by cooling past its 4700 °C cold change,
+  // which still holds); the finish push matched that, and this restores V2's fade.
+  CT_PLASMA_FADE_TICK: ['f32', LIFE_SCALE / (PLASMA_FADE_S * CONTACT_HZ)],
   CT_FIRE_TO_SMOKE: ['f32', PHYS.FIRE_TO_SMOKE],   // share of dying flames that leave smoke
   CT_FIRE_MIN_Q: ['i32', q(PHYS.FIRE_MIN_T)],      // flames cooler than FIRE_MIN_T go out
   CT_BURNT_MIN_Q: ['i32', q(PHYS.BURNT_MIN_T)],    // a burnt-out cell is at least this hot
@@ -249,12 +256,21 @@ export const CONTACT_CONSTANTS = Object.freeze({ ...CONTACT_ENERGY_CONSTANTS,
   CT_CLOUD_EVAP_NB: ['i32', PHYS.CLOUD_EVAP_NB],
   CT_STEPS_PER_TICK: ['i32', STEPS_PER_TICK],
   // A flying packet's touch on a cell beside it (ctPacketTouch, the react stage's mark for the cell's own
-  // step): a flame on any of its faces (V1 react.js nFire reads six), matter at its ignition point on a
-  // block partner. A stored mark is these bits under the tick's stamp, CT_TOUCH_STAMP above them
-  // (shaders/v2/state.js).
+  // step): a flame or burning fuel on its block partner along an axis (CT_TOUCH_FIRE times the axis's bit,
+  // 1 2 4: the fire that lights a fuel by touch), a flame on any of its faces (V1 react.js nFire reads six),
+  // matter at its ignition point on a block partner, a burning front on one (ctHotFront). A stored mark is
+  // these bits under the tick's stamp, CT_TOUCH_STAMP above them (shaders/v2/state.js).
+  CT_TOUCH_FIRE: ['i32', 1],
   CT_TOUCH_FLAME: ['i32', 8],
   CT_TOUCH_HOT: ['i32', 16],
+  CT_TOUCH_FRONT: ['i32', 32],
   CT_TOUCH_STAMP: ['i32', 64],
+  // Design decision (2026-10-22, delegated by the user): fire lights fuel by touch, as in The Powder Toy (FIRE
+  // lights a flammable neighbour with chance Flammable/1000 a frame) and Minecraft (fire spreads to the wood
+  // beside it). A flame or burning fuel on a block partner lights a fuel with this chance a tick; a face is a
+  // partner half the ticks, so 0.5/s per touching flame (ctStepAtmosphere). A burning front lights it outright
+  // (ctHotFront).
+  CT_TOUCH_LIGHT: ['f32', 1 / 60],
   // A cell's outside word (contactOutsideWord; the support pass's, shaders/v2.js v2SupportWGSL): what V1
   // react.js reads on all six faces that its three block partners don't show it, from its three
   // out-of-block faces frozen before any block runs. Counts of 0-3 at these units: non-gas faces inside
@@ -294,13 +310,13 @@ export const CONTACT_CONSTANTS = Object.freeze({ ...CONTACT_ENERGY_CONSTANTS,
 });
 for (const key of Object.keys(CONTACT_CONSTANTS)) if (key.slice(3) in E) throw Error(`contact constant ${key} shadows an element id`);
 const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGNUS_B, CT_FLAME_MISS_LOG, CT_OXY_FLAME_MISS_LOG, CT_FLAME_T_MIN, CT_FLAME_T_SPREAD,
-  CT_OXY_FLAME_GAIN, CT_KELVIN, CT_FIRE_LIFE_MIN_Q, CT_FIRE_LIFE_SPREAD_Q, CT_FIRE_BURN_TICK, CT_FIRE_BURN_SPREAD_TICK, CT_SMOKE_FADE_TICK,
+  CT_OXY_FLAME_GAIN, CT_KELVIN, CT_FIRE_LIFE_MIN_Q, CT_FIRE_LIFE_SPREAD_Q, CT_FIRE_BURN_TICK, CT_FIRE_BURN_SPREAD_TICK, CT_SMOKE_FADE_TICK, CT_PLASMA_FADE_TICK,
   CT_FIRE_TO_SMOKE, CT_FIRE_MIN_Q, CT_BURNT_MIN_Q, CT_ASH_SHARE, CT_SPARK_REST, CT_SPARK_BORN, CT_SPARK_CYCLE, CT_SPARK_V, CT_SWITCH_ON, CT_TSNS_FIRE,
   CT_LAMP_HOLD, CT_LAMP_DC_LEVEL, CT_JOULE_WHOLE, CT_JOULE_MILLI, CT_JOULE_MILLI_UNIT, CT_ELEC_PENDING, CT_ELEC_LIFE_UNIT, CT_ELEC_LIFE_MAX,
   CT_ELEC_SPENT_UNIT, CT_ELEC_SPENT_MAX, CT_ELEC_STEPS, CT_ELEC_SALT, CT_FUSE_UNLIT, CT_FUSE_BURN_NUM, CT_FUSE_BURN_DEN, CT_FUSE_HANDOFF_Q,
   CT_FUSE_OUT_STEPS, CT_FUSE_FLAME_LIGHT, CT_FUSE_SPIT_Q, CT_FUSE_END, CT_CLONE_CHANCE, CT_CLONE_MISS_LOG, CT_SPAWN_DROP_TICK, CT_PLANT_MISS_LOG, CT_MOSS_GROW, CT_FUNGUS_MISS_LOG,
   CT_ACID_EAT, CT_ACID_SPENT, CT_CLOUD_RAIN, CT_CLOUD_RAIN_NB, CT_CLOUD_EVAP, CT_CLOUD_EVAP_NB, CT_STEPS_PER_TICK,
-  CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_OUT_SURFACE, CT_OUT_FIRE, CT_OUT_EMPTY, CT_OUT_CLOUD, CT_OUT_DUST, CT_OUT_DAMP, CT_OUT_DAMP_MAX,
+  CT_TOUCH_FIRE, CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_TOUCH_FRONT, CT_TOUCH_LIGHT, CT_OUT_SURFACE, CT_OUT_FIRE, CT_OUT_EMPTY, CT_OUT_CLOUD, CT_OUT_DUST, CT_OUT_DAMP, CT_OUT_DAMP_MAX,
   CT_OUT_WET_MOSS, CT_OUT_BED, CT_OUT_UP, CT_CHARGE_T_MAX_Q, CT_CHARGE_MAX, CT_CHARGE_STEP, CT_PARTNER_STEPS, CT_CHARGE_SALT,
   CT_BURN_PUFF_PA, CT_SING_EVAP, CT_SING_MASS_MIN, CT_SING_SALT, CT_SPAWN_DROP } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 // ctFluxTick raises a step's share to STEPS_PER_TICK by squaring twice
@@ -905,19 +921,31 @@ export function ctLick(input, hotFuel, flameQ, smothered, seed) {
   }
   return c;
 }
+// Design decision (2026-10-22, delegated by the user): a burning front lights the fuel it touches outright, as
+// fire spreads through wood in The Powder Toy and Minecraft (ctStepAtmosphere hotFront; the finish push had
+// removed it only to match V1, which lights fuel by heat alone). A front is a flame at 350 °C or hotter, or a
+// burning fuel, still alight, at least the fuel's igniteQ hot, settled this tick (no pair or phase still
+// pending on it); tq is the decoded post-pair, pre-self snapshot temperature.
+export function ctHotFront(b, igniteQ) {
+  const br = ctRow(b.id);
+  return b.done === 0 && b.pending < 0 && (b.request & 5) === 0 && b.tq >= igniteQ && b.life > 0 && ((b.id === E.FIRE && b.tq >= 2493) || (br.burn > 0 && b.burning !== 0));
+}
 // What a flying packet p, as it comes into its tick, is to a cell of faceId on its host's face (v2/airborne.js):
 // a cell like any other, as V1's moving cell was to its neighbours (react.js nFire, hotTouch). Its touch
 // (CT_TOUCH_*), for the cell's own step (ctStepAtmosphere) and, on a fuse, the electric pass's (ctFuseTouch:
-// any face, as V1's fuse step reads six): a flame on any face (V1 nFire counts FIRE cells on all six; a
-// burning fuel is no flame to it), matter at the cell's ignition point on its block partner or a fuse.
-// hostFire: the host cell is itself a flame the cell counts on that face; partner: the face is the cell's
-// block partner this tick (v2/airborne.js inBlockFaces).
-export function ctPacketTouch(p, faceId, hostFire, partner) {
+// any face, as V1's fuse step reads six): a flame or burning fuel on its block partner (CT_TOUCH_FIRE along
+// the axis, the touch that lights a fuel), a flame on any face (V1 nFire counts FIRE cells on all six),
+// matter at the cell's ignition point on its block partner or a fuse, a burning front on its block partner.
+// hostFire: the host cell is itself a flame the cell counts on that face; axisBit: 1, 2, 4 for the face's
+// axis; partner: the face is the cell's block partner this tick (v2/airborne.js inBlockFaces).
+export function ctPacketTouch(p, faceId, hostFire, axisBit, partner) {
   const pr = ctRow(p.id);
   const fr = ctRow(faceId);
   let touch = 0;
+  if (partner !== 0 && hostFire === 0 && (p.id === E.FIRE || (pr.burn > 0 && p.burning !== 0))) touch = touch + CT_TOUCH_FIRE * axisBit;
   if (hostFire === 0 && p.id === E.FIRE) touch = touch | CT_TOUCH_FLAME;
   if ((partner !== 0 || faceId === E.FUSE) && pr.kind !== 0 && pr.kind !== 4 && p.tq >= fr.igniteQ) touch = touch | CT_TOUCH_HOT;
+  if (partner !== 0 && ctHotFront(p, fr.igniteQ)) touch = touch | CT_TOUCH_FRONT;
   return touch;
 }
 // V1 react.js storm charge (physics.js CHARGE_*, CT_CHARGE_*): a cloud at CHARGE_T_MAX or colder, with snow
@@ -991,6 +1019,10 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   let damp = 0;
   let dust = 0;
   let hotTouch = false;
+  // the fire that lights a fuel by touch (CT_TOUCH_LIGHT: flames and burning fuel on its partners) and a
+  // burning front among them (ctHotFront)
+  let touchFire = 0;
+  let hotFront = false;
   let clone = 0;
   let clones = 0;
   let growOf = 0;
@@ -1011,6 +1043,9 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     if (b.id === E.EMPTY || (b.id === E.FIRE && b.ctype !== E.OXYGEN)) burnAir++;
     // V1 react.js nFire: flames (FIRE cells); a burning fuel is none.
     if (b.id === E.FIRE) fire++;
+    // ...but a burning fuel lights a fuel it touches, as a flame does (CT_TOUCH_LIGHT's design decision)
+    if (b.id === E.FIRE || (br.burn > 0 && b.burning !== 0)) touchFire++;
+    hotFront = hotFront || ctHotFront(b, r.igniteQ);
     // V1 react.js nBurning: a fuel at its ignition point (explosives go off
     // instead), and past its flash point one whose vapour carries a flame.
     if (ctHotFuel(b)) { hotFuel++; flameQ = Math.max(flameQ, br.flameQ); }
@@ -1047,9 +1082,12 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   bedAxes = bedAxes | (ctDiv(out, CT_OUT_BED) % 8);
   const wetMoss = moss + outWet % 2 + ctDiv(outWet, 2) % 2 + ctDiv(outWet, 4);
   // A flying packet beside it (ctPacketTouch: the react stage's mark), as V1's react saw a moving
-  // neighbour: a cell like the rest, its flame (nFire), its heat on a partner (hotTouch).
+  // neighbour: a cell like the rest, its flame (nFire), its heat on a partner (hotTouch), its fire and
+  // burning front on a partner (one count an axis).
   if ((touch & CT_TOUCH_FLAME) !== 0) fire = fire + 1;
   hotTouch = hotTouch || (touch & CT_TOUCH_HOT) !== 0;
+  touchFire = touchFire + (touch & CT_TOUCH_FIRE) + ctDiv(touch & (2 * CT_TOUCH_FIRE), 2 * CT_TOUCH_FIRE) + ctDiv(touch & (4 * CT_TOUCH_FIRE), 4 * CT_TOUCH_FIRE);
+  hotFront = hotFront || (touch & CT_TOUCH_FRONT) !== 0;
   // V1 react.js: past its flash point a fuel's vapour carries a flame along it,
   // so air touching a flame and such a fuel catches as if the fuel burned.
   if (fire > 0 && flashFuel > 0) { hotFuel = hotFuel + flashFuel; flameQ = Math.max(flameQ, flashFlameQ); }
@@ -1089,10 +1127,11 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     }
     if (exited === 0) { result = c; exited = 1; }
   }
-  // (V1 react.js gives plasma no life rule: it leaves only by cooling past its cold change, ctPhase above)
-  if (exited === 0 && (c.id === E.FIRE || c.id === E.SMOKE)) {
-    // V1 react.js lives (CONTACT_CONSTANTS).
+  // (plasma also leaves by cooling past its cold change, ctPhase above)
+  if (exited === 0 && (c.id === E.FIRE || c.id === E.SMOKE || c.id === E.PLASMA)) {
+    // V1 react.js lives (CONTACT_CONSTANTS); plasma fades in half a second (CT_PLASMA_FADE_TICK's design decision).
     let fade = CT_SMOKE_FADE_TICK;
+    if (c.id === E.PLASMA) fade = CT_PLASMA_FADE_TICK;
     if (c.id === E.FIRE) fade = CT_FIRE_BURN_TICK + CT_FIRE_BURN_SPREAD_TICK * ctRoll(seed, 5);
     // Whole life units: the fraction is a draw, so the mean fade is exact.
     c.life = Math.max(0, c.life - ctI(Math.floor(fade + ctRoll(seed, 6))));
@@ -1109,9 +1148,22 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   if (exited === 0 && r.burn > 0 && c.id !== E.FUSE) {
     // V1 react.js combustion, re-tested every step (cooling it, or taking its air, puts it out): at its
     // ignition point, or past its flash point with a flame on a face (nFire), touching air, oxygen or a
-    // flame, and not smothered. Thermal only: no flame lights it by touch (V1 has no contact ignition).
+    // flame, and not smothered.
     let lit = 0;
     if ((c.tq >= r.igniteQ || (fire > 0 && c.tq >= r.flashQ)) && exposed && !smothered) lit = 1;
+    // Design decision (2026-10-22, delegated by the user): fire lights fuel by touch, as in The Powder Toy (a
+    // flame lights its flammable neighbour, which burns at the flame's heat) and Minecraft (fire spreads to the
+    // wood beside it). A burning front on a partner lights it outright (ctHotFront; a fuel whose flash point is
+    // under its ignition point only once past its flash point), and a flame or burning fuel on a partner with
+    // CT_TOUCH_LIGHT a tick each. A fuel lit so takes the flame's heat up to its ignition point (`pilot`, a
+    // declared source), so the thermal rule above holds it alight and cooling still puts it out. (The finish
+    // push had made ignition thermal only, TH-04, to match V1: a flame lit wood only once it had heated it to
+    // its ignition point.)
+    let pilot = 0;
+    if (lit === 0 && exposed && !smothered && (hotFront || touchFire > 0)) {
+      c.busy = 1;
+      if ((hotFront && (r.flashQ >= r.igniteQ || c.tq >= r.flashQ)) || random < ctF(touchFire) * CT_TOUCH_LIGHT) { lit = 1; pilot = 1; }
+    }
     if (c.burning !== lit) c.busy = 1;
     c.burning = lit;
     if (lit !== 0) c.busy = 1;
@@ -1124,8 +1176,14 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
       const ceiling = ctI(ctF(r.flameQ) * (1 + 0.32 * ctF(fullOxygen) / ctF(Math.max(1, fullAir + fullOxygen))));
       const perFuel = ctDiv(r.heat * 65536, Math.max(1, r.burn));
       const gain = ctI(Math.min(2147483000, ctF(perFuel) * ctF(spend)));
+      // Its heat (ctHeatTo's, with one energy write: a second inlined copy is Metal cold-compile time): a fuel lit
+      // by touch from its ignition point (the pilot), then the burn's gain up to its flame's ceiling, one source.
       const beforeHeat = ctEnergy(c);
-      c = ctRecordChange(ctHeatTo(c, ceiling, gain), beforeHeat);
+      let heated = beforeHeat;
+      let fromQ = c.tq;
+      if (pilot !== 0 && c.tq < r.igniteQ) { heated = ctAdd(ctMul(ctCapacity(c), r.igniteQ), ctOffset(c)); fromQ = r.igniteQ; }
+      const room = ctI(Math.min(2147483000, Math.max(0, ctF(ctCapacity(c)) * ctF(ceiling - fromQ))));
+      c = ctRecordChange(ctSetEnergy(c, ctAdd(heated, ctSigned(Math.max(0, Math.min(room, gain))))), beforeHeat);
       // V1 react.js: Pr += BURN_P a step
       c.request = ctPuff(c.request, CT_BURN_PUFF_PA);
       if (c.life === 0) { exhausted = 1; exited = 1; }
@@ -1234,7 +1292,7 @@ export const CONTACT_KERNEL = [
   [ctNuclearId, ['CTCell'], 'i32'], [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
   [ctGrowerDamp, ['i32', 'i32'], 'i32'], [ctPuff, ['i32', 'i32'], 'i32'], [ctPerTick, ['f32'], 'f32'],
   [ctHotFuel, ['CTCell'], 'bool'], [ctSmothered, ['i32', 'i32'], 'bool'], [ctLick, ['CTCell', 'i32', 'i32', 'bool', 'i32'], 'CTCell'],
-  [ctPacketTouch, ['CTCell', 'i32', 'i32', 'i32'], 'i32'], [ctStormCharge, ['CTCell', 'f32', 'i32'], 'CTCell'],
+  [ctHotFront, ['CTCell', 'i32'], 'bool'], [ctPacketTouch, ['CTCell', 'i32', 'i32', 'i32', 'i32'], 'i32'], [ctStormCharge, ['CTCell', 'f32', 'i32'], 'CTCell'],
   [ctStepAtmosphere, ['CTCell', 'array<CTCell, 3>', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32', 'i32'], 'CTCell'],
   [ctStep, ['CTCell', 'array<CTCell, 3>', 'i32'], 'CTCell'],
 ];

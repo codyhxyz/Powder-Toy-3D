@@ -12,7 +12,7 @@ import {E,ELEMENTS,R} from '../../src/elements.js';
 import {RAYS} from '../../src/rays.js';
 import {V1_STEP_MS,STEP_S} from '../../src/v2/gravity.js';
 import * as L from '../../src/v2/layout.js';
-import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact,PACKET_KEEP,PACKET_SUPPORTED_KEEP,packetStep,packetFlight,impactHeat,packetGrainOdds,PACKET_GRAIN_ODDS,v1GrainOdds,packetKnock} from '../../src/v2/dynamics-reference.js';
+import {PHOTON_IOR,refractDirection,dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact,PACKET_KEEP,PACKET_SUPPORTED_KEEP,packetStep,packetFlight,impactHeat,packetGrainOdds,PACKET_GRAIN_ODDS,v1GrainOdds,packetKnock} from '../../src/v2/dynamics-reference.js';
 import { importMinified } from './wgsl-grouping.mjs';
 const floatBits=v=>{const b=new ArrayBuffer(4);new Float32Array(b)[0]=v;return new Uint32Array(b)[0];};
 const close=(a,b,e,what)=>assert.ok(Math.abs(a-b)<=e,`${what??""}: ${a} vs ${b}`);
@@ -73,7 +73,7 @@ function syntax(s){for(const [a,b] of [
 ['var q = p;','var q = copy(p);'],['var particle = particle0;','var particle = copy(particle0);'],
 ['p.velocity * D_RAY_DT / D_CELL','mul(p.velocity, D_RAY_DT / D_CELL)'],['particle.velocity * D_RAY_DT / D_CELL','mul(particle.velocity, D_RAY_DT / D_CELL)'],
 ['p.position + delta * max(0.0, travelled - 0.00001 / max(length(delta), 0.00001))','add(p.position, mul(delta, max(0, travelled - 0.00001 / max(length(delta), 0.00001))))'],
-['p.position + delta;','add(p.position, delta);'],['f.destination.z >> 16u','f.destination.z >>> 16'],['bitcast<f32>(','bitsFloat('],['mEdge(startCell + down)','mEdge(add(startCell,down))'],['vec3f(cellOf(s) + P.origin) + 0.5','add(add(cellOf(s),P.origin),0.5)'],
+['p.position + delta;','add(p.position, delta);'],['p.position + delta * travelled;','add(p.position, mul(delta, travelled));'],['q.velocity = v * eta;','q.velocity = mul(v, eta);'],['f.destination.z >> 16u','f.destination.z >>> 16'],['bitcast<f32>(','bitsFloat('],['mEdge(startCell + down)','mEdge(add(startCell,down))'],['vec3f(cellOf(s) + P.origin) + 0.5','add(add(cellOf(s),P.origin),0.5)'],
 ['min(abs(velocity) * D_SHOCK_THROW, vec3f(D_V_MAX))','abs(velocity).map(x=>Math.min(x*D_SHOCK_THROW,D_V_MAX))'],
 ['vec4u(warm.core.yzw, bitcast<u32>(warm.bank))','[...warm.core.slice(1,4), warm.bank>>>0]']])s=s.replaceAll(a,b);
 return s.replace(/\/\/[^\n]*/g,'')
@@ -122,7 +122,7 @@ function fixture({mode=0, edge=0, windowed=false,
     dParticle:(position,velocity,id,m)=>({position:[...position],velocity:[...velocity],id,c0:m.core[0],tail:[...m.core.slice(1),m.bank>>>0]}),
     DPacketFlight:(moved,velocity)=>({moved:[...moved],velocity:[...velocity]}),dKeep:id=>PACKET_KEEP[id],dSupportedKeep:id=>PACKET_SUPPORTED_KEEP[id],
     D_V1_STEP:Math.fround(1/V1_STEP_MS),D_PULL_STEP:Math.fround(STEP_S*STEP_S/CELL_M),D_STEPS:4,
-    DPhotonStep:(light,heat,cell,travelled,flip,gone)=>({light:[...light],heat,cell,travelled,flip,gone}),round:Math.round,clamp:(x,a,b)=>Math.min(Math.max(x,a),b),
+    DPhotonStep:(light,heat,cell,travelled,flip,gone,bend)=>({light:[...light],heat,cell,travelled,flip,gone,bend}),round:Math.round,clamp:(x,a,b)=>Math.min(Math.max(x,a),b),
     exp:Math.exp,log:Math.log,mix:(a,b,t)=>a+(b-a)*t,bitsFloat,dPhotonEnergy:p=>Array.from(p.tail).slice(0,3).map(bitsFloat),
     // particles.js dOptical, the renderer's sigma and an opaque element's reflectance
     dOptical:id=>[...(ELEMENTS[id]?.sigma??[0,0,0]),ELEMENTS[id]?.render===R.OPAQUE?-(1+(ELEMENTS[id].reflect??0)):0],D_CELL:CELL_M,D_SWEEP_MAX:99,NX:32,NY:32,NZ:32,
@@ -183,7 +183,7 @@ function fixture({mode=0, edge=0, windowed=false,
 ['dShockHit',['t','s','p','hit','axis']],
 ['dDustFaces',['s']],
 ['dShockWall',['t','pid','u','landing','particleId']],
-['dPhotonStep',['local','delta','light0']],['dKnock',['t','s','p','before','axis','landing']],['dImpactHeat',['pid','tid','velocity','axis','c']],['dPacketFlight',['v0','wind','pull','keep','across','along','paced']],['dPhotonMoved',['p','light','travelled','flip']],['dPhotonIntegrate',['t','particle0','local']],['dAddHeat',['m','heat']],
+['dPhotonStep',['local','delta','light0']],['dKnock',['t','s','p','before','axis','landing']],['dImpactHeat',['pid','tid','velocity','axis','c']],['dPacketFlight',['v0','wind','pull','keep','across','along','paced']],['dIORClass',['id']],['dIOR',['k']],['dPhotonMoved',['p','light','travelled','flip','bend']],['dPhotonIntegrate',['t','particle0','local']],['dAddHeat',['m','heat']],
   ])ctx[name]=compile(ctx,S.integrate,name,args);
   const stages=Object.fromEntries(Object.entries(S).map(([s,c])=>[s,compile(ctx,c,'main',['t'])]));
   return {ctx,world,particles,claims,flight,stages,set:(p,m)=>world.set(slotOf(p),copy(m)),
@@ -482,18 +482,46 @@ test('a photon flies 2 cells a V1 step, 480 cells/s, for V1\'s 512 steps (EL-2)'
   raySteps(fade,1);raySteps(fade,1);assert.notEqual(fade.particles[0].id,0);close(fade.particles[0].position[0],6.5,1e-4);
   raySteps(fade,1);assert.equal(fade.particles[0].id,0,'faded');assert.equal(fade.world.size,0,'its light heats nothing');
 });
-test('a photon goes straight through glass and water, dimming by Beer-Lambert, by a film\'s fill (EL-3, EL-4, EL-9)',()=>{
+test('a photon flies on through clear matter, dimming by Beer-Lambert, by a film\'s fill (EL-3, EL-9)',()=>{
   for(const [id,fill] of [[E.GLASS,L.FULL],[E.WATER,L.FULL],[E.WATER,L.FULL/8]]) {
-    const f=fixture({material:photon(),position:[2.5,10.25,10.75],velocity:[120,36,-48]});
+    // inside the medium all the way (no face to bend at): a tick's 8 cells, its speed kept
+    const start=[5.5,11.5,8.5],f=fixture({material:photon(),position:start,velocity:[120,36,-48]});
     for(let x=4;x<14;x++)for(let y=8;y<16;y++)for(let z=4;z<14;z++)f.set([x,y,z],id===E.GLASS?L.makeMaterial(E.GLASS):wet(fill));
     const v0=[...f.particles[0].velocity];raySteps(f,4);
-    assert.deepEqual(f.particles[0].velocity,v0,`${ELEMENTS[id].key}: no refraction, no slowing`);
-    const travelled=Math.hypot(...sub(f.particles[0].position,[2.5,10.25,10.75]));
-    close(travelled,Math.hypot(...v0)*DT/CELL_M,1e-3,`${ELEMENTS[id].key}: a tick's 8+ cells in the medium too`);
-    const inside=travelled-(4-2.5)/(120/Math.hypot(...v0)),share=fill/L.FULL;
-    light(f).forEach((e,i)=>close(e,Math.exp(-ELEMENTS[id].sigma[i]*share*inside),2e-3,`${ELEMENTS[id].key} channel ${i}`));
-    let heat=0;for(const [,m] of f.world) heat+=L.cTq(m.core);assert.ok(f.world.size>0,'the light lost heats the medium');
+    assert.deepEqual(f.particles[0].velocity,v0,`${ELEMENTS[id].key}: no bend inside one medium, no slowing`);
+    const travelled=Math.hypot(...sub(f.particles[0].position,start));
+    close(travelled,Math.hypot(...v0)*DT/CELL_M,1e-3,`${ELEMENTS[id].key}: a tick's 8 cells in the medium`);
+    const share=fill/L.FULL;
+    light(f).forEach((e,i)=>close(e,Math.exp(-ELEMENTS[id].sigma[i]*share*travelled),2e-3,`${ELEMENTS[id].key} channel ${i}`));
+    assert.ok(f.world.size>0,'the light lost heats the medium');
   }
+});
+// The behaviour (design decision, 2026-10-22, delegated by the user): light refracts, as The Powder Toy's photons
+// bend in GLAS and real light does (dynamics-reference.js PHOTON_IOR, refractDirection).
+test('a photon bends into glass and water by Snell\'s law, leaves a slab parallel, and reflects past the critical angle',()=>{
+  const unit=v=>v.map(x=>x/Math.hypot(...v)),d0=[0.8,0.6,0],speed=144;
+  for(const [id,n] of PHOTON_IOR.filter(([id])=>id!==E.ICE)) {
+    // a slab x 4-7 of it: in at x = 4 (from air), out at x = 8 (into air)
+    const f=fixture({material:photon(),position:[2.5,4.5,10.5],velocity:d0.map(x=>x*speed)});
+    for(let x=4;x<8;x++)for(let y=0;y<32;y++)for(let z=0;z<32;z++)f.set([x,y,z],id===E.GLASS?L.makeMaterial(E.GLASS):wet());
+    const inside=refractDirection(d0,[-1,0,0],1/n),seen=[];
+    for(let k=0;k<12&&f.particles[0].position[0]<10;k++){raySteps(f,1);seen.push([f.particles[0].position[0],unit(f.particles[0].velocity)]);}
+    const within=seen.filter(([x])=>x>4&&x<8),after=seen.filter(([x])=>x>8);
+    assert.ok(within.length>0&&after.length>0,`${ELEMENTS[id].key}: it crossed the slab`);
+    for(const [,d] of within)d.forEach((v,i)=>close(v,inside[i],1e-4,`${ELEMENTS[id].key}: bent in (Snell, n ${n})`));
+    assert.ok(Math.abs(within[0][1][1])<0.6-0.1,`${ELEMENTS[id].key}: toward the normal`);
+    for(const [,d] of after)d.forEach((v,i)=>close(v,d0[i],1e-4,`${ELEMENTS[id].key}: out parallel to its way in`));
+    close(Math.hypot(...f.particles[0].velocity),speed,1e-3,'its speed kept');
+  }
+  // inside glass at 64° to a glass-air face (past its 41.8° critical angle): it reflects and stays in the glass
+  const tir=fixture({material:photon(),position:[5.5,10.5,10.5],velocity:[0.9*speed,Math.sqrt(1-0.81)*speed,0]});
+  for(let x=0;x<32;x++)for(let y=0;y<12;y++)for(let z=0;z<32;z++)tir.set([x,y,z],L.makeMaterial(E.GLASS));
+  let flipped=false;for(let k=0;k<12&&!flipped;k++){raySteps(tir,1);flipped=tir.particles[0].velocity[1]<0;}
+  assert.ok(flipped,'total internal reflection');assert.ok(tir.particles[0].position[1]<12,'still in the glass');
+  close(tir.particles[0].velocity[0],0.9*speed,1e-6,'along the face: unchanged');
+  // and the reference law itself: a slab's exit undoes its entry
+  const inG=refractDirection([0.6,-0.8,0],[0,1,0],1/1.5),outG=refractDirection(inG,[0,1,0],1.5);
+  outG.forEach((x,i)=>close(x,[0.6,-0.8,0][i],1e-12,'reference slab'));
 });
 test('a metal reflects a photon off the face it hits, keeping its reflectance; wood takes it all as heat',()=>{
   const metal=fixture({material:photon(),position:[5.5,10.5,10.5],velocity:[144,0,0]});
@@ -588,9 +616,10 @@ test('a grain thrown into a row of grains knocks the far ones on, as V1\'s cradl
 });
 
 // V1 react.js forces: a liquid skips its drag only in free fall (`flying`: air or gas below it). A landing's splash
-// sliding over its pool slows by its DRAG a step, so nitroglycerin splashed at V1's 0.707 cells/step from a slab
-// dropped 8 cells reaches a wall 6 cells off under its 0.700 shock speed and rests, as V1's does; across the pull
-// only (V1's landing hit is its free-fall speed, max(u1, u2))
+// sliding over its pool slows by its DRAG a step, so nitroglycerin thrown at 0.707 cells/step (V1's level splash
+// from a slab dropped 8 cells) reaches a wall 6 cells off under its 0.700 shock speed and rests, as V1's does;
+// across the pull only (V1's landing hit is its free-fall speed, max(u1, u2)). (V2's landing crown throws slower,
+// up and out: columns.js colCrown.)
 test('a liquid packet over its pool slows by V1\'s drag, one in free fall does not (the 8-cell nitro splash)',()=>{
   const slide=(y,pool)=>{const f=fixture({material:wet(L.FULL,E.NITRO),position:[6.5,y,6.5],velocity:[0.707*SHOCK_THROW_MS,0,0]});
     if(pool) for(let x=0;x<32;x++) f.set([x,0,6],wet(L.FULL,E.NITRO));runTicks(f,[0],1);return f.particles[0].velocity[0];};

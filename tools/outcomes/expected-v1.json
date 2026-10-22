@@ -306,19 +306,6 @@
     }
    ]
   },
-  "flameWood": {
-   "status": "fail",
-   "headline": "0 of 6 blocks lit within 2 s; last: 2 s: wood 64 (0 burning, hottest 26.42 °C), flames 0, smoke 0, ash 0 (bay 1)",
-   "criteria": [
-    {
-     "name": "blocks lit within 2 s",
-     "measured": 0,
-     "unit": "",
-     "threshold": "≥ 5 of 6",
-     "ok": false
-    }
-   ]
-  },
   "woodBurns": {
    "status": "pass",
    "headline": "1 s: wood 64 (52 burning, hottest 900 °C), flames 196, smoke 379, ash 0",

@@ -23,24 +23,43 @@ const columns = (w, id) => {
 };
 const run = (w, ticks) => { for (let t = 0; t < ticks; t++) w.step(); };
 
-test('MV-8: no yield stress, as V1: a 4³ block of mud levels to a cell, not a mound', () => {
-  // V1 react.js has no yield: measured, mud is a cell deep over 64 columns within 1 s
-  for (const key of ['MUD', 'LAVA', 'SLIME']) if (E[key] !== undefined) assert.equal(v2Rows()[E[key]].yieldHead, 0, `${key} has no yield`);
-  const w = new ColumnGrid(20, 8, 20);
-  block(w, E.MUD, [8, 0, 8], [11, 3, 11]);
-  run(w, 120);
-  const { peak, cols } = columns(w, E.MUD);
-  assert.ok(peak <= 1, `mud stands ${peak.toFixed(2)} cells (V1: 1) over ${cols} columns`);
+test('yield: a 4³ block of mud stands in a mound; the same block of water levels (design decision, 2026-10-22)', () => {
+  // shaders/v2.js YIELD: mud, lava and slime hold a slope (Noita's lava, real mud); water and oil have none.
+  // (V1's liquids level, a cell deep over 64 columns: the finish push's MV-8 matched that, reverted here.)
+  for (const key of ['MUD', 'LAVA', 'SLIME']) assert.ok(v2Rows()[E[key]].yieldHead > 0, `${key} has a yield`);
+  for (const key of ['WATER', 'OIL']) assert.equal(v2Rows()[E[key]].yieldHead, 0, `${key} has none`);
+  const stand = (id) => {
+    const w = new ColumnGrid(20, 8, 20);
+    block(w, id, [8, 0, 8], [11, 3, 11]);
+    run(w, 120);
+    return columns(w, id);
+  };
+  const mud = stand(E.MUD), water = stand(E.WATER);
+  // (measured 1.95 cells over 60 columns; without the yield it levelled to a cell or less)
+  assert.ok(mud.peak >= 1.5, `mud stands ${mud.peak.toFixed(2)} cells over ${mud.cols} columns (a mound, not a 1-cell layer)`);
+  assert.ok(water.peak <= 1, `water stands ${water.peak.toFixed(2)} cells over ${water.cols} columns (it levels)`);
+  assert.ok(mud.cols < water.cols, `mud covers fewer columns (${mud.cols}) than water (${water.cols})`);
 });
 
-test('MV-13: a spill beads a cell deep as V1\'s whole cells do, and still pours off a ledge', () => {
-  // V1: a 4³ block of water is one cell deep over 64 columns (its films on dry ground spend their flow: FILM_KEEP)
+test('films: a spill spreads as a thin film down to the dry tolerance, then rests, and still pours off a ledge', () => {
+  // design decision (2026-10-22, delegated by the user; columns.js FILM_DRY): a 4³ block of water runs out to a thin
+  // film (Noita's water runs out thin: measured 560 columns, 0.13 deep at 1 s), then certifies idle. V1's beads a cell deep
+  // over 64 columns; the finish push's MV-13 matched it (a third of a cell over 172 columns), which this reverts.
   const w = new ColumnGrid(32, 8, 32);
   block(w, E.WATER, [14, 0, 14], [17, 3, 17]);
-  run(w, 120);
+  run(w, 60);
   const { peak, cols } = columns(w, E.WATER);
-  // (V2's fills level where V1's whole cells bead: columns.js FILM_DRY's Intentional note)
-  assert.ok(cols <= 220 && peak >= 0.3, `water: ${cols} columns, ${peak.toFixed(2)} deep (V1 64 columns, 1 deep; a 1/8-cell film was 572)`);
+  assert.ok(cols >= 400 && peak <= 0.2 && peak * L.FULL >= COLUMN.FILM, `water: ${cols} columns, ${peak.toFixed(3)} deep (a film down to ${COLUMN.FILM / L.FULL} of a cell)`);
+  // then it rests: a 2³ spill's film certifies idle (the GPU's activity rule) and no droplet wanders on, mass exact
+  // (measured 84 columns an eighth deep, idle at tick 10; MV-13 beaded it over 12 columns two thirds deep)
+  const p = new ColumnGrid(16, 8, 16);
+  block(p, E.WATER, [7, 0, 7], [8, 1, 8]);
+  while (p.idleAt < 0 && p.tick < 300) p.step();
+  const rest = columns(p, E.WATER);
+  assert.ok(p.idleAt >= 0 && rest.cols >= 48 && rest.peak <= 0.2, `the 2³ film: ${rest.cols} columns, ${rest.peak.toFixed(3)} deep, idle at tick ${p.idleAt}`);
+  run(p, 60);
+  assert.equal(columns(p, E.WATER).cols, rest.cols, 'no wandering after it rests');
+  assert.equal(p.totals().mass, 8 * L.FULL, 'mass exact');
   // half a cell of water on a shelf by its edge pours off it (the dry film holds only at its own level)
   const s = new ColumnGrid(12, 8, 4);
   block(s, E.WALL, [0, 0, 0], [5, 3, 3]);
@@ -96,7 +115,7 @@ test('a face carries no more than V1\'s flow cap: its liquid\'s FLOW, paced as V
   // a deep mud face onto dry ground, already at the lane's Q_MAX: its next flux is V1's cap, no more
   const ctx = new ColumnGrid(4, 32, 4).ctx, rec = (r1, liq) => ctx.recMake(0, 32, r1, liq, 0, r1 * L.FULL, false, false);
   for (const [id, ok] of [[E.MUD, COLUMN_FLOW[E.MUD].q], [E.WATER, COLUMN_FLOW[E.WATER].q]]) {
-    const v = ctx.colFlux(rec(30, id), rec(0, 0), 0, 30, COLUMN.Q_MAX, COLUMN.Q_MAX, { x: 0, y: 0 }, { x: 0, y: 0 }, 0, COLUMN.FILM_DRY, false, 0);
+    const v = ctx.colFlux(rec(30, id), rec(0, 0), 0, 30, COLUMN.Q_MAX, COLUMN.Q_MAX, { x: 0, y: 0 }, { x: 0, y: 0 }, 0, false, false, 0);
     assert.ok(v > 0 && v <= ok, `${ELEMENTS[id].key}: ${v} (V1's cap ${ok})`);
   }
 });

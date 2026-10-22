@@ -247,6 +247,8 @@ sleep.** (`activity.js:175-183` against `move.js:323-352` and the block parity)
 - Ignition is purely a temperature threshold (or `flash`, which defaults to `ignite`). Flames are buoyant,
   jittering gas cells that live 12-50 steps.
 - Two 1000 °C flames placed against a wooden block warm it to 39 °C and are gone. Nothing burns.
+  (2026-10-22: that scene is a one-frame dab of fire. A player holds the brush, and held fire lights wood, V1's
+  too; the bench's `flameWood` now holds it. V2 also lights fuel by touch: docs/v2/contact.md TH-04.)
 - The Campfire construction works around it by spawning its logs at 450 °C ("a lit fire starts above its ignition
   point").
 - Once a fuel *is* past its point, the opposite happens. E7b: one 450 °C edge column sets a whole 4³ block

@@ -1000,10 +1000,14 @@ fn dV1Push(p: vec3i, id: u32) -> vec3f {
           // unallocated source exact and busy for deterministic retry.
           plan.flags=1u;plan.velocity=vec3f(0);
         }
-        // (No wind saltation: V1 never lifts a loose cell off by a draft past a threshold. Its wind and pressure push
-        // every loose cell a little, all the time: react.js forces, the air field's coupling.)
-        // V1's push down the pressure gradient (dV1Push), V1's speed for V1's matter.
+        // V1's push down the pressure gradient (dV1Push), V1's speed for V1's matter: gentle air moves a loose cell a little.
         if (exposed && mAirPressure()) { let push=dV1Push(p,id); if (any(push!=vec3f(0))) { plan.flags=1u; plan.velocity=push; } }
+        // Design decision (2026-10-22, delegated by the user): saltation. A loose cell with a face open to air under a draft
+        // faster than its lift (dynamics-reference.js lift: dust and ash 1 m/s, snow and sawdust 2, sand and the rest 12)
+        // leaves its bed at the wind's velocity, as wind lifts sand off a dune past its threshold speed (Bagnold, The
+        // Physics of Blown Sand and Desert Dunes, 1941) and Noita's wind blows loose sand and snow about. A strong draft
+        // wins over the push above. (The finish push had removed it only because V1 has none.)
+        if (exposed && length(wind)>dLift(id)) { plan.flags=1u; plan.velocity=wind; }
         // §4.2: flux over an unsupported lip faster than 1m/s becomes a droplet.
 if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
           let q=vec3f(unpack2x16float(m.core.z),unpack2x16float(m.core.w&65535u).x);

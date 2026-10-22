@@ -163,9 +163,9 @@ test('radial gravity: the column passes run the radial face stages, and a liquid
   }
 });
 
-test('the splash: a landing past V1\'s splash speed throws its landed cells sideways at V1\'s speed, on a pool or a floor, exactly', () => {
-  // V1 move.js land: a liquid landing faster than LAND_SPLASH_V turns sideways at FLOW + LAND_SPLASH_GAIN·|vy|, a
-  // random direction, each component to V_MAX (MV-5)
+test('the crown: a landing past V1\'s splash speed throws CROWN_SHARE of the run up and out, exactly, at V1\'s splash share of its speed', () => {
+  // the crown's design decision (2026-10-22, columns.js COLUMN): up and out, CROWN_ANGLE from the vertical, on a pool or
+  // a floor (the finish push's MV-5 had thrown every landed cell level, V1's move.js land: this fails on it)
   const drop = (height, pool) => {
     const w = new ColumnGrid(16, 24, 16);
     for (let x = 0; x < 16; x++) for (let z = 0; z < 16; z++) { w.set(x, 0, z, E.WALL); if (pool) for (let y = 1; y < 4; y++) w.set(x, y, z, E.WATER, { T: 15 }); }
@@ -173,31 +173,32 @@ test('the splash: a landing past V1\'s splash speed throws its landed cells side
     const base = pool ? 4 : 1;
     for (let y = base + height; y < base + 2 + height; y++) for (let z = 6; z < 10; z++) for (let x = 6; x < 10; x++) w.set(x, y, z, E.WATER, { T: 60 });
     const t0 = w.totals();
-    let launched = 0, mass = 0, level = 0, speed = 0, slowest = Infinity;
+    let launched = 0, mass = 0, up = 0, speed = 0, slowest = Infinity, tilt = 0;
     for (let t = 0; t < 90; t++) {
       const before = new Set(w.parts);
       w.step();
-      // the landing tick's launches are its splash
+      // the landing tick's launches are the crown (later ones are jets off the settling bump)
       const born = w.parts.filter(q => !before.has(q));
       if (born.length && !launched) for (const q of born) {
-        launched++; mass += L.cFill(q.m.core); if (q.vy === 0) level++;
-        const h = Math.hypot(q.vx, q.vz) * COLUMN.CELL_M; speed = Math.max(speed, h); slowest = Math.min(slowest, h);
+        launched++; mass += L.cFill(q.m.core); if (q.vy > 0) up++;
+        const v = Math.hypot(q.vx, q.vy, q.vz) * COLUMN.CELL_M; speed = Math.max(speed, v); slowest = Math.min(slowest, v);
+        tilt = Math.max(tilt, Math.abs(Math.atan2(Math.hypot(q.vx, q.vz), q.vy) - COLUMN.CROWN_ANGLE));
       }
       const t1 = w.totals();
       assert.equal(t1.mass, t0.mass); assert.equal(t1.energy, t0.energy); assert.equal(t1.fuel, t0.fuel);
     }
-    return { launched, mass, level, speed, slowest };
+    return { launched, mass, up, speed, slowest, tilt };
   };
-  const flow = ELEMENTS[E.WATER].flow, ms = 72;
+  const ms = 72, block = 32 * L.FULL, want = COLUMN.CROWN_SHARE * block;
   for (const pool of [true, false]) {
     const fast = drop(8, pool), low = drop(2, pool), where = pool ? 'onto a pool' : 'onto the floor';
-    assert.ok(fast.launched > 0 && fast.level === fast.launched, `${where}: a fast landing throws droplets level (V1's land: v.y = 0)`);
-    // the slab's cells that landed: a 4×4×2 slab falling 2+ cells a tick throws both its layers
-    assert.ok(fast.mass >= 16 * L.FULL, `${where}: ${fast.mass / L.FULL} cells thrown`);
-    // from 2 cells V1 lands at ~0.3 cells/step: FLOW + 0.3·0.3 ≈ 0.99 cells/step; from 8 at ~0.69: past V_MAX, each
-    // component to it
-    assert.ok(Math.abs(low.speed - (flow + PHYS.LAND_SPLASH_GAIN * 0.297) * ms) < 1.5 && low.slowest > 0.9 * flow * ms, `${where}: from 2 cells ${low.slowest.toFixed(1)}…${low.speed.toFixed(1)} m/s`);
-    assert.ok(fast.speed > low.speed && fast.speed <= Math.SQRT2 * PHYS.V_MAX * ms + 1e-3 && fast.slowest >= PHYS.V_MAX * ms - 1, `${where}: from 8 cells ${fast.slowest.toFixed(1)}…${fast.speed.toFixed(1)} m/s`);
+    assert.ok(fast.launched > 0 && fast.up === fast.launched, `${where}: a fast landing throws droplets upward (${fast.up} of ${fast.launched})`);
+    assert.ok(fast.tilt < 1e-3, `${where}: ${COLUMN.CROWN_ANGLE} rad off the vertical, up and out (off by ${fast.tilt})`);
+    assert.ok(Math.abs(fast.mass - want) <= 16 * 2, `${where}: crown mass ${fast.mass} vs ${want} (one quantum a column)`);
+    // V1's splash share of its landing speed (V1's speed the step after it arrives): from 8 cells ~0.69 cells/step,
+    // from 2 ~0.3
+    assert.ok(Math.abs(fast.speed - COLUMN.CROWN_GAIN * 0.69 * ms) < 1 && fast.slowest > COLUMN.CROWN_GAIN * 0.6 * ms, `${where}: from 8 cells ${fast.slowest.toFixed(1)}…${fast.speed.toFixed(1)} m/s`);
+    assert.ok(low.launched > 0 && Math.abs(low.speed - COLUMN.CROWN_GAIN * 0.297 * ms) < 1, `${where}: from 2 cells ${low.speed.toFixed(1)} m/s`);
   }
   // a one-cell gap onto its own liquid closes at once (colFall: a floating layer follows its surface): it merges
   assert.equal(drop(1, true).launched, 0, 'a one-cell drop merges');

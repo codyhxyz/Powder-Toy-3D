@@ -1,8 +1,9 @@
-// Fire outcomes (docs/v2.md 5.5 R8): a flame lights wood by contact. The scene
-// is audit-physics E7's (two 1,000 °C flames at a wooden block's corner) on a
-// 4³ block, six times over in walled bays (R8's ignition is a chance a second,
-// so one trial says little); the positive control, woodBurns, is E7b's
-// pre-heated edge (the Campfire's 450 °C logs), which today's engine does burn.
+// Fire outcomes (docs/v2.md 5.5 R8): fire lights wood. The scene is a 4³ wooden
+// block with the fire brush held to its corner edge, as a player sets wood alight
+// (audit-physics E7's two 1,000 °C flames at a block's corner, held), six times
+// over in walled bays (ignition is partly a chance, so one trial says little);
+// the positive control, woodBurns, is E7b's pre-heated edge (the Campfire's
+// 450 °C logs).
 import { SetupError } from '../engine.js';
 import { OUTCOMES } from '../thresholds.js';
 import { crit, r2 } from '../lib.js';
@@ -47,29 +48,38 @@ const lit = (s0, s) => s.burning > 0 || s.wood < s0.wood;
 const needsFire = (e) => (e.info.burning ? null : `${e.name} has no burning state`);
 
 export const flameWood = {
-  name: 'flameWood', group: 'fire', size: [48, 8, 8], needs: ['WOOD', 'FIRE', 'WALL'], cost: 45,
-  title: 'two 1,000 °C flames light a wooden block (in 5 of 6 trials)',
-  audit: 'audit-physics B9: ignition is a temperature threshold only; buoyant flames warm the wood to ~39 °C and are gone',
+  name: 'flameWood', group: 'fire', size: [48, 8, 8], needs: ['WOOD', 'FIRE', 'WALL'], cost: 60,
+  title: 'a fire brush held to a wooden block\'s corner lights it (in 5 of 6 trials)',
+  audit: 'audit-physics B9: two 1,000 °C flames put down once warm the wood to ~39 °C and are gone (a one-frame dab: FIRE lives ~0.15 s); a player holds the brush',
   expressible: needsFire,
   async run(e) {
     const O = OUTCOMES.flameWood, W = 8;
     // six bays 8 cells wide along x, walled from each other (a WALL slab at each bay's +x side; the grid's
-    // edge closes the last): in each, a 4³ wooden block on the floor (x 2-5 of the bay, z 2-5) and two
-    // flames against its corner edge (x 1, y 0-1, z 2), as in audit-physics E7
+    // edge closes the last): in each, a 4³ wooden block on the floor (x 2-5 of the bay, z 2-5) and the fire
+    // brush held to its corner edge, as a player lights wood: FIRE at its 1,000 °C painted into the empty
+    // cells of a 1×3×3 patch beside the edge (x 1, y 0-2, z 1-3) every frame for O.held s, as the held
+    // brush paints FIRE into the empty cells under it each frame (app.js brushPaints; shaders/passes.js
+    // paintUpdateWGSL, replace off). (The bench's first scene put two flames down once: a one-frame dab of
+    // FIRE, which lives ~0.15 s (physics.js FIRE_BURN), lit no engine's wood, V1's either: not play.)
+    const brush = (k) => e.box([W * k + 1, 0, 1], [W * k + 1, 2, 3], 'FIRE', { T: 1000, onlyEmpty: true });
     for (let k = 0; k < O.trials; k++) {
       const x = W * k;
       if (k < O.trials - 1) e.box([x + W - 1, 0, 0], [x + W - 1, 7, 7], 'WALL');
       e.box([x + 2, 0, 2], [x + 5, 3, 5], 'WOOD');
-      e.box([x + 1, 0, 2], [x + 1, 1, 2], 'FIRE', { T: 1000 });
+      brush(k);
     }
     const bay = (g, k) => woodStats(g, e, W * k, W * k + W - 1);
     let g = await e.read();
     const s0 = Array.from({ length: O.trials }, (_, k) => bay(g, k));
-    setup(s0.every((s) => s.wood === 64 && s.fire === 2 && s.burning === 0), `start: ${s0.map((s) => `${s.wood} wood, ${s.fire} flames, ${s.burning} burning`).join('; ')} (64, 2, 0 in each bay)`);
+    setup(s0.every((s) => s.wood === 64 && s.fire === 9 && s.burning === 0), `start: ${s0.map((s) => `${s.wood} wood, ${s.fire} flames, ${s.burning} burning`).join('; ')} (64, 9, 0 in each bay)`);
     const litAt = s0.map(() => null), rows = [`0 s: ${s0.map((s) => `${s.wood}w ${s.fire}f`).join(' | ')}`];
     let s = s0;
     while (e.time < O.seconds - 1e-9 && litAt.some((t) => t === null)) {
-      await e.advance(0.25);
+      // a quarter second a frame at a time, the brush painting while it is held
+      for (let f = 0; f < 15; f++) {
+        if (e.time < O.held - 1e-9) for (let k = 0; k < O.trials; k++) brush(k);
+        await e.advance(1 / 60);
+      }
       g = await e.read();
       s = s0.map((_, k) => bay(g, k));
       s.forEach((sk, k) => { if (litAt[k] === null && lit(s0[k], sk)) litAt[k] = e.time; });
