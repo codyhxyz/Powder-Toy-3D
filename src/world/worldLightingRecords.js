@@ -15,6 +15,11 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
   const size=frozenArray(worldSize),dims=size.map(n=>n/4),device=gpu.device,queue=device.queue,{buffer}=createLightingResources(device);
   const layouts=[false,true].map(aux=>device.createBindGroupLayout({entries:worldLightingDeltaLayouts(aux)})),pipes=[];
   let readyState=false,dead=false,generation=0,pending=null,committed=new Map(),baseline=null,clock=-1;
+  // A completed, unadopted batch's rows, for the next record() of the same cut,
+  // clock and baseline to carry (a restarted load attempt): its rows are what a
+  // new record() would read back again. Island's metadata stage re-recorded
+  // 449k rows for 2.3-2.5 s on every restart (2026-10-22).
+  const carries=new WeakMap();
   const ready=Promise.all(layouts.map((l,i)=>device.createComputePipelineAsync({label:`world lighting delta ${i?'aux':'raw'}`,layout:device.createPipelineLayout({bindGroupLayouts:[l]}),compute:{module:device.createShaderModule({code:worldLightingDeltaWGSL(!!i)}),entryPoint:'main'}}).then(p=>{pipes[i]=p;}))).then(()=>{readyState=true;});ready.catch(()=>{});
   const alive=()=>{if(dead)throw new Error('world lighting records disposed');};
   const brick=i=>[i%dims[0],Math.floor(i/dims[0])%dims[1],Math.floor(i/(dims[0]*dims[1]))];
@@ -25,8 +30,16 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
     const ids=Array.from(indices,index),missing=ids.filter(i=>!map.has(i));if(missing.length)throw requirements(missing);
     return frozenArray(ids.map(i=>{const r=map.get(i);if(derivedTick<r.changedTick)throw new Error('record predates actual change');return Object.freeze({brick:r.brick,age:Math.min(AGE.MAX,derivedTick-r.changedTick),matter:!!(r.info&BRICK_INFO.MATTER),near:false});}));
   }
-  function record(frame,{cut,previousCut=null,classification,derivedTick}={}){
-    alive();if(!readyState||frame!==gpu.frame||pending)throw new Error('ready normal Frame and no pending records transaction required');
+  // The indices a completed pending batch holds, if record() may carry it for
+  // this cut and clock; otherwise null.
+  function carryable(batch,{cut,derivedTick}={}){
+    const c=carries.get(batch);
+    return c&&pending===batch&&batch.status==='pending-acceptance'&&c.generation===generation&&c.cutIdentity===cut?.identity&&c.derivedTick===derivedTick&&c.baseline===baseline?c.indices:null;
+  }
+  function record(frame,{cut,previousCut=null,classification,derivedTick,carry=null}={}){
+    const carried=carry&&carryable(carry,{cut,derivedTick});
+    if(carry&&!carried)throw new Error('carried records require the pending batch of this cut, clock and baseline');
+    alive();if(!readyState||frame!==gpu.frame||pending&&pending!==carry)throw new Error('ready normal Frame and no pending records transaction required');
     if(!uint(derivedTick)||derivedTick<clock||derivedTick>clock+1&&clock!==-1)throw new Error('derived logical tick must advance once or retry same clock');
     validateWorldSourceCut(cut,{sourceOwner,epoch:sourceOwner.epoch,configuration:sourceOwner.cutConfiguration});
     if(baseline&&baseline.configuration!==cut.configuration)throw new Error('reset records on Source schema/configuration change');
@@ -36,8 +49,8 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
     if(pub.isReleased()||pc.identity!==cut.identity||pub.source.sourceRevision!==cut.contentToken.sourceRevision||pub.source.contentToken.epoch!==cut.identity.epoch||pub.worldSize.some((n,k)=>n!==size[k]))throw new Error('classification publication does not match owned cut');
     if(!Array.isArray(classification.records)||!classification.records.length||typeof classification.recordMetadata!=='function')throw new TypeError('real submitted classification lease required');
     const rows=classification.records,seen=new Set();
-    for(const r of rows){if(worldLightingIndex(size,r.brick)!==r.index||seen.has(r.index)||r.byteOffset!==brickIdOf(SOURCE_GRID,...r.brick.map(n=>n%8))*16||r.buffer.size<r.byteOffset+16)throw new Error('classification record layout/index mismatch');seen.add(r.index);}
-    const missing=[...committed.keys()].filter(i=>!seen.has(i));if(missing.length&&baseline?.identity!==cut.identity)throw requirements(missing);
+    for(const r of rows){if(worldLightingIndex(size,r.brick)!==r.index||seen.has(r.index)||carried?.has(r.index)||r.byteOffset!==brickIdOf(SOURCE_GRID,...r.brick.map(n=>n%8))*16||r.buffer.size<r.byteOffset+16)throw new Error('classification record layout/index mismatch');seen.add(r.index);}
+    const missing=[...committed.keys()].filter(i=>!seen.has(i)&&!carried?.has(i));if(missing.length&&baseline?.identity!==cut.identity)throw requirements(missing);
     // No original frozen MARK_DERIVED/ACT_CHANGED map is exposed by Source.
     // Bounds only nominate cores; compare actual words, never their revisions.
     // Compare every supplied known record (bounded by 32³ core), so broad
@@ -55,10 +68,11 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
       const j=new Uint32Array(132);j.set([a.slot,b.slot,rows.length*4+slot,0]);
       for(let s=0;s<64;s++)j.set([a.chunk.aux[a.slot+s],b.chunk.aux[b.slot+s]],4+2*s);g.jobs.push(j);
     }
+    const prior=carried?carries.get(carry):null;if(carried)carry.discard();
     const owned=[],held=cut.retain(),old=baseline?.retain(),atGeneration=generation;let consumed=false,complete=false,result=null,outcome='recorded',readback=null;
     const valid=()=>!dead&&generation===atGeneration&&!consumed;
     const cleanup=()=>{owned.forEach(b=>b.destroy());held.release();old?.release();classification.release();};
-    const batch={layout:WORLD_LIGHTING_RECORD_LAYOUT,indices:frozenArray(rows.map(r=>r.index)),wordCount:rows.length*5,metadataWordOffset:0,changeWordOffset:rows.length*4,
+    const batch={layout:WORLD_LIGHTING_RECORD_LAYOUT,indices:frozenArray([...(prior?.indices??[]),...rows.map(r=>r.index)]),wordCount:rows.length*5,metadataWordOffset:0,changeWordOffset:rows.length*4,
       get status(){return consumed?outcome:complete?'pending-acceptance':'recorded';},get completion(){return result;},
       get readback(){if(!complete||!valid())throw new Error('metadata readback not complete/live');return readback;},
       records(indices,{derivedTick:at=derivedTick}={}){alive();if(!complete||!valid())throw new Error('metadata transaction not complete/live');return read(next,indices,at);},
@@ -83,14 +97,22 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
         }
       },finish(words){
         if(!valid()||!held.isValid())throw new Error('discarded/stale world lighting metadata');
-        readback=frozenArray(words);next=new Map(committed);const changed=[],emission=[];
-        rows.forEach((r,s)=>{const prior=committed.get(r.index),emit=frozenArray(words.subarray(4*s,4*s+3)),info=words[4*s+3],actual=!!words[rows.length*4+s];if(actual)changed.push(r.brick);if(!prior||emit.some((w,k)=>w!==prior.emit[k]))emission.push(r.brick);next.set(r.index,{brick:frozenArray(r.brick),info,emit,changedTick:actual?derivedTick:prior.changedTick});});
+        // Carried: the prior batch is consumed, so its map and lists extend in place.
+        readback=frozenArray(words);next=prior?.next??new Map(committed);const changed=prior?.changed??[],emission=prior?.emission??[];
+        rows.forEach((r,s)=>{const prior=committed.get(r.index),b=frozenArray(r.brick),emit=frozenArray(words.subarray(4*s,4*s+3)),info=words[4*s+3],actual=!!words[rows.length*4+s];if(actual)changed.push(b);if(!prior||emit.some((w,k)=>w!==prior.emit[k]))emission.push(b);next.set(r.index,{brick:b,info,emit,changedTick:actual?derivedTick:prior.changedTick});});
         // Each emission change's 9x9x9 brick halo, from the distinct brick x of each
         // (y,z) row it reaches: a load's every brick emits anew, and 729 set adds
-        // each took 1.2 s on Descent (2026-10-21).
-        const haloRows=new Map();for(const b of emission)for(let z=Math.max(0,b[2]-4);z<=Math.min(dims[2]-1,b[2]+4);z++)for(let y=Math.max(0,b[1]-4);y<=Math.min(dims[1]-1,b[1]+4);y++){const row=y+dims[1]*z,xs=haloRows.get(row);if(xs)xs.add(b[0]);else haloRows.set(row,new Set([b[0]]));}
-        const halo=[];for(const row of Float64Array.from(haloRows.keys()).sort()){let end=-1;for(const x of Int32Array.from(haloRows.get(row)).sort()){for(let i=Math.max(0,x-4,end+1);i<=Math.min(dims[0]-1,x+4);i++)halo.push(i+dims[0]*row);end=Math.max(end,Math.min(dims[0]-1,x+4));}}
-        changes=Object.freeze({derivedTick,changedBricks:frozenArray(changed.map(frozenArray)),emissionChangedBricks:frozenArray(emission.map(frozenArray)),glowDirtyIndices:frozenArray(halo)});complete=true;return batch;
+        // each took 1.2 s on Descent (2026-10-21). Built when first read: no load
+        // stage reads it, and 81 row adds for each of 449k bricks were most of an
+        // Island restart's metadata stall (2026-10-22).
+        let halo=null;
+        const glowHalo=()=>{if(halo)return halo;const haloRows=new Map();for(const b of emission)for(let z=Math.max(0,b[2]-4);z<=Math.min(dims[2]-1,b[2]+4);z++)for(let y=Math.max(0,b[1]-4);y<=Math.min(dims[1]-1,b[1]+4);y++){const row=y+dims[1]*z,xs=haloRows.get(row);if(xs)xs.add(b[0]);else haloRows.set(row,new Set([b[0]]));}
+          const out=[];for(const row of Float64Array.from(haloRows.keys()).sort()){let end=-1;for(const x of Int32Array.from(haloRows.get(row)).sort()){for(let i=Math.max(0,x-4,end+1);i<=Math.min(dims[0]-1,x+4);i++)out.push(i+dims[0]*row);end=Math.max(end,Math.min(dims[0]-1,x+4));}}
+          return halo=frozenArray(out);};
+        const changedBricks=frozenArray(changed),emissionChangedBricks=frozenArray(emission);
+        changes=Object.freeze({derivedTick,changedBricks,emissionChangedBricks,get glowDirtyIndices(){return glowHalo();}});
+        carries.set(batch,{next,changed,emission,indices:new Set(batch.indices),cutIdentity:cut.identity,derivedTick,generation:atGeneration,baseline});
+        complete=true;return batch;
       }}).catch(e=>{batch.discard();throw e;}).finally(cleanup);
       // Completion cleanup releases native inputs, but acceptance still needs
       // its own real cut pin. Release it only on commit/discard/reset.
@@ -101,5 +123,5 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
       result.catch(()=>{});return Object.freeze(batch);
     }catch(error){batch.discard();cleanup();throw error;}
   }
-  return Object.freeze({ready,record,records(indices,{derivedTick=clock}={}){alive();return read(committed,indices,derivedTick);},get indices(){alive();return frozenArray(committed.keys());},get derivedTick(){return clock;},reset(){alive();generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed=new Map();clock=-1;},dispose(){if(!dead){generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed.clear();dead=true;}}});
+  return Object.freeze({ready,record,carryable,records(indices,{derivedTick=clock}={}){alive();return read(committed,indices,derivedTick);},get indices(){alive();return frozenArray(committed.keys());},get derivedTick(){return clock;},reset(){alive();generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed=new Map();clock=-1;},dispose(){if(!dead){generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed.clear();dead=true;}}});
 }
