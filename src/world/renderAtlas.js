@@ -25,6 +25,10 @@ export const DEFAULT_WORLD_LIMITS = Object.freeze({
 });
 const U32_MAX = 0xffffffff;
 const BU = { COPY_SRC: 4, COPY_DST: 8, UNIFORM: 64, STORAGE: 128 };
+// Books this big are built by copy and changed chunks (WorldRenderAtlas._book):
+// Descent, Tinker Creek, Giant Volcano. Island's 8 MiB books upload whole.
+export const BOOK_COPY_BYTES = 16 * 1024 ** 2;
+const BOOK_CHUNK_WORDS = 16384;
 const integer = (v, lo = 0, hi = U32_MAX) => Number.isSafeInteger(v) && v >= lo && v <= hi;
 const check = (ok, why) => { if (!ok) throw new RangeError(why); };
 const frozen = (a) => Object.freeze(a);
@@ -341,7 +345,7 @@ export class WorldRenderAtlas {
     check(this.feedbackBytes <= Math.min(this.limits.maxStorageBufferBindingSize, this.limits.maxBufferSize, 128 * 1024 ** 2), 'world feedback exceeds binding limit');
     this.retire = retire ?? (fn => { this.queue.onSubmittedWorkDone().then(fn, fn); });
     this.onChange = onChange; this.epoch = 1; this.generation = 0; this.required = new Set(); this.dead = false; this.recording = false;
-    this.snapshotStates = new WeakMap();
+    this.snapshotStates = new WeakMap(); this.bookUsers = new Map();
     this.cell = pool(); this.light = pool(); this.probe = pool();
     // Compatibility for cell-provider inspection; no light pages in this map.
     this.pages = this.cell.pages; this.pending = this.cell.pending;
@@ -366,17 +370,50 @@ export class WorldRenderAtlas {
     this.entries=entries;this.lightEntries=lightEntries;this.generation=generation;this.epoch=epoch;
     if(previous)this._releaseSnapshot(previous);
   }
+  // A big book is the current one's copy on the GPU plus the 64 KiB chunks that
+  // changed, or the current one itself when nothing changed (a pool growth),
+  // not a whole-world upload per commit: Descent's two books are 125 MiB each
+  // (2560x320x2560 cells), and a load's growths and publications re-sent them
+  // ~3 times a second, gigabytes held until retired (2026-10-21). The current
+  // snapshot's book holds this.entries/lightEntries: _commit sets both
+  // together and entries are never written in place. Books are read-only to
+  // every reader, so snapshots may share one; the last release destroys it.
+  _book(label, values, base, baseValues) {
+    const usage = BU.STORAGE | BU.COPY_DST | BU.COPY_SRC;
+    if (!base || values.byteLength < BOOK_COPY_BYTES || baseValues.length !== values.length) return this._ownBook(this._buffer(label, values.byteLength, usage, values));
+    if (values === baseValues) { this.bookUsers.set(base, this.bookUsers.get(base) + 1); return base; }
+    const b = this._ownBook(this.device.createBuffer({ label, size: values.byteLength, usage }));
+    try {
+      const encoder = this.device.createCommandEncoder({ label: 'world book copy' });
+      encoder.copyBufferToBuffer(base, 0, b, 0, values.byteLength); this.queue.submit([encoder.finish()]);
+      const n = values.length; let start = -1;
+      for (let c = 0; c < n; c += BOOK_CHUNK_WORDS) {
+        const end = Math.min(n, c + BOOK_CHUNK_WORDS); let changed = false;
+        for (let i = c; i < end; i++) if (values[i] !== baseValues[i]) { changed = true; break; }
+        if (changed) { if (start < 0) start = c; } else if (start >= 0) { this.queue.writeBuffer(b, start * 4, values, start, c - start); start = -1; }
+      }
+      if (start >= 0) this.queue.writeBuffer(b, start * 4, values, start, n - start);
+    } catch (e) { this.retire(() => this._dropBook(b)); throw e; }
+    return b;
+  }
+  _ownBook(b) { this.bookUsers.set(b, 1); return b; }
+  _dropBook(b) { const n = this.bookUsers.get(b) - 1; if (n > 0) this.bookUsers.set(b, n); else { this.bookUsers.delete(b); b.destroy(); } }
   _snapshotState(entries,lightEntries,r,epoch,dependencies,sun,generation) {
     let book, lightBook, params;
+    const base = this.current;
     try {
-      book = this._buffer('world immutable book', entries.byteLength, BU.STORAGE | BU.COPY_DST | BU.COPY_SRC, entries);
-      lightBook = this._buffer('world immutable light book', lightEntries.byteLength, BU.STORAGE | BU.COPY_DST | BU.COPY_SRC, lightEntries);
+      book = this._book('world immutable book', entries, base?.book, this.entries);
+      lightBook = this._book('world immutable light book', lightEntries, base?.lightBook, this.lightEntries);
       params = this._buffer('world immutable params', 112, BU.UNIFORM | BU.COPY_DST, paramWords(this.bookLayout, r.layout, epoch, generation, dependencies.version));
-    } catch (e) { this.retire(() => { book?.destroy(); lightBook?.destroy(); params?.destroy(); }); throw e; }
+    } catch (e) { this.retire(() => { if (book) this._dropBook(book); if (lightBook) this._dropBook(lightBook); params?.destroy(); }); throw e; }
     const pins = [];
-    for (const [kind, values] of [['cell', entries], ['light', lightEntries]]) for (const id of new Set(values.filter(v => v).map(bookPage))) {
-      const p = this[kind].pages.get(id); p.pins++; pins.push(p);
-      if (p.kind === 'light' && p.probeID !== null) this.probe.pages.get(p.probeID).pins++;
+    for (const [kind, values] of [['cell', entries], ['light', lightEntries]]) {
+      const ids = new Set();
+      for (let i = 0; i < values.length; i++) if (values[i]) ids.add(bookPage(values[i]));
+      for (const id of ids) {
+        const p = this[kind].pages.get(id); p.pins++; pins.push(p);
+        if (p.kind === 'light' && p.probeID !== null) this.probe.pages.get(p.probeID).pins++;
+      }
     }
     r.refs++;
     return { book, lightBook, params, r, pins, refs: 1, epoch, generation, dependencies, sunManifest: sun };
@@ -384,7 +421,7 @@ export class WorldRenderAtlas {
   _releaseSnapshot(s) {
     if (--s.refs) return;
     this.retire(() => {
-      s.book.destroy(); s.lightBook.destroy(); s.params.destroy(); this._releaseResources(s.r);
+      this._dropBook(s.book); this._dropBook(s.lightBook); s.params.destroy(); this._releaseResources(s.r);
       for (const p of s.pins) {
         p.pins--;
         if (p.kind === 'light' && p.probeID !== null) this.probe.pages.get(p.probeID).pins--;
@@ -694,7 +731,7 @@ export class WorldRenderAtlas {
     check(probes?.every(i=>probeCovered.has(i)),'private closure omits requested previous GI records');
     // This is a private reader generation, not a public commit. Descriptors
     // use the same N+1 stamp; public books/counter remain at N.
-    const s=this._snapshotState(this.entries.slice(),lights,this.resources,this.epoch,dependencyToken?manifest(dependencyToken):this.current.dependencies,this.current.sunManifest,this.generation+1);
+    const s=this._snapshotState(this.entries,lights,this.resources,this.epoch,dependencyToken?manifest(dependencyToken):this.current.dependencies,this.current.sunManifest,this.generation+1);
     s.producerOnly=true;
     for(const job of lightJobs)this._job(job,'light').producerOnly=true;
     const out=this._snapshot(s);this._releaseSnapshot(s);return out;

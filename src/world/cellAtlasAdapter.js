@@ -11,6 +11,7 @@ const BU = { COPY_SRC:4,COPY_DST:8,UNIFORM:64,STORAGE:128 };
 const same = (a,b) => a?.epoch === b?.epoch && a?.sourceRevision === b?.sourceRevision;
 const coreFor = b => b.map(v => Math.floor(v/8)*32);
 const submittedCaptures = new WeakMap();
+export const CELL_BATCH_WRITES = 1024;   // a raw and a fields write per page
 let dependencyID = 1;
 
 export class WorldCellAtlasAdapter {
@@ -24,6 +25,7 @@ export class WorldCellAtlasAdapter {
     // Fields may commit while its Atlas publication is aborted or retried.
     // Keep that publication debt until a successful atomic Atlas patch.
     this.unpublishedInvalidations=new Set();this.unpublishedChanges=new Map();this.lightingDirty=false;
+    this.batchWrites=CELL_BATCH_WRITES;
     this.fields=new WorldFields(gpu,{worldBounds,tables,publisher:this});
     if(this.fields.history.epoch<source.epoch)this.fields.reset(source.epoch);
     const layout=gpu.layout('world owned classifier',WORLD_CLASSIFIER_LAYOUT);
@@ -209,9 +211,44 @@ export class WorldCellAtlasAdapter {
     if(this.gpu.frame.open)throw new Error('Flush Source/Fields captures before CELL Atlas packing');
     if(!batch.source.isCurrent()||batch.plan.epoch!==this.fields.history.epoch)throw new Error('Stale CELL source/field batch');
     const jobs=[], clears=[...invalidations], device=this.gpu.device, ephemeral=[], writes=[];
-    let fieldBatch={pages:[]};
+    let fieldBatch={pages:[]}, rawBatch=[];
+    // A batch's raw pages share one job list, one version block and one pass,
+    // each page bound at its own aligned window (the pack reads exactly its 68
+    // job words and 48 version bytes). A buffer, a mapping and a pass per page
+    // (35k pages on a World load's first frame, twice that many buffers) held
+    // Chrome's GPU process until its watchdog killed it (2026-10-21).
+    const align=(n,a)=>Math.ceil(n/a)*a, limits=device.limits??{};
+    const jobStride=align(68*4,limits.minStorageBufferOffsetAlignment??256), versionStride=align(48,limits.minUniformBufferOffsetAlignment??256);
+    const packRaw=raws=>{
+      const jobWords=new Uint32Array(raws.length*jobStride/4),versionWords=new Uint32Array(raws.length*versionStride/4);
+      raws.forEach(({job,words},i)=>{
+        // (no allocation between here and recordPageWrites: the layout each page's writer reads)
+        const l=this.atlas.cell.pages.get(job.physicalPageID).resources.layout;
+        jobWords.set(words,i*jobStride/4);
+        versionWords.set([job.physicalPageID,l.cells.x,l.cells.y,l.aux.width,l.aux.height,0,0,0,READY.CELL,job.epoch,job.sourceRevision,job.fieldTick],i*versionStride/4);
+      });
+      const list=this._upload('CELL page immutable jobs',jobWords,BU.STORAGE),params=this._upload('CELL page versions',versionWords,BU.UNIFORM);ephemeral.push(list,params);
+      let seen=0;
+      const record=(encoder,raw,outputs)=>{
+        raw.outputs=outputs;if(++seen<raws.length)return;
+        const pass=encoder.beginComputePass();pass.setPipeline(this.packPipeline);
+        let shared=null,output=null;
+        raws.forEach(({source,capture,outputs},i)=>{
+          const buffers=[source.A,source.B,source.flow??this.zero,source.aeration??this.zero,source.deco?.buffer??this.zero,capture.classification];
+          const input=device.createBindGroup({layout:this.packLayouts[0],entries:[...buffers.map((buffer,binding)=>({binding,resource:{buffer}})),
+            {binding:6,resource:{buffer:list,offset:i*jobStride,size:68*4}},{binding:7,resource:{buffer:params,offset:i*versionStride,size:48}}]});
+          if(!shared||shared.length!==outputs.length||shared.some((o,k)=>o.binding!==outputs[k].binding||o.resource!==outputs[k].resource)){
+            output=device.createBindGroup({layout:this.packLayouts[1],entries:outputs});shared=outputs;
+          }
+          pass.setBindGroup(0,input);pass.setBindGroup(1,output);pass.dispatchWorkgroups(1);
+        });
+        pass.end();
+      };
+      for(const raw of raws)raw.record=record;
+    };
     const flushWrites=()=>{
       if(!writes.length)return;
+      if(rawBatch.length)packRaw(rawBatch);
       const transport=fieldBatch,groups=new Map();
       transport.buffer=this._buffer('CELL packed field batch',transport.pages.length*3*2048,BU.STORAGE|BU.COPY_SRC);ephemeral.push(transport.buffer);
       transport.pages.forEach(({capture,local},index)=>{if(!groups.has(capture))groups.set(capture,[]);groups.get(capture).push(...local,index);});
@@ -228,7 +265,7 @@ export class WorldCellAtlasAdapter {
         for(const {count,group} of dispatches){pass.setBindGroup(0,group);pass.dispatchWorkgroups(count);}
         pass.end();encoded=true;
       };
-      this.atlas.recordPageWrites(writes);writes.length=0;fieldBatch={pages:[]};
+      this.atlas.recordPageWrites(writes);writes.length=0;fieldBatch={pages:[]};rawBatch=[];
     };
     const previousLighting=this.atlas.snapshot();
     try{
@@ -236,14 +273,13 @@ export class WorldCellAtlasAdapter {
       // Without a proven lighting dependency closure, no old channel may be
       // relabelled as newly computed. Preserve it only in the pinned snapshot;
       // the lighting owner can supply explicit compatible replacements below.
-      if(derivedChanged)for(const [index,entry] of this.atlas.lightEntries.entries())if(entry){
-        const n=this.atlas.bookLayout.bricks;
-        clears.push({brick:[index%n[0],Math.floor(index/n[0])%n[1],Math.floor(index/(n[0]*n[1]))],channels:READY.LIGHT});
-      }
-      for(const [index,entry] of this.atlas.entries.entries())if(entry){
-        const b=[index%this.atlas.bookLayout.bricks[0],Math.floor(index/this.atlas.bookLayout.bricks[0])%this.atlas.bookLayout.bricks[1],Math.floor(index/(this.atlas.bookLayout.bricks[0]*this.atlas.bookLayout.bricks[1]))];
+      // (index loops: a book is 33M entries on Descent, and entries() made a pair for each)
+      const n=this.atlas.bookLayout.bricks,brickAt=index=>[index%n[0],Math.floor(index/n[0])%n[1],Math.floor(index/(n[0]*n[1]))];
+      if(derivedChanged){const light=this.atlas.lightEntries;for(let index=0;index<light.length;index++)if(light[index])clears.push({brick:brickAt(index),channels:READY.LIGHT});}
+      if(this.unpublishedInvalidations.size){const cell=this.atlas.entries;for(let index=0;index<cell.length;index++)if(cell[index]){
+        const b=brickAt(index);
         if(this.unpublishedInvalidations.has(brickKey(coreFor(b))))clears.push({brick:b,channels:READY.CELL});
-      }
+      }}
       const seen=new Set();
       for(const r of batch.options.requirements){
         const brick=Array.isArray(r)?r:r.brick,channels=Array.isArray(r)?READY.CELL:r.channels;
@@ -256,22 +292,16 @@ export class WorldCellAtlasAdapter {
         const lightEntry=this.atlas.lightEntries[worldBrickIndex(this.atlas.bookLayout,brick)];
         if(lightEntry&&this.atlas.light.pages.get(bookPage(lightEntry)).sourceRevision!==batch.source.sourceRevision)clears.push({brick,channels:READY.LIGHT});
         const words=new Uint32Array(68);words.set([start,bi,0,0]);words.set(source.aux.subarray(start,start+64),4);
-        const list=this._upload('CELL page immutable job',words,BU.STORAGE);ephemeral.push(list);
-        writes.push({job,kind:'raw',auxMetadata:[READY.CELL,job.epoch,job.sourceRevision,job.fieldTick],record:(encoder,bindings)=>{
-          const l=this.atlas.cell.pages.get(job.physicalPageID).resources.layout;
-          const params=this._upload('CELL page version',new Uint32Array([job.physicalPageID,l.cells.x,l.cells.y,l.aux.width,l.aux.height,0,0,0,READY.CELL,job.epoch,job.sourceRevision,job.fieldTick]),BU.UNIFORM);ephemeral.push(params);
-          const buffers=[source.A,source.B,source.flow??this.zero,source.aeration??this.zero,source.deco?.buffer??this.zero,capture.classification,list];
-          const input=device.createBindGroup({layout:this.packLayouts[0],entries:[...buffers.map((buffer,binding)=>({binding,resource:{buffer}})),{binding:7,resource:{buffer:params}}]});
-          const output=device.createBindGroup({layout:this.packLayouts[1],entries:bindings.outputs});
-          const pass=encoder.beginComputePass();pass.setPipeline(this.packPipeline);pass.setBindGroup(0,input);pass.setBindGroup(1,output);pass.dispatchWorkgroups(1);pass.end();
-        }});
+        const raw={job,words,source,capture,record:null};rawBatch.push(raw);
+        writes.push({job,kind:'raw',auxMetadata:[READY.CELL,job.epoch,job.sourceRevision,job.fieldTick],record:(encoder,bindings)=>raw.record(encoder,raw,bindings.outputs)});
         const transport=fieldBatch,pageIndex=transport.pages.length;transport.pages.push({capture,local});
         writes.push({job,kind:'fields',record:(encoder,bindings)=>{
           transport.record(encoder);
           bindings.destinations.forEach((destination,i)=>encoder.copyBufferToTexture({buffer:transport.buffer,offset:(pageIndex*3+i)*2048,bytesPerRow:256,rowsPerImage:8},destination,[8,8,1]));
         }});
         // Bound command-buffer size, not work: every requested page is packed.
-        if(writes.length>=128)flushWrites();
+        // 512 pages a submission: a 35k-page first frame is ~70 submissions, not 550.
+        if(writes.length>=this.batchWrites)flushWrites();
       }
       flushWrites();
       if(!batch.source.isCurrent()||batch.plan.epoch!==this.fields.history.epoch)throw new Error('CELL source changed while packing');

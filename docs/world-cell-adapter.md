@@ -98,12 +98,20 @@ planes. Absent planes explicitly become zero. Original tiled raw slot order is
 not XYZ occupancy-bit order. AUX record3 is zero; distancePlus1=0 means unknown
 (-1), never fabricated empty-space distance.
 
+A batch's raw pages share one job-list buffer and one version uniform buffer,
+each page bound at its own aligned window (68 job words, 48 version bytes), and
+one compute pass with one dispatch per page. Pages of one pool share the output
+bind group. A buffer pair, a mapping and a pass per page (35k pages on a World
+load's first frame) held Chrome's GPU process until its watchdog killed it
+(2026-10-21).
+
 `recordPageWrite(job,'fields',...)` exposes callback-scoped unpublished
 `destinations: [{texture,origin}, ...]`, retaining Atlas-owned submission.
 One integer-only pass rearranges captured field words for each existing batch
-of up to 64 pages. Each page then needs three native buffer-to-texture copies,
-not 48. The pass uses five storage buffers and no storage images. Its temporary
-output is at most 393,216 bytes per batch and retires after queue completion.
+of up to 512 pages (`CELL_BATCH_WRITES`, one submission). Each page then needs
+three native buffer-to-texture copies, not 48. The pass uses five storage
+buffers and no storage images. Its temporary output is at most 3,145,728 bytes
+per batch and retires after queue completion.
 Every half bit is preserved: there is no float conversion or requantization.
 Copies use `bytesPerRow=256`; the original row-copy helper remains the test
 reference. The existing float writer is unchanged.

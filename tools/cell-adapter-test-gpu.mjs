@@ -61,8 +61,9 @@ export class CellTestGPU extends FieldTestGPU {
     }
   }
   _pack(groups){
-    const input=i=>groups[0].entries.find(e=>e.binding===i).resource.buffer;
-    const src=[0,1,2,3,4,5,6,7].map(i=>words(input(i))),p=src[7],jobs=src[6],pid=p[0];
+    // A binding's window, as WebGPU binds it: offset and size, else the whole buffer.
+    const input=i=>{const r=groups[0].entries.find(e=>e.binding===i).resource,w=words(r.buffer),o=(r.offset??0)/4;return r.size===undefined?w.subarray(o):w.subarray(o,o+r.size/4);};
+    const src=[0,1,2,3,4,5,6,7].map(input),p=src[7],jobs=src[6],pid=p[0];
     const l={capacity:pid+1,cells:{x:p[1],y:p[2]},aux:{width:p[3],height:p[4],layers:100}};
     const outputs=groups[1].entries.map(e=>e.resource.texture??e.resource),put=(t,pos,v)=>new Uint32Array(t.bytes,at(t,pos),v.length).set(v);
     let lo=0,hi=0;for(let s=0;s<64;s++){const n=jobs[0]+s,a=src[0].subarray(n*4,n*4+4);put(outputs[0],pageTexel(pid,s,l),a);put(outputs[1],pageTexel(pid,s,l),src[1].subarray(n*4,n*4+4));const flags=jobs[4+s];put(outputs[2],auxTexel(pid,4+2*s,l),[flags&1?src[2][2*n]:0,flags&1?src[2][2*n+1]:0,flags&2?src[3][2*n]:0,flags&2?src[3][2*n+1]:0]);put(outputs[2],auxTexel(pid,5+2*s,l),[flags&4?src[4][n]:0,0,0,0]);if(Math.floor(new Float32Array(a.slice().buffer)[0]+.5)!==0){const [x,y,z]=worldSlotCell(s),k=x+4*y+16*z;if(k<32)lo|=1<<k;else hi|=1<<(k-32);}}

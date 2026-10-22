@@ -108,7 +108,14 @@ export class RawWorldSourceProducer {
     // Store, then captured, then CURRENT live. All overlays are GPU copies;
     // store bytes were already losslessly decoded by the source cache.
     for (const c of this.source.chunks.values()) {
-      const runs = planSourceCopies(c, raw, box, (_d, p) => c.rank[cellSlot(c.g, ...p.map((v, i) => v - c.origin[i]))] >= SOURCE_RANK.saved);
+      // Whole bricks decide from their 64 contiguous ranks, as recordGatherRaw's
+      // do; only mixed bricks go cell by cell. Every cell through the callback
+      // cost a 320-tall Descent column most of a second (2026-10-21).
+      const runs = planSourceCopies(c, raw, box, (_d, p) => c.rank[cellSlot(c.g, ...p.map((v, i) => v - c.origin[i]))] >= SOURCE_RANK.saved, (_d, p) => {
+        const slot = cellSlot(c.g, p[0] - c.origin[0], p[1] - c.origin[1], p[2] - c.origin[2]), ranks = c.rank.subarray(slot, slot + 64);
+        let kept = 0; for (let i = 0; i < 64; i++) if (ranks[i] >= SOURCE_RANK.saved) kept++;
+        return kept === 64 ? true : kept ? null : false;
+      });
       recordSourceCopies(frame, c, raw, runs, { aux: false });
       // Exact saved/edited/captured cells may support a new tree but are not
       // tree-owned writes. A/B store commit never relinquishes that authority.
