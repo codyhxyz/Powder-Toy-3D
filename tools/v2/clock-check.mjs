@@ -66,10 +66,6 @@ assert.equal(stepClock(sim), 480, 'a native second is LEGACY_STEP_HZ V1 steps of
 assert.equal(clockNow(), 480, 'uSimClock: the media drift runs at V1 speed under V2');
 assert.deepEqual([...gfxUniforms.uCloudShift.value], shiftOf(480), 'the cloud deck drifts as far as under V1');
 assert.equal(before, HOST_HZ); assert.equal(after, HOST_HZ);
-// and back on V1 (runtime switch): one more step is one more on the same clock, no jump
-owner.suspend(); sim.frame++;
-assert.equal(stepClock(sim), 481, 'V2 → V1 keeps the clock continuous');
-owner.activate();
 
 // ---- 3. rest: a certified-idle box keeps its clock and hooks, records nothing
 owner.certified = true;

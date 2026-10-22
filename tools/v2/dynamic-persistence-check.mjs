@@ -232,7 +232,7 @@ for (const index of [0, 1]) {
 }
 assert.equal(povGpu(sim).com(buffer({ size: 16, label: 'body com test' }), [1, 2, 3]), true);
 assert.equal(dispatches.at(-1).opts.bind[1][1].resource.buffer, d.air[d.airIndex]);
-owner.suspend();
+sim.compact = null;   // (before the owner presents the grid: the V1-format cache)
 await sim.probe(probe, [1, 1, 1], { ring, bind: [sim.tables, sim.bindRO, {}] });
 assert.equal(dispatches.at(-1).opts.header.format, 0);
 owner.activate();

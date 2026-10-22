@@ -281,19 +281,17 @@ sim.legacyState(false);
 assert.deepEqual(exported().converted, differing(), 'then only the differing ones again');
 assertExact(false, 'after a load, back');
 
-// 6. Suspend (V1 runs on the drawn cache), V1 writes a cell, resume, edit.
+// 6. A V1-format writer's cell (a stroke's fallback, a guest frame's unpack: the cache, marked), edit.
+// (A suspension under V1, which this case ran first, went with V1.)
 sim.legacyState(true);
-owner.suspend();
-assertExact(false, 'suspend');
 const v1 = [24, 4, 3], vs = cellSlot(g, ...v1);
 f32(sim.state.A).set([E.STONE, 40, 0, 0.25], (sim.cur * g.slots + vs) * 4);
 f32(sim.state.B).set([0.5, 0, 0, 0.1], (sim.cur * g.slots + vs) * 4);
 u32(sim.marks)[marksLayout(g).owned + (vs >> 5)] |= 1 << (vs & 31);
 sim.version++;
-owner.activate();
 sim.legacyState(true);
-assert.deepEqual(exported().converted, [...new Set([...differing(), brickOf(v1)])].sort((a, b) => a - b), 'resume: the V1 write and the differing bricks');
-assertExact(true, 'resume then edit');
+assert.deepEqual(exported().converted, [brickOf(v1)], 'the V1-format write\'s brick alone (the edit projection was current)');
+assertExact(true, 'a V1-format write then edit');
 
 // 7. A whole-grid write (an undo) leaves every brick stale.
 owner.restore(owner.cells);
@@ -301,4 +299,4 @@ sim.legacyState(false);
 assert.equal(exported().converted.length, nbricks, 'a whole-grid write converts every brick');
 assertExact(false, 'after a whole-grid write');
 
-console.log(`legacy projection switch: converts only the stale bricks and the ${differing().length} of ${nbricks} holding a partial liquid fill; A/B equal a full export after edits, ticks, a load, suspend/resume and a whole-grid write`);
+console.log(`legacy projection switch: converts only the stale bricks and the ${differing().length} of ${nbricks} holding a partial liquid fill; A/B equal a full export after edits, ticks, a load, a V1-format write and a whole-grid write`);

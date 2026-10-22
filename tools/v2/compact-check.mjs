@@ -81,16 +81,6 @@ assert(sim.undo());
 assert.deepEqual(v2.cells.data, original, 'undo preserves fractional fill and flux bits');
 assert(!v2.importFull, 'undo must not subsequently re-import the lossy projection');
 
-// A switch is not a whole-state write. An unchanged box keeps every compact word.
-const beforeSwitch = sim.wholeWrites;
-calls.length = 0;
-v2.suspend();
-assert.equal(sim.header().capture, 1, 'suspended compact owner tracks legacy cell writes');
-v2.activate();
-assert.equal(sim.wholeWrites, beforeSwitch);
-assert(!calls.some(c => c.name === 'v2import'), 'no-op round trip never projects back into compact cells');
-assert.deepEqual(v2.cells.data, original);
-
 // Saves own the clock, activity and raw bits, not just visible A/B.
 v2.tick = 123; v2.acc = 0.625; sim.frame = 912; sim.paints = 84;
 const saved = await v2.captureState();
@@ -113,23 +103,15 @@ v2.exportLegacy();
 assert.equal(calls.at(-1).opts.header.capture, 0, 'bridge writes cannot steal compact ownership');
 v2.restoreState(saved, { legacyCurrent: true });
 calls.length = 0;
-v2.suspend();
-assert(!calls.some(c => c.name === 'v2bridge'), 'a suspended-mode load keeps saved legacy velocities instead of projecting zeros');
-v2.activate();
-sim.version += 2; // a v1 step or edit; activity marks may already have been consumed
+sim.version += 2; // a V1-format edit (a writer's cache write); activity marks may already have been consumed
 v2.sync();
 assert.equal(calls.at(-1).opts.params.full, 0, 'ordinary legacy writes import only owned cells');
 assert.equal(calls.at(-1).opts.header.capture, 0, 'import cannot re-mark ownership');
 
-sim.snapshot('across modes');
-const acrossWords = v2.cells.data.slice();
-v2.suspend();
+// An undo entry taken before the owner presents the grid (the V1-format cache's A/B) is imported when
+// undone under V2. (Engine switches, which made such entries mid-session, went with V1.)
+sim.compact = null;
 assert.equal(sim.readHeader().format, 0);
-assert.equal(sim.history.at(-1).format, 'v2', 'mode switches retain history tags');
-calls.length = 0;
-assert(sim.undo(), 'v1 takes back a v2 entry');
-assert.deepEqual(v2.cells.data, acrossWords, "the suspended owner gets the entry's exact words (a V2 entry keeps no A/B projection)");
-assert(calls.some(c => c.name === 'v2bridge'), "V1's cells are their projection");
 sim.snapshot('legacy');
 assert.equal(sim.history.at(-1).format, 'v1');
 calls.length = 0;

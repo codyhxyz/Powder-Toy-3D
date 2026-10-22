@@ -247,7 +247,7 @@ export function createNativeWeatherKernel(sim, name, spec) {
   const kernel = { ready, main:status, apply:status,
     // opts.scrub: V1's sim.edit { scrub } for this write (NATIVE_WEATHER_SCRUB)
     run(box, values, source, { scrub = false } = {}) {
-      // (a suspended owner's cells aren't the grid's: V1 steps its own, so its writers write those)
+      // (an owner not yet presenting the grid writes nothing: the writers write the V1-format cache it imports)
       if(!built() || sim.disposed || o.disposed || sim.compact!==o) return false;
       if(!box || box.lo.some((v,a)=>v>box.hi[a])) return false;
       const count=box.hi.reduce((n,v,a)=>n*(v-box.lo[a]+1),1);

@@ -260,25 +260,20 @@ export class WorldGenerator {
    * Physics V2's (the window reads its native cells too): V2's kernel compares
    * native cores with the generator's import (prepareNativeDiff) once it is
    * built and V2 is what the readers see. Returns whether it did.
-   * owner: a SUSPENDED V2 owner (a World grid switched to V1 at runtime keeps it, shadowing V1's
-   * window, for an exact switch back): the native diff of its own cells (bound as V2's readers bind
-   * them while it runs, PhysicsV2.groups.read), beside the V1 diff of V1's cells that V1's store keeps.
-   * It records nothing until the native kernel is built (false: the window then keeps every native brick).
    */
-  diff(P, lo, bricks, out, { native = false, owner = null } = {}) {
+  diff(P, lo, bricks, out, { native = false } = {}) {
     const sim = this.sim, o = sim.origin, f = sim.gpu.frame, O = [o.x, o.y, o.z];
     const nativeDiff = this.kernels.nativeDiff;
-    if (owner && !(native && nativeDiff?.pipeline)) return false;
     this.res.prepassFor(lo.map((v, i) => v + O[i]), lo.map((v, i) => v + O[i] + bricks[i] * BRICK));
     f.clear(out.head, 0, 16);
     out.group ??= sim.gpu.bindGroup(this.kernels.diff.groups[2], this.res.entries([
       { binding: LEAVE_BINDING.head, resource: { buffer: out.head } }, { binding: LEAVE_BINDING.cells, resource: { buffer: out.cells } }]),
     `${this.scene.key} leave`);
-    const header = owner ? { ...sim.header(), format: NATIVE_READ_FORMAT } : sim.readHeader();
-    // (format 2: the readers bind V2's cells, Simulation.bindRO; a test's forced projection is format 0)
+    const header = sim.readHeader();
+    // (format 2: the readers bind V2's cells, Simulation.bindRO; format 0 before the owner presents)
     const exact = native && !!nativeDiff?.pipeline && header.format === NATIVE_READ_FORMAT;
     (exact ? nativeDiff : this.kernels.diff).dispatch(f, leaveDispatch(bricks), {
-      bind: [sim.tables, owner ? owner.groups.read : sim.bindRO, out.group], header,
+      bind: [sim.tables, sim.bindRO, out.group], header,
       params: {
         lo, bricks, wlo: [(o.x + lo[0]) / BRICK, (o.y + lo[1]) / BRICK, (o.z + lo[2]) / BRICK], wb: P.size.map((n) => n / BRICK),
       },

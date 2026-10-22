@@ -370,8 +370,10 @@ export class PhysicsV2 {
   // back, or replaces the cells, clears them, lest an old mark carry a stamp the next ticks repeat
   _clearPacketTouch() { if (this.aux) this.gpu.frame.clear(this.aux, this.auxLayout.touch * 4, this.g.slots * 4); }
   _takePlane(from) { const to = this.decoPlane; this.gpu.frame.copy(from.buffer, from.offset, to.buffer, to.offset, to.size); }
-  _givePlane(to) { const from = this.decoPlane; this.gpu.frame.copy(from.buffer, from.offset, to.buffer, to.offset, from.size); }
 
+  // The owner presents the grid from here (app.js: its first tick; the grid's legacy writes before it, a
+  // load's or a stroke's, imported then). There is no way back: V1's step, which a suspension handed the
+  // box to, went with V1.
   activate() {
     if (this.sim.compact === this) return;
     const legacyPlane = this.sim.compact ? null : this.sim.decoPlane;
@@ -382,18 +384,6 @@ export class PhysicsV2 {
     this.sync();
     this.sim.changedAll = true;
     this.sim.version++;
-    this.seenVersion = this.sim.version;
-  }
-
-  suspend() {
-    if (this.sim.compact !== this) return;
-    if (!this.gpu.failure) this.exportLegacy(false);
-    this.sim.compact = null;
-    const legacyPlane = this.sim.decoPlane;
-    if (legacyPlane && !this.gpu.failure && !this.sim.disposed) this._givePlane(legacyPlane);
-    // A presentation switch is not a state replacement. The retained owner
-    // imports only sticky per-cell legacy writes, even after v1 activity consumes its marks.
-    this.sim.noteWrite({ replaceState: false });
     this.seenVersion = this.sim.version;
   }
 
@@ -548,8 +538,8 @@ export class PhysicsV2 {
   }
 
   // Every read is recorded before the first await, alongside saves/game's legacy read.
-  // A suspended engine still owns untouched compact cells; sync consumes actual v1 writes.
-  async captureState(mode = this.sim.compact === this ? 'v2' : 'v1') {
+  // mode: the engine the save records, 'v2' (a save made while V1 ran said 'v1': wire/saves.js imports those).
+  async captureState(mode = 'v2') {
     if (!this.isReady || this.disposed) throw new Error('v2 state: engine is not ready');
     this.sync();
     const { gpu, sim, g } = this;
@@ -634,7 +624,7 @@ export class PhysicsV2 {
 
   dispose() {
     if (this.disposed) return;
-    this.suspend();
+    if (this.sim.compact === this) this.sim.compact = null;
     this.disposed = true;
     if (this.sim.compactOwner === this) this.sim.compactOwner = null;
     this.wake();

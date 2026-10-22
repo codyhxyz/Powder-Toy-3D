@@ -444,7 +444,7 @@ export function createUnpacker() {
   let g = null, gpu = null, kernel = null, buffer = null, group = null, pending = Promise.resolve();
   let nat = null;   // the native path's kernels and buffers, for one owner
   const write = (sim) => {
-    sim.compact?.suspend(); // render-only guest ownership; never simulate projected packets
+    // (no owner presents the grid yet: the V1-format cells are imported when it does, PhysicsV2.activate)
     kernel.dispatch(gpu.frame, fold(Math.ceil(g.slots / 64)), { bind: [sim.tables, sim.bindRW, group], header: sim.header() });
     sim.noteWrite();
     sim.stillFlow();   // no velocity is sent, so a guest's grains are textured in place

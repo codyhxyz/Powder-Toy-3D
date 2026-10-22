@@ -92,14 +92,8 @@ test('V2 owns the plane while it runs: taken at start and resume, handed back at
   const saved = await owner.captureState('v2');
   const meta = JSON.parse(new TextDecoder().decode(saved.subarray(12, 12 + new DataView(saved.buffer).getUint32(8, true))));
   assert.equal(meta.hasAux, true);
-  // V2 moved the paint; a stop hands the moved plane back to V1's move
-  const moved = words(owner.aux, a.deco, g.slots); moved.reverse();
-  owner.suspend();
-  assert.equal(sim.compact, null); assert.equal(sim.decoPlane.buffer, sim.moveSrc, 'suspended, V1 carries its own plane');
-  assert.deepEqual(words(sim.moveSrc), moved, 'what V2 moved is what V1 resumes with');
-  words(sim.moveSrc)[3] = GREEN;
-  owner.activate();
-  assert.equal(words(owner.aux, a.deco, g.slots)[3], GREEN, 'V1\'s strokes and moves come back into V2\'s plane on resume');
+  // (V2 presents the plane from its first activation on: a hand-back to V1's move went with V1)
+  assert.equal(sim.decoPlane.buffer, owner.aux, 'the plane is V2\'s while it presents the grid');
 });
 
 // ---------------------------------------------------------------- (2) the block pass and the column fall, executed

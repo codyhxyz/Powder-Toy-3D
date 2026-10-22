@@ -194,12 +194,11 @@ assert.deepEqual(flowAt(falling), [0, 0, 0], 'a landed grain stops its texture')
   owner.ticks(1);
   assert.deepEqual(flowAt(water), flux.map(q => f16(q / WEATHER_SPEED_FLUX)), 'a mark under anything but a grain is not a topple\'s');
 }
-// a runtime switch: V1 ran the box meanwhile and left motion; V2 activated again clears it
-owner.suspend();
-assert.equal(sim.compact, null);
+// the owner's activation clears what the cache's field held before it (a pre-owner load's motion)
+sim.compact = null;
 flowWords.fill(STALE);
 owner.activate();
-assert(flowWords.every(w => w === 0), 'V2 activated clears V1\'s motion');
+assert(flowWords.every(w => w === 0), 'V2 activated clears the stale motion');
 // World's copy of the live window carries the same field (world/renderSource.js aux flow)
 assert.equal(snapshotSource(sim).flow, sim.flow, 'World\'s live copies take V2\'s flow field');
 

@@ -64,7 +64,7 @@ const chunkAeration = (source, cell) => {
   return new Uint32Array(c.aeration.bytes.buffer)[cellSlot(c.g, ...cell.map((v, i) => v - c.origin[i])) * 2];
 };
 
-test('(1) under V2 World\'s live copy carries V2\'s foam, packed from the cores into the source; under V1 V1\'s field', () => {
+test('(1) World\'s live copy carries V2\'s foam, packed from the cores into the source; the V1-format cache none', () => {
   const v2 = fixture({ native: true });
   v2.source.recordLiveCopy(v2.frame); v2.flush();
   assert(v2.dispatched.length > 0, 'V2\'s cores packed into the source');
@@ -81,12 +81,11 @@ test('(1) under V2 World\'s live copy carries V2\'s foam, packed from the cores 
   v2.sim.version++;
   assert.equal(v2.source.needsLiveCopy(v2.sim), true, 'a recorded tick (V2\'s foam moved) needs one');
 
-  const v1 = fixture({ native: false });   // V1 steps the grid (a suspended V2 owner keeps its cells)
+  // Before the owner presents the window (its V1-format cache): no foam (V1 whitewater went with V1).
+  const v1 = fixture({ native: false });
   v1.source.recordLiveCopy(v1.frame); v1.flush();
-  assert.equal(v1.dispatched.length, 0, 'V1 packs nothing');
-  assert.equal(chunkAeration(v1.source, [40, 5, 40]), LEGACY_WORD, 'V1\'s World reads V1\'s field, as before');
-  assert.equal(snapshotSource(v1.sim).aeration, v1.sim.aeration.buffer);
-  assert.equal(snapshotSource(v1.sim).aerGeneration, 3);
+  assert.equal(v1.dispatched.length, 0, 'the cache packs nothing');
+  assert.equal(snapshotSource(v1.sim).aeration, null, 'the V1-format cache carries no aeration');
 });
 
 test('(1b) leaving copies under V2 carry V2\'s foam too (captured outside foam stays authoritative)', () => {

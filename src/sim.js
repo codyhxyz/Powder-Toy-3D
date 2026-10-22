@@ -942,8 +942,6 @@ export class Simulation {
       else { owner.restore(t.compact, t.aux); if (dynamic) d.restoreUndo(dynamic); }
       if (native?.isReady) native.changed({ all: false });   // (the restore noted its bricks)
       else { this.version++; this.changedAll = true; owner.seenVersion = this.version; }
-      // V2 suspended (a runtime switch to V1): V1's cells are the restored words' projection
-      if (!this.compact) { owner.exportLegacy(); this.noteWrite({ replaceState: false }); owner.seenVersion = this.version; }
     } else {
       this._dispatch(this.passOf('undoShift'), fold(Math.ceil(this.g.slots / 64)), {
         bind: [this.tables, this.bindRW, t.group], header: this.header(), params: { shift: [dx, 0, dz] },
@@ -993,21 +991,18 @@ export class Simulation {
     }
     const native = this.compactOwner?.isReady ? this.nativeIntegration : null;
     if (this.compactOwner?.isReady && !native?.isReady) throw new Error('Native world shift is not ready');
-    // Synchronize/project before moving either representation. Legacy shifting
-    // is a cache move, never permission to reimport the entire native grid.
-    // (Only the running owner projects: a suspended one, after a runtime switch to V1, shadows V1's cells,
-    // which are V1's own. native.shift syncs it first, importing V1's writes, as exportLegacy would.)
-    // Under V2 (running) the move is V2's alone: V1's state is only the cache its legacy writers and
+    // Legacy shifting is a cache move, never permission to reimport the entire native grid.
+    // (native.shift syncs the owner first, importing the cache's writes.)
+    // Under V2 (presenting) the move is V2's alone: V1's state is only the cache its legacy writers and
     // readbacks go through, kept in one copy, so it isn't moved; the next export rewrites all of it
     // (exportLegacy with no projection current: BRIDGE.ALL) before anything reads it. Moving it cost
     // a second copy of V1's state (36 B a slot) and a whole-window copy of it every move.
     const v2 = this.compact?.isReady ? this.compact : null;
-    if (!v2) this.compact?.exportLegacy();
     native?.shift(dx, dz);
     const f = this.gpu.frame, size = fold(Math.ceil(this.g.slots / 64)), shift = [dx, 0, dz];
     if (v2) v2.legacyNative = undefined;
     else {
-      this.pingPong(true);   // (out of place: a box the native engine owns holds one copy)
+      this.pingPong(true);   // (out of place: every grid holds one copy until a pre-owner shift)
       this._dispatch(this.passOf('shift'), size, { bind: [this.tables, this._bindRW], header: { ...this.header(this.cur, 1 - this.cur), capture: 0 }, params: { shift } });
       this.cur = 1 - this.cur;
     }

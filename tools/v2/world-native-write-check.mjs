@@ -78,7 +78,7 @@ test('(3) stored bricks back into a V2 window: the native store\'s come back exa
   store.put(k1, encodeBrick(a, 0, b, 0)); store.put(k2, encodeBrick(a, 0, b, 0));
   nativeStore.put(nativeStore.key(16, 0, 8), new Uint8Array(1280));   // k1 kept exact; k2 only by V1 (a V1-made save)
   const writes = [];
-  const win = Object.assign(Object.create(WorldWindow.prototype), { sim, store, nativeStore, restoreKernel: { name: 'restore' }, restoreBuf: null, restoreRead: -1,
+  const win = Object.assign(Object.create(WorldWindow.prototype), { sim, store, nativeStore,
     gpu: { createBuffer: ({ size }) => ({ size }), write(buf, at, data) { writes.push(data); }, stats: { flushes: 0 } } });
   const v1Bytes = store.map.get(k2);
   assert.equal(win.restore([0, 0, 0], [2, 1, 1]), 2, 'both bricks come back');
@@ -87,13 +87,17 @@ test('(3) stored bricks back into a V2 window: the native store\'s come back exa
   assert(!store.has(k1) && !store.has(k2), 'both leave V1\'s store');
   assert(nativeStore.map.has(nativeStore.key(16, 0, 8)), 'the exact brick waits for restoreNative');
   assert.deepEqual([...nativeStore.map.get(nativeStore.key(17, 0, 8))], [...legacyBrickToNative(v1Bytes)], 'the brick only V1 kept waits there too, as V2\'s import makes it (native-store-check: bit-exact)');
-  // V1 running: every stored brick is V1's to write, as before.
+  // No owner yet: a stored brick waits for one (an error the caller awaits sim.prepareNative() for), never a
+  // V1 restore edit (V1's went with V1); a slab with none restores without one.
   const v1 = fakeSim({ v2: false }), store1 = new BrickStore(wb);
-  store1.put(k1, encodeBrick(a, 0, b, 0)); store1.put(k2, encodeBrick(a, 0, b, 0));
-  const w1 = Object.assign(Object.create(WorldWindow.prototype), { sim: v1.sim, store: store1, nativeStore, restoreKernel: { name: 'restore' }, restoreBuf: null, restoreRead: -1,
+  v1.sim.compactOwner = null;
+  store1.put(k1, encodeBrick(a, 0, b, 0));
+  const w1 = Object.assign(Object.create(WorldWindow.prototype), { sim: v1.sim, store: store1, nativeStore,
     gpu: { createBuffer: ({ size }) => ({ size }), write() {}, stats: { flushes: 0 } } });
-  w1.restore([0, 0, 0], [2, 1, 1]);
-  assert.equal(v1.log.filter((e) => e[0] === 'edit').length, 1);
+  assert.throws(() => w1.restore([0, 0, 0], [2, 1, 1]), /native owner/);
+  assert.equal(v1.log.filter((e) => e[0] === 'edit').length, 0);
+  store1.drop(k1);
+  assert.equal(w1.restore([0, 0, 0], [2, 1, 1]), 0);
 });
 
 test('(4) the native world writers validate in Naga', () => {
