@@ -124,6 +124,16 @@ fn ctOutsideFace(word:u32,n:vec4u,present:bool,axis:u32)->u32 {
 }
 `;
 
+// Does an outside word hold a moss site on its own (V1 react.js mossSite: damp moss and a bed on faces of
+// different axes)? Then even a block of uniform air isn't zero work: moss creeps into it (shaders/v2.js
+// blockIdentityWGSL, which reads each cell's word through the kernel's own ctOutsideAt).
+export const outsideSiteWGSL = /* wgsl */ `
+fn ctOutsideMossSite(w:u32)->bool {
+ let wet=(w/${OUT.WET_MOSS}u)%8u;let bed=(w/${OUT.BED}u)%8u;
+ return wet!=0u && bed!=0u && !(wet==bed && (wet==1u || wet==2u || wet==4u));
+}
+`;
+
 // Two requests on one cell: their flags together, the larger unconsumed puff
 // (v2/contact.js ctPuff). The block pass stores every request word through it.
 export const requestMergeWGSL = /* wgsl */ `

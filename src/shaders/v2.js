@@ -15,7 +15,7 @@ import { MODE_FIELDS } from '../v2/modes.js';
 import { modeWGSL } from './v2/modes.js';
 import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
-import { contactWGSL as productionContactWGSL, requestMergeWGSL, outsideFacesWGSL } from './v2/contact.js';
+import { contactWGSL as productionContactWGSL, requestMergeWGSL, outsideFacesWGSL, outsideSiteWGSL } from './v2/contact.js';
 import { v2RunsKernel, v2PairsKernel, COLUMN } from './v2/columns.js';
 import { PARTICLE_CAP, SHOCK_LANDINGS } from '../v2/dynamics-reference.js';
 
@@ -862,6 +862,9 @@ const blockIdentityWGSL = /* wgsl */ `
   // Match the boundary wrapper's exact f32 round/clamp encoding. Air away from
   // ambient relaxes to it everywhere (V1's pull, ctAmbient), whatever the edge.
   if (rawTq != u32(clamp(round((P.ambient+273.25)*4.0),0.0,65535.0))) { zeroWork = false; }
+  // V1 react.js moss creeps into air on a mossSite: an air cell whose outside faces (the support pass's word)
+  // hold damp moss and a bed on different axes is not zero work (its partners are air: no site of theirs).
+  if (zeroWork) { for (var k = 0u; k < blockCount; k++) { if (ctOutsideMossSite(ctOutsideAt(slotOf(positions[k])))) { zeroWork = false; } } }
   // AIR cannot topple, equal-density AIR cannot swap, AIR is not ageing gas.
   // Uniform normal AIR emits no contact/boundary heat, requests or ledgers;
   // equal storeMaterial values would only rewrite identical cells/banks.
@@ -877,6 +880,7 @@ export const v2BlockWGSL = (g, contactWGSL = '', compact = false) => {
 ${v2Head(g, { state: false }, 'contact')}
 ${contactWGSL}
 ${/\bfn\s+ctMergeRequest\s*\(/.test(contactWGSL) ? '' : requestMergeWGSL}
+${contactWGSL === productionContactWGSL && !compact ? `${outsideSiteWGSL}fn ctOutsideAt(s: u32) -> u32 { return liquidScratch[s].y; }` : ''}
 fn motionDensity(c: vec4u) -> f32 {
   return ${/\bfn\s+contactDensity\s*\(/.test(contactWGSL) ? 'contactDensity(c)' : 'densOfE(cid(c))'};
 }
@@ -1089,6 +1093,8 @@ export const v2BlockClassifyWGSL = g => {
   return /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact').replace('liquidScratch: array<vec4u>', 'liquidScratch: array<atomic<u32>>')}
 fn off8(i: u32) -> vec3i { return vec3i(i32(i & 1u), i32(i >> 2u), i32((i >> 1u) & 1u)); }
+${outsideSiteWGSL}// (the support pass's outside word: a slot's .y, in this kernel's word view)
+fn ctOutsideAt(s: u32) -> u32 { return atomicLoad(&liquidScratch[4u * s + 1u]); }
 ${MAIN} {
   let t = foldId(wg, nwg) * 64u + li;
   let e = t / 8u;
