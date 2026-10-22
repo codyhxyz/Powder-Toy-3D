@@ -137,6 +137,22 @@ export function planSourceCopies(src, dst, bounds, accept = ACCEPT_ALL, acceptBr
   }
   return merged;
 }
+// Copy plans of whole cores (no unknown rank) by their geometry relative to
+// the destination: runs are slot offsets, the same at any common translation.
+// A field scratch (fields.js, 64 cells at a core - 16) meets 27 offsets; other
+// geometry is bounded by forgetting them all past this many.
+const WHOLE_PLANS_KEPT = 1024;
+const wholePlans = new Map();
+function wholeCopies(src, dst, bounds) {
+  const rel = (v) => v.map((n, i) => n - dst.origin[i]);
+  const key = `${src.g.nx},${src.g.ny},${src.g.nz};${dst.g.nx},${dst.g.ny},${dst.g.nz};${rel(src.origin)};${rel(bounds.lo)};${rel(bounds.hi)}`;
+  let runs = wholePlans.get(key);
+  if (!runs) {
+    if (wholePlans.size >= WHOLE_PLANS_KEPT) wholePlans.clear();
+    wholePlans.set(key, runs = Object.freeze(planSourceCopies(src, dst, bounds).map(Object.freeze)));
+  }
+  return runs;
+}
 function destinationSpans(runs) {
   const out = [];
   for (const r of [...runs].sort((a, b) => a.dst - b.dst)) {
@@ -226,8 +242,14 @@ export class WorldRenderSource {
   assertBoundedWake(regions) {
     // The cores each region touches, not every cached chunk per region (a
     // batched World load checks once per batch, 2026-10-21).
+    // A core's whole-trust scan once per check, not once per region: a batch's
+    // ~50 field regions overlap the same cores (Island, 2026-10-22). Never kept
+    // between checks: trust is read as it is now.
+    const trusted = new Map();
     for (const region of regions) for (const c of this._chunksIn(region)) {
-      if (!c.wakeTrusted.includes(0)) continue;
+      let all = trusted.get(c);
+      if (all === undefined) trusted.set(c, all = !c.wakeTrusted.includes(0));
+      if (all) continue;
       const box = intersectBounds(region, { lo: c.origin, hi: c.origin.map(v => v + 32) });
       if (!box) continue;
       for (let z = box.lo[2]; z < box.hi[2]; z++) for (let y = box.lo[1]; y < box.hi[1]; y++) for (let x = box.lo[0]; x < box.hi[0]; x++) {
@@ -305,7 +327,10 @@ export class WorldRenderSource {
     for (const name of ['A', 'B']) frame.clear(resources[name], stateCopy * g.slots * 16, g.slots * 16);
     if (resources.aeration) frame.clear(resources.aeration, aerationCopy * g.slots * 8, g.slots * 8);
     for (const c of this._chunksIn(bounds)) {
-      const runs = planSourceCopies(c, dst, bounds, (_d, p) => c.rank[cellSlot(c.g, ...p.map((v, i) => v - c.origin[i]))] !== SOURCE_RANK.unknown, (_d,p)=>{
+      // A core with no unknown rank copies every cell the box holds: its plan
+      // is the box's geometry alone, shared by every gather at that offset.
+      // Planning each anew was a fifth of a World load's CELL JS (2026-10-22).
+      const runs = c.whole ? wholeCopies(c, dst, bounds) : planSourceCopies(c, dst, bounds, (_d, p) => c.rank[cellSlot(c.g, ...p.map((v, i) => v - c.origin[i]))] !== SOURCE_RANK.unknown, (_d,p)=>{
         const slot=cellSlot(c.g,p[0]-c.origin[0],p[1]-c.origin[1],p[2]-c.origin[2]);
         const ranks=c.rank.subarray(slot,slot+64);
         return !ranks.includes(SOURCE_RANK.unknown)?true:ranks.some(n=>n!==SOURCE_RANK.unknown)?null:false;

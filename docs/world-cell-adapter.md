@@ -18,9 +18,12 @@ const demand = cells.sourceDemand({
   fieldTick, requirements, changedBricks, smoothing,
 }); // exact shared Fields demand + deduplicated missing core-XZ columns
 
-const batch = cells.record(gpu.frame, {
-  fieldTick, requirements, changedBricks, smoothing,
-}); // synchronous, opaque frozen handle
+// Optional: the batch's source columns a task at a time (a load's classify
+// flushes and yields after each nonzero call; WORLD_CLASSIFY_COLUMNS).
+while (cells.recordSourceColumns(gpu.frame, options, limit)) gpu.flush('source columns');
+
+const batch = cells.record(gpu.frame, options /* {fieldTick, requirements,
+  changedBricks, smoothing} */); // synchronous, opaque frozen handle
 // The caller owns normal Frame submission, never a per-core submit:
 gpu.flush('world cell captures');
 const { generation, token, previousLightingSnapshot } =
@@ -39,7 +42,12 @@ no approximate duplicate halo planner exists. Every missing core-XZ column is
 produced at **full world height**, preserving tree footing, world tree order,
 planted target masks and saved/captured/live protection. Population is not a
 semantic mutation or a field tick. Completeness and wake provenance are checked
-before the actual field plan/record. Caller inputs and owned capture handles
+before the actual field plan/record. `recordSourceColumns` makes the same
+producer calls in the same order, at most `limit` per call; `record` then
+finds them produced and reuses that last demand (and its field plan) while
+nothing it read has changed. A batch's cost follows the batch, never what is
+already resident: the capture cache changes in place with an undo log, and a
+publication reads it as its commit left it (`tools/world-cell-cost-cpu-check.mjs`). Caller inputs and owned capture handles
 are copied/frozen; mutating the original demand after recording cannot change
 native page addressing.
 

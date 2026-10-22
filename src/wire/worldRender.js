@@ -42,6 +42,10 @@ export const worldFeedbackExtraWords = (size) => {
 // classified before the attempt goes on; a core is never split, so no core's
 // fields are captured twice.
 export const WORLD_CLASSIFY_BRICKS=2048;
+// Source columns (64 cells square, the world's height) a batch produces per
+// task before it packs: ~1-3 ms of JS each, and a load's first batches need
+// ~100 apiece, their neighbours unproduced (Island, 2026-10-22).
+export const WORLD_CLASSIFY_COLUMNS=16;
 // Whole 32-cell cores (8^3 bricks) packed into batches of at most limit entries
 // (a lone core may exceed it): CELL classification and the GI slabs share it.
 export function worldCoreBatches(entries,limit,brickOf=e=>e) {
@@ -178,10 +182,14 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     // One pool growth for the whole demand: a growth copies every public page.
     atlas.reserve('cell',stale.length);
     const batches=worldClassifyBatches(stale);
+    const pause=()=>new Promise(resolve=>setTimeout(resolve,0));
     for(const [k,requirements] of batches.entries()){
-      if(k)await new Promise(resolve=>setTimeout(resolve,0));
+      if(k)await pause();
+      const options={fieldTick:t.fieldTick,requirements,smoothing:t.frame.params.smoothing??1};
+      // Its source columns first, a task's worth at a time.
+      while(cells.recordSourceColumns(gpu.frame,options,WORLD_CLASSIFY_COLUMNS)){gpu.flush('WORLD Source columns');await pause();}
       // record() uses actual sourceDemand and cut.producer on the normal Frame.
-      const h=cells.record(gpu.frame,{fieldTick:t.fieldTick,requirements,smoothing:t.frame.params.smoothing??1});
+      const h=cells.record(gpu.frame,options);
       gpu.flush('WORLD Source/Fields final capture');
       const publication=cells.commitAfterSourceFlush(h);
       publication.previousLightingSnapshot.release();
