@@ -62,6 +62,12 @@ export const SUMMARY = { CLOSED: 1, AIR: 2, LIQUID: 3 };
 // ¼ K steps from -273.25 °C: 20 °C is 1173 exactly
 export const T_OFFSET = 273.25;
 
+// Intentional (decided under the user's delegation, 2026-10-22): V1 jitters a gas for ever (react.js JITTER), so a
+// room holding one (a cloud deck, a CO2 pool) would never rest. A gas jitters (R3, R4b) for JITTER_TICKS after it
+// last rose or sank by its drift (its motion age: the block pass's ageing, reset by every drift trade), at V1's
+// rate meanwhile, so a spill spreads about 15 cells as V1's does in that time, then sleeps.
+export const JITTER_TICKS = 240;
+
 // ---------------------------------------------------------------- element classes
 export const V2 = { AIR: 0, SOLID: 1, POWDER: 2, LIQUID: 3, GAS: 4 };
 const KIND_CLASS = { [K.EMPTY]: V2.AIR, [K.SOLID]: V2.SOLID, [K.POWDER]: V2.POWDER, [K.LIQUID]: V2.LIQUID, [K.GAS]: V2.GAS };
@@ -316,6 +322,7 @@ const SUM_CLOSED: u32 = ${SUMMARY.CLOSED}u;
 const SUM_AIR: u32 = ${SUMMARY.AIR}u;
 const SUM_LIQUID: u32 = ${SUMMARY.LIQUID}u;
 const QUIET_CAP: u32 = ${QUIET_CAP}u;
+const JITTER_TICKS: u32 = ${JITTER_TICKS}u;
 const V2_ENERGY_SOURCE: u32 = ${a.energySource}u;
 const V2_ENERGY_SINK: u32 = ${a.energySink}u;
 const V2_BOUNDARY_MASS: u32 = ${a.boundaryMass}u;
@@ -1179,9 +1186,12 @@ fn v1Exchange(kU: u32, kL: u32, dU: f32, dL: f32, gU: f32, gL: f32) -> f32 {
   return select(p, 0.0, p < V1_REST_V);
 }
 // the chance a tick that moves a pair at V1's rate for its share of steps p (above)
+// (none where nothing moves: in f32 sqrt(PACE_A·PACE_A) need not give PACE_A back exactly, and a ~1e-7 chance would
+// keep every pair it touches, still air included, awake for ever)
 fn v2Chance(p: f32) -> f32 {
   let rate = V1_STEPS * p / (2.0 - p);
-  return min(1.0, (sqrt(PACE_A * PACE_A + 4.0 * PACE_B * rate) - PACE_A) / (2.0 * PACE_B));
+  let chance = min(1.0, (sqrt(PACE_A * PACE_A + 4.0 * PACE_B * rate) - PACE_A) / (2.0 * PACE_B));
+  return select(chance, 0.0, p <= 0.0);
 }
 `;
 // V1's landing scatter (move.js land, react.js friction and drag): a grain landing at u cells/step goes sideways at
@@ -1345,7 +1355,8 @@ ${MAIN} {
     var chance = v2Chance(v1Exchange(kU, kL, dU, dL, v1Drift(cid(hi), f32(cTq(hi)) * 0.25 - T_OFFSET), v1Drift(cid(lo), f32(cTq(lo)) * 0.25 - T_OFFSET)));
     // (jitter: a random walk only between gases canMove lets past each other both ways, within its tolerance;
     // past it, V1's noise only rounds the drift off, E[(drift + noise)+] ≈ drift)
-    if ((kU == C_GAS || kL == C_GAS) && kU != C_LIQUID && kU != C_POWDER && kL != C_LIQUID && kL != C_POWDER && abs(dU - dL) < V1_GAS_TOL) {
+    let jitters = (kU == C_GAS && cAge(hi) < JITTER_TICKS) || (kL == C_GAS && cAge(lo) < JITTER_TICKS);
+    if (jitters && kU != C_LIQUID && kU != C_POWDER && kL != C_LIQUID && kL != C_POWDER && abs(dU - dL) < V1_GAS_TOL) {
       chance = max(chance, max(jitterOf(cid(hi)), jitterOf(cid(lo))));
     }
     if (chance <= 0.0) { continue; }
@@ -1392,15 +1403,16 @@ ${MAIN} {
     let ti = 4u + pick;
     markBusy(positions[c]);
     let moved = cs[ti];
-    cs[ti] = zeroQ(gs);
+    cs[ti] = resetMotionAge(zeroQ(gs));
     cs[c] = resetMotionAge(zeroQ(moved));
     let bank = bs[c]; bs[c] = bs[ti]; bs[ti] = bank;
     let request = pending[c]; pending[c] = pending[ti]; pending[ti] = request;
     let came = fromCell[c]; fromCell[c] = fromCell[ti]; fromCell[ti] = came;
     markBusy(positions[ti]);
   }
-  // R4b: V1's jitter mixes gases sideways with air and with each other, without end (react.js JITTER, move.js
-  // horizontal: canMove lets any two gas-like cells trade sideways), at the faster of the pair's jitter chances
+  // R4b: V1's jitter mixes gases sideways with air and with each other (react.js JITTER, move.js horizontal: canMove
+  // lets any two gas-like cells trade sideways), at the faster of the pair's jitter chances, while a gas of the pair
+  // is in its JITTER_TICKS
   for (var m = 0u; m < blockCount; m++) {
     var i0 = 0u;
     var i1 = 0u;
@@ -1411,6 +1423,7 @@ ${MAIN} {
     let k0 = clsOf(a0);
     let k1 = clsOf(a1);
     if ((k0 != C_GAS && k0 != C_AIR) || (k1 != C_GAS && k1 != C_AIR) || cid(a0) == cid(a1)) { continue; }
+    if (!((k0 == C_GAS && cAge(a0) < JITTER_TICKS) || (k1 == C_GAS && cAge(a1) < JITTER_TICKS))) { continue; }
     let chance = max(jitterOf(cid(a0)), jitterOf(cid(a1)));
     if (chance <= 0.0) { continue; }
     let p0 = positions[i0];
@@ -1424,6 +1437,10 @@ ${MAIN} {
       let came = fromCell[i0]; fromCell[i0] = fromCell[i1]; fromCell[i1] = came;
       markBusy(positions[i1]);
     }
+  }
+  // A gas's motion age (JITTER_TICKS): a tick older each tick its block runs, until its jitter ends
+  for (var i = 0u; i < blockCount; i++) {
+    if (clsOf(cs[i]) == C_GAS && cAge(cs[i]) < JITTER_TICKS) { cs[i] = withAge(cs[i], cAge(cs[i]) + 1u); markBusy(positions[i]); }
   }
   // Obligations follow the moved material, not its old position. Loading these
   // before swaps would duplicate an event at both the old and new locations.

@@ -101,7 +101,8 @@ const entry=foundation.slice(foundation.indexOf('@compute @workgroup_size(64)'))
 assert(entry.includes('let blockCount=min(8u,arrayLength(&events));'));
 assert(entry.includes('let columnCount=blockCount/2u;'));
 // (+2: the decoration's read-all-then-write loops, v2BlockWGSL's P.deco carry)
-assert.equal((entry.match(/i\s*<\s*blockCount/g)||[]).length,6);
+// (+1: the gas motion age's loop, v2.js JITTER_TICKS)
+assert.equal((entry.match(/i\s*<\s*blockCount/g)||[]).length,7);
 assert.equal((entry.match(/m\s*<\s*blockCount/g)||[]).length,1);
 // (R2 topple and its targets, R2b's landing scatter, R3, R4a's diagonal escape)
 assert.equal((entry.match(/c2?\s*<\s*columnCount/g)||[]).length,5);

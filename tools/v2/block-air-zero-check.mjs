@@ -126,7 +126,8 @@ assert(shader.includes('if (clsOf(gr) != C_POWDER) { continue; }'));
 assert(shader.includes('if (chance <= 0.0) { continue; }'));
 assert(shader.includes("if ((k0 != C_GAS && k0 != C_AIR) || (k1 != C_GAS && k1 != C_AIR) || cid(a0) == cid(a1)) { continue; }"));
 assert(shader.includes('if (clsOf(gs) != C_GAS || fromCell[c] != c || !inGrid(positions[c])) { continue; }'));
-assert(!shader.includes('cAge(cs[i]) <'), 'no gas ageing: V1 jitters gases without end');
+// (a gas's motion age, JITTER_TICKS: only gas cells age, so uniform air or water does nothing)
+assert(shader.includes('if (clsOf(cs[i]) == C_GAS && cAge(cs[i]) < JITTER_TICKS) { cs[i] = withAge(cs[i], cAge(cs[i]) + 1u); markBusy(positions[i]); }'));
 for(const q of [0,1,1173,41093]) assert.equal(C.ctDensity(C.unpackContact(air(q)[0])),C.ctDensity(C.unpackContact(air(q)[7])));
 assert(materialStorageWGSL.includes('noteVisible(cellOf(slot), before.core, after.core);'));
 assert(materialStorageWGSL.includes('if (any(before.core != after.core) || before.bank != after.bank) { noteState(slot); }'));

@@ -132,7 +132,8 @@ assert(r3.indexOf(same) >= 0 && r3.indexOf(same) < r3.indexOf('markBusy(pU);'));
 assert(r3.indexOf(same) < r3.indexOf('var rs = seed3'));
 assert(shader.includes("if ((k0 != C_GAS && k0 != C_AIR) || (k1 != C_GAS && k1 != C_AIR) || cid(a0) == cid(a1)) { continue; }"));
 assert(shader.includes('if (clsOf(gs) != C_GAS || fromCell[c] != c || !inGrid(positions[c])) { continue; }'));
-assert(!shader.includes('cAge(cs[i]) <'), 'no gas ageing: V1 jitters gases without end');
+// (a gas's motion age, JITTER_TICKS: only gas cells age, so uniform air or water does nothing)
+assert(shader.includes('if (clsOf(cs[i]) == C_GAS && cAge(cs[i]) < JITTER_TICKS) { cs[i] = withAge(cs[i], cAge(cs[i]) + 1u); markBusy(positions[i]); }'));
 assert(shader.indexOf('if (zeroWater) { return; }') < shader.indexOf('  // R2 topple'));
 assert(shader.includes('events[slot] = ctMergeRequest(pending[i], requests[i]);'));   // flags OR, the larger puff
 assert(v2SupportWGSL(g).includes('liquidScratch[s].x=(liquidScratch[s].x&0xfffffc00u)|air|(oxygen<<2u)|(co2<<4u)|(gas<<6u)|(clone<<8u);'));

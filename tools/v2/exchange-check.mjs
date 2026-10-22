@@ -95,7 +95,7 @@ class Grid {
       clsOf, inGrid: p => this.valid(p), fluidC: c => [0, 3, 4].includes(clsOf(c)), dropOfE: id => rows[id].drop,
       cid: c => c[0] & 255, cAge: c => c[0] >>> 24, cTq: c => (c[0] >>> 8) & 0xffff, withAge, zeroQ, setFall,
       resetMotionAge: c => clsOf(c) === 3 ? c : clsOf(c) === 2 ? setFall(c, 0, 0) : withAge(c, 0),
-      motionDensity: c => C.contactDensity(c[0] & 255, (c[0] >>> 8) & 0xffff, P.ambient), noteTopple: () => {}, markBusy: () => {},
+      motionDensity: c => C.contactDensity(c[0] & 255, (c[0] >>> 8) & 0xffff, P.ambient), noteTopple: () => {}, markBusy: () => { this.busy = (this.busy ?? 0) + 1; },
       MOORE_U: 0x80000000, ...ctx,
     };
     const move = this.move ??= new Function(...Object.keys(h), 'cs', 'bs', 'positions', 'pending', 'P', 'down', 'supportAt',
@@ -262,4 +262,32 @@ console.log('exchange-check: spawn drop ok');
   g.cores[g.at(1, 2, 1)] = setFall(makeMaterial(E.SAND).core, 43, 0);
   for (let t = 0; t < 8; t++) { g.tick = 100 + t; g.step(); }
   assert.deepEqual(g.find(E.SAND), [[1, 2, 1]], 'a grain landing on grains stays');
+}
+
+// ---- rest (the settled regression, 2026-10-22): what can't visibly change sleeps
+{
+  // a pair where nothing moves has no chance, even where the GPU's sqrt comes back a ulp high (Metal's is not
+  // correctly rounded: a ~1e-7 chance woke every still-air pair, so no settled box ever certified rest)
+  const gpu = exchangeHelpers(code, P);
+  const ulpUp = x => { const b = new Float32Array([x]); new Uint32Array(b.buffer)[0]++; return b[0]; };
+  gpu.Math = Object.create(Math, { sqrt: { value: x => ulpUp(Math.fround(Math.sqrt(x))) } });
+  assert.equal(gpu.v2Chance(0), 0, 'no move, no chance');
+  assert(gpu.v2Chance(0.5) > 0.5, 'a move keeps its chance');
+  // still air at the ambient among walls marks nothing busy
+  const still = new Grid(8, 8, E.EMPTY, { column: false });
+  for (let z = 0; z < 8; z++) for (let x = 0; x < 8; x++) still.set(x, 0, z, E.WALL);
+  for (let t = 0; t < 16; t++) still.step();
+  assert.equal(still.busy ?? 0, 0, `still air woke ${still.busy} times`);
+  // Intentional (decided under the user's delegation, 2026-10-22; v2.js JITTER_TICKS): a CO2 pool on a floor
+  // spreads by V1's jitter for JITTER_TICKS after it settles, then sleeps
+  const { JITTER_TICKS } = await import('../../src/shaders/v2.js');
+  const pool = new Grid(16, 3, E.EMPTY, { column: false });
+  for (let z = 0; z < 16; z++) for (let x = 0; x < 16; x++) pool.set(x, 0, z, E.WALL);
+  for (let z = 6; z < 10; z++) for (let x = 6; x < 10; x++) pool.set(x, 1, z, E.CO2);
+  for (let t = 0; t < JITTER_TICKS + 4; t++) pool.step();
+  const spread = pool.find(E.CO2).filter(p => p[0] < 6 || p[0] >= 10 || p[2] < 6 || p[2] >= 10).length;
+  pool.busy = 0;
+  for (let t = 0; t < 16; t++) pool.step();
+  assert(spread > 4 && pool.busy === 0, `the pool spread (${spread} cells out of its square) and rests (${pool.busy} busy marks)`);
+  console.log(`rest: no chance where nothing moves (sqrt a ulp high), still air sleeps; a CO2 pool spread ${spread} cells out, then slept after ${JITTER_TICKS} ticks`);
 }
