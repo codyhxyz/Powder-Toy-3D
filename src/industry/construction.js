@@ -5,6 +5,7 @@ import { baseMaterial } from './catalog.js';
 import { deviceHeight } from './validation.js';
 import { PUMP_BACKPLATE_TAG } from './pumpStructure.js';
 import { nativeLife } from '../v2/layout.js';
+import { nativeIndustryWriter } from '../v2/industry.js';
 import { E } from '../elements.js';
 
 // V2 holds TUNGSTEN life in a 16-bit payload, where the tag arrives as its
@@ -12,13 +13,13 @@ import { E } from '../elements.js';
 export const PUMP_BACKPLATE_TAG_NATIVE = nativeLife(E.TUNGSTEN, PUMP_BACKPLATE_TAG);
 const wgslFloat = n => (Number.isInteger(n) ? `${n}.0` : String(n));
 
-const Params = uniformStruct('IndustryConstruction', { at: 'vec3i', material: 'i32', mode: 'u32', slot: 'u32', height: 'i32', hearth: 'u32', pump: 'u32', rotation: 'u32' });
+export const ConstructionParams = uniformStruct('IndustryConstruction', { at: 'vec3i', material: 'i32', mode: 'u32', slot: 'u32', height: 'i32', hearth: 'u32', pump: 'u32', rotation: 'u32' });
+const Params = ConstructionParams;
 // One invocation tests the entire machine before writing any cell. Unlike a
 // brush or sixteen independent transfers this cannot leave half a paid deck.
-export const constructionWGSL = (g, backplateTag = PUMP_BACKPLATE_TAG) => /* wgsl */ `
-${prelude(g, STATE_OPTS.STATE_RW)}
-${Params.wgsl}
-@group(3) @binding(1) var<uniform> P: IndustryConstruction;
+// Its body (after the prelude) is also V2's (src/v2/industry.js NativeIndustryWriter).
+export const constructionBodyWGSL = (backplateTag = PUMP_BACKPLATE_TAG, params = Params) => /* wgsl */ `${params.wgsl}
+@group(3) @binding(1) var<uniform> P: ${params.name};
 const INDUSTRY_PUMP_BACKPLATE_TAG: f32 = ${wgslFloat(backplateTag)};
 ${ringWGSL()}
 fn hearthStructureCell(x: i32, y: i32, z: i32) -> bool {
@@ -86,6 +87,16 @@ fn main() {
   }
   ringOut[P.slot] = vec4f(select(0.0, 1.0, clear || P.mode == 2u), 0.0, 0.0, 0.0);
 }`;
+export const constructionWGSL = (g, backplateTag = PUMP_BACKPLATE_TAG) => `
+${prelude(g, STATE_OPTS.STATE_RW)}
+${constructionBodyWGSL(backplateTag)}`;
+
+// V2's construction: the same body on the native cells (src/v2/industry.js NativeIndustryWriter), written in
+// the frame that places it. Flying matter in the footprint is V1's cell there: the deck isn't clear.
+export const NATIVE_CONSTRUCTION = Object.freeze({ fields: Params, body: params => constructionBodyWGSL(PUMP_BACKPLATE_TAG_NATIVE, params),
+  blocks: 'P.mode != 2u', blocked: 'vec4f(0.0)' });
+/** The machine's whole footprint: the cells the rule tests and writes (its hearth shell and pump backplate too). */
+export const constructionBox = d => ({ lo: [d.x, d.y, d.z], hi: [d.x + 3, d.y + deviceHeight(d) - 1, d.z + 3] });
 
 export function createConstruction(app) {
   const sim = app.sim, gpu = app.gpu;
@@ -95,8 +106,8 @@ export function createConstruction(app) {
   const make = (name, tag) => gpu.kernel({ name, code: constructionWGSL(sim.g, tag), params: Params,
     layouts: [sim.L.TABLES, sim.L.STATE_RW, layout], workgroupSize: [1, 1, 1] });
   const kernel = make('industryConstruction', PUMP_BACKPLATE_TAG);
-  let native = null; // V2's backplate tag, built on first use
-  const current = () => sim.compact ? (native ??= make('industryConstructionNative', PUMP_BACKPLATE_TAG_NATIVE)) : kernel;
+  // V2: the native writer, with V2's backplate tag (built on first use)
+  const current = () => (sim.compact ? nativeIndustryWriter(sim, 'industryConstruction', NATIVE_CONSTRUCTION) ?? kernel : kernel);
   return {
     ready: kernel.ready,
     async run(d, mode) {
@@ -104,10 +115,16 @@ export function createConstruction(app) {
       await k.ready;
       if (app.sim !== sim || sim.disposed || current() !== k) return false;
       const slot = ring.next();
-      sim._dispatch(k, [1, 1, 1], { bind: [sim.tables, sim.bindRW, group], header: sim.header(),
-        params: { at: [d.x, d.y, d.z], material: baseMaterial(d.type), mode, slot, height: deviceHeight(d),
-          hearth: d.type === 'hearth' ? 1 : 0, pump: d.type === 'pump' ? 1 : 0, rotation: d.rotation } });
-      if (mode) { sim.version++; sim.worldRenderSource?.noteContentChange(); sim.wake(); }
+      const params = { at: [d.x, d.y, d.z], material: baseMaterial(d.type), mode, slot, height: deviceHeight(d),
+        hearth: d.type === 'hearth' ? 1 : 0, pump: d.type === 'pump' ? 1 : 0, rotation: d.rotation };
+      if (k.run) {
+        // (its write counts its own change; it can't run only while the new physics swaps its world)
+        if (!k.run(constructionBox(d), params, ring.buffer)) throw new Error('The new physics is not ready to build yet');
+        if (mode) sim.worldRenderSource?.noteContentChange();
+      } else {
+        sim._dispatch(k, [1, 1, 1], { bind: [sim.tables, sim.bindRW, group], header: sim.header(), params });
+        if (mode) { sim.version++; sim.worldRenderSource?.noteContentChange(); sim.wake(); }
+      }
       app.requestRender();
       // Also works on an explicitly parked test page, without a frame pump.
       gpu.flush('industry construction');
@@ -117,6 +134,4 @@ export function createConstruction(app) {
 }
 
 export const WGSL_CHECK = [{ name: 'industryConstruction', kind: 'compute', code: g => constructionWGSL(g),
-  layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, RING_LAYOUT], dispatch: () => [1, 1, 1] },
-{ name: 'industryConstructionNative', kind: 'compute', code: g => constructionWGSL(g, PUMP_BACKPLATE_TAG_NATIVE),
   layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, RING_LAYOUT], dispatch: () => [1, 1, 1] }];

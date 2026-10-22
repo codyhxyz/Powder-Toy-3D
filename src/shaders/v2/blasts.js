@@ -103,13 +103,31 @@ const D_LAUNCH_COUNTS: u32 = ${L.counts}u;
 // floor (V1's chance rounding) just under one tick's fall from rest above it: it slides one tick at
 // the deck's speed and lands back on the deck where the next pass carries it on. Off a deck's end
 // nothing is under it, and it flies on at that speed.
+// The tick's fall is the integrate's (particles.js: the pull, then implicit quadratic drag on the whole
+// relative velocity, relative/(1 + drag·|relative|·DT)), so a carry's own speed takes from its fall too: the
+// drop of a tick from rest at speed v is the free fall's over 1 + drag·|v - g·DT|·DT. Started under one
+// tick's free fall, any carry past ~16 m/s landed a tick late and its deck kicked it every other tick.
 const SLIDE_CONTACT = 0.98;          // of one tick's fall: the landing comes inside the tick
 const SLIDE_SALT = 0x534c4944;       // 'SLID': the contact point's own random stream
+// the cells a packet of terminal speed vt falls in its first tick from rest while moving at velocity v (m/s)
+export function slideTickFall(vt, v, gravity = GRAVITY) {
+  const rel = [v[0], v[1] - gravity * DT, v[2]], drag = GRAVITY / (vt * (vt + GRAVITY * DT));
+  return 0.5 * gravity * DT * DT / CELL_M / (1 + drag * Math.hypot(...rel) * DT);
+}
+export const slideLift = (vt, v, gravity = GRAVITY) => SLIDE_CONTACT * slideTickFall(vt, v, gravity);
+const slideTerminal = () => {
+  const by = new Map();
+  for (const r of dynamicsRows) if (r.kind === K.POWDER) by.set(r.terminal, [...(by.get(r.terminal) ?? []), r.id]);
+  return `fn dSlideTerminal(id: u32) -> f32 { switch id { ${[...by].map(([v, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(v)}; }`).join(' ')} default: { return ${f(PHYS.V_MAX * LEGACY_STEP_HZ * CELL_M)}; } } }`;
+};
 const slideWGSL = () => /* wgsl */ `
-fn dSlideStart(slot: u32) -> vec3f {
-  let p=cellOf(slot); let id=dId(p,${SLIDE_SALT}u);
-  let lift=${f(SLIDE_CONTACT * 0.5 * DT * DT / CELL_M)}*P.gravity;
-  return vec3f(p+P.origin)+vec3f(dRandom(id,1u),lift,dRandom(id,2u));
+${slideTerminal()}
+fn dSlideStart(slot: u32, id: u32, velocity: vec3f) -> vec3f {
+  let p=cellOf(slot); let seed=dId(p,${SLIDE_SALT}u);
+  let vt=dSlideTerminal(id); let drag=${f(GRAVITY)}/(vt*(vt+${f(GRAVITY * DT)}));
+  let relative=velocity-vec3f(0.0,P.gravity*${f(DT)},0.0);
+  let lift=${f(SLIDE_CONTACT * 0.5 * DT * DT / CELL_M)}*P.gravity/(1.0+drag*length(relative)*${f(DT)});
+  return vec3f(p+P.origin)+vec3f(dRandom(seed,1u),lift,dRandom(seed,2u));
 }
 `;
 // windList's group words, for the two stages that write and read them (air.js windList, count here).
@@ -1140,7 +1158,7 @@ var<workgroup> childCounts: array<u32,64>;
         // (a cell launched whole leaves air, which holds no decoration: shaders/move.js)
         if (dSpawn(t,rank,packet,plan.velocity+incoming,P.sequence ^ 0x53504157u)) {
           after=remainder; if (cid(after.core)==0u) { setDeco(t,0u); }
-          if (forcing && (plan.flags&${PLAN.SLIDE}u)!=0u && P.gravMode==0u) { particles[atomicLoad(&control[D_FREE+rank])].position=dSlideStart(t); }
+          if (forcing && (plan.flags&${PLAN.SLIDE}u)!=0u && P.gravMode==0u) { particles[atomicLoad(&control[D_FREE+rank])].position=dSlideStart(t,cid(packet.core),plan.velocity+incoming); }
         }
         else { atomicAdd(&control[7],1u); if(forcing) { dWake(cellOf(t)); return; } } // authoritative grid fallback, never erase a failed launch
       }

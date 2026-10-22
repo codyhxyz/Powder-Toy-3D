@@ -4,6 +4,7 @@ import { uniformStruct } from '../gpu/params.js';
 import { RING_LAYOUT, ringWGSL } from '../shaders/povBody.js';
 import { INDUSTRY_LIMIT, deviceCell, baseMaterial } from './catalog.js';
 import { nativeLife } from '../v2/layout.js';
+import { nativeIndustryWriter } from '../v2/industry.js';
 
 // TPT WALL has no life field semantics. Keep this exact f32 integer in A.z;
 // ownership always requires both WALL and this marker, never element ID alone.
@@ -96,15 +97,15 @@ export function resolveGateTransition({ mode = 'open', energized = false, expect
   return { status: GATE_STATUS.OPEN, gateClosed: false, desiredClosed, write: 'none', changed: false };
 }
 
-const GateParams = uniformStruct('IndustryGate', {
+export const GateParams = uniformStruct('IndustryGate', {
   at: 'vec3i', across: 'vec3i', port: 'vec3i', base: 'vec3i', gateMode: 'u32', expectedClosed: 'u32', operation: 'u32', slot: 'u32',
 });
 
-/** One-invocation preflight-and-write kernel. The leaf is an actuator, never cargo. */
-export const gateWGSL = (g, marker = GATE_OWNER_MARKER) => /* wgsl */ `
-${prelude(g, STATE_OPTS.STATE_RW)}
-${GateParams.wgsl}
-@group(3) @binding(1) var<uniform> P: IndustryGate;
+/** One-invocation preflight-and-write kernel. The leaf is an actuator, never cargo.
+ * Its body (after the prelude) is also V2's: src/v2/industry.js runs it on the native cells
+ * (params: the native writer's, holding GateParams' fields). */
+export const gateBodyWGSL = (marker = GATE_OWNER_MARKER, params = GateParams) => /* wgsl */ `${params.wgsl}
+@group(3) @binding(1) var<uniform> P: ${params.name};
 ${ringWGSL()}
 const INDUSTRY_GATE_OWNER_TAG: f32 = ${wgslFloat(marker)};
 const INDUSTRY_GATE_OPEN: u32 = 1u;
@@ -210,10 +211,20 @@ fn main() {
   }
   ringOut[P.slot] = vec4f(f32(status), f32(physicallyClosed), select(0.0, 1.0, changed), select(0.0, 1.0, desiredClosed));
 }`;
+export const gateWGSL = (g, marker = GATE_OWNER_MARKER) => `
+${prelude(g, STATE_OPTS.STATE_RW)}
+${gateBodyWGSL(marker)}`;
 
+// V2's gate: the same body on the native cells (src/v2/industry.js NativeIndustryWriter), in the frame that
+// polls it. Flying matter in the opening is V1's cell there: a closing that would bury it is BLOCKED.
+export const NATIVE_GATE = Object.freeze({ fields: GateParams, body: params => gateBodyWGSL(GATE_OWNER_MARKER_NATIVE, params),
+  blocks: 'writerPlaces()', blocked: 'vec4f(f32(INDUSTRY_GATE_BLOCKED), 0.0, 0.0, ringOut[P.slot].w)' });
+/** The aperture's box: the cells the gate's rule reads and writes. */
+export function gateBox(geometry) {
+  const cells = geometry.aperture;
+  return { lo: [0, 1, 2].map(a => Math.min(...cells.map(c => c[a]))), hi: [0, 1, 2].map(a => Math.max(...cells.map(c => c[a]))) };
+}
 export const WGSL_CHECK = [{ name: 'industryGate', kind: 'compute', code: g => gateWGSL(g),
-  layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, RING_LAYOUT], dispatch: () => [1, 1, 1] },
-{ name: 'industryGateNative', kind: 'compute', code: g => gateWGSL(g, GATE_OWNER_MARKER_NATIVE),
   layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, RING_LAYOUT], dispatch: () => [1, 1, 1] }];
 
 function decodeResult(bytes, operation, id, mode = null) {
@@ -261,9 +272,9 @@ export function createGatePhysics({ getSim, onError = console.error, onState = (
       const kernel = make('industryGate', GATE_OWNER_MARKER);
       const ready = kernel.ready;
       sim = next;
-      // V2 runs the same transitions on its own marker (built on first use).
+      // V2 runs the same transitions on its own cells and marker (src/v2/industry.js, built on first use).
       context = { sim: next, gpu, ring, group, kernel, ready, generation,
-        get current() { return next.compact ? (this.native ??= make('industryGateNative', GATE_OWNER_MARKER_NATIVE)) : kernel; } };
+        get current() { return next.compact ? nativeIndustryWriter(next, 'industryGate', NATIVE_GATE) ?? kernel : kernel; } };
     } catch (error) {
       reportError(error);
       sim = null; context = null;
@@ -276,13 +287,16 @@ export function createGatePhysics({ getSim, onError = console.error, onState = (
     transactionQueue = job.catch(() => {});
     return job;
   }
+  // The transition, recorded now: V1's kernel on its cells, or under V2 the native writer on V2's (its
+  // write lands before the next tick, as V1's does before the next step). Null: V2's couldn't run this frame.
   function dispatch(ctx, d, operation = 'step', kernel = ctx.kernel) {
     const geom = d.geometry;
     const slot = ctx.ring.next();
-    ctx.sim._dispatch(kernel, [1, 1, 1], { bind: [ctx.sim.tables, ctx.sim.bindRW, ctx.group], header: ctx.sim.header(),
-      params: { at: geom.at, across: geom.across, port: geom.port, base: [d.x, d.y, d.z],
-        gateMode: operation === 'remove' ? 0 : MODES[d.gateMode], expectedClosed: +(operation === 'remove' ? false : d.gateClosed),
-        operation: +(operation === 'remove'), slot } });
+    const params = { at: geom.at, across: geom.across, port: geom.port, base: [d.x, d.y, d.z],
+      gateMode: operation === 'remove' ? 0 : MODES[d.gateMode], expectedClosed: +(operation === 'remove' ? false : d.gateClosed),
+      operation: +(operation === 'remove'), slot };
+    if (kernel.run) { if (!kernel.run(gateBox(geom), params, ctx.ring.buffer)) return null; }
+    else ctx.sim._dispatch(kernel, [1, 1, 1], { bind: [ctx.sim.tables, ctx.sim.bindRW, ctx.group], header: ctx.sim.header(), params });
     const result = ctx.ring.read(slot);
     ctx.gpu.flush('industry gate');
     return result;
@@ -309,10 +323,13 @@ export function createGatePhysics({ getSim, onError = console.error, onState = (
         await kernel.ready;
         // The engine may have changed while its kernel built: retry on the next poll.
         if (!isCurrent(ctx) || ctx.current !== kernel || states.get(state.device.id) !== state || state.removing || !state.active) return null;
-        const bytes = await dispatch(ctx, device, 'step', kernel);
+        const read = dispatch(ctx, device, 'step', kernel);
+        if (!read) return null;   // (V2's writer not runnable this frame: the next poll retries)
+        const bytes = await read;
         if (!isCurrent(ctx) || states.get(state.device.id) !== state || state.removing || !state.active) return null;
         const result = decodeResult(bytes, 'step', device.id, device.gateMode);
-        if (result.changed) {
+        // (V2's native write counted its own change when it recorded it)
+        if (result.changed && !kernel.run) {
           ctx.sim.version++;
           ctx.sim.wake();
         }
@@ -410,10 +427,12 @@ export function createGatePhysics({ getSim, onError = console.error, onState = (
         const kernel = ctx.current;
         await kernel.ready;
         if (!isCurrent(ctx) || ctx.current !== kernel) return { ok: false, id: d.id, status: GATE_STATUS.DAMAGED, reason: 'Simulation changed before gate removal' };
-        const bytes = await dispatch(ctx, d, 'remove', kernel);
+        const read = dispatch(ctx, d, 'remove', kernel);
+        if (!read) return { ok: false, id: d.id, status: GATE_STATUS.DAMAGED, reason: 'The new physics is not ready for gate removal yet' };
+        const bytes = await read;
         if (!isCurrent(ctx)) return { ok: false, id: d.id, status: GATE_STATUS.DAMAGED, reason: 'Simulation changed during gate removal' };
         const result = decodeResult(bytes, 'remove', d.id);
-        if (result.changed) { ctx.sim.version++; ctx.sim.wake(); }
+        if (result.changed && !kernel.run) { ctx.sim.version++; ctx.sim.wake(); }
         return { ok: true, ...result };
       } catch (error) {
         reportError(error);

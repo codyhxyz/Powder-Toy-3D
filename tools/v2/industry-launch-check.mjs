@@ -11,7 +11,7 @@ import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { PARTICLE_CAP as CAP, GRAVITY, DT, CELL_M } from '../../src/v2/dynamics-reference.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
 import { cellSlot } from '../../src/shaders/common.js';
-import { ALLOCATION_STAGES, LIST_ARGS, LAUNCH_MODE, PLAN, launchControl, listControl, controlBufferWords, blastsWGSL, listsStageWGSL,
+import { ALLOCATION_STAGES, LIST_ARGS, LAUNCH_MODE, PLAN, launchControl, listControl, controlBufferWords, blastsWGSL, listsStageWGSL, slideLift, slideTickFall,
   SPAWN_PREFIX } from '../../src/shaders/v2/blasts.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 
@@ -125,16 +125,15 @@ test('ranks cover exactly the batch\'s plans: stale plans outside are never laun
 
 test('a deck\'s carry leaves from its contact: one tick\'s slide, then it lands on the deck', () => {
   const g = gridLayout(64, 32, 64), apply = blastsWGSL(g, nativeDynamicsHead, 'apply');
-  assert(apply.includes(`if (forcing && (plan.flags&${PLAN.SLIDE}u)!=0u && P.gravMode==0u) { particles[atomicLoad(&control[D_FREE+rank])].position=dSlideStart(t); }`));
-  const lift = apply.match(/let lift=([0-9.e-]+)\*P\.gravity;/);
-  assert(lift, 'the contact height is a share of one tick\'s fall at the dispatch\'s gravity');
-  const fall = 0.5 * GRAVITY * DT * DT / CELL_M, h = Number(lift[1]) * GRAVITY;
-  assert(h > 0 && h < fall, 'under one tick\'s fall from rest: the landing comes inside the tick');
+  assert(apply.includes(`if (forcing && (plan.flags&${PLAN.SLIDE}u)!=0u && P.gravMode==0u) { particles[atomicLoad(&control[D_FREE+rank])].position=dSlideStart(t,cid(packet.core),plan.velocity+incoming); }`));
+  assert(apply.includes('*P.gravity/(1.0+drag*length(relative)*'), 'the contact height is a share of its own tick\'s fall: the pull, less the drag at its speed');
+  // the tick's fall at a belt's 43 m/s (particles.js integrate's drag on the whole velocity)
+  const vt = 72, v = [0, 0, 43.2], fall = slideTickFall(vt, v), h = slideLift(vt, v);
+  assert(h > 0 && h < fall, 'under its tick\'s fall: the landing comes inside the tick');
+  // red: under one tick's free fall (the old start) it lands a tick late, and its deck kicks it every other tick
+  assert(0.98 * 0.5 * GRAVITY * DT * DT / CELL_M > fall, 'a free fall\'s start is past a fast carry\'s tick');
   const crossing = Math.sqrt(h / fall);
   assert(crossing > 0.98, `it slides ${(crossing * 100).toFixed(1)}% of a tick at the deck's speed`);
-  // red: from the cell's centre (the old launch) it glides half a cell of fall: ~18 cells at a belt's 144 cells/s
-  const glide = 144 * Math.sqrt(2 * 0.5 * CELL_M / GRAVITY), slide = 144 * DT * crossing;
-  assert(glide > 1.5 * slide && slide < 2.5, `centre: ${glide.toFixed(1)} cells over the next decks; contact: ${slide.toFixed(2)} cells a tick`);
-  assert(apply.includes('return vec3f(p+P.origin)+vec3f(dRandom(id,1u),lift,dRandom(id,2u));'), 'a uniformly random point of its floor: V1\'s chance rounding of a fraction of a cell');
+  assert(apply.includes('return vec3f(p+P.origin)+vec3f(dRandom(seed,1u),lift,dRandom(seed,2u));'), 'a uniformly random point of its floor: V1\'s chance rounding of a fraction of a cell');
   assert(SPAWN_PREFIX > 0 && CAP > 0);
 });
