@@ -133,10 +133,6 @@ fn dHitKE(mi: f32, mj: f32, jSolid: bool, u2: f32) -> f32 { return 0.5 * select(
 // V1's cap on a speed (cells/step), and its cells/step per m/s of a throw (dynamics-reference.js SHOCK_THROW_MS)
 const D_V_MAX: f32 = ${f(PHYS.V_MAX)};
 const D_SHOCK_THROW: f32 = ${f(1 / SHOCK_THROW_MS)};
-// a packet of matter landing on a charge: the speed (m/s) past which it sets it off (PACKET_SHOCK_LANDINGS); 0 never
-fn dShockLand(mover: u32, charge: u32) -> f32 { switch (mover * 256u + charge) {
-${PACKET_SHOCK_LANDINGS.map(r => `case ${r.faller * 256 + r.charge}u: { return ${f(r.speed)}; }`).join('\n')}
-default: { return 0.0; } } }
 ${table('dTerminal', 'f32', 'terminal', 55)}
 ${table('dLift', 'f32', 'lift', 12)}
 fn dConductive(id: u32) -> bool { switch id {
@@ -319,6 +315,11 @@ fn dLanding(c: vec3i, axis: u32, velocity: vec3f) -> bool {
 // a charge's V1 cells/step per m/s of its own landing (dynamics-reference.js shockFall: V1's own fall), here
 // with its one reader, not the shared head, so its calibration rebuilds the particle stages alone
 ${table('dShockFall', 'f32', 'shockFall', 0)}
+// a packet of matter landing on a charge: the speed (m/s) past which it sets it off (PACKET_SHOCK_LANDINGS); 0
+// never. With its one reader too, so V1's landing laws rebuild the particle stages alone
+fn dShockLand(mover: u32, charge: u32) -> f32 { switch (mover * 256u + charge) {
+${PACKET_SHOCK_LANDINGS.map(r => `case ${r.faller * 256 + r.charge}u: { return ${f(r.speed)}; }`).join('\n')}
+default: { return 0.0; } } }
 // V1 react.js shock on a packet's hit (dynamics-reference.js packetShock is its CPU twin): matter and a
 // charge closing at u (m/s, the packet's speed across the face it hits, axis) set it off as V1's hit at
 // the V1 speed the same motion had, never by its own element or a gas (shockActs, isGasLike). A throw is
