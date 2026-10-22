@@ -27,7 +27,8 @@ function fakeGPU(limits = {}) {
     },
     createCommandEncoder(d = {}) {
       const ops = [];
-      return { copyTextureToTexture(src, dst, size) { assert.notEqual(src.texture, dst.texture, 'copy must not alias'); log.push(['copy', d.label, src, dst, size]); ops.push(() => {
+      return { copyBufferToBuffer(src, so, dst, d0, size) { log.push(['copyBuffer', d.label, src.label, size]); ops.push(() => { assert.ok(!src.destroyed && !dst.destroyed, 'copy uses destroyed buffer'); dst.data.set(src.data.subarray(so, so + size), d0); }); },
+        copyTextureToTexture(src, dst, size) { assert.notEqual(src.texture, dst.texture, 'copy must not alias'); log.push(['copy', d.label, src, dst, size]); ops.push(() => {
         assert.ok(!src.texture.destroyed && !dst.texture.destroyed, 'copy uses destroyed texture');
         for (let z=0;z<size[2];z++) for(let y=0;y<size[1];y++) for(let x=0;x<size[0];x++) {
           const off = [x,y,z]; dst.texture.set(dst.origin.map((v,i)=>v+off[i]), src.texture.get(src.origin.map((v,i)=>v+off[i])));
@@ -35,7 +36,8 @@ function fakeGPU(limits = {}) {
       }); }, finish() { return ops; } };
     },
     queue: {
-      writeBuffer(b, off, v) { assert.ok(!b.destroyed); b.data.set(bytes(v), off); log.push(['writeBuffer', b.label]); },
+      // (a typed array's dataOffset and size count its elements, as WebGPU's do)
+      writeBuffer(b, off, v, at = 0, n) { assert.ok(!b.destroyed); const e = v.BYTES_PER_ELEMENT ?? 1, all = bytes(v); b.data.set(all.subarray(at * e, n === undefined ? undefined : (at + n) * e), off); log.push(['writeBuffer', b.label, off, n === undefined ? all.byteLength - at * e : n * e]); },
       writeTexture(dst, v, layout, size) {
         assert.ok(!dst.texture.destroyed); const bpp = dst.texture.bpp, raw = bytes(v), row = layout.bytesPerRow ?? size[0]*bpp;
         for(let z=0;z<size[2];z++) for(let y=0;y<size[1];y++) for(let x=0;x<size[0];x++) {
@@ -106,6 +108,35 @@ test('global book sizes, signed bounds, overflow and 384 high world', () => {
   }
   for(const size of [[0,4,4],[-4,4,4],[5,4,4],[2**31,4,4],[2**30,2**30,2**30],[4096,4096,4096]]) assert.throws(()=>A.worldBookLayout(size));
   assert.throws(()=>A.worldBookLayout([3072,384,1024],{maxStorageBufferBindingSize:64*1024**2}));
+});
+test('a big book is the current book copied plus its changed chunks: same bytes as a whole upload', () => {
+  // 1024x256x1024 cells: a 16 MiB book, the smallest that copies (Descent's is 125 MiB)
+  const {gpu,atlas}=setup({worldSize:[1024,256,1024]});
+  assert.equal(atlas.bookLayout.bytes,A.BOOK_COPY_BYTES);
+  const book=s=>new Uint32Array(s.book.data.buffer,0,atlas.bookLayout.count), light=s=>new Uint32Array(s.lightBook.data.buffer,0,atlas.bookLayout.count);
+  let mark=gpu.log.length;
+  for(const brick of [[0,0,0],[255,63,255],[100,10,200]]){const j=atlas.allocate(brick,{sourceRevision:1});atlas.update(j,dataFor(j));atlas.publish(j);}
+  const s=atlas.snapshot();
+  assert.deepEqual(book(s),atlas.entries);assert.deepEqual(light(s),atlas.lightEntries);
+  const sent=gpu.log.slice(mark).filter(e=>e[0]==='writeBuffer'&&/immutable (light )?book/.test(e[1]));
+  assert.ok(sent.every(e=>e[3]<=16384*4),'only changed 64 KiB chunks are sent');
+  assert.ok(gpu.log.slice(mark).some(e=>e[0]==='copyBuffer'&&e[1]==='world book copy'));
+  // growth commits the same entries: the same books, shared, nothing sent or copied
+  mark=gpu.log.length;atlas.growPool('cell');const g=atlas.snapshot();
+  assert.equal(g.book,s.book);assert.equal(g.lightBook,s.lightBook);assert.deepEqual(book(g),atlas.entries);
+  assert.equal(gpu.log.slice(mark).filter(e=>(e[0]==='writeBuffer'&&/immutable (light )?book/.test(e[1]))||e[0]==='copyBuffer').length,0);
+  // a removal clears chunks; the old snapshot keeps its own book
+  atlas.remove([[255,63,255]]);const r=atlas.snapshot();
+  assert.deepEqual(book(r),atlas.entries);assert.equal(book(r)[A.worldBrickIndex(atlas.bookLayout,[255,63,255])],0);
+  assert.notEqual(book(s)[A.worldBrickIndex(atlas.bookLayout,[255,63,255])],0);
+  // a small book still uploads whole (Island's is 8 MiB)
+  const small=setup();assert.ok(small.atlas.bookLayout.bytes<A.BOOK_COPY_BYTES);
+  const j=small.atlas.allocate([1,1,1],{sourceRevision:1});small.atlas.update(j,dataFor(j));small.atlas.publish(j);
+  assert.ok(!small.gpu.log.some(e=>e[0]==='copyBuffer'));
+  // a shared book outlives every snapshot but the last that holds it
+  s.release();gpu.flush();assert.ok(!g.book.destroyed,'growth snapshot still reads the shared book');
+  g.release();r.release();atlas.dispose();gpu.flush();
+  assert.ok(gpu.buffers.filter(b=>/immutable (light )?book/.test(b.label)).every(b=>b.destroyed),'every book destroyed exactly once at the end');
 });
 test('original slot bijection, 32-core / page edges and array-layer geometry', () => {
   const slots=new Set();

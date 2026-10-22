@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { execFileSync } from 'node:child_process';
 import { CellTestGPU } from './cell-adapter-test-gpu.mjs';
-import { WorldCellAtlasAdapter } from '../src/world/cellAtlasAdapter.js';
+import { WorldCellAtlasAdapter, CELL_BATCH_WRITES } from '../src/world/cellAtlasAdapter.js';
 import { WorldFieldHistory } from '../src/world/fieldHistory.js';
 import { WorldRenderSource, SOURCE_GRID, snapshotSource } from '../src/world/renderSource.js';
 import { RawWorldSourceProducer } from '../src/world/renderSourceProducer.js';
@@ -37,6 +37,8 @@ function fixture(){
   const source=new WorldRenderSource(win);win.renderSource=source;sim.worldRenderSource=source;
   const producer=new RawWorldSourceProducer(win,source),atlas=new WorldRenderAtlas(gpu,{worldSize:size,initialCapacity:4});
   const adapter=new WorldCellAtlasAdapter({gpu,source,producer,atlas,tables:sim.tables,worldBounds:{min:[0,0,0],max:size}});
+  // 64 pages a submission, so these 96-page fixtures cross a batch edge (the app packs CELL_BATCH_WRITES)
+  adapter.batchWrites=128;
   return {gpu,sim,win,source,producer,atlas,adapter};
 }
 const req=[{brick:[7,1,1],channels:READY.CELL},{brick:[8,1,1],channels:READY.CELL}];
@@ -115,6 +117,37 @@ test('CELL write batches process every page across pool growth and preserve pack
     for(let s=0;s<64;s++){
       const p=worldSlotCell(s).map((v,i)=>v+local[i]*4),offset=(p[0]+32*(p[1]+32*p[2]))*4;
       for(let j=0;j<3;j++)assert.deepEqual(fieldWords(snap,'field'+j,brick,s),[...new Uint16Array(capture.buffers[j].bytes).subarray(offset,offset+4)]);
+    }
+  }
+  snap.release();publication.previousLightingSnapshot.release();await cleanup(f);
+});
+test('raw CELL pages of a batch share one job list, one version block and one pass, each bound at its own window',async()=>{
+  const f=fixture();f.adapter.batchWrites=CELL_BATCH_WRITES;await f.adapter.ready;const requirements=[];
+  for(let z=0;z<2;z++)for(let y=0;y<2;y++)for(let x=0;x<24;x++)requirements.push({brick:[x,y,z],channels:READY.CELL});
+  const batch=f.adapter.record(f.gpu.frame,{fieldTick:0,requirements});f.gpu.flush();
+  const sizes=[],write=f.atlas.recordPageWrites.bind(f.atlas);
+  f.atlas.recordPageWrites=writes=>{sizes.push(writes.length);return write(writes);};
+  const publication=f.adapter.commitAfterSourceFlush(batch);
+  assert.deepEqual(sizes,[192],'96 pages: one page-write submission at the app bound (pool growth adds its own copies)');
+  const raw=f.gpu.trace.filter(t=>t.name==='raw CELL dispatch');assert.equal(raw.length,96);
+  const window=(d,binding)=>d.groups[0].entries.find(e=>e.binding===binding).resource;
+  for(const binding of [6,7]){
+    assert.equal(new Set(raw.map(d=>window(d,binding).buffer)).size,1,`binding ${binding}: one buffer for the batch`);
+    const offsets=raw.map(d=>window(d,binding).offset);assert.equal(new Set(offsets).size,96);assert(offsets.every(o=>o%256===0));
+  }
+  assert(raw.every(d=>window(d,6).size===272&&window(d,7).size===48));
+  const ids=new Map(),id=o=>{if(!ids.has(o))ids.set(o,ids.size);return ids.get(o);};
+  const views=new Set(raw.map(d=>d.groups[1].entries.map(e=>`${e.binding}:${id(e.resource)}`).join()));
+  assert.equal(new Set(raw.map(d=>d.groups[1])).size,views.size,'one output bind group per pool resource set (this pool grows from 4 pages)');
+  assert(views.size<raw.length/4);
+  f.gpu.finish();await Promise.resolve();
+  const snap=f.atlas.snapshot();
+  for(const r of requirements){
+    const core=r.brick.map(v=>Math.floor(v/8)*32),local=r.brick.map((v,i)=>v-core[i]/4),bi=brickIdOf(SOURCE_GRID,...local),pid=lookupSnapshot(snap,r.brick).physicalPageID;
+    assert.deepEqual(auxWords(snap,r.brick,0),[READY.CELL,1,0,0]);
+    for(const s of [0,37,63]){
+      const a=pageTexel(pid,s,snap.layout),texture=snap.views.stateA.texture,d=texture.size,to=(a[0]+d[0]*(a[1]+d[1]*a[2]))*4;
+      assert.deepEqual([...u32(texture).subarray(to,to+4)],[...u32(f.source.chunks.get(core.join(',')).A).subarray((bi*64+s)*4,(bi*64+s+1)*4)]);
     }
   }
   snap.release();publication.previousLightingSnapshot.release();await cleanup(f);
