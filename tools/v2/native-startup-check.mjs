@@ -186,9 +186,10 @@ assert.equal(badInit.dispatches.length, 0);
 await assert.rejects(badInit.sim.prepareLegacy(), error => error === initError);
 assert.throws(() => badInit.sim.step(), /await sim.prepareLegacy/);
 
-// Wiring: native app host only, render-only guests unchanged, outcomes opt in,
+// Wiring: every V2 grid starts native, a guest's too (its owner holds the host's frames and, once the
+// session ends, steps them: net/codec.js, app.js v2Replica), outcomes opt in,
 // and persisted legacy restore uses the awaitable switch rather than assigning mode.
-assert.match(app, /nativeStartup: physicsMode === 'v2' && !mp\.isGuest/);
+assert.match(app, /nativeStartup: physicsMode === 'v2' \}\);\n  if \(physicsMode === 'v2'\) \{/);
 const outcomes = readFileSync(new URL('../outcomes/engine-v2.js', import.meta.url), 'utf8');
 assert.match(outcomes, /new Simulation\(gpu, nx, ny, nz, \{ debug: false, nativeStartup: true \}\)/);
 assert.match(outcomes, /await Promise\.all\(\[sim\.ready, kernel\.ready, v2\.ready\]\)/);
