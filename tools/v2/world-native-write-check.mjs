@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { WorldGenerator } from '../../src/world/gpu.js';
 import { WorldWindow } from '../../src/world/window.js';
 import { BrickStore, encodeBrick, BRICK_FLOATS } from '../../src/world/store.js';
-import { NativeBrickStore } from '../../src/world/nativeStore.js';
+import { NativeBrickStore, legacyBrickToNative } from '../../src/world/nativeStore.js';
 import { gridDims } from '../../src/shaders/common.js';
 import { WGSL_CHECK } from '../../src/shaders/worldWrite.js';
 import { assertNaga } from './wgsl-grouping.mjs';
@@ -71,7 +71,7 @@ test('(2) a world\'s load under V2 notes no whole-grid write; V1\'s cache is rew
   assert.equal(owner.legacyNative, undefined, 'V1\'s cache (the old origin\'s projection) is stale everywhere');
 });
 
-test('(3) stored bricks back into a V2 window: the native store\'s come back exact; V1\'s copies only leave the store', () => {
+test('(3) stored bricks back into a V2 window: the native store\'s come back exact; a brick only V1 kept (a V1-made save) natively too; V1\'s copies only leave the store', () => {
   const { sim, log } = fakeSim(), wb = [32, 8, 32];
   const store = new BrickStore(wb), nativeStore = new NativeBrickStore(wb), a = new Float32Array(BRICK_FLOATS), b = new Float32Array(BRICK_FLOATS);
   const k1 = store.key(16, 0, 8), k2 = store.key(17, 0, 8);   // world bricks of window bricks (0, 0, 0) and (1, 0, 0)
@@ -80,12 +80,13 @@ test('(3) stored bricks back into a V2 window: the native store\'s come back exa
   const writes = [];
   const win = Object.assign(Object.create(WorldWindow.prototype), { sim, store, nativeStore, restoreKernel: { name: 'restore' }, restoreBuf: null, restoreRead: -1,
     gpu: { createBuffer: ({ size }) => ({ size }), write(buf, at, data) { writes.push(data); }, stats: { flushes: 0 } } });
+  const v1Bytes = store.map.get(k2);
   assert.equal(win.restore([0, 0, 0], [2, 1, 1]), 2, 'both bricks come back');
   const edits = log.filter((e) => e[0] === 'edit');
-  assert.equal(edits.length, 1, 'V1\'s restore writes only the brick no native store kept');
-  assert.deepEqual([...writes[0].subarray(0, 2)], [0, 1], 'its index names window brick 1 alone');
+  assert.equal(edits.length, 0, 'no V1 restore edit under V2 (nor the whole-cell import after it)');
   assert(!store.has(k1) && !store.has(k2), 'both leave V1\'s store');
   assert(nativeStore.map.has(nativeStore.key(16, 0, 8)), 'the exact brick waits for restoreNative');
+  assert.deepEqual([...nativeStore.map.get(nativeStore.key(17, 0, 8))], [...legacyBrickToNative(v1Bytes)], 'the brick only V1 kept waits there too, as V2\'s import makes it (native-store-check: bit-exact)');
   // V1 running: every stored brick is V1's to write, as before.
   const v1 = fakeSim({ v2: false }), store1 = new BrickStore(wb);
   store1.put(k1, encodeBrick(a, 0, b, 0)); store1.put(k2, encodeBrick(a, 0, b, 0));
