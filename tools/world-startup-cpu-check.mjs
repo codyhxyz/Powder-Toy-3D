@@ -158,3 +158,12 @@ test('loading never declares WORLD ready before a confirmed MAIN, even past old 
     assert.equal(loadWatch.active,false,'the screen coming down ends the watch');
   }finally{console.error=quiet;}
 });
+
+// A gamemode starting (Sandbox right after a big map's first frame) is render-only: the World
+// owner's scene version must not follow modeEpoch, or every later frame is refused and the map
+// freezes after loading (Island, 2026-10-22). One constant per window.
+test('World frames keep one scene version per window, not the gamemode epoch',()=>{
+  assert.match(source,/sceneVersion:WORLD_SCENE_VERSION,/);
+  assert.doesNotMatch(source,/sceneVersion:\s*modeEpoch/);
+  assert.match(source,/const WORLD_SCENE_VERSION = 1;/);
+});

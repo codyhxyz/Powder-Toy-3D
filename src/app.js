@@ -2439,6 +2439,13 @@ function saveScreenshot() {
   });
 }
 
+// A World owner's scene never changes under it: a new map builds a new window
+// and owner (wire/world.js attach), and a gamemode's look is render-only
+// (gfx/presentation.js). So its scene version is one constant per window, not
+// modeEpoch: Sandbox starting after the first frame bumped modeEpoch, and the
+// owner then refused every later frame ("reset WORLD owner before changing
+// scene", never called by the app), freezing Island after it loaded (2026-10-22).
+const WORLD_SCENE_VERSION = 1;
 // A WORLD request captures source/lighting once, independently of the view.
 function captureWorldRequest(reservation,state,dt,accepted) {
   updateGfxUniforms(sim,SUN,KEY_LIGHT);
@@ -2463,7 +2470,7 @@ function captureWorldRequest(reservation,state,dt,accepted) {
     col:[...values.lampCol[i]],shape:[...values.lampShape[i]]}));
   const frame={values,physicsOrigin:origin,params:{marchNear:pov?.marchNear??0,warpK:warp.k,warpAnchor:warp.anchor,warpDir:warp.dir},
     globalKey:key,lamps,sun:{direction:[...values.sun],basisRevision:1},
-    sceneVersion:modeEpoch,schemaVersion:1,configVersion:1,advance:reservation.runDerived||!accepted,
+    sceneVersion:WORLD_SCENE_VERSION,schemaVersion:1,configVersion:1,advance:reservation.runDerived||!accepted,
     external:{mediaNoise:state.noise.view,packedMesh:state.unused.createView(),sourceAppearance:state.emptyArtwork.createView()}};
   // Reuse source settings only when they really remain compatible. Camera or
   // physics-origin changes alone must not turn a new light setting into stale data.
