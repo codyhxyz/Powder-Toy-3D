@@ -4,6 +4,7 @@ import { specialContactWGSL } from './contact.js';
 import { impactFoamWGSL } from '../../v2/foam.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { STAGE } from '../../gpu/kernels.js';
+import { TERMINAL_MS } from '../../v2/gravity.js';
 import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
@@ -133,7 +134,7 @@ fn dHitKE(mi: f32, mj: f32, jSolid: bool, u2: f32) -> f32 { return 0.5 * select(
 // V1's cap on a speed (cells/step), and its cells/step per m/s of a throw (dynamics-reference.js SHOCK_THROW_MS)
 const D_V_MAX: f32 = ${f(PHYS.V_MAX)};
 const D_SHOCK_THROW: f32 = ${f(1 / SHOCK_THROW_MS)};
-${table('dTerminal', 'f32', 'terminal', 55)}
+${table('dTerminal', 'f32', 'terminal', TERMINAL_MS)}
 ${table('dLift', 'f32', 'lift', 12)}
 fn dConductive(id: u32) -> bool { switch id {
 ${ELEMENTS.filter(e=>e.elec>0).map(e=>`case ${e.id}u: { return true; }`).join('\n')}

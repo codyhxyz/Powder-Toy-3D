@@ -1,4 +1,5 @@
-import { fallTerminal, powderLandingSpeed } from '../v2/fall.js';
+import { fallTerminal, powderLandingSpeed, stepFall, setFall, fallFraction, FALL_GRAVITY } from '../v2/fall.js';
+import { GRAVITY_MS2 } from '../v2/gravity.js';
 import { LEGACY_STEPS_PER_TICK } from '../v2/host.js';
 import { fallWGSL } from './v2/fall.js';
 import { FOAM_ROWS } from '../v2/foam.js';
@@ -43,8 +44,8 @@ import { PARTICLE_CAP, SHOCK_LANDINGS } from '../v2/dynamics-reference.js';
 
 // ---------------------------------------------------------------- clock and units
 export const TICK_HZ = 60;                         // docs/v2.md 5.1: Minecraft's fixed game tick
-// 2 g: TF2's sv_gravity 800 units/s² at 1 unit = 1 inch is ≈ 20 m/s² (docs/v2.md 5.1)
-export const G_MS2 = 19.6;
+// the reference pull: V1's gravity in m/s² (v2/gravity.js; user decision 2026-10-21: V2 falls as V1 does)
+export const G_MS2 = GRAVITY_MS2;
 export const G_TICK = G_MS2 / CELL_M / TICK_HZ ** 2;   // cells/tick²
 export const G_CELLS = G_MS2 / CELL_M;                 // cells/s²
 // liquid (lean-sim's numbers: the prototype's U-tube, pool, puddle and pipe pass on them)
@@ -118,12 +119,12 @@ export function v2Table() {
   return appendContactTable(out, CONTACT_ROWS, CONTACT_REACTIONS);
 }
 
-/** cells fallen from rest in `ticks` ticks by an element's column-fall law (the column pass's, in f64). */
+/** cells fallen from rest in `ticks` ticks by an element's column-fall law (the column pass's: fall.js stepFall). */
 export function fallCells(id, ticks) {
-  const vt = v2Rows()[id]?.vt ?? 0;
-  let f = 0;
-  for (let n = 1; n <= ticks; n++) f += Math.min(n * G_TICK, vt);
-  return f;
+  if (!(fallTerminal(id) > 0)) return 0;
+  let core = setFall(new Uint32Array([id, 0, 0, 0]), 0, 0), f = 0;
+  for (let n = 1; n <= ticks; n++) { const s = stepFall(core, FALL_GRAVITY); core = s.core; f += s.cells; }
+  return f + fallFraction(core);
 }
 
 // ---------------------------------------------------------------- buffers
@@ -704,10 +705,11 @@ ${MAIN} {
       continue;
     }
     let gravity = select(P.gravity, 0.0, P.gravMode == 1u);
-    let v = nextFallVelocity(c, gravity);
+    let fall = fallStep(c, gravity);
+    let v = fall.x;
     if (v == 0.0) { fl = y + 1; runFalling = false; continue; }
     markBusy(p);
-    var a = fallDistance(c, v);
+    var a = fall.y;
     let d = i32(floor(a));
     a = a - f32(d);
     var to = y - d;

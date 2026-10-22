@@ -6,6 +6,7 @@ import { PHYS, SIM_GRAVITY, NOMINAL_STEP_RATE } from '../physics.js';
 import { contactVacuum, specialExplosion } from './contact.js';
 import { impactFoam } from './foam.js';
 import { PACE } from '../shaders/move.js';
+import { GRAVITY_MS2, TERMINAL_MS, v1TerminalMS } from './gravity.js';
 import { energyOf, withEnergy, energyFits, makeMaterial, cTq, withPayload, payloadOf, share, packetOwnedEnergy, withPacketEnergy, packetEnergyFits } from './layout.js';
 import { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy } from './pressure.js';
 export { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy };
@@ -13,7 +14,8 @@ export { CELL_M };
 export const PARTICLE_CAP = 65536;
 export const PARTICLE_BYTES = 48;
 export const DT = 1 / 60;
-export const GRAVITY = 19.6; // TF2's ~2 g, docs/v2.md §5.1.
+// the reference pull, V1's (v2/gravity.js GRAVITY_MS2; user decision 2026-10-21: V2 falls as V1 does)
+export const GRAVITY = GRAVITY_MS2;
 export const singularityVacuumPa = core => legacyPressureToPa(contactVacuum(core));
 export const EVENT = Object.freeze({ DETONATE: 1, GAS: 2, NEUTRON: 4 });
 export const PHOTON_TAG = 254;
@@ -48,7 +50,9 @@ export const dynamicsRows = ELEMENTS.map(e => ({
   // V1 react.js: an explosive goes off under more than blast.crushP air pressure (Pa here).
   crush: e.blast?.crushP ? e.blast.crushP * LEGACY_PRESSURE_PA : 0,
   crushPhase: crushPhaseOf(e),
-  terminal: ({ ASH: 3, SNOW: 3, SAWDUST: 4, DUST: 3 })[e.key] ?? 55,
+  // a packet's terminal speed (m/s), V1's (react.js forces): its drag's balance against its pull, to V_MAX (a liquid
+  // in free fall feels no drag: V_MAX); a cell with no pull (GRAV 0) still has V1's V_MAX
+  terminal: (e.kind === K.LIQUID ? TERMINAL_MS : v1TerminalMS(e)) || TERMINAL_MS,
   lift: ({ ASH: 1, DUST: 1, SNOW: 2, SAWDUST: 2 })[e.key] ?? 12,
   energy: e.key==='DUST' ? specialBlastEnergy(PHYS.DUST_P) : e.blast ? Math.max(e.dens * 100 * CELL_M ** 3, 0.001) * (SPECIFIC_J[e.key] ?? 3e6) * BLAST_SCALE : 0,
   product: e.key==='DUST' ? E.FIRE : e.key==='SINGULARITY' ? E.FIRE : e.blast ? E[e.blast.into ?? 'FIRE'] : 0,
