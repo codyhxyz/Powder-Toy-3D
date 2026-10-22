@@ -430,6 +430,11 @@ export class Derived {
    * @returns {{ indirect: GPUBuffer, offset: number } | null} the shadow kernel's
    *   indirect arguments (a workgroup per tile), or null while the kernels build
    */
+  /** shadowTiles can list this frame's tiles (its kernels are built, FrameUniforms written). */
+  shadowTilesReady() {
+    const k = this.kernels;
+    return !!this.gpu._frameUniforms?.group && [k.shadowMark, k.shadowList, k.shadowArgs].every((x) => x.state === 'ready');
+  }
   shadowTiles(res, map = null) {
     const k = this.kernels, frame = this.gpu._frameUniforms?.group, sim = this.sim;
     if (!frame || ![k.shadowMark, k.shadowList, k.shadowArgs].every((x) => x.state === 'ready')) return null;

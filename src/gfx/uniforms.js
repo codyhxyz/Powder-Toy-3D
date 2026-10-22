@@ -195,5 +195,6 @@ export function writeFrameUniforms(gpu, frame) {
   const values = frameUniformValues(frame);
   last.viewProj.copy(values.viewProj);last.invViewProj.copy(values.invViewProj);last.model.copy(values.model);
   last.eye.setFromMatrixPosition(frame.camera.matrixWorld);last.written = true;
+  last.sun = values.sun?.toArray?.() ?? Array.from(values.sun ?? [0, 1, 0]);   // (the sun the lighting reads, grid space: tests aim at its shadows)
   uniforms.write(values);
 }

@@ -1,5 +1,5 @@
 import { decodeWorldState } from './persistence.js';
-import { NativeBrickStore, nativeBrickBanked } from './nativeStore.js';
+import { NativeBrickStore, nativeBrickBanked, legacyBrickToNative } from './nativeStore.js';
 import { BRICK } from '../shaders/common.js';
 import { restoreEdit, BRICK_CELLS } from '../shaders/window.js';
 import { leaveHeadBytes, LEAVE_BRICK_BYTES } from '../shaders/generate.js';
@@ -519,8 +519,13 @@ export class WorldWindow {
           const key = this.store.key(ob[0] + lb[0] + bx, ob[1] + lb[1] + by, ob[2] + lb[2] + bz);
           if (!this.store.has(key)) continue;
           // V2 running: a brick its store holds comes back exact (restoreNative, after): V1's copy of it
-          // only leaves the store. Only a brick no native store kept (a V1-made world save) is written.
-          if (native && this.nativeStore.map.has(this.nativeStore.key(ob[0] + lb[0] + bx, ob[1] + lb[1] + by, ob[2] + lb[2] + bz))) { exact.push(key); continue; }
+          // only leaves the store. A brick only V1's store kept (a V1-made world save) is decoded into V2's
+          // cells as V2's import makes them (nativeStore.js legacyBrickToNative) and comes back the same way.
+          if (native) {
+            const nativeKey = this.nativeStore.key(ob[0] + lb[0] + bx, ob[1] + lb[1] + by, ob[2] + lb[2] + bz);
+            if (!this.nativeStore.map.has(nativeKey)) this.nativeStore.put(nativeKey, legacyBrickToNative(this.store.map.get(key)));
+            exact.push(key); continue;
+          }
           keys.push(key);
           index[bx + bricks[0] * (by + bricks[1] * bz)] = keys.length;
         }

@@ -20,6 +20,7 @@ function gpu() {
   globalThis.GPUBufferUsage ??= {STORAGE:128,INDIRECT:256};
   const g={frame:{},_frameUniforms:{layout:{},group:{}},calls:[],buffers:[],pipes:[],flushes:0,
     layout:(_n,l)=>l,bindGroup:(l,entries)=>({l,entries}),createBuffer(d){const b=buffer(d.size);this.buffers.push(b);return b;},flush(){this.flushes++;},
+    createTexture:(d)=>({...d,createView:()=>({texture:d.label})}),device:{createSampler:(d)=>({sampler:d?.label})},
     renderPipeline(d){const p={state:'ready',ready:Promise.resolve(),desc:d,draw(_rp,o){g.calls.push({kind:'draw',name:d.name,options:o,instances:o.indirect.buffer.words[1]});}};this.pipes.push(p);return p;},
     kernel(d){const p={state:'ready',ready:Promise.resolve(),desc:d,dispatch(frame,n,o){g.calls.push({kind:'count',frame,n,options:o});
       const [control,args]=o.bind[0].entries.map(e=>e.resource.buffer); args.words.set([6,control.words[0]>0?o.params.capacity:0,0,0]);}};this.pipes.push(p);return p;}};

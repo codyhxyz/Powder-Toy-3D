@@ -10,6 +10,7 @@ import { v2Rows } from '../../src/shaders/v2.js';
 import { COLUMN, COLUMN_FLOW, COLUMN_SHOCK_ON } from '../../src/shaders/v2/columns.js';
 import { v1PaceRate } from '../../src/v2/gravity.js';
 import { ColumnGrid } from './column-wgsl.mjs';
+import { OUTCOMES } from '../outcomes/thresholds.js';
 
 const block = (w, id, [x0, y0, z0], [x1, y1, z1], opts) => { for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) w.set(x, y, z, id, opts); };
 const columns = (w, id) => {
@@ -38,7 +39,8 @@ test('MV-13: a spill beads a cell deep as V1\'s whole cells do, and still pours 
   block(w, E.WATER, [14, 0, 14], [17, 3, 17]);
   run(w, 120);
   const { peak, cols } = columns(w, E.WATER);
-  assert.ok(cols <= 200 && peak >= 0.4, `water: ${cols} columns, ${peak.toFixed(2)} deep (V1 64 columns, 1 deep; a 1/8-cell film was 572)`);
+  // (V2's fills level where V1's whole cells bead: columns.js FILM_DRY's Intentional note)
+  assert.ok(cols <= 220 && peak >= 0.3, `water: ${cols} columns, ${peak.toFixed(2)} deep (V1 64 columns, 1 deep; a 1/8-cell film was 572)`);
   // half a cell of water on a shelf by its edge pours off it (the dry film holds only at its own level)
   const s = new ColumnGrid(12, 8, 4);
   block(s, E.WALL, [0, 0, 0], [5, 3, 3]);
@@ -86,13 +88,15 @@ test('an open floor: a run falls through it from rest on V1\'s law, not at V1\'s
 
 test('a face carries no more than V1\'s flow cap: its liquid\'s FLOW, paced as V1\'s move paces it', () => {
   // V1 react.js: a liquid's head-driven flow is at most FLOW (cells/step); move.js moves it u/(2-u) cells a step
-  assert.equal(COLUMN_FLOW[E.MUD].q, Math.floor(v1PaceRate(ELEMENTS[E.MUD].flow) * COLUMN.STEPS * L.FULL));
-  assert.equal(COLUMN_FLOW[E.WATER].q, COLUMN.Q_MAX);
+  // (a pair step is a V1 step: COLUMN.SUB of them a tick)
+  assert.equal(COLUMN.SUB, COLUMN.STEPS);
+  assert.equal(COLUMN_FLOW[E.MUD].q, Math.floor(v1PaceRate(ELEMENTS[E.MUD].flow) * L.FULL));
+  assert.equal(COLUMN_FLOW[E.WATER].q, Math.floor(v1PaceRate(ELEMENTS[E.WATER].flow) * L.FULL));
   assert.equal(COLUMN_FLOW[E.WATER].ms, Number((0.9 * 72).toPrecision(7)));
   // a deep mud face onto dry ground, already at the lane's Q_MAX: its next flux is V1's cap, no more
   const ctx = new ColumnGrid(4, 32, 4).ctx, rec = (r1, liq) => ctx.recMake(0, 32, r1, liq, 0, r1 * L.FULL, false, false);
-  for (const [id, ok] of [[E.MUD, COLUMN_FLOW[E.MUD].q], [E.WATER, COLUMN.Q_MAX]]) {
-    const v = ctx.colFlux(rec(30, id), rec(0, 0), 0, 30, COLUMN.Q_MAX, COLUMN.Q_MAX, { x: 0, y: 0 }, { x: 0, y: 0 }, 0, COLUMN.FILM_DRY);
+  for (const [id, ok] of [[E.MUD, COLUMN_FLOW[E.MUD].q], [E.WATER, COLUMN_FLOW[E.WATER].q]]) {
+    const v = ctx.colFlux(rec(30, id), rec(0, 0), 0, 30, COLUMN.Q_MAX, COLUMN.Q_MAX, { x: 0, y: 0 }, { x: 0, y: 0 }, 0, COLUMN.FILM_DRY, false);
     assert.ok(v > 0 && v <= ok, `${ELEMENTS[id].key}: ${v} (V1's cap ${ok})`);
   }
 });
@@ -177,4 +181,75 @@ test('RX-7, the liquid half: a cloned liquid starts falling at V1\'s SPAWN_DROP_
     return 12 - y;
   };
   assert.ok(fall(-PHYS.SPAWN_DROP_V * COLUMN.STEPS) > fall(0), `from V1's spawn speed ${fall(1.2)} cells in 2 ticks, from rest ${fall(0)}`);
+});
+
+test('the flow runs at V1\'s speed: a dam break\'s front and a spill\'s reach by time as V1\'s, the hole still drains as V1\'s', () => {
+  // V1 (tools/v2/runs-browser-check.mjs --v1, 2026-10-22, 32³ boxes): a dam break (water 4 wide, 8 deep, across the
+  // box) has its front 16 cells from the wall at 0.1 s and at the far wall (32) by 0.2 s; a 4³ spill reaches 9.5
+  // cells from its middle at 0.1 s. One pair step a tick (before) had them at 8 at 0.1 s, 11 at 0.2 s and 5.5.
+  const dam = new ColumnGrid(32, 12, 4);
+  block(dam, E.WATER, [0, 0, 0], [3, 7, 3]);
+  const front = () => { let f = 0; for (let x = 0; x < 32; x++) for (let z = 0; z < 4; z++) for (let y = 0; y < 12; y++) if (L.cid(dam.cores[dam.at(x, y, z)]) === E.WATER) f = x + 1; return f; };
+  run(dam, 6); const at01 = front();
+  run(dam, 9); const at025 = front();
+  assert.ok(at01 >= 13 && at01 <= 24, `dam front at 0.1 s: ${at01} cells (V1 16)`);
+  assert.equal(at025, 32, `dam front at 0.25 s: ${at025} cells (V1 at the wall by 0.2 s)`);
+  const spill = new ColumnGrid(32, 8, 32);
+  block(spill, E.WATER, [14, 0, 14], [17, 3, 17]);
+  run(spill, 6);
+  let reach = 0;
+  for (let i = 0; i < spill.n; i++) if (L.cid(spill.cores[i]) === E.WATER) { const x = i % 32, z = Math.floor(i / 32) % 32; reach = Math.max(reach, Math.abs(x - 15.5), Math.abs(z - 15.5)); }
+  assert.ok(Math.abs(reach - 9.5) <= 1.5, `spill reach at 0.1 s: ${reach} cells (V1 9.5)`);
+  // the hole tank (tests/liquids.js hole, runs-browser-check drain): drained within the outcome's tolerance of V1's
+  const w = new ColumnGrid(16, 32, 8);
+  block(w, E.WALL, [0, 0, 0], [8, 31, 7]);
+  for (let y = 13; y <= 31; y++) for (let z = 1; z <= 6; z++) for (let x = 1; x <= 7; x++) w.set(x, y, z, 0);
+  block(w, E.WATER, [1, 13, 1], [7, 30, 6]); w.set(8, 14, 3, 0);
+  const tank = () => { let m = 0; for (let y = 13; y < 32; y++) for (let z = 1; z <= 6; z++) for (let x = 1; x <= 7; x++) { const c = w.cores[w.at(x, y, z)]; if (L.cid(c) === E.WATER) m += L.cFill(c) / L.FULL; } return m; };
+  const { v1, checkpoints, drainTol } = OUTCOMES.hole;
+  checkpoints.forEach((t, k) => {
+    while (w.tick < t * COLUMN.TICK_HZ) w.step();
+    const drained = 7 * 6 * 18 - tank();
+    assert.ok(Math.abs(drained / v1.drained[k] - 1) <= drainTol, `drained by ${t} s: ${drained.toFixed(1)} cells (V1 ${v1.drained[k]})`);
+  });
+});
+
+test('BL-9: a mercury flow running into C-4 or nitroglycerin sets it off as V1\'s, water\'s never', () => {
+  // V1 (runs-browser-check --v1 sideways, 2026-10-22): mercury 4 wide and h tall a cell of floor from a wall of C-4
+  // (h 8, 14) or a nitroglycerin pool (h 14) sets it off within a second (react.js shock: ½·μ·u², u its flow's
+  // FLOW-capped orifice speed); water's ½·μ·u² is under either's shock at any speed
+  const COLUMN_HIT_IDS = [E.C4, E.NITRO];
+  for (const id of COLUMN_HIT_IDS) assert.ok(ELEMENTS[id].blast.shock > 0);
+  const side = (liq, charge, h) => {
+    const w = new ColumnGrid(20, 16, 24);
+    const x1 = charge === E.C4 ? 10 : 14, y1 = charge === E.C4 ? h - 1 : 1;
+    block(w, liq, [4, 0, 10], [7, h - 1, 13]); block(w, charge, [9, 0, 6], [x1, y1, 17]);
+    for (let t = 0; t < 30; t++) { w.step(); if (w.events.some((e, i) => (e & 1) && L.cid(w.cores[i]) === charge)) return true; }
+    return false;
+  };
+  assert.ok(side(E.MERCURY, E.C4, 8), 'mercury 8 tall into C-4');
+  assert.ok(side(E.MERCURY, E.NITRO, 14), 'mercury 14 tall into nitroglycerin');
+  assert.ok(!side(E.WATER, E.NITRO, 14), 'water 14 tall into nitroglycerin rests');
+  assert.ok(!side(E.WATER, E.C4, 14), 'water 14 tall into C-4 rests');
+});
+
+test('T11, the liquid half: a painted liquid starts falling at V1\'s SPAWN_DROP_V, its import setting its column lane', async () => {
+  // V1 passes.js paint: a loose tool's new cell gets B.y = SPAWN_DROP_V cells/step; V2 imports the painted cell from
+  // V1's A/B, and the import keeps that fall in the column lane (colFall's cells a tick)
+  const { v2ImportWGSL } = await import('../../src/shaders/v2.js');
+  const { gridLayout } = await import('../../src/sim.js');
+  assert.match(v2ImportWGSL(gridLayout(16, 8, 8)), /n = colImportFall\(n, select\(0\.0, vy, cls\(u32\(clamp\(eid\(a\), 0, NE - 1\)\)\) == C_LIQUID\)\);/);
+  const fall = (vy) => {
+    const w = new ColumnGrid(4, 16, 4);
+    w.set(1, 12, 1, E.WATER);
+    w.cores[w.at(1, 12, 1)] = Uint32Array.from(w.ctx.colImportFall(w.cores[w.at(1, 12, 1)], vy));
+    const lane = w.ctx.laneOf(w.cores[w.at(1, 12, 1)], 1);
+    run(w, 2);
+    let y = 0; while (L.cid(w.cores[w.at(1, y, 1)]) !== E.WATER) y++;
+    return { lane, fell: 12 - y };
+  };
+  const painted = fall(PHYS.SPAWN_DROP_V), still = fall(0);
+  assert.equal(painted.lane, Math.f16round(-PHYS.SPAWN_DROP_V * COLUMN.STEPS));
+  assert.equal(still.lane, 0);
+  assert.ok(painted.fell > still.fell, `painted: ${painted.fell} cells in 2 ticks, from rest ${still.fell}`);
 });

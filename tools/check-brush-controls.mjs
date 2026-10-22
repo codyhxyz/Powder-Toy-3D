@@ -72,8 +72,10 @@ Object.assign(c, {
   canEraseClick: () => true,
   brushStroke: tool => ({ tool, radius: 3, shape: 0 }),
   paintStroke: stroke => paints.push(stroke),
+  win: null,   // a box: the released click's cell is the pick's own (physicalPickCell; World's is tools/world-pick-cpu-check.mjs)
 });
-vm.runInContext(fn('eraseClick'), c);
+// eraseClick takes its cell through app.js physicalPickCell (World revalidates a delayed hit there)
+vm.runInContext([fn('physicalPickCell'), fn('eraseClick')].join('\n'), c);
 await c.eraseClick({ clientX: 450, clientY: 300 });
 assert.equal(paints.length, 1);
 assert.equal(paints[0].tool, c.ERASE_TOOL);

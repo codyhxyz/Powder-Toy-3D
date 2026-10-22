@@ -18,7 +18,7 @@ import { modeWGSL } from './v2/modes.js';
 import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
 import { contactWGSL as productionContactWGSL, requestMergeWGSL, outsideFacesWGSL, outsideSiteWGSL } from './v2/contact.js';
-import { v2RunsKernel, v2PairsKernel, COLUMN } from './v2/columns.js';
+import { v2RunsKernel, v2PairsKernel, COLUMN, columnImportFallWGSL } from './v2/columns.js';
 import { PARTICLE_CAP, SHOCK_LANDINGS, v1GrainOddsTable } from '../v2/dynamics-reference.js';
 
 // Physics v2, the fast version (docs/v2.md 2, 4.1, 5.1-5.6; the rules are
@@ -50,9 +50,9 @@ export const G_TICK = G_MS2 / CELL_M / TICK_HZ ** 2;   // cells/tick²
 export const G_CELLS = G_MS2 / CELL_M;                 // cells/s²
 // liquid (lean-sim's numbers: the prototype's U-tube, pool, puddle and pipe pass on them)
 export const FULL = 1 << 16;                       // a full cell's fill
-// The face lanes hold a segment's depth-averaged flux in quanta a tick (src/shaders/v2/columns.js): this
-// many updates a second, for readers that turn a lane into a speed.
-export const LANE_HZ = TICK_HZ;
+// The face lanes hold a segment's depth-averaged flux in quanta a pair step (src/shaders/v2/columns.js, COLUMN.SUB
+// steps a tick): this many updates a second, for readers that turn a lane into a speed.
+export const LANE_HZ = COLUMN.LANE_HZ;
 // rest: a brick sleeps once neither it nor any of its 26 neighbours was busy for one offset cycle (5.6)
 export const QUIET_TICKS = 8;
 // a brick's quiet run stops counting here (one byte); a brick at it, with nothing busy near, is unchanged
@@ -496,6 +496,7 @@ const MAIN = '@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wg: v
 export const v2ImportWGSL = (g) => /* wgsl */ `
 ${v2Head(g, V2_IMPORT_OPTS, 'material')}
 ${bridgeWGSL}
+${columnImportFallWGSL}
 var<workgroup> wgMarked: u32;
 var<workgroup> wgChanged: atomic<u32>;
 ${MAIN} {
@@ -519,6 +520,8 @@ ${MAIN} {
     // loose matter B.y = SPAWN_DROP_V), and a loaded one keeps its fall (react.js forces read B)
     let vy = fetchBs(s).y;
     if (clsOf(n) == C_POWDER && vy < 0.0) { n = setFall(n, min(-vy, ${f(PHYS.V_MAX)}) * ${V1_STEP_MS}, 0.0); }
+    // (a liquid falls on at V1's speed: the brush's SPAWN_DROP_V, columns.js colImportFall)
+    n = colImportFall(n, select(0.0, vy, cls(u32(clamp(eid(a), 0, NE - 1))) == C_LIQUID));
     let oldBank = banks[s];
     banks[s] = 0; // explicit ownership resets even when the imported core compares equal
     if (any(n != c) || oldBank != 0) {

@@ -43,6 +43,8 @@ import { createMediaNoise } from './mediaNoise.js';
 import { DETAIL, SOFTWARE_UNDRAWABLE, drawableDetail } from './detail.js';
 import { decoShown } from '../deco.js';
 import { isMaterialView } from '../views.js';
+import { RENDER_LAYOUT } from '../shaders/bindings.js';
+import { createPacketShadow, packetShadowSource, packetShadowKey } from './packetShadow.js';
 
 // slots of the pick ring: a hover pick every frame plus a few one-off rays in flight
 const PICK_RING_SLOTS = 64;
@@ -107,6 +109,8 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
   for (const [names, groups] of [[LAYOUT_NAMES.volume, VOLUME_LAYOUTS()], [LAYOUT_NAMES.shadow, SHADOW_LAYOUTS()], [LAYOUT_NAMES.pick, PICK_LAYOUTS()]]) {
     names.forEach((name, i) => { L[name] = gpu.layout(name, groups[i]); });
   }
+  // (V2's shadow kernel's: V1's with the packet shadow buffer, gfx/packetShadow.js)
+  L.LIGHTING_SHADOW_PACKETS = gpu.layout('LIGHTING_SHADOW_PACKETS', RENDER_LAYOUT.LIGHTING_SHADOW_PACKETS);
   const label = (x) => `sim${sim.id} ${x}`;
 
   // ---- resources (once per grid) ----
@@ -158,6 +162,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
         { binding: 18, resource: { buffer: sim.state.flow } },
         { binding: 19, resource: { buffer: aeration ?? dummy.buffer } },
         ...derived.lightingEntries(),
+        ...(layout === L.LIGHTING_SHADOW_PACKETS ? [{ binding: 20, resource: { buffer: packets.buffer } }] : []),
       ]) byBinding.set(e.binding, e);
       lightingCache.set(key, group = gpu.bindGroup(layout, [...byBinding.values()], `${label('lighting')} ${layout.label}`));
     }
@@ -215,6 +220,10 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
   const failPicks = (e) => { for (const p of pickQueue.splice(0)) p.reject(e); };
   const meshInv = new Matrix4();
   let disposed = false;
+  // V2's flying packets in the map (gfx/packetShadow.js), made when a V2 box first records it; lastPackets:
+  // whether the last map had them (a switch either way traces every tile)
+  let packets = null;
+  let lastPackets = false;
 
   const volume = {
     sim,
@@ -225,10 +234,20 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
     shadowTextures: { map: shadowMap, x: shadowX },
     /** The media noise (gfx/mediaNoise.js): resolves once its tile is in the texture. */
     noiseReady: noise.ready,
+    /** Its view (the clouds' shadow: gfx/nativeParticles.js lights V2's flying matter with it). */
+    mediaNoiseView: noise.view,
     /** The pick kernel is built, and the shadow kernel if `shadows` (views build on first use: viewReady). */
     ready: Promise.all([pickKernel.ready, ...(shadows ? [shadowKernel.ready] : [])]).then(() => volume),
     /** Builds the shadow kernel if it isn't yet (a switch to a view with shadows); resolves when it is ready. */
     shadowReady() { return shadowKernel.build(); },
+    /** V2's packets in the map (gfx/packetShadow.js): 'none' (not wanted yet), 'building' or 'ready'. */
+    get packetShadowState() { return packets ? (packets.ready ? 'ready' : 'building') : 'none'; },
+    /**
+     * For the derived passes' key (app.js): changes each tick while V2's matter may fly, and once more as it lands,
+     * so the map takes the packets where they are now. A V1 flying cell changes the grid every step, and the
+     * grid's version moves that key; a V2 packet flies in the dynamics pool and moves no grid version.
+     */
+    get packetShadowKey() { return packetShadowKey(sim, this.packetShadowState); },
     /** The shadow kernel's state: 'idle' (not wanted yet), 'pending', 'ready' or 'failed'. */
     get shadowState() { return shadowKernel.state; },
 
@@ -307,11 +326,26 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      * @returns {boolean}
      */
     recordShadow() {
-      if (shadowKernel.state !== 'ready') { shadowKernel.build(); return false; }
+      // Under V2 its flying packets cast as V1's flying cells do (gfx/packetShadow.js): the splat, then V2's
+      // kernel, V1's trace with them folded in. Until it is built, V1's kernel traces the map without them.
+      const source = packetShadowSource(sim);
+      if (source && !packets) {
+        packets = createPacketShadow(gpu, { g, res, world: sim.world ?? WORLD_SIZE, derived,
+          layouts: { shadow: [L.FRAME, L.STATE_RO, L.LIGHTING_SHADOW_PACKETS], frame: L.FRAME } });
+      }
+      if (source) packets.build();
+      const withPackets = !!source && packets.ready;
+      if (withPackets !== lastPackets) { derived.shadowFull = true; lastPackets = withPackets; }
+      if (shadowKernel.state !== 'ready' && !withPackets) { shadowKernel.build(); return false; }
+      if (withPackets) {
+        if (!derived.shadowTilesReady()) return false;
+        packets.record(gpu.frame, fu.group, source, [sim.origin?.x ?? 0, sim.origin?.y ?? 0, sim.origin?.z ?? 0]);
+      }
       // the tiles to re-trace: those a change crossed, or all (src/derived.js shadowTiles)
       const tiles = derived.shadowTiles(res, shadowMap);
       if (!tiles) return false;
-      shadowKernel.dispatch(gpu.frame, tiles, { bind: [fu.group, sim.bindRO, lightingGroup(L.LIGHTING_SHADOW)], header: sim.readHeader() });
+      (withPackets ? packets.kernel : shadowKernel).dispatch(gpu.frame, tiles, { bind: [fu.group, sim.bindRO,
+        lightingGroup(withPackets ? L.LIGHTING_SHADOW_PACKETS : L.LIGHTING_SHADOW)], header: sim.readHeader() });
       return true;
     },
 
@@ -402,6 +436,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
       pickRing.close();
       shadowMap.destroy();
       shadowX.destroy();
+      packets?.dispose();
       lightingCache.clear();
     },
   };

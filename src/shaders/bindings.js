@@ -189,6 +189,12 @@ const VARIANTS = {
     8: ['texture_storage_2d<rgba32float, write>', storageTex('rgba32float', '2d')],
     9: ['texture_storage_2d<r32float, write>', storageTex('r32float', '2d')],
   } },
+  // V2's shadow kernel (shaders/v2/packetShadow.js): the shadow kernel's, and the flying packets' depths a
+  // texel (the packet shadow buffer: their splat's, which it folds into the map it traces and clears)
+  LIGHTING_SHADOW_PACKETS: { stages: STAGE.COMPUTE, swap: {
+    8: ['texture_storage_2d<rgba32float, write>', storageTex('rgba32float', '2d')],
+    9: ['texture_storage_2d<r32float, write>', storageTex('r32float', '2d')],
+  }, add: [[20, 'packetShadow', 'array<atomic<u32>>', { buffer: { type: 'storage' } }]] },
   // GI gather: the four bands stored as textures; flow and aeration dropped;
   // giSrc (giSource's output) and the probe history (4 bands, f16 packed) as buffers
   LIGHTING_GI: { stages: STAGE.COMPUTE, drop: [18, 19], swap: {

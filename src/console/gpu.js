@@ -2,6 +2,9 @@ import { SUPER_TEX } from '../shaders/common.js';
 import { ScriptEditParams, SCRIPT_EDIT_LAYOUT, scriptEditUpdateWGSL, scriptEditDeclsWGSL } from '../shaders/script.js';
 import { nativeScriptKernel } from '../v2/interactions.js';
 import { PARTICLE_BYTES, PHOTON_TAG } from '../v2/dynamics-reference.js';
+import { cTq, payloadOf, ctypeOf, lifeScale } from '../v2/layout.js';
+import { WEATHER_SPEED_SI } from '../v2/nativeWeather.js';
+import { ELEMENTS, K } from '../elements.js';
 
 // The console's GPU backend for ScriptWorld (console/world.js): reads blocks
 // of the state back and applies queued edits with the script edit
@@ -31,21 +34,30 @@ const ROW_READ_SPARE = 4;
 const EDIT_BUFFER_MIN = 64 * 1024;
 
 // V2's matter in flight (the dynamics pool, src/shaders/v2/particles.js DParticle: position in world
-// cells, id, velocity, the core's first word, ...): the element id of each live packet in the grid.
-// A V1 flying cell is a grid cell, so this is the matter V1's census counted that V2's grid doesn't
-// hold. Photons and neutrons are not matter (V1 keeps them in its ray list, not in cells).
+// cells, id, velocity, the core and bank): each live packet in the grid, as a script sees a cell of it
+// (console/world.js FIELDS, V1's units: compact.js compactA's fields of its core, its velocity in
+// cells a V1 step as nativeRead.js gives a grain's fall) at its slot and grid cell. A V1 flying cell is a
+// grid cell, so this is the matter V1's census and sim.parts() visited that V2's grid doesn't hold.
+// Photons and neutrons are not matter (V1 keeps them in its ray list, not in cells).
 const PARTICLE_WORDS = PARTICLE_BYTES / 4;
-export function flyingMatterIds(bytes, origin, dims) {
-  const u = new Uint32Array(bytes), f = new Float32Array(bytes), ids = [];
+const T_CODE_PER_K = 4, T_CODE_ZERO_C = 273.25;   // the native temperature code: quarter kelvins (v2/phase.js q)
+export function flyingMatter(bytes, origin, dims) {
+  const u = new Uint32Array(bytes), f = new Float32Array(bytes), out = [];
   for (let o = 0; o + PARTICLE_WORDS <= u.length; o += PARTICLE_WORDS) {
-    const element = u[o + 7] & 255;
-    if (u[o + 3] === 0 || element === 0 || element >= PHOTON_TAG) continue;
-    let inside = true;
-    for (let a = 0; a < 3; a++) { const x = Math.floor(f[o + a] - origin[a]); if (!(x >= 0 && x < dims[a])) inside = false; }
-    if (inside) ids.push(element);
+    const id = u[o + 7] & 255;
+    if (u[o + 3] === 0 || id === 0 || id >= PHOTON_TAG) continue;
+    const cell = [0, 1, 2].map(a => Math.floor(f[o + a] - origin[a]));
+    if (!cell.every((x, a) => x >= 0 && x < dims[a])) continue;
+    const core = u.subarray(o + 7, o + 11), conducts = ELEMENTS[id].elec > 0, liquid = ELEMENTS[id].kind === K.LIQUID;
+    out.push({ slot: o / PARTICLE_WORDS, id, x: cell[0], y: cell[1], z: cell[2],
+      temp: cTq(core) / T_CODE_PER_K - T_CODE_ZERO_C,
+      life: conducts && liquid ? 0 : payloadOf(core) / lifeScale(id),
+      ctype: conducts ? (liquid ? (core[3] >>> 16) : core[3]) & SPARK_MASK : ctypeOf(core),
+      vx: f[o + 4] / WEATHER_SPEED_SI, vy: f[o + 5] / WEATHER_SPEED_SI, vz: f[o + 6] / WEATHER_SPEED_SI });
   }
-  return ids;
+  return out;
 }
+const SPARK_MASK = 4095;   // a conductor's spark code (v2/state.js withSpark), which compactA shows as its ctype
 
 export function createGpuBackend(getSim) {
   let kernel = null, kernelSim = null, buffer = null, bufferGpu = null;
@@ -125,7 +137,7 @@ export function createGpuBackend(getSim) {
 
   // The blocks in `list`, read now (recorded at this call, or once the edit
   // kernel is built and the edits queued for it are in): a promise of a Map.
-  // flying: and V2's matter in flight (flyingMatterIds) as map.flying, its read recorded with the
+  // flying: and V2's matter in flight (flyingMatter) as map.flying, its read recorded with the
   // blocks', so the two see the same tick.
   function read(list, flying = false) {
     const s = getSim(), g = s.g;
@@ -138,7 +150,7 @@ export function createGpuBackend(getSim) {
       const origin = [s.origin.x, s.origin.y, s.origin.z], dims = [g.nx, g.ny, g.nz];
       const blocks = readList(s, g, list, out);
       if (!flying) return blocks;
-      return Promise.all([blocks, packets]).then(([map, bytes]) => { map.flying = bytes ? flyingMatterIds(bytes, origin, dims) : []; return map; });
+      return Promise.all([blocks, packets]).then(([map, bytes]) => { map.flying = bytes ? flyingMatter(bytes, origin, dims) : []; return map; });
     };
     return built(kernelFor(s)) ? record() : settled(s).then(record);
   }

@@ -29,12 +29,18 @@ test('the executed functions stay in the scalar subset; the WGSL embeds the mode
   for (const [k, v] of Object.entries({ COL_ACC: COLUMN.ACC, COL_G: COLUMN.G, COL_H_CAP: COLUMN.H_CAP, COL_COMP: COLUMN.COMP, COL_QMIN: COLUMN.QMIN,
     COL_FILM: COLUMN.FILM, COL_DEADQ: COLUMN.DEADQ, COL_STALL: COLUMN.STALL, COL_Q_MAX: COLUMN.Q_MAX, COL_VT: COLUMN.VT })) assert.equal(c[k], v, k);
   assert.ok(COLUMN.Q_MAX < 65504, 'a lane fits f16');
-  // one flux stage of every face first, then both parities of both axes, the axes alternating
+  // COLUMN.SUB pair steps a tick (a V1 step each): a flux stage of every face first (stage 2 s), then both
+  // parities of both axes (2 s + 1), the axes alternating each step
+  assert.equal(COLUMN.SUB, 4);
   for (const tick of [1, 2]) {
     const order = pairOrder(tick);
-    assert.deepEqual(order.map(o => o[1]), [0, 1, 1, 1, 1]);
-    assert.deepEqual(order.slice(1).map(o => o[0]), tick & 1 ? [2, 2, 0, 0] : [0, 0, 2, 2]);
-    assert.deepEqual(order.slice(1).map(o => o[2]), [0, 1, 0, 1]);
+    assert.equal(order.length, 5 * COLUMN.SUB);
+    for (let s = 0; s < COLUMN.SUB; s++) {
+      const step = order.slice(5 * s, 5 * s + 5);
+      assert.deepEqual(step.map(o => o[1]), [2 * s, 2 * s + 1, 2 * s + 1, 2 * s + 1, 2 * s + 1]);
+      assert.deepEqual(step.slice(1).map(o => o[0]), s & 1 ? [2, 2, 0, 0] : [0, 0, 2, 2]);
+      assert.deepEqual(step.slice(1).map(o => o[2]), [0, 1, 0, 1]);
+    }
   }
 });
 
@@ -251,7 +257,7 @@ test('the real driver records the runs pass and the pair stages over the awake c
     // a workgroup a brick of count's list of flagged bricks, never over every brick
     assert.deepEqual(spawn.size, { indirect: owner.dynamics.dispatchArgs, offset: LIST_ARGS.jetCells }, 'a workgroup a listed brick'); assert.deepEqual(count.size, [Math.ceil(g.nbricks / 64), 1, 1]);
     const liquid = commands.filter(c => c.name === 'v2runs' || c.name === 'v2pairs');
-    assert.deepEqual(liquid.map(c => c.name), ['v2runs', 'v2pairs', 'v2pairs', 'v2pairs', 'v2pairs', 'v2pairs']);
+    assert.deepEqual(liquid.map(c => c.name), ['v2runs', ...Array(5 * COLUMN.SUB).fill('v2pairs')]);
     for (const c of liquid) { assert.equal(c.size.indirect, owner.args); assert.equal(c.size.offset, ARGS2.COLS * 4); }
     assert.deepEqual(liquid.slice(1).map(c => [c.params.pairAxis, c.params.pairStage, c.params.pairParity]), pairOrder(tick));
     // after the block pass and its material events, before the open edges and the air

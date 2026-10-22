@@ -16,14 +16,14 @@ import { PACE } from '../../src/shaders/move.js';
 
 export const TRANSLATED = ['colMove', 'colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colPack', 'colFall',
   'colFinish', 'colShockLand', 'colShockSpeed2', 'colV1FallSpeed', 'colShockOnFall', 'colShockOnPhased', 'colShockOnSpeed', 'colV1Fall', 'colV1Hit', 'colV1Age', 'colStepGravity', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
-  'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colSplash', 'colLayer', 'colDepthAt', 'colFloats', 'colFloor', 'colSends', 'colStratify',
+  'colDampStep', 'colLidAt', 'colHitAhead', 'colV1Push', 'colImportFall', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colSplash', 'colLayer', 'colDepthAt', 'colFloats', 'colFloor', 'colSends', 'colStratify',
   // radial gravity (columns.js RADIAL)
   'colRadInside', 'colRadPull', 'colRadAxis', 'colRadSign', 'colRadMass', 'colRadHead', 'colRadWetBelow', 'colRadCovered', 'colRadDemand',
   'colRadNote', 'colRadRuns', 'colRadTowardPlus', 'colRadPairs', 'colRadFace', 'colRadPackAmount', 'colRadSendAmount',
   // the kernels' column threads (v2runs, v2pairs main)
   'colRunsColumn', 'colPairsColumn'];
 // the f32 functions (division allowed: never on integers)
-export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colStepGravity', 'colV1Age', 'colV1Hit', 'colShockOnSpeed', 'colDampTick', 'colLimit', 'colFall', 'colShockLand', 'colV1FallSpeed', 'colV1Fall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colSplash', 'colLayer', 'colDepthAt', 'colSends',
+export const FLOAT = ['colHitAhead', 'colV1Push', 'colImportFall', 'colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colStepGravity', 'colV1Age', 'colV1Hit', 'colShockOnSpeed', 'colDampStep', 'colLimit', 'colFall', 'colShockLand', 'colV1FallSpeed', 'colV1Fall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colSplash', 'colLayer', 'colDepthAt', 'colSends',
   'colRadPull', 'colRadHead', 'colRadDemand'];
 
 export function wgslFunction(code, name) {
