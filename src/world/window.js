@@ -60,6 +60,20 @@ import { RawWorldSourceProducer } from './renderSourceProducer.js';
 // a world never stalls the page on a pipeline: the window fills in, then the
 // far field around it. Until load the window doesn't move.
 
+function trackLanding(win, landing) {
+  if (!landing) return;
+  const epoch = win.epoch;
+  const pending = Promise.resolve(landing).catch((err) => {
+    if (epoch === win.epoch) win.persistenceError = win.readbackError = err;
+    if (!win.gpu.failure) console.error('world window: leaving slab readback failed; native streaming/saving is blocked', err);
+  }).finally(() => {
+    win.storeReads.delete(pending);
+    win.pending = win.storeReads.values().next().value ?? null;
+  });
+  win.storeReads.add(pending);
+  win.pending ??= pending;
+}
+
 export const WIN_STEP = 16;          // cells: how far the window moves at a time (whole supertiles along x and z)
 export const WIN_HYSTERESIS = 4;     // cells past WIN_STEP from the centre the focus goes before a move
 const BAKED_KEEP = 256;              // baked trees kept: a tree straddling slabs is stamped once per slab
@@ -323,19 +337,7 @@ export class WorldWindow {
   // A V2 move's leaving slab of dynamics (its air and requests: NativeDynamics.recordWindowShift) is
   // read back beside the cells' (readBack): the next move waits for both, and a failed read freezes
   // the window as a failed cell read does, never the world.
-  _trackDynamics(landing) {
-    if (!landing) return;
-    const epoch = this.epoch;
-    const pending = Promise.resolve(landing).catch((err) => {
-      if (epoch === this.epoch) this.persistenceError = this.readbackError = err;
-      if (!this.gpu.failure) console.error('world window: leaving slab readback failed; native streaming/saving is blocked', err);
-    }).finally(() => {
-      this.storeReads.delete(pending);
-      this.pending = this.storeReads.values().next().value ?? null;
-    });
-    this.storeReads.add(pending);
-    this.pending ??= pending;
-  }
+  _trackDynamics(landing) { trackLanding(this, landing); }
   _shiftCommitted(dx, dz) {
     const t0 = performance.now();
     const sim = this.sim, g = sim.g, before = sim.origin.clone();
@@ -363,7 +365,7 @@ export class WorldWindow {
     this.far?.summarize(leaveLo, bricks);
     // 2.
     sim.shift(dx, dz);
-    if (sim.compactOwner) this._trackDynamics(sim.nativeIntegration?.landing);
+    if (sim.compactOwner) trackLanding(this, sim.nativeIntegration?.landing);
     // 3.
     const o = sim.origin;
     this.gen.fill(this.P, [o.x, o.y, o.z], enterLo, enterHi, { residency: true });
