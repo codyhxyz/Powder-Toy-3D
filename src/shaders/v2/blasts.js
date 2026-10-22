@@ -410,8 +410,6 @@ fn dSpawn(slot: u32, rank: u32, m: Material, v: vec3f, rule: u32) -> bool {
 }
 `;
 }
-// An external blast's pressure in brick b as finish adds it (mode 14: the brick's share of the blast's air
-// weight), and the pressure on a cell read from the field that leaves (particles.js pressureReadsWGSL).
 // A picked charge the batch serves (finishCharges; normalizeCharges adds its pressure first): still set off
 // and a charge, its product's energy representable; and a served charge's pressure into its brick's air.
 const chargeServedWGSL = /* wgsl */ `
@@ -427,6 +425,8 @@ fn dChargePressure(s: u32, m: Material) {
   if(mAirPressure()) { a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2); } a.thermal.z=0.0; air[b]=a; noteAir(b);
 }
 `;
+// An external blast's pressure in brick b as finish adds it (mode 14: the brick's share of the blast's air
+// weight), and V1's pOn read from the field that leaves (particles.js pressureCellWGSL, pressureOnWGSL).
 const externalAfterWGSL = g => /* wgsl */ `
 fn dExternalAddedP2(b: u32) -> f32 {
   let total=bitcast<f32>(atomicLoad(&control[${externalAirBase(g)+g.nbricks}u])); let weight=bitcast<f32>(atomicLoad(&control[${externalAirBase(g)}u+b]));
