@@ -24,10 +24,13 @@ test('every V2 owner pulls with V1\'s gravity and stops at V1\'s terminal speed'
   assert.equal(STEPS_PER_TICK, NOMINAL_STEP_RATE / 60);
   for (const g of [MODES_GRAVITY, GRAVITY, FALL_GRAVITY, G_MS2, COLUMN.G_MS2]) assert.equal(g, GRAVITY_MS2);
   assert.equal(COLUMN.G_STEP, SIM_GRAVITY);
-  // the shallow-water faces at V1's pull: a face accelerates as if at most H_CAP deep, so g·h stays at the explicit
-  // step's calibrated bound (lean-sim's 16 cells at 2 g, under the 0.5 cells²/tick² a one-step tick is stable to)
-  close(COLUMN.G * COLUMN.H_CAP, 16 * 19.6 / CELL_M / 3600, 'deep face g·h');
-  assert.ok(COLUMN.G * COLUMN.H_CAP < 0.5 && COLUMN.H_CAP < 1, `H_CAP ${COLUMN.H_CAP} cells at V1's pull`);
+  // the shallow-water faces at V1's pull, a pair step a V1 step: a face accelerates as if at most H_CAP deep, so g·h
+  // (cells²/step²) stays at the explicit step's calibrated bound (lean-sim's 16 cells at 2 g a 60 Hz step, under the
+  // 0.5 a one-step update is stable to)
+  assert.equal(COLUMN.SUB, STEPS_PER_TICK);
+  close(COLUMN.G_SUB, SIM_GRAVITY, 'a pair step\'s pull is V1\'s');
+  close(COLUMN.G_SUB * COLUMN.H_CAP, 16 * 19.6 / CELL_M / 3600, 'deep face g·h');
+  assert.ok(COLUMN.G_SUB * COLUMN.H_CAP < 0.5, `H_CAP ${COLUMN.H_CAP} cells at V1's pull`);
   // the gravity setting is V1's: its default is the reference pull, twice it twice the pull, off none
   assert.equal(nativeModes({ gravity: 0.025 }).gravity, GRAVITY_MS2);
   assert.equal(nativeModes({ gravity: 0.05 }).gravity, 2 * GRAVITY_MS2);

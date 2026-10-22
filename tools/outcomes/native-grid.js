@@ -4,7 +4,7 @@ import { E, ELEMENTS, K } from '../../src/elements.js';
 import { FULL, lifeScale } from '../../src/v2/layout.js';
 import { unpackContact } from '../../src/v2/contact.js';
 import { unpackParticle, PARTICLE_BYTES, PHOTON_TAG, ballistic, dynamicsRows, DT, GRAVITY, CELL_M, packetFlight } from '../../src/v2/dynamics-reference.js';
-import { fallCells, TICK_HZ } from '../../src/shaders/v2.js';
+import { fallCells, TICK_HZ, LANE_HZ } from '../../src/shaders/v2.js';
 import { fallVelocity } from '../../src/v2/fall.js';
 import { tally } from './lib.js';
 import { nativeModes } from '../../src/v2/modes.js';
@@ -43,7 +43,7 @@ export async function readNativeState(v2) {
 // speed (its bottom's y lane). A supported run is a hydrostatic column with no vertical momentum: its
 // cells' vertical velocity is zero and known. A cell marked to launch (a negative y lane, mid-tick only)
 // is unknown. core(x, y, z) is a cell's four words or null outside; loop wraps x and z (loop edges).
-const LANE_MS = TICK_HZ * CELL_M / FULL;
+const LANE_MS = LANE_HZ * CELL_M / FULL;   // a face lane is quanta a pair step (columns.js COLUMN.SUB a tick)
 const f16 = new Float16Array(1), u16 = new Uint16Array(f16.buffer);
 const half = (bits) => { u16[0] = bits; return f16[0]; };
 export const laneOf = (core, axis) => half(axis === 0 ? core[2] & 65535 : axis === 1 ? core[2] >>> 16 : core[3] & 65535);

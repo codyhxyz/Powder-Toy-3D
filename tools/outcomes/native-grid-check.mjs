@@ -6,6 +6,7 @@ import { gridLayout } from '../../src/sim.js';
 import { cellSlot } from '../../src/shaders/common.js';
 import { E, ELEMENTS, K } from '../../src/elements.js';
 import { makeMaterial, FULL } from '../../src/v2/layout.js';
+import { LANE_HZ } from '../../src/shaders/v2.js';
 import { setFall } from '../../src/v2/fall.js';
 import { packContact, unpackContact } from '../../src/v2/contact.js';
 import { packParticle, ballistic, packetStep, DT, GRAVITY, CELL_M, dynamicsRows, packetFlight } from '../../src/v2/dynamics-reference.js';
@@ -165,7 +166,7 @@ test('app compatibility uses canonical census and cannot certify particle-only a
 });
 // Column-run water defines resident motion (native-grid.js columnLiquidVelocity): a face segment's lane is
 // its depth-averaged flux, a falling run's bottom y lane its fall speed, a supported run no vertical motion.
-const LANE_MS = 60 * 0.3 / FULL;
+const LANE_MS = LANE_HZ * 0.3 / FULL;   // a lane is quanta a pair step (columns.js COLUMN.LANE_HZ)
 test('a face lane reads as its segment\'s depth-averaged velocity at every row it spans (MAC mean)', () => {
   const f = fixture();
   for (let x = 0; x < 16; x++) for (let z = 0; z < 8; z++) put(f, [x, 0, z], makeMaterial(E.WALL));

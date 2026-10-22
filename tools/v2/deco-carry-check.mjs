@@ -206,7 +206,8 @@ test('column water: two liquids keep their own paint where they meet; a receiver
   let blue = 0;
   for (let i = 0; i < w.n; i++) if (L.cid(w.cores[i]) === E.WATER && w.deco[i] === BLUE) blue++;
   assert.ok(blue > 0, 'the pool the dam fell into keeps its own paint');
-  for (let i = 0; i < w.n; i++) if (L.cid(w.cores[i]) === E.WATER) assert.ok(w.deco[i] === BLUE || w.deco[i] === RED, 'no water lost its paint');
+  // (where red fill joins a blue cell it mixes by fill, columns.js colPaintMix: RX-3), never any other paint
+  for (let i = 0; i < w.n; i++) if (L.cid(w.cores[i]) === E.WATER) { const d = w.deco[i]; assert.ok(d === BLUE || d === RED || ((d >>> 24) === 255 && ((d >>> 8) & 255) === 0 && Math.abs((d & 255) + ((d >>> 16) & 255) - 255) <= 2), `no water lost its paint (${d.toString(16)})`); }
 });
 
 // ---------------------------------------------------------------- (4) launches, flight, landings, tools

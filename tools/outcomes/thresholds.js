@@ -100,11 +100,14 @@ export const OUTCOMES = {
     reachV1Tol: 0.25,   // and its stream reaches within this share of V1's
   },
   splash: {
-    phase: 'P3',   // docs/v2.md 4.2 and 4.4 ("splash KE ≤ 0.3 × incoming"), P3's exit
-    // a 4×4×2 block of water dropped 6 cells into a pool 3 deep: the kinetic energy of the liquid that the
-    // impact sends up or sideways out of the pool (at or above its surface, not falling), at its peak over
-    // `seconds` after contact, over the block's at contact
-    keRatio: 0.3,
+    phase: 'P3',
+    // a 4×4×2 block of water dropped 6 cells into a pool 3 deep: the kinetic energy the impact throws up or
+    // sideways out of the pool (liquid at or above its surface: its sideways and upward speed), at its peak over
+    // `seconds` after contact, over the block's at contact. Held to V1's (the V2 finish push: match V1), not
+    // docs/v2.md 4.4's ≤ 0.3: V1's landing turns its fall sideways (move.js land, MV-5), 2.48 of the incoming
+    // (measured on V1, 2026-10-22: tools/v2/runs-browser-check.mjs --v1 --outcomes splash), within keTol of it
+    v1: 2.48,
+    keTol: 0.25,
     seconds: 0.75,
   },
   yield: {
