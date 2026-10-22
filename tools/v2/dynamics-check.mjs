@@ -147,6 +147,21 @@ test('a painted ray flies its own random way at V1\'s speed, in its brush\'s sph
   assert.match(emit,/if \(P\.blastShape!=0u\) \{ offset=\(vec3f\(dRandom\(seed,12u\)/);
   assert.match(emit,/clamp\(P\.center-vec3f\(P\.origin\)\+offset,vec3f\(0\.0\)/,'clamped into the grid as V1\'s');
 });
+test('a fission adds V1\'s FISSION_P to its brick as Pa, as a puff does (EL-6)',async()=>{
+  const {FISSION_PA,SHOCK_UNIT_PA,particlesWGSL}=await import('../../src/shaders/v2/particles.js');
+  const {airWGSL}=await import('../../src/shaders/v2/air.js');
+  const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');
+  const {RAYS}=await import('../../src/rays.js');
+  const {legacyPressureToPa}=await import('../../src/v2/dynamics-reference.js');
+  const {CONTACT_PUFF_MAX_PA}=await import('../../src/v2/contact.js');
+  // V1 rays.js FISSION_P: 20 legacy units on its cell (react.js Pr += rayDep.y), 3459 Pa, not 20 Pa
+  close(FISSION_PA,legacyPressureToPa(RAYS.FISSION_P)); assert.ok(FISSION_PA>3400&&FISSION_PA<3500);
+  const g=gridLayout(16,8,8),impactStage=particlesWGSL(g,nativeDynamicsHead,'impact'),source=airWGSL(g,nativeDynamicsHead,'source');
+  const added=+impactStage.match(/atomicAdd\(&control\[D_SHOCK\+brickOfCell\(cellOf\(s\)\)\],(\d+)u\)/)[1];
+  close(added*SHOCK_UNIT_PA,FISSION_PA,0.5);
+  // the air source adds the words as Pa (SHOCK_UNIT_PA a count), to V1's P_MAX as a puff's
+  assert.match(source,new RegExp(`a\\.vp\\.w\\+=clamp\\(f32\\(shock\\)\\*${SHOCK_UNIT_PA}\\.0,0\\.0,max\\(0\\.0,${CONTACT_PUFF_MAX_PA}\\.0-a\\.vp\\.w\\)\\)`));
+});
 test('particle tick: one-invocation clear samples the live count before hold; restore recounts it from the records',async()=>{
   const {owner,calls}=mockOwner(),d=new NativeDynamics(owner);await d.ready;
   d.holdSession={token:1,position:[0,0,0],target:[0,0,0],radius:1,strength:1,lastTick:1};

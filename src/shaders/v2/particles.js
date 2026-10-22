@@ -5,7 +5,7 @@ import { impactFoamWGSL } from '../../v2/foam.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { STAGE } from '../../gpu/kernels.js';
 import { TERMINAL_MS } from '../../v2/gravity.js';
-import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
+import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS, LEGACY_PRESSURE_PA, legacyPressureToPa } from '../../v2/dynamics-reference.js';
 import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
 import { PHYS } from '../../physics.js';
@@ -28,6 +28,10 @@ export const PARTICLES_LAYOUT = storageLayout(5, [3]);
 export const CONTROL = Object.freeze({ LIVE: 0, AIR: 1, PENDING: 2, BLAST: 3, FREE: 4, SPAWNS: 5, ENERGY: 6,
   OUTFLOW: 16, FREE_LIST: 32, PREFIX: 32 + PARTICLE_CAP });
 export const shockBase = g => 32 + 2 * PARTICLE_CAP + 3 * g.nbricks + 64;
+// The shock words' unit: Pa a count, added to the brick's pressure by the air source (air.js), as a puff's Pa is.
+export const SHOCK_UNIT_PA = 1;
+// V1 rays.js FISSION_P, legacy pressure a fission adds to its cell (react.js: Pr = spread + rayDep.y), in Pa
+export const FISSION_PA = legacyPressureToPa(RAYS.FISSION_P);
 export const heldBase = g => shockBase(g) + g.nbricks;
 // the airborne requests (src/v2/airborne.js): a count, then a word a particle slot (the host slot
 // and its request bits), which the react stage writes and blasts.js airborneEvents posts to events
@@ -600,7 +604,8 @@ export function particlesWGSL(g, nativeHead, stage) {
       if (f.destination.z == 4u) {
         p.tail.x = ${RAYS.NEUT_LIFE}u;
         p.tail.y = bitcast<u32>(${f(RAYS.NEUT_E_FAST)});
-        atomicAdd(&control[D_SHOCK+brickOfCell(cellOf(s))],${Math.round(RAYS.FISSION_P*256)}u);
+        // V1: FISSION_P legacy (3459 Pa) on its cell, the prompt energy that throws a runaway lump apart (EL-6)
+        atomicAdd(&control[D_SHOCK+brickOfCell(cellOf(s))],${Math.round(FISSION_PA / SHOCK_UNIT_PA)}u);
         p.tail.z = u32(floor(f.effect.x-1.0)) + select(0u,1u,dRandom(p.id,761u)<fract(f.effect.x-1.0));
         atomicAdd(&control[18],p.tail.z);
         p.velocity = dDir(p.id)*${f(RAYS.NEUT_V*60*CELL_M)};
