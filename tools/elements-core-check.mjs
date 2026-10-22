@@ -283,9 +283,6 @@ if (!process.argv.includes('--cpu')) {
   const g = gridLayout(64, 64, 64);
   // a sim pass joins once its unit has ported it: WGSL has entry points
   const passes = {
-    react: async () => (await import('../src/shaders/react.js')).reactFrag(g),
-    inertRef: async () => (await import('../src/shaders/activity.js')).inertRefFrag(g),
-    moveBlock: async () => (await import('../src/shaders/move.js')).moveBlockFrag(g),
   };
   try {
     await T.withLab(async (lab) => {

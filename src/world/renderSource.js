@@ -1,6 +1,5 @@
 import { BRICK, cellSlot, slotCell, gridDims } from '../shaders/common.js';
 import { decodeBrick, BRICK_FLOATS } from './store.js';
-import { aerationForSource, isProducerBoundedAeration } from '../gfx/foam.js';
 import { recordWorldSourceCut } from './sourceCut.js';
 import { nativePackWGSL, NATIVE_PACK_LAYOUT, NativePackParams } from '../shaders/renderSource.js';
 import { fold } from '../gpu/kernels.js';
@@ -106,11 +105,10 @@ export function snapshotSource(sim, origin = sim.origin, { native = false } = {}
       aeration: native ? null : NATIVE_FOAM, aerCopy: 0, aerGeneration: owner.tick, boundedWake: true,
       deco: sim.decoPlane ? Object.freeze({ ...sim.decoPlane }) : null });
   }
-  const aer = aerationForSource(sim);
+  // (V1's cells, before the native owner is ready: no foam of their own, as V1 whitewater went with V1)
   return Object.freeze({ g: Object.freeze({ ...sim.g }), origin: Object.freeze(originOf(origin)), copy: sim.cur,
     A: sim.state.A, B: sim.state.B, flow: sim.flow,
-    aeration: aer?.buffer ?? null, aerCopy: aer?.cur ?? 0, aerGeneration: aer?.generation ?? 0,
-    boundedWake: !aer || isProducerBoundedAeration(aer),
+    aeration: null, aerCopy: 0, aerGeneration: 0, boundedWake: true,
     deco: sim.decoPlane ? Object.freeze({ ...sim.decoPlane }) : null });
 }
 // A raw read of the live cells: V1's state as it is, or V2's cells natively (snapshotSource).

@@ -13,7 +13,6 @@ import { gridLayout } from '../src/sim.js';
 import { LEGACY_PRESSURE_PA } from '../src/v2/pressure.js';
 import { prelude, STATE_OPTS } from '../src/shaders/common.js';
 import { compactDecodeWGSL } from '../src/shaders/compact.js';
-import { moveBlockFrag } from '../src/shaders/move.js';
 import { volumeFrag, pickFrag, warmChecks, VOLUME_VIEWS, volumePipeline, VolumeParams, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES } from '../src/shaders/render.js';
 import { volumeReadFormat, detailKey, volumeShaderGrid, sessionVolumeFormat } from '../src/gfx/volume.js';
 import { physicsEngine } from '../src/launch.js';
@@ -29,12 +28,11 @@ const g = gridLayout(32, 32, 32), hash = s => createHash('sha256').update(s).dig
 const baseline = {
   ro: 'd92592ba9576e9c02a65919e3badf678beb30dc58576e8fa22d4bf520d9174ed',
   rw: '338e904f3a7cce43eab8e931d3610b2e9c36d58ac2f7a4bc2d5a94acf39380ea',
-  move: '15befffbaa07f695efdc6970792bbc6f5bee4b25c3781fba3e2dbccc227e8026',
   pick: 'debfa4a3adc9ee44fb37c263209b75fc88f1427fc1b35c298af82f1acfc370c9',
   volume: 'e4c3443f7527e6ca144e6a71a91f2b487f78bd93f0ea868a9cccbccd816cb9da',
   detail: 'd3308a6d02042db7a009210a14ede172ffd936424cc35b90048884dd7f7dd03d',
 };
-const sources = { ro: prelude(g, STATE_OPTS.STATE_RO), rw: prelude(g, STATE_OPTS.STATE_RW), move: moveBlockFrag(g), pick: pickFrag(g),
+const sources = { ro: prelude(g, STATE_OPTS.STATE_RO), rw: prelude(g, STATE_OPTS.STATE_RW), pick: pickFrag(g),
   volume: volumeFrag(g), detail: volumeFrag(g, { detail: { DETAIL_LIQ_FOAM: 1, DETAIL_LIQ_RIPPLES: 1 }, curved: true }) };
 for (const [key, code] of Object.entries(sources)) assert.equal(hash(code), baseline[key], `unchanged generic ${key}`);
 for (const bad of [null, 1, 4, -1, '2', NaN]) assert.throws(() => volumeFrag(g, { fixedReadFormat: bad }), /fixedReadFormat/);
@@ -72,11 +70,11 @@ for (const format of [0, 2, 3]) {
 function deferred() { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; }
 const sim = { compact: null, readHeader: () => ({ format: 0 }) }, gpuMode = { testMode: 'visual' };
 assert.equal(volumeReadFormat(sim, gpuMode), 0);
-const native = sim.compact = { isReady: false, disposed: false, forceCompatibility: false };
+const native = sim.compact = { isReady: false, disposed: false };
 assert.equal(volumeReadFormat(sim, gpuMode), 2, 'forecast unready active native');
-native.forceCompatibility = true; assert.equal(volumeReadFormat(sim, gpuMode), 0);
-assert.equal(volumeReadFormat(sim, { testMode: null }), 2, 'compatibility flag is test-only');
-native.forceCompatibility = false; native.disposed = true; assert.equal(volumeReadFormat(sim, gpuMode), 0);
+// (no test-only compatibility render: forceCompatibility went with V1)
+native.forceCompatibility = true; assert.equal(volumeReadFormat(sim, gpuMode), 2, 'no compatibility switch reads V1\'s projection');
+native.disposed = true; assert.equal(volumeReadFormat(sim, gpuMode), 0);
 native.disposed = false; native.isReady = true; sim.readHeader = () => ({ format: 3 });
 assert.equal(volumeReadFormat(sim, gpuMode), 3, 'actual ready header honored');
 sim.compact = null; assert.equal(volumeReadFormat(sim, gpuMode), 3, 'suspended owner does not forecast');
@@ -190,4 +188,4 @@ try {
     assert.equal(result.status, 0, result.stderr);
   }
 } finally { rmSync(dir, { recursive: true, force: true }); }
-console.log('Volume format CPU: six generic/RW hashes unchanged; formats 0/2/3, actual cache/draw/startup/thumbnail/retention methods, warm identity and six Naga modules passed');
+console.log('Volume format CPU: five generic/RW hashes unchanged; formats 0/2/3, actual cache/draw/startup/thumbnail/retention methods, warm identity and six Naga modules passed');

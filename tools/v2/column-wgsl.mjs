@@ -12,7 +12,7 @@ import { ELEMENTS, E, K } from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
 import { v2Rows, SUMMARY } from '../../src/shaders/v2.js';
 import { FOAM_ROWS } from '../../src/v2/foam.js';
-import { PACE } from '../../src/shaders/move.js';
+import { PACE } from '../../src/physics.js';
 
 export const TRANSLATED = ['colMove', 'colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colPack', 'colFall',
   'colFinish', 'colShockLand', 'colShockSpeed2', 'colV1FallSpeed', 'colShockOnFall', 'colShockOnPhased', 'colShockOnSpeed', 'colV1Fall', 'colV1Hit', 'colV1Age', 'colStepGravity', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',

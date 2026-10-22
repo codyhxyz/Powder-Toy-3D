@@ -11,8 +11,8 @@ import { execFileSync } from 'node:child_process';
 const HELP = `Usage: node tools/v2/frame-bench.mjs [options]
   --frames N       measured frames per case (default 60)
   --warmup N       simulated warmup frames per case (default 12)
-  --engine both|v1|v2 (default both)
-  --v2-path direct|compatibility|both (default direct; same-physics bridge comparison)
+  --engine v2|v1|both (default v2; v1 needs --url: an app served from a checkout of the v1-oracle tag)
+  --v2-path direct (V2's renderers read its cells; the compatibility render went with V1)
   --scene all|sand|water|settled (default all)
   --view realistic|plain (default realistic; plain is an explicit blocks-renderer diagnostic)
   --port N         private strict-port Vite server (otherwise OS-assigned)
@@ -28,7 +28,7 @@ One frame: v1 test.step(4) / v2 test.step(1), then renderOnce + GPU fence.
 Non-parity: v2 is missing physics; no equivalent-work speedup claim until the full suite passes.`;
 
 export function parseArgs(argv) {
-  const o = { frames: 60, warmup: 12, engine: 'both', 'v2-path': 'direct', scene: 'all', view: 'realistic', seed: 12345,
+  const o = { frames: 60, warmup: 12, engine: 'v2', 'v2-path': 'direct', scene: 'all', view: 'realistic', seed: 12345,
     port: null, url: null, out: null, split: false, splitOnly: false, traceStartup: false, selfCheck: false, help: false };
   const flags = { '--split': 'split', '--split-only': 'splitOnly', '--trace-startup': 'traceStartup', '--self-check': 'selfCheck', '--help': 'help' };
   const values = new Set(['frames', 'warmup', 'engine', 'v2-path', 'scene', 'view', 'seed', 'port', 'url', 'out']);
@@ -47,10 +47,11 @@ export function parseArgs(argv) {
     if (key === 'port' && o.port === null) continue;
     if (!Number.isSafeInteger(o[key]) || o[key] < min || o[key] > max) throw new Error(`${key} must be an integer in [${min}, ${max}]`);
   }
-  for (const [key, allowed] of Object.entries({ engine: ['both', 'v1', 'v2'], 'v2-path': ['direct', 'compatibility', 'both'], scene: ['all', 'sand', 'water', 'settled'], view: ['realistic', 'plain'] })) {
+  for (const [key, allowed] of Object.entries({ engine: ['both', 'v1', 'v2'], 'v2-path': ['direct'], scene: ['all', 'sand', 'water', 'settled'], view: ['realistic', 'plain'] })) {
     if (!allowed.includes(o[key])) throw new Error(`${key} must be ${allowed.join('|')}`);
   }
   if ([5173, 8787].includes(o.port)) throw new Error('Use a private port, not 5173 or 8787');
+  if (o.engine !== 'v2' && !o.url) throw new Error('--engine v1 needs --url: V1 is the v1-oracle tag, served from a checkout of it');
   if (o.split && o.splitOnly) throw new Error('--split and --split-only are mutually exclusive');
   if (o.url) {
     if (!['http:', 'https:'].includes(new URL(o.url).protocol)) throw new Error('url must be HTTP(S)');
@@ -347,14 +348,13 @@ async function run(o) {
   } catch { /* URL-only runs need not have Git */ }
   const toolHash = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex');
   const report = { schema: 1, complete: false, createdAt: new Date().toISOString(), toolCommit: commit, gitStatus, toolHash, options: o,
-    parity: 'NON-PARITY: v2 is missing physics. Comparison with v1 is not equivalent work until the full physics suite passes.',
+    parity: 'V1 (--engine v1) is the v1-oracle tag\'s app at --url; V2 is this checkout\'s.',
     methodology: [
       'Serialized frame latency, not live-loop FPS: parked app; v1 step(4) or v2 step(1), renderOnce(), gpu.fence().',
       'Wall clock covers CPU recording, submissions, physics, bridge, renderer derived/shadows/GI/volume/meshes/post, and GPU completion; no bandwidth estimate.',
       'Unsplit timestamp instrumentation is enabled for headline samples. GPU pass sums are NOT elapsed GPU frame time: intervals can overlap. Copies/gaps are excluded. Wall time is the headline metric.',
       'Timing readback settling and explicit awake-count readbacks are outside wall samples. Native asynchronous simulation bookkeeping remains inside.',
       'Warmup advances the fixture. Each engine/scene/diagnostic starts in a fresh page from identical CPU arrays and seed; evolved states are NOT identical.',
-      'V2 direct/compatibility use identical physics. Compatibility exports after each tick and renders the legacy projection; this diagnoses conversion cost, not full feature parity.',
       'Fixed camera and frozen render-only animation clocks; forced draws even when idle. Settled geometry is not a live idle-loop/power benchmark.',
       'Camera equality uses GPU f32 precision; raw CPU camera values remain recorded. Render-quality settings are compared unchanged.',
       'Memory is the app GPU resource registry, not total VRAM; excludes unregistered driver/three/timestamp scratch resources. JS heap is optional Chromium telemetry.',
@@ -445,8 +445,7 @@ async function run(o) {
           if (a.physics.mode !== engine || (engine === 'v2' && !a.physics.active)) throw new Error('Wrong physics engine');
           if (engine === 'v2') {
             if (typeof a.sim.readHeader !== 'function') throw new Error('This build has no compact reader path');
-            a.physics.v2.forceCompatibility = compactPath === 'compatibility';
-            if (a.sim.readHeader().format !== (compactPath === 'direct' ? 2 : 0)) throw new Error('Wrong v2 reader path');
+            if (a.sim.readHeader().format !== 2) throw new Error('Wrong v2 reader path');
           }
           a.settings.profiler = false;
           a.gfx.smoothing = 1; a.gfx.materials = 1;

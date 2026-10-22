@@ -86,12 +86,8 @@ import { nativeBrickAirWGSL, NATIVE_BRICK_AIR_LAYOUT } from './shaders/v2/viewAi
 //   giSrc      vec4u per brick: GI sources (shaders/gi.js giSource writes them), then the
 //              GI's lists of bricks and probes (shaders/gi.js giLists)                    770 KB
 //   fieldsTmp  a copy of a final field, for its shift (made on a grid's first shift)      17 MB
-//   noAer      16 bytes: the aeration's stand-in while the whitewater doesn't run
-//
-// The field passes also read whitewater's aeration field (gfx/foam.js, attached
-// with sim.attachAeration: falling water and its wakes, shaders/fields.js
-// jetWGSL): its buffer (both copies) while it is active, its current copy in
-// their params.
+//   noAer      16 bytes: the aeration input the field passes bind (shaders/fields.js jetWGSL); V1
+//              whitewater's field, which fed it, went with V1 (V2's foam is in its cells)
 
 // Planes (u32 words a cell) of the field passes' buffers (shaders/fields.js), and the GI's bands.
 const EMA_PLANES = FIELD_RESOURCES.ema, BLURRED_PLANES = FIELD_RESOURCES.blurred;
@@ -269,22 +265,15 @@ export class Derived {
     if (this.fields) this.fields.aerBuffer = buffer;
   }
 
-  // Falling water's input (shaders/fields.js jetWGSL), as the field passes'
-  // params take it: 0 while whitewater's aeration field doesn't run, else 1 +
-  // its current copy. sim.aeration (gfx/foam.js) is { active, buffer (both
-  // copies, array<vec2u>), cur }; the groups follow its buffer.
-  // Intentional (V2 design, docs/v2.md §4.3: no aeration pass, wakes or pour parcels): under
-  // Physics V2 the field doesn't step (sim.step's native path), so what it holds is V1's from
-  // before a switch; the fields read no pours then, as World's under V2 (V2's foam records
-  // hold none: world/renderSource.js nativePack).
+  // Falling water's input (shaders/fields.js jetWGSL), as the field passes' params take it: 0, no
+  // aeration field (noAer bound). V1 whitewater's field went with V1.
+  // Intentional (V2 design, docs/v2.md §4.3: no aeration pass, wakes or pour parcels): V2's foam is
+  // the age byte in its cells (shaders/common.js fetchNativeAeration), so the fields read no pours,
+  // as World's under V2 (world/renderSource.js nativePack).
   _jet() {
-    const aer = this.sim.aeration;
-    const on = Boolean(!this.sim.compact && aer?.active && aer.buffer);
-    const buffer = on ? aer.buffer : this.noAer;
-    if (buffer !== this._jetBuffer) this._jetGroups(buffer);
-    const copy = on ? (aer.cur ? 1 : 0) : 0;
-    this.fields?.setAeration({ buffer, active: on, copy });
-    return on ? 1 + copy : 0;
+    if (this.noAer !== this._jetBuffer) this._jetGroups(this.noAer);
+    this.fields?.setAeration({ buffer: this.noAer, active: false, copy: 0 });
+    return 0;
   }
 
   // Records a dispatch into the frame's compute pass and tells the profiler.
@@ -309,7 +298,6 @@ export class Derived {
     const sim = this.sim;
     sim.compact?.sync();   // paused edits must import before age consumes their marks
     this.frameNo++;
-    this._carry();
     // a new kernel or a reset changes the fields everywhere, and so does the
     // aeration starting or stopping: falling water's input is read everywhere
     // or nowhere (a choice the WebGL build didn't make: it kept what settled
@@ -332,14 +320,6 @@ export class Derived {
     }
     this._dispatch(dirty, this._perBrick, { bind: [tables, this.gpu.emptyGroup, this.particleSplit ? this.groups.particleBook : book] });
     this._dispatch(dirtyArgs, [1, 1, 1], { bind: [tables, this.gpu.emptyGroup, book] });
-  }
-
-  // The quiet map still current at the last age pass, if steps used it since:
-  // its bricks into `changed` (sim.noteAwake), for the age pass about to run.
-  _carry() {
-    const sim = this.sim;
-    if (sim.actCarry !== null && sim.actAge > sim.actCarry) sim.noteAwake();
-    sim.actCarry = sim.actAge;
   }
 
   /** Toggle before updateBricks: rebuild existing fields, never simulation state. */
@@ -700,7 +680,6 @@ export class Derived {
     // map's note starts it over), and a whole-grid change (changedAll, a reset)
     // is the same everywhere, so it waits for that frame.
     if (!(gpu.testMode && this.test.dropFold)) {
-      this._carry();
       this._dispatch(this.kernels.age, this._perBrick, {
         bind: [tables, sim.bindBuild, this.groups.book], header: sim.header(), params: { steps: sim.actNoted, all: false, tick: 0 },
       });

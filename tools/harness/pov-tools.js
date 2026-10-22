@@ -23,7 +23,7 @@
 //   player:<tests>  (tools/pov-player-check.mjs) the body in small scenes: its numbers
 //   engine:<scene>  (tools/pov-engine-check.mjs) impact breaking, heat and blasts: its numbers
 
-import { boot, ready, test, log } from './harness.js';
+import { boot, ready, test, log, nativeSim } from './harness.js';
 import { Simulation, cellTexel } from '/src/sim.js';
 import { E, ELEMENTS, K } from '/src/elements.js';
 import { SEED_MAX } from '/src/shaders/common.js';
@@ -59,8 +59,7 @@ const STRESS_FRAMES = 150;   // frames of four overlapping transfers each: 600 t
 // A simulation at n³ with its POV kernels built.
 async function make(n = 64, opts = {}) {
   stageT0 = performance.now();
-  const sim = new Simulation(gpu, n, n, n, { debug: false, ...opts });
-  await sim.ready;
+  const sim = await nativeSim(gpu, n, n, n, { debug: false, ...opts });
   const t0 = performance.now();
   await preparePov(sim);
   log(`pov kernels for ${n}³: ${Math.round(performance.now() - t0)} ms`);
@@ -651,7 +650,7 @@ test('stage:hand', async ({ only = ['axe', 'phys'], mats: physMats = ['SAND', 'W
           const k = THREE.MathUtils.clamp((f - gather) / raise, 0, 1);
           dir = surface.clone().lerp(target, k).sub(eye).normalize();
           await frame(sim, () => tool.update(ctx({})));
-          if (f % 60 === 0) progress(`physgun ${mat}: frame ${f} of ${gather + raise + hold}, ${(await sim.readCounts()).awake} of ${sim.unit.units} bricks awake`);
+          if (f % 60 === 0) progress(`physgun ${mat}: frame ${f} of ${gather + raise + hold}, ${(await sim.compact.readStats()).awake} of ${sim.g.nbricks} bricks awake`);
         }
         const holdAt = tool.hold, com = await tool.readCom();
         const cells = (await snap(sim)).cells(id);
@@ -946,7 +945,7 @@ test('stage:char', async ({ size = 16 } = {}) => {
       for (let y = 0; y < 3; y++) for (let z = cz; z < cz + 3; z++) for (let x = cx; x < cx + 3; x++) set(x, y, z, E.COOKED_MEAT, { temp });
     });
     const count = async () => Object.fromEntries(Object.entries(await sim.census()).filter(([k]) => +k !== E.EMPTY).map(([k, v]) => [ELEMENTS[k].key, v.n]));
-    const awake = async () => (await sim.readCounts()).awake;
+    const awake = async () => (await sim.compact.readStats()).awake;   // (V2's awake bricks)
     // the control: just under the flash point, the meat neither chars nor burns
     block(ignite - CHAR_BELOW);
     for (let f = 0; f < CHAR_CONTROL_FRAMES; f++) await frame(sim);

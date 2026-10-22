@@ -1,9 +1,8 @@
 // Real-GPU integration checks; run only when the shared launcher permits it.
-// Two parts, each its own process and GPU slot under the 25 s cap (tools/browser.mjs allows one launch a
-// process), as tools/v2/app-check.mjs runs its parts: `readers` (the compact readers, the delayed bridge,
-// presentation, the picker, Plain's mesh and an exact undo) and `toggles` (exact history across V1/V2
-// switches: four engine switches, on a box of its own). Without --part both run, one after the other.
-// node tools/v2/compact-browser-check.mjs [--port 5197] [--part readers|toggles]
+// One part, `readers` (the compact readers against the bridge's projection, the delayed bridge, presentation,
+// the picker, Plain's mesh and an exact undo), its own process and GPU slot under the 25 s cap. (V1/V2
+// switches and the test-only compatibility render went with V1.)
+// node tools/v2/compact-browser-check.mjs [--port 5197]
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +10,7 @@ import { launchBrowser, newTestPage, ready, render } from '../browser.mjs';
 import { startVite } from '../vite-server.mjs';
 
 const argv = process.argv.slice(2);
-const PARTS = ['readers', 'toggles'];
+const PARTS = ['readers'];
 const part = argv.includes('--part') ? argv[argv.indexOf('--part') + 1] : null;
 if (!part) {
   let code = 0;
@@ -63,9 +62,10 @@ ${prelude(sim.g, STATE_OPTS.STATE_RO)}
   output[s] = fetchAs(s); output[SLOTS + s] = fetchBs(s);
 }` });
     await kernel.ready;
-    const decoded = async (compat) => {
-      const v2 = a.physics.v2; v2.forceCompatibility = compat;
-      kernel.dispatch(gpu.frame, fold(Math.ceil(sim.g.slots / 64)), { bind: [sim.tables, sim.bindRO, group], header: sim.readHeader() });
+    // bridged: the bridge's V1-format projection (exportLegacy), read as format 0; else V2's cells, directly
+    const decoded = async (bridged) => {
+      if (bridged) a.physics.v2.exportLegacy(false);
+      kernel.dispatch(gpu.frame, fold(Math.ceil(sim.g.slots / 64)), { bind: [sim.tables, bridged ? sim._bindRO : sim.bindRO, group], header: bridged ? { ...sim.header(), format: 0 } : sim.readHeader() });
       return new Uint32Array(await gpu.readback.buffer(out, 0, bytes * 2));
     };
     // Exact undo fixture: a fractional liquid cell with nonzero signed face flux.
@@ -83,7 +83,7 @@ ${prelude(sim.g, STATE_OPTS.STATE_RO)}
     };
     window.__compactTest = { check, equal, raw, paint, passes, decoded, exactFixture, E, VIEWS, cellSlot, marksLayout, out, prev };
   });
-  if (part === 'readers') await readers(page); else await toggles(page);
+  await readers(page);
   assert.deepEqual(errors, []);
   console.log(`compact browser checks passed (${part})`);
 } finally {
@@ -108,12 +108,11 @@ async function readers(page) {
     const marks = marksLayout(sim.g);
     const dirty = new Uint32Array(await gpu.readback.buffer(sim.marks, marks.derived * 4, Math.ceil(sim.g.nbricks / 32) * 4));
     check(dirty.some(Boolean), 'settled movement remains marked for presentation');
-    const direct = await decoded(false), compat = await decoded(true);
-    check(equal(direct, compat), 'all decoded A/B words match delayed bridge after settling');
+    const direct = await decoded(false), bridged = await decoded(true);
+    check(equal(direct, bridged), 'all decoded A/B words match delayed bridge after settling');
     const p = [32, 0, 32], slot = cellSlot(sim.g, ...p);
     const cell = await sim.readCell(...p);
     check(cell[0][0] === new Float32Array(direct.buffer)[slot * 4], 'raw readCell agrees with direct reader');
-    a.physics.v2.forceCompatibility = false;
     // New edit after hundreds of compact ticks must not resurrect the old airborne sand.
     passes.length = 0;
     paint(10, 20, 10, E.STONE);
@@ -131,20 +130,8 @@ async function readers(page) {
   await page.evaluate(async () => {
     const a = __app, h = __compactTest, sim = a.sim, gpu = a.gpu;
     h.check(!h.passes.includes('v2bridge'), 'smooth render/derived/shadow/GI/picker setup never bridges');
-    const directPick = await a.vol.pick([32, 63, 32], [0, -1, 0]);
-    sim.changedAll = sim.fieldReset = true;
-    a.derived.updateBricks();
-    const brick = new Uint32Array(await gpu.readback.buffer(a.derived.brick, 0, a.derived.brick.size));
-    const occupancy = new Uint32Array(await gpu.readback.buffer(a.derived.brickDist, 0, sim.g.nbricks * 19 * 4));
-    a.physics.v2.forceCompatibility = true;
-    const compatPick = await a.vol.pick([32, 63, 32], [0, -1, 0]);
-    h.check(JSON.stringify(directPick) === JSON.stringify(compatPick), 'picker output matches compatibility path');
-    sim.changedAll = sim.fieldReset = true;
-    a.derived.updateBricks();
-    const brick2 = new Uint32Array(await gpu.readback.buffer(a.derived.brick, 0, a.derived.brick.size));
-    const occupancy2 = new Uint32Array(await gpu.readback.buffer(a.derived.brickDist, 0, sim.g.nbricks * 19 * 4));
-    h.check(h.equal(brick, brick2) && h.equal(occupancy, occupancy2), 'derived brick/occupancy output matches compatibility path');
-    a.physics.v2.forceCompatibility = false;
+    const pick = await a.vol.pick([32, 63, 32], [0, -1, 0]);
+    h.check(pick?.id === h.E.SAND || pick?.id === h.E.STONE, `the picker reads V2's cells (${JSON.stringify(pick)})`);
     a.setView(h.VIEWS.find(v => v.key === 'plain').id);
     await a.test.ready();
     h.passes.length = 0;
@@ -154,12 +141,7 @@ async function readers(page) {
     const a = __app, h = __compactTest;
     h.check(!h.passes.includes('v2bridge'), 'Plain render never bridges');
     await a.gpu.fence();
-    const directMesh = { ...a.blocks.stats };
-    a.physics.v2.forceCompatibility = true;
-    a.blocks.update({ force: true });
-    await a.gpu.fence();
-    h.check(directMesh.opaque === a.blocks.stats.opaque && directMesh.translucent === a.blocks.stats.translucent, 'Plain mesh face counts match compatibility path');
-    a.physics.v2.forceCompatibility = false;
+    h.check(a.blocks.stats.opaque > 0, `Plain meshes V2's cells (${a.blocks.stats.opaque} opaque faces)`);
 
     const sim = a.sim, gpu = a.gpu;
     const { words, seed } = await h.exactFixture();
@@ -169,32 +151,8 @@ async function readers(page) {
     // (a V2 snapshot's capture is a readback, so an undo right after it waits for it: await it, as the app does)
     await sim.undo();
     h.check(h.equal(words, await h.raw()), 'v2 undo restores exact fill and all flux words');
-    const direct = await h.decoded(false), compat = await h.decoded(true);
-    h.check(h.equal(direct, compat), 'fractional liquid direct decode equals projected bridge');
-    a.physics.v2.forceCompatibility = false;
-    gpu.flush('compact tests done'); seed.destroy(); h.out.destroy();
-    sim.onPass = h.prev;
-  });
-}
-
-async function toggles(page) {
-  await page.evaluate(async () => {
-    const a = __app, h = __compactTest, sim = a.sim, gpu = a.gpu;
-    const { words, seed } = await h.exactFixture();
-    sim.snapshot('compact history across toggles');
-    await a.setPhysics('v1');
-    h.check(sim.history.at(-1).format === 'v2' && sim.readHeader().format === 0, 'v1 transition exports and retains compact history tag');
-    a.test.step(1);
-    await a.setPhysics('v2');
-    await sim.undo();
-    h.check(h.equal(words, await h.raw()), 'compact history restores exactly after v1/v2 toggles');
-    await a.setPhysics('v1');
-    sim.snapshot('v1 history');
-    h.check(sim.history.at(-1).format === 'v1', 'legacy history tagged');
-    await a.setPhysics('v2');
-    await sim.undo(); a.physics.v2.sync();
-    h.check(h.equal(await h.decoded(false), await h.decoded(true)), 'v1 history imports consistently when undone in v2');
-    a.physics.v2.forceCompatibility = false;
+    const direct = await h.decoded(false), bridged = await h.decoded(true);
+    h.check(h.equal(direct, bridged), 'fractional liquid direct decode equals projected bridge');
     gpu.flush('compact tests done'); seed.destroy(); h.out.destroy();
     sim.onPass = h.prev;
   });

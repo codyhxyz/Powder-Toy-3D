@@ -47,7 +47,7 @@ try {
       times.sort((a, b) => a - b);
       return { fps: +(1000 * times.length / duration).toFixed(1),
         medianMs: +times[times.length >> 1].toFixed(1), p95Ms: +times[Math.floor(times.length * .95)].toFixed(1),
-        versionChanges: a.sim.version - versions, idle: a.sim.idleCertified ?? false,
+        versionChanges: a.sim.version - versions, idle: a.physics.v2?.certified ?? false,
         cached: a.win.far.detail?.entries.size ?? 0, canvas: [a.renderer.domElement.width, a.renderer.domElement.height], scale: a.post.renderScale };
     });
     (results[port] ??= []).push(sample);

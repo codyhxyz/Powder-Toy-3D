@@ -501,8 +501,6 @@ export class PhysicsV2 {
     dynamics?.advanceAir(this.tick);
     run(k.v2invalidate, fold(Math.ceil(this.g.nbricks / 64)), invalidation);
     this.legacyPending = true;
-    // A test-only same-physics baseline for full-frame direct/compat comparisons.
-    if (this.forceCompatibility && gpu.testMode) this.exportLegacy(false);
   }
 
   /**

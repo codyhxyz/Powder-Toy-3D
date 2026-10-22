@@ -8,9 +8,7 @@
 //      measured, not assumed;
 //   4. the photon rules' numbers (water's attenuation, metal's reflection, a
 //      photon lighting wood);
-//   5. the particle kernels' WGSL: each WGSL_CHECK entry of shaders/rays.js
-//      generates for each grid size (tools/check-wgsl.mjs --file shaders/rays
-//      validates and builds them on a device: docs/webgpu.md I1).
+//   (V1's particle kernels, shaders/rays.js, went with V1: V2's are v2/dynamics.js's)
 // usage: node tools/rays-check.mjs [--quick]
 import { registerHooks } from 'node:module';
 import { ELEMENTS, E } from '../src/elements.js';
@@ -29,7 +27,6 @@ if (ELEMENTS.length > FAR_ID_CAP) {
 }
 const { gridLayout } = await import('../src/sim.js');
 const { RAYS, NUCLEAR, EMITTERS, sigmas, crossSections, neutronSpeed, scatterEnergy, reflectOf } = await import('../src/rays.js');
-const rays = await import('../src/shaders/rays.js');
 
 const quick = process.argv.includes('--quick');
 let failures = 0;
@@ -165,22 +162,6 @@ ok(through[2] > through[0], 'water passes blue over red');
 ok(reflectOf(metal) > 0 && reflectOf(metal) < 1 && reflectOf(wood) === 0, 'metal reflects part, wood none');
 const dTwood = RAYS.PHOTON_HEAT / wood.cap;
 ok(dTwood + 20 >= wood.ignite, `one white photon warms wood ${dTwood.toFixed(0)} °C: lights it (${wood.ignite} °C)`);
-
-// ---- 5. shaders ----
-// The WGSL each kernel's WGSL_CHECK entry generates, for every grid size: it
-// must generate (no JS error) and declare its entry point; check-wgsl
-// validates it with Tint and builds it.
-let n = 0;
-for (const [label, dims] of Object.entries(GRIDS)) {
-  const g = gridLayout(...dims);
-  for (const e of rays.WGSL_CHECK) {
-    let src = '';
-    try { src = e.code(g); } catch (err) { src = ''; console.log(`  ${e.name}@${label}: ${err.message}`); }
-    ok(/fn (main|vs|fs)\b/.test(src), `${e.name} (${label}): ${src.split('\n').length} lines of WGSL`);
-    n++;
-  }
-}
-console.log(`\n${n} kernels generated (validate and build them: node tools/check-wgsl.mjs --file shaders/rays)`);
 
 console.log(failures ? `\n${failures} failed` : '\nall rays checks pass');
 process.exit(failures ? 1 : 0);

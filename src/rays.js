@@ -5,8 +5,10 @@
 // layer is src/raysLayer.js, its passes src/shaders/rays.js.
 import { ELEMENTS, E, R, itemByKey } from './elements.js';
 import { BRICK } from './shaders/common.js';
-import { activityPeriod } from './shaders/activity.js';
 import { glf as f } from './glsl.js';
+// Cells an influence crosses a step (V1's activity map: shaders/activity.js INFLUENCE_PER_STEP at the
+// v1-oracle tag): a particle's speed limit is a brick per its map's period, as V1's was.
+const INFLUENCE_PER_STEP = 2;
 
 // Particle kinds (the list's kind channel; 0 = a free slot).
 export const RAY_KIND = { NONE: 0, PHOTON: 1, NEUTRON: 2 };
@@ -26,7 +28,7 @@ export const RAYS = {
   // Fastest a particle may fly, cells/step: one brick in the steps an
   // activity map lives, so the bricks a particle may touch before the next map
   // are within the one-brick halo the quiet map keeps awake around it.
-  RAY_V_MAX: BRICK / activityPeriod(BRICK),
+  RAY_V_MAX: BRICK / Math.floor(BRICK / INFLUENCE_PER_STEP),
   // Sub-steps of a particle's flight per step, each at most one cell long, so
   // it can't jump a cell (RAY_V_MAX / RAY_SUBSTEPS ≤ 1).
   RAY_SUBSTEPS: 2,

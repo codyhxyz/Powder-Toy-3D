@@ -60,11 +60,9 @@ const IGNORE = 'check-async-reads: ignore';
 
 /** @type {Record<string, string>} file → the unit that converts it (J1), or why it waits */
 const PENDING = {
-  'tools/activity-check.mjs': 'U2', 'tools/sleep-crossover.mjs': 'U2',
   'tools/derived-bench.mjs': 'U4', 'tools/detail-bench.mjs': 'U6', 'tools/profile-check.mjs': 'U7',
   'tools/headless-check.mjs': 'U8', 'tools/idle-check.mjs': 'U8',
-  'tools/elec-gpu-check.mjs': 'U12', 'tools/nt-mat-gpu.mjs': 'U12', 'tools/rays-gpu.mjs': 'U12',
-  'tools/bench.mjs': 'U14b', 'tools/headless-cost.mjs': 'U14b', 'tools/state-hash.mjs': 'U14b',
+  'tools/headless-cost.mjs': 'U14b',
   // no J1 owner: its timing fence is raw GL (a 1×1 WebGLRenderTarget and gl.readPixels), a
   // rewrite rather than an await; U14b's "no getContext() left in tools/" covers it
   'tools/crystal-check.mjs': 'U14b',

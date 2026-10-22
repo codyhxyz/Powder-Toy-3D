@@ -3,13 +3,10 @@ import {
 } from '../shaders/generate.js';
 import { sceneNativeDiffFrag } from '../shaders/v2/leave.js';
 import { nativeFillWGSL, nativeFillSize, NATIVE_WRITE_LAYOUT, NativeFillParams } from '../shaders/worldWrite.js';
-import { stampEdit, MAX_FOOT } from '../shaders/stamp.js';
 import { BRICK, LAYOUT } from '../shaders/common.js';
 import { fold } from '../gpu/kernels.js';
 import { sceneLayout, SCENE_BINDING, PRE_MARGIN, PreParams, preWords } from './scenes/sceneGpu.js';
-import { runGenerator, bake } from '../constructions/runtime.js';
-import { BUILTINS } from '../constructions/builtins.js';
-import { worldParams, TREE } from './generator.js';
+import { worldParams } from './generator.js';
 import { island } from './scenes/island.js';
 import { WORLD_SCENES } from './scenes/index.js';
 
@@ -139,112 +136,8 @@ export class SceneGpu {
 }
 
 // ---------------------------------------------------------------- stamps
-// Baked constructions (runtime.js bake) written into a grid (shaders/stamp.js),
-// one edit each (docs/webgpu.md D6), in call order: the window's trees, the
-// box's Island preset's, the felled glade by the shrine (wire/world.js) and
-// the constructions (src/constructions.js). Shapes go into a pool buffer
-// once, keyed (a tree by its trunk's column, as bakeTree caches it), and
-// stay while the pool has room; when it is full it starts over.
-const POOL_VEC4S = 1 << 18;   // the shape pool's first size: 4 MiB of voxels (about 16 trees), doubled when a batch needs more
-const stampers = new WeakMap();
-/** The grid's stamper (made on first use). */
-export const stamperFor = (sim) => {
-  let s = stampers.get(sim);
-  if (!s) stampers.set(sim, s = new Stamper(sim));
-  return s;
-};
-
-export class Stamper {
-  constructor(sim) {
-    this.sim = sim;
-    this.gpu = sim.gpu;
-    this.kernel = sim.editKernel('stamp', stampEdit());
-    this.ready = this.kernel.ready;
-    const g = sim.g;
-    this.maskW = g.nx / BRICK;
-    this.maskVec4s = Math.ceil((g.nx / BRICK) * (g.nz / BRICK) / 128);
-    this.cap = 0;
-    this.pool = null;
-    this.used = 0;
-    this.shapes = new Map();   // key → { s, base }
-    this.poolRead = -1;        // gpu.stats.flushes when a stamp last read the pool (still unsubmitted while equal)
-  }
-
-  // A write to the pool: unordered unless a stamp recorded in the open
-  // encoder still reads it (an ordered write flushes the frame first: a window
-  // move's planting would cost a second submit; gpu.write)
-  _write(offset, data) {
-    this.gpu.write(this.pool, offset, data, { ordered: this.poolRead === this.gpu.stats.flushes });
-  }
-
-  // Room for `need` more vec4s of shapes (the batch's not in the pool yet);
-  // when the pool is full it starts over, and then the batch uploads every
-  // shape it stamps again (`all` vec4s): the pool grows if they don't fit.
-  _room(need, all) {
-    if (this.pool && this.used + need <= this.cap) return;
-    this.shapes.clear();
-    this.used = this.maskVec4s;
-    if (this.pool && this.used + all <= this.cap) return;
-    if (this.pool) this.sim._retire(this.pool);
-    this.cap = Math.max(POOL_VEC4S, 2 * (this.maskVec4s + all));
-    this.pool = this.gpu.createBuffer({ label: `sim${this.sim.id} stamp pool`, size: this.cap * 16, usage: BUFFER.STORAGE | BUFFER.COPY_DST });
-    this.poolRead = -1;   // (nothing reads the new one yet)
-  }
-
-  /**
-   * Stamps each { s, at, seed, key } (s a baked construction, at its low
-   * corner in grid cells, key an optional cache key for s), one edit each in
-   * this order. mask: a byte per grid brick column (x fastest; non-zero:
-   * write it), or null for every column. scrub: the cells it gives a new
-   * element lose their decoration (src/deco.js; constructions do, trees don't).
-   * Returns how many it stamped. Needs `ready`.
-   * @param {{ s: object, at: number[], seed: number, key?: string }[]} list
-   * @param {{ mask?: Uint8Array | null, scrub?: boolean }} [opts]
-   */
-  stamp(list, { mask = null, scrub = false, clip = null } = {}) {
-    list = list.filter((t) => t.s);
-    if (!list.length) return 0;
-    // the vec4s the batch uploads: its shapes not in the pool, or after a fresh start at most all of them
-    const size = (t) => t.s.w * t.s.h * t.s.d;
-    const fresh = (t) => !(t.key != null && this.shapes.get(t.key)?.s === t.s);
-    this._room(list.reduce((n, t) => n + (fresh(t) ? size(t) : 0), 0), list.reduce((n, t) => n + size(t), 0));
-    // the shapes not in the pool yet, then the mask, then the edits (so at most the first write flushes the frame)
-    const bases = new Map();
-    for (const t of list) {
-      const had = t.key != null ? this.shapes.get(t.key) : null;
-      if (had?.s === t.s) { bases.set(t, had.base); continue; }
-      const base = this.used;
-      this._write(base * 16, t.s.data);
-      this.used += t.s.w * t.s.h * t.s.d;
-      bases.set(t, base);
-      if (t.key != null) this.shapes.set(t.key, { s: t.s, base });
-    }
-    if (mask) {
-      const bits = new Uint32Array(this.maskVec4s * 4);
-      for (let i = 0; i < mask.length; i++) if (mask[i]) bits[i >> 5] |= 1 << (i & 31);
-      this._write(0, bits);
-    }
-    const sim = this.sim, bind = [{ buffer: this.pool }];
-    for (const t of list) {
-      const s = t.s, foot = Math.min(s.foot ?? 0, MAX_FOOT), at = t.at;
-      const lo = [at[0], at[1] - foot, at[2]], hi = [at[0] + s.w - 1, at[1] + s.h - 1, at[2] + s.d - 1];
-      if (clip) for (let i = 0; i < 3; i++) { lo[i] = Math.max(lo[i], clip.lo[i]); hi[i] = Math.min(hi[i], clip.hi[i]); }
-      if (lo.some((v, i) => v > hi[i])) continue;
-      sim.edit(this.kernel, { lo, hi }, {
-        at, foot, size: [s.w, s.h, s.d], base: bases.get(t), seed: t.seed >>> 0, masked: mask ? 1 : 0, maskW: this.maskW,
-      }, { bind, scrub });
-    }
-    this.poolRead = this.gpu.stats.flushes;
-    return list.length;
-  }
-
-  dispose() {
-    if (this.pool) this.sim._retire(this.pool);
-    this.pool = null;
-    this.shapes.clear();
-    stampers.delete(this.sim);
-  }
-}
+// (V1's tree stamper went with V1: a world's trees are its render source producer's, native on V2's
+// cells: world/renderSourceProducer.js)
 
 // ---------------------------------------------------------------- V2's world writers
 // The group V2's world writers bind (shaders/worldWrite.js): the owner's cores, banks and activity.
@@ -285,10 +178,9 @@ export class WorldGenerator {
     this.code = scene.glsl(sim.g);
     // the fill now; the leaving slab's kernel when the window asks (prepareDiff)
     this.kernels = { fill: sim.editKernel(`${scene.key} fill`, fillEdit(this.code, this.res.has)) };
-    this.stamper = scene.trees ? stamperFor(sim) : null;
     // V2's fill (nativeFill) when a V2 owner exists: a window V2 runs fills it natively
     const native = sim.compactOwner ? this.prepareNativeFill() : null;
-    this.ready = Promise.all([this.res.ready, this.kernels.fill.ready, this.stamper?.ready, native]).then(() => this);
+    this.ready = Promise.all([this.res.ready, this.kernels.fill.ready, native]).then(() => this);
     this.ready.catch(() => {});
   }
 
@@ -403,28 +295,6 @@ export class WorldGenerator {
       cells: gpu.createBuffer({ label: `${this.scene.key} leave cells`, size: n * LEAVE_BRICK_BYTES, usage: U }),
       group: null,
     };
-  }
-
-  /**
-   * Stamp baked constructions (each { s, at, seed, key }, at its low corner in
-   * grid cells) one edit each, writing only the grid brick columns set in mask
-   * (a byte per column, x fastest; null: all). Returns how many.
-   */
-  stampMany(list, mask = null, clip = null) { return (this.stamper ?? stamperFor(this.sim)).stamp(list, { mask, clip }); }
-
-  /** Stamp the trees of world P whose crowns may reach the grid (at world `origin`). Returns them. */
-  plantTrees(P = this.P, origin = [0, 0, 0]) {
-    const g = this.sim.g, R = TREE.REACH;
-    if (!this.scene.trees) return [];
-    const trees = this.scene.trees.treesIn(origin[0] - R, origin[2] - R, origin[0] + g.nx + R, origin[2] + g.nz + R, P);
-    const list = [];
-    for (const t of trees) {
-      const s = bake(runGenerator(BUILTINS.TREE, { size: t.size, seed: t.seed, variant: t.variant }), t.quarter);
-      // the construction's base point on the ground at the trunk (the stamp grows its footing)
-      if (s) list.push({ s, at: [t.x - origin[0] - s.base.x, t.y - origin[1] - s.base.y, t.z - origin[2] - s.base.z], seed: t.seed, key: `${t.x},${t.z}` });
-    }
-    this.stampMany(list);
-    return trees;
   }
 
   dispose() {

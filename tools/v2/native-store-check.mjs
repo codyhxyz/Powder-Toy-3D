@@ -331,12 +331,12 @@ async function leave(win, base, bricks, natives, flagged, exact) {
   const legacyBytes = encodeBrick(A, 0, B, 0), native = legacyBrickToNative(legacyBytes), decoded = decodeNativeBrick(native);
   for (let l = 0; l < 64; l++) assert.deepEqual([...decoded.core.subarray(l * 4, l * 4 + 4)], [...oracle(A.subarray(l * 4, l * 4 + 4), B[l * 4 + 1])], `brick cell ${l}`);
   assert(decoded.bank.every(v => v === 0), 'every bank 0, as the import leaves it');
-  // WorldWindow.restore: a V2 window takes the legacy-only brick natively; V1 still writes it with its edit
+  // WorldWindow.restore: a V2 window takes the legacy-only brick natively; V1's restore edit went with V1
   const restoreWin = (nativeReady) => {
     const edits = [], scattered = [];
-    const win = Object.assign(windowFor(), { wb: [8, 8, 8], store: new BrickStore([8, 8, 8]), nativeStore: new NativeBrickStore([8, 8, 8]), restoreKernel: {}, restoreBuf: null, restoreRead: -1 });
+    const win = Object.assign(windowFor(), { wb: [8, 8, 8], store: new BrickStore([8, 8, 8]), nativeStore: new NativeBrickStore([8, 8, 8]), });
     win.gpu = { createBuffer: d => ({ ...d, destroy() {} }), write() {}, stats: { flushes: 0 } };
-    win.sim = { origin: { x: 0, y: 0, z: 0 }, _retire() {}, edit: (...args) => edits.push(args), compactOwner: nativeReady ? { sync() {} } : null,
+    win.sim = { origin: { x: 0, y: 0, z: 0 }, _retire() {}, edit: (...args) => edits.push(args), compactOwner: nativeReady ? { isReady: true, sync() {} } : null,
       compact: nativeReady ? { isReady: true } : null, nativeIntegration: nativeReady ? { isReady: true, restoreBricks: (lo, bricks, entries) => scattered.push(...entries) } : null };
     const key = win.store.key(1, 0, 0);
     win.store.put(key, legacyBytes);
@@ -350,8 +350,7 @@ async function leave(win, base, bricks, natives, flagged, exact) {
   assert.equal(v2.scattered.length, 1, 'V2: the native scatter takes it');
   assert.deepEqual([...v2.scattered[0].bytes], [...native], '...as V2\'s import would have made it');
   assert.equal(v2.win.store.has(v2.key) || v2.win.nativeStore.has(v2.key), false, 'both stores let it go (the window holds it)');
-  const v1 = restoreWin(false);
-  assert.equal(v1.edits.length, 1, 'V1: its own restore edit, unchanged');
+  assert.throws(() => restoreWin(false), /native owner/, 'no owner yet: a stored brick waits for V2 (never a V1 edit)');
   checks++;
   console.log(`PASS legacy-only stored bricks: ${cells} cells bit-exact with the import kernel's importA; a V2 window restores them natively`);
 }

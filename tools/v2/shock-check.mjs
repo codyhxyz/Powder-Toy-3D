@@ -151,7 +151,7 @@ test('the runs and pairs passes that land the runs still validate (Naga, groupin
 // per lander and charge, on V2's laws (shaders/v2.js v2ColumnWGSL for grains, columns.js colShockLand for runs)
 import { SHOCK_LANDINGS, v1ShockFall, v1GrainOddsTable, GRAIN_ODDS_FULL } from '../../src/v2/dynamics-reference.js';
 import { COLUMN_SHOCK_ON } from '../../src/shaders/v2/columns.js';
-import { PACE } from '../../src/shaders/move.js';
+import { PACE } from '../../src/physics.js';
 import { powderLandingSpeed, stepFall, fallVelocity, fallTerminal } from '../../src/v2/fall.js';
 import { SIM_GRAVITY, PHYS } from '../../src/physics.js';
 import { K } from '../../src/elements.js';

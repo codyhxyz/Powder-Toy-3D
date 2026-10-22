@@ -62,7 +62,6 @@ import lightning from './lightning.js';
 import signs from './signs.js';
 import mp from './mp.js';
 import mesh from './mesh.js';
-import foam from './foam.js';
 import deco from './deco.js';
 import console_ from './console.js';
 import saves from './saves.js';
@@ -75,7 +74,7 @@ import weather from './weather.js';
  * window follows the focus in `follow`, so a tick keeps the old one's order:
  * the body, Descent, the god camera, the window, the brush.
  */
-export const WIRES = [world, pov, descent, rays, lightning, signs, mp, mesh, foam, deco, console_, industry, saves, weather];
+export const WIRES = [world, pov, descent, rays, lightning, signs, mp, mesh, deco, console_, industry, saves, weather];
 
 /** A wire by name, or null. */
 export const wireNamed = (name) => WIRES.find((w) => w.name === name) ?? null;

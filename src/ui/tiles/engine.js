@@ -1,5 +1,6 @@
-// CPU port of the GPU engine (shaders/move.js + shaders/react.js) that runs
+// CPU port of V1's GPU engine (shaders/move.js + shaders/react.js, now at the v1-oracle tag) that runs
 // the dock tiles. Same element table, same rules, same constants (physics.js).
+// Intentional (decided under the user's delegation, 2026-10-22): previews use the CPU port of the shared rules; V2 matches V1's motion
 // A tile is a side-on slice, so z is dropped: the 2×2×2 Margolus block becomes
 // 2×2, the six face neighbours become four, and random xz directions keep only
 // their x part. Rows run bottom-up (y = 0 is the floor), as in the engine.
@@ -10,11 +11,10 @@
 // fire, clone...) needs the same case added below; scripts/check-tile-engine.mjs
 // flags any that are missing.
 import { ELEMENTS, E, K, meltInto, breakInto, meltPoint, mechanisms, PH, mossBed, fungusFood, singEats } from '../../elements.js';
-import { PHYS } from '../../physics.js';
+import { PHYS, PACE } from '../../physics.js';
 import { pcg } from '../../rng.js';
 import { BOLT, STORM, boltPath, stormColumns, pickStrike } from '../../bolt.js';
 import { GRAV as GRAV_MODE } from '../../simModes.js';
-import { PACE } from '../../shaders/move.js';
 import { SALT } from '../../shaders/common.js';
 import { ELEC, SPARK_BORN, CONDUCTS, SPARK_COST, sparkPhase, sparkLevel, packSpark, takesSpark, conductsInto, tsnsSenses, powered, cloneable, LAMP_DC } from '../../electricity.js';
 import { appearanceOf, appearanceCtype, physicalCtype } from '../../appearance.js';

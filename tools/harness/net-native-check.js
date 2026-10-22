@@ -20,7 +20,7 @@ const POOL = 65536, RECORD = 12;
 const FALL_3_5 = 0xc0600000;   // -3.5 as f32: a powder falling at 3.5 m/s (shaders/v2/fall.js setFall)
 
 test('roundtrip', async () => {
-  const sim = new Simulation(gpu, 64, 64, 64, { nativeStartup: true });
+  const sim = new Simulation(gpu, 64, 64, 64);
   await sim.ready;
   const g = sim.g, buf = (label, size) => gpu.createBuffer({ label, size: Math.max(16, Math.ceil(size / 16) * 16), usage: USAGE });
   const cells = buf('cells', g.slots * 16), aux = buf('aux', g.slots * 4), act = buf('act', g.nbricks * 12);

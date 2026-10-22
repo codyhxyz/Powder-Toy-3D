@@ -1,7 +1,7 @@
 // The outcome bench's harness page (tools/outcomes.mjs; tests in
 // tools/outcomes/tests): a test's scene on a bare simulation on this page's
-// WebGPU device, through the engine adapter ?engine= names (v1, today's: the
-// default; v2 once P2 writes tools/outcomes/engine-v2.js).
+// WebGPU device, through the engine adapter ?engine= names (v2: tools/outcomes/engine-v2.js; V1's,
+// engine-v1.js, is the v1-oracle tag's: this page served from a checkout of it).
 //   __harness.run('outcome', name, { seed, budgetMs })   one test's result (tools/outcomes/run.js)
 //   __harness.run('tests')                               the tests: name, group, size, cost
 //   __harness.run('info')                                the engine's info (its clock, its g, what it has)
@@ -16,9 +16,9 @@ import { runTest } from '../outcomes/run.js';
 
 const h = await boot({ label: 'outcomes' });
 const params = new URLSearchParams(location.search);
-const ENGINE = params.get('engine') ?? 'v1';
+const ENGINE = params.get('engine') ?? 'v2';
 
-// Math.random from a seed (mulberry32, as tools/regress.mjs and sim-check.js): the blank state's cell seeds
+// Math.random from a seed (mulberry32, as tools/regress.mjs): the blank state's cell seeds
 const seedRandom = (seed) => {
   let s = seed >>> 0;
   Math.random = () => {
@@ -31,7 +31,8 @@ const seedRandom = (seed) => {
 
 let engine = null;
 try {
-  const mod = ENGINE === 'v2' ? await import('../outcomes/engine-v2.js') : await import('../outcomes/engine-v1.js');
+  if (ENGINE !== 'v2') throw new Error('V1 is the v1-oracle tag (git worktree add <dir> v1-oracle): run this from that checkout');
+  const mod = await import('../outcomes/engine-v2.js');
   engine = mod.createEngine(h.gpu, { seed: seedRandom });
 } catch (e) {
   h.error = `engine ${ENGINE}: ${e.message}`;

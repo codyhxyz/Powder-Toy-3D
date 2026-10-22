@@ -46,7 +46,7 @@ import { detailDefaults } from '/src/gfx/detail.js';
 import { writeFrameUniforms, updateGfxUniforms, gfxUniforms } from '/src/gfx/uniforms.js';
 import { VIEWS } from '/src/views.js';
 import { volumeFrag, volumePipeline, VOLUME_LAYOUTS, REALISTIC_LEVELS } from '/src/shaders/render.js';
-import { boot, ready, test, log } from './harness.js';
+import { boot, ready, test, log, nativeSim } from './harness.js';
 
 const h = await boot({ label: 'volume' });
 const gpu = h.gpu;
@@ -60,7 +60,7 @@ three.setPixelRatio(1);
 three.setSize(W, H, false);
 const post = createPost(gpu, { presenter, pixScale: gfxUniforms.uPixScale, readable: true });
 const N = Number(new URLSearchParams(location.search).get('size') ?? 64);
-const sim = new Simulation(gpu, N, N, N, { debug: false });
+const sim = await nativeSim(gpu, N, N, N, { debug: false });
 const derived = new Derived(sim);
 const volume = createVolume(gpu, sim);
 const overlays = createOverlays(gpu);

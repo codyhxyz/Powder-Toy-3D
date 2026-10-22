@@ -86,12 +86,13 @@ test('gate marker is exact f32 and ownership always includes WALL plus marker', 
   assert.deepEqual(restoredB, b);
 });
 
-test('native react/move/rest paths do not assign WALL life-marker semantics', async () => {
-  const paths = ['../shaders/react.js', '../shaders/move.js', '../electricity.js', '../shaders/common.js'];
+test('electricity and the shared rest paths do not assign WALL life-marker semantics', async () => {
+  // (V1's react.js and move.js went with V1: the v1-oracle tag)
+  const paths = ['../electricity.js', '../shaders/common.js'];
   const sources = await Promise.all(paths.map(path => readFile(new URL(`../../src/${path.replace('../', '')}`, import.meta.url), 'utf8')));
-  for (const source of sources.slice(0, 3)) assert.doesNotMatch(source, /(?:id|eid\(a\))\s*==\s*E_WALL|E_WALL\s*&&/);
-  assert.match(sources[3], /if \(LIFE_BANK\(id\).*a\.z != 0\.0\)/);
-  assert.match(sources[3], /return true;\s*}\s*\/\/ FLAG_SELF/);
+  assert.doesNotMatch(sources[0], /(?:id|eid\(a\))\s*==\s*E_WALL|E_WALL\s*&&/);
+  assert.match(sources[1], /if \(LIFE_BANK\(id\).*a\.z != 0\.0\)/);
+  assert.match(sources[1], /return true;\s*}\s*\/\/ FLAG_SELF/);
 });
 
 test('gate transition table distinguishes empty, foreign, blocked, and damaged apertures', () => {

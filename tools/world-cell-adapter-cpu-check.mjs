@@ -13,7 +13,6 @@ import { BrickStore, encodeBrick } from '../src/world/store.js';
 import { gridDims, brickIdOf, cellSlot } from '../src/shaders/common.js';
 import { brickFrag } from '../src/shaders/passes.js';
 import { worldCellClassifierWGSL, worldCellPackWGSL, WORLD_CELL_PACK_LAYOUTS, worldFieldPackWGSL, WORLD_FIELD_PACK_LAYOUT, copyCapturedFieldPage } from '../src/shaders/worldCellAdapter.js';
-import { setAeration, aerationForSource, isProducerBoundedAeration } from '../src/gfx/foam.js';
 import { nagaExec } from './naga.mjs';
 const u32=b=>new Uint32Array(b.bytes), f32=b=>new Float32Array(b.bytes);
 // The Box brickFrag the world classifier matches: 9cdee27b's plus only V2's liquid-interior
@@ -278,11 +277,11 @@ test('source journal global invalidation and immutable store uploads do not forc
   f.source.invalidateGenerated();assert.equal(f.source.changesSince(before).global,true);await cleanup(f);
 });
 
-test('known bounded producer ownership survives capture/reset; present untrusted wakes reject before Fields recording',async()=>{
+// (V1 whitewater went with V1: a V1-state source carries no aeration, so none of its wakes needs a
+// producer's trust, even with a stray field on the grid)
+test('a V1-state source carries no aeration: its wakes stay trusted through capture/reset',async()=>{
   const f=fixture();await f.adapter.ready;
-  f.sim.aeration={buffer:f.gpu.createBuffer({size:f.sim.g.slots*16}),cur:0};f.source.recordLiveCopy(f.gpu.frame);
-  assert.throws(()=>f.adapter.record(f.gpu.frame,{fieldTick:0,requirements:[req[0]]}),/Untrusted/);f.gpu.finish();
-  f.sim.aeration=null;setAeration(f.sim,true);const aer=aerationForSource(f.sim);assert(isProducerBoundedAeration(aer));
+  f.sim.aeration={buffer:f.gpu.createBuffer({size:f.sim.g.slots*16}),cur:0};
   f.source.recordLiveCopy(f.gpu.frame);f.source.recordLeavingCopy(f.gpu.frame,f.sim,{lo:[0,0,0],hi:[32,8,8]});assert.doesNotThrow(()=>f.source.assertBoundedWake([{lo:[0,0,0],hi:[32,8,8]}]));
   const old=f.source.contentToken();f.source.reset();assert.equal(f.source.changesSince(old).global,true);assert.equal(f.source.chunks.size,0);f.adapter.reset();f.gpu.finish();await cleanup(f);
 });

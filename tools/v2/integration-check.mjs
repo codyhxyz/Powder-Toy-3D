@@ -11,7 +11,6 @@ import { WorldWindow } from '../../src/world/window.js';
 import { BrickStore } from '../../src/world/store.js';
 import { TerrainEditCache } from '../../src/world/terrainEditCache.js';
 import { WorldRenderSource } from '../../src/world/renderSource.js';
-import { Stamper } from '../../src/world/gpu.js';
 import { cellSlot, slotCell, marksLayout } from '../../src/shaders/common.js';
 import { cellOf, Load, createTransfer } from '../../src/pov/tools/transfer.js';
 import { decodeNativeTransfer, nativeCargo, NativeTransfer } from '../../src/v2/transfer.js';
@@ -337,15 +336,10 @@ for (let s = 0; s < g.slots; s++) {
   assert.equal(bank[s], (inside(q) ? originalBank : beforeBank)[from]);
 }
 
-// Tree stamps are clipped at the dispatch box, not only by a shader mask:
-// legacy ownership may claim unchanged cells inside a dispatched edit.
+// V1-format edits, recorded (sim.edit): the native paths below must not take them.
 const edits = [];
 sim.editKernel = () => ({ ready: Promise.resolve() });
 sim.edit = (kernel, box, values) => { edits.push({ box, values }); sim.version++; };
-const stamper = new Stamper(sim);
-stamper.stamp([{ s: { w: 8, h: 4, d: 8, foot: 0, data: new Uint32Array(8 * 4 * 8 * 4) }, at: [12, 2, 3], seed: 1 }],
-  { clip: { lo: [16, 0, 0], hi: [31, 31, 31] } });
-assert.deepEqual(edits.at(-1).box, { lo: [16, 2, 3], hi: [19, 5, 10] });
 
 // Real PhysicsV2 owner + host orchestration: 60 weather/script invocations,
 // paired immediately around each native tick, and bounded catch-up.
@@ -658,4 +652,4 @@ assert.equal(physicsEngine(), 'v2', 'v2 is the only engine'); assert.equal(physi
 assert(!app.includes("if (mode === 'v2' && !physicsV2 && !worldMode)"), 'no world-only v1 fallback');
 assert(app.includes('before: nativeBeforeStep'), 'automatic and manual native steps retain weather hooks');
 assert(readFileSync('src/gfx/volume.js', 'utf8').includes('pickGroup], header: sim.readHeader({ physical: true })'));
-console.log('native integration CPU checks passed: exact shifts/slabs/undo/cargo, store corruption, stamp clipping, 60Hz orchestration, capability guards, host engine/guest routing/direct codec, SI tools');
+console.log('native integration CPU checks passed: exact shifts/slabs/undo/cargo, store corruption, 60Hz orchestration, capability guards, host engine/guest routing/direct codec, SI tools');

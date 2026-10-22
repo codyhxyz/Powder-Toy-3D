@@ -3,7 +3,7 @@ import { E, ELEMENTS, K } from '../../elements.js';
 import { FOAM_ROWS } from '../../v2/foam.js';
 import { SHOCK_FALL_CELLS, SHOCK_LANDINGS, V1_FALL_CELLS_MAX, v1LiquidHit, v1LiquidArrival } from '../../v2/dynamics-reference.js';
 import { PHYS, SIM_GRAVITY } from '../../physics.js';
-import { PACE } from '../move.js';
+import { PACE } from '../../physics.js';
 import { GRAVITY_MS2, STEPS_PER_TICK, V1_STEP_MS, v1PaceRate } from '../../v2/gravity.js';
 
 // Column-run water (docs/v2/water-cost-first-principles.md; the CPU prototype it ports is

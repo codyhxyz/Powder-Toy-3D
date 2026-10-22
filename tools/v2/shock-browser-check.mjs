@@ -34,7 +34,9 @@ const V1_MATCH_CELLS = 1;
 const arg = (name) => { const i = process.argv.indexOf(name); return i < 0 ? null : process.argv[i + 1]; };
 const part = arg('--part');
 if (!['nitro', 'c4', 'c4land'].includes(part)) { console.error('usage: node tools/v2/shock-browser-check.mjs --part nitro|c4|c4land [--v1]'); process.exit(2); }
-const withV1 = process.argv.includes('--v1');
+// (V1's part is the v1-oracle tag's: this script run from a checkout of it, --v1)
+if (process.argv.includes('--v1')) throw new Error('V1 is the v1-oracle tag (git worktree add <dir> v1-oracle): run this from that checkout --v1');
+const withV1 = false;
 const NITRO_SCENES_PER_LAUNCH = 4;
 let failures = 0;
 const t0 = Date.now(), at = () => `${((Date.now() - t0) / 1000).toFixed(1)} s`;

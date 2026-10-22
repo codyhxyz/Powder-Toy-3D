@@ -5,51 +5,42 @@ import { emitNativeRay, nativeRayKind } from './v2/tools.js';
 import { NativeIntegration, nativeCapabilities } from './v2/integration.js';
 import { nativeRectToAtlasWGSL, nativeIdsWGSL, NATIVE_ID_ROWS } from './v2/nativeRead.js';
 import {
-  BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, LAYOUT, STATE_OPTS, gridDims, atlasDims, sleepUnitOf,
-  marksLayout, actLayout, ACT_COUNTS, ACT_MAP, tablesBuffer, tablesAirTOffset, cellSlot, slotCell, brickIdOf, brickCoordOf,
+  BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, LAYOUT, STATE_OPTS, gridDims, atlasDims,
+  marksLayout, actLayout, tablesBuffer, tablesAirTOffset, cellSlot, slotCell, brickIdOf, brickCoordOf,
   editKernelWGSL, EDIT_FIELDS, EDIT_SCRATCH_BINDING,
 } from './shaders/common.js';
 import {
-  activityPeriod, inertListFrag, inertFrag, quietFrag, drawnFrag, move1Frag, argsFrag, permuteFrag, inertRefFrag,
-  BuildParams, BUILD_LAYOUT, REF_LAYOUT, ARGS, ARGS_BYTES, COUNTS_SLOTS, COUNTS_BYTES, inertFold, SUPER_SETTLE_STEPS,
-} from './shaders/activity.js';
-import { moveBlockFrag, MoveParams, MOVE_LAYOUT, marginBlocks, MOVE_FORM, ownerLayout } from './shaders/move.js';
-import { reactFrag, ReactParams, REACT_LAYOUT, FACES } from './shaders/react.js';
-import {
-  paintUpdateWGSL, PaintParams, PAINT_LAYOUT, paintDeclsWGSL, freshFrag, copyFrag, toAtlasFrag, fromAtlasFrag, ConvertParams, CONVERT_LAYOUT,
-  rectToAtlasFrag, RectParams, awakeFrag, AwakeParams,
+  paintUpdateWGSL, PaintParams, PAINT_LAYOUT, paintDeclsWGSL, freshFrag, toAtlasFrag, fromAtlasFrag, ConvertParams, CONVERT_LAYOUT,
+  rectToAtlasFrag, RectParams,
 } from './shaders/passes.js';
 import { shiftFrag, undoShiftFrag, flowShiftFrag, ShiftParams, UNDO_LAYOUT, FLOW_SHIFT_LAYOUT } from './shaders/window.js';
 import { stateLayout } from './shaders/common.js';
 import { uniformStruct } from './gpu/params.js';
 import { fold } from './gpu/kernels.js';
 import { TOOLS, PROP_TOOL, isDecoTool } from './elements.js';
-import { strokeDabs, PROP } from './editing.js';
 import { GRAV, EDGE, SIM_MODE_DEFAULTS } from './simModes.js';
 import { PHYS } from './physics.js';
 
-// The simulation on the GPU (docs/webgpu.md C, D): the state buffers, the
-// step (the move in place, then react: shaders/move.js, react.js), the
-// activity map that puts quiet bricks to sleep (shaders/activity.js), the
-// writers that aren't steps (edits, loads, undo, shifts) and every read back.
+// The simulation's host on the GPU (docs/webgpu.md C, D): Physics V2 steps it (src/v2/physics.js, the
+// only engine: sim.compact, ticked by v2/host.js); here are the legacy cell buffers its V1-format
+// writers, loads and readbacks still go through (A/B/F: the import and export format), the
+// writers that aren't steps (edits, loads, undo, shifts) and every read back. V1's own step (the
+// move, react and its activity map) is gone; it lives on as the v1-oracle tag.
 // Everything records into the one open frame (gpu.frame, B3); nothing here
 // submits or waits, and every read is a promise (W6).
 //
 //   const sim = new Simulation(gpu, 128, 128, 128);
 //   await sim.ready;               // its pipelines (built asynchronously, B5)
 //   sim.paint({ center, radius, shape: 0, tool: E.SAND, rate: 1, replace: false });
-//   sim.step();
+//   sim.step();                    // one native tick (the owner: new PhysicsV2(sim, …), sim.prepareNative)
 //   const [A, B] = await sim.readState();   // atlas order (cellTexel), as load() takes
 //
 // The derived passes (render fields, the brick map, light, GI) are
 // src/derived.js's (docs/webgpu.md E): sim.attachDerived(d) and the
-// delegating methods below. Fast particles, whitewater and TPT's decoration
-// layer plug in the same way (attachRays, attachAeration, attachDeco; J3).
+// delegating methods below. TPT's decoration layer plugs in the same way (attachDeco; J3).
 //
 // TPT's simulation options (src/simModes.js: gravity, air, ambient heat and
-// edge modes) are per-dispatch params of the move and react (B4), set by the
-// setters below; switching one builds nothing. Radial gravity and void or loop
-// edges switch quiet skipping off (quietOk), so the sleeping rules stay exact.
+// edge modes) are set by the setters below and read by V2 (v2/physics.js nativeModes).
 
 // cells/step² downward (the app's gravity setting overrides it)
 const GRAVITY_DEFAULT = 0.025;
@@ -63,9 +54,6 @@ const MIX_TOOL = TOOLS.find((t) => t.key === 'MIX').id;
 const NATIVE_PENDING_SECONDS = 30, NATIVE_PENDING_HZ = 60;
 const NATIVE_PENDING_MAX = NATIVE_PENDING_SECONDS * NATIVE_PENDING_HZ;
 
-// Steps an activity map stays valid (shaders/activity.js).
-const ACTIVITY_PERIOD = activityPeriod(BRICK);
-
 // Cells added around a box of cell centres in the box an edit covers
 // (touchCentres(): the brush, the first-person body and physgun): the centres
 // sit half a cell off the grid, so this covers them with room.
@@ -74,10 +62,9 @@ const TOUCH_MARGIN = 1;
 // Undo snapshots kept, at most (each is the current A and B: ~67 MB at 128³).
 const UNDO_LIMIT = 3;
 
-// The legacy state's copies (docs/webgpu.md C1; Simulation.pingPong): V1's step
-// ping-pongs between two (the move in place, the react into the other); a box
-// the native engine owns (src/v2/physics.js) keeps only the current one, the
-// cache its edits and readbacks go through. Bytes a slot in each copy: A and B
+// The legacy state's copies (docs/webgpu.md C1; Simulation.pingPong): a window's V1-format shift
+// before its native owner is ready runs out of place into a second; the native engine
+// (src/v2/physics.js) keeps only the current one, the cache its edits and readbacks go through. Bytes a slot in each copy: A and B
 // a vec4f each, F a u32 (a copy is 36 B a slot: 75.5 MB at 128³).
 const PING_PONG = 2, ONE_COPY = 1;
 const STATE_BYTES = { A: 16, B: 16, F: 4 };
@@ -174,13 +161,6 @@ export class Vec3 {
   toArray(a = [], o = 0) { a[o] = this.x; a[o + 1] = this.y; a[o + 2] = this.z; return a; }
 }
 
-// The rays layer while nothing is attached (docs/webgpu.md J3: src/wire/rays.js
-// attaches the real one, U12): never active.
-const NO_RAYS = Object.freeze({
-  active: false, stepped: false, bricks: null, deposit: null,
-  step() {}, settle() {}, paint() { return false; }, noteElement() {}, reset() {}, wake() {}, dispose() {},
-});
-
 let nextSimId = 0;
 
 // A number per object (buffer, texture view), for keys of bind group caches.
@@ -194,7 +174,7 @@ function simLayouts(gpu) {
   for (const [name, entries] of Object.entries({
     TABLES: LAYOUT.TABLES, STATE_RW: LAYOUT.STATE_RW, STATE_RO: LAYOUT.STATE_RO, STATE_ACT: LAYOUT.STATE_ACT,
     STATE_BUILD: LAYOUT.STATE_BUILD, STATE_FLAGS_RO: stateLayout({ state: 'read', flags: true }),
-    MOVE: MOVE_LAYOUT, REACT: REACT_LAYOUT, BUILD: BUILD_LAYOUT, REF: REF_LAYOUT, CONVERT: CONVERT_LAYOUT,
+    CONVERT: CONVERT_LAYOUT,
     UNDO: UNDO_LAYOUT, FLOW_SHIFT: FLOW_SHIFT_LAYOUT,
     EDIT_SCRATCH: [{ binding: EDIT_SCRATCH_BINDING, buffer: { type: 'storage' } }],
   })) L[name] = gpu.layout(name, entries);
@@ -241,31 +221,23 @@ export class Simulation {
    * @param {number} nx
    * @param {number} ny
    * @param {number} nz
-   * @param {{ windowed?: boolean, world?: number[], sleepUnit?: {x: number, y: number, z: number}, debug?: boolean, form?: string, nativeStartup?: boolean }} [opts]
+   * @param {{ windowed?: boolean, world?: number[], debug?: boolean }} [opts]
    *   windowed: the grid is a window of a larger world (docs/scaling.md D11);
    *   world: that world's size (the GI's far layout, src/derived.js);
-   *   sleepUnit: the sleeping unit in bricks (shaders/common.js SLEEP_UNIT; SUPER for an A/B);
-   *   debug: every state access tests its cell and counts misses (readDebug; I2.8);
-   *   form: the move's code form (shaders/move.js MOVE_FORMS; tools compare them, D2)
-   *   nativeStartup: defer legacy stepping kernels until prepareLegacy(); edits/imports still build now.
-   *     A box keeps one state copy until something ping-pongs (pingPong)
+   *   debug: every state access tests its cell and counts misses (readDebug; I2.8).
+   *   A box keeps one legacy copy; a window two until its owner is ready (pingPong)
    */
-  constructor(gpu, nx, ny, nz, { windowed = false, world = null, sleepUnit = null, debug = gpu.debug, form = MOVE_FORM, nativeStartup = false } = {}) {
+  constructor(gpu, nx, ny, nz, { windowed = false, world = null, debug = gpu.debug } = {}) {
     this.gpu = gpu;
     this.id = nextSimId++;   // tells a rebuilt simulation from the old one
     this.g = gridLayout(nx, ny, nz);
     const g = this.g;
-    if (sleepUnit) g.sleepUnit = sleepUnit;
-    this.unit = sleepUnitOf(g);
     this.g.windowed = windowed;   // a window of a larger world
     this.world = world;           // the world size whose far layout the GI holds (src/derived.js)
     this.debug = Boolean(debug);
     if (!gpu.fits(g)) throw new Error(`grid ${nx}×${ny}×${nz}: ${gpu.fitsReason(g)}`);
     this.frame = 0;
     this.paints = 0;   // brush strokes applied (the brush's random stream)
-    this.idleEpoch = 0;
-    this.idleCertified = false;
-    this.idleRead = null;   // at most one asynchronous read of the activity counts
     // simulation modes (src/simModes.js), set through their setters below
     this._gravityMode = SIM_MODE_DEFAULTS.gravityMode;
     this._airMode = SIM_MODE_DEFAULTS.airMode;
@@ -283,10 +255,7 @@ export class Simulation {
     // that is its whole world stays at 0; shift() moves it.
     this.origin = new Vec3();
     this.originUniform = { value: this.origin };   // (for the render setup until it reads the header)
-    // fast particles and whitewater (attachRays, attachAeration), the derived
-    // passes (attachDerived), TPT's decoration layer (attachDeco: src/deco.js, U17)
-    this.rays = NO_RAYS;
-    this.aeration = null;
+    // the derived passes (attachDerived), TPT's decoration layer (attachDeco: src/deco.js, U17)
     this.derived = null;
     this.deco = null;
     // The decoration layer exists from the first deco stroke (main's
@@ -296,12 +265,7 @@ export class Simulation {
     // profiling hook (gfx/profiler.js): onPass(name, { kind, gpuMs }) after every dispatch
     this.onPass = null;
     // test knobs (docs/webgpu.md C7, I2); test mode only
-    //   logCounts: every build's counts go through the ring, into countsLog
-    //   ({ frame, counts: Promise<ArrayBuffer> }: nAWAKE, nDRAWN, nMOVE1, nINERT), for budget-check
-    //   loopMargin: with loop edges, run the move's low-margin blocks too: every
-    //   block straddling an edge gets a second owner (the owner check's negative control)
-    this.test = { listOrder: null, blockOrder: null, raceProbe: false, syncAfterShift: false, logCounts: false, loopMargin: false };
-    this.countsLog = [];
+    this.test = { syncAfterShift: false };
     this._shiftListeners = [];
     this._scratchGroups = [];   // [edit kernel's group cache, key] of the groups holding the edit scratch
 
@@ -310,110 +274,60 @@ export class Simulation {
     const buf = (label, size, usage = S | CS | CD) => gpu.createBuffer({ label: `sim${this.id} ${label}`, size: Math.max(16, Math.ceil(size / 16) * 16), usage });
     const slots = g.slots;
     this.cur = 0;
-    const { A, B, F } = this._stateBuffers(nativeStartup && !windowed ? ONE_COPY : PING_PONG);
+    const { A, B, F } = this._stateBuffers(windowed ? PING_PONG : ONE_COPY);
     this.flow = buf('flow', slots * 8);
-    // moveSrc's buffer: whitewater's moveSrc plane and the decoration's (_side)
+    // the decoration's plane until the native owner takes it (_side, PhysicsV2.activate)
     this.moveSrc = buf('moveSrc (none)', 16);
     this.sideDeco = false;   // it holds the decoration's plane (attachDeco)
-    // (a debug build's move stamps its cells after the marks' own words: the owner check, shaders/move.js ownerLayout)
-    this.marks = buf('marks', (this.debug ? ownerLayout(g).words : marksLayout(g).words) * 4);
+    this.marks = buf('marks', marksLayout(g).words * 4);
+    // (the derived passes' state group binds it: derived.js bindBuild)
     this.actLayout = actLayout(g);
     this.act = buf('act', this.actLayout.words * 4);
-    this.args = buf('args', ARGS_BYTES, S | CS | CD | GPUBufferUsage.INDIRECT);
-    // dummies for the rays layer's deposit and brick bits while none is attached
-    this.noDeposit = buf('rays deposit (none)', 16);
-    this.noRayBricks = buf('rays bricks (none)', 16);
     this.noMask = buf('paint mask (none)', 16);   // the brush's group 2 when it isn't a fill (passes.js PAINT_LAYOUT)
     const sim = this;
     this.state = {
       A, B, F, flow: this.flow, slots,
       get cur() { return sim.cur; },
     };
-    // the INERT dispatch's y and z stay 1 (its x is the inertList kernel's)
-    const argsInit = new Uint32Array(ARGS_BYTES / 4);
-    argsInit[1] = argsInit[2] = 1;
-    gpu.queue.writeBuffer(this.args, 0, argsInit);
-    // the activity counts' ring (B7): a slot per build whose counts are read
-    this.counts = gpu.readback.ring(`sim${this.id} counts`, COUNTS_BYTES, COUNTS_SLOTS, { buffer: this.args, offset: ARGS.RING });
-
     // ---- bind groups, made once (B6) ----
     const L = (this.L = simLayouts(gpu));
     this.tables = tablesOf(gpu).group;
     this._stateGroups();
-    this._groups();
 
-    // ---- kernels (B5): native hosts need edits/imports now, not legacy stepping ----
+    // ---- kernels (B5): the writers and readers a native host goes through ----
     const dbg = { debug: this.debug };
     const kernel = (name, code, layouts, params, extra = {}) => gpu.kernel({ name, code, layouts: [this.L.TABLES, ...layouts], params, ...extra });
-    const build = (name, frag, extra = {}) => kernel(name, frag(g), [L.STATE_BUILD, L.BUILD], BuildParams, extra);
-    const legacy = nativeStartup ? { build: 'manual' } : {};
-    this._legacyDeferred = nativeStartup;
-    this.kernels = {
-      move: kernel('move', moveBlockFrag(g, { form, ...dbg }), [L.STATE_RW, L.MOVE], MoveParams, legacy),
-      react: kernel('react', reactFrag(g, dbg), [L.STATE_RW, L.REACT], ReactParams, legacy),
-      inertList: build('inertList', inertListFrag, legacy),
-      inert: kernel('inert', inertFrag(g, dbg), [L.STATE_BUILD], BuildParams, legacy),
-      quiet: build('quiet', quietFrag, legacy),
-      drawn: build('drawn', drawnFrag, legacy),
-      move1: build('move1', move1Frag, legacy),
-      args: build('args', argsFrag, legacy),
-    };
     // the simulation's other passes (docs/webgpu.md D6, D7, C2): what a session
-    // writes with (the brush, load, undo, the derived passes' note) built now
-    // too, so a write never waits; the rest on first use (passOf, prepare)
+    // writes with (the brush, load) built now, so a write never waits; the rest on first use (passOf, prepare)
     const brush = { update: paintUpdateWGSL, params: PaintParams, decls: paintDeclsWGSL(g), layout: PAINT_LAYOUT };
-    // V1's edit passes a native host never records: its Mix runs natively (v2/interactions.js
-    // nativeCellPaint) and its undo across a shift too (v2/integration.js undo). They build on first
-    // use there (prepareLegacy builds them with V1's stepping), so the first frame never waits for them.
-    const v1Edits = {
-      paintMix: () => this.editKernel('paintMix', { ...brush, reads: 'neighbours' }),   // TPT's Mix tool reads its partner cell
-      undoShift: () => kernel('undoShift', undoShiftFrag(g, dbg), [L.STATE_RW, L.UNDO], ShiftParams),
-    };
-    this._legacyEdits = nativeStartup ? Object.keys(v1Edits) : [];
-    const v1Edit = (name) => (nativeStartup ? {} : { [name]: v1Edits[name]() });   // (V1's: built now, in its order)
     this.passes = {
       paint: this.editKernel('paint', { ...brush, reads: 'own' }),
-      ...v1Edit('paintMix'),
       fromAtlas: kernel('fromAtlas', fromAtlasFrag(g, dbg), [L.STATE_RW, L.CONVERT], ConvertParams),
-      ...v1Edit('undoShift'),
-      awake: kernel('awake', awakeFrag(g), [L.STATE_BUILD], AwakeParams),
     };
     this._lazy = {
-      ...v1Edits,
+      // (a Mix stroke in the V1 format: TPT's Mix reads its partner cell; native strokes are v2/interactions.js's)
+      paintMix: () => this.editKernel('paintMix', { ...brush, reads: 'neighbours' }),
+      // (an undo entry taken before the native owner was ready: the V1 format's, across a shift)
+      undoShift: () => kernel('undoShift', undoShiftFrag(g, dbg), [L.STATE_RW, L.UNDO], ShiftParams),
       toAtlas: () => kernel('toAtlas', toAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], ConvertParams),
       rectToAtlas: () => kernel('rectToAtlas', rectToAtlasFrag(g), [L.STATE_FLAGS_RO, L.CONVERT], RectParams),
       nativeRectToAtlas: () => kernel('nativeRectToAtlas', nativeRectToAtlasWGSL(g), [L.STATE_RO, L.CONVERT], RectParams),
       nativeIds: () => kernel('nativeIds', nativeIdsWGSL(g), [L.STATE_RO, L.CONVERT]),
       nativeDrawnToAtlas: () => kernel('nativeDrawnToAtlas', nativeRectToAtlasWGSL(g, { drawn: true }), [L.STATE_RO, L.CONVERT], RectParams),
-      copy: () => kernel('copy', copyFrag(g, dbg), [L.STATE_RW]),
       fresh: () => kernel('fresh', freshFrag(g, dbg), [L.STATE_RW]),
-      inertRef: () => kernel('inertRef', inertRefFrag(g), [L.STATE_RO, L.REF]),
-      permute: () => build('permute', permuteFrag),
-      moveRace: () => kernel('moveRace', moveBlockFrag(g, { form, ...dbg, raceProbe: true }), [L.STATE_RW, L.MOVE], MoveParams),
       shift: () => kernel('shift', shiftFrag(g, dbg), [L.STATE_RW], ShiftParams),
       flowShift: () => kernel('flowShift', flowShiftFrag(g), [gpu.L.EMPTY, L.FLOW_SHIFT], ShiftParams),
     };
-    // a window of a larger world moves (and its window code syncs copies until
-    // U10 drops that, G1); tools read the state back from their first call
-    if (windowed) for (const k of ['shift', 'flowShift', 'copy']) this.passOf(k);
-    if (gpu.testMode) for (const k of ['toAtlas', 'copy']) this.passOf(k);
+    // a window of a larger world moves; tools read the state back from their first call
+    if (windowed) for (const k of ['shift', 'flowShift']) this.passOf(k);
+    if (gpu.testMode) this.passOf('toAtlas');
     // (the state starts blank once they are: load() needs its kernel)
-    this.ready = Promise.all([...(nativeStartup ? [] : Object.values(this.kernels)), ...Object.values(this.passes)].map((k) => k.ready))
+    this.ready = Promise.all(Object.values(this.passes).map((k) => k.ready))
       .then(() => { if (!this.disposed && this.version === 0) this.clear(); return this; });
 
-    // ---- activity (docs/webgpu.md D4, D5) ----
-    this.actAge = ACTIVITY_PERIOD;
-    this.actDirty = true;
-    this.actFresh = false;   // the next step is the first since a map was built (its dirty marks start over)
-    this.actSteps = 0;       // steps that used the current map
-    this.actFull = true;     // the next map rebuilds every brick's inert bit (not only near the last DRAWN and marks)
-    this.forceAll = true;    // every unit was written since the last map: the next map draws them all
-    this._skipQuiet = true;      // false: step every brick (A/B testing)
-    this._skipSleeping = true;   // false: every unit DRAWN (A/B testing)
     // the derived passes' bookkeeping (src/derived.js reads and resets these)
     this.changedAll = true;  // every brick changed since the derived passes last ran
-    this.actCarry = null;    // actAge at the last updateBricks while that quiet map is current
-    this.actNoted = false;   // `changed` holds a quiet map noted since the last updateBricks
+    this.actNoted = false;   // (V1's quiet-map note: none since V1's step went; the derived age pass's steps param)
     this.incremental = true; // false: the derived passes rebuild every brick (A/B testing)
     this.smoothing = 1;
     this.fieldReset = true;
@@ -444,14 +358,9 @@ export class Simulation {
   get copies() { return this.state.A.size / (this.g.slots * STATE_BYTES.A); }
 
   /**
-   * Holds both legacy copies (on: V1's step, a shift, the copy tools) or only
-   * the current one (off: a box the native engine owns, src/v2/physics.js). The
-   * current copy keeps its words, as copy 0. A second copy comes back zeroed, as
-   * a new grid's starts: V1 steps only after a whole write is noted (a load, or
-   * PhysicsV2.suspend's noteWrite), so its first map draws every unit and its
-   * react writes every cell of that copy before anything reads it (the
-   * copy-through, shaders/react.js), as after any load. Only a box (g.windowed
-   * false) drops one: a window's shift runs out of place. The groups holding the
+   * Holds both legacy copies (on: a V1-format shift, before the window's native
+   * owner is ready) or only the current one (off: the native engine owns the
+   * grid, src/v2/physics.js). The current copy keeps its words, as copy 0. The groups holding the
    * old buffers are made again (here and the native owner's), and the old
    * buffers go once the queue is done with them. (Once graphics have stopped,
    * nothing is remade: nothing records any more.)
@@ -472,15 +381,6 @@ export class Simulation {
     this.compactOwner?.bindLegacy();
   }
 
-  // The group-2 bind groups that hold attachable resources (rays, aeration).
-  _groups() {
-    const { gpu, L } = this;
-    const b = (binding, buffer) => ({ binding, resource: { buffer } });
-    this.moveGroup = gpu.bindGroup(L.MOVE, [b(0, this.flow), b(1, this.moveSrc)], 'move');
-    this.reactGroup = gpu.bindGroup(L.REACT, [b(0, this.rays.deposit ?? this.noDeposit)], 'react');
-    this.buildGroup = gpu.bindGroup(L.BUILD, [b(0, this.args), b(1, this.rays.bricks ?? this.noRayBricks)], 'build');
-  }
-
   // A tool's kernel, made on first use; recording it needs it ready (prepare).
   passOf(name) { return (this.passes[name] ??= this._lazy[name]()); }
 
@@ -488,21 +388,12 @@ export class Simulation {
   _readyFor(name) { const k = this.passOf(name); return k.state === 'ready' ? null : k.ready; }
 
   /**
-   * Builds kernels the simulation makes only on demand: 'inertRef',
-   * 'permute' (sim.test.listOrder), 'moveRace' (sim.test.raceProbe), 'shift'
-   * and 'flowShift' (a grid made without `windowed`). Resolves when they are
-   * ready to record.
+   * Builds kernels the simulation makes only on demand: 'shift' and
+   * 'flowShift' (a grid made without `windowed`), the readbacks' ('toAtlas',
+   * 'rectToAtlas', ...). Resolves when they are ready to record.
    * @param {...string} names
    */
   prepare(...names) { return Promise.all(names.map((n) => this.passOf(n).ready)); }
-
-  // Explicit engine-switch boundary. Build once, await every legacy step/activity
-  // kernel and the initial clear; a failure leaves legacy stepping disabled.
-  async prepareLegacy() {
-    await Promise.all([this.ready, ...Object.values(this.kernels).map((k) => k.build()), ...this._legacyEdits.map((n) => this.passOf(n).ready)]);
-    this._legacyDeferred = false;
-    return this;
-  }
 
   // Settings can change while asleep (including away and back during a readback).
   // gravity: cells/step², as the app's setting has it; read back, what pulls
@@ -520,23 +411,12 @@ export class Simulation {
   set ambientHeat(v) { this._setMode('_ambientHeat', v); }
   get edgeMode() { return this._edgeMode; }
   set edgeMode(v) { this._setMode('_edgeMode', this.g.windowed ? EDGE.SOLID : v); }
-  // May quiet bricks be skipped? Not where a resting cell could still move:
-  // the rest test (shaders/activity.js) knows only vertical gravity and solid
-  // edges, so radial gravity and open or looping edges step every brick.
-  get quietOk() { return this._skipQuiet && this._gravityMode !== GRAV.RADIAL && this._edgeMode === EDGE.SOLID; }
-  get skipQuiet() { return this._skipQuiet; }
-  set skipQuiet(v) { if (v !== this._skipQuiet) { this._skipQuiet = v; this.actFull = true; this.wake(); } }
-  // A mode change wakes the world; one that turns quiet skipping on or off
-  // rebuilds every brick's inert bit, as a skipQuiet toggle does (docs/webgpu.md D4).
+  // A mode change wakes the world (V2 reads the modes at its next tick: v2/physics.js _noteModes).
   _setMode(key, v) {
     if (v === this[key]) return;
-    const quiet = this.quietOk;
     this[key] = v;
-    if (this.quietOk !== quiet) this.actFull = true;
     this.wake();
   }
-  get skipSleeping() { return this._skipSleeping; }
-  set skipSleeping(v) { if (v !== this._skipSleeping) { this._skipSleeping = v; this.wake(); } }
   // The ambient air temperature, °C (TPT's "ambient air temperature" option):
   // what the air relaxes to and rests at (shaders/common.js airT()). One value
   // for every simulation on the device, as the WebGL build's airTUniform was;
@@ -557,11 +437,8 @@ export class Simulation {
     else fresh.ready.then(() => { if (!this.disposed && !this.gpu.failure) this.freshFlags({ replaceState: false }); }, () => {});
   }
 
-  wake() {
-    this.idleEpoch++;
-    this.idleCertified = false;
-    this.actDirty = true;
-  }
+  // Something wrote: the frame loop's hook (app.js wraps it to wake the loop).
+  wake() {}
 
   /**
    * The header a dispatch on this grid gets (docs/webgpu.md B4): the window's
@@ -582,7 +459,6 @@ export class Simulation {
     const v2 = this.compact;
     if (!v2?.isReady) return this._bindRO;
     v2.sync();
-    if (v2.forceCompatibility && this.gpu.testMode) { v2.exportLegacy(false); return this._bindRO; }
     return v2.readGroup();
   }
   // Physical readers share the compact core but read current native coarse
@@ -592,8 +468,6 @@ export class Simulation {
   get bindPhysicalRO() {
     const v2 = this.compact;
     if (!v2?.isReady) return this._bindRO;
-    // forceCompatibility is renderer-only: physical probes always read the
-    // canonical core and current coarse air, never the visual projection.
     v2.sync();
     // (only the dynamics' buffers: their coarse air holds its rest, still air, until their kernels step it)
     const d = v2.dynamics;
@@ -684,7 +558,7 @@ export class Simulation {
   readHeader({ physical = false } = {}) {
     this.compact?.sync();
     const v2 = this.compact;
-    return { ...this.header(), format: v2?.isReady && (physical || !(v2.forceCompatibility && this.gpu.testMode)) ? (physical ? 3 : 2) : 0 };
+    return { ...this.header(), format: v2?.isReady ? (physical ? 3 : 2) : 0 };
   }
 
   // Records a dispatch into the frame's compute pass and tells the profiler.
@@ -693,155 +567,12 @@ export class Simulation {
     this.onPass?.(kernel.name, { kind: 'compute', gpuMs: null });
   }
 
-  // ---- the activity map (docs/webgpu.md D4) ----
+  // ---- the step (docs/webgpu.md D1): one native tick ----
 
-  // A zero AWAKE and DRAWN count certifies not just quiet cells, but that the
-  // last maps settled both state copies of every unit. Steps cannot wake this
-  // state themselves. External writes and settings invalidate even a late
-  // result (the epoch); ordinary steps and map rebuilds need not (a map built
-  // from the same state is the same fixed point), so a slow read can finish.
-  _wantIdleRead() {
-    return !this.idleRead && !this.idleCertified && this.quietOk && this.skipSleeping && !this.rays.active && !this.disposed;
-  }
-
-  _readIdle(slot) {
-    const epoch = this.idleEpoch;
-    this.idleRead = this.counts.read(slot).then((bytes) => {
-      const [awake, drawn] = new Uint32Array(bytes);
-      if (!this.disposed && epoch === this.idleEpoch && awake === 0 && drawn === 0) this.idleCertified = true;
-    }).catch(() => {})   // a failed read only disables this optimization; keep stepping
-      .finally(() => { this.idleRead = null; });
-  }
-
-  // Rebuild the activity map: six dispatches in the step's compute pass, one
-  // of them indirect (docs/webgpu.md D4).
-  updateActivity() {
-    const g = this.g;
-    // the outgoing map, if steps used it since the last updateBricks noted it
-    const carry = this.actCarry !== null && this.actAge > this.actCarry;
-    this.actCarry = null;
-    const read = this._wantIdleRead();
-    const order = this.gpu.testMode ? this.test.listOrder : null;
-    const log = this.gpu.testMode && this.test.logCounts;
-    const params = {
-      full: this.actFull, enabled: this.quietOk, rays: this.rays.active, carry, noted: this.actNoted,
-      forceAll: this.forceAll, nPrev: this.actSteps, all: !this.skipSleeping, slot: 0,
-    };
-    const bind = [this.tables, this.bindBuild, this.buildGroup];
-    const header = this.header();
-    const perBrick = fold(Math.ceil(g.nbricks / 64)), perUnit = fold(Math.ceil(this.unit.units / 64));
-    const { inertList, inert, quiet, drawn, move1, args } = this.kernels;
-    this._dispatch(inertList, perBrick, { bind, header, params });
-    if (order) this._permute(ACT_COUNTS.INERT, order);
-    this._dispatch(inert, { indirect: this.args, offset: ARGS.INERT }, { bind: [this.tables, this.bindBuild], header, params });
-    this._dispatch(quiet, perBrick, { bind, header, params });
-    this._dispatch(drawn, perUnit, { bind, header, params });
-    this._dispatch(move1, perUnit, { bind, header, params });
-    // the counts go to a ring slot when the idle check reads them, else to the spare one
-    const slot = read || log ? this.counts.next() : COUNTS_SLOTS;
-    this._dispatch(args, [1, 1, 1], { bind, header, params: { ...params, slot: (ARGS.RING + slot * COUNTS_BYTES) / 4 } });
-    if (order) {
-      this._permute(ACT_COUNTS.DRAWN, order);
-      this._permute(ACT_COUNTS.MOVE1, order);
-    }
-    this.actNoted = true;   // the quiet kernel noted the new map in `changed` (the step about to run uses it)
-    this.actAge = 0;
-    this.actDirty = false;
-    this.actFresh = true;
-    this.actFull = false;
-    this.forceAll = false;
-    this.actSteps = 0;
-    if (read) this._readIdle(slot);
-    if (log) this.countsLog.push({ frame: this.frame, counts: this.counts.read(slot) });
-  }
-
-  // Test only (I2.1): reorders a list in place ('reverse' or 'shuffle:<seed>').
-  _permute(list, order) {
-    const [kind, seed] = String(order).split(':');
-    const mode = kind === 'reverse' ? 1 : kind === 'shuffle' ? 2 : 0;
-    if (!mode) throw new Error(`sim.test.listOrder: 'reverse' or 'shuffle:<seed>', not ${order}`);
-    this._dispatch(this.passOf('permute'), [1, 1, 1], {
-      bind: [this.tables, this.bindBuild, this.buildGroup], header: this.header(),
-      params: { list, order: mode, seed: (Number(seed) || 0) + this.frame },
-    });
-  }
-
-  // The bricks the current quiet map doesn't skip may change: note them in
-  // `changed`, over what it holds unless it was consumed since (the derived
-  // passes' updateDirty carry, docs/webgpu.md D4, E).
-  noteAwake() {
-    this._dispatch(this.passes.awake, fold(Math.ceil(this.g.nbricks / 64)), {
-      bind: [this.tables, this.bindBuild], header: this.header(), params: { noted: this.actNoted },
-    });
-    this.actNoted = true;
-  }
-
-  // ---- the step (docs/webgpu.md D1) ----
-
+  // Callers outside app.js (scripts, fixtures) step the grid's native owner; app.js ticks it on game time.
   step() {
-    // Callers outside app.js (scripts/fixtures) step the active engine too.
-    // Engine switching is explicit; a step must never silently suspend v2.
-    if (this.compact) {
-      if (this.compact.isReady) nativeHostTick(this.compact);
-      return;
-    }
-    if (this._legacyDeferred) throw new Error('Legacy physics is not prepared: await sim.prepareLegacy() before stepping');
-    this.pingPong(true);   // (a box the native engine owned holds one copy)
-    const f = this.gpu.frame;   // (throws GraphicsFailure once graphics have stopped)
-    this.frame++;   // simulation time and parity advance even when there is nothing to step
-    // Certified idle: every unit settled in both copies, no unit AWAKE or DRAWN,
-    // and that's a fixed point until something writes (docs/webgpu.md D4).
-    if (this.idleCertified && !this.actDirty && !this.actFresh && this.actSteps >= SUPER_SETTLE_STEPS
-        && this.quietOk && this.skipSleeping && !this.rays.active) {
-      const aerGeneration = this.aeration?.generation, aerCopy = this.aeration?.cur;
-      this.aeration?.idle?.(f);   // nothing moves, but the foam left on it still bursts
-      if (this.aeration?.generation !== aerGeneration || this.aeration?.cur !== aerCopy) this.worldRenderSource?.recordLiveCopy(f, this);
-      return;
-    }
-    // particles fly first: the map below keeps the bricks they're in awake
-    if (this.rays.active) this.rays.step(f);
-    if (this.actDirty || this.actAge >= ACTIVITY_PERIOD) this.updateActivity();
-    this.actAge++;
-    this.actSteps++;
-    const parity = this.frame & 1;
-    const fresh = this.actFresh;
-    this.actFresh = false;
-    const outOfPlace = Boolean(this.aeration?.active);
-    const cur = this.cur, other = 1 - cur;
-    const testing = this.gpu.testMode;
-    const move = testing && this.test.raceProbe ? this.passOf('moveRace') : this.kernels.move;
-    const modes = { gravMode: this._gravityMode, edge: this._edgeMode };
-    const loop = this._edgeMode === EDGE.LOOP, loopMargin = testing && this.test.loopMargin;
-    const mp = {
-      frame: this.frame, parity, gravity: this.gravity, fresh, outOfPlace, margin: 0,
-      blockRev: testing && this.test.blockOrder === 'reverse', eight: 8, ...modes,
-      deco: this.decoCarried, decoAt: 0, srcAt: this.moveSrcAt, loopMargin,
-    };
-    // the move: in place (or into the other copy, for whitewater), over the
-    // offset's list, then at offset 1 the low margin's blocks; with loop edges
-    // those are the lists' blocks seen from the far side, which own them (one
-    // owner per block, shaders/move.js), so they don't run
-    const mh = this.header(cur, outOfPlace ? other : cur);
-    const mb = [this.tables, this.bindRW, this.moveGroup];
-    this._dispatch(move, { indirect: this.args, offset: parity ? ARGS.MOVE1 : ARGS.MOVE0 }, { bind: mb, header: mh, params: mp });
-    if (parity && (!loop || loopMargin)) this._dispatch(move, fold(Math.ceil(marginBlocks(this.g) / 64)), { bind: mb, header: mh, params: { ...mp, margin: 1 } });
-    // whitewater's field follows the move (gfx/foam.js): it reads the copy from
-    // before it, and moveSrc's plane at word moveSrcAt of its buffer
-    if (outOfPlace) this.aeration.step(f, { pre: cur, post: other, moveSrc: this.moveSrc, moveSrcAt: this.moveSrcAt });
-    // react, from the moved state into the other copy
-    const rh = outOfPlace ? this.header(other, cur) : this.header(cur, other);
-    this._dispatch(this.kernels.react, { indirect: this.args, offset: ARGS.REACT }, {
-      bind: [this.tables, this.bindRW, this.reactGroup], header: rh,
-      params: {
-        frame: this.frame, gravity: this.gravity, faces: FACES, headScan: this.g.ny, rays: Boolean(this.rays.stepped), ...modes,
-        airMode: this._airMode, ambientHeat: this._ambientHeat,
-      },
-    });
-    if (!outOfPlace) this.cur = other;
-    if (this.rays.active) this.rays.settle(f);
-    this.version += 2;   // (the move and react: as the WebGL build counted its two state passes)
-    this.worldRenderSource?.noteContentChange();
-    this.worldRenderSource?.recordLiveCopy(f, this);
+    if (!this.compact?.isReady) throw new Error('The grid has no ready native owner: new PhysicsV2(sim), await sim.prepareNative()');
+    nativeHostTick(this.compact);
   }
 
   // ---- writers that aren't steps (docs/webgpu.md D6) ----
@@ -1010,14 +741,7 @@ export class Simulation {
     if (tool === PROP_TOOL && !prop) return;
     // TPT's deco tools paint the decoration layer, not the cells (src/deco.js): made on the first stroke
     if (isDecoTool(tool)) { this.ensureDeco()?.paint?.({ center, radius, shape, tool }); return; }
-    // particle tools paint into the particle list, not the grid (a line or box: dabs along it)
-    const dabs = !mask && (end !== center || grow) ? strokeDabs(center, end, grow ?? undefined, radius) : [center];
-    if (this.rays.paint({ center: dabs[0], radius, shape, tool, rate })) {
-      for (const c of dabs.slice(1)) this.rays.paint({ center: c, radius, shape, tool, rate });
-      return;
-    }
-    this.rays.noteElement(tool);   // plutonium emits neutrons: the layer wakes
-    if (prop?.field === PROP.TYPE) this.rays.noteElement(prop.value);
+    if (nativeRayKind(tool)) return false;   // (particles are the native owner's: none to paint into before it is ready)
     // Its own random stream: this.frame counts steps only. The move pass
     // alternates its block partition by the step count's parity, so a paint
     // bumping it would lock the partition when one step runs per paint (Speed
@@ -1067,8 +791,6 @@ export class Simulation {
     this.version++;
     if (!residency) this.worldRenderSource?.noteContentChange();
     if (replaceState) this.wholeWrites++;
-    this.forceAll = true;
-    this.actFull = true;
     this.changedAll = true;
     this.wake();
   }
@@ -1104,7 +826,6 @@ export class Simulation {
     this.giReset = true;
     this.stillFlow();
     this.resetNativeDynamics();
-    this.rays.reset();   // a new state: the old particles go, and it may hold plutonium
     this.deco?.reset?.();   // a new state: its decoration, if any, comes after (src/deco.js uploadDeco)
   }
 
@@ -1131,17 +852,6 @@ export class Simulation {
       this._convertGroup = this.gpu.bindGroup(this.L.CONVERT, [{ binding: 0, resource: { buffer: this.atlasScratch } }], 'atlas scratch');
     }
     return this.atlasScratch;
-  }
-
-  // Copy the current state into the other copy, so both hold it (tools; after
-  // a shift and its fill nothing needs it: docs/webgpu.md D6). An exact copy of
-  // A, B and F keeps the sleeping invariant, so it forces nothing. (One
-  // dispatch: WebGPU copies no range of a buffer into another range of it.)
-  syncCopies() {
-    this.pingPong(true);
-    this._dispatch(this.passOf('copy'), fold(Math.ceil(this.g.slots / 64)), {
-      bind: [this.tables, this.bindRW], header: this.header(this.cur, 1 - this.cur),
-    });
   }
 
   // ---- undo history: GPU copies of the state, newest last ----
@@ -1242,7 +952,6 @@ export class Simulation {
     this.history.pop();
     this.deco?.restore?.(t, dx, dz);
     this.stillFlow();
-    this.rays.wake();   // it may bring plutonium back
     this._retireUndo(t);
     return true;
   }
@@ -1257,7 +966,6 @@ export class Simulation {
   stillFlow() {
     this.gpu.frame.clear(this.flow);
     this.worldRenderSource?.noteContentChange();
-    this.aeration?.reset?.(this.gpu.frame);
   }
 
   /**
@@ -1316,12 +1024,9 @@ export class Simulation {
       this.fieldReset = this.giReset = true;
       this.stillFlow();
     }
-    this.rays.reset();   // particles are in grid cells: v1 lets them go (docs/particles.md)
     this.version++;
     this.wholeWrites++;
     native?.shifted();
-    this.forceAll = true;
-    this.actFull = true;
     // the derived passes shift their own history by whole bricks and re-age
     // only the slab and the edges (docs/webgpu.md E); without that, all of it
     if (!this.derived?.shiftsBricks) this.changedAll = true;
@@ -1473,7 +1178,6 @@ export class Simulation {
     this.giReset = true;
     this.stillFlow();
     this.resetNativeDynamics();
-    this.rays?.reset?.();
     this.deco?.reset?.();
   }
 
@@ -1516,27 +1220,6 @@ export class Simulation {
   }
 
   /**
-   * Both state copies as they are at this call, atlas order, flags included
-   * (tools/state-hash.mjs's copies line): { A: [copy0, copy1], B: […], F: […] }.
-   */
-  async readCopies() {
-    const texels = this.g.width * this.g.height, rb = this.gpu.readback, wait = this._readyFor('toAtlas');
-    if (wait) await wait;
-    this.pingPong(true);
-    const reads = [];
-    for (const c of [0, 1]) {
-      this._toAtlas(c, false);
-      reads.push(rb.buffer(this.atlasScratch, 0, texels * 32));
-      this._toAtlas(c, true);
-      reads.push(rb.buffer(this.atlasScratch, 0, texels * 4));
-    }
-    this._dropAtlasScratch();
-    const [ab0, f0, ab1, f1] = await Promise.all(reads);
-    const ab = (x, k) => new Float32Array(x, k * texels * 16, texels * 4);
-    return { A: [ab(ab0, 0), ab(ab1, 0)], B: [ab(ab0, 1), ab(ab1, 1)], F: [new Uint32Array(f0), new Uint32Array(f1)] };
-  }
-
-  /**
    * One cell of the current state as it is at this call: [a, b] in the
    * fetchA/fetchB layout. For tests and tools.
    * @returns {Promise<[Float32Array, Float32Array]>}
@@ -1572,27 +1255,16 @@ export class Simulation {
    * and DRAWN (docs/webgpu.md C2; tools only).
    * @returns {Promise<{ inert: Uint8Array, quiet: Uint8Array, awake: Uint8Array, drawn: Uint8Array, run: Uint8Array }>}
    */
+  // The activity maps (the profiler's awake and drawn shares, gfx/profiler.js): the native owner's;
+  // all zero while it builds.
   async readMaps() {
     const v2 = this.compact;
     if (v2?.isReady && v2.act && v2.layout) return this._readNativeMaps(v2);
-    const g = this.g, L = this.actLayout, n = g.nbricks;
-    const w = new Uint32Array(await this.gpu.readback.buffer(this.act, 0, L.aerSeen * 4));
-    const out = { inert: new Uint8Array(n), quiet: new Uint8Array(n), awake: new Uint8Array(n), drawn: new Uint8Array(n), run: new Uint8Array(n) };
-    for (let id = 0; id < n; id++) {
-      const [bx, by, bz] = brickCoordOf(g, id);
-      const i = bx + g.bx * (by + g.by * bz);
-      const m = w[L.map + Math.floor(id / this.unit.bricks)];
-      out.inert[i] = w[L.inert + id];
-      out.quiet[i] = w[L.quiet + id];
-      out.awake[i] = m & ACT_MAP.AWAKE ? 1 : 0;
-      out.drawn[i] = m & ACT_MAP.DRAWN ? 1 : 0;
-      out.run[i] = m >>> ACT_MAP.RUN_SHIFT;
-    }
-    return out;
+    const n = this.g.nbricks;
+    return { inert: new Uint8Array(n), quiet: new Uint8Array(n), awake: new Uint8Array(n), drawn: new Uint8Array(n), run: new Uint8Array(n) };
   }
 
-  // V2's maps in readMaps's layout (the profiler's awake and drawn shares, gfx/profiler.js): V1's map
-  // is never built under V2, so it would read as it was when V2 took over. awake: the bricks V2's
+  // V2's maps in readMaps's layout (the profiler's awake and drawn shares, gfx/profiler.js). awake: the bricks V2's
   // passes visit (its awake words); drawn: those whose cells changed in its last two ticks (its busy
   // words, both parities: what its view's invalidation and the derived passes redraw); quiet: its
   // quiet ticks; inert and run: V1's alone (0).
@@ -1608,56 +1280,6 @@ export class Simulation {
       out.drawn[i] = w[L.busy0 + id] || w[L.busy1 + id] ? 1 : 0;
     }
     return out;
-  }
-
-  /**
-   * The current map's list lengths (units AWAKE, DRAWN, MOVE1; bricks its
-   * build's inert kernel redid), as they are at this call.
-   * @returns {Promise<{ awake: number, drawn: number, move1: number, inert: number, units: number }>}
-   */
-  async readCounts() {
-    const c = new Uint32Array(await this.gpu.readback.buffer(this.act, this.actLayout.count * 4, 32));
-    return { awake: c[ACT_COUNTS.AWAKE], drawn: c[ACT_COUNTS.DRAWN], move1: c[ACT_COUNTS.MOVE1], inert: c[ACT_COUNTS.INERT_LAST], units: this.unit.units };
-  }
-
-  /**
-   * The inert map built from the state alone (shaders/activity.js
-   * inertRefFrag: the reference tools/activity-check.mjs compares the
-   * incremental build with), a byte per brick in brick coordinates: of the
-   * state at this call once its kernel is built (sim.prepare('inertRef')), else
-   * of the state when it is.
-   * @returns {Promise<Uint8Array>}
-   */
-  async inertRef() {
-    const g = this.g;
-    if (!this.refInert) {
-      this.refInert = this.gpu.createBuffer({ label: `sim${this.id} inert ref`, size: g.nbricks * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
-      this._refGroup = this.gpu.bindGroup(this.L.REF, [{ binding: 0, resource: { buffer: this.refInert } }], 'inert ref');
-    }
-    const k = this.passOf('inertRef');
-    if (k.state !== 'ready') await k.ready;   // (once prepared, it records at the call, as the other reads do)
-    this._dispatch(k, fold(g.nbricks), { bind: [this.tables, this.bindRO, this._refGroup], header: this.readHeader() });
-    const w = new Uint32Array(await this.gpu.readback.buffer(this.refInert, 0, g.nbricks * 4));
-    const out = new Uint8Array(g.nbricks);
-    for (let id = 0; id < g.nbricks; id++) {
-      const [bx, by, bz] = brickCoordOf(g, id);
-      out[bx + g.bx * (by + g.by * bz)] = w[id];
-    }
-    return out;
-  }
-
-  /**
-   * The move's owner check (debug builds, shaders/move.js ownerLayout): how many
-   * cells some block covered a second time in one step, and each slot's stamp
-   * (the last frame a running block covered it), as they are at this call;
-   * null without debug.
-   * @returns {Promise<{ dup: number, stamps: Uint32Array } | null>}
-   */
-  async readOwners() {
-    if (!this.debug) return null;
-    const o = ownerLayout(this.g);
-    const w = new Uint32Array(await this.gpu.readback.buffer(this.marks, o.dup * 4, (o.words - o.dup) * 4));
-    return { dup: w[0], stamps: w.subarray(1) };
   }
 
   /** The debug prelude's count of out-of-grid accesses (I2.8; 0 without debug). */
@@ -1710,28 +1332,6 @@ export class Simulation {
   // ---- what plugs in (docs/webgpu.md C7, J3) ----
 
   /**
-   * The rays layer (raysLayer.js, U12): { active, stepped, step(f), settle(f),
-   * bricks (a GPUBuffer bitset: a bit per brick), deposit (two i32 per slot),
-   * paint(), noteElement(), reset(), wake() }. null detaches it.
-   */
-  attachRays(rays) {
-    this.rays = rays ?? NO_RAYS;
-    this._groups();
-    this.wake();
-  }
-
-  /**
-   * Whitewater's aeration field (gfx/foam.js, U12): { active, step(f, { pre,
-   * post, moveSrc, moveSrcAt }), idle(f), reset(f) }. While active the move
-   * runs out of place and records moveSrc: a u32 per slot at word moveSrcAt of
-   * the moveSrc buffer (0, or past the decoration's plane when there is one).
-   */
-  attachAeration(aer) {
-    this.aeration = aer ?? null;
-    this._side();
-  }
-
-  /**
    * TPT's decoration layer (src/deco.js, U17; docs/webgpu.md Sync log S3):
    * { paint(stroke), beforeWrite(f, box), scrub(f, box), snapshot(t),
    * restore(t, dx, dz), shift(dx, dz, f), reset(), dispose() }, each
@@ -1767,16 +1367,13 @@ export class Simulation {
   // paint (deco.active; a layer without the flag always). An inactive
   // layer's plane is all 0, which the move would only permute.
   get decoCarried() { return this.sideDeco && this.deco?.active !== false; }
-  // moveSrc's plane: after the decoration's when there is one
-  get moveSrcAt() { return this.sideDeco ? this.g.slots : 0; }
 
-  // The move's moveSrc buffer (its group 2, binding 1): the decoration plane at
-  // word 0 and whitewater's moveSrc plane at moveSrcAt, a plane (one u32 per
-  // slot) for each that is attached, or a 16-byte dummy. Remade when that
-  // changes; the decoration plane is state, so it comes along.
+  // The decoration plane's buffer until the native owner takes it (PhysicsV2.activate): one u32 per
+  // slot while a layer is attached, else a 16-byte dummy. Remade when that changes; the plane is
+  // state, so it comes along.
   _side() {
     const slots = this.g.slots, deco = Boolean(this.deco);
-    const size = Math.max(16, ((deco ? slots : 0) + (this.aeration ? slots : 0)) * 4);
+    const size = Math.max(16, (deco ? slots : 0) * 4);
     const had = this.sideDeco;
     this.sideDeco = deco;
     if (size === this.moveSrc.size && had === deco) return;
@@ -1786,7 +1383,6 @@ export class Simulation {
     });
     if (had && deco) this.gpu.frame.copy(old, 0, this.moveSrc, 0, slots * 4);
     this._retire(old);
-    this._groups();
   }
   /** The derived passes (src/derived.js, U4): fields, bricks, light, GI. */
   attachDerived(derived) { this.derived = derived ?? null; }
@@ -1820,16 +1416,14 @@ export class Simulation {
   dispose() {
     this.disposed = true;
     this.nativeIntegration?.dispose();
-    this.wake();   // an outstanding readback cannot certify a disposed simulation
     // what is recorded on these buffers goes out first: a destroyed buffer in a
     // later submit is a validation error, while one already submitted is freed
     // once the queue is done with it
     if (!this.gpu.failure) this.gpu.flush('sim dispose');
     const { A, B, F } = this.state;
     this.deco?.dispose?.();   // (its own buffers; its plane is moveSrc's, below)
-    for (const b of [A, B, F, this.flow, this.moveSrc, this.marks, this.act, this.args, this.noDeposit, this.noRayBricks, this.noMask,
-      this.paintMask, this.flowTmp, this.atlasScratch, this.rectScratch, this.editScratch, this.refInert]) b?.destroy();
-    this.counts.close();
+    for (const b of [A, B, F, this.flow, this.moveSrc, this.marks, this.act, this.noMask,
+      this.paintMask, this.flowTmp, this.atlasScratch, this.rectScratch, this.editScratch]) b?.destroy();
     for (const t of this.history) for (const b of [t.A, t.B, t.compact, t.aux, ...(t.dynamic?.buffers ?? [])]) b?.destroy();   // (an entry holds V1's copies or V2's)
     this.history = [];
   }

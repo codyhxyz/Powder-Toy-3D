@@ -1,12 +1,11 @@
 // Factory transport on the GPU, V1 against V2 (tools/v2/industry-belt-browser-check.mjs drives it):
-// the REAL machine driver (src/industry/physics.js) on a bare engine (tools/outcomes/engine-v1.js or
-// engine-v2.js), stepped as the app's frame loop steps it (src/app.js: V1 runs settings.steps steps and
+// the REAL machine driver (src/industry/physics.js) on a bare engine (tools/outcomes/engine-v2.js; V1's,
+// engine-v1.js, is the v1-oracle tag's: this page served from a checkout of it), stepped as the app's frame loop steps it (src/app.js: V1 runs settings.steps steps and
 // then the frame's machine pass; V2 runs its ticks, each followed by industry.nativeStep, and then the
 // frame's pass). No app, no world.
 //   belt(engine, { steps, fps, frames })  grains on a line of belts: the mean cells a game second
 //   lift(engine, { steps })               a grain on a lift: its apex (cells) and the game time to it
 import { boot, ready, log, test } from './harness.js';
-import { createEngine as v1Engine } from '../outcomes/engine-v1.js';
 import { createEngine as v2Engine } from '../outcomes/engine-v2.js';
 import { createIndustryPhysics } from '/src/industry/physics.js';
 import { nativeIndustry } from '/src/v2/industry.js';
@@ -15,11 +14,12 @@ import { E } from '/src/elements.js';
 
 const h = await boot({ label: 'industry belt' });
 const gpu = h.gpu;
-const engines = { v1: v1Engine(gpu), v2: v2Engine(gpu) };
+const engines = { v2: v2Engine(gpu) };
 const BASE_Y = 2, GRAIN_Y = BASE_Y + 1;
 
 async function scene(name, dims, devices, grains, steps) {
   const engine = engines[name];
+  if (!engine) throw new Error(`no ${name} engine here: V1 is the v1-oracle tag (this page served from a checkout of it)`);
   // (V2's dynamics build behind its grid, v2/physics.js dynamicsReady: engine-v2's create refuses before them)
   try { await engine.create(dims); } catch (e) { if (name !== 'v2' || !engine.sim?.compactOwner) throw e; await engine.sim.compactOwner.dynamicsReady; }
   for (const d of devices) engine.box([d.x, d.y, d.z], [d.x + 3, d.y, d.z + 3], 'INSULATOR');
@@ -36,13 +36,9 @@ function frameRunner(name, sim, physics, devices, { steps, fps }) {
   let acc = 0;
   return () => {
     const dt = 1 / fps;
-    if (name === 'v1') {
-      for (let i = 0; i < steps; i++) { sim.step(); physics.nativeStep(devices); }
-    } else {
-      acc += dt * 60 * steps / 4;
-      const n = Math.floor(acc); acc -= n;
-      for (let i = 0; i < n; i++) nativeHostTick(sim.compactOwner, { after: () => physics.nativeStep(devices) });
-    }
+    acc += dt * 60 * steps / 4;
+    const n = Math.floor(acc); acc -= n;
+    for (let i = 0; i < n; i++) nativeHostTick(sim.compactOwner, { after: () => physics.nativeStep(devices) });
     physics.step(dt, devices);
   };
 }
@@ -54,7 +50,7 @@ async function grains(engine) {
   for (const p of g.particles ?? []) if (p.id === E.NUGGETS) out.push([p.x, p.y, p.z]);
   return out;
 }
-const gameSteps = (name, sim) => (name === 'v1' ? sim.frame : (sim.nativeTicks ?? 0) * LEGACY_STEPS_PER_TICK);
+const gameSteps = (_name, sim) => (sim.nativeTicks ?? 0) * LEGACY_STEPS_PER_TICK;
 
 test('belt', async (name, { steps = 4, fps = 60, frames = 30 } = {}) => {
   const lines = [0, 8, 16, 24], devices = [];

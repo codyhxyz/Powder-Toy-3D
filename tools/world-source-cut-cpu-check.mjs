@@ -12,7 +12,6 @@ import { WorldCellAtlasAdapter } from '../src/world/cellAtlasAdapter.js';
 import { WorldRenderAtlas, READY } from '../src/world/renderAtlas.js';
 import { gridDims, atlasDims, cellSlot, brickIdOf, tableLayout, tablesBuffer, tablesAirTOffset } from '../src/shaders/common.js';
 import { BrickStore, encodeBrick } from '../src/world/store.js';
-import { setAeration, aerationForSource } from '../src/gfx/foam.js';
 import { worldParams, treesIn } from '../src/world/generator.js';
 import { createUnpacker } from '../src/net/codec.js';
 const u32=b=>new Uint32Array(b.bytes),f32=b=>new Float32Array(b.bytes);
@@ -89,14 +88,14 @@ test('owned native tables survive later ambient writes, shared prepasses and fin
 });
 
 test('actual replica unpack captures the old origin before overwrite and claims full new state after flow/wake reset',async()=>{
-  const f=await fixture();f.sim.cur=1;setAeration(f.sim,true);
+  // (no aeration: V1 whitewater went with V1, so a V1-state source carries none)
+  const f=await fixture();f.sim.cur=1;
   Object.assign(f.sim.g,atlasDims(f.sim.g));
-  const aer=aerationForSource(f.sim);u32(aer.buffer).fill(0x12345678);
   const events=[],unpack=createUnpacker(),bytes=new Uint8Array(f.sim.g.width*f.sim.g.height*4);bytes[0]=99;
   let claims=0,old;const claim=f.source.recordLiveCopy.bind(f.source);f.source.recordLiveCopy=(...args)=>{claims++;return claim(...args);};
   f.sim.bindRW={};f.sim.L.STATE_RW=f.gpu.layout('STATE_RW',[]);
   f.sim.noteWrite=()=>{events.push('write');f.sim.version++;f.sim.worldRenderSource?.noteContentChange();};
-  f.sim.stillFlow=()=>{events.push('still');f.gpu._push(()=>{u32(f.sim.flow).fill(0);u32(aer.buffer).fill(0);});f.sim.worldRenderSource?.noteContentChange();};
+  f.sim.stillFlow=()=>{events.push('still');f.gpu._push(()=>{u32(f.sim.flow).fill(0);});f.sim.worldRenderSource?.noteContentChange();};
   const execute=f.gpu.onExecute;
   f.gpu.onExecute=(kernel,options)=>{
     execute?.(kernel,options);
@@ -117,7 +116,7 @@ test('actual replica unpack captures the old origin before overwrite and claims 
   const leaving=f.source.getSource([0,0,0]),incoming=f.source.getSource([40,0,0]);
   assert.notEqual(u32(leaving.chunk.flow)[leaving.slot*2+1],0);
   assert.deepEqual([...u32(incoming.chunk.flow).subarray(incoming.slot*2,incoming.slot*2+2)],[0,0]);
-  assert.equal(u32(leaving.chunk.aeration)[leaving.slot*2],0x12345678);assert.equal(u32(incoming.chunk.aeration)[incoming.slot*2],0);
+  assert.equal(leaving.chunk.aeration??null,null);assert.equal(incoming.chunk.aeration??null,null);
   assert.deepEqual(events,['origin','write','still']);assert.equal(old.isValid(),true);assert.notDeepEqual(old.contentToken,f.source.contentToken());
   assert.equal(claims,2); // Initial outgoing capture, then complete incoming claim.
   bytes[0]=101;
@@ -139,15 +138,14 @@ test('actual replica unpack captures the old origin before overwrite and claims 
 });
 
 test('owned native cut preserves old live/full auxiliary words while current physics changes and late feedback resolves OLD saved/generator input',async()=>{
-  const f=await fixture();setAeration(f.sim,true);const aer=aerationForSource(f.sim);aer.cur=1;
-  for(let i=0;i<u32(aer.buffer).length;i++)u32(aer.buffer)[i]=(0x7fc12345+i*31)>>>0;
+  const f=await fixture();
   u32(f.sim.state.A)[3]=0x80000000;u32(f.sim.state.A)[7]=0x7fc12345;
   const deco=f.gpu.createBuffer({size:f.sim.g.slots*4+16,usage:128|4|8});for(let i=0;i<u32(deco).length;i++)u32(deco)[i]=(0x7fc12345+i)>>>0;
   f.sim.decoPlane={buffer:deco,offset:16};
-  const expected={A:u32(f.sim.state.A).slice(),B:u32(f.sim.state.B).slice(),flow:u32(f.sim.flow).slice(),aer:u32(aer.buffer).slice(),deco:u32(deco).slice()};
+  const expected={A:u32(f.sim.state.A).slice(),B:u32(f.sim.state.B).slice(),flow:u32(f.sim.flow).slice(),deco:u32(deco).slice()};
   put(f,[20,0,0],45);const old=cut(f),oldSnapshot=old.source.snapshotForFields({jetValidity:'producer-bounded-v1'}),oldChunk=old.source.chunks.get('0,0,0');
   // These execute AFTER cut copies. Do not mutate fake GPU backing bytes early.
-  f.gpu._push(()=>{u32(f.sim.state.A).fill(0x12345678);u32(f.sim.state.B).fill(0xffffffff);u32(f.sim.flow).fill(0);u32(aer.buffer).fill(0);u32(f.sim.decoPlane.buffer).fill(0);});
+  f.gpu._push(()=>{u32(f.sim.state.A).fill(0x12345678);u32(f.sim.state.B).fill(0xffffffff);u32(f.sim.flow).fill(0);u32(f.sim.decoPlane.buffer).fill(0);});
   f.sim.version++;f.source.noteContentChange();f.source.recordLiveCopy(f.gpu.frame);
   put(f,[20,0,0],99);f.editScene(88);f.win.planted.fill(1);f.win.P.seed=999;
   assert(old.isValid());assert.notDeepEqual(old.contentToken,f.source.contentToken());assert(oldSnapshot.isCurrent());
@@ -156,13 +154,12 @@ test('owned native cut preserves old live/full auxiliary words while current phy
   await drain(f.gpu);
   assert.equal(u32(oldChunk.A)[3],0x80000000);assert.equal(u32(oldChunk.A)[7],0x7fc12345);
   assert.equal(u32(oldChunk.B)[1],0x7fc12345);assert.equal(u32(oldChunk.flow)[1],(0x80000000+7919)>>>0);
-  assert.equal(u32(oldChunk.aeration)[0],(0x7fc12345+SOURCE_GRID.slots*2*31)>>>0);
+  assert.equal(oldChunk.aeration??null,null,'a V1-state source carries no aeration');
   assert.equal(u32(oldChunk.deco.buffer)[0],0x7fc12349);assert(oldChunk.wakeTrusted.every(Boolean));
   for(let z=0;z<8;z++)for(let y=0;y<8;y++)for(let x=0;x<32;x++){
     const s=cellSlot(SOURCE_GRID,x,y,z);
     for(const name of ['A','B'])assert.deepEqual(u32(oldChunk[name]).subarray(s*4,s*4+4),expected[name].subarray(s*4,s*4+4));
     assert.deepEqual(u32(oldChunk.flow).subarray(s*2,s*2+2),expected.flow.subarray(s*2,s*2+2));
-    assert.deepEqual(u32(oldChunk.aeration).subarray(s*2,s*2+2),expected.aer.subarray((SOURCE_GRID.slots+s)*2,(SOURCE_GRID.slots+s)*2+2));
     assert.equal(u32(oldChunk.deco.buffer)[s],expected.deco[s+4]);
   }
   assert.equal(new Float32Array(Uint32Array.from(read(old.source,[80,0,0])).buffer)[3],45);

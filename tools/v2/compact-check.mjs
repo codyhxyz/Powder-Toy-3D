@@ -171,12 +171,15 @@ sim.noteWrite({ replaceState: false });
 assert.equal(sim.wholeWrites, wholeBefore, 'flags-only invalidation does not replace compact state');
 sim.noteWrite();
 assert.equal(sim.wholeWrites, wholeBefore + 1, 'actual full-state writes still request full import');
-const app = { sim: { compact: {}, rays: { active: true, holds: false } }, settings: { paused: false } };
-assert.equal(raysWire.busy(app), false, 'an empty legacy scan cannot keep v2 awake');
-app.sim.rays.holds = true;
+// The particles' busy check is V2's dynamics' alone (V1's ray layer went with V1).
+const app = { sim: { compact: {} }, settings: { paused: false } };
+assert.equal(raysWire.busy(app), false, 'no dynamics: nothing in flight keeps the loop awake');
+app.sim.compact.dynamics = { isIdle: false };
 assert.equal(raysWire.busy(app), true, 'actual particles are not hidden from the busy check');
-app.sim.compact = null; app.sim.rays.holds = false;
-assert.equal(raysWire.busy(app), true, 'v1 still runs its pending emitter scan');
+app.sim.compact.dynamics.isIdle = true;
+assert.equal(raysWire.busy(app), false, 'landed particles let the loop sleep');
+app.settings.paused = true; app.sim.compact.dynamics.isIdle = false;
+assert.equal(raysWire.busy(app), false, 'paused: particles fly only with the ticks');
 // The foundation owns allocation; persistence treats its one-word-per-cell aux as opaque.
 v2.aux = buffer({ size: g.slots * 4 });
 const auxWords = new Uint32Array(v2.aux.data.buffer);

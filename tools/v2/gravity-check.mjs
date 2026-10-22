@@ -12,7 +12,7 @@ import { GRAVITY_MS2, TERMINAL_MS, STEPS_PER_TICK, v1PaceRate, v1TerminalMS } fr
 import { nativeModes, GRAVITY_MS2 as MODES_GRAVITY } from '../../src/v2/modes.js';
 import { modeWGSL } from '../../src/shaders/v2/modes.js';
 import { GRAVITY, dynamicsRows, particleFallSpeed, particleLandingSpeed, packetStep } from '../../src/v2/dynamics-reference.js';
-import { PACE } from '../../src/shaders/move.js';
+import { PACE } from '../../src/physics.js';
 import { FALL_GRAVITY, fallTerminal, setFall, stepFall, fallVelocity, fallFraction } from '../../src/v2/fall.js';
 import { G_MS2, fallCells } from '../../src/shaders/v2.js';
 import { COLUMN } from '../../src/shaders/v2/columns.js';

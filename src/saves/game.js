@@ -2,7 +2,6 @@ import { decodeWorldState, validateDecorationState } from '../world/persistence.
 import { encodeSave, decodeSave, packCells, unpackCells } from './format.js';
 import { collectSections, applySections, validateSections, savedSettingKeys } from './sections.js';
 import { cellTexel } from '../sim.js';
-import { RAYS } from '../rays.js';
 
 // Saving and loading the game (format.js has the file, sections.js what
 // features add). A save holds:
@@ -10,9 +9,8 @@ import { RAYS } from '../rays.js';
 //             seed) and B (velocity, pressure), shuffled into byte planes
 //             (format.js packCells). What derives from them (activity flags,
 //             render fields, bricks, GI) is rebuilt on load, as after any load.
-//   rays      the fast-particle list (raysLayer.js: its four vec4s a particle,
-//             as the WebGL build's four attachments, one after the other) and
-//             where its brush writes next, while any are flying
+//   (rays     V1's photon and neutron list, in saves made before the V2 cutover: V2 doesn't read it.
+//             V2's flying matter, its photons and neutrons too, is the physicsV2Dynamics section's.)
 //   settings  the settings that belong to the world (sections.js registerSavedSettings)
 //   world     in World: the stored edits outside the window (world/store.js)
 //             and the brick columns whose trees are in, with the window's
@@ -34,8 +32,6 @@ import { RAYS } from '../rays.js';
 //   onSettings()     after the saved settings were set
 
 const CHANNELS = 4;                   // RGBA per texel
-const RAY_LISTS = 4;                  // the particle's vec4s (shaders/rays.js Particle; the WebGL build's attachments)
-const RAY_SLOTS = RAYS.RAY_TEX * RAYS.RAY_TEX;
 
 export class SaveRefused extends Error {}
 
@@ -54,8 +50,8 @@ export function createSaves(app) {
         if (win.persistenceError) throw new SaveRefused('World readback failed; saving would lose retained material');
         if (sim !== app.getSim()) throw new SaveRefused('The map changed while saving');
       }
-      // the conversion to the atlas order and the particles' kernels, built before the moment
-      await Promise.all([sim.prepare(sim.saveStatePass ?? 'toAtlas'), sim.rays.prepare?.(), app.prepareCapture?.()]);
+      // the conversion to the atlas order, built before the moment
+      await Promise.all([sim.prepare(sim.saveStatePass ?? 'toAtlas'), app.prepareCapture?.()]);
       // Interaction readbacks can begin during preparation too.
       while (win?.pending || sim.deco?.pending) await Promise.all([win?.pending, sim.deco?.pending]);
       if (sim !== app.getSim() || sim.disposed || win !== app.getWin() || identity !== win?.historyIdentity) throw new SaveRefused('The map changed while saving');
@@ -63,9 +59,6 @@ export function createSaves(app) {
       const g = sim.g;
       // (V2: its own cells, read as V1's builds read `cells`: sim.readSaveState)
       const reads = [sim.readSaveState ? sim.readSaveState() : sim.readState()];
-      let rays = null;
-      const raysCursor = sim.rays.cursor ?? 0;   // (where the particle brush writes next)
-      if (sim.rays.active) rays = sim.rays.readList();
       const scene = app.header(), thumbnail = app.thumbnail?.() ?? null;
       const header = {
         name, created: new Date().toISOString(), ...scene,
@@ -79,15 +72,10 @@ export function createSaves(app) {
       if (win?.scene.interactionState) core.push({ key: 'worldInteractions', data: win.scene.interactionState.snapshot() });
       const extra = collectSections();
       // ---- (the moment ends) ----
-      const [[A, B], list, extras] = await Promise.all([reads[0], rays, extra]);
+      const [[A, B], extras] = await Promise.all([reads[0], extra]);
       header.thumbnail = await thumbnail;
       const cells = packCells(header.dims, (x, y, z) => cellTexel(g, x, y, z), [A, B]);
       const sections = [{ key: 'cells', data: cells }, ...core];
-      if (list) {
-        const data = new Float32Array(RAY_LISTS * RAY_SLOTS * CHANNELS);
-        [list.l0, list.l1, list.l2, list.l3].forEach((l, i) => data.set(l, i * RAY_SLOTS * CHANNELS));
-        sections.push({ key: 'rays', data }, { key: 'raysCursor', data: { cursor: raysCursor } });
-      }
       sections.push(...extras);
       return await encodeSave(header, sections);
     } finally { release?.(); }
@@ -125,13 +113,11 @@ export function createSaves(app) {
       if (!store || !planted) throw new Error('this world save has no world edits');
       win.loadSaved(header.world.origin, fill, store, planted, sections.get('worldInteractions'), sections.get('worldNativeStore'));
     } else fill();
-    // the particles in flight (sim.load let the old ones go). The step counter
-    // isn't saved: storms and the cloud deck time themselves by it, and it only runs forward.
-    const rays = sections.get('rays');
-    if (rays?.length === RAY_LISTS * RAY_SLOTS * CHANNELS && sim.rays.writeList) {
-      sim.rays.writeList(rays);
-      sim.rays.cursor = (sections.get('raysCursor')?.cursor ?? 0) % RAY_SLOTS;
-    }
+    // (An old save's V1 photon and neutron list, its `rays` section, is not read: those particles lived
+    // a fraction of a second, and V2's own flying matter comes back with physicsV2Dynamics.)
+    // Intentional (decided under the user's delegation, 2026-10-22): V1's in-flight photons and
+    // neutrons in a pre-cutover save are dropped on load; the cells they would have hit are kept.
+    // The step counter isn't saved: storms and the cloud deck time themselves by it, and it only runs forward.
     const saved = sections.get('settings');
     if (saved) {
       for (const k of savedSettingKeys()) if (k in saved) settings[k] = saved[k];

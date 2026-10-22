@@ -5,7 +5,6 @@ import { readFileSync } from 'node:fs';
 import { Simulation } from '../../src/sim.js';
 import { Kernel } from '../../src/gpu/kernels.js';
 
-const LEGACY = ['move', 'react', 'inertList', 'inert', 'quiet', 'drawn', 'move1', 'args'];
 globalThis.GPUBufferUsage = { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, INDIRECT: 8 };
 const turn = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
@@ -21,12 +20,13 @@ function fixture(opts = {}, held = []) {
     testMode: true, L: { PARAMS: {}, EMPTY: {} }, emptyGroup: {},
     fits: () => true, layout: (name, entries) => ({ name, entries }),
     bindGroup: (layout, entries) => ({ layout, entries }), createBuffer: buffer,
-    queue: { writeBuffer(b, at, data) {
+    queue: { onSubmittedWorkDone: () => Promise.resolve(), writeBuffer(b, at, data) {
       writes.push(b.label);
       b.data.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), at);
     } },
     write(b, at, data) { this.queue.writeBuffer(b, at, data); },
-    frame: { clear(b) { clears.push(b.label); b.data.fill(0); } },
+    frame: { clear(b) { clears.push(b.label); b.data.fill(0); }, copy(a, ao, b, bo, n) { b.data.set(a.data.subarray(ao, ao + n), bo); } },
+    retire() {},
     _frameOrThrow() {},
     fail(error) { return error; },
     readback: { ring: (_name, bytes) => ({ next: () => 0, read: async () => new ArrayBuffer(bytes) }) },
@@ -57,18 +57,16 @@ function watch(promise) {
   return () => settled;
 }
 
-// Native startup skips exactly eight builds, not initial edits/import/window passes; V1's edit
-// passes a native host never records (Mix, undo across a shift: both native there) build with V1's
-// stepping (prepareLegacy) or on first use, so the first frame never waits for them.
-const native = fixture({ nativeStartup: true, windowed: true }, 'all');
-const initial = ['paint', 'fromAtlas', 'awake', 'shift', 'flowShift', 'copy', 'toAtlas'];
-const V1_EDITS = ['paintMix', 'paintMix apply', 'undoShift'];
+// A grid builds only the writers and readers a native host goes through: the brush and the load
+// now (a write never waits), a window's shift passes, a test page's readback; V1's step kernels (move,
+// react, the activity map) and its Mix/undo-shift edits went with V1 (or build on first use). The
+// first frame waits for the import pipeline alone: the blank state is a load.
+const native = fixture({ windowed: true }, 'all');
+const initial = ['paint', 'fromAtlas', 'shift', 'flowShift', 'toAtlas'];
 assert.deepEqual(native.builds, initial);
-assert.deepEqual(Object.keys(native.sim.kernels), LEGACY);
-for (const name of LEGACY) {
-  assert.equal(native.kernels.get(name).when, 'manual');
-  assert.equal(native.kernels.get(name).state, 'idle');
-}
+assert.equal(native.sim.kernels, undefined, 'no V1 step kernels');
+for (const name of ['move', 'react', 'inertList', 'inert', 'quiet', 'drawn', 'move1', 'args', 'paintMix', 'undoShift', 'awake', 'copy'])
+  assert(!native.kernels.has(name), `${name} is not built`);
 const nativeReady = watch(native.sim.ready);
 for (const name of initial.filter(name => name !== 'fromAtlas')) native.gate(name).resolve({});
 await turn();
@@ -82,48 +80,33 @@ assert.equal(native.sim.wholeWrites, 1);
 assert.equal(native.sim.version, 1);
 assert(native.writes.some(name => name.endsWith('atlas scratch')));
 assert(native.clears.some(name => name.endsWith('flow')));
-assert.deepEqual(native.builds, initial, 'ready does not start deferred builds');
-assert.throws(() => native.sim.step(), /await sim.prepareLegacy/);
+assert.deepEqual(native.builds, initial, 'ready starts no further builds');
+assert.throws(() => native.sim.step(), /no ready native owner/, 'no owner: a step is an error, never V1');
 assert.equal(native.sim.frame, 0, 'failed early step does not advance time');
+// A box keeps one legacy copy (the import/export format's), a window two until its owner is ready.
+assert.equal(native.sim.copies, 2);
+assert.equal(fixture({}, []).sim.copies, 1);
 
-// Default/explicit-false v1 callers retain eager construction and sim.ready.
-for (const opts of [{}, { nativeStartup: false }]) {
-  const old = fixture(opts, ['args']);
-  assert.deepEqual(old.builds.slice(0, 8), LEGACY);
-  assert.deepEqual(old.builds.slice(8, 14), ['paint', 'paintMix', 'paintMix apply', 'fromAtlas', 'undoShift', 'awake'], 'V1 builds its edit passes now, in its order');
-  assert(LEGACY.every(name => old.kernels.get(name).when === 'now'));
-  const ready = watch(old.sim.ready);
-  await turn();
-  assert.equal(ready(), false, 'v1 ready still includes legacy readiness');
-  old.gate('args').resolve({});
-  await old.sim.ready;
-  old.sim.step();
-  const count = old.builds.length;
-  await old.sim.prepareLegacy();
-  assert.equal(old.builds.length, count);
-}
-
-const badInit = fixture({ nativeStartup: true }, ['fromAtlas']);
+const badInit = fixture({}, ['fromAtlas']);
 const initError = new Error('initial import compile failed');
 badInit.gate('fromAtlas').reject(initError);
 await assert.rejects(badInit.sim.ready, error => error === initError);
 assert.equal(badInit.sim.version, 0);
 assert.equal(badInit.dispatches.length, 0);
-await assert.rejects(badInit.sim.prepareLegacy(), error => error === initError);
-assert.throws(() => badInit.sim.step(), /await sim.prepareLegacy/);
+assert.throws(() => badInit.sim.step(), /no ready native owner/);
 
 // Wiring: every grid starts native (Physics V2 is the only engine), a guest's too (its owner holds the
 // host's frames and, once the session ends, steps them: net/codec.js, app.js v2Replica); outcomes opt in;
 // a save's physicsV2 section restores into the grid's own owner and never switches engines.
 const app = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
-assert.match(app, /sim = new Simulation\(gpu, nx, ny, nz, \{ windowed: !!worldMode, world: worldMode\?\.size, nativeStartup: true \}\);\n  physicsV2 = new V2mod\.PhysicsV2\(sim, V2mod\.options\);/);
+assert.match(app, /sim = new Simulation\(gpu, nx, ny, nz, \{ windowed: !!worldMode, world: worldMode\?\.size \}\);\n  physicsV2 = new V2mod\.PhysicsV2\(sim, V2mod\.options\);/);
 assert(!/setPhysics|params\.get\('physics'\)/.test(app), 'no engine switch and no ?physics= flag');
 const outcomes = readFileSync(new URL('../outcomes/engine-v2.js', import.meta.url), 'utf8');
-assert.match(outcomes, /new Simulation\(gpu, nx, ny, nz, \{ debug: false, nativeStartup: true \}\)/);
+assert.match(outcomes, /new Simulation\(gpu, nx, ny, nz, \{ debug: false \}\)/);
 // (a scene throws, blasts and pours: it waits for the dynamics and the jets, which build behind the grid: physics.js dynamicsReady)
 assert.match(outcomes, /await Promise\.all\(\[sim\.ready, kernel\.ready, v2\.dynamicsReady\]\)/);
 const saves = readFileSync(new URL('../../src/wire/saves.js', import.meta.url), 'utf8');
 // (a save made under V1 imports into V2: tools/v2/saves-check.mjs)
 assert(!saves.includes('setPhysics'), 'the save loader never switches engines');
 assert.match(saves, /if \(state\.mode === 'v1'\) v2\.resync\(\);/);
-console.log('native startup CPU: eight manual kernels, retained initialization, unchanged v1 construction, failure propagation and V2-only wiring passed');
+console.log('native startup CPU: V2-only builds (no V1 step kernels), retained initialization, one legacy copy a box, failure propagation and V2-only wiring passed');

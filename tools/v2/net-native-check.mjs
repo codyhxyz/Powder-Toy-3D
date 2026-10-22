@@ -61,11 +61,10 @@ console.log('ok native section: round trip, bounds, lying counts, newer builds f
     class Simulation { constructor(...a) { this.opts = a[4]; this.prepareNative = () => Promise.resolve(); } }
     const V2mod = { PhysicsV2: class { constructor(s) { made.push(s); } }, options: {} }, wakeLoop = () => {};
     ${construct}
-    return { owner: physicsV2, nativeStartup: sim.opts.nativeStartup };`);
+    return { owner: physicsV2 };`);
   for (const mp of [{ isGuest: true, replica: true }, { isGuest: false, replica: false }]) {
     const r = built('v2', mp);
     assert.ok(r.owner, `a V2 grid built ${mp.isGuest ? 'while guesting' : 'solo'} gets its native owner`);
-    assert.equal(r.nativeStartup, true);
   }
   const gate = slice('function v2Box()', '  function v2Status()');
   const activate = slice('  if (physicsV2?.isReady) {', '  const stepping =');

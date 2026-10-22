@@ -37,7 +37,9 @@ export function fixture(split = false) {
     flush() {},
   };
   const derived = { particleSplit: split, world: null, dlist: {}, fieldSurf: {}, fieldThin: {}, views: { fieldSurf: {}, fieldThin: {} } };
-  const sim = { id: 1, g, state:{A:{},B:{}}, derived, fieldSurf: derived.fieldSurf, fieldThin: derived.fieldThin, L: { TABLES: [], STATE_RO: [] }, origin: { x: 0, y: 0, z: 0 }, version: 0, cur: 0, header: () => ({}), readHeader: () => ({ format: 0 }) };
+  const sim = { id: 1, g, state:{A:{},B:{}}, derived, fieldSurf: derived.fieldSurf, fieldThin: derived.fieldThin, L: { TABLES: [], STATE_RO: [] }, origin: { x: 0, y: 0, z: 0 }, version: 0, cur: 0, header: () => ({}),
+    // (Physics V2 owns every box: format 2, its cells; V1's format 0 went with V1)
+    compact: { isReady: true, cells: { label: 'v2 cells' } }, readHeader: () => ({ format: 2 }) };
   return { gpu, sim, log, buffers, rings, reads, pipelines };
 }
 
@@ -140,7 +142,7 @@ for(const p of f.pipelines) assert.deepEqual(p.layouts[1],SMOOTH_STATE_LAYOUT,'c
 for(const draw of f.log.filter(c=>/smooth\.(draw|shadow)$/.test(c.name))){
   assert.deepEqual(draw.bind[1].map(e=>e.resource.buffer),[f.sim.state.A,f.sim.state.B],'use the matching vertex-visible bind group');
 }
-assert.deepEqual(f.log.slice(0, 4).map(x => x.name), ['hybrid.smooth.extract', 'hybrid.smooth.finish', 'hybrid.smooth.build', 'hybrid.smooth.draw']);
+assert.deepEqual(f.log.slice(0, 4).map(x => x.name), ['hybrid.smooth.extract', 'hybrid.smooth.finish', 'hybrid.smooth.build', 'hybrid.smooth.draw.format2']);
 assert.equal(f.log[0].params.particleSplit, 1);
 for (let revision = 2; revision < 5; revision++) { assert(renderer.update({ revision })); assert(renderer.draw({})); }
 f.reads.at(-1).resolve(new Uint32Array([1, 2000, 1000, 1]).buffer);
@@ -228,7 +230,7 @@ const sf=fixture(), sr=createHybridSmooth(sf.gpu,sf.sim,{shader:{layout:extra,bi
 sr.update({revision:1}); sr.draw({}); sr.drawShadow({},{matrix:Array(16).fill(0)});
 assert.equal(sf.log.at(-2).bind[2].length,4);
 assert.deepEqual(sf.log.at(-1).bind[2].map(e=>e.binding),[1,2,3]);
-assert.deepEqual(sf.pipelines.find(p=>p.name.endsWith('shadow')).layouts[2],SMOOTH_DRAW_LAYOUT);
+assert.deepEqual(sf.pipelines.find(p=>p.name.endsWith('shadow.format2')).layouts[2],SMOOTH_DRAW_LAYOUT);
 const before=sf.log.length; assert(!sr.update({revision:1})); assert.equal(sf.log.length,before);
 sr.update({revision:2,previousRevision:1,incremental:true}); assert.equal(sf.log.at(-3).params.full,0);
 sr.update({revision:3,previousRevision:0,incremental:true}); assert.equal(sf.log.at(-3).params.full,1);
@@ -236,12 +238,13 @@ assert(sf.log.filter(x=>x.name.endsWith('draw')||x.name.endsWith('shadow')).ever
 sr.dispose();
 sf.reads.at(-1).resolve(new Uint32Array([0,1,3,1]).buffer); await Promise.resolve();
 assert.equal(sr.stats.fallbackReason,'disposed');
-// A box V2 takes over after the Test view was made: its format-2 draw is built then (isReady holds
-// the hybrid off until it is), and its vertex state is V2's own cells, not the legacy copies.
-const nf=fixture(), nr=createHybridSmooth(nf.gpu,nf.sim);
-assert(!nf.pipelines.some(p=>/format2/.test(p.name)),'a V1 box builds no V2 draw');
-assert(nr.update({revision:1}) && nr.draw({}));
-assert.equal(nf.log.at(-1).name,'hybrid.smooth.draw'); assert.equal(nf.log.at(-1).bind[1][0].resource.buffer,nf.sim.state.A);
+// A box whose native owner is still building holds the Test view off (isReady false: no V1 draw of
+// the legacy copies meanwhile); once V2 owns it, its format-2 draw reads V2's own cells.
+const nf=fixture();
+nf.sim.compact=null; nf.sim.readHeader=()=>({format:0});
+const nr=createHybridSmooth(nf.gpu,nf.sim);
+assert(!nf.pipelines.some(p=>/^hybrid\.smooth\.(draw|shadow)$/.test(p.name)),'no V1 (format 0) smooth draw is built');
+assert(!nr.isReady && !nr.update({revision:1}),'nothing drawn from the legacy copies while the owner builds');
 Object.assign(nf.sim,{compact:{isReady:true,cells:{label:'v2 cells'}},readHeader:()=>({format:2})});
 assert(nr.isReady && nf.pipelines.some(p=>p.name==='hybrid.smooth.draw.format2') && nf.pipelines.some(p=>p.name==='hybrid.smooth.shadow.format2'));
 assert(nr.update({revision:2}) && nr.draw({}) && nr.drawShadow({},{matrix:Array(16).fill(0)}));

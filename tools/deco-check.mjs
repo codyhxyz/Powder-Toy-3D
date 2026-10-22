@@ -9,9 +9,7 @@
 //               arithmetic; a save's upload and read round trip; a load clears it; no dispatch added
 //   store       the World's window: the leaving slab's painted bricks go to the store, the plane moves
 //               with the cells, the bricks come back with the slab; a stale readback lands nowhere
-//   invariants  with paint on and strokes between steps: sleeping = every brick dispatched (state,
-//               flow, copies, maps and the plane), lists shuffled and blocks reversed, out of place,
-//               and paint on = paint off for the state (docs/webgpu.md I2.1, I2.2, I2.5)
+//   (V1's move-invariance stage went with V1's move: tools/v2/deco-carry-check.mjs covers V2's carry)
 //   view        the plain and realistic views draw the tint; display off (Ctrl+B) draws exactly the
 //               unpainted scene; the view follows the plane to whitewater's buffer
 // Every sim but the view's runs the debug prelude: an out-of-grid access fails it (I2.8).
@@ -19,14 +17,14 @@
 // The World's leave and enter are driven through the layer's API here; with
 // the app on WebGPU (world/window.js, U10) they run on every window move.
 //
-// usage: node tools/deco-check.mjs [--stage rules,store,invariants,view] [--size 32] [--port N]
+// usage: node tools/deco-check.mjs [--stage rules,store,view] [--size 32] [--port N]
 import { launchBrowser, gpuInfo } from './browser.mjs';
 import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (k) => (argv.includes(`--${k}`) ? argv[argv.indexOf(`--${k}`) + 1] : null);
-const ALL = ['rules', 'store', 'invariants', 'view'];
+const ALL = ['rules', 'store', 'view'];
 const stages = opt('stage')?.split(',') ?? ALL;
 const size = opt('size') ? Number(opt('size')) : undefined;
 const stageOpts = { ...(size && { size }) };

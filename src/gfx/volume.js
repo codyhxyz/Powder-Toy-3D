@@ -83,7 +83,7 @@ export const sessionVolumeFormat = (_view, native) => (native ? 2 : 0);
 // through a forecast native pipeline. physical: a physical reader's (format 3: the pick).
 export function volumeReadFormat(sim, gpu, header, physical = false) {
   const owner = sim.compact;
-  if (owner && !owner.disposed && !owner.isReady && !(owner.forceCompatibility && gpu.testMode)) return physical ? 3 : 2;
+  if (owner && !owner.disposed && !owner.isReady) return physical ? 3 : 2;
   return (header ?? sim.readHeader({ physical })).format ?? 0;
 }
 

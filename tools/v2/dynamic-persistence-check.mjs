@@ -199,7 +199,7 @@ const rawBrick = encodeNativeBrick(Uint32Array.from({ length: 256 }, (_, i) => m
 // fail before app.prepare, legacy cells, or core state are touched.
 delayed = false;
 const events = [], app = { sim, settings: {}, day: { clock: 0 }, physics: { mode: 'v2', v2: owner },
-  setPhysics: async mode => { app.physics.mode = mode; }, camState: () => 'pov', setSimModes() {}, resetSimModes() {}, updateSun() {} };
+  camState: () => 'pov', setSimModes() {}, resetSimModes() {}, updateSun() {} };
 savesWire.boot(app);
 sim.prepare = async () => {};
 sim.blankState = () => [new Float32Array(g.width * g.height * 4), new Float32Array(g.width * g.height * 4)];

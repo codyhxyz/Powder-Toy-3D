@@ -18,7 +18,7 @@ const HELPER = 'tools/browser.mjs';
 const DIRECT = /\b(chromium|firefox|webkit)\s*\.\s*(launch|launchPersistentContext|launchServer)\s*\(/;
 
 const LEGACY = new Set([
-  'tools/bench.mjs', 'tools/cave-refl-check.mjs',
+  'tools/cave-refl-check.mjs',
   'tools/classes-check.mjs', 'tools/combat-check.mjs', 'tools/crystal-check.mjs',
   'tools/dock-check.mjs', 'tools/headless-cost.mjs',
   'tools/keys-check.mjs', 'tools/menu-check.mjs',

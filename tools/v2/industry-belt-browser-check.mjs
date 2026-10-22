@@ -1,14 +1,15 @@
-// Real-GPU check of Factory transport, V1 against V2 (tools/harness/industry-belt.*): belts and a lift
+// Real-GPU check of Factory transport under V2 (tools/harness/industry-belt.*; V1's runs: this script from a
+// checkout of the v1-oracle tag): belts and a lift
 // under the real machine driver (src/industry/physics.js) on bare engines, stepped as the app steps them.
 // One page, no app, one GPU slot (≤25 s). Prints each run's measurement as JSON.
-//   node tools/v2/industry-belt-browser-check.mjs --runs v1:belt:4,v1:belt:12,v1:lift [--port N]
+//   node tools/v2/industry-belt-browser-check.mjs --runs v2:belt:4,v2:belt:12,v2:lift [--port N]
 //   a run is engine:case[:steps[:fps[:frames]]]
 import { launchBrowser } from '../browser.mjs';
 import { startVite } from '../vite-server.mjs';
 import { openHarness } from '../harness/open.mjs';
 
 const arg = name => (process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : undefined);
-const runs = (arg('--runs') ?? 'v1:belt:4,v1:lift').split(',').map(r => {
+const runs = (arg('--runs') ?? 'v2:belt:4,v2:lift').split(',').map(r => {
   const [engine, kind, steps = '4', fps = '60', frames = '30'] = r.split(':');
   return { engine, kind, opts: { steps: +steps, fps: +fps, frames: +frames } };
 });

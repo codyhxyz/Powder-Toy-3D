@@ -30,7 +30,7 @@
 //   budget:pov  what each costs in gpu.stats (tools/budgets/pov.mjs)
 //   budget:povFrame  a body's frame, wading, and one with a kick (tools/budgets/pov.mjs)
 
-import { boot, ready, test, log, measure } from './harness.js';
+import { boot, ready, test, log, measure, nativeSim } from './harness.js';
 import { Simulation, cellTexel } from '/src/sim.js';
 import { E, ELEMENTS, K } from '/src/elements.js';
 import { PHYS as SIM_PHYS } from '/src/physics.js';
@@ -70,8 +70,7 @@ function seed(s) {
 // out-of-grid reads are counted, I2.8).
 async function make(n, opts = {}) {
   const [nx, ny, nz] = Array.isArray(n) ? n : [n, n, n];
-  const sim = new Simulation(gpu, nx, ny, nz, { debug: true, ...opts });
-  await sim.ready;
+  const sim = await nativeSim(gpu, nx, ny, nz, { debug: true, ...opts });
   const t0 = performance.now();
   await preparePov(sim);
   log(`pov kernels for ${nx}×${ny}×${nz}: ${Math.round(performance.now() - t0)} ms`);

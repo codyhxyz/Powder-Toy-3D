@@ -10,13 +10,11 @@
 //               carrying it
 //   store       the World's window: a slab's paint read back into the store as it leaves, the plane
 //               shifted with the cells, the stored bricks written back as the slab returns
-//   invariants  paint on, strokes between steps: sleeping = every brick dispatched, lists and blocks
-//               permuted, in place = out of place, all with the plane identical; and paint on =
-//               paint off for the state (the decoration never changes the simulation)
+//   (V1's move-invariance stage went with V1's move: tools/v2/deco-carry-check.mjs covers V2's carry)
 //   view        the realistic view draws the tint (the Plain view's blocks don't yet); display off (Ctrl+B) draws exactly what
 //               the scene drew before it was painted; the view follows the plane to a new buffer
 
-import { boot, ready, test, log, measure } from './harness.js';
+import { boot, ready, test, log, measure, nativeSim } from './harness.js';
 import { Simulation, cellTexel, slotCell, cellSlot } from '/src/sim.js';
 import { buildPreset } from '/src/presets.js';
 import { E, ELEMENTS, DECO_ID0 } from '/src/elements.js';
@@ -45,8 +43,7 @@ function seed(s) {
 // src/wire/deco.js sets it; `made` counts the layers the factory made.
 async function make(n, opts = {}) {
   const [nx, ny, nz] = Array.isArray(n) ? n : [n, n, n];
-  const sim = new Simulation(gpu, nx, ny, nz, { debug: true, ...opts });
-  await sim.ready;
+  const sim = await nativeSim(gpu, nx, ny, nz, { debug: true, ...opts });
   sim.made = 0;
   sim.decoFactory = (s) => { s.made++; return ensureDeco(s); };
   return sim;
@@ -389,55 +386,11 @@ const STAGES = {
   },
 
   // Sleeping, permuted lists and blocks, out of place, with paint on; and paint on = off for the state.
-  async invariants({ size = 32, steps: n = 36, every = 12, scene = 'lab' } = {}) {
-    const out = { checks: [], ms: {} };
-    const run = async (name, { test = {}, deco = true, setup = null } = {}) => {
-      const sim = await make(size);
-      Object.assign(sim.test, test);
-      if (test.listOrder) await sim.prepare('permute');
-      if (setup) setup(sim);
-      if (!deco) sim.decoFactory = null;
-      seed(12345);
-      buildPreset(scene, sim);
-      await prepareDeco(sim);
-      const g = sim.g, res = [], t0 = performance.now();
-      for (let k = 0; k < n / every; k++) {
-        // a deco stroke and an element stroke between stretches (the strokes' boxes cross sleeping bricks)
-        stroke(sim, [DECO_MODE.SET, DECO_MODE.ADD, DECO_MODE.SMUDGE][k % 3], V(g.nx * (0.25 + 0.15 * k), g.ny * 0.3, g.nz * 0.5), 7, [60 + 50 * k, 200, 90, 255], k & 1);
-        const tool = [E.SAND, E.WATER, -2][k % 3];
-        sim.paint({ center: V(g.nx * (0.3 + 0.1 * k), g.ny * 0.7, g.nz * 0.4), radius: 3, shape: k & 1, tool, rate: 1, replace: false });
-        await tick();
-        steps(sim, every);
-        res.push({ ...(await h.hashes(sim)), deco: h.fnv(await plane(sim)).toString(16), share: ((n) => n.drawn / n.units)(await sim.readCounts()) });
-      }
-      out.ms[name] = (performance.now() - t0) / n;
-      const dbg = await sim.readDebug();
-      sim.dispose();
-      return { res, dbg };
-    };
-    const LINES = ['state', 'flow', 'copies', 'maps'];
-    const cmp = (a, b, lines) => a.res.flatMap((x, i) => lines.filter((k) => x[k] !== b.res[i][k]).map((k) => `${k}@${(i + 1) * every}`));
-    const base = await run('base');
-    check(out, `base run: the sleeping rules skipped units (DRAWN ${base.res.map((x) => (100 * x.share).toFixed(0)).join(', ')}% of bricks) and the paint is there`, base.res.some((x) => x.share < 1) && base.res.every((x) => x.deco !== h.fnv(new Uint32Array(size ** 3)).toString(16)));
-    for (const [name, opts, lines] of [
-      ['every brick dispatched (skipSleeping = false)', { setup: (s) => { s.skipSleeping = false; } }, [...LINES, 'deco']],
-      ['lists shuffled', { test: { listOrder: 'shuffle:7' } }, [...LINES, 'drawn', 'deco']],
-      ['blocks reversed', { test: { blockOrder: 'reverse' } }, [...LINES, 'drawn', 'deco']],
-      ['out of place (whitewater\'s move)', { setup: (s) => s.attachAeration({ active: true, step() {}, idle() {}, reset() {} }) }, ['state', 'flow', 'maps', 'drawn', 'deco']],
-      ['no decoration at all', { deco: false }, [...LINES, 'drawn']],
-    ]) {
-      const r = await run(name, opts);
-      const diffs = cmp(base, r, lines);
-      check(out, `${name} = base (${lines.join(', ')} at ${r.res.length} checkpoints)`, !diffs.length, diffs.join(' '));
-      check(out, `${name}: no out-of-grid access`, r.dbg === 0, `dbgOob ${r.dbg}`);
-    }
-    check(out, 'base: no out-of-grid access', base.dbg === 0, `dbgOob ${base.dbg}`);
-    return out;
-  },
+  // (V1's move-invariance stage, the plane carried through its sleeping, shuffled, reversed and
+  // out-of-place moves, went with V1's move: V2 carries the plane in its own passes, tools/v2/deco-carry-check.mjs)
 };
 for (const [name, fn] of Object.entries(STAGES)) test(`stage:${name}`, fn);
 
-// ---- hashes, as tools/harness/sim-check.js has them (state, flow, copies, maps, drawn) ----
 const fnv = (words, h0 = 0x811c9dc5) => {
   let x = h0;
   for (let i = 0; i < words.length; i++) {
@@ -448,26 +401,6 @@ const fnv = (words, h0 = 0x811c9dc5) => {
   return x >>> 0;
 };
 h.fnv = fnv;
-h.hashes = async (sim) => {
-  const g = sim.g;
-  const [[A, B], flow, copies, maps] = await Promise.all([sim.readState(), sim.readFlow(), sim.readCopies(), sim.readMaps()]);
-  const a32 = new Uint32Array(A.buffer, A.byteOffset, A.length), b32 = new Uint32Array(B.buffer, B.byteOffset, B.length);
-  const cellsW = new Uint32Array(g.slots * 8);
-  let k = 0;
-  for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
-    const t = cellTexel(g, x, y, z) * 4;
-    for (let c = 0; c < 4; c++) cellsW[k++] = a32[t + c];
-    for (let c = 0; c < 4; c++) cellsW[k++] = b32[t + c];
-  }
-  const w32 = (x) => new Uint32Array(x.buffer, x.byteOffset, x.byteLength / 4);
-  let cp = 0x811c9dc5;
-  for (const c of [sim.cur, 1 - sim.cur]) for (const arr of [copies.A[c], copies.B[c], copies.F[c]]) cp = fnv(w32(arr), cp);
-  const mapWords = (m) => Uint32Array.from(m);
-  return {
-    state: fnv(cellsW).toString(16), flow: fnv(new Uint32Array(flow.buffer, flow.byteOffset, flow.byteLength / 4)).toString(16), copies: cp.toString(16),
-    maps: fnv(mapWords(maps.awake), fnv(mapWords(maps.quiet), fnv(mapWords(maps.inert)))).toString(16), drawn: fnv(mapWords(maps.drawn)).toString(16),
-  };
-};
 h.cellSlot = cellSlot;
 
 // ---------------------------------------------------------------- budgets

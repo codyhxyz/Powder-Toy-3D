@@ -17,7 +17,7 @@ const BENCH = Object.fromEntries(Object.entries(TODAY).map(([b, t]) => [t, b]));
 const KINDS = { [V2.AIR]: 'air', [V2.SOLID]: 'solid', [V2.POWDER]: 'powder', [V2.LIQUID]: 'liquid', [V2.GAS]: 'gas' };
 const ROWS = v2Rows();
 
-// The box writer: every cell of the box (or every air cell of it) gets the element (engine-v1.js's).
+// The box writer: every cell of the box (or every air cell of it) gets the element (V1's engine-v1.js's, at the v1-oracle tag).
 const BOX = {
   update: /* wgsl */ `fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<function, vec4f>) {
   if (P.onlyEmpty != 0u && eid(a) != E_EMPTY) { return; }
@@ -48,7 +48,7 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
     async create([nx, ny, nz], { seed: s = 1 } = {}) {
       await engine.dispose();
       seed(s);
-      sim = new Simulation(gpu, nx, ny, nz, { debug: false, nativeStartup: true });
+      sim = new Simulation(gpu, nx, ny, nz, { debug: false });
       kernel = sim.editKernel('outcomeBoxV2', BOX);
       v2 = new PhysicsV2(sim, { contactWGSL, Dynamics: NativeDynamics });
       // A scene throws, blasts and pours: it needs the flying matter and the jets, which build behind the

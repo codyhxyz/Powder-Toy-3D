@@ -252,10 +252,12 @@ const gpu = {
     rings.push(ring); return ring;
   } },
 };
+// (Physics V2 owns every box: its readers are told format 2, sim.readHeader; V1's format 0 went with V1)
+const boxOwner = { isReady: true, cells: { label: 'v2 cells' }, sync() {} };
 const sim = {
-  id: 1, g, cur: 0, version: 1, state:{A:{},B:{}}, origin: { x: 0, y: 0, z: 0 }, tables: {}, bindRO: {},
+  id: 1, g, cur: 0, version: 1, state:{A:{},B:{}}, origin: { x: 0, y: 0, z: 0 }, tables: {}, bindRO: {}, compact: boxOwner, compactOwner: boxOwner,
   header() { return { origin: Object.values(this.origin), src: this.cur, dst: this.cur }; },
-  readHeader() { return { ...this.header(), format: 0 }; },
+  readHeader() { return { ...this.header(), format: 2 }; },
   derived: { views: { gi: [{}, {}, {}, {}], light: {} } },
 };
 const geometry = createHybridGeometry(gpu, sim);
@@ -368,14 +370,14 @@ assert.equal(sim.derived.particleSplit,false,'data view restores complete legacy
 renderer.dispose();
 // Every pass that binds the box's read group gets the header that names its representation (V1: format 0).
 const stateCalls=(from,group)=>calls.slice(from).filter(c=>c.bind?.[1]===group);
-assert(stateCalls(0,sim.bindRO).length&&stateCalls(0,sim.bindRO).every(c=>c.header?.format===0),'V1 readers see format 0');
-assert(!created.some(n=>/format2/.test(n)),'a V1 box builds no V2 smooth draw');
+assert(stateCalls(0,sim.bindRO).length&&stateCalls(0,sim.bindRO).every(c=>c.header?.format===2),'every reader sees V2\'s cells (format 2)');
+assert(!created.some(n=>/^hybrid\.smooth\.(draw|shadow)$/.test(n)),'no V1 (format 0) smooth draw is built');
 
 // Physics V2 owns the box: sim.bindRO is V2's own cells (src/sim.js), so every reader must be told
 // format 2 (sim.readHeader), and the smooth draw's vertex stage must read V2's cells, not V1's
 // legacy copies (only a cache under V2). Same producers, layouts and production shading, under Naga.
 {
-  const owner={isReady:true,cells:{label:'v2 cells'},sync(){}};
+  const owner={isReady:true,cells:{label:'v2 cells (own read group)'},sync(){}};
   const v2Read={label:'v2 read group'};
   const nativeSim={...sim,bindRO:v2Read,compact:owner,compactOwner:owner,state:{A:{label:'v1 A'},B:{label:'v1 B'}},
     readHeader(){return {...this.header(),format:2};}};

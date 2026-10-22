@@ -10,7 +10,6 @@ import { WorldWindow } from '../src/world/window.js';
 import { Simulation } from '../src/sim.js';
 import { Deco } from '../src/deco.js';
 import { WorldGenerator } from '../src/world/gpu.js';
-import { setAeration, dropAeration, aerationForSource } from '../src/gfx/foam.js';
 import { cellWordsDiffer, cellDiffersWGSL } from '../src/shaders/generate.js';
 import { STAMP_LIB, stampLib } from '../src/shaders/stamp.js';
 import { rawStampWGSL, rawApplyWGSL, RAW_LAYOUT, RAW_READ_LAYOUT, APPLY_STATE, nativePackSlot, nativePackWGSL } from '../src/shaders/renderSource.js';
@@ -32,7 +31,7 @@ function fixture() {
   const buf = (size) => gpu.createBuffer({ size });
   const sim = { g, gpu, cur: 1, version: 1, origin: { x: 32, y: 0, z: 32 }, L: { TABLES: [] }, tables: {},
     state: { A: buf(g.slots * 32), B: buf(g.slots * 32), F: buf(g.slots * 8) }, marks: buf(16),
-    flow: buf(g.slots * 8), aeration: { buffer: buf(g.slots * 16), cur: 1 },
+    flow: buf(g.slots * 8),
     decoPlane: { buffer: buf(g.slots * 4), offset: 0 },
     _retire(b) { retired.push(b); }, noteWrite() { this.version++; }, freshFlags() { this.refreshedFlags = true; this.noteWrite(); },
     header() { return { origin: [this.origin.x, 0, this.origin.z], src: this.cur, dst: this.cur }; }, readHeader() { return this.header(); }, pingPong() {} };
@@ -48,7 +47,7 @@ function fillState(f, salt = 0) {
     const u = wordView(f.sim.state[name]);
     for (let s = 0; s < f.sim.g.slots; s++) for (let c = 0; c < 4; c++) u[(f.sim.cur * f.sim.g.slots + s) * 4 + c] = (0x3f000001 + s * 16381 + c * 7919 + salt + (name === 'B' ? 713 : 0)) >>> 0;
   }
-  for (const b of [f.sim.flow, f.sim.aeration.buffer, f.sim.decoPlane.buffer]) wordView(b).forEach((_v, i, a) => { a[i] = (0xa1010ab + i * 971 + salt) >>> 0; });
+  for (const b of [f.sim.flow, f.sim.decoPlane.buffer]) wordView(b).forEach((_v, i, a) => { a[i] = (0xa1010ab + i * 971 + salt) >>> 0; });
 }
 function stateWords(src, name, p) {
   const slot = cellSlot(src.g, ...p.map((v, i) => v - src.origin[i]));
@@ -152,10 +151,11 @@ check('complete A/B capture preserves all original words and auxiliary planes', 
   assert(revision > 0);
   for (let s = 0; s < live.g.slots; s++) {
     const p = slotCell(live.g, s).map((v, i) => v + live.origin[i]);
-    const out = f.source.getSource(p); assert.equal(out.kind, 'live'); assert.equal(out.aux, 7);
+    // (flow and decoration; no aeration: V1 whitewater went with V1, so V1's cells carry none)
+    const out = f.source.getSource(p); assert.equal(out.kind, 'live'); assert.equal(out.aux, 5);
     for (const name of ['A', 'B']) assert.deepEqual(stateWords(out.chunk, name, p), stateWords(live, name, p));
     assert.equal(wordView(out.chunk.flow)[out.slot * 2], wordView(live.flow)[s * 2]);
-    assert.equal(wordView(out.chunk.aeration)[out.slot * 2], wordView(live.aeration)[(live.aerCopy * live.g.slots + s) * 2]);
+    assert.equal(live.aeration, null);
     assert.equal(wordView(out.chunk.deco.buffer)[out.slot], wordView(live.deco.buffer)[s]);
   }
 });
@@ -260,34 +260,6 @@ check('cached live geometry reuses plans across cur changes but not origin chang
   assert.notEqual(core.liveCopyPlan, first);
   assert.deepEqual(stateWords(core, 'A', [48, 0, 32]), stateWords(snapshotSource(f.sim), 'A', [48, 0, 32]));
 });
-check('disabled-but-allocated aeration remains discoverable, while dropped aux cannot resurrect stale buffers', () => {
-  const f = fixture(), previousUsage = globalThis.GPUBufferUsage;
-  globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_SRC: 0x04, COPY_DST: 0x08, INDIRECT: 0x100 };
-  f.sim.attachAeration = (aer) => { f.sim.aeration = aer; }; f.sim.onShift = () => () => {};
-  try {
-    const aer = setAeration(f.sim, true), buffer = aer.buffer;
-    wordView(buffer)[0] = 0x12345678;
-    setAeration(f.sim, false); assert.equal(f.sim.aeration, null);
-    assert.equal(aerationForSource(f.sim), aer); assert.equal(snapshotSource(f.sim).aeration, buffer);
-    f.source.recordLiveCopy(f.frame, f.sim); f.flush(); assert(!f.source.needsLiveCopy());
-    aer.reset(); assert(f.source.needsLiveCopy(), 'aux reset invalidates even an unchanged source version');
-    f.source.recordLiveCopy(f.frame, f.sim); f.flush();
-    dropAeration(f.sim); f.sim.decoPlane = null;
-    assert(f.source.needsLiveCopy()); f.source.recordLiveCopy(f.frame, f.sim); f.flush();
-    const out = f.source.getSource([32, 0, 32]); assert.equal(out.aux, 1);
-    assert.equal(wordView(out.chunk.aeration)[out.slot * 2], 0); assert.equal(wordView(out.chunk.deco.buffer)[out.slot], 0);
-  } finally { dropAeration(f.sim); if (previousUsage === undefined) delete globalThis.GPUBufferUsage; else globalThis.GPUBufferUsage = previousUsage; }
-});
-check('actual idle step captures aeration copy changes even without a physics/source version change', () => {
-  const f = fixture(); fillState(f);
-  Object.assign(f.sim, { worldRenderSource: f.source, frame: 0, idleCertified: true, actDirty: false, actFresh: false, actSteps: 1e6, quietOk: true, skipSleeping: true, rays: { active: false } });
-  f.sim.aeration.generation = 7;
-  f.sim.aeration.idle = () => { f.sim.aeration.cur = 0; };
-  Simulation.prototype.step.call(f.sim); f.flush();
-  const out = f.source.getSource([33, 1, 33]); assert.equal(out.kind, 'live');
-  const slot = cellSlot(f.sim.g, 1, 1, 1);
-  assert.equal(wordView(out.chunk.aeration)[out.slot * 2], wordView(f.sim.aeration.buffer)[slot * 2]);
-});
 check('real copy plans are bricked, exact at partial/corner overlaps, immutable across shifts', () => {
   const f = fixture(); fillState(f); const src = snapshotSource(f.sim), dst = f.source._chunk([32, 0, 32]);
   assert(Object.isFrozen(src.origin)); assert(Object.isFrozen(src.g));
@@ -312,7 +284,7 @@ check('no-step departure, delayed save and return restore exact captured GPU wor
   assert(f.sim.refreshedFlags, 'native state restore must refresh physical activity flags');
   const keys = []; for (let z = 8; z < 16; z++) for (let y = 0; y < 8; y++) for (let x = 8; x < 12; x++) keys.push(f.win.store.key(x, y, z));
   f.source.commitStoreRevision(keys, capture);
-  assert.equal(f.source.getSource(p).kind, 'saved'); assert(!f.source.getSource(p).pending); assert.equal(f.source.getSource(p).aux, 7);
+  assert.equal(f.source.getSource(p).kind, 'saved'); assert(!f.source.getSource(p).pending); assert.equal(f.source.getSource(p).aux, 5);   // (flow + decoration: a V1-state source carries no aeration)
   f.source.recordLiveCopy(f.frame, f.sim); f.source.commitStoreRevision(keys, capture); assert.equal(f.source.getSource(p).kind, 'live');
 });
 check('generated < saved < outgoing < live, stale revisions/epochs and partial edges', () => {
@@ -541,11 +513,10 @@ function windowFixture() {
     }
   };
   sim._shiftListeners.push((dx, dz) => {
-    shiftWords(sim.aeration.buffer, sim.aeration.buffer, 2, dx, dz, sim.aeration.cur, sim.aeration.cur);
     shiftWords(sim.decoPlane.buffer, sim.decoPlane.buffer, 1, dx, dz);
   });
   win.gen = { P: {}, sim, res: { resources: [], prepassFor() {} }, kernels: { fill: { main: 'fill' } }, fill: WorldGenerator.prototype.fill, diff() {} };
-  win.P = win.gen.P; win.restoreKernel = { main: 'restore' }; win.restore = WorldWindow.prototype.restore;
+  win.P = win.gen.P; win.restore = WorldWindow.prototype.restore;
   win.storeRevisions = new Map(); win.nativeStore = new NativeBrickStore(win.wb); win.leave = {}; win.readBack = () => {}; win.loaded = true;
   sim.dropHistory = () => {}; win.far = null;
   return f;
@@ -553,35 +524,13 @@ function windowFixture() {
 const oldUsage = globalThis.GPUBufferUsage;
 globalThis.GPUBufferUsage = { STORAGE: 128, COPY_SRC: 4, COPY_DST: 8 };
 try {
-  check('actual cold loadSaved + shift/reentry restores signed zero, NaN payload, tiny heat, pressure and appearance words', () => {
-    const f = windowFixture(), { win, sim } = f;
-    const outside = new BrickStore(win.wb), A = new Float32Array(256), B = new Float32Array(256);
-    const au = new Uint32Array(A.buffer), bu = new Uint32Array(B.buffer);
-    bu[3] = 0x80000000; // cell differs ONLY by signed zero: equality restore skips it
-    au[4 + 1] = 0x7fc12345; au[8 + 1] = 0x00000001; bu[12 + 3] = 0x3f800001; au[16 + 3] = 0xdeadbeef;
-    const key = outside.key(16, 1, 9); outside.put(key, encodeBrick(A, 0, B, 0));
-    WorldWindow.prototype.loadSaved.call(win, [32, 0, 32], () => {}, outside.toBytes(), win.planted.slice());
-    assert.equal(f.source.getSource([64, 4, 36]).kind, 'unknown', 'saved-only; no warm cache');
-    WorldWindow.prototype.shift.call(win, 16, 0); f.flush();
-    assert(!win.store.has(key));
-    const verify = () => {
-      for (let i = 0; i < 64; i++) {
-        const p = [64 + (i & 3), 4 + (i >> 2 & 3), 36 + (i >> 4)];
-        const out = f.source.getSource(p);
-        for (const [name, words] of [['A', au], ['B', bu]]) {
-          assert.deepEqual(stateWords(snapshotSource(sim), name, p), [...words.subarray(i * 4, i * 4 + 4)]);
-          assert.deepEqual(stateWords(out.chunk, name, p), [...words.subarray(i * 4, i * 4 + 4)]);
-        }
-      }
-    };
-    verify(); WorldWindow.prototype.shift.call(win, -16, 0); WorldWindow.prototype.shift.call(win, 16, 0); f.flush(); verify();
-    assert.equal(f.source.bindings.appearanceWords, win.scene.appearanceWords);
-  });
-  check('actual no-step window departure/reentry preserves content token and every A/B/flow/aer/deco word', () => {
+  // (A stored brick comes back through V2's exact native restore only, its words checked bit for bit by
+  // tools/v2/native-store-check.mjs; V1's restore edit, which this fixture's V1 window used, went with V1.)
+  check('actual no-step window departure/reentry preserves content token and every A/B/flow/deco word', () => {
     const f = windowFixture(); fillState(f); f.source.recordLiveCopy(f.frame); f.flush();
     const before = snapshotSource(f.sim), originals = {};
     for (const name of ['A', 'B']) originals[name] = wordView(before[name]).slice(before.copy * before.g.slots * 4, (before.copy + 1) * before.g.slots * 4);
-    originals.flow = wordView(before.flow).slice(); originals.aer = wordView(before.aeration).slice(before.aerCopy * before.g.slots * 2, (before.aerCopy + 1) * before.g.slots * 2); originals.deco = wordView(before.deco.buffer).slice();
+    originals.flow = wordView(before.flow).slice(); originals.deco = wordView(before.deco.buffer).slice();
     const token = f.source.contentToken(), authority = f.source.revision;
     const pinned = f.source.snapshotForFields();
     WorldWindow.prototype.shift.call(f.win, 16, 0); WorldWindow.prototype.shift.call(f.win, -16, 0); f.flush();
@@ -589,13 +538,12 @@ try {
     const after = snapshotSource(f.sim);
     for (const name of ['A', 'B']) assert.deepEqual(wordView(after[name]).slice(after.copy * after.g.slots * 4, (after.copy + 1) * after.g.slots * 4), originals[name]);
     assert.deepEqual(wordView(after.flow), originals.flow);
-    assert.deepEqual(wordView(after.aeration).slice(after.aerCopy * after.g.slots * 2, (after.aerCopy + 1) * after.g.slots * 2), originals.aer);
     assert.deepEqual(wordView(after.deco.buffer), originals.deco);
     pinned.assertComplete([sourceBounds(f.sim)]);
     assert.throws(() => pinned.assertComplete([{ lo: [0, 0, 0], hi: [4, 4, 4] }]), /Incomplete/);
     const dst = { A: f.gpu.createBuffer({ size: SOURCE_GRID.slots * 16 }), B: f.gpu.createBuffer({ size: SOURCE_GRID.slots * 16 }), aeration: f.gpu.createBuffer({ size: SOURCE_GRID.slots * 8 }) };
     pinned.recordGatherRaw(f.frame, { resources: dst, g: SOURCE_GRID, scratchOrigin: before.origin, sourceRevision: token.sourceRevision }); f.flush();
-    assert.deepEqual(wordView(dst.A), originals.A); assert.deepEqual(wordView(dst.B), originals.B); assert.deepEqual(wordView(dst.aeration), originals.aer);
+    assert.deepEqual(wordView(dst.A), originals.A); assert.deepEqual(wordView(dst.B), originals.B); assert(wordView(dst.aeration).every((w) => w === 0), 'no aeration gathered');
   });
   check('content snapshots ignore ownership transfers but reject writes and resets; shift callbacks are not suppressed', () => {
     const f = windowFixture();
@@ -609,21 +557,12 @@ try {
     assert.throws(() => pin.assertComplete([]), /Stale/);
     const pin2 = f.source.snapshotForFields(); f.source.reset(f.source.epoch + 1); assert(!pin2.isCurrent());
   });
-  check('actual paused edit, whole write, physics step, aeration reset/idle and scene changes advance content', () => {
+  check('actual paused edit, whole write and scene changes advance content', () => {
     const f = windowFixture(), { sim, source } = f;
     const advances = (fn) => { const before = source.contentRevision; fn(); assert(source.contentRevision > before); };
     advances(() => sim.edit({ main: 'brush' }, { lo: [0, 0, 0], hi: [0, 0, 0] }));
     advances(() => sim.noteWrite()); advances(() => sim.stillFlow()); advances(() => source.invalidateGenerated());
-    Object.assign(sim, { frame: 0, actAge: 0, actSteps: 0, kernels: { move: 'move', react: 'react' }, rays: { active: false }, aeration: null });
-    advances(() => Simulation.prototype.step.call(sim));
-    sim.onShift = () => () => {}; sim.attachAeration = (a) => { sim.aeration = a; };
-    const aer = setAeration(sim, true); aer._dispatch = () => {}; aer._group = () => ({});
-    advances(() => aer.reset());
-    // Actual idle method invokes actual _run, not a mirrored revision model.
-    for (const k of Object.values(aer.kernels)) k.state = 'ready';
-    f.gpu.readback = { buffer: async () => new Uint32Array([1]).buffer };
-    aer.idleSteps = 0; advances(() => aer.idle(f.frame));
-    dropAeration(sim);
+    // (a physics tick's change is V2's: its native pack, checked above; V1's step and whitewater went with V1)
   });
   {
     const f = windowFixture(), token = f.source.token();
@@ -665,5 +604,6 @@ try {
 } finally { if (oldUsage === undefined) delete globalThis.GPUBufferUsage; else globalThis.GPUBufferUsage = oldUsage; }
 const windowCode = readFileSync(new URL('../src/world/window.js', import.meta.url), 'utf8');
 assert(windowCode.includes('this.sourceProducer.record('));
-assert(readFileSync(new URL('../src/sim.js', import.meta.url), 'utf8').includes('this.worldRenderSource?.recordLiveCopy(f, this)'));
+// (V1's step recorded a live copy per step; V2's ticks bump sim.version and the window copies on demand)
+assert(windowCode.includes('if (this.renderSource.needsLiveCopy(this.sim)) this.renderSource.recordLiveCopy(this.gpu.frame, this.sim);'));
 console.log(`PASS ${assertions} world raw source CPU contracts; GPU numerical/visual equivalence remains unverified`);

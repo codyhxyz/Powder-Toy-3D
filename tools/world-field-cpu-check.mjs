@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { E } from '../src/elements.js';
-import { aerationFrag, JOIN_REACH } from '../src/shaders/gfx/liquidDetail.js';
+import { JOIN_REACH } from '../src/shaders/gfx/liquidDetail.js';
 import { PHYS } from '../src/physics.js';
 import { cellSlot } from '../src/shaders/common.js';
 import { FIELD_EMA_SETTLE, FIELD_REACH, BLUR_REACH }  from '../src/shaders/fields.js';
@@ -23,9 +23,8 @@ for (const [name, r] of Object.entries(FIELD_DEMAND)) {
   assert(interval.lo.every((v) => v >= 0)); assert(interval.hi.every((v) => v <= 64));
   assert.deepEqual(interval.lo, r.map((v) => 13 - v));
 }
-const producer = aerationFrag({ nx: 64, ny: 64, nz: 64 });
-assert.match(producer, /v = normalize\(v\) \* select\(0\.5, 1\.0, f\.y > 1\.5\)/);
-assert.match(producer, /pack2x16float\(o\.xy\)/);
+// (V1 whitewater's wake producer, liquidDetail.js aerationFrag, went with V1: the wakes below are what
+// a World field still accepts from a source, and rejects past them)
 assert.equal(BLUR_REACH, 2); assert.equal(FIELD_REACH, 4); assert.equal(JOIN_REACH, 4);
 let normalSupport = 0;
 for (let fraction = 0; fraction < 1000; fraction++) for (const h of [-0.55, -0.25, 0.25, 0.55]) {

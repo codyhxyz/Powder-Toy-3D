@@ -6,7 +6,7 @@ import { PHYS, SIM_GRAVITY, NOMINAL_STEP_RATE } from '../physics.js';
 import { LEGACY_STEPS_PER_TICK } from './host.js';
 import { contactVacuum, specialExplosion } from './contact.js';
 import { impactFoam } from './foam.js';
-import { PACE } from '../shaders/move.js';
+import { PACE } from '../physics.js';
 import { GRAVITY_MS2, TERMINAL_MS, v1TerminalMS, V1_STEP_MS, STEPS_PER_TICK, STEP_S, v1PaceRate } from './gravity.js';
 import { RAYS } from '../rays.js';
 import { energyOf, withEnergy, energyFits, makeMaterial, cTq, withPayload, payloadOf, share, packetOwnedEnergy, withPacketEnergy, packetEnergyFits } from './layout.js';

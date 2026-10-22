@@ -89,7 +89,7 @@ export async function openPovApp({ query = '?size=64&preset=empty&view=plain', v
             await new Promise((r) => setTimeout(r, 0));   // (the frame's probes land)
             if (++window.__pov.count % PROGRESS_EVERY === 0) {
               // (the bricks awake are what a frame costs here: SwiftShader steps their cells on the CPU)
-              const c = await __app.sim.readCounts();
+              const c = await __app.physics.v2.readStats();   // (V2's awake bricks of its units)
               console.log(`· ${window.__pov.count} frames (${((performance.now() - t0) / 1000).toFixed(0)} s, ${c.awake} of ${c.units} bricks awake)`);
             }
             if (done()) return i + 1;

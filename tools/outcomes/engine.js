@@ -1,7 +1,7 @@
 // The outcome bench's engine contract (tools/outcomes.mjs; docs/v2.md 2.10,
 // 4.4 and 11 "Week 0"). A test asks only this of a simulation, so one test
-// measures today's build (engine-v1.js), the CPU prototype (engine-lean.js),
-// the game at a URL (engine-app.js) and the v2 engine (engine-v2.js, written
+// measures V1 (engine-v1.js, at the v1-oracle tag), the CPU prototype (engine-lean.js),
+// the game at a URL (engine-app.js) and the V2 engine (engine-v2.js, written
 // in P2) alike. Nothing here imports the game: this module loads in Node and
 // in a page.
 //

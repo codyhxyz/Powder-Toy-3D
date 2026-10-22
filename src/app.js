@@ -582,7 +582,7 @@ function build(savedWorldSize = null) {
   // A guest's grid gets its native owner too: it holds the host's frames as native cells (net/codec.js
   // unpack) without ticking, and runs them once the session ends (a box guest plays on alone). Without
   // one, a box built while guesting never stepped again under V2 (v2Active needs an owner).
-  sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size, nativeStartup: true });
+  sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size });
   physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
   const owner = physicsV2;
   owner.integrationReady = sim.prepareNative(owner);
@@ -1964,7 +1964,7 @@ async function renderThumb(viewId, out) {
         if (b) {
           b.drawOpaque(rp, { marchNear: pov?.marchNear ?? 0, floor: !win });
           b.drawTranslucent(rp, { marchNear: pov?.marchNear ?? 0 });
-        } else vol.draw(rp, { view, detail, meshDepth: cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0 });
+        } else vol.draw(rp, { view, detail, meshDepth: cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: 0 });
         if (!win) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], lit });
       },
       meshes: (p) => { threeMeshes(p, true, thumbCam); },
@@ -2590,7 +2590,7 @@ function drawVolume(rp) {
   const meshDepth = cut.take();
   const warp = warpNow(), curved = !!warp && warp.k !== 0;
   const drew = !testNoVolume && vol.draw(rp, {
-    view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: sim.aeration?.cur ?? 0, warp,
+    view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, warp,
     // A valid hybrid frame has zero legacy instances, decided on the GPU.
     indirect: hybrid?.legacyIndirect,
   });

@@ -1,14 +1,14 @@
 import { decodeWorldState } from './persistence.js';
 import { NativeBrickStore, nativeBrickBanked, legacyBrickToNative } from './nativeStore.js';
 import { BRICK } from '../shaders/common.js';
-import { restoreEdit, BRICK_CELLS } from '../shaders/window.js';
+import { BRICK_CELLS } from '../shaders/window.js';
 import { leaveHeadBytes, LEAVE_BRICK_BYTES } from '../shaders/generate.js';
 import { WorldGenerator } from './gpu.js';
 import { WORLD_SEED } from './generator.js';
 import { island } from './scenes/island.js';
 import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
-import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
+import { BrickStore, encodeBrick, BRICK_FLOATS } from './store.js';
 import { farLayout, farSceneLayout } from '../shaders/far.js';
 import { WorldRenderSource, dropNativeWorldSource, nativePackOf, nativeSourceReady } from './renderSource.js';
 import { RawWorldSourceProducer } from './renderSourceProducer.js';
@@ -80,8 +80,6 @@ export const WIN_HYSTERESIS = 4;     // cells past WIN_STEP from the centre the 
 const BAKED_KEEP = 256;              // baked trees kept: a tree straddling slabs is stamped once per slab
 const READ_MIN = 64;                 // bricks of a leaving slab's cells read with its count at least...
 const READ_AHEAD = 1.5;              // ...or this many times the last move's (a second read fetches the rest)
-const VEC4 = 16;
-const BUFFER = { STORAGE: 0x80, COPY_DST: 0x08 };   // (GPUBufferUsage's bits)
 
 export class WorldWindow {
   // sim: the window's Simulation (its grid spans the world's height); size:
@@ -127,10 +125,6 @@ export class WorldWindow {
     const step = WIN_STEP / BRICK, BX = g.nx / BRICK, BY = g.ny / BRICK, BZ = g.nz / BRICK;
     this.maxBricks = Math.max(step * BY * BZ, BX * BY * step);
     this.leave = this.gen.diffBuffers(this.maxBricks);
-    // stored bricks back: an edit over the uncovered slab, from one upload buffer (made on first use)
-    this.restoreKernel = sim.editKernel('restore', restoreEdit());
-    this.restoreBuf = null;
-    this.restoreRead = -1;   // gpu.stats.flushes when a restore edit last read restoreBuf (still unsubmitted while equal)
     this.renderSource = new WorldRenderSource(this);
     this.sourceProducer = new RawWorldSourceProducer(this, this.renderSource);
   }
@@ -143,7 +137,7 @@ export class WorldWindow {
     // V2: the source's native read of its cells (renderSource.js nativePackOf), which every copy of the window uses
     const pack = this.sim.compactOwner ? nativePackOf(this.sim)?.kernel.ready : null;
     return (this.ready ??= Promise.all([
-      this.gen.ready, this.gen.prepareDiff(), this.restoreKernel.ready, this.sourceProducer.ready, this.sim.prepare('fresh'), this.far?.whenReady?.(), pack,
+      this.gen.ready, this.gen.prepareDiff(), this.sourceProducer.ready, this.sim.prepare('fresh'), this.far?.whenReady?.(), pack,
     ]).then(() => this));
   }
 
@@ -505,50 +499,25 @@ export class WorldWindow {
     this.pending = pending;
   }
 
-  // Write the stored bricks of the slab of grid cells [lo, lo + 4·bricks) back
-  // into the grid, taking them out of the store: an edit over the slab from
-  // one upload (the index, then the bricks' cells; shaders/window.js
-  // editFrag). Returns how many.
+  // Take the stored bricks of the slab of grid cells [lo, lo + 4·bricks) out of V1's store, for
+  // restoreNative: V2 brings each back exact from its own store, and a brick only V1's store kept (a
+  // V1-made world save) is decoded into V2's cells as V2's import makes them (nativeStore.js
+  // legacyBrickToNative) first. V1's restore edit went with V1. Returns how many.
   restore(lo, bricks) {
-    const sim = this.sim, o = sim.origin, native = !!(sim.compact?.isReady && sim.nativeIntegration?.isReady), exact = [];
-    const lb = lo.map((v) => v / BRICK), ob = [o.x / BRICK, o.y / BRICK, o.z / BRICK];
-    const n = bricks[0] * bricks[1] * bricks[2], index = new Uint32Array(Math.ceil(n / 4) * 4), keys = [];
+    const sim = this.sim, o = sim.origin, native = !!(sim.compactOwner?.isReady && sim.nativeIntegration?.isReady);
+    const lb = lo.map((v) => v / BRICK), ob = [o.x / BRICK, o.y / BRICK, o.z / BRICK], keys = [];
     for (let bz = 0; bz < bricks[2]; bz++)
       for (let by = 0; by < bricks[1]; by++)
         for (let bx = 0; bx < bricks[0]; bx++) {
           const key = this.store.key(ob[0] + lb[0] + bx, ob[1] + lb[1] + by, ob[2] + lb[2] + bz);
           if (!this.store.has(key)) continue;
-          // V2 running: a brick its store holds comes back exact (restoreNative, after): V1's copy of it
-          // only leaves the store. A brick only V1's store kept (a V1-made world save) is decoded into V2's
-          // cells as V2's import makes them (nativeStore.js legacyBrickToNative) and comes back the same way.
-          if (native) {
-            const nativeKey = this.nativeStore.key(ob[0] + lb[0] + bx, ob[1] + lb[1] + by, ob[2] + lb[2] + bz);
-            if (!this.nativeStore.map.has(nativeKey)) this.nativeStore.put(nativeKey, legacyBrickToNative(this.store.map.get(key)));
-            exact.push(key); continue;
-          }
+          if (!native) throw new Error('World restore needs the native owner: await sim.prepareNative()');
+          const nativeKey = this.nativeStore.key(ob[0] + lb[0] + bx, ob[1] + lb[1] + by, ob[2] + lb[2] + bz);
+          if (!this.nativeStore.map.has(nativeKey)) this.nativeStore.put(nativeKey, legacyBrickToNative(this.store.map.get(key)));
           keys.push(key);
-          index[bx + bricks[0] * (by + bricks[1] * bz)] = keys.length;
         }
-    for (const key of exact) this.store.drop(key);
-    if (!keys.length) return exact.length;
-    const cellsAt = index.length / 4, bytes = (cellsAt + keys.length * 2 * BRICK_CELLS) * VEC4;
-    if (!this.restoreBuf || this.restoreBuf.size < bytes) {
-      if (this.restoreBuf) sim._retire(this.restoreBuf);
-      this.restoreBuf = this.gpu.createBuffer({ label: `sim${sim.id} restore`, size: Math.max(bytes, 2 * VEC4 * (cellsAt + 64 * 2 * BRICK_CELLS)), usage: BUFFER.STORAGE | BUFFER.COPY_DST });
-      this.restoreRead = -1;   // (nothing reads the new one yet)
-    }
-    const cells = new Float32Array(keys.length * 2 * BRICK_FLOATS);
-    keys.forEach((key, s) => decodeBrick(this.store.map.get(key), cells, s * 2 * BRICK_FLOATS, cells, s * 2 * BRICK_FLOATS + BRICK_FLOATS));
-    // Unordered unless a restore recorded in the open encoder still reads the
-    // buffer (two moves in one frame: a tool's): an ordered write would flush
-    // the move's work so far, a second submit for every move that restores.
-    const ordered = this.restoreRead === this.gpu.stats.flushes;
-    this.gpu.write(this.restoreBuf, 0, index, { ordered });
-    this.gpu.write(this.restoreBuf, cellsAt * VEC4, cells, { ordered: false });   // (the first flushed, if it had to)
-    sim.edit(this.restoreKernel, { lo, hi: lo.map((v, i) => v + bricks[i] * BRICK - 1) }, { lo, bricks, cellsAt }, { bind: [{ buffer: this.restoreBuf }], residency: true });
-    this.restoreRead = this.gpu.stats.flushes;
     for (const key of keys) this.store.drop(key);
-    return keys.length + exact.length;
+    return keys.length;
   }
 
   restoreNative(lo, bricks) {
@@ -629,7 +598,7 @@ export class WorldWindow {
     dropNativeWorldSource(this.sim);   // (V2's cells as the World's source reads them)
     this.gen.dispose();
     // (destroyed once the frames that use them are submitted and done)
-    for (const b of [this.leave.head, this.leave.cells, this.leaveNative?.head, this.leaveNative?.cells, this.restoreBuf]) if (b) this.sim._retire(b);
+    for (const b of [this.leave.head, this.leave.cells, this.leaveNative?.head, this.leaveNative?.cells]) if (b) this.sim._retire(b);
     this.scene.dispose?.();
   }
 }

@@ -15,7 +15,7 @@
 //   budget:*       tools/budgets/derived.mjs
 //   bench          GPU ms per derived kernel, incremental and full
 
-import { boot, ready, log, test } from './harness.js';
+import { boot, ready, log, test, nativeSim } from './harness.js';
 import { Simulation, cellTexel, cellSlot, slotCell } from '/src/sim.js';
 import { Derived, fieldWeights } from '/src/derived.js';
 import { buildPreset } from '/src/presets.js';
@@ -46,7 +46,7 @@ h.seed = (seed) => {
 // A simulation and its derived passes, every pipeline ready.
 h.make = async (dims, opts = {}) => {
   const [nx, ny, nz] = Array.isArray(dims) ? dims : [dims, dims, dims];
-  const sim = new Simulation(gpu, nx, ny, nz, { debug: false, ...opts });
+  const sim = await nativeSim(gpu, nx, ny, nz, { debug: false, ...opts });
   const derived = new Derived(sim);
   await Promise.all([sim.ready, derived.ready]);
   return { sim, derived, dispose: () => { derived.dispose(); sim.dispose(); } };

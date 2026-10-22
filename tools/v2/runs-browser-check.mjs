@@ -31,8 +31,9 @@ const SIDE_CASES = arg('--side')?.split(',').map(c => c.split(':').map((v, k) =>
   [['C4', 1, 4], ['C4', 1, 8], ['C4', 1, 14], ['C4', 3, 14], ['C4', 0, 14], ['NITRO', 1, 6], ['NITRO', 1, 14], ['NITRO', 0, 14], ['NITRO', 3, 24]];
 // the fronts' times (s): every tick early, then sparser
 const FRONT_T = [1 / 30, 0.05, 1 / 15, 0.1, 0.15, 0.2, 0.3, 0.4, 0.8, 1.6];
-const engines = ['v1', 'v2'].filter(e => process.argv.includes(`--${e}`));
-if (!engines.length) engines.push('v1', 'v2');
+// (V1's runs are the v1-oracle tag's: this script run from a checkout of it, --v1)
+if (process.argv.includes('--v1')) throw new Error('V1 is the v1-oracle tag (git worktree add <dir> v1-oracle): run this from that checkout --v1');
+const engines = ['v2'];
 const t0 = Date.now(), at = () => `${((Date.now() - t0) / 1000).toFixed(1)} s`;
 
 async function setup(name) {

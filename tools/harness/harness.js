@@ -67,6 +67,21 @@ export async function boot({ label = 'harness' } = {}) {
   }
 }
 
+/**
+ * A grid with its Physics V2 owner, built, ready and presenting, as the app makes one (src/app.js): its
+ * sim.step() is one native tick (V1's Simulation step went with V1: the v1-oracle tag). opts: Simulation's.
+ * @returns {Promise<import('../../src/sim.js').Simulation>}
+ */
+export async function nativeSim(gpu, nx, ny, nz, opts = {}) {
+  const [{ Simulation }, { PhysicsV2 }, { contactWGSL }, { NativeDynamics }] = await Promise.all([
+    import('/src/sim.js'), import('/src/v2/physics.js'), import('/src/shaders/v2/contact.js'), import('/src/v2/dynamics.js')]);
+  const sim = new Simulation(gpu, nx, ny, nz, opts);
+  const owner = new PhysicsV2(sim, { contactWGSL, Dynamics: NativeDynamics });
+  await Promise.all([sim.ready, owner.ready, sim.prepareNative(owner)]);
+  owner.activate();
+  return sim;
+}
+
 /** Marks the page ready for its tool. */
 export function ready() { h.ready = true; }
 

@@ -380,3 +380,7 @@ export const PHYS = {
 // version, docs/webgpu.md W2.)
 export const physicsGLSL = () =>
   Object.entries(PHYS).map(([k, v]) => `const ${k}: f32 = ${f(v)};`).join('\n');
+
+// The paced draws' seeds (a falling liquid's fall paced by its own fall age, not the frame: V1's
+// shaders/move.js PACE, at the v1-oracle tag). V2's columns and the dock tiles' CPU port read them.
+export const PACE = { Y: 3518319154, X: 2882110344, Z: 2360945575 };

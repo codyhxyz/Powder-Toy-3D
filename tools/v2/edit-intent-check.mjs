@@ -110,8 +110,9 @@ assert.deepEqual(bridges.map(o=>o.header.format),[3,0,3]);assert(bridges.every(o
 assert.deepEqual(bridges.map(o=>o.params.full),[BRIDGE.ALL,BRIDGE.FLIP,BRIDGE.FLIP]);
 const projection=body(v2BridgeWGSL(g),'bridgeCell');
 assert.match(projection,/let c = cells\[s\];\n  let drawn = compactA\(p, c\);[^]*edit = compactProbeA\(p, c\);[^]*select\(drawn, edit, H.format == 3u\)/,'visual compatibility uses exactly renderer compactA, including partial-fill dither');
-const simSpy=Object.assign(Object.create(Simulation.prototype),{compact:{isReady:true,forceCompatibility:true,groups:{read:{}},sync(){},exportLegacy(native){calls.push(['mode',native]);}},gpu:{testMode:true},_bindRW:{},_bindRO:{}});
-void simSpy.bindRW;void simSpy.bindRO;simSpy.legacyState();assert.deepEqual(calls.filter(c=>c[0]==='mode').map(c=>c[1]),[true,false,false]);
+const simSpy=Object.assign(Object.create(Simulation.prototype),{compact:{isReady:true,groups:{read:{}},readGroup(){return this.groups.read;},sync(){},exportLegacy(native){calls.push(['mode',native]);}},gpu:{testMode:true},_bindRW:{},_bindRO:{}});
+// (bindRO reads V2's own cells: no export, as the test-only compatibility render went with V1)
+void simSpy.bindRW;void simSpy.bindRO;simSpy.legacyState();assert.deepEqual(calls.filter(c=>c[0]==='mode').map(c=>c[1]),[true,false]);
 // Real importer dispatch protocol: only the actual dense editing cache enables
 // partial-property merging; legacy A still uses format0 (never decode as core).
 const imports=[];engine.kernels.v2externalEvents={dispatch(_f,_n,o){imports.push(['events',o]);}};
@@ -152,16 +153,16 @@ const fillSim={g,origin:{x:0,z:0,clone(){return {...this};}},cellTexel:texel,
 for(const x of [5,6]) atlas[fillSim.cellTexel(x,5,5)*4]=probe(decodeCtx,vec(x,5,5),hidden.core).x;
 assert.deepEqual(await runFill(fillSim,{cell:[5,5,5],id:E.WATER,stroke:{tool:tools.ERASE}}),{count:2});
 assert.equal(fillSim.stroke.filter,E.WATER);assert.equal(fillSim.stroke.mask.data[fillSim.cellTexel(6,5,5)],255);
-// The renderer-only comparison switch cannot select visual geometry or zero
-// legacy velocity/pressure for a physical reader.
+// A physical reader takes V2's core and its current coarse air, never visual geometry or zero legacy
+// velocity/pressure; a drawn reader V2's cells as format 2 (no compatibility render: it went with V1).
 let exports=0;const core={},air=[{},{}];
 const physicalSim=Object.assign(Object.create(Simulation.prototype),{origin:{x:0,y:0,z:0},cur:0,
- compact:{isReady:true,forceCompatibility:true,cells:core,dynamics:{isReady:true,air,airIndex:1},sync(){},exportLegacy(){exports++;}},
+ compact:{isReady:true,cells:core,dynamics:{isReady:true,air,airIndex:1},sync(){},exportLegacy(){exports++;}},
  gpu:{testMode:true,bindGroup:(_l,entries)=>entries},L:{STATE_RO:{}},_bindRO:{}});
 physicalSim.compactOwner=physicalSim.compact;
 const physicalGroup=physicalSim.bindPhysicalRO;
 assert.equal(physicalGroup[0].resource.buffer,core);assert.equal(physicalGroup[1].resource.buffer,air[1]);
-assert.equal(physicalSim.readHeader({physical:true}).format,3);assert.equal(physicalSim.readHeader().format,0);assert.equal(exports,0);
+assert.equal(physicalSim.readHeader({physical:true}).format,3);assert.equal(physicalSim.readHeader().format,2);assert.equal(exports,0);
 physicalSim.compact.dynamics.airIndex=0;assert.equal(physicalSim.bindPhysicalRO[1].resource.buffer,air[0]);
 // Readback opt-in does not alter the default visual save/read ABI.
 const modes=[];const atlasSim=Object.assign(Object.create(Simulation.prototype),{g,cur:0,tables:{},_bindFlagsRO:{},_convertGroup:{},

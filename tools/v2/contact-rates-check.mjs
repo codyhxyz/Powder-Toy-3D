@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 import { E, ELEMENTS, REACTIONS } from '../../src/elements.js';
 import { PHYS, NOMINAL_STEP_RATE } from '../../src/physics.js';
 import * as C from '../../src/v2/contact.js';
-import { RX_PAIRINGS } from '../../src/shaders/react.js';
+// V1's react.js RX_PAIRINGS (3 axes × 2 parities: a touching pair is partners once every 6 steps), frozen at the v1-oracle tag
+const RX_PAIRINGS = 3 * 2;
 import { legacyPressureToPa } from '../../src/v2/pressure.js';
 
 const STEPS = NOMINAL_STEP_RATE / C.CONTACT_HZ, PARTNER = 2 * STEPS;

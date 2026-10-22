@@ -5,9 +5,20 @@ import { PHASE_ROWS, PHASE_NORMAL_MAX, PHASE_COLD_BASE } from '../../v2/phase.js
 import { frameBindings, RENDER_LAYOUT } from '../bindings.js';
 import { STAGE } from '../common.js';
 import { uniformStruct } from '../../gpu/params.js';
-import { RAY_LOOK } from '../rays.js';
 import { RAYS } from '../../rays.js';
 import { DECO_SIGMA } from '../gfx/deco.js';
+
+// Photons in their colour, neutrons a faint cyan, fast ones brighter (V1's photon sprites' look, kept:
+// shaders/rays.js at the v1-oracle tag): a point POINT_CELLS across, within POINT_MIN_PX..POINT_MAX_PX on screen.
+export const RAY_LOOK = {
+  POINT_CELLS: 0.7,        // a point's diameter, cells
+  POINT_MIN_PX: 1.5,       // ...and its limits on screen, px
+  POINT_MAX_PX: 24,
+  PHOTON_GLOW: 2.5,        // brightness of a white photon (additive, linear)
+  NEUT_GLOW: 0.5,          // ...of a fast neutron; a thermal one is NEUT_THERMAL_GLOW of that
+  NEUT_THERMAL_GLOW: 0.4,
+  NEUT_COLOR: [0.015, 0.75, 1.0],   // TPT NEUT's #20E0FF, linear
+};
 import { SUPER, BRICK } from '../common.js';
 import { particleViewsWGSL } from './particleViews.js';
 import { cloudDeckGLSL } from '../gfx/clouds.js';

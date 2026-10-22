@@ -142,7 +142,7 @@ async function potions(app, list) {
     const n = await __pov.frames(Math.round(3 / __pov.dt), () => pl.status.has(status));
     const on = pl.status.has(status), left = pl.status.time(status);
     a.sim.clear();
-    for (let i = 0; i < 30; i++) { await __pov.frames(1); if ((await a.sim.readCounts()).awake === 0) break; }
+    for (let i = 0; i < 30; i++) { await __pov.frames(1); if ((await a.physics.v2.readStats()).awake === 0) break; }
     pl.status.clearAll();
     return { on, left: +left.toFixed(1), frames: n };
   }, [key, status, POOL_R]);

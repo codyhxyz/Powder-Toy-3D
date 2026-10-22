@@ -108,8 +108,10 @@ try {
   };
   // --engine v1|v2: one engine a launch (V2 builds its kernels cold, so both rarely fit one slot); the other's
   // outcome from its own launch's printed line, --v1 '<json>'
-  const only = arg('--engine'), given = arg('--v1');
-  const v1 = only === 'v2' ? (given ? JSON.parse(given) : null) : await run('v1');
+  // (V1's outcome: the v1-oracle tag's run of this script, --engine v1, printed and passed back as --v1 '<json>')
+  const only = arg('--engine') ?? 'v2', given = arg('--v1');
+  if (only === 'v1') throw new Error('V1 is the v1-oracle tag (git worktree add <dir> v1-oracle): run this from that checkout --engine v1');
+  const v1 = given ? JSON.parse(given) : null;
   const v2 = only === 'v1' ? null : await run('v2');
   if (!v1 || !v2) console.log('one engine: no comparison');
   const near = (a, b, slack) => Math.abs(a - b) <= slack;

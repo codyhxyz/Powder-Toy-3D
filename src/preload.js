@@ -173,7 +173,6 @@ async function startWarmer() {
       import('./sim.js'), import('./shaders/render.js'), import('./gfx/post.js'), import('./gfx/overlays.js'),
       import('./brush.js'), import('./gfx/detail.js'), import('./views.js'),
       // the simulation's and the derived passes' kernels
-      import('./shaders/move.js'), import('./shaders/react.js'), import('./shaders/activity.js'),
       import('./shaders/passes.js'), import('./shaders/window.js'), import('./shaders/fields.js'),
     ]);
   } catch {
@@ -264,27 +263,25 @@ function savedSettings({ detailDefaults, DETAIL, settingKey }) {
 // for a WGSL_CHECK entry's layout: gpu.layout keys a layout by its name, and
 // the pipeline cache a pipeline by its layout objects, so a layout made under
 // another name builds a pipeline the game never finds. Several names hold
-// equal entries (REF and CONVERT, REACT and the brush's, MOVE and
-// DERIVED_BOOK, FLOW_SHIFT and DERIVED_PAIR), so entries alone can't say
+// equal entries (FLOW_SHIFT and DERIVED_PAIR), so entries alone can't say
 // which: a WGSL_CHECK list names its layouts by the very arrays the game
-// makes them from (shaders/passes.js DERIVED_LAYOUT.BOOK, move.js
-// MOVE_LAYOUT…), and that identity decides first. An array made on the spot
+// makes them from (shaders/passes.js DERIVED_LAYOUT.BOOK…), and that identity decides first. An array made on the spot
 // (stateLayout's, the Mix's scratch) matches by its entries as gpu.layout
 // makes them, or failing that, equal but for visibilities (a check entry may
 // name one the game leaves to the default); the game's own entries are then
 // used, so the layout is the game's. tools/smoke.mjs's warm stage checks that
 // Start then builds nothing the menu built (a miss here builds it twice).
 async function layoutNames() {
-  const [{ LAYOUT, stateLayout, EDIT_SCRATCH_BINDING }, { MOVE_LAYOUT }, { REACT_LAYOUT }, { BUILD_LAYOUT, REF_LAYOUT },
+  const [{ LAYOUT, stateLayout, EDIT_SCRATCH_BINDING },
     { PAINT_LAYOUT, CONVERT_LAYOUT, DERIVED_LAYOUT }, { UNDO_LAYOUT, FLOW_SHIFT_LAYOUT }, { FIELD_LAYOUT }, { withVisibility }] = await Promise.all([
-    import('./shaders/common.js'), import('./shaders/move.js'), import('./shaders/react.js'), import('./shaders/activity.js'),
+    import('./shaders/common.js'),
     import('./shaders/passes.js'), import('./shaders/window.js'), import('./shaders/fields.js'), import('./gpu/kernels.js'),
   ]);
   const mix = [...PAINT_LAYOUT, { binding: EDIT_SCRATCH_BINDING, buffer: { type: 'storage' } }];
   const table = {
     TABLES: LAYOUT.TABLES, STATE_RW: LAYOUT.STATE_RW, STATE_RO: LAYOUT.STATE_RO, STATE_ACT: LAYOUT.STATE_ACT,
     STATE_BUILD: LAYOUT.STATE_BUILD, STATE_FLAGS_RO: stateLayout({ state: 'read', flags: true }),
-    MOVE: MOVE_LAYOUT, REACT: REACT_LAYOUT, BUILD: BUILD_LAYOUT, REF: REF_LAYOUT, CONVERT: CONVERT_LAYOUT,
+    CONVERT: CONVERT_LAYOUT,
     UNDO: UNDO_LAYOUT, FLOW_SHIFT: FLOW_SHIFT_LAYOUT,
     [`edit paint ${JSON.stringify(PAINT_LAYOUT)}`]: PAINT_LAYOUT, [`edit paintMix ${JSON.stringify(mix)}`]: mix,
     DERIVED_BOOK: DERIVED_LAYOUT.BOOK, DERIVED_FIELD: FIELD_LAYOUT.FIELD, DERIVED_JET: FIELD_LAYOUT.JET, DERIVED_PEAK: FIELD_LAYOUT.PEAK,

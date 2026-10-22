@@ -10,7 +10,6 @@ import { WorldCellAtlasAdapter } from '../src/world/cellAtlasAdapter.js';
 import { WorldRenderAtlas, READY } from '../src/world/renderAtlas.js';
 import { gridDims, atlasDims, cellSlot, brickIdOf } from '../src/shaders/common.js';
 import { BrickStore, encodeBrick } from '../src/world/store.js';
-import { setAeration, aerationForSource } from '../src/gfx/foam.js';
 import { worldParams, treesIn } from '../src/world/generator.js';
 import { createUnpacker } from '../src/net/codec.js';
 const u32=b=>new Uint32Array(b.bytes),f32=b=>new Float32Array(b.bytes);

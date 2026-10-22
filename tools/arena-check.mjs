@@ -237,15 +237,14 @@ if (port) {
 
     // ---- step cost: Dam Valley's grid vs 'wide' (160×96×160) with the Lab
     const stepMs = () => ev(async ([iters, chunks]) => {
-      const a = window.__app, sim = a.sim, out = { sleep: [], noSleep: [], awake: [] };
+      // (V2's ticks, as run: V1's every-supertile and every-brick-awake variants went with V1's activity map)
+      const a = window.__app, sim = a.sim, out = { sleep: [] };
       // each fence yields to the page, where the app loop would draw a frame inside the
       // timing (the old build's gpuSync() kept it all one task): park the loop meanwhile
       const parked = a.test?.parked;
       a.test?.park();
       try {
-        for (const [k, sleep, quiet] of [['sleep', true, true], ['noSleep', false, true], ['awake', false, false]]) {
-          sim.skipSleeping = sleep;
-          sim.skipQuiet = quiet;
+        for (const k of ['sleep']) {
           for (let i = 0; i < 5; i++) sim.step();
           await window.__pageGpu.fence(sim);
           for (let c = 0; c < chunks; c++) {
@@ -260,7 +259,6 @@ if (port) {
       } finally {
         if (!parked) a.test?.resume();
       }
-      sim.skipSleeping = sim.skipQuiet = true;
       return out;
     }, [STEP_ITERS, STEP_CHUNKS]);
     const holdLoop = () => ev(() => { const a = window.__app; a.settings.paused = true; });
@@ -361,7 +359,7 @@ if (port) {
     const valley2 = await stepMs();
     console.log(`step ms, the valley rebuilt: ${JSON.stringify(valley2)}`);
     console.log(`step ms (median of ${STEP_CHUNKS}×${STEP_ITERS}): valley ${JSON.stringify(valley)}, wide+lab ${JSON.stringify(wide)}`);
-    console.log(`ratio valley/wide: as run ${(valley.sleep / wide.sleep).toFixed(2)}, every supertile ${(valley.noSleep / wide.noSleep).toFixed(2)}, every brick awake ${(valley.awake / wide.awake).toFixed(2)}`);
+    console.log(`ratio valley/wide: as run ${(valley.sleep / wide.sleep).toFixed(2)}`);
   } catch (err) {
     fails++;
     console.log('FAIL threw', String(err).slice(0, 600));

@@ -116,7 +116,11 @@ if (ENGINE === 'lean' || ENGINE === 'column' || ENGINE === 'column-wgsl') {
   const { launchBrowser, gpuInfo } = await import('./browser.mjs');
   const { startVite } = await import('./vite-server.mjs');
   const { openHarness } = await import('./harness/open.mjs');
-  const harness = tests.filter((t) => (t.kind ?? 'harness') === 'harness');
+  // V1 is the v1-oracle tag: its bare-simulation tests run from a checkout of it (this checkout has no
+  // V1 Simulation); its app tests run here against that checkout's server (--app-url).
+  if (ENGINE === 'v1' && !opt('app-url')) throw new Error('--engine v1: run from a checkout of the v1-oracle tag, or give --app-url (its dev server) for the app tests');
+  const harness = tests.filter((t) => (t.kind ?? 'harness') === 'harness' && ENGINE !== 'v1');
+  for (const t of tests) if (ENGINE === 'v1' && (t.kind ?? 'harness') === 'harness') results.push({ name: t.name, title: t.title, group: t.group, phase: OUTCOMES[t.key ?? t.name]?.phase, engine: ENGINE, status: 'n/a', reason: 'a bare V1 simulation: run tools/outcomes.mjs from a checkout of the v1-oracle tag' });
   const app = tests.filter((t) => t.kind === 'app');
   // batches: tests of one grid size share its pipeline builds; each batch is one browser run
   const batches = [];
