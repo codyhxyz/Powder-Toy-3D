@@ -715,7 +715,6 @@ const V1_HARD = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => f(e.hard ?? 0
 const V1_CAP = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => f(e.cap ?? 0)).join(',')});
 const V1_KE_TO_HEAT: f32 = ${f(PHYS.KE_TO_HEAT)};
 const V1_COLLIDE_V: f32 = ${PHYS.COLLIDE_V};
-const V1_STEP_MS: f32 = ${f(V1_STEP_MS)};
 // the cells a grain of id fell before a tick it starts at speed u (m/s), from rest on the powder law (GRAIN_FALLS)
 fn grainFallen(id: u32, u: f32) -> i32 {
   var cells = 0;
@@ -915,6 +914,8 @@ ${MAIN} {
       if (to < fl) {
         if (runFalling) { velocity = runVelocity; a = runFrac; } else { velocity = 0.0; a = 0.0; }
       }
+      // on a solid (or the box's floor) it keeps its landing speed for this tick: the block pass scatters it (R2b)
+      if (!runFalling && (fl == 0 || clsOf(loadCell(vec3i(x, fl - 1, z))) == C_SOLID)) { velocity = v; a = 0.0; }
       to = fl;
     }
     c = setFall(c, velocity, a);
@@ -1128,6 +1129,7 @@ export const BLOCK_PACE = { A: 0.52, B: 0.045 };
 const v1FloatP = (() => { const r = V1_FLOAT_CELLS_S / (TICK_HZ * STEPS_PER_TICK); return 2 * r / (1 + r); })();
 const blockExchangeWGSL = /* wgsl */ `
 const V1_STEPS: f32 = ${f(STEPS_PER_TICK)};
+const V1_STEP_MS: f32 = ${f(V1_STEP_MS)};
 const V1_G_REF: f32 = ${f(GRAVITY_MS2)};
 const V1_V_MAX: f32 = ${f(PHYS.V_MAX)};
 const V1_REST_V: f32 = ${PHYS.REST_V};
@@ -1181,6 +1183,11 @@ fn v2Chance(p: f32) -> f32 {
   return min(1.0, (sqrt(PACE_A * PACE_A + 4.0 * PACE_B * rate) - PACE_A) / (2.0 * PACE_B));
 }
 `;
+// V1's landing scatter (move.js land, react.js friction and drag): a grain landing at u cells/step goes sideways at
+// LAND_POWDER_SCATTER·u, which each step's friction and drag keep r = (1 - FRICTION)(1 - DRAG) of, moving on a share
+// of about half its speed's steps (gravity.js v1PaceRate): u·SCATTER/(2(1 - r)) cells in all.
+export const v1ScatterPerSpeed = e => (e.kind === K.POWDER ? PHYS.LAND_POWDER_SCATTER / (2 * (1 - (1 - (e.friction ?? 0)) * (1 - (e.drag ?? 0)))) : 0);
+const blockScatterWGSL = `const V1_SCATTER = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => f(Math.fround(v1ScatterPerSpeed(e)))).join(',')});`;
 export const v2BlockWGSL = (g, contactWGSL = '', compact = false) => {
   // Only exact production contact has the disjoint/frozen-read identity proof.
   compact = compact && contactWGSL === productionContactWGSL;
@@ -1207,6 +1214,7 @@ fn noteTopple(to: vec3i, top: u32, into: u32, down: vec3i) {
   flow[slotOf(to)] = vec2u(pack2x16float(moveD.xy), pack2x16float(vec2f(moveD.z, FLOW_TOPPLE_MARK)));
 }
 ${blockExchangeWGSL}
+${blockScatterWGSL}
 fn off8(i: u32) -> vec3i { return vec3i(i32(i & 1u), i32(i >> 2u), i32((i >> 1u) & 1u)); }
 fn supportAt(position: vec3i) -> bool {
   let p=mEdge(position);
@@ -1292,6 +1300,31 @@ ${MAIN} {
     let came = fromCell[pick]; fromCell[pick] = fromCell[ti]; fromCell[ti] = came;
     markBusy(positions[pick]);
     noteTopple(positions[pick], ti, pick, down);
+  }
+  // R2b: V1's landing scatter (move.js land): a grain landing on a solid keeps LAND_POWDER_SCATTER of its impact
+  // speed sideways, which friction and drag then spend (V1_SCATTER: the cells it travels per V1 cell/step of landing
+  // speed, on average). The column pass leaves such a grain its landing speed for the tick; this pass sees it where
+  // it tops its block, over the solid in it (half the ticks: twice the chance), and moves it a cell sideways, x or z,
+  // into a lighter fluid (canMove sideways), all within the block.
+  for (var c = 0u; c < columnCount && gravityOn; c++) {
+    let gr = cs[4u + c];
+    if (clsOf(gr) != C_POWDER || clsOf(cs[c]) != C_SOLID || fromCell[4u + c] != 4u + c || !inGrid(positions[4u + c])) { continue; }
+    let landed = fallVelocity(gr);
+    if (landed <= 0.0) { continue; }
+    let pTop = positions[4u + c];
+    markBusy(pTop);
+    var rs = seed3(pTop, P.tick, 84u);
+    let side = 4u + (c ^ (1u + u32(rnd(&rs) * 2.0)));
+    let t = cs[side];
+    let chance = min(1.0, 2.0 * V1_SCATTER[cid(gr)] * min(landed / V1_STEP_MS, V1_V_MAX));
+    if (rnd(&rs) < chance && inGrid(positions[side]) && fromCell[side] == side && fluidC(t) && motionDensity(t) < motionDensity(gr)) {
+      cs[side] = setFall(gr, 0.0, 0.0);
+      cs[4u + c] = zeroQ(t);
+      let bank = bs[side]; bs[side] = bs[4u + c]; bs[4u + c] = bank;
+      let request = pending[side]; pending[side] = pending[4u + c]; pending[4u + c] = request;
+      let came = fromCell[side]; fromCell[side] = fromCell[4u + c]; fromCell[4u + c] = came;
+      markBusy(positions[side]);
+    }
   }
   // R3: V1's vertical exchange (blockExchangeWGSL): sinking, floating up, buoyant rise, and Brownian jitter
   // across gas pairs (react.js JITTER). A fall into air (and a grain's

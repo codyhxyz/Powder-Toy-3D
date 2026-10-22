@@ -118,9 +118,9 @@ const blockCarry = new Function('P', 'blockCount', 'positions', 'cs', 'orig', 'f
   jsOf(between(block, '  if (P.deco != 0u) {\n    var dc', '  for (var i = 0u; i < blockCount; i++) {\n    let p = positions[i];')));
 
 test('block pass: every swap moves its paint with the content; air and matter born in air hold none; reactions keep it', () => {
-  // the four move rules swap fromCell beside the banks (topple, sink/float, the diagonal escape, gas jitter)
-  assert.equal(block.match(/let bank = bs\[\w+\]; bs\[/g).length, 4);
-  assert.equal(block.match(/let came = fromCell\[\w+\]; fromCell\[/g).length, 4, 'each bank swap is a paint swap');
+  // the five move rules swap fromCell beside the banks (topple, landing scatter, sink/float, the diagonal escape, gas jitter)
+  assert.equal(block.match(/let bank = bs\[\w+\]; bs\[/g).length, 5);
+  assert.equal(block.match(/let came = fromCell\[\w+\]; fromCell\[/g).length, 5, 'each bank swap is a paint swap');
   assert.ok(block.indexOf('if (P.deco != 0u) {\n    var dc') > block.indexOf('contactBlock(&cs'), 'after the contact rules: what they made is known');
   const id = (e) => new Uint32Array([e, 0, 0, 0]), cid = c => c[0] & 255;
   const plane = new Uint32Array(8), slotOf = p => p, positions = [0, 1, 2, 3, 4, 5, 6, 7];

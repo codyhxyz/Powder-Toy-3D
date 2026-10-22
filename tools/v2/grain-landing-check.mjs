@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { E, ELEMENTS, K } from '../../src/elements.js';
 import { PHYS } from '../../src/physics.js';
-import { FALL_KEEP, fallTerminal, setFall } from '../../src/v2/fall.js';
+import { FALL_KEEP, fallTerminal, setFall, fallVelocity } from '../../src/v2/fall.js';
 import { GRAVITY_MS2, V1_STEP_MS } from '../../src/v2/gravity.js';
 import { fallWGSL, fallStepWGSL } from '../../src/shaders/v2/fall.js';
 import { v2ColumnWGSL } from '../../src/shaders/v2.js';
@@ -112,5 +112,16 @@ const column = (under, at, grain, h, y0 = 4) => {
   const soft = run(column(E.STONE, E.SAND, E.SAND, 30), 40);
   assert.equal(T(soft.cells[4]), 20, 'onto grains: no heat (V1 heats only a landing on a solid)');
   console.log(`TH-10: sand landing on metal warms both +${ds.toFixed(2)} / +${dm.toFixed(2)} °C (V1 +${v1.toFixed(2)}); onto grains none`);
+}
+// ---- the knock-on's hand-off: a grain landing on a solid keeps its landing speed for the tick (the block pass's
+// R2b scatters it: tools/v2/exchange-check.mjs); the next tick's column pass stills it
+{
+  const speedAt = (under, ticks) => { const out = run(column(E.STONE, under, E.SAND, 6), ticks); const y = out.cells.findIndex(c => (c[0] & 255) === E.SAND); return { y, v: fallVelocity(out.cells[y]) }; };
+  let first = null;
+  for (let t = 1; t < 20 && !first; t++) { const r = speedAt(E.METAL, t); if (r.y === 5) first = { t, ...r }; }
+  assert(first && first.v > 0, 'the landing tick leaves its speed');
+  assert.equal(speedAt(E.METAL, first.t + 1).v, 0, 'the next tick stills it');
+  // (on grains the block pass never scatters it: R2b needs a solid under it in its block)
+  console.log(`knock-on hand-off: a grain landing on metal keeps ${first.v.toFixed(1)} m/s for its landing tick, the next tick none`);
 }
 console.log('grain-landing-check: ok');

@@ -14,6 +14,7 @@ export function exchangeHelpers(code, P) {
     ...constants(code), P, C_AIR: 0, C_SOLID: 1, C_POWDER: 2, C_LIQUID: 3, C_GAS: 4, T_OFFSET: 273.25,
     sel: (a, b, c) => (c ? b : a), clamp: (x, a, b) => Math.min(Math.max(x, a), b), U32: x => Math.floor(x) >>> 0, F32: f, I32: x => Math.trunc(x),
     driftOf: id => f(rows[id].drift), jitterOf: id => f(rows[id].jitter), cTq: c => (c[0] >>> 8) & 0xffff,
+    ...constArrays(code), fallVelocity: c => fallSpeed(c),
   };
   for (const name of ['v1Drift', 'v1DragF', 'v1Exchange', 'v2Chance']) {
     const { args, body } = wgslFunction(code, name);
@@ -56,7 +57,7 @@ export function columnMoverHelpers(code, env) {
 // ---- the column pass's grain landing (v2.js grainLandWGSL: BL-7 odds, BL-8 breaking, TH-10 heat), executed from
 // the emitted WGSL. `env` as columnMoverHelpers', plus inGrid; energies are BigInt (src/v2/layout.js twins).
 import * as Layout from '../../src/v2/layout.js';
-import { setFall as fallSet } from '../../src/v2/fall.js';
+import { setFall as fallSet, fallVelocity as fallSpeed } from '../../src/v2/fall.js';
 export function constArrays(code) {
   const out = {};
   for (const m of code.matchAll(/const (\w+) = array<\w+, \d+>\(([^)]*)\);/g)) out[m[1]] = m[2].split(',').map(v => Number(v.replace(/u$/, '')));

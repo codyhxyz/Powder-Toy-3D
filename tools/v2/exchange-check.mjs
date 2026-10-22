@@ -235,3 +235,31 @@ console.log('exchange-check: spawn drop ok');
   assert(rows[E.SMOKE].fade > 0 && v2ImportWGSL(gridLayout(16, 16, 16)).includes('if (k == C_GAS && fadeOf(id) > 0.0 && life <= 0.0) { life = 1.0; }'));
   console.log('steam: imports at life 0 (V1 lifeBank)');
 }
+
+// ---- 7. TH-10's knock-on: a grain that landed on a solid this tick (the column pass leaves it its landing speed)
+// hops sideways as far as V1's landing scatter carries it on average (move.js land; friction and drag spend it)
+{
+  const { V1_STEP_MS } = await import('../../src/v2/gravity.js');
+  const v1Travel = (e, u) => { let s = PHYS.LAND_POWDER_SCATTER * u, d = 0; const r = (1 - e.friction) * (1 - e.drag);
+    for (let k = 0; k < 4000 && s > 1e-9; k++) { d += v1PaceRate(s); s *= r; } return d; };
+  for (const id of [E.SAND, E.URANIUM]) {
+    const e = ELEMENTS[id], v = 43.2, u = Math.min(1, v / V1_STEP_MS);
+    let hopped = 0; const n = 1200;
+    for (let k = 0; k < n; k++) {
+      const g = new Grid(4, 4, E.EMPTY, { column: false }); g.tick = 1 + 37 * k;
+      for (let z = 0; z < 4; z++) for (let x = 0; x < 4; x++) g.set(x, 1, z, E.METAL);
+      g.cores[g.at(1 + (k & 1), 2, 1 + ((k >> 1) & 1))] = setFall(makeMaterial(id).core, v, 0);
+      g.step();
+      const at = g.find(id)[0]; if (at[1] === 2 && (at[0] !== 1 + (k & 1) || at[2] !== 1 + ((k >> 1) & 1))) hopped++;
+    }
+    const want = v1Travel(e, u);
+    assert(Math.abs(hopped / n - want) < 0.05 + 0.2 * want, `${e.key} landing on metal at ${v} m/s hops ${hopped / n}, V1 travels ${want.toFixed(3)} cells`);
+    console.log(`scatter: ${e.key} landing on metal hops sideways ${(hopped / n).toFixed(3)} (V1 ${want.toFixed(3)} cells)`);
+  }
+  // onto a grain: no scatter (V1 lands a grain on a solid only: move.js vertical's solid branch)
+  const g = new Grid(4, 4, E.EMPTY, { column: false });
+  for (let z = 0; z < 4; z++) for (let x = 0; x < 4; x++) { g.set(x, 0, z, E.METAL); g.set(x, 1, z, E.STONE); }
+  g.cores[g.at(1, 2, 1)] = setFall(makeMaterial(E.SAND).core, 43, 0);
+  for (let t = 0; t < 8; t++) { g.tick = 100 + t; g.step(); }
+  assert.deepEqual(g.find(E.SAND), [[1, 2, 1]], 'a grain landing on grains stays');
+}
