@@ -249,8 +249,9 @@ export const CONTACT_CONSTANTS = Object.freeze({
   // a tick: STEPS_PER_TICK steps of it.
   CT_BURN_PUFF_PA: ['i32', puffPa(PHYS.BURN_P * STEPS_PER_TICK)],
   // V1 react.js singularity: it evaporates SING_EVAP / max(m², SING_MASS_MIN) of its mass m a step (f32),
-  // here in its life's 1/256 mass units a tick, the fraction a draw (salt CT_SING_SALT) so the mean is exact.
-  CT_SING_EVAP_TICK: ['f32', PHYS.SING_EVAP * STEPS_PER_TICK * 256],
+  // its tick's STEPS_PER_TICK steps compounded, into its life's 1/256 mass units with the fraction a draw
+  // (salt CT_SING_SALT), so the mean is exact.
+  CT_SING_EVAP: ['f32', PHYS.SING_EVAP],
   CT_SING_MASS_MIN: ['f32', PHYS.SING_MASS_MIN],
   CT_SING_SALT: ['i32', 21],
 });
@@ -264,7 +265,7 @@ const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGN
   CT_ACID_EAT, CT_ACID_SPENT, CT_CLOUD_RAIN, CT_CLOUD_RAIN_NB, CT_CLOUD_EVAP, CT_CLOUD_EVAP_NB, CT_STEPS_PER_TICK,
   CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_OUT_SURFACE, CT_OUT_FIRE, CT_OUT_EMPTY, CT_OUT_CLOUD, CT_OUT_DUST, CT_OUT_DAMP, CT_OUT_DAMP_MAX,
   CT_OUT_WET_MOSS, CT_OUT_BED, CT_OUT_UP, CT_CHARGE_T_MAX_Q, CT_CHARGE_MAX, CT_CHARGE_STEP, CT_PARTNER_STEPS, CT_CHARGE_SALT,
-  CT_BURN_PUFF_PA, CT_SING_EVAP_TICK, CT_SING_MASS_MIN, CT_SING_SALT } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
+  CT_BURN_PUFF_PA, CT_SING_EVAP, CT_SING_MASS_MIN, CT_SING_SALT } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 
 const outSpecs = [];
 function spec(into = 'FIRE') {
@@ -1045,8 +1046,10 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     c.busy = 1;
     if (c.life >= 51200) { c.request = c.request | 1; return c; }
     const mass = ctF(c.life) / 256;
-    // V1 react.js: m -= SING_EVAP / max(m², SING_MASS_MIN) a step (CT_SING_EVAP_TICK), the fraction a draw
-    c.life = Math.max(0, c.life - ctI(Math.floor(CT_SING_EVAP_TICK / Math.max(CT_SING_MASS_MIN, mass * mass) + ctRoll(seed, CT_SING_SALT))));
+    // V1 react.js: m -= SING_EVAP / max(m², SING_MASS_MIN) a step, the tick's steps; the fraction a draw
+    let m = mass;
+    for (let step = 0; step < CT_STEPS_PER_TICK; step++) { m = ctF(m - ctF(CT_SING_EVAP / Math.max(ctF(m * m), CT_SING_MASS_MIN))); }
+    c.life = Math.max(0, c.life - ctI(Math.floor(ctF(ctF(mass - m) * 256.0) + ctRoll(seed, CT_SING_SALT))));
     if (c.life < 256 || c.life >= 51200) c.request = c.request | 1;
   }
   return c;
