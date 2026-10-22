@@ -922,8 +922,18 @@ fn dReactOne(t: u32, s: u32, p: vec3i) -> bool {
   // their read is inlined once.
   let chargeId = particle.c0 & 255u;
   if (dCrush(chargeId) > 0.0 && mAirPressure()) {
-    var on = -1e30; if (cls(chargeId) != C_SOLID) { on = dPressureCell(p); }
-    for (var f = 0u; f < 2u * dAxes(); f++) { on = max(on, dOpenPressure(p + face6(i32(f)))); }
+    // its own cell first (k 0, none in a solid), then each face's open pressure (dOpenPressure), all
+    // through one dPressureCell call site (cold compile)
+    var on = -1e30;
+    for (var k = 0u; k < 1u + 2u * dAxes(); k++) {
+      var q = p; var holds = cls(chargeId) != C_SOLID; var value = -1e30;
+      if (k > 0u) {
+        q = mEdge(p + face6(i32(k) - 1)); value = 0.0;
+        holds = inGrid(q) && cls(cid(loadMaterial(slotOf(q)).core)) != 1u;
+      }
+      if (holds) { value = dPressureCell(q); }
+      on = max(on, value);
+    }
     charge.pressure = on;
   }
   let r = dReact(dMaterial(particle), before, faces, valid, inBlock, trailing, onFloor, bitcast<i32>(flight[t].destination.w), charge);
