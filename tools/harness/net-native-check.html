@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Co-op native codec</title>
+<style>
+  body { font: 13px/1.45 ui-monospace, monospace; margin: 16px; background: #111; color: #ddd; }
+</style>
+</head>
+<body>
+<!-- tools/v2/net-native-browser-check.mjs drives this page: the co-op codec's native kernels
+     (src/net/codec.js) on a Simulation on its own WebGPU device, no app. -->
+<pre id="log"></pre>
+<script type="module" src="./net-native-check.js"></script>
+</body>
+</html>
