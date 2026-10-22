@@ -52,15 +52,20 @@ test('WORLD snapshot rejects a no-image stall by elapsed time, not preparation t
 });
 
 test('actual core startup retains physics/picks but never warms a BOX view for WORLD',()=>{
-  const begin=source.indexOf('const core = coreWait = Promise.all(')+'const core = coreWait = Promise.all('.length;
-  const code=source.slice(begin,source.indexOf(']).then(',begin)+1);
+  // What a frame draws with (draw); the core adds the simulation's step kernels (s.ready).
+  // A big map's first frame waits on draw alone (worldDrawWait), not on move/react.
+  assert(source.includes('const core = coreWait = Promise.all([s.ready, ...draw])'));
+  assert(source.includes('worldDrawWait = worldMode ? Promise.all(draw) : core;'));
+  const begin=source.indexOf('const draw = [')+'const draw = '.length;
+  const code=source.slice(begin,source.indexOf('];\n',begin)+1);
   for(const worldMode of [{size:[1024,128,1024]},null]){
     const calls=[],physical=Promise.resolve('physics'),pick=Promise.resolve('pick');
     const vol={ready:pick,noiseReady:Promise.resolve(),viewReady(){calls.push('view');return Promise.resolve();}};
     const env={s:{ready:physical},derived:{ready:Promise.resolve()},vol,post:{ready:Promise.resolve()},
       overlays:{ready:Promise.resolve()},brush:{ready:Promise.resolve()},hybridWait:Promise.resolve(),worldMode,blocks:null,
       viewKeyOf:()=> 'realistic',settings:{view},baseDetail:()=>({}),warpNow:()=>null,nativeOwner:null};
-    const waits=expression(code,env);
+    const draw=expression(code,env),waits=[env.s.ready,...draw];
+    assert(!draw.includes(physical),'a frame never waits on the step kernels');
     assert(waits.includes(physical));assert(waits.includes(pick));assert(waits.includes(vol.noiseReady));
     assert.deepEqual(calls,worldMode?[]:['view']);
     const options=source.match(/vol = createVolume\(gpu, sim, (.*)\);/)[1];
@@ -139,7 +144,7 @@ test('loading never declares WORLD ready before a confirmed MAIN, even past old 
   const fire=()=>{for(const t of timers.splice(0))if(t.at<=time)t.fn();else timers.push(t);};
   const launch={progress(){},ready(){ready++;}},env={win,launch,graphicsFailure:null,loadWatch,settings:{scene:'noitaTerrain05'},
     performance:{now:()=>time},requestAnimationFrame:fn=>queued.push(fn),setTimeout:fn=>queued.push(fn),
-    READY_POLL_MS:100,READY_WAIT_MS:20000,MATCH_WAIT_MS:30000,mark(){},bootMap:null};
+    READY_POLL_MS:100,READY_WAIT_MS:20000,MATCH_WAIT_MS:30000,mark(){},bootMap:null,coreReady:true};
   const quiet=console.error;console.error=()=>{};
   try{
     appFunction('bootReady',env)();

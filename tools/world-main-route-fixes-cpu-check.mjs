@@ -17,14 +17,16 @@ test('actual WORLD attachment never constructs or starts the retired Far/detail 
  const source=readFileSync(new URL('../src/wire/world.js',import.meta.url),'utf8');
  const start=source.indexOf('  attach(app) {'),brace=source.indexOf('{',start);let depth=1,end=brace+1;
  for(;depth;end++){if(source[end]==='{')depth++;else if(source[end]==='}')depth--;}
- const window={},sim={origin:{fromArray(v){this.value=v;}},resetNativeDynamics(){}},app={sim,worldMode:{size:[512,384,512]},settings:{scene:'island'},sceneByKey:k=>k};
+ const window={},sim={origin:{fromArray(v){this.value=v;}},resetNativeDynamics(){}},app={sim,worldMode:{size:[512,384,512]},settings:{scene:'island'},sceneByKey:k=>k,gpu:{}};
  const Window=class{constructor(renderer,actualSim,options){assert.equal(actualSim,sim);assert.deepEqual(options.size,app.worldMode.size);return window;}};
  const uniforms={uClouds:{value:false},uCloudSea:{value:0}},order=[];
  const Ordered=class extends Window{constructor(...a){order.push('window');return super(...a);}};
  // the World view's pipeline starts first, beside generation, for the scene picked (startWorldFrameView)
  const early=(actualApp,scene)=>{assert.equal(actualApp,app);assert.equal(scene,'island');order.push('view');};
- const attach=new Function('WorldWindow','world','gfxUniforms','beyondLevel','startWorldFrameView',`return ({${source.slice(start,end)}}).attach;`)(Ordered,{worldStart:()=>[32,0,64]},uniforms,()=>42,early);
- attach(app);assert.equal(app.win,window);assert.deepEqual(sim.origin.value,[32,0,64]);assert.deepEqual(order,['view','window']);
+ // ...and its media noise, made on the map's device, before the window too
+ const noise=gpu=>{assert.equal(gpu,app.gpu);order.push('noise');};
+ const attach=new Function('WorldWindow','world','gfxUniforms','beyondLevel','startWorldFrameView','createMediaNoise',`return ({${source.slice(start,end)}}).attach;`)(Ordered,{worldStart:()=>[32,0,64]},uniforms,()=>42,early,noise);
+ attach(app);assert.equal(app.win,window);assert.deepEqual(sim.origin.value,[32,0,64]);assert.deepEqual(order,['view','noise','window']);
  assert.equal(window.far,undefined);
  assert.equal(uniforms.uClouds.value,true);assert.equal(uniforms.uCloudSea.value,42);
 });
