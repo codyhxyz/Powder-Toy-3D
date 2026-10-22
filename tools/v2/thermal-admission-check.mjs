@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { ELEMENTS, E } from '../../src/elements.js';
 import { FULL, MAX_FILL, AIR_CAPACITY_Q, capacityOf, capacityDelta, isLiquid } from '../../src/v2/layout.js';
-import { PHASE_ROWS, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, PHASE_NORMAL_MAX, phaseOffsetPerQuantum, phaseOffsetRemainder, phaseOffsetEnergy } from '../../src/v2/phase.js';
+import { PHASE_ROWS, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, PHASE_NORMAL_MAX, phaseOffsetPerQuantum, phaseOffsetRemainder, phaseOffsetEnergy, phaseOffsetUnits, phaseCapacityUnits } from '../../src/v2/phase.js';
 import { nativeStateWGSL } from '../../src/shaders/v2/state.js';
 
 const U32 = 0xffffffffn, U64 = (1n << 64n) - 1n;
@@ -63,12 +63,11 @@ assert.equal(PHASE_ROWS[E.LAVA].coldLatent, 0);
 
 // Verify models' input tables are exactly the tables used by production WGSL.
 for (const [name, values] of [
-  ['phaseCapacityDeltaTable', ELEMENTS.map(e => capacityDelta(e.id))],
-  ...['hotQ', 'coldQ', 'hotLatent', 'coldLatent', 'offset'].map(key => [
-    `phase${key === 'offset' ? 'OffsetPerQuantum' : key[0].toUpperCase() + key.slice(1)}Table`, PHASE_ROWS.map(r => r[key])]),
-  ['phaseLavaOffsetPerQuantumTable', ELEMENTS.map(e => phaseOffsetPerQuantum(E.LAVA, e.id))],
-  ['phaseOffsetRemainderTable', PHASE_ROWS.map(r => r.offsetRem)],
-  ['phaseLavaOffsetRemainderTable', ELEMENTS.map(e => phaseOffsetRemainder(E.LAVA, e.id))],
+  ['phaseCapacityUnitsTable', ELEMENTS.map(e => phaseCapacityUnits(e.id))],
+  ...['hotQ', 'coldQ', 'hotLatent', 'coldLatent'].map(key => [
+    `phase${key[0].toUpperCase() + key.slice(1)}Table`, PHASE_ROWS.map(r => r[key])]),
+  ['phaseLavaOffsetUnitsTable', ELEMENTS.map(e => phaseOffsetUnits(E.LAVA, e.id))],
+  ['phaseOffsetUnitsTable', PHASE_ROWS.map(r => r.offsetUnits)],
 ]) {
   const match = nativeStateWGSL.match(new RegExp(`const ${name} = array<[^>]+>\\(([^)]*)\\);`));
   assert(match, name);

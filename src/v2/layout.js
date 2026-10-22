@@ -3,7 +3,7 @@ import { E, ELEMENTS, K } from '../elements.js';
 
 // Native v2 format 3. Capacity is measured in 1/(64*FULL) cap units; one integer energy quantum is
 // that capacity heated by one quarter kelvin. The ever-present air carrier (V1's air cap) makes
-// uniform-temperature drainage leave warm air; matter adds its cap over it (phase.js phaseCapacity).
+// uniform-temperature drainage leave warm air; matter adds its cap over it, to 1/1024 cap (phase.js phaseCapacity).
 // Format 2 rounded caps to 1/64 over a 1/64 carrier: state.js migrates its banks (TH-06).
 export const MATERIAL_VERSION = 3;
 export const FULL = 65536;

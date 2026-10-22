@@ -1,7 +1,7 @@
 // CPU-only scalar phase lookup regression. No browser, device or GPU.
 import assert from 'node:assert/strict';
 import { ELEMENTS, E } from '../../src/elements.js';
-import { PHASE_ROWS, phaseOffsetPerQuantum, phaseOffsetRemainder, phaseCapacityDelta } from '../../src/v2/phase.js';
+import { PHASE_ROWS, phaseOffsetUnits, phaseCapacityUnits } from '../../src/v2/phase.js';
 import { phaseWGSL } from '../../src/shaders/v2/phase.js';
 import { wgslGroupingErrors, assertNaga } from './wgsl-grouping.mjs';
 
@@ -73,14 +73,12 @@ const expected = {
   phaseColdQ: PHASE_ROWS.map(row => row.coldQ),
   phaseHotLatent: PHASE_ROWS.map(row => row.hotLatent),
   phaseColdLatent: PHASE_ROWS.map(row => row.coldLatent),
-  phaseOffsetPerQuantum: PHASE_ROWS.map(row => row.offset),
-  phaseOffsetRemainder: PHASE_ROWS.map(row => row.offsetRem),
-  // format 3 (TH-06): a whole cell's cap over the air carrier, in 1/(64·FULL) cap
-  phaseCapacityDelta: ELEMENTS.map(element => phaseCapacityDelta(element.id)),
-  phaseLavaOffsetPerQuantum: PHASE_ROWS.map((_, id) => phaseOffsetPerQuantum(E.LAVA, id)),
-  phaseLavaOffsetRemainder: PHASE_ROWS.map((_, id) => phaseOffsetRemainder(E.LAVA, id)),
+  // format 3 (TH-06): offsets and a whole cell's cap over the air carrier, in 1/1024 cap (phase.js PHASE_CAP_UNIT)
+  phaseOffsetUnits: PHASE_ROWS.map(row => row.offsetUnits),
+  phaseCapacityUnits: ELEMENTS.map(element => phaseCapacityUnits(element.id)),
+  phaseLavaOffsetUnits: PHASE_ROWS.map((_, id) => phaseOffsetUnits(E.LAVA, id)),
 };
-assert.equal(Object.keys(expected).length, 9);
+assert.equal(Object.keys(expected).length, 7);
 assert.deepEqual(wgslGroupingErrors(phaseWGSL), [], 'Chromium-compatible expression grouping');
 assert.ok(!/\b(?:enable|requires|switch)\b|@(?:group|binding)\(/.test(phaseWGSL), 'no extensions, switches or bindings');
 const functions = []; let zeroCount = 0, negativeCount = 0;
@@ -93,7 +91,7 @@ for (const [name, values] of Object.entries(expected)) {
   console.log(`${name}: ${values.length} IDs exact; ${zeros} zero entries; ${negatives} negative values; min/max ${Math.min(...values)}/${Math.max(...values)}`);
 }
 assert.ok(zeroCount > 0 && negativeCount > 0, 'actual tables exercise zeros and negative integers');
-assert.ok(expected.phaseLavaOffsetPerQuantum.some(value => value < 0), 'Lava exercises signed offsets');
+assert.ok(expected.phaseLavaOffsetUnits.some(value => value < 0), 'Lava exercises signed offsets');
 
 // Dynamic indexing fixture validates constant-array grammar and all seven
 // signed return channels on CPU Naga, including i32 extremes in the control.

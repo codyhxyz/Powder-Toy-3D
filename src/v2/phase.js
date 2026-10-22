@@ -14,13 +14,18 @@ export const PHASE_STEPS = PHASE_CODES - 1;
 const PHASE_ENERGY_PER_CAP_K = 256;
 export const PHASE_CAP_SCALE = 64 * PHASE_FULL;
 export const PHASE_AIR_CAPACITY = Math.round(ELEMENTS[E.EMPTY].cap * PHASE_CAP_SCALE);
+// Matter's cap over the carrier is kept to 1/1024 cap (PHASE_CAP_UNIT): its capacity holding `amount` is
+// then ceil(amount·units / PHASE_UNIT_FILL) in u32s, and every formation offset a whole number of units.
+export const PHASE_CAP_UNIT = PHASE_CAP_SCALE / 1024;
+export const PHASE_UNIT_FILL = PHASE_FULL / PHASE_CAP_UNIT;
 // Intentional (decided under the user's delegation, 2026-10-22): matter keeps at least 1/1024 cap over
 // the carrier, so a flying packet (which owns no carrier) still holds heat. Gases at or under air's cap
 // (hydrogen, mercury vapour, smoke at V1's 0.02) are air's plus that, 0.021 (mercury vapour 2.1x V1's).
-export const PHASE_MIN_CAPACITY_DELTA = PHASE_CAP_SCALE / 1024;
-// A whole cell's capacity over the carrier, and a cell's capacity holding `amount` (FULL a whole cell)
-export const phaseCapacityDelta = id => id === E.EMPTY ? 0 : Math.max(PHASE_MIN_CAPACITY_DELTA, Math.round(ELEMENTS[id].cap * PHASE_CAP_SCALE) - PHASE_AIR_CAPACITY);
-export const phaseCapacity = (id, amount) => PHASE_AIR_CAPACITY + Math.floor((amount * phaseCapacityDelta(id) + PHASE_FULL - 1) / PHASE_FULL);
+export const PHASE_MIN_CAPACITY_DELTA = PHASE_CAP_UNIT;
+// A whole cell's capacity over the carrier, in units and in energy a code, and a cell's holding `amount` (FULL a whole cell)
+export const phaseCapacityUnits = id => id === E.EMPTY ? 0 : Math.max(1, Math.round((ELEMENTS[id].cap * PHASE_CAP_SCALE - PHASE_AIR_CAPACITY) / PHASE_CAP_UNIT));
+export const phaseCapacityDelta = id => phaseCapacityUnits(id) * PHASE_CAP_UNIT;
+export const phaseCapacity = (id, amount) => PHASE_AIR_CAPACITY + Math.floor((amount * phaseCapacityUnits(id) + PHASE_UNIT_FILL - 1) / PHASE_UNIT_FILL);
 const q = T => Math.round((T + 273.25) * 4);
 export const PHASE_ROWS = ELEMENTS.map(e => {
   let hot = e.hot, cold = e.cold;
@@ -67,8 +72,8 @@ for (let pass = 0; pass < ELEMENTS.length; pass++) {
   if (!changed) break;
   if (pass === ELEMENTS.length - 1) throw Error('inconsistent native phase formation-energy cycle');
 }
-const offsetFullOf = id => { if (!Number.isSafeInteger(OFFSET_FULL[id])) throw Error('native phase offset is not exact'); return OFFSET_FULL[id]; };
-PHASE_ROWS.forEach((row, id) => { row.offset = Math.floor(offsetFullOf(id) / PHASE_FULL); row.offsetRem = offsetFullOf(id) - row.offset * PHASE_FULL; });
+const offsetFullOf = id => { if (!Number.isSafeInteger(OFFSET_FULL[id]) || OFFSET_FULL[id] % PHASE_CAP_UNIT !== 0) throw Error('native phase offset is not whole units'); return OFFSET_FULL[id]; };
+PHASE_ROWS.forEach((row, id) => { row.offset = Math.floor(offsetFullOf(id) / PHASE_FULL); row.offsetRem = offsetFullOf(id) - row.offset * PHASE_FULL; row.offsetUnits = offsetFullOf(id) / PHASE_CAP_UNIT; });
 export const phaseAmount = core => ELEMENTS[core[0] & 255].kind === K.LIQUID ? core[1] & 0xffffff : (core[0] & 255) === E.EMPTY ? 0 : PHASE_FULL;
 export function phaseTemperatureQ(id, raw) {
   if (!Number.isInteger(raw) || raw < 0 || raw > 65535 || !PHASE_ROWS[id]) throw Error('invalid native temperature/id');
@@ -85,9 +90,11 @@ export function phaseOffsetFull(id, ctype = 0) {
 }
 export const phaseOffsetPerQuantum = (id, ctype = 0) => Math.floor(phaseOffsetFull(id, ctype) / PHASE_FULL);
 export const phaseOffsetRemainder = (id, ctype = 0) => phaseOffsetFull(id, ctype) - phaseOffsetPerQuantum(id, ctype) * PHASE_FULL;
-// floor(amount · offset / FULL): exact for a whole cell
+export const phaseOffsetUnits = (id, ctype = 0) => phaseOffsetFull(id, ctype) / PHASE_CAP_UNIT;
+// floor(amount · offset / FULL) = floor(amount · units / PHASE_UNIT_FILL): exact for a whole cell
 export function phaseOffsetEnergy(id, amount, ctype = 0) {
-  return BigInt(phaseOffsetPerQuantum(id, ctype)) * BigInt(amount) + BigInt(amount) * BigInt(phaseOffsetRemainder(id, ctype)) / BigInt(PHASE_FULL);
+  const n = BigInt(amount) * BigInt(phaseOffsetUnits(id, ctype)), d = BigInt(PHASE_UNIT_FILL);
+  return n >= 0n ? n / d : -((-n + d - 1n) / d);
 }
 export const phaseMaterialOffsetEnergy = phaseOffsetEnergy;
 export function phaseLatentEnergy(id, raw, amount) {

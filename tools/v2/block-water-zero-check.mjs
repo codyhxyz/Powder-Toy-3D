@@ -17,7 +17,7 @@ import { wgslGroupingErrors, assertNaga, importMinified } from './wgsl-grouping.
 // Changes to these assumptions require re-proving the shortcut, not silently
 // treating a new WATER rule/calibration as an identity.
 assert.deepEqual(C.CONTACT_ROWS[E.WATER], {
-  kind: K.LIQUID, capacity: 64, offset: 0, cond: 0.03, density: 10, spawnQ: 1173, spawnLife: 0,
+  kind: K.LIQUID, capacity: 4096, offset: 0, cond: 0.03, density: 10, spawnQ: 1173, spawnLife: 0,   // (capacity: V1's cap in 1/4096, a reaction's)
   hotQ: 1493, hotOut: 1, hotL: 138240, hotGas: 259, hotOf: E.WATER,   // V1 react.js boil puff STEAM_BOIL_PUFF, Pa
   coldQ: 1093, coldOut: 2, coldL: 20480, coldOf: E.WATER,
   meltQ: 65536, meltInto: E.WATER, igniteQ: 65536, flashQ: 65536,
@@ -29,7 +29,7 @@ assert.deepEqual(C.CONTACT_ROWS[E.WATER], {
 });
 assert.deepEqual(PHASE_ROWS[E.WATER], {
   hot: { T: 100, into: 'STEAM', latent: 540, puff: 1700 }, cold: { T: 0, into: 'ICE', latent: 80 },
-  hotQ: 1493, coldQ: 1093, hotLatent: 138240, coldLatent: 20480, offset: 0,
+  hotQ: 1493, coldQ: 1093, hotLatent: 138240, coldLatent: 20480, offset: 0, offsetRem: 0, offsetUnits: 0,
 });
 assert.deepEqual(v2Rows()[E.WATER], { key: 'WATER', cls: 3, drop: 0, vt: 0, dens: 10, yieldHead: 0, damp: 0.01, fade: 0 });
 assert.equal(C.CONTACT_RX_INDEX[E.WATER * ELEMENTS.length + E.WATER], 0);

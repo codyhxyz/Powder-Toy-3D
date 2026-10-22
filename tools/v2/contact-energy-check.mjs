@@ -9,7 +9,7 @@ import { PHYS, NOMINAL_STEP_RATE } from '../../src/physics.js';
 import * as C from '../../src/v2/contact.js';
 import { offsetOf } from '../../src/v2/physics.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
-import { PHASE_AIR_CAPACITY, PHASE_CAP_SCALE } from '../../src/v2/phase.js';
+import { PHASE_AIR_CAPACITY, PHASE_CAP_SCALE, phaseCapacityUnits, phaseOffsetUnits, phaseOffsetEnergy } from '../../src/v2/phase.js';
 import { capacityOf, makeMaterial } from '../../src/v2/layout.js';
 import { stateLengths, decodeV2State } from '../../src/v2/state.js';
 
@@ -246,15 +246,26 @@ test('TH-06: a whole cell holds its element\'s V1 heat capacity (air 0.02, not a
   const floor = PHASE_AIR_CAPACITY / PHASE_CAP_SCALE + 1 / 1024;
   for (const e of ELEMENTS) {
     const amount = e.id === E.EMPTY ? 0 : 65536, held = capacityOf(e.id, amount) / PHASE_CAP_SCALE;
-    // (gases at or under air's cap keep air's plus 1/1024: phase.js PHASE_MIN_CAPACITY_DELTA)
+    // (to 1/1024 cap over air's, exact; gases at or under air's cap keep air's plus 1/1024: phase.js PHASE_MIN_CAPACITY_DELTA)
     const want = e.id !== E.EMPTY && e.cap < floor ? floor : e.cap;
-    assert(Math.abs(held - want) < 1e-6, `${e.key}: a whole cell holds ${held} cap, V1 ${e.cap}`);
+    assert(Math.abs(held - want) <= 0.5 / 1024 + 1e-9, `${e.key}: a whole cell holds ${held} cap, V1 ${e.cap}`);
+  }
+  assert(Math.abs(capacityOf(E.EMPTY, 0) / PHASE_CAP_SCALE - ELEMENTS[E.EMPTY].cap) < 1e-6, 'air is V1\'s 0.02');
+  // the WGSL's u32 form of the capacity and the offset's rest (shaders/v2/phase.js) is the CPU's, every element and fill
+  const u = x => x >>> 0, mul = (a, b) => Math.imul(a, b) >>> 0;
+  const gpuCapacity = (id, amount) => u(PHASE_AIR_CAPACITY + (u(mul(amount, phaseCapacityUnits(id)) + 15) >>> 4));
+  const gpuOffset = (units, amount) => { const m = BigInt(Math.abs(units)) * BigInt(amount); return units < 0 ? -((m + 15n) >> 4n) : m >> 4n; };
+  for (const e of ELEMENTS) for (const amount of [0, 1, 2, 17003, 32768, 65535, 65536, 65537, 98304, 16 * 65536 - 1, 16 * 65536]) {
+    if (e.id === E.EMPTY && amount) continue;
+    assert.equal(gpuCapacity(e.id, amount), capacityOf(e.id, amount), `${e.key} fill ${amount}: WGSL capacity`);
+    for (const ct of e.id === E.LAVA ? [0, E.METAL, E.GLASS] : [0]) assert.equal(gpuOffset(phaseOffsetUnits(e.id, ct), amount), phaseOffsetEnergy(e.id, amount, ct), `${e.key} fill ${amount}: WGSL offset`);
   }
   // V1 react.js: T += dE / CAP. Ten cap·°C into a whole cell warms it 10/cap °C (to the quarter-kelvin code)
   for (const id of [E.EMPTY, E.CO2, E.PROPANE, E.INSULATOR, E.WOOD, E.METAL, E.WATER, E.STEAM]) {
     const c = cell(id, id === E.STEAM ? 300 : 20), warmed = C.ctHeat(c, 10 * C.CT_ENERGY_PER_CAP_C);
     const rise = (warmed.tq - c.tq + C.ctTemperatureRemainder(warmed)) / 4;
-    assert(Math.abs(rise - 10 / ELEMENTS[id].cap) < 0.01, `${ELEMENTS[id].key}: 10 cap·°C warm it ${rise.toFixed(3)} °C, V1 ${(10 / ELEMENTS[id].cap).toFixed(3)} °C`);
+    // (within 2 %: the cap over air's to 1/1024, CO2's 0.0255 held as 0.0259)
+    assert(Math.abs(rise - 10 / ELEMENTS[id].cap) < 0.02 * 10 / ELEMENTS[id].cap, `${ELEMENTS[id].key}: 10 cap·°C warm it ${rise.toFixed(3)} °C, V1 ${(10 / ELEMENTS[id].cap).toFixed(3)} °C`);
   }
 });
 
