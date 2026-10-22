@@ -12,7 +12,7 @@ import {E,ELEMENTS,R} from '../../src/elements.js';
 import {RAYS} from '../../src/rays.js';
 import {V1_STEP_MS,STEP_S} from '../../src/v2/gravity.js';
 import * as L from '../../src/v2/layout.js';
-import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact,PACKET_KEEP,packetStep,impactHeat,packetGrainOdds,PACKET_GRAIN_ODDS,v1GrainOdds} from '../../src/v2/dynamics-reference.js';
+import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact,PACKET_KEEP,packetStep,impactHeat,packetGrainOdds,PACKET_GRAIN_ODDS,v1GrainOdds,packetKnock} from '../../src/v2/dynamics-reference.js';
 import { importMinified } from './wgsl-grouping.mjs';
 const floatBits=v=>{const b=new ArrayBuffer(4);new Float32Array(b)[0]=v;return new Uint32Array(b)[0];};
 const close=(a,b,e,what)=>assert.ok(Math.abs(a-b)<=e,`${what??""}: ${a} vs ${b}`);
@@ -73,7 +73,7 @@ function syntax(s){for(const [a,b] of [
 ['var q = p;','var q = copy(p);'],['var particle = particle0;','var particle = copy(particle0);'],
 ['p.velocity * D_RAY_DT / D_CELL','mul(p.velocity, D_RAY_DT / D_CELL)'],['particle.velocity * D_RAY_DT / D_CELL','mul(particle.velocity, D_RAY_DT / D_CELL)'],
 ['p.position + delta * max(0.0, travelled - 0.00001 / max(length(delta), 0.00001))','add(p.position, mul(delta, max(0, travelled - 0.00001 / max(length(delta), 0.00001))))'],
-['p.position + delta;','add(p.position, delta);'],['f.destination.z >> 16u','f.destination.z >>> 16'],['bitcast<f32>(','bitsFloat('],
+['p.position + delta;','add(p.position, delta);'],['f.destination.z >> 16u','f.destination.z >>> 16'],['bitcast<f32>(','bitsFloat('],['vec3f(cellOf(s) + P.origin) + 0.5','add(add(cellOf(s),P.origin),0.5)'],
 ['min(abs(velocity) * D_SHOCK_THROW, vec3f(D_V_MAX))','abs(velocity).map(x=>Math.min(x*D_SHOCK_THROW,D_V_MAX))'],
 ['vec4u(warm.core.yzw, bitcast<u32>(warm.bank))','[...warm.core.slice(1,4), warm.bank>>>0]']])s=s.replaceAll(a,b);
 return s.replace(/\/\/[^\n]*/g,'')
@@ -118,6 +118,8 @@ function fixture({mode=0, edge=0, windowed=false,
     D_G:GRAVITY,D_DT:DT,D_RAY_DT:Math.fround(DT/4),D_RAYS:31,D_PHOTON_HEAT:RAYS.PHOTON_HEAT/3,D_PHOTON_E_MIN:RAYS.PHOTON_E_MIN,D_PHOTON_CELLS:7,
     dCap:id=>ELEMENTS[id]?.cap??1,draw:0.5,dRandom:()=>ctx.draw,dShockOdds:packetGrainOdds,D_GRAIN_SALT:0x6772616e,D_LAND_KEEP:PHYS.LAND_POWDER_KEEP,D_LAND_SCATTER:PHYS.LAND_POWDER_SCATTER,vec2f:vec,
     energyMul:(a,b)=>BigInt(a)*BigInt(b),
+    DKnock:(done,packet,cell)=>({done,packet,cell}),dCarrier:m=>L.makeMaterial(0,L.cTq(m.core)*0.25-273.25),
+    dParticle:(position,velocity,id,m)=>({position:[...position],velocity:[...velocity],id,c0:m.core[0],tail:[...m.core.slice(1),m.bank>>>0]}),
     DPacketFlight:(cells,velocity)=>({cells:[...cells],velocity:[...velocity]}),dKeep:id=>PACKET_KEEP[id],
     D_V1_STEP:Math.fround(1/V1_STEP_MS),D_PULL_STEP:Math.fround(STEP_S*STEP_S/CELL_M),D_STEPS:4,
     DPhotonStep:(light,heat,cell,travelled,flip,gone)=>({light:[...light],heat,cell,travelled,flip,gone}),round:Math.round,clamp:(x,a,b)=>Math.min(Math.max(x,a),b),
@@ -181,7 +183,7 @@ function fixture({mode=0, edge=0, windowed=false,
 ['dShockHit',['t','s','p','hit','axis']],
 ['dDustFaces',['s']],
 ['dShockWall',['t','pid','u','landing','particleId']],
-['dPhotonStep',['local','delta','light0']],['dImpactHeat',['pid','tid','velocity','axis','c']],['dPacketFlight',['v0','wind','pull','keep','paced']],['dPhotonMoved',['p','light','travelled','flip']],['dPhotonIntegrate',['t','particle0','local']],['dAddHeat',['m','heat']],
+['dPhotonStep',['local','delta','light0']],['dKnock',['t','s','p','before','axis','landing','kinetic']],['dImpactHeat',['pid','tid','velocity','axis','c']],['dPacketFlight',['v0','wind','pull','keep','paced']],['dPhotonMoved',['p','light','travelled','flip']],['dPhotonIntegrate',['t','particle0','local']],['dAddHeat',['m','heat']],
   ])ctx[name]=compile(ctx,S.integrate,name,args);
   const stages=Object.fromEntries(Object.entries(S).map(([s,c])=>[s,compile(ctx,c,'main',['t'])]));
   return {ctx,world,particles,claims,flight,stages,set:(p,m)=>world.set(slotOf(p),copy(m)),
@@ -520,7 +522,7 @@ test('a ray leaving the box is gone, past a loop edge too (EL-5)',()=>{
 // which gravity-check holds to V1's arrival)
 test('the emitted flight drops a packet on V1\'s law: it lands at its twin\'s tick (gravity leftover)',()=>{
   for(const [material,id] of [[L.makeMaterial(E.SAND),E.SAND],[L.makeMaterial(E.ASH),E.ASH],[wet(),E.WATER]]) {
-    const f=fixture({material,position:[6.5,24.5,6.5],velocity:[0,0,0]});f.set([6,0,6],L.makeMaterial(E.STONE));
+    const f=fixture({material,position:[6.5,24.5,6.5],velocity:[0,0,0]});f.set([6,0,6],L.makeMaterial(E.ROCK));
     let tick=0;while(f.particles[0].id!==0&&tick<200){runTicks(f,[0],1);tick++;}
     let v=0,y=0,want=0;while(y<23.5*CELL_M){const st=packetStep(id,v);y+=st.fell;v=st.v;want++;}
     assert.ok(Math.abs(tick-want)<=1,`${ELEMENTS[id].key}: landed at tick ${tick}, its twin ${want}`);
@@ -539,7 +541,9 @@ test('a grain landing hard on rock warms the rock and itself alike, as V1\'s imp
   assert.ok(t>20.5&&rock>20.5&&Math.abs(t-rock)<1.5,`both warm alike: sand ${t} °C, rock ${rock} °C`);
   // under V1's COLLIDE_V (0.15 cells/step) it rests without heat; onto a powder (V1: a pile, not a solid) none either
   const gentle=drop(-6);assert.equal(L.energyOf(at(gentle,[6,0,6])),L.energyOf(L.makeMaterial(E.ROCK)));
-  const pile=drop(-43,E.STONE);assert.equal(L.energyOf(at(pile,[6,0,6])),L.energyOf(L.makeMaterial(E.STONE)));
+  // (the blow passes into the pile and back off the box's floor: MV-12's knock; the grain comes back to its cell)
+  const pile=drop(-43,E.STONE);for(let i=0;i<20&&pile.particles[0].id;i++) runTicks(pile,[0],1);
+  assert.equal(L.cid(at(pile,[6,0,6]).core),E.STONE);assert.equal(L.energyOf(at(pile,[6,0,6])),L.energyOf(L.makeMaterial(E.STONE)));
 });
 
 // V1's grains land on their blocks' random draws: each grain on a charge rolls its own odds at its fall (v1GrainOdds),
@@ -557,6 +561,30 @@ test('a grain packet landing on a charge rolls V1\'s odds for its fall (BL-7)',(
   // the WGSL's table is the twin's
   const wgsl=particlesWGSL(g,nativeDynamicsHead,'impact');
   for(const r of PACKET_GRAIN_ODDS) for(const b of r.bins) assert.ok(wgsl.includes(`if (u >= ${b.speed}) { odds = ${b.odds}; }`),`${ELEMENTS[r.faller].key} on ${ELEMENTS[r.charge].key}`);
+});
+
+// V1 move.js collide (MV-12): a fast grain hitting a resting grain passes its momentum on with RESTITUTION, so a blow
+// travels through a pile like a Newton's cradle (dynamics-reference.js packetKnock, the twin); V2's struck cells stayed
+test('a grain thrown into a row of grains knocks the far ones on, as V1\'s cradle, cells and energy exact (MV-12)',()=>{
+  const f=fixture({position:[8.9,0.5,6.5],velocity:[50,0,0]});
+  // (three grains: RESTITUTION 0.3 and the grains' drag spend the blow in three, V1's as V2's)
+  for(let x=10;x<13;x++) f.set([x,0,6],L.makeMaterial(E.SAND));
+  for(let x=0;x<32;x++) for(let y=0;y<3;y++) if(!f.world.has(f.ctx.slotOf([x,y,6]))) f.set([x,y,6],L.makeMaterial(0)); // (the air it moves through, counted)
+  const total=()=>{let n=0,e=0n;for(const [,m] of f.world){if(L.cid(m.core)===E.SAND)n++;e+=L.energyOf(m);}
+    for(const q of f.particles) if(q.id){n++;e+=L.packetOwnedEnergy(f.ctx.dMaterial(q));}return {n,e};};
+  const t0=total();runTicks(f,[0],1);
+  assert.equal(L.cid(at(f,[9,0,6]).core),E.SAND,'the thrown grain rests before the row');
+  assert.equal(L.cid(at(f,[10,0,6]).core),E.EMPTY,'the struck grain flew on');
+  // (V1's split of its speed at the hit: the tick's drag takes up to its four steps' share before it)
+  const hi=packetKnock(E.SAND,E.SAND,50).flies,lo=packetKnock(E.SAND,E.SAND,50*PACKET_KEEP[E.SAND]**4).flies,vx=f.particles[0].velocity[0];
+  assert.ok(f.particles[0].id!==0&&vx>=lo*0.999&&vx<=hi*1.001,`${vx} m/s vs V1's ${lo}..${hi}`);
+  assert.deepEqual(total(),t0,'every grain and every unit of energy kept');
+  for(let i=0;i<20&&f.particles[0].id;i++) runTicks(f,[0],1);
+  let far=-1;for(const [slot,m] of f.world) if(L.cid(m.core)===E.SAND) far=Math.max(far,f.ctx.cellOf(slot)[0]);
+  assert.ok(far>=13,`the blow reached the row's end and moved it on (V1's cradle): farthest grain at x ${far}`);
+  assert.equal(total().n,t0.n);
+  // a gentle push under COLLIDE_V moves only what it hits (V1: support, no exchange)
+  assert.equal(packetKnock(E.SAND,E.SAND,0.15*SHOCK_THROW_MS*0.9),null);
 });
 
 test('an empty pool reads no packet record and writes no flight record',()=>{

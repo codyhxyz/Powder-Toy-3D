@@ -551,6 +551,16 @@ export function impactHeat(mover, target, velocity, axis, landing) {
   const heat = lost * PHYS.KE_TO_HEAT, share = (e.cap ?? 1) / ((e.cap ?? 1) + (t.cap ?? 1));
   return { packet: heat * share, hit: heat * (1 - share) };
 }
+// V1 move.js collide (particles.js dKnock): a grain hitting a resting grain at u (m/s across the face) faster than
+// COLLIDE_V passes its momentum on with RESTITUTION: { flies } the struck grain's speed after (m/s, to V_MAX), and
+// { kept } the mover's (V2 rests it where it was), or null where V1 does not collide so (not both grains, a charge).
+export function packetKnock(mover, target, u) {
+  const i = ELEMENTS[mover], j = ELEMENTS[target], un = Math.min(PHYS.V_MAX, Math.abs(u) / SHOCK_THROW_MS);
+  if (i.kind !== K.POWDER || j.kind !== K.POWDER || (j.blast?.shock ?? 0) > 0 || un <= PHYS.COLLIDE_V) return null;
+  const inv = 1 / (i.dens + j.dens);
+  return { flies: Math.min(PHYS.V_MAX, (1 + PHYS.RESTITUTION) * i.dens * inv * un) * SHOCK_THROW_MS,
+    kept: (i.dens - PHYS.RESTITUTION * j.dens) * inv * un * SHOCK_THROW_MS };
+}
 export function blastPlan(source, targets, solidAt, energy) {
   const plans = targets.map(target => {
     const hit = sweep(source.map(x => x + 0.5), target.map(x => x + 0.5), p =>

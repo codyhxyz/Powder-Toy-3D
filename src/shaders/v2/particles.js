@@ -387,6 +387,30 @@ fn dImpactHeat(pid: u32, tid: u32, velocity: vec3f, axis: u32, c: vec3i) -> vec2
   let heat = lost * ${f(PHYS.KE_TO_HEAT)}; let share = dCap(pid) / (dCap(pid) + dCap(tid));
   return vec2f(heat * share, heat * (1.0 - share));
 }
+// V1 move.js collide (MV-12): a grain hitting a resting grain faster than COLLIDE_V across the face passes its
+// momentum on with RESTITUTION, so a blow travels through a pile like a Newton's cradle: the struck grain flies on
+// from its cell at (1+R)·m_i/(m_i+m_j) of the closing speed (to V_MAX); the mover, left (m_i-R·m_j)/(m_i+m_j) of
+// it, rests where it was (lands in the cell before: its slot flies the struck grain on, its cell keeps its carrier,
+// energy exact as a whole-cell launch's). Only a hit whose landing this thread also won (deposit's claim), never a
+// charge's (dShockHit) nor a held packet. dynamics-reference.js packetKnock is its twin.
+struct DKnock { done: bool, packet: DParticle, cell: Material }
+fn dKnock(t: u32, s: u32, p: DParticle, before: Material, axis: u32, landing: u32, kinetic: f32) -> DKnock {
+  var out = DKnock(false, p, before);
+  let pid = p.c0 & 255u; let tid = cid(before.core); let un = min(D_V_MAX, abs(p.velocity[axis]) * D_SHOCK_THROW);
+  if (cls(pid) == C_POWDER && cls(tid) == C_POWDER && dShockKE(tid) <= 0.0 && un > D_COLLIDE_V &&
+      atomicLoad(&control[D_HELD+t]) == 0u && dWon(landing, 1u, t)) {
+    let prev = loadMaterial(landing); let rests = dDeposit(prev, dMaterial(p), kinetic);
+    if (cid(prev.core) == 0u && rests.accepted) {
+      storeMaterial(landing, prev, rests.material); setDeco(landing, particleDecoOf(t)); dWake(cellOf(landing)); dFree(landing, 1u);
+      let mi = dDens(pid); let mj = dDens(tid);
+      var q = dParticle(vec3f(cellOf(s) + P.origin) + 0.5, vec3f(0), p.id, before);
+      q.velocity[axis] = sign(p.velocity[axis]) * min(D_V_MAX, (1.0 + D_RESTITUTION) * mi / (mi + mj) * un) / D_SHOCK_THROW;
+      setParticleDeco(t, decoOf(s)); setDeco(s, 0u);
+      out = DKnock(true, q, dCarrier(before));
+    }
+  }
+  return out;
+}
 // a charge's V1 cells/step per m/s of its own landing (dynamics-reference.js shockFall: V1's own fall), here
 // with its one reader, not the shared head, so its calibration rebuilds the particle stages alone
 ${table('dShockFall', 'f32', 'shockFall', 0)}
@@ -695,6 +719,9 @@ export function particlesWGSL(g, nativeHead, stage) {
         if (dWon(f.destination.y,1u,t)) { dFree(f.destination.y,1u); } // deposit will not see it
         flight[t].destination.y=D_NONE; // fracture is not a landing: retain unspent KE
       } else {
+        // a grain struck hard passes the blow on (dKnock; MV-12)
+        let knock = dKnock(t, s, p, before, axis, f.destination.y, f.effect.x);
+        if (knock.done) { p = knock.packet; after = knock.cell; flight[t].destination.y = D_NONE; }
         // a grain stopped by a solid warms both (dImpactHeat; TH-10): the packet's share rides it to where it lands
         let warmth = dImpactHeat(p.c0 & 255u, id, p.velocity, axis, cellOf(s));
         if (warmth.y > 0.0 && energyFits(before, dHeatEnergy(before, warmth.y))) {
@@ -705,7 +732,7 @@ export function particlesWGSL(g, nativeHead, stage) {
           let warm = withPacketEnergy(m, owned); p.c0 = warm.core.x; p.tail = vec4u(warm.core.yzw, bitcast<u32>(warm.bank));
           noteEnergySource(cellOf(s), energySub(owned, dParticleEnergy(m)));
         }
-        p.velocity = vec3f(0);
+        if (!knock.done) { p.velocity = vec3f(0); }
       }
     } else if ((f.destination.z & 255u) == 5u) {
       // a photon's V1 step with heat for this cell (dPhotonIntegrate): the cell takes its heat (V1 raysDepositFrag, a
