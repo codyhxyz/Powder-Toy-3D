@@ -239,7 +239,7 @@ export const CONTACT_CONSTANTS = Object.freeze({
   // V1 react.js storm charge (physics.js CHARGE_*): cloud at CHARGE_T_MAX or colder gains a unit of charge,
   // up to CHARGE_MAX, with chance CHARGE_RATE·closing a step, closing the speed in cells a step that snow
   // beside it closes on it: CT_CHARGE_STEP a step per cell a tick of closing. The face is a block partner
-  // half the ticks, so a partnered tick draws PARTNER_STEPS of V1's steps (ctStormCharge), from its salt on.
+  // half the ticks, so a partnered tick carries PARTNER_STEPS of V1's steps (ctStormCharge), drawn with its salt.
   CT_CHARGE_T_MAX_Q: ['i32', q(PHYS.CHARGE_T_MAX)],
   CT_CHARGE_MAX: ['i32', PHYS.CHARGE_MAX],
   CT_CHARGE_STEP: ['f32', PHYS.CHARGE_RATE / STEPS_PER_TICK],
@@ -792,16 +792,15 @@ export function ctPacketTouch(p, faceId, hostFire, partner) {
 }
 // V1 react.js storm charge (physics.js CHARGE_*, CT_CHARGE_*): a cloud at CHARGE_T_MAX or colder, with snow
 // closing on it at `closing` cells a tick on a block partner's face (half the ticks), gains a unit of charge
-// with chance CHARGE_RATE·closing on each of the PARTNER_STEPS steps that face stands for, up to CHARGE_MAX.
-// Snow in the grid (ctStepAtmosphere) and flying snow (v2/airborne.js, at its velocity onto the face) alike.
+// with chance CHARGE_RATE·closing on each of the PARTNER_STEPS steps that face stands for, up to CHARGE_MAX:
+// their expected sum, the fraction a draw, so the mean is V1's (one draw, not a loop of them: each inlined
+// copy is compile time). Snow in the grid (ctStepAtmosphere) and flying snow (v2/airborne.js) alike.
 export function ctStormCharge(input, closing, seed) {
   let c = ctCopy(input);
   if (c.id !== E.CLOUD || c.tq > CT_CHARGE_T_MAX_Q || closing <= 0.0) return c;
   c.busy = 1;
-  const chance = Math.min(1.0, CT_CHARGE_STEP * closing);
-  for (let step = 0; step < CT_PARTNER_STEPS; step++) {
-    if (ctRoll(seed, CT_CHARGE_SALT + step) < chance) c.ctype = Math.min(CT_CHARGE_MAX, c.ctype + 1);
-  }
+  const units = ctF(CT_PARTNER_STEPS) * Math.min(1.0, CT_CHARGE_STEP * closing);
+  c.ctype = Math.min(CT_CHARGE_MAX, c.ctype + ctI(Math.floor(units + ctRoll(seed, CT_CHARGE_SALT))));
   return c;
 }
 // V1 react.js FUSE, unlit: matter (not gas) at its ignition point beside it lights it, a flame beside it
