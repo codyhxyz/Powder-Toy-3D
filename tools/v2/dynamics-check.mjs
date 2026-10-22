@@ -6,6 +6,7 @@ import { gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { AIRBORNE_COLOURS } from '../../src/v2/airborne.js';
 import { windowMoveReference } from './window-move-reference.mjs';
+import { brickIdOf } from '../../src/shaders/common.js';
 import { PARTICLE_CAP, DT, CELL_M, AIR, packParticle, unpackParticle, ballistic, sweep,
   stableId, resolveDeposits, allocateSources, impact, blastPlan, exchangeScalar, airSource, airQuiet } from '../../src/v2/dynamics-reference.js';
 const close=(a,b,e=1e-9)=>assert.ok(Math.abs(a-b)<=e,`${a} != ${b}`);
@@ -152,6 +153,20 @@ test('window shift preserves world-space particles, exact archived air and oblig
   assert.equal(new Float32Array(d.air[0].bytes)[0],3);assert.equal(new Float32Array(d.air[0].bytes)[4],321);
   assert.equal(new Uint32Array(owner.events.bytes)[0],4);assert.equal(d.pendingOutside.size,0);
   assert.throws(()=>d.shiftWindow([1,0,0]),/brick-aligned/);
+});
+test('a window move is made in the call; its leaving slab lands later, and a snapshot taken meanwhile holds it',async()=>{
+  const {owner}=mockOwner(),d=new NativeDynamics(owner);await d.ready;const g=d.g;
+  const a=new Float32Array(d.air[0].bytes);a[brickIdOf(g,0,0,0)*8]=5;a[brickIdOf(g,1,0,0)*8]=9;
+  const moved=d.shiftWindow([4,0,0]);
+  assert.equal(new Float32Array(d.air[0].bytes)[brickIdOf(g,0,0,0)*8],9,'the air moves with its cells at once');
+  assert.equal(new Float32Array(d.air[1].bytes)[brickIdOf(g,0,0,0)*8],9);
+  assert.equal(new Float32Array(d.air[0].bytes)[brickIdOf(g,3,0,0)*8+6],AIR.quietTicks,'an uncovered brick is quiet');
+  assert.deepEqual(d.origin,[4,0,0]);assert.equal(d.airArchive.size,0,'(its leaving slab is still being read)');
+  const snapshot=d.snapshotDynamicState();
+  await moved.settled;assert.equal(d.airArchive.size,1,'only air that differs from quiet is archived');assert(d.airArchive.has('0,0,0'));
+  assert((await snapshot).airArchive.some(e=>e.worldCell.join(',')==='0,0,0'),'a snapshot taken before the landing holds it');
+  await d.shiftWindow([-4,0,0]).settled;
+  assert.equal(new Float32Array(d.air[0].bytes)[brickIdOf(g,0,0,0)*8],5,'and it comes back');assert.equal(d.airArchive.size,0);
 });
 test('one particle, even outside the window, prevents false idle',async()=>{
   const {owner}=mockOwner(),d=new NativeDynamics(owner);await d.ready;

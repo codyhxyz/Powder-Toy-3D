@@ -19,6 +19,8 @@ import { applyGuestStroke, applyGuestStrokes } from '../../src/net/edits.js';
 import { createPacker, createUnpacker, encodeFrame, decodeFrame, FRAME_KEY } from '../../src/net/codec.js';
 import { E, K, TOOLS, ELEMENTS } from '../../src/elements.js';
 import { readFileSync } from 'node:fs';
+import { v2ActLayout, LEGACY_WORD } from '../../src/shaders/v2.js';
+import { resetNativeDynamics } from '../../src/v2/dynamicState.js';
 
 const g = gridLayout(32, 32, 32), calls = [], shifts = [], requests = [], builds = [];
 globalThis.GPUBufferUsage = { STORAGE: 0x80, COPY_SRC: 4, COPY_DST: 8, INDIRECT: 0x100 };
@@ -75,6 +77,12 @@ function referenceDispatch(name, opts) {
     } else {
       const j = p.preserve ? otherBank[p.count + Math.floor(i / 64)] * 64 + i % 64 : i;
       const to = slot(slabCell(j)); core.set(other.subarray(i * 4, i * 4 + 4), to * 4); bank[to] = otherBank[i];
+      // the bricks it wrote, and only those (shaders/v2/window.js scatter)
+      const act = opts.bind[2].entries[4] && words(opts.bind[2].entries[4].resource.buffer), A = v2ActLayout(g);
+      if (act && i % 64 === 0) {
+        const b = Math.floor(to / 64);
+        act[A.legacy + b] = LEGACY_WORD.STALE; act[A.busy0 + b] = act[A.busy1 + b] = act[A.state + b] = act[A.air + b] = 1; act[A.summary + b] = 0;
+      }
     }
   }
 }
@@ -202,6 +210,56 @@ assert.deepEqual(core, originalCore); assert.deepEqual(bank, originalBank);
 
 // Sparse restoration touches only selected bricks (raw slab order differs
 // from the compact brick's internal y/z bit order).
+// A scatter (a stored brick coming back) notes only the bricks it wrote: their projection is stale and
+// they wake. It used to mark every brick of the window stale, so each move converted the whole window again.
+{
+  const act = words(owner.act), A = v2ActLayout(g);
+  act.fill(0, A.legacy, A.legacy + g.nbricks);
+  sim.nativeIntegration.restoreBricks([0, 0, 0], [1, 1, 1], [{ index: 0, bytes: encodeNativeBrick(originalCore.slice(0, 256), new Int32Array(64)) }]);
+  const stale = [...act.subarray(A.legacy, A.legacy + g.nbricks)].map((w, b) => w ? b : -1).filter(b => b >= 0);
+  assert.deepEqual(stale, [Math.floor(slot([0, 0, 0]) / 64)], 'one brick restored, one brick stale');
+  sim.nativeIntegration.restoreBricks([0, 0, 0], [4, 8, 8], slab.map((bytes, index) => ({ index, bytes })));
+}
+// A dynamics that fails to build stops what needs it (World streaming, native tools: their capabilities
+// stay off), never every gate: the grid keeps ticking (C4). It used to set nativeTransitionError, which
+// nothing cleared, and every tick, tool, stroke and undo stayed shut until the map was rebuilt.
+{
+  const dynamics = owner.dynamics, error = console.error;
+  owner.dynamics = { isReady: false, ready: Promise.reject(new Error('pipeline failed')) };
+  console.error = () => {};
+  try { await resetNativeDynamics(owner); } finally { console.error = error; }
+  assert.equal(sim.nativeTransition, null); assert.equal(sim.nativeTransitionError ?? null, null, 'no permanent error');
+  assert.equal(nativeCapabilities(sim).world, false, 'the window stops following (as V1 freezes only the window)');
+  assert.notEqual(nativeReadiness(sim).reason, 'native world transition pending or failed', 'nothing else is shut');
+  owner.dynamics = dynamics;
+  assert.equal(nativeCapabilities(sim).world, true);
+  assert.equal(nativeHostSteps(owner, 1 / 60, { once: true }), 1, 'the grid keeps ticking');
+}
+// A failed leaving read of a move's dynamics freezes the window (as a failed cell read does), not the world.
+{
+  const win = Object.assign(Object.create(WorldWindow.prototype), { sim, gpu: { failure: null }, epoch: 3, pending: null, storeReads: new Set(), loaded: true });
+  const error = console.error; console.error = () => {};
+  win._trackDynamics(Promise.reject(new Error('lost read')));
+  await win.pending; console.error = error;
+  assert.match(win.persistenceError?.message ?? '', /lost read/); assert.equal(win.update(0, 0), null);
+  assert.equal(nativeHostSteps(owner, 1 / 60, { once: true }), 1);
+}
+// An Islet box scene over another box starts V2's flying matter, air and requests over, as a load of
+// any scene does (sim.load), in the same task as its fill (M5). The actual wire/world.js loadIsland.
+{
+  const source = readFileSync(new URL('../../src/wire/world.js', import.meta.url), 'utf8');
+  const start = source.indexOf('  loadIsland(app) {'), brace = source.indexOf('{', start); let depth = 1, end = brace + 1;
+  for (; depth; end++) { if (source[end] === '{') depth++; else if (source[end] === '}') depth--; }
+  const wireWorld = { _islandLoad: null }, order = [];
+  wireWorld.loadIsland = new Function('loadIsland', 'world', `return ({${source.slice(start, end)}}).loadIsland;`)(
+    async (_sim, { still }) => { await null; if (!still()) return null; order.push('fill'); return { size: [32, 32, 32] }; }, wireWorld);
+  const islet = { history: [], resetNativeDynamics() { order.push('reset'); } };
+  const app = { mp: { replica: false }, sim: islet, worldSeed: 1, settings: { preset: 'island' }, win: null };
+  assert.deepEqual((await wireWorld.loadIsland(app)).size, [32, 32, 32]);
+  assert.deepEqual(order, ['fill', 'reset'], "the old box's dynamics go with its cells");
+  order.length = 0; app.settings.preset = 'empty';
+  assert.equal(await wireWorld.loadIsland(app), null); assert.deepEqual(order, [], 'an overtaken load resets nothing');
+}
 const sparse = encodeNativeBrick(Uint32Array.from({ length: 256 }, (_, i) => [E.WATER | (1173 << 8), 123, 0xbc003c00, 0xffff3800][i % 4]), new Int32Array(64).fill(-123));
 sim.nativeIntegration.restoreBricks([0, 0, 0], [2, 2, 2], [{ index: 5, bytes: sparse }]);
 for (let z = 0; z < 8; z++) for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {

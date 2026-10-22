@@ -377,5 +377,28 @@ const boundaryBytes = encodeNativeBrick(exact, new Int32Array(64).fill(0x7fc0000
 const boundaryStore = new NativeBrickStore(wb); boundaryStore.put(0, boundaryBytes);
 const boundaryRestored = new NativeBrickStore(wb); boundaryRestored.fromBytes(boundaryStore.toBytes());
 assert.deepEqual(boundaryRestored.map.get(0), boundaryBytes);
+// A World move under V2 (the integration's shift: cores, then the dynamics and the legacy words with
+// them): a brick's legacy word moves with it, only the uncovered slab is stale, and nothing marks the
+// whole window again after (shifted). Before, each move marked every brick stale two or three times, so
+// the next exports converted the whole window. Its requests and air move with the cells too.
+{
+  const act = words(owner.act), A = owner.layout, I = sim.nativeIntegration;
+  sim.worldWindow = null; sim.origin.set(0, 0, 0); d.origin = [0, 0, 0]; d.airArchive.clear(); d.pendingOutside.clear();
+  act.fill(0, A.legacy, A.legacy + g.nbricks);
+  const moved = brickIdOf(g, 5, 2, 3), lands = brickIdOf(g, 1, 2, 3);   // world brick x 20 lands at window brick x 4
+  act[A.legacy + moved] = 2;   // (LEGACY_WORD.DIFFERS: its projection is current; a switch converts it)
+  words(owner.events).fill(0); words(owner.events)[cellSlot(g, 21, 9, 13)] = 4;
+  new Float32Array(d.air[d.airIndex].bytes).fill(0); new Float32Array(d.air[d.airIndex].bytes)[moved * 8] = 7;
+  const landing = I.shift(16, 0); I.shifted(); sim.origin.x = 16;
+  const legacy = [...act.subarray(A.legacy, A.legacy + g.nbricks)];
+  assert.equal(legacy[lands], 2, 'a brick\'s legacy word moves with it');
+  const stale = legacy.filter(w => w === 1).length;
+  assert.equal(stale, (16 / 4) * (g.ny / 4) * (g.nz / 4), 'only the uncovered slab is stale');
+  assert.equal(words(owner.events)[cellSlot(g, 5, 9, 13)], 4, 'a request moves with its cell');
+  assert.equal(new Float32Array(d.air[0].bytes)[lands * 8], 7, 'a brick\'s air moves with it');
+  assert.deepEqual(d.origin, [16, 0, 0]);
+  await landing;
+  sim.origin.x = 0;
+}
 console.log('adversarial persistence: coherent lock before await through sections; prior real readBack completes; new shifts blocked; transactional legacy/native/deco/core/dynamic/origin rejection before prepare, epoch, stores or GPU writes');
-console.log('dynamic persistence CPU: actual contact+dynamics constructors; synchronous mixed-state capture; exact binary/save restoration; readback-free undo entries; V1 undo across a move (shared cells, their flying matter, air and requests); pre-mutation corruption/origin rejection; physgun held/shock/controller fields; actual-air probe/body SI boundaries and lossless refusal passed');
+console.log('dynamic persistence CPU: actual contact+dynamics constructors; synchronous mixed-state capture; exact binary/save restoration; readback-free undo entries; V1 undo across a move (shared cells, their flying matter, air and requests); in-frame World moves (legacy words, requests and air move with their cells, only the uncovered slab stale); pre-mutation corruption/origin rejection; physgun held/shock/controller fields; actual-air probe/body SI boundaries and lossless refusal passed');
