@@ -1,5 +1,6 @@
 // Disabled phase-4 producer, not an application scheduler or frame gate.
 import { worldSunWriter, worldSunWriterLayouts } from '../shaders/worldSunWriter.js';
+import { worldSunCoarse, worldSunCoarseLayouts } from '../shaders/worldSunCoarse.js';
 import { WorldSunParams, worldSunProjection, WORLD_SUN_PITCH } from '../world/worldSun.js';
 import { SUN_TAN_RADIUS } from './sky.js';
 const BU = {COPY_SRC:4,COPY_DST:8,UNIFORM:64,STORAGE:128};
@@ -39,8 +40,26 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
   const grid=Object.freeze({...g}), size=[g.nx,g.ny,g.nz], descriptors=worldSunWriterLayouts();
   const layouts=descriptors.map((entries,i)=>device.createBindGroupLayout({label:`world sun ${i}`,entries}));
   const ready=device.createComputePipelineAsync({label:'full world optical sun',layout:device.createPipelineLayout({bindGroupLayouts:layouts}),compute:{module:device.createShaderModule({code:worldSunWriter(grid)}),entryPoint:'main'}});
+  // Far tiles' coarse writer (world/worldSunRings.js): its own small module, so
+  // the full writer's and the view's stay as they were. It shares the job and
+  // feedback group layouts, so one job/feedback bind group serves either.
+  const coarseLayouts=worldSunCoarseLayouts().map((entries,i)=>i>=2?layouts[i]:device.createBindGroupLayout({label:`world coarse sun ${i}`,entries}));
+  const coarseReady=Promise.resolve(device.createComputePipelineAsync({label:'world coarse sun',layout:device.createPipelineLayout({bindGroupLayouts:coarseLayouts}),compute:{module:device.createShaderModule({code:worldSunCoarse(grid)}),entryPoint:'main'}}));
+  coarseReady.catch(()=>{});
+  // GPU copies of coarse heightfields (worldCoarseCasters), by identity.
+  const coarseSources=new Map();let coarseSerial=0;
   const maxBuffer=Math.min(128*1024**2,device.limits?.maxStorageBufferBindingSize??128*1024**2);
   let dead=false, serial=0, publication=0, active=null;
+  function coarseSource(casters) {
+    let c=coarseSources.get(casters);
+    if(c)return c;
+    if(!(casters?.heights instanceof Float32Array)||!Array.isArray(casters.dims)||casters.heights.length!==casters.dims[0]*casters.dims[1]||!Number.isFinite(casters.maxTop))throw new TypeError('coarse casters: a heightfield of one f32 per brick column');
+    const heights=buffer('coarse sun casters',casters.heights,BU.STORAGE|BU.COPY_DST);
+    let info;try{info=buffer('coarse sun casters shape',new Float32Array([casters.dims[0],casters.dims[1],casters.maxTop,0]),BU.UNIFORM|BU.COPY_DST);}catch(e){heights.destroy();throw e;}
+    c={id:++coarseSerial,heights,info,groups:[device.createBindGroup({layout:coarseLayouts[0],entries:[{binding:0,resource:{buffer:heights}}]}),device.createBindGroup({layout:coarseLayouts[1],entries:[{binding:0,resource:{buffer:info}}]})]};
+    coarseSources.set(casters,c);return c;
+  }
+  const dropCoarse=()=>{for(const c of coarseSources.values()){c.heights.destroy();c.info.destroy();}coarseSources.clear();};
   const pending=new Set();
   const alive=()=>{if(dead)throw new Error('world sun disposed');};
   const buffer=(label,data,usage)=>{
@@ -59,7 +78,10 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
       bindings(){if(released)throw new Error('released sun snapshot');return Object.freeze({params:p.params,book:p.book,sun0:p.view0,sun1:p.view1,token:p.token});}});
   }
   const snapshot=()=>{alive();return handle(active);};
-  async function prepare({direction,basisRevision,configVersion,sceneToken,receiverBounds=[],requestedTiles,changedWorldBounds,changeBaseToken}={}) {
+  // coarseTiles: tiles of the request drawn from coarseCasters' heightfield
+  // instead of their CELL casters (world/worldSunRings.js). A tile changes kind
+  // only by being written again: a copy never turns coarse into full detail.
+  async function prepare({direction,basisRevision,configVersion,sceneToken,receiverBounds=[],requestedTiles,changedWorldBounds,changeBaseToken,coarseTiles=[],coarseCasters=null}={}) {
     alive(); const id=++serial, owned=[], candidatesTextures=[];let input=null,old=null,recorded=false,finished=false,retained=false;
     const releaseInputs=()=>{input?.release();input=null;if(old){drop(old);old=null;}owned.splice(0).forEach(b=>b.destroy());};
     const destroyOutputs=()=>candidatesTextures.splice(0).forEach(t=>t.destroy());
@@ -69,6 +91,10 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
       const tileLimit=projection.tiles[2]*projection.tiles[3];
       if(requestedTiles!==undefined&&(!Array.isArray(requestedTiles)||requestedTiles.some(n=>!Number.isInteger(n)||n<0||n>=tileLimit)))throw new RangeError('requested virtual sun tile IDs');
       const wanted=[...new Set([...worldSunBoundsTiles(projection,receiverBounds,2+2*WORLD_SUN_PITCH+SUN_TAN_RADIUS*(projection.depth[0]-projection.depth[1])),...(requestedTiles??[])])].sort((a,b)=>a-b);
+      if(!Array.isArray(coarseTiles)||coarseTiles.some(n=>!Number.isInteger(n)||n<0||n>=tileLimit))throw new RangeError('coarse virtual sun tile IDs');
+      const coarse=new Set(coarseTiles.filter(n=>wanted.includes(n)));
+      const coarseInput=coarse.size?coarseSource(coarseCasters):null;
+      const kinds=new Map(wanted.map(i=>[i,coarse.has(i)?'coarse':'fine']));
       // Empty is an UNKNOWN book for offscreen feedback, not a fully-lit map.
       // The caller may clear/reuse its dirty accumulator as soon as prepare
       // returns a promise. Capture physical tile meaning before any await.
@@ -79,7 +105,7 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
       if(![input.dependencySetID,input.dependencyVersion].every(n=>Number.isInteger(n)&&n>=0&&n<=0xffffffff))throw new TypeError('explicit dependency closure reference/version required');
       const key=[sceneToken,input.epoch,basisRevision,configVersion,...projection.basis.sun];
       const content=[input.source.contentToken,input.field.publishedToken,input.field.sourceRevision,input.field.logicalFieldTick,input.dependencySetID,input.dependencyVersion];
-      if(active&&equal(key,active.key)&&equal(content,active.content)&&equal(wanted,[...active.slots.keys()])) {releaseInputs();return Object.freeze({status:'cached',snapshot:snapshot()});}
+      if(active&&equal(key,active.key)&&equal(content,active.content)&&equal(wanted,[...active.slots.keys()])&&wanted.every(i=>active.kinds.get(i)===kinds.get(i))&&(!coarseInput||coarseInput.id===active.coarseId)) {releaseInputs();return Object.freeze({status:'cached',snapshot:snapshot()});}
       const layers=Math.max(1,Math.ceil(wanted.length/64)), limit=device.limits?.maxTextureArrayLayers??256;
       if(layers>limit||(device.limits?.maxTextureDimension2D??8192)<2048)throw new RangeError('sun coverage exceeds legal physical array capacity; never lower texel density');
       const tileCount=projection.tiles[2]*projection.tiles[3];
@@ -113,17 +139,19 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
       if(reusable) {old=active;old.refs++;}
       const jobs=[], copies=[];
       for(const [index,slot] of slots) {
-        if(reusable&&active.slots.has(index)&&(equal(content,active.content)||(dirty&&!dirty.has(index)))) {copies.push({from:active.slots.get(index),to:slot,index});continue;}
+        const kind=kinds.get(index),same=reusable&&active.slots.has(index)&&active.kinds.get(index)===kind;
+        // A coarse tile reads only the static heightfield: the same one copies.
+        if(same&&(kind==='coarse'?active.coarseId===coarseInput.id:(equal(content,active.content)||(dirty&&!dirty.has(index))))) {copies.push({from:active.slots.get(index),to:slot,index});continue;}
         const bytes=new ArrayBuffer(32), v=new DataView(bytes);
         v.setInt32(0,projection.tiles[0]+index%projection.tiles[2],true);v.setInt32(4,projection.tiles[1]+Math.floor(index/projection.tiles[2]),true);
         v.setUint32(16,slot,true);v.setUint32(20,fb.jobStatusWordOffset+slot,true);v.setUint32(24,input.epoch,true);
         const job=buffer('sun tile job',bytes,BU.UNIFORM|BU.COPY_DST);owned.push(job);
-        jobs.push({slot,index,group:group(2,[{binding:0,resource:{buffer:job}},{binding:1,resource:{buffer:ws}},{binding:2,resource:view0},{binding:3,resource:view1}])});
+        jobs.push({slot,index,coarse:kind==='coarse',group:group(2,[{binding:0,resource:{buffer:job}},{binding:1,resource:{buffer:ws}},{binding:2,resource:view0},{binding:3,resource:view1}])});
       }
-      const pipe=await ready;alive();
+      const pipe=await ready,coarsePipe=jobs.some(j=>j.coarse)?await coarseReady:null;alive();
       if(id!==serial||!sourceFieldSnapshotProvider.isCurrent(input)){releaseInputs();destroyOutputs();return Object.freeze({status:'stale'});}
       let status='prepared',completion=null;
-      const candidate={params,tiles:freeze(wanted),get status(){return status;},get completion(){return completion;},
+      const candidate={params,tiles:freeze(wanted),coarse:freeze([...coarse].sort((a,b)=>a-b)),get status(){return status;},get completion(){return completion;},
         record(frame=gpu.frame) {
           alive();if(recorded||finished)throw new Error('sun candidate already consumed');
           if(id!==serial||!sourceFieldSnapshotProvider.isCurrent(input)) {
@@ -142,8 +170,9 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
               encoder.copyTextureToTexture({texture:old.sun1,origin:origin(c.from)},{texture:sun1,origin:origin(c.to)},[256,256,1]);
             }
             for(const j of jobs) {
-              frame._command();const pass=frame.compute('world optical sun',{dispatch:true});pass.setPipeline(pipe);
-              [...first,j.group,feedbackGroup].forEach((g,i)=>pass.setBindGroup(i,g));pass.dispatchWorkgroups(32,32,1);frame._commandDone('world optical sun');
+              const label=j.coarse?'world coarse sun':'world optical sun';
+              frame._command();const pass=frame.compute(label,{dispatch:true});pass.setPipeline(j.coarse?coarsePipe:pipe);
+              [...(j.coarse?coarseInput.groups:first),j.group,feedbackGroup].forEach((g,i)=>pass.setBindGroup(i,g));pass.dispatchWorkgroups(32,32,1);frame._commandDone(label);
             }
           } catch(e) { encodingError=e; }
           // Even a partial encoding must close the ticket's readback boundary;
@@ -168,7 +197,7 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
             for(const [index,slot] of slots)bookWords.set([slot,input.epoch,basisRevision,revision,input.dependencySetID,input.dependencyVersion,1,0],index*8);
             const book=buffer('immutable SunBook',bookWords,BU.STORAGE|BU.COPY_DST);
             const token=Object.freeze({epoch:input.epoch,basisRevision,publishRevision:revision,sceneToken,configVersion,sourceContentToken:input.source.contentToken,fieldPublishedToken:input.field.publishedToken,logicalFieldTick:input.field.logicalFieldTick});
-            const next={refs:1,book,sun0,sun1,view0,view1,slots,params,token,key,content};
+            const next={refs:1,book,sun0,sun1,view0,view1,slots,kinds,coarseId:coarseInput?.id??active?.coarseId??0,params,token,key,content};
             const previous=active;active=next;retained=true;candidatesTextures.length=0;drop(previous);status='published';
             return Object.freeze({status,token});
           }).catch(e=>{status='failed';return Object.freeze({status,error:String(e.message??e),retry:true});}).finally(()=>{finished=true;pending.delete(candidate);releaseInputs();if(!retained)destroyOutputs();});
@@ -181,6 +210,6 @@ export function createWorldSunLighting(gpu, {g,sourceFieldSnapshotProvider,reade
   }
   return Object.freeze({ready,prepare,snapshot,bindings(s){alive();if(!s?.bindings)throw new Error('pinned sun snapshot required');return s.bindings();},
     reset(){alive();serial++;drop(active);active=null;for(const c of [...pending])if(c.status==='prepared')c.cancel();},
-    dispose(){if(dead)return;serial++;dead=true;drop(active);active=null;for(const c of [...pending])if(c.status==='prepared')c.cancel();},
+    dispose(){if(dead)return;serial++;dead=true;drop(active);active=null;for(const c of [...pending])if(c.status==='prepared')c.cancel();dropCoarse();},
   });
 }

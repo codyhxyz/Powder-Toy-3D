@@ -7,7 +7,10 @@
 // What each stage reads (and so asks for when it lacks it) mirrors the shaders:
 // - sun (shaders/worldSunWriter.js): every texel walks from the world's top
 //   toward the ground; a brick it has no page for is walked through and asked
-//   for (CELL), down to the first resident brick its ray meets matter in.
+//   for (CELL), down to the first resident brick its ray meets matter in. With
+//   rings (world/worldSunRings.js) only the near tiles are walked so: a far
+//   tile is drawn coarse from the ground twin (shaders/worldSunCoarse.js),
+//   which reads no page and asks for nothing.
 // - source (shaders/gi.js giSourceFrag): a brick with matter reads its face
 //   neighbours' cells (giOpaque: RAW of a neighbour brick), its own previous
 //   probe (worldGIPreviousProbe: GI, unless a birth), and for every cell with a
@@ -30,6 +33,7 @@ import { GI, giSteps } from '../src/shaders/gi.js';
 import { READY } from '../src/world/renderAtlas.js';
 import { worldSourceEligible, WORLD_SUPPORT_STAGES } from '../src/wire/worldRender.js';
 import { selectWorldGI } from '../src/world/worldLightingHistory.js';
+import { worldSunRings } from '../src/world/worldSunRings.js';
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const CUBIC_SUPPORT = 2;          // cells a cubic field tap reaches past a hit (worldFieldCubic)
@@ -161,9 +165,15 @@ export function viewRays({ cam, target, width, height, vfov }) {
 // and every tile's casters), 'view' (also the whole view's tiles, from values).
 // sources: 'all' (every record a SOURCE at the reset, before this fix) or
 // 'eligible' (worldSourceEligible). resetBirths: worldGI.js's reset births.
-export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', sources: sourcePolicy = 'eligible', resetBirths = true, maxAttempts = 40, log = null }) {
+// rings: far sun tiles coarse (worldRender.js forecast(); false: every tile
+// full detail, as before 2026-10-22's rings). sharp: tiles already sharp on
+// this sun grid (a later load of the same owner); sharpen: tiles to sharpen
+// past the near ring (a load that follows a shown frame).
+export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', sources: sourcePolicy = 'eligible', resetBirths = true, rings = false, sharp = new Set(), sharpen = 0, maxAttempts = 40, log = null }) {
   const { size, dims, index, brick, info } = w;
-  const req = new Map(), support = new Set(), sunTiles = new Set(), forecastTiles = new Set(), forecastProbes = new Set(), ownedSources = new Set();
+  const req = new Map(), support = new Set(), sunTiles = new Set(), forecastTiles = new Set(sharp), forecastProbes = new Set(), ownedSources = new Set();
+  let coarse = new Set(), sharpened = false, fineTiles = [];
+  const shellTiles = new Set();
   let stage = 'cell';
   // worldRender.js add(): a brick first asked for by a support stage is support
   const add = (i, bits) => {
@@ -196,7 +206,22 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
           for (const i of forecastSourceTiles(w.projection, { size, tops, bricks: read })) sunTiles.add(i);
         }
       }
-      const tiles = [...sunTiles].filter((i) => !forecastTiles.has(i));
+      let fine = [...sunTiles];
+      if (rings) {
+        const r = worldSunRings(w.projection, cam, fine, { sharp: forecastTiles, coarse: true, sharpen: sharpened ? 0 : sharpen });
+        if (r.sharpened.length) sharpened = true;
+        fine = r.fine; coarse = new Set(r.coarse);
+      }
+      fineTiles = fine;
+      if (rings) {
+        const shells = [...coarse].filter((i) => !shellTiles.has(i));
+        if (shells.length) {
+          stage = 'forecast';
+          await forecastSunCasters({ size, direction: sun, tiles: shells, tops, shell: true, mark: (i) => add(i, READY.CELL), yieldEvery: null });
+          shells.forEach((i) => shellTiles.add(i));
+        }
+      }
+      const tiles = fine.filter((i) => !forecastTiles.has(i));
       if (tiles.length) {
         stage = 'forecast';
         await forecastSunCasters({ size, direction: sun, tiles, tops, mark: (i) => add(i, READY.CELL), yieldEvery: null });
@@ -211,7 +236,7 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
     const selection = selectWorldGI({ records, lightingTick: 0, mode: 2 });
     const sources = new Set(selection.sourceBricks.map((b) => index(...b))), probes = new Set(selection.gatherBricks.map((g) => index(...g.brick)));
     for (const [i, bits] of req) if (bits & READY.GI_SOURCE) sources.add(i);
-    const row = { attempt: attempts, requirements: req.size, sunTiles: sunTiles.size, sources: sources.size, gathers: probes.size };
+    const row = { attempt: attempts, requirements: req.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, support: support.size, sources: sources.size, gathers: probes.size };
     history.push(row);
     stage = 'sun';
     let grew = false;
@@ -220,6 +245,7 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
       const { u, v, sun: s } = w.projection.basis, span = WORLD_SUN_TILE * WORLD_SUN_PITCH, depth = w.projection.depth[0], d = s.map((n) => -n);
       const n = Math.ceil(span / SUN_SPACING);
       for (const tile of sunTiles) {
+        if (coarse.has(tile)) continue;   // coarse: the ground twin's heightfield, no page read
         const a0 = (w.projection.tiles[0] + tile % w.projection.tiles[2]) * span, b0 = (w.projection.tiles[1] + Math.floor(tile / w.projection.tiles[2])) * span;
         for (let j = 0; j <= n; j++) for (let k = 0; k <= n; k++) {
           const a = a0 + Math.min(span, k * SUN_SPACING), b = b0 + Math.min(span, j * SUN_SPACING);
@@ -319,5 +345,5 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
     row.stage = stage; log?.(row);
     if (!grew) { done = true; break; }
   }
-  return { attempts, done, history, requirements: req.size, sunTiles: sunTiles.size, sources: history.at(-1)?.sources ?? 0, gathers: history.at(-1)?.gathers ?? 0, viewTiles };
+  return { attempts, done, history, requirements: req.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, fineTiles, coarse: [...coarse], forecastTiles: [...forecastTiles], sources: history.at(-1)?.sources ?? 0, gathers: history.at(-1)?.gathers ?? 0, viewTiles };
 }

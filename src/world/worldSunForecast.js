@@ -47,6 +47,14 @@ export const FORECAST_STOP_DILATE = 1;
 // of which lies inside the tile's beam is crossed by its texels but may sit
 // between the in-tile grid points.
 export const FORECAST_EDGE_RAYS = 1;
+// A coarse sun tile's surface (forecastSunCasters shell): the bricks the walk
+// crosses from this many over the highest nearby ground down to its stop. The
+// eye sees that ground and reads its cells' cubic support (2 cells: one brick
+// covers it): asked for up front, the eye's first pass stops at it, as it did
+// when every tile's full casters were resident, instead of walking through it
+// unknown and finding its hits a load later (Node model, 2026-10-22: Island
+// 5 attempts without it, 3 with).
+export const FORECAST_SHELL_BRICKS = 1;
 // Start a ray a hair inside the box so its first brick is the one it enters.
 const ENTRY_NUDGE = 1e-4;
 // Yield to the page between forecast tiles, after this much work (ms).
@@ -114,21 +122,23 @@ export function walkWorldBricks(size, o, d, visit) {
 // bricks past the first one the ground twin puts matter in. Returns that first
 // matter brick (a receiver), or null when the ray leaves the world first.
 // The lowest ground of the brick columns within FORECAST_STOP_DILATE of (x, z).
-function dilatedTop(tops, dims, x, z) {
-  let h = Infinity;
+function dilatedTop(tops, dims, x, z, pick = Math.min) {
+  let h = pick === Math.min ? Infinity : -Infinity;
   for (let k = -FORECAST_STOP_DILATE; k <= FORECAST_STOP_DILATE; k++) for (let i = -FORECAST_STOP_DILATE; i <= FORECAST_STOP_DILATE; i++) {
-    h = Math.min(h, tops.top(Math.min(dims[0] - 1, Math.max(0, x + i)), Math.min(dims[2] - 1, Math.max(0, z + k))));
+    h = pick(h, tops.top(Math.min(dims[0] - 1, Math.max(0, x + i)), Math.min(dims[2] - 1, Math.max(0, z + k))));
   }
   return h;
 }
 // The margin is depth, bricks under the hit's: the twin's error is a height,
 // and a slanted ray's steps past the hit go sideways as often as down (Node
 // model, 2026-10-22: a step margin left a 46-degree sun's ray one brick short).
-function forecastWalk(size, tops, o, d, mark) {
+// shell: mark only the bricks from FORECAST_SHELL_BRICKS over the highest
+// nearby ground on, not the air the walk crosses above it (a coarse tile's surface).
+function forecastWalk(size, tops, o, d, mark, shell = false) {
   const dims = size.map((n) => Math.ceil(n / BRICK));
   let hit = null;
   walkWorldBricks(size, o, d, (x, y, z) => {
-    mark(x + dims[0] * (y + dims[1] * z));
+    if (!shell || hit || y * BRICK < dilatedTop(tops, dims, x, z, Math.max) + FORECAST_SHELL_BRICKS * BRICK) mark(x + dims[0] * (y + dims[1] * z));
     if (hit) return y <= hit[1] - FORECAST_STOP_MARGIN;
     if (y * BRICK < dilatedTop(tops, dims, x, z)) { hit = [x, y, z]; return FORECAST_STOP_MARGIN === 0; }
     return false;
@@ -143,7 +153,9 @@ const pause = () => new Promise((resolve) => setTimeout(resolve, 0));
 // virtual grid) for sun `direction`: every brick a texel's walk crosses down
 // to the forecast ground. mark(index) gets each brick's canonical index
 // (x + X·(y + Y·z)). Async: yields between tiles.
-export async function forecastSunCasters({ size, direction, tiles, tops, mark, yieldEvery = FORECAST_SLICE_MS }) {
+// shell: only the surface of each tile's beam (FORECAST_SHELL_BRICKS), for
+// a coarse tile (world/worldSunRings.js), whose writer needs no caster.
+export async function forecastSunCasters({ size, direction, tiles, tops, mark, shell = false, yieldEvery = FORECAST_SLICE_MS }) {
   const projection = worldSunProjection(size, direction), { u, v, sun } = projection.basis;
   const [x0, y0, w] = projection.tiles, span = WORLD_SUN_TILE * WORLD_SUN_PITCH, depth = projection.depth[0];
   const n = Math.ceil(span / FORECAST_SUN_SPACING), d = sun.map((s) => -s);
@@ -156,7 +168,7 @@ export async function forecastSunCasters({ size, direction, tiles, tops, mark, y
         const at = (k) => k < 0 || k > n ? k * FORECAST_SUN_SPACING : Math.min(span, k * FORECAST_SUN_SPACING);
         const a = a0 + at(i), b = b0 + at(j);
         const o = [0, 1, 2].map((k) => u[k] * a + v[k] * b + sun[k] * depth);
-        forecastWalk(size, tops, o, d, mark);
+        forecastWalk(size, tops, o, d, mark, shell);
       }
       if (yieldEvery != null && now() - slice > yieldEvery) { await pause(); slice = now(); }
     }

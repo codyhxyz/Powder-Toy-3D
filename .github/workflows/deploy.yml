@@ -152,7 +152,8 @@ jobs:
       - run: npm run check:world-lighting-inputs   # concrete native reader/ticket/pool-prefix seams; no app activation
       - run: npm run check:world-render-owner   # actual data owner + delayed native transport; GI gather demand resolves without restarting the attempt; a restart records only new bricks' metadata; NOT App/GPU/visual acceptance
       - run: npm run check:world-sun-forecast   # sun-caster forecast holds every resident caster of each World scene, below the blind ask
-      - run: npm run check:world-demand-chain   # a World load's demand settles in <= 3 attempts on Island/Descent's real terrain, the view's sun set known up front (CPU model)
+      - run: npm run check:world-demand-chain   # a World load's demand settles in <= 3 attempts on Island/Descent's real terrain, its first attempt bounded (Island from its hill too), every sun tile full detail or coarse, the view's sun set known up front (CPU model)
+      - run: node --test tools/world-sun-coarse-cpu-check.mjs   # far sun tiles' coarse shadow: Naga, no atlas reads, its measured terrain error under the near ring's rule, no acne (CPU)
       - run: npm run check:world-native-preflight   # actual Three cache/native-backend completion; CPU stubs, no GPU claims
       - run: npm run check:world-cells   # actual Source/Fields/classified CELL native transport + Naga, not GPU parity
       - run: npm run check:world-gi-glow   # shared world GI/glow producers, bounded history/native recording + Naga; NOT application activation
