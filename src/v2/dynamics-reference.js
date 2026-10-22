@@ -3,6 +3,7 @@
 import { ELEMENTS, E, K } from '../elements.js';
 import { CELL_M } from '../scale.js';
 import { PHYS, SIM_GRAVITY, NOMINAL_STEP_RATE } from '../physics.js';
+import { LEGACY_STEPS_PER_TICK } from './host.js';
 import { contactVacuum, specialExplosion } from './contact.js';
 import { impactFoam } from './foam.js';
 import { PACE } from '../shaders/move.js';
@@ -19,8 +20,11 @@ export const EVENT = Object.freeze({ DETONATE: 1, GAS: 2, NEUTRON: 4 });
 export const PHOTON_TAG = 254;
 export const NEUTRON_TAG = 255; // Particle-only, never a grid element.
 if (ELEMENTS.length >= PHOTON_TAG) throw new Error('Native neutron tag collides with a material');
-const SPECIFIC_J = { TNT: 4.184e6, C4: 5.858e6, NITRO: 6.28e6, GUNPOWDER: 3e6,
-  THERMITE: 3.9e6, PROPANE: 46.4e6 };
+// A charge's blast energy (J) from V1's blast.P alone (elements.js EXPLOSIVE_P: C-4 200, nitroglycerin 183,
+// TNT 148, gunpowder 60), on the one calibration V2's pressure takes (pressure.js specialBlastEnergy: gunpowder's
+// energy per its blast.P², so a charge's acoustic quarter comes out at its blast.P). V1 never sizes a blast by
+// density (react.js lit: Pr += BLAST(id).x), and C-4 and TNT have only the solid placeholder density.
+const blastEnergy = e => specialBlastEnergy(e.blast.P);
 // V1 react.js crush (elements.js crush { P, into, of }): past P of air pressure on it (the
 // highest of its own, none for a solid, and its open neighbours') a cell becomes pickOut(into),
 // keeping its temperature, with its product's spawn life; a LAVA product's ctype is `of` (or the
@@ -50,7 +54,7 @@ export const dynamicsRows = ELEMENTS.map(e => ({
   crushPhase: crushPhaseOf(e),
   terminal: ({ ASH: 3, SNOW: 3, SAWDUST: 4, DUST: 3 })[e.key] ?? 55,
   lift: ({ ASH: 1, DUST: 1, SNOW: 2, SAWDUST: 2 })[e.key] ?? 12,
-  energy: e.key==='DUST' ? specialBlastEnergy(PHYS.DUST_P) : e.blast ? Math.max(e.dens * 100 * CELL_M ** 3, 0.001) * (SPECIFIC_J[e.key] ?? 3e6) * BLAST_SCALE : 0,
+  energy: e.key==='DUST' ? specialBlastEnergy(PHYS.DUST_P) : e.blast ? blastEnergy(e) : 0,
   product: e.key==='DUST' ? E.FIRE : e.key==='SINGULARITY' ? E.FIRE : e.blast ? E[e.blast.into ?? 'FIRE'] : 0,
   productCtype: e.blast?.of ? E[e.blast.of] : 0,
   productT: e.key==='DUST' ? PHYS.DUST_FLAME_T : e.key==='SINGULARITY' ? PHYS.SING_BURST_T : e.blast?.T ?? 20,
@@ -313,6 +317,82 @@ export function frontPerRootJ(id) {
 }
 /** The legacy pressure a charge of energyJ goes off with: its blast.P on what its brick held besides it (spread). */
 export const v1FrontSource = (id, energyJ, spread) => Math.min(V1_FRONT.P_MAX, frontPerRootJ(id) * Math.sqrt(energyJ) + Math.max(0, spread));
+// ---- a batch's damage (shaders/v2/blasts.js planCharges, damageCharges), V1's rules on V2's charges ----
+// V1 react.js breaks a solid when the pressure difference across it passes hard·P_BREAK_PER_HARD (its solid
+// side holds none, so the difference is the front on its open side, v1FrontOn) and sets an explosive off past
+// its crushP (setOff, pOn): both read V1's front, which nothing weaker than the weakest of those reads. A
+// source's reach is where its front still passes that floor; past it the batch plans nothing (V1's front has
+// died to nothing there either), so a batch's work is bounded by its sources, not the grid.
+export const BLAST_FRONT_FLOOR_PA = Math.min(...dynamicsRows.filter(r => r.breakInto >= 0).map(r => r.strength),
+  ...dynamicsRows.filter(r => r.crush > 0).map(r => r.crush));
+/** The farthest taxicab cell (1 on) where V1's front from a charge holding `source` (legacy) passes the floor. */
+export function v1BlastReach(source) {
+  let d = 0; while (d < 64 && v1FrontOn(source, d + 1) * LEGACY_PRESSURE_PA > BLAST_FRONT_FLOOR_PA) d++;
+  return d;
+}
+export const BLAST_REACH_MAX = v1BlastReach(V1_FRONT.P_MAX);
+// V1 steps LEGACY_STEPS_PER_TICK times a tick, and a chain moves a cell a step (react.js: the charge's FIRE is
+// open, so the explosive beside it reads its blast.P, or rolls blast.flame against it, the next step): within a
+// tick the front goes on through the explosives it sets off up to that many cells from the batch's charges, and
+// a flame lights the cell `d` along a chain of flame explosives once the front cell's rolls (one a step) have
+// come up d times in the tick's steps: P(Binomial(steps, flame) ≥ d).
+export const BLAST_CHAIN_STEPS = LEGACY_STEPS_PER_TICK;
+export function v1FlameChainOdds(flame, d, steps = BLAST_CHAIN_STEPS) {
+  if (!(flame > 0) || d < 1 || d > steps) return 0;
+  const choose = (n, k) => { let c = 1; for (let i = 1; i <= k; i++) c = c * (n - k + i) / i; return c; };
+  let odds = 0; for (let k = d; k <= steps; k++) odds += choose(steps, k) * flame ** k * (1 - flame) ** (steps - k);
+  return odds;
+}
+/**
+ * CPU twin of one batch's grid decisions (blasts.js pick's sources, dSrcSees, dSrcPasses, damageCharges):
+ * `cells` maps "x,y,z" to an element id (missing: air), `charges` the cells going off (each {p, id, energy}),
+ * `prior` a brick's pressure (legacy) before them. A source is a brick's charges: their box, their energy and
+ * the pressure V1's front leaves them with (their largest blast.P on the prior, to P_MAX). For each cell it
+ * returns what the damage does to it: 'break', 'setOff', 'flame' (the odds a flame chain lights it), or
+ * nothing; `front` is the largest front on it (legacy).
+ */
+export function chargeBatchDamage({ dims, cells, charges, prior = () => 0 }) {
+  const id = p => cells.get(p.join(',')) ?? E.EMPTY, inside = p => p.every((v, a) => v >= 0 && v < dims[a]);
+  const brickKey = p => p.map(v => v >> 2).join(','), isCharge = new Set(charges.map(c => c.p.join(',')));
+  const bricks = new Map();
+  for (const c of charges) { const k = brickKey(c.p); if (!bricks.has(k)) bricks.set(k, []); bricks.get(k).push(c); }
+  const sources = [...bricks].sort(([a], [b]) => a < b ? -1 : 1).map(([k, list]) => {
+    const lo = [0, 1, 2].map(a => Math.min(...list.map(c => c.p[a]))), hi = [0, 1, 2].map(a => Math.max(...list.map(c => c.p[a])));
+    const energy = list.reduce((n, c) => n + c.energy, 0);
+    const own = Math.max(...list.map(c => frontPerRootJ(c.id ?? id(c.p)) * Math.sqrt(c.energy)));
+    const P = energy > 0 ? Math.min(V1_FRONT.P_MAX, own + Math.max(0, prior(k.split(',').map(Number)))) : 0;
+    return { lo, hi, energy, P, reach: v1BlastReach(P) };
+  });
+  const steps = (s, p) => p.reduce((n, v, a) => n + Math.max(0, s.lo[a] - v, v - s.hi[a]), 0);
+  const nearest = (s, p) => p.map((v, a) => Math.min(Math.max(v, s.lo[a]), s.hi[a]));
+  const frontPa = (s, d) => v1FrontOn(s.P, Math.max(d, 1)) * LEGACY_PRESSURE_PA;
+  const solid = p => ELEMENTS[id(p)].kind === K.SOLID;
+  // (an explosive the front sets off passes it on within the tick's steps: to cells up to that far)
+  const passes = (s, c, reach) => !solid(c) || isCharge.has(c.join(',')) ||
+    (dynamicsRows[id(c)].crush > 0 && reach <= BLAST_CHAIN_STEPS && frontPa(s, steps(s, c)) > dynamicsRows[id(c)].crush);
+  const flameOf = i => ELEMENTS[i].blast?.flame ?? 0;
+  const chainCell = c => isCharge.has(c.join(',')) || flameOf(id(c)) > 0;
+  // every cell a straight sight line from the source's nearest cell crosses (sweep's walk), before p
+  const crossed = (s, p) => { const from = nearest(s, p).map(v => v + 0.5), out = [];
+    sweep(from, p.map(v => v + 0.5), c => { if (c.every((v, a) => v === p[a])) return true; if (!c.every((v, a) => v === Math.floor(from[a]))) out.push([...c]); return false; });
+    return out; };
+  const out = new Map();
+  for (let z = 0; z < dims[2]; z++) for (let y = 0; y < dims[1]; y++) for (let x = 0; x < dims[0]; x++) {
+    const p = [x, y, z], here = id(p); if (here === E.EMPTY || isCharge.has(p.join(','))) continue;
+    let front = 0, flameSteps = Infinity;
+    for (const s of sources) {
+      const d = steps(s, p); if (s.energy <= 0 || d > s.reach) continue;
+      const line = crossed(s, p); if (!line.every(c => inside(c) && passes(s, c, d))) continue;
+      front = Math.max(front, frontPa(s, d));
+      if (flameOf(here) > 0 && line.every(chainCell)) flameSteps = Math.min(flameSteps, Math.max(d, 1));
+    }
+    const row = dynamicsRows[here];
+    if (row.crush > 0 && front > row.crush) out.set(p.join(','), { setOff: true, front: front / LEGACY_PRESSURE_PA });
+    else if (flameOf(here) > 0 && flameSteps <= BLAST_CHAIN_STEPS) out.set(p.join(','), { flame: v1FlameChainOdds(flameOf(here), flameSteps), front: front / LEGACY_PRESSURE_PA });
+    else if (row.breakInto >= 0 && front > row.strength) out.set(p.join(','), { break: true, front: front / LEGACY_PRESSURE_PA });
+  }
+  return out;
+}
 export function hash32(x) {
   x = Math.imul(x ^ (x >>> 16), 0x7feb352d);
   x = Math.imul(x ^ (x >>> 15), 0x846ca68b);
