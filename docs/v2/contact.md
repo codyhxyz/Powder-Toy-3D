@@ -36,23 +36,43 @@ Required foundation declarations: `Material`, `P.tick`, `inGrid`, `markBusy`,
 - Out-of-grid slots are completely excluded from pair, neighbor, self, plume,
   activity and ledger operations. Sentinel WALL at raw Tq=0 is **not** a thermal
   reservoir. Real in-grid WALL retains its normal conductivity.
-- The foundation calls `contactBoundary` only for actual open side/top faces,
-  with its topology/ambient-heat settings. Closed sides, periodic seams and the
-  floor must not silently exchange with an ambient reservoir.
+- The foundation calls `contactBoundary` only for actual faces past a void edge
+  (sides, top and floor: V1 react.js reads every face beyond the grid as still air
+  at ambient there, `VOID_AIR_A`), with its ambient-heat setting. Closed sides and
+  periodic seams must not silently exchange with an ambient reservoir.
 - Motion must use `contactDensity`, or an equivalent shared ideal-gas rule,
-  and own gas diffusion age. Contact owns FIRE/SMOKE/PLASMA life; the old prototype
-  fade for STEAM/CAUSTIC_GAS must not run.
+  and own gas diffusion age. Contact owns FIRE/SMOKE life; PLASMA has no life rule
+  (V1 react.js: it leaves only by cooling past its 4700 °C cold change), and the old
+  prototype fade for STEAM/CAUSTIC_GAS/PLASMA must not run.
 
 CPU `contactReference(cores, banks, tick, positions, pending, valid, outside)`
 accepts optional eight-entry valid and outside-count arrays. Each outside entry
-is `[air, oxygen, CO2, gas]` for the three non-owned faces, frozen before **any**
-block runs; standalone patches default to closed outside (all zero). It returns
-updated material, requests, busy indices and exact BigInt `sources`/`sinks`.
-`ctStep(input, ns, seed)` retains its three-argument closed-outside behavior,
-delegating to `ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas)`.
+is `[air, oxygen, CO2, gas, clones, word]` for the three non-owned faces, frozen
+before **any** block runs (`word`: `contactOutsideWord`, below); standalone patches
+default to closed outside (all zero). It returns updated material, requests, busy
+indices and exact BigInt `sources`/`sinks`. `ctStep(input, ns, seed)` retains its
+three-argument closed-outside behavior, delegating to
+`ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, outGas, onFloor,
+ambientQ, touch, outClones, outFaces)`. Its `ns` are the three partners in axis
+order (x, y, z): `contactBlock` places each by where it lies, since the block's
+corner order rotates with gravity (`mBlockOffset`).
 
-Support freezes those counters in `liquidScratch.x` low eight bits (four two-bit
-counts), preserving its upper 24 bits. Its 64 invocations cover exactly R5's
+**The outside word** (`outFaces`, `CT_OUT_*`) is the rest of what V1 react.js reads
+on all six faces that the three partners don't show a cell: counts (0–3) of
+in-grid non-gas faces (V1's surface to condense onto), flames (V1 `nFire`: FIRE
+cells only), air (`nAir`), cloud (`nCloud`) and dust (the dust cloud's `nFuel`);
+the dampest face's damp for a grower (V1 `dampOf`); and an axis bit each for damp
+moss and moss bed (V1 `mossSite`). Out-of-grid faces count as none. `CT_OUT_UP`
+is the block's, not Support's: 1 + the index of the partner upstream along
+gravity (the block's corner bit 2, `mBlockOffset`), for snow falling onto a cloud.
+`contactOutsideWord(faces)` is the CPU twin; `outsideFacesWGSL` (`ctOutsideFace`)
+is Support's and the flying packets' WGSL, checked equal to it over every element.
+
+Support freezes the counters in `liquidScratch.x` low ten bits (four two-bit
+counts and the clone count), preserving its upper bits, and writes the outside word
+whole in `liquidScratch.y`: no consumer reads `.y` between Support and the block
+pass, and the runs rebuild their records (and radial demand words) from the cells
+after it. Its 64 invocations cover exactly R5's
 eight shifted cubes, **including the one-cell halo outside the awake brick**,
 not simply the brick's own cells. Gravity only permutes cube corners; periodic
 wrapping preserves disjoint ownership. Core reads happen only in Support;
@@ -259,36 +279,28 @@ retry; no gas request is emitted before conversion succeeds.
 
 ### Fuel, devices and burning
 
-Ordinary fuel retains thermal certainty, existing low-flash certainty and the
-unchanged stochastic `random < fire/60` fallback. An additional deterministic
-surface-front route uses the existing three local neighbors in the **post-pair,
-pre-self frozen snapshot**: a valid source must not be done, have a pending
-conversion, or carry DETONATE/NEUTRON requests; its decoded `tq` must reach the
-recipient's existing `igniteQ`. It must be either FIRE with positive life and
-`tq >= 2493` (350°C extinction floor), or ordinary fuel with positive burn rate,
-burning flag and positive life. Low-flash recipients (`flashQ < igniteQ`) also
-need their own temperature at least `flashQ`. This adds no threshold, rate, RNG
-call, storage, outside-material read or exothermic ignition temperature jump.
-TPT's `FIRE.cpp` motivates separating contact ignition from bulk thermal
-transition, but upstream uses stochastic `Flammable/1000`, not this deterministic
-surface-front abstraction.
+Ignition is V1's (react.js combustion), **thermal only**, re-tested every tick: a
+fuel burns while it is at its ignition point, or past its flash point with a flame
+(a FIRE cell, `nFire`) on one of its six faces, touching air, oxygen or a flame,
+and not smothered (CO₂ at 30% of its gas). Cooling it under its ignition point
+(water, ice, a cold heat sink, LN₂) or taking its air puts it out; the `burning`
+flag says it burned this tick. There is no contact ignition: no random
+`fire/60` flame-touch chance, no deterministic "hot front" from a burning
+neighbour, and a burning fuel is no flame to its neighbours (V1's `nFire` counts
+FIRE). Heat reaches a fuel by conduction and flames lick into the air beside a
+burning one (`ctLick`), as in V1. An explosive's flame roll is `blast.flame` a
+step, the tick's four steps, when any of its six faces holds a flame.
 
-The recipient still needs its existing six-face oxygenated exposure and CO₂
-fraction below 30%. FIRE is not newly an ordinary-air face. Outside faces supply
-only Support-frozen atmosphere counters, never hot-source eligibility. The
-existing burn body debits recipient fuel and records only actual enthalpy gain;
-the catalytic source gets no artificial debit/refund. Cold/dead FIRE and stale
-burning flags still contribute to the old stochastic fallback exactly as before.
-Snapshot liveness permits a source to extinguish during its own later self-step
-(one-tick extinction latency), but newly ignited fuel cannot cascade within the
-same self loop. Phase/electric processing and pending-conversion early returns
-remain before ignition; latent tags/banks are not source temperatures.
+*Decision record (2026-10-21, V2 finish push):* the hot front (added at
+`9e027c71` to pass the six-bay `flameWood` GPU gate) and the `fire/60` chance were
+an agent's design additions; no record of the user approving them was found in
+docs, code or history. The finish push matches V1 wherever no user approval is
+recorded, so both are gone.
 
-WATER/SALTWATER, raw MEAT and inert matter are not newly combustible; one water
-neighbor does not create a WOOD moisture field or guarantee immunity. No new
-source types (sparks, BATTERY, PLASMA, inert hot solids or unburning hot fuel),
-FUSE/explosive rules, modes or plume behavior are introduced. AIR_OFF is not
-vacuum. Full moving-fixture ignition acceptance remains a parent GPU gate.
+Burning adds V1's `BURN_P` a step to its cell, the tick's as its GAS request's puff
+(`CT_BURN_PUFF_PA`), its burnout step too. Matter becoming gas adds no pressure of
+its own: only a rule's puff does (a reaction's, a phase change's, acid eating
+something that fizzes: `ctAcidFizz`, `puffP(FIZZ)`), as in V1.
 
 - Fuel/life is an extensive integer at foundation `FUEL_Q=2048`. Compressed
   liquid fuel scales with fill; sixteen full cells fit the u16 payload.
@@ -323,7 +335,7 @@ Explicit sources/sinks, not hidden clamps:
 - plume formation/heating paid for by finite fuel at the content
   `burnHeat/burnRate` ratio; terminal vaporization can also cool the donor fuel
   through a conservative local transfer, never below its zero-K sensible bound;
-- FIRE→SMOKE, smoke/plasma removal, cloud-edge evaporation, VOID, and escaped
+- FIRE→SMOKE, smoke removal, cloud-edge evaporation, VOID, and escaped
   burnout material remove their material enthalpy while retaining actual carrier
   temperature and residual. A trace fuel parcel cannot create a larger residue
   with free heat;
@@ -354,15 +366,15 @@ future action; static latent banks and steady DC lamps can sleep.
 | 26 melt rows, LAVA identity | every melt; iron/glass/gold heating–cooling–remelting cycles |
 | All 14 reaction rows, wildcard exclusions | actual products, temperature gates, energy/caps |
 | All 13 ordinary fuels | actual burn or low-flash ignition; extensive fuel; finite plume debit; burnout |
-| FIRE, SMOKE, PLASMA | finite life, hot plume, carrier/residual-preserving sink |
-| WATER/PLANT, MOSS, FUNGUS/rots rows | actual growth/rot witnesses, damp propagation/drying, explicit ledger |
-| CLOUD | boiling/freezing, rain, evaporation, falling-snow charge; stationary snow does not charge |
+| FIRE, SMOKE, PLASMA | FIRE/SMOKE finite life, carrier/residual-preserving sink; PLASMA lasts while hot |
+| WATER/PLANT, MOSS, FUNGUS/rots rows | actual growth/rot witnesses, six-face damp and moss site, drying, explicit ledger |
+| CLOUD | boiling/freezing, six-face rain and evaporation, charge from snow falling onto it (grid and flying) |
 | ACID, CAUSTIC_GAS | generic acidic pair dispatch, victim eligibility, finite acid life, fizz |
 | CLONE/PCLN | memory sampling, actual emission, powered on/off control |
 | All 15 conductors | full spark codes, crossing costs, all diode/switch direction pairs |
 | BATTERY, PSCN/NSCN, SWITCH, TSNS, LAMP | real source/control/sensor/hold/DC behavior and rest |
 | FUSE | air-independent countdown, handoff, terminal heat/product |
-| DUST | suspension-age threshold, concentration/exposure, source-preserving request |
+| DUST | suspension speed (V1 `DUST_LIFT_V`), six-face dust and air faces, source-preserving request |
 | SINGULARITY | swallow/merge/evaporation, full/starved request, calibrated descriptor and vacuum target |
 | PLUTONIUM and its LAVA | actual stochastic neutron request; URANIUM does not invent a spontaneous rate |
 | VOID | material removal with accounted enthalpy |
@@ -396,10 +408,16 @@ The first check currently has 31 passing groups, including 250 mixed-block
 source/sink property cases, all phase products, edge valid-mask conservation,
 requests, and finite thermal rest. Naga validates both an explicit shared ABI
 fixture and the actual foundation `v2BlockWGSL` with contact installed.
-The hot-ignition check covers live sources, threshold boundaries, exclusions and
-legacy hit/miss outputs, oxygen/CO₂ and flash gates, phases, finite fuel, exact
-ledgers, opaque state, actual post-pair heating, frozen cascade prevention,
+The hot-ignition check covers V1's thermal-only ignition: no flame-touch or
+hot-front ignition from any source (partner, outside, flying), ignition-point and
+flash-point boundaries, burning re-tested (cooling and smothering put it out),
+explosives' per-tick flame roll, finite fuel and the burning puff, exact ledgers,
 shuffled disjoint-block replay, custom contacts and AIR/WATER identities.
+`contact-rates-check` pins V1's per-step rates (clone, plant, fungus, six-face
+moss, acid, six-face cloud, reaction pairings, singularity evaporation, storm
+charge, burning puff, explosive flame roll); `contact-atmosphere-check` the outside
+word (six-face damp at every block offset, dust faces, puffs, the void floor, and
+the emitted `ctOutsideFace` against `contactOutsideWord`).
 The build check minifies a Vite library and verifies byte-identical WGSL plus
 Naga validity. Runtime never depends on `Function.toString()` surviving a
 minifier: scalar WGSL is a checked generated artifact.
