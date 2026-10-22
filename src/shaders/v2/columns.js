@@ -23,15 +23,19 @@ import { GRAVITY_MS2, STEPS_PER_TICK, V1_STEP_MS, v1PaceRate } from '../../v2/gr
 //            column (x: low16 of core.z, z: low16 of core.w); a falling run's bottom cell keeps its fall speed
 //            in the y lane (high16 of core.z) and its fall fraction in the x lane (past R1's run speed, a run
 //            whose landing reads its fall keeps there what the fall carries: colFall). Interior lanes are free.
-// One step a 60 Hz tick. Mass leaves and arrives at run surfaces only; interior cells are never written.
+// The runs pass once a 60 Hz tick, the pair stages SUB times (a pair step a V1 step: COLUMN.SUB). Mass leaves and
+// arrives at run surfaces only; interior cells are never written.
 //
 // Two passes, both a thread an (x, z) column of the awake brick columns (ARGS2.COLS):
 //   v2runs   after the block pass: packs supported runs, drops falling ones, decays foam (Monahan), and
 //            writes the column's domain records (below) into liquidScratch.
-//   v2pairs  four dispatches a tick, one per axis and parity: a thread owns a PAIR of neighbouring columns
-//            outright (dimensional splitting, LeVeque, Finite Volume Methods for Hyperbolic Problems, 2002,
-//            ch. 19), so it computes every segment's flux, the outflow limit and the transfers serially,
-//            with no atomics, no snapshots and no second reader. The order alternates each tick (Strang).
+//   v2pairs  a pair step is five dispatches: every face's flux, then one per axis and parity, a thread owning a
+//            PAIR of neighbouring columns outright (dimensional splitting, LeVeque, Finite Volume Methods for
+//            Hyperbolic Problems, 2002, ch. 19), so it computes every segment's flux, the outflow limit and the
+//            transfers serially, with no atomics, no snapshots and no second reader. The order alternates each
+//            step (Strang). SUB steps a tick (pairOrder): a face carries at most a cell a step and a front
+//            advances a column a step, so V1's flow (a cell at FLOW, 3.3 cells a tick for water) needs V1's own
+//            step; between steps the transfers keep the records (a pour's receiver is read again next tick).
 // Custody: every unit of fill moves cell to cell through colMove, which carries the exact integer share
 // of the source's carried energy and fuel (the cumulative-share telescoping of docs/v2/foundation.md
 // "Integer energy and advection", here applied to a serial sequence of moves), its ctype, lava subtype and
@@ -43,21 +47,25 @@ export const COLUMN = (() => {
   const TICK_HZ = 60, G_MS2 = GRAVITY_MS2;
   const G = G_MS2 / CELL_M / (TICK_HZ * TICK_HZ);   // cells/tick² at reference gravity
   const FULL = 1 << 16;
-  // Wave speed is sqrt(g h) cells a tick; one explicit step a tick is stable while g·h stays under 0.5 cells²/tick².
+  // the pair stages' steps a tick: V1's own step (STEPS_PER_TICK), so a face's flux is V1's cells a step and a
+  // front advances as V1's cells do; lanes hold quanta a step (LANE_HZ)
+  const SUB = STEPS_PER_TICK, LANE_HZ = TICK_HZ * SUB;
+  const G_SUB = G / (SUB * SUB);                     // cells/step² (V1's SIM_GRAVITY at the reference pull)
+  // Wave speed is sqrt(g h) cells a step; one explicit step is stable while g·h stays under 0.5 cells²/step².
   // A face accelerates as if at most H_CAP deep (below): WAVE_GH, the g·h it reaches there, is the explicit step's
-  // bound with lean-sim's 1.7x margin (its 16 cells at 2 g: real water is dispersive, deep-water waves of length L
-  // travel at sqrt(g L / 2 pi), not sqrt(g h)). At V1's pull that is 0.73 cells: every face deeper than that
-  // relaxes at the scheme's fastest stable rate, a shallower one at V1's pull.
-  const LEAN_DEEP_CELLS = 16, LEAN_G_MS2 = 19.6;   // lean-sim's calibrated deep face: 16 cells at its pull
-  const WAVE_GH = LEAN_DEEP_CELLS * LEAN_G_MS2 / CELL_M / (TICK_HZ * TICK_HZ);
+  // bound with lean-sim's 1.7x margin (its 16 cells at 2 g a 60 Hz step: real water is dispersive, deep-water waves
+  // of length L travel at sqrt(g L / 2 pi), not sqrt(g h)). At V1's pull and step that is 11.6 cells: every face
+  // deeper than that relaxes at the scheme's fastest stable rate, a shallower one at V1's pull.
+  const LEAN_DEEP_CELLS = 16, LEAN_G_MS2 = 19.6, LEAN_HZ = 60;   // lean-sim's calibrated deep face: 16 cells at its pull
+  const WAVE_GH = LEAN_DEEP_CELLS * LEAN_G_MS2 / CELL_M / (LEAN_HZ * LEAN_HZ);
   return {
-    TICK_HZ, G_MS2, G, FULL, WAVE_GH,
-    // a face's depth-averaged flux (quanta a tick per cell of wet face) gains this a tick per cell of head
-    ACC: G * FULL,
-    H_CAP: WAVE_GH / G,
+    TICK_HZ, G_MS2, G, FULL, WAVE_GH, SUB, LANE_HZ, G_SUB,
+    // a face's depth-averaged flux (quanta a step per cell of wet face) gains this a step per cell of head
+    ACC: G_SUB * FULL,
+    H_CAP: WAVE_GH / G_SUB,
     // covered runs only: stable iff COMP >= 2 g dt² (four horizontal faces, one step); 3 g dt² (lean-sim's margin)
-    COMP: 3 * G,
-    QMIN: 0.5,                 // a segment flux under this snaps to 0 (lean-sim)
+    COMP: 3 * G_SUB,
+    QMIN: 0.5,                 // a segment flux under this (quanta a step) snaps to 0 (lean-sim)
     FILM: FULL >> 3,           // the shallow-water dry tolerance (GeoClaw's dry_tolerance, Berger et al. 2011)
     // V1's liquid is whole cells: on dry ground a cell with no liquid over it is a film whose flow is spent (react.js:
     // FILM_KEEP of its speed a step), so a spill spreads until it is a cell deep and beads there (MV-13; measured on V1
@@ -66,12 +74,12 @@ export const COLUMN = (() => {
     // (or a layer on another liquid: V1's pool surface keeps flowing) the dry tolerance holds.
     FILM_DRY: FULL,
     DEADQ: 2,                  // dead band, in fill quanta of the stiffer side (lean-sim)
-    // the rows' damping is per substep of the 180 Hz model it calibrated (v2Rows: drag); per tick it is
-    // 1 - (1 - damp)^3, the same damping a second
+    // the rows' damping is per substep of the 180 Hz model it calibrated (v2Rows: drag); per pair step (240 Hz)
+    // it is 1 - (1 - damp)^(3/4), the same damping a second (colDampStep)
     DAMP_STEPS: 3,
-    STALL: 1.5,                // the stall band: a drive whose damped steady flow moves under one quantum a tick
+    STALL: 1.5,                // the stall band: a drive whose damped steady flow moves under one quantum a step
     // a face's flux at most: under f16's 65,504 by more than its spacing there (32), so a lane never rounds
-    // past it. 0.99 cells a tick (17.9 m/s): an explicit face moves at most its own cell a step.
+    // past it. 0.99 cells a step (71 m/s, V1's V_MAX): an explicit face moves at most its own cell a step.
     Q_MAX: 65000,
     // a falling run's law: V1's (colFall), STEPS V1 steps a tick at V1's gravity (cells/step², SIM_GRAVITY at the
     // reference pull) to V1's terminal speed V_MAX (cells/step)
@@ -99,6 +107,8 @@ export const COLUMN = (() => {
     FOAM_ARRIVAL: 16, FOAM_MAX_GAIN: 32,
   };
 })();
+// colDampStep's keep^(3/4) is DAMP_STEPS rows' substeps over SUB pair steps
+if (COLUMN.DAMP_STEPS / COLUMN.SUB !== 0.75) throw new Error('columns.js: colDampStep takes keep^(DAMP_STEPS / SUB) as keep^(3/4)');
 
 // Radial gravity (P.gravMode 2) has no runs: "down" is a different axis in each of the six pyramids around
 // the centre, and a run is a column along y. There a liquid moves cell face to cell face instead, The Powder
@@ -147,12 +157,12 @@ export const COLUMN_SHOCK_ON = Object.freeze(SHOCK_LANDINGS.filter(r => ELEMENTS
 
 // V1's flow cap (react.js forces: a liquid's head-driven flow is at most its FLOW, cells/step; move.js moves a cell at
 // u cells/step u/(2-u) cells a step on average, v2/gravity.js v1PaceRate): a face carries at most FLOW's paced
-// cells a step, STEPS a tick (under the lane's Q_MAX: water's 3.3 cells a tick is past it, mud's 0.44 is not), and
-// an orifice's jet leaves at most at FLOW (m/s). Non-liquids 0.
+// cells a pair step (a V1 step: water's 0.82, mud's 0.11, under the lane's Q_MAX), and an orifice's jet leaves at
+// most at FLOW (m/s). Non-liquids 0.
 export const COLUMN_FLOW = Object.freeze(ELEMENTS.map(e => {
   const flow = e.kind === K.LIQUID ? e.flow ?? 0 : 0;
   // (keep: V1's drag a step on it once it has landed, react.js forces: 1 - DRAG)
-  return { q: Math.min(COLUMN.Q_MAX, Math.floor(v1PaceRate(flow) * COLUMN.STEPS * COLUMN.FULL)), ms: Number((flow * V1_STEP_MS).toPrecision(7)),
+  return { q: Math.min(COLUMN.Q_MAX, Math.floor(v1PaceRate(flow) * COLUMN.STEPS / COLUMN.SUB * COLUMN.FULL)), ms: Number((flow * V1_STEP_MS).toPrecision(7)),
     keep: e.kind === K.LIQUID ? Math.fround(1 - (e.drag ?? 0)) : 1 };
 }));
 
@@ -188,6 +198,7 @@ const COL_PACE_Y: u32 = ${PACE.Y}u;
 const COL_FULL: f32 = ${f(COLUMN.FULL)};
 const COL_FOAM_ARRIVAL: f32 = ${f(COLUMN.FOAM_ARRIVAL)};
 const COL_TICK_HZ: f32 = ${f(COLUMN.TICK_HZ)};
+const COL_LANE_HZ: f32 = ${f(COLUMN.LANE_HZ)};
 const COL_CELL_M: f32 = ${COLUMN.CELL_M};
 const COL_JET_SPEED: f32 = ${f(COLUMN.JET_SPEED)};
 const COL_ORIFICE_CV: f32 = ${COLUMN.ORIFICE_CV};
@@ -446,7 +457,8 @@ fn colShockLand(x: i32, z: i32, b: i32, h: f32, n: i32, u1: f32) {
   if (n == 1) { u = colV1Hit(id, u1); }
   if (share * u * u >= shock) { colDetonate(x, b, z); }
 }
-fn colDampTick(liq: u32) -> f32 { let keep = 1.0 - dampOf(liq); return 1.0 - keep * keep * keep; }
+// the damping of a pair step (COLUMN.DAMP_STEPS of the rows' substeps a tick, SUB steps a tick: keep^(3/4))
+fn colDampStep(liq: u32) -> f32 { let keep = 1.0 - dampOf(liq); return 1.0 - sqrt(sqrt(keep * keep * keep)); }
 // A breakable solid (COLUMN_BREAKS) at (x, y, z) hit by a liquid of density dens at u cells/step breaks into its
 // debris when ½·dens·u² reaches its hard (V1's), the fracture work KE_TO_HEAT·hard its heat, a declared source (as
 // a packet's fracture: particles.js impact)
@@ -601,7 +613,7 @@ fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, l
   if (dryA) { liq = recLiq(rb); }
   // (bed: the segment's bottom below s0, a floating face's denser surface inside its top cell)
   let ha = colDepthAt(ra, s0, s1, la.x - bed); let hb = colDepthAt(rb, s0, s1, lb.x - bed);
-  let damp = colDampTick(liq);
+  let damp = colDampStep(liq);
   // the layers' heads: each run's own surface (its base an interface inside the cell below when it floats on
   // another liquid) plus the weight of the layers it carries
   var drive = (colEta(ra) + la.x + la.y) - (colEta(rb) + lb.x + lb.y);
@@ -650,7 +662,7 @@ fn colEdgeFlux(r: vec4u) -> f32 {
   let s0 = recY0(r);
   let h = colDepth(r, s0, recTop(r));
   if (h * COL_FULL < COL_FILM) { return 0.0; }
-  let damp = colDampTick(recLiq(r));
+  let damp = colDampStep(recLiq(r));
   let drive = colEta(r) - f32(s0);
   let band = max(COL_DEADQ * colStiff(r), COL_STALL * damp / (acc * min(h, 1.0)));
   if (drive < band) { return 0.0; }
@@ -1037,7 +1049,7 @@ fn colPour(xs: i32, zs: i32, is: i32, xd: i32, zd: i32, s0: i32, s1: i32, axis: 
     let below = colCell(xd, s0 - 1, zd);
     open = colClass(xd, s0 - 1, zd) == C_AIR || (isLiq(below) && cid(below) == recLiq(rs) && cFill(below) < COL_THIN);
   }
-  let fast = v / COL_FULL * COL_TICK_HZ * COL_CELL_M > COL_JET_SPEED;
+  let fast = v / COL_FULL * COL_LANE_HZ * COL_CELL_M > COL_JET_SPEED;
   var left = n;
   var giver = recR1(rs) - 1;
   var mass = recMass(rs);
@@ -1506,12 +1518,13 @@ fn colRunsColumn(x: i32, z: i32) {
     colScan(cx, cz, side < 0);
   }
 }
-// v2pairs. P.pairStage 0: every face's flux, both axes (a face is its -side column's, or its +side's when the
-// -side sleeps: one colFluxes call site); 1: the transfers of the pairs along P.pairAxis (0 or 2) whose -side
-// column has parity P.pairParity (owned the same way), and this column's faces to the void past an open side.
+// v2pairs. P.pairStage even (2 s at step s): every face's flux, both axes (a face is its -side column's, or its +side's
+// when the -side sleeps: one colFluxes call site); odd: the transfers of the pairs along P.pairAxis (0 or 2) whose
+// -side column has parity P.pairParity (owned the same way), and this column's faces to the void past an open side.
 fn colPairsColumn(x: i32, z: i32) {
-  if (P.gravMode == 2u) { colRadPairs(x, z); return; }
-  if (P.pairStage == 0u) {
+  // (radial gravity relaxes once a tick: its RAD_RATE is a tick's; the later steps' stages are 2 and 3)
+  if (P.gravMode == 2u) { if (P.pairStage < 2u) { colRadPairs(x, z); } return; }
+  if (floor(f32(P.pairStage) * 0.5) * 2.0 == f32(P.pairStage)) {
     for (var axis = 0; axis <= 2; axis += 2) {
       let next = colNeighbour(x, z, axis); let prev = colNeighbour(x, z, axis + 1);
       if (colInside(next)) { colFluxes(x, z, next.x, next.y, axis); }
@@ -1569,10 +1582,14 @@ ${COLUMN_THREAD}
 }
 `;
 
-/** A tick's pair stages, [axis, stage, parity]: the fluxes, then the transfers, the axes alternating each
- * tick. The parities keep one order: alternating them too leaves the U-tube's covered channel trading
- * single quanta past 10 s. */
+/** A tick's pair stages, [axis, stage, parity]: COLUMN.SUB steps of the fluxes (stage 2 s) and the transfers
+ * (2 s + 1), the axes alternating each step. The parities keep one order: alternating them too leaves the U-tube's
+ * covered channel trading single quanta past 10 s. */
 export function pairOrder(tick) {
-  const axes = tick & 1 ? [2, 0] : [0, 2];
-  return [[0, 0, 0], ...axes.flatMap(axis => [[axis, 1, 0], [axis, 1, 1]])];
+  const out = [];
+  for (let s = 0; s < COLUMN.SUB; s++) {
+    const axes = (tick * COLUMN.SUB + s) & 1 ? [2, 0] : [0, 2];
+    out.push([0, 2 * s, 0], ...axes.flatMap(axis => [[axis, 2 * s + 1, 0], [axis, 2 * s + 1, 1]]));
+  }
+  return out;
 }

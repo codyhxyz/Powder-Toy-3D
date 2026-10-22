@@ -50,9 +50,9 @@ export const G_TICK = G_MS2 / CELL_M / TICK_HZ ** 2;   // cells/tick²
 export const G_CELLS = G_MS2 / CELL_M;                 // cells/s²
 // liquid (lean-sim's numbers: the prototype's U-tube, pool, puddle and pipe pass on them)
 export const FULL = 1 << 16;                       // a full cell's fill
-// The face lanes hold a segment's depth-averaged flux in quanta a tick (src/shaders/v2/columns.js): this
-// many updates a second, for readers that turn a lane into a speed.
-export const LANE_HZ = TICK_HZ;
+// The face lanes hold a segment's depth-averaged flux in quanta a pair step (src/shaders/v2/columns.js, COLUMN.SUB
+// steps a tick): this many updates a second, for readers that turn a lane into a speed.
+export const LANE_HZ = COLUMN.LANE_HZ;
 // rest: a brick sleeps once neither it nor any of its 26 neighbours was busy for one offset cycle (5.6)
 export const QUIET_TICKS = 8;
 // a brick's quiet run stops counting here (one byte); a brick at it, with nothing busy near, is unchanged
