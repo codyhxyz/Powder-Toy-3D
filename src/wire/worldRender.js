@@ -108,6 +108,8 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     // this cut's source revision and field tick is what a new pack would write.
     const sourceRevision=t.cut.contentToken.sourceRevision;
     const stale=[...ids].map(brick).filter(b=>{const l=atlas.lookup(b,READY.CELL);return !(l.known&&l.sourceRevision===sourceRevision&&l.fieldTick===t.fieldTick);});
+    // One pool growth for the whole demand: a growth copies every public page.
+    atlas.reserve('cell',stale.length);
     const batches=worldClassifyBatches(stale);
     for(const [k,requirements] of batches.entries()){
       if(k)await new Promise(resolve=>setTimeout(resolve,0));
