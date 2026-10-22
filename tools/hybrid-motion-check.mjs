@@ -6,6 +6,7 @@ import { matchingParticleCell, createHybridMotion } from '../src/gfx/hybrid/moti
 import { motionWGSL, motionCaptureWGSL } from '../src/shaders/hybrid/motion.js';
 import { gridDims } from '../src/shaders/common.js';
 import { frameUniformsOf } from '../src/gfx/uniforms.js';
+import { nagaExec } from './naga.mjs';
 
 globalThis.GPUBufferUsage={STORAGE:0x80,COPY_DST:8};
 const grid = gridDims({ nx:128,ny:128,nz:128 }), key = [10,123];
@@ -16,7 +17,7 @@ assert.deepEqual(matchingParticleCell([0,0,0],[128,128,128],key,q => q.join() ==
 const semantic=spawnSync('naga',['--version'],{encoding:'utf8'}).status===0;
 for (const code of [motionWGSL(grid),motionCaptureWGSL(grid)]) {
   new WgslReflect(code);
-  if (semantic) execFileSync('naga',['--stdin-file-path','hybrid-motion.wgsl'],{input:code,encoding:'utf8'});
+  if (semantic) nagaExec(code, 'hybrid-motion.wgsl', {encoding:'utf8'});
 }
 assert(motionWGSL(grid).indexOf('dpdx(z)') < motionWGSL(grid).indexOf('if (P.valid'),'derivatives precede divergent rejection');
 const events=[],owned=[];

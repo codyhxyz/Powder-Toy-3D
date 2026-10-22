@@ -8,6 +8,7 @@ import { ddaGLSL } from '../src/shaders/gfx/core.js';
 import { worldRuntimeGrid } from '../src/shaders/common.js';
 import { volumeFrag, pickFrag } from '../src/shaders/render.js';
 import { WORLD_SUN_PITCH, worldSunProjection } from '../src/world/worldSun.js';
+import { nagaSpawn } from './naga.mjs';
 
 // Same lexical-scope adapter as check-crystal-transmission.mjs: 1.6.0 void
 // calls otherwise overwrite same-named caller variables (not WGSL semantics).
@@ -22,7 +23,7 @@ class ShaderExec extends WgslExec {
   }
 }
 function validate(code, label) {
-  const n = spawnSync('naga', ['--stdin-file-path', `${label}.wgsl`], { input: code, encoding: 'utf8' });
+  const n = nagaSpawn(code, `${label}.wgsl`, {encoding: 'utf8'});
   assert.equal(n.status, 0, `${label}: ${n.error ?? ''}\n${n.stdout}\n${n.stderr}`);
 }
 function body(code, name) {

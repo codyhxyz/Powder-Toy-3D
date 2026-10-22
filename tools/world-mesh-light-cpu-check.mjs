@@ -12,6 +12,7 @@ import {worldAtlasLayout,worldBookLayout,LIGHT_RECORDS} from '../src/world/rende
 import {worldMeshLightWGSL,worldMeshSunWGSL,worldMeshAmbientWGSL} from '../src/shaders/worldMeshLight.js';
 import {WgslParser,WgslExec,VectorData,ScalarData} from 'wgsl_reflect/wgsl_reflect.module.js';
 import {ELEMENTS,E,R} from '../src/elements.js';
+import { nagaSpawn } from './naga.mjs';
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return {promise,resolve,reject};};
 function renderer(){const r=new WebGPURenderer({canvas:{addEventListener(){},removeEventListener(){},style:{}}});r.hasFeature=()=>false;r.backend.device={limits:{maxUniformBufferBindingSize:65536,maxStorageBufferBindingSize:128*1024**2,maxTextureDimension2D:8192}};return r;}
 const nativeTexture=(format,width=1,height=1,depthOrArrayLayers=1,dimension='2d')=>({format,width,height,depthOrArrayLayers,dimension});
@@ -43,7 +44,7 @@ function meshFor(variant,m){
   }return new Mesh(g,m);
 }
 function build(mesh,r){const b=new WGSLNodeBuilder(mesh,r);b.scene=new Scene();if(mesh.material.isMeshStandardNodeMaterial)b.scene.add(new AmbientLight());b.camera=new PerspectiveCamera();b.build();return b;}
-function naga(code,name){const p=spawnSync('naga',['--stdin-file-path',name+'.wgsl'],{input:code,encoding:'utf8'});assert.equal(p.status,0,p.stderr);}
+function naga(code,name){const p=nagaSpawn(code, name+'.wgsl', {encoding:'utf8'});assert.equal(p.status,0,p.stderr);}
 const hash=s=>createHash('sha256').update(s).digest('hex');
 test('original BOX lighting WGSL byte-for-byte matches pre-edit base',async()=>{
   const old=execFileSync('git',['show','5a860d61:src/gfx/meshLight.js'],{encoding:'utf8'}).replace(/from '([^']+)'/g,(_m,p)=>`from '${p.startsWith('.')?new URL(p,new URL('../src/gfx/meshLight.js',import.meta.url)).href:import.meta.resolve(p)}'`);

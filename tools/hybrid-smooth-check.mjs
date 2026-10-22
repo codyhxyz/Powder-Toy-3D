@@ -11,11 +11,12 @@ import { uniformStruct } from '../src/gpu/params.js';
 import { EmaParams, BoostParams, fieldEmaFrag, fieldBoostFrag, particleAgeFrag } from '../src/shaders/fields.js';
 import { SMOOTH_CASES, SMOOTH_EDGES, SMOOTH_TETS, SMOOTH_EXTRACT_LAYOUT, SMOOTH_PREFIX_LAYOUT, SMOOTH_DRAW_LAYOUT, SMOOTH_STATE_LAYOUT, smoothExtractWGSL, smoothDrawWGSL } from '../src/shaders/hybrid/smooth.js';
 import { createHybridSmooth } from '../src/gfx/hybrid/smooth.js';
+import { nagaExec } from './naga.mjs';
 
 export const g = gridDims({ nx: 32, ny: 32, nz: 32 });
 const semantic=spawnSync('naga',['--version'],{encoding:'utf8'}).status===0;
 export function reflect(code) {
-  if (semantic) execFileSync('naga',['--stdin-file-path','hybrid-smooth.wgsl'],{input:code,encoding:'utf8'});
+  if (semantic) nagaExec(code, 'hybrid-smooth.wgsl', {encoding:'utf8'});
   const r = new WgslReflect(code);
   for (const stage of ['compute', 'vertex', 'fragment']) for (const fn of r.entry[stage]) {
     const storage = fn.resources.filter(v => r.storage.includes(v));

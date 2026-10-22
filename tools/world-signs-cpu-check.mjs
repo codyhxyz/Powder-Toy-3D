@@ -17,6 +17,7 @@ import {worldSignsWGSL,worldSignsLayouts,worldSignsArithmetic,worldSignsEntry,Wo
 import {SignParams,SIGN_LAYOUT} from '../src/shaders/probe.js';
 import {checkPipeline} from './check-sampler-budget.mjs';
 import {E} from '../src/elements.js';
+import { nagaSpawn } from './naga.mjs';
 const I=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
 function fixture() {
   const buffers=[], render=[], compute=[], pending=[];
@@ -86,7 +87,7 @@ test('full native factories Naga, four groups /16 sampled /six storage; BOX unch
   const code=worldSignsWGSL({nx:3072,ny,nz:1024,sourceAppearance,sourceGrid:[128,0,128]}),groups=worldSignsLayouts();
   assert.deepEqual(checkPipeline({code,groups,kind:'compute'}).problems,[]);
   assert.equal(groups.length,4);assert.equal(groups.flat().filter(e=>e.texture).length,16);assert.equal(groups.flat().filter(e=>e.buffer?.type.includes('storage')).length,6);
-  const r=spawnSync('naga',['--stdin-file-path',`world-signs-${ny}-${sourceAppearance}.wgsl`],{input:code,encoding:'utf8'});assert.equal(r.status,0,r.stderr);
+  const r=nagaSpawn(code, `world-signs-${ny}-${sourceAppearance}.wgsl`, {encoding:'utf8'});assert.equal(r.status,0,r.stderr);
  }
  const old=spawnSync('git',['show','HEAD:src/shaders/probe.js'],{encoding:'utf8'}).stdout;assert.equal(readFileSync('src/shaders/probe.js','utf8'),old);
  assert.equal(SignParams.size,32);assert.deepEqual(SIGN_LAYOUT.map(e=>e.binding),[0,1,2]);

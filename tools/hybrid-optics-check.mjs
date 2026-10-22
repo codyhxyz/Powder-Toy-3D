@@ -7,6 +7,7 @@ import { opticsShader, opticsBindings, opticsFieldBindings, OPTICS_STATE_LAYOUT,
 import { interfaceEnergy, opticalTransmission, walkOpticalCells, traceOpticalReference,
   opticalFieldDensity, opticalFieldSegment, opticalProbe, validateOpticsLimits, validateOpticsResources,
   createHybridOptics } from '../src/gfx/hybrid/optics.js';
+import { nagaSpawn } from './naga.mjs';
 const close = (a, b, tol = 1e-8) => assert(Math.abs(a - b) < tol, `${a} != ${b}`);
 const white = a => a.forEach(v => close(v, 1));
 {
@@ -561,7 +562,7 @@ console.log('Root selected-entry masks/layout: fragment storage 8, sampled textu
 ['root-normal',rootCodes[0]], ['root-fallback',rootCodes[1]],
 ['root-compute-normal',rootComputeCodes[0]],['root-compute-fallback',rootComputeCodes[1]],
     ['drop-depth',dropDepthWGSL], ['fallback-optics',fallbackCode], ['split-bounds',opticsBoundsShader(grid,{particles:true,world:true})]]) {
-    const result = spawnSync('naga',['--stdin-file-path',`${name}.wgsl`],{input:code,encoding:'utf8'});
+    const result = nagaSpawn(code, `${name}.wgsl`, {encoding:'utf8'});
     assert.equal(result.status,0,`${name}: ${result.error ?? ''}${result.stdout}${result.stderr}`);
   }
   console.log('Naga CPU semantic validation: bounds WG64 kernels and field/cell optics passed (no GPU execution)');

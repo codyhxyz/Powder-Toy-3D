@@ -8,6 +8,7 @@ import { startVite } from './vite-server.mjs';
 import { openHarness } from './harness/open.mjs';
 import { swatchCode, SWATCHES } from './cozy-fixture.mjs';
 import { WgslParser, WgslExec } from 'wgsl_reflect/wgsl_reflect.module.js';
+import { nagaSpawn } from './naga.mjs';
 
 const cpu = process.argv.includes('--cpu');
 const swatches = SWATCHES;
@@ -23,7 +24,7 @@ if (beforeArg >= 0) {
 }
 const rows = beforeWGSL ? 2 : 1, height = size * rows;
 const code = swatchCode(size, beforeWGSL);
-const validation = spawnSync('naga', ['--stdin-file-path', 'cozy-swatches.wgsl'], { input: code, encoding: 'utf8' });
+const validation = nagaSpawn(code, 'cozy-swatches.wgsl', {encoding: 'utf8'});
 assert.ifError(validation.error);
 assert.equal(validation.status, 0, validation.stderr);
 const job = {
