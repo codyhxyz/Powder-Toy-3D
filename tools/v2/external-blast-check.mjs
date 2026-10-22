@@ -128,6 +128,11 @@ assert.match(shader('finish'),/weight\/total/);
   // its own bit: above the products (8..15) and a partial launch's amount (a full cell's at most, from bit 8)
   assert.ok(PLAN.SET_OFF>FULL*256*2 && PLAN.SET_OFF<2**32 && Object.values(PLAN).filter(v=>v&PLAN.SET_OFF).length===1);
   assert.ok(!/fn dPressureOnAfterExternal/.test(apply),'only damagePlan carries the field read');
+  // V1 react.js breaking (BL-1): the pressure difference across a solid on that field past hard·P_BREAK_PER_HARD
+  // (dStrength), not the blast's energy share against its hardness as joules
+  assert.ok(damage.includes('difference=max(difference,abs(dOpenPressureAfterExternal(p+dAxis(a))-dOpenPressureAfterExternal(p-dAxis(a))));'));
+  assert.ok(damage.includes('if (dBreak(id)>=0 && difference>dStrength(id) && energyFits(broken,energyOf(m))) { plan.flags|=2u|(u32(dBreak(id))<<8u); }'));
+  assert.ok(!damage.includes('dToughness('),'no energy-share breaking');
 }
 // Codec corruption must not interpret explicit null as a backwards-compatible omission.
 const encoded=encodeDynamicState(saved),view=new DataView(encoded.buffer),oldLength=view.getUint32(8,true),oldAt=Math.ceil((16+oldLength)/4)*4;

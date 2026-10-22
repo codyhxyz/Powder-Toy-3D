@@ -928,8 +928,12 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
     }
     var kinetic=energy;
     if (energy>0.0 && k==1u) {
+      // V1 react.js breaking: the pressure difference across the solid, on the field the blast leaves (a
+      // solid neighbour holds none), past hard·P_BREAK_PER_HARD; breaking costs the debris nothing.
+      var difference=0.0; let p=cellOf(t);
+      if (mAirPressure()) { for (var a=0u;a<3u;a++) { difference=max(difference,abs(dOpenPressureAfterExternal(p+dAxis(a))-dOpenPressureAfterExternal(p-dAxis(a)))); } }
       var broken=m; broken.core.x=(broken.core.x&0xffffff00u)|u32(max(0,dBreak(id)));
-      if (dBreak(id)>=0 && energy>=dToughness(id) && energyFits(broken,energyOf(m))) { plan.flags|=2u|(u32(dBreak(id))<<8u); kinetic-=dToughness(id); }
+      if (dBreak(id)>=0 && difference>dStrength(id) && energyFits(broken,energyOf(m))) { plan.flags|=2u|(u32(dBreak(id))<<8u); }
       else { kinetic=0.0; }
     }
     if (kinetic>0.0 && (k==2u || k==3u || (plan.flags&2u)!=0u) && (plan.flags&8u)==0u) {
