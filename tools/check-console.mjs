@@ -36,10 +36,14 @@ function mockBackend([nx, ny, nz]) {
     blockCount: blocks.length,
     blockTexels: texels,
     locate,
-    readBlocks(list, sync) {
+    // flying: V2's matter in flight beside the grid (console/gpu.js flyingMatterIds), when this
+    // backend has any (be.flying: element ids); V1's backend has none (its flying cells are cells)
+    flying: null, flyingReads: 0,
+    readBlocks(list, sync, flying = false) {
       be.reads += list.length;
       if (sync) be.syncReads += list.length;
       const m = new Map(list.map((i) => [i, { a: blocks[i].a.slice(), b: blocks[i].b.slice() }]));
+      if (flying && be.flying) { m.flying = be.flying.slice(); be.flyingReads++; }
       return sync ? m : Promise.resolve(m);
     },
     // shaders/script.js scriptEdit, line by line
@@ -173,6 +177,41 @@ eq(backend.passes - before, 1, 'a 1024-cell loop is one GPU pass');
 eq(val('sim.elementCount("WALL")'), '1024', 'elementCount');
 const parts = Number(val('local n = 0 for i in sim.parts() do n = n + 1 end return n'));
 eq(parts, Number(val('sim.partCount()')), 'sim.parts() visits every particle');
+// R4: V2's matter in flight is counted, as V1's flying cells are (they are cells): a census reads the
+// pool with the blocks (console/world.js readAll flying, console/gpu.js flyingMatterIds)
+{
+  const sand0 = Number(val('sim.elementCount("SAND")')), all0 = Number(val('sim.partCount()'));
+  backend.flying = [E.SAND, E.SAND, E.WATER];
+  eq(Number(val('sim.elementCount("SAND")')), sand0 + 2, 'elementCount counts flying sand (V2 packets)');
+  eq(Number(val('sim.partCount()')), all0 + 3, 'partCount counts every flying packet');
+  const reads = backend.flyingReads;
+  eq(val('return sim.partCount() == sim.partCount()'), 'true', 'one command, one read of the pool');
+  eq(backend.flyingReads, reads + 1, '...read once per command, as each block is');
+  backend.flying = [E.SAND];
+  eq(Number(val('sim.partCount()')), all0 + 1, 'the next command reads the pool fresh');
+  // a handler's census: what was read last, refreshed in the background as its blocks are
+  const hw = new ScriptWorld(backend, { now });
+  eq(hw.readAll(false, { flying: true }), false, 'a handler waits for the pool');
+  hw.pump(); await new Promise((r) => setTimeout(r, 0));
+  eq(hw.readAll(false, { flying: true }), true, '...then has it');
+  let n = 0; hw.forEachFlying((id) => { if (id === E.SAND) n++; });
+  eq(n, 1, '...and counts it');
+  backend.flying = null;
+}
+{
+  // the GPU backend's pool decode (src/shaders/v2/particles.js DParticle): live matter inside the window
+  const { flyingMatterIds } = await import('../src/console/gpu.js');
+  const { PARTICLE_BYTES, PHOTON_TAG, NEUTRON_TAG } = await import('../src/v2/dynamics-reference.js');
+  const words = PARTICLE_BYTES / 4, pool = new ArrayBuffer(PARTICLE_BYTES * 6), u = new Uint32Array(pool), f = new Float32Array(pool);
+  const put = (i, id, element, x, y, z) => { f.set([x, y, z], i * words); u[i * words + 3] = id; u[i * words + 7] = element | (77 << 8); };
+  put(0, 5, E.SAND, 110.5, 4.2, 9.9);       // in the window at origin (100, 0, 0)
+  put(1, 0, E.SAND, 110.5, 4.2, 9.9);       // a dead slot
+  put(2, 6, PHOTON_TAG, 110.5, 4.2, 9.9);   // a photon: not matter
+  put(3, 7, NEUTRON_TAG, 110.5, 4.2, 9.9);  // a neutron: not matter
+  put(4, 8, E.WATER, 99.5, 4.2, 9.9);       // flying outside the window (World retains it)
+  put(5, 9, E.OIL, 131.9, 15.5, 31.5);
+  eq(JSON.stringify(flyingMatterIds(pool, [100, 0, 0], SIZE)), JSON.stringify([E.SAND, E.OIL]), 'flyingMatterIds: live matter packets in the window');
+}
 // more edits than one pass takes
 const many = SIZE[0] * SIZE[1] * SIZE[2];
 const p0 = backend.passes;

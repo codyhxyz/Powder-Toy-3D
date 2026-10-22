@@ -317,6 +317,9 @@ const PICK_FACE_FLOOR = 2;    // render.js pickFrag PICK_FACE_FLOOR
 export const ParticlePickParams = uniformStruct('ParticlePickParams', {
   ro: `array<vec4f, ${PICK_RAYS}>`, rd: `array<vec4f, ${PICK_RAYS}>`, slot: `array<vec4u, ${PICK_RAYS / 4}>`,
   origin: 'vec3f', n: 'u32', grid: 'vec4u', supers: 'vec4u', capacity: 'u32',
+  // the rays' frame less the window's cells: 0 for the Box pick (window cells), the window's origin
+  // for World's (wire/worldPick.js: world cells, as its grid pick reports them)
+  shift: 'vec3f',
 });
 export const PARTICLE_PICK_LAYOUT = [ro(0, STAGE.COMPUTE), { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
 export const particlePickWGSL = () => /* wgsl */ `
@@ -366,7 +369,7 @@ fn pickParticle(i: u32, ro: vec3f, rd: vec3f, skipLiquids: bool, nrm: ptr<functi
   var amount = 1.0;
   if (kind == ${K.LIQUID}u) { amount = f32(p.payloadBank.x & 0xffffffu) / 65536.0; }
   if (amount <= 0.0) { return -1.0; }
-  let c = bitcast<vec3f>(p.positionId.xyz) - P.origin;
+  let c = bitcast<vec3f>(p.positionId.xyz) - P.origin + P.shift;
   if (blockyView(FU.view)) {
     let h = vec3f(0.5 * pow(amount, 1.0 / 3.0));
     return pickBox(ro, rd, c - h, c + h, nrm);
@@ -403,6 +406,8 @@ var<workgroup> wgI: array<u32, ${PICK_THREADS}>;
   let s = P.slot[r / 4u][r % 4u] * 2u;
   // the grid's hit: its cell's entry, the floor (cell y -1), or a miss (face -1)
   let at = picks[s];
+  // (World's grid pick still loading the ray's pages, face -2: the pick waits for them, particles too)
+  if (at.w < -1.5) { return; }
   var tGrid = 1e30;
   if (at.w >= 0.0 && at.y < 0.0 && rd.y < 0.0) { tGrid = -ro.y / rd.y; }
   else if (at.w >= 0.0) { var n0: vec3f; tGrid = max(pickBox(ro, rd, at.xyz, at.xyz + 1.0, &n0), 0.0); }
@@ -414,7 +419,7 @@ var<workgroup> wgI: array<u32, ${PICK_THREADS}>;
   let core = vec4u(p.velocityCore.w, p.payloadBank.xyz);
   // its own cell, as the grid pick reports a V1 flying cell's (its surface can reach past it)
   let c = bitcast<vec3f>(p.positionId.xyz) - P.origin;
-  let cell = clamp(vec3i(floor(c)), vec3i(0), vec3i(P.grid.xyz) - 1);
+  let cell = clamp(vec3i(floor(c)), vec3i(0), vec3i(P.grid.xyz) - 1) + vec3i(P.shift);
   let an = abs(nrm);
   var axis = 0;
   if (an.y >= an.x && an.y >= an.z) { axis = 1; } else if (an.z >= an.x && an.z >= an.y) { axis = 2; }

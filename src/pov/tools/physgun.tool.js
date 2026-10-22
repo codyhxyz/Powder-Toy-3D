@@ -210,10 +210,10 @@ export default {
       const reach = hit ? hit.dist : Math.min(face + BLAST.BITE, BLAST.RANGE);
       hold.copy(ctx.eye).addScaledVector(dir, reach);
       if (hit) hit.target.shove?.(dir.clone().multiplyScalar(PUNT_SPEED));
-      else if (sim.compact) {
-        sim.applyNativeTool({ kind: 'impulse', position: worldPosition(sim, hold), direction: dir.toArray(),
-          radius: BLAST.RADIUS0 + BLAST.SPREAD * reach, strength: PUNT_SPEED * CELL_M });
-      } else {
+      else {
+        // V1's cone from the muzzle (shaders/povTools.js blastWGSL), on either engine: under V2 the same
+        // edit runs V1's rule on V2's cells and flying packets as native forcing (v2/interactions.js
+        // povBlast), each push launched at its cells a step in m/s (WEATHER_SPEED_SI, V1's 240 Hz step).
         // The cone's bounding box: both ends, padded by its far-end radius.
         const pad = BLAST.RADIUS0 + BLAST.SPREAD * reach;
         const a = ctx.eye.toArray(), b = hold.toArray();

@@ -72,6 +72,25 @@ for(const name of ['povKick','povStrike','povField']) assert(povGpu(sim).edit(na
  assert.match(code('povRocketForcePlan'),/if\(r\.before\.x!=r\.after\.x && \(k==0u \|\| k==4u\)\) \{/);
  assert.match(code('povRocketForcePlan'),/if\(r\.before\.x!=r\.after\.x\) \{ flags=2u\|\(u32\(r\.after\.x\)<<8u\); \}/);
 }
+// T7: the physgun's punt with nothing hit is V1's cone from the muzzle (shaders/povTools.js blastWGSL) as
+// native forcing, not one 8 m/s impulse sphere at the far end: the same edit, V1's rule on V2's cells and
+// flying packets, its pushes launched at their cells a step in m/s (WEATHER_SPEED_SI = V1's 240 Hz step).
+{
+ calls.length=0;const before=modules.length;
+ const values={muzzle:{x:2.5,y:8.5,z:8.5},dir:{x:1,y:0,z:0},reach:12};
+ assert.equal(povGpu(sim).edit('povBlast',{lo:[0,3,3],hi:[17,14,14]},values),true,'the punt runs natively (it reached the legacy edit)');
+ const names=calls.filter(x=>x.name).map(x=>x.name);
+ assert.deepEqual(names.slice(0,2),['povBlastForceEvaluate','povBlastForceParticleEvaluate']);
+ assert.ok(names.includes('povBlastForcePlan') && names.at(-1)==='povBlastForceParticleCommit',names.join(' '));
+ const ev=calls.find(x=>x.name==='povBlastForceEvaluate').args.params;
+ assert.deepEqual([ev.muzzle,ev.dir,ev.reach],[values.muzzle,values.dir,values.reach],'from the muzzle along the aim, V1\'s reach');
+ assert.deepEqual(calls.find(x=>x.allocate).allocate,{mode:15},'its launches are bounded forcing (absolute speeds)');
+ const made=modules.slice(before),code=n=>made.find(m=>m.name===n).code;
+ for(const m of made) assertNaga(m.code,m.name);
+ for(const rule of ['let along = dot(d, P.dir);','let radius = BLAST_RADIUS0 + BLAST_SPREAD * along;','min(BLAST_IMPULSE / DENS(id), V_MAX) * w'])
+  assert.ok(code('povBlastForceEvaluate').includes(rule),rule);
+ assert.match(code('povBlastForcePlan'),new RegExp(`r\\.motion\\.xyz\\*${WEATHER_SPEED_SI}`),'a push of v cells a step launches at v x 240 steps x CELL_M m/s');
+}
 // Independent packed-state/SI oracle: velocity properties replace only one
 // component; force dV keeps incoming flight; packet conversion preserves banks.
 const material=withPayload(makeMaterial(E.OIL,20,17003,27),54321);material.bank=-173;
@@ -85,4 +104,4 @@ assert.equal(energyOf(material)-energyOf(cooled),BigInt(capacityQ(material.core)
 assert.equal(WEATHER_SPEED_FLUX/65536*LANE_HZ*0.3,WEATHER_SPEED_SI);
 const source={slot:0,material,particle:packet};allocateSources([source],[{id:1}],1);assert(source.retry);assert.deepEqual(source.material,material);
 
-console.log(`20 native force modules validated; actual bounded driver ordering, canonical predicates, particle lanes, <=8 bindings; no GPU execution`);
+console.log(`${modules.length} native force modules validated (T7 punt cone native); actual bounded driver ordering, canonical predicates, particle lanes, <=8 bindings; no GPU execution`);
