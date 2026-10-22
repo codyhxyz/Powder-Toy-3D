@@ -12,7 +12,7 @@ import {E,ELEMENTS,R} from '../../src/elements.js';
 import {RAYS} from '../../src/rays.js';
 import {V1_STEP_MS,STEP_S} from '../../src/v2/gravity.js';
 import * as L from '../../src/v2/layout.js';
-import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact,PACKET_KEEP,packetStep} from '../../src/v2/dynamics-reference.js';
+import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact,PACKET_KEEP,packetStep,impactHeat} from '../../src/v2/dynamics-reference.js';
 import { importMinified } from './wgsl-grouping.mjs';
 const floatBits=v=>{const b=new ArrayBuffer(4);new Float32Array(b)[0]=v;return new Uint32Array(b)[0];};
 const close=(a,b,e,what)=>assert.ok(Math.abs(a-b)<=e,`${what??""}: ${a} vs ${b}`);
@@ -73,7 +73,9 @@ function syntax(s){for(const [a,b] of [
 ['var q = p;','var q = copy(p);'],['var particle = particle0;','var particle = copy(particle0);'],
 ['p.velocity * D_RAY_DT / D_CELL','mul(p.velocity, D_RAY_DT / D_CELL)'],['particle.velocity * D_RAY_DT / D_CELL','mul(particle.velocity, D_RAY_DT / D_CELL)'],
 ['p.position + delta * max(0.0, travelled - 0.00001 / max(length(delta), 0.00001))','add(p.position, mul(delta, max(0, travelled - 0.00001 / max(length(delta), 0.00001))))'],
-['p.position + delta;','add(p.position, delta);'],['f.destination.z >> 16u','f.destination.z >>> 16'],['bitcast<f32>(','bitsFloat(']])s=s.replaceAll(a,b);
+['p.position + delta;','add(p.position, delta);'],['f.destination.z >> 16u','f.destination.z >>> 16'],['bitcast<f32>(','bitsFloat('],
+['min(abs(velocity) * D_SHOCK_THROW, vec3f(D_V_MAX))','abs(velocity).map(x=>Math.min(x*D_SHOCK_THROW,D_V_MAX))'],
+['vec4u(warm.core.yzw, bitcast<u32>(warm.bank))','[...warm.core.slice(1,4), warm.bank>>>0]']])s=s.replaceAll(a,b);
 return s.replace(/\/\/[^\n]*/g,'')
   .replace(/\bvar\b/g,'let')
   .replace(/\bloop\s*\{/g,'while(true){')
@@ -114,6 +116,8 @@ function fixture({mode=0, edge=0, windowed=false,
     D_REACT_KIND:AIRBORNE.KIND,D_REACT_SALT:AIRBORNE.SALT,
     C_AIR:0,C_SOLID:1,C_POWDER:2,C_LIQUID:3,C_GAS:4,
     D_G:GRAVITY,D_DT:DT,D_RAY_DT:Math.fround(DT/4),D_RAYS:31,D_PHOTON_HEAT:RAYS.PHOTON_HEAT/3,D_PHOTON_E_MIN:RAYS.PHOTON_E_MIN,D_PHOTON_CELLS:7,
+    dCap:id=>ELEMENTS[id]?.cap??1,D_LAND_KEEP:PHYS.LAND_POWDER_KEEP,D_LAND_SCATTER:PHYS.LAND_POWDER_SCATTER,vec2f:vec,
+    energyMul:(a,b)=>BigInt(a)*BigInt(b),
     DPacketFlight:(cells,velocity)=>({cells:[...cells],velocity:[...velocity]}),dKeep:id=>PACKET_KEEP[id],
     D_V1_STEP:Math.fround(1/V1_STEP_MS),D_PULL_STEP:Math.fround(STEP_S*STEP_S/CELL_M),D_STEPS:4,
     DPhotonStep:(light,heat,cell,travelled,flip,gone)=>({light:[...light],heat,cell,travelled,flip,gone}),round:Math.round,clamp:(x,a,b)=>Math.min(Math.max(x,a),b),
@@ -177,7 +181,7 @@ function fixture({mode=0, edge=0, windowed=false,
 ['dShockHit',['t','s','p','hit','axis']],
 ['dDustFaces',['s']],
 ['dShockWall',['t','pid','u','landing','particleId']],
-['dPhotonStep',['local','delta','light0']],['dPacketFlight',['v0','wind','pull','keep','paced']],['dPhotonMoved',['p','light','travelled','flip']],['dPhotonIntegrate',['t','particle0','local']],['dAddHeat',['m','heat']],
+['dPhotonStep',['local','delta','light0']],['dImpactHeat',['pid','tid','velocity','axis','c']],['dPacketFlight',['v0','wind','pull','keep','paced']],['dPhotonMoved',['p','light','travelled','flip']],['dPhotonIntegrate',['t','particle0','local']],['dAddHeat',['m','heat']],
   ])ctx[name]=compile(ctx,S.integrate,name,args);
   const stages=Object.fromEntries(Object.entries(S).map(([s,c])=>[s,compile(ctx,c,'main',['t'])]));
   return {ctx,world,particles,claims,flight,stages,set:(p,m)=>world.set(slotOf(p),copy(m)),
@@ -521,6 +525,21 @@ test('the emitted flight drops a packet on V1\'s law: it lands at its twin\'s ti
     let v=0,y=0,want=0;while(y<23.5*CELL_M){const st=packetStep(id,v);y+=st.fell;v=st.v;want++;}
     assert.ok(Math.abs(tick-want)<=1,`${ELEMENTS[id].key}: landed at tick ${tick}, its twin ${want}`);
   }
+});
+
+// V1 move.js impactHeat (TH-10): a grain stopped by a solid turns its lost KE into heat, KE_TO_HEAT per unit, shared by
+// capacity so both warm alike (dynamics-reference.js impactHeat, the twin)
+test('a grain landing hard on rock warms the rock and itself alike, as V1\'s impactHeat; nothing for a gentle one (TH-10)',()=>{
+  const drop=(vy,solid=E.ROCK)=>{const f=fixture({position:[6.5,1.02,6.5],velocity:[3,vy,0]});f.set([6,0,6],L.makeMaterial(E[solid]??solid));runTicks(f,[0],1);return f;};
+  const f=drop(-43),hit=f.flight[0],want=impactHeat(E.SAND,E.ROCK,[3,-43,0],1,true);
+  const rise=L.energyOf(at(f,[6,0,6]))-L.energyOf(L.makeMaterial(E.ROCK));
+  assert.ok(want.hit>0&&want.packet>0); close(Number(rise)/(256*65536),want.hit,0.01,'the rock takes its share');
+  const sand=at(f,[6,1,6]);assert.equal(L.cid(sand.core),E.SAND,'landed above');
+  const t=L.cTq(sand.core)/4-273.25,rock=L.cTq(at(f,[6,0,6]).core)/4-273.25;
+  assert.ok(t>20.5&&rock>20.5&&Math.abs(t-rock)<1.5,`both warm alike: sand ${t} °C, rock ${rock} °C`);
+  // under V1's COLLIDE_V (0.15 cells/step) it rests without heat; onto a powder (V1: a pile, not a solid) none either
+  const gentle=drop(-6);assert.equal(L.energyOf(at(gentle,[6,0,6])),L.energyOf(L.makeMaterial(E.ROCK)));
+  const pile=drop(-43,E.STONE);assert.equal(L.energyOf(at(pile,[6,0,6])),L.energyOf(L.makeMaterial(E.STONE)));
 });
 
 test('an empty pool reads no packet record and writes no flight record',()=>{

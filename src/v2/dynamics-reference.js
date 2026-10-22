@@ -516,6 +516,18 @@ export function impact(core, velocity, target, amount = 1, axis = velocity.reduc
   const kept = u1 > PHYS.COLLIDE_V ? u1 * (rho - PHYS.RESTITUTION * debris) / (rho + debris) : u1;
   return { energy, broken, remaining: 0.5 * rho * kept * kept, speed: f(Math.sign(velocity[axis]) * kept * SHOCK_THROW_MS) };
 }
+// V1 move.js impactHeat (particles.js dImpactHeat): a grain stopped by a solid faster than COLLIDE_V across the face
+// (cells/step, the throws' map, to V_MAX) loses ½·dens·u² of its KE (a landing: V1's land() keeps LAND_POWDER_KEEP of
+// its sideways speed and scatters LAND_POWDER_SCATTER of the impact), as KE_TO_HEAT heat shared by capacity:
+// { packet, hit } in cap·°C, each warming by E·KE_TO_HEAT / (cap_i + cap_j).
+export function impactHeat(mover, target, velocity, axis, landing) {
+  const e = ELEMENTS[mover], t = ELEMENTS[target], u = velocity.map(v => Math.min(PHYS.V_MAX, Math.abs(v) / SHOCK_THROW_MS)), un = u[axis];
+  if (e.kind !== K.POWDER || t.kind !== K.SOLID || un <= PHYS.COLLIDE_V) return { packet: 0, hit: 0 };
+  const t2 = u.reduce((s, x) => s + x * x, 0) - un * un;
+  const lost = 0.5 * e.dens * (landing ? un * un * (1 - PHYS.LAND_POWDER_SCATTER ** 2) + t2 * (1 - PHYS.LAND_POWDER_KEEP ** 2) : un * un);
+  const heat = lost * PHYS.KE_TO_HEAT, share = (e.cap ?? 1) / ((e.cap ?? 1) + (t.cap ?? 1));
+  return { packet: heat * share, hit: heat * (1 - share) };
+}
 export function blastPlan(source, targets, solidAt, energy) {
   const plans = targets.map(target => {
     const hit = sweep(source.map(x => x + 0.5), target.map(x => x + 0.5), p =>

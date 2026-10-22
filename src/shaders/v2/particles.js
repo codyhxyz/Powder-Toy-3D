@@ -369,6 +369,24 @@ fn dLanding(c: vec3i, axis: u32, velocity: vec3f) -> bool {
   let down = mDown(vec3f(c)+0.5);
   return down[axis] != 0 && velocity[axis] * f32(down[axis]) > 0.0;
 }
+// V1's heat capacity of a cell (elements.js cap), for move.js impactHeat's share
+fn dCap(id: u32) -> f32 { switch id {
+${[...ELEMENTS.reduce((m, e) => (e.cap ?? 1) !== 1 ? m.set(e.cap, [...(m.get(e.cap) ?? []), e.id]) : m, new Map())].map(([c, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(c)}; }`).join('\n')}
+default: { return 1.0; } } }
+const D_LAND_KEEP: f32 = ${f(PHYS.LAND_POWDER_KEEP)};
+const D_LAND_SCATTER: f32 = ${f(PHYS.LAND_POWDER_SCATTER)};
+// V1 move.js impactHeat: a grain stopped by a solid faster than COLLIDE_V across the face loses its KE (½·dens·u², V1's
+// units: landing, V1's land() keeps LAND_POWDER_KEEP of its sideways speed and scatters LAND_POWDER_SCATTER of the
+// impact; a side hit stops its component: bounceR 0), shared by capacity, so both warm alike (ΔT = E·KE_TO_HEAT /
+// (cap_i + cap_j)). [the packet's share, the solid's], cap·°C (dHeatEnergy's unit). dynamics-reference.js impactHeat.
+fn dImpactHeat(pid: u32, tid: u32, velocity: vec3f, axis: u32, c: vec3i) -> vec2f {
+  let u = min(abs(velocity) * D_SHOCK_THROW, vec3f(D_V_MAX)); let un = u[axis];
+  if (cls(pid) != C_POWDER || cls(tid) != C_SOLID || un <= D_COLLIDE_V) { return vec2f(0.0); }
+  var lost = 0.5 * dDens(pid) * un * un;
+  if (dLanding(c, axis, velocity)) { lost = 0.5 * dDens(pid) * (un * un * (1.0 - D_LAND_SCATTER * D_LAND_SCATTER) + (dot(u, u) - un * un) * (1.0 - D_LAND_KEEP * D_LAND_KEEP)); }
+  let heat = lost * ${f(PHYS.KE_TO_HEAT)}; let share = dCap(pid) / (dCap(pid) + dCap(tid));
+  return vec2f(heat * share, heat * (1.0 - share));
+}
 // a charge's V1 cells/step per m/s of its own landing (dynamics-reference.js shockFall: V1's own fall), here
 // with its one reader, not the shared head, so its calibration rebuilds the particle stages alone
 ${table('dShockFall', 'f32', 'shockFall', 0)}
@@ -664,7 +682,19 @@ export function particlesWGSL(g, nativeHead, stage) {
         p.velocity[axis] = sign(p.velocity[axis]) * kept / D_SHOCK_THROW;
         if (dWon(f.destination.y,1u,t)) { dFree(f.destination.y,1u); } // deposit will not see it
         flight[t].destination.y=D_NONE; // fracture is not a landing: retain unspent KE
-      } else { p.velocity = vec3f(0); }
+      } else {
+        // a grain stopped by a solid warms both (dImpactHeat; TH-10): the packet's share rides it to where it lands
+        let warmth = dImpactHeat(p.c0 & 255u, id, p.velocity, axis, cellOf(s));
+        if (warmth.y > 0.0 && energyFits(before, dHeatEnergy(before, warmth.y))) {
+          after = dAddHeat(before, warmth.y); noteEnergySource(cellOf(s), energySub(energyOf(after), energyOf(before)));
+        }
+        let m = dMaterial(p); let owned = energyAdd(dParticleEnergy(m), energyMul(u32(round(warmth.x * 256.0)), 65536u));
+        if (warmth.x > 0.0 && packetEnergyFits(m, owned)) {
+          let warm = withPacketEnergy(m, owned); p.c0 = warm.core.x; p.tail = vec4u(warm.core.yzw, bitcast<u32>(warm.bank));
+          noteEnergySource(cellOf(s), energySub(owned, dParticleEnergy(m)));
+        }
+        p.velocity = vec3f(0);
+      }
     } else if ((f.destination.z & 255u) == 5u) {
       // a photon's V1 step with heat for this cell (dPhotonIntegrate): the cell takes its heat (V1 raysDepositFrag, a
       // declared source; past what its energy holds the rest is lost, as V1 clamps a cell's T at CELL_TEMP_MAX), the
