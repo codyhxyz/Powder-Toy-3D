@@ -119,19 +119,19 @@ export const RADIAL = {
 
 // V1's shock on landing (react.js: an explosive landing with ½·μ·u² of at least its blast.shock goes off,
 // common.js hitKE), by its fall, on V1's own fall law (dynamics-reference.js v1LiquidArrival: V1's Margolus move
-// and its paced draws make a liquid's fall a function of its height and its phase, its start row's parity). A
-// liquid charge's own landing: V1's hit after that fall (colV1FallSpeed: dynamics-reference.js v1LiquidHit, a
-// table to V1_FALL_CELLS_MAX, past which it is at V_MAX) against its speed for the shock (speed2: ½·dens·u² =
-// blast.shock, (cells/step)²): on a solid, nitroglycerin's from 9 cells at phase 0 (2.7 m), 10 at phase 1. A run
-// landing ON a charge sets it off from V1's fall for the pair (SHOCK_LANDINGS: colShockOnFall). The fall a landing
-// counts (colV1Fall): a lone cell's, less a cell at phase 1; a stack's (a run of more than one cell), its top's,
-// at any phase: measured on V1 (2026-10-22, tools/outcomes/engine-v1.js, nitroglycerin 4×4 blocks 3 and 5 tall
-// in fresh boxes, both phases: rest when the top falls 8, go off when it falls 9 or 10; the bottom layer lands and
-// splashes aside, move.js land, and the cells above it fall on to the floor). So a run's landing reads how far it
-// has fallen (colFall's fallen) and how tall it is: R1's run speed caps how fast a run falls (from ~3.8 m on),
-// not how far. Heights are cells of fall at the reference pull (colFall counts each tick's at P.gravity's share
-// of it), so V1's falls are the tables. V1's hit is at its own speed, which PHYS.V_MAX caps (react.js forces): a
-// longer fall hits no harder, so a liquid it outweighs too much never sets it off (nitroglycerin onto water or oil).
+// and its paced draws make a liquid's fall a function of its height and its phase, its start row's parity). A run
+// falls on that law itself (colFall steps V1's partition and draws), so a lone cell lands at V1's own speed, phase
+// and all: its hit is V1's at that speed (colV1Hit: dynamics-reference.js v1LandingHit), against its speed for the
+// shock (speed2: ½·dens·u² = blast.shock, (cells/step)²): on a solid, nitroglycerin's from 9 cells at phase 0
+// (2.7 m), 10 at phase 1. A run landing ON a charge sets it off from V1's fall for the pair (SHOCK_LANDINGS:
+// colShockOnFall; a lone cell's phased law at the speed that fall lands at, colShockOnSpeed). A stack (a run of
+// more than one cell) counts its top's fall at any phase (colV1Fall), V1's hit after it (colV1FallSpeed: v1LiquidHit,
+// a table to V1_FALL_CELLS_MAX, past which it is at V_MAX): measured on V1 (2026-10-22, tools/outcomes/engine-v1.js,
+// nitroglycerin 4×4 blocks 3 and 5 tall in fresh boxes, both phases: rest when the top falls 8, go off when it falls
+// 9 or 10; the bottom layer lands and splashes aside, move.js land, and the cells above it fall on to the floor). So
+// a run's landing reads how far it has fallen (colFall's fallen, whole cells) and how tall it is. V1's hit is at its
+// own speed, which PHYS.V_MAX caps (react.js forces): a longer fall hits no harder, so a liquid it outweighs too much
+// never sets it off (nitroglycerin onto water or oil).
 export const COLUMN_SHOCK = Object.freeze(Object.entries(SHOCK_FALL_CELLS).map(([id, cells]) => {
   const e = ELEMENTS[+id];
   if (e.kind !== K.LIQUID) throw new Error(`columns.js: ${e.key}'s own landing is no liquid's`);

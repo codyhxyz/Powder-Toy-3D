@@ -42,6 +42,12 @@ export const setOffBase = g => shockPostBase(g) + 1 + PARTICLE_CAP;
 const f = n => Number.isInteger(n) && Math.abs(n)<1e21 ? `${n}.0` : String(n);
 const table = (name, type, field, fallback) => `fn ${name}(id: u32) -> ${type} { switch id {\n${dynamicsRows.filter(r => r[field] !== fallback).map(r =>
   `case ${r.id}u: { return ${type === 'f32' ? f(r[field]) : `${r[field]}${type === 'u32' ? 'u' : 'i'}`}; }`).join('\n')}\ndefault: { return ${type === 'f32' ? f(fallback) : `${fallback}${type === 'u32' ? 'u' : 'i'}`}; } } }`;
+// an f32 row's table, its elements grouped by value (one case a value: V1's terminal speeds repeat by kind and drag)
+const groupedTable = (name, field, fallback) => {
+  const groups = new Map();
+  for (const r of dynamicsRows) if (r[field] !== fallback) groups.set(r[field], [...(groups.get(r[field]) ?? []), r.id]);
+  return `fn ${name}(id: u32) -> f32 { switch id {\n${[...groups].map(([v, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(v)}; }`).join('\n')}\ndefault: { return ${f(fallback)}; } } }`;
+};
 // V1 react.js setOff counts blast.air (BLAST_LIT) with the crush: an explosive that needs air goes off
 // only touching it. No explosive with a crushP needs air (elements.js: propane, the one that does, has
 // none), so the crush reads here and in src/v2/airborne.js are V1's whole rule.
@@ -134,7 +140,7 @@ fn dHitKE(mi: f32, mj: f32, jSolid: bool, u2: f32) -> f32 { return 0.5 * select(
 // V1's cap on a speed (cells/step), and its cells/step per m/s of a throw (dynamics-reference.js SHOCK_THROW_MS)
 const D_V_MAX: f32 = ${f(PHYS.V_MAX)};
 const D_SHOCK_THROW: f32 = ${f(1 / SHOCK_THROW_MS)};
-${table('dTerminal', 'f32', 'terminal', TERMINAL_MS)}
+${groupedTable('dTerminal', 'terminal', TERMINAL_MS)}
 ${table('dLift', 'f32', 'lift', 12)}
 fn dConductive(id: u32) -> bool { switch id {
 ${ELEMENTS.filter(e=>e.elec>0).map(e=>`case ${e.id}u: { return true; }`).join('\n')}

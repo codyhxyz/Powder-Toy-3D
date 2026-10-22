@@ -1,7 +1,7 @@
 import { fallTerminal, powderLandingSpeed, stepFall, setFall, fallFraction, FALL_GRAVITY } from '../v2/fall.js';
 import { GRAVITY_MS2 } from '../v2/gravity.js';
 import { LEGACY_STEPS_PER_TICK } from '../v2/host.js';
-import { fallWGSL } from './v2/fall.js';
+import { fallWGSL, fallStepWGSL } from './v2/fall.js';
 import { FOAM_ROWS } from '../v2/foam.js';
 import { nativeStateWGSL, materialStorageWGSL, decoStorageWGSL } from './v2/state.js';
 import { compactDecodeWGSL } from './compact.js';
@@ -660,6 +660,7 @@ const POWDER_SHOCK_ON = SHOCK_LANDINGS.filter(r => ELEMENTS[r.faller].kind === K
   .map(r => ({ ...r, speed: Math.fround(powderLandingSpeed(r.faller, r.cells) * POWDER_SHOCK_SLACK) }));
 export const v2ColumnWGSL = (g) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
+${fallStepWGSL}
 // the landing speed (m/s) past which a grain of faller sets off the charge it lands on (POWDER_SHOCK_ON); 0 never
 fn shockOnSpeed(faller: u32, charge: u32) -> f32 {
 ${POWDER_SHOCK_ON.map(r => `  if (faller == ${r.faller}u && charge == ${r.charge}u) { return ${r.speed}; }`).join('\n')}

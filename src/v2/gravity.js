@@ -33,5 +33,6 @@ export const v1Keep = (e, flying) => 1 - (flying ? 0 : (e.drag ?? 0));
 export function v1TerminalMS(e, flying = false) {
   const keep = v1Keep(e, flying), g = SIM_GRAVITY * Math.abs(e.grav ?? 0);
   const u = keep >= 1 ? PHYS.V_MAX : Math.min(PHYS.V_MAX, g * keep / (1 - keep));
-  return u * V1_STEP_MS;
+  // (to f32's 7 digits, so the shaders' tables of it are short literals)
+  return Number((u * V1_STEP_MS).toPrecision(7));
 }

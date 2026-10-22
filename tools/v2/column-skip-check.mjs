@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { E, ELEMENTS } from '../../src/elements.js';
 import { fallTerminal, setFall, FALL_KEEP } from '../../src/v2/fall.js';
 import { GRAVITY_MS2 } from '../../src/v2/gravity.js';
-import { fallWGSL } from '../../src/shaders/v2/fall.js';
+import { fallWGSL, fallStepWGSL } from '../../src/shaders/v2/fall.js';
 import { v2ColumnWGSL, SUMMARY } from '../../src/shaders/v2.js';
 import { gridDims } from '../../src/shaders/common.js';
 import { makeMaterial } from '../../src/v2/layout.js';
@@ -23,7 +23,7 @@ function scalar(source) {
     .replace(/bitcast<f32>/g, 'fromBits').replace(/bitcast<u32>/g, 'toBits')
     .replace(/\b(0x[\da-f]+|\d+)u\b/gi, '$1').replace(/>>/g, '>>>').replace(/&act2/g, 'act2');
 }
-const helpers = scalar(fallWGSL), g = gridDims({ nx: 16, ny: 128, nz: 8 });
+const helpers = scalar(fallWGSL + fallStepWGSL), g = gridDims({ nx: 16, ny: 128, nz: 8 });
 const emitted = v2ColumnWGSL(g), body = emitted.slice(emitted.lastIndexOf('  if (P.gravMode == 2u'), emitted.lastIndexOf('}'));
 const NY = 128, SUMMARY_AT = 2;
 function run(start, summaries, main = body) {

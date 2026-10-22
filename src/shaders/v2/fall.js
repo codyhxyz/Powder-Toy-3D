@@ -8,7 +8,6 @@ const lit = x => (Number.isInteger(x) ? `${x}.0` : String(x));
 export const fallWGSL = /* wgsl */ `
 const FALL_TERMINAL = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => lit(fallTerminal(e.id))).join(',')});
 const FALL_POWDER = array<bool, ${ELEMENTS.length}>(${ELEMENTS.map(e => String(e.kind === K.POWDER)).join(',')});
-const FALL_KEEP = array<f32, ${ELEMENTS.length}>(${FALL_KEEP.map(lit).join(',')});
 fn fallVelocity(c: vec4u) -> f32 {
   if (!FALL_POWDER[c.x & 255u]) { return 0.0; }
   if ((c.z & 0x80000000u) != 0u) { return -bitcast<f32>(c.z); }
@@ -23,7 +22,11 @@ fn setFall(c: vec4u, velocity: f32, fraction: f32) -> vec4u {
   return vec4u((c.x & 0xffffffu) | ((q & 255u) << 24u),
     (c.y & 0x1ffffffu) | ((q >> 8u) << 25u), bitcast<u32>(-velocity) | 0x80000000u, c.w);
 }
-// a tick of V1's grain fall (v2/fall.js fallSteps): (its speed after, m/s; the cells it has moved, its fraction in)
+`;
+// The column pass's own (shaders/v2.js v2ColumnWGSL), after fallWGSL: a tick of V1's grain fall (v2/fall.js
+// fallSteps): (its speed after, m/s; the cells it has moved, its fraction in)
+export const fallStepWGSL = /* wgsl */ `
+const FALL_KEEP = array<f32, ${ELEMENTS.length}>(${FALL_KEEP.map(lit).join(',')});
 fn fallStep(c: vec4u, gravity: f32) -> vec2f {
   let keep = FALL_KEEP[c.x & 255u];
   let g = gravity * ${FALL_G_PER_MS2};

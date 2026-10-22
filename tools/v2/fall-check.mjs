@@ -5,7 +5,7 @@ import { CELL_M } from '../../src/scale.js';
 import { FALL_Q, FALL_QUANTIZATION_BOUND, FALL_KEEP, LEGACY_FALL_GRAVITY, fallTerminal, fallVelocity, fallFraction, setFall, stepFall } from '../../src/v2/fall.js';
 import { GRAVITY_MS2 } from '../../src/v2/gravity.js';
 import { SIM_GRAVITY, PHYS } from '../../src/physics.js';
-import { fallWGSL } from '../../src/shaders/v2/fall.js';
+import { fallWGSL, fallStepWGSL } from '../../src/shaders/v2/fall.js';
 import { v2ColumnWGSL, v2BlockWGSL, nativeDynamicsHead } from '../../src/shaders/v2.js';
 import { blastsWGSL } from '../../src/shaders/v2/blasts.js';
 import { particlesWGSL } from '../../src/shaders/v2/particles.js';
@@ -25,7 +25,7 @@ function scalar(source) {
     .replace(/bitcast<f32>/g,'fromBits').replace(/bitcast<u32>/g,'toBits')
     .replace(/\b(0x[\da-f]+|\d+)u\b/gi,'$1').replace(/>>/g,'>>>').replace(/&act2/g,'act2');
 }
-const helpers=scalar(fallWGSL);
+const helpers=scalar(fallWGSL+fallStepWGSL);
 const g=gridDims({nx:16,ny:128,nz:8});
 const emitted=v2ColumnWGSL(g);
 const main=emitted.slice(emitted.lastIndexOf('  if (P.gravMode == 2u'),emitted.lastIndexOf('}'));
