@@ -396,14 +396,16 @@ export function ctExhaust(input, seed) {
 // V1 react.js: a new flame's life, FIRE_LIFE_MIN + FIRE_LIFE_SPREAD·rnd.
 export function ctFlameLife(seed) { return ctI(CT_FIRE_LIFE_MIN_Q + CT_FIRE_LIFE_SPREAD_Q * ctRoll(seed, 20)); }
 export function ctCreate(input, id, tq) {
-  let made = id;
-  // V1's cells are whole: a part-filled liquid that grows into a whole cell (water into plant) does
-  // so with its fill's chance, else it is taken up and leaves its carrier air. The draw is the one
-  // ctPhase left in the liquid's age, which a liquid doesn't keep (packContact), this tick.
-  if (ctRow(input.id).kind === 3 && ctRow(id).kind !== 3 && ctRoll(input.age, CT_FILL_SALT) >= ctShare(input)) made = E.EMPTY;
-  let c = ctInherit(ctNew(made, tq, 65536), input);
+  let c = ctInherit(ctNew(id, tq, 65536), input);
   c.busy = 1;
   return ctRecordChange(c, ctEnergy(input));
+}
+// V1's cells are whole: a part-filled liquid that grows into a whole cell at its temperature (water
+// into plant) does so with its fill's chance (roll), else it is taken up and leaves its carrier air.
+export function ctGrow(input, id, roll) {
+  let made = id;
+  if (roll >= ctShare(input)) made = E.EMPTY;
+  return ctCreate(input, made, input.tq);
 }
 // V1 react.js Void: what it drains becomes air at the scene's ambient (T = airT()); the energy the
 // cell held is a declared sink.
@@ -524,8 +526,7 @@ export function ctPhase(input, surface, random) {
     if (of <= 0 || of >= CONTACT_ELEMENT_COUNT) of = E.STONE;
     if (c.tq < ctRow(of).meltQ - 600) { into = of; convert = true; }
   }
-  // (a liquid keeps the tick's draw in its age, which it doesn't store, for ctCreate's fill draw)
-  if (!convert) { if (r.kind === 3) c.age = ctI(random * CT_ROLL_UNIT); return c; }
+  if (!convert) return c;
   if (product >= 0) {
     into = ctProduct(product, random);
     if (cold && c.id === E.STEAM && surface === 0) into = E.CLOUD;
@@ -980,7 +981,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     }
   }
   // The fuse is the electric pass's (ctFuseStep: V1's step, four a tick, six faces).
-  if (c.id === E.WATER && plant > 0) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(plant) * CT_PLANT_MISS_LOG)) return ctCreate(c, E.PLANT, c.tq); }
+  if (c.id === E.WATER && plant > 0) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(plant) * CT_PLANT_MISS_LOG)) return ctGrow(c, E.PLANT, ctRoll(seed, CT_FILL_SALT)); }
   if (r.rots !== 0 && fungus > 0 && c.tq < CONTACT_DAMP_DRY_Q) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(fungus) * CT_FUNGUS_MISS_LOG)) return ctCreate(c, E.FUNGUS, c.tq); }
   if (c.id === E.MOSS || c.id === E.FUNGUS) {
     const previous = c.ctype;
@@ -1045,6 +1046,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
 export const CONTACT_KERNEL = [
   [ctInherit, ['CTCell', 'CTCell'], 'CTCell'], [ctRecordChange, ['CTCell', 'vec2u'], 'CTCell'],
   [ctDecay, ['CTCell', 'i32'], 'CTCell'], [ctExhaust, ['CTCell', 'i32'], 'CTCell'], [ctFlameLife, ['i32'], 'i32'], [ctCreate, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctDrain, ['CTCell', 'i32'], 'CTCell'],
+  [ctGrow, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctDensity, ['CTCell'], 'f32'], [ctAmount, ['CTCell'], 'i32'], [ctCapacity, ['CTCell'], 'i32'], [ctHeat, ['CTCell', 'i32'], 'CTCell'], [ctHeatTo, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctConvert, ['CTCell', 'i32', 'i32'], 'CTCell'],
   [ctTemperatureRemainder, ['CTCell'], 'f32'], [ctFlux, ['CTCell', 'CTCell'], 'i32'], [ctPhase, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctNuclearId, ['CTCell'], 'i32'], [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
@@ -1103,8 +1105,8 @@ export function ctWarm(input, dq) {
   let c = ctCopy(input);
   let gain = ctMul(ctCapacity(c), Math.abs(dq));
   if (dq < 0) gain = ctSub(ctSigned(0), gain);
-  const target = ctAdd(ctEnergy(c), gain);
-  if (ctFits(c, target)) return ctSetEnergy(c, target);
+  const warmed = ctAdd(ctEnergy(c), gain);
+  if (ctFits(c, warmed)) return ctSetEnergy(c, warmed);
   c.tq = Math.max(0, Math.min(CT_Q_MAX, c.tq + dq)); c.raw = c.tq; c.bank = 0;
   return c;
 }
