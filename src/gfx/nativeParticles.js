@@ -148,20 +148,23 @@ export class NativeParticles {
    * @param {{ ring: GPUBuffer, ro: number[][], rd: number[][], slot: number[][], n: number, origin: number[] }} rays
    * @returns {boolean} recorded (false: nothing flies, or the pass is building)
    */
-  recordPick(frame, { ring, ro, rd, slot, n, origin }) {
+  // shift: the rays' frame less the window's cells (World's pick: its origin, the rays and cells being
+  // world cells there); transient: a one-pick output buffer (World's), whose group isn't kept
+  recordPick(frame, { ring, ro, rd, slot, n, origin, shift = [0, 0, 0], transient = false }) {
     if (!this.isReady || this.pickPipe.state !== 'ready' || this.source.isIdle === true || this.source.active === false || !(n > 0)) return false;
     if (n > PICK_RAYS) throw new RangeError('native particle pick batch too large');
     const s = validateNativeParticleSource(this.state);
-    let cached = this.pickGroups.get(ring);
-    if (cached?.particles !== s.particles) {
-      cached = { particles: s.particles, group: this.gpu.bindGroup(this.pickLayout,
-        [{ binding: 0, resource: { buffer: s.particles } }, { binding: 1, resource: { buffer: ring } }],'native particle pick') };
+    const make = () => this.gpu.bindGroup(this.pickLayout,
+      [{ binding: 0, resource: { buffer: s.particles } }, { binding: 1, resource: { buffer: ring } }],'native particle pick');
+    let cached = transient ? null : this.pickGroups.get(ring);
+    if (!transient && cached?.particles !== s.particles) {
+      cached = { particles: s.particles, group: make() };
       this.pickGroups.set(ring, cached);
     }
-    const group = cached.group;
+    const group = cached ? cached.group : make();
     const air = this.air();
     this.pickPipe.dispatch(frame,[n,1,1],{ bind: [this.fu.group,group,air.group],
-      params: { ro, rd, slot, n, origin: vector(origin), capacity: s.capacity, ...air.params } });
+      params: { ro, rd, slot, n, origin: vector(origin), shift: vector(shift), capacity: s.capacity, ...air.params } });
     return true;
   }
   dispose() {

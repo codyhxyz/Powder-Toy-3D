@@ -144,3 +144,27 @@ test('the pick records the particle pass after the grid\'s, into the same ring',
   assert.match(pick, /picks\[s \+ 1u\] = vec4f\(f32\(id\), temperature\(id, core\.x\), particleAirAt\(c\)\.w, particleLife\(id, core\)\);/);
   assert.match(pick, /if \(kind == 4u \|\| \(skipLiquids && kind == 3u\)\) \{ return -1\.0; \}/, 'render.js pickStops');
 });
+
+test('the World pick finds flying matter too, in world cells, after its grid pick', () => {
+  const { gpu, view, calls } = fake();
+  // World's one-pick output (wire/worldPick.js): its rays and cells are world cells, so the pass shifts
+  // the window's cells by its origin, and its group isn't kept for a buffer the pick destroys
+  const output = buffer(32), origin = { x: 512, y: 0, z: -256 };
+  const rays = { ring: output, ro: [[520, 9, -250, 0]], rd: [[0, -1, 0, 0]], slot: [[0, 0, 0, 0], [0, 0, 0, 0]], n: 1, origin, shift: [512, 0, -256], transient: true };
+  assert.equal(view.recordPick(gpu.frame, rays), true);
+  const k = calls.at(-1);
+  assert.equal(k.o.bind[1].entries[1].resource.buffer, output);
+  assert.deepEqual([k.o.params.origin, k.o.params.shift], [[512, 0, -256], [512, 0, -256]]);
+  assert.equal(view.pickGroups.has(output), false, 'a transient output keeps no group');
+  // the Box pick's default: no shift
+  view.recordPick(gpu.frame, { ...rays, ring: buffer(4096), shift: undefined, transient: false });
+  assert.deepEqual(calls.at(-1).o.params.shift, [0, 0, 0]);
+  const src = readFileSync(new URL('../../src/wire/worldPick.js', import.meta.url), 'utf8');
+  assert.match(src, /native\.recordPickReady\(gpu\.frame,\{params,output,view:view\.view\}\)\)throw[^\n]*\n[\s\S]*?sim\.compact\?\.dynamics\?\.drawAdapter\?\.recordPick\?\.\(gpu\.frame,\{ring:output,ro:params\.ro,rd:params\.rd,slot:params\.slot,n:1,\s*origin:o,shift:\[o\.x,o\.y,o\.z\],transient:true\}\);[\s\S]*?copyBufferToBuffer\(output,/,
+    'after the grid\'s pick, into its output, before the output is copied out');
+  const pick = particlePickWGSL();
+  assert.match(pick, /let c = bitcast<vec3f>\(p\.positionId\.xyz\) - P\.origin \+ P\.shift;/, 'the hit test in the rays\' frame');
+  assert.match(pick, /let cell = clamp\(vec3i\(floor\(c\)\), vec3i\(0\), vec3i\(P\.grid\.xyz\) - 1\) \+ vec3i\(P\.shift\);/, 'its cell in the rays\' frame');
+  assert.match(pick, /if \(at\.w < -1\.5\) \{ return; \}/, 'World\'s incomplete grid pick (face -2) stays incomplete');
+  assert(ParticlePickParams.wgsl.includes('shift: vec3f'));
+});
