@@ -162,7 +162,8 @@ test('a lone charge: the old plan\'s expressions, in the old order, from its own
   assert.match(blastsWGSL(g, nativeDynamicsHead, 'normalize'), /scale=min\(1\.0,budget\*0\.5\/max\(sum,0\.000001\)\);/);
   assert.match(norm, /let scale=min\(1\.0,budget\*0\.5\/max\(sum,0\.000001\)\);/);
   // plan writes a source's sums only where normalize reads them: the bricks within its reach
-  assert.ok(now.includes('wgNear=select(0u,1u,brick<D_BRICKS && dSrcNearBrick(k,brick));') && norm.includes('if (!dSrcNearBrick(k,b)) { continue; }'));
+  assert.ok(now.includes('wgNear=select(0u,1u,brick<D_BRICKS && dSrcNearBrick(k,brick));') && now.includes('let lo=cellOf(b*64u)&vec3i(-4); let gap=max(vec3i(0),max(lo-dSrcHi(k),dSrcLo(k)-(lo+vec3i(3))));')
+    && norm.includes('let gap=max(vec3i(0),max(q*4-hi,lo-(q*4+vec3i(3)))); if (gap.x+gap.y+gap.z>reach) { continue; }'));
   const damage = blastsWGSL(g, nativeDynamicsHead, 'damageCharges');
   assert.match(damage, /var energy=length\(plan\.velocity\)\*bitcast<f32>\(atomicLoad\(&control\[6\]\)\);/);
   assert.match(damage, /select\(normalize\(plan\.velocity\),normalize\(combined\+vec3f\(0\.000001\)\),n>1u\)/);

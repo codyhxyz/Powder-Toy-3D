@@ -695,11 +695,12 @@ var<workgroup> wgNear: u32;
   if (stage === 'normalizeCharges') return h + chargeSourcesWGSL + main64(`
     let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX); let k=li;
     if (k<n) {
-      var sum=0.0; let at=vec3i(dSrcBase(k)>>vec3u(2u));
+      var sum=0.0; let at=vec3i(dSrcBase(k)>>vec3u(2u)); let lo=dSrcLo(k); let hi=dSrcHi(k); let reach=dSrcReach(k);
       for (var z=-D_REACH_BRICKS;z<=D_REACH_BRICKS;z++) { for (var y=-D_REACH_BRICKS;y<=D_REACH_BRICKS;y++) { for (var x=-D_REACH_BRICKS;x<=D_REACH_BRICKS;x++) {
         let q=at+vec3i(x,y,z); if (any(q<vec3i(0)) || any(q>=vec3i(BX,BY,BZ))) { continue; }
-        let b=brickId(q); if (!dSrcNearBrick(k,b)) { continue; }
-        sum += bitcast<f32>(atomicLoad(&control[D_CHARGE_SUMS+k*D_BRICKS+b]));
+        // (dSrcNearBrick, its source's words read once)
+        let gap=max(vec3i(0),max(q*4-hi,lo-(q*4+vec3i(3)))); if (gap.x+gap.y+gap.z>reach) { continue; }
+        sum += bitcast<f32>(atomicLoad(&control[D_CHARGE_SUMS+k*D_BRICKS+brickId(q)]));
       } } }
       let budget=dSrcEnergy(k); let scale=min(1.0,budget*0.5/max(sum,0.000001));
       atomicStore(&control[D_CHARGE_SCALES+k],bitcast<u32>(scale));
