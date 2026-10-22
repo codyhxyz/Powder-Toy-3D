@@ -29,8 +29,10 @@ fn beaconPower(p: vec3f) -> vec3f {
 // the World volume ~0.3 s of its cold build (2026-10-21).
 struct BeaconRay { o: vec3f, d: vec3f, len: f32, trace: bool, dist: f32, end: f32 }
 // Same DDA as local lamps, but a lighthouse crosses the whole window.
-// A ray crosses at most NX+NY+NZ faces; no whole-world voxel march.
-const BEACON_MAX_STEPS: i32 = NX + NY + NZ + 3;
+// A ray crosses at most NX+NY+NZ faces; no whole-world voxel march. A
+// function, not a const: the World view reads NX..NZ at run time
+// (common.js WORLD_RUNTIME_GRID), and a const can't hold those.
+fn beaconMaxSteps() -> i32 { return NX + NY + NZ + 3; }
 fn beaconRay(p: vec3f) -> BeaconRay {
   let dv = beaconPosition() - p;
   let d = length(dv);
@@ -69,7 +71,7 @@ fn beaconVisible(p: vec3f) -> bool {
   let r = beaconRay(p);
   var hc: vec3i;
   var hn: vec3f;
-  var clear = !r.trace || !(traceNearSteps(r.o, r.d, r.len, true, LAMP_SELF_SKIP, BEACON_MAX_STEPS, &hc, &hn) >= 0.0);
+  var clear = !r.trace || !(traceNearSteps(r.o, r.d, r.len, true, LAMP_SELF_SKIP, beaconMaxSteps(), &hc, &hn) >= 0.0);
   if (clear) { clear = beaconFarClear(p, r); }
   return clear;
 }

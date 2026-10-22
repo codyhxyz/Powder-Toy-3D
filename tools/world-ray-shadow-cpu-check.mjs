@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { ddaGLSL } from '../src/shaders/gfx/core.js';
+import { worldRuntimeGrid } from '../src/shaders/common.js';
 import { volumeFrag, pickFrag } from '../src/shaders/render.js';
 import { WORLD_SUN_PITCH, worldSunProjection } from '../src/world/worldSun.js';
 
@@ -48,7 +49,8 @@ function slab(ro, rd, lo, hi) {
 
 test('actual WORLD factory keeps direction for primary, pick, reflection and tangent optics; Box stays legacy',()=>{
   const volume=volumeFrag(g,{backend:'world'}), pick=pickFrag(g,{backend:'world'});
-  for(const code of [volume,pick]) for(const name of ['safeDir','ddaCrossing','ddaNext','ddaInit','ddaStart','ddaStep','ddaJumpBox','skipBrick','boxHit']) assert.equal(body(code,name),body(factory,name));
+  // The view reads its world's grid at run time (common.js WORLD_RUNTIME_GRID): the same DDA text with the size words swapped. Pick keeps its constants.
+  for(const [code,grid] of [[volume,worldRuntimeGrid],[pick,text=>text]]) for(const name of ['safeDir','ddaCrossing','ddaNext','ddaInit','ddaStart','ddaStep','ddaJumpBox','skipBrick','boxHit']) assert.equal(body(code,name),grid(body(factory,name)));
   assert.match(body(volume,'reflectHit'),/let rd = safeDir\(rd0\)/);
   assert.match(body(volume,'worldSunExact'),/let sunward = safeDir\(FU.sun\)/);
   assert.match(body(volume,'worldSunExact'),/shadowTexel\(ro,-sunward\)/);

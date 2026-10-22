@@ -1116,7 +1116,7 @@ fn lampLights(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn, beamO
       // Cull daylight, darkness, range and cone BEFORE tracing/sampling.
       if (max(power.r, max(power.g, power.b)) <= 0.0) { break; }
       ray = beaconRay(ro);
-      o = ray.o; rd = ray.d; len = ray.len; steps = BEACON_MAX_STEPS; trace = ray.trace;
+      o = ray.o; rd = ray.d; len = ray.len; steps = beaconMaxSteps(); trace = ray.trace;
     } else {`}
     let near = lampNearest(i, ro);
     let dv = near - ro;

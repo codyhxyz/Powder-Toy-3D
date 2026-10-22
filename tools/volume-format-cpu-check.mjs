@@ -24,13 +24,14 @@ const g = gridLayout(32, 32, 32), hash = s => createHash('sha256').update(s).dig
 // prelude (ro, rw) with Descent's four exact-terrain elements (07f0ca91), the birds' removal (ea102f19, T_FLOCK)
 // and the Noita view's appearance variants (0da2ef45); move, pick and the volume with the V2 and render merges.
 // Then (wave 4, 2026-10-20) the volume and its detail variant: the distance haze (farShared.js volumeHaze), over origin/main bb37db6e.
+// Re-pinned 2026-10-21 (cold compile): only the lamp and beacon shadow rays moved (lighting.js lampLights/lampShade/lampSpecSeen, lighthouse.js beaconRay/beaconFarClear/beaconMaxSteps/beaconVisible; one traceNearSteps call site, crystals skip the beam), diffed against origin/main 186cefd7; the volume and its detail variant only.
 const baseline = {
   ro: 'd92592ba9576e9c02a65919e3badf678beb30dc58576e8fa22d4bf520d9174ed',
   rw: '338e904f3a7cce43eab8e931d3610b2e9c36d58ac2f7a4bc2d5a94acf39380ea',
   move: '15befffbaa07f695efdc6970792bbc6f5bee4b25c3781fba3e2dbccc227e8026',
   pick: 'debfa4a3adc9ee44fb37c263209b75fc88f1427fc1b35c298af82f1acfc370c9',
-  volume: '5e115f6448b125deb1c1152babfe01ae93807e20cb697ca84781195bd4dd4969',
-  detail: '82bc5cef6cb15fe1b8c6b3b235d16a4ab2719524d03a905cfa0605be25ac8d26',
+  volume: 'e4c3443f7527e6ca144e6a71a91f2b487f78bd93f0ea868a9cccbccd816cb9da',
+  detail: 'd3308a6d02042db7a009210a14ede172ffd936424cc35b90048884dd7f7dd03d',
 };
 const sources = { ro: prelude(g, STATE_OPTS.STATE_RO), rw: prelude(g, STATE_OPTS.STATE_RW), move: moveBlockFrag(g), pick: pickFrag(g),
   volume: volumeFrag(g), detail: volumeFrag(g, { detail: { DETAIL_LIQ_FOAM: 1, DETAIL_LIQ_RIPPLES: 1 }, curved: true }) };

@@ -79,7 +79,8 @@ test('seven independent production GI/key/select/args and glow emissions remain 
   // here), giAlong/giPast and the march's two lines that use them, diffed against origin/main 6a056d8d.
   // Re-pinned 2026-10-20 (distance haze): the source gained lighting.js giAirSkyHeld only,
   // diffed against origin/main 6a056d8d; the other six unchanged.
-  const hashes = ['67c3d7d0442ec4d1430fc21d0ed0291b43e08c4d0a81b4df7238bc5b4af2dfda', 'e42add413933739b32692df5c94478dfc6056fe1cd7a37d932c0624d704b6538', '1c1c1466266457d229a0f1ed0d59e5b054b3f6b3e4306dc23f695c656d4f63a8', '49c243e0fecd677ad02a487aace986634f1f43785e3626f74240ec2e2a40d28f', 'e57f139d63b575e2d8b5b7dee20033283e73efb40fc19e4f9b52f2645237e4e7', 'b7f2b431e07d44a6aeab03f55db2a30f28a3eff1643a6db5e6aaa0fe58e982c6', '8ebdc6e328ec9e086242a31194be0fd9e088fffe3f7cef3507552398c373796e'];
+  // Re-pinned 2026-10-21 (cold compile): only the lamp and beacon shadow rays moved (lighting.js lampLights/lampShade/lampSpecSeen, lighthouse.js beaconRay/beaconFarClear/beaconMaxSteps/beaconVisible; one traceNearSteps call site, crystals skip the beam), diffed against origin/main 186cefd7; source and gather only, the other five unchanged.
+  const hashes = ['741a25f89d3304545a9b9d413cfadd9a8003d53ea018eb3dd1c0e47372288b46', 'ebde1a6d3b80cc562112221ff13456799bea675bb3acc210146aafbdbcc8599f', '1c1c1466266457d229a0f1ed0d59e5b054b3f6b3e4306dc23f695c656d4f63a8', '49c243e0fecd677ad02a487aace986634f1f43785e3626f74240ec2e2a40d28f', 'e57f139d63b575e2d8b5b7dee20033283e73efb40fc19e4f9b52f2645237e4e7', 'b7f2b431e07d44a6aeab03f55db2a30f28a3eff1643a6db5e6aaa0fe58e982c6', '8ebdc6e328ec9e086242a31194be0fd9e088fffe3f7cef3507552398c373796e'];
   [giSourceFrag(g), giGatherFrag(g), giKeyFrag(g), giSelectFrag(g), giArgsFrag(g), blurFrag(g), blurFrag(g, { last: true })].forEach((code, i) => assert.equal(createHash('sha256').update(code).digest('hex'), hashes[i]));
 });
 test('actual eight world GI/two glow modules validate Naga and default budgets', () => {
@@ -121,7 +122,8 @@ test('world gather is the original generated module minus unused texture mirrors
   // lookup (unused here); diffed against origin/main 46ee20fe, nothing else moved.
   // Then (2026-10-20, distance haze) worldAccess.js's worldProbeHeld / worldProbeAlphaHeld
   // (unused here); diffed against origin/main 6a056d8d, nothing else moved.
-  const hashes = ['97d63747811bd469dcc37366232163d9445e763c8e53833403ad7171b29f0951', 'e5ff3fce767e30583ff55ee1e231fd5fa8a4730d1544d99b9b137c657a65486f', '76029bca7d0f9e8a2fa450933c5e478774de1d7e3bb0dd9844383f2cdaf47211', '30a7e095684fd0e934f965f15083f14e3adfc2afc375665d14b69eefe495f81b'];
+  // Re-pinned 2026-10-21 (cold compile): only the lamp and beacon shadow rays moved (lighting.js lampLights/lampShade/lampSpecSeen, lighthouse.js beaconRay/beaconFarClear/beaconMaxSteps/beaconVisible; one traceNearSteps call site, crystals skip the beam), diffed against origin/main 186cefd7; nothing else moved.
+  const hashes = ['a5cfe7220645a2b87bef9364e905bee124b25cb6f75155924d1c39868d8e139f', 'd2c16aa4e297ca3a176941b5e7adda5b0f31314ff6f8adbe8d3a0074938090c8', '9ecd5d221762bbd9fc4926f0ba9ad25e8eb8c73d3f968f1953f032f999f0de99', 'b176b07e0aa4ceee2ab2972d6340e5f09ae6e126fb5c70287475db5c0ee1bd45'];
   const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
   gathers.forEach((c, i) => {
     const code = c.code(), groups = c.layouts();
