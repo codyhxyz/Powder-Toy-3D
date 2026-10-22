@@ -400,12 +400,14 @@ const D_LAND_SCATTER: f32 = ${f(PHYS.LAND_POWDER_SCATTER)};
 // impact; a side hit stops its component: bounceR 0), shared by capacity, so both warm alike (ΔT = E·KE_TO_HEAT /
 // (cap_i + cap_j)). [the packet's share, the solid's], cap·°C (dHeatEnergy's unit). dynamics-reference.js impactHeat.
 fn dImpactHeat(pid: u32, tid: u32, velocity: vec3f, axis: u32, c: vec3i) -> vec2f {
-  let u = min(abs(velocity) * D_SHOCK_THROW, vec3f(D_V_MAX)); let un = u[axis];
-  if (cls(pid) != C_POWDER || cls(tid) != C_SOLID || un <= D_COLLIDE_V) { return vec2f(0.0); }
-  var lost = 0.5 * dDens(pid) * un * un;
-  if (dLanding(c, axis, velocity)) { lost = 0.5 * dDens(pid) * (un * un * (1.0 - D_LAND_SCATTER * D_LAND_SCATTER) + (dot(u, u) - un * un) * (1.0 - D_LAND_KEEP * D_LAND_KEEP)); }
-  let heat = lost * ${f(PHYS.KE_TO_HEAT)}; let share = dCap(pid) / (dCap(pid) + dCap(tid));
-  return vec2f(heat * share, heat * (1.0 - share));
+  let u = min(abs(velocity) * D_SHOCK_THROW, vec3f(D_V_MAX)); let un = u[axis]; var out = vec2f(0.0);
+  if (cls(pid) == C_POWDER && cls(tid) == C_SOLID && un > D_COLLIDE_V) {
+    var lost = 0.5 * dDens(pid) * un * un;
+    if (dLanding(c, axis, velocity)) { lost = 0.5 * dDens(pid) * (un * un * (1.0 - D_LAND_SCATTER * D_LAND_SCATTER) + (dot(u, u) - un * un) * (1.0 - D_LAND_KEEP * D_LAND_KEEP)); }
+    let heat = lost * ${f(PHYS.KE_TO_HEAT)}; let share = dCap(pid) / (dCap(pid) + dCap(tid));
+    out = vec2f(heat * share, heat * (1.0 - share));
+  }
+  return out;
 }
 // V1 move.js collide (MV-12): a grain hitting a resting grain faster than COLLIDE_V across the face passes its
 // momentum on with RESTITUTION, so a blow travels through a pile like a Newton's cradle: the struck grain flies on
@@ -444,12 +446,16 @@ default: { return 0.0; } } }
 // a grain packet landing on a charge at u (m/s): V1's odds of its fall setting it off (dynamics-reference.js
 // PACKET_GRAIN_ODDS: v1GrainOdds by the fall its speed is in; BL-7), rolled once a hit (D_GRAIN_SALT)
 const D_GRAIN_SALT: u32 = 0x6772616eu;
+// (the bins as data, one loop over the pair's: a table compiles as one load, not a branch a bin)
+const D_GRAIN_BINS = array<vec2f, ${PACKET_GRAIN_ODDS.reduce((n, r) => n + r.bins.length, 0)}>(${PACKET_GRAIN_ODDS.flatMap(r => r.bins.map(b => `vec2f(${f(b.speed)},${f(b.odds)})`)).join(',')});
 fn dShockOdds(mover: u32, charge: u32, u: f32) -> f32 {
-  var odds = 0.0;
+  var bins = vec2u(0u);
   switch (mover * 256u + charge) {
-${PACKET_GRAIN_ODDS.map(r => `    case ${r.faller * 256 + r.charge}u: {${r.bins.map(b => ` if (u >= ${f(b.speed)}) { odds = ${f(b.odds)}; }`).join('')} }`).join('\n')}
+${(() => { let at = 0; return PACKET_GRAIN_ODDS.map(r => { const c = `    case ${r.faller * 256 + r.charge}u: { bins = vec2u(${at}u, ${r.bins.length}u); }`; at += r.bins.length; return c; }).join('\n'); })()}
     default: { }
   }
+  var odds = 0.0;
+  for (var i = 0u; i < bins.y; i++) { let b = D_GRAIN_BINS[bins.x + i]; if (u >= b.x) { odds = b.y; } }
   return odds;
 }
 // V1 react.js shock on a packet's hit (dynamics-reference.js packetShock is its CPU twin): matter and a

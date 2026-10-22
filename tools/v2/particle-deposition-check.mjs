@@ -560,7 +560,7 @@ test('a grain packet landing on a charge rolls V1\'s odds for its fall (BL-7)',(
   assert.equal(landed(p1*0.5),true,'a draw under its odds sets it off');assert.equal(landed(Math.min(0.99,p1*1.5+0.01)),false,'one over rests');
   // the WGSL's table is the twin's
   const wgsl=particlesWGSL(g,nativeDynamicsHead,'impact');
-  for(const r of PACKET_GRAIN_ODDS) for(const b of r.bins) assert.ok(wgsl.includes(`if (u >= ${b.speed}) { odds = ${b.odds}; }`),`${ELEMENTS[r.faller].key} on ${ELEMENTS[r.charge].key}`);
+  for(const r of PACKET_GRAIN_ODDS) for(const b of r.bins) assert.ok(wgsl.includes(`vec2f(${b.speed},${b.odds})`),`${ELEMENTS[r.faller].key} on ${ELEMENTS[r.charge].key}`);
 });
 
 // V1 move.js collide (MV-12): a fast grain hitting a resting grain passes its momentum on with RESTITUTION, so a blow
