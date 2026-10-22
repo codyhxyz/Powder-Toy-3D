@@ -14,6 +14,7 @@
 //       are V2's own activity (readStats), not V1's stale maps.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 import { registerHooks } from 'node:module';
 registerHooks({ load(url, context, next) {
   if (url.endsWith('.css')) return { format: 'module', source: '', shortCircuit: true };
@@ -262,6 +263,21 @@ assert(/steps: 4, gravity:/.test(app), 'app.js DEFAULTS.steps is 4');
   assert(/const legacyStepped = !stepping \? 0 : v2Box\(\) \? stepped \* LEGACY_STEPS_PER_TICK : settings\.steps;/.test(app));
   assert(/stepCount \+= legacyStepped;/.test(app), 'the HUD\'s steps/s');
   assert(/prof\.endFrame\(legacyStepped\);/.test(app), 'the profiler\'s per-step costs');
+  // World maps: the rates are counted after the renderer branch (if(win) {...} else {...}), not inside the
+  // box's, where a World frame never reached them and the HUD kept its boot fps and 0 steps/s
+  const branch = app.indexOf('if(win) {\n    // The WORLD renderer failing');
+  assert(branch > 0, 'tick\'s World/box renderer branch');
+  const blockEnd = (open) => { let depth = 0, i = open; do { if (app[i] === '{') depth++; else if (app[i] === '}') depth--; i++; } while (depth); return i; };
+  const ifEnd = blockEnd(app.indexOf('{', branch));
+  assert(/^\s*else \{/.test(app.slice(ifEnd)), 'the box\'s else branch');
+  const at = blockEnd(app.indexOf('{', ifEnd));
+  const call = app.indexOf('countHudRates(runView, now, dt, legacyStepped)', branch);
+  assert(call > at && call < app.indexOf('gpu.endFrame();', branch), 'the HUD\'s rates are counted for World frames too (after the renderer branch)');
+  const rates = vm.createContext({ FPS_WINDOW: 0.5, frames: 0, fpsTime: 0, fps: 60, idleTime: 0, lastDrawAt: null, stepTime: 0, stepCount: 0, stepRate: 0 });
+  const fnText = app.slice(app.indexOf('function countHudRates('), app.indexOf('\n}\n', app.indexOf('function countHudRates(')) + 2);
+  vm.runInContext(fnText, rates);
+  for (let i = 0; i < 61; i++) vm.runInContext(`countHudRates(true, ${i * 1000 / 30}, ${1 / 30}, ${2 * LEGACY_STEPS_PER_TICK})`, rates);
+  assert(Math.abs(rates.fps - 30) < 1 && Math.abs(rates.stepRate - 240) < 5, `a World frame's rates: ${rates.fps} fps, ${rates.stepRate} steps/s`);
   assert.equal(legacySteps({ compact: {} }, 1), 4);
   // the profiler: frames of one tick (4 V1 steps), samples a second apart; V2's activity from readStats
   let passes = 0, now = 0, sample = null;

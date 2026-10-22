@@ -2398,6 +2398,20 @@ const CAP_NOTICE = 'Your browser is holding this page at 30 fps. In Chrome, turn
 const CAP_NOTICE_MS = 9000;
 const DT_MAX = 0.1;      // s: longer gaps (a hidden tab, a sleeping loop) count as this, so animations don't jump
 const FPS_WINDOW = 0.5;  // s over which the fps readout averages
+// The HUD's fps and steps/s, once a frame whichever renderer drew it (World's driver or the box's
+// volume). Preview draws are not adjacent app ticks; report draw and step rates separately.
+function countHudRates(drew, now, dt, legacyStepped) {
+  if (drew) {
+    if (lastDrawAt != null && now - lastDrawAt <= FPS_WINDOW * 1000) { frames++; fpsTime += (now - lastDrawAt) / 1000; }
+    else { frames = 0; fpsTime = 0; }
+    lastDrawAt = now;
+  }
+  if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
+  stepTime += dt;
+  stepCount += legacyStepped;
+  if (stepTime > FPS_WINDOW) { stepRate = stepCount / stepTime; stepTime = stepCount = 0; }
+  idleTime = drew ? 0 : idleTime + dt;
+}
 const invVol = new THREE.Matrix4();
 const autoRes = createAutoResolution();
 autoRes.enabled = !testMode || testMode === 'visual'; // intentional preview caps are not GPU slowness
@@ -3035,20 +3049,7 @@ function tick(now, renderOnly = false) {
     // picks below in this same tick. Raw/night/meter/held tools stay full.
     runView = true;
   }
-  if (!renderOnly) {
-    // Preview draws are not adjacent app ticks; report draw and step rates separately.
-    if (runView) {
-      if (lastDrawAt != null && now - lastDrawAt <= FPS_WINDOW * 1000) { frames++; fpsTime += (now - lastDrawAt) / 1000; }
-      else { frames = 0; fpsTime = 0; }
-      lastDrawAt = now;
-    }
-    if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
-    stepTime += dt;
-    stepCount += legacyStepped;
-    if (stepTime > FPS_WINDOW) { stepRate = stepCount / stepTime; stepTime = stepCount = 0; }
-    idleTime = runView ? 0 : idleTime + dt;
-    renderedLast = runView;
-  }
+  if (!renderOnly) renderedLast = runView;
   // Picking is input work, not presentation: a preview must keep it responsive.
   // (Asked for before the frame, so the frame's compute pass marches it.)
   if (!renderOnly && (pointerPickDirty || (!postOnly && (runView || pov?.active || testMode === 'preview')))) requestPick();
@@ -3089,6 +3090,8 @@ function tick(now, renderOnly = false) {
     prof.phase('other');
   }
   }
+  // The HUD's rates, for a World frame as for a box's (the World branch above draws through its driver)
+  if (!renderOnly) countHudRates(runView, now, dt, legacyStepped);
   gpu.endFrame();   // this tick's command buffer, if it recorded anything (B3)
   // a map switched in-game is on screen: its load watch ends (loadWatch.js)
   if (loadWatch.active && (win ? win.renderFrame?.driver?.displayedMainFrame : runView)) loadWatch.onScreen();
