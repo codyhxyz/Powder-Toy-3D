@@ -5,6 +5,9 @@ import { glf as f } from '../../glsl.js';
 import { occupancyReadWGSL } from '../occupancy.js';
 import { renderBackend, worldOccupancyWGSL, worldFieldWGSL } from './worldCore.js';
 
+/** DDA steps past the corner-to-corner count (NX + NY + NZ) a march may take (MAX_STEPS). */
+export const DDA_SPARE_STEPS = 8;
+
 // Shared render core: brick and field access, the DDA helpers and the
 // smooth-surface machinery (sampling, root finding, normals), in WGSL (the
 // names are the GLSL version's, docs/webgpu.md W2). The state is read with
@@ -372,8 +375,9 @@ fn meshCutAt(d: f32, clipToGrid: mat4x4f, res: vec2f, rd: vec3f) -> f32 {
 // trace: docs/webgpu.md F5, G2) pastes prelude(g) + materialsGLSL() +
 // ddaGLSL(g) and binds no lighting group. coreGLSL includes it.
 export const ddaGLSL = (g, { backend = 'box', physicalRays = false } = {}) => /* wgsl */ `${renderBackend(backend) && ''}
-const GRID: vec3i = vec3i(NX, NY, NZ);
-const MAX_STEPS: i32 = ${backend === 'world' ? g.nx + g.ny + g.nz + 8 : g.maxSteps ?? g.nx + g.ny + g.nz + 8};   // DDA steps that cross the box corner to corner
+${g.runtimeGrid ? `// (the World view's grid, read at run time: shaders/common.js WORLD_RUNTIME_GRID)
+fn worldMaxSteps() -> i32 { let n = worldGrid(); return n.x + n.y + n.z + ${DDA_SPARE_STEPS}; }` : `const GRID: vec3i = vec3i(NX, NY, NZ);
+const MAX_STEPS: i32 = ${backend === 'world' ? g.nx + g.ny + g.nz + DDA_SPARE_STEPS : g.maxSteps ?? g.nx + g.ny + g.nz + DDA_SPARE_STEPS};   // DDA steps that cross the box corner to corner`}
 
 // Whether cell c lies outside the grid.
 fn outside(c: vec3i) -> bool { return any(c < vec3i(0)) || any(c >= GRID); }

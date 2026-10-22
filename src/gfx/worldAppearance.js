@@ -1,6 +1,8 @@
 // Independent texture transport; original importer ABI v1 and decoder unchanged.
 import { appearanceRegion, uploadAppearance } from './sourceAppearance.js';
-export function createWorldAppearance(gpu, { words, width = 128, depth = 128 }) {
+/** The source artwork grid a World's view reads (x, unused y, z): createWorldAppearance's default. */
+export const WORLD_APPEARANCE_GRID = Object.freeze([128, 0, 128]);
+export function createWorldAppearance(gpu, { words, width = WORLD_APPEARANCE_GRID[0], depth = WORLD_APPEARANCE_GRID[2] }) {
   const device=gpu.device ?? gpu;
   const limit=device.limits?.maxTextureDimension3D ?? 2048;
   if (!(words instanceof Uint32Array) || ![width,depth].every(n=>Number.isSafeInteger(n)&&n>0&&n<=limit)) throw new RangeError('world appearance dimensions/words');

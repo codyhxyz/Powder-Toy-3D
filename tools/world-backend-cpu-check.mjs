@@ -8,7 +8,7 @@ import {createHash} from 'node:crypto';
 import {WGSL_CHECK as boxChecks,volumeFrag,pickFrag,PickParams,VOLUME_LAYOUTS,PICK_LAYOUTS,REALISTIC_LEVELS,SHADOW_LAYOUTS} from '../src/shaders/render.js';
 import {WGSL_CHECK as worldChecks} from '../src/shaders/worldRender.js';
 import {lib} from '../src/shaders/gfx/lib.js';
-import {tableLayout} from '../src/shaders/common.js';
+import {tableLayout,worldRuntimeGrid} from '../src/shaders/common.js';
 import {checkPipeline} from './check-sampler-budget.mjs';
 import {WorldRenderAtlas,worldBookLayout,worldCellAddress,worldBrickIndex,worldLocalSlot} from '../src/world/renderAtlas.js';
 import {createWorldVolume,worldFrameValues,decodeWorldFeedback} from '../src/gfx/worldVolume.js';
@@ -43,7 +43,11 @@ test('240 actual world view/detail/curved/source/height/pick layouts and Naga mo
     assert.equal(groups.flat().filter(e=>e.buffer?.type.includes('storage')).length,c.kind==='compute'?6:5);
     assert.equal(groups[0].find(e=>e.binding===5).buffer.type,'read-only-storage');
     assert.match(code,/fn worldPos\(p: vec3f\) -> vec3f \{ return p; \}/);
-    assert.match(code,/fn brickId\(b: vec3i\).*b.x \+ BX \* \(b.y \+ BY \* b.z\)/);
+    if(c.kind==='render') {
+      // One view module for every world size: its extent is read at run time (shaders/common.js WORLD_RUNTIME_GRID).
+      assert.match(code,/fn brickId\(b: vec3i\) -> u32 \{ return u32\(b\.x\) \| \(u32\(b\.y\) << 11u\) \| \(u32\(b\.z\) << 21u\); \}/);
+      assert.doesNotMatch(code,/\b(NX|NY|NZ|BX|BY|BZ|GRID|MAX_STEPS|SLOTS|NBRICKS|NSUPER|STX|STY|STZ|MARK_[A-Z]+)\b/);
+    } else assert.match(code,/fn brickId\(b: vec3i\).*b.x \+ BX \* \(b.y \+ BY \* b.z\)/);
     assert.doesNotMatch(code,/farCasterDepth|farBeyond|farShadeMaterial|LIQ_WINDOW_FADE|homogeneous liquid beyond/);
     const path=`${dir}/${c.name}.wgsl`;writeFileSync(path,code);
     const result=spawnSync('naga',[path,`${dir}/out.spv`],{encoding:'utf8'});
@@ -54,7 +58,8 @@ test('240 actual world view/detail/curved/source/height/pick layouts and Naga mo
 test('one continuous full tracer, intrinsic budgets, exact optics and sticky secondary misses',()=>{
   const g={nx:3072,ny:384,nz:1024,maxSteps:128,sourceAppearance:true,sourceGrid:[128,0,128]};
   const code=volumeFrag(g,{backend:'world',detail:REALISTIC_LEVELS.full()});
-  assert.match(code,/MAX_STEPS: i32 = 4488/);assert.match(code,/return worldFlow\(c\)/);assert.match(code,/let f = worldAeration\(c\)/);
+  assert.match(code,/fn worldMaxSteps\(\) -> i32 \{ let n = worldGrid\(\); return n\.x \+ n\.y \+ n\.z \+ 8; \}/);
+  assert.equal(code,volumeFrag({...g,nx:1024,ny:128,nz:1024,maxSteps:undefined},{backend:'world',detail:REALISTIC_LEVELS.full()}),'every world size shares the module');assert.match(code,/return worldFlow\(c\)/);assert.match(code,/let f = worldAeration\(c\)/);
   assert.match(code,/return worldFieldCubic\(t, p\)/);assert.match(code,/unpack4x8unorm\(worldDeco\(c\)\)/);
   for(const name of ['gatherSurf','gatherPlan','crispSurf','crispPlan','planMat','grainSurf','decoSurf','shadeSurf','shadeHit','liquidInterface','reflectDefer','reflectResolve','shadowTexel','worldSunExact','giIrradiance'])assert.ok(new RegExp(`fn ${name}\\(`).test(code),name);
   assert.equal((code.match(/worldBeginQuery\(\);/g)||[]).length,1);
@@ -73,7 +78,7 @@ test('one continuous full tracer, intrinsic budgets, exact optics and sticky sec
     while(depth&&++end<text.length){if(text[end]==='{')depth++;else if(text[end]==='}')depth--;}
     assert.equal(depth,0,name);return text.slice(start,end+1);
   };
-  for(const name of ['gatherSurf','gatherPlan','crispSurf','crispPlan','planMat','grainSurf','decoSurf','shadeSurf','shadeHit','liquidInterface','reflectDefer','reflectResolve','reflectHit','mediaSegment','surfRoot','surfCross','faceAO','fieldAO','ggxSpecA','envBRDF','envReflectGI','glintSpec','shadowTexelAtt','underPool','causticGain','sourceShade'])assert.equal(body(code,name),body(box,name),name);
+  for(const name of ['gatherSurf','gatherPlan','crispSurf','crispPlan','planMat','grainSurf','decoSurf','shadeSurf','shadeHit','liquidInterface','reflectDefer','reflectResolve','reflectHit','mediaSegment','surfRoot','surfCross','faceAO','fieldAO','ggxSpecA','envBRDF','envReflectGI','glintSpec','shadowTexelAtt','underPool','causticGain','sourceShade'])assert.equal(body(code,name),worldRuntimeGrid(body(box,name)),name);   // (the Box's sizes are the World's run-time ones)
   const native=volumeFrag({...g,sourceAppearance:false},{backend:'world'});assert.doesNotMatch(native,/fn sourcePair/);
   assert.match(pickFrag(g,{backend:'world'}),/r = Pick\(vec4f\(0.0,0.0,0.0,-2.0\)/);
 });

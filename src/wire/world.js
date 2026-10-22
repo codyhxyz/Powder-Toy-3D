@@ -8,7 +8,7 @@ import { loadIsland, releaseGenerator } from '../world/gpu.js';
 import { WorldWindow, WIN_STEP } from '../world/window.js';
 import { installWorldRender } from './worldRender.js';
 import { createMediaNoise } from '../gfx/mediaNoise.js';
-import { createWorldFrameState, createWorldFrameDriver, disposeWorldFrame } from './worldRenderFrame.js';
+import { createWorldFrameState, createWorldFrameDriver, disposeWorldFrame, startWorldFrameView } from './worldRenderFrame.js';
 import { bakedAir } from '../constructions/runtime.js';
 import { beyondLevel } from '../world/far.js';
 import { createTorchLights } from '../world/torchLights.js';
@@ -53,7 +53,12 @@ const world = {
   attach(app) {
     const { sim } = app;
     if (!app.worldMode) return;
-    const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene: app.sceneByKey(app.settings.scene) });
+    const scene = app.sceneByKey(app.settings.scene);
+    // The World view's pipeline starts building first, beside the world's generation, not
+    // once the world has generated and streamed in: cold (after a deploy) it is a big map's
+    // longest single build, ~10 s (wire/worldRenderFrame.js startWorldFrameView).
+    startWorldFrameView(app, scene);
+    const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene });
     sim.origin.fromArray(world.worldStart(app));
     sim.onWorldHistoryRestore = (dx, dz) => {
       if (app.sim !== sim || app.win !== win) return;
