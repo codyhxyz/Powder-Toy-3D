@@ -740,3 +740,38 @@ await test('queued builds start by rank: first, now, then idle ones; a demand mo
   await Promise.all([...blockers, ...idle, ...now, pole].map((p) => p.ready));
   assert.equal(f.gpu.pipelines.queued.size, 0);
 });
+
+// Every build settles whatever order demands, promotions, idle callbacks and completions come in:
+// no queued job is lost or left behind its `ready` (seeded interleavings of the ranked queue).
+await test('ranked queue: random demands, promotions, idle callbacks and completions settle every build', async (t) => {
+  const f = await fixture(t, { concurrency: PIPELINE_CONCURRENCY_MAX });
+  let seed = 0x2545f491;
+  const rnd = (n) => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) % n; };
+  const modes = ['now', 'idle', 'manual'], pipes = [];
+  for (let round = 0; round < 400; round++) {
+    const action = rnd(6);
+    if (action <= 1 && pipes.length < 160) {
+      // a new pipe, sometimes the same module and constants as an earlier one (a cache hit)
+      const i = rnd(3) === 0 && pipes.length ? rnd(pipes.length) : 1000 + pipes.length;
+      pipes.push(pipe(f.gpu, i, { name: `r${pipes.length}`, build: modes[rnd(3)], first: rnd(4) === 0, kind: rnd(2) ? 'compute' : 'render' }));
+    } else if (action === 2 && pipes.length) pipes[rnd(pipes.length)].build(rnd(3));   // a demand at any rank
+    else if (action === 3) f.runIdle();
+    else if (action >= 4) {
+      const open = f.calls.filter((c) => !c.done);
+      if (open.length) { const c = open[rnd(open.length)]; c.done = true; c.resolve({}); }
+    }
+    await drain();
+    assert.ok(f.counts.maxActive <= PIPELINE_CONCURRENCY_MAX);
+  }
+  // then everything asked for is built: demand each manual pipe, and drain
+  for (const p of pipes) p.build();
+  for (let i = 0; i < 2000 && (f.calls.some((c) => !c.done) || f.gpu.pipelines.queue.length || f.gpu.pipelines.idleQueue.length || f.gpu.pipelines.idleJobs.size); i++) {
+    for (const c of f.calls) if (!c.done) { c.done = true; c.resolve({}); }
+    await drain(); f.runIdle(); await drain();
+  }
+  const states = await Promise.all(pipes.map((p) => Promise.race([p.ready.then(() => 'ready'), new Promise((r) => setImmediate(() => r('pending')))])));
+  assert.ok(pipes.length > 50 && f.calls.length > 30, `a real mix (${pipes.length} pipes, ${f.calls.length} native builds)`);
+  assert.deepEqual(states.filter((s) => s !== 'ready'), [], 'every ready settled');
+  assert.equal(f.gpu.pipelines.queue.length, 0); assert.equal(f.gpu.pipelines.queued.size, 0);
+  assert.equal(f.gpu.pipelines.pending.size, 0); assert.equal(f.gpu.stats.pipelinesPending, 0);
+});
