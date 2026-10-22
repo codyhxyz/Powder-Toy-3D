@@ -285,7 +285,7 @@ export const hole = {
 
 export const splash = {
   name: 'splash', group: 'liquids', size: [32, 16, 32], needs: ['WATER'], cost: 70,
-  title: 'a block dropped into a pool splashes at most 0.3 of its kinetic energy out of it',
+  title: 'a block dropped into a pool splashes as much of its kinetic energy out of it as V1\'s (V1 measured: OUTCOMES.splash.v1)',
   audit: 'audit-liquids B5, B6: a liquid cell that lands gets a random sideways speed of 0.9 cells/step plus 0.3·|vy| (per component up to V_MAX), so a landing makes kinetic energy, not spends it (×160-210 from a 1-cell drop)',
   expressible: (e) => (e.info.velocity ? null : `${e.name} reports no complete cell velocities`),
   async run(e) {
@@ -294,8 +294,12 @@ export const splash = {
     e.box([0, 0, 0], [31, S - 1, 31], 'WATER');
     e.box([14, S + 6, 14], [17, S + 7, 17], 'WATER');
     // kinetic energy of liquid (fill or particle mass × speed², in cells·(m/s)²: the same ρ throughout, so
-    // the ratio is the energies'), all of it, and of what is at or above the surface and not falling: the splash
+    // the ratio is the energies'), all of it, and of what is at or above the surface going sideways or up: the
+    // splash. Its fall back is not counted (the downward part of its speed), so a drop thrown level counts its throw
+    // whether it is a cell sliding on the surface (V1 move.js land: v.y = 0, the throw sideways) or a packet already
+    // falling a tick after it left (V2's crown, columns.js colSplash)
     const water = e.id('WATER');
+    const thrown = (vx, vy, vz) => vx * vx + vz * vz + Math.max(vy, 0) ** 2;
     const energy = (g) => {
       let all = 0, out = 0, lowest = Infinity, cellsOut = 0;
       const inFlight = new Map();   // (amount bins each particle into its cell: the cell's own fill is the rest)
@@ -312,14 +316,14 @@ export const splash = {
         setup(!g.velocityKnown || g.velocityKnown[i] !== 0, `splash: unknown resident-water velocity at ${x},${y},${z}`);
         const vx = g.vel[3 * i], vy = g.vel[3 * i + 1], vz = g.vel[3 * i + 2];
         setup(Number.isFinite(vx) && Number.isFinite(vy) && Number.isFinite(vz), `splash: nonfinite resident-water velocity at ${x},${y},${z}`);
-        const k = a * (vx * vx + vy * vy + vz * vz);
+        const k = a * (vx * vx + vy * vy + vz * vz), up = a * thrown(vx, vy, vz);
         all += k;
-        if (y >= S && vy >= 0) { out += k; if (k > 0) cellsOut++; }
+        if (y >= S) { out += up; if (up > 0) cellsOut++; }
         if (y >= S) lowest = Math.min(lowest, y);
       }
       for (const p of g.particles ?? []) {
-        const k = p.mass * (p.vx * p.vx + p.vy * p.vy + p.vz * p.vz);
-        all += k; if (p.y >= S && p.vy >= 0) out += k;
+        const k = p.mass * (p.vx * p.vx + p.vy * p.vy + p.vz * p.vz), up = p.mass * thrown(p.vx, p.vy, p.vz);
+        all += k; if (p.y >= S) { out += up; if (up > 0) cellsOut++; }
         lowest = Math.min(lowest, Math.floor(p.y));
       }
       setup(Number.isFinite(all) && Number.isFinite(out), 'splash: nonfinite kinetic energy');
@@ -354,7 +358,7 @@ export const splash = {
     return {
       headline: `the block met the pool at ${r2(vIn)} m/s (free fall: ${r2(vIdeal)}); at its peak, ${r2(peakAt)} s after contact, the splash carried ${r2(ratio)} of that energy (${peakCells} cells); all liquid at most ${r2(peakAll / incoming)}`,
       criteria: [
-        crit('splash kinetic energy / incoming (peak)', r2(ratio), ratio <= O.keRatio, `≤ ${O.keRatio}`),
+        crit('splash kinetic energy / incoming (peak), off V1\'s', r2(ratio), Math.abs(ratio / O.v1 - 1) <= O.keTol, `V1's ${O.v1} ± ${100 * O.keTol} %`),
         crit('mass exact', r3(m - m0), Math.abs(m - m0) < 1e-6, '0', 'cells'),
       ],
       evidence: [`fell ${r2(fallTime)} s to contact at ${r2(contact)} s; after contact:\n${hist.join('\n')}`],

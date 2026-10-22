@@ -9,7 +9,7 @@ import { runTest } from '../outcomes/run.js';
 import { at, stepClock } from '../outcomes/engine.js';
 import { OUTCOMES } from '../outcomes/thresholds.js';
 
-function fake({ ratio = .25, legacy = false, overlay = false, resident, packet } = {}) {
+function fake({ ratio = OUTCOMES.splash.v1, legacy = false, overlay = false, level = false, resident, packet } = {}) {
   const clock = stepClock(60), boxes = [];
   const e = {
     name: 'fake-observer', info: { velocity: true, stepsPerSecond: 60, gravity: 19.6 },
@@ -32,6 +32,8 @@ function fake({ ratio = .25, legacy = false, overlay = false, resident, packet }
       const vy=clock.steps===0 ? 0 : clock.steps<=2 ? -2 : 2*Math.sqrt(ratio);
       for (let y=foot; y<foot+2; y++) for (let z=14; z<=17; z++) for (let x=14; x<=17; x++) {
         const i=at(g,x,y,z); g.id[i]=1; g.amount[i]=1; g.vel[3*i+1]=vy;
+        // thrown level and already falling a tick later (V2's crown packets): sideways at the same speed
+        if (level && post) { g.vel[3*i]=vy; g.vel[3*i+1]=-.5; }
         if (overlay) {
           g.velocityKnown[i]=0; g.vel[3*i]=NaN; g.vel[3*i+1]=NaN;
           g.particles.push({x:x+.5,y:y+.5,z:z+.5,vx:0,vy,vz:0,mass:1,id:1});
@@ -48,17 +50,24 @@ function fake({ ratio = .25, legacy = false, overlay = false, resident, packet }
   return e;
 }
 
-test('unchanged fixture, timing and criteria: .25 pass, >.3 fail, legacy complete vectors work', async () => {
+test('unchanged fixture and timing; V1\'s ratio passes, a quarter off it fails; legacy complete vectors work', async () => {
   assert.deepEqual(splash.size,[32,16,32]);
-  assert.equal(OUTCOMES.splash.keRatio,.3); assert.equal(OUTCOMES.splash.seconds,.75);
+  assert.equal(OUTCOMES.splash.v1,2.48); assert.equal(OUTCOMES.splash.keTol,.25); assert.equal(OUTCOMES.splash.seconds,.75);
   for (const legacy of [false,true]) {
     const r=await runTest(splash,fake({legacy}));
-    assert.equal(r.status,'pass'); assert.equal(r.numbers.ratio,.25);
+    assert.equal(r.status,'pass'); assert.ok(Math.abs(r.numbers.ratio-2.48)<1e-6);
     assert.equal(r.numbers.incoming,128); assert.equal(r.gameSeconds,.783); assert.equal(r.steps,47);
     assert.equal(r.criteria[1].ok,true);
   }
-  const r=await runTest(splash,fake({ratio:.36}));
-  assert.equal(r.status,'fail'); assert.ok(r.numbers.ratio>.3); assert.equal(r.criteria[1].ok,true);
+  for (const ratio of [.25,3.2]) {
+    const r=await runTest(splash,fake({ratio}));
+    assert.equal(r.status,'fail'); assert.equal(r.criteria[1].ok,true);
+  }
+});
+
+test('a drop thrown level counts its throw though it already falls (V2\'s crown a tick after it left), as V1\'s sliding cell', async () => {
+  const r=await runTest(splash,fake({level:true}));
+  assert.equal(r.status,'pass'); assert.ok(Math.abs(r.numbers.ratio-2.48)<1e-6);
 });
 
 test('unknown finite resident vectors and every nonfinite component are setup errors postcontact', async () => {
@@ -81,7 +90,7 @@ test('matter packets validate all position/velocity/mass components before class
 
 test('pure binned flight overlay with zero resident mass ignores unknown cell mask and NaNs', async () => {
   const r=await runTest(splash,fake({overlay:true}));
-  assert.equal(r.status,'pass'); assert.equal(r.numbers.ratio,.25); assert.equal(r.criteria[1].ok,true);
+  assert.equal(r.status,'pass'); assert.ok(Math.abs(r.numbers.ratio-2.48)<1e-6); assert.equal(r.criteria[1].ok,true);
 });
 
 test('finite packet inputs cannot overflow energy into a false pass', async () => {
@@ -123,6 +132,6 @@ test('in-memory removal of new guards reproduces false pass for NaN postcontact 
   const options={ratio:1,resident:g=>{for(let i=0;i<g.id.length;i++) if(g.id[i]===1 && i>=3*32*32) g.vel[3*i+1]=NaN;}};
   const fixed=await runTest(splash,fake(options)), broken=await runTest(mutant.splash,fake(options));
   assert.equal(fixed.status,'error'); assert.match(fixed.reason,/setup:.*nonfinite resident-water/);
-  assert.equal(broken.status,'pass'); assert.equal(broken.numbers.ratio,0);
+  assert.notEqual(broken.status,'error'); assert.equal(broken.numbers.ratio,0);
   assert.ok(Number.isNaN(broken.numbers.peakAll));
 });
