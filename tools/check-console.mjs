@@ -17,6 +17,7 @@ const eq = (got, want, what) => ok(Object.is(got, want) || got === want, `${what
 
 // ---------------------------------------------------------------- mock GPU
 const B = [16, 8, 8];   // a block: a supertile's cells (shaders/common.js SUPER_CELLS)
+const { WEATHER_SPEED_SI } = await import('../src/v2/nativeWeather.js');
 function mockBackend([nx, ny, nz]) {
   const nb = [nx / B[0], ny / B[1], nz / B[2]];
   const texels = B[0] * B[1] * B[2];
@@ -38,7 +39,19 @@ function mockBackend([nx, ny, nz]) {
     locate,
     // flying: V2's matter in flight beside the grid (console/gpu.js flyingMatter), when this
     // backend has any (be.flying: its records); V1's backend has none (its flying cells are cells)
-    flying: null, flyingReads: 0,
+    flying: null, flyingReads: 0, flyingWrites: [],
+    // v2/nativePaint.js commitParticles on the records: a write finds its packet by slot and id word
+    applyFlyingEdits(list) {
+      be.flyingWrites.push(...list);
+      for (const e of list) {
+        const i = be.flying?.findIndex((q) => q.slot === e.slot && q.uid === e.uid) ?? -1;
+        if (i < 0) continue;
+        if (e.changed & 1) { be.flying.splice(i, 1); continue; }
+        const [id, temp, life, ctype] = e.after, q = be.flying[i];
+        Object.assign(q, { id, temp, life, ctype: Math.floor(ctype), vx: e.vel[0] / WEATHER_SPEED_SI, vy: e.vel[1] / WEATHER_SPEED_SI, vz: e.vel[2] / WEATHER_SPEED_SI });
+      }
+      return true;
+    },
     readBlocks(list, sync, flying = false) {
       be.reads += list.length;
       if (sync) be.syncReads += list.length;
@@ -209,6 +222,32 @@ const packet = (slot, id, x, y, z, more = {}) => ({ slot, id, x, y, z, temp: 20,
   eq(hw.readAll(false, { flying: true }), true, '...then has it');
   let n = 0; hw.forEachFlying((id) => { if (id === E.SAND) n++; });
   eq(n, 1, '...and counts it');
+  // R4: a script's writes reach a packet as V1's reach its flying cell (a cell): natively, on the pool
+  // (console/world.js editFlying -> nativePaint.js commitParticles), found by its slot and id word
+  {
+    const { NATIVE_PAINT_PARTICLE: PF } = await import('../src/v2/nativePaint.js');
+    backend.flying = [packet(3, E.SAND, 4, 9, 4, { uid: 0x51, seed: 0.25 }), packet(9, E.SAND, 5, 9, 4, { uid: 0x52 })];
+    backend.flyingWrites.length = 0;
+    const pi = (slot) => cellCount + slot;
+    run(`sim.partProperty(${pi(3)}, "temp", 500)`);
+    const t = backend.flyingWrites.at(-1);
+    eq(t && t.slot === 3 && t.uid === 0x51 && t.changed === PF.TEMP && t.after[1] === 500, true, 'partProperty temp: a TEMP write to slot 3, found by its id word');
+    eq(t?.after[3], 0.25, '...its ctype with its seed, as the brush\'s evaluate gives it');
+    eq(val(`return sim.partProperty(${pi(3)}, "temp")`), '500', '...and the packet holds it');
+    run(`sim.partChangeType(${pi(3)}, "WATR")`);
+    eq(backend.flyingWrites.at(-1)?.changed, PF.TYPE, 'partChangeType: a TYPE write');
+    eq(val(`return sim.partProperty(${pi(3)}, "type"), sim.partProperty(${pi(3)}, "temp")`), `${E.WATER}, 500`, '...the packet is water, its temperature kept');
+    run(`sim.partProperty(${pi(3)}, "vy", -0.5)`);
+    const vy = backend.flyingWrites.at(-1);
+    ok(vy?.changed === PF.VEL && Math.abs(vy.vel[1] + 0.5 * WEATHER_SPEED_SI) < 1e-9, 'partProperty vy: a VEL write in m/s (cells a V1 step there)');
+    eq(val(`return sim.partProperty(${pi(3)}, "vy")`), '-0.5', '...read back in cells a V1 step');
+    run(`sim.partKill(${pi(9)})`);
+    eq(backend.flyingWrites.at(-1)?.changed, PF.KILL, 'partKill: a KILL write');
+    eq(val(`return sim.partExists(${pi(9)}), sim.partExists(${pi(3)})`), 'false, true', '...that packet is gone, the other kept');
+    run(`sim.partProperty(${pi(3)}, "type", "NONE")`);
+    eq(val(`return sim.partExists(${pi(3)})`), 'false', 'partProperty type NONE kills a packet (TPT)');
+    eq(val(`local n = 0 for i in sim.parts() do if i >= ${cellCount} then n = n + 1 end end return n`), '0', 'sim.parts() no longer visits them');
+  }
   backend.flying = null;
 }
 {

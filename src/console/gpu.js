@@ -1,6 +1,6 @@
-import { SUPER_TEX } from '../shaders/common.js';
+import { SUPER_TEX, SEED_MAX } from '../shaders/common.js';
 import { ScriptEditParams, SCRIPT_EDIT_LAYOUT, scriptEditUpdateWGSL, scriptEditDeclsWGSL } from '../shaders/script.js';
-import { nativeScriptKernel } from '../v2/interactions.js';
+import { nativeScriptKernel, nativePacketEdit } from '../v2/interactions.js';
 import { PARTICLE_BYTES, PHOTON_TAG } from '../v2/dynamics-reference.js';
 import { cTq, payloadOf, ctypeOf, lifeScale } from '../v2/layout.js';
 import { WEATHER_SPEED_SI } from '../v2/nativeWeather.js';
@@ -49,7 +49,10 @@ export function flyingMatter(bytes, origin, dims) {
     const cell = [0, 1, 2].map(a => Math.floor(f[o + a] - origin[a]));
     if (!cell.every((x, a) => x >= 0 && x < dims[a])) continue;
     const core = u.subarray(o + 7, o + 11), conducts = ELEMENTS[id].elec > 0, liquid = ELEMENTS[id].kind === K.LIQUID;
-    out.push({ slot: o / PARTICLE_WORDS, id, x: cell[0], y: cell[1], z: cell[2],
+    // uid: its id word (a write finds it still in its slot by it); seed: its cell seed, as compactA's
+    // fraction of the ctype (nativePaint.js particleCommit keeps it through a retype)
+    out.push({ slot: o / PARTICLE_WORDS, uid: u[o + 3], id, x: cell[0], y: cell[1], z: cell[2],
+      seed: liquid ? 0 : (core[3] >>> 16) * SEED_MAX / 65536,
       temp: cTq(core) / T_CODE_PER_K - T_CODE_ZERO_C,
       life: conducts && liquid ? 0 : payloadOf(core) / lifeScale(id),
       ctype: conducts ? (liquid ? (core[3] >>> 16) : core[3]) & SPARK_MASK : ctypeOf(core),
@@ -214,6 +217,11 @@ export function createGpuBackend(getSim) {
       queued.push(chunk);
       if (queued.length === 1) settled(s).catch((err) => console.error('console: the edit kernel failed to build', err));
     },
+
+    // a script's writes to packets (console/world.js flushFlying): the native particle commit, now
+    // (it builds with the brush at boot; false while it can't run: the writes are dropped, as a cell
+    // edit on a grid being replaced is)
+    applyFlyingEdits(list) { const s = getSim(); return !!s?.compact && nativePacketEdit(s, list); },
 
     dispose() { buffer?.destroy(); buffer = bufferGpu = kernel = kernelSim = fetched = null; queued = []; },
   };

@@ -65,6 +65,9 @@ const forceSpecs={povKick:{update:kickWGSL,params:KickParams},povStrike:{update:
 // V1 sets them, vx/vy/vz as launches or the air's wind, pressure as the air's.
 const scriptSpec={update:scriptEditUpdateWGSL,params:ScriptEditParams,decls:scriptEditDeclsWGSL,layout:SCRIPT_EDIT_LAYOUT,commit:{sources:true,life:true}};
 export const nativeScriptKernel=sim=>forceKernel(sim,'nativeScriptEdit');
+// A script's writes to V2's flying packets (console/world.js editFlying): the brush's particle commit (built with
+// the brush at boot, NATIVE_BRUSH_KERNELS), fed the writes (nativePaint.js commitParticles)
+export const nativePacketEdit=(sim,list)=>forceKernel(sim,'nativePaint').commitParticles(list);
 const deferred=new Set(['povBlow']);
 const forces=new WeakMap();
 function forceKernel(sim,name) {

@@ -16,6 +16,8 @@ function nativeLayer(app) {
     app.nativeParticles?.dispose();
     const layer = app.nativeParticles = new NativeParticles(app.sim.gpu, source);
     layer.ready.then(() => app.pacer?.wake(), () => {});
+    // (a layer made while a World runs builds World's pipe at once: prewarmWorldFrame waited for the last one's)
+    if (app.worldMode) layer.worldReady()?.then(() => app.pacer?.wake(), () => {});
   }
   return app.nativeParticles;
 }
@@ -43,13 +45,14 @@ const rays = {
   // sprites' vertex stage, shaders/v2/particleRender.js, would warp each particle's world
   // cell with presentationWGSL's warpPoint before projecting it, from the
   // parameters app.presentation holds while active: U12's.)
-  scene(app, rp) {
+  // worldLight: World's light for this frame (app.drawWorldAfter's, gfx/worldMeshLight.js context.particleLight)
+  scene(app, rp, worldLight = null) {
     const t = app.post.sceneTarget;
-    // (the Box volume's light, as V1's flying cells take it: its sun map and GI, from the GPU volume, app.vol, not
-    // the three Object3D app.volume, which holds only its matrix; World draws them in the open sky's)
+    // (the volume's light, as V1's flying cells take it: the Box's sun map and GI, from the GPU volume, app.vol, not
+    // the three Object3D app.volume, which holds only its matrix; World's atlas and paged sun, as its figures read them)
     // Intentional (decided under the user's delegation, 2026-10-22): World packets don't cast sun shadows;
     // World's sun map is published read-only tiles (the Box's packets cast theirs: gfx/packetShadow.js).
-    if (app.sim.compact && app.nativeParticles?.isReady) app.nativeParticles.draw(rp, t, app.worldMode ? null : boxParticleLight(app.vol, app.derived, app.sim.gpu));
+    if (app.sim.compact && app.nativeParticles?.isReady) app.nativeParticles.draw(rp, t, app.worldMode ? worldLight : boxParticleLight(app.vol, app.derived, app.sim.gpu));
   },
   // particles fly between frames: the loop keeps ticking while any may be
   // alive, unless paused (they fly only with the steps; a load wakes the layer
