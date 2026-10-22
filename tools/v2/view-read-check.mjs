@@ -82,7 +82,7 @@ const env = {
   COMPACT_CTYPE_MASK: ELEMENTS.map(e => e.burnRate > 0 ? 127 : 255),
   slotOf: position => { assert.deepEqual(position, p); return 73; },
   cellOf: slot => { assert.equal(slot, 73); return canonical; },
-  A: new Proxy({}, { get: (_, k) => { assert.equal(k, '73'); return core; } }),
+  fetchNativeCore: position => { assert.deepEqual(position, p); return core; },
 };
 env.compactTq = execute(compactDecodeWGSL, 'compactTq', 'c', env);
 env.compactProbeCore = execute(compactDecodeWGSL, 'compactProbeCore', 'c', env);
@@ -150,12 +150,12 @@ const flow = volumeFrag(g, { view: 'flow', fixedReadFormat: 2 });
 ok(flow.includes('mobileVel(cell, id, volumeB(cell).xyz)') && body(flow, 'brickStroke').includes('volumeB(c).xyz'), 'Flow reads V1\'s B');
 ok(body(volumeFrag(g, { view: 'pressure', fixedReadFormat: 2 }), 'pressureAt').includes('volumeB('), 'Pressure reads the air');
 ok(body(volumeFrag(g, { fixedReadFormat: 2, detail }), 'flowVel').includes('volumeB(i0)'), 'smoke follows the flow (R3)');
-ok(nativeAirWGSL(g).includes('airB[s] = nativeMotionB(A[s], fetchBs(s));'), 'World\'s B export');
+ok(nativeAirWGSL(g).includes('airB[s] = nativeMotionB(fetchNativeCoreS(s), fetchBs(s));'), 'World\'s B export');
 
 // ---- R1: the brick map's air flags under V2 ----
 const air2 = nativeBrickAirWGSL(g), v1Brick = brickFrag(g);
 ok(v1Brick.includes(`const AIR_FLAG_P: f32 = ${AIR_FLAG.P};`) && v1Brick.includes(`const AIR_FLAG_V: f32 = ${AIR_FLAG.V};`), 'brickFrag thresholds');
-ok(air2.includes(`const AIR_FLAG_P: f32 = ${AIR_FLAG.P};`) && air2.includes('nativeMotionB(A[s], air)') && air2.includes('vec3i(k & 1, (k >> 1u) & 1, (k >> 2u) & 1) + 1'),
+ok(air2.includes(`const AIR_FLAG_P: f32 = ${AIR_FLAG.P};`) && air2.includes('nativeMotionB(fetchNativeCore(brickCoord(b) * BS + vec3i(k & 1, (k >> 1u) & 1, (k >> 2u) & 1) + 1), air)') && true,
   'V2 flags: brickFrag\'s core sample and thresholds over V1\'s B');
 
 // Fake device: V2's read group binds the current air; the derived frame flags the bricks with it.

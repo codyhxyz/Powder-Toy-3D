@@ -1496,8 +1496,7 @@ fn volumeId(p: vec3i) -> i32 {
 }
 ${compactDrawWGSL(format === 3)}${nativeMotionWGSL}
 fn volumeB(p: vec3i) -> vec4f {
-  let s = slotOf(p);
-  return nativeMotionB(A[s], nativeAirB(s));
+  return nativeMotionB(fetchNativeCore(p), nativeAirB(slotOf(p)));
 }
 `;
 // The call ARGS of each `name(` in code (not its definition): [start, end] of

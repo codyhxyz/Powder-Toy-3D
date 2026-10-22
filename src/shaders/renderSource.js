@@ -113,7 +113,7 @@ ${prelude(g, { ...STATE_OPTS.STATE_RO, fixedReadFormat: 3 })}
 ${nativeMotionWGSL}
 @group(2) @binding(0) var<storage, read_write> airB: array<vec4f>;
 ${thread}
-  airB[s] = nativeMotionB(A[s], fetchBs(s));
+  airB[s] = nativeMotionB(fetchNativeCoreS(s), fetchBs(s));
 }`;
 
 export const WGSL_CHECK = () => WORLD_SCENES.map((scene) => ({

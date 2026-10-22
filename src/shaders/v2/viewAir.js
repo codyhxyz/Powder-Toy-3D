@@ -30,8 +30,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   var speed2 = 0.0;
   for (var k = 0; k < 8; k++) {
     // brickFrag's sample: the core's cells (local 1..2 on each axis)
-    let s = slotOf(brickCoord(b) * BS + vec3i(k & 1, (k >> 1u) & 1, (k >> 2u) & 1) + 1);
-    let bv = nativeMotionB(A[s], air);
+    let bv = nativeMotionB(fetchNativeCore(brickCoord(b) * BS + vec3i(k & 1, (k >> 1u) & 1, (k >> 2u) & 1) + 1), air);
     pressure = max(pressure, abs(bv.w));
     speed2 = max(speed2, dot(bv.xyz, bv.xyz));
   }

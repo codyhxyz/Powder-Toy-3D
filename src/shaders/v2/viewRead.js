@@ -1,4 +1,5 @@
 import { fallWGSL } from './fall.js';
+import { nativeSlotAccessWGSL } from '../common.js';
 import { WEATHER_SPEED_SI, WEATHER_SPEED_FLUX } from '../../v2/nativeWeather.js';
 import { LEGACY_PRESSURE_PA } from '../../v2/pressure.js';
 
@@ -17,9 +18,9 @@ import { LEGACY_PRESSURE_PA } from '../../v2/pressure.js';
 // gauge), in V1's units; the physical readers' fetchBs (shaders/common.js, format 3) reads the same.
 // nativeMotionB(c, air): V1's B of the cell with core c in a brick whose air is air.
 export const nativeMotionWGSL = /* wgsl */ `
-${fallWGSL}
+${fallWGSL}${nativeSlotAccessWGSL}
 fn nativeAirB(s: u32) -> vec4f {
-  let air = B[(s >> 6u) * 2u];
+  let air = fetchNativeAirS(s);
   return vec4f(air.xyz / ${WEATHER_SPEED_SI}, air.w / ${LEGACY_PRESSURE_PA});
 }
 fn nativeMotionB(c: vec4u, air: vec4f) -> vec4f {
