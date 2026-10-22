@@ -8,6 +8,7 @@ import { E, ELEMENTS, REACTIONS } from '../../src/elements.js';
 import { PHYS, NOMINAL_STEP_RATE } from '../../src/physics.js';
 import * as C from '../../src/v2/contact.js';
 import { offsetOf } from '../../src/v2/physics.js';
+import { contactWGSL } from '../../src/shaders/v2/contact.js';
 
 const q = T => Math.round((T + 273.25) * 4);
 const celsius = c => c.tq / 4 - 273.25;
@@ -219,6 +220,23 @@ test('RX-6: the void drains a cell to air at the scene\'s ambient, not at the ce
     assert.equal(out.id, E.EMPTY); assert.equal(celsius(out), ambient, `lava into void leaves air at ${celsius(out)} °C`);
     ledger([out], energy(lava));
   }
+});
+
+test('the block pass declares its energy once: deferred, the block\'s net change is every rule\'s record summed', () => {
+  // (shaders/v2/contact.js contactBlock's ledger, cold compile: no ctEnergy pair a rule) a burning, reacting,
+  // conducting, radiating block: hot wood by air and water, hydrogen by a flame, steam, salt on ice
+  const ids = [E.WOOD, E.EMPTY, E.WATER, E.HYDROGEN, E.FIRE, E.STEAM, E.SALT, E.ICE], temps = [400, 20, 20, 600, 1500, 3000, -5, -5];
+  for (let tick = 1; tick <= 40; tick++) {
+    const fresh = () => ids.map((id, i) => C.packContact(C.ctNew(id, q(temps[(i + tick) % 8]), 65536)));
+    const run = deferred => { const m = fresh(); return C.contactReference(m.map(x => x.core), m.map(x => x.bank), tick, undefined, undefined, undefined, undefined, undefined, undefined, deferred); };
+    const eager = run(false), deferred = run(true);
+    const json = x => JSON.stringify(x, (k, v) => typeof v === 'bigint' ? String(v) : ArrayBuffer.isView(v) ? Array.from(v) : v);
+    assert.equal(json([deferred.cores, deferred.banks, deferred.requests, deferred.busy]), json([eager.cores, eager.banks, eager.requests, eager.busy]), `tick ${tick}: the same cells`);
+    const sum = eager.sources.reduce((n, x, k) => n + x - eager.sinks[k], 0n);
+    assert.equal(deferred.net, sum, `tick ${tick}: the block's net change is its rules' records`);
+    assert(deferred.sources.every(x => x === 0n) && deferred.sinks.every(x => x === 0n), 'no rule records while deferred');
+  }
+  assert.match(contactWGSL, /ctLedgerDeferred=true;[\s\S]*ctLedgerDeferred=false;[\s\S]*noteEnergySource\(positions\[0\],net\)/, 'contactBlock notes the block\'s net once');
 });
 
 console.log(`${groups} V2 contact energy groups passed against V1 react.js (CPU only)`);

@@ -222,6 +222,8 @@ fn ctPastPhase(c:CTCell,hot:bool)->bool {
  return !phaseLess(energySub(baseline,latent),ctEnergy(c));
 }
 fn ctCeilEnergy(energy:vec2u,divisor:i32)->i32{return i32(phaseDiv(energyAdd(energy,energySigned(divisor-1)),vec2u(u32(divisor),0u)).x);}
+// contactBlock's deferred ledger (v2/contact.js ctRecordChange): set while its rules run, false elsewhere
+var<private> ctLedgerDeferred: bool = false;
 ${generated}
 
 fn ctUnpack(core:vec4u,bank:i32)->CTCell {
@@ -288,11 +290,17 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
  // Native event storage has at least one 64-cell brick. Keep the bound
  // runtime-backed so Metal need not duplicate every contact rule eight times.
  let count=min(8u,arrayLength(&events));
+ // The block's energy before and after its rules, its one declared change (v2/contact.js contactReference's
+ // deferred mode): no rule records its own while ctLedgerDeferred holds, so its cold compile has this pair
+ // of sums, not a pair of ctEnergy copies a rule. Conduction moves energy inside the block: it cancels.
+ var initial=vec2u(0u);
  for(var i=0u;i<count;i++){
   cells[i]=ctUnpack((*cores)[i],(*banks)[i]);cells[i].request=i32((*requests)[i]);
   cells[i].valid=select(0,1,inGrid(positions[i]));
   if((cells[i].request&5)!=0){cells[i].done=1;cells[i].busy=1;}
+  if(cells[i].valid!=0){initial=energyAdd(initial,ctEnergy(cells[i]));}
  }
+ ctLedgerDeferred=true;
  for(var i=0u;i<count;i++){
   for(var axis=0u;axis<u32(ctNeighborCount());axis++){
    let j=i^(1u<<axis);if(j<=i || cells[i].valid==0 || cells[j].valid==0){continue;}
@@ -345,13 +353,17 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
    cells[i]=pair.a;cells[j]=pair.b;
   }
  }
+ var after=vec2u(0u);
  for(var i=0u;i<count;i++){
   if(cells[i].valid==0){continue;}
   cells[i]=ctAmbient(cells[i],contactAmbientQ(),i32(P.ambientHeat));
+  after=energyAdd(after,ctEnergy(cells[i]));
   (*cores)[i]=ctPack(cells[i],(*cores)[i]);(*banks)[i]=cells[i].bank;(*requests)[i]=ctMergeRequest((*requests)[i],u32(cells[i].request));
-  if(any(cells[i].source!=vec2u(0u))){noteEnergySource(positions[i],cells[i].source);}
-  if(any(cells[i].sink!=vec2u(0u))){noteEnergySink(positions[i],cells[i].sink);}
   if(cells[i].busy!=0){markBusy(positions[i]);}
  }
+ ctLedgerDeferred=false;
+ // (a negative change notes a sink: noteEnergySource)
+ let net=energySub(after,initial);
+ if(any(net!=vec2u(0u))){noteEnergySource(positions[0],net);}
 }
 `;

@@ -415,8 +415,13 @@ export function ctInherit(input, original) {
   // sets gas free, its row's puff, which its rule adds with ctPuff)
   return c;
 }
+// The block pass declares its cells' energy once, at its end (contactBlock, contactReference's deferred
+// mode: the block's net change), not at each rule: while deferred, a rule's record is the caller's. Its
+// cold compile then holds one pair of energy sums, not a pair of ctEnergy copies a rule (docs/webgpu.md B5).
+let ctLedgerDeferred = false;
 export function ctRecordChange(input, before) {
   let c = ctCopy(input);
+  if (ctLedgerDeferred) return c;
   const after = ctEnergy(c);
   if (ctLess(before, after)) c.source = ctAdd(c.source, ctSub(after, before));
   else c.sink = ctAdd(c.sink, ctSub(before, after));
@@ -1092,8 +1097,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
       const perFuel = ctDiv(r.heat * 65536, Math.max(1, r.burn));
       const gain = ctI(Math.min(2147483000, ctF(perFuel) * ctF(spend)));
       const beforeHeat = ctEnergy(c);
-      c = ctHeatTo(c, ceiling, gain);
-      c.source = ctAdd(c.source, ctSub(ctEnergy(c), beforeHeat));
+      c = ctRecordChange(ctHeatTo(c, ceiling, gain), beforeHeat);
       // V1 react.js: Pr += BURN_P a step
       c.request = ctPuff(c.request, CT_BURN_PUFF_PA);
       if (c.life === 0) return ctExhaust(c, seed);
@@ -1404,14 +1408,20 @@ export function contactOutsideWord(faces) {
 // as the block pass reads them from its params.
 export const CONTACT_DEFAULT_MODES = Object.freeze({ ambient: PHYS.AMBIENT, ambientHeat: 1, edge: 0 });
 // touch: each cell's flying-packet touch this tick (ctPacketTouch; the react stage's mark), none by default.
-export function contactReference(cores, banks, tick = 0, positions = CONTACT_POSITIONS, pending = new Uint32Array(8), valid = Array(8).fill(true), outside = Array.from({ length: 8 }, () => [0, 0, 0, 0]), modes = CONTACT_DEFAULT_MODES, touch = Array(8).fill(0)) {
+// deferred: the block pass's own ledger (shaders/v2/contact.js contactBlock): no rule records its change,
+// and `net` is the block's energy after less before (its cells' per-rule records' sum, conduction cancelling).
+export function contactReference(cores, banks, tick = 0, positions = CONTACT_POSITIONS, pending = new Uint32Array(8), valid = Array(8).fill(true), outside = Array.from({ length: 8 }, () => [0, 0, 0, 0]), modes = CONTACT_DEFAULT_MODES, touch = Array(8).fill(0), deferred = false) {
   const ambientQ = contactAmbientQ(modes.ambient), airHeat = +!!modes.ambientHeat;
   let cells = cores.map((core, i) => {
     const c = unpackContact(core, banks[i]); c.request = pending[i]; c.valid = +!!valid[i];
     if (c.request & 5) { c.done = 1; c.busy = 1; }
     return c;
   });
+  let initial = 0n;
+  for (let i = 0; i < 8; i++) if (valid[i]) initial += ctEnergy(cells[i]);
   const requests = new Uint32Array(pending), busy = [];
+  ctLedgerDeferred = !!deferred;
+  try {
   const seedAt = i => (Math.imul(positions[i][0], 73856093) ^ Math.imul(positions[i][1], 19349663) ^ Math.imul(positions[i][2], 83492791) ^ Math.imul(tick, 2654435761)) | 0;
   for (const [i, j] of CONTACT_PAIRS) {
     if (!valid[i] || !valid[j]) continue;
@@ -1444,7 +1454,10 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
     cores[i] = out.core; banks[i] = out.bank; requests[i] = cells[i].request;
     if (cells[i].busy) busy.push(i);
   }
-  return { cores, banks, requests, busy, sources: cells.map(c => c.source), sinks: cells.map(c => c.sink) };
+  } finally { ctLedgerDeferred = false; }
+  let final = 0n;
+  for (let i = 0; i < 8; i++) if (valid[i]) final += ctEnergy(cells[i]);
+  return { cores, banks, requests, busy, sources: cells.map(c => c.source), sinks: cells.map(c => c.sink), net: final - initial };
 }
 
 // The heat pass (shaders/v2/heat.js) on one of its cubes, the block pass's one cell over on every
