@@ -3,6 +3,7 @@ import { PHYS } from '../physics.js';
 import { prelude, STATE_OPTS, LAYOUT } from '../shaders/common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { RING_LAYOUT, ringWGSL } from '../shaders/povBody.js';
+import { nativeIndustryWriter } from '../v2/industry.js';
 
 // Existing TPT materials only: Industry charges credits in its controller after
 // a confirmed placement; purchases are physical and irreversible.
@@ -56,15 +57,14 @@ export function validateControlPartSpec(spec, bounds) {
   return out;
 }
 
-const PartParams = uniformStruct('FactoryControlPart', {
+export const PartParams = uniformStruct('FactoryControlPart', {
   at: 'vec3i', material: 'i32', temperature: 'f32', mode: 'u32', slot: 'u32',
 });
 
-/** One workgroup writes one empty cell or toggles one real native SWITCH. */
-export const controlPartsWGSL = g => /* wgsl */ `
-${prelude(g, STATE_OPTS.STATE_RW)}
-${PartParams.wgsl}
-@group(3) @binding(1) var<uniform> P: FactoryControlPart;
+/** One workgroup writes one empty cell or toggles one real native SWITCH.
+ * Its body (after the prelude) is also V2's (src/v2/industry.js NativeIndustryWriter). */
+export const controlPartsBodyWGSL = (params = PartParams) => /* wgsl */ `${params.wgsl}
+@group(3) @binding(1) var<uniform> P: ${params.name};
 ${ringWGSL()}
 const FACTORY_PART_PLACE: u32 = 0u;
 const FACTORY_PART_TOGGLE: u32 = 1u;
@@ -110,9 +110,18 @@ fn main() {
   }
   ringOut[P.slot] = result;
 }`;
+export const controlPartsWGSL = g => `
+${prelude(g, STATE_OPTS.STATE_RW)}
+${controlPartsBodyWGSL()}`;
 
 export const WGSL_CHECK = [{ name: 'industryFactoryControlParts', kind: 'compute', code: controlPartsWGSL,
   layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, RING_LAYOUT], dispatch: () => [1, 1, 1] }];
+
+// V2's control parts: the same body on the native cells (src/v2/industry.js NativeIndustryWriter), written in
+// the frame that asks: a switch's toggle lands before the next tick. Flying matter in the cell is V1's cell
+// there: a placement is rejected.
+export const NATIVE_CONTROL_PARTS = Object.freeze({ fields: PartParams, body: params => controlPartsBodyWGSL(params),
+  blocks: 'P.mode == FACTORY_PART_PLACE', blocked: 'vec4f(FACTORY_PART_REJECTED, f32(E_EMPTY), 0.0, 0.0)' });
 
 function failure(reason, spec = {}) { return { ok: false, reason, ...spec }; }
 function recordResult(bytes) { return new Float32Array(bytes, 0, 4); }
@@ -164,8 +173,15 @@ export function createFactoryControlParts({ getSim }) {
         const slot = ctx.ring.next();
         const material = mode === 0 ? spec.material : E.SWITCH;
         const temperature = mode === 0 ? (spec.threshold ?? ELEMENTS[spec.material].temp) : 0;
-        ctx.sim._dispatch(ctx.kernel, [1, 1, 1], { bind: [ctx.sim.tables, ctx.sim.bindRW, ctx.group], header: ctx.sim.header(),
-          params: { at: [spec.x, spec.y, spec.z], material, temperature, mode, slot } });
+        const params = { at: [spec.x, spec.y, spec.z], material, temperature, mode, slot };
+        // V2: V2's own cells, in this frame (its write counts its own change)
+        const native = ctx.sim.compact ? nativeIndustryWriter(ctx.sim, 'industryFactoryControlParts', NATIVE_CONTROL_PARTS) : null;
+        if (native) {
+          await native.ready;
+          if (!current(ctx)) return failure('Simulation changed before the control-part operation');
+          const cell = [spec.x, spec.y, spec.z];
+          if (!native.run({ lo: cell, hi: cell }, params, ctx.ring.buffer)) return failure('The new physics is not ready for control parts yet');
+        } else ctx.sim._dispatch(ctx.kernel, [1, 1, 1], { bind: [ctx.sim.tables, ctx.sim.bindRW, ctx.group], header: ctx.sim.header(), params });
         const result = ctx.ring.read(slot);
         ctx.gpu.flush('industry factory control part');
         const [code, foundMaterial, temperatureOut, stateOut] = recordResult(await result);
@@ -175,8 +191,7 @@ export function createFactoryControlParts({ getSim }) {
             ? 'Control parts may only be placed in an empty cell' : 'A real SWCH is not at the requested cell';
           return failure(reason, { key: spec.key ?? 'SWITCH', x: spec.x, y: spec.y, z: spec.z });
         }
-        ctx.sim.version++;
-        ctx.sim.wake();
+        if (!native) { ctx.sim.version++; ctx.sim.wake(); }
         if (mode === 0) return { ok: true, reason: '', key: spec.key, material: Math.trunc(foundMaterial), cost: spec.cost,
           x: spec.x, y: spec.y, z: spec.z, ...(spec.threshold === undefined ? {} : { threshold: temperatureOut }) };
         return { ok: true, reason: '', key: 'SWITCH', material: E.SWITCH, x: spec.x, y: spec.y, z: spec.z, on: stateOut === 10 };

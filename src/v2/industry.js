@@ -1,5 +1,7 @@
 import { fold, STAGE } from '../gpu/kernels.js';
-import { nativeWeatherParams, nativeWeatherEvaluateWGSL } from './nativeWeather.js';
+import { nativeWeatherParams, nativeWeatherEvaluateWGSL, nativeWeatherCommitWGSL, NATIVE_WEATHER_COMMIT_LAYOUT, scratchWGSL, boxWGSL, weatherMain } from './nativeWeather.js';
+import { prelude, STATE_OPTS } from '../shaders/common.js';
+import { PARTICLE_CAP } from './dynamics-reference.js';
 import { nativeForceCommitWGSL, FORCE_COMMIT_LAYOUT } from './nativeForcing.js';
 import { nativeModes } from './modes.js';
 import { GRAVITY } from './dynamics-reference.js';
@@ -147,4 +149,169 @@ export function nativeIndustry(sim) {
     natives.set(sim, entry);
   }
   return entry.kernel;
+}
+
+// ---- Factory construction, gates and control parts on V2's own cells ----
+// V1's writers (industry/construction.js, gates.js, controlParts.js) are one-invocation kernels that test
+// a whole structure, then write it (writeCell), and report through the result ring. Under V2 the same WGSL
+// body runs here against the frozen native grid (the physical read, as the machines' evaluate above), its
+// writeCell recorded as the cell's after-state; nativeWeather.js's material commit then stores each changed
+// cell in V2's own cells: a change of element is a new cell at the rule's temperature, life and seed (a
+// shutter, a deck, a switch), anything else merges its life, ctype and heat (a switch's toggle). It lands in
+// the frame that asked, before the next tick, as V1's kernel write does: no legacy A/B write, no export of
+// the projection, no import, no wait for the ring's readback (M10, M11).
+// V1 holds moving matter as cells, so its emptiness tests see a grain crossing a gate's opening or a
+// machine's footprint; V2 holds it as a particle. A packet inside the box counts as V1's cell there: the
+// rule's emptiness answer is overturned (`blocks`) and nothing is written, as V1's rule found it occupied.
+export const WRITER_CELLS_MAX = 256;                   // a writer's box: a pump's 4×7×4 is the largest
+const FLYING_WORDS = WRITER_CELLS_MAX / 32;
+export const nativeWriterParams = (name, fields) => nativeWeatherParams(name,
+  { params: { ...Object.fromEntries(fields.fields.map(f => [f.name, f.type])), origin: 'vec3i' } });
+// The flying scan's and the commit's: box, tick, modes and origin alone, so every writer shares their pipelines.
+export const WRITER_SHARED_PARAMS = nativeWeatherParams('industryWriter', { params: { origin: 'vec3i' } });
+const shared = values => Object.fromEntries(WRITER_SHARED_PARAMS.fields.filter(f => f.name in values).map(f => [f.name, values[f.name]]));
+// The packets inside the box, a bit a box cell.
+export const nativeWriterFlyingWGSL = params => `${params.wgsl}
+@group(3) @binding(1) var<uniform> P: ${params.name};
+${boxWGSL}
+struct WriterParticle { position: vec3f, id: u32, velocity: vec3f, c0: u32, tail: vec4u }
+@group(0) @binding(0) var<storage, read> particles: array<WriterParticle>;
+@group(0) @binding(1) var<storage, read_write> flying: array<atomic<u32>>;
+${weatherMain(`if(i>=${PARTICLE_CAP}u) { return; }
+let q=particles[i]; let id=q.c0&255u;
+// (matter only: no free slot, no ray or heat carrier: dynamics-reference.js PHOTON_TAG and up)
+if(q.id==0u || id==0u || id>=254u) { return; }
+let p=vec3i(floor(q.position))-P.origin;
+if(any(p<P.editLo) || any(p>P.editHi)) { return; }
+let k=weatherIndex(p); atomicOr(&flying[k>>5u],1u<<(k&31u));`)}`;
+// The V1 body with its stores recorded (not written) and its legacy bookkeeping dropped.
+// blocks: WGSL bool, after the rule, for "the box's flying matter overturns this answer"; blocked: the ring's
+// answer then (what V1's rule reports for an occupied cell).
+export function nativeWriterEvaluateWGSL(g, body, { blocks, blocked }) {
+  const entry = /@compute @workgroup_size\(1\)\nfn main\(\) \{/;
+  if (!entry.test(body)) throw new Error('native Factory writer: the V1 body has no one-invocation main');
+  return `${prelude(g, STATE_OPTS.STATE_RO)}
+${scratchWGSL}
+@group(2) @binding(1) var<storage, read_write> results: array<WeatherResult>;
+@group(2) @binding(2) var<storage, read> flying: array<u32>;
+${boxWGSL}
+fn fetchF(p: vec3i) -> u32 { return 0u; }
+fn markBrick(id: u32) {}
+fn ownLegacy(s: u32) {}
+// V1's store (shaders/common.js writeCell): only a cell of the box, only a change; here its after-state
+fn writeCell(p: vec3i, a: vec4f, b: vec4f, f: u32, oA: vec4f, oB: vec4f) -> bool {
+  if (!inGrid(p) || any(p < P.editLo) || any(p > P.editHi)) { return false; }
+  if (all(oA == a) && all(oB == b)) { return false; }
+  results[weatherIndex(p)].after = oA;
+  return true;
+}
+fn writerFlying() -> bool {
+  for (var w = 0u; w < ${FLYING_WORDS}u; w++) { if (flying[w] != 0u) { return true; } }
+  return false;
+}
+fn writerPlaces() -> bool {
+  for (var i = 0u; i < weatherCount(); i++) { let r = results[i]; if (eid(r.before) == E_EMPTY && eid(r.after) != E_EMPTY) { return true; } }
+  return false;
+}
+${body.replace(entry, 'fn industryWriterRule() {')}
+@compute @workgroup_size(1)
+fn main() {
+  for (var i = 0u; i < weatherCount(); i++) { let a = fetchA(weatherCell(i)); results[i] = WeatherResult(a, a, vec4f(0.0), vec4f(0.0)); }
+  industryWriterRule();
+  if (writerFlying() && (${blocks})) {
+    for (var i = 0u; i < weatherCount(); i++) { results[i].after = results[i].before; }
+    ringOut[P.slot] = ${blocked};
+  }
+}`;
+}
+export const nativeWriterCommitWGSL = (g, params) => nativeWeatherCommitWGSL(g, params, 'material');
+
+export class NativeIndustryWriter {
+  /** spec: { fields: the V1 kernel's params struct, body: params => its WGSL body, blocks, blocked } */
+  constructor(sim, name, spec) {
+    const o = sim.compactOwner, d = o?.dynamics, gpu = sim.gpu;
+    if (!o?.nativeDynamics || !d) throw new Error('Native Factory writers need the native dynamics adapter');
+    this.sim = sim; this.owner = o; this.dynamics = d; this.gpu = gpu; this.name = name;
+    const params = this.params = nativeWriterParams(name, spec.fields);
+    this.flyLayout = gpu.layout('industryWriterFlying', [binding(0, true), binding(1)]);
+    this.evalLayout = gpu.layout('industryWriterEvaluate', [binding(0), binding(1), binding(2, true)]);
+    this.commitLayout = gpu.layout('NATIVE_WEATHER_COMMIT', NATIVE_WEATHER_COMMIT_LAYOUT);
+    const common = WRITER_SHARED_PARAMS;
+    this.flying = gpu.kernel({ name: 'industryWriterFlying', params: common, code: nativeWriterFlyingWGSL(common), layouts: [this.flyLayout] });
+    this.evaluate = gpu.kernel({ name: `${name}Evaluate`, params, code: nativeWriterEvaluateWGSL(sim.g, spec.body(params), spec),
+      layouts: [sim.L.TABLES, sim.L.STATE_RO, this.evalLayout], workgroupSize: [1, 1, 1] });
+    this.commit = gpu.kernel({ name: 'industryWriterCommit', params: common, code: nativeWriterCommitWGSL(sim.g, common), layouts: [o.nativeDynamics.layout, this.commitLayout] });
+    this.kernels = [this.flying, this.evaluate, this.commit];
+    // Its own kernels only: it records none of the dynamics' (it reads their buffers), so it writes from
+    // the first frame while their kernels still build, as the native brush does (nativePaint.js).
+    this.ready = Promise.all(this.kernels.map(k => k.ready));
+    this.ready.catch(() => {});
+    this.results = gpu.createBuffer({ label: `${name} native results`, size: WRITER_CELLS_MAX * RESULT_BYTES, usage: GPUBufferUsage.STORAGE });
+    this.flags = gpu.createBuffer({ label: `${name} flying cells`, size: FLYING_WORDS * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    this.groups = new Map();
+  }
+  get isReady() {
+    const d = this.dynamics;
+    return this.kernels.every(k => k.state === 'ready') && !d.disposed && !!d.air && !!d.particles
+      && !this.sim.disposed && !this.owner.disposed && this.sim.compactOwner === this.owner && this.sim.compact === this.owner;
+  }
+  _groups(ring) {
+    const d = this.dynamics, air = d.air[d.airIndex], key = ring;
+    let g = this.groups.get(key);
+    if (!g || g.air !== air) {
+      const entries = buffers => buffers.map((buffer, binding) => ({ binding, resource: { buffer } }));
+      g = { air,
+        flying: this.gpu.bindGroup(this.flyLayout, entries([d.particles, this.flags]), `${this.name} flying`),
+        evaluate: this.gpu.bindGroup(this.evalLayout, entries([ring, this.results, this.flags]), `${this.name} evaluate`),
+        commit: this.gpu.bindGroup(this.commitLayout, entries([this.results, air, d.plans]), `${this.name} commit`) };
+      this.groups.set(key, g);
+    }
+    return g;
+  }
+  /** One write: box {lo, hi} (inclusive cells, the V1 rule's whole reach), values: the V1 params' fields,
+   * ring: the result ring's buffer the rule reports into (its P.slot). False if it can't run now. */
+  run(box, values, ring) {
+    const sim = this.sim, o = this.owner, d = this.dynamics, gpu = this.gpu;
+    if (!this.isReady || sim.nativeTransition || sim.nativeTransitionError) return false;
+    const dims = [sim.g.nx, sim.g.ny, sim.g.nz];
+    const lo = box.lo.map(v => Math.max(0, Math.ceil(v))), hi = box.hi.map((v, a) => Math.min(dims[a] - 1, Math.floor(v)));
+    if (lo.some((v, a) => v > hi[a])) return false;
+    const count = hi.reduce((n, v, a) => n * (v - lo[a] + 1), 1);
+    if (count > WRITER_CELLS_MAX) throw new RangeError(`${this.name}: a box of ${count} cells is past the writer's ${WRITER_CELLS_MAX}`);
+    o.sync();
+    const groups = this._groups(ring), physical = sim.bindPhysicalRO;
+    const params = { ...nativeModes(sim), ...values, editLo: lo, editHi: hi, tick: o.tick + 1, scrub: 0, origin: [sim.origin.x, sim.origin.y, sim.origin.z] };
+    const dispatch = (k, size, bind, header) => {
+      k.dispatch(gpu.frame, size, { bind, header, params: k === this.evaluate ? params : shared(params) });
+      sim.onPass?.(k.name, { kind: 'compute', gpuMs: null });
+    };
+    gpu.frame.clear(this.flags);
+    dispatch(this.flying, fold(PARTICLE_CAP / 64), [groups.flying], sim.header());
+    dispatch(this.evaluate, [1, 1, 1], [sim.tables, physical, groups.evaluate], sim.readHeader({ physical: true }));
+    dispatch(this.commit, fold(Math.ceil(count / 64)), [o.nativeDynamics.group, groups.commit], sim.header());
+    // As the machines' batch: storeMaterial noted every brick it changed (no changedAll); the projection is stale.
+    o.legacyPending = o.writtenSinceTick = true;
+    sim.version++; o.seenVersion = sim.version;
+    d._externalWork?.(); o.wake?.(); sim.wake();
+    return true;
+  }
+  dispose() {
+    if (this.results) this.sim._retire(this.results);
+    if (this.flags) this.sim._retire(this.flags);
+    this.results = this.flags = null; this.groups.clear();
+  }
+}
+const writers = new WeakMap();   // sim → { owner, byName }: one per native owner and writer
+export function nativeIndustryWriter(sim, name, spec) {
+  const o = sim?.compactOwner;
+  if (!sim?.compact || sim.compact !== o || !o.dynamics || !o.nativeDynamics) return null;
+  let entry = writers.get(sim);
+  if (!entry || entry.owner !== o) {
+    for (const w of entry?.byName.values() ?? []) w.dispose();
+    entry = { owner: o, byName: new Map() };
+    writers.set(sim, entry);
+  }
+  let writer = entry.byName.get(name);
+  if (!writer) entry.byName.set(name, writer = new NativeIndustryWriter(sim, name, spec));
+  return writer;
 }
