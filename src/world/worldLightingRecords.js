@@ -123,5 +123,7 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
       result.catch(()=>{});return Object.freeze(batch);
     }catch(error){batch.discard();cleanup();throw error;}
   }
-  return Object.freeze({ready,record,carryable,records(indices,{derivedTick=clock}={}){alive();return read(committed,indices,derivedTick);},get indices(){alive();return frozenArray(committed.keys());},get derivedTick(){return clock;},reset(){alive();generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed=new Map();clock=-1;},dispose(){if(!dead){generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed.clear();dead=true;}}});
+  return Object.freeze({ready,record,carryable,records(indices,{derivedTick=clock}={}){alive();return read(committed,indices,derivedTick);},get indices(){alive();return frozenArray(committed.keys());},
+    // The committed indices without a copy (a frozen array of a big map's 450k was a tick's first O(N) cost).
+    keys(){alive();return committed.keys();},get derivedTick(){return clock;},reset(){alive();generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed=new Map();clock=-1;},dispose(){if(!dead){generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed.clear();dead=true;}}});
 }

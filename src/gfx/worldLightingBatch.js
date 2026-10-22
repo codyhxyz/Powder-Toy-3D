@@ -11,18 +11,46 @@ export function worldLightingIndex(size, b) {
   if (!Array.isArray(b) || b.length !== 3 || !ok(0) || !ok(1) || !ok(2)) throw new RangeError('global lighting brick');
   return b[0] + size[0] / 4 * (b[1] + size[1] / 4 * b[2]);
 }
-// Exact Chebyshev neighborhood, without scanning every change for every record.
+// Exact Chebyshev neighborhood: is a brick within radius of any changed brick.
+// The changes are dilated once, into merged x-intervals per (y,z) row, so a
+// query is one row lookup and a binary search. A scan of the (2r+1)^3 bricks
+// around every queried record was 1.4 s of every 20 on Island and Descent
+// (real Chrome, 2026-10-22): two such tests ran over every record each tick.
 export function worldLightingNear(size, bricks, radius) {
   if(!uint(radius))throw new RangeError('lighting neighborhood radius');
   const [nx,ny,nz]=size.map(n=>n/4);
-  const changed=new Set(Array.from(bricks,b=>worldLightingIndex(size,b)));
+  // each changed brick's x, by its row y + ny*z
+  const source=new Map();
+  for(const b of Array.from(bricks)){worldLightingIndex(size,b);const row=b[1]+ny*b[2],xs=source.get(row);if(xs)xs.push(b[0]);else source.set(row,[b[0]]);}
+  if(!source.size)return b=>{worldLightingIndex(size,b);return false;};
+  // every row within radius in y and z gets the row's x-intervals [x-r,x+r]
+  const target=new Map();
+  for(const [row,xs] of source){
+    xs.sort((a,b)=>a-b);
+    const spans=[];
+    for(const x of xs){const lo=Math.max(0,x-radius),hi=Math.min(nx-1,x+radius);if(spans.length&&lo<=spans[spans.length-1]+1)spans[spans.length-1]=Math.max(spans[spans.length-1],hi);else spans.push(lo,hi);}
+    const y=row%ny,z=(row-y)/ny;
+    for(let tz=Math.max(0,z-radius);tz<=Math.min(nz-1,z+radius);tz++)for(let ty=Math.max(0,y-radius);ty<=Math.min(ny-1,y+radius);ty++){
+      const key=ty+ny*tz,list=target.get(key);if(list)list.push(spans);else target.set(key,[spans]);
+    }
+  }
+  // each target row's intervals merged: sorted, disjoint [lo,hi] pairs
+  const rows=new Map();
+  for(const [key,lists] of target){
+    let pairs;
+    if(lists.length===1)pairs=lists[0];
+    else{
+      const all=[];for(const l of lists)for(let k=0;k<l.length;k+=2)all.push([l[k],l[k+1]]);
+      all.sort((a,b)=>a[0]-b[0]);pairs=[];
+      for(const [lo,hi] of all){if(pairs.length&&lo<=pairs[pairs.length-1]+1)pairs[pairs.length-1]=Math.max(pairs[pairs.length-1],hi);else pairs.push(lo,hi);}
+    }
+    rows.set(key,Int32Array.from(pairs));
+  }
   return b=>{
-    if(changed.has(worldLightingIndex(size,b)))return true;
-    if(!changed.size)return false;
-    for(let z=Math.max(0,b[2]-radius);z<=Math.min(nz-1,b[2]+radius);z++)
-      for(let y=Math.max(0,b[1]-radius);y<=Math.min(ny-1,b[1]+radius);y++)
-        for(let x=Math.max(0,b[0]-radius);x<=Math.min(nx-1,b[0]+radius);x++)
-          if(changed.has(x+nx*(y+ny*z)))return true;
+    worldLightingIndex(size,b);
+    const pairs=rows.get(b[1]+ny*b[2]);if(!pairs)return false;
+    const x=b[0];let lo=0,hi=pairs.length/2-1;
+    while(lo<=hi){const m=(lo+hi)>>1;if(pairs[2*m+1]<x)lo=m+1;else if(pairs[2*m]>x)hi=m-1;else return true;}
     return false;
   };
 }

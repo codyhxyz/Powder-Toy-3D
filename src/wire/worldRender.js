@@ -90,6 +90,33 @@ export const WORLD_SUPPORT_STAGES=Object.freeze(new Set(['forecast','sun','sourc
 export function worldSourceEligible(i,{requirements,support,ownedSources,reached=null}) {
   return ownedSources.has(i)||requirements.has(i)&&!support.has(i)&&(!reached||reached(i));
 }
+// A lighting tick's GI records (history.begin): only the bricks the selection
+// can pick, an owned SOURCE or probe or a brick the transaction asks to be
+// one (worldSourceEligible, or a GI ask), and every SOURCE asked for by name
+// (requestedSources: a plan's SOURCE that can be born a probe in place, which
+// needs its record's declaration, sourceBirths). The selector skips every other
+// record (selectWorldGI: sourceEligible and probeEligible false), so its plan,
+// births and declarations are the same; but a record of every brick the
+// metadata holds, 40k-450k of them, each tested against the change
+// neighbourhood, was most of every tick's JS (real Chrome, 2026-10-22: 1.9-2.5
+// s of begin() and 2.7-3.3 s of attempt() itself in 20 s). Also the probe
+// births (never: asked for but not owned) and the SOURCES asked for anew. The
+// batch's records are by book index, the metadata's own (worldLightingRecords).
+export function worldGIRecords(batch,{size,requirements,support,ownedSources,ownedProbes,reached=null}) {
+  const eligible=[],rule={requirements,support,ownedSources,reached};
+  for(const i of ownedSources)eligible.push(i);
+  for(const i of ownedProbes)if(!ownedSources.has(i))eligible.push(i);
+  for(const [i,bits] of requirements)if(!ownedSources.has(i)&&!ownedProbes.has(i)&&(bits&(READY.GI|READY.GI_SOURCE)||worldSourceEligible(i,rule)))eligible.push(i);
+  const nearChanged=worldLightingNear(size,batch.changes.changedBricks,2),read=batch.records(eligible),records=new Array(read.length),never=[];
+  for(let k=0;k<read.length;k++){
+    const r=read[k],i=eligible[k],probeEligible=ownedProbes.has(i)||!!(requirements.get(i)&READY.GI);
+    records[k]={brick:r.brick,age:r.age,matter:r.matter,near:nearChanged(r.brick),probeEligible,sourceEligible:worldSourceEligible(i,rule)};
+    if(probeEligible&&!ownedProbes.has(i))never.push(records[k]);
+  }
+  const dims=size.map(n=>n/4),requestedSources=[];
+  for(const [i,bits] of requirements)if(bits&READY.GI_SOURCE&&!ownedSources.has(i))requestedSources.push([i%dims[0],Math.floor(i/dims[0])%dims[1],Math.floor(i/(dims[0]*dims[1]))]);
+  return {records,never,requestedSources};
+}
 // ---- the CELL stage: the owner's field tick and packing (attempt()), at
 // module level so tools/world-tick-repack-cpu-check.mjs runs them at a big
 // map's scale ----
@@ -394,7 +421,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     t.attempts=(t.attempts??0)+1;t.stage='cell';
     await clearAttempt(t,{keepRecords:true});
     await forecast(t);t.stage='cell';
-    const ids=new Set([...metadata.indices,...ownedSources,...ownedProbes,...t.requirements.keys()]);
+    const ids=new Set(metadata.keys());for(const set of [ownedSources,ownedProbes,t.requirements.keys()])for(const i of set)ids.add(i);
     for(const i of ownedGlow)t.requirements.set(i,(t.requirements.get(i)??0)|READY.GLOW);
     const glowCores=new Map();
     for(const [i,bits]of t.requirements)if(bits&READY.GLOW){const core=brick(i).map(n=>Math.floor(n/8));glowCores.set(core.join(','),core);}
@@ -416,15 +443,12 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       await t.batch.completion;
     }
     t.stage='history';
-    const nearChanged=worldLightingNear(size,t.batch.changes.changedBricks,2);
     // What this load's gathers read at full detail: the eye's ring and every probe's (no ring: everything)
     const ring=giRing(t),reach=ring&&worldGIReach(ring.eye,[...new Set([...ownedProbes,...[...t.requirements].filter(([,bits])=>bits&READY.GI).map(([i])=>i)])].map(brick),ring.radius);
     const reached=reach?i=>reach(brick(i)):null;
-    const records=t.batch.records([...ids]).map(r=>({...r,near:nearChanged(r.brick),probeEligible:ownedProbes.has(index(r.brick))||!!(t.requirements.get(index(r.brick))&READY.GI),sourceEligible:worldSourceEligible(index(r.brick),{requirements:t.requirements,support:t.support,ownedSources,reached})}));
     // Reflective SOURCE self-reads discover GI demand through typed feedback.
     // Matter (including liquids), SOURCE and CELL alone do not imply a probe.
-    const never=records.filter(r=>r.probeEligible&&!ownedProbes.has(index(r.brick)));
-    const requestedSources=[...t.requirements].filter(([i,bits])=>bits&READY.GI_SOURCE&&!ownedSources.has(i)).map(([i])=>brick(i));
+    const {records,never,requestedSources}=worldGIRecords(t.batch,{size,requirements:t.requirements,support:t.support,ownedSources,ownedProbes,reached});
     if(t.frame.advance)t.plan=history.begin({lightingTick:t.tick,globalKey:t.frame.globalKey,records,currentLamps:t.frame.lamps,mode:t.tick===0?2:0,initialization:{cutToken:t.cut.contentToken,sourceBricks:requestedSources,probeBricks:never.map(r=>r.brick),records}});
     else t.plan=history.beginBirth({cutToken:t.cut.contentToken,sourceBricks:[...new Map([...requestedSources,...never.filter(r=>!ownedSources.has(index(r.brick))).map(r=>r.brick)].map(b=>[index(b),b])).values()],probeBricks:never.map(r=>r.brick),records});
     // Every owned offscreen record remains a causal input. BUILDING is never

@@ -9,6 +9,9 @@ import { validateWorldSourceCut } from './sourceCut.js';
 import { _issueWorldLightingRestore, validateWorldLightingRestore } from './worldLightingRestore.js';
 export { validateWorldLightingRestore } from './worldLightingRestore.js';
 const manifests = new WeakMap();
+// A list holds exactly a set's members, each once (same() of both sorted,
+// without sorting every SOURCE of the transaction for each GI slab).
+const sameMembers = (list,set) => {if(list.length!==set.size)return false;const seen=new Set();for(const i of list){if(!set.has(i)||seen.has(i))return false;seen.add(i);}return true;};
 
 // Only the real ledger can issue a seed declaration. Caller metadata alone is
 // insufficient authority to turn a missing previous probe into initialized GI.
@@ -17,29 +20,46 @@ export function validateWorldGIInitialization(manifest,{epoch,lightingTick,sourc
   if(!m || !m.valid() || epoch!==manifest.epoch || lightingTick!==manifest.birthTick || previousToken!==manifest.previousToken || cutToken!==manifest.cutToken) throw new Error('invalid/stale world GI birth manifest');
   if(sourceIndices.some(i=>!m.sources.has(i)) || probeIndices.some(i=>!m.probes.has(i))) throw new Error('GI jobs outside initialization transaction');
   if(m.sameClock && sourceIndices.some(i=>m.knownSources.has(i))) throw new Error('same-clock initialization cannot recompute retained sources');
-  if(probeIndices.length && !same([...sourceIndices].sort((a,b)=>a-b),[...m.sources].sort((a,b)=>a-b)) && (!m.sourcesDone() || sourcePhaseToken!==manifest.sourcePhaseToken)) throw new Error('entire private SOURCE phase must complete before any gather slab');
+  if(probeIndices.length && !sameMembers(sourceIndices,m.sources) && (!m.sourcesDone() || sourcePhaseToken!==manifest.sourcePhaseToken)) throw new Error('entire private SOURCE phase must complete before any gather slab');
   return manifest;
 }
 
+// One GI record's validation (selectWorldGI's): the same checks, no allocation.
+function giRecord(r,age=r.age,near=r.near) {
+  const b=r.brick;
+  if(!Array.isArray(b)||b.length!==3||!uint(b[0])||!uint(b[1])||!uint(b[2])||!uint(age)||typeof r.matter!=='boolean'||typeof near!=='boolean')throw new TypeError('complete world GI age/matter/near record required');
+}
+const lampNear=(spheres,b)=>{
+  for(const s of spheres){
+    // (sum in selectWorldGI's order: 0 + d0^2 + d1^2 + d2^2)
+    let a=0;for(let k=0;k<s.pos.length;k++){const v=s.pos[k],d=v-Math.max(b[k]*4,Math.min(b[k]*4+4,v));a+=d*d;}
+    if(a<=s.radius*s.radius)return true;
+  }
+  return false;
+};
+// The selector's rule for one record: bit 1 SOURCE, bit 2 probe, bit 4 background.
+function giSelect(b,age,matter,recordNear,lightingTick,mode,settle,spheres) {
+  const [x,y,z]=b,board=((x+y+z+lightingTick%2)&1)===1;
+  const near=recordNear||spheres.length>0&&lampNear(spheres,b);let source,probe,background=false;
+  if(mode===2){source=true;probe=true;}
+  else if(mode!==0||settle!==0){source=true;probe=board;}
+  else{source=age===0||matter&&(near||((x&1)|((z&1)<<1))===lightingTick%GI_SRC_EVERY);probe=near?board:((x&1)|((y&1)<<1)|((z&1)<<2))===lightingTick%GI_BG_EVERY;background=!near;}
+  return (source?1:0)|(probe?2:0)|(background?4:0);
+}
 /** Original world-fixed selector. near is an actual lighting declaration, never physics distance. */
 export function selectWorldGI({records,lightingTick,mode=0,settle=0,lampSpheres=[],allSources=false}) {
   if(!uint(lightingTick)||![0,1,2].includes(mode)||!uint(settle))throw new TypeError('world GI selection clock/mode');
   const sourceBricks=[],gatherBricks=[];
   for(const r of records){
-    if(!Array.isArray(r.brick)||r.brick.length!==3||r.brick.some(n=>!uint(n))||!uint(r.age)||typeof r.matter!=='boolean'||typeof r.near!=='boolean')throw new TypeError('complete world GI age/matter/near record required');
-    const [x,y,z]=r.brick,board=((x+y+z+lightingTick%2)&1)===1;
-    const lampNear=lampSpheres.some(s=>{const d=s.pos.map((v,k)=>v-Math.max(r.brick[k]*4,Math.min(r.brick[k]*4+4,v)));return d.reduce((a,v)=>a+v*v,0)<=s.radius*s.radius;});
-    const near=r.near||lampNear;let source,probe,background=false;
-    if(mode===2){source=true;probe=true;}
-    else if(mode!==0||settle!==0){source=true;probe=board;}
-    else{source=r.age===0||r.matter&&(near||((x&1)|((z&1)<<1))===lightingTick%GI_SRC_EVERY);probe=near?board:((x&1)|((y&1)<<1)|((z&1)<<2))===lightingTick%GI_BG_EVERY;background=!near;}
+    giRecord(r);
+    const pick=giSelect(r.brick,r.age,r.matter,r.near,lightingTick,mode,settle,lampSpheres);
     // Nor is every record a SOURCE: a brick only the sun map or a SOURCE
     // reads is none (wire/worldRender.js worldSourceEligible). Omission keeps
     // the original contract.
-    if((source||allSources)&&r.sourceEligible!==false)sourceBricks.push(frozenArray(r.brick));
+    if((pick&1||allSources)&&r.sourceEligible!==false)sourceBricks.push(frozenArray(r.brick));
     // Metadata and SOURCE dependencies are not necessarily probe recipients.
     // Omission preserves the original selector contract for existing callers.
-    if(probe&&r.probeEligible!==false)gatherBricks.push(Object.freeze({brick:frozenArray(r.brick),background}));
+    if(pick&2&&r.probeEligible!==false)gatherBricks.push(Object.freeze({brick:frozenArray(r.brick),background:(pick&4)!==0}));
   }
   return Object.freeze({sourceBricks:frozenArray(sourceBricks),gatherBricks:frozenArray(gatherBricks)});
 }
@@ -87,14 +107,19 @@ export function createWorldLightingHistory({worldSize,epoch,sourceOwner=null,con
     let released=false;
     return Object.freeze({publication,leases:frozenArray(leases),release(){if(!released){released=true;leases.forEach(l=>l.release());}}});
   }
-  function transaction({lightingTick,selection,nextKey=key,nextLamps=lamps,nextSettle=settle,cutToken=null,sameClock=false,initialization=false,records=[]}){
+  // sourceIDs/probeIDs/background: the selection, by index. declared: each
+  // record by index, copied (frozen) only where a birth keeps it: a copy of
+  // every record each tick was most of begin() on a big map.
+  function transaction({lightingTick,sourceIDs=new Set(),probeIDs=new Set(),background=new Map(),declared=new Map(),nextKey=key,nextLamps=lamps,nextSettle=settle,cutToken=null,sameClock=false,initialization=false}){
     if(pending)throw new Error('world lighting tick already planned');
-    const sourceIDs=new Set(selection.sourceBricks.map(index)),probeIDs=new Set(selection.gatherBricks.map(index)),background=new Map(selection.gatherBricks.map(r=>[index(r),r.background===true]));
-    const born=new Set(),declarations=new Map(records.map(r=>[index(r),Object.freeze({...r,brick:frozenArray(r.brick)})]));
-    const staged=[],stagedSources=new Set(),stagedProbes=new Set();let consumed=false,version=0,sealed=false,manifest=null;
+    const born=new Set(),declaration=i=>{const r=declared.get(i);return r?Object.freeze({...r,brick:frozenArray(r.brick)}):null;};
+    const staged=[],stagedSources=new Set(),stagedProbes=new Set();let consumed=false,version=0,sealed=false,manifest=null,sortedSources=null,sortedGathers=null;
     const prevMap=sameClock?previous:probes,prevToken=sameClock?previousToken:publicationToken;
     const valid=()=>!dead&&!consumed&&pending===plan;
-    const sourcesDone=()=>same([...sourceIDs].sort((a,b)=>a-b),[...stagedSources].sort((a,b)=>a-b));
+    // stage() admits only selected, unstaged indices, and expand() clears the
+    // staged ones, so the staged sets are always subsets: equal when as large.
+    const sourcesDone=()=>stagedSources.size===sourceIDs.size;
+    const probesDone=()=>stagedProbes.size===probeIDs.size;
     function updateManifest(){
       if(!initialization)return;
       const v=++version;
@@ -108,14 +133,13 @@ export function createWorldLightingHistory({worldSize,epoch,sourceOwner=null,con
       if(new Set(addSources).size!==addSources.length||new Set(addProbes).size!==addProbes.length)throw new Error('duplicate initialization declaration');
       if(addProbes.some(i=>probes.has(i)||born.has(i)))throw new Error('cannot initialize an existing/duplicate world probe');
       if(sameClock&&addSources.some(i=>sources.has(i)))throw new Error('same-clock initialization cannot recompute retained sources');
-      const preparedRecords=moreRecords.map(r=>{
-        selectWorldGI({records:[r],lightingTick});
-        return [index(r),Object.freeze({...r,brick:frozenArray(r.brick)})];
-      });
+      // (selectWorldGI's checks of each record, before anything changes)
+      if(moreRecords.length&&!uint(lightingTick))throw new TypeError('world GI selection clock/mode');
+      const preparedRecords=moreRecords.map(r=>{giRecord(r);return index(r);});
       // Expansion invalidates private work, never committed authoritative history.
-      staged.splice(0).forEach(o=>o.release());stagedSources.clear();stagedProbes.clear();
+      staged.splice(0).forEach(o=>o.release());stagedSources.clear();stagedProbes.clear();sortedSources=sortedGathers=null;
       addSources.forEach(i=>sourceIDs.add(i));addProbes.forEach(i=>{born.add(i);probeIDs.add(i);background.set(i,false);});
-      for(const [i,r]of preparedRecords)declarations.set(i,r);
+      preparedRecords.forEach((i,k)=>declared.set(i,moreRecords[k]));
       updateManifest();return plan;
     }
     function stage(output){
@@ -124,14 +148,16 @@ export function createWorldLightingHistory({worldSize,epoch,sourceOwner=null,con
       if(!initialization&&lightingTick>0&&output.token.previousToken!==prevToken)throw new Error('output must retain the exact previous world history declaration');
       const ids=Array.from(output.sources),ps=Array.from(output.probes);
       if(ids.some(i=>!sourceIDs.has(i)||stagedSources.has(i))||ps.some(i=>!probeIDs.has(i)||stagedProbes.has(i))||new Set(ids).size!==ids.length||new Set(ps).size!==ps.length)throw new Error('duplicate/outside world transaction output');
-      if(ps.length&&!sourcesDone()&&!same([...ids].sort((a,b)=>a-b),[...sourceIDs].filter(i=>!stagedSources.has(i)).sort((a,b)=>a-b)))throw new Error('entire SOURCE phase must finish before gather');
+      // (ids are distinct, selected and unstaged: the rest of the SOURCES when as many)
+      if(ps.length&&!sourcesDone()&&ids.length!==sourceIDs.size-stagedSources.size)throw new Error('entire SOURCE phase must finish before gather');
       const ref=staged[0]?.token;
       if(ref&&['sourceRevision','sourceContentToken','fieldPublishedToken','logicalFieldTick','previousToken','configVersion','dependencySetID','dependencyVersion'].some(k=>output.token[k]!==ref[k]))throw new Error('incompatible world output slabs');
       const retained=output.retain();staged.push(retained);ids.forEach(i=>stagedSources.add(i));ps.forEach(i=>stagedProbes.add(i));return plan;
     }
     const plan=Object.freeze({epoch,lightingTick,sameClock,
-      get sourceBricks(){return frozenArray([...sourceIDs].sort((a,b)=>a-b).map(i=>frozenArray(brick(i))));},
-      get gatherBricks(){return frozenArray([...probeIDs].sort((a,b)=>a-b).map(i=>Object.freeze({brick:frozenArray(brick(i)),background:background.get(i)===true})));},
+      // (built once per selection: expand() is all that changes one)
+      get sourceBricks(){return sortedSources??=frozenArray(Array.from(Uint32Array.from(sourceIDs).sort(),i=>frozenArray(brick(i))));},
+      get gatherBricks(){return sortedGathers??=frozenArray(Array.from(Uint32Array.from(probeIDs).sort(),i=>Object.freeze({brick:frozenArray(brick(i)),background:background.get(i)===true})));},
       get initialization(){return manifest;},get sourcesComplete(){return sourcesDone();},
       expand,
       expandFeedback(feedback){
@@ -146,11 +172,13 @@ export function createWorldLightingHistory({worldSize,epoch,sourceOwner=null,con
       stage,
       captureRestore({cut,configVersion,sourceIndices=[],probeIndices=[],sourcePhase=false}={}){
         alive();if(!valid())throw new Error('closed restore transaction');
-        const v=version, merged=new Map(sources);
+        // The staged SOURCES over the committed ones (issueRestore reads it
+        // synchronously): a copy of every committed SOURCE per restore before.
+        const v=version, staging=new Map(), merged=sourcePhase?{get:i=>staging.get(i)??sources.get(i)}:sources;
         if(sourcePhase){
           if(!sourcesDone())throw new Error('complete private SOURCE phase required');
-          for(const o of staged)for(let slot=0;slot<o.sources.length;slot++)merged.set(o.sources[slot],{output:o,slot,count:o.sources.length});
-          if([...sourceIDs].some(i=>!sourceIndices.includes(i)))throw new Error('private SOURCE publication must include ALL selected sources');
+          for(const o of staged)for(let slot=0;slot<o.sources.length;slot++)staging.set(o.sources[slot],{output:o,slot,count:o.sources.length});
+          const listed=new Set(sourceIndices);for(const i of sourceIDs)if(!listed.has(i))throw new Error('private SOURCE publication must include ALL selected sources');
           for(const i of sourceIDs){const t=merged.get(i).output.token;if(t.sourceContentToken!==cut.contentToken||t.configVersion!==configVersion)throw new Error('staged SOURCE current cut/config mismatch');}
         }
         return issueRestore({cut,configVersion,sourceIndices,probeIndices},merged,prevMap,prevToken,()=>valid()&&version===v,sourcePhase?(manifest?.sourcePhaseToken??plan):null);
@@ -160,19 +188,19 @@ export function createWorldLightingHistory({worldSize,epoch,sourceOwner=null,con
         const outputs=[];try{for(const o of staged)if(o.sources.length)outputs.push(o.retain());}catch(e){outputs.forEach(o=>o.release());throw e;}
         let released=false;return Object.freeze({complete:true,token:manifest.sourcePhaseToken,outputs:frozenArray(outputs),release(){if(!released){released=true;outputs.forEach(o=>o.release());}}});
       },
-      seal({cutToken:cut,feedback}={}){alive();if(!valid()||!initialization||cut!==cutToken||feedback?.incomplete!==false||!Array.isArray(feedback.requirements)||feedback.requirements.length||feedback.sun?.length||!sourcesDone()||!same([...probeIDs].sort((a,b)=>a-b),[...stagedProbes].sort((a,b)=>a-b)))throw new Error('complete source/gather and dependency closure required');if([...born].some(i=>!declarations.has(i)))throw new Error('actual age/matter/near declaration required for every birth');sealed=true;return plan;},
+      seal({cutToken:cut,feedback}={}){alive();if(!valid()||!initialization||cut!==cutToken||feedback?.incomplete!==false||!Array.isArray(feedback.requirements)||feedback.requirements.length||feedback.sun?.length||!sourcesDone()||!probesDone())throw new Error('complete source/gather and dependency closure required');for(const i of born)if(!declared.has(i))throw new Error('actual age/matter/near declaration required for every birth');sealed=true;return plan;},
       commit(outputOrSlabs){
         alive();if(!valid())throw new Error('stale/duplicate world history commit');
         if(outputOrSlabs!==undefined){for(const o of Array.isArray(outputOrSlabs)?outputOrSlabs:[outputOrSlabs])stage(o);}
         if(initialization&&!sealed)throw new Error('initialization closure must be sealed before adoption');
-        if(!sourcesDone()||!same([...probeIDs].sort((a,b)=>a-b),[...stagedProbes].sort((a,b)=>a-b)))throw new Error('completed outputs must cover the entire world selection exactly once');
-        if([...probeIDs].some(i=>!probes.has(i)&&lightingTick!==0&&!born.has(i)))throw new Error('never-owned world probe requires explicit initialization');
-        if([...born].some(i=>!declarations.has(i)))throw new Error('actual age/matter/near declaration required for every birth');
+        if(!sourcesDone()||!probesDone())throw new Error('completed outputs must cover the entire world selection exactly once');
+        if(lightingTick!==0)for(const i of probeIDs)if(!probes.has(i)&&!born.has(i))throw new Error('never-owned world probe requires explicit initialization');
+        for(const i of born)if(!declared.has(i))throw new Error('actual age/matter/near declaration required for every birth');
         const additions=[],sourceAdds=[];let prior=null;
         try{if(!sameClock)prior=clone(probes);for(const output of staged){for(let slot=0;slot<output.probes.length;slot++)additions.push([output.probes[slot],{output:output.retain(),slot,count:output.probes.length}]);for(let slot=0;slot<output.sources.length;slot++)sourceAdds.push([output.sources[slot],{output:output.retain(),slot,count:output.sources.length}]);}}
         catch(e){if(prior)drop(prior);for(const [,p]of [...additions,...sourceAdds])p.output.release();throw e;}
         if(prior){drop(previous);previous=prior;previousToken=publicationToken;}
-        for(const [i,p]of additions){probes.get(i)?.output.release();probes.set(i,p);if(!births.has(i))births.set(i,Object.freeze({birthTick:lightingTick,record:declarations.get(i)??null}));}
+        for(const [i,p]of additions){probes.get(i)?.output.release();probes.set(i,p);if(!births.has(i))births.set(i,Object.freeze({birthTick:lightingTick,record:declaration(i)}));}
         for(const [i,p]of sourceAdds){sources.get(i)?.output.release();sources.set(i,p);}
         if(!sameClock){tick=lightingTick;settle=Math.max(0,nextSettle-1);key=nextKey;lamps=nextLamps;}
         committedCut=cutToken??staged[0]?.token.sourceContentToken??committedCut;revision++;publicationToken=Object.freeze({epoch,lightingTick:tick,revision});consumed=true;pending=null;staged.splice(0).forEach(o=>o.release());
@@ -187,20 +215,31 @@ export function createWorldLightingHistory({worldSize,epoch,sourceOwner=null,con
     if(mode===2&&lightingTick!==0)throw new Error('original reset only at scene epoch tick0, never on arrival');
     if(!Array.isArray(globalKey)&&!(globalKey instanceof Uint32Array))throw new TypeError('immutable global light key words required');
     const nextKey=Array.from(globalKey);if(!nextKey.every(uint))throw new TypeError('global light key bits');
-    const provided=new Set(records.map(index));if(provided.size!==records.length)throw new Error('duplicate world GI record');if([...probes.keys()].some(i=>!provided.has(i)))throw new Error('ordinary selection must include every owned offscreen probe');
+    const ids=Array.from(records,index),declared=new Map();
+    for(let k=0;k<ids.length;k++)declared.set(ids[k],records[k]);
+    if(declared.size!==records.length)throw new Error('duplicate world GI record');for(const i of probes.keys())if(!declared.has(i))throw new Error('ordinary selection must include every owned offscreen probe');
     const nextLamps=currentLamps.map(copyLamp),spheres=[];
     for(let i=0;i<Math.max(lamps.length,nextLamps.length);i++)if(!lampEqual(lamps[i],nextLamps[i]))for(const l of [lamps[i],nextLamps[i]])if(l)spheres.push({pos:l.pos.slice(0,3),radius:l.pos[3]+l.shape[0]+.5*l.shape[1]+2});
     const nextSettle=mode!==0||!same(key,nextKey)?GI_SETTLE:settle;
     const nearRecent=worldLightingNear(size,[...changed.values()].filter(c=>c.tick<=lightingTick&&lightingTick-c.tick<GI_RECENT).map(c=>c.brick),GI_NEAR_DILATE);
-    const effective=records.map(r=>({...r,age:births.has(index(r))?Math.min(r.age,lightingTick-births.get(index(r)).birthTick):r.age,near:!!(r.near||nearRecent(r.brick))}));
-    const selection=selectWorldGI({records:effective,lightingTick,mode,settle:nextSettle,lampSpheres:spheres,allSources});
-    const plan=transaction({lightingTick,selection,nextKey,nextLamps,nextSettle,records,initialization:!!initialization,cutToken:initialization?.cutToken??null});
+    // selectWorldGI over each record as a birth's age and the recent changes see it
+    if(![0,1,2].includes(mode)||!uint(nextSettle))throw new TypeError('world GI selection clock/mode');
+    const sourceIDs=new Set(),probeIDs=new Set(),background=new Map();
+    for(let k=0;k<ids.length;k++){
+      const r=records[k],i=ids[k],birth=births.get(i),age=birth?Math.min(r.age,lightingTick-birth.birthTick):r.age,near=!!(r.near||nearRecent(r.brick));
+      giRecord(r,age,near);
+      const pick=giSelect(r.brick,age,r.matter,near,lightingTick,mode,nextSettle,spheres);
+      if((pick&1||allSources)&&r.sourceEligible!==false)sourceIDs.add(i);
+      if(pick&2&&r.probeEligible!==false){probeIDs.add(i);background.set(i,(pick&4)!==0);}
+    }
+    const plan=transaction({lightingTick,sourceIDs,probeIDs,background,declared,nextKey,nextLamps,nextSettle,initialization:!!initialization,cutToken:initialization?.cutToken??null});
     if(initialization){try{plan.expand(initialization);}catch(e){plan.abort();throw e;}}
     return plan;
   }
   function beginBirth({lightingTick=tick,cutToken,sourceBricks=[],probeBricks=[],records=[]}={}){
     alive();if(tick<0||lightingTick!==tick||cutToken==null||cutToken!==committedCut)throw new Error('same-clock birth requires the committed cut');
-    const plan=transaction({lightingTick,selection:{sourceBricks:[],gatherBricks:[]},sameClock:true,initialization:true,cutToken,records});
+    const declared=new Map();for(const r of records)declared.set(index(r),r);
+    const plan=transaction({lightingTick,declared,sameClock:true,initialization:true,cutToken});
     try{plan.expand({sourceBricks,probeBricks,records});}catch(e){plan.abort();throw e;}return plan;
   }
   return Object.freeze({begin,beginBirth,captureRestore:options=>issueRestore(options),
