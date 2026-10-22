@@ -409,3 +409,24 @@ test('a restart\'s metadata cost is proportional to new bricks',async()=>{
   assert.deepEqual(new Set(f.owner.metadata.indices.map(String)),new Set([...f.owner.atlas.bookPages('cell')].map(pg=>String(pg.brick[0]+4*(pg.brick[1]+2*pg.brick[2])))));
   c.release();await f.close();
 });
+
+// A big map's second tick packed every resident brick again on top of its old
+// page (Island 400k, Descent 650k past the page cap, 2026-10-22): a tick packs
+// only the CELL pages its changes reach (tools/world-tick-repack-cpu-check.mjs at scale).
+test('a field tick alone packs no CELL page; a far change packs none of the near core, whose page pairs with this revision\'s LIGHT',async()=>{
+  const f=await setup({size:[64,8,8],feedback:false}),atlas=f.owner.atlas,demand=[{brick:[0,0,0],channels:READY.GI_SOURCE|READY.GI}];
+  let c=await settle(f.gpu,f.owner.request(f.frame,demand));await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
+  const packed=[],allocate=atlas.allocate.bind(atlas);atlas.allocate=(b,v)=>{packed.push(b);return allocate(b,v);};
+  const pages=new Map(atlas.live.cell);assert(pages.size>0);
+  f.sim.version++;c=await settle(f.gpu,f.owner.request(f.frame,demand));
+  assert.equal(c.logicalFieldTick,1);assert.deepEqual(packed,[],'a field tick with no change packed CELL pages again');
+  assert([...atlas.live.cell].every(([i,p])=>pages.get(i)===p),'every CELL page is the load\'s');
+  await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
+  // the far core (x >= 32 cells): past the near core's 8-cell field reach
+  f.source.noteContentChange({lo:[56,0,0],hi:[64,8,8]});
+  c=await settle(f.gpu,f.owner.request(f.frame,demand));
+  assert(packed.every(b=>b[0]*4>=32),'a far change packed a near-core CELL page');
+  const cell=atlas.live.cell.get(0),light=atlas.light.pages.get(bookPage(atlas.lightEntries[0]));
+  assert.equal(cell,pages.get(0));assert(cell.sourceRevision<c.cut.sourceRevision);assert.equal(light.sourceRevision,c.cut.sourceRevision);
+  atlas.allocate=allocate;await settle(f.gpu,f.owner.accept(c,post(c)));c.release();await f.close();
+});

@@ -365,6 +365,17 @@ export class WorldRenderAtlas {
     // index -> page for every nonzero entry: a commit checks these, never a
     // scan of the books (33M entries each on Descent, 2026-10-21).
     this.live = { cell: new Map(), light: new Map() };
+    // The source revision through which every live CELL page is current: a
+    // pack of its brick at any revision from its own up to this one writes the
+    // same page, so a LIGHT page of a revision in that span pairs with it
+    // (publish). Declared by the CELL adapter's publications
+    // (world/cellAtlasAdapter.js), which clear a page as soon as its brick's
+    // cells or its core's fields change; null (unknown) after any other CELL
+    // publication. A big map's field tick or a physics step then keeps the
+    // pages that did not change instead of packing every one again: Island's
+    // and Descent's second tick packed all 400k-650k on top of the old ones
+    // (Descent past the 2^20 page cap, 2026-10-22).
+    this.cellRevision = null;
     try { this._commit(NO_CHANGE); } catch (e) { this._releaseResources(this.resources); throw e; }
   }
   _alive() { if (this.dead) throw new Error('world atlas disposed'); check(!this.recording, 'non-reentrant synchronous atlas writer'); }
@@ -660,6 +671,9 @@ export class WorldRenderAtlas {
     check(!sun || !oldSun || sun.basisRevision > oldSun.basisRevision || (sun.basisRevision === oldSun.basisRevision && sun.publishRevision >= oldSun.publishRevision), 'sun publication regression');
     if (sun && oldSun && sun.basisRevision === oldSun.basisRevision && sun.publishRevision === oldSun.publishRevision) check(
       ['book','sun0','sun1','dependencySetID','dependencyVersion'].every(k => sun[k] === oldSun[k]) && JSON.stringify(sun.params) === JSON.stringify(oldSun.params), 'changed sun publication requires new version');
+    const cellPages = ps.filter(p => p.kind === 'cell'), declared = explicit && Object.hasOwn(input, 'cellRevision');
+    check(!declared || input.cellRevision === null || (integer(input.cellRevision) && cellPages.every(p => p.sourceRevision === input.cellRevision)), 'CELL book revision must be its new pages\' source revision');
+    const cellRevision = declared ? input.cellRevision : cellPages.length ? null : this.cellRevision;
     const invalidations = explicit ? input.invalidations ?? [] : [];
     const cleared = invalidations.map(({ brick, channels }) => {
       check([READY.CELL, READY.LIGHT, READY.ALL].includes(channels), 'invalidation must clear complete pool domains');
@@ -680,7 +694,7 @@ export class WorldRenderAtlas {
       // Only a changed index can pair anew: every other pair passed its own commit.
       for (const i of new Set([...tx.changed.cell, ...tx.changed.light])) {
         const light = this.live.light.get(i), cell = this.live.cell.get(i);
-        if (light && cell) check(light.sourceRevision === cell.sourceRevision, 'incompatible cell/light source revision');
+        if (light && cell) check(light.sourceRevision === cell.sourceRevision || (cellRevision !== null && cell.sourceRevision < light.sourceRevision && light.sourceRevision <= cellRevision), 'incompatible cell/light source revision');
       }
       // Revalidate retained descriptors too: a new manifest cannot silently mix
       // old dependencies. Under the same manifest every retained one passed its
@@ -704,6 +718,7 @@ export class WorldRenderAtlas {
       }
       this._commit(tx.changed, this.resources, this.epoch, dependencies, sun);
     } catch (e) { this._rollback(tx); throw e; }
+    this.cellRevision = cellRevision;
     for (const p of tx.oldPages) { this._supersede(p, this.generation); p.public = false; this._collect(p); }
     for (const p of ps) { p.public = true; p.since = this.generation; p.pending = false; this[p.kind].pending.delete(p.index); this._releaseResources(p.resources); }
     this.onChange({ epoch: this.epoch, generation: this.generation }); return this.generation;
@@ -839,6 +854,7 @@ export class WorldRenderAtlas {
     this.entries = new Uint32Array(this.bookLayout.count); this.lightEntries = new Uint32Array(this.bookLayout.count); this.live = { cell: new Map(), light: new Map() };
     try { this._commit(NO_CHANGE, this.resources, this.epoch + 1, manifest(), null, null); }
     catch (e) { [this.entries, this.lightEntries, this.live] = kept; throw e; }
+    this.cellRevision = null;
     for (const live of Object.values(kept[2])) for (const p of live.values()) this._supersede(p, this.generation);
     for (const pool of [this.cell, this.light]) {
       for (const p of [...pool.pending.values()]) this._cancelPage(p);

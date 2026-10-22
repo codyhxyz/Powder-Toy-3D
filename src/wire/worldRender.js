@@ -83,6 +83,50 @@ export const WORLD_SUPPORT_STAGES=Object.freeze(new Set(['forecast','sun','sourc
 export function worldSourceEligible(i,{requirements,support,ownedSources}) {
   return ownedSources.has(i)||requirements.has(i)&&!support.has(i);
 }
+// ---- the CELL stage: the owner's field tick and packing (attempt()), at
+// module level so tools/world-tick-repack-cpu-check.mjs runs them at a big
+// map's scale ----
+const pause=()=>new Promise(resolve=>setTimeout(resolve,0));
+// One CELL adapter record and commit, its source columns first, a task's
+// worth at a time.
+async function recordCells(gpu,cells,options,label) {
+  while(cells.recordSourceColumns(gpu.frame,options,WORLD_CLASSIFY_COLUMNS)){gpu.flush('WORLD Source columns');await pause();}
+  // record() uses actual sourceDemand and cut.producer on the normal Frame.
+  const h=cells.record(gpu.frame,options);
+  gpu.flush(label);
+  cells.commitAfterSourceFlush(h).previousLightingSnapshot.release();
+}
+// A transaction's field tick, first: its cut's changes and the tick's
+// advancing field owners reach the fields, and the CELL book drops every page
+// they change, before any page is judged current (worldCellCurrent). A record
+// of no bricks; nothing to do on a restart or a camera-only birth of the
+// accepted cut. Whether it recorded.
+export async function worldAdvanceFields(gpu,cells,{fieldTick,smoothing=1}) {
+  if(!cells.behind(fieldTick))return false;
+  await recordCells(gpu,cells,{fieldTick,requirements:[],smoothing},'WORLD Fields tick');
+  return true;
+}
+// A brick's CELL page is current while the book holds it: after
+// worldAdvanceFields, every page the book holds is what a pack at this cut and
+// field tick would write (renderAtlas.js cellRevision), so only bricks it
+// lacks are packed. Packing every page not of this cut's source revision and
+// field tick packed a big map's whole demand again on its second tick, on top
+// of the old pages (Island 400k: a 9.75 s stall; Descent 650k: past the pool's
+// 2^20 page cap, 2026-10-22), and a restart its unchanged pages (Island's
+// sixth attempt: 35k of 134k, 2026-10-21).
+export function worldCellCurrent(atlas,i) {const p=atlas.live.cell.get(i);return !!p&&(p.readyBits&READY.CELL)===READY.CELL;}
+// Packs the bricks of ids (book indices) whose pages are not current, in
+// batches of whole cores, yielding between them. How many it packed.
+export async function worldClassify(gpu,cells,atlas,ids,{fieldTick,smoothing=1},brick) {
+  const stale=[];for(const i of ids)if(!worldCellCurrent(atlas,i))stale.push(brick(i));
+  // One pool growth for the whole demand: a growth copies every public page.
+  atlas.reserve('cell',stale.length);
+  for(const [k,requirements] of worldClassifyBatches(stale).entries()){
+    if(k)await pause();
+    await recordCells(gpu,cells,{fieldTick,requirements,smoothing},'WORLD Source/Fields final capture');
+  }
+  return stale.length;
+}
 export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,producer=win.sourceProducer,tables=win.sim.tables,tableBuffer=gpu._simTables?.buffer,wake=()=>{},giSlabJobs=WORLD_GI_SLAB_JOBS}={}) {
   if(win.render)throw new Error('WORLD data owner already installed');
   if(!source||!producer||source.win!==win||source.gpu!==gpu)throw new TypeError('actual WORLD Source/Producer required');
@@ -171,30 +215,10 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     const p=cells.publication;
     return {version:atlas.generation+1,sets:[{id:p.dependencySetID,version:p.dependencyVersion}]};
   }
-  async function classify(t,ids) {
-    cells.bindCut(t.cut);
-    // A restart (the Sun's casters or an eye miss widened the demand) packed
-    // again every page it had just published: Island's sixth attempt of one
-    // load packed 134k pages, 35k of them unchanged (2026-10-21). A page of
-    // this cut's source revision and field tick is what a new pack would write.
-    const sourceRevision=t.cut.contentToken.sourceRevision;
-    const stale=[...ids].map(brick).filter(b=>{const l=atlas.lookup(b,READY.CELL);return !(l.known&&l.sourceRevision===sourceRevision&&l.fieldTick===t.fieldTick);});
-    // One pool growth for the whole demand: a growth copies every public page.
-    atlas.reserve('cell',stale.length);
-    const batches=worldClassifyBatches(stale);
-    const pause=()=>new Promise(resolve=>setTimeout(resolve,0));
-    for(const [k,requirements] of batches.entries()){
-      if(k)await pause();
-      const options={fieldTick:t.fieldTick,requirements,smoothing:t.frame.params.smoothing??1};
-      // Its source columns first, a task's worth at a time.
-      while(cells.recordSourceColumns(gpu.frame,options,WORLD_CLASSIFY_COLUMNS)){gpu.flush('WORLD Source columns');await pause();}
-      // record() uses actual sourceDemand and cut.producer on the normal Frame.
-      const h=cells.record(gpu.frame,options);
-      gpu.flush('WORLD Source/Fields final capture');
-      const publication=cells.commitAfterSourceFlush(h);
-      publication.previousLightingSnapshot.release();
-    }
-  }
+  const cellOptions=t=>({fieldTick:t.fieldTick,smoothing:t.frame.params.smoothing??1});
+  async function advanceFields(t) {cells.bindCut(t.cut);await worldAdvanceFields(gpu,cells,cellOptions(t));}
+  const cellCurrent=i=>worldCellCurrent(atlas,i);
+  async function classify(t,ids) {await worldClassify(gpu,cells,atlas,ids,cellOptions(t),brick);}
   function captureInput(t,{previous=null,emission=null}={}) {
     const p=cells.acquire();
     return Object.freeze({...p,source:Object.freeze({...p.source,contentToken:t.cut.contentToken}),atlas:p.atlas,previous,emission,initialization:t.plan?.initialization,sourcePhaseToken:t.restore?.publication.sourcePhaseToken,
@@ -241,9 +265,9 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     let outside=0;for(const i of atlas.live.cell.keys())if(!ids.has(i))outside++;
     const pool=atlas.cell,used=pool.nextID-pool.free.length,limit=Math.max(0,budget.cell-outside),room=Math.max(0,budget.pool.cell-used);
     if(ids.size<=limit&&ids.size<=room)return;
-    // classify()'s rule: a page of this cut's source revision and field tick is not packed again
-    const sourceRevision=t.cut.contentToken.sourceRevision,fresh=new Set(),resident=new Set();
-    for(const i of ids){const l=atlas.lookup(brick(i),READY.CELL);if(l.known)resident.add(i);if(!(l.known&&l.sourceRevision===sourceRevision&&l.fieldTick===t.fieldTick))fresh.add(i);}
+    // classify()'s rule: a current page is not packed again
+    const fresh=new Set(),resident=new Set();
+    for(const i of ids)(cellCurrent(i)?resident:fresh).add(i);
     if(ids.size<=limit&&fresh.size<=room)return;
     const eye=t.frame.values?.cam,cam=eye&&Array.from(eye).length===3&&Array.from(eye).every(Number.isFinite)?Array.from(eye):null;
     // only bricks this load asked for may go: never a held page, a glow core's region, a record's brick or a pinned support brick
@@ -334,6 +358,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     for(const [i,bits]of t.requirements)if(bits&READY.GLOW){const core=brick(i).map(n=>Math.floor(n/8));glowCores.set(core.join(','),core);}
     for(const core of glowCores.values()){const region=worldGlowPlan(size,core).input;for(let z=0;z<region.size[2];z++)for(let y=0;y<region.size[1];y++)for(let x=0;x<region.size[0];x++)ids.add(index([x+region.min[0],y+region.min[1],z+region.min[2]]));}
     if(!ids.size)throw new Error('WORLD requires explicit initial CELL demand');
+    await advanceFields(t);
     await budgetDemand(t,ids);
     await classify(t,ids);
     t.stage='metadata';

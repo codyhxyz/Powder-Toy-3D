@@ -248,9 +248,19 @@ export class WorldFields {
           const key = brickKey(planned.brick), owner = { ...ownerOf(key) }; updated.set(key, owner);
           const page = this.history.allocate(); allocated.push(page);
           this.history.copy(frame, r, origin, owner.brick, page, true);
+          // A brick with no history starts over at its target (AGE.FRESH above),
+          // and that is the blend's 8-bit fixed point: blending toward the same
+          // target rounds back to it, for every channel's weight
+          // (tools/world-tick-repack-cpu-check.mjs proves it). So it is born settled,
+          // as an owner FIELD_EMA_SETTLE ticks past its last change is: only a
+          // change makes it advance again. Born unsettled, every brick of a big
+          // map's load advanced for FIELD_EMA_SETTLE more ticks, the same bytes
+          // each time, and every core of it was derived and packed again
+          // (Island's second tick: 400k owners, a 9.75 s stall, 2026-10-22).
+          const fresh = !owner.page;
           if (owner.page) replaced.push(owner.page);
           owner.page = page;
-          owner.age = owner.changed || owner.lastTick === null ? 0 : Math.min(FIELD_EMA_SETTLE, owner.age + 1);
+          owner.age = fresh ? FIELD_EMA_SETTLE : owner.changed ? 0 : Math.min(FIELD_EMA_SETTLE, owner.age + 1);
           owner.lastTick = plan.fieldTick;
           owner.sourceVersion = plan.sourceRevision;
         }

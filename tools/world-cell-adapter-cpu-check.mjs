@@ -14,6 +14,7 @@ import { gridDims, brickIdOf, cellSlot } from '../src/shaders/common.js';
 import { brickFrag } from '../src/shaders/passes.js';
 import { worldCellClassifierWGSL, worldCellPackWGSL, WORLD_CELL_PACK_LAYOUTS, worldFieldPackWGSL, WORLD_FIELD_PACK_LAYOUT, copyCapturedFieldPage } from '../src/shaders/worldCellAdapter.js';
 import { setAeration, aerationForSource, isProducerBoundedAeration } from '../src/gfx/foam.js';
+import { FIELD_EMA_SETTLE } from '../src/shaders/fields.js';
 const u32=b=>new Uint32Array(b.bytes), f32=b=>new Float32Array(b.bytes);
 // The Box brickFrag the world classifier matches: 9cdee27b's plus only V2's liquid-interior
 // certificate bit (7c893f14), as merged into main from 7f9b2f1c.
@@ -188,9 +189,14 @@ function brickKeyForTest(brick){return brick.map(v=>Math.floor(v/8)*32).join(','
 
 test('zero-output unseen settling invalidates retained required CELL pages atomically, preserving previous pins',async()=>{
   const f=fixture();await f.adapter.ready;f.atlas.require(req);
-  const b=f.adapter.record(f.gpu.frame,{fieldTick:0,requirements:req});f.gpu.flush();f.adapter.commitAfterSourceFlush(b).previousLightingSnapshot.release();f.gpu.finish();
+  let b=f.adapter.record(f.gpu.frame,{fieldTick:0,requirements:req});f.gpu.flush();f.adapter.commitAfterSourceFlush(b).previousLightingSnapshot.release();f.gpu.finish();
+  // A change at the two cores' seam: their owners settle over the next ticks
+  // (a load's own owners are born settled, fields.js), and the pages packed
+  // meanwhile are of fields still settling.
+  f.source.noteContentChange({lo:[28,4,4],hi:[36,8,8]});
+  b=f.adapter.record(f.gpu.frame,{fieldTick:1,requirements:req});f.gpu.flush();f.adapter.commitAfterSourceFlush(b).previousLightingSnapshot.release();f.gpu.finish();
   const old=f.atlas.snapshot(),required=new Set(f.atlas.required);
-  const next=f.adapter.record(f.gpu.frame,{fieldTick:1,requirements:[]});assert.equal(f.adapter.pending.result.outputs.length,0);assert.equal(f.adapter.pending.invalidated.length,2);assert.equal(f.adapter.cache.size,0);
+  const next=f.adapter.record(f.gpu.frame,{fieldTick:2,requirements:[]});assert.equal(f.adapter.pending.result.outputs.length,0);assert.equal(f.adapter.pending.invalidated.length,2);assert.equal(f.adapter.cache.size,0);
   f.gpu.flush();f.adapter.commitAfterSourceFlush(next).previousLightingSnapshot.release();f.gpu.finish();assert.deepEqual(f.atlas.required,required);
   assert(f.atlas.lookup(req[0].brick).incomplete);assert(!lookupSnapshot(old,req[0].brick).incomplete);old.release();await cleanup(f);
 });
@@ -202,10 +208,12 @@ test('aborted settling retains CELL/LIGHT/Sun invalidations until successful Atl
   f.atlas.publish({lightJobs:[light],sunManifest:{epoch:1,basisRevision:1,publishRevision:1,dependencySetID:0,dependencyVersion:0,book:{},sun0:{},sun1:{},
     params:{worldToLight:Array(16).fill(0),depth:[1,0,1,1],tiles:[0,0,1,1],physical:[256,8,64,1],version:[1,1,1,f.atlas.bookLayout.sunWord]}}});f.gpu.finish();
   const old=f.atlas.snapshot();
-  for(let tick=1;tick<=13;tick++){
+  // A change its owners settle from (a load's own are born settled, fields.js).
+  f.source.noteContentChange({lo:[0,0,0],hi:[4,4,4]});
+  for(let tick=1;tick<=FIELD_EMA_SETTLE+1;tick++){
     batch=f.adapter.record(f.gpu.frame,{fieldTick:tick,requirements:[]});f.gpu.flush();f.adapter.abort(batch);f.gpu.finish();await Promise.resolve();
   }
-  batch=f.adapter.record(f.gpu.frame,{fieldTick:14,requirements:[]});
+  batch=f.adapter.record(f.gpu.frame,{fieldTick:FIELD_EMA_SETTLE+2,requirements:[]});
   assert.equal(f.adapter.pending.plan.advancing.length,0);assert.equal(f.adapter.pending.invalidated.length,0);
   assert(f.adapter.unpublishedInvalidations.has('0,0,0'));assert(f.adapter.lightingDirty);f.gpu.flush();
   const publish=f.atlas.publish.bind(f.atlas);f.atlas.publish=()=>{throw new Error('Atlas patch rejected');};

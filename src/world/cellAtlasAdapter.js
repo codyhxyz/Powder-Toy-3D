@@ -173,6 +173,13 @@ export class WorldCellAtlasAdapter {
     if(!columns.length)this.prepared={options,demand,authority,state:this._demandState()};
     return columns.length;
   }
+  // Whether the bound cut's changes and fieldTick's owners are still to reach
+  // the fields and the book (wire/worldRender.js advanceFields): until a record
+  // at fieldTick commits, a page the book holds may be one this tick changes.
+  behind(fieldTick){
+    this._alive();
+    return !this.publication||!same(this.publication.source,this.source.contentToken())||this.fields.lastTick!==fieldTick||this.unpublishedInvalidations.size>0;
+  }
   // What a demand read besides the source's authority token.
   _demandState(){const f=this.fields;return [this.source,this.lastSourceToken,f.version,f.history.epoch,f.publishedToken,f.published.size];}
   _demand(options){
@@ -328,8 +335,18 @@ export class WorldCellAtlasAdapter {
       // the lighting owner can supply explicit compatible replacements below.
       // The books' own pages, not a scan of 33M entries each on Descent (2026-10-21).
       if(derivedChanged)for(const p of this.atlas.bookPages('light'))clears.push({brick:[...p.brick],channels:READY.LIGHT});
-      if(this.unpublishedInvalidations.size)for(const p of this.atlas.bookPages('cell')){
-        if(this.unpublishedInvalidations.has(brickKey(coreFor(p.brick))))clears.push({brick:[...p.brick],channels:READY.CELL});
+      // The invalidated cores' pages, in book order as a pass over every page
+      // found them: the pages of one core are at most its 512 bricks, and that
+      // pass sorted all of a big map's (650k on Descent) per commit, every
+      // tick something changed (2026-10-22).
+      if(this.unpublishedInvalidations.size){
+        const book=this.atlas.bookLayout,live=this.atlas.live.cell,dims=this.bounds.max.map(v=>v/4),cleared=[];
+        for(const key of this.unpublishedInvalidations){
+          const core=key.split(',').map(Number),lo=core.map(v=>v/4),hi=lo.map((v,k)=>Math.min(v+8,dims[k]));
+          for(let z=lo[2];z<hi[2];z++)for(let y=lo[1];y<hi[1];y++)for(let x=lo[0];x<hi[0];x++){const i=worldBrickIndex(book,[x,y,z]);if(live.has(i))cleared.push(i);}
+        }
+        cleared.sort((a,b)=>a-b);
+        for(const i of cleared)clears.push({brick:[...live.get(i).brick],channels:READY.CELL});
       }
       const cellKeys=new Set();for(const r of batch.options.requirements)if((Array.isArray(r)?READY.CELL:r.channels)&READY.CELL)cellKeys.add(brickKey(Array.isArray(r)?r:r.brick));
       this.atlas.reserve('cell',cellKeys.size);
@@ -355,7 +372,10 @@ export class WorldCellAtlasAdapter {
       }
       flushWrites();
       if(!batch.source.isCurrent()||batch.plan.epoch!==this.fields.history.epoch)throw new Error('CELL source changed while packing');
-      const publication=this.atlas.publish({cellJobs:jobs,lightJobs,invalidations:clears,...(dependencyToken?{dependencyToken}:{}),...(sunManifest!==undefined?{sunManifest}:derivedChanged?{sunManifest:null}:{})});
+      // Every page this commit leaves in the book is what a pack at this
+      // revision would write: a change to a brick's cells or its core's fields
+      // invalidated the core (fields.js), whose pages it just cleared.
+      const publication=this.atlas.publish({cellJobs:jobs,lightJobs,invalidations:clears,cellRevision:batch.source.sourceRevision,...(dependencyToken?{dependencyToken}:{}),...(sunManifest!==undefined?{sunManifest}:derivedChanged?{sunManifest:null}:{})});
       batch.state='published';this.pending=null;
       const old=this.publication;
       this.publication=Object.freeze({identity:Object.freeze({generation:publication}),source:batch.contentToken,fieldToken:batch.fieldToken,fieldTick:batch.fieldToken.fieldTick,changedBricks:Object.freeze([...this.unpublishedChanges.values()]),invalidatedCoreKeys:Object.freeze([...this.unpublishedInvalidations]),dependencySetID:this.dependencyID,dependencyVersion:publication});
