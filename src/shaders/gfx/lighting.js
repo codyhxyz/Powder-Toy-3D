@@ -1078,7 +1078,10 @@ const LAMP_PAD: f32 = 0.3;         // cells short of the lamp the shadow ray sto
 const LAMP_FIXED_PAD: f32 = ${LAMP_FIXED_PAD.toFixed(2)};   // ...a fixed lamp's: its light is in a solid cell (gfx/lamps.js)
 const LAMP_FIXED_SELF: f32 = 0.6;  // cells: a surface this close to a fixed lamp's centre (each axis) is its own cell's
 // view: what the specular needs (lampSpec, off in lampSum); the shadow ray is shared.
-fn lampShade(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn) -> LampLit {
+// beamOn: whether the lighthouse's beam lights the diffuse sum (a caller that
+// reads only .spec passes false: the beam has no specular, and its shadow ray
+// would only request bricks for light nobody uses).
+fn lampLights(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn, beamOn: bool) -> LampLit {
   var sum = vec3f(0.0);
   var spec = vec3f(0.0);${giUniforms ? `
   for (var i = 0; i < LAMP_MAX; i++) {
@@ -1091,7 +1094,7 @@ fn lampShade(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn) -> Lam
   let lamps = min(FU.lampCount, LAMP_MAX);
   for (var i = 0; i <= LAMP_MAX; i++) {
     let beam = i == lamps;
-    if (i > lamps || (beam && !(FU.beaconDir.w > 0.0))) { break; }`}
+    if (i > lamps || (beam && !(beamOn && FU.beaconDir.w > 0.0))) { break; }`}
     let ro = p + ng * LAMP_START;
     var o = ro;
     var rd = vec3f(0.0);
@@ -1156,6 +1159,9 @@ fn lampShade(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn) -> Lam
     if (view.on) { spec += E * lampSpec(i, p, n, view); }
   }
   return LampLit(sum, spec);
+}
+fn lampShade(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn) -> LampLit {
+  return lampLights(p, ng, n, soft, view, true);
 }
 fn lampSum(p: vec3f, ng: vec3f, n: vec3f, soft: bool) -> vec3f {
   return lampShade(p, ng, n, soft, LampSpecIn(vec3f(0.0), 1.0, vec3f(0.0), vec3f(1.0, 0.0, 0.0), 0.0, false)).diff;
