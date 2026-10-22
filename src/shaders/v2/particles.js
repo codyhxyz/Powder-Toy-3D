@@ -68,9 +68,12 @@ fn dPressureCell${suffix}(p: vec3i) -> f32 {
   }
   let core=loadMaterial(slotOf(p)).core;
   if (cid(core)==${E.SINGULARITY}u) { return contactVacuum(core)*${f(LEGACY_PRESSURE_PA)}; }
+  // (only beside a singularity: V1 react.js takes the min for a SINGULARITY neighbour alone, so every
+  // other cell keeps its pressure, a blast's included)
   for (var a=0u;a<3u;a++) { for (var side=-1;side<=1;side+=2) {
     let q=mEdge(p+dAxis(a)*side);
-    if (inGrid(q)) { s=min(s,${f(PHYS.SING_RING)}*contactVacuum(loadMaterial(slotOf(q)).core)*${f(LEGACY_PRESSURE_PA)}); }
+    if (inGrid(q)) { let n=loadMaterial(slotOf(q)).core;
+      if (cid(n)==${E.SINGULARITY}u) { s=min(s,${f(PHYS.SING_RING)}*contactVacuum(n)*${f(LEGACY_PRESSURE_PA)}); } }
   } }
   return s;
 }

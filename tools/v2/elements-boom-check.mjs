@@ -134,6 +134,12 @@ test('row 24: a singularity holds the brick at the mean of V1 per-cell vacuums',
   assert.ok(!/a\.vp\.w=min\(a\.vp\.w,vacuum\)/.test(source), 'no whole-brick vacuum');
   const plan = blastsWGSL(g, nativeDynamicsHead, 'couplePlan');
   assert.ok(plan.includes(`${PHYS.SING_RING}*contactVacuum(`), 'the per-cell read keeps the ring');
+  // V1 react.js takes that min beside a SINGULARITY alone (nid[i] == E_SINGULARITY): every other cell keeps
+  // its own pressure. Taken beside any cell (contactVacuum is 0 there) it held every positive pressure at
+  // 0, so no blast's pressure set off an explosive (crushP), broke a solid or crushed anything.
+  const cell = plan.slice(plan.indexOf('fn dPressureCell('), plan.indexOf('fn dOpenPressure('));
+  assert.ok(cell.includes(`if (inGrid(q)) { let n=loadMaterial(slotOf(q)).core;\n      if (cid(n)==${E.SINGULARITY}u) { s=min(s,${PHYS.SING_RING}*contactVacuum(n)*`), 'the ring beside a singularity only');
+  assert.equal(cell.match(/s=min\(s,/g).length, 1, 'and no other min on the cell\'s pressure');
 });
 
 function minimalSnapshot() {
