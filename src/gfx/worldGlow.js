@@ -28,16 +28,19 @@ export function createWorldGlow(gpu, { g, emissionProvider, submissionProvider }
     if (!p) return null;
     p.refs++; let released = false;
     const live = () => { if (released) throw new Error('released world glow output'); };
+    // One Atlas write, for transport.writeAll to submit with the others.
+    const atlasWrite = job => {
+      live(); worldLightingIndex(size, job.brick);
+      const c = job.brick.map((n, k) => n - p.plan.output.min[k]);
+      if (c.some((n, k) => n < 0 || n >= p.plan.output.size[k])) throw new RangeError('glow output does not own Atlas brick');
+      const index = c[0] + p.plan.output.size[0] * (c[1] + p.plan.output.size[1] * c[2]);
+      return { job, kind: 'glow', token: p.token, source: p.texture, origin: [index % 256, Math.floor(index / 256), 0], retain: () => handle(p) };
+    };
     return Object.freeze({ token: p.token, plan: p.plan,
       retain() { live(); return handle(p); },
       release() { if (!released) { released = true; drop(p); } },
-      writeAtlas(atlas, job) {
-        live(); worldLightingIndex(size, job.brick);
-        const c = job.brick.map((n, k) => n - p.plan.output.min[k]);
-        if (c.some((n, k) => n < 0 || n >= p.plan.output.size[k])) throw new RangeError('glow output does not own Atlas brick');
-        const index = c[0] + p.plan.output.size[0] * (c[1] + p.plan.output.size[1] * c[2]);
-        return transport.write({ atlas, job, kind: 'glow', token: p.token, source: p.texture, origin: [index % 256, Math.floor(index / 256), 0], retain: () => handle(p) });
-      },
+      atlasWrite,
+      writeAtlas(atlas, job) { return transport.write({ atlas, ...atlasWrite(job) }); },
     });
   }
   async function prepare({ core, lightingTick, configVersion } = {}) {

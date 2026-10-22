@@ -409,3 +409,82 @@ test('a restart\'s metadata cost is proportional to new bricks',async()=>{
   assert.deepEqual(new Set(f.owner.metadata.indices.map(String)),new Set([...f.owner.atlas.bookPages('cell')].map(pg=>String(pg.brick[0]+4*(pg.brick[1]+2*pg.brick[2])))));
   c.release();await f.close();
 });
+
+// A restart re-ran every SOURCE job of the load: Island's scene round restarted
+// a probe-ready load twice with ~78k SOURCES each time, then took 20-28 s to
+// publish them (2026-10-22). Same cut, field tick, clock, config and sun: a
+// restart carries them (gfx/worldGI.js carry), byte for byte what it computed.
+const sourceRuns=f=>f.giJobs.filter(j=>j.phase==='world GI source');
+// a SOURCE's published bytes, read back through the history a camera-only load restores
+async function sourceBytes(f,bricks){
+  const c=await settle(f.gpu,f.owner.request({...f.frame,advance:false},[{brick:bricks[0],channels:READY.CELL}]));
+  const out=bricks.map(b=>{const s=c.snapshot.lightingProvenance(b).source;return [...words(s.nativeBuffer).subarray(s.ranges[0].from/4,s.ranges[0].from/4+4)];});
+  await settle(f.gpu,f.owner.discard(c));c.release();return out;
+}
+test('a restart with unchanged inputs runs no SOURCE job again, and publishes the same SOURCE bytes',async()=>{
+  const demand=[0,1,2].map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE|READY.GI})),bricks=demand.map(r=>r.brick);
+  const f=await setup({feedback:false});
+  const c=await settle(f.gpu,f.owner.request(f.frame,demand));
+  const first=sourceRuns(f).length;assert.equal(first,3);
+  // the scene asks for a glow (as its round does): the same SOURCES, nothing they read changed
+  const extended=await settle(f.gpu,f.owner.extend(c,{incomplete:true,requirements:[{brick:[0,0,0],channels:READY.GLOW}],sun:[]}));c.release();
+  const p=f.owner.progress;assert.equal(p.attempts,2);
+  assert.equal(sourceRuns(f).length-first,0,'the restart ran SOURCE jobs again');
+  assert.equal(p.carriedSources,3);assert.equal(p.sourceJobs,3);
+  await settle(f.gpu,f.owner.accept(extended,post(extended)));extended.release();
+  const carried=await sourceBytes(f,bricks);await f.close();
+  // what a load that asked for the glow up front publishes
+  const g=await setup({feedback:false});
+  const fresh=await settle(g.gpu,g.owner.request(g.frame,[...demand,{brick:[0,0,0],channels:READY.GLOW}]));
+  assert.equal(g.owner.progress.carriedSources,0);
+  await settle(g.gpu,g.owner.accept(fresh,post(fresh)));fresh.release();
+  assert.deepEqual(carried,await sourceBytes(g,bricks));await g.close();
+});
+// A SOURCE job's light depends on none of its slab's other jobs: a pass whose
+// slab had one job ask for its own probe (a birth, past the reset) keeps the
+// jobs that completed, and the next pass runs only the birth again.
+test('a SOURCE pass after births runs again only the jobs that asked for something, with the same result',async()=>{
+  const cores=[0,8,16],run=async kinds=>{
+    const f=await setup({size:[96,8,8],feedback:false,sourceKinds:kinds});
+    const c0=await settle(f.gpu,f.owner.request(f.frame,cores.map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE}))));
+    await settle(f.gpu,f.owner.accept(c0,post(c0)));c0.release();f.giJobs.length=0;
+    const c=await settle(f.gpu,f.owner.request(f.frame,cores.map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE}))));
+    const p=f.owner.progress,jobs=sourceRuns(f).map(j=>j.index);
+    await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
+    const bytes=await sourceBytes(f,cores.map(x=>[x,0,0]));await f.close();
+    return {p,jobs,bytes};
+  };
+  const r=await run({0:'opaque',8:'air',16:'air'});
+  assert.equal(r.p.attempts,1);assert.equal(r.p.sourcePasses,1);
+  assert.deepEqual(r.jobs,[0,8,16,0],'the second pass ran a completed job again');
+  assert.equal(r.p.carriedSources,2);
+  // each carried job's own bytes (the fixture's SOURCE writes its index and clock), none moved to another slot
+  assert.deepEqual(r.bytes,cores.map(x=>[x,1,101,202]));
+});
+// A load's final publish writes every SOURCE, probe and glow page in one
+// submission with one wait: a wait per page was 20-28 s on Island (2026-10-22).
+test('the final publish writes all of its light pages in one Atlas submission',async()=>{
+  const f=await setup({feedback:false}),calls=[],batch=f.owner.atlas.recordLightWrites.bind(f.owner.atlas);
+  f.owner.atlas.recordLightWrites=writes=>{calls.push(writes.map(w=>w.kind));return batch(writes);};
+  const c=await settle(f.gpu,f.owner.request(f.frame,[0,1,2].map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE|READY.GI}))));
+  const final=calls.at(-1);
+  assert.equal(final.filter(k=>k==='source').length,3);assert.equal(final.filter(k=>k==='gi').length,3);
+  assert.equal(calls.filter(k=>k.length>1).length,1,'one batched publish');
+  await settle(f.gpu,f.owner.discard(c));c.release();await f.close();
+});
+// Only the bricks a gather reads at full detail are SOURCES: the eye's ring
+// and every probe's (world/worldGIRing.js worldGIReach). A brick the view asked
+// for past them was a SOURCE before (Island: ~78k a restart, 2026-10-22).
+test('SOURCE jobs are only bricks within a gather\'s reach: a far brick the view asked for is no SOURCE',async()=>{
+  const {worldGIReach,WORLD_GI_NEAR_RADIUS}=await import('../src/world/worldGIRing.js');
+  const f=await setup({size:[192,8,8],feedback:false,ground:()=>2});
+  const far=[40,0,0],probe=[0,0,0];
+  const c=await settle(f.gpu,f.owner.request(f.frame,[{brick:probe,channels:READY.GI},{brick:far,channels:READY.CELL},{brick:[2,0,0],channels:READY.CELL}]));
+  const reach=worldGIReach(f.frame.values.cam,[probe],WORLD_GI_NEAR_RADIUS),dims=[48,2,2];
+  const at=j=>[j.index%dims[0],Math.floor(j.index/dims[0])%dims[1],Math.floor(j.index/dims[0]/dims[1])];
+  const sources=sourceRuns(f).map(at);
+  assert(sources.some(b=>b[0]===2),'a brick inside the reach the view asked for is a SOURCE');
+  assert(sources.every(b=>reach(b)),`SOURCE jobs past every gather's reach: ${JSON.stringify(sources.filter(b=>!reach(b)))}`);
+  assert(f.owner.atlas.lookup(far,READY.CELL).known,'the far brick is still loaded for the view');
+  await settle(f.gpu,f.owner.discard(c));c.release();await f.close();
+});

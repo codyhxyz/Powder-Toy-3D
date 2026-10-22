@@ -12,7 +12,7 @@ import { createWorldAppearance } from '../gfx/worldAppearance.js';
 import { worldSunProjection, WORLD_SUN_PITCH } from '../world/worldSun.js';
 import { worldColumnTops, forecastSunCasters, forecastViewTiles, worldViewRays, forecastGatherSources, forecastSourceTiles } from '../world/worldSunForecast.js';
 import { worldSunRings, worldCoarseCasters, WORLD_SUN_SHARPEN_TILES } from '../world/worldSunRings.js';
-import { WORLD_GI_NEAR_RADIUS } from '../world/worldGIRing.js';
+import { WORLD_GI_NEAR_RADIUS, worldGIReach } from '../world/worldGIRing.js';
 import { worldViewAirFloors, worldViewAirWords, worldPageBudget, worldBudgetDemand } from '../world/worldViewRing.js';
 import { worldGIGroundWords } from '../shaders/worldGI.js';
 
@@ -79,9 +79,16 @@ export function mergeWorldFeedback(list) {
 // 449k bricks over 17 attempts, every brick a SOURCE). A support brick a gather
 // does read comes back as a typed SOURCE request, so every SOURCE the picture
 // reads is still computed, and the same: only the unread ones are skipped.
+// And of those only the ones a gather reads at full detail (reached: the eye's
+// light-bounce ring and each gathered probe's, world/worldGIRing.js
+// worldGIReach): a far brick the view asked for has its SOURCE read by no
+// gather but a ray's far stride, which takes the ground twin past the ring
+// (an earlier load's held SOURCE where there is one), so it is not computed
+// (Island, 2026-10-22: ~78k SOURCES a restart, 20-28 s to publish). Small
+// maps (Box) compute every brick's SOURCE (shaders/gi.js) and never get here.
 export const WORLD_SUPPORT_STAGES=Object.freeze(new Set(['forecast','sun','source']));
-export function worldSourceEligible(i,{requirements,support,ownedSources}) {
-  return ownedSources.has(i)||requirements.has(i)&&!support.has(i);
+export function worldSourceEligible(i,{requirements,support,ownedSources,reached=null}) {
+  return ownedSources.has(i)||requirements.has(i)&&!support.has(i)&&(!reached||reached(i));
 }
 export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,producer=win.sourceProducer,tables=win.sim.tables,tableBuffer=gpu._simTables?.buffer,wake=()=>{},giSlabJobs=WORLD_GI_SLAB_JOBS}={}) {
   if(win.render)throw new Error('WORLD data owner already installed');
@@ -156,11 +163,11 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     if(!t.retired||t.bundlePins||t.cleaned)return;
     t.cleaned=true;t.inputs?.release();t.gi?.dispose();t.glow?.dispose();t.sun?.dispose();t.appearance?.dispose();t.feedbackBuffer?.destroy();t.cut.release();releaseFrame(t.frame);
   }
-  // A restart keeps its completed metadata batch for the next attempt to carry.
+  // A restart keeps its completed metadata batch and SOURCE slabs for the next attempt to carry.
   async function clearAttempt(t,{keepRecords=false}={}) {
     t.bundle?.release();t.bundle=null;
     t.plan?.abort();t.plan=null;if(!keepRecords){t.batch?.discard();t.batch=null;}
-    for(const p of t.outputs.splice(0))p.release();
+    if(keepRecords)poolSources(t);else{for(const p of t.outputs.splice(0))p.release();for(const e of t.carry.splice(0))e.output.release();}
     for(const p of t.glows.splice(0))p.release();
     t.sunHandle?.release();t.sunHandle=null;
     t.privateSnapshot?.release();t.privateSnapshot=null;
@@ -206,7 +213,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     if(!candidate.record)throw new Error('WORLD producer lost frozen cut');
     const outcome=await candidate.record(gpu.frame);
     if(outcome.status==='published')return {output:producer.snapshot()};
-    if(outcome.feedback)return {feedback:outcome.feedback};
+    if(outcome.feedback)return {feedback:outcome.feedback,partial:outcome.partial??null};
     throw new Error(`WORLD producer ${outcome.status}: ${outcome.error??'unresolved jobs without typed feedback'}`);
   }
   function slabs(entries) {
@@ -224,7 +231,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     const feedback=[],ring=phase==='source'?null:giRing(t),ground=ring?await giGroundFor():null;
     for(const slab of slabs(bricks)){
       const r=await result(t,t.gi,await t.gi.prepare({lightingTick:t.tick,reset:t.tick===0,configVersion:t.frame.configVersion,initialization:t.plan.initialization,sourceBricks:phase==='source'?slab:[],gatherBricks:phase==='source'?[]:slab,shadows:t.frame.params.shadows!==false,ring,ground}));
-      if(r.feedback){feedback.push(r.feedback);continue;}
+      if(r.feedback){feedback.push(r.feedback);if(r.partial)t.carry.push({output:r.partial,sun:t.sunKinds});continue;}
       t.outputs.push(r.output);if(!feedback.length)t.plan.stage(r.output);
     }
     return feedback.length?mergeWorldFeedback(feedback):null;
@@ -253,6 +260,30 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     for(const i of r.dropped){ids.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);}
     if(r.air!==current.air)viewAir={air:r.air,id:++viewAirId};t.budgetDropped=t.dropped.size;
     console.warn(`WORLD load over its GPU page budget (${budget.cell} pages, pool ${budget.pool.cell}): ${r.dropped.length} farthest bricks dropped`);
+  }
+  // SOURCE slabs a restart keeps (gfx/worldGI.js carry): the transaction's cut,
+  // field tick, lighting tick, frame and config are a restart's too, so a
+  // completed SOURCE job (a published slab's, or an incomplete slab's that read
+  // nothing missing) is what a fresh pass would compute while the sun map it
+  // read is unchanged: the same tiles, each as sharp or coarse (a tile's
+  // texels are the cut's, given its kind: a full-detail pass publishes only
+  // once every caster it walks to is resident). Island ran ~78k SOURCE jobs
+  // on each of its restarts, the same each time (2026-10-22).
+  function poolSources(t) {
+    for(const o of t.outputs.splice(0)){if(!o.probes.length&&o.sources.length&&t.sunKinds)t.carry.push({output:o,sun:t.sunKinds});else o.release();}
+  }
+  const sunAgrees=(was,now)=>{for(const [i,coarse]of was)if(now.get(i)!==coarse)return false;return true;};
+  // This attempt's SOURCE phase: the pool's jobs carried, the rest computed.
+  async function carrySources(t,sources) {
+    const from=t.carry.filter(e=>sunAgrees(e.sun,t.sunKinds)).map(e=>e.output);let rest=sources;
+    try{
+      if(from.length&&sources.length){
+        const {output,carried}=await t.gi.carry({from,sourceBricks:sources,lightingTick:t.tick,configVersion:t.frame.configVersion,initialization:t.plan.initialization,reset:t.tick===0,shadows:t.frame.params.shadows!==false});
+        if(output){t.outputs.push(output);t.plan.stage(output);const kept=new Set(carried);rest=sources.filter(b=>!kept.has(index(b)));}
+      }
+    }finally{for(const e of t.carry.splice(0))e.output.release();}
+    t.carriedSources=sources.length-rest.length;t.sourceJobs=(t.sourceJobs??0)+rest.length;
+    return rest.length?giPhase(t,rest,'source'):null;
   }
   // A SOURCE job reads its own brick's previous probe (gi.js giSourceFrag), so
   // the SOURCE phase's only GI demand is births of its own bricks: the restart
@@ -350,7 +381,10 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     }
     t.stage='history';
     const nearChanged=worldLightingNear(size,t.batch.changes.changedBricks,2);
-    const records=t.batch.records([...ids]).map(r=>({...r,near:nearChanged(r.brick),probeEligible:ownedProbes.has(index(r.brick))||!!(t.requirements.get(index(r.brick))&READY.GI),sourceEligible:worldSourceEligible(index(r.brick),{requirements:t.requirements,support:t.support,ownedSources})}));
+    // What this load's gathers read at full detail: the eye's ring and every probe's (no ring: everything)
+    const ring=giRing(t),reach=ring&&worldGIReach(ring.eye,[...new Set([...ownedProbes,...[...t.requirements].filter(([,bits])=>bits&READY.GI).map(([i])=>i)])].map(brick),ring.radius);
+    const reached=reach?i=>reach(brick(i)):null;
+    const records=t.batch.records([...ids]).map(r=>({...r,near:nearChanged(r.brick),probeEligible:ownedProbes.has(index(r.brick))||!!(t.requirements.get(index(r.brick))&READY.GI),sourceEligible:worldSourceEligible(index(r.brick),{requirements:t.requirements,support:t.support,ownedSources,reached})}));
     // Reflective SOURCE self-reads discover GI demand through typed feedback.
     // Matter (including liquids), SOURCE and CELL alone do not imply a probe.
     const never=records.filter(r=>r.probeEligible&&!ownedProbes.has(index(r.brick)));
@@ -371,17 +405,20 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     const air=await viewAirFor();
     const sun=await result(t,t.sun,await t.sun.prepare({direction:t.frame.sun.direction,basisRevision:t.frame.sun.basisRevision,configVersion:t.frame.configVersion,sceneToken:t.frame.sceneVersion,receiverBounds:[],requestedTiles:[...t.sunTiles],coarseTiles,coarseCasters,viewAir:{words:worldViewAirWords(air.air),id:air.id},changedWorldBounds:t.batch.changes.changedBricks.map(b=>({min:b.map(n=>n*4),max:b.map(n=>n*4+4)}))}));
     if(sun.feedback)return sun.feedback;t.sunHandle=sun.output;
+    // the tiles this sun map drew, each coarse or not: what a carried SOURCE was lit under
+    {const coarse=new Set(coarseTiles);t.sunKinds=new Map([...t.sunTiles].map(i=>[i,coarse.has(i)]));}
     const sources=t.plan.sourceBricks;
     // GLOBAL barrier: all SOURCE slabs are submitted and staged before ANY gather.
     t.stage='source';
     for(;;){
-      const feedback=await giPhase(t,sources,'source');
+      const feedback=await carrySources(t,sources);
       if(!feedback)break;
       const births=sourceBirths(t,feedback);
       if(!births)return feedback;
-      // In place: the same plan, expanded by exactly the births a restart adds.
+      // In place: the same plan, expanded by exactly the births a restart adds;
+      // its completed SOURCE jobs carry into the next pass (a birth's own did not complete).
       add(t,feedback.requirements);
-      for(const p of t.outputs.splice(0))p.release();
+      poolSources(t);
       t.plan.expand({probeBricks:births});
       t.sourcePasses=(t.sourcePasses??0)+1;
     }
@@ -410,7 +447,11 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
         const job=atlas.allocateLight(b,{publication:restore.publication,sourceRevision:t.cut.contentToken.sourceRevision,sourceTick:st?.lightingTick??0,giTick:gt?.lightingTick??0,glowTick:lt?.lightingTick??0,readyBits:(st?READY.GI_SOURCE:0)|(gt?READY.GI:0)|(lt?READY.GLOW:0),dependencies:{source:st&&dep(st),gi:gt&&dep(gt),glow:lt&&dep(lt)}});jobs.push(job);
       }
       await transport.restore(gpu,atlas,jobs.flatMap(job=>Object.values(leases.get(index(job.brick))??{}).map(lease=>({job,lease}))));
-      for(const job of jobs){const i=index(job.brick),s=sourceOutputs.get(i),gi=probeOutputs.get(i),b=brick(i),glow=t.glows.find(o=>b.every((n,k)=>n>=o.plan.output.min[k]&&n<o.plan.output.max[k]));if(s)await s.writeAtlas(atlas,job,'source');if(gi)await gi.writeAtlas(atlas,job,'gi');if(glow)await glow.writeAtlas(atlas,job);}
+      // One submission and one wait for every page: a wait per page was ~0.3 ms
+      // each, 20-28 s for an Island load's ~78k SOURCES (2026-10-22).
+      const writes=[];
+      for(const job of jobs){const i=index(job.brick),s=sourceOutputs.get(i),gi=probeOutputs.get(i),b=brick(i),glow=t.glows.find(o=>b.every((n,k)=>n>=o.plan.output.min[k]&&n<o.plan.output.max[k]));if(s)writes.push(s.atlasWrite(job,'source'));if(gi)writes.push(gi.atlasWrite(job,'gi'));if(glow)writes.push(glow.atlasWrite(job));}
+      await transport.writeAll(atlas,writes);
       const s=t.sunHandle.bindings(),token=t.sunHandle.token;
       atlas.publish({lightJobs:jobs,dependencyToken:dependency(t),sunManifest:{...token,...s,dependencySetID:cells.publication.dependencySetID,dependencyVersion:cells.publication.dependencyVersion}});
       const snapshot=atlas.snapshot();
@@ -463,7 +504,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     if(same&&(!accepted||JSON.stringify(frame.globalKey)!==JSON.stringify(accepted.frame.globalKey)||frame.configVersion!==accepted.frame.configVersion))throw new Error('camera-only births require the accepted lighting settings/cut');
     const cut=same?accepted.cut.retain():source.recordCut(gpu.frame,{previousCut:accepted?.cut,sceneVersion:frame.sceneVersion,configVersion:frame.schemaVersion});
     if(!history)history=createWorldLightingHistory({worldSize:size,epoch:source.epoch,sourceOwner:source,configuration:cut.configuration});
-    const t={id:++serial,frame,cut,tick:same?history.lightingTick:history.lightingTick+1,fieldTick:same?accepted.fieldTick:(cells.fields.lastTick??-1)+1,state:'building',stage:'initializing',requirements:new Map(),support:new Set(),dropped:new Set(),pinned:new Set(),forecastProbes:new Set(),sunTiles:new Set(),outputs:[],glows:[],privateJobs:[],bundle:null,bundlePins:0,retired:false,cleaned:false};
+    const t={id:++serial,frame,cut,tick:same?history.lightingTick:history.lightingTick+1,fieldTick:same?accepted.fieldTick:(cells.fields.lastTick??-1)+1,state:'building',stage:'initializing',requirements:new Map(),support:new Set(),dropped:new Set(),pinned:new Set(),forecastProbes:new Set(),sunTiles:new Set(),outputs:[],carry:[],glows:[],privateJobs:[],bundle:null,bundlePins:0,retired:false,cleaned:false};
     try{add(t,requirements);}catch(e){cut.release();throw e;}
     viewAir=null;   // a transaction's budget drops are its own: the next starts from the scene's floors
     active=t;t.work=run(t);t.work.catch(()=>{});return t.work;
@@ -474,7 +515,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   function next() {if(queued&&!dead){const q=queued;queued=null;try{start(q.frame,q.requirements).then(q.resolve,q.reject);}catch(e){releaseFrame(q.frame);q.reject(e);}}wake();}
   const api={atlas,cells,metadata,
     // Passive counters only: inspecting readiness must never advance work.
-    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,support:t.support.size,sunTiles:t.sunTiles.size,coarseTiles:t.coarseTiles?.size??0,budgetDropped:t.budgetDropped??0,pageBudget:budget.cell,forecastBricks:t.forecastBricks??0,sourcePasses:t.sourcePasses??0,metadataBricks:t.metadataBricks??0,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
+    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,support:t.support.size,sunTiles:t.sunTiles.size,coarseTiles:t.coarseTiles?.size??0,budgetDropped:t.budgetDropped??0,pageBudget:budget.cell,forecastBricks:t.forecastBricks??0,sourcePasses:t.sourcePasses??0,sourceJobs:t.sourceJobs??0,carriedSources:t.carriedSources??0,metadataBricks:t.metadataBricks??0,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
     get busy(){return !!active||!!queued;},get failure(){return failure??metadataFeedback.failure??active?.feedback?.failure??active?.error??null;},get state(){return dead?'disposed':resetting?'resetting':metadataFeedback.failure||active?.feedback?.failure?'blocked':active?.state??'idle';},
     request(frame,requirements=[]){live();const f=captureFrame(frame);if(active){if(queued){releaseFrame(queued.frame);queued.resolve(null);}return new Promise((resolve,reject)=>{queued={frame:f,requirements:frozen(requirements),resolve,reject};});}try{return start(f,requirements);}catch(e){releaseFrame(f);throw e;}},
     probe(){live();return active?.state==='probe-ready'?active.bundle.retain():null;},

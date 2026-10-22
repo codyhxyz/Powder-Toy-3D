@@ -41,7 +41,7 @@ import { READY } from '../src/world/renderAtlas.js';
 import { worldSourceEligible, WORLD_SUPPORT_STAGES } from '../src/wire/worldRender.js';
 import { selectWorldGI } from '../src/world/worldLightingHistory.js';
 import { worldSunRings } from '../src/world/worldSunRings.js';
-import { worldGIBrickNear, worldGIProxyCoverage } from '../src/world/worldGIRing.js';
+import { worldGIBrickNear, worldGIProxyCoverage, worldGIReach } from '../src/world/worldGIRing.js';
 import { worldViewAirFloors, worldViewFarAir, worldViewProbeFar, worldBudgetDemand, WORLD_VIEW_GI_RADIUS } from '../src/world/worldViewRing.js';
 import { worldGlowPlan } from '../src/gfx/worldGlow.js';
 
@@ -186,7 +186,14 @@ export function viewRays({ cam, target, width, height, vfov }) {
 // glow: the view's glow lookups ask for their cores (false: not modelled, as
 // before 2026-10-22's view rings). viewRing: the view's rings. budget: the GPU
 // page budget (worldViewRing.js worldPageBudget's cell pages; null: none).
-export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', sources: sourcePolicy = 'eligible', resetBirths = true, rings = false, giRing = null, sharp = new Set(), sharpen = 0, maxAttempts = 40, log = null, glow = false, viewRing = false, budget = null }) {
+// sourceReach: only the bricks a gather reads at full detail are SOURCES
+// (world/worldGIRing.js worldGIReach; false: every eligible brick, as before
+// 2026-10-22's reach). carry: a restart keeps the SOURCE jobs its last
+// attempts completed under the same sun tiles (worldRender.js carrySources;
+// false: every attempt computes every SOURCE again). Each row's sourceJobs is
+// the SOURCE jobs its attempt ran (none when its sun pass restarted it), and
+// reach the bricks within the gathers' reach, for checking SOURCES against.
+export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', sources: sourcePolicy = 'eligible', resetBirths = true, rings = false, giRing = null, sharp = new Set(), sharpen = 0, maxAttempts = 40, log = null, glow = false, viewRing = false, budget = null, sourceReach = false, carry = false }) {
   const { size, dims, index, brick, info } = w;
   const req = new Map(), support = new Set(), sunTiles = new Set(), forecastTiles = new Set(sharp), forecastProbes = new Set(), ownedSources = new Set();
   const glowCores = new Map(), dropped = new Set();
@@ -218,7 +225,9 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
   add(camBrick, READY.CELL);
   const tops = forecast === 'none' ? null : worldColumnTops({ size, scene: w.scene, P: w.P });
   const history = [];
-  let attempts = 0, done = false, forecastEye = false, viewTiles = 0, sourceTiles = 0;
+  let attempts = 0, done = false, forecastEye = false, viewTiles = 0, sourceTiles = 0, sourceJobs = 0;
+  // carried SOURCES: brick -> the sun tiles (tile -> coarse) its slab was lit under
+  const carried = new Map();
   while (attempts < maxAttempts) {
     attempts++;
     // forecast (worldRender.js forecast())
@@ -272,12 +281,15 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
     const resident = new Set(req.keys());
     // worldRender.js attempt(): records, then history.begin's mode-2 selection
     // plus the typed SOURCE requests; probes are the typed GI recipients.
+    // the gathers' reach (checked on every policy, used by sourceReach's)
+    const reach = giRing != null ? worldGIReach(cam, [...req].filter(([, bits]) => bits & READY.GI).map(([i]) => brick(i)), giRing) : null;
+    const reached = reach ? (i) => reach(brick(i)) : null;
     const records = [...req].map(([i, bits]) => ({ brick: brick(i), age: 0, matter: info(i).any, near: false, probeEligible: !!(bits & READY.GI),
-      ...(sourcePolicy === 'eligible' ? { sourceEligible: worldSourceEligible(i, { requirements: req, support, ownedSources }) } : {}) }));
+      ...(sourcePolicy === 'eligible' ? { sourceEligible: worldSourceEligible(i, { requirements: req, support, ownedSources, reached: sourceReach ? reached : null }) } : {}) }));
     const selection = selectWorldGI({ records, lightingTick: 0, mode: 2 });
     const sources = new Set(selection.sourceBricks.map((b) => index(...b))), probes = new Set(selection.gatherBricks.map((g) => index(...g.brick)));
     for (const [i, bits] of req) if (bits & READY.GI_SOURCE) sources.add(i);
-    const row = { attempt: attempts, requirements: req.size, classified: glowCores.size || budget != null ? classified().size : req.size, glowCores: glowCores.size, dropped: dropped.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, support: support.size, sources: sources.size, gathers: probes.size };
+    const row = { attempt: attempts, requirements: req.size, classified: glowCores.size || budget != null ? classified().size : req.size, glowCores: glowCores.size, dropped: dropped.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, support: support.size, sources: sources.size, gathers: probes.size, sourceJobs: 0, sourceSet: sources, reached };
     history.push(row);
     stage = 'sun';
     let grew = false;
@@ -300,10 +312,17 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
       }
     }
     if (grew) { row.stage = stage; log?.(row); continue; }
-    // source: neighbours, own previous probe, sun taps
+    // source: neighbours, own previous probe, sun taps; a job that asks for
+    // any of them leaves its slab unpublished (worldRender.js giPhase)
     stage = 'source';
     const born = probes;   // every probe of a first load is a birth
-    for (const i of sources) {
+    // the sun tiles this attempt's sun pass drew, each full detail or coarse
+    const lit = new Map([...sunTiles].map((t) => [t, coarse.has(t)]));
+    const same = (was) => [...was].every(([t, c]) => lit.get(t) === c);
+    const fresh = [...sources].filter((i) => !(carry && carried.has(i) && same(carried.get(i))));
+    row.sourceJobs = fresh.length; sourceJobs += fresh.length;
+    const asked = new Set();
+    for (const i of fresh) {
       const r = info(i);
       if (!r.any) continue;
       const b = brick(i);
@@ -312,13 +331,16 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
         const nb = [...b]; nb[f >> 1] += (f & 1) ? 1 : -1;
         if (nb.some((n, k) => n < 0 || n >= dims[k])) return;
         const j = index(...nb);
-        if (!resident.has(j)) grew = add(j, READY.RAW) || grew;
+        if (!resident.has(j)) { asked.add(i); grew = add(j, READY.RAW) || grew; }
       });
-      if (!resetBirths && !born.has(i)) grew = add(i, READY.GI) || grew;
+      if (!resetBirths && !born.has(i)) { asked.add(i); grew = add(i, READY.GI) || grew; }
       const tiles = new Set();
       for (const p of r.sunPoints) w.tilesAt(p, tiles);
-      for (const t of tiles) if (!sunTiles.has(t)) { sunTiles.add(t); grew = true; sourceTiles++; }
+      for (const t of tiles) if (!sunTiles.has(t)) { asked.add(i); sunTiles.add(t); grew = true; sourceTiles++; }
     }
+    // a job that asked for nothing completed (its slab published, or kept it
+    // from an incomplete one: gfx/worldGI.js partial): a restart carries it
+    for (const i of fresh) if (!asked.has(i)) carried.set(i, lit);
     if (grew) { row.stage = stage; log?.(row); continue; }
     // gather: 7-brick burial test, then 32 rays
     stage = 'gather';
@@ -402,5 +424,5 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
     row.stage = stage; log?.(row);
     if (!grew) { done = true; break; }
   }
-  return { attempts, done, history, byStage, giAsked, requirements: req.size, classified: classified().size, glowCores: glowCores.size, dropped: dropped.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, fineTiles, coarse: [...coarse], forecastTiles: [...forecastTiles], sources: history.at(-1)?.sources ?? 0, gathers: history.at(-1)?.gathers ?? 0, viewTiles, sourceTiles };
+  return { attempts, done, history, byStage, giAsked, sourceJobs, requirements: req.size, classified: classified().size, glowCores: glowCores.size, dropped: dropped.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, fineTiles, coarse: [...coarse], forecastTiles: [...forecastTiles], sources: history.at(-1)?.sources ?? 0, gathers: history.at(-1)?.gathers ?? 0, viewTiles, sourceTiles };
 }
