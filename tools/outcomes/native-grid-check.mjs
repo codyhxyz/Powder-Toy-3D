@@ -8,7 +8,7 @@ import { E, ELEMENTS, K } from '../../src/elements.js';
 import { makeMaterial, FULL } from '../../src/v2/layout.js';
 import { setFall } from '../../src/v2/fall.js';
 import { packContact, unpackContact } from '../../src/v2/contact.js';
-import { packParticle, ballistic, DT, GRAVITY, CELL_M, dynamicsRows } from '../../src/v2/dynamics-reference.js';
+import { packParticle, ballistic, DT, GRAVITY, CELL_M, dynamicsRows, packetFlight } from '../../src/v2/dynamics-reference.js';
 import { toGrid, nativeTally, nativeFlight, nativeFall, readNativeState } from './native-grid.js';
 import { at } from './engine.js';
 
@@ -48,8 +48,10 @@ test('canonical fields, current brick air units, mixed cells and outside-window 
   assert.deepEqual(census.particles, { WATER: .75, SAND: 1 });
 });
 test('flight reuses production ballistic/terminal law, not bare gravity; no invented liquid grid fall', () => {
-  const v = [30 * CELL_M, 0, 0], drag = 1 + GRAVITY / dynamicsRows[E.SAND].terminal ** 2 * Math.hypot(...v) * DT;
-  assert.deepEqual(nativeFlight(E.SAND, [30, 0], DT), ballistic([0,0,0], v.map(x => x / drag)).position.slice(0,2));
+  // the packets' law: V1's drag a step, V_MAX and Margolus lag (particles.js dPacketFlight, its twin packetFlight)
+  const v = [30 * CELL_M, 0, 0];
+  assert.deepEqual(nativeFlight(E.SAND, [30, 0], DT), packetFlight(E.SAND, v).moved.slice(0, 2));
+  assert.notDeepEqual(nativeFlight(E.SAND, [30, 0], DT), ballistic([0,0,0], v).position.slice(0,2), 'not bare gravity');
   assert.equal(nativeFlight(E.WALL, [1, 0], 1), null);
   assert.equal(nativeFall(E.WATER, 1), null);
   assert.ok(nativeFall(E.SAND, 1) > 0);

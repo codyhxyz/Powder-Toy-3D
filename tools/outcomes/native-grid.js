@@ -3,7 +3,7 @@ import { cellSlot } from '../../src/shaders/common.js';
 import { E, ELEMENTS, K } from '../../src/elements.js';
 import { FULL, lifeScale } from '../../src/v2/layout.js';
 import { unpackContact } from '../../src/v2/contact.js';
-import { unpackParticle, PARTICLE_BYTES, PHOTON_TAG, ballistic, dynamicsRows, DT, GRAVITY, CELL_M } from '../../src/v2/dynamics-reference.js';
+import { unpackParticle, PARTICLE_BYTES, PHOTON_TAG, ballistic, dynamicsRows, DT, GRAVITY, CELL_M, packetFlight } from '../../src/v2/dynamics-reference.js';
 import { fallCells, TICK_HZ } from '../../src/shaders/v2.js';
 import { fallVelocity } from '../../src/v2/fall.js';
 import { tally } from './lib.js';
@@ -16,13 +16,10 @@ export function nativeFlight(id, [vx, vy], seconds) {
   const row = dynamicsRows[id];
   if (!row || ![K.POWDER, K.LIQUID, K.GAS].includes(row.kind)) return null;
   let position = [0, 0, 0], velocity = [vx * CELL_M, vy * CELL_M, 0];
-  const vt = row.terminal, drag = GRAVITY / (vt * (vt + GRAVITY * DT)), g = row.kind === K.GAS ? 0 : GRAVITY;
+  // particles.js integrate in still air: V1's law a V1 step at a time (dPacketFlight; dynamics-reference.js packetFlight)
   for (let i = 0; i < Math.round(seconds / DT); i++) {
-    // particles.js integrate in still air: the tick's gravity, then implicit quadratic drag to the element's
-    // terminal speed; the velocity goes linearly to that across the tick
-    const rel = velocity.map((v, a) => v - (a === 1 ? g * DT : 0)), after = rel.map(v => v / (1 + drag * Math.hypot(...rel) * DT));
-    position = position.map((p, a) => p + 0.5 * (velocity[a] + after[a]) * DT / CELL_M);
-    velocity = after;
+    const s = packetFlight(id, velocity);
+    position = position.map((p, a) => p + s.moved[a]); velocity = s.velocity;
   }
   return position.slice(0, 2);
 }

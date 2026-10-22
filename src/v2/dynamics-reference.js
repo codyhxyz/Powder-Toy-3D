@@ -96,6 +96,20 @@ export function packetStep(id, v, gravity = GRAVITY) {
   }
   return { v: u * V1_STEP_MS, fell: d * CELL_M };
 }
+// A packet's tick in still air in 3D (particles.js dPacketFlight, the twin of the whole of it): each axis V1's steps
+// (packetStep's law), under the pull (m/s², a gas none). Returns the cells it moved and its velocity after (m/s).
+export function packetFlight(id, velocity, pull = [0, ELEMENTS[id].kind === K.GAS ? 0 : -GRAVITY, 0]) {
+  const keep = PACKET_KEEP[id], paced = ELEMENTS[id].kind !== K.LIQUID, moved = [0, 0, 0], after = [0, 0, 0];
+  for (let a = 0; a < 3; a++) {
+    const g = pull[a] * STEP_S * STEP_S / CELL_M; let u = velocity[a] / V1_STEP_MS, d = 0;
+    for (let k = 0; k < STEPS_PER_TICK; k++) {
+      d += Math.sign(u) * (paced ? v1PaceRate(Math.abs(u)) : Math.min(Math.abs(u), PHYS.V_MAX));
+      u = Math.min(PHYS.V_MAX, Math.max(-PHYS.V_MAX, (u + g) * keep));
+    }
+    moved[a] = d; after[a] = u * V1_STEP_MS;
+  }
+  return { moved, velocity: after };
+}
 export function particleFallSpeed(id, h) {
   let v = 0, y = 0;
   while (y < h) { const s = packetStep(id, v); y += s.fell; v = s.v; }

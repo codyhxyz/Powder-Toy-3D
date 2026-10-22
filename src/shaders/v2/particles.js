@@ -362,7 +362,7 @@ const D_STEPS: u32 = ${STEPS_PER_TICK}u;
 // move: gravity.js v1PaceRate, the grid grains' fall.js fallSteps) and |u| for a liquid (its R3 draws carry it as
 // fast as its speed: dynamics-reference.js v1LiquidArrival), then takes the step's pull and its drag toward the air
 // it is in (react.js forces), to V_MAX on each component. In V1's cells/step; m/s and m/s² in and out.
-struct DPacketFlight { cells: vec3f, velocity: vec3f }
+struct DPacketFlight { moved: vec3f, velocity: vec3f }
 fn dPacketFlight(v0: vec3f, wind: vec3f, pull: vec3f, keep: f32, paced: bool) -> DPacketFlight {
   var out = DPacketFlight(vec3f(0), vec3f(0));
   for (var a = 0u; a < 3u; a++) {
@@ -371,7 +371,7 @@ fn dPacketFlight(v0: vec3f, wind: vec3f, pull: vec3f, keep: f32, paced: bool) ->
       let pace = min(abs(u), D_V_MAX); d += sign(u) * select(pace, pace / (2.0 - pace), paced);
       u = clamp(w + (u - w + g) * keep, -D_V_MAX, D_V_MAX);
     }
-    out.cells[a] = d; out.velocity[a] = u / D_V1_STEP;
+    out.moved[a] = d; out.velocity[a] = u / D_V1_STEP;
   }
   return out;
 }
@@ -610,7 +610,7 @@ export function particlesWGSL(g, nativeHead, stage) {
       // grains do. The sweep below runs straight to where they take it, its velocity going linearly from v to theirs
       // across the tick (the hit's speed at its share of the tick).
       let flown = dPacketFlight(v, wind, acceleration, dKeep(id), cls(id) != C_LIQUID);
-      travel = flown.cells; acceleration = (flown.velocity - v) / D_DT;
+      travel = flown.moved; acceleration = (flown.velocity - v) / D_DT;
     }
     let end = local + travel;
     particle.velocity = v + acceleration * D_DT;
