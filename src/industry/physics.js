@@ -96,6 +96,10 @@ const machineState = device => ({ device: { ...device }, load: new Load(16), clo
  * the matching terrain snapshot separately. Neither operation accepts pending
  * transfers. reset is for WORLD REPLACEMENT, not pause, mode toggles or save.
  */
+// The machines' frame (wire/industry.js afterStep): [dt, stepping, running] for index.js update. V1's clocks run
+// on the frame's wall time on every frame the world runs; under V2 a frame that ran no tick still runs.
+export const machineFrame = (app, dt) => [dt, app.stepping, app.stepping || (app.nativeStepped === 0 && !app.settings?.paused && !app.renderOnly)];
+
 // The decks whose carry or throw is V1's per-frame kick (shaders/industry.js update: belt, separator, lift, and
 // a miner's deck): under V2 they run beside each native tick (nativeStep), on game time, not once a frame.
 const DECK_TYPES = new Set(['belt', 'separator', 'lift', 'miner']);

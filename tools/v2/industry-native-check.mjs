@@ -351,3 +351,17 @@ console.log('PASS gate and pump-backplate ownership tags survive V2 storage; V1 
   delete sim.bindRW;
   console.log('PASS V2 gates and switches write natively in the frame that asks: no bridge, no export, no import');
 }
+
+// M9: the machines' clocks are V1's, the frame's wall time (capped at 0.05 s in industry/index.js update), not
+// the game time of the ticks it ran; a V2 frame that ran none still runs (its time goes with the next).
+{
+  const { machineFrame } = await import('../../src/industry/physics.js');
+  const seen = [], app = { settings: { paused: false }, renderOnly: false };
+  const afterStep = (a, dt) => seen.push(machineFrame(a, dt));                   // wire/industry.js afterStep
+  afterStep({ ...app, stepping: true, nativeStepped: 3 }, 1 / 60);        // Speed 3: three ticks a 60 Hz frame
+  afterStep({ ...app, stepping: false, nativeStepped: 0 }, 1 / 120);      // a 120 Hz frame between ticks
+  afterStep({ ...app, stepping: false, nativeStepped: 0, settings: { paused: true } }, 1 / 60);
+  afterStep({ ...app, stepping: true, nativeStepped: null }, 1 / 30);     // V1
+  assert.deepEqual(seen, [[1 / 60, true, true], [1 / 120, false, true], [1 / 60, false, false], [1 / 30, true, true]]);
+  console.log("PASS machine clocks run on V1's wall-clock frame time under V2 (Speed and tick-less frames)");
+}

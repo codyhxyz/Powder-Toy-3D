@@ -1,4 +1,5 @@
 import { createIndustry, validateIndustrySave } from '../industry/index.js';
+import { machineFrame } from '../industry/physics.js';
 import { registerSaveSection } from '../saves/sections.js';
 
 export default {
@@ -26,10 +27,7 @@ export default {
   // step; gates.js step): V1 steps every frame it isn't paused. Under V2 a frame may run no tick (a display past
   // 60 Hz, a low Speed: app.js nativeHostSteps) and still counts its time, held for the next frame that ticks
   // (industry/index.js update). The decks' carry is game time, beside each tick (industry/physics.js nativeStep).
-  afterStep(app, dt) {
-    const running = app.stepping || (app.nativeStepped === 0 && !app.settings?.paused && !app.renderOnly);
-    app.industry?.update(dt, app.stepping, running);
-  },
+  afterStep(app, dt) { app.industry?.update(...machineFrame(app, dt)); },
   busy(app) { return !!(app.industry?.building || app.industry?.pending); },
   invalidate(app) { app.industry?.dispose(); app.industry = null; },
 };
