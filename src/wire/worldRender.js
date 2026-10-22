@@ -31,6 +31,20 @@ export const worldFeedbackExtraWords = (size) => {
  * Native tables/external resources remain caller-owned, with explicit pins.
  * request() captures the active cut synchronously; newer requests coalesce.
  */
+// A load's CELL demand goes in batches of whole 32-cell cores (8^3 bricks),
+// yielding between them: all of it in one synchronous batch froze the page
+// for 3 s on Island and 6 s on Descent (2026-10-21). Every brick is still
+// classified before the attempt goes on; a core is never split, so no core's
+// fields are captured twice.
+export const WORLD_CLASSIFY_BRICKS=2048;
+export function worldClassifyBatches(bricks,limit=WORLD_CLASSIFY_BRICKS) {
+  const cores=new Map();
+  for(const b of bricks){const key=b.map(n=>Math.floor(n/8)).join(',');if(!cores.has(key))cores.set(key,[]);cores.get(key).push({brick:b,channels:READY.CELL});}
+  const out=[];let batch=[];
+  for(const core of cores.values()){if(batch.length&&batch.length+core.length>limit){out.push(batch);batch=[];}batch.push(...core);}
+  if(batch.length)out.push(batch);
+  return out;
+}
 export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,producer=win.sourceProducer,tables=win.sim.tables,tableBuffer=gpu._simTables?.buffer,wake=()=>{}}={}) {
   if(win.render)throw new Error('WORLD data owner already installed');
   if(!source||!producer||source.win!==win||source.gpu!==gpu)throw new TypeError('actual WORLD Source/Producer required');
@@ -87,13 +101,24 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     return {version:atlas.generation+1,sets:[{id:p.dependencySetID,version:p.dependencyVersion}]};
   }
   async function classify(t,ids) {
-    const requirements=[...ids].map(i=>({brick:brick(i),channels:READY.CELL}));
     cells.bindCut(t.cut);
-    // record() uses actual sourceDemand and cut.producer on the normal Frame.
-    const h=cells.record(gpu.frame,{fieldTick:t.fieldTick,requirements,smoothing:t.frame.params.smoothing??1});
-    gpu.flush('WORLD Source/Fields final capture');
-    const publication=cells.commitAfterSourceFlush(h);
-    publication.previousLightingSnapshot.release();
+    // A restart (the Sun's casters or an eye miss widened the demand) packed
+    // again every page it had just published: Island's sixth attempt of one
+    // load packed 134k pages, 35k of them unchanged (2026-10-21). A page of
+    // this cut's source revision and field tick is what a new pack would write.
+    const sourceRevision=t.cut.contentToken.sourceRevision;
+    const stale=[...ids].map(brick).filter(b=>{const l=atlas.lookup(b,READY.CELL);return !(l.known&&l.sourceRevision===sourceRevision&&l.fieldTick===t.fieldTick);});
+    // One pool growth for the whole demand: a growth copies every public page.
+    atlas.reserve('cell',stale.length);
+    const batches=worldClassifyBatches(stale);
+    for(const [k,requirements] of batches.entries()){
+      if(k)await new Promise(resolve=>setTimeout(resolve,0));
+      // record() uses actual sourceDemand and cut.producer on the normal Frame.
+      const h=cells.record(gpu.frame,{fieldTick:t.fieldTick,requirements,smoothing:t.frame.params.smoothing??1});
+      gpu.flush('WORLD Source/Fields final capture');
+      const publication=cells.commitAfterSourceFlush(h);
+      publication.previousLightingSnapshot.release();
+    }
   }
   function captureInput(t,{previous=null,emission=null}={}) {
     const p=cells.acquire();
@@ -158,7 +183,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     else t.plan=history.beginBirth({cutToken:t.cut.contentToken,sourceBricks:[...new Map([...requestedSources,...never.filter(r=>!ownedSources.has(index(r.brick))).map(r=>r.brick)].map(b=>[index(b),b])).values()],probeBricks:never.map(r=>r.brick),records});
     // Every owned offscreen record remains a causal input. BUILDING is never
     // returned by probe(); the previous accepted bundle remains independently pinned.
-    const invalidations=[];for(let i=0;i<atlas.lightEntries.length;i++)if(atlas.lightEntries[i])invalidations.push({brick:brick(i),channels:READY.LIGHT});
+    const invalidations=atlas.bookPages('light').map(p=>({brick:[...p.brick],channels:READY.LIGHT}));
     atlas.publish({invalidations,sunManifest:null});
     const previousProbes=[...ownedProbes].filter(i=>t.frame.advance||history.birth(i)?.birthTick<t.tick);
     const previous=t.plan.captureRestore({cut:t.cut,configVersion:t.frame.configVersion,sourceIndices:[...ownedSources],probeIndices:previousProbes});

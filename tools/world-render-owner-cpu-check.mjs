@@ -6,7 +6,7 @@ import { Matrix4, Vector3 } from 'three';
 import assert from 'node:assert/strict';
 import { WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { fixture, drain } from './world-lighting-records-fixture.mjs';
-import { installWorldRender } from '../src/wire/worldRender.js';
+import { installWorldRender, worldClassifyBatches } from '../src/wire/worldRender.js';
 import { READY, bookPage } from '../src/world/renderAtlas.js';
 import { tableLayout } from '../src/shaders/common.js';
 import { worldGISource, worldGIBirthWGSL } from '../src/shaders/worldGI.js';
@@ -258,7 +258,11 @@ test('ordinary newer physics coalesces, rejected submitted image preserves accep
 
 test('scene feedback extends the same cut/clock, out-of-order identities reject; camera-only birth does not age known records',async()=>{
   const f=await setup({feedback:false});let c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE|READY.GI}]));
+  // the restart packs only the CELL pages it lacks, not the ones this cut and clock just published
+  const before=new Set(f.owner.atlas.bookPages('cell').map(p=>p.brick.join(','))),allocated=[],allocate=f.owner.atlas.allocate.bind(f.owner.atlas);
+  f.owner.atlas.allocate=(b,v)=>{allocated.push(b.join(','));return allocate(b,v);};
   const cut=c.cut;const extended=await settle(f.gpu,f.owner.extend(c,{incomplete:true,requirements:[{index:1,brick:[1,0,0],channels:READY.GI_SOURCE|READY.GI}],sun:[]}));
+  f.owner.atlas.allocate=allocate;assert(before.size>0);assert(allocated.every(k=>!before.has(k)),'a restart re-packed a current CELL page');
   assert.equal(extended.cut,cut);assert.equal(extended.logicalFieldTick,c.logicalFieldTick);assert.notEqual(extended.identity,c.identity);await assert.rejects(f.owner.extend(c,complete),/out-of-order/);
   await settle(f.gpu,f.owner.accept(extended,post(extended)));assert.equal(f.owner.metadata.derivedTick,0);
   const birth=await settle(f.gpu,f.owner.request({...f.frame,advance:false},[{brick:[2,0,0],channels:READY.GI_SOURCE|READY.GI}]));assert.equal(birth.cut,cut);assert.equal(birth.logicalFieldTick,extended.logicalFieldTick);
@@ -318,4 +322,13 @@ test('appearance words and camera freeze with the real cut, independently of mut
   const work=f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE|READY.GI}]);artwork[0]=99;f.frame.values.cam.x=77;f.frame.values.model.elements[0]=99;
   const c=await settle(f.gpu,work);assert.equal(c.frame.values.cam[0],0);assert.equal(c.frame.values.model[0],1);assert.equal(words(c.appearance.texture)[0],11);assert.equal(c.frame.external.sourceAppearance,c.appearance.view);assert.notEqual(c.appearance.texture,f.frame.external.sourceAppearance);
   await settle(f.gpu,f.owner.discard(c));c.release();await f.close();
+});
+test('a load classifies in batches of whole cores, each brick once, none past the bound but a lone core',()=>{
+  const bricks=[];for(let z=0;z<24;z++)for(let y=0;y<4;y++)for(let x=0;x<40;x++)if((x*7+y*3+z*5)%4)bricks.push([x,y,z]);
+  const batches=worldClassifyBatches(bricks,300),seen=new Set(),core=b=>b.map(n=>Math.floor(n/8)).join(',');
+  assert(batches.length>1);
+  for(const batch of batches){assert(batch.length<=300||new Set(batch.map(r=>core(r.brick))).size===1);for(const r of batch){assert.equal(r.channels,READY.CELL);seen.add(r.brick.join(','));}}
+  assert.equal(seen.size,bricks.length);assert.equal(batches.flat().length,bricks.length);
+  const owner=new Map();batches.forEach((batch,k)=>{for(const r of batch){const c=core(r.brick);assert(!owner.has(c)||owner.get(c)===k,'a core never splits across batches');owner.set(c,k);}});
+  assert.deepEqual(worldClassifyBatches([[1,2,3]]),[[{brick:[1,2,3],channels:READY.CELL}]]);
 });

@@ -28,11 +28,18 @@ or reinterpreted on reset. The CPU CI Atlas gate explicitly asserts ABI2.
   record 0 read (~3 s of the World volume shader's cold build).
   Each book separately costs **24/72 MiB** at world `[3072,128/384,1024]`.
   Do not combine them: height384 would exceed the 128 MiB binding limit.
-- A commit's books of `BOOK_COPY_BYTES` (16 MiB) or more are not uploaded whole:
-  an unchanged book (a pool growth) is the current snapshot's buffer, shared and
-  refcounted (books are read-only to every reader); a changed one is a GPU copy
-  of the current book plus the 64 KiB chunks that differ. Descent's 125 MiB
-  books were re-sent several times a second during a load (2026-10-21).
+- A commit never uploads or scans a whole book. An unchanged book (a pool
+  growth) is the current snapshot's buffer, shared and refcounted (books are
+  read-only to every reader). A changed one is a GPU copy of the current book
+  plus the 64 KiB chunks (`BOOK_CHUNK_WORDS`) that hold the commit's changed
+  entries. A reset or private producer book starts from a fresh, zeroed buffer.
+  Descent's 125 MiB books were re-sent several times a second during a load
+  (2026-10-21).
+- `atlas.live.cell`/`atlas.live.light` map each nonzero book index to its page.
+  A commit pins those pages and checks only its changed indices, never all 33M
+  entries of a Descent book. `bookPages(kind)` lists them in book order.
+- `reserve(kind, count)` grows a pool once for a batch's pages, not a doubling
+  per overflow (each growth copies every public page).
 - **Cell PID**, **light descriptor ID**, and **probe PID** are independent
   namespaces, not interchangeable. Source-only descriptors allocate no cell or
   probe slot. GI/glow-only descriptors allocate no cell slot. GI/glow share a

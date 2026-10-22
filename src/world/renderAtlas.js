@@ -25,13 +25,12 @@ export const DEFAULT_WORLD_LIMITS = Object.freeze({
 });
 const U32_MAX = 0xffffffff;
 const BU = { COPY_SRC: 4, COPY_DST: 8, UNIFORM: 64, STORAGE: 128 };
-// Books this big are built by copy and changed chunks (WorldRenderAtlas._book):
-// Descent, Tinker Creek, Giant Volcano. Island's 8 MiB books upload whole.
-export const BOOK_COPY_BYTES = 16 * 1024 ** 2;
-const BOOK_CHUNK_WORDS = 16384;
+// A commit's book is its base copied plus the 64 KiB chunks it changed (WorldRenderAtlas._book).
+export const BOOK_CHUNK_WORDS = 16384;
 const integer = (v, lo = 0, hi = U32_MAX) => Number.isSafeInteger(v) && v >= lo && v <= hi;
 const check = (ok, why) => { if (!ok) throw new RangeError(why); };
 const frozen = (a) => Object.freeze(a);
+const NO_CHANGE = Object.freeze({ cell: Object.freeze([]), light: Object.freeze([]) });
 // GPUSupportedLimits uses WebIDL prototype getters, not enumerable properties.
 const limitsOf = supplied => Object.fromEntries(Object.entries(DEFAULT_WORLD_LIMITS).map(([k, v]) => [k, supplied?.[k] ?? v]));
 
@@ -179,8 +178,12 @@ export function worldInterpolate(fetch, position, size, cubic = false, spacing =
 }
 export function requestMissing(bits, index) { bits[index >>> 5] |= 1 << (index & 31); }
 export function requestedBricks(bits, count) {
-  const out = [];
-  for (let i = 0; i < count; i++) if ((bits[i >>> 5] >>> (i & 31)) & 1) out.push(i);
+  // Word by word, skipping zero words: Descent's 33M bricks per plane (2026-10-21).
+  const out = [], words = Math.ceil(count / 32);
+  for (let w = 0; w < words; w++) for (let v = bits[w]; v; v &= v - 1) {
+    const i = w * 32 + 31 - Math.clz32(v & -v);
+    if (i < count) out.push(i);
+  }
   return out;
 }
 
@@ -351,7 +354,10 @@ export class WorldRenderAtlas {
     this.pages = this.cell.pages; this.pending = this.cell.pending;
     this.resources = createResources(this.device, worldAtlasLayout(initialCapacity, this.limits, initialLightCapacity, initialProbeCapacity));
     this.entries = new Uint32Array(this.bookLayout.count); this.lightEntries = new Uint32Array(this.bookLayout.count);
-    try { this._commit(this.entries, this.lightEntries); } catch (e) { this._releaseResources(this.resources); throw e; }
+    // index -> page for every nonzero entry: a commit pins and checks these,
+    // never a scan of the books (33M entries each on Descent, 2026-10-21).
+    this.live = { cell: new Map(), light: new Map() };
+    try { this._commit(NO_CHANGE); } catch (e) { this._releaseResources(this.resources); throw e; }
   }
   _alive() { if (this.dead) throw new Error('world atlas disposed'); check(!this.recording, 'non-reentrant synchronous atlas writer'); }
   _releaseResources(r) {
@@ -363,57 +369,67 @@ export class WorldRenderAtlas {
     catch (e) { this.retire(() => b.destroy()); throw e; }
     return b;
   }
-  _commit(entries, lightEntries, r = this.resources, epoch = this.epoch, dependencies = this.current?.dependencies ?? manifest(), sun = this.current?.sunManifest ?? null) {
+  // this.entries/lightEntries/live already hold the commit; changed lists the
+  // book indices it wrote. base null: books start from zeros (a reset).
+  _commit(changed, r = this.resources, epoch = this.epoch, dependencies = this.current?.dependencies ?? manifest(), sun = this.current?.sunManifest ?? null, base = this.current) {
     check(this.generation < U32_MAX, 'world generation overflow');
     const previous=this.current,generation=this.generation+1;
-    this.current=this._snapshotState(entries,lightEntries,r,epoch,dependencies,sun,generation);
-    this.entries=entries;this.lightEntries=lightEntries;this.generation=generation;this.epoch=epoch;
+    this.current=this._snapshotState(this.entries,this.lightEntries,{cell:{base:base?.book,changed:changed.cell},light:{base:base?.lightBook,changed:changed.light}},
+      [...this.live.cell.values(),...this.live.light.values()],r,epoch,dependencies,sun,generation);
+    this.generation=generation;this.epoch=epoch;
     if(previous)this._releaseSnapshot(previous);
   }
-  // A big book is the current one's copy on the GPU plus the 64 KiB chunks that
-  // changed, or the current one itself when nothing changed (a pool growth),
-  // not a whole-world upload per commit: Descent's two books are 125 MiB each
-  // (2560x320x2560 cells), and a load's growths and publications re-sent them
-  // ~3 times a second, gigabytes held until retired (2026-10-21). The current
-  // snapshot's book holds this.entries/lightEntries: _commit sets both
-  // together and entries are never written in place. Books are read-only to
-  // every reader, so snapshots may share one; the last release destroys it.
-  _book(label, values, base, baseValues) {
-    const usage = BU.STORAGE | BU.COPY_DST | BU.COPY_SRC;
-    if (!base || values.byteLength < BOOK_COPY_BYTES || baseValues.length !== values.length) return this._ownBook(this._buffer(label, values.byteLength, usage, values));
-    if (values === baseValues) { this.bookUsers.set(base, this.bookUsers.get(base) + 1); return base; }
-    const b = this._ownBook(this.device.createBuffer({ label, size: values.byteLength, usage }));
+  // Entries change in place, recorded for undo until the commit holds (_rollback).
+  _put(tx, kind, index, p) {
+    const entries = kind === 'cell' ? this.entries : this.lightEntries, live = this.live[kind], old = live.get(index);
+    tx.undo.push([entries, live, index, entries[index], old]); tx.changed[kind].push(index);
+    if (old) tx.oldPages.push(old);
+    entries[index] = p ? bookEntry(p) : 0;
+    if (p) live.set(index, p); else live.delete(index);
+  }
+  _rollback(tx) {
+    for (let k = tx.undo.length; k--;) { const [entries, live, index, value, page] = tx.undo[k]; entries[index] = value; if (page) live.set(index, page); else live.delete(index); }
+  }
+  // A book is its base (the current one) copied on the GPU plus the 64 KiB
+  // chunks holding changed entries, or the base itself when none changed (a
+  // pool growth), or zeros plus those chunks without a base: never a
+  // whole-world upload or scan per commit. Descent's two books are 125 MiB
+  // each (2560x320x2560 cells), and a load's growths and publications re-sent
+  // them ~3 times a second, gigabytes held until retired (2026-10-21). Books
+  // are read-only to every reader, so snapshots may share one; the last
+  // release destroys it.
+  _books(specs) {
+    const out = [], writes = []; let encoder = null;
     try {
-      const encoder = this.device.createCommandEncoder({ label: 'world book copy' });
-      encoder.copyBufferToBuffer(base, 0, b, 0, values.byteLength); this.queue.submit([encoder.finish()]);
-      const n = values.length; let start = -1;
-      for (let c = 0; c < n; c += BOOK_CHUNK_WORDS) {
-        const end = Math.min(n, c + BOOK_CHUNK_WORDS); let changed = false;
-        for (let i = c; i < end; i++) if (values[i] !== baseValues[i]) { changed = true; break; }
-        if (changed) { if (start < 0) start = c; } else if (start >= 0) { this.queue.writeBuffer(b, start * 4, values, start, c - start); start = -1; }
+      for (const [label, values, base, changed] of specs) {
+        const chunks = [...new Set(Array.from(changed, i => Math.floor(i / BOOK_CHUNK_WORDS)))].sort((a, b) => a - b);
+        if (base && !chunks.length) { this.bookUsers.set(base, this.bookUsers.get(base) + 1); out.push(base); continue; }
+        const b = this._ownBook(this.device.createBuffer({ label, size: values.byteLength, usage: BU.STORAGE | BU.COPY_DST | BU.COPY_SRC })); out.push(b);
+        if (base) (encoder ??= this.device.createCommandEncoder({ label: 'world book copy' })).copyBufferToBuffer(base, 0, b, 0, values.byteLength);
+        writes.push([b, values, chunks]);
       }
-      if (start >= 0) this.queue.writeBuffer(b, start * 4, values, start, n - start);
-    } catch (e) { this.retire(() => this._dropBook(b)); throw e; }
-    return b;
+      // Queue order: the chunk writes land after the copies they patch.
+      if (encoder) this.queue.submit([encoder.finish()]);
+      for (const [b, values, chunks] of writes) for (let k = 0; k < chunks.length;) {
+        let end = k + 1; while (end < chunks.length && chunks[end] === chunks[end - 1] + 1) end++;
+        const start = chunks[k] * BOOK_CHUNK_WORDS, stop = Math.min(values.length, (chunks[end - 1] + 1) * BOOK_CHUNK_WORDS);
+        this.queue.writeBuffer(b, start * 4, values, start, stop - start); k = end;
+      }
+    } catch (e) { this.retire(() => out.forEach(b => this._dropBook(b))); throw e; }
+    return out;
   }
   _ownBook(b) { this.bookUsers.set(b, 1); return b; }
   _dropBook(b) { const n = this.bookUsers.get(b) - 1; if (n > 0) this.bookUsers.set(b, n); else { this.bookUsers.delete(b); b.destroy(); } }
-  _snapshotState(entries,lightEntries,r,epoch,dependencies,sun,generation) {
-    let book, lightBook, params;
-    const base = this.current;
-    try {
-      book = this._book('world immutable book', entries, base?.book, this.entries);
-      lightBook = this._book('world immutable light book', lightEntries, base?.lightBook, this.lightEntries);
-      params = this._buffer('world immutable params', 112, BU.UNIFORM | BU.COPY_DST, paramWords(this.bookLayout, r.layout, epoch, generation, dependencies.version));
-    } catch (e) { this.retire(() => { if (book) this._dropBook(book); if (lightBook) this._dropBook(lightBook); params?.destroy(); }); throw e; }
-    const pins = [];
-    for (const [kind, values] of [['cell', entries], ['light', lightEntries]]) {
-      const ids = new Set();
-      for (let i = 0; i < values.length; i++) if (values[i]) ids.add(bookPage(values[i]));
-      for (const id of ids) {
-        const p = this[kind].pages.get(id); p.pins++; pins.push(p);
-        if (p.kind === 'light' && p.probeID !== null) this.probe.pages.get(p.probeID).pins++;
-      }
+  // pages: every page the two books hold, each pinned once.
+  _snapshotState(entries,lightEntries,books,pages,r,epoch,dependencies,sun,generation) {
+    const [book, lightBook] = this._books([['world immutable book', entries, books.cell.base, books.cell.changed], ['world immutable light book', lightEntries, books.light.base, books.light.changed]]);
+    let params;
+    try { params = this._buffer('world immutable params', 112, BU.UNIFORM | BU.COPY_DST, paramWords(this.bookLayout, r.layout, epoch, generation, dependencies.version)); }
+    catch (e) { this.retire(() => { this._dropBook(book); this._dropBook(lightBook); }); throw e; }
+    const pins = [...pages];
+    for (const p of pins) {
+      p.pins++;
+      if (p.kind === 'light' && p.probeID !== null) this.probe.pages.get(p.probeID).pins++;
     }
     r.refs++;
     return { book, lightBook, params, r, pins, refs: 1, epoch, generation, dependencies, sunManifest: sun };
@@ -457,6 +473,14 @@ export class WorldRenderAtlas {
     const p = this[kind], key = kind === 'cell' ? 'capacity' : kind + 'Capacity';
     if (!p.free.length && p.nextID >= this.resources.layout[key]) this.growPool(kind, worldPoolGrowth(kind, this.resources.layout, this.limits));
     return p.free.length ? p.free.pop() : p.nextID++;
+  }
+  // Room for count more pages in one growth, not a doubling per overflow
+  // mid-batch: a growth copies every public page, and a pending page made
+  // before one is copied again when it is published.
+  reserve(kind, count) {
+    this._alive(); const p = this[kind], l = this.resources.layout, key = kind === 'cell' ? 'capacity' : kind + 'Capacity';
+    const needed = Math.min(worldPoolMax(kind, l, this.limits), p.nextID + Math.max(0, count - p.free.length));
+    if (needed > l[key]) this.growPool(kind, worldPoolGrowth(kind, l, this.limits, needed));
   }
   allocate(brick, { sourceRevision, fieldTick = 0, readyBits = READY.CELL } = {}) {
     this._alive(); check(integer(sourceRevision) && integer(fieldTick) && integer(readyBits, 1, READY.CELL), 'invalid cell version/readiness');
@@ -599,55 +623,52 @@ export class WorldRenderAtlas {
       check([READY.CELL, READY.LIGHT, READY.ALL].includes(channels), 'invalidation must clear complete pool domains');
       return { index: worldBrickIndex(this.bookLayout, brick), channels };
     });
-    const nextCell = this.entries.slice(), nextLight = this.lightEntries.slice(), oldPages = [];
-    // Required demand remains required. Clear/install in ONE immutable commit;
-    // replacements below win, and older snapshots retain their original pins.
-    for (const { index, channels } of cleared) for (const [kind, entries, mask] of [['cell', nextCell, READY.CELL], ['light', nextLight, READY.LIGHT]]) {
-      if (!(channels & mask)) continue;
-      if (entries[index]) oldPages.push(this[kind].pages.get(bookPage(entries[index])));
-      entries[index] = 0;
-    }
-    for (const p of ps) {
-      check(this._needed(p).every(n => p.written.has(n)), 'cannot publish partial page');
-      for(const [kind,lease]of Object.entries(p.restoreDeclarations??{}))validateWorldLightingRestore(lease,{job:p.job,kind});
-      const entries = p.kind === 'cell' ? nextCell : nextLight;
-      if (entries[p.index]) oldPages.push(this[p.kind].pages.get(bookPage(entries[p.index])));
-      entries[p.index] = bookEntry(p);
-    }
-    for (let i = 0; i < nextLight.length; i++) if (nextLight[i] && nextCell[i]) {
-      check(this.light.pages.get(bookPage(nextLight[i])).sourceRevision === this.cell.pages.get(bookPage(nextCell[i])).sourceRevision, 'incompatible cell/light source revision');
-    }
-    // Revalidate retained descriptors too: a new manifest cannot silently mix old dependencies.
-    for (const v of nextLight) if (v) {
-      const p = this.light.pages.get(bookPage(v));
-      for (const [channel, bit] of [['source', READY.GI_SOURCE], ['gi', READY.GI], ['glow', READY.GLOW]]) if (p.readyBits & bit) {
-        const d = p.dependencies[channel];
-        const retained=p.provenance?.[channel];
-        if(retained)check(retained.publication===p.publication&&retained.publication.epoch===p.epoch&&retained.publication.sourceRevision===p.sourceRevision,'incompatible retained publication');
-        else check(!d.id || dependencies.sets.some(x => x.id === d.id && x.version === d.version), 'incompatible channel dependency version');
+    const tx = { undo: [], oldPages: [], changed: { cell: [], light: [] } };
+    try {
+      // Required demand remains required. Clear/install in ONE immutable commit;
+      // replacements below win, and older snapshots retain their original pins.
+      for (const { index, channels } of cleared) for (const [kind, mask] of [['cell', READY.CELL], ['light', READY.LIGHT]]) {
+        if (channels & mask) this._put(tx, kind, index, null);
       }
-    }
-    if (sun?.dependencySetID) check(dependencies.sets.some(d => d.id === sun.dependencySetID && d.version === sun.dependencyVersion), 'incompatible sun dependency version');
-    for (const p of ps) if (p.kind === 'light') this._writeDescriptor(p);
-    const moved = ps.filter(p => p.resources !== this.resources);
-    if (moved.length) {
-      const encoder = this.device.createCommandEncoder({ label: 'world pending repack' });
-      moved.forEach(p => copyJob(encoder, p.resources, this.resources, p)); this.queue.submit([encoder.finish()]);
-    }
-    this._commit(nextCell, nextLight, this.resources, this.epoch, dependencies, sun);
-    for (const p of oldPages) { p.public = false; this._collect(p); }
+      for (const p of ps) {
+        check(this._needed(p).every(n => p.written.has(n)), 'cannot publish partial page');
+        for(const [kind,lease]of Object.entries(p.restoreDeclarations??{}))validateWorldLightingRestore(lease,{job:p.job,kind});
+        this._put(tx, p.kind, p.index, p);
+      }
+      // Only a changed index can pair anew: every other pair passed its own commit.
+      for (const i of new Set([...tx.changed.cell, ...tx.changed.light])) {
+        const light = this.live.light.get(i), cell = this.live.cell.get(i);
+        if (light && cell) check(light.sourceRevision === cell.sourceRevision, 'incompatible cell/light source revision');
+      }
+      // Revalidate retained descriptors too: a new manifest cannot silently mix old dependencies.
+      for (const p of this.live.light.values()) {
+        for (const [channel, bit] of [['source', READY.GI_SOURCE], ['gi', READY.GI], ['glow', READY.GLOW]]) if (p.readyBits & bit) {
+          const d = p.dependencies[channel];
+          const retained=p.provenance?.[channel];
+          if(retained)check(retained.publication===p.publication&&retained.publication.epoch===p.epoch&&retained.publication.sourceRevision===p.sourceRevision,'incompatible retained publication');
+          else check(!d.id || dependencies.sets.some(x => x.id === d.id && x.version === d.version), 'incompatible channel dependency version');
+        }
+      }
+      if (sun?.dependencySetID) check(dependencies.sets.some(d => d.id === sun.dependencySetID && d.version === sun.dependencyVersion), 'incompatible sun dependency version');
+      for (const p of ps) if (p.kind === 'light') this._writeDescriptor(p);
+      const moved = ps.filter(p => p.resources !== this.resources);
+      if (moved.length) {
+        const encoder = this.device.createCommandEncoder({ label: 'world pending repack' });
+        moved.forEach(p => copyJob(encoder, p.resources, this.resources, p)); this.queue.submit([encoder.finish()]);
+      }
+      this._commit(tx.changed, this.resources, this.epoch, dependencies, sun);
+    } catch (e) { this._rollback(tx); throw e; }
+    for (const p of tx.oldPages) { p.public = false; this._collect(p); }
     for (const p of ps) { p.public = true; p.pending = false; this[p.kind].pending.delete(p.index); this._releaseResources(p.resources); }
     this.onChange({ epoch: this.epoch, generation: this.generation }); return this.generation;
   }
   remove(bricks, channels = READY.ALL) {
     this._alive(); const indices = bricks.map(b => worldBrickIndex(this.bookLayout, b));
     for (const i of indices) check(!this.required.has(i) && !this.cell.pending.has(i) && !this.light.pending.has(i), 'cannot remove requested/pending brick');
-    const cells = this.entries.slice(), lights = this.lightEntries.slice(), oldPages = [];
-    for (const [kind, entries, mask] of [['cell', cells, READY.CELL], ['light', lights, READY.LIGHT]]) if (channels & mask) for (const i of indices) {
-      if (entries[i]) oldPages.push(this[kind].pages.get(bookPage(entries[i]))); entries[i] = 0;
-    }
-    this._commit(cells, lights);
-    for (const p of oldPages) { p.public = false; this._collect(p); }
+    const tx = { undo: [], oldPages: [], changed: { cell: [], light: [] } };
+    for (const [kind, mask] of [['cell', READY.CELL], ['light', READY.LIGHT]]) if (channels & mask) for (const i of indices) this._put(tx, kind, i, null);
+    try { this._commit(tx.changed); } catch (e) { this._rollback(tx); throw e; }
+    for (const p of tx.oldPages) { p.public = false; this._collect(p); }
     this.onChange({ epoch: this.epoch, generation: this.generation });
   }
   _cancelPage(p) { p.pending = false; this[p.kind].pending.delete(p.index); this._releaseResources(p.resources); this._collect(p); }
@@ -665,7 +686,7 @@ export class WorldRenderAtlas {
       // Pinned retired descriptors are still addressed by producer-only mixed
       // readers. Every growth preserves their numeric pool prefix too.
       for (const pool of [this.cell, this.light]) for (const p of pool.pages.values()) if (p.public || p.pins) copyJob(encoder, old, next, p);
-      this.queue.submit([encoder.finish()]); this._commit(this.entries, this.lightEntries, next);
+      this.queue.submit([encoder.finish()]); this._commit(NO_CHANGE, next);
     } catch (e) { this._releaseResources(next); throw e; }
     this.resources = next; this._releaseResources(old);
     this.onChange({ epoch: this.epoch, generation: this.generation }); return next.layout;
@@ -712,7 +733,7 @@ export class WorldRenderAtlas {
   prepareProducerSnapshot({lightJobs,dependencyToken,sourcePhaseToken}) {
     this._alive();check(sourcePhaseToken!=null,'private SOURCE phase identity required');
     check(this.generation<U32_MAX,'world generation overflow');
-    const lights=new Uint32Array(this.bookLayout.count),seen=new Set(),sourceCovered=new Set(),probeCovered=new Set(),target=lightJobs[0]?.publication;
+    const lights=new Uint32Array(this.bookLayout.count),pages=[],seen=new Set(),sourceCovered=new Set(),probeCovered=new Set(),target=lightJobs[0]?.publication;
     for(const job of lightJobs){
       const p=this._job(job,'light');check(!seen.has(p.index),'duplicate private light job');seen.add(p.index);
       check(p.publication===target,'private closure target identity mismatch');
@@ -724,14 +745,15 @@ export class WorldRenderAtlas {
       check(p.resources===this.resources,'private closure must use current pool prefix');
       if(p.readyBits&READY.GI_SOURCE)sourceCovered.add(p.index);
       if(p.readyBits&READY.GI)probeCovered.add(p.index);
-      this._writeDescriptor(p);lights[p.index]=bookEntry(p);
+      this._writeDescriptor(p);lights[p.index]=bookEntry(p);pages.push(p);
     }
     const required=target?.sourceIndices,probes=target?.probeIndices;
     check(required?.every(i=>sourceCovered.has(i)),'private closure omits selected SOURCE records');
     check(probes?.every(i=>probeCovered.has(i)),'private closure omits requested previous GI records');
     // This is a private reader generation, not a public commit. Descriptors
     // use the same N+1 stamp; public books/counter remain at N.
-    const s=this._snapshotState(this.entries,lights,this.resources,this.epoch,dependencyToken?manifest(dependencyToken):this.current.dependencies,this.current.sunManifest,this.generation+1);
+    const s=this._snapshotState(this.entries,lights,{cell:{base:this.current.book,changed:[]},light:{base:null,changed:seen}},[...this.live.cell.values(),...pages],
+      this.resources,this.epoch,dependencyToken?manifest(dependencyToken):this.current.dependencies,this.current.sunManifest,this.generation+1);
     s.producerOnly=true;
     for(const job of lightJobs)this._job(job,'light').producerOnly=true;
     const out=this._snapshot(s);this._releaseSnapshot(s);return out;
@@ -759,9 +781,14 @@ export class WorldRenderAtlas {
     const missingChannels = readyBits & ~((cell?.readyBits ?? 0) | (light?.readyBits ?? 0));
     return missingChannels ? { known: false, incomplete: true, request: index, missingChannels } : { known: true, incomplete: false, physicalPageID: cell?.id, lightDescriptorID: light?.id, probePID: light?.probeID, epoch: this.epoch, sourceRevision: cell?.sourceRevision ?? light?.sourceRevision, fieldTick: cell?.fieldTick };
   }
+  // The pages a current book holds, in book order, without scanning the book.
+  bookPages(kind) { return [...this.live[kind].values()].sort((a, b) => a.index - b.index); }
   reset() {
     this._alive(); check(this.epoch < U32_MAX, 'world epoch overflow');
-    this._commit(new Uint32Array(this.bookLayout.count), new Uint32Array(this.bookLayout.count), this.resources, this.epoch + 1, manifest(), null);
+    const kept = [this.entries, this.lightEntries, this.live];
+    this.entries = new Uint32Array(this.bookLayout.count); this.lightEntries = new Uint32Array(this.bookLayout.count); this.live = { cell: new Map(), light: new Map() };
+    try { this._commit(NO_CHANGE, this.resources, this.epoch + 1, manifest(), null, null); }
+    catch (e) { [this.entries, this.lightEntries, this.live] = kept; throw e; }
     for (const pool of [this.cell, this.light]) {
       for (const p of [...pool.pending.values()]) this._cancelPage(p);
       for (const p of pool.pages.values()) { p.public = false; this._collect(p); }

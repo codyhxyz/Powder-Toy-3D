@@ -62,7 +62,8 @@ check('raw completeness scans exact ranks without repeated cut validation or loo
   f.source.getSource=()=>{throw Error('coverage must not allocate a lookup per cell');};
   assert(f.source.assertComplete([bounds]));assert.equal(validations,1);
   for(const local of [[0,0,0],[13,17,9],[31,31,31]]){
-    const slot=cellSlot(SOURCE_GRID,...local),old=chunk.rank[slot];chunk.rank[slot]=SOURCE_RANK.unknown;
+    // a writer that makes a rank unknown clears its core's whole flag (as invalidateGenerated does)
+    const slot=cellSlot(SOURCE_GRID,...local),old=chunk.rank[slot];chunk.rank[slot]=SOURCE_RANK.unknown;chunk.whole=false;
     assert.throws(()=>f.source.assertComplete([bounds]),/Incomplete in-world/);
     const lo=local.map((v,k)=>v+bounds.lo[k]);
     assert.throws(()=>f.source.assertComplete([{lo,hi:lo.map(v=>v+1)}]),/Incomplete in-world/);
@@ -81,16 +82,16 @@ check('partial-core brick-aligned completeness scans every rank and preserves ex
   for(const brick of [[4,4,4],[12,16,20],[24,24,24]]){
     const base=cellSlot(SOURCE_GRID,...brick);
     for(let i=0;i<64;i++){
-      const old=chunk.rank[base+i];chunk.rank[base+i]=SOURCE_RANK.unknown;
+      const old=chunk.rank[base+i];chunk.rank[base+i]=SOURCE_RANK.unknown;chunk.whole=false;
       assert.throws(()=>f.source.assertComplete([bounds]),/Incomplete in-world/);
       chunk.rank[base+i]=old;
     }
   }
-  const outside=cellSlot(SOURCE_GRID,0,0,0),old=chunk.rank[outside];chunk.rank[outside]=SOURCE_RANK.unknown;
+  const outside=cellSlot(SOURCE_GRID,0,0,0),old=chunk.rank[outside];chunk.rank[outside]=SOURCE_RANK.unknown;chunk.whole=false;
   assert(f.source.assertComplete([bounds]),'unknown cells outside the partial core do not count');
   assert(f.source.assertComplete([{lo:[33,1,33],hi:[36,4,36]}]),'unaligned selection excludes a hole in the same brick');
   chunk.rank[outside]=old;
-  const inside=cellSlot(SOURCE_GRID,1,1,1);chunk.rank[inside]=SOURCE_RANK.unknown;
+  const inside=cellSlot(SOURCE_GRID,1,1,1);chunk.rank[inside]=SOURCE_RANK.unknown;chunk.whole=false;
   assert.throws(()=>f.source.assertComplete([{lo:[33,1,33],hi:[36,4,36]}]),/Incomplete in-world/);
   assert.throws(()=>f.source.assertComplete([{lo:[60,4,36],hi:[68,28,60]}]),/Incomplete in-world/);
   f.source.dispose();
@@ -121,7 +122,7 @@ check('bulk ranked raw gather preserves every native word and fails before any e
   f.source.recordGatherRaw(f.frame,request);f.flush();
   const chunk=f.source.chunks.get('32,0,32');
   for(const n of ['A','B'])assert.deepEqual(resources[n].bytes,chunk[n].bytes);
-  chunk.rank[cellSlot(SOURCE_GRID,13,17,9)]=SOURCE_RANK.unknown;
+  chunk.rank[cellSlot(SOURCE_GRID,13,17,9)]=SOURCE_RANK.unknown;chunk.whole=false;
   const frame={copy(){assert.fail('must preflight before copy');},clear(){assert.fail('must preflight before clear');}};
   assert.throws(()=>f.source.recordGatherRaw(frame,request),/Incomplete in-world/);
   f.source.dispose();
@@ -300,7 +301,9 @@ check('generated < saved < outgoing < live, stale revisions/epochs and partial e
   assert.equal(f.source.getSource([33, 1, 33]).kind, 'saved'); assert.equal(f.source.getSource([32, 1, 33]).kind, 'generated');
   f.source.recordLiveCopy(f.frame, f.sim, { lo: [34, 0, 34], hi: [36, 2, 36] });
   f.source.recordPopulate(f.frame, raw, old); assert.equal(f.source.getSource([34, 1, 34]).kind, 'live');
+  const cell = { lo: [32, 0, 32], hi: [33, 1, 33] }; assert(f.source.assertComplete([cell]));
   f.source.invalidateGenerated(); assert.equal(f.source.getSource([32, 0, 32]).kind, 'unknown');
+  assert.throws(() => f.source.assertComplete([cell]), /Incomplete in-world/, 'invalidation reopens a core found whole');
   assert.equal(f.source.recordPopulate(f.frame, raw, old), 0);
   const current = f.source.token(); f.source.reset(2); assert.equal(f.source.recordPopulate(f.frame, raw, current), 0);
   assert.equal(f.source.getSource([127, 31, 127]).kind, 'unknown');

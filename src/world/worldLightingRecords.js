@@ -85,8 +85,12 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
         if(!valid()||!held.isValid())throw new Error('discarded/stale world lighting metadata');
         readback=frozenArray(words);next=new Map(committed);const changed=[],emission=[];
         rows.forEach((r,s)=>{const prior=committed.get(r.index),emit=frozenArray(words.subarray(4*s,4*s+3)),info=words[4*s+3],actual=!!words[rows.length*4+s];if(actual)changed.push(r.brick);if(!prior||emit.some((w,k)=>w!==prior.emit[k]))emission.push(r.brick);next.set(r.index,{brick:frozenArray(r.brick),info,emit,changedTick:actual?derivedTick:prior.changedTick});});
-        const halo=new Set();for(const b of emission)for(let z=Math.max(0,b[2]-4);z<=Math.min(dims[2]-1,b[2]+4);z++)for(let y=Math.max(0,b[1]-4);y<=Math.min(dims[1]-1,b[1]+4);y++)for(let x=Math.max(0,b[0]-4);x<=Math.min(dims[0]-1,b[0]+4);x++)halo.add(worldLightingIndex(size,[x,y,z]));
-        changes=Object.freeze({derivedTick,changedBricks:frozenArray(changed.map(frozenArray)),emissionChangedBricks:frozenArray(emission.map(frozenArray)),glowDirtyIndices:frozenArray([...halo].sort((a,b)=>a-b))});complete=true;return batch;
+        // Each emission change's 9x9x9 brick halo, from the distinct brick x of each
+        // (y,z) row it reaches: a load's every brick emits anew, and 729 set adds
+        // each took 1.2 s on Descent (2026-10-21).
+        const haloRows=new Map();for(const b of emission)for(let z=Math.max(0,b[2]-4);z<=Math.min(dims[2]-1,b[2]+4);z++)for(let y=Math.max(0,b[1]-4);y<=Math.min(dims[1]-1,b[1]+4);y++){const row=y+dims[1]*z,xs=haloRows.get(row);if(xs)xs.add(b[0]);else haloRows.set(row,new Set([b[0]]));}
+        const halo=[];for(const row of Float64Array.from(haloRows.keys()).sort()){let end=-1;for(const x of Int32Array.from(haloRows.get(row)).sort()){for(let i=Math.max(0,x-4,end+1);i<=Math.min(dims[0]-1,x+4);i++)halo.push(i+dims[0]*row);end=Math.max(end,Math.min(dims[0]-1,x+4));}}
+        changes=Object.freeze({derivedTick,changedBricks:frozenArray(changed.map(frozenArray)),emissionChangedBricks:frozenArray(emission.map(frozenArray)),glowDirtyIndices:frozenArray(halo)});complete=true;return batch;
       }}).catch(e=>{batch.discard();throw e;}).finally(cleanup);
       // Completion cleanup releases native inputs, but acceptance still needs
       // its own real cut pin. Release it only on commit/discard/reset.

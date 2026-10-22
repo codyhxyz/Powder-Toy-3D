@@ -213,10 +213,12 @@ export class WorldCellAtlasAdapter {
     const jobs=[], clears=[...invalidations], device=this.gpu.device, ephemeral=[], writes=[];
     let fieldBatch={pages:[]}, rawBatch=[];
     // A batch's raw pages share one job list, one version block and one pass,
-    // each page bound at its own aligned window (the pack reads exactly its 68
-    // job words and 48 version bytes). A buffer, a mapping and a pass per page
-    // (35k pages on a World load's first frame, twice that many buffers) held
-    // Chrome's GPU process until its watchdog killed it (2026-10-21).
+    // each page bound at its own aligned dynamic offset (the pack reads exactly
+    // its 68 job words and 48 version bytes), and the pages of one source core
+    // share one bind group. A buffer, a mapping and a pass per page (35k pages
+    // on a World load's first frame, twice that many buffers) held Chrome's GPU
+    // process until its watchdog killed it, and a bind group per page still
+    // cost a Descent load a second (2026-10-21).
     const align=(n,a)=>Math.ceil(n/a)*a, limits=device.limits??{};
     const jobStride=align(68*4,limits.minStorageBufferOffsetAlignment??256), versionStride=align(48,limits.minUniformBufferOffsetAlignment??256);
     const packRaw=raws=>{
@@ -232,15 +234,18 @@ export class WorldCellAtlasAdapter {
       const record=(encoder,raw,outputs)=>{
         raw.outputs=outputs;if(++seen<raws.length)return;
         const pass=encoder.beginComputePass();pass.setPipeline(this.packPipeline);
-        let shared=null,output=null;
+        let shared=null,output=null;const inputs=new Map();
         raws.forEach(({source,capture,outputs},i)=>{
           const buffers=[source.A,source.B,source.flow??this.zero,source.aeration??this.zero,source.deco?.buffer??this.zero,capture.classification];
-          const input=device.createBindGroup({layout:this.packLayouts[0],entries:[...buffers.map((buffer,binding)=>({binding,resource:{buffer}})),
-            {binding:6,resource:{buffer:list,offset:i*jobStride,size:68*4}},{binding:7,resource:{buffer:params,offset:i*versionStride,size:48}}]});
+          let input=inputs.get(capture);
+          if(!input||input.buffers.some((b,k)=>b!==buffers[k])){
+            input={buffers,group:device.createBindGroup({layout:this.packLayouts[0],entries:[...buffers.map((buffer,binding)=>({binding,resource:{buffer}})),
+              {binding:6,resource:{buffer:list,offset:0,size:68*4}},{binding:7,resource:{buffer:params,offset:0,size:48}}]})};inputs.set(capture,input);
+          }
           if(!shared||shared.length!==outputs.length||shared.some((o,k)=>o.binding!==outputs[k].binding||o.resource!==outputs[k].resource)){
             output=device.createBindGroup({layout:this.packLayouts[1],entries:outputs});shared=outputs;
           }
-          pass.setBindGroup(0,input);pass.setBindGroup(1,output);pass.dispatchWorkgroups(1);
+          pass.setBindGroup(0,input.group,[i*jobStride,i*versionStride]);pass.setBindGroup(1,output);pass.dispatchWorkgroups(1);
         });
         pass.end();
       };
@@ -249,9 +254,21 @@ export class WorldCellAtlasAdapter {
     const flushWrites=()=>{
       if(!writes.length)return;
       if(rawBatch.length)packRaw(rawBatch);
-      const transport=fieldBatch,groups=new Map();
-      transport.buffer=this._buffer('CELL packed field batch',transport.pages.length*3*2048,BU.STORAGE|BU.COPY_SRC);ephemeral.push(transport.buffer);
-      transport.pages.forEach(({capture,local},index)=>{if(!groups.has(capture))groups.set(capture,[]);groups.get(capture).push(...local,index);});
+      const transport=fieldBatch,groups=new Map(),runs=[];
+      // Up to four pages with consecutive IDs in one tile row share each 256-byte
+      // buffer row, so one native copy per channel writes all their tiles: a copy
+      // per page and channel was ~100k calls of a Descent load (2026-10-21). A
+      // run's tiles are pages of this one page-write batch, written together.
+      let run=null;
+      for(const page of transport.pages){
+        const p=this.atlas.cell.pages.get(page.job.physicalPageID),gx=p.resources.layout.cells.x;
+        if(run&&run.count<4&&p.id===run.last+1&&p.id%gx!==0&&p.resources===run.resources)run.count++;
+        else{run={index:runs.length,count:1,resources:p.resources,destinations:null};runs.push(run);}
+        run.last=p.id;page.run=run;page.slot=run.count-1;
+      }
+      transport.buffer=this._buffer('CELL packed field batch',runs.length*3*2048,BU.STORAGE|BU.COPY_SRC);ephemeral.push(transport.buffer);
+      // The pack's job.w: the page's first texel, in 8-byte words.
+      transport.pages.forEach(({capture,local,run,slot})=>{if(!groups.has(capture))groups.set(capture,[]);groups.get(capture).push(...local,run.index*768+slot*8);});
       const dispatches=[];
       for(const [capture,words] of groups){
         const list=this._upload('CELL field batch jobs',new Uint32Array(words),BU.STORAGE);ephemeral.push(list);
@@ -265,6 +282,12 @@ export class WorldCellAtlasAdapter {
         for(const {count,group} of dispatches){pass.setBindGroup(0,group);pass.dispatchWorkgroups(count);}
         pass.end();encoded=true;
       };
+      transport.copy=(encoder,index,destinations)=>{
+        const {run,slot}=transport.pages[index];
+        if(slot===0)run.destinations=destinations;
+        if(slot<run.count-1)return;
+        run.destinations.forEach((destination,i)=>encoder.copyBufferToTexture({buffer:transport.buffer,offset:(run.index*3+i)*2048,bytesPerRow:256,rowsPerImage:8},destination,[8*run.count,8,1]));
+      };
       this.atlas.recordPageWrites(writes);writes.length=0;fieldBatch={pages:[]};rawBatch=[];
     };
     const previousLighting=this.atlas.snapshot();
@@ -273,13 +296,13 @@ export class WorldCellAtlasAdapter {
       // Without a proven lighting dependency closure, no old channel may be
       // relabelled as newly computed. Preserve it only in the pinned snapshot;
       // the lighting owner can supply explicit compatible replacements below.
-      // (index loops: a book is 33M entries on Descent, and entries() made a pair for each)
-      const n=this.atlas.bookLayout.bricks,brickAt=index=>[index%n[0],Math.floor(index/n[0])%n[1],Math.floor(index/(n[0]*n[1]))];
-      if(derivedChanged){const light=this.atlas.lightEntries;for(let index=0;index<light.length;index++)if(light[index])clears.push({brick:brickAt(index),channels:READY.LIGHT});}
-      if(this.unpublishedInvalidations.size){const cell=this.atlas.entries;for(let index=0;index<cell.length;index++)if(cell[index]){
-        const b=brickAt(index);
-        if(this.unpublishedInvalidations.has(brickKey(coreFor(b))))clears.push({brick:b,channels:READY.CELL});
-      }}
+      // The books' own pages, not a scan of 33M entries each on Descent (2026-10-21).
+      if(derivedChanged)for(const p of this.atlas.bookPages('light'))clears.push({brick:[...p.brick],channels:READY.LIGHT});
+      if(this.unpublishedInvalidations.size)for(const p of this.atlas.bookPages('cell')){
+        if(this.unpublishedInvalidations.has(brickKey(coreFor(p.brick))))clears.push({brick:[...p.brick],channels:READY.CELL});
+      }
+      const cellKeys=new Set();for(const r of batch.options.requirements)if((Array.isArray(r)?READY.CELL:r.channels)&READY.CELL)cellKeys.add(brickKey(Array.isArray(r)?r:r.brick));
+      this.atlas.reserve('cell',cellKeys.size);
       const seen=new Set();
       for(const r of batch.options.requirements){
         const brick=Array.isArray(r)?r:r.brick,channels=Array.isArray(r)?READY.CELL:r.channels;
@@ -294,11 +317,8 @@ export class WorldCellAtlasAdapter {
         const words=new Uint32Array(68);words.set([start,bi,0,0]);words.set(source.aux.subarray(start,start+64),4);
         const raw={job,words,source,capture,record:null};rawBatch.push(raw);
         writes.push({job,kind:'raw',auxMetadata:[READY.CELL,job.epoch,job.sourceRevision,job.fieldTick],record:(encoder,bindings)=>raw.record(encoder,raw,bindings.outputs)});
-        const transport=fieldBatch,pageIndex=transport.pages.length;transport.pages.push({capture,local});
-        writes.push({job,kind:'fields',record:(encoder,bindings)=>{
-          transport.record(encoder);
-          bindings.destinations.forEach((destination,i)=>encoder.copyBufferToTexture({buffer:transport.buffer,offset:(pageIndex*3+i)*2048,bytesPerRow:256,rowsPerImage:8},destination,[8,8,1]));
-        }});
+        const transport=fieldBatch,pageIndex=transport.pages.length;transport.pages.push({capture,local,job});
+        writes.push({job,kind:'fields',record:(encoder,bindings)=>{transport.record(encoder);transport.copy(encoder,pageIndex,bindings.destinations);}});
         // Bound command-buffer size, not work: every requested page is packed.
         // 512 pages a submission: a 35k-page first frame is ~70 submissions, not 550.
         if(writes.length>=this.batchWrites)flushWrites();

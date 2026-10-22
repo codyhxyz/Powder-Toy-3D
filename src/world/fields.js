@@ -25,8 +25,18 @@ function boxBricks(lo, hi, bounds) {
   }
   return out;
 }
-function touches(core, owner, reach = 4) {
-  return core.every((v, i) => owner[i] * 4 < v + 32 + reach && owner[i] * 4 + 4 > v - reach);
+// The keys of every 32-aligned core that a brick touches, the core grown by
+// reach cells on each side (at most two cores a side): testing each core
+// against every brick was O(cores x bricks) per plan, and a World load plans
+// once per batch (2026-10-21).
+function touchedCores(bricks, reach = 4) {
+  const keys = new Set(), side = (v) => {
+    const out = [];
+    for (let c = Math.floor((v * 4 - 32 - reach) / 32) * 32; c < v * 4 + 4 + reach; c += 32) if (v * 4 < c + 32 + reach && v * 4 + 4 > c - reach) out.push(c);
+    return out;
+  };
+  for (const b of bricks) { const [xs, ys, zs] = b.map(side); for (const z of zs) for (const y of ys) for (const x of xs) keys.add(brickKey([x, y, z])); }
+  return keys;
 }
 function synchronous(result, label) {
   if (result && typeof result.then === 'function') throw new Error(`${label} must be a synchronous GPU recorder`);
@@ -123,11 +133,15 @@ export class WorldFields {
       if (!Array.isArray(core) || core.length !== 3 || core.some((v) => !Number.isSafeInteger(v) || v % 32)) throw new Error('World field cores must be 32-cell aligned');
       if (boxBricks(core, core.map((v) => v + 32), this.bounds).length) cores.set(brickKey(core), [...core]);
     }
-    const owners = new Map([...this.history.owners].map(([k, v]) => [k, { ...v, changed: jetToggle }]));
+    // History owners are shared, never written: a plan copies an owner only to
+    // change it. A copy of every owner (one a brick) per plan was most of a
+    // batched World load's field planning and its garbage (2026-10-21).
+    const owners = new Map(this.history.owners);
+    for (const [k, v] of owners) if (v.changed !== jetToggle) owners.set(k, { ...v, changed: jetToggle });
     const ensure = (brick, changed = false) => {
-      const key = brickKey(brick);
-      if (!owners.has(key)) owners.set(key, { brick, page: null, lastTick: null, age: 0, sourceVersion: null });
-      if (changed) owners.get(key).changed = true;
+      const key = brickKey(brick), owner = owners.get(key);
+      if (!owner) owners.set(key, changed ? { brick, page: null, lastTick: null, age: 0, sourceVersion: null, changed: true } : { brick, page: null, lastTick: null, age: 0, sourceVersion: null });
+      else if (changed && !owner.changed) owners.set(key, { ...owner, changed: true });
     };
     // Include all required authoritative EMA halos, not only visible owners.
     for (const core of cores.values()) for (const b of boxBricks(core.map((v) => v - 4), core.map((v) => v + 36), this.bounds)) ensure(b);
@@ -146,8 +160,9 @@ export class WorldFields {
       if (owner.page && owner.age < FIELD_EMA_SETTLE && fieldTick !== owner.lastTick + 1) throw new Error('Missing dynamic field ticks; replay pinned snapshots first');
       if (!owner.page || owner.changed || owner.age < FIELD_EMA_SETTLE) advancing.push(owner);
     }
+    const nearAdvancing = touchedCores(advancing.map((o) => o.brick)), nearChanged = touchedCores(changedBricks, 8);
     const jobs = [...cores.values()].filter((core) => full || this.smoothing !== smoothing || !this.published.has(brickKey(core)) ||
-      advancing.some((o) => touches(core, o.brick)) || changedBricks.some((b) => touches(core, b, 8)));
+      nearAdvancing.has(brickKey(core)) || nearChanged.has(brickKey(core)));
     const batches = new Map();
     for (const owner of advancing) {
       const core = coreOfBrick(owner.brick), key = brickKey(core);
@@ -160,14 +175,15 @@ export class WorldFields {
     });
     if (preflight) assertComplete(source, regions); // exact same demand calculation before population
     return { epoch, fieldTick, sourceRevision: source.sourceRevision, source, version: this.version, smoothing,
-      owners, advancing, changedBricks, aerationActive, batches: [...batches.values()], jobs, regions };
+      owners, advancing, changedBricks, nearAdvancing, nearChanged, aerationActive, batches: [...batches.values()], jobs, regions };
   }
   record(frame, plan) {
     if (plan.epoch !== this.history.epoch || plan.version !== this.version || plan.source.isCurrent() !== true) throw new Error('Stale world field plan');
     if (Object.values(this.kernels).some((k) => k.state !== 'ready')) throw new Error('World field kernels not ready');
     assertComplete(plan.source, plan.regions);
     const r = this.scratch, uploads = [], allocated = [], outputs = [], replaced = [];
-    const owners = new Map([...plan.owners].map(([key, owner]) => [key, { ...owner }]));
+    // Shared owners again: an advancing one is copied before it changes.
+    const owners = new Map(plan.owners);
     const header = { src: 0, dst: 0, origin: [0, 0, 0] };
     const domain = (origin, interval) => ({ worldMin: this.bounds.min, worldMax: this.bounds.max, scratchOrigin: origin, ...interval });
     const gatherRaw = (origin) => synchronous(plan.source.recordGatherRaw(frame, { resources: { A: r.A, B: r.B, aeration: r.aeration },
@@ -193,7 +209,7 @@ export class WorldFields {
         this.deriver.recordEMA(frame, { sourceGroup: this.sourceGroup, header,
           size: fold(ids.length), domain: domain(origin, { lo: [16, 16, 16], hi: [48, 48, 48] }) });
         for (const planned of batch.owners) {
-          const owner = owners.get(brickKey(planned.brick));
+          const key = brickKey(planned.brick), owner = { ...owners.get(key) }; owners.set(key, owner);
           const page = this.history.allocate(); allocated.push(page);
           this.history.copy(frame, r, origin, owner.brick, page, true);
           if (owner.page) replaced.push(owner.page);
@@ -225,11 +241,7 @@ export class WorldFields {
       // A throwing publisher must leave its retained snapshot unchanged.
       if (plan.epoch !== this.history.epoch || plan.version !== this.version || plan.source.isCurrent() !== true) throw new Error('World field source/epoch changed during recording');
       const token = this._token(plan);
-      const invalidatedCoreKeys = [...this.published].filter(key => {
-        const core = key.split(',').map(Number);
-        return this.smoothing !== plan.smoothing || plan.advancing.some(o => touches(core, o.brick)) ||
-          plan.changedBricks.some(b => touches(core, b, 8));
-      });
+      const invalidatedCoreKeys = [...this.published].filter(key => this.smoothing !== plan.smoothing || plan.nearAdvancing.has(key) || plan.nearChanged.has(key));
       synchronous(this.publisher.publish({ token, outputs, invalidatedCoreKeys }), 'publish');
       if (plan.epoch !== this.history.epoch || plan.version !== this.version || plan.source.isCurrent() !== true) throw new Error('World field source/epoch changed during publication');
       this.history.owners = owners;

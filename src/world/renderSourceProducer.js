@@ -21,6 +21,16 @@ export function treeColumnMask(win, origin, g) {
   return mask;
 }
 export const bakeSourceTree = (t, generator = BUILTINS.TREE) => bake(runGenerator(generator, { size: t.size, seed: t.seed, variant: t.variant }), t.quarter);
+// A tree within reach of several producer columns was baked again for each
+// (0.36 s of an Island load, 2026-10-21). A bake is a pure function of these.
+const bakedTrees = new WeakMap();
+function bakedSourceTree(t, generator = BUILTINS.TREE) {
+  let memo = bakedTrees.get(generator);
+  if (!memo) bakedTrees.set(generator, memo = new Map());
+  const key = `${t.size},${t.seed},${t.variant},${t.quarter}`;
+  if (!memo.has(key)) { if (memo.size >= 1024) memo.clear(); memo.set(key, bakeSourceTree(t, generator)); }
+  return memo.get(key);
+}
 export function sourceTrees(win, origin, g) {
   if (!win.scene.trees) return [];
   const R = TREE.REACH;
@@ -28,7 +38,7 @@ export function sourceTrees(win, origin, g) {
   const candidates = win.scene.trees.treesIn(origin[0] - R, origin[2] - R, origin[0] + g.nx + R, origin[2] + g.nz + R, win.P, win.candidates);
   // Stable WORLD order, independent of chunk partition/query/cache order.
   return [...candidates].sort((a, b) => Math.floor(a.z / 4) - Math.floor(b.z / 4) || Math.floor(a.x / 4) - Math.floor(b.x / 4) || a.z - b.z || a.x - b.x).flatMap((t) => {
-    const s = win.bakeTree ? win.bakeTree(t) : bakeSourceTree(t, win.treeGenerator);
+    const s = win.bakeTree ? win.bakeTree(t) : bakedSourceTree(t, win.treeGenerator);
     if (!s) return [];
     const at = [t.x - s.base.x, t.y - s.base.y, t.z - s.base.z];
     if (at[0] + s.w <= origin[0] || at[0] >= origin[0] + g.nx || at[2] + s.d <= origin[2] || at[2] >= origin[2] + g.nz) return [];
@@ -107,7 +117,7 @@ export class RawWorldSourceProducer {
     this.source.recordStore(box, token);
     // Store, then captured, then CURRENT live. All overlays are GPU copies;
     // store bytes were already losslessly decoded by the source cache.
-    for (const c of this.source.chunks.values()) {
+    for (const c of this.source._chunksIn(box)) {
       // Whole bricks decide from their 64 contiguous ranks, as recordGatherRaw's
       // do; only mixed bricks go cell by cell. Every cell through the callback
       // cost a 320-tall Descent column most of a second (2026-10-21).
