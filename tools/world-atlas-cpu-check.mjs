@@ -600,6 +600,19 @@ test('a pool never grows past the owner\'s page budget: growth clamps to it, a d
   assert.ok(far>kept,'the farthest bricks go first');
   for(const i of r.dropped)assert.ok(V.worldViewFarAir(eye,brick(i),r.air),'a dropped brick is air to the view');
   for(const i of r.keep)assert.ok(!V.worldViewFarAir(eye,brick(i),r.air)||!ids.has(i));
+  // the pool caps hold a re-pack's copies: twice the demand, never more
+  assert.equal(R.pool.cell,R.cell*V.WORLD_PAGE_COPIES);
+  // a pool short of room for the new pages drops only new pages, the farthest first; a held brick keeps its page and its column's floor
+  const fresh=new Set([...ids].filter(i=>brick(i)[0]%2===0)),resident=new Set([...ids].filter(i=>!fresh.has(i))),room=fresh.size-5;
+  const c=V.worldBudgetDemand(ids,{budget:ids.size,eye,brick,air,fresh,room,resident});
+  assert.equal(c.dropped.length,5);assert.ok(c.dropped.every(i=>fresh.has(i)),'only a new page frees pool room');
+  assert.ok(Math.min(...c.dropped.map(i=>brick(i)[0]))>Math.max(...[...fresh].filter(i=>!c.dropped.includes(i)).map(i=>brick(i)[0])),'the farthest new pages go first');
+  const held=V.worldBudgetDemand(ids,{budget:ids.size-3,eye,brick,air,resident:ids});
+  assert.equal(held.dropped.length,3);assert.equal(held.air,air,'a resident dropped brick keeps its page: no floor is lowered');
+  // floors are brick rows over the twin plus the trees' clearance; no twin: never air
+  assert.equal(air.floors[0],Math.ceil((8+V.WORLD_VIEW_AIR_CLEARANCE)/4));
+  assert.ok(!V.worldViewFarAir([0,0,0],[60,30,60],V.worldViewAirFloors({size,tops:null})),'without a ground twin nothing is air');
+  const words=V.worldViewAirWords(air);assert.equal(words.length,air.floors.length+1);assert.equal(words.at(-1),air.floors.length);
 });
 test('canonical original GI-source packing fixtures survive source-only descriptor transport, not reserved cell record3',()=>{
   // Inputs are already reduced giSourceFrag outputs, NOT material/profile aliases.

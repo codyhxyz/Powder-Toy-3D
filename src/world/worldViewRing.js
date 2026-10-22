@@ -18,19 +18,26 @@
 // bias) and Lumen's near/far split:
 // - Past WORLD_VIEW_NEAR_RADIUS of the eye, a missing brick over the scene's
 //   ground twin by more than WORLD_VIEW_AIR_CLEARANCE is air: the view walks
-//   through it without asking (shaders/worldAccess.js worldViewFarAir). A brick
-//   that is resident is still read: what the view already holds is drawn.
+//   through it without asking (shaders/worldAccess.js worldViewFarAir), and
+//   every reader of it (cells, fields, media) gets the empty placeholder. A
+//   brick that is resident is still read: what the view already holds is
+//   drawn. A missing far brick under the floor (the ground and the trees on
+//   it) is still asked for: that is the far ground the picture shows, which
+//   the load's own forecast mostly asks for first (worldSunForecast.js).
+// - Far shading: the sun tiles a far pixel finds are drawn coarse from the
+//   same twin (worldSunRings.js, by the tile's distance), never with casters.
 // - Past WORLD_VIEW_GI_RADIUS a surface's light bounce is the open sky's
 //   (no bounce, all of the sky), faded in over WORLD_VIEW_GI_FADE: no probe
 //   there is ever asked for, so none is born. Past it glow reads nothing.
 // - Inside the near rings the view behaves exactly as before.
 // And a GPU memory budget (worldPageBudget): a load never asks the atlas for
-// more pages than a stated share of the device's memory holds; past it the
-// farthest requested bricks are dropped and read as air from there up
-// (worldBudgetDemand), as UE5's Nanite and Virtual Shadow Map pools do with a
-// fixed page budget (r.Nanite.StreamingPoolSize, r.Shadow.Virtual.MaxPhysicalPages:
-// the pool is a budget, overflow drops the farthest/coarsest requests, it never
-// grows past it).
+// more pages than a stated share of the device's memory holds, and no pool
+// grows past that times its copies; past it the farthest requested bricks
+// are dropped and read as air from there up (worldBudgetDemand), as UE5's
+// Nanite and Virtual Shadow Map pools do with a fixed page budget
+// (r.Nanite.Streaming.StreamingPoolSize, r.Shadow.Virtual.MaxPhysicalPages:
+// the pool is a budget, overflow drops the farthest/coarsest requests, it
+// never grows past it).
 import { WORLD_SUN_NEAR_RADIUS } from './worldSunRings.js';
 import { BRICK } from '../shaders/common.js';
 import { AUX_RECORDS, LIGHT_RECORDS, PAGE_CHANNELS } from './renderAtlas.js';
@@ -44,7 +51,12 @@ export const WORLD_VIEW_NEAR_RADIUS = WORLD_SUN_NEAR_RADIUS;
 // ground (scenes/giantVolcano.js TREE_REACH: Volcano isles' trees, half as big
 // again as Island's), since the twin (scene.ground) holds the terrain and its
 // structures but not the trees planted on it. So a far crown is still asked
-// for and drawn; only the open sky over it is skipped.
+// for and drawn; only the open sky over it is skipped. Matter the twin cannot
+// know of higher up (smoke, a cloud, a player's tower) is drawn past the ring
+// when its bricks are resident, and not asked for when they are not: the
+// open follow-up is a per-brick "holds matter" summary from the simulation,
+// asked for by the load (Minecraft's empty chunk sections, which it never
+// meshes), so far air over the floor that does hold something is loaded too.
 export const WORLD_VIEW_AIR_CLEARANCE = 28;
 // Columns around a brick column whose highest top it is held under: the twin
 // is sampled once per column (its centre), so a slope or a step inside the
@@ -58,28 +70,30 @@ export const WORLD_VIEW_GI_RADIUS = WORLD_SUN_NEAR_RADIUS;
 // Cells over which the probes' light eases into the open sky's, inside the
 // ring: two probes' spacing, so the hand-off is never a step at a probe edge.
 export const WORLD_VIEW_GI_FADE = 2 * BRICK;
-// A column floor no brick reaches (f32): every missing brick there is asked for.
-export const WORLD_VIEW_NO_FLOOR = 3.0e38;
+// A column floor no brick row reaches: every missing brick there is asked for.
+export const WORLD_VIEW_NO_FLOOR = 0xffffffff;
 
-// Per brick column (x fastest), the lowest cell y from which a missing brick
-// past the near ring is air: the highest twin top within WORLD_VIEW_AIR_DILATE
-// columns (open water: its surface, tops.sea), plus WORLD_VIEW_AIR_CLEARANCE.
-// tops: worldSunForecast.js worldColumnTops, or casters: the coarse sun's
-// heightfield of the same tops (worldSunRings.js worldCoarseCasters), read
-// without asking the twin again. No twin: every floor is WORLD_VIEW_NO_FLOOR
-// (nothing is skipped until the budget lowers one).
+// Per brick column (x fastest), the lowest brick row from which a missing
+// brick past the near ring is air: the brick rows wholly over the highest twin
+// top within WORLD_VIEW_AIR_DILATE columns (open water: its surface,
+// tops.sea), plus WORLD_VIEW_AIR_CLEARANCE. Brick rows, not cells, so the
+// shader's test is one integer compare. tops: worldSunForecast.js
+// worldColumnTops, or casters: the coarse sun's heightfield of the same tops
+// (worldSunRings.js worldCoarseCasters), read without asking the twin again.
+// No twin: every floor is WORLD_VIEW_NO_FLOOR (nothing is skipped until the
+// budget lowers one).
 export function worldViewAirFloors({ size, tops, casters = null }) {
   const dims = [Math.ceil(size[0] / BRICK), Math.ceil(size[2] / BRICK)], raw = new Float32Array(dims[0] * dims[1]), sea = tops?.sea ?? 0;
-  if (!tops) return Object.freeze({ floors: raw.fill(WORLD_VIEW_NO_FLOOR), dims: Object.freeze(dims) });
+  if (!tops) return Object.freeze({ floors: new Uint32Array(raw.length).fill(WORLD_VIEW_NO_FLOOR), dims: Object.freeze(dims) });
   for (let z = 0; z < dims[1]; z++) for (let x = 0; x < dims[0]; x++) raw[x + dims[0] * z] = Math.max(casters ? casters.heights[x + dims[0] * z] : tops.top(x, z), sea);
-  const floors = new Float32Array(raw.length);
+  const floors = new Uint32Array(raw.length);
   for (let z = 0; z < dims[1]; z++) for (let x = 0; x < dims[0]; x++) {
     let h = 0;
     for (let k = -WORLD_VIEW_AIR_DILATE; k <= WORLD_VIEW_AIR_DILATE; k++) for (let i = -WORLD_VIEW_AIR_DILATE; i <= WORLD_VIEW_AIR_DILATE; i++) {
       const xi = Math.min(dims[0] - 1, Math.max(0, x + i)), zi = Math.min(dims[1] - 1, Math.max(0, z + k));
       h = Math.max(h, raw[xi + dims[0] * zi]);
     }
-    floors[x + dims[0] * z] = h + WORLD_VIEW_AIR_CLEARANCE;
+    floors[x + dims[0] * z] = Math.ceil((h + WORLD_VIEW_AIR_CLEARANCE) / BRICK);
   }
   return Object.freeze({ floors, dims: Object.freeze(dims) });
 }
@@ -90,17 +104,17 @@ export function worldViewFarAir(eye, b, air, radius = WORLD_VIEW_NEAR_RADIUS) {
   if (!air || !eye) return false;
   let s = 0;
   for (let k = 0; k < 3; k++) { const d = (b[k] + 0.5) * BRICK - eye[k]; s += d * d; }
-  return s > radius * radius && b[1] * BRICK >= air.floors[b[0] + air.dims[0] * b[2]];
+  return s > radius * radius && b[1] >= air.floors[b[0] + air.dims[0] * b[2]];
 }
 // Is a GI probe sampled at p (cells) past the view's light-bounce ring? (worldProbe's
 // fade reaches 1 there: it asks for none of its taps.)
 export const worldViewProbeFar = (eye, p, radius = WORLD_VIEW_GI_RADIUS) => !!eye && Math.hypot(p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]) >= radius;
 // The floors as the words appended to the SunBook (gfx/worldSunLighting.js):
-// one f32 per column, then the column count, which tells the shader they are there.
+// one brick row per column, then the column count, which tells the shader they are there.
 export function worldViewAirWords(air) {
   if (!air) return null;
   const n = air.floors.length, words = new Uint32Array(n + 1);
-  words.set(new Uint32Array(air.floors.buffer, air.floors.byteOffset, n));
+  words.set(air.floors);
   words[n] = n;
   return words;
 }
@@ -112,37 +126,55 @@ export function worldViewAirWords(air) {
 const channelBytes = (shape) => Object.values(PAGE_CHANNELS).filter(([, s]) => s === shape).reduce((a, [, , b]) => a + b, 0);
 export const WORLD_CELL_PAGE_BYTES = 64 * channelBytes('cells') + AUX_RECORDS * PAGE_CHANNELS.aux[2];
 export const WORLD_LIGHT_PAGE_BYTES = LIGHT_RECORDS * PAGE_CHANNELS.aux[2] + channelBytes('probes');
-// The share of the device's memory the World's atlas pages may hold. Real
-// Chrome on the user's Mac (navigator.deviceMemory 8) ran out of GPU memory at
-// ~480k CELL pages (2.7 GB of pages, a third of it, with their growth copy and
-// the load's transient buffers on top) and held 235k-449k (2026-10-22): a fifth
-// keeps a load at ~300k pages there, under what it held.
+// The share of the device's memory a load's demand may hold in atlas pages.
+// Real Chrome on the user's Mac (navigator.deviceMemory 8) held 449k pages
+// (2.6 GB) through a load and ran out of GPU memory growing past ~480k, the
+// pool's doubling growth holding the old and the new arrays at once
+// (2026-10-22): a fifth keeps a load's demand at ~295k pages there, which
+// with its copies (WORLD_PAGE_COPIES) is ~590k pages, held without a doubling.
 export const WORLD_GPU_MEMORY_SHARE = 0.2;
+// Pages a pool holds per demanded brick at most: a re-pack writes a brick's
+// new page while its old one is still published (renderAtlas.js keeps the
+// previous snapshot's pages until the new one is accepted, copy-on-write),
+// so a pool may need two pages for a brick during a load.
+export const WORLD_PAGE_COPIES = 2;
 // GiB assumed when the browser does not say (navigator.deviceMemory is absent
-// outside Chrome; Chrome caps it at 8).
-export const WORLD_DEVICE_MEMORY_FALLBACK_GB = 4;
-// Pages each pool may hold: a brick's worst case is a CELL page and a LIGHT
-// page. Also held under one maxBufferSize per page plane's texture array
-// (a pool can never be bigger than the device can address in one resource),
-// which only binds on a device with a small limit.
+// outside Chrome): Chrome's own cap, the most the user's Mac reports; every
+// desktop that runs WebGPU has at least that, and phones start on the small
+// maps (Box), which hold no atlas.
+export const WORLD_DEVICE_MEMORY_FALLBACK_GB = 8;
+// Pages a load's demand may hold (cell, light, probe) and the most each pool
+// may grow to (pool: the demand times WORLD_PAGE_COPIES): a brick's worst case
+// is a CELL page and a LIGHT page. Each pool is also held under one
+// maxBufferSize per page plane's texture array (a pool can never be bigger
+// than the device can address in one resource), which only binds on a device
+// with a small limit. The rule of UE5's streaming pools (Nanite's
+// r.Nanite.Streaming.StreamingPoolSize, Virtual Shadow Maps'
+// r.Shadow.Virtual.MaxPhysicalPages): a fixed page budget, never grown past.
 export function worldPageBudget({ deviceMemoryGB, limits = {} } = {}) {
   const gb = Number.isFinite(deviceMemoryGB) && deviceMemoryGB > 0 ? deviceMemoryGB : WORLD_DEVICE_MEMORY_FALLBACK_GB;
   const bytes = Math.floor(gb * 1024 ** 3 * WORLD_GPU_MEMORY_SHARE);
-  let pages = Math.floor(bytes / (WORLD_CELL_PAGE_BYTES + WORLD_LIGHT_PAGE_BYTES));
+  let pool = Math.floor(bytes / (WORLD_CELL_PAGE_BYTES + WORLD_LIGHT_PAGE_BYTES)) * WORLD_PAGE_COPIES;
   const maxBuffer = limits.maxBufferSize;
-  if (Number.isFinite(maxBuffer) && maxBuffer > 0) pages = Math.min(pages, Math.floor(maxBuffer / (64 * PAGE_CHANNELS.stateA[2])));
-  return Object.freeze({ cell: pages, light: pages, probe: pages, bytes, deviceMemoryGB: gb });
+  if (Number.isFinite(maxBuffer) && maxBuffer > 0) pool = Math.min(pool, Math.floor(maxBuffer / (64 * PAGE_CHANNELS.stateA[2])));
+  const pages = Math.floor(pool / WORLD_PAGE_COPIES);
+  return Object.freeze({ cell: pages, light: pages, probe: pages, pool: Object.freeze({ cell: pool, light: pool, probe: pool }), bytes, deviceMemoryGB: gb });
 }
 // The demand that fits the budget: ids (brick indices) to keep. When there are
-// more than `budget` of them, the farthest from the eye that are not `held`
-// (pages the owner keeps anyway) and lie past the near ring are dropped, and
-// each dropped brick lowers its column's floor to its own bottom, so it and
-// every brick over it in the column read as air (the view never asks for them
-// again on this load). Returns { keep, dropped, floors } (floors: the changed
-// copy, or the input when nothing was dropped).
-export function worldBudgetDemand(ids, { budget, eye, brick, held = new Set(), air = null, radius = WORLD_VIEW_NEAR_RADIUS }) {
-  const all = [...ids];
-  if (!(all.length > budget) || !eye) return { keep: new Set(all), dropped: [], air };
+// more than `budget` of them, or more new pages (fresh: the bricks a pack
+// would write a page for; all of them when null) than the pool has `room` for,
+// the farthest from the eye that are not `held` (pages the owner keeps anyway)
+// and lie past the near ring are dropped, until both fit. A dropped brick the
+// atlas does not hold (not in `resident`) lowers its column's floor to its
+// own row, so it and every brick over it in the column read as air: the view
+// never asks for them again on this load, the far edge of the picture is what
+// is resident, as past Minecraft's render distance nothing is drawn. A
+// resident one keeps its last page. Returns { keep, dropped, air } (air: the
+// lowered copy, or the input when nothing was lowered).
+export function worldBudgetDemand(ids, { budget, eye, brick, held = new Set(), air = null, radius = WORLD_VIEW_NEAR_RADIUS, fresh = null, room = Infinity, resident = null }) {
+  const all = [...ids], isFresh = (i) => !fresh || fresh.has(i);
+  let over = all.length - budget, short = all.filter(isFresh).length - room;
+  if (!(over > 0 || short > 0) || !eye) return { keep: new Set(all), dropped: [], air };
   const far = [];
   for (const i of all) {
     if (held.has(i)) continue;
@@ -150,11 +182,19 @@ export function worldBudgetDemand(ids, { budget, eye, brick, held = new Set(), a
     if (d > radius) far.push([d, i, b]);
   }
   far.sort((a, b) => b[0] - a[0] || b[1] - a[1]);
-  const drop = far.slice(0, all.length - budget), dropped = new Set(drop.map(([, i]) => i));
+  const drop = [];
+  for (const e of far) {
+    if (over <= 0 && short <= 0) break;
+    const f = isFresh(e[1]);
+    if (over <= 0 && !f) continue;   // only the pool is short: only a new page frees room
+    drop.push(e); over--; if (f) short--;
+  }
+  const dropped = new Set(drop.map(([, i]) => i));
   let next = air;
-  if (drop.length && air) {
-    const floors = Float32Array.from(air.floors);
-    for (const [, , b] of drop) { const c = b[0] + air.dims[0] * b[2]; floors[c] = Math.min(floors[c], b[1] * BRICK); }
+  const lower = drop.filter(([, i]) => !resident?.has(i));
+  if (lower.length && air) {
+    const floors = Uint32Array.from(air.floors);
+    for (const [, , b] of lower) { const c = b[0] + air.dims[0] * b[2]; floors[c] = Math.min(floors[c], b[1]); }
     next = Object.freeze({ floors, dims: air.dims });
   }
   return { keep: new Set(all.filter((i) => !dropped.has(i))), dropped: drop.map(([, i]) => i), air: next };

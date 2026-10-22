@@ -15,6 +15,14 @@
 // (world/worldGIRing.js): fails on b48dd7e4, whose gathers asked for every
 // brick to the world's edge (Island's start 417k bricks in all, its hill 790k,
 // Descent's first level 824k), and every load within its whole-load budget.
+// And the scene's own feedback round (the model's view stage: what the
+// picture asks for once the load is probe-ready, worldRender.js extend())
+// stays bounded too: every load fits the GPU page budget of the user's Mac
+// (world/worldViewRing.js worldPageBudget) and gathers at most a few thousand
+// probes. Fails on 18a914b0, whose view asked for every brick of air its far
+// pixels crossed and every far surface's probes and glow (Island's hill: 495k
+// bricks packed, 21k gathers at 512x288; real Chrome: 481k bricks, 49k
+// gathers, then out of GPU memory, 2026-10-22).
 // CPU only: no browser, no GPU.
 //   node --test tools/world-demand-chain-cpu-check.mjs
 //   node tools/world-demand-chain-cpu-check.mjs --report [scene]   (per-attempt rows, every policy)
@@ -113,12 +121,14 @@ const DESCENT_START = JSON.parse(await readFile(new URL('../src/world/scenes/des
 const picked = ['island', DESCENT_START].map((k) => scenes.find((s) => s.key === k)).filter(Boolean);
 // Island from its hill: its first attempt is bounded and every tile shadowed,
 // and since the light bounce's near ring its gathers ask for nothing past it
-// (b48dd7e4's asked for 283k bricks across the island, 790k in all). It still
-// takes 4 attempts and ~446k bricks: ~324k of them are the eye's own walk
-// through unloaded air over the whole island (the model's view stage) and 9
-// sun tiles its grazing view finds that forecastViewTiles misses: the next
-// fix, view-side; gated under what Chrome held, not settled in 3 yet.
-const CAMERAS = { island: { start: { settle: true }, hill: { settle: false } } };
+// (b48dd7e4's asked for 283k bricks across the island, 790k in all). At
+// 18a914b0 it took ~446k bricks, ~324k of them the eye's own walk through
+// unloaded air over the whole island (the model's view stage, the scene's own
+// feedback round); with the view's rings (world/worldViewRing.js) it settles
+// at ~218k, under the whole-load budget like the start. It takes 4 attempts,
+// not 3: its grazing view finds 9 sun tiles forecastViewTiles misses, all far,
+// so all coarse (no casters to wait for).
+const CAMERAS = { island: { start: { settle: true }, hill: { settle: true, attempts: HILL_ATTEMPTS } } };
 // The view's own feedback (world/worldViewRing.js): with the scene's round
 // (the model's view stage, its glow lookups included) every load must fit the
 // GPU page budget of the user's Mac without dropping a brick, and its light
@@ -149,12 +159,12 @@ if (process.argv.includes('--report')) {
     console.log(`${scene.key} ${where} | ${name}: ${r.done ? 'complete' : 'NOT complete'} after ${r.attempts} attempts, ${r.requirements} bricks (${r.classified} packed, ${r.glowCores} glow cores, ${r.dropped} dropped), ${r.sunTiles} sun tiles (${r.coarseTiles} coarse), ${r.sources} sources, ${r.gathers} gathers, view-found tiles ${r.viewTiles} (${((performance.now() - t0) / 1000).toFixed(1)} s)`);
   }
 } else {
-  for (const scene of picked) for (const [where, { settle }] of Object.entries(CAMERAS[scene.key] ?? { start: { settle: true } })) test(`${scene.key} from its ${where}: ${settle ? `a load settles within ${WORLD_LOAD_ATTEMPTS} attempts and ${WORLD_LOAD_BRICKS} bricks, ` : `a load stays under the ${WORLD_HELD_BRICKS} bricks Chrome held, `}its first attempt under ${WORLD_FIRST_ATTEMPT_BRICKS} bricks, its light bounce asks for nothing past its near ring, every sun tile shadowed`, async () => {
+  for (const scene of picked) for (const [where, { settle, attempts = WORLD_LOAD_ATTEMPTS }] of Object.entries(CAMERAS[scene.key] ?? { start: { settle: true } })) test(`${scene.key} from its ${where}: ${settle ? `a load settles within ${attempts} attempts and ${WORLD_LOAD_BRICKS} bricks, ` : `a load stays under the ${WORLD_HELD_BRICKS} bricks Chrome held, `}its first attempt under ${WORLD_FIRST_ATTEMPT_BRICKS} bricks, the scene's own round included: within the GPU page budget, at most ${WORLD_VIEW_LOAD_GATHERS} gathers, its light bounce asks for nothing past its near ring, every sun tile shadowed`, async () => {
     const rows = [];
-    const r = await load(scene, { ...POLICIES['this fix'], maxAttempts: settle ? WORLD_LOAD_ATTEMPTS + 1 : HILL_ATTEMPTS }, (row) => rows.push(row), where);
+    const r = await load(scene, { ...POLICIES['this fix'], maxAttempts: settle ? attempts + 1 : HILL_ATTEMPTS }, (row) => rows.push(row), where);
     console.log(`${scene.key} ${where}: ${rows.map((row) => `att ${row.attempt} ${row.stage} req ${row.requirements} (support ${row.support}) sun ${row.sunTiles} coarse ${row.coarseTiles} src ${row.sources} gat ${row.gathers}`).join(' | ')} | total ${r.requirements}, light bounce asked ${r.giAsked.size}`);
     if (settle) assert(r.done, `not complete after ${r.attempts} attempts (${r.requirements} bricks, ${r.sunTiles} sun tiles)`);
-    if (settle) assert(r.attempts <= WORLD_LOAD_ATTEMPTS, `${r.attempts} attempts`);
+    if (settle) assert(r.attempts <= attempts, `${r.attempts} attempts`);
     assert(r.done, `not complete after ${r.attempts} attempts`);
     assert(r.requirements <= (settle ? WORLD_LOAD_BRICKS : WORLD_HELD_BRICKS), `the load asks for ${r.requirements} bricks`);
     assert(r.classified <= VIEW_BUDGET.cell, `the load packs ${r.classified} bricks, past the ${VIEW_BUDGET.cell}-page budget`);
@@ -162,8 +172,10 @@ if (process.argv.includes('--report')) {
     assert(r.gathers <= WORLD_VIEW_LOAD_GATHERS, `the load gathers ${r.gathers} probes`);
     assert.deepEqual(farAsked(r), [], 'the light bounce asked for bricks past its near ring');
     assert(rows[0].requirements <= WORLD_FIRST_ATTEMPT_BRICKS, `first attempt asks for ${rows[0].requirements} bricks`);
-    // the view's own sun set is known up front: the scene's feedback adds no tile
-    if (settle) assert.equal(r.viewTiles, 0, `the view asked for ${r.viewTiles} sun tiles the forecast missed`);
+    // the view's own sun set is known up front: the scene's feedback adds no
+    // tile (the hill's grazing view adds far ones: every full-detail tile has
+    // its casters forecast, below, so those are coarse)
+    if (settle && attempts === WORLD_LOAD_ATTEMPTS) assert.equal(r.viewTiles, 0, `the view asked for ${r.viewTiles} sun tiles the forecast missed`);
     // No tile without a shadow source: every tile is full detail with its
     // casters asked for, or coarse with a heightfield depth at every texel row.
     const forecast = new Set(r.forecastTiles);

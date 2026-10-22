@@ -27,8 +27,9 @@
 //   its 32-cell core's glow, whose blur reads that core's whole input region
 //   (gfx/worldGlow.js worldGlowPlan: 16^3 bricks; attempt() classifies them).
 //   With viewRing (world/worldViewRing.js) a far missing brick over its
-//   column's floor is walked through unasked, and a far probe or glow lookup
-//   asks for nothing.
+//   column's floor is walked through unasked and no cell read around a hit
+//   asks for it either (shaders/worldAccess.js worldPage), and a far probe or
+//   glow lookup asks for nothing.
 // The matter is the twin's heightfield (solid under scene.ground, water counted
 // as its surface): caves, overhangs and trees are not modelled, so the counts
 // are the loop's shape on the real terrain, not the GPU's exact numbers.
@@ -364,11 +365,13 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
     if (grew) { row.stage = stage; log?.(row); continue; }
     // probe-ready: the eye probe and the scene
     stage = 'view';
+    // the view's far air (worldPage's ring): no reader of a missing brick there asks for it
+    const farAir = (x, y, z) => !!air && (viewRing || dropped.size > 0) && worldViewFarAir(cam, [x, y, z], air);
     const wantCell = (p) => {
       for (let z = Math.floor((p[2] - CUBIC_SUPPORT) / BRICK); z <= Math.floor((p[2] + CUBIC_SUPPORT) / BRICK); z++)
         for (let y = Math.floor((p[1] - CUBIC_SUPPORT) / BRICK); y <= Math.floor((p[1] + CUBIC_SUPPORT) / BRICK); y++)
           for (let x = Math.floor((p[0] - CUBIC_SUPPORT) / BRICK); x <= Math.floor((p[0] + CUBIC_SUPPORT) / BRICK); x++)
-            if (x >= 0 && y >= 0 && z >= 0 && x < dims[0] && y < dims[1] && z < dims[2]) grew = add(index(x, y, z), READY.CELL) || grew;
+            if (x >= 0 && y >= 0 && z >= 0 && x < dims[0] && y < dims[1] && z < dims[2] && (resident.has(index(x, y, z)) || !farAir(x, y, z))) grew = add(index(x, y, z), READY.CELL) || grew;
     };
     const wantProbes = (p, bits = READY.GI) => {
       if (viewRing && worldViewProbeFar(cam, p, WORLD_VIEW_GI_RADIUS)) return;   // past the ring: the open sky's light, no ask
@@ -384,7 +387,7 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
       march(size, cam, d, (x, y, z, t0, t1) => {
         const i = index(x, y, z);
         if (!resident.has(i)) {
-          if (air && (viewRing || dropped.size) && worldViewFarAir(cam, [x, y, z], air)) return false;   // far air: walked through unasked
+          if (farAir(x, y, z)) return false;   // far air: walked through unasked
           grew = add(i, READY.CELL) || grew; return false;
         }
         if (!info(i).any && !(y * BRICK < w.seen(x * BRICK + 2, z * BRICK + 2))) return false;

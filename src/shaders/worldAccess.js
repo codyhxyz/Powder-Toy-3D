@@ -6,7 +6,10 @@ import { SH_Y0, SH_Y1, SKYVIS_OPEN_DC } from './gfx/lighting.js';
 /** Caller MUST worldBeginQuery(), perform the WHOLE dependent ray/shading
  * query, then test worldQueryIncomplete(). Placeholder zeros are unusable
  * when incomplete: discard/withhold the entire production frame and service
- * the feedback bitset. Never turn a miss into AIR, sky, or an early ray exit.
+ * the feedback bitset. Never turn a miss into AIR, sky, or an early ray exit,
+ * except where the view's rings say so (viewRing: world/worldViewRing.js):
+ * past its near ring a missing brick over its column's floor is air, and past
+ * its light-bounce ring the probes are the open sky's.
  * Out-of-world raw queries also mark incomplete (no request bit): callers own
  * the genuine world exterior policy. Field/probe filters extend world edges.
  * Feedback must be cleared before the query dispatch, and read after its
@@ -64,7 +67,15 @@ ${opticalWriter ? '' : `@group(2) @binding(0) var ${gi[0]}: texture_2d_array<f32
 @group(2) @binding(9) var worldPackedMesh: texture_2d<u32>;`}
 @group(3) @binding(${integrated ? 1 : 0}) var<storage, read_write> worldRequests: array<atomic<u32>>;
 var<private> worldIncomplete: bool;
-fn worldBeginQuery() { worldIncomplete = false; }
+${viewRing ? `// The view's far-air floors (worldViewFarAir): the SunBook word of column
+// 0's floor, or 0 when the book carries none. Read once per query, not at
+// each of worldPage's inlined copies.
+var<private> worldViewFloors: u32;
+fn worldViewRingBegin() {
+  let n = arrayLength(&SunBook); let cols = WA.bricks.x * WA.bricks.z;
+  worldViewFloors = select(0u, n - 1u - cols, n > cols && SunBook[n - 1u] == cols);
+}
+` : ''}fn worldBeginQuery() { worldIncomplete = false;${viewRing ? ' worldViewRingBegin();' : ''} }
 fn worldQueryIncomplete() -> bool { return worldIncomplete; }
 fn worldInBounds(c: vec3i) -> bool { return all(c >= vec3i(0)) && all(c < vec3i(WA.world.xyz)); }
 fn worldBrickInBounds(b: vec3i) -> bool { return all(b >= vec3i(0)) && all(b < vec3i(WA.bricks.xyz)); }
@@ -103,16 +114,19 @@ fn worldPageMeta(pid: u32, record: u32) -> vec4u {
 // names pages of its own epoch, which their aux metadata repeats.
 ${viewRing ? `// A missing brick past the view's near ring that starts over its column's
 // floor (the ground twin's top plus the trees' clearance, or lower where the
-// GPU memory budget dropped bricks) is air to the view: it is walked through
-// without asking for it, and the query stays complete. The floors ride at the
-// end of the SunBook, one f32 per brick column, then the column count (the
-// sign they are there). CPU twin: world/worldViewRing.js worldViewFarAir.
+// GPU memory budget dropped bricks) is air to the view: every reader of it
+// (brick info, cells, fields, media) reads the empty placeholder without
+// asking, so its march walks on and the query stays complete. A resident page
+// is read as before, and inside the ring nothing changes. The floors ride at
+// the end of the SunBook, one brick row per brick column, then the column
+// count (the sign they are there). Straight-line, no short circuit: it is
+// inlined into each of worldPage's ~180 copies (~1 s of a cold build,
+// tools/check-world-volume-inlining.mjs). CPU twin: world/worldViewRing.js worldViewFarAir.
 const WORLD_VIEW_NEAR_R2: f32 = ${(WORLD_VIEW_NEAR_RADIUS ** 2).toFixed(1)};
 fn worldViewFarAir(b: vec3i) -> bool {
-  let n = arrayLength(&SunBook); let cols = WA.bricks.x * WA.bricks.z;
-  if (n <= cols || SunBook[n - 1u] != cols) { return false; }
   let d = vec3f(b * 4 + 2) - FU.cam;
-  return dot(d, d) > WORLD_VIEW_NEAR_R2 && f32(b.y * 4) >= bitcast<f32>(SunBook[n - 1u - cols + u32(b.x) + WA.bricks.x * u32(b.z)]);
+  let floor = SunBook[worldViewFloors + u32(b.x) + WA.bricks.x * u32(b.z)];
+  return (worldViewFloors != 0u) & (dot(d, d) > WORLD_VIEW_NEAR_R2) & (u32(b.y) >= floor);
 }
 ` : ''}fn worldPage(b: vec3i, ready: u32) -> i32 {
   if (!worldBrickInBounds(b)) { worldIncomplete = true; return -1; }
@@ -120,23 +134,9 @@ fn worldViewFarAir(b: vec3i) -> bool {
   let e = worldBook[i]; let page = e & WORLD_BOOK_PAGE;
   let known = page != 0u && page <= WA.tiles.z && WA.tiles.w == WORLD_ABI;
   let have = select(0u, e >> WORLD_BOOK_READY, known);   // the channels the page holds
-  if (!known || (have & ready) != ready) { worldRequest(i, ready, have); return -1; }
+  if (!known || (have & ready) != ready) { ${viewRing ? 'if (!worldViewFarAir(b)) { worldRequest(i, ready, have); }' : 'worldRequest(i, ready, have);'} return -1; }
   return i32(page - 1u);
-}${viewRing ? `
-// worldPage for the brick-level readers the view's march walks with (brick
-// info, occupancy, empty-space distance): a march reads a brick's cells,
-// fields or media only after its brick info says it holds them, so a far air
-// brick that is not asked for here is never asked for at all. Only these few
-// call sites carry the ring: worldPage itself is inlined ~380 times.
-fn worldPageView(b: vec3i, ready: u32) -> i32 {
-  if (!worldBrickInBounds(b)) { worldIncomplete = true; return -1; }
-  let i = worldBookIndex(b);
-  let e = worldBook[i]; let page = e & WORLD_BOOK_PAGE;
-  let known = page != 0u && page <= WA.tiles.z && WA.tiles.w == WORLD_ABI;
-  let have = select(0u, e >> WORLD_BOOK_READY, known);
-  if (!known || (have & ready) != ready) { if (!worldViewFarAir(b)) { worldRequest(i, ready, have); } return -1; }
-  return i32(page - 1u);
-}` : ''}
+}
 fn worldCellTexel(pid: u32, c: vec3i) -> vec3i {
   let l = c & vec3i(3);
   let s = u32(l.x + 4 * (l.y & 1) + 8 * (l.z + 4 * (l.y >> 1)));
@@ -171,19 +171,19 @@ fn worldAeration(c: vec3i) -> vec4f {
 fn worldDeco(c: vec3i) -> u32 { return worldCellAux(c, 1u).x; }
 struct WorldBrickInfo { emit: vec3f, info: u32 }
 fn worldBrickInfo(b: vec3i) -> WorldBrickInfo {
-  let pid = ${viewRing ? 'worldPageView' : 'worldPage'}(b, ${integrated ? 'WORLD_RAW | WORLD_FIELD | WORLD_AUX' : 'WORLD_AUX'});
+  let pid = worldPage(b, ${integrated ? 'WORLD_RAW | WORLD_FIELD | WORLD_AUX' : 'WORLD_AUX'});
   if (pid < 0) { return WorldBrickInfo(vec3f(0.0), 0u); }
   let m = worldPageMeta(u32(pid), 1u);
   return WorldBrickInfo(bitcast<vec3f>(m.xyz), m.w);
 }
 fn worldBrickOccupancy(b: vec3i) -> vec2u {
-  let pid = ${viewRing ? 'worldPageView' : 'worldPage'}(b, WORLD_AUX);
+  let pid = worldPage(b, WORLD_AUX);
   if (pid < 0) { return vec2u(0u); }
   return worldPageMeta(u32(pid), 2u).xy;
 }
 // Same distance+1 encoding as local brickDist: zero decodes to -1, NOT empty.
 fn worldBrickDistance(b: vec3i) -> i32 {
-  let pid = ${viewRing ? 'worldPageView' : 'worldPage'}(b, WORLD_AUX);
+  let pid = worldPage(b, WORLD_AUX);
   if (pid < 0) { return -1; }
   return i32(worldPageMeta(u32(pid), 2u).z) - 1;
 }
@@ -285,6 +285,9 @@ const WORLD_VIEW_GI_TO: f32 = ${WORLD_VIEW_GI_RADIUS.toFixed(3)};
 // normal (lighting.js giSkyVis), no bounce light.
 const WORLD_VIEW_SKY_C0: f32 = ${(SKYVIS_OPEN_DC / SH_Y0).toFixed(6)};
 const WORLD_VIEW_SKY_CY: f32 = ${(SKYVIS_OPEN_DC / (2 / 3 * SH_Y1)).toFixed(6)};
+// One exit, no early return past the ring: Metal inlines this into the view's
+// main ~16 times, and early returns in inlined helpers are what made its cold
+// builds blow up (memory: cold-shader-compile, 2026-10-11).
 fn worldViewGIFar(p: vec3f) -> f32 { return smoothstep(WORLD_VIEW_GI_FROM, WORLD_VIEW_GI_TO, distance(p, FU.cam)); }
 ` : ''}fn worldProbeTex(t: texture_2d_array<f32>, p: vec3f, ready: u32) -> vec4f {
   let q = clamp(p/4.0 - 0.5, vec3f(0.0), vec3f(WA.bricks.xyz) - 1.0);
@@ -292,11 +295,12 @@ fn worldViewGIFar(p: vec3f) -> f32 { return smoothstep(WORLD_VIEW_GI_FROM, WORLD
   var value = vec4f(0.0);${viewRing ? `
   // past the ring: the open sky's band 0 (tGI0, the only band read here) or no glow
   let far = worldViewGIFar(p);
-  if (far >= 1.0) { return select(vec4f(0.0, 0.0, 0.0, WORLD_VIEW_SKY_C0), vec4f(0.0), ready == WORLD_GLOW); }` : ''}
+  if (far < 1.0) {` : ''}
   for (var z = 0; z < 2; z++) { for (var y = 0; y < 2; y++) { for (var x = 0; x < 2; x++) {
     let w = select(1.0-f, f, vec3i(x,y,z) == vec3i(1));
     value += worldProbeLoad(t, base + vec3i(x,y,z), ready) * w.x * w.y * w.z;
   } } }${viewRing ? `
+  }
   value = mix(value, select(vec4f(0.0, 0.0, 0.0, WORLD_VIEW_SKY_C0), vec4f(0.0), ready == WORLD_GLOW), far);` : ''}
   return value;
 }
@@ -338,9 +342,9 @@ fn worldProbe(p: vec3f) -> WorldProbe {
   let q = clamp(p/4.0 - 0.5, vec3f(0.0), vec3f(WA.bricks.xyz) - 1.0);
   let base = vec3i(floor(q)); let f = fract(q);${viewRing ? `
   let sky = WorldProbe(vec4f(0.0, 0.0, 0.0, WORLD_VIEW_SKY_C0), vec4f(0.0), vec4f(0.0, 0.0, 0.0, WORLD_VIEW_SKY_CY), vec4f(0.0));
-  let far = worldViewGIFar(p);
-  if (far >= 1.0) { return sky; }` : ''}
-  var o = WorldProbe(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));
+  let far = worldViewGIFar(p);` : ''}
+  var o = WorldProbe(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));${viewRing ? `
+  if (far < 1.0) {` : ''}
   for (var z = 0; z < 2; z++) { for (var y = 0; y < 2; y++) { for (var x = 0; x < 2; x++) {
     let w = select(1.0-f, f, vec3i(x,y,z) == vec3i(1));
     // worldProbeLoad's lookup, for all four bands
@@ -360,6 +364,7 @@ fn worldProbe(p: vec3f) -> WorldProbe {
     o.c0 += t0 * w.x * w.y * w.z; o.cx += t1 * w.x * w.y * w.z;
     o.cy += t2 * w.x * w.y * w.z; o.cz += t3 * w.x * w.y * w.z;
   } } }${viewRing ? `
+  }
   o = WorldProbe(mix(o.c0, sky.c0, far), mix(o.cx, sky.cx, far), mix(o.cy, sky.cy, far), mix(o.cz, sky.cz, far));` : ''}
   return o;
 }
