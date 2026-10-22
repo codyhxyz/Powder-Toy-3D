@@ -128,7 +128,6 @@ ${table('dToughness', 'f32', 'toughness', 1e30)}
 ${table('dStrength', 'f32', 'strength', 1e30)}
 ${table('dBreak', 'i32', 'breakInto', -1)}
 ${table('dShockKE', 'f32', 'shockKE', 0)}
-${table('dShockFall', 'f32', 'shockFall', 0)}
 // V1 common.js hitKE: closing at speed² u2, the mover i's mass against a solid j, else the reduced mass
 fn dHitKE(mi: f32, mj: f32, jSolid: bool, u2: f32) -> f32 { return 0.5 * select(mi * mj / (mi + mj), mi, jSolid) * u2; }
 // V1's cap on a speed (cells/step), and its cells/step per m/s of a throw (dynamics-reference.js SHOCK_THROW_MS)
@@ -317,6 +316,9 @@ fn dLanding(c: vec3i, axis: u32, velocity: vec3f) -> bool {
   let down = mDown(vec3f(c)+0.5);
   return down[axis] != 0 && velocity[axis] * f32(down[axis]) > 0.0;
 }
+// a charge's V1 cells/step per m/s of its own landing (dynamics-reference.js shockFall: V1's own fall), here
+// with its one reader, not the shared head, so its calibration rebuilds the particle stages alone
+${table('dShockFall', 'f32', 'shockFall', 0)}
 // V1 react.js shock on a packet's hit (dynamics-reference.js packetShock is its CPU twin): matter and a
 // charge closing at u (m/s, the packet's speed across the face it hits, axis) set it off as V1's hit at
 // the V1 speed the same motion had, never by its own element or a gas (shockActs, isGasLike). A throw is
