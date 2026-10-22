@@ -197,6 +197,27 @@ export function packetShock(mover, target, u, landing) {
   }
   return out;
 }
+// V1's pressure front (react.js air pressure): each open cell takes at least P_FRONT of its strongest open
+// neighbour's pressure, and all of it P_DECAY, a step, so a charge's pressure travels a cell a step through open
+// cells (a solid holds none: walls block it), KEEP of it a cell, by taxicab steps. A charge going off adds its
+// blast.P to what its cell held (V1's spread), to P_MAX (react.js lit: Pr += BLAST.x, clamped). An explosive
+// goes off under more than its crushP (setOff), the highest of its own and its open neighbours' (pOn), so one
+// `steps` cells from the charge reads the front a step short. V2's air is an acoustic field per 4³ brick, which
+// spreads a charge's pressure over the bricks within a tick and reaches a third as far (nitroglycerin on
+// nitroglycerin: ~5 cells, V1's 15), so the batch's damage reads V1's front from its own charges as well
+// (shaders/v2/blasts.js dChargeFrontOver).
+export const V1_FRONT = Object.freeze({ KEEP: PHYS.P_FRONT * PHYS.P_DECAY, P_MAX: PHYS.P_MAX });
+/** V1's front, legacy pressure, on a cell `steps` taxicab cells from a charge that went off holding source. */
+export const v1FrontOn = (source, steps) => Math.min(source, V1_FRONT.P_MAX) * V1_FRONT.KEEP ** Math.max(0, steps - 1);
+/** A charge's V1 blast.P per √J of its energy (dChargeEnergy): its blast.P for a whole cell, a liquid's share of a
+ * cell by its fill as V2's pressure takes it (p² ∝ J); DUST's and SINGULARITY's legacy pressure, as their energy
+ * derives from it (contact.js specialExplosion: GUNPOWDER's energy per its blast.P²). 0 for no charge. */
+export function frontPerRootJ(id) {
+  if (id === E.DUST || id === E.SINGULARITY) return GUNPOWDER_PRESSURE / Math.sqrt(GUNPOWDER_ENERGY_J);
+  return dynamicsRows[id].energy > 0 && ELEMENTS[id].blast ? ELEMENTS[id].blast.P / Math.sqrt(dynamicsRows[id].energy) : 0;
+}
+/** The legacy pressure a charge of energyJ goes off with: its blast.P on what its brick held besides it (spread). */
+export const v1FrontSource = (id, energyJ, spread) => Math.min(V1_FRONT.P_MAX, frontPerRootJ(id) * Math.sqrt(energyJ) + Math.max(0, spread));
 export function hash32(x) {
   x = Math.imul(x ^ (x >>> 16), 0x7feb352d);
   x = Math.imul(x ^ (x >>> 15), 0x846ca68b);

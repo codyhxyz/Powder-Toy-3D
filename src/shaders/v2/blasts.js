@@ -1,6 +1,6 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
 import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase, shockPostBase, setOffBase, crushWGSL, pressureCellWGSL, pressureOnWGSL } from './particles.js';
-import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
+import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA, V1_FRONT, frontPerRootJ } from '../../v2/dynamics-reference.js';
 import { E } from '../../elements.js';
 import { RAYS } from '../../rays.js';
 import { PHYS } from '../../physics.js';
@@ -434,6 +434,31 @@ fn dExternalAddedP2(b: u32) -> f32 {
   return ${f(AIR.rho*AIR.sound**2/AIR.edge**3)}*P.strength*weight/total;
 }
 ${pressureCellWGSL('AfterExternal', 'let b=brickOfCell(p); let w=air[b].vp.w; let added=dExternalAddedP2(b); return select(w,sqrt(w*w+added),added>0.0);')}${pressureOnWGSL('AfterExternal')}`;
+// V1's pressure front from the batch's charges (dynamics-reference.js V1_FRONT, v1FrontOn, v1FrontSource): does
+// one of them, its pressure kept KEEP a taxicab cell from it, put more than crush (Pa) on p, its own or an open
+// neighbour's (V1 react.js setOff, pOn)? A charge goes off holding its blast.P (dFrontPerRootJ·√J) on what its
+// brick held besides its own share (V1's spread: normalizeCharges added that share in quadrature), to P_MAX.
+// Solids block it (dShielded, as the charge's damage share). The damage of the batch that went off reads it,
+// so the front is in place a tick on, where V1's takes a step a cell (15 cells: under 4 ticks).
+const chargeFrontWGSL = /* wgsl */ `
+fn dFrontPerRootJ(id: u32) -> f32 { switch id {
+${dynamicsRows.filter(r => frontPerRootJ(r.id) > 0).map(r => `case ${r.id}u: { return ${f(frontPerRootJ(r.id))}; }`).join('\n')}
+default: { return 0.0; } } }
+fn dChargeFrontOver(p: vec3i, crush: f32) -> bool {
+  let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
+  for (var c=0u;c<n;c++) {
+    let s=atomicLoad(&control[D_CHARGES+c]); let m=loadMaterial(s);
+    if (!dChargeServed(s,m) || dEvaporates(m)) { continue; }
+    let q=cellOf(s); let d=abs(p-q); let steps=d.x+d.y+d.z;
+    if (steps==0) { continue; }
+    let energy=dChargeEnergy(m); let w=air[brickOfCell(q)].vp.w;
+    let spread=sqrt(max(0.0,w*w-${f(2*AIR.rho*AIR.sound**2*0.25/AIR.edge**3)}*energy))/${f(LEGACY_PRESSURE_PA)};
+    let source=min(${f(V1_FRONT.P_MAX)},dFrontPerRootJ(cid(m.core))*sqrt(energy)+spread);
+    if (source*pow(${f(V1_FRONT.KEEP)},f32(steps-1))*${f(LEGACY_PRESSURE_PA)}>crush && !dShielded(q,p)) { return true; }
+  }
+  return false;
+}
+`;
 export function blastsWGSL(g,nativeHead,stage) {
   const h = head(g,nativeHead);
   if (stage === 'externalBegin') return h + main1(`
@@ -582,7 +607,7 @@ var<workgroup> wgCharges: u32;
       dChargePressure(s,before);
     }
   `);
-  if (stage === 'damageCharges') return h + main64(`
+  if (stage === 'damageCharges') return h + chargeServedWGSL + chargeFrontWGSL + main64(`
     if (t >= D_SLOTS) { return; } var plan=plans[t]; let m=loadMaterial(t); let id=cid(m.core); let k=cls(id);
     let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
     var energy=length(plan.velocity)*bitcast<f32>(atomicLoad(&control[6]));
@@ -598,8 +623,9 @@ var<workgroup> wgCharges: u32;
     // V1 react.js setOff: an explosive under more than its crushP goes off rather than break or fly ("a hit
     // or pressure that sets it off wins over breaking it"). The batch's pressure is in the air already
     // (normalizeCharges), so the explosive beside a charge is set off by it where it is, not thrown first,
-    // and goes off with the next tick's batch (The Powder Toy: a chain spreads one step a frame).
-    if (energy>0.0 && dCrush(id)>0.0 && mAirPressure() && dPressureOn(cellOf(t),k)>dCrush(id)) {
+    // and goes off with the next tick's batch (The Powder Toy: a chain spreads one step a frame). V1's pressure
+    // reaches farther than V2's air carries it: its front from the batch's charges sets it off too (dChargeFrontOver).
+    if (energy>0.0 && dCrush(id)>0.0 && mAirPressure() && (dPressureOn(cellOf(t),k)>dCrush(id) || dChargeFrontOver(cellOf(t),dCrush(id)))) {
       events[t]|=1u; noteEvents(t,events[t]); dWake(cellOf(t)); plan.velocity=vec3f(0); plans[t]=plan; return;
     }
     var kinetic=energy;
