@@ -385,6 +385,9 @@ requests.length = 0; sim.nativeEmission = undefined;
 for (let i = 0; i < 120; i++) assert(emitNativeRay(sim, stroke, 1 / 120));
 assert.equal(requests.reduce((n, r) => n + r.count, 0), emitted);
 assert(requests.every(r => r.count > 0 && Number.isInteger(r.count)));
+// V1 paints each ray at a random place in the brush's sphere or cube, in its own random direction (shaders/rays.js
+// raysPaintFrag: randDir(&rs) * speed), never all one way: the zero direction asks rayEmit for that draw (EL-1)
+assert(requests.every(r => r.direction.every(v => v === 0) && r.shape === 1), 'a held cube brush asks for isotropic rays in its cube');
 assert.equal(sim.nativeCapabilities.physgun, false, 'generic impulse cannot advertise working physgun hold');
 owner.dynamics.capabilities.drawReady = false;
 assert.equal(sim.nativeCapabilities.photon, true, 'photons are physics: their sprites building never refuses the tool');
@@ -403,6 +406,7 @@ owner.dynamics.capabilities.drawReady = true;
   assert(dabs.length > 1);
   assert.deepEqual(requests.map(r => r.position[0]), dabs.map(c => c.x + sim.origin.x), 'one request a dab, along the whole line');
   assert(requests.every(r => r.count === each && r.kind === 'photon'));
+  assert(requests.every(r => r.direction.every(v => v === 0) && r.shape === 0), 'a line of photons asks for isotropic rays in each dab\'s sphere');
   requests.length = 0;
   assert(Simulation.prototype.paint.call(sim, { ...line, tool: TOOLS.find(t => t.key === 'NEUTRON').id }), 'sim.paint keeps the line too');
   assert.equal(requests.length, dabs.length); assert(requests.every(r => r.kind === 'neutron'));

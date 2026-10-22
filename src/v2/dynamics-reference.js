@@ -7,7 +7,8 @@ import { LEGACY_STEPS_PER_TICK } from './host.js';
 import { contactVacuum, specialExplosion } from './contact.js';
 import { impactFoam } from './foam.js';
 import { PACE } from '../shaders/move.js';
-import { GRAVITY_MS2, TERMINAL_MS, v1TerminalMS } from './gravity.js';
+import { GRAVITY_MS2, TERMINAL_MS, v1TerminalMS, V1_STEP_MS } from './gravity.js';
+import { RAYS } from '../rays.js';
 import { energyOf, withEnergy, energyFits, makeMaterial, cTq, withPayload, payloadOf, share, packetOwnedEnergy, withPacketEnergy, packetEnergyFits } from './layout.js';
 import { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy } from './pressure.js';
 export { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy };
@@ -22,6 +23,16 @@ export const EVENT = Object.freeze({ DETONATE: 1, GAS: 2, NEUTRON: 4 });
 export const PHOTON_TAG = 254;
 export const NEUTRON_TAG = 255; // Particle-only, never a grid element.
 if (ELEMENTS.length >= PHOTON_TAG) throw new Error('Native neutron tag collides with a material');
+// ---- rays: V1's photons and neutrons (src/rays.js RAYS, src/shaders/rays.js), on V1's clock ----
+// V1 flies a ray in cells a STEP (240 steps/s), at most one interaction a step, and counts its life in steps.
+// V2's particle lane runs the ray stages once a V1 step (RAY_STEPS_PER_TICK sub-steps a tick: dynamics.js
+// advanceParticles), so its speeds are V1's in m/s (gravity.js V1_STEP_MS a cell/step) and its lives V1's steps.
+export const RAY_STEPS_PER_TICK = LEGACY_STEPS_PER_TICK;
+// a photon: PHOTON_V cells/step, capped at RAY_V_MAX (shaders/rays.js raysPaintFrag: min(PHOTON_V, RAY_V_MAX))
+export const RAY_PHOTON_MS = Math.min(RAYS.PHOTON_V, RAYS.RAY_V_MAX) * V1_STEP_MS;
+// a neutron of energy e (MeV): shaders/rays.js neutSpeed, NEUT_V·√(e/NEUT_E_FAST) to [NEUT_V_THERMAL, RAY_V_MAX]
+export const rayNeutronMS = e => Math.min(RAYS.RAY_V_MAX, Math.max(RAYS.NEUT_V_THERMAL, RAYS.NEUT_V * Math.sqrt(e / RAYS.NEUT_E_FAST))) * V1_STEP_MS;
+export const RAY_NEUTRON_FAST_MS = rayNeutronMS(RAYS.NEUT_E_FAST);
 // A charge's blast energy (J) from V1's blast.P alone (elements.js EXPLOSIVE_P: C-4 200, nitroglycerin 183,
 // TNT 148, gunpowder 60), on the one calibration V2's pressure takes (pressure.js specialBlastEnergy: gunpowder's
 // energy per its blast.P², so a charge's acoustic quarter comes out at its blast.P). V1 never sizes a blast by

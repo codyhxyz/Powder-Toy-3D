@@ -1,6 +1,6 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
 import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase, shockPostBase, setOffBase, crushWGSL, pressureCellWGSL, pressureOnWGSL } from './particles.js';
-import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA, V1_FRONT, frontPerRootJ, BLAST_FRONT_FLOOR_PA, BLAST_CHAIN_STEPS, v1BlastReach, v1FlameChainOdds } from '../../v2/dynamics-reference.js';
+import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA, V1_FRONT, frontPerRootJ, BLAST_FRONT_FLOOR_PA, BLAST_CHAIN_STEPS, v1BlastReach, v1FlameChainOdds, RAY_PHOTON_MS, RAY_NEUTRON_FAST_MS } from '../../v2/dynamics-reference.js';
 import { E, ELEMENTS } from '../../elements.js';
 import { RAYS } from '../../rays.js';
 import { PHYS } from '../../physics.js';
@@ -1082,7 +1082,7 @@ var<workgroup> childCounts: array<u32,64>;
       let rank=dRank(t);
       if ((plan.flags&8u)!=0u) {
         let neutron=Material(vec4u(D_NEUTRON,${RAYS.NEUT_LIFE}u,bitcast<u32>(${f(RAYS.NEUT_E_FAST)}),0u),0i);
-        if (dSpawn(t,rank,neutron,dDir(dId(cellOf(t),4u))*${f(RAYS.NEUT_V*60*CELL_M)},4u)) { events[t]&=~4u; }
+        if (dSpawn(t,rank,neutron,dDir(dId(cellOf(t),4u))*${f(RAY_NEUTRON_FAST_MS)},4u)) { events[t]&=~4u; }
         else { atomicAdd(&control[7],1u); }
       } else {
         var packet=after; var remainder=dCarrier(after);
@@ -1153,26 +1153,35 @@ var<workgroup> childCounts: array<u32,64>;
       let rank=atomicLoad(&control[5])+offset+child;
       if (rank>=atomicLoad(&control[4])) { break; }
       let dest=atomicLoad(&control[D_FREE+rank]); let id=max(1u,dHash(parent.id ^ (P.tick*2654435761u) ^ ((child+1u)*0x9e3779b9u)));
-      var born=parent; born.id=id; born.tail.z=0u; born.tail.x=${RAYS.NEUT_LIFE}u; born.velocity=dDir(id)*${f(RAYS.NEUT_V*60*CELL_M)};
+      var born=parent; born.id=id; born.tail.z=0u; born.tail.x=${RAYS.NEUT_LIFE}u; born.velocity=dDir(id)*${f(RAY_NEUTRON_FAST_MS)};
       particles[dest]=born; noteLive(dest); setParticleDeco(dest,0u); atomicStore(&control[D_HELD+dest],0u); atomicAdd(&control[0],1u); n--;
     }
     particles[t].tail.z=n; atomicSub(&control[18],parent.tail.z-n);
   `);
-  if (stage === 'rayEmit') return h + main1(/* wgsl */ `
+  if (stage === 'rayEmit') return h + `
+const D_RAY_GRID_INSET: f32 = 0.001; // V1 shaders/rays.js GRID_INSET
+const D_RAY_DIRECTION_SALT: u32 = 0x5bd1e995u;
+` + main1(/* wgsl */ `
     let index=${rayRequestBase(g)}u+P.substep; var remaining=atomicLoad(&control[index]);
     if (remaining==0u) { return; }
     for (var slot=0u;slot<D_CAP;slot++) {
       if (slotLive(slot) && particles[slot].id!=0u) { continue; }
       let emitted=u32(P.strength)-remaining;
       let seed=max(1u,dHash(P.sequence ^ (emitted*2654435761u) ^ P.tick));
-      let position=P.center+dDir(seed)*P.radius*pow(dRandom(seed,11u),1.0/3.0);
+      // V1 shaders/rays.js raysPaintFrag: a place in the brush, its sphere (blastShape 0) or its cube, clamped into
+      // the grid (GRID_INSET: a ray outside it is gone)
+      var offset=dDir(seed)*P.radius*pow(dRandom(seed,11u),1.0/3.0);
+      if (P.blastShape!=0u) { offset=(vec3f(dRandom(seed,12u),dRandom(seed,13u),dRandom(seed,14u))*2.0-1.0)*P.radius; }
+      let position=vec3f(P.origin)+clamp(P.center-vec3f(P.origin)+offset,vec3f(0.0),vec3f(f32(NX),f32(NY),f32(NZ))-D_RAY_GRID_INSET);
       var m=Material(vec4u(D_NEUTRON,${RAYS.NEUT_LIFE}u,bitcast<u32>(${f(RAYS.NEUT_E_FAST)}),0u),0i);
       if (P.mode==7u) {
         let local=vec3i(floor(position))-P.origin; var medium=0u;
         if (inGrid(local)) { medium=cid(loadMaterial(slotOf(local)).core); }
         m=Material(vec4u(D_PHOTON|(${RAYS.PHOTON_LIFE}u<<8u)|(medium<<24u),bitcast<u32>(1.0),bitcast<u32>(1.0),bitcast<u32>(1.0)),0i);
       }
-      var velocity=P.vector; if (length(velocity)<0.000001) { velocity=dDir(seed)*${f(RAYS.NEUT_V*60*CELL_M)}; }
+      // its own direction (V1: randDir, a draw apart from its place's) at V1's speed for the kind, for the zero vector
+      var velocity=P.vector;
+      if (length(velocity)<0.000001) { velocity=dDir(dHash(seed ^ D_RAY_DIRECTION_SALT))*select(${f(RAY_NEUTRON_FAST_MS)},${f(RAY_PHOTON_MS)},P.mode==7u); }
       particles[slot]=dParticle(position,velocity,seed,m); noteLive(slot); setParticleDeco(slot,0u); atomicStore(&control[D_HELD+slot],0u); remaining--; atomicAdd(&control[0],1u);
       let local=vec3i(floor(position))-P.origin; if (inGrid(local)) { dWake(local); }
       if (remaining==0u) { break; }

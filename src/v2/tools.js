@@ -17,6 +17,13 @@ export function nativeImpulse(sim, { position, direction, radius, acceleration, 
 // -> raysLayer.paint: ceil(volume x RAY_PAINT_PER_CELL x rate) particles a dab).
 export const isRayShape = stroke => !!stroke.grow?.some?.(g => g > 0) || (!!stroke.end && stroke.end !== stroke.center &&
   (stroke.end.x !== stroke.center.x || stroke.end.y !== stroke.center.y || stroke.end.z !== stroke.center.z));
+// A painted ray's request: V1 paints each particle at a random place in the brush, a sphere (shape 0) or a
+// cube (shape 1), flying in its own random direction (src/shaders/rays.js raysPaintFrag: randDir(&rs) * speed).
+// The zero direction asks rayEmit for that isotropic draw (src/shaders/v2/blasts.js); the speed is V1's
+// (dynamics.js _recordRay).
+export const RAY_ISOTROPIC = Object.freeze([0, 0, 0]);
+const nativeRayRequest = (sim, kind, stroke, at, count) => ({ kind, position: worldPosition(sim, at), direction: [...RAY_ISOTROPIC],
+  radius: stroke.radius, shape: stroke.shape ? 1 : 0, strength: 0, count });
 const brushVolume = stroke => stroke.shape === 0 ? 4 / 3 * Math.PI * stroke.radius ** 3 : (2 * stroke.radius) ** 3;
 export function emitNativeRayShape(sim, stroke) {
   const kind = nativeRayKind(stroke.tool);
@@ -25,7 +32,7 @@ export function emitNativeRayShape(sim, stroke) {
   if (!count) return true;
   let accepted = false;
   for (const c of strokeDabs(stroke.center, stroke.end ?? stroke.center, stroke.grow ?? undefined, stroke.radius))
-    accepted = sim.applyNativeTool({ kind, position: worldPosition(sim, c), direction: [0, 1, 0], radius: stroke.radius, strength: 0, count }) || accepted;
+    accepted = sim.applyNativeTool(nativeRayRequest(sim, kind, stroke, c, count)) || accepted;
   return accepted;
 }
 export function emitNativeRay(sim, stroke, dt = 1 / 60) {
@@ -38,7 +45,7 @@ export function emitNativeRay(sim, stroke, dt = 1 / 60) {
   const rate = Math.min(RAYS.RAY_PAINT_MAX, brushVolume(stroke) * RAYS.RAY_PAINT_PER_CELL * stroke.rate) * 60;
   const amount = Math.min(RAYS.RAY_PAINT_MAX, sim.nativeEmission[kind] + rate * dt), count = Math.floor(amount);
   if (!count) { sim.nativeEmission[kind] = amount; return true; }
-  const accepted = sim.applyNativeTool({ kind, position: worldPosition(sim, stroke.center), direction: [0, 1, 0], radius: stroke.radius, strength: 0, count });
+  const accepted = sim.applyNativeTool(nativeRayRequest(sim, kind, stroke, stroke.center, count));
   sim.nativeEmission[kind] = accepted ? amount - count : amount;
   return accepted;
 }

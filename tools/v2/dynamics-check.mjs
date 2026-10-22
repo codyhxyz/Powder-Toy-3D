@@ -116,6 +116,27 @@ test('driver records real pipeline families, one batch of up to 64 bricks, and s
   assert.equal(d.applyToolImpulse({kind:'photon',position:[1,2,3],direction:[1,0,0],count:3}).status,'queued');
   d.dispose(); assert.ok(buffers.filter(b=>b!==owner.events).every(b=>b.destroyed));
 });
+test('a painted ray flies its own random way at V1\'s speed, in its brush\'s sphere or cube (EL-1)',async()=>{
+  const {RAY_PHOTON_MS,RAY_NEUTRON_FAST_MS}=await import('../../src/v2/dynamics-reference.js');
+  const {RAYS}=await import('../../src/rays.js');
+  const {blastsWGSL}=await import('../../src/shaders/v2/blasts.js');
+  const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');
+  // V1: 2 cells a step (PHOTON_V, NEUT_V at NEUT_E_FAST) at 240 steps/s, not V2's tick
+  close(RAY_PHOTON_MS,RAYS.PHOTON_V*240*CELL_M); close(RAY_NEUTRON_FAST_MS,RAYS.NEUT_V*240*CELL_M);
+  const {owner,calls}=mockOwner(),d=new NativeDynamics(owner);await d.ready;calls.length=0;
+  assert.equal(d.applyToolImpulse({kind:'photon',position:[4,4,4],direction:[0,0,0],radius:2,shape:1,count:5}).status,'queued');
+  assert.equal(d.applyToolImpulse({kind:'neutron',position:[4,4,4],direction:[0,2,0],radius:2,count:5}).status,'queued');
+  const [brush,beam]=calls.filter(c=>c.name==='v2blasts_rayEmit').map(c=>c.opts.params);
+  assert.deepEqual(brush.vector,[0,0,0],'the brush asks for a direction each'); assert.equal(brush.blastShape,1,'in its cube');
+  assert.deepEqual(beam.vector,[0,RAY_NEUTRON_FAST_MS,0],'a directed ray at V1\'s speed'); assert.equal(beam.blastShape,0);
+  const snapshot=await d.snapshotDynamicState(); assert.deepEqual(snapshot.requests.map(r=>r.shape),[1,0],'the shape survives a save');
+  d.restoreDynamicState(snapshot); assert.equal(d.rayRequests.get(0).shape,1);
+  const emit=blastsWGSL(gridLayout(16,8,8),nativeDynamicsHead,'rayEmit');
+  // its direction is a draw of its own (V1 randDir), not its place's (which put every ray flying straight out of the centre)
+  assert.match(emit,/velocity=dDir\(dHash\(seed \^ D_RAY_DIRECTION_SALT\)\)\*select\(144\.0,144\.0,P\.mode==7u\)/);
+  assert.match(emit,/if \(P\.blastShape!=0u\) \{ offset=\(vec3f\(dRandom\(seed,12u\)/);
+  assert.match(emit,/clamp\(P\.center-vec3f\(P\.origin\)\+offset,vec3f\(0\.0\)/,'clamped into the grid as V1\'s');
+});
 test('particle tick: one-invocation clear samples the live count before hold; restore recounts it from the records',async()=>{
   const {owner,calls}=mockOwner(),d=new NativeDynamics(owner);await d.ready;
   d.holdSession={token:1,position:[0,0,0],target:[0,0,0],radius:1,strength:1,lastTick:1};
