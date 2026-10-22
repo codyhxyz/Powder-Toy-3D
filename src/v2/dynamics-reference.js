@@ -344,7 +344,7 @@ export function v1FlameChainOdds(flame, d, steps = BLAST_CHAIN_STEPS) {
   return odds;
 }
 /**
- * CPU twin of one batch's grid decisions (blasts.js pick's sources, dSrcSees, dSrcPasses, damageCharges):
+ * CPU twin of one batch's grid decisions (blasts.js pick's sources, dSrcSees, dSrcLine, dSrcPasses, damageCharges):
  * `cells` maps "x,y,z" to an element id (missing: air), `charges` the cells going off (each {p, id, energy}),
  * `prior` a brick's pressure (legacy) before them. A source is a brick's charges: their box, their energy and
  * the pressure V1's front leaves them with (their largest blast.P on the prior, to P_MAX). For each cell it
@@ -376,15 +376,25 @@ export function chargeBatchDamage({ dims, cells, charges, prior = () => 0 }) {
   const crossed = (s, p) => { const from = nearest(s, p).map(v => v + 0.5), out = [];
     sweep(from, p.map(v => v + 0.5), c => { if (c.every((v, a) => v === p[a])) return true; if (!c.every((v, a) => v === Math.floor(from[a]))) out.push([...c]); return false; });
     return out; };
+  const clear = (s, t) => crossed(s, t).every(c => inside(c) && passes(s, c, steps(s, t)));
+  // dSrcSees: a cell that holds air, its sight line; a solid, a face neighbour a step nearer the source the front
+  // reaches (V1 reads a solid's front on its open side)
+  const sees = (s, p) => {
+    if (!solid(p)) return clear(s, p);
+    const q = nearest(s, p); if (p.every((v, a) => v === q[a])) return true;
+    for (let a = 0; a < 3; a++) { if (p[a] === q[a]) continue; const n = [...p]; n[a] += p[a] > q[a] ? -1 : 1;
+      if (inside(n) && passes(s, n, steps(s, p)) && clear(s, n)) return true; }
+    return false;
+  };
   const out = new Map();
   for (let z = 0; z < dims[2]; z++) for (let y = 0; y < dims[1]; y++) for (let x = 0; x < dims[0]; x++) {
     const p = [x, y, z], here = id(p); if (here === E.EMPTY || isCharge.has(p.join(','))) continue;
     let front = 0, flameSteps = Infinity;
     for (const s of sources) {
       const d = steps(s, p); if (s.energy <= 0 || d > s.reach) continue;
-      const line = crossed(s, p); if (!line.every(c => inside(c) && passes(s, c, d))) continue;
+      if (!sees(s, p)) continue;
       front = Math.max(front, frontPa(s, d));
-      if (flameOf(here) > 0 && line.every(chainCell)) flameSteps = Math.min(flameSteps, Math.max(d, 1));
+      if (flameOf(here) > 0 && crossed(s, p).every(chainCell)) flameSteps = Math.min(flameSteps, Math.max(d, 1));
     }
     const row = dynamicsRows[here];
     if (row.crush > 0 && front > row.crush) out.set(p.join(','), { setOff: true, front: front / LEGACY_PRESSURE_PA });

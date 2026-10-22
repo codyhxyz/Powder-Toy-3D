@@ -499,6 +499,19 @@ fn dSrcLine(k: u32, p: vec3i, chain: bool) -> bool {
   }
   return false;   // non-progress is shielded, never transparent
 }
+// Is p in source k's sight? A cell that holds air, its sight line; a solid (V1 reads the front on its open
+// side: react.js breaking, pOn), a face neighbour a step nearer the source that the front reaches.
+fn dSrcSees(k: u32, p: vec3i) -> bool {
+  if (cls(cid(loadMaterial(slotOf(p)).core))!=1u) { return dSrcLine(k,p,false); }
+  let q=dSrcNearest(k,p); let reach=dSrcSteps(k,p);
+  if (all(p==q)) { return true; }
+  for (var a=0u;a<3u;a++) {
+    if (p[a]==q[a]) { continue; }
+    var n=p; n[a]+=select(1,-1,p[a]>q[a]);
+    if (inGrid(n) && dSrcPasses(k,n,reach) && dSrcLine(k,n,false)) { return true; }
+  }
+  return false;
+}
 // Source k's share at p (direction times J), p in its sight: plan's expressions, from its charges' mean cell.
 fn dSrcShare(k: u32, p: vec3i) -> vec3f {
   let delta=vec3f(p)-dSrcCentre(k); let r2 = max(0.25,dot(delta,delta));
@@ -662,7 +675,7 @@ var<workgroup> wgNear: u32;
       if (li==0u) { wgNear=select(0u,1u,brick<D_BRICKS && dSrcNearBrick(k,brick)); }
       if (workgroupUniformLoad(&wgNear)==0u) { continue; }
       var velocity=vec3f(0);
-      if (eligible && dSrcSteps(k,p)<=dSrcReach(k) && dSrcLine(k,p,false)) { velocity=dSrcShare(k,p); }
+      if (eligible && dSrcSteps(k,p)<=dSrcReach(k) && dSrcSees(k,p)) { velocity=dSrcShare(k,p); }
       if (k==0u) { plan.velocity=velocity; }
       wgEnergy[li]=length(velocity); workgroupBarrier();
       if (li==0u) {
@@ -711,7 +724,7 @@ var<workgroup> wgNear: u32;
       // sources each one's share at its own scale, summed (energy) and as a direction
       if (n>1u) { energy=0.0; }
       for (var c=0u;c<n;c++) {
-        let steps=dSrcSteps(c,p); if (dSrcEnergy(c)<=0.0 || steps>dSrcReach(c) || !dSrcLine(c,p,false)) { continue; }
+        let steps=dSrcSteps(c,p); if (dSrcEnergy(c)<=0.0 || steps>dSrcReach(c) || !dSrcSees(c,p)) { continue; }
         front=max(front,dSrcFrontPa(c,steps));
         if (n>1u) { let share=dSrcShare(c,p)*bitcast<f32>(atomicLoad(&control[D_CHARGE_SCALES+c])); energy+=length(share); combined+=share; }
         if (dFlame(id) && max(steps,1)<flameSteps && dSrcLine(c,p,true)) { flameSteps=max(steps,1); }

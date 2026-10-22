@@ -104,6 +104,8 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
       await sim.gpuSync();
     },
     get time() { return clock.time; },
+    // the bare simulation, for a check that drives a tool on it (tools/v2/blast-damage-browser-check.mjs: the rocket)
+    get sim() { return sim; },
     get steps() { return clock.steps; },
     async read() {
       const [A, B] = await sim.readState();

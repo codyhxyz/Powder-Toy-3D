@@ -153,7 +153,7 @@ test('a lone charge: the old plan\'s expressions, in the old order, from its own
   // a source's share is from its charges' mean cell (one charge: that cell, exactly: Σ/1), in its sight and reach
   assert.match(now, /let delta=vec3f\(p\)-dSrcCentre\(k\);/);
   assert.match(pickCode, /let centre=vec3f\(base\)\+sum\/max\(count,1\.0\);/);
-  assert.match(now, /if \(eligible && dSrcSteps\(k,p\)<=dSrcReach\(k\) && dSrcLine\(k,p,false\)\) \{ velocity=dSrcShare\(k,p\); \}/);
+  assert.match(now, /if \(eligible && dSrcSteps\(k,p\)<=dSrcReach\(k\) && dSrcSees\(k,p\)\) \{ velocity=dSrcShare\(k,p\); \}/);
   assert.match(now, /if \(k==0u\) \{ plan\.velocity=velocity; \}/);
   assert.match(now, /if \(live\) \{ if \(n!=1u\) \{ plan\.velocity=vec3f\(0\); \} plans\[t\] = plan; \}/);
   assert.match(now, /wgEnergy\[li\]=length\(velocity\); workgroupBarrier\(\);/);
@@ -312,6 +312,10 @@ test('BL-5: within a tick the front goes on through the explosives it sets off, 
   const damage = blastsWGSL(g, nativeDynamicsHead, 'damageCharges');
   for (const x of odds.slice(0, 4)) assert.ok(damage.includes(String(x)), `dFlameOdds holds ${x}`);
   assert.ok(damage.includes(`const D_CHAIN: i32 = ${LEGACY_STEPS_PER_TICK};`));
+  // the emitted pass-through is the twin's: a source cell, or an explosive the front sets off, within the tick's steps
+  assert.ok(damage.includes('if (cls(id)!=1u || dIsSourceCell(c)) { return true; }') &&
+    damage.includes('return dCrush(id)>0.0 && reach<=D_CHAIN && dSrcFrontPa(k,dSrcSteps(k,c))>dCrush(id);'), 'dSrcPasses');
+  assert.ok(damage.includes('if (open && flameSteps<=D_CHAIN && dRandom(dId(p,') && damage.includes('dFlameOdds(id,flameSteps)'), 'the flame chain rolls');
 });
 test('the front\'s reach: where V1\'s front from P_MAX passes the floor every rule reads, and walls block it', () => {
   assert.equal(BLAST_REACH_MAX, 17); assert.equal(v1BlastReach(ELEMENTS[E.GUNPOWDER].blast.P), 9);
