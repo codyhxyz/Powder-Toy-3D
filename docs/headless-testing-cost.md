@@ -57,8 +57,7 @@ It does not wait for unrelated model, world-generation, or audio loading.
 Changing presentation cadence still changes temporal history. Use visual mode for pixel-regression baselines.
 
 The helper closes its browsers on uncaught exceptions, rejected promises, and termination signals.
-Each GPU slot lasts at most **25 seconds total**. This limit includes player detection, browser startup, compilation, warmup, assertions, and cleanup.
-`TPT_TEST_TIMEOUT_MS` can shorten this limit, but cannot extend it.
+Each GPU slot lasts **25 seconds total** unless the test asks for more (`lifetimeMs`, or `TPT_TEST_TIMEOUT_MS`), up to a 10-minute ceiling that only guards hung tests (user, 2026-10-22: a full big-map load runs ~2 min). The slot includes player detection, browser startup, compilation, warmup, assertions, and cleanup.
 An independent watchdog runs in its own session/process group, requests closure before the deadline, and terminates only the test's own processes if closure fails.
 It reserves four seconds for forced cleanup and verified release, without extending the absolute deadline.
 Run GPU checks on an awake machine. Software cannot clean up while the operating system is suspended.

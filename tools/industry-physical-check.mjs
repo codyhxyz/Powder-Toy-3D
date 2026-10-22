@@ -4,14 +4,14 @@
 //   node tools/industry-physical-check.mjs --case mechanisms --port 19543
 // CPU geometry check: --case thermal --preflight. Compute-only: --case thermal --harness.
 import { launchBrowser, newTestPage, ready } from './browser.mjs';
-import { budgetMs, CLEANUP_MS, MAX_SLOT_MS } from './gpu-deadline.mjs';
+import { budgetMs, CLEANUP_MS, DEFAULT_SLOT_MS } from './gpu-deadline.mjs';
 import { validateDevices } from '../src/industry/validation.js';
 import { hearthRegions, hearthStructureCells } from '../src/industry/hearth.js';
 import { writeFileSync } from 'node:fs';
 
 const invokedAt = Date.now();
 const arg = name => process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : undefined;
-const slotBudgetMs = budgetMs(Number(arg('--budget-ms') || MAX_SLOT_MS));
+const slotBudgetMs = budgetMs(Number(arg('--budget-ms') || DEFAULT_SLOT_MS));
 // The independent watchdog starts graceful shutdown two cleanup intervals
 // before the slot ends. Return observations BEFORE that shutdown, not during it.
 const workDeadline = invokedAt + slotBudgetMs - 2 * CLEANUP_MS - 500;

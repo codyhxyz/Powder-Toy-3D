@@ -5,7 +5,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const MAX_SLOT_MS = 25000;
+// A slot's default length (a short check), and its ceiling, which only guards a
+// hung test: a full big-map load runs ~2 min (user, 2026-10-22: "just remove the
+// cap", the old 25 s ceiling). A test that needs longer asks for it (lifetimeMs).
+export const DEFAULT_SLOT_MS = 25000;
+export const MAX_SLOT_MS = 10 * 60 * 1000;
 // Each capture can spend 1000 ms on the table plus 250 ms on orphan
 // environments. Reserve a delayed observer, the hard kill's fresh capture,
 // and exit verification (3 * 1250 ms + the 100 ms poll), without moving the
