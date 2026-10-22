@@ -91,5 +91,5 @@ export class NativeFlow {
   dispose() { this.disposed = true; this.isReady = false; }
 }
 
-/** tools/check-wgsl.mjs, tools/check-sampler-budget.mjs (src/gpu/checks.js): built only with ?physics=v2. */
+/** tools/check-wgsl.mjs, tools/check-sampler-budget.mjs (src/gpu/checks.js): built with the native owner. */
 export const WGSL_CHECK = [{ name: 'v2flow', kind: 'compute', code: v2FlowWGSL, layouts: () => [LAYOUT.TABLES, FLOW_LAYOUT, V2_LAYOUT], tool: true }];

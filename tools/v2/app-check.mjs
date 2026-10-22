@@ -1,4 +1,4 @@
-// The new physics' fast version in the game (?physics=v2, src/v2/physics.js): a 64³ box boots with it,
+// Physics V2 in the game (src/v2/physics.js): a 64³ box boots with it,
 // painting, erasing, a box preset and undo reach its cells, its ticks reach what today's renderer,
 // picker and census read (direct readers / lazy legacy cache), and the flag turns off and on again. Manual mode: every tick
 // is an explicit __app.test.step (60 a game second).
@@ -46,7 +46,7 @@ async function open(browser) {
   page.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errors.push(`console: ${m.text()}`); });
   // (progress from the page, so a part that runs out of its slot says where it was)
   page.on('console', (m) => { if (m.type() === 'log' && m.text().startsWith('info ')) console.log(m.text()); });
-  await page.goto(vite.url('/?size=64&preset=empty&view=plain&physics=v2'));
+  await page.goto(vite.url('/?size=64&preset=empty&view=plain'));
   await page.waitForFunction(() => window.__app?.sim, null, { polling: 250, timeout: 150000 });
   // (TAA off: its history converging keeps a live loop presenting: tools/idle-check.mjs does the same)
   await page.evaluate(() => { const a = window.__app; a.post.settings.taa = false; return a.test.ready(); });
@@ -140,23 +140,6 @@ async function edits(page) {
     return { water: (await h.v2Count(h.E.WATER)).n, today: await h.todayCount(h.E.WATER), exact: words.every((w, i) => w === h.beforeLab[i]) };
   });
   ok(undone.exact, `undo restores exact pre-lab compact words: ${undone.water} fractional water cells in v2, ${undone.today} whole cells in the legacy projection`);
-
-  // the flag off, then on again: today's step runs, then v2 picks up today's state
-  const toggled = await page.evaluate(async () => {
-    const a = window.__app, h = window.__v2;
-    await a.setPhysics('v1');
-    const off = { ...a.physics, v2: !!a.physics.v2 };
-    const f0 = a.sim.frame;
-    h.paint(40, 30, 40, 2, h.E.SAND);
-    a.test.step(30);
-    const stepped = a.sim.frame - f0;
-    await a.setPhysics('v2');
-    a.test.step(1);
-    const on = { ...a.physics, v2: !!a.physics.v2 };
-    return { off, on, stepped, v2: (await h.v2Count(h.E.SAND)).n, today: await h.todayCount(h.E.SAND) };
-  });
-  ok(!toggled.off.active && toggled.off.mode === 'v1' && toggled.stepped === 30, `setPhysics('v1'): today's physics steps the box (${toggled.stepped} steps)`);
-  ok(toggled.on.active && toggled.v2 === toggled.today, `setPhysics('v2') again: v2 takes today's state (${toggled.v2} grains, today's ${toggled.today})`);
 }
 
 async function rest(page) {

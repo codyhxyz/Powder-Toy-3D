@@ -86,54 +86,6 @@ assert.deepEqual(native.builds, initial, 'ready does not start deferred builds')
 assert.throws(() => native.sim.step(), /await sim.prepareLegacy/);
 assert.equal(native.sim.frame, 0, 'failed early step does not advance time');
 
-// Exercise the actual app method without booting DOM/WebGPU. All external app
-// state is injected; persisted saves call this same method, verified below.
-const app = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
-const start = app.indexOf('async setPhysics(mode) {');
-const end = app.indexOf('\n    get physics()', start);
-assert(start >= 0 && end > start);
-const method = app.slice(start, end).trim().replace(/,$/, '');
-const setter = state => new Function('state', `with (state) { return ({ ${method} }).setPhysics; }`)(state);
-function appState(sim) {
-  const state = {
-    sim, physicsMode: 'v2', physicsChanging: false, V2mod: null, v2Running: true, mp: { isGuest: false },
-    pacer: { wake() {} }, wakeLoop() {},
-  };
-  state.physicsV2 = {
-    sim, isReady: true, ready: Promise.resolve(), ticks(n) { this.tick = (this.tick ?? 0) + n; },
-    suspend() { state.sim.compact = null; state.suspended = true; },
-  };
-  sim.compact = state.physicsV2;
-  return state;
-}
-const state = appState(native.sim);
-const switchLegacy = setter(state)('v1');
-const switched = watch(switchLegacy);
-assert.deepEqual(native.builds.slice(initial.length), [...LEGACY, ...V1_EDITS], 'activation starts all eight builds, and V1\'s edit passes');
-for (const name of V1_EDITS) native.gate(name).resolve({});
-for (const name of LEGACY.slice(0, -1)) {
-  native.gate(name).resolve({});
-  await turn();
-  assert.equal(switched(), false);
-  assert.equal(state.physicsMode, 'v2', 'running loop must not see v1 while any build is pending');
-  assert.equal(state.suspended, undefined);
-  native.sim.step();
-}
-assert.equal(state.physicsV2.tick, 7, 'native stepping remains available while compiling legacy');
-native.gate('args').resolve({});
-assert.equal(await switchLegacy, 'v1');
-assert.equal(state.physicsMode, 'v1');
-assert.equal(state.suspended, true);
-assert.equal(state.v2Running, false);
-assert.equal(state.physicsChanging, false);
-assert(LEGACY.every(name => native.kernels.get(name).state === 'ready'));
-native.dispatches.length = 0;
-native.sim.step();
-assert.deepEqual([...new Set(native.dispatches.map(c => c.name))].sort(), [...LEGACY].sort());
-const built = native.builds.length;
-await native.sim.prepareLegacy();
-assert.equal(native.builds.length, built, 'repeated preparation never rebuilds');
-
 // Default/explicit-false v1 callers retain eager construction and sim.ready.
 for (const opts of [{}, { nativeStartup: false }]) {
   const old = fixture(opts, ['args']);
@@ -151,37 +103,6 @@ for (const opts of [{}, { nativeStartup: false }]) {
   assert.equal(old.builds.length, count);
 }
 
-// A map rebuilt during preparation must prepare its new sim before publication.
-const first = fixture({ nativeStartup: true }, LEGACY), second = fixture({ nativeStartup: true }, LEGACY);
-await Promise.all([first.sim.ready, second.sim.ready]);
-const replaced = appState(first.sim);
-const replaceSwitch = setter(replaced)('v1');
-replaced.sim = second.sim;
-for (const name of LEGACY) first.gate(name).resolve({});
-await turn();
-assert.equal(replaced.physicsMode, 'v2');
-assert.deepEqual(second.builds.slice(-(LEGACY.length + V1_EDITS.length)), [...LEGACY, ...V1_EDITS]);
-for (const name of LEGACY) second.gate(name).resolve({});
-await replaceSwitch;
-assert.equal(replaced.physicsMode, 'v1');
-assert.equal(second.sim._legacyDeferred, false);
-
-// Preparation failure rejects the caller and never publishes v1 or enables steps.
-const failed = fixture({ nativeStartup: true }, LEGACY);
-await failed.sim.ready;
-const failureState = appState(failed.sim);
-const failureSwitch = setter(failureState)('v1');
-const compileError = new Error('legacy compile failed');
-failed.gate('react').reject(compileError);
-for (const name of LEGACY.filter(name => name !== 'react')) failed.gate(name).resolve({});
-await assert.rejects(failureSwitch, error => error === compileError);
-assert.equal(failureState.physicsMode, 'v2');
-assert.equal(failureState.suspended, undefined);
-assert.equal(failureState.physicsChanging, false, 'failed legacy builds release serialization without publishing V1');
-failed.sim.compact = null;
-assert.throws(() => failed.sim.step(), /await sim.prepareLegacy/);
-await assert.rejects(failed.sim.prepareLegacy(), error => error === compileError);
-
 const badInit = fixture({ nativeStartup: true }, ['fromAtlas']);
 const initError = new Error('initial import compile failed');
 badInit.gate('fromAtlas').reject(initError);
@@ -191,15 +112,18 @@ assert.equal(badInit.dispatches.length, 0);
 await assert.rejects(badInit.sim.prepareLegacy(), error => error === initError);
 assert.throws(() => badInit.sim.step(), /await sim.prepareLegacy/);
 
-// Wiring: every V2 grid starts native, a guest's too (its owner holds the host's frames and, once the
-// session ends, steps them: net/codec.js, app.js v2Replica), outcomes opt in,
-// and persisted legacy restore uses the awaitable switch rather than assigning mode.
-assert.match(app, /nativeStartup: physicsMode === 'v2' \}\);\n  if \(physicsMode === 'v2'\) \{/);
+// Wiring: every grid starts native (Physics V2 is the only engine), a guest's too (its owner holds the
+// host's frames and, once the session ends, steps them: net/codec.js, app.js v2Replica); outcomes opt in;
+// a save's physicsV2 section restores into the grid's own owner and never switches engines.
+const app = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
+assert.match(app, /sim = new Simulation\(gpu, nx, ny, nz, \{ windowed: !!worldMode, world: worldMode\?\.size, nativeStartup: true \}\);\n  physicsV2 = new V2mod\.PhysicsV2\(sim, V2mod\.options\);/);
+assert(!/setPhysics|params\.get\('physics'\)/.test(app), 'no engine switch and no ?physics= flag');
 const outcomes = readFileSync(new URL('../outcomes/engine-v2.js', import.meta.url), 'utf8');
 assert.match(outcomes, /new Simulation\(gpu, nx, ny, nz, \{ debug: false, nativeStartup: true \}\)/);
 // (a scene throws, blasts and pours: it waits for the dynamics and the jets, which build behind the grid: physics.js dynamicsReady)
 assert.match(outcomes, /await Promise\.all\(\[sim\.ready, kernel\.ready, v2\.dynamicsReady\]\)/);
 const saves = readFileSync(new URL('../../src/wire/saves.js', import.meta.url), 'utf8');
-// (only a V1 session goes back to V1; a V2 session stays on V2: tools/v2/saves-check.mjs)
-assert.match(saves, /if \(state\.mode === 'v1'\) \{\s*if \(session === 'v1'\) await app\.setPhysics\('v1'\)/);
-console.log('native startup CPU: eight manual kernels, retained initialization, awaited app/saved legacy activation, unchanged v1, map replacement and failure propagation passed');
+// (a save made under V1 imports into V2: tools/v2/saves-check.mjs)
+assert(!saves.includes('setPhysics'), 'the save loader never switches engines');
+assert.match(saves, /if \(state\.mode === 'v1'\) v2\.resync\(\);/);
+console.log('native startup CPU: eight manual kernels, retained initialization, unchanged v1 construction, failure propagation and V2-only wiring passed');

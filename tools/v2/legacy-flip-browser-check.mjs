@@ -29,7 +29,7 @@ try {
     if (/ERR_CONNECTION_REFUSED/.test(m.text())) return;
     errors.push(m.text()); console.log(`console error: ${m.text()}`);
   });
-  await page.goto(vite.url(world ? '/?size=world&physics=v2' : `/?size=${size}&preset=empty&physics=v2`));
+  await page.goto(vite.url(world ? '/?size=world' : `/?size=${size}&preset=empty`));
   await ready(page);
   console.log(`t+${Date.now() - launched} ms: app up`);
   if (world) await page.waitForFunction(() => window.__app.win?.loaded, null, { polling: 100, timeout: 20000 });

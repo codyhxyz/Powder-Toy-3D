@@ -1,4 +1,4 @@
-// Scratch: runs a JS snippet in the game booted at ?physics=v2 (manual mode) and prints its result.
+// Scratch: runs a JS snippet in the game booted (manual mode) and prints its result.
 //   node tools/v2/app-debug.mjs <file.js> [--port N] [--query 'size=64&preset=empty']   (the file's text is the body of an async function(a))
 import { readFileSync } from 'node:fs';
 import { launchBrowser, newTestPage } from '../browser.mjs';
@@ -13,7 +13,7 @@ try {
   const errors = [];
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errors.push(`console: ${m.text()}`); });
-  await page.goto(vite.url(`/?${q}&view=plain&physics=v2`));
+  await page.goto(vite.url(`/?${q}&view=plain`));
   await page.waitForFunction(() => window.__app?.sim, null, { polling: 250, timeout: 150000 });
   await page.evaluate(async () => { await window.__app.test.ready(); window.__app.test.park(); });
   const r = await page.evaluate(async (src) => new Function('a', `return (async () => { ${src} })();`)(window.__app), body);

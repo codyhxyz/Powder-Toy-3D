@@ -23,8 +23,7 @@ import { PARTICLE_CAP, SHOCK_LANDINGS, v1GrainOddsTable } from '../v2/dynamics-r
 
 // Physics v2, the fast version (docs/v2.md 2, 4.1, 5.1-5.6; the rules are
 // tools/v2/lean-sim.mjs's, the CPU prototype that validated them, ported to
-// WGSL here). Behind ?physics=v2 (src/v2/physics.js drives it); nothing
-// imports this module with the flag off.
+// WGSL here). The only physics engine (src/v2/physics.js drives it).
 //
 // Core format 2: 16-byte cells + signed 4-byte energy bank; transient liquid
 // snapshots 16 bytes and material requests 4 bytes. See docs/v2/native-contract.md.
@@ -1607,7 +1606,7 @@ export const V2_KERNELS = [
   { name: 'v2bridge', code: v2BridgeWGSL, layouts: withState, dispatch: perBrick },
 ];
 
-/** tools/check-wgsl.mjs, tools/check-sampler-budget.mjs (src/gpu/checks.js): built only with ?physics=v2. */
+/** tools/check-wgsl.mjs, tools/check-sampler-budget.mjs (src/gpu/checks.js): built with the native owner. */
 export const WGSL_CHECK = V2_KERNELS.map(({ name, code, layouts, dispatch }) => ({ name, kind: 'compute', code, layouts, dispatch, tool: true }));
 
 // Dynamics owns group1 (up to five family buffers). This adapter has exactly

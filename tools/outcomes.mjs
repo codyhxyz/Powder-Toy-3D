@@ -22,8 +22,8 @@
 // harness mode on --port, default 5366), batched by grid size into browser runs
 // of under ~3 minutes each on SwiftShader. App tests (the default island)
 // boot the game itself (Vite on --port + 1, or --app-url: a dev server of any
-// checkout, e.g. the frozen v1 checkout's or a v2 candidate's with --app-query
-// physics=v2; a bundled build needs __app.test.elements: engine-app.js).
+// checkout, e.g. the frozen V1 oracle's, a checkout of the v1-oracle tag, with
+// --engine v1; a bundled build needs __app.test.elements: engine-app.js).
 //
 // Every run first checks the roundness measure on footprints whose answer is
 // known (lib.js selfCheck: lattice discs read round, squares and diamonds
@@ -32,9 +32,9 @@
 // default there) and paste the table back; on a phone or in Safari, open the
 // harness page by hand (tools/harness/outcomes.html, ?run=<group>).
 //
-// usage: node tools/outcomes.mjs [--engine v1|lean|column|v2] [--group liquids,solids,...] [--tests utube,puddle]
+// usage: node tools/outcomes.mjs [--engine v2|v1|lean|column] [--group liquids,solids,...] [--tests utube,puddle]
 //          [--strict [--phase P2]] [--json results.json] [--record] [--expected file.json] [--verbose] [--list]
-//          [--port N] [--app-url http://127.0.0.1:N] [--app-query physics=v2] [--seed N] [--self-check]
+//          [--port N] [--app-url http://127.0.0.1:N] [--app-query q] [--seed N] [--self-check]
 //   groups: liquids, solids, fire, blasts, world, census, controls
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -46,7 +46,7 @@ import { selfCheck } from './outcomes/lib.js';
 const argv = process.argv.slice(2);
 const opt = (k, d = null) => { const i = argv.indexOf(`--${k}`); return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : d; };
 const flag = (k) => argv.includes(`--${k}`);
-const ENGINE = opt('engine', 'v1');
+const ENGINE = opt('engine', 'v2');
 const PORT = Number(opt('port', 5366));
 const SEED = Number(opt('seed', 1));
 const PHASES = ['P2', 'P3', 'P4', 'P5', 'P6'];
@@ -166,7 +166,7 @@ if (ENGINE === 'lean' || ENGINE === 'column' || ENGINE === 'column-wgsl') {
         const errors = [];
         try {
           say(`browser run: ${t.name} (the game at ${base}${t.url})`);
-          const engine = createEngine(browser, { base, query: opt('app-query', ENGINE === 'v2' ? 'physics=v2' : ''), expectedPhysics: ENGINE, errors });
+          const engine = createEngine(browser, { base, query: opt('app-query', ''), expectedPhysics: ENGINE, errors });
           const r = await runTest(t, engine, { seed: SEED, budgetMs: BUDGET_MS * 2 });
           r.engine = ENGINE;
           r.adapter = engine.info.label;

@@ -70,18 +70,17 @@ const savesWire = {
         decodeV2State(data, h.dims);
       },
       load: async (data, h) => {
-        const state = decodeV2State(data, h.dims), session = app.physics.mode;
-        await app.setPhysics('v2');
-        if (!app.physics.v2) throw new Error('v2 state: no compact engine for this grid');
-        app.physics.v2.restoreState(data, { legacyCurrent: state.mode === 'v1' });
-        // Saved while V1 ran: its legacy cells are the current ones. A V1
-        // session goes back to V1; a V2 session runs V2 on them, never V1.
-        // Intentional (user request, 2026-10-17: no V1 fallbacks for V2): a save made
-        // under V2 keeps V2 running after it loads, as V1 would get only its lossy projection.
-        if (state.mode === 'v1') {
-          if (session === 'v1') await app.setPhysics('v1');
-          else app.physics.v2.resync();
-        }
+        const state = decodeV2State(data, h.dims), v2 = app.physics.v2;
+        if (!v2) throw new Error('v2 state: no compact engine for this grid');
+        // (a load right after the grid's rebuild: its native pipelines finish building first, as its first tick waits)
+        await v2.ready;
+        await v2.integrationReady;
+        v2.activate();   // (it presents the box from here: the frame loop's tick would, a frame later)
+        v2.restoreState(data, { legacyCurrent: state.mode === 'v1' });
+        // Saved while V1 ran (before the V2 cutover): its legacy cells are the current ones (saves/game.js
+        // loaded them), so V2 imports them whole (shaders/v2.js v2import): element, T, life, ctype, and a
+        // falling grain's speed; liquid starts full and still, as V1's cells carry no fill.
+        if (state.mode === 'v1') v2.resync();
       },
       // An old save is an intentional legacy replacement, never a reason to revive retained cells.
       absent: () => app.physics.v2?.resync(),
@@ -247,7 +246,7 @@ function takeSaveThumbnail(app) {
 // words (restoreState), so its V1 cells needn't be written first (saves/game.js apply, sim.loadNative).
 export const nativeSaveLoad = app => (h, sections) => {
   const v2 = app.physics.v2, data = sections.get('physicsV2');
-  if (app.physics.mode !== 'v2' || !v2?.isReady || v2 !== app.sim?.compact || data === undefined) return false;
+  if (!v2?.isReady || v2 !== app.sim?.compact || data === undefined) return false;
   try { return decodeV2State(data, h.dims).mode === 'v2'; } catch { return false; }
 };
 export async function prepareSave(app, h) {

@@ -35,7 +35,7 @@ export function appPreloadPlugin({ entry = 'src/app.js' } = {}) {
           styles: [...styles].map((f) => base + f),
           workers: workers.map((f) => base + f.fileName),
         };
-        // Recovery also repairs optional startup chunks (?shot, ?physics=v2).
+        // Recovery also repairs optional startup chunks (?shot, the native physics modules).
         // Do not add them to normal menu preloading.
         for (const c of chunks.values()) for (const f of c.dynamicImports ?? []) walk(bundle[f]);
         list.retry = [...new Set([...chunks.values()].filter(c => !c.isEntry)

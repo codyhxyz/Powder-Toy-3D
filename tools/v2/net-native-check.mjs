@@ -67,7 +67,6 @@ console.log('ok native section: round trip, bounds, lying counts, newer builds f
     assert.ok(r.owner, `a V2 grid built ${mp.isGuest ? 'while guesting' : 'solo'} gets its native owner`);
     assert.equal(r.nativeStartup, true);
   }
-  assert.equal(built('v1', { isGuest: true }).owner, null, 'a V1 grid builds none (unchanged)');
   const gate = slice('function v2Box()', '  function v2Status()');
   const activate = slice('  if (physicsV2?.isReady) {', '  const stepping =');
   const frame = new Function('physicsMode', 'mp', 'log', `
@@ -83,7 +82,5 @@ console.log('ok native section: round trip, bounds, lying counts, newer builds f
   assert.equal(r.steps, 1, 'its tools\' clocks run on game time (a tick a 60 Hz frame)');
   log.length = 0; r = frame('v2', { replica: false }, log);
   assert.deepEqual(log, ['activate']); assert.equal(r.v2Box, true, 'the session over, the box is V2\'s to step');
-  log.length = 0; frame('v1', { replica: true }, log);
-  assert.deepEqual(log, ['suspend'], 'a V1 replica keeps V1\'s unpack (unchanged)');
 }
 console.log('ok app session wiring (src/app.js run against stubs): guests\' grids get their owner, replicas present it unticked, the session\'s end steps it');

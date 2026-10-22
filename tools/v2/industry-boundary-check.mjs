@@ -1,5 +1,5 @@
 // CPU protocol checks. Execute the real controller and app methods with GPU/UI
-// services stubbed. This is admission/cadence evidence: both engines run the
+// services stubbed. This is admission/cadence evidence: V2 (the only engine) runs the
 // machines (native transport itself: tools/v2/industry-native-check.mjs).
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -11,7 +11,6 @@ import { createProgression } from '../../src/industry/progression.js';
 import { validateIndustryPhysics, controlCell } from '../../src/industry/physics.js';
 import { E } from '../../src/elements.js';
 import { nativeReadiness } from '../../src/v2/host.js';
-import { createEngineRetag } from '../../src/industry/engineSwitch.js';
 
 const indexSource = readFileSync(new URL('../../src/industry/index.js', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
@@ -41,7 +40,7 @@ function fixture(native, gamemode = 'factory') {
   const create = vm.runInNewContext(
     indexSource.replace(/^import .*;\n/gm, '').replace(/^export /gm, '') + '\ncreateIndustry;',
     { ...catalog, ...validation, ...controls, E, validateIndustryPhysics, controlCell, createProgression,
-      structuredClone, performance, crypto, createEngineRetag,
+      structuredClone, performance, crypto,
       addEventListener: noop, removeEventListener: noop, allLoads: () => new Map(),
       createIndustryPhysics: () => physics,
       createConstruction: () => ({ ready: Promise.resolve(), run: async () => { write('construction'); return true; } }),
@@ -85,138 +84,27 @@ for (const mode of ['factory', 'sandbox']) {
 }
 console.log('PASS active native Factory/Sandbox admit and step machine work, and round-trip their saves');
 
-{
-  const f = fixture(false);
-  assert(f.sim.compactOwner, 'retain the native owner after suspension');
-  assert.equal(f.api.state.active, true, 'retained owner must not disable V1 Factory');
-  assert.equal(f.api.setDrive(f.api.state.devices[0].id, true).ok, true);
-  f.api.update(1 / 60, true);
-  f.api.nativeStep();
-  assert.deepEqual(f.writes, ['machinery', 'gate', 'paid heat']);
-  f.api.dispose();
-}
-console.log('PASS suspended native owner retains V1 machine dispatch');
-
-// A runtime V2 -> V1 switch gives the machines' tagged cells V1's ownership tags before they step
-// (industry/engineSwitch.js): a gate closed under V2 is CLOSED to V1's kernel, not DAMAGED.
-{
-  const f = fixture(true, 'sandbox'), { api } = f;
-  for (const d of [{ type: 'gate', x: 40, y: 8, z: 40 }, { type: 'pump', x: 60, y: 8, z: 60 }]) {
-    const placed = await api.place(d);
-    assert.equal(placed.ok, true, `${d.type} placed under V2: ${placed.reason ?? ''}`);
-  }
-  const tagged = api.state.devices.filter(d => d.type === 'gate' || d.type === 'pump');
-  assert.equal(tagged.length, 2);
-  api.update(1 / 60, true);
-  assert.equal(f.retags.length, 0, 'no retag while V2 runs');
-  f.sim.compact = null;   // (PhysicsV2.suspend: compactOwner stays)
-  f.writes.length = 0;
-  api.update(1 / 60, true);
-  assert.equal(f.retags.length, tagged.length, 'one retag a tagged machine');
-  assert(f.retags.every(r => r.kernel === 'industryRetag' && r.at === 0), 'recorded before any machine or gate steps');
-  assert.deepEqual(f.writes, ['machinery', 'gate']);
-  api.update(1 / 60, true);
-  assert.equal(f.retags.length, tagged.length, 'once a switch');
-  api.dispose();
-}
-console.log('PASS V2 -> V1 retags gates and pump backplates before the machines step');
-
 const statusStart = appSource.indexOf('  function v2Status()');
 const statusEnd = appSource.indexOf('function v2Active()', statusStart);
-const setterStart = appSource.indexOf('    async setPhysics(mode)');
-const setterEnd = appSource.indexOf('    get physics()', setterStart);
-assert(statusStart >= 0 && statusEnd > statusStart && setterStart >= 0 && setterEnd > setterStart);
+assert(statusStart >= 0 && statusEnd > statusStart);
+assert(!appSource.includes('setPhysics'), 'no runtime engine switch: V2 is the only engine');
 assert(!appSource.includes('INDUSTRY_V2_UNAVAILABLE') && !appSource.includes('nativePhysicsRequested'), 'the app no longer gates Factory on the engine');
 function appFixture({ pending = false, duringImport = false, factory = false } = {}) {
   const calls = [], notices = [];
   const context = vm.createContext({
     nativeReadiness, sim: { compactOwner: { isReady: true }, nativeCapabilities: { state: true } },
     win: null, pov: null, mp: { replica: false, isGuest: false },
-    selectedMode: factory ? 'factory' : 'sandbox', physicsMode: 'v1', physicsChanging: false,
+    selectedMode: factory ? 'factory' : 'sandbox',
     ctx: { industry: { pending, hasMachines: factory } }, V2mod: null, physicsV2: null,
     hud: { toast: message => notices.push(message) },
     pacer: { wake: noop }, wakeLoop: noop, v2Running: false,
   });
-  context.loadNativePhysics = async () => {
-    calls.push('import');
-    if (duringImport) context.ctx.industry.pending = true;
-    return { PhysicsV2: class {
-      constructor(sim) { calls.push('construct'); sim.compact = sim.compactOwner = this; this.isReady = true; }
-      activate() { calls.push('activate'); }
-    }, options: {} };
-  };
-  context.sim.prepareNative = async () => { calls.push('prepare native'); };
-  context.sim.prepareLegacy = async () => { throw new Error('No legacy fallback'); };
-  context.v2Box = () => context.physicsMode === 'v2';
   vm.runInContext(appSource.slice(statusStart, statusEnd), context);
-  const setPhysics = vm.runInContext(`({${appSource.slice(setterStart, setterEnd)}}).setPhysics`, context);
-  return { context, calls, notices, setPhysics };
+  return { context, calls, notices };
 }
-
-// A machine transfer in flight (a running pump is nearly always waiting on one) no longer stops a
-// switch to V2: it rides the switch (app.js setPhysics; engine-switch-check covers the cargo).
-for (const options of [{ pending: true }, { duringImport: true }]) {
-  const f = appFixture(options);
-  assert.equal(await f.setPhysics('v2'), 'v2', 'the switch goes through with a transfer in flight');
-  assert.equal(f.context.physicsMode, 'v2');
-  assert.equal(f.context.physicsChanging, false, 'the engine-change lock is released');
-  assert.deepEqual(f.calls.slice(0, 2), ['import', 'construct']);
-  assert.equal(f.notices.some(n => /machine transfer/.test(n)), false, 'no refusal');
-}
-console.log('PASS app switches to V2 with a machine transfer in flight (no refusal)');
-
-{
-  const f = fixture(false), transition = appFixture({ factory: true });
-  const before = clone(f.api.toJSON());
-  let entered, release;
-  const prepared = new Promise(resolve => { entered = resolve; });
-  const gate = new Promise(resolve => { release = resolve; });
-  const owner = f.sim.compactOwner;
-  owner.ready = Promise.resolve();
-  owner.activate = () => { f.sim.compact = owner; };
-  f.sim.nativeCapabilities = { state: true };
-  f.sim.prepareNative = async () => { entered(); await gate; };
-  transition.context.sim = f.sim;
-  transition.context.physicsV2 = owner;
-  transition.context.V2mod = {};
-  transition.context.ctx.industry = f.api;
-  assert.equal(f.api.state.active, true, 'stable V1 with a retained owner admits machine work');
-  const activation = transition.setPhysics('v2');
-  try {
-    await prepared;
-    assert.equal(f.sim.compact, null, 'retained owner has not activated yet');
-    assert.equal(transition.context.physicsMode, 'v2', 'requested mode is already published');
-    await assert.rejects(transition.setPhysics('v1'), /current physics change/);
-    // Admission stays open: a dismantle now is a captured edit the owner imports on activation.
-    const removal = await f.api.remove(before.devices[0].id);
-    assert.equal(removal.ok, true, 'machines stay usable while V2 prepares');
-    assert.deepEqual(f.writes, ['construction']);
-  } finally {
-    release();
-    await activation;
-    assert.equal(transition.context.physicsChanging, false);
-  }
-  assert.equal(f.sim.compact, owner);
-  assert.equal(f.api.state.active, true, 'V2 keeps the Factory running after activation');
-  f.api.update(1 / 60, true);
-  assert.deepEqual(f.writes, ['construction', 'machinery', 'gate']);
-  f.api.dispose();
-}
-console.log('PASS real app/controller keeps machines admitted through V2 activation');
-
-
-{
-  const f = appFixture();
-  f.context.sim.prepareNative = async () => { throw new Error('preparation failed'); };
-  await assert.rejects(f.setPhysics('v2'), /preparation failed/);
-  assert.equal(f.context.physicsChanging, false, 'failed preparation must not leave an admission lock');
-}
-console.log('PASS failed preparation releases engine-change serialization');
 
 {
   const f = appFixture({ factory: true });
-  await f.setPhysics('v2');
-  assert.equal(f.context.physicsMode, 'v2');
   assert.equal(f.context.v2Status().ready, true, 'a Factory with machines runs on V2');
   assert.deepEqual(f.notices, [], 'no V1-required toast');
   f.context.selectedMode = 'sandbox';

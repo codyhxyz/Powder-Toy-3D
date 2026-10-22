@@ -1,9 +1,9 @@
 // The outcome bench's engine on the game itself, at a URL (tools/outcomes.mjs
 // runs it in Node over a Playwright page): the app tests (tests/world.js) boot
 // a scene the game makes for itself (?map=island&win=64) and measure it through
-// window.__app, so the same test runs on any checkout's dev server: this one,
-// the frozen v1 checkout (/home/user/wt/v1 here), a v2 candidate's (--app-query
-// physics=v2). The element table comes from __app.test.elements ([{ key, kind }])
+// window.__app, so the same test runs on any checkout's dev server: this one
+// (Physics V2, the only engine), or the frozen V1 oracle (a checkout of the
+// v1-oracle tag, with --engine v1 --app-url). The element table comes from __app.test.elements ([{ key, kind }])
 // when the build offers it, else from the page's own /src/elements.js, which
 // only a dev server serves: a bundled build (a deploy, the /v1/ build) needs
 // the hook (today's app has none, so --app-url must be a dev server). Contract:
@@ -36,10 +36,10 @@ const LOAD_TIMEOUT = 300000;   // ms a world may take to boot on SwiftShader (sm
 /**
  * @param {import('playwright').Browser} browser
  * @param {{ base: string, query?: string, errors?: string[] }} opts base: the server's origin
- *   (http://127.0.0.1:PORT); query: added to every test's URL (physics=v2)
- * @param {'v1'|'v2'} opts.expectedPhysics the engine the result claims to measure
+ *   (http://127.0.0.1:PORT); query: added to every test's URL
+ * @param {'v1'|'v2'} opts.expectedPhysics the engine the result claims to measure (v1: the v1-oracle tag's checkout)
  */
-export function createEngine(browser, { base, query = '', errors = [], expectedPhysics = 'v1' }) {
+export function createEngine(browser, { base, query = '', errors = [], expectedPhysics = 'v2' }) {
   let page = null, meta = null, clock = stepClock(240);
   const engine = {
     name: 'app', app: true,

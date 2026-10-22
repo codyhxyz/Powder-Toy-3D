@@ -58,6 +58,7 @@ const engine = {
   captureState(m) { events.push('compact capture'); return Promise.resolve(encodeV2State({ ...decodeV2State(stored), mode: m })); },
   restoreState(b) { events.push('restore compact'); restored = decodeV2State(b, dims); stored = b; },
   resync() { events.push('legacy resync'); },
+  activate() { events.push('activate'); },
 };
 const sim = {
   g, rays: {},
@@ -68,8 +69,8 @@ const sim = {
 };
 const app = {
   settings: {}, sim, day: { clock: 0 },
+  // (mode: the engine a save records; only a pre-cutover build's save says 'v1', forged here)
   get physics() { return { mode, v2: engine }; },
-  async setPhysics(m) { events.push(`engine ${m}`); mode = m; },
   camState: () => 'pov', setSimModes() {}, resetSimModes() {}, updateSun() {},
 };
 savesWire.boot(app); // registers the real strict physicsV2 section, not a test copy
@@ -83,32 +84,24 @@ const saved = await saves.capture('exact');
 assert.deepEqual(events.slice(0, 2), ['legacy capture', 'compact capture'], 'readbacks start in the same task');
 const decoded = await decodeSave(saved);
 assert.deepEqual(decodeV2State(decoded.sections.get('physicsV2')).cells, state.cells);
-mode = 'v1'; events.length = 0;
+events.length = 0;
 await saves.apply(saved);
 assert.deepEqual(restored.cells, state.cells);
 assert.deepEqual(restored.aux, state.aux);
 assert.deepEqual(restored.activity, state.activity);
 assert.deepEqual(restored.args, state.args);
 for (const k of ['tick', 'acc', 'frame', 'paints']) assert.equal(restored[k], state[k]);
-assert(events.indexOf('engine v2') < events.indexOf('restore compact'));
+assert(events.indexOf('activate') < events.indexOf('restore compact'), 'the grid\'s own owner presents it before its words land');
 assert(events.indexOf('legacy load') < events.indexOf('restore compact'));
-assert.equal(mode, 'v2');
+assert(!events.includes('legacy resync'), 'a V2 save keeps its exact words: no import over them');
 
-// Save while temporarily in v1: the retained compact owner is included. A V1
-// session returns to v1 on load; a V2 session keeps V2 and imports the saved
-// legacy cells, which were the current ones (no quiet switch to V1).
+// A save made under V1 (before the V2 cutover: meta.mode 'v1') holds the retained owner's words too, but
+// its legacy cells are the current ones: V2 imports them (resync). There is no engine to switch to.
 mode = 'v1';
 const switched = await saves.capture('suspended');
-events.length = 0;
-await saves.apply(switched);
-assert.equal(mode, 'v1');
-assert.deepEqual(restored.cells, state.cells);
-assert.deepEqual(restored.aux, state.aux);
-assert.deepEqual(events.filter(e => e.startsWith('engine') || e === 'restore compact'), ['engine v2', 'restore compact', 'engine v1']);
 mode = 'v2'; events.length = 0;
 await saves.apply(switched);
-assert.equal(mode, 'v2', 'a V2 session never switches to V1 on load');
-assert.deepEqual(events.filter(e => e.startsWith('engine') || e === 'restore compact' || e === 'legacy resync'), ['engine v2', 'restore compact', 'legacy resync']);
+assert.deepEqual(events.filter(e => e === 'restore compact' || e === 'legacy resync'), ['restore compact', 'legacy resync']);
 
 // Older files keep their intentional legacy replacement semantics.
 const old = await encodeSave(decoded.header, [...decoded.sections].filter(([key]) => key !== 'physicsV2').map(([key, data]) => ({ key, data })));
@@ -177,4 +170,4 @@ for (const change of [h => { h.sections.find(s => s.key === 'worldNativeStore').
 }
 world.persistenceError = new Error('readback failed');
 await assert.rejects(worlds.capture('must not lose data'), /readback failed/);
-console.log('v2 saves CPU checks passed: raw words/clock/activity, real section + container round trips, suspended mode, old saves, native world retained state, pre-mutation corruption rejection');
+console.log('v2 saves CPU checks passed: raw words/clock/activity, real section + container round trips, V1-made saves import, old saves, native world retained state, pre-mutation corruption rejection');

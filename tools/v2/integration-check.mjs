@@ -652,8 +652,9 @@ assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouc
 
 const app = readFileSync('src/app.js', 'utf8');
 // (one decision, src/launch.js physicsEngine, which the start menu's warm-up reads too: src/preload.js)
-assert(app.includes('let physicsMode = physicsEngine(location.search);'), 'the app takes the engine from launch.js');
-assert.equal(physicsEngine(''), 'v1', 'v1 remains default'); assert.equal(physicsEngine('?physics=v2'), 'v2');
+assert(app.includes('const physicsMode = physicsEngine();'), 'the app takes the engine from launch.js');
+// Physics V2 is the only engine: no URL picks V1 (an old link's ?physics= is ignored)
+assert.equal(physicsEngine(), 'v2', 'v2 is the only engine'); assert.equal(physicsEngine('?physics=v1'), 'v2');
 assert(!app.includes("if (mode === 'v2' && !physicsV2 && !worldMode)"), 'no world-only v1 fallback');
 assert(app.includes('before: nativeBeforeStep'), 'automatic and manual native steps retain weather hooks');
 assert(readFileSync('src/gfx/volume.js', 'utf8').includes('pickGroup], header: sim.readHeader({ physical: true })'));

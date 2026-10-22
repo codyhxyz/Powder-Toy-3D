@@ -17,7 +17,7 @@ try {
   const errors = [];
   page.on('pageerror', e => { errors.push(e.message); console.log('page error:', e.message); });
   page.on('console', m => { if (m.type() === 'log' && /^(ok|FAIL|info) /.test(m.text())) console.log(m.text()); });
-  await page.goto(vite.url('/?size=64&preset=empty&physics=v2'));
+  await page.goto(vite.url('/?size=64&preset=empty'));
   await ready(page);
   console.log(`info app up at ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   const result = await page.evaluate(async () => {

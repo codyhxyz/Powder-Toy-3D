@@ -259,7 +259,7 @@ assert(/steps: 4, gravity:/.test(app), 'app.js DEFAULTS.steps is 4');
 
 // ---- C6: steps/s and the profiler in V1 steps, the profiler's shares V2's own
 {
-  assert(/const legacyStepped = !stepping \? 0 : v2Box\(\) \? stepped \* LEGACY_STEPS_PER_TICK : settings\.steps;/.test(app));
+  assert(/const legacyStepped = !stepping \? 0 : stepped \* LEGACY_STEPS_PER_TICK;/.test(app));
   assert(/stepCount \+= legacyStepped;/.test(app), 'the HUD\'s steps/s');
   assert(/prof\.endFrame\(legacyStepped\);/.test(app), 'the profiler\'s per-step costs');
   assert.equal(legacySteps({ compact: {} }, 1), 4);

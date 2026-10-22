@@ -178,7 +178,7 @@ for (const view of VOLUME_VIEWS) {
     assert(e.name.endsWith(`.format${forecast}`) && !e.name.endsWith('.format0'), `${e.name}: V2's warm-up names its format, never format 0`);
 }
 assert.deepEqual(VOLUME_VIEWS.filter(v => sessionVolumeFormat(v, true) !== 2), [], 'every view, the air views included, draws V2\'s format 2 (its air in the read group)');
-assert.equal(physicsEngine('?physics=v2'), 'v2'); assert.equal(physicsEngine(''), 'v1');
+assert.equal(physicsEngine(), 'v2'); assert.equal(physicsEngine('?physics=v1'), 'v2');
 
 const dir = mkdtempSync(join(tmpdir(), 'volume-format-'));
 try {

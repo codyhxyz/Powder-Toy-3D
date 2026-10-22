@@ -34,7 +34,7 @@ try {
     if (/^http:\/\/(?:localhost|127\.0\.0\.1):8787\//.test(m.location().url) && /ERR_CONNECTION_REFUSED/.test(m.text())) return;
     errors.push(m.text());
   });
-  await page.goto(vite.url('/?size=64&preset=empty&physics=v2'));
+  await page.goto(vite.url('/?size=64&preset=empty'));
   await ready(page);
   await page.evaluate(async () => {
     const a = __app, { E, ELEMENTS } = await import('/src/elements.js');

@@ -92,7 +92,6 @@ import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z, HO
 import { withCityBusFocus } from './pov/village/bus.js';
 import { MAPS, mapByKey, mapOf, isWorld, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
-import { SUPER_SETTLE_STEPS } from './shaders/activity.js';
 import { VIEWS, viewKey as viewKeyOf, isMaterialView, isTestView, viewForMode } from './views.js';
 import { createReadyVolumeView } from './gfx/readyVolumeView.js';
 import { WIRES, wireNamed } from './wire/index.js';
@@ -288,11 +287,9 @@ if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 if (!['real', 'woman', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
 if (!['boy', 'girl'].includes(settings.villageCharacter)) settings.villageCharacter = DEFAULTS.villageCharacter;
 settings.paused = params.get('paused') === '1' || testMode === 'manual' || testMode === 'ui';
-// Experimental native physics remains opt-in until measured parity/performance
-// acceptance. Worlds/POV use explicit readiness, never a silent v1 fallback.
-// Multiplayer guests are deliberately render-only, irrespective of host engine.
-  let physicsMode = physicsEngine(location.search);
-  let physicsChanging = false;
+// Physics V2 is the only engine (launch.js physicsEngine). Worlds/POV use explicit readiness while its
+// pipelines build. Multiplayer guests are deliberately render-only: a guest's owner holds the host's frames.
+const physicsMode = physicsEngine();
   let ctx; // Readiness also runs during picker construction, before wires attach.
 async function loadNativePhysics() {
   const [physics, contact, dynamics] = await Promise.all([import('./v2/physics.js'), import('./shaders/v2/contact.js'), import('./v2/dynamics.js')]);
@@ -303,10 +300,10 @@ const hybridOptIn = params.get('renderer') === 'hybrid';
 let hybridModule = hybridOptIn ? await import('./gfx/hybrid/index.js') : null;
 let hybridLoad = null, hybridWait = Promise.resolve(), hybridUnavailable = false;
 let releaseHybrid = () => {};
-let V2mod = physicsMode === 'v2' ? await loadNativePhysics() : null;
+const V2mod = await loadNativePhysics();
 let physicsV2 = null;    // the authoritative native host (a guest's holds the host's frames and never ticks: net/codec.js)
 let nativeRayStroke = null;
-let v2Running = false;   // the last steps were v2's (switching away notes a whole write for today's activity map)
+let v2Running = false;   // the owner was activated for this grid's ticks
 
 let saveTimer = 0;
 function save() {
@@ -585,13 +582,11 @@ function build(savedWorldSize = null) {
   // A guest's grid gets its native owner too: it holds the host's frames as native cells (net/codec.js
   // unpack) without ticking, and runs them once the session ends (a box guest plays on alone). Without
   // one, a box built while guesting never stepped again under V2 (v2Active needs an owner).
-  sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size, nativeStartup: physicsMode === 'v2' });
-  if (physicsMode === 'v2') {
-    physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
-    const owner = physicsV2;
-    owner.integrationReady = sim.prepareNative(owner);
-    owner.integrationReady.then(() => wakeLoop(), () => {});
-  }
+  sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size, nativeStartup: true });
+  physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
+  const owner = physicsV2;
+  owner.integrationReady = sim.prepareNative(owner);
+  owner.integrationReady.then(() => wakeLoop(), () => {});
   derived = new Derived(sim);
   // WORLD uses its native frame wire. Keep local picks, not unused BOX views.
   blocksOn = !worldMode && plainView();
@@ -2764,13 +2759,13 @@ function viewClock(held) {
   cloudShift(t, gfxUniforms.uCloudShift.value);
 }
 
-// A native host never falls back to v1 while dependencies are building or unavailable.
-  // Remote replicas run neither engine; a V2 replica presents its owner's native cells (v2Replica).
+// A native host waits for its pipelines while they build; nothing else steps the grid.
+  // Remote replicas tick nothing; a replica presents its owner's native cells (v2Replica).
 // (declarations: the tool picker asks before this line has run)
-function v2Box() { return physicsMode === 'v2' && !mp.replica; }
+function v2Box() { return !mp.replica; }
 // A V2 guest's replica: its owner holds the host's frames (net/codec.js unpack) for the renderer, active
 // but never ticked, so the guest draws native cells and its own particles' renderer (wire/rays.js).
-function v2Replica() { return physicsMode === 'v2' && mp.replica && !!physicsV2; }
+function v2Replica() { return mp.replica && !!physicsV2; }
 // The ticks of game time a replica's frame stands for (it runs none): its tools' and body's clocks read
 // them as a host's read its ticks (ctx.nativeToolSteps), at the host's 60 Hz with the same catch-up cap.
 let replicaAcc = 0;
@@ -2786,10 +2781,8 @@ function replicaToolSteps(dt, speed) {
     return nativeReadiness(sim, { world: !!win, pov: !!pov?.active, guest: mp.replica });
   }
 function v2Active() { return v2Box() && v2Status().ready; }
-// The simulation records nothing per step (certified idle: sim.js step(); v2's own), so ticking it is pointless.
-const simAsleep = () => (v2Box() ? v2Active() && v2Running && physicsV2.asleep
-  : sim.idleCertified && !sim.actDirty && !sim.actFresh && sim.actSteps >= SUPER_SETTLE_STEPS
-    && sim.quietOk && sim.skipSleeping && !sim.rays.active);
+// The simulation records nothing per tick (V2's own rest: v2/host.js), so ticking it is pointless.
+const simAsleep = () => v2Active() && v2Running && physicsV2.asleep;
 
 // the camera the toolbar shows: god view, or the body's first / third person
 const camState = () => (!pov?.active || pov.mode === 'exiting' ? 'god' : pov.camera.third ? 'third' : 'first');
@@ -2897,7 +2890,7 @@ function tick(now, renderOnly = false) {
   prof.phase('sim');
   if (physicsV2?.isReady) {
     // (a replica's owner stays the presentation owner: the host's frames are its cells)
-    if (v2Box() || v2Replica()) physicsV2.activate(); else { physicsV2.suspend(); v2Running = false; }
+    physicsV2.activate();
   }
   const stepping = !renderOnly && !mp.replica && (!settings.paused || stepOnce);
   ctx.stepping = stepping;
@@ -2922,21 +2915,11 @@ function tick(now, renderOnly = false) {
     // view's clock (v2/host.js partialTick): every frame at any Speed, not a jump each tick
     animTime += Math.max(0, stepped + (physicsV2?.acc ?? 0) - accFrom) / HOST_HZ;
     stepOnce = false;
-  } else if (stepping) {
-      if (v2Running) { physicsV2.suspend(); v2Running = false; }
-      for (let i = 0; i < settings.steps; i++) {
-        scripts?.beforeStep(); weatherWire.step(ctx); sim.step();
-        ctx.industry?.nativeStep();
-        scripts?.afterStep();
-      }
-    if (DAY.running) day.clock += settings.steps;
-    animTime += dt;
-    stepOnce = false;
   } else if (!renderOnly && mp.isGuest && DAY.running) day.clock += settings.steps;   // guests don't step: keep the day going at their own rate
   // The V1 steps this frame ran, a native tick being LEGACY_STEPS_PER_TICK of them: the HUD's steps/s
   // and the profiler's per-step costs count V1's steps under either engine (V2's ticks read ~60 for
   // V1's ~240, the sim seemingly at a quarter rate).
-  const legacyStepped = !stepping ? 0 : v2Box() ? stepped * LEGACY_STEPS_PER_TICK : settings.steps;
+  const legacyStepped = !stepping ? 0 : stepped * LEGACY_STEPS_PER_TICK;
   // A frame between two ticks of an awake box (Speed under 1×: a tick every 2nd to 4th frame) is still
   // drawn: its clock and its flying matter move on the partial tick (v2/host.js viewStepClock,
   // particleLagSeconds), as V1's frame of steps moves its world (it drew the same image until the tick).
@@ -3158,8 +3141,8 @@ function tick(now, renderOnly = false) {
   drawWorldAfter(rp){for(const w of after)w.scene(ctx,rp);brush.draw(rp);},
   drawWorldOverlay(rp){for(const w of overlayWires)w.overlay(ctx,rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
-  // the engine, as __app reports and switches it (src/wire/saves.js captures and restores it)
-  get physics() { return window.__app?.physics; }, setPhysics: (mode) => window.__app.setPhysics(mode),
+  // the engine, as __app reports it (src/wire/saves.js captures and restores it)
+  get physics() { return window.__app?.physics; },
   get renderView() { return renderView; },
   get scale() { return scale; }, get anchor() { return anchor; }, get worldMode() { return worldMode; },
   get win() { return win; }, set win(v) { win = v; },
@@ -3381,42 +3364,7 @@ try {
     openSave,        // a local save's id, or a .tpt3d file's bytes: resolves to whether it loaded
     setSimMode,      // (key, value): as the drawer's Simulation switches do (simModes.js SIM_MODE_KEYS)
     setSimModes,     // ({ gravityMode, airMode, ambientHeat, edgeMode }): a world's, at once (a save's)
-    // the physics a box runs: 'v1' (today's) or 'v2' (the new physics' fast version, as ?physics=v2);
-    // resolves once the requested engine's pipelines are built. Not persisted.
-    // Saved engine modes also use this boundary. physics: { mode, active, v2 (its PhysicsV2) }
-    async setPhysics(mode) {
-      if (mode !== 'v1' && mode !== 'v2') throw new Error(`setPhysics: 'v1' or 'v2', not ${mode}`);
-      if (physicsChanging) throw new Error('Wait for the current physics change to finish.');
-      physicsChanging = true;
-      try {
-        // A machine or tool transfer in flight rides the switch: both engines run the machines, a V1
-        // transfer's writes are recorded before the owner's import of them (PhysicsV2.activate sync),
-        // its answer is V1 cells V2 places as it imports V1's, and V2 cargo meets V1 as V2's export
-        // gives it (pov/tools/transfer.js legacyCargo).
-        if (mode === 'v2') V2mod ??= await loadNativePhysics();
-        if (mode === 'v1') {
-          // Keep native mode published while legacy builds: the running loop must
-          // not step unbuilt kernels. A map change meanwhile needs its own prepare.
-          let prepared;
-          do { prepared = sim; await prepared.prepareLegacy(); } while (prepared !== sim);
-        }
-        physicsMode = mode;
-        if (mode === 'v2' && !physicsV2) physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
-        if (mode === 'v1' && physicsV2) {
-          physicsV2.suspend();
-          v2Running = false;
-        }
-        await physicsV2?.ready;
-        if (mode === 'v2' && physicsV2) await sim.prepareNative(physicsV2);
-        if (mode === 'v2' && !v2Status().ready && !mp.isGuest) hud.toast(v2Status().reason, { kind: 'error' });
-        if (mode === 'v2' && v2Box()) physicsV2.activate();
-        pacer.wake();
-        wakeLoop();
-        return physicsMode;
-      } finally {
-        physicsChanging = false;
-      }
-    },
+    // the physics: { mode: 'v2' (the only engine), active, readiness, capabilities, v2 (its PhysicsV2) }
     get physics() { return { mode: physicsMode, active: v2Active(), readiness: v2Status(), capabilities: sim.nativeCapabilities, v2: physicsV2 }; },
     fill: (req) => runFill(sim, req, { openSides: !!win }),   // a flood fill on the current grid (editing.js runFill), for tools
     get worldFocus() { return worldFocus; }, set worldFocus(v) { worldFocus = v; },
@@ -3451,20 +3399,12 @@ try {
         if (!testParked || mp.isGuest) throw new Error('Park a local test page before stepping');
         if (!Number.isSafeInteger(count) || count < 0 || count > 10000) throw new RangeError('steps must be an integer from 0 to 10000');
         if (!readySims.has(sim)) throw new Error('The grid is still building its pipelines: await __app.test.ready() first');
-        if (v2Box()) {
-          if (!v2Active()) throw new Error('The new physics is still building its pipelines: await __app.test.ready() first');
-          if (!v2Running) { physicsV2.activate(); v2Running = true; }
-          for (let i = 0; i < count; i++) nativeHostTick(physicsV2, {
-            before: nativeBeforeStep, after: nativeAfterStep,
-          });
-          if (DAY.running) day.clock += count * LEGACY_STEPS_PER_TICK;   // (the day is tuned in V1 steps)
-        } else {
-          for (let i = 0; i < count; i++) {
-            weatherWire.step(ctx); sim.step(); ctx.industry?.nativeStep();
-            lightning?.update(sim, { worldEpoch: win?.epoch, worldIdentity: win });
-          }
-          if (DAY.running) day.clock += count;
-        }
+        if (!v2Active()) throw new Error('The new physics is still building its pipelines: await __app.test.ready() first');
+        if (!v2Running) { physicsV2.activate(); v2Running = true; }
+        for (let i = 0; i < count; i++) nativeHostTick(physicsV2, {
+          before: nativeBeforeStep, after: nativeAfterStep,
+        });
+        if (DAY.running) day.clock += count * LEGACY_STEPS_PER_TICK;   // (the day is tuned in V1 steps)
       },
       // Every pipeline the current settings need is built, ours and three's (B5).
       ready: allReady,

@@ -380,7 +380,7 @@ for (const [name, desc, opts] of [['importedDoor', IMPORTED_DOOR_EDIT, {}], ['im
   assert.match(wire, /nativeLoad: nativeSaveLoad\(app\),/);
   // the wires boot with app.js's ctx, not __app: saving reads and switches the engine through it
   const appSrc = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8'), ctxBlock = appSrc.slice(appSrc.indexOf('\n  ctx = {'), appSrc.indexOf('window.__app = {'));
-  assert.match(ctxBlock, /get physics\(\) \{/, 'ctx.physics: wire/saves.js reads app.physics.v2'); assert.match(ctxBlock, /setPhysics: /, 'ctx.setPhysics: a save\'s section switches the engine');
+  assert.match(ctxBlock, /get physics\(\) \{/, 'ctx.physics: wire/saves.js reads app.physics.v2'); assert.doesNotMatch(ctxBlock, /setPhysics/, 'no engine switch: a save\'s section restores into V2, the only engine');
   checks++; }
 // 10. The profiler's awake/drawn shares: V2's activity, not V1's map (never built under V2).
 { readbacks.length = 0;

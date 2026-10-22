@@ -3,7 +3,7 @@
 // container's window; the game's own world generator and sleep rules, nothing
 // built by the bench), certifies idle within a couple of seconds and holds
 // water. An app test: it runs on engine-app.js (the game at a URL), so a v2
-// candidate is measured by its URL (tools/outcomes.mjs --app-query physics=v2).
+// candidate is measured by its URL (tools/outcomes.mjs; V1: the v1-oracle tag with --engine v1 --app-url).
 import { SetupError } from '../engine.js';
 import { OUTCOMES } from '../thresholds.js';
 import { advanceWatching, crit, r2 } from '../lib.js';
