@@ -163,6 +163,19 @@ export async function worldClassify(gpu,cells,atlas,ids,{fieldTick,smoothing=1},
   }
   return stale.length;
 }
+// The bricks a transaction's metadata stage records (book indices): the
+// committed rows a cut may have changed (worldLightingRecords stale), and the
+// bricks of ids no row holds yet. ids holds every committed row's brick and
+// those of extra (the requirements and glow regions); every owned SOURCE and
+// probe has a committed row (its records were read when it was selected, and
+// rows go only on a reset, with the owned sets), so extra need not list them.
+// Bounded by the change, the cores and extra, not by the rows committed.
+export function worldMetadataFresh(metadata,ids,{cut,captureOf,carry=null,carried=null,extra=[]}) {
+  const out=[],seen=metadata.stale(cut,{captureOf,carry});
+  for(const i of seen)out.push(i);
+  for(const list of extra)for(const i of list)if(!seen.has(i)&&ids.has(i)&&!metadata.has(i)&&!carried?.has(i)){seen.add(i);out.push(i);}
+  return out;
+}
 // A frame's feedback whose only misses are budget-dropped bricks (and Sun tiles it
 // already has), settled as complete; any other feedback unchanged (owner.settle).
 export function worldSettleFeedback(feedback,{dropped,sunTiles,index}) {
@@ -263,6 +276,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   const cellOptions=t=>({fieldTick:t.fieldTick,smoothing:t.frame.params.smoothing??1});
   async function advanceFields(t) {cells.bindCut(t.cut);await worldAdvanceFields(gpu,cells,cellOptions(t));}
   const cellCurrent=i=>worldCellCurrent(atlas,i);
+  const captureOf=b=>cells.classificationBuffer(b);
   async function classify(t,ids) {await worldClassify(gpu,cells,atlas,ids,cellOptions(t),brick);}
   function captureInput(t,{previous=null,emission=null}={}) {
     const p=cells.acquire();
@@ -423,9 +437,9 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     await forecast(t);t.stage='cell';
     const ids=new Set(metadata.keys());for(const set of [ownedSources,ownedProbes,t.requirements.keys()])for(const i of set)ids.add(i);
     for(const i of ownedGlow)t.requirements.set(i,(t.requirements.get(i)??0)|READY.GLOW);
-    const glowCores=new Map();
+    const glowCores=new Map(),glowBricks=[];
     for(const [i,bits]of t.requirements)if(bits&READY.GLOW){const core=brick(i).map(n=>Math.floor(n/8));glowCores.set(core.join(','),core);}
-    for(const core of glowCores.values()){const region=worldGlowPlan(size,core).input;for(let z=0;z<region.size[2];z++)for(let y=0;y<region.size[1];y++)for(let x=0;x<region.size[0];x++)ids.add(index([x+region.min[0],y+region.min[1],z+region.min[2]]));}
+    for(const core of glowCores.values()){const region=worldGlowPlan(size,core).input;for(let z=0;z<region.size[2];z++)for(let y=0;y<region.size[1];y++)for(let x=0;x<region.size[0];x++){const i=index([x+region.min[0],y+region.min[1],z+region.min[2]]);ids.add(i);glowBricks.push(i);}}
     if(!ids.size)throw new Error('WORLD requires explicit initial CELL demand');
     await advanceFields(t);
     await budgetDemand(t,ids);
@@ -433,13 +447,17 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     t.stage='metadata';
     // Only the bricks the last attempt's records lack: the cut, clock and
     // baseline are the transaction's, so its rows would read back the same.
+    // And of the committed rows only the stale ones (worldLightingRecords
+    // stale: the rest read back what they hold).
     const carried=t.batch&&metadata.carryable(t.batch,{cut:t.cut,derivedTick:t.tick});
     if(!carried){t.batch?.discard();t.batch=null;}
-    const fresh=carried?[...ids].filter(i=>!carried.has(i)):[...ids];
+    const fresh=worldMetadataFresh(metadata,ids,{cut:t.cut,captureOf,carry:carried?t.batch:null,carried,extra:[t.requirements.keys(),glowBricks]});
     t.metadataBricks=fresh.length;
-    if(fresh.length){
-      const classification=cells.acquireClassification({bricks:fresh.map(brick)});
-      try{t.batch=metadata.record(gpu.frame,{cut:t.cut,classification,derivedTick:t.tick,carry:carried?t.batch:null});}catch(e){classification.release();throw e;}
+    if(fresh.length||!t.batch){
+      // (a transaction holds a batch even with nothing stale: its commit moves
+      // the clock; one row read again reads back what it holds)
+      const classification=cells.acquireClassification({bricks:(fresh.length?fresh:[ids.values().next().value]).map(brick)});
+      try{t.batch=metadata.record(gpu.frame,{cut:t.cut,classification,derivedTick:t.tick,carry:carried?t.batch:null,captureOf});}catch(e){classification.release();throw e;}
       await t.batch.completion;
     }
     t.stage='history';

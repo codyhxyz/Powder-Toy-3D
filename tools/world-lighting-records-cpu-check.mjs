@@ -15,6 +15,7 @@ import { cellSlot, brickIdOf } from '../src/shaders/common.js';
 import { SOURCE_GRID } from '../src/world/renderSource.js';
 import { worldLightingNear } from '../src/gfx/worldLightingBatch.js';
 import { nagaSpawn } from './naga.mjs';
+import { worldAdvanceFields, worldClassify } from '../src/wire/worldRender.js';
 test('indexed change neighborhoods exactly match clipped Chebyshev selection',()=>{
  const size=[32,20,28],changed=[[0,0,0],[7,4,6],[2,3,1],[2,3,1]];
  for(const points of [[],changed])for(const radius of [0,1,2,4]){
@@ -141,4 +142,63 @@ test('classification metadata: one GPU copy per run of neighbouring records, row
   assert(copies<=2,`one core's ${all.length} records took ${copies} copies`);
   assert.deepEqual(new Set(classification.records.map(r=>r.index)).size,all.length,'every brick keeps its row');
   classification.release();await f.close();
+});
+
+// A new transaction records only the committed rows its cut may have changed
+// (stale: the delta's bricks and those of re-captured cores) and the new ones:
+// every one of a big map's 450k-680k rows a tick was most of its metadata
+// stage (2026-10-22). Tick after tick, what it reads back is what recording
+// every row reads back: the records, their changes and the Glow halo.
+async function settle(gpu,promise){let done=false,error;promise.then(()=>{done=true;},e=>{done=true;error=e;});for(let i=0;i<200&&!done;i++){gpu.finish();await new Promise(r=>setTimeout(r,0));}assert(done,'native final boundary failed to settle');if(error)throw error;return promise;}
+// Ticks of no change before the cores' field owners settle (no field tick re-captures them).
+const SETTLE_TICKS_MAX=64;
+test('a new transaction records only stale rows, and reads back what recording every row reads',async()=>{
+  const size=[64,8,8],f=await setup({size,cur:1}),all=f.bricks,ids=all.map(b=>b[0]+16*(b[1]+2*b[2])),sorted=l=>[...l].map(String).sort();
+  const full=createWorldLightingRecords(f.gpu,{worldSize:size,sourceOwner:f.source,submissionProvider:provider(f.gpu)});await full.ready;
+  const captureOf=b=>f.adapter.classificationBuffer(b);
+  const slot=cellSlot(f.sim.g,0,0,0),offset=f.sim.cur*f.sim.g.slots*4+slot*4;
+  let a=cut(f),t=0;
+  // One transaction: its change, the owner's CELL stage, then the metadata
+  // recorded both ways: every row (the reference) and only the stale ones.
+  async function step(change){
+    if(change==='raw'){u32(f.sim.state.B)[offset]^=1;f.sim.version++;f.source.noteContentChange();}
+    else if(change==='deco'){u32(f.sim.decoPlane.buffer)[0]^=1;f.sim.version++;f.source.noteContentChange();}
+    else if(change==='far')f.source.noteContentChange({lo:[56,0,0],hi:[64,8,8]});   // core 1 only, past core 0's field reach
+    else if(change==='global')f.source.noteContentChange({global:true});
+    else f.source.noteContentChange({lo:[0,0,0],hi:[0,0,0]});
+    const b=t?f.source.recordCut(f.gpu.frame,{previousCut:a,sceneVersion:'scene',configVersion:1}):a;
+    // the owner's CELL stage (wire/worldRender.js): the field tick, then every brick whose page is not current
+    f.adapter.bindCut(b);await settle(f.gpu,worldAdvanceFields(f.gpu,f.adapter,{fieldTick:t}));
+    await settle(f.gpu,worldClassify(f.gpu,f.adapter,f.atlas,ids,{fieldTick:t},i=>all[ids.indexOf(i)]));
+    const reference=full.record(f.gpu.frame,{cut:b,classification:f.adapter.acquireClassification({bricks:all}),derivedTick:t});
+    const stale=f.records.stale(b,{captureOf});
+    const fresh=[...stale,...ids.filter(i=>!f.records.has(i)&&!stale.has(i))];
+    const pick=fresh.length?fresh:[ids[0]],bricks=pick.map(i=>all[ids.indexOf(i)]);
+    const batch=f.records.record(f.gpu.frame,{cut:b,classification:f.adapter.acquireClassification({bricks}),derivedTick:t,captureOf});
+    await settle(f.gpu,Promise.all([reference.completion,batch.completion]));
+    assert.deepEqual(batch.records(ids),reference.records(ids),`tick ${t} (${change}): the records`);
+    assert.deepEqual(sorted(batch.changes.changedBricks),sorted(reference.changes.changedBricks),`tick ${t}: the changed bricks`);
+    assert.deepEqual(sorted(batch.changes.emissionChangedBricks),sorted(reference.changes.emissionChangedBricks),`tick ${t}: the emission changes`);
+    assert.deepEqual([...batch.changes.glowDirtyIndices].sort((x,y)=>x-y),[...reference.changes.glowDirtyIndices].sort((x,y)=>x-y),`tick ${t}: the Glow halo`);
+    const out={rows:batch.wordCount/5,stale:sorted([...stale])};
+    batch.commit();reference.commit();
+    assert.deepEqual(f.records.records(ids,{derivedTick:t}),full.records(ids,{derivedTick:t}),`tick ${t}: the committed records`);
+    if(b!==a){a.release();a=b;}
+    t++;return out;
+  }
+  async function quiet(){for(let k=0;k<SETTLE_TICKS_MAX;k++)if(!(await step(null)).stale.length)return k;assert.fail('field owners never settled');}
+  assert.equal((await step(null)).rows,all.length,'a birth records every row');
+  await step('raw');await quiet();
+  assert.equal((await step(null)).rows,1,'a settled tick of no change reads one row again');
+  // a far change: core 1's rows only (its bricks in the delta, its capture new), core 0's carried
+  const far=await step('far');assert.deepEqual(far.stale,sorted([ids[2],ids[3]]),'a far change makes stale only its own core');
+  await quiet();
+  for(const change of ['raw','deco','global'])assert((await step(change)).rows===all.length,`a ${change} change reads every row of this one-core window again`);
+  await quiet();
+  // a missing stale row is asked for, as a missing row always was
+  f.source.noteContentChange({global:true});const c=f.source.recordCut(f.gpu.frame,{previousCut:a,sceneVersion:'scene',configVersion:1});
+  f.adapter.bindCut(c);await settle(f.gpu,worldAdvanceFields(f.gpu,f.adapter,{fieldTick:t}));
+  await settle(f.gpu,worldClassify(f.gpu,f.adapter,f.atlas,ids,{fieldTick:t},i=>all[ids.indexOf(i)]));
+  assert.throws(()=>f.records.record(f.gpu.frame,{cut:c,classification:f.adapter.acquireClassification({bricks:[all[0]]}),derivedTick:t,captureOf}),e=>e.requirements?.length===all.length-1);
+  full.dispose();a.release();c.release();await f.close();
 });

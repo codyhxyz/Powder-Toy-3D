@@ -15,6 +15,21 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
   const size=frozenArray(worldSize),dims=size.map(n=>n/4),device=gpu.device,queue=device.queue,{buffer}=createLightingResources(device);
   const layouts=[false,true].map(aux=>device.createBindGroupLayout({entries:worldLightingDeltaLayouts(aux)})),pipes=[];
   let readyState=false,dead=false,generation=0,pending=null,committed=new Map(),baseline=null,clock=-1;
+  // The committed rows by 32-cell core (8^3 bricks) and the classification
+  // capture each was read from (its buffer: a capture's classification is
+  // written once, by its classifier dispatch, and only read after; a new
+  // capture is a new buffer, cellAtlasAdapter.js recordOwnedFields). A row
+  // whose capture is still its core's and whose brick no cut since changed
+  // reads back the same words, so a new transaction records only the rest
+  // (stale): every row of all 450k-680k bricks a tick was most of a big
+  // map's metadata stage (2026-10-22).
+  const cdims=dims.map(n=>Math.ceil(n/8)),cores=new Map();
+  const coreOf=i=>{const x=i%dims[0],y=Math.floor(i/dims[0])%dims[1],z=Math.floor(i/(dims[0]*dims[1]));return (x>>3)+cdims[0]*((y>>3)+cdims[1]*(z>>3));};
+  const coreBrick=k=>[(k%cdims[0])*8,(Math.floor(k/cdims[0])%cdims[1])*8,Math.floor(k/(cdims[0]*cdims[1]))*8];
+  const coreAdd=(i,buffer)=>{const k=coreOf(i);let byBuffer=cores.get(k);if(!byBuffer)cores.set(k,byBuffer=new Map());let set=byBuffer.get(buffer);if(!set)byBuffer.set(buffer,set=new Set());set.add(i);};
+  const coreDelete=(i,buffer)=>{const k=coreOf(i),byBuffer=cores.get(k),set=byBuffer?.get(buffer);if(!set)return;set.delete(i);if(!set.size){byBuffer.delete(buffer);if(!byBuffer.size)cores.delete(k);}};
+  // A batch's rows over the committed ones, without a copy of every committed row.
+  const view=next=>({has:i=>next.has(i)||committed.has(i),get:i=>next.get(i)??committed.get(i)});
   // A completed, unadopted batch's rows, for the next record() of the same cut,
   // clock and baseline to carry (a restarted load attempt): its rows are what a
   // new record() would read back again. Island's metadata stage re-recorded
@@ -36,7 +51,31 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
     const c=carries.get(batch);
     return c&&pending===batch&&batch.status==='pending-acceptance'&&c.generation===generation&&c.cutIdentity===cut?.identity&&c.derivedTick===derivedTick&&c.baseline===baseline?c.indices:null;
   }
-  function record(frame,{cut,previousCut=null,classification,derivedTick,carry=null}={}){
+  // The committed rows a record() at cut must read again (captureOf(brick):
+  // the classification buffer a lease would read the brick's core from now,
+  // cellAtlasAdapter.js classificationBuffer): every one when there is no
+  // baseline delta (none committed, or a global change); else each one whose
+  // brick the delta since the baseline lists (its words may differ: the native
+  // delta compares them) and each one read from a capture its core no longer
+  // has. Any other row reads back what it holds: the same capture's words,
+  // and no change word (a row the delta does not list records none, and its
+  // source is known: ranks fall to unknown only by a global change,
+  // renderSource.js invalidateGenerated). Rows a carried batch (carryable)
+  // already read at this cut are not listed. Bounded by the delta and the
+  // cores, not by the rows committed.
+  function stale(cut,{captureOf,carry=null}={}){
+    alive();if(typeof captureOf!=='function')throw new TypeError('classification capture lookup required');
+    const overlay=carry?carries.get(carry)?.next:null,out=new Set(),add=i=>{if(!overlay?.has(i))out.add(i);};
+    if(!baseline||!committed.size)return out;
+    const delta=cut.source.changesSince(baseline.contentToken);
+    if(delta.global){for(const i of committed.keys())add(i);return out;}
+    for(const b of delta.changedBricks){const i=b[0]+dims[0]*(b[1]+dims[1]*b[2]);if(committed.has(i))add(i);}
+    for(const [k,byBuffer] of cores){const now=captureOf(coreBrick(k));for(const [buffer,set] of byBuffer)if(buffer!==now)for(const i of set)add(i);}
+    return out;
+  }
+  // captureOf (stale): rows of committed bricks may be left out where they
+  // read back what they hold; without it every committed row is recorded.
+  function record(frame,{cut,previousCut=null,classification,derivedTick,carry=null,captureOf=null}={}){
     const carried=carry&&carryable(carry,{cut,derivedTick});
     if(carry&&!carried)throw new Error('carried records require the pending batch of this cut, clock and baseline');
     alive();if(!readyState||frame!==gpu.frame||pending&&pending!==carry)throw new Error('ready normal Frame and no pending records transaction required');
@@ -50,7 +89,8 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
     if(!Array.isArray(classification.records)||!classification.records.length||typeof classification.recordMetadata!=='function')throw new TypeError('real submitted classification lease required');
     const rows=classification.records,seen=new Set();
     for(const r of rows){if(worldLightingIndex(size,r.brick)!==r.index||seen.has(r.index)||carried?.has(r.index)||r.byteOffset!==brickIdOf(SOURCE_GRID,...r.brick.map(n=>n%8))*16||r.buffer.size<r.byteOffset+16)throw new Error('classification record layout/index mismatch');seen.add(r.index);}
-    const missing=[...committed.keys()].filter(i=>!seen.has(i)&&!carried?.has(i));if(missing.length&&baseline?.identity!==cut.identity)throw requirements(missing);
+    if(captureOf){const missing=[];for(const i of stale(cut,{captureOf,carry:carried?carry:null}))if(!seen.has(i))missing.push(i);if(missing.length)throw requirements(missing);}
+    else{const missing=[...committed.keys()].filter(i=>!seen.has(i)&&!carried?.has(i));if(missing.length&&baseline?.identity!==cut.identity)throw requirements(missing);}
     // No original frozen MARK_DERIVED/ACT_CHANGED map is exposed by Source.
     // Bounds only nominate cores; compare actual words, never their revisions.
     // Compare every supplied known record (bounded by 32³ core), so broad
@@ -75,7 +115,7 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
     const batch={layout:WORLD_LIGHTING_RECORD_LAYOUT,indices:frozenArray([...(prior?.indices??[]),...rows.map(r=>r.index)]),wordCount:rows.length*5,metadataWordOffset:0,changeWordOffset:rows.length*4,
       get status(){return consumed?outcome:complete?'pending-acceptance':'recorded';},get completion(){return result;},
       get readback(){if(!complete||!valid())throw new Error('metadata readback not complete/live');return readback;},
-      records(indices,{derivedTick:at=derivedTick}={}){alive();if(!complete||!valid())throw new Error('metadata transaction not complete/live');return read(next,indices,at);},
+      records(indices,{derivedTick:at=derivedTick}={}){alive();if(!complete||!valid())throw new Error('metadata transaction not complete/live');return read(view(next),indices,at);},
       discard(){if(!consumed){outcome='discarded';consumed=true;if(pending===batch)pending=null;}},
       get changes(){if(!complete||!valid())throw new Error('metadata readback not complete/live');return changes;}
     };
@@ -98,8 +138,9 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
       },finish(words){
         if(!valid()||!held.isValid())throw new Error('discarded/stale world lighting metadata');
         // Carried: the prior batch is consumed, so its map and lists extend in place.
-        readback=frozenArray(words);next=prior?.next??new Map(committed);const changed=prior?.changed??[],emission=prior?.emission??[];
-        rows.forEach((r,s)=>{const prior=committed.get(r.index),b=frozenArray(r.brick),emit=frozenArray(words.subarray(4*s,4*s+3)),info=words[4*s+3],actual=!!words[rows.length*4+s];if(actual)changed.push(b);if(!prior||emit.some((w,k)=>w!==prior.emit[k]))emission.push(b);next.set(r.index,{brick:b,info,emit,changedTick:actual?derivedTick:prior.changedTick});});
+        // next: this transaction's rows only, read over the committed ones (view).
+        readback=frozenArray(words);next=prior?.next??new Map();const changed=prior?.changed??[],emission=prior?.emission??[];
+        rows.forEach((r,s)=>{const prior=committed.get(r.index),b=frozenArray(r.brick),emit=frozenArray(words.subarray(4*s,4*s+3)),info=words[4*s+3],actual=!!words[rows.length*4+s];if(actual)changed.push(b);if(!prior||emit.some((w,k)=>w!==prior.emit[k]))emission.push(b);next.set(r.index,{brick:b,info,emit,changedTick:actual?derivedTick:prior.changedTick,buffer:r.buffer});});
         // Each emission change's 9x9x9 brick halo, from the distinct brick x of each
         // (y,z) row it reaches: a load's every brick emits anew, and 729 set adds
         // each took 1.2 s on Descent (2026-10-21). Built when first read: no load
@@ -119,11 +160,12 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
       const acceptance=held.retain(),discard=batch.discard;
       batch.discard=()=>{discard();acceptance.release();};
       // held is released on completion: use acceptance for post-readback commit.
-      batch.commit=()=>{alive();if(!complete||!valid()||!acceptance.isValid())throw new Error('metadata transaction not complete/live');const pin=acceptance.retain();baseline?.release();baseline=pin;committed=next;clock=derivedTick;outcome='committed';consumed=true;pending=null;acceptance.release();return changes;};
+      batch.commit=()=>{alive();if(!complete||!valid()||!acceptance.isValid())throw new Error('metadata transaction not complete/live');const pin=acceptance.retain();baseline?.release();baseline=pin;for(const [i,r] of next){const old=committed.get(i);if(old)coreDelete(i,old.buffer);committed.set(i,r);coreAdd(i,r.buffer);}clock=derivedTick;outcome='committed';consumed=true;pending=null;acceptance.release();return changes;};
       result.catch(()=>{});return Object.freeze(batch);
     }catch(error){batch.discard();cleanup();throw error;}
   }
-  return Object.freeze({ready,record,carryable,records(indices,{derivedTick=clock}={}){alive();return read(committed,indices,derivedTick);},get indices(){alive();return frozenArray(committed.keys());},
+  return Object.freeze({ready,record,carryable,stale,records(indices,{derivedTick=clock}={}){alive();return read(committed,indices,derivedTick);},get indices(){alive();return frozenArray(committed.keys());},
+    has(i){alive();return committed.has(i);},get size(){return committed.size;},
     // The committed indices without a copy (a frozen array of a big map's 450k was a tick's first O(N) cost).
-    keys(){alive();return committed.keys();},get derivedTick(){return clock;},reset(){alive();generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed=new Map();clock=-1;},dispose(){if(!dead){generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed.clear();dead=true;}}});
+    keys(){alive();return committed.keys();},get derivedTick(){return clock;},reset(){alive();generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed=new Map();cores.clear();clock=-1;},dispose(){if(!dead){generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed.clear();cores.clear();dead=true;}}});
 }
