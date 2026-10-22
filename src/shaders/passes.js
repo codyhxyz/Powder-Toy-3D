@@ -362,36 +362,8 @@ ${slotMain}
   writeStateS(s, fa, fb, freshFlags(fa, fb));
 }
 `;
-// The copy H.src into the copy H.dst, flags and all (syncCopies: an exact
-// copy keeps the sleeping invariant, docs/webgpu.md D6). A kernel, not
-// copyBufferToBuffer: WebGPU doesn't copy between two ranges of one buffer,
-// and the copies are halves of A, B and F.
-export const copyFrag = (g, { debug = false } = {}) => /* wgsl */ `
-${prelude(g, { ...STATE_OPTS.STATE_RW, debug })}
-${slotMain}
-  writeStateS(s, fetchAs(s), fetchBs(s), fetchFs(s));
-}
-`;
-
-// ---- the derived passes' note of the quiet map (docs/webgpu.md D4 noteAwake) ----
-// The bricks the current quiet map doesn't skip may change: changed[b] =
-// noted ? changed[b] | !quiet[b] : !quiet[b] (the old MAX blend). One thread
-// per brick; sim.noteAwake() runs it for updateDirty's carry (the build
-// notes its own maps in its quiet kernel).
-export const AwakeParams = uniformStruct('AwakeParams', { noted: 'u32' });
-export const awakeFrag = (g) => /* wgsl */ `
-${prelude(g, STATE_OPTS.STATE_BUILD)}
-${AwakeParams.wgsl}
-@group(3) @binding(1) var<uniform> P: AwakeParams;
-@compute @workgroup_size(64)
-fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
-  let b = foldThread(wg, nwg, li);
-  if (b >= NBRICKS) { return; }
-  let woke = atomicLoad(&act[ACT_QUIET + b]) == 0u;
-  let was = atomicLoad(&act[ACT_CHANGED + b]) != 0u;
-  atomicStore(&act[ACT_CHANGED + b], select(0u, 1u, woke || (P.noted != 0u && was)));
-}
-`;
+// (V1's copy of one ping-pong copy into the other, syncCopies, and its quiet-map note for the derived
+// passes, noteAwake, went with V1's step and activity map.)
 
 // ---- the derived passes (docs/webgpu.md E; src/derived.js runs them) ----
 // Per derived frame, at brick resolution (docs/scaling.md D9):
@@ -1275,16 +1247,12 @@ export const WGSL_CHECK = [
   { name: 'paintMix', kind: 'compute', code: (g) => paintKernelWGSL(g, { reads: 'neighbours' }), dispatch: perBox,
     layouts: () => [...rw(), [...PAINT_LAYOUT, { binding: EDIT_SCRATCH_BINDING, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }]] },
   { name: 'fresh', kind: 'compute', code: (g) => freshFrag(g), layouts: rw, dispatch: perSlot, tool: true },
-  // (a world's window syncs its copies until world/window.js stops, G1; elsewhere tools only)
-  { name: 'copy', kind: 'compute', code: (g) => copyFrag(g), layouts: rw, dispatch: perSlot, windowed: true },
   { name: 'toAtlas', kind: 'compute', code: toAtlasFrag, dispatch: perSlot, tool: true,
     layouts: () => [LAYOUT.TABLES, stateLayout({ state: 'read', flags: true }), CONVERT_LAYOUT] },
   // (the console's reads, U12: a rectangle as large as the atlas at most)
   { name: 'rectToAtlas', kind: 'compute', code: rectToAtlasFrag, dispatch: perTexel, tool: true,
     layouts: () => [LAYOUT.TABLES, stateLayout({ state: 'read', flags: true }), CONVERT_LAYOUT] },
   { name: 'fromAtlas', kind: 'compute', code: (g) => fromAtlasFrag(g), dispatch: perSlot, layouts: () => [...rw(), CONVERT_LAYOUT] },
-  { name: 'awake', kind: 'compute', code: awakeFrag, dispatch: (g) => fold(Math.ceil(gridDims(g).nbricks / 64)),
-    layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_BUILD] },
   // the derived passes (src/derived.js)
   { name: 'age', kind: 'compute', code: ageFrag, dispatch: perBrick, layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_BUILD, DERIVED_LAYOUT.BOOK] },
   { name: 'dirty', kind: 'compute', code: dirtyFrag, dispatch: perBrick, layouts: () => [LAYOUT.TABLES, 'EMPTY', DERIVED_LAYOUT.BOOK] },

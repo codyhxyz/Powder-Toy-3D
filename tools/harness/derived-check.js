@@ -389,13 +389,12 @@ test('shiftModel', async ({ shift = [16, -8] } = {}) => {
             if (A0[i + c] !== A1[i + c] || B0[i + c] !== B1[i + c]) marked.add(brickIdOf(g, Math.floor(x / BRICK), Math.floor(y / BRICK), Math.floor(z / BRICK)));
           }
         }
-    // what the fold counts (src/derived.js shift, passes.js ageFrag at tick 0):
-    // the carry's note of the current map (sim.noteAwake: changed = !quiet, or
-    // over what `changed` holds when it is noted), then `changed` if noted
+    // what the fold counts (src/derived.js shift, passes.js ageFrag at tick 0): `changed` if noted
+    // (V1's quiet-map carry, sim.noteAwake, went with V1's activity map)
     const AL = sim.actLayout;
     const act = new Uint32Array(await gpu.readback.buffer(sim.act, 0, AL.map * 4));
-    const carry = sim.actCarry !== null && sim.actAge > sim.actCarry;
-    const noted = carry || sim.actNoted;
+    const carry = false;
+    const noted = sim.actNoted;
     const pending = (b) => {
       if (marked.has(b)) return true;
       const was = act[AL.changed + b] !== 0, woke = act[AL.quiet + b] === 0;
@@ -828,7 +827,7 @@ test('budget:move', async () => {
 });
 
 // ---------------------------------------------------------------- bench (tools/derived-bench.mjs)
-const DERIVED_KERNELS = ['noteAwake', 'awake', 'age', 'dirty', 'dirtyArgs', 'fieldEma', 'fieldBlur', 'fieldFinal', 'fieldBoost0',
+const DERIVED_KERNELS = ['age', 'dirty', 'dirtyArgs', 'fieldEma', 'fieldBlur', 'fieldFinal', 'fieldBoost0',
   'fieldBoost', 'fieldPeak', 'brick', 'occupancy', 'boxArgs', 'brickDist', 'blur', 'blurLast'];
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s[Math.floor((s.length - 1) / 2)] ?? NaN; };
 const nextFrame = () => new Promise((r) => setTimeout(r, 0));
