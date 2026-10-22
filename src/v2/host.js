@@ -25,6 +25,90 @@ export const legacySteps = (sim, stepsPerFrame) => (sim?.compact ? stepsPerFrame
 // only V1 has stepped this grid.
 export const stepClock = sim => sim.frame + (sim.nativeTicks ?? 0) * (LEGACY_STEPS_PER_TICK - 1);
 
+// Ticks a frame may run at Speed 1×, at most: past them time dilates rather than the frame
+// stretching (docs/v2.md 5.1: Minecraft's lag; v2/physics.js CATCH_UP, its own frame()).
+export const CATCH_UP_TICKS = 2;
+/**
+ * The ticks a frame of `dt` seconds runs at `speed` (ticks a second over HOST_HZ, the Speed setting)
+ * from the accumulator `acc`: the whole ticks of game time it holds, at most ⌈CATCH_UP_TICKS·speed⌉,
+ * and the accumulator after them. nativeHostSteps runs exactly these; the app reads them before it
+ * ticks, for the clocks that pace the frame's input by its game time (app.js ctx.nativeToolSteps).
+ * @returns {{ n: number, acc: number }}
+ */
+export function frameTicks(acc, dt, speed) {
+  const max = Math.max(1, Math.ceil(CATCH_UP_TICKS * speed));
+  const total = acc + Math.max(0, dt) * HOST_HZ * speed;
+  const n = Math.floor(total);
+  return n > max ? { n: max, acc: 0 } : { n, acc: total - n };
+}
+
+// The share of its next tick a box's game time has reached: its accumulator, 0 to 1 (0 under V1,
+// for a replica, which never ticks, and for a box that hasn't run). Minecraft's partial tick (its
+// renderer's partialTicks): what the view adds to the ticks run, so a clock it draws by moves every
+// frame, as it does under V1's steps a frame, when a frame runs no tick (Speed under 1×, a display
+// over 60 Hz). Paused, the accumulator holds and so does the clock.
+export const partialTick = sim => {
+  const a = sim?.compact?.acc;
+  return Number.isFinite(a) ? Math.min(Math.max(a, 0), 1) : 0;
+};
+// The view's clock (FrameUniforms' simClock, the cloud deck's drift: app.js viewClock, gfx/uniforms.js)
+// in V1 steps: stepClock and the partial tick. A V1 grid at Speed 1 moves it one step a frame; a V2
+// box at Speed 1 (a tick every fourth 60 Hz frame) moved it four steps every fourth frame. Presentation
+// only: the game's clocks (weather, storms, machines) keep stepClock, whole ticks.
+export const viewStepClock = sim => stepClock(sim) + partialTick(sim) * LEGACY_STEPS_PER_TICK;
+
+/**
+ * V1 runs a script's beforesim and aftersim around each of its steps (app.js's V1 loop: beforeStep,
+ * sim.step, afterStep; TPT's event.beforesim / event.aftersim), and a step's writes reach the steps
+ * after it (console/index.js: beforeStep flushes the queued writes, afterStep's wait for the next
+ * one). A native tick is LEGACY_STEPS_PER_TICK of those steps run as one: the hooks keep V1's count and
+ * order around it, B A B A B A B [tick] A. Every write a beforesim makes reaches the tick that runs its
+ * step, an aftersim's the tick after its step, and a script that counts, pairs or alternates them (a flag
+ * set before and read after, a write every other step) sees V1's sequence, each call's writes applied
+ * in order rather than merged with the next call's. What no hook order can give: the world's own motion
+ * between those calls, a tick's four steps being one GPU pass sequence (v2/physics.js _tick).
+ * @param {() => void} beforeStep one V1 step's beforesim (scripts.beforeStep)
+ * @param {() => void} afterStep one V1 step's aftersim (scripts.afterStep)
+ * @returns {{ before: () => void, after: () => void }} a tick's: before it, after it
+ */
+export function legacyStepHooks(beforeStep, afterStep) {
+  return {
+    before() {
+      for (let i = 1; i < LEGACY_STEPS_PER_TICK; i++) { beforeStep(); afterStep(); }
+      beforeStep();
+    },
+    after() { afterStep(); },
+  };
+}
+
+/**
+ * The paints a held brush owes, at V1's rate. V1 paints it once a frame, and a frame is settings.steps
+ * of its steps (app.js: the paint phase, then the steps): one paint per `per` V1 steps of game time,
+ * the first at once, the next before the steps that follow. A V2 frame runs 0 to ⌈2·speed⌉ ticks of
+ * LEGACY_STEPS_PER_TICK steps each, so a paint a frame painted half as much a game step at 30 fps (two
+ * ticks a frame) and twice as much on a 120 Hz display (a tick every other frame). This keeps V1's
+ * instants: a frame paints every multiple of `per` since the stroke began that its steps reach, and the
+ * one due now (a stroke's first, whatever the frame runs).
+ */
+export function brushPace() {
+  let at = 0, next = 0;   // V1 steps since the stroke began; the step of its next paint
+  return {
+    start() { at = next = 0; },
+    /**
+     * @param {number} steps the V1 steps the frame is about to run (a native frame: ticks × LEGACY_STEPS_PER_TICK)
+     * @param {number} per V1 steps a paint (settings.steps: V1's steps a frame)
+     * @returns {number} the paints this frame owes
+     */
+    frame(steps, per) {
+      per = Math.max(1, per);
+      let n = 0;
+      while (next <= at || next < at + steps) { n++; next += per; }
+      at += Math.max(0, steps);
+      return n;
+    },
+  };
+}
+
 // V1 steps asked of a grid (a script's sim.step(n)) as the whole native ticks they make: the steps
 // short of a tick carry to the next ask on that grid, so four asks of one step run one tick, the
 // 1/60 s four of V1's steps take. One carry per caller.
@@ -62,11 +146,9 @@ export function nativeHostSteps(owner, dt, { speed = 1, once = false, before, af
   // A resting box keeps its clock: V1 steps a certified-idle grid too (sim.js step(): "simulation
   // time and parity advance even when there is nothing to step"), so its hooks (weather, scripts,
   // machines) and the clocks keyed on its steps go on while it records nothing (nativeHostTick rest).
-  const max = Math.max(1, Math.ceil(2 * speed));
-  owner.acc += Math.max(0, dt) * HOST_HZ * speed;
-  let n = Math.floor(owner.acc);
-  if (n > max) { n = max; owner.acc = 0; } else owner.acc -= n;
-  if (once) n = Math.max(1, n);
+  const due = frameTicks(owner.acc, dt, speed);
+  owner.acc = due.acc;
+  const n = once ? Math.max(1, due.n) : due.n;
   for (let i = 0; i < n; i++) nativeHostTick(owner, { before, after, rest: true });
   return n;
 }

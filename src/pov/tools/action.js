@@ -59,7 +59,12 @@ const TIME_EPS = 1e-6;   // s: a wait this close to done counts as done (frame t
 // (ctx.toolRate, the Faster Tools perk, pov/perks.js). Everything a tool does
 // over time (refire waits, swings, digging, pouring, heating) runs on it, so
 // one perk speeds up every tool, a new one included.
-export const toolDt = (ctx) => (ctx.nativeDt ?? ctx.dt) * (ctx.toolRate ?? 1);
+// Real time under either engine, as V1's: a tool re-arms, swings, digs and pours while the game is
+// paused and at its own pace at any Speed. Under V2 it ran on the ticks the frame ran (ctx.nativeDt):
+// paused, every tool acted once and froze (a trigger with dt 0 never re-arms), and Speed ½ halved the
+// SMG's rate of fire. (ctx.nativeDt stays the frame's game time for what moves with the world: the
+// physgun's hold, physgun.tool.js run.)
+export const toolDt = (ctx) => ctx.dt * (ctx.toolRate ?? 1);
 
 export function trigger(interval, { hold = true, button = 'primary', buffer = true } = {}) {
   const holdWait = typeof hold === 'number' ? Math.max(0, hold - interval) : 0;   // s held repeats wait beyond `interval`
