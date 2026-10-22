@@ -10,6 +10,9 @@ import { RAYS } from '../../rays.js';
 import { DECO_SIGMA } from '../gfx/deco.js';
 import { SUPER, BRICK } from '../common.js';
 import { particleViewsWGSL } from './particleViews.js';
+import { cloudDeckGLSL } from '../gfx/clouds.js';
+import { VIEWS } from '../../views.js';
+import { SH_Y0, SH_Y1, GI_OFFSET_CELLS, SHADOW_TINT_ID_SCALE, SHADOW_PAD } from '../gfx/lighting.js';
 
 export const PARTICLE_BYTES = 48;
 export const PARTICLE_WORDS = 12;
@@ -22,6 +25,8 @@ export const PARTICLE_WORDS = 12;
 export const NativeParticleParams = uniformStruct('NativeParticleParams', {
   inverseModel: 'mat4x4f', origin: 'vec3f', scale: 'f32', eye: 'vec3f', sample: 'u32',
   viewport: 'vec2f', capacity: 'u32', deco: 'u32', grid: 'vec4u', supers: 'vec4u', lag: 'f32',
+  // light: 1 when the Box volume's sun map, GI probes and noise are bound (NATIVE_PARTICLE_LIGHT_LAYOUT)
+  light: 'u32',
 });
 const ro = (binding, visibility) => ({ binding, visibility, buffer: { type: 'read-only-storage' } });
 // 1: each pool slot's decoration, RGBA8 (src/v2/physics.js particleDecoRange)
@@ -29,6 +34,12 @@ export const NATIVE_PARTICLE_LAYOUT = [ro(0, STAGE.VERTEX), ro(1, STAGE.VERTEX)]
 // group 2: V2's coarse air (two vec4f a brick, v2/dynamics.js air[airIndex]): the brick's
 // pressure the Pressure view paints a particle with (render.js marchPressure's Pf)
 export const NATIVE_PARTICLE_AIR_LAYOUT = [ro(0, STAGE.FRAGMENT | STAGE.COMPUTE)];
+// The matter draw's group 2: the air, and the light V1's flying cells take in the volume (shaders/gfx/lighting.js):
+// the sun's map (rgba32float, textureLoad), the GI probes' four bands, the media noise (the clouds' shadow), samplers
+const tex = (binding, sampleType, viewDimension) => ({ binding, visibility: STAGE.FRAGMENT, texture: { sampleType, viewDimension } });
+const smp = binding => ({ binding, visibility: STAGE.FRAGMENT, sampler: { type: 'filtering' } });
+export const NATIVE_PARTICLE_LIGHT_LAYOUT = [ro(0, STAGE.FRAGMENT | STAGE.COMPUTE), tex(1, 'unfilterable-float', '2d'),
+  tex(2, 'float', '3d'), tex(3, 'float', '3d'), tex(4, 'float', '3d'), tex(5, 'float', '3d'), tex(6, 'float', '3d'), smp(7), smp(8)];
 export const NATIVE_PARTICLE_ARGS_LAYOUT = [ro(0, STAGE.COMPUTE),
   { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
 export const nativeParticleArgsWGSL = () => `
@@ -88,6 +99,89 @@ fn particleLife(id: u32, core: vec4u) -> f32 {
 fn particleSeed(id: u32, core: vec4u, stableId: u32) -> f32 {
   if (LOOK_CLASS[id].x == ${K.LIQUID}u) { return f32(coverageHash(stableId) >> 16u) / 65536.0; }
   return f32(core.w >> 16u) / 65536.0;
+}`;
+
+// The light V1's flying cell takes in the volume, on a packet's sphere (Box): lighting.js hitLight, the one model
+// for a surface seen second-hand (sunShadowAt's map with the clouds' shadow, giIrradiance of the probe GI_OFFSET out
+// along the normal), with sunMapShadow's surface bias on the map. Not a deviation: the volume's light, read by
+// another drawer (gfx/meshLight.js reads it the same way for the figures). P.light 0 (World, a box without its map
+// bound yet): the sky's open light, as before.
+const particleLightWGSL = /* wgsl */ `
+@group(2) @binding(1) var particleShadow: texture_2d<f32>;
+@group(2) @binding(2) var particleGI0: texture_3d<f32>;
+@group(2) @binding(3) var particleGI1: texture_3d<f32>;
+@group(2) @binding(4) var particleGI2: texture_3d<f32>;
+@group(2) @binding(5) var particleGI3: texture_3d<f32>;
+@group(2) @binding(6) var tMediaNoise: texture_3d<f32>;
+@group(2) @binding(7) var linearClamp: sampler;
+@group(2) @binding(8) var linearRepeat: sampler;
+const PARTICLE_SIGMA = array<vec3f, ${ELEMENTS.length}>(${ELEMENTS.map(e => v(e.sigma ?? [0, 0, 0])).join(',')});
+const SHADOW_TINT_ID_SCALE: f32 = ${f(SHADOW_TINT_ID_SCALE)};
+const SHADOW_PAD: f32 = ${f(SHADOW_PAD)};
+const SHADOW_NORMAL_OFFSET: f32 = 0.002;   // lighting.js sunMapShadow's
+const SHADOW_BIAS_MIN: f32 = 0.8;
+const SHADOW_BIAS_NS_MIN: f32 = 0.25;
+const SHADOW_BIAS_PAD: f32 = 0.1;
+const SH_Y0: f32 = ${SH_Y0};
+const SH_Y1: f32 = ${SH_Y1};
+const SH_COS1: f32 = 2.0 / 3.0;
+const GI_OFFSET: f32 = ${f(GI_OFFSET_CELLS)};
+// the views that trace and read the map (src/views.js shadows; shaders/render.js viewShadows), by FU.view
+const PARTICLE_VIEW_SHADOWS = array<u32, ${Math.max(...VIEWS.map(v => v.id)) + 1}>(${Array.from({ length: Math.max(...VIEWS.map(v => v.id)) + 1 }, (_, i) => VIEWS.find(v => v.id === i)?.shadows ? '1u' : '0u').join(',')});
+const PARTICLE_BRICK: f32 = ${f(BRICK)};
+${cloudDeckGLSL}
+// lighting.js shadowTexelAtt: the map texel's tint at depth d
+fn particleTexelAtt(sm: vec4f, d: f32) -> vec3f {
+  let tid = i32(sm.w / SHADOW_TINT_ID_SCALE);
+  if (tid <= 0 || tid >= ${ELEMENTS.length} || d <= sm.y) { return vec3f(1.0); }
+  let tau = sm.w - f32(tid) * SHADOW_TINT_ID_SCALE;
+  let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
+  let sigma = PARTICLE_SIGMA[tid];
+  return exp(-sigma / max(dot(sigma, vec3f(1.0 / 3.0)), 1e-4) * tau * frac);
+}
+// lighting.js sunShadow at grid point hp of a surface with normal n (grid space): the clouds' shadow, then the
+// map's four taps (sunBasis with the window's origin, shadowProject, sunMapShadow's bias)
+fn particleSun(hp: vec3f, n: vec3f) -> vec3f {
+  if (P.light == 0u || FU.shadows == 0u || u32(FU.view) >= ${Math.max(...VIEWS.map(v => v.id)) + 1}u || PARTICLE_VIEW_SHADOWS[u32(FU.view)] == 0u) { return vec3f(1.0); }
+  let cloud = cloudShadow(hp + P.origin);
+  if (cloud <= CLOUD_SHADOW_SKIP) { return vec3f(0.0); }
+  let grid = vec3f(P.grid.xyz);
+  var c = grid * 0.5;
+  let R = 0.5 * length(grid) + SHADOW_PAD;
+  let u = normalize(cross(vec3f(0.0, 1.0, 0.0), FU.sun));
+  let v = cross(FU.sun, u);
+  let res = max(FU.shadowRes, 1);
+  let T = 2.0 * R / f32(res);
+  let ot = vec2f(dot(P.origin, u), dot(P.origin, v)) / T;
+  let snap = (round(ot) - ot) * T;
+  c += snap.x * u + snap.y * v;
+  let q = hp + n * SHADOW_NORMAL_OFFSET - c;
+  let st = vec2f(dot(q, u), dot(q, v)) / R * 0.5 + 0.5;
+  let d = R - dot(q, FU.sun);
+  let fx = st * f32(res) - 0.5;
+  let i0 = vec2i(floor(fx)); let w = fx - vec2f(i0);
+  let bias = max(SHADOW_BIAS_MIN, T * (abs(dot(n, u)) + abs(dot(n, v))) / max(dot(n, FU.sun), SHADOW_BIAS_NS_MIN) + SHADOW_BIAS_PAD);
+  var acc = vec3f(0.0);
+  for (var k = 0; k < 4; k++) {
+    let o = vec2i(k & 1, k >> 1u);
+    let sm = textureLoad(particleShadow, clamp(i0 + o, vec2i(0), vec2i(res - 1)), 0);
+    let wk = select(1.0 - w.x, w.x, o.x == 1) * select(1.0 - w.y, w.y, o.y == 1);
+    acc += select(0.0, 1.0, d < sm.x + bias) * particleTexelAtt(sm, d) * wk;
+  }
+  return cloud * acc;
+}
+// lighting.js probeTex, probeAt and giIrradiance (with the scene's cave ambient): the irradiance / pi on a surface
+// at p facing n, from the probe GI_OFFSET out along it
+fn particleProbe(t: texture_3d<f32>, p: vec3f) -> vec4f {
+  let B = ceil(vec3f(P.grid.xyz) / PARTICLE_BRICK);
+  let q = clamp(p / PARTICLE_BRICK, vec3f(0.5), B - 0.5);
+  return textureSampleLevel(t, linearClamp, q / B, 0.0);
+}
+fn particleGI(p: vec3f, n: vec3f) -> vec3f {
+  let at = p + n * GI_OFFSET;
+  let c0 = particleProbe(particleGI0, at).rgb; let cx = particleProbe(particleGI1, at).rgb;
+  let cy = particleProbe(particleGI2, at).rgb; let cz = particleProbe(particleGI3, at).rgb;
+  return max(SH_Y0 * c0 + SH_COS1 * SH_Y1 * (cx * n.x + cy * n.y + cz * n.z), vec3f(0.0)) + FU.caveAmbient;
 }`;
 
 // A data view's or Plain's particle (particleViews.js): the cube of its volume, as those
@@ -173,7 +267,8 @@ struct Particle { positionId: vec4u, velocityCore: vec4u, payloadBank: vec4u }
 fn decoLinear(c: vec3f) -> vec3f { return select(c / 12.92, pow((c + 0.055) / 1.055, vec3f(2.4)), c >= vec3f(0.04045)); }
 ${particleCommonWGSL()}${rays ? '' : `
 ${particleViewsWGSL()}
-${particleAirWGSL}`}
+${particleAirWGSL}
+${particleLightWGSL}`}
 struct Out {
   @builtin(position) position: vec4f,
   @location(0) @interpolate(flat) center: vec3f,
@@ -285,8 +380,11 @@ struct Surface { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }${r
   if (LOOK_CLASS[id].x == ${K.GAS}u) { fresnel = vec3f(0.0); }
   let specPower = max(2.0,2.0 / max(alb.w*alb.w,0.002)-2.0);
   var specular = fresnel * pow(max(dot(normal,halfVector),0.0),specPower) * (specPower+2.0)/8.0;
-  let light = FU.sunCol * FU.sunExt * max(dot(normal,sun),0.0);
-  let ambient = mix(FU.ground,FU.skyUp,normal.y*0.5+0.5) + FU.caveAmbient;
+  // the volume's light where it is bound (particleLightWGSL: the sun's map and the clouds, the GI probes), in grid space
+  let gridNormal = (hit-o.center)/o.radius;
+  let light = FU.sunCol * FU.sunExt * max(dot(normal,sun),0.0) * particleSun(hit, gridNormal);
+  var ambient = mix(FU.ground,FU.skyUp,normal.y*0.5+0.5) + FU.caveAmbient;
+  if (P.light != 0u) { ambient = particleGI(hit, gridNormal); }
   var diffuse = alb.rgb * (1.0-metal);
   let paint = o.paint;
   // a painted metal is a painted (dielectric) coat, as the volume's decoSurf
@@ -449,5 +547,5 @@ export const WGSL_CHECK = [
     params: ParticlePickParams, layouts: () => [RENDER_LAYOUT.FRAME,PARTICLE_PICK_LAYOUT,NATIVE_PARTICLE_AIR_LAYOUT], layoutNames: ['FRAME'], dispatch: () => [PICK_RAYS,1,1] },
   ...[false,true].map(rays => ({ name: rays ? 'nativeParticleRays' : 'nativeParticleMatter', kind: 'render', grids: false,
     warm: false, code: () => nativeParticleWGSL(rays), params: NativeParticleParams,
-    layouts: () => [RENDER_LAYOUT.FRAME,NATIVE_PARTICLE_LAYOUT,NATIVE_PARTICLE_AIR_LAYOUT], layoutNames: ['FRAME'], ...nativeParticlePipeline(rays) })),
+    layouts: () => [RENDER_LAYOUT.FRAME,NATIVE_PARTICLE_LAYOUT,rays ? NATIVE_PARTICLE_AIR_LAYOUT : NATIVE_PARTICLE_LIGHT_LAYOUT], layoutNames: ['FRAME'], ...nativeParticlePipeline(rays) })),
 ];

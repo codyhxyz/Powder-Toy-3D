@@ -299,6 +299,8 @@ test('particles are drawn with their paint while the layer is painted and shown'
   const calls = [], pb = { size: PARTICLE_CAP * 48 }, control = { size: 16, words: new Uint32Array(4) }, aux = { size: 1 << 24 };
   const gpu = { frame: {}, _frameUniforms: { layout: {}, group: {} }, layout: (_n, l) => l, bindGroup: (l, entries) => ({ l, entries }),
     createBuffer: d => ({ size: d.size, words: new Uint32Array(d.size / 4), destroy() {} }), flush() {},
+    // (the matter draw's light group: the stand-ins it binds where no Box volume lights it, nativeParticles.js lightGroup)
+    createTexture: d => ({ ...d, createView: () => ({ texture: d.label }) }), device: { createSampler: d => ({ sampler: d?.label }) },
     renderPipeline: d => ({ state: 'ready', ready: Promise.resolve(), draw: (_rp, o) => calls.push(o) }),
     kernel: () => ({ state: 'ready', ready: Promise.resolve(), dispatch() {} }) };
   const range = { buffer: aux, offset: 2 * 4096 * 4, size: PARTICLE_CAP * 4 };

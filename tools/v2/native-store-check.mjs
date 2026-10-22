@@ -33,7 +33,15 @@ import { createHash } from 'node:crypto';
 import { WorldGenerator } from '../../src/world/gpu.js';
 import { WorldWindow } from '../../src/world/window.js';
 import { BrickStore } from '../../src/world/store.js';
-import { NativeBrickStore, encodeNativeBrick, NATIVE_BRICK_BYTES, nativeBrickBanked } from '../../src/world/nativeStore.js';
+import { NativeBrickStore, encodeNativeBrick, NATIVE_BRICK_BYTES, nativeBrickBanked, legacyBrickToNative, legacyCellCore, decodeNativeBrick } from '../../src/world/nativeStore.js';
+import { encodeBrick } from '../../src/world/store.js';
+import { v2Rows, V2, FULL as V2_FULL, T_OFFSET } from '../../src/shaders/v2.js';
+import { SEED_MAX } from '../../src/shaders/common.js';
+import { lifeScale } from '../../src/v2/layout.js';
+import { setFall } from '../../src/v2/fall.js';
+import { V1_STEP_MS } from '../../src/v2/gravity.js';
+import { PHYS } from '../../src/physics.js';
+import { ELEMENTS } from '../../src/elements.js';
 import { TerrainEditCache } from '../../src/world/terrainEditCache.js';
 import { leaveHeadBytes, LEAVE_BRICK_BYTES } from '../../src/shaders/generate.js';
 
@@ -286,5 +294,65 @@ async function leave(win, base, bricks, natives, flagged, exact) {
   assert.deepEqual(shiftSim(false), ['nativeShift'], 'V2 suspended: V1\'s cells are V1\'s; nothing exported over them');
   checks++;
   console.log('PASS V2 suspended: retained bricks restore into the owner; no projection over V1\'s window');
+}
+{
+  // A V1-made World save keeps V1's bricks only. Under V2 they come back natively: legacyBrickToNative is
+  // the import kernel's own importA (its production text, run on the CPU as tools/v2/native-writers-check.mjs
+  // runs WGSL) and its powder fall, cell for cell, and the window restores them exact, never through V1's
+  // restore edit and the import.
+  const g = gridLayout(32, 32, 32), rows = v2Rows();
+  const body = importAWGSL(g).replace(/^fn importA\(a: vec4f\) -> vec4u \{/, '').replace(/\}\s*$/, '')
+    .replace(/\b(0x[\da-f]+|\d+)u\b/g, '$1').replace(/\bvar\b/g, 'let').replace(/ >> /g, ' >>> ')
+    .replace(/\ba\.([xyzw])/g, (_s, c) => `a[${'xyzw'.indexOf(c)}]`).replace(/\bc\.([xyzw]) =/g, (_s, c) => `c[${'xyzw'.indexOf(c)}] =`);
+  const roundEven = x => { const f = Math.floor(x), d = x - f; return d > 0.5 ? f + 1 : d < 0.5 ? f : f % 2 === 0 ? f : f + 1; };
+  const liq = c => rows[c[0] & 255].cls === V2.LIQUID;
+  const ctx = {
+    u32: x => Math.trunc(x) >>> 0, clamp: (x, a, b) => Math.max(a, Math.min(b, x)), round: roundEven, floor: Math.floor, max: Math.max,
+    fract: x => x - Math.floor(x), select: (a, b, c) => (c ? b : a), eid: a => Math.floor(a[0] + 0.5), NE: ELEMENTS.length,
+    T_OFFSET, SEED_MAX, FULLU: V2_FULL, C_AIR: V2.AIR, C_LIQUID: V2.LIQUID, C_GAS: V2.GAS,
+    cls: id => rows[id].cls, fadeOf: id => rows[id].fade, conductsNative: id => ELEMENTS[id].elec > 0,
+    vec4u: (...w) => new Uint32Array(w),
+    withLife: (c, v) => { const o = new Uint32Array(c), p = Math.max(0, Math.min(65535, roundEven(v * lifeScale(c[0] & 255)))); if (liq(c)) o[3] = (o[3] & 0xffff) | (p << 16); else o[1] = (o[1] & 0xffff0000) | p; return o; },
+    withSpark: (c, v) => { const o = new Uint32Array(c); if (liq(c)) o[3] = (o[3] & 0xf000ffff) | ((v & 4095) << 16); else o[3] = (o[3] & 0xfffff000) | (v & 4095); return o; },
+  };
+  const importA = new Function('ctx', 'a', `with (ctx) { ${body} }`);
+  // v2import's fall, as its text reads it
+  assert.match(v2ImportWGSL(g), new RegExp(`if \\(clsOf\\(n\\) == C_POWDER && vy < 0\\.0\\) \\{ n = setFall\\(n, min\\(-vy, ${PHYS.V_MAX}\\.0\\) \\* ${V1_STEP_MS}, 0\\.0\\); \\}`), 'v2import: a powder\'s fall from V1\'s B.y');
+  const oracle = (a, vy) => { const c = importA(ctx, a); return rows[c[0] & 255].cls === V2.POWDER && vy < 0 ? setFall(c, Math.min(-vy, PHYS.V_MAX) * V1_STEP_MS, 0) : c; };
+  let cells = 0;
+  for (const e of ELEMENTS) for (const [T, life, w, vy] of [[20, 0, 0.25, 0], [-40.5, 12, 3.5, -0.75], [912.25, 0.5, 17.125, 0], [3500, 400, 0.9375, -3]]) {
+    const a = [e.id, T, life, w];
+    assert.deepEqual([...legacyCellCore(a, vy)], [...oracle(a, vy)], `${e.key} at ${T} °C, life ${life}, w ${w}, B.y ${vy}`);
+    cells++;
+  }
+  // a brick of them, through V1's stored bytes (store.js encodeBrick, slab order: the native brick's)
+  const A = new Float32Array(256), B = new Float32Array(256), picks = [E.SAND, E.WATER, E.STONE, E.FIRE, E.EMPTY];
+  for (let l = 0; l < 64; l++) { A.set([picks[l % 5], 20 + l, l % 3, (l % 7) + 0.5], l * 4); B.set([0, l % 2 ? -0.5 : 0, 0, 0.25], l * 4); }
+  const legacyBytes = encodeBrick(A, 0, B, 0), native = legacyBrickToNative(legacyBytes), decoded = decodeNativeBrick(native);
+  for (let l = 0; l < 64; l++) assert.deepEqual([...decoded.core.subarray(l * 4, l * 4 + 4)], [...oracle(A.subarray(l * 4, l * 4 + 4), B[l * 4 + 1])], `brick cell ${l}`);
+  assert(decoded.bank.every(v => v === 0), 'every bank 0, as the import leaves it');
+  // WorldWindow.restore: a V2 window takes the legacy-only brick natively; V1 still writes it with its edit
+  const restoreWin = (nativeReady) => {
+    const edits = [], scattered = [];
+    const win = Object.assign(windowFor(), { wb: [8, 8, 8], store: new BrickStore([8, 8, 8]), nativeStore: new NativeBrickStore([8, 8, 8]), restoreKernel: {}, restoreBuf: null, restoreRead: -1 });
+    win.gpu = { createBuffer: d => ({ ...d, destroy() {} }), write() {}, stats: { flushes: 0 } };
+    win.sim = { origin: { x: 0, y: 0, z: 0 }, _retire() {}, edit: (...args) => edits.push(args), compactOwner: nativeReady ? { sync() {} } : null,
+      compact: nativeReady ? { isReady: true } : null, nativeIntegration: nativeReady ? { isReady: true, restoreBricks: (lo, bricks, entries) => scattered.push(...entries) } : null };
+    const key = win.store.key(1, 0, 0);
+    win.store.put(key, legacyBytes);
+    const restored = WorldWindow.prototype.restore.call(win, [0, 0, 0], [4, 8, 8]);
+    WorldWindow.prototype.restoreNative.call(win, [0, 0, 0], [4, 8, 8]);
+    return { restored, edits, scattered, win, key };
+  };
+  const v2 = restoreWin(true);
+  assert.equal(v2.restored, 1, 'the brick is restored');
+  assert.equal(v2.edits.length, 0, 'V2: no V1 restore edit (and so no whole-cell import of its cells)');
+  assert.equal(v2.scattered.length, 1, 'V2: the native scatter takes it');
+  assert.deepEqual([...v2.scattered[0].bytes], [...native], '...as V2\'s import would have made it');
+  assert.equal(v2.win.store.has(v2.key) || v2.win.nativeStore.has(v2.key), false, 'both stores let it go (the window holds it)');
+  const v1 = restoreWin(false);
+  assert.equal(v1.edits.length, 1, 'V1: its own restore edit, unchanged');
+  checks++;
+  console.log(`PASS legacy-only stored bricks: ${cells} cells bit-exact with the import kernel's importA; a V2 window restores them natively`);
 }
 console.log(`PASS ${checks} native store checks (CPU, fake device; no GPU/browser)`);
