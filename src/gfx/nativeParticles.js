@@ -3,6 +3,7 @@ import { frameUniformsOf } from './uniforms.js';
 import {
   PARTICLE_BYTES, NativeParticleParams, NATIVE_PARTICLE_LAYOUT, NATIVE_PARTICLE_ARGS_LAYOUT, NATIVE_PARTICLE_AIR_LAYOUT,
   nativeParticleWGSL, nativeParticlePipeline, nativeParticleArgsWGSL,
+  ParticlePickParams, PARTICLE_PICK_LAYOUT, PICK_RAYS, particlePickWGSL,
 } from '../shaders/v2/particleRender.js';
 import { decoView } from '../deco.js';
 
@@ -61,6 +62,12 @@ export class NativeParticles {
     }));
     this.countPipe = gpu.kernel({ name: 'nativeParticleArgs', code: nativeParticleArgsWGSL(),
       layouts: [this.argsLayout], params: NativeParticleParams });
+    // the pick's particle pass (particleRender.js particlePickWGSL): built in idle time, as the
+    // pick is never on the first frame; until it is, picks see the grid only
+    this.pickLayout = gpu.layout('NATIVE_PARTICLES_PICK',PARTICLE_PICK_LAYOUT);
+    this.pickPipe = gpu.kernel({ name: 'nativeParticlePick', code: particlePickWGSL(), build: 'idle',
+      layouts: [this.fu.layout,this.pickLayout,this.airLayout], params: ParticlePickParams, workgroupSize: [64,1,1] });
+    this.pickGroups = new Map();
     if (source) this.attachSource(source);
   }
   get state() { return this.source?.renderState ?? this.source; }
@@ -133,6 +140,30 @@ export class NativeParticles {
     for (const pipe of this.pipes) pipe.draw(rp,options);
     return true; // Recorded, not a claim of a nonzero GPU count.
   }
+  /**
+   * After the grid's pick (gfx/volume.js recordPicks) wrote each ray's ring slot: the nearest
+   * matter particle along each flat ray replaces the slot's hit where it is nearer (render.js
+   * pickFrag's result: cell, face, id, T, P, life). Records into the same compute pass.
+   * @param {object} frame the open frame (gpu.frame)
+   * @param {{ ring: GPUBuffer, ro: number[][], rd: number[][], slot: number[][], n: number, origin: number[] }} rays
+   * @returns {boolean} recorded (false: nothing flies, or the pass is building)
+   */
+  recordPick(frame, { ring, ro, rd, slot, n, origin }) {
+    if (!this.isReady || this.pickPipe.state !== 'ready' || this.source.isIdle === true || this.source.active === false || !(n > 0)) return false;
+    if (n > PICK_RAYS) throw new RangeError('native particle pick batch too large');
+    const s = validateNativeParticleSource(this.state);
+    let cached = this.pickGroups.get(ring);
+    if (cached?.particles !== s.particles) {
+      cached = { particles: s.particles, group: this.gpu.bindGroup(this.pickLayout,
+        [{ binding: 0, resource: { buffer: s.particles } }, { binding: 1, resource: { buffer: ring } }],'native particle pick') };
+      this.pickGroups.set(ring, cached);
+    }
+    const group = cached.group;
+    const air = this.air();
+    this.pickPipe.dispatch(frame,[n,1,1],{ bind: [this.fu.group,group,air.group],
+      params: { ro, rd, slot, n, origin: vector(origin), capacity: s.capacity, ...air.params } });
+    return true;
+  }
   dispose() {
     if (this.disposed) return;
     this.attachSource(null);
@@ -141,5 +172,6 @@ export class NativeParticles {
     if (!this.gpu.failure) this.gpu.flush('native particles dispose');
     this.args.destroy();
     this.group = this.countGroup = this.view = null;
+    this.pickGroups.clear(); this.airGroups.clear();
   }
 }

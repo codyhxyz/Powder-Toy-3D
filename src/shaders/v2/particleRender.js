@@ -143,6 +143,20 @@ fn blockyFragment(o: Out, eye: vec3f, direction: vec3f) -> Surface {
   return out;
 }`;
 
+// The particle's tables, temperature and coverage hash (the draw's and the pick's).
+const particleCommonWGSL = () => `
+${tables}
+${incandescenceGLSL().replace('TB.incand[i]', 'PARTICLE_INCAND[i]')}
+fn temperature(id: u32, word: u32) -> f32 {
+  let raw = (word >> 8u) & 65535u;
+  var tq = raw;
+  if (raw > ${PHASE_NORMAL_MAX}u) { tq = select(PHASE_TQ[id].x, PHASE_TQ[id].y, raw >= ${PHASE_COLD_BASE}u); }
+  return f32(tq) * 0.25 - 273.25;
+}
+fn coverageHash(input: u32) -> u32 {
+  var x = input; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15u; x *= 0x846ca68bu; return x ^ (x >> 16u);
+}`;
+
 // Pure presentation: never write or reorder the native physics records.
 export const nativeParticleWGSL = (rays = false) => /* wgsl */ `
 ${frameBindings()}
@@ -155,17 +169,7 @@ struct Particle { positionId: vec4u, velocityCore: vec4u, payloadBank: vec4u }
 // TPT's decoration over the element's colour by its alpha (src/graphics/Renderer.cpp; the volume's
 // shaders/gfx/deco.js decoTint and absorbDeco, for a sphere of one albedo: no texture detail to keep)
 fn decoLinear(c: vec3f) -> vec3f { return select(c / 12.92, pow((c + 0.055) / 1.055, vec3f(2.4)), c >= vec3f(0.04045)); }
-${tables}
-${incandescenceGLSL().replace('TB.incand[i]', 'PARTICLE_INCAND[i]')}
-fn temperature(id: u32, word: u32) -> f32 {
-  let raw = (word >> 8u) & 65535u;
-  var tq = raw;
-  if (raw > ${PHASE_NORMAL_MAX}u) { tq = select(PHASE_TQ[id].x, PHASE_TQ[id].y, raw >= ${PHASE_COLD_BASE}u); }
-  return f32(tq) * 0.25 - 273.25;
-}
-fn coverageHash(input: u32) -> u32 {
-  var x = input; x ^= x >> 16u; x *= 0x7feb352du; x ^= x >> 15u; x *= 0x846ca68bu; return x ^ (x >> 16u);
-}${rays ? '' : `
+${particleCommonWGSL()}${rays ? '' : `
 ${particleViewsWGSL()}
 ${particleAirWGSL}`}
 struct Out {
@@ -300,6 +304,126 @@ struct Surface { @location(0) color: vec4f, @builtin(frag_depth) depth: f32 }${r
   return out;
 }`;
 
+// The pick (gfx/volume.js recordPicks, render.js pickFrag's rays and ring): a V1 flying cell
+// is a cell, so the box pick finds it; a V2 one flies in the pool. After the grid's pick has
+// written each ray's slot, this kernel finds the nearest matter particle along the ray (the
+// shape its view draws: particleViews.js blockyView's cube, else the equal-volume sphere)
+// and, where it is nearer than the grid's hit, writes its cell, face and (id, T, P, life) as
+// pickFrag does. A workgroup per ray, its threads striding the pool. Curved rays (the
+// rolling log) skip it: particles are not bent by the presentation (wire/rays.js).
+export const PICK_RAYS = 8;   // render.js PICK_BATCH (particle-views-check pins it)
+const PICK_THREADS = 64;
+const PICK_FACE_FLOOR = 2;    // render.js pickFrag PICK_FACE_FLOOR
+export const ParticlePickParams = uniformStruct('ParticlePickParams', {
+  ro: `array<vec4f, ${PICK_RAYS}>`, rd: `array<vec4f, ${PICK_RAYS}>`, slot: `array<vec4u, ${PICK_RAYS / 4}>`,
+  origin: 'vec3f', n: 'u32', grid: 'vec4u', supers: 'vec4u', capacity: 'u32',
+});
+export const PARTICLE_PICK_LAYOUT = [ro(0, STAGE.COMPUTE), { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
+export const particlePickWGSL = () => /* wgsl */ `
+${frameBindings()}
+${ParticlePickParams.wgsl}
+@group(3) @binding(1) var<uniform> P: ParticlePickParams;
+struct Particle { positionId: vec4u, velocityCore: vec4u, payloadBank: vec4u }
+@group(1) @binding(0) var<storage, read> particles: array<Particle>;
+@group(1) @binding(1) var<storage, read_write> picks: array<vec4f>;   // render.js pickFrag's ring: two per slot
+${particleCommonWGSL()}
+${particleViewsWGSL()}
+${particleAirWGSL}
+// Entry t of ray (ro, rd) into the box [lo, hi], or -1 for a miss; *nrm: the entered face's normal.
+fn pickBox(ro: vec3f, rd: vec3f, lo: vec3f, hi: vec3f, nrm: ptr<function, vec3f>) -> f32 {
+  let inv = 1.0 / select(rd, vec3f(1e-20), abs(rd) < vec3f(1e-20));
+  let a = (lo - ro) * inv;
+  let b = (hi - ro) * inv;
+  let mn = min(a, b);
+  let mx = max(a, b);
+  let tn = max(mn.x, max(mn.y, mn.z));
+  let tf = min(mx.x, min(mx.y, mx.z));
+  if (tf < max(tn, 0.0)) { return -1.0; }
+  var axis = 0;
+  if (mn.y >= mn.x && mn.y >= mn.z) { axis = 1; } else if (mn.z >= mn.x && mn.z >= mn.y) { axis = 2; }
+  var n = vec3f(0.0);
+  n[axis] = -sign(rd[axis]);
+  *nrm = n;
+  return max(tn, 0.0);
+}
+fn pickSphere(ro: vec3f, rd: vec3f, c: vec3f, r: f32) -> f32 {
+  let oc = ro - c; let b = dot(oc, rd);
+  let d = b * b - dot(oc, oc) + r * r;
+  if (d <= 0.0) { return -1.0; }
+  let root = sqrt(d);
+  var t = -b - root;
+  if (t < 0.0) { t = -b + root; }
+  return t;
+}
+// The particle's hit t along the ray (-1: none), *nrm its outward normal there.
+fn pickParticle(i: u32, ro: vec3f, rd: vec3f, skipLiquids: bool, nrm: ptr<function, vec3f>) -> f32 {
+  let p = particles[i];
+  let id = p.velocityCore.w & 255u;
+  if (p.positionId.w == 0u || id == 0u || id >= ${ELEMENTS.length}u) { return -1.0; }
+  let kind = LOOK_CLASS[id].x;
+  // render.js pickStops: not gas-like; liquids too unless the tool aims through them
+  if (kind == ${K.GAS}u || (skipLiquids && kind == ${K.LIQUID}u)) { return -1.0; }
+  var amount = 1.0;
+  if (kind == ${K.LIQUID}u) { amount = f32(p.payloadBank.x & 0xffffffu) / 65536.0; }
+  if (amount <= 0.0) { return -1.0; }
+  let c = bitcast<vec3f>(p.positionId.xyz) - P.origin;
+  if (blockyView(FU.view)) {
+    let h = vec3f(0.5 * pow(amount, 1.0 / 3.0));
+    return pickBox(ro, rd, c - h, c + h, nrm);
+  }
+  let r = pow(amount * (3.0 / (4.0 * 3.141592653589793)), 1.0 / 3.0);
+  let t = pickSphere(ro, rd, c, r);
+  *nrm = (ro + rd * t - c) / r;
+  return t;
+}
+var<workgroup> wgT: array<f32, ${PICK_THREADS}>;
+var<workgroup> wgI: array<u32, ${PICK_THREADS}>;
+@compute @workgroup_size(${PICK_THREADS}) fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let r = wg.x;
+  if (r >= P.n) { return; }
+  let ro = P.ro[r].xyz;
+  let rd = normalize(P.rd[r].xyz);
+  var best = 1e30;
+  var bestI = 0xffffffffu;
+  if (P.ro[r].w == 0.0) {
+    for (var i = li; i < P.capacity; i += ${PICK_THREADS}u) {
+      var nrm: vec3f;
+      let t = pickParticle(i, ro, rd, P.rd[r].w != 0.0, &nrm);
+      if (t >= 0.0 && t < best) { best = t; bestI = i; }
+    }
+  }
+  wgT[li] = best;
+  wgI[li] = bestI;
+  workgroupBarrier();
+  for (var w = ${PICK_THREADS / 2}u; w > 0u; w >>= 1u) {
+    if (li < w && wgT[li + w] < wgT[li]) { wgT[li] = wgT[li + w]; wgI[li] = wgI[li + w]; }
+    workgroupBarrier();
+  }
+  if (li != 0u || wgI[0] == 0xffffffffu) { return; }
+  let s = P.slot[r / 4u][r % 4u] * 2u;
+  // the grid's hit: its cell's entry, the floor (cell y -1), or a miss (face -1)
+  let at = picks[s];
+  var tGrid = 1e30;
+  if (at.w >= 0.0 && at.y < 0.0 && rd.y < 0.0) { tGrid = -ro.y / rd.y; }
+  else if (at.w >= 0.0) { var n0: vec3f; tGrid = max(pickBox(ro, rd, at.xyz, at.xyz + 1.0, &n0), 0.0); }
+  var nrm: vec3f;
+  let t = pickParticle(wgI[0], ro, rd, P.rd[r].w != 0.0, &nrm);
+  if (t < 0.0 || t >= tGrid) { return; }
+  let p = particles[wgI[0]];
+  let id = p.velocityCore.w & 255u;
+  let core = vec4u(p.velocityCore.w, p.payloadBank.xyz);
+  let hp = ro + rd * t;
+  let cell = clamp(vec3i(floor(hp)), vec3i(0), vec3i(P.grid.xyz) - 1);
+  let an = abs(nrm);
+  var axis = 0;
+  if (an.y >= an.x && an.y >= an.z) { axis = 1; } else if (an.z >= an.x && an.z >= an.y) { axis = 2; }
+  // face codes as pickFrag's: axis * 2 + (1 if the ray steps +axis); the normal is minus the step
+  let face = axis * 2 + select(0, 1, nrm[axis] < 0.0);
+  let c = bitcast<vec3f>(p.positionId.xyz) - P.origin;
+  picks[s] = vec4f(vec3f(cell), f32(face));
+  picks[s + 1u] = vec4f(f32(id), temperature(id, core.x), particleAirAt(c).w, particleLife(id, core));
+}`;
+
 export const nativeParticlePipeline = (rays = false) => ({
   vertex: { entry: 'vs' }, fragment: { entry: 'fs', targets: [{ format: 'rgba16float',
     ...(rays ? { blend: { color: { srcFactor: 'one', dstFactor: 'one' }, alpha: { srcFactor: 'zero', dstFactor: 'one' } } } : {}),
@@ -309,6 +433,8 @@ export const nativeParticlePipeline = (rays = false) => ({
 export const WGSL_CHECK = [
   { name: 'nativeParticleArgs', kind: 'compute', grids: false, warm: false, code: nativeParticleArgsWGSL,
     params: NativeParticleParams, layouts: () => [NATIVE_PARTICLE_ARGS_LAYOUT], dispatch: () => [1,1,1] },
+  { name: 'nativeParticlePick', kind: 'compute', grids: false, warm: false, code: particlePickWGSL,
+    params: ParticlePickParams, layouts: () => [RENDER_LAYOUT.FRAME,PARTICLE_PICK_LAYOUT,NATIVE_PARTICLE_AIR_LAYOUT], layoutNames: ['FRAME'], dispatch: () => [PICK_RAYS,1,1] },
   ...[false,true].map(rays => ({ name: rays ? 'nativeParticleRays' : 'nativeParticleMatter', kind: 'render', grids: false,
     warm: false, code: () => nativeParticleWGSL(rays), params: NativeParticleParams,
     layouts: () => [RENDER_LAYOUT.FRAME,NATIVE_PARTICLE_LAYOUT,NATIVE_PARTICLE_AIR_LAYOUT], layoutNames: ['FRAME'], ...nativeParticlePipeline(rays) })),

@@ -351,14 +351,16 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
           slots = batch.map(() => pickRing.next());
           const words = new Array(PICK_BATCH).fill(0);
           slots.forEach((s, i) => { words[i] = s; });
+          const rays = {
+            ro: batch.map((b) => [...b.ro, b.warp?.k ?? 0]), rd: batch.map((b) => [...b.rd, b.skipLiquids ? 1 : 0]),
+            slot: [words.slice(0, 4), words.slice(4, 8)], n: batch.length,
+          };
           pickKernel.dispatch(gpu.frame, [1, 1, 1], {
             bind: [sim.tables, read, pickGroup], header: sim.readHeader({ physical: true }),
-            params: {
-              ro: batch.map((b) => [...b.ro, b.warp?.k ?? 0]), rd: batch.map((b) => [...b.rd, b.skipLiquids ? 1 : 0]),
-              warp: batch.map((b) => (b.warp ? [...b.warp.anchor, ...b.warp.dir] : [0, 0, 0, 1])),
-              slot: [words.slice(0, 4), words.slice(4, 8)], n: batch.length,
-            },
+            params: { ...rays, warp: batch.map((b) => (b.warp ? [...b.warp.anchor, ...b.warp.dir] : [0, 0, 0, 1])) },
           });
+          // V2's flying matter (a V1 flying cell is a cell the march finds): gfx/nativeParticles.js recordPick
+          sim.compact?.dynamics?.drawAdapter?.recordPick?.(gpu.frame, { ring: pickRing.buffer, ...rays, origin: sim.origin });
         } catch (e) {
           for (const b of batch) b.reject(e);
           failPicks(e);
