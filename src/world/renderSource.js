@@ -7,6 +7,7 @@ import { fold } from '../gpu/kernels.js';
 export const SOURCE_CORE = 32;
 export const SOURCE_BRICK = BRICK;
 export const SOURCE_RANK = Object.freeze({ unknown: 0, generated: 1, saved: 2, captured: 3, live: 4 });
+const RANK_NAMES = Object.freeze(Object.keys(SOURCE_RANK).reduce((names, k) => { names[SOURCE_RANK[k]] ??= k; return names; }, []));
 export const SOURCE_GRID = Object.freeze(gridDims({ nx: 32, ny: 32, nz: 32 }));
 const USAGE = 0x80 | 0x08 | 0x04;
 const MAX_BINDING = 128 * 1024 * 1024;
@@ -80,6 +81,98 @@ function recordNativePack(frame, src, dst, box) {
   sim.onPass?.('worldNativePack', { kind: 'compute', gpuMs: null });
 }
 const extentOf = (d) => ({ lo: d.origin, hi: d.origin.map((v, i) => v + [d.g.nx, d.g.ny, d.g.nz][i]) });
+
+// A content delta (WorldRenderSource.changesSince): the bricks the journal's entries since a token
+// cover, in the order the first entry that reached each one reached it (journal order, then z, y, x
+// in its box). V2 journals its whole window every step (v2/physics.js _ran), so a span is mostly one
+// box many times over: expanding every entry into a string-keyed Map was the World renderer's top
+// JS cost after load, 2.6 s of 20 s on Island and 3.9 s on Descent (2026-10-22). Here a span is its
+// distinct boxes (an entry inside an earlier one adds nothing), and changedBricks is built from them
+// once, when first read: membership (includes) and the 32-cell cores (coreKeys) read the boxes.
+const DELTA_BOXES_TESTED = 64;   // earlier boxes an entry is tested against for containment (bounds the scan; the stamp keeps the result exact)
+const DELTA_BOXES_SCANNED = 16;  // boxes includes() scans directly; past this many it indexes the bricks once
+const CORE_BRICKS = SOURCE_CORE / BRICK;
+let deltaSeen = new Uint8Array(0);   // a span's bricks already listed (module scratch: a delta builds synchronously, then clears it)
+export const changesSinceStats = { calls: 0, built: 0, entries: 0, boxes: 0, bricksVisited: 0, bricksListed: 0 };   // CPU check counters
+function contentDelta(token, global, boxes) {
+  let bricks = null, index = null;
+  const list = () => {
+    if (bricks) return bricks;
+    const out = [];
+    if (boxes.length === 1) {
+      const [x0, y0, z0, x1, y1, z1] = boxes[0];
+      for (let z = z0; z < z1; z++) for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) out.push(Object.freeze([x, y, z]));
+      changesSinceStats.bricksVisited += out.length;
+    } else if (boxes.length) {
+      // Overlapping boxes: stamp each brick of their bounding box the first time a box reaches it.
+      const lo = boxes[0].slice(0, 3), hi = boxes[0].slice(3);
+      for (const b of boxes) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], b[k]); hi[k] = Math.max(hi[k], b[k + 3]); }
+      const w = hi[0] - lo[0], h = hi[1] - lo[1], volume = w * h * (hi[2] - lo[2]);
+      if (deltaSeen.length < volume) deltaSeen = new Uint8Array(volume);
+      const seen = deltaSeen;
+      for (const [x0, y0, z0, x1, y1, z1] of boxes) {
+        for (let z = z0; z < z1; z++) for (let y = y0; y < y1; y++) {
+          const row = w * ((y - lo[1]) + h * (z - lo[2])) - lo[0];
+          for (let x = x0; x < x1; x++) if (!seen[row + x]) { seen[row + x] = 1; out.push(Object.freeze([x, y, z])); }
+        }
+        changesSinceStats.bricksVisited += (x1 - x0) * (y1 - y0) * (z1 - z0);
+      }
+      seen.fill(0, 0, volume);
+    }
+    changesSinceStats.bricksListed += out.length;
+    return (bricks = Object.freeze(out));
+  };
+  const inBox = (b, x, y, z) => x >= b[0] && x < b[3] && y >= b[1] && y < b[4] && z >= b[2] && z < b[5];
+  const delta = { token, global };
+  Object.defineProperty(delta, 'changedBricks', { enumerable: true, get: list });
+  // Non-enumerable: a delta still compares equal to {token, global, changedBricks}.
+  Object.defineProperties(delta, {
+    // Whether brick [x, y, z] is one of changedBricks (a global delta lists none).
+    includes: { value: (brick) => {
+      const x = brick[0], y = brick[1], z = brick[2];
+      if (!Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(z)) return false;
+      if (boxes.length <= DELTA_BOXES_SCANNED) { for (let i = 0; i < boxes.length; i++) if (inBox(boxes[i], x, y, z)) return true; return false; }
+      index ??= new Set(list().map(brickKeyOf));
+      return index.has(`${x},${y},${z}`);
+    } },
+    // The keys ('x,y,z' of their cell origins) of the 32-cell cores changedBricks touch.
+    coreKeys: { value: () => {
+      const keys = new Set(), c = (v) => Math.floor(v / CORE_BRICKS);
+      for (const [x0, y0, z0, x1, y1, z1] of boxes)
+        for (let z = c(z0); z <= c(z1 - 1); z++) for (let y = c(y0); y <= c(y1 - 1); y++) for (let x = c(x0); x <= c(x1 - 1); x++)
+          keys.add(`${x * SOURCE_CORE},${y * SOURCE_CORE},${z * SOURCE_CORE}`);
+      return keys;
+    } },
+  });
+  return Object.freeze(delta);
+}
+const brickKeyOf = (b) => `${b[0]},${b[1]},${b[2]}`;
+// The span's distinct brick boxes [x0, y0, z0, x1, y1, z1] (journal order), or null when an entry is global.
+function journalBoxes(journal, from, size) {
+  // Revisions rise along the journal (noteContentChange): the span starts at the first one past from.
+  let lo = 0, hi = journal.length;
+  while (lo < hi) { const mid = (lo + hi) >>> 1; if (journal[mid].revision > from) hi = mid; else lo = mid + 1; }
+  const boxes = [];
+  changesSinceStats.entries += journal.length - lo;
+  for (let i = lo; i < journal.length; i++) {
+    const entry = journal[i];
+    if (entry.global) return null;
+    const loX = Math.max(0, entry.loX), loY = Math.max(0, entry.loY), loZ = Math.max(0, entry.loZ);
+    const hiX = Math.min(size[0], entry.hiX), hiY = Math.min(size[1], entry.hiY), hiZ = Math.min(size[2], entry.hiZ);
+    if (!(loX < hiX && loY < hiY && loZ < hiZ)) continue;
+    const box = [Math.floor(loX / BRICK), Math.floor(loY / BRICK), Math.floor(loZ / BRICK), Math.ceil(hiX / BRICK), Math.ceil(hiY / BRICK), Math.ceil(hiZ / BRICK)];
+    // (the first and the latest boxes: the window's, and where it walked to)
+    let inside = false;
+    const n = boxes.length, half = DELTA_BOXES_TESTED / 2;
+    for (let k = 0; k < n && !inside; k = k + 1 === half && n > DELTA_BOXES_TESTED ? n - half : k + 1) {
+      const b = boxes[k];
+      inside = box[0] >= b[0] && box[1] >= b[1] && box[2] >= b[2] && box[3] <= b[3] && box[4] <= b[4] && box[5] <= b[5];
+    }
+    if (!inside) boxes.push(Object.freeze(box));
+  }
+  changesSinceStats.boxes += boxes.length;
+  return Object.freeze(boxes);
+}
 // A native source's cells over runs (planSourceCopies' plan from src into dst over box): the pack
 // writes every cell of box ∩ src ∩ dst, so the plan must hold all of them (a live or leaving copy's
 // does: nothing outranks it); then the aux the pack doesn't write (flow, decoration) by copy.
@@ -238,26 +331,36 @@ export class WorldRenderSource {
       Number.isFinite(lo[0]) && Number.isFinite(lo[1]) && Number.isFinite(lo[2]) &&
       Number.isFinite(hi[0]) && Number.isFinite(hi[1]) && Number.isFinite(hi[2]) &&
       lo[0] <= hi[0] && lo[1] <= hi[1] && lo[2] <= hi[2];
-    this.changeJournal ??= [];
+    const journal = this.changeJournal ??= [];
     // Flat primitive records need one freeze, own no caller arrays, and can be
     // shared by cuts that copy only journal membership.
-    this.changeJournal.push(Object.freeze(bounded ? { revision: this.contentRevision, global: false,
+    const entry = Object.freeze(bounded ? { revision: this.contentRevision, global: false,
       loX: lo[0], loY: lo[1], loZ: lo[2], hiX: hi[0], hiY: hi[1], hiZ: hi[2] } :
-      { revision: this.contentRevision, global: true }));
+      { revision: this.contentRevision, global: true });
+    // The same box as the latest entry replaces it: a span holds both or the
+    // newer alone, so it reaches the same bricks in the same place in journal
+    // order. V2 notes its whole window every step, and the journal grew by one
+    // entry a step for as long as a World ran (cuts that copied it keep theirs).
+    const last = journal.at(-1);
+    if (bounded && last && !last.global && last.revision === entry.revision - 1 && last.loX === entry.loX && last.loY === entry.loY && last.loZ === entry.loZ &&
+        last.hiX === entry.hiX && last.hiY === entry.hiY && last.hiZ === entry.hiZ) journal[journal.length - 1] = entry;
+    else journal.push(entry);
   }
+  // The bricks changed since token (contentToken), or global. Every caller in a
+  // transaction may ask for the same span: the latest answer is kept until the
+  // journal or the token moves (the delta is frozen; its bricks are shared).
   changesSince(token) {
-    const current = this.contentToken();
-    if (!token || token.epoch !== this.epoch || token.sourceRevision > this.contentRevision) return { token: current, global: true, changedBricks: [] };
-    const changed = new Map(), size = this.context.size;
-    for (const entry of this.changeJournal ?? []) if (entry.revision > token.sourceRevision) {
-      if (entry.global) return { token: current, global: true, changedBricks: [] };
-      const loX = Math.max(0, entry.loX), loY = Math.max(0, entry.loY), loZ = Math.max(0, entry.loZ);
-      const hiX = Math.min(size[0], entry.hiX), hiY = Math.min(size[1], entry.hiY), hiZ = Math.min(size[2], entry.hiZ);
-      if (loX < hiX && loY < hiY && loZ < hiZ) for (let z = Math.floor(loZ / 4); z < Math.ceil(hiZ / 4); z++)
-        for (let y = Math.floor(loY / 4); y < Math.ceil(hiY / 4); y++)
-          for (let x = Math.floor(loX / 4); x < Math.ceil(hiX / 4); x++) changed.set(`${x},${y},${z}`, [x, y, z]);
-    }
-    return { token: current, global: false, changedBricks: [...changed.values()] };
+    changesSinceStats.calls++;
+    if (!token || token.epoch !== this.epoch || token.sourceRevision > this.contentRevision) return contentDelta(this.contentToken(), true, []);
+    const journal = this.changeJournal ?? [], size = this.context.size, m = this._changesSinceMemo;
+    if (m && m.journal === journal && m.length === journal.length && m.last === journal.at(-1) && m.from === token.sourceRevision &&
+        m.epoch === this.epoch && m.contentRevision === this.contentRevision && m.size[0] === size[0] && m.size[1] === size[1] && m.size[2] === size[2]) return m.delta;
+    changesSinceStats.built++;
+    const boxes = journalBoxes(journal, token.sourceRevision, size);
+    const delta = contentDelta(this.contentToken(), !boxes, boxes ?? []);
+    this._changesSinceMemo = { journal, length: journal.length, last: journal.at(-1), from: token.sourceRevision, epoch: this.epoch,
+      contentRevision: this.contentRevision, size: [...size], delta };
+    return delta;
   }
   recordUpload(frame, target, offset, data) {
     const buffer = this.gpu.createBuffer({ label: 'immutable world source upload', size: data.byteLength, usage: 4, mappedAtCreation: true });
@@ -554,10 +657,12 @@ export class WorldRenderSource {
   }
   getSource(cell) {
     if(this.ownedContext&&!this.ownedContext.isValid())throw new Error('Invalid owned Source cut');
-    const c = this.chunks.get(cell.map((v) => Math.floor(v / 32) * 32).join(','));
+    // (a lighting record reads two a row: no arrays, joins or key search per read)
+    const x = cell[0], y = cell[1], z = cell[2];
+    const c = this.chunks.get(`${Math.floor(x / 32) * 32},${Math.floor(y / 32) * 32},${Math.floor(z / 32) * 32}`);
     if (!c) return { kind: 'unknown', epoch: this.epoch };
-    const slot = cellSlot(c.g, ...cell.map((v, i) => v - c.origin[i])), rank = c.rank[slot];
-    return { kind: Object.keys(SOURCE_RANK).find((k) => SOURCE_RANK[k] === rank), chunk: c, slot, revision: c.revisions[slot],
+    const slot = cellSlot(c.g, x - c.origin[0], y - c.origin[1], z - c.origin[2]), rank = c.rank[slot];
+    return { kind: RANK_NAMES[rank], chunk: c, slot, revision: c.revisions[slot],
       pending: !!c.pending[slot], aux: c.aux[slot], epoch: this.epoch };
   }
   get bindings() { return { epoch: this.epoch, revision: this.revision, contentRevision: this.contentRevision, chunks: this.chunks, auxContract: this.auxContract,
@@ -583,7 +688,7 @@ export class WorldRenderSource {
   reset(epoch = this.epoch + 1) {
     if (this.ownedContext) throw new Error('Release the owning Source cut instead of resetting it');
     for (const c of this.chunks.values()) for (const b of [c.A, c.B, c.flow, c.aeration, c.deco?.buffer]) if (b) this._retire(b);
-    this.chunks.clear(); this.changeJournal = []; this.epoch = epoch; this.revision = 0; this.contentRevision = 0; this.liveVersion = -1; this.liveSnapshot = null; this.minimumStaticRevision = 0;
+    this.chunks.clear(); this.changeJournal = []; this._changesSinceMemo = null; this.epoch = epoch; this.revision = 0; this.contentRevision = 0; this.liveVersion = -1; this.liveSnapshot = null; this.minimumStaticRevision = 0;
   }
   dispose() { if (this.disposed) return; this.unsubscribeData?.(); this.reset(); this.disposed = true; }
 }

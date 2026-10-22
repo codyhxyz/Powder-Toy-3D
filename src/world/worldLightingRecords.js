@@ -57,12 +57,12 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
     // Source journals and origin-only ownership transfers cannot reset ages.
     const groups=new Map(),births=new Set();
     const delta=baseline?cut.source.changesSince(baseline.contentToken):null;
-    const candidates=new Set(delta?.changedBricks.map(b=>b.join(',')));
     for(let slot=0;slot<rows.length;slot++){
       const r=rows[slot],p=r.brick.map(n=>n*4),box={lo:p,hi:p.map(n=>n+4)};cut.source.assertComplete([box]);
       const b=cut.source.getSource(p),a=baseline?.source.getSource(p);
       if(!committed.has(r.index)||!a||a.kind==='unknown'){births.add(slot);continue;}
-      if(!delta.global&&!candidates.has(r.brick.join(',')))continue;
+      // (membership in the delta's boxes: no set of its bricks, no key per row)
+      if(!delta.global&&!delta.includes(r.brick))continue;
       baseline.source.assertComplete([box]);
       const key=b.chunk.key;let g=groups.get(key);if(!g){g={a:a.chunk,b:b.chunk,jobs:[]};groups.set(key,g);}
       const j=new Uint32Array(132);j.set([a.slot,b.slot,rows.length*4+slot,0]);

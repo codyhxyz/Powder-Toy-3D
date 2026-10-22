@@ -178,7 +178,8 @@ export function recordWorldSourceCut(parent,frame,{previousCut=null,sceneVersion
     const source=state.source=new parent.constructor(w,{context});
     source.epoch=state.epoch;source.revision=authority.revision;source.contentRevision=token.sourceRevision;source.minimumStaticRevision=parent.minimumStaticRevision;
     source.changeJournal=(parent.changeJournal??[]).slice();
-    const changedCores=new Set(delta.changedBricks.map(b=>b.map(v=>Math.floor(v/8)*32).join(',')));
+    // (the cores of the delta's boxes: no pass over its bricks, one per window step)
+    const changedCores=delta.coreKeys();
     if(compatible&&!delta.global)for(const [key,c] of old.source.chunks)if(!changedCores.has(key))source.chunks.set(key,hold(c));
     for(const [key,c] of parent.chunks) {
       if(!c.rank.some(v=>v>=SOURCE_RANK.saved)&&!c.aux.some(Boolean))continue; // regenerate static discovery, do not snapshot a dense cache
