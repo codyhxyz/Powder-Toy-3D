@@ -816,38 +816,51 @@ fn colExtent(x: i32, z: i32, r0: i32, top: i32) -> i32 {
 }
 fn colScan(x: i32, z: i32, settle: bool) -> i32 {
   if (settle) { colStratify(x, z); }
+  // Open stretches [o0, o1) bottom up: a dry floor, then runs each with the air above them. A run is loose (it
+  // packs) when a cell under another is not full, or a compressed cell is not its domain's top. A domain ends at a
+  // new liquid, a closed cell or the column's top; one colFinish call site (Metal inlines each call: compile time).
   var k = 0;
   var y = 0;
+  var open = false;
+  var o0 = 0; var y0 = 0; var r1 = 0; var liq = 0u; var sub = 0u; var mass = 0u;
+  var loose = false; var over = -1; var below = 0u;
   loop {
-    if (y >= NY) { break; }
-    var probe = colProbe(x, y, z);
-    if (!probeOpen(probe)) { y = y + 1; continue; }
-    // an open stretch [o0, o1): a dry floor, then runs each with the air above them. A run is loose (it
-    // packs) when a cell under another is not full, or a compressed cell is not its domain's top.
-    let o0 = y;
-    var y0 = y; var r1 = y; var liq = 0u; var sub = 0u; var mass = 0u;
-    var loose = false; var over = -1; var below = 0u;
-    loop {
-      if (y >= NY) { break; }
-      probe = colProbe(x, y, z);
-      if (!probeOpen(probe)) { break; }
-      if (settle && probeRead(probe)) { foamDecay(x, y, z); }
-      let id = probeLiquid(probe);
-      if (id != 0u) {
-        let fill = probeFill(probe);
-        if (liq == id && sub == probeSub(probe) && r1 == y) {
-          if (below < FULLU || over >= 0) { loose = true; }
-          r1 = y + 1; mass = mass + fill;
-        } else {
-          if (liq != 0u || y > o0) { k = colFinish(x, z, k, y0, y, r1, liq, sub, mass, o0, settle, loose || (over >= 0 && over != y - 1)); }
-          y0 = y; r1 = y + 1; liq = id; sub = probeSub(probe); mass = fill; loose = false; over = -1;
-        }
-        if (fill > FULLU) { over = y; }
-        below = fill;
-      }
-      y = y + 1;
+    let inside = y < NY;
+    let probe = colProbe(x, min(y, NY - 1), z);
+    let here = inside && probeOpen(probe);
+    if (!open) {
+      if (!inside) { break; }
+      if (!here) { y = y + 1; continue; }
+      open = true; o0 = y; y0 = y; r1 = y; liq = 0u; sub = 0u; mass = 0u; loose = false; over = -1; below = 0u;
     }
-    k = colFinish(x, z, k, y0, y, r1, liq, sub, mass, o0, settle, loose || (over >= 0 && over != y - 1));
+    var id = 0u;
+    if (here) {
+      if (settle && probeRead(probe)) { foamDecay(x, y, z); }
+      id = probeLiquid(probe);
+    }
+    let grows = id != 0u && liq == id && sub == probeSub(probe) && r1 == y;
+    let starts = id != 0u && !grows;
+    if (!here || (starts && (liq != 0u || y > o0))) {
+      k = colFinish(x, z, k, y0, y, r1, liq, sub, mass, o0, settle, loose || (over >= 0 && over != y - 1));
+    }
+    if (!here) {
+      open = false;
+      if (!inside) { break; }
+      y = y + 1;
+      continue;
+    }
+    if (id != 0u) {
+      let fill = probeFill(probe);
+      if (grows) {
+        if (below < FULLU || over >= 0) { loose = true; }
+        r1 = y + 1; mass = mass + fill;
+      } else {
+        y0 = y; r1 = y + 1; liq = id; sub = probeSub(probe); mass = fill; loose = false; over = -1;
+      }
+      if (fill > FULLU) { over = y; }
+      below = fill;
+    }
+    y = y + 1;
   }
   if (k == 0) { colPut(x, 0, z, recMake(0, 0, 0, 0u, 0u, 0u, false, true)); return 1; }
   colPut(x, k - 1, z, withRecLast(colRec(x, k - 1, z), true));
@@ -1064,9 +1077,9 @@ fn colTransfers(xa: i32, za: i32, xb: i32, zb: i32, axis: i32) {
     else { if (recLast(qb)) { break; } j = j + 1; }
   }
   colLimit(xa, za); colLimit(xb, zb);
-  // the floating faces first, while every floor is where the flux stage saw it; then the rest bottom up
-  colSends(xa, za, xb, zb, axis, true);
-  colSends(xa, za, xb, zb, axis, false);
+  // the floating faces first, while every floor is where the flux stage saw it; then the rest bottom up (one
+  // colSends call site: Metal inlines each call)
+  for (var round = 0; round < 2; round++) { colSends(xa, za, xb, zb, axis, round == 0); }
 }
 fn colSends(xa: i32, za: i32, xb: i32, zb: i32, axis: i32, floating: bool) {
   var i = 0; var j = 0;
@@ -1136,7 +1149,7 @@ fn colSentHeadAt(x: i32, y: i32, z: i32, axis: i32) -> f32 { return f32(atomicLo
 
 // ---- radial gravity (RADIAL above). Three stages a tick on the column passes' threads and ownership:
 //   v2runs         every face's demand from the frozen cells (reads only; writes its words): colRadRuns
-//   v2pairs 0      each column's y faces, its own cells only: colRadColumn
+//   v2pairs 0      each column's y faces, its own cells only: colRadPairs
 //   v2pairs 1      the x and z faces of the pairs a thread owns, as the transfers: colRadPairs
 // A face's demand word lives in the liquidScratch slot of its -side cell, where the runs keep their records
 // under vertical gravity (none exist under radial; support's air byte in .x is untouched): .y its +x face,
@@ -1300,29 +1313,34 @@ fn colRadRuns(x: i32, z: i32) {
   }
 }
 fn colRadTowardPlus(x: i32, y: i32, z: i32) -> bool { let a = colRadAxis(x, y, z); return a == 1 && colRadSign(x, y, z, a) > 0; }
-// v2pairs stage 0: the column's foam (colScan's, which does not run), then its y faces: those that pack
-// toward -y bottom up, so a hole rises through a stack in one sweep, then those toward +y top down
-fn colRadColumn(x: i32, z: i32) {
-  for (var y = 0; y < NY; y++) { foamDecay(x, y, z); }
-  // one sweep of 2 (NY - 1) steps, the ascending faces then the descending ones (one call site)
-  for (var k = 0; k < 2 * (NY - 1); k++) {
-    var y = k; var plus = false;
-    if (k >= NY - 1) { y = 2 * (NY - 1) - 1 - k; plus = true; }
-    if (colRadTowardPlus(x, y, z) == plus) { colRadFace(x, y, z, 1); }
+// v2pairs' radial stages, one colRadFace call site (each inlined copy is Metal compile time). Stage 0: the
+// column's foam (colScan's, which does not run), then its y faces: those that pack toward -y bottom up, so a
+// hole rises through a stack in one sweep, then those toward +y top down (2 (NY - 1) steps). Stage 1: the x or z
+// faces of the pair this thread owns along P.pairAxis (v2PairsKernel's ownership, without loop edges), bottom up.
+fn colRadPairs(x: i32, z: i32) {
+  var fx = x; var fz = z; var axis = 1; var faces = 0;
+  if (P.pairStage == 0u) {
+    for (var y = 0; y < NY; y++) { foamDecay(x, y, z); }
+    faces = 2 * (NY - 1);
+  } else {
+    axis = i32(P.pairAxis);
+    var own = z; var xn = x; var zn = z + 1; var xp = x; var zp = z - 1;
+    if (axis == 0) { own = x; xn = x + 1; zn = z; xp = x - 1; zp = z; }
+    let odd = floor(f32(own) * 0.5) * 2.0 != f32(own);
+    if (select(0u, 1u, odd) == P.pairParity) {
+      if (xn < NX && zn < NZ) { faces = NY; }
+    } else if (xp >= 0 && zp >= 0 && !colAwake(xp, zp)) { fx = xp; fz = zp; faces = NY; }
+  }
+  for (var k = 0; k < faces; k++) {
+    var y = k; var go = true;
+    if (P.pairStage == 0u) {
+      var plus = false;
+      if (k >= NY - 1) { y = 2 * (NY - 1) - 1 - k; plus = true; }
+      go = colRadTowardPlus(x, y, z) == plus;
+    }
+    if (go) { colRadFace(fx, y, fz, axis); }
   }
 }
-// v2pairs stage 1: the pairs this thread owns along P.pairAxis (v2PairsKernel's ownership, without loop edges)
-fn colRadPairs(x: i32, z: i32) {
-  if (P.pairStage == 0u) { colRadColumn(x, z); return; }
-  let axis = i32(P.pairAxis);
-  var own = z; var xn = x; var zn = z + 1; var xp = x; var zp = z - 1;
-  if (axis == 0) { own = x; xn = x + 1; zn = z; xp = x - 1; zp = z; }
-  let odd = floor(f32(own) * 0.5) * 2.0 != f32(own);
-  if (select(0u, 1u, odd) == P.pairParity) {
-    if (xn < NX && zn < NZ) { colRadPair(x, z, axis); }
-  } else if (xp >= 0 && zp >= 0 && !colAwake(xp, zp)) { colRadPair(xp, zp, axis); }
-}
-fn colRadPair(x: i32, z: i32, axis: i32) { for (var y = 0; y < NY; y++) { colRadFace(x, y, z, axis); } }
 // a face at its stage: along a side's pull it packs, across both it carries its demand (never more than the
 // giver holds, less RAD_KEEP when covered, nor more than the receiver has room for). One move a face, from
 // one colMove call site (each inlined copy is Metal compile time).
@@ -1378,6 +1396,56 @@ fn colRadSendAmount(cs: vec4u, cd: vec4u, t: f32, covered: bool) -> i32 {
   if (isLiq(cd)) { room = FULLU - min(cFill(cd), FULLU); }
   return i32(min(u32(t), min(have, room)));
 }
+// the column one step along side (0 +x, 1 -x, 2 +z, 3 -z: face6's order) from (x, z), past a loop edge
+// wrapped (mEdge), as (x, z); and whether it is in the grid
+fn colNeighbour(x: i32, z: i32, side: i32) -> vec2i { return mEdge(vec3i(x, 0, z) + face6(select(side, side + 2, side >= 2))).xz; }
+fn colInside(n: vec2i) -> bool { return n.x >= 0 && n.y >= 0 && n.x < NX && n.y < NZ; }
+// v2runs: settle the column's runs and write its domain records, then the records of each sleeping neighbour
+// (read only: the pair stages' halo; identical concurrent builds write equal words). One colScan call site.
+fn colRunsColumn(x: i32, z: i32) {
+  // radial gravity has no runs: the column's face demands instead (RADIAL)
+  if (P.gravMode == 2u) { colRadRuns(x, z); return; }
+  for (var side = -1; side < 4; side++) {
+    var cx = x; var cz = z;
+    if (side >= 0) {
+      let n = colNeighbour(x, z, side);
+      if (!colInside(n) || colAwake(n.x, n.y)) { continue; }
+      cx = n.x; cz = n.y;
+    }
+    colScan(cx, cz, side < 0);
+  }
+}
+// v2pairs. P.pairStage 0: every face's flux, both axes (a face is its -side column's, or its +side's when the
+// -side sleeps: one colFluxes call site); 1: the transfers of the pairs along P.pairAxis (0 or 2) whose -side
+// column has parity P.pairParity (owned the same way), and this column's faces to the void past an open side.
+fn colPairsColumn(x: i32, z: i32) {
+  if (P.gravMode == 2u) { colRadPairs(x, z); return; }
+  if (P.pairStage == 0u) {
+    for (var axis = 0; axis <= 2; axis += 2) {
+      let next = colNeighbour(x, z, axis); let prev = colNeighbour(x, z, axis + 1);
+      if (colInside(next)) { colFluxes(x, z, next.x, next.y, axis); }
+      if (colInside(prev) && !colAwake(prev.x, prev.y)) { colFluxes(prev.x, prev.y, x, z, axis); }
+    }
+    return;
+  }
+  let axis = i32(P.pairAxis);
+  let side = select(2, 0, axis == 0);
+  let next = colNeighbour(x, z, side); let prev = colNeighbour(x, z, side + 1);
+  // the pair this thread owns: with the next column, or with a sleeping previous one; one colTransfers
+  // call for both (Metal inlines it whole at each call: cold compile, docs/webgpu.md B5)
+  let own = select(z, x, axis == 0);
+  let mine = select(0u, 1u, floor(f32(own) * 0.5) * 2.0 != f32(own)) == P.pairParity;
+  var pair = false; var xa = x; var za = z; var xb = x; var zb = z;
+  if (mine && colInside(next)) { pair = true; xb = next.x; zb = next.y; }
+  if (!mine && colInside(prev) && !colAwake(prev.x, prev.y)) { pair = true; xa = prev.x; za = prev.y; }
+  if (pair) { colTransfers(xa, za, xb, zb, axis); }
+  // a side of the grid on this axis is open: this thread owns the column, so its face to the void too (one
+  // colEdges call site; both sides open, both faces)
+  var edges = 0;
+  if (mine && P.edge == 1u && !colInside(next)) { edges = edges + 1; }
+  if (mine && P.edge == 1u && !colInside(prev)) { edges = edges + 1; }
+  for (var e = 0; e < edges; e++) { colEdges(x, z); }
+}
 `;
 
 // The column the thread of an awake brick column's column list handles (v2column's indexing).
@@ -1390,52 +1458,23 @@ const COLUMN_THREAD = /* wgsl */ `
   let z = i32(col / u32(BX)) * BS + i32(t >> 2u);`;
 
 /** v2runs: settle every awake column's runs and write its domain records, and the records of its
- * sleeping neighbours (read only: the pair stages' halo; identical concurrent builds write equal words). */
+ * sleeping neighbours (columns.js colRunsColumn). */
 export const v2RunsKernel = (head, MAIN) => /* wgsl */ `
 ${head}
 ${columnWaterWGSL}
 ${MAIN} {
 ${COLUMN_THREAD}
-  // radial gravity has no runs: the column's face demands instead (RADIAL)
-  if (P.gravMode == 2u) { colRadRuns(x, z); return; }
-  colScan(x, z, true);
-  for (var side = 0; side < 4; side++) {
-    let n = mEdge(vec3i(x, 0, z) + face6(select(side, side + 2, side >= 2)));
-    if (inGrid(n) && !colAwake(n.x, n.z)) { colScan(n.x, n.z, false); }
-  }
+  colRunsColumn(x, z);
 }
 `;
 
-/** v2pairs. P.pairStage 0: every face's flux, both axes (a face is its -side column's, or its +side's
- * when the -side sleeps); 1: the transfers of the pairs along P.pairAxis (0 or 2) whose -side column has
- * parity P.pairParity (owned the same way). */
+/** v2pairs: the flux stage, or a parity of an axis's transfers (columns.js colPairsColumn). */
 export const v2PairsKernel = (head, MAIN) => /* wgsl */ `
 ${head}
 ${columnWaterWGSL}
 ${MAIN} {
 ${COLUMN_THREAD}
-  if (P.gravMode == 2u) { colRadPairs(x, z); return; }
-  let here = vec3i(x, 0, z);
-  if (P.pairStage == 0u) {
-    for (var axis = 0; axis <= 2; axis += 2) {
-      let next = mEdge(here + axisV(axis)); let prev = mEdge(here - axisV(axis));
-      if (inGrid(next)) { colFluxes(x, z, next.x, next.z, axis); }
-      if (inGrid(prev) && !colAwake(prev.x, prev.z)) { colFluxes(prev.x, prev.z, x, z, axis); }
-    }
-    return;
-  }
-  let axis = i32(P.pairAxis);
-  let next = mEdge(here + axisV(axis)); let prev = mEdge(here - axisV(axis));
-  // the pair this thread owns: with the next column, or with a sleeping previous one; one colTransfers
-  // call for both (Metal inlines it whole at each call: cold compile, docs/webgpu.md B5)
-  let mine = u32(select(z, x, axis == 0) & 1) == P.pairParity;
-  var pair = false; var pa = vec2i(x, z); var pb = vec2i(x, z);
-  if (mine) { if (inGrid(next)) { pair = true; pb = next.xz; } }
-  else if (inGrid(prev) && !colAwake(prev.x, prev.z)) { pair = true; pa = prev.xz; }
-  if (pair) { colTransfers(pa.x, pa.y, pb.x, pb.y, axis); }
-  // a side of the grid on this axis is open: this thread owns the column, so its face to the void too
-  if (mine && P.edge == 1u && !inGrid(next)) { colEdges(x, z); }
-  if (mine && P.edge == 1u && !inGrid(prev)) { colEdges(x, z); }
+  colPairsColumn(x, z);
 }
 `;
 

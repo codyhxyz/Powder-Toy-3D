@@ -150,9 +150,12 @@ test('radial gravity: the column passes run the radial face stages, and a liquid
   assert.match(plan, /\|\| radialDrip\) \{\s*\/\/ Real SI flight/);
   // columns.js RADIAL: each kernel's radial stage, then return, before any of the runs' code (vertical gravity
   // runs none of it; tools/v2/radial-spread-check.mjs executes it)
-  for (const [code, stage, first] of [[v2RunsWGSL(g), 'colRadRuns', 'colScan(x, z, true);'], [v2PairsWGSL(g), 'colRadPairs', 'let here = vec3i(x, 0, z);']]) {
-    const main = code.slice(code.lastIndexOf('@compute')), at = main.indexOf(`if (P.gravMode == 2u) { ${stage}(x, z); return; }`);
-    assert.ok(at > 0 && at < main.indexOf(first), `${stage} branches first`);
+  for (const [code, thread, stage, first] of [[v2RunsWGSL(g), 'colRunsColumn', 'colRadRuns', 'colScan(cx, cz, side < 0);'], [v2PairsWGSL(g), 'colPairsColumn', 'colRadPairs', 'if (P.pairStage == 0u) {']]) {
+    // (the kernel's main is its column thread, columns.js colRunsColumn / colPairsColumn)
+    const main = code.slice(code.lastIndexOf('@compute'));
+    assert.match(main, new RegExp(`\\n  ${thread}\\(x, z\\);\\n\\}`), `${thread} is the main's body`);
+    const body = code.slice(code.indexOf(`fn ${thread}(`)), at = body.indexOf(`if (P.gravMode == 2u) { ${stage}(x, z); return; }`);
+    assert.ok(at > 0 && at < body.indexOf(first), `${stage} branches first`);
   }
 });
 

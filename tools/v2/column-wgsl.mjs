@@ -17,7 +17,9 @@ export const TRANSLATED = ['colMove', 'colEta', 'colStiff', 'colDepth', 'colFlux
   'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colCrown', 'colLayer', 'colDepthAt', 'colFloats', 'colFloor', 'colSends', 'colStratify',
   // radial gravity (columns.js RADIAL)
   'colRadInside', 'colRadPull', 'colRadAxis', 'colRadSign', 'colRadMass', 'colRadHead', 'colRadWetBelow', 'colRadCovered', 'colRadDemand',
-  'colRadNote', 'colRadRuns', 'colRadTowardPlus', 'colRadColumn', 'colRadPairs', 'colRadPair', 'colRadFace', 'colRadPackAmount', 'colRadSendAmount'];
+  'colRadNote', 'colRadRuns', 'colRadTowardPlus', 'colRadPairs', 'colRadFace', 'colRadPackAmount', 'colRadSendAmount',
+  // the kernels' column threads (v2runs, v2pairs main)
+  'colRunsColumn', 'colPairsColumn'];
 // the f32 functions (division allowed: never on integers)
 export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colStepGravity', 'colV1Age', 'colV1Hit', 'colShockOnSpeed', 'colDampTick', 'colLimit', 'colFall', 'colShockLand', 'colV1FallSpeed', 'colV1Fall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown', 'colLayer', 'colDepthAt', 'colSends',
   'colRadPull', 'colRadHead', 'colRadDemand'];
@@ -235,6 +237,9 @@ export class ColumnGrid {
       colCrownAzimuth: (x, y, z) => { let h = Math.imul(x, 73856093) ^ Math.imul(y, 19349663) ^ Math.imul(z, 83492791) ^ Math.imul(g.P.tick, 2654435761) ^ COLUMN.CROWN_SALT; h = Math.imul(h ^ (h >>> 16), 0x7feb352d); h = Math.imul(h ^ (h >>> 15), 0x846ca68b); return ((h ^ (h >>> 16)) >>> 8) / 16777216; },
       cos: Math.cos, sin: Math.sin,
       colPending: (x, y, z) => (g.events[slotOf([x, y, z])] & 1) !== 0,
+      // the column a side away (face6's order), wrapped by mEdge, as { x, y } = (x, z); in the grid
+      colNeighbour: (x, z, side) => { const [nx, nz] = g.edge([x + [1, -1, 0, 0][side], z + [0, 0, 1, -1][side]]); return { x: nx, y: nz }; },
+      colInside: n => n.x >= 0 && n.y >= 0 && n.x < g.nx && n.y < g.nz,
       colDetonate: (x, y, z) => { g.events[slotOf([x, y, z])] |= 1; g.markAt(x, y, z); },
       colAwake: (x, z) => { for (let by = 0; by < g.by; by++) if (g.awake[(x >> 2) + g.bx * ((z >> 2) + g.bz * by)]) return true; return false; },
       colSetDemand: (x, y, z, axis, t, head) => { g.demand[2 * slotOf([x, y, z]) + (axis >> 1)] = (Math.min(t, COLUMN.DEMAND_MAX) | (Math.min(255, Math.max(0, Math.round(head * COLUMN.HEAD_Q))) << 24)) >>> 0; },
@@ -289,33 +294,17 @@ export class ColumnGrid {
     for (let b = 0; b < this.nb; b++) if (this.awake[b]) this.summarize(b);
     const cols = [];
     for (let z = 0; z < this.nz; z++) for (let x = 0; x < this.nx; x++) if (this.ctx.colAwake(x, z)) cols.push([x, z]);
-    if (this.P.gravMode !== 2) {
-      // v2runs: settle each awake column; read its sleeping neighbours' records (the halo)
+    // v2runs, then the pair stages (columns.js colRunsColumn, colPairsColumn: the kernels' column threads), and
+    // under vertical gravity the jets; radial gravity (columns.js RADIAL) runs the same threads' radial stages
+    if (this.P.gravMode !== 2 || !this.stillRadial) {
       this.onStage?.('v2runs');
-      for (const [x, z] of cols) {
-        this.ctx.colScan(x, z, true);
-        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const n = this.edge([x + dx, z + dz]);
-          if (this.#inside(n) && !this.ctx.colAwake(n[0], n[1])) this.ctx.colScan(n[0], n[1], false);
-        }
-      }
+      for (const [x, z] of cols) this.ctx.colRunsColumn(x, z);
       for (const [axis, stage, parity] of pairOrder(this.tick)) {
         Object.assign(this.P, { pairAxis: axis, pairStage: stage, pairParity: parity });
         this.onStage?.('v2pairs');
-        for (const [x, z] of cols) this.#pairThread(x, z, axis, stage, parity);
+        for (const [x, z] of cols) this.ctx.colPairsColumn(x, z);
       }
-      this.onStage?.('jets');
-      this.jets();
-    } else if (!this.stillRadial) {
-      // radial gravity (columns.js RADIAL): v2runs writes every face's demand, v2pairs stage 0 each column's
-      // y faces, the transfer stages the pairs' x and z faces
-      this.onStage?.('v2runs');
-      for (const [x, z] of cols) this.ctx.colRadRuns(x, z);
-      for (const [axis, stage, parity] of pairOrder(this.tick)) {
-        Object.assign(this.P, { pairAxis: axis, pairStage: stage, pairParity: parity });
-        this.onStage?.('v2pairs');
-        for (const [x, z] of cols) this.ctx.colRadPairs(x, z);
-      }
+      if (this.P.gravMode !== 2) { this.onStage?.('jets'); this.jets(); }
     }
     let n = this.parts.length ? 1 : 0; for (const b of this.busy) n += b;
     this.busyIn = Uint8Array.from(this.busy);
@@ -323,26 +312,6 @@ export class ColumnGrid {
     if (this.quietTicks >= 8 && this.idleAt < 0) this.idleAt = this.tick - 7;
     if (n) this.idleAt = -1;
     return n;
-  }
-  // v2pairs main (columns.js v2PairsKernel), on a grid without loop edges
-  #pairThread(x, z, axis, stage, parity) {
-    const ctx = this.ctx, asleep = ([a, b]) => this.#inside([a, b]) && !ctx.colAwake(a, b);
-    const ends = (ax) => { const d = ax === 0 ? [1, 0] : [0, 1]; return [this.edge([x + d[0], z + d[1]]), this.edge([x - d[0], z - d[1]])]; };
-    if (stage === 0) {
-      for (const ax of [0, 2]) {
-        const [next, prev] = ends(ax);
-        if (this.#inside(next)) ctx.colFluxes(x, z, next[0], next[1], ax);
-        if (asleep(prev)) ctx.colFluxes(prev[0], prev[1], x, z, ax);
-      }
-      return;
-    }
-    const [next, prev] = ends(axis);
-    if (((axis === 0 ? x : z) & 1) === parity) {
-      if (this.#inside(next)) ctx.colTransfers(x, z, next[0], next[1], axis);
-      if (this.P.edge === 1 && !this.#inside(next)) ctx.colEdges(x, z);
-      if (this.P.edge === 1 && !this.#inside(prev)) ctx.colEdges(x, z);
-    }
-    else if (asleep(prev)) ctx.colTransfers(prev[0], prev[1], x, z, axis);
   }
   #inside([x, z]) { return x >= 0 && z >= 0 && x < this.nx && z < this.nz; }
   // mEdge on a column: wrapped under loop edges, else as it is
