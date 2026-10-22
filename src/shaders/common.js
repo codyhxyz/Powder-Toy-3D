@@ -366,6 +366,16 @@ export function stateLayout(opts) {
     ...(o.act ? [buf(4, o.act === 'read_write')] : []),
   ];
 }
+// The World render source's chunk words (world/renderSource.js: a drawn copy of state A and B per chunk,
+// in the World's render interchange format), declared here with their accessors, as the state is
+// (tools/check-state-access.mjs). Raw u32 words: never loaded as floats, so no NaN payload is
+// canonicalized. The CELL pack reads them (shaders/worldCellAdapter.js worldCellPackWGSL).
+export const sourceChunkWGSL = (group, bindingA, bindingB) => /* wgsl */ `
+@group(${group}) @binding(${bindingA}) var<storage,read> A: array<vec4u>;
+@group(${group}) @binding(${bindingB}) var<storage,read> B: array<vec4u>;
+fn sourceWordsA(s: u32) -> vec4u { return A[s]; }
+fn sourceWordsB(s: u32) -> vec4u { return B[s]; }`;
+
 // The state layouts every family builds on (docs/webgpu.md C4), and the
 // prelude options that declare them: prelude(g, STATE_OPTS.STATE_RW) with
 // layouts [L.TABLES, L.STATE_RW, ...].

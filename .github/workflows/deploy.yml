@@ -17,11 +17,9 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The checks and the build. Publishing (the last job) waits for this and the V2 suite's long checks.
   deploy:
     runs-on: ubuntu-latest
-    environment:
-      name: production
-      url: https://tpt3d.codyh.xyz
     permissions:
       contents: read
     steps:
@@ -161,8 +159,59 @@ jobs:
       - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
       - run: node tools/hybrid-check.mjs   # CPU/Naga: all hybrid producers, actual stage layouts and six grid shapes
       - run: node tools/hybrid-test-view-check.mjs   # CPU-only: explicit Test activation, teardown, and warning UI
+      - run: node tools/v2/cpu-suite.mjs --skip-long   # Physics V2's CPU checks (fake GPU, CPU twins, Naga) and the import/state-access lints; the long ones run in v2-long
       - run: npm run build
       - run: node tools/check-local-map-build.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          retention-days: 1
+
+  # The V2 CPU suite's long checks (column-wgsl-check: minutes), beside the deploy job's.
+  v2-long:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Cache CPU WGSL validator
+        uses: actions/cache@v4
+        id: naga-cache
+        with:
+          path: ~/.cargo/bin/naga
+          key: ${{ runner.os }}-naga-cli-30.0.1
+      - name: Install CPU WGSL validator
+        if: steps.naga-cache.outputs.cache-hit != 'true'
+        run: |
+          cargo install naga-cli --version 30.0.1 --locked
+      - name: Verify CPU WGSL validator
+        run: |
+          test "$("$HOME/.cargo/bin/naga" --version)" = "30.0.1"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - run: node tools/v2/cpu-suite.mjs --only-long
+
+  publish:
+    needs: [deploy, v2-long]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://tpt3d.codyh.xyz
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
       - name: Deploy to Cloudflare Pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

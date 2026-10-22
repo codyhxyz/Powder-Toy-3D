@@ -1,6 +1,7 @@
 // Concrete CELL transport. Native source/half bytes never become JS floats.
 import { uniformStruct } from '../gpu/params.js';
 import { brickFrag, WorldBrickParams } from './passes.js';
+import { sourceChunkWGSL } from './common.js';
 export { WorldBrickParams };
 export const worldCellClassifierWGSL = g => brickFrag(g, { world: true });
 const ro = binding => ({ binding, visibility: 4, buffer: { type: 'read-only-storage' } });
@@ -14,8 +15,7 @@ export const WORLD_CELL_PACK_LAYOUTS = [
 ];
 export const worldCellPackWGSL = /* wgsl */ `
 ${CellPackParams.wgsl}
-@group(0) @binding(0) var<storage,read> A: array<vec4u>;
-@group(0) @binding(1) var<storage,read> B: array<vec4u>;
+${sourceChunkWGSL(0, 0, 1)}
 @group(0) @binding(2) var<storage,read> flow: array<vec2u>;
 @group(0) @binding(3) var<storage,read> aeration: array<vec2u>;
 @group(0) @binding(4) var<storage,read> deco: array<u32>;
@@ -36,10 +36,10 @@ fn putAux(r: u32, v: vec4u) { let a = auxAddress(r); textureStore(outAux,a.xy,a.
 @compute @workgroup_size(64)
 fn main(@builtin(local_invocation_index) s: u32) {
   let src = jobs[0] + s;
-  let a = A[src];
+  let a = sourceWordsA(src);
   let pixel = vec3i(vec3u((P.page.x % P.page.y) * 8u + (s & 7u), ((P.page.x / P.page.y) % P.page.z) * 8u + (s >> 3u), P.page.x / (P.page.y * P.page.z)));
   textureStore(outA,pixel.xy,pixel.z,a);
-  textureStore(outB,pixel.xy,pixel.z,B[src]);
+  textureStore(outB,pixel.xy,pixel.z,sourceWordsB(src));
   let flags = jobs[4u+s];
   var f = vec2u(0u); var aer = vec2u(0u); var d = 0u;
   if ((flags & 1u) != 0u) { f = flow[src]; }
