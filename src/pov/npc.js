@@ -347,7 +347,8 @@ export function createNpc({ env, ai, home = () => null, style = 'axeman', team =
       if (alive && it.tool) {
         pick();
         ctx.sim = sim; ctx.dt = dt; ctx.stepsPerFrame = w.stepsPerFrame; ctx.toolRate = body.perks.toolRate;
-        // (V2: its tools' clock is the ticks the frame ran, as the player's: pov/index.js ctx.nativeDt)
+        // (its tools' clock is the frame's time, as the player's and V1's: tools/action.js toolDt; nativeDt is
+        // the game time the frame ran, for what moves with the world: the physgun's hold)
         ctx.nativeDt = sim?.compact ? nativeSeconds(w.stepsPerFrame) : undefined;
         ctx.primary = it.primary; ctx.secondary = it.secondary;
         ctx.primaryPressed = it.primaryPressed; ctx.secondaryPressed = it.secondaryPressed;

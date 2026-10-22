@@ -105,7 +105,9 @@ assert.equal(carry({}, 2), 0, 'a new grid starts its own carry');
 const consoleWire = readFileSync(new URL('../../src/wire/console.js', import.meta.url), 'utf8');
 assert(/sim\.compact \? scriptTicks\(sim, n\) : n/.test(consoleWire), 'the console steps V2 by V1 steps');
 const fnBody = name => app.slice(app.indexOf(`function ${name}()`), app.indexOf('\n}', app.indexOf(`function ${name}()`)));
-assert(/for \(let i = 0; i < LEGACY_STEPS_PER_TICK; i\+\+\) scripts\?\.beforeStep\(\)/.test(fnBody('nativeBeforeStep')), 'beforesim fires per V1 step under V2');
-assert(/for \(let i = 0; i < LEGACY_STEPS_PER_TICK; i\+\+\) scripts\?\.afterStep\(\)/.test(fnBody('nativeAfterStep')), 'aftersim fires per V1 step under V2');
+// (their order around the tick, V1's B A B A B A B [tick] A: tools/v2/clocks-v1-check.mjs, with the real Lua)
+assert(/const scriptSteps = legacyStepHooks\(\(\) => scripts\?\.beforeStep\(\), \(\) => scripts\?\.afterStep\(\)\);/.test(app), 'the console\'s step hooks, per V1 step');
+assert(/^\s*scriptSteps\.before\(\);/m.test(fnBody('nativeBeforeStep')), 'beforesim fires per V1 step under V2');
+assert(/^\s*scriptSteps\.after\(\);/m.test(fnBody('nativeAfterStep')), 'aftersim fires per V1 step under V2');
 
 console.log('V2 clocks: view/cloud clock at V1 speed across engines, rest ticks keep clock and hooks with nothing recorded, console steps in V1 steps: passed');
