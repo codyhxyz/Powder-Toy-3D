@@ -158,7 +158,8 @@ export function strokeDabs(center, end = center, grow = [0, 0, 0], radius = 1) {
 export const FLOOD_MAX_CELLS = 1 << 18;
 const N6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
 
-// a: state A read back (fetchA layout, RGBA floats per atlas texel); g: the
+// a: state A read back (fetchA layout, RGBA floats per atlas texel), or under V2 a byte a texel,
+// its element id (sim.readNativeIds); g: the
 // grid layout; texel(x, y, z): a cell's texel in it (sim.js cellTexel);
 // start: [x, y, z]; id: the element the region is made of.
 // openSides: the grid's x and z walls aren't walls (a World's window), so a
@@ -167,7 +168,8 @@ const N6 = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
 // (inclusive), or { error: 'start' | 'cap' | 'edge' }.
 export function floodRegion(a, g, texel, start, { id, maxY = g.ny - 1, cap = FLOOD_MAX_CELLS, openSides = false }) {
   const { nx, ny, nz } = g;
-  const idAt = (x, y, z) => Math.round(a[texel(x, y, z) * 4]);
+  // (V2 reads a byte a texel, the id alone: sim.readNativeIds)
+  const idAt = a instanceof Uint8Array ? (x, y, z) => a[texel(x, y, z)] : (x, y, z) => Math.round(a[texel(x, y, z) * 4]);
   const [sx, sy, sz] = start;
   const top = Math.min(maxY, ny - 1);
   if (!(sx >= 0 && sx < nx && sy >= 0 && sy <= top && sz >= 0 && sz < nz) || idAt(sx, sy, sz) !== id) return { error: 'start' };
@@ -230,8 +232,9 @@ export function regionMask(g, texel, cells, [dx, dz] = [0, 0]) {
 // the simulation was replaced meanwhile).
 export async function runFill(sim, req, { openSides = false, before, valid = () => true } = {}) {
   const o = sim.origin.clone();
-  // Edit predicates must include hidden fractional liquids, not visual dither.
-  const a = await sim.readStateAAsync({ physical: true });
+  // Edit predicates must include hidden fractional liquids, not visual dither. V2 reads its own
+  // cells' ids (a byte a texel), not V1's projection exported and read back whole.
+  const a = sim.compact?.isReady ? await sim.readNativeIds() : await sim.readStateAAsync({ physical: true });
   if (sim.disposed || !valid()) return { error: 'gone' };
   const texel = (x, y, z) => sim.cellTexel(x, y, z);
   const r = floodRegion(a, sim.g, texel, req.cell, { id: req.id, maxY: req.maxY, openSides });

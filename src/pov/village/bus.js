@@ -44,14 +44,21 @@ export async function cityBusArrivalClear(sim, feet, player) {
   const lo = [Math.floor(feet.x - half + eps), Math.floor(feet.y), Math.floor(feet.z - half + eps)];
   const hi = [Math.floor(feet.x + half - eps), Math.ceil(feet.y + height) - 1, Math.floor(feet.z + half - eps)];
   if (lo[0] < 0 || lo[1] < 1 || lo[2] < 0 || hi[0] >= g.nx || hi[1] >= g.ny || hi[2] >= g.nz) return false;
+  const clear = (id, support) => support ? ELEMENTS[id]?.kind === K.SOLID : id === E.EMPTY;
+  // V2: its own cells' ids in one read (sim.readNativeIds: the physical view, so a liquid film is
+  // liquid, not the drawn projection's empty), not V1's projection exported and read cell by cell.
+  if (sim.compact?.isReady) {
+    const ids = await sim.readNativeIds();
+    for (let x = lo[0]; x <= hi[0]; x++) for (let z = lo[2]; z <= hi[2]; z++) {
+      for (let y = lo[1] - 1; y <= hi[1]; y++) if (!clear(ids[sim.cellTexel(x, y, z)], y === lo[1] - 1)) return false;
+    }
+    return true;
+  }
   const reads = [];
   for (let x = lo[0]; x <= hi[0]; x++) for (let z = lo[2]; z <= hi[2]; z++) {
     for (let y = lo[1] - 1; y <= hi[1]; y++) {
       const support = y === lo[1] - 1;
-      reads.push(sim.readCell(x, y, z).then(([a]) => {
-        const id = Math.round(a[0]);
-        return support ? ELEMENTS[id]?.kind === K.SOLID : id === E.EMPTY;
-      }));
+      reads.push(sim.readCell(x, y, z).then(([a]) => clear(Math.round(a[0]), support)));
     }
   }
   return (await Promise.all(reads)).every(Boolean);

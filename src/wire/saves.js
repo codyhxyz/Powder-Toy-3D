@@ -111,6 +111,13 @@ const savesWire = {
     saves = createSaves({
       settings, getSim: () => app.sim, getWin: () => app.win,
       prepareCapture: () => app.physics.v2?.ready,
+      // A V2-mode save opened while V2 presents a ready owner: its physicsV2 section restores V2's
+      // exact words (restoreState above), so its V1 cells needn't be written first (saves/game.js).
+      nativeLoad: (h, sections) => {
+        const v2 = app.physics.v2, data = sections.get('physicsV2');
+        if (app.physics.mode !== 'v2' || !v2?.isReady || v2 !== app.sim?.compact || data === undefined) return false;
+        try { return decodeV2State(data, h.dims).mode === 'v2'; } catch { return false; }
+      },
       header: () => {
         const m = mapOf(settings);
         return {

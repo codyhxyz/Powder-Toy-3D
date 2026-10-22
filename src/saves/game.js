@@ -55,13 +55,14 @@ export function createSaves(app) {
         if (sim !== app.getSim()) throw new SaveRefused('The map changed while saving');
       }
       // the conversion to the atlas order and the particles' kernels, built before the moment
-      await Promise.all([sim.prepare('toAtlas'), sim.rays.prepare?.(), app.prepareCapture?.()]);
+      await Promise.all([sim.prepare(sim.saveStatePass ?? 'toAtlas'), sim.rays.prepare?.(), app.prepareCapture?.()]);
       // Interaction readbacks can begin during preparation too.
       while (win?.pending || sim.deco?.pending) await Promise.all([win?.pending, sim.deco?.pending]);
       if (sim !== app.getSim() || sim.disposed || win !== app.getWin() || identity !== win?.historyIdentity) throw new SaveRefused('The map changed while saving');
       // ---- from here to the readbacks, one task: everything below is the same moment ----
       const g = sim.g;
-      const reads = [sim.readState()];
+      // (V2: its own cells, read as V1's builds read `cells`: sim.readSaveState)
+      const reads = [sim.readSaveState ? sim.readSaveState() : sim.readState()];
       let rays = null;
       const raysCursor = sim.rays.cursor ?? 0;   // (where the particle brush writes next)
       if (sim.rays.active) rays = sim.rays.readList();
@@ -108,14 +109,22 @@ export function createSaves(app) {
     if (!await app.prepare(header)) return null;
     const sim = app.getSim(), win = app.getWin(), g = sim.g;
     if ([g.nx, g.ny, g.nz].some((n, i) => n !== header.dims[i])) throw new Error(`the save is ${header.dims.join('×')}, the grid ${g.nx}×${g.ny}×${g.nz}`);
-    const [A, B] = sim.blankState();   // (texels past the last cell keep a blank state's values)
-    unpackCells(header.dims, (x, y, z) => cellTexel(g, x, y, z), cells, [A, B]);
+    // A save whose V2 section restores V2's exact cells in a session V2 presents (app.nativeLoad):
+    // its V1 `cells` aren't unpacked and written for V2 to replace (sim.loadNative).
+    const native = !!app.nativeLoad?.(header, sections);
+    let fill;
+    if (native) fill = () => sim.loadNative();
+    else {
+      const [A, B] = sim.blankState();   // (texels past the last cell keep a blank state's values)
+      unpackCells(header.dims, (x, y, z) => cellTexel(g, x, y, z), cells, [A, B]);
+      fill = () => sim.load(A, B);
+    }
     if (header.world) {
       if (!win) throw new Error('a world save, but no world is loaded');
       const store = sections.get('worldStore'), planted = sections.get('worldPlanted');
       if (!store || !planted) throw new Error('this world save has no world edits');
-      win.loadSaved(header.world.origin, () => sim.load(A, B), store, planted, sections.get('worldInteractions'), sections.get('worldNativeStore'));
-    } else sim.load(A, B);
+      win.loadSaved(header.world.origin, fill, store, planted, sections.get('worldInteractions'), sections.get('worldNativeStore'));
+    } else fill();
     // the particles in flight (sim.load let the old ones go). The step counter
     // isn't saved: storms and the cloud deck time themselves by it, and it only runs forward.
     const rays = sections.get('rays');
