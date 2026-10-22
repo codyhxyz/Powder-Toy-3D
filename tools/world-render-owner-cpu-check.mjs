@@ -43,7 +43,7 @@ let head=array<u32,7>(${kind==='opaque'?'1':'0'}u,0u,0u,0u,0u,0u,${kind==='cryst
   return miss[0]===READY.GI;
 }
 async function settle(gpu,promise){let done=false,error,result;promise.then(r=>{done=true;result=r;},e=>{done=true;error=e;});for(let i=0;i<2000&&!done;i++){gpu.finish();await tick();}assert(done,'native final boundary failed to settle');if(error)throw error;return result;}
-export async function setup({size=[16,8,8],feedback=true,sourceKinds=null}={}) {
+export async function setup({size=[16,8,8],feedback=true,sourceKinds=null,ground=null}={}) {
   const f=await fixture({size}),gpu=f.gpu,events=[],sources=[],histories=[],tablesUsed=[],giJobs=[];
   const tableBuffer=gpu.createBuffer({label:'real fixture tables',size:tableLayout().Tables.size,usage:128|4|8});
   const tableGroup=gpu.bindGroup(f.sim.L.TABLES,[{binding:0,resource:{buffer:tableBuffer}}],'fixture TABLES');
@@ -102,6 +102,8 @@ export async function setup({size=[16,8,8],feedback=true,sourceKinds=null}={}) {
   gpu.encoder=(label,frame=false)=>{const e=original(label,frame),push=fn=>frame?gpu._push(fn):e.ops.push(fn);e.clearBuffer=(b,o=0,n=b.size-o)=>push(()=>bytes(b).fill(0,o,o+n));e.beginComputePass=()=>{let pipe;const groups=[];return {setPipeline:p=>pipe=p,setBindGroup:(i,g)=>groups[i]=g,dispatchWorkgroups:n=>dispatch(pipe,[...groups],n,push),end(){}};};return e;};
   gpu.frame._command=()=>{};gpu.frame._commandDone=()=>{};
   gpu.frame.compute=()=>{let pipe;const groups=[];return {setPipeline:p=>pipe=p,setBindGroup:(i,g)=>groups[i]=g,dispatchWorkgroups:n=>dispatch(pipe,groups,n,fn=>gpu._push(fn))};};
+  // A ground twin (world/scenes/index.js ground) turns on the sun-caster forecast.
+  if(ground)f.win.scene.ground=ground;
   owner=installWorldRender(f.win);
   const frame={sceneVersion:'scene',schemaVersion:1,configVersion:1,values:{cam:[0,0,0]},physicsOrigin:[0,0,0],globalKey:[1],sun:{direction:[1,1,1],basisRevision:1},external:Object.fromEntries(['mediaNoise','packedMesh','sourceAppearance'].map(name=>[name,{name}]))};
   return {...f,owner,events,sources,histories,tablesUsed,giJobs,frame,async close(){await settle(gpu,owner.dispose());await f.finish();}};
@@ -331,4 +333,24 @@ test('a load classifies in batches of whole cores, each brick once, none past th
   assert.equal(seen.size,bricks.length);assert.equal(batches.flat().length,bricks.length);
   const owner=new Map();batches.forEach((batch,k)=>{for(const r of batch){const c=core(r.brick);assert(!owner.has(c)||owner.get(c)===k,'a core never splits across batches');owner.set(c,k);}});
   assert.deepEqual(worldClassifyBatches([[1,2,3]]),[[{brick:[1,2,3],channels:READY.CELL}]]);
+});
+
+// The sun-caster forecast (world/worldSunForecast.js): the eye probe's sun tile
+// and its casters are in the first attempt, so neither the GI source's
+// unknown Sun nor the sun pass's unknown CELL caster restarts it. Without a
+// ground twin the same load takes three attempts (2026-10-21).
+for(const forecast of [false,true])test(`sun casters ${forecast?'forecast from the ground twin: one attempt':'found by feedback: three attempts'}`,async()=>{
+  const f=await setup({ground:forecast?()=>2:null});
+  const c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.CELL}]));
+  const p=f.owner.progress;
+  assert.equal(p.stage,'probe-ready');
+  assert.equal(p.attempts,forecast?1:3,`attempts ${p.attempts}`);
+  assert.equal(f.events.includes('unknown Sun'),!forecast);
+  assert.equal(f.events.includes('unknown CELL'),!forecast);
+  // The eye at the world's corner sits on a tile corner: its probe's four
+  // bilinear taps read four tiles (the mock GI source asks for the first only).
+  assert.equal(p.sunTiles,forecast?4:1);
+  if(forecast)assert(p.forecastBricks>0&&f.owner.atlas.lookup([3,0,0],READY.CELL).known,'caster brick forecast and resident');
+  else assert.equal(p.forecastBricks,0);
+  await settle(f.gpu,f.owner.accept(c,post(c)));c.release();await f.close();
 });

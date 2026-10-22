@@ -10,6 +10,7 @@ import { createWorldSunLighting } from '../gfx/worldSunLighting.js';
 import { createLightingTransport, worldLightingNear } from '../gfx/worldLightingBatch.js';
 import { createWorldAppearance } from '../gfx/worldAppearance.js';
 import { worldSunProjection, WORLD_SUN_PITCH } from '../world/worldSun.js';
+import { worldColumnTops, forecastSunCasters, forecastEyeTiles } from '../world/worldSunForecast.js';
 
 const copy = v => v?.elements ? Array.from(v.elements) : typeof v?.toArray === 'function' ? v.toArray() : ArrayBuffer.isView(v) ? Array.from(v) : Array.isArray(v) ? v.map(copy) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k,x]) => [k,copy(x)])) : v;
 const frozen = v => { const c=copy(v); const freeze=x=>{if(x&&typeof x==='object'){Object.values(x).forEach(freeze);Object.freeze(x);}return x;};return freeze(c); };
@@ -57,6 +58,9 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   const metadata=createWorldLightingRecords(gpu,{worldSize:size,sourceOwner:source,submissionProvider:metadataFeedback});
   const transport=createLightingTransport(gpu.device);
   let history=null, active=null, queued=null, accepted=null, dead=false, serial=0, failure=null, resetting=false, resetWork=null;
+  // Sun-caster forecast (world/worldSunForecast.js): the scene's ground twin, and
+  // the tiles whose casters were already asked for on this projection grid.
+  const tops=worldColumnTops({size,scene:win.scene,P:win.P}), forecastTiles=new Set();let forecastGrid=null;
   const ownedSources=new Set(),ownedProbes=new Set(),ownedGlow=new Set();
   const brick=i=>[i%dims[0],Math.floor(i/dims[0])%dims[1],Math.floor(i/(dims[0]*dims[1]))];
   const index=b=>worldBrickIndex(atlas.bookLayout,b);
@@ -158,9 +162,30 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       else atlas.publish({lightJobs:jobs,dependencyToken:dependency(t)});
     }catch(e){for(const j of jobs)try{atlas.cancel(j);}catch{}throw e;}
   }
+  // Before the CELL stage: ask for the casters of every sun tile in the demand
+  // whose casters this grid has not forecast yet, and on a transaction's first
+  // attempt for the eye probe's tiles. A tile's casters were found by its own
+  // blind sun pass, one restart per wave of tiles (and through the ground to the
+  // floor); forecast, that pass finds them resident. Only adds requests: the
+  // feedback still closes whatever the ground twin missed.
+  async function forecast(t) {
+    if(!tops)return;
+    const projection=worldSunProjection(size,t.frame.sun.direction),grid=projection.tiles.join(',');
+    if(grid!==forecastGrid){forecastGrid=grid;forecastTiles.clear();}
+    if(!t.forecastEye){t.forecastEye=true;add(t,[],forecastEyeTiles(projection,t.frame.values?.cam));}
+    const tiles=[...t.sunTiles].filter(i=>!forecastTiles.has(i));
+    if(!tiles.length)return;
+    t.stage='forecast';
+    const bricks=new Set();
+    await forecastSunCasters({size,direction:t.frame.sun.direction,tiles,tops,mark:i=>bricks.add(i)});
+    for(const i of tiles)forecastTiles.add(i);
+    t.forecastBricks=(t.forecastBricks??0)+bricks.size;
+    add(t,[...bricks].map(i=>({brick:brick(i),channels:READY.CELL})));
+  }
   async function attempt(t) {
     t.attempts=(t.attempts??0)+1;t.stage='cell';
     await clearAttempt(t);
+    await forecast(t);t.stage='cell';
     const ids=new Set([...metadata.indices,...ownedSources,...ownedProbes,...t.requirements.keys()]);
     for(const i of ownedGlow)t.requirements.set(i,(t.requirements.get(i)??0)|READY.GLOW);
     const glowCores=new Map();
@@ -283,7 +308,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   function next() {if(queued&&!dead){const q=queued;queued=null;try{start(q.frame,q.requirements).then(q.resolve,q.reject);}catch(e){releaseFrame(q.frame);q.reject(e);}}wake();}
   const api={atlas,cells,metadata,
     // Passive counters only: inspecting readiness must never advance work.
-    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,sunTiles:t.sunTiles.size,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
+    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,sunTiles:t.sunTiles.size,forecastBricks:t.forecastBricks??0,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
     get busy(){return !!active||!!queued;},get failure(){return failure??metadataFeedback.failure??active?.feedback?.failure??active?.error??null;},get state(){return dead?'disposed':resetting?'resetting':metadataFeedback.failure||active?.feedback?.failure?'blocked':active?.state??'idle';},
     request(frame,requirements=[]){live();const f=captureFrame(frame);if(active){if(queued){releaseFrame(queued.frame);queued.resolve(null);}return new Promise((resolve,reject)=>{queued={frame:f,requirements:frozen(requirements),resolve,reject};});}try{return start(f,requirements);}catch(e){releaseFrame(f);throw e;}},
     probe(){live();return active?.state==='probe-ready'?active.bundle.retain():null;},
@@ -301,7 +326,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       resetWork=(async()=>{
         if(queued){releaseFrame(queued.frame);queued.resolve(null);queued=null;}
         const t=active;active=null;if(t){await t.work.catch(()=>{});await retire(t);}await fence();
-        accepted?.bundle.release();accepted?.cut.release();accepted=null;history?.dispose();history=null;metadata.reset();ownedSources.clear();ownedProbes.clear();ownedGlow.clear();
+        accepted?.bundle.release();accepted?.cut.release();accepted=null;history?.dispose();history=null;metadata.reset();ownedSources.clear();ownedProbes.clear();ownedGlow.clear();forecastTiles.clear();forecastGrid=null;
         const cut=source.recordCut(gpu.frame,{sceneVersion,configVersion:schemaVersion});
         try{gpu.flush('WORLD reset cut capture');await fence();cells.bindCut(cut);cells.reset();}finally{cut.release();}
         failure=null;wake();

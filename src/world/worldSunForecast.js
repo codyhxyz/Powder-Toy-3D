@@ -1,0 +1,172 @@
+// CPU forecast of a WORLD load's sun-shadow closure (wire/worldRender.js).
+//
+// Why a load took ~9 attempts (Island 35k -> 213k bricks, 2026-10-21): a WORLD
+// ray treats a brick it has no page for as empty and walks on, asking for it
+// (shaders/worldAccess.js worldPage; World pages carry no empty-space distance,
+// so skipEmpty steps one brick at a time). So every layer of the demand is
+// found only once the layer before it is resident: the eye's bricks, then the
+// sun tiles of what the eye hits, then those tiles' casters (each texel's walk
+// from the world's top down to its first opaque cell), then the field support
+// next to the hits, and every new sun tile (the scene's receivers, GI sources)
+// starts that chain again. And a blind walk does not stop at the ground it
+// cannot see yet: it asks for every brick down to the world's floor.
+//
+// The scene already knows where its ground is (scene.ground, the CPU twin every
+// World scene has). This forecasts the same walks against it before an attempt
+// runs: for every sun tile that enters the demand (the eye probe's, the
+// scene's, GI sources'), its casters from the world's entry to the first brick
+// under the ground plus a margin, and the eye probe's own tiles up front.
+// (The eye's whole view is not forecast: a heightfield walk of the view asked
+// for 2-3x the 35k bricks the real eye pass does, 2026-10-21 Node model.)
+// It only adds requests. The GPU feedback stays the authority, so a forecast
+// miss (a tree or roof over the ground, a dug hole, a cave mouth) costs the
+// round trip it always did, and the pixels are the ones the feedback loop
+// converges to anyway: the same pages, fetched in fewer passes.
+import { worldSunProjection, WORLD_SUN_PITCH, WORLD_SUN_TILE } from './worldSun.js';
+import { BRICK } from '../shaders/common.js';
+
+// Forecast sun rays run on a square grid this many cells apart in the light's
+// plane. A brick's cross-section seen from any direction holds a disk BRICK
+// wide, and a square grid of pitch s hits every disk wider than s·√2, so every
+// brick a tile's beam crosses is crossed by at least one forecast ray.
+export const FORECAST_SUN_SPACING = BRICK / Math.SQRT2;
+// Bricks a forecast walk keeps going past the first brick it expects matter in:
+// the ground twin is sampled once per brick column (its centre), so a slope or
+// a step inside the column can put the real first hit up to this much lower.
+export const FORECAST_STOP_MARGIN = 2;
+// A walk expects matter in a brick only under the LOWEST ground of the brick
+// columns within this many columns of it: a texel ray between two forecast rays
+// can slip past a cliff's edge or a roof's rim that the nearer forecast ray
+// stopped on, and go down its face (Node model, 2026-10-21: 0.1-0.5% of the
+// casters were missed without it, which costs the whole restart anyway).
+export const FORECAST_STOP_DILATE = 1;
+// Forecast rays this many grid steps past each tile edge: a brick only a sliver
+// of which lies inside the tile's beam is crossed by its texels but may sit
+// between the in-tile grid points.
+export const FORECAST_EDGE_RAYS = 1;
+// Start a ray a hair inside the box so its first brick is the one it enters.
+const ENTRY_NUDGE = 1e-4;
+// Yield to the page between forecast tiles, after this much work (ms).
+export const FORECAST_SLICE_MS = 8;
+
+// The CPU twin's estimate of where a brick column's matter starts, per brick
+// column, cached: a column of open water (top at or under the sea) counts as
+// unknown down to the floor, since sunlight goes through water to the bed. A
+// scene without a ground twin forecasts nothing.
+export function worldColumnTops({ size, scene, P }) {
+  if (typeof scene?.ground !== 'function' || !Array.isArray(size) || size.length !== 3) return null;
+  const bx = Math.ceil(size[0] / BRICK), bz = Math.ceil(size[2] / BRICK), sea = Number.isFinite(P?.sea) ? P.sea : 0;
+  const tops = new Int32Array(bx * bz).fill(-1);
+  let calls = 0;
+  const top = (x, z) => {
+    const i = x + bx * z;
+    let h = tops[i];
+    if (h >= 0) return h;
+    calls++;
+    const cx = Math.min(size[0] - 1, x * BRICK + BRICK / 2), cz = Math.min(size[2] - 1, z * BRICK + BRICK / 2);
+    let g = 0;
+    try {
+      const lo = [x * BRICK, z * BRICK], hi = [lo[0] + BRICK, lo[1] + BRICK];
+      g = scene.mayContainCellsXZ && !scene.mayContainCellsXZ(lo, hi, 0) ? 0 : scene.ground(cx, cz, P);
+    } catch { g = 0; }
+    h = Number.isFinite(g) ? Math.max(0, Math.floor(g)) : 0;
+    if (sea > 0 && h <= sea) h = 0;
+    tops[i] = h;
+    return h;
+  };
+  return Object.freeze({ top, get calls() { return calls; } });
+}
+
+// Brick DDA (Amanatides & Woo) of the ray o + t·d (cells) through the world's
+// brick grid. visit(x, y, z) returns true to stop.
+export function walkWorldBricks(size, o, d, visit) {
+  const dims = size.map((n) => Math.ceil(n / BRICK));
+  let t0 = 0, t1 = Infinity;
+  for (let i = 0; i < 3; i++) {
+    if (d[i] === 0) { if (o[i] < 0 || o[i] >= size[i]) return; continue; }
+    let a = -o[i] / d[i], b = (size[i] - o[i]) / d[i];
+    if (a > b) [a, b] = [b, a];
+    if (a > t0) t0 = a;
+    if (b < t1) t1 = b;
+  }
+  if (!(t0 < t1)) return;
+  const t = t0 + ENTRY_NUDGE * (t1 - t0);
+  const cell = [0, 0, 0], step = [0, 0, 0], tMax = [Infinity, Infinity, Infinity], tDelta = [Infinity, Infinity, Infinity];
+  for (let i = 0; i < 3; i++) {
+    const p = (o[i] + d[i] * t) / BRICK;
+    cell[i] = Math.min(dims[i] - 1, Math.max(0, Math.floor(p)));
+    if (d[i] > 0) { step[i] = 1; tDelta[i] = BRICK / d[i]; tMax[i] = t + (cell[i] + 1 - p) * tDelta[i]; }
+    else if (d[i] < 0) { step[i] = -1; tDelta[i] = -BRICK / d[i]; tMax[i] = t + (p - cell[i]) * tDelta[i]; }
+  }
+  for (;;) {
+    if (visit(cell[0], cell[1], cell[2])) return;
+    const ax = tMax[0] < tMax[1] ? (tMax[0] < tMax[2] ? 0 : 2) : (tMax[1] < tMax[2] ? 1 : 2);
+    cell[ax] += step[ax];
+    if (cell[ax] < 0 || cell[ax] >= dims[ax]) return;
+    tMax[ax] += tDelta[ax];
+  }
+}
+
+// One forecast walk: marks every brick from the entry to FORECAST_STOP_MARGIN
+// bricks past the first one the ground twin puts matter in. Returns that first
+// matter brick (a receiver), or null when the ray leaves the world first.
+function forecastWalk(size, tops, o, d, mark) {
+  const dims = size.map((n) => Math.ceil(n / BRICK));
+  let hit = null, past = -1;
+  walkWorldBricks(size, o, d, (x, y, z) => {
+    mark(x + dims[0] * (y + dims[1] * z));
+    if (past >= 0) return ++past >= FORECAST_STOP_MARGIN;
+    let h = Infinity;
+    for (let k = -FORECAST_STOP_DILATE; k <= FORECAST_STOP_DILATE; k++) for (let i = -FORECAST_STOP_DILATE; i <= FORECAST_STOP_DILATE; i++) {
+      h = Math.min(h, tops.top(Math.min(dims[0] - 1, Math.max(0, x + i)), Math.min(dims[2] - 1, Math.max(0, z + k))));
+    }
+    if (y * BRICK < h) { hit = [x, y, z]; past = 0; return FORECAST_STOP_MARGIN === 0; }
+    return false;
+  });
+  return hit;
+}
+
+const now = () => (globalThis.performance?.now ? performance.now() : Date.now());
+const pause = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+// The casters of sun tiles `tiles` (projection tile ids, worldSunProjection's
+// virtual grid) for sun `direction`: every brick a texel's walk crosses down
+// to the forecast ground. mark(index) gets each brick's canonical index
+// (x + X·(y + Y·z)). Async: yields between tiles.
+export async function forecastSunCasters({ size, direction, tiles, tops, mark, yieldEvery = FORECAST_SLICE_MS }) {
+  const projection = worldSunProjection(size, direction), { u, v, sun } = projection.basis;
+  const [x0, y0, w] = projection.tiles, span = WORLD_SUN_TILE * WORLD_SUN_PITCH, depth = projection.depth[0];
+  const n = Math.ceil(span / FORECAST_SUN_SPACING), d = sun.map((s) => -s);
+  let slice = now();
+  for (const tile of tiles) {
+    const a0 = (x0 + tile % w) * span, b0 = (y0 + Math.floor(tile / w)) * span;
+    for (let j = -FORECAST_EDGE_RAYS; j <= n + FORECAST_EDGE_RAYS; j++) {
+      for (let i = -FORECAST_EDGE_RAYS; i <= n + FORECAST_EDGE_RAYS; i++) {
+        // Grid points on both tile edges (clamped), and past them.
+        const at = (k) => k < 0 || k > n ? k * FORECAST_SUN_SPACING : Math.min(span, k * FORECAST_SUN_SPACING);
+        const a = a0 + at(i), b = b0 + at(j);
+        const o = [0, 1, 2].map((k) => u[k] * a + v[k] * b + sun[k] * depth);
+        forecastWalk(size, tops, o, d, mark);
+      }
+      if (yieldEvery != null && now() - slice > yieldEvery) { await pause(); slice = now(); }
+    }
+  }
+}
+
+// The sun tiles the eye's point probe reads first (shaders/worldPoint.js
+// sunShadowAt(cam) -> lighting.js sunMapShadowAt: its four bilinear taps around
+// the eye's light-space position), so the first attempt renders them with
+// their casters instead of learning them from the probe one round later.
+export function forecastEyeTiles(projection, cam) {
+  if (!Array.isArray(cam) && !ArrayBuffer.isView(cam)) return [];
+  const p = Array.from(cam);
+  if (p.length !== 3 || !p.every(Number.isFinite)) return [];
+  const { u, v } = projection.basis, [x0, y0, w, h] = projection.tiles, out = new Set();
+  const dot = (a) => a[0] * p[0] + a[1] * p[1] + a[2] * p[2];
+  const q = [dot(u) / WORLD_SUN_PITCH, dot(v) / WORLD_SUN_PITCH], i0 = q.map((n) => Math.floor(n - 0.5));
+  for (let k = 0; k < 4; k++) {
+    const tx = Math.floor((i0[0] + (k & 1)) / WORLD_SUN_TILE) - x0, ty = Math.floor((i0[1] + (k >> 1)) / WORLD_SUN_TILE) - y0;
+    if (tx >= 0 && ty >= 0 && tx < w && ty < h) out.add(tx + w * ty);
+  }
+  return [...out].sort((a, b) => a - b);
+}
