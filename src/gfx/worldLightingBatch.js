@@ -80,28 +80,41 @@ export function completeLightingBatch({ frame, queue, feedbackBuffer, wordCount,
 
 // All outputs are already native texels; transport only records scoped copies.
 export function createLightingTransport(device) {
+  // One page's copy, checked against its Atlas job's provenance.
+  function writer({ job, kind, token, source, copies, origin }) {
+    if (!['source', 'gi', 'glow'].includes(kind)) throw new TypeError('lighting transport kind');
+    const tick = kind === 'source' ? 'sourceTick' : kind === 'gi' ? 'giTick' : 'glowTick';
+    const dependency = job?.dependencies?.[kind];
+    if (job?.kind !== 'light' || job.epoch !== token.epoch || job.sourceRevision !== token.sourceRevision || job[tick] !== token.lightingTick ||
+      dependency?.id !== token.dependencySetID || dependency?.version !== token.dependencyVersion) throw new Error('lighting Atlas job provenance mismatch');
+    if (kind === 'glow') return { job, kind, record(encoder, bindings) {
+      encoder.copyTextureToTexture({ texture: source, origin }, bindings.destinations[0], [1, 1, 1]);
+    } };
+    const stride = kind === 'gi' ? 8 : 16;
+    if (copies.length !== (kind === 'gi' ? 4 : 1) || copies.some((c, i) => c.to !== i * stride || c.size !== stride)) throw new Error('exact packed lighting ranges required');
+    return { job, kind, record(encoder, bindings) {
+      copies.forEach((c, i) => encoder.copyBufferToTexture({ buffer: source, offset: c.from }, bindings.destinations[i], [1, 1, 1]));
+    } };
+  }
   async function write({ atlas, job, kind, token, source, copies, origin, retain }) {
     const held = retain();
     try {
-      if (!['source', 'gi', 'glow'].includes(kind)) throw new TypeError('lighting transport kind');
-      const tick = kind === 'source' ? 'sourceTick' : kind === 'gi' ? 'giTick' : 'glowTick';
-      const dependency = job?.dependencies?.[kind];
-      if (job?.kind !== 'light' || job.epoch !== token.epoch || job.sourceRevision !== token.sourceRevision || job[tick] !== token.lightingTick ||
-        dependency?.id !== token.dependencySetID || dependency?.version !== token.dependencyVersion) throw new Error('lighting Atlas job provenance mismatch');
-      if (kind === 'glow') {
-        atlas.recordLightWrite(job, kind, { record(encoder, bindings) {
-          encoder.copyTextureToTexture({ texture: source, origin }, bindings.destinations[0], [1, 1, 1]);
-        } });
-      } else {
-        const stride = kind === 'gi' ? 8 : 16;
-        if (copies.length !== (kind === 'gi' ? 4 : 1) || copies.some((c, i) => c.to !== i * stride || c.size !== stride)) throw new Error('exact packed lighting ranges required');
-        atlas.recordLightWrite(job, kind, { record(encoder, bindings) {
-          copies.forEach((c, i) => encoder.copyBufferToTexture({ buffer: source, offset: c.from }, bindings.destinations[i], [1, 1, 1]));
-        } });
-      }
+      const w = writer({ job, kind, token, source, copies, origin });
+      atlas.recordLightWrite(w.job, w.kind, { record: w.record });
       // recordLightWrite has submitted; this is not a source-side hidden submit.
       await device.queue.onSubmittedWorkDone();
     } finally { held.release(); }
+  }
+  // Many pages' copies (outputs' atlasWrite entries) in one Atlas submission
+  // and one wait: none is recorded unless all check out.
+  async function writeAll(atlas, entries) {
+    const held = [];
+    try {
+      for (const e of entries) held.push(e.retain());
+      const writes = entries.map(writer);
+      if (writes.length) atlas.recordLightWrites(writes);
+      await device.queue.onSubmittedWorkDone();
+    } finally { held.forEach(h => h.release()); }
   }
   // Retained outputs are immutable, completed producer publications. Close
   // the normal Frame once before Atlas copies; no staging or per-brick flush.
@@ -133,5 +146,5 @@ export function createLightingTransport(device) {
       await device.queue.onSubmittedWorkDone();
     } finally {retire();}
   }
-  return { write, restore };
+  return { write, writeAll, restore };
 }

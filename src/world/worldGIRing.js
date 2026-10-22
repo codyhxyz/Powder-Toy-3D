@@ -60,6 +60,51 @@ export function worldGIBrickNear(eye, b, radius = WORLD_GI_NEAR_RADIUS) {
   for (let k = 0; k < 3; k++) { const d = (b[k] + 0.5) * BRICK - eye[k]; s += d * d; }
   return s <= radius * radius;
 }
+// Cells per axis in worldGIReach's keys: past any World's bricks over a span.
+const REACH_KEY = 1 << 16;
+// The bricks whose SOURCE a load's gathers read at full detail: those inside
+// the ring of the eye (where a gather asks for a missing one), and those
+// within the same radius of a probe the load gathers: its burial test (its
+// own brick and its six neighbours) and its rays' first GI.NEAR_STEPS steps,
+// whose every brick has its centre within the radius of the probe's (the
+// radius's own rule, above). Every other read is a ray's far stride past the
+// ring, which takes a held SOURCE or the ground twin (worldGI.js
+// worldGISourceRing). So only these are a load's SOURCE candidates
+// (wire/worldRender.js worldSourceEligible): on Island a load's SOURCE stage
+// computed every brick the view asked for out to the far shore, ~78k on each
+// restart, and publishing them took 20-28 s (real Chrome, 2026-10-22).
+// The probes are the ones the load declares (the eye's, the view's, the ones
+// it owns); a later load's births, found by its SOURCE phase on bricks inside
+// this reach, read past it as any far stride does.
+// Returns a test of brick coordinates; no eye or no ring: every brick (as
+// without rings). Probes are hashed by cells of a ring's span in bricks, so a
+// test looks at the 27 cells around its brick.
+export function worldGIReach(eye, probes = [], radius = WORLD_GI_NEAR_RADIUS) {
+  if (!(radius >= 0) || !eye) return () => true;
+  const span = Math.max(1, Math.ceil(radius / BRICK)), cells = new Map(), r2 = radius * radius;
+  // a cell's key: its coordinates offset by one (a neighbour of cell 0 is -1)
+  const key = (x, y, z) => ((z + 1) * REACH_KEY + (y + 1)) * REACH_KEY + (x + 1);
+  for (const p of probes) {
+    const k = key(Math.floor(p[0] / span), Math.floor(p[1] / span), Math.floor(p[2] / span));
+    if (!cells.has(k)) cells.set(k, []);
+    cells.get(k).push(p);
+  }
+  return (b) => {
+    if (worldGIBrickNear(eye, b, radius)) return true;
+    if (!cells.size) return false;
+    const cx = Math.floor(b[0] / span), cy = Math.floor(b[1] / span), cz = Math.floor(b[2] / span);
+    for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const list = cells.get(key(cx + dx, cy + dy, cz + dz));
+      if (!list) continue;
+      for (const p of list) {
+        let s = 0;
+        for (let k = 0; k < 3; k++) { const d = (b[k] - p[k]) * BRICK; s += d * d; }
+        if (s <= r2) return true;
+      }
+    }
+    return false;
+  };
+}
 // The heightfield's stand-in SOURCE coverage of a brick at height y (bricks)
 // in a column whose ground twin top is `top` (cells; worldCoarseCasters'
 // heights): the share of its rows under the top, along x and z, and its whole

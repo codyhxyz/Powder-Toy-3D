@@ -600,12 +600,15 @@ export class WorldRenderAtlas {
     return job;
   }
   updateLight(job, data) { this._job(job, 'light'); return this.update(job, data); }
-  recordLightWrite(job, kind, options) {
-    const p=this._job(job,'light'),lease=options.restoreDeclaration;
-    if(lease)validateWorldLightingRestore(lease,{job,kind});
-    const result=this.recordPageWrite(job,kind,options);
-    if(lease){p.restoreDeclarations??={};p.restoreDeclarations[kind]=lease;p.provenance=frozen({...p.provenance,[kind]:lease.provenance});}
-    else if(p.provenance?.[kind]){const next={...p.provenance};delete next[kind];p.provenance=frozen(next);delete p.restoreDeclarations[kind];}
+  recordLightWrite(job, kind, options) { return this.recordLightWrites([{ ...options, job, kind }])[0]; }
+  // Many light pages' writes in one submission (gfx/worldLightingBatch.js writeAll):
+  // a submission and a wait per page was 20-28 s for an Island load (2026-10-22).
+  recordLightWrites(writes) {
+    const ps=writes.map(({job,kind,restoreDeclaration:lease})=>{const p=this._job(job,'light');if(lease)validateWorldLightingRestore(lease,{job,kind});return p;});
+    const result=this.recordPageWrites(writes.map(({job,kind,auxMetadata,record})=>({job,kind,auxMetadata,record})));
+    writes.forEach(({kind,restoreDeclaration:lease},k)=>{const p=ps[k];
+      if(lease){p.restoreDeclarations??={};p.restoreDeclarations[kind]=lease;p.provenance=frozen({...p.provenance,[kind]:lease.provenance});}
+      else if(p.provenance?.[kind]){const next={...p.provenance};delete next[kind];p.provenance=frozen(next);delete p.restoreDeclarations[kind];}});
     return result;
   }
   writerBindings(job, kind) {

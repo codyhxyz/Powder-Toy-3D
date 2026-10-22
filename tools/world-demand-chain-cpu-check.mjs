@@ -23,6 +23,12 @@
 // pixels crossed and every far surface's probes and glow (Island's hill: 495k
 // bricks packed, 21k gathers at 512x288; real Chrome: 481k bricks, 49k
 // gathers, then out of GPU memory, 2026-10-22).
+// And the light bounce's SOURCES are only the bricks its gathers read at full
+// detail (world/worldGIRing.js worldGIReach), and a restart runs no SOURCE job
+// its last attempt completed: fails on ff605115, where every brick the view
+// asked for was a SOURCE, recomputed on every restart (Island's hill: ~100k
+// a restart, 300k in all; real Chrome: ~78k a restart, 20-28 s to publish
+// each time, 2026-10-22).
 // CPU only: no browser, no GPU.
 //   node --test tools/world-demand-chain-cpu-check.mjs
 //   node tools/world-demand-chain-cpu-check.mjs --report [scene]   (per-attempt rows, every policy)
@@ -144,10 +150,17 @@ const POLICIES = {
   'demand chain (aeef0d0c)': { forecast: 'view', sources: 'eligible', resetBirths: true },
   'sun rings (b48dd7e4)': { forecast: 'view', sources: 'eligible', resetBirths: true, rings: true },
   'near bounce (18a914b0)': { forecast: 'view', sources: 'eligible', resetBirths: true, rings: true, giRing: WORLD_GI_NEAR_RADIUS, glow: true },
-  'this fix': { forecast: 'view', sources: 'eligible', resetBirths: true, rings: true, giRing: WORLD_GI_NEAR_RADIUS, glow: true, viewRing: true, budget: VIEW_BUDGET.cell },
+  'view rings (bf0f3dfb)': { forecast: 'view', sources: 'eligible', resetBirths: true, rings: true, giRing: WORLD_GI_NEAR_RADIUS, glow: true, viewRing: true, budget: VIEW_BUDGET.cell },
+  'this fix': { forecast: 'view', sources: 'eligible', resetBirths: true, rings: true, giRing: WORLD_GI_NEAR_RADIUS, glow: true, viewRing: true, budget: VIEW_BUDGET.cell, sourceReach: true, carry: true },
 };
 // Every brick the light bounce asked for lies inside its near ring of the eye.
 const farAsked = (r) => [...r.giAsked].filter((i) => !worldGIBrickNear(r.cam, r.w.brick(i)));
+// Each attempt's SOURCES past its gathers' reach (every one, with no reach).
+const unreached = (row) => [...row.sourceSet].filter((i) => !row.reached?.(i));
+// SOURCE jobs a restart ran again: an attempt that follows one whose SOURCE
+// stage completed (it restarted from its gathers or the view) runs only the
+// SOURCES that one did not have.
+const rerun = (rows) => rows.slice(1).reduce((n, row, k) => n + (['gather', 'view'].includes(rows[k].stage) ? Math.max(0, row.sourceJobs - [...row.sourceSet].filter((i) => !rows[k].sourceSet.has(i)).length) : 0), 0);
 
 if (process.argv.includes('--report')) {
   const only = process.argv[process.argv.indexOf('--report') + 1];
@@ -155,14 +168,14 @@ if (process.argv.includes('--report')) {
   const where = process.argv.includes('--camera') ? process.argv[process.argv.indexOf('--camera') + 1] : 'start';
   for (const scene of picked.filter((s) => !only || s.key === only)) for (const [name, policy] of Object.entries(POLICIES).filter(([n]) => !policyOnly || n === policyOnly)) {
     const t0 = performance.now();
-    const r = await load(scene, { ...policy, maxAttempts: 30 }, (row) => console.log(`  ${scene.key} ${where} | ${name} | att ${row.attempt} ${row.stage}: req ${row.requirements} classified ${row.classified} (support ${row.support}, glow cores ${row.glowCores}, dropped ${row.dropped}) sun ${row.sunTiles} coarse ${row.coarseTiles} sources ${row.sources} gathers ${row.gathers}`), where);
-    console.log(`${scene.key} ${where} | ${name}: ${r.done ? 'complete' : 'NOT complete'} after ${r.attempts} attempts, ${r.requirements} bricks (${r.classified} packed, ${r.glowCores} glow cores, ${r.dropped} dropped), ${r.sunTiles} sun tiles (${r.coarseTiles} coarse), ${r.sources} sources, ${r.gathers} gathers, view-found tiles ${r.viewTiles} (${((performance.now() - t0) / 1000).toFixed(1)} s)`);
+    const r = await load(scene, { ...policy, maxAttempts: 30 }, (row) => console.log(`  ${scene.key} ${where} | ${name} | att ${row.attempt} ${row.stage}: req ${row.requirements} classified ${row.classified} (support ${row.support}, glow cores ${row.glowCores}, dropped ${row.dropped}) sun ${row.sunTiles} coarse ${row.coarseTiles} sources ${row.sources} (SOURCE jobs run ${row.sourceJobs}) gathers ${row.gathers}`), where);
+    console.log(`${scene.key} ${where} | ${name}: ${r.done ? 'complete' : 'NOT complete'} after ${r.attempts} attempts, ${r.requirements} bricks (${r.classified} packed, ${r.glowCores} glow cores, ${r.dropped} dropped), ${r.sunTiles} sun tiles (${r.coarseTiles} coarse), ${r.sources} sources, ${r.sourceJobs} SOURCE jobs run in all, ${r.gathers} gathers, view-found tiles ${r.viewTiles} (${((performance.now() - t0) / 1000).toFixed(1)} s)`);
   }
 } else {
-  for (const scene of picked) for (const [where, { settle, attempts = WORLD_LOAD_ATTEMPTS }] of Object.entries(CAMERAS[scene.key] ?? { start: { settle: true } })) test(`${scene.key} from its ${where}: ${settle ? `a load settles within ${attempts} attempts and ${WORLD_LOAD_BRICKS} bricks, ` : `a load stays under the ${WORLD_HELD_BRICKS} bricks Chrome held, `}its first attempt under ${WORLD_FIRST_ATTEMPT_BRICKS} bricks, the scene's own round included: within the GPU page budget, at most ${WORLD_VIEW_LOAD_GATHERS} gathers, its light bounce asks for nothing past its near ring, every sun tile shadowed`, async () => {
+  for (const scene of picked) for (const [where, { settle, attempts = WORLD_LOAD_ATTEMPTS }] of Object.entries(CAMERAS[scene.key] ?? { start: { settle: true } })) test(`${scene.key} from its ${where}: ${settle ? `a load settles within ${attempts} attempts and ${WORLD_LOAD_BRICKS} bricks, ` : `a load stays under the ${WORLD_HELD_BRICKS} bricks Chrome held, `}its first attempt under ${WORLD_FIRST_ATTEMPT_BRICKS} bricks, the scene's own round included: within the GPU page budget, at most ${WORLD_VIEW_LOAD_GATHERS} gathers, its light bounce asks for nothing past its near ring and computes only the SOURCES its gathers reach, none again on a restart, every sun tile shadowed`, async () => {
     const rows = [];
     const r = await load(scene, { ...POLICIES['this fix'], maxAttempts: settle ? attempts + 1 : HILL_ATTEMPTS }, (row) => rows.push(row), where);
-    console.log(`${scene.key} ${where}: ${rows.map((row) => `att ${row.attempt} ${row.stage} req ${row.requirements} (support ${row.support}) sun ${row.sunTiles} coarse ${row.coarseTiles} src ${row.sources} gat ${row.gathers}`).join(' | ')} | total ${r.requirements}, light bounce asked ${r.giAsked.size}`);
+    console.log(`${scene.key} ${where}: ${rows.map((row) => `att ${row.attempt} ${row.stage} req ${row.requirements} (support ${row.support}) sun ${row.sunTiles} coarse ${row.coarseTiles} src ${row.sources} (jobs ${row.sourceJobs}) gat ${row.gathers}`).join(' | ')} | total ${r.requirements}, SOURCE jobs ${r.sourceJobs}, light bounce asked ${r.giAsked.size}`);
     if (settle) assert(r.done, `not complete after ${r.attempts} attempts (${r.requirements} bricks, ${r.sunTiles} sun tiles)`);
     if (settle) assert(r.attempts <= attempts, `${r.attempts} attempts`);
     assert(r.done, `not complete after ${r.attempts} attempts`);
@@ -171,6 +184,8 @@ if (process.argv.includes('--report')) {
     assert.equal(r.dropped, 0, 'the load had to drop bricks to fit the budget');
     assert(r.gathers <= WORLD_VIEW_LOAD_GATHERS, `the load gathers ${r.gathers} probes`);
     assert.deepEqual(farAsked(r), [], 'the light bounce asked for bricks past its near ring');
+    for (const row of rows) assert.equal(unreached(row).length, 0, `attempt ${row.attempt}: ${unreached(row).length} of its ${row.sources} SOURCES past every gather's reach`);
+    assert.equal(rerun(rows), 0, 'a restart ran SOURCE jobs its last attempt completed');
     assert(rows[0].requirements <= WORLD_FIRST_ATTEMPT_BRICKS, `first attempt asks for ${rows[0].requirements} bricks`);
     // the view's own sun set is known up front: the scene's feedback adds no
     // tile (the hill's grazing view adds far ones: every full-detail tile has
@@ -188,6 +203,13 @@ if (process.argv.includes('--report')) {
       const t = coarseSunDepth(casters, o, sun.map((n) => -n));
       assert(Number.isFinite(t) && t > 0 && t <= WORLD_SUN_COARSE_NO_HIT, `coarse tile ${tile}: depth ${t}`);
     }
+  });
+  test('the SOURCES before their reach are what this check catches: Island from its hill (ff605115) computes the far view\'s, and again on every restart', async () => {
+    const island = picked.find((s) => s.key === 'island'), rows = [];
+    const r = await load(island, { ...POLICIES['view rings (bf0f3dfb)'], maxAttempts: HILL_ATTEMPTS }, (row) => rows.push(row), 'hill');
+    assert(rows.some((row) => unreached(row).length > 0), 'ff605115\'s SOURCES were all within reach');
+    assert(r.sourceJobs > 2 * r.sources, `ff605115's restarts ran only ${r.sourceJobs} SOURCE jobs for ${r.sources} SOURCES`);
+    assert(rerun(rows) > 0, 'ff605115\'s restarts ran no SOURCE job again');
   });
   test('the view before its rings is what this check catches: Island from its hill (18a914b0) packs past the page budget and gathers far probes', async () => {
     const island = picked.find((s) => s.key === 'island');
