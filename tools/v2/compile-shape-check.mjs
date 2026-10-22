@@ -13,7 +13,7 @@ import { particlesWGSL } from '../../src/shaders/v2/particles.js';
 import { nativeDynamicsHead, v2BlockWGSL } from '../../src/shaders/v2.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
 import { marksLayout } from '../../src/shaders/common.js';
-import { ctPhase, ctRow, ctConvert, ctSetEnergy, ctEnergy, ctPastPhase, ctProduct, ctNew, ctPuff, CONTACT_ELEMENT_COUNT } from '../../src/v2/contact.js';
+import { ctPhase, ctRow, ctConvert, ctSetEnergy, ctEnergy, ctPastPhase, ctProduct, ctNew, ctPuff, ctRoll, CONTACT_ELEMENT_COUNT, CONTACT_CONSTANTS } from '../../src/v2/contact.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 
 // 1. call sites in the generated kernels (a definition is not a call)
@@ -81,14 +81,20 @@ for (const dims of [[32, 32, 32], [128, 128, 128]]) {
   }
 }
 
-// 2. ctPhase as it was (one ctConvert a branch, with phase-blast's puffs), against today's
+// 2. ctPhase as it was (one ctConvert a branch, with phase-blast's puffs), against today's.
+// A part-filled liquid that becomes a whole cell does so with its fill's chance, else it leaves
+// carrier air and no puff (contact.js ctPhase, TH-02), drawn from the tick's draw.
+const drawn = (c, id, random) => ctRow(c.id).kind === 3 && ctRow(id).kind !== 3 && c.fill < 65536
+  && ctRoll(Math.trunc(random * CONTACT_CONSTANTS.CT_ROLL_UNIT[1]), CONTACT_CONSTANTS.CT_FILL_SALT[1]) * 65536 >= c.fill;
+const whole = (c, id, random) => drawn(c, id, random) ? E.EMPTY : id;
 function ctPhaseBefore(input, surface, random) {
   if (ctRow(input.id).kind === 3 && input.fill === 0) return ctConvert(input, E.EMPTY, 0);
   let c = ctSetEnergy(input, ctEnergy(input));
   const r = ctRow(c.id);
   if (r.hotOut >= 0 && ctPastPhase(c, true)) {
-    c = ctConvert(c, ctProduct(r.hotOut, random), r.hotOf);
-    if (r.hotGas !== 0) {
+    const gone = drawn(c, ctProduct(r.hotOut, random), random), id = whole(c, ctProduct(r.hotOut, random), random);
+    c = ctConvert(c, id, r.hotOf);
+    if (r.hotGas !== 0 && !gone) {
       if (c.id !== input.id) c.request = ctPuff(c.request, r.hotGas);
       else if (c.pending >= 0) c.pendingGas = r.hotGas;
     }
@@ -97,18 +103,20 @@ function ctPhaseBefore(input, surface, random) {
   if (r.coldOut >= 0 && ctPastPhase(c, false)) {
     let id = ctProduct(r.coldOut, random);
     if (c.id === E.STEAM && surface === 0) id = E.CLOUD;
+    const gone = drawn(c, id, random);
+    id = whole(c, id, random);
     c = ctConvert(c, id, r.coldOf);
-    if (r.coldGas !== 0) {
+    if (r.coldGas !== 0 && !gone) {
       if (c.id !== input.id) c.request = ctPuff(c.request, r.coldGas);
       else if (c.pending >= 0) c.pendingGas = r.coldGas;
     }
     return c;
   }
-  if (c.tq > r.meltQ) return ctConvert(c, E.LAVA, r.meltInto);
+  if (c.tq > r.meltQ) return ctConvert(c, whole(c, E.LAVA, random), r.meltInto);
   if (c.id === E.LAVA) {
     let of = c.ctype;
     if (of <= 0 || of >= CONTACT_ELEMENT_COUNT) of = E.STONE;
-    if (c.tq < ctRow(of).meltQ - 600) return ctConvert(c, of, 0);
+    if (c.tq < ctRow(of).meltQ - 600) return ctConvert(c, whole(c, of, random), 0);
   }
   return c;
 }
