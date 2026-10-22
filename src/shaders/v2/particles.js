@@ -718,7 +718,7 @@ fn dReactOne(t: u32, s: u32, p: vec3i) -> bool {
   // and the air pressure on a charge with a crushP (dReact compares them): V1 react.js pOn, the highest of
   // its cell's (it flies in its host's air; a solid holds none) and its host's open faces' (dOpenPressure),
   // as couplePlan reads a resident cell's (dPressureOn). The faces in a loop bound at run time (dAxes), so
-  // the cell read is inlined once there.
+  // their read is inlined once.
   let chargeId = particle.c0 & 255u;
   if (dCrush(chargeId) > 0.0 && mAirPressure()) {
     var on = -1e30; if (cls(chargeId) != C_SOLID) { on = dPressureCell(p); }
