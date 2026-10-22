@@ -64,7 +64,7 @@ async function block() {
   for (let k = 0; k < 20; k++) { await e.advance(1 / 60); out.push(await count('C4')); }
   return out;
 }
-async function rocket() {
+async function rocket(only) {
   const { e, count } = window.__blast, out = {};
   const { povGpu } = await import('/src/pov/gpu.js');
   // the rocket's edit, as rocket.tool.js records it (its kernels build on first use: retried until recorded)
@@ -73,6 +73,7 @@ async function rocket() {
     return false; };
   for (const [name, key, lo, hi, center] of [['rock', 'ROCK', [16, 0, 4], [19, 16, 27], { x: 14.5, y: 8.5, z: 16.5 }], ['wood', 'WOOD', [16, 0, 4], [19, 16, 27], { x: 14.5, y: 8.5, z: 16.5 }],
     ['sand', 'SAND', [0, 0, 0], [31, 5, 31], { x: 16.5, y: 7.5, z: 16.5 }]]) {
+    if (only && name !== only) continue;
     await e.create([32, 32, 32]); e.box(lo, hi, key); await e.advance(name === 'sand' ? 0.6 : 0.05);
     const before = await count(key, lo, hi), crater = await count(key, [10, 0, 10], [22, 16, 22]);
     out[name] = { fired: await fire(center) };
@@ -97,7 +98,8 @@ try {
     if (part === 'walls') { out = {}; for (const [name, fn, a] of [['walls', wallScene], ['TNT', chargeScene, 'TNT'], ['NITRO', chargeScene, 'NITRO']]) {
       out[name] = await page.evaluate(fn, a); console.log(`${engine} ${name}: ${JSON.stringify(out[name])} [${at()}]`); }
       out = { ...out.walls, TNT: out.TNT, NITRO: out.NITRO }; }
-    else out = await page.evaluate(part === 'block' ? block : rocket);
+    else if (part === 'rocket') { out = {}; for (const name of ['rock', 'sand', 'wood']) { Object.assign(out, await page.evaluate(rocket, name)); console.log(`${engine} rocket ${name}: ${JSON.stringify(out[name])} [${at()}]`); } }
+    else out = await page.evaluate(block);
     await page.evaluate(() => window.__blast.e.dispose());
     await page.close();
     console.log(`${engine}: ${JSON.stringify(out)} [${at()}]`);
@@ -108,9 +110,9 @@ try {
   const only = arg('--engine'), given = arg('--v1');
   const v1 = only === 'v2' ? (given ? JSON.parse(given) : null) : await run('v1');
   const v2 = only === 'v1' ? null : await run('v2');
-  if (!v1 || !v2) { console.log('one engine: no comparison'); process.exit(0); }
+  if (!v1 || !v2) console.log('one engine: no comparison');
   const near = (a, b, slack) => Math.abs(a - b) <= slack;
-  if (part === 'walls') {
+  if (!v1 || !v2) { /* (printed above) */ } else if (part === 'walls') {
     ok(v2.broken.metal === 0 && v1.broken.metal === 0, `metal never breaks: V1 ${v1.broken.metal}, V2 ${v2.broken.metal}`);
     for (const key of ['rock', 'brick', 'glass']) ok(near(v2.broken[key], v1.broken[key], Math.max(2, v1.broken[key] * 0.35)), `${key} broken: V1 ${v1.broken[key]}, V2 ${v2.broken[key]}`);
     ok(v1.TNT.glass > 0 && v1.NITRO.glass > 0 && near(v2.TNT.glass, v1.TNT.glass, Math.max(2, v1.TNT.glass * 0.35)) && near(v2.NITRO.glass, v1.NITRO.glass, Math.max(2, v1.NITRO.glass * 0.35)),
