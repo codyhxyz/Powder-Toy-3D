@@ -96,7 +96,7 @@ test('a face carries no more than V1\'s flow cap: its liquid\'s FLOW, paced as V
   // a deep mud face onto dry ground, already at the lane's Q_MAX: its next flux is V1's cap, no more
   const ctx = new ColumnGrid(4, 32, 4).ctx, rec = (r1, liq) => ctx.recMake(0, 32, r1, liq, 0, r1 * L.FULL, false, false);
   for (const [id, ok] of [[E.MUD, COLUMN_FLOW[E.MUD].q], [E.WATER, COLUMN_FLOW[E.WATER].q]]) {
-    const v = ctx.colFlux(rec(30, id), rec(0, 0), 0, 30, COLUMN.Q_MAX, COLUMN.Q_MAX, { x: 0, y: 0 }, { x: 0, y: 0 }, 0, COLUMN.FILM_DRY, false);
+    const v = ctx.colFlux(rec(30, id), rec(0, 0), 0, 30, COLUMN.Q_MAX, COLUMN.Q_MAX, { x: 0, y: 0 }, { x: 0, y: 0 }, 0, COLUMN.FILM_DRY, false, 0);
     assert.ok(v > 0 && v <= ok, `${ELEMENTS[id].key}: ${v} (V1's cap ${ok})`);
   }
 });
