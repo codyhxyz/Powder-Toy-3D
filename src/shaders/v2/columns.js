@@ -504,6 +504,14 @@ ${COLUMN_BREAKS.map(r => `  if (j == ${r.id}u) { into = ${r.into}; hard = ${f(r.
   storeMaterial(s, before, after);
   markBusy(p);
 }
+// V1's speed (quanta a pair step, paced: v2/gravity.js v1PaceRate) for a liquid of the run r flowing over a face at
+// s0: its orifice speed for the head over that row's centre (react.js forces: ORIFICE_CV·√(2gh), set at once, to
+// its FLOW). What V1's moving cell carries into a charge it runs into (colHitAhead)
+fn colV1Push(r: vec4u, s0: i32) -> f32 {
+  let h = max(colEta(r) - (f32(s0) + 0.5), 0.0);
+  let want = min(COL_ORIFICE_CV * sqrt(2.0 * colStepGravity() * h), colFlowSpeed(recLiq(r)) / COL_STEP_MS);
+  return want / (2.0 - min(want, 1.0)) * COL_FULL;
+}
 // The cells a flow of liq at v (quanta a pair step, paced) runs on into past the receiver (x, z), rows [y0, y1),
 // along the axis toward toward (±1): a charge there takes V1's hit (COLUMN_HIT, react.js shock) at V1's own speed
 // for that pace (v2/gravity.js v1PaceRate's inverse: u = 2r/(1 + r)), as V1's moving cell hits the charge it
@@ -681,15 +689,6 @@ fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, l
   if (drive > 0.0 || (drive == 0.0 && v > 0.0)) { hUp = ha; }
   v = v + acc * drive * min(1.0, COL_H_CAP / max(hUp, 1.0)) - colAdvect(u, up);
   if (drive == 0.0) { v = v * 0.5; }
-  // V1's head-driven speed: a liquid with a cell or more of level over its neighbour leaves at least at V1's
-  // orifice speed for the head over the face's bottom row (react.js forces: ORIFICE_CV·√(2gh) to its FLOW, set at
-  // once, not built up), at V1's pace (v2/gravity.js v1PaceRate)
-  if (abs(drive) >= 1.0) {
-    let h = max(select(hb, ha, drive > 0.0) - 0.5, 0.0);
-    let want = min(COL_ORIFICE_CV * sqrt(2.0 * colStepGravity() * h), colFlowSpeed(liq) / COL_STEP_MS);
-    let paced = want / (2.0 - min(want, 1.0)) * COL_FULL;
-    if (drive > 0.0) { v = max(v, paced); } else { v = min(v, 0.0 - paced); }
-  }
   if ((v > 0.0 && ha == 0.0) || (v < 0.0 && hb == 0.0)) { v = 0.0; }
   // the film rule as the dry tolerance: a face whose upwind wet depth is under FILM carries no flux, and onto dry
   // ground at its level none from under \`film\` (FILM_DRY: V1's films; a floating layer's FILM)
@@ -1195,10 +1194,8 @@ fn colFluxes(xa: i32, za: i32, xb: i32, zb: i32, axis: i32) {
       let plus = floats == 2;
       let rs = select(qb, qa, plus);
       let lo = max(recY0(qa), recY0(qb));
-      let h = colEta(rs) - (f32(lo) + 0.5);
-      if (h >= 1.0) {
-        let want = min(COL_ORIFICE_CV * sqrt(2.0 * colStepGravity() * h), colFlowSpeed(recLiq(rs)) / COL_STEP_MS);
-        colHitAhead(select(xb, xa, plus), select(zb, za, plus), axis, select(-1, 1, plus), want / (2.0 - min(want, 1.0)) * COL_FULL, lo, min(recR1(qa), recR1(qb)), recLiq(rs));
+      if (colEta(rs) - (f32(lo) + 0.5) >= 1.0) {
+        colHitAhead(select(xb, xa, plus), select(zb, za, plus), axis, select(-1, 1, plus), colV1Push(rs, lo), lo, min(recR1(qa), recR1(qb)), recLiq(rs));
       }
     }
     var ra = qa; var rb = qb; var la = colLayer(xa, za, i); var lb = colLayer(xb, zb, j);
@@ -1287,8 +1284,9 @@ fn colSends(xa: i32, za: i32, xb: i32, zb: i32, axis: i32, floating: bool) {
         let wet = s0 + i32(ceil(colDepth(rsend, s0, s1)));
         if (floating || colOver(colRec(xd, id, zd), s0)) { colPour(xs, zs, is, xd, zd, s0, s1, axis, select(-1.0, 1.0, plus), abs(v), head, n); }
         else { colTransfer(xs, zs, is, xd, zd, id, n); }
-        // what crossed runs on into the cell past the receiver at the face's wet rows (BL-9)
-        colHitAhead(xd, zd, axis, select(-1, 1, plus), abs(v), s0, wet, recLiq(rsend));
+        // what crossed runs on into the cell past the receiver at the face's wet rows, at V1's speed for it: the
+        // face's, or the head-driven speed V1 sets a flowing cell to (BL-9)
+        colHitAhead(xd, zd, axis, select(-1, 1, plus), max(abs(v), colV1Push(rsend, s0)), s0, wet, recLiq(rsend));
       }
     }
     // (transfers change a record's mass and end, never its y0, top or last flag)

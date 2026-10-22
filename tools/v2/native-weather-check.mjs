@@ -68,7 +68,7 @@ assert.deepEqual(calls.filter(c=>c.name.startsWith('testWave')).map(c=>c.name),[
 assert.equal(calls.at(-1).bind[1].entries[1].resource.buffer,sim.compactOwner.dynamics.air[1]);
 assert.equal(retired.at(-1).size,8*64);
 // Independent numerical oracle: calibrated SI pulse, not a 60Hz reinterpretation.
-close(WEATHER_SPEED_SI,72); close(WEATHER_SPEED_FLUX,65536*4); // 240 Hz source cells into lanes of quanta a 60 Hz tick
+close(WEATHER_SPEED_SI,72); close(WEATHER_SPEED_FLUX,65536*240/LANE_HZ); // 240 Hz source cells into lanes of quanta a pair step (columns.js COLUMN.LANE_HZ)
 // (a liquid's authored velocity, cells a 240 Hz step, reaches its native lanes as the same m/s)
 const authored=[0.01,-0.02,0.03];
 authored.map(v=>v*WEATHER_SPEED_FLUX).forEach((v,a)=>close(v/65536*LANE_HZ*CELL_M,authored[a]*240*CELL_M));
