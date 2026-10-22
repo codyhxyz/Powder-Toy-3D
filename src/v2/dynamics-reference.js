@@ -235,11 +235,12 @@ export const hitKE = (mi, mj, jSolid, u2) => 0.5 * (jSolid ? mi : mi * mj / (mi 
 // a lone landing's hit; that is no law of a step, so it is V1's measured fall (V1_SINKING_FALLS).
 // (A packet's landings are packetShockLandings', from the same laws.)
 // V1_SINKING_FALLS: measured on V1 (2026-10-22, tools/outcomes/engine-v1.js, each drop a 2×2 slab onto a 4×4×2
-// pool in a fresh 64×48×64 box, both phases): mercury on nitroglycerin goes off from 2 cells, the least fall
-// measured (2-9 cells all go off); mud from 15 at phase 0 and 16 at phase 1 (14 rests at both, 15 at phase 1).
-// Lava sets nitroglycerin off by its heat wherever it touches it (react.js heat, nitroglycerin's ignite); its
-// landing law is its own fall's.
-const V1_SINKING_FALLS = Object.freeze({ MERCURY: { NITRO: { fall: 2, phased: false } }, MUD: { NITRO: { fall: 15, phased: true } } });
+// pool in a fresh 64×48×64 box, both phases): mercury on nitroglycerin goes off from 2 cells (2-9 cells all go
+// off), and from 0 and 1 (tools/v2/runs-browser-check.mjs mercury, 2026-10-22: laid on an 8×8×2 pool, or dropped a
+// cell, it goes off within 3 ticks; BL-10): from any fall, 0; mud from 15 at phase 0 and 16 at phase 1 (14 rests
+// at both, 15 at phase 1). Lava sets nitroglycerin off by its heat wherever it touches it (react.js heat,
+// nitroglycerin's ignite); its landing law is its own fall's.
+const V1_SINKING_FALLS = Object.freeze({ MERCURY: { NITRO: { fall: 0, phased: false } }, MUD: { NITRO: { fall: 15, phased: true } } });
 export function v1ShockLaw(faller, charge) {
   const j = ELEMENTS[faller], k = ELEMENTS[charge], shock = k.blast?.shock ?? 0;
   if (!(shock > 0) || faller === charge || (j.kind !== K.POWDER && j.kind !== K.LIQUID) || !(j.grav > 0)) return null;
@@ -277,8 +278,10 @@ export function particleLandingSpeed(id, h) {
 export const PACKET_SHOCK_SLACK = 1 - 2 ** -16;
 /** A packet of matter landing on a charge (SHOCK_LANDINGS, packets' law): { faller, charge, cells, speed },
  * speed the m/s past which it sets the charge off, a packet's landing speed after V1's fall (particles.js dShockLand). */
+// (a law from any fall, fall 0: every landing at all, PACKET_ANY_LANDING m/s on)
+export const PACKET_ANY_LANDING = 2 ** -16;
 export const PACKET_SHOCK_LANDINGS = Object.freeze(SHOCK_LANDINGS.map(r =>
-  ({ ...r, speed: Math.fround(particleLandingSpeed(r.faller, r.cells * CELL_M) * PACKET_SHOCK_SLACK) })));
+  ({ ...r, speed: r.cells <= 0 ? PACKET_ANY_LANDING : Math.fround(particleLandingSpeed(r.faller, r.cells * CELL_M) * PACKET_SHOCK_SLACK) })));
 /** V1's shock on a packet's hit, as particles.js dShockHit reads it (CPU twin of its decision). mover: the
  * packet's element, target: the grid cell's; u: the closing speed (m/s) along the face; landing: along the
  * pull onto its upper face. Returns { target, mover }: whether each, a charge, goes off. */

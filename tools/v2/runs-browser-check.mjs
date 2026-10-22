@@ -4,12 +4,13 @@
 //   spread   a 4³ block of water on the floor: wet columns and its reach from the middle, by time
 //   drain    the outcome bench's hole tank (tests/liquids.js hole) in a 32³ box: the tank's level by time
 //   splash   a 2×2×2 block of water dropped 10 cells onto the floor: its footprint after landing
-//   wall     a 2×1×2 nitroglycerin slab 3 cells from a side wall, dropped 4, 6 and 8 cells (V1: move.js land
-//            throws it aside, react.js shock goes off against the wall)
+//   wall     a 2×1×2 nitroglycerin slab d cells from a side wall dropped h cells, [d, h] in WALL_CASES (V1: move.js
+//            land throws it aside, react.js shock goes off against the wall)
 //   mounds   4³ blocks of mud and of lava on the floor: their peak and footprint by time
 //   mercury  a 2×1×2 mercury slab onto a nitroglycerin pool 2 deep, 0, 1 and 2 cells over it
+//   outcomes the outcome bench's tests named by --outcomes (tools/outcomes/tests), their status and numbers
 // Without --v1 or --v2 both run (one launch, one GPU slot each: --v1 and --v2 split them).
-//   node tools/v2/runs-browser-check.mjs [--v1] [--v2] [--scenes spread,drain,...]
+//   node tools/v2/runs-browser-check.mjs [--v1] [--v2] [--scenes spread,drain,...] [--outcomes hole,yield,...]
 import { launchBrowser } from '../browser.mjs';
 import { startVite } from '../vite-server.mjs';
 import { openHarness } from '../harness/open.mjs';
@@ -17,6 +18,10 @@ import { openHarness } from '../harness/open.mjs';
 const arg = (name) => { const i = process.argv.indexOf(name); return i < 0 ? null : process.argv[i + 1]; };
 const ALL = ['spread', 'drain', 'splash', 'wall', 'mounds', 'mercury'];
 const scenes = (arg('--scenes') ?? ALL.join(',')).split(',');
+const outcomes = (arg('--outcomes') ?? '').split(',').filter(Boolean);
+if (outcomes.length && !scenes.includes('outcomes')) scenes.push('outcomes');
+// [cells from the wall, cells dropped] (the slab's row is its drop: its phase is the row's parity)
+const WALL_CASES = [[3, 4], [3, 6], [3, 8], [3, 9], [3, 12], [3, 20], [1, 9], [1, 12], [6, 20]];
 const engines = ['v1', 'v2'].filter(e => process.argv.includes(`--${e}`));
 if (!engines.length) engines.push('v1', 'v2');
 const t0 = Date.now(), at = () => `${((Date.now() - t0) / 1000).toFixed(1)} s`;
@@ -26,7 +31,7 @@ async function setup(name) {
   window.__runs = { e: createEngine(window.__harness.gpu) };
 }
 // the page side: every scene's numbers (the same code on both engines)
-async function run(list) {
+async function run([list, wallCases, tests]) {
   const { e } = window.__runs, out = {}, N = [32, 32, 32];
   const r2 = (x) => Math.round(x * 100) / 100;
   // liquid of `key` per column (fills and flying packets binned to their cell), the wet columns, the reach
@@ -72,10 +77,10 @@ async function run(list) {
   }
   if (list.includes('wall')) {
     const rows = [];
-    for (const h of [4, 6, 8]) {
-      await e.create(N); e.box([3, h, 14], [4, h, 15], 'NITRO');
+    for (const [d, h] of wallCases) {
+      await e.create(N); e.box([d, h, 14], [d + 1, h, 15], 'NITRO');
       await e.advance(0.05); const before = await amount('NITRO');
-      await e.advance(0.75); rows.push([h, r2(before), r2(await amount('NITRO'))]);
+      await e.advance(0.75); rows.push([d, h, r2(before), r2(await amount('NITRO'))]);
     }
     out.wall = rows;
   }
@@ -96,6 +101,14 @@ async function run(list) {
     }
     out.mercury = rows;
   }
+  if (list.includes('outcomes')) {
+    const { TESTS } = await import('/tools/outcomes/tests/index.js');
+    const { runTest } = await import('/tools/outcomes/run.js');
+    for (const name of tests) {
+      const r = await runTest(TESTS.find(t => t.name === name), e, { seed: 1 });
+      out[`outcome ${name}`] = { status: r.status, headline: r.headline ?? r.reason, criteria: (r.criteria ?? []).map(c => [c.name, c.measured]), numbers: r.numbers };
+    }
+  }
   await e.dispose();
   return out;
 }
@@ -108,7 +121,7 @@ try {
   for (const engine of engines) {
     const page = await openHarness(browser, vite, `/tools/harness/outcomes.html?engine=${engine}`, { errors, timeout: 20000 });
     await page.evaluate(setup, engine);
-    const out = await page.evaluate(run, scenes);
+    const out = await page.evaluate(run, [scenes, WALL_CASES, outcomes]);
     await page.close();
     for (const [k, v] of Object.entries(out)) console.log(`${engine} ${k}: ${JSON.stringify(v)}`);
     console.log(`${engine} done [${at()}]`);

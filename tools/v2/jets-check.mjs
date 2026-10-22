@@ -10,6 +10,7 @@ import { E, ELEMENTS, K } from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
 import { gridLayout } from '../../src/sim.js';
 import { COLUMN } from '../../src/shaders/v2/columns.js';
+import { V1_STEP_MS } from '../../src/v2/gravity.js';
 import { jetsWGSL, JET_STAGES } from '../../src/shaders/v2/jets.js';
 import { ColumnGrid } from './column-wgsl.mjs';
 import { assertNaga } from './wgsl-grouping.mjs';
@@ -76,7 +77,7 @@ function holeScene() {
 }
 const tankMass = (w) => { let m = 0; for (let y = 13; y < 32; y++) for (let z = 1; z < 7; z++) for (let x = 1; x < 8; x++) { const c = w.cores[w.at(x, y, z)]; if (L.isLiquid(L.cid(c))) m += L.cFill(c); } return m; };
 
-test('the launch head is the reservoir\'s exact head; jets leave at sqrt(2gh) and discharge stays under A sqrt(2gh)', () => {
+test('the launch head is the reservoir\'s exact head; jets leave at V1\'s orifice speed, ORIFICE_CV·sqrt(2gh) to its FLOW, and discharge stays under A sqrt(2gh)', () => {
   const w = holeScene(), ctx = w.ctx, t0 = w.totals();
   for (let t = 0; t < 30; t++) w.step();
   let prev = tankMass(w);
@@ -89,7 +90,10 @@ test('the launch head is the reservoir\'s exact head; jets leave at sqrt(2gh) an
     assert.ok(Math.abs(ctx.colLaunchHead(8, 3, 9, 3, rB, 14) - etaA) < 1e-6, 'the launch head is the tank\'s');
     const jet = w.parts.filter(p => p.x < 9.2).map(p => Math.hypot(p.vx, p.vz) * CELL_M);
     assert.ok(jet.length > 0);
-    for (const v of jet) assert.ok(Math.abs(v / torricelli - 1) < 0.02, `launch ${v} vs ${torricelli}`);
+    // V1 react.js: Torricelli's speed times the orifice's velocity coefficient, capped at the liquid's FLOW (water
+    // 0.9 cells/step, 64.8 m/s); f16 lanes round the launch to 0.1 % (the old law, √(2gh), is 2 % over)
+    const orifice = Math.min(PHYS.ORIFICE_CV * torricelli, ELEMENTS[E.WATER].flow * V1_STEP_MS);
+    for (const v of jet) assert.ok(Math.abs(v / orifice - 1) < 0.01, `launch ${v} vs V1's ${orifice}`);
     // cells/s over 0.5 s: Torricelli's, to what one explicit face carries a tick (COLUMN.Q_MAX, a cell of fill a cell
     // of wet face): at V1's pull a 4.5 m head's jet (√(2gh) ≈ 60 m/s) is past it
     const now = tankMass(w), discharge = (prev - now) / L.FULL * 2, ideal = Math.min(torricelli / CELL_M, COLUMN.Q_MAX / L.FULL * COLUMN.TICK_HZ);

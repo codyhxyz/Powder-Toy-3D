@@ -5,7 +5,7 @@
 // division in them); the codec helpers they call (records, lanes, the moved cores, foam, atomics) are JS
 // twins of the bit layouts they name. f32 expressions run in f64 (integer custody does not depend on it).
 // No GPU, browser or World variant of the application.
-import { columnWaterWGSL, pairOrder, COLUMN, RADIAL } from '../../src/shaders/v2/columns.js';
+import { columnWaterWGSL, pairOrder, COLUMN, RADIAL, COLUMN_FLOW } from '../../src/shaders/v2/columns.js';
 import { ELEMENTS, E, K } from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
 import { v2Rows, SUMMARY } from '../../src/shaders/v2.js';
@@ -152,6 +152,17 @@ export class ColumnGrid {
       clsOf: c => CLS[L.cid(c)] ?? C.SOLID, isLiq: c => CLS[L.cid(c)] === C.LIQUID,
       isOpenC: c => { const k = CLS[L.cid(c)]; return k === C.AIR || k === C.LIQUID; },
       materialAmount: c => (L.cid(c) === 0 ? 0 : L.isLiquid(L.cid(c)) ? L.cFill(c) : L.FULL),
+      // V1's flow caps (columns.js COLUMN_FLOW) and the paint mix of a receiver (columns.js colPaintMix, RGBA8 unorm)
+      colFlowCap: id => COLUMN_FLOW[id].q, colFlowSpeed: id => COLUMN_FLOW[id].ms,
+      colPaintMix: (d, s, fd, n) => {
+        if (fd === 0 || d === s) return s >>> 0;
+        const ch = (w, k) => ((w >>> (8 * k)) & 255) / 255, wa = fd * ch(d, 3), wb = n * ch(s, 3);
+        if (wa + wb <= 0) return 0;
+        const px = v => Math.round(Math.min(Math.max(v, 0), 1) * 255);
+        let out = px((wa + wb) / (fd + n)) << 24;
+        for (let k = 0; k < 3; k++) out |= px((ch(d, k) * wa + ch(s, k) * wb) / (wa + wb)) << (8 * k);
+        return out >>> 0;
+      },
       conductsNative: L.isConductor, dampOf: id => ROWS[id].damp, yieldOf: id => ROWS[id].yieldHead, densOfE: id => ROWS[id].dens,
       vec2f: (a, b) => ({ x: a, y: b }),
       withPayload: (c, v) => L.withPayload({ core: c, bank: 0 }, v).core,
