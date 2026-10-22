@@ -418,6 +418,9 @@ export class PhysicsV2 {
   _tick() {
     this._noteWrites();
     const dynamics = this.dynamicsBuilt ? this.dynamics : null, jets = this.jetsBuilt ? this.jets : null;
+    // the requests held while they built, oldest first, before this tick moves anything (the app's
+    // nativeBeforeStep runs them first; any other driver's ticks here)
+    if (dynamics && this.sim.nativePending?.length) this.sim.flushNativeTools?.();
     // a writer's launches held for a take (nativeForcing.js defer) go before anything else moves
     dynamics?.flushLaunch?.();
     const { gpu, sim, kernels: k, groups } = this;

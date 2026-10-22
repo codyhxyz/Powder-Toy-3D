@@ -117,7 +117,7 @@ release(); await owner.dynamicsReady; await turn();
 assert.equal(owner.dynamics.isReady, true); assert.equal(owner.dynamicsBuilt, true); assert.equal(owner.jetsBuilt, true);
 assert.equal(nativeCapabilities(sim).impulse, true);
 log.length = 0;
-ticks = nativeHostSteps(owner, 1 / 60, { before });
+ticks = owner.ticks(1);   // (a driver without the app's nativeBeforeStep: the tick runs what was held)
 assert.equal(ticks, 1);
 assert.equal(sim.nativePending.length, 0, 'every held request ran');
 // each request's first recording, in the order recorded: the numbered ones by their sequence (the
