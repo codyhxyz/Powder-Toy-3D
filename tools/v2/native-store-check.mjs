@@ -281,7 +281,8 @@ async function leave(win, base, bricks, natives, flagged, exact) {
     Simulation.prototype.shift.call(fake, SUPER_CELLS.x, 0);
     return calls;
   };
-  assert.deepEqual(shiftSim(true), ['export', 'nativeShift'], 'V2 running: project, then move both');
+  // V2 running: the move is V2's alone; V1's cache is neither projected nor moved, and its next export rewrites it whole
+  assert.deepEqual(shiftSim(true), ['nativeShift'], 'V2 running: V2 moves, V1\'s cache is left stale');
   assert.deepEqual(shiftSim(false), ['nativeShift'], 'V2 suspended: V1\'s cells are V1\'s; nothing exported over them');
   checks++;
   console.log('PASS V2 suspended: retained bricks restore into the owner; no projection over V1\'s window');

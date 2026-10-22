@@ -459,7 +459,8 @@ export class Simulation {
    */
   pingPong(on) {
     const n = on ? PING_PONG : ONE_COPY;
-    if (n === this.copies || (!on && this.g.windowed !== false) || this.gpu.failure) return;
+    // (a window under V2 holds one too: its move is V2's, and V1's copy then only a cache: shift below)
+    if (n === this.copies || (!on && this.g.windowed !== false && !(this.g.windowed === true && this.compact)) || this.gpu.failure) return;
     const f = this.gpu.frame, state = this.state, next = this._stateBuffers(n), slots = this.g.slots;
     for (const k of Object.keys(STATE_BYTES)) {
       f.copy(state[k], this.cur * slots * STATE_BYTES[k], next[k], 0, slots * STATE_BYTES[k]);
@@ -1287,12 +1288,20 @@ export class Simulation {
     // is a cache move, never permission to reimport the entire native grid.
     // (Only the running owner projects: a suspended one, after a runtime switch to V1, shadows V1's cells,
     // which are V1's own. native.shift syncs it first, importing V1's writes, as exportLegacy would.)
-    this.compact?.exportLegacy();
+    // Under V2 (running) the move is V2's alone: V1's state is only the cache its legacy writers and
+    // readbacks go through, kept in one copy, so it isn't moved; the next export rewrites all of it
+    // (exportLegacy with no projection current: BRIDGE.ALL) before anything reads it. Moving it cost
+    // a second copy of V1's state (36 B a slot) and a whole-window copy of it every move.
+    const v2 = this.compact?.isReady ? this.compact : null;
+    if (!v2) this.compact?.exportLegacy();
     native?.shift(dx, dz);
-    this.pingPong(true);   // (out of place: a box the native engine owns holds one copy)
     const f = this.gpu.frame, size = fold(Math.ceil(this.g.slots / 64)), shift = [dx, 0, dz];
-    this._dispatch(this.passOf('shift'), size, { bind: [this.tables, this._bindRW], header: { ...this.header(this.cur, 1 - this.cur), capture: 0 }, params: { shift } });
-    this.cur = 1 - this.cur;
+    if (v2) v2.legacyNative = undefined;
+    else {
+      this.pingPong(true);   // (out of place: a box the native engine owns holds one copy)
+      this._dispatch(this.passOf('shift'), size, { bind: [this.tables, this._bindRW], header: { ...this.header(this.cur, 1 - this.cur), capture: 0 }, params: { shift } });
+      this.cur = 1 - this.cur;
+    }
     // the flow field: into a scratch, then back
     this.flowTmp ??= this.gpu.createBuffer({ label: `sim${this.id} flow shift`, size: this.flow.size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
     this._flowShiftGroup ??= this.gpu.bindGroup(this.L.FLOW_SHIFT, [

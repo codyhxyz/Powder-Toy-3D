@@ -17,7 +17,7 @@ import { gridLayout } from '../../src/sim.js';
 import { volumeFrag, VOLUME_VIEWS } from '../../src/shaders/render.js';
 import { nativeMotionWGSL } from '../../src/shaders/v2/viewRead.js';
 import { nativeBrickAirWGSL } from '../../src/shaders/v2/viewAir.js';
-import { nativeAirWGSL } from '../../src/shaders/renderSource.js';
+import { nativePackWGSL } from '../../src/shaders/renderSource.js';
 import { brickFrag, AIR_FLAG } from '../../src/shaders/passes.js';
 import { WEATHER_SPEED_SI, WEATHER_SPEED_FLUX } from '../../src/v2/nativeWeather.js';
 import { LEGACY_PRESSURE_PA } from '../../src/v2/pressure.js';
@@ -150,7 +150,7 @@ const flow = volumeFrag(g, { view: 'flow', fixedReadFormat: 2 });
 ok(flow.includes('mobileVel(cell, id, volumeB(cell).xyz)') && body(flow, 'brickStroke').includes('volumeB(c).xyz'), 'Flow reads V1\'s B');
 ok(body(volumeFrag(g, { view: 'pressure', fixedReadFormat: 2 }), 'pressureAt').includes('volumeB('), 'Pressure reads the air');
 ok(body(volumeFrag(g, { fixedReadFormat: 2, detail }), 'flowVel').includes('volumeB(i0)'), 'smoke follows the flow (R3)');
-ok(nativeAirWGSL(g).includes('airB[s] = nativeMotionB(fetchNativeCoreS(s), fetchBs(s));'), 'World\'s B export');
+ok(nativePackWGSL(g).includes('nativeMotionB(core, nativeAirB(s))'), 'World\'s B: the same read, packed into its source natively');
 
 // ---- R1: the brick map's air flags under V2 ----
 const air2 = nativeBrickAirWGSL(g), v1Brick = brickFrag(g);

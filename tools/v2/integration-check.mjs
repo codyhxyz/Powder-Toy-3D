@@ -20,7 +20,7 @@ import { createPacker, createUnpacker, encodeFrame, decodeFrame, nativeSection, 
 import { nativeHostSteps as hostSteps } from '../../src/v2/host.js';
 import { E, K, TOOLS, ELEMENTS } from '../../src/elements.js';
 import { readFileSync } from 'node:fs';
-import { v2ActLayout, LEGACY_WORD } from '../../src/shaders/v2.js';
+import { v2ActLayout, LEGACY_WORD, BRIDGE } from '../../src/shaders/v2.js';
 import { resetNativeDynamics } from '../../src/v2/dynamicState.js';
 import { physicsEngine } from '../../src/launch.js';
 
@@ -194,7 +194,18 @@ const duplicate = encoded.slice(); new DataView(duplicate.buffer).setUint32(4 + 
 assert.throws(() => validateNativeWorldStore(encoded, null));
 
 calls.length = 0;
+// A window V2 runs holds one copy of V1's state, and its move is V2's alone: V1's cache isn't moved
+// (no second copy, no whole-window copy of it); the next export rewrites all of it (BRIDGE.ALL).
+sim.g.windowed = true; sim.pingPong(true); assert.equal(sim.copies, 2); sim.pingPong(false);
+assert.equal(sim.copies, 1, 'a window under V2 drops V1\'s second copy');
+const curBefore = sim.cur;
 shiftNative(16, 0);
+assert(!calls.some(c => c.name === 'shift'), 'V1\'s cache is not moved'); assert.equal(sim.copies, 1); assert.equal(sim.cur, curBefore);
+assert(!calls.some(c => c.name === 'v2bridge'), 'nor exported before the move');
+assert.equal(owner.legacyNative, undefined, 'the cache is stale everywhere');
+calls.length = 0; owner.exportLegacy(true);
+assert.equal(calls.find(c => c.name === 'v2bridge').opts.params.full, BRIDGE.ALL, 'the next export rewrites all of it');
+calls.length = 0; delete sim.g.windowed;
 assert.deepEqual(shifts, [[16, 0, 0]], 'only dynamics local fields reindex; world particle positions belong to dynamics');
 assert.deepEqual(moveOrder, [['record', true], ['restore'], ['commit']], 'dynamics and legacy words move with the cores, around their restore');
 for (let s = 0; s < g.slots; s++) {
@@ -602,13 +613,13 @@ assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouc
   assert.equal(cache.native.size, 0);
 }
 
-// main's World renderer keeps its own copy of the cells, from the live A/B
-// (src/world/renderSource.js). On a V2 world those are V2's lazy projection:
-// a tick reaches the copy through an export of only the bricks it changed,
-// recorded before the copy reads A/B. Nothing ticked: nothing exported.
+// main's World renderer keeps its own copy of the cells (src/world/renderSource.js). On a V2
+// world it reads V2's cells natively: each tick's copy packs the window's cores, air and foam
+// through V2's read group straight into the source (renderSource.js nativePack), and exports
+// nothing to V1's state (v2/physics.js exportLegacy) and copies none of it.
 {
   const realCopy = gpu.frame.copy;
-  gpu.frame.copy = function (...args) { calls.push({ name: 'copy' }); return realCopy.apply(this, args); };
+  gpu.frame.copy = function (...args) { calls.push({ name: 'copy', args }); return realCopy.apply(this, args); };
   const win = { sim, gpu, epoch: 1, size: [sim.origin.x + g.nx, g.ny, sim.origin.z + g.nz], scene: {} };
   const source = sim.worldRenderSource = new WorldRenderSource(win);
   source.recordLiveCopy(gpu.frame);
@@ -617,22 +628,17 @@ assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouc
   assert(source.needsLiveCopy(), 'a V2 tick is a live content change');
   calls.length = 0;
   source.recordLiveCopy(gpu.frame);
-  const bridge = calls.findIndex(c => c.name === 'v2bridge'), copy = calls.findIndex(c => c.name === 'copy');
-  assert(bridge >= 0 && bridge < copy, 'the export is recorded before the copy');
-  assert.equal(calls.filter(c => c.name === 'v2bridge').length, 1);
-  assert.equal(calls[bridge].opts.params.full, 0, 'only the bricks the tick changed');
-  assert.equal(calls[bridge].opts.header.format, 0, 'the drawn projection, as the Box draws it');
-  // V2's air (B) comes from the V2 air export, through the physical reader; its foam from v2/nativeAeration.js.
-  const air = calls.findIndex(c => c.name === 'worldNativeAir'), foam = calls.findIndex(c => c.name === 'nativeAeration');
-  assert(air >= 0 && air < copy, 'the V2 air export is recorded before the copy');
-  assert(foam >= 0 && foam < copy, 'the V2 foam pack is recorded before the copy');
-  assert.equal(calls[air].opts.header.format, 3); assert.equal(calls[air].opts.bind[1], sim.bindPhysicalRO);
-  assert.equal(source.liveSnapshot.B, calls[air].opts.bind[2].entries[0].resource.buffer, 'the drawn B is V2 air');
-  assert.equal(source.liveSnapshot.aeration, calls[foam].opts.bind[2].entries[0].resource.buffer, 'the drawn aeration is V2 foam');
+  assert(!calls.some(c => ['v2bridge', 'worldNativeAir', 'nativeAeration'].includes(c.name)), 'no export to V1\'s state, no window-sized air or foam pass');
+  const packs = calls.filter(c => c.name === 'worldNativePack');
+  assert(packs.length > 0, 'the source packs V2\'s cells');
+  assert(packs.every(c => c.opts.bind[1] === owner.readGroup() && c.opts.header.format === 2), 'through V2\'s read group, format 2 (the Box draw\'s)');
+  assert.equal(packs.reduce((n, c) => n + c.opts.params.hi.reduce((m, v, i) => m * (v - c.opts.params.lo[i]), 1), 0), g.slots, 'every window cell, once');
+  for (const name of ['A', 'B']) assert(!calls.some(c => c.name === 'copy' && c.args[0] === sim.state[name]), `V1's ${name} is never read`);
+  assert(calls.some(c => c.name === 'copy' && c.args[0] === sim.flow), 'V2\'s flow field is copied as before');
   calls.length = 0;
   assert.equal(source.needsLiveCopy(), false);
   source.recordLiveCopy(gpu.frame);
-  assert(!calls.some(c => c.name === 'v2bridge'), 'nothing ticked: nothing to export');
+  assert(!calls.some(c => c.name === 'v2bridge'), 'nothing exported');
   // Planted trees are a bounded write: V2 imports the marked bricks, not the window.
   const whole = sim.wholeWrites, version = sim.version;
   const planter = { sim, gpu, wb: [win.size[0] / 4, 1, win.size[2] / 4], planted: new Uint8Array(win.size[0] * win.size[2] / 16), plantCost: null,

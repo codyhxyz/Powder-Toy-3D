@@ -99,21 +99,87 @@ ${thread}
   if (writeCell(p, a, b, fetchF(p), bitcast<vec4f>(rawA[at]), bitcast<vec4f>(rawB[at]))) { markBrick(s >> 6u); }
 }`;
 
-// Physics V2's air and motion in the B lane the World's source copies, for the
-// drawn projection (world/renderSource.js, the V2 air export): B as V1 keeps it
-// (a grain's or a liquid's own velocity, else the air's; pressure: the
-// Pressure/Flow views, the hover readout, smoke following the flow), from the
-// physical reader's air (format 3: shaders/common.js fetchBs) and the core
-// (shaders/v2/viewRead.js nativeMotionB), so these are the values the Box's
-// views read from V2's own buffers (shaders/render.js volumeB). (V2's foam
-// reaches the source by v2/nativeAeration.js.)
-export const NATIVE_AIR_LAYOUT = [storage(0, true)];
-export const nativeAirWGSL = (g) => /* wgsl */ `
-${prelude(g, { ...STATE_OPTS.STATE_RO, fixedReadFormat: 3 })}
+// World's source of Physics V2's cells, read natively (world/renderSource.js nativePack): the
+// window's cells packed straight into a World source target (a 32³ source core, or the tree
+// producer's raw scratch) in the World's own render format, the A/B words its atlas, fields, pick
+// and store read. Every value is the one Box's draw reads from V2's own buffers through the read
+// group (Simulation.bindRO under V2: v2/physics.js readGroup, format 2, the cells and dynamics'
+// current coarse air):
+//   A  compactA of the core (the drawn projection: Box's format-2 fetchA, a partial liquid fill
+//      dithered to whole cells, hashed by the world cell: below), or compactProbeA (edit: one quantum of liquid is liquid, the edit
+//      projection's, for the tree producer's support tests);
+//   B  nativeMotionB of the core in its brick's air (shaders/v2/viewRead.js: Box's volumeB, the
+//      Pressure and Flow views, the hover readout, smoke following the flow); zero in edit mode
+//      (nothing reads it: the producer's B never reaches physics or a drawn cell);
+//   aeration  V2's foam, fetchNativeAeration packed as V1's aeration record (vec2u of f16 pairs:
+//      aeration, liquid, fall, grounded), so World's worldAeration → aerTap gives what Box's aerTap
+//      gives, (age / 255, 1, 1) (the atlas's half floats round age / 255 to f16).
+// It replaces what V2 exported to V1's state every tick for the World's copies (v2/physics.js
+// exportLegacy, the v2bridge pass, then a copy of V1's A) and the two whole-window passes beside
+// it (the air export into a window-sized B, the foam into a window-sized record): the same words,
+// one pass, written where the World keeps them. Different code, same picture (CLAUDE.md "Same
+// features in every world"): tools/v2/world-native-source-check.mjs pins the equivalence.
+// A workgroup a brick of the box [lo, hi) (world cells); cell w is window cell w - H.origin, and
+// target cell w - dstOrigin, in the target's supertile slot order (common.js cellSlot) with
+// dstTiles supertiles along x and z, its copy at dstBase.
+export const NATIVE_PACK_LAYOUT = [storage(0, true), storage(1, true), storage(2, true)];
+export const NativePackParams = uniformStruct('NativePackParams', {
+  lo: 'vec3i', edit: 'u32', hi: 'vec3i', air: 'u32', dstOrigin: 'vec3i', dstBase: 'u32', dstTiles: 'vec2u', aer: 'u32',
+});
+/** The target slot of target-local cell (x, y, z) in a grid of tiles = [nx / 16, nz / 8] supertiles
+ * (common.js cellSlot's order): the kernel's packDstSlot, as JS (tools/v2/world-native-source-check.mjs). */
+export function nativePackSlot(tiles, x, y, z) {
+  const bx = x >> 2, by = y >> 2, bz = z >> 2, sx = bx >> 2, sy = by >> 1, sz = bz >> 1;
+  const st = sx + tiles[0] * (sz + tiles[1] * sy), ly = y & 3;
+  return ((st * 16 + (bx - sx * 4) + 4 * ((bz - sz * 2) + 2 * (by - sy * 2))) * 64 + (x & 3) + 4 * (ly & 1) + 8 * ((z & 3) + 4 * (ly >> 1))) >>> 0;
+}
+export const nativePackWGSL = (g) => /* wgsl */ `
+${prelude(g, { ...STATE_OPTS.STATE_RO, fixedReadFormat: 2 })}
 ${nativeMotionWGSL}
-@group(2) @binding(0) var<storage, read_write> airB: array<vec4f>;
-${thread}
-  airB[s] = nativeMotionB(fetchNativeCoreS(s), fetchBs(s));
+@group(2) @binding(0) var<storage, read_write> outA: array<vec4u>;
+@group(2) @binding(1) var<storage, read_write> outB: array<vec4u>;
+@group(2) @binding(2) var<storage, read_write> outAer: array<vec2u>;
+${NativePackParams.wgsl}
+@group(3) @binding(1) var<uniform> P: NativePackParams;
+fn packDstSlot(q: vec3i) -> u32 {
+  let b = q >> vec3u(2u);
+  let st = b / SUPER_B;
+  let k = b - st * SUPER_B;
+  let l = q & vec3i(3);
+  let t = st.x + i32(P.dstTiles.x) * (st.z + i32(P.dstTiles.y) * st.y);
+  return u32((t * 16 + k.x + 4 * (k.z + 2 * k.y)) * 64 + l.x + 4 * (l.y & 1) + 8 * (l.z + 4 * (l.y >> 1)));
+}
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let base = (P.lo >> vec3u(2u)) * BS;
+  let nb = vec3u((P.hi - base + BS - 1) / BS);
+  let k = foldId(wg, nwg);
+  if (k >= nb.x * nb.y * nb.z) { return; }
+  let b = vec3i(vec3u(k % nb.x, (k / nb.x) % nb.y, k / (nb.x * nb.y)));
+  let w = base + b * BS + vec3i(i32(li & 3u), i32((li >> 2u) & 3u), i32(li >> 4u));
+  if (any(w < P.lo) || any(w >= P.hi)) { return; }
+  let p = w - H.origin;
+  if (!inGrid(p)) { return; }
+  let s = slotOf(p);
+  let core = fetchNativeCoreS(s);
+  let q = packDstSlot(w - P.dstOrigin);
+  if (P.edit != 0u) {
+    outA[P.dstBase + q] = bitcast<vec4u>(compactA(p, compactProbeCore(core)));
+    outB[P.dstBase + q] = vec4u(0u);
+    return;
+  }
+  // Intentional (decided under the user's delegation, 2026-10-22): the drawn A's per-cell hashes (an
+  // empty or liquid cell's seed, a partial liquid fill's dither) take the world cell w, not the window
+  // cell p, so a cell looks the same wherever the window is, as a V1 cell's seed travels with it in
+  // its state, and as a Box at that origin draws it (its window cell is its world cell). V2's export
+  // hashed the window cell, so every window move re-dithered the partial cells it re-exported (a
+  // flicker of the sea's surface once per 16 cells of travel). Matter keeps its seed in its core.
+  outA[P.dstBase + q] = bitcast<vec4u>(compactA(w, core));
+  outB[P.dstBase + q] = bitcast<vec4u>(select(vec4f(0.0), nativeMotionB(core, nativeAirB(s)), P.air != 0u));
+  if (P.aer != 0u) {
+    let a = fetchNativeAeration(p);
+    outAer[q] = select(vec2u(0u), vec2u(pack2x16float(vec2f(a.x, a.y)), pack2x16float(vec2f(0.0, a.z))), a.y > 0.5);
+  }
 }`;
 
 export const WGSL_CHECK = () => WORLD_SCENES.map((scene) => ({
@@ -125,6 +191,6 @@ export const WGSL_CHECK = () => WORLD_SCENES.map((scene) => ({
     layouts: () => [LAYOUT.TABLES, RAW_LAYOUT], params: RawParams, dispatch: (g) => fold(Math.ceil(g.slots / 64)) },
   { name: 'raw source apply', kind: 'compute', grids: ['128'], warm: false, code: (g) => rawApplyWGSL(g, { ...g, nx: 64, nz: 64, slots: 64 * g.ny * 64 }),
     layouts: () => [LAYOUT.TABLES, stateLayout(APPLY_STATE), RAW_READ_LAYOUT], params: RawApplyParams, dispatch: (g) => fold(Math.ceil(g.slots / 64)) },
-  { name: 'world native air', kind: 'compute', grids: ['128'], warm: false, code: nativeAirWGSL,
-    layouts: () => [LAYOUT.TABLES, stateLayout(STATE_OPTS.STATE_RO), NATIVE_AIR_LAYOUT], dispatch: (g) => fold(Math.ceil(g.slots / 64)) },
+  { name: 'world native pack', kind: 'compute', grids: ['128'], warm: false, code: nativePackWGSL, params: NativePackParams,
+    layouts: () => [LAYOUT.TABLES, stateLayout(STATE_OPTS.STATE_RO), NATIVE_PACK_LAYOUT], dispatch: (g) => fold(Math.ceil(g.slots / 64)) },
 ]);
