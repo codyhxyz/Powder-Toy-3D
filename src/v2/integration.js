@@ -16,12 +16,16 @@ export function nativeCapabilities(sim) {
   const particles = tools;
   return {
     state,
-    world: state && owner.contactReady === true && tools && (typeof d?.shiftWindow === 'function' || typeof d?.shiftOrigin === 'function'),
+    // (and nothing held for the dynamics' build: its requests are in window cells, sim.nativePending)
+    world: state && owner.contactReady === true && tools && !sim.nativePending?.length && (typeof d?.shiftWindow === 'function' || typeof d?.shiftOrigin === 'function'),
     pov: state && owner.contactReady === true && tools && typeof d?.applyToolImpulse === 'function',
     physgun: tools && d?.capabilities?.physgun === true && typeof d?.applyPhysgun === 'function',
     impulse: tools && typeof d?.applyToolImpulse === 'function' && (d?.capabilities?.impulse === true || d?.supportsToolKind?.('impulse') === true),
     photon: particles && typeof d?.applyToolImpulse === 'function' && (d?.capabilities?.photon === true || d?.supportsToolKind?.('photon') === true),
     neutron: particles && typeof d?.applyToolImpulse === 'function' && (d?.capabilities?.neutron === true || d?.supportsToolKind?.('neutron') === true),
+    // the writers sim.deferNative holds while the dynamics build: an external blast, a force kernel's launch
+    externalBlast: tools && typeof d?.applyExternalBlast === 'function',
+    force: tools,
   };
 }
 

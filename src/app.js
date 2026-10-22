@@ -3248,7 +3248,8 @@ async function allReady() {
       // update() uses flat-near readiness even when the drawn view is curved.
       ...(near && curved ? [v.viewReady(view, detail, false)] : []),
       ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
-      ...(physicsV2 ? [physicsV2.ready, physicsV2.integrationReady] : []),
+      // (and the flying matter's, which the first frame doesn't wait for: v2/physics.js dynamicsReady)
+      ...(physicsV2 ? [physicsV2.ready, physicsV2.integrationReady, physicsV2.dynamicsReady] : []),
       ...(far && isMaterialView(view) ? [far.buildView()] : [])]);
     await gpu.settled();
     if (graphicsFailure) throw graphicsFailure;

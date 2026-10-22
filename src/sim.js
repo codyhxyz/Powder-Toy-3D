@@ -56,9 +56,12 @@ const GRAVITY_DEFAULT = 0.025;
 
 // TPT's Mix tool (elements.js TOOLS): its stroke reads other cells, so it is a two-phase edit (passes.js).
 const MIX_TOOL = TOOLS.find((t) => t.key === 'MIX').id;
-// Native tool requests held while the dynamics finish building: two seconds of
-// a 60 Hz brush (applyNativeTool). More would be a stuck build, not a wait.
-const NATIVE_PENDING_MAX = 120;
+// Native requests held while the dynamics finish building (applyNativeTool, deferNative): the
+// first frame no longer waits for them (src/v2/physics.js dynamicsReady), so a brush held from
+// frame 1 must wait out their whole cold build. Thirty seconds of a 60 Hz brush: more would be a
+// stuck build, not a wait.
+const NATIVE_PENDING_SECONDS = 30, NATIVE_PENDING_HZ = 60;
+const NATIVE_PENDING_MAX = NATIVE_PENDING_SECONDS * NATIVE_PENDING_HZ;
 
 // Steps an activity map stays valid (shaders/activity.js).
 const ACTIVITY_PERIOD = activityPeriod(BRICK);
@@ -577,8 +580,9 @@ export class Simulation {
     // forceCompatibility is renderer-only: physical probes always read the
     // canonical core and current coarse air, never the visual projection.
     v2.sync();
+    // (only the dynamics' buffers: their coarse air holds its rest, still air, until their kernels step it)
     const d = v2.dynamics;
-    if (!d?.isReady) return null;
+    if (!d?.air || d.disposed) return null;
     if (this._physicalOwner !== this.compact) {
       this._physicalOwner = this.compact;
       this._physicalGroups = d.air.map(buffer => this.gpu.bindGroup(this.L.STATE_RO, [
@@ -589,9 +593,13 @@ export class Simulation {
   }
   get nativeCapabilities() { return nativeCapabilities(this); }
   async prepareNative(owner = this.compactOwner) {
-    // The brush's kernels need only the owner's buffers: their builds start with the owner's, not
-    // after its readiness, which made them a serial tail of the loading screen (cold compile).
+    // The brush's and the window's kernels need only the owner's buffers: their builds start with
+    // the owner's, not after its readiness, which made them a serial tail of the loading screen.
     if (owner && owner === this.compactOwner && owner.dynamics && !owner.isReady) prepareNativeBrush(this).catch(() => {});
+    if (owner?.aux && !owner.disposed && this.nativeIntegration?.owner !== owner) {
+      this.nativeIntegration?.dispose();
+      this.nativeIntegration = new NativeIntegration(this, owner);
+    }
     await owner?.ready;
     if (!owner?.aux) return false;
     if (this.nativeIntegration?.owner !== owner) {
@@ -611,23 +619,43 @@ export class Simulation {
     if (this.nativeTransition || this.nativeTransitionError) return false;
     const kind = request.kind ?? 'impulse';
     if (!this.compact) return false;
-    if (!this.nativeCapabilities[kind]) {
-      if ((this.nativePending ??= []).length >= NATIVE_PENDING_MAX) return false;
-      this.nativePending.push(request);
-      this.wake();
-      return true;
-    }
+    if (!this.nativeCapabilities[kind]) return this._holdNative(request);
     if (this.nativePending?.length) this.flushNativeTools();
+    // (behind any request still waiting: one order)
+    if (this.nativePending?.length) return this._holdNative(request);
     return this._applyNativeTool(request, kind);
   }
-  // Runs the requests that waited for readiness, oldest first (app.js nativeBeforeStep).
+  _holdNative(request) {
+    if ((this.nativePending ??= []).length >= NATIVE_PENDING_MAX) return false;
+    this.nativePending.push(request);
+    this.wake();
+    return true;
+  }
+  /**
+   * Another native writer that records the dynamics' stages (an external blast, a force kernel's
+   * launch): now if they are built and nothing waits before it, else queued behind the tool requests
+   * already waiting, in one order, to run once they are (flushNativeTools). Never refused for the
+   * build, nor handed to V1.
+   * @param {string} kind its capability (nativeCapabilities: 'externalBlast', 'force')
+   * @param {() => boolean} apply records it; true when it was accepted
+   * @returns {boolean} accepted, or queued
+   */
+  deferNative(kind, apply) {
+    if (this.nativeTransition || this.nativeTransitionError || !this.compact) return false;
+    if (this.nativeCapabilities[kind]) {
+      if (this.nativePending?.length) this.flushNativeTools();
+      if (!this.nativePending?.length) return apply();
+    }
+    return this._holdNative({ kind, apply });
+  }
+  // Runs the requests that waited for readiness, oldest first (app.js nativeBeforeStep; PhysicsV2._tick).
   flushNativeTools() {
     const pending = this.nativePending;
     if (!pending?.length || !this.compact || this.nativeTransition || this.nativeTransitionError) return 0;
     let n = 0;
     while (pending.length && this.nativeCapabilities[pending[0].kind ?? 'impulse']) {
       const request = pending.shift();
-      if (this._applyNativeTool(request, request.kind ?? 'impulse')) n++;
+      if (request.apply ? request.apply() : this._applyNativeTool(request, request.kind ?? 'impulse')) n++;
     }
     return n;
   }
@@ -1406,8 +1434,9 @@ export class Simulation {
         b.set(new Float32Array(bytes, n * 16, n * 4));
       });
     };
-    const waits = [this._readyFor(pass), native && !this.compact.dynamics.isReady ? this.compact.dynamics.ready : null].filter(Boolean);
-    return waits.length ? Promise.all(waits).then(read) : read();
+    // (the physical readers bind the dynamics' air buffers, not their kernels: bindPhysicalRO)
+    const wait = this._readyFor(pass);
+    return wait ? wait.then(read) : read();
   }
 
   // readStateRect's scratch (A then B, 32 bytes a texel), grown as needed and

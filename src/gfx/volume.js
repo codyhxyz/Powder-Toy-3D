@@ -239,10 +239,12 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
       let p = pipes.get(key);
       if (!p) {
       const name = isMaterialView(view) ? `volume.${view}(${detailKey(d) || 'off'})` : `volume.${view}`;
+        // (a view drawn now is a long pole of the frame waiting for it: it starts ahead of the short
+        // builds, gpu/kernels.js BUILD_RANK.FIRST; a prefetch stays behind them)
         pipes.set(key, p = gpu.renderPipeline({
           name: `${curved ? `${name}.curved` : name}.format${format}`,
           code: volumeFrag(g, { view, detail: d, curved, fixedReadFormat: format }), layouts: [L.VOLUME_FRAME, L.STATE_RO, L.LIGHTING],
-          params: VolumeParams, ...volumePipeline(), build,
+          params: VolumeParams, ...volumePipeline(), build, first: build === 'now',
         }));
       } else if (build === 'now' && p.state === 'idle') p.build();
       return p;

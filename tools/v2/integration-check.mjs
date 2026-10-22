@@ -84,8 +84,8 @@ const gpu = {
   queue: { writeBuffer(b, at, data) { b.data.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), at); } },
   write(b, at, data) { this.queue.writeBuffer(b, at, data); },
   frame: { copy(a, at, b, to, n) { b.data.set(a.data.subarray(at, at + n), to); }, clear(b, at = 0, n = b.size - at) { b.data.fill(0, at, at + n); } },
-  kernel: ({ name, build }) => {
-    builds.push({ name, build });
+  kernel: ({ name, build, first }) => {
+    builds.push({ name, build, first });
     return { name, state: 'ready', ready: Promise.resolve(), dispatch(f, size, opts) { calls.push({ name, size, opts }); referenceDispatch(name, opts); } };
   },
   readback: { buffer: (b, at, n, opts) => { const copy = b.data.slice(at, at + n); if (opts?.into) new Uint8Array(opts.into).set(copy); return Promise.resolve(copy.buffer); } },
@@ -102,9 +102,12 @@ const sim = Object.assign(Object.create(Simulation.prototype), {
   passOf: name => gpu.kernel({ name }), passes: { paint: {}, undoShift: gpu.kernel({ name: 'undoShift' }) },
 });
 const owner = new PhysicsV2(sim); await owner.ready;
+// The grid's passes are what the first frame waits for: built now, never behind the idle queue, the
+// longest poles first (gpu/kernels.js BUILD_RANK.FIRST); the dynamics build behind them.
 for (const name of Object.keys(owner.kernels)) {
   const desc = builds.find(b => b.name === name);
-  assert.equal(desc.build, name === 'v2block' ? 'now' : 'idle', 'required contact must not wait behind idle graphics builds');
+  assert.equal(desc.build, 'now', `${name}: the grid's passes must not wait behind idle builds`);
+  assert.equal(desc.first, ['v2block', 'v2runs', 'v2pairs'].includes(name), `${name}: the long poles start first`);
 }
 // The foundation lane owns allocation; this fixture supplies it on old bases.
 owner.aux ??= buffer({ size: g.slots * 4 });
