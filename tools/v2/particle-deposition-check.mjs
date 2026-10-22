@@ -26,7 +26,7 @@ function body(s,name) {
   return s.slice(b+1,e-1);
 }
 function syntax(s){for(const [a,b] of [
-['var after=incoming','var after=copy(incoming)'], ['after=before;','after=copy(before);'],
+['var after=incoming','var after=copy(incoming)'],['var rests = withEnergy(mover, combined);','var rests = copy(withEnergy(mover, combined));'], ['after=before;','after=copy(before);'],
 ['var cell=start;','var cell=[...start];'],
 ['-mDown(vec3f(cell)+0.5)','mul(mDown(add(cell,0.5)),-1)'],
 ['all(direction==vec3i(0))','direction.every(v=>v===0)'],
@@ -183,7 +183,7 @@ function fixture({mode=0, edge=0, windowed=false,
 ['dShockHit',['t','s','p','hit','axis']],
 ['dDustFaces',['s']],
 ['dShockWall',['t','pid','u','landing','particleId']],
-['dPhotonStep',['local','delta','light0']],['dKnock',['t','s','p','before','axis','landing','kinetic']],['dImpactHeat',['pid','tid','velocity','axis','c']],['dPacketFlight',['v0','wind','pull','keep','paced']],['dPhotonMoved',['p','light','travelled','flip']],['dPhotonIntegrate',['t','particle0','local']],['dAddHeat',['m','heat']],
+['dPhotonStep',['local','delta','light0']],['dKnock',['t','s','p','before','axis','landing']],['dImpactHeat',['pid','tid','velocity','axis','c']],['dPacketFlight',['v0','wind','pull','keep','paced']],['dPhotonMoved',['p','light','travelled','flip']],['dPhotonIntegrate',['t','particle0','local']],['dAddHeat',['m','heat']],
   ])ctx[name]=compile(ctx,S.integrate,name,args);
   const stages=Object.fromEntries(Object.entries(S).map(([s,c])=>[s,compile(ctx,c,'main',['t'])]));
   return {ctx,world,particles,claims,flight,stages,set:(p,m)=>world.set(slotOf(p),copy(m)),

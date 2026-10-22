@@ -414,14 +414,16 @@ fn dImpactHeat(pid: u32, tid: u32, velocity: vec3f, axis: u32, c: vec3i) -> vec2
 // energy exact as a whole-cell launch's). Only a hit whose landing this thread also won (deposit's claim), never a
 // charge's (dShockHit) nor a held packet. dynamics-reference.js packetKnock is its twin.
 struct DKnock { done: bool, packet: DParticle, cell: Material }
-fn dKnock(t: u32, s: u32, p: DParticle, before: Material, axis: u32, landing: u32, kinetic: f32) -> DKnock {
+fn dKnock(t: u32, s: u32, p: DParticle, before: Material, axis: u32, landing: u32) -> DKnock {
   var out = DKnock(false, p, before);
   let pid = p.c0 & 255u; let tid = cid(before.core); let un = min(D_V_MAX, abs(p.velocity[axis]) * D_SHOCK_THROW);
   if (cls(pid) == C_POWDER && cls(tid) == C_POWDER && dShockKE(tid) <= 0.0 && un > D_COLLIDE_V &&
       atomicLoad(&control[D_HELD+t]) == 0u && dWon(landing, 1u, t)) {
-    let prev = loadMaterial(landing); let rests = dDeposit(prev, dMaterial(p), kinetic);
-    if (cid(prev.core) == 0u && rests.accepted) {
-      storeMaterial(landing, prev, rests.material); setDeco(landing, particleDecoOf(t)); dWake(cellOf(landing)); dFree(landing, 1u);
+    // (a grain into air: dDeposit's admission without its liquid merge, foam or a second inlined copy of it)
+    let prev = loadMaterial(landing); let mover = dMaterial(p); let combined = energyAdd(energyOf(prev), dParticleEnergy(mover));
+    if (cid(prev.core) == 0u && energyFits(mover, combined)) {
+      var rests = withEnergy(mover, combined); rests.core = setFall(rests.core, 0.0, 0.0);
+      storeMaterial(landing, prev, rests); setDeco(landing, particleDecoOf(t)); dWake(cellOf(landing)); dFree(landing, 1u);
       let mi = dDens(pid); let mj = dDens(tid);
       var q = dParticle(vec3f(cellOf(s) + P.origin) + 0.5, vec3f(0), p.id, before);
       q.velocity[axis] = sign(p.velocity[axis]) * min(D_V_MAX, (1.0 + D_RESTITUTION) * mi / (mi + mj) * un) / D_SHOCK_THROW;
@@ -725,7 +727,7 @@ export function particlesWGSL(g, nativeHead, stage) {
         flight[t].destination.y=D_NONE; // fracture is not a landing: retain unspent KE
       } else {
         // a grain struck hard passes the blow on (dKnock; MV-12)
-        let knock = dKnock(t, s, p, before, axis, f.destination.y, f.effect.x);
+        let knock = dKnock(t, s, p, before, axis, f.destination.y);
         if (knock.done) { p = knock.packet; after = knock.cell; flight[t].destination.y = D_NONE; }
         // a grain stopped by a solid warms both (dImpactHeat; TH-10): the packet's share rides it to where it lands
         let warmth = dImpactHeat(p.c0 & 255u, id, p.velocity, axis, cellOf(s));
