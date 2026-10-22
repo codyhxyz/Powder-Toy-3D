@@ -42,7 +42,10 @@ export class NullGPU {
   bindGroup(layout, entries, name) { this.counts.bindGroups++; return { layout, entries, name }; }
   kernel(desc) {
     const self = this;
-    return { ...desc, state: 'ready', ready: Promise.resolve(), dispatch(frame, size, opts = {}) { desc.params?.pack?.(opts.params); self.counts.dispatches++; self.open++; } };
+    // Params pack into one reused view, as the real ring's push does (gpu/params.js
+    // ParamRing): a new ArrayBuffer a dispatch cost more than the code it hosts.
+    self.paramView ??= new DataView(new ArrayBuffer(64 * 1024));
+    return { ...desc, state: 'ready', ready: Promise.resolve(), dispatch(frame, size, opts = {}) { if (opts.params) desc.params?.pack?.(opts.params, self.paramView); self.counts.dispatches++; self.open++; } };
   }
   flush() { if (this.open) { this.counts.flushes++; this.counts.submits++; this.open = 0; } }
   retire(b) { b.destroy?.(); }

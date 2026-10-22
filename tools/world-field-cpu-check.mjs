@@ -169,7 +169,7 @@ const tooSmall = new QuantizedFields({ bounds, raw, aeration, scratchOrigin: [32
 assert.throws(() => tooSmall.stage('peak', [32, 32, 32]), /Unavailable/);
 console.log(`PASS quantized field reference: ${compared + denseCompared} packed stage comparisons (including exhaustive 3-core stage intervals/all owned final words); materials/films/walls/fire/aeration; 4/32 faces/corners/world edges/height384; epsilon/cubic/normal queries; negative controls`);
 
-// Actual WorldFields + FieldDeriver/kernel factories + native-copy history,
+// Actual WorldFields + FieldDeriver/kernel factories + history copy kernel,
 // executed by a fake encoder (EMA numerics use the quantized reference above).
 const smallBounds = { min: [0, 0, 0], max: [96, 8, 8] }, wanted = [[0, 0, 0], [32, 0, 0], [64, 0, 0]];
 function setup(reverse = false) {
@@ -218,7 +218,7 @@ for (const replacing of [false, true]) {
     published: [...ctx.fields.published], snapshots: [...ctx.published] };
   const copies = [], copy = ctx.gpu.frame.copy, publish = ctx.fields.publisher.publish;
   ctx.gpu.frame.copy = (...args) => copies.push(args);
-  ctx.gpu.emulateEMA = false; // Nothing from the discarded encoder executes.
+  ctx.gpu.emulateEMA = ctx.gpu.emulateCopies = false; // Nothing from the discarded encoder executes.
   ctx.fields.publisher.publish = () => { throw new Error('Injected publication failure'); };
   let error;
   try { ctx.fields.record(ctx.gpu.frame, plan); } catch (e) { error = e; }
@@ -233,7 +233,7 @@ for (const replacing of [false, true]) {
   assert.deepEqual(ctx.published, prior.snapshots);
   copies.length = 0; // Discard rather than submit the failed recording.
   error.retireWorldFieldUploads();
-  ctx.gpu.frame.copy = copy; ctx.gpu.emulateEMA = true;
+  ctx.gpu.frame.copy = copy; ctx.gpu.emulateEMA = ctx.gpu.emulateCopies = true;
   ctx.fields.publisher.publish = publish;
   record(ctx, plan); // The SAME plan must remain valid.
   record(control, control.plan(tick, { changedBricks, full: true }));
@@ -241,7 +241,7 @@ for (const replacing of [false, true]) {
   ctx.fields.dispose(); control.fields.dispose();
 }
 const a = setup(), b = setup(true); await a.fields.ready; await b.fields.ready;
-assert.deepEqual(a.gpu.kernels.map((k) => k.name), ['fieldEma', 'fieldBlur', 'fieldFinal', 'fieldBoost0', 'fieldBoost', 'fieldPeak']);
+assert.deepEqual(a.gpu.kernels.map((k) => k.name), ['fieldEma', 'fieldBlur', 'fieldFinal', 'fieldBoost0', 'fieldBoost', 'fieldPeak', 'world field history']);
 const scratch = a.fields.scratch;
 assert.equal(['ema', 'tmpA', 'tmpB', 'blurred'].reduce((n, key) => n + scratch[key].size, 0) + 64 ** 3 * 24 + scratch.age.size + scratch.dlist.size, 21_069_952);
 const initial = a.plan(0); assert.equal(initial.jobs.length, 3); assert.equal(initial.advancing.length, 96);
@@ -250,7 +250,14 @@ const ownerTrace = a.gpu.trace.filter((e) => e.name === 'emaOwners').flatMap((e)
 assert.equal(new Set(ownerTrace).size, ownerTrace.length, 'halo duplicate EMA');
 const firstSpatial = a.gpu.trace.findIndex((e) => e.name === 'fieldBlur');
 assert(a.gpu.trace.slice(firstSpatial).every((e) => e.name !== 'fieldEma'), 'all-owner barrier before spatial');
-assert(a.gpu.trace.slice(0, firstSpatial).filter((e) => e.name === 'copy' && e.src === a.fields.scratch.ema).length === ownerTrace.length * 3);
+// Every owner's page is scattered once, by copy dispatches (one a batch and
+// slab), and no history page moves by a native copy any more.
+const scatters = a.gpu.trace.slice(0, firstSpatial).filter((e) => e.name === 'world field history' && e.opts.params.scatter);
+const inSlab = (e) => { const l = new Uint32Array(e.opts.bind[0].entries[0].resource.buffer.bytes), p = e.opts.params; let k = 0;
+  for (let j = p.first; j < p.first + p.count; j++) if (l[j * 3 + 2] === p.slab) k++; return k; };
+assert.equal(scatters.reduce((n, e) => n + inSlab(e), 0), ownerTrace.length);
+assert(scatters.length <= initial.batches.length * a.fields.history.slabs.length, 'a scatter dispatch per batch and slab, not per owner');
+assert(!a.gpu.trace.some((e) => e.name === 'copy' && (e.src === a.fields.scratch.ema || e.dst === a.fields.scratch.ema)), 'no native history page copies');
 const saved = wordsOf(a.fields), published = JSON.stringify(a.published[0]);
 a.gpu.trace.length = 0;
 record(a, a.plan(0)); assert(!a.fields.isCurrent(firstPublication.token)); assert.equal(a.gpu.trace.filter((e) => e.name === 'fieldEma').length, 0); assert.deepEqual(wordsOf(a.fields), saved);
@@ -332,4 +339,4 @@ assert.equal(worldPlan.jobs.length, 2); assert(worldPlan.owners.has('400,32,128'
 world.dispose();
 assert.throws(() => new WorldFieldHistory(tallGpu, { pagesPerSlab: 200000 }), /Invalid/);
 for (const ctx of [a, b]) ctx.fields.dispose(); tall.dispose();
-console.log('PASS world control: actual factory/recording/native-copy paths; global owner barrier; 3 odd/reversed cores; sameTick/settling/retry/source/epoch/publication/origin invariants; sparse height384; no GPU occupancy');
+console.log('PASS world control: actual factory/recording/history copy-kernel paths; global owner barrier; 3 odd/reversed cores; sameTick/settling/retry/source/epoch/publication/origin invariants; sparse height384; no GPU occupancy');

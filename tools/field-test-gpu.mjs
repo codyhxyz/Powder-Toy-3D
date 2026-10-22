@@ -3,11 +3,32 @@ import { dirtyLists, AGE, DIRTY } from '../src/shaders/fields.js';
 import { slotCell, cellSlot, gridDims, Header } from '../src/shaders/common.js';
 import { emaWords, jetAt, unpack2 } from './field-reference.mjs';
 
+// The field history's copy kernel (world/fields.js, shaders/fieldHistory.js),
+// executed as its WGSL reads: job j of [first, first + count) whose slab
+// (jobs[3j + 2]) is the bound one copies the 3 x 64 words of scratch slots
+// jobs[3j] + plane * SLOTS + i and page words jobs[3j + 1] + plane * 64 + i,
+// pages into the scratch or (scatter) back.
+// tools/world-field-copies-cpu-check.mjs runs the WGSL itself against this.
+export const FIELD_HISTORY_KERNEL = 'world field history';
+export function fieldHistoryCopy(desc, { bind, params: p }) {
+  const slots = +desc.code.match(/const SLOTS: u32 = (\d+)u/)[1];
+  const buf = (binding) => new Uint32Array(bind[0].entries.find((e) => e.binding === binding).resource.buffer.bytes);
+  const jobs = buf(0), pool = buf(1), ema = buf(2);
+  for (let j = p.first; j < p.first + p.count; j++) {
+    if (jobs[3 * j + 2] !== p.slab) continue;
+    for (let plane = 0; plane < 3; plane++) {
+      const s = plane * slots + jobs[3 * j], q = jobs[3 * j + 1] + plane * 64;
+      if (p.scatter) pool.set(ema.subarray(s, s + 64), q); else ema.set(pool.subarray(q, q + 64), s);
+    }
+  }
+}
+
 export class FieldTestGPU {
-  constructor({ emulateEMA = false } = {}) {
+  // emulateCopies: execute the field history's page copies (fieldHistoryCopy), bit for bit.
+  constructor({ emulateEMA = false, emulateCopies = true } = {}) {
     globalThis.GPUBufferUsage ??= { STORAGE: 1, COPY_SRC: 2, COPY_DST: 4, INDIRECT: 8 };
     globalThis.GPUTextureUsage ??= { TEXTURE_BINDING: 1, STORAGE_BINDING: 2, COPY_SRC: 4, COPY_DST: 8 };
-    Object.assign(this, { emulateEMA, L: {}, trace: [], resources: [], kernels: [], testMode: true });
+    Object.assign(this, { emulateEMA, emulateCopies, L: {}, trace: [], resources: [], kernels: [], testMode: true });
     this.L.EMPTY = this.layout('EMPTY', []);
     this.emptyGroup = this.bindGroup(this.L.EMPTY, [], 'empty');
     this.frame = { copy: (src, so, dst, to, size) => {
@@ -33,6 +54,7 @@ export class FieldTestGPU {
       this.trace.push({ name: desc.name, size, opts, kernel: k });
       this.onDispatch?.(k, opts);
       if (this.emulateEMA && desc.name === 'fieldEma') this._ema(desc, opts);
+      if (this.emulateCopies && desc.name === FIELD_HISTORY_KERNEL) fieldHistoryCopy(desc, opts);
     } };
     this.kernels.push(k); return k;
   }

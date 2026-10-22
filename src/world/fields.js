@@ -3,6 +3,7 @@ import { AGE, DIRTY, FIELD_EMA_SETTLE, dirtyLists } from '../shaders/fields.js';
 import { fold } from '../gpu/kernels.js';
 import { createFieldResources, createFieldLayouts, createFieldKernels, FieldDeriver, FIELD_TEXTURES } from '../gfx/fieldDeriver.js';
 import { WorldFieldHistory, brickKey } from './fieldHistory.js';
+import { fieldHistoryWGSL, FieldHistoryParams, FIELD_HISTORY_LAYOUT } from '../shaders/fieldHistory.js';
 
 export const WORLD_FIELD_CORE = 32, WORLD_FIELD_HALO = 16, WORLD_FIELD_SCRATCH = 64;
 // Backward demand, not Box COVER. Each reused scratch job recomputes all of it.
@@ -14,7 +15,6 @@ export function fieldInterval(stage, guard = 0) {
   if (!r) throw new Error(`Unknown field stage ${stage}`);
   return { lo: r.map((n) => 16 - guard - n), hi: r.map((n) => 48 + guard + n) };
 }
-const add = (a, b) => a.map((v, i) => v + b[i]);
 const coreOfBrick = (b) => b.map((v) => Math.floor(v / 8) * 32);
 function boxBricks(lo, hi, bounds) {
   const min = lo.map((v, i) => Math.max(v, bounds.min[i])), max = hi.map((v, i) => Math.min(v, bounds.max[i]));
@@ -106,7 +106,11 @@ export class WorldFields {
     this.deriver = new FieldDeriver(gpu, { g, resources: this.scratch, layouts: this.layouts, kernels: this.kernels, tables });
     this.deriver.setAeration({ buffer: this.scratch.aeration, active: true, copy: 0 });
     this.allLists = upload(gpu, 'world full field lists', this._lists(Array.from({ length: g.nbricks }, (_, i) => i)));
-    this.ready = Promise.all(Object.values(this.kernels).map((k) => k.ready)).then(() => this);
+    // History pages <-> scratch EMA: one dispatch a copy run and slab (fieldHistory.js HistoryCopies).
+    const copyLayout = gpu.layout('WORLD_FIELD_HISTORY', FIELD_HISTORY_LAYOUT);
+    this.historyCopy = { layout: copyLayout, ema: this.scratch.ema,
+      kernel: gpu.kernel({ name: 'world field history', code: fieldHistoryWGSL(g), layouts: [copyLayout], params: FieldHistoryParams }) };
+    this.ready = Promise.all([...Object.values(this.kernels), this.historyCopy.kernel].map((k) => k.ready)).then(() => this);
     this.version = 0;
     this.generation = 0;
     this.lastTick = null;
@@ -214,7 +218,7 @@ export class WorldFields {
   }
   record(frame, plan) {
     if (plan.epoch !== this.history.epoch || plan.version !== this.version || plan.source.isCurrent() !== true) throw new Error('Stale world field plan');
-    if (Object.values(this.kernels).some((k) => k.state !== 'ready')) throw new Error('World field kernels not ready');
+    if (Object.values(this.kernels).some((k) => k.state !== 'ready') || this.historyCopy.kernel.state !== 'ready') throw new Error('World field kernels not ready');
     assertComplete(plan.source, plan.regions);
     const r = this.scratch, uploads = [], allocated = [], outputs = [], replaced = [];
     // Shared owners again: an advancing one is copied before it changes, and
@@ -227,27 +231,26 @@ export class WorldFields {
     let committed = false;
     this.deriver.setAeration({ buffer: r.aeration, copy: 0, active: plan.aerationActive });
     try {
-      // Global EMA phase. Each ownership brick appears in exactly one list.
+      // Every history copy is staged before any is recorded, into one job list
+      // (fieldHistory.js HistoryCopies): the owners a batch advances, the pages
+      // it allocates and each job's halo pages are the ones recording them in
+      // turn would see, and the list is uploaded before its first dispatch.
+      const copies = this.history.copies(this.historyCopy), batches = [], jobs = [], g = this.g;
       for (const batch of plan.batches) {
-        const origin = batch.core.map((v) => v - 16), ids = [], ages = new Uint32Array(this.g.nbricks);
-        gatherRaw(origin);
+        const origin = batch.core.map((v) => v - 16), [ox, oy, oz] = origin.map((v) => v / 4);
+        const keys = [], ids = [], ages = new Uint32Array(g.nbricks), gather = copies.begin(false);
         for (const planned of batch.owners) {
-          const owner = ownerOf(brickKey(planned.brick));
-          const local = owner.brick.map((v, i) => v - origin[i] / 4), id = brickIdOf(this.g, ...local);
-          ids.push(id);
-          if (owner.page) this.history.copy(frame, r, origin, owner.brick, owner.page);
+          const key = brickKey(planned.brick), owner = ownerOf(key), b = owner.brick, id = brickIdOf(g, b[0] - ox, b[1] - oy, b[2] - oz);
+          keys.push(key); ids.push(id);
+          if (owner.page) copies.add(id, owner.page);
           else ages[id] = AGE.FRESH;
         }
-        const lists = upload(this.gpu, 'world owned EMA list', this._lists(ids)), age = upload(this.gpu, 'world owned EMA ages', ages);
-        uploads.push(lists, age);
-        frame.copy(lists, 0, r.dlist, 0, lists.size);
-        frame.copy(age, 0, r.age, 0, age.size);
-        this.deriver.recordEMA(frame, { sourceGroup: this.sourceGroup, header,
-          size: fold(ids.length), domain: domain(origin, { lo: [16, 16, 16], hi: [48, 48, 48] }) });
-        for (const planned of batch.owners) {
-          const key = brickKey(planned.brick), owner = { ...ownerOf(key) }; updated.set(key, owner);
+        copies.end();
+        const scatter = copies.begin(true);
+        for (let k = 0; k < keys.length; k++) {
+          const key = keys[k], owner = { ...ownerOf(key) }; updated.set(key, owner);
           const page = this.history.allocate(); allocated.push(page);
-          this.history.copy(frame, r, origin, owner.brick, page, true);
+          copies.add(ids[k], page);
           // A brick with no history starts over at its target (AGE.FRESH above),
           // and that is the blend's 8-bit fixed point: blending toward the same
           // target rounds back to it, for every channel's weight
@@ -264,17 +267,42 @@ export class WorldFields {
           owner.lastTick = plan.fieldTick;
           owner.sourceVersion = plan.sourceRevision;
         }
+        copies.end();
+        batches.push({ origin, ids, ages, gather, scatter });
+      }
+      // A job's EMA halo, every owner's page after the batches above.
+      const interval = fieldInterval('ema'), { min, max } = this.bounds;
+      for (const core of plan.jobs) {
+        const origin = core.map((v) => v - 16), [ox, oy, oz] = origin.map((v) => v / 4), gather = copies.begin(false);
+        // boxBricks' bricks, in its order, without an array a brick.
+        const a = origin.map((v, i) => Math.max(v + interval.lo[i], min[i])), b = origin.map((v, i) => Math.min(v + interval.hi[i], max[i]));
+        const lo = a.map((v) => Math.floor(v / 4)), hi = a.some((v, i) => v >= b[i]) ? lo : b.map((v) => Math.ceil(v / 4));
+        for (let z = lo[2]; z < hi[2]; z++) for (let y = lo[1]; y < hi[1]; y++) for (let x = lo[0]; x < hi[0]; x++) {
+          const owner = ownerOf(`${x},${y},${z}`);
+          if (!owner?.page) throw new Error('Missing authoritative world EMA neighbor');
+          copies.add(brickIdOf(g, x - ox, y - oy, z - oz), owner.page);
+        }
+        copies.end();
+        jobs.push({ core, origin, gather });
+      }
+      const list = copies.upload();
+      if (list) uploads.push(list);
+      // Global EMA phase. Each ownership brick appears in exactly one list.
+      for (const { origin, ids, ages, gather, scatter } of batches) {
+        gatherRaw(origin);
+        copies.record(frame, gather);
+        const lists = upload(this.gpu, 'world owned EMA list', this._lists(ids)), age = upload(this.gpu, 'world owned EMA ages', ages);
+        uploads.push(lists, age);
+        frame.copy(lists, 0, r.dlist, 0, lists.size);
+        frame.copy(age, 0, r.age, 0, age.size);
+        this.deriver.recordEMA(frame, { sourceGroup: this.sourceGroup, header,
+          size: fold(ids.length), domain: domain(origin, { lo: [16, 16, 16], hi: [48, 48, 48] }) });
+        copies.record(frame, scatter);
       }
       // ALL owned scatters precede ANY spatial halo gather. No EMA in this loop.
-      for (const core of plan.jobs) {
-        const origin = core.map((v) => v - 16);
+      for (const { core, origin, gather } of jobs) {
         gatherRaw(origin);
-        const interval = fieldInterval('ema');
-        for (const brick of boxBricks(add(origin, interval.lo), add(origin, interval.hi), this.bounds)) {
-          const owner = ownerOf(brickKey(brick));
-          if (!owner?.page) throw new Error('Missing authoritative world EMA neighbor');
-          this.history.copy(frame, r, origin, brick, owner.page);
-        }
+        copies.record(frame, gather);
         frame.copy(this.allLists, 0, r.dlist, 0, this.allLists.size);
         this.deriver.recordSpatial(frame, { sourceGroup: this.sourceGroup, header, smoothing: plan.smoothing,
           sizeFor: () => fold(this.g.nbricks), domainFor: (stage) => domain(origin, fieldInterval(stage)) });
