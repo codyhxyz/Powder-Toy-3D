@@ -192,6 +192,18 @@ const REC_FALLING = 0x80000000, REC_LAST = 0x40000000, REC_MASS = 0x3fffffff;
 const f = (x) => (Number.isInteger(x) ? `${x}.0` : String(x));
 
 // ---------------------------------------------------------------- WGSL
+const LANE_WGSL = /* wgsl */ `fn withLane(c: vec4u, axis: i32, v: f32) -> vec4u {
+  var q = qOf(c); q[axis] = v;
+  return vec4u(c.x, c.y, pack2x16float(q.xy), (c.w & 0xffff0000u) | (pack2x16float(vec2f(q.z, 0.0)) & 0xffffu));
+}`;
+// T11, the liquid half: a liquid V1 left falling at vy cells/step (the brush's SPAWN_DROP_V: passes.js paint, B.y)
+// falls on at that speed in its column lane (colFall's: cells a tick, STEPS V1 steps), as RX-7's clone does
+// (contact.js CT_SPAWN_DROP_TICK); the import (shaders/v2.js v2ImportWGSL) passes it V1's B.y
+const IMPORT_FALL_WGSL = /* wgsl */ `fn colImportFall(c: vec4u, vy: f32) -> vec4u {
+  if (vy >= 0.0) { return c; }
+  return withLane(c, 1, 0.0 - vy * ${f(COLUMN.STEPS)});
+}`;
+export const columnImportFallWGSL = `${LANE_WGSL}\n${IMPORT_FALL_WGSL}`;
 // The column helpers. Functions named col* are written in a small scalar subset (no bit operations, no
 // integer division) so tools/v2/column-wgsl-check.mjs executes their emitted bodies on the CPU; the codec
 // helpers above them (records, lanes, the moved cores) are the only ones it replaces with JS twins.
@@ -275,10 +287,8 @@ fn withRecRun(r: vec4u, r1: i32, liq: u32, sub: u32, mass: u32) -> vec4u {
 
 // ---- lanes: x 0, y 1, z 2 (qOf's order); the f16 rounds to nearest
 fn laneOf(c: vec4u, axis: i32) -> f32 { return qOf(c)[axis]; }
-fn withLane(c: vec4u, axis: i32, v: f32) -> vec4u {
-  var q = qOf(c); q[axis] = v;
-  return vec4u(c.x, c.y, pack2x16float(q.xy), (c.w & 0xffff0000u) | (pack2x16float(vec2f(q.z, 0.0)) & 0xffffu));
-}
+${LANE_WGSL}
+${IMPORT_FALL_WGSL}
 // a liquid's lava subtype (runs are single-subtype: different formation energies never merge)
 fn liquidSub(c: vec4u) -> u32 { return select(0u, ctypeOf(c), cid(c) == ${E.LAVA}u); }
 fn colBurning(c: vec4u) -> u32 { return select(0u, c.y & 0x80000000u, MATERIAL_BURNS[cid(c)]); }

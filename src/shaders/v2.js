@@ -17,7 +17,7 @@ import { modeWGSL } from './v2/modes.js';
 import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
 import { contactWGSL as productionContactWGSL, requestMergeWGSL, outsideFacesWGSL, outsideSiteWGSL } from './v2/contact.js';
-import { v2RunsKernel, v2PairsKernel, COLUMN } from './v2/columns.js';
+import { v2RunsKernel, v2PairsKernel, COLUMN, columnImportFallWGSL } from './v2/columns.js';
 import { PARTICLE_CAP, SHOCK_LANDINGS } from '../v2/dynamics-reference.js';
 
 // Physics v2, the fast version (docs/v2.md 2, 4.1, 5.1-5.6; the rules are
@@ -471,6 +471,7 @@ const MAIN = '@compute @workgroup_size(64)\nfn main(@builtin(workgroup_id) wg: v
 export const v2ImportWGSL = (g) => /* wgsl */ `
 ${v2Head(g, V2_IMPORT_OPTS, 'material')}
 ${bridgeWGSL}
+${columnImportFallWGSL}
 var<workgroup> wgMarked: u32;
 var<workgroup> wgChanged: atomic<u32>;
 ${MAIN} {
@@ -489,7 +490,8 @@ ${MAIN} {
   let mask = 1u << (s & 31u);
   let owned = atomicAnd(&marks[MARK_OWNED + (s >> 5u)], ~mask) & mask;
   if (P.full != 0u || owned != 0u) {
-    let n = importA(a);
+    // (a liquid falls on at V1's speed: the brush's SPAWN_DROP_V, columns.js colImportFall)
+    let n = colImportFall(importA(a), select(0.0, fetchBs(s).y, cls(u32(clamp(eid(a), 0, NE - 1))) == C_LIQUID));
     let oldBank = banks[s];
     banks[s] = 0; // explicit ownership resets even when the imported core compares equal
     if (any(n != c) || oldBank != 0) {

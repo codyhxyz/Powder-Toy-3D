@@ -232,3 +232,24 @@ test('BL-9: a mercury flow running into C-4 or nitroglycerin sets it off as V1\'
   assert.ok(!side(E.WATER, E.NITRO, 14), 'water 14 tall into nitroglycerin rests');
   assert.ok(!side(E.WATER, E.C4, 14), 'water 14 tall into C-4 rests');
 });
+
+test('T11, the liquid half: a painted liquid starts falling at V1\'s SPAWN_DROP_V, its import setting its column lane', async () => {
+  // V1 passes.js paint: a loose tool's new cell gets B.y = SPAWN_DROP_V cells/step; V2 imports the painted cell from
+  // V1's A/B, and the import keeps that fall in the column lane (colFall's cells a tick)
+  const { v2ImportWGSL } = await import('../../src/shaders/v2.js');
+  const { gridLayout } = await import('../../src/sim.js');
+  assert.match(v2ImportWGSL(gridLayout(16, 8, 8)), /let n = colImportFall\(importA\(a\), select\(0\.0, fetchBs\(s\)\.y, cls\(u32\(clamp\(eid\(a\), 0, NE - 1\)\)\) == C_LIQUID\)\);/);
+  const fall = (vy) => {
+    const w = new ColumnGrid(4, 16, 4);
+    w.set(1, 12, 1, E.WATER);
+    w.cores[w.at(1, 12, 1)] = Uint32Array.from(w.ctx.colImportFall(w.cores[w.at(1, 12, 1)], vy));
+    const lane = w.ctx.laneOf(w.cores[w.at(1, 12, 1)], 1);
+    run(w, 2);
+    let y = 0; while (L.cid(w.cores[w.at(1, y, 1)]) !== E.WATER) y++;
+    return { lane, fell: 12 - y };
+  };
+  const painted = fall(PHYS.SPAWN_DROP_V), still = fall(0);
+  assert.equal(painted.lane, Math.f16round(-PHYS.SPAWN_DROP_V * COLUMN.STEPS));
+  assert.equal(still.lane, 0);
+  assert.ok(painted.fell > still.fell, `painted: ${painted.fell} cells in 2 ticks, from rest ${still.fell}`);
+});
