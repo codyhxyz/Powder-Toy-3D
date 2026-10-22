@@ -8,11 +8,15 @@ import assert from 'node:assert/strict';
 import {particlesWGSL,heldBase,shockPostBase,setOffBase,airborneBase} from '../../src/shaders/v2/particles.js';
 import {AIRBORNE} from '../../src/v2/airborne.js';
 import {nativeDynamicsHead} from '../../src/shaders/v2.js';
-import {E,ELEMENTS} from '../../src/elements.js';
+import {E,ELEMENTS,R} from '../../src/elements.js';
+import {RAYS} from '../../src/rays.js';
+import {V1_STEP_MS,STEP_S} from '../../src/v2/gravity.js';
 import * as L from '../../src/v2/layout.js';
-import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS} from '../../src/v2/dynamics-reference.js';
+import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact,PACKET_KEEP,packetStep,impactHeat,packetGrainOdds,PACKET_GRAIN_ODDS,v1GrainOdds,packetKnock} from '../../src/v2/dynamics-reference.js';
 import { importMinified } from './wgsl-grouping.mjs';
 const floatBits=v=>{const b=new ArrayBuffer(4);new Float32Array(b)[0]=v;return new Uint32Array(b)[0];};
+const close=(a,b,e,what)=>assert.ok(Math.abs(a-b)<=e,`${what??""}: ${a} vs ${b}`);
+const bitsFloat=w=>{const b=new ArrayBuffer(4);new Uint32Array(b)[0]=w;return new Float32Array(b)[0];};
 const g={nx:32,ny:32,nz:32,nbx:8,nby:8,nbz:8,nbricks:512,slots:32768,windowed:false},NONE=0xffffffff,S=Object.fromEntries(['clear','integrate','elect','impact','deposit','reactClaim','reactDust'].map(s=>[s,particlesWGSL(g,nativeDynamicsHead,s)]));
 const add=(a,b)=>a.map((v,i)=>v+(Array.isArray(b)?b[i]:b)),sub=(a,b)=>a.map((v,i)=>v-b[i]),mul=(a,b)=>a.map(v=>v*b),vec=(...v)=>v.flat().length===1?Array(3).fill(v[0]):v.flat(),copy=structuredClone;
 function body(s,name) {
@@ -22,7 +26,7 @@ function body(s,name) {
   return s.slice(b+1,e-1);
 }
 function syntax(s){for(const [a,b] of [
-['var after=incoming','var after=copy(incoming)'], ['after=before;','after=copy(before);'],
+['var after=incoming','var after=copy(incoming)'],['var rests = withEnergy(mover, combined);','var rests = copy(withEnergy(mover, combined));'], ['after=before;','after=copy(before);'],
 ['var cell=start;','var cell=[...start];'],
 ['-mDown(vec3f(cell)+0.5)','mul(mDown(add(cell,0.5)),-1)'],
 ['all(direction==vec3i(0))','direction.every(v=>v===0)'],
@@ -45,7 +49,7 @@ function syntax(s){for(const [a,b] of [
 ['(after - v) / D_DT','mul(sub(after,v),1/D_DT)'],
 ['v - wind','sub(v,wind)'],
 ['wind + relative / (1.0 + drag * length(relative) * D_DT)','add(wind,mul(relative,1/(1+drag*length(relative)*D_DT)))'],
-['local + (v * D_DT + 0.5 * acceleration * D_DT * D_DT) / D_CELL','add(local,mul(add(mul(v,D_DT),mul(acceleration,0.5*D_DT*D_DT)),1/D_CELL))'],
+['v * D_RAY_DT / D_CELL','mul(v, D_RAY_DT / D_CELL)'],['local + travel','add(local, travel)'],['(flown.velocity - v) / D_DT','mul(sub(flown.velocity, v), 1/D_DT)'],
 ['v + acceleration * D_DT','add(v,mul(acceleration,D_DT))'],
 ['end - local','sub(end,local)'],
 ['var cell = startCell; var previous = startCell','var cell = [...startCell]; var previous = [...startCell]'],
@@ -61,7 +65,17 @@ function syntax(s){for(const [a,b] of [
 ['all(down==vec3i(0))','down.every(v=>v===0)'],
 ['cell+down','add(cell,down)'],
 ['p.velocity *= sqrt(max(0.0,1.0-cost/max(f.effect.x,0.000001)))','p.velocity=mul(p.velocity,sqrt(max(0,1-cost/max(f.effect.x,0.000001))))'],
-['mEdge(p + face6(f))','mEdge(add(p,face6(f)))']])s=s.replaceAll(a,b);
+['mEdge(p + face6(f))','mEdge(add(p,face6(f)))'],
+// the photon step (particles.js dPhotonStep, dPhotonMoved, dPhotonIntegrate) and its impact
+['out.light *= r','out.light = mul(out.light, r)'],['dot(out.light - left,','dot(sub(out.light, left),'],
+['out.light * exp(-optics.xyz * dAmount(m) * max(0.0, exit - entry) * len)','out.light.map((e,i)=>e*Math.exp(-optics[i]*dAmount(m)*max(0, exit-entry)*len))'],
+['any(optics.xyz > vec3f(0))','optics.slice(0,3).some(v=>v>0)'],
+['var q = p;','var q = copy(p);'],['var particle = particle0;','var particle = copy(particle0);'],
+['p.velocity * D_RAY_DT / D_CELL','mul(p.velocity, D_RAY_DT / D_CELL)'],['particle.velocity * D_RAY_DT / D_CELL','mul(particle.velocity, D_RAY_DT / D_CELL)'],
+['p.position + delta * max(0.0, travelled - 0.00001 / max(length(delta), 0.00001))','add(p.position, mul(delta, max(0, travelled - 0.00001 / max(length(delta), 0.00001))))'],
+['p.position + delta;','add(p.position, delta);'],['f.destination.z >> 16u','f.destination.z >>> 16'],['bitcast<f32>(','bitsFloat('],['vec3f(cellOf(s) + P.origin) + 0.5','add(add(cellOf(s),P.origin),0.5)'],
+['min(abs(velocity) * D_SHOCK_THROW, vec3f(D_V_MAX))','abs(velocity).map(x=>Math.min(x*D_SHOCK_THROW,D_V_MAX))'],
+['vec4u(warm.core.yzw, bitcast<u32>(warm.bank))','[...warm.core.slice(1,4), warm.bank>>>0]']])s=s.replaceAll(a,b);
 return s.replace(/\/\/[^\n]*/g,'')
   .replace(/\bvar\b/g,'let')
   .replace(/\bloop\s*\{/g,'while(true){')
@@ -96,12 +110,22 @@ function fixture({mode=0, edge=0, windowed=false,
     sign:v=>Array.isArray(v)?v.map(Math.sign):Math.sign(v),
     fract:v=>v.map(x=>x-Math.floor(x)),normalize:v=>mul(v,1/Math.hypot(...v)),
     floatBits,floatBits3:v=>v.map(floatBits),
-    P:{origin:[0,0,0],edge,tick:108,gravMode:mode,gravity},
+    P:{origin:[0,0,0],edge,tick:108,gravMode:mode,gravity,substep:0},
     D_CAP:65536,D_SWEEP:65536,D_HELD:heldBase(g),D_NONE:NONE,D_PHOTON:254,D_NEUTRON:255,
     D_SHOCK_COUNT:shockPostBase(g),D_SET_OFF:setOffBase(g),D_AIRBORNE_POSTS:airborneBase(g)+1,D_REQUEST_SHIFT:28,D_DUST:E.DUST,
     D_REACT_KIND:AIRBORNE.KIND,D_REACT_SALT:AIRBORNE.SALT,
     C_AIR:0,C_SOLID:1,C_POWDER:2,C_LIQUID:3,C_GAS:4,
-    D_G:GRAVITY,D_DT:DT,D_CELL:CELL_M,D_SWEEP_MAX:99,NX:32,NY:32,NZ:32,
+    D_G:GRAVITY,D_DT:DT,D_RAY_DT:Math.fround(DT/4),D_RAYS:31,D_PHOTON_HEAT:RAYS.PHOTON_HEAT/3,D_PHOTON_E_MIN:RAYS.PHOTON_E_MIN,D_PHOTON_CELLS:7,
+    dCap:id=>ELEMENTS[id]?.cap??1,draw:0.5,dRandom:()=>ctx.draw,dShockOdds:packetGrainOdds,D_GRAIN_SALT:0x6772616e,D_LAND_KEEP:PHYS.LAND_POWDER_KEEP,D_LAND_SCATTER:PHYS.LAND_POWDER_SCATTER,vec2f:vec,
+    energyMul:(a,b)=>BigInt(a)*BigInt(b),
+    DKnock:(done,packet,cell)=>({done,packet,cell}),dCarrier:m=>L.makeMaterial(0,L.cTq(m.core)*0.25-273.25),
+    dParticle:(position,velocity,id,m)=>({position:[...position],velocity:[...velocity],id,c0:m.core[0],tail:[...m.core.slice(1),m.bank>>>0]}),
+    DPacketFlight:(moved,velocity)=>({moved:[...moved],velocity:[...velocity]}),dKeep:id=>PACKET_KEEP[id],
+    D_V1_STEP:Math.fround(1/V1_STEP_MS),D_PULL_STEP:Math.fround(STEP_S*STEP_S/CELL_M),D_STEPS:4,
+    DPhotonStep:(light,heat,cell,travelled,flip,gone)=>({light:[...light],heat,cell,travelled,flip,gone}),round:Math.round,clamp:(x,a,b)=>Math.min(Math.max(x,a),b),
+    exp:Math.exp,log:Math.log,mix:(a,b,t)=>a+(b-a)*t,bitsFloat,dPhotonEnergy:p=>Array.from(p.tail).slice(0,3).map(bitsFloat),
+    // particles.js dOptical, the renderer's sigma and an opaque element's reflectance
+    dOptical:id=>[...(ELEMENTS[id]?.sigma??[0,0,0]),ELEMENTS[id]?.render===R.OPAQUE?-(1+(ELEMENTS[id].reflect??0)):0],D_CELL:CELL_M,D_SWEEP_MAX:99,NX:32,NY:32,NZ:32,
     D_WINDOWED:windowed,FULLU:L.FULL,particles,flight,control,claims,air:[{vp:[0,0,0,0]}],
     DFlight:(destination,effect)=>({destination,effect}),
     DDeposit:(material,accepted)=>({material:copy(material),accepted}),
@@ -110,14 +134,14 @@ function fixture({mode=0, edge=0, windowed=false,
     dWrap:v=>edge===2?v.map(x=>(x%32+32)%32):v,dWake:()=>{},slotLive:()=>true,noteDead:()=>{},noteLive:()=>{},dKey:id=>claimKey(id,108),
     dMaterial:p=>({core:Uint32Array.from([p.c0,...p.tail.slice(0,3)]),bank:p.tail[3]|0}),
     cls:id=>id?ELEMENTS[id].kind:0,isLiq:c=>L.isLiquid(L.cid(c)),
-    dTerminal:id=>dynamicsRows[id].terminal,dMass:id=>dynamicsRows[id].mass,
+    dTerminal:id=>dynamicsRows[id].terminal,dMass:id=>dynamicsRows[id].mass,dDens:id=>ELEMENTS[id]?.dens??0,
     dAmount:m=>L.isLiquid(L.cid(m.core))?L.cFill(m.core)/L.FULL:1,
     dParticleEnergy:L.packetOwnedEnergy,energyAdd:(a,b)=>a+b,energySub:(a,b)=>a-b,noteEnergySource:()=>{},
     // particles.js dHeatEnergy: one legacy cap·°C is 256·FULL native energy units
     dHeatEnergy:(m,heat)=>L.energyOf(m)+BigInt(Math.round(Math.abs(heat)*256))*65536n*(heat<0?-1n:1n),
     dToughness:id=>dynamicsRows[id].toughness,dBreak:id=>dynamicsRows[id].breakInto,
     dShockKE:id=>dynamicsRows[id].shockKE,dShockFall:id=>dynamicsRows[id].shockFall,
-    D_V_MAX:PHYS.V_MAX,D_SHOCK_THROW:Math.fround(1/SHOCK_THROW_MS),
+    D_V_MAX:PHYS.V_MAX,D_SHOCK_THROW:Math.fround(1/SHOCK_THROW_MS),D_RESTITUTION:PHYS.RESTITUTION,D_COLLIDE_V:PHYS.COLLIDE_V,
     MATERIAL_BURNS:ELEMENTS.map(e=>e.burnRate>0),conductsNative:L.isConductor,
     withPayload:(c,v)=>L.withPayload({core:c,bank:0},v).core,
     face6:f=>{const d=[0,0,0];d[f>>1]=1-2*(f&1);return d;},
@@ -159,6 +183,7 @@ function fixture({mode=0, edge=0, windowed=false,
 ['dShockHit',['t','s','p','hit','axis']],
 ['dDustFaces',['s']],
 ['dShockWall',['t','pid','u','landing','particleId']],
+['dPhotonStep',['local','delta','light0']],['dKnock',['t','s','p','before','axis','landing']],['dImpactHeat',['pid','tid','velocity','axis','c']],['dPacketFlight',['v0','wind','pull','keep','paced']],['dPhotonMoved',['p','light','travelled','flip']],['dPhotonIntegrate',['t','particle0','local']],['dAddHeat',['m','heat']],
   ])ctx[name]=compile(ctx,S.integrate,name,args);
   const stages=Object.fromEntries(Object.entries(S).map(([s,c])=>[s,compile(ctx,c,'main',['t'])]));
   return {ctx,world,particles,claims,flight,stages,set:(p,m)=>world.set(slotOf(p),copy(m)),
@@ -399,7 +424,7 @@ const runTicks=(f,order,ticks,after=()=>{})=>{
 };
 test('winners free every claim: fracture, contention and ties leave an empty table in any thread order',()=>{
   // A fracture is not a landing, so impact itself frees the deposit claim it won.
-  const glass=fixture({position:[6.5,2.5,6.5],velocity:[0,-20,0]});
+  const glass=fixture({position:[6.5,2.5,6.5],velocity:[0,-80,0]});
   glass.set([6,1,6],L.makeMaterial(E.GLASS));glass.set([6,0,6],L.makeMaterial(E.STONE));
   runTicks(glass,[0],1);assert.equal(L.cid(at(glass,[6,1,6]).core),E.SHARDS);assert.notEqual(glass.particles[0].id,0);
   // V1 react.js: the debris takes the fracture work as heat, hard·KE_TO_HEAT / cap (glass → shards: ~+48 °C;
@@ -422,6 +447,146 @@ test('winners free every claim: fracture, contention and ties leave an empty tab
   }
 });
 
+// V1 react.js breaking in V1's units (dynamics-reference.js impact, the twin): ½·dens·vn² across the face, vn
+// cells/step to V_MAX, against hard. V2 compared ½·kg·(m/s)² with hard, so a grain broke glass at walking pace.
+test('the emitted impact breaks what V1\'s flying cell breaks, at V1\'s speeds, as its twin (BL-3)',()=>{
+  const cases=[['SAND','GLASS',-20],['SAND','GLASS',-80],['SAND','METAL',-200],['SAND','WOOD',-5],['STONE','GLASS',-70],
+    ['NUGGETS','METAL',-60],['NUGGETS','METAL',-50],['WATER','LAMP',-80],['WATER','GLASS',-80],['SCRAP','BRICK',-60]];
+  for(const [mover,solid,vy] of cases) {
+    const f=fixture({material:mover==='WATER'?wet():L.makeMaterial(E[mover]),position:[6.5,1.05,6.5],velocity:[0,vy,0]});
+    f.set([6,0,6],L.makeMaterial(E[solid]));runTicks(f,[0],1);
+    const want=impact(L.makeMaterial(E[mover]).core,[0,f.particles[0].velocity[1]===0?vy:vy,0],L.makeMaterial(E[solid]).core);
+    const broke=L.cid(at(f,[6,0,6]).core)!==E[solid];
+    assert.equal(broke,want.broken,`${mover} at ${vy} m/s on ${solid}`);
+    if(broke) assert.ok(Math.abs(f.particles[0].velocity[1]-want.speed)<=Math.abs(want.speed)*0.02+0.05,`${mover}: ${f.particles[0].velocity[1]} vs ${want.speed}`);
+  }
+  // sand at walking pace and at its terminal speed lands on glass, wood and metal without a scratch
+  for(const solid of ['GLASS','WOOD','METAL']) {
+    const f=fixture({position:[6.5,1.05,6.5],velocity:[0,-43,0]});f.set([6,0,6],L.makeMaterial(E[solid]));runTicks(f,[0],1);
+    assert.equal(L.cid(at(f,[6,0,6]).core),E[solid],`sand at its terminal speed on ${solid}`);
+  }
+});
+
+// V1's rays (src/rays.js, shaders/rays.js raysAdvanceFrag) on V1's clock: the ray stages run once a V1 step,
+// RAY_STEPS_PER_TICK a tick (dynamics.js advanceParticles), each a photon's 2 cells (PHOTON_V) and one interaction.
+const photon=(life=RAYS.PHOTON_LIFE)=>({core:Uint32Array.from([254|(life<<8),floatBits(1),floatBits(1),floatBits(1)]),bank:0});
+const raySteps=(f,steps)=>{for(let k=0;k<steps;k++){f.ctx.P.substep=k%4;if(k%4===0)f.stages.clear(0);
+  for(const s of ['integrate','elect','impact','deposit'])for(let t=0;t<f.particles.length;t++)f.stages[s](t);}};
+const light=f=>Array.from(f.particles[0].tail).slice(0,3).map(bitsFloat);
+test('a photon flies 2 cells a V1 step, 480 cells/s, for V1\'s 512 steps (EL-2)',()=>{
+  const f=fixture({material:photon(),position:[2.5,10.5,10.5],velocity:[144,0,0]});
+  raySteps(f,4);close(f.particles[0].position[0],10.5,1e-4,'a tick: 8 cells');
+  assert.equal((f.particles[0].c0>>>8)&65535,RAYS.PHOTON_LIFE-4,'aged a V1 step a stage');
+  // its life is V1's steps: 3 steps of life fly 2 of them, then it fades with no heat
+  const fade=fixture({material:photon(3),position:[2.5,10.5,10.5],velocity:[144,0,0]});
+  raySteps(fade,1);raySteps(fade,1);assert.notEqual(fade.particles[0].id,0);close(fade.particles[0].position[0],6.5,1e-4);
+  raySteps(fade,1);assert.equal(fade.particles[0].id,0,'faded');assert.equal(fade.world.size,0,'its light heats nothing');
+});
+test('a photon goes straight through glass and water, dimming by Beer-Lambert, by a film\'s fill (EL-3, EL-4, EL-9)',()=>{
+  for(const [id,fill] of [[E.GLASS,L.FULL],[E.WATER,L.FULL],[E.WATER,L.FULL/8]]) {
+    const f=fixture({material:photon(),position:[2.5,10.25,10.75],velocity:[120,36,-48]});
+    for(let x=4;x<14;x++)for(let y=8;y<16;y++)for(let z=4;z<14;z++)f.set([x,y,z],id===E.GLASS?L.makeMaterial(E.GLASS):wet(fill));
+    const v0=[...f.particles[0].velocity];raySteps(f,4);
+    assert.deepEqual(f.particles[0].velocity,v0,`${ELEMENTS[id].key}: no refraction, no slowing`);
+    const travelled=Math.hypot(...sub(f.particles[0].position,[2.5,10.25,10.75]));
+    close(travelled,Math.hypot(...v0)*DT/CELL_M,1e-3,`${ELEMENTS[id].key}: a tick's 8+ cells in the medium too`);
+    const inside=travelled-(4-2.5)/(120/Math.hypot(...v0)),share=fill/L.FULL;
+    light(f).forEach((e,i)=>close(e,Math.exp(-ELEMENTS[id].sigma[i]*share*inside),2e-3,`${ELEMENTS[id].key} channel ${i}`));
+    let heat=0;for(const [,m] of f.world) heat+=L.cTq(m.core);assert.ok(f.world.size>0,'the light lost heats the medium');
+  }
+});
+test('a metal reflects a photon off the face it hits, keeping its reflectance; wood takes it all as heat',()=>{
+  const metal=fixture({material:photon(),position:[5.5,10.5,10.5],velocity:[144,0,0]});
+  metal.set([7,10,10],L.makeMaterial(E.METAL));raySteps(metal,1);
+  assert.equal(metal.particles[0].velocity[0],-144,'reflected across x');assert.ok(metal.particles[0].position[0]<7);
+  const r=ELEMENTS[E.METAL].reflect;light(metal).forEach(e=>close(e,r,1e-6));
+  const t0=L.cTq(L.makeMaterial(E.METAL).core),t1=L.cTq(at(metal,[7,10,10]).core);assert.ok(t1>t0,'the rest heats the metal');
+  const wood=fixture({material:photon(),position:[5.5,10.5,10.5],velocity:[144,0,0]});
+  wood.set([7,10,10],L.makeMaterial(E.WOOD));raySteps(wood,1);
+  assert.equal(wood.particles[0].id,0,'absorbed');
+  const warm=L.energyOf(at(wood,[7,10,10]))-L.energyOf(L.makeMaterial(E.WOOD));
+  assert.equal(warm,BigInt(Math.round(RAYS.PHOTON_HEAT*256))*65536n,'all its light as PHOTON_HEAT');
+});
+test('a ray leaving the box is gone, past a loop edge too (EL-5)',()=>{
+  for(const edge of [0,2]) {
+    const f=fixture({edge,material:photon(),position:[30.5,10.5,10.5],velocity:[144,0,0]});raySteps(f,1);
+    assert.equal(f.particles[0].id,0,`edge ${edge}`);
+  }
+  const neutron=fixture({edge:2,material:{core:Uint32Array.from([255,RAYS.NEUT_LIFE,floatBits(RAYS.NEUT_E_FAST),0]),bank:0},position:[30.5,10.5,10.5],velocity:[144,0,0]});
+  neutron.ctx.dNuclear=()=>({fast:[0,0,0],thermal:[0,0,0],h:0,A:1,nuF:0,nuT:0});neutron.ctx.contactNuclearMaterial=()=>0;
+  raySteps(neutron,1);assert.equal(neutron.particles[0].id,0,'a neutron too');
+});
+
+// V1's fall (react.js forces: a fixed drag a step; move.js: a grain's Margolus lag, a liquid's R3 draws), a V1 step at a
+// time (dPacketFlight): the emitted stage lands a packet at the tick its twin does (dynamics-reference.js packetStep,
+// which gravity-check holds to V1's arrival)
+test('the emitted flight drops a packet on V1\'s law: it lands at its twin\'s tick (gravity leftover)',()=>{
+  for(const [material,id] of [[L.makeMaterial(E.SAND),E.SAND],[L.makeMaterial(E.ASH),E.ASH],[wet(),E.WATER]]) {
+    const f=fixture({material,position:[6.5,24.5,6.5],velocity:[0,0,0]});f.set([6,0,6],L.makeMaterial(E.ROCK));
+    let tick=0;while(f.particles[0].id!==0&&tick<200){runTicks(f,[0],1);tick++;}
+    let v=0,y=0,want=0;while(y<23.5*CELL_M){const st=packetStep(id,v);y+=st.fell;v=st.v;want++;}
+    assert.ok(Math.abs(tick-want)<=1,`${ELEMENTS[id].key}: landed at tick ${tick}, its twin ${want}`);
+  }
+});
+
+// V1 move.js impactHeat (TH-10): a grain stopped by a solid turns its lost KE into heat, KE_TO_HEAT per unit, shared by
+// capacity so both warm alike (dynamics-reference.js impactHeat, the twin)
+test('a grain landing hard on rock warms the rock and itself alike, as V1\'s impactHeat; nothing for a gentle one (TH-10)',()=>{
+  const drop=(vy,solid=E.ROCK)=>{const f=fixture({position:[6.5,1.02,6.5],velocity:[3,vy,0]});f.set([6,0,6],L.makeMaterial(E[solid]??solid));runTicks(f,[0],1);return f;};
+  const f=drop(-43),hit=f.flight[0],want=impactHeat(E.SAND,E.ROCK,[3,-43,0],1,true);
+  const rise=L.energyOf(at(f,[6,0,6]))-L.energyOf(L.makeMaterial(E.ROCK));
+  assert.ok(want.hit>0&&want.packet>0); close(Number(rise)/(256*65536),want.hit,0.01,'the rock takes its share');
+  const sand=at(f,[6,1,6]);assert.equal(L.cid(sand.core),E.SAND,'landed above');
+  const t=L.cTq(sand.core)/4-273.25,rock=L.cTq(at(f,[6,0,6]).core)/4-273.25;
+  assert.ok(t>20.5&&rock>20.5&&Math.abs(t-rock)<1.5,`both warm alike: sand ${t} °C, rock ${rock} °C`);
+  // under V1's COLLIDE_V (0.15 cells/step) it rests without heat; onto a powder (V1: a pile, not a solid) none either
+  const gentle=drop(-6);assert.equal(L.energyOf(at(gentle,[6,0,6])),L.energyOf(L.makeMaterial(E.ROCK)));
+  // (the blow passes into the pile and back off the box's floor: MV-12's knock; the grain comes back to its cell)
+  const pile=drop(-43,E.STONE);for(let i=0;i<20&&pile.particles[0].id;i++) runTicks(pile,[0],1);
+  assert.equal(L.cid(at(pile,[6,0,6]).core),E.STONE);assert.equal(L.energyOf(at(pile,[6,0,6])),L.energyOf(L.makeMaterial(E.STONE)));
+});
+
+// V1's grains land on their blocks' random draws: each grain on a charge rolls its own odds at its fall (v1GrainOdds),
+// so a 4×4 uranium slab dropped a cell onto C-4 goes off 70 % of the time (BL-7); V2's packets had one fixed speed
+test('a grain packet landing on a charge rolls V1\'s odds for its fall (BL-7)',()=>{
+  const j=ELEMENTS[E.URANIUM],k=ELEMENTS[E.C4],at1=particleLandingSpeed(E.URANIUM,1*CELL_M);
+  const p1=packetGrainOdds(E.URANIUM,E.C4,at1);close(p1,v1GrainOdds(j,j.dens,k.blast.shock,1),1e-6,'from a cell: V1\'s 7 %');
+  const slab=1-(1-p1)**16;assert.ok(slab>0.65&&slab<0.75,`a 16-grain slab from a cell goes off ${(slab*100).toFixed(0)} % (V1 70 %)`);
+  assert.ok(packetGrainOdds(E.SCRAP,E.C4,particleLandingSpeed(E.SCRAP,5*CELL_M))>0.05,'scrap from 5 cells: V1 10 %');
+  assert.equal(packetGrainOdds(E.SAND,E.C4,72),0,'sand never (V1: ½·16·V_MAX² < 20)');
+  // the emitted shock rolls the packet's draw against them
+  const SP=shockPostBase(g),landed=draw=>{const f=fixture({material:L.makeMaterial(E.URANIUM),position:[18.8,1.05,15.5],velocity:[0,-at1,0]});
+    f.ctx.draw=draw;f.set([18,0,15],L.makeMaterial(E.C4));f.tick();return f.ctx.control[SP]===1;};
+  assert.equal(landed(p1*0.5),true,'a draw under its odds sets it off');assert.equal(landed(Math.min(0.99,p1*1.5+0.01)),false,'one over rests');
+  // the WGSL's table is the twin's
+  const wgsl=particlesWGSL(g,nativeDynamicsHead,'impact');
+  for(const r of PACKET_GRAIN_ODDS) for(const b of r.bins) assert.ok(wgsl.includes(`vec2f(${b.speed},${b.odds})`),`${ELEMENTS[r.faller].key} on ${ELEMENTS[r.charge].key}`);
+});
+
+// V1 move.js collide (MV-12): a fast grain hitting a resting grain passes its momentum on with RESTITUTION, so a blow
+// travels through a pile like a Newton's cradle (dynamics-reference.js packetKnock, the twin); V2's struck cells stayed
+test('a grain thrown into a row of grains knocks the far ones on, as V1\'s cradle, cells and energy exact (MV-12)',()=>{
+  const f=fixture({position:[8.9,0.5,6.5],velocity:[50,0,0]});
+  // (three grains: RESTITUTION 0.3 and the grains' drag spend the blow in three, V1's as V2's)
+  for(let x=10;x<13;x++) f.set([x,0,6],L.makeMaterial(E.SAND));
+  for(let x=0;x<32;x++) for(let y=0;y<3;y++) if(!f.world.has(f.ctx.slotOf([x,y,6]))) f.set([x,y,6],L.makeMaterial(0)); // (the air it moves through, counted)
+  const total=()=>{let n=0,e=0n;for(const [,m] of f.world){if(L.cid(m.core)===E.SAND)n++;e+=L.energyOf(m);}
+    for(const q of f.particles) if(q.id){n++;e+=L.packetOwnedEnergy(f.ctx.dMaterial(q));}return {n,e};};
+  const t0=total();runTicks(f,[0],1);
+  assert.equal(L.cid(at(f,[9,0,6]).core),E.SAND,'the thrown grain rests before the row');
+  assert.equal(L.cid(at(f,[10,0,6]).core),E.EMPTY,'the struck grain flew on');
+  // (V1's split of its speed at the hit: the tick's drag takes up to its four steps' share before it)
+  const hi=packetKnock(E.SAND,E.SAND,50).flies,lo=packetKnock(E.SAND,E.SAND,50*PACKET_KEEP[E.SAND]**4).flies,vx=f.particles[0].velocity[0];
+  assert.ok(f.particles[0].id!==0&&vx>=lo*0.999&&vx<=hi*1.001,`${vx} m/s vs V1's ${lo}..${hi}`);
+  assert.deepEqual(total(),t0,'every grain and every unit of energy kept');
+  for(let i=0;i<20&&f.particles[0].id;i++) runTicks(f,[0],1);
+  let far=-1;for(const [slot,m] of f.world) if(L.cid(m.core)===E.SAND) far=Math.max(far,f.ctx.cellOf(slot)[0]);
+  assert.ok(far>=13,`the blow reached the row's end and moved it on (V1's cradle): farthest grain at x ${far}`);
+  assert.equal(total().n,t0.n);
+  // a gentle push under COLLIDE_V moves only what it hits (V1: support, no exchange)
+  assert.equal(packetKnock(E.SAND,E.SAND,0.15*SHOCK_THROW_MS*0.9),null);
+});
+
 test('an empty pool reads no packet record and writes no flight record',()=>{
   const f=fixture();f.particles[0].id=0;f.ctx.control[0]=0;let reads=0;
   const pool=f.particles;f.ctx.particles=new Proxy(pool,{get:(a,k)=>{if(/^\d+$/.test(k))reads++;return a[k];}});
@@ -441,7 +606,7 @@ test('a hit sets off C-4 and nitroglycerin as V1\'s shock: the charge hit and th
     f.set(start,target);f.tick();return f;
   };
   const thrown=(material,speed,target)=>{
-    const f=fixture({material,position:[17.2,0.5,15.5],velocity:[speed,0,0]});
+    const f=fixture({material,position:[17.9,0.5,15.5],velocity:[speed,0,0]});
     f.set(beside,target);f.tick();return f;
   };
   const posted=f=>f.ctx.control[S0+1]===(f.ctx.slotOf(start)|DET)>>>0&&f.ctx.control[S0]===1;
@@ -449,8 +614,8 @@ test('a hit sets off C-4 and nitroglycerin as V1\'s shock: the charge hit and th
   // sand never sets C-4 off (V1: ½·16·V_MAX² = 8, under its 20), landing or thrown, however fast
   for(const v of [-6,-25,-60])assert.ok(quiet(hit(L.makeMaterial(E.SAND),v,L.makeMaterial(E.C4))),`sand landing at ${-v} m/s`);
   for(const v of [6,40,100])assert.ok(quiet(thrown(L.makeMaterial(E.SAND),v,L.makeMaterial(E.C4))),`sand thrown at ${v} m/s`);
-  // ...though the same landing still smashes wood (fracture is V2's toughness, unchanged)
-  let f=hit(L.makeMaterial(E.SAND),-6,L.makeMaterial(E.WOOD));assert.notEqual(L.cid(at(f,start).core),E.WOOD);
+  // ...nor breaks wood (V1 react.js breaking: ½·16·vn² never reaches wood's hard 20; BL-3)
+  let f=hit(L.makeMaterial(E.SAND),-6,L.makeMaterial(E.WOOD));assert.equal(L.cid(at(f,start).core),E.WOOD);
   // uranium does: landing past the speed a packet has after V1's fall (V1: 1.46 m), thrown past V1's speed
   // for it at V2's throw map (V1: √(2·20/191) cells/step, at SHOCK_THROW_MS m/s each)
   const uOn=PACKET_SHOCK_LANDINGS.find(r=>r.faller===E.URANIUM&&r.charge===E.C4).speed;
@@ -533,7 +698,7 @@ test('the emitted shock decides every pair as its CPU twin and as V1\'s rule at 
     if(j===c) continue;
     for(const [mover,target] of [[j,c],[c,j]]) for(const landing of [true,false]) {
       const material=kind(mover)===3?wet(L.FULL,mover):L.makeMaterial(mover),tm=kind(target)===3?wet(L.FULL,target):L.makeMaterial(target);
-      const f=landing?fixture({material,position:[18.8,1.1,15.5],velocity:[0,-u,0]}):fixture({material,position:[17.2,0.5,15.5],velocity:[u,0,0]});
+      const f=landing?fixture({material,position:[18.8,1.1,15.5],velocity:[0,-u,0]}):fixture({material,position:[17.9,0.5,15.5],velocity:[u,0,0]});
       f.set(landing?[18,0,15]:[18,0,15],tm);f.tick();
       const want=packetShock(mover,target,u,landing);
       const got={target:f.ctx.control[shockPostBase(g)+1]!==0,mover:f.ctx.control[setOffBase(g)]!==0||f.ctx.control[airborneBase(g)+1]!==0};

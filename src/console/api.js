@@ -190,18 +190,21 @@ export function installBuiltins(host) {
     return null;
   }, { args: 'i', doc: 'Index of the next particle after i (-1 for the first), or nil. for i in sim.parts() uses it.' });
 
+  // The grid's matter and what flies beside it: a V1 flying cell is a cell, a V2 one a packet in
+  // flight (console/world.js forEachFlying), so both engines count all the matter there is.
   const census = (ctx) => {
-    const done = w().readAll(sync(ctx));
+    const done = w().readAll(sync(ctx), { flying: true });
     const counts = new Array(ELEMENTS.length).fill(0);
     w().forEachMatter((x, y, z, c) => { counts[c.id]++; });
+    w().forEachFlying((id) => { if (id < counts.length) counts[id]++; });
     return { counts, done };
   };
   fn('sim', 'elementCount', function (type) {
     return census(this).counts[elementId(type)];
-  }, { args: 'type', doc: 'How many cells hold an element (in a handler: of the snapshot read so far).' });
+  }, { args: 'type', doc: 'How many cells hold an element, flying ones too (in a handler: of the snapshot read so far).' });
   fn('sim', 'partCount', function () {
     return census(this).counts.reduce((s, n) => s + n, 0);
-  }, { doc: 'How many cells hold matter.' });
+  }, { doc: 'How many cells hold matter, flying ones too.' });
 
   fn('sim', 'pressure', function (...a) {
     const [x, y, z] = xyz(a[0], a[1], a[2]);

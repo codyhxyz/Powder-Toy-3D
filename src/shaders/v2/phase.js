@@ -1,10 +1,12 @@
 import { PHASE_ROWS, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, phaseOffsetPerQuantum } from '../../v2/phase.js';
 import { ELEMENTS } from '../../elements.js';
 const field = (name, get) => {
-  // Small scalar tables avoid switch-return fanout without adding GPU bindings.
+  // Small scalar tables avoid switch-return fanout without adding GPU bindings. One exit, no branch:
+  // these inline at every energy read, and early returns there are what make Metal's cold compile slow
+  // (docs/webgpu.md B5); past the table it is 0, as before.
   const values = PHASE_ROWS.map((r, i) => get(r, i));
   return `const ${name}Table = array<i32, ${values.length}>(${values.join(',')});
-fn ${name}(id:u32)->i32 { if(id>=${values.length}u){return 0;} return ${name}Table[id]; }`;
+fn ${name}(id:u32)->i32 { return select(0,${name}Table[min(id,${values.length - 1}u)],id<${values.length}u); }`;
 };
 // Requires foundation energyAdd/Sub/Signed/Mul; no bindings. vec2u is low,high.
 export const phaseWGSL = /* wgsl */ `
@@ -17,10 +19,11 @@ ${field('phaseHotLatent', r => r.hotLatent)}
 ${field('phaseColdLatent', r => r.coldLatent)}
 ${field('phaseOffsetPerQuantum', r => r.offset)}
 ${field('phaseCapacityPerQuantum', (_, i) => Math.max(1, Math.round(ELEMENTS[i].cap * 64)))}
+// (phaseTq and the offset and latent reads below have one exit each and pick with select: they inline at
+// every energy read, and their early returns made the contact kernels slow to compile cold, B5. The
+// divisions keep their early returns: one exit there made the column kernels slower, v2runs/v2pairs)
 fn phaseTq(id:u32,raw:u32)->u32 {
- if(raw<=41093u){return raw;}
- if(raw<PHASE_COLD_BASE){return u32(phaseHotQ(id));}
- return u32(phaseColdQ(id));
+ return select(u32(select(phaseColdQ(id),phaseHotQ(id),raw<PHASE_COLD_BASE)),raw,raw<=41093u);
 }
 fn phaseLess(a:vec2u,b:vec2u)->bool {
  return bitcast<i32>(a.y)<bitcast<i32>(b.y) || (a.y==b.y && a.x<b.x);
@@ -90,47 +93,49 @@ fn phaseDiv(a:vec2u,b:vec2u)->vec2u {
 }
 fn phaseOffsetEnergy(id:u32,amount:u32)->vec2u {
  let offset=phaseOffsetPerQuantum(id); let magnitude=energyMul(u32(abs(offset)),amount);
- if(offset<0){return energySub(vec2u(0u),magnitude);}return magnitude;
+ return select(magnitude,energySub(vec2u(0u),magnitude),offset<0);
 }
 ${field('phaseLavaOffsetPerQuantum', (_, i) => phaseOffsetPerQuantum(10, i))}
+// (lava's by the element it melted from, every other element's its own: phaseOffsetEnergy's rule)
 fn phaseMaterialOffsetEnergy(id:u32,amount:u32,ctype:u32)->vec2u {
- if(id!=10u){return phaseOffsetEnergy(id,amount);}
  var source=ctype;if(source>=${ELEMENTS.length}u){source=3u;}
- let offset=phaseLavaOffsetPerQuantum(source);
+ let offset=select(phaseOffsetPerQuantum(id),phaseLavaOffsetPerQuantum(source),id==10u);
  let magnitude=energyMul(u32(abs(offset)),amount);
- if(offset<0){return energySub(vec2u(0u),magnitude);}return magnitude;
+ return select(magnitude,energySub(vec2u(0u),magnitude),offset<0);
 }
+// (none outside a latent interval: raw-base wraps there, and the select drops what it made)
 fn phaseLatentEnergy(id:u32,raw:u32,amount:u32)->vec2u {
- if(raw<=41093u){return vec2u(0u);}
  let hot=raw<PHASE_COLD_BASE;
  let base=select(PHASE_COLD_BASE,PHASE_HOT_BASE,hot);
  let per=select(phaseColdLatent(id),phaseHotLatent(id),hot);
  let total=energyMul(u32(per),amount);
  let magnitude=phaseDiv(phaseMulSmall(total,raw-base),vec2u(PHASE_STEPS,0u));
- if(hot){return magnitude;}return energySub(vec2u(0u),magnitude);
+ return select(select(energySub(vec2u(0u),magnitude),magnitude,hot),vec2u(0u),raw<=41093u);
 }
 // raw=0xffffffff is not in a latent interval. y is bitcast<i32>(residual).
 fn phaseEncode(id:u32,amount:u32,energy:vec2u)->vec2u {
  return phaseEncodeCapacity(id,amount,energy,65536u+amount*u32(phaseCapacityPerQuantum(id)),0u);
 }
+// The first side (hot, then cold) whose latent interval holds the energy, then its encoding: the
+// divisions once, after the side is found, not once a side (cold compile, B5).
 fn phaseEncodeCapacity(id:u32,amount:u32,energy:vec2u,capacity:u32,ctype:u32)->vec2u {
  let sensible=energySub(energy,phaseMaterialOffsetEnergy(id,amount,ctype));
+ var found=false; var hot=false; var latent=vec2u(0u); var progress=vec2u(0u);
  for(var side=0u;side<2u;side++){
-  let hot=side==0u;
-  let per=select(phaseColdLatent(id),phaseHotLatent(id),hot);
-  if(per<=0){continue;}
-  let latent=energyMul(u32(per),amount);
-  if(all(latent==vec2u(0u))){continue;}
-  let threshold=energyMul(capacity,u32(select(phaseColdQ(id),phaseHotQ(id),hot)));
-  var progress=energySub(threshold,sensible);
-  if(hot){progress=energySub(sensible,threshold);}
-  if(phaseLess(progress,vec2u(0u)) || phaseLess(latent,progress)){continue;}
+  let h=side==0u;
+  let per=select(phaseColdLatent(id),phaseHotLatent(id),h);
+  let l=energyMul(u32(max(per,0)),amount);
+  let threshold=energyMul(capacity,u32(select(phaseColdQ(id),phaseHotQ(id),h)));
+  let p=select(energySub(threshold,sensible),energySub(sensible,threshold),h);
+  if(!found && per>0 && !all(l==vec2u(0u)) && !phaseLess(p,vec2u(0u)) && !phaseLess(l,p)){found=true; hot=h; latent=l; progress=p;}
+ }
+ var out=vec2u(0xffffffffu,0u);
+ if(found){
   let index=phaseDiv(phaseMulSmall(progress,PHASE_STEPS),latent).x;
   let encoded=phaseDiv(phaseMulSmall(latent,index),vec2u(PHASE_STEPS,0u));
-  var residual=energySub(encoded,progress);
-  if(hot){residual=energySub(progress,encoded);}
-  return vec2u(select(PHASE_COLD_BASE,PHASE_HOT_BASE,hot)+index,residual.x);
+  let residual=select(energySub(encoded,progress),energySub(progress,encoded),hot);
+  out=vec2u(select(PHASE_COLD_BASE,PHASE_HOT_BASE,hot)+index,residual.x);
  }
- return vec2u(0xffffffffu,0u);
+ return out;
 }
 `;

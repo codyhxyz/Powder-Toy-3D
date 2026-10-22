@@ -7,11 +7,14 @@ import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
 import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase, setOffBase, storageLayout } from '../shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, COUPLE_MODE,
-  COUPLE_ARGS, listControl, LIST_ARGS, DISPATCH_ARGS_BYTES, LISTS_STAGES, listsStageWGSL, controlBufferWords, LAUNCH_MODE } from '../shaders/v2/blasts.js';
+  COUPLE_ARGS, RAY_ARGS, listControl, LIST_ARGS, DISPATCH_ARGS_BYTES, LISTS_STAGES, listsStageWGSL, controlBufferWords, LAUNCH_MODE } from '../shaders/v2/blasts.js';
 import { AIR as AIR_MODE, EDGE } from '../simModes.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
 import { windowWGSL, WINDOW_STAGES, WINDOW_LAYOUT, WINDOW_MODE, windowWork } from '../shaders/v2/windowMove.js';
-import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M, EVENT } from './dynamics-reference.js';
+import { PARTICLE_CAP, PARTICLE_BYTES, AIR, CELL_M, EVENT, RAY_PHOTON_MS, RAY_NEUTRON_FAST_MS, RAY_STEPS_PER_TICK } from './dynamics-reference.js';
+// the particle stages a V1 step of a ray takes (particles.js: integrate moves, elect and impact take the hits,
+// deposit lands matter)
+const RAY_STAGES=['integrate','elect','impact','deposit'];
 import { NATIVE_LAUNCH_MODE } from './nativeForcing.js';
 import { CONTACT_PUFF_UNIT as PUFF_UNIT } from './contact.js';   // a GAS request's puff rides above its flags
 import { AIRBORNE_COLOURS, packAirborne } from './airborne.js';
@@ -84,7 +87,8 @@ export function validateDynamicState(snapshot,g) {
     if (!Number.isInteger(r.slot) || r.slot<0 || r.slot>=RAY_REQUEST_CAP || requests.has(r.slot) ||
       !['photon','neutron'].includes(r.kind) || !finiteVector(r.position) || !finiteVector(r.direction) ||
       !safeDynamicNumber(r.radius) || r.radius<0 || !Number.isInteger(r.count) || r.count<1 || r.count>PARTICLE_CAP ||
-      !Number.isInteger(r.requestId) || r.requestId<1 || r.requestId>s.sequence || s.rayRemaining[r.slot]>r.count) throw new Error('Invalid queued native ray');
+      !Number.isInteger(r.requestId) || r.requestId<1 || r.requestId>s.sequence || s.rayRemaining[r.slot]>r.count ||
+      ![undefined,0,1].includes(r.shape)) throw new Error('Invalid queued native ray');
     requests.set(r.slot,cloneRequest(r));
   }
   for(let slot=0;slot<RAY_REQUEST_CAP;slot++) if(s.rayRemaining[slot] && !requests.has(slot)) throw new Error('Unowned native ray obligation');
@@ -254,15 +258,24 @@ export class NativeDynamics {
     this._record('blasts','children',Math.ceil(PARTICLE_CAP/64),tick,p);
   }
   _rays(tick) { for (const [slot,r] of this.rayRequests) this._recordRay(slot,r,tick); }
+  // A ray request's emission (blasts.js rayEmit): at V1's speed for its kind (dynamics-reference.js RAY_PHOTON_MS,
+  // RAY_NEUTRON_FAST_MS) along its direction, or each in its own random direction for the zero direction (a
+  // painted brush: V1 shaders/rays.js raysPaintFrag), placed in its brush's sphere (shape 0) or cube (1).
   _recordRay(slot,r,tick) {
-    this._record('blasts','rayEmit',1,tick,{mode:r.kind==='photon'?7:8,center:r.position,
-      vector:r.direction.map(v=>v*36),radius:r.radius,strength:r.count,sequence:r.requestId,substep:slot});
+    const speed=r.kind==='photon'?RAY_PHOTON_MS:RAY_NEUTRON_FAST_MS;
+    this._record('blasts','rayEmit',1,tick,{mode:r.kind==='photon'?7:8,center:r.position,blastShape:r.shape??0,
+      vector:r.direction.map(v=>v*speed),radius:r.radius,strength:r.count,sequence:r.requestId,substep:slot});
   }
   advanceParticles(tick) {
     // Rays spawn before clear samples the live count; hold neither spawns nor counts.
     this._work(); this._rays(tick);
     this._record('particles','clear',1,tick); this._hold(tick);
-    for (const stage of ['integrate','elect','impact','deposit']) this._record('particles',stage,PARTICLE_CAP/64,tick);
+    for (const stage of RAY_STAGES) this._record('particles',stage,PARTICLE_CAP/64,tick);
+    // V1 steps a ray RAY_STEPS_PER_TICK times a tick, at most one interaction a step (shaders/rays.js): the stages
+    // again for the tick's later V1 steps, the rays alone, over the pool only when the first moved a ray (rayGate)
+    this._record('lists','rayGate',1,tick);
+    for (let step=1;step<RAY_STEPS_PER_TICK;step++) for (const stage of RAY_STAGES)
+      this._record('particles',stage,{indirect:this.dispatchArgs,offset:RAY_ARGS},tick,{substep:step});
     // what is still flying takes part, as V1's moving cells did (src/v2/airborne.js): each packet
     // joins its cell's list (a dust packet counts its dust faces once all have), then the cells'
     // lists run a colour at a time, so no two whose footprints overlap run together, with the block
@@ -373,7 +386,7 @@ export class NativeDynamics {
       if (!Number.isInteger(count) || count<1 || count>PARTICLE_CAP) return {status:'rejected',reason:'ray count must be 1..65536'};
       let slot=0; while(this.rayRequests.has(slot)) slot++;
       if (slot>=RAY_REQUEST_CAP) return {status:'rejected',reason:'native ray request queue is full; retry explicitly'};
-      const norm=Math.hypot(...direction),r={kind,position,direction:norm?direction.map(v=>v/norm):direction,radius,count,requestId};
+      const norm=Math.hypot(...direction),r={kind,position,direction:norm?direction.map(v=>v/norm):direction,radius,count,requestId,shape:request.shape?1:0};
       this.rayRequests.set(slot,r); this.gpu.write(this.control,(rayRequestBase(this.g)+slot)*4,new Uint32Array([count]));
       this._externalWork(); this._recordRay(slot,r,tick);
       return {status:'queued',requestId};

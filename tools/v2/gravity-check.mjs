@@ -12,6 +12,7 @@ import { GRAVITY_MS2, TERMINAL_MS, STEPS_PER_TICK, v1PaceRate, v1TerminalMS } fr
 import { nativeModes, GRAVITY_MS2 as MODES_GRAVITY } from '../../src/v2/modes.js';
 import { modeWGSL } from '../../src/shaders/v2/modes.js';
 import { GRAVITY, dynamicsRows, particleFallSpeed, particleLandingSpeed, packetStep } from '../../src/v2/dynamics-reference.js';
+import { PACE } from '../../src/shaders/move.js';
 import { FALL_GRAVITY, fallTerminal, setFall, stepFall, fallVelocity, fallFraction } from '../../src/v2/fall.js';
 import { G_MS2, fallCells } from '../../src/shaders/v2.js';
 import { COLUMN } from '../../src/shaders/v2/columns.js';
@@ -47,7 +48,7 @@ test('every V2 owner pulls with V1\'s gravity and stops at V1\'s terminal speed'
   for (const id of [E.SAND, E.ASH, E.WATER, E.SNOW, E.SCRAP]) {
     let v = 0;
     for (let t = 0; t < 600; t++) v = packetStep(id, v).v;
-    close(v, dynamicsRows[id].terminal, `${ELEMENTS[id].key} packet`, 1e-6);
+    close(v, dynamicsRows[id].terminal, `${ELEMENTS[id].key} packet`, 1e-3); // (its keep is f32, as the shader's table)
     close(particleFallSpeed(id, 400), dynamicsRows[id].terminal, `${ELEMENTS[id].key} packet after 400 m`, 1e-3);
   }
   // a fall's landing speed grows with its height (the velocity changes linearly across a tick)
@@ -112,4 +113,44 @@ test('a grain lands when V1\'s does, within a tick, and as fast', () => {
   let core = setFall(new Uint32Array([E.SAND, 0, 0, 0]), 0, 0), cells = 0;
   for (let t = 0; t < 9; t++) { const s = stepFall(core, GRAVITY_MS2); core = s.core; cells += s.cells; }
   close(fallCells(E.SAND, 9), cells + fallFraction(core), 'fallCells');
+});
+
+// V1's lone liquid cell falling h cells at phase (dynamics-reference.js v1LiquidArrival's loop): the step it lands
+function v1LiquidStep(h, phase) {
+  const f32 = Math.fround, g = f32(SIM_GRAVITY), draw = n => { const w = Math.imul(n, PACE.Y) >>> 0; return f32(f32(f32((w >>> 8) * 256) + (w & 255)) * f32(2 ** -32)); };
+  let y = h, v = 0, parity = (phase + h) & 1;
+  for (let n = 0; n < 100000; n++) {
+    parity ^= 1;
+    if (v > 0 && ((y - parity) & 1) === 1) {
+      const age = v < PHYS.V_MAX ? Math.floor(f32(f32(v / g) + 0.5)) : 0;
+      if (v >= PHYS.V_MAX || draw(age) < v) { y -= 1; if (y === 0) return n + 1; }
+    }
+    v = Math.min(PHYS.V_MAX, f32(v + g));
+  }
+  throw new Error('no landing');
+}
+// a packet dropped from rest (dynamics-reference.js packetStep, particles.js dPacketFlight's twin): the tick it has
+// fallen h cells
+function packetArrival(id, h) {
+  let v = 0, y = 0;
+  for (let t = 1; t < 5000; t++) { const s = packetStep(id, v); y += s.fell; v = s.v; if (y >= h * CELL_M - 1e-9) return t; }
+  throw new Error('no landing');
+}
+test('a packet lands when V1\'s cell does, within a tick, short drops and long (gravity leftover: V1\'s drag and move)', () => {
+  // V1 react.js forces: a fixed drag a step (DRAG), V_MAX; move.js: a grain moves on its block's random draws (its
+  // Margolus lag), a liquid on its R3 draws. V2's packets took a squared-speed drag and no lag: sand from 16 cells
+  // landed 6 ticks early, ash from 16 cells 15
+  for (const key of ['SAND', 'STONE', 'SCRAP', 'ASH', 'SNOW', 'URANIUM']) {
+    const e = ELEMENTS[E[key]];
+    for (const h of [2, 4, 8, 16, 32, 64]) {
+      const v1 = Math.ceil(v1GrainArrival(e, h).step / STEPS_PER_TICK), v2 = packetArrival(e.id, h);
+      assert.ok(Math.abs(v2 - v1) <= 1, `${key} packet from ${h}: tick ${v2}, V1 ${v1}`);
+    }
+  }
+  for (const key of ['WATER', 'MERCURY', 'NITRO', 'LAVA']) {
+    for (const h of [2, 4, 8, 16, 32, 64]) {
+      const v1 = Math.ceil((v1LiquidStep(h, 0) + v1LiquidStep(h, 1)) / 2 / STEPS_PER_TICK), v2 = packetArrival(E[key], h);
+      assert.ok(Math.abs(v2 - v1) <= 1, `${key} packet from ${h}: tick ${v2}, V1 ${v1}`);
+    }
+  }
 });

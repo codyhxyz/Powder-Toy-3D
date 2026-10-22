@@ -14,7 +14,7 @@ const MAX_FILL: u32 = ${MAX_FILL}u;
 const FUEL_Q: f32 = ${FUEL_Q}.0;
 struct Material { core: vec4u, bank: i32 }
 ${phaseWGSL}
-fn materialAmount(c: vec4u) -> u32 { if (cid(c) == 0u) { return 0u; } if (isLiq(c)) { return cFill(c); } return 65536u; }
+fn materialAmount(c: vec4u) -> u32 { return select(select(65536u, cFill(c), isLiq(c)), 0u, cid(c) == 0u); }
 fn capacityPerQuantum(id: u32) -> u32 { return MATERIAL_CAP[id]; }
 fn conductsNative(id: u32) -> bool { return MATERIAL_CONDUCTS[id]; }
 fn capacityQ(c: vec4u) -> u32 {
@@ -181,7 +181,7 @@ fn energyPacketFits(src: Material, dst: Material, packet: vec2u, n: u32) -> bool
   if (phaseLess(vec2u(0u), excessHi) && phaseLess(roomHi, phaseMulSmall(excessHi, 6u))) { return false; }
   return true;
 }
-fn ctypeOf(c: vec4u) -> u32 { if (isLiq(c)) { return (c.y >> 24u) & select(255u, 127u, MATERIAL_BURNS[cid(c)]); } return (c.y >> 16u) & 255u; }
+fn ctypeOf(c: vec4u) -> u32 { return select((c.y >> 16u) & 255u, (c.y >> 24u) & select(255u, 127u, MATERIAL_BURNS[cid(c)]), isLiq(c)); }
 fn withCtype(c: vec4u, ct: u32) -> vec4u { var o = c; if (isLiq(c)) {
   let mask = select(255u, 127u, MATERIAL_BURNS[cid(c)]);
   o.y = (c.y & ~(mask << 24u)) | ((ct & mask) << 24u);

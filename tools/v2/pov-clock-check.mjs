@@ -91,6 +91,40 @@ function chaseOneFrame(sim, stepsPerFrame) {
   console.log(`PASS physgun chase: ${v2Arc.toFixed(2)} cells a V2 tick, as V1's ${v1Arc.toFixed(2)} a 4-step frame`);
 }
 
+// ---- 2b. T7: the physgun's punt with nothing hit is V1's cone from the muzzle on both engines (shaders/povTools.js
+// blastWGSL through the same povBlast edit; under V2 pov/gpu.js edit runs it as native forcing:
+// tools/v2/native-force-check.mjs), not one 8 m/s impulse sphere at the far end.
+{
+  const punt = (sim) => {
+    const edits = [], impulses = [];
+    sim.applyNativeTool = (r) => { impulses.push(r); return true; };
+    setPovGpu(sim, { ready: true, com: () => true, edit: (name, box, values) => { edits.push({ name, box, values }); return true; }, probe: () => null });
+    const tool = physgun.create(toolEnv(sim));
+    const eye = new THREE.Vector3(8, 16, 16), dir = new THREE.Vector3(1, 0, 0);
+    tool.update({ sim, dt: 1 / 60, nativeDt: sim.compact ? 1 / HOST_HZ : undefined, stepsPerFrame: sim.compact ? 1 : 4, eye, dir,
+      aim: { valid: false }, primary: false, primaryPressed: false, secondary: true, secondaryPressed: true, wheel: 0 });
+    tool.dispose();
+    return { edits, impulses, eye, dir };
+  };
+  const box = (lo, hi) => ({ lo, hi });
+  const v1 = { id: 1, g: { nx: 64, ny: 64, nz: 64 }, origin: new THREE.Vector3(), gravity: 0.025, touchCentres: box };
+  const v2 = { id: 2, compact: { dynamics: { applyPhysgun: () => ({ status: 'queued' }), holdSession: null } }, nativeCapabilities: { physgun: true },
+    g: { nx: 64, ny: 64, nz: 64 }, origin: new THREE.Vector3(), gravity: 0.025, touchCentres: box };
+  const a = punt(v1), b = punt(v2);
+  assert.equal(b.impulses.length, 0, 'V2: no far-end impulse sphere (it pushed one 8 m/s sphere at the cone\'s end)');
+  for (const [engine, r] of [['V1', a], ['V2', b]]) {
+    assert.equal(r.edits.length, 1, `${engine}: one blast edit`);
+    const { name, box: bb, values } = r.edits[0];
+    assert.equal(name, 'povBlast', `${engine}: V1's cone`);
+    assert.equal(values.muzzle.distanceTo(r.eye), 0, `${engine}: from the muzzle`);
+    assert.equal(values.dir.distanceTo(r.dir), 0);
+    assert(bb.lo[0] <= r.eye.x - 1 && bb.hi[0] >= r.eye.x + values.reach, `${engine}: the box spans muzzle to reach`);
+  }
+  assert.deepEqual(b.edits[0].values.reach, a.edits[0].values.reach, 'the same reach');
+  assert.deepEqual([b.edits[0].box.lo, b.edits[0].box.hi], [a.edits[0].box.lo, a.edits[0].box.hi], 'the same cone box');
+  console.log(`PASS physgun punt: V2 fires V1's cone from the muzzle (reach ${a.edits[0].values.reach} cells), no far-end impulse`);
+}
+
 // ---- 3. Out of POV, what's in the air flies by the ticks the world ran between rAF calls, not the last app frame's count each call.
 {
   const ticks = tickCounter(), sim = { nativeTicks: 10 };

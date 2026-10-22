@@ -1,5 +1,5 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../v2.js';
-import { dynamicsCommon, storageLayout, main64 } from './particles.js';
+import { dynamicsCommon, storageLayout, main64, SHOCK_UNIT_PA } from './particles.js';
 import { listControl, listWGSL, windGroupsWGSL } from './blasts.js';
 import { AIR, DT, GRAVITY, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { V1_AIR } from '../../v2/pressure.js';
@@ -188,7 +188,8 @@ var<workgroup> wgWind: atomic<u32>;
     }
     if (pending>0u) { atomicAdd(&control[2],pending); }
     let shock=atomicExchange(&control[D_SHOCK+t],0u);
-    if (shock>0u && mAirPressure()) { a.vp.w+=f32(shock)/256.0; a.thermal.z=0.0; dWake(aBase(t)); }
+    // a fission's pressure (particles.js FISSION_PA), in SHOCK_UNIT_PA, to V1's P_MAX as a puff's (react.js clamps a cell's)
+    if (shock>0u && mAirPressure()) { a.vp.w+=clamp(f32(shock)*${f(SHOCK_UNIT_PA)},0.0,max(0.0,${f(CONTACT_PUFF_MAX_PA)}-a.vp.w)); a.thermal.z=0.0; dWake(aBase(t)); }
     if (count>0u) {
       // V1 clamps a cell's pressure at P_MAX (react.js): puffs raise the brick at most to it.
       if(mAirPressure()) { a.vp.w+=gas; a.vp.w+=clamp(puff,0.0,max(0.0,${f(CONTACT_PUFF_MAX_PA)}-a.vp.w)); } if(mAirHeat()) { a.thermal.x+=heat; }

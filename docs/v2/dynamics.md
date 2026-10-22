@@ -224,9 +224,10 @@ memory grows with explored active air; compression/eviction is not implemented.
   thermal energy; selection gates its representation before ANY blast work.
   Acoustic pressure uses `sqrt(oldP²+addedP²)`, not additive sqrt kicks.
   Material heat from products and accepted rays uses foundation source ledgers.
-- Photon core0 bits8..23 are life, bits24..31 last medium; its reserved bank
-  word stores the last crossed axis, so attenuating through a slab does not
-  skip refraction on exit. This tag-specific metadata is not a material bank.
+- Photon core0 bits8..23 are life (V1 steps), bits24..31 the medium it was
+  emitted in; its reserved bank word is 0. Rays run once a V1 step (the ray
+  stages' sub-steps, gated by lists rayGate), fly through clear matter dimming
+  by Beer-Lambert and do not refract (V1 shaders/rays.js; WS-F 2026-10-22).
 - DDA has an analytical nx+ny+nz+3 bound for in-box crossings; non-progress
   retains the packet (or shields a blast), never skips a wall. Closed boxes
   land matter at boundaries; ray outflow is explicitly counted at control[16].

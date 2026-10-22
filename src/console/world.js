@@ -28,10 +28,15 @@ import { physicalCtype } from '../appearance.js';
 //   size()                      [nx, ny, nz]
 //   blockCount, blockTexels     blocks in the grid, texels per block
 //   locate(x, y, z)             [block, texel in the block]
-//   readBlocks(blocks, sync)    Map(block → { a, b }) (Float32Array RGBA per texel,
+//   readBlocks(blocks, sync, flying)
+//                               Map(block → { a, b }) (Float32Array RGBA per texel,
 //                               the fetchA/fetchB layout), or a Promise of one;
 //                               sync may throw an error carrying retry() instead
-//                               (console/gpu.js: the read waits for the GPU)
+//                               (console/gpu.js: the read waits for the GPU). With
+//                               flying, the map's .flying is the element id of each
+//                               piece of matter in flight in the grid, read with
+//                               the blocks (V2's packets: a V1 flying cell is a cell,
+//                               so V1's backend leaves it undefined)
 //   applyEdits(chunk)           one pass over a packed chunk (packEdits)
 
 // Edit mask bits (shaders/script.js has the same).
@@ -204,6 +209,9 @@ export class ScriptWorld {
     this.cell = blankCell();
     this.passes = 0;            // GPU passes run (tests, the status line)
     this.onEdit = null;         // called before each edit is queued
+    // the matter in flight beside the grid (readBlocks' .flying): { ids, stamp, readAt, usedAt }
+    this.flying = null;
+    this.flyingWanted = false;  // a handler's census asked for it
   }
 
   get size() { return this.backend.size(); }
@@ -227,6 +235,8 @@ export class ScriptWorld {
     this.epoch = e;
     this.blocks.clear();
     this.wanted.clear();
+    this.flying = null;
+    this.flyingWanted = false;
     this.edits.clear();
   }
 
@@ -295,7 +305,7 @@ export class ScriptWorld {
   // synchronous one (later reads in the command reuse it).
   beginCommand() { this.stamp++; }
   // The state moved on under the cache (sim.step from a command).
-  invalidate() { this.stamp++; for (const b of this.blocks.values()) b.readAt = 0; }
+  invalidate() { this.stamp++; for (const b of this.blocks.values()) b.readAt = 0; if (this.flying) this.flying.readAt = 0; }
 
   // Cell (x, y, z) as scripts see it ({ id, temp, life, ctype, vx, vy, vz,
   // pressure }, reused by the next read), or null: outside the grid, or (not
@@ -333,7 +343,9 @@ export class ScriptWorld {
 
   // Every block of the grid cached (sync: read now); false while a handler's
   // whole-grid read is still filling in (the blocks are requested).
-  readAll(sync) {
+  // flying: and the matter in flight beside the grid (forEachFlying), read with the
+  // blocks it reads so the two agree (a grain launched between them is counted once).
+  readAll(sync, { flying = false } = {}) {
     this.checkEpoch();
     const missing = [];
     const now = this.now();
@@ -342,11 +354,22 @@ export class ScriptWorld {
       if (!b || (sync && b.stamp !== this.stamp)) missing.push(i);
       else b.usedAt = now;
     }
-    if (!missing.length) return true;
-    if (!sync) { for (const i of missing) this.wanted.add(i); return false; }
-    this.store(this.backend.readBlocks(missing, true), now, this.seq);
+    if (!sync) {
+      if (flying) { if (this.flying) this.flying.usedAt = now; else this.flyingWanted = true; }
+      for (const i of missing) this.wanted.add(i);
+      return !missing.length && (!flying || !!this.flying);
+    }
+    const stale = flying && this.flying?.stamp !== this.stamp;
+    if (!missing.length && !stale) return true;
+    const map = this.backend.readBlocks(missing, true, stale);
+    this.store(map, now, this.seq);
+    if (stale) this.flying = { ids: map.flying ?? [], stamp: this.stamp, readAt: now, usedAt: now };
     return true;
   }
+
+  // Each piece of matter in flight beside the grid (after readAll with flying): fn(id). V2's
+  // flying packets; V1's flying matter is cells, which forEachMatter already visits.
+  forEachFlying(fn) { for (const id of this.flying?.ids ?? []) fn(id); }
 
   // Every cached cell holding matter (after readAll): fn(x, y, z, cell). The
   // queued edits are overlaid.
@@ -376,6 +399,7 @@ export class ScriptWorld {
     this.checkEpoch();
     const now = this.now();
     for (const [i, b] of this.blocks) if (now - b.usedAt > EVICT_MS) this.blocks.delete(i);
+    if (this.flying && now - this.flying.usedAt > EVICT_MS) this.flying = null;
     if (this.inflight >= MAX_INFLIGHT_READS) return;
     const list = [...this.wanted].slice(0, MAX_READ_BLOCKS_PER_FRAME);
     if (list.length < MAX_READ_BLOCKS_PER_FRAME) {
@@ -383,12 +407,15 @@ export class ScriptWorld {
         .sort((p, q) => p[1].readAt - q[1].readAt).slice(0, MAX_READ_BLOCKS_PER_FRAME - list.length);
       for (const [i] of stale) list.push(i);
     }
-    if (!list.length) return;
+    // the flying matter a handler's census reads, refreshed as its blocks are
+    const flying = this.flyingWanted || (!!this.flying && now - this.flying.readAt > REFRESH_MS && now - this.flying.usedAt < REFRESH_MS * 2);
+    if (!list.length && !flying) return;
     for (const i of list) this.wanted.delete(i);
+    this.flyingWanted = false;
     // (stamped as of now: a typed command that began since reads it fresh)
     const epoch = this.epoch, seq = this.seq, stamp = this.stamp;
     this.inflight++;
-    Promise.resolve(this.backend.readBlocks(list, false)).then((map) => {
+    Promise.resolve(this.backend.readBlocks(list, false, flying)).then((map) => {
       if (epoch !== this.epoch) return;
       // a block written since the read was issued: the read missed the write, read it again
       for (const [i] of map) {
@@ -396,6 +423,7 @@ export class ScriptWorld {
         if (b && b.wroteSeq > seq) { map.delete(i); b.readAt = 0; }
       }
       this.store(map, this.now(), seq, stamp);
+      if (flying) { const t = this.now(); this.flying = { ids: map.flying ?? [], stamp, readAt: t, usedAt: this.flying?.usedAt ?? t }; }
     }).catch(() => { /* a failed read only leaves the cache as it was */ })
       .finally(() => { this.inflight--; });
   }

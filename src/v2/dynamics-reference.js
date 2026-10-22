@@ -7,7 +7,8 @@ import { LEGACY_STEPS_PER_TICK } from './host.js';
 import { contactVacuum, specialExplosion } from './contact.js';
 import { impactFoam } from './foam.js';
 import { PACE } from '../shaders/move.js';
-import { GRAVITY_MS2, TERMINAL_MS, v1TerminalMS } from './gravity.js';
+import { GRAVITY_MS2, TERMINAL_MS, v1TerminalMS, V1_STEP_MS, STEPS_PER_TICK, STEP_S, v1PaceRate } from './gravity.js';
+import { RAYS } from '../rays.js';
 import { energyOf, withEnergy, energyFits, makeMaterial, cTq, withPayload, payloadOf, share, packetOwnedEnergy, withPacketEnergy, packetEnergyFits } from './layout.js';
 import { AIR, V1_AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy } from './pressure.js';
 export { AIR, V1_AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy };
@@ -22,6 +23,16 @@ export const EVENT = Object.freeze({ DETONATE: 1, GAS: 2, NEUTRON: 4 });
 export const PHOTON_TAG = 254;
 export const NEUTRON_TAG = 255; // Particle-only, never a grid element.
 if (ELEMENTS.length >= PHOTON_TAG) throw new Error('Native neutron tag collides with a material');
+// ---- rays: V1's photons and neutrons (src/rays.js RAYS, src/shaders/rays.js), on V1's clock ----
+// V1 flies a ray in cells a STEP (240 steps/s), at most one interaction a step, and counts its life in steps.
+// V2's particle lane runs the ray stages once a V1 step (RAY_STEPS_PER_TICK sub-steps a tick: dynamics.js
+// advanceParticles), so its speeds are V1's in m/s (gravity.js V1_STEP_MS a cell/step) and its lives V1's steps.
+export const RAY_STEPS_PER_TICK = LEGACY_STEPS_PER_TICK;
+// a photon: PHOTON_V cells/step, capped at RAY_V_MAX (shaders/rays.js raysPaintFrag: min(PHOTON_V, RAY_V_MAX))
+export const RAY_PHOTON_MS = Math.min(RAYS.PHOTON_V, RAYS.RAY_V_MAX) * V1_STEP_MS;
+// a neutron of energy e (MeV): shaders/rays.js neutSpeed, NEUT_V·√(e/NEUT_E_FAST) to [NEUT_V_THERMAL, RAY_V_MAX]
+export const rayNeutronMS = e => Math.min(RAYS.RAY_V_MAX, Math.max(RAYS.NEUT_V_THERMAL, RAYS.NEUT_V * Math.sqrt(e / RAYS.NEUT_E_FAST))) * V1_STEP_MS;
+export const RAY_NEUTRON_FAST_MS = rayNeutronMS(RAYS.NEUT_E_FAST);
 // A charge's blast energy (J) from V1's blast.P alone (elements.js EXPLOSIVE_P: C-4 200, nitroglycerin 183,
 // TNT 148, gunpowder 60), on the one calibration V2's pressure takes (pressure.js specialBlastEnergy: gunpowder's
 // energy per its blast.P², so a charge's acoustic quarter comes out at its blast.P). V1 never sizes a blast by
@@ -68,13 +79,36 @@ export const dynamicsRows = ELEMENTS.map(e => ({
  * the particle lane's own step (particles.js integrate: implicit quadratic drag toward the element's
  * terminal speed, then the tick's gravity), stepped as V1's fallKE steps V1's (elements.js fallKE).
  */
-// A packet's tick along the pull in still air (particles.js integrate): the tick's gravity, then implicit quadratic
-// drag whose fixed point is the element's terminal speed; the velocity goes linearly from v to the result across
-// the tick. Returns its speed after (m/s, downward) and the metres it fell.
+// V1's keep a step of a flying packet (react.js forces: 1 - DRAG, none for a liquid in free fall: a flying liquid
+// packet always is), f32 as the shaders' table (particles.js dKeep)
+export const PACKET_KEEP = ELEMENTS.map(e => e.kind === K.LIQUID ? 1 : Math.fround(1 - (e.drag ?? 0)));
+// A packet's tick along the pull in still air (particles.js dPacketFlight, one axis of it): V1's law, STEPS_PER_TICK
+// steps, each moving it v1PaceRate of its speed (V1's Margolus move on its block's random draws: the grid grains'
+// fall.js fallSteps), a liquid its whole speed (its R3 draws: V1's arrival to the tick, v1LiquidArrival), then
+// adding the step's pull and taking its drag (react.js forces), to V_MAX. Its terminal speed is V1's (the drag's
+// balance, row.terminal). Returns its speed after (m/s, downward) and the metres it fell.
 export function packetStep(id, v, gravity = GRAVITY) {
-  const vt = dynamicsRows[id].terminal, drag = GRAVITY / (vt * (vt + GRAVITY * DT)), rel = v + gravity * DT;
-  const after = rel / (1 + drag * Math.abs(rel) * DT);
-  return { v: after, fell: 0.5 * (v + after) * DT };
+  const keep = PACKET_KEEP[id], g = gravity * STEP_S * STEP_S / CELL_M, paced = ELEMENTS[id].kind !== K.LIQUID;
+  let u = v / V1_STEP_MS, d = 0;
+  for (let k = 0; k < STEPS_PER_TICK; k++) {
+    d += Math.sign(u) * (paced ? v1PaceRate(Math.abs(u)) : Math.min(Math.abs(u), PHYS.V_MAX));
+    u = Math.min(PHYS.V_MAX, Math.max(-PHYS.V_MAX, (u + g) * keep));
+  }
+  return { v: u * V1_STEP_MS, fell: d * CELL_M };
+}
+// A packet's tick in still air in 3D (particles.js dPacketFlight, the twin of the whole of it): each axis V1's steps
+// (packetStep's law), under the pull (m/s², a gas none). Returns the cells it moved and its velocity after (m/s).
+export function packetFlight(id, velocity, pull = [0, ELEMENTS[id].kind === K.GAS ? 0 : -GRAVITY, 0]) {
+  const keep = PACKET_KEEP[id], paced = ELEMENTS[id].kind !== K.LIQUID, moved = [0, 0, 0], after = [0, 0, 0];
+  for (let a = 0; a < 3; a++) {
+    const g = pull[a] * STEP_S * STEP_S / CELL_M; let u = velocity[a] / V1_STEP_MS, d = 0;
+    for (let k = 0; k < STEPS_PER_TICK; k++) {
+      d += Math.sign(u) * (paced ? v1PaceRate(Math.abs(u)) : Math.min(Math.abs(u), PHYS.V_MAX));
+      u = Math.min(PHYS.V_MAX, Math.max(-PHYS.V_MAX, (u + g) * keep));
+    }
+    moved[a] = d; after[a] = u * V1_STEP_MS;
+  }
+  return { moved, velocity: after };
 }
 export function particleFallSpeed(id, h) {
   let v = 0, y = 0;
@@ -280,12 +314,12 @@ export const SHOCK_LANDINGS = Object.freeze(ELEMENTS.filter(k => k.blast?.shock)
 export function particleLandingSpeed(id, h) {
   let v = 0, y = 0;
   for (;;) {
-    const s = packetStep(id, v), a = (s.v - v) / DT;
+    const s = packetStep(id, v);
     if (y + s.fell >= h) {
-      // the share of the tick at which it has fallen h: y + v·DT·s + ½·a·DT²·s² = h (a the tick's own change)
-      const qa = 0.5 * a * DT * DT, b = v * DT, c = y - h;
-      const share = Math.abs(qa) < 1e-12 ? -c / b : (-b + Math.sqrt(b * b - 4 * qa * c)) / (2 * qa);
-      return v + a * DT * share;
+      // the share of the tick at which it has fallen h: its sweep runs straight across the tick's fall, its velocity
+      // going linearly from v to the tick's end (particles.js integrate)
+      const share = s.fell > 0 ? (h - y) / s.fell : 0;
+      return v + (s.v - v) * share;
     }
     y += s.fell; v = s.v;
   }
@@ -298,10 +332,32 @@ export const PACKET_SHOCK_SLACK = 1 - 2 ** -16;
 export const PACKET_ANY_LANDING = 2 ** -16;
 export const PACKET_SHOCK_LANDINGS = Object.freeze(SHOCK_LANDINGS.map(r =>
   ({ ...r, speed: r.cells <= 0 ? PACKET_ANY_LANDING : Math.fround(particleLandingSpeed(r.faller, r.cells * CELL_M) * PACKET_SHOCK_SLACK) })));
+// V1's grains land on their blocks' random draws, so each grain landing on a charge rolls its own odds of setting it
+// off at its fall (v1GrainOdds; BL-7): a 4×4 uranium slab dropped a cell onto C-4 goes off 70 % of the time, not never.
+// A packet's fall is its landing speed's: the fall h a packet landing at u had is the h whose bin it is in, from
+// (h - 0.5) cells (the landing law's cells: the middle of V1's step) to h + 0.5. Per grain pair { faller, charge, bins:
+// [{ speed, odds }] }, ascending: from speed on (m/s, PACKET_SHOCK_SLACK under the f64 law, as the landings'), V1's
+// odds for that h, to where they reach PACKET_GRAIN_ODDS_DONE (particles.js dShockOdds).
+const PACKET_GRAIN_ODDS_DONE = 0.999;
+export const PACKET_GRAIN_ODDS = Object.freeze(SHOCK_LANDINGS.filter(r => r.fall != null && ELEMENTS[r.faller].kind === K.POWDER).map(r => {
+  const j = ELEMENTS[r.faller], k = ELEMENTS[r.charge], mu = k.kind === K.SOLID ? j.dens : j.dens * k.dens / (j.dens + k.dens), bins = [];
+  for (let h = 1; h <= V1_GRAIN_FALL_MAX; h++) {
+    const odds = v1GrainOdds(j, mu, k.blast.shock, h);
+    if (odds > 0) bins.push({ speed: Math.fround(particleLandingSpeed(j.id, (h - 0.5) * CELL_M) * PACKET_SHOCK_SLACK), odds: Math.fround(odds) });
+    if (odds >= PACKET_GRAIN_ODDS_DONE) break;
+  }
+  return { faller: r.faller, charge: r.charge, bins };
+}));
+/** V1's odds that a grain packet of mover landing at u (m/s) on charge sets it off (PACKET_GRAIN_ODDS; 0 for none). */
+export function packetGrainOdds(mover, charge, u) {
+  let odds = 0;
+  for (const b of PACKET_GRAIN_ODDS.find(r => r.faller === mover && r.charge === charge)?.bins ?? []) if (u >= b.speed) odds = b.odds;
+  return odds;
+}
 /** V1's shock on a packet's hit, as particles.js dShockHit reads it (CPU twin of its decision). mover: the
  * packet's element, target: the grid cell's; u: the closing speed (m/s) along the face; landing: along the
  * pull onto its upper face. Returns { target, mover }: whether each, a charge, goes off. */
-export function packetShock(mover, target, u, landing) {
+export function packetShock(mover, target, u, landing, draw = 0.5) {
   const out = { target: false, mover: false };
   const kind = id => ELEMENTS[id].kind, gasLike = id => kind(id) === K.GAS || kind(id) === K.EMPTY;
   if (mover === target || gasLike(mover) || gasLike(target)) return out;
@@ -315,7 +371,8 @@ export function packetShock(mover, target, u, landing) {
   if (dynamicsRows[target].shockKE > 0) {
     if (landing && (kind(mover) === K.POWDER || kind(mover) === K.LIQUID)) {
       const on = PACKET_SHOCK_LANDINGS.find(r => r.faller === mover && r.charge === target)?.speed ?? 0;
-      out.target = on > 0 && u >= on;
+      // a liquid lands on its R3 draws, a fixed law; a grain rolls V1's odds for its fall (its draw, in [0, 1))
+      out.target = kind(mover) === K.POWDER ? draw < packetGrainOdds(mover, target, u) : on > 0 && u >= on;
     } else out.target = acts(target, mover, thrown);
   }
   if (dynamicsRows[mover].shockKE > 0) {
@@ -500,11 +557,42 @@ export function allocateSources(sources, pool, capacity = PARTICLE_CAP) {
     source.material = null; source.retry = false;
   }
 }
-export function impact(core, velocity, target, amount = 1) {
-  const row = dynamicsRows[core[0] & 255], t = dynamicsRows[target[0] & 255];
-  const energy = 0.5 * row.mass * amount * velocity.reduce((s, v) => s + v * v, 0);
-  const broken = row.kind !== K.LIQUID && t.breakInto >= 0 && energy >= t.toughness;
-  return { energy, broken, remaining: energy - (broken ? t.toughness : 0) };
+// V1 react.js breaking (particles.js impact, its WGSL): a mover breaks a breakable solid it hits with ½·ρ·vn² of at
+// least its hard (elements.js hard), in V1's units: ρ the mover's V1 density (elements.js dens) times its share
+// of a cell (a liquid's fill), vn its closing speed across the face (axis), cells/step to PHYS.V_MAX (the throws' map,
+// SHOCK_THROW_MS). Sand breaks glass only at V_MAX (72 m/s) and never wood, rock or metal; water breaks a lamp at most.
+// Then react.js shatter: the fracture takes hard, the rest hits the debris head on (RESTITUTION past COLLIDE_V).
+// energy: V1's hit KE; remaining: what is left of it; speed: the mover's speed across the face after (m/s, signed).
+export function impact(core, velocity, target, amount = 1, axis = velocity.reduce((a, v, i) => Math.abs(v) > Math.abs(velocity[a]) ? i : a, 0)) {
+  const row = dynamicsRows[core[0] & 255], t = dynamicsRows[target[0] & 255], f = Math.fround;
+  const rho = (ELEMENTS[core[0] & 255].dens ?? 0) * amount, un = Math.min(PHYS.V_MAX, Math.abs(velocity[axis]) / SHOCK_THROW_MS);
+  const energy = 0.5 * rho * un * un, broken = t.breakInto >= 0 && energy >= t.toughness;
+  if (!broken) return { energy, broken, remaining: energy, speed: 0 };
+  const u1 = Math.sqrt(Math.max(un * un - 2 * t.toughness / Math.max(rho, 1e-6), 0)), debris = ELEMENTS[t.breakInto].dens ?? 0;
+  const kept = u1 > PHYS.COLLIDE_V ? u1 * (rho - PHYS.RESTITUTION * debris) / (rho + debris) : u1;
+  return { energy, broken, remaining: 0.5 * rho * kept * kept, speed: f(Math.sign(velocity[axis]) * kept * SHOCK_THROW_MS) };
+}
+// V1 move.js impactHeat (particles.js dImpactHeat): a grain stopped by a solid faster than COLLIDE_V across the face
+// (cells/step, the throws' map, to V_MAX) loses ½·dens·u² of its KE (a landing: V1's land() keeps LAND_POWDER_KEEP of
+// its sideways speed and scatters LAND_POWDER_SCATTER of the impact), as KE_TO_HEAT heat shared by capacity:
+// { packet, hit } in cap·°C, each warming by E·KE_TO_HEAT / (cap_i + cap_j).
+export function impactHeat(mover, target, velocity, axis, landing) {
+  const e = ELEMENTS[mover], t = ELEMENTS[target], u = velocity.map(v => Math.min(PHYS.V_MAX, Math.abs(v) / SHOCK_THROW_MS)), un = u[axis];
+  if (e.kind !== K.POWDER || t.kind !== K.SOLID || un <= PHYS.COLLIDE_V) return { packet: 0, hit: 0 };
+  const t2 = u.reduce((s, x) => s + x * x, 0) - un * un;
+  const lost = 0.5 * e.dens * (landing ? un * un * (1 - PHYS.LAND_POWDER_SCATTER ** 2) + t2 * (1 - PHYS.LAND_POWDER_KEEP ** 2) : un * un);
+  const heat = lost * PHYS.KE_TO_HEAT, share = (e.cap ?? 1) / ((e.cap ?? 1) + (t.cap ?? 1));
+  return { packet: heat * share, hit: heat * (1 - share) };
+}
+// V1 move.js collide (particles.js dKnock): a grain hitting a resting grain at u (m/s across the face) faster than
+// COLLIDE_V passes its momentum on with RESTITUTION: { flies } the struck grain's speed after (m/s, to V_MAX), and
+// { kept } the mover's (V2 rests it where it was), or null where V1 does not collide so (not both grains, a charge).
+export function packetKnock(mover, target, u) {
+  const i = ELEMENTS[mover], j = ELEMENTS[target], un = Math.min(PHYS.V_MAX, Math.abs(u) / SHOCK_THROW_MS);
+  if (i.kind !== K.POWDER || j.kind !== K.POWDER || (j.blast?.shock ?? 0) > 0 || un <= PHYS.COLLIDE_V) return null;
+  const inv = 1 / (i.dens + j.dens);
+  return { flies: Math.min(PHYS.V_MAX, (1 + PHYS.RESTITUTION) * i.dens * inv * un) * SHOCK_THROW_MS,
+    kept: (i.dens - PHYS.RESTITUTION * j.dens) * inv * un * SHOCK_THROW_MS };
 }
 export function blastPlan(source, targets, solidAt, energy) {
   const plans = targets.map(target => {
@@ -581,11 +669,6 @@ export function chargeEnergy(material) {
 }
 export const pressureEnergy = p => p*p*AIR.edge**3/(2*AIR.rho*AIR.sound**2);
 export const addBlastPressure = (p,energy) => Math.sqrt(p*p+2*AIR.rho*AIR.sound**2*energy*0.25/AIR.edge**3);
-export function refractDirection(direction,normal,ratio) {
-  const dot=direction.reduce((s,x,i)=>s+x*normal[i],0),k=1-ratio*ratio*(1-dot*dot);
-  if(k<0) return direction.map((x,i)=>x-2*dot*normal[i]);
-  return direction.map((x,i)=>ratio*x-(ratio*dot+Math.sqrt(k))*normal[i]);
-}
 
 export function holdVelocities(particles, destination, strength=12, dt=DT) {
   let mass=0;const offset=[0,0,0],mean=[0,0,0];

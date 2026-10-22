@@ -8,11 +8,13 @@ import { wgslGroupingErrors, assertNaga } from './wgsl-grouping.mjs';
 // Decode the emitted array and bounds/load source independently of field().
 function decode(source, name) {
   assert.equal([...source.matchAll(new RegExp(`\\bfn ${name}\\s*\\(`, 'g'))].length, 1, `${name}: unique function`);
-  const fn = source.match(new RegExp(`fn ${name}\\(id:u32\\)->i32 \\{([^}]*\\}[^}]*?)\\}`));
+  const fn = source.match(new RegExp(`fn ${name}\\(id:u32\\)->i32 \\{([^{}]*)\\}`));
   assert.ok(fn, `${name}: unchanged signature and guarded scalar load`);
-  const body = fn[1].match(/^\s*if\(id>=(\d+)u\)\{return 0;\} return (\w+)\[id\];\s*$/);
-  assert.ok(body, `${name}: only explicit unsigned bounds guard then indexed return; no switch or conversion`);
-  const bound = Number(body[1]), table = body[2];
+  // (one exit, B5: the load clamped inside the table, 0 past it by an explicit unsigned bound)
+  const body = fn[1].match(/^\s*return select\(0,(\w+)\[min\(id,(\d+)u\)\],id<(\d+)u\);\s*$/);
+  assert.ok(body, `${name}: only an explicit unsigned bounds select of a clamped indexed load; no switch or conversion`);
+  const bound = Number(body[3]), table = body[1];
+  assert.equal(Number(body[2]), bound - 1, `${name}: the load clamped to the last row`);
   assert.equal(table, `${name}Table`, `${name}: distinct scalar table`);
   assert.equal([...source.matchAll(new RegExp(`\\bconst ${table}\\b`, 'g'))].length, 1, `${name}: unique const array`);
   const array = source.match(new RegExp(`const ${table} = array<i32, (\\d+)>\\(([^]*?)\\);`));
@@ -45,7 +47,7 @@ function checkField(source, name, expected) {
 // Negative controls cover missing/extra/reordered entries, fractional/out-of-i32
 // values, changed guard/default/index/table, and unguarded or switch fallbacks.
 const fixture = `const fixtureTable = array<i32, 5>(0,7,-3,-2147483648,2147483647);
-fn fixture(id:u32)->i32 { if(id>=5u){return 0;} return fixtureTable[id]; }`;
+fn fixture(id:u32)->i32 { return select(0,fixtureTable[min(id,4u)],id<5u); }`;
 const fixtureValues = [0, 7, -3, -2147483648, 2147483647];
 checkField(fixture, 'fixture', fixtureValues);
 for (const bad of [
@@ -54,14 +56,14 @@ for (const bad of [
   fixture.replace('0,7,-3,', '0,-3,7,'),
   fixture.replace('0,7,-3,', '0,7.0,-3,'),
   fixture.replace('2147483647)', '2147483648)'),
-  fixture.replace('id>=5u', 'id>=4u'),
-  fixture.replace('id>=5u', 'id>5u'),
-  fixture.replace('return 0;', 'return 1;'),
-  fixture.replace('fixtureTable[id]', 'fixtureTable[id+1u]'),
-  fixture.replace('return fixtureTable[id]', 'return otherTable[id]'),
-  fixture.replace('if(id>=5u){return 0;} ', ''),
-  fixture.replace('if(id>=5u){return 0;} return fixtureTable[id];', 'return fixtureTable[id]; if(id>=5u){return 0;}'),
-  fixture.replace('if(id>=5u){return 0;} return fixtureTable[id];', 'switch id { default: { return 0; } }'),
+  fixture.replace('id<5u', 'id<4u'),
+  fixture.replace('id<5u', 'id<=5u'),
+  fixture.replace('select(0,', 'select(1,'),
+  fixture.replace('fixtureTable[min(id,4u)]', 'fixtureTable[min(id,4u)+1u]'),
+  fixture.replace('fixtureTable[min(id,4u)]', 'otherTable[min(id,4u)]'),
+  fixture.replace('min(id,4u)', 'min(id,3u)'),
+  fixture.replace('return select(0,fixtureTable[min(id,4u)],id<5u);', 'return fixtureTable[id];'),
+  fixture.replace('return select(0,fixtureTable[min(id,4u)],id<5u);', 'switch id { default: { return 0; } }'),
   `${fixture}\n${fixture}`,
 ]) assert.throws(() => checkField(bad, 'fixture', fixtureValues), assert.AssertionError);
 
