@@ -59,27 +59,26 @@ export const volumeShaderGrid = (g, world, sourceAppearance = false) => ({
 });
 
 // The data views that draw the air's pressure and velocity (Pressure, Flow: B's .w and .xyz).
-// V1 keeps both per cell in B; Physics V2 keeps them in its coarse air (per 4³ brick), which
-// only the physical readers bind (format 3: sim.readHeader({ physical }), sim.bindPhysicalRO;
-// format 2's B is empty, so these views drew still air under V2). Not a deviation: the same
-// views of the same quantities, in V1's units (shaders/common.js fetchBs), each read where its
-// engine keeps them. (World draws the same: its atlas's B, which world/renderSource.js's V2 air
-// export fills through the same reader.)
-export const readsAir = (view) => view === 'pressure' || view === 'flow';
+// V1 keeps both per cell in B, with a grain's or a liquid's own velocity; Physics V2 keeps the
+// air per 4³ brick and the motion in the cores. Every view draws V2's format 2 (the drawn
+// projection), whose read group binds V2's air in B (v2/physics.js readGroup), and the volume
+// reads V1's B from both (shaders/v2/viewRead.js: render.js volumeB): the same views of the same
+// quantities, in V1's units. Not a deviation. (World draws the same: its atlas's B, which
+// world/renderSource.js's V2 export fills through the same rule.)
 
 /**
  * The read format a session's volume draws `view` in (shaders/render.js fixedReadFormat): V2's
- * packed cells (2), with its coarse air for the views that draw the air (3: readsAir); V1's A/B (0).
- * What volumeReadFormat forecasts for an owner still building, for the start menu's warm-up
- * (src/preload.js), which has no simulation yet.
- * @param {string} view @param {boolean} native the session runs Physics V2 (launch.js physicsEngine)
- * @returns {0 | 2 | 3}
+ * packed cells (2) in every view, the air views included (their air comes in V2's read group, above);
+ * V1's A/B (0). What volumeReadFormat forecasts for an owner still building, for the start menu's
+ * warm-up (src/preload.js), which has no simulation yet.
+ * @param {string} _view @param {boolean} native the session runs Physics V2 (launch.js physicsEngine)
+ * @returns {0 | 2}
  */
-export const sessionVolumeFormat = (view, native) => (native ? (readsAir(view) ? 3 : 2) : 0);
+export const sessionVolumeFormat = (_view, native) => (native ? 2 : 0);
 
 // Compile the intended native representation before its initialization finishes.
 // Actual draw headers are checked separately, so legacy buffers are never read
-// through a forecast native pipeline. physical: a view that reads the air (readsAir).
+// through a forecast native pipeline. physical: a physical reader's (format 3: the pick).
 export function volumeReadFormat(sim, gpu, header, physical = false) {
   const owner = sim.compact;
   if (owner && !owner.disposed && !owner.isReady && !(owner.forceCompatibility && gpu.testMode)) return physical ? 3 : 2;
@@ -242,7 +241,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      * @param {boolean} [curved] the rolling log's variant
      * @param {0 | 2 | 3} [format] draw's captured representation (otherwise the view's: volumeReadFormat)
      */
-    pipeline(view, detail = {}, build = 'now', curved = false, format = volumeReadFormat(sim, gpu, undefined, readsAir(view))) {
+    pipeline(view, detail = {}, build = 'now', curved = false, format = volumeReadFormat(sim, gpu)) {
       if (!VOLUME_VIEWS.includes(view)) throw new Error(`volume: no view ${view}`);
     const d = isMaterialView(view) ? drawable(detail) : {};
       const key = `${view}|${detailKey(d)}${curved ? '|curved' : ''}|format${format}`;
@@ -281,11 +280,9 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      */
     draw(rp, { view = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, warp = null, indirect = null } = {}) {
       const curved = isCurved(warp);
-      const physical = readsAir(view);
-      const header = sim.readHeader({ physical }), format = volumeReadFormat(sim, gpu, header, physical);
+      const header = sim.readHeader(), format = volumeReadFormat(sim, gpu, header);
       if ((header.format ?? 0) !== format) return false;
-      const state = physical ? sim.bindPhysicalRO : sim.bindRO;
-      if (!state) return false;   // (V2's air is still building: sim.bindPhysicalRO)
+      const state = sim.bindRO;
       const pipe = volume.pipeline(view, detail, 'now', curved, format);
       if (pipe.state !== 'ready') return false;
       meshInv.multiplyMatrices(fu.last.viewProj, fu.last.model).invert();   // clip → grid, the jittered camera's
@@ -363,14 +360,16 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
           slots = batch.map(() => pickRing.next());
           const words = new Array(PICK_BATCH).fill(0);
           slots.forEach((s, i) => { words[i] = s; });
+          const rays = {
+            ro: batch.map((b) => [...b.ro, b.warp?.k ?? 0]), rd: batch.map((b) => [...b.rd, b.skipLiquids ? 1 : 0]),
+            slot: [words.slice(0, 4), words.slice(4, 8)], n: batch.length,
+          };
           pickKernel.dispatch(gpu.frame, [1, 1, 1], {
             bind: [sim.tables, read, pickGroup], header: sim.readHeader({ physical: true }),
-            params: {
-              ro: batch.map((b) => [...b.ro, b.warp?.k ?? 0]), rd: batch.map((b) => [...b.rd, b.skipLiquids ? 1 : 0]),
-              warp: batch.map((b) => (b.warp ? [...b.warp.anchor, ...b.warp.dir] : [0, 0, 0, 1])),
-              slot: [words.slice(0, 4), words.slice(4, 8)], n: batch.length,
-            },
+            params: { ...rays, warp: batch.map((b) => (b.warp ? [...b.warp.anchor, ...b.warp.dir] : [0, 0, 0, 1])) },
           });
+          // V2's flying matter (a V1 flying cell is a cell the march finds): gfx/nativeParticles.js recordPick
+          sim.compact?.dynamics?.drawAdapter?.recordPick?.(gpu.frame, { ring: pickRing.buffer, ...rays, origin: sim.origin });
         } catch (e) {
           for (const b of batch) b.reject(e);
           failPicks(e);

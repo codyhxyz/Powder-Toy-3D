@@ -15,7 +15,7 @@ import { prelude, STATE_OPTS } from '../src/shaders/common.js';
 import { compactDecodeWGSL } from '../src/shaders/compact.js';
 import { moveBlockFrag } from '../src/shaders/move.js';
 import { volumeFrag, pickFrag, warmChecks, VOLUME_VIEWS, volumePipeline, VolumeParams, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES } from '../src/shaders/render.js';
-import { volumeReadFormat, readsAir, detailKey, volumeShaderGrid, sessionVolumeFormat } from '../src/gfx/volume.js';
+import { volumeReadFormat, detailKey, volumeShaderGrid, sessionVolumeFormat } from '../src/gfx/volume.js';
 import { physicsEngine } from '../src/launch.js';
 import { createReadyVolumeView } from '../src/gfx/readyVolumeView.js';
 import { isMaterialView } from '../src/views.js';
@@ -97,7 +97,7 @@ function productionVolume() {
   } };
   const volume = { get format() { return volumeReadFormat(sim, gpu); } };
   const state = { volume, sim, gpu, pipes, g: volumeShaderGrid(g), VOLUME_VIEWS, isMaterialView, drawable: d => d,
-    detailKey, volumeReadFormat, readsAir, volumeFrag, VolumeParams, volumePipeline, L: {}, Matrix4,
+    detailKey, volumeReadFormat, volumeFrag, VolumeParams, volumePipeline, L: {}, Matrix4,
     isCurved: w => !!w?.k, meshInv: new Matrix4(), fu: { last: { viewProj: new Matrix4(), model: new Matrix4() } },
     dummy: { depth: { width: 1, height: 1 } }, volumeFrameGroup: () => ({}), lightingGroup: () => ({}),
     decoShown: () => false, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES };
@@ -112,6 +112,13 @@ const before = p.reads(); assert.equal(p.volume.draw(null), false); assert.equal
 p.sim.compact.isReady = true; p.setHeader({ format: 2 });
 const current = p.reads(); assert.equal(p.volume.draw(null), true); assert.equal(p.reads() - current, 1, 'one actual draw header snapshot');
 assert.equal(p.draws.at(-1).header.format, 2);
+// Pressure and Flow draw V2's format 2 too: its read group binds V2's air (v2/physics.js readGroup),
+// which the volume reads as V1's B (render.js volumeB); no physical group, no format-3 variant.
+for (const view of ['pressure', 'flow']) {
+  const q = productionVolume(); q.sim.compact = { isReady: true }; q.setHeader({ format: 2 });
+  assert.equal(q.volume.draw(null, { view }), true, `${view} draws under V2`);
+  assert.match(q.descs[0].name, /format2$/); assert.equal(q.draws[0].bind[1], 'state', `${view} binds the read group`);
+}
 p.sim.compact = null; p.setHeader({ format: 0 }); p.volume.pipeline('realistic');
 assert.equal(p.descs.length, 2); assert.notEqual(p.descs[0].code, p.descs[1].code);
 p.sim.compact = { isReady: true }; p.setHeader({ format: 2 }); p.volume.pipeline('realistic'); assert.equal(p.descs.length, 2, 'reactivation reuses native pipeline');
@@ -164,13 +171,13 @@ assert.match(app, /\$\{presentation.key\}\|\$\{vol.format\}/);
 assert.match(readFileSync(new URL('../src/preload.js', import.meta.url), 'utf8'),
   /warmChecks\(view, settings, \{ fallback, curved, fixedReadFormat: sessionVolumeFormat\(view, physicsEngine\(\) === 'v2'\) \}\)/);
 for (const view of VOLUME_VIEWS) {
-  const forecast = volumeReadFormat({ compact: { isReady: false, disposed: false } }, { testMode: null }, undefined, readsAir(view));
+  const forecast = volumeReadFormat({ compact: { isReady: false, disposed: false } }, { testMode: null });
   assert.equal(sessionVolumeFormat(view, true), forecast, `${view}: V2's warm-up builds the format its first frame draws`);
   assert.equal(sessionVolumeFormat(view, false), 0, `${view}: V1's warm-up keeps format 0`);
   for (const e of warmChecks(view, {}, { fixedReadFormat: sessionVolumeFormat(view, true) }).filter(x => x.name.startsWith('volume.')))
     assert(e.name.endsWith(`.format${forecast}`) && !e.name.endsWith('.format0'), `${e.name}: V2's warm-up names its format, never format 0`);
 }
-assert.deepEqual(VOLUME_VIEWS.filter(v => sessionVolumeFormat(v, true) === 3), ['pressure', 'flow'].filter(v => VOLUME_VIEWS.includes(v)), 'the air views read the coarse air');
+assert.deepEqual(VOLUME_VIEWS.filter(v => sessionVolumeFormat(v, true) !== 2), [], 'every view, the air views included, draws V2\'s format 2 (its air in the read group)');
 assert.equal(physicsEngine('?physics=v2'), 'v2'); assert.equal(physicsEngine(''), 'v1');
 
 const dir = mkdtempSync(join(tmpdir(), 'volume-format-'));

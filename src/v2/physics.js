@@ -204,6 +204,22 @@ export class PhysicsV2 {
     this.groups.import = gpu.bindGroup(L.import, [b(0, A), b(1, B), b(3, sim.marks)], 'v2 import');
     this.groups.state = gpu.bindGroup(L.state, [b(0, A), b(1, B), b(2, F), b(3, sim.marks)], 'v2 state');
   }
+  // The readers' group (sim.bindRO, format 2): the cells, and in B dynamics' current coarse air
+  // (two vec4f per brick, one group per air copy), which the Box's draw and the brick map's air
+  // flags read as V1's B (shaders/v2/viewRead.js; V1 keeps air in B too). Generic readers' format
+  // 2 never reads B (shaders/common.js fetchBs). Without dynamics (CPU fixtures): groups.read.
+  readGroup() {
+    const d = this.dynamics;
+    if (!d?.air) return this.groups.read;
+    if (this._readAir !== d.air) {
+      this._readAir = d.air;
+      this._readGroups = d.air.map(buffer => this.gpu.bindGroup(this.legacyLayouts.read, [
+        { binding: 0, resource: { buffer: this.cells } }, { binding: 1, resource: { buffer } }], 'compact readers (air)'));
+    }
+    return this._readGroups[d.airIndex];
+  }
+  // Whether group is one of the readers' groups (sim.probe: a reader of V2's cells).
+  isReadGroup(group) { return group === this.groups.read || !!this._readGroups?.includes(group); }
 
   // ---- writes and rest ----
 

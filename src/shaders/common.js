@@ -511,6 +511,14 @@ fn writeCell(p: vec3i, a: vec4f, b: vec4f, f: u32, oA: vec4f, oB: vec4f) -> bool
   return out.join('\n');
 }
 
+// Physics V2's cores and coarse air by slot, raw, for readers that bind a V2 read group (formats
+// 2 and 3: v2/physics.js readGroup, sim.bindPhysicalRO bind the cells in A and dynamics' current air,
+// two vec4f per brick, in B): shaders/v2/viewRead.js. Not part of the prelude (its text, and so every
+// generic module's, is unchanged): a module that reads them includes this once (viewRead.js does).
+export const nativeSlotAccessWGSL = /* wgsl */ `
+fn fetchNativeCoreS(s: u32) -> vec4u { return A[s]; }
+fn fetchNativeAirS(s: u32) -> vec4f { return B[(s >> 6u) * 2u]; }`;
+
 // ---- the World view's run-time grid ----
 // The World's view module (shaders/render.js volumeFrag, backend 'world') reads its
 // world's extent at run time, from the atlas's parameters (WA.world and WA.bricks:
