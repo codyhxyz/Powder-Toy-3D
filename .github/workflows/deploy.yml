@@ -151,6 +151,7 @@ jobs:
       - run: npm run check:world-lighting-inputs   # concrete native reader/ticket/pool-prefix seams; no app activation
       - run: npm run check:world-render-owner   # actual data owner + delayed native transport; NOT App/GPU/visual acceptance
       - run: npm run check:world-sun-forecast   # sun-caster forecast holds every resident caster of each World scene, below the blind ask
+      - run: npm run check:world-demand-chain   # a World load's demand settles in <= 3 attempts on Island/Descent's real terrain, the view's sun set known up front (CPU model)
       - run: npm run check:world-native-preflight   # actual Three cache/native-backend completion; CPU stubs, no GPU claims
       - run: npm run check:world-cells   # actual Source/Fields/classified CELL native transport + Naga, not GPU parity
       - run: npm run check:world-gi-glow   # shared world GI/glow producers, bounded history/native recording + Naga; NOT application activation

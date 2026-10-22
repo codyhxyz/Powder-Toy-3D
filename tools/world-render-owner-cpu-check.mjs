@@ -134,11 +134,21 @@ test('mode2 keeps SOURCE/data dependencies without invented probes; typed air GI
   c.release();await f.close();
 });
 
-for(const kind of ['opaque','crystal'])test(`${kind} SOURCE actual self-read feedback requires full birth before admission`,async()=>{
+// At the original reset every previous probe is the ledger's zero seed, read as
+// a birth (gfx/worldGI.js): a SOURCE asks for no probe of its own, which was a
+// chain (each such probe's gather asked for more SOURCES). Past the reset the
+// self-read still requires a full birth before admission.
+for(const kind of ['opaque','crystal'])test(`${kind} SOURCE actual self-read: none at the reset, full birth before admission after it`,async()=>{
   const f=await setup({feedback:false,sourceKinds:{0:kind}});
-  const c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE}]));
+  let c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE}]));
+  assert(!f.events.includes('typed GI self-miss'));
+  assert(f.giJobs.filter(j=>j.phase==='world GI source').every(j=>j.flags&2),'reset SOURCE jobs read the zero seed as births');
+  assert.deepEqual(f.giJobs.filter(j=>j.phase==='world GI gather'),[]);
+  await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
+  f.giJobs.length=0;f.events.length=0;
+  c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.GI_SOURCE}]));
   assert(f.events.includes('typed GI self-miss'));
-  const gathers=f.giJobs.filter(j=>j.phase==='world GI gather');assert.deepEqual(gathers.map(j=>j.index),[0]);
+  const gathers=f.giJobs.filter(j=>j.phase==='world GI gather');assert.deepEqual([...new Set(gathers.map(j=>j.index))],[0]);
   assert.equal(gathers[0].flags&2,2);assert.equal(f.owner.atlas.lookup([0,0,0],READY.GI).known,true);
   await settle(f.gpu,f.owner.accept(c,post(c)));c.release();await f.close();
 });

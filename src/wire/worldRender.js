@@ -10,7 +10,7 @@ import { createWorldSunLighting } from '../gfx/worldSunLighting.js';
 import { createLightingTransport, worldLightingNear } from '../gfx/worldLightingBatch.js';
 import { createWorldAppearance } from '../gfx/worldAppearance.js';
 import { worldSunProjection, WORLD_SUN_PITCH } from '../world/worldSun.js';
-import { worldColumnTops, forecastSunCasters, forecastEyeTiles } from '../world/worldSunForecast.js';
+import { worldColumnTops, forecastSunCasters, forecastViewTiles, worldViewRays, forecastGatherSources, forecastSourceTiles } from '../world/worldSunForecast.js';
 
 const copy = v => v?.elements ? Array.from(v.elements) : typeof v?.toArray === 'function' ? v.toArray() : ArrayBuffer.isView(v) ? Array.from(v) : Array.isArray(v) ? v.map(copy) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k,x]) => [k,copy(x)])) : v;
 const frozen = v => { const c=copy(v); const freeze=x=>{if(x&&typeof x==='object'){Object.values(x).forEach(freeze);Object.freeze(x);}return x;};return freeze(c); };
@@ -46,6 +46,21 @@ export function worldClassifyBatches(bricks,limit=WORLD_CLASSIFY_BRICKS) {
   if(batch.length)out.push(batch);
   return out;
 }
+// A brick's light can reach the picture only through a GI gather reading its
+// SOURCE (shaders/worldGI.js worldGISourceStaged is SOURCE's only reader), so
+// a brick is a SOURCE candidate only if the eye, the scene or a gather asked
+// for it, or it is one already. A brick asked for only as SUPPORT (a sun-map
+// caster, a SOURCE's neighbour or lamp-shadow cells) is not: as a SOURCE it
+// looked up the sun at its own lit faces, the tiles there needed casters of
+// their own, and those became SOURCES in turn, so a load's sun set spread tile
+// by tile over the whole island (Island, 2026-10-22: 1 -> 24 tiles, 39k ->
+// 449k bricks over 17 attempts, every brick a SOURCE). A support brick a gather
+// does read comes back as a typed SOURCE request, so every SOURCE the picture
+// reads is still computed, and the same: only the unread ones are skipped.
+export const WORLD_SUPPORT_STAGES=Object.freeze(new Set(['forecast','sun','source']));
+export function worldSourceEligible(i,{requirements,support,ownedSources}) {
+  return ownedSources.has(i)||requirements.has(i)&&!support.has(i);
+}
 export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,producer=win.sourceProducer,tables=win.sim.tables,tableBuffer=gpu._simTables?.buffer,wake=()=>{}}={}) {
   if(win.render)throw new Error('WORLD data owner already installed');
   if(!source||!producer||source.win!==win||source.gpu!==gpu)throw new TypeError('actual WORLD Source/Producer required');
@@ -73,9 +88,11 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       return {values:frozen(frame.values),physicsOrigin:frozen(frame.physicsOrigin),params:frozen(frame.params??{}),globalKey:frozen(frame.globalKey),lamps:frozen(frame.lamps??[]),sun:frozen(frame.sun),sceneVersion:frame.sceneVersion,schemaVersion:frame.schemaVersion,configVersion:frame.configVersion,advance:frame.advance!==false,external:{...frame.external},pins};
     }catch(e){pins.forEach(p=>p.release());throw e;}
   }
-  function add(t,requirements=[],sun=[]) {
+  // support: asked for by a stage that reads cells only to light a SOURCE or
+  // write the sun map (WORLD_SUPPORT_STAGES); any other ask makes it demand.
+  function add(t,requirements=[],sun=[],support=false) {
     let changed=false;
-    for(const r of requirements){const i=index(r.brick??brick(r.index)),bits=r.channels;if(!Number.isInteger(bits)||bits<1||bits>READY.ALL||r.index!=null&&r.index!==i)throw new TypeError('canonical WORLD requirements required');const old=t.requirements.get(i)??0;if((old|bits)!==old){t.requirements.set(i,old|bits);changed=true;}}
+    for(const r of requirements){const i=index(r.brick??brick(r.index)),bits=r.channels;if(!Number.isInteger(bits)||bits<1||bits>READY.ALL||r.index!=null&&r.index!==i)throw new TypeError('canonical WORLD requirements required');const old=t.requirements.get(i);if(old===undefined&&support)t.support.add(i);else if(!support)t.support.delete(i);if(((old??0)|bits)!==old){t.requirements.set(i,(old??0)|bits);changed=true;}}
     const projection=worldSunProjection(size,t.frame.sun.direction),n=projection.tiles[2]*projection.tiles[3];
     for(const i of sun){if(!Number.isInteger(i)||i<0||i>=n)throw new RangeError('WORLD Sun tile');if(!t.sunTiles.has(i)){t.sunTiles.add(i);changed=true;}}
     return changed;
@@ -164,15 +181,26 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   }
   // Before the CELL stage: ask for the casters of every sun tile in the demand
   // whose casters this grid has not forecast yet, and on a transaction's first
-  // attempt for the eye probe's tiles. A tile's casters were found by its own
-  // blind sun pass, one restart per wave of tiles (and through the ground to the
-  // floor); forecast, that pass finds them resident. Only adds requests: the
-  // feedback still closes whatever the ground twin missed.
+  // attempt for the tiles of the eye probe and of the whole view. A tile's
+  // casters were found by its own blind sun pass, one restart per wave of tiles
+  // (and through the ground to the floor); forecast, that pass finds them
+  // resident. Only adds requests: the feedback still closes whatever the ground
+  // twin missed. Casters are support, never SOURCES (worldSourceEligible).
   async function forecast(t) {
     if(!tops)return;
     const projection=worldSunProjection(size,t.frame.sun.direction),grid=projection.tiles.join(',');
     if(grid!==forecastGrid){forecastGrid=grid;forecastTiles.clear();}
-    if(!t.forecastEye){t.forecastEye=true;add(t,[],forecastEyeTiles(projection,t.frame.values?.cam));}
+    if(!t.forecastEye){t.forecastEye=true;add(t,[],forecastViewTiles(projection,{cam:t.frame.values?.cam,rays:worldViewRays(t.frame.values,size),size,tops}));}
+    // the SOURCES each new probe's gather reads, and the sun tiles they light in
+    const probes=[...t.requirements].filter(([i,bits])=>bits&READY.GI&&!t.forecastProbes.has(i)).map(([i])=>i);
+    if(probes.length){
+      t.stage='forecast';
+      const read=new Set();
+      await forecastGatherSources({size,tops,probes:probes.map(brick),mark:i=>read.add(i)});
+      probes.forEach(i=>t.forecastProbes.add(i));
+      add(t,[...read].filter(i=>!ownedSources.has(i)).map(i=>({brick:brick(i),channels:READY.GI_SOURCE})));
+      add(t,[],forecastSourceTiles(projection,{size,tops,bricks:read}));
+    }
     const tiles=[...t.sunTiles].filter(i=>!forecastTiles.has(i));
     if(!tiles.length)return;
     t.stage='forecast';
@@ -180,7 +208,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     await forecastSunCasters({size,direction:t.frame.sun.direction,tiles,tops,mark:i=>bricks.add(i)});
     for(const i of tiles)forecastTiles.add(i);
     t.forecastBricks=(t.forecastBricks??0)+bricks.size;
-    add(t,[...bricks].map(i=>({brick:brick(i),channels:READY.CELL})));
+    add(t,[...bricks].map(i=>({brick:brick(i),channels:READY.CELL})),[],true);
   }
   async function attempt(t) {
     t.attempts=(t.attempts??0)+1;t.stage='cell';
@@ -199,7 +227,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     await t.batch.completion;
     t.stage='history';
     const nearChanged=worldLightingNear(size,t.batch.changes.changedBricks,2);
-    const records=t.batch.records([...ids]).map(r=>({...r,near:nearChanged(r.brick),probeEligible:ownedProbes.has(index(r.brick))||!!(t.requirements.get(index(r.brick))&READY.GI)}));
+    const records=t.batch.records([...ids]).map(r=>({...r,near:nearChanged(r.brick),probeEligible:ownedProbes.has(index(r.brick))||!!(t.requirements.get(index(r.brick))&READY.GI),sourceEligible:worldSourceEligible(index(r.brick),{requirements:t.requirements,support:t.support,ownedSources})}));
     // Reflective SOURCE self-reads discover GI demand through typed feedback.
     // Matter (including liquids), SOURCE and CELL alone do not imply a probe.
     const never=records.filter(r=>r.probeEligible&&!ownedProbes.has(index(r.brick)));
@@ -280,7 +308,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
         let feedback;
         try{feedback=await attempt(t);}catch(e){if(e.requirements){feedback={requirements:e.requirements,sun:[],incomplete:true};}else throw e;}
         if(!feedback){t.state='probe-ready';wake();return t.bundle.retain();}
-        if(!add(t,feedback.requirements,feedback.sun))throw new Error('WORLD unresolved feedback made no dependency progress');
+        if(!add(t,feedback.requirements,feedback.sun,WORLD_SUPPORT_STAGES.has(t.stage)))throw new Error('WORLD unresolved feedback made no dependency progress');
       }
       return null;
     }catch(error){rejected(t,error);throw error;}
@@ -298,7 +326,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     if(same&&(!accepted||JSON.stringify(frame.globalKey)!==JSON.stringify(accepted.frame.globalKey)||frame.configVersion!==accepted.frame.configVersion))throw new Error('camera-only births require the accepted lighting settings/cut');
     const cut=same?accepted.cut.retain():source.recordCut(gpu.frame,{previousCut:accepted?.cut,sceneVersion:frame.sceneVersion,configVersion:frame.schemaVersion});
     if(!history)history=createWorldLightingHistory({worldSize:size,epoch:source.epoch,sourceOwner:source,configuration:cut.configuration});
-    const t={id:++serial,frame,cut,tick:same?history.lightingTick:history.lightingTick+1,fieldTick:same?accepted.fieldTick:(cells.fields.lastTick??-1)+1,state:'building',stage:'initializing',requirements:new Map(),sunTiles:new Set(),outputs:[],glows:[],privateJobs:[],bundle:null,bundlePins:0,retired:false,cleaned:false};
+    const t={id:++serial,frame,cut,tick:same?history.lightingTick:history.lightingTick+1,fieldTick:same?accepted.fieldTick:(cells.fields.lastTick??-1)+1,state:'building',stage:'initializing',requirements:new Map(),support:new Set(),forecastProbes:new Set(),sunTiles:new Set(),outputs:[],glows:[],privateJobs:[],bundle:null,bundlePins:0,retired:false,cleaned:false};
     try{add(t,requirements);}catch(e){cut.release();throw e;}
     active=t;t.work=run(t);t.work.catch(()=>{});return t.work;
   }
@@ -308,7 +336,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   function next() {if(queued&&!dead){const q=queued;queued=null;try{start(q.frame,q.requirements).then(q.resolve,q.reject);}catch(e){releaseFrame(q.frame);q.reject(e);}}wake();}
   const api={atlas,cells,metadata,
     // Passive counters only: inspecting readiness must never advance work.
-    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,sunTiles:t.sunTiles.size,forecastBricks:t.forecastBricks??0,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
+    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,support:t.support.size,sunTiles:t.sunTiles.size,forecastBricks:t.forecastBricks??0,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
     get busy(){return !!active||!!queued;},get failure(){return failure??metadataFeedback.failure??active?.feedback?.failure??active?.error??null;},get state(){return dead?'disposed':resetting?'resetting':metadataFeedback.failure||active?.feedback?.failure?'blocked':active?.state??'idle';},
     request(frame,requirements=[]){live();const f=captureFrame(frame);if(active){if(queued){releaseFrame(queued.frame);queued.resolve(null);}return new Promise((resolve,reject)=>{queued={frame:f,requirements:frozen(requirements),resolve,reject};});}try{return start(f,requirements);}catch(e){releaseFrame(f);throw e;}},
     probe(){live();return active?.state==='probe-ready'?active.bundle.retain():null;},
@@ -336,6 +364,6 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     async dispose(){if(dead)return;dead=true;if(resetWork)await resetWork;if(queued){releaseFrame(queued.frame);queued.resolve(null);queued=null;}const t=active;active=null;if(t){await t.work.catch(()=>{});await retire(t);}await fence();accepted?.bundle.release();accepted?.cut.release();accepted=null;history?.dispose();metadata.dispose();cells.dispose();atlas.dispose();if(win.render===api)delete win.render;}
   };
   function metadataChanges(t){const changes=t.batch.commit();t.batch=null;history.noteChanged(changes.changedBricks,changes.derivedTick);}
-  async function runRetry(t){try{while(active===t&&!dead){let feedback;try{feedback=await attempt(t);}catch(e){if(!e.requirements)throw e;feedback={requirements:e.requirements,sun:[]};}if(!feedback){t.state='probe-ready';wake();return t.bundle.retain();}if(!add(t,feedback.requirements,feedback.sun))throw new Error('WORLD unresolved feedback made no dependency progress');}return null;}catch(e){rejected(t,e);throw e;}}
+  async function runRetry(t){try{while(active===t&&!dead){let feedback;try{feedback=await attempt(t);}catch(e){if(!e.requirements)throw e;feedback={requirements:e.requirements,sun:[]};}if(!feedback){t.state='probe-ready';wake();return t.bundle.retain();}if(!add(t,feedback.requirements,feedback.sun,WORLD_SUPPORT_STAGES.has(t.stage)))throw new Error('WORLD unresolved feedback made no dependency progress');}return null;}catch(e){rejected(t,e);throw e;}}
   win.render=Object.freeze(api);return win.render;
 }

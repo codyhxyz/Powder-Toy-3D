@@ -80,7 +80,14 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
       const buffer = (label, bytes, usage, data) => { const b = resources.buffer(label, bytes, usage, data); owned.push(b); return b; };
       const requests = buffer('world GI typed feedback', fb.wordCount * 4, BU.STORAGE | BU.COPY_SRC | BU.COPY_DST);
       const words = new Uint32Array(Math.max(4, count * 4));
-      [...sources, ...probes].forEach((j, i) => words.set([j.index, (j.background ? 1 : 0) | (births.has(j.index) ? 2 : 0), 0, 0], i * 4));
+      // The original reset (shaders/gi.js mode 2: every source and probe
+      // replaced) seeds from the ledger's reset seed, every probe zero
+      // (validated above), which is what a birth reads. So at the reset every
+      // job reads its previous probe as a birth: a SOURCE with no probe yet no
+      // longer asks for one only to read zero from it, which made each SOURCE's
+      // brick a probe whose gather asked for more SOURCES, and so on (Island,
+      // 2026-10-22: ~64 more probes every attempt from the 18th on).
+      [...sources, ...probes].forEach((j, i) => words.set([j.index, (j.background ? 1 : 0) | (reset || births.has(j.index) ? 2 : 0), 0, 0], i * 4));
       const jobs = buffer('world GI global jobs', words.byteLength, BU.STORAGE, words);
       const source = buffer('private world GI sources', sources.length * 16, BU.STORAGE | BU.COPY_SRC);
       const history = buffer('COW world GI packed history', probes.length * 32, BU.STORAGE | BU.COPY_SRC | BU.COPY_DST);

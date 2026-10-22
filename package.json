@@ -18,6 +18,7 @@
     "check:world-lighting-records": "node --test tools/world-lighting-records-cpu-check.mjs",
     "check:world-render-owner": "node --test tools/world-render-owner-cpu-check.mjs",
     "check:world-sun-forecast": "node --test tools/world-sun-forecast-cpu-check.mjs",
+    "check:world-demand-chain": "node --test tools/world-demand-chain-cpu-check.mjs",
     "check:world-render-frame": "node --test tools/world-render-frame-cpu-check.mjs",
     "check:world-main-route": "node --test tools/world-main-route-cpu-check.mjs tools/world-main-route-fixes-cpu-check.mjs tools/world-startup-cpu-check.mjs",
     "check:world-pick": "node --test tools/world-pick-cpu-check.mjs",
