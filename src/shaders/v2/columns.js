@@ -657,7 +657,7 @@ fn colDepth(r: vec4u, s0: i32, s1: i32) -> f32 {
 
 // ---- the segment rule (prototype segment()): the new flux of [s0, s1) between a (-side) and b, from u.
 // Positive flows a to b. Falling runs, two dry floors and two different liquids exchange nothing.
-fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, lb: vec2f, bed: f32, film: f32, lid: bool) -> f32 {
+fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, lb: vec2f, bed: f32, film: f32, lid: bool, shut: i32) -> f32 {
   let dryA = recLiq(ra) == 0u; let dryB = recLiq(rb) == 0u;
   if (recFalling(ra) || recFalling(rb) || (dryA && dryB)) { return 0.0; }
   if (!dryA && !dryB && (recLiq(ra) != recLiq(rb) || recSub(ra) != recSub(rb))) { return 0.0; }
@@ -681,10 +681,14 @@ fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, l
   var v = u;
   if (ha == 0.0) { v = min(v, 0.0); }   // a dry side's stale outflow is dropped
   if (hb == 0.0) { v = max(v, 0.0); }
-  // a front onto dry ground takes the flow arriving behind it (momentum carried into the new face: V1's moving
-  // cell keeps its speed into the cell it moves on to, react.js forces), so a front runs at the flow's speed
-  if (hb == 0.0 && !colOver(rb, s0) && up > v) { v = up; }
-  if (ha == 0.0 && !colOver(ra, s0) && up < v) { v = up; }
+  // a new front onto dry ground (a face at rest, its receiver dry at its level) takes the flow arriving behind it
+  // (momentum carried into the new face: V1's moving cell keeps its speed into the cell it moves on to, react.js
+  // forces), so a front runs at the flow's speed. Only a new one onto dry ground: a face already flowing keeps its
+  // own momentum, and a floating layer's edge on a denser surface (its \`film\` FILM) is no dry front: fed the
+  // flow behind it each step, a layered pool's edge sloshes for ever and never rests
+  let front = u == 0.0 && film >= COL_FILM_DRY;
+  if (front && hb == 0.0 && !colOver(rb, s0) && up > v) { v = up; }
+  if (front && ha == 0.0 && !colOver(ra, s0) && up < v) { v = up; }
   var hUp = hb;
   if (drive > 0.0 || (drive == 0.0 && v > 0.0)) { hUp = ha; }
   v = v + acc * drive * min(1.0, COL_H_CAP / max(hUp, 1.0)) - colAdvect(u, up);
@@ -696,6 +700,10 @@ fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, l
   if (v < 0.0 && hb * COL_FULL < COL_FILM) { v = 0.0; }
   if (v > 0.0 && hb == 0.0 && !colOver(rb, s0) && ha * COL_FULL < film) { v = 0.0; }
   if (v < 0.0 && ha == 0.0 && !colOver(ra, s0) && hb * COL_FULL < film) { v = 0.0; }
+  // a side full under another liquid takes nothing (colTransfer: it compresses only under a closed cell; the runs
+  // pass's colStratify floats a lighter cover up): the face rests rather than push at it (shut: 1 b, 2 a, 3 both)
+  if (v > 0.0 && (shut == 1 || shut == 3)) { v = 0.0; }
+  if (v < 0.0 && shut >= 2) { v = 0.0; }
   v = v * (1.0 - damp);
   if (abs(v) < COL_QMIN) { v = 0.0; }
   var cap = colFlowCap(liq);
@@ -1074,6 +1082,10 @@ fn probeRead(p: vec2u) -> bool { return (p.x & COL_PROBE_READ) != 0u; }
 fn colOpen(x: i32, y: i32, z: i32) -> bool { return isOpenC(colCell(x, y, z)); }
 // a closed cell (neither air nor liquid): a segment's lid
 fn colLidAt(x: i32, y: i32, z: i32) -> bool { let k = colClass(x, y, z); return k != C_AIR && k != C_LIQUID; }
+// the run r of column (x, z) fills its domain under another liquid: colTransfer puts nothing into it
+fn colShut(x: i32, z: i32, r: vec4u) -> bool {
+  return recLiq(r) != 0u && recTop(r) < NY && f32(recMass(r)) >= f32(recTop(r) - recY0(r)) * COL_FULL && colClass(x, recTop(r), z) == C_LIQUID;
+}
 // Monahan lifetime, byte-quantized deterministic decay at native 60 Hz (the foam pass this replaces)
 fn foamDecay(x: i32, y: i32, z: i32) {
   let p = vec3i(x, y, z); let before = loadCell(p);
@@ -1163,7 +1175,8 @@ fn colTransfer(xs: i32, zs: i32, is: i32, xd: i32, zd: i32, id: i32, n: u32) {
     if (have == 0u) { giver = giver - 1; continue; }
     let filled = colFill(xd, to, zd);
     var room = FULLU - min(filled, FULLU);
-    if (to == dTop - 1) { room = MAX_FILL - filled; }
+    // (a covered top cell compresses under a closed cell only: under another liquid, colStratify floats that up)
+    if (to == dTop - 1 && !(dTop < NY && colClass(xd, dTop, zd) == C_LIQUID)) { room = MAX_FILL - filled; }
     if (room == 0u) { to = to + 1; continue; }
     let m = min(left, min(have, room));
     if (!colMove(xs, giver, zs, xd, to, zd, m, true)) { break; }
@@ -1213,7 +1226,9 @@ fn colFluxes(xa: i32, za: i32, xb: i32, zb: i32, axis: i32) {
       // (the face upwind of the flow, or of the head where the face is at rest: a new front's)
       // (a lid over the segment on either side: a bore, COLUMN.BORE_Q)
       let lid = s1 < NY && (colLidAt(xa, s1, za) || colLidAt(xb, s1, zb));
-      let v = colFlux(ra, rb, s0, s1, u, colUpwind(xa, za, xb, zb, s0, axis, select(u, colEta(ra) - colEta(rb), u == 0.0)), la, lb, bed, select(COL_FILM_DRY, COL_FILM, floats != 0), lid);
+      // (a side full under another liquid: colTransfer gives it nothing)
+      let shut = select(0, 1, colShut(xb, zb, rb)) + select(0, 2, colShut(xa, za, ra));
+      let v = colFlux(ra, rb, s0, s1, u, colUpwind(xa, za, xb, zb, s0, axis, select(u, colEta(ra) - colEta(rb), u == 0.0)), la, lb, bed, select(COL_FILM_DRY, COL_FILM, floats != 0), lid, shut);
       // and R14's launch head, while every record is frozen: the sender's exact head, or a same-liquid
       // neighbour's that feeds it (an orifice's reservoir), over the segment's bottom
       // (only a face that pours needs one: its bottom over the receiver's surface or dry floor)
