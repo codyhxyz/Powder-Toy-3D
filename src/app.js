@@ -2937,6 +2937,10 @@ function tick(now, renderOnly = false) {
   // and the profiler's per-step costs count V1's steps under either engine (V2's ticks read ~60 for
   // V1's ~240, the sim seemingly at a quarter rate).
   const legacyStepped = !stepping ? 0 : v2Box() ? stepped * LEGACY_STEPS_PER_TICK : settings.steps;
+  // A frame between two ticks of an awake box (Speed under 1×: a tick every 2nd to 4th frame) is still
+  // drawn: its clock and its flying matter move on the partial tick (v2/host.js viewStepClock,
+  // particleLagSeconds), as V1's frame of steps moves its world (it drew the same image until the tick).
+  const betweenTicks = v2Box() && v2Running && stepping && stepped === 0 && !physicsV2.asleep;
   ctx.nativeStepped = v2Box() ? (stepping ? stepped : 0) : null;
   ctx.stepping = stepping && (!v2Box() || stepped > 0);
   if (!renderOnly && stepping && stepped > 0) { nativeRayStroke = null; releaseHeldNativeRays(sim); }
@@ -2982,7 +2986,7 @@ function tick(now, renderOnly = false) {
         reserve:()=>{
           const derived=pacer.derived(`${sim.id}:${sim.version}|${SUN.toArray()}|${KEY_LIGHT}|${renderView}|${JSON.stringify(gfx)}|${settings.nearGI}:${settings.glowLights}:${settings.caustics}|${detailVersion}`);
           const key=viewKey(camera,scene,pixelRatio,innerWidth,innerHeight,`${brushKey(brush,toolById(settings.tool).color)}|${presentation.key}`,viewSettings,gfx,post.settings);
-          return {runDerived:derived,runView:pacer.view(key,derived||wantFrame())};
+          return {runDerived:derived,runView:pacer.view(key,derived||wantFrame()||betweenTicks)};
         },capture:(reservation,state)=>captureWorldRequest(reservation,state,dt,driver.accepted)});
       if(present || runView)driver.presentLast();
       if(runView)viewClock(false); // Only an accepted WORLD transaction advances presentation clocks.
@@ -3002,7 +3006,7 @@ function tick(now, renderOnly = false) {
     `${win?.far?.chunksDrawn}|${brushKey(brush, toolById(settings.tool).color)}|${presentation.key}|${vol.format}`,   // a world scene's far field filling in (world/far.js); the brush (ours); the bend
     viewSettings, gfx, post.settings) : viewSeen;
   const viewChanged = viewV !== viewSeen;
-  runView = present && pacer.view(viewV, runDerived || wantFrame());
+  runView = present && pacer.view(viewV, runDerived || wantFrame() || betweenTicks);
   // Adaptation is scheduled separately below: forcing the view here would
   // restart TAA settling on every exposure update, forever until eyes settle.
   // three's meshes moved, and nothing else in the key (gfx/meshFrames.js), since the last view frame

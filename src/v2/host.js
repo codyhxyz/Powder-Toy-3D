@@ -56,6 +56,12 @@ export const partialTick = sim => {
 // box at Speed 1 (a tick every fourth 60 Hz frame) moved it four steps every fourth frame. Presentation
 // only: the game's clocks (weather, storms, machines) keep stepClock, whole ticks.
 export const viewStepClock = sim => stepClock(sim) + partialTick(sim) * LEGACY_STEPS_PER_TICK;
+// How far behind its record (s) a box's flying matter and rays are drawn: the share of a tick its game
+// time has not reached, so the draw is Minecraft's lerp(prev, pos, partialTicks) with prev = pos − velocity
+// × a tick (gfx/nativeParticles.js, shaders/v2/particleRender.js). At Speed 1 (a tick every fourth frame)
+// a thrown grain moved four V1 steps every fourth frame; V1's moves a step a frame. 0 for a box this
+// client doesn't tick (`ticking` false: a co-op replica draws the host's records as they come).
+export const particleLagSeconds = (sim, ticking = true) => (ticking && sim?.compact ? (1 - partialTick(sim)) / HOST_HZ : 0);
 
 /**
  * V1 runs a script's beforesim and aftersim around each of its steps (app.js's V1 loop: beforeStep,

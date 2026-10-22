@@ -10,6 +10,7 @@
 // gfx/nativeParticles.js; not a deviation: the same particles and sprites, another owner.
 import { Rays } from '../raysLayer.js';
 import { NativeParticles } from '../gfx/nativeParticles.js';
+import { particleLagSeconds } from '../v2/host.js';
 
 function nativeLayer(app) {
   const source = app.sim.compactOwner?.dynamics;
@@ -40,7 +41,9 @@ const rays = {
     const native = app.sim.compact ? nativeLayer(app) : null;
     const height = app.post.sceneTarget.height || app.canvas.height * app.post.renderScale;
     if (native) {
-      native.updateView(app.camera, height, app.volume.matrixWorld, app.sim.origin);
+      // (between ticks, a share of a tick behind their records, so they move every frame: v2/host.js
+      // particleLagSeconds; a replica's records are the host's, and it runs no ticks of its own)
+      native.updateView(app.camera, height, app.volume.matrixWorld, app.sim.origin, { lagSeconds: particleLagSeconds(app.sim, !app.mp?.replica) });
       if (native.isReady) native.prepareDraw(); // compute must precede the scene pass
     } else app.sim.rays.updateView?.(app.camera, height, app.volume.matrixWorld);
   },

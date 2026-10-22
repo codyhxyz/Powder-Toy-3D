@@ -6,11 +6,13 @@ import {
   ParticlePickParams, PARTICLE_PICK_LAYOUT, PICK_RAYS, particlePickWGSL,
 } from '../shaders/v2/particleRender.js';
 import { decoView } from '../deco.js';
+import { CELL_M } from '../scale.js';
 
 const vector = p => Array.isArray(p) || ArrayBuffer.isView(p) ? Array.from(p) : [p?.x ?? 0,p?.y ?? 0,p?.z ?? 0];
 
-/** CPU view data only: physics world coordinates are never rebased or copied. */
-export function nativeParticleView(camera, targetHeight, volumeMatrix, origin = [0,0,0], sample = 0) {
+/** CPU view data only: physics world coordinates are never rebased or copied.
+ * lagSeconds: how far behind its record each particle is drawn (v2/host.js particleLagSeconds). */
+export function nativeParticleView(camera, targetHeight, volumeMatrix, origin = [0,0,0], sample = 0, lagSeconds = 0) {
   if (!(targetHeight > 0) || !Number.isFinite(targetHeight)) throw new RangeError('invalid target height');
   const matrix = new Matrix4();
   if (volumeMatrix) matrix.fromArray(volumeMatrix.elements ?? volumeMatrix);
@@ -24,7 +26,9 @@ export function nativeParticleView(camera, targetHeight, volumeMatrix, origin = 
   const o = vector(origin);
   if (o.length !== 3 || !o.every(Number.isFinite) || !eye.every(Number.isFinite)) throw new Error('invalid particle view coordinates');
   if (!Number.isInteger(sample) || sample < 0 || sample > 0xffffffff) throw new RangeError('invalid TAA sample');
-  return { inverseModel: matrix.invert().elements, origin: o, scale: Math.sqrt(norm1*normInf), eye, sample };
+  if (!(lagSeconds >= 0) || !Number.isFinite(lagSeconds)) throw new RangeError('invalid particle lag');
+  // (velocity m/s × lag cells per m/s: cells; the records' velocity, renderState.velocity)
+  return { inverseModel: matrix.invert().elements, origin: o, scale: Math.sqrt(norm1*normInf), eye, sample, lag: lagSeconds / CELL_M };
 }
 
 export function validateNativeParticleSource(state) {
@@ -106,8 +110,8 @@ export class NativeParticles {
     const grid = g ? [g.nx, g.ny, g.nz, buffer ? 1 : 0] : [0, 0, 0, 0];
     return { group, params: { grid, supers: g ? [g.stx, g.stz, 0, 0] : [0, 0, 0, 0] } };
   }
-  updateView(camera, targetHeight, volumeMatrix = null, origin = [0,0,0], { sample = 0 } = {}) {
-    this.view = nativeParticleView(camera,targetHeight,volumeMatrix,origin,sample);
+  updateView(camera, targetHeight, volumeMatrix = null, origin = [0,0,0], { sample = 0, lagSeconds = 0 } = {}) {
+    this.view = nativeParticleView(camera,targetHeight,volumeMatrix,origin,sample,lagSeconds);
     this.preparedFrame = null;
   }
   prepareDraw(frame = this.gpu.frame) {
@@ -161,7 +165,7 @@ export class NativeParticles {
     const group = cached.group;
     const air = this.air();
     this.pickPipe.dispatch(frame,[n,1,1],{ bind: [this.fu.group,group,air.group],
-      params: { ro, rd, slot, n, origin: vector(origin), capacity: s.capacity, ...air.params } });
+      params: { ro, rd, slot, n, origin: vector(origin), capacity: s.capacity, lag: this.view?.lag ?? 0, ...air.params } });
     return true;
   }
   dispose() {

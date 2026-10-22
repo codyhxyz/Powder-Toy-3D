@@ -20,7 +20,7 @@ registerHooks({ load(url, context, next) {
   return next(url, context);
 } });
 const { trigger, toolDt } = await import('../../src/pov/tools/action.js');
-const { nativeHostSteps, frameTicks, partialTick, viewStepClock, stepClock, legacyStepHooks, brushPace, legacySteps,
+const { nativeHostSteps, frameTicks, partialTick, viewStepClock, particleLagSeconds, stepClock, legacyStepHooks, brushPace, legacySteps,
   HOST_HZ, LEGACY_STEPS_PER_TICK, CATCH_UP_TICKS } = await import('../../src/v2/host.js');
 const { ScriptWorld, EDIT, EDIT_TEX_W, EDIT_SEARCH_STEPS } = await import('../../src/console/world.js');
 const { installBuiltins } = await import('../../src/console/api.js');
@@ -28,6 +28,10 @@ const { createLua, EVENTS } = await import('../../src/console/lua.js');
 const { createProfiler } = await import('../../src/gfx/profiler.js');
 const { ELEMENTS, E } = await import('../../src/elements.js');
 const { PHYS } = await import('../../src/physics.js');
+const { nativeParticleView } = await import('../../src/gfx/nativeParticles.js');
+const { WGSL_CHECK: PARTICLE_WGSL } = await import('../../src/shaders/v2/particleRender.js');
+const { CELL_M } = await import('../../src/scale.js');
+const { PerspectiveCamera, Matrix4 } = await import('three');
 const src = (path) => readFileSync(new URL(`../../src/${path}`, import.meta.url), 'utf8');
 const app = src('app.js');
 const DEFAULT_STEPS = 4;   // app.js DEFAULTS.steps: V1's steps a frame at 1×
@@ -212,6 +216,35 @@ assert(/steps: 4, gravity:/.test(app), 'app.js DEFAULTS.steps is 4');
   assert.equal(viewStepClock({ frame: 7, compact: null }), 7, 'V1: exactly its steps');
   // paused (no host call): it holds
   const held = viewStepClock(sim); assert.equal(viewStepClock(sim), held);
+  // flying matter: a record moving at v (m/s) whose position steps a tick at a time is drawn the
+  // share of a tick behind it (particleRender.js: pos - velocity × P.lag), so it moves every frame
+  {
+    const o = fakeOwner(), s = o.sim, v = 12;   // m/s
+    let ticks = 0;
+    const drawn = [], raw = [];
+    for (let i = 0; i < 16; i++) {
+      ticks += nativeHostSteps(o, 1 / 60, { speed: 0.25 });
+      const pos = ticks * v / HOST_HZ / CELL_M;   // cells: the record after its ticks
+      const view = nativeParticleView(new PerspectiveCamera(), 720, new Matrix4(), [0, 0, 0], 0, particleLagSeconds(s));
+      drawn.push(pos - v * view.lag); raw.push(pos);
+    }
+    const perFrame = v / HOST_HZ / CELL_M * 0.25;   // cells: a quarter tick's flight
+    assert.deepEqual(steps(drawn).map((d) => +(d / perFrame).toFixed(6)), Array(15).fill(1), 'drawn a quarter tick further every frame at 0.25×');
+    assert(steps(raw).some((d) => d === 0), 'its record moves only on the tick frames');
+    assert.equal(particleLagSeconds(s, false), 0, 'a replica draws its records as they come');
+    assert.equal(particleLagSeconds({ compact: null }), 0, 'V1: no V2 records');
+    const shaders = Object.fromEntries(PARTICLE_WGSL.map((c) => [c.name, c.code()]));
+    for (const name of ['nativeParticleMatter', 'nativeParticleRays']) {
+      assert(shaders[name].includes('o.center = bitcast<vec3f>(p.positionId.xyz) - P.origin - bitcast<vec3f>(p.velocityCore.xyz) * P.lag;'), `${name} draws on the partial tick`);
+    }
+    assert((shaders.nativeParticlePick.match(/particleDrawn\(p\)/g) ?? []).length === 2, 'the pick picks where the particle is drawn');
+    assert(/lagSeconds: particleLagSeconds\(app\.sim, !app\.mp\?\.replica\)/.test(src('wire/rays.js')), 'the rays wire passes the lag');
+    assert(/lag: this\.view\?\.lag \?\? 0/.test(src('gfx/nativeParticles.js')), "the pick's params carry it");
+    // the frames between ticks are drawn (the pacer would keep the last image until the tick)
+    assert(/const betweenTicks = v2Box\(\) && v2Running && stepping && stepped === 0 && !physicsV2\.asleep;/.test(app));
+    assert(/runView = present && pacer\.view\(viewV, runDerived \|\| wantFrame\(\) \|\| betweenTicks\);/.test(app), 'Box');
+    assert(/runView:pacer\.view\(key,derived\|\|wantFrame\(\)\|\|betweenTicks\)/.test(app), 'World');
+  }
   // the app draws by it, the scene's animations run on it, the label shows the game's speed
   assert(/const now = viewStepClock\(sim\);/.test(app), 'app.js viewClock');
   assert(/const steps = viewStepClock\(sim\);/.test(src('gfx/uniforms.js')), 'gfx/uniforms.js uSimClock and the cloud drift');
@@ -221,7 +254,7 @@ assert(/steps: 4, gravity:/.test(app), 'app.js DEFAULTS.steps is 4');
   const fmtSpeed = (v) => `${+(v / DEFAULT_STEPS).toFixed(2)}×`;
   assert.deepEqual([1, 2, 3, 4, 5, 8, 12].map(fmtSpeed), ['0.25×', '0.5×', '0.75×', '1×', '1.25×', '2×', '3×'], 'Speed 1 reads 0.25× (it read 1×)');
   assert(/key: 'steps', label: 'Speed', min: 1, max: 12/.test(app));
-  console.log('PASS C5 clocks: frameTicks = nativeHostSteps, the view clock a V1 step a frame at 0.25×, Speed label 0.25×-3×');
+  console.log('PASS C5 clocks: frameTicks = nativeHostSteps, the view clock and flying matter move every frame at 0.25×, Speed label 0.25×-3×');
 }
 
 // ---- C6: steps/s and the profiler in V1 steps, the profiler's shares V2's own
