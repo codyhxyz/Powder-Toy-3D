@@ -7,7 +7,8 @@ export const TU = Object.freeze({ COPY_SRC: 1, COPY_DST: 2, TEXTURE_BINDING: 4, 
 export const uint = n => Number.isInteger(n) && n >= 0 && n <= 0xffffffff;
 export const frozenArray = a => Object.freeze(Array.from(a));
 export function worldLightingIndex(size, b) {
-  if (!Array.isArray(b) || b.length !== 3 || b.some((v, k) => !Number.isInteger(v) || v < 0 || v >= size[k] / 4)) throw new RangeError('global lighting brick');
+  const ok = (k) => Number.isInteger(b[k]) && b[k] >= 0 && b[k] < size[k] / 4;
+  if (!Array.isArray(b) || b.length !== 3 || !ok(0) || !ok(1) || !ok(2)) throw new RangeError('global lighting brick');
   return b[0] + size[0] / 4 * (b[1] + size[1] / 4 * b[2]);
 }
 // Exact Chebyshev neighborhood, without scanning every change for every record.

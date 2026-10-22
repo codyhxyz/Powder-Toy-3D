@@ -6,8 +6,10 @@ export const worldCellClassifierWGSL = g => brickFrag(g, { world: true });
 const ro = binding => ({ binding, visibility: 4, buffer: { type: 'read-only-storage' } });
 export const WORLD_CLASSIFIER_LAYOUT = [ro(0), ...[1,2,3].map(binding => ({ binding, visibility: 4, texture: { sampleType: 'unfilterable-float', viewDimension: '3d' } })), { binding: 4, visibility: 4, buffer: { type: 'storage' } }];
 export const CellPackParams = uniformStruct('CellPackParams', { page: 'vec4u', aux: 'vec4u', version: 'vec4u' });
+// A page's jobs (6) and version (7) sit at dynamic offsets in its batch's
+// shared buffers, so the pages of one source core share one bind group.
 export const WORLD_CELL_PACK_LAYOUTS = [
-  [...Array.from({ length: 7 }, (_, i) => ro(i)), { binding: 7, visibility: 4, buffer: { type: 'uniform' } }],
+  [...Array.from({ length: 6 }, (_, i) => ro(i)), { ...ro(6), buffer: { type: 'read-only-storage', hasDynamicOffset: true } }, { binding: 7, visibility: 4, buffer: { type: 'uniform', hasDynamicOffset: true } }],
   [0,1,2].map(binding => ({ binding, visibility: 4, storageTexture: { access: 'write-only', format: 'rgba32uint', viewDimension: '2d-array' } })),
 ];
 export const worldCellPackWGSL = /* wgsl */ `
@@ -74,7 +76,7 @@ fn main(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) s:
   let job = jobs[group.x];
   let x = s & 3u; let y = ((s >> 2u) & 1u) + 2u*(s >> 5u); let z = (s >> 3u) & 3u;
   let src = x + 4u*job.x + 32u*(y + 4u*job.y + 32u*(z + 4u*job.z));
-  let dst = job.w*768u + (s >> 3u)*32u + (s & 7u);
+  let dst = job.w + (s >> 3u)*32u + (s & 7u);
   packed[dst] = field0[src];
   packed[dst + 256u] = field1[src];
   packed[dst + 512u] = field2[src];

@@ -70,12 +70,14 @@ test('real Source/Producer/Fields/Atlas: two-core queued captures precede scratc
   const secondClassifier=f.gpu.trace.findIndex((t,i,a)=>t.name==='world owned classifier'&&a.slice(0,i).some(x=>x.name==='world owned classifier'));
   assert(f.gpu.trace.indexOf(captures[2])<secondClassifier);
   f.gpu.flush();const packBefore=f.gpu.nativeSubmits,publication=f.adapter.commitAfterSourceFlush(batch);
-  assert.equal(f.gpu.nativeSubmits-packBefore,1,'both raw/field pages share one native submission');
+  assert.equal(f.gpu.nativeSubmits-packBefore,2,"both raw/field pages share one native submission; the other is the commit's book copy");
   const dispatches=f.gpu.trace.filter(t=>t.name==='field CELL dispatch'),copies=f.gpu.trace.filter(t=>t.name==='native half copy');
-  assert.equal(dispatches.length,2,'one job list/dispatch per capture, not per channel');assert.equal(copies.length,req.length*3);
+  assert.equal(dispatches.length,2,'one job list/dispatch per capture, not per channel');
+  // three copies per run of up to four consecutive pages; every page's tile is in one
+  assert.equal(copies.reduce((n,c)=>n+c.extent[0]/8,0),req.length*3);assert(copies.length<=req.length*3);
   assert(dispatches.every(d=>f.gpu.trace.indexOf(d)<f.gpu.trace.indexOf(copies[0])),'all capture dispatches precede first packed copy');
   for(const d of dispatches){assert.equal(d.groups[0].entries.length,5);for(const e of d.groups[0].entries.slice(0,3))assert(e.resource.buffer.usage&128);}
-  for(const c of copies){assert.deepEqual(c.extent,[8,8,1]);assert.equal(c.bytesPerRow,256);assert.equal(c.rowsPerImage,8);assert.equal(c.offset%2048,0);}
+  for(const c of copies){assert([8,16,24,32].includes(c.extent[0])&&c.extent[1]===8&&c.extent[2]===1);assert.equal(c.bytesPerRow,256);assert.equal(c.rowsPerImage,8);assert.equal(c.offset%2048,0);}
   assert.equal(f.adapter.fields.lastTick,0);f.gpu.finish();await Promise.resolve();
   const snap=f.atlas.snapshot();
   for(const r of req){
@@ -104,8 +106,9 @@ test('CELL write batches process every page across pool growth and preserve pack
   assert.deepEqual(sizes,[128,64]);assert(requirements.every(r=>!f.atlas.lookup(r.brick,READY.CELL).incomplete));
   const snap=f.atlas.snapshot();
   const copies=f.gpu.trace.filter(t=>t.name==='native half copy');
-  assert.equal(copies.length,96*3,'exactly three native FIELD texture copies per page');
-  assert(copies.every(t=>t.bytesPerRow===256&&t.rowsPerImage===8&&t.offset%256===0&&t.extent.join(',')==='8,8,1'));
+  assert.equal(copies.reduce((n,t)=>n+t.extent[0]/8,0),96*3,'every page tile in exactly one native FIELD copy per channel');
+  assert.equal(copies.length,24*3,'96 fresh consecutive pages: runs of four, three copies each');
+  assert(copies.every(t=>t.bytesPerRow===256&&t.rowsPerImage===8&&t.offset%256===0&&t.extent[0]<=32&&t.extent[1]===8&&t.extent[2]===1));
   const dispatches=f.gpu.trace.filter(t=>t.name==='field CELL dispatch');
   assert.equal(dispatches.reduce((n,t)=>n+t.count,0),96,'all pages packed once');
   assert.equal(new Set(dispatches.map(t=>t.groups[0].entries[4].resource.buffer)).size,2,'one packed buffer per existing submission');
@@ -121,14 +124,16 @@ test('CELL write batches process every page across pool growth and preserve pack
   }
   snap.release();publication.previousLightingSnapshot.release();await cleanup(f);
 });
-test('raw CELL pages of a batch share one job list, one version block and one pass, each bound at its own window',async()=>{
+test('raw CELL pages of a batch share one job list, one version block and one pass, each bound at its own dynamic offset',async()=>{
   const f=fixture();f.adapter.batchWrites=CELL_BATCH_WRITES;await f.adapter.ready;const requirements=[];
   for(let z=0;z<2;z++)for(let y=0;y<2;y++)for(let x=0;x<24;x++)requirements.push({brick:[x,y,z],channels:READY.CELL});
   const batch=f.adapter.record(f.gpu.frame,{fieldTick:0,requirements});f.gpu.flush();
   const sizes=[],write=f.atlas.recordPageWrites.bind(f.atlas);
   f.atlas.recordPageWrites=writes=>{sizes.push(writes.length);return write(writes);};
+  const inputs=[],bind=f.gpu.device.createBindGroup;f.gpu.device.createBindGroup=d=>{if(d.layout===f.adapter.packLayouts[0])inputs.push(d);return bind(d);};
   const publication=f.adapter.commitAfterSourceFlush(batch);
   assert.deepEqual(sizes,[192],'96 pages: one page-write submission at the app bound (pool growth adds its own copies)');
+  assert.equal(inputs.length,3,'one input bind group per source core (24x2x2 bricks: three), each page at its own dynamic offset');
   const raw=f.gpu.trace.filter(t=>t.name==='raw CELL dispatch');assert.equal(raw.length,96);
   const window=(d,binding)=>d.groups[0].entries.find(e=>e.binding===binding).resource;
   for(const binding of [6,7]){
@@ -293,7 +298,8 @@ test('actual raw-u32 field WGSL preserves all half patterns, all channels and bo
   // Includes both signs of NaN payloads/infinities/zero/subnormals, as raw words.
   for(const pattern of [0,0x8000,1,0x8001,0x7c00,0xfc00,0x7c01,0x7e55,0xfc01,0xfe55])assert(new Uint16Array(buffers[0].bytes).includes(pattern));
   const jobs=new Uint32Array(512*4),packed=new Uint32Array(512*3*2048/4);packed.fill(0xdededede);
-  for(let i=0;i<512;i++)jobs.set([i&7,(i>>3)&7,i>>6,511-i],i*4);
+  // job.w: the page's first packed texel; one page alone in its rows here
+  for(let i=0;i<512;i++)jobs.set([i&7,(i>>3)&7,i>>6,(511-i)*768],i*4);
   new FieldShaderExec(new WgslParser().parse(worldFieldPackWGSL)).dispatchWorkgroups('main',512,{0:{0:u32(buffers[0]),1:u32(buffers[1]),2:u32(buffers[2]),3:jobs,4:packed}});
   const layout={capacity:512,cells:{x:8,y:8}},actual=[],expected=[];
   for(let c=0;c<3;c++){actual.push(gpu.createTexture({size:[64,64,8],format:'rgba16float'}));expected.push(gpu.createTexture({size:[64,64,8],format:'rgba16float'}));}
@@ -305,6 +311,13 @@ test('actual raw-u32 field WGSL preserves all half patterns, all channels and bo
   assert.equal(gpu.trace.filter(t=>t.name==='native half copy'&&actual.includes(t.dst)).length,512*3);
   gpu.finish();for(let c=0;c<3;c++)assert.deepEqual(new Uint8Array(actual[c].bytes),new Uint8Array(expected[c].bytes));
   for(let row=0;row<512*3*8;row++)for(let word=16;word<64;word++)assert.equal(packed[row*64+word],0xdededede,'row padding untouched');
+  // four consecutive pages of a tile row share each 256-byte row: one [32,8,1] copy per run and channel
+  const runJobs=new Uint32Array(512*4),runPacked=new Uint32Array(128*3*2048/4);
+  for(let i=0;i<512;i++){const pid=511-i;runJobs.set([i&7,(i>>3)&7,i>>6,(pid>>2)*768+(pid&3)*8],i*4);}
+  new FieldShaderExec(new WgslParser().parse(worldFieldPackWGSL)).dispatchWorkgroups('main',512,{0:{0:u32(buffers[0]),1:u32(buffers[1]),2:u32(buffers[2]),3:runJobs,4:runPacked}});
+  const runActual=Array.from({length:3},()=>gpu.createTexture({size:[64,64,8],format:'rgba16float'}));
+  for(let r=0;r<128;r++)for(let c=0;c<3;c++)gpu.frame.direct().copyBufferToTexture({buffer:{bytes:runPacked.buffer},offset:(r*3+c)*2048,bytesPerRow:256,rowsPerImage:8},{texture:runActual[c],origin:pageTexel(r*4,0,layout)},[32,8,1]);
+  gpu.finish();for(let c=0;c<3;c++)assert.deepEqual(new Uint8Array(runActual[c].bytes),new Uint8Array(expected[c].bytes),'runs of four pages land as single pages do');
   assertWorldLayout([WORLD_FIELD_PACK_LAYOUT]);assert.equal(WORLD_FIELD_PACK_LAYOUT.length,5);assert.equal(WORLD_FIELD_PACK_LAYOUT.filter(e=>e.buffer?.type==='read-only-storage').length,4);
 });
 

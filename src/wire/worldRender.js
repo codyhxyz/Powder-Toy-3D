@@ -158,7 +158,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     else t.plan=history.beginBirth({cutToken:t.cut.contentToken,sourceBricks:[...new Map([...requestedSources,...never.filter(r=>!ownedSources.has(index(r.brick))).map(r=>r.brick)].map(b=>[index(b),b])).values()],probeBricks:never.map(r=>r.brick),records});
     // Every owned offscreen record remains a causal input. BUILDING is never
     // returned by probe(); the previous accepted bundle remains independently pinned.
-    const invalidations=[];for(let i=0;i<atlas.lightEntries.length;i++)if(atlas.lightEntries[i])invalidations.push({brick:brick(i),channels:READY.LIGHT});
+    const invalidations=atlas.bookPages('light').map(p=>({brick:[...p.brick],channels:READY.LIGHT}));
     atlas.publish({invalidations,sunManifest:null});
     const previousProbes=[...ownedProbes].filter(i=>t.frame.advance||history.birth(i)?.birthTick<t.tick);
     const previous=t.plan.captureRestore({cut:t.cut,configVersion:t.frame.configVersion,sourceIndices:[...ownedSources],probeIndices:previousProbes});

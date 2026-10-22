@@ -7,6 +7,10 @@ const words=b=>new Uint32Array(b.bytes);
 const dims=t=>Array.isArray(t.size)?t.size:[t.size.width,t.size.height,t.size.depthOrArrayLayers??1];
 const bpp=t=>t.format==='rgba32uint'?16:t.format==='r32float'?4:8;
 const at=(t,p)=>{const d=dims(t);return (p[0]+d[0]*(p[1]+d[1]*p[2]))*bpp(t);};
+// WebGPU's dynamic offsets: in binding order, added to each dynamic entry's offset.
+const dynamicGroup=(g,dynamic)=>{let k=0;const dyn=new Set(g.layout.entries.filter(e=>e.buffer?.hasDynamicOffset).map(e=>e.binding));
+  if(dyn.size!==dynamic.length)throw new Error('dynamic offset count');
+  return {...g,entries:[...g.entries].sort((a,b)=>a.binding-b.binding).map(e=>dyn.has(e.binding)?{...e,resource:{...e.resource,offset:(e.resource.offset??0)+dynamic[k++]}}:e)};};
 export class CellTestGPU extends FieldTestGPU {
   constructor(){
     super({emulateEMA:true});this.commands=[];this.submitted=[];this.waiters=[];this.retireOnFlush=[];this.flushes=0;this.nativeSubmits=0;this.writes=0;
@@ -29,7 +33,7 @@ export class CellTestGPU extends FieldTestGPU {
       copyBufferToTexture:(s,d,e)=>push(()=>this._bufferTexture(bytes(s.buffer),s.offset??0,d.texture,d.origin??[0,0,0],e,s.bytesPerRow,s.rowsPerImage),{name:'native half copy',src:s.buffer,dst:d.texture,offset:s.offset??0,bytesPerRow:s.bytesPerRow,rowsPerImage:s.rowsPerImage,extent:e}),
       copyTextureToTexture:(s,d,e)=>push(()=>{const [w,h,z]=e;for(let k=0;k<z;k++)for(let y=0;y<h;y++)for(let x=0;x<w;x++){const a=(s.origin??[0,0,0]).map((v,i)=>v+[x,y,k][i]),b=(d.origin??[0,0,0]).map((v,i)=>v+[x,y,k][i]);bytes(d.texture).set(bytes(s.texture).subarray(at(s.texture,a),at(s.texture,a)+bpp(s.texture)),at(d.texture,b));}},{name:'texture copy'}),
       copyBufferToBuffer:(s,so,d,to,n)=>push(()=>bytes(d).set(bytes(s).subarray(so,so+n),to),{name:'native buffer copy'}),
-      beginComputePass:()=>{const groups=[];let pipeline;return {setPipeline:p=>pipeline=p,setBindGroup:(i,g)=>groups[i]=g,dispatchWorkgroups:(count=1)=>{const frozen=[...groups],fields=pipeline.label==='world CELL field pack';push(()=>fields?this._packFields(frozen,count):this._pack(frozen),{name:fields?'field CELL dispatch':'raw CELL dispatch',pipeline,groups:frozen,count});},end(){}};},finish(){return {ops};}};
+      beginComputePass:()=>{const groups=[];let pipeline;return {setPipeline:p=>pipeline=p,setBindGroup:(i,g,dynamic=[])=>groups[i]=dynamic.length?dynamicGroup(g,dynamic):g,dispatchWorkgroups:(count=1)=>{const frozen=[...groups],fields=pipeline.label==='world CELL field pack';push(()=>fields?this._packFields(frozen,count):this._pack(frozen),{name:fields?'field CELL dispatch':'raw CELL dispatch',pipeline,groups:frozen,count});},end(){}};},finish(){return {ops};}};
   }
   _bufferTexture(input,offset,t,origin,extent,row,image){
     const [w,h,z]=extent, stride=bpp(t);row??=w*stride;image??=h;
@@ -56,7 +60,7 @@ export class CellTestGPU extends FieldTestGPU {
   _packFields(groups,count){
     const buffers=groups[0].entries.map(e=>e.resource.buffer),jobs=words(buffers[3]),out=words(buffers[4]);
     for(let i=0;i<count;i++)for(let s=0;s<64;s++){
-      const [x,y,z]=worldSlotCell(s),src=x+4*jobs[4*i]+32*(y+4*jobs[4*i+1]+32*(z+4*jobs[4*i+2])),dst=jobs[4*i+3]*768+(s>>3)*32+(s&7);
+      const [x,y,z]=worldSlotCell(s),src=x+4*jobs[4*i]+32*(y+4*jobs[4*i+1]+32*(z+4*jobs[4*i+2])),dst=jobs[4*i+3]+(s>>3)*32+(s&7);
       for(let c=0;c<3;c++)out.set(words(buffers[c]).subarray(src*2,src*2+2),(dst+c*256)*2);
     }
   }

@@ -137,6 +137,14 @@ export function planSourceCopies(src, dst, bounds, accept = ACCEPT_ALL, acceptBr
   }
   return merged;
 }
+function destinationSpans(runs) {
+  const out = [];
+  for (const r of [...runs].sort((a, b) => a.dst - b.dst)) {
+    const last = out.at(-1);
+    if (last && last.dst + last.cells === r.dst) last.cells += r.cells; else out.push({ dst: r.dst, cells: r.cells });
+  }
+  return out;
+}
 export function recordSourceCopies(frame, src, dst, runs, { aux = true } = {}) {
   const native = (a, ao, b, bo, n) => {
     if (ao < 0 || bo < 0 || ao + n > a.size || bo + n > b.size || [ao, bo, n].some(v => v % 4)) throw new Error('raw source copy exceeds its original buffer layout');
@@ -264,13 +272,18 @@ export class WorldRenderSource {
       for(const origin of this._cores(box)){
         const c=this.chunks.get(origin.join(','));
         if(!c)throw new Error('Incomplete in-world raw source');
+        // A core without one unknown rank holds every box in it. A rank turns
+        // unknown only at the core's birth and in invalidateGenerated, which
+        // clears c.whole, so a core found whole stays whole: scanning every
+        // core per check took 1.7 s of a Descent load (2026-10-21).
+        if(c.whole||!c.rank.includes(SOURCE_RANK.unknown)){c.whole=true;continue;}
         const lo=box.lo.map((n,k)=>Math.max(0,n-origin[k]));
         const hi=box.hi.map((n,k)=>Math.min(SOURCE_CORE,n-origin[k]));
         if(lo.every(n=>n===0)&&hi.every(n=>n===SOURCE_CORE)){
-          if(c.rank.includes(SOURCE_RANK.unknown))throw new Error('Incomplete in-world raw source');
+          throw new Error('Incomplete in-world raw source');
         }else if(lo.every(n=>n%BRICK===0)&&hi.every(n=>n%BRICK===0)){
           // Field halos cut cores at brick boundaries: scan all 64 exact ranks,
-          // not a cell address calculation per rank. No completeness cache.
+          // not a cell address calculation per rank.
           for(let z=lo[2];z<hi[2];z+=BRICK)for(let y=lo[1];y<hi[1];y+=BRICK)for(let x=lo[0];x<hi[0];x+=BRICK){
             const slot=cellSlot(c.g,x,y,z);
             if(c.rank.subarray(slot,slot+64).includes(SOURCE_RANK.unknown))throw new Error('Incomplete in-world raw source');
@@ -291,7 +304,7 @@ export class WorldRenderSource {
     // Outside-world scratch and explicitly absent aux are zero, not stale data.
     for (const name of ['A', 'B']) frame.clear(resources[name], stateCopy * g.slots * 16, g.slots * 16);
     if (resources.aeration) frame.clear(resources.aeration, aerationCopy * g.slots * 8, g.slots * 8);
-    for (const c of this.chunks.values()) {
+    for (const c of this._chunksIn(bounds)) {
       const runs = planSourceCopies(c, dst, bounds, (_d, p) => c.rank[cellSlot(c.g, ...p.map((v, i) => v - c.origin[i]))] !== SOURCE_RANK.unknown, (_d,p)=>{
         const slot=cellSlot(c.g,p[0]-c.origin[0],p[1]-c.origin[1],p[2]-c.origin[2]);
         const ranks=c.rank.subarray(slot,slot+64);
@@ -321,6 +334,10 @@ export class WorldRenderSource {
     }
     return c;
   }
+  // The cached cores a box touches, not every cached chunk: a Descent load
+  // caches thousands, and each gather planned against all of them (2026-10-21).
+  // Cores are disjoint, so their copies land the same in any order.
+  *_chunksIn(bounds) { for (const origin of this._cores(bounds)) { const c = this.chunks.get(origin.join(',')); if (c) yield c; } }
   *_cores(bounds) {
     const box = intersectBounds(bounds, { lo: [0, 0, 0], hi: this.context.size });
     if (!box) return;
@@ -356,10 +373,12 @@ export class WorldRenderSource {
         // not state.cur, bytes, or semantic revision. Retain only this core's
         // latest geometry plan; native offsets still use the new snapshot.
         const key = `${src.g.nx},${src.g.ny},${src.g.nz},${src.g.slots};${src.origin};${box.lo};${box.hi}`;
-        if (c.liveCopyPlan?.key !== key) c.liveCopyPlan = { key, runs: planSourceCopies(src, c, box) };
-        livePlan = c.liveCopyPlan.runs;
+        // Its metadata spans merge by destination alone: one fill per span, not
+        // five per brick (0.5 s of a Descent load, 2026-10-21).
+        if (c.liveCopyPlan?.key !== key) { const runs = planSourceCopies(src, c, box); c.liveCopyPlan = { key, runs, spans: destinationSpans(runs) }; }
+        livePlan = c.liveCopyPlan;
       }
-      const runs = freshLive ? livePlan : planSourceCopies(src, c, box, (d) => {
+      const runs = freshLive ? livePlan.runs : planSourceCopies(src, c, box, (d) => {
         // A late static result cannot widen over a partial live/captured edge.
         if (rank < c.rank[d] || revision < c.revisions[d]) return false;
         c.rank[d] = rank; c.revisions[d] = revision;
@@ -371,7 +390,7 @@ export class WorldRenderSource {
         for (let i = d; i < d + 64; i++) if (rank < c.rank[i] || revision < c.revisions[i]) return null;
         setRange(d, 64); return true;
       });
-      if (freshLive) for (const r of runs) setRange(r.dst, r.cells);
+      if (freshLive) for (const r of livePlan.spans) setRange(r.dst, r.cells);
       if (runs.length) c.highestRevision = Math.max(c.highestRevision, revision);
       recordSourceCopies(frame, src, c, runs);
       // Absence is explicit zero, not permission to resurrect a previously
@@ -404,7 +423,7 @@ export class WorldRenderSource {
     const revision = this.nextRevision(), src = liveSource(sim, oldOrigin, { aux: true });
     // Leaving live cells transfer ownership to captured; they are not stale
     // static data and must be allowed to replace the previous live revision.
-    for (const c of this.chunks.values()) planSourceCopies(src, c, bounds,
+    for (const c of this._chunksIn(bounds)) planSourceCopies(src, c, bounds,
       (d) => { c.rank[d] = Math.min(c.rank[d], SOURCE_RANK.captured); return false; },
       (d) => { for (let i = d; i < d + 64; i++) c.rank[i] = Math.min(c.rank[i], SOURCE_RANK.captured); return false; });
     this._record(frame, src, bounds, SOURCE_RANK.captured, revision);
@@ -439,7 +458,7 @@ export class WorldRenderSource {
     this.minimumStaticRevision = this.revision;
     for (const c of this.chunks.values()) {
       for (let i = 0; i < c.rank.length; i++) if (c.rank[i] === SOURCE_RANK.generated) {
-        c.rank[i] = SOURCE_RANK.unknown; c.revisions[i] = this.revision;
+        c.rank[i] = SOURCE_RANK.unknown; c.revisions[i] = this.revision; c.whole = false;
       }
       c.highestRevision = Math.max(c.highestRevision, this.revision);
     }
@@ -491,7 +510,7 @@ export class WorldRenderSource {
   restoreCaptured(frame, sim, bounds) {
     if(this.ownedContext)throw new Error('An owned Source cut cannot restore current physics');
     const dst = snapshotSource(sim); let count = 0;
-    for (const c of this.chunks.values()) {
+    for (const c of this._chunksIn(bounds)) {
       const runs = planSourceCopies(c, dst, bounds, (_d, p) => {
         const s = cellSlot(c.g, ...p.map((v, i) => v - c.origin[i]));
         return c.rank[s] >= SOURCE_RANK.saved && c.rank[s] < SOURCE_RANK.live;

@@ -109,10 +109,10 @@ test('global book sizes, signed bounds, overflow and 384 high world', () => {
   for(const size of [[0,4,4],[-4,4,4],[5,4,4],[2**31,4,4],[2**30,2**30,2**30],[4096,4096,4096]]) assert.throws(()=>A.worldBookLayout(size));
   assert.throws(()=>A.worldBookLayout([3072,384,1024],{maxStorageBufferBindingSize:64*1024**2}));
 });
-test('a big book is the current book copied plus its changed chunks: same bytes as a whole upload', () => {
-  // 1024x256x1024 cells: a 16 MiB book, the smallest that copies (Descent's is 125 MiB)
+test('a book is the current book copied plus its changed chunks: same bytes as a whole upload', () => {
+  // 1024x256x1024 cells: a 16 MiB book (Descent's is 125 MiB)
   const {gpu,atlas}=setup({worldSize:[1024,256,1024]});
-  assert.equal(atlas.bookLayout.bytes,A.BOOK_COPY_BYTES);
+  assert.equal(atlas.bookLayout.bytes,16*1024**2);
   const book=s=>new Uint32Array(s.book.data.buffer,0,atlas.bookLayout.count), light=s=>new Uint32Array(s.lightBook.data.buffer,0,atlas.bookLayout.count);
   let mark=gpu.log.length;
   for(const brick of [[0,0,0],[255,63,255],[100,10,200]]){const j=atlas.allocate(brick,{sourceRevision:1});atlas.update(j,dataFor(j));atlas.publish(j);}
@@ -129,10 +129,17 @@ test('a big book is the current book copied plus its changed chunks: same bytes 
   atlas.remove([[255,63,255]]);const r=atlas.snapshot();
   assert.deepEqual(book(r),atlas.entries);assert.equal(book(r)[A.worldBrickIndex(atlas.bookLayout,[255,63,255])],0);
   assert.notEqual(book(s)[A.worldBrickIndex(atlas.bookLayout,[255,63,255])],0);
-  // a small book still uploads whole (Island's is 8 MiB)
-  const small=setup();assert.ok(small.atlas.bookLayout.bytes<A.BOOK_COPY_BYTES);
+  // a small book is made the same way (Island's is 8 MiB)
+  const small=setup(),smallMark=small.gpu.log.length;
   const j=small.atlas.allocate([1,1,1],{sourceRevision:1});small.atlas.update(j,dataFor(j));small.atlas.publish(j);
-  assert.ok(!small.gpu.log.some(e=>e[0]==='copyBuffer'));
+  assert.ok(small.gpu.log.slice(smallMark).some(e=>e[0]==='copyBuffer'&&e[1]==='world book copy'));
+  assert.ok(small.gpu.log.slice(smallMark).filter(e=>e[0]==='writeBuffer'&&/immutable (light )?book/.test(e[1])).every(e=>e[3]<=16384*4));
+  const ss=small.atlas.snapshot();assert.deepEqual(new Uint32Array(ss.book.data.buffer,0,small.atlas.bookLayout.count),small.atlas.entries);ss.release();
+  // a reset starts both books from zeros: nothing sent, nothing copied
+  mark=gpu.log.length;atlas.reset();const z=atlas.snapshot();
+  assert.ok(book(z).every(v=>v===0)&&light(z).every(v=>v===0));
+  assert.equal(gpu.log.slice(mark).filter(e=>(e[0]==='writeBuffer'&&/immutable (light )?book/.test(e[1]))||e[0]==='copyBuffer').length,0);
+  z.release();
   // a shared book outlives every snapshot but the last that holds it
   s.release();gpu.flush();assert.ok(!g.book.destroyed,'growth snapshot still reads the shared book');
   g.release();r.release();atlas.dispose();gpu.flush();
@@ -520,7 +527,7 @@ test('light jobs delayed/cancel/reset/failure, non-reentrant synchronous source/
   const before=atlas.snapshot(), generation=atlas.generation, create=gpu.device.createBuffer;
   gpu.device.createBuffer=d=>{if(d.label==='world immutable light book')throw new Error('injected second-book failure');return create(d);};
   assert.throws(()=>atlas.publish(j),/injected/);assert.equal(atlas.generation,generation);assert.equal(atlas.lookup([0,0,0],A.READY.LIGHT).known,false);
-  assert.throws(()=>atlas.growPool('light',7),/injected/);assert.equal(atlas.generation,generation);
+  // a growth shares the current books, so it makes no light book to fail (params failures: the allocation-failure test)
   assert.throws(()=>atlas.reset(),/injected/);assert.equal(atlas.epoch,before.epoch);
   gpu.device.createBuffer=create;atlas.publish(j);const retained=atlas.snapshot();
   const createTexture=gpu.device.createTexture, generationBeforeViewFailure=atlas.generation;

@@ -107,7 +107,7 @@ export class RawWorldSourceProducer {
     this.source.recordStore(box, token);
     // Store, then captured, then CURRENT live. All overlays are GPU copies;
     // store bytes were already losslessly decoded by the source cache.
-    for (const c of this.source.chunks.values()) {
+    for (const c of this.source._chunksIn(box)) {
       // Whole bricks decide from their 64 contiguous ranks, as recordGatherRaw's
       // do; only mixed bricks go cell by cell. Every cell through the callback
       // cost a 320-tall Descent column most of a second (2026-10-21).
