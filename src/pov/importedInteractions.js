@@ -4,6 +4,7 @@ import { uniformStruct } from '../gpu/params.js';
 import { BODY_HEIGHT, BODY_WIDTH } from './constants.js';
 import { decodeImportedIndex } from '../world/import/importedInteractionState.js';
 import { prepareDoorMove, doorStepBounds, DOOR_SOURCE_WORDS } from '../world/import/doorRuntime.js';
+import { nativeEditKernel, nativeEdit } from '../v2/interactions.js';
 
 // Legacy manifests without motion retain instant exclusive-cell retraction.
 // Motion manifests use the two-phase moving leaf below; boxes are only
@@ -75,6 +76,25 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
 }`,
 };
 
+// Under V2 the doors' rules run on V2's own cells (v2/interactions.js nativeEdit): evaluated on the
+// frozen native grid, every chunk before any commit (the moving leaf reads its old cells), and
+// committed natively: a cell the leaf leaves is new air, a placed door cell a new cell, and a moved
+// one takes its source's exact core and bank (its temperature and heat), not V1's projection of it.
+// Nothing else in the box is touched. Not a deviation: the same door either way.
+export const IMPORTED_DOOR_MOVE_HOOK = ['*oA = oldA; *oB = fetchB(old);', ' paintMoved = true; paintPartner = old;'];
+export function importedDoorWriter(sim, name, desc, opts = {}) {
+  if (sim.compact) {
+    const kernel = nativeEditKernel(sim, `native${name[0].toUpperCase()}${name.slice(1)}`, desc, opts);
+    return { native: true, owner: sim.compactOwner, ready: kernel.ready, write: (box, values, buffer) => nativeEdit(sim, kernel, box, values, buffer) };
+  }
+  const kernel = sim.editKernel(name, desc);
+  return { native: false, owner: null, ready: kernel.ready, write: (box, values, buffer) => sim.edit(kernel, box, values, { bind: [{ buffer }], scrub: true }) };
+}
+const writerFor = (cache, sim, name, desc, opts) => {
+  let writer = cache.get(sim);
+  if (!writer || writer.owner !== (sim.compact ? sim.compactOwner : null)) { writer = importedDoorWriter(sim, name, desc, opts); cache.set(sim, writer); }
+  return writer;
+};
 export const WGSL_CHECK = [{ name: 'importedDoorMotion', kind: 'compute', tool: true,
   code: g => editKernelWGSL(g, { ...IMPORTED_DOOR_MOTION_EDIT, params: uniformStruct('ImportedDoorMotionParams', { ...EDIT_FIELDS, ...IMPORTED_DOOR_MOTION_EDIT.params }) }),
   layouts: () => [LAYOUT.TABLES, LAYOUT.STATE_RW, [...IMPORTED_DOOR_MOTION_EDIT.layout, { binding: 15, visibility: 4, buffer: { type: 'storage' } }]],
@@ -116,8 +136,7 @@ export function createImportedInteractions({ app, interact, getBodies, toast = (
     const previous = state.ensure(door), from = previous.progress;
     const occupied = () => importedDoorOccupied({ bounds: doorStepBounds(map, door, from, progress, previous.alive) }, getBodies(), origin);
     if (occupied()) return false;
-    let kernel = motionKernels.get(sim);
-    if (!kernel) { kernel = sim.editKernel('importedDoorMotion', IMPORTED_DOOR_MOTION_EDIT); motionKernels.set(sim, kernel); }
+    const kernel = writerFor(motionKernels, sim, 'importedDoorMotion', IMPORTED_DOOR_MOTION_EDIT, { hook: IMPORTED_DOOR_MOVE_HOOK, moved: 'paintMoved', noteMoves: true });
     const valid = () => {
       const now=current();
       return state.epoch===epoch && now?.world===world && now?.sim===sim && now?.state===state && !sim.disposed;
@@ -130,8 +149,8 @@ export function createImportedInteractions({ app, interact, getBodies, toast = (
       try {
         sim.gpu.write(buffer, 0, plan.data);
         const at = plan.min.map((v,k) => v-origin[k]);
-        sim.edit(kernel, { lo: at, hi: plan.max.map((v,k) => v-origin[k]-1) },
-          { at, size: plan.size, sourceAt: plan.sourceAt, origin, seed: world.P.seed >>> 0 }, { bind: [{ buffer }], scrub: true });
+        kernel.write({ lo: at, hi: plan.max.map((v,k) => v-origin[k]-1) },
+          { at, size: plan.size, sourceAt: plan.sourceAt, origin, seed: world.P.seed >>> 0 }, buffer);
         // Only per-source result records, never the world or dense destination grid.
         const result = new Uint32Array(await sim.gpu.readback.buffer(buffer, plan.sourceAt*4, door.cells.length/2*DOOR_SOURCE_WORDS*4));
         if (!valid()) return false;
@@ -167,8 +186,7 @@ export function createImportedInteractions({ app, interact, getBodies, toast = (
     }
     if (!door.cells.length) { if (!automatic) toast('No exclusive door cells to move'); return false; }
     const epoch = state.epoch;
-    let kernel = kernels.get(sim);
-    if (!kernel) { kernel = sim.editKernel('importedDoor', IMPORTED_DOOR_EDIT); kernels.set(sim, kernel); }
+    const kernel = writerFor(kernels, sim, 'importedDoor', IMPORTED_DOOR_EDIT);
     const transaction = (async () => {
       await kernel.ready;
       if (state.epoch !== epoch || current()?.world !== world || sim.disposed) return false;
@@ -188,7 +206,7 @@ export function createImportedInteractions({ app, interact, getBodies, toast = (
       try {
         sim.gpu.write(buffer, 0, dense);
         const at = min.map((n, k) => n - origin[k]);
-        sim.edit(kernel, { lo: at, hi: max.map((n, k) => n - origin[k] - 1) }, { at, size, opening: opening ? 1 : 0, origin, seed: world.P.seed >>> 0 }, { bind: [{ buffer }], scrub: true });
+        kernel.write({ lo: at, hi: max.map((n, k) => n - origin[k] - 1) }, { at, size, opening: opening ? 1 : 0, origin, seed: world.P.seed >>> 0 }, buffer);
         const result = new Uint32Array(await sim.gpu.readback.buffer(buffer, 0, dense.byteLength));
         if (state.epoch !== epoch || current()?.world !== world || sim.disposed) return false;
         const alive = offsets.map(at => result[at + 1]);

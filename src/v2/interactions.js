@@ -1,5 +1,5 @@
 import { createNativeForceKernel } from './nativeForcing.js';
-import { createNativePaintKernel } from './nativePaint.js';
+import { createNativePaintKernel, createNativeEditKernel, nativeEditSpec, nativeEditParams } from './nativePaint.js';
 import { paintUpdateWGSL, PaintParams, paintDeclsWGSL, PAINT_LAYOUT } from '../shaders/passes.js';
 import { kickWGSL, KickParams } from '../shaders/povKick.js';
 import { strikeWGSL, StrikeParams } from '../shaders/povTrace.js';
@@ -72,6 +72,24 @@ function forceKernel(sim,name) {
     cache.kernels.set(name,kernel=createNativeForceKernel(sim,name,spec));
   }
   return kernel;
+}
+// V1's other cell writers that aren't steps, as sim.editKernel takes them ({ update, params, decls,
+// layout }: a construction stamp, an imported door), on V2's own cells (nativePaint.js
+// createNativeEditKernel: V1's rule on the frozen native grid, a native commit of the cells it
+// changed), one per writer and owner. opts: nativeEditSpec's hook, moved, noteMoves.
+export function nativeEditKernel(sim, name, desc, opts = {}) {
+  let cache=forces.get(sim);if(!cache || cache.owner!==sim.compactOwner) {cache={owner:sim.compactOwner,kernels:new Map()};forces.set(sim,cache);}
+  let kernel=cache.kernels.get(name);
+  if(!kernel) cache.kernels.set(name,kernel=createNativeEditKernel(sim,name,nativeEditSpec({update:desc.update,decls:desc.decls,layout:desc.layout,...opts}),nativeEditParams(name,desc.params)));
+  return kernel;
+}
+// One such write over box (sim.edit's box: inclusive grid cells), its binding 0 the writer's buffer:
+// refused as sim.edit refuses one (a World shift between its halves, a failed transition).
+export function nativeEdit(sim, kernel, box, values, source = null) {
+  if ((sim.nativeTransitionKind === 'shift' && !sim.nativeCommitting) || sim.nativeTransitionError) return false;
+  const accepted=kernel.run(box,values,null,{source});
+  sim.nativeInteractionResult=accepted?{status:'queued'}:{status:'rejected',reason:'native edit kernel not ready or empty bounds'};
+  return accepted;
 }
 export const prepareNativePOVForces=sim=>Promise.all(Object.keys(forceSpecs).map(name=>forceKernel(sim,name).ready));
 // The god-view brush's native kernels build with the native owner (sim.prepareNative), as V1's

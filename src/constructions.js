@@ -1,6 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { attribute, normalGeometry, positionLocal, vec3, float, max, dot, uniform } from 'three/tsl';
-import { BUILD_STAMP_KERNEL } from './shaders/construction.js';
+import { buildStampWriter } from './shaders/construction.js';
 import { prepareMesh } from './gfx/meshLight.js';
 import { ELEMENTS, BUILDS, isBuild } from './elements.js';
 import { h } from './ui/dom.js';
@@ -152,7 +152,7 @@ export class Constructions {
     this.baked = null; this.bakeKey = '';
     this.origin = new THREE.Vector3();
     this.valid = false;
-    this.stampKernel = null; this.stampSim = null;   // the stamp's box writer (shaders/construction.js), per grid
+    this.stampKernel = null; this.stampSim = null; this.stampOwner = null;   // the stamp's box writer (shaders/construction.js), per grid and engine
     this.stampBuf = null; this.stampGpu = null;       // the baked cells it reads (grown as needed), and its device
 
     // PROMPT: the player's own constructions, their sandbox results, and the agent
@@ -233,11 +233,12 @@ export class Constructions {
   // The stamp's kernel for the current grid, made when a construction is
   // first previewed or stamped (its pipeline builds while the ghost shows),
   // or ahead of that by prepareStamp.
+  // (V2's own writer once V2 presents the grid, V1's otherwise: shaders/construction.js buildStampWriter)
   _stampKernel() {
-    const sim = this.getSim();
-    if (this.stampSim !== sim) {
-      this.stampSim = sim;
-      this.stampKernel = sim.editKernel('buildStamp', BUILD_STAMP_KERNEL);
+    const sim = this.getSim(), owner = sim.compact ? sim.compactOwner : null;
+    if (this.stampSim !== sim || this.stampOwner !== owner) {
+      this.stampSim = sim; this.stampOwner = owner;
+      this.stampKernel = buildStampWriter(sim);
     }
     return this.stampKernel;
   }
@@ -359,7 +360,7 @@ export class Constructions {
   // was dropped (a load, a moved window's snapshots).
   _stamp(s, origin) {
     const sim = this.getSim(), kernel = this._stampKernel();
-    if (kernel.main.state !== 'ready' || kernel.apply.state !== 'ready') {
+    if (!kernel.isReady) {
       const at = origin.clone(), o = sim.origin.clone(), history = sim.history, top = history.at(-1) ?? null;
       kernel.ready.then(() => {
         if (this.getSim() !== sim || sim.disposed || sim.history !== history || (top && !history.includes(top))) return;
@@ -383,8 +384,8 @@ export class Constructions {
     const at = [Math.floor(origin.x), Math.floor(origin.y), Math.floor(origin.z)];
     // the stamp's box, its footings below it included; what it builds over
     // loses its decoration, as a TPT stamp replaces particles (scrub, src/deco.js)
-    sim.edit(kernel, { lo: [at[0], at[1] - foot, at[2]], hi: [at[0] + s.w - 1, at[1] + s.h - 1, at[2] + s.d - 1] },
-      { at, foot, size: [s.w, s.h, s.d], seed: newSeed() }, { bind: [{ buffer: this.stampBuf }], scrub: true });
+    kernel.write({ lo: [at[0], at[1] - foot, at[2]], hi: [at[0] + s.w - 1, at[1] + s.h - 1, at[2] + s.d - 1] },
+      { at, foot, size: [s.w, s.h, s.d], seed: newSeed() }, this.stampBuf);
   }
 
   // New seed (and, when shuffling, maybe a new variant) for the next placement.

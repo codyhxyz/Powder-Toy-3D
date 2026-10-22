@@ -2,6 +2,7 @@ import { LAYOUT, STAGE, EDIT_FIELDS, EDIT_SCRATCH_BINDING, editKernelWGSL, gridD
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { STAMP_LIB } from './stamp.js';
+import { nativeEditKernel, nativeEdit } from '../v2/interactions.js';
 
 // A construction stamped into the grid (src/constructions.js): a box writer
 // (sim.editKernel, docs/webgpu.md D6) over the construction's box and the
@@ -54,6 +55,27 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
 export const BUILD_STAMP_KERNEL = {
   update: buildStampUpdate, params: BuildStampParams, reads: 'neighbours', decls: buildStampDecls, layout: BUILD_STAMP_LAYOUT,
 };
+
+/**
+ * The stamp's writer for this grid ({ native, ready, isReady, write(box, values, buffer) }): V1's box
+ * writer (sim.edit), or under V2 the same rule on V2's own cells (v2/interactions.js nativeEdit:
+ * buildStampUpdate evaluated on the frozen native grid, every chunk before any commit, so the
+ * footings read the grid from before the stamp as V1's two-phase edit does; a stamped cell is a new
+ * cell, liquids FULL, as V1 writes them, and nothing it didn't stamp is touched: no export, no
+ * import). Not a deviation: the same construction either way.
+ */
+export function buildStampWriter(sim) {
+  if (sim.compact) {
+    const kernel = nativeEditKernel(sim, 'nativeBuildStamp', BUILD_STAMP_KERNEL);
+    return { native: true, ready: kernel.ready, get isReady() { return kernel.isReady; }, write: (box, values, buffer) => nativeEdit(sim, kernel, box, values, buffer) };
+  }
+  const kernel = sim.editKernel('buildStamp', BUILD_STAMP_KERNEL);
+  return {
+    native: false, ready: kernel.ready, get isReady() { return kernel.main.state === 'ready' && kernel.apply.state === 'ready'; },
+    // what it builds over loses its decoration, as a TPT stamp replaces particles (scrub, src/deco.js)
+    write: (box, values, buffer) => sim.edit(kernel, box, values, { bind: [{ buffer }], scrub: true }),
+  };
+}
 
 /** tools/check-wgsl.mjs (built when a construction is first stamped or previewed: `tool`, not warmed) */
 export const WGSL_CHECK = [{
