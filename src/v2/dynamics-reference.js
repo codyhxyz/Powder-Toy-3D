@@ -492,11 +492,20 @@ export function allocateSources(sources, pool, capacity = PARTICLE_CAP) {
     source.material = null; source.retry = false;
   }
 }
-export function impact(core, velocity, target, amount = 1) {
-  const row = dynamicsRows[core[0] & 255], t = dynamicsRows[target[0] & 255];
-  const energy = 0.5 * row.mass * amount * velocity.reduce((s, v) => s + v * v, 0);
-  const broken = row.kind !== K.LIQUID && t.breakInto >= 0 && energy >= t.toughness;
-  return { energy, broken, remaining: energy - (broken ? t.toughness : 0) };
+// V1 react.js breaking (particles.js impact, its WGSL): a mover breaks a breakable solid it hits with ½·ρ·vn² of at
+// least its hard (elements.js hard), in V1's units: ρ the mover's V1 density (elements.js dens) times its share
+// of a cell (a liquid's fill), vn its closing speed across the face (axis), cells/step to PHYS.V_MAX (the throws' map,
+// SHOCK_THROW_MS). Sand breaks glass only at V_MAX (72 m/s) and never wood, rock or metal; water breaks a lamp at most.
+// Then react.js shatter: the fracture takes hard, the rest hits the debris head on (RESTITUTION past COLLIDE_V).
+// energy: V1's hit KE; remaining: what is left of it; speed: the mover's speed across the face after (m/s, signed).
+export function impact(core, velocity, target, amount = 1, axis = velocity.reduce((a, v, i) => Math.abs(v) > Math.abs(velocity[a]) ? i : a, 0)) {
+  const row = dynamicsRows[core[0] & 255], t = dynamicsRows[target[0] & 255], f = Math.fround;
+  const rho = (ELEMENTS[core[0] & 255].dens ?? 0) * amount, un = Math.min(PHYS.V_MAX, Math.abs(velocity[axis]) / SHOCK_THROW_MS);
+  const energy = 0.5 * rho * un * un, broken = t.breakInto >= 0 && energy >= t.toughness;
+  if (!broken) return { energy, broken, remaining: energy, speed: 0 };
+  const u1 = Math.sqrt(Math.max(un * un - 2 * t.toughness / Math.max(rho, 1e-6), 0)), debris = ELEMENTS[t.breakInto].dens ?? 0;
+  const kept = u1 > PHYS.COLLIDE_V ? u1 * (rho - PHYS.RESTITUTION * debris) / (rho + debris) : u1;
+  return { energy, broken, remaining: 0.5 * rho * kept * kept, speed: f(Math.sign(velocity[axis]) * kept * SHOCK_THROW_MS) };
 }
 export function blastPlan(source, targets, solidAt, energy) {
   const plans = targets.map(target => {

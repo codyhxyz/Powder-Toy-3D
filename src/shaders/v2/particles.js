@@ -140,6 +140,13 @@ fn dHitKE(mi: f32, mj: f32, jSolid: bool, u2: f32) -> f32 { return 0.5 * select(
 // V1's cap on a speed (cells/step), and its cells/step per m/s of a throw (dynamics-reference.js SHOCK_THROW_MS)
 const D_V_MAX: f32 = ${f(PHYS.V_MAX)};
 const D_SHOCK_THROW: f32 = ${f(1 / SHOCK_THROW_MS)};
+// V1's density of a cell of id (elements.js dens; common.js densityOf for matter) and its collision rule's numbers
+// (react.js shatter, move.js collide: PHYS.RESTITUTION past PHYS.COLLIDE_V cells/step)
+const D_RESTITUTION: f32 = ${f(PHYS.RESTITUTION)};
+const D_COLLIDE_V: f32 = ${f(PHYS.COLLIDE_V)};
+fn dDens(id: u32) -> f32 { switch id {
+${[...ELEMENTS.reduce((m, e) => e.dens ? m.set(e.dens, [...(m.get(e.dens) ?? []), e.id]) : m, new Map())].map(([d, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(d)}; }`).join('\n')}
+default: { return 0.0; } } }
 ${groupedTable('dTerminal', 'terminal', TERMINAL_MS)}
 ${table('dLift', 'f32', 'lift', 12)}
 fn dConductive(id: u32) -> bool { switch id {
@@ -522,9 +529,15 @@ export function particlesWGSL(g, nativeHead, stage) {
     dFree(s,0u);
     var p = particles[t]; let before = loadMaterial(s); var after = before;
     if (f.destination.z == 1u) {
-      dShockHit(t,s,p,before,u32(f.effect.y));
+      let axis = u32(f.effect.y);
+      dShockHit(t,s,p,before,axis);
       let id = cid(before.core); let cost = dToughness(id);
-      if (cls(p.c0 & 255u) != 3u && dBreak(id) >= 0 && f.effect.x >= cost) {
+      // V1 react.js breaking, in V1's units (dynamics-reference.js impact, its twin): a mover breaks a breakable solid
+      // it hits with ½·ρ·vn² of at least its hard, ρ its V1 density (its share of a cell, a liquid's fill) and vn
+      // its closing speed across the face, cells/step to V_MAX (a packet's m/s as the throws' map reads it)
+      let rho = dDens(p.c0 & 255u) * dAmount(dMaterial(p));
+      let un = min(D_V_MAX, abs(p.velocity[axis]) * D_SHOCK_THROW);
+      if (dBreak(id) >= 0 && 0.5 * rho * un * un >= cost) {
         after.core.x = (before.core.x & 0xffffff00u) | u32(dBreak(id));
         if (cid(after.core)!=id && cls(cid(after.core))==2u) { after.core=setFall(after.core,0.0,0.0); }
         // V1 react.js: the debris takes the fracture work as heat, KE_TO_HEAT
@@ -533,9 +546,12 @@ export function particlesWGSL(g, nativeHead, stage) {
         let warm=dHeatEnergy(before,cost*${f(PHYS.KE_TO_HEAT)});
         if (!energyFits(after,warm)) { particles[t].velocity=vec3f(0); return; }
         after=withEnergy(after,warm); noteEnergySource(cellOf(s),energySub(warm,energyOf(before)));
-        // Fracture spends KE. Stop at the first face;
-        // remaining KE survives for the next swept segment.
-        p.velocity *= sqrt(max(0.0,1.0-cost/max(f.effect.x,0.000001)));
+        // V1 react.js shatter: the fracture takes hard of its KE along the face, then it hits the loose debris head
+        // on (move.js collide: RESTITUTION past COLLIDE_V, else the debris just supports it). Stop at the first
+        // face; what is left flies on for the next swept segment.
+        let u1 = sqrt(max(un * un - 2.0 * cost / max(rho, 0.000001), 0.0)); var kept = u1;
+        if (u1 > D_COLLIDE_V) { let debris = dDens(u32(dBreak(id))); kept = u1 * (rho - D_RESTITUTION * debris) / (rho + debris); }
+        p.velocity[axis] = sign(p.velocity[axis]) * kept / D_SHOCK_THROW;
         if (dWon(f.destination.y,1u,t)) { dFree(f.destination.y,1u); } // deposit will not see it
         flight[t].destination.y=D_NONE; // fracture is not a landing: retain unspent KE
       } else { p.velocity = vec3f(0); }

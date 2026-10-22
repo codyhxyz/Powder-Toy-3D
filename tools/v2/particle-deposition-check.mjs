@@ -10,7 +10,7 @@ import {AIRBORNE} from '../../src/v2/airborne.js';
 import {nativeDynamicsHead} from '../../src/shaders/v2.js';
 import {E,ELEMENTS} from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
-import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS} from '../../src/v2/dynamics-reference.js';
+import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact} from '../../src/v2/dynamics-reference.js';
 import { importMinified } from './wgsl-grouping.mjs';
 const floatBits=v=>{const b=new ArrayBuffer(4);new Float32Array(b)[0]=v;return new Uint32Array(b)[0];};
 const g={nx:32,ny:32,nz:32,nbx:8,nby:8,nbz:8,nbricks:512,slots:32768,windowed:false},NONE=0xffffffff,S=Object.fromEntries(['clear','integrate','elect','impact','deposit','reactClaim','reactDust'].map(s=>[s,particlesWGSL(g,nativeDynamicsHead,s)]));
@@ -110,14 +110,14 @@ function fixture({mode=0, edge=0, windowed=false,
     dWrap:v=>edge===2?v.map(x=>(x%32+32)%32):v,dWake:()=>{},slotLive:()=>true,noteDead:()=>{},noteLive:()=>{},dKey:id=>claimKey(id,108),
     dMaterial:p=>({core:Uint32Array.from([p.c0,...p.tail.slice(0,3)]),bank:p.tail[3]|0}),
     cls:id=>id?ELEMENTS[id].kind:0,isLiq:c=>L.isLiquid(L.cid(c)),
-    dTerminal:id=>dynamicsRows[id].terminal,dMass:id=>dynamicsRows[id].mass,
+    dTerminal:id=>dynamicsRows[id].terminal,dMass:id=>dynamicsRows[id].mass,dDens:id=>ELEMENTS[id]?.dens??0,
     dAmount:m=>L.isLiquid(L.cid(m.core))?L.cFill(m.core)/L.FULL:1,
     dParticleEnergy:L.packetOwnedEnergy,energyAdd:(a,b)=>a+b,energySub:(a,b)=>a-b,noteEnergySource:()=>{},
     // particles.js dHeatEnergy: one legacy cap·°C is 256·FULL native energy units
     dHeatEnergy:(m,heat)=>L.energyOf(m)+BigInt(Math.round(Math.abs(heat)*256))*65536n*(heat<0?-1n:1n),
     dToughness:id=>dynamicsRows[id].toughness,dBreak:id=>dynamicsRows[id].breakInto,
     dShockKE:id=>dynamicsRows[id].shockKE,dShockFall:id=>dynamicsRows[id].shockFall,
-    D_V_MAX:PHYS.V_MAX,D_SHOCK_THROW:Math.fround(1/SHOCK_THROW_MS),
+    D_V_MAX:PHYS.V_MAX,D_SHOCK_THROW:Math.fround(1/SHOCK_THROW_MS),D_RESTITUTION:PHYS.RESTITUTION,D_COLLIDE_V:PHYS.COLLIDE_V,
     MATERIAL_BURNS:ELEMENTS.map(e=>e.burnRate>0),conductsNative:L.isConductor,
     withPayload:(c,v)=>L.withPayload({core:c,bank:0},v).core,
     face6:f=>{const d=[0,0,0];d[f>>1]=1-2*(f&1);return d;},
@@ -399,7 +399,7 @@ const runTicks=(f,order,ticks,after=()=>{})=>{
 };
 test('winners free every claim: fracture, contention and ties leave an empty table in any thread order',()=>{
   // A fracture is not a landing, so impact itself frees the deposit claim it won.
-  const glass=fixture({position:[6.5,2.5,6.5],velocity:[0,-20,0]});
+  const glass=fixture({position:[6.5,2.5,6.5],velocity:[0,-80,0]});
   glass.set([6,1,6],L.makeMaterial(E.GLASS));glass.set([6,0,6],L.makeMaterial(E.STONE));
   runTicks(glass,[0],1);assert.equal(L.cid(at(glass,[6,1,6]).core),E.SHARDS);assert.notEqual(glass.particles[0].id,0);
   // V1 react.js: the debris takes the fracture work as heat, hard·KE_TO_HEAT / cap (glass → shards: ~+48 °C;
@@ -419,6 +419,26 @@ test('winners free every claim: fracture, contention and ties leave an empty tab
       return {world:[...f.world].sort((a,b)=>a[0]-b[0]),particles:f.particles,live:f.ctx.control[0]};
     };
     assert.deepEqual(run(true),run(false));
+  }
+});
+
+// V1 react.js breaking in V1's units (dynamics-reference.js impact, the twin): ½·dens·vn² across the face, vn
+// cells/step to V_MAX, against hard. V2 compared ½·kg·(m/s)² with hard, so a grain broke glass at walking pace.
+test('the emitted impact breaks what V1\'s flying cell breaks, at V1\'s speeds, as its twin (BL-3)',()=>{
+  const cases=[['SAND','GLASS',-20],['SAND','GLASS',-80],['SAND','METAL',-200],['SAND','WOOD',-5],['STONE','GLASS',-70],
+    ['NUGGETS','METAL',-60],['NUGGETS','METAL',-50],['WATER','LAMP',-80],['WATER','GLASS',-80],['SCRAP','BRICK',-60]];
+  for(const [mover,solid,vy] of cases) {
+    const f=fixture({material:mover==='WATER'?wet():L.makeMaterial(E[mover]),position:[6.5,1.05,6.5],velocity:[0,vy,0]});
+    f.set([6,0,6],L.makeMaterial(E[solid]));runTicks(f,[0],1);
+    const want=impact(L.makeMaterial(E[mover]).core,[0,f.particles[0].velocity[1]===0?vy:vy,0],L.makeMaterial(E[solid]).core);
+    const broke=L.cid(at(f,[6,0,6]).core)!==E[solid];
+    assert.equal(broke,want.broken,`${mover} at ${vy} m/s on ${solid}`);
+    if(broke) assert.ok(Math.abs(f.particles[0].velocity[1]-want.speed)<=Math.abs(want.speed)*0.02+0.05,`${mover}: ${f.particles[0].velocity[1]} vs ${want.speed}`);
+  }
+  // sand at walking pace and at its terminal speed lands on glass, wood and metal without a scratch
+  for(const solid of ['GLASS','WOOD','METAL']) {
+    const f=fixture({position:[6.5,1.05,6.5],velocity:[0,-43,0]});f.set([6,0,6],L.makeMaterial(E[solid]));runTicks(f,[0],1);
+    assert.equal(L.cid(at(f,[6,0,6]).core),E[solid],`sand at its terminal speed on ${solid}`);
   }
 });
 
@@ -449,8 +469,8 @@ test('a hit sets off C-4 and nitroglycerin as V1\'s shock: the charge hit and th
   // sand never sets C-4 off (V1: ½·16·V_MAX² = 8, under its 20), landing or thrown, however fast
   for(const v of [-6,-25,-60])assert.ok(quiet(hit(L.makeMaterial(E.SAND),v,L.makeMaterial(E.C4))),`sand landing at ${-v} m/s`);
   for(const v of [6,40,100])assert.ok(quiet(thrown(L.makeMaterial(E.SAND),v,L.makeMaterial(E.C4))),`sand thrown at ${v} m/s`);
-  // ...though the same landing still smashes wood (fracture is V2's toughness, unchanged)
-  let f=hit(L.makeMaterial(E.SAND),-6,L.makeMaterial(E.WOOD));assert.notEqual(L.cid(at(f,start).core),E.WOOD);
+  // ...nor breaks wood (V1 react.js breaking: ½·16·vn² never reaches wood's hard 20; BL-3)
+  let f=hit(L.makeMaterial(E.SAND),-6,L.makeMaterial(E.WOOD));assert.equal(L.cid(at(f,start).core),E.WOOD);
   // uranium does: landing past the speed a packet has after V1's fall (V1: 1.46 m), thrown past V1's speed
   // for it at V2's throw map (V1: √(2·20/191) cells/step, at SHOCK_THROW_MS m/s each)
   const uOn=PACKET_SHOCK_LANDINGS.find(r=>r.faller===E.URANIUM&&r.charge===E.C4).speed;

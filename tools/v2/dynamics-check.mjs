@@ -42,12 +42,22 @@ test('64K full-capacity fallback keeps source material and deterministic retries
   pool[42]=null; allocateSources(sources,pool); assert.equal(pool[42].id,101);
   assert.equal(sources.filter(s=>s.material===null).length,1); assert.deepEqual(pool[42].core,matter().core);
 });
-test('liquid impact never breaks a solid and solid fracture spends KE',()=>{
-  const metal=[E.METAL,0,0,0];
-  assert.equal(impact([E.WATER,0,0,0],[10000,0,0],metal).broken,false);
-  assert.equal(impact([E.NUGGETS,0,0,0],[0.01,0,0],metal).broken,false);
-  const fast=impact([E.NUGGETS,0,0,0],[10,0,0],metal);
-  assert.equal(fast.broken,true); assert.ok(fast.remaining>=0&&fast.remaining<fast.energy);
+test('a packet breaks a solid as V1\'s flying cell does: ½·dens·vn² past hard, in V1\'s units (BL-3)',()=>{
+  const at=(a,b,v,amount=1)=>impact([E[a],0,0,0],[v,0,0],[E[b],0,0,0],amount);
+  assert.equal(at('WATER','METAL',10000).broken,false);
+  // V1 react.js: sand needs V_MAX (72 m/s) for glass and never breaks wood, rock or metal (V2 broke them at 0.61,
+  // 0.96 and 1.67 m/s, its J against hard)
+  assert.equal(at('SAND','GLASS',71).broken,false); assert.equal(at('SAND','GLASS',72).broken,true);
+  for (const solid of ['WOOD','ROCK','METAL','BRICK']) assert.equal(at('SAND',solid,1e4).broken,false,solid);
+  assert.equal(at('SAND','GLASS',0.61).broken,false); assert.equal(at('SAND','METAL',1.67).broken,false);
+  // its closing speed across the face it hits: a graze along a wall breaks nothing
+  assert.equal(impact([E.SAND,0,0,0],[0.5,72,0],[E.GLASS,0,0,0],1,0).broken,false);
+  // a heavy grain: nuggets break metal from √(2·60/193) cells/step (56.8 m/s); the fracture spends hard, then the
+  // debris takes RESTITUTION's share (react.js shatter)
+  assert.equal(at('NUGGETS','METAL',56).broken,false); const fast=at('NUGGETS','METAL',57);
+  assert.equal(fast.broken,true); assert.ok(fast.remaining>=0&&fast.remaining<fast.energy&&fast.speed>0&&fast.speed<57);
+  // a liquid breaks as V1's moving cell did: water at V_MAX a lamp (½·10 ≥ 3), not as a half-full film
+  assert.equal(at('WATER','LAMP',72).broken,true); assert.equal(at('WATER','LAMP',72,0.5).broken,false);
 });
 test('blast LOS shields rear targets and total allocated energy is bounded',()=>{
   const targets=Array.from({length:100},(_,i)=>[i+1,0,0]);
