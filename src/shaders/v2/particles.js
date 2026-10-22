@@ -6,7 +6,7 @@ import { uniformStruct } from '../../gpu/params.js';
 import { STAGE } from '../../gpu/kernels.js';
 import { TERMINAL_MS } from '../../v2/gravity.js';
 import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS, PACKET_GRAIN_ODDS, LEGACY_PRESSURE_PA, legacyPressureToPa,
-  RAY_STEPS_PER_TICK, RAY_NEUTRON_FAST_MS, PACKET_KEEP } from '../../v2/dynamics-reference.js';
+  RAY_STEPS_PER_TICK, RAY_NEUTRON_FAST_MS, PACKET_KEEP, PACKET_SUPPORTED_KEEP } from '../../v2/dynamics-reference.js';
 import { V1_STEP_MS, STEPS_PER_TICK, STEP_S } from '../../v2/gravity.js';
 import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
@@ -354,6 +354,11 @@ default: { return 0.0; } } }
 fn dKeep(id: u32) -> f32 { switch id {
 ${[...PACKET_KEEP.reduce((m, k, id) => k !== 1 ? m.set(k, [...(m.get(k) ?? []), id]) : m, new Map())].map(([k, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(k)}; }`).join('\n')}
 default: { return 1.0; } } }
+// a liquid's keep when it is not in free fall (react.js forces: DRAG unless the cell below is air or gas):
+// dynamics-reference.js PACKET_SUPPORTED_KEEP
+fn dSupportedKeep(id: u32) -> f32 { switch id {
+${[...PACKET_SUPPORTED_KEEP.reduce((m, k, id) => k !== 1 ? m.set(k, [...(m.get(k) ?? []), id]) : m, new Map())].map(([k, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(k)}; }`).join('\n')}
+default: { return 1.0; } } }
 const D_V1_STEP: f32 = ${f(1 / V1_STEP_MS)};
 const D_PULL_STEP: f32 = ${f(STEP_S * STEP_S / CELL_M)};
 const D_STEPS: u32 = ${STEPS_PER_TICK}u;
@@ -361,15 +366,18 @@ const D_STEPS: u32 = ${STEPS_PER_TICK}u;
 // step it moves along each axis, pace(|u|) = |u|/(2-|u|) cells for matter on its block's random draws (V1's Margolus
 // move: gravity.js v1PaceRate, the grid grains' fall.js fallSteps) and |u| for a liquid (its R3 draws carry it as
 // fast as its speed: dynamics-reference.js v1LiquidArrival), then takes the step's pull and its drag toward the air
-// it is in (react.js forces), to V_MAX on each component. In V1's cells/step; m/s and m/s² in and out.
+// it is in (react.js forces), to V_MAX on each component. In V1's cells/step; m/s and m/s² in and out. keep: its
+// drag a step along the pull's axis (along: 3 for none), across: across it (a liquid's, off free fall: a splash
+// sliding over its pool slows as V1's does; along the pull V1's landing hit is its free-fall speed, max(u1, u2)).
 struct DPacketFlight { moved: vec3f, velocity: vec3f }
-fn dPacketFlight(v0: vec3f, wind: vec3f, pull: vec3f, keep: f32, paced: bool) -> DPacketFlight {
+fn dPacketFlight(v0: vec3f, wind: vec3f, pull: vec3f, keep: f32, across: f32, along: u32, paced: bool) -> DPacketFlight {
   var out = DPacketFlight(vec3f(0), vec3f(0));
   for (var a = 0u; a < 3u; a++) {
     let w = wind[a] * D_V1_STEP; let g = pull[a] * D_PULL_STEP; var u = v0[a] * D_V1_STEP; var d = 0.0;
+    let ka = select(across, keep, a == along);
     for (var k = 0u; k < D_STEPS; k++) {
       let pace = min(abs(u), D_V_MAX); d += sign(u) * select(pace, pace / (2.0 - pace), paced);
-      u = clamp(w + (u - w + g) * keep, -D_V_MAX, D_V_MAX);
+      u = clamp(w + (u - w + g) * ka, -D_V_MAX, D_V_MAX);
     }
     out.moved[a] = d; out.velocity[a] = u / D_V1_STEP;
   }
@@ -613,7 +621,19 @@ export function particlesWGSL(g, nativeHead, stage) {
       // V1's fall and flight, its steps a tick (dPacketFlight): so a packet lands when V1's cell would, as the grid
       // grains do. The sweep below runs straight to where they take it, its velocity going linearly from v to theirs
       // across the tick (the hit's speed at its share of the tick).
-      let flown = dPacketFlight(v, wind, acceleration, dKeep(id), cls(id) != C_LIQUID);
+      // V1 react.js forces: a liquid off free fall (the cell below it, along the pull, neither air nor gas: a pool, the
+      // floor) takes its drag (dSupportedKeep) across the pull; without a pull every axis is across it
+      // (matter but a liquid keeps its drag on every axis: its pull's axis needn't be found)
+      var along = 3u; var across = dKeep(id);
+      if (cls(id) == C_LIQUID) {
+        let down = mDown(local);
+        if (down.x != 0) { along = 0u; } if (down.y != 0) { along = 1u; } if (down.z != 0) { along = 2u; }
+        let below = mEdge(startCell + down); var free = along < 3u;
+        if (free && inGrid(below)) { let k = cls(cid(loadCore(slotOf(below)))); free = k == C_AIR || k == C_GAS; }
+        else if (free) { free = P.edge == 1u || D_WINDOWED; }
+        across = select(dSupportedKeep(id), 1.0, free);
+      }
+      let flown = dPacketFlight(v, wind, acceleration, dKeep(id), across, along, cls(id) != C_LIQUID);
       travel = flown.moved; acceleration = (flown.velocity - v) / D_DT;
     }
     let end = local + travel;

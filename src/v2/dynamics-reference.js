@@ -82,6 +82,9 @@ export const dynamicsRows = ELEMENTS.map(e => ({
 // V1's keep a step of a flying packet (react.js forces: 1 - DRAG, none for a liquid in free fall: a flying liquid
 // packet always is), f32 as the shaders' table (particles.js dKeep)
 export const PACKET_KEEP = ELEMENTS.map(e => e.kind === K.LIQUID ? 1 : Math.fround(1 - (e.drag ?? 0)));
+// a liquid packet off free fall (the cell below it neither air nor gas: react.js forces' `flying`) takes its drag
+// across the pull (particles.js dSupportedKeep); every other element's is its keep anyway
+export const PACKET_SUPPORTED_KEEP = ELEMENTS.map(e => Math.fround(1 - (e.drag ?? 0)));
 // A packet's tick along the pull in still air (particles.js dPacketFlight, one axis of it): V1's law, STEPS_PER_TICK
 // steps, each moving it v1PaceRate of its speed (V1's Margolus move on its block's random draws: the grid grains'
 // fall.js fallSteps), a liquid its whole speed (its R3 draws: V1's arrival to the tick, v1LiquidArrival), then
@@ -98,13 +101,16 @@ export function packetStep(id, v, gravity = GRAVITY) {
 }
 // A packet's tick in still air in 3D (particles.js dPacketFlight, the twin of the whole of it): each axis V1's steps
 // (packetStep's law), under the pull (m/s², a gas none). Returns the cells it moved and its velocity after (m/s).
-export function packetFlight(id, velocity, pull = [0, ELEMENTS[id].kind === K.GAS ? 0 : -GRAVITY, 0]) {
+// supported: a liquid off free fall (over its pool or the floor), which takes its drag across the pull (V1's `flying`)
+export function packetFlight(id, velocity, pull = [0, ELEMENTS[id].kind === K.GAS ? 0 : -GRAVITY, 0], supported = false) {
   const keep = PACKET_KEEP[id], paced = ELEMENTS[id].kind !== K.LIQUID, moved = [0, 0, 0], after = [0, 0, 0];
+  const along = pull.findIndex(g => g !== 0);
   for (let a = 0; a < 3; a++) {
-    const g = pull[a] * STEP_S * STEP_S / CELL_M; let u = velocity[a] / V1_STEP_MS, d = 0;
+    const g = pull[a] * STEP_S * STEP_S / CELL_M, ka = a === along || !supported ? keep : PACKET_SUPPORTED_KEEP[id];
+    let u = velocity[a] / V1_STEP_MS, d = 0;
     for (let k = 0; k < STEPS_PER_TICK; k++) {
       d += Math.sign(u) * (paced ? v1PaceRate(Math.abs(u)) : Math.min(Math.abs(u), PHYS.V_MAX));
-      u = Math.min(PHYS.V_MAX, Math.max(-PHYS.V_MAX, (u + g) * keep));
+      u = Math.min(PHYS.V_MAX, Math.max(-PHYS.V_MAX, (u + g) * ka));
     }
     moved[a] = d; after[a] = u * V1_STEP_MS;
   }

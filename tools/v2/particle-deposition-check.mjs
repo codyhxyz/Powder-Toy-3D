@@ -12,7 +12,7 @@ import {E,ELEMENTS,R} from '../../src/elements.js';
 import {RAYS} from '../../src/rays.js';
 import {V1_STEP_MS,STEP_S} from '../../src/v2/gravity.js';
 import * as L from '../../src/v2/layout.js';
-import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact,PACKET_KEEP,packetStep,impactHeat,packetGrainOdds,PACKET_GRAIN_ODDS,v1GrainOdds,packetKnock} from '../../src/v2/dynamics-reference.js';
+import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact,PACKET_KEEP,PACKET_SUPPORTED_KEEP,packetStep,packetFlight,impactHeat,packetGrainOdds,PACKET_GRAIN_ODDS,v1GrainOdds,packetKnock} from '../../src/v2/dynamics-reference.js';
 import { importMinified } from './wgsl-grouping.mjs';
 const floatBits=v=>{const b=new ArrayBuffer(4);new Float32Array(b)[0]=v;return new Uint32Array(b)[0];};
 const close=(a,b,e,what)=>assert.ok(Math.abs(a-b)<=e,`${what??""}: ${a} vs ${b}`);
@@ -73,7 +73,7 @@ function syntax(s){for(const [a,b] of [
 ['var q = p;','var q = copy(p);'],['var particle = particle0;','var particle = copy(particle0);'],
 ['p.velocity * D_RAY_DT / D_CELL','mul(p.velocity, D_RAY_DT / D_CELL)'],['particle.velocity * D_RAY_DT / D_CELL','mul(particle.velocity, D_RAY_DT / D_CELL)'],
 ['p.position + delta * max(0.0, travelled - 0.00001 / max(length(delta), 0.00001))','add(p.position, mul(delta, max(0, travelled - 0.00001 / max(length(delta), 0.00001))))'],
-['p.position + delta;','add(p.position, delta);'],['f.destination.z >> 16u','f.destination.z >>> 16'],['bitcast<f32>(','bitsFloat('],['vec3f(cellOf(s) + P.origin) + 0.5','add(add(cellOf(s),P.origin),0.5)'],
+['p.position + delta;','add(p.position, delta);'],['f.destination.z >> 16u','f.destination.z >>> 16'],['bitcast<f32>(','bitsFloat('],['mEdge(startCell + down)','mEdge(add(startCell,down))'],['vec3f(cellOf(s) + P.origin) + 0.5','add(add(cellOf(s),P.origin),0.5)'],
 ['min(abs(velocity) * D_SHOCK_THROW, vec3f(D_V_MAX))','abs(velocity).map(x=>Math.min(x*D_SHOCK_THROW,D_V_MAX))'],
 ['vec4u(warm.core.yzw, bitcast<u32>(warm.bank))','[...warm.core.slice(1,4), warm.bank>>>0]']])s=s.replaceAll(a,b);
 return s.replace(/\/\/[^\n]*/g,'')
@@ -120,7 +120,7 @@ function fixture({mode=0, edge=0, windowed=false,
     energyMul:(a,b)=>BigInt(a)*BigInt(b),
     DKnock:(done,packet,cell)=>({done,packet,cell}),dCarrier:m=>L.makeMaterial(0,L.cTq(m.core)*0.25-273.25),
     dParticle:(position,velocity,id,m)=>({position:[...position],velocity:[...velocity],id,c0:m.core[0],tail:[...m.core.slice(1),m.bank>>>0]}),
-    DPacketFlight:(moved,velocity)=>({moved:[...moved],velocity:[...velocity]}),dKeep:id=>PACKET_KEEP[id],
+    DPacketFlight:(moved,velocity)=>({moved:[...moved],velocity:[...velocity]}),dKeep:id=>PACKET_KEEP[id],dSupportedKeep:id=>PACKET_SUPPORTED_KEEP[id],
     D_V1_STEP:Math.fround(1/V1_STEP_MS),D_PULL_STEP:Math.fround(STEP_S*STEP_S/CELL_M),D_STEPS:4,
     DPhotonStep:(light,heat,cell,travelled,flip,gone)=>({light:[...light],heat,cell,travelled,flip,gone}),round:Math.round,clamp:(x,a,b)=>Math.min(Math.max(x,a),b),
     exp:Math.exp,log:Math.log,mix:(a,b,t)=>a+(b-a)*t,bitsFloat,dPhotonEnergy:p=>Array.from(p.tail).slice(0,3).map(bitsFloat),
@@ -183,7 +183,7 @@ function fixture({mode=0, edge=0, windowed=false,
 ['dShockHit',['t','s','p','hit','axis']],
 ['dDustFaces',['s']],
 ['dShockWall',['t','pid','u','landing','particleId']],
-['dPhotonStep',['local','delta','light0']],['dKnock',['t','s','p','before','axis','landing']],['dImpactHeat',['pid','tid','velocity','axis','c']],['dPacketFlight',['v0','wind','pull','keep','paced']],['dPhotonMoved',['p','light','travelled','flip']],['dPhotonIntegrate',['t','particle0','local']],['dAddHeat',['m','heat']],
+['dPhotonStep',['local','delta','light0']],['dKnock',['t','s','p','before','axis','landing']],['dImpactHeat',['pid','tid','velocity','axis','c']],['dPacketFlight',['v0','wind','pull','keep','across','along','paced']],['dPhotonMoved',['p','light','travelled','flip']],['dPhotonIntegrate',['t','particle0','local']],['dAddHeat',['m','heat']],
   ])ctx[name]=compile(ctx,S.integrate,name,args);
   const stages=Object.fromEntries(Object.entries(S).map(([s,c])=>[s,compile(ctx,c,'main',['t'])]));
   return {ctx,world,particles,claims,flight,stages,set:(p,m)=>world.set(slotOf(p),copy(m)),
@@ -585,6 +585,21 @@ test('a grain thrown into a row of grains knocks the far ones on, as V1\'s cradl
   assert.equal(total().n,t0.n);
   // a gentle push under COLLIDE_V moves only what it hits (V1: support, no exchange)
   assert.equal(packetKnock(E.SAND,E.SAND,0.15*SHOCK_THROW_MS*0.9),null);
+});
+
+// V1 react.js forces: a liquid skips its drag only in free fall (`flying`: air or gas below it). A landing's splash
+// sliding over its pool slows by its DRAG a step, so nitroglycerin splashed at V1's 0.707 cells/step from a slab
+// dropped 8 cells reaches a wall 6 cells off under its 0.700 shock speed and rests, as V1's does; across the pull
+// only (V1's landing hit is its free-fall speed, max(u1, u2))
+test('a liquid packet over its pool slows by V1\'s drag, one in free fall does not (the 8-cell nitro splash)',()=>{
+  const slide=(y,pool)=>{const f=fixture({material:wet(L.FULL,E.NITRO),position:[6.5,y,6.5],velocity:[0.707*SHOCK_THROW_MS,0,0]});
+    if(pool) for(let x=0;x<32;x++) f.set([x,0,6],wet(L.FULL,E.NITRO));runTicks(f,[0],1);return f.particles[0].velocity[0];};
+  const keep=PACKET_SUPPORTED_KEEP[E.NITRO]**4,u=0.707*SHOCK_THROW_MS;
+  close(slide(1.5,true),u*keep,1e-3*u,'over its pool: its drag, four V1 steps');
+  close(slide(20.5,false),u,1e-6*u,'in free fall: none');
+  // the twin: six cells over its pool from 0.707 cells/step it arrives under nitroglycerin's shock speed
+  let v=[u,0,0],x=0;while(x<6){const st=packetFlight(E.NITRO,v,undefined,true);x+=st.moved[0];v=st.velocity;}
+  assert.ok(v[0]/SHOCK_THROW_MS<Math.sqrt(2*ELEMENTS[E.NITRO].blast.shock/ELEMENTS[E.NITRO].dens),`${v[0]/SHOCK_THROW_MS} cells/step at the wall`);
 });
 
 test('an empty pool reads no packet record and writes no flight record',()=>{
