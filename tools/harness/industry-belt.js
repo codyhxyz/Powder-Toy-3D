@@ -95,7 +95,8 @@ test('trace', async (name, { steps = 4, frames = 10 } = {}) => {
 test('lift', async (name, { steps = 4 } = {}) => {
   const d = { id: 'lift', type: 'lift', x: 4, y: BASE_Y, z: 4, rotation: 0 };
   const { engine, sim, physics, errors } = await scene(name, [32, 32, 64], [d], [[5, GRAIN_Y, 5], [6, GRAIN_Y, 6]], steps);
-  physics.step(1 / 60, [d]);                 // the kick
+  // the kick: V1's frame pass; V2's is the pass after a tick (industry/physics.js nativeStep)
+  if (name === 'v1') physics.step(1 / 60, [d]); else nativeHostTick(sim.compactOwner, { after: () => physics.nativeStep([d]) });
   const s0 = gameSteps(name, sim), track = [];
   const per = name === 'v1' ? 1 : LEGACY_STEPS_PER_TICK;
   for (let k = 0; k < 64; k += per) {
