@@ -100,6 +100,53 @@ fn nativeNewCell(a: vec4f, amount: u32) -> Material {
  if(conductsNative(id)) { m.core=withSpark(m.core,legacy); }
  return m;
 }`;
+// What V1's rule did to a cell it didn't move (a: before, outA: after, owned: it called ownLegacy):
+// (flags, fields, temperature change in quarter degrees). Replaced (owned, or noteLegacy's change of
+// element: its capture-2 rule): a new cell, as the import makes an owned one. Changed in place:
+// importProperties's fields; a seed alone owns nothing.
+const changeWGSL = /* wgsl */ `
+fn nativeEditChange(a: vec4f, outA: vec4f, owned: bool) -> vec3u {
+ if(all(outA==a)) { return vec3u(0u); }
+ if(owned || eid(outA)!=eid(a)) { return vec3u(${NATIVE_PAINT_FLAG.TYPE}u,0u,0u); }
+ var fields=0u; var dq=0;
+ if(outA.y!=a.y) { fields|=${PF.TEMP}u; dq=i32(round((outA.y-a.y)*4.0)); }
+ if(outA.z!=a.z) { fields|=${PF.LIFE}u; }
+ if(floor(outA.w)!=floor(a.w)) { fields|=${PF.CTYPE}u; }
+ if(fields==0u) { return vec3u(0u); }
+ return vec3u(${NATIVE_PAINT_FLAG.MERGE}u,fields,bitcast<u32>(dq));
+}`;
+// The cell a result leaves (before: the cell as it is): a move takes its source's exact core and
+// bank; a new cell is nativeNewCell, FULL unless a retype keeps a liquid's fill; a merge is V2's
+// importProperties (shaders/v2.js bridgeWGSL) on the fields the rule changed: ctype, life, and the
+// rule's own temperature change as sensible heat on the cell's bank. Fill, flux and fall are kept.
+const commitWGSL = spec => /* wgsl */ `
+fn nativeEditCommit(r: PaintResult, before: Material) -> Material {
+ var m=before;
+ if(r.flags==${NATIVE_PAINT_FLAG.SWAP}u) { m=Material(r.core,r.bank); }
+ else if(r.flags==${NATIVE_PAINT_FLAG.TYPE}u) {
+  let id=u32(r.after.x);
+  var amount=FULLU;
+  if(${spec.retype}) {
+   if(id==cid(before.core)) { return before; }
+   // a liquid that stays a liquid keeps its amount: PropertyTool changes the type, not the mass
+   if(isLiq(before.core) && cls(id)==C_LIQUID) { amount=cFill(before.core); }
+  }
+  m=nativeNewCell(r.after,amount);
+ } else {
+  if((r.pad.x&${PF.CTYPE}u)!=0u) {
+   let ct=u32(max(floor(r.after.w),0.0));
+   if(conductsNative(cid(m.core))) { m.core=withSpark(m.core,ct); } else { m.core=withCtype(m.core,ct); }
+  }
+  if((r.pad.x&${PF.LIFE}u)!=0u && !(isLiq(m.core) && conductsNative(cid(m.core)))) { m.core=withLife(m.core,r.after.z); }
+  if((r.pad.x&${PF.TEMP}u)!=0u) {
+   let dq=bitcast<i32>(r.pad.y);
+   let heat=energyMul(capacityQ(m.core),u32(abs(dq)));
+   let edited=energyAdd(energyOf(m),select(heat,energyNeg(heat),dq<0));
+   if(energyFits(m,edited)) { m=withEnergy(m,edited); }
+  }
+ }
+ return m;
+}`;
 export function nativePaintUpdateWGSL() {
   const parts = paintUpdateWGSL.split(MIX_PARTNER);
   if (parts.length !== 2) throw new Error('passes.js mixCell no longer computes its partner as expected');
@@ -187,23 +234,14 @@ ${resultWGSL}
 @group(2) @binding(1) var<storage, read_write> results: array<PaintResult>;
 @group(2) @binding(2) var<storage, read> paintBanks: array<i32>;
 ${boxWGSL}
+${changeWGSL}
 ${weatherMain(`if(i>=weatherCount()) { return; }
 let p=weatherCell(i); let a=fetchA(p); let b=fetchB(p);
 var outA=a; var outB=b; paintOwned=false; paintMoved=false; paintPartner=p;
 update(p,a,b,&outA,&outB);
 var r=PaintResult(vec4u(0u),outA,0,0u,vec2u(0u));
 if(${spec.moved}) { r.core=fetchNativeCore(paintPartner); r.bank=paintBanks[slotOf(paintPartner)]; r.flags=${NATIVE_PAINT_FLAG.SWAP}u; }
-else if(any(outA!=a)) {
- // replaced (V1's ownLegacy, or noteLegacy's change of element): a new cell, as the import makes an owned one
- if(paintOwned || eid(outA)!=eid(a)) { r.flags=${NATIVE_PAINT_FLAG.TYPE}u; }
- else {
-  // changed in place: importProperties's fields (a seed alone owns nothing)
-  if(outA.y!=a.y) { r.pad.x|=${PF.TEMP}u; r.pad.y=bitcast<u32>(i32(round((outA.y-a.y)*4.0))); }
-  if(outA.z!=a.z) { r.pad.x|=${PF.LIFE}u; }
-  if(floor(outA.w)!=floor(a.w)) { r.pad.x|=${PF.CTYPE}u; }
-  if(r.pad.x!=0u) { r.flags=${NATIVE_PAINT_FLAG.MERGE}u; }
- }
-}
+else { let c=nativeEditChange(a,outA,paintOwned); r.flags=c.x; r.pad=c.yz; }
 results[i]=r;`)}
 `;
   if (stage === 'commit') return `${params.wgsl}
@@ -213,39 +251,14 @@ ${resultWGSL}
 @group(1) @binding(0) var<storage, read> results: array<PaintResult>;
 ${boxWGSL}
 ${newCellWGSL}
+${commitWGSL(spec)}
 ${weatherMain(`if(i>=weatherCount()) { return; }
 let r=results[i]; if(r.flags==0u) { return; }
 let p=weatherCell(i); let s=slotOf(p); let before=loadMaterial(s);
-var m=before;
-if(r.flags==${NATIVE_PAINT_FLAG.SWAP}u) {
- m=Material(r.core,r.bank);
- ${spec.noteMoves ? '// one way (a door leaf): what arrives is a source here, what left a sink at its source (TYPE)\n noteEnergySource(p,energySub(energyOf(m),energyOf(before)));' : '// Mutual by construction (both cells test the same pair and coin): energy moves, none is made.'}
-} else if(r.flags==${NATIVE_PAINT_FLAG.TYPE}u) {
- let id=u32(r.after.x);
- var amount=FULLU;
- if(${spec.retype}) {
-  if(id==cid(before.core)) { return; }
-  // a liquid that stays a liquid keeps its amount: PropertyTool changes the type, not the mass
-  if(isLiq(before.core) && cls(id)==C_LIQUID) { amount=cFill(before.core); }
- }
- m=nativeNewCell(r.after,amount);
- noteEnergySource(p,energySub(energyOf(m),energyOf(before)));
-} else {
- // V2's importProperties (shaders/v2.js bridgeWGSL) on the fields the rule changed: ctype, life, sensible heat
- if((r.pad.x&${PF.CTYPE}u)!=0u) {
-  let ct=u32(max(floor(r.after.w),0.0));
-  if(conductsNative(cid(m.core))) { m.core=withSpark(m.core,ct); } else { m.core=withCtype(m.core,ct); }
- }
- if((r.pad.x&${PF.LIFE}u)!=0u && !(isLiq(m.core) && conductsNative(cid(m.core)))) { m.core=withLife(m.core,r.after.z); }
- if((r.pad.x&${PF.TEMP}u)!=0u) {
-  let dq=bitcast<i32>(r.pad.y);
-  let heat=energyMul(capacityQ(m.core),u32(abs(dq)));
-  let edited=energyAdd(energyOf(m),select(heat,energyNeg(heat),dq<0));
-  if(energyFits(m,edited)) { m=withEnergy(m,edited); }
- }
- noteEnergySource(p,energySub(energyOf(m),energyOf(before)));
-}
+let m=nativeEditCommit(r,before);
 if(all(m.core==before.core) && m.bank==before.bank) { return; }
+${spec.noteMoves ? '// (a door leaf moves one way: what arrives is a source here, what left a sink at its source, a new cell there)\nnoteEnergySource(p,energySub(energyOf(m),energyOf(before)));'
+    : `// (a Mix pair is mutual by construction, both cells testing the same pair and coin: energy moves, none is made)\nif(r.flags!=${NATIVE_PAINT_FLAG.SWAP}u) { noteEnergySource(p,energySub(energyOf(m),energyOf(before))); }`}
 // V1's edits scrub the decoration of every cell they give a new element (sim.edit { scrub: true },
 // src/deco.js decoScrub: TPT's create_part resets dcolour); a Mix swap of equals keeps it in place
 if(cid(m.core)!=cid(before.core)) { setDeco(s,0u); }
