@@ -156,6 +156,7 @@ jobs:
       - run: node --test tools/world-sun-coarse-cpu-check.mjs   # far sun tiles' coarse shadow: Naga, no atlas reads, its measured terrain error under the near ring's rule, no acne (CPU)
       - run: npm run check:world-native-preflight   # actual Three cache/native-backend completion; CPU stubs, no GPU claims
       - run: npm run check:world-cells   # actual Source/Fields/classified CELL native transport + Naga, not GPU parity
+      - run: node tools/world-cell-cost-cpu-check.mjs   # a World load's CELL batch counts the same Map/Set work and GPU commands at 8x the resident pages (CPU, counting fake GPU)
       - run: npm run check:world-gi-glow   # shared world GI/glow producers, bounded history/native recording + Naga; NOT application activation
       - run: npm run check:world-gi-birth   # explicit native-history initialization/adoption; CPU fake transport, no app activation
       - run: node tools/check-edge-sea.mjs   # CPU: the sea past a map's edge (big maps and small) where its water reaches it; Naga validates the sky and floor grid shaders

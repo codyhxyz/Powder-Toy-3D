@@ -36,8 +36,15 @@ or reinterpreted on reset. The CPU CI Atlas gate explicitly asserts ABI2.
   Descent's 125 MiB books were re-sent several times a second during a load
   (2026-10-21).
 - `atlas.live.cell`/`atlas.live.light` map each nonzero book index to its page.
-  A commit pins those pages and checks only its changed indices, never all 33M
-  entries of a Descent book. `bookPages(kind)` lists them in book order.
+  A commit checks only its changed indices, never all 33M entries of a Descent
+  book. `bookPages(kind)` lists them in book order.
+- A snapshot state does not pin each page its books name: a page is public
+  from `p.since` (the commit that published it) until the commit that
+  supersedes it, and only then is it pinned by every live state whose
+  generation lies in that span, until that state retires. Pinning every live
+  page per commit grew a World load's CELL batches with all it had loaded
+  (Island, 2026-10-22). A publish under an unchanged dependency manifest
+  revalidates only its own LIGHT pages; every retained one passed under it.
 - `reserve(kind, count)` grows a pool once for a batch's pages, not a doubling
   per overflow (each growth copies every public page).
 - **Cell PID**, **light descriptor ID**, and **probe PID** are independent

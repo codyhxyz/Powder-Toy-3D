@@ -10,7 +10,6 @@ import { worldCellClassifierWGSL, WorldBrickParams, WORLD_CLASSIFIER_LAYOUT, wor
 const BU = { COPY_SRC:4,COPY_DST:8,UNIFORM:64,STORAGE:128 };
 const same = (a,b) => a?.epoch === b?.epoch && a?.sourceRevision === b?.sourceRevision;
 const coreFor = b => b.map(v => Math.floor(v/8)*32);
-const submittedCaptures = new WeakMap();
 export const CELL_BATCH_WRITES = 1024;   // a raw and a fields write per page
 let dependencyID = 1;
 
@@ -21,10 +20,14 @@ export class WorldCellAtlasAdapter {
     Object.assign(this,{gpu,source,producer,atlas,tables});
     this.mutableSource=source;this.boundCut=null;
     this.bounds={min:[...worldBounds.min],max:[...worldBounds.max]};
-    this.cache=new Map(); this.capturePins=new WeakMap(); this.retiredCaptures=new WeakSet(); this.pending=null; this.dead=false; this.publication=null; this.lastSourceToken=null; this.dependencyID=dependencyID++;
+    this.cache=new Map(); this.capturePins=new WeakMap();
+    // Captures a commit installed (the current publication's), and those
+    // published to the cache since the last commit: a publication reads the
+    // cache as it was at its commit (_installed), never a copy of it per batch.
+    this.installed=new WeakSet(); this.uninstalled=new Set(); this.retiredCaptures=new WeakSet(); this.pending=null; this.dead=false; this.publication=null; this.lastSourceToken=null; this.dependencyID=dependencyID++;
     // Fields may commit while its Atlas publication is aborted or retried.
     // Keep that publication debt until a successful atomic Atlas patch.
-    this.unpublishedInvalidations=new Set();this.unpublishedChanges=new Map();this.lightingDirty=false;
+    this.unpublishedInvalidations=new Set();this.unpublishedChanges=new Map();this.lightingDirty=false;this.prepared=null;
     this.batchWrites=CELL_BATCH_WRITES;
     this.fields=new WorldFields(gpu,{worldBounds,tables,publisher:this});
     if(this.fields.history.epoch<source.epoch)this.fields.reset(source.epoch);
@@ -73,10 +76,10 @@ export class WorldCellAtlasAdapter {
   // Submitted classification only: no raw geometry readback. Captures are
   // selected synchronously and pinned independently of later cache replacement.
   acquireClassification({bricks}={}){
-    this._alive();const publication=this.acquire(),installed=submittedCaptures.get(publication.identity),captures=new Set(),records=[];
+    this._alive();const publication=this.acquire(),captures=new Set(),records=[];
     try{
       for(const brick of bricks){
-        const index=worldBrickIndex(this.atlas.bookLayout,brick),core=coreFor(brick),c=installed?.get(brickKey(core));
+        const index=worldBrickIndex(this.atlas.bookLayout,brick),core=coreFor(brick),c=this._installed(brickKey(core));
         // Installation proves retained numerical compatibility with this
         // publication. Its original input cut may since have been released.
         if(!c||this.retiredCaptures.has(c)){
@@ -141,28 +144,52 @@ export class WorldCellAtlasAdapter {
   sourceDemand(options){
     this._alive();
     const planned=this._options(options), snapshot=this.source.snapshotForFields({refreshLive:false});
-    const regions=this.fields.requiredSourceRegions({...planned,sourceSnapshot:snapshot});
+    const fieldPlan=this.fields.sourcePlan({...planned,sourceSnapshot:snapshot}),regions=fieldPlan.regions;
     const columns=new Map();
     for(const region of regions)for(const core of this.source._cores(region)){
       const bounds={lo:core.map((v,i)=>Math.max(v,region.lo[i])),hi:core.map((v,i)=>Math.min(v+32,region.hi[i]))};
       try{this.source.assertComplete([bounds]);}catch{columns.set(`${core[0]},${core[2]}`,[core[0],core[2]]);}
     }
-    return {regions,columns:[...columns.values()],options:planned,contentToken:snapshot,authorityToken:this.source.token()};
+    return {regions,columns:[...columns.values()],options:planned,fieldPlan,contentToken:snapshot,authorityToken:this.source.token()};
   }
-  record(frame,options){
+  _recordable(frame){
     this._alive();if(!this.readyState)throw new Error('Await CELL adapter.ready before recording');
     if(frame!==this.gpu.frame)throw new Error('CELL work must use the normal GPU Frame');
     if(this.pending)throw new Error('Commit or abort the pending CELL batch first');
     if(this.source.epoch!==this.fields.history.epoch||this.source.epoch!==this.atlas.epoch||this.source.epoch===0)throw new Error('Reset CELL adapter/Atlas after source epoch change');
     if(this.source.needsLiveCopy())this.source.recordLiveCopy(frame);
-    const demand=this.sourceDemand(options), batch={handle:Object.freeze({}),state:'recording',captures:[],options:demand.options,atlasJobs:[],invalidated:[],before:new Map(this.cache)};
+  }
+  // At most limit of the source columns record(options) would produce, the
+  // same calls in the same order; how many it recorded. A caller that flushes
+  // and yields after each nonzero call bounds each task: a load's first CELL
+  // batches each produced ~100 columns before packing, 0.2-0.5 s of JS
+  // (Island, 2026-10-22). record() then finds them produced, and reuses the
+  // last call's demand while nothing it read has changed.
+  recordSourceColumns(frame,options,limit){
+    this._recordable(frame);this.prepared=null;
+    if(!Number.isSafeInteger(limit)||limit<1)throw new RangeError('Source column limit must be a positive integer');
+    const demand=this.sourceDemand(options),authority=this.source.token(),columns=demand.columns.slice(0,limit);
+    for(const column of columns)if(!this.producer.record(frame,column,authority))throw new Error('Source producer authority overtaken');
+    if(!columns.length)this.prepared={options,demand,authority,state:this._demandState()};
+    return columns.length;
+  }
+  // What a demand read besides the source's authority token.
+  _demandState(){const f=this.fields;return [this.source,this.lastSourceToken,f.version,f.history.epoch,f.publishedToken,f.published.size];}
+  _demand(options){
+    const p=this.prepared,now=this.source.token(),state=this._demandState();this.prepared=null;
+    const current=p&&p.options===options&&p.state.every((v,i)=>v===state[i])&&['epoch','revision','contentRevision'].every(k=>p.authority[k]===now[k]);
+    return current?p.demand:this.sourceDemand(options);
+  }
+  record(frame,options){
+    this._recordable(frame);
+    const demand=this._demand(options), batch={handle:Object.freeze({}),state:'recording',captures:[],options:demand.options,atlasJobs:[],invalidated:[],undo:new Map()};
     this.pending=batch;
     try{
       const authority=this.source.token();
       for(const column of demand.columns)if(!this.producer.record(frame,column,authority))throw new Error('Source producer authority overtaken');
       this.source.assertComplete(demand.regions);this.source.assertBoundedWake(demand.regions);
       const source=this.source.snapshotForFields({jetValidity:'producer-bounded-v1',refreshLive:false});
-      const plan=this.fields.plan({...demand.options,sourceSnapshot:source});
+      const plan=this.fields.plan({...demand.options,sourceSnapshot:source},demand.fieldPlan);
       batch.source=source;batch.contentToken=this.source.contentToken();batch.plan=plan;
       batch.result=this.fields.record(frame,plan);batch.state='captured';this.lastSourceToken=batch.contentToken;
       for(const key of batch.invalidated)this.unpublishedInvalidations.add(key);
@@ -170,7 +197,7 @@ export class WorldCellAtlasAdapter {
       this.lightingDirty ||= !same(this.publication?.source,batch.contentToken) || plan.advancing.length>0 || batch.result.outputs.length>0 || batch.invalidated.length>0;
       return batch.handle;
     }catch(error){
-      this.cache=batch.before;
+      this._undo(batch);
       // A prefix may already be submitted. Flush only through the normal Frame,
       // then release failed COW pages/captures AFTER the final orphan submission.
       try{this.gpu.flush('failed world CELL orphan');}catch(flushError){error.orphanFlushError=flushError;throw error;}
@@ -200,11 +227,14 @@ export class WorldCellAtlasAdapter {
   }
   publish({token,outputs,invalidatedCoreKeys}){
     const batch=this.pending;if(!batch||batch.state!=='recording'||outputs.some(c=>!batch.captures.includes(c)||this.retiredCaptures.has(c)||c.token.historyVersion!==token.historyVersion||!c.source.isCurrent()))throw new Error('Invalid CELL capture publication');
-    const next=new Map(this.cache);
-    for(const key of invalidatedCoreKeys){if(typeof key!=='string')throw new Error('Invalid field invalidation');next.delete(key);}
-    for(const c of outputs)next.set(c.key,c);
+    for(const key of invalidatedCoreKeys)if(typeof key!=='string')throw new Error('Invalid field invalidation');
+    // The cache changes in place, each key's old capture kept for _undo: a copy
+    // of every core's per batch grew a load's batches with what it had loaded.
+    const keep=key=>{if(!batch.undo.has(key))batch.undo.set(key,this.cache.get(key));};
+    for(const key of invalidatedCoreKeys){keep(key);this.cache.delete(key);}
+    for(const c of outputs){keep(c.key);this.cache.set(c.key,c);this.uninstalled.add(c);}
     // No GPU submission or irreversible Atlas mutation in this callback.
-    batch.invalidated=[...invalidatedCoreKeys];batch.fieldToken=token;this.cache=next;
+    batch.invalidated=[...invalidatedCoreKeys];batch.fieldToken=token;
   }
   commitAfterSourceFlush(handle,{lightJobs=[],invalidations=[],dependencyToken,sunManifest}={}){
     this._alive();const batch=this.pending;if(!batch||handle!==batch.handle||batch.state!=='captured')throw new Error('Invalid CELL batch');
@@ -329,9 +359,9 @@ export class WorldCellAtlasAdapter {
       batch.state='published';this.pending=null;
       const old=this.publication;
       this.publication=Object.freeze({identity:Object.freeze({generation:publication}),source:batch.contentToken,fieldToken:batch.fieldToken,fieldTick:batch.fieldToken.fieldTick,changedBricks:Object.freeze([...this.unpublishedChanges.values()]),invalidatedCoreKeys:Object.freeze([...this.unpublishedInvalidations]),dependencySetID:this.dependencyID,dependencyVersion:publication});
-      submittedCaptures.set(this.publication.identity,new Map(this.cache));
+      for(const c of this.uninstalled)if(this.cache.get(c.key)===c)this.installed.add(c);this.uninstalled.clear();
       this.unpublishedInvalidations.clear();this.unpublishedChanges.clear();this.lightingDirty=false;
-      for(const [key,c] of batch.before)if(this.cache.get(key)!==c)this._dropCapture(c);
+      this._dropReplaced(batch);
       const queue=this.gpu.queue??device.queue;
       Promise.resolve(queue.onSubmittedWorkDone()).then(()=>batch.result.retire(),()=>batch.result.retire());
       for(const b of ephemeral)this._retire(b);
@@ -349,7 +379,22 @@ export class WorldCellAtlasAdapter {
     if(this.gpu.frame.open)throw new Error('Flush pending CELL captures before abort');
     this.pending=null;batch.state='aborted';
     const queue=this.gpu.queue??this.gpu.device.queue;Promise.resolve(queue.onSubmittedWorkDone()).then(()=>batch.result.retire(),()=>batch.result.retire());
-    for(const [key,c] of batch.before)if(this.cache.get(key)!==c)this._dropCapture(c);
+    this._dropReplaced(batch);
+  }
+  // The captures a batch replaced or removed, once it is settled either way.
+  _dropReplaced(batch){for(const [key,c] of batch.undo)if(c&&this.cache.get(key)!==c)this._dropCapture(c);}
+  // A failed record puts the cache back as it was before the batch.
+  _undo(batch){
+    for(const [key,c] of batch.undo)if(c)this.cache.set(key,c);else this.cache.delete(key);
+    for(const c of batch.captures)this.uninstalled.delete(c);
+    batch.undo.clear();
+  }
+  // The capture the current publication installed for a core, as a copy of the
+  // cache made at its commit held it: a pending batch's replaced one, and none
+  // that no commit installed (an aborted batch's).
+  _installed(key){
+    const undo=this.pending?.undo,c=undo?.has(key)?undo.get(key):this.cache.get(key);
+    return c&&this.installed.has(c)?c:undefined;
   }
   acquire(){
     this._alive();if((this.boundCut&&!this.boundCut.isValid())||!this.publication||!same(this.publication.source,this.source.contentToken()))throw new Error('No current submitted CELL publication');
