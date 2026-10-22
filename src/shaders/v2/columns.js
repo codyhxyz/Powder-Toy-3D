@@ -72,6 +72,10 @@ export const COLUMN = (() => {
     // 2026-10-22, tools/v2/runs-browser-check.mjs: a 4³ block of water or of mud is one cell deep over 64 columns).
     // A face onto dry ground at its own level carries nothing from under this; over an edge it pours, into liquid
     // (or a layer on another liquid: V1's pool surface keeps flowing) the dry tolerance holds.
+    // Intentional (decided under the user's delegation, 2026-10-22): V1's lone droplets wander for ever (react.js
+    // DROPLET_WANDER, FILM_COHESION) and its spill beads into whole cells; V2's films stop here and its fills level
+    // (a 4³ spill rests 0.4 deep over 170 columns, V1's a cell deep over 64), so a spill rests and certifies idle
+    // (wandering would cost the rest certification and frame time)
     FILM_DRY: FULL,
     DEADQ: 2,                  // dead band, in fill quanta of the stiffer side (lean-sim)
     // the rows' damping is per substep of the 180 Hz model it calibrated (v2Rows: drag); per pair step (240 Hz)
@@ -81,6 +85,12 @@ export const COLUMN = (() => {
     // a face's flux at most: under f16's 65,504 by more than its spacing there (32), so a lane never rounds
     // past it. 0.99 cells a step (71 m/s, V1's V_MAX): an explicit face moves at most its own cell a step.
     Q_MAX: 65000,
+    // a face under a lid (a closed cell over the segment on either side: a hole, a bore, a pipe) carries at most
+    // this, quanta a step: a cell a tick. V1's liquid through a one-cell opening moves a whole cell at a time and
+    // waits for the next to refill it (react.js pipe flow, move.js Margolus pairs), so its hole drains at about a
+    // fifth of a cell a step whatever its speed (measured on V1, 2026-10-22: tools/outcomes/thresholds.js V1_HOLE;
+    // runs-browser-check drain), where a face at V1's speed would carry four times that
+    BORE_Q: 65000 / STEPS_PER_TICK,
     // a falling run's law: V1's (colFall), STEPS V1 steps a tick at V1's gravity (cells/step², SIM_GRAVITY at the
     // reference pull) to V1's terminal speed V_MAX (cells/step)
     STEPS: STEPS_PER_TICK, G_STEP: SIM_GRAVITY, V_MAX: PHYS.V_MAX,
@@ -191,6 +201,7 @@ const COL_FILM_DRY: f32 = ${f(COLUMN.FILM_DRY)};
 const COL_DEADQ: f32 = ${f(COLUMN.DEADQ)};
 const COL_STALL: f32 = ${f(COLUMN.STALL)};
 const COL_Q_MAX: f32 = ${f(COLUMN.Q_MAX)};
+const COL_BORE_Q: f32 = ${f(COLUMN.BORE_Q)};
 const COL_STEPS: f32 = ${f(COLUMN.STEPS)};
 const COL_G_STEP: f32 = ${COLUMN.G_STEP};
 const COL_V_MAX: f32 = ${f(COLUMN.V_MAX)};
@@ -603,7 +614,7 @@ fn colDepth(r: vec4u, s0: i32, s1: i32) -> f32 {
 
 // ---- the segment rule (prototype segment()): the new flux of [s0, s1) between a (-side) and b, from u.
 // Positive flows a to b. Falling runs, two dry floors and two different liquids exchange nothing.
-fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, lb: vec2f, bed: f32, film: f32) -> f32 {
+fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, lb: vec2f, bed: f32, film: f32, lid: bool) -> f32 {
   let dryA = recLiq(ra) == 0u; let dryB = recLiq(rb) == 0u;
   if (recFalling(ra) || recFalling(rb) || (dryA && dryB)) { return 0.0; }
   if (!dryA && !dryB && (recLiq(ra) != recLiq(rb) || recSub(ra) != recSub(rb))) { return 0.0; }
@@ -627,6 +638,10 @@ fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, l
   var v = u;
   if (ha == 0.0) { v = min(v, 0.0); }   // a dry side's stale outflow is dropped
   if (hb == 0.0) { v = max(v, 0.0); }
+  // a front onto dry ground takes the flow arriving behind it (momentum carried into the new face: V1's moving
+  // cell keeps its speed into the cell it moves on to, react.js forces), so a front runs at the flow's speed
+  if (hb == 0.0 && !colOver(rb, s0) && up > v) { v = up; }
+  if (ha == 0.0 && !colOver(ra, s0) && up < v) { v = up; }
   var hUp = hb;
   if (drive > 0.0 || (drive == 0.0 && v > 0.0)) { hUp = ha; }
   v = v + acc * drive * min(1.0, COL_H_CAP / max(hUp, 1.0)) - colAdvect(u, up);
@@ -640,7 +655,8 @@ fn colFlux(ra: vec4u, rb: vec4u, s0: i32, s1: i32, u: f32, up: f32, la: vec2f, l
   if (v < 0.0 && ha == 0.0 && !colOver(ra, s0) && hb * COL_FULL < film) { v = 0.0; }
   v = v * (1.0 - damp);
   if (abs(v) < COL_QMIN) { v = 0.0; }
-  let cap = colFlowCap(liq);
+  var cap = colFlowCap(liq);
+  if (lid) { cap = min(cap, COL_BORE_Q); }
   return clamp(v, -cap, cap);
 }
 // what the flux v carries a tick (quanta): v times the upwind wet depth
@@ -1013,6 +1029,8 @@ fn probeSub(p: vec2u) -> u32 { return (p.x >> 16u) & 255u; }
 fn probeFill(p: vec2u) -> u32 { return p.y; }
 fn probeRead(p: vec2u) -> bool { return (p.x & COL_PROBE_READ) != 0u; }
 fn colOpen(x: i32, y: i32, z: i32) -> bool { return isOpenC(colCell(x, y, z)); }
+// a closed cell (neither air nor liquid): a segment's lid
+fn colLidAt(x: i32, y: i32, z: i32) -> bool { let k = colClass(x, y, z); return k != C_AIR && k != C_LIQUID; }
 // Monahan lifetime, byte-quantized deterministic decay at native 60 Hz (the foam pass this replaces)
 fn foamDecay(x: i32, y: i32, z: i32) {
   let p = vec3i(x, y, z); let before = loadCell(p);
@@ -1138,7 +1156,10 @@ fn colFluxes(xa: i32, za: i32, xb: i32, zb: i32, axis: i32) {
       // lanes hold last tick's fluxes all stage long (only the transfers write them), so the face
       // upwind is read race-free
       let u = laneOf(colCell(xa, s0, za), axis);
-      let v = colFlux(ra, rb, s0, s1, u, colUpwind(xa, za, xb, zb, s0, axis, u), la, lb, bed, select(COL_FILM_DRY, COL_FILM, floats != 0));
+      // (the face upwind of the flow, or of the head where the face is at rest: a new front's)
+      // (a lid over the segment on either side: a bore, COLUMN.BORE_Q)
+      let lid = s1 < NY && (colLidAt(xa, s1, za) || colLidAt(xb, s1, zb));
+      let v = colFlux(ra, rb, s0, s1, u, colUpwind(xa, za, xb, zb, s0, axis, select(u, colEta(ra) - colEta(rb), u == 0.0)), la, lb, bed, select(COL_FILM_DRY, COL_FILM, floats != 0), lid);
       // and R14's launch head, while every record is frozen: the sender's exact head, or a same-liquid
       // neighbour's that feeds it (an orifice's reservoir), over the segment's bottom
       // (only a face that pours needs one: its bottom over the receiver's surface or dry floor)
