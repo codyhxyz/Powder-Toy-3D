@@ -41,11 +41,12 @@ export const NATIVE_PAINT_RESULT_BYTES = 48;
 // keeps its latent heat, as importProperties adds sensible heat to the bank).
 export const NATIVE_PAINT_FLAG = Object.freeze({ SWAP: 1, TYPE: 2, MERGE: 4 });
 // What V1's brush rule changed on a flying cell (particleEvaluate), field by field, for the
-// particle commit: KILL empties it, TYPE retypes it, TEMP/LIFE/CTYPE merge as importProperties does.
-export const NATIVE_PAINT_PARTICLE = Object.freeze({ KILL: 1, TYPE: 2, TEMP: 4, LIFE: 8, CTYPE: 16 });
-export const NATIVE_PAINT_PARTICLE_RESULT_BYTES = 32;
+// particle commit: KILL empties it, TYPE retypes it, TEMP/LIFE/CTYPE merge as importProperties does;
+// VEL (a script's write, console/world.js editFlying: no brush sets it) its velocity, vel (m/s).
+export const NATIVE_PAINT_PARTICLE = Object.freeze({ KILL: 1, TYPE: 2, TEMP: 4, LIFE: 8, CTYPE: 16, VEL: 32 });
+export const NATIVE_PAINT_PARTICLE_RESULT_BYTES = 48;
 const resultWGSL = 'struct PaintResult { core: vec4u, after: vec4f, bank: i32, flags: u32, pad: vec2u }';
-const particleResultWGSL = 'struct PaintParticleResult { after: vec4f, id: u32, changed: u32, pad: vec2u }';
+const particleResultWGSL = 'struct PaintParticleResult { after: vec4f, id: u32, changed: u32, pad: vec2u, vel: vec4f }';
 const PF = NATIVE_PAINT_PARTICLE;
 // mixCell's partner, recorded where V1 computes it; its ownLegacy call is the
 // swap (passes.js: "a successful Mix swap replaces the selected cell").
@@ -161,7 +162,7 @@ ${particleResultWGSL}
 @group(2) @binding(1) var<storage, read_write> particleResults: array<PaintParticleResult>;
 @group(2) @binding(2) var<storage, read> paintParticles: array<PaintParticle>;
 ${weatherMain(`if(i>=${PARTICLE_CAP}u) { return; }
-particleResults[i]=PaintParticleResult(vec4f(0.0),0u,0u,vec2u(0u));
+particleResults[i]=PaintParticleResult(vec4f(0.0),0u,0u,vec2u(0u),vec4f(0.0));
 let particle=paintParticles[i]; if(particle.id==0u || (particle.c0&255u)>=254u) { return; }
 let p=vec3i(floor(particle.position))-H.origin;
 if(!inGrid(p) || any(p<P.editLo) || any(p>P.editHi)) { return; }
@@ -176,7 +177,7 @@ else {
  if(outA.z!=a.z) { changed|=${PF.LIFE}u; }
  if(floor(outA.w)!=floor(a.w)) { changed|=${PF.CTYPE}u; }
 }
-if(changed!=0u) { particleResults[i]=PaintParticleResult(outA,particle.id,changed,vec2u(0u)); }`)}
+if(changed!=0u) { particleResults[i]=PaintParticleResult(outA,particle.id,changed,vec2u(0u),vec4f(0.0)); }`)}
 `;
   if (stage === 'particleCommit') return `${params.wgsl}
 @group(3) @binding(1) var<uniform> P: ${params.name};
@@ -221,7 +222,10 @@ if((r.changed&${PF.TYPE}u)!=0u) {
   if(packetEnergyFits(m,edited)) { m=withPacketEnergy(m,edited); }
  }
 }
-if(all(m.core==before.core) && m.bank==before.bank) { return; }
+// (a script's velocity, as V1's partProperty sets a flying cell's B: cells a V1 step, here m/s)
+let moved=(r.changed&${PF.VEL}u)!=0u;
+if(moved) { particle.velocity=r.vel.xyz; }
+if(!moved && all(m.core==before.core) && m.bank==before.bank) { return; }
 if(inGrid(p)) { noteEnergySource(p,energySub(packetOwnedEnergy(m),packetOwnedEnergy(before))); }
 particle.c0=m.core.x; particle.tail=vec4u(m.core.yzw,bitcast<u32>(m.bank));
 // a flying cell the brush gives a new element loses its paint, as the grid commit's (V1's scrub)
@@ -344,5 +348,32 @@ export function createNativeEditKernel(sim, name, spec, params) {
     d._externalWork(); sim.wake();
     return true;
   }
-  return { ready, get isReady() { return built(); }, run };
+  /** A script's writes to flying packets (console/world.js editFlying, V1's partKill / partProperty /
+   * partChangeType on a flying cell): the particle commit alone, its results the given ones
+   * ({ slot, uid: the packet's id word, changed: NATIVE_PAINT_PARTICLE bits, after: [id, temp, life,
+   * ctype + seed] as particleEvaluate gives them, vel: m/s }); a slot whose id moved on (it landed,
+   * or another packet took it) is left alone, as the brush's are. */
+  function commitParticles(list) {
+    if (!spec.particles || !built() || sim.disposed || o.disposed || sim.compactOwner !== o || !list.length) return false;
+    o.sync();
+    const B = NATIVE_PAINT_PARTICLE_RESULT_BYTES, results = gpu.createBuffer({ label: `${name} script particle results`,
+      size: PARTICLE_CAP * B, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    for (const e of list) {
+      const rec = new ArrayBuffer(B), f = new Float32Array(rec), u = new Uint32Array(rec);
+      f.set(e.after, 0); u[4] = e.uid; u[5] = e.changed; f.set(e.vel ?? [0, 0, 0], 8);
+      gpu.write(results, e.slot * B, new Uint8Array(rec));
+    }
+    const dims = [sim.g.nx, sim.g.ny, sim.g.nz];
+    particleCommit.dispatch(gpu.frame, fold(Math.ceil(PARTICLE_CAP / 64)), { bind: [o.nativeDynamics.group,
+      gpu.bindGroup(particleLayout, [results, d.particles, d.control].map((buffer, binding) => ({ binding, resource: { buffer } })), `${name} script particles`)],
+      header: sim.header(), params: { ...nativeModes(sim), editLo: [0, 0, 0], editHi: dims.map(n => n - 1), tick: o.tick + 1 } });
+    sim.onPass?.(particleCommit.name, { kind: 'compute', gpuMs: null });
+    sim._retire(results);
+    o.legacyPending = o.writtenSinceTick = true;
+    sim.version++; o.seenVersion = sim.version; sim.changedAll = true;
+    sim.worldRenderSource?.noteContentChange?.();
+    d._externalWork(); sim.wake();
+    return true;
+  }
+  return { ready, get isReady() { return built(); }, run, commitParticles };
 }

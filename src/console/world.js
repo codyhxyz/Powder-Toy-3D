@@ -1,6 +1,8 @@
 import { ELEMENTS, E } from '../elements.js';
 import { PHYS } from '../physics.js';
 import { physicalCtype } from '../appearance.js';
+import { NATIVE_PAINT_PARTICLE as PF } from '../v2/nativePaint.js';
+import { WEATHER_SPEED_SI } from '../v2/nativeWeather.js';
 
 // The console's view of the world (docs/console.md, "Reads and writes").
 //
@@ -38,6 +40,8 @@ import { physicalCtype } from '../appearance.js';
 //                               x, y, z, temp, life, ctype, vx, vy, vz }: V2's packets;
 //                               a V1 flying cell is a cell, so V1's backend leaves it undefined)
 //   applyEdits(chunk)           one pass over a packed chunk (packEdits)
+//   applyFlyingEdits(list)      the queued writes to V2's packets (editFlying), natively on its pool
+//                               (v2/nativePaint.js commitParticles: { slot, uid, changed, after, vel })
 
 // Edit mask bits (shaders/script.js has the same).
 export const EDIT = {
@@ -212,10 +216,11 @@ export class ScriptWorld {
     // the matter in flight beside the grid (readBlocks' .flying): { list, bySlot, stamp, readAt, usedAt }
     this.flying = null;
     this.flyingWanted = false;  // a handler's census asked for it
+    this.flyingEdits = new Map();   // pool slot → its queued write (editFlying)
   }
 
   get size() { return this.backend.size(); }
-  get pending() { return this.edits.size; }
+  get pending() { return this.edits.size + this.flyingEdits.size; }
 
   inBounds(x, y, z) {
     const [nx, ny, nz] = this.size;
@@ -238,6 +243,7 @@ export class ScriptWorld {
     this.flying = null;
     this.flyingWanted = false;
     this.edits.clear();
+    this.flyingEdits.clear();
   }
 
   // ---------------------------------------------------------------- writes
@@ -272,11 +278,51 @@ export class ScriptWorld {
     return true;
   }
 
+  // Queue a write to V2's packet at pool slot `slot` (read: flyingAt), as edit() queues a cell's: V1's
+  // flying cell is a cell, so partKill, partProperty and partChangeType reach it there; a packet holds
+  // no cell, so they reach it in the pool (applyFlyingEdits: the native particle commit). Its read
+  // entry takes the write at once (a kill drops it), as a cell's cached block does. Pressure is the
+  // air's, not the packet's: the caller writes it to the cell. Returns false if it can't apply.
+  editFlying(slot, mask, values = {}) {
+    this.checkEpoch();
+    const p = this.flyingAt(slot);
+    if (!p) return false;
+    const v = new Float32Array(8);
+    for (const [name, f] of Object.entries(FIELDS)) if (name in values) v[f.slot] = values[name];
+    if (mask & EDIT.TEMP) v[1] = clamp(v[1], LIMITS.temp);
+    if (mask & EDIT.CTYPE) v[3] = Math.round(clamp(v[3], LIMITS.ctype));
+    for (const [bit, s] of [[EDIT.VX, 4], [EDIT.VY, 5], [EDIT.VZ, 6]]) if (mask & bit) v[s] = clamp(v[s], LIMITS.v);
+    const c = { id: p.id, temp: p.temp, life: p.life, ctype: p.ctype, vx: p.vx, vy: p.vy, vz: p.vz, pressure: 0 };
+    if (!applyEdit(c, { mask: mask & ~EDIT.PRESSURE, v })) return false;
+    this.onEdit?.();
+    const prev = this.flyingEdits.get(slot);
+    let changed = prev?.changed ?? 0;
+    if (c.id === E.EMPTY) changed = PF.KILL;
+    else {
+      if (c.id !== p.id) changed |= PF.TYPE;
+      if (c.temp !== p.temp) changed |= PF.TEMP;
+      if (c.life !== p.life) changed |= PF.LIFE;
+      if (c.ctype !== p.ctype) changed |= PF.CTYPE;
+      if (c.vx !== p.vx || c.vy !== p.vy || c.vz !== p.vz) changed |= PF.VEL;
+    }
+    if (!changed) return true;
+    Object.assign(p, { id: c.id, temp: c.temp, life: c.life, ctype: c.ctype, vx: c.vx, vy: c.vy, vz: c.vz });
+    this.flyingEdits.set(slot, { slot, uid: p.uid, changed, p });
+    if (changed & PF.KILL) {
+      const f = this.flying;
+      f.list = f.list.filter((q) => q !== p);
+      f.bySlot = new Map(f.list.map((q, i) => [q.slot, i]));
+    }
+    return true;
+  }
+
   // Apply every queued edit: one GPU pass per EDIT_CHUNK cells, and the same
-  // edits to the cached blocks, so reads see them before the cache refreshes.
+  // edits to the cached blocks, so reads see them before the cache refreshes;
+  // then the packets' (editFlying), one native pass.
   flush() {
     this.checkEpoch();
-    if (!this.edits.size) return 0;
+    const flying = this.flushFlying();
+    if (!this.edits.size) return flying;
     const keys = [...this.edits.keys()].sort((a, b) => a - b);
     const size = this.size;
     for (const chunk of packEdits(keys, this.edits, size)) {
@@ -296,7 +342,17 @@ export class ScriptWorld {
     }
     const n = keys.length;
     this.edits.clear();
-    return n;
+    return n + flying;
+  }
+  flushFlying() {
+    if (!this.flyingEdits.size) return 0;
+    // (after particleEvaluate's result: after = id, temp, life, ctype + its seed; velocity in m/s)
+    const list = [...this.flyingEdits.values()].map(({ slot, uid, changed, p }) => ({ slot, uid, changed,
+      after: [p.id, p.temp, p.life, p.ctype + (p.seed ?? 0)], vel: [p.vx, p.vy, p.vz].map((x) => x * WEATHER_SPEED_SI) }));
+    this.flyingEdits.clear();
+    this.backend.applyFlyingEdits?.(list);
+    this.passes++;
+    return list.length;
   }
 
   // ---------------------------------------------------------------- reads

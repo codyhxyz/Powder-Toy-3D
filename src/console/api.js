@@ -113,6 +113,18 @@ export function installBuiltins(host) {
     }
     return w().edit(x, y, z, FIELDS[key].bit | cond, { [key]: num(v, key) });
   };
+  // the same write to a packet (console/world.js editFlying: V1's partProperty on a flying cell, which is a
+  // cell, natively on V2's pool): its pressure is the air's where it flies, the cell's write there
+  const setPacketField = (f, key, v) => {
+    if (['x', 'y', 'z', 'id'].includes(key)) throw new Error(`${key} is read only`);
+    if (key === 'pressure') return w().edit(f.x, f.y, f.z, EDIT.PRESSURE, { pressure: num(v, key) });
+    if (key === 'type') {
+      const id = elementId(v);
+      if (id === E.EMPTY) return w().editFlying(f.slot, EDIT.SPAWN | EDIT.IF_MATTER, { type: E.EMPTY });
+      return w().editFlying(f.slot, EDIT.TYPE | EDIT.IF_MATTER, { type: id });
+    }
+    return w().editFlying(f.slot, FIELDS[key].bit | EDIT.IF_MATTER, { [key]: num(v, key) });
+  };
 
   // ------------------------------------------------------------ sim
   value('sim', 'PT_NUM', ELEMENTS.length, { doc: 'Number of elements (ids 0 to PT_NUM - 1).' });
@@ -142,6 +154,8 @@ export function installBuiltins(host) {
   fn('sim', 'partKill', function (...a) {
     const p = a.length >= 3 ? xyz(...a) : pos(int(a[0], 'index'));
     if (p && w().inBounds(...p)) w().edit(...p, EDIT.SPAWN | EDIT.IF_MATTER, { type: E.EMPTY });
+    const f = !p && a.length < 3 ? packetOf(this, int(a[0], 'index')) : null;
+    if (f) w().editFlying(f.slot, EDIT.SPAWN | EDIT.IF_MATTER, { type: E.EMPTY });
     return null;
   }, { args: 'i | x, y, z', writes: true, doc: 'Removes a particle (leaves air at room temperature).' });
 
@@ -168,6 +182,7 @@ export function installBuiltins(host) {
     const key = field(name);
     if (arguments.length >= 3) {
       if (p) setField(...p, key, v, EDIT.IF_MATTER);
+      else { const f = packetOf(this, int(i, 'index')); if (f) setPacketField(f, key, v); }
       return null;
     }
     const c = p && matter(this, ...p);
@@ -179,6 +194,7 @@ export function installBuiltins(host) {
   fn('sim', 'partChangeType', function (i, type) {
     const p = pos(int(i, 'index'));
     if (p) setField(...p, 'type', type, EDIT.IF_MATTER);
+    else { const f = packetOf(this, int(i, 'index')); if (f) setPacketField(f, 'type', type); }
     return null;
   }, { args: 'i, type', writes: true, doc: 'Changes particle i\'s element, keeping its temperature and the rest.' });
 
