@@ -83,13 +83,11 @@ export const COLUMN = (() => {
     // a deposited cell to launch: its y lane holds this, less its upward launch speed (a falling run's own
     // y lane is never negative)
     JET_MARK: -1,
-    // The crown (Worthington, A Study of Splashes, 1908): a run that lands on liquid harder than V1's splash
-    // speed (PHYS.LAND_SPLASH_V, m/s: move.js land) throws this share of its mass up out of its column at V1's
-    // splash share of its impact speed (PHYS.LAND_SPLASH_GAIN: V1 turns that much of it sideways), CROWN_ANGLE
-    // from the vertical, at a hashed azimuth (docs/v2.md 4.4's 0.3 bound on the energy it carries). Slower
-    // landings (a pour's one-cell drop) merge inelastically.
-    CROWN_SHARE: 0.15, CROWN_SPEED: PHYS.LAND_SPLASH_V * V1_STEP_MS, CROWN_GAIN: PHYS.LAND_SPLASH_GAIN,
-    CROWN_ANGLE: Math.PI / 4, CROWN_SALT: 0x63726f77,
+    // V1's landing splash (move.js land, MV-5): a liquid that lands faster than LAND_SPLASH_V (cells/step), on
+    // anything, turns sideways at its FLOW plus LAND_SPLASH_GAIN of its impact speed, in a random direction, each
+    // component to V_MAX: every cell of it that lands. A run throws the cells it lands this tick (the rows it
+    // vacated) from its top, each at a hashed azimuth. Slower landings (a pour's one-cell drop) merge.
+    SPLASH_V: PHYS.LAND_SPLASH_V, SPLASH_GAIN: PHYS.LAND_SPLASH_GAIN, STEP_MS: V1_STEP_MS, CROWN_SALT: 0x63726f77,
     // a liquid this thin under a pour still leaves it open below (lean-sim openBelow: FULL/16)
     THIN: FULL >> 4,
     // a face's demand word: what it carries in the low 24 bits, its launch head in the byte above, in
@@ -153,7 +151,9 @@ export const COLUMN_SHOCK_ON = Object.freeze(SHOCK_LANDINGS.filter(r => ELEMENTS
 // an orifice's jet leaves at most at FLOW (m/s). Non-liquids 0.
 export const COLUMN_FLOW = Object.freeze(ELEMENTS.map(e => {
   const flow = e.kind === K.LIQUID ? e.flow ?? 0 : 0;
-  return { q: Math.min(COLUMN.Q_MAX, Math.floor(v1PaceRate(flow) * COLUMN.STEPS * COLUMN.FULL)), ms: Number((flow * V1_STEP_MS).toPrecision(7)) };
+  // (keep: V1's drag a step on it once it has landed, react.js forces: 1 - DRAG)
+  return { q: Math.min(COLUMN.Q_MAX, Math.floor(v1PaceRate(flow) * COLUMN.STEPS * COLUMN.FULL)), ms: Number((flow * V1_STEP_MS).toPrecision(7)),
+    keep: e.kind === K.LIQUID ? Math.fround(1 - (e.drag ?? 0)) : 1 };
 }));
 
 // record flags, in the mass word (a run's mass stays under 2^30: 16 383 cells of FULL, or 1 023 of MAX_FILL)
@@ -187,11 +187,9 @@ const COL_CELL_M: f32 = ${COLUMN.CELL_M};
 const COL_JET_SPEED: f32 = ${f(COLUMN.JET_SPEED)};
 const COL_ORIFICE_CV: f32 = ${COLUMN.ORIFICE_CV};
 const COL_JET_MARK: f32 = ${f(COLUMN.JET_MARK)};
-const COL_CROWN_SHARE: f32 = ${COLUMN.CROWN_SHARE};
-const COL_CROWN_SPEED: f32 = ${f(COLUMN.CROWN_SPEED)};
-const COL_CROWN_GAIN: f32 = ${f(COLUMN.CROWN_GAIN)};
-const COL_CROWN_SIN: f32 = ${Math.sin(COLUMN.CROWN_ANGLE)};
-const COL_CROWN_COS: f32 = ${Math.cos(COLUMN.CROWN_ANGLE)};
+const COL_SPLASH_V: f32 = ${COLUMN.SPLASH_V};
+const COL_SPLASH_GAIN: f32 = ${COLUMN.SPLASH_GAIN};
+const COL_STEP_MS: f32 = ${f(COLUMN.STEP_MS)};
 const COL_TAU: f32 = ${2 * Math.PI};
 const COL_THIN: u32 = ${COLUMN.THIN}u;
 const COL_DEMAND_MAX: u32 = ${COLUMN.DEMAND_MAX}u;
@@ -214,6 +212,7 @@ const COL_FOAM_GAIN = array<f32, ${FOAM_ROWS.length}>(${FOAM_ROWS.map(r => `${r.
 // V1's flow cap a liquid (COLUMN_FLOW): a face's flux at most (quanta a tick per cell of wet face), its jet at most (m/s)
 const COL_FLOW_Q = array<f32, ${COLUMN_FLOW.length}>(${COLUMN_FLOW.map(r => f(r.q)).join(',')});
 const COL_FLOW_MS = array<f32, ${COLUMN_FLOW.length}>(${COLUMN_FLOW.map(r => f(r.ms)).join(',')});
+const COL_FLOW_KEEP = array<f32, ${COLUMN_FLOW.length}>(${COLUMN_FLOW.map(r => f(r.keep)).join(',')});
 
 // ---- records: a column's domains bottom up, record k in the liquidScratch slot of the column's cell at
 // height k (k < the domains' count <= NY). x = y0 | top << 16, y = r1 | liquid << 16 | lava subtype << 24,
@@ -339,7 +338,7 @@ fn colLaunchHead(xs: i32, zs: i32, xt: i32, zt: i32, rs: vec4u, y: i32) -> f32 {
   }
   return eta;
 }
-// a crown droplet to launch at (vx, vy, vz) m/s, vy upward: the jets' mark with the rise in its y lane
+// a splash droplet to launch at (vx, vy, vz) m/s, vy upward: the jets' mark with the rise in its y lane
 fn colMarkCrown(x: i32, y: i32, z: i32, vx: f32, vy: f32, vz: f32) {
   let p = vec3i(x, y, z); let s = slotOf(p); let before = loadMaterial(s);
   storeMaterial(s, before, Material(withLane(withLane(withLane(zeroQ(before.core), 0, vx), 2, vz), 1, COL_JET_MARK - vy), before.bank));
@@ -442,6 +441,7 @@ fn colDampTick(liq: u32) -> f32 { let keep = 1.0 - dampOf(liq); return 1.0 - kee
 // V1's flow caps of a liquid (COLUMN_FLOW): a face's flux (quanta a tick per cell of wet face), a jet's speed (m/s)
 fn colFlowCap(liq: u32) -> f32 { return COL_FLOW_Q[liq]; }
 fn colFlowSpeed(liq: u32) -> f32 { return COL_FLOW_MS[liq]; }
+fn colV1Keep(liq: u32) -> f32 { return COL_FLOW_KEEP[liq]; }
 
 // The paint of a receiver holding fd quanta under paint d that takes n quanta under paint s (RGBA8, unpainted 0):
 // the mixture's, alpha-weighted (premultiplied colour, mean alpha by fill), so a painted liquid's colour carries
@@ -795,38 +795,34 @@ fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
   }
   if (landed) { colSetLanes(x, r0 - d, z, 0.0, 0.0); } else if (r1 - d > 0) { colSetLanes(x, max(r0 - d, 0), z, u * COL_STEPS, fallen); }
   if (landed) { colShockLand(x, z, r0 - d, fallen, r1 - r0, hit); }
-  let impact = hit * COL_STEPS * COL_TICK_HZ * COL_CELL_M;
-  if (landed && d > 0 && r0 - d > o0 && colClass(x, r0 - d - 1, z) == C_LIQUID && impact > COL_CROWN_SPEED) {
-    colCrown(x, z, r0 - d, r1 - d, d, impact * COL_CROWN_GAIN);
-  }
+  // V1's landing (move.js land) sees the speed it has the step after it arrives: a step more of gravity, and its
+  // drag now it is no longer in free fall (react.js forces), to V_MAX
+  let impact = min(COL_V_MAX, (hit + g) * colV1Keep(cid(colCell(x, r0 - d, z))));
+  if (landed && d > 0 && impact > COL_SPLASH_V) { colSplash(x, z, r0 - d, r1 - d, d, impact); }
   return r0 - d;
 }
-// The crown of a run [b0, b1) that just landed, thrown at impact m/s (V1's splash share of its landing speed):
-// CROWN_SHARE of its mass, cut from its top down, into the cells it vacated above it (rows of them), each marked
-// to launch up and out.
-fn colCrown(x: i32, z: i32, b0: i32, b1: i32, rows: i32, impact: f32) {
-  var mass = 0u;
-  for (var k = b0; k < b1; k++) { mass = mass + colFill(x, k, z); }
-  var left = u32(floor(f32(mass) * COL_CROWN_SHARE));
+// V1's splash (move.js land) of a run [b0, b1) that just landed at impact cells/step: the cells it landed this tick
+// (rows of them, the rows it vacated above it), cut from its top down into those rows, each marked to launch
+// sideways at its liquid's FLOW plus LAND_SPLASH_GAIN of the impact, at a hashed azimuth, each component to V_MAX
+fn colSplash(x: i32, z: i32, b0: i32, b1: i32, rows: i32, impact: f32) {
+  let speed = colFlowSpeed(cid(colCell(x, b0, z))) + COL_SPLASH_GAIN * impact * COL_STEP_MS;
+  let most = COL_V_MAX * COL_STEP_MS;
   var giver = b1 - 1;
   for (var r = 0; r < rows; r++) {
-    if (left == 0u) { break; }
     let y = b1 + r;
-    let share = min(left, FULLU);
     var put = 0u;
     loop {
-      if (put >= share || giver < b0) { break; }
+      if (put >= FULLU || giver < b0) { break; }
       let have = colFill(x, giver, z);
       if (have == 0u) { giver = giver - 1; continue; }
-      let m = min(share - put, have);
+      let m = min(FULLU - put, have);
       if (!colMove(x, giver, z, x, y, z, m, false)) { break; }
       put = put + m;
       if (m == have) { giver = giver - 1; }
     }
     if (put == 0u) { break; }
-    left = left - put;
     let azimuth = colCrownAzimuth(x, y, z) * COL_TAU;
-    colMarkCrown(x, y, z, impact * COL_CROWN_SIN * cos(azimuth), impact * COL_CROWN_COS, impact * COL_CROWN_SIN * sin(azimuth));
+    colMarkCrown(x, y, z, clamp(speed * cos(azimuth), -most, most), 0.0, clamp(speed * sin(azimuth), -most, most));
   }
 }
 

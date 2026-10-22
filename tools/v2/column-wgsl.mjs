@@ -14,14 +14,14 @@ import { PACE } from '../../src/shaders/move.js';
 
 export const TRANSLATED = ['colMove', 'colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colPack', 'colFall',
   'colFinish', 'colShockLand', 'colShockSpeed2', 'colV1FallSpeed', 'colShockOnFall', 'colShockOnPhased', 'colShockOnSpeed', 'colV1Fall', 'colV1Hit', 'colV1Age', 'colStepGravity', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
-  'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colCrown', 'colLayer', 'colDepthAt', 'colFloats', 'colFloor', 'colSends', 'colStratify',
+  'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colSplash', 'colLayer', 'colDepthAt', 'colFloats', 'colFloor', 'colSends', 'colStratify',
   // radial gravity (columns.js RADIAL)
   'colRadInside', 'colRadPull', 'colRadAxis', 'colRadSign', 'colRadMass', 'colRadHead', 'colRadWetBelow', 'colRadCovered', 'colRadDemand',
   'colRadNote', 'colRadRuns', 'colRadTowardPlus', 'colRadPairs', 'colRadFace', 'colRadPackAmount', 'colRadSendAmount',
   // the kernels' column threads (v2runs, v2pairs main)
   'colRunsColumn', 'colPairsColumn'];
 // the f32 functions (division allowed: never on integers)
-export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colStepGravity', 'colV1Age', 'colV1Hit', 'colShockOnSpeed', 'colDampTick', 'colLimit', 'colFall', 'colShockLand', 'colV1FallSpeed', 'colV1Fall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown', 'colLayer', 'colDepthAt', 'colSends',
+export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colStepGravity', 'colV1Age', 'colV1Hit', 'colShockOnSpeed', 'colDampTick', 'colLimit', 'colFall', 'colShockLand', 'colV1FallSpeed', 'colV1Fall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colSplash', 'colLayer', 'colDepthAt', 'colSends',
   'colRadPull', 'colRadHead', 'colRadDemand'];
 
 export function wgslFunction(code, name) {
@@ -153,7 +153,7 @@ export class ColumnGrid {
       isOpenC: c => { const k = CLS[L.cid(c)]; return k === C.AIR || k === C.LIQUID; },
       materialAmount: c => (L.cid(c) === 0 ? 0 : L.isLiquid(L.cid(c)) ? L.cFill(c) : L.FULL),
       // V1's flow caps (columns.js COLUMN_FLOW) and the paint mix of a receiver (columns.js colPaintMix, RGBA8 unorm)
-      colFlowCap: id => COLUMN_FLOW[id].q, colFlowSpeed: id => COLUMN_FLOW[id].ms,
+      colFlowCap: id => COLUMN_FLOW[id].q, colFlowSpeed: id => COLUMN_FLOW[id].ms, colV1Keep: id => COLUMN_FLOW[id].keep,
       colPaintMix: (d, s, fd, n) => {
         if (fd === 0 || d === s) return s >>> 0;
         const ch = (w, k) => ((w >>> (8 * k)) & 255) / 255, wa = fd * ch(d, 3), wb = n * ch(s, 3);
