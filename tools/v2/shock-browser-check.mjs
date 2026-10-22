@@ -16,7 +16,8 @@ import { openHarness } from '../harness/open.mjs';
 // V1 on the same drops (--v1, 2026-10-22, Apple M-series): none of its nitroglycerin is left 2 s after the
 // 12.6 m drop. It lands from 0.15 s (V1's 44 g) and is gone by 0.30 s, its chain taking all it reaches. (V1's
 // 4.8 m block goes off as it lands, its liquid falling without drag past fallKE's NITRO_FALL_M, and takes
-// the resting block 18 cells away with it, so V1 drops the 12.6 m block alone: 48 → 0 cells.)
+// the resting block 15 cells away with it, so V1 drops the 12.6 m block alone: 48 → 0 cells. Here V2's two
+// resting blocks lie 15 and 21 cells from it, 15 from each other: V1's chain reaches that far.)
 const V1_HIGH_LEFT = 0;
 // V2's amounts are f32 fills and packets, V1's whole cells: what V2 may leave over V1's (cells)
 const V1_MATCH_CELLS = 1;
