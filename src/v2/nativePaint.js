@@ -8,25 +8,38 @@ import { nativeModes } from './modes.js';
 import { nativeWeatherParams, boxWGSL, weatherMain, WEATHER_SPEED_SI } from './nativeWeather.js';
 import { heldBase } from '../shaders/v2/particles.js';
 import { PARTICLE_CAP } from './dynamics-reference.js';
+import { PROP_TOOL } from '../elements.js';
 
-// The brush tools whose V1 rule replaces a cell with another cell's or a new
-// type's contents, run on the native cells themselves: TPT's Mix (MIX.cpp: a
-// swap with a cell of its own kind) and the Property tool's type (PropertyTool:
-// the particle keeps everything but its type). Through V1's projection and the
-// owned-cell import they would come back FULL, with no bank or flux: a stirred
-// puddle would grow. Here the rule is V1's own text (passes.js paintUpdateWGSL),
-// evaluated on a frozen physical view of the native cells (the weather/force
-// adapters' evaluate, nativeWeather.js); only the commit is native: a Mix swap
-// moves the partner's exact core and bank (fill, flux, fall, latent heat), and a
-// new type keeps a liquid's fill when it stays a liquid. No legacy A/B write,
-// no import. Every chunk is evaluated before any commits: Mix pairs read each
-// other, so the stroke reads the state before it (V1's two-phase paint, D6).
+// V1's cell writers that aren't steps (docs/webgpu.md D6: the brush, a construction stamp, an
+// imported door), run on V2's own cells. Each writer's rule is V1's own text (its `update`: the
+// brush's passes.js paintUpdateWGSL, shaders/construction.js buildStampUpdate, the doors' edits in
+// pov/importedInteractions.js), evaluated on a frozen physical view of the native cells (the
+// weather/force adapters' evaluate, nativeWeather.js); only the commit is native, and it touches
+// only the cells the rule changed. Through V1's projection and the owned-cell import a write cost an
+// export of every brick changed since the last one plus an import, and came back lossy: an owned
+// cell FULL with its bank reset, the cells it didn't change re-merged from the projection. Here:
+//   a move (TPT's Mix: MIX.cpp swaps with a cell of its own kind; a moving door leaf) takes the
+//     source cell's exact core and bank (fill, flux, fall, latent heat);
+//   a cell the rule replaced (V1's ownLegacy, or a change of element: noteLegacy's capture-2 rule)
+//     is a new cell as V2's import makes one (shaders/v2.js importA: liquids FULL, their life, a
+//     conductor's spark), except that the Property tool's type keeps a liquid's fill while it
+//     stays a liquid (PropertyTool changes the type, not the mass);
+//   a cell whose temperature, life or ctype the rule changed in place (Heat, Cool, Spark, Warm and
+//     Cool air, the Property tool's temperature, life and ctype) merges them as V2's import merges
+//     a cell it doesn't own (shaders/v2.js importProperties): sensible heat on its own bank, its
+//     fill, flux and fall untouched.
+// No legacy A/B write, no import. Every chunk is evaluated before any commits: Mix pairs and a
+// stamp's footings read other cells, so the write reads the state before it (V1's two-phase edit, D6).
 const binding = (n, read = false) => ({ binding: n, visibility: STAGE.COMPUTE, buffer: { type: read ? 'read-only-storage' : 'storage' } });
 export const NATIVE_PAINT_EVAL_LAYOUT = [...PAINT_LAYOUT, binding(1), binding(2, true)];
 export const NATIVE_PAINT_COMMIT_LAYOUT = [binding(0, true)];
 export const NATIVE_PAINT_PARTICLE_LAYOUT = [binding(0, true), binding(1), binding(2)];
 export const NATIVE_PAINT_RESULT_BYTES = 48;
-export const NATIVE_PAINT_FLAG = Object.freeze({ SWAP: 1, TYPE: 2 });
+// SWAP: a move (the result's core and bank are the source's); TYPE: a new cell; MERGE: properties
+// merged in place, the result's pad.x the fields (NATIVE_PAINT_PARTICLE's TEMP/LIFE/CTYPE bits) and
+// pad.y the temperature change in quarter degrees (the rule's own delta: a cell mid phase change
+// keeps its latent heat, as importProperties adds sensible heat to the bank).
+export const NATIVE_PAINT_FLAG = Object.freeze({ SWAP: 1, TYPE: 2, MERGE: 4 });
 // What V1's brush rule changed on a flying cell (particleEvaluate), field by field, for the
 // particle commit: KILL empties it, TYPE retypes it, TEMP/LIFE/CTYPE merge as importProperties does.
 export const NATIVE_PAINT_PARTICLE = Object.freeze({ KILL: 1, TYPE: 2, TEMP: 4, LIFE: 8, CTYPE: 16 });
@@ -43,24 +56,59 @@ const MIX_PARTNER = 'let q = p + lq - l;';
 // and one that changes a cell's type, temperature, life or ctype (Heat, Cool,
 // Spark, Property) changes a flying one the same way (particleCommit).
 const particleWGSL = 'struct PaintParticle { position: vec3f, id: u32, velocity: vec3f, c0: u32, tail: vec4u }';
-const updateHeadWGSL = (g, params) => `${prelude(g, STATE_OPTS.STATE_RO)}
+const updateHeadWGSL = (g, params, spec = paintSpec(g)) => `${prelude(g, STATE_OPTS.STATE_RO)}
 ${params.wgsl}
 @group(3) @binding(1) var<uniform> P: ${params.name};
 ${modeWGSL}
 ${fallWGSL}
-${paintDeclsWGSL(g)}
+${spec.decls}
 var<private> paintOwned: bool;
+var<private> paintMoved: bool;
 var<private> paintPartner: vec3i;
 fn ownLegacy(s: u32) { paintOwned = true; }
-${nativePaintUpdateWGSL()}`;
+${spec.update}`;
+// A writer for createNativeEditKernel: its V1 update (the text a hook may extend: the move's source
+// recorded where V1 computes it), decls and group-2 layout (binding 0 at most: the results and the
+// banks take 1 and 2), params, which cells move (moved: a WGSL test after the update), which keep
+// a liquid's fill when retyped (retype), and whether a move notes its energy (a door leaf moves
+// one way; a Mix pair is mutual, so its energy moves and none is made).
+export const paintSpec = g => ({ update: nativePaintUpdateWGSL(), decls: paintDeclsWGSL(g), layout: PAINT_LAYOUT, moved: 'P.tool==T_MIX && paintOwned', retype: `P.tool==${PROP_TOOL}`, particles: true });
+export function nativeEditSpec({ update, decls = '', layout = [], hook = null, moved = 'false', retype = 'false', noteMoves = false }) {
+  if (layout.some(e => e.binding !== 0)) throw new Error('nativeEditSpec: a writer binds binding 0 at most');
+  let text = update;
+  if (hook) {
+    const parts = update.split(hook[0]);
+    if (parts.length !== 2) throw new Error('nativeEditSpec: the writer no longer moves its source as expected');
+    text = parts.join(hook[0] + hook[1]);
+  }
+  return { update: text, decls, layout, moved, retype, noteMoves, particles: false };
+}
+// A cell V1's writer made, as V2's import makes an owned one (shaders/v2.js importA: the element at
+// its temperature, a liquid's life and ctype, a gas that fades given life, a conductor's ctype as its
+// spark, the colour seed), holding amount of liquid.
+const newCellWGSL = /* wgsl */ `
+fn nativeNewCell(a: vec4f, amount: u32) -> Material {
+ let id=u32(a.x); let k=cls(id);
+ let legacy=u32(max(floor(a.w),0.0));
+ var m=makeMaterial(id,a.y,amount,select(legacy&255u,0u,conductsNative(id)));
+ if(k!=C_AIR) {
+  var life=a.z;
+  if(k==C_GAS && fadeOf(id)>0.0 && life<=0.0) { life=1.0; }
+  m.core=withLife(m.core,life);
+  if(k!=C_LIQUID) { m.core.w=u32(clamp(fract(a.w)/${SEED_MAX}*65536.0,0.0,65535.0))<<16u; }
+ }
+ if(conductsNative(id)) { m.core=withSpark(m.core,legacy); }
+ return m;
+}`;
 export function nativePaintUpdateWGSL() {
   const parts = paintUpdateWGSL.split(MIX_PARTNER);
   if (parts.length !== 2) throw new Error('passes.js mixCell no longer computes its partner as expected');
   return parts.join(`${MIX_PARTNER}\n  paintPartner = q;`);
 }
 export const nativePaintParams = () => nativeWeatherParams('nativePaint', { params: PaintParams });
-export function nativePaintWGSL(g, params, stage) {
-  if (stage === 'particleEvaluate') return `${updateHeadWGSL(g, params)}
+export const nativeEditParams = (name, params) => nativeWeatherParams(name, { params });
+export function nativePaintWGSL(g, params, stage, spec = paintSpec(g)) {
+  if (stage === 'particleEvaluate') return `${updateHeadWGSL(g, params, spec)}
 ${particleWGSL}
 ${particleResultWGSL}
 @group(2) @binding(1) var<storage, read_write> particleResults: array<PaintParticleResult>;
@@ -134,19 +182,28 @@ if(cid(m.core)!=cid(before.core)) { setParticleDeco(i,0u); }
 paintParticles[i]=particle;
 if(inGrid(p)) { markBusy(p); }`)}
 `;
-  if (stage === 'evaluate') return `${updateHeadWGSL(g, params)}
+  if (stage === 'evaluate') return `${updateHeadWGSL(g, params, spec)}
 ${resultWGSL}
 @group(2) @binding(1) var<storage, read_write> results: array<PaintResult>;
 @group(2) @binding(2) var<storage, read> paintBanks: array<i32>;
 ${boxWGSL}
 ${weatherMain(`if(i>=weatherCount()) { return; }
 let p=weatherCell(i); let a=fetchA(p); let b=fetchB(p);
-var outA=a; var outB=b; paintOwned=false; paintPartner=p;
+var outA=a; var outB=b; paintOwned=false; paintMoved=false; paintPartner=p;
 update(p,a,b,&outA,&outB);
 var r=PaintResult(vec4u(0u),outA,0,0u,vec2u(0u));
-if(P.tool==T_MIX) {
- if(paintOwned) { r.core=fetchNativeCore(paintPartner); r.bank=paintBanks[slotOf(paintPartner)]; r.flags=${NATIVE_PAINT_FLAG.SWAP}u; }
-} else if(any(outA!=a)) { r.flags=${NATIVE_PAINT_FLAG.TYPE}u; }
+if(${spec.moved}) { r.core=fetchNativeCore(paintPartner); r.bank=paintBanks[slotOf(paintPartner)]; r.flags=${NATIVE_PAINT_FLAG.SWAP}u; }
+else if(any(outA!=a)) {
+ // replaced (V1's ownLegacy, or noteLegacy's change of element): a new cell, as the import makes an owned one
+ if(paintOwned || eid(outA)!=eid(a)) { r.flags=${NATIVE_PAINT_FLAG.TYPE}u; }
+ else {
+  // changed in place: importProperties's fields (a seed alone owns nothing)
+  if(outA.y!=a.y) { r.pad.x|=${PF.TEMP}u; r.pad.y=bitcast<u32>(i32(round((outA.y-a.y)*4.0))); }
+  if(outA.z!=a.z) { r.pad.x|=${PF.LIFE}u; }
+  if(floor(outA.w)!=floor(a.w)) { r.pad.x|=${PF.CTYPE}u; }
+  if(r.pad.x!=0u) { r.flags=${NATIVE_PAINT_FLAG.MERGE}u; }
+ }
+}
 results[i]=r;`)}
 `;
   if (stage === 'commit') return `${params.wgsl}
@@ -155,27 +212,41 @@ ${nativeDynamicsHead(g)}
 ${resultWGSL}
 @group(1) @binding(0) var<storage, read> results: array<PaintResult>;
 ${boxWGSL}
+${newCellWGSL}
 ${weatherMain(`if(i>=weatherCount()) { return; }
 let r=results[i]; if(r.flags==0u) { return; }
 let p=weatherCell(i); let s=slotOf(p); let before=loadMaterial(s);
 var m=before;
 if(r.flags==${NATIVE_PAINT_FLAG.SWAP}u) {
- // Mutual by construction (both cells test the same pair and coin): energy moves, none is made.
  m=Material(r.core,r.bank);
-} else {
+ ${spec.noteMoves ? '// one way (a door leaf): what arrives is a source here, what left a sink at its source (TYPE)\n noteEnergySource(p,energySub(energyOf(m),energyOf(before)));' : '// Mutual by construction (both cells test the same pair and coin): energy moves, none is made.'}
+} else if(r.flags==${NATIVE_PAINT_FLAG.TYPE}u) {
  let id=u32(r.after.x);
- if(id==cid(before.core)) { return; }
- // the weather adapter's new-source rule (nativeWeather.js), but a liquid that
- // stays a liquid keeps its amount: PropertyTool changes the type, not the mass
  var amount=FULLU;
- if(isLiq(before.core) && cls(id)==C_LIQUID) { amount=cFill(before.core); }
- m=makeMaterial(id,r.after.y,amount,u32(floor(r.after.w)));
- m.core=withLife(m.core,r.after.z);
- if(!isLiq(m.core)) { m.core.w=u32(fract(r.after.w)/${SEED_MAX / 65536})<<16u; }
+ if(${spec.retype}) {
+  if(id==cid(before.core)) { return; }
+  // a liquid that stays a liquid keeps its amount: PropertyTool changes the type, not the mass
+  if(isLiq(before.core) && cls(id)==C_LIQUID) { amount=cFill(before.core); }
+ }
+ m=nativeNewCell(r.after,amount);
+ noteEnergySource(p,energySub(energyOf(m),energyOf(before)));
+} else {
+ // V2's importProperties (shaders/v2.js bridgeWGSL) on the fields the rule changed: ctype, life, sensible heat
+ if((r.pad.x&${PF.CTYPE}u)!=0u) {
+  let ct=u32(max(floor(r.after.w),0.0));
+  if(conductsNative(cid(m.core))) { m.core=withSpark(m.core,ct); } else { m.core=withCtype(m.core,ct); }
+ }
+ if((r.pad.x&${PF.LIFE}u)!=0u && !(isLiq(m.core) && conductsNative(cid(m.core)))) { m.core=withLife(m.core,r.after.z); }
+ if((r.pad.x&${PF.TEMP}u)!=0u) {
+  let dq=bitcast<i32>(r.pad.y);
+  let heat=energyMul(capacityQ(m.core),u32(abs(dq)));
+  let edited=energyAdd(energyOf(m),select(heat,energyNeg(heat),dq<0));
+  if(energyFits(m,edited)) { m=withEnergy(m,edited); }
+ }
  noteEnergySource(p,energySub(energyOf(m),energyOf(before)));
 }
 if(all(m.core==before.core) && m.bank==before.bank) { return; }
-// V1's brush scrubs the decoration of every cell it gives a new element (sim.edit { scrub: true },
+// V1's edits scrub the decoration of every cell they give a new element (sim.edit { scrub: true },
 // src/deco.js decoScrub: TPT's create_part resets dcolour); a Mix swap of equals keeps it in place
 if(cid(m.core)!=cid(before.core)) { setDeco(s,0u); }
 storeMaterial(s,before,m);
@@ -187,28 +258,33 @@ for(var z=-1;z<=1;z++) { for(var y=-1;y<=1;y++) { for(var x=-1;x<=1;x++) { markB
 // The driver: evaluate every chunk of the box, then commit every chunk; then,
 // for a stroke that empties cells, the particle list (65536 slots, one pass each).
 export function createNativePaintKernel(sim) {
+  return createNativeEditKernel(sim, 'nativePaint', paintSpec(sim.g), nativePaintParams());
+}
+// name: its kernels' prefix; spec: paintSpec or nativeEditSpec; params: its nativeWeatherParams struct.
+export function createNativeEditKernel(sim, name, spec, params) {
   const o = sim.compactOwner, d = o?.dynamics, gpu = sim.gpu;
-  if (!d) throw new Error('nativePaint: native dynamics unavailable');
-  const params = nativePaintParams();
-  const layout = (name, entries) => gpu.layout(name, entries);
-  const evalLayout = layout('nativePaintEvaluate', NATIVE_PAINT_EVAL_LAYOUT), commitLayout = layout('NATIVE_PAINT_COMMIT', NATIVE_PAINT_COMMIT_LAYOUT);
-  const particleLayout = layout('NATIVE_PAINT_PARTICLE', NATIVE_PAINT_PARTICLE_LAYOUT);
-  const make = (name, stage, layouts) => gpu.kernel({ name, params, code: nativePaintWGSL(sim.g, params, stage), layouts });
-  const evaluate = make('nativePaintEvaluate', 'evaluate', [sim.L.TABLES, sim.L.STATE_RO, evalLayout]);
-  const commit = make('nativePaintCommit', 'commit', [o.nativeDynamics.layout, commitLayout]);
-  const particleEvaluate = make('nativePaintParticleEvaluate', 'particleEvaluate', [sim.L.TABLES, sim.L.STATE_RO, evalLayout]);
-  const particleCommit = make('nativePaintParticleCommit', 'particleCommit', [o.nativeDynamics.layout, particleLayout]);
-  const kernels = [evaluate, commit, particleEvaluate, particleCommit];
+  if (!d) throw new Error(`${name}: native dynamics unavailable`);
+  const layout = (n, entries) => gpu.layout(n, entries);
+  const evalLayout = layout(`${name}Evaluate`, [...spec.layout, binding(1), binding(2, true)]), commitLayout = layout('NATIVE_PAINT_COMMIT', NATIVE_PAINT_COMMIT_LAYOUT);
+  const particleLayout = spec.particles ? layout('NATIVE_PAINT_PARTICLE', NATIVE_PAINT_PARTICLE_LAYOUT) : null;
+  const make = (n, stage, layouts) => gpu.kernel({ name: n, params, code: nativePaintWGSL(sim.g, params, stage, spec), layouts });
+  const evaluate = make(`${name}Evaluate`, 'evaluate', [sim.L.TABLES, sim.L.STATE_RO, evalLayout]);
+  const commit = make(`${name}Commit`, 'commit', [o.nativeDynamics.layout, commitLayout]);
+  const particleEvaluate = spec.particles ? make(`${name}ParticleEvaluate`, 'particleEvaluate', [sim.L.TABLES, sim.L.STATE_RO, evalLayout]) : null;
+  const particleCommit = spec.particles ? make(`${name}ParticleCommit`, 'particleCommit', [o.nativeDynamics.layout, particleLayout]) : null;
+  const kernels = [evaluate, commit, particleEvaluate, particleCommit].filter(Boolean);
   // Its own kernels only: it records none of the dynamics' (it writes their buffers: the flying
   // matter's records, which it edits as V1's brush did its moving cells), so the brush paints from the
   // first frame while their kernels still build (src/v2/physics.js dynamicsReady).
   const ready = Promise.all(kernels.map(k => k.ready)); ready.catch(() => {});
   const built = () => kernels.every(k => k.state === 'ready') && !d.disposed;
-  /** box: grid cells; values: PaintParams; mask: a fill's bytes; grid: run the
-   * cell rule here (Mix, Property type); particles: apply the rule to the flying matter too
-   * (empty, retype, heat, life, ctype: particleCommit). */
-  function run(box, values, mask, { grid = true, particles = false } = {}) {
+  /** box: grid cells; values: the params' fields; mask: a fill's bytes (the brush), or
+   * source: the writer's own binding-0 buffer (a stamp's cells, a door's records); grid: run the
+   * cell rule here; particles: apply the rule to the flying matter too (empty, retype, heat,
+   * life, ctype: particleCommit; the brush only). */
+  function run(box, values, mask, { grid = true, particles = false, source: own = null } = {}) {
     if (!built() || sim.disposed || o.disposed || sim.compactOwner !== o || !box) return false;
+    if (particles && !spec.particles) throw new Error(`${name}: no particle stages`);
     const dims = [sim.g.nx, sim.g.ny, sim.g.nz];
     box = { lo: box.lo.map(v => Math.max(0, Math.ceil(v))), hi: box.hi.map((v, a) => Math.min(dims[a] - 1, Math.floor(v))) };
     if (box.lo.some((v, a) => v > box.hi[a])) return false;
@@ -225,31 +301,33 @@ export function createNativePaintKernel(sim) {
       left.hi[a] = cut - 1; right.lo[a] = cut; split(left); split(right);
     })(box);
     o.sync();
-    const source = mask ? sim._paintMask(mask) : sim.noMask;
+    const source = own ?? (mask ? sim._paintMask(mask) : sim.noMask);
     const entries = (buffers, start = 0) => buffers.map((buffer, i) => ({ binding: start + i, resource: { buffer } }));
     const p = b => ({ ...nativeModes(sim), ...values, editLo: b.lo, editHi: b.hi, tick: o.tick + 1 });
     const dispatch = (k, n, bind, header, b) => {
       k.dispatch(gpu.frame, fold(Math.ceil(n / 64)), { bind, header, params: p(b) });
       sim.onPass?.(k.name, { kind: 'compute', gpuMs: null });
     };
-    const evalGroup = (scratch, read) => gpu.bindGroup(evalLayout, [{ binding: 0, resource: { buffer: source } }, ...entries([scratch, read], 1)], 'native paint');
+    const evalGroup = (scratch, read) => gpu.bindGroup(evalLayout, [...(spec.layout.length ? [{ binding: 0, resource: { buffer: source } }] : []), ...entries([scratch, read], 1)], name);
     for (const c of chunks) {
-      c.scratch = gpu.createBuffer({ label: 'native paint results', size: c.count * NATIVE_PAINT_RESULT_BYTES, usage: GPUBufferUsage.STORAGE });
+      c.scratch = gpu.createBuffer({ label: `${name} results`, size: c.count * NATIVE_PAINT_RESULT_BYTES, usage: GPUBufferUsage.STORAGE });
       dispatch(evaluate, c.count, [sim.tables, sim.bindPhysicalRO, evalGroup(c.scratch, o.aux)], sim.readHeader({ physical: true }), c.box);
     }
     for (const c of chunks) {
-      dispatch(commit, c.count, [o.nativeDynamics.group, gpu.bindGroup(commitLayout, entries([c.scratch]), 'native paint commit')], sim.header(), c.box);
+      dispatch(commit, c.count, [o.nativeDynamics.group, gpu.bindGroup(commitLayout, entries([c.scratch]), `${name} commit`)], sim.header(), c.box);
       sim._retire(c.scratch);
     }
     if (particles) {
       // (after the grid's commit: a particle's cell rule reads the stroke's grid as V1's moving cells did)
-      const results = gpu.createBuffer({ label: 'native paint particle results', size: PARTICLE_CAP * NATIVE_PAINT_PARTICLE_RESULT_BYTES, usage: GPUBufferUsage.STORAGE });
+      const results = gpu.createBuffer({ label: `${name} particle results`, size: PARTICLE_CAP * NATIVE_PAINT_PARTICLE_RESULT_BYTES, usage: GPUBufferUsage.STORAGE });
       dispatch(particleEvaluate, PARTICLE_CAP, [sim.tables, sim.bindPhysicalRO, evalGroup(results, d.particles)], sim.readHeader({ physical: true }), box);
-      dispatch(particleCommit, PARTICLE_CAP, [o.nativeDynamics.group, gpu.bindGroup(particleLayout, entries([results, d.particles, d.control]), 'native paint particles')], sim.header(), box);
+      dispatch(particleCommit, PARTICLE_CAP, [o.nativeDynamics.group, gpu.bindGroup(particleLayout, entries([results, d.particles, d.control]), `${name} particles`)], sim.header(), box);
       sim._retire(results);
     }
     o.legacyPending = o.writtenSinceTick = true;
     sim.version++; o.seenVersion = sim.version; sim.changedAll = true;
+    // a semantic write, as V1's sim.edit notes one (the World's render source)
+    sim.worldRenderSource?.noteContentChange?.();
     d._externalWork(); sim.wake();
     return true;
   }
