@@ -12,7 +12,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(fileURLToPath(import.meta.url), '../../..');
 const argv = process.argv.slice(2);
-// minutes each (column-wgsl-check: 140-290 s, its WGSL column twin over every case)
+// minutes each (column-wgsl-check: over 300 s since the pair stages run 4 times a tick; its oil-on-water
+// case needs its 2700 ticks to certify idle, so it runs whole, in its own job)
 export const LONG = ['tools/v2/column-wgsl-check.mjs'];
 const BROWSER = /browser\.mjs|playwright|launchBrowser|newTestPage|chromium|vite-server/;
 // CPU-only although they name the launcher (native-grid-check stubs newTestPage)
@@ -35,7 +36,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const failed = [];
   for (const rel of picked) {
     const t0 = Date.now();
-    const r = spawnSync(process.execPath, [rel], { cwd: root, encoding: 'utf8', timeout: 600000, maxBuffer: 64 << 20 });
+    const r = spawnSync(process.execPath, [rel], { cwd: root, encoding: 'utf8', timeout: LONG.includes(rel) ? 1800000 : 600000, maxBuffer: 64 << 20 });
     const ok = r.status === 0, s = ((Date.now() - t0) / 1000).toFixed(1);
     console.log(`${ok ? 'ok  ' : 'FAIL'} ${rel} ${s}s`);
     if (!ok) { failed.push(rel); console.log(`${r.stdout ?? ''}${r.stderr ?? ''}${r.error ? `\n${r.error.message}` : ''}`.split('\n').filter(Boolean).slice(-20).join('\n')); }
