@@ -54,6 +54,8 @@ export const LIST_NAMES = ['source', 'step', 'wind', 'events', 'jets', 'reachX',
 // serviceable charge in it (V1 react.js has no cap: every charge that meets its trigger goes off that
 // step, so a tick serves every charge of up to CHARGES_MAX bricks, 4,096 cells, together).
 export const CHARGES_MAX = 64;
+// frontFlood's passes, D_FLOOD_STEPS cells each: as far as V1's front from P_MAX passes the floor (v1BlastReach).
+export const FLOOD_PASSES = Math.ceil(v1BlastReach(V1_FRONT.P_MAX) / 2);
 // A source's words: its brick's two charge masks, its charges' box in the brick (2 bits an axis, lo
 // then hi) with its reach (cells) above, their energy (J), the mean of their cells (grid cells, x y z)
 // and the legacy pressure V1's front leaves it with (dynamics-reference.js v1FrontSource).
@@ -513,6 +515,28 @@ fn dSrcSees(k: u32, p: vec3i) -> bool {
   }
   return false;
 }
+// The flood (frontFlood): the front (legacy) a cell holds after round-1 passes: a source cell its source's
+// pressure (round 1 reads the sources, later ones the last round's plans), past the grid none.
+const D_FLOOD_PASSES: u32 = ${FLOOD_PASSES}u;
+const D_FLOOD_UNIT: f32 = ${f(V1_FRONT.P_MAX / 16383)};   // a quantum of the front planCharges keeps (14 bits to P_MAX)
+const D_FLOOD_SHIFT: u32 = 16u;
+fn dFace(f: u32) -> vec3i { var d=vec3i(0); d[f>>1u]=select(1,-1,(f&1u)!=0u); return d; }
+fn dFloodHeld(c0: vec3i, round: u32) -> f32 {
+  let c=mEdge(c0); if (!inGrid(c)) { return 0.0; }
+  if (round<=1u) { if (!dIsSourceCell(c)) { return 0.0; } let s=slotOf(c); return dSrcPressure(atomicLoad(&control[D_SOURCE_OF+s/64u])-1u); }
+  return plans[slotOf(c)].velocity[(round-1u)&1u];
+}
+// Does cell c round the front on (legacy) reaching it steps cells out (dSrcPasses, as the flood reads it)?
+fn dFloodPasses(c0: vec3i, on: f32, steps: i32) -> bool {
+  let c=mEdge(c0); if (!inGrid(c)) { return false; }
+  let id=cid(loadMaterial(slotOf(c)).core);
+  if (cls(id)!=1u || dIsSourceCell(c)) { return true; }
+  return dCrush(id)>0.0 && steps<=D_CHAIN && on*${f(LEGACY_PRESSURE_PA)}>dCrush(id);
+}
+// The flood's front on this cell (Pa), as planCharges keeps it in its plan's flags, and the flags without it.
+fn dFloodFront(flags: u32) -> f32 { return f32((flags>>D_FLOOD_SHIFT)&16383u)*D_FLOOD_UNIT*${f(LEGACY_PRESSURE_PA)}; }
+fn dFloodKeep(front: f32) -> u32 { return u32(clamp(round(front/D_FLOOD_UNIT),0.0,16383.0))<<D_FLOOD_SHIFT; }
+const D_FLOOD_BITS: u32 = 16383u<<16u;
 // Source k's share at p (direction times J), p in its sight: plan's expressions, from its charges' mean cell.
 fn dSrcShare(k: u32, p: vec3i) -> vec3f {
   let delta=vec3f(p)-dSrcCentre(k); let r2 = max(0.25,dot(delta,delta));
@@ -656,6 +680,44 @@ var<workgroup> wgSources: u32;
   // normalize scales each source to its own budget, damage adds the sources' scaled shares. One source of
   // one charge is the old plan's expressions (tools/v2/blast-batch-check.mjs).
   // External blasts (mode 14) keep plan/sum/normalize/damagePlan/finish.
+  // BL-11: V1's front goes around corners (react.js: each open cell takes P_FRONT of its strongest open
+  // neighbour a step), so a cell's front is its source's pressure kept V1_FRONT.KEEP a cell along the shortest
+  // path of cells that pass it (dSrcPasses: open cells, the sources, an explosive the front sets off within the
+  // tick's steps), not only along a straight sight line. A bounded flood over the cells within the batch's
+  // reach: pass i (P.substep, 1..FLOOD_PASSES) takes the front two cells further, the largest of every
+  // source's (V1's max), in plans' velocity x/y in turn; pass 0 leaves each cell the front on it (an
+  // explosive's pOn; a solid's difference across it, V1's breaking test) in its velocity z, which
+  // planCharges keeps in its plan's flags for damageCharges (dFloodFront). The sight-line front stays the
+  // throw's and the flame chain's.
+  if (stage === 'frontFlood') return h + chargeSourcesWGSL + main64(/* wgsl */ `
+    if (t >= D_SLOTS) { return; }
+    let p=cellOf(t); let round=P.substep; let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
+    var near=false; for (var k=0u;k<n;k++) { near=near || dSrcNearBrick(k,t/64u); }
+    if (round==0u) {
+      // an explosive's pOn: its open neighbours' largest; any other cell's V1 breaking difference: along an axis
+      // the nearer side's front, the far side not yet reached (a side the same path away peaks with it: none)
+      var front=0.0; let last=D_FLOOD_PASSES+1u;
+      if (near && dCrush(cid(loadMaterial(t).core))>0.0) { for (var f=0u;f<6u;f++) { front=max(front,dFloodHeld(p+dFace(f),last)); } }
+      else if (near) { for (var a=0u;a<3u;a++) {
+        let up=dFloodHeld(p+dAxis(a),last); let down=dFloodHeld(p-dAxis(a),last); if (up!=down) { front=max(front,max(up,down)); } } }
+      plans[t].velocity.z=front; return;
+    }
+    var held=0.0;
+    if (near) {
+      held=dFloodHeld(p,round); var on=0.0;
+      for (var f=0u;f<6u;f++) {
+        let q=mEdge(p+dFace(f)); if (!inGrid(q)) { continue; }
+        // q's front: what it holds, or one cell on from its neighbours' if it passes it (two cells a pass)
+        var reach=dFloodHeld(q,round); var into=0.0;
+        for (var g=0u;g<6u;g++) { into=max(into,dFloodHeld(q+dFace(g),round)); }
+        if (dFloodPasses(q,into,2*i32(round)-1)) { reach=max(reach,into*${f(V1_FRONT.KEEP)}); }
+        on=max(on,reach);
+      }
+      // (a cell keeps what it held: an explosive passed it on once it went off within the tick's steps)
+      if (dFloodPasses(p,on,2*i32(round))) { held=max(held,on*${f(V1_FRONT.KEEP)}); }
+    }
+    plans[t].velocity[round&1u]=held;
+  `);
   if (stage === 'planCharges') return h + chargeSourcesWGSL + `
 var<workgroup> wgEnergy: array<f32,64>;
 var<workgroup> wgCharges: u32;
@@ -668,6 +730,7 @@ var<workgroup> wgNear: u32;
     if (live) {
       p=cellOf(t); let id=cid(loadMaterial(t).core);
       if ((events[t]&4u)!=0u) { plan.flags = 9u; } // neutron request has its own immutable source
+      plan.flags|=dFloodKeep(plans[t].velocity.z); // (frontFlood's front on it, for damageCharges)
       eligible=id != 0u && (events[t]&1u)==0u;
       if (dIsSourceCell(p)) { plan.flags |= 4u; eligible=false; }
     }
@@ -719,7 +782,7 @@ var<workgroup> wgNear: u32;
     if (t >= D_SLOTS) { return; } var plan=plans[t]; let m=loadMaterial(t); let id=cid(m.core); let k=cls(id); let p=cellOf(t);
     let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
     var energy=length(plan.velocity)*bitcast<f32>(atomicLoad(&control[6]));
-    var combined=vec3f(0); var front=0.0; var flameSteps=D_CHAIN+1;
+    var combined=vec3f(0); var front=dFloodFront(plan.flags); var flameSteps=D_CHAIN+1; plan.flags&=~D_FLOOD_BITS;
     let open=id!=0u && (events[t]&1u)==0u && (plan.flags&4u)==0u;
     if (open) {
       // every source this cell is in reach and sight of: V1's front on it (its largest), and with several
@@ -1238,7 +1301,7 @@ var<workgroup> childCounts: array<u32,64>;
   `);
   throw new Error(`Unknown blast stage ${stage}`);
 }
-export const BLAST_STAGES = [...ALLOCATION_STAGES,'airborneEvents','eventList','reset','select','pick','planCharges','normalizeCharges','damageCharges','finishCharges','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply','launchMark','launchCount','launchPrefix'];
+export const BLAST_STAGES = [...ALLOCATION_STAGES,'airborneEvents','eventList','reset','select','pick','frontFlood','planCharges','normalizeCharges','damageCharges','finishCharges','plan','sum','normalize','damagePlan','count','allocate','apply','children','finish','toolPlan','couplePlan','rayEmit','bodyPlan','externalBegin','externalGate','externalParticlePlan','externalParticleApply','launchMark','launchCount','launchPrefix'];
 
 export const WGSL_CHECK = BLAST_STAGES.map(stage => ({ name: `v2blasts_${stage}`, kind: 'compute',
   code: g => blastsWGSL(g,nativeDynamicsHead,stage), layouts: () => [V2_DYNAMICS_LAYOUT,BLASTS_LAYOUT,'EMPTY'], tool: true }));

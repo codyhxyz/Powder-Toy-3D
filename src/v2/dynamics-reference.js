@@ -395,10 +395,14 @@ export function chargeBatchDamage({ dims, cells, charges, prior = () => 0 }) {
       if (inside(n) && passes(s, n, steps(s, p)) && clear(s, n)) return true; }
     return false;
   };
+  // BL-11 (blasts.js frontFlood): V1's front around corners, the largest of the sources' kept V1_FRONT.KEEP a cell
+  // along the shortest path of cells that pass it, two cells a pass, FLOOD_PASSES passes; an explosive reads its
+  // open neighbours' largest, any other cell the nearer side's along an axis (legacy)
+  const flood = floodFront({ dims, id, isCharge, sources, solid, steps });
   const out = new Map();
   for (let z = 0; z < dims[2]; z++) for (let y = 0; y < dims[1]; y++) for (let x = 0; x < dims[0]; x++) {
     const p = [x, y, z], here = id(p); if (here === E.EMPTY || isCharge.has(p.join(','))) continue;
-    let front = 0, flameSteps = Infinity;
+    let front = flood(p) * LEGACY_PRESSURE_PA, flameSteps = Infinity;
     for (const s of sources) {
       const d = steps(s, p); if (s.energy <= 0 || d > s.reach) continue;
       if (!sees(s, p)) continue;
@@ -411,6 +415,37 @@ export function chargeBatchDamage({ dims, cells, charges, prior = () => 0 }) {
     else if (row.breakInto >= 0 && front > row.strength) out.set(p.join(','), { break: true, front: front / LEGACY_PRESSURE_PA });
   }
   return out;
+}
+export const FLOOD_PASSES = Math.ceil(BLAST_REACH_MAX / 2);
+function floodFront({ dims, id, isCharge, sources, solid, steps }) {
+  const n = dims[0] * dims[1] * dims[2], at = p => p[0] + dims[0] * (p[2] + dims[2] * p[1]);
+  const inside = p => p.every((v, a) => v >= 0 && v < dims[a]);
+  const FACES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]], add = (p, f) => p.map((v, a) => v + f[a]);
+  // (blasts.js dSrcNearBrick: the cell's brick holds a cell within a source's reach)
+  const near = p => { const lo = p.map(v => (v >> 2) * 4);
+    return sources.some(s => s.energy > 0 && [0, 1, 2].reduce((g, a) => g + Math.max(0, lo[a] - s.hi[a], s.lo[a] - (lo[a] + 3)), 0) <= s.reach); };
+  const seed = p => { let P = 0; for (const s of sources) if (s.energy > 0 && isCharge.has(p.join(',')) && p.every((v, a) => v >= s.lo[a] && v <= s.hi[a])) P = Math.max(P, s.P); return P; };
+  const passes = (p, on, step) => inside(p) && (!solid(p) || isCharge.has(p.join(',')) ||
+    (dynamicsRows[id(p)].crush > 0 && step <= BLAST_CHAIN_STEPS && on * LEGACY_PRESSURE_PA > dynamicsRows[id(p)].crush));
+  let held = new Float64Array(n); const cells = [];
+  for (let y = 0; y < dims[1]; y++) for (let z = 0; z < dims[2]; z++) for (let x = 0; x < dims[0]; x++) { const p = [x, y, z]; held[at(p)] = seed(p); if (near(p)) cells.push(p); }
+  const get = (h, p) => inside(p) ? h[at(p)] : 0;
+  for (let round = 1; round <= FLOOD_PASSES; round++) {
+    const next = new Float64Array(held);
+    for (const p of cells) {
+      let on = 0;
+      for (const f of FACES) { const q = add(p, f); if (!inside(q)) continue;
+        let reach = get(held, q), into = 0; for (const g of FACES) into = Math.max(into, get(held, add(q, g)));
+        if (passes(q, into, 2 * round - 1)) reach = Math.max(reach, into * V1_FRONT.KEEP);
+        on = Math.max(on, reach); }
+      if (passes(p, on, 2 * round)) next[at(p)] = Math.max(next[at(p)], on * V1_FRONT.KEEP);
+    }
+    held = next;
+  }
+  // an explosive's pOn; any other cell's difference across it, the nearer side's front along an axis
+  return p => { if (dynamicsRows[id(p)].crush > 0) return FACES.reduce((m, f) => Math.max(m, get(held, add(p, f))), 0);
+    let front = 0; for (let a = 0; a < 3; a++) { const up = get(held, add(p, FACES[2 * a])), down = get(held, add(p, FACES[2 * a + 1])); if (up !== down) front = Math.max(front, up, down); }
+    return front; };
 }
 export function hash32(x) {
   x = Math.imul(x ^ (x >>> 16), 0x7feb352d);

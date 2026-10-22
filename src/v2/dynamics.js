@@ -6,7 +6,7 @@ import { ELEMENTS, K } from '../elements.js';
 import { nativeModes } from './modes.js';
 import { cellSlot, slotCell, brickCoordOf } from '../shaders/common.js';
 import { DynamicParams, particlesWGSL, PARTICLE_STAGES, PARTICLES_LAYOUT, heldBase, shockBase, setOffBase, storageLayout } from '../shaders/v2/particles.js';
-import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, COUPLE_MODE,
+import { blastsWGSL, BLAST_STAGES, BLASTS_LAYOUT, FLOOD_PASSES, controlWords, rayRequestBase, RAY_REQUEST_CAP, externalBlastBase, externalMaskBase, ALLOCATION_STAGES, COUPLE_MODE,
   COUPLE_ARGS, listControl, LIST_ARGS, DISPATCH_ARGS_BYTES, LISTS_STAGES, listsStageWGSL, controlBufferWords, LAUNCH_MODE } from '../shaders/v2/blasts.js';
 import { AIR as AIR_MODE, EDGE } from '../simModes.js';
 import { airWGSL, AIR_STAGES, AIR_LAYOUT } from '../shaders/v2/air.js';
@@ -318,6 +318,9 @@ export class NativeDynamics {
     // The args go straight into the separate INDIRECT buffer (the lists layout binds it only
     // there): never a read_write binding of the indirect source of the same dispatch.
     this._record('lists','workArgs',1,tick);
+    // BL-11: V1's front around corners, a bounded flood over the batch's reach (blasts.js frontFlood)
+    for (let pass=1;pass<=FLOOD_PASSES;pass++) this._record('blasts','frontFlood',size(0),tick,{substep:pass});
+    this._record('blasts','frontFlood',size(0),tick,{substep:0});
     this._record('blasts','planCharges',size(0),tick);
     this._record('blasts','normalizeCharges',size(32),tick);
     this._record('blasts','damageCharges',size(0),tick);

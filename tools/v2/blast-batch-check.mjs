@@ -7,13 +7,14 @@
 // sets off resolves a tick a step. 3. The damage is V1's (dynamics-reference.js chargeBatchDamage, the CPU
 // twin of planCharges/damageCharges): a solid breaks by V1's front against hard·P_BREAK_PER_HARD, not by an
 // energy share; the front goes through the explosives it sets off for V1's steps a tick; a flame chain lights
-// at V1's odds; charges are as strong as their blast.P. 4. An idle tick records 17 blast dispatches.
+// at V1's odds; charges are as strong as their blast.P; the front goes around corners (BL-11). 4. An idle tick records
+// 17 blast dispatches and the front flood's passes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
-import { blastsWGSL, listsStageWGSL, listControl, RESET_SELECTION, CHARGES_MAX, SOURCE_WORDS } from '../../src/shaders/v2/blasts.js';
+import { blastsWGSL, listsStageWGSL, listControl, RESET_SELECTION, CHARGES_MAX, SOURCE_WORDS, FLOOD_PASSES } from '../../src/shaders/v2/blasts.js';
 const NONE = 0xffffffff, BATCH_DEFAULT = 64;
 // Straight-line integer WGSL with loops → JS (atomics as plain words).
 const js = code => code.replace(/\b(0x[\da-f]+|\d+)u\b/gi, '$1')
@@ -168,9 +169,11 @@ test('a lone charge: the old plan\'s expressions, in the old order, from its own
   assert.match(damage, /var energy=length\(plan\.velocity\)\*bitcast<f32>\(atomicLoad\(&control\[6\]\)\);/);
   assert.match(damage, /select\(normalize\(plan\.velocity\),normalize\(combined\+vec3f\(0\.000001\)\),n>1u\)/);
 });
-test('an idle tick records 17 blast dispatches, not 115, and no copies', () => {
+test('an idle tick records 17 blast dispatches and the front flood\'s passes, not 115, and no copies', () => {
   commands.length = 0; d.blastBatch = BATCH_DEFAULT; d.consumeMaterialEvents(9);
-  assert.equal(commands.filter(c => !c.copy).length, 17); assert.equal(commands.filter(c => c.copy).length, 0);
+  // (the flood's FLOOD_PASSES passes and its read are indirect on the batch's work: empty with none)
+  assert.equal(commands.filter(c => c.stage === 'frontFlood').length, FLOOD_PASSES + 1);
+  assert.equal(commands.filter(c => !c.copy).length, 17 + FLOOD_PASSES + 1); assert.equal(commands.filter(c => c.copy).length, 0);
   assert.equal(body(blastsWGSL(g, nativeDynamicsHead, 'reset')).trim(), RESET_SELECTION);
   assert.match(listsStageWGSL(g, 'workArgs'), /let hasWork=control\[3\]!=D_NONE/);
 });
@@ -296,11 +299,15 @@ test('BL-5: within a tick the front goes on through the explosives it sets off, 
   while (lit.length && ticks < 10) {
     ticks++; for (const p of lit) { gone.add(KEY(p)); block.cells.delete(KEY(p)); }
     const out = chargeBatchDamage({ ...block, charges: lit.map(p => charge(p, 'C4')) });
-    if (ticks === 1) assert.deepEqual([...new Set([...out].filter(([, v]) => v.setOff).map(([k]) => +k.split(',')[0] - lo))].sort(), [1, 2, 3, 4], 'the first tick sets off 4 layers');
+    // (inside the block: its surface the front also reaches through the air around it, BL-11). Layers 1-4 V1 sets
+    // off within the tick's steps, and the 5th on the next tick's first step, from the 4th's front (the flood's
+    // read): all go off with the next tick's batch
+    const inner = k => { const [, y, z] = k.split(',').map(Number); return y > lo && y < lo + 5 && z > lo && z < lo + 5; };
+    if (ticks === 1) assert.deepEqual([...new Set([...out].filter(([k, v]) => v.setOff && inner(k)).map(([k]) => +k.split(',')[0] - lo))].sort(), [1, 2, 3, 4, 5], 'the first tick sets off 5 layers');
     lit = [...out].filter(([, v]) => v.setOff).map(([k]) => k.split(',').map(Number));
     for (const p of lit) block.cells.set(KEY(p), E.C4);
   }
-  assert.equal(gone.size, 216, 'the whole block goes off'); assert.equal(ticks, 3, 'in 3 ticks (V1: 6 steps, 1.5 ticks); the old batch took 6+');
+  assert.equal(gone.size, 216, 'the whole block goes off'); assert.ok(ticks <= 3, `in ${ticks} ticks (V1: 6 steps, 1.5 ticks); the old batch took 6+`);
   assert.equal(BLAST_CHAIN_STEPS, LEGACY_STEPS_PER_TICK);
   // a flame chain (gunpowder): V1's blast.flame a step, so the d-th cell along it is lit within the tick at
   // P(Binomial(steps, flame) ≥ d): 0.992, 0.916, 0.652, 0.240 (2.8 cells a tick, V1's 1/0.7 steps a cell)
@@ -328,8 +335,48 @@ test('the front\'s reach: where V1\'s front from P_MAX passes the floor every ru
   // C-4 on C-4 (crushP 60) across open air: 8 cells
   const c4 = x => chargeBatchDamage({ dims: [32, 4, 4], cells: new Map([[KEY([x, 1, 1]), E.C4]]), charges: [charge([0, 1, 1], 'C4')] }).get(KEY([x, 1, 1]))?.setOff ?? false;
   assert.equal(c4(8), true); assert.equal(c4(9), false);
-  // a wall between: shielded
-  const walled = chargeBatchDamage({ dims: [32, 4, 4], cells: new Map([[KEY([3, 1, 1]), E.METAL], [KEY([6, 1, 1]), E.NITRO]]), charges: [charge([0, 1, 1], 'NITRO')] });
-  assert.equal(walled.get(KEY([6, 1, 1])), undefined);
+  // a wall across the box between: shielded; a lone cell of it the front goes around (BL-11), as V1's does
+  const wall = new Map([[KEY([6, 1, 1]), E.NITRO]]); for (let y = 0; y < 4; y++) for (let z = 0; z < 4; z++) wall.set(KEY([3, y, z]), E.METAL);
+  assert.equal(chargeBatchDamage({ dims: [32, 4, 4], cells: wall, charges: [charge([0, 1, 1], 'NITRO')] }).get(KEY([6, 1, 1])), undefined);
+  const post = chargeBatchDamage({ dims: [32, 4, 4], cells: new Map([[KEY([3, 1, 1]), E.METAL], [KEY([6, 1, 1]), E.NITRO]]), charges: [charge([0, 1, 1], 'NITRO')] });
+  assert.equal(post.get(KEY([6, 1, 1]))?.setOff, true);
+});
+// BL-11: V1's front goes around corners and through doorways (react.js: each open cell takes P_FRONT of its strongest
+// open neighbour a step). V1's law stepped on a box with a wall part-way across it, C-4 behind it at each distance:
+// the batch sets off what V1's front does (blasts.js frontFlood; the straight sight line the batch read set none off).
+function v1Behind(dims, solids, source, target, crush) {
+  const at = p => p[0] + dims[0] * (p[1] + dims[1] * p[2]), inside = p => p.every((v, a) => v >= 0 && v < dims[a]);
+  const solid = new Set(solids.map(KEY)); solid.add(KEY(target));
+  const faces = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
+  let P = new Float32Array(dims[0] * dims[1] * dims[2]); P[at(source)] = PHYS.P_MAX;
+  for (let step = 1; step < 40; step++) {
+    const next = new Float32Array(P.length);
+    for (let z = 0; z < dims[2]; z++) for (let y = 0; y < dims[1]; y++) for (let x = 0; x < dims[0]; x++) {
+      const p = [x, y, z]; if (solid.has(KEY(p))) continue;
+      const own = P[at(p)]; let lap = 0, front = 0;
+      for (const f of faces) { const q = p.map((v, a) => v + f[a]); const pn = inside(q) && !solid.has(KEY(q)) ? P[at(q)] : own; lap += pn - own; front = Math.max(front, pn); }
+      next[at(p)] = Math.min(PHYS.P_MAX, Math.max(own + PHYS.P_DIFFUSE * lap, front * PHYS.P_FRONT) * PHYS.P_DECAY);
+    }
+    P = next;
+    let on = 0; for (const f of faces) { const q = target.map((v, a) => v + f[a]); if (inside(q) && !solid.has(KEY(q))) on = Math.max(on, P[at(q)]); }
+    if (on > crush) return true;
+  }
+  return false;
+}
+test('BL-11: the front goes around a corner and through a doorway as V1\'s does, not only along a sight line', () => {
+  const dims = [16, 3, 12], source = [3, 1, 2], crush = ELEMENTS[E.C4].blast.crushP;
+  // a wall at x=5 over z 0..3 (its end a corner) and, past a doorway at z 6, over z 7..11
+  const wallCells = []; for (let y = 0; y < 3; y++) for (let z = 0; z < 12; z++) if (z <= 3 || z >= 7) wallCells.push([5, y, z]);
+  let behind = 0;
+  for (const target of [[6, 1, 2], [7, 1, 2], [8, 1, 2], [9, 1, 2], [6, 1, 9], [7, 1, 9], [8, 1, 8]]) {
+    const cells = new Map(wallCells.map(p => [KEY(p), E.METAL])); cells.set(KEY(target), E.C4);
+    const v1 = v1Behind(dims, wallCells, source, target, crush);
+    const v2 = chargeBatchDamage({ dims, cells, charges: [charge(source, 'C4')] }).get(KEY(target))?.setOff ?? false;
+    assert.equal(v2, v1, `C-4 at ${target} behind the wall: V1 ${v1 ? 'goes off' : 'stays'}, V2 ${v2 ? 'goes off' : 'stays'}`);
+    behind += v1;
+  }
+  assert.ok(behind >= 2, `V1 sets some off behind the wall (${behind})`);
+  const flood = blastsWGSL(g, nativeDynamicsHead, 'frontFlood'), damage = blastsWGSL(g, nativeDynamicsHead, 'damageCharges');
+  assert.ok(flood.includes(`const D_FLOOD_PASSES: u32 = ${FLOOD_PASSES}u;`) && damage.includes('var front=dFloodFront(plan.flags);'), 'damage reads the flood');
 });
 test.after(() => d.dispose());
