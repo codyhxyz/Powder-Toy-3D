@@ -1483,12 +1483,13 @@ export function ctAmbient(input, ambientQ, airHeat) {
   const cool = ctRow(c.id).cool;
   if (cool <= 0.0) return c;
   const dt = ctF(ctF(ambientQ - c.tq) - ctTemperatureRemainder(c));
-  const transfer = ctI(Math.max(-2147483000, Math.min(2147483000, ctF(ctCapacity(c)) * dt * cool)));
-  if (transfer === 0) return c;
-  const room = ctHeatRoom(c, transfer);
-  if (room === 0) return c;
+  // (wide: steam at 5000 °C sheds more in a tick than an i32 holds, which held its cooling to under half V1's)
+  const transfer = ctWide(ctF(ctCapacity(c)) * dt * cool);
+  if (!ctNonzero(transfer)) return c;
+  const room = ctRoomWide(c, transfer);
+  if (!ctNonzero(room)) return c;
   const before = ctEnergy(c);
-  c = ctHeat(c, room);
+  c = ctSetEnergy(c, ctAdd(before, room));
   c.busy = 1;
   return ctRecordChange(c, before);
 }

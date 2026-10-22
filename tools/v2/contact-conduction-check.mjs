@@ -1,5 +1,5 @@
 // CPU only: V2 conduction carries V1's rate (react.js condFlux: every face, every step) without
-// overshoot. A tick is the block pass's cubes (contactReference, the block pass's twin) at the
+// overshoot, and hot gases radiate at V1's rate. A tick is the block pass's cubes (contactReference, the block pass's twin) at the
 // tick's offset (v2/physics.js offsetOf), then the heat pass's (contactHeatReference, shaders/v2/heat.js)
 // one cell over on every axis. Fails with the heat pass or ctFluxTick reverted (metal at 0.8× V1).
 import assert from 'node:assert/strict';
@@ -100,6 +100,15 @@ test('a pair never crosses its equilibrium: an isolated hot/cold metal pair rela
     // V1: an isolated pair keeps (1 - 2·cond/cap)^4 of ΔT a tick (the heat-capacity units' rounding aside)
     if (t === 1) assert(Math.abs(now / 480 - (1 - 2 * share) ** (NOMINAL_STEP_RATE / C.CONTACT_HZ)) < 0.03, `pair keeps ${(now / 480).toFixed(3)} of ΔT a tick`);
     gap = now;
+  }
+});
+
+test('a hot gas radiates toward ambient at V1\'s rate however hot (react.js T += (airT - T)·rad a step)', () => {
+  // hydrogen's flame: steam thousands of °C hot cools as V1's does, a tick its four steps of rad
+  for (const [id, hot] of [[E.STEAM, 5000], [E.STEAM, 3000], [E.FIRE, 4000], [E.PLASMA, 9000]]) {
+    const out = C.ctAmbient(C.ctNew(id, Math.round((hot + 273.25) * 4), 65536), Math.round((20 + 273.25) * 4), 1);
+    const want = 20 + (hot - 20) * (1 - ELEMENTS[id].rad) ** (NOMINAL_STEP_RATE / C.CONTACT_HZ);
+    assert(Math.abs(T(out) - want) < 0.5, `${ELEMENTS[id].key} at ${hot} °C: a tick leaves ${T(out).toFixed(1)} °C, V1 ${want.toFixed(1)} °C`);
   }
 });
 
