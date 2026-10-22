@@ -1,7 +1,7 @@
 import { Matrix4, Vector3 } from 'three';
 import { frameUniformsOf } from './uniforms.js';
 import {
-  PARTICLE_BYTES, NativeParticleParams, NATIVE_PARTICLE_LAYOUT, NATIVE_PARTICLE_ARGS_LAYOUT,
+  PARTICLE_BYTES, NativeParticleParams, NATIVE_PARTICLE_LAYOUT, NATIVE_PARTICLE_ARGS_LAYOUT, NATIVE_PARTICLE_AIR_LAYOUT,
   nativeParticleWGSL, nativeParticlePipeline, nativeParticleArgsWGSL,
 } from '../shaders/v2/particleRender.js';
 import { decoView } from '../deco.js';
@@ -51,11 +51,13 @@ export class NativeParticles {
     this.fu = frameUniformsOf(gpu);
     this.layout = gpu.layout('NATIVE_PARTICLES_DRAW',NATIVE_PARTICLE_LAYOUT);
     this.argsLayout = gpu.layout('NATIVE_PARTICLES_ARGS',NATIVE_PARTICLE_ARGS_LAYOUT);
+    this.airLayout = gpu.layout('NATIVE_PARTICLES_AIR',NATIVE_PARTICLE_AIR_LAYOUT);
+    this.airGroups = new Map();
     this.args = gpu.createBuffer({ label: 'native particles draw args', size: 16,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT });
     this.pipes = [false,true].map(rays => gpu.renderPipeline({
       name: rays ? 'nativeParticleRays' : 'nativeParticleMatter', code: nativeParticleWGSL(rays),
-      layouts: [this.fu.layout,this.layout], params: NativeParticleParams, ...nativeParticlePipeline(rays),
+      layouts: [this.fu.layout,this.layout,this.airLayout], params: NativeParticleParams, ...nativeParticlePipeline(rays),
     }));
     this.countPipe = gpu.kernel({ name: 'nativeParticleArgs', code: nativeParticleArgsWGSL(),
       layouts: [this.argsLayout], params: NativeParticleParams });
@@ -79,9 +81,23 @@ export class NativeParticles {
     this.source = source;
     this.group = this.countGroup = null;
     this.boundParticles = this.boundControl = this.boundDeco = null;
+    this.airGroups = new Map();
     this.preparedFrame = null;
     source?.attachDrawAdapter?.(this);
     return this;
+  }
+  /**
+   * The source's current coarse air (its brick's pressure: the Pressure view, the pick's P)
+   * and the grid that numbers its bricks, as params and a group-2 bind group. A source
+   * without air binds its records there, never read (grid.w 0: still air).
+   */
+  air() {
+    const src = this.source, g = src?.g, buffer = src?.air?.[src.airIndex ?? 0] ?? null;
+    const target = buffer ?? this.state.particles;
+    let group = this.airGroups.get(target);
+    if (!group) this.airGroups.set(target, group = this.gpu.bindGroup(this.airLayout,[{ binding: 0, resource: { buffer: target } }],'native particle air'));
+    const grid = g ? [g.nx, g.ny, g.nz, buffer ? 1 : 0] : [0, 0, 0, 0];
+    return { group, params: { grid, supers: g ? [g.stx, g.stz, 0, 0] : [0, 0, 0, 0] } };
   }
   updateView(camera, targetHeight, volumeMatrix = null, origin = [0,0,0], { sample = 0 } = {}) {
     this.view = nativeParticleView(camera,targetHeight,volumeMatrix,origin,sample);
@@ -111,8 +127,9 @@ export class NativeParticles {
     const s = this.state;
     if (s.particles !== this.boundParticles || s.control !== this.boundControl || (s.deco?.buffer ?? null) !== this.boundDeco) return false;
     if (!(width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height))) throw new RangeError('invalid particle viewport');
-    const options = { bind: [this.fu.group,this.group], indirect: { buffer: this.args, offset: 0 },
-      params: { ...this.view, capacity: s.capacity, viewport: [width,height], deco: s.deco && s.decoActive && decoView.show ? 1 : 0 } };
+    const air = this.air();
+    const options = { bind: [this.fu.group,this.group,air.group], indirect: { buffer: this.args, offset: 0 },
+      params: { ...this.view, ...air.params, capacity: s.capacity, viewport: [width,height], deco: s.deco && s.decoActive && decoView.show ? 1 : 0 } };
     for (const pipe of this.pipes) pipe.draw(rp,options);
     return true; // Recorded, not a claim of a nonzero GPU count.
   }
