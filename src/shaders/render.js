@@ -1,4 +1,6 @@
 import { STATE_OPTS, LAYOUT, prelude, readFormatWGSL, WORLD_RUNTIME_GRID, worldRuntimeGrid } from './common.js';
+import { compactDrawWGSL } from './compact.js';
+import { nativeMotionWGSL } from './v2/viewRead.js';
 import { RENDER_LAYOUT } from './bindings.js';
 import { ELEMENTS } from '../elements.js';
 import { COLORMAPS, VIEWS, xrayDensity, isMaterialView, materialStyleForView } from '../views.js';
@@ -1476,18 +1478,61 @@ ${plain ? 'fn worldPlainFragment(v: VolumeVarying, phase: u32)' : '@fragment fn 
 @fragment fn fsScatter(v: VolumeVarying) -> VolumeFrag { return worldPlainFragment(v,2u); }` : ''}`;
 
 // ID-only probes need neither temperature tables nor life/colour decoding.
-// Use the same raw cell and canonical dither coordinate as fetchAs; debug
-// readers retain their original access-count instrumentation.
+// Use the same raw cell and canonical dither coordinate as fetchAs (a whole
+// liquid cell beats every threshold: no hash); debug readers retain their
+// original access-count instrumentation. With them the volume's other reads
+// of V2's cells (shaders/compact.js compactDrawWGSL: volumeA, volumeT) and
+// its B (volumeB: V1's B, a cell's own motion and its brick's air, as
+// shaders/v2/viewRead.js builds it from the read group's air).
 const volumeIdWGSL = format => /* wgsl */ `
 fn volumeId(p: vec3i) -> i32 {
   let c = fetchNativeCore(p);
   let id = i32(c.x & 255u);
   let k = KIND(id);
   if (k == K_EMPTY) { return E_EMPTY; }
-  if (k == K_LIQUID && ${format === 3 ? '(c.y & 0xffffffu) == 0u' : '(c.y & 0xffffffu) <= (seed3(cellOf(slotOf(p)), 0u, 4243u) >> 16u)'}) { return E_EMPTY; }
+  if (k == K_LIQUID && ${format === 3 ? '(c.y & 0xffffffu) == 0u' : '(c.y & 0xffffffu) < 65536u && (c.y & 0xffffffu) <= (seed3(cellOf(slotOf(p)), 0u, 4243u) >> 16u)'}) { return E_EMPTY; }
   return id;
 }
+${compactDrawWGSL(format === 3)}${nativeMotionWGSL}
+fn volumeB(p: vec3i) -> vec4f {
+  let s = slotOf(p);
+  return nativeMotionB(A[s], nativeAirB(s));
+}
 `;
+// The call ARGS of each `name(` in code (not its definition): [start, end] of
+// `name(ARGS)`, balanced parentheses.
+function calls(code, name) {
+  const out = [], re = new RegExp(`(?<![\\w.])${name}\\(`, 'g');
+  for (let m; (m = re.exec(code));) {
+    if (/\bfn\s+$/.test(code.slice(Math.max(0, m.index - 4), m.index))) continue;
+    let depth = 1, i = m.index + m[0].length;
+    for (; depth && i < code.length; i++) { if (code[i] === '(') depth++; else if (code[i] === ')') depth--; }
+    out.push([m.index, i]);
+  }
+  return out;
+}
+// The Box volume's reads of V2's cells through its own readers (volumeIdWGSL):
+// eid(fetchA(x)) → volumeId(x), fetchA(x).y → volumeT(x), fetchA → volumeA, fetchB → volumeB.
+function nativeVolumeReads(code) {
+  let out = code;
+  for (const [name, rewrite] of [
+    ['eid', (call) => /^eid\(fetchA\((.*)\)\)$/s.exec(call) && calls(call, 'fetchA')[0]?.[1] === call.length - 1 ? `volumeId(${call.slice(11, -2)})` : null],
+    ['fetchA', (call, after) => (/^\.y(?![\w])/.test(after) ? { text: `volumeT(${call.slice(7, -1)})`, skip: 2 } : `volumeA(${call.slice(7)}`)],
+    ['fetchB', (call) => `volumeB(${call.slice(7)}`],
+  ]) {
+    let next = '', at = 0;
+    for (const [a, b] of calls(out, name)) {
+      if (a < at) continue;   // (inside a call already rewritten)
+      const r = rewrite(out.slice(a, b), out.slice(b));
+      if (r === null) continue;
+      const { text, skip = 0 } = typeof r === 'string' ? { text: r } : r;
+      next += out.slice(at, a) + text;
+      at = b + skip;
+    }
+    out = next + out.slice(at);
+  }
+  return out;
+}
 /**
  * The volume's WGSL module for grid g: a vertex entry `vs` and a fragment
  * entry `fs` drawing `view` (a key of src/views.js VIEWS: 'realistic',
@@ -1537,8 +1582,7 @@ export const volumeFrag = (grid, { view = 'realistic', detail = {}, curved = fal
   // Keep the heavier artwork out of Realistic's active shader path/registers.
   const joined = parts.join('\n').replaceAll('FU.materialStyle', `${materialStyleForView(view) ?? 0}.0`);
   const code = backend === 'world' ? worldRuntimeGrid(joined) : joined;
-  // Literal cell identifiers only, not a general WGSL expression rewrite.
-  return nativeIds ? code.replace(/\beid\(fetchA\((cell|c|lc|oc|q|nc|cj)\)\)/g, 'volumeId($1)') : code;
+  return nativeIds ? nativeVolumeReads(code) : code;
 };
 
 // ---- the pipeline (docs/webgpu.md F1, F2) ----

@@ -567,10 +567,12 @@ export class Simulation {
     if (!v2?.isReady) return this._bindRO;
     v2.sync();
     if (v2.forceCompatibility && this.gpu.testMode) { v2.exportLegacy(false); return this._bindRO; }
-    return v2.groups.read;
+    return v2.readGroup();
   }
   // Physical readers share the compact core but read current native coarse
-  // air in B. Renderer format2 keeps its existing projection-only read group.
+  // air in B. Format 2's group (bindRO: the drawn projection) binds the same
+  // air (v2/physics.js readGroup): the draw reads it as V1's B, generic format-2
+  // readers never read B.
   get bindPhysicalRO() {
     const v2 = this.compact;
     if (!v2?.isReady) return this._bindRO;
@@ -1567,7 +1569,7 @@ export class Simulation {
    * @returns {Promise<ArrayBuffer>}
    */
   probe(kernel, size, { ring, bind = [], params = {} }) {
-    const physical = !!this.compact && bind[1] === this.compact.groups.read;
+    const physical = !!this.compact && this.compact.isReadGroup(bind[1]);
     if (physical) {
       const state = this.bindPhysicalRO;
       if (!state) return null;

@@ -772,6 +772,9 @@ fn main() {
 // per cell, reduced in workgroup memory: maxima and counts are order-free,
 // and the emission's sum runs a fixed tree, so it doesn't depend on how the
 // threads are scheduled (docs/webgpu.md W21).
+// The air flags' thresholds (brickFrag's AIR_FLAG_P, AIR_FLAG_V: V1 pressure, cells/step), shared
+// with Physics V2's air flags (shaders/v2/viewAir.js).
+export const AIR_FLAG = { P: 0.04, V: 0.05 };
 export const WorldBrickParams = uniformStruct('WorldBrickParams', { scratchOrigin: 'vec3i', worldMin: 'vec3i', worldMax: 'vec3i', count: 'u32' });
 // Shared classification/reduction; only ownership and genuine exterior differ.
 export const brickFrag = (g, { world = false } = {}) => /* wgsl */ `
@@ -796,8 +799,8 @@ fn noteChange(box: u32, b: vec3i) {
 // Air worth flagging for the data views: off ambient by more than AIR_FLAG_T °C,
 // pressure beyond AIR_FLAG_P, or moving faster than AIR_FLAG_V cells/step.
 const AIR_FLAG_T: f32 = 3.0;
-const AIR_FLAG_P: f32 = 0.04;
-const AIR_FLAG_V: f32 = 0.05;
+const AIR_FLAG_P: f32 = ${AIR_FLAG.P};
+const AIR_FLAG_V: f32 = ${AIR_FLAG.V};
 // a fire cell's glow: blackbody colour × (BASE + T / T_SCALE) × GAIN
 const FIRE_GLOW_BASE: f32 = 0.6;
 const FIRE_GLOW_T: f32 = 1500.0;
