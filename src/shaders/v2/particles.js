@@ -46,12 +46,13 @@ const table = (name, type, field, fallback) => `fn ${name}(id: u32) -> ${type} {
 // none), so the crush reads here and in src/v2/airborne.js are V1's whole rule.
 if (ELEMENTS.some(e => e.blast?.crushP && e.blast.air)) throw new Error('particles.js: an explosive with a crushP that needs air needs V1\'s blastAir in its crush');
 const crushTable = dynamicsRows.filter(r => r.crush > 0).map(r => `case ${r.id}u: { return ${f(r.crush)}; }`).join('\n');
-// The air pressure on a cell as V1 reads it: dPressureOn and its parts, reading each brick's pressure
-// with `brick` (WGSL statements returning it from p, the brick's clamped cell), under names ending in
-// suffix. The air binding's own (airPressureWGSL) has none; a blast that will add its pressure later in
-// its tick reads the field it will leave (blasts.js damagePlan).
-export const pressureReadsWGSL = (suffix, brick) => /* wgsl */ `
-// V1 keeps pressure per cell (react.js b.w); v2 keeps it per 4³ brick. A cell's
+// The air pressure on a cell as V1 reads it, its parts as blasts.js's head holds them: the crush table, the
+// cell reads (pressureCellWGSL: dBrickPressure, dPressureCell, dOpenPressure) and V1's pOn on them
+// (pressureOnWGSL: dPressureOn). Each brick's pressure comes from `brick` (WGSL statements returning it from
+// p, the brick's clamped cell) under names ending in suffix: the air binding's own has none; a blast that
+// adds its pressure later in its tick reads the field it will leave (blasts.js damagePlan).
+export const crushWGSL = `fn dCrush(id: u32) -> f32 { switch id { ${crushTable} default: { return 0.0; } } }`;
+export const pressureCellWGSL = (suffix = '', brick = 'return air[brickOfCell(p)].vp.w;') => /* wgsl */ `// V1 keeps pressure per cell (react.js b.w); v2 keeps it per 4³ brick. A cell's
 // pressure is the brick field read trilinearly between brick centres, as V1's
 // own pressure sampler reads its field (render.js pressureAt), with V1's local
 // singularity rule on top: its cell holds its vacuum, an open cell touching one
@@ -78,18 +79,18 @@ fn dOpenPressure${suffix}(p0: vec3i) -> f32 {
   let p=mEdge(p0); if (!inGrid(p) || !mAirPressure() || cls(cid(loadMaterial(slotOf(p)).core))==1u) { return 0.0; }
   return dPressureCell${suffix}(p);
 }
-// V1 react.js pOn: the highest air pressure on a cell, its own (a solid holds none) or an open neighbour's.
+`;
+export const pressureOnWGSL = (suffix = '') => /* wgsl */ `// V1 react.js pOn: the highest air pressure on a cell, its own (a solid holds none) or an open neighbour's.
 fn dPressureOn${suffix}(p: vec3i, k: u32) -> f32 {
   var on=-1e30; if (k!=1u) { on=dPressureCell${suffix}(p); }
   for (var a=0u;a<3u;a++) { on=max(on,max(dOpenPressure${suffix}(p+dAxis(a)),dOpenPressure${suffix}(p-dAxis(a)))); }
   return on;
 }
 `;
-// The air pressure on a cell as V1 reads it, for an explosive's crushP (V1 react.js setOff): on a
-// resident cell (blasts.js couplePlan, damageCharges) and on a flying packet in its host cell (the
-// react stage: src/v2/airborne.js charge.pressure). It reads its family's air binding.
-export const airPressureWGSL = /* wgsl */ `
-fn dCrush(id: u32) -> f32 { switch id { ${crushTable} default: { return 0.0; } } }${pressureReadsWGSL('', 'return air[brickOfCell(p)].vp.w;')}`;
+// All of it, for an explosive's crushP (V1 react.js setOff) on a flying packet in its host cell (the react
+// stage: src/v2/airborne.js charge.pressure), as blasts.js reads it on a resident cell (couplePlan,
+// damageCharges). It reads its family's air binding.
+export const airPressureWGSL = `\n${crushWGSL}\n${pressureCellWGSL()}${pressureOnWGSL()}`;
 export function dynamicsCommon(g, nativeHead) {
   return /* wgsl */ `
 ${DynamicParams.wgsl}

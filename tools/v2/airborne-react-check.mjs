@@ -14,7 +14,8 @@ import { airborneReference, outsideOf, nearOf, openNear, inBlockFaces, trailingF
   FACE6, AIRBORNE, AIRBORNE_COLOURS, AIRBORNE_COLOUR_TABLE, AIRBORNE_NO_CHARGE, dustFacesOf } from '../../src/v2/airborne.js';
 import { DUST_MIN_FALL_SPEED, CONTACT_PUFF_UNIT, ctNew, packContact, unpackContact } from '../../src/v2/contact.js';
 import { offsetOf } from '../../src/v2/physics.js';
-import { particlesWGSL, PARTICLE_STAGES, airborneBase, airbornePuffBase, heldBase, shockPostBase, setOffBase, PARTICLE_CAP, DynamicParams } from '../../src/shaders/v2/particles.js';
+import { particlesWGSL, PARTICLE_STAGES, airborneBase, airbornePuffBase, heldBase, shockPostBase, setOffBase, PARTICLE_CAP, DynamicParams,
+  pressureCellWGSL, pressureOnWGSL, crushWGSL } from '../../src/shaders/v2/particles.js';
 import { blastsWGSL, BLAST_STAGES, externalBlastBase } from '../../src/shaders/v2/blasts.js';
 import { nativeDynamicsHead, v2Table } from '../../src/shaders/v2.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
@@ -228,7 +229,8 @@ assert.equal(key(fly(packet(E.LAVA, 1500, FULL / 4), () => air(20), 4000).p.core
   assert.ok(react.includes('let crushed = dCrush(u32(v.id)) > 0.0 && charge.pressure > dCrush(u32(v.id));'), 'dReact sets it off past its crushP');
   assert.ok(react.includes('(charge.setOff || crushed)'), 'as a hit does');
   assert.equal(react.match(/fn dPressureCell\(/g).length, 1, 'the blasts\' own pressure read');
-  assert.ok(blastsWGSL(gridLayout(32, 32, 32), nativeDynamicsHead, 'couplePlan').includes(react.slice(react.indexOf('fn dBrickPressure('), react.indexOf('fn dPressureOn('))), 'one pressure read for resident cells and flying ones');
+  const plan = blastsWGSL(gridLayout(32, 32, 32), nativeDynamicsHead, 'couplePlan');
+  for (const read of [pressureCellWGSL(), pressureOnWGSL(), crushWGSL]) assert.ok(react.includes(read) && plan.includes(read), 'one pressure read for resident cells and flying ones');
 }
 // 9c. A dust cloud (V1 react.js dust clouds, physics.js DUST_*): wind-blown dust, faster than DUST_LIFT_V,
 // with dust beside it and air enough, goes off as one when lit, landing with its detonation; lean, rich,

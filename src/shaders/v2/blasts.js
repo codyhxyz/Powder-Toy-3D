@@ -1,5 +1,5 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
-import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase, shockPostBase, setOffBase, airPressureWGSL, pressureReadsWGSL } from './particles.js';
+import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase, shockPostBase, setOffBase, crushWGSL, pressureCellWGSL, pressureOnWGSL } from './particles.js';
 import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { E } from '../../elements.js';
 import { RAYS } from '../../rays.js';
@@ -235,7 +235,7 @@ fn dCrushInto(id: u32, r: f32) -> u32 { switch id {
 ${crushPhaseRows.map(r => `  case ${r.id}u: { ${r.crushPhase.outs.slice(0, -1).map(([o, at]) => `if (r<${f(at)}) { return ${o}u; } `).join('')}return ${r.crushPhase.outs.at(-1)[0]}u; }`).join('\n')}
   default: { return id; } } }
 fn dCrushOf(id: u32) -> u32 { switch id { ${crushPhaseRows.map(r => `case ${r.id}u: { return ${r.crushPhase.of}u; }`).join(' ')} default: { return id; } } }
-// The crushed cell: its product at its own temperature (V1 keeps T) with the product's spawn life,
+${pressureOnWGSL()}// The crushed cell: its product at its own temperature (V1 keeps T) with the product's spawn life,
 // a LAVA product's ctype its crush.of (react.js ctypeOf); a liquid into a liquid keeps its fill and
 // anything else is a whole cell (contact.js ctConvert). The energy it differs by is a declared source.
 fn dCrushed(m: Material, into: u32) -> Material {
@@ -306,20 +306,6 @@ fn dProductEnergy(m: Material) -> vec2u {
   if (dEvaporates(m)) { return energyOf(dCarrier(m)); }
   return energyOf(dProduct(m));
 }
-// A picked charge the batch serves (finishCharges; normalizeCharges adds its pressure first): still set off
-// and a charge, its product's energy representable.
-fn dChargeServed(s: u32, m: Material) -> bool {
-  if ((dChargeEnergy(m)<=0.0 && !dEvaporates(m)) || (events[s]&1u)==0u) { return false; }
-  return energyFits(dProduct(m),dProductEnergy(m));
-}
-// A served charge's pressure into its brick's air.
-fn dChargePressure(s: u32, m: Material) {
-  let b=brickOfCell(cellOf(s)); var a=air[b];
-  // 1/4 blast energy enters acoustic compression, 1/2 bounded damage/KE; the
-  // products are at V1's blast.T (dProductEnergy). Pressure energy p² V / (2 rho c²), not an arbitrary kick.
-  let addedP2=2.0*${f(AIR.rho*AIR.sound**2)}*dChargeEnergy(m)*0.25/${f(AIR.edge**3)};
-  if(mAirPressure()) { a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2); } a.thermal.z=0.0; air[b]=a; noteAir(b);
-}
 fn dShielded(source: vec3i, destination: vec3i) -> bool {
   let delta = vec3f(destination-source);
   var cell = source; var next = vec3f(1e30); var stride = vec3f(1e30); let step = vec3i(sign(delta));
@@ -364,13 +350,13 @@ fn dChargeShare(source: u32, p: vec3i) -> vec3f {
   return vec3f(0);
 }
 fn dPressureAt(p0: vec3i) -> f32 { let p=mEdge(p0); if (!inGrid(p) || !mAirPressure()) { return 0.0; } return air[brickOfCell(p)].vp.w; }
+${crushWGSL}
 fn dNoteEnergyChange(p: vec3i, before: vec2u, after: vec2u) {
   let gained=energySub(after,before);
   if ((gained.y&0x80000000u)==0u) { if (any(gained!=vec2u(0u))) { noteEnergySource(p,gained); } }
   else { noteEnergySink(p,energyNeg(gained)); }
 }
-${airPressureWGSL}
-${crushPhaseWGSL}
+${pressureCellWGSL()}${crushPhaseWGSL}
 // A superset of the bricks where couplePlan can flag anything. The powder-fall
 // and jet-less lip rules read cells, so their modes keep every brick. Otherwise
 // a cell needs wind in its own brick (every lift is >0) or a face-neighbour
@@ -426,13 +412,28 @@ fn dSpawn(slot: u32, rank: u32, m: Material, v: vec3f, rule: u32) -> bool {
 }
 // An external blast's pressure in brick b as finish adds it (mode 14: the brick's share of the blast's air
 // weight), and the pressure on a cell read from the field that leaves (particles.js pressureReadsWGSL).
+// A picked charge the batch serves (finishCharges; normalizeCharges adds its pressure first): still set off
+// and a charge, its product's energy representable; and a served charge's pressure into its brick's air.
+const chargeServedWGSL = /* wgsl */ `
+fn dChargeServed(s: u32, m: Material) -> bool {
+  if ((dChargeEnergy(m)<=0.0 && !dEvaporates(m)) || (events[s]&1u)==0u) { return false; }
+  return energyFits(dProduct(m),dProductEnergy(m));
+}
+fn dChargePressure(s: u32, m: Material) {
+  let b=brickOfCell(cellOf(s)); var a=air[b];
+  // 1/4 blast energy enters acoustic compression, 1/2 bounded damage/KE; the
+  // products are at V1's blast.T (dProductEnergy). Pressure energy p² V / (2 rho c²), not an arbitrary kick.
+  let addedP2=2.0*${f(AIR.rho*AIR.sound**2)}*dChargeEnergy(m)*0.25/${f(AIR.edge**3)};
+  if(mAirPressure()) { a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2); } a.thermal.z=0.0; air[b]=a; noteAir(b);
+}
+`;
 const externalAfterWGSL = g => /* wgsl */ `
 fn dExternalAddedP2(b: u32) -> f32 {
   let total=bitcast<f32>(atomicLoad(&control[${externalAirBase(g)+g.nbricks}u])); let weight=bitcast<f32>(atomicLoad(&control[${externalAirBase(g)}u+b]));
   if (P.mode!=14u || !mAirPressure() || total<=0.0 || weight<=0.0) { return 0.0; }
   return ${f(AIR.rho*AIR.sound**2/AIR.edge**3)}*P.strength*weight/total;
 }
-${pressureReadsWGSL('AfterExternal', 'let b=brickOfCell(p); let w=air[b].vp.w; let added=dExternalAddedP2(b); return select(w,sqrt(w*w+added),added>0.0);')}`;
+${pressureCellWGSL('AfterExternal', 'let b=brickOfCell(p); let w=air[b].vp.w; let added=dExternalAddedP2(b); return select(w,sqrt(w*w+added),added>0.0);')}${pressureOnWGSL('AfterExternal')}`;
 export function blastsWGSL(g,nativeHead,stage) {
   const h = head(g,nativeHead);
   if (stage === 'externalBegin') return h + main1(`
@@ -563,7 +564,7 @@ var<workgroup> wgCharges: u32;
     // One charge: damage reads its share from the plan, as before; more: damage adds them up.
     if (live) { if (n!=1u) { plan.velocity=vec3f(0); } plans[t] = plan; }
   `);
-  if (stage === 'normalizeCharges') return h + main1(`
+  if (stage === 'normalizeCharges') return h + chargeServedWGSL + main1(`
     let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
     for (var k=0u;k<n;k++) {
       var sum=0.0; for (var b=0u;b<D_BRICKS;b++) { sum += bitcast<f32>(atomicLoad(&control[D_CHARGE_SUMS+k*D_BRICKS+b])); }
@@ -622,7 +623,7 @@ var<workgroup> wgCharges: u32;
     plans[t]=plan;
   `);
   // One thread: every picked charge in slot order, as finish served one: products, ledger, air.
-  if (stage === 'finishCharges') return h + main1(/* wgsl */ `
+  if (stage === 'finishCharges') return h + chargeServedWGSL + main1(/* wgsl */ `
     let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
     for (var c=0u;c<n;c++) {
       let s=atomicLoad(&control[D_CHARGES+c]);
