@@ -12,13 +12,13 @@ import { v2Rows, SUMMARY } from '../../src/shaders/v2.js';
 import { FOAM_ROWS } from '../../src/v2/foam.js';
 
 export const TRANSLATED = ['colMove', 'colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colPack', 'colFall',
-  'colFinish', 'colShockLand', 'colShockSpeed2', 'colV1FallSpeed', 'colShockOnFall', 'colKeepsFall', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
+  'colFinish', 'colShockLand', 'colShockSpeed2', 'colV1FallSpeed', 'colShockOnFall', 'colShockOnPhased', 'colV1Fall', 'colKeepsFall', 'colExtent', 'colScan', 'colTransfer', 'colFluxes', 'colTransfers', 'colClearScratch', 'colLimit', 'colGravity',
   'colDampTick', 'colSwap', 'colSetLanes', 'colSetLane', 'colFill', 'colClass', 'colCell', 'colBusy', 'colAdvect', 'colSend', 'colPour', 'colOver', 'colEdgeFlux', 'colEdges', 'colDrain', 'colRemove', 'colCrown', 'colLayer', 'colDepthAt', 'colFloats', 'colFloor', 'colSends', 'colStratify',
   // radial gravity (columns.js RADIAL)
   'colRadInside', 'colRadPull', 'colRadAxis', 'colRadSign', 'colRadMass', 'colRadHead', 'colRadWetBelow', 'colRadCovered', 'colRadDemand',
   'colRadNote', 'colRadRuns', 'colRadTowardPlus', 'colRadColumn', 'colRadPairs', 'colRadPair', 'colRadFace', 'colRadPackAmount', 'colRadSendAmount'];
 // the f32 functions (division allowed: never on integers)
-export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colShockLand', 'colV1FallSpeed', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown', 'colLayer', 'colDepthAt', 'colSends',
+export const FLOAT = ['colEta', 'colStiff', 'colDepth', 'colFlux', 'colDemand', 'colGravity', 'colDampTick', 'colLimit', 'colFall', 'colShockLand', 'colV1FallSpeed', 'colV1Fall', 'colFluxes', 'colTransfers', 'colAdvect', 'colSend', 'colPour', 'colEdgeFlux', 'colEdges', 'colCrown', 'colLayer', 'colDepthAt', 'colSends',
   'colRadPull', 'colRadHead', 'colRadDemand'];
 
 export function wgslFunction(code, name) {

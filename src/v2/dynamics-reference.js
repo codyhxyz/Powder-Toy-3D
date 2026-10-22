@@ -5,6 +5,7 @@ import { CELL_M } from '../scale.js';
 import { PHYS, SIM_GRAVITY, NOMINAL_STEP_RATE } from '../physics.js';
 import { contactVacuum, specialExplosion } from './contact.js';
 import { impactFoam } from './foam.js';
+import { PACE } from '../shaders/move.js';
 import { energyOf, withEnergy, energyFits, makeMaterial, cTq, withPayload, payloadOf, share, packetOwnedEnergy, withPacketEnergy, packetEnergyFits } from './layout.js';
 import { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy } from './pressure.js';
 export { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy };
@@ -81,32 +82,113 @@ export function particleFallSpeed(id, h) {
 //                A solid has no V1 fall (V1's solids never move): its landing is a throw.
 // A shock V2 has no derivation for is an error here, never a silent zero.
 export const SHOCK_THROW_MS = NOMINAL_STEP_RATE * CELL_M;
-// V1's fall law (react.js forces: a step adds gravity·GRAV, then drag takes DRAG of it, except from a liquid in
-// free fall, and V_MAX caps it; the move pass covers the step's speed in cells: as elements.js fallKE steps it,
-// but without the drag V1 never applies to a falling liquid): the cells of fall from rest past which a cell of
-// `faller` lands with ½·mu·u² of at least `shock`, or null where V1's fall never carries that much.
+// ---- V1's fall, as V1 runs it (react.js forces, move.js vertical) ----
+// react.js forces: a step adds gravity·GRAV (SIM_GRAVITY cells/step²), then drag takes DRAG of it, except from a
+// liquid in free fall (nothing but air under it: `flying`), and V_MAX caps it. move.js (a Margolus block pass)
+// moves a cell down only from a 2×2×2 block's top half, and the partition shifts a cell every step (P.parity):
+// a cell that moved down is on a top half again the next step, one that did not is on a bottom half (it cannot
+// move) for a step. It moves when its draw falls under its speed: a liquid into air on the R3 sequence at its
+// fall age (move.js draw, PACE.Y, fallAge: speed/g steps), a grain on its block's random stream. So V1's fall
+// is slower than its speed: a cell lands faster than the speed a fall of that height would give it.
+// The landing then hits twice (react.js shock, common.js impactActs): the react after the move that brought it
+// over what it lands on sees its free-fall speed (u1), and a hit that acts is left unlanded by the next move, so
+// the react after that sees it again, after its drag (u2): V1's hit is the larger.
+// Measured on V1 (2026-10-22, tools/outcomes/engine-v1.js, a lone water cell in a fresh 64×48×64 box, its
+// speed the step before it lands, which is u2): 2 → 0.297, 4 → 0.5445, 6 → 0.6435, 8 → 0.693, 10 → 0.792, 12 →
+// 0.8415, 14 → 0.9405, 16 → 0.99, 18 on → 1.0 cells/step: v1LiquidArrival's law to the digit (tools/v2/shock-check.mjs).
+// A liquid's fall is deterministic: its arrival depends on the fall h and its phase, its start row's parity
+// against the step's ((y0 + frame) & 1: phase 0 starts on a block's top half). The game steps V1 four times a
+// frame and the outcome bench's box starts at frame 0, so matter placed at row y0 falls at phase y0 & 1. A fall
+// at phase 1 is phase 0's a cell shorter (V1 loses its first step to the partition).
 const V1_FALL_STEPS_MAX = 100000;
-function v1FallPast(j, mu, shock) {
-  const drag = j.kind === K.LIQUID ? 0 : j.drag ?? 0;
-  // V1's terminal speed on this law: a fall that never carries the shock is no trigger at any height
-  const vt = drag > 0 ? Math.min(PHYS.V_MAX, SIM_GRAVITY * j.grav * (1 - drag) / drag) : PHYS.V_MAX;
-  if (0.5 * mu * vt * vt < shock) return null;
-  let v = 0, y = 0;
+const f32 = Math.fround;
+// V1 common.js u32ToF32 · UINT_TO_UNIT: move.js draw's paced value at step n of the sequence
+const v1PaceDraw = (n, pace) => { const s = Math.imul(n, pace) >>> 0; return f32(f32(f32((s >>> 8) * 256) + (s & 255)) * f32(2 ** -32)); };
+/** V1's lone liquid cell (grav its GRAV) falling h cells from rest at `phase`: the steps of free fall it has
+ * when the move brings it over what it lands on (its speed then is that many steps of gravity, to V_MAX). */
+export function v1LiquidArrival(h, phase, grav = 1) {
+  const g = f32(SIM_GRAVITY * grav);
+  // (rows from the cell it lands in; a block's top half holds the rows odd against the step's parity, and the
+  // step before its first has the parity that puts row h on a top half at phase 0)
+  let y = h, v = 0, parity = (phase + h) & 1;
   for (let n = 0; n < V1_FALL_STEPS_MAX; n++) {
-    const before = y;
-    v = Math.min(PHYS.V_MAX, (v + SIM_GRAVITY * j.grav) * (1 - drag)); y += v;
-    if (0.5 * mu * v * v >= shock) return before;
+    parity ^= 1;
+    if (v > 0 && ((y - parity) & 1) === 1) {
+      const age = v < PHYS.V_MAX ? Math.floor(f32(f32(v / g) + 0.5)) : 0;
+      // (past V_MAX move.js draws at the frame, but the draw is then under 1 always)
+      if (v >= PHYS.V_MAX || v1PaceDraw(age, PACE.Y) < v) { y -= 1; if (y === 0) return Math.round(v / g); }
+    }
+    v = Math.min(PHYS.V_MAX, f32(v + g));
   }
+  throw new Error('v1LiquidArrival: no landing');
+}
+/** V1's hit (cells/step) of a cell of element j landing after `steps` steps of free fall: max(u1, u2), above. */
+export function v1LandingHit(j, steps) {
+  const g = SIM_GRAVITY * j.grav, u1 = Math.min(PHYS.V_MAX, steps * g);
+  return Math.max(u1, Math.min(PHYS.V_MAX, (u1 + g) * (1 - (j.drag ?? 0))));
+}
+/** V1's hit (cells/step) of a lone liquid cell of element j landing after a fall of h cells at phase 0. */
+export const v1LiquidHit = (j, h) => h <= 0 ? 0 : v1LandingHit(j, v1LiquidArrival(h, 0, j.grav));
+// V1's fall is at V_MAX from V1_FALL_CELLS_MAX cells (the hit no longer grows): V1's falls are tables to it
+export const V1_FALL_CELLS_MAX = (() => { let h = 1; while (v1LiquidArrival(h, 0) * SIM_GRAVITY < PHYS.V_MAX) h++; return h; })();
+// A liquid's landing law: the fall `fall` (cells, at phase 0) from which a cell of j lands with ½·mu·u² of at least
+// shock (V1 sets it off from there at phase 0, from a cell more at phase 1), or null where no fall carries it.
+function v1LiquidFall(j, mu, shock) {
+  for (let h = 1; h <= V1_FALL_CELLS_MAX; h++) if (0.5 * mu * v1LiquidHit(j, h) ** 2 >= shock) return h;
   return null;
 }
+// A grain falls on V1's random stream: at a height it sets a charge off at some odds (the arrival's spread over
+// its draws, computed exactly over the draws' states), from V1_GRAIN_ODDS on. Its fall is the first height V1's
+// odds reach it (a grain from there goes off more often than not); its phase is no matter at those odds.
+export const V1_GRAIN_ODDS = 0.5;
+const V1_GRAIN_FALL_MAX = 200;
+/** V1's odds that a grain of j landing after h cells from rest (either phase, half each) hits with ½·mu·u² ≥ shock. */
+export function v1GrainOdds(j, mu, shock, h) {
+  const g = f32(SIM_GRAVITY * j.grav), keep = f32(1 - (j.drag ?? 0)), ustar2 = 2 * shock / mu;
+  let odds = 0;
+  for (const phase of [0, 1]) {
+    // the chance it is h - i cells up on a top half (top) or a bottom half (bottom) before the step's move
+    let top = new Float64Array(h + 1), bottom = new Float64Array(h + 1), v = 0;
+    (phase === 0 ? top : bottom)[h] = 1;
+    for (let n = 0; n < V1_FALL_STEPS_MAX && (top.some(p => p > 1e-12) || bottom.some(p => p > 1e-12)); n++) {
+      const after = Math.min(PHYS.V_MAX, f32(f32(v + g) * keep));
+      const nextTop = new Float64Array(h + 1), nextBottom = new Float64Array(h + 1), p = Math.min(1, v);
+      for (let y = 1; y <= h; y++) {
+        nextTop[y] += bottom[y];
+        if (!top[y]) continue;
+        if (y === 1) { if (Math.max(v, after) ** 2 >= ustar2) odds += 0.5 * top[y] * p; }
+        else nextTop[y - 1] += top[y] * p;
+        nextBottom[y] += top[y] * (1 - p);
+      }
+      top = nextTop; bottom = nextBottom; v = after;
+    }
+  }
+  return odds;
+}
+function v1GrainFall(j, mu, shock) {
+  const keep = 1 - (j.drag ?? 0), vt = Math.min(PHYS.V_MAX, SIM_GRAVITY * j.grav * keep / (1 - keep));
+  if (0.5 * mu * vt * vt < shock) return null;
+  for (let h = 1; h <= V1_GRAIN_FALL_MAX; h++) if (v1GrainOdds(j, mu, shock, h) >= V1_GRAIN_ODDS) return h;
+  return null;
+}
+// A landing law { fall, phased, cells }: V1 sets the charge off from `fall` cells, at phase 0 and from a cell
+// more at phase 1 where `phased` (a liquid's law), at any phase otherwise; `cells`, the fall a continuous fall
+// (a packet's, a grain's in V2) is held to, the middle of V1's step between resting and going off.
+const landingLaw = (fall, phased) => fall === null ? null : { fall, phased, cells: phased ? fall : fall - 0.5 };
+function v1FallLaw(j, mu, shock) {
+  if (j.kind === K.LIQUID) return landingLaw(v1LiquidFall(j, mu, shock), true);
+  return landingLaw(v1GrainFall(j, mu, shock), false);
+}
 // A loose charge's own landing on a solid (V1 react.js: ½·m·u², its own mass against a solid, common.js hitKE):
-// the cells of fall past which V1 sets it off. Nitroglycerin's is about 10.2 cells (3.0 m), not elements.js
-// NITRO_FALL_M: that derived its shock with a drag (fallKE) V1's falling liquid never feels (react.js).
-export function v1OwnShockFall(id) {
+// V1's law for it. Nitroglycerin's: from 9 cells at phase 0, 10 at phase 1 (2.7-3.0 m; measured on V1, a lone
+// cell and a one-layer slab in a fresh box: rests from 8, and from 9 at phase 1, goes off from 9 at phase 0 and
+// from 10), not elements.js NITRO_FALL_M: that derived its shock with a drag (fallKE) V1's falling liquid never feels.
+export function v1OwnShockLaw(id) {
   const e = ELEMENTS[id];
   if (!(e.blast?.shock > 0) || (e.kind !== K.POWDER && e.kind !== K.LIQUID) || !(e.grav > 0)) return null;
-  return v1FallPast(e, e.dens, e.blast.shock);
+  return v1FallLaw(e, e.dens, e.blast.shock);
 }
+export const v1OwnShockFall = id => v1OwnShockLaw(id)?.cells ?? null;
 export const SHOCK_FALL_CELLS = Object.freeze(Object.fromEntries(ELEMENTS.filter(e => e.blast?.shock && e.kind !== K.SOLID)
   .map(e => [e.id, v1OwnShockFall(e.id)])));
 for (const e of ELEMENTS) {
@@ -127,22 +209,35 @@ export const hitKE = (mi, mj, jSolid, u2) => 0.5 * (jSolid ? mi : mi * mj / (mi 
 // of at least its blast.shock, a cell landing on it included (the move pass leaves the lander's speed for
 // the react pass to see: common.js impactActs, shockActs), μ the lander's own mass on a solid charge and
 // the reduced mass on a loose one (common.js hitKE: each a cell of its density), never by its own element
-// or a gas (shockActs, isGasLike). The lander's speed is its fall on V1's own law (react.js forces: a step
-// adds gravity·GRAV, then drag takes DRAG of it, except from a liquid in free fall, and V_MAX caps it: as
-// elements.js fallKE steps it). So the rule is a fall: the cells past which a cell of `faller` landing on
-// `charge` sets it off, or null where V1's fall never carries that much. In V1 that is the very heavy
-// powders (scrap, uranium, plutonium, gold nuggets, singularity) and the liquids heavy enough near V1's
-// terminal speed (mercury on C-4; mercury, lava and mud on nitroglycerin). Sand, stone, water never do.
-// (A packet's landings are packetShockLandings', from the same falls.)
-export function v1ShockFall(faller, charge) {
+// or a gas (shockActs, isGasLike). The lander's hit is its fall on V1's own law (v1LiquidArrival, v1GrainOdds
+// above), so the rule is a landing law (landingLaw: from which fall a cell of `faller` landing on `charge`
+// sets it off), or null where V1's fall never carries that much. In V1 that is the very heavy powders (scrap,
+// uranium, plutonium, gold nuggets, singularity) and the liquids heavy enough near V1's terminal speed
+// (mercury on C-4; mercury, lava and mud on nitroglycerin). Sand, stone, water never do.
+// A liquid heavier than a liquid charge sinks into it (move.js vertical: it trades places on its draws, on the
+// block's random stream), and while it presses on the charge unmoved it keeps its fall's speed and gains on it
+// (react.js forces: nothing holds a cell that is moving down), so V1 sets the charge off from shorter falls than
+// a lone landing's hit; that is no law of a step, so it is V1's measured fall (V1_SINKING_FALLS).
+// (A packet's landings are packetShockLandings', from the same laws.)
+// V1_SINKING_FALLS: measured on V1 (2026-10-22, tools/outcomes/engine-v1.js, each drop a 2×2 slab onto a 4×4×2
+// pool in a fresh 64×48×64 box, both phases): mercury on nitroglycerin goes off from 2 cells, the least fall
+// measured (2-9 cells all go off); mud from 15 at phase 0 and 16 at phase 1 (14 rests at both, 15 at phase 1).
+// Lava sets nitroglycerin off by its heat wherever it touches it (react.js heat, nitroglycerin's ignite); its
+// landing law is its own fall's.
+const V1_SINKING_FALLS = Object.freeze({ MERCURY: { NITRO: { fall: 2, phased: false } }, MUD: { NITRO: { fall: 15, phased: true } } });
+export function v1ShockLaw(faller, charge) {
   const j = ELEMENTS[faller], k = ELEMENTS[charge], shock = k.blast?.shock ?? 0;
   if (!(shock > 0) || faller === charge || (j.kind !== K.POWDER && j.kind !== K.LIQUID) || !(j.grav > 0)) return null;
-  return v1FallPast(j, k.kind === K.SOLID ? j.dens : j.dens * k.dens / (j.dens + k.dens), shock);
+  const sinking = V1_SINKING_FALLS[j.key]?.[k.key];
+  if (sinking) return landingLaw(sinking.fall, sinking.phased);
+  return v1FallLaw(j, k.kind === K.SOLID ? j.dens : j.dens * k.dens / (j.dens + k.dens), shock);
 }
-/** Every V1 shock trigger a grid landing can make: { faller, charge, cells } (v1ShockFall), for the
+/** The fall (cells) a continuous fall onto the charge is held to (landingLaw cells), or null: v1ShockLaw's. */
+export const v1ShockFall = (faller, charge) => v1ShockLaw(faller, charge)?.cells ?? null;
+/** Every V1 shock trigger a grid landing can make: { faller, charge, fall, phased, cells } (v1ShockLaw), for the
  * column passes (shaders/v2.js v2ColumnWGSL for powders, shaders/v2/columns.js colShockLand for liquids). */
 export const SHOCK_LANDINGS = Object.freeze(ELEMENTS.filter(k => k.blast?.shock).flatMap(k => ELEMENTS
-  .map(j => ({ faller: j.id, charge: k.id, cells: v1ShockFall(j.id, k.id) })).filter(r => r.cells !== null)));
+  .map(j => ({ faller: j.id, charge: k.id, ...v1ShockLaw(j.id, k.id) })).filter(r => r.fall !== undefined)));
 /**
  * The speed (m/s) a packet dropped from rest in still air at reference gravity has when it has fallen h
  * metres, as the particle lane's integrate steps it (implicit quadratic drag to the element's terminal
