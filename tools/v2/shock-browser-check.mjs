@@ -61,26 +61,26 @@ async function nitroScene() {
   await e.dispose();
   return out;
 }
-// C-4, on a 32³ box (sides whole supertiles: common.js gridDims): a block on the floor left alone; a lit cell
-// (past its ignition point) with C-4 cells 8 and 10 taxicab cells from it, far from the block; sand thrown down
-// at the block at 25 m/s, then uranium (a body-coupled launch: engine-v2.js box { v })
+// C-4, on a 32³ box (sides whole supertiles: common.js gridDims): two blocks on the floor left alone; a lit
+// cell (past its ignition point) with C-4 cells 8 and 10 taxicab cells from it, 11 or more from the blocks; sand
+// thrown down at one block at 25 m/s, then uranium at the other (a body-coupled launch: engine-v2.js box { v })
 async function c4Scene() {
   const { e } = window.__shock, out = {};
   await e.create([32, 32, 32]);
-  // the block's C-4 cells (x, z 10..13, y 0..1), and what is at a cell
-  const block = async () => { const g = await e.read(), id = e.id('C4'); let n = 0;
-    for (let y = 0; y <= 1; y++) for (let z = 10; z <= 13; z++) for (let x = 10; x <= 13; x++) if (g.id[x + g.nx * (z + g.nz * y)] === id) n++; return n; };
+  // a block's C-4 cells (4×2×4 from x0, 0, z0), and what is at a cell
+  const block = async (x0, z0) => { const g = await e.read(), id = e.id('C4'); let n = 0;
+    for (let y = 0; y <= 1; y++) for (let z = z0; z < z0 + 4; z++) for (let x = x0; x < x0 + 4; x++) if (g.id[x + g.nx * (z + g.nz * y)] === id) n++; return n; };
   const at = async (x, y, z) => { const g = await e.read(); return e.nameOf(g.id[x + g.nx * (z + g.nz * y)]); };
-  e.box([10, 0, 10], [13, 1, 13], 'C4');
-  await e.advance(0.05); out.rest0 = await block(); await e.advance(0.5); out.rest1 = await block();
+  e.box([10, 0, 10], [13, 1, 13], 'C4'); e.box([2, 0, 24], [5, 1, 27], 'C4');
+  await e.advance(0.05); out.rest0 = await block(10, 10); await e.advance(0.5); out.rest1 = await block(10, 10); out.other = await block(2, 24);
   e.box([26, 0, 18], [26, 0, 18], 'C4'); e.box([16, 0, 26], [16, 0, 26], 'C4');
   e.box([26, 0, 26], [26, 0, 26], 'C4', { T: 400 });
   await e.advance(0.25);
-  out.source = await at(26, 0, 26); out.near = await at(26, 0, 18); out.far = await at(16, 0, 26); out.block0 = await block();
+  out.source = await at(26, 0, 26); out.near = await at(26, 0, 18); out.far = await at(16, 0, 26); out.block0 = await block(10, 10);
   e.box([10, 20, 10], [13, 22, 13], 'SAND', { v: [0, -25, 0] });
-  await e.advance(0.75); out.sand = await block();
-  e.box([10, 20, 10], [13, 22, 13], 'URANIUM', { v: [0, -25, 0] });
-  await e.advance(0.75); out.uranium = await block();
+  await e.advance(0.75); out.sand = await block(10, 10); out.other0 = await block(2, 24);
+  e.box([2, 20, 24], [5, 22, 27], 'URANIUM', { v: [0, -25, 0] });
+  await e.advance(0.75); out.uranium = await block(2, 24);
   await e.dispose();
   return out;
 }
@@ -126,7 +126,7 @@ try {
       // V1 react.js shock: ½·μ·u² past 20, μ the grain's mass on a solid, u to V_MAX (common.js hitKE): sand's
       // ½·16·1² = 8 never; uranium's ½·191·u² past 20 from u = 0.46 cells/step (33 m/s), which its fall reaches
       ok(o.sand === o.rest1, `${name}: sand thrown down at it at 25 m/s rests on it (V1: never past ½·16·V_MAX²): ${o.rest1} → ${o.sand} cells`);
-      ok(o.uranium < o.rest1 / 2, `${name}: uranium thrown at 25 m/s sets it off: ${o.sand} → ${o.uranium} cells`);
+      ok(o.other === o.rest1 && o.other0 === o.other && o.uranium < o.other / 2, `${name}: uranium thrown at 25 m/s sets the other block off: ${o.other} → ${o.other0} → ${o.uranium} cells`);
     }
     if (v1) ok(v1.source === v2.source && v1.near === v2.near && v1.far === v2.far, `V2 sets off what V1 does: ${v1.near}/${v2.near}, ${v1.far}/${v2.far}`);
   }
