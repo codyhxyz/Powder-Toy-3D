@@ -107,7 +107,7 @@ export async function prewarmWorldFrame(app, state, data, {view,detail={},curved
     sourceAppearance:!!data.appearance,sourceGrid:data.appearance?.sourceGrid}, atlas:state.data.atlas, tables:data.tables.buffer});
   // (and V2's packet pipe for World's light, gfx/nativeParticles.js worldPipe: none under V1)
   await Promise.all([state.volume.viewReady(view,detail,curved), state.volume.pointReady,
-    state.volume.signsReady, state.opaque.ready, app.post.sceneReady, app.nativeParticles?.worldReady()]);
+    state.volume.signsReady, state.opaque.ready, app.post.sceneReady, app.sim?.compact ? app.nativeParticles?.worldReady() : null]);
   requireReady(!state.dead && app.win?.render===state.data, 'WORLD preparation retired while awaiting pipelines');
 }
 

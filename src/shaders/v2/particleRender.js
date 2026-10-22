@@ -208,7 +208,7 @@ fn particleGI(p: vec3f, n: vec3f) -> vec3f {
 // along the normal; a page not loaded yet requests it, and the frame waits for it, as the figures' do. Not a
 // deviation: the World volume's light, read by another drawer, as the Box draw reads the Box volume's. The same
 // two terms as particleLightWGSL's (no caustics, no glow: the Box packet's), in world cells (the window's + P.origin).
-const particleWorldLightWGSL = () => /* wgsl */ `
+export const particleWorldLightWGSL = () => /* wgsl */ `
 @group(2) @binding(1) var particleWorldAux: texture_2d_array<u32>;
 @group(2) @binding(2) var particleGI0: texture_2d_array<f32>;
 @group(2) @binding(3) var particleGI1: texture_2d_array<f32>;

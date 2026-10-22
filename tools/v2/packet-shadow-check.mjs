@@ -8,8 +8,14 @@ import { gridLayout } from '../../src/sim.js';
 import { shadowFrag, shadowRes } from '../../src/shaders/render.js';
 import { RENDER_LAYOUT } from '../../src/shaders/bindings.js';
 import { packetShadowFrag, packetShadowSplatWGSL, packetShadowWords, PACKET_SHADOW_EMPTY, PACKET_RETRACE_WORDS } from '../../src/shaders/v2/packetShadow.js';
-import { nativeParticleWGSL, NATIVE_PARTICLE_LIGHT_LAYOUT, NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT, PARTICLE_SHADOW_LIFT } from '../../src/shaders/v2/particleRender.js';
-import { SHADOW_LIFT } from '../../src/gfx/meshLight.js';
+import { nativeParticleWGSL, NATIVE_PARTICLE_LIGHT_LAYOUT, NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT, PARTICLE_SHADOW_LIFT, particleWorldLightWGSL, NativeParticleParams } from '../../src/shaders/v2/particleRender.js';
+import { SHADOW_LIFT, meshLightWGSL } from '../../src/gfx/meshLight.js';
+import { frameBindings } from '../../src/shaders/bindings.js';
+import { worldMeshSunWGSL, worldMeshAmbientWGSL } from '../../src/shaders/worldMeshLight.js';
+import { LIGHT_RECORDS } from '../../src/world/renderAtlas.js';
+import { WORLD_SUN_PITCH } from '../../src/world/worldSun.js';
+import { GI_OFFSET_CELLS } from '../../src/shaders/gfx/lighting.js';
+import { WgslParser, WgslExec, VectorData, ScalarData } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { NativeParticles, boxParticleLight } from '../../src/gfx/nativeParticles.js';
 import raysWire from '../../src/wire/rays.js';
 import { packetShadowKey } from '../../src/gfx/packetShadow.js';
@@ -149,7 +155,88 @@ test('World lights its packets with its atlas and paged sun, as its figures (not
   // the World frame hands its mesh context's light to the after wires, and waits for the pipe before its frames
   const frame = readFileSync(new URL('../../src/wire/worldRenderFrame.js', import.meta.url), 'utf8');
   assert.match(frame, /app\.drawWorldAfter\(rp,context\.particleLight\)/);
-  assert.match(frame, /app\.nativeParticles\?\.worldReady\(\)\]\);/);
+  assert.match(frame, /app\.sim\?\.compact \? app\.nativeParticles\?\.worldReady\(\) : null\]\);/);
+});
+
+// The CPU WGSL interpreter tools/world-mesh-light-cpu-check.mjs runs World's readers with (its adapters, copied)
+class Exec extends WgslExec {
+  _callBuiltinFunction(node,context){
+    // 1.6.0 types vector select from its boolean condition, truncating weights.
+    if(node.name==='select'){const [a,b,c]=node.args.map(x=>this.evalExpression(x,context));if(a.data?.length>1)return new VectorData(new a.data.constructor(Array.from(a.data,(v,i)=>(c.data[i]??c.value)?b.data[i]:v)),a.typeInfo);return new ScalarData((c.value??c.data[0])?b.value:a.value,a.typeInfo);}
+    return super._callBuiltinFunction(node,context);
+  }
+  _makeCwiseData(values,type){if(type.name.startsWith('vec')&&['u32','i32'].includes(type.format?.name))return new VectorData(type.format.name==='u32'?new Uint32Array(values):new Int32Array(values),type);return super._makeCwiseData(values,type);}
+  _call(node,context){const fn=context.getFunction(node.name);if(!fn)return super._call(node,context);const values=node.args.map(a=>this.evalExpression(a,context)),scope=context.clone();scope.currentFunctionName=node.name;fn.node.args.forEach((a,i)=>scope.createVariable(a.name,values[i],a));this._execStatements(fn.node.body,scope);}
+  _callConstructorVec(node,context){const type=this.getTypeInfo(node.type),format=type.format?.name;if(!['u32','i32'].includes(format))return super._callConstructorVec(node,context);const n=Number(type.name.at(-1));let v=[];if(node.isVector)v=Array.from(node.vectorValue);else for(const a of node.args??[]){const q=this.evalExpression(a,context);v.push(...(q.data?.length>1?Array.from(q.data):[q.value]));}if(!v.length)v=Array(n).fill(0);if(v.length===1)v=Array(n).fill(v[0]);return new VectorData(format==='u32'?new Uint32Array(v.slice(0,n)):new Int32Array(v.slice(0,n)),type).getSubData(this,node.postfix,context);}
+}
+const texBinding = (data, size, format = 'rgba32float', dimension = '2d') => ({ texture: [data.buffer], descriptor: { size, format, dimension } });
+test('executed: World\'s packet light is its figures\' on the same pages (a packet in a shadow dark, one in the sun lit, GI equal)', () => {
+  // world-mesh-light-cpu-check's atlas: 18 x 2 x 2 bricks, every probe resident, its bands a ramp
+  const dims = [18, 2, 2], count = dims.reduce((a, b) => a * b), auxW = 128, base = 132, auxH = Math.ceil((base + count * LIGHT_RECORDS) / auxW), probeW = 16, probeH = Math.ceil(count / probeW);
+  const book = new Uint32Array(count), aux = new Uint32Array(auxW * auxH * 4), band = new Float32Array(probeW * probeH * 4);
+  for (let i = 0; i < count; i++) {
+    const id = count - 1 - i; book[i] = id + 1; aux.set([48, 1, 1, 1], (base + id * LIGHT_RECORDS) * 4); aux.set([i + 1, i + 1, 0, 0], (base + id * LIGHT_RECORDS + 1) * 4); aux.set([0, 0, 2, 7], (base + id * LIGHT_RECORDS + 3) * 4);
+    const x = i % dims[0], y = Math.floor(i / dims[0]) % 2, z = Math.floor(i / (dims[0] * 2)); band.set([x + 2 * y + 3 * z, 2 * x - y, .5 * z, 1], i * 4);
+  }
+  const plane = Math.ceil(count / 32), status = plane * 6;
+  // the sun's pages (an identity projection: texel x, y, depth z), two tiles resident; around one packet an occluder
+  // at depth 0 (a plate between it and the sun), around the other nothing
+  const optical = new Float32Array(2048 * 2048 * 4), sunBook = new Uint32Array(16);
+  sunBook.set([0, 1, 1, 1, 0, 0, 1, 0]); sunBook.set([1, 1, 1, 1, 0, 0, 1, 0], 8);
+  const origin = [90, 0, 0], pIn = [20.5, 5.5, 3], pOut = [40.5, 5.5, 3];   // world cells (the window's plus its origin)
+  for (const p of [pIn, pOut]) for (let dx = -1; dx <= 2; dx++) for (let dy = -1; dy <= 2; dy++)
+    optical.set(p === pIn ? [0, 0, 0, 0] : [1e5, 1e5, 1e5, 0], (Math.floor(p[0]) + dx + 2048 * (Math.floor(p[1]) + dy)) * 4);
+  const run = (light) => {
+    const src = `${frameBindings().match(/struct FrameUniforms \{[\s\S]*?\n\}/)[0]}
+${NativeParticleParams.wgsl}
+var<private> FU: FrameUniforms;
+var<private> P: NativeParticleParams;
+${particleWorldLightWGSL()}
+${meshLightWGSL}
+${worldMeshSunWGSL}
+${worldMeshAmbientWGSL}
+@group(0) @binding(0) var<storage, read> pts: array<vec4f>;
+@group(0) @binding(1) var<storage, read_write> outv: array<vec4f>;
+@group(0) @binding(2) var sig: texture_2d<f32>;
+@group(0) @binding(3) var wand: texture_2d<f32>;
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) id: vec3u) {
+  FU.shadows = 1u; FU.view = 0; FU.sun = vec3f(0.0, 0.0, 1.0); FU.clouds = 0u; FU.caveAmbient = vec3f(0.1, 0.2, 0.3);
+  P.light = ${light}u; P.origin = vec3f(${origin.join(',')});
+  P.wWorld = vec4u(18u, 2u, 2u, 1u); P.wLight = vec4u(132u, ${count}u, ${count}u, 7u); P.wGeometry = vec4u(${auxW}u, ${auxH}u, ${probeW}u, ${probeH}u);
+  P.wFeedback = vec4u(${plane}u, ${status}u, ${status + 1}u, 2u);
+  P.wProjection = mat4x4f(vec4f(1.0, 0.0, 0.0, 0.0), vec4f(0.0, 1.0, 0.0, 0.0), vec4f(0.0, 0.0, 1.0, 0.0), vec4f(0.0, 0.0, 0.0, 1.0));
+  P.wDepth = vec4f(0.0, 0.0, ${WORLD_SUN_PITCH}, 2.4); P.wTiles = vec4i(0, 0, 2, 1); P.wPhysical = vec4u(256u, 8u, 64u, 1u); P.wVersion = vec4u(1u, 1u, 1u, ${status + 1}u);
+  let w = pts[id.x].xyz; let n = normalize(vec3f(0.3, 0.4, 0.8)); let q = vec3f(4.0 + f32(id.x) * 20.0, 3.0, 3.0);
+  // the packet's draw (window cells) and the figures' readers (world cells: the lift toward the sun, GI_OFFSET out)
+  outv[id.x * 4u] = vec4f(particleSun(w - P.origin, n), 0.0);
+  outv[id.x * 4u + 1u] = vec4f(wmlSun(w + FU.sun * ${PARTICLE_SHADOW_LIFT.toFixed(1)}, particleWorldSun, sig, tMediaNoise, linearRepeat, P.wWorld, P.wFeedback, P.wProjection,
+    P.wDepth, P.wTiles, P.wPhysical, P.wVersion, vec4f(FU.sun, 1.0), vec4f(1.0), vec4f(0.0), vec4f(FU.caveAmbient, 0.0), vec4f(0.0)), 0.0);
+  outv[id.x * 4u + 2u] = vec4f(particleGI(q - P.origin, n), 0.0);
+  outv[id.x * 4u + 3u] = vec4f(wmlAmbient(q, q + n * ${GI_OFFSET_CELLS.toFixed(1)}, n, particleGI0, particleGI1, particleGI2, particleGI3, particleGI0, particleWorldAux,
+    P.wWorld, P.wLight, P.wGeometry, P.wFeedback, wand, 0.0, vec4f(1.0, 1.0, 1.0, 0.0), vec4f(FU.caveAmbient, 0.0)), 0.0);
+}`;
+    const out = new Float32Array(2 * 4 * 4), requests = new Uint32Array(status + 6), tex = (d, w, h) => texBinding(d, [w, h, 1]);
+    new Exec(new WgslParser().parse(src)).dispatchWorkgroups('main', 2, {
+      0: { 0: new Float32Array([...pIn, 0, ...pOut, 0]), 1: out, 2: tex(new Float32Array(64 * 4), 64, 1), 3: tex(new Float32Array(16 * 4), 8, 2) },
+      2: { 1: texBinding(aux, [auxW, auxH, 1], 'rgba32uint'), 2: tex(band, probeW, probeH), 3: tex(band, probeW, probeH), 4: tex(band, probeW, probeH), 5: tex(band, probeW, probeH),
+        6: tex(optical, 2048, 2048), 7: texBinding(new Float32Array([.8, .8, .8, .8]), [1, 1, 1], 'rgba32float', '3d'), 8: { sampler: {} }, 9: book, 10: sunBook, 11: requests } });
+    const v = (k) => Array.from(out.subarray(k * 4, k * 4 + 3)).map((x) => +x.toFixed(4));
+    return { inSun: v(0), inFig: v(1), inGI: v(2), inFigGI: v(3), outSun: v(4), outFig: v(5), outGI: v(6), outFigGI: v(7), requests };
+  };
+  const r = run(1);
+  assert.deepEqual(r.inSun, [0, 0, 0], 'the packet under the occluder: no sun');
+  assert.deepEqual(r.outSun, [1, 1, 1], 'the packet beside it: the whole sun');
+  assert.deepEqual([r.inSun, r.outSun], [r.inFig, r.outFig], 'the figures\' reader (wmlSun) on the same pages, the same');
+  assert.deepEqual([r.inGI, r.outGI], [r.inFigGI, r.outFigGI], 'GI: the figures\' wmlAmbient (no glow), the same');
+  assert.ok(r.outGI[0] > r.inGI[0] && r.inGI[0] > 0.1, `the GI follows the probes (${r.inGI}, ${r.outGI})`);
+  assert.ok(r.requests.every((x) => x === 0), 'every page resident: no requests');
+  // before: World drew its packets with the Box pipe and no light bound (P.light 0): the open sky, shadow or not
+  assert.deepEqual(run(0).inSun, [1, 1, 1], 'P.light 0: the open sky\'s');
+  // a page not loaded yet: requested, as the figures' misses are (the frame then waits for it)
+  sunBook[6] = 0; book[0] = 0;
+  const miss = run(1);
+  assert.equal(miss.requests[status], 1, 'a missing sun tile or probe marks the frame incomplete');
+  assert.ok(miss.requests[status + 1] & 1, 'and requests the sun tile');
 });
 
 test('the derived passes run again each tick packets fly (V1\'s flying cells move the grid version; packets do not)', () => {
