@@ -19,8 +19,9 @@ ${field('phaseHotLatent', r => r.hotLatent)}
 ${field('phaseColdLatent', r => r.coldLatent)}
 ${field('phaseOffsetPerQuantum', r => r.offset)}
 ${field('phaseCapacityPerQuantum', (_, i) => Math.max(1, Math.round(ELEMENTS[i].cap * 64)))}
-// (the helpers below have one exit each, and pick with select where both sides are cheap: they inline
-// at every energy read, and their early returns made the big kernels slow to compile cold, B5)
+// (phaseTq and the offset and latent reads below have one exit each and pick with select: they inline at
+// every energy read, and their early returns made the contact kernels slow to compile cold, B5. The
+// divisions keep their early returns: one exit there made the column kernels slower, v2runs/v2pairs)
 fn phaseTq(id:u32,raw:u32)->u32 {
  return select(u32(select(phaseColdQ(id),phaseHotQ(id),raw<PHASE_COLD_BASE)),raw,raw<=41093u);
 }
@@ -33,9 +34,9 @@ fn phaseMulSmall(a:vec2u,n:u32)->vec2u {
 // Exact unsigned long division is the fallback, never an approximate result.
 fn phaseDivExact(a:vec2u,b:vec2u)->vec2u {
  var quotient=vec2u(0u); var remainder=vec2u(0u);
+ if(all(b==vec2u(0u))){return quotient;}
  var top=31-i32(countLeadingZeros(a.x));
  if(a.y!=0u){top=63-i32(countLeadingZeros(a.y));}
- if(all(b==vec2u(0u))){top=-1;} // (a zero divisor: no bits, quotient 0)
  for(var bit=top;bit>=0;bit--){
   remainder=vec2u(remainder.x<<1u,(remainder.y<<1u)|(remainder.x>>31u));
   var incoming=0u;
@@ -49,13 +50,14 @@ fn phaseDivExact(a:vec2u,b:vec2u)->vec2u {
  return quotient;
 }
 fn phaseDiv(a:vec2u,b:vec2u)->vec2u {
- var out=vec2u(0u); var done=true;
- if(all(b==vec2u(0u)) || energyLess(a,b)){
- }else if(b.y==0u && (b.x & (b.x-1u))==0u){
-  // (b.x==1: a itself; the shift's 32-bit term is then unused)
+ if(all(b==vec2u(0u))){return vec2u(0u);}
+ if(energyLess(a,b)){return vec2u(0u);}
+ if(b.y==0u && (b.x & (b.x-1u))==0u){
+  if(b.x==1u){return a;}
   let shift=firstTrailingBit(b.x);
-  out=select(vec2u((a.x>>shift)|(a.y<<(32u-shift)),a.y>>shift),a,b.x==1u);
- }else if(b.y==0u && b.x<=0x80000000u){
+  return vec2u((a.x>>shift)|(a.y<<(32u-shift)),a.y>>shift);
+ }
+ if(b.y==0u && b.x<=0x80000000u){
   // Long division retains the HIGH quotient too. For PHASE_STEPS (<=65536),
   // radix-65536 digits keep BOTH intermediate numerators <=2^32-1: each is
   // remainder*65536+digit, remainder<d<=65536. Only exact builtin / and %.
@@ -63,33 +65,31 @@ fn phaseDiv(a:vec2u,b:vec2u)->vec2u {
   if(b.x<=65536u){
    let middle=(rem<<16u)|(a.x>>16u);
    let low=((middle%b.x)<<16u)|(a.x&65535u);
-   out=vec2u(((middle/b.x)<<16u)|(low/b.x),high);
-  }else{ out=vec2u(energyDiv(vec2u(a.x,rem),b.x).x,high); }
- }else if(b.x==0u && (b.y & (b.y-1u))==0u){ out=vec2u(a.y>>firstTrailingBit(b.y),0u);
- }else{
-  done=false;
-  // phaseEncode's quotient <= PHASE_STEPS (12220). Restrict both factors:
-  // b<2^48, q<=65535 => b*q<2^64, so phaseMulSmall CANNOT overflow.
-  // Other domains, and any inaccurate estimate, retain exact long division.
-  if(b.y<=65535u){
-   let estimate=(f32(a.y)*4294967296.0+f32(a.x))/(f32(b.y)*4294967296.0+f32(b.x));
-   if(estimate<65536.0){
-    var q=u32(max(estimate,0.0)); var product=phaseMulSmall(b,q);
-    for(var attempt=0u;attempt<4u;attempt++){
-     if(energyLess(a,product)){
-      if(q==0u){break;}
-      q--; product=energySub(product,b);
-     }else{
-      if(energyLess(energySub(a,product),b)){out=vec2u(q,0u); done=true; break;}
-      if(q==65535u){break;}
-      q++; product=energyAdd(product,b);
-     }
+   return vec2u(((middle/b.x)<<16u)|(low/b.x),high);
+  }
+  return vec2u(energyDiv(vec2u(a.x,rem),b.x).x,high);
+ }
+ if(b.x==0u && (b.y & (b.y-1u))==0u){return vec2u(a.y>>firstTrailingBit(b.y),0u);}
+ // phaseEncode's quotient <= PHASE_STEPS (12220). Restrict both factors:
+ // b<2^48, q<=65535 => b*q<2^64, so phaseMulSmall CANNOT overflow.
+ // Other domains, and any inaccurate estimate, retain exact long division.
+ if(b.y<=65535u){
+  let estimate=(f32(a.y)*4294967296.0+f32(a.x))/(f32(b.y)*4294967296.0+f32(b.x));
+  if(estimate<65536.0){
+   var q=u32(max(estimate,0.0)); var product=phaseMulSmall(b,q);
+   for(var attempt=0u;attempt<4u;attempt++){
+    if(energyLess(a,product)){
+     if(q==0u){break;}
+     q--; product=energySub(product,b);
+    }else{
+     if(energyLess(energySub(a,product),b)){return vec2u(q,0u);}
+     if(q==65535u){break;}
+     q++; product=energyAdd(product,b);
     }
    }
   }
  }
- if(!done){out=phaseDivExact(a,b);}
- return out;
+ return phaseDivExact(a,b);
 }
 fn phaseOffsetEnergy(id:u32,amount:u32)->vec2u {
  let offset=phaseOffsetPerQuantum(id); let magnitude=energyMul(u32(abs(offset)),amount);
