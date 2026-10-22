@@ -328,6 +328,7 @@ assert.deepEqual([...decoded.native.records], exact, 'the native section round-t
 const pool = { isReady: true, isIdle: true, disposed: false, particles: buffer({ size: 64 * 48 }), control: buffer({ size: 64 }), flight: buffer({ size: 64 * 32 }),
   renderState: { capacity: 64 } };
 const hostDynamics = owner.dynamics; owner.dynamics = Object.assign(Object.create(hostDynamics), pool);
+words(pool.particles)[5 * 12 + 3] = 99;   // (a packet the guest's own physics left in flight before it joined)
 const unpacker = createUnpacker(); const tickBeforeGuest = owner.tick, wholeBefore = sim.wholeWrites;
 owner.importFull = true;   // (a stale V1 load the guest's owner would import over the frame: build()'s preset)
 await unpacker.unpack(sim, decoded.body, { native: decoded.native });
@@ -345,8 +346,12 @@ assert.ok(busy.every(v => v === 1), 'every brick wakes for the first tick that r
 assert.equal(words(pool.control)[0], 1, 'the flying sand is live in the guest\'s pool');
 assert.deepEqual([...words(pool.particles).subarray(42 * 12, 43 * 12)], [...sand.subarray(1)], '...at its host slot, record for record');
 assert.equal(owner.dynamics.isIdle, false, 'a pool in flight keeps the replica drawing it');
+assert.equal(words(pool.particles)[5 * 12 + 3], 0, 'the replica\'s pool is the host\'s alone');
 await unpacker.unpack(sim, decoded.body, { native: { records: new Uint32Array(0), particles: new Uint32Array(0) } });
 assert.equal(words(pool.control)[0], 0, 'landed matter leaves the pool'); assert.equal(owner.dynamics.isIdle, true);
+owner.dynamics.isIdle = false;
+await unpacker.unpack(sim, decoded.body, { native: null });
+assert.equal(owner.dynamics.isIdle, true, 'an empty replica pool lets the guest\'s loop rest (wire/rays.js busy)');
 assert.equal(owner.tick, tickBeforeGuest, 'guest decoder never steps');
 // C1: the session ends; the guest's own box steps on from the frame (app.js v2Replica, then v2Box).
 {

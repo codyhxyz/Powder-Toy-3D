@@ -561,7 +561,9 @@ function writeFlying(owner, list, v2) {
   const d = owner.dynamics;
   if (!d?.isReady || d.disposed) return;
   const count = list ? list.length / NATIVE_PARTICLE_WORDS : 0;
-  if (!count && !d.replicaFlying) return;   // (nothing flew last frame either)
+  // (nothing flew last frame either: the pool is already the replica's, and empty; the first frame clears
+  // whatever the guest's own physics left in it)
+  if (!count && d.replicaFlying === false) { d.isIdle = true; return; }
   const cap = d.renderState.capacity, pool = new Uint32Array(cap * PARTICLE_RECORD_WORDS);
   let live = 0;
   for (let k = 0; k < count; k++) {
