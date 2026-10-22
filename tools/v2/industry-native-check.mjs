@@ -10,8 +10,11 @@ import { cellSlot, marksLayout, editKernelWGSL } from '../../src/shaders/common.
 import { createIndustryPhysics, machineBox, machinePorts } from '../../src/industry/physics.js';
 import { deviceCell, deviceDirection, baseMaterial, FILTER_IDS } from '../../src/industry/catalog.js';
 import { INDUSTRY_KIND, INDUSTRY_EDIT } from '../../src/shaders/industry.js';
-import { NativeIndustry, MACHINE_SPEED_SI, MACHINE_CARRY_SI, DECK_SLIDE_TICKS, v1DeckCells, v1DeckKeep, deckSlideSI, industryMotionWGSL, nativeIndustryEvaluateWGSL, nativeIndustryPlanWGSL, nativeIndustryParams } from '../../src/v2/industry.js';
-import { LAUNCH_MODE, PLAN } from '../../src/shaders/v2/blasts.js';
+import { NativeIndustry, MACHINE_SPEED_SI, MACHINE_CARRY_SI, v1DeckCells, v1DeckKeep, deckSlideSI, v1ThrowAcross, industryMotionWGSL, nativeIndustryEvaluateWGSL, nativeIndustryPlanWGSL, nativeIndustryParams } from '../../src/v2/industry.js';
+import { LAUNCH_MODE, PLAN, slideLift, slideTickFall, blastsWGSL } from '../../src/shaders/v2/blasts.js';
+import { nativeDynamicsHead } from '../../src/shaders/v2.js';
+import { dynamicsRows } from '../../src/v2/dynamics-reference.js';
+import { nativeFlight } from '../outcomes/native-grid.js';
 import { NOMINAL_STEP_RATE } from '../../src/physics.js';
 import { nativeForceCommitWGSL } from '../../src/v2/nativeForcing.js';
 import { nativeWeatherParams } from '../../src/v2/nativeWeather.js';
@@ -261,10 +264,38 @@ assert(!/\bownLegacy\(slotOf/.test(evaluate), 'evaluation claims no legacy owner
 assert(plan.includes('plans[s]=ForcePlan(industryVelocity(p,id,r.motion.xyz),flags)'), "motion converts by what it is: a deck's carry or a throw");
 assert(plan.includes(`if((flags&1u)!=0u && industryCarries(p)) { flags|=${PLAN.SLIDE}u; }`), "a deck's carry leaves from its contact with the deck");
 const wgslF = n => (Number.isInteger(n) ? `${n}.0` : String(n));
-assert(industryMotionWGSL.includes(`return motion * ${wgslF(MACHINE_SPEED_SI)}; }`), 'a throw keeps V1\'s trajectory in cells');
+assert(industryMotionWGSL.includes(`return vec3f(industryAcross(motion.x), motion.y, industryAcross(motion.z)) * ${wgslF(MACHINE_SPEED_SI)}; }`), "a throw goes V1's paced speed across, V1's own up");
+// M8: a slide lands back on its deck inside its tick at any carry speed, so the next tick's pass kicks it again
+// (the cause of the every-other-tick kick: the integrate's drag on the whole velocity shortens a fast carry's
+// fall, particles.js integrate, and a start under one tick's free fall landed a tick late past ~16 m/s).
+{
+  const apply = blastsWGSL(g, nativeDynamicsHead, 'apply');
+  assert(apply.includes('dSlideStart(t,cid(packet.core),plan.velocity+incoming)') && apply.includes('*P.gravity/(1.0+drag*length(relative)*'), 'the slide starts under its own tick\'s fall');
+  for (const r of dynamicsRows.filter(r => r?.kind === K.POWDER)) for (const v of [2, 10, 18, 30, 43.2, 72]) {
+    assert(slideLift(r.terminal, [0, 0, v]) < slideTickFall(r.terminal, [0, 0, v]), `${ELEMENTS[r.id].name} at ${v} m/s lands inside its tick`);
+  }
+  // Miner debris (shaders/industry.js update: 0.35 back, 0.1 up) lands where V1's does: a Monte Carlo of V1's
+  // move (each axis: chance |v| from the block's near side) and react (pull, then drag), against V2's flight.
+  let seed = 11; const random = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
+  const v1Range = (ux, uy, drop, drag) => { let sum = 0; for (let i = 0; i < 3000; i++) {
+    let x = 0, y = 0, k = 0;
+    for (let vx = ux, vy = uy; k < 400 && y > -drop; k++) {
+      if (((x - k) & 1) === 0 && random() < Math.min(vx, 1)) x++;
+      if (vy > 0 ? ((y - k) & 1) === 0 && random() < Math.min(vy, 1) : ((y - k) & 1) !== 0 && random() < Math.min(-vy, 1)) y += Math.sign(vy);
+      vy -= SIM_GRAVITY; vx *= 1 - drag; vy *= 1 - drag;
+    }
+    sum += x; } return sum / 3000; };
+  const v2Range = (ux, uy, drop, id) => { for (let t = 1; t < 200; t++) { const [x, y] = nativeFlight(id, [v1ThrowAcross(ux) * MACHINE_SPEED_SI / CELL_M, uy * MACHINE_SPEED_SI / CELL_M], t / HOST_HZ); if (y <= -drop) return x; } };
+  for (const [id, drop] of [[E.BROKENCOAL, 1], [E.STONE, 2]]) {
+    const v1 = v1Range(0.35, 0.1, drop, ELEMENTS[id].drag ?? 0), v2 = v2Range(0.35, 0.1, drop, id);
+    // (within a cell: what is left is V1's paced fall, slower than a particle's over a short drop)
+    assert(Math.abs(v2 - v1) < 1, `${ELEMENTS[id].name} debris lands ${v2.toFixed(2)} cells back, V1's ${v1.toFixed(2)}`);
+  }
+  console.log('PASS slides land inside their tick at every carry speed; a miner\'s debris lands where V1\'s does');
+}
 // under V1's pull (v2/gravity.js) a throw's map is V1's cells/s too: one speed keeps both
 assert.equal(MACHINE_SPEED_SI, MACHINE_CARRY_SI);
-assert(industryMotionWGSL.includes(`flat = motion.xz / along * (industryDeckCells(id, along) * ${wgslF(MACHINE_CARRY_SI * DECK_SLIDE_TICKS)}); }`)
+assert(industryMotionWGSL.includes(`flat = motion.xz / along * (industryDeckCells(id, along) * ${wgslF(MACHINE_CARRY_SI)}); }`)
   && industryMotionWGSL.includes(`return vec3f(flat.x, motion.y * ${wgslF(MACHINE_SPEED_SI)}, flat.y);`),
   "a carry moves at V1's game-time speed along the deck (v1DeckCells); its vertical part is a throw's");
 // M7: V1's deck speed in game time, against V1 itself on the GPU (tools/v2/industry-belt-browser-check.mjs,
@@ -276,8 +307,8 @@ assert(industryMotionWGSL.includes(`flat = motion.xz / along * (industryDeckCell
   let seed = 7; const random = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
   const carlo = steps => { let x = 0, u = 0.6, frame = 0; for (let f = 0; f < 4000; f++) { for (let k = 0; k < steps; k++, frame++) { if (((x - frame) & 1) === 0 && random() < u) x++; u *= keep; } u = 0.6; } return x / (4000 * steps); };
   for (const steps of [1, 2, 4, 12]) assert(Math.abs(carlo(steps) / v1DeckCells(keep, 0.6, steps) - 1) < 0.04, `the chain is V1's rules' mean at ${steps} steps`);
-  // and V2 delivers it: a slide is a kick every DECK_SLIDE_TICKS ticks, a tick its speed's cells
-  const tickCells = v => v / CELL_M / HOST_HZ / DECK_SLIDE_TICKS;
+  // and V2 delivers it: a slide is a kick every tick, a tick its speed's cells
+  const tickCells = v => v / CELL_M / HOST_HZ;
   assert(Math.abs(tickCells(deckSlideSI(v1DeckCells(keep, 0.6, 4))) - LEGACY_STEPS_PER_TICK * v1DeckCells(keep, 0.6, 4)) < 1e-9, "a tick carries V1's four steps' cells");
   console.log(`PASS V1's belt speed in game time: ${perSecond(4).toFixed(0)} cells/s at Speed 1, ${perSecond(12).toFixed(0)} at Speed 3 (V1 on the GPU: 58, 25)`);
 }

@@ -5,7 +5,8 @@ import { PARTICLE_CAP } from './dynamics-reference.js';
 import { nativeForceCommitWGSL, FORCE_COMMIT_LAYOUT } from './nativeForcing.js';
 import { nativeModes } from './modes.js';
 import { GRAVITY } from './dynamics-reference.js';
-import { SIM_GRAVITY, NOMINAL_STEP_RATE } from '../physics.js';
+import { SIM_GRAVITY, NOMINAL_STEP_RATE, PHYS } from '../physics.js';
+import { v1PaceRate } from './gravity.js';
 import { CELL_M } from '../scale.js';
 import { INDUSTRY_EDIT, INDUSTRY_KIND } from '../shaders/industry.js';
 import { ELEMENTS, K } from '../elements.js';
@@ -61,12 +62,14 @@ export function v1DeckCells(keep, kick, steps) {
   }
   return moved / steps;
 }
-// A slide (blasts.js PLAN.SLIDE) moves its grain its speed for one tick, and the grain is on the grid for a
-// kick again one tick after it lands: a deck kicks a grain every DECK_SLIDE_TICKS ticks (measured on the GPU:
-// a 144 cells/s slide carries 72 cells/s; tools/v2/industry-belt-browser-check.mjs).
-export const DECK_SLIDE_TICKS = 2;
-// m/s of the slide that carries V1's mean `cells` a step, kicked every DECK_SLIDE_TICKS ticks
-export const deckSlideSI = cells => cells * MACHINE_CARRY_SI * DECK_SLIDE_TICKS;
+// A slide (blasts.js PLAN.SLIDE) moves its grain its speed for one tick and lands it back on the deck inside
+// that tick, so the next tick's pass kicks it again: m/s of the slide that carries V1's mean `cells` a step.
+export const deckSlideSI = cells => cells * MACHINE_CARRY_SI;
+// A throw (a lift's, a miner's debris, a pour) on V1's move: a cell crosses a face along an axis with chance
+// |v| from its Margolus block's near side only, so it goes |v|/(2 - |v|) cells a step on average (v2/gravity.js
+// v1PaceRate). Across, a particle flies at that mean. Up, it flies V1's own speed: measured on the GPU, a
+// lift's grain tops out at V1's 14 cells (V2 14.8) as the particles' drag stands in for V1's pacing.
+export const v1ThrowAcross = u => Math.sign(u) * v1PaceRate(Math.abs(u));
 const deckKeeps = (() => {
   const by = new Map();
   for (const e of ELEMENTS) if (e?.kind === K.POWDER) { const k = Math.fround(v1DeckKeep(e)); by.set(k, [...(by.get(k) ?? []), e.id]); }
@@ -95,12 +98,13 @@ fn industryDeckCells(id: u32, kick: f32) -> f32 {
   }
   return moved / f32(steps);
 }
+fn industryAcross(u: f32) -> f32 { let a = min(abs(u), ${wf(PHYS.V_MAX)}); return sign(u) * a / (2.0 - a); }
 fn industryVelocity(p: vec3i, id: u32, motion: vec3f) -> vec3f {
-  if (!industryCarries(p)) { return motion * ${wf(MACHINE_SPEED_SI)}; }
+  if (!industryCarries(p)) { return vec3f(industryAcross(motion.x), motion.y, industryAcross(motion.z)) * ${wf(MACHINE_SPEED_SI)}; }
   // the carry along the deck at V1's game-time speed (deckSlideSI); its vertical part is a throw's
   let along = length(motion.xz);
   var flat = vec2f(0.0);
-  if (along > 0.0) { flat = motion.xz / along * (industryDeckCells(id, along) * ${wf(MACHINE_CARRY_SI * DECK_SLIDE_TICKS)}); }
+  if (along > 0.0) { flat = motion.xz / along * (industryDeckCells(id, along) * ${wf(MACHINE_CARRY_SI)}); }
   return vec3f(flat.x, motion.y * ${wf(MACHINE_SPEED_SI)}, flat.y);
 }
 `;

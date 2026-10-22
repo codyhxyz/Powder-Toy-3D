@@ -75,6 +75,24 @@ test('belt', async (name, { steps = 4, fps = 60, frames = 30 } = {}) => {
   return out;
 });
 
+// Grains run off a line of belts' end (z 28) at height DROP_Y and land on a floor 11 cells below: where they land.
+test('drop', async (name, { steps = 4, frames = 50 } = {}) => {
+  const lines = [0, 8, 16, 24], devices = [], DECK_Y = 12;
+  for (const x of lines) for (let z = 0; z < 28; z += 4) devices.push({ id: `d${x}-${z}`, type: 'belt', x, y: DECK_Y, z, rotation: 0 });
+  const start = lines.flatMap(x => [[x + 1, DECK_Y + 1, 1], [x + 2, DECK_Y + 1, 9]]);
+  const { engine, sim, physics, errors } = await scene(name, [32, 32, 64], devices, start, steps);
+  engine.box([0, 0, 28], [31, 1, 63], 'INSULATOR');
+  const frame = frameRunner(name, sim, physics, devices, { steps, fps: 60 });
+  physics.step(1 / 60, devices);
+  for (let f = 0; f < frames; f++) frame();
+  const g = await grains(engine), landed = g.filter(p => p[1] < DECK_Y);
+  const beyond = landed.map(p => p[2] - 28);
+  const out = { engine: name, steps, landed: landed.length, of: g.length, meanBeyond: beyond.reduce((n, v) => n + v, 0) / Math.max(1, beyond.length),
+    beyond: beyond.map(v => +v.toFixed(1)).sort((a, b) => a - b), ys: [...new Set(g.map(p => Math.floor(p[1])))], errors };
+  log(JSON.stringify(out));
+  return out;
+});
+
 // One grain on a line of belts, tick by tick (V2) or frame by frame (V1): where it is after each, on the grid or flying.
 test('trace', async (name, { steps = 4, frames = 10 } = {}) => {
   const devices = [];
