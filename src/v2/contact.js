@@ -1157,14 +1157,14 @@ export function ctReaction(a0, b0, seed) {
   if ((code - 1) % 2 !== 0) { const temp = ao; ao = bo; bo = temp; }
   if (ao < 0) ao = a.id;
   if (bo < 0) bo = b.id;
-  // rxT in ¼ K codes: row.heat is 1/256 cap·°C and capacity 1/CT_CAP_UNITS of a cap.
+  // rxT in ¼ K codes (row.heat: 1/256 cap·°C; capacity: cap·CT_CAP_UNITS).
   const dq = ctI(Math.floor(ctF(row.heat) * ctF(CT_CAP_UNITS * CT_Q_PER_C) / ctF(CT_RX_HEAT_UNIT * (ctRow(ao).capacity + ctRow(bo).capacity)) + 0.5));
   const shareA = ctShare(a);
   const shareB = ctShare(b);
-  let warmA = dq;
-  let warmB = dq;
-  if (shareA > shareB && ctRoll(seed, CT_PAIR_FILL_SALT + 2) * shareA >= shareB) { ao = a.id; warmA = 0; }
-  if (shareB > shareA && ctRoll(seed, CT_PAIR_FILL_SALT + 3) * shareB >= shareA) { bo = b.id; warmB = 0; }
+  let partA = 1;
+  let partB = 1;
+  if (shareA > shareB && ctRoll(seed, CT_PAIR_FILL_SALT + 2) * shareA >= shareB) { ao = a.id; partA = 0; }
+  if (shareB > shareA && ctRoll(seed, CT_PAIR_FILL_SALT + 3) * shareB >= shareA) { bo = b.id; partB = 0; }
   if (ctRow(ao).kind !== 3 && ao !== a.id && ctRoll(seed, CT_PAIR_FILL_SALT) >= shareA) ao = E.EMPTY;
   if (ctRow(bo).kind !== 3 && bo !== b.id && ctRoll(seed, CT_PAIR_FILL_SALT + 1) >= shareB) bo = E.EMPTY;
   let amountA = 65536; let amountB = 65536;
@@ -1174,11 +1174,11 @@ export function ctReaction(a0, b0, seed) {
   let nb = ctInherit(ctNew(bo, b.tq, amountB), b);
   if (ao === a.id) na = ctCopy(a);
   if (bo === b.id) nb = ctCopy(b);
-  na = ctRecordChange(ctWarm(na, warmA), ctEnergy(a));
-  nb = ctRecordChange(ctWarm(nb, warmB), ctEnergy(b));
+  na = ctRecordChange(ctWarm(na, dq * partA), ctEnergy(a));
+  nb = ctRecordChange(ctWarm(nb, dq * partB), ctEnergy(b));
   na.busy = 1; nb.busy = 1; na.done = 1; nb.done = 1;
-  // V1: each cell of the pair takes half the puff (rxP), when both took part.
-  if (row.gas !== 0 && warmA === dq && warmB === dq) { na.request = ctPuff(na.request, row.puff); nb.request = ctPuff(nb.request, row.puff); }
+  // V1: each cell in the pair takes half the puff (rxP), when both took part.
+  if (row.gas !== 0 && partA + partB === 2) { na.request = ctPuff(na.request, row.puff); nb.request = ctPuff(nb.request, row.puff); }
   return ctPairValue(na, nb, 1);
 }
 // V1 react.js ACIDIC: acid eats what it touches, which becomes smoke or air at its own temperature
