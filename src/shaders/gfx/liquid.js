@@ -484,7 +484,10 @@ fn crystalInterface(s: Shard, hp: vec3f, n: vec3f, rd: vec3f, inside: bool, liqu
     *col += *trans * path.frontF * env;
     if (FU.lampCount > 0) {
       let f0 = pow((eta - 1.0) / (eta + 1.0), 2.0);
-      let lit = lampShade(hp, n, n, true, LampSpecIn(-rd, ROUGH(E_CRYSTAL), vec3f(f0), s.u, 0.0, true));
+      // only the lamps' highlight: the beam lights the diffuse sum alone, and
+      // its whole-window shadow ray inside the march loop cost the World
+      // volume ~0.4 s of its cold build (2026-10-21)
+      let lit = lampLights(hp, n, n, true, LampSpecIn(-rd, ROUGH(E_CRYSTAL), vec3f(f0), s.u, 0.0, true), false);
       *col += *trans * lit.spec;
     }
   }

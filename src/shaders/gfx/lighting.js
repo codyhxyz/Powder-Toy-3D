@@ -1078,25 +1078,59 @@ const LAMP_PAD: f32 = 0.3;         // cells short of the lamp the shadow ray sto
 const LAMP_FIXED_PAD: f32 = ${LAMP_FIXED_PAD.toFixed(2)};   // ...a fixed lamp's: its light is in a solid cell (gfx/lamps.js)
 const LAMP_FIXED_SELF: f32 = 0.6;  // cells: a surface this close to a fixed lamp's centre (each axis) is its own cell's
 // view: what the specular needs (lampSpec, off in lampSum); the shadow ray is shared.
-fn lampShade(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn) -> LampLit {
+// beamOn: whether the lighthouse's beam lights the diffuse sum (a caller that
+// reads only .spec passes false: the beam has no specular, and its shadow ray
+// would only request bricks for light nobody uses).
+fn lampLights(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn, beamOn: bool) -> LampLit {
   var sum = vec3f(0.0);
-  var spec = vec3f(0.0);
+  var spec = vec3f(0.0);${giUniforms ? `
   for (var i = 0; i < LAMP_MAX; i++) {
-    if (i >= FU.lampCount) { break; }
+    if (i >= FU.lampCount) { break; }` : `
+  // Beacon direct light only: no rotating contribution left behind in GI
+  // history. It is the loop's last trip (i == lamps, beaconDiffuse's light),
+  // so its shadow ray and the lamps' are one traceNearSteps call site: Metal
+  // inlines every call, and the second copy of the march cost the World
+  // volume ~0.3 s of its cold build (2026-10-21). Same light, same order.
+  let lamps = min(FU.lampCount, LAMP_MAX);
+  for (var i = 0; i <= LAMP_MAX; i++) {
+    let beam = i == lamps;
+    if (i > lamps || (beam && !(beamOn && FU.beaconDir.w > 0.0))) { break; }`}
     let ro = p + ng * LAMP_START;
+    var o = ro;
+    var rd = vec3f(0.0);
+    var len = 0.0;
+    var steps = NEAR_MAX_STEPS;
+    var nl = 0.0;
+    var d2 = 0.0;
+    var R = 0.0;
+    var r = 0.0;${giUniforms ? '' : `
+    var trace = true;
+    var power = vec3f(0.0);
+    var ray: BeaconRay;
+    if (beam) {
+      // beaconDiffuse(p, ng, n): beaconIrradiance(ro) * nl, with beaconVisible's ray
+      let dv = beaconPosition() - ro;
+      nl = max(dot(n, dv) * inverseSqrt(max(dot(dv, dv), 1e-8)), 0.0);
+      if (nl <= 0.0) { break; }
+      power = beaconPower(ro);
+      // Cull daylight, darkness, range and cone BEFORE tracing/sampling.
+      if (max(power.r, max(power.g, power.b)) <= 0.0) { break; }
+      ray = beaconRay(ro);
+      o = ray.o; rd = ray.d; len = ray.len; steps = BEACON_MAX_STEPS; trace = ray.trace;
+    } else {`}
     let near = lampNearest(i, ro);
     let dv = near - ro;
-    let d2 = dot(dv, dv);
-    let R = FU.lampPos[i].w;
+    d2 = dot(dv, dv);
+    R = FU.lampPos[i].w;
     if (d2 >= R * R) { continue; }
     let fixedLamp = FU.lampCol[i].w > 0.5;
     if (!lampLive(i)) { continue; }
     if (fixedLamp && all(abs(p - FU.lampPos[i].xyz) < vec3f(LAMP_FIXED_SELF))) { continue; }   // the torch's own head: its glow is its emission
     let d = sqrt(d2);
     let l = dv / max(d, 1e-4);
-    let nl = dot(n, l);
+    nl = dot(n, l);
     if (nl <= 0.0) { continue; }
-    let r = FU.lampShape[i].x;
+    r = FU.lampShape[i].x;
     var aim = near;
     if (soft) {
       let u = lampRand(i);
@@ -1107,18 +1141,27 @@ fn lampShade(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn) -> Lam
     }
     let sv = aim - ro;
     let sd = length(sv);
-    var hc: vec3i;
-    var hn: vec3f;
     // stop as far short of the aim as it is off the nearest point, so the ray ends by the light, never in the wall a torch hangs on
     let pad = select(LAMP_PAD, LAMP_FIXED_PAD, fixedLamp) + distance(aim, near);
-    if (traceNear(ro, sv / max(sd, 1e-4), max(sd - pad, 0.0), true, LAMP_SELF_SKIP, &hc, &hn) >= 0.0) { continue; }
+    rd = sv / max(sd, 1e-4);
+    len = max(sd - pad, 0.0);${giUniforms ? '' : `
+    }`}
+    var hc: vec3i;
+    var hn: vec3f;
+    // (traceNear: the lamps' NEAR_MAX_STEPS)
+    if (${giUniforms ? '' : 'trace && '}traceNearSteps(o, rd, len, true, LAMP_SELF_SKIP, steps, &hc, &hn) >= 0.0) { continue; }${giUniforms ? '' : `
+    if (beam) {
+      if (beaconFarClear(ro, ray)) { sum += power * nl; }
+      break;
+    }`}
     let E = FU.lampCol[i].rgb * lampFall(d2, R, r);
     sum += E * nl;
     if (view.on) { spec += E * lampSpec(i, p, n, view); }
   }
-  // Beacon direct light only: no rotating contribution left behind in GI history.
-  ${giUniforms ? '' : 'if (FU.beaconDir.w > 0.0) { sum += beaconDiffuse(p, ng, n); }'}
   return LampLit(sum, spec);
+}
+fn lampShade(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn) -> LampLit {
+  return lampLights(p, ng, n, soft, view, true);
 }
 fn lampSum(p: vec3f, ng: vec3f, n: vec3f, soft: bool) -> vec3f {
   return lampShade(p, ng, n, soft, LampSpecIn(vec3f(0.0), 1.0, vec3f(0.0), vec3f(1.0, 0.0, 0.0), 0.0, false)).diff;
