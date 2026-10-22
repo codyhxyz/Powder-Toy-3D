@@ -299,10 +299,32 @@ export const PACKET_SHOCK_SLACK = 1 - 2 ** -16;
  * speed the m/s past which it sets the charge off, a packet's landing speed after V1's fall (particles.js dShockLand). */
 export const PACKET_SHOCK_LANDINGS = Object.freeze(SHOCK_LANDINGS.map(r =>
   ({ ...r, speed: Math.fround(particleLandingSpeed(r.faller, r.cells * CELL_M) * PACKET_SHOCK_SLACK) })));
+// V1's grains land on their blocks' random draws, so each grain landing on a charge rolls its own odds of setting it
+// off at its fall (v1GrainOdds; BL-7): a 4×4 uranium slab dropped a cell onto C-4 goes off 70 % of the time, not never.
+// A packet's fall is its landing speed's: the fall h a packet landing at u had is the h whose bin it is in, from
+// (h - 0.5) cells (the landing law's cells: the middle of V1's step) to h + 0.5. Per grain pair { faller, charge, bins:
+// [{ speed, odds }] }, ascending: from speed on (m/s, PACKET_SHOCK_SLACK under the f64 law, as the landings'), V1's
+// odds for that h, to where they reach PACKET_GRAIN_ODDS_DONE (particles.js dShockOdds).
+const PACKET_GRAIN_ODDS_DONE = 0.999;
+export const PACKET_GRAIN_ODDS = Object.freeze(SHOCK_LANDINGS.filter(r => r.fall != null && ELEMENTS[r.faller].kind === K.POWDER).map(r => {
+  const j = ELEMENTS[r.faller], k = ELEMENTS[r.charge], mu = k.kind === K.SOLID ? j.dens : j.dens * k.dens / (j.dens + k.dens), bins = [];
+  for (let h = 1; h <= V1_GRAIN_FALL_MAX; h++) {
+    const odds = v1GrainOdds(j, mu, k.blast.shock, h);
+    if (odds > 0) bins.push({ speed: Math.fround(particleLandingSpeed(j.id, (h - 0.5) * CELL_M) * PACKET_SHOCK_SLACK), odds: Math.fround(odds) });
+    if (odds >= PACKET_GRAIN_ODDS_DONE) break;
+  }
+  return { faller: r.faller, charge: r.charge, bins };
+}));
+/** V1's odds that a grain packet of mover landing at u (m/s) on charge sets it off (PACKET_GRAIN_ODDS; 0 for none). */
+export function packetGrainOdds(mover, charge, u) {
+  let odds = 0;
+  for (const b of PACKET_GRAIN_ODDS.find(r => r.faller === mover && r.charge === charge)?.bins ?? []) if (u >= b.speed) odds = b.odds;
+  return odds;
+}
 /** V1's shock on a packet's hit, as particles.js dShockHit reads it (CPU twin of its decision). mover: the
  * packet's element, target: the grid cell's; u: the closing speed (m/s) along the face; landing: along the
  * pull onto its upper face. Returns { target, mover }: whether each, a charge, goes off. */
-export function packetShock(mover, target, u, landing) {
+export function packetShock(mover, target, u, landing, draw = 0.5) {
   const out = { target: false, mover: false };
   const kind = id => ELEMENTS[id].kind, gasLike = id => kind(id) === K.GAS || kind(id) === K.EMPTY;
   if (mover === target || gasLike(mover) || gasLike(target)) return out;
@@ -316,7 +338,8 @@ export function packetShock(mover, target, u, landing) {
   if (dynamicsRows[target].shockKE > 0) {
     if (landing && (kind(mover) === K.POWDER || kind(mover) === K.LIQUID)) {
       const on = PACKET_SHOCK_LANDINGS.find(r => r.faller === mover && r.charge === target)?.speed ?? 0;
-      out.target = on > 0 && u >= on;
+      // a liquid lands on its R3 draws, a fixed law; a grain rolls V1's odds for its fall (its draw, in [0, 1))
+      out.target = kind(mover) === K.POWDER ? draw < packetGrainOdds(mover, target, u) : on > 0 && u >= on;
     } else out.target = acts(target, mover, thrown);
   }
   if (dynamicsRows[mover].shockKE > 0) {

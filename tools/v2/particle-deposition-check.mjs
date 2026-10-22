@@ -12,7 +12,7 @@ import {E,ELEMENTS,R} from '../../src/elements.js';
 import {RAYS} from '../../src/rays.js';
 import {V1_STEP_MS,STEP_S} from '../../src/v2/gravity.js';
 import * as L from '../../src/v2/layout.js';
-import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact,PACKET_KEEP,packetStep,impactHeat} from '../../src/v2/dynamics-reference.js';
+import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact,PACKET_KEEP,packetStep,impactHeat,packetGrainOdds,PACKET_GRAIN_ODDS,v1GrainOdds} from '../../src/v2/dynamics-reference.js';
 import { importMinified } from './wgsl-grouping.mjs';
 const floatBits=v=>{const b=new ArrayBuffer(4);new Float32Array(b)[0]=v;return new Uint32Array(b)[0];};
 const close=(a,b,e,what)=>assert.ok(Math.abs(a-b)<=e,`${what??""}: ${a} vs ${b}`);
@@ -116,7 +116,7 @@ function fixture({mode=0, edge=0, windowed=false,
     D_REACT_KIND:AIRBORNE.KIND,D_REACT_SALT:AIRBORNE.SALT,
     C_AIR:0,C_SOLID:1,C_POWDER:2,C_LIQUID:3,C_GAS:4,
     D_G:GRAVITY,D_DT:DT,D_RAY_DT:Math.fround(DT/4),D_RAYS:31,D_PHOTON_HEAT:RAYS.PHOTON_HEAT/3,D_PHOTON_E_MIN:RAYS.PHOTON_E_MIN,D_PHOTON_CELLS:7,
-    dCap:id=>ELEMENTS[id]?.cap??1,D_LAND_KEEP:PHYS.LAND_POWDER_KEEP,D_LAND_SCATTER:PHYS.LAND_POWDER_SCATTER,vec2f:vec,
+    dCap:id=>ELEMENTS[id]?.cap??1,draw:0.5,dRandom:()=>ctx.draw,dShockOdds:packetGrainOdds,D_GRAIN_SALT:0x6772616e,D_LAND_KEEP:PHYS.LAND_POWDER_KEEP,D_LAND_SCATTER:PHYS.LAND_POWDER_SCATTER,vec2f:vec,
     energyMul:(a,b)=>BigInt(a)*BigInt(b),
     DPacketFlight:(cells,velocity)=>({cells:[...cells],velocity:[...velocity]}),dKeep:id=>PACKET_KEEP[id],
     D_V1_STEP:Math.fround(1/V1_STEP_MS),D_PULL_STEP:Math.fround(STEP_S*STEP_S/CELL_M),D_STEPS:4,
@@ -540,6 +540,23 @@ test('a grain landing hard on rock warms the rock and itself alike, as V1\'s imp
   // under V1's COLLIDE_V (0.15 cells/step) it rests without heat; onto a powder (V1: a pile, not a solid) none either
   const gentle=drop(-6);assert.equal(L.energyOf(at(gentle,[6,0,6])),L.energyOf(L.makeMaterial(E.ROCK)));
   const pile=drop(-43,E.STONE);assert.equal(L.energyOf(at(pile,[6,0,6])),L.energyOf(L.makeMaterial(E.STONE)));
+});
+
+// V1's grains land on their blocks' random draws: each grain on a charge rolls its own odds at its fall (v1GrainOdds),
+// so a 4×4 uranium slab dropped a cell onto C-4 goes off 70 % of the time (BL-7); V2's packets had one fixed speed
+test('a grain packet landing on a charge rolls V1\'s odds for its fall (BL-7)',()=>{
+  const j=ELEMENTS[E.URANIUM],k=ELEMENTS[E.C4],at1=particleLandingSpeed(E.URANIUM,1*CELL_M);
+  const p1=packetGrainOdds(E.URANIUM,E.C4,at1);close(p1,v1GrainOdds(j,j.dens,k.blast.shock,1),1e-6,'from a cell: V1\'s 7 %');
+  const slab=1-(1-p1)**16;assert.ok(slab>0.65&&slab<0.75,`a 16-grain slab from a cell goes off ${(slab*100).toFixed(0)} % (V1 70 %)`);
+  assert.ok(packetGrainOdds(E.SCRAP,E.C4,particleLandingSpeed(E.SCRAP,5*CELL_M))>0.05,'scrap from 5 cells: V1 10 %');
+  assert.equal(packetGrainOdds(E.SAND,E.C4,72),0,'sand never (V1: ½·16·V_MAX² < 20)');
+  // the emitted shock rolls the packet's draw against them
+  const SP=shockPostBase(g),landed=draw=>{const f=fixture({material:L.makeMaterial(E.URANIUM),position:[18.8,1.05,15.5],velocity:[0,-at1,0]});
+    f.ctx.draw=draw;f.set([18,0,15],L.makeMaterial(E.C4));f.tick();return f.ctx.control[SP]===1;};
+  assert.equal(landed(p1*0.5),true,'a draw under its odds sets it off');assert.equal(landed(Math.min(0.99,p1*1.5+0.01)),false,'one over rests');
+  // the WGSL's table is the twin's
+  const wgsl=particlesWGSL(g,nativeDynamicsHead,'impact');
+  for(const r of PACKET_GRAIN_ODDS) for(const b of r.bins) assert.ok(wgsl.includes(`if (u >= ${b.speed}) { odds = ${b.odds}; }`),`${ELEMENTS[r.faller].key} on ${ELEMENTS[r.charge].key}`);
 });
 
 test('an empty pool reads no packet record and writes no flight record',()=>{

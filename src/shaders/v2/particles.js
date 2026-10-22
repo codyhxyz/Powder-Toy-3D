@@ -5,7 +5,7 @@ import { impactFoamWGSL } from '../../v2/foam.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { STAGE } from '../../gpu/kernels.js';
 import { TERMINAL_MS } from '../../v2/gravity.js';
-import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS, LEGACY_PRESSURE_PA, legacyPressureToPa,
+import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS, PACKET_GRAIN_ODDS, LEGACY_PRESSURE_PA, legacyPressureToPa,
   RAY_STEPS_PER_TICK, RAY_NEUTRON_FAST_MS, PACKET_KEEP } from '../../v2/dynamics-reference.js';
 import { V1_STEP_MS, STEPS_PER_TICK, STEP_S } from '../../v2/gravity.js';
 import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
@@ -395,6 +395,17 @@ ${table('dShockFall', 'f32', 'shockFall', 0)}
 fn dShockLand(mover: u32, charge: u32) -> f32 { switch (mover * 256u + charge) {
 ${PACKET_SHOCK_LANDINGS.map(r => `case ${r.faller * 256 + r.charge}u: { return ${f(r.speed)}; }`).join('\n')}
 default: { return 0.0; } } }
+// a grain packet landing on a charge at u (m/s): V1's odds of its fall setting it off (dynamics-reference.js
+// PACKET_GRAIN_ODDS: v1GrainOdds by the fall its speed is in; BL-7), rolled once a hit (D_GRAIN_SALT)
+const D_GRAIN_SALT: u32 = 0x6772616eu;
+fn dShockOdds(mover: u32, charge: u32, u: f32) -> f32 {
+  var odds = 0.0;
+  switch (mover * 256u + charge) {
+${PACKET_GRAIN_ODDS.map(r => `    case ${r.faller * 256 + r.charge}u: {${r.bins.map(b => ` if (u >= ${f(b.speed)}) { odds = ${f(b.odds)}; }`).join('')} }`).join('\n')}
+    default: { }
+  }
+  return odds;
+}
 // V1 react.js shock on a packet's hit (dynamics-reference.js packetShock is its CPU twin): matter and a
 // charge closing at u (m/s, the packet's speed across the face it hits, axis) set it off as V1's hit at
 // the V1 speed the same motion had, never by its own element or a gas (shockActs, isGasLike). A throw is
@@ -411,6 +422,7 @@ fn dShockHit(t: u32, s: u32, p: DParticle, hit: Material, axis: u32) {
   if (dShockKE(tid) > 0.0) {
     var fires = dShockActs(tid, pid, thrown);
     if (landing && (cls(pid) == C_POWDER || cls(pid) == C_LIQUID)) { let on = dShockLand(pid, tid); fires = on > 0.0 && u >= on; }
+    if (landing && cls(pid) == C_POWDER) { fires = dRandom(p.id, D_GRAIN_SALT) < dShockOdds(pid, tid, u); }
     if (fires) { atomicStore(&control[D_SHOCK_COUNT + 1u + t], s | (1u << D_REQUEST_SHIFT)); atomicAdd(&control[D_SHOCK_COUNT], 1u); }
   }
   if (dShockKE(pid) > 0.0) {
