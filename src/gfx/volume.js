@@ -65,7 +65,6 @@ export const volumeShaderGrid = (g, world, sourceAppearance = false) => ({
 // reads V1's B from both (shaders/v2/viewRead.js: render.js volumeB): the same views of the same
 // quantities, in V1's units. Not a deviation. (World draws the same: its atlas's B, which
 // world/renderSource.js's V2 export fills through the same rule.)
-export const readsAir = (view) => view === 'pressure' || view === 'flow';
 
 // Compile the intended native representation before its initialization finishes.
 // Actual draw headers are checked separately, so legacy buffers are never read
