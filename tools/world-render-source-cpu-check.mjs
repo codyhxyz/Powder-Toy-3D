@@ -458,6 +458,32 @@ check('raw producer rejects an epoch/revision overtaken before recording; separa
   });
   producer.dispose();
 }
+// Under V2 the same producer stamps into V2's cores: its native apply, never V1's.
+{
+  const f = fixture();
+  f.win.gen = { ready: Promise.resolve(), res: { layout: [], entries: () => [], prepassFor() {} } };
+  f.win.scene.glsl = () => '';
+  f.win.scene.trees = { treesIn: () => [{ x: 40, y: 4, z: 40, seed: 7 }] };
+  f.win.bakeTree = () => ({ w: 1, h: 1, d: 1, base: { x: 0, y: 0, z: 0 }, foot: 0, data: new Float32Array([5, 87, 11, 1]) });
+  f.win.loaded = true;
+  const owner = { isReady: true, tick: 1, cells: f.gpu.createBuffer({ size: 16 }), aux: f.gpu.createBuffer({ size: 16 }), act: f.gpu.createBuffer({ size: 16 }),
+    syncs: 0, sync() { this.syncs++; }, wake() {}, readGroup: () => ({}) };
+  Object.assign(f.sim, { compact: owner, compactOwner: owner, changedAll: false, wake() {} });
+  f.sim.L.STATE_RO = [];
+  const producer = new RawWorldSourceProducer(f.win, f.source); await producer.ready;
+  producer.nativeApply.state = 'ready';   // (built)
+  check('under V2 the planted trees go into V2\'s cores (the native apply), never V1\'s state', () => {
+    const version = f.sim.version;
+    assert(producer.record(f.frame, [32, 32], f.source.token(), { physicsBounds: { lo: [32, 0, 32], hi: [64, 32, 64] } }));
+    assert.equal(producer.apply.calls?.length ?? 0, 0, 'no V1 apply');
+    assert.equal(producer.nativeApply.calls.length, 1);
+    const call = producer.nativeApply.calls[0];
+    assert.deepEqual(call.opts.bind[1].entries.map((e) => e.resource.buffer), [owner.cells, owner.aux, owner.act]);
+    assert.equal(call.opts.bind[2], producer.readGroup, 'the stamped scratch');
+    assert(owner.syncs > 0 && f.sim.version > version, 'V1 writes imported first; noted as an edit');
+  });
+  producer.dispose();
+}
 check('real physics plant keeps planted marks until shared producer records and skips reentry', () => {
   const f = fixture(), win = f.win, order = [];
   win.sourceProducer = { record(_frame, _xz, _token, opts) { assert.equal(win.planted[8 + 8 * 32], 0); assert.deepEqual(opts.physicsBounds.lo, [32, 0, 32]); order.push('record'); return { trees: 1 }; } };

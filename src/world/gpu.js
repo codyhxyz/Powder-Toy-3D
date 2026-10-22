@@ -2,6 +2,7 @@ import {
   fillEdit, sceneFillFrag, FillParams, sceneDiffFrag, leaveLayout, leaveDispatch, LeaveParams, leaveHeadBytes, LEAVE_BRICK_BYTES, LEAVE_BINDING,
 } from '../shaders/generate.js';
 import { sceneNativeDiffFrag } from '../shaders/v2/leave.js';
+import { nativeFillWGSL, nativeFillSize, NATIVE_WRITE_LAYOUT, NativeFillParams } from '../shaders/v2/worldWrite.js';
 import { stampEdit, MAX_FOOT } from '../shaders/stamp.js';
 import { BRICK, LAYOUT } from '../shaders/common.js';
 import { fold } from '../gpu/kernels.js';
@@ -245,6 +246,29 @@ export class Stamper {
   }
 }
 
+// ---------------------------------------------------------------- V2's world writers
+// The group V2's world writers bind (shaders/v2/worldWrite.js): the owner's cores, banks and activity.
+const writeGroups = new WeakMap();   // owner → { cells, group }
+export function nativeWriteGroup(sim) {
+  const owner = sim.compact, gpu = sim.gpu;
+  let w = writeGroups.get(owner);
+  if (!w || w.cells !== owner.cells || w.aux !== owner.aux) {
+    const group = gpu.bindGroup(gpu.layout('NATIVE_WORLD_WRITE', NATIVE_WRITE_LAYOUT),
+      [owner.cells, owner.aux, owner.act].map((buffer, binding) => ({ binding, resource: { buffer } })), 'native world write');
+    writeGroups.set(owner, w = { cells: owner.cells, aux: owner.aux, group });
+  }
+  return w.group;
+}
+// After a native write: as an edit notes itself (Simulation.edit): the version (V2 then looks for V1
+// writes to import: none; the write noted its own bricks), the derived passes, the source, a wake.
+export function nativeWritten(sim, { residency = false } = {}) {
+  sim.version++;
+  sim.changedAll = true;
+  if (!residency) sim.worldRenderSource?.noteContentChange();
+  sim.compact.wake();
+  sim.wake();
+}
+
 // ---------------------------------------------------------------- the generator
 export class WorldGenerator {
   /**
@@ -262,7 +286,9 @@ export class WorldGenerator {
     // the fill now; the leaving slab's kernel when the window asks (prepareDiff)
     this.kernels = { fill: sim.editKernel(`${scene.key} fill`, fillEdit(this.code, this.res.has)) };
     this.stamper = scene.trees ? stamperFor(sim) : null;
-    this.ready = Promise.all([this.res.ready, this.kernels.fill.ready, this.stamper?.ready]).then(() => this);
+    // V2's fill (nativeFill) when a V2 owner exists: a window V2 runs fills it natively
+    const native = sim.compactOwner ? this.prepareNativeFill() : null;
+    this.ready = Promise.all([this.res.ready, this.kernels.fill.ready, this.stamper?.ready, native]).then(() => this);
     this.ready.catch(() => {});
   }
 
@@ -302,7 +328,37 @@ export class WorldGenerator {
     if (P !== this.P && JSON.stringify(P) !== JSON.stringify(this.P)) throw new Error('WorldGenerator.fill: another world than its own (make a generator for it)');
     const g = this.sim.g, hi = max ?? [g.nx, g.ny, g.nz];
     this.res.prepassFor(min.map((v, i) => v + origin[i]), hi.map((v, i) => v + origin[i]));
+    if (this.sim.compact?.isReady) return this._nativeFill(origin, min, hi, { residency });
     this.sim.edit(this.kernels.fill, { lo: min, hi: hi.map((v) => v - 1) }, { origin }, { bind: this.res.resources, residency });
+  }
+
+  /** V2's fill kernel (shaders/v2/worldWrite.js; made on the first call); resolves when it is built. */
+  prepareNativeFill() {
+    const { sim, scene } = this, gpu = sim.gpu;
+    this.kernels.nativeFill ??= gpu.kernel({ name: `${scene.key} native fill`, code: nativeFillWGSL(sim.g, this.code), params: NativeFillParams,
+      layouts: [sim.L.TABLES, gpu.layout('NATIVE_WORLD_WRITE', NATIVE_WRITE_LAYOUT), gpu.layout(`native scene ${JSON.stringify(this.res.has)}`, this.res.layout)] });
+    return this.kernels.nativeFill.ready;
+  }
+  /** Whether a fill of a window V2 runs can record now (the window's moves wait for it: world/window.js). */
+  get nativeReady() { return !this.sim.compact?.isReady || this.kernels.nativeFill?.state === 'ready'; }
+
+  // While V2 runs the grid the scene's cells go straight into V2's cores (shaders/v2/worldWrite.js): the
+  // import of the V1 edit's cells, without the edit (the edit, an export of V1's cache before it, and
+  // the import after it). The same cores either way: V2's terrain is importA of the scene's cell.
+  _nativeFill(origin, lo, hi, { residency }) {
+    const sim = this.sim, owner = sim.compact, gpu = sim.gpu, k = this.kernels.nativeFill;
+    if (sim.nativeTransitionKind === 'shift' && !sim.nativeCommitting) return false;
+    if (k?.state !== 'ready') { this.prepareNativeFill(); throw new Error('the native world fill is not built yet'); }
+    const box = { lo: lo.map((v) => Math.max(0, v)), hi: hi.map((v, i) => Math.min(v, [sim.g.nx, sim.g.ny, sim.g.nz][i])) };
+    if (box.lo.some((v, i) => v >= box.hi[i])) return;
+    owner.sync();   // (V1 writes pending before it are imported first)
+    const write = nativeWriteGroup(sim);
+    if (this._sceneGroupFor !== this.res.data || !this._sceneGroup) {
+      this._sceneGroupFor = this.res.data;
+      this._sceneGroup = gpu.bindGroup(gpu.layout(`native scene ${JSON.stringify(this.res.has)}`, this.res.layout), this.res.entries(), 'native fill scene');
+    }
+    sim._dispatch(k, nativeFillSize(box.lo, box.hi), { bind: [sim.tables, write, this._sceneGroup], header: sim.header(), params: { origin, lo: box.lo, hi: box.hi } });
+    nativeWritten(sim, { residency });
   }
 
   /**

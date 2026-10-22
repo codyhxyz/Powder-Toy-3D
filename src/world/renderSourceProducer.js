@@ -3,6 +3,8 @@ import { MAX_FOOT } from '../shaders/stamp.js';
 import { fold } from '../gpu/kernels.js';
 import { rawGenerateWGSL, rawStampWGSL, rawApplyWGSL, RAW_LAYOUT, RAW_READ_LAYOUT, APPLY_STATE, RawParams, RawApplyParams } from '../shaders/renderSource.js';
 import { TREE } from './generator.js';
+import { nativeApplyWGSL, NATIVE_WRITE_LAYOUT } from '../shaders/v2/worldWrite.js';
+import { nativeWriteGroup, nativeWritten } from './gpu.js';
 import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { planSourceCopies, recordSourceCopies, recordNativeRuns, nativeSourceReady, intersectBounds, snapshotSource, liveSource, sourceBounds, SOURCE_RANK } from './renderSource.js';
@@ -68,7 +70,10 @@ export class RawWorldSourceProducer {
     this.generate = gpu.kernel({ name: `${win.scene.key} raw source`, code: rawGenerateWGSL(this.g, win.scene), layouts, params: RawParams });
     this.stamp = gpu.kernel({ name: 'raw source stamp', code: rawStampWGSL(this.g), layouts: [sim.L.TABLES, this.rawL], params: RawParams });
     this.apply = gpu.kernel({ name: 'raw source apply', code: rawApplyWGSL(sim.g, this.g), layouts: [sim.L.TABLES, this.applyStateL, this.readL], params: RawApplyParams });
-    this.ready = Promise.all([win.gen.ready, this.generate.ready, this.stamp.ready, this.apply.ready]).then(() => {
+    // V2's apply (shaders/v2/worldWrite.js), when a V2 owner exists: the stamps into V2's cores
+    this.nativeApply = sim.compactOwner ? gpu.kernel({ name: 'raw source native apply', code: nativeApplyWGSL(sim.g, this.g),
+      layouts: [sim.L.TABLES, gpu.layout('NATIVE_WORLD_WRITE', NATIVE_WRITE_LAYOUT), this.readL], params: RawApplyParams }) : null;
+    this.ready = Promise.all([win.gen.ready, this.generate.ready, this.stamp.ready, this.apply.ready, this.nativeApply?.ready]).then(() => {
       if (this.disposed) return this;
       this.sceneGroup = gpu.bindGroup(layouts[2], win.gen.res.entries(), 'raw source scene');
       return this;
@@ -155,9 +160,15 @@ export class RawWorldSourceProducer {
     if (physicsBounds) {
       const world = intersectBounds(core, physicsBounds);
       if (world) {
-        const o = snapshotSource(this.sim).origin;
-        this.apply.dispatch(frame, fold(Math.ceil(this.sim.g.slots / 64)), { bind: [this.sim.tables, this._applyState(), this.readGroup], header: this.sim.header(),
-          params: { sourceOrigin: [...origin], copy: raw.copy, lo: world.lo.map((v, i) => v - o[i]), hi: world.hi.map((v, i) => v - o[i]) } });
+        const o = snapshotSource(this.sim).origin, sim = this.sim;
+        const params = { sourceOrigin: [...origin], copy: raw.copy, lo: world.lo.map((v, i) => v - o[i]), hi: world.hi.map((v, i) => v - o[i]) };
+        // V2 running: the stamps go into its cores (the import of the V1 apply's cells, without the apply)
+        if (sim.compact?.isReady) {
+          if (this.nativeApply?.state !== 'ready') throw new Error('the native tree apply is not built yet');
+          sim.compact.sync();
+          this.nativeApply.dispatch(frame, fold(Math.ceil(sim.g.slots / 64)), { bind: [sim.tables, nativeWriteGroup(sim), this.readGroup], header: sim.header(), params });
+          nativeWritten(sim, { residency: true });
+        } else this.apply.dispatch(frame, fold(Math.ceil(sim.g.slots / 64)), { bind: [sim.tables, this._applyState(), this.readGroup], header: sim.header(), params });
       }
     }
     return { epoch: token.epoch, revision: token.revision, core, trees: trees.length };

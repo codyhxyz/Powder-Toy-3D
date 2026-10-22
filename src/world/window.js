@@ -174,7 +174,12 @@ export class WorldWindow {
     sim.resetNativeDynamics();
     this.gen.fill(this.P, [origin[0], 0, origin[2]]);
     if (this.scene.trees) this.plant([0, 0, 0], [g.nx, g.ny, g.nz]);
-    sim.noteWrite();
+    // Under V2 the fill and the trees wrote its cores (WorldGenerator.fill, the producer's apply), noting
+    // their bricks: a whole-grid note would reimport V1's cache over them. That cache was the old
+    // origin's projection: the next export rewrites all of it (BRIDGE.ALL).
+    const v2 = sim.compact?.isReady ? sim.compact : null;
+    if (v2) v2.legacyNative = undefined;
+    sim.noteWrite({ replaceState: !v2 });
     this.far?.build();
     sim.dropHistory();   // undo would bring back a window of the old world
     // a new scene: the render fields and GI start over instead of blending in, and nothing is moving
@@ -236,6 +241,7 @@ export class WorldWindow {
     if (!this.loaded || this.persistenceError || this.capturing) return null;
     const sim = this.sim, waits = [this.pending, sim.deco?.pending];
     if (sim.compact && !nativeSourceReady(sim)) waits.push(nativePackOf(sim)?.kernel.ready);
+    if (!this.gen.nativeReady) waits.push(this.gen.prepareNativeFill());
     if (sim.compactOwner && (sim.nativeTransition || !sim.nativeCapabilities.world)) {
       const owner = sim.compactOwner;
       waits.push(sim.nativeTransition ?? Promise.all([sim.prepareNative(), owner.dynamics?.windowBuilt,
@@ -255,6 +261,7 @@ export class WorldWindow {
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) return null;
     // (V2: the leaving slab's copy reads its cells natively: renderSource.js nativePackOf)
     if (this.sim.compact && !nativeSourceReady(this.sim)) return null;
+    if (!this.gen.nativeReady) { this.gen.prepareNativeFill(); return null; }   // (and its fill writes V2's cells)
     // V2's leaving slab keeps what differs from the generator (readBack); a
     // grid V2 came to after load builds it now, keeping everything meanwhile
     if (this.sim.compactOwner) this.gen.prepareNativeDiff?.();
@@ -345,7 +352,7 @@ export class WorldWindow {
     if (this.historyReaders) throw new Error('World history capture is pending');
     if (this.sim.compactOwner && this.pending) throw new Error('World shift while leaving slab is pending');
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) throw new Error('Native world shift is not ready');
-    if (this.sim.compact && !nativeSourceReady(this.sim)) throw new Error('Native world source is not ready');
+    if (this.sim.compact && (!nativeSourceReady(this.sim) || !this.gen.nativeReady)) throw new Error('Native world source is not ready');
     return this._shiftCommitted(dx, dz);
   }
   // A V2 move's leaving slab of dynamics (its air and requests: NativeDynamics.recordWindowShift) is
@@ -503,7 +510,7 @@ export class WorldWindow {
   // one upload (the index, then the bricks' cells; shaders/window.js
   // editFrag). Returns how many.
   restore(lo, bricks) {
-    const sim = this.sim, o = sim.origin;
+    const sim = this.sim, o = sim.origin, native = !!(sim.compact?.isReady && sim.nativeIntegration?.isReady), exact = [];
     const lb = lo.map((v) => v / BRICK), ob = [o.x / BRICK, o.y / BRICK, o.z / BRICK];
     const n = bricks[0] * bricks[1] * bricks[2], index = new Uint32Array(Math.ceil(n / 4) * 4), keys = [];
     for (let bz = 0; bz < bricks[2]; bz++)
@@ -511,10 +518,14 @@ export class WorldWindow {
         for (let bx = 0; bx < bricks[0]; bx++) {
           const key = this.store.key(ob[0] + lb[0] + bx, ob[1] + lb[1] + by, ob[2] + lb[2] + bz);
           if (!this.store.has(key)) continue;
+          // V2 running: a brick its store holds comes back exact (restoreNative, after): V1's copy of it
+          // only leaves the store. Only a brick no native store kept (a V1-made world save) is written.
+          if (native && this.nativeStore.map.has(this.nativeStore.key(ob[0] + lb[0] + bx, ob[1] + lb[1] + by, ob[2] + lb[2] + bz))) { exact.push(key); continue; }
           keys.push(key);
           index[bx + bricks[0] * (by + bricks[1] * bz)] = keys.length;
         }
-    if (!keys.length) return 0;
+    for (const key of exact) this.store.drop(key);
+    if (!keys.length) return exact.length;
     const cellsAt = index.length / 4, bytes = (cellsAt + keys.length * 2 * BRICK_CELLS) * VEC4;
     if (!this.restoreBuf || this.restoreBuf.size < bytes) {
       if (this.restoreBuf) sim._retire(this.restoreBuf);
@@ -532,7 +543,7 @@ export class WorldWindow {
     sim.edit(this.restoreKernel, { lo, hi: lo.map((v, i) => v + bricks[i] * BRICK - 1) }, { lo, bricks, cellsAt }, { bind: [{ buffer: this.restoreBuf }], residency: true });
     this.restoreRead = this.gpu.stats.flushes;
     for (const key of keys) this.store.drop(key);
-    return keys.length;
+    return keys.length + exact.length;
   }
 
   restoreNative(lo, bricks) {
