@@ -24,7 +24,7 @@ import { PHASE_HOT_BASE } from '../../src/v2/phase.js';
 import { registerSaveSection, unregisterSaveSection } from '../../src/saves/sections.js';
 import { captureNativeSnapshot, restoreNativeSnapshot, encodeDynamicState, decodeDynamicState } from '../../src/v2/dynamicState.js';
 import { decodeV2State } from '../../src/v2/state.js';
-import savesWire from '../../src/wire/saves.js';
+import savesWire, { nativeSaveLoad } from '../../src/wire/saves.js';
 import { createSaves } from '../../src/saves/game.js';
 import { encodeSave, decodeSave } from '../../src/saves/format.js';
 
@@ -204,10 +204,11 @@ savesWire.boot(app);
 sim.prepare = async () => {};
 sim.blankState = () => [new Float32Array(g.width * g.height * 4), new Float32Array(g.width * g.height * 4)];
 sim.readState = async () => sim.blankState();
+sim.readSaveState = async () => sim.blankState();   // (a save's cells under V2: sim.readSaveState reads V2's own)
 sim.load = () => events.push('legacy load');
 const saves = createSaves({ settings: app.settings, getSim: () => sim, getWin: () => null,
   header: () => ({ world: null, nativeDynamicsVersion: 1 }), prepareCapture: () => owner.ready,
-  prepare: () => { events.push('prepare'); return true; }, finish() {}, onSettings() {} });
+  prepare: () => { events.push('prepare'); return true; }, finish() {}, onSettings() {}, nativeLoad: nativeSaveLoad(app) });
 const saved = await saves.capture('mixed native');
 const file = await decodeSave(saved);
 assert(file.sections.has('physicsV2Dynamics'));
@@ -217,6 +218,7 @@ n = writes.length; await assert.rejects(saves.apply(broken)); assert.equal(event
 const missing = await encodeSave(file.header, [...file.sections].filter(([key]) => key !== 'physicsV2Dynamics').map(([key, data]) => ({ key, data })));
 await assert.rejects(saves.apply(missing)); assert.equal(events.length, 0);
 await saves.apply(saved);
+assert(!events.includes('legacy load'), 'a V2 save in a V2 session restores V2\'s words without writing V1\'s cells first (sim.loadNative)');
 assert.deepEqual(words(d.particles), oldParticles); assert(d.airArchive.has('128,0,0')); assert.equal(d.rayRequests.size, 1);
 // Physical native readers bind actual ping-pong coarse air, not the legacy B
 // cache. The shared format3 accessors convert pressure for existing vitals.

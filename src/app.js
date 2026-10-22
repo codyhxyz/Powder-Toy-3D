@@ -3158,6 +3158,8 @@ function tick(now, renderOnly = false) {
   drawWorldAfter(rp){for(const w of after)w.scene(ctx,rp);brush.draw(rp);},
   drawWorldOverlay(rp){for(const w of overlayWires)w.overlay(ctx,rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
+  // the engine, as __app reports and switches it (src/wire/saves.js captures and restores it)
+  get physics() { return window.__app?.physics; }, setPhysics: (mode) => window.__app.setPhysics(mode),
   get renderView() { return renderView; },
   get scale() { return scale; }, get anchor() { return anchor; }, get worldMode() { return worldMode; },
   get win() { return win; }, set win(v) { win = v; },

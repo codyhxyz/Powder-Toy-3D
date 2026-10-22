@@ -362,20 +362,24 @@ assert.equal(nativeHostSteps(owner, 0, { once: true }), 1, 'manual step works at
 // Real host paint entrypoint routes a guest intent into its current owner,
 // bounded edits only. No guest simulation and no protocol migration.
 const fullBefore = sim.wholeWrites;
+// (an element stroke is V1's rule on V2's own cells: v2/interactions.js routeNativePaint, nativePaint.js)
+const strokes = () => edits.length + calls.filter(c => c.name === 'nativePaintCommit').length;
+const editsAt = strokes();
 applyGuestStroke(sim, { c: [3, 4, 5], r: 999, shape: 0, tool: E.SAND, rate: 1, replace: false });
-assert.equal(edits.at(-1).values.radius, 24); assert.equal(sim.compact, owner);
+assert.equal(calls.filter(c => c.name === 'nativePaintEvaluate').at(-1).opts.params.radius, 24); assert.equal(sim.compact, owner);
+assert.equal(edits.length, editsAt, 'a guest\'s element stroke never writes V1\'s cells for V2 to import');
 assert.equal(sim.wholeWrites, fullBefore);
 // A guest's wind is V1's paint rule on the host's native grid (nativePaintForce, built with the native
 // owner: v2/interactions.js NATIVE_BRUSH_KERNELS), never a legacy edit or an impulse.
 {
   const wind = TOOLS.find(t => t.key === 'WIND').id;
   const queue = [{ c: [3, 4, 5], r: 2, shape: 0, tool: wind, rate: 1 }, { c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }];
-  const painted = edits.length, asked = requests.length, from = calls.length;
+  const painted = strokes(), asked = requests.length, from = calls.length;
   assert.equal(applyGuestStrokes(sim, queue, { options: () => ({ wind: [1, 0, 0] }) }), 0, 'the guest wind is not refused');
   assert(calls.slice(from).some(c => c.name === 'nativePaintForceForceEvaluate'), 'the guest wind runs V1 pushed() natively');
   assert.equal(requests.length, asked, 'no impulse');
   assert.equal(queue.length, 0, 'the frame takes its strokes off the queue');
-  assert.equal(edits.length, painted + 1, 'the next guest stroke still paints');
+  assert.equal(strokes(), painted + 1, 'the next guest stroke still paints');
 }
 // A stroke the host can't take yet (a kernel it needs still building throws, or its run refuses) waits
 // for it (C10): the next stroke still paints, the held one goes back on the queue and paints on a later
@@ -386,14 +390,14 @@ assert.equal(sim.wholeWrites, fullBefore);
   sim.paint = function (stroke) { if (building-- > 0) throw new Error('nativePaint used before its pipeline was ready (await .ready first)'); return paint.call(this, stroke); };
   console.warn = () => {};
   const queue = [{ c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }, { c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 }];
-  const painted = edits.length;
+  const painted = strokes();
   try {
     assert.equal(applyGuestStrokes(sim, queue, { now: 1000 }), 0, 'a stroke the host cannot take yet is held, not refused');
     assert.equal(queue.length, 1, 'the held stroke goes back on the queue');
-    assert.equal(edits.length, painted + 1, 'the next guest stroke still paints');
+    assert.equal(strokes(), painted + 1, 'the next guest stroke still paints');
     assert.equal(applyGuestStrokes(sim, queue, { now: 1016 }), 0);
     assert.equal(queue.length, 0, 'once its kernel is built the held stroke paints');
-    assert.equal(edits.length, painted + 2, 'the guest\'s first dab is not lost');
+    assert.equal(strokes(), painted + 2, 'the guest\'s first dab is not lost');
     building = Infinity;
     queue.push({ c: [3, 4, 5], r: 2, shape: 0, tool: E.SAND, rate: 1 });
     assert.equal(applyGuestStrokes(sim, queue, { now: 2000 }), 0);
@@ -401,7 +405,7 @@ assert.equal(sim.wholeWrites, fullBefore);
     assert.equal(queue.length, 0);
   } finally { sim.paint = paint; console.warn = warn; }
 }
-owner.sync(); assert.equal(calls.at(-1).name, 'v2import'); assert.equal(calls.at(-1).opts.params.full, 0);
+{ const from = calls.length; owner.sync(); assert(!calls.slice(from).some(c => c.name === 'v2import'), 'guest element strokes are native: nothing of V1\'s to import'); }
 const packer = createPacker(); const packet = await packer.pack(sim);
 assert.equal(calls.findLast(c => c.name === 'packNative').opts.header.format, 2, 'actual host codec uses direct compact projection');
 assert.equal(packer.native(sim), true, 'a V2 host streams native frames');

@@ -96,7 +96,11 @@ const savesWire = {
         if (!h.sections?.some(s => s.key === 'physicsV2')) throw new Error('Native dynamics requires matching core state');
         decodeDynamicState(data, { dims: h.dims, origin: h.world?.origin ?? [0, 0, 0] });
       },
-      load: (data, h) => {
+      load: async (data, h) => {
+        // (a load in the first seconds, while the flying matter's kernels still build behind the grid's:
+        // it waits for them, v2/physics.js dynamicsReady, rather than failing the load)
+        const v2 = app.physics.v2;
+        if (v2 && !v2.dynamics?.isReady) await v2.dynamicsReady;
         const d = app.physics.v2?.dynamics;
         if (!d?.isReady) throw new Error('Native dynamics restore owner is unavailable');
         const o = app.sim.origin;
@@ -111,6 +115,7 @@ const savesWire = {
     saves = createSaves({
       settings, getSim: () => app.sim, getWin: () => app.win,
       prepareCapture: () => app.physics.v2?.ready,
+      nativeLoad: nativeSaveLoad(app),
       header: () => {
         const m = mapOf(settings);
         return {
@@ -238,6 +243,13 @@ function takeSaveThumbnail(app) {
 
 // Get the grid ready for a save: its map and size (a rebuild if they differ),
 // else an undo snapshot. Resolves false to refuse.
+// A V2-mode save opened while V2 presents a ready owner: its physicsV2 section restores V2's exact
+// words (restoreState), so its V1 cells needn't be written first (saves/game.js apply, sim.loadNative).
+export const nativeSaveLoad = app => (h, sections) => {
+  const v2 = app.physics.v2, data = sections.get('physicsV2');
+  if (app.physics.mode !== 'v2' || !v2?.isReady || v2 !== app.sim?.compact || data === undefined) return false;
+  try { return decodeV2State(data, h.dims).mode === 'v2'; } catch { return false; }
+};
 export async function prepareSave(app, h) {
   const { settings } = app;
   if (app.graphicsFailure) throw app.graphicsFailure;

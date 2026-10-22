@@ -1,5 +1,5 @@
 import { createNativeForceKernel } from './nativeForcing.js';
-import { createNativePaintKernel } from './nativePaint.js';
+import { createNativePaintKernel, createNativeEditKernel, nativeEditSpec, nativeEditParams } from './nativePaint.js';
 import { paintUpdateWGSL, PaintParams, paintDeclsWGSL, PAINT_LAYOUT } from '../shaders/passes.js';
 import { kickWGSL, KickParams } from '../shaders/povKick.js';
 import { strikeWGSL, StrikeParams } from '../shaders/povTrace.js';
@@ -18,13 +18,21 @@ const ids = Object.fromEntries(TOOLS.map(t => [t.key, t.id]));
 // the air's wind), all with V1's smoothstep falloff, brush shape, line, box, fill mask and filter.
 // The pressure becomes the air's (Pa) and the pushes launches or wind (nativeWeather.js air).
 const pendingPaint = new Set(['VACUUM', 'CYCLONE', 'GRAV_IN', 'GRAV_OUT', 'WIND', 'BLAST'].map(k => ids[k]));
-// Tools whose V1 rule moves or retypes whole cells: the native paint kernel (nativePaint.js).
-const nativeCellPaint = stroke => stroke.tool === ids.MIX || (stroke.tool === PROP_TOOL && stroke.prop?.field === PROP.TYPE);
-// Tools whose V1 rule changes what a cell is or holds (passes.js update: Heat, Cool, Spark and the
-// Property tool's type, temperature, life and ctype). V1's flying matter was grid cells, so they
-// reach V2's particles too (nativePaint.js particleCommit); the grid cells keep their own route.
-const particleRule = stroke => [ids.HEAT, ids.COOL, ids.SPARK].includes(stroke.tool) ||
-  (stroke.tool === PROP_TOOL && [PROP.TYPE, PROP.TEMP, PROP.LIFE, PROP.CTYPE].includes(stroke.prop?.field));
+// Every tool whose V1 rule writes grid cells (passes.js update), on the native paint kernel
+// (nativePaint.js): an element (spawn, replace, a filter, specific delete), Erase, Heat, Cool,
+// Spark, Warm and Cool air, Mix and the Property tool's type, temperature, life and ctype. V1's
+// rule on V2's own cells, committed natively: a new cell where V1 made one, a merge where it
+// changed a cell in place, an exact move for Mix. (The air tools above are the force kernel's;
+// photons and neutrons are V2's particles, v2/tools.js; decoration is its own plane, src/deco.js.)
+const GRID_TOOLS = new Set(['ERASE', 'HEAT', 'COOL', 'SPARK', 'AMB_HEAT', 'AMB_COOL', 'MIX'].map(k => ids[k]));
+const GRID_PROPS = new Set([PROP.TYPE, PROP.TEMP, PROP.LIFE, PROP.CTYPE]);
+const nativeCellPaint = stroke => stroke.tool >= 0 || GRID_TOOLS.has(stroke.tool) || (stroke.tool === PROP_TOOL && GRID_PROPS.has(stroke.prop?.field));
+// Tools whose V1 rule changes what a cell is or holds (passes.js update: Heat, Cool, Spark, the
+// Property tool's type, temperature, life and ctype, and an element brush in replace mode, which
+// replaces what is there). V1's flying matter was grid cells, so they reach V2's particles too
+// (nativePaint.js particleCommit).
+const particleRule = stroke => [ids.HEAT, ids.COOL, ids.SPARK].includes(stroke.tool) || (stroke.tool >= 0 && !!stroke.replace) ||
+  (stroke.tool === PROP_TOOL && GRID_PROPS.has(stroke.prop?.field));
 // The POV writers whose V1 rule sets velocity or pressure, or throws matter, as native forcing: V1's
 // update on the frozen native grid, its motion as V2 launches and air (nativeForcing.js).
 //   povBlow (axe, pickaxe, knife, jackhammer, a worm's bite): V1's fracture into debris with the
@@ -65,6 +73,24 @@ function forceKernel(sim,name) {
   }
   return kernel;
 }
+// V1's other cell writers that aren't steps, as sim.editKernel takes them ({ update, params, decls,
+// layout }: a construction stamp, an imported door), on V2's own cells (nativePaint.js
+// createNativeEditKernel: V1's rule on the frozen native grid, a native commit of the cells it
+// changed), one per writer and owner. opts: nativeEditSpec's hook, moved, noteMoves.
+export function nativeEditKernel(sim, name, desc, opts = {}) {
+  let cache=forces.get(sim);if(!cache || cache.owner!==sim.compactOwner) {cache={owner:sim.compactOwner,kernels:new Map()};forces.set(sim,cache);}
+  let kernel=cache.kernels.get(name);
+  if(!kernel) cache.kernels.set(name,kernel=createNativeEditKernel(sim,name,nativeEditSpec({update:desc.update,decls:desc.decls,layout:desc.layout,...opts}),nativeEditParams(name,desc.params)));
+  return kernel;
+}
+// One such write over box (sim.edit's box: inclusive grid cells), its binding 0 the writer's buffer:
+// refused as sim.edit refuses one (a World shift between its halves, a failed transition).
+export function nativeEdit(sim, kernel, box, values, source = null) {
+  if ((sim.nativeTransitionKind === 'shift' && !sim.nativeCommitting) || sim.nativeTransitionError) return false;
+  const accepted=kernel.run(box,values,null,{source});
+  sim.nativeInteractionResult=accepted?{status:'queued'}:{status:'rejected',reason:'native edit kernel not ready or empty bounds'};
+  return accepted;
+}
 export const prepareNativePOVForces=sim=>Promise.all(Object.keys(forceSpecs).map(name=>forceKernel(sim,name).ready));
 // The god-view brush's native kernels build with the native owner (sim.prepareNative), as V1's
 // paint pass builds with the simulation: the first stroke never finds them still compiling.
@@ -92,15 +118,12 @@ function force(sim,name,box,values,source,opts) {
 export function routeNativePaint(sim, stroke) {
   const { tool, prop, center, end = center, radius, shape, grow, mask, filter = -1, erase } = stroke;
   const erases = tool === ids.ERASE || (tool >= 0 && erase) || (tool === PROP_TOOL && prop?.field === PROP.TYPE && prop.value === E.EMPTY);
-  if (nativeCellPaint(stroke) || erases || particleRule(stroke)) {
+  if (nativeCellPaint(stroke)) {
     const a=[center.x,center.y,center.z],b=[end.x,end.y,end.z],reach=a.map((_,k)=>radius+Math.max(grow?.[k]??0,0));
     const box=mask?{lo:mask.lo,hi:mask.hi}:sim.touchCentres(a.map((x,k)=>Math.min(x,b[k])-reach[k]),a.map((x,k)=>Math.max(x,b[k])+reach[k]));
-    const grid=nativeCellPaint(stroke);
-    // (an erase of grid cells stays the edit intent's replacement, which is exact; it follows in sim.paint,
-    // as do Heat, Cool, Spark and the Property tool's temperature, life and ctype on grid cells)
+    // (V1's paint counter seeds the stroke: sim.js paint's this.paints++, so its spawn pattern is V1's)
     const accepted=forceKernel(sim,'nativePaint').run(box,{center:a,end:b,radius,shape,tool,rate:stroke.rate??1,replace:+!!stroke.replace,
-      frame:grid?++sim.paints:sim.paints+1,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},mask?.data,{grid,particles:erases||particleRule(stroke)});
-    if (!grid) return null;
+      frame:++sim.paints,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},mask?.data,{grid:true,particles:erases||particleRule(stroke)});
     sim.nativeInteractionResult=accepted?{status:'queued'}:{status:'rejected',reason:'native paint kernel not ready or empty bounds'};
     return accepted;
   }
