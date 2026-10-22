@@ -93,11 +93,17 @@ const DELTA_BOXES_TESTED = 64;   // earlier boxes an entry is tested against for
 const DELTA_BOXES_SCANNED = 16;  // boxes includes() scans directly; past this many it indexes the bricks once
 const CORE_BRICKS = SOURCE_CORE / BRICK;
 let deltaSeen = new Uint8Array(0);   // a span's bricks already listed (module scratch: a delta builds synchronously, then clears it)
+// The last built brick list and its boxes: a later span of the same boxes (V2's window, tick after tick)
+// lists the same bricks, so it is that frozen list again, not 80k new arrays (Descent, 2026-10-22), and
+// WorldFields finds it the change it planned last (fields.js _owners).
+let deltaListed = { boxes: null, bricks: null };
+const sameBoxes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i] || x.every((v, k) => v === b[i][k]));
 export const changesSinceStats = { calls: 0, built: 0, entries: 0, boxes: 0, bricksVisited: 0, bricksListed: 0 };   // CPU check counters
 function contentDelta(token, global, boxes) {
   let bricks = null, index = null;
   const list = () => {
     if (bricks) return bricks;
+    if (deltaListed.boxes && sameBoxes(deltaListed.boxes, boxes)) return (bricks = deltaListed.bricks);
     const out = [];
     if (boxes.length === 1) {
       const [x0, y0, z0, x1, y1, z1] = boxes[0];
@@ -120,7 +126,9 @@ function contentDelta(token, global, boxes) {
       seen.fill(0, 0, volume);
     }
     changesSinceStats.bricksListed += out.length;
-    return (bricks = Object.freeze(out));
+    bricks = Object.freeze(out);
+    deltaListed = { boxes, bricks };
+    return bricks;
   };
   const inBox = (b, x, y, z) => x >= b[0] && x < b[3] && y >= b[1] && y < b[4] && z >= b[2] && z < b[5];
   const delta = { token, global };
