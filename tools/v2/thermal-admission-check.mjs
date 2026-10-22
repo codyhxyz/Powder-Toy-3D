@@ -87,7 +87,7 @@ const expected = `
       energyMul(capacity, u32(select(phaseColdQ(id), phaseHotQ(id), hot))));
     var progress = energySub(base, e);
     if (hot) { progress = energySub(e, base); }
-    if (!phaseLess(progress, vec2u(0u)) && !phaseLess(latent, progress)) { return true; }
+    if (!phaseLess(progress, vec2u(0u)) && !phaseLess(energyAdd(latent, vec2u(PHASE_EDGE_SLACK, 0u)), progress)) { return true; }
   }
   let sensible = energySub(e, phaseMaterialOffsetEnergy(id, amount, ctypeOf(m.core)));
   let hi = energyAdd(energyMul(capacity, 41093u), energySigned(2147483647));

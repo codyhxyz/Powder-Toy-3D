@@ -124,7 +124,7 @@ export class ColumnGrid {
     const g = this, code = columnWaterWGSL;
     const slotOf = p => g.at(p[0], p[1], p[2]);
     const ctx = {
-      ...constants(code), NX: g.nx, NY: g.ny, NZ: g.nz, FULLU: L.FULL, MAX_FILL: L.MAX_FILL, C_AIR: C.AIR, C_SOLID: C.SOLID, C_POWDER: C.POWDER, C_LIQUID: C.LIQUID, C_GAS: C.GAS, P: g.P,
+      ...constants(code), NX: g.nx, NY: g.ny, NZ: g.nz, FULLU: L.FULL, AIR_CARRIER_Q: L.AIR_CAPACITY_Q, MAX_FILL: L.MAX_FILL, C_AIR: C.AIR, C_SOLID: C.SOLID, C_POWDER: C.POWDER, C_LIQUID: C.LIQUID, C_GAS: C.GAS, P: g.P,
       vec3i: (x, y, z) => [x, y, z], Material: (core, bank) => ({ core, bank }),
       u32: x => Math.max(0, Math.trunc(x)), i32: Math.trunc, f32: Math.fround,
       min: Math.min, max: Math.max, abs: Math.abs, floor: Math.floor, ceil: Math.ceil, sqrt: Math.sqrt,
@@ -352,7 +352,7 @@ export class ColumnGrid {
       for (let y = by * 4; y < Math.min(this.ny, by * 4 + 4); y++) for (let z = bz * 4; z < Math.min(this.nz, bz * 4 + 4); z++) for (let x = bx * 4; x < Math.min(this.nx, bx * 4 + 4); x++) {
         const i = this.at(x, y, z), c = this.cores[i];
         if (CLS[L.cid(c)] !== C.LIQUID || !L.cFill(c) || !(ctx.laneOf(c, 1) <= COLUMN.JET_MARK)) continue;
-        const before = this.material(i), carried = L.energyOf(before) - BigInt(L.FULL) * BigInt(L.cTq(c));
+        const before = this.material(i), carried = L.energyOf(before) - BigInt(L.AIR_CAPACITY_Q) * BigInt(L.cTq(c));
         let m = { core: new Uint32Array([c[0], c[1], 0, (L.payloadOf(c) << 16) >>> 0]), bank: 0 };
         m.bank = Number(BigInt.asIntN(32, carried - L.packetOwnedEnergy(m)));
         const vx = ctx.laneOf(c, 0), vz = ctx.laneOf(c, 2), vy = COLUMN.JET_MARK - ctx.laneOf(c, 1), speed = Math.hypot(vx, vy, vz);

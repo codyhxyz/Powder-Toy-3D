@@ -20,7 +20,9 @@ function check(before, transfers, uniform = false, gated = false) {
   assert.equal(energySum(after), energySum(before), 'defined integer energy is exact');
   assert.equal(fillSum(after), fillSum(before), 'fill is exact');
   assert.equal(fuelSum(after), fuelSum(before), 'fuel quanta are exact');
-  if (uniform) for (const m of after) assert.equal(cTq(m.core), cTq(before[0].core), 'dry and wet cells retain uniform T');
+  // (format 3, TH-06: a part's capacity is ceil(fill·units/16) over the carrier, so a part, or a cell several
+  // land in, is at the source's temperature to a share of a code: on it, or a code below with the rest banked)
+  if (uniform) for (const m of after) { const T = cTq(m.core) + (cRawTq(m.core) <= PHASE_NORMAL_MAX ? m.bank / capacityQ(m.core) : 0); assert(Math.abs(T - cTq(before[0].core)) < 0.25, `dry and wet cells retain uniform T: ${T} for ${cTq(before[0].core)}`); }
   for (const m of after) assert.equal(energyOf(withEnergy(m, energyOf(m))), energyOf(m));
   cases++; return after;
 }
@@ -62,7 +64,8 @@ assert.equal(payloadOf(withPayload(makeMaterial(id('SINGULARITY')), 200 * 256).c
 assert.equal(payloadOf(withPayload(makeMaterial(oil, 20, MAX_FILL), FUEL_Q * 16).core), 32768);
 const mercury = withPayload(makeMaterial(id('MERCURY')), 3608);
 assert.equal(payloadOf(mercury.core), 3608, 'spark codes fit the conductor tagged union');
-assert.equal(capacityQ(makeMaterial(0).core), FULL, 'air has permanent carrier capacity');
+// (format 3, TH-06: the carrier is V1's air cap, 0.02 in 1/(64·FULL) cap a code)
+assert.equal(capacityQ(makeMaterial(0).core), Math.round(ELEMENTS[0].cap * 64 * FULL), 'air has permanent carrier capacity');
 for (const bank of [-2147483648, -100000, 0, 100000, 2147483647]) {
   const m = makeMaterial(water, 1000, MAX_FILL); m.bank = bank;
   assert.equal(energyOf(withEnergy(m, energyOf(m))), energyOf(m));
@@ -143,7 +146,8 @@ function oldBytes(f) {
   return out;
 }
 const migrated = decodeV2State(oldBytes(fixture));
-assert.equal(migrated.version, 2); assert.equal(migrated.migratedFrom, 1);
+// (a prototype save lands on format 3 directly: its banks are all zero, so capacity has nothing to rescale)
+assert.equal(migrated.version, 3); assert.equal(migrated.migratedFrom, 1);
 assert.equal(migrated.cells[0] >>> 24, 0, 'old remainder is not foam');
 assert.equal(migrated.cells[3] >>> 16, FUEL_Q, 'old limiter is not fuel');
 assert.equal(migrated.cells[2], 0x12345678); assert.equal(migrated.cells[3] & 65535, 0x3800);

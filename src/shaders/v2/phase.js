@@ -1,4 +1,4 @@
-import { PHASE_ROWS, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, phaseOffsetUnits, PHASE_AIR_CAPACITY, phaseCapacityUnits, PHASE_UNIT_FILL } from '../../v2/phase.js';
+import { PHASE_ROWS, PHASE_HOT_BASE, PHASE_COLD_BASE, PHASE_STEPS, phaseOffsetUnits, PHASE_AIR_CAPACITY, phaseCapacityUnits, PHASE_UNIT_FILL, PHASE_EDGE_SLACK } from '../../v2/phase.js';
 import { ELEMENTS } from '../../elements.js';
 const field = (name, get) => {
   // Small scalar tables avoid switch-return fanout without adding GPU bindings.
@@ -11,6 +11,7 @@ export const phaseWGSL = /* wgsl */ `
 const PHASE_HOT_BASE:u32=${PHASE_HOT_BASE}u;
 const PHASE_COLD_BASE:u32=${PHASE_COLD_BASE}u;
 const PHASE_STEPS:u32=${PHASE_STEPS}u;
+const PHASE_EDGE_SLACK:u32=${PHASE_EDGE_SLACK}u;
 ${field('phaseHotQ', r => r.hotQ)}
 ${field('phaseColdQ', r => r.coldQ)}
 ${field('phaseHotLatent', r => r.hotLatent)}
@@ -135,8 +136,10 @@ fn phaseEncodeCapacity(id:u32,amount:u32,energy:vec2u,capacity:u32,ctype:u32)->v
   let threshold=energyMul(capacity,u32(select(phaseColdQ(id),phaseHotQ(id),hot)));
   var progress=energySub(threshold,sensible);
   if(hot){progress=energySub(sensible,threshold);}
-  if(phaseLess(progress,vec2u(0u)) || phaseLess(latent,progress)){continue;}
-  let index=phaseDiv(phaseMulSmall(progress,PHASE_STEPS),latent).x;
+  if(phaseLess(progress,vec2u(0u)) || phaseLess(energyAdd(latent,vec2u(PHASE_EDGE_SLACK,0u)),progress)){continue;}
+  // (past the end by the fills' rounding: v2/phase.js PHASE_EDGE_SLACK, on the last code)
+  var onPlateau=progress;if(phaseLess(latent,progress)){onPlateau=latent;}
+  let index=phaseDiv(phaseMulSmall(onPlateau,PHASE_STEPS),latent).x;
   let encoded=phaseDiv(phaseMulSmall(latent,index),vec2u(PHASE_STEPS,0u));
   var residual=energySub(encoded,progress);
   if(hot){residual=energySub(progress,encoded);}

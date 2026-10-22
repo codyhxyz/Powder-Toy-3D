@@ -495,7 +495,7 @@ fn colMove(xa: i32, ya: i32, za: i32, xb: i32, yb: i32, zb: i32, n: u32, agitate
   // a cell never holds two liquids or two lava subtypes
   if (cid(dst.core) != 0u && (cid(dst.core) != cid(src.core) || liquidSub(dst.core) != liquidSub(src.core))) { return false; }
   if (n > have || fill > MAX_FILL) { return false; }
-  let carried = energySub(energyOf(src), energyMul(FULLU, cTq(src.core)));
+  let carried = energySub(energyOf(src), energyMul(AIR_CARRIER_Q, cTq(src.core)));
   let heat = energyShare(carried, 0u, n, have);
   let conducts = conductsNative(cid(src.core));
   var fuel = 0u;
@@ -702,7 +702,7 @@ fn colRemove(x: i32, y: i32, z: i32, n: u32) -> bool {
   if (!isLiq(src.core)) { return false; }
   let have = cFill(src.core);
   if (n > have) { return false; }
-  let carried = energySub(energyOf(src), energyMul(FULLU, cTq(src.core)));
+  let carried = energySub(energyOf(src), energyMul(AIR_CARRIER_Q, cTq(src.core)));
   let heat = energyShare(carried, 0u, n, have);
   let conducts = conductsNative(cid(src.core));
   var sent = drainedCore(src.core, have - n);

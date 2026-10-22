@@ -130,7 +130,7 @@ test('the WGSL: deterministic ranks, refusal keeps the liquid, the allocator pro
   assert.match(body, /rank<atomicLoad\(&control\[4\]\) && length\(velocity\)>0\.0 && all\(dParticleEnergy\(m\)==carried\) && energyFits\(empty,rest\)/);
   assert.match(body, /\} else \{[^}]*storeMaterial\(t,before,Material\(zeroQ\(c\),before\.bank\)\);/);
   assert.match(spawn, /out\.bank = bitcast<i32>\(energySub\(jetCarried\(m\), dParticleEnergy\(out\)\)\.x\);/);
-  assert.match(spawn, /fn jetCarried\(m: Material\) -> vec2u \{ return energySub\(energyOf\(m\), energyMul\(FULLU, cTq\(m\.core\)\)\); \}/);
+  assert.match(spawn, /fn jetCarried\(m: Material\) -> vec2u \{ return energySub\(energyOf\(m\), energyMul\(AIR_CARRIER_Q, cTq\(m\.core\)\)\); \}/);
   assert.match(body, /if\(li==0u\) \{ atomicStore\(&act2\[V2_JETS\+b\],0u\); \}/);
   // count keeps padding lanes through its barrier; allocate gives group bases and the request total
   const countBody = count.slice(count.lastIndexOf('@compute'));

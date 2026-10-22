@@ -29,8 +29,8 @@ const J_COUNTS: u32 = J_PREFIX + D_BRICKS;
 const JET_MARK: f32 = ${f(COLUMN.JET_MARK)};
 fn jetMarked(c: vec4u) -> bool { return isLiq(c) && cFill(c) != 0u && qOf(c).y <= JET_MARK; }
 fn jetBrick(b: u32) -> bool { return b < D_BRICKS && atomicLoad(&act2[V2_JETS + b]) != 0u; }
-// the whole cell as a flight packet: everything but the stationary air carrier (FULL at its temperature)
-fn jetCarried(m: Material) -> vec2u { return energySub(energyOf(m), energyMul(FULLU, cTq(m.core))); }
+// the whole cell as a flight packet: everything but the stationary air carrier (AIR_CARRIER_Q at its temperature)
+fn jetCarried(m: Material) -> vec2u { return energySub(energyOf(m), energyMul(AIR_CARRIER_Q, cTq(m.core))); }
 fn jetMaterial(m: Material) -> Material {
   var out = Material(vec4u(m.core.x, m.core.y, 0u, payloadOf(m.core) << 16u), 0);
   out.bank = bitcast<i32>(energySub(jetCarried(m), dParticleEnergy(out)).x);

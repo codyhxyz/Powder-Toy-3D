@@ -403,8 +403,8 @@ test('winners free every claim: fracture, contention and ties leave an empty tab
   glass.set([6,1,6],L.makeMaterial(E.GLASS));glass.set([6,0,6],L.makeMaterial(E.STONE));
   runTicks(glass,[0],1);assert.equal(L.cid(at(glass,[6,1,6]).core),E.SHARDS);assert.notEqual(glass.particles[0].id,0);
   // V1 react.js: the debris takes the fracture work as heat, hard·KE_TO_HEAT / cap (glass → shards: ~+48 °C;
-  // a native cell's capacity also holds its 1/64 air carrier).
-  const warmed=L.cTq(at(glass,[6,1,6]).core)/4-273.25, rise=ELEMENTS[E.GLASS].hard*PHYS.KE_TO_HEAT*64/(Math.round(ELEMENTS[E.SHARDS].cap*64)+1);
+  // a native cell holds V1's cap, its air carrier included: format 3, TH-06).
+  const warmed=L.cTq(at(glass,[6,1,6]).core)/4-273.25, rise=ELEMENTS[E.GLASS].hard*PHYS.KE_TO_HEAT/ELEMENTS[E.SHARDS].cap;
   assert.ok(Math.abs(warmed-(20+rise))<=0.5,`shards at ${warmed} °C, V1 ${20+rise} °C`);
   for(const tie of [false,true]) {
     const run=reverse=>{

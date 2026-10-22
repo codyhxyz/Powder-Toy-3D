@@ -105,6 +105,10 @@ export function phaseLatentEnergy(id, raw, amount) {
   const energy = BigInt(hot ? row.hotLatent : row.coldLatent) * BigInt(amount) * BigInt(index) / BigInt(PHASE_STEPS);
   return hot ? energy : -energy;
 }
+// A fill's share of a cell on a plateau can land past its end by the capacities' rounding (format 3: ceil
+// a quantum, at most a unit a code, 41093 at the top) and the offsets' and shares' (a unit each): it stays
+// on the plateau's last code with that in its bank, so it changes phase next, never reads as superheated.
+export const PHASE_EDGE_SLACK = PHASE_FULL;
 // Return an exact representable phase code+bank, or null for sensible energy.
 // The final code includes the full threshold; the contact pass consumes it.
 export function encodePhaseEnergy(id, amount, energy, capacity = BigInt(phaseCapacity(id, amount)), ctype = 0) {
@@ -115,8 +119,8 @@ export function encodePhaseEnergy(id, amount, energy, capacity = BigInt(phaseCap
     if (latent <= 0n) continue;
     const threshold = capacity * BigInt(hot ? row.hotQ : row.coldQ);
     const progress = hot ? sensible - threshold : threshold - sensible;
-    if (progress < 0n || progress > latent) continue;
-    const index = Number(progress * BigInt(PHASE_STEPS) / latent);
+    if (progress < 0n || progress > latent + BigInt(PHASE_EDGE_SLACK)) continue;
+    const index = Number((progress > latent ? latent : progress) * BigInt(PHASE_STEPS) / latent);
     const encoded = latent * BigInt(index) / BigInt(PHASE_STEPS);
     const bank = Number(hot ? progress - encoded : encoded - progress);
     if (bank < -2147483648 || bank > 2147483647) throw Error('phase bank exceeds i32');

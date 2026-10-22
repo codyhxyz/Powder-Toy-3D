@@ -32,15 +32,15 @@ ${MAIN} {
   // a runtime bound, as the block pass's: Metal need not unroll eight copies of the energy helpers
   let count = min(8u, arrayLength(&events));
   var cores: array<vec4u, 8>; var banksIn: array<i32, 8>; var positions: array<vec3i, 8>; var valid: array<bool, 8>;
-  var uniform = true;
+  var still = true;
   for (var i = 0u; i < count; i++) {
     let p = mEdge(c0 + vec3i(i32(i & 1u), i32((i >> 1u) & 1u), i32(i >> 2u))); positions[i] = p;
     valid[i] = inGrid(p);
     if (valid[i]) { cores[i] = cellAt(p); banksIn[i] = banks[slotOf(p)]; }
     // one element at one code, no remainders: no face can move anything
-    if (!valid[i] || banksIn[i] != 0 || (cores[i].x & 0xffffffu) != (cores[0].x & 0xffffffu)) { uniform = false; }
+    if (!valid[i] || banksIn[i] != 0 || (cores[i].x & 0xffffffu) != (cores[0].x & 0xffffffu)) { still = false; }
   }
-  if (uniform) { return; }
+  if (still) { return; }
   var cs: array<CTCell, 8>; var moved: array<bool, 8>;
   for (var i = 0u; i < count; i++) { if (valid[i]) { cs[i] = ctUnpack(cores[i], banksIn[i]); } }
   for (var i = 0u; i < count; i++) {

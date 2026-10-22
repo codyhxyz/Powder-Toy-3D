@@ -10,6 +10,8 @@ const MATERIAL_LIFE_SCALE = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => `
 const MATERIAL_CONDUCTS = array<bool, ${ELEMENTS.length}>(${ELEMENTS.map(e => String(e.elec > 0)).join(',')});
 const MATERIAL_BURNS = array<bool, ${ELEMENTS.length}>(${ELEMENTS.map(e => String(e.burnRate > 0)).join(',')});
 const MAX_FILL: u32 = ${MAX_FILL}u;
+// the stationary air carrier a code (v2/layout.js AIR_CAPACITY_Q: V1's air cap, format 3)
+const AIR_CARRIER_Q: u32 = ${AIR_CAPACITY_Q}u;
 const FUEL_Q: f32 = ${FUEL_Q}.0;
 struct Material { core: vec4u, bank: i32 }
 ${phaseWGSL}
@@ -145,7 +147,7 @@ fn energyFits(m: Material, e: vec2u) -> bool {
       energyMul(capacity, u32(select(phaseColdQ(id), phaseHotQ(id), hot))));
     var progress = energySub(base, e);
     if (hot) { progress = energySub(e, base); }
-    if (!phaseLess(progress, vec2u(0u)) && !phaseLess(latent, progress)) { return true; }
+    if (!phaseLess(progress, vec2u(0u)) && !phaseLess(energyAdd(latent, vec2u(PHASE_EDGE_SLACK, 0u)), progress)) { return true; }
   }
   let sensible = energySub(e, phaseMaterialOffsetEnergy(id, amount, ctypeOf(m.core)));
   let hi = energyAdd(energyMul(capacity, 41093u), energySigned(2147483647));
