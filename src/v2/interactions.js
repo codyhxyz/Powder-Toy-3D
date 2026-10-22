@@ -35,9 +35,9 @@ const particleRule = stroke => [ids.HEAT, ids.COOL, ids.SPARK].includes(stroke.t
 //     life (a new cell, not a fracture), the stream as the air's wind, heat as energy;
 //   povWand: a wand's dig, emit, place, erase, heat and its pressure, attract/repel and velocity;
 //   povRocket (rocket launcher, frag grenade): V1's blast (shaders/povTools.js rocketWGSL): a solid in
-//     BREAK_RADIUS its blow beats breaks into debris flying out (a fracture), air within FIRE_RADIUS
+//     BREAK_RADIUS its blow beats breaks into debris flying out where a free face lets it (a fracture; blocked: V1's move), air within FIRE_RADIUS
 //     turns to fire at the gunpowder blast's temperature (a new cell, its outward speed the air's
-//     wind), loose matter is shoved out, and the air takes max(its pressure, PULSE_P faded) within
+//     wind), loose matter with a free face along its shove is shoved out (one walled in stays, as V1's move leaves it), and the air takes max(its pressure, PULSE_P faded) within
 //     PULSE_RADIUS, which V2's air spreads as V1's react pass spreads it;
 //   povLaser: the laser cannon's beam over its segments (nativeLaser): heat as energy, its core
 //     vaporised as V2's own boiling converts (vaporise: energy-exact, so a thin film's steam is the
@@ -45,7 +45,7 @@ const particleRule = stroke => [ids.HEAT, ids.COOL, ids.SPARK].includes(stroke.t
 const LASER_REST='if(all(r.motion.xyz==vec3f(0.0))) { flags&=~1u; }'; // (debris the rule sets at rest stays on the grid, as V1's B=0 leaves it)
 const forceSpecs={povKick:{update:kickWGSL,params:KickParams},povStrike:{update:strikeWGSL,params:StrikeParams},povField:{update:povFieldWGSL,params:FieldParams},
   povBlow:{update:blowWGSL,params:BlowParams,commit:{renameNow:true}},povBurrow:{update:burrowWGSL,params:BurrowParams},
-  povFlame:{update:flameWGSL,params:FlameParams,commit:{sources:true}},povRocket:{update:rocketWGSL,params:RocketParams,commit:{sources:true,sourcesFromGas:true}},povWand:{update:wandApplyWGSL,params:WandParams,commit:{sources:true}},
+  povFlame:{update:flameWGSL,params:FlameParams,commit:{sources:true}},povRocket:{update:rocketWGSL,params:RocketParams,commit:{sources:true,sourcesFromGas:true,blocked:true}},povWand:{update:wandApplyWGSL,params:WandParams,commit:{sources:true}},
   povLaser:{update:laserNativeWGSL,params:LaserNativeParams,layout:LASER_NATIVE_LAYOUT,commit:{vaporise:true,sparse:true,motion:{flags:LASER_REST}}}};
 // The melee blow's launches wait for its gather (nativeForcing.js defer).
 // The console's writes (shaders/script.js: partCreate, partKill, partProperty, sim.pressure, ...):

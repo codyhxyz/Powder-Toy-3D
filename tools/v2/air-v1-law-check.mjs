@@ -153,6 +153,33 @@ for (const sign of [1, -1]) {
   const g = gridLayout(16, 16, 16), params = nativeWeatherParams('bolt', { params: { strikeR: 'f32' } });
   assert.match(nativeWeatherCommitWGSL(g, params, 'material'), /let broke=wPressureBreak\(p,r\);/, 'the weather commit (a bolt) breaks per cell');
   assert.match(nativeForceCommitWGSL(g, params, 'plan'), /let broke=wPressureBreak\(p,r\); if\(broke>=0\) \{ flags=2u/, 'the force commit (a wand, the Pressure tool) plans the fracture');
+  // V1's front goes on through the layers it breaks (a rocket's PULSE_P broke 191 cells of a wood wall in V1, 106
+  // under V2 when only the face broke: tools/v2/blast-damage-browser-check.mjs rocket). V1's per-cell law on a wall
+  // of layers behind a written slab of open cells, against the commit's walk (writerLayersBroken, its twin).
+  const { writerLayersBroken, WRITER_LAYERS, WRITER_LAYER_KEEP } = await import('../../src/v2/nativeWeather.js');
+  const v1Layers = (open, key, width = 4, layers = 20) => {
+    const n = width + layers, hard = ELEMENTS[E[key]].hard * PHYS.P_BREAK_PER_HARD;
+    let P = new Float64Array(n).fill(open, 0, width), solid = new Uint8Array(n).fill(1, width);
+    for (let t = 0; t < 300; t++) {
+      const out = new Float64Array(n), next = new Uint8Array(solid);
+      for (let x = 0; x < n; x++) {
+        const own = P[x], open1 = i => i >= 0 && i < n && !solid[i];
+        if (solid[x]) { if (Math.abs((open1(x - 1) ? P[x - 1] : 0) - (open1(x + 1) ? P[x + 1] : 0)) > hard) next[x] = 0; continue; }
+        const l = open1(x - 1) ? P[x - 1] : own, r = open1(x + 1) ? P[x + 1] : own;   // (its slab's other faces: its own)
+        out[x] = Math.min(PHYS.P_MAX, Math.max(own + PHYS.P_DIFFUSE * (l + r - 2 * own), Math.max(own, l, r) * PHYS.P_FRONT) * PHYS.P_DECAY);
+      }
+      P = out; solid = next;
+    }
+    let broken = 0; for (let x = width; x < n; x++) broken += 1 - solid[x];
+    return broken;
+  };
+  for (const [open, key] of [[140, 'WOOD'], [140, 'BRICK'], [160, 'ROCK'], [200, 'GLASS'], [120, 'GLASS'], [100, 'LAMP'], [200, 'BRICK']]) {
+    const v1 = v1Layers(open, key), v2 = writerLayersBroken(open, Array(20).fill(ELEMENTS[E[key]].hard * PHYS.P_BREAK_PER_HARD));
+    assert.equal(v2, v1, `a writer's ${open} on ${key}: V1 breaks ${v1} layers, the commit ${v2}`);
+  }
+  const breakWGSL = V1_PRESSURE_BREAK_WGSL;
+  assert.ok(breakWGSL.includes(`const W_LAYERS: i32 = ${WRITER_LAYERS};`) && breakWGSL.includes(`const W_LAYER_KEEP: f32 = ${WRITER_LAYER_KEEP};`) &&
+    breakWGSL.includes('through=through && open*pow(W_LAYER_KEEP,f32(j-1-k))>wLayerP(mEdge(p+d*k));'), 'the commit walks the layers as writerLayersBroken');
 }
 // 5. MV-6: couplePlan pushes a loose cell down the pressure gradient by V1's law (react.js forces: a =
 //    -∇P·P_ACCEL/ρ, ρ = max(dens·RHO_SCALE, RHO_MIN), its drag), at V1's chance of moving, not only past
