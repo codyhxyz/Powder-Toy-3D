@@ -17,6 +17,7 @@ try {
   const errors = [];
   page.on('pageerror', e => { errors.push(e.message); console.log('page error:', e.message); });
   page.on('console', m => { if (m.type() === 'log' && /^(ok|FAIL|info) /.test(m.text())) console.log(m.text()); });
+  page.on('console', m => { if (m.type() === 'error') console.log('console error:', m.text().slice(0, 300)); });
   await page.goto(vite.url('/?size=64&preset=empty&physics=v2'));
   await ready(page);
   console.log(`info app up at ${((Date.now() - t0) / 1000).toFixed(1)} s`);

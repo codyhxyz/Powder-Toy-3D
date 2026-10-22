@@ -96,7 +96,11 @@ const savesWire = {
         if (!h.sections?.some(s => s.key === 'physicsV2')) throw new Error('Native dynamics requires matching core state');
         decodeDynamicState(data, { dims: h.dims, origin: h.world?.origin ?? [0, 0, 0] });
       },
-      load: (data, h) => {
+      load: async (data, h) => {
+        // (a load in the first seconds, while the flying matter's kernels still build behind the grid's:
+        // it waits for them, v2/physics.js dynamicsReady, rather than failing the load)
+        const v2 = app.physics.v2;
+        if (v2 && !v2.dynamics?.isReady) await v2.dynamicsReady;
         const d = app.physics.v2?.dynamics;
         if (!d?.isReady) throw new Error('Native dynamics restore owner is unavailable');
         const o = app.sim.origin;
