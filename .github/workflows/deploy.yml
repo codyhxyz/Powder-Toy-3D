@@ -168,7 +168,7 @@ jobs:
           path: dist
           retention-days: 1
 
-  # The V2 CPU suite's long checks (column-wgsl-check: minutes), beside the deploy job's.
+  # The V2 CPU suite's long checks (column-run water's WGSL twin, four parts: minutes), beside the deploy job's.
   v2-long:
     runs-on: ubuntu-latest
     permissions:
