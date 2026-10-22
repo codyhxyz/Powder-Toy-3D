@@ -13,7 +13,7 @@ import { WorldGenerator } from '../src/world/gpu.js';
 import { setAeration, dropAeration, aerationForSource } from '../src/gfx/foam.js';
 import { cellWordsDiffer, cellDiffersWGSL } from '../src/shaders/generate.js';
 import { STAMP_LIB, stampLib } from '../src/shaders/stamp.js';
-import { rawStampWGSL, rawApplyWGSL, RAW_LAYOUT, RAW_READ_LAYOUT, APPLY_STATE, nativePackSlot } from '../src/shaders/renderSource.js';
+import { rawStampWGSL, rawApplyWGSL, RAW_LAYOUT, RAW_READ_LAYOUT, APPLY_STATE, nativePackSlot, nativePackWGSL } from '../src/shaders/renderSource.js';
 import { stateLayout } from '../src/shaders/common.js';
 
 let assertions = 0;
@@ -215,6 +215,11 @@ check('Physics V2: the source reads V2\'s cells natively (one pack into each cor
   assert(f.source.needsLiveCopy()); assert.equal(snapshotSource(f.sim).A, f.sim.state.A); assert.equal(snapshotSource(f.sim).B, f.sim.state.B);
   dropNativeWorldSource(f.sim);
   f.source.dispose();
+});
+check('the native pack hashes a drawn cell by its world cell (stable as the window moves), the edit read by its window cell (the export\'s)', () => {
+  const code = nativePackWGSL(gridDims({ nx: 32, ny: 32, nz: 32 }));
+  assert(code.includes('outA[P.dstBase + q] = bitcast<vec4u>(compactA(w, core));'), 'drawn: the world cell');
+  assert(code.includes('outA[P.dstBase + q] = bitcast<vec4u>(compactA(p, compactProbeCore(core)));'), 'edit: the export\'s window cell');
 });
 check('the native pack\'s target slot is every source grid\'s own slot order (common.js cellSlot)', () => {
   for (const g of [SOURCE_GRID, rawSourceGrid(32), gridDims({ nx: 128, ny: 64, nz: 128 })]) {

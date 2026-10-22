@@ -106,7 +106,7 @@ ${thread}
 // group (Simulation.bindRO under V2: v2/physics.js readGroup, format 2, the cells and dynamics'
 // current coarse air):
 //   A  compactA of the core (the drawn projection: Box's format-2 fetchA, a partial liquid fill
-//      dithered to whole cells), or compactProbeA (edit: one quantum of liquid is liquid, the edit
+//      dithered to whole cells, hashed by the world cell: below), or compactProbeA (edit: one quantum of liquid is liquid, the edit
 //      projection's, for the tree producer's support tests);
 //   B  nativeMotionB of the core in its brick's air (shaders/v2/viewRead.js: Box's volumeB, the
 //      Pressure and Flow views, the hover readout, smoke following the flow); zero in edit mode
@@ -168,7 +168,13 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     outB[P.dstBase + q] = vec4u(0u);
     return;
   }
-  outA[P.dstBase + q] = bitcast<vec4u>(compactA(p, core));
+  // Intentional (decided under the user's delegation, 2026-10-22): the drawn A's per-cell hashes (an
+  // empty or liquid cell's seed, a partial liquid fill's dither) take the world cell w, not the window
+  // cell p, so a cell looks the same wherever the window is, as a V1 cell's seed travels with it in
+  // its state, and as a Box at that origin draws it (its window cell is its world cell). V2's export
+  // hashed the window cell, so every window move re-dithered the partial cells it re-exported (a
+  // flicker of the sea's surface once per 16 cells of travel). Matter keeps its seed in its core.
+  outA[P.dstBase + q] = bitcast<vec4u>(compactA(w, core));
   outB[P.dstBase + q] = bitcast<vec4u>(select(vec4f(0.0), nativeMotionB(core, nativeAirB(s)), P.air != 0u));
   if (P.aer != 0u) {
     let a = fetchNativeAeration(p);
