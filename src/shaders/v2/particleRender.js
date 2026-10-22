@@ -412,14 +412,14 @@ var<workgroup> wgI: array<u32, ${PICK_THREADS}>;
   let p = particles[wgI[0]];
   let id = p.velocityCore.w & 255u;
   let core = vec4u(p.velocityCore.w, p.payloadBank.xyz);
-  let hp = ro + rd * t;
-  let cell = clamp(vec3i(floor(hp)), vec3i(0), vec3i(P.grid.xyz) - 1);
+  // its own cell, as the grid pick reports a V1 flying cell's (its surface can reach past it)
+  let c = bitcast<vec3f>(p.positionId.xyz) - P.origin;
+  let cell = clamp(vec3i(floor(c)), vec3i(0), vec3i(P.grid.xyz) - 1);
   let an = abs(nrm);
   var axis = 0;
   if (an.y >= an.x && an.y >= an.z) { axis = 1; } else if (an.z >= an.x && an.z >= an.y) { axis = 2; }
   // face codes as pickFrag's: axis * 2 + (1 if the ray steps +axis); the normal is minus the step
   let face = axis * 2 + select(0, 1, nrm[axis] < 0.0);
-  let c = bitcast<vec3f>(p.positionId.xyz) - P.origin;
   picks[s] = vec4f(vec3f(cell), f32(face));
   picks[s + 1u] = vec4f(f32(id), temperature(id, core.x), particleAirAt(c).w, particleLife(id, core));
 }`;
