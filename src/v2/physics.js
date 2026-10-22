@@ -463,6 +463,11 @@ export class PhysicsV2 {
     run(k.v2args, [1, 1, 1], [sim.tables, gpu.emptyGroup, groups.args]);
     dynamics?.advanceParticles(this.tick);
     run(k.v2column, ind(ARGS2.COLS));
+    // The faces the block's cubes cut trade heat on the cubes one cell over (shaders/v2/heat.js), every face
+    // once a tick: before the block pass on odd ticks and after it on even ones, so a face is traded twice
+    // running (which moves less) on 3/7 of tick boundaries an axis, not 4/7 (heat.js HEAT_FIRST_ON_ODD_TICKS)
+    const heatFirst = !!k.v2heat && (params.tick & 1) === 1;
+    if (heatFirst) run(k.v2heat, ind(ARGS2.BLOCKS));
     run(k.v2support, ind(ARGS2.BRICKS));
     if (this.blockCompact) {
       // Support above MUST cover every original target before the identity scan. The header's
@@ -471,8 +476,7 @@ export class PhysicsV2 {
       run(k.v2blockFinalize, [1, 1, 1], [gpu.emptyGroup, gpu.emptyGroup, groups.blockFinalize]);
       run(k.v2block, ind(ARGS2.COMPACT), [sim.tables, groups.flow, groups.contact]);
     } else run(k.v2block, ind(ARGS2.BLOCKS), [sim.tables, groups.flow, groups.contact]);
-    // the faces the block's cubes cut, on the cubes one cell over (shaders/v2/heat.js): every face trades heat each tick
-    if (k.v2heat) run(k.v2heat, ind(ARGS2.BLOCKS));
+    if (k.v2heat && !heatFirst) run(k.v2heat, ind(ARGS2.BLOCKS));
     // Electricity at V1's rate (shaders/v2/electric.js): ELEC_STEPS steps a tick of V1's step on six
     // faces, each a gather and a commit. Step 0 gathers the awake bricks and lists where it changed
     // anything (and their 3³); the args publish that list; the rest run over it alone.

@@ -230,9 +230,9 @@ await test('7. the driver runs four gather/commit steps after the block pass, ov
     header: () => ({}), noteWrite() {}, origin: { x: 0, y: 0, z: 0 } };
   const engine = new PhysicsV2(sim, { contactWGSL }); await engine.ready;
   engine.sync(); engine._tick(); commands.length = 0; engine._tick();
-  // (the block pass's heat pass, shaders/v2/heat.js, runs right after it: the faces its cubes cut)
-  const names = commands.map(c => c.name), at = names.indexOf('v2heat');
-  assert.equal(names[at - 1], 'v2block');
+  // (the heat pass, shaders/v2/heat.js, follows the block pass on even ticks: this is tick 2)
+  const names = commands.map(c => c.name), block = names.indexOf('v2block'), at = block + 1;
+  assert.equal(names[at], 'v2heat');
   assert.deepEqual(names.slice(at + 1, at + 10), ['v2elecGather', 'v2elecArgs', 'v2elecCommit', 'v2elecGather', 'v2elecCommit', 'v2elecGather', 'v2elecCommit', 'v2elecGather', 'v2elecCommit']);
   const elec = commands.slice(at + 1, at + 10).filter(c => c.name !== 'v2elecArgs');
   assert.deepEqual(elec.map(c => c.params.elecStep), [0, 0, 1, 1, 2, 2, 3, 3]);

@@ -26,9 +26,11 @@ function grid(nx, ny, nz, at, modes = C.CONTACT_DEFAULT_MODES) {
   };
   return {
     tick(t) {
-      const o = offsetOf(t);
+      // (the heat pass before the block pass on odd ticks, after it on even ones: src/v2/physics.js)
+      const o = offsetOf(t), heat = () => cubes(o.map(v => 1 - v), (cs, bs, valid) => C.contactHeatReference(cs, bs, valid, modes));
+      if (t & 1) heat();
       cubes(o, (cs, bs, valid, pos) => C.contactReference(cs, bs, t, pos, new Uint32Array(8), valid, undefined, modes));
-      cubes(o.map(v => 1 - v), (cs, bs, valid) => C.contactHeatReference(cs, bs, valid, modes));
+      if (!(t & 1)) heat();
     },
     T: (x, y, z) => T(C.unpackContact(cores[index(x, y, z)], banks[index(x, y, z)])),
   };

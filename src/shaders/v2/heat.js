@@ -3,8 +3,9 @@
 // second). The block pass trades only inside its 2×2×2 cubes, so a face is a partner on half the
 // ticks, and a pair that may not overshoot its equilibrium can't carry what V1 moves in two ticks
 // when the material conducts as well as metal does: a metal bar's far end warmed at 0.8× V1's.
-// This pass runs right after the block pass on the cubes one cell over on every axis (the
-// complementary offset, 1 - P.offset): exactly the faces the block pass's cubes cut. Every face
+// This pass runs on the cubes one cell over on every axis (the complementary offset, 1 - P.offset):
+// exactly the faces the block pass's cubes cut, after the block pass on even ticks and before its
+// support pass on odd ones (src/v2/physics.js), so fewer faces trade twice running. Every face
 // then trades once a tick, each V1's tick of conduction for the pair alone (v2/contact.js
 // ctFluxTick), which never crosses the pair's equilibrium, so nothing flickers. Conduction only:
 // reactions, phases and fire stay the block pass's. Same cube set rule as the block pass (the cubes
