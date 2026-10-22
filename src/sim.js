@@ -1125,17 +1125,17 @@ export class Simulation {
     const t = (this.history.length >= limit ? this.history.shift() : null) ?? {};
     t.format = this.compact?.isReady ? 'v2' : 'v1';
     if (t.format === 'v2') {
-      t.compact ??= this.gpu.createBuffer({ label: `sim${this.id} undo compact`, size: bytes,
-        usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+      // (storage too: an undo across a move reads them in the native window's merge, v2/integration.js undo)
+      const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
+      t.compact ??= this.gpu.createBuffer({ label: `sim${this.id} undo compact`, size: bytes, usage });
       f.copy(this.compact.cells, 0, t.compact, 0, bytes);
       if (this.compact.aux) {
-        t.aux ??= this.gpu.createBuffer({ label: `sim${this.id} undo aux`, size: this.g.slots * 4,
-          usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+        t.aux ??= this.gpu.createBuffer({ label: `sim${this.id} undo aux`, size: this.g.slots * 4, usage });
         f.copy(this.compact.aux, 0, t.aux, 0, this.g.slots * 4);
       } else if (t.aux) { this._retire(t.aux); t.aux = null; }
       // (a dynamics still building, a box's first seconds, holds nothing yet to take back)
       const d = this.compact.dynamics;
-      if (d?.isReady && !this.nativeTransition) t.dynamic = d.captureUndo(t.dynamic);
+      if (d?.isReady && d.captureUndo && !this.nativeTransition) t.dynamic = d.captureUndo(t.dynamic);
       else this._retireUndoDynamic(t);
       if (t.A) { this._retire(t.A); this._retire(t.B); t.A = t.B = t.group = null; }
     } else {

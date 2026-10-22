@@ -269,6 +269,15 @@ for (let z = 0; z < 8; z++) for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x
 }
 assert.deepEqual(decodeNativeBrick(sparse).bank, new Int32Array(64).fill(-123));
 
+// An undo entry's words are read as storage by the merge across a move (a real GPU refused a bind
+// group over copy-only buffers there: graphics stopped at the first undo after a move).
+{
+  sim.snapshot('storage');
+  const t = sim.history.at(-1);
+  assert(t.compact.usage & GPUBufferUsage.STORAGE, 'the entry\'s cores bind as storage');
+  assert(!t.aux || t.aux.usage & GPUBufferUsage.STORAGE, 'and its banks');
+  sim.dropHistory();
+}
 // Shifted undo preserves the part outside the old snapshot, never imports
 // legacy whole cells before the native merge.
 const snapCore = buffer({ size: bytes }), snapBank = buffer({ size: g.slots * 4 });
