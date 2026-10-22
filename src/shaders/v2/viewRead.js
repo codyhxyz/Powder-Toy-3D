@@ -11,7 +11,7 @@ import { LEGACY_PRESSURE_PA } from '../../v2/pressure.js';
 // Not a deviation: the same quantities each read where V2 keeps them. Its readers: the Box's draw
 // (shaders/render.js volumeB: the Flow view's matter, its air strokes and haze, the Pressure view,
 // "Smoke follows the flow"), the brick map's air flags (shaders/v2/viewAir.js) and World's B
-// (shaders/renderSource.js nativeAirWGSL).
+// (shaders/renderSource.js nativePackWGSL).
 //
 // nativeAirB(s): slot s's brick's air, as the read groups bind it in B (v2/physics.js readGroup and
 // sim.bindPhysicalRO: dynamics' current coarse air, two vec4f per brick: velocity m/s, pressure Pa

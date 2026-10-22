@@ -5,7 +5,7 @@ import { rawGenerateWGSL, rawStampWGSL, rawApplyWGSL, RAW_LAYOUT, RAW_READ_LAYOU
 import { TREE } from './generator.js';
 import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
-import { planSourceCopies, recordSourceCopies, intersectBounds, snapshotSource, liveSource, sourceBounds, SOURCE_RANK } from './renderSource.js';
+import { planSourceCopies, recordSourceCopies, recordNativeRuns, nativeSourceReady, intersectBounds, snapshotSource, liveSource, sourceBounds, SOURCE_RANK } from './renderSource.js';
 
 // Complete vertical columns avoid recursive footing support at a scratch y
 // edge. A 16-cell x/z halo is NOT a field support assertion: stamp footing
@@ -133,8 +133,13 @@ export class RawWorldSourceProducer {
     }
     if (!this.source.ownedContext && (win.loaded || physicsBounds)) {
       // Trees stamped for physics are applied back like an edit: its projection.
+      // (V2: its cells read natively, the edit projection for physics: renderSource.js recordNativeRuns.
+      // Only before the pack has built, after a runtime switch of engines in a loaded World, is there
+      // nothing to read them with: the scratch keeps the generated and stored cells then; a move or a
+      // plant waits for the pack, so physics never takes such a result: world/window.js.)
       const live = liveSource(this.sim, undefined, { native: !!physicsBounds }), liveBox = intersectBounds(box, sourceBounds(this.sim));
-      if (liveBox) recordSourceCopies(frame, live, raw, planSourceCopies(live, raw, liveBox), { aux: false });
+      if (liveBox && live.nativeSim) { if (nativeSourceReady(this.sim)) recordNativeRuns(frame, live, raw, liveBox, planSourceCopies(live, raw, liveBox), { aux: false }); }
+      else if (liveBox) recordSourceCopies(frame, live, raw, planSourceCopies(live, raw, liveBox), { aux: false });
     }
     for (const t of trees) {
       const s = t.s, next = 1 - raw.copy;

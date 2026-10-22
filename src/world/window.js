@@ -10,7 +10,7 @@ import { runGenerator, bake } from '../constructions/runtime.js';
 import { BUILTINS } from '../constructions/builtins.js';
 import { BrickStore, encodeBrick, decodeBrick, BRICK_FLOATS } from './store.js';
 import { farLayout, farSceneLayout } from '../shaders/far.js';
-import { WorldRenderSource, dropNativeWorldAir } from './renderSource.js';
+import { WorldRenderSource, dropNativeWorldSource, nativePackOf, nativeSourceReady } from './renderSource.js';
 import { RawWorldSourceProducer } from './renderSourceProducer.js';
 
 // The window over a massive world (docs/scaling.md D11, phases W1 and W2;
@@ -140,8 +140,10 @@ export class WorldWindow {
   // window its far field first): load and the moves then record at once.
   whenReady() {
     if (this.sim.compactOwner) this.gen.prepareNativeDiff?.();   // (V2's leaving slab: not awaited, see update)
+    // V2: the source's native read of its cells (renderSource.js nativePackOf), which every copy of the window uses
+    const pack = this.sim.compactOwner ? nativePackOf(this.sim)?.kernel.ready : null;
     return (this.ready ??= Promise.all([
-      this.gen.ready, this.gen.prepareDiff(), this.restoreKernel.ready, this.sourceProducer.ready, this.sim.prepare('fresh'), this.far?.whenReady?.(),
+      this.gen.ready, this.gen.prepareDiff(), this.restoreKernel.ready, this.sourceProducer.ready, this.sim.prepare('fresh'), this.far?.whenReady?.(), pack,
     ]).then(() => this));
   }
 
@@ -233,6 +235,7 @@ export class WorldWindow {
   blocker() {
     if (!this.loaded || this.persistenceError || this.capturing) return null;
     const sim = this.sim, waits = [this.pending, sim.deco?.pending];
+    if (sim.compact && !nativeSourceReady(sim)) waits.push(nativePackOf(sim)?.kernel.ready);
     if (sim.compactOwner && (sim.nativeTransition || !sim.nativeCapabilities.world)) {
       const owner = sim.compactOwner;
       waits.push(sim.nativeTransition ?? Promise.all([sim.prepareNative(), owner.dynamics?.windowBuilt,
@@ -250,6 +253,8 @@ export class WorldWindow {
     this.far?.tick();
     if (this.capturing || this.pending || this.sim.deco?.pending) return null;
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) return null;
+    // (V2: the leaving slab's copy reads its cells natively: renderSource.js nativePackOf)
+    if (this.sim.compact && !nativeSourceReady(this.sim)) return null;
     // V2's leaving slab keeps what differs from the generator (readBack); a
     // grid V2 came to after load builds it now, keeping everything meanwhile
     if (this.sim.compactOwner) this.gen.prepareNativeDiff?.();
@@ -340,6 +345,7 @@ export class WorldWindow {
     if (this.historyReaders) throw new Error('World history capture is pending');
     if (this.sim.compactOwner && this.pending) throw new Error('World shift while leaving slab is pending');
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) throw new Error('Native world shift is not ready');
+    if (this.sim.compact && !nativeSourceReady(this.sim)) throw new Error('Native world source is not ready');
     return this._shiftCommitted(dx, dz);
   }
   // A V2 move's leaving slab of dynamics (its air and requests: NativeDynamics.recordWindowShift) is
@@ -604,7 +610,7 @@ export class WorldWindow {
     if (this.sim.worldRenderSource === this.renderSource) this.sim.worldRenderSource = null;
     this.sourceProducer.dispose();
     this.renderSource.dispose();
-    dropNativeWorldAir(this.sim);   // (V2's air as the World's source reads it)
+    dropNativeWorldSource(this.sim);   // (V2's cells as the World's source reads them)
     this.gen.dispose();
     // (destroyed once the frames that use them are submitted and done)
     for (const b of [this.leave.head, this.leave.cells, this.leaveNative?.head, this.leaveNative?.cells, this.restoreBuf]) if (b) this.sim._retire(b);

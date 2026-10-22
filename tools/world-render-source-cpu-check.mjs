@@ -1,7 +1,7 @@
 // CPU command/authority tests. No browser, GPU, shader interpreter or speed claim.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { WorldRenderSource, SOURCE_GRID, SOURCE_RANK, snapshotSource, liveSource, dropNativeWorldAir, sourceBounds, planSourceCopies, recordSourceCopies, decodeSourceBrick } from '../src/world/renderSource.js';
+import { WorldRenderSource, SOURCE_GRID, SOURCE_RANK, snapshotSource, liveSource, dropNativeWorldSource, sourceBounds, planSourceCopies, recordSourceCopies, decodeSourceBrick } from '../src/world/renderSource.js';
 import { rawSourceGrid, treeColumnMask, sourceTrees, RawWorldSourceProducer } from '../src/world/renderSourceProducer.js';
 import { gridDims, cellSlot, slotCell } from '../src/shaders/common.js';
 import { BrickStore, encodeBrick } from '../src/world/store.js';
@@ -13,7 +13,7 @@ import { WorldGenerator } from '../src/world/gpu.js';
 import { setAeration, dropAeration, aerationForSource } from '../src/gfx/foam.js';
 import { cellWordsDiffer, cellDiffersWGSL } from '../src/shaders/generate.js';
 import { STAMP_LIB, stampLib } from '../src/shaders/stamp.js';
-import { rawStampWGSL, rawApplyWGSL, RAW_LAYOUT, RAW_READ_LAYOUT, APPLY_STATE } from '../src/shaders/renderSource.js';
+import { rawStampWGSL, rawApplyWGSL, RAW_LAYOUT, RAW_READ_LAYOUT, APPLY_STATE, nativePackSlot } from '../src/shaders/renderSource.js';
 import { stateLayout } from '../src/shaders/common.js';
 
 let assertions = 0;
@@ -159,55 +159,71 @@ check('complete A/B capture preserves all original words and auxiliary planes', 
     assert.equal(wordView(out.chunk.deco.buffer)[out.slot], wordView(live.deco.buffer)[s]);
   }
 });
-check('Physics V2: the drawn source takes B from the V2 air export and V2 foam, the edit projection keeps the legacy B', () => {
+check('Physics V2: the source reads V2\'s cells natively (one pack into each core), never V1\'s state or an export', () => {
   const f = fixture(); fillState(f);
-  const previousUsage = globalThis.GPUBufferUsage;
-  globalThis.GPUBufferUsage ??= { STORAGE: 0x80, COPY_SRC: 0x04, COPY_DST: 0x08 };   // (v2/nativeAeration.js's buffer)
   const dispatches = [], kernel = f.gpu.kernel;
-  // The kernels' stand-in writes words that name their buffer and dispatch, as the real ones write V2's air and foam.
+  // The pack's stand-in writes, into each cell of its box, words naming the dispatch and the cell's
+  // window slot, as the real one writes what V2's read group holds for that cell.
   f.gpu.kernel = (desc) => ({ ...kernel.call(f.gpu, desc), state: 'ready', dispatch(_frame, size, opts) {
     dispatches.push({ name: desc.name, size, opts });
-    opts.bind[2].entries.forEach((e, j) => wordView(e.resource.buffer).forEach((_v, i, a) => { a[i] = (0x5b000000 + (j << 20) + i + dispatches.length) >>> 0; }));
-  } });
-  const exports = [];
-  Object.assign(f.sim, { compact: { isReady: true, dynamics: { isReady: true }, tick: 5, sync() {}, groups: { read: { read: true } } }, bindPhysicalRO: { physical: true },
-    legacyState(native) { exports.push(native); }, _dispatch(k, size, opts) { k.dispatch(f.frame, size, opts); },
-    readHeader({ physical = false } = {}) { return { ...this.header(), format: physical ? 3 : 2 }; } });
-  f.sim.L.STATE_RO = [];
-  try {
-    // (the air kernel builds on first use; until it is ready the legacy B stands in)
-    assert.equal(snapshotSource(f.sim).B, f.sim.state.B, 'no export before the first live read');
-    const revision = f.source.recordLiveCopy(f.frame, f.sim); f.flush();
-    assert(revision > 0); assert.deepEqual(exports, [false]);
-    assert.deepEqual(dispatches.map((d) => d.name), ['worldNativeAir', 'nativeAeration'], 'V2 air and foam, both before the copy');
-    assert.equal(dispatches[0].opts.bind[1], f.sim.bindPhysicalRO); assert.equal(dispatches[0].opts.header.format, 3);
-    const live = f.source.liveSnapshot;
-    assert.notEqual(live.B, f.sim.state.B); assert.equal(live.bCopy, 0); assert.equal(live.copy, 1);
-    assert.equal(live.B.size, f.sim.g.slots * 16); assert.equal(live.B, dispatches[0].opts.bind[2].entries[0].resource.buffer);
-    assert.equal(live.aeration, dispatches[1].opts.bind[2].entries[0].resource.buffer, 'the drawn aeration is V2 foam');
-    assert.equal(live.aerCopy, 0); assert.equal(live.aerGeneration, 5); assert.equal(live.boundedWake, true);
-    for (let s = 0; s < live.g.slots; s += 37) {
-      const p = slotCell(live.g, s).map((v, i) => v + live.origin[i]), out = f.source.getSource(p);
-      assert.equal(out.kind, 'live'); assert.equal(out.aux & 2, 2);
-      assert.deepEqual(stateWords(out.chunk, 'A', p), stateWords(live, 'A', p), 'A stays the legacy projection (copy cur)');
-      assert.deepEqual([...wordView(out.chunk.B).subarray(out.slot * 4, out.slot * 4 + 4)], [...wordView(live.B).subarray(s * 4, s * 4 + 4)]);
-      assert.deepEqual([...wordView(out.chunk.aeration).subarray(out.slot * 2, out.slot * 2 + 2)], [...wordView(live.aeration).subarray(s * 2, s * 2 + 2)]);
+    const { lo, hi, dstOrigin, dstBase, dstTiles, aer, edit } = opts.params, [A, B, AER] = opts.bind[2].entries.map((e) => wordView(e.resource.buffer));
+    for (let z = lo[2]; z < hi[2]; z++) for (let y = lo[1]; y < hi[1]; y++) for (let x = lo[0]; x < hi[0]; x++) {
+      const s = cellSlot(f.sim.g, x - opts.header.origin[0], y - opts.header.origin[1], z - opts.header.origin[2]);
+      const d = nativePackSlot(dstTiles, x - dstOrigin[0], y - dstOrigin[1], z - dstOrigin[2]);
+      for (let c = 0; c < 4; c++) { A[(dstBase + d) * 4 + c] = (0x7a000000 + s * 4 + c + (edit ? 0x100000 : 0)) >>> 0; B[(dstBase + d) * 4 + c] = edit ? 0 : (0x7b000000 + s * 4 + c) >>> 0; }
+      if (aer) { AER[d * 2] = (0x7c000000 + s) >>> 0; AER[d * 2 + 1] = 0; }
     }
-    assert(!f.source.needsLiveCopy(), 'the export is the same buffer every read: no copy without a change');
-    assert.doesNotThrow(() => f.source.assertBoundedWake([{ lo: [32, 0, 32], hi: [64, 32, 64] }]), 'V2 records hold no wakes');
-    // The edit projection (written back into physics) reads the legacy B and runs no air export.
-    const edit = liveSource(f.sim, undefined, { native: true });
-    assert.equal(edit.B, f.sim.state.B); assert.equal(edit.bCopy, undefined); assert.deepEqual(exports, [false, true]);
-    // A read that copies A alone (the raw producer's tree support) runs no air export either.
-    assert.equal(liveSource(f.sim).B, live.B);
-    assert.equal(dispatches.filter((d) => d.name === 'worldNativeAir').length, 1);
-    // A switch back to V1 hands the lanes back.
-    f.sim.compact = null;
-    assert(f.source.needsLiveCopy()); assert.equal(snapshotSource(f.sim).B, f.sim.state.B);
-    dropNativeWorldAir(f.sim);
-    assert(f.retired.includes(live.B), 'the window lets go of the air buffer');
-    f.source.dispose();
-  } finally { if (previousUsage === undefined) delete globalThis.GPUBufferUsage; else globalThis.GPUBufferUsage = previousUsage; }
+  } });
+  const exports = [], readGroup = { read: true };
+  const owner = { isReady: true, dynamics: { isReady: true, air: [{}] }, tick: 5, syncs: 0, sync() { this.syncs++; }, readGroup: () => readGroup };
+  Object.assign(f.sim, { compact: owner, compactOwner: owner, legacyState(native) { exports.push(native); } });
+  f.sim.L.STATE_RO = [];
+  // (until the pack is built nothing is copied, and the copy stays wanted)
+  const building = f.gpu.kernel; f.gpu.kernel = (desc) => ({ ...building(desc), state: 'building' });
+  assert.equal(f.source.recordLiveCopy(f.frame, f.sim), 0); assert(f.source.needsLiveCopy());
+  dropNativeWorldSource(f.sim); f.gpu.kernel = building;
+  const revision = f.source.recordLiveCopy(f.frame, f.sim); f.flush();
+  assert(revision > 0); assert.deepEqual(exports, [], 'no export to V1\'s state');
+  assert(dispatches.length > 0 && dispatches.every((d) => d.name === 'worldNativePack'));
+  assert(dispatches.every((d) => d.opts.bind[1] === readGroup && d.opts.header.format === 2), 'V2\'s read group, format 2');
+  assert(dispatches.every((d) => d.opts.params.air === 1 && d.opts.params.aer === 1 && d.opts.params.edit === 0));
+  // the boxes are the window, once: every cell packed, none twice
+  const volume = (d) => d.opts.params.hi.reduce((n, v, i) => n * (v - d.opts.params.lo[i]), 1);
+  assert.equal(dispatches.reduce((n, d) => n + volume(d), 0), f.sim.g.slots);
+  const live = f.source.liveSnapshot;
+  assert.equal(live.A, null); assert.equal(live.B, null); assert.equal(live.nativeSim, f.sim); assert.equal(live.aerGeneration, 5); assert.equal(live.boundedWake, true);
+  for (let s = 0; s < f.sim.g.slots; s += 37) {
+    const p = slotCell(f.sim.g, s).map((v, i) => v + live.origin[i]), out = f.source.getSource(p);
+    assert.equal(out.kind, 'live'); assert.equal(out.aux & 7, 7, 'flow, foam and decoration');
+    assert.deepEqual(stateWords(out.chunk, 'A', p), [0, 1, 2, 3].map((c) => 0x7a000000 + s * 4 + c), 'A: V2\'s cell, packed');
+    assert.deepEqual([...wordView(out.chunk.B).subarray(out.slot * 4, out.slot * 4 + 4)], [0, 1, 2, 3].map((c) => 0x7b000000 + s * 4 + c), 'B: its motion and air');
+    assert.equal(wordView(out.chunk.aeration)[out.slot * 2], 0x7c000000 + s, 'its foam');
+    assert.equal(wordView(out.chunk.flow)[out.slot * 2], wordView(f.sim.flow)[s * 2], 'flow: V2\'s own buffer, copied');
+    assert.equal(wordView(out.chunk.deco.buffer)[out.slot], wordView(f.sim.decoPlane.buffer)[s], 'decoration: V2\'s plane, copied');
+  }
+  assert(!f.source.needsLiveCopy(), 'no copy without a change');
+  f.sim.version++; assert(f.source.needsLiveCopy(), 'a tick wants one');
+  assert.doesNotThrow(() => f.source.assertBoundedWake([{ lo: [32, 0, 32], hi: [64, 32, 64] }]), 'V2 records hold no wakes');
+  // Without dynamics' air, B reads zero (as V1's projection of V2 held it).
+  owner.dynamics = { isReady: false }; dispatches.length = 0; f.source.recordLiveCopy(f.frame, f.sim);
+  assert(dispatches.every((d) => d.opts.params.air === 0));
+  // The edit projection (the tree producer's read written back into physics): edit, no foam.
+  const edit = liveSource(f.sim, undefined, { native: true });
+  assert.equal(edit.edit, true); assert.equal(edit.aeration, null); assert.equal(edit.A, null);
+  // A switch back to V1 hands the lanes back.
+  f.sim.compact = null;
+  assert(f.source.needsLiveCopy()); assert.equal(snapshotSource(f.sim).A, f.sim.state.A); assert.equal(snapshotSource(f.sim).B, f.sim.state.B);
+  dropNativeWorldSource(f.sim);
+  f.source.dispose();
+});
+check('the native pack\'s target slot is every source grid\'s own slot order (common.js cellSlot)', () => {
+  for (const g of [SOURCE_GRID, rawSourceGrid(32), gridDims({ nx: 128, ny: 64, nz: 128 })]) {
+    const tiles = [g.nx / 16, g.nz / 8];
+    for (let i = 0; i < 4000; i++) {
+      const p = [(i * 7919) % g.nx, (i * 104729) % g.ny, (i * 1299709) % g.nz];
+      assert.equal(nativePackSlot(tiles, ...p), cellSlot(g, ...p));
+    }
+  }
 });
 check('bulk LIVE metadata never bypasses a newer partial source revision', () => {
   const f = fixture(); fillState(f);

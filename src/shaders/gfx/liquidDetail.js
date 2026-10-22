@@ -202,15 +202,16 @@ ${Object.entries(MENISCUS_PROPS).map(([k, p]) => `  if (id == E_${k}) { return v
 
 /** Box programs always compile native compact foam (legacy detail switches still gate their effects).
  * WORLD reads its own atlas, so its switches decide what is compiled in, as before, unless the
- * atlas is V2's (WORLD_NATIVE: its live copies carry V2's foam, v2/nativeAeration.js): then it
- * compiles native foam as Box's format-2 programs do. */
+ * atlas is V2's (WORLD_NATIVE: its live cells are packed from V2's cores with their foam,
+ * world/renderSource.js nativePack): then it compiles native foam as Box's format-2 programs do. */
 export const WORLD_NATIVE = 'NATIVE_V2';   // the World view's detail key while V2 runs the box (wire/worldRenderFrame.js freezeWorldView)
 export const LIQ_DETAIL = (detail = {}, backend = 'box') => backend !== 'world'
   || !!(detail.DETAIL_LIQ_RIPPLES || detail.DETAIL_LIQ_MENISCUS || detail.DETAIL_LIQ_FOAM || detail[WORLD_NATIVE]);
 
 export const liquidDetailGLSL = (detail = {}, { backend = 'box', fixedReadFormat } = {}) => {
-  // WORLD reads its own atlas, never V2's packed state: its format is the legacy one.
-  const format = backend === 'world' ? '0u' : readFormatWGSL(fixedReadFormat);
+  // WORLD reads its atlas (worldAeration), not a sim's buffers: it has no read format. Under V2
+  // the atlas's live foam is V2's, packed natively from its cores (world/renderSource.js nativePack).
+  const format = backend === 'world' ? null : readFormatWGSL(fixedReadFormat);
   const ripples = !!detail.DETAIL_LIQ_RIPPLES;
   const meniscus = !!detail.DETAIL_LIQ_MENISCUS;
   const world = backend === 'world';

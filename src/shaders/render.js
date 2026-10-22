@@ -768,14 +768,19 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 //   where that edge was. Nothing sets FU.far now (world maps draw with the
 //   WORLD renderer, and the far field was retired in dc480f4f), so neither
 //   renderer runs them.
-// - format: World reads its own atlas, filled from the legacy A/B projection
-//   (V2's exportLegacy), never V2's packed state, except V2's foam and air:
-//   while V2 runs, World's live copies carry its foam (v2/nativeAeration.js,
-//   liquidDetail.js WORLD_NATIVE), so the molten-foam layer after shadeSurf
-//   draws it as the Box does, and its air (B: the Pressure and Flow views,
-//   world/renderSource.js, the V2 air export).
+// - format: World's programs read World's atlas (worldFetchA/B, worldAeration),
+//   which holds the whole world's cells in World's own words, never a sim's
+//   buffers, so they have no read format. While V2 runs the window, the atlas's
+//   live cells are V2's, read natively: the source packs them through V2's read
+//   group with the decoders the Box's format-2 program reads them with (A:
+//   compactA, B: viewRead.js nativeMotionB in its brick's air, the foam:
+//   fetchNativeAeration; world/renderSource.js nativePack, no export to V1's
+//   state), and the World programs compile the native foam (liquidDetail.js
+//   WORLD_NATIVE), so the molten-foam layer after shadeSurf draws as the Box's.
+//   Different code, the same picture (CLAUDE.md "Same features in every world").
 const realistic = (detail, curved = false, backend = 'box', fixedReadFormat) => {
-  const format = backend === 'world' ? '0u' : readFormatWGSL(fixedReadFormat);
+  // (World's: none, see above; its branches below never read it)
+  const format = backend === 'world' ? null : readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
   const liq = LIQ_DETAIL(detail, backend);
   // World's atlas while V2 runs the box carries V2's foam (liquidDetail.js WORLD_NATIVE): the molten

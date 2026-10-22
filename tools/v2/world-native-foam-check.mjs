@@ -6,7 +6,8 @@
 // from V1's field (gfx/foam.js), which only V1's step advances: under V2 World showed foam frozen from
 // before the switch, or none, never on lava, and only with Whitewater on. Pins:
 //   (1) while V2 runs the box, World's live copies carry V2's foam packed from the cores
-//       (v2/nativeAeration.js), dispatched before the copy that reads it; under V1 V1's field, as before;
+//       (world/renderSource.js's native pack, shaders/renderSource.js nativePackWGSL), straight into
+//       the source; under V1 V1's field, as before;
 //   (2) the packed record decodes, through World's worldAeration/aerTap, to what Box's aerTap reads;
 //   (3) the World view carries WORLD_NATIVE under V2 only (freezeWorldView), and its programs then compile
 //       native foam and molten foam as Box's format-2 programs do; without it World's text is unchanged;
@@ -16,7 +17,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PerspectiveCamera, Matrix4, Vector3 } from 'three';
 import { WorldRenderSource, snapshotSource } from '../../src/world/renderSource.js';
-import { nativeAerationWGSL, NATIVE_AERATION_LAYOUT } from '../../src/v2/nativeAeration.js';
+import { nativePackWGSL, NATIVE_PACK_LAYOUT, nativePackSlot } from '../../src/shaders/renderSource.js';
 import { volumeFrag, VOLUME_LAYOUTS, VOLUME_VIEWS, REALISTIC_LEVELS } from '../../src/shaders/render.js';
 import { WORLD_NATIVE } from '../../src/shaders/gfx/liquidDetail.js';
 import { freezeWorldView, worldViewDetail } from '../../src/wire/worldRenderFrame.js';
@@ -38,44 +39,46 @@ function fixture({ native }) {
   const gpu = { frame, stats: { flushes: 0 }, createBuffer,
     write(b, at, data) { flush(); b.bytes.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), at); },
     layout(_name, e) { return e; }, bindGroup(layout, entries) { return { layout, entries }; },
-    kernel(desc) { return { ...desc, state: 'ready', ready: Promise.resolve(), dispatch() {} }; } };
+    // The pack's dispatch, in order with the copies: it "writes" NATIVE_WORD into the foam of each cell of its box.
+    kernel(desc) { return { ...desc, state: 'ready', ready: Promise.resolve(), dispatch(_f, size, opts) {
+      dispatched.push({ kernel: desc, size, opts });
+      const { lo, hi, dstOrigin, dstTiles, aer } = opts.params, out = opts.bind[2].entries[2].resource.buffer;
+      if (aer) commands.push(() => { const w = new Uint32Array(out.bytes.buffer);
+        for (let z = lo[2]; z < hi[2]; z++) for (let y = lo[1]; y < hi[1]; y++) for (let x = lo[0]; x < hi[0]; x++) w[nativePackSlot(dstTiles, x - dstOrigin[0], y - dstOrigin[1], z - dstOrigin[2]) * 2] = NATIVE_WORD; });
+    } }; } };
   const g = gridDims({ nx: 32, ny: 32, nz: 32 });
-  const owner = { isReady: true, tick: 7, groups: { read: { name: 'v2 compact readers' } }, synced: 0, sync() { this.synced++; } };
+  const readGroup = { name: 'v2 compact readers (air)' };
+  const owner = { isReady: true, tick: 7, dynamics: { isReady: true, air: [{}] }, readGroup: () => readGroup, synced: 0, sync() { this.synced++; } };
   const sim = { id: 1, g, gpu, cur: 1, version: 1, origin: { x: 32, y: 0, z: 32 }, L: { TABLES: LAYOUT.TABLES, STATE_RO: LAYOUT.STATE_RO }, tables: { name: 'tables' },
     state: { A: createBuffer({ size: g.slots * 32 }), B: createBuffer({ size: g.slots * 32 }) }, flow: createBuffer({ size: g.slots * 8 }),
     aeration: { buffer: createBuffer({ size: g.slots * 16 }), cur: 0, generation: 3 }, decoPlane: null,
     compact: native ? owner : null, compactOwner: owner,
-    _retire() {}, legacyState() {}, header() { return { origin: [this.origin.x, 0, this.origin.z], src: this.cur, dst: this.cur, format: 0, capture: 0 }; },
-    // The pack kernel's dispatch, in order with the copies: it "writes" NATIVE_WORD into its buffer.
-    _dispatch(kernel, size, opts) {
-      dispatched.push({ kernel, size, opts });
-      const out = opts.bind[2].entries[0].resource.buffer;
-      commands.push(() => new Uint32Array(out.bytes.buffer).fill(NATIVE_WORD));
-    } };
+    _retire() {}, legacyState() {}, header() { return { origin: [this.origin.x, 0, this.origin.z], src: this.cur, dst: this.cur, format: 0, capture: 0 }; } };
   new Uint32Array(sim.aeration.buffer.bytes.buffer).fill(LEGACY_WORD);
   const win = { sim, gpu, size: [128, 32, 128], epoch: 1, wb: [32, 8, 32], scene: {}, planted: new Uint8Array(32 * 32), candidates: new Map(), store: { map: new Map() } };
   const source = new WorldRenderSource(win);
-  return { sim, owner, source, frame, flush, dispatched };
+  return { sim, owner, readGroup, source, frame, flush, dispatched };
 }
 const chunkAeration = (source, cell) => {
   const c = source.chunks.get(cell.map(v => Math.floor(v / 32) * 32).join(','));
   return new Uint32Array(c.aeration.bytes.buffer)[cellSlot(c.g, ...cell.map((v, i) => v - c.origin[i])) * 2];
 };
 
-test('(1) under V2 World\'s live copy carries V2\'s foam, packed from the cores before the copy; under V1 V1\'s field', () => {
+test('(1) under V2 World\'s live copy carries V2\'s foam, packed from the cores into the source; under V1 V1\'s field', () => {
   const v2 = fixture({ native: true });
   v2.source.recordLiveCopy(v2.frame); v2.flush();
-  assert.equal(v2.dispatched.length, 1, 'one pack of V2\'s cores per live copy');
-  const d = v2.dispatched[0];
-  assert.equal(d.kernel.name, 'nativeAeration');
-  assert.equal(d.opts.bind[1], v2.owner.groups.read, 'it reads V2\'s cores, as Box\'s format-2 volume binds them');
-  assert.equal(d.opts.header.format, 2);
+  assert(v2.dispatched.length > 0, 'V2\'s cores packed into the source');
+  for (const d of v2.dispatched) {
+    assert.equal(d.kernel.name, 'worldNativePack');
+    assert.equal(d.opts.bind[1], v2.readGroup, 'it reads V2\'s cores, as Box\'s format-2 volume binds them');
+    assert.equal(d.opts.header.format, 2); assert.equal(d.opts.params.aer, 1);
+  }
   assert(v2.owner.synced > 0, 'V2 imports pending writes before the pack');
   assert.equal(chunkAeration(v2.source, [40, 5, 40]), NATIVE_WORD, 'World\'s atlas holds V2\'s foam, not V1\'s frozen field');
   const snap = snapshotSource(v2.sim);
   assert.equal(snap.aerCopy, 0); assert.equal(snap.boundedWake, true); assert.equal(snap.aerGeneration, v2.owner.tick);
   assert.equal(v2.source.needsLiveCopy(v2.sim), false, 'an unchanged V2 box needs no new copy');
-  v2.owner.tick++;
+  v2.sim.version++;
   assert.equal(v2.source.needsLiveCopy(v2.sim), true, 'a recorded tick (V2\'s foam moved) needs one');
 
   const v1 = fixture({ native: false });   // V1 steps the grid (a suspended V2 owner keeps its cells)
@@ -98,8 +101,8 @@ function packRecord([x, y, z]) { return y > 0.5 ? [f16(x), f16(y), f16(0), f16(z
 // World's reader (worldAccess.js worldAeration → liquidDetail.js aerTap world branch).
 const worldTap = f => f[1] > 0.5 ? [f[0], 1, f[3]] : [0, 0, 0];
 test('(2) the packed record reads, through World\'s aerTap, as Box\'s aerTap reads V2\'s cores', () => {
-  const code = nativeAerationWGSL(gridDims({ nx: 32, ny: 32, nz: 32 }));
-  assert.match(code, /let a = fetchNativeAeration\(cellOf\(s\)\);/, 'Box\'s own reader');
+  const code = nativePackWGSL(gridDims({ nx: 32, ny: 32, nz: 32 }));
+  assert.match(code, /let a = fetchNativeAeration\(p\);/, 'Box\'s own reader');
   assert.match(code, /select\(vec2u\(0u\), vec2u\(pack2x16float\(vec2f\(a\.x, a\.y\)\), pack2x16float\(vec2f\(0\.0, a\.z\)\)\), a\.y > 0\.5\)/);
   assert.match(code, /fn fetchNativeAeration\(p: vec3i\) -> vec3f \{\n  if \(2u != 2u && 2u != 3u\) \{ return vec3f\(0\.0\); \}/, 'fixed format 2: the cores');
   for (let age = 0; age < 256; age++) {
@@ -131,7 +134,7 @@ test('(3) the World view carries WORLD_NATIVE under V2 only; its programs then c
   assert.doesNotMatch(whitewater, /CH_MOLTEN && KIND\(s\.id\) == K_LIQUID\) \{/, 'V1 World keeps its programs');
 });
 
-test('(4) the native World programs and the pack kernel validate in Naga', () => {
+test('(4) the native World programs and the source pack validate in Naga', () => {
   let n = 0;
   for (const view of VOLUME_VIEWS.filter(isMaterialView)) for (const [level, d] of Object.entries(REALISTIC_LEVELS)) for (const curved of [false, true]) {
     const code = volumeFrag(world, { backend: 'world', view, detail: { ...d(), [WORLD_NATIVE]: true }, curved });
@@ -139,7 +142,7 @@ test('(4) the native World programs and the pack kernel validate in Naga', () =>
     if (level === 'off' || level === 'full') { assertNaga(code, `world.volume.${view}.${level}${curved ? '.curved' : ''}.native`); n++; }
   }
   const g = gridDims({ nx: 128, ny: 128, nz: 128 });
-  assertNaga(nativeAerationWGSL(g), 'nativeAeration'); n++;
-  assert.deepEqual(NATIVE_AERATION_LAYOUT.map(e => e.buffer.type), ['storage']);
+  assertNaga(nativePackWGSL(g), 'worldNativePack'); n++;
+  assert.deepEqual(NATIVE_PACK_LAYOUT.map(e => e.buffer.type), ['storage', 'storage', 'storage']);
   console.log(`Naga: ${n} native World modules`);
 });

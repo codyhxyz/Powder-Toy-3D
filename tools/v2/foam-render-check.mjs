@@ -5,7 +5,7 @@ import { gridLayout } from '../../src/sim.js';
 import { volumeFrag } from '../../src/shaders/render.js';
 import { allDetailDefines, detailDefines, detailDefaults } from '../../src/gfx/detail.js';
 import { liquidDetailGLSL, WORLD_NATIVE } from '../../src/shaders/gfx/liquidDetail.js';
-import { nativeAirWGSL } from '../../src/shaders/renderSource.js';
+import { nativePackWGSL } from '../../src/shaders/renderSource.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 
 test('compact high-byte foam is independent of legacy Whitewater; v1 eligibility is unchanged',()=>{
@@ -49,10 +49,10 @@ test('WORLD under V2 draws the same foam and air: its programs compile the foam 
     assert.match(v2,/foamTrans \* \(c - s.emit\) \+ s.emit/,'incandescence retained');
     assertNaga(v2,`world v2 whitewater ${enabled}`);
   }
-  // (its foam: v2/nativeAeration.js, tools/v2/world-native-foam-check.mjs)
-  const air=nativeAirWGSL(gridLayout(32,32,32));
+  // (its foam and air: the source's native pack, tools/v2/world-native-foam-check.mjs)
+  const pack=nativePackWGSL(gridLayout(32,32,32));
   // V1's B as V2 holds it: a grain's fall and a liquid's flux in their cells, the air elsewhere (shaders/v2/viewRead.js)
-  assert.match(air,/airB\[s\] = nativeMotionB\(fetchNativeCoreS\(s\), fetchBs\(s\)\);/);
-  assert.match(air,/let air = B\[\(s >> 6u\) \* 2u\];/,'coarse air in V1 units, as the Box Pressure/Flow views read it');
-  assertNaga(air,'world v2 air export');
+  assert.match(pack,/nativeMotionB\(core, nativeAirB\(s\)\)/);
+  assert.match(pack,/fn nativeAirB\(s: u32\) -> vec4f \{\n  let air = fetchNativeAirS\(s\);/,'coarse air in V1 units, as the Box Pressure/Flow views read it');
+  assertNaga(pack,'world v2 source pack');
 });
