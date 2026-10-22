@@ -36,8 +36,8 @@ function mockBackend([nx, ny, nz]) {
     blockCount: blocks.length,
     blockTexels: texels,
     locate,
-    // flying: V2's matter in flight beside the grid (console/gpu.js flyingMatterIds), when this
-    // backend has any (be.flying: element ids); V1's backend has none (its flying cells are cells)
+    // flying: V2's matter in flight beside the grid (console/gpu.js flyingMatter), when this
+    // backend has any (be.flying: its records); V1's backend has none (its flying cells are cells)
     flying: null, flyingReads: 0,
     readBlocks(list, sync, flying = false) {
       be.reads += list.length;
@@ -178,16 +178,29 @@ eq(val('sim.elementCount("WALL")'), '1024', 'elementCount');
 const parts = Number(val('local n = 0 for i in sim.parts() do n = n + 1 end return n'));
 eq(parts, Number(val('sim.partCount()')), 'sim.parts() visits every particle');
 // R4: V2's matter in flight is counted, as V1's flying cells are (they are cells): a census reads the
-// pool with the blocks (console/world.js readAll flying, console/gpu.js flyingMatterIds)
+// pool with the blocks (console/world.js readAll flying, console/gpu.js flyingMatter)
+const packet = (slot, id, x, y, z, more = {}) => ({ slot, id, x, y, z, temp: 20, life: 0, ctype: 0, vx: 0, vy: 0, vz: 0, ...more });
 {
   const sand0 = Number(val('sim.elementCount("SAND")')), all0 = Number(val('sim.partCount()'));
-  backend.flying = [E.SAND, E.SAND, E.WATER];
+  backend.flying = [packet(7, E.SAND, 2, 9, 3), packet(2, E.SAND, 30, 12, 30), packet(40, E.WATER, 0, 15, 0)];
   eq(Number(val('sim.elementCount("SAND")')), sand0 + 2, 'elementCount counts flying sand (V2 packets)');
   eq(Number(val('sim.partCount()')), all0 + 3, 'partCount counts every flying packet');
   const reads = backend.flyingReads;
   eq(val('return sim.partCount() == sim.partCount()'), 'true', 'one command, one read of the pool');
   eq(backend.flyingReads, reads + 1, '...read once per command, as each block is');
-  backend.flying = [E.SAND];
+  // sim.parts() walks them as V1 walks its flying cells, the cells they are in: in key order, after the cell
+  const cellCount = SIZE[0] * SIZE[1] * SIZE[2];
+  const order = val('local t = {} for i in sim.parts() do t[#t + 1] = i end return table.concat(t, ",")').split(',').map(Number);
+  eq(order.length, all0 + 3, 'sim.parts() visits each flying packet (V2) as V1 visits its flying cells');
+  const where = (i) => (i >= cellCount ? backend.flying.find((p) => p.slot === i - cellCount) : null);
+  const keyOf = (i) => { const p = where(i); return p ? idx(p.x, p.y, p.z) : i; };
+  ok(order.every((i, k) => k === 0 || keyOf(order[k - 1]) < keyOf(i) || (keyOf(order[k - 1]) === keyOf(i) && i >= cellCount)), 'sim.parts() is in V1\'s order: a packet at its cell\'s key');
+  eq(order.filter((i) => i >= cellCount).map((i) => i - cellCount).join(','), '40,7,2', '...the packets by their cells (keys 480, 1826, 15774)');
+  eq(val(`return sim.partProperty(${cellCount + 40}, "type"), sim.partProperty(${cellCount + 40}, "temp"), sim.partProperty(${cellCount + 40}, "y")`), `${E.WATER}, 20, 15`, 'partProperty reads a flying packet');
+  eq(val(`return sim.partExists(${cellCount + 2}), sim.partPosition(${cellCount + 2})`), 'true, 30, 12, 30', 'partExists, partPosition of a packet');
+  eq(val(`return sim.partExists(${cellCount + 3})`), 'false', 'no packet in slot 3');
+  eq(val(`local k = 0 for i in sim.parts() do if sim.partProperty(i, "type") == elem.DEFAULT_PT_SAND then k = k + 1 end end return k`), String(sand0 + 2), 'a parts() loop reads the flying sand');
+  backend.flying = [packet(0, E.SAND, 1, 1, 1)];
   eq(Number(val('sim.partCount()')), all0 + 1, 'the next command reads the pool fresh');
   // a handler's census: what was read last, refreshed in the background as its blocks are
   const hw = new ScriptWorld(backend, { now });
@@ -200,7 +213,7 @@ eq(parts, Number(val('sim.partCount()')), 'sim.parts() visits every particle');
 }
 {
   // the GPU backend's pool decode (src/shaders/v2/particles.js DParticle): live matter inside the window
-  const { flyingMatterIds } = await import('../src/console/gpu.js');
+  const { flyingMatter } = await import('../src/console/gpu.js');
   const { PARTICLE_BYTES, PHOTON_TAG, NEUTRON_TAG } = await import('../src/v2/dynamics-reference.js');
   const words = PARTICLE_BYTES / 4, pool = new ArrayBuffer(PARTICLE_BYTES * 6), u = new Uint32Array(pool), f = new Float32Array(pool);
   const put = (i, id, element, x, y, z) => { f.set([x, y, z], i * words); u[i * words + 3] = id; u[i * words + 7] = element | (77 << 8); };
@@ -210,7 +223,12 @@ eq(parts, Number(val('sim.partCount()')), 'sim.parts() visits every particle');
   put(3, 7, NEUTRON_TAG, 110.5, 4.2, 9.9);  // a neutron: not matter
   put(4, 8, E.WATER, 99.5, 4.2, 9.9);       // flying outside the window (World retains it)
   put(5, 9, E.OIL, 131.9, 15.5, 31.5);
-  eq(JSON.stringify(flyingMatterIds(pool, [100, 0, 0], SIZE)), JSON.stringify([E.SAND, E.OIL]), 'flyingMatterIds: live matter packets in the window');
+  u[0 * words + 7] = E.SAND | (Math.round((300 + 273.25) * 4) << 8); f[0 * words + 5] = -2 * 240 * 0.3;   // 300 °C, falling 2 cells a V1 step (CELL_M 0.3 m)
+  const found = flyingMatter(pool, [100, 0, 0], SIZE);
+  eq(JSON.stringify(found.map((p) => p.id)), JSON.stringify([E.SAND, E.OIL]), 'flyingMatter: live matter packets in the window');
+  eq(JSON.stringify(found.map((p) => [p.slot, p.x, p.y, p.z])), JSON.stringify([[0, 10, 4, 9], [5, 31, 15, 31]]), '...their slots and grid cells');
+  eq(found[0].temp, 300, '...a packet\'s temperature in °C');
+  ok(Math.abs(found[0].vy + 2) < 1e-6, `...its velocity in cells a V1 step (${found[0].vy})`);
 }
 // more edits than one pass takes
 const many = SIZE[0] * SIZE[1] * SIZE[2];

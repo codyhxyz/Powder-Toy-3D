@@ -33,10 +33,10 @@ import { physicalCtype } from '../appearance.js';
 //                               the fetchA/fetchB layout), or a Promise of one;
 //                               sync may throw an error carrying retry() instead
 //                               (console/gpu.js: the read waits for the GPU). With
-//                               flying, the map's .flying is the element id of each
-//                               piece of matter in flight in the grid, read with
-//                               the blocks (V2's packets: a V1 flying cell is a cell,
-//                               so V1's backend leaves it undefined)
+//                               flying, the map's .flying is each piece of matter in
+//                               flight in the grid, read with the blocks ({ slot, id,
+//                               x, y, z, temp, life, ctype, vx, vy, vz }: V2's packets;
+//                               a V1 flying cell is a cell, so V1's backend leaves it undefined)
 //   applyEdits(chunk)           one pass over a packed chunk (packEdits)
 
 // Edit mask bits (shaders/script.js has the same).
@@ -209,7 +209,7 @@ export class ScriptWorld {
     this.cell = blankCell();
     this.passes = 0;            // GPU passes run (tests, the status line)
     this.onEdit = null;         // called before each edit is queued
-    // the matter in flight beside the grid (readBlocks' .flying): { ids, stamp, readAt, usedAt }
+    // the matter in flight beside the grid (readBlocks' .flying): { list, bySlot, stamp, readAt, usedAt }
     this.flying = null;
     this.flyingWanted = false;  // a handler's census asked for it
   }
@@ -363,13 +363,39 @@ export class ScriptWorld {
     if (!missing.length && !stale) return true;
     const map = this.backend.readBlocks(missing, true, stale);
     this.store(map, now, this.seq);
-    if (stale) this.flying = { ids: map.flying ?? [], stamp: this.stamp, readAt: now, usedAt: now };
+    if (stale) this.flying = this.flyingSnapshot(map.flying, this.stamp, now, now);
     return true;
   }
 
-  // Each piece of matter in flight beside the grid (after readAll with flying): fn(id). V2's
+  // The matter in flight alone, as readAll({ flying }) reads it beside the blocks: a typed command's
+  // read fresh once a command, a handler's what was read last (false until it arrives).
+  readFlying(sync) {
+    this.checkEpoch();
+    const now = this.now();
+    if (!sync) { if (this.flying) this.flying.usedAt = now; else this.flyingWanted = true; return !!this.flying; }
+    if (this.flying?.stamp === this.stamp) { this.flying.usedAt = now; return true; }
+    this.flying = this.flyingSnapshot(this.backend.readBlocks([], true, true).flying, this.stamp, now, now);
+    return true;
+  }
+
+  // Each piece of matter in flight beside the grid (after readAll with flying): fn(id, packet). V2's
   // flying packets; V1's flying matter is cells, which forEachMatter already visits.
-  forEachFlying(fn) { for (const id of this.flying?.ids ?? []) fn(id); }
+  forEachFlying(fn) { for (const p of this.flying?.list ?? []) fn(p.id, p); }
+  // The packets read, in V1's order: a V1 flying cell is the cell it is in, so sim.parts() meets a
+  // packet at its cell's key, after the grid's cell there, packets in one cell by pool slot.
+  flyingSnapshot(packets = [], stamp, readAt, usedAt) {
+    const list = packets.map((p) => ({ ...p, key: this.key(p.x, p.y, p.z) })).sort((a, b) => a.key - b.key || a.slot - b.slot);
+    return { list, bySlot: new Map(list.map((p, i) => [p.slot, i])), stamp, readAt, usedAt };
+  }
+  // The packet at pool slot `slot` in the last read, or null.
+  flyingAt(slot) { const i = this.flying?.bySlot.get(slot); return i === undefined ? null : this.flying.list[i]; }
+  // The first packet after (key, slot) in V1's order (forEachFlying's), or null.
+  flyingAfter(key, slot) {
+    const list = this.flying?.list ?? [];
+    let lo = 0, hi = list.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (list[m].key < key || (list[m].key === key && list[m].slot <= slot)) lo = m + 1; else hi = m; }
+    return list[lo] ?? null;
+  }
 
   // Every cached cell holding matter (after readAll): fn(x, y, z, cell). The
   // queued edits are overlaid.
@@ -423,7 +449,7 @@ export class ScriptWorld {
         if (b && b.wroteSeq > seq) { map.delete(i); b.readAt = 0; }
       }
       this.store(map, this.now(), seq, stamp);
-      if (flying) { const t = this.now(); this.flying = { ids: map.flying ?? [], stamp, readAt: t, usedAt: this.flying?.usedAt ?? t }; }
+      if (flying) { const t = this.now(); this.flying = this.flyingSnapshot(map.flying, stamp, t, this.flying?.usedAt ?? t); }
     }).catch(() => { /* a failed read only leaves the cache as it was */ })
       .finally(() => { this.inflight--; });
   }

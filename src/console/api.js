@@ -68,6 +68,19 @@ export function installBuiltins(host) {
     return w().cellOf(i);
   };
   const xyz = (x, y, z) => [int(x, 'x'), int(y, 'y'), int(z, 'z')];
+  // V2's matter in flight (console/world.js flyingAt): a V1 flying cell is a cell, its index the cell's; a
+  // V2 packet holds no cell, so it takes an index no cell has, the grid's cell count plus its pool slot
+  // (stable while it flies). Its fields as a cell's (console/gpu.js flyingMatter), the air's pressure there.
+  const packetOf = (ctx, i) => {
+    const [nx, ny, nz] = size(), n = nx * ny * nz;
+    if (!Number.isInteger(i) || i < n || !w().readFlying(sync(ctx))) return null;
+    return w().flyingAt(i - n);
+  };
+  const packetField = (ctx, f, key, i) => {
+    const p = [f.x, f.y, f.z];
+    if (key === 'pressure') return w().read(...p, sync(ctx))?.pressure ?? null;
+    return getField(f, key, p, i);
+  };
   // a cell holding matter, or null (air, outside, or not read yet in a handler)
   const matter = (ctx, x, y, z) => {
     const c = w().read(x, y, z, sync(ctx));
@@ -132,7 +145,7 @@ export function installBuiltins(host) {
 
   fn('sim', 'partExists', function (i) {
     const p = pos(i);
-    return !!(p && matter(this, ...p));
+    return !!(p ? matter(this, ...p) : packetOf(this, i));
   }, { args: 'i', doc: 'Is there a particle at index i?' });
 
   fn('sim', 'partID', function (x, y, z) {
@@ -142,6 +155,8 @@ export function installBuiltins(host) {
 
   fn('sim', 'partPosition', function (i) {
     const p = pos(int(i, 'index'));
+    const f = p ? null : packetOf(this, int(i, 'index'));
+    if (f) return multi(f.x, f.y, f.z);
     if (!p || !matter(this, ...p)) return multi(null, null, null);
     return multi(...p);
   }, { args: 'i', doc: 'x, y, z of particle i (cells don\'t move between whole cells, so integers).' });
@@ -154,6 +169,7 @@ export function installBuiltins(host) {
       return null;
     }
     const c = p && matter(this, ...p);
+    if (!p) { const f = packetOf(this, int(i, 'index')); return f ? packetField(this, f, key, int(i, 'index')) : null; }
     return c ? getField(c, key, p, i) : null;
   }, { args: 'i, field[, value]', writes: true,
     doc: 'Gets or sets type, temp, life, ctype, vx, vy, vz or pressure of particle i (nil if there is none).' });
@@ -176,18 +192,24 @@ export function installBuiltins(host) {
   }, { args: 'x, y, z, field[, value]', writes: true,
     doc: 'Like partProperty for any cell, air included (air has a temperature and pressure). Setting type makes a fresh cell.' });
 
-  // the next particle after index i (sim.parts in Lua walks it), or nil
+  // the next particle after index i (sim.parts in Lua walks it), or nil: the grid's cells in key order, and
+  // V2's matter in flight where V1's flying cell would be, at its cell's key after the cell (V1 visits a
+  // flying cell as the cell it is in), so both engines walk the same matter in the same order
   fn('sim', 'partNext', function (i) {
     const [nx, ny, nz] = size();
     const n = nx * ny * nz;
     i = Math.max(-1, int(i ?? -1, 'index'));
-    if (i < 0) w().readAll(sync(this));
-    for (let k = i + 1; k < n; k++) {
+    if (i < 0) w().readAll(sync(this), { flying: true });
+    let key = i, slot = -1;
+    if (i >= n) { const p = w().flyingAt(i - n); if (!p) return null; key = p.key; slot = p.slot; }
+    const packet = w().flyingAfter(key, slot);
+    // a cell before the next packet's, or at it (the cell comes first)
+    for (let k = key + 1, last = packet ? packet.key : n - 1; k <= last; k++) {
       const [x, y, z] = w().cellOf(k);
       const c = w().read(x, y, z, false, false);
       if (c && c.id !== E.EMPTY) return k;
     }
-    return null;
+    return packet ? n + packet.slot : null;
   }, { args: 'i', doc: 'Index of the next particle after i (-1 for the first), or nil. for i in sim.parts() uses it.' });
 
   // The grid's matter and what flies beside it: a V1 flying cell is a cell, a V2 one a packet in
