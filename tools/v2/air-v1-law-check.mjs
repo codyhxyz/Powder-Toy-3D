@@ -154,4 +154,19 @@ for (const sign of [1, -1]) {
   assert.match(nativeWeatherCommitWGSL(g, params, 'material'), /let broke=wPressureBreak\(p,r\);/, 'the weather commit (a bolt) breaks per cell');
   assert.match(nativeForceCommitWGSL(g, params, 'plan'), /let broke=wPressureBreak\(p,r\); if\(broke>=0\) \{ flags=2u/, 'the force commit (a wand, the Pressure tool) plans the fracture');
 }
+// 5. MV-6: couplePlan pushes a loose cell down the pressure gradient by V1's law (react.js forces: a =
+//    -∇P·P_ACCEL/ρ, ρ = max(dens·RHO_SCALE, RHO_MIN), its drag), at V1's chance of moving, not only past
+//    the wind's lift.
+{
+  const { blastsWGSL } = await import('../../src/shaders/v2/blasts.js');
+  const { nativeDynamicsHead } = await import('../../src/shaders/v2.js');
+  const { gridLayout } = await import('../../src/sim.js');
+  const plan = blastsWGSL(gridLayout(16, 16, 16), nativeDynamicsHead, 'couplePlan'), sand = ELEMENTS[E.SAND];
+  const row = `case ${E.SAND}u: { return vec2f(${Math.max(sand.dens * PHYS.RHO_SCALE, PHYS.RHO_MIN)},${sand.drag}); }`;
+  assert.ok(plan.includes(row), 'sand pushed at V1\'s ρ and drag');
+  assert.match(plan, /let push=dV1Push\(p,id\); if \(any\(push!=vec3f\(0\)\)\) \{ plan\.flags=1u; plan\.velocity=push; \}/, 'loose cells take V1\'s push');
+  // a held Pressure brush's edge (case 2: ~4 V1 units a cell) moves sand at V1's speed, well under V_MAX
+  const a = 4 / 2 * 2 * PHYS.P_ACCEL / Math.max(sand.dens * PHYS.RHO_SCALE, PHYS.RHO_MIN), v = Math.min(PHYS.V_MAX, a * (1 - sand.drag) / sand.drag);
+  assert.ok(v > 0.1 && v <= PHYS.V_MAX, `sand at a held brush's edge moves (${v.toFixed(2)} cells/step)`);
+}
 console.log('air V1 law CPU: sealed and open blast decay, held Pressure and Vacuum, wind draft drag match V1 react.js (no GPU)');
