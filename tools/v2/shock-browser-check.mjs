@@ -17,9 +17,9 @@ import { launchBrowser } from '../browser.mjs';
 import { startVite } from '../vite-server.mjs';
 import { openHarness } from '../harness/open.mjs';
 
-// V1 on the same scenes (--v1, Apple M-series, 2026-10-22). Nitroglycerin: poured gently and dropped 2.4 m it
-// rests; dropped 4.8 m it goes off as it lands, its chain taking both resting blocks 15 cells away (none of
-// the three left 1.5 s on); dropped 12.6 m, alone by then, it goes off and none is left 2 s on.
+// What V1 leaves of the nitroglycerin, without --v1: V1's rules (its own fall, 3.0 m; its front, 15 cells in a
+// chain) say none, as V1 measured on the scene before these (--v1, 2026-10-22: its 4.8 m drop took the resting
+// block 15 cells away, 96 → 0, and its 12.6 m drop went 48 → 0).
 const V1_LEFT = { short: 0, high: 0 };
 // V2's amounts are f32 fills and packets, V1's whole cells: what V2 may leave over V1's (cells)
 const V1_MATCH_CELLS = 1;
