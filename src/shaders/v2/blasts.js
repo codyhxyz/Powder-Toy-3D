@@ -926,6 +926,11 @@ var<workgroup> wgNear: u32;
     }
     plans[t] = plan;
   `);
+  // T8, the body's push on loose matter (couplePlan's body leg, P.mode 13): outward in XZ from the body's
+  // centre plus a lift in Y (P.bodyLift).
+  // Intentional (decided under the user's delegation, 2026-10-22): V2 pushes outward XZ plus lift Y; V1's
+  // xz→xy swizzle was a bug (shaders/povBody.js povCouplingWGSL at the v1-oracle tag: vec3f(out2 + ahead, lift),
+  // the XZ push landing in X and Y and the lift in Z), so it isn't matched.
   if (stage === 'bodyPlan') return h + main64(`
     if(t>=D_SLOTS) { return; }var plan=DPlan(vec3f(0),0u);let p=cellOf(t);
     let m=loadMaterial(t);let id=cid(m.core);let k=cls(id);
