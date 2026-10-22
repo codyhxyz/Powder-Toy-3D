@@ -53,8 +53,8 @@
 //              contact.js DUST_MIN_FALL_SPEED a tick) with DUST_MEC_NB dust faces and DUST_RICH_AIR air
 //              faces goes off as one when lit (its own heat, matter at its ignition point beside it, or
 //              a flame beside it or around it: DUST_FIRE, every step), as grid dust does (contact.js);
-//              its air faces are its six contacts' (the host in the face behind it), as its own step
-//              counts them (ctStepAtmosphere fullAir)
+//              its air faces are the air cells among its six contacts (the host in the face behind it),
+//              its partners and its outside word's (contact.js CT_OUT_EMPTY)
 // Anything that cannot be represented leaves the packet and every cell exactly as they were for
 // the next tick.
 //
@@ -68,9 +68,9 @@
 // across a looped edge too (every side is a multiple of 4: shaders/common.js gridDims).
 import { E, ELEMENTS, K } from '../elements.js';
 import { AIR_CAPACITY_Q, makeMaterial, cTq, cid, energyOf, withEnergy, energyFits, withPacketEnergy, packetEnergyFits } from './layout.js';
-import { unpackContact, packContact, ctNew, ctFlux, ctHeat, ctReaction, ctAcid, ctSwallow, ctStepAtmosphere, ctElecAirborne, ctPacketTouch,
-  ctResolvePhase, ctLick, ctHotFuel, ctSmothered, ctRow, ctConducts, ctHeatRoom, ctAmbient, ctPairValue,
-  contactAmbientQ, CONTACT_DEFAULT_MODES, DUST_MIN_FALL_SPEED, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR, CONTACT_PUFF_UNIT } from './contact.js';
+import { unpackContact, packContact, ctNew, ctFlux, ctHeat, ctReaction, ctAcidFizz, ctSwallow, ctStepAtmosphere, ctElecAirborne, ctPacketTouch,
+  ctResolvePhase, ctLick, ctHotFuel, ctSmothered, ctRow, ctConducts, ctHeatRoom, ctAmbient, ctPairValue, ctStormCharge, contactOutsideWord,
+  contactAmbientQ, CONTACT_DEFAULT_MODES, DUST_MIN_FALL_SPEED, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR, CONTACT_PUFF_UNIT, CONTACT_CONSTANTS } from './contact.js';
 import { PHYS } from '../physics.js';
 import { dynamicsRows } from './dynamics-reference.js';
 
@@ -135,10 +135,11 @@ const C_AIR = K.EMPTY, C_GAS = K.GAS;
 // V1 react.js lights a dust cloud beside a flame with chance DUST_FIRE a step: every step, so every tick.
 if (PHYS.DUST_FIRE !== 1) throw new Error('airborne.js: a flame beside a dust cloud lights it every tick only while DUST_FIRE is 1');
 /** What sets a flying packet off besides its own rules (particles.js react): none by default. */
-export const AIRBORNE_NO_CHARGE = Object.freeze({ setOff: false, speed: 0, dust: 0, fire: 0, hot: 0, pressure: 0 });
+export const AIRBORNE_NO_CHARGE = Object.freeze({ setOff: false, speed: 0, dust: 0, fire: 0, hot: 0, pressure: 0, velocity: Object.freeze([0, 0, 0]) });
 // setOff: a hit set it off (particles.js dShockHit); speed: |v| in cells a tick; dust: its dust faces
 // (particles.js dDustFaces); fire, hot: its flame faces and hot faces (dustFacesOf); pressure: the highest
-// air pressure on it (Pa, f32: particles.js react reads it for a charge with a crushP, blasts.js dPressureOn)
+// air pressure on it (Pa, f32: particles.js react reads it for a charge with a crushP, blasts.js dPressureOn);
+// velocity: its own in cells a tick (x y z), for flying snow closing on a cloud beside it (ctStormCharge)
 /** V1 react.js setOff by pressure: a charge with a crushP (elements.js blast.crushP; dynamics-reference.js
  * crush, Pa) under more than it. In f32, as the react stage compares them (particles.js dCrush). */
 export const crushedBy = (id, pressure) => dynamicsRows[id].crush > 0 && Math.fround(pressure) > Math.fround(dynamicsRows[id].crush);
@@ -196,7 +197,7 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
   // to its neighbours (react.js nFire, hotTouch), for their own steps after it (contact.js ctPacketTouch;
   // particles.js react marks each, the block pass and the electric pass read them)
   const v0 = unpackContact(packet.core, packet.bank), hostFire = +((host.core[0] & 255) === E.FIRE);
-  const touch = FACE6.map((_, f) => (f === trailing || !faces[f] ? 0 : ctPacketTouch(v0, faces[f].core[0] & 255, hostFire, 1 << (f >> 1), +(inBlock[f >> 1] === f))));
+  const touch = FACE6.map((_, f) => (f === trailing || !faces[f] ? 0 : ctPacketTouch(v0, faces[f].core[0] & 255, hostFire, +(inBlock[f >> 1] === f))));
   const refused = { state: AIRBORNE.REFUSED, particle: packet, host, faces, source: 0n, sink: 0n, requests: 0, touch };
   const carrier0 = BigInt(AIR_CAPACITY_Q) * BigInt(cTq(packet.core));
   try {
@@ -205,7 +206,8 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
     const ps = inBlock.map(f => (f === trailing ? unpackContact(host.core, host.bank) : faces[f] ? unpackContact(faces[f].core, faces[f].bank) : null));
     const ambientQ = contactAmbientQ(modes.ambient), airHeat = +!!modes.ambientHeat;
     // (its outside, frozen before any pair runs, as the support pass freezes a cell's)
-    const outside = outsideOf(inBlock.map(f => (f ^ 1) === trailing ? host.core : faces[f ^ 1]?.core));
+    const outCores = inBlock.map(f => (f ^ 1) === trailing ? host.core : faces[f ^ 1]?.core);
+    const outside = outsideOf(outCores), outFaces = contactOutsideWord(outCores);
     for (let a = 0; a < 3; a++) {
       let b = ps[a]; if (!b) continue;
       const s = seed ^ (AIRBORNE.PAIR_SALT << a);
@@ -213,8 +215,8 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
       if (flux !== 0) flux = -ctHeatRoom(b, -ctHeatRoom(v, flux));
       if (flux !== 0) { v = ctHeat(v, flux); b = ctHeat(b, -flux); v.busy = 1; b.busy = 1; }
       let pair = ctReaction(v, b, s);
-      if (!pair.changed) pair = ctAcid(pair.a, pair.b, s);
-      if (!pair.changed) { const rev = ctAcid(pair.b, pair.a, s); pair = ctPairValue(rev.b, rev.a, rev.changed); }
+      if (!pair.changed) pair = ctAcidFizz(pair.a, pair.b, s);
+      if (!pair.changed) { const rev = ctAcidFizz(pair.b, pair.a, s); pair = ctPairValue(rev.b, rev.a, rev.changed); }
       if (!pair.changed) pair = ctSwallow(pair.a, pair.b, s);
       if (!pair.changed) { const rev = ctSwallow(pair.b, pair.a, s); pair = ctPairValue(rev.b, rev.a, rev.changed); }
       v = pair.a; ps[a] = pair.b;
@@ -231,8 +233,17 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
     });
     v = ctElecAirborne(v, contacts, seed);
     const ns = ps.map(b => (b ? { ...b } : none));
-    // (no clone share: a packet is never the air a clone fills)
-    v = ctStepAtmosphere(v, ns, seed, ...outside, onFloor, ambientQ, 0, 0);
+    // (no clone share and no snow above: a packet is never the air a clone fills, nor a cloud it charges)
+    v = ctStepAtmosphere(v, ns, seed, ...outside, onFloor, ambientQ, 0, 0, outFaces);
+    // flying snow closing on a cloud partner charges it (V1 react.js closing: its speed onto that face)
+    if (v.id === E.SNOW) {
+      for (let a = 0; a < 3; a++) {
+        if (!ps[a] || ps[a].id !== E.CLOUD) continue;
+        const d = FACE6[inBlock[a]], u = charge.velocity ?? AIRBORNE_NO_CHARGE.velocity;
+        const closing = Math.fround(Math.fround(Math.fround(u[0] * d[0]) + Math.fround(u[1] * d[1])) + Math.fround(u[2] * d[2]));
+        ps[a] = ctStormCharge(ps[a], closing, seed ^ (AIRBORNE.PAIR_SALT << a));
+      }
+    }
     for (let a = 0; a < 3; a++) {
       if (!ps[a]) continue;
       let pair = ctResolvePhase(v, ps[a]);
@@ -258,12 +269,12 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
     });
     const hostId = cid(hm.core);
     // still the charge it was: set off by a hit or by the pressure on it, or a dust cloud lit, with the
-    // air among its six contacts as its own step counted it (ctStepAtmosphere fullAir: its partners then,
-    // its outside)
+    // air among its six contacts (its partners then, its outside)
     const charge0 = packet.core[0] & 255;
     if (v.id === charge0 && ctRow(v.id).blast !== 0 && (charge.setOff || crushedBy(v.id, charge.pressure ?? 0))) v.request = v.request | 1;
-    const air = outside[0] + ns.filter(b => b.valid !== 0 && (b.id === E.EMPTY || (b.id === E.FIRE && b.ctype !== E.OXYGEN))).length;
-    if (v.id === E.DUST && charge0 === E.DUST && charge.speed >= DUST_MIN_FALL_SPEED && charge.dust >= CONTACT_DUST_MEC_NB &&
+    // (V1 react.js dust clouds' nAir: air cells among its six faces)
+    const air = Math.floor(outFaces / CONTACT_CONSTANTS.CT_OUT_EMPTY[1]) % 4 + ns.filter(b => b.valid !== 0 && b.id === E.EMPTY).length;
+    if (v.id === E.DUST && charge0 === E.DUST && charge.speed > DUST_MIN_FALL_SPEED && charge.dust >= CONTACT_DUST_MEC_NB &&
       air >= CONTACT_DUST_RICH_AIR && (v.tq >= ctRow(E.DUST).igniteQ || charge.hot > 0 || charge.fire > 0 || hostId === E.FIRE)) v.request = v.request | 1;
     asked |= v.request & AIRBORNE_LANDED_REQUESTS;
     // a puff rides with its GAS request (bit 1, posted flying or landed): V1's pressure from gas a

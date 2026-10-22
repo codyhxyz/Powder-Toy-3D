@@ -15,7 +15,7 @@ import { MODE_FIELDS } from '../v2/modes.js';
 import { modeWGSL } from './v2/modes.js';
 import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
-import { contactWGSL as productionContactWGSL, requestMergeWGSL } from './v2/contact.js';
+import { contactWGSL as productionContactWGSL, requestMergeWGSL, outsideFacesWGSL } from './v2/contact.js';
 import { v2RunsKernel, v2PairsKernel, COLUMN } from './v2/columns.js';
 import { PARTICLE_CAP, SHOCK_LANDINGS } from '../v2/dynamics-reference.js';
 
@@ -93,7 +93,9 @@ const YIELD = { MUD: 0.4, LAVA: 0.3, SLIME: 0.25 };
 // Gases that fade (R4, R8): life spent in this many seconds. FIRE lives ~0.5-1 s (R8; TPT's FIRE 120-169
 // frames at 60 fps is 2-3 s, faster here so a flame doesn't outlast its fuel, which this version doesn't
 // burn); smoke thins away; steam stands in for condensing (no heat yet). The rest persist and come to rest.
-const FADE_S = { FIRE: 0.75, PLASMA: 0.5, SMOKE: 6, STEAM: 10, CAUSTIC_GAS: 10 };
+// Only the import reads it now (a fading gas comes in with life): contact owns the lives (v2/contact.js), and
+// plasma has none in V1 (react.js: it leaves only by cooling), so it isn't one.
+const FADE_S = { FIRE: 0.75, SMOKE: 6, STEAM: 10, CAUSTIC_GAS: 10 };
 
 /** The v2 row of every element: { cls, drop, vt (cells/tick), dens, yieldHead, damp, fade (life a tick) }. */
 export function v2Rows() {
@@ -774,7 +776,7 @@ ${MAIN} {
 // pass reads the cells under a block from this snapshot, never from a block another thread is moving)
 export const v2SupportWGSL = (g) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
-var<workgroup> wgN: u32;
+${outsideFacesWGSL}var<workgroup> wgN: u32;
 var<workgroup> occW: array<atomic<u32>, 2>;
 var<workgroup> wgFirst: u32;
 var<workgroup> wgMixed: atomic<u32>;
@@ -806,10 +808,12 @@ ${MAIN} {
   let local=vec3i(i32(i&1u),i32(i>>2u),i32((i>>1u)&1u));
   let p=mEdge(c0+local);
   if (!inGrid(p)) { return; }
-  var air=0u; var oxygen=0u; var co2=0u; var gas=0u; var clone=0u;
+  var air=0u; var oxygen=0u; var co2=0u; var gas=0u; var clone=0u; var faces=0u;
   for(var axis=0;axis<3;axis++) {
     let sign=select(-1,1,local[axis]!=0);
-    let n=cellAt(mEdge(p+axisV(axis)*sign)); let id=cid(n); let kind=clsOf(n);
+    let q=mEdge(p+axisV(axis)*sign); let n=cellAt(q); let id=cid(n); let kind=clsOf(n);
+    // the rest V1 react.js reads on all six faces (contact.js CT_OUT_*: surface, flames, air, cloud, dust, damp, moss site)
+    faces=ctOutsideFace(faces,n,inGrid(q),u32(axis));
     // V1 react.js: a flame is burning air to a fuel (oxygen when it burns in it).
     if(id==${E.EMPTY}u || (id==${E.FIRE}u && ctypeOf(n)!=${E.OXYGEN}u)){air++;}
     if(id==${E.OXYGEN}u || (id==${E.FIRE}u && ctypeOf(n)==${E.OXYGEN}u)){oxygen++;}
@@ -823,6 +827,9 @@ ${MAIN} {
   // or gather. Sleeping faces are rejected before reading limiter bits.
   let s=slotOf(p);
   liquidScratch[s].x=(liquidScratch[s].x&0xfffffc00u)|air|(oxygen<<2u)|(co2<<4u)|(gas<<6u)|(clone<<8u);
+  // The outside word in .y, whole: like the low bits above, no consumer reads .y between here and the block
+  // pass, and the runs rebuild their records (and the radial demand words) from the cells after it.
+  liquidScratch[s].y=faces;
 }
 `;
 
@@ -1042,8 +1049,9 @@ ${MAIN} {
   if (P.edge==1u && mAirHeat()) {
     for (var i=0u;i<blockCount;i++) {
       let p=positions[i]; if (!inGrid(p)) { continue; }
-      // R5 exposed sides and top, never the floor, solid walls or loop seams.
-      let open=u32(p.x==0)+u32(p.x==NX-1)+u32(p.z==0)+u32(p.z==NZ-1)+u32(p.y==NY-1);
+      // R5 faces past the void edge, the floor's too (V1 react.js VOID_AIR_A: every face beyond the grid);
+      // never solid walls or loop seams (P.edge 1 only).
+      let open=u32(p.x==0)+u32(p.x==NX-1)+u32(p.z==0)+u32(p.z==NZ-1)+u32(p.y==0)+u32(p.y==NY-1);
       if (open!=0u) {
         let m=contactBoundary(Material(cs[i],bs[i]),open,u32(clamp(round((P.ambient+273.25)*4.0),0.0,65535.0)),p);
         cs[i]=m.core; bs[i]=m.bank;
