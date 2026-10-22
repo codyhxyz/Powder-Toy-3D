@@ -1,6 +1,7 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
 import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase, shockPostBase, setOffBase, crushWGSL, pressureCellWGSL, pressureOnWGSL } from './particles.js';
-import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA, V1_FRONT, frontPerRootJ, BLAST_FRONT_FLOOR_PA, BLAST_CHAIN_STEPS, v1BlastReach, v1FlameChainOdds, RAY_PHOTON_MS, RAY_NEUTRON_FAST_MS } from '../../v2/dynamics-reference.js';
+import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA, V1_FRONT, frontPerRootJ, BLAST_FRONT_FLOOR_PA, BLAST_CHAIN_STEPS, v1BlastReach, v1FlameChainOdds, RAY_PHOTON_MS, RAY_NEUTRON_FAST_MS, PACKET_KEEP, packetFlight } from '../../v2/dynamics-reference.js';
+import { STEP_S } from '../../v2/gravity.js';
 import { E, ELEMENTS, K } from '../../elements.js';
 import { LEGACY_STEPS_PER_TICK, LEGACY_STEP_HZ } from '../../v2/host.js';
 import { RAYS } from '../../rays.js';
@@ -105,31 +106,30 @@ const D_LAUNCH_COUNTS: u32 = ${L.counts}u;
 // floor (V1's chance rounding) just under one tick's fall from rest above it: it slides one tick at
 // the deck's speed and lands back on the deck where the next pass carries it on. Off a deck's end
 // nothing is under it, and it flies on at that speed.
-// The tick's fall is the integrate's (particles.js: the pull, then implicit quadratic drag on the whole
-// relative velocity, relative/(1 + drag·|relative|·DT)), so a carry's own speed takes from its fall too: the
-// drop of a tick from rest at speed v is the free fall's over 1 + drag·|v - g·DT|·DT. Started under one
-// tick's free fall, any carry past ~16 m/s landed a tick late and its deck kicked it every other tick.
-const SLIDE_CONTACT = 0.98;          // of one tick's fall: the landing comes inside the tick
+// The tick's fall is the packet flight's (particles.js dPacketFlight, dynamics-reference.js packetFlight: V1's
+// steps, each moving it pace(|u|) = |u|/(2-|u|), then adding the pull and taking its drag), so from rest a grain
+// falls only a share of a free fall's tick: started under the free fall, a slide landed ticks late and its deck
+// kicked it every second or third tick (half V1's belt speed on the GPU). Each axis keeps its own steps, so a
+// carry's speed doesn't change its fall: the start is SLIDE_CONTACT of that tick's fall, the landing comes at
+// SLIDE_CONTACT of the tick (the sweep is straight), and the next tick's pass kicks it again.
+export const SLIDE_CONTACT = 0.98;   // of one tick's fall: the landing comes inside the tick
 const SLIDE_SALT = 0x534c4944;       // 'SLID': the contact point's own random stream
-// the cells a packet of terminal speed vt falls in its first tick from rest while moving at velocity v (m/s)
-export function slideTickFall(vt, v, gravity = GRAVITY) {
-  const rel = [v[0], v[1] - gravity * DT, v[2]], drag = GRAVITY / (vt * (vt + GRAVITY * DT));
-  return 0.5 * gravity * DT * DT / CELL_M / (1 + drag * Math.hypot(...rel) * DT);
-}
-export const slideLift = (vt, v, gravity = GRAVITY) => SLIDE_CONTACT * slideTickFall(vt, v, gravity);
-const slideTerminal = () => {
+// the cells a packet of id falls in its first tick from rest (V1's steps at pull m/s²)
+export const slideTickFall = (id, gravity = GRAVITY) => -packetFlight(id, [0, 0, 0], [0, -gravity, 0]).moved[1];
+export const slideLift = (id, gravity = GRAVITY) => SLIDE_CONTACT * slideTickFall(id, gravity);
+const slideKeep = () => {
   const by = new Map();
-  for (const r of dynamicsRows) if (r.kind === K.POWDER) by.set(r.terminal, [...(by.get(r.terminal) ?? []), r.id]);
-  return `fn dSlideTerminal(id: u32) -> f32 { switch id { ${[...by].map(([v, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(v)}; }`).join(' ')} default: { return ${f(PHYS.V_MAX * LEGACY_STEP_HZ * CELL_M)}; } } }`;
+  for (const e of ELEMENTS) if (e?.kind === K.POWDER && PACKET_KEEP[e.id] !== 1) by.set(PACKET_KEEP[e.id], [...(by.get(PACKET_KEEP[e.id]) ?? []), e.id]);
+  return `fn dSlideKeep(id: u32) -> f32 { switch id { ${[...by].map(([k, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(k)}; }`).join(' ')} default: { return 1.0; } } }`;
 };
 const slideWGSL = () => /* wgsl */ `
-${slideTerminal()}
-fn dSlideStart(slot: u32, id: u32, velocity: vec3f) -> vec3f {
+${slideKeep()}
+fn dSlideStart(slot: u32, id: u32) -> vec3f {
   let p=cellOf(slot); let seed=dId(p,${SLIDE_SALT}u);
-  let vt=dSlideTerminal(id); let drag=${f(GRAVITY)}/(vt*(vt+${f(GRAVITY * DT)}));
-  let relative=velocity-vec3f(0.0,P.gravity*${f(DT)},0.0);
-  let lift=${f(SLIDE_CONTACT * 0.5 * DT * DT / CELL_M)}*P.gravity/(1.0+drag*length(relative)*${f(DT)});
-  return vec3f(p+P.origin)+vec3f(dRandom(seed,1u),lift,dRandom(seed,2u));
+  // packetFlight's first tick from rest along the pull: V1's steps (pace, then the pull and the drag)
+  let g=P.gravity*${f(STEP_S * STEP_S / CELL_M)}; let keep=dSlideKeep(id); var u=0.0; var fall=0.0;
+  for (var k=0u;k<${LEGACY_STEPS_PER_TICK}u;k++) { let a=min(u,${f(PHYS.V_MAX)}); fall+=a/(2.0-a); u=min((u+g)*keep,${f(PHYS.V_MAX)}); }
+  return vec3f(p+P.origin)+vec3f(dRandom(seed,1u),${f(SLIDE_CONTACT)}*fall,dRandom(seed,2u));
 }
 `;
 // windList's group words, for the two stages that write and read them (air.js windList, count here).
@@ -1226,7 +1226,7 @@ var<workgroup> childCounts: array<u32,64>;
         // (a cell launched whole leaves air, which holds no decoration: shaders/move.js)
         if (dSpawn(t,rank,packet,plan.velocity+incoming,P.sequence ^ 0x53504157u)) {
           after=remainder; if (cid(after.core)==0u) { setDeco(t,0u); }
-          if (forcing && (plan.flags&${PLAN.SLIDE}u)!=0u && P.gravMode==0u) { particles[atomicLoad(&control[D_FREE+rank])].position=dSlideStart(t,cid(packet.core),plan.velocity+incoming); }
+          if (forcing && (plan.flags&${PLAN.SLIDE}u)!=0u && P.gravMode==0u) { particles[atomicLoad(&control[D_FREE+rank])].position=dSlideStart(t,cid(packet.core)); }
         }
         else { atomicAdd(&control[7],1u); if(forcing) { dWake(cellOf(t)); return; } } // authoritative grid fallback, never erase a failed launch
       }

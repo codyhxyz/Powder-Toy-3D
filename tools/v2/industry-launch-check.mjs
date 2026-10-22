@@ -11,6 +11,7 @@ import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { PARTICLE_CAP as CAP, GRAVITY, DT, CELL_M } from '../../src/v2/dynamics-reference.js';
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT } from '../../src/shaders/v2.js';
 import { cellSlot } from '../../src/shaders/common.js';
+import { E } from '../../src/elements.js';
 import { ALLOCATION_STAGES, LIST_ARGS, LAUNCH_MODE, PLAN, launchControl, listControl, controlBufferWords, blastsWGSL, listsStageWGSL, slideLift, slideTickFall,
   SPAWN_PREFIX } from '../../src/shaders/v2/blasts.js';
 import { assertNaga } from './wgsl-grouping.mjs';
@@ -125,15 +126,12 @@ test('ranks cover exactly the batch\'s plans: stale plans outside are never laun
 
 test('a deck\'s carry leaves from its contact: one tick\'s slide, then it lands on the deck', () => {
   const g = gridLayout(64, 32, 64), apply = blastsWGSL(g, nativeDynamicsHead, 'apply');
-  assert(apply.includes(`if (forcing && (plan.flags&${PLAN.SLIDE}u)!=0u && P.gravMode==0u) { particles[atomicLoad(&control[D_FREE+rank])].position=dSlideStart(t,cid(packet.core),plan.velocity+incoming); }`));
-  assert(apply.includes('*P.gravity/(1.0+drag*length(relative)*'), 'the contact height is a share of its own tick\'s fall: the pull, less the drag at its speed');
-  // the tick's fall at a belt's 43 m/s (particles.js integrate's drag on the whole velocity)
-  const vt = 72, v = [0, 0, 43.2], fall = slideTickFall(vt, v), h = slideLift(vt, v);
+  assert(apply.includes(`if (forcing && (plan.flags&${PLAN.SLIDE}u)!=0u && P.gravMode==0u) { particles[atomicLoad(&control[D_FREE+rank])].position=dSlideStart(t,cid(packet.core)); }`));
+  assert(apply.includes('fall+=a/(2.0-a); u=min((u+g)*keep,'), 'the contact height is a share of its own tick\'s fall on V1\'s steps');
+  const fall = slideTickFall(E.NUGGETS), h = slideLift(E.NUGGETS);
   assert(h > 0 && h < fall, 'under its tick\'s fall: the landing comes inside the tick');
-  // red: under one tick's free fall (the old start) it lands a tick late, and its deck kicks it every other tick
-  assert(0.98 * 0.5 * GRAVITY * DT * DT / CELL_M > fall, 'a free fall\'s start is past a fast carry\'s tick');
-  const crossing = Math.sqrt(h / fall);
-  assert(crossing > 0.98, `it slides ${(crossing * 100).toFixed(1)}% of a tick at the deck's speed`);
-  assert(apply.includes('return vec3f(p+P.origin)+vec3f(dRandom(seed,1u),lift,dRandom(seed,2u));'), 'a uniformly random point of its floor: V1\'s chance rounding of a fraction of a cell');
+  // red: under one tick's free fall (the old start) it lands ticks late, and its deck kicks it every second or third tick
+  assert(0.98 * 0.5 * GRAVITY * DT * DT / CELL_M > 2 * fall, 'a free fall\'s start is past two of its ticks');
+  assert(apply.includes('return vec3f(p+P.origin)+vec3f(dRandom(seed,1u),'), 'a uniformly random point of its floor: V1\'s chance rounding of a fraction of a cell');
   assert(SPAWN_PREFIX > 0 && CAP > 0);
 });
