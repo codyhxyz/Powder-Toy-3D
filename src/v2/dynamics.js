@@ -138,15 +138,16 @@ export class NativeDynamics {
     };
     const lists=bg(L.lists,[this.control,this.dispatchArgs],'native list args'); this.groups.lists=[lists,lists];
     this.kernels={};
-    for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES],['lists',(g,_head,name)=>listsStageWGSL(g,name),LISTS_STAGES]]) {
-      for (const stage of stages) {
-        const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','externalBegin','externalGate','pick','normalizeCharges','finishCharges','launchMark','launchPrefix'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage)) || family==='lists';
-        const name=`v2${family}_${stage}`;
-        // Built behind the grid's kernels, which the first frame waits for (physics.js dynamicsReady);
-        // the longest of them (DYNAMICS_LONG_POLES) first, so the dynamics are ready as soon as they can be.
-        this.kernels[`${family}/${stage}`]=gpu.kernel({name,build:'idle',first:DYNAMICS_LONG_POLES.has(name),code:generate(g,owner.nativeDynamics.head,stage),
-          params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
-      }
+    const specs=[];
+    for (const [family,generate,stages] of [['particles',particlesWGSL,PARTICLE_STAGES],['blasts',blastsWGSL,BLAST_STAGES],['air',airWGSL,AIR_STAGES],['lists',(g,_head,name)=>listsStageWGSL(g,name),LISTS_STAGES]])
+      for (const stage of stages) specs.push({family,generate,stage,name:`v2${family}_${stage}`});
+    // Built behind the grid's kernels, which the first frame waits for (physics.js dynamicsReady); the
+    // longest of them (DYNAMICS_LONG_POLES) made first, so its idle build is the first to start.
+    specs.sort((a,b)=>DYNAMICS_LONG_POLES.has(b.name)-DYNAMICS_LONG_POLES.has(a.name));
+    for (const {family,generate,stage,name} of specs) {
+      const single=(family==='blasts' && ['reset','normalize','allocate','freeScan','finish','rayEmit','externalBegin','externalGate','pick','normalizeCharges','finishCharges','launchMark','launchPrefix'].includes(stage)) || (family==='particles' && ['clear','holdCOM'].includes(stage)) || family==='lists';
+      this.kernels[`${family}/${stage}`]=gpu.kernel({name,build:'idle',first:DYNAMICS_LONG_POLES.has(name),code:generate(g,owner.nativeDynamics.head,stage),
+        params:DynamicParams,workgroupSize:single?[1,1,1]:[64,1,1],layouts:[owner.nativeDynamics.layout,L[family]]});
     }
     this.ready=Promise.all(Object.values(this.kernels).map(k=>k.ready)).then(()=>{ if(!this.disposed) this.isReady=true; return this; });
     this.ready.catch(()=>{});
