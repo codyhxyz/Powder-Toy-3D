@@ -10,8 +10,9 @@ import {AIRBORNE} from '../../src/v2/airborne.js';
 import {nativeDynamicsHead} from '../../src/shaders/v2.js';
 import {E,ELEMENTS,R} from '../../src/elements.js';
 import {RAYS} from '../../src/rays.js';
+import {V1_STEP_MS,STEP_S} from '../../src/v2/gravity.js';
 import * as L from '../../src/v2/layout.js';
-import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact} from '../../src/v2/dynamics-reference.js';
+import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS,impact,PACKET_KEEP,packetStep} from '../../src/v2/dynamics-reference.js';
 import { importMinified } from './wgsl-grouping.mjs';
 const floatBits=v=>{const b=new ArrayBuffer(4);new Float32Array(b)[0]=v;return new Uint32Array(b)[0];};
 const close=(a,b,e,what)=>assert.ok(Math.abs(a-b)<=e,`${what??""}: ${a} vs ${b}`);
@@ -48,7 +49,7 @@ function syntax(s){for(const [a,b] of [
 ['(after - v) / D_DT','mul(sub(after,v),1/D_DT)'],
 ['v - wind','sub(v,wind)'],
 ['wind + relative / (1.0 + drag * length(relative) * D_DT)','add(wind,mul(relative,1/(1+drag*length(relative)*D_DT)))'],
-['local + (v * dt + 0.5 * acceleration * dt * dt) / D_CELL','add(local,mul(add(mul(v,dt),mul(acceleration,0.5*dt*dt)),1/D_CELL))'],
+['v * D_RAY_DT / D_CELL','mul(v, D_RAY_DT / D_CELL)'],['local + travel','add(local, travel)'],['(flown.velocity - v) / D_DT','mul(sub(flown.velocity, v), 1/D_DT)'],
 ['v + acceleration * D_DT','add(v,mul(acceleration,D_DT))'],
 ['end - local','sub(end,local)'],
 ['var cell = startCell; var previous = startCell','var cell = [...startCell]; var previous = [...startCell]'],
@@ -113,6 +114,8 @@ function fixture({mode=0, edge=0, windowed=false,
     D_REACT_KIND:AIRBORNE.KIND,D_REACT_SALT:AIRBORNE.SALT,
     C_AIR:0,C_SOLID:1,C_POWDER:2,C_LIQUID:3,C_GAS:4,
     D_G:GRAVITY,D_DT:DT,D_RAY_DT:Math.fround(DT/4),D_RAYS:31,D_PHOTON_HEAT:RAYS.PHOTON_HEAT/3,D_PHOTON_E_MIN:RAYS.PHOTON_E_MIN,D_PHOTON_CELLS:7,
+    DPacketFlight:(cells,velocity)=>({cells:[...cells],velocity:[...velocity]}),dKeep:id=>PACKET_KEEP[id],
+    D_V1_STEP:Math.fround(1/V1_STEP_MS),D_PULL_STEP:Math.fround(STEP_S*STEP_S/CELL_M),D_STEPS:4,
     DPhotonStep:(light,heat,cell,travelled,flip,gone)=>({light:[...light],heat,cell,travelled,flip,gone}),round:Math.round,clamp:(x,a,b)=>Math.min(Math.max(x,a),b),
     exp:Math.exp,log:Math.log,mix:(a,b,t)=>a+(b-a)*t,bitsFloat,dPhotonEnergy:p=>Array.from(p.tail).slice(0,3).map(bitsFloat),
     // particles.js dOptical, the renderer's sigma and an opaque element's reflectance
@@ -174,7 +177,7 @@ function fixture({mode=0, edge=0, windowed=false,
 ['dShockHit',['t','s','p','hit','axis']],
 ['dDustFaces',['s']],
 ['dShockWall',['t','pid','u','landing','particleId']],
-['dPhotonStep',['local','delta','light0']],['dPhotonMoved',['p','light','travelled','flip']],['dPhotonIntegrate',['t','particle0','local']],['dAddHeat',['m','heat']],
+['dPhotonStep',['local','delta','light0']],['dPacketFlight',['v0','wind','pull','keep','paced']],['dPhotonMoved',['p','light','travelled','flip']],['dPhotonIntegrate',['t','particle0','local']],['dAddHeat',['m','heat']],
   ])ctx[name]=compile(ctx,S.integrate,name,args);
   const stages=Object.fromEntries(Object.entries(S).map(([s,c])=>[s,compile(ctx,c,'main',['t'])]));
   return {ctx,world,particles,claims,flight,stages,set:(p,m)=>world.set(slotOf(p),copy(m)),
@@ -508,6 +511,18 @@ test('a ray leaving the box is gone, past a loop edge too (EL-5)',()=>{
   raySteps(neutron,1);assert.equal(neutron.particles[0].id,0,'a neutron too');
 });
 
+// V1's fall (react.js forces: a fixed drag a step; move.js: a grain's Margolus lag, a liquid's R3 draws), a V1 step at a
+// time (dPacketFlight): the emitted stage lands a packet at the tick its twin does (dynamics-reference.js packetStep,
+// which gravity-check holds to V1's arrival)
+test('the emitted flight drops a packet on V1\'s law: it lands at its twin\'s tick (gravity leftover)',()=>{
+  for(const [material,id] of [[L.makeMaterial(E.SAND),E.SAND],[L.makeMaterial(E.ASH),E.ASH],[wet(),E.WATER]]) {
+    const f=fixture({material,position:[6.5,24.5,6.5],velocity:[0,0,0]});f.set([6,0,6],L.makeMaterial(E.STONE));
+    let tick=0;while(f.particles[0].id!==0&&tick<200){runTicks(f,[0],1);tick++;}
+    let v=0,y=0,want=0;while(y<23.5*CELL_M){const st=packetStep(id,v);y+=st.fell;v=st.v;want++;}
+    assert.ok(Math.abs(tick-want)<=1,`${ELEMENTS[id].key}: landed at tick ${tick}, its twin ${want}`);
+  }
+});
+
 test('an empty pool reads no packet record and writes no flight record',()=>{
   const f=fixture();f.particles[0].id=0;f.ctx.control[0]=0;let reads=0;
   const pool=f.particles;f.ctx.particles=new Proxy(pool,{get:(a,k)=>{if(/^\d+$/.test(k))reads++;return a[k];}});
@@ -527,7 +542,7 @@ test('a hit sets off C-4 and nitroglycerin as V1\'s shock: the charge hit and th
     f.set(start,target);f.tick();return f;
   };
   const thrown=(material,speed,target)=>{
-    const f=fixture({material,position:[17.2,0.5,15.5],velocity:[speed,0,0]});
+    const f=fixture({material,position:[17.9,0.5,15.5],velocity:[speed,0,0]});
     f.set(beside,target);f.tick();return f;
   };
   const posted=f=>f.ctx.control[S0+1]===(f.ctx.slotOf(start)|DET)>>>0&&f.ctx.control[S0]===1;
@@ -619,7 +634,7 @@ test('the emitted shock decides every pair as its CPU twin and as V1\'s rule at 
     if(j===c) continue;
     for(const [mover,target] of [[j,c],[c,j]]) for(const landing of [true,false]) {
       const material=kind(mover)===3?wet(L.FULL,mover):L.makeMaterial(mover),tm=kind(target)===3?wet(L.FULL,target):L.makeMaterial(target);
-      const f=landing?fixture({material,position:[18.8,1.1,15.5],velocity:[0,-u,0]}):fixture({material,position:[17.2,0.5,15.5],velocity:[u,0,0]});
+      const f=landing?fixture({material,position:[18.8,1.1,15.5],velocity:[0,-u,0]}):fixture({material,position:[17.9,0.5,15.5],velocity:[u,0,0]});
       f.set(landing?[18,0,15]:[18,0,15],tm);f.tick();
       const want=packetShock(mover,target,u,landing);
       const got={target:f.ctx.control[shockPostBase(g)+1]!==0,mover:f.ctx.control[setOffBase(g)]!==0||f.ctx.control[airborneBase(g)+1]!==0};

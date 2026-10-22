@@ -7,7 +7,7 @@ import { LEGACY_STEPS_PER_TICK } from './host.js';
 import { contactVacuum, specialExplosion } from './contact.js';
 import { impactFoam } from './foam.js';
 import { PACE } from '../shaders/move.js';
-import { GRAVITY_MS2, TERMINAL_MS, v1TerminalMS, V1_STEP_MS } from './gravity.js';
+import { GRAVITY_MS2, TERMINAL_MS, v1TerminalMS, V1_STEP_MS, STEPS_PER_TICK, STEP_S, v1PaceRate } from './gravity.js';
 import { RAYS } from '../rays.js';
 import { energyOf, withEnergy, energyFits, makeMaterial, cTq, withPayload, payloadOf, share, packetOwnedEnergy, withPacketEnergy, packetEnergyFits } from './layout.js';
 import { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy } from './pressure.js';
@@ -79,13 +79,22 @@ export const dynamicsRows = ELEMENTS.map(e => ({
  * the particle lane's own step (particles.js integrate: implicit quadratic drag toward the element's
  * terminal speed, then the tick's gravity), stepped as V1's fallKE steps V1's (elements.js fallKE).
  */
-// A packet's tick along the pull in still air (particles.js integrate): the tick's gravity, then implicit quadratic
-// drag whose fixed point is the element's terminal speed; the velocity goes linearly from v to the result across
-// the tick. Returns its speed after (m/s, downward) and the metres it fell.
+// V1's keep a step of a flying packet (react.js forces: 1 - DRAG, none for a liquid in free fall: a flying liquid
+// packet always is), f32 as the shaders' table (particles.js dKeep)
+export const PACKET_KEEP = ELEMENTS.map(e => e.kind === K.LIQUID ? 1 : Math.fround(1 - (e.drag ?? 0)));
+// A packet's tick along the pull in still air (particles.js dPacketFlight, one axis of it): V1's law, STEPS_PER_TICK
+// steps, each moving it v1PaceRate of its speed (V1's Margolus move on its block's random draws: the grid grains'
+// fall.js fallSteps), a liquid its whole speed (its R3 draws: V1's arrival to the tick, v1LiquidArrival), then
+// adding the step's pull and taking its drag (react.js forces), to V_MAX. Its terminal speed is V1's (the drag's
+// balance, row.terminal). Returns its speed after (m/s, downward) and the metres it fell.
 export function packetStep(id, v, gravity = GRAVITY) {
-  const vt = dynamicsRows[id].terminal, drag = GRAVITY / (vt * (vt + GRAVITY * DT)), rel = v + gravity * DT;
-  const after = rel / (1 + drag * Math.abs(rel) * DT);
-  return { v: after, fell: 0.5 * (v + after) * DT };
+  const keep = PACKET_KEEP[id], g = gravity * STEP_S * STEP_S / CELL_M, paced = ELEMENTS[id].kind !== K.LIQUID;
+  let u = v / V1_STEP_MS, d = 0;
+  for (let k = 0; k < STEPS_PER_TICK; k++) {
+    d += Math.sign(u) * (paced ? v1PaceRate(Math.abs(u)) : Math.min(Math.abs(u), PHYS.V_MAX));
+    u = Math.min(PHYS.V_MAX, Math.max(-PHYS.V_MAX, (u + g) * keep));
+  }
+  return { v: u * V1_STEP_MS, fell: d * CELL_M };
 }
 export function particleFallSpeed(id, h) {
   let v = 0, y = 0;
@@ -274,12 +283,12 @@ export const SHOCK_LANDINGS = Object.freeze(ELEMENTS.filter(k => k.blast?.shock)
 export function particleLandingSpeed(id, h) {
   let v = 0, y = 0;
   for (;;) {
-    const s = packetStep(id, v), a = (s.v - v) / DT;
+    const s = packetStep(id, v);
     if (y + s.fell >= h) {
-      // the share of the tick at which it has fallen h: y + v·DT·s + ½·a·DT²·s² = h (a the tick's own change)
-      const qa = 0.5 * a * DT * DT, b = v * DT, c = y - h;
-      const share = Math.abs(qa) < 1e-12 ? -c / b : (-b + Math.sqrt(b * b - 4 * qa * c)) / (2 * qa);
-      return v + a * DT * share;
+      // the share of the tick at which it has fallen h: its sweep runs straight across the tick's fall, its velocity
+      // going linearly from v to the tick's end (particles.js integrate)
+      const share = s.fell > 0 ? (h - y) / s.fell : 0;
+      return v + (s.v - v) * share;
     }
     y += s.fell; v = s.v;
   }

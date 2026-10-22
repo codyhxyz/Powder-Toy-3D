@@ -6,8 +6,8 @@ import { uniformStruct } from '../../gpu/params.js';
 import { STAGE } from '../../gpu/kernels.js';
 import { TERMINAL_MS } from '../../v2/gravity.js';
 import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS, LEGACY_PRESSURE_PA, legacyPressureToPa,
-  RAY_STEPS_PER_TICK, RAY_NEUTRON_FAST_MS } from '../../v2/dynamics-reference.js';
-import { V1_STEP_MS } from '../../v2/gravity.js';
+  RAY_STEPS_PER_TICK, RAY_NEUTRON_FAST_MS, PACKET_KEEP } from '../../v2/dynamics-reference.js';
+import { V1_STEP_MS, STEPS_PER_TICK, STEP_S } from '../../v2/gravity.js';
 import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
 import { PHYS } from '../../physics.js';
@@ -158,6 +158,32 @@ fn dDens(id: u32) -> f32 { switch id {
 ${[...ELEMENTS.reduce((m, e) => e.dens ? m.set(e.dens, [...(m.get(e.dens) ?? []), e.id]) : m, new Map())].map(([d, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(d)}; }`).join('\n')}
 default: { return 0.0; } } }
 ${groupedTable('dTerminal', 'terminal', TERMINAL_MS)}
+// V1's keep a step (react.js forces: 1 - DRAG; none for a liquid in free fall, as a flying liquid packet is):
+// dynamics-reference.js PACKET_KEEP
+fn dKeep(id: u32) -> f32 { switch id {
+${[...PACKET_KEEP.reduce((m, k, id) => k !== 1 ? m.set(k, [...(m.get(k) ?? []), id]) : m, new Map())].map(([k, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(k)}; }`).join('\n')}
+default: { return 1.0; } } }
+const D_V1_STEP: f32 = ${f(1 / V1_STEP_MS)};
+const D_PULL_STEP: f32 = ${f(STEP_S * STEP_S / CELL_M)};
+const D_STEPS: u32 = ${STEPS_PER_TICK}u;
+// A packet's tick on V1's law, a V1 step at a time (dynamics-reference.js packetStep, its twin along the pull): each
+// step it moves along each axis, pace(|u|) = |u|/(2-|u|) cells for matter on its block's random draws (V1's Margolus
+// move: gravity.js v1PaceRate, the grid grains' fall.js fallSteps) and |u| for a liquid (its R3 draws carry it as
+// fast as its speed: dynamics-reference.js v1LiquidArrival), then takes the step's pull and its drag toward the air
+// it is in (react.js forces), to V_MAX on each component. In V1's cells/step; m/s and m/s² in and out.
+struct DPacketFlight { cells: vec3f, velocity: vec3f }
+fn dPacketFlight(v0: vec3f, wind: vec3f, pull: vec3f, keep: f32, paced: bool) -> DPacketFlight {
+  var out = DPacketFlight(vec3f(0), vec3f(0));
+  for (var a = 0u; a < 3u; a++) {
+    let w = wind[a] * D_V1_STEP; let g = pull[a] * D_PULL_STEP; var u = v0[a] * D_V1_STEP; var d = 0.0;
+    for (var k = 0u; k < D_STEPS; k++) {
+      let pace = min(abs(u), D_V_MAX); d += sign(u) * select(pace, pace / (2.0 - pace), paced);
+      u = clamp(w + (u - w + g) * keep, -D_V_MAX, D_V_MAX);
+    }
+    out.cells[a] = d; out.velocity[a] = u / D_V1_STEP;
+  }
+  return out;
+}
 ${table('dLift', 'f32', 'lift', 12)}
 fn dConductive(id: u32) -> bool { switch id {
 ${ELEMENTS.filter(e=>e.elec>0).map(e=>`case ${e.id}u: { return true; }`).join('\n')}
@@ -498,6 +524,8 @@ export function particlesWGSL(g, nativeHead, stage) {
     let m = dMaterial(particle); let id = cid(m.core); let neutron = id == D_NEUTRON; let photon = id == D_PHOTON;
     var v = particle.velocity; var acceleration = mGravity(local);
     if (photon) { dPhotonIntegrate(t, particle, local); return; }
+    // (a neutron's flight is its V1 step's, D_RAY_DT; matter's a tick's on V1's law, below)
+    var travel = v * D_RAY_DT / D_CELL;
     if (neutron) {
       if ((particle.c0>>8u)!=0u) {
         let slot=slotOf(startCell); let pendingKind=particle.c0>>8u;
@@ -511,19 +539,13 @@ export function particlesWGSL(g, nativeHead, stage) {
     } else {
       let wind = select(vec3f(0),air[brickOfCell(startCell)].vp.xyz,mAirVelocity());
       if (cls(id) == 4u || atomicLoad(&control[D_HELD+t])!=0u) { acceleration = vec3f(0); }
-      // The tick's pull, then implicit quadratic drag (V1's order, react.js forces: gravity, then drag), stable at
-      // any speed and NOT a displacement cap; its coefficient puts the fixed point at the element's terminal speed
-      // (dynamics-reference.js packetStep). Across the tick the velocity goes linearly from v to that (the hit's
-      // speed at its share of the tick, below), so a fall's landing speed grows with its height.
-      let relative = v + acceleration * D_DT - wind;
-      let vt = dTerminal(id);
-      let drag = D_G / (vt * (vt + D_G * D_DT));
-      let after = wind + relative / (1.0 + drag * length(relative) * D_DT);
-      acceleration = (after - v) / D_DT;
+      // V1's fall and flight, its steps a tick (dPacketFlight): so a packet lands when V1's cell would, as the grid
+      // grains do. The sweep below runs straight to where they take it, its velocity going linearly from v to theirs
+      // across the tick (the hit's speed at its share of the tick).
+      let flown = dPacketFlight(v, wind, acceleration, dKeep(id), cls(id) != C_LIQUID);
+      travel = flown.cells; acceleration = (flown.velocity - v) / D_DT;
     }
-    // (a neutron's flight is its V1 step's, D_RAY_DT; matter's the tick's)
-    var dt = D_DT; if (neutron) { dt = D_RAY_DT; }
-    let end = local + (v * dt + 0.5 * acceleration * dt * dt) / D_CELL;
+    let end = local + travel;
     particle.velocity = v + acceleration * D_DT;
     let delta = end - local; var cell = startCell; var previous = startCell;
     var next = vec3f(1e30); var stride = vec3f(1e30); let step = vec3i(sign(delta));
