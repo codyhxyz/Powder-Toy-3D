@@ -98,17 +98,18 @@ export function packetStep(id, v, gravity = GRAVITY) {
 }
 // A packet's tick in still air in 3D (particles.js dPacketFlight, the twin of the whole of it): each axis V1's steps
 // (packetStep's law), under the pull (m/s², a gas none). Returns the cells it moved and its velocity after (m/s).
+// Matter crosses only on the steps it didn't move down (V1's block: move.js horizontal needs !m; particles.js
+// dPacketFlight): pace((1 - pace(|u_down|))·|u|), the vertical being the pull's dominant axis (y without one).
 export function packetFlight(id, velocity, pull = [0, ELEMENTS[id].kind === K.GAS ? 0 : -GRAVITY, 0]) {
-  const keep = PACKET_KEEP[id], paced = ELEMENTS[id].kind !== K.LIQUID, moved = [0, 0, 0], after = [0, 0, 0];
-  for (let a = 0; a < 3; a++) {
-    const g = pull[a] * STEP_S * STEP_S / CELL_M; let u = velocity[a] / V1_STEP_MS, d = 0;
-    for (let k = 0; k < STEPS_PER_TICK; k++) {
-      d += Math.sign(u) * (paced ? v1PaceRate(Math.abs(u)) : Math.min(Math.abs(u), PHYS.V_MAX));
-      u = Math.min(PHYS.V_MAX, Math.max(-PHYS.V_MAX, (u + g) * keep));
-    }
-    moved[a] = d; after[a] = u * V1_STEP_MS;
+  const keep = PACKET_KEEP[id], paced = ELEMENTS[id].kind !== K.LIQUID, moved = [0, 0, 0];
+  const g = pull.map(p => p * STEP_S * STEP_S / CELL_M), u = velocity.map(v => v / V1_STEP_MS), q = pull.map(Math.abs);
+  const down = q[0] > q[1] && q[0] >= q[2] ? 0 : q[2] > q[1] && q[2] > q[0] ? 2 : 1;
+  for (let k = 0; k < STEPS_PER_TICK; k++) {
+    const a = u.map(c => Math.min(Math.abs(c), PHYS.V_MAX)), fall = v1PaceRate(a[down]);
+    for (let i = 0; i < 3; i++) moved[i] += Math.sign(u[i]) * (paced ? v1PaceRate(i === down ? a[i] : a[i] * (1 - fall)) : a[i]);
+    for (let i = 0; i < 3; i++) u[i] = Math.min(PHYS.V_MAX, Math.max(-PHYS.V_MAX, (u[i] + g[i]) * keep));
   }
-  return { moved, velocity: after };
+  return { moved, velocity: u.map(c => c * V1_STEP_MS) };
 }
 export function particleFallSpeed(id, h) {
   let v = 0, y = 0;

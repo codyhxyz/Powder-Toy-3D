@@ -3,6 +3,7 @@ import { nativeWeatherParams, nativeWeatherEvaluateWGSL, nativeWeatherCommitWGSL
 import { prelude, STATE_OPTS } from '../shaders/common.js';
 import { PARTICLE_CAP, PACKET_KEEP, packetFlight } from './dynamics-reference.js';
 import { LEGACY_STEPS_PER_TICK } from './host.js';
+import { STEP_S } from './gravity.js';
 import { nativeForceCommitWGSL, FORCE_COMMIT_LAYOUT } from './nativeForcing.js';
 import { nativeModes } from './modes.js';
 import { GRAVITY } from './dynamics-reference.js';
@@ -67,8 +68,8 @@ export function v1DeckCells(keep, kick, steps) {
 // next tick's pass kicks it again. Its speed is the one whose tick carries V1's tick of deck travel (four of V1's
 // mean steps, v1DeckCells): the inverse of the flight's tick, found by bisection (DECK_SOLVE_STEPS halvings).
 export const DECK_SOLVE_STEPS = 16;
-export function deckSlideSI(id, cells) {
-  const target = LEGACY_STEPS_PER_TICK * cells / SLIDE_CONTACT, moved = u => packetFlight(id, [u * MACHINE_CARRY_SI, 0, 0], [0, 0, 0]).moved[0];
+export function deckSlideSI(id, cells, gravity = GRAVITY) {
+  const target = LEGACY_STEPS_PER_TICK * cells / SLIDE_CONTACT, moved = u => packetFlight(id, [u * MACHINE_CARRY_SI, 0, 0], [0, -gravity, 0]).moved[0];
   let lo = 0, hi = PHYS.V_MAX;
   for (let i = 0; i < DECK_SOLVE_STEPS; i++) { const mid = (lo + hi) / 2; if (moved(mid) < target) lo = mid; else hi = mid; }
   return (lo + hi) / 2 * MACHINE_CARRY_SI;
@@ -110,10 +111,14 @@ fn industryDeckCells(id: u32, kick: f32) -> f32 {
 fn industryFlyKeep(id: u32) -> f32 {
   switch id { ${flyKeeps.map(([k, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${wf(k)}; }`).join(' ')} default: { return 1.0; } }
 }
-// dPacketFlight's tick along one axis, from u cells/step with no pull: the cells it moves
+// dPacketFlight's tick across, from u cells/step and at rest along the pull: the cells it moves (it crosses on
+// the steps its fall left it, as V1's block)
 fn industryFlown(u: f32, keep: f32) -> f32 {
-  var d = 0.0; var w = u;
-  for (var k = 0u; k < ${LEGACY_STEPS_PER_TICK}u; k++) { let a = min(w, ${wf(PHYS.V_MAX)}); d += a / (2.0 - a); w = min(w * keep, ${wf(PHYS.V_MAX)}); }
+  var d = 0.0; var w = u; var down = 0.0; let g = P.gravity * ${wf(STEP_S * STEP_S / CELL_M)};
+  for (var k = 0u; k < ${LEGACY_STEPS_PER_TICK}u; k++) {
+    let f = min(down, ${wf(PHYS.V_MAX)}); let a = min(w, ${wf(PHYS.V_MAX)}) * (1.0 - f / (2.0 - f));
+    d += a / (2.0 - a); w = min(w * keep, ${wf(PHYS.V_MAX)}); down = min((down + g) * keep, ${wf(PHYS.V_MAX)});
+  }
   return d;
 }
 // deckSlideSI: the slide whose tick carries cells a step for the tick's steps, landing at SLIDE_CONTACT of it

@@ -278,7 +278,7 @@ assert(industryMotionWGSL.includes(`return motion * ${wgslF(MACHINE_SPEED_SI)}; 
   }
   // Miner debris (shaders/industry.js update: 0.35 back, 0.1 up) lands where V1's does: a Monte Carlo of V1's
   // move (each axis: chance |v| from the block's near side) and react (pull, then drag), against V2's flight.
-  let seed = 11; const random = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
+  const random = (s => () => { s = s + 0x6D2B79F5 | 0; let r = Math.imul(s ^ s >>> 15, 1 | s); r = r + Math.imul(r ^ r >>> 7, 61 | r) ^ r; return ((r ^ r >>> 14) >>> 0) / 4294967296; })(11);   // (mulberry32: an LCG's successive draws correlate)
   const v1Range = (ux, uy, drop, drag) => { let sum = 0; for (let i = 0; i < 3000; i++) {
     let x = 0, y = 0, k = 0;
     for (let vx = ux, vy = uy; k < 400 && y > -drop; k++) {
@@ -293,7 +293,23 @@ assert(industryMotionWGSL.includes(`return motion * ${wgslF(MACHINE_SPEED_SI)}; 
     // (the packet's law is V1's mean pace a step, read here at a tick's end: within a tick's travel, 0.85 cells)
     assert(Math.abs(v2 - v1) < 0.9, `${ELEMENTS[id].name} debris lands ${v2.toFixed(2)} cells back, V1's ${v1.toFixed(2)}`);
   }
-  console.log('PASS slides land inside their tick at every carry speed; a miner\'s debris lands where V1\'s does');
+  // A grain off a belt's end (V2 on the GPU flew 7.5 cells past an 11-cell drop where V1's landed 6.1): V1's block
+  // moves matter across only on a step it didn't fall (move.js horizontal: !m), as the packet law now does.
+  const blockRule = (uz0, drop, keepStep) => { let sum = 0; for (let i = 0; i < 4000; i++) {
+    let y = 0, z = 0, uy = 0, uz = uz0, k = i & 1;
+    for (let n = 0; n < 2000 && y > -drop; n++, k++) {
+      const p = k & 1; let moved = false;
+      if (uy < 0 && (((y - p) % 2) + 2) % 2 === 1 && random() < Math.min(-uy, 1)) { y--; moved = true; }
+      if (!moved && (((z - p) % 2) + 2) % 2 === 0 && random() < Math.min(uz, 1)) z++;
+      uy = Math.max((uy - SIM_GRAVITY) * keepStep, -1); uz *= keepStep;
+    } sum += z; } return sum / 4000; };
+  const lawRange = (uz0, drop, id) => { let p = [0, 0, 0], v = [0, 0, uz0 * MACHINE_SPEED_SI];
+    while (p[1] > -drop) { const s = packetFlight(id, v); p = p.map((c, a) => c + s.moved[a]); v = s.velocity; } return p[2]; };
+  for (const uz of [0.25, 0.42, 0.6]) {
+    const v1 = blockRule(uz, 11, 1 - ELEMENTS[E.NUGGETS].drag), v2 = lawRange(uz, 11, E.NUGGETS);
+    assert(Math.abs(v2 / v1 - 1) < 0.08, `off a belt at ${uz} cells/step: V2 ${v2.toFixed(2)} cells, V1's block ${v1.toFixed(2)}`);
+  }
+  console.log('PASS slides land inside their tick; debris and belt-end flights land where V1\'s block puts them');
 }
 // under V1's pull (v2/gravity.js) a throw's map is V1's cells/s too: one speed keeps both
 assert.equal(MACHINE_SPEED_SI, MACHINE_CARRY_SI);
@@ -306,13 +322,13 @@ assert(industryMotionWGSL.includes('flat = motion.xz / along * industrySlide(id,
 {
   const keep = v1DeckKeep(ELEMENTS[E.NUGGETS]), perSecond = steps => v1DeckCells(keep, 0.6, steps) * NOMINAL_STEP_RATE;
   for (const [steps, gpu] of [[4, 58], [12, 25]]) assert(Math.abs(perSecond(steps) / gpu - 1) < 0.08, `Speed ${steps / 4}: ${perSecond(steps).toFixed(1)} cells/s, V1's ${gpu}`);
-  let seed = 7; const random = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32);
+  const random = (s => () => { s = s + 0x6D2B79F5 | 0; let r = Math.imul(s ^ s >>> 15, 1 | s); r = r + Math.imul(r ^ r >>> 7, 61 | r) ^ r; return ((r ^ r >>> 14) >>> 0) / 4294967296; })(7);   // (mulberry32: an LCG's successive draws correlate)
   const carlo = steps => { let x = 0, u = 0.6, frame = 0; for (let f = 0; f < 4000; f++) { for (let k = 0; k < steps; k++, frame++) { if (((x - frame) & 1) === 0 && random() < u) x++; u *= keep; } u = 0.6; } return x / (4000 * steps); };
   for (const steps of [1, 2, 4, 12]) assert(Math.abs(carlo(steps) / v1DeckCells(keep, 0.6, steps) - 1) < 0.04, `the chain is V1's rules' mean at ${steps} steps`);
   // and V2 delivers it: a slide is a kick every tick, flown on V1's steps (dPacketFlight's twin) to its landing
   for (const steps of [1, 4, 12]) {
     const cells = v1DeckCells(keep, 0.6, steps), v = deckSlideSI(E.NUGGETS, cells);
-    const tick = SLIDE_CONTACT * packetFlight(E.NUGGETS, [v, 0, 0], [0, 0, 0]).moved[0];
+    const tick = SLIDE_CONTACT * packetFlight(E.NUGGETS, [v, 0, 0]).moved[0];
     assert(Math.abs(tick / (LEGACY_STEPS_PER_TICK * cells) - 1) < 1e-3, `a tick carries V1's four steps' cells at Speed ${steps / 4}`);
   }
   console.log(`PASS V1's belt speed in game time: ${perSecond(4).toFixed(0)} cells/s at Speed 1, ${perSecond(12).toFixed(0)} at Speed 3 (V1 on the GPU: 58, 25)`);
