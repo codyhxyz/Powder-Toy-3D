@@ -51,7 +51,7 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
       sim = new Simulation(gpu, nx, ny, nz, { debug: false, nativeStartup: true });
       kernel = sim.editKernel('outcomeBoxV2', BOX);
       v2 = new PhysicsV2(sim, { contactWGSL, Dynamics: NativeDynamics });
-      await Promise.all([sim.ready, kernel.ready, v2.ready]);
+      await Promise.all([sim.ready, kernel.ready, v2.ready, v2.dynamicsReady]);   // (the dynamics build behind the grid: v2/physics.js dynamicsReady)
       clock = stepClock(TICK_HZ);
       launches = [];
       if (!v2.isReady || !v2.contactReady || !v2.dynamics?.isReady) throw new SetupError('v2: integrated native physics did not become ready');
