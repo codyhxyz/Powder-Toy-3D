@@ -281,7 +281,10 @@ export class WorldFields {
       synchronous(this.publisher.publish({ token, outputs, invalidatedCoreKeys }), 'publish');
       if (plan.epoch !== this.history.epoch || plan.version !== this.version || plan.source.isCurrent() !== true) throw new Error('World field source/epoch changed during publication');
       this.history.commit(updated);
-      this.history.free.push(...replaced);
+      // One push per page, not push(...replaced): a big map's second field tick
+      // replaces every owner (~400k on Island), past V8's argument limit
+      // ("Maximum call stack size exceeded", 2026-10-22).
+      for (const page of replaced) this.history.free.push(page);
       this.lastTick = plan.fieldTick;
       this.tickSource = plan.sourceRevision;
       this.version++;
