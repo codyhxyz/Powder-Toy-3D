@@ -96,7 +96,13 @@ const machineState = device => ({ device: { ...device }, load: new Load(16), clo
  * the matching terrain snapshot separately. Neither operation accepts pending
  * transfers. reset is for WORLD REPLACEMENT, not pause, mode toggles or save.
  */
-export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = () => {}, onError = console.error }) {
+// The decks whose carry or throw is V1's per-frame kick (shaders/industry.js update: belt, separator, lift, and
+// a miner's deck): under V2 they run beside each native tick (nativeStep), on game time, not once a frame.
+const DECK_TYPES = new Set(['belt', 'separator', 'lift', 'miner']);
+const V1_STEPS_DEFAULT = 4;   // app.js DEFAULTS.steps: V1's steps a frame at Speed 1
+
+// legacySteps: V1's steps a frame at the game's Speed (app.js settings.steps): a deck's carry is V1's over that many.
+export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = () => {}, onError = console.error, legacySteps = () => V1_STEPS_DEFAULT }) {
   let sim = null, kernel = null, transfer = null, epoch = 0, disposed = false;
   let ready = Promise.resolve(), built = false, cursor = 0;
   // nativeFrame: the hearths' draft clock, game time in V1 steps (v2/host.js stepClock), so the seconds
@@ -202,7 +208,11 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = 
       selectedId: FILTER_IDS.includes(d.filter) ? d.filter : E.NUGGETS,
       dt, drill: +drill,
     };
-    if (batch) { batch.push({ box: machineBox(d), values }); return; }
+    if (batch) {
+      const steps = Math.round(Number(legacySteps()));
+      batch.push({ box: machineBox(d), values: { ...values, carrySteps: Number.isFinite(steps) ? Math.min(Math.max(steps, 1), 64) : V1_STEPS_DEFAULT } });
+      return;
+    }
     sim.edit(kernel, machineBox(d), values);
   }
   // Under V2 the same rules run on V2's own cells: one native batch, never a
@@ -218,10 +228,14 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = 
   }
   // Like TPT conduction, paid draft runs beside each native tick, not once
   // after a presentation-frame batch has already cooled its hot sources.
+  // Under V2 the decks carry here too, a pass a tick: V1's kick lands once every V1 frame of game time and
+  // keeps its grains moving through the frame's steps, so its speed is a game-time speed (src/v2/industry.js
+  // v1DeckCells); a pass a presentation frame slowed belts by the ticks a frame ran (30 fps, Speed 3).
   function nativeStep(devices) {
     if (disposed) return;
     const list = (Array.isArray(devices) ? devices : []).slice(0, INDUSTRY_LIMIT);
-    if (!list.some(d => d?.type === 'hearth')) {
+    const native = !!getSim()?.compact;
+    if (!list.some(d => d?.type === 'hearth' || (native && DECK_TYPES.has(d?.type)))) {
       if (sim && sim === getSim()) nativeFrame = draftClock(sim);
       return;
     }
@@ -230,15 +244,18 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = 
     const steps = clock !== null && nativeFrame !== null ? Math.max(0, clock - nativeFrame) : 0;
     nativeFrame = clock;
     if (!sim || !built || steps <= 0) return;
-    const seen = new Set();
+    const seen = new Set(), decks = [];
     // V1 steps of game time, LEGACY_STEP_HZ a second (a native host tick is LEGACY_STEPS_PER_TICK of them)
     nativePass(() => {
       for (const d of list) {
         if (!validMachine(d, sim.g) || seen.has(d.id)) continue;
         seen.add(d.id);
         if (d.type === 'hearth') editDevice(d, steps / LEGACY_STEP_HZ, false, INDUSTRY_KIND.hearthHeat);
+        else if (sim.compact && DECK_TYPES.has(d.type)) decks.push(d);
       }
     }, false);
+    // (the carry's batch launches; the draft's is heat alone. A miner's drill stays on its 0.35 s pulse: step)
+    if (decks.length) nativePass(() => { for (const d of decks) editDevice(d, 0, false); }, true);
   }
   function step(dt, devices) {
     if (disposed || !Number.isFinite(dt) || dt <= 0) return;
@@ -287,6 +304,8 @@ export function createIndustryPhysics({ getSim, onShip = () => {}, onTransfer = 
         continue;
       }
       const drill = s.drillClock >= 0.35;
+      // (V2's decks carried beside each tick, nativeStep: the frame's pass is a miner's drill pulse alone)
+      if (sim.compact && DECK_TYPES.has(d.type) && !drill) continue;
       editDevice(d, dt, drill);
       if (drill) s.drillClock = 0;
     } }, true);

@@ -8,6 +8,7 @@ import { GRAVITY } from './dynamics-reference.js';
 import { SIM_GRAVITY, NOMINAL_STEP_RATE } from '../physics.js';
 import { CELL_M } from '../scale.js';
 import { INDUSTRY_EDIT, INDUSTRY_KIND } from '../shaders/industry.js';
+import { ELEMENTS, K } from '../elements.js';
 import { PLAN } from '../shaders/v2/blasts.js';
 
 // Factory machines on V2's own cells. The machine rules are V1's, unchanged:
@@ -35,6 +36,42 @@ import { PLAN } from '../shaders/v2/blasts.js';
 export const MACHINE_SPEED_SI = Math.sqrt(GRAVITY * CELL_M / SIM_GRAVITY);
 export const MACHINE_CARRY_SI = NOMINAL_STEP_RATE * CELL_M;
 const wf = n => (Number.isInteger(n) ? `${n}.0` : String(n));
+
+// ---- a deck's carry, V1's speed in game time (M7) ----
+// V1 runs the machine pass once a frame, after the frame's settings.steps steps (app.js; industry/index.js
+// update). Its kick sets a grain's velocity along the deck, 0.6 cells/step (shaders/industry.js update); each
+// step after, the move (shaders/move.js, a Margolus block pass) moves the grain one cell with chance |v|, but
+// only from its block's near side: a hit keeps it there for the next step's block, a miss leaves it on the
+// far side for one; then react (react.js forces) takes its drag and, resting on the deck, its friction. So a
+// belt's speed in game time is V1's mean over a pass of settings.steps steps: a frame rate never changes it,
+// the Speed setting does (a 12-step frame's grain slows to a crawl before the next kick). Measured on V1
+// (tools/v2/industry-belt-browser-check.mjs): nuggets 58 cells/s at Speed 1, 25 at Speed 3; this model, 60
+// and 27. V2 carries per native tick (industry/physics.js nativeStep), whatever the frames: the tick's slide
+// moves the grain V1's cells for the tick's LEGACY_STEPS_PER_TICK steps (v2/host.js).
+// V1's keep of a resting grain's velocity a step: (1 - drag)(1 - friction) (react.js forces).
+export const v1DeckKeep = e => (1 - (e.drag ?? 0)) * (1 - (e.friction ?? 0));
+// Frames of the chain run to its steady state (it settles in four; eight leaves it to f32's digits).
+export const DECK_CHAIN_FRAMES = 8;
+/** V1's mean cells/step of a deck's grain: kicked to `kick` cells/step once every `steps` steps (V1's frame). */
+export function v1DeckCells(keep, kick, steps) {
+  let near = 1, moved = 0;
+  for (let f = 0; f < DECK_CHAIN_FRAMES; f++) {
+    moved = 0;
+    for (let k = 0, u = kick; k < steps; k++, u *= keep) { const hit = near * Math.min(u, 1); moved += hit; near = hit + 1 - near; }
+  }
+  return moved / steps;
+}
+// A slide (blasts.js PLAN.SLIDE) moves its grain its speed for one tick, and the grain is on the grid for a
+// kick again one tick after it lands: a deck kicks a grain every DECK_SLIDE_TICKS ticks (measured on the GPU:
+// a 144 cells/s slide carries 72 cells/s; tools/v2/industry-belt-browser-check.mjs).
+export const DECK_SLIDE_TICKS = 2;
+// m/s of the slide that carries V1's mean `cells` a step, kicked every DECK_SLIDE_TICKS ticks
+export const deckSlideSI = cells => cells * MACHINE_CARRY_SI * DECK_SLIDE_TICKS;
+const deckKeeps = (() => {
+  const by = new Map();
+  for (const e of ELEMENTS) if (e?.kind === K.POWDER) { const k = Math.fround(v1DeckKeep(e)); by.set(k, [...(by.get(k) ?? []), e.id]); }
+  return [...by];
+})();
 // V2's own: which motion is a deck's carry (V1's update: a belt or separator moves only grains on its
 // deck; a miner's deck is its 4×4 at y 1, its cut face z 4..7 ahead). A carry leaves from its contact
 // with the deck (blasts.js PLAN.SLIDE), so it slides on to the next deck instead of gliding over it.
@@ -45,19 +82,37 @@ fn industryCarries(p: vec3i) -> bool {
   let rel = p - P.corner;
   return rel.y == 1 && dot(vec3f(rel), vec3f(P.forward)) <= 3.0;
 }
-fn industryVelocity(p: vec3i, motion: vec3f) -> vec3f {
+fn industryKeep(id: u32) -> f32 {
+  switch id { ${deckKeeps.map(([k, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${wf(k)}; }`).join(' ')} default: { return 1.0; } }
+}
+// v1DeckCells: V1's mean cells/step, kicked once every P.carrySteps steps (V1's frame at its Speed)
+fn industryDeckCells(id: u32, kick: f32) -> f32 {
+  let steps = max(P.carrySteps, 1u); let keep = industryKeep(id);
+  var near = 1.0; var moved = 0.0;
+  for (var f = 0u; f < ${DECK_CHAIN_FRAMES}u; f++) {
+    moved = 0.0; var u = kick;
+    for (var k = 0u; k < steps; k++) { let hit = near * min(u, 1.0); moved += hit; near = hit + 1.0 - near; u *= keep; }
+  }
+  return moved / f32(steps);
+}
+fn industryVelocity(p: vec3i, id: u32, motion: vec3f) -> vec3f {
   if (!industryCarries(p)) { return motion * ${wf(MACHINE_SPEED_SI)}; }
-  return vec3f(motion.x * ${wf(MACHINE_CARRY_SI)}, motion.y * ${wf(MACHINE_SPEED_SI)}, motion.z * ${wf(MACHINE_CARRY_SI)});
+  // the carry along the deck at V1's game-time speed (deckSlideSI); its vertical part is a throw's
+  let along = length(motion.xz);
+  var flat = vec2f(0.0);
+  if (along > 0.0) { flat = motion.xz / along * (industryDeckCells(id, along) * ${wf(MACHINE_CARRY_SI * DECK_SLIDE_TICKS)}); }
+  return vec3f(flat.x, motion.y * ${wf(MACHINE_SPEED_SI)}, flat.y);
 }
 `;
 export const NATIVE_INDUSTRY_SPEC = { ...INDUSTRY_EDIT, nativeForcing: true, speedSI: MACHINE_SPEED_SI };
 export const NATIVE_INDUSTRY_COMMIT = { speedSI: MACHINE_SPEED_SI, life: true, sparse: true, motion: {
-  decls: industryMotionWGSL, velocity: 'industryVelocity(p,r.motion.xyz)',
+  decls: industryMotionWGSL, velocity: 'industryVelocity(p,id,r.motion.xyz)',
   flags: `if((flags&1u)!=0u && industryCarries(p)) { flags|=${PLAN.SLIDE}u; }\n` } };
 const RESULT_BYTES = 64;   // nativeWeather.js WeatherResult: four vec4s a cell
 const binding = (n, read = false) => ({ binding: n, visibility: STAGE.COMPUTE, buffer: { type: read ? 'read-only-storage' : 'storage' } });
+// carrySteps: V1's steps a frame at the game's Speed (app.js settings.steps), for a deck's carry (V2 only)
 export const nativeIndustryParams = () => nativeWeatherParams('industry', { ...NATIVE_INDUSTRY_SPEC,
-  params: { ...Object.fromEntries(INDUSTRY_EDIT.params.fields.map(f => [f.name, f.type])), origin: 'vec3i' } });
+  params: { ...Object.fromEntries(INDUSTRY_EDIT.params.fields.map(f => [f.name, f.type])), origin: 'vec3i', carrySteps: 'u32' } });
 export const nativeIndustryEvaluateWGSL = (g, params = nativeIndustryParams()) => nativeWeatherEvaluateWGSL(g, NATIVE_INDUSTRY_SPEC, params);
 export const nativeIndustryPlanWGSL = (g, params = nativeIndustryParams()) => nativeForceCommitWGSL(g, params, 'plan', NATIVE_INDUSTRY_COMMIT);
 

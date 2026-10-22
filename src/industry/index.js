@@ -70,7 +70,7 @@ export function createIndustry(app) {
   });
   const controlParts = createFactoryControlParts({ getSim: () => app.sim });
   const engineTags = createEngineRetag({ getSim: () => app.sim });
-  const physics = createIndustryPhysics({ getSim: () => app.sim,
+  const physics = createIndustryPhysics({ getSim: () => app.sim, legacySteps: () => app.settings.steps,
     onShip: shipment => {
       if (disposed || !factory() || !progression) return;
       const before = progression.snapshot();
