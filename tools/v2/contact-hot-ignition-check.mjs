@@ -131,6 +131,30 @@ test('a block: wood a flame heats but leaves under its ignition point stays unli
   }
 });
 
+// V1 react.js lit tests an explosive's temperature the step it is (one step's conduction before it): a charge at
+// its ignition point beside cold matter goes off on its first step. The block's pairs trade a partnered tick's
+// heat first (CT_COND_FLUX), which took a 400 °C C-4 corner of a cold block to 211 °C and 250 °C nitroglycerin on
+// a metal floor to 213-221 °C, under their points, so neither went off (tools/v2/blast-damage-browser-check.mjs
+// block, walls NITRO). A charge it would light trades none (ctLitHot): it goes off this tick, and so does a
+// cold charge touching it at that heat (hotTouch: V1 reads the neighbour as the step came in).
+test('a charge at its ignition point goes off before a tick\'s conduction can cool it (V1: the first step)', () => {
+  const nitroFloor = i => (i & 2) ? cell(E.NITRO, 250) : cell(E.METAL);
+  for (const [what, make, hot] of [
+    ['a 400 °C corner of a cold C-4 block', i => cell(E.C4, i === 0 ? 400 : 20), [0, 1, 2, 4]],
+    ['250 °C nitroglycerin on a metal floor', nitroFloor, [2, 3, 6, 7]],
+    ['300 °C TNT on a metal floor', i => (i & 2) ? cell(E.TNT, 300) : cell(E.METAL), [2, 3, 6, 7]],
+    ['a 250 °C gunpowder grain in a cold pile', i => cell(E.GUNPOWDER, i === 0 ? 250 : 20), [0, 1, 2, 4]],
+  ]) {
+    const { out } = block(Array.from({ length: 8 }, (_, i) => make(i)));
+    for (let i = 0; i < 8; i++) assert.equal(out.requests[i] & 1, +hot.includes(i), `${what}: cell ${i}`);
+  }
+  // a charge under its point still warms and cools as before
+  const { decoded } = block(Array.from({ length: 8 }, (_, i) => cell(E.C4, i === 0 ? 250 : 20)));
+  assert(decoded[0].tq < q(250) && decoded[1].tq > q(20), 'a C-4 cell under its ignition point trades heat');
+  // propane (blast.air) is lit by its exposure, so it trades as any gas
+  assert.equal(C.ctLitHot(cell(E.PROPANE, 500), cell(E.EMPTY)), false);
+});
+
 test('shuffled disjoint production contact blocks replay identically with global position/tick seeds', () => {
   function replay(order) {
     const states = Array.from({ length: 12 }, (_, b) => {
