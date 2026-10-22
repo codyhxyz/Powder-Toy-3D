@@ -1459,6 +1459,7 @@ export class Simulation {
     if (this.nativeTransitionKind === 'shift') throw new Error('Cannot load during a native world shift');
     if (!this.compact?.isReady) throw new Error('loadNative: no native cells');
     this.noteWrite({ replaceState: false });
+    this.compact.seenVersion = this.version;   // (nothing written to V1's cells: nothing to import)
     this.fieldReset = true;
     this.giReset = true;
     this.stillFlow();
