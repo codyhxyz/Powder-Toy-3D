@@ -26,7 +26,7 @@ try {
     const {gridLayout}=await import('/src/sim.js');
     const {E}=await import('/src/elements.js');
     const {LAYOUT,tablesBuffer,cellSlot}=await import('/src/shaders/common.js');
-const {v2BlockWGSL,v2SupportWGSL,V2Params,V2_CONTACT_LAYOUT,v2ActLayout,v2Table}=await import('/src/shaders/v2.js');
+const {v2BlockWGSL,v2SupportWGSL,V2Params,V2_CONTACT_LAYOUT,V2_BLOCK_FLOW_LAYOUT,v2ActLayout,v2Table}=await import('/src/shaders/v2.js');
     const {contactWGSL}=await import('/src/shaders/v2/contact.js');
     const {makeMaterial,energyOf}=await import('/src/v2/layout.js');
     const gpu=window.__harness.gpu,g=gridLayout(32,32,32),a=v2ActLayout(g),buffers=[];
@@ -81,8 +81,11 @@ const {v2BlockWGSL,v2SupportWGSL,V2Params,V2_CONTACT_LAYOUT,v2ActLayout,v2Table}
         [6,buffer('contact events',g.slots*4)],
       ].map(([binding,buffer])=>({binding,resource:{buffer}}));
       const tables=gpu.layout('contact tables',LAYOUT.TABLES),material=gpu.layout('contact material',V2_CONTACT_LAYOUT);
-      const bind=[gpu.bindGroup(tables,[{binding:0,resource:{buffer:buffer('contact legacy tables',legacy.byteLength,legacy)}}]),
-        gpu.emptyGroup,gpu.bindGroup(material,entries)];
+      const tablesGroup=gpu.bindGroup(tables,[{binding:0,resource:{buffer:buffer('contact legacy tables',legacy.byteLength,legacy)}}]);
+      const bind=[tablesGroup,gpu.emptyGroup,gpu.bindGroup(material,entries)];
+      // the block pass's group 1, as src/v2/physics.js binds it: the renderer's flow field (v2/flow.js: a vec2u a slot)
+      const flowLayout=gpu.layout('contact flow',V2_BLOCK_FLOW_LAYOUT);
+      const blockBind=[tablesGroup,gpu.bindGroup(flowLayout,[{binding:0,resource:{buffer:buffer('contact flow field',g.slots*8)}}]),bind[2]];
       const start=performance.now();
 let code=v2BlockWGSL(g,contactWGSL);
       if(fixedBounds)for(const [before,after] of [
@@ -94,7 +97,7 @@ let code=v2BlockWGSL(g,contactWGSL);
         code=code.replace(before,after);
       }
       const kernel=gpu.kernel({name:'production contact thermal check',code,params:V2Params,
-        layouts:[tables,gpu.L.EMPTY,material],workgroupSize:[64,1,1]});
+        layouts:[tables,flowLayout,material],workgroupSize:[64,1,1]});
       const support=gpu.kernel({name:'production contact support snapshot',code:v2SupportWGSL(g),params:V2Params,
         layouts:[tables,gpu.L.EMPTY,material],workgroupSize:[64,1,1]});
       await Promise.all([kernel.ready,support.ready]);
@@ -103,7 +106,7 @@ let code=v2BlockWGSL(g,contactWGSL);
         const params={tick,busyIn:0,busyOut:g.nbricks,full:0,offset:[0,0,0],preserveLegacyMarks:0,
           gravMode:1,edge:0,airMode:0,ambientHeat:0,gravity:0,ambient:20};
         support.dispatch(gpu.frame,[g.nbricks,1,1],{bind,params});
-        kernel.dispatch(gpu.frame,[Math.ceil(g.nbricks/8),1,1],{bind,params});
+        kernel.dispatch(gpu.frame,[Math.ceil(g.nbricks/8),1,1],{bind:blockBind,params});
       }
       await gpu.fence();
       const [rawBytes,bankBytes]=await Promise.all([

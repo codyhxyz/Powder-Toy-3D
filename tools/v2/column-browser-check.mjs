@@ -20,6 +20,7 @@ try {
     const {LAYOUT,tablesBuffer,cellSlot,slotCell}=await import('/src/shaders/common.js');
     const {v2ColumnWGSL,V2Params,V2_CONTACT_LAYOUT,v2ActLayout,v2Table}=await import('/src/shaders/v2.js');
     const {makeMaterial}=await import('/src/v2/layout.js');
+    const {nativeModes}=await import('/src/v2/modes.js');
     const {nativeFall}=await import('/tools/outcomes/native-grid.js');
     const gpu=window.__harness.gpu,g=gridLayout(32,32,32),a=v2ActLayout(g),buffers=[];
     const buffer=(name,size,data)=>{
@@ -38,7 +39,8 @@ try {
       const ev=v2Table(),legacy=tablesBuffer();
       const entries=[
         [0,cells],[1,act],[2,buffer('R1 elements',ev.byteLength,ev)],
-        [4,buffer('R1 banks',g.slots*4)],[6,buffer('R1 events',g.slots*4)],
+        // as src/v2/physics.js binds its contact group: banks, liquid snapshots, material requests
+        [4,buffer('R1 banks',g.slots*4)],[5,buffer('R1 liquid snapshots',g.slots*16)],[6,buffer('R1 events',g.slots*4)],
       ].map(([binding,buffer])=>({binding,resource:{buffer}}));
       const tables=gpu.layout('R1 tables',LAYOUT.TABLES),material=gpu.layout('R1 material',V2_CONTACT_LAYOUT);
       const bind=[
@@ -48,11 +50,11 @@ try {
       const kernel=gpu.kernel({name:'R1 runtime slab',code:v2ColumnWGSL(g),params:V2Params,
         layouts:[tables,gpu.L.EMPTY,material],workgroupSize:[64,1,1]});
       await kernel.ready;
-      const rows=[];
+      // a default box's modes (vertical gravity at the default setting, solid edge), as physics.js passes them
+      const modes=nativeModes({g}),rows=[];
       for(let tick=1;tick<=180;tick++) {
         kernel.dispatch(gpu.frame,[Math.ceil(columns*16/64),1,1],{bind,params:{
-          tick,busyIn:0,busyOut:g.nbricks,full:0,offset:[0,0,0],preserveLegacyMarks:0,
-          gravMode:0,edge:0,airMode:0,ambientHeat:0,gravity:19.6,ambient:20,
+          tick,busyIn:0,busyOut:g.nbricks,full:0,offset:[0,0,0],preserveLegacyMarks:0,...modes,
         }});
         if(tick%30===0) {
           await gpu.fence();
