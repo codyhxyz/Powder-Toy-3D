@@ -59,8 +59,9 @@ export const PIPELINE_CONCURRENCY = pipelineConcurrency();
  *               volume), started before the short builds it would otherwise queue behind: with
  *               PIPELINE_CONCURRENCY slots the longest build last decides the wait (list scheduling)
  *   NOW         every other build something waits for (`build: 'now'`, or a build() asked for)
- *   BACKGROUND  an `idle` build its idle callback started: never ahead of a build something waits for,
- *               whenever it arrived; a later demand (build()) moves it up
+ *   BACKGROUND  an `idle` build: started as soon as a slot is free and nothing above is queued (never
+ *               on the page's idle time), never ahead of a build something waits for, whenever it
+ *               arrived; a later demand (build()) moves it up
  * Intentional (user request, 2026-10-21: "MAKE IT LOAD FAST"): V2's 101 boot kernels.
  */
 export const BUILD_RANK = Object.freeze({ FIRST: 0, NOW: 1, BACKGROUND: 2 });
@@ -125,8 +126,9 @@ export class PipelineCache {
     this.running = 0;
     this.failure = null;
     this.pipes = new Set();
-    this.idleQueue = [];
-    this.idleJobs = new Map();
+    this.idleQueue = [];      // idle builds not started yet (idle(): started as slots free up)
+    this.idleJobs = new Map();  // (kept empty: idle builds no longer wait on idle callbacks)
+    this.pumping = false;
     /** native compilations at once, foreground and idle builds alike (pipelineConcurrency) */
     this.concurrency = PIPELINE_CONCURRENCY;
     /** native builds made outside this cache and still compiling (outside()) */
@@ -312,13 +314,31 @@ export class PipelineCache {
    */
   outside(promise) {
     this.outsideBuilds++;
-    const done = () => { this.outsideBuilds--; this.pump(); this.pumpIdle(); };
+    const done = () => { this.outsideBuilds--; this.pump(); };
     Promise.resolve(promise).then(done, done);
     return promise;
   }
 
   pump() {
-    while (!this.failure && !this.gpu.failure && this.running < this.slots && this.queue.length) {
+    // (a build an idle job starts below queues itself and pumps again: this loop starts it)
+    if (this.pumping) return;
+    this.pumping = true;
+    try { this._pump(); } finally { this.pumping = false; }
+  }
+
+  _pump() {
+    while (!this.failure && !this.gpu.failure && this.running < this.slots) {
+      // A free slot with nothing queued that something waits for starts the next idle build, at
+      // once: idle builds wait only for the builds ahead of them, never for the page's idle time
+      // (a 60 fps frame loop leaves little: one idle callback per few builds held the dynamics for
+      // up to ~18 s after the first frame, tools/pipeline-safety-cpu-check.mjs). Its module is made
+      // only now, so a deferred set costs nothing until it starts.
+      if (!this.queue.length) {
+        const idle = this.idleQueue.shift();
+        if (!idle) break;
+        try { idle.build(BUILD_RANK.BACKGROUND); } catch { /* (its own failure: Pipe.build cancels it) */ }
+        continue;
+      }
       const job = this.queue.shift();
       this.queued.delete(job.full);
       this.active.add(job);
@@ -368,7 +388,6 @@ export class PipelineCache {
     this.queue.length = 0;
     this.queued.clear();
     for (const job of jobs) this.finish(job, this.failure);
-    for (const cancel of this.idleJobs.values()) cancel?.();
     this.idleJobs.clear();
     this.idleQueue.length = 0;
     for (const pipe of this.pipes) pipe.cancel(this.failure);
@@ -377,41 +396,32 @@ export class PipelineCache {
   }
 
   /**
-   * Idle scheduling is separate from the central native compilation semaphore.
-   * @param {{ build: () => Promise<unknown>, cancel?: (error: GraphicsFailure) => void }} job
+   * An idle build (BUILD_RANK.BACKGROUND): started (job.build(rank)) by pump() as soon as a slot is
+   * free and nothing that something waits for is queued, so a deferred set is ready in its compile
+   * time, whatever the page's idle time.
+   * @param {{ build: (rank: number) => Promise<unknown>, cancel?: (error: GraphicsFailure) => void, desc?: { first?: boolean } }} job
    */
   idle(job) {
     if (this.failure) { job.cancel?.(this.failure); return; }
     // a long pole of its own (`first`) ahead of the other idle builds, in arrival order among them
     const at = job.desc?.first ? this.idleQueue.findIndex((j) => !j.desc?.first) : -1;
     if (at < 0) this.idleQueue.push(job); else this.idleQueue.splice(at, 0, job);
-    this.pumpIdle();
-  }
-
-  pumpIdle() {
-    while (!this.failure && this.idleJobs.size < this.slots && this.idleQueue.length) {
-      const job = this.idleQueue.shift();
-      this.idleJobs.set(job, idleCallback(() => {
-        if (this.failure || !this.idleJobs.has(job)) return;
-        this.idleJobs.set(job, null);
-        Promise.resolve().then(() => { this.check(); return job.build(BUILD_RANK.BACKGROUND); }).catch(() => {}).finally(() => {
-          this.idleJobs.delete(job);
-          this.pumpIdle();
-        });
-      }));
-    }
+    this.pump();
   }
 
   /** Resolves when every build started or queued so far has settled. */
   async settled() {
-    while (this.pending.size || this.idleQueue.length || this.idleJobs.size) {
+    while (this.pending.size || this.idleQueue.length) {
       await Promise.allSettled([...this.pending]);
-      if (!this.pending.size && (this.idleQueue.length || this.idleJobs.size)) await new Promise((r) => setTimeout(r, 16));
+      if (!this.pending.size && this.idleQueue.length) await new Promise((r) => setTimeout(r, 16));
     }
   }
 }
 
-/** requestIdleCallback where available, else setTimeout. Returns a cancellation function. */
+/**
+ * requestIdleCallback where available, else setTimeout. Returns a cancellation function. (Not the
+ * pipeline cache's: its idle builds start as slots free up, PipelineCache.idle.)
+ */
 export function idleCallback(fn) {
   if (typeof requestIdleCallback === 'function') {
     const id = requestIdleCallback(() => fn(), { timeout: 1000 });
@@ -535,7 +545,8 @@ export class Kernel extends Pipe {
    *   constants?: Record<string, number>, workgroupSize?: number[], build?: 'now' | 'idle' | 'manual', optional?: boolean, first?: boolean }} desc
    *   optional: true isolates attributed shader failures, not device loss or timeout.
    *   build: 'now' starts at once (boot and a mode just entered), 'idle' queues it
-   *   behind the cache's concurrency (pipelineConcurrency), 'manual' waits for build()
+   *   behind every build something waits for, started as soon as a slot of the cache's
+   *   concurrency (pipelineConcurrency) is free, 'manual' waits for build()
    *   first: a long pole, started ahead of the builds of its kind (BUILD_RANK.FIRST; an idle one ahead of the idle queue)
    */
   constructor(gpu, desc) {

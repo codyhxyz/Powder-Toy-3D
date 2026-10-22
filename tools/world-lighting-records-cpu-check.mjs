@@ -14,6 +14,7 @@ import { BRICK_INFO } from '../src/shaders/bindings.js';
 import { cellSlot, brickIdOf } from '../src/shaders/common.js';
 import { SOURCE_GRID } from '../src/world/renderSource.js';
 import { worldLightingNear } from '../src/gfx/worldLightingBatch.js';
+import { nagaSpawn } from './naga.mjs';
 test('indexed change neighborhoods exactly match clipped Chebyshev selection',()=>{
  const size=[32,20,28],changed=[[0,0,0],[7,4,6],[2,3,1],[2,3,1]];
  for(const points of [[],changed])for(const radius of [0,1,2,4]){
@@ -51,7 +52,7 @@ async function setup({size=[64,8,8],cur=0}={}){
 }
 
 test('actual delta modules validate Naga, <=8 storage; production execution preserves NaN/signed-zero and absent aux',()=>{
-  for(const aux of [false,true]){const code=worldLightingDeltaWGSL(aux),p=spawnSync('naga',['--stdin-file-path','worldLightingDelta.wgsl'],{input:code,encoding:'utf8'});assert.equal(p.status,0,p.stderr);assert.equal(worldLightingDeltaLayouts(aux).length,aux?8:6);
+  for(const aux of [false,true]){const code=worldLightingDeltaWGSL(aux),p=nagaSpawn(code, 'worldLightingDelta.wgsl', {encoding:'utf8'});assert.equal(p.status,0,p.stderr);assert.equal(worldLightingDeltaLayouts(aux).length,aux?8:6);
     const data=Array.from({length:aux?6:4},()=>new Uint32Array(256));for(const d of data){d[0]=0x7fc12345;d[1]=0x80000000;}
     const delta=new Uint32Array(1),jobs=new Uint32Array(132);jobs[2]=0;
     execute(code,[...data,delta,jobs]);assert.equal(delta[0],0,'stable words including NaN and signed zero');

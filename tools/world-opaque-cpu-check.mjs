@@ -5,6 +5,7 @@ import {spawnSync} from 'node:child_process';
 import {WgslParser,WgslExec,WgslReflect,VectorData} from 'wgsl_reflect/wgsl_reflect.module.js';
 import {createWorldOpaqueCapture} from '../src/gfx/worldOpaque.js';
 import {worldOpaqueWGSL,worldOpaqueLayout} from '../src/shaders/worldOpaque.js';
+import { nagaSpawn } from './naga.mjs';
 const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b;});return{promise,resolve,reject};};
 const turn=()=>new Promise(r=>setImmediate(r));
 // The interpreter constructs integer vectors through Float32Array and loses
@@ -37,7 +38,7 @@ function fixture() {
   return{capture,gpu,device,compilation,completion,buffers,groups,events,options};
 }
 test('opaque capture validates native WGSL/resource layout and exact original half HDR/depth/coverage leaf',()=>{
-  const n=spawnSync('naga',['--stdin-file-path','world-opaque.wgsl'],{input:worldOpaqueWGSL,encoding:'utf8'});
+  const n=nagaSpawn(worldOpaqueWGSL, 'world-opaque.wgsl', {encoding:'utf8'});
   assert.equal(n.status,0,n.stderr);
   const reflection=new WgslReflect(worldOpaqueWGSL);assert.equal(reflection.uniforms[0].size,32);
   assert.equal(worldOpaqueLayout.length,4);assert.equal(worldOpaqueLayout[2].storageTexture.format,'rgba32uint');

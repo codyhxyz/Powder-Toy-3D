@@ -7,6 +7,7 @@ import { WORLD_SCENES } from '../src/world/scenes/index.js';
 import { rawSourceGrid } from '../src/world/renderSourceProducer.js';
 import { rawGenerateWGSL, rawStampWGSL, rawApplyWGSL, nativeAirWGSL } from '../src/shaders/renderSource.js';
 import { sceneDiffFrag } from '../src/shaders/generate.js';
+import { nagaSpawn } from './naga.mjs';
 const imported = createImportedMapScene(JSON.parse(readFileSync(new URL('../public/local-maps/androgenAssault.json', import.meta.url), 'utf8')));
 const scenes = [...WORLD_SCENES, imported];
 let count = 0;
@@ -21,7 +22,7 @@ for (const height of [128, 384]) {
     assert(resources.every(r => Number(r[1]) < 4));
     assert(resources.filter(r => r[3]?.startsWith('storage')).length <= 8, `${name}: storage budget`);
     assert(resources.filter(r => r[4].startsWith('texture_')).length <= 16);
-    const run = spawnSync('naga', ['--stdin-file-path', `${name}-${height}.wgsl`], { input: code, encoding: 'utf8' });
+    const run = nagaSpawn(code, `${name}-${height}.wgsl`, {encoding: 'utf8'});
     if (run.error || run.status !== 0) throw new Error(`${name}-${height}: ${run.error ?? run.stderr ?? run.stdout}`);
     count++;
   }

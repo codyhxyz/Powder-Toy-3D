@@ -20,6 +20,7 @@ import { WORLD_NATIVE } from '../src/shaders/gfx/liquidDetail.js';
 import { VIEWS } from '../src/views.js';
 import { gateVariants } from '../src/gfx/detailGate.js';
 import { detailDefaults } from '../src/gfx/detail.js';
+import { nagaSpawn } from './naga.mjs';
 
 // Every World world: the registered scenes and the converted source levels (as check-world-fit.mjs).
 function worldSizes() {
@@ -57,7 +58,7 @@ test('the shared module validates in Naga (flat, curved, Plain, source artwork)'
   assert.equal(naga.status, 0, 'install the CPU naga CLI for this gate');
   for (const [view, curved, sourceAppearance] of [['realistic', false, false], ['realistic', true, true], ['plain', false, false], ['noita', false, false]]) {
     const code = volumeFrag({ sourceAppearance, sourceGrid: WORLD_APPEARANCE_GRID }, { backend: 'world', view, detail: REALISTIC_LEVELS.full(), curved });
-    const r = spawnSync('naga', ['--stdin-file-path', `world-${view}.wgsl`], { input: code, encoding: 'utf8' });
+    const r = nagaSpawn(code, `world-${view}.wgsl`, {encoding: 'utf8'});
     assert.equal(r.status, 0, `${view}: ${r.stdout}\n${r.stderr}`);
   }
 });

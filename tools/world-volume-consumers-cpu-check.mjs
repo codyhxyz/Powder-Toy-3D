@@ -14,6 +14,7 @@ import { worldQueryWGSL } from '../src/shaders/worldRenderBackend.js';
 import { checkPipeline } from './check-sampler-budget.mjs';
 import { FRAME_UNIFORM_FIELDS } from '../src/shaders/bindings.js';
 import { uniformStruct } from '../src/gpu/params.js';
+import { nagaSpawn } from './naga.mjs';
 
 const I=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
 export function fixture({appearance=null}={}) {
@@ -53,7 +54,7 @@ function checkModule(code,groups,kind,name) {
   assert.deepEqual(checkPipeline({code,groups,kind}).problems,[],name);
   assert.equal(groups.flat().filter(e=>e.texture).length,16);
   assert.equal(groups.flat().filter(e=>e.buffer?.type.includes('storage')).length,kind==='render'?5:6);
-  const n=spawnSync('naga',['--stdin-file-path',`${name}.wgsl`],{input:code,encoding:'utf8'});
+  const n=nagaSpawn(code, `${name}.wgsl`, {encoding:'utf8'});
   assert.equal(n.status,0,`${name}: ${n.stdout}\n${n.stderr}`);
 }
 

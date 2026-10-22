@@ -10,6 +10,7 @@ import { volumeFrag, shadowFrag } from '../src/shaders/render.js';
 import { allDetailDefines } from '../src/gfx/detail.js';
 import { brickFrag } from '../src/shaders/passes.js';
 import { giSourceFrag } from '../src/shaders/gi.js';
+import { nagaSpawn } from './naga.mjs';
 
 const lighting = lightingGLSL();
 const trace = lighting.slice(lighting.indexOf('fn traceNearSteps('), lighting.indexOf('fn traceNear('));
@@ -56,9 +57,7 @@ if (process.argv.includes('--naga')) {
     ['gi-source', giSource],
   ];
   for (const [name, code] of modules) {
-    const result = spawnSync('naga', ['--stdin-file-path', `${name}.wgsl`], {
-      input: code, encoding: 'utf8', maxBuffer: 10 * 1024 * 1024,
-    });
+    const result = nagaSpawn(code, `${name}.wgsl`, {encoding: 'utf8', maxBuffer: 10 * 1024 * 1024});
     assert.ifError(result.error);
     assert.equal(result.status, 0, `${name}: ${result.stderr}\n${result.stdout}`);
     console.log(`ok: ${name}`);

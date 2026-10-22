@@ -7,6 +7,7 @@ import { VOLUME_VIEWS, viewShadows, volumeFrag } from '../src/shaders/render.js'
 import { gridLayout } from '../src/sim.js';
 import { createShaderPicker, testFailureMessage } from '../src/ui/shaders.js';
 import { OptionalShaderFailure } from '../src/gpu/kernels.js';
+import { nagaSpawn } from './naga.mjs';
 
 const test = VIEWS.find(v => v.key === 'test');
 assert.equal(test.name, 'Test');
@@ -25,7 +26,7 @@ for(const curved of [false,true])for(const sourceAppearance of [false,true]){
   const code=volumeFrag(g,{view:'test',curved});
   assert.equal(code.replace(/^\/\/ volume: test/,'// volume: realistic'),volumeFrag(g,{view:'realistic',curved}),
     'unsupported Test scenes must keep exactly the Realistic fallback shader');
-  const result=spawnSync('naga',['--stdin-file-path','test-view.wgsl'],{input:code,encoding:'utf8'});
+  const result=nagaSpawn(code, 'test-view.wgsl', {encoding:'utf8'});
   if(result.error)throw result.error;
   assert.equal(result.status,0,result.stdout+result.stderr);
 }
