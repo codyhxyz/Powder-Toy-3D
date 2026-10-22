@@ -1,116 +1,136 @@
 // GPU: V1's shock under V2 on what only the GPU runs, through the integrated native engine on the outcome
 // bench's bare simulation (tools/outcomes/engine-v2.js: src/v2/physics.js with its dynamics, no app):
-// nitroglycerin poured gently rests, dropped from height goes off where its run lands
-// (shaders/v2/columns.js colShockLand); C-4 hit by grains thrown down at it goes off
-// (shaders/v2/particles.js dShockHit, posted by blasts.js airborneEvents). The rules' CPU checks:
-// tools/v2/shock-check.mjs, particle-deposition-check.mjs; a chain of explosives under their own
-// blast's pressure (V1 react.js setOff, crushP): airborne-react-check.mjs 9b', blast-batch-check.mjs.
-// One launch, one GPU slot. --v1 also runs the nitroglycerin drops on V1 (tools/outcomes/engine-v1.js,
-// the same launch) and holds V2 to what V1 does there; without it V2 is held to V1's numbers below.
+// nitroglycerin poured gently or dropped 2.4 m rests, dropped from past V1's own fall (3.0 m: its liquid falls
+// without drag, dynamics-reference.js SHOCK_FALL_CELLS) goes off where its run lands (shaders/v2/columns.js
+// colShockLand), and its chain takes what V1's pressure front reaches (blasts.js dChargeFrontOver: blocks 15
+// cells away); a lit C-4 cell sets off C-4 8 cells away, not 10 (V1's front); C-4 hit by grains thrown down at
+// it: sand never sets it off (V1: ½·16·V_MAX² < its shock 20), uranium does (shaders/v2/particles.js
+// dShockHit, posted by blasts.js airborneEvents). The rules' CPU checks: tools/v2/shock-check.mjs,
+// particle-deposition-check.mjs, blast-batch-check.mjs (V1's front); a chain under its own blast's pressure
+// (V1 react.js setOff, crushP): airborne-react-check.mjs 9b'.
+// One launch, one GPU slot, one part a launch (each builds its engines: --part nitro, --part c4). --v1 also
+// runs the part on V1 (tools/outcomes/engine-v1.js, the same launch) and holds V2 to what V1 does there;
+// without it V2 is held to V1's numbers below.
 //
-//   node tools/v2/shock-browser-check.mjs [--port N] [--v1]
+//   node tools/v2/shock-browser-check.mjs --part nitro|c4 [--v1]
 import { launchBrowser } from '../browser.mjs';
 import { startVite } from '../vite-server.mjs';
 import { openHarness } from '../harness/open.mjs';
 
-// V1 on the same drops (--v1, 2026-10-22, Apple M-series): none of its nitroglycerin is left 2 s after the
-// 12.6 m drop. It lands from 0.15 s (V1's 44 g) and is gone by 0.30 s, its chain taking all it reaches. (V1's
-// 4.8 m block goes off as it lands, its liquid falling without drag past fallKE's NITRO_FALL_M, and takes
-// the resting block 15 cells away with it, so V1 drops the 12.6 m block alone: 48 → 0 cells. Here V2's two
-// resting blocks lie 15 and 21 cells from it, 15 from each other: V1's chain reaches that far.)
-const V1_HIGH_LEFT = 0;
+// V1 on the same scenes (--v1, Apple M-series, 2026-10-22). Nitroglycerin: poured gently and dropped 2.4 m it
+// rests; dropped 4.8 m it goes off as it lands, its chain taking both resting blocks 15 cells away (none of
+// the three left 1.5 s on); dropped 12.6 m, alone by then, it goes off and none is left 2 s on.
+const V1_LEFT = { short: 0, high: 0 };
 // V2's amounts are f32 fills and packets, V1's whole cells: what V2 may leave over V1's (cells)
 const V1_MATCH_CELLS = 1;
+const arg = (name) => { const i = process.argv.indexOf(name); return i < 0 ? null : process.argv[i + 1]; };
+const part = arg('--part');
+if (!['nitro', 'c4'].includes(part)) { console.error('usage: node tools/v2/shock-browser-check.mjs --part nitro|c4 [--v1]'); process.exit(2); }
 const withV1 = process.argv.includes('--v1');
 let failures = 0;
 const t0 = Date.now(), at = () => `${((Date.now() - t0) / 1000).toFixed(1)} s`;
 const ok = (cond, what) => { if (!cond) failures++; console.log(`${cond ? 'ok  ' : 'FAIL'} ${what} [${at()}]`); };
+
+// the page side, the same for both engines: window.__shock = { e, count, amount }
+async function setup(name) {
+  const { createEngine } = await import(`/tools/outcomes/engine-${name}.js`);
+  const e = createEngine(window.__harness.gpu);
+  window.__shock = { e, async count(key) { const g = await e.read(), id = e.id(key); let n = 0; for (let i = 0; i < g.id.length; i++) if (g.id[i] === id) n++; return n; },
+    // a liquid's amount in full cells, resting fills and flying packets once each (native-grid.js nativeTally):
+    // V2's liquid spreads into thinner cells, so its cell count grows while its amount holds
+    async amount(key) { return (await e.census()).liquid[e.nameOf(e.id(key))] ?? 0; } };
+}
+// Nitroglycerin, on a 32×48×32 box: a block resting a cell over the floor; one dropped 8 cells (2.4 m, short of
+// V1's own fall) 15 cells from it; one dropped 16 (4.8 m, past it: V1's goes off) 15 from the first; then one
+// dropped 42 (12.6 m) 15 from the two others. Each block 4×3×4 cells.
+async function nitroScene() {
+  const { e, amount } = window.__shock, out = {};
+  await e.create([32, 48, 32]);
+  const r = (v) => +v.toFixed(2);
+  e.box([22, 1, 22], [25, 3, 25], 'NITRO');
+  await e.advance(0.05); out.gentle0 = r(await amount('NITRO')); await e.advance(0.6); out.gentle1 = r(await amount('NITRO'));
+  e.box([4, 8, 22], [7, 10, 25], 'NITRO');
+  await e.advance(0.05); out.low0 = r(await amount('NITRO')); await e.advance(1); out.low1 = r(await amount('NITRO'));
+  e.box([22, 16, 4], [25, 18, 7], 'NITRO');
+  out.short = [];
+  let start = e.time;
+  for (const s of [0.05, 0.3, 0.45, 0.6, 0.9, 1.55]) { await e.advance(s - (e.time - start)); out.short.push([+(e.time - start).toFixed(3), r(await amount('NITRO'))]); }
+  e.box([4, 42, 4], [7, 44, 7], 'NITRO');
+  out.high = []; start = e.time;
+  for (const s of [0.05, 0.3, 0.5, 1.35, 1.6, 2.05]) { await e.advance(s - (e.time - start)); out.high.push([+(e.time - start).toFixed(3), r(await amount('NITRO'))]); }
+  await e.dispose();
+  return out;
+}
+// C-4, on a 32³ box (sides whole supertiles: common.js gridDims): a block on the floor left alone; a lit cell
+// (past its ignition point) with C-4 cells 8 and 10 taxicab cells from it, far from the block; sand thrown down
+// at the block at 25 m/s, then uranium (a body-coupled launch: engine-v2.js box { v })
+async function c4Scene() {
+  const { e } = window.__shock, out = {};
+  await e.create([32, 32, 32]);
+  // the block's C-4 cells (x, z 10..13, y 0..1), and what is at a cell
+  const block = async () => { const g = await e.read(), id = e.id('C4'); let n = 0;
+    for (let y = 0; y <= 1; y++) for (let z = 10; z <= 13; z++) for (let x = 10; x <= 13; x++) if (g.id[x + g.nx * (z + g.nz * y)] === id) n++; return n; };
+  const at = async (x, y, z) => { const g = await e.read(); return e.nameOf(g.id[x + g.nx * (z + g.nz * y)]); };
+  e.box([10, 0, 10], [13, 1, 13], 'C4');
+  await e.advance(0.05); out.rest0 = await block(); await e.advance(0.5); out.rest1 = await block();
+  e.box([26, 0, 18], [26, 0, 18], 'C4'); e.box([16, 0, 26], [16, 0, 26], 'C4');
+  e.box([26, 0, 26], [26, 0, 26], 'C4', { T: 400 });
+  await e.advance(0.25);
+  out.source = await at(26, 0, 26); out.near = await at(26, 0, 18); out.far = await at(16, 0, 26); out.block0 = await block();
+  e.box([10, 20, 10], [13, 22, 13], 'SAND', { v: [0, -25, 0] });
+  await e.advance(0.75); out.sand = await block();
+  e.box([10, 20, 10], [13, 22, 13], 'URANIUM', { v: [0, -25, 0] });
+  await e.advance(0.75); out.uranium = await block();
+  await e.dispose();
+  return out;
+}
+
 const vite = await startVite({ harness: true });
 let browser;
 try {
   browser = await launchBrowser();
   const errors = [];
-  const page = await openHarness(browser, vite, '/tools/harness/outcomes.html?engine=v2', { errors, timeout: 20000 });
-  console.log(`harness up [${at()}]`);
-  await page.evaluate(async () => {
-    const { createEngine } = await import('/tools/outcomes/engine-v2.js');
-    const e = createEngine(window.__harness.gpu);
-    window.__shock = { e, async count(name) { const g = await e.read(), id = e.id(name); let n = 0; for (let i = 0; i < g.id.length; i++) if (g.id[i] === id) n++; return n; },
-      // a liquid's amount in full cells, resting fills and flying packets once each (native-grid.js nativeTally):
-      // V2's liquid spreads into thinner cells, so its cell count grows while its amount holds
-      async amount(name) { return (await e.census()).liquid[e.nameOf(e.id(name))] ?? 0; } };
-  });
-  const createMs = await page.evaluate(async () => { const t = performance.now(); await window.__shock.e.create([32, 48, 32]); return Math.round(performance.now() - t); });
-  console.log(`engine up in ${createMs} ms [${at()}]`);
-  // nitroglycerin: a block resting a cell over the floor, one dropped from 16 cells (4.8 m: past R1's run
-  // speed, short of NITRO_FALL_M), then one dropped from 42 cells (12.6 m), sampled every SAMPLE_S after it
-  // drops while it lands and goes off (V1 at 0.25 s: 44 g, V2 at 1.35 s: 2 g): all of it, near the drop
-  // (x < 16), away from it
-  const nitroScene = async (WINDOWS) => {
-    const { e, amount } = window.__shock, out = {}, SAMPLE_S = 0.05, END_S = 2.05;
-    const split = async () => {
-      const g = await e.read(), id = e.id('NITRO'), fill = g.gridAmount ?? g.amount; let near = 0, far = 0;
-      for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) {
-        const i = x + g.nx * (z + g.nz * y); if (g.id[i] === id) { if (x < 16) near += fill[i]; else far += fill[i]; } }
-      for (const p of g.particles ?? []) if (p.id === id) { if (p.x < 16) near += p.mass; else far += p.mass; }
-      return [+(near + far).toFixed(2), +near.toFixed(2), +far.toFixed(2)];
-    };
-    e.box([22, 1, 22], [25, 3, 25], 'NITRO');
-    await e.advance(0.05); out.gentle0 = await amount('NITRO'); await e.advance(1); out.gentle1 = await amount('NITRO');
-    e.box([22, 16, 4], [25, 18, 7], 'NITRO');
-    await e.advance(0.05); out.short0 = await amount('NITRO'); await e.advance(1.5); out.short1 = await amount('NITRO');
-    e.box([4, 42, 4], [7, 44, 7], 'NITRO');
-    out.timeline = [];
-    const t0 = e.time;
-    await e.advance(0.05); out.high0 = await amount('NITRO');
-    const sample = async () => out.timeline.push([+(e.time - t0).toFixed(3), ...await split()]);
-    for (const [from, to] of WINDOWS) {
-      if (e.time - t0 < from - 1e-6) await e.advance(from - (e.time - t0));
-      for (; e.time - t0 < to + 1e-6; await e.advance(SAMPLE_S)) await sample();
-    }
-    await e.advance(END_S - (e.time - t0)); out.high1 = await amount('NITRO'); await sample();
+  const run = async (engine) => {
+    const page = await openHarness(browser, vite, `/tools/harness/outcomes.html?engine=${engine}`, { errors, timeout: 20000 });
+    await page.evaluate(setup, engine);
+    const out = await page.evaluate(part === 'nitro' ? nitroScene : c4Scene);
+    await page.close();
+    console.log(`${engine}: ${JSON.stringify(out)} [${at()}]`);
     return out;
   };
-  let v1 = null;
-  if (withV1) {
-    const p1 = await openHarness(browser, vite, '/tools/harness/outcomes.html?engine=v1', { errors, timeout: 20000 });
-    await p1.evaluate(async () => {
-      const { createEngine } = await import('/tools/outcomes/engine-v1.js');
-      const e = createEngine(window.__harness.gpu); await e.create([32, 48, 32]);
-      window.__shock = { e, async amount(name) { return (await e.census()).liquid[e.nameOf(e.id(name))] ?? 0; } };
-    });
-    v1 = await p1.evaluate(nitroScene, [[0.05, 0.6]]);
-    await p1.evaluate(() => window.__shock.e.dispose());
-    await p1.close();
-    console.log(`V1: rests ${v1.gentle0} → ${v1.gentle1}, 4.8 m ${v1.short0} → ${v1.short1}, 12.6 m ${v1.high0} → ${v1.high1} [${at()}]`);
-    console.log(`V1 12.6 m [s after the drop, all, near, away]: ${JSON.stringify(v1.timeline)}`);
-  }
-  const nitro = await page.evaluate(nitroScene, [[1.2, 1.7]]);
-  console.log(`V2 12.6 m [s after the drop, all, near, away]: ${JSON.stringify(nitro.timeline)}`);
+  const v1 = withV1 ? await run('v1') : null;
+  const v2 = await run('v2');
   // the amounts are sums of f32 fills: AMOUNT_EPS is far under one fill quantum and far over their rounding
-  const AMOUNT_EPS = 1e-3, same = (a, b) => Math.abs(a - b) < AMOUNT_EPS, cells = (a) => a.toFixed(2);
-  ok(nitro.gentle0 > 10 && same(nitro.gentle1, nitro.gentle0), `nitroglycerin poured gently rests: ${cells(nitro.gentle0)} → ${cells(nitro.gentle1)} cells of it`);
-  ok(nitro.short0 > nitro.gentle1 + 10 && same(nitro.short1, nitro.short0), `dropped 4.8 m, past the run speed, it lands and rests: ${cells(nitro.short0)} → ${cells(nitro.short1)} cells of it`);
-  ok(nitro.high0 > 10 && nitro.high1 < nitro.high0 / 2, `dropped from 12.6 m it goes off where it lands: ${cells(nitro.high0)} → ${cells(nitro.high1)} cells of it`);
-  // and its chain through what its blast reaches leaves what V1's leaves, ejecta and all (V1 react.js setOff:
-  // more than its crushP of pressure on it, resident or flying)
-  const v1Left = v1 ? v1.high1 : V1_HIGH_LEFT;
-  ok(nitro.high1 <= v1Left + V1_MATCH_CELLS, `as V1's chain does: ${cells(nitro.high1)} cells of it left after 2 s, V1 ${cells(v1Left)}${v1 ? ' (measured now)' : ''}`);
-  // C-4 on the floor; sand thrown down at it at 25 m/s (a body-coupled launch: engine-v2.js box { v })
-  const c4 = await page.evaluate(async () => {
-    const { e, count } = window.__shock, out = {};
-    await e.create([32, 32, 32]); // sides are whole supertiles (16×8×8, common.js gridDims)
-    e.box([10, 0, 10], [13, 1, 13], 'C4');
-    await e.advance(0.05); out.rest0 = await count('C4'); await e.advance(0.5); out.rest1 = await count('C4');
-    e.box([10, 20, 10], [13, 22, 13], 'SAND', { v: [0, -25, 0] });
-    await e.advance(0.75); out.hit = await count('C4');
-    await e.dispose();
-    return out;
-  });
-  ok(c4.rest0 > 10 && c4.rest1 === c4.rest0, `C-4 left alone stays: ${c4.rest0} → ${c4.rest1} cells`);
-  ok(c4.hit < c4.rest1 / 2, `hit by grains thrown at 25 m/s it goes off: ${c4.rest1} → ${c4.hit} cells`);
+  const AMOUNT_EPS = 1e-2, same = (a, b) => Math.abs(a - b) < AMOUNT_EPS;
+  if (part === 'nitro') {
+    for (const [name, o] of [['V1', v1], ['V2', v2]]) {
+      if (!o) continue;
+      const short1 = o.short.at(-1)[1], high0 = o.high[0][1], high1 = o.high.at(-1)[1];
+      ok(o.gentle0 > 10 && same(o.gentle1, o.gentle0), `${name}: nitroglycerin poured gently rests: ${o.gentle0} → ${o.gentle1} cells of it`);
+      ok(o.low0 > o.gentle1 + 10 && same(o.low1, o.low0), `${name}: dropped 2.4 m, short of V1's own fall, it lands and rests: ${o.low0} → ${o.low1}`);
+      ok(o.short[0][1] > o.low1 + 10, `${name}: then a block dropped 4.8 m: ${o.short[0][1]} cells of it in all`);
+      // V1 react.js: past its own fall it goes off as it lands; its chain takes both resting blocks 15 cells away
+      // (V1's front: setOff past crushP, dynamics-reference.js v1FrontOn)
+      const v1Short = v1 ? v1.short.at(-1)[1] : V1_LEFT.short;
+      ok(short1 <= v1Short + V1_MATCH_CELLS, `${name}: dropped 4.8 m it goes off as it lands and takes the resting blocks 15 cells away: ${o.short.map(s => s.join(' s: ')).join(', ')} (V1 leaves ${v1Short})`);
+      const v1High = v1 ? v1.high.at(-1)[1] : V1_LEFT.high;
+      ok(high0 > 10 && high1 <= v1High + V1_MATCH_CELLS, `${name}: dropped 12.6 m it goes off where it lands, its chain leaving what V1's leaves: ${o.high.map(s => s.join(' s: ')).join(', ')} (V1 leaves ${v1High})`);
+    }
+  } else {
+    for (const [name, o] of [['V1', v1], ['V2', v2]]) {
+      if (!o) continue;
+      ok(o.rest0 > 10 && o.rest1 === o.rest0, `${name}: C-4 left alone stays: ${o.rest0} → ${o.rest1} cells`);
+      // V1's front (blast.P 200, KEEP a cell: 8 cells over C-4's crushP 60); flung fire and heat take longer
+      ok(o.source !== 'C4' && o.near !== 'C4' && o.far === 'C4' && o.block0 === o.rest1,
+        `${name}: a lit C-4 cell sets off C-4 8 cells away, not 10: ${o.source}, ${o.near}, ${o.far}; the block ${o.block0}`);
+      // V1 react.js shock: ½·μ·u² past 20, μ the grain's mass on a solid, u to V_MAX (common.js hitKE): sand's
+      // ½·16·1² = 8 never; uranium's ½·191·u² past 20 from u = 0.46 cells/step (33 m/s), which its fall reaches
+      ok(o.sand === o.rest1, `${name}: sand thrown down at it at 25 m/s rests on it (V1: never past ½·16·V_MAX²): ${o.rest1} → ${o.sand} cells`);
+      ok(o.uranium < o.rest1 / 2, `${name}: uranium thrown at 25 m/s sets it off: ${o.sand} → ${o.uranium} cells`);
+    }
+    if (v1) ok(v1.source === v2.source && v1.near === v2.near && v1.far === v2.far, `V2 sets off what V1 does: ${v1.near}/${v2.near}, ${v1.far}/${v2.far}`);
+  }
   ok(!errors.length, `no page errors${errors.length ? `:\n  ${errors.join('\n  ')}` : ''}`);
-  await page.close();
 } finally {
   await browser?.close();
   await vite.close();
