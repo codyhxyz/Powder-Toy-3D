@@ -206,3 +206,11 @@ console.log('exchange-check: spawn drop ok');
   assert(!/length\(wind\)\s*>\s*dLift\(id\)/.test(blasts), 'couplePlan launches loose cells on a draft past their lift');
   console.log('wind: no saltation launch in couplePlan');
 }
+
+// ---- 6. MV-14: steam imports at V1's life 0 (its latent bank), never the fading gases' floor of 1
+{
+  const { v2ImportWGSL } = await import('../../src/shaders/v2.js');
+  assert.equal(rows[E.STEAM].fade, 0, 'steam has no fade row, so the import keeps its life 0');
+  assert(rows[E.SMOKE].fade > 0 && v2ImportWGSL(gridLayout(16, 16, 16)).includes('if (k == C_GAS && fadeOf(id) > 0.0 && life <= 0.0) { life = 1.0; }'));
+  console.log('steam: imports at life 0 (V1 lifeBank)');
+}
