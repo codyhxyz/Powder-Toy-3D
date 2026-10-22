@@ -215,8 +215,8 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
       let pair = ctReaction(v, b, s);
       if (!pair.changed) pair = ctAcid(pair.a, pair.b, s);
       if (!pair.changed) { const rev = ctAcid(pair.b, pair.a, s); pair = ctPairValue(rev.b, rev.a, rev.changed); }
-      if (!pair.changed) pair = ctSwallow(pair.a, pair.b, s);
-      if (!pair.changed) { const rev = ctSwallow(pair.b, pair.a, s); pair = ctPairValue(rev.b, rev.a, rev.changed); }
+      if (!pair.changed) pair = ctSwallow(pair.a, pair.b, s, ambientQ);
+      if (!pair.changed) { const rev = ctSwallow(pair.b, pair.a, s, ambientQ); pair = ctPairValue(rev.b, rev.a, rev.changed); }
       v = pair.a; ps[a] = pair.b;
     }
     // V1's electricity on the flying cell, its steps a tick (contact.js ctElecAirborne), with its six
