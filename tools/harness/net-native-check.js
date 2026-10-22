@@ -11,6 +11,7 @@ import { E } from '/src/elements.js';
 import { cellSlot } from '/src/shaders/common.js';
 import { makeMaterial, withPayload, FULL } from '/src/v2/layout.js';
 import * as codec from '/src/net/codec.js';
+import { PhysicsV2 } from '/src/v2/physics.js';
 
 const h = await boot({ label: 'net native' });
 const gpu = h.gpu;
@@ -27,7 +28,9 @@ test('roundtrip', async () => {
   const owner = { isReady: true, disposed: false, g, gpu, cells, aux, act, layout: { busy0: 0, busy1: g.nbricks, legacy: 2 * g.nbricks },
     liquidScratch: buf('scratch', 16), jetMask: buf('jets', 16), events: buf('events', 16),
     dynamics: { isReady: true, isIdle: false, disposed: false, renderState: { capacity: POOL }, particles, control, flight },
-    sync() {}, noteAllCells() {}, wake() {} };
+    sync() {}, noteAllCells() {}, wake() {},
+    // the readers' group as sim.bindRO takes it: PhysicsV2's own (this owner's dynamics have no coarse air, so its read group)
+    readGroup: PhysicsV2.prototype.readGroup, isReadGroup: PhysicsV2.prototype.isReadGroup };
   owner.groups = { read: gpu.bindGroup(sim.L.STATE_RO, [{ binding: 0, resource: { buffer: cells } }, { binding: 1, resource: { buffer: sim.state.B } }], 'net native readers') };
   sim.compact = sim.compactOwner = owner;
   // the scene: air at 20 C, then the matter

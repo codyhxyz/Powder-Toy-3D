@@ -122,14 +122,19 @@ assert.equal(calls.at(-1).opts.params.full, 0, 'ordinary legacy writes import on
 assert.equal(calls.at(-1).opts.header.capture, 0, 'import cannot re-mark ownership');
 
 sim.snapshot('across modes');
+const acrossWords = v2.cells.data.slice();
 v2.suspend();
 assert.equal(sim.readHeader().format, 0);
 assert.equal(sim.history.at(-1).format, 'v2', 'mode switches retain history tags');
-assert(sim.undo(), 'v1 accepts the saved projection of a v2 snapshot');
+calls.length = 0;
+assert(sim.undo(), 'v1 takes back a v2 entry');
+assert.deepEqual(v2.cells.data, acrossWords, "the suspended owner gets the entry's exact words (a V2 entry keeps no A/B projection)");
+assert(calls.some(c => c.name === 'v2bridge'), "V1's cells are their projection");
 sim.snapshot('legacy');
 assert.equal(sim.history.at(-1).format, 'v1');
+calls.length = 0;
 v2.activate();
-assert.equal(calls.at(-1).opts.params.full, 1, 'an actual legacy undo replaces the retained compact state on activation');
+assert(!calls.some(c => c.name === 'v2import' && c.opts.params.full === 1), 'activation reimports no projection over the exact words');
 assert(!v2.importFull, 'activation consumes the replacement immediately');
 sim.undo();
 v2.sync();

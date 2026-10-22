@@ -924,7 +924,7 @@ fn dReactOne(t: u32, s: u32, p: vec3i) -> bool {
   let inBlock = dInBlock(p); let trailing = dTrailing(particle.velocity);
   // what sets it off besides its own rules: a hit's mark (dShockHit), a dust cloud's speed, dust, flame
   // and hot faces (reactDust, dReactDustFaces)
-  var charge = DReactCharge(atomicLoad(&control[D_SET_OFF+t]) == particle.id, length(particle.velocity) * D_DT / D_CELL, i32(flight[t].effect.y), 0, 0, 0.0);
+  var charge = DReactCharge(atomicLoad(&control[D_SET_OFF+t]) == particle.id, length(particle.velocity) * D_DT / D_CELL, i32(flight[t].effect.y), 0, 0, 0.0, particle.velocity * D_DT / D_CELL);
   if ((particle.c0 & 255u) == D_DUST) { let dust = dReactDustFaces(p); charge.fire = dust.x; charge.hot = dust.y; }
   // and the air pressure on a charge with a crushP (dReact compares them): V1 react.js pOn, the highest of
   // its cell's (it flies in its host's air; a solid holds none) and its host's open faces' (dOpenPressure),

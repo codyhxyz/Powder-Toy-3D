@@ -91,7 +91,8 @@ events[EVENT_SLOT] = CHARGE;   // a material request the block pass wrote (shade
 const ids = Object.fromEntries(TOOLS.map(t => [t.key, t.id])), centre = new Vector3(12, 12, 12);
 const fired = [];
 assert.equal(nativeImpulse(sim, { position: centre, direction: [0, 1, 0], radius: 3, deltaV: 2 }), true, 'an impulse is held, not refused'); fired.push('impulse');
-assert.equal(routeNativePaint(sim, { tool: ids.BLAST, center: centre, end: centre, radius: 2, shape: 0 }), true, 'a Blast stroke is held, not refused'); fired.push('externalBlast');
+// (the Pressure tool is V1's paint rule, a force kernel: v2/interactions.js pendingPaint)
+assert.equal(routeNativePaint(sim, { tool: ids.BLAST, center: centre, end: centre, radius: 2, shape: 0, rate: 1 }), true, 'a Pressure stroke (a force kernel) is held, not refused'); fired.push('force');
 assert.equal(emitNativeRay(sim, { tool: ids.PHOTON, center: centre, radius: 2, shape: 0, rate: 1 }), true, 'a photon stroke is held, not refused'); fired.push('photon');
 assert.equal(routeNativePaint(sim, { tool: ids.VACUUM, center: centre, end: centre, radius: 2, shape: 0, rate: 1 }), true, 'a Vacuum stroke (a force kernel) is held, not refused'); fired.push('force');
 assert.equal(nativeImpulse(sim, { position: centre, direction: [1, 0, 0], radius: 3, deltaV: 5 }), true); fired.push('impulse');
@@ -121,21 +122,21 @@ ticks = owner.ticks(1);   // (a driver without the app's nativeBeforeStep: the t
 assert.equal(ticks, 1);
 assert.equal(sim.nativePending.length, 0, 'every held request ran');
 // each request's first recording, in the order recorded: the numbered ones by their sequence (the
-// dynamics number them as they run them), the force stroke by its plan
+// dynamics number them as they run them), a force stroke by its plan (one a tool)
 const KIND = { v2blasts_toolPlan: 'impulse', v2blasts_externalBegin: 'externalBlast', v2blasts_rayEmit: 'photon' };
 const seen = new Set(), order = [];
 for (const c of log) {
   const kind = c.name === 'nativePaintForceForcePlan' ? 'force' : KIND[c.name];
-  const id = kind === 'force' ? 'force' : c.params.sequence;
+  const id = kind === 'force' ? `force${c.params.tool}` : c.params.sequence;
   if (kind && id && !seen.has(id)) { seen.add(id); order.push(kind); }
 }
 assert.deepEqual(order, fired, 'every held request ran, in the order it was made');
 const names = log.map(c => c.name);
-assert.deepEqual(log.filter(c => c.name === 'v2blasts_toolPlan').map(c => c.params.sequence), [1, 4], 'numbered as they ran: the impulses first and last (a force kernel takes no number)');
+assert.deepEqual(log.filter(c => c.name === 'v2blasts_toolPlan').map(c => c.params.sequence), [1, 3], 'numbered as they ran: the impulses first and last (a force kernel takes no number)');
 // the material request is served by the first tick's batch (consumeMaterialEvents), still in events
 for (const stage of ['v2blasts_reset', 'v2blasts_eventList', 'v2blasts_select', 'v2blasts_pick', 'v2blasts_planCharges'])
   assert(ran.has(stage) === false && names.includes(stage), `${stage}: the held material request is served on the first tick`);
 assert.equal(events[EVENT_SLOT], CHARGE, 'the request reached that tick intact');
 for (const stage of ['v2particles_integrate', 'v2particles_react', 'v2air_step', 'v2jets_spawn']) assert(names.includes(stage), `${stage} runs from the first tick`);
-console.log(`deferred dynamics CPU: first frame and brush without the ${dynamicsKernels.length} dynamics kernels; ${5} ticks stepped meanwhile with the grid's passes; ${fired.length} frame-1 requests (impulse, blast, photon, force) and a material request held, then run in order on the first tick`);
+console.log(`deferred dynamics CPU: first frame and brush without the ${dynamicsKernels.length} dynamics kernels; ${5} ticks stepped meanwhile with the grid's passes; ${fired.length} frame-1 requests (impulse, pressure, photon, vacuum) and a material request held, then run in order on the first tick`);
 process.exit(0);

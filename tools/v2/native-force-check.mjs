@@ -41,11 +41,20 @@ sim.compact=owner;sim.paints=0;sim.noMask={dummy:true};sim._paintMask=data=>({ma
 sim.touchCentres=(lo,hi)=>({lo:lo.map(Math.floor),hi:hi.map(Math.ceil)});
 sim.edit=()=>{throw Error('legacy edit forbidden');};
 const center={x:8,y:8,z:8},end={x:13,y:9,z:10};
-for(const key of ['VACUUM','CYCLONE','GRAV_IN','GRAV_OUT']) {
- calls.length=0;assert(Simulation.prototype.paint.call(sim,{center,end,radius:2,shape:1,grow:[3,1,0],filter:E.SAND,tool:TOOLS.find(t=>t.key===key).id}));
+// V1's air tools (passes.js update) on the native grid: Pressure (BLAST) and Wind too, with V1's line, box,
+// shape and filter (and Wind's drag), never an external blast or a uniform impulse (v2/interactions.js).
+d.applyExternalBlast=()=>{throw Error('the Pressure tool is V1 paint, not an external blast');};
+sim.applyNativeTool=()=>{throw Error('the Wind tool is V1 paint, not an impulse');};
+for(const key of ['VACUUM','CYCLONE','GRAV_IN','GRAV_OUT','WIND','BLAST']) {
+ calls.length=0;assert(Simulation.prototype.paint.call(sim,{center,end,radius:2,shape:1,grow:[3,1,0],filter:E.SAND,wind:[1,0,2],tool:TOOLS.find(t=>t.key===key).id}),key);
  const evalCall=calls.find(c=>c.name==='nativePaintForceForceEvaluate');assert.deepEqual(evalCall.args.params.end,[13,9,10]);
  assert.deepEqual(evalCall.args.params.grow,[3,1,0]);assert.equal(evalCall.args.params.filter_,E.SAND);assert.equal(evalCall.args.params.shape,1);
+ assert.equal(evalCall.args.params.tool,TOOLS.find(t=>t.key===key).id);assert.deepEqual(evalCall.args.params.wind,[1,0,2]);
+ assert(calls.some(c=>c.name==='nativePaintForceForceAir'),key+': its pressure and draft reach the native air');
 }
+// No drag: V1 pushes by a zero wind, so nothing runs (and nothing is refused).
+calls.length=0;assert(Simulation.prototype.paint.call(sim,{center,radius:2,shape:0,wind:[0,0,0],tool:TOOLS.find(t=>t.key==='WIND').id}));
+assert(!calls.some(c=>c.name),'a still Wind brush dispatches nothing');
 for(const field of [PROP.VX,PROP.VY,PROP.VZ,PROP.PRESSURE]) {
  calls.length=0;assert(Simulation.prototype.paint.call(sim,{center,radius:1,shape:0,tool:PROP_TOOL,prop:{field,value:0.2},mask:{lo:[4,4,4],hi:[5,5,5],data:new Uint8Array(4)}}));
  assert.equal(calls.find(c=>c.name==='nativePaintForceForceEvaluate').args.params.masked,1);

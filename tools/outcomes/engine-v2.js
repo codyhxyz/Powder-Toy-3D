@@ -51,10 +51,12 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
       sim = new Simulation(gpu, nx, ny, nz, { debug: false, nativeStartup: true });
       kernel = sim.editKernel('outcomeBoxV2', BOX);
       v2 = new PhysicsV2(sim, { contactWGSL, Dynamics: NativeDynamics });
-      await Promise.all([sim.ready, kernel.ready, v2.ready, v2.dynamicsReady]);
+      // A scene throws, blasts and pours: it needs the flying matter and the jets, which build behind the
+      // grid's kernels (src/v2/physics.js: `ready` is the grid's, `dynamicsReady` the dynamics' and jets').
+      await Promise.all([sim.ready, kernel.ready, v2.dynamicsReady]);
       clock = stepClock(TICK_HZ);
       launches = [];
-      if (!v2.isReady || !v2.contactReady || !v2.dynamics?.isReady) throw new SetupError('v2: integrated native physics did not become ready');
+      if (!v2.isReady || !v2.contactReady || !v2.dynamics || !v2.dynamicsBuilt || !v2.jets || !v2.jetsBuilt) throw new SetupError('v2: integrated native physics did not become ready');
     },
     box(lo, hi, name, { T, v = [0, 0, 0], onlyEmpty = false, pressure } = {}) {
       const id = idOf(name);

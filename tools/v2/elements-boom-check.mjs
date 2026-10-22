@@ -46,14 +46,16 @@ test('row 23: only liquid water wets moss and fungus (V1 dampOf), not saltwater'
 });
 
 test('row 19: suspended dust needs V1 DUST_RICH_AIR air faces of six, counting the outside faces', () => {
-  const dust = cell(E.DUST, 500); dust.fallSpeed = C.DUST_MIN_FALL_SPEED;
-  const wall = cell(E.STONE);
+  // (suspended: faster than DUST_LIFT_V, strictly; the outside faces are the support pass's word, CT_OUT_*)
+  const dust = cell(E.DUST, 500); dust.fallSpeed = C.DUST_MIN_FALL_SPEED * 1.01;
+  const wall = cell(E.STONE), word = (...ids) => C.contactOutsideWord(ids.map(id => (id === null ? null : C.packContact(cell(id)).core)));
+  const step = (ns, n, w) => C.ctStepAtmosphere(dust, ns, 0, n, 0, 0, n, 0, C.contactAmbientQ(20), 0, 0, w);
   // one in-block air face and none outside: a heap's rich top, it does not go off
-  assert.equal(C.ctStepAtmosphere(dust, [cell(E.DUST), wall, cell(E.EMPTY)], 0, 0, 0, 0, 0).request & 1, 0);
+  assert.equal(step([cell(E.DUST), wall, cell(E.EMPTY)], 0, 0).request & 1, 0);
   // one in-block and one outside air face: two of six, a cloud
-  assert.ok(C.ctStepAtmosphere(dust, [cell(E.DUST), wall, cell(E.EMPTY)], 0, 1, 0, 0, 1).request & 1);
+  assert.ok(step([cell(E.DUST), wall, cell(E.EMPTY)], 1, word(E.EMPTY, null, null)).request & 1);
   // no dust face: a lone mote burns, it does not go off
-  assert.equal(C.ctStepAtmosphere(dust, [wall, cell(E.EMPTY), cell(E.EMPTY)], 0, 3, 0, 0, 3).request & 1, 0);
+  assert.equal(step([wall, cell(E.EMPTY), cell(E.EMPTY)], 3, word(E.EMPTY, E.EMPTY, E.EMPTY)).request & 1, 0);
 });
 
 test('row 20: the temperature sensor fires past V1 MATTER_REST_T, sub-quantum heat included', () => {

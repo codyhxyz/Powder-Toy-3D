@@ -12,7 +12,8 @@ import { externalBlastPressure, externalBlastBudget, validateExternalBlasts, ext
 import { blastPlan, pressureEnergy, dynamicsRows } from '../../src/v2/dynamics-reference.js';
 import { povGpu } from '../../src/pov/gpu.js';
 import { TOOLS, E } from '../../src/elements.js';
-import { AIR } from '../../src/v2/pressure.js';
+import { AIR, specialBlastEnergy } from '../../src/v2/pressure.js';
+import { PHYS } from '../../src/physics.js';
 
 globalThis.GPUBufferUsage = { STORAGE:128, COPY_SRC:4, COPY_DST:8, INDIRECT:256 };
 const commands=[], writes=[];
@@ -27,15 +28,19 @@ const g=gridLayout(16,8,8),sim=Object.assign(Object.create(Simulation.prototype)
 });
 const owner={g,gpu,sim,tick:0,epoch:0,wake(){},sync(){},nativeDynamics:{head:nativeDynamicsHead,layout:V2_DYNAMICS_LAYOUT,group:{}},events:make({size:g.slots*4,label:'events'})};
 const d=new NativeDynamics(owner,{blastBatch:1});owner.dynamics=d;sim.compactOwner=owner;await d.ready;
-const blast=TOOLS.find(t=>t.key==='BLAST').id;
-assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:0,tool:blast}),true);
+// The Pressure tool is V1's paint rule now (v2/interactions.js pendingPaint: TOOL_PRESSURE·falloff a
+// paint into the air, tools/v2/native-force-check.mjs); external blasts carry the rocket's pulse and
+// any caller's selection (shape, line, box, filter, fill mask).
+const blast=specialBlastEnergy(PHYS.TOOL_PRESSURE)/2;
+const queue=selection=>d.applyExternalBlast({position:[4,4,4],radius:2,energy:blast,selection:{shape:0,end:[4,4,4],grow:[0,0,0],filter:-1,fade:true,...selection}});
+assert.equal(queue({}).status,'queued');
 assert.equal(d.externalBlasts.size,1);
-assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:1,tool:blast}),true);
-assert.equal(sim.paint({center:new Vector3(4,4,4),radius:2,shape:0,tool:blast,filter:E.SAND}),true);
+assert.equal(queue({shape:1}).status,'queued');
+assert.equal(queue({filter:E.SAND}).status,'queued');
 // (the rocket is V1's own blast rule as native forcing, not an external blast: native-force-check.mjs)
 assert.equal(d.applyExternalBlast({position:[200,0,0],radius:2,energy:100}).status,'queued');
-const mask=new Uint8Array(g.width*g.height);mask[12]=255;
-assert.equal(sim.paint({center:new Vector3(4,4,4),end:new Vector3(9,4,4),grow:[2,1,0],radius:2,shape:1,tool:blast,filter:E.SAND,mask:{lo:[1,1,1],hi:[6,6,6],data:mask}}),true);
+const mask=new Uint8Array(Math.ceil(g.width*g.height/4)*4);mask[12]=255;
+assert.equal(queue({shape:1,end:[9,4,4],grow:[2,1,0],filter:E.SAND,maskWords:new Uint32Array(mask.buffer),maskOrigin:[0,0,0],lo:[1,1,1],hi:[6,6,6]}).status,'queued');
 mask[12]=0;const selection=d.externalBlasts.get(4).selection;
 assert.equal(new Uint8Array(selection.maskWords.buffer)[12],255,'queued masks own immutable bytes');
 assert.deepEqual(selection.end,[9,4,4]);assert.deepEqual(selection.grow,[2,1,0]);assert.equal(selection.filter,E.SAND);

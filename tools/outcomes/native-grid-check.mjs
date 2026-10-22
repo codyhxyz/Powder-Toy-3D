@@ -8,7 +8,7 @@ import { E, ELEMENTS, K } from '../../src/elements.js';
 import { makeMaterial, FULL } from '../../src/v2/layout.js';
 import { setFall } from '../../src/v2/fall.js';
 import { packContact, unpackContact } from '../../src/v2/contact.js';
-import { packParticle, ballistic, DT, GRAVITY, CELL_M, dynamicsRows, packetFlight } from '../../src/v2/dynamics-reference.js';
+import { packParticle, ballistic, packetStep, DT, GRAVITY, CELL_M, dynamicsRows, packetFlight } from '../../src/v2/dynamics-reference.js';
 import { toGrid, nativeTally, nativeFlight, nativeFall, readNativeState } from './native-grid.js';
 import { at } from './engine.js';
 
@@ -47,11 +47,17 @@ test('canonical fields, current brick air units, mixed cells and outside-window 
   assert.equal(census.liquid.OIL, .5); assert.equal(census.liquid.WATER, .75);
   assert.deepEqual(census.particles, { WATER: .75, SAND: 1 });
 });
-test('flight reuses production ballistic/terminal law, not bare gravity; no invented liquid grid fall', () => {
-  // the packets' law: V1's drag a step, V_MAX and Margolus lag (particles.js dPacketFlight, its twin packetFlight)
+test('flight reuses production packet law (V1\'s drag a step, V_MAX, Margolus lag), not bare gravity; no invented liquid grid fall', () => {
+  // straight down from rest: production's CPU twin of a packet's tick (dynamics-reference.js packetStep), tick by tick
+  let speed = 0, fell = 0;
+  for (let i = 0; i < 30; i++) { const s = packetStep(E.SAND, speed); fell += s.fell; speed = s.v; }
+  const [dropX, dropY] = nativeFlight(E.SAND, [0, 0], 30 * DT);
+  assert.equal(dropX, 0); assert.ok(Math.abs(dropY + fell / CELL_M) < 1e-9, `dropped ${dropY} cells, packetStep ${-fell / CELL_M}`);
+  // thrown sideways, one tick: the packets' 3D law (particles.js dPacketFlight, its twin packetFlight)
   const v = [30 * CELL_M, 0, 0];
   assert.deepEqual(nativeFlight(E.SAND, [30, 0], DT), packetFlight(E.SAND, v).moved.slice(0, 2));
-  assert.notDeepEqual(nativeFlight(E.SAND, [30, 0], DT), ballistic([0,0,0], v).position.slice(0,2), 'not bare gravity');
+  // the drag and the lag act (bare gravity would carry it the whole 30 cells/s)
+  assert.ok(nativeFlight(E.SAND, [30, 0], DT)[0] < ballistic([0, 0, 0], v).position[0]);
   assert.equal(nativeFlight(E.WALL, [1, 0], 1), null);
   assert.equal(nativeFall(E.WATER, 1), null);
   assert.ok(nativeFall(E.SAND, 1) > 0);

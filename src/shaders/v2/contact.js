@@ -98,6 +98,46 @@ fn contactSpecialExplosion(core:vec4u,gunpowderEnergyJ:f32)->vec4f {
 }
 `;
 
+// A cell's outside word (v2/contact.js contactOutsideWord, CT_OUT_*): one out-of-block face n along axis
+// (present: inside the grid; beyond it is the box's wall, cellAt's sentinel, none of these) added to word.
+// The support pass's and the flying packets' (shaders/v2/airborne.js); the constants inline, so the module
+// declares none another may also hold. Needs cid, clsOf, ctypeOf, C_AIR and C_GAS from its head.
+const OUT = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).filter(([k]) => k.startsWith('CT_OUT_')).map(([k, [, v]]) => [k.slice(7), v]));
+const BEDS = CONTACT_ROWS.flatMap((r, id) => r.bed ? [id] : []);
+export const outsideFacesWGSL = /* wgsl */ `
+fn ctOutsideFace(word:u32,n:vec4u,present:bool,axis:u32)->u32 {
+ if(!present){return word;}
+ let id=cid(n);let kind=clsOf(n);var w=word;
+ if(kind!=C_AIR && kind!=C_GAS){w+=${OUT.SURFACE}u;}
+ if(id==${E.FIRE}u){w+=${OUT.FIRE}u;}
+ if(id==${E.EMPTY}u){w+=${OUT.EMPTY}u;}
+ if(id==${E.CLOUD}u){w+=${OUT.CLOUD}u;}
+ if(id==${E.DUST}u){w+=${OUT.DUST}u;}
+ // V1 dampOf: liquid water gives DAMP_REACH, a grower one less than its own (cedar-leaf moss holds CEDAR_BASE + damp)
+ var damp=0u;
+ if(id==${E.WATER}u){damp=${CONTACT_DAMP_REACH}u;}
+ if(id==${E.MOSS}u || id==${E.FUNGUS}u){
+  var d=ctypeOf(n);
+  if(id==${E.MOSS}u && d>=${CONTACT_CEDAR_BASE}u && d<=${CONTACT_CEDAR_BASE + CONTACT_DAMP_REACH}u){d=d-${CONTACT_CEDAR_BASE}u;}
+  if(d>=1u){damp=d-1u;if(id==${E.MOSS}u){w|=${OUT.WET_MOSS}u<<axis;}}
+ }
+ let held=(w/${OUT.DAMP}u)%${OUT.DAMP_MAX}u;
+ if(damp>held){w+=(damp-held)*${OUT.DAMP}u;}
+ if(${BEDS.length ? BEDS.map(id => `id==${id}u`).join(' || ') : 'false'}){w|=${OUT.BED}u<<axis;}
+ return w;
+}
+`;
+
+// Does an outside word hold a moss site on its own (V1 react.js mossSite: damp moss and a bed on faces of
+// different axes)? Then even a block of uniform air isn't zero work: moss creeps into it (shaders/v2.js
+// blockIdentityWGSL, which reads each cell's word through the kernel's own ctOutsideAt).
+export const outsideSiteWGSL = /* wgsl */ `
+fn ctOutsideMossSite(w:u32)->bool {
+ let wet=(w/${OUT.WET_MOSS}u)%8u;let bed=(w/${OUT.BED}u)%8u;
+ return wet!=0u && bed!=0u && !(wet==bed && (wet==1u || wet==2u || wet==4u));
+}
+`;
+
 // Two requests on one cell: their flags together, the larger unconsumed puff
 // (v2/contact.js ctPuff). The block pass stores every request word through it.
 export const requestMergeWGSL = /* wgsl */ `
@@ -208,6 +248,8 @@ fn ctPack(c:CTCell,original:vec4u)->vec4u {
   if(row.burn>0 && c.burning!=0){core.y|=0x80000000u;}
   if(row.conductor!=0){core.w=(core.w&0xf000ffffu)|(u32(c.spark&4095)<<16u);}
   else{core.w=(core.w&65535u)|(u32(c.life)<<16u);}
+  // a new liquid that starts falling (a clone's: v2/contact.js CT_SPAWN_DROP_TICK): its column lane, cells a tick
+  if(c.fallSpeed>0.0 && c.id!=i32(original.x&255u)){core.z=(core.z&65535u)|(pack2x16float(vec2f(0.0,c.fallSpeed))&0xffff0000u);}
  }else{
   core.y=(core.y&0xfe000000u)|(u32(c.burning)<<24u)|u32(c.life)|(u32(c.ctype)<<16u);
   if(row.conductor!=0){core.w=(core.w&0xfffff000u)|u32(c.spark);}
@@ -264,7 +306,7 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
    for(var order=0u;order<ctPairOrders();order++){
     if(pair.changed!=0){continue;}
     var a=pair.a;var b=pair.b;if(order==1u){a=pair.b;b=pair.a;}
-    let r=ctAcid(a,b,seed);pair=r;if(order==1u){pair=ctPairValue(r.b,r.a,r.changed);}
+    let r=ctAcidFizz(a,b,seed);pair=r;if(order==1u){pair=ctPairValue(r.b,r.a,r.changed);}
    }
    for(var order=0u;order<ctPairOrders();order++){
     if(pair.changed!=0){continue;}
@@ -277,14 +319,22 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
  let snapshot=cells;
  for(var i=0u;i<count;i++){
   if(cells[i].valid==0){continue;}
-  let ns=array<CTCell,3>(snapshot[i^1u],snapshot[i^2u],snapshot[i^4u]);
+  // its partners along x, y, z (ctStepAtmosphere's order, the outside word's axes): the corner order is the
+  // block's, rotated with gravity (shaders/v2.js mBlockOffset), so each partner's axis is where it lies
+  var ns:array<CTCell,3>;var up=0;
+  for(var bit=0u;bit<3u;bit++){
+   let j=i^(1u<<bit);let d=positions[j]-positions[i];let axis=select(select(2u,1u,d.y!=0),0u,d.x!=0);ns[axis]=snapshot[j];
+   // (bit 2 is the block's axis along gravity, mBlockOffset: its 0 corner the downstream one)
+   if(bit==2u && (i&4u)==0u){up=i32(axis)+1;}
+  }
   // Frozen pre-block atmosphere, never a global core read during R5.
   let outside=liquidScratch[slotOf(positions[i])].x&1023u;
+  let faces=i32(liquidScratch[slotOf(positions[i])].y)+up*CT_OUT_UP;
   // V1 react.js counts the box's solid floor as a surface (its sides and lid don't).
   let onFloor=select(0,1,positions[i].y==0 && P.edge==${EDGE.SOLID}u);
   // a flying packet in a partner's cell, as V1's react saw a moving neighbour: the react stage's mark here
   let touch=packetTouchNow(slotOf(positions[i]));
-  cells[i]=ctStepAtmosphere(cells[i],ns,ctSeed(positions[i],P.tick),i32(outside&3u),i32((outside>>2u)&3u),i32((outside>>4u)&3u),i32((outside>>6u)&3u),onFloor,contactAmbientQ(),touch,i32(outside>>8u));
+  cells[i]=ctStepAtmosphere(cells[i],ns,ctSeed(positions[i],P.tick),i32(outside&3u),i32((outside>>2u)&3u),i32((outside>>4u)&3u),i32((outside>>6u)&3u),onFloor,contactAmbientQ(),touch,i32(outside>>8u),faces);
  }
  for(var i=0u;i<count;i++){
   for(var axis=0u;axis<u32(ctNeighborCount());axis++){

@@ -40,7 +40,7 @@ assert(block.includes('let dU = motionDensity(hi)'));
 assert(block.includes('return contactDensity(c)'));
 assert(!block.includes('cid(lo) == cid(hi)'), 'same gas with different temperatures can convect');
 // runs are single-subtype and two runs of different subtypes never share a segment
-assert(columnWaterWGSL.includes('if (liq == id && sub == probeSub(probe) && r1 == y)'), 'a subtype change ends a run');
+assert(columnWaterWGSL.includes('let grows = id != 0u && liq == id && sub == probeSub(probe) && r1 == y;'), 'a subtype change ends a run');
 assert(columnWaterWGSL.includes('(liquidSub(c) << 16u)'), 'the scan reads a cell\'s subtype'); assert(columnWaterWGSL.includes('(code & 0xffff00u)'), 'a summary keeps its subtype');
 assert(columnWaterWGSL.includes('(recLiq(ra) != recLiq(rb) || recSub(ra) != recSub(rb))'), 'real WGSL rejects incompatible lava');
 console.log('native coupling: typed lava enthalpy/transport, strongest-face tags, freshwater sparks, pending ownership and buoyancy passed');

@@ -12,7 +12,7 @@ import { makeMaterial } from '../../src/v2/layout.js';
 import { setFall } from '../../src/v2/fall.js';
 import * as C from '../../src/v2/contact.js';
 import { modeWGSL } from '../../src/shaders/v2/modes.js';
-import { contactWGSL } from '../../src/shaders/v2/contact.js';
+import { contactWGSL, outsideSiteWGSL } from '../../src/shaders/v2/contact.js';
 import { V2_ELECTRIC_KERNELS } from '../../src/shaders/v2/electric.js';
 import { ARGS2, V2_KERNELS, WGSL_CHECK, v2BlockWGSL, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockCompactLayout, v2Rows, v2Table } from '../../src/shaders/v2.js';
 import { buildFixture } from './frame-bench.mjs';
@@ -42,15 +42,30 @@ const js = predicateSource.replace(/\/\/[^\n]*/g, '')
   .replace('any(cs[k] != canonicalAir)', 'cs[k].some((v,j)=>v!==canonicalAir[j])')
   .replaceAll('mAirHeat()', '(P.ambientHeat !== 0)').replaceAll('inGrid(positions[k])', 'valid(positions[k])')
   .replaceAll('var ', 'let ').replace(/\b(0x[\da-f]+|\d+)u\b/g, '$1')
+  .replaceAll('ctOutsideMossSite(ctOutsideAt(slotOf(positions[k])))', 'site(k)')
   .replaceAll('{ return; }', '{ return true; }');
-const emittedPredicate = new Function('cs', 'bs', 'positions', 'pending', 'P', 'blockCount', 'valid', 'ambientQ', `${js}\nreturn false;`);
+const emittedPredicate = new Function('cs', 'bs', 'positions', 'pending', 'P', 'blockCount', 'valid', 'ambientQ', 'site', `${js}\nreturn false;`);
 const valid = p => p.every((v, a) => v >= 0 && v < dims[a]);
 const ps = Array.from({ length: 8 }, (_, i) => [6 + (i & 1), 6 + (i >> 2), 6 + ((i >> 1) & 1)]);
 const P = { edge: EDGE.SOLID, ambient: 20, ambientHeat: 1, gravMode: GRAV.VERTICAL, gravity: 19.6 };
 const zero = new Int32Array(8);
 const air = q => Array.from({ length: 8 }, () => new Uint32Array([q << 8, 0, 0, 0]));
 const water = () => Array.from({ length: 8 }, () => new Uint32Array([(1173 << 8) | E.WATER, 65536, 0, 0]));
-const eligible = (cs, bs = zero, positions = ps, pending = zero, params = P, count = 8) => emittedPredicate(cs, bs, positions, pending, params, count, valid, ambientQ);
+const eligible = (cs, bs = zero, positions = ps, pending = zero, params = P, count = 8, site = () => false) => emittedPredicate(cs, bs, positions, pending, params, count, valid, ambientQ, site);
+// An air cell whose outside word holds a moss site (V1 react.js mossSite) is not a classify skip (shaders/v2/contact.js
+// outsideSiteWGSL, run as JS); its word's other contents never matter to uniform air.
+{
+  const siteSrc = outsideSiteWGSL.slice(outsideSiteWGSL.indexOf('fn ctOutsideMossSite('));
+  const siteJs = siteSrc.replace(/^fn ctOutsideMossSite\(w:u32\)->bool \{/, 'return w=>{').replace(/\blet /g, 'const ').replace(/(\d+)u\b/g, '$1')
+    .replace(/\(w\/(\d+)\)%8/g, '(Math.floor(w/$1)%8)');
+  const mossSite = new Function(siteJs)();
+  const K = C.CONTACT_CONSTANTS, wet = K.CT_OUT_WET_MOSS[1], bed = K.CT_OUT_BED[1];
+  for (let w = 0; w < 8; w++) for (let b = 0; b < 8; b++) {
+    const word = w * wet + b * bed, expected = w !== 0 && b !== 0 && !(w === b && [1, 2, 4].includes(w));
+    assert.equal(mossSite(word), expected, `site word wet ${w} bed ${b}`);
+    for (let i = 0; i < 8; i++) assert.equal(eligible(air(1173), zero, ps, zero, P, 8, k => k === i && mossSite(word)), !expected);
+  }
+}
 // Uniform AIR is a classify skip exactly at the scene's ambient (V1's pull acts everywhere else: ctAmbient).
 for (let q = 0; q <= 41093; q++) { assert.equal(eligible(air(q)), q === 1173); assert(eligible(air(q), zero, ps, zero, { ...P, ambient: q / 4 - 273.25 })); }
 let seed = 77123;

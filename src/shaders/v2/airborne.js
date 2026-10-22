@@ -1,10 +1,10 @@
-import { contactWGSL, specialContactWGSL } from './contact.js';
+import { contactWGSL, specialContactWGSL, outsideFacesWGSL } from './contact.js';
 import { v2Table } from '../v2.js';
 import { AIR_CAPACITY_Q } from '../../v2/layout.js';
 import { AIRBORNE, AIRBORNE_FLYING_REQUESTS, AIRBORNE_LANDED_REQUESTS, AIRBORNE_FACE_REQUESTS, AIRBORNE_OFFSET_BITS,
   AIRBORNE_COLOUR_TABLE } from '../../v2/airborne.js';
 import { EDGE } from '../../simModes.js';
-import { DUST_MIN_FALL_SPEED, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR, CONTACT_PUFF_UNIT } from '../../v2/contact.js';
+import { DUST_MIN_FALL_SPEED, CONTACT_DUST_MEC_NB, CONTACT_DUST_RICH_AIR, CONTACT_PUFF_UNIT, CONTACT_CONSTANTS } from '../../v2/contact.js';
 
 // Airborne matter takes part (docs/v2/native-contract.md "Contact module"): V1 had no flying
 // state, its splashes and ejecta were ordinary cells, so its react pass (shaders/react.js) heated,
@@ -56,7 +56,7 @@ fn dReactHash(p: DParticle) -> u32 {
   return h >> 8u;
 }
 `;
-export const airborneReactWGSL = /* wgsl */ `${airborneClaimWGSL}
+export const airborneReactWGSL = /* wgsl */ `${airborneClaimWGSL}${outsideFacesWGSL}
 const D_REACT_PAIR_SALT: i32 = ${AIRBORNE.PAIR_SALT};
 const D_REACT_PLUME_SALT: i32 = ${AIRBORNE.PLUME_SALT};
 const D_CARRIER_Q: u32 = ${AIR_CAPACITY_Q}u;
@@ -76,8 +76,9 @@ const D_REACT_SOLID_EDGE: u32 = ${EDGE.SOLID}u;
 struct DReact { particle: Material, host: Material, partners: array<Material, 3>, state: u32, source: vec2u, sink: vec2u, requests: u32, touch: array<i32, 6> }
 // What sets a flying packet off besides its own rules (src/v2/airborne.js AIRBORNE_NO_CHARGE): a hit set it
 // off (particles.js dShockHit), a dust packet's speed (cells a tick), dust, flame and hot faces, and the
-// highest air pressure on it (Pa: particles.js react, for an explosive's crushP, dCrush).
-struct DReactCharge { setOff: bool, speed: f32, dust: i32, fire: i32, hot: i32, pressure: f32 }
+// highest air pressure on it (Pa: particles.js react, for an explosive's crushP, dCrush). velocity: its
+// own, cells a tick, for the speed flying snow closes on a cloud beside it (ctStormCharge).
+struct DReactCharge { setOff: bool, speed: f32, dust: i32, fire: i32, hot: i32, pressure: f32, velocity: vec3f }
 // [flame faces, hot faces] among the host cell's six: V1 react.js dust clouds' nFire and hotTouch (matter,
 // not gas, at dust's ignition point or hotter). src/v2/airborne.js dustFacesOf.
 fn dReactDustFaces(p: vec3i) -> vec2i {
@@ -130,7 +131,7 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
   let hostFire = select(0, 1, cid(host.core) == u32(CT_FIRE));
   for (var f = 0u; f < 2u * dAxes(); f++) {
     if (f == trailing || ((valid >> f) & 1u) == 0u) { continue; }
-    touch[f] = ctPacketTouch(v, i32(cid(faces[f].core)), hostFire, i32(1u << (f >> 1u)), select(0, 1, inBlock[f >> 1u] == f));
+    touch[f] = ctPacketTouch(v, i32(cid(faces[f].core)), hostFire, select(0, 1, inBlock[f >> 1u] == f));
   }
   let refused = DReact(packet, host, array<Material, 3>(faces[inBlock.x], faces[inBlock.y], faces[inBlock.z]), D_REACT_REFUSED, vec2u(0u), vec2u(0u), 0u, touch);
   let carrier0 = energyMul(D_CARRIER_Q, cTq(packet.core));
@@ -145,10 +146,12 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
   }
   let ambientQ = i32(clamp(round((P.ambient + 273.25) * 4.0), 0.0, 65535.0)); let airHeat = i32(P.ambientHeat);
   // its outside, frozen before any pair runs, as the support pass freezes a cell's
-  var outside = vec4i(0);
+  var outside = vec4i(0); var outFaces = 0u;
   for (var a = 0u; a < dAxes(); a++) {
     let f = inBlock[a] ^ 1u;
-    if (f == trailing) { outside += dReactCount(host.core, true); } else { outside += dReactCount(faces[f].core, ((valid >> f) & 1u) != 0u); }
+    var n = host.core; var present = true;
+    if (f != trailing) { n = faces[f].core; present = ((valid >> f) & 1u) != 0u; }
+    outside += dReactCount(n, present); outFaces = ctOutsideFace(outFaces, n, present, a);
   }
   for (var a = 0u; a < dAxes(); a++) {
     if (ps[a].valid == 0) { continue; }
@@ -173,7 +176,7 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
     for (var order = 0u; order < dPairOrders(); order++) {
       if (pair.changed != 0) { continue; }
       v = pair.a; b = pair.b; if (order == 1u) { v = pair.b; b = pair.a; }
-      let r = ctAcid(v, b, s);
+      let r = ctAcidFizz(v, b, s);
       pair = r; if (order == 1u) { pair = ctPairValue(r.b, r.a, r.changed); }
     }
     for (var order = 0u; order < dPairOrders(); order++) {
@@ -196,12 +199,20 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
     }
     v = ctElecAirborne(v, contacts, seed);
   }
-  // the air among its six contacts, as its own step counts it (ctStepAtmosphere fullAir: burnAir)
-  var fullAir = outside.x;
+  // the air among its six contacts, as its own step counts it (V1 react.js dust clouds' nAir: air cells)
+  var airFaces = i32((outFaces / ${CONTACT_CONSTANTS.CT_OUT_EMPTY[1]}u) % 4u);
   for (var a = 0u; a < dAxes(); a++) {
-    if (ps[a].valid != 0 && (ps[a].id == CT_EMPTY || (ps[a].id == CT_FIRE && ps[a].ctype != CT_OXYGEN))) { fullAir++; }
+    if (ps[a].valid != 0 && ps[a].id == CT_EMPTY) { airFaces++; }
   }
-  v = ctStepAtmosphere(v, ps, seed, outside.x, outside.y, outside.z, outside.w, onFloor, ambientQ, 0, 0);
+  // (no clone share and no snow above: a packet is never the air a clone fills, nor a cloud it charges)
+  v = ctStepAtmosphere(v, ps, seed, outside.x, outside.y, outside.z, outside.w, onFloor, ambientQ, 0, 0, i32(outFaces));
+  // flying snow closing on a cloud partner charges it (V1 react.js closing: its speed onto that face)
+  if (v.id == CT_SNOW) {
+    for (var a = 0u; a < dAxes(); a++) {
+      if (ps[a].valid == 0 || ps[a].id != CT_CLOUD) { continue; }
+      ps[a] = ctStormCharge(ps[a], dot(charge.velocity, vec3f(face6(i32(inBlock[a])))), seed ^ (D_REACT_PAIR_SALT << a));
+    }
+  }
   for (var a = 0u; a < dAxes(); a++) {
     if (ps[a].valid == 0) { continue; }
     var pair = ctPairValue(v, ps[a], 0);
@@ -242,12 +253,12 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
   let hostId = i32(cid(hm.core));
   // still the charge it was: set off by a hit or by more than its crushP of pressure on it (V1 react.js
   // setOff: src/v2/airborne.js crushedBy), or a dust cloud lit (V1 react.js dust clouds), with the air
-  // among its six contacts as its own step counted it (fullAir)
+  // among its six contacts (airFaces)
   let charge0 = i32(packet.core.x & 255u);
   let crushed = dCrush(u32(v.id)) > 0.0 && charge.pressure > dCrush(u32(v.id));
   if (v.id == charge0 && ctRow(v.id).blast != 0 && (charge.setOff || crushed)) { v.request = v.request | 1; }
-  if (v.id == CT_DUST && charge0 == CT_DUST && charge.speed >= D_REACT_DUST_SPEED && charge.dust >= D_REACT_DUST_MEC_NB &&
-    fullAir >= D_REACT_DUST_RICH_AIR && (v.tq >= ctRow(CT_DUST).igniteQ || charge.hot > 0 || charge.fire > 0 || hostId == CT_FIRE)) {
+  if (v.id == CT_DUST && charge0 == CT_DUST && charge.speed > D_REACT_DUST_SPEED && charge.dust >= D_REACT_DUST_MEC_NB &&
+    airFaces >= D_REACT_DUST_RICH_AIR && (v.tq >= ctRow(CT_DUST).igniteQ || charge.hot > 0 || charge.fire > 0 || hostId == CT_FIRE)) {
     v.request = v.request | 1;
   }
   // the GAS request's puff rides above the bits (contact.js ctPuff): the largest of its own and its

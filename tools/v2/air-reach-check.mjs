@@ -5,7 +5,7 @@
 // bit for bit over several ticks, every air/edge/heat mode and stray writes
 // to one copy. A shorter reach must fail, so the fixtures exercise it.
 import assert from 'node:assert/strict';
-import { AIR, DT } from '../../src/v2/dynamics-reference.js';
+import { AIR, DT, V1_AIR } from '../../src/v2/dynamics-reference.js';
 import { REACH } from '../../src/shaders/v2/air.js';
 import { AIR as AIR_MODE, EDGE } from '../../src/simModes.js';
 import { dynamicsRows } from '../../src/v2/dynamics-reference.js';
@@ -15,9 +15,12 @@ import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { gridLayout } from '../../src/sim.js';
 
 const fr = Math.fround, F = x => fr(x);
-const A_DT = F(DT / AIR.substeps), A_DX = F(AIR.edge), A_C = F(AIR.sound), A_RHO = F(AIR.rho), A_DIFF = F(AIR.diffusion);
+const A_DT = F(DT / AIR.substeps), A_DX = F(AIR.edge), A_DIFF = F(AIR.diffusion);
 const A_PQ = F(AIR.pQuantum), A_VQ = F(AIR.vQuantum), A_SQ = F(AIR.scalarQuantum), QUIET = F(AIR.quietTicks);
-const LOSS = F(AIR.loss ** (1 / AIR.substeps)), BUOYANCY_EXCESS = F(0.01), GRAVITY = F(19.6);
+const BUOYANCY_EXCESS = F(0.01), GRAVITY = F(19.6);
+// V1's air law (pressure.js V1_AIR), as air.js declares it
+const A_FRONT = F(V1_AIR.front), A_DECAY = F(V1_AIR.decay), A_PDIFF = F(V1_AIR.diffuse), A_PMIN = F(V1_AIR.pMin), A_PMAX = F(V1_AIR.pMax);
+const A_ACCEL = F(V1_AIR.accel), A_KEEP = F(V1_AIR.keep), A_VMAX = F(V1_AIR.vMax);
 const negZero = x => x === 0 && 1 / x < 0;
 const bits = a => Array.from(new Uint32Array(Float32Array.from(a).buffer));
 
@@ -48,16 +51,11 @@ function physics(modes) {
   const level = (a, b) => [0, 1].every(i => Math.abs(fr(a.th[i] - b.th[i])) < A_SQ);
   const virtual = () => ({ vp: [0, 0, 0, 0], th: [0, 0, QUIET, 0] });
   function flux(left, right, axis) {
-    const l = [...left.vp.slice(0, 3).map(v => vel ? v : 0), pres ? left.vp[3] : 0];
-    const r = [...right.vp.slice(0, 3).map(v => vel ? v : 0), pres ? right.vp[3] : 0];
-    const delta = r.map((v, i) => fr(v - l[i]));
-    const acoustic = [0, 0, 0, 0];
-    acoustic[axis] = fr(fr(l[3] + r[3]) / fr(2 * A_RHO));
-    acoustic[3] = fr(fr(fr(fr(A_RHO * A_C) * A_C) * fr(l[axis] + r[axis])) * 0.5);
-    for (let i = 0; i < 4; i++) acoustic[i] = fr(acoustic[i] - fr(fr(0.5 * A_C) * delta[i]));
+    const l = left.vp.slice(0, 3).map(v => vel ? v : 0);
+    const r = right.vp.slice(0, 3).map(v => vel ? v : 0);
     const courant = Math.min(F(1 / 12), Math.max(F(-1 / 12), fr(fr(fr(fr(l[axis] + r[axis]) * 0.5) * A_DT) / A_DX)));
     const donor = courant >= 0 ? l : r;
-    const vp = acoustic.map((v, i) => fr(fr(fr(v * A_DT) / A_DX) + (i < 3 ? fr(donor[i] * courant) : 0)));
+    const vp = [0, 1, 2].map(i => fr(donor[i] * courant)).concat([0]);
     const k = fr(fr(A_DIFF * A_DT) / fr(A_DX * A_DX)), scalar = [0, 1].map(i => {
       let d = fr(right.th[i] - left.th[i]); if (Math.abs(d) < A_SQ) d = 0;
       return fr(fr(courant * (courant >= 0 ? left.th[i] : right.th[i])) - fr(k * d));
@@ -69,6 +67,8 @@ function physics(modes) {
     const before = airIn[t], next = { vp: [...before.vp], th: [...before.th] };
     let quiet = still(before), gradient = false;
     const face = (q, axis, side) => q < 0 ? (modes.edge === EDGE.VOID ? w.voidOpen[t * 6 + axis * 2 + (side > 0)] : 0) : side > 0 ? w.faces[t].open[axis] : w.faces[q].open[axis];
+    const own = pres ? before.vp[3] : 0, pn = [own, own, own, own, own, own];
+    let lap = 0, front = own;
     for (let axis = 0; axis < 3; axis++) for (const side of [-1, 1]) {
       const q = w.neighbor(t, axis, side); if (q < 0 && modes.edge !== EDGE.VOID) continue;
       const other = q < 0 ? virtual() : airIn[q], open = face(q, axis, side); if (open === 0) continue;
@@ -76,16 +76,19 @@ function physics(modes) {
       gradient = gradient || (heat && Math.abs(fr(other.th[0] - before.th[0])) >= A_SQ) || ((pres || vel) && Math.abs(fr(other.th[1] - before.th[1])) >= A_SQ);
       const f = side > 0 ? flux(before, other, axis) : flux(other, before, axis), so = fr(side * open);
       for (let i = 0; i < 4; i++) next.vp[i] = fr(next.vp[i] - fr(so * f.vp[i]));
-      next.vp[axis] = fr(next.vp[axis] + fr(fr(fr(fr(so * before.vp[3]) / A_RHO) * A_DT) / A_DX));
       for (let i = 0; i < 4; i++) next.th[i] = fr(next.th[i] - fr(so * f.th[i]));
+      const theirs = pres ? other.vp[3] : 0, d = fr(theirs - own);
+      pn[axis * 2 + (side > 0 ? 0 : 1)] = fr(own + fr(open * d)); lap = fr(lap + fr(open * d)); front = Math.max(front, theirs);
     }
+    if (substep === 0 && pres) next.vp[3] = Math.min(A_PMAX, Math.max(A_PMIN, fr(Math.max(fr(own + fr(A_PDIFF * lap)), fr(front * A_FRONT)) * A_DECAY)));
+    for (let axis = 0; axis < 3; axis++) next.vp[axis] = fr(next.vp[axis] - fr(fr(pn[axis * 2] - pn[axis * 2 + 1]) * A_ACCEL));
     const excess = fr(before.th[0] + w.faces[t].w), g = modes.gravity ? [0, -GRAVITY, 0] : [0, 0, 0];
     if (heat && vel && Math.abs(excess) > BUOYANCY_EXCESS && g[1] !== 0) for (let axis = 0; axis < 3; axis++) {
       const below = w.neighbor(t, axis, -1), open = fr(w.faces[t].open[axis] + face(below, axis, -1));
       const lift = fr(fr(fr(g[axis] * Math.min(2, Math.max(-0.5, fr(excess / F(Math.max(1, modes.ambient + 273.15)))))) * A_DT) * Math.min(open, 1));
       next.vp[axis] = fr(next.vp[axis] - lift); if (open > 0 && g[axis] !== 0) quiet = false;
     }
-    next.vp = next.vp.map(v => fr(v * LOSS));
+    next.vp = [...next.vp.slice(0, 3).map(v => Math.min(A_VMAX, Math.max(-A_VMAX, fr(v * A_KEEP)))), next.vp[3]];
     if (modes.airMode === AIR_MODE.NO_UPDATE) next.vp = [...before.vp];
     if (!vel) next.vp = [0, 0, 0, next.vp[3]]; if (!pres) next.vp[3] = 0; if (!heat) next.th[0] = 0;
     if (substep === AIR.substeps - 1) {

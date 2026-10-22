@@ -73,7 +73,7 @@ export function decodeDynamicState(bytes, expected = {}) {
 // No await before BOTH owners enqueue their GPU copies. Used by save sections
 // and available to parent driver hooks without changing PhysicsV2's core codec.
 export function captureNativeSnapshot(owner, mode) {
-  if (owner.sim?.nativeTransition || owner.sim?.nativeTransitionError) throw new Error('Native transition prevents a consistent snapshot');
+  if (owner.sim?.nativeTransition) throw new Error('Native transition prevents a consistent snapshot');
   const core = owner.captureState(mode);
   const dynamic = owner.dynamics?.snapshotDynamicState();
   return Promise.all([core, dynamic]).then(([core, dynamic]) => ({ core, dynamic }));
@@ -122,7 +122,12 @@ export function resetNativeDynamics(owner) {
   // (a restore writes the dynamics' buffers alone: while their kernels build it needs none of them,
   // so a load at boot never holds the world in a transition until they are built)
   if (d.isReady || !d.disposed) { apply(); return; }
-  const pending = d.ready.then(apply).catch(error => { sim.nativeTransitionError = error; throw error; }).finally(() => {
+  // A dynamics that never builds stops what needs it (its capabilities stay false), never every gate:
+  // the grid keeps stepping (as a failed slab read freezes only the window under V1, world/window.js
+  // readBack). (Its pipeline's failure stops graphics and says why.)
+  const pending = d.ready.then(apply).catch(error => {
+    if (!sim.gpu?.failure) console.error('native dynamics failed to build; World streaming and native tools are unavailable', error);
+  }).finally(() => {
     if (sim.nativeTransition === pending) sim.nativeTransition = null;
     sim.wake();
   });
