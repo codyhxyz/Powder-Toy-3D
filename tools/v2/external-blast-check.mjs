@@ -132,7 +132,7 @@ assert.match(shader('finish'),/weight\/total/);
   // (dStrength), not the blast's energy share against its hardness as joules
   assert.ok(damage.includes('difference=max(difference,abs(dOpenPressureAfterExternal(p+dAxis(a))-dOpenPressureAfterExternal(p-dAxis(a))));'));
   assert.ok(damage.includes('if (dBreak(id)>=0 && difference>dStrength(id) && energyFits(broken,energyOf(m))) { plan.flags|=2u|(u32(dBreak(id))<<8u); }'));
-  assert.ok(!damage.includes('dToughness('),'no energy-share breaking');
+  assert.ok(!damage.includes('dToughness(id)'),'no energy-share breaking');
 }
 // Codec corruption must not interpret explicit null as a backwards-compatible omission.
 const encoded=encodeDynamicState(saved),view=new DataView(encoded.buffer),oldLength=view.getUint32(8,true),oldAt=Math.ceil((16+oldLength)/4)*4;

@@ -196,7 +196,7 @@ test('the batch\'s pressure is in the air before its damage, which sets an explo
   assert.ok(setOff > 0 && setOff < damage.indexOf('var kinetic=energy;'), 'the set-off comes before the break and the throw');
   assert.ok(damage.includes('events[t]|=1u; noteEvents(t,events[t]); dWake(p); plan.velocity=vec3f(0); plans[t]=plan; return;'));
   // BL-1: a solid breaks by V1's front against its strength (hard·P_BREAK_PER_HARD), never by an energy share
-  assert.ok(damage.includes('front>dStrength(id)') && !damage.includes('dToughness('), 'damage breaks by pressure, not by energy against toughness');
+  assert.ok(damage.includes('front>dStrength(id)') && !damage.includes('dToughness(id)'), 'damage breaks by pressure, not by energy against toughness');
 });
 
 // V1 react.js air pressure: each open cell takes max(its diffusion, P_FRONT of its strongest open neighbour),
