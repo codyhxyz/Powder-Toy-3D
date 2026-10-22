@@ -4,7 +4,7 @@ import { FOAM_ROWS } from '../../v2/foam.js';
 import { SHOCK_FALL_CELLS, SHOCK_LANDINGS, V1_FALL_CELLS_MAX, v1LiquidHit, v1LiquidArrival } from '../../v2/dynamics-reference.js';
 import { PHYS, SIM_GRAVITY } from '../../physics.js';
 import { PACE } from '../move.js';
-import { GRAVITY_MS2, STEPS_PER_TICK } from '../../v2/gravity.js';
+import { GRAVITY_MS2, STEPS_PER_TICK, V1_STEP_MS } from '../../v2/gravity.js';
 
 // Column-run water (docs/v2/water-cost-first-principles.md; the CPU prototype it ports is
 // tools/v2/column-water.mjs). Water is stored exactly as before (16 B core + 4 B bank) and read per (x, z)
@@ -75,11 +75,13 @@ export const COLUMN = (() => {
     // a deposited cell to launch: its y lane holds this, less its upward launch speed (a falling run's own
     // y lane is never negative)
     JET_MARK: -1,
-    // The crown (Worthington, A Study of Splashes, 1908): a run that lands on liquid faster than CROWN_SPEED
-    // m/s throws this share of its mass up out of its column at its impact speed, CROWN_ANGLE from the
-    // vertical, at a hashed azimuth: that share of its kinetic energy, half the bench's 0.3 bound
-    // (docs/v2.md 4.4). Slower landings (a pour's one-cell drop) merge inelastically.
-    CROWN_SHARE: 0.15, CROWN_SPEED: 5, CROWN_ANGLE: Math.PI / 4, CROWN_SALT: 0x63726f77,
+    // The crown (Worthington, A Study of Splashes, 1908): a run that lands on liquid harder than V1's splash
+    // speed (PHYS.LAND_SPLASH_V, m/s: move.js land) throws this share of its mass up out of its column at V1's
+    // splash share of its impact speed (PHYS.LAND_SPLASH_GAIN: V1 turns that much of it sideways), CROWN_ANGLE
+    // from the vertical, at a hashed azimuth (docs/v2.md 4.4's 0.3 bound on the energy it carries). Slower
+    // landings (a pour's one-cell drop) merge inelastically.
+    CROWN_SHARE: 0.15, CROWN_SPEED: PHYS.LAND_SPLASH_V * V1_STEP_MS, CROWN_GAIN: PHYS.LAND_SPLASH_GAIN,
+    CROWN_ANGLE: Math.PI / 4, CROWN_SALT: 0x63726f77,
     // a liquid this thin under a pour still leaves it open below (lean-sim openBelow: FULL/16)
     THIN: FULL >> 4,
     // a face's demand word: what it carries in the low 24 bits, its launch head in the byte above, in
@@ -168,6 +170,7 @@ const COL_JET_SPEED: f32 = ${f(COLUMN.JET_SPEED)};
 const COL_JET_MARK: f32 = ${f(COLUMN.JET_MARK)};
 const COL_CROWN_SHARE: f32 = ${COLUMN.CROWN_SHARE};
 const COL_CROWN_SPEED: f32 = ${f(COLUMN.CROWN_SPEED)};
+const COL_CROWN_GAIN: f32 = ${f(COLUMN.CROWN_GAIN)};
 const COL_CROWN_SIN: f32 = ${Math.sin(COLUMN.CROWN_ANGLE)};
 const COL_CROWN_COS: f32 = ${Math.cos(COLUMN.CROWN_ANGLE)};
 const COL_TAU: f32 = ${2 * Math.PI};
@@ -739,12 +742,13 @@ fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
   if (landed) { colShockLand(x, z, r0 - d, fallen, r1 - r0, hit); }
   let impact = hit * COL_STEPS * COL_TICK_HZ * COL_CELL_M;
   if (landed && d > 0 && r0 - d > o0 && colClass(x, r0 - d - 1, z) == C_LIQUID && impact > COL_CROWN_SPEED) {
-    colCrown(x, z, r0 - d, r1 - d, d, impact);
+    colCrown(x, z, r0 - d, r1 - d, d, impact * COL_CROWN_GAIN);
   }
   return r0 - d;
 }
-// The crown of a run [b0, b1) that just landed at impact m/s: CROWN_SHARE of its mass, cut from its top
-// down, into the cells it vacated above it (rows of them), each marked to launch up and out.
+// The crown of a run [b0, b1) that just landed, thrown at impact m/s (V1's splash share of its landing speed):
+// CROWN_SHARE of its mass, cut from its top down, into the cells it vacated above it (rows of them), each marked
+// to launch up and out.
 fn colCrown(x: i32, z: i32, b0: i32, b1: i32, rows: i32, impact: f32) {
   var mass = 0u;
   for (var k = b0; k < b1; k++) { mass = mass + colFill(x, k, z); }
