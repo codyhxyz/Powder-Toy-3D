@@ -98,3 +98,32 @@ test('origin-only same-cut work, present deco/presence bits, released leases and
   const released=await f.publish(c,4);released.release();const invalid=f.records.record(f.gpu.frame,{cut:c,classification:released,derivedTick:4});await drain(f.gpu);await assert.rejects(invalid.completion,/Released\/stale/);
   const live=await f.publish(c,4),pending=f.records.record(f.gpu.frame,{cut:c,classification:live,derivedTick:4});f.records.dispose();a.release();b.release();c.release();await drain(f.gpu);await assert.rejects(pending.completion,/discarded\/stale/);assert.throws(()=>f.records.records([0],{derivedTick:4}),/disposed/);await f.close();
 });
+
+// A restarted load attempt records only the bricks its last attempt's records
+// lacked, and reads back exactly what one record() of all of them reads: Island
+// re-recorded 449k rows, 2.3-2.5 s a restart, with nothing new (2026-10-22).
+test('a restart\'s metadata cost is proportional to new bricks; carried records stay exact',async()=>{
+  const f=await setup({cur:1}),all=f.bricks,first=[all[0],all[2]],rest=[all[1],all[3]];
+  let a=cut(f);await f.sample(a,0,{bs:first});
+  const slot=cellSlot(f.sim.g,0,0,0),offset=f.sim.cur*f.sim.g.slots*4+slot*4;u32(f.sim.state.B)[offset]^=1;f.sim.version++;f.source.noteContentChange();
+  const b=f.source.recordCut(f.gpu.frame,{previousCut:a,sceneVersion:'scene',configVersion:1});
+  const ids=all.map(x=>x[0]+16*(x[1]+2*x[2])),sorted=l=>[...l].map(String).sort();
+  const full=await f.sample(b,1,{bs:all,commit:false});
+  const reference={records:full.records(ids),changed:sorted(full.changes.changedBricks),emission:sorted(full.changes.emissionChangedBricks),halo:[...full.changes.glowDirtyIndices]};
+  assert(reference.changed.length>0,'the edit changes a carried brick');
+  full.discard();
+  const one=await f.sample(b,1,{bs:first,commit:false});
+  assert.deepEqual(f.records.carryable(one,{cut:b,derivedTick:1}),new Set(first.map(x=>x[0]+16*(x[1]+2*x[2]))));
+  assert.equal(f.records.carryable(one,{cut:b,derivedTick:2}),null,'another clock never carries');
+  const classification=await f.publish(b,1,rest),two=f.records.record(f.gpu.frame,{cut:b,classification,derivedTick:1,carry:one});
+  await drain(f.gpu);await two.completion;
+  assert.equal(two.wordCount,rest.length*5,'only the new bricks are recorded');
+  assert.throws(()=>one.records(ids),/not complete\/live/,'a carried batch is consumed');
+  assert.deepEqual(two.records(ids),reference.records);
+  assert.deepEqual(sorted(two.changes.changedBricks),reference.changed);
+  assert.deepEqual(sorted(two.changes.emissionChangedBricks),reference.emission);
+  assert.deepEqual([...two.changes.glowDirtyIndices],reference.halo);
+  assert.deepEqual(sorted(two.indices),sorted(ids));
+  two.commit();assert.deepEqual(f.records.records(ids,{derivedTick:1}),reference.records);
+  a.release();b.release();await f.close();
+});

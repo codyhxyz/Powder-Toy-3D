@@ -43,7 +43,7 @@ let head=array<u32,7>(${kind==='opaque'?'1':'0'}u,0u,0u,0u,0u,0u,${kind==='cryst
   return miss[0]===READY.GI;
 }
 async function settle(gpu,promise){let done=false,error,result;promise.then(r=>{done=true;result=r;},e=>{done=true;error=e;});for(let i=0;i<2000&&!done;i++){gpu.finish();await tick();}assert(done,'native final boundary failed to settle');if(error)throw error;return result;}
-export async function setup({size=[16,8,8],feedback=true,sourceKinds=null,ground=null}={}) {
+export async function setup({size=[16,8,8],feedback=true,sourceKinds=null,ground=null,ownerOptions={}}={}) {
   const f=await fixture({size}),gpu=f.gpu,events=[],sources=[],histories=[],tablesUsed=[],giJobs=[];
   const tableBuffer=gpu.createBuffer({label:'real fixture tables',size:tableLayout().Tables.size,usage:128|4|8});
   const tableGroup=gpu.bindGroup(f.sim.L.TABLES,[{binding:0,resource:{buffer:tableBuffer}}],'fixture TABLES');
@@ -104,7 +104,7 @@ export async function setup({size=[16,8,8],feedback=true,sourceKinds=null,ground
   gpu.frame.compute=()=>{let pipe;const groups=[];return {setPipeline:p=>pipe=p,setBindGroup:(i,g)=>groups[i]=g,dispatchWorkgroups:n=>dispatch(pipe,groups,n,fn=>gpu._push(fn))};};
   // A ground twin (world/scenes/index.js ground) turns on the sun-caster forecast.
   if(ground)f.win.scene.ground=ground;
-  owner=installWorldRender(f.win);
+  owner=installWorldRender(f.win,ownerOptions);
   const frame={sceneVersion:'scene',schemaVersion:1,configVersion:1,values:{cam:[0,0,0]},physicsOrigin:[0,0,0],globalKey:[1],sun:{direction:[1,1,1],basisRevision:1},external:Object.fromEntries(['mediaNoise','packedMesh','sourceAppearance'].map(name=>[name,{name}]))};
   return {...f,owner,events,sources,histories,tablesUsed,giJobs,frame,async close(){await settle(gpu,owner.dispose());await f.finish();}};
 }
@@ -295,7 +295,8 @@ test('actual owner captures original 384-height boundary and pins external resou
 });
 
 test('two actual SOURCE core slabs precede ANY gather; retained GI crosses R+1 with original mixed compute tokens',async()=>{
-  const f=await setup({size:[48,8,8],feedback:false});const demand=[0,8].map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE|READY.GI}));
+  // A one-job bound: each core is its own slab (WORLD_GI_SLAB_JOBS packs both into one).
+  const f=await setup({size:[48,8,8],feedback:false,ownerOptions:{giSlabJobs:1}});const demand=[0,8].map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE|READY.GI}));
   let c=await settle(f.gpu,f.owner.request(f.frame,demand));
   const phases=f.events.filter(x=>x==='world GI source'||x==='world GI gather');assert.deepEqual(phases,['world GI source','world GI source','world GI gather','world GI gather']);
   await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
@@ -353,4 +354,44 @@ for(const forecast of [false,true])test(`sun casters ${forecast?'forecast from t
   if(forecast)assert(p.forecastBricks>0&&f.owner.atlas.lookup([3,0,0],READY.CELL).known,'caster brick forecast and resident');
   else assert.equal(p.forecastBricks,0);
   await settle(f.gpu,f.owner.accept(c,post(c)));c.release();await f.close();
+});
+
+// GI demand that the SOURCE phase discovers (each opaque SOURCE job reads its own
+// brick's previous probe) resolves inside the attempt: every slab runs and the
+// births join the same plan. An Island load restarted once per 32-cell core,
+// ~64 probes a time, for 19+ attempts of ~3.5 s from its SOURCE stage (2026-10-22).
+for(const giSlabJobs of [1,undefined])test(`GI gather demand resolves without restarting the attempt (${giSlabJobs?'a slab per core':'packed slabs'})`,async()=>{
+  const cores=[0,8,16],kinds=Object.fromEntries(cores.map(x=>[x,'opaque']));
+  const run=async channels=>{
+    const f=await setup({size:[96,8,8],feedback:false,sourceKinds:kinds,ownerOptions:giSlabJobs?{giSlabJobs}:{}});
+    const c=await settle(f.gpu,f.owner.request(f.frame,cores.map(x=>({brick:[x,0,0],channels}))));
+    const p=f.owner.progress,last=new Map();
+    for(const j of f.giJobs)last.set(`${j.phase} ${j.index}`,j.flags);
+    const gi=cores.map(x=>f.owner.atlas.lookup([x,0,0],READY.GI).known);
+    await settle(f.gpu,f.owner.discard(c));c.release();await f.close();
+    return {p,last,gi};
+  };
+  const found=await run(READY.GI_SOURCE),declared=await run(READY.GI_SOURCE|READY.GI);
+  assert.equal(found.p.attempts,1,`attempts ${found.p.attempts}`);
+  assert.equal(found.p.sourcePasses,1,'one SOURCE pass found every core\'s births');
+  assert.equal(found.p.gathers,cores.length);
+  // Exact: the same jobs, birth flags and probes as a load that asked for them.
+  assert.equal(declared.p.attempts,1);assert.equal(declared.p.sourcePasses,0);
+  assert.deepEqual([...found.last].sort(),[...declared.last].sort());
+  assert.deepEqual(found.gi,cores.map(()=>true));assert.deepEqual(declared.gi,found.gi);
+});
+
+// Each restart records metadata for the bricks it adds, not for the whole
+// demand again (Island: 2.3-2.5 s of every restart at 449k bricks, 2026-10-22).
+test('a restart\'s metadata cost is proportional to new bricks',async()=>{
+  const f=await setup(),counts=[],acquire=f.owner.cells.acquireClassification.bind(f.owner.cells);
+  f.owner.cells.acquireClassification=o=>{counts.push(o.bricks.map(b=>b.join(',')));return acquire(o);};
+  const c=await settle(f.gpu,f.owner.request(f.frame,[{brick:[0,0,0],channels:READY.CELL}]));
+  const p=f.owner.progress;assert.equal(p.attempts,3);
+  const once=counts.flat();assert.equal(new Set(once).size,once.length,'every brick\'s metadata is recorded once');
+  assert.equal(once.length,p.requirements,'and every required brick\'s');
+  assert.equal(p.metadataBricks,counts.at(-1)?.length??0);
+  await settle(f.gpu,f.owner.accept(c,post(c)));
+  assert.deepEqual(new Set(f.owner.metadata.indices.map(String)),new Set([...f.owner.atlas.bookPages('cell')].map(pg=>String(pg.brick[0]+4*(pg.brick[1]+2*pg.brick[2])))));
+  c.release();await f.close();
 });
