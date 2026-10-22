@@ -256,7 +256,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
           code: volumeFrag(g, { view, detail: d, curved, fixedReadFormat: format }), layouts: [L.VOLUME_FRAME, L.STATE_RO, L.LIGHTING],
           params: VolumeParams, ...volumePipeline(), build, first: build === 'now',
         }));
-      } else if (build === 'now' && p.state === 'idle') p.build();
+      } else if (build === 'now' && (p.state === 'idle' || p.state === 'pending')) p.build();   // (a queued prefetch moves up: BUILD_RANK)
       return p;
     },
     /** Queues a view's pipeline for idle time (B5); resolves with it when it is ready. */
