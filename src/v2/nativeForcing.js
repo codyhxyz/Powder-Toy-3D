@@ -16,6 +16,8 @@ export const NATIVE_LAUNCH_MODE=15;
 // opts.sources: a change of element is a new cell, as V1's writer made it (its temperature, life,
 //   ctype and seed: nativeWeather.js's new-source rule; air into fire, a wand's emit, a script's
 //   create), not a fracture, and it launches when it is loose matter the update set moving;
+// opts.sourcesFromGas: with sources, only a change of air or a gas is a new cell (the rocket's fire); a
+//   solid's change stays a fracture (energy-exact in apply, its debris launched at the rule's speed).
 // opts.renameNow: a fracture renames the cell here, energy-exact as apply does, and plans only its
 //   launch, so a take recorded before the allocation (a melee tool's gather: run's defer) finds the
 //   debris on the grid where V1's take found it.
@@ -44,7 +46,7 @@ if(r.before.x!=r.after.x && cls(u32(r.after.x))==C_GAS) {
  return;
 }` : '';
   const sources=opts.sources ? `
-if(r.before.x!=r.after.x) {
+if(r.before.x!=r.after.x${opts.sourcesFromGas ? ' && (k==0u || k==4u)' : ''}) {
  let made=u32(r.after.x);
  var m=makeMaterial(made,r.after.y,FULLU,u32(max(floor(r.after.w),0.0)));
  m.core=withLife(m.core,r.after.z);
@@ -147,7 +149,8 @@ export function createNativeForceKernel(sim,name,spec) {
   // must leave every cell to one part (it changes nothing elsewhere) and the commit must be sparse,
   // or a later part's empty plans would clear an earlier part's. `box` is then their union, the
   // particles' (each particle is evaluated once, with `values` alone).
-  return {ready,get isReady(){return kernels.every(k=>k.state==='ready') && d.isReady;},run(box,values,source,{defer=false,parts=null}={}) {
+  // ownReady: its own kernels are built (isReady: and the dynamics', whose stages its launches record)
+  return {ready,get ownReady(){return kernels.every(k=>k.state==='ready');},get isReady(){return kernels.every(k=>k.state==='ready') && d.isReady;},run(box,values,source,{defer=false,parts=null}={}) {
     if(kernels.some(k=>k.state!=='ready') || !d.isReady || sim.disposed || sim.compactOwner!==o || !box) return false;
     if(parts && !spec.commit?.sparse) throw Error(`${name}: parts need a sparse commit`);
     const dims=[sim.g.nx,sim.g.ny,sim.g.nz],clip=b=>({lo:b.lo.map(v=>Math.max(0,Math.ceil(v))),hi:b.hi.map((v,a)=>Math.min(dims[a]-1,Math.floor(v)))});

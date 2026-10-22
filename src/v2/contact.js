@@ -13,7 +13,7 @@ import { EDGE } from '../simModes.js';
 const EDGE_SOLID = EDGE.SOLID;
 
 import { FUEL_Q } from './layout.js';
-import { PHASE_ROWS, phaseTemperatureQ, phaseOffsetEnergy, phaseLatentEnergy, encodePhaseEnergy } from './phase.js';
+import { PHASE_ROWS, PHASE_NORMAL_MAX, phaseTemperatureQ, phaseOffsetEnergy, phaseLatentEnergy, encodePhaseEnergy } from './phase.js';
 const CONTACT_FULL = 65536;
 export const CONTACT_ELEMENT_COUNT = ELEMENTS.length;
 const LIFE_SCALE = FUEL_Q;
@@ -69,6 +69,7 @@ const RX_PAIRINGS_PER_PARTNER_TICK = PARTNER_STEPS / V1_RX_PAIRINGS;
 // n partners fire with 1 - exp(n·log). p ≥ 1 is certain: a log far under f32's.
 const missLog = p => PARTNER_STEPS * Math.log(Math.max(1e-30, 1 - Math.min(1, p)));
 const CONTACT_CAP_UNITS = 64;   // ctCapacity's units of a cap (CONTACT_ROWS capacity: cap·64)
+const CONTACT_RX_HEAT_UNIT = 256;   // a reaction row's heat, in 1/256 cap·°C (CONTACT_REACTIONS heat)
 const CONTACT_Q_PER_C = 4;      // the ¼ K temperature code
 export const CT_ENERGY_PER_CAP_C = CONTACT_Q_PER_C * CONTACT_FULL * CONTACT_CAP_UNITS;
 const JOULE_ENERGY = ELEC.JOULE_PER_LEVEL * CT_ENERGY_PER_CAP_C;
@@ -97,9 +98,34 @@ const FUSE_BURN_DEN = FUSE_HANDOFF_DEN * PHYS.FUSE_STEPS_PER_CELL;
 if (Math.abs(FUSE_BURN_NUM / FUSE_BURN_DEN - PHYS.FUSE_BURN * FUSE_UNLIT) > 1e-9 || FUSE_BURN_NUM <= FUSE_BURN_DEN) throw Error('fuse burn is not an exact fraction above a unit a step');
 if (FUSE_STEPS.out * FUSE_BURN_NUM > 2147483647) throw Error('fuse countdown overflows i32');
 if (ELEC.SPARK_V > ELEC_SPENT_MAX || SPARK_BORN + SPARK_CYCLE * ELEC.SPARK_V >= ELEC_LIFE_UNIT || ELEC.SWITCH_ON > ELEC_LIFE_MAX) throw Error('electric scratch word fields overflow');
+// The energy rules' constants (ctFlux, ctReaction, ctConvert...), in CONTACT_CONSTANTS below.
+const CONTACT_ENERGY_CONSTANTS = {
+  // V1 react.js condFlux, min(cond)·ΔT cap·°C a step, as native energy a partnered tick for ΔT in
+  // ¼ K codes: PARTNER_STEPS steps of CT_ENERGY_PER_CAP_C per cap·°C, a quarter of it per code.
+  CT_COND_FLUX: ['f32', PARTNER_STEPS * CT_ENERGY_PER_CAP_C / CONTACT_Q_PER_C],
+  // ctCapacity's units of a cap (CONTACT_ROWS capacity: cap·64) and ¼ K codes per °C: a
+  // reaction's heat (row.heat, 1/256 cap·°C) over its products' caps as V1 react.js rxT does.
+  CT_CAP_UNITS: ['i32', CONTACT_CAP_UNITS],
+  CT_Q_PER_C: ['i32', CONTACT_Q_PER_C],
+  // A whole cell's amount (ctAmount): a liquid's fill is its share of one.
+  CT_FULL: ['i32', CONTACT_FULL],
+  // A fill draw (a part-filled liquid that becomes a whole cell): ctRoll's salt, and a draw's
+  // 2^24 steps (ctRoll), which make a draw already made a seed for a fresh one.
+  CT_FILL_SALT: ['i32', 21],
+  CT_ROLL_UNIT: ['f32', 16777216],
+  // ...and a reaction's or acid's fill draws, CT_PAIR_FILL_SALT + 0..3 (ctReaction, ctAcid: the pair's seed)
+  CT_PAIR_FILL_SALT: ['i32', 24],
+  // The ¼ K codes' top, 10000 °C (phase.js PHASE_NORMAL_MAX; V1 react.js clamps T at CELL_TEMP_MAX)
+  CT_Q_MAX: ['i32', PHASE_NORMAL_MAX],
+  // A reaction row's heat in 1/CT_RX_HEAT_UNIT cap·°C (CONTACT_REACTIONS heat)
+  CT_RX_HEAT_UNIT: ['i32', CONTACT_RX_HEAT_UNIT],
+  // A share of a whole cell's energy in i32 (ctElecApply): FULL = CT_SHARE_LO² · CT_SHARE_HI
+  CT_SHARE_LO: ['i32', 16],
+  CT_SHARE_HI: ['i32', CONTACT_FULL / 256],
+};
 // Named rule constants, shared verbatim by the scalar kernel and its WGSL
 // (shaders/v2/contact.js emits each as a typed const).
-export const CONTACT_CONSTANTS = Object.freeze({
+export const CONTACT_CONSTANTS = Object.freeze({ ...CONTACT_ENERGY_CONSTANTS,
   // the default scene's ambient (physics.js AMBIENT) for ctStep's standalone patch
   CT_AMBIENT_Q: ['i32', q(PHYS.AMBIENT)],
   CT_CODE_ZERO_C: ['f32', 273.25],   // the native ¼ K code's zero (q above)
@@ -266,6 +292,7 @@ const { CT_AMBIENT_Q, CT_CODE_ZERO_C, CT_CLOUD_EVAP_COOL_Q, CT_MAGNUS_A, CT_MAGN
   CT_TOUCH_FLAME, CT_TOUCH_HOT, CT_OUT_SURFACE, CT_OUT_FIRE, CT_OUT_EMPTY, CT_OUT_CLOUD, CT_OUT_DUST, CT_OUT_DAMP, CT_OUT_DAMP_MAX,
   CT_OUT_WET_MOSS, CT_OUT_BED, CT_OUT_UP, CT_CHARGE_T_MAX_Q, CT_CHARGE_MAX, CT_CHARGE_STEP, CT_PARTNER_STEPS, CT_CHARGE_SALT,
   CT_BURN_PUFF_PA, CT_SING_EVAP, CT_SING_MASS_MIN, CT_SING_SALT } = Object.fromEntries(Object.entries(CONTACT_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
+const { CT_COND_FLUX, CT_CAP_UNITS, CT_Q_PER_C, CT_FULL, CT_FILL_SALT, CT_ROLL_UNIT, CT_PAIR_FILL_SALT, CT_Q_MAX, CT_RX_HEAT_UNIT, CT_SHARE_LO, CT_SHARE_HI } = Object.fromEntries(Object.entries(CONTACT_ENERGY_CONSTANTS).map(([k, [, v]]) => [k, Math.fround(v)]));
 
 const outSpecs = [];
 function spec(into = 'FIRE') {
@@ -334,9 +361,10 @@ export const CONTACT_REACTIONS = REACTIONS.map(r => ({
   // a pairing; a face is a block partner half the 60 Hz ticks, so a partnered tick carries
   // RX_PAIRINGS_PER_PARTNER_TICK of V1's pairings. Never multiply the heat by pairing.
   chance: 1 - (1 - Math.min(1, (r.chance ?? 1) * V1_RX_PAIRINGS)) ** RX_PAIRINGS_PER_PARTNER_TICK, minQ: q(r.minT ?? -273.25), maxQ: q(r.maxT ?? 10000),
-  heat: Math.round((r.heat ?? 0) * 256), gas: +(!!r.puff),
-  // Hydrogen's adiabatic oxygen flame: existing elements.js reaction content.
-  ceiling: q(r.a === 'HYDROGEN' ? (r.b === 'OXYGEN' ? 2800 : 2254) : 10000),
+  heat: Math.round((r.heat ?? 0) * CONTACT_RX_HEAT_UNIT), gas: +(!!r.puff),
+  // V1 react.js has no reaction ceiling, only its 10000 °C clamp (ctReaction: products at their
+  // own T plus rxT, hydrogen's 2254/2800 °C flame from ambient reactants as elements.js sets its heat).
+  ceiling: PHASE_NORMAL_MAX,
   // V1 react.js: each cell of the pair takes half the puff's pressure (rxP).
   puff: puffPa(0.5 * puffP(r.puff ?? 0)),
 }));
@@ -422,6 +450,20 @@ export function ctCreate(input, id, tq) {
   c.busy = 1;
   return ctRecordChange(c, ctEnergy(input));
 }
+// V1's cells are whole: a part-filled liquid that grows into a whole cell at its temperature (water
+// into plant) does so with its fill's chance (roll), else it is taken up and leaves its carrier air.
+export function ctGrow(input, id, roll) {
+  let made = id;
+  if (roll >= ctShare(input)) made = E.EMPTY;
+  return ctCreate(input, made, input.tq);
+}
+// V1 react.js Void: what it drains becomes air at the scene's ambient (T = airT()); the energy the
+// cell held is a declared sink.
+export function ctDrain(input, ambientQ) {
+  let c = ctInherit(ctNew(E.EMPTY, ambientQ, 65536), input);
+  c.busy = 1;
+  return ctRecordChange(c, ctEnergy(input));
+}
 
 
 // Keep scalar kernel bodies within this deliberately small JS/WGSL subset:
@@ -470,6 +512,13 @@ export function ctConvert(input, id, of) {
   c.ctype = 0;
   if (id === E.LAVA) c.ctype = of;
   c = ctInherit(c, input);
+  // V1's cells are whole (react.js: a phase change is one cell into one cell, at its T). A
+  // part-filled liquid that becomes a whole cell (or its carrier air: ctPhase's fill draw) is it
+  // at the liquid's temperature, and the energy the whole cell differs by is a declared change.
+  if (ctRow(input.id).kind === 3 && amount !== input.fill) {
+    c.busy = 1;
+    return ctRecordChange(c, ctEnergy(input));
+  }
   if (!ctFits(c, ctEnergy(input))) {
     let wait = ctCopy(input); wait.pending = id; wait.pendingOf = of; wait.busy = 1; return wait;
   }
@@ -486,13 +535,18 @@ export function ctTemperatureRemainder(c) {
 export function ctFlux(a, b) {
   const ra = ctRow(a.id);
   const rb = ctRow(b.id);
-  if (ra.cond + rb.cond === 0) return 0;
+  // V1 react.js condFlux: min(cond_a, cond_b)·ΔT a step on each face, CT_COND_FLUX the
+  // PARTNER_STEPS steps a partnered tick carries (a face is a block partner half the ticks).
+  const k = Math.min(ra.cond, rb.cond);
+  if (k === 0) return 0;
   const dt = ctF(ctF(b.tq - a.tq) + ctTemperatureRemainder(b) - ctTemperatureRemainder(a));
-  // Harmonic mean, 4 legacy steps/native tick and each face present 1/2
-  // ticks. Sequential conservative pair exchange is stable at this limiter.
-  const k = 2 * ra.cond * rb.cond / (ra.cond + rb.cond);
-  const lim = ctI(Math.min(2147483000, Math.abs(dt) * ctF(Math.min(ctCapacity(a), ctCapacity(b))) / 6));
-  const flux = ctI(Math.max(-2147483000, Math.min(2147483000, k * dt * 33554432)));
+  // V1 caps a step's flux at COND_FLUX_SHARE (1/6) of min(cap)·ΔT because it sums six faces at
+  // once; a block pair trades alone, one pair after another, so its bound is the pair's own
+  // equilibrium, |ΔT|·CaCb/(Ca+Cb): neither cell crosses the other (stable, no overshoot).
+  const ca = ctF(ctCapacity(a));
+  const cb = ctF(ctCapacity(b));
+  const lim = ctI(Math.min(2147483000, Math.abs(dt) * (ca * cb / (ca + cb))));
+  const flux = ctI(Math.max(-2147483000, Math.min(2147483000, k * dt * CT_COND_FLUX)));
   return Math.max(-lim, Math.min(lim, flux));
 }
 // The branches only pick what the cell becomes; one ctConvert and one ctProduct call do it. Every
@@ -527,6 +581,10 @@ export function ctPhase(input, surface, random) {
     into = ctProduct(product, random);
     if (cold && c.id === E.STEAM && surface === 0) into = E.CLOUD;
   }
+  // A part-filled liquid becoming a whole cell (ice, steam, clay, stone...) does so with its fill's
+  // chance, else it leaves its carrier air: whole cells' worth in proportion to the liquid it held,
+  // as V1's whole cells convert one for one (ctConvert keeps either at its temperature).
+  if (ctRow(subject.id).kind === 3 && ctRow(into).kind !== 3 && subject.fill < CT_FULL && ctRoll(ctI(random * CT_ROLL_UNIT), CT_FILL_SALT) * ctF(CT_FULL) >= ctF(subject.fill)) { into = E.EMPTY; gas = 0; }
   const next = ctConvert(subject, into, intoOf);
   if (gas !== 0) {
     if (next.id !== input.id) next.request = ctPuff(next.request, gas);
@@ -672,7 +730,12 @@ export function ctElecApply(input, word, seed) {
   if (ctRow(c.id).conductor !== 0) c.spark = spark;
   if (c.id === E.SWITCH || c.id === E.PCLN || c.id === E.TSNS) c = ctWithLife(c, ctF(lifeCode));
   if (spent > 0) {
-    const joule = ctHeatRoom(c, spent * CT_JOULE_WHOLE + ctDiv(spent * CT_JOULE_MILLI, CT_JOULE_MILLI_UNIT));
+    let heat = spent * CT_JOULE_WHOLE + ctDiv(spent * CT_JOULE_MILLI, CT_JOULE_MILLI_UNIT);
+    // V1 warms its whole cell JOULE_PER_LEVEL cap·°C a level. A part-filled liquid holds its fill's
+    // share of that cell, so it takes that share, and warms as V1's cell does (heat·amount/FULL, in
+    // i32: FULL = CT_SHARE_LO² · CT_SHARE_HI). It costs a spark V1's levels a cell all the same.
+    if (ctAmount(c) < CT_FULL) heat = ctDiv(ctDiv(heat, CT_SHARE_LO) * ctDiv(ctAmount(c), CT_SHARE_HI), CT_SHARE_LO);
+    const joule = ctHeatRoom(c, heat);
     c = ctHeat(c, joule);
     c.source = ctAdd(c.source, ctSigned(joule));
   }
@@ -920,7 +983,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
   // Electricity is the electric pass's (shaders/v2/electric.js: V1's step, four a tick, six faces).
   c = ctPhase(c, surface + onFloor, ctRoll(seed, 3));
   if (c.id !== input.id || c.pending >= 0) return c;
-  if (voidTouch && c.id !== E.EMPTY && r.kind !== 1) return ctDecay(c, E.EMPTY);
+  if (voidTouch && c.id !== E.EMPTY && r.kind !== 1) return ctDrain(c, ambientQ);
   const emitter = ctRow(ctNuclearId(c)).emitter;
   if (emitter > 0) { c.busy = 1; if (ctRoll(seed, 4) < emitter) c.request = c.request | 4; }
   if (r.blast !== 0) {
@@ -984,7 +1047,7 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
     }
   }
   // The fuse is the electric pass's (ctFuseStep: V1's step, four a tick, six faces).
-  if (c.id === E.WATER && plant > 0) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(plant) * CT_PLANT_MISS_LOG)) return ctCreate(c, E.PLANT, c.tq); }
+  if (c.id === E.WATER && plant > 0) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(plant) * CT_PLANT_MISS_LOG)) return ctGrow(c, E.PLANT, ctRoll(seed, CT_FILL_SALT)); }
   if (r.rots !== 0 && fungus > 0 && c.tq < CONTACT_DAMP_DRY_Q) { c.busy = 1; if (random < 1.0 - Math.exp(ctF(fungus) * CT_FUNGUS_MISS_LOG)) return ctCreate(c, E.FUNGUS, c.tq); }
   if (c.id === E.MOSS || c.id === E.FUNGUS) {
     const previous = c.ctype;
@@ -1057,7 +1120,8 @@ export function ctStepAtmosphere(input, ns, seed, outAir, outOxygen, outCo2, out
 // Function signatures are part of the checked JS→WGSL kernel ABI.
 export const CONTACT_KERNEL = [
   [ctInherit, ['CTCell', 'CTCell'], 'CTCell'], [ctRecordChange, ['CTCell', 'vec2u'], 'CTCell'],
-  [ctDecay, ['CTCell', 'i32'], 'CTCell'], [ctExhaust, ['CTCell', 'i32'], 'CTCell'], [ctFlameLife, ['i32'], 'i32'], [ctCreate, ['CTCell', 'i32', 'i32'], 'CTCell'],
+  [ctDecay, ['CTCell', 'i32'], 'CTCell'], [ctExhaust, ['CTCell', 'i32'], 'CTCell'], [ctFlameLife, ['i32'], 'i32'], [ctCreate, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctDrain, ['CTCell', 'i32'], 'CTCell'],
+  [ctGrow, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctDensity, ['CTCell'], 'f32'], [ctAmount, ['CTCell'], 'i32'], [ctCapacity, ['CTCell'], 'i32'], [ctHeat, ['CTCell', 'i32'], 'CTCell'], [ctHeatTo, ['CTCell', 'i32', 'i32'], 'CTCell'], [ctConvert, ['CTCell', 'i32', 'i32'], 'CTCell'],
   [ctTemperatureRemainder, ['CTCell'], 'f32'], [ctFlux, ['CTCell', 'CTCell'], 'i32'], [ctPhase, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctNuclearId, ['CTCell'], 'i32'], [ctLive, ['CTCell'], 'bool'], [ctConductsInto, ['i32', 'i32'], 'bool'], [ctCloneable, ['i32'], 'bool'],
@@ -1103,42 +1167,56 @@ export const ctPairValue = (a, b, changed) => ({ a, b, changed });
 export const ctRxAt = (a, b) => CONTACT_RX_INDEX[a * ELEMENTS.length + b];
 export const ctRx = index => CONTACT_REACTIONS[index];
 export const ctCeilEnergy = (energy, divisor) => Number((energy + BigInt(divisor) - 1n) / BigInt(divisor));
-export const ctCommonQ = (energy, a, b) => Number((energy - ctOffset(a) - ctOffset(b)) / BigInt(ctCapacity(a) + ctCapacity(b)));
-export const ctRemainder = (energy, a, b) => energy - ctEnergy(a) - ctEnergy(b);
-export function ctBalance(a0, b0, energy, ceiling) {
-  let a = ctCopy(a0);
-  let b = ctCopy(b0);
-  const tq = Math.max(0, Math.min(ceiling, ctCommonQ(energy, a, b)));
-  a.tq = tq; a.raw = tq; a.bank = 0;
-  b.tq = tq; b.raw = tq; b.bank = 0;
-  // Remaining integer quanta stay with the larger capacity. No f32 energy
-  // average and no independent rounded shares (which lose heat).
-  const remainder = ctRemainder(energy, a, b);
-  if (ctCapacity(a) >= ctCapacity(b)) {
-    const targetEnergy = ctAdd(ctEnergy(a), remainder);
-    if (!ctFits(a, targetEnergy)) return ctPairValue(a0, b0, 0);
-    a = ctSetEnergy(a, targetEnergy);
-  } else {
-    const targetEnergy = ctAdd(ctEnergy(b), remainder);
-    if (!ctFits(b, targetEnergy)) return ctPairValue(a0, b0, 0);
-    b = ctSetEnergy(b, targetEnergy);
-  }
-  if (a.tq > ceiling || b.tq > ceiling) return ctPairValue(a0, b0, 0);
-  a.done = 1; b.done = 1; a.busy = 1; b.busy = 1;
-  return ctPairValue(a, b, 1);
+// The share of a whole cell a cell holds: a liquid's fill (at most one), anything else 1.
+export function ctShare(c) {
+  if (ctRow(c.id).kind === 3) return Math.min(1.0, ctF(c.fill) / ctF(CT_FULL));
+  return 1.0;
 }
+// A cell given dq ¼ K codes of V1's reaction heat (react.js T += rxT): its energy plus its capacity's
+// worth, or, past what its codes hold (10000 °C, absolute zero), at that end. The change is the
+// caller's to declare (ctRecordChange).
+export function ctWarm(input, dq) {
+  if (dq === 0) return input;
+  let c = ctCopy(input);
+  let gain = ctMul(ctCapacity(c), Math.abs(dq));
+  if (dq < 0) gain = ctSub(ctSigned(0), gain);
+  const warmed = ctAdd(ctEnergy(c), gain);
+  if (ctFits(c, warmed)) return ctSetEnergy(c, warmed);
+  c.tq = Math.max(0, Math.min(CT_Q_MAX, c.tq + dq)); c.raw = c.tq; c.bank = 0;
+  return c;
+}
+// V1 react.js: an eaten or spent cell (acid) becomes `id`, smoke or air, at its own temperature, its
+// energy a declared change. A part-filled liquid's smoke is a whole cell with its fill's chance
+// (roll), else air: V1's whole cells one for one.
+export function ctGone(input, id, roll) {
+  let out = id;
+  if (roll >= ctShare(input)) out = E.EMPTY;
+  let c = ctInherit(ctNew(out, input.tq, 65536), input);
+  c.busy = 1; c.done = 1;
+  return ctRecordChange(c, ctEnergy(input));
+}
+// V1 react.js: a cell changes phase at its own temperature (latent heat aside, which its bank
+// holds), its partner untouched. A change ctConvert could not make energy-exact (pending) is made
+// at the cell's temperature; the energy the product differs by is a declared source or sink.
 export function ctResolvePhase(a0, b0) {
   if (a0.pending < 0 || b0.done !== 0 || b0.pending >= 0 || (b0.request & 5) !== 0) return ctPairValue(a0, b0, 0);
   let amount = 65536;
   if (ctRow(a0.pending).kind === 3 && ctRow(a0.id).kind === 3) amount = a0.fill;
   let a = ctInherit(ctNew(a0.pending, a0.tq, amount), a0);
   if (a.id === E.LAVA) a.ctype = a0.pendingOf;
-  const before = ctAdd(ctEnergy(a0), ctEnergy(b0));
-  let pair = ctBalance(a, b0, before, 41093);
-  if (pair.changed === 0) return ctPairValue(a0, b0, 0);
-  if (a0.pendingGas !== 0) pair.a.request = ctPuff(pair.a.request, a0.pendingGas);
-  return pair;
+  a.busy = 1; a.done = 1;
+  a = ctRecordChange(a, ctEnergy(a0));
+  if (a0.pendingGas !== 0) a.request = ctPuff(a.request, a0.pendingGas);
+  return ctPairValue(a, b0, 1);
 }
+// V1 react.js reactions (applied at `T += rxT`): each product keeps its own cell's temperature and
+// both take the row's heat alike, heat / (CAP(oa) + CAP(ob)); a cell the row leaves as it is (SAME)
+// takes it too. No ceiling past the codes' 10000 °C (V1's clamp). The energy each cell changes by
+// is its declared source or sink, never pooled between the two.
+// V1's cells are whole and react one for one. A part-filled liquid makes a whole-cell product with
+// its fill's chance (else carrier air: ctConvert's rule), and of a pair the cell holding more takes
+// part with the smaller share over its own (else it stays as it is, unheated), so a film reacts
+// for its share of a whole cell: a thin puddle makes its volume's worth of mud, not a cell a film.
 export function ctReaction(a0, b0, seed) {
   let a = ctCopy(a0);
   let b = ctCopy(b0);
@@ -1154,6 +1232,16 @@ export function ctReaction(a0, b0, seed) {
   if ((code - 1) % 2 !== 0) { const temp = ao; ao = bo; bo = temp; }
   if (ao < 0) ao = a.id;
   if (bo < 0) bo = b.id;
+  // rxT in ¼ K codes (row.heat: 1/256 cap·°C; capacity: cap·CT_CAP_UNITS).
+  const dq = ctI(Math.floor(ctF(row.heat) * ctF(CT_CAP_UNITS * CT_Q_PER_C) / ctF(CT_RX_HEAT_UNIT * (ctRow(ao).capacity + ctRow(bo).capacity)) + 0.5));
+  const shareA = ctShare(a);
+  const shareB = ctShare(b);
+  let partA = 1;
+  let partB = 1;
+  if (shareA > shareB && ctRoll(seed, CT_PAIR_FILL_SALT + 2) * shareA >= shareB) { ao = a.id; partA = 0; }
+  if (shareB > shareA && ctRoll(seed, CT_PAIR_FILL_SALT + 3) * shareB >= shareA) { bo = b.id; partB = 0; }
+  if (ctRow(ao).kind !== 3 && ao !== a.id && ctRoll(seed, CT_PAIR_FILL_SALT) >= shareA) ao = E.EMPTY;
+  if (ctRow(bo).kind !== 3 && bo !== b.id && ctRoll(seed, CT_PAIR_FILL_SALT + 1) >= shareB) bo = E.EMPTY;
   let amountA = 65536; let amountB = 65536;
   if (ctRow(ao).kind === 3 && ctRow(a.id).kind === 3) amountA = a.fill;
   if (ctRow(bo).kind === 3 && ctRow(b.id).kind === 3) amountB = b.fill;
@@ -1161,25 +1249,15 @@ export function ctReaction(a0, b0, seed) {
   let nb = ctInherit(ctNew(bo, b.tq, amountB), b);
   if (ao === a.id) na = ctCopy(a);
   if (bo === b.id) nb = ctCopy(b);
-  const initial = ctAdd(ctEnergy(a), ctEnergy(b));
-  let gain = ctMul(Math.abs(row.heat), 65536);
-  if (row.heat < 0) gain = ctSub(ctSigned(0), gain);
-  let energy = ctAdd(initial, gain);
-  // Cap released chemical energy at the products' flame temperature, not
-  // temperature after adding an unbounded legacy dT to the reactants.
-  const upper = ctAdd(ctAdd(ctMul(ctCapacity(na), row.ceiling), ctMul(ctCapacity(nb), row.ceiling)), ctAdd(ctOffset(na), ctOffset(nb)));
-  if (row.heat > 0 && !ctLess(energy, upper)) {
-    energy = initial;
-    if (ctLess(initial, upper)) energy = upper;
-  }
-  let pair = ctBalance(na, nb, energy, row.ceiling);
-  if (pair.changed === 0) return ctPairValue(a, b, 0);
-  const delta = ctSub(energy, initial);
-  if (ctLess(delta, ctSigned(0))) pair.a.sink = ctAdd(pair.a.sink, ctSub(ctSigned(0), delta));
-  else pair.a.source = ctAdd(pair.a.source, delta);
-  if (row.gas !== 0) { pair.a.request = ctPuff(pair.a.request, row.puff); pair.b.request = ctPuff(pair.b.request, row.puff); }
-  return pair;
+  na = ctRecordChange(ctWarm(na, dq * partA), ctEnergy(a));
+  nb = ctRecordChange(ctWarm(nb, dq * partB), ctEnergy(b));
+  na.busy = 1; nb.busy = 1; na.done = 1; nb.done = 1;
+  // V1: each cell in the pair takes half the puff (rxP), when both took part.
+  if (row.gas !== 0 && partA + partB === 2) { na.request = ctPuff(na.request, row.puff); nb.request = ctPuff(nb.request, row.puff); }
+  return ctPairValue(na, nb, 1);
 }
+// V1 react.js ACIDIC: acid eats what it touches, which becomes smoke or air at its own temperature
+// (ctGone), and spent it does the same; nothing else heats.
 export function ctAcid(a0, b0, seed) {
   let a = ctCopy(a0);
   let b = ctCopy(b0);
@@ -1189,41 +1267,44 @@ export function ctAcid(a0, b0, seed) {
   a.life = Math.max(0, a.life - CT_ACID_SPENT);
   const eats = ctRoll(seed, 13) < CT_ACID_EAT;
   if (!eats && a.life > 0) return ctPairValue(a, b, 0);
-  const energy = ctAdd(ctEnergy(a), ctEnergy(b));
   const fizz = ctRow(b.id).fizz;
   let product = E.EMPTY;
   if (ctRoll(seed, 14) < 0.3) product = E.SMOKE;
-  if (eats) b = ctInherit(ctNew(product, b.tq, 65536), b);
+  if (eats) b = ctGone(b, product, ctRoll(seed, CT_PAIR_FILL_SALT + 1));
   // used up (react.js: life <= 0), it leaves smoke or air, eating or not
-  if (a.life === 0) a = ctInherit(ctNew(product, a.tq, 65536), a);
-  let pair = ctBalance(a, b, energy, 41093);
-  // (no room for the change: nothing changes this tick)
-  if (pair.changed === 0) return ctPairValue(a0, b0, 0);
-  if (eats && fizz !== 0) pair.b.request = pair.b.request | 2;
-  return pair;
+  if (a.life === 0) a = ctGone(a, product, ctRoll(seed, CT_PAIR_FILL_SALT));
+  a.done = 1; b.done = 1;
+  if (eats && fizz !== 0) b.request = b.request | 2;
+  return ctPairValue(a, b, 1);
 }
-export function ctSwallow(a0, b0, seed) {
+// V1 react.js singularity: it gains the mass of what it swallows (density over water's, for a
+// part-filled liquid its fill's share), and the swallowed cell becomes air at the scene's ambient
+// (airT()), a lighter singularity it takes air as it was; its own temperature doesn't change. The
+// energy the swallowed cell loses is a declared sink.
+export function ctSwallow(a0, b0, seed, ambientQ) {
   let a = ctCopy(a0);
   let b = ctCopy(b0);
   if (a.id !== E.SINGULARITY || (ctRow(b.id).singFood === 0 && b.id !== E.SINGULARITY) || a.done !== 0 || b.done !== 0) return ctPairValue(a, b, 0);
   if (b.id === E.SINGULARITY && b.life > a.life) return ctPairValue(a, b, 0);
   a.busy = 1; b.busy = 1;
   if (b.id !== E.SINGULARITY && ctRoll(seed, 15) >= 1) return ctPairValue(a, b, 0);
-  let mass = ctI(ctDensity(b) * 25.6);
-  if (b.id === E.SINGULARITY) mass = b.life;
+  let mass = ctI(ctDensity(b) * 25.6 * ctShare(b));
+  let airQ = ambientQ;
+  if (b.id === E.SINGULARITY) { mass = b.life; airQ = b.tq; }
   a.life = Math.min(65535, a.life + mass);
-  const energy = ctAdd(ctEnergy(a), ctEnergy(b));
-  b = ctInherit(ctNew(E.EMPTY, 1173, 65536), b);
-  const pair = ctBalance(a, b, energy, 41093);
-  if (pair.changed === 0) return ctPairValue(a0, b0, 0);
-  return pair;
+  b = ctInherit(ctNew(E.EMPTY, airQ, 65536), b);
+  b = ctRecordChange(b, ctEnergy(b0));
+  a.done = 1; b.done = 1;
+  return ctPairValue(a, b, 1);
 }
 CONTACT_KERNEL.push(
-  [ctBalance, ['CTCell', 'CTCell', 'vec2u', 'i32'], 'CTPair'],
+  [ctShare, ['CTCell'], 'f32'],
+  [ctWarm, ['CTCell', 'i32'], 'CTCell'],
+  [ctGone, ['CTCell', 'i32', 'f32'], 'CTCell'],
   [ctResolvePhase, ['CTCell', 'CTCell'], 'CTPair'],
   [ctReaction, ['CTCell', 'CTCell', 'i32'], 'CTPair'],
   [ctAcid, ['CTCell', 'CTCell', 'i32'], 'CTPair'],
-  [ctSwallow, ['CTCell', 'CTCell', 'i32'], 'CTPair'],
+  [ctSwallow, ['CTCell', 'CTCell', 'i32', 'i32'], 'CTPair'],
 );
 // ctAcid as the block pass and flying packets run it: V1 react.js sets the gas of what fizzes (limestone)
 // free as acid eats it, puffP(FIZZ) on the eaten cell, so its GAS request carries that puff (CONTACT_ROWS fizz).
@@ -1283,8 +1364,8 @@ export function contactReference(cores, banks, tick = 0, positions = CONTACT_POS
     let pair = ctReaction(cells[i], cells[j], seedAt(i) ^ j);
     if (!pair.changed) pair = ctAcidFizz(pair.a, pair.b, seedAt(i) ^ j);
     if (!pair.changed) { const reverse = ctAcidFizz(pair.b, pair.a, seedAt(i) ^ j); pair = ctPairValue(reverse.b, reverse.a, reverse.changed); }
-    if (!pair.changed) pair = ctSwallow(pair.a, pair.b, seedAt(i) ^ j);
-    if (!pair.changed) { const reverse = ctSwallow(pair.b, pair.a, seedAt(i) ^ j); pair = ctPairValue(reverse.b, reverse.a, reverse.changed); }
+    if (!pair.changed) pair = ctSwallow(pair.a, pair.b, seedAt(i) ^ j, ambientQ);
+    if (!pair.changed) { const reverse = ctSwallow(pair.b, pair.a, seedAt(i) ^ j, ambientQ); pair = ctPairValue(reverse.b, reverse.a, reverse.changed); }
     cells[i] = pair.a; cells[j] = pair.b;
   }
   const snapshot = cells.map(ctCopy);

@@ -199,8 +199,11 @@ export function createNativePaintKernel(sim) {
   const particleEvaluate = make('nativePaintParticleEvaluate', 'particleEvaluate', [sim.L.TABLES, sim.L.STATE_RO, evalLayout]);
   const particleCommit = make('nativePaintParticleCommit', 'particleCommit', [o.nativeDynamics.layout, particleLayout]);
   const kernels = [evaluate, commit, particleEvaluate, particleCommit];
-  const ready = Promise.all([...kernels.map(k => k.ready), d.ready]); ready.catch(() => {});
-  const built = () => kernels.every(k => k.state === 'ready') && d.isReady;
+  // Its own kernels only: it records none of the dynamics' (it writes their buffers: the flying
+  // matter's records, which it edits as V1's brush did its moving cells), so the brush paints from the
+  // first frame while their kernels still build (src/v2/physics.js dynamicsReady).
+  const ready = Promise.all(kernels.map(k => k.ready)); ready.catch(() => {});
+  const built = () => kernels.every(k => k.state === 'ready') && !d.disposed;
   /** box: grid cells; values: PaintParams; mask: a fill's bytes; grid: run the
    * cell rule here (Mix, Property type); particles: apply the rule to the flying matter too
    * (empty, retype, heat, life, ctype: particleCommit). */

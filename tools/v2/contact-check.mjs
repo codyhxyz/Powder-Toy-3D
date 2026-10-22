@@ -96,7 +96,10 @@ test('uniform-temperature liquid advection leaves persistent carrier energy',()=
     }
   }
 });
-test('all 14 reaction rows dispatch real products, obey gates, and balance heat',()=>{
+// Energy after, its declared sinks back and sources out: what went in (contact.js ctRecordChange).
+const ledger = (cells, before, label) => assert.equal(cells.reduce((n, c) => n + energy(c) + c.sink - c.source, 0n), before, label);
+const celsius = c => c.tq / 4 - 273.25;
+test('all 14 reaction rows dispatch real products, obey gates, and give V1 react.js rxT at each cell\'s own T',()=>{
   assert.equal(C.CONTACT_REACTIONS.length,REACTIONS.length);
   for(let i=0;i<REACTIONS.length;i++) {
     const row=C.CONTACT_REACTIONS[i],idb=row.b<0?E.METAL:row.b;
@@ -105,10 +108,10 @@ test('all 14 reaction rows dispatch real products, obey gates, and balance heat'
     for(let seed=0;seed<2000;seed++){pair=C.ctReaction(a,b,seed);if(pair.changed)break;}
     assert.equal(pair.changed,1,`row ${i}`);
     assert.ok(pair.a.id!==a.id||pair.b.id!==b.id,`row ${i} products`);
-    const limit=BigInt(row.ceiling)*BigInt(C.ctCapacity(pair.a)+C.ctCapacity(pair.b))+C.ctOffset(pair.a)+C.ctOffset(pair.b);
-    const expected=energy(a)+energy(b)+BigInt(row.heat)*65536n;
-    assert.equal(energy(pair.a)+energy(pair.b),row.heat>0&&expected>limit?(energy(a)+energy(b)>limit?energy(a)+energy(b):limit):expected,`row ${i} energy`);
-    assert.ok(pair.a.tq<=row.ceiling&&pair.b.tq<=row.ceiling,`row ${i} temperature cap`);
+    ledger([pair.a,pair.b],energy(a)+energy(b),`row ${i} declared ledger`);
+    // V1 react.js: T += heat/(CAP(oa)+CAP(ob)) on each cell, clamped at CELL_TEMP_MAX (a cell banking a latent change holds its T)
+    const v1 = Math.min(10000, T + (REACTIONS[i].heat ?? 0) / (ELEMENTS[pair.a.id].cap + ELEMENTS[pair.b.id].cap));
+    for (const p of [pair.a, pair.b]) if (p.raw <= F.PHASE_NORMAL_MAX) assert.ok(Math.abs(celsius(p) - v1) <= 1 + 0.02 * Math.abs(v1 - T), `row ${i} ${ELEMENTS[p.id].key} at ${celsius(p)} °C, V1 ${v1}`);
     if(row.minQ>0)assert.equal(C.ctReaction(cell(row.a,-273.25),cell(idb,-273.25),0).changed,0);
   }
   assert.equal(C.ctRxAt(E.ANTIMATTER,E.WALL),0);
@@ -198,7 +201,8 @@ test('growth/damp propagation, acid consumption, clone memory, void, singularity
   assert.equal(eaten.changed,1);assert.ok(eaten.a.life<2048);assert.ok(eaten.b.request&2);
   assert.equal(C.ctAcid(cell(E.ACID),cell(E.GLASS),0).changed,0);
   const a=cell(E.SINGULARITY),b=cell(E.SINGULARITY),before=energy(a)+energy(b);
-  const merged=C.ctSwallow(a,b,0);assert.equal(merged.a.life,6144);assert.equal(merged.b.id,E.EMPTY);assert.equal(energy(merged.a)+energy(merged.b),before);
+  const merged=C.ctSwallow(a,b,0,q(20));assert.equal(merged.a.life,6144);assert.equal(merged.b.id,E.EMPTY);ledger([merged.a,merged.b],before);
+  assert.equal(merged.a.tq,a.tq,'V1: the singularity keeps its temperature');
 });
 test('block keeps banks/core paired and stationary contact can sleep',()=>{
   const materials=Array.from({length:8},()=>C.packContact(cell(E.METAL,20)));
@@ -233,9 +237,11 @@ test('every content hot/cold product executes, with conservative overflow redist
       const ready=C.ctSetEnergy(c,baseline+(hot?latent:-latent));
       let after=C.ctPhase(ready,1,draw);
       if(after.pending>=0) {
+        // V1 react.js: the change at the cell's own temperature, the partner untouched, the difference declared
         const reservoir=cell(E.WALL),pair=C.ctResolvePhase(after,reservoir);
         assert.equal(pair.changed,1,`${e.key} ${hot?'hot':'cold'} ${ELEMENTS[product.id].key} can execute`);
-        assert.equal(energy(pair.a)+energy(pair.b),energy(ready)+energy(reservoir));
+        ledger([pair.a],energy(ready));assert.deepEqual(pair.b,reservoir,'its partner keeps its heat');
+        assert.equal(pair.a.tq,ready.tq,`${e.key}: V1 keeps the cell's temperature through the change`);
         after=pair.a;redistributed++;
       }else assert.equal(energy(after),energy(ready));
       assert.equal(after.id,product.id,`${e.key} ${hot?'hot':'cold'} product`);
@@ -362,7 +368,9 @@ test('cloud rain/evaporation/storm charge, clone emit/control and singularity li
   const starved=cell(E.SINGULARITY);starved.life=256;assert.ok(C.ctStep(starved,ns(),0).request&1);
   const ordinary=cell(E.SINGULARITY),evaporated=C.ctStep(ordinary,ns(),0);assert.ok(evaporated.life<ordinary.life);assert.equal(evaporated.id,E.SINGULARITY);
   assert.equal(C.contactVacuum(C.packContact(full).core),-50);
-  const victim=cell(E.SAND);const swallowed=C.ctSwallow(ordinary,victim,0);assert.equal(swallowed.b.id,E.EMPTY);assert.ok(swallowed.a.life>ordinary.life);assert.equal(energy(swallowed.a)+energy(swallowed.b),energy(ordinary)+energy(victim));
+  const victim=cell(E.SAND,300);const swallowed=C.ctSwallow(ordinary,victim,0,q(-15));assert.equal(swallowed.b.id,E.EMPTY);assert.ok(swallowed.a.life>ordinary.life);ledger([swallowed.a,swallowed.b],energy(ordinary)+energy(victim));
+  // V1 react.js: the swallowed cell becomes air at the scene's ambient (airT), the singularity keeps its T
+  assert.equal(swallowed.b.tq,q(-15));assert.equal(swallowed.a.tq,ordinary.tq);
 });
 test('pending source obligations survive chemistry/phase and OR with existing gas requests',()=>{
   const materials=Array.from({length:8},()=>C.packContact(cell(E.ACID,500)));
@@ -451,7 +459,9 @@ test('zero-fill/zero-fuel edges and invalid phase sources do not manufacture hea
   const pending=cell(E.ACID),row=C.ctRow(E.ACID);
   const ready=C.ctSetEnergy(pending,BigInt(C.ctCapacity(pending))*BigInt(row.hotQ)+C.ctOffset(pending)+BigInt(row.hotL)*65536n);
   const wait=C.ctPhase(ready,1,0.999);assert.equal(wait.pending,E.CAUSTIC_GAS);assert.equal(wait.request&2,0);
-  const air=cell(E.EMPTY),blocked=C.ctResolvePhase(wait,air);assert.equal(blocked.changed,0);assert.equal(blocked.a.id,E.ACID);assert.equal(energy(blocked.a)+energy(blocked.b),energy(ready)+energy(air));
+  // V1 react.js boils it at its own temperature beside plain air too: the energy it differs by is declared
+  const air=cell(E.EMPTY),boiled=C.ctResolvePhase(wait,air);assert.equal(boiled.changed,1);assert.equal(boiled.a.id,E.CAUSTIC_GAS);assert.equal(boiled.a.tq,ready.tq);
+  assert.deepEqual(boiled.b,air);ledger([boiled.a],energy(ready));
   const lava=C.packContact(cell(E.LAVA));lava.core[1]=(lava.core[1]&0xffffff)|(E.WOOD<<24);assert.throws(()=>F.validatePhaseCore(lava.core),/invalid native lava source/);
   C.validateContactMaterials();assert.throws(()=>C.validateContactMaterials([{kind:K.LIQUID,key:'BAD',elec:1,burnRate:1,life:1}]),/payload conflict/);
 });

@@ -1,8 +1,10 @@
 import { CELL_M } from '../../scale.js';
 import { E, ELEMENTS, K } from '../../elements.js';
 import { FOAM_ROWS } from '../../v2/foam.js';
-import { SHOCK_FALL_CELLS, SHOCK_LANDINGS, V1_FALL_CELLS_MAX, v1LiquidHit } from '../../v2/dynamics-reference.js';
+import { SHOCK_FALL_CELLS, SHOCK_LANDINGS, V1_FALL_CELLS_MAX, v1LiquidHit, v1LiquidArrival } from '../../v2/dynamics-reference.js';
 import { PHYS, SIM_GRAVITY } from '../../physics.js';
+import { PACE } from '../move.js';
+import { GRAVITY_MS2, STEPS_PER_TICK, V1_STEP_MS } from '../../v2/gravity.js';
 
 // Column-run water (docs/v2/water-cost-first-principles.md; the CPU prototype it ports is
 // tools/v2/column-water.mjs). Water is stored exactly as before (16 B core + 4 B bank) and read per (x, z)
@@ -37,17 +39,22 @@ import { PHYS, SIM_GRAVITY } from '../../physics.js';
 
 // ---------------------------------------------------------------- constants (JS and WGSL)
 export const COLUMN = (() => {
-  const TICK_HZ = 60, G_MS2 = 19.6;
-  const G = G_MS2 / CELL_M / (TICK_HZ * TICK_HZ);   // cells/tick² at reference gravity (2 g, docs/v2.md 5.1)
+  // the reference pull: V1's (v2/gravity.js GRAVITY_MS2, user decision 2026-10-21: V2 falls as V1 does)
+  const TICK_HZ = 60, G_MS2 = GRAVITY_MS2;
+  const G = G_MS2 / CELL_M / (TICK_HZ * TICK_HZ);   // cells/tick² at reference gravity
   const FULL = 1 << 16;
+  // Wave speed is sqrt(g h) cells a tick; one explicit step a tick is stable while g·h stays under 0.5 cells²/tick².
+  // A face accelerates as if at most H_CAP deep (below): WAVE_GH, the g·h it reaches there, is the explicit step's
+  // bound with lean-sim's 1.7x margin (its 16 cells at 2 g: real water is dispersive, deep-water waves of length L
+  // travel at sqrt(g L / 2 pi), not sqrt(g h)). At V1's pull that is 0.73 cells: every face deeper than that
+  // relaxes at the scheme's fastest stable rate, a shallower one at V1's pull.
+  const LEAN_DEEP_CELLS = 16, LEAN_G_MS2 = 19.6;   // lean-sim's calibrated deep face: 16 cells at its pull
+  const WAVE_GH = LEAN_DEEP_CELLS * LEAN_G_MS2 / CELL_M / (TICK_HZ * TICK_HZ);
   return {
-    TICK_HZ, G_MS2, G, FULL,
+    TICK_HZ, G_MS2, G, FULL, WAVE_GH,
     // a face's depth-averaged flux (quanta a tick per cell of wet face) gains this a tick per cell of head
     ACC: G * FULL,
-    // Wave speed is sqrt(g h); one explicit step a tick is stable for h < 27.5 cells. Deeper faces accelerate
-    // as if this deep: real water is dispersive (deep-water waves of length L travel at sqrt(g L / 2 pi), not
-    // sqrt(g h)), so this is the deep-water limit for waves up to ~100 cells long (1.7x margin).
-    H_CAP: 16,
+    H_CAP: WAVE_GH / G,
     // covered runs only: stable iff COMP >= 2 g dt² (four horizontal faces, one step); 3 g dt² (lean-sim's margin)
     COMP: 3 * G,
     QMIN: 0.5,                 // a segment flux under this snaps to 0 (lean-sim)
@@ -60,18 +67,21 @@ export const COLUMN = (() => {
     // a face's flux at most: under f16's 65,504 by more than its spacing there (32), so a lane never rounds
     // past it. 0.99 cells a tick (17.9 m/s): an explicit face moves at most its own cell a step.
     Q_MAX: 65000,
-    // R1's bulk run speed for a falling run of liquid, 12 m/s (lean-sim VT_SAND), in cells/tick
-    VT: 12 / CELL_M / TICK_HZ,
+    // a falling run's law: V1's (colFall), STEPS V1 steps a tick at V1's gravity (cells/step², SIM_GRAVITY at the
+    // reference pull) to V1's terminal speed V_MAX (cells/step)
+    STEPS: STEPS_PER_TICK, G_STEP: SIM_GRAVITY, V_MAX: PHYS.V_MAX,
     // R14's birth gate: an overfall faster than this leaves as particles (lean-sim V_JET), m/s
     JET_SPEED: 1,
     // a deposited cell to launch: its y lane holds this, less its upward launch speed (a falling run's own
     // y lane is never negative)
     JET_MARK: -1,
-    // The crown (Worthington, A Study of Splashes, 1908): a run that lands on liquid faster than CROWN_SPEED
-    // m/s throws this share of its mass up out of its column at its impact speed, CROWN_ANGLE from the
-    // vertical, at a hashed azimuth: that share of its kinetic energy, half the bench's 0.3 bound
-    // (docs/v2.md 4.4). Slower landings (a pour's one-cell drop) merge inelastically.
-    CROWN_SHARE: 0.15, CROWN_SPEED: 5, CROWN_ANGLE: Math.PI / 4, CROWN_SALT: 0x63726f77,
+    // The crown (Worthington, A Study of Splashes, 1908): a run that lands on liquid harder than V1's splash
+    // speed (PHYS.LAND_SPLASH_V, m/s: move.js land) throws this share of its mass up out of its column at V1's
+    // splash share of its impact speed (PHYS.LAND_SPLASH_GAIN: V1 turns that much of it sideways), CROWN_ANGLE
+    // from the vertical, at a hashed azimuth (docs/v2.md 4.4's 0.3 bound on the energy it carries). Slower
+    // landings (a pour's one-cell drop) merge inelastically.
+    CROWN_SHARE: 0.15, CROWN_SPEED: PHYS.LAND_SPLASH_V * V1_STEP_MS, CROWN_GAIN: PHYS.LAND_SPLASH_GAIN,
+    CROWN_ANGLE: Math.PI / 4, CROWN_SALT: 0x63726f77,
     // a liquid this thin under a pour still leaves it open below (lean-sim openBelow: FULL/16)
     THIN: FULL >> 4,
     // a face's demand word: what it carries in the low 24 bits, its launch head in the byte above, in
@@ -109,29 +119,25 @@ export const RADIAL = {
 
 // V1's shock on landing (react.js: an explosive landing with ½·μ·u² of at least its blast.shock goes off,
 // common.js hitKE), by its fall, on V1's own fall law (dynamics-reference.js v1LiquidArrival: V1's Margolus move
-// and its paced draws make a liquid's fall a function of its height and its phase, its start row's parity). A
-// liquid charge's own landing: V1's hit after that fall (colV1FallSpeed: dynamics-reference.js v1LiquidHit, a
-// table to V1_FALL_CELLS_MAX, past which it is at V_MAX) against its speed for the shock (speed2: ½·dens·u² =
-// blast.shock, (cells/step)²): on a solid, nitroglycerin's from 9 cells at phase 0 (2.7 m), 10 at phase 1. A run
-// landing ON a charge sets it off from V1's fall for the pair (SHOCK_LANDINGS: colShockOnFall). The fall a landing
-// counts (colV1Fall): a lone cell's, less a cell at phase 1; a stack's (a run of more than one cell), its top's,
-// at any phase: measured on V1 (2026-10-22, tools/outcomes/engine-v1.js, nitroglycerin 4×4 blocks 3 and 5 tall
-// in fresh boxes, both phases: rest when the top falls 8, go off when it falls 9 or 10; the bottom layer lands and
-// splashes aside, move.js land, and the cells above it fall on to the floor). So a run's landing reads how far it
-// has fallen (colFall's fallen) and how tall it is: R1's run speed caps how fast a run falls (from ~3.8 m on),
-// not how far. Heights are cells of fall at the reference pull (colFall counts each tick's at P.gravity's share
-// of it), so V1's falls are the tables. V1's hit is at its own speed, which PHYS.V_MAX caps (react.js forces): a
-// longer fall hits no harder, so a liquid it outweighs too much never sets it off (nitroglycerin onto water or oil).
+// and its paced draws make a liquid's fall a function of its height and its phase, its start row's parity). A run
+// falls on that law itself (colFall steps V1's partition and draws), so a lone cell lands at V1's own speed, phase
+// and all: its hit is V1's at that speed (colV1Hit: dynamics-reference.js v1LandingHit), against its speed for the
+// shock (speed2: ½·dens·u² = blast.shock, (cells/step)²): on a solid, nitroglycerin's from 9 cells at phase 0
+// (2.7 m), 10 at phase 1. A run landing ON a charge sets it off from V1's fall for the pair (SHOCK_LANDINGS:
+// colShockOnFall; a lone cell's phased law at the speed that fall lands at, colShockOnSpeed). A stack (a run of
+// more than one cell) counts its top's fall at any phase (colV1Fall), V1's hit after it (colV1FallSpeed: v1LiquidHit,
+// a table to V1_FALL_CELLS_MAX, past which it is at V_MAX): measured on V1 (2026-10-22, tools/outcomes/engine-v1.js,
+// nitroglycerin 4×4 blocks 3 and 5 tall in fresh boxes, both phases: rest when the top falls 8, go off when it falls
+// 9 or 10; the bottom layer lands and splashes aside, move.js land, and the cells above it fall on to the floor). So
+// a run's landing reads how far it has fallen (colFall's fallen, whole cells) and how tall it is. V1's hit is at its
+// own speed, which PHYS.V_MAX caps (react.js forces): a longer fall hits no harder, so a liquid it outweighs too much
+// never sets it off (nitroglycerin onto water or oil).
 export const COLUMN_SHOCK = Object.freeze(Object.entries(SHOCK_FALL_CELLS).map(([id, cells]) => {
   const e = ELEMENTS[+id];
   if (e.kind !== K.LIQUID) throw new Error(`columns.js: ${e.key}'s own landing is no liquid's`);
   return { id: +id, cells, speed2: 2 * e.blast.shock / e.dens, hits: Array.from({ length: V1_FALL_CELLS_MAX + 1 }, (_, h) => v1LiquidHit(e, h)) };
 }));
 export const COLUMN_SHOCK_ON = Object.freeze(SHOCK_LANDINGS.filter(r => ELEMENTS[r.faller].kind === K.LIQUID));
-// the liquids whose landing reads their fall: a liquid charge, a liquid that sets one off
-export const COLUMN_KEEPS_FALL = Object.freeze([...new Set([...COLUMN_SHOCK.map(r => r.id), ...COLUMN_SHOCK_ON.map(r => r.faller)])]);
-// the y lane's value for R1's run speed, as pack2x16float stores it (f16, round to nearest)
-const laneValue = x => { const ulp = 2 ** (Math.floor(Math.log2(x)) - 10); return Math.round(x / ulp) * ulp; };
 
 // record flags, in the mass word (a run's mass stays under 2^30: 16 383 cells of FULL, or 1 023 of MAX_FILL)
 const REC_FALLING = 0x80000000, REC_LAST = 0x40000000, REC_MASS = 0x3fffffff;
@@ -152,8 +158,10 @@ const COL_FILM: f32 = ${f(COLUMN.FILM)};
 const COL_DEADQ: f32 = ${f(COLUMN.DEADQ)};
 const COL_STALL: f32 = ${f(COLUMN.STALL)};
 const COL_Q_MAX: f32 = ${f(COLUMN.Q_MAX)};
-const COL_VT: f32 = ${COLUMN.VT};
-const COL_VT_LANE: f32 = ${laneValue(COLUMN.VT)};
+const COL_STEPS: f32 = ${f(COLUMN.STEPS)};
+const COL_G_STEP: f32 = ${COLUMN.G_STEP};
+const COL_V_MAX: f32 = ${f(COLUMN.V_MAX)};
+const COL_PACE_Y: u32 = ${PACE.Y}u;
 const COL_FULL: f32 = ${f(COLUMN.FULL)};
 const COL_FOAM_ARRIVAL: f32 = ${f(COLUMN.FOAM_ARRIVAL)};
 const COL_TICK_HZ: f32 = ${f(COLUMN.TICK_HZ)};
@@ -162,6 +170,7 @@ const COL_JET_SPEED: f32 = ${f(COLUMN.JET_SPEED)};
 const COL_JET_MARK: f32 = ${f(COLUMN.JET_MARK)};
 const COL_CROWN_SHARE: f32 = ${COLUMN.CROWN_SHARE};
 const COL_CROWN_SPEED: f32 = ${f(COLUMN.CROWN_SPEED)};
+const COL_CROWN_GAIN: f32 = ${f(COLUMN.CROWN_GAIN)};
 const COL_CROWN_SIN: f32 = ${Math.sin(COLUMN.CROWN_ANGLE)};
 const COL_CROWN_COS: f32 = ${Math.cos(COLUMN.CROWN_ANGLE)};
 const COL_TAU: f32 = ${2 * Math.PI};
@@ -323,6 +332,19 @@ fn colMarkJet(x: i32, y: i32, z: i32, axis: i32, v: f32) {
   noteJet(brickOfCell(p));
 }
 fn colGravity() -> f32 { if (P.gravMode != 0u) { return 0.0; } return COL_G * P.gravity / COL_G_MS2; }
+// V1's gravity a step (cells/step²: SIM_GRAVITY at the reference pull, P.gravity's share of it)
+fn colStepGravity() -> f32 { if (P.gravMode != 0u) { return 0.0; } return COL_G_STEP * (P.gravity / COL_G_MS2); }
+// the index of V1's paced draw for a liquid falling at u (move.js fallAge: its fall age, speed over g, rounded;
+// without a pull, V1's frame: the tick's step k)
+fn colV1Age(u: f32, g: f32, k: i32) -> f32 {
+  if (g > 0.0) { return floor(u / g + 0.5); }
+  return f32(P.tick) * COL_STEPS + f32(k);
+}
+// V1's paced draw n (move.js draw: n·PACE.Y as a fixed-point fraction, common.js u32ToF32 · UINT_TO_UNIT)
+fn colV1Draw(n: f32) -> f32 {
+  let s = u32(n) * COL_PACE_Y;
+  return (f32(s >> 8u) * 256.0 + f32(s & 255u)) * ${2 ** -32};
+}
 // a liquid charge's shock as V1's speed for it, (cells/step)² (COLUMN_SHOCK speed2); 0 for every other liquid
 fn colShockSpeed2(id: u32) -> f32 {
 ${COLUMN_SHOCK.map(r => `  if (id == ${r.id}u) { return ${f(r.speed2)}; }`).join('\n')}
@@ -343,32 +365,39 @@ ${COLUMN_SHOCK_ON.map(r => `  if (faller == ${r.faller}u && charge == ${r.charge
 fn colShockOnPhased(faller: u32, charge: u32) -> bool {
   return ${COLUMN_SHOCK_ON.filter(r => r.phased).map(r => `(faller == ${r.faller}u && charge == ${r.charge}u)`).join(' || ') || 'false'};
 }
-// The fall V1's law counts for a run of n cells landing with its bottom at row b after h cells (dynamics-reference.js
-// landingLaw, the tables above): whole cells (V1's falls are), a lone cell's a cell less at phase 1 (its start
-// row b + cells odd: V1 places matter at an even step, so its row is its phase) where the law is phased, a
-// stack's its top's (COLUMN_SHOCK, above). (The parity as f32 floors: the executed subset has no bit operations.)
-fn colV1Fall(b: i32, h: f32, n: i32, phased: bool) -> i32 {
-  let cells = i32(floor(h + 0.5));
-  if (n > 1) { return cells + n - 1; }
-  if (!phased) { return cells; }
-  let y0 = f32(b + cells);
-  return cells - i32(y0 - 2.0 * floor(y0 * 0.5));
+// The fall V1's law counts for a run of n cells landing with its bottom at row b after h cells (colFall's fallen,
+// whole cells, as V1's are): a lone cell's own, a stack's (a run of more than one cell) its top's, at any phase
+// (COLUMN_SHOCK, above). A lone cell's phase needs no count: colFall steps V1's own partition, so it lands at V1's speed.
+fn colV1Fall(h: f32, n: i32) -> i32 { return i32(floor(h + 0.5)) + n - 1; }
+// V1's hit (cells/step) of a lone cell of the charge id landing at u1 cells/step (dynamics-reference.js v1LandingHit:
+// react.js sees it at u1, then once more after a step of gravity and drag, to V_MAX)
+fn colV1Hit(id: u32, u1: f32) -> f32 {
+${COLUMN_SHOCK.map(r => `  if (id == ${r.id}u) { return max(u1, min(COL_V_MAX, (u1 + colStepGravity()) * ${f(1 - (ELEMENTS[r.id].drag ?? 0))})); }`).join('\n')}
+  return u1;
 }
-// whether the liquid keeps its fall past the run speed: its landing reads it (COLUMN_KEEPS_FALL)
-fn colKeepsFall(id: u32) -> bool { return ${COLUMN_KEEPS_FALL.map(id => `id == ${id}u`).join(' || ')}; }
-// A run of n cells that landed with its bottom cell at b, having fallen h (colFall's fallen): V1 react.js sets a
-// charge off on a hit of ½·μ·u² past its shock, μ the mover's own mass on a solid and the reduced mass on loose
-// matter (common.js hitKE: masses as V1's densities, a cell each), never on its own element or a gas (isGasLike).
-// u is V1's hit after its fall (colV1FallSpeed at colV1Fall's) and its shock the speed colShockSpeed2, so it goes
-// off when (μ/m)·u² reaches colShockSpeed2. Under the box's floor is a WALL only with solid edges (V1 react.js: past
-// a solid edge a face is WALL; past a void one, still air).
-fn colShockLand(x: i32, z: i32, b: i32, h: f32, n: i32) {
+// the landing speed (cells/step) from which a lone cell of liquid faller sets off the charge it lands on, where its
+// law is phased (a liquid's own: V1's speed after its fall at phase 0, v1LiquidArrival's steps of g, to V_MAX)
+fn colShockOnSpeed(faller: u32, charge: u32) -> f32 {
+${COLUMN_SHOCK_ON.filter(r => r.phased).map(r => `  if (faller == ${r.faller}u && charge == ${r.charge}u) { return ${f(Math.min(PHYS.V_MAX, v1LiquidArrival(r.fall, 0, ELEMENTS[r.faller].grav) * SIM_GRAVITY))}; }`).join('\n')}
+  return 0.0;
+}
+// A run of n cells that landed with its bottom cell at b, having fallen h (colFall's fallen) and arriving at u1
+// cells/step: V1 react.js sets a charge off on a hit of ½·μ·u² past its shock, μ the mover's own mass on a solid and
+// the reduced mass on loose matter (common.js hitKE: masses as V1's densities, a cell each), never on its own element
+// or a gas (isGasLike). u is V1's hit: a lone cell's at its own landing (colV1Hit), a stack's its top's after its fall
+// (colV1FallSpeed at colV1Fall's); its shock the speed colShockSpeed2, so it goes off when (μ/m)·u² reaches
+// colShockSpeed2. Under the box's floor is a WALL only with solid edges (V1 react.js: past a solid edge a face is
+// WALL; past a void one, still air).
+fn colShockLand(x: i32, z: i32, b: i32, h: f32, n: i32, u1: f32) {
   let id = cid(colCell(x, b, z));
-  // landing on a charge: V1 sets it off from its fall (COLUMN_SHOCK_ON, colShockOnFall)
+  // landing on a charge: V1 sets it off from its fall (COLUMN_SHOCK_ON, colShockOnFall), a lone cell's phased law
+  // at the speed that fall lands at (colShockOnSpeed)
   if (b > 0) {
     let charge = cid(colCell(x, b - 1, z));
     let on = colShockOnFall(id, charge);
-    if (on > 0 && colV1Fall(b, h, n, colShockOnPhased(id, charge)) >= on) { colDetonate(x, b - 1, z); }
+    var off = on > 0 && colV1Fall(h, n) >= on;
+    if (on > 0 && n == 1 && colShockOnPhased(id, charge)) { off = u1 >= colShockOnSpeed(id, charge); }
+    if (off) { colDetonate(x, b - 1, z); }
   }
   let shock = colShockSpeed2(id);
   if (shock <= 0.0) { return; }
@@ -382,7 +411,8 @@ fn colShockLand(x: i32, z: i32, b: i32, h: f32, n: i32) {
     if (kind == C_SOLID) { share = 1.0; }
     if ((kind == C_POWDER || kind == C_LIQUID) && j != id) { share = densOfE(j) / (densOfE(id) + densOfE(j)); }
   }
-  let u = colV1FallSpeed(id, colV1Fall(b, h, n, true));
+  var u = colV1FallSpeed(id, colV1Fall(h, n));
+  if (n == 1) { u = colV1Hit(id, u1); }
   if (share * u * u >= shock) { colDetonate(x, b, z); }
 }
 fn colDampTick(liq: u32) -> f32 { let keep = 1.0 - dampOf(liq); return 1.0 - keep * keep * keep; }
@@ -662,59 +692,63 @@ fn colPack(x: i32, z: i32, r0: i32, top: i32, mass: u32) -> i32 {
   return end;
 }
 
-// ---- fall: the run [r0, r1) with air under it, down to the lowest air cell above o0, on R1's law
-// (v += g to the run speed, whole cells, a landing ends the fall). Returns its new bottom.
+// ---- fall: the run [r0, r1) with air under it, down to the lowest air cell above o0, on V1's law for a falling
+// liquid (dynamics-reference.js v1LiquidArrival, which V1's measured landings follow to the digit: react.js forces,
+// move.js vertical, draw, fallAge). A tick is COL_STEPS V1 steps. A step moves the run's bottom down a cell when that
+// cell is on a Margolus block's top half (its row against the step's parity: V1's partition, the tick's first step
+// even, as V1's frames run four to a tick) and its paced draw at its fall age (its speed over g, PACE.Y) falls under
+// its speed (at V_MAX always); then gravity adds g to its speed (no drag on a liquid in free fall), to V_MAX.
+// Arriving over what it lands on ends the fall, at the speed it had. Whole cells: the bottom cell's y lane holds its
+// speed (cells/tick: COL_STEPS of V1's cells/step), its x lane the cells it has fallen. Returns its new bottom.
 fn colFall(x: i32, z: i32, o0: i32, r0: i32, r1: i32) -> i32 {
   let b = colCell(x, r0, z);
+  let g = colStepGravity();
   // a run that was not falling last tick (its bottom's x lane is then a segment's flux), or a deposit
   // whose launch was refused, falls from rest
-  var v0 = laneOf(b, 1); var a0 = laneOf(b, 0);
-  if (v0 <= 0.0) { v0 = 0.0; a0 = 0.0; }
-  a0 = clamp(a0, 0.0, 1.0);
-  // past R1's run speed a run whose landing reads its fall keeps in the lane the speed that fall carries
-  // (½u² = g·h, below), and moves at the run speed's lane, as every run does: the cap holds the move, not the fall
-  let carried = v0;
-  v0 = min(v0, COL_VT_LANE);
-  let v = min(v0 + colGravity(), COL_VT);
-  var a = a0 + v;
-  var d = i32(floor(a));
-  a = a - f32(d);
+  var u = laneOf(b, 1) / COL_STEPS;
+  var fallen = laneOf(b, 0);
+  if (u <= 0.0) { u = 0.0; fallen = 0.0; }
+  // V1's speed is whole steps of g below V_MAX (the lane's f16 rounds it): its fall age, exact
+  if (u < COL_V_MAX && g > 0.0) { u = min(floor(u / g + 0.5) * g, COL_V_MAX); }
   var fl = r0;
   loop {
     if (fl - 1 < o0 || colClass(x, fl - 1, z) != C_AIR) { break; }
     fl = fl - 1;
   }
-  var speed = v;
+  var d = 0;
   var landed = false;
+  var hit = u;
   // a layer floating on another liquid follows its surface: a gap of one cell (a lower layer's drained top
   // cell) closes at once, not from rest, or the layer and the surface it rests on trade the cell forever
-  if (r0 - fl == 1 && fl > o0 && colClass(x, fl - 1, z) == C_LIQUID && v0 == 0.0) { d = 1; }
-  if (d >= r0 - fl) { d = r0 - fl; speed = 0.0; a = 0.0; landed = true; }
-  // how far it has fallen, in cells at the reference pull (½u² = g·h at any pull): what it carried in (the
-  // column law's fall to v0 from rest, v += g a cell a tick at v), and this tick's fall (v, or to the floor it
-  // lands on) at P.gravity's share of it. Its landing reads it (colShockLand).
-  var fallen = (v0 * v0 + colGravity() * v0) / (2.0 * COL_G);
-  if (carried > COL_VT_LANE) { fallen = carried * carried / (2.0 * COL_G); }
-  var drop = v;
-  if (landed) { drop = f32(r0 - fl) - a0; }
-  fallen = fallen + drop * colGravity() / COL_G;
-  var lane = speed;
-  if (!landed && v >= COL_VT_LANE && colKeepsFall(cid(b))) { lane = max(speed, sqrt(2.0 * COL_G * fallen)); }
+  if (r0 - fl == 1 && fl > o0 && colClass(x, fl - 1, z) == C_LIQUID && u == 0.0) { d = 1; landed = true; }
+  for (var k = 0; f32(k) < COL_STEPS; k++) {
+    if (landed) { break; }
+    // its row against the step's parity (f32 floors: the executed subset has no bit operations)
+    let row = f32(r0 - d + k);
+    let top = row - 2.0 * floor(row * 0.5) == 0.0;
+    if (u > 0.0 && top && (u >= COL_V_MAX || colV1Draw(colV1Age(u, g, k)) < u)) {
+      d = d + 1;
+      if (r0 - d == fl) { landed = true; hit = u; }
+    }
+    u = min(u + g, COL_V_MAX);
+  }
+  fallen = fallen + f32(d);
   colBusy(x, r0, z);
   if (d > 0) {
     for (var k = r0; k < r1; k++) { colSwap(x, k, k - d, z); }
     colBusy(x, r0 - d, z); colBusy(x, r1 - 1, z);
   }
-  colSetLanes(x, r0 - d, z, lane, a);
-  if (landed) { colShockLand(x, z, r0 - d, fallen, r1 - r0); }
-  let impact = v * COL_TICK_HZ * COL_CELL_M;
+  if (landed) { colSetLanes(x, r0 - d, z, 0.0, 0.0); } else { colSetLanes(x, r0 - d, z, u * COL_STEPS, fallen); }
+  if (landed) { colShockLand(x, z, r0 - d, fallen, r1 - r0, hit); }
+  let impact = hit * COL_STEPS * COL_TICK_HZ * COL_CELL_M;
   if (landed && d > 0 && r0 - d > o0 && colClass(x, r0 - d - 1, z) == C_LIQUID && impact > COL_CROWN_SPEED) {
-    colCrown(x, z, r0 - d, r1 - d, d, impact);
+    colCrown(x, z, r0 - d, r1 - d, d, impact * COL_CROWN_GAIN);
   }
   return r0 - d;
 }
-// The crown of a run [b0, b1) that just landed at impact m/s: CROWN_SHARE of its mass, cut from its top
-// down, into the cells it vacated above it (rows of them), each marked to launch up and out.
+// The crown of a run [b0, b1) that just landed, thrown at impact m/s (V1's splash share of its landing speed):
+// CROWN_SHARE of its mass, cut from its top down, into the cells it vacated above it (rows of them), each marked
+// to launch up and out.
 fn colCrown(x: i32, z: i32, b0: i32, b1: i32, rows: i32, impact: f32) {
   var mass = 0u;
   for (var k = b0; k < b1; k++) { mass = mass + colFill(x, k, z); }
@@ -768,7 +802,7 @@ fn colFinish(x: i32, z: i32, k: i32, y0: i32, top: i32, r1: i32, liq: u32, sub: 
   }
   colPut(x, k, z, recMake(bottom, top, end, liq, sub, mass, falling, false));
   // an open floor holds nothing: the run falls out of the box at R1's bulk run speed
-  if (settle && P.edge == 1u && bottom == 0 && !falling) { colDrain(x, z, k, min(mass, u32(COL_VT * COL_FULL)), true); }
+  if (settle && P.edge == 1u && bottom == 0 && !falling) { colDrain(x, z, k, min(mass, u32(COL_V_MAX * COL_STEPS * COL_FULL)), true); }
   return k + 1;
 }
 // the run's end after a refused move: one past its highest cell holding any fill

@@ -1,13 +1,14 @@
 import { applyGuestStrokes } from './edits.js';
 import { ELEMENTS, TOOLS, PROP_TOOL } from '../elements.js';
 import { propRangeError, runFill, PROP_FIELDS } from '../editing.js';
-import { createPacker, createUnpacker, encodeFrame, decodeFrame, xorInto, FRAME_KEY, FRAME_DELTA } from './codec.js';
+import { createPacker, createUnpacker, encodeFrame, decodeFrame, xorInto, nativeSection, sameSection, outdatedFrame,
+  FRAME_KEY, FRAME_DELTA, FRAME_NATIVE_KEY, FRAME_NATIVE_DELTA, KEY_FRAMES, DELTA_FRAMES, OUTDATED_SEQ } from './codec.js';
 import { createRemoteCursors } from './cursors.js';
 import { createChat, MAX_CHAT_CHARS } from './chat.js';
 import { sessionToken } from '../account.js';
 import { h } from '../ui/dom.js';
 import './net.css';
-import { stamp, validPose, leash } from './protocol.js';
+import { stamp, validPose, leash, NET_VERSION, MIN_GUEST_VERSION, UPDATE_GAME } from './protocol.js';
 
 // Multiplayer: one player hosts and runs the simulation; guests see the
 // host's world (streamed, ~100 ms behind) from their own camera, send paint
@@ -96,12 +97,17 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
   let sent = null, sentDims = '', scratch = null, seq = 0, wantKey = false, lastStream = 0;
   let sending = Promise.resolve(); // captures are encoded and sent strictly in order
   const strokes = [];
+  const heldStrokes = [];   // guests' strokes the host's engine couldn't take yet (edits.js applyGuestStrokes)
   const fills = [];   // guests' flood fills (src/editing.js runFill), run one at a time
   let filling = false;
+  // each guest's build (its hello: protocol.js NET_VERSION); a guest that asks for a keyframe without one
+  // is a build from before native frames, sent codec.outdatedFrame once (outdated) when the stream is native
+  const guestVersions = new Map(), outdated = new Set();
+  let sentSection = null;   // the native section last sent (a frame that changes nothing isn't sent)
 
   // guest state
   const unpacker = createUnpacker();
-  let world = null, worldDims = null, worldSeq = 0, worldDirty = false, lastKeyRequest = 0;
+  let world = null, worldDims = null, worldSeq = 0, worldDirty = false, lastKeyRequest = 0, worldNative = null;
   let frames = Promise.resolve();
   let epoch = 0, receivedMeta = null, committedMeta = null, sentMeta = '', lastReceived = 0, hostAway = false;
   let lastPose = 0, poseSeq = 0, frozen = false, cursorStamp = null, avatarMap = null;
@@ -142,8 +148,9 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
     epoch++; worldDirty = false; receivedMeta = committedMeta = null; sentMeta = ''; worldDims = null; lastReceived = 0;
     frames = sending = Promise.resolve(); seq = worldSeq = poseSeq = 0; hostAway = false;
     poses.clear(); avatars?.clear(); sessionChanged('solo');
-    socket = null; role = 'solo'; me = null; room = null; sent = null; world = null; joiningAs = null;
+    socket = null; role = 'solo'; me = null; room = null; sent = null; world = null; joiningAs = null; worldNative = null; sentSection = null;
     peers.clear();
+    guestVersions.clear(); outdated.clear(); heldStrokes.length = 0;
     pings.clear();
     hostScore = null;
     cursors.clear();
@@ -189,7 +196,10 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
         sessionChanged(role);
         me = { id: m.id, n: m.n, role: m.role, name: m.name ?? null };
         for (const p of m.peers) peers.set(p.id, p);
-        if (role === 'guest') { lastKeyRequest = -Infinity; requestKey(); hud.toast(`Joined as ${peerName(me)}. Waiting for host terrain…`); }
+        if (role === 'guest') {
+          send({ t: 'hello', to: 'host', v: NET_VERSION });   // (before the keyframe request: the host reads it first)
+          lastKeyRequest = -Infinity; requestKey(); hud.toast(`Joined as ${peerName(me)}. Waiting for host terrain…`);
+        }
         break;
       case 'join':
         peers.set(m.id, m);
@@ -209,6 +219,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
         if (p) chat.notice(`${peerName(p)} left`);
         peers.delete(m.id);
         pings.delete(m.id);
+        guestVersions.delete(m.id); outdated.delete(m.id);
         cursors.remove(m.id); avatars?.remove(m.id); poses.delete(m.id);
         break;
       }
@@ -243,7 +254,19 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
         if (from && typeof m.text === 'string') chat.say(peerName(from), peerColor(from), m.text.slice(0, MAX_CHAT_CHARS));
         break;
       case 'key':
-        if (role === 'host' && from?.role === 'guest') wantKey = true;
+        if (role === 'host' && from?.role === 'guest') {
+          wantKey = true;
+          if (!guestVersions.has(m.from) && packer.native(getSim())) sendOutdated(m.from);
+        }
+        break;
+      case 'hello':   // a guest's build
+        if (role === 'host' && from?.role === 'guest' && Number.isSafeInteger(m.v)) {
+          guestVersions.set(m.from, m.v);
+          if (m.v < MIN_GUEST_VERSION) send({ t: 'version', peer: m.from, need: MIN_GUEST_VERSION });
+        }
+        break;
+      case 'version':   // the host's stream needs a newer build than this one
+        if (role === 'guest' && from?.role === 'host' && m.peer === me?.id) { const ws = socket; socket = null; ws?.close(); end(UPDATE_GAME); return; }
         break;
       case 'away':
         if (from?.role === 'host') { hostAway = !!m.away; hud.toast(m.away ? HOST_AWAY : HOST_BACK); }
@@ -300,22 +323,26 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
   });
 
   // ---- host: stream the world ----
-  async function sendCapture({ bytes, dims, meta, release }, generation) {
+  async function sendCapture({ bytes, dims, meta, release, native = null }, generation) {
     const key = wantKey;
     wantKey = false;
     try {
       if (epoch !== generation || role !== 'host') return;
       const dimsKey = dims.join('x'), metadataKey = JSON.stringify(meta);
       const fresh = key || !sent || sentDims !== dimsKey || stamp(meta) !== stamp(sentMeta ? JSON.parse(sentMeta) : null);
+      // a V2 host's native section rides every frame whole (codec.js FRAME_NATIVE_*)
+      const section = native ? nativeSection(native) : null;
       if (!fresh) {
         scratch ??= new Uint8Array(bytes.length);
         const changed = xorInto(scratch, bytes, sent);
-        if (!changed && metadataKey === sentMeta && !meta) return;
+        if (!changed && metadataKey === sentMeta && !meta && (!section || sameSection(section, sentSection))) return;
         // Heartbeats distinguish a quiet world from a stale host.
       }
-      const frame = await encodeFrame(fresh ? FRAME_KEY : FRAME_DELTA, seq + 1, dims, fresh ? bytes : scratch, meta);
+      const kind = section ? (fresh ? FRAME_NATIVE_KEY : FRAME_NATIVE_DELTA) : fresh ? FRAME_KEY : FRAME_DELTA;
+      const frame = await encodeFrame(kind, seq + 1, dims, fresh ? bytes : scratch, meta, section);
       if (epoch !== generation || role !== 'host' || !socket) return;
       sentMeta = metadataKey;
+      sentSection = section;
       socket.send(frame);
       seq++;
       if (fresh) { sent = new Uint8Array(bytes.length); scratch = new Uint8Array(bytes.length); sentDims = dimsKey; }
@@ -328,17 +355,32 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
     }
   }
 
+  // A guest on a build from before native frames can't read this host's: the frame that ends its session
+  // (codec.js OUTDATED_SEQ; every guest gets it, and the guests that know it ignore it).
+  function sendOutdated(id) {
+    if (outdated.has(id)) return;
+    outdated.add(id);
+    const generation = epoch;
+    outdatedFrame().then((frame) => { if (epoch === generation && role === 'host') socket?.send(frame); })
+      .catch((err) => console.error('multiplayer: could not tell an old guest to update', err));
+  }
+
   // ---- guest: receive the world ----
   function onFrame(buf) {
     const generation = epoch;
-    frames = frames.then(() => applyFrame(buf, generation)).catch((err) => { if (epoch === generation) requestKey(); console.error('multiplayer: bad world frame', err); });
+    frames = frames.then(() => applyFrame(buf, generation)).catch((err) => {
+      if (epoch !== generation) return;
+      // a newer host's stream: say so and stop, rather than ask for keyframes it can never read
+      if (err?.newer) { const ws = socket; socket = null; ws?.close(); end(UPDATE_GAME); return; }
+      requestKey(); console.error('multiplayer: bad world frame', err);
+    });
   }
 
   async function applyFrame(buf, generation) {
     if (role !== 'guest' || epoch !== generation) return;
-    const { kind, seq: n, dims, body, meta } = await decodeFrame(buf);
-    if (role !== 'guest' || epoch !== generation) return;
-    if (kind === FRAME_KEY) {
+    const { kind, seq: n, dims, body, meta, native } = await decodeFrame(buf);
+    if (role !== 'guest' || epoch !== generation || n === OUTDATED_SEQ) return;   // (another guest's: an old build's)
+    if (KEY_FRAMES.includes(kind)) {
       const previousSim = getSim();
       if (!setGrid(dims, meta)) { socket?.close(); end('The host is using a map this version or device cannot load'); return; }
       if (meta?.id !== receivedMeta?.id || getSim() !== previousSim) {
@@ -346,7 +388,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
       }
       world = body;
       worldDims = dims;
-    } else if (kind === FRAME_DELTA && world && n === worldSeq + 1 && body.length === world.length && sameDims(getSim().g, dims) && stamp(meta) === stamp(receivedMeta)) {
+    } else if (DELTA_FRAMES.includes(kind) && world && n === worldSeq + 1 && body.length === world.length && sameDims(getSim().g, dims) && stamp(meta) === stamp(receivedMeta)) {
       xorInto(world, world, body);
     } else {
       requestKey();
@@ -354,6 +396,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
     }
     worldSeq = n;
     receivedMeta = meta;
+    worldNative = native;   // (whole each frame; null from a V1 or older host)
     worldDirty = true;
   }
 
@@ -506,8 +549,11 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
       if (context() !== cursorStamp) { cursors.clear(); cursorStamp = context(); }
 
       if (role === 'host') {
-        applyGuestStrokes(sim, strokes, { valid: validContext,
+        // (the strokes still waiting for the host's engine go first, then this frame's: edits.js)
+        const queue = heldStrokes.splice(0).concat(strokes.splice(0));
+        applyGuestStrokes(sim, queue, { valid: validContext, now,
           options: (s) => ({ wind: strokeWind(s.w), edits: editsIn(s), minRadius: MIN_BRUSH_RADIUS, maxRadius: MAX_BRUSH_RADIUS }) });
+        heldStrokes.push(...queue);
         for (let i = 0; i < MAX_FILLS_PER_FRAME && fills.length && !filling; i++) {
           const f = fills.shift();
           if (!validContext(f)) continue;
@@ -536,8 +582,8 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
 
       // (a keyframe at another size rebuilt the grid first: applyFrame's setGrid)
       if (role === 'guest' && worldDirty && sameDims(sim.g, worldDims)) {
-        const generation = epoch, meta = receivedMeta, bytes = world.slice();
-        unpacker.unpack(sim, bytes, {
+        const generation = epoch, meta = receivedMeta, bytes = world.slice(), native = worldNative;
+        unpacker.unpack(sim, bytes, { native,
           valid: () => epoch === generation && role === 'guest' && getSim() === sim,
           commit: () => { commitFrame(meta, bytes); committedMeta = meta; lastReceived = performance.now(); },
         }).catch((err) => console.error('multiplayer: could not unpack the world', err));

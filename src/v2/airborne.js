@@ -15,7 +15,7 @@
 //                 as the support pass counts a cell's out-of-block faces (shaders/v2.js v2SupportWGSL).
 // and with them it runs V2's native contact rules (src/v2/contact.js, already converted from V1's
 // per-step rates to per-tick ones) in contactBlock's order, the packet as the block's cell 0:
-//   conduction    ctFlux with each partner, the harmonic-mean face exchange, none between matter
+//   conduction    ctFlux with each partner, V1's min(cond) face exchange, none between matter
 //                 and air with ambient heat off (ctConducts), never past a phase point it can't
 //                 hold (ctHeatRoom): a stone flying past a hot wall warms, the wall cools
 //   reactions     ctReaction (elements.js REACTIONS: a water drop through caustic gas turns acid),
@@ -217,8 +217,8 @@ export function airborneReference(packet, host, seed, near = openNear(), modes =
       let pair = ctReaction(v, b, s);
       if (!pair.changed) pair = ctAcidFizz(pair.a, pair.b, s);
       if (!pair.changed) { const rev = ctAcidFizz(pair.b, pair.a, s); pair = ctPairValue(rev.b, rev.a, rev.changed); }
-      if (!pair.changed) pair = ctSwallow(pair.a, pair.b, s);
-      if (!pair.changed) { const rev = ctSwallow(pair.b, pair.a, s); pair = ctPairValue(rev.b, rev.a, rev.changed); }
+      if (!pair.changed) pair = ctSwallow(pair.a, pair.b, s, ambientQ);
+      if (!pair.changed) { const rev = ctSwallow(pair.b, pair.a, s, ambientQ); pair = ctPairValue(rev.b, rev.a, rev.changed); }
       v = pair.a; ps[a] = pair.b;
     }
     // V1's electricity on the flying cell, its steps a tick (contact.js ctElecAirborne), with its six

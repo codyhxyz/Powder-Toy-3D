@@ -178,7 +178,8 @@ warmer.warmMap('willowCove', 'sandbox');
 assert.equal(warmer.calls[2].view, 'cozy', 'the authored map exception warms Cozy without requiring Animal Crossing');
 assert.equal(warmer.calls[2].curved, false, 'Sandbox does not inherit the Animal Crossing presentation effect');
 assert.match(preload, /view = views\.viewKey\(settings\.view\)/);
-assert.match(preload, /render\.warmChecks\(view, settings, \{ fallback, curved, fixedReadFormat: 0 \}\)/);
+// (in the read format the session's engine draws: tools/volume-format-cpu-check.mjs)
+assert.match(preload, /render\.warmChecks\(view, settings, \{ fallback, curved, fixedReadFormat: sessionVolumeFormat\(view, physicsEngine\(\) === 'v2'\) \}\)/);
 assert.doesNotMatch(app.match(/const DEFAULTS = \{[\s\S]*?\n\};/)[0], /materialStyle/, 'separate preference removed');
 assert.doesNotMatch(app, /key:\s*['"]materialStyle['"]|['"]Material style['"]/, 'separate drawer control removed; internal frozen view state is allowed');
 assert.match(app.slice(app.indexOf('const PERSIST'), app.indexOf('const STORE')), /'view'/);

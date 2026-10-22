@@ -18,22 +18,18 @@ import { PLAN } from '../shaders/v2/blasts.js';
 //
 // Units. The rules author speeds in cells per V1 step: V1 steps NOMINAL_STEP_RATE
 // (240) times a second under SIM_GRAVITY = 0.025 cells/step² (physics.js), which is
-// 0.025·240² = 1440 cells/s² (432 m/s², 44 g at CELL_M = 0.3 m: V1's clock runs
-// SIM_TIME_SCALE ≈ 6.6× real time). V2 falls at GRAVITY = 19.6 m/s² (TF2's 2 g,
-// docs/v2.md §5.1), 65.3 cells/s²: 22× less in cells. One speed can't keep both
-// V1's cells/s and V1's trajectories under that gravity, so a machine's motion
-// converts by what it is (V1's rule kinds, shaders/industry.js update):
+// 0.025·240² = 1440 cells/s² (432 m/s² at CELL_M = 0.3 m). V2 falls at V1's pull
+// (GRAVITY, v2/gravity.js; user decision 2026-10-21), so one speed keeps both V1's
+// cells/s and V1's trajectories; a machine's motion still converts by what it is
+// (V1's rule kinds, shaders/industry.js update), and both maps are V1's 72 m/s per cell/step:
 // - a throw (a lift's launch, a miner's cut debris, a furnace's or hearth's pour)
-//   keeps V1's trajectory in cells: v·√(GRAVITY·CELL_M/SIM_GRAVITY)
-//   (MACHINE_SPEED_SI, 15.3 m/s per cell/step). A lift still throws its grains
-//   V1's 20 cells up (1²/(2·0.025)) into the catch you built; the flight takes
-//   √22 ≈ 4.7× V1's time (0.78 s to the top against 0.17 s);
+//   keeps V1's trajectory in cells: v·√(GRAVITY·CELL_M/SIM_GRAVITY) (MACHINE_SPEED_SI).
+//   A lift throws its grains V1's 20 cells up (1²/(2·0.025)) into the catch you built,
+//   in V1's time (0.17 s to the top);
 // - a deck's carry (a belt's, a separator's, a miner's deck: grains resting on it)
 //   moves at V1's cells/s along the deck: v·NOMINAL_STEP_RATE·CELL_M
-//   (MACHINE_CARRY_SI, 72 m/s per cell/step: a belt's 0.6 is 144 cells/s). The
-//   vertical part of a carry is still a throw's. A grain that runs off a deck's
-//   end flies on at that speed: under V2's gravity it falls one cell over ~25
-//   cells, where V1's fell one over ~5.
+//   (MACHINE_CARRY_SI: a belt's 0.6 is 144 cells/s). The vertical part of a carry is
+//   a throw's. A grain that runs off a deck's end flies on at that speed and falls as V1's.
 export const MACHINE_SPEED_SI = Math.sqrt(GRAVITY * CELL_M / SIM_GRAVITY);
 export const MACHINE_CARRY_SI = NOMINAL_STEP_RATE * CELL_M;
 const wf = n => (Number.isInteger(n) ? `${n}.0` : String(n));

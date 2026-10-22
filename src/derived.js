@@ -19,6 +19,7 @@ import { WORLD_SIZE } from './shaders/farShared.js';
 import { createMediaNoise } from './gfx/mediaNoise.js';
 import { GI_BLEND } from './sim.js';
 import { Occupancy } from './shaders/occupancy.js';
+import { nativeBrickAirWGSL, NATIVE_BRICK_AIR_LAYOUT } from './shaders/v2/viewAir.js';
 
 // The derived passes (docs/webgpu.md E): what the renderer reads of the
 // simulation, rebuilt from its state once per derived frame, in the open
@@ -377,7 +378,10 @@ export class Derived {
     const sim = this.sim, k = this.kernels, gr = this.groups, tables = sim.tables, empty = this.gpu.emptyGroup;
     this.updateDirty();
     this.updateFields();
-    this._dispatch(k.brick, this._over(DIRTY.FIELDS), { bind: [tables, sim.bindRO, gr.brick], header: sim.readHeader() });
+    const header = sim.readHeader(), state = sim.bindRO;
+    this._dispatch(k.brick, this._over(DIRTY.FIELDS), { bind: [tables, state, gr.brick], header });
+    const air = this._nativeBrickAir();   // (built from V2's start, drawn once V2 draws: format 2)
+    if (air && header.format === 2) this._dispatch(air.kernel, fold(Math.ceil(sim.g.nbricks / 64)), { bind: [tables, state, air.group], header });
     this.occupancy.update();   // over the brick map's list (every brick at a shift: its own onShift)
     this._dispatch(k.boxArgs, [1, 1, 1], { bind: [tables, empty, gr.boxes], params: { full: this.boxFull || !sim.incremental } });
     this.boxFull = false;
@@ -390,6 +394,22 @@ export class Derived {
       const group = last ? aToLight : i === 0 ? fromBrick : i & 1 ? aToB : bToA;
       this._dispatch(last ? k.blurLast : k.blur, this._region(REGIONS.LIGHT + i), { bind: [tables, empty, group], params: { axis: i % 3, region: REGIONS.LIGHT + i } });
     }
+  }
+
+  // Physics V2's air flags on the brick map (shaders/v2/viewAir.js), after the brick kernel: its
+  // kernel (built on first use, under V2 only) and group, or null while it builds or without V2's
+  // air (its read group binds it: v2/physics.js readGroup; a CPU fixture's owner has none).
+  _nativeBrickAir() {
+    const owner = this.sim.compact;
+    if (!owner?.dynamics?.air) return null;
+    if (!this.nativeAir) {
+      const gpu = this.gpu, layout = gpu.layout('DERIVED_NATIVE_AIR', NATIVE_BRICK_AIR_LAYOUT);
+      this.nativeAir = {
+        kernel: gpu.kernel({ name: 'nativeBrickAir', code: nativeBrickAirWGSL(this.g), layouts: [this.sim.L.TABLES, this.sim.L.STATE_RO, layout], workgroupSize: [64, 1, 1] }),
+        group: gpu.bindGroup(layout, [{ binding: 0, resource: { buffer: this.brick } }], 'brick air (V2)'),
+      };
+    }
+    return this.nativeAir.kernel.state === 'ready' ? this.nativeAir : null;
   }
 
   // a region's indirect arguments (boxArgs: a thread per brick of it)

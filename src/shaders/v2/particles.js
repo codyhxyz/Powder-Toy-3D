@@ -4,6 +4,7 @@ import { specialContactWGSL } from './contact.js';
 import { impactFoamWGSL } from '../../v2/foam.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { STAGE } from '../../gpu/kernels.js';
+import { TERMINAL_MS } from '../../v2/gravity.js';
 import { dynamicsRows, PARTICLE_CAP, CELL_M, DT, GRAVITY, AIR, NEUTRON_TAG, SHOCK_THROW_MS, PACKET_SHOCK_LANDINGS, LEGACY_PRESSURE_PA } from '../../v2/dynamics-reference.js';
 import { NUCLEAR, sigmas, RAYS } from '../../rays.js';
 import { ELEMENTS, E, R } from '../../elements.js';
@@ -41,6 +42,12 @@ export const setOffBase = g => shockPostBase(g) + 1 + PARTICLE_CAP;
 const f = n => Number.isInteger(n) && Math.abs(n)<1e21 ? `${n}.0` : String(n);
 const table = (name, type, field, fallback) => `fn ${name}(id: u32) -> ${type} { switch id {\n${dynamicsRows.filter(r => r[field] !== fallback).map(r =>
   `case ${r.id}u: { return ${type === 'f32' ? f(r[field]) : `${r[field]}${type === 'u32' ? 'u' : 'i'}`}; }`).join('\n')}\ndefault: { return ${type === 'f32' ? f(fallback) : `${fallback}${type === 'u32' ? 'u' : 'i'}`}; } } }`;
+// an f32 row's table, its elements grouped by value (one case a value: V1's terminal speeds repeat by kind and drag)
+const groupedTable = (name, field, fallback) => {
+  const groups = new Map();
+  for (const r of dynamicsRows) if (r[field] !== fallback) groups.set(r[field], [...(groups.get(r[field]) ?? []), r.id]);
+  return `fn ${name}(id: u32) -> f32 { switch id {\n${[...groups].map(([v, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(v)}; }`).join('\n')}\ndefault: { return ${f(fallback)}; } } }`;
+};
 // V1 react.js setOff counts blast.air (BLAST_LIT) with the crush: an explosive that needs air goes off
 // only touching it. No explosive with a crushP needs air (elements.js: propane, the one that does, has
 // none), so the crush reads here and in src/v2/airborne.js are V1's whole rule.
@@ -133,7 +140,7 @@ fn dHitKE(mi: f32, mj: f32, jSolid: bool, u2: f32) -> f32 { return 0.5 * select(
 // V1's cap on a speed (cells/step), and its cells/step per m/s of a throw (dynamics-reference.js SHOCK_THROW_MS)
 const D_V_MAX: f32 = ${f(PHYS.V_MAX)};
 const D_SHOCK_THROW: f32 = ${f(1 / SHOCK_THROW_MS)};
-${table('dTerminal', 'f32', 'terminal', 55)}
+${groupedTable('dTerminal', 'terminal', TERMINAL_MS)}
 ${table('dLift', 'f32', 'lift', 12)}
 fn dConductive(id: u32) -> bool { switch id {
 ${ELEMENTS.filter(e=>e.elec>0).map(e=>`case ${e.id}u: { return true; }`).join('\n')}
@@ -406,10 +413,15 @@ export function particlesWGSL(g, nativeHead, stage) {
     } else {
       let wind = select(vec3f(0),air[brickOfCell(startCell)].vp.xyz,mAirVelocity());
       if (cls(id) == 4u || atomicLoad(&control[D_HELD+t])!=0u) { acceleration = vec3f(0); }
-      let relative = v - wind;
-      // Implicit quadratic drag is stable at any speed; it is NOT a displacement cap.
-      let drag = D_G / (dTerminal(id) * dTerminal(id));
-      v = wind + relative / (1.0 + drag * length(relative) * D_DT);
+      // The tick's pull, then implicit quadratic drag (V1's order, react.js forces: gravity, then drag), stable at
+      // any speed and NOT a displacement cap; its coefficient puts the fixed point at the element's terminal speed
+      // (dynamics-reference.js packetStep). Across the tick the velocity goes linearly from v to that (the hit's
+      // speed at its share of the tick, below), so a fall's landing speed grows with its height.
+      let relative = v + acceleration * D_DT - wind;
+      let vt = dTerminal(id);
+      let drag = D_G / (vt * (vt + D_G * D_DT));
+      let after = wind + relative / (1.0 + drag * length(relative) * D_DT);
+      acceleration = (after - v) / D_DT;
     }
     let end = local + (v * D_DT + 0.5 * acceleration * D_DT * D_DT) / D_CELL;
     particle.velocity = v + acceleration * D_DT;

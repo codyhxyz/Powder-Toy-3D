@@ -86,7 +86,7 @@ import { inventory } from './pov/tools/inventory.js';
 import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
 import { accountSection } from './ui/account-section.js';
-import { launch, mark } from './launch.js';
+import { launch, mark, physicsEngine } from './launch.js';
 import { createLoadWatch } from './loadWatch.js';
 import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z, HOME_ENTRY } from './pov/village/state.js';
 import { withCityBusFocus } from './pov/village/bus.js';
@@ -291,7 +291,7 @@ settings.paused = params.get('paused') === '1' || testMode === 'manual' || testM
 // Experimental native physics remains opt-in until measured parity/performance
 // acceptance. Worlds/POV use explicit readiness, never a silent v1 fallback.
 // Multiplayer guests are deliberately render-only, irrespective of host engine.
-  let physicsMode = params.get('physics') === 'v2' ? 'v2' : 'v1';
+  let physicsMode = physicsEngine(location.search);
   let physicsChanging = false;
   let ctx; // Readiness also runs during picker construction, before wires attach.
 async function loadNativePhysics() {
@@ -304,7 +304,7 @@ let hybridModule = hybridOptIn ? await import('./gfx/hybrid/index.js') : null;
 let hybridLoad = null, hybridWait = Promise.resolve(), hybridUnavailable = false;
 let releaseHybrid = () => {};
 let V2mod = physicsMode === 'v2' ? await loadNativePhysics() : null;
-let physicsV2 = null;    // the authoritative native host (guests never simulate)
+let physicsV2 = null;    // the authoritative native host (a guest's holds the host's frames and never ticks: net/codec.js)
 let nativeRayStroke = null;
 let v2Running = false;   // the last steps were v2's (switching away notes a whole write for today's activity map)
 
@@ -582,8 +582,11 @@ function build(savedWorldSize = null) {
   const [nx, ny, nz] = worldMode?.win ?? SIZES[settings.size];
   win = null;
   nativeRayStroke = null;
-  sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size, nativeStartup: physicsMode === 'v2' && !mp.isGuest });
-  if (physicsMode === 'v2' && !mp.isGuest) {
+  // A guest's grid gets its native owner too: it holds the host's frames as native cells (net/codec.js
+  // unpack) without ticking, and runs them once the session ends (a box guest plays on alone). Without
+  // one, a box built while guesting never stepped again under V2 (v2Active needs an owner).
+  sim = new Simulation(gpu, nx, ny, nz, { windowed: !!worldMode, world: worldMode?.size, nativeStartup: physicsMode === 'v2' });
+  if (physicsMode === 'v2') {
     physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
     const owner = physicsV2;
     owner.integrationReady = sim.prepareNative(owner);
@@ -2747,9 +2750,23 @@ function viewClock(held) {
 }
 
 // A native host never falls back to v1 while dependencies are building or unavailable.
-  // Remote replicas use legacy presentation without running either engine.
+  // Remote replicas run neither engine; a V2 replica presents its owner's native cells (v2Replica).
 // (declarations: the tool picker asks before this line has run)
 function v2Box() { return physicsMode === 'v2' && !mp.replica; }
+// A V2 guest's replica: its owner holds the host's frames (net/codec.js unpack) for the renderer, active
+// but never ticked, so the guest draws native cells and its own particles' renderer (wire/rays.js).
+function v2Replica() { return physicsMode === 'v2' && mp.replica && !!physicsV2; }
+// The ticks of game time a replica's frame stands for (it runs none): its tools' and body's clocks read
+// them as a host's read its ticks (ctx.nativeToolSteps), at the host's 60 Hz with the same catch-up cap.
+let replicaAcc = 0;
+function replicaToolSteps(dt, speed) {
+  if (settings.paused) { replicaAcc = 0; return 0; }
+  const max = Math.max(1, Math.ceil(2 * speed));
+  replicaAcc += dt * HOST_HZ * speed;
+  const n = Math.min(Math.floor(replicaAcc), max);
+  replicaAcc = n === max ? 0 : replicaAcc - n;
+  return n;
+}
   function v2Status() {
     return nativeReadiness(sim, { world: !!win, pov: !!pov?.active, guest: mp.replica });
   }
@@ -2825,7 +2842,8 @@ function tick(now, renderOnly = false) {
     const cam = camState();
     if (cam !== camShown) toolbar.setCamera(camShown = cam);
     const nativeSpeed = settings.steps / DEFAULTS.steps;
-    ctx.nativeToolSteps = v2Box() ? (!v2Active() || settings.paused ? 0 : Math.min(Math.floor((physicsV2.acc ?? 0) + dt * 60 * nativeSpeed), Math.max(1, Math.ceil(2 * nativeSpeed)))) : null;
+    ctx.nativeToolSteps = v2Box() ? (!v2Active() || settings.paused ? 0 : Math.min(Math.floor((physicsV2.acc ?? 0) + dt * 60 * nativeSpeed), Math.max(1, Math.ceil(2 * nativeSpeed))))
+      : v2Replica() ? replicaToolSteps(dt, nativeSpeed) : null;
     for (const w of live) {
       if (ctx.descent?.terrainPending) break;
       if (!mp.replica || w.name === 'pov' || w.name === 'mp') w.beforeStep?.(ctx, sim.nativeTransition || sim.nativeTransitionError ? 0 : dt);
@@ -2857,7 +2875,8 @@ function tick(now, renderOnly = false) {
   }
   prof.phase('sim');
   if (physicsV2?.isReady) {
-    if (v2Box()) physicsV2.activate(); else { physicsV2.suspend(); v2Running = false; }
+    // (a replica's owner stays the presentation owner: the host's frames are its cells)
+    if (v2Box() || v2Replica()) physicsV2.activate(); else { physicsV2.suspend(); v2Running = false; }
   }
   const stepping = !renderOnly && !mp.replica && (!settings.paused || stepOnce);
   ctx.stepping = stepping;
@@ -3248,7 +3267,8 @@ async function allReady() {
       // update() uses flat-near readiness even when the drawn view is curved.
       ...(near && curved ? [v.viewReady(view, detail, false)] : []),
       ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
-      ...(physicsV2 ? [physicsV2.ready, physicsV2.integrationReady] : []),
+      // (and the flying matter's, which the first frame doesn't wait for: v2/physics.js dynamicsReady)
+      ...(physicsV2 ? [physicsV2.ready, physicsV2.integrationReady, physicsV2.dynamicsReady] : []),
       ...(far && isMaterialView(view) ? [far.buildView()] : [])]);
     await gpu.settled();
     if (graphicsFailure) throw graphicsFailure;
@@ -3343,7 +3363,7 @@ try {
           do { prepared = sim; await prepared.prepareLegacy(); } while (prepared !== sim);
         }
         physicsMode = mode;
-        if (mode === 'v2' && !physicsV2 && !mp.isGuest) physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
+        if (mode === 'v2' && !physicsV2) physicsV2 = new V2mod.PhysicsV2(sim, V2mod.options);
         if (mode === 'v1' && physicsV2) {
           physicsV2.suspend();
           v2Running = false;

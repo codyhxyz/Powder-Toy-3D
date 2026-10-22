@@ -123,15 +123,26 @@ assert.equal(trailingFace([0, 0, 0]), 1, 'at rest: x, counted as moving +');
 }
 // 2. Boiling: a water drop through flames turns to steam (phase.js latent heat; V1 WATER→STEAM at 100 °C).
 {
-  const out = fly(packet(E.WATER, 20, FULL / 8), fire, 600);
+  const out = fly(packet(E.WATER, 20), fire, 600);
   assert.equal(key(out.p.core), 'STEAM', 'the drop boils in flight');
   assert.equal(out.r.requests & 2, 2, 'its steam is the air\'s gas source at its host (requests bit 1)');
   assert.equal(out.r.requests & 1, 0, 'never a detonation while flying');
 }
+// ...and a part-filled drop makes a whole steam cell with its fill's chance, else leaves its carrier air
+// (contact.js ctPhase: V1's whole cells boil one for one), its energy exact either way (fly's ledger).
+{
+  let steam = 0, gone = 0;
+  for (let k = 0; k < 48; k++) {
+    const out = fly(packet(E.WATER, 90, FULL / 8), fire, 600, openFaces, { t0: 7919 * k });
+    if (out.p && key(out.p.core) === 'STEAM') steam++; else if (!out.p) gone++;
+  }
+  assert.equal(steam + gone, 48, 'every film drop boils away');
+  assert(steam >= 1 && steam <= 15, `an eighth of a cell makes steam about an eighth of the time: ${steam}/48`);
+}
 // 3. Melting: ice through flames melts.
 assert.equal(key(fly(packet(E.ICE, -10), fire, 600).p.core), 'WATER', 'ice melts in flight');
 // 4. Freezing the other way round: lava cools to its stone in cold air.
-assert.equal(key(fly(packet(E.LAVA, 1500, FULL / 4), () => air(20), 4000).p.core), 'STONE', 'a lava drop sets in flight');
+assert.equal(key(fly(packet(E.LAVA, 1500), () => air(20), 4000).p.core), 'STONE', 'a lava drop sets in flight');
 // 5. Ignition and burning: sawdust thrown through a fire catches, spends its fuel and leaves its exhaust.
 {
   const out = fly(packet(E.SAWDUST, 20), fire, 600);

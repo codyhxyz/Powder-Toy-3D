@@ -219,12 +219,6 @@ fn ctPastPhase(c:CTCell,hot:bool)->bool {
  return !phaseLess(energySub(baseline,latent),ctEnergy(c));
 }
 fn ctCeilEnergy(energy:vec2u,divisor:i32)->i32{return i32(phaseDiv(energyAdd(energy,energySigned(divisor-1)),vec2u(u32(divisor),0u)).x);}
-fn ctCommonQ(energy:vec2u,a:CTCell,b:CTCell)->i32 {
- let sensible=energySub(energySub(energy,ctOffset(a)),ctOffset(b));
- if(phaseLess(sensible,vec2u(0u))){return 0;}
- return i32(phaseDiv(sensible,vec2u(u32(ctCapacity(a)+ctCapacity(b)),0u)).x);
-}
-fn ctRemainder(energy:vec2u,a:CTCell,b:CTCell)->vec2u{return energySub(energySub(energy,ctEnergy(a)),ctEnergy(b));}
 ${generated}
 
 fn ctUnpack(core:vec4u,bank:i32)->CTCell {
@@ -311,7 +305,7 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
    for(var order=0u;order<ctPairOrders();order++){
     if(pair.changed!=0){continue;}
     var a=pair.a;var b=pair.b;if(order==1u){a=pair.b;b=pair.a;}
-    let r=ctSwallow(a,b,seed);pair=r;if(order==1u){pair=ctPairValue(r.b,r.a,r.changed);}
+    let r=ctSwallow(a,b,seed,contactAmbientQ());pair=r;if(order==1u){pair=ctPairValue(r.b,r.a,r.changed);}
    }
    cells[i]=pair.a;cells[j]=pair.b;
   }
