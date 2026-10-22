@@ -150,40 +150,7 @@ fn dHitKE(mi: f32, mj: f32, jSolid: bool, u2: f32) -> f32 { return 0.5 * select(
 // V1's cap on a speed (cells/step), and its cells/step per m/s of a throw (dynamics-reference.js SHOCK_THROW_MS)
 const D_V_MAX: f32 = ${f(PHYS.V_MAX)};
 const D_SHOCK_THROW: f32 = ${f(1 / SHOCK_THROW_MS)};
-// V1's density of a cell of id (elements.js dens; common.js densityOf for matter) and its collision rule's numbers
-// (react.js shatter, move.js collide: PHYS.RESTITUTION past PHYS.COLLIDE_V cells/step)
-const D_RESTITUTION: f32 = ${f(PHYS.RESTITUTION)};
-const D_COLLIDE_V: f32 = ${f(PHYS.COLLIDE_V)};
-fn dDens(id: u32) -> f32 { switch id {
-${[...ELEMENTS.reduce((m, e) => e.dens ? m.set(e.dens, [...(m.get(e.dens) ?? []), e.id]) : m, new Map())].map(([d, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(d)}; }`).join('\n')}
-default: { return 0.0; } } }
 ${groupedTable('dTerminal', 'terminal', TERMINAL_MS)}
-// V1's keep a step (react.js forces: 1 - DRAG; none for a liquid in free fall, as a flying liquid packet is):
-// dynamics-reference.js PACKET_KEEP
-fn dKeep(id: u32) -> f32 { switch id {
-${[...PACKET_KEEP.reduce((m, k, id) => k !== 1 ? m.set(k, [...(m.get(k) ?? []), id]) : m, new Map())].map(([k, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(k)}; }`).join('\n')}
-default: { return 1.0; } } }
-const D_V1_STEP: f32 = ${f(1 / V1_STEP_MS)};
-const D_PULL_STEP: f32 = ${f(STEP_S * STEP_S / CELL_M)};
-const D_STEPS: u32 = ${STEPS_PER_TICK}u;
-// A packet's tick on V1's law, a V1 step at a time (dynamics-reference.js packetStep, its twin along the pull): each
-// step it moves along each axis, pace(|u|) = |u|/(2-|u|) cells for matter on its block's random draws (V1's Margolus
-// move: gravity.js v1PaceRate, the grid grains' fall.js fallSteps) and |u| for a liquid (its R3 draws carry it as
-// fast as its speed: dynamics-reference.js v1LiquidArrival), then takes the step's pull and its drag toward the air
-// it is in (react.js forces), to V_MAX on each component. In V1's cells/step; m/s and m/s² in and out.
-struct DPacketFlight { cells: vec3f, velocity: vec3f }
-fn dPacketFlight(v0: vec3f, wind: vec3f, pull: vec3f, keep: f32, paced: bool) -> DPacketFlight {
-  var out = DPacketFlight(vec3f(0), vec3f(0));
-  for (var a = 0u; a < 3u; a++) {
-    let w = wind[a] * D_V1_STEP; let g = pull[a] * D_PULL_STEP; var u = v0[a] * D_V1_STEP; var d = 0.0;
-    for (var k = 0u; k < D_STEPS; k++) {
-      let pace = min(abs(u), D_V_MAX); d += sign(u) * select(pace, pace / (2.0 - pace), paced);
-      u = clamp(w + (u - w + g) * keep, -D_V_MAX, D_V_MAX);
-    }
-    out.cells[a] = d; out.velocity[a] = u / D_V1_STEP;
-  }
-  return out;
-}
 ${table('dLift', 'f32', 'lift', 12)}
 fn dConductive(id: u32) -> bool { switch id {
 ${ELEMENTS.filter(e=>e.elec>0).map(e=>`case ${e.id}u: { return true; }`).join('\n')}
@@ -355,6 +322,59 @@ fn dElect(s: u32,kind: u32,index: u32) {
     if(atomicCompareExchangeWeak(&claims[at],old,index+1u).exchanged) { return; }
   }
 }
+// A flying dust packet's dust faces (V1 react.js dust clouds: nFuel), read in reactDust, before react's
+// walkers clear the notes: another dust packet in its own cell, and each face cell holding dust, settled or flying
+// (reactClaim notes a flying one in its host's kind-1 key word, free by then: deposit freed every one).
+fn dDustFaces(s: u32) -> i32 {
+  let p = cellOf(s);
+  var n = select(0, 1, atomicLoad(&claims[s * 4u + 2u]) > 1u);
+  for (var f = 0; f < 6; f++) {
+    let q = mEdge(p + face6(f));
+    if (!inGrid(q)) { continue; }
+    let r = slotOf(q);
+    if (cid(loadCore(r)) == D_DUST || atomicLoad(&claims[r * 4u + 2u]) != 0u) { n++; }
+  }
+  return n;
+}
+`;
+}
+// A packet's flight and hits on V1's laws (V1's units; react.js, move.js): the shock (dShockHit, dShockWall), breaking,
+// landing heat and knocks (impact), its flight (integrate). Only those two stages read them, so the other particle
+// stages, react's above all (its cold compile), don't carry them.
+const packetHitsWGSL = /* wgsl */ `
+// V1's density of a cell of id (elements.js dens; common.js densityOf for matter) and its collision rule's numbers
+// (react.js shatter, move.js collide: PHYS.RESTITUTION past PHYS.COLLIDE_V cells/step)
+const D_RESTITUTION: f32 = ${f(PHYS.RESTITUTION)};
+const D_COLLIDE_V: f32 = ${f(PHYS.COLLIDE_V)};
+fn dDens(id: u32) -> f32 { switch id {
+${[...ELEMENTS.reduce((m, e) => e.dens ? m.set(e.dens, [...(m.get(e.dens) ?? []), e.id]) : m, new Map())].map(([d, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(d)}; }`).join('\n')}
+default: { return 0.0; } } }
+// V1's keep a step (react.js forces: 1 - DRAG; none for a liquid in free fall, as a flying liquid packet is):
+// dynamics-reference.js PACKET_KEEP
+fn dKeep(id: u32) -> f32 { switch id {
+${[...PACKET_KEEP.reduce((m, k, id) => k !== 1 ? m.set(k, [...(m.get(k) ?? []), id]) : m, new Map())].map(([k, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${f(k)}; }`).join('\n')}
+default: { return 1.0; } } }
+const D_V1_STEP: f32 = ${f(1 / V1_STEP_MS)};
+const D_PULL_STEP: f32 = ${f(STEP_S * STEP_S / CELL_M)};
+const D_STEPS: u32 = ${STEPS_PER_TICK}u;
+// A packet's tick on V1's law, a V1 step at a time (dynamics-reference.js packetStep, its twin along the pull): each
+// step it moves along each axis, pace(|u|) = |u|/(2-|u|) cells for matter on its block's random draws (V1's Margolus
+// move: gravity.js v1PaceRate, the grid grains' fall.js fallSteps) and |u| for a liquid (its R3 draws carry it as
+// fast as its speed: dynamics-reference.js v1LiquidArrival), then takes the step's pull and its drag toward the air
+// it is in (react.js forces), to V_MAX on each component. In V1's cells/step; m/s and m/s² in and out.
+struct DPacketFlight { cells: vec3f, velocity: vec3f }
+fn dPacketFlight(v0: vec3f, wind: vec3f, pull: vec3f, keep: f32, paced: bool) -> DPacketFlight {
+  var out = DPacketFlight(vec3f(0), vec3f(0));
+  for (var a = 0u; a < 3u; a++) {
+    let w = wind[a] * D_V1_STEP; let g = pull[a] * D_PULL_STEP; var u = v0[a] * D_V1_STEP; var d = 0.0;
+    for (var k = 0u; k < D_STEPS; k++) {
+      let pace = min(abs(u), D_V_MAX); d += sign(u) * select(pace, pace / (2.0 - pace), paced);
+      u = clamp(w + (u - w + g) * keep, -D_V_MAX, D_V_MAX);
+    }
+    out.cells[a] = d; out.velocity[a] = u / D_V1_STEP;
+  }
+  return out;
+}
 // V1 react.js shock from the charge's side (me): it and the matter j closing at V1's v (cells/step) set it
 // off with hitKE past its blast.shock, a solid charge taking the mover's mass, a loose one its own against
 // a solid and the reduced mass otherwise (common.js hitKE: V1's densities a cell each, dShockKE in dMass's
@@ -463,22 +483,7 @@ fn dShockWall(t: u32, pid: u32, u: f32, landing: bool, particleId: u32) {
   if (landing && dShockFall(pid) > 0.0) { v = min(D_V_MAX, u * dShockFall(pid)); }
   if (dShockActs(pid, ${E.WALL}u, v)) { atomicStore(&control[D_SET_OFF + t], particleId); }
 }
-// A flying dust packet's dust faces (V1 react.js dust clouds: nFuel), read in reactDust, before react's
-// walkers clear the notes: another dust packet in its own cell, and each face cell holding dust, settled or flying
-// (reactClaim notes a flying one in its host's kind-1 key word, free by then: deposit freed every one).
-fn dDustFaces(s: u32) -> i32 {
-  let p = cellOf(s);
-  var n = select(0, 1, atomicLoad(&claims[s * 4u + 2u]) > 1u);
-  for (var f = 0; f < 6; f++) {
-    let q = mEdge(p + face6(f));
-    if (!inGrid(q)) { continue; }
-    let r = slotOf(q);
-    if (cid(loadCore(r)) == D_DUST || atomicLoad(&claims[r * 4u + 2u]) != 0u) { n++; }
-  }
-  return n;
-}
 `;
-}
 // V1 shaders/rays.js raysAdvanceFrag, a photon's step (a stage runs one V1 step: D_RAY_DT). It flies straight on
 // through clear matter (V1 has no refraction: EL-4), losing exp(-sigma·path) of its light to it (Beer-Lambert with the
 // renderer's extinction; by a liquid's fill, EL-9), and stops at opaque matter: a metal keeps its reflectance share and
@@ -554,7 +559,7 @@ export function particlesWGSL(g, nativeHead, stage) {
     atomicStore(&control[0],0u); atomicStore(&control[18],0u); atomicStore(&control[D_RAYS],0u);
     atomicStore(&control[D_SHOCK_COUNT],0u); // this tick's shock posts (blasts.js airborneEvents drains them)
   `);
-  if (stage === 'integrate') return h + photonStepWGSL + main64(/* wgsl */ `
+  if (stage === 'integrate') return h + packetHitsWGSL + photonStepWGSL + main64(/* wgsl */ `
     // Later stages read flight only for live slots, so dead slots skip it.
     if (t >= D_CAP || dPoolEmpty() || !slotLive(t) || particles[t].id == 0u) { return; }
     var particle = particles[t]; flight[t] = DFlight(vec4u(D_NONE,D_NONE,0u,0u),vec4f(0));
@@ -687,7 +692,7 @@ export function particlesWGSL(g, nativeHead, stage) {
   `);
   // Impact reads only kind-0 election words and deposit only kind-1 words, so
   // a winner may free its claim at once: every other claimant loses either way.
-  if (stage === 'impact') return h + main64(/* wgsl */ `
+  if (stage === 'impact') return h + packetHitsWGSL + main64(/* wgsl */ `
     if (t >= D_CAP || dPoolEmpty() || !slotLive(t) || particles[t].id == 0u) { return; }
     let f = flight[t]; let s = f.destination.x; if (!dWon(s,0u,t)) { return; }
     dFree(s,0u);
