@@ -82,7 +82,12 @@ export function createWorldMeshLightContext(gpu,{publication,worldSize,frameValu
       book:externalStorageAttribute(renderer,A.lightBook,count),sunBook:externalStorageAttribute(renderer,S.book,sunCount*8),requests:externalStorageAttribute(renderer,feedback,feedbackWords),
       world:[...book.bricks,A.epoch],light:[layout.descriptorBase,layout.lightCapacity,layout.probeCapacity,A.generation],geometry:[layout.aux.width,layout.aux.height,layout.probes.width,layout.probes.height],
       feedback:[book.planeWords,book.statusWord,book.sunWord,WORLD_ATLAS_ABI],normalToGrid:model.clone().transpose(),projection:array(S.params.worldToLight),depth:array(S.params.depth),tiles:array(S.params.tiles),physical:array(S.params.physical),version:array(S.params.version),values,worldToGrid:model.invert()};
-    const context=Object.freeze({identity:publication.identity??A,epoch:A.epoch,
+    // V2's packet draw (gfx/nativeParticles.js worldLightGroup, particleRender.js particleWorldLightWGSL): the same
+    // publication's native resources and values, as its own pipeline binds them (not three's nodes)
+    const particleLight=Object.freeze({world:true,aux:textures.aux,gi:[...textures.gi],sun:nativeSun,noise,book:A.lightBook,sunBook:S.book,requests:feedback,
+      params:Object.freeze({wWorld:owned.world,wLight:owned.light,wGeometry:owned.geometry,wFeedback:owned.feedback,wProjection:owned.projection,
+        wDepth:owned.depth,wTiles:owned.tiles,wPhysical:owned.physical,wVersion:owned.version})});
+    const context=Object.freeze({identity:publication.identity??A,epoch:A.epoch,particleLight,
       bind(){check(!released&&!retiring,'retired world mesh context');check(isCompatible(publication)===true,'incompatible world mesh scene/epoch/config');used=true;install(owned,context);},
       cancel(){check(!used,'used context requires final submission fence');release();},
       retireAfter(submitted){check(!retiring&&!released&&submitted?.then,'one final submission promise required');retiring=true;

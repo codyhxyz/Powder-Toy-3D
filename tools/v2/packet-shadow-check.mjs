@@ -8,7 +8,8 @@ import { gridLayout } from '../../src/sim.js';
 import { shadowFrag, shadowRes } from '../../src/shaders/render.js';
 import { RENDER_LAYOUT } from '../../src/shaders/bindings.js';
 import { packetShadowFrag, packetShadowSplatWGSL, packetShadowWords, PACKET_SHADOW_EMPTY, PACKET_RETRACE_WORDS } from '../../src/shaders/v2/packetShadow.js';
-import { nativeParticleWGSL, NATIVE_PARTICLE_LIGHT_LAYOUT } from '../../src/shaders/v2/particleRender.js';
+import { nativeParticleWGSL, NATIVE_PARTICLE_LIGHT_LAYOUT, NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT, PARTICLE_SHADOW_LIFT } from '../../src/shaders/v2/particleRender.js';
+import { SHADOW_LIFT } from '../../src/gfx/meshLight.js';
 import { NativeParticles, boxParticleLight } from '../../src/gfx/nativeParticles.js';
 import raysWire from '../../src/wire/rays.js';
 import { packetShadowKey } from '../../src/gfx/packetShadow.js';
@@ -107,8 +108,48 @@ test('the matter draw lights its sphere with the Box volume\'s map and GI where 
     nativeParticles: { isReady: true, draw: (_rp, _t, l) => got.push(l) }, volume: { matrixWorld: new Matrix4() }, vol: volume, derived };
   raysWire.scene(app, { frame: g.frame });
   assert.equal(got[0]?.map, volume.shadowTextures.map, 'the Box draw lights its packets with the volume\'s map');
-  raysWire.scene({ ...app, worldMode: {} }, { frame: g.frame });
-  assert.equal(got[1], null, 'World: its own readers');
+  const worldLight = { world: true };
+  raysWire.scene({ ...app, worldMode: {} }, { frame: g.frame }, worldLight);
+  assert.equal(got[1], worldLight, 'World: the frame\'s own light (app.drawWorldAfter\'s)');
+});
+
+test('World lights its packets with its atlas and paged sun, as its figures (not the open sky)', async () => {
+  const wgsl = nativeParticleWGSL(false, true);
+  assertNaga(wgsl, 'nativeParticleMatterWorld');
+  assert.equal(PARTICLE_SHADOW_LIFT, SHADOW_LIFT, 'the figures\' lift toward the sun');
+  // wmlSun's taps and wmlAmbient's probes (shaders/worldMeshLight.js), in world cells
+  assert.match(wgsl, /let p = hp \+ P\.origin \+ FU\.sun \* PARTICLE_SHADOW_LIFT;/);
+  assert.match(wgsl, /wmlSunTap\(i0 \+ o, particleWorldSun, P\.wWorld/);
+  assert.match(wgsl, /wmlProbe\(particleGI0, at, PARTICLE_GI_READY, particleWorldAux/);
+  assert.doesNotMatch(nativeParticleWGSL(false), /wmlSunTap/, 'the Box pipe reads the Box volume\'s');
+  const calls = [], g = { frame: {}, _frameUniforms: { layout: {}, group: {} }, layout: (_n, l) => l, bindGroup: (l, entries) => ({ l, entries }),
+    createBuffer: d => buffer(d.size), flush() {}, createTexture: d => ({ ...d, createView: () => ({ texture: d.label }) }),
+    device: { createSampler: d => ({ sampler: d?.label }) },
+    renderPipeline(d) { return { state: 'ready', ready: Promise.resolve(), draw(_rp, o) { calls.push({ name: d.name, o }); } }; },
+    kernel() { return { state: 'ready', ready: Promise.resolve(), dispatch() {} }; } };
+  globalThis.GPUBufferUsage ??= { STORAGE: 128, INDIRECT: 256 };
+  const s = { isIdle: false, particles: buffer(65536 * 48), control: buffer(16), attachDrawAdapter() {}, get ready() { return Promise.resolve(); },
+    get renderState() { return { version: 1, particleBytes: 48, capacity: 65536, position: 'world cells', particleIdOffset: 12, coreOffsets: [28, 32, 36, 40], bankOffset: 44, liveCountOffset: 0, particles: this.particles, control: this.control, ready: true }; } };
+  const a = new NativeParticles(g, s); a.updateView(camera(), 720, new Matrix4(), [0, 0, 0]);
+  await a.worldReady();
+  a.prepareDraw(g.frame);
+  const tex = name => ({ texture: { createView: d => ({ view: name, ...d }) } });
+  const light = { world: true, aux: tex('aux'), gi: ['g0', 'g1', 'g2', 'g3'].map(tex), sun: tex('sun'), noise: tex('noise'),
+    book: buffer(16), sunBook: buffer(16), requests: buffer(16), params: { wWorld: [9, 9, 9, 1], wProjection: Array(16).fill(1) } };
+  a.draw({ frame: g.frame }, { width: 640, height: 360 }, light);
+  const matter = calls.find(c => c.name === 'nativeParticleMatterWorld');
+  assert.ok(matter, 'World draws its packets with its own pipe');
+  assert.ok(!calls.some(c => c.name === 'nativeParticleMatter'), 'not the open sky\'s');
+  assert.equal(matter.o.params.light, 1); assert.deepEqual(matter.o.params.wWorld, [9, 9, 9, 1]);
+  assert.equal(matter.o.bind[2].l, NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT);
+  const e = Object.fromEntries(matter.o.bind[2].entries.map(x => [x.binding, x.resource]));
+  assert.deepEqual([1, 2, 3, 4, 5, 6].map(b => e[b].view), ['aux', 'g0', 'g1', 'g2', 'g3', 'sun']);
+  assert.equal(e[6].dimension, '2d-array'); assert.equal(e[7].view, 'noise');
+  assert.equal(e[9].buffer, light.book); assert.equal(e[10].buffer, light.sunBook); assert.equal(e[11].buffer, light.requests);
+  // the World frame hands its mesh context's light to the after wires, and waits for the pipe before its frames
+  const frame = readFileSync(new URL('../../src/wire/worldRenderFrame.js', import.meta.url), 'utf8');
+  assert.match(frame, /app\.drawWorldAfter\(rp,context\.particleLight\)/);
+  assert.match(frame, /app\.nativeParticles\?\.worldReady\(\)\]\);/);
 });
 
 test('the derived passes run again each tick packets fly (V1\'s flying cells move the grid version; packets do not)', () => {

@@ -3158,7 +3158,8 @@ function tick(now, renderOnly = false) {
   // the realistic views draw it first, behind the volume and meshes, with the
   // sea past the edge where the world's water reaches it (worldSea).
   drawWorldSky(rp,view){if(isMaterialView(view))overlays.drawSky(rp,worldSea(),sim.origin.toArray());},
-  drawWorldAfter(rp){for(const w of after)w.scene(ctx,rp);brush.draw(rp);},
+  // (light: World's for V2's packets, gfx/worldMeshLight.js context.particleLight; wire/rays.js)
+  drawWorldAfter(rp,light=null){for(const w of after)w.scene(ctx,rp,light);brush.draw(rp);},
   drawWorldOverlay(rp){for(const w of overlayWires)w.overlay(ctx,rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
   // the engine, as __app reports and switches it (src/wire/saves.js captures and restores it)

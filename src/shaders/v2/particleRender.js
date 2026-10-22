@@ -12,8 +12,13 @@ import { SUPER, BRICK } from '../common.js';
 import { particleViewsWGSL } from './particleViews.js';
 import { cloudDeckGLSL } from '../gfx/clouds.js';
 import { VIEWS } from '../../views.js';
-import { SH_Y0, SH_Y1, GI_OFFSET_CELLS, SHADOW_TINT_ID_SCALE, SHADOW_PAD } from '../gfx/lighting.js';
+import { SH_Y0, SH_Y1, GI_OFFSET_CELLS, SHADOW_TINT_ID_SCALE, SHADOW_PAD, VOLUME_SHADOW_BIAS } from '../gfx/lighting.js';
+import { worldMeshLightWGSL } from '../worldMeshLight.js';
+import { READY } from '../../world/renderAtlas.js';
 
+// gfx/meshLight.js SHADOW_LIFT: how far toward the sun World's figures read its map, cells (that module pulls in
+// three's node builder, so the number is held here; packet-shadow-check pins the two equal)
+export const PARTICLE_SHADOW_LIFT = 0.6;
 export const PARTICLE_BYTES = 48;
 export const PARTICLE_WORDS = 12;
 // deco: draw each particle's decoration (src/deco.js decoShown: painted, display on)
@@ -25,8 +30,13 @@ export const PARTICLE_WORDS = 12;
 export const NativeParticleParams = uniformStruct('NativeParticleParams', {
   inverseModel: 'mat4x4f', origin: 'vec3f', scale: 'f32', eye: 'vec3f', sample: 'u32',
   viewport: 'vec2f', capacity: 'u32', deco: 'u32', grid: 'vec4u', supers: 'vec4u', lag: 'f32',
-  // light: 1 when the Box volume's sun map, GI probes and noise are bound (NATIVE_PARTICLE_LIGHT_LAYOUT)
+  // light: 1 when the Box volume's sun map, GI probes and noise are bound (NATIVE_PARTICLE_LIGHT_LAYOUT), or World's
+  // atlas and sun (NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT, the World pipe)
   light: 'u32',
+  // World's (the World pipe only): its book's bricks and epoch, the atlas's light and geometry, the feedback's words, the
+  // sun's projection and pages (gfx/worldMeshLight.js createWorldMeshLightContext's owned, the figures' same values)
+  wWorld: 'vec4u', wLight: 'vec4u', wGeometry: 'vec4u', wFeedback: 'vec4u', wProjection: 'mat4x4f', wDepth: 'vec4f',
+  wTiles: 'vec4i', wPhysical: 'vec4u', wVersion: 'vec4u',
 });
 const ro = (binding, visibility) => ({ binding, visibility, buffer: { type: 'read-only-storage' } });
 // 1: each pool slot's decoration, RGBA8 (src/v2/physics.js particleDecoRange)
@@ -40,6 +50,14 @@ const tex = (binding, sampleType, viewDimension) => ({ binding, visibility: STAG
 const smp = binding => ({ binding, visibility: STAGE.FRAGMENT, sampler: { type: 'filtering' } });
 export const NATIVE_PARTICLE_LIGHT_LAYOUT = [ro(0, STAGE.FRAGMENT | STAGE.COMPUTE), tex(1, 'unfilterable-float', '2d'),
   tex(2, 'float', '3d'), tex(3, 'float', '3d'), tex(4, 'float', '3d'), tex(5, 'float', '3d'), tex(6, 'float', '3d'), smp(7), smp(8)];
+// The World pipe's group 2: the air, and World's light as its figures read it (gfx/worldMeshLight.js): the atlas's aux
+// records and GI bands, the sun's pages (textureLoad), the media noise (the clouds' shadow) and its sampler, the light
+// and sun books, and the frame's feedback words its misses request pages through (the figures' wmlMiss)
+const arr = (binding, sampleType) => ({ binding, visibility: STAGE.FRAGMENT, texture: { sampleType, viewDimension: '2d-array' } });
+export const NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT = [ro(0, STAGE.FRAGMENT | STAGE.COMPUTE), arr(1, 'uint'),
+  arr(2, 'unfilterable-float'), arr(3, 'unfilterable-float'), arr(4, 'unfilterable-float'), arr(5, 'unfilterable-float'),
+  arr(6, 'unfilterable-float'), tex(7, 'float', '3d'), smp(8), ro(9, STAGE.FRAGMENT), ro(10, STAGE.FRAGMENT),
+  { binding: 11, visibility: STAGE.FRAGMENT, buffer: { type: 'storage' } }];
 export const NATIVE_PARTICLE_ARGS_LAYOUT = [ro(0, STAGE.COMPUTE),
   { binding: 1, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
 export const nativeParticleArgsWGSL = () => `
@@ -184,6 +202,71 @@ fn particleGI(p: vec3f, n: vec3f) -> vec3f {
   return max(SH_Y0 * c0 + SH_COS1 * SH_Y1 * (cx * n.x + cy * n.y + cz * n.z), vec3f(0.0)) + FU.caveAmbient;
 }`;
 
+// World's light on a packet's sphere, as World lights its figures (gfx/meshLight.js litColor with
+// gfx/worldMeshLight.js's readers, shaders/worldMeshLight.js wmlSun and wmlAmbient): the sun's paged map read
+// SHADOW_LIFT toward the sun with the volume's bias (and the clouds' shadow), the atlas's GI probe GI_OFFSET out
+// along the normal; a page not loaded yet requests it, and the frame waits for it, as the figures' do. Not a
+// deviation: the World volume's light, read by another drawer, as the Box draw reads the Box volume's. The same
+// two terms as particleLightWGSL's (no caustics, no glow: the Box packet's), in world cells (the window's + P.origin).
+const particleWorldLightWGSL = () => /* wgsl */ `
+@group(2) @binding(1) var particleWorldAux: texture_2d_array<u32>;
+@group(2) @binding(2) var particleGI0: texture_2d_array<f32>;
+@group(2) @binding(3) var particleGI1: texture_2d_array<f32>;
+@group(2) @binding(4) var particleGI2: texture_2d_array<f32>;
+@group(2) @binding(5) var particleGI3: texture_2d_array<f32>;
+@group(2) @binding(6) var particleWorldSun: texture_2d_array<f32>;
+@group(2) @binding(7) var tMediaNoise: texture_3d<f32>;
+@group(2) @binding(8) var linearRepeat: sampler;
+@group(2) @binding(9) var<storage, read> particleWorldBook: array<u32>;
+@group(2) @binding(10) var<storage, read> particleWorldSunBook: array<u32>;
+@group(2) @binding(11) var<storage, read_write> particleWorldRequests: array<atomic<u32>>;
+const PARTICLE_SIGMA = array<vec3f, ${ELEMENTS.length}>(${ELEMENTS.map(e => v(e.sigma ?? [0, 0, 0])).join(',')});
+const SHADOW_TINT_ID_SCALE: f32 = ${f(SHADOW_TINT_ID_SCALE)};
+const PARTICLE_SHADOW_LIFT: f32 = ${f(PARTICLE_SHADOW_LIFT)};   // meshLight.js SHADOW_LIFT (the figures')
+const PARTICLE_VOLUME_SHADOW_BIAS: f32 = ${f(VOLUME_SHADOW_BIAS)}; // lighting.js VOLUME_SHADOW_BIAS (wmlSun's)
+const PARTICLE_GI_READY: u32 = ${READY.GI}u;
+const SH_Y0: f32 = ${SH_Y0};
+const SH_Y1: f32 = ${SH_Y1};
+const SH_COS1: f32 = 2.0 / 3.0;
+const GI_OFFSET: f32 = ${f(GI_OFFSET_CELLS)};
+const PARTICLE_VIEW_SHADOWS = array<u32, ${Math.max(...VIEWS.map(v => v.id)) + 1}>(${Array.from({ length: Math.max(...VIEWS.map(v => v.id)) + 1 }, (_, i) => VIEWS.find(v => v.id === i)?.shadows ? '1u' : '0u').join(',')});
+${cloudDeckGLSL}
+${worldMeshLightWGSL('', { book: 'particleWorldBook', sunBook: 'particleWorldSunBook', requests: 'particleWorldRequests' })}
+fn particleTexelAtt(sm: vec4f, d: f32) -> vec3f {
+  let tid = i32(sm.w / SHADOW_TINT_ID_SCALE);
+  if (tid <= 0 || tid >= ${ELEMENTS.length} || d <= sm.y) { return vec3f(1.0); }
+  let tau = sm.w - f32(tid) * SHADOW_TINT_ID_SCALE;
+  let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
+  let sigma = PARTICLE_SIGMA[tid];
+  return exp(-sigma / max(dot(sigma, vec3f(1.0 / 3.0)), 1e-4) * tau * frac);
+}
+// wmlSun at the window's grid point hp (n unused: the figures' lift stands in for a normal's offset)
+fn particleSun(hp: vec3f, n: vec3f) -> vec3f {
+  if (P.light == 0u || FU.shadows == 0u || u32(FU.view) >= ${Math.max(...VIEWS.map(v => v.id)) + 1}u || PARTICLE_VIEW_SHADOWS[u32(FU.view)] == 0u) { return vec3f(1.0); }
+  let p = hp + P.origin + FU.sun * PARTICLE_SHADOW_LIFT;
+  let cloud = cloudShadow(p);
+  if (cloud <= CLOUD_SHADOW_SKIP) { return vec3f(0.0); }
+  let q = (P.wProjection * vec4f(p, 1.0)).xyz;
+  let i0 = vec2i(floor(q.xy - 0.5)); let w = fract(q.xy - 0.5);
+  var acc = vec3f(0.0);
+  for (var k = 0; k < 4; k++) {
+    let o = vec2i(k & 1, k >> 1u);
+    let m = wmlSunTap(i0 + o, particleWorldSun, P.wWorld, P.wFeedback, P.wDepth, P.wTiles, P.wPhysical, P.wVersion);
+    let wk = select(1.0 - w.x, w.x, o.x == 1) * select(1.0 - w.y, w.y, o.y == 1);
+    acc += select(0.0, 1.0, q.z < m.x + PARTICLE_VOLUME_SHADOW_BIAS) * particleTexelAtt(m, q.z) * wk;
+  }
+  return cloud * acc;
+}
+// wmlAmbient's GI (with the scene's cave ambient) on a surface at hp facing n, from the probe GI_OFFSET out along it
+fn particleGI(hp: vec3f, n: vec3f) -> vec3f {
+  let at = hp + P.origin + n * GI_OFFSET;
+  let c0 = wmlProbe(particleGI0, at, PARTICLE_GI_READY, particleWorldAux, P.wWorld, P.wLight, P.wGeometry, P.wFeedback).rgb;
+  let cx = wmlProbe(particleGI1, at, PARTICLE_GI_READY, particleWorldAux, P.wWorld, P.wLight, P.wGeometry, P.wFeedback).rgb;
+  let cy = wmlProbe(particleGI2, at, PARTICLE_GI_READY, particleWorldAux, P.wWorld, P.wLight, P.wGeometry, P.wFeedback).rgb;
+  let cz = wmlProbe(particleGI3, at, PARTICLE_GI_READY, particleWorldAux, P.wWorld, P.wLight, P.wGeometry, P.wFeedback).rgb;
+  return max(SH_Y0 * c0 + SH_COS1 * SH_Y1 * (cx * n.x + cy * n.y + cz * n.z), vec3f(0.0)) + FU.caveAmbient;
+}`;
+
 // A data view's or Plain's particle (particleViews.js): the cube of its volume, as those
 // views draw a cell, coloured as they colour a lone cell of its element.
 const blockyFragmentWGSL = /* wgsl */ `
@@ -254,7 +337,8 @@ fn coverageHash(input: u32) -> u32 {
 }`;
 
 // Pure presentation: never write or reorder the native physics records.
-export const nativeParticleWGSL = (rays = false) => /* wgsl */ `
+// world: the World pipe (its light, particleWorldLightWGSL), else the Box's (particleLightWGSL)
+export const nativeParticleWGSL = (rays = false, world = false) => /* wgsl */ `
 ${frameBindings()}
 ${NativeParticleParams.wgsl}
 @group(3) @binding(1) var<uniform> P: NativeParticleParams;
@@ -268,7 +352,7 @@ fn decoLinear(c: vec3f) -> vec3f { return select(c / 12.92, pow((c + 0.055) / 1.
 ${particleCommonWGSL()}${rays ? '' : `
 ${particleViewsWGSL()}
 ${particleAirWGSL}
-${particleLightWGSL}`}
+${world ? particleWorldLightWGSL() : particleLightWGSL}`}
 struct Out {
   @builtin(position) position: vec4f,
   @location(0) @interpolate(flat) center: vec3f,

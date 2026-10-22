@@ -105,8 +105,9 @@ export async function prewarmWorldFrame(app, state, data, {view,detail={},curved
   requireReady(!state.dead && data.tables?.buffer && data.sunTextures, 'pinned WORLD native inputs required');
   state.volume ??= createWorldVolume(app.gpu, {g:{nx:app.win.size[0],ny:app.win.size[1],nz:app.win.size[2],
     sourceAppearance:!!data.appearance,sourceGrid:data.appearance?.sourceGrid}, atlas:state.data.atlas, tables:data.tables.buffer});
+  // (and V2's packet pipe for World's light, gfx/nativeParticles.js worldPipe: none under V1)
   await Promise.all([state.volume.viewReady(view,detail,curved), state.volume.pointReady,
-    state.volume.signsReady, state.opaque.ready, app.post.sceneReady]);
+    state.volume.signsReady, state.opaque.ready, app.post.sceneReady, app.nativeParticles?.worldReady()]);
   requireReady(!state.dead && app.win?.render===state.data, 'WORLD preparation retired while awaiting pipelines');
 }
 
@@ -206,7 +207,7 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
       opaque(p) {drew=app.threeMeshes(p,false,camera);return drew;},
       capture(p) {requireReady(state.opaque.recordReady(gpu.frame,{color:p.sceneTarget.color,depth:p.sceneTarget.depth,
         output:p.sceneTarget.packedOpaque,drew,submitted:ticket.submitted}), 'WORLD opaque capture not ready');},
-      draw(rp) {app.drawWorldSky(rp,view);requireReady(native.recordDraw(rp,{view,detail,curved}), 'WORLD synchronous volume unavailable');if(!stillTarget)app.drawWorldAfter(rp);},
+      draw(rp) {app.drawWorldSky(rp,view);requireReady(native.recordDraw(rp,{view,detail,curved}), 'WORLD synchronous volume unavailable');if(!stillTarget)app.drawWorldAfter(rp,context.particleLight);},
       meshes(p) {app.threeMeshes(p,true,camera);},
       overlay:stillTarget ? undefined : rp=>app.drawWorldOverlay(rp),
     },camera,{identity:data.identity,publication:postPublication,feedbackIdentity,submission:ticket,worldModel:model,cameraIdentity:frozenView?.cameraIdentity??camera,
