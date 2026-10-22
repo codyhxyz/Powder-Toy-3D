@@ -1,16 +1,16 @@
 import { fold, STAGE } from '../gpu/kernels.js';
 import { nativeWeatherParams, nativeWeatherEvaluateWGSL, nativeWeatherCommitWGSL, NATIVE_WEATHER_COMMIT_LAYOUT, scratchWGSL, boxWGSL, weatherMain } from './nativeWeather.js';
 import { prelude, STATE_OPTS } from '../shaders/common.js';
-import { PARTICLE_CAP } from './dynamics-reference.js';
+import { PARTICLE_CAP, PACKET_KEEP, packetFlight } from './dynamics-reference.js';
+import { LEGACY_STEPS_PER_TICK } from './host.js';
 import { nativeForceCommitWGSL, FORCE_COMMIT_LAYOUT } from './nativeForcing.js';
 import { nativeModes } from './modes.js';
 import { GRAVITY } from './dynamics-reference.js';
 import { SIM_GRAVITY, NOMINAL_STEP_RATE, PHYS } from '../physics.js';
-import { v1PaceRate } from './gravity.js';
 import { CELL_M } from '../scale.js';
 import { INDUSTRY_EDIT, INDUSTRY_KIND } from '../shaders/industry.js';
 import { ELEMENTS, K } from '../elements.js';
-import { PLAN } from '../shaders/v2/blasts.js';
+import { PLAN, SLIDE_CONTACT } from '../shaders/v2/blasts.js';
 
 // Factory machines on V2's own cells. The machine rules are V1's, unchanged:
 // shaders/industry.js update() (belt, separator, lift, miner, furnace, hearth)
@@ -62,14 +62,22 @@ export function v1DeckCells(keep, kick, steps) {
   }
   return moved / steps;
 }
-// A slide (blasts.js PLAN.SLIDE) moves its grain its speed for one tick and lands it back on the deck inside
-// that tick, so the next tick's pass kicks it again: m/s of the slide that carries V1's mean `cells` a step.
-export const deckSlideSI = cells => cells * MACHINE_CARRY_SI;
-// A throw (a lift's, a miner's debris, a pour) on V1's move: a cell crosses a face along an axis with chance
-// |v| from its Margolus block's near side only, so it goes |v|/(2 - |v|) cells a step on average (v2/gravity.js
-// v1PaceRate). Across, a particle flies at that mean. Up, it flies V1's own speed: measured on the GPU, a
-// lift's grain tops out at V1's 14 cells (V2 14.8) as the particles' drag stands in for V1's pacing.
-export const v1ThrowAcross = u => Math.sign(u) * v1PaceRate(Math.abs(u));
+// A slide (blasts.js PLAN.SLIDE) flies its grain one tick on V1's law (particles.js dPacketFlight: each V1 step
+// pace(|u|) = |u|/(2-|u|) cells, then the drag) and lands it back on the deck at SLIDE_CONTACT of that tick, so the
+// next tick's pass kicks it again. Its speed is the one whose tick carries V1's tick of deck travel (four of V1's
+// mean steps, v1DeckCells): the inverse of the flight's tick, found by bisection (DECK_SOLVE_STEPS halvings).
+export const DECK_SOLVE_STEPS = 16;
+export function deckSlideSI(id, cells) {
+  const target = LEGACY_STEPS_PER_TICK * cells / SLIDE_CONTACT, moved = u => packetFlight(id, [u * MACHINE_CARRY_SI, 0, 0], [0, 0, 0]).moved[0];
+  let lo = 0, hi = PHYS.V_MAX;
+  for (let i = 0; i < DECK_SOLVE_STEPS; i++) { const mid = (lo + hi) / 2; if (moved(mid) < target) lo = mid; else hi = mid; }
+  return (lo + hi) / 2 * MACHINE_CARRY_SI;
+}
+const flyKeeps = (() => {
+  const by = new Map();
+  for (const e of ELEMENTS) if (e?.kind === K.POWDER && PACKET_KEEP[e.id] !== 1) by.set(PACKET_KEEP[e.id], [...(by.get(PACKET_KEEP[e.id]) ?? []), e.id]);
+  return [...by];
+})();
 const deckKeeps = (() => {
   const by = new Map();
   for (const e of ELEMENTS) if (e?.kind === K.POWDER) { const k = Math.fround(v1DeckKeep(e)); by.set(k, [...(by.get(k) ?? []), e.id]); }
@@ -98,13 +106,29 @@ fn industryDeckCells(id: u32, kick: f32) -> f32 {
   }
   return moved / f32(steps);
 }
-fn industryAcross(u: f32) -> f32 { let a = min(abs(u), ${wf(PHYS.V_MAX)}); return sign(u) * a / (2.0 - a); }
+// a throw (a lift's, a miner's debris, a pour) is V1's own velocity: the packet flies V1's steps (dPacketFlight)
+fn industryFlyKeep(id: u32) -> f32 {
+  switch id { ${flyKeeps.map(([k, ids]) => `case ${ids.map(i => `${i}u`).join(', ')}: { return ${wf(k)}; }`).join(' ')} default: { return 1.0; } }
+}
+// dPacketFlight's tick along one axis, from u cells/step with no pull: the cells it moves
+fn industryFlown(u: f32, keep: f32) -> f32 {
+  var d = 0.0; var w = u;
+  for (var k = 0u; k < ${LEGACY_STEPS_PER_TICK}u; k++) { let a = min(w, ${wf(PHYS.V_MAX)}); d += a / (2.0 - a); w = min(w * keep, ${wf(PHYS.V_MAX)}); }
+  return d;
+}
+// deckSlideSI: the slide whose tick carries cells a step for the tick's steps, landing at SLIDE_CONTACT of it
+fn industrySlide(id: u32, cells: f32) -> f32 {
+  let want = ${wf(LEGACY_STEPS_PER_TICK)} * cells / ${wf(SLIDE_CONTACT)}; let keep = industryFlyKeep(id);
+  var lo = 0.0; var hi = ${wf(PHYS.V_MAX)};
+  for (var i = 0u; i < ${DECK_SOLVE_STEPS}u; i++) { let mid = 0.5 * (lo + hi); if (industryFlown(mid, keep) < want) { lo = mid; } else { hi = mid; } }
+  return 0.5 * (lo + hi) * ${wf(MACHINE_CARRY_SI)};
+}
 fn industryVelocity(p: vec3i, id: u32, motion: vec3f) -> vec3f {
-  if (!industryCarries(p)) { return vec3f(industryAcross(motion.x), motion.y, industryAcross(motion.z)) * ${wf(MACHINE_SPEED_SI)}; }
+  if (!industryCarries(p)) { return motion * ${wf(MACHINE_SPEED_SI)}; }
   // the carry along the deck at V1's game-time speed (deckSlideSI); its vertical part is a throw's
   let along = length(motion.xz);
   var flat = vec2f(0.0);
-  if (along > 0.0) { flat = motion.xz / along * (industryDeckCells(id, along) * ${wf(MACHINE_CARRY_SI)}); }
+  if (along > 0.0) { flat = motion.xz / along * industrySlide(id, industryDeckCells(id, along)); }
   return vec3f(flat.x, motion.y * ${wf(MACHINE_SPEED_SI)}, flat.y);
 }
 `;
