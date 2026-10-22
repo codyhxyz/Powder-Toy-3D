@@ -149,7 +149,9 @@ assert(converted > 500, `the cases reach phase changes (${converted} of ${cases}
   for (const name of ['nativePaintEvaluate', 'nativePaintCommit', 'nativePaintForceForceEvaluate', 'nativePaintForceForcePlan']) {
     assert(built.includes(name), `${name} builds before the owner is ready`);
   }
-  assert(!built.some(n => n.startsWith('nativeWindow')), 'the integration itself still waits for the owner');
+  // the window's kernels too (v2/integration.js): only the owner's buffers, not its readiness, so they
+  // were a serial tail of the loading screen after its kernels
+  assert(['shift', 'gather', 'scatter'].every(n => built.includes(`nativeWindow${n}`)), 'the integration builds with the owner');
   resolve(owner);
 }
 console.log(`V2 compile shape: one inlined copy of each pair rule and of ctPhase's conversion in react and block; ctPhase exact on ${cases} cells (${converted} converted); the brush builds with the owner; no GPU`);
