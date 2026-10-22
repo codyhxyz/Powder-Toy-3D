@@ -2,6 +2,7 @@
 // node --experimental-vm-modules tools/world-coop-cpu-check.mjs
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import vm from 'node:vm';
 import * as THREE from 'three';
 import * as codec from '../src/net/codec.js';
@@ -43,11 +44,12 @@ function simulation(dims = [64, 64, 64], { delayPack = null, delayUnpack = null,
     kernel({ name }) {
       const wait = name === 'pack' ? delayPack : delayUnpack;
       const k = { state: wait ? 'building' : 'ready', ready: wait?.promise ?? Promise.resolve(),
-        dispatch(_, __, { bind }) { if (name === 'pack') bind[2].data.set(sim.bytes); else sim.bytes.set(bind[2].data); } };
+        dispatch(_, __, { bind }) { if (name === 'pack' || name === 'packNative') bind[2].data.set(sim.bytes); else sim.bytes.set(bind[2].data); } };
       k.ready.then(() => { k.state = 'ready'; }); return k;
     },
     write: (buffer, _, bytes) => buffer.data.set(bytes),
-    readback: { buffer: async (buffer, _, __, { into }) => { const captured = buffer.data.slice(); await delayRead?.promise; new Uint8Array(into).set(captured); } },
+    readback: { buffer: async (buffer, at = 0, n = buffer.size - at, { into } = {}) => { const captured = buffer.data.slice(at, at + n); await delayRead?.promise;
+      if (!into) return captured.buffer; new Uint8Array(into).set(captured); return into; } },
   };
   return sim;
 }
@@ -109,7 +111,8 @@ const document = { body: new Node('body'), hidden: false, createElement: (tag) =
 const location = { href: 'https://test/', search: '', pathname: '/', hostname: 'test' };
 const context = vm.createContext({ console, document, location, history: { replaceState() {} }, WebSocket: Socket,
   navigator: { clipboard: { writeText: async () => {} } }, crypto: { randomUUID: () => 'abcdef0012345678' },
-  performance: { now: () => now }, addEventListener() {}, URL, URLSearchParams, setTimeout, clearTimeout, Uint8Array, ArrayBuffer });
+  performance: { now: () => now }, addEventListener() {}, URL, URLSearchParams, setTimeout, clearTimeout, Uint8Array, Uint32Array, ArrayBuffer,
+  CompressionStream, DecompressionStream, Blob, Response, TextEncoder, TextDecoder });
 const mocked = {
   '/src/pov/figureReal.js': { createBody: () => ({ root: new THREE.Object3D(), compile: async () => {}, bind() {}, setVisible() {}, update() {}, dispose() {} }) },
   '/src/net/cursors.js': { createRemoteCursors: () => ({ set() {}, remove() {}, clear() {}, update() {} }) },
@@ -217,6 +220,88 @@ assert.equal(maps.net.metadata.mode, 'box');
 mws.message({ t: 'away', from: 'host', away: true }); assert.equal(maps.net.stale, true);
 mws.message({ t: 'away', from: 'host', away: false }); now += 3000; assert.equal(maps.net.stale, true);
 console.log('ok production multiplayer: join-before-frame, shift metadata, stale edits, delta recovery, validated poses, map/box lifecycle, disconnect decode epoch, host away/stale');
+
+// A V2 host (its box's owner presents it): native frames, the version handshake, guests' held strokes.
+{
+  const owner = { isReady: true, disposed: false, aux: { size: 64, data: new Uint8Array(64), destroy() {} }, dynamics: null };
+  const v2sim = simulation(); v2sim.compact = v2sim.compactOwner = owner;
+  v2sim.bytes.fill(5);
+  const nhost = client('host', { sim: v2sim, getMetadata: () => null }), nhws = await nhost.ready();   // (a box: no heartbeat metadata)
+  const ng = client('guest'), ngws = await ng.ready();
+  const told = ngws.sent.filter((x) => typeof x === 'string').map((x) => JSON.parse(x));
+  assert.ok(told.findIndex((m) => m.t === 'hello') >= 0 && told.findIndex((m) => m.t === 'hello') < told.findIndex((m) => m.t === 'key'), 'a guest says its build before it asks for terrain');
+  assert.equal(told.find((m) => m.t === 'hello').v, protocol.NET_VERSION);
+  nhws.message({ t: 'hello', from: 'guest', v: protocol.NET_VERSION }); nhws.message({ t: 'key', from: 'guest' });
+  nhost.update(); await settle();
+  const stream = () => nhws.sent.filter((x) => x instanceof ArrayBuffer);
+  const nf = stream().at(-1), d = await codec.decodeFrame(nf);
+  assert.equal(d.kind, codec.FRAME_NATIVE_KEY, 'a V2 host streams native frames'); assert.equal(d.native.records.length, 0);
+  // a guest of this build without a native owner (V1, or still building) reads a native frame's texels
+  ngws.message(nf); await settle(); ng.update(); await settle();
+  assert.equal(ng.net.terrainReady, true); assert.equal(ng.sim.bytes[7], 5);
+  const framesBefore = stream().length;
+  nhost.update(); await settle();
+  assert.equal(stream().length, framesBefore, 'a frame that changes nothing (cells or section) is not sent');
+  // A build from before native frames (no hello) is sent the outdated frame, once; this build ignores it.
+  nhws.message({ t: 'join', id: 'old', n: 2, role: 'guest' });
+  nhws.message({ t: 'key', from: 'old' }); nhws.message({ t: 'key', from: 'old' });
+  const isOutdated = (f) => new Uint32Array(f, 0, 2)[1] === codec.OUTDATED_SEQ;
+  // (codec.outdatedFrame's deflate isn't one of the tracked net encodes: wait for the frame itself)
+  for (let i = 0; i < 200 && !stream().some(isOutdated); i++) await new Promise((r) => setTimeout(r, 5));
+  await settle();
+  const outdated = stream().filter(isOutdated);
+  assert.equal(outdated.length, 1, 'one outdated frame per old guest');
+  const commits = ng.commits.length; ngws.message(outdated[0]); await settle(); ng.update(); await settle();
+  assert.equal(ng.commits.length, commits, 'this build ignores another guest\'s outdated frame');
+  assert.equal(ng.net.role, 'guest');
+  // The old build itself (the base commit's net modules, run as they shipped) meets this host: it fails a native
+  // frame (its key loop) and the outdated frame then ends its session with a reason, instead of looping.
+  const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'origin/main'], { cwd: new URL('..', import.meta.url).pathname }).toString().trim();
+  const old = (f) => execFileSync('/usr/bin/git', ['show', `${base}:src/net/${f}`], { cwd: new URL('..', import.meta.url).pathname }).toString();
+  const netDir = new URL('../src/net/', import.meta.url), oldModules = new Map();
+  async function loadOld(name, from) {
+    const file = name.startsWith('./') && ['codec.js', 'protocol.js', 'edits.js', 'multiplayer.js'].includes(name.slice(2)) ? name.slice(2) : null;
+    if (!file) return load(new URL(name, from));
+    if (oldModules.has(file)) return oldModules.get(file);
+    const mod = new vm.SourceTextModule(old(file), { context, identifier: `old:${file}`, initializeImportMeta(meta) { meta.env = { VITE_RELAY_URL: 'ws://test' }; } });
+    oldModules.set(file, mod);
+    await mod.link((n) => loadOld(n, netDir)); return mod;
+  }
+  const oldNet = await loadOld('./multiplayer.js', netDir); await oldNet.evaluate();
+  const oldToasts = []; let oldSim = simulation();
+  location.search = '?join=abcdef00';
+  const oldGuest = oldNet.namespace.createMultiplayer({ getSim: () => oldSim, getVolume: () => null, hud: { toast: (t) => oldToasts.push(t) },
+    // the shipped app's setGrid: a box no map has (app.js SIZES) is refused
+    setGrid: (dims) => [64, 96, 128].includes(dims[0]) && dims.every((n) => n === dims[0]) || (dims[0] === 160 && dims[1] === 96), getMetadata: () => null });
+  const ows = sockets.at(-1);
+  ows.message({ t: 'welcome', id: 'old', n: 2, role: 'guest', peers: [{ id: 'host', n: 0, role: 'host' }] });
+  assert.ok(!ows.sent.some((x) => typeof x === 'string' && JSON.parse(x).t === 'hello'), 'the old build sends no hello');
+  const keysBefore = ows.sent.filter((x) => typeof x === 'string' && JSON.parse(x).t === 'key').length;
+  now += 2000; ows.message(nf);
+  for (let i = 0; i < 200 && ows.sent.filter((x) => typeof x === 'string' && JSON.parse(x).t === 'key').length === keysBefore; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(oldGuest.role, 'guest', 'a native frame alone leaves the old build asking for keyframes (the loop this ends)');
+  assert.ok(ows.sent.filter((x) => typeof x === 'string' && JSON.parse(x).t === 'key').length > keysBefore);
+  ows.message(outdated[0]);
+  // (the old build's own decode, untracked here: wait for its outcome, bounded)
+  for (let i = 0; i < 200 && oldGuest.role !== 'solo'; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(oldGuest.role, 'solo', 'the outdated frame ends the old build\'s session');
+  assert.match(oldToasts.at(-1), /this version/, `the old build says why: ${oldToasts.at(-1)}`);
+  // A newer host's stream (a kind or a version this build doesn't know) ends this build's session: update, not a loop.
+  const nn = client('guest'), nnws = await nn.ready();
+  const future = nf.slice(0); new Uint32Array(future, 0, 1)[0] = codec.FRAME_NATIVE_DELTA + 1;
+  nnws.message(future); await settle();
+  assert.equal(nn.net.role, 'solo'); assert.equal(nn.toasts.at(-1).startsWith(protocol.UPDATE_GAME), true);
+  const nv = client('guest'), nvws = await nv.ready();
+  nvws.message({ t: 'version', from: 'host', peer: 'guest', need: protocol.NET_VERSION + 1 });
+  assert.equal(nv.net.role, 'solo'); assert.ok(nv.toasts.at(-1).startsWith(protocol.UPDATE_GAME));
+  // C10: a stroke the host's engine can't take yet (a native kernel still building) waits and paints later.
+  let building = 2; v2sim.paint = function (st) { if (building-- > 0) return false; this.paints.push(st); return true; };
+  const sand = { t: 'paint', from: 'guest', context: null, c: [32, 4, 32], r: 2, shape: 0, tool: E.SAND, rate: 1 };
+  nhws.message(sand); nhost.update(); nhost.update();
+  assert.equal(v2sim.paints.length, 0, 'held while the kernel builds');
+  nhost.update(); assert.equal(v2sim.paints.length, 1, 'the guest\'s dab paints once it can');
+}
+console.log('ok V2 host: native frames, V1-guest texels, unchanged-frame skip, hello before key, outdated frame (ignored here; ends the shipped old build), newer host -> update, held guest strokes');
 
 // Remote presentation uses the real createBody interface, with a CPU render double.
 const { createRemotePlayers } = (await load(new URL('../src/net/players.js', import.meta.url))).namespace;

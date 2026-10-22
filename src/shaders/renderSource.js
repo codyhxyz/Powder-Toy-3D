@@ -1,4 +1,5 @@
 // Phase 1: raw source construction, not field derivation or a volume renderer.
+import { nativeMotionWGSL } from './v2/viewRead.js';
 import { prelude, LAYOUT, STATE_OPTS, stateLayout } from './common.js';
 import { stampLib } from './stamp.js';
 import { uniformStruct } from '../gpu/params.js';
@@ -98,18 +99,21 @@ ${thread}
   if (writeCell(p, a, b, fetchF(p), bitcast<vec4f>(rawA[at]), bitcast<vec4f>(rawB[at]))) { markBrick(s >> 6u); }
 }`;
 
-// Physics V2's air in the B lane the World's source copies, for the drawn
-// projection (world/renderSource.js, the V2 air export): B as V1 keeps it
-// (velocity, pressure: the Pressure/Flow views, the hover readout), through the
-// physical reader (format 3: shaders/common.js fetchBs), so these are the values
-// the Box's views of the air read from V2's own buffers. (V2's foam reaches the
-// source by v2/nativeAeration.js.)
+// Physics V2's air and motion in the B lane the World's source copies, for the
+// drawn projection (world/renderSource.js, the V2 air export): B as V1 keeps it
+// (a grain's or a liquid's own velocity, else the air's; pressure: the
+// Pressure/Flow views, the hover readout, smoke following the flow), from the
+// physical reader's air (format 3: shaders/common.js fetchBs) and the core
+// (shaders/v2/viewRead.js nativeMotionB), so these are the values the Box's
+// views read from V2's own buffers (shaders/render.js volumeB). (V2's foam
+// reaches the source by v2/nativeAeration.js.)
 export const NATIVE_AIR_LAYOUT = [storage(0, true)];
 export const nativeAirWGSL = (g) => /* wgsl */ `
 ${prelude(g, { ...STATE_OPTS.STATE_RO, fixedReadFormat: 3 })}
+${nativeMotionWGSL}
 @group(2) @binding(0) var<storage, read_write> airB: array<vec4f>;
 ${thread}
-  airB[s] = fetchBs(s);
+  airB[s] = nativeMotionB(fetchNativeCoreS(s), fetchBs(s));
 }`;
 
 export const WGSL_CHECK = () => WORLD_SCENES.map((scene) => ({

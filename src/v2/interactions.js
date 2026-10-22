@@ -6,12 +6,10 @@ import { strikeWGSL, StrikeParams } from '../shaders/povTrace.js';
 import { povFieldWGSL, FieldParams } from '../shaders/povBody.js';
 import { TOOLS, PROP_TOOL, E } from '../elements.js';
 import { PROP } from '../editing.js';
-import { ROCKET, blowWGSL, BlowParams, flameWGSL, FlameParams } from '../shaders/povTools.js';
+import { blowWGSL, BlowParams, flameWGSL, FlameParams, rocketWGSL, RocketParams } from '../shaders/povTools.js';
 import { burrowWGSL, BurrowParams, laserNativeWGSL, LaserNativeParams, LASER_NATIVE_LAYOUT, LASER, LASER_SEGMENT } from '../shaders/povBore.js';
 import { wandApplyWGSL, WandParams } from '../shaders/wands.js';
 import { scriptEditUpdateWGSL, ScriptEditParams, scriptEditDeclsWGSL, SCRIPT_EDIT_LAYOUT } from '../shaders/script.js';
-import { specialBlastEnergy } from './pressure.js';
-import { worldPosition } from './tools.js';
 
 const ids = Object.fromEntries(TOOLS.map(t => [t.key, t.id]));
 // V1's air tools (passes.js update) run as V1's rule on the frozen native grid (nativePaintForce):
@@ -36,13 +34,18 @@ const particleRule = stroke => [ids.HEAT, ids.COOL, ids.SPARK].includes(stroke.t
 //   povFlame (flamethrower, torch, a burning body): air into fire at the flame's temperature and
 //     life (a new cell, not a fracture), the stream as the air's wind, heat as energy;
 //   povWand: a wand's dig, emit, place, erase, heat and its pressure, attract/repel and velocity;
+//   povRocket (rocket launcher, frag grenade): V1's blast (shaders/povTools.js rocketWGSL): a solid in
+//     BREAK_RADIUS its blow beats breaks into debris flying out (a fracture), air within FIRE_RADIUS
+//     turns to fire at the gunpowder blast's temperature (a new cell, its outward speed the air's
+//     wind), loose matter is shoved out, and the air takes max(its pressure, PULSE_P faded) within
+//     PULSE_RADIUS, which V2's air spreads as V1's react pass spreads it;
 //   povLaser: the laser cannon's beam over its segments (nativeLaser): heat as energy, its core
 //     vaporised as V2's own boiling converts (vaporise: energy-exact, so a thin film's steam is the
 //     film's), the rim's spalled debris left at rest on the grid, the plume as the air's wind.
 const LASER_REST='if(all(r.motion.xyz==vec3f(0.0))) { flags&=~1u; }'; // (debris the rule sets at rest stays on the grid, as V1's B=0 leaves it)
 const forceSpecs={povKick:{update:kickWGSL,params:KickParams},povStrike:{update:strikeWGSL,params:StrikeParams},povField:{update:povFieldWGSL,params:FieldParams},
   povBlow:{update:blowWGSL,params:BlowParams,commit:{renameNow:true}},povBurrow:{update:burrowWGSL,params:BurrowParams},
-  povFlame:{update:flameWGSL,params:FlameParams,commit:{sources:true}},povWand:{update:wandApplyWGSL,params:WandParams,commit:{sources:true}},
+  povFlame:{update:flameWGSL,params:FlameParams,commit:{sources:true}},povRocket:{update:rocketWGSL,params:RocketParams,commit:{sources:true,sourcesFromGas:true}},povWand:{update:wandApplyWGSL,params:WandParams,commit:{sources:true}},
   povLaser:{update:laserNativeWGSL,params:LaserNativeParams,layout:LASER_NATIVE_LAYOUT,commit:{vaporise:true,sparse:true,motion:{flags:LASER_REST}}}};
 // The melee blow's launches wait for its gather (nativeForcing.js defer).
 // The console's writes (shaders/script.js: partCreate, partKill, partProperty, sim.pressure, ...):
@@ -69,25 +72,20 @@ export const NATIVE_BRUSH_KERNELS=['nativePaintForce','nativePaint'];
 export const prepareNativeBrush=sim=>Promise.all(NATIVE_BRUSH_KERNELS.map(name=>forceKernel(sim,name).ready));
 export const nativePOVForcesReady=sim=>Object.keys(forceSpecs).every(name=>forces.get(sim)?.owner===sim.compactOwner && forces.get(sim).kernels.get(name)?.isReady);
 function force(sim,name,box,values,source,opts) {
-  const accepted=forceKernel(sim,name).run(box,values,source,opts);
+  const kernel=forceKernel(sim,name);
+  // A force kernel built while the dynamics' kernels build (its launches record theirs): it waits for
+  // them in order with the other native requests (sim.deferNative), its source bytes copied now.
+  // (A force kernel still building itself records nothing, as V1's POV edits do: src/pov/gpu.js edit.)
+  // source: its bound buffer, or a function making it (the brush's fill mask: made when it runs)
+  const bound=()=>typeof source==='function'?source():source;
+  if(!kernel.isReady && kernel.ownReady && sim.compactOwner?.dynamics?.building && sim.deferNative) {
+    const accepted=sim.deferNative('force',()=>forceKernel(sim,name).run(box,values,bound(),opts));
+    sim.nativeInteractionResult=accepted?{status:'queued',deferred:'native dynamics building'}:{status:'rejected',reason:'native request queue full'};
+    return accepted;
+  }
+  const accepted=kernel.run(box,values,bound(),opts);
   sim.nativeInteractionResult=accepted?{status:'queued',fallback:'capacity-limited packets remain exact on grid; capacityFallbacks counts refused launches'}:{status:'rejected',reason:'native force kernel not ready or empty bounds'};
   return accepted;
-}
-function refused(sim, reason) {
-  sim.nativeInteractionResult = { status: 'rejected', reason };
-  return false;
-}
-function blast(sim, center, radius, pressure, selection) {
-  const d = sim.compactOwner?.dynamics;
-  if (!d?.isReady || sim.nativeTransition || sim.nativeTransitionError) return refused(sim, 'native external blast unavailable');
-  // Powder Toy pressure calibration, same acoustic J/Pa conversion as native
-  // voxel charges. External sources allocate half (not quarter) to air, hence /2.
-  sim.compactOwner.sync();
-  const result = d.applyExternalBlast({ position: worldPosition(sim, center), radius, energy: specialBlastEnergy(pressure) / 2, ...(selection?{selection}:{}) });
-  sim.nativeInteractionResult = result;
-  if (result.status !== 'queued') return false;
-  sim.wake();
-  return true;
 }
 // null means this router does not own the tool. false is an explicit refusal:
 // never run a legacy B writer and report success when native import ignores it.
@@ -113,17 +111,15 @@ export function routeNativePaint(sim, stroke) {
     const a=[center.x,center.y,center.z],b=[end.x,end.y,end.z],reach=a.map((_,k)=>radius+Math.max(grow?.[k]??0,0));
     const box=mask?{lo:mask.lo,hi:mask.hi}:sim.touchCentres(a.map((x,k)=>Math.min(x,b[k])-reach[k]),a.map((x,k)=>Math.max(x,b[k])+reach[k]));
     return force(sim,'nativePaintForce',box,{center:a,end:b,radius,shape,tool,rate:stroke.rate??1,replace:+!!stroke.replace,
-      frame:++sim.paints,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},mask?sim._paintMask(mask.data):sim.noMask);
+      frame:++sim.paints,wind:stroke.wind??[0,0,0],grow:grow??[0,0,0],masked:+!!mask,filter_:filter,del:+!!erase,prop:prop?.field??0,propValue:prop?.value??0},
+      // (the fill's mask is one shared buffer each fill rewrites: a stroke held for the dynamics' build keeps its own bytes)
+      mask?(bytes=>()=>sim._paintMask(bytes))(mask.data.slice()):sim.noMask);
   }
   return null;
 }
 export function routeNativePOV(sim, name, box, values) {
   if (forceSpecs[name]) return force(sim,name,box,values,undefined,{defer:deferred.has(name)});
-  if (name !== 'povRocket') return null;
-  if (!box) return refused(sim, 'rocket has no active bounds');
-  const origin=[sim.origin.x,sim.origin.y,sim.origin.z];
-  return blast(sim,values.center,ROCKET.PULSE_RADIUS,ROCKET.PULSE_P,{shape:0,end:worldPosition(sim,values.center),grow:[0,0,0],filter:-1,fade:false,
-    lo:box.lo.map((v,a)=>Math.ceil(v)+origin[a]),hi:box.hi.map((v,a)=>Math.floor(v)+origin[a])});
+  return null;
 }
 // V2's laser shot (src/pov/gpu.js laser), after the reach kernel wrote its shot into `beam`: V1's
 // beam rule (shaders/povBore.js laser) on V2's own cells over the beam's segments, the reach read

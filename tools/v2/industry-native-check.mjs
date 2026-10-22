@@ -237,8 +237,11 @@ assert(evaluate.includes(INDUSTRY_EDIT.update) && evaluate.includes(INDUSTRY_EDI
 assert(!/\bownLegacy\(slotOf/.test(evaluate), 'evaluation claims no legacy ownership');
 assert(plan.includes('plans[s]=ForcePlan(industryVelocity(p,r.motion.xyz),flags)'), "motion converts by what it is: a deck's carry or a throw");
 assert(plan.includes(`if((flags&1u)!=0u && industryCarries(p)) { flags|=${PLAN.SLIDE}u; }`), "a deck's carry leaves from its contact with the deck");
-assert(industryMotionWGSL.includes(`return motion * ${MACHINE_SPEED_SI}; }`), 'a throw keeps V1\'s trajectory in cells');
-assert(industryMotionWGSL.includes(`vec3f(motion.x * ${MACHINE_CARRY_SI}.0, motion.y * ${MACHINE_SPEED_SI}, motion.z * ${MACHINE_CARRY_SI}.0)`),
+const wgslF = n => (Number.isInteger(n) ? `${n}.0` : String(n));
+assert(industryMotionWGSL.includes(`return motion * ${wgslF(MACHINE_SPEED_SI)}; }`), 'a throw keeps V1\'s trajectory in cells');
+// under V1's pull (v2/gravity.js) a throw's map is V1's cells/s too: one speed keeps both
+assert.equal(MACHINE_SPEED_SI, MACHINE_CARRY_SI);
+assert(industryMotionWGSL.includes(`vec3f(motion.x * ${wgslF(MACHINE_CARRY_SI)}, motion.y * ${wgslF(MACHINE_SPEED_SI)}, motion.z * ${wgslF(MACHINE_CARRY_SI)})`),
   "a carry moves at V1's cells/s along the deck; its vertical part is a throw's");
 assert(evaluate.includes(`/${MACHINE_SPEED_SI}`), 'grain fall state reads in the same unit');
 assert(plan.includes('withLife(shaped,r.after.z)') && plan.includes('withCtype(shaped,ct)'), 'fuel life and ctype writes commit natively');

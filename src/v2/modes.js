@@ -1,12 +1,13 @@
 import { GRAV, AIR, EDGE, SIM_MODE_DEFAULTS } from '../simModes.js';
 import { CELL_M } from '../scale.js';
+import { GRAVITY_MS2 } from './gravity.js';
+export { GRAVITY_MS2 };
 
 // The saved slider remains dimensionless relative to the shipped .025 default.
-// Native physics uses TF2's ~2g (docs/v2.md §5.1), consistently in every owner;
-// legacy cells/step² are NOT SI units. The first-person body is not a grid owner:
+// Native physics pulls with V1's gravity (v2/gravity.js GRAVITY_MS2: V1's 0.025 cells/step² at
+// 240 steps/s, in m/s²), consistently in every owner. The first-person body is not a grid owner:
 // it falls at Noita's 5.4 g under both engines, along gravityAt (pov/player.js).
 const GRAVITY_SETTING_REFERENCE = 0.025;
-export const GRAVITY_MS2 = 19.6;
 export const MODE_FIELDS = { gravMode: 'u32', edge: 'u32', airMode: 'u32', ambientHeat: 'u32', gravity: 'f32', ambient: 'f32' };
 const mode = (value, values, name) => {
   if (!Object.values(values).includes(value)) throw new RangeError(`Unknown native ${name}: ${value}`);

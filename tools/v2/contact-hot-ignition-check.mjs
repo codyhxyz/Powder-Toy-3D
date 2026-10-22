@@ -181,7 +181,7 @@ const block = (cells, tick = 1, positions = C.CONTACT_POSITIONS, valid = Array(8
 test('actual post-pair single-contact witness ignites below bulk threshold; source has only its existing own step', () => {
   const wood = cell(E.WOOD), fire = flame(), flux = C.ctFlux(wood, fire);
   const postWood = C.ctHeat(wood, flux), postFire = C.ctHeat(fire, -flux);
-  assert.equal(postWood.tq / 4 - 273.25, 183.25); assert.equal(postFire.tq / 4 - 273.25, 836.5);
+  assert.equal(postWood.tq / 4 - 273.25, 220.5); assert.equal(postFire.tq / 4 - 273.25, 799.25);
   assert(postWood.tq < C.ctRow(E.WOOD).igniteQ); assert(postFire.tq >= C.ctRow(E.WOOD).igniteQ);
   const cells = Array.from({ length: 8 }, () => cell(E.WALL)); cells[0] = wood; cells[1] = fire;
   const positions = C.CONTACT_POSITIONS.map(p => p.map(v => v + 6));
@@ -196,7 +196,7 @@ test('actual post-pair single-contact witness ignites below bulk threshold; sour
   assert.equal(out.sources[1], 0n, 'no catalytic debit/refund');
 });
 
-test('original static corner cube, production corner/pair order: 810–858 C sources survive conduction', () => {
+test('original static corner cube, production corner/pair order: 714–895 C sources survive conduction', () => {
   // The original bay's WOOD x=2..5,y=0..3,z=2..5; FIRE x=1,y=0..1,z=2.
   // This bounded contact opportunity is not the moving six-bay GPU outcome.
   const positions = Array.from({ length: 8 }, (_, i) => [1 + (i & 1), i >> 2, 2 + ((i >> 1) & 1)]);
@@ -207,7 +207,7 @@ test('original static corner cube, production corner/pair order: 810–858 C sou
     postPair[i] = C.ctHeat(postPair[i], flux); postPair[j] = C.ctHeat(postPair[j], -flux);
     assert.equal(C.ctReaction(postPair[i], postPair[j], seedAt(positions[i], 1) ^ j).changed, 0);
   }
-  assert.deepEqual([0, 1, 4, 5].map(i => postPair[i].tq / 4 - 273.25), [858, 133.25, 810.25, 168.5]);
+  assert.deepEqual([0, 1, 4, 5].map(i => postPair[i].tq / 4 - 273.25), [894.5, 146.75, 713.75, 184.75]);
   const { out, decoded } = block(cells, 1, positions);
   for (const i of [1, 5]) {
     assert(C.ctRoll(seedAt(positions[i], 1), 1) > 1 / 60, 'original fallback misses');

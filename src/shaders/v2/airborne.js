@@ -168,7 +168,7 @@ fn dReact(packet: Material, host: Material, faces: array<Material, 6>, valid: u3
     for (var order = 0u; order < dPairOrders(); order++) {
       if (pair.changed != 0) { continue; }
       v = pair.a; b = pair.b; if (order == 1u) { v = pair.b; b = pair.a; }
-      let r = ctSwallow(v, b, s);
+      let r = ctSwallow(v, b, s, ambientQ);
       pair = r; if (order == 1u) { pair = ctPairValue(r.b, r.a, r.changed); }
     }
     v = pair.a; ps[a] = pair.b;

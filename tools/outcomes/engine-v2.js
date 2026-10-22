@@ -85,6 +85,8 @@ export function createEngine(gpu, { seed = () => {} } = {}) {
     // 'vertical' or 'radial' (TPT's radial mode): the box's own setting, as the drawer sets it (sim.js)
     setGravity(mode) { sim.gravityMode = mode === 'radial' ? GRAV.RADIAL : GRAV.VERTICAL; },
     get time() { return clock.time; },
+    // the bare simulation, for a check that drives a tool on it (tools/v2/blast-damage-browser-check.mjs: the rocket)
+    get sim() { return sim; },
     get steps() { return clock.steps; },
     async read() {
       await verifyLaunches();

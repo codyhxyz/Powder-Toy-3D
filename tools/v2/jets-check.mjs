@@ -4,6 +4,7 @@
 // and its WGSL is pinned where the twin cannot execute it (deterministic ranks, refusal, the allocator).
 // Flight is the prototype's R4 in the twin, not the dynamics module. No GPU, browser or World variant.
 import assert from 'node:assert/strict';
+import { PHYS } from '../../src/physics.js';
 import { test } from 'node:test';
 import { E, ELEMENTS, K } from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
@@ -89,7 +90,9 @@ test('the launch head is the reservoir\'s exact head; jets leave at sqrt(2gh) an
     const jet = w.parts.filter(p => p.x < 9.2).map(p => Math.hypot(p.vx, p.vz) * CELL_M);
     assert.ok(jet.length > 0);
     for (const v of jet) assert.ok(Math.abs(v / torricelli - 1) < 0.02, `launch ${v} vs ${torricelli}`);
-    const now = tankMass(w), discharge = (prev - now) / L.FULL * 2, ideal = torricelli / CELL_M;   // cells/s over 0.5 s
+    // cells/s over 0.5 s: Torricelli's, to what one explicit face carries a tick (COLUMN.Q_MAX, a cell of fill a cell
+    // of wet face): at V1's pull a 4.5 m head's jet (√(2gh) ≈ 60 m/s) is past it
+    const now = tankMass(w), discharge = (prev - now) / L.FULL * 2, ideal = Math.min(torricelli / CELL_M, COLUMN.Q_MAX / L.FULL * COLUMN.TICK_HZ);
     prev = now;
     assert.ok(discharge / ideal > 0.9 && discharge / ideal <= 1, `discharge ${discharge.toFixed(2)} vs A sqrt(2gh) ${ideal.toFixed(2)}`);
   }
@@ -153,27 +156,35 @@ test('radial gravity: the column passes run the radial face stages, and a liquid
   }
 });
 
-test('the crown: a fast landing throws CROWN_SHARE of the run up and out, exactly; a slow one merges', () => {
+test('the crown: a landing past V1\'s splash speed throws CROWN_SHARE of the run up and out, exactly, at V1\'s splash share of its speed', () => {
   const drop = (height) => {
     const w = new ColumnGrid(16, 24, 16);
     for (let x = 0; x < 16; x++) for (let z = 0; z < 16; z++) { w.set(x, 0, z, E.WALL); for (let y = 1; y < 4; y++) w.set(x, y, z, E.WATER, { T: 15 }); }
     for (let y = 4 + height; y < 6 + height; y++) for (let z = 6; z < 10; z++) for (let x = 6; x < 10; x++) w.set(x, y, z, E.WATER, { T: 60 });
     const t0 = w.totals();
-    let launched = 0, crownMass = 0, up = 0;
+    let launched = 0, crownMass = 0, up = 0, speed = 0;
     for (let t = 0; t < 90; t++) {
       const before = new Set(w.parts);
       w.step();
       // the landing tick's launches are the crown (later ones are jets off the settling bump)
       const born = w.parts.filter(q => !before.has(q));
-      if (born.length && !launched) for (const q of born) { launched++; crownMass += L.cFill(q.m.core); if (q.vy > 0) up++; }
+      if (born.length && !launched) for (const q of born) { launched++; crownMass += L.cFill(q.m.core); if (q.vy > 0) up++; speed = Math.max(speed, Math.hypot(q.vx, q.vy, q.vz) * COLUMN.CELL_M); }
       const t1 = w.totals();
       assert.equal(t1.mass, t0.mass); assert.equal(t1.energy, t0.energy); assert.equal(t1.fuel, t0.fuel);
     }
-    return { launched, crownMass, up };
+    return { launched, crownMass, up, speed };
   };
-  const fast = drop(8), slow = drop(1);
+  const fast = drop(8), slow = drop(1), low = drop(2);
   assert.ok(fast.launched > 0 && fast.up === fast.launched, 'a fast landing throws droplets upward');
   const block = 32 * L.FULL, want = COLUMN.CROWN_SHARE * block;
   assert.ok(Math.abs(fast.crownMass - want) <= 16 * 2, `crown mass ${fast.crownMass} vs ${want} (one quantum a column)`);
+  // a one-cell gap onto its own liquid closes at once (colFall: a floating layer follows its surface): it merges
   assert.equal(slow.launched, 0, 'a one-cell drop merges');
+  // V1's splash (move.js land): past LAND_SPLASH_V, LAND_SPLASH_GAIN of the impact speed. V1's fall reaches its
+  // first cell in ~10 steps of g (0.25 cells/step, 18 m/s), past its splash speed: a two-cell drop splashes, slower
+  assert.equal(COLUMN.CROWN_SPEED, PHYS.LAND_SPLASH_V * 240 * COLUMN.CELL_M);
+  assert.ok(low.launched > 0 && low.speed < fast.speed, `a two-cell drop splashes slower: ${low.speed.toFixed(1)} vs ${fast.speed.toFixed(1)} m/s`);
+  // at V1's speeds, its splash share: from 8 cells V1 lands at 0.675 cells/step (49 m/s), from 2 at 0.275 (20 m/s)
+  assert.ok(Math.abs(fast.speed - COLUMN.CROWN_GAIN * 0.675 * 72) < 1, `from 8 cells: ${fast.speed.toFixed(1)} m/s`);
+  assert.ok(Math.abs(low.speed - COLUMN.CROWN_GAIN * 0.275 * 72) < 1, `from 2 cells: ${low.speed.toFixed(1)} m/s`);
 });

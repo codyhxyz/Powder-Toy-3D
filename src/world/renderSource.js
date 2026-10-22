@@ -27,9 +27,11 @@ export function intersectBounds(a, b) {
 // while V2 runs a World window, the drawn source takes B from this per-slot
 // buffer instead (one copy: bCopy 0), which the World's own live and leaving
 // copies rewrite from V2's air just before they copy (liveSource's aux;
-// shaders/renderSource.js nativeAirWGSL). Not a deviation: the World's Pressure
-// and Flow views (and the hover readout) then draw the air the Box's draw under
-// V2, read from its atlas instead of V2's buffers. The edit projection (native)
+// shaders/renderSource.js nativeAirWGSL: V1's B as V2 holds it, a grain's fall
+// and a liquid's flux in their cells and the air elsewhere). Not a deviation:
+// the World's Pressure and Flow views (and the hover readout, and smoke
+// following the flow) then draw what the Box's draw under V2 does
+// (shaders/render.js volumeB), read from its atlas instead of V2's buffers. The edit projection (native)
 // keeps the legacy B: it is written back into physics. (V2's foam reaches the
 // source by v2/nativeAeration.js.)
 const nativeAir = new WeakMap();   // sim → { kernel, group, B }

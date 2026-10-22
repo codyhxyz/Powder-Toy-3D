@@ -178,9 +178,12 @@ sim.ready = new Promise(resolve => { finishInitialization = () => {
   resolve(sim);
 }; });
 const engine = new PhysicsV2(sim);
-assert.equal(Object.values(engine.kernels).filter(k => k.build === 'now').length, 1);
-for (const k of Object.values(engine.kernels))
-  assert.equal(k.build, k.name === 'v2block' ? 'now' : 'idle', 'only required contact gets early queue priority');
+// The grid's passes are what the first frame waits for: all built now, the long poles first
+// (gpu/kernels.js BUILD_RANK); only the dynamics build idle, behind them (physics.js dynamicsReady).
+for (const k of Object.values(engine.kernels)) {
+  assert.equal(k.build, 'now', `${k.name}: the grid's passes never wait behind the idle queue`);
+  assert.equal(!!k.first, ['v2block', 'v2runs', 'v2pairs'].includes(k.name), `${k.name}: the long poles start first`);
+}
 await new Promise(resolve => setImmediate(resolve));
 assert.equal(engine.isReady, false, 'finished native kernels still wait for initial state');
 assert.equal(sim.version, 0);

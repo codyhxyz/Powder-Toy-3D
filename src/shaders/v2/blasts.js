@@ -1,6 +1,6 @@
 import { nativeDynamicsHead, V2_DYNAMICS_LAYOUT, brickGroups, brickGroupWGSL } from '../v2.js';
 import { dynamicsCommon, DynamicParams, storageLayout, main64, main1, CONTROL, heldBase, airborneBase, airbornePuffBase, shockPostBase, setOffBase, crushWGSL, pressureCellWGSL, pressureOnWGSL } from './particles.js';
-import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA, V1_FRONT, frontPerRootJ } from '../../v2/dynamics-reference.js';
+import { dynamicsRows, CELL_M, AIR, DT, GRAVITY, PARTICLE_CAP, LEGACY_PRESSURE_PA, V1_FRONT, frontPerRootJ, BLAST_FRONT_FLOOR_PA, BLAST_CHAIN_STEPS, v1BlastReach, v1FlameChainOdds } from '../../v2/dynamics-reference.js';
 import { E, ELEMENTS, K } from '../../elements.js';
 import { LEGACY_STEPS_PER_TICK, LEGACY_STEP_HZ } from '../../v2/host.js';
 import { RAYS } from '../../rays.js';
@@ -50,19 +50,28 @@ export const COUPLE_ARGS = 64;
 // jets: bricks the jets' count found flagged (src/shaders/v2/jets.js spawn runs over them); reachX,
 // reachY: bricks the air reach's x and y scatters reached (air.js reach).
 export const LIST_NAMES = ['source', 'step', 'wind', 'events', 'jets', 'reachX', 'reachY'];
-// The charges one batch serves at most (DYNAMICS_ABI.blastBatchMax): its per-charge words.
+// The sources one batch serves at most (DYNAMICS_ABI.blastBatchMax): a source is a brick and every
+// serviceable charge in it (V1 react.js has no cap: every charge that meets its trigger goes off that
+// step, so a tick serves every charge of up to CHARGES_MAX bricks, 4,096 cells, together).
 export const CHARGES_MAX = 64;
+// A source's words: its brick's two charge masks, its charges' box in the brick (2 bits an axis, lo
+// then hi) with its reach (cells) above, their energy (J), the mean of their cells (grid cells, x y z)
+// and the legacy pressure V1's front leaves it with (dynamics-reference.js v1FrontSource).
+export const SOURCE_WORDS = 8;
 // After the reach words, the one batch a tick's charge words: select's serviceable masks (two a
-// brick), pick's charges in slot order and their count, normalize's scales, and plan's per-charge
-// per-brick energy sums (charge-major).
+// brick), pick's sources (bricks) in brick order and their count, normalize's scales, plan's
+// per-source per-brick energy sums (source-major), each source's words, and each brick's source
+// (its index + 1, 0 for none: pick sets it, finishCharges clears it).
 export function listControl(g) {
   let at = coupleArgsBase(g) + COUPLE_ARGS_WORDS; const lists = {};
   for (const name of LIST_NAMES) { lists[name] = at; at += 2 + g.nbricks; }
   const reach = at; at += g.nbricks;
   const charges = { masks: at, slots: at + 2 * g.nbricks, count: at + 2 * g.nbricks + CHARGES_MAX,
     scales: at + 2 * g.nbricks + CHARGES_MAX + 1, sums: at + 2 * g.nbricks + 2 * CHARGES_MAX + 1 };
+  charges.info = charges.sums + CHARGES_MAX * g.nbricks;
+  charges.sourceOf = charges.info + CHARGES_MAX * SOURCE_WORDS;
   // the jets' count adds every group's demand here; their gate reads it once and restarts it
-  const jetTotal = charges.sums + CHARGES_MAX * g.nbricks;
+  const jetTotal = charges.sourceOf + g.nbricks;
   // windList's word for each group of BRICK_GROUP bricks (shaders/v2.js; a workgroup of it): whether it listed any.
   // The couple run's count reads it instead of every brick's air words (only listed bricks count there).
   const windGroups = jetTotal + 1;
@@ -128,6 +137,8 @@ const D_CHARGES: u32 = ${L.charges.slots}u;
 const D_CHARGE_COUNT: u32 = ${L.charges.count}u;
 const D_CHARGE_SCALES: u32 = ${L.charges.scales}u;
 const D_CHARGE_SUMS: u32 = ${L.charges.sums}u;
+const D_SOURCE_INFO: u32 = ${L.charges.info}u;
+const D_SOURCE_OF: u32 = ${L.charges.sourceOf}u;
 const D_CHARGES_MAX: u32 = ${CHARGES_MAX}u;
 // The i-th brick of a list, or D_NONE past the length its listArgs published.
 fn dListed(list: u32, i: u32) -> u32 { if (i >= atomicLoad(&control[list])) { return D_NONE; } return atomicLoad(&control[list + 2u + i]); }
@@ -228,6 +239,7 @@ const crushPhaseRows = dynamicsRows.filter(r => r.crushPhase);
 const MIN_CRUSH_PHASE = Math.min(...crushPhaseRows.map(r => r.crushPhase.pa));
 const D_NO_CRUSH = 3.4e38;   // dCrushPa's "no crush": no f32 pressure exceeds it
 const CRUSH_SALT = 0x43525348;   // 'CRSH': the crush product's own draw
+const FLAME_SALT = 0x464c4d45;   // 'FLME': a flame chain's roll (damageCharges)
 const crushPhaseWGSL = /* wgsl */ `
 const D_NO_CRUSH: f32 = ${D_NO_CRUSH};
 fn dCrushPa(id: u32) -> f32 { switch id { ${crushPhaseRows.map(r => `case ${r.id}u: { return ${f(r.crushPhase.pa)}; }`).join(' ')} default: { return D_NO_CRUSH; } } }
@@ -342,14 +354,6 @@ fn dExternalShieldedPosition(endpoint: vec3f) -> bool {
   return true;
 }
 fn dExternalShielded(destination: vec3i) -> bool { return dExternalShieldedPosition(vec3f(destination)+0.5); }
-// A charge's received share at p (direction times J, or zero): plan's expressions for a grid source.
-fn dChargeShare(source: u32, p: vec3i) -> vec3f {
-  let sourcePos=cellOf(source); let explosionEnergy=dChargeEnergy(loadMaterial(source)); let delta=vec3f(p-sourcePos);
-  let weight=1.0; let r2 = max(0.25,dot(delta,delta));
-  let received = explosionEnergy * 0.5 * weight / (12.566370614359*r2);
-  if (received >= 0.01 && !dShielded(sourcePos,p)) { return normalize(delta+vec3f(0.000001))*received; }
-  return vec3f(0);
-}
 fn dPressureAt(p0: vec3i) -> f32 { let p=mEdge(p0); if (!inGrid(p) || !mAirPressure()) { return 0.0; } return air[brickOfCell(p)].vp.w; }
 ${crushWGSL}
 fn dNoteEnergyChange(p: vec3i, before: vec2u, after: vec2u) {
@@ -411,19 +415,12 @@ fn dSpawn(slot: u32, rank: u32, m: Material, v: vec3f, rule: u32) -> bool {
 }
 `;
 }
-// A picked charge the batch serves (finishCharges; normalizeCharges adds its pressure first): still set off
-// and a charge, its product's energy representable; and a served charge's pressure into its brick's air.
+// A charge the batch serves (finishCharges; pick's sources hold it, normalizeCharges adds its pressure first):
+// still set off and a charge, its product's energy representable.
 const chargeServedWGSL = /* wgsl */ `
 fn dChargeServed(s: u32, m: Material) -> bool {
   if ((dChargeEnergy(m)<=0.0 && !dEvaporates(m)) || (events[s]&1u)==0u) { return false; }
   return energyFits(dProduct(m),dProductEnergy(m));
-}
-fn dChargePressure(s: u32, m: Material) {
-  let b=brickOfCell(cellOf(s)); var a=air[b];
-  // 1/4 blast energy enters acoustic compression, 1/2 bounded damage/KE; the
-  // products are at V1's blast.T (dProductEnergy). Pressure energy p² V / (2 rho c²), not an arbitrary kick.
-  let addedP2=2.0*${f(AIR.rho*AIR.sound**2)}*dChargeEnergy(m)*0.25/${f(AIR.edge**3)};
-  if(mAirPressure()) { a.vp.w=sqrt(a.vp.w*a.vp.w+addedP2); } a.thermal.z=0.0; air[b]=a; noteAir(b);
 }
 `;
 // An external blast's pressure in brick b as finish adds it (mode 14: the brick's share of the blast's air
@@ -435,29 +432,93 @@ fn dExternalAddedP2(b: u32) -> f32 {
   return ${f(AIR.rho*AIR.sound**2/AIR.edge**3)}*P.strength*weight/total;
 }
 ${pressureCellWGSL('AfterExternal', 'let b=brickOfCell(p); let w=air[b].vp.w; let added=dExternalAddedP2(b); return select(w,sqrt(w*w+added),added>0.0);')}${pressureOnWGSL('AfterExternal')}`;
-// V1's pressure front from the batch's charges (dynamics-reference.js V1_FRONT, v1FrontOn, v1FrontSource): does
-// one of them, its pressure kept KEEP a taxicab cell from it, put more than crush (Pa) on p, its own or an open
-// neighbour's (V1 react.js setOff, pOn)? A charge goes off holding its blast.P (dFrontPerRootJ·√J) on what its
-// brick held besides its own share (V1's spread: normalizeCharges added that share in quadrature), to P_MAX.
-// Solids block it (dShielded, as the charge's damage share). The damage of the batch that went off reads it,
-// so the front is in place a tick on, where V1's takes a step a cell (15 cells: under 4 ticks).
-const chargeFrontWGSL = /* wgsl */ `
+// The batch's sources (pick: a brick and its serviceable charges) and V1's rules on them
+// (dynamics-reference.js chargeBatchDamage, its CPU twin). V1 react.js: a charge going off holds its blast.P on
+// what its cell held (V1's spread: the brick's pressure before the batch), to P_MAX; each open cell takes KEEP of
+// its strongest open neighbour a step, so the front on a cell `steps` taxicab cells from the charge is
+// v1FrontOn (a solid holds none: walls block it; the charge's own FIRE is open, and so is an explosive the front
+// sets off within the tick's steps, BLAST_CHAIN_STEPS, which goes off before the front moves on). It breaks a
+// solid past hard·P_BREAK_PER_HARD (dStrength) and sets an explosive off past its crushP; past a source's reach
+// (v1BlastReach: its front under the floor every rule reads) the batch plans nothing for it.
+const flameRows = dynamicsRows.filter(r => (ELEMENTS[r.id].blast?.flame ?? 0) > 0);
+const chargeSourcesWGSL = /* wgsl */ `
+const D_SOURCE_WORDS: u32 = ${SOURCE_WORDS}u;
+const D_CHAIN: i32 = ${BLAST_CHAIN_STEPS};
+const D_REACH_MAX: i32 = ${v1BlastReach(V1_FRONT.P_MAX)};
+const D_REACH_BRICKS: i32 = ${Math.ceil((v1BlastReach(V1_FRONT.P_MAX) + 3) / 4)};
 fn dFrontPerRootJ(id: u32) -> f32 { switch id {
 ${dynamicsRows.filter(r => frontPerRootJ(r.id) > 0).map(r => `case ${r.id}u: { return ${f(frontPerRootJ(r.id))}; }`).join('\n')}
 default: { return 0.0; } } }
-fn dChargeFrontOver(p: vec3i, crush: f32) -> bool {
-  let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
-  for (var c=0u;c<n;c++) {
-    let s=atomicLoad(&control[D_CHARGES+c]); let m=loadMaterial(s);
-    if (!dChargeServed(s,m) || dEvaporates(m)) { continue; }
-    let q=cellOf(s); let d=abs(p-q); let steps=d.x+d.y+d.z;
-    if (steps==0) { continue; }
-    let energy=dChargeEnergy(m); let w=air[brickOfCell(q)].vp.w;
-    let spread=sqrt(max(0.0,w*w-${f(2*AIR.rho*AIR.sound**2*0.25/AIR.edge**3)}*energy))/${f(LEGACY_PRESSURE_PA)};
-    let source=min(${f(V1_FRONT.P_MAX)},dFrontPerRootJ(cid(m.core))*sqrt(energy)+spread);
-    if (source*pow(${f(V1_FRONT.KEEP)},f32(steps-1))*${f(LEGACY_PRESSURE_PA)}>crush && !dShielded(q,p)) { return true; }
+// V1 react.js lit: a flame explosive beside fire lights at blast.flame a step (v1FlameChainOdds by chain cells)
+fn dFlameOdds(id: u32, steps: i32) -> f32 { switch id {
+${flameRows.map(r => `case ${r.id}u: { switch steps { ${Array.from({ length: BLAST_CHAIN_STEPS }, (_, i) => `case ${i + 1}: { return ${f(v1FlameChainOdds(ELEMENTS[r.id].blast.flame, i + 1))}; }`).join(' ')} default: { return 0.0; } } }`).join('\n')}
+default: { return 0.0; } } }
+fn dFlame(id: u32) -> bool { return ${flameRows.length ? flameRows.map(r => `id==${r.id}u`).join(' || ') : 'false'}; }
+fn dSrc(k: u32, w: u32) -> u32 { return atomicLoad(&control[D_SOURCE_INFO+k*D_SOURCE_WORDS+w]); }
+fn dSrcBrick(k: u32) -> u32 { return atomicLoad(&control[D_CHARGES+k]); }
+fn dSrcBase(k: u32) -> vec3i { return cellOf(dSrcBrick(k)*64u)&vec3i(-4); }
+fn dSrcLo(k: u32) -> vec3i { let a=dSrc(k,2u); return dSrcBase(k)+vec3i(i32(a&3u),i32((a>>2u)&3u),i32((a>>4u)&3u)); }
+fn dSrcHi(k: u32) -> vec3i { let a=dSrc(k,2u); return dSrcBase(k)+vec3i(i32((a>>6u)&3u),i32((a>>8u)&3u),i32((a>>10u)&3u)); }
+fn dSrcReach(k: u32) -> i32 { return i32((dSrc(k,2u)>>12u)&255u); }
+fn dSrcEnergy(k: u32) -> f32 { return bitcast<f32>(dSrc(k,3u)); }
+fn dSrcCentre(k: u32) -> vec3f { return vec3f(bitcast<f32>(dSrc(k,4u)),bitcast<f32>(dSrc(k,5u)),bitcast<f32>(dSrc(k,6u))); }
+fn dSrcPressure(k: u32) -> f32 { return bitcast<f32>(dSrc(k,7u)); }
+fn dSrcNearest(k: u32, p: vec3i) -> vec3i { return clamp(p,dSrcLo(k),dSrcHi(k)); }
+fn dSrcSteps(k: u32, p: vec3i) -> i32 { let d=abs(p-dSrcNearest(k,p)); return d.x+d.y+d.z; }
+// V1's front (Pa) on a cell steps cells from source k (dynamics-reference.js v1FrontOn: a cell inside its box, one)
+fn dSrcFrontPa(k: u32, steps: i32) -> f32 { return dSrcPressure(k)*pow(${f(V1_FRONT.KEEP)},f32(max(steps,1)-1))*${f(LEGACY_PRESSURE_PA)}; }
+// Does brick b hold a cell within source k's reach (planCharges writes, normalizeCharges reads, its sums there)?
+fn dSrcNearBrick(k: u32, b: u32) -> bool {
+  let lo=cellOf(b*64u)&vec3i(-4); let gap=max(vec3i(0),max(lo-dSrcHi(k),dSrcLo(k)-(lo+vec3i(3))));
+  return gap.x+gap.y+gap.z<=dSrcReach(k);
+}
+fn dIsSourceCell(c: vec3i) -> bool {
+  let s=slotOf(c); let k=atomicLoad(&control[D_SOURCE_OF+s/64u]); if (k==0u) { return false; }
+  return ((dSrc(k-1u,(s&63u)>>5u)>>(s&31u))&1u)!=0u;
+}
+// A cell between source k and a cell reach steps from it: does V1's front cross it this tick? An explosive
+// it sets off passes it on only within the tick's steps (V1 sets the one beyond off the next tick's first step).
+fn dSrcPasses(k: u32, c: vec3i, reach: i32) -> bool {
+  let id=cid(loadMaterial(slotOf(c)).core);
+  if (cls(id)!=1u || dIsSourceCell(c)) { return true; }
+  return dCrush(id)>0.0 && reach<=D_CHAIN && dSrcFrontPa(k,dSrcSteps(k,c))>dCrush(id);
+}
+// The straight sight line from source k's nearest cell to p (dShielded's walk): clear (every cell it crosses
+// passes the front) or, chain, every cell it crosses a charge going off or a flame explosive.
+fn dSrcLine(k: u32, p: vec3i, chain: bool) -> bool {
+  let source=dSrcNearest(k,p); let delta=vec3f(p-source); let reach=dSrcSteps(k,p);
+  var cell=source; var next=vec3f(1e30); var stride=vec3f(1e30); let step=vec3i(sign(delta));
+  for (var a=0u;a<3u;a++) { if (delta[a]!=0.0) { stride[a]=abs(1.0/delta[a]); next[a]=0.5*stride[a]; } }
+  for (var crossed=0u;crossed<=D_SWEEP_MAX;crossed++) {
+    var a=0u; if (next.y<next.x) { a=1u; } if (next.z<next[a]) { a=2u; }
+    if (next[a]>1.0) { return true; }
+    cell[a]+=step[a]; next[a]+=stride[a];
+    if (all(cell==p)) { return true; }
+    if (!inGrid(cell)) { return false; }
+    if (chain) { if (!dIsSourceCell(cell) && !dFlame(cid(loadMaterial(slotOf(cell)).core))) { return false; } }
+    else if (!dSrcPasses(k,cell,reach)) { return false; }
+  }
+  return false;   // non-progress is shielded, never transparent
+}
+// Is p in source k's sight? A cell that holds air, its sight line; a solid (V1 reads the front on its open
+// side: react.js breaking, pOn), a face neighbour a step nearer the source that the front reaches.
+fn dSrcSees(k: u32, p: vec3i) -> bool {
+  if (cls(cid(loadMaterial(slotOf(p)).core))!=1u) { return dSrcLine(k,p,false); }
+  let q=dSrcNearest(k,p); let reach=dSrcSteps(k,p);
+  if (all(p==q)) { return true; }
+  for (var a=0u;a<3u;a++) {
+    if (p[a]==q[a]) { continue; }
+    var n=p; n[a]+=select(1,-1,p[a]>q[a]);
+    if (inGrid(n) && dSrcPasses(k,n,reach) && dSrcLine(k,n,false)) { return true; }
   }
   return false;
+}
+// Source k's share at p (direction times J), p in its sight: plan's expressions, from its charges' mean cell.
+fn dSrcShare(k: u32, p: vec3i) -> vec3f {
+  let delta=vec3f(p)-dSrcCentre(k); let r2 = max(0.25,dot(delta,delta));
+  let received = dSrcEnergy(k) * 0.5 / (12.566370614359*r2);
+  if (received >= 0.01) { return normalize(delta+vec3f(0.000001))*received; }
+  return vec3f(0);
 }
 `;
 export function blastsWGSL(g,nativeHead,stage) {
@@ -507,30 +568,63 @@ export function blastsWGSL(g,nativeHead,stage) {
       atomicOr(&control[D_SERVE_MASKS+2u*(t/64u)+((t&63u)>>5u)],1u<<(t&31u));
     }
   `,'dListedCell(LIST_EVENTS,wg,nwg,li)');
-  // One thread: the batch's charges, the P.substep lowest serviceable slots (the mask bits of the
-  // event list's bricks, which it clears), in slot order. One batch a tick serves them together:
-  // The Powder Toy's rule, a chain spreads one step a frame. A charge another one sets off this tick
-  // (contact requests come from the next tick's block pass) waits for the next tick's batch.
-  if (stage === 'pick') return h + main1(`
-    // The Powder Toy: a chain spreads one step a frame; a charge set off this tick waits for the next.
-    var picked: array<u32, ${CHARGES_MAX}>; var n=0u; let most=min(P.substep,D_CHARGES_MAX);
+  // One workgroup: the batch's sources, the P.substep lowest bricks of the event list holding serviceable
+  // charges (select's mask bits, which it clears), in brick order, each with every charge in it (V1 react.js
+  // has no cap: every charge that meets its trigger goes off that step). Then a lane a source: its charges'
+  // box, energy, mean cell and the pressure V1's front leaves them with (dynamics-reference.js chargeBatchDamage).
+  // A charge another one sets off this tick waits for the next tick's batch, as one V1 sets off a step on.
+  if (stage === 'pick') return h + chargeServedWGSL + chargeSourcesWGSL + `
+// The selection (one thread): the sources' bricks, masks and source words, their count; it returns the count.
+fn dPickSources() -> u32 {
+    var picked: array<u32, ${CHARGES_MAX}>; var low: array<u32, ${CHARGES_MAX}>; var high: array<u32, ${CHARGES_MAX}>;
+    var n=0u; let most=min(P.substep,D_CHARGES_MAX);
     let bricks=atomicLoad(&control[LIST_EVENTS]);
     for (var i=0u;i<bricks;i++) {
       let b=atomicLoad(&control[LIST_EVENTS+2u+i]);
-      for (var w=0u;w<2u;w++) {
-        var bits=atomicExchange(&control[D_SERVE_MASKS+2u*b+w],0u);
-        while (bits!=0u) {
-          let s=b*64u+w*32u+firstTrailingBit(bits); bits&=bits-1u;
-          var j=n;
-          if (n<most) { n++; } else if (most==0u || s>=picked[most-1u]) { continue; } else { j=most-1u; }
-          while (j>0u && picked[j-1u]>s) { picked[j]=picked[j-1u]; j--; }
-          picked[j]=s;
-        }
-      }
+      let w0=atomicExchange(&control[D_SERVE_MASKS+2u*b],0u); let w1=atomicExchange(&control[D_SERVE_MASKS+2u*b+1u],0u);
+      if ((w0|w1)==0u) { continue; }
+      var j=n;
+      if (n<most) { n++; } else if (most==0u || b>=picked[most-1u]) { continue; } else { j=most-1u; }
+      while (j>0u && picked[j-1u]>b) { picked[j]=picked[j-1u]; low[j]=low[j-1u]; high[j]=high[j-1u]; j--; }
+      picked[j]=b; low[j]=w0; high[j]=w1;
     }
-    for (var k=0u;k<n;k++) { atomicStore(&control[D_CHARGES+k],picked[k]); }
+    for (var k=0u;k<n;k++) {
+      let b=picked[k]; let at=D_SOURCE_INFO+k*D_SOURCE_WORDS;
+      atomicStore(&control[D_CHARGES+k],b); atomicStore(&control[at],low[k]); atomicStore(&control[at+1u],high[k]); atomicStore(&control[D_SOURCE_OF+b],k+1u);
+    }
     atomicStore(&control[D_CHARGE_COUNT],n);
-    atomicStore(&control[3],select(D_NONE,picked[0],n>0u)); // the batch has work (workArgs)
+    // the batch has work (workArgs): its first charge
+    var first=D_NONE; if (n>0u) { first=picked[0]*64u+select(32u+firstTrailingBit(high[0]),firstTrailingBit(low[0]),low[0]!=0u); }
+    atomicStore(&control[3],first);
+    return n;
+}
+var<workgroup> wgSources: u32;
+` + main64(`
+    if (li==0u) { wgSources=dPickSources(); }
+    storageBarrier(); // (the lanes below read the masks lane 0 wrote)
+    let n=workgroupUniformLoad(&wgSources);
+    if (li<n) {
+      let k=li; let b=dSrcBrick(k); let base=dSrcBase(k);
+      var lo=vec3i(3); var hi=vec3i(0); var energy=0.0; var sum=vec3f(0); var count=0.0; var own=0.0;
+      for (var l=0u;l<64u;l++) {
+        if (((dSrc(k,l>>5u)>>(l&31u))&1u)==0u) { continue; }
+        let s=b*64u+l; let m=loadMaterial(s);
+        if (!dChargeServed(s,m) || dEvaporates(m)) { continue; }
+        let e=dChargeEnergy(m); let local=cellOf(s)-base;
+        lo=min(lo,local); hi=max(hi,local); energy+=e; sum+=vec3f(local); count+=1.0;
+        own=max(own,dFrontPerRootJ(cid(m.core))*sqrt(e));
+      }
+      if (count==0.0) { lo=vec3i(0); hi=vec3i(0); }
+      // V1's spread: what its cells held before it, the brick's pressure (legacy)
+      var prior=0.0; if (mAirPressure()) { prior=max(0.0,air[b].vp.w)/${f(LEGACY_PRESSURE_PA)}; }
+      let pressure=select(0.0,min(${f(V1_FRONT.P_MAX)},own+prior),energy>0.0);
+      var reach=0; while (reach<D_REACH_MAX && pressure*pow(${f(V1_FRONT.KEEP)},f32(reach))*${f(LEGACY_PRESSURE_PA)}>${f(BLAST_FRONT_FLOOR_PA)}) { reach++; }
+      let box=u32(lo.x)|(u32(lo.y)<<2u)|(u32(lo.z)<<4u)|(u32(hi.x)<<6u)|(u32(hi.y)<<8u)|(u32(hi.z)<<10u)|(u32(reach)<<12u);
+      let centre=vec3f(base)+sum/max(count,1.0); let at=D_SOURCE_INFO+k*D_SOURCE_WORDS;
+      atomicStore(&control[at+2u],box); atomicStore(&control[at+3u],bitcast<u32>(energy));
+      atomicStore(&control[at+4u],bitcast<u32>(centre.x)); atomicStore(&control[at+5u],bitcast<u32>(centre.y)); atomicStore(&control[at+6u],bitcast<u32>(centre.z));
+      atomicStore(&control[at+7u],bitcast<u32>(pressure));
+    }
   `);
   if (stage === 'plan') return h + main64(/* wgsl */ `
     if (t >= D_SLOTS) { return; }
@@ -556,84 +650,108 @@ export function blastsWGSL(g,nativeHead,stage) {
     }
     plans[t] = plan;
   `);
-  // ---- One batch a tick (dynamics.js consumeMaterialEvents): the picked charges planned together.
-  // Each charge keeps its own shielded energy and its own normalisation: plan sums every charge's
-  // received energy per brick (a workgroup a brick, lanes in slot order: sum's order), normalize
-  // scales each charge to its own budget, damage adds the charges' scaled shares. One charge is
-  // today's plan, sum, normalize and damagePlan bit for bit (tools/v2/blast-batch-check.mjs).
+  // ---- One batch a tick (dynamics.js consumeMaterialEvents): the picked sources planned together.
+  // Each source keeps its own shielded energy and its own normalisation: plan sums every source's
+  // received energy per brick within its reach (a workgroup a brick, lanes in slot order: sum's order),
+  // normalize scales each source to its own budget, damage adds the sources' scaled shares. One source of
+  // one charge is the old plan's expressions (tools/v2/blast-batch-check.mjs).
   // External blasts (mode 14) keep plan/sum/normalize/damagePlan/finish.
-  if (stage === 'planCharges') return h + `
+  if (stage === 'planCharges') return h + chargeSourcesWGSL + `
 var<workgroup> wgEnergy: array<f32,64>;
 var<workgroup> wgCharges: u32;
+var<workgroup> wgNear: u32;
 ` + main64(/* wgsl */ `
-    // the charge count, uniform across the workgroup for the barriers below
+    // the source count, uniform across the workgroup for the barriers below
     if (li==0u) { wgCharges=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX); }
-    let n=workgroupUniformLoad(&wgCharges); let live=t<D_SLOTS;
+    let n=workgroupUniformLoad(&wgCharges); let live=t<D_SLOTS; let brick=t/64u;
     var plan=DPlan(vec3f(0),0u); var p=vec3i(0); var eligible=false;
     if (live) {
       p=cellOf(t); let id=cid(loadMaterial(t).core);
       if ((events[t]&4u)!=0u) { plan.flags = 9u; } // neutron request has its own immutable source
       eligible=id != 0u && (events[t]&1u)==0u;
-      for (var k=0u;k<n;k++) { if (atomicLoad(&control[D_CHARGES+k])==t) { plan.flags |= 4u; eligible=false; } }
+      if (dIsSourceCell(p)) { plan.flags |= 4u; eligible=false; }
     }
     for (var k=0u;k<n;k++) {
+      // a brick past a source's reach holds no share of it, and its sum is never read (normalizeCharges)
+      if (li==0u) { wgNear=select(0u,1u,brick<D_BRICKS && dSrcNearBrick(k,brick)); }
+      if (workgroupUniformLoad(&wgNear)==0u) { continue; }
       var velocity=vec3f(0);
-      if (eligible) { velocity=dChargeShare(atomicLoad(&control[D_CHARGES+k]),p); }
+      if (eligible && dSrcSteps(k,p)<=dSrcReach(k) && dSrcSees(k,p)) { velocity=dSrcShare(k,p); }
       if (k==0u) { plan.velocity=velocity; }
       wgEnergy[li]=length(velocity); workgroupBarrier();
       if (li==0u) {
         var energy=0.0; for (var lane=0u;lane<64u;lane++) { energy += wgEnergy[lane]; }
-        atomicStore(&control[D_CHARGE_SUMS+k*D_BRICKS+t/64u],bitcast<u32>(energy));
+        atomicStore(&control[D_CHARGE_SUMS+k*D_BRICKS+brick],bitcast<u32>(energy));
       }
       workgroupBarrier();
     }
-    // One charge: damage reads its share from the plan, as before; more: damage adds them up.
+    // One source: damage reads its share from the plan, as before; more: damage adds them up.
     if (live) { if (n!=1u) { plan.velocity=vec3f(0); } plans[t] = plan; }
   `);
-  if (stage === 'normalizeCharges') return h + chargeServedWGSL + main1(`
-    let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
-    for (var k=0u;k<n;k++) {
-      var sum=0.0; for (var b=0u;b<D_BRICKS;b++) { sum += bitcast<f32>(atomicLoad(&control[D_CHARGE_SUMS+k*D_BRICKS+b])); }
-      let budget=dChargeEnergy(loadMaterial(atomicLoad(&control[D_CHARGES+k])));
-      atomicStore(&control[D_CHARGE_SCALES+k],bitcast<u32>(min(1.0,budget*0.5/max(sum,0.000001))));
+  // One workgroup, a lane a source: its scale (the sums plan wrote within its reach, bricks in z, y, x order)
+  // and its charges' pressure into their brick's air, before the damage reads it (V1 react.js setOff: the
+  // explosive beside a charge is under its blast.P before anything moves it). A quarter of the blast's energy is
+  // acoustic, pressure energy p² V / (2 rho c²); V1 clamps a cell's pressure at P_MAX (react.js), so the blast
+  // raises its brick at most to it (as air.js source does a puff).
+  if (stage === 'normalizeCharges') return h + chargeSourcesWGSL + main64(`
+    let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX); let k=li;
+    if (k<n) {
+      var sum=0.0; let at=vec3i(dSrcBase(k)>>vec3u(2u)); let lo=dSrcLo(k); let hi=dSrcHi(k); let reach=dSrcReach(k);
+      for (var z=-D_REACH_BRICKS;z<=D_REACH_BRICKS;z++) { for (var y=-D_REACH_BRICKS;y<=D_REACH_BRICKS;y++) { for (var x=-D_REACH_BRICKS;x<=D_REACH_BRICKS;x++) {
+        let q=at+vec3i(x,y,z); if (any(q<vec3i(0)) || any(q>=vec3i(BX,BY,BZ))) { continue; }
+        // (dSrcNearBrick, its source's words read once)
+        let gap=max(vec3i(0),max(q*4-hi,lo-(q*4+vec3i(3)))); if (gap.x+gap.y+gap.z>reach) { continue; }
+        sum += bitcast<f32>(atomicLoad(&control[D_CHARGE_SUMS+k*D_BRICKS+brickId(q)]));
+      } } }
+      let budget=dSrcEnergy(k); let scale=min(1.0,budget*0.5/max(sum,0.000001));
+      atomicStore(&control[D_CHARGE_SCALES+k],bitcast<u32>(scale));
+      // control[6] is the first source's scale (one source: normalize's), 1 without one
+      if (k==0u) { atomicStore(&control[6],bitcast<u32>(scale)); }
+      if (budget>0.0) {
+        let b=dSrcBrick(k); var a=air[b];
+        let addedP2=2.0*${f(AIR.rho*AIR.sound**2)}*budget*0.25/${f(AIR.edge**3)};
+        if(mAirPressure()) { a.vp.w=max(a.vp.w,min(sqrt(a.vp.w*a.vp.w+addedP2),${f(V1_FRONT.P_MAX * LEGACY_PRESSURE_PA)})); } a.thermal.z=0.0; air[b]=a; noteAir(b);
+      }
     }
-    // control[6] is the first charge's scale (one charge: normalize's), 1 without one
-    atomicStore(&control[6],select(bitcast<u32>(1.0),atomicLoad(&control[D_CHARGE_SCALES]),n>0u));
-    // The batch's pressure goes into the air now, before its damage (finishCharges serves the rest, the
-    // same charges in the same order): V1's charge adds its blast.P as it goes off, so the explosive beside
-    // it is under that pressure before anything moves it (V1 react.js setOff; damageCharges reads it).
-    for (var c=0u;c<n;c++) {
-      let s=atomicLoad(&control[D_CHARGES+c]); let before=loadMaterial(s);
-      if (!dChargeServed(s,before) || dEvaporates(before)) { continue; }
-      dChargePressure(s,before);
-    }
+    if (li==0u && n==0u) { atomicStore(&control[6],bitcast<u32>(1.0)); }
   `);
-  if (stage === 'damageCharges') return h + chargeServedWGSL + chargeFrontWGSL + main64(`
-    if (t >= D_SLOTS) { return; } var plan=plans[t]; let m=loadMaterial(t); let id=cid(m.core); let k=cls(id);
+  if (stage === 'damageCharges') return h + chargeServedWGSL + chargeSourcesWGSL + main64(`
+    if (t >= D_SLOTS) { return; } var plan=plans[t]; let m=loadMaterial(t); let id=cid(m.core); let k=cls(id); let p=cellOf(t);
     let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
     var energy=length(plan.velocity)*bitcast<f32>(atomicLoad(&control[6]));
-    var combined=vec3f(0);
-    if (n>1u && id!=0u && (events[t]&1u)==0u && (plan.flags&4u)==0u) {
-      // several charges: each one's share at its own scale, summed (energy) and as a direction
-      energy=0.0; let p=cellOf(t);
+    var combined=vec3f(0); var front=0.0; var flameSteps=D_CHAIN+1;
+    let open=id!=0u && (events[t]&1u)==0u && (plan.flags&4u)==0u;
+    if (open) {
+      // every source this cell is in reach and sight of: V1's front on it (its largest), and with several
+      // sources each one's share at its own scale, summed (energy) and as a direction
+      if (n>1u) { energy=0.0; }
       for (var c=0u;c<n;c++) {
-        let share=dChargeShare(atomicLoad(&control[D_CHARGES+c]),p)*bitcast<f32>(atomicLoad(&control[D_CHARGE_SCALES+c]));
-        energy+=length(share); combined+=share;
+        let steps=dSrcSteps(c,p); if (dSrcEnergy(c)<=0.0 || steps>dSrcReach(c) || !dSrcSees(c,p)) { continue; }
+        front=max(front,dSrcFrontPa(c,steps));
+        if (n>1u) { let share=dSrcShare(c,p)*bitcast<f32>(atomicLoad(&control[D_CHARGE_SCALES+c])); energy+=length(share); combined+=share; }
+        if (dFlame(id) && max(steps,1)<flameSteps && dSrcLine(c,p,true)) { flameSteps=max(steps,1); }
       }
     }
     // V1 react.js setOff: an explosive under more than its crushP goes off rather than break or fly ("a hit
     // or pressure that sets it off wins over breaking it"). The batch's pressure is in the air already
-    // (normalizeCharges), so the explosive beside a charge is set off by it where it is, not thrown first,
-    // and goes off with the next tick's batch (The Powder Toy: a chain spreads one step a frame). V1's pressure
-    // reaches farther than V2's air carries it: its front from the batch's charges sets it off too (dChargeFrontOver).
-    if (energy>0.0 && dCrush(id)>0.0 && mAirPressure() && (dPressureOn(cellOf(t),k)>dCrush(id) || dChargeFrontOver(cellOf(t),dCrush(id)))) {
-      events[t]|=1u; noteEvents(t,events[t]); dWake(cellOf(t)); plan.velocity=vec3f(0); plans[t]=plan; return;
+    // (normalizeCharges), and V1's front from the batch's sources reaches farther than V2's air carries it;
+    // it goes off with the next tick's batch, as V1's goes off the step the front reaches it.
+    if (open && dCrush(id)>0.0 && mAirPressure() && (front>dCrush(id) || (energy>0.0 && dPressureOn(p,k)>dCrush(id)))) {
+      events[t]|=1u; noteEvents(t,events[t]); dWake(p); plan.velocity=vec3f(0); plans[t]=plan; return;
     }
+    // V1 react.js lit: a flame explosive (gunpowder, propane) along a chain of them from the batch's charges
+    // lights as V1's rolls of blast.flame a step would light it within the tick's steps (v1FlameChainOdds).
+    if (open && flameSteps<=D_CHAIN && dRandom(dId(p,${FLAME_SALT}u),1u)<dFlameOdds(id,flameSteps)) {
+      events[t]|=1u; noteEvents(t,events[t]); dWake(p); plan.velocity=vec3f(0); plans[t]=plan; return;
+    }
+    // V1 react.js breaking: the pressure difference across a solid past hard·P_BREAK_PER_HARD breaks it, and
+    // the front on its open side is that difference (its solid side holds none). Breaking costs the debris
+    // nothing (V1's pressure fracture pays no hardness): it flies on its share.
     var kinetic=energy;
-    if (energy>0.0 && k==1u) {
+    if (k==1u) {
+      kinetic=0.0;
       var broken=m; broken.core.x=(broken.core.x&0xffffff00u)|u32(max(0,dBreak(id)));
-      if (dBreak(id)>=0 && energy>=dToughness(id) && energyFits(broken,energyOf(m))) { plan.flags|=2u|(u32(dBreak(id))<<8u); kinetic-=dToughness(id); }
-      else { kinetic=0.0; }
+      if (open && dBreak(id)>=0 && mAirPressure() && front>dStrength(id) && energyFits(broken,energyOf(m))) { plan.flags|=2u|(u32(dBreak(id))<<8u); kinetic=energy; }
     }
     if (kinetic>0.0 && (k==2u || k==3u || (plan.flags&2u)!=0u) && (plan.flags&8u)==0u) {
       plan.flags|=1u;
@@ -649,11 +767,13 @@ var<workgroup> wgCharges: u32;
     }
     plans[t]=plan;
   `);
-  // One thread: every picked charge in slot order, as finish served one: products, ledger, air.
-  if (stage === 'finishCharges') return h + chargeServedWGSL + main1(/* wgsl */ `
+  // One workgroup: a lane a cell of every source's brick, served as finish served a charge: products,
+  // ledger. Then a lane a source clears its brick's source word for the next batch.
+  if (stage === 'finishCharges') return h + chargeServedWGSL + chargeSourcesWGSL + main64(/* wgsl */ `
     let n=min(atomicLoad(&control[D_CHARGE_COUNT]),D_CHARGES_MAX);
     for (var c=0u;c<n;c++) {
-      let s=atomicLoad(&control[D_CHARGES+c]);
+      if (((dSrc(c,li>>5u)>>(li&31u))&1u)==0u) { continue; }
+      let s=dSrcBrick(c)*64u+li;
       let before=loadMaterial(s);
       // select() gated this BEFORE any damage: retry cannot duplicate a blast.
       if (!dChargeServed(s,before)) { continue; }
@@ -670,6 +790,7 @@ var<workgroup> wgCharges: u32;
       storeMaterial(s,before,after);
       events[s]&=~1u; dWake(cellOf(s));
     }
+    if (li<n) { atomicStore(&control[D_SOURCE_OF+dSrcBrick(li)],0u); }
   `);
   if(stage==='externalParticlePlan') return h+main64(`
     if(t>=D_CAP) { return; }let base=D_EXTERNAL_PARTICLES+t*4u;
@@ -842,8 +963,12 @@ if (P.nativeJets==0u && k==3u && dOpen(p+mDown(vec3f(p)+0.5))) {
     }
     var kinetic=energy;
     if (energy>0.0 && k==1u) {
+      // V1 react.js breaking: the pressure difference across the solid, on the field the blast leaves (a
+      // solid neighbour holds none), past hard·P_BREAK_PER_HARD; breaking costs the debris nothing.
+      var difference=0.0; let p=cellOf(t);
+      if (mAirPressure()) { for (var a=0u;a<3u;a++) { difference=max(difference,abs(dOpenPressureAfterExternal(p+dAxis(a))-dOpenPressureAfterExternal(p-dAxis(a)))); } }
       var broken=m; broken.core.x=(broken.core.x&0xffffff00u)|u32(max(0,dBreak(id)));
-      if (dBreak(id)>=0 && energy>=dToughness(id) && energyFits(broken,energyOf(m))) { plan.flags|=2u|(u32(dBreak(id))<<8u); kinetic-=dToughness(id); }
+      if (dBreak(id)>=0 && difference>dStrength(id) && energyFits(broken,energyOf(m))) { plan.flags|=2u|(u32(dBreak(id))<<8u); }
       else { kinetic=0.0; }
     }
     if (kinetic>0.0 && (k==2u || k==3u || (plan.flags&2u)!=0u) && (plan.flags&8u)==0u) {
