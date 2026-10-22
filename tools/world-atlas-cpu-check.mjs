@@ -110,41 +110,70 @@ test('global book sizes, signed bounds, overflow and 384 high world', () => {
   for(const size of [[0,4,4],[-4,4,4],[5,4,4],[2**31,4,4],[2**30,2**30,2**30],[4096,4096,4096]]) assert.throws(()=>A.worldBookLayout(size));
   assert.throws(()=>A.worldBookLayout([3072,384,1024],{maxStorageBufferBindingSize:64*1024**2}));
 });
-test('a book is the current book copied plus its changed chunks: same bytes as a whole upload', () => {
+test('a book is the current book patched in place, or copied, plus runs of its changed entries: same bytes as a whole upload', () => {
   // 1024x256x1024 cells: a 16 MiB book (Descent's is 125 MiB)
-  const {gpu,atlas}=setup({worldSize:[1024,256,1024]});
+  // (room for every page: a pool growth shares the books, so its next commit copies them, below)
+  const {gpu,atlas}=setup({worldSize:[1024,256,1024],initialCapacity:64});
   assert.equal(atlas.bookLayout.bytes,16*1024**2);
   const book=s=>new Uint32Array(s.book.data.buffer,0,atlas.bookLayout.count), light=s=>new Uint32Array(s.lightBook.data.buffer,0,atlas.bookLayout.count);
-  let mark=gpu.log.length;
-  for(const brick of [[0,0,0],[255,63,255],[100,10,200]]){const j=atlas.allocate(brick,{sourceRevision:1});atlas.update(j,dataFor(j));atlas.publish(j);}
+  const isBook=label=>/immutable (light )?book/.test(label);
+  const writes=from=>gpu.log.slice(from).filter(e=>e[0]==='writeBuffer'&&isBook(e[1])), copies=from=>gpu.log.slice(from).filter(e=>e[0]==='copyBuffer'&&e[1]==='world book copy');
+  const made=()=>gpu.buffers.filter(b=>isBook(b.label)).length;
+  const put=(...bricks)=>{const js=bricks.map(b=>{const j=atlas.allocate(b,{sourceRevision:1});atlas.update(j,dataFor(j));return j;});atlas.publish(js);};
+  const at=b=>A.worldBrickIndex(atlas.bookLayout,b);
+  // no snapshot reads the current book: each commit patches it in place, its one changed entry a write
+  let mark=gpu.log.length,books=made();
+  for(const brick of [[0,0,0],[255,63,255],[100,10,200]])put(brick);
+  assert.equal(copies(mark).length,0,'an unobserved book is patched, not copied');assert.equal(made(),books,'and no book is made');
+  assert.deepEqual(writes(mark).map(e=>e[3]),[4,4,4],'each write is its one changed entry');
   const s=atlas.snapshot();
   assert.deepEqual(book(s),atlas.entries);assert.deepEqual(light(s),atlas.lightEntries);
-  const sent=gpu.log.slice(mark).filter(e=>e[0]==='writeBuffer'&&/immutable (light )?book/.test(e[1]));
-  assert.ok(sent.every(e=>e[3]<=16384*4),'only changed 64 KiB chunks are sent');
-  assert.ok(gpu.log.slice(mark).some(e=>e[0]==='copyBuffer'&&e[1]==='world book copy'));
+  // a snapshot holds it: the next commit copies it, and the snapshot keeps its own
+  mark=gpu.log.length;books=made();put([101,10,200]);
+  assert.equal(copies(mark).length,1);assert.equal(made(),books+1,'a held book is copied into a new one');
+  assert.equal(book(s)[at([101,10,200])],0,'the held snapshot\'s book is unchanged');
+  const t=atlas.snapshot();assert.deepEqual(book(t),atlas.entries);t.release();
+  // runs nearer than BOOK_RUN_GAP_WORDS are one write (the words between included), farther ones two
+  const gap=A.BOOK_RUN_GAP_WORDS;mark=gpu.log.length;
+  put([110,20,30],[110+gap+1,20,30],[110+2*gap+3,20,30]);
+  assert.deepEqual(writes(mark).map(e=>[e[2]/4,e[3]/4]),[[at([110,20,30]),gap+2],[at([110+2*gap+3,20,30]),1]],'merged runs, exact extents');
+  const merged=atlas.snapshot();assert.deepEqual(book(merged),atlas.entries);merged.release();
   // growth commits the same entries: the same books, shared, nothing sent or copied
-  mark=gpu.log.length;atlas.growPool('cell');const g=atlas.snapshot();
-  assert.equal(g.book,s.book);assert.equal(g.lightBook,s.lightBook);assert.deepEqual(book(g),atlas.entries);
-  assert.equal(gpu.log.slice(mark).filter(e=>(e[0]==='writeBuffer'&&/immutable (light )?book/.test(e[1]))||e[0]==='copyBuffer').length,0);
-  // a removal clears chunks; the old snapshot keeps its own book
+  const grown=atlas.snapshot();mark=gpu.log.length;atlas.growPool('cell');const g=atlas.snapshot();
+  assert.equal(writes(mark).length+copies(mark).length,0);
+  assert.equal(g.book,grown.book);assert.equal(g.lightBook,grown.lightBook);assert.deepEqual(book(g),atlas.entries);grown.release();
+  // a shared book (the growth's, still retiring) is copied, never patched
+  g.release();mark=gpu.log.length;put([120,20,30]);
+  assert.equal(copies(mark).length,1,'a book another state shares is copied');
+  const copied=atlas.snapshot();assert.deepEqual(book(copied),atlas.entries);copied.release();
+  // a removal clears entries; the old snapshot keeps its own book
   atlas.remove([[255,63,255]]);const r=atlas.snapshot();
-  assert.deepEqual(book(r),atlas.entries);assert.equal(book(r)[A.worldBrickIndex(atlas.bookLayout,[255,63,255])],0);
-  assert.notEqual(book(s)[A.worldBrickIndex(atlas.bookLayout,[255,63,255])],0);
+  assert.deepEqual(book(r),atlas.entries);assert.equal(book(r)[at([255,63,255])],0);
+  assert.notEqual(book(s)[at([255,63,255])],0);
+  // every entry cleared: a fresh zero book, nothing sent or copied
+  gpu.flush();mark=gpu.log.length;books=made();
+  atlas.remove(atlas.bookPages('cell').map(p=>p.brick),A.READY.CELL);const z0=atlas.snapshot();
+  assert.equal(writes(mark).length+copies(mark).length,0);assert.equal(made(),books+1);assert.ok(book(z0).every(v=>v===0));
+  // a patched book is a state's alone: put one back, patched in place again once nothing holds the zeros
+  z0.release();gpu.flush();
+  for(const h of [s,r])h.release();gpu.flush();
+  mark=gpu.log.length;books=made();put([7,7,7]);
+  assert.equal(copies(mark).length,0);assert.equal(made(),books);
+  const p=atlas.snapshot();assert.deepEqual(book(p),atlas.entries);assert.deepEqual(light(p),atlas.lightEntries);p.release();
   // a small book is made the same way (Island's is 8 MiB)
   const small=setup(),smallMark=small.gpu.log.length;
   const j=small.atlas.allocate([1,1,1],{sourceRevision:1});small.atlas.update(j,dataFor(j));small.atlas.publish(j);
-  assert.ok(small.gpu.log.slice(smallMark).some(e=>e[0]==='copyBuffer'&&e[1]==='world book copy'));
-  assert.ok(small.gpu.log.slice(smallMark).filter(e=>e[0]==='writeBuffer'&&/immutable (light )?book/.test(e[1])).every(e=>e[3]<=16384*4));
+  assert.deepEqual(small.gpu.log.slice(smallMark).filter(e=>e[0]==='writeBuffer'&&isBook(e[1])).map(e=>e[3]),[4]);
   const ss=small.atlas.snapshot();assert.deepEqual(new Uint32Array(ss.book.data.buffer,0,small.atlas.bookLayout.count),small.atlas.entries);ss.release();
+  small.atlas.dispose();small.gpu.flush();
   // a reset starts both books from zeros: nothing sent, nothing copied
   mark=gpu.log.length;atlas.reset();const z=atlas.snapshot();
   assert.ok(book(z).every(v=>v===0)&&light(z).every(v=>v===0));
-  assert.equal(gpu.log.slice(mark).filter(e=>(e[0]==='writeBuffer'&&/immutable (light )?book/.test(e[1]))||e[0]==='copyBuffer').length,0);
+  assert.equal(writes(mark).length+copies(mark).length,0);
   z.release();
-  // a shared book outlives every snapshot but the last that holds it
-  s.release();gpu.flush();assert.ok(!g.book.destroyed,'growth snapshot still reads the shared book');
-  g.release();r.release();atlas.dispose();gpu.flush();
-  assert.ok(gpu.buffers.filter(b=>/immutable (light )?book/.test(b.label)).every(b=>b.destroyed),'every book destroyed exactly once at the end');
+  // every book destroyed exactly once, none while a snapshot reads it
+  atlas.dispose();gpu.flush();
+  assert.ok(gpu.buffers.filter(b=>isBook(b.label)).every(b=>b.destroyed),'every book destroyed exactly once at the end');
 });
 test('original slot bijection, 32-core / page edges and array-layer geometry', () => {
   const slots=new Set();

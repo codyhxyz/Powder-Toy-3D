@@ -14,7 +14,8 @@ const dynamicGroup=(g,dynamic)=>{let k=0;const dyn=new Set(g.layout.entries.filt
 export class CellTestGPU extends FieldTestGPU {
   constructor(){
     super({emulateEMA:true});this.commands=[];this.submitted=[];this.waiters=[];this.retireOnFlush=[];this.flushes=0;this.nativeSubmits=0;this.writes=0;
-    this.queue={writeBuffer:(b,o,v)=>{const data=new Uint8Array(v.buffer??v,v.byteOffset??0,v.byteLength).slice();this.submitted.push(()=>bytes(b).set(data,o));},
+    // WebGPU's writeBuffer: a typed array's dataOffset and size count its elements (an ArrayBuffer's, bytes)
+    this.queue={writeBuffer:(b,o,v,at=0,n)=>{const e=v.BYTES_PER_ELEMENT??1,all=new Uint8Array(v.buffer??v,v.byteOffset??0,v.byteLength),data=all.slice(at*e,n===undefined?undefined:(at+n)*e);this.submitted.push(()=>bytes(b).set(data,o));},
       writeTexture:(dst,data,layout,extent)=>{const copy=new Uint8Array(data.buffer,data.byteOffset,data.byteLength).slice();this.submitted.push(()=>this._bufferTexture(copy,layout?.offset??0,dst.texture,dst.origin??[0,0,0],extent,layout?.bytesPerRow,layout?.rowsPerImage));},
       submit:encoders=>{this.nativeSubmits++;for(const e of encoders)this.submitted.push(...e.ops);},
       onSubmittedWorkDone:()=>new Promise(resolve=>this.waiters.push(resolve))};

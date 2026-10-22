@@ -30,11 +30,19 @@ or reinterpreted on reset. The CPU CI Atlas gate explicitly asserts ABI2.
   Do not combine them: height384 would exceed the 128 MiB binding limit.
 - A commit never uploads or scans a whole book. An unchanged book (a pool
   growth) is the current snapshot's buffer, shared and refcounted (books are
-  read-only to every reader). A changed one is a GPU copy of the current book
-  plus the 64 KiB chunks (`BOOK_CHUNK_WORDS`) that hold the commit's changed
-  entries. A reset or private producer book starts from a fresh, zeroed buffer.
-  Descent's 125 MiB books were re-sent several times a second during a load
-  (2026-10-21).
+  read-only to every reader). A changed one sends only the runs of its changed
+  entries (runs nearer than `BOOK_RUN_GAP_WORDS` merged), onto: the current
+  book itself when nothing else can read it (the atlas holds the current
+  state alone: no snapshot handle, no other state sharing the book; the
+  writes are queue-ordered after every submitted reader), else a GPU copy of
+  it, else (a reset, a private producer book, a book whose entries now number
+  no more than its changes, e.g. every LIGHT page cleared) a fresh zeroed
+  buffer with its nonzero entries. Descent's 125 MiB books were re-sent
+  several times a second during a load (2026-10-21); 64 KiB chunks still sent
+  ~25 MiB and allocated ~260 MiB of new books per Island lighting tick
+  (2026-10-22, `tools/world-book-writes-cpu-check.mjs`). Hence a snapshot
+  handle must be released only after its readers' final submission: a
+  released book may be patched by the next commit.
 - `atlas.live.cell`/`atlas.live.light` map each nonzero book index to its page.
   A commit checks only its changed indices, never all 33M entries of a Descent
   book. `bookPages(kind)` lists them in book order.

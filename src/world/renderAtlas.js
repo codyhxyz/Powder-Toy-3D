@@ -25,8 +25,13 @@ export const DEFAULT_WORLD_LIMITS = Object.freeze({
 });
 const U32_MAX = 0xffffffff;
 const BU = { COPY_SRC: 4, COPY_DST: 8, UNIFORM: 64, STORAGE: 128 };
-// A commit's book is its base copied plus the 64 KiB chunks it changed (WorldRenderAtlas._book).
-export const BOOK_CHUNK_WORDS = 16384;
+// A commit's book is its base copied plus the runs of entries it changed
+// (WorldRenderAtlas._books). Runs nearer than this many unchanged words are
+// sent as one write, the words between them included. Measured on Island's
+// lighting ticks (tools/world-book-writes-cpu-check.mjs --gaps): any gap up
+// to 128 sends ~0.47 MiB in ~9.6k-10.6k writes; 256 and up merges a CELL
+// core's rows (8 entries, a y-row of 256 apart) and sends 8.7 MiB.
+export const BOOK_RUN_GAP_WORDS = 32;
 const integer = (v, lo = 0, hi = U32_MAX) => Number.isSafeInteger(v) && v >= lo && v <= hi;
 const check = (ok, why) => { if (!ok) throw new RangeError(why); };
 const frozen = (a) => Object.freeze(a);
@@ -393,7 +398,7 @@ export class WorldRenderAtlas {
   _commit(changed, r = this.resources, epoch = this.epoch, dependencies = this.current?.dependencies ?? manifest(), sun = this.current?.sunManifest ?? null, base = this.current) {
     check(this.generation < U32_MAX, 'world generation overflow');
     const previous=this.current,generation=this.generation+1;
-    this.current=this._snapshotState(this.entries,this.lightEntries,{cell:{base:base?.book,changed:changed.cell},light:{base:base?.lightBook,changed:changed.light}},
+    this.current=this._snapshotState(this.entries,this.lightEntries,{cell:{base:base?.book,changed:changed.cell,live:this.live.cell,owner:base},light:{base:base?.lightBook,changed:changed.light,live:this.live.light,owner:base}},
       [],r,epoch,dependencies,sun,generation);
     this.generation=generation;this.epoch=epoch;
     if(previous)this._releaseSnapshot(previous);
@@ -409,36 +414,70 @@ export class WorldRenderAtlas {
   _rollback(tx) {
     for (let k = tx.undo.length; k--;) { const [entries, live, index, value, page] = tx.undo[k]; entries[index] = value; if (page) live.set(index, page); else live.delete(index); }
   }
-  // A book is its base (the current one) copied on the GPU plus the 64 KiB
-  // chunks holding changed entries, or the base itself when none changed (a
-  // pool growth), or zeros plus those chunks without a base: never a
-  // whole-world upload or scan per commit. Descent's two books are 125 MiB
-  // each (2560x320x2560 cells), and a load's growths and publications re-sent
-  // them ~3 times a second, gigabytes held until retired (2026-10-21). Books
-  // are read-only to every reader, so snapshots may share one; the last
-  // release destroys it.
+  // A book is its base (the current one) copied on the GPU plus the runs of
+  // entries that changed, or the base itself when none changed (a pool
+  // growth), or a fresh zero buffer plus the runs of its nonzero entries when
+  // it has no more of them than changed (a reset, a private closure's LIGHT
+  // book, every LIGHT page cleared): never a whole-world upload or scan per
+  // commit. Descent's two books are 125 MiB each (2560x320x2560 cells), and a
+  // load's growths and publications re-sent them ~3 times a second, gigabytes
+  // held until retired (2026-10-21). Sending the 64 KiB chunks holding changed
+  // entries still sent ~25 MiB per Island lighting tick for its ~120k changed
+  // entries (its CELL and LIGHT changes are scattered: every chunk a core or a
+  // light page reached), 3 s of writeBuffer in 20 s (2026-10-22). Books are
+  // read-only to every reader, so snapshots may share one; the last release
+  // destroys it.
+  // And a base nothing else can read (the current state's own, no snapshot
+  // handle on it, no other state sharing it) is patched in place, not copied
+  // (unless it is now all zeros: a fresh buffer is then sent nothing):
+  // queue.writeBuffer lands after every submitted command that read it, and
+  // no reader can bind it again (_reusable). A copy and a new 8 MiB book per
+  // commit was ~260 MiB of new buffers per Island lighting tick (33 commits).
+  // specs: [label, values, base, changed, live, owner]: values is the whole
+  // book's entries now, changed the indices this commit wrote (repeats
+  // allowed), live (optional, with .size and .keys()) the indices of every
+  // nonzero entry, owner (optional) the state whose book base is.
+  // Returns [books, reused]: reused[k] when books[k] is owner's base, patched.
   _books(specs) {
-    const out = [], writes = []; let encoder = null;
+    const out = [], reused = [], writes = []; let encoder = null;
     try {
-      for (const [label, values, base, changed] of specs) {
-        const chunks = [...new Set(Array.from(changed, i => Math.floor(i / BOOK_CHUNK_WORDS)))].sort((a, b) => a - b);
-        if (base && !chunks.length) { this.bookUsers.set(base, this.bookUsers.get(base) + 1); out.push(base); continue; }
-        const b = this._ownBook(this.device.createBuffer({ label, size: values.byteLength, usage: BU.STORAGE | BU.COPY_DST | BU.COPY_SRC })); out.push(b);
-        if (base) (encoder ??= this.device.createCommandEncoder({ label: 'world book copy' })).copyBufferToBuffer(base, 0, b, 0, values.byteLength);
-        writes.push([b, values, chunks]);
+      for (const [label, values, base, changed, live, owner] of specs) {
+        const count = changed.length ?? changed.size;
+        if (base && !count) { this.bookUsers.set(base, this.bookUsers.get(base) + 1); out.push(base); reused.push(false); continue; }
+        if (base && live?.size !== 0 && this._reusable(owner, base)) { out.push(base); reused.push(true); writes.push([base, values, changed]); continue; }
+        // Its nonzero entries from zeros, when there are no more of them than changed ones.
+        const fresh = !base || (live && live.size <= count);
+        const b = this._ownBook(this.device.createBuffer({ label, size: values.byteLength, usage: BU.STORAGE | BU.COPY_DST | BU.COPY_SRC })); out.push(b); reused.push(false);
+        if (!fresh) (encoder ??= this.device.createCommandEncoder({ label: 'world book copy' })).copyBufferToBuffer(base, 0, b, 0, values.byteLength);
+        writes.push([b, values, fresh && live ? live.keys() : changed]);
       }
-      // Queue order: the chunk writes land after the copies they patch.
+      // Queue order: the run writes land after the copies they patch.
       if (encoder) this.queue.submit([encoder.finish()]);
-      for (const [b, values, chunks] of writes) for (let k = 0; k < chunks.length;) {
-        let end = k + 1; while (end < chunks.length && chunks[end] === chunks[end - 1] + 1) end++;
-        const start = chunks[k] * BOOK_CHUNK_WORDS, stop = Math.min(values.length, (chunks[end - 1] + 1) * BOOK_CHUNK_WORDS);
-        this.queue.writeBuffer(b, start * 4, values, start, stop - start); k = end;
-      }
-    } catch (e) { this.retire(() => out.forEach(b => this._dropBook(b))); throw e; }
-    return out;
+    } catch (e) { const own = out.filter((b, k) => !reused[k]); this.retire(() => own.forEach(b => this._dropBook(b))); throw e; }
+    // Nothing after this point fails before the commit holds: a patched base is the new state's.
+    for (const [b, values, indices] of writes) this._writeRuns(b, values, indices);
+    return [out, reused];
+  }
+  // Whether base, owner's book, can be patched in place: owner is the current
+  // public state, held by the atlas alone (every snapshot handle on it
+  // released: their readers submitted, docs/world-render-atlas-abi.md), and
+  // no other state shares the book (a growth's or a private closure's).
+  _reusable(owner, base) {
+    return !!owner && owner === this.current && owner.refs === 1 && !owner.producerOnly && this.bookUsers.get(base) === 1;
+  }
+  // Writes values at indices (any order, repeats allowed) to book b, one
+  // write per run of them, runs nearer than BOOK_RUN_GAP_WORDS merged.
+  _writeRuns(b, values, indices) {
+    const sorted = Uint32Array.from(indices).sort();
+    for (let k = 0; k < sorted.length;) {
+      const start = sorted[k]; let stop = start + 1;
+      while (++k < sorted.length && sorted[k] <= stop + BOOK_RUN_GAP_WORDS) stop = sorted[k] + 1;
+      this.queue.writeBuffer(b, start * 4, values, start, stop - start);
+    }
   }
   _ownBook(b) { this.bookUsers.set(b, 1); return b; }
-  _dropBook(b) { const n = this.bookUsers.get(b) - 1; if (n > 0) this.bookUsers.set(b, n); else { this.bookUsers.delete(b); b.destroy(); } }
+  // null: a book a later commit patched in place, now that state's (_books).
+  _dropBook(b) { if (!b) return; const n = this.bookUsers.get(b) - 1; if (n > 0) this.bookUsers.set(b, n); else { this.bookUsers.delete(b); b.destroy(); } }
   // A state holds the pages its books name without pinning each: a page is
   // public from p.since until the commit that supersedes it, and only then
   // pinned by the live states whose generation lies in that span
@@ -447,10 +486,14 @@ export class WorldRenderAtlas {
   // 2026-10-22). pages: pinned explicitly (a private closure's own LIGHT).
   // cellGeneration: the public generation whose CELL pages the state reads.
   _snapshotState(entries,lightEntries,books,pages,r,epoch,dependencies,sun,generation,cellGeneration=generation) {
-    const [book, lightBook] = this._books([['world immutable book', entries, books.cell.base, books.cell.changed], ['world immutable light book', lightEntries, books.light.base, books.light.changed]]);
-    let params;
-    try { params = this._buffer('world immutable params', 112, BU.UNIFORM | BU.COPY_DST, paramWords(this.bookLayout, r.layout, epoch, generation, dependencies.version)); }
-    catch (e) { this.retire(() => { this._dropBook(book); this._dropBook(lightBook); }); throw e; }
+    // params first: once _books has patched a base in place, nothing may fail.
+    const params = this._buffer('world immutable params', 112, BU.UNIFORM | BU.COPY_DST, paramWords(this.bookLayout, r.layout, epoch, generation, dependencies.version));
+    let book, lightBook, reused;
+    try { [[book, lightBook], reused] = this._books([['world immutable book', entries, books.cell.base, books.cell.changed, books.cell.live, books.cell.owner], ['world immutable light book', lightEntries, books.light.base, books.light.changed, books.light.live, books.light.owner]]); }
+    catch (e) { this.retire(() => params.destroy()); throw e; }
+    // A patched base moves to this state: its owner (superseded by this commit) no longer drops it.
+    if (reused[0]) books.cell.owner.book = null;
+    if (reused[1]) books.light.owner.lightBook = null;
     const pins = [...pages];
     for (const p of pins) {
       p.pins++;

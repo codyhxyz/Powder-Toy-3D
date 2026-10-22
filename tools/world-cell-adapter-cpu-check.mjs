@@ -71,7 +71,8 @@ test('real Source/Producer/Fields/Atlas: two-core queued captures precede scratc
   const secondClassifier=f.gpu.trace.findIndex((t,i,a)=>t.name==='world owned classifier'&&a.slice(0,i).some(x=>x.name==='world owned classifier'));
   assert(f.gpu.trace.indexOf(captures[2])<secondClassifier);
   f.gpu.flush();const packBefore=f.gpu.nativeSubmits,publication=f.adapter.commitAfterSourceFlush(batch);
-  assert.equal(f.gpu.nativeSubmits-packBefore,2,"both raw/field pages share one native submission; the other is the commit's book copy");
+  // (no book copy: its two entries are all the book holds, written onto a fresh zero book, renderAtlas.js _books)
+  assert.equal(f.gpu.nativeSubmits-packBefore,1,'both raw/field pages share one native submission');
   const dispatches=f.gpu.trace.filter(t=>t.name==='field CELL dispatch'),copies=f.gpu.trace.filter(t=>t.name==='native half copy');
   assert.equal(dispatches.length,2,'one job list/dispatch per capture, not per channel');
   // three copies per run of up to four consecutive pages; every page's tile is in one

@@ -289,7 +289,7 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
     const selection = selectWorldGI({ records, lightingTick: 0, mode: 2 });
     const sources = new Set(selection.sourceBricks.map((b) => index(...b))), probes = new Set(selection.gatherBricks.map((g) => index(...g.brick)));
     for (const [i, bits] of req) if (bits & READY.GI_SOURCE) sources.add(i);
-    const row = { attempt: attempts, requirements: req.size, classified: glowCores.size || budget != null ? classified().size : req.size, glowCores: glowCores.size, dropped: dropped.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, support: support.size, sources: sources.size, gathers: probes.size, sourceJobs: 0, sourceSet: sources, reached };
+    const row = { attempt: attempts, requirements: req.size, classified: glowCores.size || budget != null ? classified().size : req.size, glowCores: glowCores.size, dropped: dropped.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, support: support.size, sources: sources.size, gathers: probes.size, sourceJobs: 0, sourceSet: sources, probeSet: probes, reached };
     history.push(row);
     stage = 'sun';
     let grew = false;
@@ -424,5 +424,7 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
     row.stage = stage; log?.(row);
     if (!grew) { done = true; break; }
   }
-  return { attempts, done, history, byStage, giAsked, sourceJobs, requirements: req.size, classified: classified().size, glowCores: glowCores.size, dropped: dropped.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, fineTiles, coarse: [...coarse], forecastTiles: [...forecastTiles], sources: history.at(-1)?.sources ?? 0, gathers: history.at(-1)?.gathers ?? 0, viewTiles, sourceTiles };
+  return { attempts, done, history, byStage, giAsked, sourceJobs, requirements: req.size, classified: classified().size, glowCores: glowCores.size, dropped: dropped.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, fineTiles, coarse: [...coarse], forecastTiles: [...forecastTiles], sources: history.at(-1)?.sources ?? 0, gathers: history.at(-1)?.gathers ?? 0, viewTiles, sourceTiles,
+    // the bricks themselves, for checks that replay a load's atlas traffic (tools/world-book-writes-cpu-check.mjs)
+    cellSet: classified(), sourceSet: history.at(-1)?.sourceSet ?? new Set(), probeSet: history.at(-1)?.probeSet ?? new Set() };
 }
