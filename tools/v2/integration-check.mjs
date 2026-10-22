@@ -20,7 +20,7 @@ import { createPacker, createUnpacker, encodeFrame, decodeFrame, nativeSection, 
 import { nativeHostSteps as hostSteps } from '../../src/v2/host.js';
 import { E, K, TOOLS, ELEMENTS } from '../../src/elements.js';
 import { readFileSync } from 'node:fs';
-import { v2ActLayout, LEGACY_WORD } from '../../src/shaders/v2.js';
+import { v2ActLayout, LEGACY_WORD, BRIDGE } from '../../src/shaders/v2.js';
 import { resetNativeDynamics } from '../../src/v2/dynamicState.js';
 import { physicsEngine } from '../../src/launch.js';
 
@@ -194,7 +194,18 @@ const duplicate = encoded.slice(); new DataView(duplicate.buffer).setUint32(4 + 
 assert.throws(() => validateNativeWorldStore(encoded, null));
 
 calls.length = 0;
+// A window V2 runs holds one copy of V1's state, and its move is V2's alone: V1's cache isn't moved
+// (no second copy, no whole-window copy of it); the next export rewrites all of it (BRIDGE.ALL).
+sim.g.windowed = true; sim.pingPong(true); assert.equal(sim.copies, 2); sim.pingPong(false);
+assert.equal(sim.copies, 1, 'a window under V2 drops V1\'s second copy');
+const curBefore = sim.cur;
 shiftNative(16, 0);
+assert(!calls.some(c => c.name === 'shift'), 'V1\'s cache is not moved'); assert.equal(sim.copies, 1); assert.equal(sim.cur, curBefore);
+assert(!calls.some(c => c.name === 'v2bridge'), 'nor exported before the move');
+assert.equal(owner.legacyNative, undefined, 'the cache is stale everywhere');
+calls.length = 0; owner.exportLegacy(true);
+assert.equal(calls.find(c => c.name === 'v2bridge').opts.params.full, BRIDGE.ALL, 'the next export rewrites all of it');
+calls.length = 0; delete sim.g.windowed;
 assert.deepEqual(shifts, [[16, 0, 0]], 'only dynamics local fields reindex; world particle positions belong to dynamics');
 assert.deepEqual(moveOrder, [['record', true], ['restore'], ['commit']], 'dynamics and legacy words move with the cores, around their restore');
 for (let s = 0; s < g.slots; s++) {

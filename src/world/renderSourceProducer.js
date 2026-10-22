@@ -71,7 +71,6 @@ export class RawWorldSourceProducer {
     this.ready = Promise.all([win.gen.ready, this.generate.ready, this.stamp.ready, this.apply.ready]).then(() => {
       if (this.disposed) return this;
       this.sceneGroup = gpu.bindGroup(layouts[2], win.gen.res.entries(), 'raw source scene');
-      this.applyState = gpu.bindGroup(this.applyStateL, [sim.state.A, sim.state.B, sim.state.F, sim.marks].map((buffer, binding) => ({ binding, resource: { buffer } })), 'raw source physics');
       return this;
     });
     this.ready.catch(() => {});
@@ -157,11 +156,21 @@ export class RawWorldSourceProducer {
       const world = intersectBounds(core, physicsBounds);
       if (world) {
         const o = snapshotSource(this.sim).origin;
-        this.apply.dispatch(frame, fold(Math.ceil(this.sim.g.slots / 64)), { bind: [this.sim.tables, this.applyState, this.readGroup], header: this.sim.header(),
+        this.apply.dispatch(frame, fold(Math.ceil(this.sim.g.slots / 64)), { bind: [this.sim.tables, this._applyState(), this.readGroup], header: this.sim.header(),
           params: { sourceOrigin: [...origin], copy: raw.copy, lo: world.lo.map((v, i) => v - o[i]), hi: world.hi.map((v, i) => v - o[i]) } });
       }
     }
     return { epoch: token.epoch, revision: token.revision, core, trees: trees.length };
+  }
+  // V1's state for the apply, made again when the simulation makes its buffers again (Simulation.pingPong:
+  // a window V2 runs holds one copy of it).
+  _applyState() {
+    const sim = this.sim, A = sim.state.A;
+    if (this.applyStateFor !== A) {
+      this.applyStateFor = A;
+      this.applyState = this.gpu.bindGroup(this.applyStateL, [A, sim.state.B, sim.state.F, sim.marks].map((buffer, binding) => ({ binding, resource: { buffer } })), 'raw source physics');
+    }
+    return this.applyState;
   }
   dispose() {
     if (this.disposed) return; this.disposed = true;
