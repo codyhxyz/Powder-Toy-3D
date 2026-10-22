@@ -21,22 +21,31 @@ fn beaconPower(p: vec3f) -> vec3f {
   }
   return vec3f(${LIGHTHOUSE.color.map(glf).join(', ')}) * (${glf(LIGHTHOUSE.intensity)} * FU.beaconDir.w * cone * lampFall(d2, FU.beacon.w, ${glf(LIGHTHOUSE.radius)}));
 }
-fn beaconVisible(p: vec3f) -> bool {
+// The beam's shadow ray from p: the window's stretch of the line to the
+// emitter, stopping short of it (the lens/crystal is transparent). trace:
+// whether there is a stretch to march (else the window has nothing between).
+// lampShade marches it from its lamps' traceNearSteps call site, beaconVisible
+// from its own: Metal inlines every call, and each copy of the march cost
+// the World volume ~0.3 s of its cold build (2026-10-21).
+struct BeaconRay { o: vec3f, d: vec3f, len: f32, trace: bool, dist: f32, end: f32 }
+// Same DDA as local lamps, but a lighthouse crosses the whole window.
+// A ray crosses at most NX+NY+NZ faces; no whole-world voxel march.
+const BEACON_MAX_STEPS: i32 = NX + NY + NZ + 3;
+fn beaconRay(p: vec3f) -> BeaconRay {
   let dv = beaconPosition() - p;
   let d = length(dv);
   let rd = safeDir(dv / max(d, 1e-4));
-  // The lens/crystal is transparent; stop short of the emitter itself.
   let end = max(d - 2.0, 0.0);
   let hit = boxHit(p, rd);
   let a = max(hit.x, 0.0);
   let b = min(hit.y, end);
-  if (b > a + 0.002) {
-    var hc: vec3i;
-    var hn: vec3f;
-    // Same DDA as local lamps, but a lighthouse crosses the whole window.
-    // A ray crosses at most NX+NY+NZ faces; no whole-world voxel march.
-    if (traceNearSteps(p + rd * (a + 0.001), rd, b - a - 0.002, true, LAMP_SELF_SKIP, NX + NY + NZ + 3, &hc, &hn) >= 0.0) { return false; }
-  }
+  return BeaconRay(p + rd * (a + 0.001), rd, b - a - 0.002, b > a + 0.002, d, end);
+}
+// The rest of beaconVisible past the window, along ray r from p.
+fn beaconFarClear(p: vec3f, r: BeaconRay) -> bool {
+  let rd = r.d;
+  let d = r.dist;
+  let end = r.end;
   ${far ? `if (FU.far != 0u) {
     // Actual far occupancy, not generated terrain/scenery. Bounded coarse
     // shadow: narrow distant walls can fall between samples. The far field
@@ -55,6 +64,14 @@ fn beaconVisible(p: vec3f) -> bool {
     }
   }` : ''}
   return true;
+}
+fn beaconVisible(p: vec3f) -> bool {
+  let r = beaconRay(p);
+  var hc: vec3i;
+  var hn: vec3f;
+  var clear = !r.trace || !(traceNearSteps(r.o, r.d, r.len, true, LAMP_SELF_SKIP, BEACON_MAX_STEPS, &hc, &hn) >= 0.0);
+  if (clear) { clear = beaconFarClear(p, r); }
+  return clear;
 }
 fn beaconIrradiance(p: vec3f) -> vec3f {
   let power = beaconPower(p);
