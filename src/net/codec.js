@@ -551,7 +551,7 @@ function writeNative(sim, n, section) {
   owner.seenWhole = sim.wholeWrites;
   owner.legacyPending = owner.writtenSinceTick = true;
   owner.wake();
-  gpu.frame.clear(sim.flow);   // nothing is moving on a replica (sim.stillFlow; V2's foam is in the cores)
+  if (sim.flow) gpu.frame.clear(sim.flow);   // nothing is moving on a replica (sim.stillFlow; V2's foam is in the cores)
 }
 
 // A frame's flying matter into the replica's pool, each record at its host slot (so a session's end runs
