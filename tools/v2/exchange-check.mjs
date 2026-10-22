@@ -15,9 +15,9 @@ import { setFall } from '../../src/v2/fall.js';
 import { GRAVITY_MS2, STEPS_PER_TICK, v1PaceRate } from '../../src/v2/gravity.js';
 import * as C from '../../src/v2/contact.js';
 import { contactWGSL } from '../../src/shaders/v2/contact.js';
-import { v2BlockWGSL, v2Rows, BLOCK_PACE, V1_FLOAT_CELLS_S, TICK_HZ } from '../../src/shaders/v2.js';
+import { v2BlockWGSL, v2ColumnWGSL, v2Rows, BLOCK_PACE, V1_FLOAT_CELLS_S, TICK_HZ } from '../../src/shaders/v2.js';
 import { densityOf as v1Density } from '../../src/ui/tiles/engine.js';
-import { exchangeHelpers, motionSource } from './block-motion.mjs';
+import { exchangeHelpers, motionSource, columnMoverHelpers, motionJS } from './block-motion.mjs';
 
 const f = Math.fround;
 const code = v2BlockWGSL(gridLayout(16, 16, 16), contactWGSL);
@@ -63,10 +63,22 @@ const seed3 = (p, tick, salt) => pcg((p[0] + pcg((p[1] + pcg((p[2] + pcg((Math.i
 const clsOf = c => rows[c[0] & 255].cls;
 const withAge = (c, age) => new Uint32Array([(c[0] & 0xffffff) | (Math.min(age, 255) << 24), c[1], c[2], c[3]]);
 const zeroQ = c => [0, 3].includes(clsOf(c)) ? new Uint32Array([c[0], c[1], 0, c[3] & 0xffff0000]) : c;
+// the column pass's R1b (its fast movers), emitted, a column at a time
+const columnCode = v2ColumnWGSL(gridLayout(16, 16, 16));
+const r1b = motionJS(columnCode.slice(columnCode.indexOf('  // R1b sinkers'), columnCode.lastIndexOf('}'))).replace(/&act2/g, 'act2');
 class Grid {
-  constructor(n, ny, fill) {
-    Object.assign(this, { n, ny }); this.cores = []; this.tick = 1;
+  constructor(n, ny, fill, { column = true } = {}) {
+    Object.assign(this, { n, ny, column }); this.cores = []; this.tick = 1;
     for (let i = 0; i < n * n * ny; i++) this.cores.push(makeMaterial(fill).core);
+    const grid = this;
+    this.colCtx = columnMoverHelpers(columnCode, {
+      get P() { return grid.params; }, NY: ny, events: new Uint32Array(n * n * ny), act2: [], V2_SUMMARY: 0, SUM_AIR: 2, SUM_LIQUID: 3,
+      atomicLoad: x => x, brickOfCell: () => 0, vec3i: (x, y, z) => ({ x, y, z }), slotOf: p => grid.at(p.x, p.y, p.z),
+      loadCell: p => grid.cores[grid.at(p.x, p.y, p.z)], loadMaterial: s => ({ core: grid.cores[s], bank: 0 }),
+      storeMaterial: (s, before, after) => { grid.cores[s] = new Uint32Array(after.core); }, noteEvents: () => {}, markBusy: () => {},
+      decoOf: () => 0, setDeco: () => {}, zeroQ, cFill: c => c[1] & 0xffffff,
+    });
+    this.r1b = new Function('ctx', 'x', 'z', `with (ctx) { ${r1b} }`);
   }
   at(x, y, z) { return x + this.n * (z + this.n * y); }
   valid(p) { return p[0] >= 0 && p[2] >= 0 && p[1] >= 0 && p[0] < this.n && p[2] < this.n && p[1] < this.ny; }
@@ -76,7 +88,8 @@ class Grid {
     const tick = this.tick++, o = offsetOf(tick), frozen = this.cores.map(c => new Uint32Array(c));
     const supportAt = p => !this.valid(p) || [1, 2].includes(clsOf(frozen[this.at(...p)]));
     const wall = new Uint32Array([E.WALL, 0, 0, 0]);
-    const params = { ...P, tick };
+    const params = this.params = { ...P, tick };
+    if (this.column) for (let z = 0; z < this.n; z++) for (let x = 0; x < this.n; x++) this.r1b(this.colCtx, x, z);
     const h = this.h ??= {
       add: (a, b) => a.map((v, i) => v + b[i]), pcg, seed3, unit: s => f(f(f(s >>> 8) * 256) + f(s & 255)) / 4294967296,
       clsOf, inGrid: p => this.valid(p), fluidC: c => [0, 3, 4].includes(clsOf(c)), dropOfE: id => rows[id].drop,
@@ -96,10 +109,10 @@ class Grid {
   }
 }
 // the rate (cells/s) a lone cell of `id` crosses a box of `medium` (up or down), as the median of `trials` runs
-function rate(id, medium, dir, { trials = 9, ny = 48, t = 20 } = {}) {
+function rate(id, medium, dir, { trials = 9, ny = 48, t = 20, column = true } = {}) {
   const speeds = [];
   for (let k = 0; k < trials; k++) {
-    const g = new Grid(4, ny, medium), y0 = dir < 0 ? ny - 4 : 3;
+    const g = new Grid(4, ny, medium, { column }), y0 = dir < 0 ? ny - 4 : 3;
     g.tick = 1 + 977 * k; g.set(1 + (k & 1), y0, 2, id, t);
     let start = null, ticks = 0;
     for (; ticks < 4000; ticks++) {
@@ -118,26 +131,34 @@ const v1DragFOf = (a, b) => { const gl = e => e.kind === K.GAS || e.kind === K.E
   return (la && !gl(b)) || (lb && !gl(a)) ? PHYS.DRAG_LIQUID_MIN + PHYS.DRAG_LIQUID_SPAN * Math.min(1, PHYS.DRAG_LIQUID_DENS * Math.abs(a.dens - b.dens) / Math.max(a.dens, b.dens)) : 1; };
 const v1Rate = (id, medium) => { const e = ELEMENTS[id], keep = 1 - e.drag, ut = Math.min(PHYS.V_MAX, SIM_GRAVITY * Math.abs(e.grav) * keep / (1 - keep));
   return v1PaceRate(ut * v1DragFOf(e, ELEMENTS[medium])) * STEPS_PER_TICK * TICK_HZ; };
-// V2's block pass moves a cell at most PACE_A + PACE_B a tick (the column pass's share past it: not here)
+// V2's block pass alone moves a cell at most PACE_A + PACE_B a tick; the column pass's R1b moves the rest
 const CAP = (BLOCK_PACE.A + BLOCK_PACE.B) * TICK_HZ;
 const expect = (id, medium, dir, want, tol = 0.2) => {
-  const got = rate(id, medium, dir), target = Math.min(want, CAP);
+  const got = rate(id, medium, dir), target = want;
   assert(Math.abs(got / target - 1) < tol, `${ELEMENTS[id].key} through ${ELEMENTS[medium].key}: ${got.toFixed(1)} cells/s, want ${target.toFixed(1)} (V1 ${want.toFixed(1)})`);
+  if (want > CAP * 1.2) {
+    const blockOnly = rate(id, medium, dir, { trials: 3, column: false });
+    assert(Math.abs(blockOnly / CAP - 1) < tol, `${ELEMENTS[id].key}: the block pass alone ${blockOnly.toFixed(1)}, its reach ${CAP.toFixed(1)}`);
+  }
   return `${ELEMENTS[id].key} ${got.toFixed(1)} (V1 ${want.toFixed(1)})`;
 };
 const lines = [];
 // MV-2: sinking at V1's pace through a liquid (sand, uranium past the block pass's own reach)
 lines.push(expect(E.SAND, E.WATER, -1, v1Rate(E.SAND, E.WATER)));
 lines.push(expect(E.URANIUM, E.WATER, -1, v1Rate(E.URANIUM, E.WATER)));
+lines.push(expect(E.WATER, E.OIL, -1, v1Rate(E.WATER, E.OIL)));
+lines.push(expect(E.MERCURY, E.WATER, -1, v1Rate(E.MERCURY, E.WATER)));
 // MV-1: a lighter powder floats up through a liquid, at V1's measured rate
 lines.push(expect(E.SAWDUST, E.WATER, 1, V1_FLOAT_CELLS_S, 0.3));
 lines.push(expect(E.ASH, E.OIL, 1, V1_FLOAT_CELLS_S, 0.3));
 // MV-3: each gas at its own speed and sign
 lines.push(expect(E.HYDROGEN, E.EMPTY, 1, v1Rate(E.HYDROGEN, E.EMPTY)));
+lines.push(expect(E.STEAM, E.EMPTY, 1, v1Rate(E.STEAM, E.EMPTY), 0.25));
+lines.push(expect(E.MERCURY_VAPOR, E.EMPTY, -1, v1Rate(E.MERCURY_VAPOR, E.EMPTY), 0.25));
 lines.push(expect(E.CO2, E.EMPTY, -1, v1Rate(E.CO2, E.EMPTY), 0.3));
 lines.push(expect(E.PROPANE, E.EMPTY, -1, v1Rate(E.PROPANE, E.EMPTY), 0.3));
 lines.push(expect(E.SMOKE, E.EMPTY, 1, v1Rate(E.SMOKE, E.EMPTY), 0.3));
-console.log(`rates (cells/s, block pass): ${lines.join(', ')}`);
+console.log(`rates (cells/s, column R1b + block pass): ${lines.join(', ')}`);
 // MV-4: a gas keeps spreading sideways without end, and two gases mix
 {
   // (V1's spread of a lone CO2 cell in air, the tiles' CPU port: 0.91 cells² a tick on each axis)

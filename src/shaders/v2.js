@@ -690,9 +690,98 @@ fn main() {
 const POWDER_SHOCK_SLACK = 1 - 2 ** -16;
 const POWDER_SHOCK_ON = SHOCK_LANDINGS.filter(r => ELEMENTS[r.faller].kind === K.POWDER)
   .map(r => ({ ...r, speed: Math.fround(powderLandingSpeed(r.faller, r.cells) * POWDER_SHOCK_SLACK) }));
+// ---- R1b: V1's fast movers, past the block pass's reach. The block pass trades a pair at most once a paired tick
+// (BLOCK_PACE: A + B cells a tick at chance 1, ~34 cells/s); V1 moves a cell whose drift through its medium is
+// faster up to a cell a step (240 cells/s: uranium through water, hydrogen rising, fire and steam plumes, sand
+// in water at 77). The column pass moves such a cell the rest of V1's rate, a column at a time: sinkers bottom up
+// (a grain into a lighter liquid, a full liquid cell into a lighter full one, a gas into lighter gas or air), then
+// risers top down (a buoyant gas into anything V1's canMove lets it rise into). The cells it passes shift one
+// cell back, order kept, each with its bank, request and paint (the swaps' carry, shaders/move.js). Air rises by
+// its warmth in the air field and the block pass, not here.
+const colMoverWGSL = () => /* wgsl */ `
+${blockExchangeWGSL}
+const BLOCK_CAP: f32 = ${f(BLOCK_PACE.A + BLOCK_PACE.B)};
+const V1_AIR_DENS_SPAN: f32 = ${f(PHYS.AIR_DENS_SPAN)};
+const V1_AIR_DENS_LO: f32 = ${PHYS.AIR_DENS_LO};
+const V1_AIR_DENS_HI: f32 = ${PHYS.AIR_DENS_HI};
+// a gas's spawn temperature (°C), as the contact rows' ¼ K codes hold it (v2/contact.js contactDensity)
+const V1_SPAWN_C = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map(e => f(Math.round((e.temp + T_OFFSET) * 4) * 0.25 - T_OFFSET)).join(',')});
+fn colTemp(c: vec4u) -> f32 { return f32(cTq(c)) * 0.25 - T_OFFSET; }
+fn colAirDensity(t: f32) -> f32 { return 1.0 - clamp((t - P.ambient) / V1_AIR_DENS_SPAN, V1_AIR_DENS_LO, V1_AIR_DENS_HI); }
+// V1 common.js densityOf (the block pass's motionDensity: v2/contact.js contactDensity)
+fn colDensity(c: vec4u) -> f32 {
+  let k = clsOf(c);
+  var d = densOfE(cid(c));
+  if (k == C_AIR) { d = colAirDensity(colTemp(c)); }
+  if (k == C_GAS) { d = d * colAirDensity(colTemp(c)) / colAirDensity(V1_SPAWN_C[cid(c)]); }
+  return d;
+}
+fn colGasLike(k: u32) -> bool { return k == C_AIR || k == C_GAS; }
+// V1's share of steps mover m falls into n under it (0 where this pass doesn't move it)
+fn colSinkP(m: vec4u, n: vec4u) -> f32 {
+  let km = clsOf(m);
+  let kn = clsOf(n);
+  let g = v1Drift(cid(m), colTemp(m));
+  if (g <= 0.0 || cid(m) == cid(n)) { return 0.0; }
+  let dm = colDensity(m);
+  let dn = colDensity(n);
+  var p = 0.0;
+  if (km == C_POWDER && kn == C_LIQUID && dm > dn) { p = g * v1DragF(km, kn, dm, dn); }
+  if (km == C_LIQUID && kn == C_LIQUID && dm > dn && cFill(m) == FULLU && cFill(n) == FULLU) { p = g * v1DragF(km, kn, dm, dn); }
+  if (km == C_GAS && colGasLike(kn) && dm > dn - V1_GAS_TOL) { p = g; }
+  return min(p, V1_V_MAX);
+}
+// V1's share of steps a buoyant gas m rises into n over it (canMove up: within the gas tolerance, else any fluid
+// or grain of another density; dragF is 1 beside a gas)
+fn colRiseP(m: vec4u, n: vec4u) -> f32 {
+  let kn = clsOf(n);
+  let g = v1Drift(cid(m), colTemp(m));
+  if (clsOf(m) != C_GAS || g >= 0.0 || kn == C_SOLID || cid(m) == cid(n)) { return 0.0; }
+  let dm = colDensity(m);
+  let dn = colDensity(n);
+  if (colGasLike(kn) && !(dm < dn + V1_GAS_TOL)) { return 0.0; }
+  if (!colGasLike(kn) && dm == dn) { return 0.0; }
+  if (kn == C_LIQUID && cFill(n) != FULLU) { return 0.0; }
+  return min(-g, V1_V_MAX);
+}
+// the cells a tick past the block pass's reach at V1's share p (gravity.js v1PaceRate, LEGACY_STEPS_PER_TICK steps)
+fn colExcess(p: f32) -> f32 { return max(V1_STEPS * p / (2.0 - p) - BLOCK_CAP, 0.0); }
+// whole cells of an excess this tick: its integer part and its fraction's chance
+fn colCells(excess: f32, p: vec3i, salt: u32) -> i32 {
+  var rs = seed3(p, P.tick, salt);
+  return i32(floor(excess)) + select(0, 1, rnd(&rs) < fract(excess));
+}
+// The content of (x, fromY, z) moves to (x, toY, z); the cells between move one cell back toward it, order kept,
+// each with its bank, request and paint; a moved air or liquid cell's face fluxes stay where they were (zeroQ)
+fn colShift(x: i32, z: i32, fromY: i32, toY: i32) {
+  let step = select(-1, 1, toY > fromY);
+  let s0 = slotOf(vec3i(x, fromY, z));
+  let mover = loadMaterial(s0);
+  let moverEvents = events[s0];
+  var moverDeco = 0u;
+  if (P.deco != 0u) { moverDeco = decoOf(s0); }
+  var y = fromY;
+  for (var n = 0; n < NY && y != toY; n++) {
+    let a = slotOf(vec3i(x, y, z));
+    let b = slotOf(vec3i(x, y + step, z));
+    let next = loadMaterial(b);
+    storeMaterial(a, loadMaterial(a), Material(zeroQ(next.core), next.bank));
+    events[a] = events[b]; noteEvents(a, events[a]);
+    if (P.deco != 0u) { setDeco(a, select(decoOf(b), 0u, cid(next.core) == 0u)); }
+    markBusy(vec3i(x, y, z));
+    y += step;
+  }
+  let st = slotOf(vec3i(x, toY, z));
+  storeMaterial(st, loadMaterial(st), Material(zeroQ(mover.core), mover.bank));
+  events[st] = moverEvents; noteEvents(st, moverEvents);
+  if (P.deco != 0u) { setDeco(st, moverDeco); }
+  markBusy(vec3i(x, toY, z));
+}
+`;
 export const v2ColumnWGSL = (g) => /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact')}
 ${fallStepWGSL}
+${colMoverWGSL()}
 // the landing speed (m/s) past which a grain of faller sets off the charge it lands on (POWDER_SHOCK_ON); 0 never
 fn shockOnSpeed(faller: u32, charge: u32) -> f32 {
 ${POWDER_SHOCK_ON.map(r => `  if (faller == ${r.faller}u && charge == ${r.charge}u) { return ${r.speed}; }`).join('\n')}
@@ -775,6 +864,41 @@ ${MAIN} {
     runFalling = velocity != 0.0;
     runVelocity = velocity;
     runFrac = a;
+  }
+  // R1b sinkers, bottom up (colMoverWGSL): a brick all air or all one still liquid holds none
+  for (var y = 1; y < NY; y++) {
+    if ((y & 3) == 0) {
+      let code = atomicLoad(&act2[V2_SUMMARY + brickOfCell(vec3i(x, y, z))]) & 255u;
+      if (code == SUM_AIR || code == SUM_LIQUID) { y += 3; continue; }
+    }
+    let m = loadCell(vec3i(x, y, z));
+    let km = clsOf(m);
+    if (km != C_POWDER && km != C_LIQUID && km != C_GAS) { continue; }
+    let excess = colExcess(colSinkP(m, loadCell(vec3i(x, y - 1, z))));
+    if (excess <= 0.0) { continue; }
+    let n = colCells(excess, vec3i(x, y, z), 81u);
+    var to = y;
+    for (var j = 1; j <= n && to == y - j + 1 && y - j >= 0; j++) {
+      if (colSinkP(m, loadCell(vec3i(x, y - j, z))) > 0.0) { to = y - j; }
+    }
+    if (to != y) { colShift(x, z, y, to); }
+  }
+  // R1b risers, top down
+  for (var y = NY - 2; y >= 0; y--) {
+    if ((y & 3) == 3) {
+      let code = atomicLoad(&act2[V2_SUMMARY + brickOfCell(vec3i(x, y, z))]) & 255u;
+      if (code == SUM_AIR || code == SUM_LIQUID) { y -= 3; continue; }
+    }
+    let m = loadCell(vec3i(x, y, z));
+    if (clsOf(m) != C_GAS) { continue; }
+    let excess = colExcess(colRiseP(m, loadCell(vec3i(x, y + 1, z))));
+    if (excess <= 0.0) { continue; }
+    let n = colCells(excess, vec3i(x, y, z), 82u);
+    var to = y;
+    for (var j = 1; j <= n && to == y + j - 1 && y + j < NY; j++) {
+      if (colRiseP(m, loadCell(vec3i(x, y + j, z))) > 0.0) { to = y + j; }
+    }
+    if (to != y) { colShift(x, z, y, to); }
   }
 }
 `;

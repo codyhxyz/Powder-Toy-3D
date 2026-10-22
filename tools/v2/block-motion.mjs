@@ -27,3 +27,28 @@ export function motionSource(code) {
     .replace(/array<u32, 3>\(([^)]+)\)/g, '[$1]').replace(/array<f32, 3>\(([^)]+)\)/g, '[$1]')
     .replaceAll('pt + down*i32(dd)', 'add(pt,down.map(v=>v*dd))').replaceAll('rnd(&rs)', '(rs=pcg(rs), unit(rs))');
 }
+
+// ---- the column pass's fast movers (v2.js colMoverWGSL, R1b), executed from the emitted WGSL. `env` supplies the
+// grid: loadCell, loadMaterial, storeMaterial, slotOf, events, noteEvents, decoOf, setDeco, markBusy, zeroQ, cFill,
+// vec3i (objects {x, y, z}), NY and P (live).
+import { ELEMENTS } from '../../src/elements.js';
+const COLUMN_MOVER_FNS = ['v1Drift', 'v1DragF', 'colTemp', 'colAirDensity', 'colDensity', 'colGasLike', 'colSinkP', 'colRiseP', 'colExcess', 'colCells', 'colShift'];
+export function columnMoverHelpers(code, env) {
+  const rows = v2Rows(), T = 273.25;
+  const pcg = v => { const s = (Math.imul(v, 747796405) + 2891336453) >>> 0; const w = Math.imul((s >>> ((s >>> 28) + 4)) ^ s, 277803737) >>> 0; return ((w >>> 22) ^ w) >>> 0; };
+  const ctx = {
+    ...constants(code), C_AIR: 0, C_SOLID: 1, C_POWDER: 2, C_LIQUID: 3, C_GAS: 4, T_OFFSET: T, FULLU: 65536,
+    V1_SPAWN_C: ELEMENTS.map(e => f(Math.round((e.temp + T) * 4) * 0.25 - T)),
+    sel: (a, b, c) => (c ? b : a), clamp: (x, a, b) => Math.min(Math.max(x, a), b), U32: x => Math.floor(x) >>> 0, F32: f, I32: x => Math.trunc(x),
+    fract: x => x - Math.floor(x), pcg, unit: s => f(f(f(s >>> 8) * 256) + f(s & 255)) / 4294967296,
+    seed3: (p, tick, salt) => pcg((p.x + pcg((p.y + pcg((p.z + pcg((Math.imul(tick, 1664525) + salt) >>> 0)) >>> 0)) >>> 0)) >>> 0),
+    driftOf: id => f(rows[id].drift), densOfE: id => f(rows[id].dens), clsOf: c => rows[c[0] & 255].cls, cid: c => c[0] & 255,
+    cTq: c => (c[0] >>> 8) & 0xffff, Material: (core, bank) => ({ core, bank }),
+  };
+  Object.defineProperties(ctx, Object.getOwnPropertyDescriptors(env));
+  for (const name of COLUMN_MOVER_FNS) {
+    const { args, body } = wgslFunction(code, name);
+    ctx[name] = new Function('ctx', ...args, `with (ctx) { ${motionJS(body).replaceAll('rnd(&rs)', '(rs=pcg(rs), unit(rs))')} }`).bind(null, ctx);
+  }
+  return ctx;
+}

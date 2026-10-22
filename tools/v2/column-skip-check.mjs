@@ -14,6 +14,7 @@ import { v2ColumnWGSL, SUMMARY } from '../../src/shaders/v2.js';
 import { gridDims } from '../../src/shaders/common.js';
 import { makeMaterial } from '../../src/v2/layout.js';
 import { K } from '../../src/elements.js';
+import { columnMoverHelpers } from './block-motion.mjs';
 
 const word = value => new Uint32Array(new Float32Array([value]).buffer)[0];
 const vec = (...v) => { const a = Uint32Array.from(v); for (const [i, k] of ['x', 'y', 'z', 'w'].entries()) Object.defineProperty(a, k, { get: () => a[i] }); return a; };
@@ -30,7 +31,7 @@ function run(start, summaries, main = body) {
   const cells = start.map(c => vec(...c)), events = new Uint32Array(NY), busy = new Set();
   start.forEach((_, y) => { events[y] = y % 7 === 0 ? y : 0; });
   const act2 = [1, 0, ...summaries];
-  const env = { P: { gravity: GRAVITY_MS2, gravMode: 0, edge: 0 }, wg: 0, nwg: 0, li: 0, BS: 4, BX: 1, NY,
+  const env = { P: { gravity: GRAVITY_MS2, gravMode: 0, edge: 0, tick: 7, ambient: 20, deco: 0 }, wg: 0, nwg: 0, li: 0, BS: 4, BX: 1, NY,
     V2_COUNT: 0, CNT_USE_COLS: 0, V2_COLS: 1, act2, C_AIR: 0, C_GAS: 4, C_POWDER: 2,
     V2_SUMMARY: SUMMARY_AT, SUM_AIR: SUMMARY.AIR, SUM_LIQUID: SUMMARY.LIQUID, brickOfCell: p => p.y >> 2,
     atomicLoad: x => x, foldThread: () => 0, u32: x => x >>> 0, i32: Math.trunc, f32: Math.fround,
@@ -41,8 +42,13 @@ function run(start, summaries, main = body) {
     clsOf: c => ELEMENTS[c.x & 255].kind, markBusy: p => busy.add(p.y), storeCell: (p, c) => { cells[p.y] = vec(...c); },
     zeroQ: c => c, slotOf: p => p.y, events, noteEvents: () => {},
     loadMaterial: s => ({ core: cells[s], bank: 0 }), Material: (core, bank) => ({ core, bank }),
-    storeMaterial: (s, b, a) => { cells[s] = vec(...a.core); },
+    storeMaterial: (s, b, a) => { cells[s] = vec(...a.core); }, C_LIQUID: 3,
   };
+  // the column pass's fast movers (R1b), executed from the emitted WGSL on these cells (tools/v2/block-motion.mjs)
+  const movers = columnMoverHelpers(emitted, { P: env.P, NY, events, slotOf: env.slotOf, vec3i: env.vec3i, loadCell: env.loadCell,
+    loadMaterial: env.loadMaterial, storeMaterial: env.storeMaterial, noteEvents: () => {}, markBusy: env.markBusy, decoOf: () => 0, setDeco: () => {},
+    zeroQ: c => c, cFill: c => c[1] & 0xffffff });
+  for (const name of ['colExcess', 'colSinkP', 'colRiseP', 'colCells', 'colShift']) env[name] = movers[name];
   Function(...Object.keys(env), helpers + scalar(main))(...Object.values(env));
   return JSON.stringify([cells.map(c => Array.from(c)), Array.from(events), [...busy].sort((a, b) => a - b)]);
 }
