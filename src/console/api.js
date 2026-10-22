@@ -71,6 +71,8 @@ export function installBuiltins(host) {
   // V2's matter in flight (console/world.js flyingAt): a V1 flying cell is a cell, its index the cell's; a
   // V2 packet holds no cell, so it takes an index no cell has, the grid's cell count plus its pool slot
   // (stable while it flies). Its fields as a cell's (console/gpu.js flyingMatter), the air's pressure there.
+  // Intentional (decided under the user's delegation, 2026-10-22): that index, not its cell's key (which the
+  // grid's cell there owns); sim.parts() still visits it in V1's order, at its cell's key.
   const packetOf = (ctx, i) => {
     const [nx, ny, nz] = size(), n = nx * ny * nz;
     if (!Number.isInteger(i) || i < n || !w().readFlying(sync(ctx))) return null;
