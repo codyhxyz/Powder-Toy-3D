@@ -5,7 +5,7 @@ import { E } from '../../src/elements.js';
 import { gridLayout } from '../../src/sim.js';
 import { NativeDynamics } from '../../src/v2/dynamics.js';
 import { AIRBORNE_COLOURS } from '../../src/v2/airborne.js';
-import { PARTICLE_CAP, DT, CELL_M, AIR, packParticle, unpackParticle, ballistic, sweep,
+import { PARTICLE_CAP, DT, CELL_M, AIR, GRAVITY, packParticle, unpackParticle, ballistic, sweep,
   stableId, resolveDeposits, allocateSources, impact, blastPlan, exchangeScalar, airSource, airQuiet } from '../../src/v2/dynamics-reference.js';
 const close=(a,b,e=1e-9)=>assert.ok(Math.abs(a-b)<=e,`${a} != ${b}`);
 const matter=(id=E.SAND)=>({core:[id|(1173<<8)|0xaa000000,0xfedcba98,0x3f400000,0xcdefabcd].map(x=>x>>>0),bank:-123456789});
@@ -16,10 +16,11 @@ test('48B particle preserves every material word, signed bank and stable ID',()=
   assert.equal(stableId([-20,2,4],123,9),stableId([-20,2,4],123,9));
   assert.notEqual(stableId([-20,2,4],123,9),stableId([-20,2,4],124,9));
 });
-test('closed-form 2g ballistic range at 60Hz, no displacement cap',()=>{
-  let p=[0,0,0],v=[40,19.6,0];
+test('closed-form ballistic range at 60Hz under V1\'s pull (GRAVITY), no displacement cap',()=>{
+  // thrown up at GRAVITY·1 s it comes back down at that speed 2 s later, 2 s of its 40 m/s along
+  let p=[0,0,0],v=[40,GRAVITY,0];
   for(let i=0;i<120;i++) ({position:p,velocity:v}=ballistic(p,v));
-  close(p[0]*CELL_M,80,1e-10); close(p[1],0,1e-10); close(v[1],-19.6,1e-10);
+  close(p[0]*CELL_M,80,1e-10); close(p[1],0,1e-8); close(v[1],-GRAVITY,1e-10);
   assert.ok(ballistic([0,0,0],[360,0,0]).position[0]>1);
 });
 test('swept DDA hits one-cell wall at arbitrarily high speed, including negative axes',()=>{
@@ -302,7 +303,7 @@ test('native gravity/air/edge modes and exact-jets gate reach every dynamics dis
   const {owner,calls}=mockOwner();owner.sim.gravityMode=2;owner.sim.airMode=4;owner.sim.edgeMode=2;owner.sim._gravity=.05;owner.sim.ambientHeat=false;
   owner.jets={isReady:true};const d=new NativeDynamics(owner);await d.ready;d.advanceParticles(1);d.advanceAir(1);
   for(const c of calls.filter(c=>c.opts)) {
-    assert.equal(c.opts.params.gravity,39.2);assert.equal(c.opts.params.gravMode,2);assert.equal(c.opts.params.airMode,4);
+    assert.equal(c.opts.params.gravity,2*GRAVITY);assert.equal(c.opts.params.gravMode,2);assert.equal(c.opts.params.airMode,4);
     assert.equal(c.opts.params.edge,2);assert.equal(c.opts.params.ambientHeat,0);assert.equal(c.opts.params.nativeJets,1);
   }
   const {nativeDynamicsHead}=await import('../../src/shaders/v2.js');

@@ -10,7 +10,7 @@ import {AIRBORNE} from '../../src/v2/airborne.js';
 import {nativeDynamicsHead} from '../../src/shaders/v2.js';
 import {E,ELEMENTS} from '../../src/elements.js';
 import * as L from '../../src/v2/layout.js';
-import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall} from '../../src/v2/dynamics-reference.js';
+import {dynamicsRows,claimKey,CELL_M,DT,GRAVITY,SHOCK_THROW_MS,PACKET_SHOCK_LANDINGS,particleLandingSpeed,packetShock,v1ShockFall,SHOCK_FALL_CELLS} from '../../src/v2/dynamics-reference.js';
 import { importMinified } from './wgsl-grouping.mjs';
 const floatBits=v=>{const b=new ArrayBuffer(4);new Float32Array(b)[0]=v;return new Uint32Array(b)[0];};
 const g={nx:32,ny:32,nz:32,nbx:8,nby:8,nbz:8,nbricks:512,slots:32768,windowed:false},NONE=0xffffffff,S=Object.fromEntries(['clear','integrate','elect','impact','deposit','reactClaim','reactDust'].map(s=>[s,particlesWGSL(g,nativeDynamicsHead,s)]));
@@ -41,6 +41,8 @@ function syntax(s){for(const [a,b] of [
 ['particle.position - vec3f(P.origin)','sub(particle.position,vec3f(P.origin))'],
 ['any(local<vec3f(0))','local.some(v=>v<0)'],
 ['any(local>=vec3f(32.0,32.0,32.0))','local.some(v=>v>=32)'],
+['v + acceleration * D_DT - wind','sub(add(v,mul(acceleration,D_DT)),wind)'],
+['(after - v) / D_DT','mul(sub(after,v),1/D_DT)'],
 ['v - wind','sub(v,wind)'],
 ['wind + relative / (1.0 + drag * length(relative) * D_DT)','add(wind,mul(relative,1/(1+drag*length(relative)*D_DT)))'],
 ['local + (v * D_DT + 0.5 * acceleration * D_DT * D_DT) / D_CELL','add(local,mul(add(mul(v,D_DT),mul(acceleration,0.5*D_DT*D_DT)),1/D_CELL))'],
@@ -453,16 +455,17 @@ test('a hit sets off C-4 and nitroglycerin as V1\'s shock: the charge hit and th
   // for it at V2's throw map (V1: √(2·20/191) cells/step, at SHOCK_THROW_MS m/s each)
   const uOn=PACKET_SHOCK_LANDINGS.find(r=>r.faller===E.URANIUM&&r.charge===E.C4).speed;
   assert.ok(Math.abs(uOn-particleLandingSpeed(E.URANIUM,v1ShockFall(E.URANIUM,E.C4)*CELL_M))<1e-3);
-  assert.ok(posted(hit(L.makeMaterial(E.URANIUM),-(uOn+0.3),L.makeMaterial(E.C4))),'uranium landing past its fall');
-  assert.ok(quiet(hit(L.makeMaterial(E.URANIUM),-(uOn-0.3),L.makeMaterial(E.C4))),'uranium landing short of it');
+  // (the fixture's speed is before the tick's drag, which takes a few % of it at V1's terminal speeds)
+  assert.ok(posted(hit(L.makeMaterial(E.URANIUM),-uOn*1.1,L.makeMaterial(E.C4))),'uranium landing past its fall');
+  assert.ok(quiet(hit(L.makeMaterial(E.URANIUM),-uOn*0.9,L.makeMaterial(E.C4))),'uranium landing short of it');
   const uThrow=Math.sqrt(2*20/ELEMENTS[E.URANIUM].dens)*SHOCK_THROW_MS;
   assert.ok(posted(thrown(L.makeMaterial(E.URANIUM),uThrow*1.03,L.makeMaterial(E.C4))),'uranium thrown past V1\'s speed');
   assert.ok(quiet(thrown(L.makeMaterial(E.URANIUM),uThrow*0.97,L.makeMaterial(E.C4))),'uranium thrown under it');
   assert.ok(quiet(thrown(L.makeMaterial(E.URANIUM),uOn+0.3,L.makeMaterial(E.C4))),'a throw is no fall');
   // a liquid: mercury landing on C-4 past its fall sets it off (V1 does, as the column pass), water never
   const hgOn=PACKET_SHOCK_LANDINGS.find(r=>r.faller===E.MERCURY&&r.charge===E.C4).speed;
-  assert.ok(posted(hit(wet(L.FULL,E.MERCURY),-(hgOn+0.3),L.makeMaterial(E.C4))),'mercury landing past its fall');
-  assert.ok(quiet(hit(wet(L.FULL,E.MERCURY),-(hgOn-0.3),L.makeMaterial(E.C4))),'mercury short of it');
+  assert.ok(posted(hit(wet(L.FULL,E.MERCURY),-hgOn*1.1,L.makeMaterial(E.C4))),'mercury landing past its fall');
+  assert.ok(quiet(hit(wet(L.FULL,E.MERCURY),-hgOn*0.9,L.makeMaterial(E.C4))),'mercury short of it');
   assert.ok(quiet(hit(wet(),-60,L.makeMaterial(E.C4))),'water never');
   // nor does C-4 hit C-4 (its own element)
   assert.ok(quiet(hit(L.makeMaterial(E.C4),-60,L.makeMaterial(E.C4))));
@@ -470,7 +473,8 @@ test('a hit sets off C-4 and nitroglycerin as V1\'s shock: the charge hit and th
   // V1's cap (½·μ·V_MAX² = 3.99 against 3.9)
   assert.ok(quiet(hit(L.makeMaterial(E.SAND),-60,wet(L.FULL,E.NITRO))),'sand landing on nitroglycerin');
   const n=wet(L.FULL,E.NITRO);
-  f=thrown(L.makeMaterial(E.SAND),SHOCK_THROW_MS*1.01,n);assert.equal(f.ctx.control[S0+1],(f.ctx.slotOf(beside)|DET)>>>0,'sand thrown at V1\'s cap');
+  // (thrown past it: sand's drag, V1's terminal speed of 43 m/s, takes a fifth of a 72 m/s throw in a tick)
+  f=thrown(L.makeMaterial(E.SAND),SHOCK_THROW_MS*1.3,n);assert.equal(f.ctx.control[S0+1],(f.ctx.slotOf(beside)|DET)>>>0,'sand thrown at V1\'s cap');
   assert.ok(quiet(thrown(L.makeMaterial(E.SAND),SHOCK_THROW_MS*0.97,n)),'sand thrown under it');
   // the charge hitting: a C-4 lump (V1 never moves a solid) thrown at metal past ½·dens·v² = 20 goes off,
   // lands and its detonation is posted there; dropped onto stone it never can (½·26·V_MAX² < 20)
@@ -479,26 +483,30 @@ test('a hit sets off C-4 and nitroglycerin as V1\'s shock: the charge hit and th
   assert.ok(quiet(thrown(L.makeMaterial(E.C4),Math.sqrt(2*20/1000)*SHOCK_THROW_MS*0.95,L.makeMaterial(E.WALL))));
   f=hit(L.makeMaterial(E.C4),-60,L.makeMaterial(E.STONE));assert.equal(f.ctx.control[A],0);assert.equal(f.ctx.control[S0],0);
   // nitroglycerin landing on metal from a fall's speed goes off (V1's own fall, dynamics-reference.js
-  // SHOCK_FALL_CELLS: 9 cells, a packet's ~10.3 m/s after it); from a gentler one it rests
-  f=hit(wet(L.FULL,E.NITRO),-12,L.makeMaterial(E.METAL));
+  // SHOCK_FALL_CELLS: 9 cells, nOn the packet's speed after it); from a gentler one it rests
+  const nOn=particleLandingSpeed(E.NITRO,SHOCK_FALL_CELLS[E.NITRO]*CELL_M);
+  f=hit(wet(L.FULL,E.NITRO),-nOn*1.15,L.makeMaterial(E.METAL));
   assert.equal(L.cid(at(f,above).core),E.NITRO);assert.equal(f.ctx.control[A],(f.ctx.slotOf(above)|DET)>>>0);
-  f=hit(wet(L.FULL,E.NITRO),-9,L.makeMaterial(E.METAL));
+  f=hit(wet(L.FULL,E.NITRO),-nOn*0.85,L.makeMaterial(E.METAL));
   assert.equal(L.cid(at(f,above).core),E.NITRO);assert.equal(f.ctx.control[A],0);assert.equal(f.ctx.control[S0],0);
-  // stone is a powder in V1 (loose matter): the reduced mass, so the same 12 m/s landing on it does not; 16 does
-  f=hit(wet(L.FULL,E.NITRO),-12,L.makeMaterial(E.STONE));assert.equal(f.ctx.control[A],0);
-  f=hit(wet(L.FULL,E.NITRO),-16,L.makeMaterial(E.STONE));assert.equal(f.ctx.control[A],(f.ctx.slotOf(above)|DET)>>>0);
+  // stone is a powder in V1 (loose matter): the reduced mass, so the same landing on it does not; one past the
+  // speed whose V1 speed carries the shock for the reduced mass (common.js hitKE) does
+  const mu=ELEMENTS[E.NITRO].dens*ELEMENTS[E.STONE].dens/(ELEMENTS[E.NITRO].dens+ELEMENTS[E.STONE].dens);
+  const stoneOn=Math.sqrt(2*ELEMENTS[E.NITRO].blast.shock/mu)/dynamicsRows[E.NITRO].shockFall;
+  f=hit(wet(L.FULL,E.NITRO),-nOn*1.15,L.makeMaterial(E.STONE));assert.equal(f.ctx.control[A],0);
+  f=hit(wet(L.FULL,E.NITRO),-stoneOn*1.15,L.makeMaterial(E.STONE));assert.equal(f.ctx.control[A],(f.ctx.slotOf(above)|DET)>>>0);
   // onto water no landing ever carries it (V1: ½·6.1·V_MAX² = 3.07, under 3.9)
   f=hit(wet(L.FULL,E.NITRO),-80,wet());assert.equal(f.ctx.control[SET],0);
   // into its own pool it never does
-  f=hit(wet(L.FULL/4,E.NITRO),-25,wet(L.FULL,E.NITRO));assert.equal(f.ctx.control[A],0);assert.equal(f.ctx.control[SET],0);
+  f=hit(wet(L.FULL/4,E.NITRO),-nOn*1.3,wet(L.FULL,E.NITRO));assert.equal(f.ctx.control[A],0);assert.equal(f.ctx.control[SET],0);
   // onto the box's floor (its solid edge, a wall): the same landing goes off there too, and a gentle one rests
-  for(const [v,fired] of [[-12,true],[-9,false]]) {
+  for(const [v,fired] of [[-nOn*1.15,true],[-nOn*0.85,false]]) {
     const w=fixture({material:wet(L.FULL,E.NITRO),position:[18.8,0.5,15.5],velocity:[0,v,0]});w.tick();
     assert.equal(w.particles[0].id,0,'landed on the floor');assert.equal(L.cid(at(w,start).core),E.NITRO);
     assert.equal(w.ctx.control[A],fired?(w.ctx.slotOf(start)|DET)>>>0:0,`${-v} m/s onto the floor`);
   }
   // a set-off charge that cannot land yet stays set off: the mark is its id, a later packet in the slot is not
-  f=fixture({material:wet(L.FULL,E.NITRO),position:[18.8,1.1,15.5],velocity:[0,-16,0],held:3});
+  f=fixture({material:wet(L.FULL,E.NITRO),position:[18.8,1.1,15.5],velocity:[0,-nOn*1.3,0],held:3});
   f.set(start,L.makeMaterial(E.METAL));f.tick();
   assert.notEqual(f.particles[0].id,0,'held: no deposit');assert.equal(f.ctx.control[SET],f.particles[0].id);
 });
@@ -529,8 +537,8 @@ test('the emitted shock decides every pair as its CPU twin and as V1\'s rule at 
       f.set(landing?[18,0,15]:[18,0,15],tm);f.tick();
       const want=packetShock(mover,target,u,landing);
       const got={target:f.ctx.control[shockPostBase(g)+1]!==0,mover:f.ctx.control[setOffBase(g)]!==0||f.ctx.control[airborneBase(g)+1]!==0};
-      // (the velocity at the hit is the tick's start speed plus the pull's share: within a few percent)
-      const near=packetShock(mover,target,u*1.05+0.5,landing),far=packetShock(mover,target,Math.max(0,u*0.95-0.5),landing);
+      // (the velocity at the hit is the tick's start speed, its drag's and the pull's shares: within several percent)
+      const near=packetShock(mover,target,u*1.05+0.5,landing),far=packetShock(mover,target,Math.max(0,u*0.9-0.5),landing);
       for(const k of ['target','mover']) if(near[k]===far[k]) assert.equal(got[k],want[k],`${ELEMENTS[mover].key} on ${ELEMENTS[target].key} at ${u} ${landing?'landing':'thrown'}: ${k}`);
     }
   }

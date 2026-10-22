@@ -16,10 +16,13 @@ export function nativeFlight(id, [vx, vy], seconds) {
   const row = dynamicsRows[id];
   if (!row || ![K.POWDER, K.LIQUID, K.GAS].includes(row.kind)) return null;
   let position = [0, 0, 0], velocity = [vx * CELL_M, vy * CELL_M, 0];
+  const vt = row.terminal, drag = GRAVITY / (vt * (vt + GRAVITY * DT)), g = row.kind === K.GAS ? 0 : GRAVITY;
   for (let i = 0; i < Math.round(seconds / DT); i++) {
-    // particles.js integrate: implicit quadratic drag in still air, then ballistic motion.
-    const divisor = 1 + GRAVITY / row.terminal ** 2 * Math.hypot(...velocity) * DT;
-    ({ position, velocity } = ballistic(position, velocity.map(v => v / divisor), DT, row.kind === K.GAS ? 0 : GRAVITY));
+    // particles.js integrate in still air: the tick's gravity, then implicit quadratic drag to the element's
+    // terminal speed; the velocity goes linearly to that across the tick
+    const rel = velocity.map((v, a) => v - (a === 1 ? g * DT : 0)), after = rel.map(v => v / (1 + drag * Math.hypot(...rel) * DT));
+    position = position.map((p, a) => p + 0.5 * (velocity[a] + after[a]) * DT / CELL_M);
+    velocity = after;
   }
   return position.slice(0, 2);
 }

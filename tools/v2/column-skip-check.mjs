@@ -7,8 +7,9 @@
 // the floor behind, must break it.
 import assert from 'node:assert/strict';
 import { E, ELEMENTS } from '../../src/elements.js';
-import { fallTerminal, setFall } from '../../src/v2/fall.js';
-import { fallWGSL } from '../../src/shaders/v2/fall.js';
+import { fallTerminal, setFall, FALL_KEEP } from '../../src/v2/fall.js';
+import { GRAVITY_MS2 } from '../../src/v2/gravity.js';
+import { fallWGSL, fallStepWGSL } from '../../src/shaders/v2/fall.js';
 import { v2ColumnWGSL, SUMMARY } from '../../src/shaders/v2.js';
 import { gridDims } from '../../src/shaders/common.js';
 import { makeMaterial } from '../../src/v2/layout.js';
@@ -17,24 +18,24 @@ import { K } from '../../src/elements.js';
 const word = value => new Uint32Array(new Float32Array([value]).buffer)[0];
 const vec = (...v) => { const a = Uint32Array.from(v); for (const [i, k] of ['x', 'y', 'z', 'w'].entries()) Object.defineProperty(a, k, { get: () => a[i] }); return a; };
 function scalar(source) {
-  return source.replace(/const FALL_(?:TERMINAL|POWDER) = array<[^;]+;/g, '')
+  return source.replace(/const FALL_(?:TERMINAL|POWDER|KEEP) = array<[^;]+;/g, '')
     .replace(/fn (\w+)\(([^)]*)\) -> \w+\s*\{/g, (_, n, args) => `function ${n}(${args.replace(/: \w+/g, '')}) {`)
     .replace(/bitcast<f32>/g, 'fromBits').replace(/bitcast<u32>/g, 'toBits')
     .replace(/\b(0x[\da-f]+|\d+)u\b/gi, '$1').replace(/>>/g, '>>>').replace(/&act2/g, 'act2');
 }
-const helpers = scalar(fallWGSL), g = gridDims({ nx: 16, ny: 128, nz: 8 });
+const helpers = scalar(fallWGSL + fallStepWGSL), g = gridDims({ nx: 16, ny: 128, nz: 8 });
 const emitted = v2ColumnWGSL(g), body = emitted.slice(emitted.lastIndexOf('  if (P.gravMode == 2u'), emitted.lastIndexOf('}'));
 const NY = 128, SUMMARY_AT = 2;
 function run(start, summaries, main = body) {
   const cells = start.map(c => vec(...c)), events = new Uint32Array(NY), busy = new Set();
   start.forEach((_, y) => { events[y] = y % 7 === 0 ? y : 0; });
   const act2 = [1, 0, ...summaries];
-  const env = { P: { gravity: 19.6, gravMode: 0, edge: 0 }, wg: 0, nwg: 0, li: 0, BS: 4, BX: 1, NY,
+  const env = { P: { gravity: GRAVITY_MS2, gravMode: 0, edge: 0 }, wg: 0, nwg: 0, li: 0, BS: 4, BX: 1, NY,
     V2_COUNT: 0, CNT_USE_COLS: 0, V2_COLS: 1, act2, C_AIR: 0, C_GAS: 4, C_POWDER: 2,
     V2_SUMMARY: SUMMARY_AT, SUM_AIR: SUMMARY.AIR, SUM_LIQUID: SUMMARY.LIQUID, brickOfCell: p => p.y >> 2,
     atomicLoad: x => x, foldThread: () => 0, u32: x => x >>> 0, i32: Math.trunc, f32: Math.fround,
     min: Math.min, floor: Math.floor, select: (a, b, c) => c ? b : a,
-    FALL_TERMINAL: ELEMENTS.map(e => fallTerminal(e.id)), FALL_POWDER: ELEMENTS.map(e => e.kind === K.POWDER),
+    FALL_TERMINAL: ELEMENTS.map(e => fallTerminal(e.id)), FALL_POWDER: ELEMENTS.map(e => e.kind === K.POWDER), FALL_KEEP, vec2f: (x, y) => ({ x, y }),
     fromBits: x => new Float32Array(new Uint32Array([x]).buffer)[0], toBits: word,
     vec4u: vec, vec3i: (x, y, z) => ({ x, y, z }), loadCell: p => cells[p.y],
     clsOf: c => ELEMENTS[c.x & 255].kind, markBusy: p => busy.add(p.y), storeCell: (p, c) => { cells[p.y] = vec(...c); },

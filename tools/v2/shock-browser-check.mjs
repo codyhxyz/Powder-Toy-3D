@@ -1,8 +1,8 @@
 // GPU: V1's shock under V2 on what only the GPU runs, through the integrated native engine on the outcome
 // bench's bare simulation (tools/outcomes/engine-v2.js: src/v2/physics.js with its dynamics, no app). Every
 // scene is a fresh box (a scene's heat and fire never reach the next), and each is judged by its outcome only
-// (what is left once both engines have long landed), never by when: V1 falls about 6× faster in game time
-// (SIM_GRAVITY at 240 steps/s, ~430 m/s², against V2's GRAVITY), a separate design question.
+// (what is left once both engines have long landed), never by when (V2 now falls as V1 does: v2/gravity.js,
+// tools/v2/gravity-check.mjs and shock-check.mjs time it against V1's fall).
 // Nitroglycerin (V1's fall law, dynamics-reference.js v1LiquidArrival: a lone cell from 9 cells at phase 0, its
 // start row even, and 10 at phase 1; a stack by its top's fall from 9; shaders/v2/columns.js colShockLand):
 // poured gently, dropped 8 cells, from 9 at phase 1, a stack whose top falls 8: all rest; a slab from 9 at phase

@@ -2,8 +2,10 @@
 import assert from 'node:assert/strict';
 import { E, ELEMENTS, K } from '../../src/elements.js';
 import { CELL_M } from '../../src/scale.js';
-import { FALL_Q, FALL_QUANTIZATION_BOUND, fallTerminal, fallVelocity, fallFraction, setFall, stepFall } from '../../src/v2/fall.js';
-import { fallWGSL } from '../../src/shaders/v2/fall.js';
+import { FALL_Q, FALL_QUANTIZATION_BOUND, FALL_KEEP, LEGACY_FALL_GRAVITY, fallTerminal, fallVelocity, fallFraction, setFall, stepFall } from '../../src/v2/fall.js';
+import { GRAVITY_MS2 } from '../../src/v2/gravity.js';
+import { SIM_GRAVITY, PHYS } from '../../src/physics.js';
+import { fallWGSL, fallStepWGSL } from '../../src/shaders/v2/fall.js';
 import { v2ColumnWGSL, v2BlockWGSL, nativeDynamicsHead } from '../../src/shaders/v2.js';
 import { blastsWGSL } from '../../src/shaders/v2/blasts.js';
 import { particlesWGSL } from '../../src/shaders/v2/particles.js';
@@ -18,12 +20,12 @@ const word = value => new Uint32Array(new Float32Array([value]).buffer)[0];
 const vec = (...v) => { const a=Uint32Array.from(v); for(const [i,k] of ['x','y','z','w'].entries()) Object.defineProperty(a,k,{get:()=>a[i]}); return a; };
 // Restricted syntax adapter, not an independently rewritten physics model.
 function scalar(source) {
-  return source.replace(/const FALL_(?:TERMINAL|POWDER) = array<[^;]+;/g,'')
+  return source.replace(/const FALL_(?:TERMINAL|POWDER|KEEP) = array<[^;]+;/g,'')
     .replace(/fn (\w+)\(([^)]*)\) -> \w+\s*\{/g,(_,n,args)=>`function ${n}(${args.replace(/: \w+/g,'')}) {`)
     .replace(/bitcast<f32>/g,'fromBits').replace(/bitcast<u32>/g,'toBits')
     .replace(/\b(0x[\da-f]+|\d+)u\b/gi,'$1').replace(/>>/g,'>>>').replace(/&act2/g,'act2');
 }
-const helpers=scalar(fallWGSL);
+const helpers=scalar(fallWGSL+fallStepWGSL);
 const g=gridDims({nx:16,ny:128,nz:8});
 const emitted=v2ColumnWGSL(g);
 const main=emitted.slice(emitted.lastIndexOf('  if (P.gravMode == 2u'),emitted.lastIndexOf('}'));
@@ -35,7 +37,8 @@ function column(core, gravity, gravMode=0, obstacle=null) {
     V2_COUNT:0,CNT_USE_COLS:0,V2_COLS:1,act2:[1,0], C_AIR:0,C_GAS:4,C_POWDER:2,
     atomicLoad:x=>x,foldThread:()=>0,u32:x=>x>>>0,i32:Math.trunc,f32:Math.fround,
     min:Math.min,floor:Math.floor,select:(a,b,c)=>c?b:a,
-    FALL_TERMINAL:ELEMENTS.map(e=>fallTerminal(e.id)),FALL_POWDER:ELEMENTS.map(e=>e.kind===K.POWDER),
+    FALL_TERMINAL:ELEMENTS.map(e=>fallTerminal(e.id)),FALL_POWDER:ELEMENTS.map(e=>e.kind===K.POWDER),FALL_KEEP,
+    vec2f:(x,y)=>({x,y}),
     fromBits:x=>new Float32Array(new Uint32Array([x]).buffer)[0],toBits:word,
     vec4u:vec,vec3i:(x,y,z)=>({x,y,z}),loadCell:p=>cells[p.y],
     clsOf:c=>ELEMENTS[c.x&255].kind,markBusy:()=>{},storeCell:(p,c)=>{cells[p.y]=vec(...c);},
@@ -49,36 +52,55 @@ function column(core, gravity, gravMode=0, obstacle=null) {
   return {core:cells[y],cells:100-y};
 }
 let legacy=makeMaterial(E.SAND).core; legacy[0]|=10<<24;legacy[2]=word(0.125);
-close(fallVelocity(legacy),10*19.6/60,1e-14);
-let seed=setFall(legacy,10*19.6/60,0.125);
-for (const [gravity,mode,expected] of [[39.2,0,3.92],[9.8,0,3.43],[19.6,1,10*19.6/60],[0,0,10*19.6/60]]) {
-  const result=column(seed,gravity,mode);close(fallVelocity(result.core),expected);
+// legacy-format cells (an age) were saved under R1's 2 g: they decode at that pull, once
+close(fallVelocity(legacy),10*LEGACY_FALL_GRAVITY/60,1e-14);
+// V1's grain law, independently in f64 (react.js forces, move.js vertical): four V1 steps a tick, each moving the
+// grain u/(2-u) of its speed u (cells/step; the Margolus pacing), then gravity (SIM_GRAVITY cells/step² at V1's pull,
+// P.gravity's share of it) and V1's drag, to V_MAX
+function v1Grain(velocity, fraction, gravity, id=E.SAND) {
+  const keep=1-ELEMENTS[id].drag, g=SIM_GRAVITY*gravity/GRAVITY_MS2;
+  let u=velocity/72, d=fraction;
+  for(let k=0;k<4;k++) { const p=Math.min(u,1); d+=p/(2-p); u=Math.min((u+g)*keep,1); }
+  if (g===0 && u<PHYS.REST_V) u=0;
+  return { velocity:u*72, distance:d };
+}
+let seed=setFall(legacy,10*LEGACY_FALL_GRAVITY/60,0.125);
+for (const [gravity,mode] of [[2*GRAVITY_MS2,0],[GRAVITY_MS2/2,0],[GRAVITY_MS2,1],[0,0]]) {
+  const result=column(seed,gravity,mode), law=v1Grain(fallVelocity(seed),fallFraction(seed),mode===1?0:gravity);
+  close(fallVelocity(result.core),law.velocity,1e-4);
+  assert.equal(result.cells,Math.floor(law.distance));
   assert.notEqual(fallVelocity(result.core),7.1866666667);
-  const cpu=stepFall(seed,mode===1?0:gravity);close(fallVelocity(cpu.core),fallVelocity(result.core));
+  // (the executed WGSL runs in f64, the twin op for op in f32: a few f32 ulps of a speed apart)
+  const cpu=stepFall(seed,mode===1?0:gravity);close(fallVelocity(cpu.core),fallVelocity(result.core),2e-5);
   close(fallFraction(cpu.core),fallFraction(result.core),FALL_QUANTIZATION_BOUND);assert.equal(cpu.cells,result.cells);
   let current=result.core;
   for(let n=0;n<20;n++) {
     const next=column(current,gravity,mode), expectedStep=stepFall(current,mode===1?0:gravity);
-    close(fallVelocity(next.core),fallVelocity(expectedStep.core));
+    close(fallVelocity(next.core),fallVelocity(expectedStep.core),2e-5);
     close(fallFraction(next.core),fallFraction(expectedStep.core),FALL_QUANTIZATION_BOUND);
     assert.equal(next.cells,expectedStep.cells);
     current=next.core;
   }
 }
+// without a pull drag stills a moving grain (V1's), and a still one stays still: nothing to fall
+assert.equal(fallVelocity(stepFall(setFall(seed,0,0),0).core),0);
+let coast=setFall(seed,10,0); for(let n=0;n<400;n++) coast=stepFall(coast,0).core; assert.equal(fallVelocity(coast),0);
 // Off-gravity stationary powders are barriers, not transparent column holes.
 const stopped=column(setFall(seed,12,0.8),0,1,makeMaterial(E.SNOW).core);
 assert.equal(stopped.cells,0);assert.equal(fallVelocity(stopped.core),0);assert.equal(fallFraction(stopped.core),0);
 // Execute legacy decode through the actual branch, then change gravity.
-const migrated=column(legacy,19.6).core;assert.ok(migrated[2]&0x80000000);
-close(fallVelocity(column(migrated,39.2).core),12*19.6/60+19.6/60);
-// Whole fall distance is bounded by explicit Q15 truncation plus f32 error.
-let core=makeMaterial(E.SAND).core, distance=0,exact=0,v=0;
+const migrated=column(legacy,GRAVITY_MS2).core;assert.ok(migrated[2]&0x80000000);
+close(fallVelocity(column(migrated,2*GRAVITY_MS2).core),v1Grain(fallVelocity(migrated),0,2*GRAVITY_MS2).velocity,1e-4);
+// Whole fall distance is bounded by explicit Q15 truncation plus f32 error, against V1's law in f64.
+let core=makeMaterial(E.SAND).core, distance=0,exact={velocity:0,distance:0};
 for(let n=1;n<=600;n++) {
-  const next=stepFall(core,19.6);core=next.core;distance+=next.cells;
-  v=Math.min(v+19.6/60,12);exact+=v/(CELL_M*60);
-  const bound=n*FALL_QUANTIZATION_BOUND+0.0001;
-  close(distance+fallFraction(core),exact,bound);
+  const next=stepFall(core,GRAVITY_MS2);core=next.core;distance+=next.cells;
+  const law=v1Grain(exact.velocity,exact.distance,GRAVITY_MS2);exact={velocity:law.velocity,distance:law.distance};
+  const bound=n*FALL_QUANTIZATION_BOUND+0.0001*n;
+  close(distance+fallFraction(core),exact.distance,bound);
 }
+// its terminal speed is V1's: sand's drag balances its pull at 0.6 cells/step (43.2 m/s); scrap, at V_MAX
+close(fallVelocity(core),fallTerminal(E.SAND),1e-3);close(fallTerminal(E.SAND),0.6*72,1e-9);close(fallTerminal(E.SCRAP),72,1e-9);
 assert.equal(FALL_QUANTIZATION_BOUND,1/FALL_Q);
 // Every packed fraction bit, plus burning/ctype/fuel/seed/device/spark lanes.
 for(const id of [E.SAND,E.SAWDUST,E.SCRAP]) for(const q of [0,1,255,256,8191,16384,32767]) {
@@ -96,7 +118,7 @@ for(const id of [E.SAND,E.SAWDUST,E.SCRAP]) for(const q of [0,1,255,256,8191,163
 }
 const rest=setFall(seed,0,0);assert.equal(rest[2],0x80000000);assert.equal(fallVelocity(rest),0);
 // Save and streaming transports retain both generations byte-exact, even custom g.
-const custom=stepFall(seed,7.123).core;
+const custom=stepFall(seed,7.123*GRAVITY_MS2/19.6).core;
 const dims=[16,8,8],lengths=stateLengths(dims,true);
 const state={version:2,dims,tick:12,frame:12,paints:0,acc:0,certified:false,writtenSinceTick:true,mode:'v2',energyLedger:true,
   cells:new Uint32Array(lengths.cells),activity:new Uint32Array(lengths.activity),args:new Uint32Array(lengths.args),aux:new Uint32Array(lengths.aux)};
@@ -125,4 +147,5 @@ assert.match(blastsWGSL(g,nativeDynamicsHead,'damagePlan'),/incoming=vec3f\(0,-f
 assert.match(blastsWGSL(g,nativeDynamicsHead,'couplePlan'),/fallVelocity\(m.core\)>0.0/);
 assert.match(particlesWGSL(g,nativeDynamicsHead,'deposit'),/setFall\(after.core,0.0,0.0\)/);
 assert.doesNotMatch(main,/cAge|G_TICK/);
+assert.match(main,/let fall = fallStep\(c, gravity\);/);
 console.log('Native fall: generated R1 double/half/off/zero inertia, legacy migration, 600-tick Q15 bound, contact metadata, save/stream and malformed state passed; CPU only');

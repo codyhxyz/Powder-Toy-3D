@@ -18,6 +18,7 @@
 import { newTestPage } from '../browser.mjs';
 import { toGrid, nativeTally, nativeFall, nativeFlight } from './native-grid.js';
 import { stepClock, SetupError } from './engine.js';
+import { GRAVITY_MS2 } from '../../src/v2/gravity.js';
 
 // A requested engine is not proof of the engine that actually stepped (worlds currently fall back).
 export function appPhysicsClock({ expectedPhysics, physics, stepsPerSecond, steps }) {
@@ -88,7 +89,7 @@ export function createEngine(browser, { base, query = '', errors = [], expectedP
         velocity: false,
         velocityDetails: meta.physics.active ? 'No complete cell velocities: partial SI particles, powder fall and air vectors do not establish resident-liquid kinetic energy' : 'Legacy app read() is not offered',
         pressure: meta.physics.active, burning: meta.physics.active, airCell: meta.physics.active ? 4 : null,
-        gravity: meta.physics.active ? 19.6 : NaN,
+        gravity: meta.physics.active ? GRAVITY_MS2 : NaN,
       });
     },
     box() { throw new Error('app: the scene is the game\'s own (no box writes)'); },

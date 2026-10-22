@@ -6,6 +6,7 @@ import { PHYS, SIM_GRAVITY, NOMINAL_STEP_RATE } from '../physics.js';
 import { contactVacuum, specialExplosion } from './contact.js';
 import { impactFoam } from './foam.js';
 import { PACE } from '../shaders/move.js';
+import { GRAVITY_MS2, TERMINAL_MS, v1TerminalMS } from './gravity.js';
 import { energyOf, withEnergy, energyFits, makeMaterial, cTq, withPayload, payloadOf, share, packetOwnedEnergy, withPacketEnergy, packetEnergyFits } from './layout.js';
 import { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy } from './pressure.js';
 export { AIR, BLAST_SCALE, GUNPOWDER_ENERGY_J, GUNPOWDER_PRESSURE, LEGACY_PRESSURE_PA, legacyPressureToPa, specialBlastEnergy };
@@ -13,7 +14,8 @@ export { CELL_M };
 export const PARTICLE_CAP = 65536;
 export const PARTICLE_BYTES = 48;
 export const DT = 1 / 60;
-export const GRAVITY = 19.6; // TF2's ~2 g, docs/v2.md §5.1.
+// the reference pull, V1's (v2/gravity.js GRAVITY_MS2; user decision 2026-10-21: V2 falls as V1 does)
+export const GRAVITY = GRAVITY_MS2;
 export const singularityVacuumPa = core => legacyPressureToPa(contactVacuum(core));
 export const EVENT = Object.freeze({ DETONATE: 1, GAS: 2, NEUTRON: 4 });
 export const PHOTON_TAG = 254;
@@ -48,7 +50,9 @@ export const dynamicsRows = ELEMENTS.map(e => ({
   // V1 react.js: an explosive goes off under more than blast.crushP air pressure (Pa here).
   crush: e.blast?.crushP ? e.blast.crushP * LEGACY_PRESSURE_PA : 0,
   crushPhase: crushPhaseOf(e),
-  terminal: ({ ASH: 3, SNOW: 3, SAWDUST: 4, DUST: 3 })[e.key] ?? 55,
+  // a packet's terminal speed (m/s), V1's (react.js forces): its drag's balance against its pull, to V_MAX (a liquid
+  // in free fall feels no drag: V_MAX); a cell with no pull (GRAV 0) still has V1's V_MAX
+  terminal: (e.kind === K.LIQUID ? TERMINAL_MS : v1TerminalMS(e)) || TERMINAL_MS,
   lift: ({ ASH: 1, DUST: 1, SNOW: 2, SAWDUST: 2 })[e.key] ?? 12,
   energy: e.key==='DUST' ? specialBlastEnergy(PHYS.DUST_P) : e.blast ? Math.max(e.dens * 100 * CELL_M ** 3, 0.001) * (SPECIFIC_J[e.key] ?? 3e6) * BLAST_SCALE : 0,
   product: e.key==='DUST' ? E.FIRE : e.key==='SINGULARITY' ? E.FIRE : e.blast ? E[e.blast.into ?? 'FIRE'] : 0,
@@ -60,10 +64,17 @@ export const dynamicsRows = ELEMENTS.map(e => ({
  * the particle lane's own step (particles.js integrate: implicit quadratic drag toward the element's
  * terminal speed, then the tick's gravity), stepped as V1's fallKE steps V1's (elements.js fallKE).
  */
+// A packet's tick along the pull in still air (particles.js integrate): the tick's gravity, then implicit quadratic
+// drag whose fixed point is the element's terminal speed; the velocity goes linearly from v to the result across
+// the tick. Returns its speed after (m/s, downward) and the metres it fell.
+export function packetStep(id, v, gravity = GRAVITY) {
+  const vt = dynamicsRows[id].terminal, drag = GRAVITY / (vt * (vt + GRAVITY * DT)), rel = v + gravity * DT;
+  const after = rel / (1 + drag * Math.abs(rel) * DT);
+  return { v: after, fell: 0.5 * (v + after) * DT };
+}
 export function particleFallSpeed(id, h) {
-  const drag = GRAVITY / dynamicsRows[id].terminal ** 2;
   let v = 0, y = 0;
-  while (y < h) { v = v / (1 + drag * v * DT); y += v * DT + 0.5 * GRAVITY * DT * DT; v += GRAVITY * DT; }
+  while (y < h) { const s = packetStep(id, v); y += s.fell; v = s.v; }
   return v;
 }
 // V1's shock (elements.js blast.shock: react.js sets an explosive off under a hit of at least that
@@ -246,18 +257,16 @@ export const SHOCK_LANDINGS = Object.freeze(ELEMENTS.filter(k => k.blast?.shock)
  * both laws (V1's and this), so these speeds hold at any gravity.
  */
 export function particleLandingSpeed(id, h) {
-  const drag = GRAVITY / dynamicsRows[id].terminal ** 2;
   let v = 0, y = 0;
   for (;;) {
-    v = v / (1 + drag * v * DT);
-    const step = v * DT + 0.5 * GRAVITY * DT * DT;
-    if (y + step >= h) {
-      // the share of the tick at which it has fallen h: y + v·DT·s + ½·g·DT²·s² = h
-      const a = 0.5 * GRAVITY * DT * DT, b = v * DT, c = y - h;
-      const share = (-b + Math.sqrt(b * b - 4 * a * c)) / (2 * a);
-      return v + GRAVITY * DT * share;
+    const s = packetStep(id, v), a = (s.v - v) / DT;
+    if (y + s.fell >= h) {
+      // the share of the tick at which it has fallen h: y + v·DT·s + ½·a·DT²·s² = h (a the tick's own change)
+      const qa = 0.5 * a * DT * DT, b = v * DT, c = y - h;
+      const share = Math.abs(qa) < 1e-12 ? -c / b : (-b + Math.sqrt(b * b - 4 * qa * c)) / (2 * qa);
+      return v + a * DT * share;
     }
-    y += step; v += GRAVITY * DT;
+    y += s.fell; v = s.v;
   }
 }
 // PACKET_SHOCK_SLACK: the GPU's f32 sums of a fall's ticks may land a quantum under the f64 law's speed.
