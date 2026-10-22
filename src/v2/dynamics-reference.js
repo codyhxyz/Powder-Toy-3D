@@ -1,6 +1,6 @@
 // CPU specification and shared constants for native dynamics. Units: world cells,
 // seconds, m/s, J and Pa. No legacy state is read by the native kernels.
-import { ELEMENTS, E, K, NITRO_FALL_M } from '../elements.js';
+import { ELEMENTS, E, K } from '../elements.js';
 import { CELL_M } from '../scale.js';
 import { PHYS, SIM_GRAVITY, NOMINAL_STEP_RATE } from '../physics.js';
 import { contactVacuum, specialExplosion } from './contact.js';
@@ -75,13 +75,40 @@ export function particleFallSpeed(id, h) {
 //   a landing    (along the pull, onto the cell's upper face) a fall, as the column passes calibrate it:
 //                a packet of matter landing on a charge at past the speed a packet reaches over V1's fall
 //                for that pair (SHOCK_LANDINGS) sets it off (packetShockLandings); a charge landing on
-//                matter maps its speed by its own fall, SHOCK_FALL_M (nitroglycerin's NITRO_FALL_M: V1
-//                derived its shock as that fall's, elements.js), so shockFall (V1 cells/step per m/s) is
-//                that fall's V1 speed over a packet's speed after it (particleLandingSpeed), to V1's cap.
+//                matter maps its speed by its own fall, SHOCK_FALL_CELLS (V1's own fall to its shock on a
+//                solid, v1OwnShockFall), so shockFall (V1 cells/step per m/s) is that fall's V1 speed over a
+//                packet's speed after it (particleLandingSpeed), to V1's cap.
 //                A solid has no V1 fall (V1's solids never move): its landing is a throw.
 // A shock V2 has no derivation for is an error here, never a silent zero.
-export const SHOCK_FALL_M = Object.freeze({ [E.NITRO]: NITRO_FALL_M });
 export const SHOCK_THROW_MS = NOMINAL_STEP_RATE * CELL_M;
+// V1's fall law (react.js forces: a step adds gravity·GRAV, then drag takes DRAG of it, except from a liquid in
+// free fall, and V_MAX caps it; the move pass covers the step's speed in cells: as elements.js fallKE steps it,
+// but without the drag V1 never applies to a falling liquid): the cells of fall from rest past which a cell of
+// `faller` lands with ½·mu·u² of at least `shock`, or null where V1's fall never carries that much.
+const V1_FALL_STEPS_MAX = 100000;
+function v1FallPast(j, mu, shock) {
+  const drag = j.kind === K.LIQUID ? 0 : j.drag ?? 0;
+  // V1's terminal speed on this law: a fall that never carries the shock is no trigger at any height
+  const vt = drag > 0 ? Math.min(PHYS.V_MAX, SIM_GRAVITY * j.grav * (1 - drag) / drag) : PHYS.V_MAX;
+  if (0.5 * mu * vt * vt < shock) return null;
+  let v = 0, y = 0;
+  for (let n = 0; n < V1_FALL_STEPS_MAX; n++) {
+    const before = y;
+    v = Math.min(PHYS.V_MAX, (v + SIM_GRAVITY * j.grav) * (1 - drag)); y += v;
+    if (0.5 * mu * v * v >= shock) return before;
+  }
+  return null;
+}
+// A loose charge's own landing on a solid (V1 react.js: ½·m·u², its own mass against a solid, common.js hitKE):
+// the cells of fall past which V1 sets it off. Nitroglycerin's is about 10.2 cells (3.0 m), not elements.js
+// NITRO_FALL_M: that derived its shock with a drag (fallKE) V1's falling liquid never feels (react.js).
+export function v1OwnShockFall(id) {
+  const e = ELEMENTS[id];
+  if (!(e.blast?.shock > 0) || (e.kind !== K.POWDER && e.kind !== K.LIQUID) || !(e.grav > 0)) return null;
+  return v1FallPast(e, e.dens, e.blast.shock);
+}
+export const SHOCK_FALL_CELLS = Object.freeze(Object.fromEntries(ELEMENTS.filter(e => e.blast?.shock && e.kind !== K.SOLID)
+  .map(e => [e.id, v1OwnShockFall(e.id)])));
 for (const e of ELEMENTS) {
   const row = dynamicsRows[e.id];
   row.shockKE = 0; row.shockFall = 0;
@@ -90,10 +117,9 @@ for (const e of ELEMENTS) {
   if (e.blast.air) throw new Error(`dynamics-reference: ${e.key}'s shock needs air faces the impact stage does not read`);
   if (!(e.dens > 0)) throw new Error(`dynamics-reference: ${e.key}'s shock has no V1 density to take it`);
   row.shockKE = e.blast.shock * MASS_PER_DENS;
-  if (SHOCK_FALL_M[e.id] !== undefined) {
-    if (e.kind === K.SOLID) throw new Error(`dynamics-reference: ${e.key} is solid: V1 never drops it`);
-    row.shockFall = Math.sqrt(2 * e.blast.shock / e.dens) / particleLandingSpeed(e.id, SHOCK_FALL_M[e.id]);
-  } else if (e.kind !== K.SOLID) throw new Error(`dynamics-reference: no V2 derivation of ${e.key}'s blast.shock on landing`);
+  if (e.kind === K.SOLID) continue;
+  if (!(SHOCK_FALL_CELLS[e.id] > 0)) throw new Error(`dynamics-reference: no V2 derivation of ${e.key}'s blast.shock on landing`);
+  row.shockFall = Math.sqrt(2 * e.blast.shock / e.dens) / particleLandingSpeed(e.id, SHOCK_FALL_CELLS[e.id] * CELL_M);
 }
 /** V1 common.js hitKE: closing at speed² u2, the mover i's mass against a solid j, else the reduced mass. */
 export const hitKE = (mi, mj, jSolid, u2) => 0.5 * (jSolid ? mi : mi * mj / (mi + mj)) * u2;
@@ -108,22 +134,10 @@ export const hitKE = (mi, mj, jSolid, u2) => 0.5 * (jSolid ? mi : mi * mj / (mi 
 // powders (scrap, uranium, plutonium, gold nuggets, singularity) and the liquids heavy enough near V1's
 // terminal speed (mercury on C-4; mercury, lava and mud on nitroglycerin). Sand, stone, water never do.
 // (A packet's landings are packetShockLandings', from the same falls.)
-const V1_FALL_STEPS_MAX = 100000;
 export function v1ShockFall(faller, charge) {
   const j = ELEMENTS[faller], k = ELEMENTS[charge], shock = k.blast?.shock ?? 0;
   if (!(shock > 0) || faller === charge || (j.kind !== K.POWDER && j.kind !== K.LIQUID) || !(j.grav > 0)) return null;
-  const mu = k.kind === K.SOLID ? j.dens : j.dens * k.dens / (j.dens + k.dens);
-  const drag = j.kind === K.LIQUID ? 0 : j.drag ?? 0;
-  // V1's terminal speed on this law: a fall that never carries the shock is no trigger at any height
-  const vt = drag > 0 ? Math.min(PHYS.V_MAX, SIM_GRAVITY * j.grav * (1 - drag) / drag) : PHYS.V_MAX;
-  if (0.5 * mu * vt * vt < shock) return null;
-  let v = 0, y = 0;
-  for (let n = 0; n < V1_FALL_STEPS_MAX; n++) {
-    const before = y;
-    v = Math.min(PHYS.V_MAX, (v + SIM_GRAVITY * j.grav) * (1 - drag)); y += v;
-    if (0.5 * mu * v * v >= shock) return before;
-  }
-  return null;
+  return v1FallPast(j, k.kind === K.SOLID ? j.dens : j.dens * k.dens / (j.dens + k.dens), shock);
 }
 /** Every V1 shock trigger a grid landing can make: { faller, charge, cells } (v1ShockFall), for the
  * column passes (shaders/v2.js v2ColumnWGSL for powders, shaders/v2/columns.js colShockLand for liquids). */

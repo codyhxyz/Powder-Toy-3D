@@ -478,20 +478,21 @@ test('a hit sets off C-4 and nitroglycerin as V1\'s shock: the charge hit and th
   assert.equal(f.particles[0].id,0,'landed');assert.equal(f.ctx.control[A],(f.ctx.slotOf([17,0,15])|DET)>>>0,'its detonation posted where it landed');
   assert.ok(quiet(thrown(L.makeMaterial(E.C4),Math.sqrt(2*20/1000)*SHOCK_THROW_MS*0.95,L.makeMaterial(E.WALL))));
   f=hit(L.makeMaterial(E.C4),-60,L.makeMaterial(E.STONE));assert.equal(f.ctx.control[A],0);assert.equal(f.ctx.control[S0],0);
-  // nitroglycerin landing on metal from a fall's speed goes off (NITRO_FALL_M: ~13.8 m/s); from a gentler one it rests
-  f=hit(wet(L.FULL,E.NITRO),-16,L.makeMaterial(E.METAL));
-  assert.equal(L.cid(at(f,above).core),E.NITRO);assert.equal(f.ctx.control[A],(f.ctx.slotOf(above)|DET)>>>0);
+  // nitroglycerin landing on metal from a fall's speed goes off (V1's own fall, dynamics-reference.js
+  // SHOCK_FALL_CELLS: ~10.2 cells, a packet's ~10.9 m/s after it); from a gentler one it rests
   f=hit(wet(L.FULL,E.NITRO),-12,L.makeMaterial(E.METAL));
+  assert.equal(L.cid(at(f,above).core),E.NITRO);assert.equal(f.ctx.control[A],(f.ctx.slotOf(above)|DET)>>>0);
+  f=hit(wet(L.FULL,E.NITRO),-10,L.makeMaterial(E.METAL));
   assert.equal(L.cid(at(f,above).core),E.NITRO);assert.equal(f.ctx.control[A],0);assert.equal(f.ctx.control[S0],0);
-  // stone is a powder in V1 (loose matter): the reduced mass, so the same 16 m/s landing on it does not; 25 does
-  f=hit(wet(L.FULL,E.NITRO),-16,L.makeMaterial(E.STONE));assert.equal(f.ctx.control[A],0);
-  f=hit(wet(L.FULL,E.NITRO),-25,L.makeMaterial(E.STONE));assert.equal(f.ctx.control[A],(f.ctx.slotOf(above)|DET)>>>0);
+  // stone is a powder in V1 (loose matter): the reduced mass, so the same 12 m/s landing on it does not; 16 does
+  f=hit(wet(L.FULL,E.NITRO),-12,L.makeMaterial(E.STONE));assert.equal(f.ctx.control[A],0);
+  f=hit(wet(L.FULL,E.NITRO),-16,L.makeMaterial(E.STONE));assert.equal(f.ctx.control[A],(f.ctx.slotOf(above)|DET)>>>0);
   // onto water no landing ever carries it (V1: ½·6.1·V_MAX² = 3.07, under 3.9)
   f=hit(wet(L.FULL,E.NITRO),-80,wet());assert.equal(f.ctx.control[SET],0);
   // into its own pool it never does
   f=hit(wet(L.FULL/4,E.NITRO),-25,wet(L.FULL,E.NITRO));assert.equal(f.ctx.control[A],0);assert.equal(f.ctx.control[SET],0);
   // onto the box's floor (its solid edge, a wall): the same landing goes off there too, and a gentle one rests
-  for(const [v,fired] of [[-16,true],[-12,false]]) {
+  for(const [v,fired] of [[-12,true],[-10,false]]) {
     const w=fixture({material:wet(L.FULL,E.NITRO),position:[18.8,0.5,15.5],velocity:[0,v,0]});w.tick();
     assert.equal(w.particles[0].id,0,'landed on the floor');assert.equal(L.cid(at(w,start).core),E.NITRO);
     assert.equal(w.ctx.control[A],fired?(w.ctx.slotOf(start)|DET)>>>0:0,`${-v} m/s onto the floor`);

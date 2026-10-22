@@ -1,17 +1,17 @@
 // CPU only (no GPU, no browser): V1's shock (elements.js blast.shock; react.js sets an explosive off
 // under a hit of ½·μ·u² past it, common.js hitKE) under V2. Checks the derivation of each charge's
-// shock in V2's mechanics (dynamics-reference.js SHOCK_FALL_M, the shock field) and a nitroglycerin
+// shock in V2's mechanics (dynamics-reference.js SHOCK_FALL_CELLS, the shock field) and a nitroglycerin
 // run landing on the executed column passes (shaders/v2/columns.js colShockLand on
 // tools/v2/column-wgsl.mjs's CPU grid of production cells), by how far it has fallen (colFall).
 // Particle hits are in particle-deposition-check.mjs, a charge set off in flight in airborne-react-check.mjs.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { ELEMENTS, E, NITRO_FALL_M } from '../../src/elements.js';
-import { dynamicsRows, SHOCK_FALL_M, hitKE, GRAVITY, MASS_PER_DENS, particleLandingSpeed, packetShock, SHOCK_THROW_MS } from '../../src/v2/dynamics-reference.js';
+import { dynamicsRows, SHOCK_FALL_CELLS, v1OwnShockFall, hitKE, GRAVITY, MASS_PER_DENS, particleLandingSpeed, packetShock, SHOCK_THROW_MS } from '../../src/v2/dynamics-reference.js';
 import { legacyVelocityToMS } from '../../src/v2/tools.js';
-import { COLUMN, COLUMN_SHOCK, columnWaterWGSL } from '../../src/shaders/v2/columns.js';
+import { COLUMN, COLUMN_SHOCK, V1_FALL, columnWaterWGSL } from '../../src/shaders/v2/columns.js';
 import * as L from '../../src/v2/layout.js';
-import { ColumnGrid } from './column-wgsl.mjs';
+import { ColumnGrid, wgslFunction, syntax } from './column-wgsl.mjs';
 
 test('each charge\'s shock, in V1\'s units on a packet\'s hit, its fall re-derived on V2\'s laws', () => {
   // C-4: "a hit that would smash wood" (shock = WOOD's hard), now V1's own number in V1's units: the
@@ -19,15 +19,21 @@ test('each charge\'s shock, in V1\'s units on a packet\'s hit, its fall re-deriv
   assert.equal(ELEMENTS[E.C4].blast.shock, ELEMENTS[E.WOOD].hard);
   for (const e of ELEMENTS) assert.equal(dynamicsRows[e.id].shockKE, (e.blast?.shock ?? 0) * MASS_PER_DENS, e.key);
   assert.equal(dynamicsRows[E.C4].shockFall, 0, 'C-4 is solid: V1 never drops it');
-  // nitroglycerin: a NITRO_FALL_M fall, on the particle lane's law: about free fall's speed at that height
-  assert.equal(SHOCK_FALL_M[E.NITRO], NITRO_FALL_M);
-  const v = particleLandingSpeed(E.NITRO, NITRO_FALL_M), free = Math.sqrt(2 * GRAVITY * NITRO_FALL_M);
-  assert.ok(v < free * 1.03 && v > free * 0.9, `a ${NITRO_FALL_M} m fall lands at ${v.toFixed(2)} m/s (free fall ${free.toFixed(2)})`);
+  // nitroglycerin: V1's own fall onto a solid (its liquid falls without drag, react.js), on the particle lane's
+  // law: about free fall's speed at that height. elements.js derived its shock from a NITRO_FALL_M fall with
+  // drag (fallKE), which V1's falling liquid never feels, so V1 sets it off from about 3 m, not 5.
+  const h1 = SHOCK_FALL_CELLS[E.NITRO];
+  assert.deepEqual(Object.keys(SHOCK_FALL_CELLS).map(Number), [E.NITRO]);
+  assert.equal(h1, v1OwnShockFall(E.NITRO));
+  assert.ok(v1LandingKE(E.NITRO, E.METAL, h1 + 1e-9) >= ELEMENTS[E.NITRO].blast.shock && v1LandingKE(E.NITRO, E.METAL, h1) < ELEMENTS[E.NITRO].blast.shock);
+  assert.ok(h1 * CELL_M > 2.9 && h1 * CELL_M < 3.2 && h1 * CELL_M < NITRO_FALL_M, `V1's own fall ${(h1 * CELL_M).toFixed(2)} m`);
+  const v = particleLandingSpeed(E.NITRO, h1 * CELL_M), free = Math.sqrt(2 * GRAVITY * h1 * CELL_M);
+  assert.ok(v < free * 1.03 && v > free * 0.9, `a ${(h1 * CELL_M).toFixed(2)} m fall lands at ${v.toFixed(2)} m/s (free fall ${free.toFixed(2)})`);
   // its landing maps that speed onto the V1 speed that carries its shock on a solid (½·dens·v² = shock)
   assert.ok(Math.abs(0.5 * ELEMENTS[E.NITRO].dens * (v * dynamicsRows[E.NITRO].shockFall) ** 2 - ELEMENTS[E.NITRO].blast.shock) < 1e-9);
-  // poured gently it is safe: a 1 m fall onto metal is not, a 6 m one is
-  assert.equal(packetShock(E.NITRO, E.METAL, particleLandingSpeed(E.NITRO, 1), true).mover, false);
-  assert.equal(packetShock(E.NITRO, E.METAL, particleLandingSpeed(E.NITRO, 6), true).mover, true);
+  // poured gently it is safe: a 1 m or 2.7 m fall onto metal is not, a 3.3 m or 6 m one is (V1: 9 and 11 cells)
+  for (const [m, off] of [[1, false], [2.7, false], [3.3, true], [6, true]])
+    assert.equal(packetShock(E.NITRO, E.METAL, particleLandingSpeed(E.NITRO, m), true).mover, off, `${m} m`);
   // V1's throws: SHOCK_THROW_MS m/s a cell/step (v2/tools.js legacyVelocityToMS, the throws' own map)
   assert.equal(SHOCK_THROW_MS, legacyVelocityToMS(1));
   // V1 hitKE: the mover's mass on a solid, the reduced mass otherwise
@@ -35,18 +41,24 @@ test('each charge\'s shock, in V1\'s units on a packet\'s hit, its fall re-deriv
 });
 
 const literal = x => String(x).replace('.', '\\.');
-test('a run\'s shock is its fall, emitted as the WGSL reads it: R1\'s run speed caps how fast a run falls, not how far', () => {
+test('a run\'s shock is V1\'s own fall law, emitted as the WGSL reads it: R1\'s run speed caps how fast a run falls, not how far', () => {
   assert.deepEqual(COLUMN_SHOCK.map(r => r.id), [E.NITRO]);
   const [nitro] = COLUMN_SHOCK, e = ELEMENTS[E.NITRO];
-  assert.equal(nitro.cells, NITRO_FALL_M / CELL_M);
-  // the column law (v += g, a cell a tick at v) reaches the run speed under 4 m into a fall, short of NITRO_FALL_M
+  assert.equal(nitro.cells, SHOCK_FALL_CELLS[E.NITRO]);
+  assert.equal(nitro.speed2, 2 * e.blast.shock / e.dens);
+  assert.deepEqual(V1_FALL, { G: SIM_GRAVITY, V_MAX: PHYS.V_MAX });
+  // the column law (v += g, a cell a tick at v) reaches the run speed under 4 m into a fall, past V1's own fall
   let v = 0, y = 0;
   while (v + COLUMN.G <= COLUMN.VT) { v += COLUMN.G; y += v; }
-  assert.ok(y * CELL_M > 3.5 && y * CELL_M < 4 && y < nitro.cells, `the run speed after ${(y * CELL_M).toFixed(2)} m`);
-  // V1's cap: at that fall V1's hit speed (its speed for the shock times √(h / its fall)) is V_MAX
-  assert.ok(Math.abs(Math.sqrt(2 * e.blast.shock / e.dens) * Math.sqrt(nitro.cap / nitro.cells) - PHYS.V_MAX) < 1e-12);
-  assert.match(columnWaterWGSL, new RegExp(`fn colShockFall\\(id: u32\\) -> f32 \\{\\n  if \\(id == ${E.NITRO}u\\) \\{ return ${literal(nitro.cells)}; \\}`));
-  assert.match(columnWaterWGSL, new RegExp(`fn colShockCap\\(id: u32\\) -> f32 \\{\\n  if \\(id == ${E.NITRO}u\\) \\{ return ${literal(nitro.cap)}; \\}`));
+  assert.ok(y * CELL_M > 3.5 && y * CELL_M < 4 && y > nitro.cells, `the run speed after ${(y * CELL_M).toFixed(2)} m`);
+  assert.match(columnWaterWGSL, new RegExp(`fn colShockSpeed2\\(id: u32\\) -> f32 \\{\\n  if \\(id == ${E.NITRO}u\\) \\{ return ${literal(nitro.speed2)}; \\}`));
+  // the emitted colV1FallSpeed, executed: V1's speed after a fall of h cells from rest, as V1 steps it
+  // (react.js forces: g a step, no drag on a falling liquid, V_MAX; move.js covers v a step), for every h
+  const { args, body } = wgslFunction(columnWaterWGSL, 'colV1FallSpeed');
+  const speed = Function(...args, 'min', 'sqrt', 'ceil', syntax(body));
+  const v1Speed = h => { let u = 0, y = 0; while (y < h) { u = Math.min(PHYS.V_MAX, u + SIM_GRAVITY); y += u; } return u; };
+  // (off the steps' own boundaries, g·n(n+1)/2, where f32 and f64 round either way)
+  for (let h = 0.0137; h < 60; h += 0.1) assert.ok(Math.abs(speed(h, Math.min, Math.sqrt, Math.ceil) - v1Speed(h)) < 1e-9, `${h.toFixed(2)} cells`);
 });
 
 function world() {
@@ -221,11 +233,14 @@ function drop(liquid, under, fall, { moveAt = -1, dx = 0 } = {}) {
 const dens = id => ELEMENTS[id].dens;
 
 test('a run counts all its fall past R1\'s run speed: each landing goes off past its own height, not at the run speed\'s', () => {
-  // nitroglycerin onto the floor: past NITRO_FALL_M (16.7 cells), not from the run speed's ~3.8 m (13 cells)
+  // nitroglycerin onto the floor: past V1's own fall (10.15 cells, 3.0 m: its liquid falls without drag), the
+  // shock check's 4.8 m drop (16 cells) included, under it not; not at NITRO_FALL_M's 16.7 cells
   const [nitro] = COLUMN_SHOCK;
-  assert.equal(drop(E.NITRO, E.WALL, 13), 0);
-  assert.equal(drop(E.NITRO, E.WALL, Math.floor(nitro.cells)), 0, 'short of NITRO_FALL_M');
-  assert.equal(drop(E.NITRO, E.WALL, Math.ceil(nitro.cells)), 1, 'past NITRO_FALL_M');
+  assert.equal(drop(E.NITRO, E.WALL, 8), 0);
+  assert.equal(drop(E.NITRO, E.WALL, Math.floor(nitro.cells)), 0, 'short of V1\'s fall');
+  assert.equal(drop(E.NITRO, E.WALL, Math.ceil(nitro.cells)), 1, 'past V1\'s fall');
+  assert.equal(drop(E.NITRO, E.WALL, 13), 1, 'at the run speed\'s fall');
+  assert.equal(drop(E.NITRO, E.WALL, 16), 1, '4.8 m, short of NITRO_FALL_M');
   // lava and mud onto nitroglycerin past V1's own falls (4.7 m and 5.6 m), both past the run speed's
   for (const liquid of [E.LAVA, E.MUD]) {
     const { cells } = COLUMN_SHOCK_ON.find(r => r.faller === liquid && r.charge === E.NITRO);
@@ -236,21 +251,22 @@ test('a run counts all its fall past R1\'s run speed: each landing goes off past
   // and under it, to the cell: mercury onto nitroglycerin past V1's 10.9 cells
   assert.equal(drop(E.MERCURY, E.NITRO, 10), 0);
   assert.equal(drop(E.MERCURY, E.NITRO, 11), 1);
-  // nitroglycerin onto a liquid it does not outweigh much: the reduced mass, past NITRO_FALL_M over its share
-  // (mercury: 5.6 m); onto one it outweighs too much, never (water: V1's V_MAX caps its hit)
-  const need = nitro.cells * (dens(E.NITRO) + dens(E.MERCURY)) / dens(E.MERCURY);
+  // nitroglycerin onto a liquid it does not outweigh much: the reduced mass, past V1's own fall for it (mercury:
+  // 10.9 cells); onto one it outweighs too much, never (water: V1's V_MAX caps its hit)
+  let need = 0; while (v1LandingKE(E.NITRO, E.MERCURY, need + 0.5) < ELEMENTS[E.NITRO].blast.shock) need += 0.5;
+  assert.ok(need > nitro.cells && need < 12, `${need} cells`);
   assert.equal(drop(E.NITRO, E.MERCURY, Math.floor(need)), 0);
-  assert.equal(drop(E.NITRO, E.MERCURY, Math.ceil(need)), 1);
+  assert.equal(drop(E.NITRO, E.MERCURY, Math.ceil(need + 0.5)), 1);
   assert.equal(drop(E.NITRO, E.WATER, 60), 0);
 });
 
 test('the fall lives in the run\'s cells: it moves as every run does, and carries its fall through a save, an undo or a shift', () => {
   assert.deepEqual([...COLUMN_KEEPS_FALL].sort((a, b) => a - b), [E.LAVA, E.MERCURY, E.MUD, E.NITRO].sort((a, b) => a - b));
-  // an 18-cell drop copied away 42 ticks in, 16 cells down: it still goes off (counted on from the run speed's
-  // 12.6 cells it would not), and short of NITRO_FALL_M it still does not
+  // mud dropped 21 cells onto nitroglycerin, copied away mid-fall: it still sets it off past V1's 18.5 cells
+  // (counted on from the run speed's 12.6 cells it would not), and from 18 it still does not
   for (const dx of [0, 2]) {
-    assert.equal(drop(E.NITRO, E.WALL, 18, { moveAt: 42, dx }), 1, `moved ${dx} cells`);
-    assert.equal(drop(E.NITRO, E.WALL, 16, { moveAt: 40, dx }), 0, `moved ${dx} cells`);
+    assert.equal(drop(E.MUD, E.NITRO, 21, { moveAt: 42, dx }), 1, `moved ${dx} cells`);
+    assert.equal(drop(E.MUD, E.NITRO, 18, { moveAt: 40, dx }), 0, `moved ${dx} cells`);
   }
   // a nitroglycerin slab and a water slab dropped 40 cells move cell for cell alike (the cap holds the move)
   // until they land; past the run speed the nitroglycerin's lane is the speed its fall carries, ½u² = g·h, the
