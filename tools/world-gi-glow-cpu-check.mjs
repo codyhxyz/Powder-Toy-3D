@@ -7,7 +7,8 @@ import { spawnSync } from 'node:child_process';
 import { WgslExec, WgslParser, VectorData, ScalarData } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { giSourceFrag, giGatherFrag, giKeyFrag, giSelectFrag, giArgsFrag, giSrcWGSL } from '../src/shaders/gi.js';
 import { blurFrag } from '../src/shaders/passes.js';
-import { WGSL_CHECK as GI_CHECK, worldGISource, worldGIGather, worldGIBirthWGSL } from '../src/shaders/worldGI.js';
+import { WGSL_CHECK as GI_CHECK, worldGISource, worldGIGather, worldGIBirthWGSL, worldGIGroundWords } from '../src/shaders/worldGI.js';
+import { worldGIBrickNear, worldGIProxyCoverage } from '../src/world/worldGIRing.js';
 import { WGSL_CHECK as GLOW_CHECK, worldGlow } from '../src/shaders/worldGlow.js';
 import { createWorldGI } from '../src/gfx/worldGI.js';
 import { createWorldGlow, worldGlowPlan } from '../src/gfx/worldGlow.js';
@@ -97,7 +98,7 @@ test('actual eight world GI/two glow modules validate Naga and default budgets',
   console.log(`Naga: ${count} actual GI/glow modules passed; 16 sampled / <=8 storage / <=4 images`);
   const source = worldGISource({ nx: 3072, ny: 384, nz: 1024 });
   assert.ok(source.indexOf('head[6] == 0u') < source.indexOf('let pr = worldGIPreviousProbe'), 'liquid/media early exit before previous GI');
-  assert.match(worldGIGather({ nx: 3072, ny: 384, nz: 1024 }), /worldGISourceStaged\(b\)/);
+  assert.match(worldGIGather({ nx: 3072, ny: 384, nz: 1024 }), /worldGISourceRing\(b\)/);
 });
 test('world gather is the original generated module minus unused texture mirrors only', () => {
   // Pre-deletion emissions, normalized ONLY by dropping output declarations/dst
@@ -123,7 +124,10 @@ test('world gather is the original generated module minus unused texture mirrors
   // Then (2026-10-20, distance haze) worldAccess.js's worldProbeHeld / worldProbeAlphaHeld
   // (unused here); diffed against origin/main 6a056d8d, nothing else moved.
   // Re-pinned 2026-10-21 (cold compile): only the lamp and beacon shadow rays moved (lighting.js lampLights/lampShade/lampSpecSeen, lighthouse.js beaconRay/beaconFarClear/beaconMaxSteps/beaconVisible; one traceNearSteps call site, crystals skip the beam), diffed against origin/main 186cefd7; nothing else moved.
-  const hashes = ['a5cfe7220645a2b87bef9364e905bee124b25cb6f75155924d1c39868d8e139f', 'd2c16aa4e297ca3a176941b5e7adda5b0f31314ff6f8adbe8d3a0074938090c8', '9ecd5d221762bbd9fc4926f0ba9ad25e8eb8c73d3f968f1953f032f999f0de99', 'b176b07e0aa4ceee2ab2972d6340e5f09ae6e126fb5c70287475db5c0ee1bd45'];
+  // Re-pinned 2026-10-22 (light bounce near ring, world/worldGIRing.js): WorldGIParams gained ring and
+  // ground, worldGISourceStaged became worldGIStagedJob + worldGISourceRing (both reads), beyond()'s
+  // floor sun is looked up inside the ring only; diffed against b48dd7e4, nothing else moved.
+  const hashes = ['2a890de6af07c901adb9f07da4d03899813cf91dc8148d677fad6941da050693', '314c42d170b88ffccf7e934585a0830e07cb9cdb4f5f262eff5991c3f7f5da77', 'ce0a042c75e734169d8c3ce3af645c117aadd36a3a578e0e34678b61c4d74ca5', 'ac948eb4a0b948bd90bed2e7bd90857ae5f5a308b9d800f3dfa6554059f6e2f2'];
   const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
   gathers.forEach((c, i) => {
     const code = c.code(), groups = c.layouts();
@@ -162,7 +166,7 @@ test('executed original 32-ray world march reaches far sources beyond step12, tr
   assert.ok(start > 0 && end > start); const trace = production.slice(start, end);
   const constants = ['GI_RAYS', 'GI_STEPS', 'GI_NEAR_STEPS', 'GI_FAR_STRIDE', 'GI_T_MIN', 'GI_FACING', 'GOLDEN_ANGLE'].map(name => production.match(new RegExp(`const ${name}:[^;]+;`))?.[0]).join('\n');
   const code = `${giSrcWGSL}\n${constants}\nconst BS:i32=4; var<private> worldIncomplete:bool; var<private> testMode:u32;
-fn worldGISourceStaged(b:vec3i)->vec4u {
+fn worldGISourceRing(b:vec3i)->vec4u {
   if(testMode==1u && b.x==30){worldIncomplete=true;}
   if(testMode!=2u && b.x==60){return giSrcPack(vec3f(2.0,1.0,0.5),vec3f(1.0),vec3f(0.0));}
   return giSrcPack(vec3f(0.0),vec3f(0.0),vec3f(0.0));
@@ -267,18 +271,87 @@ out[gid.x] = vec4f(L, T); visits[gid.x] = seen;
 });
 test('executed private source overlay resolves global keys independent of physical IDs and retains nonselected dependencies', () => {
   const production = worldGIGather({ nx: 3072, ny: 384, nz: 1024 });
-  const code = `struct Params{counts:vec4u} const WGI=Params(vec4u(4u,0u,0u,0u));
+  // every query near (ring.w < 0): the staged overlay, else the published SOURCE (asked for when missing)
+  const code = `struct Params{counts:vec4u, ring:vec4f, ground:vec4u} const WGI=Params(vec4u(4u,0u,0u,0u),vec4f(0.0,0.0,0.0,-1.0),vec4u(0u));
+const BS:i32=4;
 @group(0)@binding(0)var<storage,read>worldGIJobs:array<vec4u>;
 @group(0)@binding(1)var<storage,read>worldGISources:array<vec4u>;
 @group(0)@binding(2)var<storage,read>query:array<vec4u>;
 @group(0)@binding(3)var<storage,read_write>out:array<vec4u>;
 fn worldBookIndex(b:vec3i)->u32{return u32(b.x);}
 fn worldGISource(b:vec3i)->vec4u{return vec4u(0u,0u,0u,0x1ff7fdffu);}
-${fnBody(production, 'worldGISourceStaged')}
-@compute@workgroup_size(1)fn main(@builtin(global_invocation_id) p:vec3u){out[p.x]=worldGISourceStaged(vec3i(i32(query[p.x].x),0,0));}`;
-  naga(code, 'world.gi.overlay'); const indices = [2, 111, 100000, 18874367], q = [1, 2, 3, 111, 222, 100000, 18874367], jobs = new Uint32Array(indices.flatMap(n => [n, 0, 0, 0])), sources = new Uint32Array(indices.flatMap((n, i) => [i + 1, n, n + 1, 0x1ff7fdff])), output = new Uint32Array(q.length * 4);
+fn worldGIProxy(b:vec3i)->vec4u{return vec4u(7u);}
+const worldLightBook=array<u32,1>(0u); struct WAs{light:vec4u,tiles:vec4u} const WA=WAs(vec4u(0u),vec4u(0u));
+const WORLD_BOOK_PAGE:u32=1u; const WORLD_ABI:u32=0u; const WORLD_BOOK_READY:u32=0u; const WORLD_BOOK_LIGHT:u32=0u; const WORLD_GI_SOURCE:u32=0u;
+fn worldLightMeta(i:u32,r:u32)->vec4u{return vec4u(0u);}
+${fnBody(production, 'worldGIStagedJob')}
+${fnBody(production, 'worldGIRingNear')}
+${fnBody(production, 'worldGISourceRing')}
+@compute@workgroup_size(1)fn main(@builtin(global_invocation_id) p:vec3u){out[p.x]=worldGISourceRing(vec3i(i32(query[p.x].x),0,0));}`;
+  naga(code, 'world.gi.overlay');
+  const indices = [2, 111, 100000, 18874367], q = [1, 2, 3, 111, 222, 100000, 18874367], jobs = new Uint32Array(indices.flatMap(n => [n, 0, 0, 0])), sources = new Uint32Array(indices.flatMap((n, i) => [i + 1, n, n + 1, 0x1ff7fdff])), output = new Uint32Array(q.length * 4);
   new ShaderExec(new WgslParser().parse(code)).dispatchWorkgroups('main', q.length, { 0: { 0: jobs, 1: sources, 2: new Uint32Array(q.flatMap(n => [n, 0, 0, 0])), 3: output } });
   q.forEach((n, i) => { const slot = indices.indexOf(n); assert.deepEqual([...output.subarray(i * 4, i * 4 + 4)], slot < 0 ? [0, 0, 0, 0x1ff7fdff] : [...sources.subarray(slot * 4, slot * 4 + 4)]); });
+});
+test('executed light bounce ring: inside it a missing SOURCE is asked for; past it the held SOURCE, else the ground twin, never asking', () => {
+  // world/worldGIRing.js: the production ring test, stand-in and read, against
+  // their CPU twins (worldGIBrickNear, worldGIProxyCoverage, worldGIGroundWords).
+  const production = worldGIGather({ nx: 3072, ny: 384, nz: 1024 });
+  const eye = [8, 6, 2], radius = 30, cols = [64, 1], staged = [3, 41];
+  const tops = Array.from({ length: cols[0] }, (_, x) => (x % 5) * 3 + 2);   // cells: a bumpy ground, one row of columns
+  const groundWords = worldGIGroundWords(tops), groundAt = staged.length;
+  // book: bricks with x % 3 == 0 (and x > 0) hold a SOURCE of light descriptor x (book entry x + 1)
+  const held = (x) => x > 0 && x % 3 === 0, LIGHT = 1 << 28;
+  const queries = [];
+  for (let x = 0; x < cols[0]; x++) for (const y of [0, 1, 2, 3, 5]) queries.push([x, y]);
+  const code = `${giSrcWGSL}
+struct Params{counts:vec4u, ring:vec4f, ground:vec4u}
+const WGI=Params(vec4u(${staged.length}u,0u,0u,0u),vec4f(${eye.map(n => n.toFixed(1)).join(',')},${radius.toFixed(1)}),vec4u(${cols[0]}u,${cols[1]}u,${groundAt}u,0u));
+struct WAs{light:vec4u,tiles:vec4u} const WA=WAs(vec4u(0u,1000u,0u,0u),vec4u(0u,0u,0u,9u));
+const WORLD_ABI:u32=9u; const WORLD_BOOK_PAGE:u32=0xfffffffu; const WORLD_BOOK_READY:u32=28u; const WORLD_BOOK_LIGHT:u32=3u; const WORLD_GI_SOURCE:u32=8u;
+const BS:i32=4; const GROUND_ALB:vec3f=vec3f(0.5); struct F{sunCol:vec3f,sun:vec3f,skyUp:vec3f} const FU=F(vec3f(1.0,2.0,4.0),vec3f(0.0,0.5,0.0),vec3f(0.25));
+${production.match(/const WORLD_GI_GROUND_BITS:[^;]+;/)[0]}
+${production.match(/const WORLD_GI_GROUND_PER_WORD:[^;]+;/)[0]}
+var<private> worldIncomplete:bool;
+@group(0)@binding(0)var<storage,read>worldGIJobs:array<vec4u>;
+@group(0)@binding(1)var<storage,read>worldGISources:array<vec4u>;
+@group(0)@binding(2)var<storage,read>worldLightBook:array<u32>;
+@group(0)@binding(3)var<storage,read>query:array<vec4i>;
+@group(0)@binding(4)var<storage,read_write>out:array<vec4u>;
+@group(0)@binding(5)var<storage,read_write>status:array<u32>;
+fn worldBookIndex(b:vec3i)->u32{return u32(b.x + 64 * b.y);}
+fn worldGISource(b:vec3i)->vec4u{worldIncomplete=true;return vec4u(0u,0u,0u,0x1ff7fdffu);}
+fn worldLightMeta(id:u32,record:u32)->vec4u{return vec4u(id+100u,record,0u,0x1ff7fdffu);}
+${fnBody(production, 'worldGIStagedJob')}
+${fnBody(production, 'worldGIRingNear')}
+${fnBody(production, 'worldGIProxy')}
+${fnBody(production, 'worldGISourceRing')}
+@compute@workgroup_size(1)fn main(@builtin(global_invocation_id) p:vec3u){worldIncomplete=false;let q=query[p.x];out[p.x]=worldGISourceRing(vec3i(q.x,q.y,0));status[p.x]=select(0u,1u,worldIncomplete);}`;
+  naga(code, 'world.gi.ring');
+  const book = new Uint32Array(64 * 8);
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 64; x++) if (held(x)) book[x + 64 * y] = ((x + 1) | LIGHT) >>> 0;
+  const stagedIndex = staged.map((x) => x + 64 * 1);   // staged jobs at y = 1
+  const jobs = new Uint32Array(groundAt * 4 + groundWords.length);
+  stagedIndex.forEach((n, i) => jobs.set([n, 0, 0, 0], i * 4)); jobs.set(groundWords, groundAt * 4);
+  const sources = new Uint32Array(staged.flatMap((n, i) => [i + 1, n, 0, 0x1ff7fdff]));
+  const out = new Uint32Array(queries.length * 4), status = new Uint32Array(queries.length);
+  new ShaderExec(new WgslParser().parse(code)).dispatchWorkgroups('main', queries.length, { 0: { 0: jobs, 1: sources, 2: book, 3: new Int32Array(queries.flatMap(([x, y]) => [x, y, 0, 0])), 4: out, 5: status } });
+  const rad = [0.5 * (1 * 0.5 + 0.25), 0.5 * (2 * 0.5 + 0.25), 0.5 * (4 * 0.5 + 0.25)];
+  let far = 0, stand = 0;
+  queries.forEach(([x, y], i) => {
+    const got = [...out.subarray(i * 4, i * 4 + 4)], slot = stagedIndex.indexOf(x + 64 * y), isNear = worldGIBrickNear(eye, [x, y, 0], radius);
+    if (slot >= 0) { assert.deepEqual(got, [...sources.subarray(slot * 4, slot * 4 + 4)]); assert.equal(status[i], 0); return; }
+    if (isNear) { assert.deepEqual(got, [0, 0, 0, 0x1ff7fdff]); assert.equal(status[i], 1, `near brick ${x},${y} asks for its SOURCE`); return; }
+    far++;
+    assert.equal(status[i], 0, `far brick ${x},${y} asks for nothing`);
+    if (held(x)) { assert.deepEqual(got, [x + 100, 4, 0, 0x1ff7fdff]); return; }
+    const cov = worldGIProxyCoverage(tops[x], y), surface = tops[x] <= (y + 1) * 4;
+    const dir = surface ? (511 | 1022 << 10 | 511 << 20) >>> 0 : 0x1ff7fdff;
+    assert.deepEqual(got, cov[1] > 0 ? [pair(rad[0], rad[1]), pair(rad[2], cov[0]), pair(cov[1], cov[2]), dir] : [0, 0, 0, 0x1ff7fdff], `stand-in at ${x},${y}`);
+    stand++;
+  });
+  assert.ok(far > 0 && stand > 0);
+  console.log(`CPU production GI ring: ${queries.length} reads, ${queries.length - far} near or staged, ${far} far (${stand} from the ground twin), none of them asking`);
 });
 test('executed original f32 blend writes exactly the packed halves used for four bands over many ticks', () => {
   const production = worldGIGather({ nx: 64, ny: 128, nz: 64 }), blend = fnBody(production, 'giBlend');

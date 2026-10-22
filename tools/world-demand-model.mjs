@@ -34,6 +34,7 @@ import { READY } from '../src/world/renderAtlas.js';
 import { worldSourceEligible, WORLD_SUPPORT_STAGES } from '../src/wire/worldRender.js';
 import { selectWorldGI } from '../src/world/worldLightingHistory.js';
 import { worldSunRings } from '../src/world/worldSunRings.js';
+import { worldGIBrickNear, worldGIProxyCoverage } from '../src/world/worldGIRing.js';
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const CUBIC_SUPPORT = 2;          // cells a cubic field tap reaches past a hit (worldFieldCubic)
@@ -169,15 +170,23 @@ export function viewRays({ cam, target, width, height, vfov }) {
 // full detail, as before 2026-10-22's rings). sharp: tiles already sharp on
 // this sun grid (a later load of the same owner); sharpen: tiles to sharpen
 // past the near ring (a load that follows a shown frame).
-export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', sources: sourcePolicy = 'eligible', resetBirths = true, rings = false, sharp = new Set(), sharpen = 0, maxAttempts = 40, log = null }) {
+// giRing: the light bounce's near ring radius (cells; world/worldGIRing.js):
+// a gather asks for a missing SOURCE only inside it, and past it reads the
+// ground twin's stand-in (null: every read asks, as before 2026-10-22's ring).
+export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', sources: sourcePolicy = 'eligible', resetBirths = true, rings = false, giRing = null, sharp = new Set(), sharpen = 0, maxAttempts = 40, log = null }) {
   const { size, dims, index, brick, info } = w;
   const req = new Map(), support = new Set(), sunTiles = new Set(), forecastTiles = new Set(sharp), forecastProbes = new Set(), ownedSources = new Set();
   let coarse = new Set(), sharpened = false, fineTiles = [];
   const shellTiles = new Set();
   let stage = 'cell';
   // worldRender.js add(): a brick first asked for by a support stage is support
+  // bricks first asked for by each stage, and every brick a gather (or its
+  // forecast) asked for: the light bounce's own demand (world/worldGIRing.js)
+  const byStage = {}, giAsked = new Set();
   const add = (i, bits) => {
     const old = req.get(i), sup = WORLD_SUPPORT_STAGES.has(stage);
+    if (old === undefined) byStage[stage] = (byStage[stage] ?? 0) + 1;
+    if (stage === 'gather' || stage === 'gather forecast') giAsked.add(i);
     if (old === undefined && sup) support.add(i); else if (!sup) support.delete(i);
     if (((old ?? 0) | bits) !== old) { req.set(i, (old ?? 0) | bits); return true; }
     return false;
@@ -186,7 +195,7 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
   add(camBrick, READY.CELL);
   const tops = forecast === 'none' ? null : worldColumnTops({ size, scene: w.scene, P: w.P });
   const history = [];
-  let attempts = 0, done = false, forecastEye = false, viewTiles = 0;
+  let attempts = 0, done = false, forecastEye = false, viewTiles = 0, sourceTiles = 0;
   while (attempts < maxAttempts) {
     attempts++;
     // forecast (worldRender.js forecast())
@@ -200,7 +209,7 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
         if (probes.length) {
           stage = 'gather forecast';   // gather demand, not support (worldRender.js forecast)
           const read = new Set();
-          await forecastGatherSources({ size, tops, probes: probes.map(brick), mark: (i) => read.add(i), yieldEvery: null });
+          await forecastGatherSources({ size, tops, probes: probes.map(brick), mark: (i) => read.add(i), ring: giRing == null ? null : { eye: cam, radius: giRing }, yieldEvery: null });
           probes.forEach((i) => forecastProbes.add(i));
           for (const i of read) add(i, READY.GI_SOURCE);
           for (const i of forecastSourceTiles(w.projection, { size, tops, bricks: read })) sunTiles.add(i);
@@ -276,13 +285,22 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
       if (!resetBirths && !born.has(i)) grew = add(i, READY.GI) || grew;
       const tiles = new Set();
       for (const p of r.sunPoints) w.tilesAt(p, tiles);
-      for (const t of tiles) if (!sunTiles.has(t)) { sunTiles.add(t); grew = true; }
+      for (const t of tiles) if (!sunTiles.has(t)) { sunTiles.add(t); grew = true; sourceTiles++; }
     }
     if (grew) { row.stage = stage; log?.(row); continue; }
     // gather: 7-brick burial test, then 32 rays
     stage = 'gather';
     const steps = giSteps({ nx: size[0], ny: size[1], nz: size[2] });
-    const readSource = (j) => { if (!sources.has(j)) { grew = add(j, READY.GI_SOURCE) || grew; return null; } return info(j); };
+    // a SOURCE the attempt holds; else inside the ring asked for (and read as
+    // nothing); past it the ground twin's stand-in (worldGI.js worldGISourceFar)
+    const groundTops = giRing == null ? null : (tops ?? worldColumnTops({ size, scene: w.scene, P: w.P }));
+    const readSource = (j) => {
+      if (sources.has(j)) return info(j);
+      const b = brick(j);
+      if (giRing == null || worldGIBrickNear(cam, b, giRing)) { grew = add(j, READY.GI_SOURCE) || grew; return null; }
+      const cov = worldGIProxyCoverage(groundTops.top(b[0], b[2]), b[1]);
+      return { any: cov[1] > 0, cov };
+    };
     for (const i of probes) {
       const bc = brick(i);
       let blk = 1;
@@ -345,5 +363,5 @@ export async function modelLoad(w, { cam, rays, values, sun, forecast = 'view', 
     row.stage = stage; log?.(row);
     if (!grew) { done = true; break; }
   }
-  return { attempts, done, history, requirements: req.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, fineTiles, coarse: [...coarse], forecastTiles: [...forecastTiles], sources: history.at(-1)?.sources ?? 0, gathers: history.at(-1)?.gathers ?? 0, viewTiles };
+  return { attempts, done, history, byStage, giAsked, requirements: req.size, sunTiles: sunTiles.size, coarseTiles: coarse.size, fineTiles, coarse: [...coarse], forecastTiles: [...forecastTiles], sources: history.at(-1)?.sources ?? 0, gathers: history.at(-1)?.gathers ?? 0, viewTiles, sourceTiles };
 }

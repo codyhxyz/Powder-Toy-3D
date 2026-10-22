@@ -27,6 +27,7 @@
 import { worldSunProjection, WORLD_SUN_PITCH, WORLD_SUN_TILE } from './worldSun.js';
 import { BRICK } from '../shaders/common.js';
 import { GI, giSteps } from '../shaders/gi.js';
+import { worldGIBrickNear } from './worldGIRing.js';
 
 // Forecast sun rays run on a square grid this many cells apart in the light's
 // plane. A brick's cross-section seen from any direction holds a disk BRICK
@@ -288,16 +289,20 @@ export function giRayDir(i) {   // giGatherFrag giDir: a Fibonacci lattice, y up
   const y = 1 - (2 * i + 1) / GI.RAYS, r = Math.sqrt(Math.max(1 - y * y, 0)), a = i * GOLDEN_ANGLE;
   return [r * Math.cos(a), y, r * Math.sin(a)];
 }
-export async function forecastGatherSources({ size, tops, probes, mark, yieldEvery = FORECAST_SLICE_MS }) {
+// ring ({ eye, radius }, world/worldGIRing.js): a gather asks for a SOURCE
+// only inside the light bounce's near ring, so only those are forecast; past
+// it the gather reads the resident SOURCE or the ground twin and asks nothing.
+export async function forecastGatherSources({ size, tops, probes, mark, ring = null, yieldEvery = FORECAST_SLICE_MS }) {
   const dims = size.map((n) => Math.ceil(n / BRICK)), steps = giSteps({ nx: size[0], ny: size[1], nz: size[2] });
   const at = (b) => b[0] + dims[0] * (b[1] + dims[1] * b[2]), inside = (b) => b.every((n, k) => n >= 0 && n < dims[k]);
+  const near = ring ? (b) => worldGIBrickNear(ring.eye, b, ring.radius) : () => true;
   const dirs = Array.from({ length: GI.RAYS }, (_, i) => giRayDir(i));
   let slice = now();
   for (const bc of probes) {
     for (let k = 0; k < 7; k++) {
       const b = [...bc];
       if (k > 0) b[(k - 1) >> 1] += (k & 1) ? 1 : -1;
-      if (inside(b)) mark(at(b));
+      if (inside(b) && near(b)) mark(at(b));
     }
     for (const d of dirs) {
       const q = bc.map((n) => n + 0.5), d2 = d.map((n) => n * n);
@@ -307,7 +312,7 @@ export async function forecastGatherSources({ size, tops, probes, mark, yieldEve
         for (let i = 0; i < 3; i++) q[i] += d[i] * s;
         const b = q.map(Math.floor);
         if (!inside(b)) break;
-        mark(at(b));
+        if (near(b)) mark(at(b));
         if (past >= 0) { if (++past >= FORECAST_STOP_MARGIN) break; continue; }
         // giGatherFrag's own stop: the brick's share of the ray, its covered
         // face share (giSrcCov) along d^2, from the lowest nearby ground, so the

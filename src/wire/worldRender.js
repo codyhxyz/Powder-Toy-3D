@@ -12,6 +12,8 @@ import { createWorldAppearance } from '../gfx/worldAppearance.js';
 import { worldSunProjection, WORLD_SUN_PITCH } from '../world/worldSun.js';
 import { worldColumnTops, forecastSunCasters, forecastViewTiles, worldViewRays, forecastGatherSources, forecastSourceTiles } from '../world/worldSunForecast.js';
 import { worldSunRings, worldCoarseCasters, WORLD_SUN_SHARPEN_TILES } from '../world/worldSunRings.js';
+import { WORLD_GI_NEAR_RADIUS } from '../world/worldGIRing.js';
+import { worldGIGroundWords } from '../shaders/worldGI.js';
 
 const copy = v => v?.elements ? Array.from(v.elements) : typeof v?.toArray === 'function' ? v.toArray() : ArrayBuffer.isView(v) ? Array.from(v) : Array.isArray(v) ? v.map(copy) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k,x]) => [k,copy(x)])) : v;
 const frozen = v => { const c=copy(v); const freeze=x=>{if(x&&typeof x==='object'){Object.values(x).forEach(freeze);Object.freeze(x);}return x;};return freeze(c); };
@@ -62,7 +64,7 @@ export function mergeWorldFeedback(list) {
   return Object.freeze({incomplete:true,requirements:Object.freeze([...channels].sort((a,b)=>a[0]-b[0]).map(([index,c])=>Object.freeze({index,channels:c}))),sun:Object.freeze([...sun].sort((a,b)=>a-b))});
 }
 // A brick's light can reach the picture only through a GI gather reading its
-// SOURCE (shaders/worldGI.js worldGISourceStaged is SOURCE's only reader), so
+// SOURCE (shaders/worldGI.js worldGISourceRing is SOURCE's only reader), so
 // a brick is a SOURCE candidate only if the eye, the scene or a gather asked
 // for it, or it is one already. A brick asked for only as SUPPORT (a sun-map
 // caster, a SOURCE's neighbour or lamp-shadow cells) is not: as a SOURCE it
@@ -95,6 +97,11 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   // as a heightfield, built once for the scene during the first load's CELL
   // stage (its slices yield between the CELL batches) and awaited by its sun.
   let coarseBuild=null;
+  // The light bounce's near ring (world/worldGIRing.js): a gather asks for SOURCES
+  // only within it of the eye, and reads the same ground twin, packed, past it.
+  let giGround=null;
+  const giRing=t=>{const eye=t.frame.values?.cam;return tops&&eye&&Array.from(eye).length===3&&Array.from(eye).every(Number.isFinite)?{eye:Array.from(eye),radius:WORLD_GI_NEAR_RADIUS}:null;};
+  const giGroundFor=async()=>{if(!tops)return null;coarseBuild??=worldCoarseCasters({size,tops});giGround??=coarseBuild.then(c=>Object.freeze({words:worldGIGroundWords(c.heights),columns:[...c.dims]}));return giGround;};
   const ownedSources=new Set(),ownedProbes=new Set(),ownedGlow=new Set();
   const brick=i=>[i%dims[0],Math.floor(i/dims[0])%dims[1],Math.floor(i/(dims[0]*dims[1]))];
   const index=b=>worldBrickIndex(atlas.bookLayout,b);
@@ -187,9 +194,9 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   // per attempt: an Island load restarted 19+ times, ~64 probes a time, from its
   // SOURCE stage (2026-10-22).
   async function giPhase(t,bricks,phase) {
-    const feedback=[];
+    const feedback=[],ring=phase==='source'?null:giRing(t),ground=ring?await giGroundFor():null;
     for(const slab of slabs(bricks)){
-      const r=await result(t,t.gi,await t.gi.prepare({lightingTick:t.tick,reset:t.tick===0,configVersion:t.frame.configVersion,initialization:t.plan.initialization,sourceBricks:phase==='source'?slab:[],gatherBricks:phase==='source'?[]:slab,shadows:t.frame.params.shadows!==false}));
+      const r=await result(t,t.gi,await t.gi.prepare({lightingTick:t.tick,reset:t.tick===0,configVersion:t.frame.configVersion,initialization:t.plan.initialization,sourceBricks:phase==='source'?slab:[],gatherBricks:phase==='source'?[]:slab,shadows:t.frame.params.shadows!==false,ring,ground}));
       if(r.feedback){feedback.push(r.feedback);continue;}
       t.outputs.push(r.output);if(!feedback.length)t.plan.stage(r.output);
     }
@@ -235,12 +242,12 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     const projection=worldSunProjection(size,t.frame.sun.direction),grid=projection.tiles.join(',');
     if(grid!==forecastGrid){forecastGrid=grid;forecastTiles.clear();shellTiles.clear();}
     if(!t.forecastEye){t.forecastEye=true;add(t,[],forecastViewTiles(projection,{cam:t.frame.values?.cam,rays:worldViewRays(t.frame.values,size),size,tops}));}
-    // the SOURCES each new probe's gather reads, and the sun tiles they light in
+    // the SOURCES each new probe's gather asks for (inside the near ring), and the sun tiles they light in
     const probes=[...t.requirements].filter(([i,bits])=>bits&READY.GI&&!t.forecastProbes.has(i)).map(([i])=>i);
     if(probes.length){
       t.stage='forecast';
       const read=new Set();
-      await forecastGatherSources({size,tops,probes:probes.map(brick),mark:i=>read.add(i)});
+      await forecastGatherSources({size,tops,probes:probes.map(brick),mark:i=>read.add(i),ring:giRing(t)});
       probes.forEach(i=>t.forecastProbes.add(i));
       add(t,[...read].filter(i=>!ownedSources.has(i)).map(i=>({brick:brick(i),channels:READY.GI_SOURCE})));
       add(t,[],forecastSourceTiles(projection,{size,tops,bricks:read}));

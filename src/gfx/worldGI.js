@@ -1,7 +1,7 @@
 // Disabled continuous-world GI producer. Inputs/history/publication are explicit;
 // this is not the application's scheduler, cold-history replay, or frame gate.
 import { GiParams, giBgBlend } from '../shaders/gi.js';
-import { worldGISource, worldGIGather, worldGILayouts } from '../shaders/worldGI.js';
+import { worldGISource, worldGIGather, worldGILayouts, WORLD_GI_PARAMS_BYTES, WORLD_GI_GROUND_PER_WORD } from '../shaders/worldGI.js';
 import { validateWorldGIInitialization } from '../world/worldLightingHistory.js';
 import { BU, uint, frozenArray, worldLightingIndex, validateLightingInput, sameLightingProvenance, createLightingResources, completeLightingBatch, createLightingTransport } from './worldLightingBatch.js';
 
@@ -38,9 +38,16 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
     };
     return Object.freeze(h);
   }
-  async function prepare({ lightingTick, sourceBricks = [], gatherBricks = [], reset = false, shadows = true, configVersion, initialization = null } = {}) {
+  // ring: the light bounce's near ring ({ eye, radius }, cells: world/worldGIRing.js),
+  // ground: the ground twin a gather reads past it ({ words, columns }:
+  // shaders/worldGI.js worldGIGroundWords). Without both every read is near.
+  async function prepare({ lightingTick, sourceBricks = [], gatherBricks = [], reset = false, shadows = true, configVersion, initialization = null, ring = null, ground = null } = {}) {
     alive();
     if (!uint(lightingTick) || configVersion == null || reset !== (lightingTick === 0)) throw new TypeError('world logical lighting tick/config/reset');
+    const ringed = !!ring && !!ground;
+    if (ringed && (!(Array.from(ring.eye ?? []).length === 3 && Array.from(ring.eye).every(Number.isFinite)) || !(ring.radius >= 0) ||
+      !(ground.words instanceof Uint32Array) || ground.words.length % 4 || !Array.isArray(ground.columns) || ground.columns.length !== 2 || !ground.columns.every(n => uint(n) && n > 0) ||
+      ground.words.length * WORLD_GI_GROUND_PER_WORD < ground.columns[0] * ground.columns[1])) throw new TypeError('world GI ring: an eye, a radius and the packed ground twin');
     const canonical = (entries, gather) => {
       const jobs = entries.map(entry => ({ index: worldLightingIndex(size, Array.isArray(entry) ? entry : entry.brick), background: gather && entry.background === true }));
       jobs.sort((a, b) => a.index - b.index);
@@ -67,7 +74,7 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
       const pipes = await ready; alive(); validateInitialization();
       if (id !== serial || !snapshotProvider.isCurrent(input)) { release(); return Object.freeze({ status: 'stale', retry: true }); }
       const births = new Set(initialization?.indices ?? []);
-      const key = JSON.stringify([lightingTick, reset, shadows, sources, probes]);
+      const key = JSON.stringify([lightingTick, reset, shadows, sources, probes, ringed ? [Array.from(ring.eye), ring.radius] : null]);
       if (active?.token.initialization === initialization && active?.token.lightingTick === lightingTick && active.key === key && sameLightingProvenance(active.token,input) && active.token.configVersion === configVersion && active.token.previousToken === input.previous.token) {
         release(); return Object.freeze({ status: 'cached', snapshot: handle(active) });
       }
@@ -88,10 +95,19 @@ export function createWorldGI(gpu, { g, snapshotProvider, readerBindingProvider,
       // brick a probe whose gather asked for more SOURCES, and so on (Island,
       // 2026-10-22: ~64 more probes every attempt from the 18th on).
       [...sources, ...probes].forEach((j, i) => words.set([j.index, (j.background ? 1 : 0) | (reset || births.has(j.index) ? 2 : 0), 0, 0], i * 4));
-      const jobs = buffer('world GI global jobs', words.byteLength, BU.STORAGE, words);
+      // A gather's ground twin follows its jobs in the same buffer (worldGIProxy).
+      const groundAt = Math.max(1, count), withGround = ringed && probes.length > 0;
+      const jobWords = withGround ? new Uint32Array(groundAt * 4 + ground.words.length) : words;
+      if (withGround) { jobWords.set(words.subarray(0, count * 4)); jobWords.set(ground.words, groundAt * 4); }
+      const jobs = buffer('world GI global jobs', jobWords.byteLength, BU.STORAGE, jobWords);
       const source = buffer('private world GI sources', sources.length * 16, BU.STORAGE | BU.COPY_SRC);
       const history = buffer('COW world GI packed history', probes.length * 32, BU.STORAGE | BU.COPY_SRC | BU.COPY_DST);
-      const params = buffer('world GI logical params', 32, BU.UNIFORM, new Uint32Array([sources.length, probes.length, fb.jobStatusWordOffset, lightingTick, input.epoch, 0, 0, 0]));
+      // WorldGIParams (shaders/worldGI.js): counts at word 0, config 4, ring 8, ground 12.
+      const paramWords = new ArrayBuffer(WORLD_GI_PARAMS_BYTES), u32 = new Uint32Array(paramWords), f32 = new Float32Array(paramWords);
+      u32.set([sources.length, probes.length, fb.jobStatusWordOffset, lightingTick, input.epoch, 0, 0, 0]);
+      f32.set(withGround ? [...Array.from(ring.eye), ring.radius] : [0, 0, 0, -1], 8);
+      u32.set(withGround ? [ground.columns[0], ground.columns[1], groundAt, 0] : [0, 0, 0, 0], 12);
+      const params = buffer('world GI logical params', WORLD_GI_PARAMS_BYTES, BU.UNIFORM, u32);
       const gi = new ArrayBuffer(GiParams.size), dv = new DataView(gi);
       // GiParams is the ORIGINAL packed uniform layout; normal blend .4,
       // background blend 1-(1-.4)^4, reset blend 1. No allocation-based phase.

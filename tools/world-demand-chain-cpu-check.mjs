@@ -11,6 +11,10 @@
 // fails on aeef0d0c, whose forecast asked for every visible tile's full-detail
 // casters up front (Island from a hill: 30 tiles, 821k bricks, then Chrome ran
 // out of GPU memory, 2026-10-22).
+// And the light bounce's demand stays inside its near ring of the eye
+// (world/worldGIRing.js): fails on b48dd7e4, whose gathers asked for every
+// brick to the world's edge (Island's start 417k bricks in all, its hill 790k,
+// Descent's first level 824k), and every load within its whole-load budget.
 // CPU only: no browser, no GPU.
 //   node --test tools/world-demand-chain-cpu-check.mjs
 //   node tools/world-demand-chain-cpu-check.mjs --report [scene]   (per-attempt rows, every policy)
@@ -26,6 +30,7 @@ import { LOAD_FLAG_MS } from '../src/loadWatch.js';
 import { worldCoarseCasters, coarseSunDepth, WORLD_SUN_COARSE_NO_HIT } from '../src/world/worldSunRings.js';
 import { worldColumnTops } from '../src/world/worldSunForecast.js';
 import { WORLD_SUN_PITCH, WORLD_SUN_TILE } from '../src/world/worldSun.js';
+import { WORLD_GI_NEAR_RADIUS, worldGIBrickNear } from '../src/world/worldGIRing.js';
 
 const ROOT = new URL('../public', import.meta.url).pathname;
 const localFetch = async (url) => new Response(await readFile(ROOT + String(url).split('?')[0]));
@@ -45,8 +50,19 @@ export const WORLD_LOAD_ATTEMPTS = 3;
 // origin/main reached.
 const CELL_US_PER_BRICK = 85;
 export const WORLD_FIRST_ATTEMPT_BRICKS = Math.floor(LOAD_FLAG_MS / 2 * 1e3 / CELL_US_PER_BRICK);
+// A whole load's bricks: its CELL stage in the same half of the load watch's
+// time (Island start and Descent's first level, with the light bounce's near
+// ring, world/worldGIRing.js; before it Island's start asked for 417k and
+// Descent's 824k, the GI gathers reading to the world's edge).
+export const WORLD_LOAD_BRICKS = WORLD_FIRST_ATTEMPT_BRICKS;
+// What real Chrome held without running out of GPU memory, and never
+// finished (Island, 2026-10-22: 449,215 bricks; 821k ran it out of memory):
+// no load may ask for more, the hill's view included.
+export const WORLD_HELD_BRICKS = 449215;
 // The hill camera: the highest ground on a grid this many cells apart.
 const HILL_GRID = 16;
+// The hill's load is modelled to completion within this many attempts (it settles in 4; b48dd7e4's in 5).
+const HILL_ATTEMPTS = 6;
 
 // where: 'start' (the scene's start, looking at its centre) or 'hill' (its
 // highest ground, looking at its start: most of the map in view).
@@ -93,16 +109,22 @@ const scenes = WORLD_SCENES.filter((s) => typeof s.ground === 'function' && (!s.
 const DESCENT_START = JSON.parse(await readFile(new URL('../src/world/scenes/descent/terrainRoute.json', import.meta.url), 'utf8')).startScene;
 const picked = ['island', DESCENT_START].map((k) => scenes.find((s) => s.key === k)).filter(Boolean);
 // Island from its hill: its first attempt is bounded and every tile shadowed,
-// but its GI gathers then ask for ~600k SOURCES across the island (the model,
-// 2026-10-22), which take it past WORLD_LOAD_ATTEMPTS: the next fix (far
-// SOURCES from what is resident), not gated yet.
+// and since the light bounce's near ring its gathers ask for nothing past it
+// (b48dd7e4's asked for 283k bricks across the island, 790k in all). It still
+// takes 4 attempts and ~446k bricks: ~324k of them are the eye's own walk
+// through unloaded air over the whole island (the model's view stage) and 9
+// sun tiles its grazing view finds that forecastViewTiles misses: the next
+// fix, view-side; gated under what Chrome held, not settled in 3 yet.
 const CAMERAS = { island: { start: { settle: true }, hill: { settle: false } } };
 const POLICIES = {
   'before forecast (fceb7605)': { forecast: 'none', sources: 'all', resetBirths: false },
   'casters forecast (186cefd7)': { forecast: 'eye', sources: 'all', resetBirths: false },
   'demand chain (aeef0d0c)': { forecast: 'view', sources: 'eligible', resetBirths: true },
-  'this fix': { forecast: 'view', sources: 'eligible', resetBirths: true, rings: true },
+  'sun rings (b48dd7e4)': { forecast: 'view', sources: 'eligible', resetBirths: true, rings: true },
+  'this fix': { forecast: 'view', sources: 'eligible', resetBirths: true, rings: true, giRing: WORLD_GI_NEAR_RADIUS },
 };
+// Every brick the light bounce asked for lies inside its near ring of the eye.
+const farAsked = (r) => [...r.giAsked].filter((i) => !worldGIBrickNear(r.cam, r.w.brick(i)));
 
 if (process.argv.includes('--report')) {
   const only = process.argv[process.argv.indexOf('--report') + 1];
@@ -114,12 +136,15 @@ if (process.argv.includes('--report')) {
     console.log(`${scene.key} ${where} | ${name}: ${r.done ? 'complete' : 'NOT complete'} after ${r.attempts} attempts, ${r.requirements} bricks, ${r.sunTiles} sun tiles (${r.coarseTiles} coarse), ${r.sources} sources, ${r.gathers} gathers, view-found tiles ${r.viewTiles} (${((performance.now() - t0) / 1000).toFixed(1)} s)`);
   }
 } else {
-  for (const scene of picked) for (const [where, { settle }] of Object.entries(CAMERAS[scene.key] ?? { start: { settle: true } })) test(`${scene.key} from its ${where}: ${settle ? `a load settles within ${WORLD_LOAD_ATTEMPTS} attempts, ` : ''}its first attempt under ${WORLD_FIRST_ATTEMPT_BRICKS} bricks, every sun tile shadowed`, async () => {
+  for (const scene of picked) for (const [where, { settle }] of Object.entries(CAMERAS[scene.key] ?? { start: { settle: true } })) test(`${scene.key} from its ${where}: ${settle ? `a load settles within ${WORLD_LOAD_ATTEMPTS} attempts and ${WORLD_LOAD_BRICKS} bricks, ` : `a load stays under the ${WORLD_HELD_BRICKS} bricks Chrome held, `}its first attempt under ${WORLD_FIRST_ATTEMPT_BRICKS} bricks, its light bounce asks for nothing past its near ring, every sun tile shadowed`, async () => {
     const rows = [];
-    const r = await load(scene, { ...POLICIES['this fix'], maxAttempts: settle ? WORLD_LOAD_ATTEMPTS + 1 : 1 }, (row) => rows.push(row), where);
-    console.log(`${scene.key} ${where}: ${rows.map((row) => `att ${row.attempt} ${row.stage} req ${row.requirements} (support ${row.support}) sun ${row.sunTiles} coarse ${row.coarseTiles} src ${row.sources} gat ${row.gathers}`).join(' | ')}`);
+    const r = await load(scene, { ...POLICIES['this fix'], maxAttempts: settle ? WORLD_LOAD_ATTEMPTS + 1 : HILL_ATTEMPTS }, (row) => rows.push(row), where);
+    console.log(`${scene.key} ${where}: ${rows.map((row) => `att ${row.attempt} ${row.stage} req ${row.requirements} (support ${row.support}) sun ${row.sunTiles} coarse ${row.coarseTiles} src ${row.sources} gat ${row.gathers}`).join(' | ')} | total ${r.requirements}, light bounce asked ${r.giAsked.size}`);
     if (settle) assert(r.done, `not complete after ${r.attempts} attempts (${r.requirements} bricks, ${r.sunTiles} sun tiles)`);
     if (settle) assert(r.attempts <= WORLD_LOAD_ATTEMPTS, `${r.attempts} attempts`);
+    assert(r.done, `not complete after ${r.attempts} attempts`);
+    assert(r.requirements <= (settle ? WORLD_LOAD_BRICKS : WORLD_HELD_BRICKS), `the load asks for ${r.requirements} bricks`);
+    assert.deepEqual(farAsked(r), [], 'the light bounce asked for bricks past its near ring');
     assert(rows[0].requirements <= WORLD_FIRST_ATTEMPT_BRICKS, `first attempt asks for ${rows[0].requirements} bricks`);
     // the view's own sun set is known up front: the scene's feedback adds no tile
     if (settle) assert.equal(r.viewTiles, 0, `the view asked for ${r.viewTiles} sun tiles the forecast missed`);
@@ -135,6 +160,12 @@ if (process.argv.includes('--report')) {
       const t = coarseSunDepth(casters, o, sun.map((n) => -n));
       assert(Number.isFinite(t) && t > 0 && t <= WORLD_SUN_COARSE_NO_HIT, `coarse tile ${tile}: depth ${t}`);
     }
+  });
+  test('the light bounce before its ring is what this check catches: Island from its hill (b48dd7e4) asks for SOURCES across the island, past what Chrome held', async () => {
+    const island = picked.find((s) => s.key === 'island');
+    const r = await load(island, { ...POLICIES['sun rings (b48dd7e4)'], maxAttempts: HILL_ATTEMPTS }, null, 'hill');
+    assert(r.requirements > WORLD_HELD_BRICKS, `b48dd7e4's hill load asked for only ${r.requirements} bricks`);
+    assert(farAsked(r).length > 0, 'b48dd7e4\'s gathers asked for nothing past the ring');
   });
   test('the chain before rings is what this check catches: Island from its hill asks for every visible tile\'s casters up front', async () => {
     const island = picked.find((s) => s.key === 'island'), rows = [];

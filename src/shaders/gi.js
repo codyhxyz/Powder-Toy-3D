@@ -197,6 +197,11 @@ fn giSrcDir(s: vec4u) -> vec3f {
 
 const paramsWGSL = `${GiParams.wgsl}@group(3) @binding(1) var<uniform> P: GiParams;`;
 
+/** The open ground's light, its sunlit share `sun` (a WGSL f32 expression): the
+ * floor past a ray's end (giGatherFrag beyond), and World's stand-in for
+ * ground it has not loaded (shaders/worldGI.js worldGIProxy). */
+export const giGroundLightWGSL = (sun) => `GROUND_ALB * (FU.sunCol * max(FU.sun.y, 0.0) * ${sun} + FU.skyUp)`;
+
 /**
  * GI source for grid g: a 64-thread workgroup per brick (thread = cell, x
  * fastest, then y, z: its index is the cell's bit in the opaque mask), over
@@ -406,6 +411,13 @@ fn giPast(k: i32, r: i32) -> i32 {
  * a brick without matter has a zero giSrc (giSource), so the leap gives the
  * light and sky of reading each one, for fewer steps. World's march reads every
  * brick still: different code, the same light (not a deviation).
+ * World's gather asks for a missing SOURCE only within the light bounce's near
+ * ring of the eye, and past it reads the resident SOURCE or the ground twin's
+ * stand-in (worldGI.js worldGISourceRing; world/worldGIRing.js), and its
+ * beyond() looks the floor's sun up only inside the ring (past it a sun tile
+ * is not asked for, and the floor is lit as the stand-in's ground is). Box
+ * holds every brick's SOURCE, so its gather reads full detail everywhere:
+ * the light World's converges to inside its ring (not a deviation).
  * @param {{ nx: number, ny: number, nz: number }} g
  * @param {{ world?: number[] }} [opts]
  */
@@ -440,10 +452,10 @@ fn beyond(p: vec3f, d: vec3f) -> vec3f {
   if (d.y >= 0.0) { return skyColor(d); }
   let pf = p + d * (-p.y / d.y);
   let grid = vec3f(GRID);
-  let onFloor = pf.x >= 0.0 && pf.z >= 0.0 && pf.x < grid.x && pf.z < grid.z;
+  let onFloor = pf.x >= 0.0 && pf.z >= 0.0 && pf.x < grid.x && pf.z < grid.z${backend === 'world' ? ' && worldGIRingNear(vec3i(floor(vec3f(pf.x, 0.0, pf.z) / f32(BS))))' : ''};
   var sun = 1.0;
   if (P.shadows != 0u && onFloor) { sun = dot(sunShadowAt(vec3f(pf.x, 0.0, pf.z)), vec3f(1.0 / 3.0)); }
-  return GROUND_ALB * (FU.sunCol * max(FU.sun.y, 0.0) * sun + FU.skyUp);
+  return ${giGroundLightWGSL('sun')};
 }
 
 // The brick of this frame's i-th probe: every brick in turn after a reset,
@@ -506,7 +518,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     var b = bc;
     if (k > 0) { b[(k - 1) >> 1u] += select(-1, 1, (k & 1) == 1); }
     if (any(b < vec3i(0)) || any(b >= bmax)) { blk = 0.0; break; }
-    let cv = giSrcCov(${backend === 'world' ? 'worldGISourceStaged(b)' : 'giSrc[brickId(b)]'});
+    let cv = giSrcCov(${backend === 'world' ? 'worldGISourceRing(b)' : 'giSrc[brickId(b)]'});
     blk = min(blk, min(cv.x, min(cv.y, cv.z)));
   }${backend === 'world' ? ' }' : ''}
   var sh = array<vec4f, 4>(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));
@@ -525,7 +537,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
       if (any(b < vec3i(0)) || any(b >= bmax)) { break; }${backend === 'world' ? '' : `
       let r = brickDistAt(b);
       if (r >= 0) { k = giPast(k, r) - 1; continue; }   // no matter within r bricks: on to the first step past them`}
-      let s = ${backend === 'world' ? 'worldGISourceStaged(b)' : 'giSrc[brickId(b)]'};
+      let s = ${backend === 'world' ? 'worldGISourceRing(b)' : 'giSrc[brickId(b)]'};
       var a = dot(giSrcCov(s), d2);
       if (a <= 0.0) { continue; }
       let nd = giSrcDir(s);
