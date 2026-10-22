@@ -240,6 +240,8 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
     ready: Promise.all([pickKernel.ready, ...(shadows ? [shadowKernel.ready] : [])]).then(() => volume),
     /** Builds the shadow kernel if it isn't yet (a switch to a view with shadows); resolves when it is ready. */
     shadowReady() { return shadowKernel.build(); },
+    /** V2's packets in the map (gfx/packetShadow.js): 'none' (not wanted yet), 'building' or 'ready'. */
+    get packetShadowState() { return packets ? (packets.ready ? 'ready' : 'building') : 'none'; },
     /** The shadow kernel's state: 'idle' (not wanted yet), 'pending', 'ready' or 'failed'. */
     get shadowState() { return shadowKernel.state; },
 
