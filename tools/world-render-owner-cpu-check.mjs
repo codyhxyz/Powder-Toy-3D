@@ -374,6 +374,10 @@ for(const giSlabJobs of [1,undefined])test(`GI gather demand resolves without re
   const cores=[0,8,16],kinds=Object.fromEntries(cores.map(x=>[x,'opaque']));
   const run=async channels=>{
     const f=await setup({size:[96,8,8],feedback:false,sourceKinds:kinds,ownerOptions:giSlabJobs?{giSlabJobs}:{}});
+    // Past the reset: at it every previous probe is the zero seed, read as a
+    // birth (gfx/worldGI.js), so its SOURCE jobs ask for none.
+    const c0=await settle(f.gpu,f.owner.request(f.frame,cores.map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE}))));
+    await settle(f.gpu,f.owner.accept(c0,post(c0)));c0.release();f.giJobs.length=0;
     const c=await settle(f.gpu,f.owner.request(f.frame,cores.map(x=>({brick:[x,0,0],channels}))));
     const p=f.owner.progress,last=new Map();
     for(const j of f.giJobs)last.set(`${j.phase} ${j.index}`,j.flags);
