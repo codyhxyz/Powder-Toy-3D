@@ -192,6 +192,9 @@ for (const sign of [1, -1]) {
   const row = `case ${E.SAND}u: { return vec2f(${Math.max(sand.dens * PHYS.RHO_SCALE, PHYS.RHO_MIN)},${sand.drag}); }`;
   assert.ok(plan.includes(row), 'sand pushed at V1\'s ρ and drag');
   assert.match(plan, /let push=dV1Push\(p,id\); if \(any\(push!=vec3f\(0\)\)\) \{ plan\.flags=1u; plan\.velocity=push; \}/, 'loose cells take V1\'s push');
+  // V1's move: an axis walled in by matter moves none (a buried bed's surface pushed along itself stays: the rocket
+  // GPU scene, tools/v2/blast-damage-browser-check.mjs, had its whole sand floor stripped)
+  assert.ok(plan.includes('if (v[k]!=0.0 && dOpen(p+dAxis(k)*select(-1,1,v[k]>0.0))) { free[k]=v[k]; }') && plan.includes('return free*'), 'the push moves only along free axes');
   // a held Pressure brush's edge (case 2: ~4 V1 units a cell) moves sand at V1's speed, well under V_MAX
   const a = 4 / 2 * 2 * PHYS.P_ACCEL / Math.max(sand.dens * PHYS.RHO_SCALE, PHYS.RHO_MIN), v = Math.min(PHYS.V_MAX, a * (1 - sand.drag) / sand.drag);
   assert.ok(v > 0.1 && v <= PHYS.V_MAX, `sand at a held brush's edge moves (${v.toFixed(2)} cells/step)`);

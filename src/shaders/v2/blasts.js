@@ -928,8 +928,13 @@ fn dV1Push(p: vec3i, id: u32) -> vec3f {
   let down=mDown(vec3f(p)+0.5); let dn=vec3f(down);
   if (any(down!=vec3i(0)) && !dOpen(p+down) && dot(a,dn)>0.0) { a-=dn*dot(a,dn)/dot(dn,dn); }
   let v=clamp(a*(1.0-row.y)/row.y,vec3f(-${f(PHYS.V_MAX)}),vec3f(${f(PHYS.V_MAX)}));
-  if (dRandom(dId(p,0x56315055u),2u)>=min(1.0,${f(LEGACY_STEPS_PER_TICK)}*(abs(v.x)+abs(v.y)+abs(v.z)))) { return vec3f(0); }
-  return v*${f(LEGACY_STEP_HZ * CELL_M)};
+  // V1's move takes a cell a cell along an axis with chance |v| there, into air or gas: one walled in by matter
+  // along an axis moves none that way (a bed of sand under a blast's pressure, its surface pushed along itself,
+  // stays as V1's does; it had launched the whole surface a tick, stripping the bed)
+  var free=vec3f(0);
+  for (var k=0u;k<3u;k++) { if (v[k]!=0.0 && dOpen(p+dAxis(k)*select(-1,1,v[k]>0.0))) { free[k]=v[k]; } }
+  if (dRandom(dId(p,0x56315055u),2u)>=min(1.0,${f(LEGACY_STEPS_PER_TICK)}*(abs(free.x)+abs(free.y)+abs(free.z)))) { return vec3f(0); }
+  return free*${f(LEGACY_STEP_HZ * CELL_M)};
 }
 ` + main64(/* wgsl */ `
     // A quiet brick's plans would all be empty; count and apply skip it too.
