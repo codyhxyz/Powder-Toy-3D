@@ -252,7 +252,9 @@ export async function worldBudgetPass(t,ids,{atlas,budget,cellCurrent,brick,owne
   const current=await viewAirFor();let air=current.air;
   const warn=what=>console.warn(`WORLD load over its GPU page budget (${budget.cell} pages, pool ${budget.pool.cell}): ${what}`);
   const drop=function*(r,why){
-    for(const i of r.dropped){ids.delete(i);fresh.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);if(full(WORLD_BUDGET_DROP_OPS))yield;}
+    // (and from resident: a dropped brick's page is outside the demand now, so the
+    // last eviction never picks a page an earlier one already removed)
+    for(const i of r.dropped){ids.delete(i);fresh.delete(i);resident.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);if(full(WORLD_BUDGET_DROP_OPS))yield;}
     air=r.air;t.budgetDropped=t.dropped.size;
     warn(`${r.dropped.length} farthest bricks dropped${why}`);
   };

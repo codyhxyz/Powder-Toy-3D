@@ -110,7 +110,8 @@ function atlasOf({ live, superseded, reclaimable, index, delay }) {
   const log = [];
   return { live: { cell: live }, superseded, reclaimable, log,
     poolUsed(kind) { assert.equal(kind, 'cell'); return this.live.cell.size + this.superseded; },
-    remove(bricks, channels) { assert.equal(channels, READY.CELL); log.push(['remove', bricks.map(index)]); for (const b of bricks) if (this.live.cell.delete(index(b))) { this.superseded++; this.reclaimable++; } },
+    // (an eviction of a page already gone frees nothing: a dropped brick evicted twice, fixed 2026-10-22)
+    remove(bricks, channels) { assert.equal(channels, READY.CELL); log.push(['remove', bricks.map(index)]); for (const b of bricks) { assert(this.live.cell.has(index(b)), `evicted a page already gone: ${index(b)}`); if (this.live.cell.delete(index(b))) { this.superseded++; this.reclaimable++; } } },
     reclaim(kind, count) { const freed = Math.min(count, this.reclaimable); this.reclaimable -= freed; this.superseded -= freed; log.push(['reclaim', kind, count, freed]); return delay(freed); } };
 }
 // One case, built afresh for each pass from its seed.

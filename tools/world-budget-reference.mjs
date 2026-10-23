@@ -54,7 +54,9 @@ export async function budgetDemand(t, ids, { atlas, budget, cellCurrent, brick, 
     const eye=t.frame.values?.cam,cam=eye&&Array.from(eye).length===3&&Array.from(eye).every(Number.isFinite)?Array.from(eye):null;
     const current=await viewAirFor();let air=current.air;
     const drop=(r,why)=>{
-      for(const i of r.dropped){ids.delete(i);fresh.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);}
+      // (2026-10-22: also from resident, the one fix past d62feb64: a dropped brick's page
+      // was evicted twice by the last pass, freeing nothing; same fix in worldRender.js)
+      for(const i of r.dropped){ids.delete(i);fresh.delete(i);resident.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);}
       air=r.air;t.budgetDropped=t.dropped.size;
       console.warn(`WORLD load over its GPU page budget (${budget.cell} pages, pool ${budget.pool.cell}): ${r.dropped.length} farthest bricks dropped${why}`);
     };
