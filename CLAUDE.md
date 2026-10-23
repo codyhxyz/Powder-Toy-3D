@@ -69,6 +69,7 @@ The user plays on this Mac while agents work. Headless tests can disrupt the gam
 A feature, fix or look applies everywhere the player can meet it: every map and scene, both renderers (Box and World, including World's far field), and every view.
 
 - Ship it everywhere in the same task. "Box only for now", "World later" and "V2 not yet" are unfinished work, not a scope choice, and the task isn't done until they're closed.
+- Every small-map vs big-map difference is a row in `src/mapKind.js`, and code reads its row instead of testing the map kind itself (`tools/check-frame-wires.mjs` reports strays). A new difference is a new row there.
 - A difference is allowed only when the user asked for it or it belongs to a gamemode. Mark it at the branch with who decided and why: `// Intentional (user request, 2026-10-20): ...` or `// Intentional (gamemode: Halo): ...`.
 - Different code that looks and plays the same to the player (World reads its atlas, Box reads V2 state) isn't a deviation. Say so in a comment anyway, so the next agent doesn't take it for one.
 - If you find an undocumented difference, close it. If it might be wanted, ask the user. Never report it as a limitation and stop.
