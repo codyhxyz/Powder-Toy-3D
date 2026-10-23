@@ -5,6 +5,7 @@
 import test from 'node:test';
 import { Matrix4, Vector3 } from 'three';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { fixture } from './world-lighting-records-fixture.mjs';
 import { setup, settle, post, complete, words, tick } from './world-render-owner-fixture.mjs';
 // (other checks import the fixture from here: world-main-route*, world-still)
@@ -450,4 +451,24 @@ test('feedback missing only budget-dropped bricks settles as complete; any other
   assert.equal(settled.incomplete,false);assert.deepEqual([...settled.requirements],[]);assert.deepEqual([...settled.sun],[]);
   for(const f of [miss([5,7]),miss([5],[3]),miss([]),{incomplete:false,requirements:[],sun:[]}])assert.equal(worldSettleFeedback(f,{dropped,sunTiles,index}),f);
   assert.equal(worldSettleFeedback(miss([5]),{dropped:new Set(),sunTiles,index}).incomplete,true,'nothing dropped: nothing settles');
+});
+// Misses that ask for nothing new (pages already required, gone since; an unresolved sign) rerun the
+// attempt WORLD_IDLE_EXTENDS times, then settle: extend() threw "WORLD scene feedback made no dependency
+// progress" and the big map stopped drawing (Island, live 2026-10-23).
+test('feedback asking for nothing new settles once idle; a new page, channel or Sun tile never does',async()=>{
+  const {worldSettleFeedback,WORLD_IDLE_EXTENDS}=await import('../src/wire/worldRender.js');
+  assert(WORLD_IDLE_EXTENDS>=1);
+  const dropped=new Set([5]),sunTiles=new Set([2]),requirements=new Map([[7,3],[8,1]]),index=r=>r.index;
+  const miss=(req,sun=[])=>({incomplete:true,requirements:req.map(([i,c])=>({index:i,channels:c})),sun});
+  const at=(f,idle)=>worldSettleFeedback(f,{dropped,sunTiles,index,requirements,idle});
+  for(const f of [miss([[7,1],[8,1],[5,2]],[2]),miss([[7,3]]),miss([])])
+    {assert.equal(at(f,false),f,'not idle yet: unchanged');assert.equal(at(f,true).incomplete,false,'idle: settled');}
+  for(const f of [miss([[9,1]]),miss([[8,2]]),miss([[7,1]],[4])])assert.equal(at(f,true),f,'something new: never settled');
+  const done={incomplete:false,requirements:[],sun:[]};assert.equal(at(done,true),done);
+});
+// The owner's extend() reruns instead of throwing for feedback asking for nothing new, at most WORLD_IDLE_EXTENDS times.
+test('extend reruns an attempt for feedback that asks for nothing new, a bounded number of times',()=>{
+  const src=readFileSync(new URL('../src/wire/worldRender.js',import.meta.url),'utf8');
+  assert.match(src,/if\(!add\(t,feedback\.requirements,feedback\.sun,false,false,true\)\)\{if\(\(t\.idleExtends\?\?0\)>=WORLD_IDLE_EXTENDS\)throw [^;]*;t\.idleExtends=\(t\.idleExtends\?\?0\)\+1;\}t\.state='building';t\.work=runRetry\(t\);/);
+  assert.match(src,/idle:\(t\.idleExtends\?\?0\)>=WORLD_IDLE_EXTENDS/);
 });

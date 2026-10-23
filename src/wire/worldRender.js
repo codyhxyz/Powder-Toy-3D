@@ -94,6 +94,12 @@ export function mergeWorldFeedback(list) {
 // after two (its state, then its pages: renderAtlas.js _releaseSnapshot, _collect).
 export const WORLD_RECLAIM_ROUNDS=3;
 export const WORLD_SUPPORT_STAGES=Object.freeze(new Set(['forecast','sun','source']));
+// A frame's misses that ask for nothing new: pages the transaction already requires (gone since, as
+// a full CELL pool reclaims, or never published), bricks the budget dropped, an unresolved sign. Its
+// attempt runs again for them this many times (extend); past that the frame is settled as complete
+// as it can be and accepted, and the next transaction asks again. Before, extend() threw "WORLD scene
+// feedback made no dependency progress" and the big map stopped drawing (Island, live 2026-10-23).
+export const WORLD_IDLE_EXTENDS=2;
 export function worldSourceEligible(i,{requirements,support,ownedSources,reached=null}) {
   return ownedSources.has(i)||requirements.has(i)&&!support.has(i)&&(!reached||reached(i));
 }
@@ -323,10 +329,18 @@ export function* worldRestoreResidentSteps(all,{resident,live,leases,fresh},full
 }
 // A frame's feedback whose only misses are budget-dropped bricks (and Sun tiles it
 // already has), settled as complete; any other feedback unchanged (owner.settle).
-export function worldSettleFeedback(feedback,{dropped,sunTiles,index}) {
+// idle (past WORLD_IDLE_EXTENDS reruns): any feedback that asks for nothing new
+// settles too: each miss dropped or already in requirements with its channels.
+export function worldSettleFeedback(feedback,{dropped,sunTiles,index,requirements=null,idle=false}) {
   const req=feedback?.requirements??[],sun=feedback?.sun??[];
-  if(!feedback||feedback.incomplete===false||!dropped?.size||!(req.length||sun.length))return feedback;
-  for(const r of req)if(!dropped.has(index(r)))return feedback;
+  if(!feedback||feedback.incomplete===false)return feedback;
+  if(!idle&&(!dropped?.size||!(req.length||sun.length)))return feedback;
+  for(const r of req){
+    const i=index(r);
+    if(dropped?.has(i))continue;
+    const old=idle?requirements?.get(i):undefined;
+    if(old===undefined||(old|r.channels)!==old)return feedback;
+  }
   for(const i of sun)if(!sunTiles.has(i))return feedback;
   return Object.freeze({...feedback,incomplete:false,requirements:Object.freeze([]),sun:Object.freeze([])});
 }
@@ -770,8 +784,8 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     // accepted instead of extend() refusing it for making no progress (Descent,
     // real Chrome 2026-10-22: "WORLD scene feedback made no dependency progress"
     // every frame once over budget). Any other miss, or a new Sun tile, stays.
-    settle(feedback){const t=active;return t?worldSettleFeedback(feedback,{dropped:t.dropped,sunTiles:t.sunTiles,index:r=>index(r.brick??brick(r.index))}):feedback;},
-    async extend(candidate,feedback){live();const t=active;if(!t||t.state!=='probe-ready'||candidate.identity!==t.bundle.identity)throw new Error('foreign/out-of-order WORLD feedback');if(complete(feedback))return t.bundle.retain();if(!add(t,feedback.requirements,feedback.sun,false,false,true))throw new Error('WORLD scene feedback made no dependency progress');t.state='building';t.work=runRetry(t);t.work.catch(()=>{});return t.work;},
+    settle(feedback){const t=active;return t?worldSettleFeedback(feedback,{dropped:t.dropped,sunTiles:t.sunTiles,index:r=>index(r.brick??brick(r.index)),requirements:t.requirements,idle:(t.idleExtends??0)>=WORLD_IDLE_EXTENDS}):feedback;},
+    async extend(candidate,feedback){live();const t=active;if(!t||t.state!=='probe-ready'||candidate.identity!==t.bundle.identity)throw new Error('foreign/out-of-order WORLD feedback');if(complete(feedback))return t.bundle.retain();if(!add(t,feedback.requirements,feedback.sun,false,false,true)){if((t.idleExtends??0)>=WORLD_IDLE_EXTENDS)throw new Error('WORLD scene feedback made no dependency progress');t.idleExtends=(t.idleExtends??0)+1;}t.state='building';t.work=runRetry(t);t.work.catch(()=>{});return t.work;},
     async accept(candidate,{feedback,feedbackIdentity,postTicket}={}){live();const t=active;if(!t||t.state!=='probe-ready'||candidate.identity!==t.bundle.identity||!complete(feedback)||!postTicket?.confirmation||postTicket.publication?.identity!==candidate.identity||feedbackIdentity==null||postTicket.feedbackIdentity!==feedbackIdentity||['epoch','sceneToken','configVersion'].some(k=>postTicket.identity?.[k]!==candidate.identity[k]))throw new Error('exact complete scene/native feedback and final Post ticket required');t.state='accepting';const confirmed=await postTicket.confirmation;if(active!==t||dead)return false;if(confirmed!==true||postTicket.status!=='committed'){t.state='probe-ready';wake();return false;}if(candidate.identity!==t.bundle.identity)throw new Error('WORLD publication changed during final Post');
       // In slices (worldSlices.js): a reset or disposal between two (the only
       // calls an accepting transaction admits) stops it, and clears what it adopted.
