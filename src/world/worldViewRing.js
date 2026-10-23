@@ -41,7 +41,6 @@
 import { WORLD_SUN_NEAR_RADIUS } from './worldSunRings.js';
 import { BRICK } from '../shaders/common.js';
 import { AUX_RECORDS, LIGHT_RECORDS, PAGE_CHANNELS } from './renderAtlas.js';
-import { worldRunSync, WORLD_SLICE_COST as COST } from './worldSlices.js';
 
 // The view's full-detail ring, cells: the sun's near ring (worldSunRings.js:
 // the screen-error rule of gfx/lodFade.js applied to the coarse stand-in's
@@ -164,91 +163,39 @@ export function worldPageBudget({ deviceMemoryGB, limits = {} } = {}) {
 // The demand that fits the budget: ids (brick indices) to keep. When there are
 // more than `budget` of them, or more new pages (fresh: the bricks a pack
 // would write a page for; all of them when null) than the pool has `room` for,
-// the farthest from the eye that are not `held` (pages the owner keeps anyway;
-// a Set, or a rule asked of ids' bricks) and lie past the near ring are
-// dropped, until both fit. A dropped brick the atlas does not hold (not in
-// `resident`) lowers its column's floor to its own row, so it and every brick
-// over it in the column read as air: the view never asks for them again on
-// this load, the far edge of the picture is what is resident, as past
-// Minecraft's render distance nothing is drawn. A resident one keeps its last
-// page. Returns { keep, dropped, air } (air: the lowered copy, or the input
-// when nothing was lowered).
-// (worldBudgetDemandSteps: the same in slices, worldSlices.js, without keep)
-export function worldBudgetDemand(ids, options) {
-  const r = worldRunSync(worldBudgetDemandSteps(ids, options)), dropped = new Set(r.dropped);
-  return { keep: new Set([...ids].filter((i) => !dropped.has(i))), dropped: r.dropped, air: r.air };
-}
-export function* worldBudgetDemandSteps(ids, { budget, eye, brick, held = null, air = null, radius = WORLD_VIEW_NEAR_RADIUS, fresh = null, room = Infinity, resident = null }, full = () => false) {
-  const isHeld = !held ? () => false : typeof held === 'function' ? held : (i) => held.has(i), isFresh = (i) => !fresh || fresh.has(i);
-  // ids' new pages, counted over the smaller of the two sets
-  let news = ids.size;
-  if (fresh) {
-    news = 0;
-    const [a, b] = fresh.size < ids.size ? [fresh, ids] : [ids, fresh];
-    for (const i of a) { if (b.has(i)) news++; if (full(COST.member)) yield; }
+// the farthest from the eye that are not `held` (pages the owner keeps anyway)
+// and lie past the near ring are dropped, until both fit. A dropped brick the
+// atlas does not hold (not in `resident`) lowers its column's floor to its
+// own row, so it and every brick over it in the column read as air: the view
+// never asks for them again on this load, the far edge of the picture is what
+// is resident, as past Minecraft's render distance nothing is drawn. A
+// resident one keeps its last page. Returns { keep, dropped, air } (air: the
+// lowered copy, or the input when nothing was lowered).
+export function worldBudgetDemand(ids, { budget, eye, brick, held = new Set(), air = null, radius = WORLD_VIEW_NEAR_RADIUS, fresh = null, room = Infinity, resident = null }) {
+  const all = [...ids], isFresh = (i) => !fresh || fresh.has(i);
+  let over = all.length - budget, short = all.filter(isFresh).length - room;
+  if (!(over > 0 || short > 0) || !eye) return { keep: new Set(all), dropped: [], air };
+  const far = [];
+  for (const i of all) {
+    if (held.has(i)) continue;
+    const b = brick(i), d = Math.hypot(...b.map((n, k) => (n + 0.5) * BRICK - eye[k]));
+    if (d > radius) far.push([d, i, b]);
   }
-  let over = ids.size - budget, short = news - room;
-  if (!(over > 0 || short > 0) || !eye) return { dropped: [], air };
-  const dropped = [];
-  // A brick goes while either is short; once only the pool is (over never
-  // rises again), only a new page frees room, so a demand within its budget
-  // ranks only its new pages (walking the smaller of the two sets): the same
-  // farthest-first walk over fewer bricks.
-  const [list, skip] = over > 0 ? [ids, isHeld] : fresh && fresh.size < ids.size ? [fresh, (i) => !ids.has(i) || isHeld(i)] : [ids, (i) => !isFresh(i) || isHeld(i)];
-  yield* worldFarthestSteps(list, { eye, brick, skip, radius, visit(i) {
-    const f = isFresh(i);
-    if (over > 0 || f) { dropped.push(i); over--; if (f) short--; }
-    return over <= 0 && short <= 0;
-  } }, full);
+  far.sort((a, b) => b[0] - a[0] || b[1] - a[1]);
+  const drop = [];
+  for (const e of far) {
+    if (over <= 0 && short <= 0) break;
+    const f = isFresh(e[1]);
+    if (over <= 0 && !f) continue;   // only the pool is short: only a new page frees room
+    drop.push(e); over--; if (f) short--;
+  }
+  const dropped = new Set(drop.map(([, i]) => i));
   let next = air;
-  if (air) {
-    let floors = null;
-    for (const i of dropped) {
-      if (!resident?.has(i)) { const b = brick(i), c = b[0] + air.dims[0] * b[2]; floors ??= Uint32Array.from(air.floors); floors[c] = Math.min(floors[c], b[1]); }
-      if (full(COST.member)) yield;
-    }
-    if (floors) next = Object.freeze({ floors, dims: air.dims });
+  const lower = drop.filter(([, i]) => !resident?.has(i));
+  if (lower.length && air) {
+    const floors = Uint32Array.from(air.floors);
+    for (const [, , b] of lower) { const c = b[0] + air.dims[0] * b[2]; floors[c] = Math.min(floors[c], b[1]); }
+    next = Object.freeze({ floors, dims: air.dims });
   }
-  return { dropped, air: next };
-}
-// visit(i), farthest first, for the bricks of ids that skip(i) does not skip
-// and whose centre lies past radius cells of eye, until visit returns true:
-// the order the budget's rules read (worldBudgetDemand above, the owner's
-// evictions: wire/worldRender.js worldBudgetPass), every brick by its
-// distance, the higher index first at a tie. In slices (worldSlices.js), and
-// no sort of them all: each distance goes to one of about as many buckets as
-// bricks, a bucket the same share of the distances' span (a monotone rule, so
-// a farther bucket holds only bricks as far or farther), and a bucket is put
-// in order only when the walk reaches it: the bricks once, then what the walk
-// takes. The budget sorted every brick of a big map's demand, ~300k, for each
-// of its rules, all in one task (Descent, real Chrome with the user's
-// settings, 2026-10-22: 1.1 s blocked as a view round loaded ~96k bricks).
-export function* worldFarthestSteps(ids, { eye, brick, skip = null, radius = -Infinity, visit }, full = () => false) {
-  let n = 0, D = new Float64Array(Math.max(1, ids.size ?? ids.length ?? 0)), I = new Uint32Array(D.length), lo = Infinity, hi = -Infinity;
-  for (const i of ids) {
-    if (!skip?.(i)) {
-      // (the distance as worldViewFarAir's centre rule, bit for bit)
-      const b = brick(i), d = Math.hypot((b[0] + 0.5) * BRICK - eye[0], (b[1] + 0.5) * BRICK - eye[1], (b[2] + 0.5) * BRICK - eye[2]);
-      if (d > radius) {
-        if (n === D.length) { const d2 = new Float64Array(2 * n), i2 = new Uint32Array(2 * n); d2.set(D); i2.set(I); D = d2; I = i2; }
-        D[n] = d; I[n++] = i; if (d < lo) lo = d; if (d > hi) hi = d;
-      }
-    }
-    if (full(COST.rank)) yield;
-  }
-  if (!n) return;
-  const buckets = n, width = (hi - lo) / buckets, bucket = width > 0 ? (d) => Math.min(buckets - 1, Math.floor((d - lo) / width)) : () => 0;
-  // a counting sort into the buckets: starts, then each brick's slot
-  const start = new Uint32Array(buckets + 1), order = new Uint32Array(n);
-  for (let k = 0; k < n; k++) { start[bucket(D[k]) + 1]++; if (full(COST.typed)) yield; }
-  for (let k = 0; k < buckets; k++) { start[k + 1] += start[k]; if (full(COST.typed)) yield; }
-  const slot = start.slice(0, buckets);
-  for (let k = 0; k < n; k++) { order[slot[bucket(D[k])]++] = k; if (full(COST.typed)) yield; }
-  const farther = (a, b) => D[b] - D[a] || I[b] - I[a];
-  for (let k = buckets - 1; k >= 0; k--) {
-    const s = start[k], e = start[k + 1];
-    if (e - s > 1) { order.subarray(s, e).sort(farther); if (full(COST.compare * (e - s) * Math.ceil(Math.log2(e - s)))) yield; }
-    for (let j = s; j < e; j++) { if (visit(I[order[j]])) return; if (full(COST.member)) yield; }
-    if (full(COST.typed)) yield;
-  }
+  return { keep: new Set(all.filter((i) => !dropped.has(i))), dropped: drop.map(([, i]) => i), air: next };
 }

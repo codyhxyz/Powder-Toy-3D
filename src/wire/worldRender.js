@@ -13,9 +13,9 @@ import { worldSunProjection, WORLD_SUN_PITCH } from '../world/worldSun.js';
 import { worldColumnTops, forecastSunCasters, forecastViewTiles, worldViewRays, forecastGatherSources, forecastSourceTiles } from '../world/worldSunForecast.js';
 import { worldSunRings, worldCoarseCasters, WORLD_SUN_SHARPEN_TILES } from '../world/worldSunRings.js';
 import { WORLD_GI_NEAR_RADIUS, worldGIReach } from '../world/worldGIRing.js';
-import { worldViewAirFloors, worldViewAirWords, worldPageBudget, worldBudgetDemandSteps, worldFarthestSteps } from '../world/worldViewRing.js';
+import { worldViewAirFloors, worldViewAirWords, worldPageBudget, worldBudgetDemand } from '../world/worldViewRing.js';
 import { worldGIGroundWords } from '../shaders/worldGI.js';
-import { worldRunSync, worldRunSliced, worldSliceMeter, worldPause, WORLD_SLICE_COST as COST } from '../world/worldSlices.js';
+import { worldRunSync, worldRunSliced, worldSliceMeter, WORLD_SLICE_COST as COST } from '../world/worldSlices.js';
 
 const copy = v => v?.elements ? Array.from(v.elements) : typeof v?.toArray === 'function' ? v.toArray() : ArrayBuffer.isView(v) ? Array.from(v) : Array.isArray(v) ? v.map(copy) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k,x]) => [k,copy(x)])) : v;
 const frozen = v => { const c=copy(v); const freeze=x=>{if(x&&typeof x==='object'){Object.values(x).forEach(freeze);Object.freeze(x);}return x;};return freeze(c); };
@@ -42,8 +42,6 @@ export const worldFeedbackExtraWords = (size) => {
 // for 3 s on Island and 6 s on Descent (2026-10-21). Every brick is still
 // classified before the attempt goes on; a core is never split, so no core's
 // fields are captured twice.
-// The CELL pool headroom a first load reserves past its demand (worldClassify).
-export const WORLD_LOAD_POOL_HEADROOM=0.5;
 export const WORLD_CLASSIFY_BRICKS=2048;
 // Source columns (64 cells square, the world's height) a batch produces per
 // task before it packs: ~1-3 ms of JS each, and a load's first batches need
@@ -185,12 +183,7 @@ export function worldCellCurrent(atlas,i) {const p=atlas.live.cell.get(i);return
 export async function worldClassify(gpu,cells,atlas,ids,{fieldTick,smoothing=1,full=worldSliceMeter(),paced=false},brick) {
   const stale=await worldRunSliced(worldStaleCellSteps(atlas,ids,brick,full));
   // One pool growth for the whole demand: a growth copies every public page.
-  // A first load (unpaced) also reserves headroom while its loading screen is
-  // up, so the pool doubles behind it rather than under the first frames: the
-  // next tick's growth right after Island's first frame copied every page
-  // (1.3 s, real Chrome 2026-10-22). Never past the page budget.
-  const extra=paced?0:Math.ceil(stale.length*WORLD_LOAD_POOL_HEADROOM),room=(atlas.pageBudget?.cell??Infinity)-atlas.poolUsed('cell');
-  atlas.reserve('cell',Math.max(stale.length,Math.min(stale.length+extra,room)));
+  atlas.reserve('cell',stale.length);
   for(const [k,requirements] of worldClassifyBatches(stale).entries()){
     if(k)await (paced?(gpu.device??gpu).queue.onSubmittedWorkDone():pause());
     await recordCells(gpu,cells,{fieldTick,requirements,smoothing},'WORLD Source/Fields final capture');
@@ -218,74 +211,6 @@ export function* worldOutsideSteps(keys,ids,full=()=>false) {
 export function* worldExceptSteps(list,skip,full=()=>false) {
   const out=[];for(const i of list){if(!skip.has(i))out.push(i);if(full(COST.member))yield;}
   return out;
-}
-// ids split by classify()'s rule (a current page is not packed again): {fresh, resident}.
-export function* worldCurrentSplitSteps(ids,current,full=()=>false) {
-  const fresh=new Set(),resident=new Set();
-  for(const i of ids){(current(i)?resident:fresh).add(i);if(full(COST.member))yield;}
-  return {fresh,resident};
-}
-// Set operations a budget drop or eviction does per brick (worldBudgetPass).
-const WORLD_BUDGET_DROP_OPS=6;
-// The GPU memory budget's pass over a transaction's demand ids (the owner's
-// budgetDemand, installWorldRender; its rule is there). Every scan in slices
-// (worldSlices.js, t.full), and every farthest-first rule a bucketed walk,
-// not a sort (world/worldViewRing.js worldFarthestSteps): the same drops,
-// evictions and kept demand as one synchronous sort a rule
-// (tools/world-budget-slices-cpu-check.mjs, against d62feb64's). Descent sat
-// over its budget, so every transaction ran this: 1.1 s in one task as a view
-// round loaded ~96k bricks (real Chrome with the user's settings, 2026-10-22).
-// What stays one call is atlas.remove (one commit for all of a rule's
-// evictions: a commit a slice would be a new generation each).
-// ctx: the owner's atlas, budget, cellCurrent, brick, owned SOURCE/probe/glow
-// sets, viewAirFor, setViewAir(air) (a new set of floors), reclaim(kind,over)
-// and pause (worldRunSliced's; a test's meter).
-export async function worldBudgetPass(t,ids,{atlas,budget,cellCurrent,brick,ownedSources,ownedProbes,ownedGlow,viewAirFor,setViewAir,reclaim,pause=worldPause}) {
-  const full=t.full??worldSliceMeter(),run=steps=>worldRunSliced(steps,{pause});
-  const outside=await run(worldOutsideSteps(atlas.live.cell.keys(),ids,full));
-  const limit=Math.max(0,budget.cell-outside),roomNow=()=>Math.max(0,budget.pool.cell-atlas.poolUsed('cell'));
-  let room=roomNow();
-  if(ids.size<=limit&&ids.size<=room)return;
-  const {fresh,resident}=await run(worldCurrentSplitSteps(ids,cellCurrent,full));
-  if(ids.size<=limit&&fresh.size<=room)return;
-  const eye=t.frame.values?.cam,cam=eye&&Array.from(eye).length===3&&Array.from(eye).every(Number.isFinite)?Array.from(eye):null;
-  const current=await viewAirFor();let air=current.air;
-  const warn=what=>console.warn(`WORLD load over its GPU page budget (${budget.cell} pages, pool ${budget.pool.cell}): ${what}`);
-  const drop=function*(r,why){
-    // (and from resident: a dropped brick's page is outside the demand now, so the
-    // last eviction never picks a page an earlier one already removed)
-    for(const i of r.dropped){ids.delete(i);fresh.delete(i);resident.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);if(full(WORLD_BUDGET_DROP_OPS))yield;}
-    air=r.air;t.budgetDropped=t.dropped.size;
-    warn(`${r.dropped.length} farthest bricks dropped${why}`);
-  };
-  // only bricks this load asked for may go: never a held page, a glow core's region, a record's brick or a pinned support brick
-  const held=i=>!t.requirements.has(i)||t.pinned.has(i)||ownedSources.has(i)||ownedProbes.has(i)||ownedGlow.has(i);
-  const r=await run(worldBudgetDemandSteps(ids,{budget:limit,eye:cam,brick,held,air,fresh,room,resident},full));
-  if(r.dropped.length)await run(drop(r,''));
-  if(fresh.size>room){await reclaim('cell',()=>fresh.size-roomNow());room=roomNow();}
-  const keeps=i=>t.pinned.has(i)||t.squeezed.has(i)||ownedSources.has(i)||ownedProbes.has(i);
-  // Pages kept resident (a load never evicts one), farthest first: the ones
-  // outside this demand, then (past them) this demand's own; an evicted one
-  // of the demand is dropped from it, its misses settled as a dropped brick's
-  // (worldSettleFeedback). list: the pages, of which skip(i) are not candidates.
-  const evict=async(list,skip)=>{
-    const count=fresh.size-room,out=[];
-    await run(worldFarthestSteps(list,{eye:cam??[0,0,0],brick,skip:i=>skip(i)||keeps(i),visit:i=>out.push(i)>=count},full));
-    if(!out.length)return;
-    atlas.remove(await run((function*(){const bricks=[];for(const i of out){bricks.push(brick(i));if(full(COST.member))yield;}return bricks;})()),READY.CELL);
-    await run((function*(){for(const i of out){if(ids.has(i)){ids.delete(i);resident.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);t.squeezed.add(i);}if(full(WORLD_BUDGET_DROP_OPS))yield;}})());
-    t.budgetDropped=t.dropped.size;
-    warn(`${out.length} farthest resident pages evicted`);
-    await reclaim('cell',()=>fresh.size-roomNow());room=roomNow();
-  };
-  if(fresh.size>room)await evict(atlas.live.cell.keys(),i=>ids.has(i));
-  if(fresh.size>room){
-    const r2=await run(worldBudgetDemandSteps(ids,{budget:Infinity,eye:cam??[0,0,0],brick,held:keeps,air,fresh,room,resident,radius:0},full));
-    await run((function*(){for(const i of r2.dropped){t.squeezed.add(i);if(full(COST.member))yield;}})());
-    if(r2.dropped.length)await run(drop(r2,' (past the near ring rule: the pool is full)'));
-  }
-  if(fresh.size>room)await evict(resident,()=>false);
-  if(air!==current.air)setViewAir(air);
 }
 // The bricks a transaction's metadata stage records (book indices): the
 // committed rows a cut may have changed (worldLightingRecords stale), and the
@@ -476,9 +401,50 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   // bricks of any kind but a producer's own ask (t.pinned) and the owned light
   // records, each at most once a transaction (t.squeezed): a producer that
   // asks for one again gets it, pinned, on its next attempt.
-  // (worldBudgetPass: the pass, in slices)
-  const budgetContext={atlas,budget,cellCurrent,brick,ownedSources,ownedProbes,ownedGlow,viewAirFor,setViewAir:air=>{viewAir={air,id:++viewAirId};},reclaim};
-  const budgetDemand=(t,ids)=>worldBudgetPass(t,ids,budgetContext);
+  async function budgetDemand(t,ids) {
+    const outside=await worldRunSliced(worldOutsideSteps(atlas.live.cell.keys(),ids,t.full));
+    const limit=Math.max(0,budget.cell-outside),roomNow=()=>Math.max(0,budget.pool.cell-atlas.poolUsed('cell'));
+    let room=roomNow();
+    if(ids.size<=limit&&ids.size<=room)return;
+    // classify()'s rule: a current page is not packed again
+    const fresh=new Set(),resident=new Set();
+    for(const i of ids)(cellCurrent(i)?resident:fresh).add(i);
+    if(ids.size<=limit&&fresh.size<=room)return;
+    const eye=t.frame.values?.cam,cam=eye&&Array.from(eye).length===3&&Array.from(eye).every(Number.isFinite)?Array.from(eye):null;
+    const current=await viewAirFor();let air=current.air;
+    const drop=(r,why)=>{
+      for(const i of r.dropped){ids.delete(i);fresh.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);}
+      air=r.air;t.budgetDropped=t.dropped.size;
+      console.warn(`WORLD load over its GPU page budget (${budget.cell} pages, pool ${budget.pool.cell}): ${r.dropped.length} farthest bricks dropped${why}`);
+    };
+    // only bricks this load asked for may go: never a held page, a glow core's region, a record's brick or a pinned support brick
+    const held=new Set([...ids].filter(i=>!t.requirements.has(i)||t.pinned.has(i)||ownedSources.has(i)||ownedProbes.has(i)||ownedGlow.has(i)));
+    const r=worldBudgetDemand(ids,{budget:limit,eye:cam,brick,held,air,fresh,room,resident});
+    if(r.dropped.length)drop(r,'');
+    if(fresh.size>room){await reclaim('cell',()=>fresh.size-roomNow());room=roomNow();}
+    const keeps=i=>t.pinned.has(i)||t.squeezed.has(i)||ownedSources.has(i)||ownedProbes.has(i);
+    const far=(list)=>{const at=cam??[0,0,0];return list.map(i=>[Math.hypot(...brick(i).map((n,k)=>(n+0.5)*4-at[k])),i]).sort((a,b)=>b[0]-a[0]||b[1]-a[1]).map(([,i])=>i);};
+    // Pages kept resident (a load never evicts one), farthest first: the ones
+    // outside this demand, then (past them) this demand's own; an evicted one
+    // of the demand is dropped from it, its misses settled as a dropped brick's
+    // (worldSettleFeedback).
+    const evict=async(list)=>{
+      const out=far(list.filter(i=>!keeps(i))).slice(0,fresh.size-room);if(!out.length)return;
+      atlas.remove(out.map(brick),READY.CELL);
+      for(const i of out)if(ids.has(i)){ids.delete(i);resident.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);t.squeezed.add(i);}
+      t.budgetDropped=t.dropped.size;
+      console.warn(`WORLD load over its GPU page budget (${budget.cell} pages, pool ${budget.pool.cell}): ${out.length} farthest resident pages evicted`);
+      await reclaim('cell',()=>fresh.size-roomNow());room=roomNow();
+    };
+    if(fresh.size>room)await evict([...atlas.live.cell.keys()].filter(i=>!ids.has(i)));
+    if(fresh.size>room){
+      const r2=worldBudgetDemand(ids,{budget:Infinity,eye:cam??[0,0,0],brick,held:new Set([...ids].filter(keeps)),air,fresh,room,resident,radius:0});
+      for(const i of r2.dropped)t.squeezed.add(i);
+      if(r2.dropped.length)drop(r2,' (past the near ring rule: the pool is full)');
+    }
+    if(fresh.size>room)await evict([...resident]);
+    if(air!==current.air)viewAir={air,id:++viewAirId};
+  }
   // SOURCE slabs a restart keeps (gfx/worldGI.js carry): the transaction's cut,
   // field tick, lighting tick, frame and config are a restart's too, so a
   // completed SOURCE job (a published slab's, or an incomplete slab's that read

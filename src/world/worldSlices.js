@@ -19,9 +19,6 @@ export const WORLD_SLICE_COST = Object.freeze({
   record: 4,     // a metadata row read into a frozen GI record, or one built for the selector
   select: 8,     // the selector's rule for one record (giSelect), its checks and its sets
   lease: 16,     // a restore lease or light page: frozen provenance, validation, registration
-  rank: 4,       // a brick's distance from the eye: its skip rule's lookups, its decode and hypot (worldViewRing.js worldFarthestSteps)
-  typed: 1 / 16, // one element of a typed-array pass (a bucket count or move: a few ns)
-  compare: 1 / 4, // one comparison of a typed-array sort
 });
 export const worldPause = () => new Promise((resolve) => setTimeout(resolve, 0));
 // A meter over one step: full(cost) counts cost units, and is true (and starts
