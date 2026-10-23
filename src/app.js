@@ -67,7 +67,7 @@ import { cloudShift } from './shaders/gfx/clouds.js';
 import { DETAIL, settingKey, detailDefaults, detailRows } from './gfx/detail.js';
 import { createDetailGate, gateVariants } from './gfx/detailGate.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
-import { createGpuLossTracker, failureKind, lossDetails } from './gfx/gpuLoss.js';
+import { createGpuLossTracker, failureKind, lossDetails, recordFrameError, lastFrameError } from './gfx/gpuLoss.js';
 import { createPost, createAutoResolution, UPSCALE, UPSCALE_FLOOR } from './gfx/post.js';
 import { canPostFrame } from './gfx/postFrames.js';
 import { sprintBlurStep } from './gfx/sprintBlur.js';
@@ -394,7 +394,8 @@ let graphicsFailure = null;
 // A map load that stalls or errors is flagged: on the loading screen while it's up, else a
 // toast; and kept in this browser for the bug report (loadWatch.js). A cancelled start is
 // not a stall. build: this bundle's hashed name, which names the deploy.
-const loadWatch = createLoadWatch({ build: import.meta.url.split('/').pop(), alive: () => !graphicsFailure && !launch.startupError,
+const loadBuild = import.meta.url.split('/').pop();   // this bundle's hashed name: the deploy, in records
+const loadWatch = createLoadWatch({ build: loadBuild, alive: () => !graphicsFailure && !launch.startupError,
   report: (record, text) => { if (!launch.flagLoad?.(text)) hud.toast(text, { kind: 'error' }); } });
 // What the page was doing when its GPU work stopped (gfx/gpuLoss.js), kept for the bug report.
 const gpuLoss = createGpuLossTracker(gpu);
@@ -403,12 +404,13 @@ const gpuLoss = createGpuLossTracker(gpu);
 // throws the same GraphicsFailure, so every entry point that would record GPU
 // work (a step, a stroke, a load, a map) throws it, and the frame loop stops.
 // There is no restore: the state lived on the GPU.
-function stopGraphics(error) {
+// kind: the report's, when the failure isn't the GPU's own (failureKind reads those from the message).
+function stopGraphics(error, { kind = failureKind(error.message) } = {}) {
   if (!graphicsFailure) {
     loadWatch.error(error);   // a load under way failing is flagged and recorded (loadWatch.js)
     loadWatch.stop();
     graphicsFailure = error;
-    gpuLoss.record({ kind: failureKind(error.message), message: error.message.slice(0, 2000), ...gpuLoss.snapshot() });
+    gpuLoss.record({ kind, message: error.message.slice(0, 2000), stack: String(error.stack ?? '').slice(0, 1500), ...gpuLoss.snapshot() });
     invalidateGpuWork();
     const el = document.getElementById('error');
     el.style.display = 'flex';
@@ -419,7 +421,17 @@ function stopGraphics(error) {
   }
   return graphicsFailure;
 }
-gpu.onFailure(stopGraphics);
+gpu.onFailure((error) => stopGraphics(error));
+// The WORLD driver's work failed (its tick throws every frame after: wire/worldRenderFrame.js). Before,
+// the picture froze with no message and no record (the user's "map crashed", 2026-10-23). It is kept
+// for the bug report and the driver rebuilt over the same world (wire/world.js restartRender); past its
+// restarts, or with the GPU itself gone, graphics stop with the failure on screen.
+function worldFailed(error) {
+  if (gpu.failure || graphicsFailure || !wire('world').restartRender(ctx)) throw stopGraphics(error, gpu.failure ? {} : { kind: 'worldFailed' });
+  gpuLoss.record({ kind: 'worldRestarted', message: error.message.slice(0, 2000), stack: String(error.stack ?? '').slice(0, 1500), ...gpuLoss.snapshot() });
+  console.error('World renderer failed; restarting it:', error);
+  hud.toast('Something went wrong drawing the map. Restarting it.', { kind: 'error' });
+}
 // A gamemode's presentation effect (gfx/presentation.js; maps.js GAMEMODES.effect:
 // Animal Crossing's rolling log): the displayed world bends, physics stays flat.
 // Selecting one drops TAA's history, ends a stroke and wakes the view.
@@ -2835,7 +2847,7 @@ function frame(now) {
     if (!keep && settledSleep) gpuLoss.sleep();   // (a loss from here on happened to a page with nothing to draw)
     return keep;
   } catch (error) {
-    if (error !== graphicsFailure) throw error;
+    if (error !== graphicsFailure) { recordFrameError(error, loadBuild); throw error; }
     return false;
   }
 }
@@ -3008,15 +3020,18 @@ function tick(now, renderOnly = false) {
     try{driver=wire('world').prepareRender(ctx);}
     catch(error){stopGraphics(error);throw error;}
     if(driver) {
+      // Its tick throws once its work has failed, every frame after (worldRenderFrame.js): worldFailed.
+      try {
       runView=driver.tick({present,dt,
         reserve:()=>{
           const derived=pacer.derived(`${sim.id}:${sim.version}|${SUN.toArray()}|${KEY_LIGHT}|${renderView}|${JSON.stringify(gfx)}|${settings.nearGI}:${settings.glowLights}:${settings.caustics}|${detailVersion}`);
           const key=viewKey(camera,scene,pixelRatio,innerWidth,innerHeight,`${brushKey(brush,toolById(settings.tool).color)}|${presentation.key}`,viewSettings,gfx,post.settings);
           return {runDerived:derived,runView:pacer.view(key,derived||wantFrame()||betweenTicks)};
         },capture:(reservation,state)=>captureWorldRequest(reservation,state,dt,driver.accepted)});
-      if(present || runView)driver.presentLast();
+      } catch(error) { worldFailed(error); driver=null; }
+      if(driver && (present || runView))driver.presentLast();
       if(runView)viewClock(false); // Only an accepted WORLD transaction advances presentation clocks.
-      if(!renderOnly && (pointerPickDirty || runView || pov?.active))requestPick();
+      if(driver && !renderOnly && (pointerPickDirty || runView || pov?.active))requestPick();
     }
     lastFrameMode='world';
     if(runView && captureNext){const c=captureNext;captureNext=null;c(post.capture());}
@@ -3375,6 +3390,7 @@ try {
     get arena() { return arenaLayout; },
     get win() { return win; },
     get lastGpuFailure() { return gpuLoss.last; },   // the last GPU failure's report, kept across reloads (gfx/gpuLoss.js)
+    get lastFrameError() { return lastFrameError(); },   // the last uncaught frame error's report, kept across reloads (gfx/gpuLoss.js)
     // world mode: start the world over with the window at `origin` (world cells)
     worldLoad(origin) {
       if (graphicsFailure) throw graphicsFailure;

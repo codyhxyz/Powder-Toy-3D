@@ -17,6 +17,26 @@
 // wait can also be a page with nothing to draw: the report says which.
 
 const STORE = 'powder-toy-3d:lastGpuFailure';
+// The first error a frame threw past the loop, once a page load (app.js frame()). A throw there
+// left the picture frozen with nothing on screen and nothing kept: the user's "map crashed"
+// (2026-10-23) had no record to read.
+const FRAME_ERROR_STORE = 'powder-toy-3d:lastFrameError';
+const STACK_CHARS = 1500;   // of an error's stack, in a record
+let frameErrorKept = false;
+
+/** Keep the first uncaught frame error of this page load (its message and stack) for the bug report. */
+export function recordFrameError(error, build = '') {
+  if (frameErrorKept) return;
+  frameErrorKept = true;
+  try {
+    localStorage.setItem(FRAME_ERROR_STORE, JSON.stringify({ at: new Date().toISOString(), build,
+      message: String(error?.message ?? error).slice(0, 2000), stack: String(error?.stack ?? '').slice(0, STACK_CHARS) }));
+  } catch { /* storage unavailable */ }
+}
+/** The last recordFrameError's report, kept across reloads (__app.lastFrameError). */
+export function lastFrameError() {
+  try { return JSON.parse(localStorage.getItem(FRAME_ERROR_STORE) || 'null'); } catch { return null; }
+}
 
 /**
  * The kind of a GraphicsFailure's message (gpu/errors.js formats):

@@ -44,6 +44,12 @@ const SHRINE_HEADROOM = 16;        // cells of window it needs above its floor (
 const SHRINE_GLADE = 10;           // cells around its footprint the clearing reaches (trunks within it are felled)
 const SHRINE_TREE_COST = 2;        // a spot's score: cells of rise, plus this per tree to fell...
 const SHRINE_FAR_COST = 0.05;      // ...plus this per cell from the window's middle (lowest wins)
+// A WORLD driver whose work failed throws every tick after it (worldRenderFrame.js failure): the
+// picture froze, with nothing on screen and nothing kept (the user's "map crashed", 2026-10-23). It
+// is retired and a new one built over the same world and source, as a map switch retires one, this
+// many times a page load; past them the failure stops graphics with its message (app.js worldFailed).
+const WORLD_RESTARTS = 1;
+let worldRestarts = 0;
 
 const world = {
   name: 'world',
@@ -101,12 +107,20 @@ const world = {
     if (app.mp.replica) app.win.far?.tick();
     else world.moveWindow(app);
   },
+  // A failed driver retired for a new one (prepareRender, next frame); false when there is none to
+  // retire, it is already going, or the page has had its WORLD_RESTARTS.
+  restartRender(app) {
+    const slot=app.win?.renderFrame;
+    if(!slot || slot.dead || slot.restart || worldRestarts>=WORLD_RESTARTS)return false;
+    worldRestarts++;slot.restart=true;app.wakeLoop();
+    return true;
+  },
   // Installation and completion only store state; SceneAttempt remains in App.tick.
   prepareRender(app) {
     const win=app.win;
     if(!win?.loaded)return null;
     const previous=win.renderFrame;
-    if(previous && previous.epoch!==win.renderSource.epoch) {
+    if(previous && (previous.epoch!==win.renderSource.epoch || previous.restart)) {
       if(!previous.dead) {
         previous.dead=true;
         previous.ready=Promise.resolve(previous.ready).then(()=>previous.driver?.dispose()).then(()=>win.render?.dispose())

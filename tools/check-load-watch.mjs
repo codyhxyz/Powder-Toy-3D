@@ -94,4 +94,13 @@ assert.match(app, /try\{driver=wire\('world'\)\.prepareRender\(ctx\);\}\s*catch\
   "the WORLD renderer's failure stops graphics on screen");
 assert.match(body('stopGraphics'), /loadWatch\.error\(error\);[^\n]*\n\s*loadWatch\.stop\(\);/, 'a graphics failure during a load is flagged and recorded');
 assert.match(app, /loadWatch\.onScreen\(\)/, 'frames end in-game watches');
+// A failed WORLD driver throws every tick after: it is rebuilt once a page load, else graphics stop on screen;
+// either way the failure is kept (the user's frozen "map crashed" had no record, 2026-10-23).
+assert.match(app, /runView=driver\.tick\([\s\S]{0,900}?\}\);\s*\} catch\(error\) \{ worldFailed\(error\); driver=null; \}/, "a failed WORLD driver's tick goes to worldFailed");
+assert.match(body('worldFailed'), /restartRender\(ctx\)\) throw stopGraphics\(/, 'past its restarts graphics stop with the failure on screen');
+assert.match(body('worldFailed'), /gpuLoss\.record\(\{ kind: 'worldRestarted'/, 'a restart is kept for the bug report');
+assert.match(body('frame'), /recordFrameError\(error, loadBuild\); throw error;/, 'an uncaught frame error is kept');
+const worldWire = readFileSync(new URL('../src/wire/world.js', import.meta.url), 'utf8');
+assert.match(worldWire, /previous\.epoch!==win\.renderSource\.epoch \|\| previous\.restart/, 'a restart retires the driver as a map switch does');
+assert.match(worldWire, /worldRestarts>=WORLD_RESTARTS\)return false;/, 'restarts are bounded');
 console.log(`PASS load watch: flags past ${LOAD_FLAG_MS / 1000} s and on errors, records bounded; app.js wires the boot, map switches and WORLD failures`);

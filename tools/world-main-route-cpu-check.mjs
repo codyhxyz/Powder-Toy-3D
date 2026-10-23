@@ -146,5 +146,6 @@ test('actual App hooks select driver, reserve only inside callback, and suppress
   assert.doesNotMatch(app,/WORLD_CONSUMER_NOT_READY/);
   assert.match(app,/if\(win && visible\)/);
   assert.match(app,/driver\.pick\(\{ray/);
-  assert.match(app,/if\(!renderOnly && \(pointerPickDirty \|\| runView \|\| pov\?\.active\)\)requestPick\(\)/);
+  // (driver: none after its tick failed and it went for a restart: app.js worldFailed)
+  assert.match(app,/if\(driver && !renderOnly && \(pointerPickDirty \|\| runView \|\| pov\?\.active\)\)requestPick\(\)/);
 });
