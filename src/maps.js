@@ -136,6 +136,7 @@ export function sizeTag(m) {
   return x === y && y === z ? `${x}^3` : `${x}×${y}×${z}`;
 }
 
-// where a new player starts: laptops on the Island world, phones in the Lab box (app.js MOBILE_DEFAULTS)
+// where a new player starts: Island in Sandbox, phones included (user request, 2026-10-22; app.js
+// MOBILE_DEFAULTS keeps phones on the plain look)
 export const DEFAULT_MAP = 'island';
-export const MOBILE_MAP = 'lab';
+export const MOBILE_MAP = DEFAULT_MAP;

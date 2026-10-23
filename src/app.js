@@ -165,15 +165,15 @@ const DEFAULTS = {
   ...detailDefaults(),
   profiler: false,
 };
-// Phones and tablets (touch-first, no hover) start on the plain look in the
-// Lab box: no World, no extra lighting passes, no close-up detail, and the
-// cheapest upscaling. Only the defaults change; anything the player picks in
+// Phones and tablets (touch-first, no hover) start on the plain look: no extra
+// lighting passes, no close-up detail, and the cheapest upscaling. They start
+// on the Island like everyone else (user request, 2026-10-22: maps.js
+// MOBILE_MAP). Only the defaults change; anything the player picks in
 // Settings still sticks.
 const MOBILE = matchMedia('(hover: none) and (pointer: coarse)').matches;
 const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)');
 REDUCED_MOTION.addEventListener('change', () => wakeLoop());
 const MOBILE_DEFAULTS = {
-  size: BOX_DEFAULT, preset: 'lab',
   nearGI: false, glowLights: false, caustics: false, upscale: 'performance',
   ...Object.fromEntries(DETAIL.map((f) => [settingKey(f), false])),
 };
@@ -183,7 +183,7 @@ if (MOBILE) Object.assign(DEFAULTS, MOBILE_DEFAULTS);
 // settings saved before it (the store's REV_KEY counts the ones applied).
 const DEFAULT_CHANGES = [
   MOBILE ? MOBILE_DEFAULTS : {},   // 1: phones start on the plain look
-  { size: DEFAULTS.size },         // 2: World by default (phones: the box)
+  { size: DEFAULTS.size },         // 2: World by default (phones too since 2026-10-22, for new players)
 ];
 const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
