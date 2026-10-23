@@ -18,8 +18,14 @@
 //   - a tick's Map/Set work is the same with OPERATION_GROWTH times the
 //     records outside what it can select: bounded by the selection and the
 //     change, never the map's size;
+//   - the tick's metadata rows are exactly the brute-force stale rule's
+//     (world/worldLightingRecords.js worldLightingStale: the delta's rows and
+//     those of re-captured cores), and they and the final publish's pages
+//     (wire/worldRender.js worldRestoreResident) are the same with
+//     OPERATION_GROWTH times the records;
 //   - (--scale) at Island's and Descent's record counts, the old and new
-//     ms per tick and the largest synchronous step, for the report.
+//     ms per tick and the largest synchronous step, and the other stages'
+//     ms and rows/pages (old -> new), for the report.
 //
 //   node tools/world-tick-incremental-cpu-check.mjs [--scale] [--ticks N] [--verbose]
 import assert from 'node:assert/strict';
@@ -30,6 +36,8 @@ import { READY } from '../src/world/renderAtlas.js';
 import { AGE } from '../src/shaders/fields.js';
 import { GI_SETTLE } from '../src/shaders/gi.js';
 import * as reference from './world-tick-reference.mjs';
+import { worldLightingStale } from '../src/world/worldLightingRecords.js';
+import { worldRestoreResident, worldCellCurrent } from '../src/wire/worldRender.js';
 
 const args = process.argv.slice(2), opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? +args[i + 1] : d; };
 const VERBOSE = args.includes('--verbose'), SCALE = args.includes('--scale');
@@ -218,6 +226,54 @@ function timed(spec, path, count) {
   return { rows, records: w.committed.size, owned: run.ownedSources.size + run.ownedProbes.size };
 }
 
+// ---- 4. the tick's other stages over every brick (wire/worldRender.js attempt()) ----
+// metadata: the rows a tick records (worldLightingStale, against recording
+// every committed row: the old path) with each core's capture new where the
+// change's field owners advance (FIELD_REACH bricks around it); the final
+// publish's restored pages (worldRestoreResident, against every owned one);
+// and the scans still over every brick (ids, the budget's and the CELL
+// stage's), for the report.
+const FIELD_REACH = 2;
+function stages(spec, count, { time = true } = {}) {
+  const w = world(spec), run = runner(w, 'new'), rows = [], dims = w.dims, core = (i) => { const b = w.brick(i); return (b[0] >> 3) + Math.ceil(dims[0] / 8) * ((b[1] >> 3) + Math.ceil(dims[1] / 8) * (b[2] >> 3)); };
+  const capture = new Map(), cores = new Map(), captureOf = (b) => capture.get((b[0] >> 3) + Math.ceil(dims[0] / 8) * ((b[1] >> 3) + Math.ceil(dims[1] / 8) * (b[2] >> 3)));
+  for (const i of w.committed.keys()) { const k = core(i); if (!capture.has(k)) capture.set(k, { k, v: 0 }); let m = cores.get(k); if (!m) cores.set(k, m = new Map([[capture.get(k), new Set()]])); m.get(capture.get(k)).add(i); }
+  const live = new Map([...w.committed.keys()].map((i) => [i, { readyBits: READY.CELL }])), atlas = { live: { cell: live } };
+  const clock = () => (time ? performance.now() : 0);
+  for (const tick of ticks(w, count)) {
+    for (const i of tick.changed) w.committed.get(i).changedTick = tick.k;
+    // the change's cores take new captures (their field owners advance)
+    const recaptured = new Set();
+    for (const i of tick.changed) { const b = w.brick(i); for (const dz of [-FIELD_REACH, 0, FIELD_REACH]) for (const dx of [-FIELD_REACH, 0, FIELD_REACH]) { const x = b[0] + dx, z = b[2] + dz; if (x >= 0 && z >= 0 && x < dims[0] && z < dims[2]) recaptured.add((x >> 3) + Math.ceil(dims[0] / 8) * ((b[1] >> 3) + Math.ceil(dims[1] / 8) * (z >> 3))); } }
+    for (const k of recaptured) if (capture.has(k)) capture.set(k, { k, v: tick.k });
+    const t0 = clock();
+    const ids = new Set(w.committed.keys()); for (const set of [run.ownedSources, run.ownedProbes, tick.requirements.keys()]) for (const i of set) ids.add(i);
+    const t1 = clock(); let outside = 0; for (const i of live.keys()) if (!ids.has(i)) outside++;
+    const t2 = clock(); let staleCells = 0; for (const i of ids) if (!worldCellCurrent(atlas, i)) staleCells++;
+    const t3 = clock();
+    const delta = { global: tick.k === 0, changedBricks: tick.changed.map(w.brick) };
+    const stale = worldLightingStale({ dims, committed: w.committed, cores, delta, captureOf });
+    const t4 = clock();
+    // the brute-force rule: every committed row in the delta or read from a capture its core no longer has
+    const changed = new Set(tick.changed);
+    if (!time) for (const [k, m] of cores) for (const [buffer, set] of m) for (const i of set) assert.equal(stale.has(i), delta.global || changed.has(i) || buffer !== capture.get(k), `tick ${tick.k}: row ${i} stale`);
+    // the records step reads the rows; commit moves each re-read row to its core's capture
+    for (const i of stale) { const k = core(i), m = cores.get(k); for (const set of m.values()) set.delete(i); let set = m.get(capture.get(k)); if (!set) m.set(capture.get(k), set = new Set()); set.add(i); }
+    for (const m of cores.values()) for (const [buffer, set] of m) if (!set.size) m.delete(buffer);
+    const batch = batchOf(w, tick.k, tick.changed.map(w.brick)), p = run.plan(tick, batch); run.births(p.plan, tick);
+    // the final publish: the restore made every owned page resident; the plan's selection is new
+    const owned = new Set([...run.ownedSources, ...run.ownedProbes]), selected = new Set([...p.plan.sourceBricks.map(w.index), ...p.plan.gatherBricks.map((r) => w.index(r.brick))]);
+    const resident = new Map(), leases = new Map(), page = new Map();
+    for (const i of owned) { const job = {}, token = { i }; resident.set(i, { job, source: token, gi: null }); leases.set(i, { source: { token } }); page.set(i, { job }); }
+    const t5 = clock();
+    const allocated = worldRestoreResident(new Set([...owned, ...selected]), { resident, live: page, leases, fresh: (i) => selected.has(i) });
+    const t6 = clock();
+    run.commit(p.plan, p.cutToken, tick.changed);
+    rows.push({ k: tick.k, ids: t1 - t0, budget: t2 - t1, classify: t3 - t2, stale: t4 - t3, restore: t6 - t5, oldRows: w.committed.size, newRows: stale.size, oldPages: owned.size + [...selected].filter((i) => !owned.has(i)).length, newPages: allocated.size, outside, staleCells });
+  }
+  return { rows, records: w.committed.size };
+}
+
 const SMALL = { dims: [96, 24, 96], depth: 5, air: 2, sourceRadius: 18, probeRadius: 12 };
 if (!SCALE) {
   const e = exactness(SMALL);
@@ -229,6 +285,14 @@ if (!SCALE) {
   assert(b.records >= OPERATION_GROWTH * a.records, `the far fixture holds ${b.records} records, not ${OPERATION_GROWTH}x ${a.records}`);
   for (let k = 0; k < a.ops.length; k++) assert(Math.abs(b.ops[k] - a.ops[k]) <= OPERATION_TOLERANCE * a.ops[k], `tick ${k}: ${b.ops[k]} Map/Set entries with ${b.records} records, ${a.ops[k]} with ${a.records}`);
   console.log(`  bounded: the same Map/Set work every tick with ${b.records} records as with ${a.records} (up to ${Math.max(...a.ops)} entries a tick)`);
+  // metadata and restore: exactly the brute-force rule, and rows/pages bounded by the change, not the map
+  const sa = stages(SMALL, TICKS, { time: false }), sb = stages({ ...SMALL, dims: [SMALL.dims[0] * 2, SMALL.dims[1], SMALL.dims[2] * 2], far: 1e9 }, TICKS, { time: false });
+  for (let k = 1; k < sa.rows.length; k++) {
+    assert.equal(sb.rows[k].newRows, sa.rows[k].newRows, `tick ${k}: ${sb.rows[k].newRows} metadata rows with ${sb.records} records, ${sa.rows[k].newRows} with ${sa.records}`);
+    assert.equal(sb.rows[k].newPages, sa.rows[k].newPages, `tick ${k}: ${sb.rows[k].newPages} restored pages with ${sb.records} records, ${sa.rows[k].newPages} with ${sa.records}`);
+    assert(sa.rows[k].newRows < sa.rows[k].oldRows && sa.rows[k].newPages < sa.rows[k].oldPages);
+  }
+  console.log(`  metadata and restore: the brute-force stale rule every tick; up to ${Math.max(...sa.rows.slice(1).map((r) => r.newRows))} rows and ${Math.max(...sa.rows.slice(1).map((r) => r.newPages))} pages a tick, the same with ${sb.records} records as with ${sa.records}`);
   console.log(`PASS a lighting tick's GI plan is the old path's, tick after tick, in work bounded by its selection and change`);
 } else {
   // Island ~450k records, Descent ~650k (real Chrome, 2026-10-22); their SOURCE rings ~80k and ~100k.
@@ -242,5 +306,7 @@ if (!SCALE) {
       const avg = (k) => steady.reduce((a, x) => a + x[k], 0) / steady.length;
       console.log(`${name} ${path}: ${r.records} records, ${r.owned} owned; load ${r.rows[0].total.toFixed(0)} ms; steady tick ${avg('total').toFixed(1)} ms (plan ${avg('plan').toFixed(1)}, births ${avg('births').toFixed(1)}, commit ${avg('commit').toFixed(1)}), largest step ${Math.max(...steady.map((x) => x.chunk)).toFixed(1)} ms; ${steady.at(-1).sources} SOURCES, ${steady.at(-1).gathers} gathers`);
     }
+    const st = stages(full, n), sr = st.rows.slice(1), avg = (k) => sr.reduce((a, x) => a + x[k], 0) / sr.length;
+    console.log(`${name} stages: ids ${avg('ids').toFixed(1)} ms, budget scan ${avg('budget').toFixed(1)}, CELL scan ${avg('classify').toFixed(1)}, metadata selection ${avg('stale').toFixed(1)} (rows ${avg('oldRows').toFixed(0)} -> ${avg('newRows').toFixed(0)}), final-publish selection ${avg('restore').toFixed(1)} (pages ${avg('oldPages').toFixed(0)} -> ${avg('newPages').toFixed(0)})`);
   }
 }

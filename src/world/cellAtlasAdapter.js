@@ -75,6 +75,13 @@ export class WorldCellAtlasAdapter {
   }
   _destroyCapture(c){for(const b of [...c.buffers,c.classification,...c.uploads].filter(Boolean))this._retire(b);}
   _dropCapture(c){if(this.retiredCaptures.has(c))return;this.retiredCaptures.add(c);if(!this.capturePins.get(c))this._destroyCapture(c);}
+  // The classification buffer acquireClassification would read brick's row
+  // from now (its core's installed capture), or null where it would throw: a
+  // capture's identity, for worldLightingRecords stale().
+  classificationBuffer(brick){
+    this._alive();const c=this._installed(brickKey(coreFor(brick)));
+    return c&&!this.retiredCaptures.has(c)?c.classification:null;
+  }
   // Submitted classification only: no raw geometry readback. Captures are
   // selected synchronously and pinned independently of later cache replacement.
   acquireClassification({bricks}={}){

@@ -11,6 +11,7 @@ import { READY, bookPage } from '../src/world/renderAtlas.js';
 import { tableLayout } from '../src/shaders/common.js';
 import { worldGISource, worldGIBirthWGSL } from '../src/shaders/worldGI.js';
 import { selectWorldGI } from '../src/world/worldLightingHistory.js';
+import { GI_SETTLE } from '../src/shaders/gi.js';
 const words=b=>new Uint32Array(b.bytes),bytes=b=>new Uint8Array(b.bytes);
 class Exec extends WgslExec {_dispatchWorkgroup(fn,id,c){for(const a of fn.node.attributes??[])if(a.name==='workgroup_size'&&typeof a.value==='string')a.value=[a.value];return super._dispatchWorkgroup(fn,id,c);}}
 const tick=()=>new Promise(r=>setTimeout(r,0));
@@ -486,12 +487,38 @@ test('a SOURCE pass after births runs again only the jobs that asked for somethi
 // submission with one wait: a wait per page was 20-28 s on Island (2026-10-22).
 test('the final publish writes all of its light pages in one Atlas submission',async()=>{
   const f=await setup({feedback:false}),calls=[],batch=f.owner.atlas.recordLightWrites.bind(f.owner.atlas);
-  f.owner.atlas.recordLightWrites=writes=>{calls.push(writes.map(w=>w.kind));return batch(writes);};
+  // (a restore's copies are one submission too: worldLightingBatch.js restore)
+  f.owner.atlas.recordLightWrites=writes=>{if(!writes.some(w=>w.restoreDeclaration))calls.push(writes.map(w=>w.kind));return batch(writes);};
   const c=await settle(f.gpu,f.owner.request(f.frame,[0,1,2].map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE|READY.GI}))));
   const final=calls.at(-1);
   assert.equal(final.filter(k=>k==='source').length,3);assert.equal(final.filter(k=>k==='gi').length,3);
   assert.equal(calls.filter(k=>k.length>1).length,1,'one batched publish');
   await settle(f.gpu,f.owner.discard(c));c.release();await f.close();
+});
+// A tick's final publish allocates no page its own restore already made
+// resident with the same retained SOURCE and probe: a big map restored every
+// owned one twice a tick, 90k-115k pages (2026-10-22). The published book
+// holds the same readiness and bytes as when every page is allocated again.
+test('a final publish keeps the pages its restore made resident; the book is the same',async()=>{
+  const demand=[0,1,2,8].map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE|READY.GI})),bricks=demand.map(r=>r.brick);
+  const run=async keepResident=>{
+    const f=await setup({size:[64,8,8],feedback:false,ownerOptions:{keepResident}}),out=[];
+    // past the load's settle ticks (every SOURCE recomputed), and a field tick of a change
+    for(let k=0;k<GI_SETTLE+4;k++){
+      if(k===GI_SETTLE+2)f.sim.version++;
+      const c=await settle(f.gpu,f.owner.request(f.frame,demand)),p=f.owner.progress;
+      const book=bricks.map(b=>{const l=c.snapshot.lightingProvenance(b),look=f.owner.atlas.lookup(b,READY.GI_SOURCE|READY.GI);
+        const read=x=>x?[...words(x.nativeBuffer).subarray(x.ranges[0].from/4,x.ranges[0].from/4+x.ranges[0].size/4)]:null;
+        return {known:look.known,source:read(l?.source),gi:read(l?.gi)};});
+      out.push({kept:p.residentKept,book});
+      await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
+    }
+    await f.close();return out;
+  };
+  const kept=await run(true),again=await run(false);
+  assert(kept.slice(GI_SETTLE+1).every(r=>r.kept>0),`ticks after the settle keep resident pages (${kept.map(r=>r.kept)})`);
+  assert(again.every(r=>r.kept===0));
+  assert.deepEqual(kept.map(r=>r.book),again.map(r=>r.book),'the same book, tick after tick');
 });
 // Only the bricks a gather reads at full detail are SOURCES: the eye's ring
 // and every probe's (world/worldGIRing.js worldGIReach). A brick the view asked

@@ -163,6 +163,38 @@ export async function worldClassify(gpu,cells,atlas,ids,{fieldTick,smoothing=1},
   }
   return stale.length;
 }
+// The bricks a transaction's metadata stage records (book indices): the
+// committed rows a cut may have changed (worldLightingRecords stale), and the
+// bricks of ids no row holds yet. ids holds every committed row's brick and
+// those of extra (the requirements and glow regions); every owned SOURCE and
+// probe has a committed row (its records were read when it was selected, and
+// rows go only on a reset, with the owned sets), so extra need not list them.
+// Bounded by the change, the cores and extra, not by the rows committed.
+export function worldMetadataFresh(metadata,ids,{cut,captureOf,carry=null,carried=null,extra=[]}) {
+  const out=[],seen=metadata.stale(cut,{captureOf,carry});
+  for(const i of seen)out.push(i);
+  for(const list of extra)for(const i of list)if(!seen.has(i)&&ids.has(i)&&!metadata.has(i)&&!carried?.has(i)){seen.add(i);out.push(i);}
+  return out;
+}
+// The light pages a final publish allocates (book indices, of all): every one
+// but those this attempt's public restore already made resident (resident:
+// index -> its job and the SOURCE and probe tokens it restored) that the book
+// still holds (live) with the very leases the publish would restore again
+// (leases: index -> {source, gi}) and no new output (fresh). Such a page holds
+// the bytes, readiness, ticks and dependencies the publish would write: the
+// same retained outputs' slots, by the same tokens, at the same cut revision
+// (shaders read a page by its book readiness, worldAccess.js
+// worldLightDescriptor). A big map's publish restored every owned SOURCE and
+// probe a second time, 90k-115k pages (2026-10-22).
+export function worldRestoreResident(all,{resident,live,leases,fresh}) {
+  if(!resident?.size)return all;
+  const out=new Set();
+  for(const i of all){
+    const r=resident.get(i),held=leases.get(i);
+    if(!r||fresh(i)||live.get(i)?.job!==r.job||(held?.source?.token??null)!==r.source||(held?.gi?.token??null)!==r.gi)out.add(i);
+  }
+  return out;
+}
 // A frame's feedback whose only misses are budget-dropped bricks (and Sun tiles it
 // already has), settled as complete; any other feedback unchanged (owner.settle).
 export function worldSettleFeedback(feedback,{dropped,sunTiles,index}) {
@@ -172,7 +204,7 @@ export function worldSettleFeedback(feedback,{dropped,sunTiles,index}) {
   for(const i of sun)if(!sunTiles.has(i))return feedback;
   return Object.freeze({...feedback,incomplete:false,requirements:Object.freeze([]),sun:Object.freeze([])});
 }
-export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,producer=win.sourceProducer,tables=win.sim.tables,tableBuffer=gpu._simTables?.buffer,wake=()=>{},giSlabJobs=WORLD_GI_SLAB_JOBS}={}) {
+export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,producer=win.sourceProducer,tables=win.sim.tables,tableBuffer=gpu._simTables?.buffer,wake=()=>{},giSlabJobs=WORLD_GI_SLAB_JOBS,keepResident=true}={}) {
   if(win.render)throw new Error('WORLD data owner already installed');
   if(!source||!producer||source.win!==win||source.gpu!==gpu)throw new TypeError('actual WORLD Source/Producer required');
   if(!tables||Number.isInteger(tables.size)||!Number.isInteger(tableBuffer?.size)||tableBuffer.size<16)throw new TypeError('distinct TABLES bind group and native table buffer required');
@@ -263,6 +295,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   const cellOptions=t=>({fieldTick:t.fieldTick,smoothing:t.frame.params.smoothing??1});
   async function advanceFields(t) {cells.bindCut(t.cut);await worldAdvanceFields(gpu,cells,cellOptions(t));}
   const cellCurrent=i=>worldCellCurrent(atlas,i);
+  const captureOf=b=>cells.classificationBuffer(b);
   async function classify(t,ids) {await worldClassify(gpu,cells,atlas,ids,cellOptions(t),brick);}
   function captureInput(t,{previous=null,emission=null}={}) {
     const p=cells.acquire();
@@ -372,7 +405,9 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       // Allocate the WHOLE closure first: growth changes pool/generation.
       await transport.restore(gpu,atlas,jobs.flatMap(job=>Object.values(byIndex.get(index(job.brick))).map(lease=>({job,lease}))));
       if(privatePhase){t.privateJobs=jobs;t.privateSnapshot=atlas.prepareProducerSnapshot({lightJobs:jobs,sourcePhaseToken:bundle.publication.sourcePhaseToken,dependencyToken:dependency(t)});}
-      else atlas.publish({lightJobs:jobs,dependencyToken:dependency(t)});
+      else{atlas.publish({lightJobs:jobs,dependencyToken:dependency(t)});
+        // what this attempt's public restore made resident, for publishFinal (worldRestoreResident)
+        t.resident=new Map();for(const job of jobs){const l=byIndex.get(index(job.brick));t.resident.set(index(job.brick),{job,source:l.source?.token??null,gi:l.gi?.token??null});}}
     }catch(e){for(const j of jobs)try{atlas.cancel(j);}catch{}throw e;}
   }
   // Before the CELL stage: ask for the casters of every sun tile in the demand
@@ -418,14 +453,14 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     }
   }
   async function attempt(t) {
-    t.attempts=(t.attempts??0)+1;t.stage='cell';
+    t.attempts=(t.attempts??0)+1;t.stage='cell';t.resident=null;
     await clearAttempt(t,{keepRecords:true});
     await forecast(t);t.stage='cell';
     const ids=new Set(metadata.keys());for(const set of [ownedSources,ownedProbes,t.requirements.keys()])for(const i of set)ids.add(i);
     for(const i of ownedGlow)t.requirements.set(i,(t.requirements.get(i)??0)|READY.GLOW);
-    const glowCores=new Map();
+    const glowCores=new Map(),glowBricks=[];
     for(const [i,bits]of t.requirements)if(bits&READY.GLOW){const core=brick(i).map(n=>Math.floor(n/8));glowCores.set(core.join(','),core);}
-    for(const core of glowCores.values()){const region=worldGlowPlan(size,core).input;for(let z=0;z<region.size[2];z++)for(let y=0;y<region.size[1];y++)for(let x=0;x<region.size[0];x++)ids.add(index([x+region.min[0],y+region.min[1],z+region.min[2]]));}
+    for(const core of glowCores.values()){const region=worldGlowPlan(size,core).input;for(let z=0;z<region.size[2];z++)for(let y=0;y<region.size[1];y++)for(let x=0;x<region.size[0];x++){const i=index([x+region.min[0],y+region.min[1],z+region.min[2]]);ids.add(i);glowBricks.push(i);}}
     if(!ids.size)throw new Error('WORLD requires explicit initial CELL demand');
     await advanceFields(t);
     await budgetDemand(t,ids);
@@ -433,13 +468,17 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     t.stage='metadata';
     // Only the bricks the last attempt's records lack: the cut, clock and
     // baseline are the transaction's, so its rows would read back the same.
+    // And of the committed rows only the stale ones (worldLightingRecords
+    // stale: the rest read back what they hold).
     const carried=t.batch&&metadata.carryable(t.batch,{cut:t.cut,derivedTick:t.tick});
     if(!carried){t.batch?.discard();t.batch=null;}
-    const fresh=carried?[...ids].filter(i=>!carried.has(i)):[...ids];
+    const fresh=worldMetadataFresh(metadata,ids,{cut:t.cut,captureOf,carry:carried?t.batch:null,carried,extra:[t.requirements.keys(),glowBricks]});
     t.metadataBricks=fresh.length;
-    if(fresh.length){
-      const classification=cells.acquireClassification({bricks:fresh.map(brick)});
-      try{t.batch=metadata.record(gpu.frame,{cut:t.cut,classification,derivedTick:t.tick,carry:carried?t.batch:null});}catch(e){classification.release();throw e;}
+    if(fresh.length||!t.batch){
+      // (a transaction holds a batch even with nothing stale: its commit moves
+      // the clock; one row read again reads back what it holds)
+      const classification=cells.acquireClassification({bricks:(fresh.length?fresh:[ids.values().next().value]).map(brick)});
+      try{t.batch=metadata.record(gpu.frame,{cut:t.cut,classification,derivedTick:t.tick,carry:carried?t.batch:null,captureOf});}catch(e){classification.release();throw e;}
       await t.batch.completion;
     }
     t.stage='history';
@@ -499,10 +538,13 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     for(const out of t.outputs){for(const i of out.sources)sourceOutputs.set(i,out);for(const i of out.probes)probeOutputs.set(i,out);}
     const restore=history.captureRestore({cut:t.cut,configVersion:t.frame.configVersion,sourceIndices:[...ownedSources].filter(i=>!sourceOutputs.has(i)),probeIndices:[...ownedProbes].filter(i=>!probeOutputs.has(i))});
     const leases=new Map();for(const l of restore.leases){if(!leases.has(l.index))leases.set(l.index,{});leases.get(l.index)[l.kind]=l;}
-    const ids=new Set([...ownedSources,...ownedProbes,...sourceOutputs.keys(),...probeOutputs.keys(),...[...t.requirements].filter(([,bits])=>bits&READY.GLOW).map(([i])=>i)]),jobs=[];
+    const all=new Set([...ownedSources,...ownedProbes,...sourceOutputs.keys(),...probeOutputs.keys(),...[...t.requirements].filter(([,bits])=>bits&READY.GLOW).map(([i])=>i)]),jobs=[];
+    const glowOf=b=>t.glows.find(o=>b.every((n,k)=>n>=o.plan.output.min[k]&&n<o.plan.output.max[k]));
+    const ids=worldRestoreResident(all,{resident:keepResident?t.resident:null,live:atlas.live.light,leases,fresh:i=>sourceOutputs.has(i)||probeOutputs.has(i)||!!glowOf(brick(i))});
+    t.residentKept=all.size-ids.size;
     capacity('light',ids.size);capacity('probe',ids.size);
     try{
-      for(const i of ids){const held=leases.get(i)??{},s=sourceOutputs.get(i),gi=probeOutputs.get(i),b=brick(i),glow=t.glows.find(o=>b.every((n,k)=>n>=o.plan.output.min[k]&&n<o.plan.output.max[k]));
+      for(const i of ids){const held=leases.get(i)??{},s=sourceOutputs.get(i),gi=probeOutputs.get(i),b=brick(i),glow=glowOf(b);
         const st=s?.token??held.source?.token,gt=gi?.token??held.gi?.token,lt=glow?.token;
         const job=atlas.allocateLight(b,{publication:restore.publication,sourceRevision:t.cut.contentToken.sourceRevision,sourceTick:st?.lightingTick??0,giTick:gt?.lightingTick??0,glowTick:lt?.lightingTick??0,readyBits:(st?READY.GI_SOURCE:0)|(gt?READY.GI:0)|(lt?READY.GLOW:0),dependencies:{source:st&&dep(st),gi:gt&&dep(gt),glow:lt&&dep(lt)}});jobs.push(job);
       }
@@ -510,7 +552,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       // One submission and one wait for every page: a wait per page was ~0.3 ms
       // each, 20-28 s for an Island load's ~78k SOURCES (2026-10-22).
       const writes=[];
-      for(const job of jobs){const i=index(job.brick),s=sourceOutputs.get(i),gi=probeOutputs.get(i),b=brick(i),glow=t.glows.find(o=>b.every((n,k)=>n>=o.plan.output.min[k]&&n<o.plan.output.max[k]));if(s)writes.push(s.atlasWrite(job,'source'));if(gi)writes.push(gi.atlasWrite(job,'gi'));if(glow)writes.push(glow.atlasWrite(job));}
+      for(const job of jobs){const i=index(job.brick),s=sourceOutputs.get(i),gi=probeOutputs.get(i),b=brick(i),glow=glowOf(b);if(s)writes.push(s.atlasWrite(job,'source'));if(gi)writes.push(gi.atlasWrite(job,'gi'));if(glow)writes.push(glow.atlasWrite(job));}
       await transport.writeAll(atlas,writes);
       const s=t.sunHandle.bindings(),token=t.sunHandle.token;
       atlas.publish({lightJobs:jobs,dependencyToken:dependency(t),sunManifest:{...token,...s,dependencySetID:cells.publication.dependencySetID,dependencyVersion:cells.publication.dependencyVersion}});
@@ -575,7 +617,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   function next() {if(queued&&!dead){const q=queued;queued=null;try{start(q.frame,q.requirements).then(q.resolve,q.reject);}catch(e){releaseFrame(q.frame);q.reject(e);}}wake();}
   const api={atlas,cells,metadata,
     // Passive counters only: inspecting readiness must never advance work.
-    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,support:t.support.size,sunTiles:t.sunTiles.size,coarseTiles:t.coarseTiles?.size??0,budgetDropped:t.budgetDropped??0,pageBudget:budget.cell,forecastBricks:t.forecastBricks??0,sourcePasses:t.sourcePasses??0,sourceJobs:t.sourceJobs??0,carriedSources:t.carriedSources??0,metadataBricks:t.metadataBricks??0,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
+    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,support:t.support.size,sunTiles:t.sunTiles.size,coarseTiles:t.coarseTiles?.size??0,budgetDropped:t.budgetDropped??0,pageBudget:budget.cell,forecastBricks:t.forecastBricks??0,sourcePasses:t.sourcePasses??0,sourceJobs:t.sourceJobs??0,carriedSources:t.carriedSources??0,metadataBricks:t.metadataBricks??0,residentKept:t.residentKept??0,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
     get busy(){return !!active||!!queued;},get failure(){return failure??metadataFeedback.failure??active?.feedback?.failure??active?.error??null;},get state(){return dead?'disposed':resetting?'resetting':metadataFeedback.failure||active?.feedback?.failure?'blocked':active?.state??'idle';},
     request(frame,requirements=[]){live();const f=captureFrame(frame);if(active){if(queued){releaseFrame(queued.frame);queued.resolve(null);}return new Promise((resolve,reject)=>{queued={frame:f,requirements:frozen(requirements),resolve,reject};});}try{return start(f,requirements);}catch(e){releaseFrame(f);throw e;}},
     probe(){live();return active?.state==='probe-ready'?active.bundle.retain():null;},
