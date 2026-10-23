@@ -175,12 +175,17 @@ export async function worldAdvanceFields(gpu,cells,{fieldTick,smoothing=1,eye=nu
 export function worldCellCurrent(atlas,i) {const p=atlas.live.cell.get(i);return !!p&&(p.readyBits&READY.CELL)===READY.CELL;}
 // Packs the bricks of ids (book indices) whose pages are not current, in
 // batches of whole cores, yielding between them. How many it packed.
-export async function worldClassify(gpu,cells,atlas,ids,{fieldTick,smoothing=1,full=worldSliceMeter()},brick) {
+// paced (a map on screen): each batch first waits for the GPU to finish what
+// went before. Unpaced, a load's new demand queued all its batches at once and
+// every frame waited behind seconds of packing (Descent's view round, 182k
+// bricks: 1.2 s stalls, real Chrome 2026-10-22). A first load is not paced:
+// no frame waits on it, and waiting would only add idle gaps.
+export async function worldClassify(gpu,cells,atlas,ids,{fieldTick,smoothing=1,full=worldSliceMeter(),paced=false},brick) {
   const stale=await worldRunSliced(worldStaleCellSteps(atlas,ids,brick,full));
   // One pool growth for the whole demand: a growth copies every public page.
   atlas.reserve('cell',stale.length);
   for(const [k,requirements] of worldClassifyBatches(stale).entries()){
-    if(k)await pause();
+    if(k)await (paced?(gpu.device??gpu).queue.onSubmittedWorkDone():pause());
     await recordCells(gpu,cells,{fieldTick,requirements,smoothing},'WORLD Source/Fields final capture');
   }
   return stale.length;
@@ -342,7 +347,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   async function advanceFields(t) {cells.bindCut(t.cut);const cam=t.frame.values?.cam,eye=cam&&Array.from(cam);await worldAdvanceFields(gpu,cells,{...cellOptions(t),eye:eye?.length===3&&eye.every(Number.isFinite)?eye:null});}
   const cellCurrent=i=>worldCellCurrent(atlas,i);
   const captureOf=b=>cells.classificationBuffer(b);
-  async function classify(t,ids) {await worldClassify(gpu,cells,atlas,ids,{...cellOptions(t),full:t.full},brick);}
+  async function classify(t,ids) {await worldClassify(gpu,cells,atlas,ids,{...cellOptions(t),full:t.full,paced:!!accepted},brick);}
   function captureInput(t,{previous=null,emission=null}={}) {
     const p=cells.acquire();
     return Object.freeze({...p,source:Object.freeze({...p.source,contentToken:t.cut.contentToken}),atlas:p.atlas,previous,emission,initialization:t.plan?.initialization,sourcePhaseToken:t.restore?.publication.sourcePhaseToken,
