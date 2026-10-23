@@ -381,7 +381,11 @@ export function startWorldFrameView(app, scene) {
 }
 export function freezeWorldView(app,values,{view,detail={},curved=false}={}) {
   app.camera.updateMatrixWorld();
-  const camera=app.camera.clone(false);camera.parent=null;
+  // (three's Object3D.copy deep-copies userData through JSON.stringify: a texture kept there was
+  // PNG-encoded by toDataURL on every frame, ~25% of first person's main thread, 2026-10-23)
+  const userData=app.camera.userData;app.camera.userData={};
+  let camera;try{camera=app.camera.clone(false);}finally{app.camera.userData=userData;}
+  camera.userData=userData;camera.parent=null;
   camera.matrix.copy(app.camera.matrixWorld);camera.matrixWorld.copy(app.camera.matrixWorld);
   camera.matrixWorldInverse.copy(app.camera.matrixWorldInverse);
   camera.matrix.decompose(camera.position,camera.quaternion,camera.scale);
