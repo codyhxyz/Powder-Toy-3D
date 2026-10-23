@@ -58,8 +58,23 @@ const STEPS = [
 // a cold compile's note, said as app.js's close-up detail toast says it
 const COLD_NOTE = 'The first time after an update, this can take several seconds.';
 
+// What the game is, under its name, for a player who has never seen it (The Powder Toy's own pitch, in 3D).
+const TAGLINE = 'A 3D falling-sand game: every grain of sand, drop of water and lick of flame is simulated. Pick a map, then Start.';
+const BETA_NOTE = 'In testing: this mode is still being built, so expect rough edges. Sandbox is the full game.';
+// The loading screen's tips, as TF2's and GMod's loading screens give them: the keys a first game needs
+// (app.js's key handler, pov/index.js's Q; ? lists the rest).
+const TIPS = [
+  ['V', 'switches between flying over the map and walking around in your body'],
+  ['T', 'opens the elements to pour and build with (Q while walking)'],
+  ['?', 'lists every key'],
+  ['Esc', 'brings back this menu'],
+];
+
 const count = (m) => m.dims.reduce((a, b) => a * b, 1).toLocaleString('en-US');
 const dimsText = (m) => `${m.dims.join(' × ')} cells`;
+// a map's size said plainly: a big map loads around you, a small one is simulated whole
+const sizeWord = (m) => (isWorld(m) ? 'Big map' : 'Small map');
+const sizeLine = (m) => (isWorld(m) ? 'Big map · loads around you as you explore' : 'Small map · simulated whole, loads quickly');
 
 // a baked icon (tools/game-icons.mjs) as inline SVG, drawn in the text's colour
 const iconSVG = (icon, box, cls) => (icon ? `<svg class="${cls}" viewBox="0 0 ${box} ${box}" aria-hidden="true"><path d="${icon.d}"/></svg>` : '');
@@ -112,6 +127,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
   const modeEmblem = h('div.mm-emblem');
   const modeTitle = h('h2');
   const modeDesc = h('p');
+  const modeBeta = h('p.mm-beta-note', { text: BETA_NOTE });
   const grid = h('div.mm-grid', { role: 'listbox', 'aria-label': 'Maps' });
   const pickThumb = h('img.mm-pick-thumb', { alt: '' });
   const pickName = h('div.mm-pick-name');
@@ -148,19 +164,20 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
     backdrop,
     h('div.mm-shell', {},
       h('header.mm-top', {},
-        h('div.mm-brand', { html: `${logoMark(30)}<span>Powder Toy 3D</span>` }),
+        h('div.mm-brand', { html: `${logoMark(30)}<span>Powder Toy 3D</span>` }, h('p.mm-tagline', { text: TAGLINE })),
         resumeBtn),
       h('div.mm-body', {},
         nav,
         h('section.mm-main', {},
-          h('div.mm-mode-head', {}, modeEmblem, h('div.mm-head-text', {}, h('div.mm-head-line', {}, modeTitle, openFileBtn), modeDesc)),
+          h('div.mm-mode-head', {}, modeEmblem, h('div.mm-head-text', {}, h('div.mm-head-line', {}, modeTitle, openFileBtn), modeDesc, modeBeta)),
           grid)),
       h('footer.mm-bar', {},
         pickThumb,
         h('div.mm-pick', {}, h('div.mm-pick-line', {}, pickName, pickMeta), pickDesc),
         h('div.mm-actions', {}, exportBtn, deleteBtn, startBtn))),
     h('div.mm-load', { 'aria-live': 'polite' },
-      h('div.mm-load-copy', {}, loadMode, loadName, loadStatus, h('div.mm-load-bar', {}, h('i')), loadStep, loadFlag),
+      h('div.mm-load-copy', {}, loadMode, loadName, loadStatus, h('div.mm-load-bar', {}, h('i')), loadStep, loadFlag,
+        h('ul.mm-tips', {}, ...TIPS.map(([k, text]) => h('li', {}, h('kbd', { text: k }), h('span', { text }))))),
       youFig));
   document.body.append(el);
   // Skyrim's loading screen: the wheel zooms him, wherever the pointer is.
@@ -178,11 +195,16 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
     return img;
   };
 
+  // the finished gamemodes first; the beta ones (maps.js GAMEMODES beta) after them, under "In testing"
+  const modeBtn = (m) => h('button.mm-mode', {
+    type: 'button', 'data-mode': m.key, 'aria-pressed': String(view === 'maps' && m.key === modeKey),
+    on: { click: () => setMode(m.key) },
+  }, iconEl('span.mm-mode-ico', m.key, 'mm-ico'), h('span.mm-mode-name', { text: m.name }),
+  m.beta ? h('span.mm-beta', { text: 'Beta' }) : null, h('small', { text: String(mapsFor(m.key).length) }));
   function renderModes() {
-    nav.replaceChildren(h('div.mm-label', { text: 'Gamemode' }), ...modes.map((m) => h('button.mm-mode', {
-      type: 'button', 'data-mode': m.key, 'aria-pressed': String(view === 'maps' && m.key === modeKey),
-      on: { click: () => setMode(m.key) },
-    }, iconEl('span.mm-mode-ico', m.key, 'mm-ico'), h('span.mm-mode-name', { text: m.name }), h('small', { text: String(mapsFor(m.key).length) }))),
+    const beta = modes.filter((m) => m.beta);
+    nav.replaceChildren(h('div.mm-label', { text: 'Gamemode' }), ...modes.filter((m) => !m.beta).map(modeBtn),
+    ...(beta.length ? [h('div.mm-label.mm-label-gap', { text: 'In testing' }), ...beta.map(modeBtn)] : []),
     h('div.mm-label.mm-label-gap', { text: 'Your games' }),
     h('button.mm-mode', { type: 'button', 'aria-pressed': String(view === 'saves'), on: { click: () => showSaves() } },
       iconEl('span.mm-mode-ico', 'saves', 'mm-ico'), h('span.mm-mode-name', { text: 'Saves' }), h('small', { text: saveList.length ? String(saveList.length) : '' })));
@@ -195,6 +217,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
     modeEmblem.innerHTML = modeIcon(mo.key, 'mm-ico');
     modeTitle.textContent = mo.name;
     modeDesc.textContent = mo.desc;
+    modeBeta.hidden = !mo.beta;
     const list = mapsFor(modeKey);
     if (!list.includes(pick)) pick = list[0];
     cards = list.map((m) => {
@@ -202,7 +225,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
         type: 'button', role: 'option', 'data-map': m.key, title: m.desc,
         on: { click: () => select(m), dblclick: () => { select(m); start(); } },
       },
-      h('div.mm-thumb', {}, thumb(m), h('span.mm-tag', { text: sizeTag(m), title: dimsText(m) })),
+      h('div.mm-thumb', {}, thumb(m), h('span.mm-tag', { text: sizeWord(m), title: `${sizeTag(m)}: ${dimsText(m)}` })),
       h('div.mm-name', { text: m.name }));
       return { m, card };
     });
@@ -217,7 +240,8 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
     mapBackdrop(m);
     pickName.textContent = m.name;
     pickMeta.innerHTML = modeIcon(isWorld(m) ? 'world' : 'box', 'mm-ico');
-    pickMeta.append(isWorld(m) ? `World · ${dimsText(m)}, simulated around you` : `Box · ${dimsText(m)}`);
+    pickMeta.append(sizeLine(m));
+    pickMeta.title = dimsText(m);
     pickDesc.textContent = m.desc;
     startBtn.textContent = inGame ? 'Load map' : 'Start game';
     startBtn.disabled = false;              // (an empty Saves list leaves it off)
@@ -248,6 +272,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
     modeEmblem.innerHTML = modeIcon('saves', 'mm-ico');
     modeTitle.textContent = 'Saves';
     modeDesc.textContent = SAVES_DESC;
+    modeBeta.hidden = true;
     saveCards = saveList.map((sv) => {
       const img = sv.thumbnail ? h('img', { src: sv.thumbnail, alt: '', draggable: false }) : null;
       const card = h('button.mm-card', {
