@@ -86,6 +86,10 @@ export function mergeWorldFeedback(list) {
 // (an earlier load's held SOURCE where there is one), so it is not computed
 // (Island, 2026-10-22: ~78k SOURCES a restart, 20-28 s to publish). Small
 // maps (Box) compute every brick's SOURCE (shaders/gi.js) and never get here.
+// GPU completions budgetDemand and capacity() wait through for pages to come
+// back to a full pool: a reclaimed page frees after one, a released snapshot's
+// after two (its state, then its pages: renderAtlas.js _releaseSnapshot, _collect).
+export const WORLD_RECLAIM_ROUNDS=3;
 export const WORLD_SUPPORT_STAGES=Object.freeze(new Set(['forecast','sun','source']));
 export function worldSourceEligible(i,{requirements,support,ownedSources,reached=null}) {
   return ownedSources.has(i)||requirements.has(i)&&!support.has(i)&&(!reached||reached(i));
@@ -339,22 +343,60 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   // them, and everything over them, as air; a held one keeps its last page.
   // Logged: it is the degraded picture instead of a lost GPU device. Pages the
   // atlas already holds for bricks outside this demand count against it.
+  // And it is an invariant: the pages classify() packs always fit the pool's
+  // budget. The bricks that rule cannot drop (inside the near ring, a held
+  // record's, a glow core's) are no bound: a big map's re-pack of what changed
+  // needed a second page for each of them while the displayed frame's snapshot
+  // held the first, past the cap (Descent, real Chrome 2026-10-22: "cell pool
+  // of 1067442 pages past 1048576", a throw every transaction from then on). So
+  // when the new pages still do not fit, the oldest snapshots' superseded pages
+  // go back to the pool first (renderAtlas.js reclaim), then the farthest new
+  // bricks of any kind but a producer's own ask (t.pinned) and the owned light
+  // records, each at most once a transaction (t.squeezed): a producer that
+  // asks for one again gets it, pinned, on its next attempt.
   async function budgetDemand(t,ids) {
     let outside=0;for(const i of atlas.live.cell.keys())if(!ids.has(i))outside++;
-    const pool=atlas.cell,used=pool.nextID-pool.free.length,limit=Math.max(0,budget.cell-outside),room=Math.max(0,budget.pool.cell-used);
+    const limit=Math.max(0,budget.cell-outside),roomNow=()=>Math.max(0,budget.pool.cell-atlas.poolUsed('cell'));
+    let room=roomNow();
     if(ids.size<=limit&&ids.size<=room)return;
     // classify()'s rule: a current page is not packed again
     const fresh=new Set(),resident=new Set();
     for(const i of ids)(cellCurrent(i)?resident:fresh).add(i);
     if(ids.size<=limit&&fresh.size<=room)return;
     const eye=t.frame.values?.cam,cam=eye&&Array.from(eye).length===3&&Array.from(eye).every(Number.isFinite)?Array.from(eye):null;
+    const current=await viewAirFor();let air=current.air;
+    const drop=(r,why)=>{
+      for(const i of r.dropped){ids.delete(i);fresh.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);}
+      air=r.air;t.budgetDropped=t.dropped.size;
+      console.warn(`WORLD load over its GPU page budget (${budget.cell} pages, pool ${budget.pool.cell}): ${r.dropped.length} farthest bricks dropped${why}`);
+    };
     // only bricks this load asked for may go: never a held page, a glow core's region, a record's brick or a pinned support brick
-    const current=await viewAirFor(),held=new Set([...ids].filter(i=>!t.requirements.has(i)||t.pinned.has(i)||ownedSources.has(i)||ownedProbes.has(i)||ownedGlow.has(i)));
-    const r=worldBudgetDemand(ids,{budget:limit,eye:cam,brick,held,air:current.air,fresh,room,resident});
-    if(!r.dropped.length)return;
-    for(const i of r.dropped){ids.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);}
-    if(r.air!==current.air)viewAir={air:r.air,id:++viewAirId};t.budgetDropped=t.dropped.size;
-    console.warn(`WORLD load over its GPU page budget (${budget.cell} pages, pool ${budget.pool.cell}): ${r.dropped.length} farthest bricks dropped`);
+    const held=new Set([...ids].filter(i=>!t.requirements.has(i)||t.pinned.has(i)||ownedSources.has(i)||ownedProbes.has(i)||ownedGlow.has(i)));
+    const r=worldBudgetDemand(ids,{budget:limit,eye:cam,brick,held,air,fresh,room,resident});
+    if(r.dropped.length)drop(r,'');
+    if(fresh.size>room){await reclaim('cell',()=>fresh.size-roomNow());room=roomNow();}
+    const keeps=i=>t.pinned.has(i)||t.squeezed.has(i)||ownedSources.has(i)||ownedProbes.has(i);
+    const far=(list)=>{const at=cam??[0,0,0];return list.map(i=>[Math.hypot(...brick(i).map((n,k)=>(n+0.5)*4-at[k])),i]).sort((a,b)=>b[0]-a[0]||b[1]-a[1]).map(([,i])=>i);};
+    // Pages kept resident (a load never evicts one), farthest first: the ones
+    // outside this demand, then (past them) this demand's own; an evicted one
+    // of the demand is dropped from it, its misses settled as a dropped brick's
+    // (worldSettleFeedback).
+    const evict=async(list)=>{
+      const out=far(list.filter(i=>!keeps(i))).slice(0,fresh.size-room);if(!out.length)return;
+      atlas.remove(out.map(brick),READY.CELL);
+      for(const i of out)if(ids.has(i)){ids.delete(i);resident.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);t.squeezed.add(i);}
+      t.budgetDropped=t.dropped.size;
+      console.warn(`WORLD load over its GPU page budget (${budget.cell} pages, pool ${budget.pool.cell}): ${out.length} farthest resident pages evicted`);
+      await reclaim('cell',()=>fresh.size-roomNow());room=roomNow();
+    };
+    if(fresh.size>room)await evict([...atlas.live.cell.keys()].filter(i=>!ids.has(i)));
+    if(fresh.size>room){
+      const r2=worldBudgetDemand(ids,{budget:Infinity,eye:cam??[0,0,0],brick,held:new Set([...ids].filter(keeps)),air,fresh,room,resident,radius:0});
+      for(const i of r2.dropped)t.squeezed.add(i);
+      if(r2.dropped.length)drop(r2,' (past the near ring rule: the pool is full)');
+    }
+    if(fresh.size>room)await evict([...resident]);
+    if(air!==current.air)viewAir={air,id:++viewAirId};
   }
   // SOURCE slabs a restart keeps (gfx/worldGI.js carry): the transaction's cut,
   // field tick, lighting tick, frame and config are a restart's too, so a
@@ -391,15 +433,25 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     for(const r of feedback.requirements)if(r.channels!==READY.GI||!sources.has(r.index)||probes.has(r.index)||ownedProbes.has(r.index))return null;
     return feedback.requirements.map(r=>brick(r.index));
   }
-  function capacity(kind,count) {
-    const key=kind==='cell'?'capacity':kind+'Capacity',pool=atlas[kind];
+  // Until over() pages fit: the oldest snapshots' superseded pages taken back
+  // (renderAtlas.js reclaim), and the pages already retiring (a cancelled
+  // private closure's, a released snapshot's) waited for, a few GPU
+  // completions at most (a released state's pages retire one completion after it).
+  async function reclaim(kind,over) {
+    for(let k=0;k<WORLD_RECLAIM_ROUNDS&&over()>0;k++)await atlas.reclaim(kind,over());
+  }
+  // Room for count more pages of a pool, its oldest snapshots' superseded pages
+  // reclaimed first when a growth would pass its budget (budgetDemand's rule).
+  async function capacity(kind,count) {
+    const key=kind==='cell'?'capacity':kind+'Capacity',pool=atlas[kind],over=atlas.poolUsed(kind)+count-budget.pool[kind];
+    if(over>0&&kind!=='probe')await reclaim(kind,()=>atlas.poolUsed(kind)+count-budget.pool[kind]);
     while(pool.free.length+atlas.resources.layout[key]-pool.nextID<count)atlas.growPool(kind);
   }
   async function restoreJobs(t,bundle,{privatePhase=false}={}) {
     const byIndex=new Map();
     for(const lease of bundle.leases){if(!byIndex.has(lease.index))byIndex.set(lease.index,{});byIndex.get(lease.index)[lease.kind]=lease;}
     const jobs=[];
-    capacity('light',byIndex.size);capacity('probe',[...byIndex.values()].filter(l=>l.gi).length);
+    await capacity('light',byIndex.size);await capacity('probe',[...byIndex.values()].filter(l=>l.gi).length);
     try{
       for(const [i,leases]of byIndex){const s=leases.source,gi=leases.gi;const job=atlas.allocateLight(brick(i),{publication:bundle.publication,sourceRevision:t.cut.contentToken.sourceRevision,sourceTick:s?.token.lightingTick??0,giTick:gi?.token.lightingTick??0,readyBits:(s?READY.GI_SOURCE:0)|(gi?READY.GI:0),dependencies:{source:s&&dep(s.token),gi:gi&&dep(gi.token)}});jobs.push(job);}
       // Allocate the WHOLE closure first: growth changes pool/generation.
@@ -542,7 +594,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     const glowOf=b=>t.glows.find(o=>b.every((n,k)=>n>=o.plan.output.min[k]&&n<o.plan.output.max[k]));
     const ids=worldRestoreResident(all,{resident:keepResident?t.resident:null,live:atlas.live.light,leases,fresh:i=>sourceOutputs.has(i)||probeOutputs.has(i)||!!glowOf(brick(i))});
     t.residentKept=all.size-ids.size;
-    capacity('light',ids.size);capacity('probe',ids.size);
+    await capacity('light',ids.size);await capacity('probe',ids.size);
     try{
       for(const i of ids){const held=leases.get(i)??{},s=sourceOutputs.get(i),gi=probeOutputs.get(i),b=brick(i),glow=glowOf(b);
         const st=s?.token??held.source?.token,gt=gi?.token??held.gi?.token,lt=glow?.token;
@@ -606,7 +658,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     if(same&&(!accepted||JSON.stringify(frame.globalKey)!==JSON.stringify(accepted.frame.globalKey)||frame.configVersion!==accepted.frame.configVersion))throw new Error('camera-only births require the accepted lighting settings/cut');
     const cut=same?accepted.cut.retain():source.recordCut(gpu.frame,{previousCut:accepted?.cut,sceneVersion:frame.sceneVersion,configVersion:frame.schemaVersion});
     if(!history)history=createWorldLightingHistory({worldSize:size,epoch:source.epoch,sourceOwner:source,configuration:cut.configuration});
-    const t={id:++serial,frame,cut,tick:same?history.lightingTick:history.lightingTick+1,fieldTick:same?accepted.fieldTick:(cells.fields.lastTick??-1)+1,state:'building',stage:'initializing',requirements:new Map(),support:new Set(),dropped:new Set(),pinned:new Set(),forecastProbes:new Set(),sunTiles:new Set(),outputs:[],carry:[],glows:[],privateJobs:[],bundle:null,bundlePins:0,retired:false,cleaned:false};
+    const t={id:++serial,frame,cut,tick:same?history.lightingTick:history.lightingTick+1,fieldTick:same?accepted.fieldTick:(cells.fields.lastTick??-1)+1,state:'building',stage:'initializing',requirements:new Map(),support:new Set(),dropped:new Set(),squeezed:new Set(),pinned:new Set(),forecastProbes:new Set(),sunTiles:new Set(),outputs:[],carry:[],glows:[],privateJobs:[],bundle:null,bundlePins:0,retired:false,cleaned:false};
     try{add(t,requirements);}catch(e){cut.release();throw e;}
     viewAir=null;   // a transaction's budget drops are its own: the next starts from the scene's floors
     active=t;t.work=run(t);t.work.catch(()=>{});return t.work;
