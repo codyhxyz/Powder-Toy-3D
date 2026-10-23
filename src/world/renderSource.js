@@ -99,6 +99,13 @@ let deltaSeen = new Uint8Array(0);   // a span's bricks already listed (module s
 let deltaListed = { boxes: null, bricks: null };
 const sameBoxes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i] || x.every((v, k) => v === b[i][k]));
 export const changesSinceStats = { calls: 0, built: 0, entries: 0, boxes: 0, bricksVisited: 0, bricksListed: 0 };   // CPU check counters
+// A native source's live refresh (WorldRenderSource.refreshLiveCopy) packs only what V2 journaled since its
+// last copy: the whole window's pack every frame V2 ticked cost 1.5 ms of JS a frame and a window-sized GPU
+// pack while anything moved (a pool on Pharmakokinetiks, 2026-10-23). Past LIVE_DELTA_BOXES boxes, or boxes
+// holding more than LIVE_DELTA_SHARE of the window, one whole copy is recorded instead (fewer dispatches).
+const LIVE_DELTA_BOXES = 64;
+const LIVE_DELTA_SHARE = 0.5;
+export const liveDeltaStats = { entries: 0, boxes: 0 };   // CPU check counters (kept apart from changesSince's)
 // A journal box (noteContentChange): { loX, loY, loZ, hiX, hiY, hiZ } of a { lo, hi } or { min, max }, or null if it isn't one.
 function boxRecord(change) {
   const lo = change && !change.global && (change.lo || change.min);
@@ -175,12 +182,12 @@ function contentDelta(token, global, boxes) {
 }
 const brickKeyOf = (b) => `${b[0]},${b[1]},${b[2]}`;
 // The span's distinct brick boxes [x0, y0, z0, x1, y1, z1] (journal order), or null when an entry is global.
-function journalBoxes(journal, from, size) {
+function journalBoxes(journal, from, size, stats = changesSinceStats) {
   // Revisions rise along the journal (noteContentChange): the span starts at the first one past from.
   let lo = 0, hi = journal.length;
   while (lo < hi) { const mid = (lo + hi) >>> 1; if (journal[mid].revision > from) hi = mid; else lo = mid + 1; }
   const boxes = [];
-  changesSinceStats.entries += journal.length - lo;
+  stats.entries += journal.length - lo;
   for (let i = lo; i < journal.length; i++) {
     const entry = journal[i];
     if (entry.global) return null;
@@ -200,7 +207,7 @@ function journalBoxes(journal, from, size) {
       if (!inside) boxes.push(Object.freeze(box));
     }
   }
-  changesSinceStats.boxes += boxes.length;
+  stats.boxes += boxes.length;
   return Object.freeze(boxes);
 }
 // A native source's cells over runs (planSourceCopies' plan from src into dst over box): the pack
@@ -427,7 +434,7 @@ export class WorldRenderSource {
   // Provider adapter contract. jetValidity must be attested by the adapter
   // after checking wake provenance; raw storage alone cannot prove bounded jets.
   snapshotForFields({ jetValidity, refreshLive = true } = {}) {
-    if (refreshLive && this.needsLiveCopy()) this.recordLiveCopy(this.gpu.frame);
+    if (refreshLive) this.refreshLiveCopy(this.gpu.frame);
     const token = this.contentToken();
     const isCurrent = () => !this.disposed && (this.ownedContext ? this.ownedContext.isValid() : token.epoch === this.epoch && token.sourceRevision === this.contentRevision);
     const assertCurrent = () => { if (!isCurrent()) throw new Error('Stale world content snapshot'); };
@@ -598,6 +605,41 @@ export class WorldRenderSource {
     this._record(frame, src, bounds, SOURCE_RANK.live, revision);
     this.liveVersion = sim.version; this.liveContentRevision = this.contentRevision; this.liveSnapshot = src;
     return revision;
+  }
+  // The live copy brought up to date for a reader (the window's frame, a CELL batch, a cut, a fields
+  // snapshot). A native source whose window and buffers are the last copy's packs only the boxes
+  // journaled since it (_liveDelta); anything else, the whole window (recordLiveCopy).
+  refreshLiveCopy(frame = this.gpu.frame, sim = this.sim) {
+    if (!this.needsLiveCopy(sim)) return 0;
+    const boxes = this._liveDelta(sim);
+    if (!boxes) return this.recordLiveCopy(frame, sim);
+    const src = liveSource(sim, sim.origin), revision = boxes.length ? this.nextRevision() : 0;
+    for (const box of boxes) this._record(frame, src, box, SOURCE_RANK.live, revision);
+    this.liveVersion = sim.version; this.liveContentRevision = this.contentRevision; this.liveSnapshot = src;
+    return revision;
+  }
+  // What a native source's live refresh must pack: the window's part of the boxes journaled since the
+  // last live copy ([] for none), or null for the whole window (a new window, owner or buffers, a
+  // global change, or a change past LIVE_DELTA_BOXES boxes or LIVE_DELTA_SHARE of the window). V2's
+  // ticks journal every brick they write (v2/physics.js _reportChanges), so a tick alone needs nothing.
+  _liveDelta(sim) {
+    const a = this.liveSnapshot;
+    if (!a?.nativeSim || !isNativeSource(sim) || !nativeSourceReady(sim)) return null;
+    const b = snapshotSource(sim);
+    if (a.nativeSim !== b.nativeSim || a.nativeOwner !== b.nativeOwner || a.edit !== b.edit || a.flow !== b.flow ||
+        a.g.nx !== b.g.nx || a.g.ny !== b.g.ny || a.g.nz !== b.g.nz || a.origin.some((v, i) => v !== b.origin[i]) ||
+        a.deco?.buffer !== b.deco?.buffer || a.deco?.offset !== b.deco?.offset) return null;
+    if (this.liveContentRevision === this.contentRevision) return [];
+    const bricks = journalBoxes(this.changeJournal ?? [], this.liveContentRevision, this.context.size, liveDeltaStats);
+    if (!bricks || bricks.length > LIVE_DELTA_BOXES) return null;
+    const window = sourceBounds(sim), boxes = [];
+    let cells = 0;
+    for (const [x0, y0, z0, x1, y1, z1] of bricks) {
+      const box = intersectBounds({ lo: [x0 * BRICK, y0 * BRICK, z0 * BRICK], hi: [x1 * BRICK, y1 * BRICK, z1 * BRICK] }, window);
+      if (!box) continue;
+      boxes.push(box); cells += box.hi.reduce((n, v, i) => n * (v - box.lo[i]), 1);
+    }
+    return cells > LIVE_DELTA_SHARE * sim.g.nx * sim.g.ny * sim.g.nz ? null : boxes;
   }
   needsLiveCopy(sim = this.sim) {
     if (this.ownedContext) return false;

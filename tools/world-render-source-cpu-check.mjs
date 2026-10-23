@@ -216,6 +216,41 @@ check('Physics V2: the source reads V2\'s cells natively (one pack into each cor
   dropNativeWorldSource(f.sim);
   f.source.dispose();
 });
+check('Physics V2: a live refresh packs only what V2 journaled since the last copy; a tick alone packs nothing', () => {
+  const f = fixture(); fillState(f);
+  const packed = [], kernel = f.gpu.kernel;
+  f.gpu.kernel = (desc) => ({ ...kernel.call(f.gpu, desc), state: 'ready', dispatch(_frame, _size, opts) { packed.push([opts.params.lo, opts.params.hi]); } });
+  const owner = { isReady: true, dynamics: { isReady: true, air: [{}] }, tick: 5, sync() {}, readGroup: () => ({}) };
+  Object.assign(f.sim, { compact: owner, compactOwner: owner });
+  f.sim.L.STATE_RO = [];
+  const volume = () => packed.reduce((n, [lo, hi]) => n + hi.reduce((m, v, i) => m * (v - lo[i]), 1), 0), window = f.sim.g.slots;
+  f.source.refreshLiveCopy(f.frame); f.flush();
+  assert.equal(volume(), window, 'the first copy: the whole window');
+  // A tick that journaled nothing: nothing packed, and none wanted after it.
+  packed.length = 0; f.sim.version++; owner.tick++;
+  assert(f.source.needsLiveCopy());
+  assert.equal(f.source.refreshLiveCopy(f.frame), 0); assert.deepEqual(packed, []);
+  assert(!f.source.needsLiveCopy());
+  // A tick's report (v2/physics.js _reportChanges): its boxes alone, clipped to the window.
+  f.sim.version++; f.source.noteContentChange({ boxes: [{ lo: [36, 4, 40], hi: [44, 8, 48] }, { lo: [60, 0, 60], hi: [80, 4, 64] }] });
+  const revision = f.source.refreshLiveCopy(f.frame); f.flush();
+  assert.deepEqual(packed, [[[36, 4, 40], [44, 8, 48]], [[60, 0, 60], [64, 4, 64]]]);
+  assert.equal(f.source.getSource([36, 4, 40]).revision, revision, 'packed: live at the refresh');
+  assert(f.source.getSource([32, 0, 32]).revision < revision, 'untouched: the first copy');
+  // A later change: it alone (the earlier one is packed).
+  packed.length = 0; f.source.noteContentChange({ lo: [32, 0, 32], hi: [36, 4, 36] });
+  f.source.refreshLiveCopy(f.frame); f.flush();
+  assert.deepEqual(packed, [[[32, 0, 32], [36, 4, 36]]]);
+  // A global change, a moved window, a change past half the window: the whole window.
+  for (const change of [() => f.source.noteContentChange({ global: true }), () => { f.sim.origin.x += 16; },
+    () => f.source.noteContentChange({ lo: [48, 0, 32], hi: [80, 20, 64] })]) {
+    packed.length = 0; f.sim.version++; change();
+    f.source.refreshLiveCopy(f.frame); f.flush();
+    assert.equal(volume(), window);
+  }
+  dropNativeWorldSource(f.sim);
+  f.source.dispose();
+});
 check('the native pack hashes a drawn cell by its world cell (stable as the window moves), the edit read by its window cell (the export\'s)', () => {
   const code = nativePackWGSL(gridDims({ nx: 32, ny: 32, nz: 32 }));
   assert(code.includes('outA[P.dstBase + q] = bitcast<vec4u>(compactA(w, core));'), 'drawn: the world cell');
@@ -604,6 +639,7 @@ try {
 } finally { if (oldUsage === undefined) delete globalThis.GPUBufferUsage; else globalThis.GPUBufferUsage = oldUsage; }
 const windowCode = readFileSync(new URL('../src/world/window.js', import.meta.url), 'utf8');
 assert(windowCode.includes('this.sourceProducer.record('));
-// (V1's step recorded a live copy per step; V2's ticks bump sim.version and the window copies on demand)
-assert(windowCode.includes('if (this.renderSource.needsLiveCopy(this.sim)) this.renderSource.recordLiveCopy(this.gpu.frame, this.sim);'));
+// (V1's step recorded a live copy per step; V2's ticks bump sim.version and the window refreshes on demand,
+// packing what V2 journaled: refreshLiveCopy)
+assert(windowCode.includes('if (this.renderSource.needsLiveCopy(this.sim)) this.renderSource.refreshLiveCopy(this.gpu.frame, this.sim);'));
 console.log(`PASS ${assertions} world raw source CPU contracts; GPU numerical/visual equivalence remains unverified`);

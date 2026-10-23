@@ -203,7 +203,7 @@ export class WorldCellAtlasAdapter {
     if(frame!==this.gpu.frame)throw new Error('CELL work must use the normal GPU Frame');
     if(this.pending)throw new Error('Commit or abort the pending CELL batch first');
     if(this.source.epoch!==this.fields.history.epoch||this.source.epoch!==this.atlas.epoch||this.source.epoch===0)throw new Error('Reset CELL adapter/Atlas after source epoch change');
-    if(this.source.needsLiveCopy())this.source.recordLiveCopy(frame);
+    this.source.refreshLiveCopy(frame);
   }
   // At most limit of the source columns record(options) would produce, the
   // same calls in the same order; how many it recorded. A caller that flushes

@@ -249,7 +249,7 @@ export class WorldWindow {
   // move made, [dx, dz] world cells, or null.
   update(fx, fz) {
     if (!this.loaded || this.persistenceError || this.sim.nativeTransition || this.historyReaders) return null;
-    if (this.renderSource.needsLiveCopy(this.sim)) this.renderSource.recordLiveCopy(this.gpu.frame, this.sim);
+    if (this.renderSource.needsLiveCopy(this.sim)) this.renderSource.refreshLiveCopy(this.gpu.frame, this.sim);
     this.far?.tick();
     if (this.capturing || this.pending || this.sim.deco?.pending) return null;
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) return null;

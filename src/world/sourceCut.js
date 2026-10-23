@@ -61,12 +61,23 @@ function cloneCore(source, c, frame) {
 }
 function completeCore(c,size) {
   // In-world slots only; partial outer cores do not require exterior authority.
-  for(let z=0;z<32;z++)for(let y=0;y<32;y++)for(let x=0;x<32;x++) {
-    if(c.origin.some((v,i)=>v+[x,y,z][i]>=size[i]))continue;
-    const s=cellSlot(c.g,x,y,z);
-    if(!c.rank[s])return false;
-  }
+  // A core wholly in the world is one native scan of its ranks, not a closure
+  // and an array per cell: 2.8 s of 40 s on Pharmakokinetiks (2026-10-23).
+  const hi=c.origin.map((v,i)=>Math.min(32,size[i]-v));
+  if(hi.every(n=>n>=32))return !c.rank.includes(SOURCE_RANK.unknown);
+  for(let z=0;z<hi[2];z++)for(let y=0;y<hi[1];y++)for(let x=0;x<hi[0];x++)if(!c.rank[cellSlot(c.g,x,y,z)])return false;
   return true;
+}
+// Whether a core holds more than the generator's discovery: a rank of saved or
+// above, or any auxiliary plane. Native scans: per-element callbacks over every
+// cached core were a cut's cost on a big map (Pharmakokinetiks, 2026-10-23).
+let keptRanks=null;   // (on first use: renderSource.js imports this module, so SOURCE_RANK isn't set while it loads)
+const AUX_FLAGS=7;   // renderSource.js _record: flow 1 | aeration 2 | deco 4
+function snapshotWorthy(c) {
+  keptRanks??=Object.values(SOURCE_RANK).filter(v=>v>=SOURCE_RANK.saved);
+  for(const v of keptRanks)if(c.rank.includes(v))return true;
+  for(let v=1;v<=AUX_FLAGS;v++)if(c.aux.includes(v))return true;
+  return false;
 }
 function captureTables(parent,frame) {
   const gpu=parent.gpu,original=gpu._simTables?.buffer;
@@ -161,7 +172,7 @@ export function recordWorldSourceCut(parent,frame,{previousCut=null,sceneVersion
   if(previousCut&&(!old||old.parent!==parent||!previousCut.isValid()))throw new Error('Invalid previous Source cut');
   if(!parent.cutConfiguration||parent.cutConfiguration.epoch!==parent.epoch||!Object.is(parent.cutConfiguration.sceneVersion,sceneVersion)||!Object.is(parent.cutConfiguration.configVersion,configVersion))parent.cutConfiguration=Object.freeze({epoch:parent.epoch,sceneVersion,configVersion});
   const configuration=parent.cutConfiguration, compatible=old&&old.configuration===configuration;
-  if(parent.needsLiveCopy())parent.recordLiveCopy(frame);
+  parent.refreshLiveCopy(frame);
   const token=parent.contentToken(), authority=parent.token(), delta=parent.changesSince(compatible?old.token:null);
   const state={parent,epoch:parent.epoch,configuration,token,identity:Object.freeze({epoch:parent.epoch,sourceRevision:token.sourceRevision,sceneVersion,configVersion}),refs:1,closed:false,source:null,producer:null,scene:null,tables:null};
   try {
@@ -182,7 +193,7 @@ export function recordWorldSourceCut(parent,frame,{previousCut=null,sceneVersion
     const changedCores=delta.coreKeys();
     if(compatible&&!delta.global)for(const [key,c] of old.source.chunks)if(!changedCores.has(key))source.chunks.set(key,hold(c));
     for(const [key,c] of parent.chunks) {
-      if(!c.rank.some(v=>v>=SOURCE_RANK.saved)&&!c.aux.some(Boolean))continue; // regenerate static discovery, do not snapshot a dense cache
+      if(!snapshotWorthy(c))continue; // regenerate static discovery, do not snapshot a dense cache
       const existing=source.chunks.get(key);
       if(existing&&completeCore(existing,context.size))continue;
       const next=cloneCore(source,c,frame);if(existing)drop(parent.gpu,existing);source.chunks.set(key,next);
