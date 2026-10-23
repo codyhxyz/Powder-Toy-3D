@@ -35,195 +35,27 @@ jobs:
           path: dist
           retention-days: 1
 
-  # The CPU checks, beside the build: a failure shows red on the push but does not hold the deploy back.
+  # A handful of fast CPU checks beside the build, each guarding a failure a player would hit
+  # that the build itself can't catch. A failure shows red on the push but never holds the deploy.
+  # The other check scripts in tools/ and scripts/ still run locally; they are not in CI on purpose.
   checks:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0   # immutable pre-feature generator for exact legacy cell acceptance
       - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
-      - name: Cache CPU WGSL validator
-        uses: actions/cache@v4
-        id: naga-cache
-        with:
-          path: ~/.cargo/bin/naga
-          key: ${{ runner.os }}-naga-cli-30.0.1
-      - name: Install CPU WGSL validator
-        if: steps.naga-cache.outputs.cache-hit != 'true'
-        run: cargo install naga-cli --version 30.0.1 --locked
-      - name: Verify CPU WGSL validator
-        run: |
-          test "$("$HOME/.cargo/bin/naga" --version)" = "30.0.1"
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - run: npm ci
-        env:
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1   # playwright is only for local headless checks
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Check native terrain decoder and compiler
-        run: |
-          python -m pip install numpy==2.0.1 Pillow==12.2.0
-          python -B -m unittest discover -s tools -p 'test_noita_save_decode.py'
-          python -B tools/import-noita-terrain-test.py
-      - run: node --test tools/check-mode-icons.mjs   # CPU-only: every gamemode has a valid credited menu emblem
-      - run: node tools/check-map-previews.mjs   # every menu map, including source imports, has a square preview
-      - run: node tools/check-browser-launch.mjs   # headless tests launch through tools/browser.mjs (CLAUDE.md)
-      - run: node --test tests/industry/*.test.js
-      - name: Check physical factory logic and shaders without a GPU
-        run: |
-          node tools/industry-hearth-check.mjs
-          node tools/industry-physics-check.mjs
-          node tools/industry-diagnostics-check.mjs
-          node scripts/check-industry-factory-ui.mjs
-      - run: node tools/check-gpu-deadline.mjs   # CPU-only: enforce total slot budget and cleanup ownership
-      - run: node --test tools/pipeline-safety-cpu-check.mjs   # fake GPU: compiler concurrency, deadlines and cancellation
-      - run: node --experimental-vm-modules --test tools/startup-safety-cpu-check.mjs   # fake browser: startup failure and safe restart
-      - run: node tools/check-profiler-coverage.mjs   # never silently ship an incomplete GPU total
-      - run: node tools/frame-profile.mjs --self-test   # a capture must include the voxel volume, not just meshes
-      - run: node tools/render-read-cpu-check.mjs
-      - run: npm run check:fields   # CPU shared-field ownership, packing, Box contracts; optional Naga CLI
-      - run: node tools/world-render-source-cpu-check.mjs   # phase-1 exact raw source authority; not unified-render completion
-      - run: npm run check:world-source-cuts   # owned native inputs, delayed feedback and final-submission lifetime (CPU)
-      - run: node tools/world-changes-since-cpu-check.mjs   # CPU: the World source's change deltas match the old per-entry expansion exactly, with bounded work per span
-      - run: node tools/detail-culling-cpu-check.mjs
-      - run: node tools/detail-residency-check.mjs && node tools/detail-worker-check.mjs && node tools/far-lod-check.mjs && node tools/surface-mesh-check.mjs   # full-detail terrain ownership, streaming and material seams
-      - run: node tools/post-reuse-cpu-check.mjs && node tools/view-inputs-check.mjs
-      - run: npm run check:world-scenes   # staged native scene admission, real Three jitter hooks + fake GPU (not app activation)
-      - run: npm run check:world-render-frame
-      - run: npm run check:world-main-route # CPU owner/driver/Post/pacer; not native rendering proof
-      - run: npm run check:world-pick
-      - run: node tools/world-feedback-compact-cpu-check.mjs   # CPU: a big map's frame reads back only a compacted list of its feedback's non-zero words (the pass's actual WGSL CPU-executed against its twin + Naga), decoded exactly as the whole-buffer decode on random, empty, full and edge planes, in steps bounded by its requests, not the world; an overflow decodes the full copy
-      - run: npm run check:world-still # CPU actual owner/driver/Post; explicit native scene transport mocks
-      - run: npm run check:world-viewmodel-eye   # original one-eye hands, accepted-only easing + real guard (CPU, not App activation)
-      - run: npm run check:world-mesh-light   # actual Three fragment variants/Naga + CPU optical/SH references; not GPU evidence
-      - run: node tools/check-reflection-roots.mjs && node tools/check-clod-budget.mjs && node tools/resolution-check.mjs
-      - run: node tools/check-opaque-surface.mjs   # liquid transitions must not skip opaque walls
-      - run: node tools/check-normal-mapped-surfaces.mjs
-      - run: node tools/wood-endgrain-cpu-check.mjs
-      - run: node tools/check-cozy-materials.mjs   # CPU artwork, shader-view selection and water scope
-      - run: node tools/check-noita-materials.mjs --validate-wgsl   # CPU Noita view: measured looks through the real WGSL, Descent variant labels, Naga
-      - run: node tools/check-ready-volume-view.mjs   # keep terrain visible while a replacement shader compiles
-      - run: node tools/volume-format-cpu-check.mjs   # CPU: read-format specializations against the generic volume shaders, startup and thumbnail gates + Naga
-      - run: node tools/check-appearance.mjs && node tools/check-far-appearance.mjs
-      - run: node tools/check-island-appearance.mjs && node tools/check-construction-appearance.mjs && node tools/check-wang-appearance.mjs
-      - run: node tools/check-map-appearance.mjs
-      - run: node tools/check-crystal-material.mjs
-      - run: node tools/check-crystal-transmission.mjs
-      - run: node tools/check-world-volume-inlining.mjs   # CPU-only: big-map volume shader's inlined march/field-read copies stay under their compile-cost ceilings
-      - run: node tools/check-presentation.mjs   # tool-gun aim uses the simulation's Vec3, including shifted worlds
-      - run: node tools/check-sprint.mjs   # CPU body/camera/animation: launch, late surge, braking, interruptions
-      - run: node tools/check-strikes.mjs   # CPU quaternion strikes/wingbeats, bone frames, grips and repeat recovery
-      - run: node tools/check-willow-cove.mjs   # CPU terrain: body-clear running circuit and village routes
-      - run: node --test tools/check-city-folk.mjs   # composed world, exact legacy geometry, city bus/edit lifecycle
-      - run: node tools/check-city-folk-terrain.mjs && node tools/check-city-folk-town.mjs && node tools/check-city-folk-nature.mjs && node tools/check-city-folk-bus.mjs
-      - run: node --test tools/check-city-folk-neighborhood.mjs && node tools/check-village-buildings.mjs && node tools/check-village-interactions.mjs && node tools/check-village-orders.mjs
-      - run: node tools/grapple-cpu-check.mjs   # CPU original Grappendix: force bands, air control, momentum and lifecycle
-      - run: node tools/mission-node-check.mjs && node tools/mission-retry-cpu-check.mjs && node --test tools/import-cruelty-map-check.mjs
-      - run: node tools/check-world-fit.mjs && node tools/check-load-watch.mjs   # every World world fits the WORLD renderer; a stalled/failed load is flagged, never spins
-      - run: node scripts/check-noita-fold.mjs && node scripts/check-noita-materials.mjs && node scripts/check-noita-source.mjs && node scripts/check-terrain-handoff.mjs && node scripts/check-terrain-raster.mjs --naga && node scripts/check-terrain-edits.mjs && node tools/gpu-readback-check.mjs   # immutable terrain, invertible fold, persistent handoffs and CPU validation of full GPU shaders
-      - run: node scripts/check-descent-switch.mjs && node scripts/check-descent-temple.mjs && node scripts/check-descent-items.mjs   # legacy fixtures and shared run/item rules
-      - name: Ensure ImageMagick for source appearance fixtures
-        run: |
-          if ! command -v magick >/dev/null && ! command -v convert >/dev/null; then
-            sudo apt-get update && sudo apt-get install -y imagemagick
-          fi
-      - run: node --test tools/appearance-conversion-check.mjs tools/check-source-appearance.mjs tools/check-cruelty-post.mjs && node tools/source-appearance-gpu-check.mjs --cpu
-      - run: node --test tools/imported-interactions-check.mjs tools/door-motion-check.mjs tools/imported-door-motion-check.mjs && node tools/imported-door-passage-check.mjs
-      - run: node tools/cruelty-use-cpu-check.mjs   # compact source-only prompt, real actions and keyboard/touch guards
-      - run: node tools/ladder-cpu-check.mjs && node tools/cruelty-enemies-cpu-check.mjs
-      - run: node --experimental-vm-modules tools/world-coop-cpu-check.mjs   # host window, guest bodies and leash
-      - run: node tools/jetpack-figure-check.mjs   # CPU rigs/GLB: visible packs, animated nozzle origins and exhaust
-      - run: node tools/check-village-jump.mjs   # CPU charged jump, half gravity, cancellations and Three.js clips
-      - run: node tools/check-body-gravity.mjs   # CPU: the body's jump, jet, pogo, swim and gravity modes match under V1 and V2 (Noita's gravity)
-      - run: node tools/check-radial-projectiles.mjs   # CPU: shots, throws, frags, wand bolts and bot lobs fall toward the centre under radial gravity; normal gravity's paths bit for bit
-      - run: node tools/enemy-aim-cpu-check.mjs   # persistent tracking, bursts, cover, real firearm spread
-      - run: node tools/check-village.mjs && node tools/check-village-shapes.mjs && node tools/check-village-actions.mjs && node tools/check-village-punch.mjs && node tools/check-village-speech.mjs && node tools/check-village-residents.mjs   # character shapes, peaceful punches, tools, furniture and neighbor dialogue
-      - run: node tools/check-village-crook.mjs && node tools/check-village-debt-badge.mjs   # CPU doorstep dialogue, persistent debt and shrink/glide HUD
-      - run: node tools/check-character-models.mjs && node tools/check-loading-character.mjs   # CPU-only bodies, selection and portraits
-      - run: node tools/check-shot-particles.mjs   # generated WGSL must age particles in every fade mode
-      - run: node tools/firearm-aim-check.mjs && node tools/held-tools-check.mjs
-      - run: node tools/viewmodel-arms-check.mjs   # CPU GLBs: muscular view arms, grip alignment, live selection and disposal
-      - run: node tools/torch-cpu-check.mjs   # water quenching and frame-rate-independent flame inertia
-      - run: node tools/npc-held-check.mjs
-      - run: node tools/shrine-interact-cpu-check.mjs
-      - run: node tools/hotbar-cpu-check.mjs
-      - run: node tools/check-weather-wire.mjs && node tools/check-weather.mjs
-      - run: node tools/lighthouse-cpu-check.mjs --wgsl   # CPU: the island lighthouse's lamp lifecycle, beacon uniforms and its shader variants + Naga
-      - run: node tools/check-sprint-blur.mjs && node tools/check-sprint-music.mjs
-      - run: node --test tools/world-atlas-cpu-check.mjs   # sparse world ABI v2: independent LIGHT/pools, typed feedback, publication/copy + Naga (no GPU)
-      - run: npm run check:world-backend   # shared full world shader/assembly + actual Naga; NOT application activation
-      - run: node --test tools/world-view-early-cpu-check.mjs   # one World view module for every world size, started with the map's build and reused by its first frame (CPU/Naga)
-      - run: node --test tools/world-boot-start-cpu-check.mjs   # a big map's World load starts from its world's load, which never waits for the step kernels (V2's grid passes, built later on a big map); the loop ticks render-only meanwhile (CPU)
-      - run: npm run check:world-signs   # native global sign endpoint + accepted frozen DOM; CPU/Naga, not App activation
-      - run: npm run check:world-opaque   # actual HDR/depth packing, leased destinations; CPU/Naga, not GPU parity
-      - run: node tools/naga-file-check.mjs   # CPU: every check hands naga a file with a deadline, never its stdin (a stdin pipe can hang on macOS)
-      - run: npm run check:world-plain   # original voxel look/global rays, native three-phase blends + Naga; NOT app activation
-      - run: node --test tools/world-ray-shadow-cpu-check.mjs   # production DDA/PCSS CPU arithmetic + Naga, not GPU parity
-      - run: npm run check:world-sun   # CPU references/native recording + actual full optical Naga; NOT application activation
-      - run: npm run check:world-lighting-records   # submitted metadata, precise native word delta, logical ages; a restart's metadata cost is proportional to new bricks and carried records stay exact; a new transaction records only stale rows, exact against recording every row (CPU/Naga only)
-      - run: npm run check:world-lighting-inputs   # concrete native reader/ticket/pool-prefix seams; no app activation
-      - run: npm run check:world-render-owner   # actual data owner + delayed native transport; GI gather demand resolves without restarting the attempt; a restart records only new bricks' metadata; the final publish keeps resident pages, the same book; NOT App/GPU/visual acceptance
-      - run: npm run check:world-sun-forecast   # sun-caster forecast holds every resident caster of each World scene, below the blind ask
-      - run: npm run check:world-demand-chain   # a World load's demand settles in <= 3 attempts on Island/Descent's real terrain, its first attempt bounded (Island from its hill too), every sun tile full detail or coarse, the view's sun set known up front (CPU model)
-      - run: node --test tools/world-sun-coarse-cpu-check.mjs   # far sun tiles' coarse shadow: Naga, no atlas reads, its measured terrain error under the near ring's rule, no acne (CPU)
-      - run: npm run check:world-native-preflight   # actual Three cache/native-backend completion; CPU stubs, no GPU claims
-      - run: npm run check:world-cells   # actual Source/Fields/classified CELL native transport + Naga, not GPU parity
-      - run: node tools/world-cell-cost-cpu-check.mjs   # a World load's CELL batch counts the same Map/Set work and GPU commands at 8x the resident pages (CPU, counting fake GPU)
-      - run: node tools/world-field-copies-cpu-check.mjs   # a big map's field-history page copies: O(1) dispatches a batch, no native copy a page, every bit moved (CPU-executed WGSL + Naga, fake GPU)
-      - run: node tools/world-field-owners-cpu-check.mjs   # a big map's field plan costs its change, not its window: the old planner's plans, copies, EMA inputs and history on random ticks; Map/Set calls a tick by batch, not brick (CPU, fake GPU)
-      - run: node tools/world-tick-repack-cpu-check.mjs   # a big map's next field tick packs only the CELL pages that changed: none with no change, never past the page cap (CPU, counting fake GPU)
-      - run: node tools/world-field-budget-cpu-check.mjs   # a big map's field tick records at most its GPU budget (EMA batches and the CELL jobs they cause), the rest carried core by core, nearest the eye first; once drained the fields equal the unbudgeted ones word for word (CPU, byte and counting fake GPUs)
-      - run: node tools/world-pool-budget-cpu-check.mjs   # a big map's CELL pool stays under its GPU page budget through ticks of churn: the oldest snapshots' superseded pages go back to a full pool, the farthest bricks degrade, never a throw (CPU, actual owner, fake GPU)
-      - run: node tools/world-budget-slices-cpu-check.mjs   # a big map's GPU page budget drops, evicts and keeps exactly as d62feb64's sorts did, on random demands, eyes, budgets and atlases, with no sort of the demand: every step in yielding slices, its largest synchronous chunk bounded in counted Map/Set operations, the same with 4x the demand (CPU)
-      - run: node tools/world-book-writes-cpu-check.mjs   # a big map's atlas commits send only their changed book entries, patch unread books in place, and an Island lighting tick sends 20x+ fewer bytes than 64 KiB chunks (CPU, counting fake GPU)
-      - run: node tools/world-tick-incremental-cpu-check.mjs   # a big map's lighting tick plans its light bounce exactly as the old path did, tick after tick, in Map/Set work bounded by its selection and change, not the map's records; its metadata rows (the brute-force stale rule) and final-publish pages the same with 7x the records; every step in yielding slices, its largest synchronous chunk bounded in counted Map/Set operations, not the map's size (CPU)
-      - run: npm run check:world-gi-glow   # shared world GI/glow producers, bounded history/native recording + Naga; NOT application activation
-      - run: node --test tools/world-pipeline-cache-cpu-check.mjs   # CPU: World lighting producers build their pipelines once per device and grid, not per lighting transaction
-      - run: node --test tools/world-classify-pacing-cpu-check.mjs   # CPU: once a big map is on screen, its packing waits for the GPU between batches (no seconds-long queue behind frames)
-      - run: npm run check:world-gi-birth   # explicit native-history initialization/adoption; CPU fake transport, no app activation
-      - run: node tools/check-edge-sea.mjs   # CPU: the sea past a map's edge (big maps and small) where its water reaches it; Naga validates the sky and floor grid shaders
-      - run: node tools/check-sky-clouds.mjs   # CPU: the sky's cloud deck is its shadows' (same field, slices, constants, switch), on over every map; Naga validates the sky shader
-      - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
-      - run: node tools/hybrid-check.mjs   # CPU/Naga: all hybrid producers, actual stage layouts and six grid shapes
-      - run: node tools/hybrid-test-view-check.mjs   # CPU-only: explicit Test activation, teardown, and warning UI
-      - run: node tools/v2/cpu-suite.mjs --skip-long   # Physics V2's CPU checks (fake GPU, CPU twins, Naga) and the import/state-access lints; the long ones run in v2-long
-
-  # The V2 CPU suite's long checks (column-run water's WGSL twin, four parts: minutes), beside the other checks.
-  v2-long:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - name: Cache CPU WGSL validator
-        uses: actions/cache@v4
-        id: naga-cache
-        with:
-          path: ~/.cargo/bin/naga
-          key: ${{ runner.os }}-naga-cli-30.0.1
-      - name: Install CPU WGSL validator
-        if: steps.naga-cache.outputs.cache-hit != 'true'
-        run: |
-          cargo install naga-cli --version 30.0.1 --locked
-      - name: Verify CPU WGSL validator
-        run: |
-          test "$("$HOME/.cargo/bin/naga" --version)" = "30.0.1"
-          echo "$HOME/.cargo/bin" >> "${GITHUB_PATH:-/dev/null}"   # (a local run of the deploy's steps has no GITHUB_PATH)
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
-      - run: node tools/v2/cpu-suite.mjs --only-long
+      - run: node tools/check-imports.mjs   # shader/gfx/gpu modules import without a GPU or DOM at load time
+      - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
+      - run: node tools/check-world-fit.mjs && node tools/check-load-watch.mjs   # big maps fit the renderer; a stalled/failed load is flagged, never spins
+      - run: node tools/check-map-previews.mjs   # every menu map has a square preview
+      - run: node --test tools/check-mode-icons.mjs   # every gamemode has a valid menu emblem
 
   publish:
     needs: [build]

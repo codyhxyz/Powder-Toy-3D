@@ -13,7 +13,7 @@
 // - The sea fades into the horizon through the same air as the land: the sky
 //   shader carries the volume's haze (shaders/farShared.js farAirWGSL) and
 //   draws the sea through t cells of it.
-// - With Naga installed (CI: deploy.yml), the sky and floor grid shaders validate.
+// - With Naga installed, the sky and floor grid shaders validate.
 //   node tools/check-edge-sea.mjs
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
