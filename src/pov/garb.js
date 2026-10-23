@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildBarrel } from './barrel.js';
+import { buildBeard } from './beard.js';
 
 // The wizard's hat for the realistic body (figureReal.js): a lathe (brim and
 // cone, the tip bent back), built once per loaded model, seated on the head and
@@ -118,6 +119,7 @@ export function buildGarb(meshes, { bag = false } = {}) {
   if (bag) Object.assign(garb, buildPaperBag(verts, boneIndex));
   else garb.hat = buildHat(verts, boneIndex);
   if (female && !bag) Object.assign(garb, buildBarrel(verts, bindPos, boneIndex, skinTo));
+  if (!female && !bag) garb.beard = buildBeard(verts, bindPos, boneIndex);   // the wizard's beard (beard.js): its own skeleton, rigged per body
   return garb;
 }
 

@@ -10,6 +10,62 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { buildGarb } from '../src/pov/garb.js';
 import { createBarrelFit, innerRadius, outerRadius } from '../src/pov/barrel.js';
 
+// His beard (beard.js) under a fast turn: every joint of its chain stays out of his torso (the
+// skin's bind-pose vertices, carried by spine_03), the tip lags (it swings), settles back to its rest
+// drape, and the swing is the same at 30 and 144 fps. Returns the tip's offset in Head's frame after the turn.
+const BEARD_TURN = 2.4, BEARD_TURN_TIME = 0.25, BEARD_SAMPLE = 0.4;   // rad, s, s
+function beardTurn(body, state, dt, { census = null } = {}) {
+  const rig = body.real.beard;
+  const yaw0 = state.yaw;
+  const sm = (x) => { const t = Math.min(Math.max(x, 0), 1); return t * t * (3 - 2 * t); };
+  for (let i = 0; i < Math.round(1.5 / dt); i++) body.update(dt, state);   // settle at rest
+  let lag = 0;
+  const steps = Math.round(BEARD_SAMPLE / dt);
+  for (let i = 1; i <= steps; i++) {
+    body.update(dt, { ...state, yaw: yaw0 + BEARD_TURN * sm((i * dt) / BEARD_TURN_TIME) });
+    lag = Math.max(lag, rig.joints.at(-1).distanceTo(rig.rest.at(-1)));
+    census?.(rig);
+  }
+  const head = body.model.getObjectByName('Head');
+  head.updateWorldMatrix(true, false);
+  const metre = rig.unit;   // world units per model metre
+  const offset = rig.joints.at(-1).clone().sub(rig.rest.at(-1)).applyQuaternion(head.getWorldQuaternion(new THREE.Quaternion()).invert()).divideScalar(metre);
+  return { lag: lag / metre, offset };
+}
+function checkBeard(body, state, torso) {
+  const rig = body.real.beard;
+  assert.ok(rig, 'the wizard has a beard rig');
+  const s03 = body.model.getObjectByName('spine_03');
+  const { bones, boneInverses } = body.model.getObjectByName('SuperHero_Male').skeleton;
+  const inv03 = boneInverses[bones.indexOf(s03)];
+  const toBind = new THREE.Matrix4(), p = new THREE.Vector3();
+  let worst = -Infinity;
+  const census = (r) => {
+    toBind.multiplyMatrices(s03.matrixWorld, inv03).invert();
+    for (const j of r.joints.slice(1)) {
+      p.copy(j).applyMatrix4(toBind);
+      // the skin in front of and behind this point, at its height and across
+      let front = -Infinity, back = Infinity;
+      for (const v of torso) {
+        if (Math.abs(v.y - p.y) > 0.02 || Math.abs(v.x - p.x) > 0.025) continue;
+        front = Math.max(front, v.z); back = Math.min(back, v.z);
+      }
+      if (p.z > back && p.z < front) worst = Math.max(worst, front - p.z);
+    }
+  };
+  const start = beardTurn(body, state, 1 / 60, { census });
+  assert.ok(worst <= 0.005, `the beard stays out of his chest through a turn (${(worst * 100).toFixed(1)} cm in)`);
+  assert.ok(start.lag > 0.04, `the beard swings behind a turn (${(start.lag * 100).toFixed(1)} cm)`);
+  for (let i = 0; i < 150; i++) body.update(1 / 60, { ...state, yaw: state.yaw + BEARD_TURN });
+  const settled = rig.joints.at(-1).distanceTo(rig.rest.at(-1)) / rig.unit;
+  assert.ok(settled < 0.015, `the beard settles back after a turn (${(settled * 100).toFixed(1)} cm off its rest)`);
+  const slow = beardTurn(body, state, 1 / 30).offset, fast = beardTurn(body, state, 1 / 144).offset;
+  assert.ok(slow.distanceTo(fast) < 0.01, `the swing is the same at 30 and 144 fps (${(slow.distanceTo(fast) * 100).toFixed(1)} cm apart)`);
+  for (const j of rig.joints) assert.ok(j.toArray().every(Number.isFinite));
+  console.log(`PASS beard: swings ${(start.lag * 100).toFixed(1)} cm behind a ${BEARD_TURN} rad turn, deepest chest contact ${(Math.max(worst, 0) * 100).toFixed(1)} cm, `
+    + `settles to ${(settled * 100).toFixed(1)} cm, 30 vs 144 fps ${(slow.distanceTo(fast) * 100).toFixed(1)} cm apart`);
+}
+
 // Her barrel: which wood each skinned body vertex is in after the fit (barrel.js), in the
 // barrel's own frame (spine_01's rest). Arms must be out of the wood and out of the barrel, legs and
 // torso out of the wood. Returns { arm, armInside, leg, legDeep, torso } (counts, legDeep in m).
@@ -77,6 +133,7 @@ const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).register(parse
   return { name: 'cpu-textures' };
 });
 const models = new Map();
+let torso = null;   // his torso's skin in the bind pose, for the beard's census
 for (const file of ['body', 'woman']) {
   const bytes = readFileSync(new URL(`../public/models/character/${file}.glb`, import.meta.url));
   const gltf = await loader.parseAsync(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), '');
@@ -104,6 +161,31 @@ for (const file of ['body', 'woman']) {
   if (file === 'body') {
     const bagged = buildGarb(meshes, { bag: true });
     assert.ok(bagged.bag && bagged.marker && !bagged.hat, 'paper bag replaces the wizard hat');
+    assert.equal(bagged.beard, undefined, 'the paper-bag guy has no beard');
+    const { beard } = garb;
+    assert.ok(beard?.userData.beard, 'the wizard wears a beard');
+    const chain = beard.userData.beard.joints.length;   // its skeleton: Head, then one bone per joint but the tip
+    const { skinIndex, skinWeight, position } = beard.attributes;
+    for (let i = 0; i < skinIndex.count; i++) {
+      let sum = 0;
+      for (let k = 0; k < 4; k++) {
+        assert.ok(skinIndex.getComponent(i, k) < chain, 'beard skin indices are its own skeleton\'s');
+        sum += skinWeight.getComponent(i, k);
+      }
+      assert.ok(Math.abs(sum - 1) < 1e-5, 'beard skin weights sum to one');
+    }
+    for (const i of beard.index.array) assert.ok(i < position.count);
+    beard.computeBoundingBox();
+    const hips = new THREE.Vector3().setFromMatrixPosition(body.skeleton.boneInverses[body.skeleton.bones.findIndex(b => b.name === 'spine_02')].clone().invert());
+    assert.ok(beard.boundingBox.min.y > hips.y + 0.1, 'the beard ends on his chest, above his abs');
+    beard.dispose();
+    const { bones } = body.skeleton, si = body.geometry.attributes.skinIndex, sw = body.geometry.attributes.skinWeight;
+    torso = [];
+    for (let i = 0; i < si.count; i++) {
+      const w = [sw.getX(i), sw.getY(i), sw.getZ(i), sw.getW(i)];
+      const main = bones[si.getComponent(i, w.indexOf(Math.max(...w)))].name;
+      if (/^(spine_0[123]|clavicle_[lr]|neck_01)$/.test(main)) torso.push(new THREE.Vector3().fromBufferAttribute(body.geometry.attributes.position, i).applyMatrix4(body.bindMatrix));
+    }
     bagged.bag.dispose();
     bagged.marker.dispose();
   }
@@ -172,6 +254,7 @@ for (const file of ['body', 'woman']) {
     }
     fit.restore();
     fitMixer.stopAllAction();
+    assert.equal(garb.beard, undefined, 'she has no beard');
   } else assert.equal(garb.robe, undefined);
   hat.computeBoundingBox();
   assert.ok(hat.boundingBox.min.toArray().every(Number.isFinite));
@@ -235,6 +318,7 @@ try {
         const weights = body.real.weights;
         assert.ok(Math.abs(Object.values(weights).reduce((a, b) => a + b, 0) - 1) < 1e-6);
         assert.ok(body.anchor(new THREE.Vector3()).toArray().every(Number.isFinite));
+        assert.ok(body.real.beard?.joints.every(j => j.toArray().every(Number.isFinite)) ?? key === 'woman', `${key}: beard`);
       }
       const hand = body.model.getObjectByName('hand_r');
       body.reach({ right: { pos: hand.getWorldPosition(new THREE.Vector3()),
@@ -242,6 +326,7 @@ try {
       body.model.updateMatrixWorld(true);
       assert.ok(hand.matrixWorld.elements.every(Number.isFinite));
       if (key === 'woman') checkBarrelFigure(body, state);
+      else checkBeard(body, state, torso);
     }
   } finally { body.dispose(); }
 } finally {
