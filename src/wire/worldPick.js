@@ -34,13 +34,14 @@ export function queryWorldPick(app,state,displayed,{ray,skipLiquids=false},isCur
     native=state.volume.prepare({snapshot:data.snapshot.retain(),tableBuffer:data.tables.buffer,appearance:data.appearance,
       frameUniforms:{...data.frame.values,...view.values},physicsOrigin:data.frame.physicsOrigin,
       params:{...data.frame.params,...view.params},lighting:data.lighting,
-      external:{...data.frame.external,packedMesh:state.unused.createView()}});
+      external:{...data.frame.external,packedMesh:state.unused.createView()},feedbackKind:'pick'});
     const {gpu}=app,ticket=createWorldFeedbackProvider(gpu,{}).reserve(gpu.frame);
     submitted=ticket.submitted;
     let error,read;
     try {
       output=gpu.device.createBuffer({label:'WORLD visual pick output',size:32,usage:128|4});
-      combined=gpu.device.createBuffer({label:'WORLD visual pick whole feedback and output',size:native.feedback.size+32,usage:4|8});
+      const feedbackBytes=native.feedbackWords*4;   // the feedback's readback (compacted, or whole), then the output
+      combined=gpu.device.createBuffer({label:'WORLD visual pick whole feedback and output',size:feedbackBytes+32,usage:4|8});
       if(!native.recordPickReady(gpu.frame,{params,output,view:view.view}))throw Error('WORLD pick pipeline unavailable');
       // V2's flying matter (a V1 flying cell is a cell the march finds), as the Box pick finds it
       // (gfx/volume.js recordPicks): the nearer of the two, in world cells (shift: the window's origin)
@@ -48,15 +49,15 @@ export function queryWorldPick(app,state,displayed,{ray,skipLiquids=false},isCur
       if(o)sim.compact?.dynamics?.drawAdapter?.recordPick?.(gpu.frame,{ring:output,ro:params.ro,rd:params.rd,slot:params.slot,n:1,
         origin:o,shift:[o.x,o.y,o.z],transient:true});
       const encoder=gpu.frame.direct();
-      encoder.copyBufferToBuffer(native.feedback,0,combined,0,native.feedback.size);
-      encoder.copyBufferToBuffer(output,0,combined,native.feedback.size,32);
+      native.recordFeedback(encoder,combined,0);
+      encoder.copyBufferToBuffer(output,0,combined,feedbackBytes,32);
     } catch(e){error=e;} finally {read=ticket.record(gpu.frame,combined??state.boundary);}
     const words=await read;if(error)throw error;
-    const feedback=native.decodeFeedback(words.subarray(0,native.feedback.size/4));
+    const feedback=await native.readFeedback(words.subarray(0,native.feedbackWords));
     if(state.dead || !isCurrent(displayed))return worldPickNotReady('WORLD_PICK_OBSOLETE');
     // Raw picks do not read Sun. Never reapply old basis indices to a new cut.
     if(feedback.sun.length)throw Object.assign(Error('unexpected WORLD raw pick Sun dependency'),{code:'WORLD_PICK_UNEXPECTED_SUN'});
-    const raw=new Float32Array(words.slice(native.feedback.size/4).buffer);
+    const raw=new Float32Array(words.slice(native.feedbackWords).buffer);
     if(feedback.incomplete || feedback.requirements.length || raw[3]===-2){
       queueDemand(feedback,displayed);
       return worldPickNotReady('WORLD_PICK_INCOMPLETE',{frameIdentity:displayed.frameIdentity,feedback});

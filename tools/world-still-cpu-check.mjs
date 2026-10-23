@@ -36,7 +36,8 @@ async function setup() {
   state.volume.pipelineState=()=>({state:'ready'});
   state.volume.prepare=input=>{
     const feedback=f.gpu.createBuffer({size:f.owner.atlas.feedbackBytes,usage:128|4|8});
-    return {feedback,publication:{},recordDraw(){phases.push('volume');return true;},decodeFeedback:()=>complete(),
+    return {feedback,publication:{},recordDraw(){phases.push('volume');return true;},feedbackWords:feedback.size/4,readFeedback:async()=>complete(),
+      recordFeedback(encoder,dst,offset=0){encoder.copyBufferToBuffer(feedback,0,dst,offset,feedback.size);},
       release(){input.snapshot.release();feedback.destroy();}};
   };
   app.signs={worldRequest(){counts.sign++;return null;}};
@@ -59,7 +60,7 @@ async function setup() {
           ...(still?{still:true,target:options.stillTarget}:{})});
       seen.push({still,cut:data.cut,identity:data.identity,view:options.frozenView,target:options.stillTarget,sign:options.signRequest});
       return {data,sceneTicket,feedbackIdentity,hands:still?{}:{lighting:{canCommit:()=>true,commit(){counts.vm++;return true;},discard(){}}},
-        native:{feedback,decodeFeedback:words=>words[0]?{incomplete:true,requirements:[{brick:[1,0,0],channels:words[0]}],sun:[]}:complete(),publication:{}},
+        native:{feedback,feedbackWords:1,readFeedback:async words=>words[0]?{incomplete:true,requirements:[{brick:[1,0,0],channels:words[0]}],sun:[]}:complete(),publication:{}},
         read:submission.record(f.gpu.frame,feedback),submitted:submission.submitted,releaseAfter:async()=>feedback.destroy()};
     },
   });

@@ -11,8 +11,10 @@ import { Header } from '../shaders/common.js';
 import { WorldSunParams, worldSunFeedbackWords } from '../world/worldSun.js';
 import { requestedBricks, requestedChannels, READY, WORLD_ATLAS_ABI } from '../world/renderAtlas.js';
 import { worldBricksFit } from '../shaders/common.js';
-import { OUTSIDE_VIEW_SLOTS } from '../gpu/kernels.js';
-const BU={COPY_SRC:4,COPY_DST:8,UNIFORM:64,STORAGE:128};
+import { OUTSIDE_VIEW_SLOTS, fold } from '../gpu/kernels.js';
+import { worldFeedbackCompactWGSL, WORLD_FEEDBACK_COMPACT_LAYOUT, WORLD_FEEDBACK_MIN_ENTRIES, worldFeedbackReadWords, worldFeedbackCompactBytes,
+  worldFeedbackCompactGroups, worldFeedbackMaxEntries, nextWorldFeedbackCapacity, decodeCompactWorldFeedback, createWorldFeedbackScratch } from './worldFeedbackCompact.js';
+const BU={MAP_READ:1,COPY_SRC:4,COPY_DST:8,UNIFORM:64,STORAGE:128}, MAP_MODE_READ=1;
 const WorldFrameStruct = uniformStruct('FrameUniforms', FRAME_UNIFORM_FIELDS);
 const vec = v => Array.from(v?.elements ?? (v?.toArray ? v.toArray() : v));
 // Native local lamp/wand/dig positions converted ONCE from a frozen origin.
@@ -64,6 +66,21 @@ function nativeBuild(gpu, promise, slots=1) {
   ready.catch(()=>{});
   return Object.freeze({get state(){return state;},get pipeline(){return pipeline;},get error(){return error;},ready});
 }
+// The feedback compaction pass (gfx/worldFeedbackCompact.js), one per device: built on a
+// volume's first compacted read; until it is ready, reads take the whole feedback as before.
+const sharedCompactors = new WeakMap();   // device -> { layout, build }
+function feedbackCompactor(gpu) {
+  const device=gpu.device ?? gpu;
+  let c=sharedCompactors.get(device);
+  if (!c) {
+    const layout=device.createBindGroupLayout({label:'world feedback compact',entries:WORLD_FEEDBACK_COMPACT_LAYOUT});
+    c={layout,build:nativeBuild(gpu,device.createComputePipelineAsync({label:'world feedback compact',
+      layout:device.createPipelineLayout({bindGroupLayouts:[layout]}),
+      compute:{module:device.createShaderModule({code:worldFeedbackCompactWGSL(),label:'world feedback compact'}),entryPoint:'main'}}))};
+    sharedCompactors.set(device,c);
+  }
+  return c;
+}
 // The view's native builds (Plain: its three phases) for grid's module, started once per device.
 function viewBuilds(gpu, grid, view, detail, curved) {
   const device=gpu.device ?? gpu, shared=viewPipelines(device);
@@ -113,6 +130,10 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
   const linear=device.createSampler({minFilter:'linear',magFilter:'linear'});
   const repeat=device.createSampler({minFilter:'linear',magFilter:'linear',addressModeU:'repeat',addressModeV:'repeat',addressModeW:'repeat'});
   const pipes=new Map(), compilations=[]; let dead=false;
+  // Each reader kind's compacted list capacity (prepare's feedbackKind: the eye's point query
+  // names a few bricks, a scene frame up to thousands), from its last read's count.
+  const capacities=new Map(), scratch=createWorldFeedbackScratch(); let compactor=null;
+  const compacting=()=>{if(!compactor){compactor=feedbackCompactor(gpu);own(compactor.build);}return compactor.build.state==='ready';};
   const alive=()=>{if(dead)throw new Error('world volume disposed');};
   const module=(code,label)=>device.createShaderModule({code,label});
   // (a shared build, too, is this volume's to drain before disposal: compilationSettled)
@@ -151,7 +172,9 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
   // external lighting/appearance/mesh/noise publication through final submission.
   // A supplied snapshot transfers ownership to this call, including failure.
   // Acquire the default only after checking disposal, inside the cleanup scope.
-  function prepare({snapshot,frameUniforms,physicsOrigin,params,external,tableBuffer=tables,appearance:cutAppearance=appearance,lighting:light=lighting}={}) {
+  // feedbackKind: read this candidate's feedback compacted (recordFeedback/readFeedback), with
+  // that kind's capacity; omitted, its feedback is read whole (decodeFeedback) or not at all.
+  function prepare({snapshot,frameUniforms,physicsOrigin,params,external,tableBuffer=tables,appearance:cutAppearance=appearance,lighting:light=lighting,feedbackKind=null}={}) {
     const owned=[]; let released=false;
     const buffer=(label,bytes,usage=BU.UNIFORM|BU.COPY_DST)=>{
       const b=device.createBuffer({label,size:bytes.byteLength,usage}); owned.push(b); queue.writeBuffer(b,0,bytes); return b;
@@ -177,7 +200,10 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       const fuBytes=WorldFrameStruct.pack(values);
       const preparedCamera=vec(values.cam).map(Math.fround);
       const headerBytes=new ArrayBuffer(Header.size); Header.write(new DataView(headerBytes),0,{origin:[0,0,0]});
-      const feedback=buffer('world candidate feedback',new Uint32Array(atlas.feedbackBytes/4),BU.STORAGE|BU.COPY_SRC|BU.COPY_DST);
+      // A new buffer is zeros (WebGPU zero-initializes every buffer, on the GPU): uploading
+      // 24 MiB of zeros from a fresh array a candidate was 1.7 s of writeBuffer and much of
+      // 2.5 s of GC in 40 s of Descent (real Chrome, 2026-10-22).
+      const feedback=device.createBuffer({label:'world candidate feedback',size:atlas.feedbackBytes,usage:BU.STORAGE|BU.COPY_SRC|BU.COPY_DST}); owned.push(feedback);
       const fu=buffer('world candidate frame',fuBytes), header=buffer('world zero origin',headerBytes), sunParams=buffer('world sun publication',sunBytes);
       const p=buffer('world view params',VolumeParams.pack(params));
       const b=(binding,buffer)=>({binding,resource:{buffer}});
@@ -188,6 +214,40 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       const first=entries.slice(0,3).map((e,i)=>group(layouts[i],e));
       const groups=[...first,group(layouts[3],[b(0,p),...base])];
       const valid=()=>{alive();if(released)throw new Error('world candidate released');if(snapshot.epoch!==atlas.epoch)throw new Error('stale world candidate epoch');};
+      const decodeFeedback=words=>{valid();return decodeWorldFeedback(words,atlas.bookLayout,tileCount);};
+      // The feedback as its readers read it back (gfx/worldFeedbackCompact.js): with a kind and the
+      // pass built, the compacted list of its non-zero words, plus a full copy only an overflowed
+      // list maps; else the whole feedback, as before.
+      let feedbackWords=feedback.size/4;
+      let recordFeedback=(encoder,dst,offset=0)=>{encoder.copyBufferToBuffer(feedback,0,dst,offset,feedback.size);};
+      let readFeedback=async words=>decodeFeedback(words);
+      if (feedbackKind!==null && compacting()) {
+        const readWords=worldFeedbackReadWords(atlas.bookLayout,tileCount), max=worldFeedbackMaxEntries(readWords);
+        const capacity=Math.min(max,capacities.get(feedbackKind)??WORLD_FEEDBACK_MIN_ENTRIES);
+        const compactParams=buffer('world feedback compact params',new Uint32Array([readWords,capacity,0,0]));
+        const compact=device.createBuffer({label:'world feedback compact',size:worldFeedbackCompactBytes(capacity),usage:BU.STORAGE|BU.COPY_SRC}); owned.push(compact);
+        const full=device.createBuffer({label:'world feedback full copy',size:readWords*4,usage:BU.MAP_READ|BU.COPY_DST}); owned.push(full);
+        const compactGroup=device.createBindGroup({layout:compactor.layout,entries:[b(0,compactParams),{binding:1,resource:{buffer:feedback,offset:0,size:readWords*4}},b(2,compact)]});
+        feedbackWords=compact.size/4;
+        recordFeedback=(encoder,dst,offset=0)=>{
+          valid();
+          const pass=encoder.beginComputePass({label:'world feedback compact'});
+          try {pass.setPipeline(compactor.build.pipeline);pass.setBindGroup(0,compactGroup);pass.dispatchWorkgroups(...fold(worldFeedbackCompactGroups(readWords)));}
+          finally {pass.end();}
+          encoder.copyBufferToBuffer(compact,0,dst,offset,compact.size);
+          encoder.copyBufferToBuffer(feedback,0,full,0,full.size);
+        };
+        readFeedback=async words=>{
+          valid();
+          if(!(words instanceof Uint32Array)||words.length!==feedbackWords)throw new RangeError('complete compact feedback readback required');
+          capacities.set(feedbackKind,nextWorldFeedbackCapacity(readWords,capacity,words[0]));
+          const decoded=decodeCompactWorldFeedback(words,atlas.bookLayout,tileCount,scratch);
+          if(decoded)return decoded;
+          // Overflowed: the full copy, read in place (the submission that filled it is done).
+          await full.mapAsync(MAP_MODE_READ);valid();
+          try {return decodeFeedback(new Uint32Array(full.getMappedRange()));} finally {full.unmap();}
+        };
+      }
       function recordDraw(pass,{view='realistic',detail={},curved=false}={}) {
         valid(); const state=pipelineState(view,detail,curved);
         if(state.state!=='ready')return false;
@@ -280,7 +340,7 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
         async recordSigns(frame,options) {
           valid();const captured=captureSigns(options);await signsReady;valid();return recordCapturedSigns(frame,captured);
         },
-        decodeFeedback:words=>{valid();return decodeWorldFeedback(words,atlas.bookLayout,tileCount);},
+        decodeFeedback,feedbackWords,recordFeedback,readFeedback,
         // ONLY after submitting the last use AND GPU completion. No hidden
         // source/field submits, and no assumption that borrowed scratch survives.
         release(){if(!released){released=true;snapshot.release();owned.forEach(b=>b.destroy());}},
