@@ -316,6 +316,11 @@ export function createWorldLightingHistory({worldSize,epoch,sourceOwner=null,con
     captureSources({indices}){alive();const held=new Map();try{for(const i of indices){const p=sources.get(i);if(!p)throw new Error('unknown retained GI source');if(!held.has(i))held.set(i,{...p,output:p.output.retain()});}}catch(e){drop(held);throw e;}let released=false;return Object.freeze({token:publicationToken,lightingTick:tick,bindingsFor(i){if(released||!held.has(i))throw new Error('uncaptured retained source');const p=held.get(i);return Object.freeze({buffer:p.output.bindings().source,byteOffset:p.slot*16,token:p.output.token});},release(){if(!released){released=true;drop(held);}}});},
     get lightingTick(){return tick;},get epoch(){return epoch;},get token(){return publicationToken;},
     birth(index){alive();return births.get(index)??null;},
+    // Drops the retained SOURCES and probes of indices (world/worldResidency.js:
+    // bricks the view has not used lately). A forgotten one is born again, as a
+    // new one, when a load next asks for it.
+    forget(indices){alive();if(pending)throw new Error('forget world GI history with a tick planned');for(const i of indices){for(const m of [probes,previous,sources]){const p=m.get(i);if(p){p.output.release();m.delete(i);}}births.delete(i);changed.delete(i);}},
+    get pending(){return !!pending;},
     noteChanged(bricks,atTick){alive();if(!uint(atTick)||atTick<tick)throw new Error('world change tick regression');for(const b of bricks)changed.set(index(b),{brick:frozenArray(b),tick:atTick});},
     dispose(){if(dead)return;pending?.abort();dead=true;drop(probes);drop(previous);drop(sources);births.clear();}
   });

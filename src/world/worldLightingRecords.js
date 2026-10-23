@@ -170,6 +170,10 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
   }
   return Object.freeze({ready,record,carryable,stale,records(indices,{derivedTick=clock}={}){alive();return read(committed,indices,derivedTick);},get indices(){alive();return frozenArray(committed.keys());},
     has(i){alive();return committed.has(i);},get size(){return committed.size;},
+    // Drops the rows of indices (world/worldResidency.js: bricks the view has
+    // not used lately). A forgotten brick's next record is a birth, as a new one's.
+    forget(indices){alive();if(pending)throw new Error('forget world lighting rows with a records transaction pending');for(const i of indices){const r=committed.get(i);if(r){committed.delete(i);coreDelete(i,r.buffer);}}},
+    get pending(){return !!pending;},
     // The committed indices without a copy (a frozen array of a big map's 450k was a tick's first O(N) cost).
     keys(){alive();return committed.keys();},get derivedTick(){return clock;},reset(){alive();generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed=new Map();cores.clear();clock=-1;},dispose(){if(!dead){generation++;pending?.discard();pending=null;baseline?.release();baseline=null;committed.clear();cores.clear();dead=true;}}});
 }

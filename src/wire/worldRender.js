@@ -14,6 +14,7 @@ import { worldColumnTops, forecastSunCasters, forecastViewTiles, worldViewRays, 
 import { worldSunRings, worldCoarseCasters, WORLD_SUN_SHARPEN_TILES } from '../world/worldSunRings.js';
 import { WORLD_GI_NEAR_RADIUS, worldGIReach } from '../world/worldGIRing.js';
 import { worldViewAirFloors, worldViewAirWords, worldPageBudget, worldBudgetDemandSteps, worldFarthestSteps } from '../world/worldViewRing.js';
+import { createWorldResidency, worldResidentView, WORLD_RESIDENT_SHARE } from '../world/worldResidency.js';
 import { worldGIGroundWords } from '../shaders/worldGI.js';
 import { worldRunSync, worldRunSliced, worldSliceMeter, worldPause, WORLD_SLICE_COST as COST } from '../world/worldSlices.js';
 
@@ -494,6 +495,36 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   // (worldBudgetPass: the pass, in slices)
   const budgetContext={atlas,budget,cellCurrent,brick,ownedSources,ownedProbes,ownedGlow,viewAirFor,setViewAir:air=>{viewAir={air,id:++viewAirId};},reclaim};
   const budgetDemand=(t,ids)=>worldBudgetPass(t,ids,budgetContext);
+  // Old bricks out before the demand is built (world/worldResidency.js): every
+  // brick a load asks for is a use; past WORLD_RESIDENT_SHARE of the budget, or
+  // past what leaves the load's new asks their room, the least recently used
+  // go from everywhere a brick is kept (its lighting row, its SOURCE and probe,
+  // its CELL and LIGHT pages), unless the camera's frustum or near ring holds
+  // it now, or this load or a glow region does. Lumen's surface cache forgets
+  // the same way; a forgotten brick the view asks for again is born again.
+  // Only at a transaction's first attempt: no records batch or GI tick is
+  // pending then, and a retry's demand is the same load's.
+  const residency=createWorldResidency({capacity:budget.pool.cell});
+  async function forgetUnused(t){
+    let asks=0;
+    await worldRunSliced((function*(){for(const i of t.requirements.keys()){residency.touch(i);if(!metadata.has(i))asks++;if(t.full(COST.member))yield;}})());
+    const count=Math.max(metadata.size-Math.floor(budget.cell*WORLD_RESIDENT_SHARE),metadata.size+asks-budget.cell);
+    if(count<=0||t.attempts!==1||t.batch||t.plan||metadata.pending||history.pending)return;
+    const view=worldResidentView(t.frame.values);if(!view)return;
+    const regions=[];
+    for(const i of ownedGlow){const c=brick(i).map(n=>Math.floor(n/8));regions.push(worldGlowPlan(size,c).input);}
+    const inGlow=b=>regions.some(r=>b.every((n,k)=>n>=r.min[k]&&n<r.min[k]+r.size[k]));
+    const held=i=>t.requirements.has(i)||t.pinned.has(i)||ownedGlow.has(i)||inGlow(brick(i));
+    const out=await worldRunSliced(residency.forgetSteps({count,held,seen:i=>view(brick(i))},t.full));
+    if(!out.length)return;
+    metadata.forget(out);history.forget(out);
+    for(const i of out){ownedSources.delete(i);ownedProbes.delete(i);}
+    for(const [kind,channels] of [['cell',READY.CELL],['light',READY.LIGHT]]){
+      const pages=out.filter(i=>atlas.live[kind].has(i)&&!atlas[kind].pending.has(i));
+      if(pages.length)atlas.remove(pages.map(brick),channels);
+    }
+    t.forgotten=(t.forgotten??0)+out.length;
+  }
   // SOURCE slabs a restart keeps (gfx/worldGI.js carry): the transaction's cut,
   // field tick, lighting tick, frame and config are a restart's too, so a
   // completed SOURCE job (a published slab's, or an incomplete slab's that read
@@ -613,6 +644,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     t.full=worldSliceMeter();
     await clearAttempt(t,{keepRecords:true});
     await forecast(t);t.stage='cell';
+    await forgetUnused(t);
     const ids=await worldRunSliced(worldDemandIdSteps([metadata.keys(),ownedSources,ownedProbes,t.requirements.keys()],t.full));
     for(const i of ownedGlow)t.requirements.set(i,(t.requirements.get(i)??0)|READY.GLOW);
     const glowCores=new Map(),glowBricks=[];
@@ -780,7 +812,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   function next() {if(queued&&!dead){const q=queued;queued=null;try{start(q.frame,q.requirements).then(q.resolve,q.reject);}catch(e){releaseFrame(q.frame);q.reject(e);}}wake();}
   const api={atlas,cells,metadata,
     // Passive counters only: inspecting readiness must never advance work.
-    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,support:t.support.size,sunTiles:t.sunTiles.size,coarseTiles:t.coarseTiles?.size??0,budgetDropped:t.budgetDropped??0,pageBudget:budget.cell,forecastBricks:t.forecastBricks??0,sourcePasses:t.sourcePasses??0,sourceJobs:t.sourceJobs??0,carriedSources:t.carriedSources??0,metadataBricks:t.metadataBricks??0,residentKept:t.residentKept??0,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
+    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,support:t.support.size,sunTiles:t.sunTiles.size,coarseTiles:t.coarseTiles?.size??0,budgetDropped:t.budgetDropped??0,pageBudget:budget.cell,forecastBricks:t.forecastBricks??0,sourcePasses:t.sourcePasses??0,sourceJobs:t.sourceJobs??0,carriedSources:t.carriedSources??0,metadataBricks:t.metadataBricks??0,residentKept:t.residentKept??0,forgotten:t.forgotten??0,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
     get busy(){return !!active||!!queued;},get failure(){return failure??metadataFeedback.failure??active?.feedback?.failure??active?.error??null;},get state(){return dead?'disposed':resetting?'resetting':metadataFeedback.failure||active?.feedback?.failure?'blocked':active?.state??'idle';},
     request(frame,requirements=[]){live();const f=captureFrame(frame);if(active){if(queued){releaseFrame(queued.frame);queued.resolve(null);}return new Promise((resolve,reject)=>{queued={frame:f,requirements:frozen(requirements),resolve,reject};});}try{return start(f,requirements);}catch(e){releaseFrame(f);throw e;}},
     probe(){live();return active?.state==='probe-ready'?active.bundle.retain():null;},
@@ -809,7 +841,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       resetWork=(async()=>{
         if(queued){releaseFrame(queued.frame);queued.resolve(null);queued=null;}
         const t=active;active=null;if(t){await t.work.catch(()=>{});await retire(t);}await fence();
-        accepted?.bundle.release();accepted?.cut.release();accepted=null;history?.dispose();history=null;metadata.reset();ownedSources.clear();ownedProbes.clear();ownedGlow.clear();forecastTiles.clear();shellTiles.clear();forecastGrid=null;viewAir=null;
+        accepted?.bundle.release();accepted?.cut.release();accepted=null;history?.dispose();history=null;metadata.reset();residency.clear();ownedSources.clear();ownedProbes.clear();ownedGlow.clear();forecastTiles.clear();shellTiles.clear();forecastGrid=null;viewAir=null;
         const cut=source.recordCut(gpu.frame,{sceneVersion,configVersion:schemaVersion});
         try{gpu.flush('WORLD reset cut capture');await fence();cells.bindCut(cut);cells.reset();}finally{cut.release();}
         failure=null;wake();
