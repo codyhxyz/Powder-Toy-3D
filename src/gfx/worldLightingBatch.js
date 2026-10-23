@@ -164,13 +164,17 @@ export function createLightingTransport(device) {
         prepared.push({job,lease,pin});
       }
       gpu.flush('world retained lighting closure');
-      for(const {job,lease,pin}of prepared){
+      // Every lease's copies in one Atlas submission (recordLightWrites), not a
+      // command encoder and a submission per lease: a restore is every owned
+      // SOURCE and probe, 90k-115k leases a big map's tick (2026-10-22).
+      const writes=prepared.map(({job,lease,pin})=>{
         validateWorldLightingRestore(lease,{job});
         const {buffer:source,ranges}=pin.bindings();
-        atlas.recordLightWrite(job,lease.kind,{restoreDeclaration:lease,record(encoder,bindings){
+        return {job,kind:lease.kind,restoreDeclaration:lease,record(encoder,bindings){
           ranges.forEach((c,i)=>encoder.copyBufferToTexture({buffer:source,offset:c.from},bindings.destinations[i],[1,1,1]));
-        }});
-      }
+        }};
+      });
+      if(writes.length)atlas.recordLightWrites(writes);
       await device.queue.onSubmittedWorkDone();
     } finally {retire();}
   }

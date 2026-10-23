@@ -494,7 +494,7 @@ test('authentic cut/lease rejection, private staged SOURCE plus previous GI, fai
     const fb=f.gpu.createBuffer({size:f.atlas.feedbackBytes});assert.equal(f.atlas.producerBindings(old,privateBook,Object.fromEntries(['sunDepth','sunOptical','mediaNoise','sourceAppearance','packedMesh'].map(k=>[k,{}])),fb)[0][2].resource.buffer,privateBook.lightBook);
     privateBook.release();old.release();jobs.forEach(j=>f.atlas.cancel(j));staged.release();f.plan.abort();
     const retained=f.h.captureRestore(args),pending=f.job(retained),snapshot=f.atlas.snapshot();let count=0;
-    const record=f.atlas.recordLightWrite.bind(f.atlas);f.atlas.recordLightWrite=(...a)=>{if(++count===2)throw new Error('partial restore');return record(...a);};
+    const record=f.atlas.recordLightWrites.bind(f.atlas);f.atlas.recordLightWrites=(...a)=>{if(++count===1)throw new Error('partial restore');return record(...a);};
     await assert.rejects(f.write(retained,[pending]),/partial restore/);
     assert.throws(()=>f.atlas.publish({lightJobs:[pending]}),/partial page/);assert.equal(f.h.lightingTick,0);assert.equal(f.atlas.generation,generation);assert.equal(snapshot.generation,generation);
     f.atlas.cancel(pending);snapshot.release();retained.release();
