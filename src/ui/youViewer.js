@@ -92,7 +92,7 @@ async function loadBody(character, time) {
   const fit = garb.robe ? createBarrelFit(garb.robe.userData.barrel, model, body) : null;
   for (const [name, geo] of Object.entries(garb)) {
     const mat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color().setRGB(...(GARB_COLORS[name] ?? GARB_COLORS.hat)),
+      color: new THREE.Color().setRGB(...(geo.userData.albedo ?? GARB_COLORS[name] ?? GARB_COLORS.hat)),
       roughness: name === 'hoops' ? 0.55 : 0.95,
       metalness: name === 'hoops' ? 0.8 : 0,
       side: THREE.DoubleSide,

@@ -173,14 +173,38 @@ for (const file of ['body', 'woman']) {
     fit.restore();
     fitMixer.stopAllAction();
   } else assert.equal(garb.robe, undefined);
-  hat.computeBoundingBox();
-  assert.ok(hat.boundingBox.min.toArray().every(Number.isFinite));
-  assert.ok(hat.boundingBox.max.toArray().every(Number.isFinite));
+  // the hat: crown and brim, band and sewn-on trim, rigid on the head and clear of the skull
   const head = body.skeleton.bones.findIndex(b => b.name === 'Head');
-  for (let i = 0; i < hat.attributes.position.count; i++) {
-    assert.equal(hat.attributes.skinIndex.getX(i), head);
-    assert.equal(hat.attributes.skinWeight.getX(i), 1);
+  const hatParts = ['hat', 'hatBand', 'hatTrim'].map(name => garb[name]);
+  assert.ok(hatParts.every(Boolean), `${file}: hat, band and trim`);
+  for (const geo of hatParts) {
+    geo.computeBoundingBox();
+    assert.ok([...geo.boundingBox.min.toArray(), ...geo.boundingBox.max.toArray()].every(Number.isFinite));
+    assert.ok(geo.userData.albedo?.length === 3, `${file}: each hat part carries its colour`);
+    for (let i = 0; i < geo.attributes.position.count; i++) {
+      assert.equal(geo.attributes.skinIndex.getX(i), head);
+      assert.equal(geo.attributes.skinWeight.getX(i), 1);
+    }
   }
+  // A ray from the middle of the head out through any head vertex meets the hat beyond it, if at all.
+  const headVerts = [];
+  const { position: bp, skinIndex: bsi, skinWeight: bsw } = body.geometry.attributes;
+  for (let i = 0; i < bp.count; i++) {
+    const w = [bsw.getX(i), bsw.getY(i), bsw.getZ(i), bsw.getW(i)];
+    if ([bsi.getX(i), bsi.getY(i), bsi.getZ(i), bsi.getW(i)][w.indexOf(Math.max(...w))] !== head) continue;
+    headVerts.push(new THREE.Vector3().fromBufferAttribute(bp, i).applyMatrix4(body.bindMatrix));
+  }
+  const headMiddle = new THREE.Box3().setFromPoints(headVerts).getCenter(new THREE.Vector3());
+  const felt = new THREE.Mesh(hat, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+  const ray = new THREE.Raycaster();
+  let through = 0;
+  for (const v of headVerts) {
+    const d = v.clone().sub(headMiddle), len = d.length();
+    ray.set(headMiddle, d.normalize());
+    const hit = ray.intersectObject(felt)[0];
+    if (hit && hit.distance < len) through++;
+  }
+  assert.equal(through, 0, `${file}: ${through} head vertices poke through the hat`);
   const mixer = new THREE.AnimationMixer(gltf.scene);
   for (const name of ['idle', 'walk', 'jog', 'sprint', 'fall', 'swim', 'tread', 'death']) {
     const clip = gltf.animations.find(c => c.name === name);

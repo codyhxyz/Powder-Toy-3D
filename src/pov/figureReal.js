@@ -101,7 +101,7 @@ function seatPack(pack, model) {
   let gap = Infinity;
   const v = new THREE.Vector3();
   model.traverse((o) => {
-    if (!o.isSkinnedMesh || o.name === 'hat' || o.name === 'sleeves' || o.name === 'bung') return;
+    if (!o.isSkinnedMesh || o.name.startsWith('hat') || o.name === 'sleeves' || o.name === 'bung') return;
     // She wears a barrel: the pack straps to that, not to the body inside it.
     if (model.getObjectByName('robe') && o.name !== 'robe' && o.name !== 'hoops') return;
     if (!model.getObjectByName('robe') && (o.name === 'robe' || o.name === 'hoops')) return;
@@ -141,13 +141,13 @@ export function createRealFigure(gltf, { bag = false } = {}) {
   const box = new THREE.Box3();
   for (const m of meshes) { m.geometry.computeBoundingBox(); box.union(m.geometry.boundingBox); }
 
-  // the wizard's hat, on this body's own skeleton
+  // the wizard's hat (crown and brim, band, sewn-on trim), on this body's own skeleton
   for (const [name, geo] of Object.entries(garbFor(gltf, meshes, bag))) {
     const garment = new THREE.SkinnedMesh(geo, body.material);
     garment.name = name;
     garment.frustumCulled = false;
     garment.bind(body.skeleton, body.bindMatrix);
-    garment.userData.look = { albedo: GARB_COLORS[name], side: THREE.DoubleSide };   // the brim is one sheet
+    garment.userData.look = { albedo: geo.userData.albedo ?? GARB_COLORS[name], side: THREE.DoubleSide };   // the brim is one sheet
     body.parent.add(garment);
     meshes.push(garment);
   }
