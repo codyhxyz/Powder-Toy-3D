@@ -142,7 +142,7 @@ export function createHelp(onClose) {
         row('Air mode: on, pressure off, velocity off, off, no update', 'Y'),
         row('Ambient heat on or off (gravity and edges: Settings)', 'U'),
         row('Switch view', '1', '–', '5'),
-        row('Show or hide elements', 'T'),
+        row('Show or hide elements', 'Q'),
         row('Chat, when playing together', 'T'),
         row(CLASSES_ENABLED ? 'Settings (in Siege, the gear)' : 'Settings', ','),
         row('Screenshot', 'F2'),

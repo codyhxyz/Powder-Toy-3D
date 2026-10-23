@@ -2337,7 +2337,8 @@ addEventListener('keydown', (e) => {
   else if (Object.hasOwn(MODE_KEYS, k.toLowerCase())) { const key = MODE_KEYS[k.toLowerCase()]; setSimMode(key, nextMode(key, settings[key]), true); }   // TPT's Y, U
   else if (k === 'i' || k === 'I') { if (!(pointerInside && !uiHover && pickHovered())) setEyedropper(!eyedropper); }
   else if (k === 'r' || k === 'R') actions.resetCamera();
-  else if (k === 't' || k === 'T') dock.toggle();
+  // Q is Garry's Mod's spawn-menu key, the same key as in the body; T stays as the old key (chat when playing together)
+  else if (k === 'q' || k === 'Q' || k === 't' || k === 'T') dock.toggle();
   else if (k === '/') { e.preventDefault(); dock.focusSearch(); }
   else if (k === ',') actions.toggleSettings();
   else if (k === '?') actions.toggleHelp();

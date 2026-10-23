@@ -61,14 +61,6 @@ const COLD_NOTE = 'The first time after an update, this can take several seconds
 // What the game is, under its name, for a player who has never seen it (The Powder Toy's own pitch, in 3D).
 const TAGLINE = 'A 3D falling-sand game: every grain of sand, drop of water and lick of flame is simulated. Pick a map, then Start.';
 const BETA_NOTE = 'In testing: this mode is still being built, so expect rough edges. Sandbox is the full game.';
-// The loading screen's tips, as TF2's and GMod's loading screens give them: the keys a first game needs
-// (app.js's key handler, pov/index.js's Q; ? lists the rest).
-const TIPS = [
-  ['V', 'switches between flying over the map and walking around in your body'],
-  ['T', 'opens the elements to pour and build with (Q while walking)'],
-  ['?', 'lists every key'],
-  ['Esc', 'brings back this menu'],
-];
 
 const count = (m) => m.dims.reduce((a, b) => a * b, 1).toLocaleString('en-US');
 const dimsText = (m) => `${m.dims.join(' × ')} cells`;
@@ -176,8 +168,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
         h('div.mm-pick', {}, h('div.mm-pick-line', {}, pickName, pickMeta), pickDesc),
         h('div.mm-actions', {}, exportBtn, deleteBtn, startBtn))),
     h('div.mm-load', { 'aria-live': 'polite' },
-      h('div.mm-load-copy', {}, loadMode, loadName, loadStatus, h('div.mm-load-bar', {}, h('i')), loadStep, loadFlag,
-        h('ul.mm-tips', {}, ...TIPS.map(([k, text]) => h('li', {}, h('kbd', { text: k }), h('span', { text }))))),
+      h('div.mm-load-copy', {}, loadMode, loadName, loadStatus, h('div.mm-load-bar', {}, h('i')), loadStep, loadFlag),
       youFig));
   document.body.append(el);
   // Skyrim's loading screen: the wheel zooms him, wherever the pointer is.

@@ -197,7 +197,7 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
   const tabTile = h('span.dock-tab-swatch', { 'aria-hidden': 'true' });
   const tabName = h('b');
   const tab = h('button.dock-tab.panel', { type: 'button', title: 'Show elements (T)', on: { click: () => setCollapsed(false) } },
-    tabTile, tabName, h('span', { html: ICON.chevDown }), h('kbd', { text: 'T' }));
+    tabTile, tabName, h('span', { html: ICON.chevDown }), h('kbd', { text: 'Q' }));
   // Space activates a focused control, not the simulation's global pause shortcut.
   for (const el of [dock, tab]) el.addEventListener('keydown', (e) => {
     if (e.code === 'Space') e.stopPropagation();
