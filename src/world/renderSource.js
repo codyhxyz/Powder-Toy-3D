@@ -1,3 +1,4 @@
+import { copyRuns } from '../gpu/copyRuns.js';
 import { BRICK, cellSlot, slotCell, gridDims } from '../shaders/common.js';
 import { decodeBrick, BRICK_FLOATS } from './store.js';
 import { recordWorldSourceCut } from './sourceCut.js';
@@ -318,9 +319,14 @@ function destinationSpans(runs) {
   return out;
 }
 export function recordSourceCopies(frame, src, dst, runs, { aux = true } = {}) {
+  // Every run's copies, by buffer pair, recorded together (gpu/copyRuns.js): a copy a run and a
+  // buffer was ~37,000 commands a second on Island, choking Chrome's GPU process.
+  const pairs = new Map();
   const native = (a, ao, b, bo, n) => {
     if (ao < 0 || bo < 0 || ao + n > a.size || bo + n > b.size || [ao, bo, n].some(v => v % 4)) throw new Error('raw source copy exceeds its original buffer layout');
-    frame.copy(a, ao, b, bo, n);
+    let to = pairs.get(a); if (!to) pairs.set(a, to = new Map());
+    let list = to.get(b); if (!list) to.set(b, list = []);
+    list.push([ao, bo, n]);
   };
   const copyOf = (d) => d.copy ?? 0;
   // (a native source's A, B and aeration are packed, not copied: recordNativeRuns)
@@ -335,6 +341,7 @@ export function recordSourceCopies(frame, src, dst, runs, { aux = true } = {}) {
     if (src.deco && dst.deco) native(src.deco.buffer, src.deco.offset + r.src * 4,
       dst.deco.buffer, dst.deco.offset + r.dst * 4, r.cells * 4);
   }
+  for (const [a, to] of pairs) for (const [b, list] of to) copyRuns(frame, a, b, list);
 }
 
 // Data/construction ownership only. No optical draw domains, field histories,
