@@ -55,8 +55,9 @@ explicit empty binding; each cut's real artwork overrides it, including null.
 Native table buffer, Sun textures and appearance are borrowed under candidate
 pins. Data/eye/scene publications intentionally have different reference identities.
 
-App exposes actual `threeMeshes`, `prepareWorldAfter`, `drawWorldAfter`, and
-`drawWorldOverlay`. Existing local sprites/cursors keep their coordinate ABI:
+App exposes actual `threeMeshes`, `drawWorldSky`, `drawWorldBrush`, and
+`frameWires` (src/wire/frameWires.js: the wires' beforeView, compute, scene
+and overlay hooks, the same dispatchers a small map's frame calls). Existing local sprites/cursors keep their coordinate ABI:
 App derives their local transform from the frozen global model and the current
 scene origin; source lamp/wand conversions use the separately captured source
 origin. Scoped view/settings overrides restore synchronously after encoding.

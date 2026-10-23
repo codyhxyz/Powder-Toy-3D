@@ -87,9 +87,9 @@ const runtime = new Function('helpers', `
   let volumeFormat;
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', resets = 0, volumeFirst = false, volumeDrawn = false;
   let hybrid=null;
-  const blocks = null, blocksOn = false, testNoVolume = false, overlayWires = [], win = { far }, worldMode = null;
+  const blocks = null, blocksOn = false, testNoVolume = false, win = { far }, worldMode = null;
   const post = { reset() { resets++; } }, meshFrames = { drop() {} }, sim = { g: {}, resetGI() {} };
-  const before = [], after = [], brush = { draw() {} };
+  const frameWires = { lighting() {}, beforeView() {}, compute() {}, sceneBelow() {}, sceneAbove() {}, overlay() {}, hasOverlay: false }, brush = { draw() {} };
   const ctx = { get renderView() { return renderView; } };
   const wire = () => ({ buildFarView() {} });
   const warpNow = () => null, baseDetail = () => ({}), cut = { take() { return null; } }, pov = null;
@@ -157,7 +157,7 @@ assert.equal(far.lastOcclusion,false,'hybrid clears the legacy far-field volume-
 runtime.setHybrid(null);
 runtime.setView(6);
 check(6);
-assert(app.indexOf('selectRenderView();') < app.indexOf('for (const w of live) w.beforeView?.(ctx, dt)'), 'select before any presentation hooks');
+assert(app.indexOf('selectRenderView();') < app.indexOf('frameWires.beforeView(dt);'), 'select before any presentation hooks');
 assert.match(source('src/wire/world.js'), /far\?\.view\(app\.volume, isMaterialView\(app\.renderView\)/);
 assert.match(source('src/wire/weather.js'), /enabled\(app\) && isMaterialView\(app\.renderView\)/);
 assert.match(source('src/shaders/far.js'), /if \(all\(v\.world\.xz >= winLo\.xz\) && all\(v\.world\.xz < winLo\.xz \+ GRID_XZ\)\) \{ discard; \}/, 'actual live-window ownership unchanged');
@@ -172,7 +172,7 @@ const localBegin = app.indexOf('  const hybridScale = hybrid?.adapt(', worldSpli
 assert(scheduleBegin>=0&&worldSplit>scheduleBegin&&localBegin>worldSplit);
 const scheduleCode = app.slice(scheduleBegin,worldSplit)+'  let runDerived=false, runView=false;\n'+app.slice(localBegin,app.indexOf('  const viewV = present ?'));
 const viewScheduleCode = app.match(/  runView = present && pacer\.view\(viewV, runDerived \|\| wantFrame\(\) \|\| betweenTicks\);/)[0];
-const wakeCode = app.slice(app.indexOf('const waited = new WeakSet();'), app.indexOf('// the wires that draw into the scene pass'));
+const wakeCode = app.slice(app.indexOf('const waited = new WeakSet();'), app.indexOf("// The wires' per-frame hooks (src/wire/frameWires.js)"));
 assert.equal((scheduleCode.match(/selectRenderView\(\);/g) ?? []).length, 1, 'select exactly once before scheduling');
 assert.equal((app.match(/\bselectRenderView\(\);/g) ?? []).length, 1, 'no second selection after scheduling');
 const latePipe = pipeline();
@@ -188,7 +188,8 @@ const paused = new Function('helpers', `
   const pacer = createPacer({ derivedSettle: 3, viewSettle: 2 });
   let volumeFormat;
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', frameDerived = false, gi = 1;
-  const events = [], blocks = null, blocksOn = false, overlayWires = [], live = [];
+  const events = [], blocks = null, blocksOn = false, live = [];
+  const frameWires = { lighting() {}, beforeView() {}, compute() {}, sceneBelow() {}, sceneAbove() {}, overlay() {}, hasOverlay: false };
   const win = null, worldMode = null;
   const post = { settings: { cruelty: false }, renderScale: 1, reset() { events.push('post.reset'); } };
   const meshFrames = { drop() {} }, prof = { phase() {} };
@@ -210,6 +211,7 @@ const paused = new Function('helpers', `
   const selectedMode = 'sandbox', renderOnly = false, wantFrame = () => false, betweenTicks = false;   // (a V2 frame between ticks: app.js)
   const SUN = new Vector3(0, 1, 0), KEY_LIGHT = [1, 1, 1], gfx = { smoothing: 1 }, detailVersion = 0, giBuilt = 1;
   const frameValues = (cam, view) => ({ camera: cam, model: new Matrix4(), sun: SUN, view });
+  const addEventListener = () => {};
   ${resolutionCode}\n${wakeCode}\n${setCode}\n${selectCode}\n${hooksCode}
   let now = 0;
   return { setView, tick() {

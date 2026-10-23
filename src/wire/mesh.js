@@ -90,7 +90,8 @@ const mesh = {
   },
   beforeView(app) {
     if (getMeshGpu() !== app.gpu) setMeshGpu(app.gpu);   // (a device replaced at Start)
-    // WORLD preflight binds the actual native graph before any guard/VM pass.
+    // Intentional (the WORLD frame lights its meshes and draws the held tool itself:
+    // worldRenderFrame.js preflight binds the actual native graph before any guard/VM pass).
     if(app.win?.render)return;
     updateMeshLight(app);
     // the held tool's pass (once a frame: src/wire/pov.js may have run it already), to post: an

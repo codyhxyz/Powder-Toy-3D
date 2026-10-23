@@ -143,19 +143,20 @@ const world = {
     if(win.renderFrame.error)throw win.renderFrame.error;
     return win.renderFrame.driver;
   },
-  captureLighting(app) {
-    gfxUniforms.uCaveAmbient.value=app.win?.scene.ambient??NO_AMBIENT;
-    torchLights.update(app.win?.scene??null,app.camGrid,app.sim.origin);
+  // (every map's frame: wire/frameWires.js lighting; a big map's once a WORLD request)
+  lighting(app) {
+    gfxUniforms.uCaveAmbient.value=app.win?.scene.ambient??NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)
+    torchLights.update(app.win?.scene??null,app.camGrid,app.sim.origin);   // the nearest wall torches lit as lamps (world/torchLights.js)
   },
   beforeView(app) {
     const { win } = app;
+    // Intentional (the WORLD renderer lights and draws a big map's ground itself): no window far view.
     if(win?.render)return;
-    gfxUniforms.uCaveAmbient.value = win?.scene.ambient ?? NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)
-    torchLights.update(win?.scene ?? null, app.camGrid, app.sim.origin);   // the nearest wall torches lit as lamps (world/torchLights.js)
     if (win?.far && isMaterialView(app.renderView)) world.buildFarView(app, win.far);
     win?.far?.view(app.volume, isMaterialView(app.renderView), app.camera);
   },
   // the detail meshes' distances, before the scene pass (world/far.js prepass: their own render pass)
+  // Intentional (the WORLD renderer owns a big map's frame): the window far field's prepass and draw are a small map's.
   compute(app) { if(!app.win?.render)app.win?.far?.prepass(app.post?.sceneTarget); },
   scene(app, rp) { if(!app.win?.render)app.win?.far?.draw?.(rp, app.post?.sceneTarget); },
   invalidate(app) {

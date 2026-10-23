@@ -116,7 +116,7 @@ test('the matter draw lights its sphere with the Box volume\'s map and GI where 
   assert.equal(got[0]?.map, volume.shadowTextures.map, 'the Box draw lights its packets with the volume\'s map');
   const worldLight = { world: true };
   raysWire.scene({ ...app, worldMode: {} }, { frame: g.frame }, worldLight);
-  assert.equal(got[1], worldLight, 'World: the frame\'s own light (app.drawWorldAfter\'s)');
+  assert.equal(got[1], worldLight, 'World: the frame\'s own light (frameWires.sceneAbove\'s)');
 });
 
 test('World lights its packets with its atlas and paged sun, as its figures (not the open sky)', async () => {
@@ -161,7 +161,7 @@ test('World lights its packets with its atlas and paged sun, as its figures (not
   assert.equal(calls.filter(c => c.name === 'nativeParticleMatterWorld').at(-1).o.bind[2], matter.o.bind[2], 'equal values, equal sources: the group kept');
   // the World frame hands its mesh context's light to the after wires, and waits for the pipe before its frames
   const frame = readFileSync(new URL('../../src/wire/worldRenderFrame.js', import.meta.url), 'utf8');
-  assert.match(frame, /app\.drawWorldAfter\(rp,context\.particleLight\)/);
+  assert.match(frame, /app\.frameWires\.sceneAbove\(rp,context\.particleLight\)/);
   assert.match(frame, /app\.sim\?\.compact \? app\.nativeParticles\?\.worldReady\(\) : null\]\);/);
 });
 

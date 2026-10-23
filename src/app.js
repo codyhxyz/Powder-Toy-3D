@@ -96,6 +96,7 @@ import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast
 import { VIEWS, viewKey as viewKeyOf, isMaterialView, isTestView, viewForMode } from './views.js';
 import { createReadyVolumeView } from './gfx/readyVolumeView.js';
 import { WIRES, wireNamed } from './wire/index.js';
+import { createFrameWires } from './wire/frameWires.js';
 import { offline as OFFLINE } from './wire/mp.js';
 import weatherWire, { weather } from './wire/weather.js';
 import { weatherSection } from './ui/weather.js';
@@ -2509,12 +2510,12 @@ const WORLD_SCENE_VERSION = 1;
 // A WORLD request captures source/lighting once, independently of the view.
 function captureWorldRequest(reservation,state,dt,accepted) {
   updateGfxUniforms(sim,SUN,KEY_LIGHT);
-  wire('world').captureLighting(ctx);
+  frameWires.lighting();   // (as a small map's presented frame: tick's runView)
   post.settings.raw=!isMaterialView(renderView);
   post.settings.upscale=presetOf()*DEVICE_RATIO/pixelRatio;
   post.settings.adaptive=presetOf()<1;
   post.settings.floor=UPSCALE_FLOOR*DEVICE_RATIO/pixelRatio;
-  post.settings.sprintBlur=0;
+  post.settings.sprintBlur=sprintBlurNow(dt);
   gfxUniforms.uNearGI.value=settings.nearGI;gfxUniforms.uGlowLights.value=settings.glowLights;gfxUniforms.uCaustics.value=settings.caustics;
   const model=volume.matrixWorld.clone().multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray().map(v=>-v)));
   const captured=frameUniformValues({...frameValues(camera,renderView,[0,0]),model,far:false,sourceAppearance:[0,0,0,0]});
@@ -2541,6 +2542,13 @@ function captureWorldRequest(reservation,state,dt,accepted) {
 }
 
 // ---------------------------------------------------------------- a presented frame
+// The sprint blur's strength this frame (gfx/sprintBlur.js), eased from the last: small maps'
+// frames and big maps' WORLD requests alike (it was 0 on big maps until 2026-10-23).
+function sprintBlurNow(dt) {
+  const allowed = settings.sprintBlur && !REDUCED_MOTION.matches && pov?.mode === 'on'
+    && !pov.player?.dead && !pov.vehicles.seated && pov.camera.zoom === 1;
+  return allowed ? sprintBlurStep(post.settings.sprintBlur, pov.player?.sprintRush ?? 0, dt) : 0;
+}
 // FrameUniforms for a frame of `cam` in view `view` (gfx/uniforms.js): written
 // once per frame, in post's prepare hook, from the jittered camera.
 function frameValues(cam, view, jitter) {
@@ -2563,10 +2571,9 @@ function wakeWhen(promise) {
   waited.add(promise);
   promise.then(() => pacer.wake(), () => {});
 }
-// the wires that draw into the scene pass, before the volume and after it, and into the overlay pass
-const sceneWires = live.filter((w) => w.scene).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-const before = sceneWires.filter((w) => (w.order ?? 0) < 0), after = sceneWires.filter((w) => (w.order ?? 0) >= 0);
-const overlayWires = live.filter((w) => w.overlay);
+// The wires' per-frame hooks (src/wire/frameWires.js): this frame and a big map's WORLD frame
+// (wire/worldRenderFrame.js, captureWorldRequest) both run them through these dispatchers, never by hand.
+const frameWires = createFrameWires(live, () => ctx);
 
 // three.js's meshes of one kind into the scene target, seen by `cam`: the
 // opaque ones before our scene pass (clearing it; Sync log S1: the volume
@@ -2694,14 +2701,14 @@ function drawScene(rp) {
   const lit = !win && isMaterialView(view), sea = lit ? boxSeaParams() : null;
   if (lit) overlays.drawSky(rp, sea);
   if (!win) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: Math.min(1, post.renderScale * pixelRatio), lit, sea });   // one scene pixel wide: fade as it widens past a CSS pixel
-  for (const w of before) w.scene(ctx, rp);
+  frameWires.sceneBelow(rp);
   if (blocks) {
     // the blocks renderer (gfx/blocks.js): the opaque faces and a box's floor,
     // what draws above the volume, then the translucent faces
     const marchNear = pov?.marchNear ?? 0;
     volumeDrawn = !testNoVolume && blocks.drawOpaque(rp, { marchNear, floor: !win });
     if (!volumeDrawn && !testNoVolume) wakeWhen(blocks.ready);
-    for (const w of after) w.scene(ctx, rp);
+    frameWires.sceneAbove(rp);
     if (volumeDrawn) blocks.drawTranslucent(rp, { marchNear });
     if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], scale: post.renderScale, lit });
     brush.draw(rp);
@@ -2710,7 +2717,7 @@ function drawScene(rp) {
   // the volume: drawn first this frame (volumeFirst), it composites over the far field now; else drawn here
   volumeDrawn = volumeFirst ? win.far.drawVolume(rp) : drawVolume(rp);
   volumeFirst = false;
-  for (const w of after) w.scene(ctx, rp);
+  frameWires.sceneAbove(rp);
   if (!win) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], scale: post.renderScale, lit });
   brush.draw(rp);
 }
@@ -2730,6 +2737,7 @@ const frameHooks = {
   // passes, the shadow map (views that read it), GI (the realistic view), the
   // wires' upkeep, the picks asked for this tick
   compute: () => {
+    // Intentional (the WORLD renderer owns a big map's frame; its wires' compute runs in it: worldRenderFrame.js)
     if(win?.render)return; // WORLD has its own owned native transaction; no local union upkeep.
     const splitChanged = hybrid?.prepare({
       view: viewKeyOf(renderView), model: volume.matrixWorld, warp: warpNow(),
@@ -2753,7 +2761,7 @@ const frameHooks = {
     }
     prof.phase('view');
     // (a mesh-only frame keeps what the wires drew into the scene pass: their upkeep for it too, the far field's prepass)
-    for (const w of live) if (frameMode !== 'meshes' || !w.scene) w.compute?.(ctx);
+    frameWires.compute((w) => frameMode === 'meshes' && !!w.scene);
     hybrid?.update({
       view: viewKeyOf(renderView), sun: SUN, model: volume.matrixWorld, warp: warpNow(),
       camera, paused: settings.paused,
@@ -2786,7 +2794,7 @@ const frameHooks = {
     const transparentMeshes = threeMeshes(p, true);
     hybrid?.temporalFrame(p, { camera, model: volume.matrixWorld, transparentMeshes });
   },
-  overlay: overlayWires.length ? (rp) => { for (const w of overlayWires) w.overlay(ctx, rp); } : undefined,
+  overlay: frameWires.hasOverlay ? (rp) => frameWires.overlay(rp) : undefined,
 };
 
 // Mesh-only frames (gfx/meshFrames.js; docs/webgpu.md K3): this view frame's
@@ -3128,13 +3136,11 @@ function tick(now, renderOnly = false) {
     frameMode = renderOnly ? 'full' : planMeshFrame(runDerived);
     meshesMoved = false;
     viewClock(frameMode !== 'full');   // (before the wires read it: the meshes' light under the clouds)
-    for (const w of live) w.beforeView?.(ctx, dt);   // the world's far field and ambient, signs, the held tool
+    frameWires.lighting();   // a world scene's ambient and torches (as a big map's WORLD request: captureWorldRequest)
+    frameWires.beforeView(dt);   // the world's far field, signs, the held tool
     // (the blocks' faces are radiance, as the material views'; data views are finished colours)
     post.settings.raw = blocks ? false : !isMaterialView(renderView);
-    const blurAllowed = settings.sprintBlur && !REDUCED_MOTION.matches && pov?.mode === 'on'
-      && !pov.player?.dead && !pov.vehicles.seated && pov.camera.zoom === 1;
-    post.settings.sprintBlur = blurAllowed
-      ? sprintBlurStep(post.settings.sprintBlur, pov.player?.sprintRush ?? 0, dt) : 0;
+    post.settings.sprintBlur = sprintBlurNow(dt);
     // beforeView hooks may edit presentation settings; retain the final sync.
     syncRenderResolution();
     gfxUniforms.uNearGI.value = settings.nearGI;
@@ -3223,14 +3229,14 @@ function tick(now, renderOnly = false) {
     fu.last.viewProj.fromArray(values.viewProj);fu.last.model.copy(model);fu.last.invViewProj.fromArray(values.invViewProj);
     fu.last.eye.setFromMatrixPosition(cam.matrixWorld);fu.last.written=true;
   },
-  prepareWorldAfter(){wire('rays')?.beforeView(ctx);},
+  // The wires' per-frame hooks, as this app's own frame runs them (src/wire/frameWires.js).
+  frameWires,
   // A world stands under the sky that lights it, as a box does (drawScene's lit):
   // the realistic views draw it first, behind the volume and meshes, with the
   // sea past the edge where the world's water reaches it (worldSea).
   drawWorldSky(rp,view){if(isMaterialView(view))overlays.drawSky(rp,worldSea(),sim.origin.toArray());},
-  // (light: World's for V2's packets, gfx/worldMeshLight.js context.particleLight; wire/rays.js)
-  drawWorldAfter(rp,light=null){for(const w of after)w.scene(ctx,rp,light);brush.draw(rp);},
-  drawWorldOverlay(rp){for(const w of overlayWires)w.overlay(ctx,rp);},
+  // the brush, last in the scene pass, as drawScene draws it
+  drawWorldBrush(rp){brush.draw(rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
   // the engine, as __app reports it (src/wire/saves.js captures and restores it)
   get physics() { return window.__app?.physics; },

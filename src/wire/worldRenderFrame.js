@@ -168,7 +168,7 @@ function retireWorldUse(state,gpu,submitted,release) {
 export function recordWorldFrame(app, state, data, {camera, view, detail={}, curved=false,
   eye, identity, order, signRequest=null, dt=0, frozenView=null, preflight=null, stillTarget=null}) {
   requireReady(!state.dead && app.win?.loaded && app.win.render===state.data, 'live WORLD frame required');
-  requireReady(['threeMeshes','writeWorldFrame','drawWorldSky','drawWorldAfter','drawWorldOverlay'].every(k=>typeof app[k]==='function'),
+  requireReady(['threeMeshes','writeWorldFrame','drawWorldSky','drawWorldBrush'].every(k=>typeof app[k]==='function') && app.frameWires,
     'actual App opaque/after/overlay functions must be connected before recording');
   requireReady(stillTarget || (complete(eye.feedback) && eye.words.length===20 && eye.words[19]===1), 'complete native eye required before hands');
   if(stillTarget)signRequest=null;
@@ -202,7 +202,8 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
       prepare(p) {
         const fv=worldSceneValues(values,camera,p.jitter);
         app.writeWorldFrame(fv,camera);
-        if(!stillTarget)app.prepareWorldAfter(fv,camera);
+        // The wires' per-frame hooks, the same dispatch as a small map's frame (src/wire/frameWires.js).
+        if(!stillTarget)app.frameWires.beforeView(dt);
         native=nativeCandidate(state,data,fv,worldSceneParams(params,fv,p.inSize),p.sceneTarget.packedOpaque.createView(),'scene');
         context=meshContext(app,state,data,native,fv,state.noise.texture);context.bind();
         requireReady(guardMeshes(app.scene,camera,{skip:o=>o.name==='pov-viewmodel',onReady:()=>app.wakeLoop()})===0,
@@ -218,9 +219,16 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
       opaque(p) {drew=app.threeMeshes(p,false,camera);return drew;},
       capture(p) {requireReady(state.opaque.recordReady(gpu.frame,{color:p.sceneTarget.color,depth:p.sceneTarget.depth,
         output:p.sceneTarget.packedOpaque,drew,submitted:ticket.submitted}), 'WORLD opaque capture not ready');},
-      draw(rp) {app.drawWorldSky(rp,view);requireReady(native.recordDraw(rp,{view,detail,curved}), 'WORLD synchronous volume unavailable');if(!stillTarget)app.drawWorldAfter(rp,context.particleLight);},
+      // (light: World's for V2's packets, gfx/worldMeshLight.js context.particleLight; wire/rays.js)
+      compute() {if(!stillTarget)app.frameWires.compute();},
+      draw(rp) {
+        app.drawWorldSky(rp,view);
+        if(!stillTarget)app.frameWires.sceneBelow(rp,context.particleLight);
+        requireReady(native.recordDraw(rp,{view,detail,curved}), 'WORLD synchronous volume unavailable');
+        if(!stillTarget){app.frameWires.sceneAbove(rp,context.particleLight);app.drawWorldBrush(rp);}
+      },
       meshes(p) {app.threeMeshes(p,true,camera);},
-      overlay:stillTarget ? undefined : rp=>app.drawWorldOverlay(rp),
+      overlay:stillTarget ? undefined : rp=>app.frameWires.overlay(rp),
     },camera,{identity:data.identity,publication:postPublication,feedbackIdentity,submission:ticket,worldModel:model,cameraIdentity:frozenView?.cameraIdentity??camera,
       onPublicationTransferred:()=>{transferred=true;},dt,viewmodel:hands.viewmodel,glow:hands.glow,
       ...(stillTarget ? {still:true,target:stillTarget} : {})});

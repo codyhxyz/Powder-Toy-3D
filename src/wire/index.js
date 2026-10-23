@@ -30,6 +30,8 @@
 //                 work that reads it (far-field upkeep, probes; post's compute hook).
 //                 A mesh-only frame (gfx/meshFrames.js) keeps what the wires drew
 //                 into the scene pass, and skips the compute of a wire with a scene hook
+//   lighting(app) the frame's lights, after FrameUniforms' lighting is set (a
+//                 world scene's ambient and torches; a big map's once a WORLD request)
 //   beforeView(app, dt)   in a presented frame, before it is drawn (signs, the
 //                 far field's view, figures' uniforms and external textures,
 //                 the held tool's target: app.viewmodel, app.glow)
@@ -44,6 +46,11 @@
 //                 frames may then keep the volume's scene (gfx/meshFrames.js);
 //                 any other busy wire makes every frame a full one
 //   invalidate(app)   graphics stopped: reject its outstanding reads
+// The per-frame hooks (lighting, beforeView, compute, scene, overlay) run through
+// one dispatch, src/wire/frameWires.js, from both frames: a small map's (app.js)
+// and a big map's (the WORLD renderer, worldRenderFrame.js). A wire that must act
+// differently on a big map decides inside its hook (`app.win?.render`) with an
+// `// Intentional (...)` comment; tools/check-frame-wires.mjs guards both.
 // `app` is app.js's context (`ctx` there): J3's { gpu, three, sim, derived,
 // scene, camera, settings, pacer, post } (three is three.js's renderer, also
 // app.renderer), the grid's volume (app.vol), the UI (app.hud, app.dock, …),

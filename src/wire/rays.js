@@ -45,7 +45,7 @@ const rays = {
   // sprites' vertex stage, shaders/v2/particleRender.js, would warp each particle's world
   // cell with presentationWGSL's warpPoint before projecting it, from the
   // parameters app.presentation holds while active: U12's.)
-  // worldLight: World's light for this frame (app.drawWorldAfter's, gfx/worldMeshLight.js context.particleLight)
+  // worldLight: World's light for this frame (frameWires.sceneAbove's in a WORLD frame, gfx/worldMeshLight.js context.particleLight)
   scene(app, rp, worldLight = null) {
     const t = app.post.sceneTarget;
     // (the volume's light, as V1's flying cells take it: the Box's sun map and GI, from the GPU volume, app.vol, not

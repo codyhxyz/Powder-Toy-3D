@@ -141,7 +141,7 @@ test('actual App hooks select driver, reserve only inside callback, and suppress
   const app=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
   assert.match(app,/driver\.tick\(\{present,dt/);assert.match(app,/capture:\(reservation,state\)=>captureWorldRequest/);
   assert.match(app,/if\(win\?\.render\)return; \/\/ WORLD/);
-  for(const hook of ['threeMeshes','writeWorldFrame','drawWorldSky','prepareWorldAfter','drawWorldAfter','drawWorldOverlay'])assert.match(app,new RegExp(hook));
+  for(const hook of ['threeMeshes','writeWorldFrame','drawWorldSky','drawWorldBrush','frameWires,'])assert.match(app,new RegExp(hook));
   assert.match(app,/if\(win\)return renderWorldThumb\(viewId,out\)/);
   assert.doesNotMatch(app,/WORLD_CONSUMER_NOT_READY/);
   assert.match(app,/if\(win && visible\)/);

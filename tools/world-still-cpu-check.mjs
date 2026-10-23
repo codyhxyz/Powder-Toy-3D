@@ -30,9 +30,10 @@ async function setup() {
   state.unused.createView=()=>({});state.opaque.recordReady=()=>{phases.push('pack');return true;};
   app.threeMeshes=(_p,transparent)=>{phases.push(transparent?'transparent':'opaque');return true;};
   app.writeWorldFrame=()=>phases.push('frame');app.drawWorldSky=()=>phases.push('sky');
-  app.prepareWorldAfter=()=>assert.fail('still must not prepare MAIN wires');
-  app.drawWorldAfter=()=>assert.fail('still must not draw MAIN wires');
-  app.drawWorldOverlay=()=>assert.fail('still must not draw MAIN gizmos');
+  app.drawWorldBrush=()=>assert.fail('still must not draw MAIN brush');
+  app.frameWires={beforeView:()=>assert.fail('still must not prepare MAIN wires'),compute:()=>assert.fail('still must not run MAIN wire upkeep'),
+    sceneBelow:()=>assert.fail('still must not draw MAIN wires'),sceneAbove:()=>assert.fail('still must not draw MAIN wires'),
+    overlay:()=>assert.fail('still must not draw MAIN gizmos')};
   state.volume.pipelineState=()=>({state:'ready'});
   state.volume.prepare=input=>{
     const feedback=f.gpu.createBuffer({size:f.owner.atlas.feedbackBytes,usage:128|4|8});
