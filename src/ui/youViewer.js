@@ -21,6 +21,7 @@ import { BODY_MODEL_URLS } from '../pov/bodyModel.js';
 import { YOU_ZOOM_MIN, YOU_ZOOM_MAX } from '../pov/character.js';
 import { buildGarb, GARB_COLORS } from '../pov/garb.js';
 import { createBarrelFit } from '../pov/barrel.js';
+import { createBeardRig } from '../pov/beard.js';
 
 const FOV = 20;                       // degrees: a long lens, little distortion (pov/classPortraits.js uses 24)
 const FRAME_MARGIN = 1.03;            // room round his box
@@ -90,6 +91,7 @@ async function loadBody(character, time) {
   const garb = buildGarb(meshes, { bag: character === 'stick' });
   // her barrel: the arms hung over its rim and the legs inside it, as in the game (figureReal.js)
   const fit = garb.robe ? createBarrelFit(garb.robe.userData.barrel, model, body) : null;
+  let beard = null;   // his beard's swinging chain (beard.js): a drag swings it
   for (const [name, geo] of Object.entries(garb)) {
     const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color().setRGB(...(geo.userData.albedo ?? GARB_COLORS[name] ?? GARB_COLORS.hat)),
@@ -100,6 +102,8 @@ async function loadBody(character, time) {
     const mesh = new THREE.SkinnedMesh(geo, mat);
     mesh.frustumCulled = false;
     mesh.bind(body.skeleton, body.bindMatrix);
+    if (geo.userData.beard) mesh.bind((beard = createBeardRig(geo, body)).skeleton, body.bindMatrix);
+    if (geo.userData.albedo) mat.color.setRGB(...geo.userData.albedo);
     body.parent.add(mesh);
     meshes.push(mesh);
   }
@@ -110,7 +114,8 @@ async function loadBody(character, time) {
   const pose = () => { if (fit) { model.updateMatrixWorld(true); fit.drape(); fit.keepLegs(); } };
   mixer.setTime(time);
   pose();
-  return { model, step(dt) { fit?.restore(); mixer?.update(dt); pose(); }, stop() { mixer?.stopAllAction(); } };
+  beard?.update(0);   // its rest drape
+  return { model, step(dt) { fit?.restore(); mixer?.update(dt); pose(); beard?.update(dt); }, stop() { mixer?.stopAllAction(); } };
 }
 
 export async function createYou({ canvas, width, height, character = 'real', zoom = 1, pixelRatio = 1, yaw = YOU_YAW, time = YOU_TIME, preserveDrawingBuffer = false }) {

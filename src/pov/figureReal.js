@@ -6,6 +6,7 @@ import { BODY_HEIGHT, EYE_HEIGHT } from './constants.js';
 import { BODY_MODEL_URLS } from './bodyModel.js';
 import { buildGarb, GARB_COLORS } from './garb.js';
 import { createBarrelFit, BARREL_CROUCH } from './barrel.js';
+import { createBeardRig } from './beard.js';
 import { buildSpartan } from './figureSpartan.js';
 import {
   createFigure, createContactShadow, buildJetpack, updateJetFlames, figureMaterial, figureUniforms, FIGURE_ALBEDO, FIGURE_HEAT_GLOW,
@@ -142,12 +143,14 @@ export function createRealFigure(gltf, { bag = false } = {}) {
   for (const m of meshes) { m.geometry.computeBoundingBox(); box.union(m.geometry.boundingBox); }
 
   // the wizard's hat (crown and brim, band, sewn-on trim), on this body's own skeleton
+  let beard = null;   // his beard's swinging chain (beard.js)
   for (const [name, geo] of Object.entries(garbFor(gltf, meshes, bag))) {
     const garment = new THREE.SkinnedMesh(geo, body.material);
     garment.name = name;
     garment.frustumCulled = false;
     garment.bind(body.skeleton, body.bindMatrix);
     garment.userData.look = { albedo: geo.userData.albedo ?? GARB_COLORS[name], side: THREE.DoubleSide };   // the brim is one sheet
+    if (geo.userData.beard) garment.bind((beard = createBeardRig(geo, body)).skeleton, body.bindMatrix);   // its own chain of bones under Head
     body.parent.add(garment);
     meshes.push(garment);
   }
@@ -427,6 +430,7 @@ export function createRealFigure(gltf, { bag = false } = {}) {
         holding = true;   // restore even untracked bones before the next mixer update
       }
       fit?.keepLegs();   // a stride or a kick stays inside her barrel
+      beard?.update(dt, s);   // last: it swings from the head as finally posed
       contact.visible = s.onGround && !s.dead && !riding;
       updateJetFlames(jetpack.flames, s);
     },
@@ -485,6 +489,7 @@ export function createRealFigure(gltf, { bag = false } = {}) {
     // tests: the posed rig, her barrel's fit, and each clip's blend weight
     model,
     barrel: fit,
+    beard,
     get weights() { return Object.fromEntries(Object.entries(actions).map(([k, a]) => [k, a.getEffectiveWeight()])); },
     dispose() {
       mixer.stopAllAction();
