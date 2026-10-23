@@ -153,6 +153,8 @@ export async function probeWorldFrameEye(app, state, data, frozenView = null) {
     () => {native?.release();output?.destroy();combined?.destroy();pin.release();});
   return result;
 }
+// The native point's last word: 1 when every probe and Sun tile it read was loaded.
+const eyeLit=eye=>eye?.words?.length===20 && eye.words[19]===1;
 function retireWorldUse(state,gpu,submitted,release) {
   const done = Promise.resolve(submitted).catch(() => {}).then(() => gpu.device.queue.onSubmittedWorkDone()).finally(release);
   state.uses.add(done);done.then(() => state.uses.delete(done),() => state.uses.delete(done));
@@ -170,20 +172,25 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
   requireReady(!state.dead && app.win?.loaded && app.win.render===state.data, 'live WORLD frame required');
   requireReady(['threeMeshes','writeWorldFrame','drawWorldSky','drawWorldBrush'].every(k=>typeof app[k]==='function') && app.frameWires,
     'actual App opaque/after/overlay functions must be connected before recording');
-  requireReady(stillTarget || (complete(eye.feedback) && eye.words.length===20 && eye.words[19]===1), 'complete native eye required before hands');
+  requireReady(stillTarget || complete(eye.feedback), 'complete native eye required before hands');
+  // (a frame settled over budget (worldRender.js settle) may leave the camera's own point
+  // incomplete: the driver lends it the last complete eye's light (prepare), and before
+  // there is one that frame draws no hands. Before, this threw and the renderer restarted:
+  // Island zoomed out, live 2026-10-23.)
+  const lit=!stillTarget && eyeLit(eye);
   if(stillTarget)signRequest=null;
   requireReady(state.volume.pipelineState(view,detail,curved).state==='ready', 'prewarm WORLD view before recording');
   requireReady(preflight && preflightWorldMeshes(app, preflight, camera), 'WORLD mesh preparation required before hands');
   const values=frozenView ? {...data.frame.values,...frozenView.values} : data.frame.values, {gpu,post}=app;
   const params={...data.frame.params,...frozenView?.params};
-  const worldLighting=stillTarget ? null : {publication:eye.publication,position:eye.position,
+  const worldLighting=!lit ? null : {publication:eye.publication,position:eye.position,
     frame:{identity,scene:data.frame.sceneVersion,epoch:data.identity.epoch,domain:'world',order,time:values.time,
       sunDirection:values.sun,sunColor:values.sunCol,keyLight:values.keyLight,
       settings:{exposure:post.settings.exposure,raw:post.settings.raw}},
     sample:{identity:eye,publication:eye.publication,frameIdentity:identity,position:eye.position,words:eye.words}};
   const ticket=createWorldFeedbackProvider(gpu,{}).reserve(gpu.frame), feedbackIdentity=Object.freeze({identity});
   let hands;
-  try {hands=stillTarget ? {ready:true} : app.presentation.neutral(() => renderViewmodels(app.renderer,app.scene,camera,post,{
+  try {hands=!lit ? {ready:true} : app.presentation.neutral(() => renderViewmodels(app.renderer,app.scene,camera,post,{
     worldLighting,onReady:()=>app.wakeLoop(),onPending:work=>trackWorldCompilation(app,preflight,work)}));}
   catch(error) {
     const pin=data.retain(),read=ticket.record(gpu.frame,state.boundary);read.catch(()=>{});
@@ -410,7 +417,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
     preflight=preflightWorldMeshes,record=recordWorldFrame,releasePreflight=releaseWorldMeshPreflight,
     idlePerBusy=WORLD_IDLE_PER_BUSY}=execution;   // (protocol checks drive transactions back to back: 0)
   let pending=null, dead=false, order=0, accepted=null, failure=null, retirement=null;
-  let displayedMainFrame=null, blockedPick=null, preferMain=false;
+  let displayedMainFrame=null, blockedPick=null, preferMain=false, litEye=null;
   // The live view: while a transaction loads, each presented frame draws the displayed (accepted) world
   // from the camera as it is now, the way streamed worlds draw from what is resident while the rest
   // streams in (UE5 virtual textures, id Tech 5 MegaTexture). Before, the picture changed only when a
@@ -539,6 +546,8 @@ export function createWorldFrameDriver(app,state,execution={}) {
         if(dead || failure || pending!==p)return;
         p.eye={...p.eye,feedback:state.data.settle?.(p.eye.feedback)??p.eye.feedback};   // (budget-dropped misses: worldRender.js settle)
         if(!complete(p.eye.feedback)){data=await extend(p,p.eye.feedback);continue;}
+        // (settled, the camera's own probe may still sit in a dropped brick: hands keep the last light)
+        if(eyeLit(p.eye))litEye=p.eye;else if(litEye)p.eye={...p.eye,words:litEye.words};
       }
       await p.preparing;return;
     }
@@ -661,7 +670,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
         const error=new Error('WORLD still driver disposed');
         for(const job of stills.splice(0))job.reject(error);
         if(p){await drain(p);p.result?.release?.();await p.rejectionDrain;p.data?.release();}
-        displayedMainFrame?.data.release();displayedMainFrame=null;pickDemands.clear();
+        displayedMainFrame?.data.release();displayedMainFrame=null;litEye=null;pickDemands.clear();
         await Promise.allSettled([...state.uses]);
         p?.job?.reject(error);
         await state.data.dispose();

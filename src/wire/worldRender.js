@@ -500,22 +500,30 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   // past what leaves the load's new asks their room, the least recently used
   // go from everywhere a brick is kept (its lighting row, its SOURCE and probe,
   // its CELL and LIGHT pages), unless the camera's frustum or near ring holds
-  // it now, or this load or a glow region does. Lumen's surface cache forgets
+  // it now, or this load or a glow region does. What the frame on screen asked
+  // for (its shadow casters and light sources too) goes last, only for the
+  // room this load's new asks need. Lumen's surface cache forgets
   // the same way; a forgotten brick the view asks for again is born again.
   // Only at a transaction's first attempt: no records batch or GI tick is
-  // pending then, and a retry's demand is the same load's.
+  // pending then, and a retry's demand is the same load's. (A first attempt
+  // asks only for the view; the shadow casters and light sources it finds later.
+  // Held only by this load, they were forgotten each time and built again, every
+  // load: ~145k bricks and ~35 s each on Island with the camera still, 2026-10-23.)
   const residency=createWorldResidency({capacity:budget.pool.cell});
   async function forgetUnused(t){
     let asks=0;
     await worldRunSliced((function*(){for(const i of t.requirements.keys()){residency.touch(i);if(!metadata.has(i))asks++;if(t.full(COST.member))yield;}})());
-    const count=Math.max(metadata.size-Math.floor(budget.cell*WORLD_RESIDENT_SHARE),metadata.size+asks-budget.cell);
+    const room=metadata.size+asks-budget.cell,count=Math.max(metadata.size-Math.floor(budget.cell*WORLD_RESIDENT_SHARE),room);
     if(count<=0||t.attempts!==1||t.batch||t.plan||metadata.pending||history.pending)return;
     const view=worldResidentView(t.frame.values);if(!view)return;
     const regions=[];
     for(const i of ownedGlow){const c=brick(i).map(n=>Math.floor(n/8));regions.push(worldGlowPlan(size,c).input);}
     const inGlow=b=>regions.some(r=>b.every((n,k)=>n>=r.min[k]&&n<r.min[k]+r.size[k]));
-    const held=i=>t.requirements.has(i)||t.pinned.has(i)||ownedGlow.has(i)||inGlow(brick(i));
-    const out=await worldRunSliced(residency.forgetSteps({count,held,seen:i=>view(brick(i))},t.full));
+    const held=i=>t.requirements.has(i)||t.pinned.has(i)||ownedGlow.has(i)||inGlow(brick(i)),seen=i=>view(brick(i));
+    // The frame on screen's go last: only for the room this load's new asks need.
+    const shown=accepted?.requirements,keep=i=>held(i)||!!shown?.has(i);
+    const out=await worldRunSliced(residency.forgetSteps({count,held:keep,seen},t.full));
+    if(out.length<room)out.push(...await worldRunSliced(residency.forgetSteps({count:room-out.length,held,seen},t.full)));
     if(!out.length)return;
     metadata.forget(out);history.forget(out);
     for(const i of out){ownedSources.delete(i);ownedProbes.delete(i);}
@@ -832,7 +840,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       const full=worldSliceMeter();
       for(const out of t.outputs){for(const [list,owned] of [[out.sources,ownedSources],[out.probes,ownedProbes]])for(const i of list){owned.add(i);if(full(COST.member)){await pause();if(!current())return false;}}}
       for(const [i,bits]of t.requirements)if(bits&READY.GLOW)ownedGlow.add(i);
-      const old=accepted;accepted={bundle:t.bundle.retain(),cut:t.cut.retain(),frame:t.frame,fieldTick:t.fieldTick};await retire(t);active=null;if(old){old.bundle.release();old.cut.release();}next();return true;},
+      const old=accepted;accepted={bundle:t.bundle.retain(),cut:t.cut.retain(),frame:t.frame,fieldTick:t.fieldTick,requirements:t.requirements};await retire(t);active=null;if(old){old.bundle.release();old.cut.release();}next();return true;},
     async retry(){live();const t=active;if(!t||t.state!=='rejected')throw new Error('only definitively rejected WORLD work can retry');t.state='retrying';try{await fence();}catch(e){rejected(t,e);throw e;}if(active!==t||dead)return null;t.error=null;t.state='building';t.work=runRetry(t);t.work.catch(()=>{});return t.work;},
     async discard(candidate=null){live();const t=active;if(t?.state==='accepting')throw new Error('wait for final Post confirmation before discarding WORLD');if(!t||!['probe-ready','rejected'].includes(t.state)||(t.bundle?candidate?.identity!==t.bundle.identity:t.state!=='rejected'))throw new Error('foreign WORLD discard');t.state='retiring';await retire(t);if(active!==t||dead)return;active=null;next();},
     reset({sceneVersion=active?.frame.sceneVersion??accepted?.frame.sceneVersion,schemaVersion=active?.frame.schemaVersion??accepted?.frame.schemaVersion}={}){
