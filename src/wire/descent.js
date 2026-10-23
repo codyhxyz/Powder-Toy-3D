@@ -103,7 +103,7 @@ const descent = {
     if (app.descent || !app.pov) return;
     const pov = app.pov;
     // a Descent level: you start (and respawn) at its spawn
-    app.descentSpawn = () => descentSpawn(app, levelByScene(app.win ? app.settings.scene : null));
+    app.descentSpawn = () => descentSpawn(app, levelByScene(app.mapKind.presets ? null : app.settings.scene));
     let motion = null;
     const persistence = createTerrainPersistence();
     app.descent = createDescentRunner({
@@ -148,7 +148,7 @@ const descent = {
     const feet = live ? descentFeet.copy(p.pos).add(sim.origin) : null;
     const query = feet && win.scene.querySource?.([feet.x, feet.y, feet.z]);
     d.frame({
-      key: win ? app.settings.scene : null,
+      key: app.mapKind.presets ? null : app.settings.scene,
       feet,
       source: query?.kind === 'source' ? query.source : null,
       live, load: win,

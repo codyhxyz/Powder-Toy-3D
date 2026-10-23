@@ -6,6 +6,7 @@ import {gateVariants} from '../src/gfx/detailGate.js';
 import {DETAIL,settingKey} from '../src/gfx/detail.js';
 import {VIEWS,isMaterialView,isTestView} from '../src/views.js';
 import {createLoadWatch,LOAD_FLAG_MS} from '../src/loadWatch.js';
+import {kindOf} from '../src/mapKind.js';
 const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
 function appFunction(name,env){
   const start=source.indexOf(`function ${name}(`),brace=source.indexOf('{',start);
@@ -26,7 +27,7 @@ test('actual WORLD snapshot helper yields for native phases and counts confirmed
   let ticks=0,accepted=0,fences=0;
   const driver={busy:true,displayedMainFrame:null},win={renderFrame:{driver}};
   const pacer={wake(){},get settled(){return accepted>=2;},settleLimit:4};
-  const render=renderMethod({win,pacer,coreWait:Promise.resolve(),graphicsFailure:null,
+  const render=renderMethod({win,mapKind:kindOf(true),pacer,coreWait:Promise.resolve(),graphicsFailure:null,
     gpu:{async fence(){fences++;}},
     tick(){
       if(++ticks>20)throw Error('helper never converged');
@@ -36,14 +37,14 @@ test('actual WORLD snapshot helper yields for native phases and counts confirmed
   assert(ticks>=9,'pending native phases must not spend the four-image limit');
   assert(fences>=9);assert.equal(accepted,2);
   ticks=0;fences=0;
-  const box=renderMethod({win:null,coreWait:Promise.resolve(),graphicsFailure:null,
+  const box=renderMethod({win:null,mapKind:kindOf(false),coreWait:Promise.resolve(),graphicsFailure:null,
     pacer:{wake(){},get settled(){return ticks>=2;},settleLimit:4},
     tick(){ticks++;},gpu:{async fence(){fences++;}}});
   assert.equal(await box(),2);assert.equal(ticks,2);assert.equal(fences,1);
 });
 test('WORLD snapshot rejects a no-image stall by elapsed time, not preparation tick count',async()=>{
   let wall=0,ticks=0;
-  const render=renderMethod({win:{renderFrame:{driver:{busy:true,displayedMainFrame:null}}},
+  const render=renderMethod({mapKind:kindOf(true),win:{renderFrame:{driver:{busy:true,displayedMainFrame:null}}},
     coreWait:Promise.resolve(),graphicsFailure:null,performance:{now:()=>wall},
     pacer:{wake(){},settled:false,settleLimit:2},gpu:{async fence(){}},
     tick(){ticks++;wall+=2000;}});
@@ -55,21 +56,21 @@ test('actual core startup retains physics/picks but never warms a BOX view for W
   // What a frame draws with (draw); the core adds the simulation's step kernels (s.ready).
   // A big map's first frame waits on draw alone (worldDrawWait), not on move/react.
   assert(source.includes('const core = coreWait = Promise.all([s.ready, ...draw])'));
-  assert(source.includes('worldDrawWait = worldMode ? Promise.all(draw) : core;'));
+  assert(source.includes('worldDrawWait = mapKind.stepKernelsLater ? Promise.all(draw) : core;'));
   const begin=source.indexOf('const draw = [')+'const draw = '.length;
   const code=source.slice(begin,source.indexOf('];\n',begin)+1);
   for(const worldMode of [{size:[1024,128,1024]},null]){
     const calls=[],physical=Promise.resolve('physics'),pick=Promise.resolve('pick');
     const vol={ready:pick,noiseReady:Promise.resolve(),viewReady(){calls.push('view');return Promise.resolve();}};
     const env={s:{ready:physical},derived:{ready:Promise.resolve()},vol,post:{ready:Promise.resolve()},
-      overlays:{ready:Promise.resolve()},brush:{ready:Promise.resolve()},hybridWait:Promise.resolve(),worldMode,blocks:null,
+      overlays:{ready:Promise.resolve()},brush:{ready:Promise.resolve()},hybridWait:Promise.resolve(),worldMode,mapKind:kindOf(!!worldMode),blocks:null,
       viewKeyOf:()=> 'realistic',settings:{view},baseDetail:()=>({}),warpNow:()=>null,nativeOwner:null};
     const draw=expression(code,env),waits=[env.s.ready,...draw];
     assert(!draw.includes(physical),'a frame never waits on the step kernels');
     assert(waits.includes(physical));assert(waits.includes(pick));assert(waits.includes(vol.noiseReady));
     assert.deepEqual(calls,worldMode?[]:['view']);
     const options=source.match(/vol = createVolume\(gpu, sim, (.*)\);/)[1];
-    const opts=expression(options,{worldMode,blocksOn:false,viewShadows:()=>true,viewKeyOf:()=> 'realistic',settings:{view},sceneByKey:()=>({})});
+    const opts=expression(options,{worldMode,mapKind:kindOf(!!worldMode),blocksOn:false,viewShadows:()=>true,viewKeyOf:()=> 'realistic',settings:{view},sceneByKey:()=>({})});
     assert.equal(opts.shadows,!worldMode);
   }
 });
@@ -77,14 +78,14 @@ test('actual core startup retains physics/picks but never warms a BOX view for W
 test('WORLD never requests legacy GI, detail variants or block pipelines; BOX still does',()=>{
   for(const worldMode of [{size:[1024,128,1024]},null]){
     const calls=[],settings={view};
-    const env={worldMode,blocksOn:false,settings,isMaterialView,derived:{prepareGI(){calls.push('GI');return Promise.resolve();}},
+    const env={worldMode,mapKind:kindOf(!!worldMode),blocksOn:false,settings,isMaterialView,derived:{prepareGI(){calls.push('GI');return Promise.resolve();}},
       giWait:Promise.resolve(),giBuilt:0,wakeLoop(){},live:[],ctx:{},vol:{},detailVersion:0,
       detailGate:{dispose(){calls.push('dispose gate');},configure(){calls.push('configure gate');}},
       post:{reset(){calls.push('reset');}}};
     appFunction('prepareGI',env)();appFunction('applyDetail',env)();
     assert.deepEqual(calls,worldMode?['dispose gate','reset']:['GI','configure gate','reset']);
     let blocks=0;
-    appFunction('setBlocks',{worldMode,blocksOn:false,graphicsFailure:null,createBlocks(){blocks++;return {ready:Promise.resolve()};},
+    appFunction('setBlocks',{worldMode,mapKind:kindOf(!!worldMode),blocksOn:false,graphicsFailure:null,createBlocks(){blocks++;return {ready:Promise.resolve()};},
       gpu:{},sim:{},blocks:null,pacer:{wake(){}},post:{reset(){}}})(true);
     assert.equal(blocks,worldMode?0:1);
   }
@@ -93,7 +94,7 @@ test('WORLD never requests legacy GI, detail variants or block pipelines; BOX st
 test('WORLD view selection cannot build the retired shadow or detail variant',()=>{
   for(const worldMode of [{size:[1024,128,1024]},null]){
     const calls=[],settings={view};
-    appFunction('setView',{worldMode,VIEWS,settings,isMaterialView,isTestView,hybridUnavailable:false,ensureHybrid(){},post:{reset(){}},meshFrames:{drop(){}},sim:{resetGI(){}},
+    appFunction('setView',{worldMode,mapKind:kindOf(!!worldMode),VIEWS,settings,isMaterialView,isTestView,hybridUnavailable:false,ensureHybrid(){},post:{reset(){}},meshFrames:{drop(){}},sim:{resetGI(){}},
       detailGate:{setView(){calls.push('detail');}},setBlocks(){},plainView:()=>false,prepareGI(){},viewKeyOf:()=> 'realistic',
       blocksOn:false,vol:{shadowState:'idle',shadowReady(){calls.push('shadow');return Promise.resolve();}},
       viewShadows:()=>true,pacer:{wake(){}},settingsPanel:{sync(){}},shaderPanel:{sync(){}},hud:{setLegend(){}},save(){}})(view);
@@ -104,7 +105,7 @@ test('WORLD view selection cannot build the retired shadow or detail variant',()
 test('actual WORLD readiness waits core/queue without unrelated local view, GI or shadows',async()=>{
   for(const win of [{size:[1024,128,1024]},null]){
     const calls=[],sim={},vol={viewReady(){calls.push('view');return Promise.resolve();},shadowReady(){calls.push('shadow');return Promise.resolve();}};
-    await appFunction('allReady',{win,sim,vol,coreWait:Promise.resolve(),coreReady:true,graphicsFailure:null,hybridLoad:null,hybrid:null,hybridWait:Promise.resolve(),
+    await appFunction('allReady',{win,mapKind:kindOf(!!win),sim,vol,coreWait:Promise.resolve(),coreReady:true,graphicsFailure:null,hybridLoad:null,hybrid:null,hybridWait:Promise.resolve(),
       gpu:{async settled(){calls.push('queue');}},viewKeyOf:()=> 'realistic',settings:{view},blocksOn:false,blocks:null,
       warpNow:()=>null,viewShadows:()=>true,baseDetail:()=>({}),giWait:Promise.resolve(),physicsV2:null,
       // the BOX checkpoint's footprint (syncRenderResolution, updateFrameDetail): not under test here
@@ -115,23 +116,23 @@ test('actual WORLD readiness waits core/queue without unrelated local view, GI o
 
 test('WORLD Test fallback never allocates unused local hybrid pipelines',()=>{
   for(const hybridOptIn of [false,true]){
-    appFunction('ensureHybrid',{worldMode:{},hybridOptIn,isTestView,settings:{view:VIEWS.find(v=>v.key==='test').id},hybrid:null,
+    appFunction('ensureHybrid',{worldMode:{},mapKind:kindOf(true),hybridOptIn,isTestView,settings:{view:VIEWS.find(v=>v.key==='test').id},hybrid:null,
       hybridModule:{createHybridRenderer(){throw Error('WORLD must use its global data wire');}}})();
   }
 });
 
 test('WORLD frame detail uses all selected defines, never camera distance from physics',()=>{
   // updateFrameDetail (app.js) returns it for the frame and the parked checkpoints alike.
-  const code=`frameDetail = ${source.match(/function updateFrameDetail\(\) \{[\s\S]*?return (win \? .*);\n\}/)[1]};`;
+  const code=`frameDetail = ${source.match(/function updateFrameDetail\(\) \{[\s\S]*?return (mapKind\.detailGate \? .*);\n\}/)[1]};`;
   const settings=Object.fromEntries(DETAIL.map(f=>[settingKey(f),true])),all=gateVariants(settings).near;
   assert(Object.keys(all).length>0);
   const detailGate={update(){throw Error('WORLD must not query the local detail gate');}};
-  const actual=new Function('win','gateVariants','settings','detailGate','camera','camGrid','sim','canvas','post',
-    `let frameDetail;${code}return frameDetail;`)({},gateVariants,settings,detailGate);
+  const actual=new Function('mapKind','gateVariants','settings','detailGate','camera','camGrid','sim','canvas','post',
+    `let frameDetail;${code}return frameDetail;`)(kindOf(true),gateVariants,settings,detailGate);
   assert.deepEqual(actual,all);
   const box={legacy:1};
-  const result=new Function('win','gateVariants','settings','detailGate','camera','camGrid','sim','canvas','post',
-    `let frameDetail;${code}return frameDetail;`)(null,gateVariants,settings,{update:()=>box},null,null,{g:{nx:128,ny:128,nz:128}},{height:200},{renderScale:1});
+  const result=new Function('mapKind','gateVariants','settings','detailGate','camera','camGrid','sim','canvas','post',
+    `let frameDetail;${code}return frameDetail;`)(kindOf(false),gateVariants,settings,{update:()=>box},null,null,{g:{nx:128,ny:128,nz:128}},{height:200},{renderScale:1});
   assert.equal(result,box);
 });
 
@@ -142,7 +143,7 @@ test('loading never declares WORLD ready before a confirmed MAIN, even past old 
   const loadWatch=createLoadWatch({now:()=>time,store:null,report:r=>flags.push(r),
     setTimer:(fn,ms)=>timers.push({fn,at:time+ms}),clearTimer:()=>{}});
   const fire=()=>{for(const t of timers.splice(0))if(t.at<=time)t.fn();else timers.push(t);};
-  const launch={progress(){},ready(){ready++;}},env={win,launch,graphicsFailure:null,loadWatch,settings:{scene:'noitaTerrain05'},
+  const launch={progress(){},ready(){ready++;}},env={win,mapKind:kindOf(true),launch,graphicsFailure:null,loadWatch,settings:{scene:'noitaTerrain05'},
     performance:{now:()=>time},requestAnimationFrame:fn=>queued.push(fn),setTimeout:fn=>queued.push(fn),
     READY_POLL_MS:100,READY_WAIT_MS:20000,MATCH_WAIT_MS:30000,mark(){},bootMap:null,coreReady:true};
   const quiet=console.error;console.error=()=>{};

@@ -1,6 +1,7 @@
 // Actual WorldVolume + normal GpuFrame + whole-feedback final provider.
 // Native compute writes explicit hit words: this is transport, NOT DDA/GPU proof.
 import test from 'node:test';
+import { BIG_MAP } from '../src/mapKind.js';
 import assert from 'node:assert/strict';
 import {Matrix4,PerspectiveCamera,Ray,Vector3} from 'three/webgpu';
 import {readFileSync} from 'node:fs';
@@ -96,11 +97,11 @@ test('actual App mutation entry points refuse outside/stale global hover after o
  const identity={},hover={valid:true,worldReady:true,globalCell:new Vector3(4,5,4),cell:new Vector3(),frameIdentity:identity,worldToken:'tool'};
  const sim={origin:new Vector3()},win={renderFrame:{driver:{displayedMainFrame:{frameIdentity:identity}}}};
  const inWindow=c=>c.x>=0&&c.x<32&&c.y>=0&&c.y<32&&c.z>=0&&c.z<32;
- const sync=new Function('win','hover','sim','inWindow','localWorldHover','worldPickToken',`${extract('syncWorldHover')};return syncWorldHover;`)(win,hover,sim,inWindow,localWorldHover,()=> 'tool');
- const ready=new Function('win','hover','worldPickToken','syncWorldHover',`${extract('worldMutationReady')};return worldMutationReady;`)(win,hover,()=> 'tool',sync);
+ const sync=new Function('win','mapKind','hover','sim','inWindow','localWorldHover','worldPickToken',`${extract('syncWorldHover')};return syncWorldHover;`)(win,BIG_MAP,hover,sim,inWindow,localWorldHover,()=> 'tool');
+ const ready=new Function('win','mapKind','hover','worldPickToken','syncWorldHover',`${extract('worldMutationReady')};return worldMutationReady;`)(win,BIG_MAP,hover,()=> 'tool',sync);
  assert.equal(sync(),true);sim.origin.set(32,0,32);
  for(const name of ['fillAt','clickTool']){
-   const action=new Function('win','syncWorldHover','worldMutationReady',`${extract(name)};return ${name};`)(win,sync,ready);
+   const action=new Function('win','mapKind','syncWorldHover','worldMutationReady',`${extract(name)};return ${name};`)(win,BIG_MAP,sync,ready);
    assert.doesNotThrow(()=>action(),'must return before reaching ANY physical subsystem');
    assert.equal(hover.valid,true,'physical refusal must not erase global visual validity');
  }
@@ -108,9 +109,9 @@ test('actual App mutation entry points refuse outside/stale global hover after o
  win.renderFrame.driver.displayedMainFrame={frameIdentity:{}};
  assert.equal(sync(),false);assert.equal(hover.valid,false);
  // Brush guards run in both actual update paths before BOX-only clamps.
- assert.match(extract('updateBrush'),/if\(win && brushValid && !inWindow\(brushCenter\)\)brushValid=false/);
- assert.match(extract('updateGunBrush'),/if\(win && brushValid && !inWindow\(brushCenter\)\)brushValid=false/);
- assert.match(source,/painting && brushValid && \(!win \|\| \(inWindow\(brushCenter\)/);
+ assert.match(extract('updateBrush'),/if\(!mapKind\.clampBrush && brushValid && !inWindow\(brushCenter\)\)brushValid=false/);
+ assert.match(extract('updateGunBrush'),/if\(!mapKind\.clampBrush && brushValid && !inWindow\(brushCenter\)\)brushValid=false/);
+ assert.match(source,/painting && brushValid && \(!mapKind\.streamed \|\| \(inWindow\(brushCenter\)/);
 });
 
 test('actual App visible tool ray preserves local-cell ABI and revalidates global hits at delayed mutation',async()=>{
@@ -125,10 +126,10 @@ test('actual App visible tool ray preserves local-cell ABI and revalidates globa
  const win={renderFrame:{driver}},inside=c=>c.x>=0&&c.x<32&&c.z>=0&&c.z<32;
  let token='tool';
  // Native transport is covered above. Here execute the actual App ABI adapter.
- const pick=new Function('win','sim','worldPickToken','transportWorldRay','volume','camera','THREE','inWindow',
-   `${extract('pickRay')};return pickRay;`)(win,sim,()=>token,()=>({}),{matrixWorld:new Matrix4()},{},{Vector3},inside);
- const physical=new Function('win','sim','worldPickToken','inWindow',
-   `${extract('physicalPickCell')};return physicalPickCell;`)(win,sim,()=>token,inside);
+ const pick=new Function('win','mapKind','sim','worldPickToken','transportWorldRay','volume','camera','THREE','inWindow',
+   `${extract('pickRay')};return pickRay;`)(win,BIG_MAP,sim,()=>token,()=>({}),{matrixWorld:new Matrix4()},{},{Vector3},inside);
+ const physical=new Function('win','mapKind','sim','worldPickToken','inWindow',
+   `${extract('physicalPickCell')};return physicalPickCell;`)(win,BIG_MAP,sim,()=>token,inside);
  const hit=await pick(new Vector3(),new Vector3(0,0,-1),true);
  assert(hit.valid);assert.deepEqual(hit.cell.toArray(),[4,5,4]);assert.deepEqual(hit.globalCell.toArray(),[100,5,100]);
  sim.origin.set(98,0,98);assert.deepEqual(physical(hit).toArray(),[2,5,2]);
@@ -163,11 +164,11 @@ test('actual App brush dispatch permits certified sky misses, but not unknown or
  const identity={},hover={valid:false,worldReady:true,frameIdentity:identity,worldToken:'tool'};
  const win={renderFrame:{driver:{displayedMainFrame:{frameIdentity:identity}}}};
  let inside=false;
- const ready=new Function('win','hover','worldPickToken','syncWorldHover',
-   `${extract('worldMutationReady')};return worldMutationReady;`)(win,hover,()=> 'tool',()=>inside);
- const click=new Function('win','worldMutationReady','settings','SIGN_TOOL','LIGHTNING_TOOL',
+ const ready=new Function('win','mapKind','hover','worldPickToken','syncWorldHover',
+   `${extract('worldMutationReady')};return worldMutationReady;`)(win,BIG_MAP,hover,()=> 'tool',()=>inside);
+ const click=new Function('win','mapKind','worldMutationReady','settings','SIGN_TOOL','LIGHTNING_TOOL',
    'isDecoTool','isSpawnerTool','isBuild','mp','selectedMode','ctx',
-   `${extract('clickTool')};return clickTool;`)(win,ready,{tool:1},-1,-2,()=>false,()=>false,()=>false,{},'sandbox',{});
+   `${extract('clickTool')};return clickTool;`)(win,BIG_MAP,ready,{tool:1},-1,-2,()=>false,()=>false,()=>false,{},'sandbox',{});
  assert.equal(click(),null,'a brush can reach its existing air-pouring path');
  hover.worldReady=false;assert.equal(click(),false,'missing dependencies are not sky');
  hover.worldReady=true;hover.valid=true;assert.equal(click(),false,'outside-window surface cannot anchor an edit');
@@ -186,12 +187,12 @@ test('actual rejected App pick revokes previous sky readiness',async()=>{
  const identity={},hover={valid:true,worldReady:true,frameIdentity:identity,worldToken:'tool'};
  const win={renderFrame:{driver:{displayedMainFrame:{frameIdentity:identity},pick:()=>Promise.reject(new Error('failed readback'))}}};
  const pointer={x:0,y:0,toArray:()=>[0,0]};
- const request=new Function('win','hover','pointer','sim','worldPickToken','displayedWorldRay','syncWorldHover',
+ const request=new Function('win','mapKind','hover','pointer','sim','worldPickToken','displayedWorldRay','syncWorldHover',
    `let pickPending=false,pointerInside=true,pointerPickDirty=true,pov=null;
-    ${extract('requestWorldPick')};return requestWorldPick;`)(win,hover,pointer,{},()=> 'tool',()=>({}),()=>true);
+    ${extract('requestWorldPick')};return requestWorldPick;`)(win,BIG_MAP,hover,pointer,{},()=> 'tool',()=>({}),()=>true);
  request();await new Promise(resolve=>setImmediate(resolve));
  assert.equal(hover.valid,false);assert.equal(hover.worldReady,false);
- const ready=new Function('win','hover','worldPickToken','syncWorldHover',
-   `${extract('worldMutationReady')};return worldMutationReady;`)(win,hover,()=> 'tool',()=>true);
+ const ready=new Function('win','mapKind','hover','worldPickToken','syncWorldHover',
+   `${extract('worldMutationReady')};return worldMutationReady;`)(win,BIG_MAP,hover,()=> 'tool',()=>true);
  assert.equal(ready(),false,'failed readback must not become a certified sky miss');
 });

@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import * as THREE from 'three';
 import { E } from '../src/elements.js';
+import { SMALL_MAP } from '../src/mapKind.js';
 
 // The actual UI runs against a tiny DOM; only CSS loading is omitted.
 const hooks = registerHooks({ load(url, context, next) {
@@ -70,7 +71,7 @@ function fixture(mode='sandbox') {
     snapshot(label){this.history.push({label,terrain:this.terrain,note:null});},
     clear(){this.terrain='empty';},undo(){const old=this.history.pop();if(!old)return false;this.terrain=old.terrain;return true;},
     get canUndo(){return !!this.history.length;}};
-  const app = {sim,gpu,gamemode:mode,settings:{preset:'quarry'},win:null,scale:1,canvas:new Element('canvas'),
+  const app = {sim,gpu,gamemode:mode,settings:{preset:'quarry'},win:null,mapKind:SMALL_MAP,scale:1,canvas:new Element('canvas'),
     scene:new THREE.Group(),volume:{position:new THREE.Vector3()},hud:{toast:text=>toasts.push(text)},
     requestRender(){},leaveBuild(){},dock:{setCollapsed(){}},toolbar:{setUndoEnabled(){},setIndustry(visible,open){this.visible=visible;this.open=open;}},isTyping:()=>false,
     pov:{active:false,player:{pos:{x:10,y:8,z:10}},worldReplaced(){}},hover:{valid:false}};

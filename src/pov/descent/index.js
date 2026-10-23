@@ -7,6 +7,7 @@ import { rollShop, buy } from './shop.js';
 import { hashString, mixSeed } from '../../rng.js';
 import { createDescentItems } from './items.js';
 import { startsDescentRun } from './terrainHandoff.js';
+import { SMALL_MAP } from '../../mapKind.js';
 
 // The Holy Mountain (docs/descent-contract.md, C): Noita's temple between biomes,
 // and the gold that pays for it. On a Descent level (A's levels.js) it keeps:
@@ -76,7 +77,7 @@ const disposeObj = (o) => o.traverse((m) => { if (!m.isSprite) m.geometry?.dispo
 const spellName = (id) => SPELL_BY_ID[id]?.name ?? id;
 const spellDesc = (id) => SPELL_BY_ID[id]?.description ?? '';
 
-// app: the POV's app (getSim, getVolume, getScale, getPerkOrbs, settings, inWorld, requestRender);
+// app: the POV's app (getSim, getVolume, getScale, getPerkOrbs, settings, mapKind, requestRender);
 // hud: the god view's (toast); interact: the shell's look + E (interact.js); events: povEvents
 export function createDescent({ app, scene, hud, interact, events, getToolbelt = () => null }) {
   const purse = createPurse();
@@ -238,7 +239,7 @@ export function createDescent({ app, scene, hud, interact, events, getToolbelt =
     const sim = app.getSim?.(), vol = app.getVolume?.(), scale = app.getScale?.();
     if (!sim || !vol) return;
     // the run (gold, shop, pool, altar) is the Noita gamemode's: Descent in Sandbox is only the map
-    const key = app.inWorld?.() && app.gamemode?.() === 'noita' ? app.settings.scene : null;
+    const key = !(app.mapKind?.() ?? SMALL_MAP).presets && app.gamemode?.() === 'noita' ? app.settings.scene : null;
     const lv = key ? levelByScene(key) : null;
     if (!lv) { if (level) leave(); pendingArrive = null; return; }
     // arrive on A's descent:level, or (before it lands) the first live frame on a new level

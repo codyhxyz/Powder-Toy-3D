@@ -49,8 +49,10 @@
 // The per-frame hooks (lighting, beforeView, compute, scene, overlay) run through
 // one dispatch, src/wire/frameWires.js, from both frames: a small map's (app.js)
 // and a big map's (the WORLD renderer, worldRenderFrame.js). A wire that must act
-// differently on a big map decides inside its hook (`app.win?.render`) with an
-// `// Intentional (...)` comment; tools/check-frame-wires.mjs guards both.
+// differently on a big map decides inside its hook, reading its row in
+// src/mapKind.js (`app.mapKind.<row>`), or skipping the WORLD renderer's frame
+// (`app.win?.render`) with an `// Intentional (...)` comment;
+// tools/check-frame-wires.mjs guards all three.
 // `app` is app.js's context (`ctx` there): J3's { gpu, three, sim, derived,
 // scene, camera, settings, pacer, post } (three is three.js's renderer, also
 // app.renderer), the grid's volume (app.vol), the UI (app.hud, app.dock, …),

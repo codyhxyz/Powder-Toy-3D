@@ -61,7 +61,7 @@ const world = {
   // The window's size is the simulation's: build() made it worldMode.win, ?win= applied.
   attach(app) {
     const { sim } = app;
-    if (!app.worldMode) return;
+    if (!app.mapKind.streamed) return;
     const scene = app.sceneByKey(app.settings.scene);
     // The World view's pipeline starts building first, beside the world's generation, not
     // once the world has generated and streamed in: cold (after a deploy) it is a big map's
@@ -118,7 +118,7 @@ const world = {
     return !!far && (far.queue.length > 0 || far.detail.busy);
   },
   follow(app) {
-    if (!app.win) return;
+    if (!app.mapKind.streamed) return;
     // Replicas do not move or simulate their window, but render-only streaming
     // must still progress; the host's live cells retain their authority.
     if (app.mp.replica) app.win.far?.tick();
@@ -201,7 +201,7 @@ const world = {
     // In the same task as the fill, so no tick runs between them.
     t.done = loadIsland(sim, {
       seed: app.worldSeed,
-      still: () => world._islandLoad === t && app.sim === sim && app.settings.preset === 'island' && !app.win
+      still: () => world._islandLoad === t && app.sim === sim && app.settings.preset === 'island' && app.mapKind.presets
         && (t.mark === null || sim.history.includes(t.mark)),
     }).then((P) => { if (P) sim.resetNativeDynamics(); return P; });
     t.done.catch(() => {});   // (a pipeline that fails stops graphics: stopGraphics says why)

@@ -17,7 +17,7 @@ function nativeLayer(app) {
     const layer = app.nativeParticles = new NativeParticles(app.sim.gpu, source);
     layer.ready.then(() => app.pacer?.wake(), () => {});
     // (a layer made while a World runs builds World's pipe at once: prewarmWorldFrame waited for the last one's)
-    if (app.worldMode) layer.worldReady()?.then(() => app.pacer?.wake(), () => {});
+    if (app.mapKind.worldRenderer) layer.worldReady()?.then(() => app.pacer?.wake(), () => {});
   }
   return app.nativeParticles;
 }
@@ -52,7 +52,7 @@ const rays = {
     // the three Object3D app.volume, which holds only its matrix; World's atlas and paged sun, as its figures read them)
     // Intentional (decided under the user's delegation, 2026-10-22): World packets don't cast sun shadows;
     // World's sun map is published read-only tiles (the Box's packets cast theirs: gfx/packetShadow.js).
-    if (app.sim.compact && app.nativeParticles?.isReady) app.nativeParticles.draw(rp, t, app.worldMode ? worldLight : boxParticleLight(app.vol, app.derived, app.sim.gpu));
+    if (app.sim.compact && app.nativeParticles?.isReady) app.nativeParticles.draw(rp, t, app.mapKind.worldRenderer ? worldLight : boxParticleLight(app.vol, app.derived, app.sim.gpu));
   },
   // particles fly between frames: the loop keeps ticking while any may be
   // alive, unless paused (they fly only with the steps; a load wakes the layer

@@ -2,6 +2,7 @@
 // drag orbits, and first-person right-click keeps its held erase stroke.
 // node tools/check-brush-controls.mjs
 import assert from 'node:assert/strict';
+import { SMALL_MAP } from '../src/mapKind.js';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import * as THREE from 'three';
@@ -72,7 +73,7 @@ Object.assign(c, {
   canEraseClick: () => true,
   brushStroke: tool => ({ tool, radius: 3, shape: 0 }),
   paintStroke: stroke => paints.push(stroke),
-  win: null,   // a box: the released click's cell is the pick's own (physicalPickCell; World's is tools/world-pick-cpu-check.mjs)
+  win: null, mapKind: SMALL_MAP,   // a box: the released click's cell is the pick's own (physicalPickCell; World's is tools/world-pick-cpu-check.mjs)
 });
 // eraseClick takes its cell through app.js physicalPickCell (World revalidates a delayed hit there)
 vm.runInContext([fn('physicalPickCell'), fn('eraseClick')].join('\n'), c);

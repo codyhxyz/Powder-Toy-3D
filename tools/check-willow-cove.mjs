@@ -4,6 +4,7 @@
 // tools/willow-cove-check.mjs.
 // Run: node tools/check-willow-cove.mjs
 import assert from 'node:assert/strict';
+import { SMALL_MAP, BIG_MAP } from '../src/mapKind.js';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
@@ -82,7 +83,7 @@ assert.equal(createHash('sha256').update(new Uint8Array(legacyIds.buffer)).diges
   const builds = [];
   const makeWorld = dims => ({ size: dims, whenReady: async () => {} });
   const app = {
-    settings: { size: 'world', scene: scene.key }, win: makeWorld(size), worldSeed: P.seed,
+    settings: { size: 'world', scene: scene.key }, win: makeWorld(size), mapKind: BIG_MAP, worldSeed: P.seed,
     mp: { guard: () => false, guardWorld: () => false }, pov: { exit() {} },
     WORLDS: { world: { size: WORLD_SIZE } }, sceneByKey,
     setSize(key, savedSize) { builds.push(savedSize); this.win = makeWorld(savedSize ?? scene.size); },
@@ -108,7 +109,7 @@ assert.equal(createHash('sha256').update(new Uint8Array(legacyIds.buffer)).diges
   const source = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const fn = source.slice(source.indexOf('function setGrid('), source.indexOf('// The cells of size'));
   const ctx = {
-    replicaMap: null, win: null, sim: { g: { nx: 128, ny: 128, nz: 128 } },
+    replicaMap: null, win: null, mapKind: SMALL_MAP, sim: { g: { nx: 128, ny: 128, nz: 128 } },
     SIZES: {}, WORLDS: { world: { size: WORLD_SIZE } }, sceneByKey,
     worldOf: (w, s) => ({ ...w, size: s.size ?? w.size }),
     settings: {}, presentation: { select() {} }, build() {}, gridFits: () => true,

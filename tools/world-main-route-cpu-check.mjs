@@ -142,9 +142,9 @@ test('actual App hooks select driver, reserve only inside callback, and suppress
   assert.match(app,/driver\.tick\(\{present,dt/);assert.match(app,/capture:\(reservation,state\)=>captureWorldRequest/);
   assert.match(app,/if\(win\?\.render\)return; \/\/ WORLD/);
   for(const hook of ['threeMeshes','writeWorldFrame','drawWorldSky','drawWorldBrush','frameWires,'])assert.match(app,new RegExp(hook));
-  assert.match(app,/if\(win\)return renderWorldThumb\(viewId,out\)/);
+  assert.match(app,/if\(mapKind\.worldRenderer\)return renderWorldThumb\(viewId,out\)/);
   assert.doesNotMatch(app,/WORLD_CONSUMER_NOT_READY/);
-  assert.match(app,/if\(win && visible\)/);
+  assert.match(app,/if\(mapKind\.worldRenderer && visible\)/);
   assert.match(app,/driver\.pick\(\{ray/);
   // (driver: none after its tick failed and it went for a restart: app.js worldFailed)
   assert.match(app,/if\(driver && !renderOnly && \(pointerPickDirty \|\| runView \|\| pov\?\.active\)\)requestPick\(\)/);

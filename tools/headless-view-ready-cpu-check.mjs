@@ -1,6 +1,7 @@
 // CPU only: execute the production readiness/helpers with controlled external
 // promises and real detail-gate, camera transforms and post render-scale maths.
 import assert from 'node:assert/strict';
+import { kindOf } from '../src/mapKind.js';
 import { readFileSync } from 'node:fs';
 import { Matrix4, Object3D, PerspectiveCamera, Vector3 } from 'three/webgpu';
 import { createDetailGate, gateVariants, PREWARM_DELAY_MS } from '../src/gfx/detailGate.js';
@@ -89,6 +90,7 @@ function context({ close = false, curved = false, ratio = 1 } = {}) {
     camera: new PerspectiveCamera(60, 1280 / 720, 0.1, 10000), camGrid: new Vector3(), invVol: new Matrix4(),
     coreWait: Promise.resolve(), coreReady: true, blocksOn: false, blocks: null,
     graphicsFailure: null, giWait: Promise.resolve(), physicsV2: null, win: null,
+    get mapKind() { return kindOf(!!this.win); },   // (app.js: follows the window, as build() sets it)
     hybridLoad: null, hybrid: null, hybridWait: Promise.resolve(),   // the hybrid renderer off (app.js)
     curved, isMaterialView, gateVariants, detailKey, UPSCALE_FLOOR,
     viewKeyOf: v => v, viewShadows: v => isMaterialView(v),

@@ -12,6 +12,7 @@ import { createPlayer } from '../src/pov/player.js';
 import { setPovGpu } from '../src/pov/gpu.js';
 import { PROBE, PROBE_CELLS } from '../src/shaders/povBody.js';
 import { E } from '../src/elements.js';
+import { kindOf } from '../src/mapKind.js';
 
 const tick = () => new Promise((r) => setImmediate(r));
 // The net's frames go through the codec's CompressionStream/DecompressionStream (zlib off the main thread),
@@ -149,7 +150,7 @@ function client(role, options = {}) {
   location.search = role === 'guest' ? '?join=abcdef00' : '';
   const firstNode = nodes.length;
   const net = createMultiplayer({ getSim: () => sim, getVolume: () => null, hud: { toast: (s) => toasts.push(s) },
-    inWorld: () => meta.mode === 'world', getMetadata: () => meta,
+    mapKind: () => kindOf(meta.mode === 'world'), getMetadata: () => meta,
     setGrid(dims, m) { if (!m || m.id !== meta.id || !dims.every((n, i) => n === [sim.g.nx, sim.g.ny, sim.g.nz][i])) {
       sim.disposed = true; sim = simulation(dims); sim.id++; }
       if (m) meta = m; return true; },

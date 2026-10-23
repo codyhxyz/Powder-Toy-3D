@@ -3,11 +3,12 @@ import { createMissionAttempt, validMission } from './missionRules.js';
 import { PLAYER } from '../pov/targets.js';
 import { povEvents } from '../pov/events.js';
 import { crueltyProfile } from './crueltyProfiles.js';
+import { kindOfGrid } from '../mapKind.js';
 
 // cells from a World window's edge an NPC must be inside to be simulated: its body's probe and the
 // AI's world model only hold the window's cells (a box's whole grid is resident)
 const RESIDENT_MARGIN = 2;
-export const residentIn = (p, g) => !g?.windowed
+export const residentIn = (p, g) => !kindOfGrid(g).streamed
   || (p.x >= RESIDENT_MARGIN && p.z >= RESIDENT_MARGIN && p.x < g.nx - RESIDENT_MARGIN && p.z < g.nz - RESIDENT_MARGIN);
 
 // Narrow adapter: existing NPC bodies/tools/combat, an authored mission, one attempt.

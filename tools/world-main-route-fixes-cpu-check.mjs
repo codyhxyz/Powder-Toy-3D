@@ -1,5 +1,6 @@
 // Actual WORLD owner/driver/Post/pacer and allocation faults. No browser/GPU.
 import test from 'node:test';
+import { BIG_MAP } from '../src/mapKind.js';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {Scene,Matrix4} from 'three/webgpu';
@@ -20,7 +21,7 @@ test('actual WORLD attachment adds the far field behind the volume without holdi
  const source=readFileSync(new URL('../src/wire/world.js',import.meta.url),'utf8');
  const start=source.indexOf('  attach(app) {'),brace=source.indexOf('{',start);let depth=1,end=brace+1;
  for(;depth;end++){if(source[end]==='{')depth++;else if(source[end]==='}')depth--;}
- const window={loaded:false},sim={origin:{fromArray(v){this.value=v;}},resetNativeDynamics(){}},app={sim,worldMode:{size:[512,384,512]},settings:{scene:'island'},sceneByKey:k=>k,gpu:{},vol:{lightingGroup:{}},sun:{},presentation:{},wakeLoop(){}};
+ const window={loaded:false},sim={origin:{fromArray(v){this.value=v;}},resetNativeDynamics(){}},app={sim,worldMode:{size:[512,384,512]},mapKind:BIG_MAP,settings:{scene:'island'},sceneByKey:k=>k,gpu:{},vol:{lightingGroup:{}},sun:{},presentation:{},wakeLoop(){}};
  const Window=class{constructor(renderer,actualSim,options){assert.equal(actualSim,sim);assert.deepEqual(options.size,app.worldMode.size);return window;}};
  const uniforms={uClouds:{value:false},uCloudSea:{value:0}},order=[];
  const Ordered=class extends Window{constructor(...a){order.push('window');return super(...a);}};

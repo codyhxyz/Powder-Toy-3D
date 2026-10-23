@@ -6,7 +6,8 @@ import { registerHooks } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import * as THREE from 'three';
 import { createMission } from '../src/game/mission.js';
-import { isWorld, resolveMode } from '../src/maps.js';
+import { resolveMode } from '../src/maps.js';
+import { kindOf, kindOfMap } from '../src/mapKind.js';
 
 let makePov;
 const povUrl = new URL('../src/pov/index.js', import.meta.url).href;
@@ -59,9 +60,9 @@ const lifecycle = {
   THREE, console: { error: (...args) => errors.push(args) },
   modeEpoch: 0, selectedMode: 'crueltySquad', villageFocus: null,
   settings: { view: 'plain', size: 'world', scene: map.scene, gravity: 1 },
-  sim, win: world(), ctx: {}, mp: { role: 'solo', guard: () => false, guardWorld: () => false },
+  sim, win: world(), mapKind: kindOf(true), ctx: {}, mp: { role: 'solo', guard: () => false, guardWorld: () => false },
   graphicsFailure: null, mapByKey: key => key === map.key ? map : null, mapOf: () => map,
-  isWorld, resolveMode, dimsOf: () => [64, 32, 64], gridFits: () => true,
+  kindOfMap, resolveMode, dimsOf: () => [64, 32, 64], gridFits: () => true,
   wire: () => ({ moveWindow: () => false, streamToFocus: async () => {} }), hud: { toast() {} }, loadWatch: { start() {} },
   scoreboard: { reset() {} }, presentation: { select() {} }, pacer: { wake() {} },
   viewForMode: (_chosen, view) => view, applyGravity() {},

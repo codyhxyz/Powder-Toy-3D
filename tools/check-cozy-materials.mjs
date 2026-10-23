@@ -1,6 +1,7 @@
 // CPU-only contracts; --validate-wgsl also runs Naga over complete generated
 // near/far/detail modules, through stdin (no browser or temporary files).
 import assert from 'node:assert/strict';
+import { SMALL_MAP, kindOfMap } from '../src/mapKind.js';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { Matrix4, Vector3, PerspectiveCamera } from 'three/webgpu';
@@ -108,14 +109,14 @@ const modeCode = app.slice(app.indexOf('async function startMode('), app.indexOf
 const makeMode = new Function('settings', 'helpers', `
   const { resolveMode, mapOf, viewForMode } = helpers;
   let selectedMode = 'sandbox', modeEpoch = 0, villageFocus = null;
-  const win = null, pov = null, mp = { role: 'solo' }, ctx = {};
+  const win = null, mapKind = helpers.SMALL_MAP, pov = null, mp = { role: 'solo' }, ctx = {};
   const hud = { toast() {}, dismissHint() {} }, presentation = { select() {} }, pacer = { wake() {} };
   const applyGravity = () => {}, setView = id => { settings.view = id; };
   ${modeCode}
   return startMode;
 `);
 const modeSettings = { view: 0, size: 'world', scene: 'willowCove' };
-const startMode = makeMode(modeSettings, { resolveMode, mapOf, viewForMode });
+const startMode = makeMode(modeSettings, { resolveMode, mapOf, viewForMode, SMALL_MAP });
 await startMode('animalCrossing');
 assert.equal(modeSettings.view, cozy.id, 'entering the running mode selects Cozy');
 modeSettings.view = 1;
@@ -134,7 +135,7 @@ assert.equal(modeSettings.view, cozy.id, 'manual Cozy remains usable within the 
 const openMapCode = app.slice(app.indexOf('function openMap('), app.indexOf('// Animal Crossing on Tinker Creek'));
 assert(openMapCode.indexOf('setView(modeView)') < openMapCode.indexOf('setSize(m.size)'), 'new maps choose their shader before building pipelines');
 const useMapCode = app.slice(app.indexOf('function useMap('), app.indexOf('// The start menu\'s Start'));
-const makeMapOpener = new Function('settings', 'mapByKey', 'resolveMode', 'viewForMode', 'isWorld', `
+const makeMapOpener = new Function('settings', 'mapByKey', 'resolveMode', 'viewForMode', 'kindOfMap', `
   const mp = { frozen: false, guard: () => false, guardWorld: () => false, role: 'solo' };
   const graphicsFailure = null, pov = null, wire = () => true, gridFits = () => true, dimsOf = () => [];
   const hud = { toast() {} }, scoreboard = { reset() {} }, presentation = { select() {} }, loadWatch = { start() {} };
@@ -146,7 +147,7 @@ const makeMapOpener = new Function('settings', 'mapByKey', 'resolveMode', 'viewF
   return openMap;
 `);
 const mapSettings = { view: cozy.id, size: 'world', scene: 'willowCove' };
-const openMap = makeMapOpener(mapSettings, mapByKey, resolveMode, viewForMode, m => !m.preset);
+const openMap = makeMapOpener(mapSettings, mapByKey, resolveMode, viewForMode, kindOfMap);
 assert.equal(viewForMode(modeByKey('sandbox'), 0, mapByKey('willowCove')), cozy.id);
 for (const [key, mode, expected] of [
   ['island', 'sandbox', 0], ['willowCove', 'sandbox', cozy.id],
@@ -187,14 +188,14 @@ assert.match(app.slice(app.indexOf('const PERSIST'), app.indexOf('const STORE'))
 assert.match(app, /view: 0, camSpeed/, 'Realistic remains the default');
 const runtime = app.slice(app.indexOf('function setView(id)'), app.indexOf('// The blocks renderer on or off'));
 for (const text of ['settings.view = id', 'post.reset()', 'meshFrames.drop()', 'sim.resetGI()', 'detailGate.setView(id)', 'save()']) assert.ok(runtime.includes(text), text);
-const selectView = new Function('settings', 'VIEWS', 'isMaterialView', 'isTestView', `
+const selectView = new Function('settings', 'VIEWS', 'isMaterialView', 'isTestView', 'mapKind', `
   const hybridUnavailable = false, worldMode = null;
   const post = { reset() {} }, meshFrames = { drop() {} }, sim = { resetGI() {} }, detailGate = { setView() {} };
   const setBlocks = () => {}, plainView = () => false, prepareGI = () => {}, viewKeyOf = () => 'cozy';
   const blocksOn = true, settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {}, toast() {} }, save = () => {}, ensureHybrid = () => {};
   ${runtime}
   return setView;
-`)(modeSettings, VIEWS, isMaterialView, isTestView);
+`)(modeSettings, VIEWS, isMaterialView, isTestView, SMALL_MAP);
 for (const view of VIEWS) {
   selectView(view.id);
   await startMode('sandbox');

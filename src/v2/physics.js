@@ -19,6 +19,7 @@ import { V2_HEAT_KERNEL } from '../shaders/v2/heat.js';
 import { CONTACT_CONSTANTS } from './contact.js';
 import { auxLayout } from '../shaders/v2/state.js';
 import { PARTICLE_CAP } from './dynamics-reference.js';
+import { kindOfGrid } from '../mapKind.js';
 
 // The window [origin, origin + grid) in world cells (world/renderSource.js sourceBounds, at a given origin).
 const sourceBoundsAt = (sim, origin) => ({ lo: [...origin], hi: origin.map((v, i) => v + [sim.g.nx, sim.g.ny, sim.g.nz][i]) });
@@ -186,7 +187,7 @@ export class PhysicsV2 {
       // did there (main's World load split, 2026-10-22). What the world writes before the owner is
       // built goes into the V1-format cache, which the owner imports when it first presents the grid.
       this.kernels[k.name] = gpu.kernel({
-        name: k.name, build: sim.g.windowed ? 'later' : 'now', first: LONG_POLES.has(k.name), code: k.name === 'v2block' ? v2BlockWGSL(g, contactWGSL, !!this.blockCompact) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
+        name: k.name, build: kindOfGrid(sim.g).stepKernelsLater ? 'later' : 'now', first: LONG_POLES.has(k.name), code: k.name === 'v2block' ? v2BlockWGSL(g, contactWGSL, !!this.blockCompact) : k.code(g), params: V2Params, workgroupSize: k.workgroupSize ?? [64, 1, 1],
         layouts: [finalize ? gpu.L.EMPTY : sim.L.TABLES, k.name === 'v2import' ? L.IMPORT : withState ? L.STATE : (k.name === 'v2invalidate' || k.name === 'v2externalEvents') ? L.INVALIDATE : k.name === 'v2block' ? L.BLOCK_FLOW : gpu.L.EMPTY, finalize ? L.BLOCK_FINALIZE : familyLayouts[this.familyOf(k.name)]],
       });
     }

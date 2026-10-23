@@ -1,6 +1,7 @@
 import { h } from './dom.js';
 import { logoMark } from './logo.js';
-import { MAPS, mapByKey, mapsFor, isWorld, sizeTag, mapPreviewUrl as THUMB, mapLoadingUrl } from '../maps.js';
+import { MAPS, mapByKey, mapsFor, sizeTag, mapPreviewUrl as THUMB, mapLoadingUrl } from '../maps.js';
+import { kindOfMap } from '../mapKind.js';
 import { listSaves, getSave, putSave, deleteSave, downloadSave, pickSaveFile } from '../saves/local.js';
 import { readSaveHeader } from '../saves/format.js';
 import { MODEICONS, MODEICON_BOX } from './modeicons.js';
@@ -50,7 +51,7 @@ const STORE = 'powder-toy-3d:menu';   // the last gamemode and map picked here
 // the screen (app.js bootReady: all but Sandbox).
 const STEPS = [
   { key: 'fetch', text: () => 'Downloading the game' },
-  { key: 'build', text: (m) => (isWorld(m) ? 'Setting up the simulation around you' : `Filling ${count(m)} cells`) },
+  { key: 'build', text: (m) => kindOfMap(m).buildStep.replace('{cells}', count(m)) },
   { key: 'compile', text: () => 'Compiling shaders' },
   { key: 'world', text: () => 'Generating the world', world: true },
   { key: 'match', text: () => 'Starting the match', match: true },
@@ -64,9 +65,9 @@ const BETA_NOTE = 'In testing: this mode is still being built, so expect rough e
 
 const count = (m) => m.dims.reduce((a, b) => a * b, 1).toLocaleString('en-US');
 const dimsText = (m) => `${m.dims.join(' × ')} cells`;
-// a map's size said plainly: a big map loads around you, a small one is simulated whole
-const sizeWord = (m) => (isWorld(m) ? 'Big map' : 'Small map');
-const sizeLine = (m) => (isWorld(m) ? 'Big map · loads around you as you explore' : 'Small map · simulated whole, loads quickly');
+// a map's size said plainly: a big map loads around you, a small one is simulated whole (mapKind.js)
+const sizeWord = (m) => kindOfMap(m).label;
+const sizeLine = (m) => `${kindOfMap(m).label} · ${kindOfMap(m).blurb}`;
 
 // a baked icon (tools/game-icons.mjs) as inline SVG, drawn in the text's colour
 const iconSVG = (icon, box, cls) => (icon ? `<svg class="${cls}" viewBox="0 0 ${box} ${box}" aria-hidden="true"><path d="${icon.d}"/></svg>` : '');
@@ -230,7 +231,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
     pickThumb.src = THUMB(m.key);
     mapBackdrop(m);
     pickName.textContent = m.name;
-    pickMeta.innerHTML = modeIcon(isWorld(m) ? 'world' : 'box', 'mm-ico');
+    pickMeta.innerHTML = modeIcon(kindOfMap(m).icon, 'mm-ico');
     pickMeta.append(sizeLine(m));
     pickMeta.title = dimsText(m);
     pickDesc.textContent = m.desc;
@@ -406,7 +407,7 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
       loadName.textContent = name ?? pick.name;
       loadStatus.textContent = status;
       const matchMode = !save && mo.key !== 'sandbox';
-      steps = STEPS.filter((s) => (!s.world || (!save && isWorld(pick))) && (!s.match || matchMode))
+      steps = STEPS.filter((s) => (!s.world || (!save && kindOfMap(pick).generateStep)) && (!s.match || matchMode))
         .map((s) => ({ key: s.key, label: s.text(pick) }));
       at = -1;
       cold = false;

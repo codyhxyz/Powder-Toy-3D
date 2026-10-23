@@ -1,6 +1,7 @@
 import { GRAV, AIR, EDGE, SIM_MODE_DEFAULTS } from '../simModes.js';
 import { CELL_M } from '../scale.js';
 import { GRAVITY_MS2 } from './gravity.js';
+import { kindOfGrid } from '../mapKind.js';
 export { GRAVITY_MS2 };
 
 // The saved slider remains dimensionless relative to the shipped .025 default.
@@ -23,7 +24,7 @@ export function nativeModes(sim) {
   if (typeof heat !== 'boolean') throw new TypeError('Native ambientHeat must be boolean');
   if (!Number.isFinite(setting) || setting < 0 || !Number.isFinite(Math.fround(setting / GRAVITY_SETTING_REFERENCE * GRAVITY_MS2))) throw new RangeError('Invalid native gravity magnitude');
   if (!Number.isFinite(ambient)) throw new RangeError('Invalid native ambient temperature');
-  return { gravMode, edge: sim.g?.windowed ? EDGE.SOLID : requestedEdge, airMode, ambientHeat: +heat,
+  return { gravMode, edge: kindOfGrid(sim.g).edgeMode ?? requestedEdge, airMode, ambientHeat: +heat,
     gravity: gravMode === GRAV.OFF ? 0 : setting / GRAVITY_SETTING_REFERENCE * GRAVITY_MS2, ambient };
 }
 export const modeSignature = p => Object.keys(MODE_FIELDS).map(k => p[k]).join('|');

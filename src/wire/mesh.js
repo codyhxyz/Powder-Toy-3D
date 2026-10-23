@@ -78,7 +78,7 @@ const mesh = {
   },
   // a world stamps its shrine and the trees in its glade once its passes are
   // built (src/wire/world.js worldShrine): the stamp's kernel builds beside them
-  attach(app) { if (app.win) app.builds?.prepareStamp(); },
+  attach(app) { if (app.mapKind.autoShrine) app.builds?.prepareStamp(); },
   afterStep(app) {
     const { spawners, pov } = app;
     spawners.setGhosts(!pov?.active);   // the crosshair cell stays fresh for the tools

@@ -3,6 +3,7 @@
 // Only volume/detail changed from 8d5ad463, retaining production's cave fixes.
 // No browser/device or timing claim.
 import assert from 'node:assert/strict';
+import { SMALL_MAP } from '../src/mapKind.js';
 import { createHash } from 'node:crypto';
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -148,7 +149,7 @@ c.sim.compact = { isReady: false };
 const context = { physicsV2: { ready: ready.promise, integrationReady: integration.promise }, coreWait: null, coreReady: false,
   s: { ready: Promise.resolve() }, derived: { ready: Promise.resolve() }, vol: Object.assign(c.volume, { ready: Promise.resolve(), noiseReady: Promise.resolve(), viewReady(v,d,b) { return this.pipeline(v,d,'now',b).ready; } }),
   post: { ready: Promise.resolve() }, overlays: { ready: Promise.resolve() }, brush: { ready: Promise.resolve() }, blocks: null,
-  hybridWait: Promise.resolve(), worldMode: false,   // (app.js since: the hybrid engine's load, and a World session draws no Box view)
+  hybridWait: Promise.resolve(), worldMode: false, mapKind: SMALL_MAP,   // (app.js since: the hybrid engine's load, and a World session draws no Box view)
   settings: { view: 'realistic' }, viewKeyOf: v => v, baseDetail: () => ({}), warpNow: () => null, wakeLoop() {} };
 const cp = makeCore(context)(); let done = false; cp.then(() => { done = true; });
 await Promise.resolve(); assert.equal(done, false); assert(c.descs.every(d => d.name.endsWith('format2')));
@@ -156,7 +157,7 @@ context.physicsV2 = null; ready.resolve(); await Promise.resolve(); assert.equal
 integration.resolve(); await cp; assert.equal(context.coreReady, true);
 const thumbGate = deferred(), thumbVol = { format: 2, viewReady: () => thumbGate.promise };
 const thumbState = { graphicsFailure: null, coreReady: true, viewKeyOf: v => v, isMaterialView, gateVariants: () => ({ base: {} }),
-  settings: {}, vol: thumbVol, blocks: null, viewShadows: () => false, win: null };   // (win: a Box session's thumbnail, not a World's)
+  settings: {}, vol: thumbVol, blocks: null, viewShadows: () => false, win: null, mapKind: SMALL_MAP };   // (win: a Box session's thumbnail, not a World's)
 const thumb = new Function('state', `with(state) { return ${block(app, 'async function renderThumb(')}; }`)(thumbState);
 const tp = thumb('realistic', null); thumbVol.format = 0; thumbGate.resolve(); assert.equal(await tp, false, 'stale thumbnail cancels before GPU draw');
 assert.match(app, /curved: !!warpNow\(\)\?\.k, format/);

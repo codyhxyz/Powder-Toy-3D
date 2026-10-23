@@ -1,6 +1,7 @@
 // CPU-only independent acceptance of the COMPOSED scene. No browser/GPU.
 // node --test tools/check-city-folk.mjs (missing requirements FAIL, never skip).
 import assert from 'node:assert/strict';
+import { BIG_MAP } from '../src/mapKind.js';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -173,7 +174,7 @@ test('I01 identity, aliases, mode availability, world/window sizes and co-op acc
 
 test('I02 solo saves retain supported geometries, coordinates and reject unknown sizes', async () => {
   const builds = [], makeWorld = dims => ({ size: dims, whenReady: async () => {} });
-  const app = { settings: { size: 'world', scene: scene.key }, win: makeWorld(size), worldSeed: seed,
+  const app = { settings: { size: 'world', scene: scene.key }, win: makeWorld(size), mapKind: BIG_MAP, worldSeed: seed,
     mp: { guard: () => false, guardWorld: () => false }, pov: { exit() {} }, WORLDS: { world: { size: WORLD_SIZE } }, sceneByKey,
     setSize(k, dims) { builds.push(dims); this.win = makeWorld(dims ?? scene.size); } };
   for (const dims of [scene.legacySize, size]) {

@@ -118,10 +118,10 @@ const savesWire = {
       header: () => {
         const m = mapOf(settings);
         return {
-          map: m?.key ?? null, mapName: m?.name ?? null, size: settings.size, preset: app.win ? null : settings.preset,
-          world: app.win ? { scene: settings.scene, seed: app.worldSeed ?? null } : null,
+          map: m?.key ?? null, mapName: m?.name ?? null, size: settings.size, preset: app.mapKind.presets ? settings.preset : null,
+          world: app.mapKind.presets ? null : { scene: settings.scene, seed: app.worldSeed ?? null },
           // Runtime refusal must not erase the saved Factory/Sandbox mode.
-          industryMode: app.industry && !app.win && ['sandbox', 'factory'].includes(app.gamemode) ? app.gamemode : undefined,
+          industryMode: app.industry && app.mapKind.industry && ['sandbox', 'factory'].includes(app.gamemode) ? app.gamemode : undefined,
           nativeDynamicsVersion: app.physics.v2?.dynamics ? 1 : undefined,
           guestCopy: app.mp.isGuest || undefined,   // a guest's copy of the host's world (no velocity or pressure: net/codec.js)
         };
@@ -129,7 +129,7 @@ const savesWire = {
       thumbnail: () => saveThumbnail(app),
       prepare: (h) => prepareSave(app, h),
       finish: () => {
-        if (app.win) app.placeVolume();
+        if (app.mapKind.streamed) app.placeVolume();
         app.post.reset();
         app.pov?.worldReplaced();
         app.toolbar.setUndoEnabled(app.gamemode !== 'factory' && app.sim.canUndo);
@@ -152,7 +152,7 @@ const savesWire = {
         app.controls.update();
       },
       // saved in the body: in a world, the god view over the window (the window would chase a camera left elsewhere)
-      absent: () => { if (app.win) { app.homeOver(app.sim.origin.x + app.sim.g.nx / 2, app.sim.origin.z + app.sim.g.nz / 2); app.rig.reset(true); } },
+      absent: () => { if (app.mapKind.streamed) { app.homeOver(app.sim.origin.x + app.sim.g.nx / 2, app.sim.origin.z + app.sim.g.nz / 2); app.rig.reset(true); } },
     });
     registerSaveSection('day', {
       save: () => ({ clock: app.day.clock }),
@@ -264,7 +264,7 @@ export async function prepareSave(app, h) {
     const expectedSize = legacySize ?? scene.size ?? app.WORLDS[h.size].size;
     if (expectedSize.some((n, i) => n !== h.world.size?.[i])) throw new SaveRefused('That save\'s world is a different size');
     const seed = h.world.seed ?? undefined;
-    if (!app.win || settings.size !== h.size || settings.scene !== scene.key || app.worldSeed !== seed || app.win.size.some((n, i) => n !== expectedSize[i])) {
+    if (!app.mapKind.streamed || settings.size !== h.size || settings.scene !== scene.key || app.worldSeed !== seed || app.win.size.some((n, i) => n !== expectedSize[i])) {
       settings.scene = scene.key;
       app.worldSeed = seed;
       app.setSize(h.size, legacySize);

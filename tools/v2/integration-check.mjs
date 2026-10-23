@@ -1,6 +1,7 @@
 // CPU-only application/driver protocol tests. Native residency kernels below
 // execute an independent coordinate reference, NOT WGSL or physics emulation.
 import assert from 'node:assert/strict';
+import { SMALL_MAP } from '../../src/mapKind.js';
 import { Simulation, gridLayout } from '../../src/sim.js';
 import { PhysicsV2 } from '../../src/v2/physics.js';
 import { nativeCapabilities } from '../../src/v2/integration.js';
@@ -300,7 +301,7 @@ assert.deepEqual(core, originalCore); assert.deepEqual(bank, originalBank);
   wireWorld.loadIsland = new Function('loadIsland', 'world', `return ({${source.slice(start, end)}}).loadIsland;`)(
     async (_sim, { still }) => { await null; if (!still()) return null; order.push('fill'); return { size: [32, 32, 32] }; }, wireWorld);
   const islet = { history: [], resetNativeDynamics() { order.push('reset'); } };
-  const app = { mp: { replica: false }, sim: islet, worldSeed: 1, settings: { preset: 'island' }, win: null };
+  const app = { mp: { replica: false }, sim: islet, worldSeed: 1, settings: { preset: 'island' }, win: null, mapKind: SMALL_MAP };
   assert.deepEqual((await wireWorld.loadIsland(app)).size, [32, 32, 32]);
   assert.deepEqual(order, ['fill', 'reset'], "the old box's dynamics go with its cells");
   order.length = 0; app.settings.preset = 'empty';

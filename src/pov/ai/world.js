@@ -5,6 +5,7 @@ import { BRICK } from '../../shaders/common.js';
 import { BODY_HEIGHT } from '../constants.js';
 import { deswizzle, columnTops, ID_BITS } from './deswizzle.js';
 import { voxelWalk } from '../grid.js';
+import { kindOfGrid } from '../../mapKind.js';
 
 // The NPCs' picture of the world (and the vehicles' terrain, and Teleportitis's
 // safe spots): the sim's cells read back to the CPU a few times a second (the
@@ -231,7 +232,7 @@ function createModel(renderer) {
     if (!job) return;
     busy = true;
     behind = identity;
-    const frame = { origin, world: sim.g.windowed && sim.world ? [...sim.world] : null };
+    const frame = { origin, world: kindOfGrid(sim.g).streamed && sim.world ? [...sim.world] : null };
     job.then((r) => {
       if (startWorker()) send(r, state, identity, frame);        // busy until the worker answers
       else { ingestHere(r, state, identity, frame); busy = false; }

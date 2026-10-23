@@ -111,7 +111,7 @@ assert.throws(() => badInit.sim.step(), /no ready native owner/);
 // host's frames and, once the session ends, steps them: net/codec.js, app.js v2Replica); outcomes opt in;
 // a save's physicsV2 section restores into the grid's own owner and never switches engines.
 const app = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
-assert.match(app, /sim = new Simulation\(gpu, nx, ny, nz, \{ windowed: !!worldMode, world: worldMode\?\.size \}\);\n  physicsV2 = new V2mod\.PhysicsV2\(sim, V2mod\.options\);/);
+assert.match(app, /sim = new Simulation\(gpu, nx, ny, nz, \{ windowed: mapKind\.streamed, world: worldMode\?\.size \}\);\n  physicsV2 = new V2mod\.PhysicsV2\(sim, V2mod\.options\);/);
 assert(!/setPhysics|params\.get\('physics'\)/.test(app), 'no engine switch and no ?physics= flag');
 const outcomes = readFileSync(new URL('../outcomes/engine-v2.js', import.meta.url), 'utf8');
 assert.match(outcomes, /new Simulation\(gpu, nx, ny, nz, \{ debug: false \}\)/);

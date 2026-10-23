@@ -17,6 +17,7 @@ import { HOVERBIKE, buildHoverbike } from './hoverbike.js';
 import { BOAT, buildBoat } from './boat.js';
 import { createVehicleHud } from './hud.js';
 import './vehicles.css';
+import { kindOfGrid } from '../../mapKind.js';
 
 // Vehicles for first person (docs/vehicles.md): a Warthog-style jeep and a
 // drifty hoverbike and a small motorboat, rigid bodies in Rapier (physics.js) on a voxel collider
@@ -140,14 +141,14 @@ export function createVehicles(env) {
   // either's edge only where it is the world's own)? A box's always is.
   function residentBox(min, max) {
     const g = env.getSim().g;
-    if (!g.windowed) return true;
+    if (!kindOfGrid(g).streamed) return true;
     const o = origin(), world = env.getSim().world;
     const x0 = min.x - RESIDENT_MARGIN, x1 = max.x + RESIDENT_MARGIN, z0 = min.z - RESIDENT_MARGIN, z1 = max.z + RESIDENT_MARGIN;
     const side = (lo, hi, at, n, size) => (lo >= at || at <= 0) && (hi < at + n || (!!size && at + n >= size));
     return side(x0, x1, o.x, g.nx, world?.[0]) && side(z0, z1, o.z, g.nz, world?.[2]) && !!cells?.knows(Math.floor(x0), Math.floor(z0), Math.floor(x1), Math.floor(z1));
   }
   const rmin = new THREE.Vector3(), rmax = new THREE.Vector3();
-  const resident = (v) => !env.getSim().g.windowed || (boxWorld(v, rmin, rmax), residentBox(rmin, rmax));
+  const resident = (v) => !kindOfGrid(env.getSim().g).streamed || (boxWorld(v, rmin, rmax), residentBox(rmin, rmax));
   // Park a World's vehicle outside the window, or bring it back: a parked body
   // is out of Rapier's step (its velocities kept for when it comes back) and unseen.
   function park(v, on) {
@@ -533,7 +534,7 @@ export function createVehicles(env) {
     }
     syncHomes();
     // a moved World window's copy at once, while there are vehicles: a driven one can't wait for the cells ahead
-    cells.update(dt, g.windowed && homes.size > 0);
+    cells.update(dt, kindOfGrid(g).streamed && homes.size > 0);
     if (!cells.ready) return;
     for (const h of homes.values()) {
       if (h.vehicle || h.placement?.consumed) continue;

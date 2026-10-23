@@ -17,7 +17,7 @@ const mp = {
     let session = 0, map = '', warp = 0, forceCatchup = false, backdrop = 0;
     const metadata = () => {
       const sim = app.sim, win = app.win, p = app.pov;
-      if (!sim || !win) return null; // retain the legacy box wire format and editing compatibility
+      if (!sim || !app.mapKind.streamed) return null; // retain the legacy box wire format and editing compatibility
       const focus = p?.active && p.player ? p.player.pos.clone().add(sim.origin).toArray()
         : [app.controls.target.x / app.scale + app.anchor.x, 0, app.controls.target.z / app.scale + app.anchor.y];
       if (!p?.active) focus[1] = win ? win.scene.ground(focus[0], focus[2], win.P) + 1 : sim.g.ny / 2;
@@ -30,13 +30,13 @@ const mp = {
     app.mp = createMultiplayer({
       gpu: app.gpu, scene: app.scene, camera: app.camera, hud: app.hud,
       getSim: () => app.sim, getVolume: () => app.volume, setGrid: app.setGrid,
-      inWorld: () => !!app.win, score: () => app.scoreboard.mine, getMetadata: metadata,
-      // Intentional (gamemode: team modes are built for their own maps; user decision 2026-10-20): a big map is hosted in Sandbox only
-      canHost: () => !app.win || app.gamemode === 'sandbox', canStream: () => !app.win || app.win.loaded, avatars,
+      mapKind: () => app.mapKind, score: () => app.scoreboard.mine, getMetadata: metadata,
+      // a big map is hosted in Sandbox only (mapKind.js coopSandboxOnly)
+      canHost: () => !app.mapKind.coopSandboxOnly || app.gamemode === 'sandbox', canStream: () => !app.mapKind.streamed || app.win.loaded, avatars,
       sessionChanged(role) {
         session++; map = ''; warp++;
         app.pov?.exit(true); app.pov?.worldReplaced();
-        if (role === 'guest' && app.win) app.win.epoch++; // cancel outstanding local generator work
+        if (role === 'guest' && app.mapKind.streamed) app.win.epoch++; // cancel outstanding local generator work
       },
       commitFrame(meta, bytes) {
         // a box host's frame: the sea past the walls where its water reaches them (app.js boxSeaFrom)
@@ -48,7 +48,7 @@ const mp = {
         app.placeVolume();
         app.pov?.windowShifted(meta.origin[0] - old.x, meta.origin[2] - old.z);
         // Backdrop only, after the paired unpack write. Never refill replica cells.
-        if (app.win && (replaced || moved)) {
+        if (app.mapKind.streamed && (replaced || moved)) {
           const win = app.win, token = ++backdrop;
           win.loaded = true;
           queueMicrotask(() => win.whenReady().then(() => {

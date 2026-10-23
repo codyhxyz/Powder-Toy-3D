@@ -18,7 +18,8 @@ import { stateLayout } from './shaders/common.js';
 import { uniformStruct } from './gpu/params.js';
 import { fold } from './gpu/kernels.js';
 import { TOOLS, PROP_TOOL, isDecoTool } from './elements.js';
-import { GRAV, EDGE, SIM_MODE_DEFAULTS } from './simModes.js';
+import { GRAV, SIM_MODE_DEFAULTS } from './simModes.js';
+import { kindOfGrid } from './mapKind.js';
 import { PHYS } from './physics.js';
 
 // The simulation's host on the GPU (docs/webgpu.md C, D): Physics V2 steps it (src/v2/physics.js, the
@@ -402,8 +403,8 @@ export class Simulation {
   // physgun read it too, so they float as TPT's stickman does, STKM.cpp)
   get gravity() { return this._gravityMode === GRAV.OFF ? 0 : this._gravity; }
   set gravity(v) { if (v !== this._gravity) { this._gravity = v; this.wake(); } }
-  // Simulation modes (src/simModes.js). World's window keeps solid edges:
-  // its edge is the store's boundary, not the world's.
+  // Simulation modes (src/simModes.js). A big map's window keeps solid edges:
+  // its edge is the store's boundary, not the world's (mapKind.js edgeMode).
   get gravityMode() { return this._gravityMode; }
   set gravityMode(v) { this._setMode('_gravityMode', v); }
   get airMode() { return this._airMode; }
@@ -411,7 +412,7 @@ export class Simulation {
   get ambientHeat() { return this._ambientHeat; }
   set ambientHeat(v) { this._setMode('_ambientHeat', v); }
   get edgeMode() { return this._edgeMode; }
-  set edgeMode(v) { this._setMode('_edgeMode', this.g.windowed ? EDGE.SOLID : v); }
+  set edgeMode(v) { this._setMode('_edgeMode', kindOfGrid(this.g).edgeMode ?? v); }
   // A mode change wakes the world (V2 reads the modes at its next tick: v2/physics.js _noteModes).
   _setMode(key, v) {
     if (v === this[key]) return;

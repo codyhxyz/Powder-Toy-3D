@@ -208,7 +208,7 @@ test('actual App WORLD thumbnail hook executes own-camera queue, readback, unpre
   let image;const out={dataset:{},getContext:()=>({createImageData:()=>({data:new Uint8ClampedArray(4)}),putImageData:i=>image=i})};
   const result=run(0,out);assert.deepEqual(events,['queue']);assert.notEqual(job.view.camera,camera);assert.equal(job.view.camera.children.length,0);assert.equal(job.view.curved,false);assert.equal(job.view.values.cam[0],20,'detached thumbnail retains POV rig world pose');
   gate.resolve(true);assert.equal(await result,true);assert.deepEqual(events,['queue','read','fence','destroy']);assert.equal(out.dataset.rendered,'1');assert.deepEqual([...image.data],[40,20,10,128]);
-  assert.match(extract(source,'renderThumb'),/if\(win\)return renderWorldThumb\(viewId,out\)/);
+  assert.match(extract(source,'renderThumb'),/if\(mapKind\.worldRenderer\)return renderWorldThumb\(viewId,out\)/);
   presentation.dispose();
 });
 

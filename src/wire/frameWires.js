@@ -6,8 +6,8 @@
 // on big maps and small maps alike.
 //
 // A wire that must act differently on a big map decides inside its own hook
-// (`app.win?.render` is the WORLD renderer owning the frame), with an
-// `// Intentional (...)` comment saying why: never by one frame path leaving
+// (its row in src/mapKind.js, `app.mapKind.<row>`; `app.win?.render` is the WORLD
+// renderer owning the frame, with an `// Intentional (...)` comment saying why): never by one frame path leaving
 // the hook out. Hand-picked calls like `wire('rays').beforeView(ctx)` were how
 // the far field, the held tool's device check and every `before` scene hook
 // silently skipped big maps (2026-10-23). tools/check-frame-wires.mjs fails

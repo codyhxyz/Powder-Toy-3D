@@ -57,7 +57,7 @@ console.log('ok native section: round trip, bounds, lying counts, newer builds f
   const slice = (from, to) => { const a = app.indexOf(from); const b = app.indexOf(to, a); assert.ok(a >= 0 && b > a, `app.js: ${from}`); return app.slice(a, b); };
   const construct = slice('  sim = new Simulation(gpu, nx, ny, nz,', '  derived = new Derived(sim);');
   const built = new Function('physicsModeArg', 'mp', `
-    let physicsMode = physicsModeArg, physicsV2 = null, sim = null, worldMode = null; const gpu = {}, nx = 64, ny = 64, nz = 64, made = [];
+    let physicsMode = physicsModeArg, physicsV2 = null, sim = null, worldMode = null, mapKind = { streamed: false }; const gpu = {}, nx = 64, ny = 64, nz = 64, made = [];
     class Simulation { constructor(...a) { this.opts = a[4]; this.prepareNative = () => Promise.resolve(); } }
     const V2mod = { PhysicsV2: class { constructor(s) { made.push(s); } }, options: {} }, wakeLoop = () => {};
     ${construct}

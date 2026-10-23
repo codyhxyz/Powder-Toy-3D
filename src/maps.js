@@ -20,6 +20,7 @@
 //   defaultView optional authored shader, overriding the gamemode's starting view
 import terrainRoute from './world/scenes/descent/terrainRoute.json' with { type: 'json' };
 import { createFold } from './world/scenes/descent/terrainFold.js';
+import { kindOfMap } from './mapKind.js';
 
 export const WORLD_DIMS = [1024, 128, 1024];   // shaders/far.js WORLD_SIZE (app.js checks)
 // Intentional (gamemode: team modes are built for their own maps; user decision 2026-10-20): only the
@@ -112,7 +113,7 @@ export function resolveMode(map, mode = 'sandbox') {
   return m && (mode === 'sandbox' || eligible(map, mode)) ? m : GAMEMODES[0];
 }
 export const mapsFor = (mode) => (mode === 'sandbox' ? MAPS : MAPS.filter((m) => eligible(m, mode)));
-export const isWorld = (m) => !m.preset;
+export const isWorld = (m) => kindOfMap(m).streamed;   // (a big map: mapKind.js)
 export function mapPreviewUrl(key) {
   const map = mapByKey(key), revision = map?.previewVersion;
   return `/maps/${map?.key ?? key}.webp${revision ? `?v=${revision}` : ''}`;
@@ -132,7 +133,7 @@ export function mapOf({ size, preset, scene }) {
 // '128^3' (a caret, not a superscript ³: too small to read on a tag), '256×96×128', '1024×1024' (a world: its footprint, when its height is a box's), '1024×384×1024'
 export function sizeTag(m) {
   const [x, y, z] = m.dims;
-  if (isWorld(m) && y === WORLD_DIMS[1]) return `${x}×${z}`;
+  if (kindOfMap(m).footprintTag && y === WORLD_DIMS[1]) return `${x}×${z}`;
   return x === y && y === z ? `${x}^3` : `${x}×${y}×${z}`;
 }
 

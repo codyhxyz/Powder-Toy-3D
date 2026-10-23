@@ -13,12 +13,17 @@
 //      (dispatch it through frameWires.js, both paths) nor a SHARED one below;
 //   4. a wire or app.js skips the WORLD renderer's frame (`win?.render`)
 //      without an `// Intentional (...)` comment saying why (CLAUDE.md, the
-//      same-features-every-map rule).
+//      same-features-every-map rule);
+//   5. code tests big map vs small map itself (`!win`, `app.win ?`,
+//      `worldMode &&`, `g.windowed ?`, `isWorld(m)`, `inWorld()`) instead of
+//      reading its row in src/mapKind.js, the one table of every difference;
+//      or a row there is read nowhere.
 // Usage: node tools/check-frame-wires.mjs
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FRAME_HOOKS, FRAME_DISPATCH } from '../src/wire/frameWires.js';
+import { SMALL_MAP, BIG_MAP } from '../src/mapKind.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const read = (p) => readFileSync(join(root, p), 'utf8');
@@ -117,8 +122,42 @@ for (const p of ['src/app.js', ...[...jsFiles('src/wire')].filter((f) => !/world
   });
 }
 
+// 5. Big vs small is read from src/mapKind.js, never tested ad hoc. A kind test is the window
+// (`win`, app.js's own; `app.win`, `ctx.win` anywhere), `worldMode`, a grid's `g.windowed`,
+// `isWorld(m)` or `inWorld()` used as a yes/no: `!x`, `x ?`, `x &&`, `&& x`, `x ||`, `if (x)`.
+// Using the window (`win.size`, `win?.far`) or comparing it (`app.win !== world`) is not one;
+// neither is a local `win` held from app.win (it is the window, already known to be there).
+// The kind itself is decided in app.js build() (worldMode, then `mapKind = kindOf(...)`) and
+// passed to kindOf / kindOfGrid; those are not tests either.
+const KIND_SKIP = /^src\/(mapKind\.js|shaders\/|world\/|wire\/worldRender(Frame)?\.js|gfx\/worldVolume\.js)/;
+const subjects = (own) => String.raw`(?:${own ? String.raw`(?<![\w.$])(?:win|worldMode)|` : ''}\b(?:app|ctx)\.(?:win|worldMode)|\bg\??\.windowed)`;
+const kindTest = (own) => {
+  const W = subjects(own), used = String.raw`(?!\s*(?:\.|\?\.|\[|[!=]==?))`;
+  return new RegExp(String.raw`!+\s*${W}\b${used}|(?<![!=]=\s*)${W}\b\s*(?:\?(?![.?])|&&|\|\|)|(?:&&|\|\|)\s*${W}\b${used}|\bif\s*\(\s*${W}\s*\)|\bisWorld\(|\binWorld\(`);
+};
+const decided = (src) => {   // app.js build()'s lines that decide the kind
+  const lines = src.split('\n'), from = lines.findIndex((l) => l.includes('worldMode = replicaMap')), to = lines.findIndex((l) => /^\s+mapKind = kindOf\(/.test(l));
+  return from < 0 || to < from ? null : [from, to];
+};
+const rowsRead = new Set();
+for (const p of jsFiles('src')) {
+  if (p === join('src', 'mapKind.js')) continue;
+  const src = read(p);
+  for (const k of Object.keys(SMALL_MAP)) if (new RegExp(`\\.${k}\\b`).test(src)) rowsRead.add(k);
+  if (KIND_SKIP.test(p) || (p === join('src', 'maps.js'))) continue;
+  const own = p === join('src', 'app.js'), test = kindTest(own), span = own ? decided(src) : null;
+  if (own && !span) fail('src/app.js: build()\'s kind decision (worldMode = replicaMap ... mapKind = kindOf(...)) was not found (update tools/check-frame-wires.mjs)');
+  src.split('\n').forEach((line, i) => {
+    if (/^\s*(\/\/|\*|\/\*)/.test(line) || (span && i >= span[0] && i <= span[1])) return;
+    const code = line.replace(/\/\/.*$/, '').replace(/\bkindOf(Grid)?\([^)]*\)/g, '');
+    if (test.test(code)) fail(`${p}:${i + 1}: a big/small map test of its own; read its row in src/mapKind.js (app.mapKind.<row>, kindOf / kindOfGrid / kindOfMap), adding the row there with why it differs`);
+  });
+}
+for (const k of Object.keys(SMALL_MAP)) if (!rowsRead.has(k)) fail(`src/mapKind.js: the row ${k} is read nowhere in src; drop it or read it where the maps differ`);
+if (Object.keys(BIG_MAP).join() !== Object.keys(SMALL_MAP).join()) fail('src/mapKind.js: SMALL_MAP and BIG_MAP have different rows');
+
 if (failures.length) {
   console.error(`check-frame-wires: ${failures.length} problem(s): big maps and small maps must run the same wire hooks\n  ${failures.join('\n  ')}`);
   process.exit(1);
 }
-console.log(`check-frame-wires: both frame paths call ${FRAME_DISPATCH.join(', ')}; no hand-picked hook calls; every big-map skip is Intentional`);
+console.log(`check-frame-wires: both frame paths call ${FRAME_DISPATCH.join(', ')}; no hand-picked hook calls; every big-map skip is Intentional; big vs small is read from src/mapKind.js (${Object.keys(SMALL_MAP).length} rows)`);

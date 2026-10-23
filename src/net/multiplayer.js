@@ -9,6 +9,7 @@ import { sessionToken } from '../account.js';
 import { h } from '../ui/dom.js';
 import './net.css';
 import { stamp, validPose, leash, NET_VERSION, MIN_GUEST_VERSION, UPDATE_GAME } from './protocol.js';
+import { SMALL_MAP } from '../mapKind.js';
 
 // Multiplayer: one player hosts and runs the simulation; guests see the
 // host's world (streamed, ~100 ms behind) from their own camera, send paint
@@ -73,13 +74,13 @@ const sameDims = (g, dims) => g.nx === dims[0] && g.ny === dims[1] && g.nz === d
 // app hooks:
 //   getSim(), getVolume()   current simulation and volume mesh (both are rebuilt on grid size changes)
 //   setGrid(dims, metadata) rebuild only when the received map changes; false if unsupported
-//   inWorld()               the grid is World's host-led window (docs/scaling.md D11)
+//   mapKind()               what differs on this map, small or big (src/mapKind.js: co-op's rows)
 //   score()                 your [kills, deaths] on the scoreboard (the host sends its own to the guests)
 //   commitFrame(meta, bytes) a guest's frame landed: the host's metadata (null for a box) and its
 //                           cells (codec.js: TEXEL_BYTES a texel in cellTexel order, the element id first)
 // gpu: the device (src/gpu), for the remote cursors' brushes (a pipeline of
 // ours, brush.js); the stream's kernels use each simulation's own.
-export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, setGrid, inWorld = () => false, score = () => null,
+export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, setGrid, mapKind = () => SMALL_MAP, score = () => null,
   getMetadata = () => null, commitFrame = () => {}, canHost = () => true, canStream = () => true, sessionChanged = () => {},
   getPose = () => null, avatars = null, catchUp = () => {},
 }) {
@@ -144,7 +145,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
 
   function end(reason) {
     const wasGuest = role === 'guest' || joiningAs === 'guest';
-    frozen = wasGuest && inWorld();
+    frozen = wasGuest && !mapKind().guestPlaysOn;
     epoch++; worldDirty = false; receivedMeta = committedMeta = null; sentMeta = ''; worldDims = null; lastReceived = 0;
     frames = sending = Promise.resolve(); seq = worldSeq = poseSeq = 0; hostAway = false;
     poses.clear(); avatars?.clear(); sessionChanged('solo');
@@ -467,7 +468,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
     panelTitle.textContent = role === 'solo' ? 'Connecting…' : hosting ? 'Hosting this world' : 'In the host\'s world';
     panelCount.textContent = role === 'solo' ? '' : `${guests + 1} ${guests ? 'players' : 'player'}`;
     stopBtn.textContent = hosting ? 'Stop hosting' : 'Leave';
-    stopBtn.title = hosting ? 'Disconnect every guest and play on your own' : inWorld() ? 'Disconnect; reload or choose a map to play solo' : 'Keep this world and play on your own';
+    stopBtn.title = hosting ? 'Disconnect every guest and play on your own' : mapKind().guestPlaysOn ? 'Keep this world and play on your own' : 'Disconnect; reload or choose a map to play solo';
     copyBtn.disabled = !room;
     const everyone = me ? [{ ...me, you: true }, ...peers.values()] : [];
     everyone.sort((a, b) => (a.role === 'host' ? -1 : b.role === 'host' ? 1 : a.n - b.n));
@@ -518,7 +519,7 @@ export function createMultiplayer({ gpu, scene, camera, hud, getSim, getVolume, 
 
     guardEntities() {
       if (role === 'solo' && !frozen && joiningAs !== 'guest') return false;
-      if (role === 'host' && !inWorld()) return false;
+      if (role === 'host' && mapKind().coopEntities) return false;
       hud.toast('Co-op shares terrain and exploring bodies, not signs, decoration, NPCs or vehicles.');
       return true;
     },

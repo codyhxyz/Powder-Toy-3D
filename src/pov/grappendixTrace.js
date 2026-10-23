@@ -5,6 +5,7 @@ import { TRACE, TRACE_MISS, TRACE_ROUND } from '../shaders/povTrace.js';
 import { decodeBrick, BRICK_FLOATS } from '../world/store.js';
 import { voxelWalk } from './grid.js';
 import { povGpu } from './gpu.js';
+import { kindOfGrid } from '../mapKind.js';
 
 const stops = id => id < 0 || (id !== E.EMPTY && ELEMENTS[id]?.kind !== K.GAS);
 export const grappleResident = (g, cell) => cell.x >= 0 && cell.x < g.nx && cell.y >= 0 && cell.y < g.ny && cell.z >= 0 && cell.z < g.nz;
@@ -40,10 +41,10 @@ export async function traceGrappendix(sim, world, eye, dir, range) {
   ends[0] = [...eye.clone().addScaledVector(dir, range), 0];
   const read = povGpu(sim).probe('povTrace', { starts, ends });
   if (!read) return null; // kernels not ready: do not bypass unknown live cells
-  const farCell = sim.g.windowed ? grappleFarCells(world) : null;
+  const streamed = kindOfGrid(sim.g).streamed, farCell = streamed ? grappleFarCells(world) : null;
   const origin = sim.origin?.clone() ?? new THREE.Vector3();
   let far = null, knownDistance = range;
-  if (sim.g.windowed) {
+  if (streamed) {
     voxelWalk(eye, dir, range, (x, y, z, dist, axis, step) => {
       if (grappleResident(sim.g, { x, y, z })) return;
       // Above the open top is known air even without a CPU source.

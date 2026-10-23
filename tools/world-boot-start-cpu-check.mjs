@@ -33,7 +33,7 @@ const lazy = keys(body(sim, 'this._lazy = {'));
 
 test("the step kernels (V2's grid passes) build behind the World load on a big map", () => {
   assert.doesNotMatch(sim, /this\.kernels = \{/, "sim.js builds no step kernels (V1's went with V1)");
-  assert.match(physics, /build: sim\.g\.windowed \? 'later' : 'now', first: LONG_POLES\.has\(k\.name\)/, "a window's are `later`, long poles first");
+  assert.match(physics, /build: kindOfGrid\(sim\.g\)\.stepKernelsLater \? 'later' : 'now', first: LONG_POLES\.has\(k\.name\)/, "a window's are `later`, long poles first");
 });
 
 test("a world's load waits for its window's passes and the blank state's, never a step kernel", () => {
@@ -58,22 +58,22 @@ test("a world's load waits for its window's passes and the blank state's, never 
 
 test('the app loads a big map outside the simulation-ready wait, and ticks render-only meanwhile', () => {
   const preset = body(app, 'function loadPreset(name, undoable = true) {');
-  const call = preset.indexOf("if (win && !mp.replica) wire('world').loadScene(ctx);");
+  const call = preset.indexOf("if (!mapKind.presets && !mp.replica) wire('world').loadScene(ctx);");
   assert.ok(call >= 0 && call < preset.indexOf('whenSimReady('), 'loadScene is called before, not inside, whenSimReady');
   assert.equal(preset.match(/loadScene\(ctx\)/g).length, 1);
   const build = body(app, 'function build(savedWorldSize = null) {');
   const draw = /const draw = \[([^\n]*)\n([^\n]*)\];/.exec(build);
   assert.ok(draw, 'the frame draw set');
   assert.doesNotMatch(draw[0], /\bs\.ready\b/, 'a big map draws without the step kernels');
-  assert.match(build, /worldDrawWait = worldMode \? Promise\.all\(draw\) : core;/);
-  assert.match(build, /if \(worldMode\) worldDrawWait\.then\(/);
+  assert.match(build, /worldDrawWait = mapKind\.stepKernelsLater \? Promise\.all\(draw\) : core;/);
+  assert.match(build, /if \(mapKind\.stepKernelsLater\) worldDrawWait\.then\(/);
   // the boot starts the loop on that set (not coreWait), and its loading screen stays till both
   const boot = app.slice(app.indexOf("launch.progress?.('compile');"));
   assert.ok(boot.indexOf('await worldDrawWait;') >= 0 && boot.indexOf('await worldDrawWait;') < boot.indexOf('loop.start();'));
   assert.doesNotMatch(boot.slice(0, boot.indexOf('loop.start();')), /await coreWait;\n\s*if \(graphicsFailure\) throw graphicsFailure;\n\s*window\.__app/);
-  assert.match(body(app, 'function bootReady(pending = null) {'), /if\(win&&\(!win\.renderFrame\?\.driver\?\.displayedMainFrame\|\|!coreReady\)\)\{/);
+  assert.match(body(app, 'function bootReady(pending = null) {'), /if\(mapKind\.worldRenderer&&\(!win\.renderFrame\?\.driver\?\.displayedMainFrame\|\|!coreReady\)\)\{/);
   const tick = body(app, 'function tick(now, renderOnly = false) {');
-  assert.match(tick, /if \(!coreReady && !\(win && worldDrawReady\)\) return false;/);
+  assert.match(tick, /if \(!coreReady && !\(mapKind\.stepKernelsLater && worldDrawReady\)\) return false;/);
   assert.match(tick, /const simPending = !coreReady;\n\s*renderOnly \|\|= simPending;/);
   assert.match(tick, /\(!renderOnly \|\| ctx\.descent\?\.terrainPending \|\| simPending\) && \(gpu\.inFlight/, 'still paced');
   assert.match(tick, /if \(!ctx\.descent\?\.terrainPending && !simPending\) for \(const w of live\)/, 'no afterStep hook before the simulation is ready');

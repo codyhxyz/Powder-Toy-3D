@@ -6,6 +6,7 @@ import { rayTarget, targetById, PLAYER } from './targets.js';
 import { povEvents } from './events.js';
 import { GRAPPENDIX_RANGE, GRAPPENDIX_MAX_CABLE } from './grappendixPhysics.js';
 import { traceGrappendix, grappleResident, grappleFarCells } from './grappendixTrace.js';
+import { kindOfGrid } from '../mapKind.js';
 
 // weapon.gd's toggle and Player.gd's force, with adapted range (docs/grappendix.md).
 // The original visual is four pulsating flesh orbs per meter, not a hemp rope or a flying claw.
@@ -101,7 +102,7 @@ export function createGrappendix(env) {
     }
     else if (!checking && cell.y >= 0) {
       const resident = grappleResident(sim.g, cell);
-      if (!resident && sim.g.windowed) {
+      if (!resident && kindOfGrid(sim.g).streamed) {
         const far = grappleFarCells(world);
         if (far && !solid(far(cell.x + sim.origin.x, cell.y, cell.z + sim.origin.z))) { release('tear'); return; }
       }

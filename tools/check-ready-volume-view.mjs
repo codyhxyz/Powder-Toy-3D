@@ -1,5 +1,6 @@
 // CPU-only regression for uninterrupted live-window terrain on material switches.
 import assert from 'node:assert/strict';
+import { SMALL_MAP } from '../src/mapKind.js';
 import { readFileSync } from 'node:fs';
 import { Matrix4, PerspectiveCamera, Vector3 } from 'three/webgpu';
 import { createReadyVolumeView } from '../src/gfx/readyVolumeView.js';
@@ -82,12 +83,13 @@ const gpu = { _frameUniforms: {
 } };
 const camera = new PerspectiveCamera();
 const runtime = new Function('helpers', `
-  const { createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows, writeFrameUniforms, vol, far, gpu, camera, Matrix4, Vector3 } = helpers;
+  const { createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows, writeFrameUniforms, vol, far, gpu, camera, Matrix4, Vector3, SMALL_MAP } = helpers;
   const settings = { view: 6 }, readyVolumeView = createReadyVolumeView();
   let volumeFormat;
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', resets = 0, volumeFirst = false, volumeDrawn = false;
   let hybrid=null;
   const blocks = null, blocksOn = false, testNoVolume = false, win = { far }, worldMode = null;
+  const mapKind = { ...SMALL_MAP, boxFrame: false };   // (a box view with a far field in front: no floor grid, as \`win\` hid it)
   const post = { reset() { resets++; } }, meshFrames = { drop() {} }, sim = { g: {}, resetGI() {} };
   const frameWires = { lighting() {}, beforeView() {}, compute() {}, sceneBelow() {}, sceneAbove() {}, overlay() {}, hasOverlay: false }, brush = { draw() {} };
   const ctx = { get renderView() { return renderView; } };
@@ -109,7 +111,7 @@ const runtime = new Function('helpers', `
     return { draw: vol.lastDraw, volumeDrawn, renderView, contextView: ctx.renderView, resets };
   } };
 `)({ createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows, writeFrameUniforms,
-  vol: fakeVolume, far, gpu, camera, Matrix4, Vector3 });
+  vol: fakeVolume, far, gpu, camera, Matrix4, Vector3, SMALL_MAP });
 function check(expected, detail = {}) {
   const f = runtime.frame(detail);
   assert.equal(far.lastOcclusion,true,'legacy local opaque coverage exists before far ownership clipping');
@@ -182,7 +184,7 @@ const settlingVolume = {
 };
 const paused = new Function('helpers', `
   const { createReadyVolumeView, createPacer, canPostFrame, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows,
-    writeFrameUniforms, Matrix4, Vector3, camera, gpu, vol } = helpers;
+    writeFrameUniforms, Matrix4, Vector3, camera, gpu, vol, SMALL_MAP } = helpers;
   const settings = { view: 6, paused: true }, readyVolumeView = createReadyVolumeView();
   const hybrid=null;
   const pacer = createPacer({ derivedSettle: 3, viewSettle: 2 });
@@ -190,7 +192,7 @@ const paused = new Function('helpers', `
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', frameDerived = false, gi = 1;
   const events = [], blocks = null, blocksOn = false, live = [];
   const frameWires = { lighting() {}, beforeView() {}, compute() {}, sceneBelow() {}, sceneAbove() {}, overlay() {}, hasOverlay: false };
-  const win = null, worldMode = null;
+  const win = null, worldMode = null, mapKind = SMALL_MAP;
   const post = { settings: { cruelty: false }, renderScale: 1, reset() { events.push('post.reset'); } };
   const meshFrames = { drop() {} }, prof = { phase() {} };
   const sim = { id: 1, version: 1, g: { nx: 32, ny: 32, nz: 32 },
@@ -231,7 +233,7 @@ const paused = new Function('helpers', `
     return { runDerived, runView, renderView, gi, events: [...events], settled: pacer.settled, postOnlyEligible };
   } };
 `)({ createReadyVolumeView, createPacer, canPostFrame, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows,
-  writeFrameUniforms, Matrix4, Vector3, camera, gpu, vol: settlingVolume });
+  writeFrameUniforms, Matrix4, Vector3, camera, gpu, vol: settlingVolume, SMALL_MAP });
 for (let i = 0; i < 12; i++) paused.tick();
 let settled = paused.tick();
 assert(settled.settled && !settled.runDerived && !settled.runView);

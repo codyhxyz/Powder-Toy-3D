@@ -26,7 +26,8 @@
 // Start, makes a new one.
 import { BODY_MODEL_URL } from './pov/bodyModel.js';
 import { launch, physicsEngine } from './launch.js';
-import { mapByKey, isWorld, resolveMode } from './maps.js';
+import { mapByKey, resolveMode } from './maps.js';
+import { kindOfMap, kindOfGrid } from './mapKind.js';
 import { refreshBootFiles } from './bootRecovery.js';
 import { sceneByKey } from './world/scenes/index.js';
 
@@ -157,7 +158,7 @@ export function warmMap(key, mode = 'sandbox') {
 
 // The grid a map's session simulates: a box's own, or a world's window over it.
 function gridOf(m) {
-  const windowed = isWorld(m);
+  const windowed = kindOfMap(m).streamed;
   const dims = windowed ? [WORLD_WINDOW[0], m.dims[1], WORLD_WINDOW[1]] : m.dims;
   return { dims, windowed, world: windowed ? m.dims : null, key: `${dims.join('x')}${windowed ? 'w' : ''}`,
     sourceAppearance: windowed && !!sceneByKey(m.scene).importManifest?.appearance };
@@ -207,7 +208,7 @@ async function startWarmer() {
       ? gpu.renderPipeline({ ...desc, vertex: e.vertex, fragment: e.fragment, primitive: e.primitive, depthStencil: e.depthStencil, multisample: e.multisample })
       : gpu.kernel({ ...desc, entry: e.entry, workgroupSize: e.workgroupSize }));
   };
-  const inSession = (e, g) => !e.tool && e.warm !== false && (!e.windowed || g.windowed);
+  const inSession = (e, g) => !e.tool && e.warm !== false && (!e.windowed || kindOfGrid(g).streamed);
   const listed = (mod) => (typeof mod.WGSL_CHECK === 'function' ? mod.WGSL_CHECK() : mod.WGSL_CHECK);
   // sim.editKernel's two-phase writers (reads 'neighbours': TPT's Mix) have a
   // second entry point, `apply`, that the game builds as '<name> apply'

@@ -6,6 +6,7 @@ import { gfxUniforms } from '../gfx/uniforms.js';
 import { dayPhase } from '../gfx/daylight.js';
 import { CELL_M } from '../scale.js';
 import { isMaterialView } from '../views.js';
+import { BOX_SEA_LEVEL } from '../mapKind.js';
 
 export const weather = createWeather();
 const eye = new THREE.Vector3();
@@ -16,8 +17,7 @@ let clock = 0, world = null, epoch = -1, simulation = null;
 // Weather runs on every map, a box's as a world's (CLAUDE.md "Same features in
 // every world"): its clouds and rain are real elements in the top of whatever
 // grid is simulated.
-const BOX_SEA_LEVEL = 0;   // cells: a box has no sea of its own here, so the cloud band sits under its lid (elementWeather.js)
-const enabled = app => (!app.win || app.win.loaded) && !app.mp.isGuest && !app.mp.replica;
+const enabled = app => (!app.mapKind.streamed || app.win.loaded) && !app.mp.isGuest && !app.mp.replica;
 function reset(app) {
   // Map lifecycle only. Clear/Stop sources calls weather.reset directly and
   // must not discharge surviving storm clouds.
@@ -50,7 +50,7 @@ const wire = {
     weather.update(clock += 1 / hz);
     app.elementWeather.step(weather.state, {
       sim: app.sim, world: app.win, advancing: true, host: true, stepHz: hz,
-      enabled: true, seaLevel: app.win ? app.win.P.sea : BOX_SEA_LEVEL,
+      enabled: true, seaLevel: app.mapKind.seaLevel ?? app.win.P.sea,   // (a box's: BOX_SEA_LEVEL, under its lid)
     });
   },
   afterStep(app) {

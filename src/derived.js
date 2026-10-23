@@ -20,6 +20,7 @@ import { createMediaNoise } from './gfx/mediaNoise.js';
 import { GI_BLEND } from './sim.js';
 import { Occupancy } from './shaders/occupancy.js';
 import { nativeBrickAirWGSL, NATIVE_BRICK_AIR_LAYOUT } from './shaders/v2/viewAir.js';
+import { kindOfGrid } from './mapKind.js';
 
 // The derived passes (docs/webgpu.md E): what the renderer reads of the
 // simulation, rebuilt from its state once per derived frame, in the open
@@ -232,7 +233,7 @@ export class Derived {
       giShift: () => kernel('giShift', giShiftFrag(g), E, L.GI_SHIFT, GiShiftParams),
       brickBits: () => kernel('brickBits', brickBitsFrag(g), E, L.PAIR),
     };
-    if (g.windowed) this.prepare('shift');
+    if (kindOfGrid(g).streamed) this.prepare('shift');
     // (a world's grid moves: its shift's kernels are part of what it waits for)
     this.ready = Promise.all([...Object.values(this.kernels), ...Object.values(this.passes)].map((k) => k.ready)).then(() => this);
 

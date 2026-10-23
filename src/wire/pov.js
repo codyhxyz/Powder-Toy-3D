@@ -39,11 +39,11 @@ const pov = {
       getArena: () => app.arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
       // Tinker Creek's Animal Crossing: you start in front of your cottage (pov/village/state.js);
       // a Descent level: you start (and respawn) at its spawn
-      dropAt: () => app.settings.preset === 'quarry' && !app.win ? new Vector3(...QUARRY_SPAWN) : app.villageSpawn() ?? app.descentSpawn?.(),
+      dropAt: () => app.settings.preset === 'quarry' && app.mapKind.presets ? new Vector3(...QUARRY_SPAWN) : app.villageSpawn() ?? app.descentSpawn?.(),
       getMode: () => app.gamemode, getWorld: () => app.win,   // the village switches on in Animal Crossing on Tinker Creek
       withVillageFocus: (at, valid, visit) => app.withVillageFocus(at, valid, visit),
       requestRender: () => app.requestRender(),
-      inWorld: () => !!app.win,
+      mapKind: () => app.mapKind,
       gamemode: () => app.gamemode,   // Noita's rules (wands only) are its gamemode's, not Descent's: Sandbox there has the tools
       industryBuilding: () => !!app.industry?.building,
       toolGun: app.toolGun,   // the tool gun's click at the crosshair

@@ -44,6 +44,7 @@ import { preparePov, volumeLight } from './gpu.js';
 import { leash } from '../net/protocol.js';
 import { createVillage } from './village/index.js';
 import { gridSpace } from './space.js';
+import { SMALL_MAP, kindOfGrid } from '../mapKind.js';
 
 // First-person (POV) mode: drop into the world with V (Garry's Mod's noclip
 // key; F drops in too), walk around in it, pop back out to the god view's
@@ -104,10 +105,11 @@ const PASS_KEYS = new Set(['Escape', '?', ',', 'F2']);
 
 // app = { renderer, scene, camera, controls, canvas, hud, settings, mp, isTyping, post (gfx/post.js: night vision),
 //         getSim, getVolume, getScale, hover, pointerHover (() => bool), pickRay (ro, rd → Promise<hit>),
-//         requestRender, inWorld (() => bool: the grid is a window of a larger world, docs/scaling.md D11),
+//         requestRender, mapKind (() => what differs on this map, small or big: src/mapKind.js),
 //         showToolsMenu (the palette's first-person tools brought into view: Q), hideToolsMenu (Q closed) }
 export function createPov(app) {
   const { renderer, scene, camera, controls, canvas, hud } = app;
+  const mapKind = () => app.mapKind?.() ?? SMALL_MAP;
   const createPlayer = playerModule?.createPlayer;
   const createToolbelt = toolsModule?.createToolbelt;
 
@@ -227,7 +229,7 @@ export function createPov(app) {
     kick: () => { if (mode === 'on') { if (village.enabled) void village.kick(); else kickQueued = true; } },
     useVehicle,
   });
-  const coop = () => app.mp.replica || (app.inWorld?.() && app.mp.role === 'host');
+  const coop = () => app.mp.replica || (!mapKind().coopEntities && app.mp.role === 'host');
   const coopHint = () => hud.toast('Co-op exploration: walk, jump and jet. Use god view to edit; weapons, vehicles, perks and progression require solo play.');
   const canUse = () => !village.enabled && !coop() && (!mission.engaged || mission.active) && (isLocked() || touch.enabled);
   // Intentional (gamemode: Cruelty Squad, Sandbox): E's grapple is Cruelty Squad's Grappendix (docs/grappendix.md),
@@ -469,7 +471,7 @@ export function createPov(app) {
           hud, viewmodel, handWorld, heldOnBody: () => held.holding !== null,
           getAimCamera: () => povCam.pose.eyeDist <= FIGURE_HIDE_DIST ? camera : null,
           interact,                            // Descent's wand and spell pickups (wands/loot.js)
-          getScene: () => (app.inWorld?.() ? app.settings.scene : null),   // the world scene loaded (Descent levels are world scenes)
+          getScene: () => (mapKind().presets ? null : app.settings.scene),   // the world scene loaded (Descent levels are world scenes)
           getMode: () => app.gamemode?.() ?? 'sandbox',   // the gamemode playing: Noita's wands only in it
           toolGun: app.toolGun,   // the god view's click at the crosshair (app.js), for the tool gun
           isActive: () => live() && !editing && !coop(),
@@ -625,7 +627,7 @@ export function createPov(app) {
     // In a world larger than the grid, the god view comes back over where the
     // body is now, as it was framed over the drop point, not across the world
     // where it went in (the window would have to go all the way back).
-    if (app.inWorld?.() && player) {
+    if (mapKind().streamed && player) {
       const here = vB.copy(player.pos).add(app.getSim().origin);
       const moved = vA.subVectors(here, enteredAt).multiplyScalar(app.getScale());
       saved.pos.add(moved);
@@ -750,7 +752,7 @@ export function createPov(app) {
     }
     if (npcMod) {
       for (const s of homes) {
-        if (npcs.has(s.id) || s.consumed || (g.windowed && !sp.feet(s))) continue;   // (a World spawner outside the window: later)
+        if (npcs.has(s.id) || s.consumed || (kindOfGrid(g).streamed && !sp.feet(s))) continue;   // (a World spawner outside the window: later)
         const spec = {
           env: { renderer, scene, getSim: app.getSim, getVolume: app.getVolume, getScale: app.getScale, ballistics: npcBallistics },
           ai: npcAi, oneShot: s.oneShot,
@@ -1217,7 +1219,7 @@ export function createPov(app) {
     get entitiesPending() {
       const sp = app.getSpawners?.();
       return vehicles.pending || !!sp?.list.some((s) => !s.consumed && (s.oneShot || !game.running) && ENEMY_KINDS.includes(s.kind) && !npcs.has(s.id)
-        && (!app.getSim()?.g.windowed || sp.feet(s)));   // (a World's spawner outside the window waits for it)
+        && (!kindOfGrid(app.getSim()?.g).streamed || sp.feet(s)));   // (a World's spawner outside the window waits for it)
     },
     // the world was replaced (undo, a scene load): tools drop what they carry from the old one
     worldReplaced: () => {
