@@ -99,6 +99,7 @@ export const WORLD_SUPPORT_STAGES=Object.freeze(new Set(['forecast','sun','sourc
 // attempt runs again for them this many times (extend); past that the frame is settled as complete
 // as it can be and accepted, and the next transaction asks again. Before, extend() threw "WORLD scene
 // feedback made no dependency progress" and the big map stopped drawing (Island, live 2026-10-23).
+// An attempt's own unresolved asks (runRetry) that add nothing run it again as many times.
 export const WORLD_IDLE_EXTENDS=2;
 export function worldSourceEligible(i,{requirements,support,ownedSources,reached=null}) {
   return ownedSources.has(i)||requirements.has(i)&&!support.has(i)&&(!reached||reached(i));
@@ -745,7 +746,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
         let feedback;
         try{feedback=await attempt(t);}catch(e){if(e.requirements){feedback={requirements:e.requirements,sun:[],incomplete:true};}else throw e;}
         if(!feedback){t.state='probe-ready';wake();return t.bundle.retain();}
-        if(!add(t,feedback.requirements,feedback.sun,WORLD_SUPPORT_STAGES.has(t.stage)))throw new Error('WORLD unresolved feedback made no dependency progress');
+        if(!add(t,feedback.requirements,feedback.sun,WORLD_SUPPORT_STAGES.has(t.stage))&&(t.idleAttempts=(t.idleAttempts??0)+1)>WORLD_IDLE_EXTENDS)throw new Error('WORLD unresolved feedback made no dependency progress');
       }
       return null;
     }catch(error){rejected(t,error);throw error;}
@@ -813,6 +814,6 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     async dispose(){if(dead)return;dead=true;if(resetWork)await resetWork;if(queued){releaseFrame(queued.frame);queued.resolve(null);queued=null;}const t=active;active=null;if(t){await t.work.catch(()=>{});await retire(t);}await fence();accepted?.bundle.release();accepted?.cut.release();accepted=null;history?.dispose();metadata.dispose();cells.dispose();atlas.dispose();if(win.render===api)delete win.render;}
   };
   function metadataChanges(t){const changes=t.batch.commit();t.batch=null;history.noteChanged(changes.changedBricks,changes.derivedTick);}
-  async function runRetry(t){try{while(active===t&&!dead){let feedback;try{feedback=await attempt(t);}catch(e){if(!e.requirements)throw e;feedback={requirements:e.requirements,sun:[]};}if(!feedback){t.state='probe-ready';wake();return t.bundle.retain();}if(!add(t,feedback.requirements,feedback.sun,WORLD_SUPPORT_STAGES.has(t.stage)))throw new Error('WORLD unresolved feedback made no dependency progress');}return null;}catch(e){rejected(t,e);throw e;}}
+  async function runRetry(t){try{while(active===t&&!dead){let feedback;try{feedback=await attempt(t);}catch(e){if(!e.requirements)throw e;feedback={requirements:e.requirements,sun:[]};}if(!feedback){t.state='probe-ready';wake();return t.bundle.retain();}if(!add(t,feedback.requirements,feedback.sun,WORLD_SUPPORT_STAGES.has(t.stage))&&(t.idleAttempts=(t.idleAttempts??0)+1)>WORLD_IDLE_EXTENDS)throw new Error('WORLD unresolved feedback made no dependency progress');}return null;}catch(e){rejected(t,e);throw e;}}
   win.render=Object.freeze(api);return win.render;
 }

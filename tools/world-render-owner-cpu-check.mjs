@@ -471,4 +471,6 @@ test('extend reruns an attempt for feedback that asks for nothing new, a bounded
   const src=readFileSync(new URL('../src/wire/worldRender.js',import.meta.url),'utf8');
   assert.match(src,/if\(!add\(t,feedback\.requirements,feedback\.sun,false,false,true\)\)\{if\(\(t\.idleExtends\?\?0\)>=WORLD_IDLE_EXTENDS\)throw [^;]*;t\.idleExtends=\(t\.idleExtends\?\?0\)\+1;\}t\.state='building';t\.work=runRetry\(t\);/);
   assert.match(src,/idle:\(t\.idleExtends\?\?0\)>=WORLD_IDLE_EXTENDS/);
+  // (and an attempt's own unresolved asks that add nothing: runRetry runs it again, as many times)
+  assert.equal(src.match(/\(t\.idleAttempts=\(t\.idleAttempts\?\?0\)\+1\)>WORLD_IDLE_EXTENDS\)throw new Error\('WORLD unresolved feedback made no dependency progress'\)/g)?.length,2,'the first run and every retry');
 });
