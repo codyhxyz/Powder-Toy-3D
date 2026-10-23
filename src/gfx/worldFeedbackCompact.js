@@ -7,10 +7,11 @@
 // few thousand set bits, and a frame reads three times (eye, scene, final boundary): 5.3 s of
 // requestedBricks, 1.7 s of copying and 2.5 s of GC in 40 s of Descent (real Chrome, 2026-10-22).
 //
-// The fix is the GPU feedback pattern of virtual texturing and streaming: UE5's Nanite streaming
-// requests (the GPU appends each request to a capped buffer behind an atomic counter; the CPU
-// reads back only that buffer) and id Tech 5's virtual texture feedback (the CPU analyses a small
-// feedback buffer, never the texture's address space). After a frame's readers, one small compute
+// The fix is the GPU feedback pattern of virtual texturing and streaming: UE5's virtual texture
+// feedback buffer and its Nanite streaming requests (the GPU appends each request to a capped
+// buffer behind an atomic count in its first word; the CPU reads back only that buffer), and id
+// Tech 5's virtual texture feedback (the CPU analyses a small feedback buffer, never the texture's
+// address space). After a frame's readers, one small compute
 // pass (worldFeedbackCompactWGSL) appends each non-zero word of the feedback as (word index, word)
 // to a capped list behind an atomic count. Only that list is read back, and the decoder sorts and
 // expands its entries: bytes and work in proportion to the requests. The World view shader is
