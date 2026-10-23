@@ -93,7 +93,8 @@ const win = { sim, gpu, size, wb, epoch: 1, scene: { key: 'tick-repack', glsl: (
   gen: { ready: Promise.resolve(), res: { layout: [], entries: () => [], prepassFor() {} } } };
 const source = new WorldRenderSource(win); win.renderSource = source; sim.worldRenderSource = source;
 const producer = new RawWorldSourceProducer(win, source), atlas = new WorldRenderAtlas(gpu, { worldSize: size });
-const cells = new WorldCellAtlasAdapter({ gpu, source, producer, atlas, tables: sim.tables, worldBounds: { min: [0, 0, 0], max: size } });
+// (unbudgeted: a change's tick whole; tools/world-field-budget-cpu-check.mjs checks the field budget)
+const cells = new WorldCellAtlasAdapter({ gpu, source, producer, atlas, tables: sim.tables, worldBounds: { min: [0, 0, 0], max: size }, fieldBudget: Infinity });
 await cells.ready;
 const book = atlas.bookLayout, brick = (i) => [i % wb[0], Math.floor(i / wb[0]) % wb[1], Math.floor(i / (wb[0] * wb[1]))];
 const ids = new Set();

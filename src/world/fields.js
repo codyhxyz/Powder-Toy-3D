@@ -38,6 +38,32 @@ const DILATE_SHARE = 8, DILATE_MIN = 1 << 15;
 const SIDE_MARGIN = 8;
 // Scratch of a plan's dilation (module level: a plan builds synchronously).
 let dilateFirst = new Int32Array(0), dilateA = new Uint8Array(0), dilateB = new Uint8Array(0);
+
+// ---- the per-tick field GPU budget ----
+// A field tick (wire/worldRender.js worldAdvanceFields) records at most this
+// many workgroups of field work: its cores' EMA batches (history gathers, the
+// EMA, history scatters: one workgroup a brick each) and the spatial jobs
+// their invalidation sends to the CELL stage (worldClassify re-derives every
+// invalidated core it demands: the EMA halo's gathers, seven stage dispatches
+// over the whole 64^3 scratch, the classifier). V2 noted its whole window
+// changed every tick, and one Descent tick's field work held the GPU, and every
+// frame queued behind it, for about 10 s (real Chrome, 2026-10-22: one
+// submission of `world field history` x80460 and `fieldEma` x180118
+// workgroups, `fieldBlur` passes of 145k-500k).
+//
+// The rate: the field passes' full rebuild at 128^3 on the user's M5 (headless
+// Chrome, ANGLE Metal; docs/scaling.md "D9, incremental derived passes": about
+// 2.4 ms) is 32768 bricks through the eight per-brick field passes (the EMA, the
+// three blurs, the three boost stages and the peak), a workgroup a brick and
+// pass here: 262144 workgroups in 2.4 ms.
+export const FIELD_WORKGROUPS_PER_MS = Math.round((128 / 4) ** 3 * 8 / 2.4);
+// The share of a 60 Hz frame (16.7 ms) a tick's field work may hold the GPU:
+// a quarter, the rest the frame's own draw and the lighting stages.
+export const FIELD_TICK_MS = 4;
+export const WORLD_FIELD_TICK_WORKGROUPS = FIELD_WORKGROUPS_PER_MS * FIELD_TICK_MS;
+// Seven stage dispatches a spatial job (FieldDeriver.recordSpatial: three
+// blurs, three boost stages, the peak), each over every scratch brick.
+const SPATIAL_STAGES = 7;
 // Owners by brick: history's, then a plan's new ones, by core and slot. A
 // one-core cache: bricks visited in x runs share their core 8 at a time.
 class OwnerFinder {
@@ -105,8 +131,11 @@ class FieldOwners {
  * world snapshot; unchanged cores keep their prior numerically valid fields.
  */
 export class WorldFields {
+  // budget: workgroups a field tick may record (WORLD_FIELD_TICK_WORKGROUPS);
+  // Infinity records every tick whole, as before the budget.
   constructor(gpu, { worldBounds, tables, tablesLayout = gpu.layout('TABLES', LAYOUT.TABLES), stateLayout = gpu.layout('STATE_RO', LAYOUT.STATE_RO),
-    publisher, history = new WorldFieldHistory(gpu) }) {
+    publisher, history = new WorldFieldHistory(gpu), budget = WORLD_FIELD_TICK_WORKGROUPS }) {
+    if (!(budget > 0)) throw new Error('A field budget is a positive number of workgroups');
     if (!worldBounds || ['min', 'max'].some((k) => !Array.isArray(worldBounds[k]) || worldBounds[k].length !== 3) ||
       worldBounds.min.some((v, i) => !Number.isSafeInteger(v) || !Number.isSafeInteger(worldBounds.max[i]) || v >= worldBounds.max[i])) {
       throw new Error('Field world bounds must be nonempty integer cell intervals');
@@ -142,6 +171,18 @@ export class WorldFields {
     // without a pass over every published core per batch (record).
     this.publishedAt = new Map(); this.publishedSeq = 0;
     this.publishedToken = null;
+    // The budget's backlog (_admit). pending: owners a field tick deferred,
+    // each with whether it changed since it last advanced; they advance, whole
+    // core by whole core, on a later tick, as if that tick were theirs.
+    // waiting: the cores whose owners are pending, by the first tick they
+    // waited. lagging: published cores whose invalidation is withheld, by the
+    // first tick withheld: their EMA halo still holds a pending owner (or a
+    // CELL batch changed it), so they keep their last whole publication (its
+    // capture, and the CELL pages packed from it, of an earlier tick) and are
+    // invalidated once no owner of the halo is pending. A core is never
+    // derived from a halo with a pending owner.
+    this.budget = budget;
+    this.pending = new Map(); this.waiting = new Map(); this.lagging = new Map();
     this._planner();
   }
   // A plan's integer scratch (_owners): the world's cores, two past each side,
@@ -231,7 +272,9 @@ export class WorldFields {
   plan(options, prior = null) { return this._plan(options, true, prior); }
   sourcePlan(options) { return this._plan(options, false); }
   requiredSourceRegions(options) { return this.sourcePlan(options).regions; }
-  _plan({ fieldTick, sourceSnapshot, wantedCores = [], changedBricks = [], smoothing = 1, full = false }, preflight, prior = null) {
+  // eye: the view's position in cells, or null: a budgeted field tick
+  // records the cores nearest it first (_admit).
+  _plan({ fieldTick, sourceSnapshot, wantedCores = [], changedBricks = [], smoothing = 1, full = false, eye = null }, preflight, prior = null) {
     const source = sourceSnapshot, epoch = this.history.epoch;
     if (!Number.isSafeInteger(fieldTick) || fieldTick < 0 || (this.lastTick !== null && fieldTick < this.lastTick)) throw new Error('Stale field tick');
     if (!Number.isFinite(smoothing) || smoothing < 0) throw new Error('Invalid field smoothing');
@@ -243,12 +286,12 @@ export class WorldFields {
     // Everything the source-independent part reads: the options, and fields
     // state that only a commit, reset or cut switch changes.
     const inputs = { wantedCores, changedBricks, fieldTick, smoothing, full, jetToggle, epoch, version: this.version,
-      publishedToken: this.publishedToken, publishedSize: this.published.size, lastSmoothing: this.smoothing };
+      publishedToken: this.publishedToken, publishedSize: this.published.size, lastSmoothing: this.smoothing, eye };
     const reuse = prior?.inputs && Object.keys(inputs).every((k) => prior.inputs[k] === inputs[k]);
-    const { owners, find, advancing, nearAdvancing, nearChanged, jobs, batches, regions, changeCache } = reuse ? prior : this._owners(inputs);
+    const { owners, find, advancing, nearAdvancing, nearChanged, jobs, batches, regions, changeCache, budget } = reuse ? prior : this._owners(inputs);
     if (preflight) assertComplete(source, regions); // exact same demand calculation before population
     return { epoch, fieldTick, sourceRevision: source.sourceRevision, source, version: this.version, smoothing, inputs,
-      owners, find, advancing, changedBricks, nearAdvancing, nearChanged, aerationActive, batches, jobs, regions, changeCache };
+      owners, find, advancing, changedBricks, nearAdvancing, nearChanged, aerationActive, batches, jobs, regions, changeCache, budget };
   }
   // A plan's owners, advancing owners, spatial jobs and source regions.
   //
@@ -263,7 +306,7 @@ export class WorldFields {
   // changed brick's neighbours made: the same owners, flags, order (a new
   // owner's order is the pass's first visit) and batches
   // (tools/world-field-owners-cpu-check.mjs compares them).
-  _owners({ wantedCores, changedBricks, fieldTick, smoothing, full, jetToggle }) {
+  _owners({ wantedCores, changedBricks, fieldTick, smoothing, full, jetToggle, eye }) {
     const cores = new Map(), { min, max } = this.bounds;
     for (const core of wantedCores) {
       if (!Array.isArray(core) || core.length !== 3 || core.some((v) => !Number.isSafeInteger(v) || v % 32)) throw new Error('World field cores must be 32-cell aligned');
@@ -311,10 +354,13 @@ export class WorldFields {
     // owners are already in history's order (sorted, all changed), so only
     // the unsettled owners outside it join them.
     let dilated = null;
-    const fast = same && !jetToggle && !cores.size && !!last.sorted;
+    // (not with a backlog: its owners join with their own changed flags)
+    const fast = same && !jetToggle && !cores.size && !!last.sorted && !this.pending.size;
     if (fast) { dilated = last.owners; for (const owner of last.sorted) orders.seen[owner.order] = serial; }
     else if (same) for (const owner of (dilated = last.owners)) add(owner, true);
     else if (changedBricks.length) { dilated = []; this._dilate(changedBricks, find, (owner) => { dilated.push(owner); orders.d[owner.order] = serial; add(owner, true); }, create); }
+    // The owners a budgeted field tick deferred advance as if their tick were this one.
+    for (const [owner, changed] of this.pending) if (owner.lastTick !== fieldTick) add(owner, changed);
     const extras = [];
     if (!jetToggle) for (const [tick, list] of history.unsettled) {
       if (tick === fieldTick) continue;
@@ -340,7 +386,8 @@ export class WorldFields {
         if (jetToggle) throw new Error('Aeration changed within a committed field tick');
         all = false; continue;
       }
-      if (owner.page && owner.age < FIELD_EMA_SETTLE && fieldTick !== owner.lastTick + 1) throw new Error('Missing dynamic field ticks; replay pinned snapshots first');
+      // (a pending owner's next advance is the one the budget deferred: its tick, late)
+      if (owner.page && owner.age < FIELD_EMA_SETTLE && fieldTick !== owner.lastTick + 1 && !this.pending.has(owner)) throw new Error('Missing dynamic field ticks; replay pinned snapshots first');
       if (!(!owner.page || sorted.flags[i] || owner.age < FIELD_EMA_SETTLE)) all = false;
     }
     if (!all) {
@@ -368,7 +415,7 @@ export class WorldFields {
     if (again && !(was.advancing === advancing && was.flags === changedFlags)) for (let i = 0; again && i < advancing.length; i++) again = was.advancing[i] === advancing[i] && was.flags[i] === changedFlags[i];
     if (again) {
       const { batches, nearAdvancing } = was;
-      return this._planOf({ cores, full, smoothing, history, find, advancing, nearAdvancing, nearChanged, batches, changeCache });
+      return this._planOf({ cores, full, smoothing, history, find, advancing, nearAdvancing, nearChanged, batches, changeCache, fieldTick, eye });
     }
     const nearAdvancing = this._touched(advancing.map((o) => o.brick), 4);
     // Batches by core, in their first owner's order: a stamp a core.
@@ -381,16 +428,132 @@ export class WorldFields {
       into.owners.push(advancing[i]); into.changed.push(changedFlags[i]);
     }
     this.batchCache = { epoch: history.epoch, advancing, flags: changedFlags, batches, nearAdvancing };
-    return this._planOf({ cores, full, smoothing, history, find, advancing, nearAdvancing, nearChanged, batches, changeCache });
+    return this._planOf({ cores, full, smoothing, history, find, advancing, nearAdvancing, nearChanged, batches, changeCache, fieldTick, eye });
   }
-  _planOf({ cores, full, smoothing, history, find, advancing, nearAdvancing, nearChanged, batches, changeCache }) {
+  _planOf({ cores, full, smoothing, history, find, advancing, nearAdvancing, nearChanged, batches, changeCache, fieldTick, eye }) {
+    let budget = null;
+    if (Number.isFinite(this.budget)) ({ batches, advancing, nearAdvancing, budget } = this._admit({ cores, smoothing, batches, advancing, nearAdvancing, nearChanged, fieldTick, eye }));
+    const lagging = budget ? this.lagging : null;
+    // (a lagging core a CELL batch asks for is derived again: its capture is an earlier tick's)
     const jobs = [...cores.values()].filter((core) => full || this.smoothing !== smoothing || !this.published.has(brickKey(core)) ||
-      nearAdvancing.has(brickKey(core)) || nearChanged.has(brickKey(core)));
+      nearAdvancing.has(brickKey(core)) || nearChanged.has(brickKey(core)) || !!lagging?.has(brickKey(core)));
     const regions = [...batches, ...jobs.map((core) => ({ core }))].map(({ core }) => {
       const origin = core.map((v) => v - 16);
       return { origin, lo: origin.map((v, i) => Math.max(v, this.bounds.min[i])), hi: origin.map((v, i) => Math.min(v + 64, this.bounds.max[i])) };
     });
-    return { owners: new FieldOwners(history.owners, find), find, advancing, nearAdvancing, nearChanged, jobs, batches, regions, changeCache };
+    return { owners: new FieldOwners(history.owners, find), find, advancing, nearAdvancing, nearChanged, jobs, batches, regions, changeCache, budget };
+  }
+  // A batch's workgroups (record): its gathers (an owner with a page each), the
+  // EMA and its scatters (one an owner each).
+  _batchWorkgroups(batch) {
+    let paged = 0;
+    for (const owner of batch.owners) if (owner.page) paged++;
+    return 2 * batch.owners.length + paged;
+  }
+  // A spatial job's workgroups at core (record's jobs): its EMA halo's gathers
+  // (an in-world brick of the halo each), the stage dispatches over every
+  // scratch brick, the classifier (an in-world brick of the core each).
+  _jobWorkgroups(core) {
+    const { min, max } = this.bounds, interval = fieldInterval('ema');
+    const bricks = (lo, hi) => lo.reduce((n, v, i) => n * Math.max(0, Math.ceil(Math.min(hi[i], max[i]) / 4) - Math.floor(Math.max(v, min[i]) / 4)), 1);
+    const origin = core.map((v) => v - 16);
+    return bricks(origin.map((v, i) => v + interval.lo[i]), origin.map((v, i) => v + interval.hi[i])) + SPATIAL_STAGES * this.g.nbricks +
+      bricks(core, core.map((v) => v + 32));
+  }
+  // The batches a budgeted plan records now, and the rest deferred, whole core
+  // by whole core.
+  //
+  // A field tick (no wanted cores) takes, in order, the oldest waiting first,
+  // then the nearest the eye, then history's order: each core's batch, with the
+  // published cores it leaves no pending owner near (their CELL stage jobs),
+  // or a lagging core no pending owner is near any more; each that fits what
+  // is left of the budget (and always the first one, so the backlog drains:
+  // a skipped item is older on the next tick). A
+  // published core near an advancing owner, or near a change, is invalidated
+  // only once no owner of its EMA halo is pending, else withheld (lagging).
+  // Its invalidation's jobs are the CELL stage's (worldClassify), counted here.
+  //
+  // A CELL batch (wanted cores) records what it needs: every batch with an
+  // owner the backlog does not hold (new halos, which are born settled), and a
+  // pending core's whole batch when an owner of it is in a wanted core's EMA
+  // halo (that job reads it), late in its tick but in it. Its own changes to
+  // published cores are withheld (lagging): the field tick has already judged
+  // which CELL pages are current, and the stage packs only those it lacks.
+  //
+  // A smoothing change re-derives every published core (_invalidated): such a
+  // tick is recorded whole.
+  _admit({ cores, smoothing, batches, advancing: all, nearAdvancing, nearChanged, fieldTick, eye }) {
+    const pending = this.pending, published = this.published, admitted = [], deferred = [];
+    const invalidate = new Set(), withhold = new Set();
+    const touchOf = (batch) => this._touched(batch.owners.map((o) => o.brick), 4);
+    let workgroups = 0;
+    if (cores.size || (this.smoothing !== null && this.smoothing !== smoothing)) {
+      for (const batch of batches) {
+        let needed = !cores.size || batch.owners.some((o) => !pending.has(o));
+        if (!needed) for (const key of touchOf(batch)) if (cores.has(key)) { needed = true; break; }
+        if (needed) { admitted.push(batch); workgroups += this._batchWorkgroups(batch); } else deferred.push(batch);
+      }
+      const touched = admitted.length ? this._touched(admitted.flatMap((b) => b.owners.map((o) => o.brick)), 4) : new Set();
+      if (cores.size) for (const near of [touched, nearChanged]) for (const key of near) if (published.has(key)) withhold.add(key);
+      return this._admitted(batches, all, admitted, deferred, touched, { invalidate, withhold, workgroups, deferredWorkgroups: 0, firstWorkgroups: 0 });
+    }
+    // No backlog, and the whole tick within the budget: all of it, as unbudgeted
+    // (the plan's own touched cores; no batch's own).
+    if (!pending.size && !this.lagging.size) {
+      for (const batch of batches) workgroups += this._batchWorkgroups(batch);
+      const near = new Set();
+      for (const set of [nearAdvancing, nearChanged]) for (const key of set) if (published.has(key) && !near.has(key)) { near.add(key); workgroups += this._jobWorkgroups(key.split(',').map(Number)); }
+      if (workgroups <= this.budget) return this._admitted(batches, all, batches, [], nearAdvancing, { invalidate: near, withhold, workgroups, deferredWorkgroups: 0, firstWorkgroups: workgroups });
+      workgroups = 0;
+    }
+    // Each batch's touched cores; and how many batches touch each core.
+    const touch = batches.map(touchOf), blockers = new Map(), targets = new Set();
+    for (const t of touch) for (const key of t) { blockers.set(key, (blockers.get(key) ?? 0) + 1); if (published.has(key)) targets.add(key); }
+    for (const key of nearChanged) if (published.has(key)) targets.add(key);
+    for (const key of this.lagging.keys()) if (published.has(key)) targets.add(key);
+    const items = [], coreOf = (key) => key.split(',').map(Number);
+    batches.forEach((batch, i) => items.push({ i, key: brickKey(batch.core), core: batch.core }));
+    for (const key of targets) if (!blockers.get(key)) items.push({ i: -1, key, core: coreOf(key) });
+    const at = new Map(items.map((it, k) => [it, k])), since = (it) => (it.i < 0 ? this.lagging.get(it.key) : this.waiting.get(it.key)) ?? fieldTick;
+    const distance = (core) => (eye ? Math.hypot(...core.map((v, k) => v + 16 - eye[k])) : 0);
+    for (const it of items) { it.since = since(it); it.distance = distance(it.core); }
+    items.sort((a, b) => a.since - b.since || a.distance - b.distance || at.get(a) - at.get(b));
+    const taken = new Set(), skipped = [];
+    let firstWorkgroups = 0, k = 0;
+    // First fit in that order: an item over what is left waits (it is older
+    // next tick, so it goes first then: the first item is always taken). A
+    // published core a taken batch leaves no pending owner near is a job of
+    // its own, tried at once: one that does not fit stays lagging (its last
+    // whole publication, of an earlier tick) and waits for a later one.
+    const take = (it, cost) => {
+      if (k++ && workgroups + cost > this.budget) return false;
+      if (k === 1) firstWorkgroups = cost;
+      workgroups += cost;
+      return true;
+    };
+    for (const it of items) {
+      if (it.i < 0) { if (take(it, this._jobWorkgroups(it.core))) invalidate.add(it.key); else skipped.push(it); continue; }
+      if (!take(it, this._batchWorkgroups(batches[it.i]))) { skipped.push(it); continue; }
+      taken.add(it.i);
+      for (const key of touch[it.i]) {
+        const left = blockers.get(key) - 1;
+        blockers.set(key, left);
+        if (!left && targets.has(key) && !take(null, this._jobWorkgroups(coreOf(key)))) continue;
+        if (!left && targets.has(key)) invalidate.add(key);
+      }
+    }
+    let deferredWorkgroups = 0;
+    for (const it of skipped) deferredWorkgroups += it.i < 0 ? this._jobWorkgroups(it.core) : this._batchWorkgroups(batches[it.i]);
+    for (const key of targets) if (!invalidate.has(key)) withhold.add(key);
+    batches.forEach((batch, i) => (taken.has(i) ? admitted : deferred).push(batch));
+    const touched = new Set();
+    for (const i of taken) for (const key of touch[i]) touched.add(key);
+    return this._admitted(batches, all, admitted, deferred, touched, { invalidate, withhold, workgroups, deferredWorkgroups, firstWorkgroups });
+  }
+  // (all admitted: the plan's own advancing list, in history's order)
+  _admitted(batches, all, admitted, deferred, nearAdvancing, budget) {
+    const advancing = admitted.length === batches.length ? all : admitted.flatMap((b) => b.owners);
+    return { batches: admitted, advancing, nearAdvancing, budget: { ...budget, deferred } };
   }
   // Every brick within one brick of a changed one (the cells JOIN_REACH 4
   // reaches, in bounds) changes: each owner is flagged, and an absent one is
@@ -650,6 +813,7 @@ export class WorldFields {
       synchronous(this.publisher.publish({ token, outputs, invalidatedCoreKeys }), 'publish');
       if (plan.epoch !== this.history.epoch || plan.version !== this.version || plan.source.isCurrent() !== true) throw new Error('World field source/epoch changed during publication');
       this.history.commit({ owners: advanced, pages, ages, tick: plan.fieldTick, source: plan.sourceRevision });
+      if (plan.budget) this._commitBacklog(plan, advanced, invalidatedCoreKeys);
       if (plan.changeCache?.pending && this.changeCache === plan.changeCache) plan.changeCache.pending = false;
       // One push per page, not push(...replaced): a big map's second field tick
       // replaces every owner (~400k on Island), past V8's argument limit
@@ -686,10 +850,35 @@ export class WorldFields {
   // batches with what it had loaded (2026-10-22).
   _invalidated(plan) {
     if (this.smoothing !== plan.smoothing) return [...this.published];
+    // (budgeted: the cores no pending owner is near any more, _admit)
+    if (plan.budget) return [...plan.budget.invalidate].filter((key) => this.published.has(key)).sort((a, b) => this.publishedAt.get(a) - this.publishedAt.get(b));
     const keys = new Set();
     for (const near of [plan.nearAdvancing, plan.nearChanged]) for (const key of near) if (this.published.has(key)) keys.add(key);
     return [...keys].sort((a, b) => this.publishedAt.get(a) - this.publishedAt.get(b));
   }
+  // A budgeted plan's backlog, at its commit: the owners it deferred join the
+  // pending ones (changed if either was), a deferred new owner joins history
+  // without a page (so no plan makes another for its brick), and the cores it
+  // withheld are lagging until a field tick invalidates them.
+  _commitBacklog(plan, advanced, invalidated) {
+    const { pending, waiting, lagging } = this, tick = plan.fieldTick;
+    // (a field tick's: its least, the first core it took, for the bound's check)
+    if (!plan.inputs.wantedCores.length) this.lastFirstWorkgroups = plan.budget.firstWorkgroups;
+    if (pending.size) for (const owner of advanced) pending.delete(owner);
+    if (waiting.size) for (const batch of plan.batches) waiting.delete(brickKey(batch.core));
+    for (const batch of plan.budget.deferred) {
+      batch.owners.forEach((owner, k) => {
+        pending.set(owner, (pending.get(owner) ?? 0) | (batch.changed[k] ? 1 : 0));
+        if (!owner.page && !this.history.owners.has(brickKey(owner.brick))) this.history._insert(owner);
+      });
+      if (!waiting.has(brickKey(batch.core))) waiting.set(brickKey(batch.core), tick);
+    }
+    if (lagging.size) for (const key of invalidated) lagging.delete(key);
+    for (const key of plan.budget.withhold) if (!lagging.has(key)) lagging.set(key, tick);
+    if (lagging.size) { const jobs = new Set(plan.jobs.map(brickKey)); for (const key of lagging.keys()) if (!this.published.has(key) && !jobs.has(key)) lagging.delete(key); }
+  }
+  // The budget's backlog: owners still to advance, and published cores still to invalidate.
+  get backlog() { return { owners: this.pending.size, cores: this.waiting.size, lagging: this.lagging.size }; }
   _token(plan) { return Object.freeze({ epoch: plan.epoch, fieldTick: plan.fieldTick, sourceRevision: plan.sourceRevision,
     historyVersion: plan.version + 1, smoothing: plan.smoothing, generation: this.generation }); }
   isCurrent(token) {
@@ -703,6 +892,7 @@ export class WorldFields {
     this.version++;
     this.lastTick = null; this.tickSource = null; this.smoothing = null; this.aerationActive = null; this.published.clear(); this.publishedAt.clear(); this.generation++;
     this.sortHint = null; this.changeCache = null; this.batchCache = null;
+    this.pending.clear(); this.waiting.clear(); this.lagging.clear();
   }
   // Caller must finish its own queued work before disposal.
   dispose() {

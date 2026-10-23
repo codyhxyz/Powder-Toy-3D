@@ -177,12 +177,27 @@ export class HistoryCopies {
       this.seen[slab] = this.runs; this.run.slabs.push(slab);
     }
   }
-  // Closes the open run.
+  // Closes the open run. A run over several slabs has its jobs grouped by
+  // slab (in the order the slabs were first touched, each group in the order
+  // added), so each slab's dispatch covers only its own: a run's workgroups
+  // are its jobs, not its jobs times its slabs (fields.js counts them against
+  // the tick's field budget). Its copies commute (distinct words), so the
+  // grouping moves the same bits.
   end() {
     const run = this.run;
     if (!run) throw new Error('No field history copy run open');
     this.run = null;
     run.count = this.n - run.first;
+    if (run.slabs.length < 2) { run.ranges = run.slabs.map((slab) => ({ slab, first: run.first, count: run.count })); return run; }
+    // (a slab's place in run.slabs by an array, not a Map lookup a job)
+    const J = FIELD_HISTORY_JOB_WORDS, at = this.slabAt = this.slabAt?.length >= this.seen.length ? this.slabAt : new Int32Array(this.seen.length), counts = new Array(run.slabs.length).fill(0);
+    run.slabs.forEach((slab, k) => { at[slab] = k; });
+    for (let j = run.first; j < this.n; j++) counts[at[this.jobs[j * J + 2]]]++;
+    run.ranges = [];
+    let next = run.first;
+    for (let k = 0; k < counts.length; k++) { run.ranges.push({ slab: run.slabs[k], first: next, count: counts[k] }); next += counts[k]; }
+    const was = this.jobs.slice(run.first * J, this.n * J), fill = run.ranges.map((r) => r.first);
+    for (let j = 0; j < run.count; j++) { const to = fill[at[was[j * J + 2]]]++ * J; this.jobs[to] = was[j * J]; this.jobs[to + 1] = was[j * J + 1]; this.jobs[to + 2] = was[j * J + 2]; }
     return run;
   }
   // The job list, uploaded once every run is staged (null when there is none);
@@ -196,15 +211,15 @@ export class HistoryCopies {
     this.buffer.unmap();
     return this.buffer;
   }
-  // Records a staged run's copies: one dispatch a slab it touches.
+  // Records a staged run's copies: one dispatch a slab it touches, over that slab's jobs.
   record(frame, run) {
     if (!run.count) return;
     if (!this.buffer) throw new Error('Upload field history copies before recording them');
-    const size = fold(run.count), gpu = this.history.gpu;
-    for (const slab of run.slabs) {
+    const gpu = this.history.gpu;
+    for (const { slab, first, count } of run.ranges) {
       const group = this.groups[slab] ??= gpu.bindGroup(this.layout, [{ binding: 0, resource: { buffer: this.buffer } },
         { binding: 1, resource: { buffer: this.history.slabs[slab] } }, { binding: 2, resource: { buffer: this.ema } }], 'world field history');
-      this.kernel.dispatch(frame, size, { bind: [group], params: { first: run.first, count: run.count, scatter: run.scatter, slab } });
+      this.kernel.dispatch(frame, fold(count), { bind: [group], params: { first, count, scatter: run.scatter, slab } });
     }
   }
 }

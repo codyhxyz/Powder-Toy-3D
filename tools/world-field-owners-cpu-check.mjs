@@ -44,13 +44,18 @@ const BOUNDS = { min: [0, 0, 0], max: [192, 64, 160] }, WB = BOUNDS.max.map((v) 
 const hash = (u32) => { let h = 2166136261 >>> 0; for (let i = 0; i < u32.length; i++) { h ^= u32[i]; h = Math.imul(h, 16777619) >>> 0; } return h; };
 function side(Fields, History) {
   const gpu = new FieldTestGPU({ emulateCopies: true }), log = [], state = { revision: 0, aeration: true, failPublish: false };
-  const fields = new Fields(gpu, { worldBounds: BOUNDS, tables: {}, history: new History(gpu, { pagesPerSlab: 256 }), publisher: {
+  // (unbudgeted: the old planner's plans, every tick whole; tools/world-field-budget-cpu-check.mjs checks the budget)
+  const fields = new Fields(gpu, { worldBounds: BOUNDS, tables: {}, history: new History(gpu, { pagesPerSlab: 256 }), budget: Infinity, publisher: {
     recordOwnedFields(frame, p) { log.push(['owned', p.scratchOrigin.join(), p.ownedWorldBricks.length]); return { token: p.token }; },
     publish({ invalidatedCoreKeys }) { if (state.failPublish) throw new Error('Injected publication failure'); log.push(['publish', invalidatedCoreKeys.join(' ')]); } } });
   gpu.onDispatch = (k, opts) => {
     if (k.name === FIELD_HISTORY_KERNEL) {
-      const p = opts.params, jobs = new Uint32Array(opts.bind[0].entries[0].resource.buffer.bytes);
-      log.push(['copies', p.first, p.count, p.scatter, p.slab, hash(jobs.subarray(3 * p.first, 3 * (p.first + p.count)))]);
+      // The jobs a dispatch copies (its range's, in the bound slab): a run over
+      // several slabs now groups its jobs by slab (world/fieldHistory.js end),
+      // so each slab's dispatch has its own range; the copies are the same.
+      const p = opts.params, jobs = new Uint32Array(opts.bind[0].entries[0].resource.buffer.bytes), moved = [];
+      for (let j = p.first; j < p.first + p.count; j++) if (jobs[3 * j + 2] === p.slab) moved.push(...jobs.subarray(3 * j, 3 * j + 3));
+      log.push(['copies', p.scatter, p.slab, moved.length / 3, hash(Uint32Array.from(moved))]);
     } else if (k.name === 'fieldEma') {
       const s = fields.scratch;
       log.push(['ema', hash(new Uint32Array(s.dlist.bytes)), hash(new Uint32Array(s.age.bytes)), hash(new Uint32Array(s.ema.bytes))]);
