@@ -28,7 +28,9 @@ export function queryWorldPick(app,state,displayed,{ray,skipLiquids=false},isCur
   let native,output,combined,submitted=Promise.resolve();
   const work=(async()=>{
     await state.volume.pickPipelineState(view.view).ready;
-    if(state.dead || !isCurrent(displayed))return worldPickNotReady('WORLD_PICK_OBSOLETE');
+    // A full page pool took the displayed snapshot's replaced pages back
+    // (world/renderAtlas.js reclaim): obsolete, as a newer frame would make it.
+    if(state.dead || !isCurrent(displayed) || data.snapshot.expired)return worldPickNotReady('WORLD_PICK_OBSOLETE');
     native=state.volume.prepare({snapshot:data.snapshot.retain(),tableBuffer:data.tables.buffer,appearance:data.appearance,
       frameUniforms:{...data.frame.values,...view.values},physicsOrigin:data.frame.physicsOrigin,
       params:{...data.frame.params,...view.params},lighting:data.lighting,

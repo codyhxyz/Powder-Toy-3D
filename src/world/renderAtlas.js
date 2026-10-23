@@ -106,6 +106,8 @@ export function worldPoolMax(kind, layout, deviceLimits = {}) {
 // world/worldViewRing.js worldPageBudget): a growth never passes it, and a
 // demand past it is refused (WORLD_PAGE_BUDGET), never allocated.
 export const WORLD_PAGE_BUDGET = 'WORLD page budget';
+// A snapshot whose superseded pages a full pool took back (WorldRenderAtlas.reclaim).
+export const WORLD_SNAPSHOT_EXPIRED = 'expired world snapshot: its pages were reclaimed';
 export function worldPoolGrowth(kind, layout, deviceLimits = {}, needed, budget = Infinity) {
   const current = layout[kind === 'cell' ? 'capacity' : kind + 'Capacity'];
   needed ??= current + 1;
@@ -512,6 +514,7 @@ export class WorldRenderAtlas {
   _supersede(p, until) {
     p.until = until;
     for (const s of this.states) {
+      if (s.expired) continue;   // binds nothing again (reclaim)
       const g = this._readGeneration(s, p);
       if (g < p.since || g >= until) continue;
       p.pins++;
@@ -537,6 +540,38 @@ export class WorldRenderAtlas {
         this._collect(p);
       }
     });
+  }
+  // Pages a pool holds (live, pending, superseded but still pinned, retiring):
+  // what its growth must fit under the page budget.
+  poolUsed(kind) { const p = this[kind]; return p.nextID - p.free.length; }
+  // Frees up to `count` superseded pages of a pool by expiring the oldest
+  // snapshots that pin them, never the current state or a private closure. A
+  // snapshot pins every page its book named that a later commit replaced
+  // (_supersede), so a World load re-packing a big map's changed bricks held
+  // two pages a brick for as long as the displayed frame's snapshot lived: past
+  // the pool's cap (Descent, real Chrome 2026-10-22: "cell pool of 1067442
+  // pages past 1048576"). An expired snapshot's handles refuse new bindings
+  // (bindings, textures, retain, producerBindings), so nothing reads its pages
+  // again; work already submitted through it finishes before its pages are
+  // reused (retire). The rule of a fixed-size page pool (UE5's Virtual Shadow
+  // Map physical pages, r.Shadow.Virtual.MaxPhysicalPages): when it is full,
+  // the oldest cached pages are evicted, the pool never grows past its size.
+  // Resolves once the freed pages are back in the pool's free list; how many it freed.
+  reclaim(kind, count) {
+    this._alive(); check(['cell', 'light'].includes(kind), 'invalid pool');
+    const old = [...this.states].filter(s => s !== this.current && !s.producerOnly && !s.expired && s.late.some(p => p.kind === kind)).sort((a, b) => a.generation - b.generation);
+    const freed = [];
+    for (const s of old) {
+      if (freed.length >= count) break;
+      s.expired = true;
+      for (const p of s.late.splice(0)) {
+        p.pins--;
+        if (p.kind === 'light' && p.probeID !== null) this.probe.pages.get(p.probeID).pins--;
+        if (!p.pins && !p.public && !p.pending && !p.retiring && p.kind === kind) freed.push(p);
+        this._collect(p);
+      }
+    }
+    return new Promise(resolve => this.retire(() => resolve(freed.length)));
   }
   _collect(p) {
     if (p.pins || p.public || p.pending || p.retiring) return;
@@ -804,6 +839,8 @@ export class WorldRenderAtlas {
     s.refs++; let released = false;
     const handle = frozen({ abi: WORLD_ATLAS_ABI, producerOnly:!!s.producerOnly, epoch: s.epoch, generation: s.generation, layout: s.r.layout, book: s.book, lightBook: s.lightBook, params: s.params, views: s.r.views,
       dependencies: s.dependencies, sunManifest: s.sunManifest,
+      // reclaim(): its superseded pages went back to the pool; it binds nothing again.
+      get expired() { return !!s.expired; },
       lightingProvenance: brick => {
         if(released)throw new Error('snapshot released');
         check(s.epoch===this.epoch,'stale world snapshot epoch');
@@ -814,6 +851,7 @@ export class WorldRenderAtlas {
       },
       retain: () => {
         if (released) throw new Error('snapshot released');
+        check(!s.expired, WORLD_SNAPSHOT_EXPIRED);
         check(s.epoch === this.epoch, 'stale world snapshot epoch');
         return this._snapshot(s);
       },
@@ -821,11 +859,13 @@ export class WorldRenderAtlas {
       // native resources from the latest Atlas after an asynchronous boundary.
       textures: () => {
         if (released) throw new Error('snapshot released');
+        check(!s.expired, WORLD_SNAPSHOT_EXPIRED);
         check(s.epoch === this.epoch, 'stale world snapshot epoch');
         return frozen({ ...s.r.textures });
       },
       bindings: (external, feedback) => {
         if (released) throw new Error('snapshot released');
+        check(!s.expired, WORLD_SNAPSHOT_EXPIRED);
         check(!s.producerOnly,'private LIGHT closure is producer-only');
         check(s.epoch === this.epoch, 'stale world snapshot epoch');
         check(feedback?.size >= this.feedbackBytes && feedback.size <= Math.min(this.limits.maxStorageBufferBindingSize, 128 * 1024 ** 2), 'feedback binding size');
@@ -875,6 +915,7 @@ export class WorldRenderAtlas {
     this._alive();
     const a = this.snapshotStates.get(cellSnapshot), b = this.snapshotStates.get(previousSnapshot);
     check(a?.live() && b?.live(), 'owned live producer snapshots required');
+    check(!a.s.expired && !b.s.expired, WORLD_SNAPSHOT_EXPIRED);
     check(a.s.epoch === this.epoch && b.s.epoch === this.epoch &&
       (b.s.producerOnly ? a.s.generation===this.generation&&b.s.generation===this.generation+1 : a.s.generation>=b.s.generation), 'producer snapshot epoch/generation mismatch');
     check(a.s.r === this.resources, 'producer CELL snapshot must use current pool prefix');
