@@ -3049,14 +3049,14 @@ function tick(now, renderOnly = false) {
       const liveForce=present && (key!==worldLiveSeen.key || pacer.wakes!==worldLiveSeen.wakes || pacer.takeMeshWake() || wantFrame() || v2Flying());
       if(present){worldLiveSeen.key=key;worldLiveSeen.wakes=pacer.wakes;}
       // Its tick throws once its work has failed, every frame after (worldRenderFrame.js): worldFailed.
+      // reserve: the derived key reads the world's content revision, not sim.version (V2 bumps that every
+      // tick, changed or not, which made every transaction a full lighting tick; physics.js _reportChanges
+      // notes what really changed). No betweenTicks: a transaction carries the cells, which change only on
+      // a tick; the partial tick's flying matter is the live frame's.
       try {
       runView=driver.tick({present,dt,live:{force:liveForce,settle:pacer.viewSettle},
         reserve:()=>{
-          // (the world's content revision, not sim.version: V2 bumps that every tick, changed or not, which
-          // made every transaction a full lighting tick; physics.js _reportChanges notes what really changed)
           const derived=pacer.derived(`${sim.id}:${win.renderSource?.contentRevision ?? sim.version}|${SUN.toArray()}|${KEY_LIGHT}|${renderView}|${JSON.stringify(gfx)}|${settings.nearGI}:${settings.glowLights}:${settings.caustics}|${detailVersion}`);
-          // (no betweenTicks: a transaction carries the world's cells, which change only on a tick; the
-          // partial tick's flying matter is the live frame's)
           return {runDerived:derived,runView:pacer.view(key,derived||wantFrame())};
         },capture:(reservation,state)=>captureWorldRequest(reservation,state,dt,driver.accepted)});
       } catch(error) { worldFailed(error); driver=null; }
