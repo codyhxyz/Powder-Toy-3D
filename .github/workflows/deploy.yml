@@ -11,14 +11,32 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# One deploy at a time; a newer push replaces a deploy that's still waiting.
-concurrency:
-  group: production
-  cancel-in-progress: false
-
 jobs:
-  # The checks and the build. Publishing (the last job) waits for this and the V2 suite's long checks.
-  deploy:
+  # The build, the only thing publishing waits for: a push is live in a minute or two.
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+      - run: node tools/check-browser-launch.mjs   # headless tests launch through tools/browser.mjs (CLAUDE.md)
+      - run: npm run build
+      - run: node tools/check-local-map-build.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          retention-days: 1
+
+  # The CPU checks, beside the build: a failure shows red on the push but does not hold the deploy back.
+  checks:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -176,15 +194,8 @@ jobs:
       - run: node tools/hybrid-check.mjs   # CPU/Naga: all hybrid producers, actual stage layouts and six grid shapes
       - run: node tools/hybrid-test-view-check.mjs   # CPU-only: explicit Test activation, teardown, and warning UI
       - run: node tools/v2/cpu-suite.mjs --skip-long   # Physics V2's CPU checks (fake GPU, CPU twins, Naga) and the import/state-access lints; the long ones run in v2-long
-      - run: npm run build
-      - run: node tools/check-local-map-build.mjs
-      - uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist
-          retention-days: 1
 
-  # The V2 CPU suite's long checks (column-run water's WGSL twin, four parts: minutes), beside the deploy job's.
+  # The V2 CPU suite's long checks (column-run water's WGSL twin, four parts: minutes), beside the other checks.
   v2-long:
     runs-on: ubuntu-latest
     permissions:
@@ -215,8 +226,12 @@ jobs:
       - run: node tools/v2/cpu-suite.mjs --only-long
 
   publish:
-    needs: [deploy, v2-long]
+    needs: [build]
     runs-on: ubuntu-latest
+    # One publish at a time, in push order; the checks never queue a deploy.
+    concurrency:
+      group: production
+      cancel-in-progress: false
     environment:
       name: production
       url: https://tpt3d.codyh.xyz
