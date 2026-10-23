@@ -10,6 +10,16 @@ import { BU, uint, frozenArray, worldLightingIndex, createLightingResources, com
 import { createWorldFeedbackProvider } from '../gfx/worldLightingInputs.js';
 import { worldLightingDeltaWGSL, worldLightingDeltaLayouts } from '../shaders/worldLightingDelta.js';
 export const WORLD_LIGHTING_RECORD_LAYOUT=Object.freeze({metadataWords:4,changeWords:1,emission:'f32 xyz /64 (original bit words retained)',info:'u32 original BrickInfo',order:'classification.records order; metadata first, then one u32 change per brick'});
+// worldLightingRecords stale()'s rule, over its committed rows (index -> row),
+// their cores (core -> capture buffer -> indices) and the cut's delta since
+// the baseline: the rows to read again, but those overlay already holds.
+export function worldLightingStale({dims,committed,cores,delta,captureOf,overlay=null}) {
+  const cdims=dims.map(n=>Math.ceil(n/8)),out=new Set(),add=i=>{if(!overlay?.has(i))out.add(i);};
+  if(delta.global){for(const i of committed.keys())add(i);return out;}
+  for(const b of delta.changedBricks){const i=b[0]+dims[0]*(b[1]+dims[1]*b[2]);if(committed.has(i))add(i);}
+  for(const [k,byBuffer] of cores){const now=captureOf([(k%cdims[0])*8,(Math.floor(k/cdims[0])%cdims[1])*8,Math.floor(k/(cdims[0]*cdims[1]))*8]);for(const [buffer,set] of byBuffer)if(buffer!==now)for(const i of set)add(i);}
+  return out;
+}
 export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submissionProvider=createWorldFeedbackProvider(gpu,{})}={}){
   if(!Array.isArray(worldSize)||worldSize.length!==3||worldSize.some((n,k)=>!uint(n)||!n||n%4||n!==sourceOwner?.win.size[k])||sourceOwner?.gpu!==gpu)throw new TypeError('world size and actual Source owner required');
   const size=frozenArray(worldSize),dims=size.map(n=>n/4),device=gpu.device,queue=device.queue,{buffer}=createLightingResources(device);
@@ -25,7 +35,6 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
   // map's metadata stage (2026-10-22).
   const cdims=dims.map(n=>Math.ceil(n/8)),cores=new Map();
   const coreOf=i=>{const x=i%dims[0],y=Math.floor(i/dims[0])%dims[1],z=Math.floor(i/(dims[0]*dims[1]));return (x>>3)+cdims[0]*((y>>3)+cdims[1]*(z>>3));};
-  const coreBrick=k=>[(k%cdims[0])*8,(Math.floor(k/cdims[0])%cdims[1])*8,Math.floor(k/(cdims[0]*cdims[1]))*8];
   const coreAdd=(i,buffer)=>{const k=coreOf(i);let byBuffer=cores.get(k);if(!byBuffer)cores.set(k,byBuffer=new Map());let set=byBuffer.get(buffer);if(!set)byBuffer.set(buffer,set=new Set());set.add(i);};
   const coreDelete=(i,buffer)=>{const k=coreOf(i),byBuffer=cores.get(k),set=byBuffer?.get(buffer);if(!set)return;set.delete(i);if(!set.size){byBuffer.delete(buffer);if(!byBuffer.size)cores.delete(k);}};
   // A batch's rows over the committed ones, without a copy of every committed row.
@@ -65,13 +74,8 @@ export function createWorldLightingRecords(gpu,{worldSize,sourceOwner,submission
   // cores, not by the rows committed.
   function stale(cut,{captureOf,carry=null}={}){
     alive();if(typeof captureOf!=='function')throw new TypeError('classification capture lookup required');
-    const overlay=carry?carries.get(carry)?.next:null,out=new Set(),add=i=>{if(!overlay?.has(i))out.add(i);};
-    if(!baseline||!committed.size)return out;
-    const delta=cut.source.changesSince(baseline.contentToken);
-    if(delta.global){for(const i of committed.keys())add(i);return out;}
-    for(const b of delta.changedBricks){const i=b[0]+dims[0]*(b[1]+dims[1]*b[2]);if(committed.has(i))add(i);}
-    for(const [k,byBuffer] of cores){const now=captureOf(coreBrick(k));for(const [buffer,set] of byBuffer)if(buffer!==now)for(const i of set)add(i);}
-    return out;
+    if(!baseline||!committed.size)return new Set();
+    return worldLightingStale({dims,committed,cores,delta:cut.source.changesSince(baseline.contentToken),captureOf,overlay:carry?carries.get(carry)?.next:null});
   }
   // captureOf (stale): rows of committed bricks may be left out where they
   // read back what they hold; without it every committed row is recorded.
