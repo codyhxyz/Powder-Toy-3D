@@ -17,6 +17,8 @@ import { gateVariants } from '../gfx/detailGate.js';
 const array = v => Array.from(v?.elements ?? (v?.toArray ? v.toArray() : v));
 const requireReady = (ok, message) => { if (!ok) throw new Error(message); };
 const complete = f => f?.incomplete === false && !f.requirements.length && !f.sun.length;
+const LIVE_COMMIT_TRIES = 3;     // frames a live view frame may wait for Post to admit it (an older scene's submission pending)
+const LIVE_RETIRING_MAX = 2;     // live view frames recorded and not yet retired (Post's staged targets: post.js maxPendingScenes 3)
 
 // A real CELL publication bootstraps the subsequent eye/scene feedback loop.
 // Outside-world views seed the nearest valid brick, not an assumed empty page.
@@ -394,6 +396,14 @@ export function createWorldFrameDriver(app,state,execution={}) {
     preflight=preflightWorldMeshes,record=recordWorldFrame,releasePreflight=releaseWorldMeshPreflight}=execution;
   let pending=null, dead=false, order=0, accepted=null, failure=null, retirement=null;
   let displayedMainFrame=null, blockedPick=null, preferMain=false;
+  // The live view: while a transaction loads, each presented frame draws the displayed (accepted) world
+  // from the camera as it is now, the way streamed worlds draw from what is resident while the rest
+  // streams in (UE5 virtual textures, id Tech 5 MegaTexture). Before, the picture changed only when a
+  // whole transaction was accepted, and V2's water makes every frame one (app.js advance on each
+  // sim.version): the camera and the first-person view showed seconds late or never (Island,
+  // 2026-10-23: "even in god mode I can't move the camera"). Its own frames are never accepted:
+  // no feedback, history, signs or hands baseline advance.
+  let liveBusy=false, liveRetired=0, liveFailure=null;
   const pickDemands=new Map(), stills=[];
   const emptyFeedback=()=>({incomplete:false,requirements:[],sun:[]});
   const retiredStill=()=>app.win?.render!==state.data || (app.win?.renderSource &&
@@ -418,6 +428,55 @@ export function createWorldFrameDriver(app,state,execution={}) {
     return new Promise((resolve,reject)=>{stills.push({view,target,resolve,reject});wake();});
   };
   const wake=()=>app.wakeLoop();
+  const liveViewAllowed=p=>!dead && !failure && !liveFailure && !liveBusy && liveRetired<LIVE_RETIRING_MAX && displayedMainFrame?.eye
+    && !retiredStill() && p && !p.job && !stills.length && p.phase==='waiting' && p.waitTarget!=='finished';
+  // (a view whose program isn't built yet, as just after switching views, waits for the transaction)
+  const viewBuilt=v=>state.volume?.pipelineState?.(v.view,v.detail,v.curved)?.state==='ready';
+  const nextFrame=()=>new Promise(resolve=>requestAnimationFrame(()=>resolve()));
+  // Records the displayed world under `view` (this tick's camera), then admits it once its frame is
+  // submitted: Post admits on CPU submission, not GPU completion (post.js commitStagedScene).
+  const recordLive=(view,dt)=>{
+    const shown=displayedMainFrame, data=shown.data.retain();
+    let pf=null, recorded=null;
+    try {
+      pf=createPreflight(app,state,data,view);
+      recorded=withWorldView(app,view,()=>{
+        if(!preflight(app,pf,view.camera))return null;
+        app.post.setSceneIdentity(data.identity);
+        const identity=Object.freeze({order:++order});
+        return record(app,state,data,{...view,frozenView:view,preflight:pf,eye:shown.eye,identity,order,dt,stillTarget:null,signRequest:null});
+      });
+    } catch(error) {
+      liveFailure=error;console.error('WORLD live view stopped; frames wait for each transaction again',error);
+    }
+    if(!recorded){Promise.allSettled([releasePreflight(app,pf)]).finally(()=>data.release());return;}
+    liveBusy=true;liveRetired++;
+    const {sceneTicket,feedbackIdentity,hands,native}=recorded;
+    recorded.read.catch(()=>{});
+    let finalSubmission=recorded.submitted;
+    (async()=>{
+      try {
+        await recorded.submitted;
+        for(let tries=0;tries<LIVE_COMMIT_TRIES && !dead && sceneTicket.status==='recorded';tries++) {
+          const final=createWorldFeedbackProvider(app.gpu,{}).reserve(app.gpu.frame);
+          finalSubmission=final.submitted;
+          let committed=false;
+          try {committed=app.post.commitScene(sceneTicket,{feedbackIdentity,feedback:{incomplete:false,requirements:[],sun:[]},submission:final});}
+          finally {final.record(app.gpu.frame,native.feedback,1).catch(()=>{});}
+          if(committed)break;
+          await nextFrame();
+        }
+      } catch(error) {
+        liveFailure=error;console.error('WORLD live view stopped; frames wait for each transaction again',error);
+      } finally {
+        liveBusy=false;wake();
+        hands.lighting?.discard();app.post.discardScene(sceneTicket);
+        await Promise.allSettled([recorded.releaseAfter(finalSubmission)]);
+        await Promise.allSettled([releasePreflight(app,pf)]);
+        data.release();liveRetired--;
+      }
+    })();
+  };
   const queuePickDemand=(feedback,display)=>{
     if(dead || display!==displayedMainFrame)return false;
     if(feedback.sun.length)throw new Error('raw WORLD pick must not demand Sun');
@@ -513,7 +572,13 @@ export function createWorldFrameDriver(app,state,execution={}) {
       }
       if(!pending && preferMain) {preferMain=false;wake();}
       const p=pending;if(!p)return false;
+      let liveView=null;
+      const view=()=>liveView??=capture({runDerived:false,runView:true},state).view;
+      if(present && liveViewAllowed(p) && viewBuilt(view()))recordLive(view(),dt);
       if(p.phase==='prepared') {
+        // The transaction's own frame draws from the camera as it is now too, not as it was when it
+        // started loading (seconds ago): its misses there extend it like any other.
+        if(present && !p.job && displayedMainFrame && !liveFailure && viewBuilt(view()))p.view=view();
         p.result=null;p.preflight=createPreflight(app,state,p.data,p.view);p.phase='scene';
       }
       if(p.phase==='scene') {
@@ -539,7 +604,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
           accepted={frame:p.data.frame,reservation:p.reservation};
           const old=displayedMainFrame;
           const pin=p.data.retain();
-          displayedMainFrame=Object.freeze({data:pin,view:p.view,frameIdentity:p.frameIdentity});
+          displayedMainFrame=Object.freeze({data:pin,view:p.view,frameIdentity:p.frameIdentity,eye:p.eye});
           old?.data.release();
         }
         p.data.release();p.data=null;
