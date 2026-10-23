@@ -279,7 +279,7 @@ function createRig(env) {
       h.position.copy(h.userData.rest).add(pos);
       h.rotation.copy(rot);
     }
-    updateViewmodelArms(root, env.getCharacter?.() ?? 'stick');
+    updateViewmodelArms(root, env.getCharacter?.() ?? 'real');
     // The shell advances the flap once per frame, after tools place their grips.
     setLayers(env.viewmodel);
     if (!settled()) globalThis.__app?.requestRender?.();

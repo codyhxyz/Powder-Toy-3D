@@ -307,16 +307,17 @@ console.log('ok V2 host: native frames, V1-guest texels, unchanged-frame skip, h
 
 // Remote presentation uses the real createBody interface, with a CPU render double.
 const { createRemotePlayers } = (await load(new URL('../src/net/players.js', import.meta.url))).namespace;
-const rendered = [], scene = new THREE.Scene(), vol = new THREE.Object3D(), avatarSim = simulation();
+const rendered = [], bodies = [], scene = new THREE.Scene(), vol = new THREE.Object3D(), avatarSim = simulation();
 const avatars = createRemotePlayers({ scene, getSim: () => avatarSim, getVolume: () => vol,
-  makeBody: () => ({ root: new THREE.Object3D(), compile: async () => {}, bind() {}, setVisible(v) { this.root.visible = v; },
+  makeBody: ({ choice }) => (bodies.push(choice()), { root: new THREE.Object3D(), compile: async () => {}, bind() {}, setVisible(v) { this.root.visible = v; },
     update(dt, s) { rendered.push({ x: s.feet.x, yaw: s.yaw }); }, dispose() {} }) });
 const a = { ...pose, yaw: Math.PI - 0.1, p: [30, 4, 30] }, b = { ...pose, seq: 2, yaw: -Math.PI + 0.1, p: [40, 4, 30] };
 avatars.set('a', a); avatars.update(0.1); avatars.set('a', b); avatars.update(0.05);
 assert.ok(Math.abs(rendered.at(-1).yaw - Math.PI) < 0.01); assert.equal(rendered.at(-1).x, 35);
 avatars.set('a', { ...b, seq: 3, warp: 1, p: [90, 4, 30] }); avatars.update(0.01); assert.equal(rendered.at(-1).x, 90);
+assert.deepEqual(bodies, ['real'], 'other players show as the male wizard');
 avatars.clear(); assert.equal(scene.children.length, 0);
-console.log('ok avatars: shortest-angle interpolation, warp snap, lifecycle cleanup');
+console.log('ok avatars: male wizard, shortest-angle interpolation, warp snap, lifecycle cleanup');
 
 // Real guest body, with probes of received terrain and all edit sinks counted.
 {

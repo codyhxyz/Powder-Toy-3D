@@ -3,6 +3,9 @@ import { createBody } from '../pov/figureReal.js';
 import { volumeLight } from '../pov/gpu.js';
 import { interpolatePose } from './protocol.js';
 
+// Everyone else shows as the male wizard, every new player's own body (app.js DEFAULTS.character).
+const REMOTE_BODY = 'real';
+
 // Presentation only: remote bodies never register hitboxes, tools or simulation writers.
 export function createRemotePlayers({ scene, renderer, camera, getSim, getVolume, makeBody = createBody }) {
   const peers = new Map(), inverse = new Matrix4(), feet = new Vector3();
@@ -11,7 +14,7 @@ export function createRemotePlayers({ scene, renderer, camera, getSim, getVolume
     set(id, pose) {
       let p = peers.get(id);
       if (!p) {
-        const body = makeBody({ choice: () => 'stick' });
+        const body = makeBody({ choice: () => REMOTE_BODY });
         p = { body, pose: null, from: null, age: 0 };
         peers.set(id, p); scene.add(body.root);
         body.compile(renderer, camera, scene).catch((err) => console.warn('Remote body compile failed', err));
