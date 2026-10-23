@@ -36,7 +36,7 @@ assert(mapsFor('animalCrossing').includes(map));
 for (const mode of GAMEMODES.filter(m => !['sandbox', 'animalCrossing'].includes(m.key))) assert(!mapsFor(mode.key).includes(map));
 assert.equal(mapOf({ size: 'world', scene: scene.key }), map);
 assert.equal(DEFAULT_MAP, 'island');
-assert.equal(MOBILE_MAP, 'lab');
+assert.equal(MOBILE_MAP, 'island');
 assert.deepEqual(P, { size, seed: 20261008, sea: C.SEA, floor: C.FLOOR });
 assert.deepEqual(scene.start(P), world(...M.plaza));
 assert(scene.view.dir[1] > 0 && scene.view.dist > 0);

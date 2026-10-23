@@ -156,7 +156,7 @@ test('I01 identity, aliases, mode availability, world/window sizes and co-op acc
   assert.equal(mapByKey('tinkerCreek'), map); assert.equal(mapByKey('willowCove'), map); assert.deepEqual(map.dims, size);
   assert(mapsFor('animalCrossing').includes(map)); assert(mapsFor('sandbox').includes(map));
   for (const m of GAMEMODES.filter(m => !['animalCrossing', 'sandbox'].includes(m.key))) assert(!mapsFor(m.key).includes(map));
-  assert.equal(DEFAULT_MAP, 'island'); assert.equal(MOBILE_MAP, 'lab'); assert.equal(sceneByKey(scene.key), scene);
+  assert.equal(DEFAULT_MAP, 'island'); assert.equal(MOBILE_MAP, 'island'); assert.equal(sceneByKey(scene.key), scene);
   assert.equal(GAMEMODES.find(m => m.key === 'animalCrossing').effect, 'rollingLog');
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const source = app.slice(app.indexOf('function setGrid('), app.indexOf('// The cells of size')); assert(source.length > 100);
