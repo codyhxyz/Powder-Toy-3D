@@ -42,6 +42,8 @@ export const worldFeedbackExtraWords = (size) => {
 // for 3 s on Island and 6 s on Descent (2026-10-21). Every brick is still
 // classified before the attempt goes on; a core is never split, so no core's
 // fields are captured twice.
+// The CELL pool headroom a first load reserves past its demand (worldClassify).
+export const WORLD_LOAD_POOL_HEADROOM=0.5;
 export const WORLD_CLASSIFY_BRICKS=2048;
 // Source columns (64 cells square, the world's height) a batch produces per
 // task before it packs: ~1-3 ms of JS each, and a load's first batches need
@@ -183,7 +185,12 @@ export function worldCellCurrent(atlas,i) {const p=atlas.live.cell.get(i);return
 export async function worldClassify(gpu,cells,atlas,ids,{fieldTick,smoothing=1,full=worldSliceMeter(),paced=false},brick) {
   const stale=await worldRunSliced(worldStaleCellSteps(atlas,ids,brick,full));
   // One pool growth for the whole demand: a growth copies every public page.
-  atlas.reserve('cell',stale.length);
+  // A first load (unpaced) also reserves headroom while its loading screen is
+  // up, so the pool doubles behind it rather than under the first frames: the
+  // next tick's growth right after Island's first frame copied every page
+  // (1.3 s, real Chrome 2026-10-22). Never past the page budget.
+  const extra=paced?0:Math.ceil(stale.length*WORLD_LOAD_POOL_HEADROOM),room=(atlas.pageBudget?.cell??Infinity)-atlas.poolUsed('cell');
+  atlas.reserve('cell',Math.max(stale.length,Math.min(stale.length+extra,room)));
   for(const [k,requirements] of worldClassifyBatches(stale).entries()){
     if(k)await (paced?(gpu.device??gpu).queue.onSubmittedWorkDone():pause());
     await recordCells(gpu,cells,{fieldTick,requirements,smoothing},'WORLD Source/Fields final capture');
