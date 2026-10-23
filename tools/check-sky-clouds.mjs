@@ -1,6 +1,6 @@
 // CPU check: the cloud deck in the sky pass (gfx/overlays.js skyWGSL,
 // shaders/gfx/clouds.js cloudSkyGLSL), on every map, small and big.
-// - With Naga installed (CI: deploy.yml), the sky shader validates.
+// - With Naga installed, the sky shader validates.
 // - The clouds are the very deck their shadows fall from: the deck's WGSL
 //   (cloudDensity, cloudShadow and their CLOUD_ constants) is in the sky
 //   shader verbatim, as it is in the lighting the shadows are cast in (both

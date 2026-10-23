@@ -1,4 +1,4 @@
-// The V2 CPU suite (the deploy runs it: .github/workflows/deploy.yml): every CPU-only check of Physics V2
+// The V2 CPU suite (run locally; not part of the deploy since CI was trimmed): every CPU-only check of Physics V2
 // (tools/v2/*-check.mjs, tools/v2/check-*.mjs, tools/outcomes/*-check.mjs), plus the import and
 // state-access lints, one at a time. A script that launches a browser is left out (GPU checks run on
 // the Mac, CLAUDE.md), so a new browser check never reaches CI by accident.
