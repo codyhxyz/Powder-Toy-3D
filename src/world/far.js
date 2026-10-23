@@ -586,6 +586,49 @@ export class FarField {
   }
 
   /**
+   * Big maps' distance level of detail (the WORLD renderer: wire/worldRenderFrame.js,
+   * app.js drawWorldSky): the view drawn behind the WORLD volume, after the sky,
+   * without writing depth, so the volume draws over it wherever it hits and the
+   * coarse grid shows only where the volume has nothing (a brick not loaded yet,
+   * one the GPU page budget dropped, or past what it asks for), never the sky
+   * through the ground. The rule of every engine's LOD and of virtual texturing:
+   * a missing fine page falls back to a coarser one that is always resident
+   * (UE5 virtual textures, Nanite's root pages; Tanner et al. 1998, "The Clipmap").
+   * The far field was the big maps' coarse level until 2026-10-15 (dc480f4f);
+   * the WORLD renderer had none since, so a missing brick drew the sky's grey.
+   * No detail meshes (the volume draws the near ground) and no occluder.
+   * @param {GPURenderPassEncoder} rp
+   * @returns {boolean} whether it drew
+   */
+  drawBehind(rp) {
+    if (!this.behind || !this.vol) return false;
+    const pipe = this.behindPipeline;
+    if (pipe.state !== 'ready') { if (pipe.state === 'idle') pipe.build().then(() => this.onChange?.(), () => {}); return false; }
+    const p = this._params();
+    p.detailDepth = 0;
+    pipe.draw(rp, { bind: [this._frameGroup(NO_DETAIL_DEPTH.get(this.gpu)), this.sim.bindRO, this.vol.lightingGroup],
+      header: { ...this.sim.readHeader(), origin: [0, 0, 0] }, params: p, count: 3 });
+    return true;
+  }
+
+  // Before a WORLD frame: whether drawBehind draws (visible: the realistic
+  // view), and what derives from the grid brought up to date.
+  viewBehind(visible) {
+    this.behind = visible && this.built;
+    if (this.built) this.refresh();
+  }
+
+  // drawBehind's pipeline: the view's (flat or the rolling log's), its depth tested but never written.
+  get behindPipeline() {
+    const curved = this.curved, key = curved ? 'behindCurved' : 'behindFlat', base = farViewPipeline();
+    return (this[key] ??= this.gpu.renderPipeline({
+      name: curved ? 'far view behind curved' : 'far view behind', code: farFrag(this.sim.g, this.L, false, { curved, sourceAppearance: this.sourceAppearance }),
+      layouts: [this.viewFrameLayout, this.sim.L.STATE_RO, this.gpu.L.LIGHTING],
+      params: FarViewParams, ...base, depthStencil: { ...base.depthStencil, depthWriteEnabled: false }, build: 'manual',
+    }));
+  }
+
+  /**
    * The volume first (docs/webgpu.md F1, shaders/far.js farOccluderFrag):
    * whether this frame draws the window's volume before the scene pass, into
    * `target` (post.sceneTarget): the view draws this frame and the prepass ran

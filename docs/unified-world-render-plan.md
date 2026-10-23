@@ -26,8 +26,11 @@ Physics stays local. Graphics do not select quality from physics residency.
 Use the existing full surface, liquid, glass, media, material, and lighting rules
 throughout the world. Do not replace them with outside-only proxy shading.
 Keep world-space artwork, mixtures, temperatures, cell types, seeds, and histories.
-Keep culling and texture anti-aliasing. Add no coarse visible fallback, fog,
-distance cutoff, frame-rate change, or geometry-resolution tier.
+Keep culling and texture anti-aliasing. Add no fog, distance cutoff or
+frame-rate change. Distance does keep a coarse level (2026-10-23, the user: "we
+always had an LOD system"): the far field's brick grid is drawn behind the
+volume wherever the volume has nothing (world/far.js drawBehind), never the
+sky through missing ground.
 
 Chunks own data and derivation work. They are not independent optical domains.
 Primary and secondary rays must continue across chunk boundaries.

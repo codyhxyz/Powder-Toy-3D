@@ -2554,8 +2554,9 @@ function sprintBlurNow(dt) {
 function frameValues(cam, view, jitter) {
   return {
     camera: cam, model: volume.matrixWorld, sun: SUN, view, shadowRes: vol.shadowRes, time: viewTime, lightGain: GLOW_GAIN,
-    shadows: true, far: !!win?.far, sea: win?.P?.sea ?? 0, jitter,
-    sourceAppearance: win?.far?.appearance.uniform ?? [0, 0, 0, 0],
+    // (a far field only behind the WORLD volume, world/far.js drawBehind, lights nothing else: FU.far stays off)
+    shadows: true, far: !!win?.far && !win.far.behindOnly, sea: win?.P?.sea ?? 0, jitter,
+    sourceAppearance: (!win?.far?.behindOnly && win?.far?.appearance.uniform) || [0, 0, 0, 0],
     sourceStyle: selectedMode === 'crueltySquad' && isMaterialView(view),
   };
 }
@@ -2632,7 +2633,7 @@ function selectRenderView() {
       required.push({ state: vol.shadowState });
     }
     const far = win?.far;
-    if (far && isMaterialView(next.view)) {
+    if (far && !far.behindOnly && isMaterialView(next.view)) {
       wire('world').buildFarView(ctx, far);
       required.push(far.viewPipeline);
     }
@@ -3228,13 +3229,16 @@ function tick(now, renderOnly = false) {
     const fu=frameUniformsOf(gpu);fu.uniforms.write(local);
     fu.last.viewProj.fromArray(values.viewProj);fu.last.model.copy(model);fu.last.invViewProj.fromArray(values.invViewProj);
     fu.last.eye.setFromMatrixPosition(cam.matrixWorld);fu.last.written=true;
+    win?.far?.viewBehind(isMaterialView(renderView));   // its distance level of detail, drawn behind the volume (drawWorldSky)
   },
   // The wires' per-frame hooks, as this app's own frame runs them (src/wire/frameWires.js).
   frameWires,
   // A world stands under the sky that lights it, as a box does (drawScene's lit):
   // the realistic views draw it first, behind the volume and meshes, with the
   // sea past the edge where the world's water reaches it (worldSea).
-  drawWorldSky(rp,view){if(isMaterialView(view))overlays.drawSky(rp,worldSea(),sim.origin.toArray());},
+  // ...and behind the volume, its distance level of detail: the far field's coarse
+  // grid wherever the volume has nothing (world/far.js drawBehind).
+  drawWorldSky(rp,view){if(isMaterialView(view)){overlays.drawSky(rp,worldSea(),sim.origin.toArray());win?.far?.drawBehind(rp);}},
   // the brush, last in the scene pass, as drawScene draws it
   drawWorldBrush(rp){brush.draw(rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
@@ -3388,7 +3392,7 @@ async function allReady() {
       ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
       // (and the flying matter's, which the first frame doesn't wait for: v2/physics.js dynamicsReady)
       ...(physicsV2 ? [physicsV2.ready, physicsV2.integrationReady, physicsV2.dynamicsReady] : []),
-      ...(far && isMaterialView(view) ? [far.buildView()] : [])]);
+      ...(far && !far.behindOnly && isMaterialView(view) ? [far.buildView()] : [])]);
     await gpu.settled();
     if (graphicsFailure) throw graphicsFailure;
     if (s !== sim || v !== vol || format !== v.format || !coreReady || blocksOn || view !== viewKeyOf(settings.view) || curved !== !!warpNow()?.k) continue;

@@ -13,11 +13,14 @@ import {GI_SETTLE} from '../src/shaders/gi.js';
 import {READY} from '../src/world/renderAtlas.js';
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
 const complete={incomplete:false,requirements:[],sun:[]};
-test('actual WORLD attachment never constructs or starts the retired Far/detail pipeline',()=>{
+// Its distance level of detail (world/far.js drawBehind): the far field is made
+// after the window, and joins it only once its kernels are built, so the load
+// never waits on them (win.whenReady waits on win.far); it lights nothing else.
+test('actual WORLD attachment adds the far field behind the volume without holding up the load',async()=>{
  const source=readFileSync(new URL('../src/wire/world.js',import.meta.url),'utf8');
  const start=source.indexOf('  attach(app) {'),brace=source.indexOf('{',start);let depth=1,end=brace+1;
  for(;depth;end++){if(source[end]==='{')depth++;else if(source[end]==='}')depth--;}
- const window={},sim={origin:{fromArray(v){this.value=v;}},resetNativeDynamics(){}},app={sim,worldMode:{size:[512,384,512]},settings:{scene:'island'},sceneByKey:k=>k,gpu:{}};
+ const window={loaded:false},sim={origin:{fromArray(v){this.value=v;}},resetNativeDynamics(){}},app={sim,worldMode:{size:[512,384,512]},settings:{scene:'island'},sceneByKey:k=>k,gpu:{},vol:{lightingGroup:{}},sun:{},presentation:{},wakeLoop(){}};
  const Window=class{constructor(renderer,actualSim,options){assert.equal(actualSim,sim);assert.deepEqual(options.size,app.worldMode.size);return window;}};
  const uniforms={uClouds:{value:false},uCloudSea:{value:0}},order=[];
  const Ordered=class extends Window{constructor(...a){order.push('window');return super(...a);}};
@@ -25,9 +28,14 @@ test('actual WORLD attachment never constructs or starts the retired Far/detail 
  const early=(actualApp,scene)=>{assert.equal(actualApp,app);assert.equal(scene,'island');order.push('view');};
  // ...and its media noise, made on the map's device, before the window too
  const noise=gpu=>{assert.equal(gpu,app.gpu);order.push('noise');};
- const attach=new Function('WorldWindow','world','gfxUniforms','beyondLevel','startWorldFrameView','createMediaNoise',`return ({${source.slice(start,end)}}).attach;`)(Ordered,{worldStart:()=>[32,0,64]},uniforms,()=>42,early,noise);
- attach(app);assert.equal(app.win,window);assert.deepEqual(sim.origin.value,[32,0,64]);assert.deepEqual(order,['view','noise','window']);
- assert.equal(window.far,undefined);
+ let built,made=null;
+ const Far=class{constructor(renderer,win){assert.equal(win,window);order.push('far');made=this;}whenReady(){return new Promise(r=>{built=r;});}build(){this.built=true;}dispose(){this.disposed=true;}};
+ const attach=new Function('WorldWindow','world','gfxUniforms','beyondLevel','startWorldFrameView','createMediaNoise','FarField',`return ({${source.slice(start,end)}}).attach;`)(Ordered,{worldStart:()=>[32,0,64]},uniforms,()=>42,early,noise,Far);
+ attach(app);assert.equal(app.win,window);assert.deepEqual(sim.origin.value,[32,0,64]);assert.deepEqual(order,['view','noise','window','far']);
+ assert.equal(window.far,undefined,'the load does not wait on the far field');
+ assert.equal(made.vol,app.vol);assert.equal(made.behindOnly,true);
+ window.loaded=true;built();await new Promise(r=>setTimeout(r,0));
+ assert.equal(window.far,made);assert.equal(made.built,true,'built over the loaded window');
  assert.equal(uniforms.uClouds.value,true);assert.equal(uniforms.uCloudSea.value,42);
 });
 async function pump(f,work,p=null){
