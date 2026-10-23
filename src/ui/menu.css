@@ -262,3 +262,64 @@ body { color: var(--mm-text); font: 400 13px/1.4 var(--mm-ui); -webkit-font-smoo
   .mm-label-gap { display: none; }
   .mm.saves-view .mm-side { padding: 8px 10px; }
 }
+
+/* Choose your character (ui/characterPick.js): the first visit's first screen,
+   over everything. A fighting game's character select (Street Fighter II's):
+   each fighter on a card of their own colour, the colour-blind-safe blue and
+   orange pair, on a plain warm black, so the cards and the two characters
+   read apart at a glance. Side by side; stacked on a phone held upright. */
+.cp {
+  --cp-bg: #0f0d0c;
+  --cp-title: #ffe3a3;
+  position: fixed; inset: 0; z-index: 1100; box-sizing: border-box;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: clamp(12px, 3vh, 28px);
+  padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+  background: radial-gradient(ellipse at 50% 40%, #2a2420, var(--cp-bg) 70%);
+  color: #fff; font: 400 13px/1.4 var(--mm-ui);
+  user-select: none; transition: opacity 0.18s;
+}
+.cp *, .cp *::before { box-sizing: border-box; }
+.cp.leaving { opacity: 0; }
+.cp-title {
+  margin: 0; text-align: center; text-transform: uppercase; color: var(--cp-title);
+  font: 400 clamp(20px, 5vw, 34px)/1.1 var(--mm-pixel); letter-spacing: 0.04em;
+  text-shadow: 0 3px 0 #6b3a12, 0 6px 18px rgba(0, 0, 0, 0.7);
+}
+.cp-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 280px)); gap: clamp(12px, 3vw, 32px); width: 100%; justify-content: center; }
+/* his card blue, hers orange: each a bright top fading dark, rimmed lighter */
+.cp-card[data-gender='male'] { --cp-hi: #4f86ff; --cp-mid: #1d3aa8; --cp-lo: #0b1446; --cp-rim: #9cbcff; --cp-name: #ffd166; }
+.cp-card[data-gender='female'] { --cp-hi: #ff9a45; --cp-mid: #c2401f; --cp-lo: #4a0f0a; --cp-rim: #ffc79e; --cp-name: #fff1e0; }
+.cp-card {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 8px;
+  padding: 14px 8px 14px; border-radius: 12px; cursor: pointer; overflow: hidden;
+  font: inherit; color: inherit;
+  background: linear-gradient(165deg, var(--cp-hi), var(--cp-mid) 55%, var(--cp-lo));
+  border: 2px solid var(--cp-rim);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  transition: transform 0.12s, box-shadow 0.12s, filter 0.12s;
+}
+/* a spotlight behind the fighter, so he stands off his card */
+.cp-card::before {
+  content: ''; position: absolute; left: 50%; top: 46%; width: 100%; height: 75%; transform: translate(-50%, -50%);
+  background: radial-gradient(closest-side, rgba(255, 255, 255, 0.34), transparent);
+}
+.cp-card img, .cp-card canvas {
+  position: relative; display: block; width: 100%; height: auto; max-height: 56vh; object-fit: contain;
+  filter: drop-shadow(0 8px 12px rgba(0, 0, 0, 0.5));
+}
+.cp-label {
+  position: relative; color: var(--cp-name); font: 400 clamp(14px, 3.6vw, 18px)/1.2 var(--mm-pixel);
+  text-transform: uppercase; letter-spacing: 0.03em; text-shadow: 0 2px 0 rgba(0, 0, 0, 0.55);
+}
+.cp-card:hover, .cp-card:focus-visible { transform: translateY(-3px); filter: brightness(1.1); box-shadow: 0 0 0 3px var(--cp-rim), 0 14px 34px rgba(0, 0, 0, 0.6); }
+.cp-card:focus-visible { outline: none; }
+.cp-note { margin: 0; color: #b9aea4; font-size: 12px; text-align: center; }
+/* a phone held upright: one above the other, each card sharing the height
+   left under the title, in a trading card's upright proportion */
+@media (max-width: 600px) and (orientation: portrait) {
+  .cp { justify-content: flex-start; }
+  .cp-cards { flex: 1 1 0; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  .cp-card { justify-self: center; height: 100%; max-width: 100%; aspect-ratio: 4 / 5; padding: 12px 12px 14px; }
+  .cp-card img, .cp-card canvas { flex: 1 1 0; min-height: 0; width: 100%; height: 100%; max-height: none; }
+  .cp-label { font-size: 19px; }
+}

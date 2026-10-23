@@ -439,8 +439,9 @@ export function createMenu({ modes, map, mode, onStart, onResume, onLoadSave }) 
 // (ui/youWorker.js): built while the menu is up, so he is there the moment Start is pressed, and
 // breathing and turning on through the boot's long frames. In the still's place once built; the
 // worker and its WebGL context go with the screen, and the next menu builds him again. Without
-// OffscreenCanvas WebGL, or on a failure, the still stays.
-function liveYou(fig, still) {
+// OffscreenCanvas WebGL, or on a failure, the still stays. Choose your character's cards
+// (ui/characterPick.js) use it too, without the drag, live only while hovered (hold()).
+export function liveYou(fig, still, { drag: draggable = true } = {}) {
   let worker = null, canvas = null, ready = false, shown = false, on = false, drag = null;
   let character = null, zoom = 1;
   const paintZoom = () => {
@@ -452,11 +453,13 @@ function liveYou(fig, still) {
     }
   };
   const show = () => {
-    if (shown || !ready) return;
-    shown = true;
-    paintZoom();
-    still.replaceWith(canvas);
-    fig.classList.add('live');
+    if (!ready) return;
+    if (!shown) {
+      shown = true;
+      paintZoom();
+      still.replaceWith(canvas);
+      fig.classList.add('live');
+    }
     worker.postMessage({ run: true });
   };
   const prepare = (choice) => {
@@ -501,7 +504,7 @@ function liveYou(fig, still) {
     paintZoom();
   };
   fig.addEventListener('pointerdown', (e) => {
-    if (!shown || e.button !== 0) return;
+    if (!draggable || !shown || e.button !== 0) return;
     drag = { x: e.clientX };
     worker.postMessage({ drag: 'start' });
     fig.setPointerCapture(e.pointerId);
@@ -525,5 +528,7 @@ function liveYou(fig, still) {
       paintZoom();
     },
     stop() { on = false; release(); drop(); },
+    // stop breathing and turning where he is, the canvas kept; start() goes on from there
+    hold() { on = false; release(); worker?.postMessage({ run: false }); },
   };
 }
