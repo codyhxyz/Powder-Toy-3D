@@ -15,6 +15,7 @@ import { worldSunRings, worldCoarseCasters, WORLD_SUN_SHARPEN_TILES } from '../w
 import { WORLD_GI_NEAR_RADIUS, worldGIReach } from '../world/worldGIRing.js';
 import { worldViewAirFloors, worldViewAirWords, worldPageBudget, worldBudgetDemand } from '../world/worldViewRing.js';
 import { worldGIGroundWords } from '../shaders/worldGI.js';
+import { worldRunSync, worldRunSliced, worldSliceMeter, WORLD_SLICE_COST as COST } from '../world/worldSlices.js';
 
 const copy = v => v?.elements ? Array.from(v.elements) : typeof v?.toArray === 'function' ? v.toArray() : ArrayBuffer.isView(v) ? Array.from(v) : Array.isArray(v) ? v.map(copy) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k,x]) => [k,copy(x)])) : v;
 const frozen = v => { const c=copy(v); const freeze=x=>{if(x&&typeof x==='object'){Object.values(x).forEach(freeze);Object.freeze(x);}return x;};return freeze(c); };
@@ -86,6 +87,10 @@ export function mergeWorldFeedback(list) {
 // (an earlier load's held SOURCE where there is one), so it is not computed
 // (Island, 2026-10-22: ~78k SOURCES a restart, 20-28 s to publish). Small
 // maps (Box) compute every brick's SOURCE (shaders/gi.js) and never get here.
+// GPU completions budgetDemand and capacity() wait through for pages to come
+// back to a full pool: a reclaimed page frees after one, a released snapshot's
+// after two (its state, then its pages: renderAtlas.js _releaseSnapshot, _collect).
+export const WORLD_RECLAIM_ROUNDS=3;
 export const WORLD_SUPPORT_STAGES=Object.freeze(new Set(['forecast','sun','source']));
 export function worldSourceEligible(i,{requirements,support,ownedSources,reached=null}) {
   return ownedSources.has(i)||requirements.has(i)&&!support.has(i)&&(!reached||reached(i));
@@ -102,21 +107,36 @@ export function worldSourceEligible(i,{requirements,support,ownedSources,reached
 // s of begin() and 2.7-3.3 s of attempt() itself in 20 s). Also the probe
 // births (never: asked for but not owned) and the SOURCES asked for anew. The
 // batch's records are by book index, the metadata's own (worldLightingRecords).
-export function worldGIRecords(batch,{size,requirements,support,ownedSources,ownedProbes,reached=null}) {
+// (worldGIRecordSteps: the same in slices, worldSlices.js; the batch's rows
+// are read a slice at a time, its missing ones all reported together)
+export const worldGIRecords=(batch,options)=>worldRunSync(worldGIRecordSteps(batch,options));
+export function* worldGIRecordSteps(batch,{size,requirements,support,ownedSources,ownedProbes,reached=null},full=()=>false) {
   const eligible=[],rule={requirements,support,ownedSources,reached};
-  for(const i of ownedSources)eligible.push(i);
-  for(const i of ownedProbes)if(!ownedSources.has(i))eligible.push(i);
-  for(const [i,bits] of requirements)if(!ownedSources.has(i)&&!ownedProbes.has(i)&&(bits&(READY.GI|READY.GI_SOURCE)||worldSourceEligible(i,rule)))eligible.push(i);
-  const nearChanged=worldLightingNear(size,batch.changes.changedBricks,2),read=batch.records(eligible),records=new Array(read.length),never=[];
-  for(let k=0;k<read.length;k++){
-    const r=read[k],i=eligible[k],probeEligible=ownedProbes.has(i)||!!(requirements.get(i)&READY.GI);
-    records[k]={brick:r.brick,age:r.age,matter:r.matter,near:nearChanged(r.brick),probeEligible,sourceEligible:worldSourceEligible(i,rule)};
-    if(probeEligible&&!ownedProbes.has(i))never.push(records[k]);
+  for(const i of ownedSources){eligible.push(i);if(full(COST.member))yield;}
+  for(const i of ownedProbes){if(!ownedSources.has(i))eligible.push(i);if(full(COST.member))yield;}
+  for(const [i,bits] of requirements){if(!ownedSources.has(i)&&!ownedProbes.has(i)&&(bits&(READY.GI|READY.GI_SOURCE)||worldSourceEligible(i,rule)))eligible.push(i);if(full(COST.member))yield;}
+  const nearChanged=worldLightingNear(size,batch.changes.changedBricks,2),records=new Array(eligible.length),never=[];
+  let missing=null;const rows=full.limit?Math.max(1,Math.floor(full.limit/WORLD_RECORD_UNITS)):eligible.length;
+  for(let k=0;k<eligible.length;){
+    const end=Math.min(eligible.length,k+rows),part=k||end<eligible.length?eligible.slice(k,end):eligible;
+    let read=null;
+    try{read=batch.records(part);}catch(e){if(!e.requirements)throw e;(missing??=[]).push(e);}
+    for(let j=0;read&&j<read.length;j++,k++){
+      const r=read[j],i=eligible[k],probeEligible=ownedProbes.has(i)||!!(requirements.get(i)&READY.GI);
+      records[k]={brick:r.brick,age:r.age,matter:r.matter,near:nearChanged(r.brick),probeEligible,sourceEligible:worldSourceEligible(i,rule)};
+      if(probeEligible&&!ownedProbes.has(i))never.push(records[k]);
+      if(full(WORLD_RECORD_UNITS))yield;
+    }
+    k=end;
   }
+  if(missing){const e=missing[0];if(missing.length>1)e.requirements=missing.flatMap(m=>m.requirements);throw e;}
   const dims=size.map(n=>n/4),requestedSources=[];
-  for(const [i,bits] of requirements)if(bits&READY.GI_SOURCE&&!ownedSources.has(i))requestedSources.push([i%dims[0],Math.floor(i/dims[0])%dims[1],Math.floor(i/(dims[0]*dims[1]))]);
+  for(const [i,bits] of requirements){if(bits&READY.GI_SOURCE&&!ownedSources.has(i))requestedSources.push([i%dims[0],Math.floor(i/dims[0])%dims[1],Math.floor(i/(dims[0]*dims[1]))]);if(full(COST.member))yield;}
   return {records,never,requestedSources};
 }
+// A metadata row's units: read, then built into its GI record. One read takes
+// a slice's worth of rows.
+const WORLD_RECORD_UNITS=2*COST.record;
 // ---- the CELL stage: the owner's field tick and packing (attempt()), at
 // module level so tools/world-tick-repack-cpu-check.mjs runs them at a big
 // map's scale ----
@@ -155,8 +175,8 @@ export async function worldAdvanceFields(gpu,cells,{fieldTick,smoothing=1,eye=nu
 export function worldCellCurrent(atlas,i) {const p=atlas.live.cell.get(i);return !!p&&(p.readyBits&READY.CELL)===READY.CELL;}
 // Packs the bricks of ids (book indices) whose pages are not current, in
 // batches of whole cores, yielding between them. How many it packed.
-export async function worldClassify(gpu,cells,atlas,ids,{fieldTick,smoothing=1},brick) {
-  const stale=[];for(const i of ids)if(!worldCellCurrent(atlas,i))stale.push(brick(i));
+export async function worldClassify(gpu,cells,atlas,ids,{fieldTick,smoothing=1,full=worldSliceMeter()},brick) {
+  const stale=await worldRunSliced(worldStaleCellSteps(atlas,ids,brick,full));
   // One pool growth for the whole demand: a growth copies every public page.
   atlas.reserve('cell',stale.length);
   for(const [k,requirements] of worldClassifyBatches(stale).entries()){
@@ -164,6 +184,28 @@ export async function worldClassify(gpu,cells,atlas,ids,{fieldTick,smoothing=1},
     await recordCells(gpu,cells,{fieldTick,requirements,smoothing},'WORLD Source/Fields final capture');
   }
   return stale.length;
+}
+// ---- a transaction's scans over every brick it holds, in slices
+// (worldSlices.js): each yields once a slice's work is done ----
+// The bricks of ids whose CELL pages are not current (worldClassify).
+export function* worldStaleCellSteps(atlas,ids,brick,full=()=>false) {
+  const stale=[];for(const i of ids){if(!worldCellCurrent(atlas,i))stale.push(brick(i));if(full(COST.member))yield;}
+  return stale;
+}
+// A transaction's demand (book indices): the lists' members, in their order.
+export function* worldDemandIdSteps(lists,full=()=>false) {
+  const ids=new Set();for(const list of lists)for(const i of list){ids.add(i);if(full(COST.member))yield;}
+  return ids;
+}
+// How many of keys ids lacks (the CELL pages held outside the demand, budgetDemand).
+export function* worldOutsideSteps(keys,ids,full=()=>false) {
+  let outside=0;for(const i of keys){if(!ids.has(i))outside++;if(full(COST.member))yield;}
+  return outside;
+}
+// list's members held outside skip (the owned ones a final publish restores).
+export function* worldExceptSteps(list,skip,full=()=>false) {
+  const out=[];for(const i of list){if(!skip.has(i))out.push(i);if(full(COST.member))yield;}
+  return out;
 }
 // The bricks a transaction's metadata stage records (book indices): the
 // committed rows a cut may have changed (worldLightingRecords stale), and the
@@ -188,12 +230,14 @@ export function worldMetadataFresh(metadata,ids,{cut,captureOf,carry=null,carrie
 // (shaders read a page by its book readiness, worldAccess.js
 // worldLightDescriptor). A big map's publish restored every owned SOURCE and
 // probe a second time, 90k-115k pages (2026-10-22).
-export function worldRestoreResident(all,{resident,live,leases,fresh}) {
+export const worldRestoreResident=(all,options)=>worldRunSync(worldRestoreResidentSteps(all,options));
+export function* worldRestoreResidentSteps(all,{resident,live,leases,fresh},full=()=>false) {
   if(!resident?.size)return all;
   const out=new Set();
   for(const i of all){
     const r=resident.get(i),held=leases.get(i);
     if(!r||fresh(i)||live.get(i)?.job!==r.job||(held?.source?.token??null)!==r.source||(held?.gi?.token??null)!==r.gi)out.add(i);
+    if(full(COST.record))yield;
   }
   return out;
 }
@@ -298,7 +342,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   async function advanceFields(t) {cells.bindCut(t.cut);const cam=t.frame.values?.cam,eye=cam&&Array.from(cam);await worldAdvanceFields(gpu,cells,{...cellOptions(t),eye:eye?.length===3&&eye.every(Number.isFinite)?eye:null});}
   const cellCurrent=i=>worldCellCurrent(atlas,i);
   const captureOf=b=>cells.classificationBuffer(b);
-  async function classify(t,ids) {await worldClassify(gpu,cells,atlas,ids,cellOptions(t),brick);}
+  async function classify(t,ids) {await worldClassify(gpu,cells,atlas,ids,{...cellOptions(t),full:t.full},brick);}
   function captureInput(t,{previous=null,emission=null}={}) {
     const p=cells.acquire();
     return Object.freeze({...p,source:Object.freeze({...p.source,contentToken:t.cut.contentToken}),atlas:p.atlas,previous,emission,initialization:t.plan?.initialization,sourcePhaseToken:t.restore?.publication.sourcePhaseToken,
@@ -341,22 +385,60 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   // them, and everything over them, as air; a held one keeps its last page.
   // Logged: it is the degraded picture instead of a lost GPU device. Pages the
   // atlas already holds for bricks outside this demand count against it.
+  // And it is an invariant: the pages classify() packs always fit the pool's
+  // budget. The bricks that rule cannot drop (inside the near ring, a held
+  // record's, a glow core's) are no bound: a big map's re-pack of what changed
+  // needed a second page for each of them while the displayed frame's snapshot
+  // held the first, past the cap (Descent, real Chrome 2026-10-22: "cell pool
+  // of 1067442 pages past 1048576", a throw every transaction from then on). So
+  // when the new pages still do not fit, the oldest snapshots' superseded pages
+  // go back to the pool first (renderAtlas.js reclaim), then the farthest new
+  // bricks of any kind but a producer's own ask (t.pinned) and the owned light
+  // records, each at most once a transaction (t.squeezed): a producer that
+  // asks for one again gets it, pinned, on its next attempt.
   async function budgetDemand(t,ids) {
-    let outside=0;for(const i of atlas.live.cell.keys())if(!ids.has(i))outside++;
-    const pool=atlas.cell,used=pool.nextID-pool.free.length,limit=Math.max(0,budget.cell-outside),room=Math.max(0,budget.pool.cell-used);
+    const outside=await worldRunSliced(worldOutsideSteps(atlas.live.cell.keys(),ids,t.full));
+    const limit=Math.max(0,budget.cell-outside),roomNow=()=>Math.max(0,budget.pool.cell-atlas.poolUsed('cell'));
+    let room=roomNow();
     if(ids.size<=limit&&ids.size<=room)return;
     // classify()'s rule: a current page is not packed again
     const fresh=new Set(),resident=new Set();
     for(const i of ids)(cellCurrent(i)?resident:fresh).add(i);
     if(ids.size<=limit&&fresh.size<=room)return;
     const eye=t.frame.values?.cam,cam=eye&&Array.from(eye).length===3&&Array.from(eye).every(Number.isFinite)?Array.from(eye):null;
+    const current=await viewAirFor();let air=current.air;
+    const drop=(r,why)=>{
+      for(const i of r.dropped){ids.delete(i);fresh.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);}
+      air=r.air;t.budgetDropped=t.dropped.size;
+      console.warn(`WORLD load over its GPU page budget (${budget.cell} pages, pool ${budget.pool.cell}): ${r.dropped.length} farthest bricks dropped${why}`);
+    };
     // only bricks this load asked for may go: never a held page, a glow core's region, a record's brick or a pinned support brick
-    const current=await viewAirFor(),held=new Set([...ids].filter(i=>!t.requirements.has(i)||t.pinned.has(i)||ownedSources.has(i)||ownedProbes.has(i)||ownedGlow.has(i)));
-    const r=worldBudgetDemand(ids,{budget:limit,eye:cam,brick,held,air:current.air,fresh,room,resident});
-    if(!r.dropped.length)return;
-    for(const i of r.dropped){ids.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);}
-    if(r.air!==current.air)viewAir={air:r.air,id:++viewAirId};t.budgetDropped=t.dropped.size;
-    console.warn(`WORLD load over its GPU page budget (${budget.cell} pages, pool ${budget.pool.cell}): ${r.dropped.length} farthest bricks dropped`);
+    const held=new Set([...ids].filter(i=>!t.requirements.has(i)||t.pinned.has(i)||ownedSources.has(i)||ownedProbes.has(i)||ownedGlow.has(i)));
+    const r=worldBudgetDemand(ids,{budget:limit,eye:cam,brick,held,air,fresh,room,resident});
+    if(r.dropped.length)drop(r,'');
+    if(fresh.size>room){await reclaim('cell',()=>fresh.size-roomNow());room=roomNow();}
+    const keeps=i=>t.pinned.has(i)||t.squeezed.has(i)||ownedSources.has(i)||ownedProbes.has(i);
+    const far=(list)=>{const at=cam??[0,0,0];return list.map(i=>[Math.hypot(...brick(i).map((n,k)=>(n+0.5)*4-at[k])),i]).sort((a,b)=>b[0]-a[0]||b[1]-a[1]).map(([,i])=>i);};
+    // Pages kept resident (a load never evicts one), farthest first: the ones
+    // outside this demand, then (past them) this demand's own; an evicted one
+    // of the demand is dropped from it, its misses settled as a dropped brick's
+    // (worldSettleFeedback).
+    const evict=async(list)=>{
+      const out=far(list.filter(i=>!keeps(i))).slice(0,fresh.size-room);if(!out.length)return;
+      atlas.remove(out.map(brick),READY.CELL);
+      for(const i of out)if(ids.has(i)){ids.delete(i);resident.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);t.squeezed.add(i);}
+      t.budgetDropped=t.dropped.size;
+      console.warn(`WORLD load over its GPU page budget (${budget.cell} pages, pool ${budget.pool.cell}): ${out.length} farthest resident pages evicted`);
+      await reclaim('cell',()=>fresh.size-roomNow());room=roomNow();
+    };
+    if(fresh.size>room)await evict([...atlas.live.cell.keys()].filter(i=>!ids.has(i)));
+    if(fresh.size>room){
+      const r2=worldBudgetDemand(ids,{budget:Infinity,eye:cam??[0,0,0],brick,held:new Set([...ids].filter(keeps)),air,fresh,room,resident,radius:0});
+      for(const i of r2.dropped)t.squeezed.add(i);
+      if(r2.dropped.length)drop(r2,' (past the near ring rule: the pool is full)');
+    }
+    if(fresh.size>room)await evict([...resident]);
+    if(air!==current.air)viewAir={air,id:++viewAirId};
   }
   // SOURCE slabs a restart keeps (gfx/worldGI.js carry): the transaction's cut,
   // field tick, lighting tick, frame and config are a restart's too, so a
@@ -389,23 +471,35 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   // holds nothing else; otherwise the attempt restarts.
   function sourceBirths(t,feedback) {
     if(feedback.sun.length||!feedback.requirements.length)return null;
-    const sources=new Set(t.plan.sourceBricks.map(index)),probes=new Set(t.plan.gatherBricks.map(r=>index(r.brick)));
-    for(const r of feedback.requirements)if(r.channels!==READY.GI||!sources.has(r.index)||probes.has(r.index)||ownedProbes.has(r.index))return null;
+    // (the plan's own selection, by book index: no set of its every SOURCE a pass)
+    for(const r of feedback.requirements)if(r.channels!==READY.GI||!t.plan.selectsSource(r.index)||t.plan.selectsProbe(r.index)||ownedProbes.has(r.index))return null;
     return feedback.requirements.map(r=>brick(r.index));
   }
-  function capacity(kind,count) {
-    const key=kind==='cell'?'capacity':kind+'Capacity',pool=atlas[kind];
+  // Until over() pages fit: the oldest snapshots' superseded pages taken back
+  // (renderAtlas.js reclaim), and the pages already retiring (a cancelled
+  // private closure's, a released snapshot's) waited for, a few GPU
+  // completions at most (a released state's pages retire one completion after it).
+  async function reclaim(kind,over) {
+    for(let k=0;k<WORLD_RECLAIM_ROUNDS&&over()>0;k++)await atlas.reclaim(kind,over());
+  }
+  // Room for count more pages of a pool, its oldest snapshots' superseded pages
+  // reclaimed first when a growth would pass its budget (budgetDemand's rule).
+  async function capacity(kind,count) {
+    const key=kind==='cell'?'capacity':kind+'Capacity',pool=atlas[kind],over=atlas.poolUsed(kind)+count-budget.pool[kind];
+    if(over>0&&kind!=='probe')await reclaim(kind,()=>atlas.poolUsed(kind)+count-budget.pool[kind]);
     while(pool.free.length+atlas.resources.layout[key]-pool.nextID<count)atlas.growPool(kind);
   }
+  // (its per-page loops in slices, worldSlices.js: a restore covers every owned SOURCE)
   async function restoreJobs(t,bundle,{privatePhase=false}={}) {
-    const byIndex=new Map();
-    for(const lease of bundle.leases){if(!byIndex.has(lease.index))byIndex.set(lease.index,{});byIndex.get(lease.index)[lease.kind]=lease;}
+    const byIndex=new Map(),full=t.full??worldSliceMeter();let probesHeld=0;
+    for(const lease of bundle.leases){if(!byIndex.has(lease.index))byIndex.set(lease.index,{});byIndex.get(lease.index)[lease.kind]=lease;if(lease.kind==='gi')probesHeld++;if(full(COST.member))await pause();}
     const jobs=[];
-    capacity('light',byIndex.size);capacity('probe',[...byIndex.values()].filter(l=>l.gi).length);
+    await capacity('light',byIndex.size);await capacity('probe',probesHeld);
     try{
-      for(const [i,leases]of byIndex){const s=leases.source,gi=leases.gi;const job=atlas.allocateLight(brick(i),{publication:bundle.publication,sourceRevision:t.cut.contentToken.sourceRevision,sourceTick:s?.token.lightingTick??0,giTick:gi?.token.lightingTick??0,readyBits:(s?READY.GI_SOURCE:0)|(gi?READY.GI:0),dependencies:{source:s&&dep(s.token),gi:gi&&dep(gi.token)}});jobs.push(job);}
+      for(const [i,leases]of byIndex){const s=leases.source,gi=leases.gi;const job=atlas.allocateLight(brick(i),{publication:bundle.publication,sourceRevision:t.cut.contentToken.sourceRevision,sourceTick:s?.token.lightingTick??0,giTick:gi?.token.lightingTick??0,readyBits:(s?READY.GI_SOURCE:0)|(gi?READY.GI:0),dependencies:{source:s&&dep(s.token),gi:gi&&dep(gi.token)}});jobs.push(job);if(full(COST.lease))await pause();}
       // Allocate the WHOLE closure first: growth changes pool/generation.
-      await transport.restore(gpu,atlas,jobs.flatMap(job=>Object.values(byIndex.get(index(job.brick))).map(lease=>({job,lease}))));
+      const pairs=[];for(const job of jobs){for(const lease of Object.values(byIndex.get(index(job.brick))))pairs.push({job,lease});if(full(COST.member))await pause();}
+      await transport.restore(gpu,atlas,pairs);
       if(privatePhase){t.privateJobs=jobs;t.privateSnapshot=atlas.prepareProducerSnapshot({lightJobs:jobs,sourcePhaseToken:bundle.publication.sourcePhaseToken,dependencyToken:dependency(t)});}
       else{atlas.publish({lightJobs:jobs,dependencyToken:dependency(t)});
         // what this attempt's public restore made resident, for publishFinal (worldRestoreResident)
@@ -456,9 +550,11 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   }
   async function attempt(t) {
     t.attempts=(t.attempts??0)+1;t.stage='cell';t.resident=null;
+    // one slice meter over the attempt's steps (worldSlices.js): a slice ends at most every WORLD_SLICE_UNITS
+    t.full=worldSliceMeter();
     await clearAttempt(t,{keepRecords:true});
     await forecast(t);t.stage='cell';
-    const ids=new Set(metadata.keys());for(const set of [ownedSources,ownedProbes,t.requirements.keys()])for(const i of set)ids.add(i);
+    const ids=await worldRunSliced(worldDemandIdSteps([metadata.keys(),ownedSources,ownedProbes,t.requirements.keys()],t.full));
     for(const i of ownedGlow)t.requirements.set(i,(t.requirements.get(i)??0)|READY.GLOW);
     const glowCores=new Map(),glowBricks=[];
     for(const [i,bits]of t.requirements)if(bits&READY.GLOW){const core=brick(i).map(n=>Math.floor(n/8));glowCores.set(core.join(','),core);}
@@ -489,15 +585,15 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     const reached=reach?i=>reach(brick(i)):null;
     // Reflective SOURCE self-reads discover GI demand through typed feedback.
     // Matter (including liquids), SOURCE and CELL alone do not imply a probe.
-    const {records,never,requestedSources}=worldGIRecords(t.batch,{size,requirements:t.requirements,support:t.support,ownedSources,ownedProbes,reached});
-    if(t.frame.advance)t.plan=history.begin({lightingTick:t.tick,globalKey:t.frame.globalKey,records,currentLamps:t.frame.lamps,mode:t.tick===0?2:0,initialization:{cutToken:t.cut.contentToken,sourceBricks:requestedSources,probeBricks:never.map(r=>r.brick),records}});
-    else t.plan=history.beginBirth({cutToken:t.cut.contentToken,sourceBricks:[...new Map([...requestedSources,...never.filter(r=>!ownedSources.has(index(r.brick))).map(r=>r.brick)].map(b=>[index(b),b])).values()],probeBricks:never.map(r=>r.brick),records});
+    const {records,never,requestedSources}=await worldRunSliced(worldGIRecordSteps(t.batch,{size,requirements:t.requirements,support:t.support,ownedSources,ownedProbes,reached},t.full));
+    if(t.frame.advance)t.plan=await history.beginSliced({lightingTick:t.tick,globalKey:t.frame.globalKey,records,currentLamps:t.frame.lamps,mode:t.tick===0?2:0,initialization:{cutToken:t.cut.contentToken,sourceBricks:requestedSources,probeBricks:never.map(r=>r.brick),records}},{full:t.full});
+    else t.plan=await history.beginBirthSliced({cutToken:t.cut.contentToken,sourceBricks:[...new Map([...requestedSources,...never.filter(r=>!ownedSources.has(index(r.brick))).map(r=>r.brick)].map(b=>[index(b),b])).values()],probeBricks:never.map(r=>r.brick),records},{full:t.full});
     // Every owned offscreen record remains a causal input. BUILDING is never
     // returned by probe(); the previous accepted bundle remains independently pinned.
     const invalidations=atlas.bookPages('light').map(p=>({brick:[...p.brick],channels:READY.LIGHT}));
     atlas.publish({invalidations,sunManifest:null});
     const previousProbes=[...ownedProbes].filter(i=>t.frame.advance||history.birth(i)?.birthTick<t.tick);
-    const previous=t.plan.captureRestore({cut:t.cut,configVersion:t.frame.configVersion,sourceIndices:[...ownedSources],probeIndices:previousProbes});
+    const previous=await t.plan.captureRestoreSliced({cut:t.cut,configVersion:t.frame.configVersion,sourceIndices:ownedSources,probeIndices:previousProbes},{full:t.full});
     try{if(previous.leases.length)await restoreJobs(t,previous);}finally{previous.release();}
     t.stage='sun';
     // A tile the feedback added after this attempt's forecast (none is, with
@@ -523,7 +619,9 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       t.plan.expand({probeBricks:births});
       t.sourcePasses=(t.sourcePasses??0)+1;
     }
-    t.restore=t.plan.captureRestore({cut:t.cut,configVersion:t.frame.configVersion,sourceIndices:[...new Set([...ownedSources,...sources.map(index)])],probeIndices:previousProbes,sourcePhase:true});
+    t.full=worldSliceMeter();
+    const restoreSources=await worldRunSliced(worldDemandIdSteps([ownedSources,(function*(){for(const b of sources)yield index(b);})()],t.full));
+    t.restore=await t.plan.captureRestoreSliced({cut:t.cut,configVersion:t.frame.configVersion,sourceIndices:[...restoreSources],probeIndices:previousProbes,sourcePhase:true},{full:t.full});
     t.stage='restore';
     if(t.restore.leases.length)await restoreJobs(t,t.restore,{privatePhase:true});
     const gathers=t.plan.gatherBricks;
@@ -536,25 +634,29 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     return null;
   }
   async function publishFinal(t) {
-    const sourceOutputs=new Map(),probeOutputs=new Map();
-    for(const out of t.outputs){for(const i of out.sources)sourceOutputs.set(i,out);for(const i of out.probes)probeOutputs.set(i,out);}
-    const restore=history.captureRestore({cut:t.cut,configVersion:t.frame.configVersion,sourceIndices:[...ownedSources].filter(i=>!sourceOutputs.has(i)),probeIndices:[...ownedProbes].filter(i=>!probeOutputs.has(i))});
-    const leases=new Map();for(const l of restore.leases){if(!leases.has(l.index))leases.set(l.index,{});leases.get(l.index)[l.kind]=l;}
-    const all=new Set([...ownedSources,...ownedProbes,...sourceOutputs.keys(),...probeOutputs.keys(),...[...t.requirements].filter(([,bits])=>bits&READY.GLOW).map(([i])=>i)]),jobs=[];
+    const full=t.full=worldSliceMeter(),sourceOutputs=new Map(),probeOutputs=new Map();
+    await worldRunSliced((function*(){for(const out of t.outputs){for(const i of out.sources){sourceOutputs.set(i,out);if(full(COST.member))yield;}for(const i of out.probes){probeOutputs.set(i,out);if(full(COST.member))yield;}}})());
+    const sourceIndices=await worldRunSliced(worldExceptSteps(ownedSources,sourceOutputs,full)),probeIndices=await worldRunSliced(worldExceptSteps(ownedProbes,probeOutputs,full));
+    const restore=history.captureRestore({cut:t.cut,configVersion:t.frame.configVersion,sourceIndices,probeIndices});
     const glowOf=b=>t.glows.find(o=>b.every((n,k)=>n>=o.plan.output.min[k]&&n<o.plan.output.max[k]));
-    const ids=worldRestoreResident(all,{resident:keepResident?t.resident:null,live:atlas.live.light,leases,fresh:i=>sourceOutputs.has(i)||probeOutputs.has(i)||!!glowOf(brick(i))});
+    const leases=new Map();for(const l of restore.leases){if(!leases.has(l.index))leases.set(l.index,{});leases.get(l.index)[l.kind]=l;}
+    const glows=[],jobs=[];for(const [i,bits]of t.requirements)if(bits&READY.GLOW)glows.push(i);
+    const all=await worldRunSliced(worldDemandIdSteps([ownedSources,ownedProbes,sourceOutputs.keys(),probeOutputs.keys(),glows],full));
+    const ids=await worldRunSliced(worldRestoreResidentSteps(all,{resident:keepResident?t.resident:null,live:atlas.live.light,leases,fresh:i=>sourceOutputs.has(i)||probeOutputs.has(i)||!!glowOf(brick(i))},full));
     t.residentKept=all.size-ids.size;
-    capacity('light',ids.size);capacity('probe',ids.size);
+    await capacity('light',ids.size);await capacity('probe',ids.size);
     try{
       for(const i of ids){const held=leases.get(i)??{},s=sourceOutputs.get(i),gi=probeOutputs.get(i),b=brick(i),glow=glowOf(b);
         const st=s?.token??held.source?.token,gt=gi?.token??held.gi?.token,lt=glow?.token;
         const job=atlas.allocateLight(b,{publication:restore.publication,sourceRevision:t.cut.contentToken.sourceRevision,sourceTick:st?.lightingTick??0,giTick:gt?.lightingTick??0,glowTick:lt?.lightingTick??0,readyBits:(st?READY.GI_SOURCE:0)|(gt?READY.GI:0)|(lt?READY.GLOW:0),dependencies:{source:st&&dep(st),gi:gt&&dep(gt),glow:lt&&dep(lt)}});jobs.push(job);
+        if(full(COST.lease))await pause();
       }
-      await transport.restore(gpu,atlas,jobs.flatMap(job=>Object.values(leases.get(index(job.brick))??{}).map(lease=>({job,lease}))));
+      const pairs=[];for(const job of jobs){for(const lease of Object.values(leases.get(index(job.brick))??{}))pairs.push({job,lease});if(full(COST.member))await pause();}
+      await transport.restore(gpu,atlas,pairs);
       // One submission and one wait for every page: a wait per page was ~0.3 ms
       // each, 20-28 s for an Island load's ~78k SOURCES (2026-10-22).
       const writes=[];
-      for(const job of jobs){const i=index(job.brick),s=sourceOutputs.get(i),gi=probeOutputs.get(i),b=brick(i),glow=glowOf(b);if(s)writes.push(s.atlasWrite(job,'source'));if(gi)writes.push(gi.atlasWrite(job,'gi'));if(glow)writes.push(glow.atlasWrite(job));}
+      for(const job of jobs){const i=index(job.brick),s=sourceOutputs.get(i),gi=probeOutputs.get(i),b=brick(i),glow=glowOf(b);if(s)writes.push(s.atlasWrite(job,'source'));if(gi)writes.push(gi.atlasWrite(job,'gi'));if(glow)writes.push(glow.atlasWrite(job));if(full(COST.record))await pause();}
       await transport.writeAll(atlas,writes);
       const s=t.sunHandle.bindings(),token=t.sunHandle.token;
       atlas.publish({lightJobs:jobs,dependencyToken:dependency(t),sunManifest:{...token,...s,dependencySetID:cells.publication.dependencySetID,dependencyVersion:cells.publication.dependencyVersion}});
@@ -608,7 +710,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     if(same&&(!accepted||JSON.stringify(frame.globalKey)!==JSON.stringify(accepted.frame.globalKey)||frame.configVersion!==accepted.frame.configVersion))throw new Error('camera-only births require the accepted lighting settings/cut');
     const cut=same?accepted.cut.retain():source.recordCut(gpu.frame,{previousCut:accepted?.cut,sceneVersion:frame.sceneVersion,configVersion:frame.schemaVersion});
     if(!history)history=createWorldLightingHistory({worldSize:size,epoch:source.epoch,sourceOwner:source,configuration:cut.configuration});
-    const t={id:++serial,frame,cut,tick:same?history.lightingTick:history.lightingTick+1,fieldTick:same?accepted.fieldTick:(cells.fields.lastTick??-1)+1,state:'building',stage:'initializing',requirements:new Map(),support:new Set(),dropped:new Set(),pinned:new Set(),forecastProbes:new Set(),sunTiles:new Set(),outputs:[],carry:[],glows:[],privateJobs:[],bundle:null,bundlePins:0,retired:false,cleaned:false};
+    const t={id:++serial,frame,cut,tick:same?history.lightingTick:history.lightingTick+1,fieldTick:same?accepted.fieldTick:(cells.fields.lastTick??-1)+1,state:'building',stage:'initializing',requirements:new Map(),support:new Set(),dropped:new Set(),squeezed:new Set(),pinned:new Set(),forecastProbes:new Set(),sunTiles:new Set(),outputs:[],carry:[],glows:[],privateJobs:[],bundle:null,bundlePins:0,retired:false,cleaned:false};
     try{add(t,requirements);}catch(e){cut.release();throw e;}
     viewAir=null;   // a transaction's budget drops are its own: the next starts from the scene's floors
     active=t;t.work=run(t);t.work.catch(()=>{});return t.work;
@@ -632,8 +734,13 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     settle(feedback){const t=active;return t?worldSettleFeedback(feedback,{dropped:t.dropped,sunTiles:t.sunTiles,index:r=>index(r.brick??brick(r.index))}):feedback;},
     async extend(candidate,feedback){live();const t=active;if(!t||t.state!=='probe-ready'||candidate.identity!==t.bundle.identity)throw new Error('foreign/out-of-order WORLD feedback');if(complete(feedback))return t.bundle.retain();if(!add(t,feedback.requirements,feedback.sun,false,false,true))throw new Error('WORLD scene feedback made no dependency progress');t.state='building';t.work=runRetry(t);t.work.catch(()=>{});return t.work;},
     async accept(candidate,{feedback,feedbackIdentity,postTicket}={}){live();const t=active;if(!t||t.state!=='probe-ready'||candidate.identity!==t.bundle.identity||!complete(feedback)||!postTicket?.confirmation||postTicket.publication?.identity!==candidate.identity||feedbackIdentity==null||postTicket.feedbackIdentity!==feedbackIdentity||['epoch','sceneToken','configVersion'].some(k=>postTicket.identity?.[k]!==candidate.identity[k]))throw new Error('exact complete scene/native feedback and final Post ticket required');t.state='accepting';const confirmed=await postTicket.confirmation;if(active!==t||dead)return false;if(confirmed!==true||postTicket.status!=='committed'){t.state='probe-ready';wake();return false;}if(candidate.identity!==t.bundle.identity)throw new Error('WORLD publication changed during final Post');
-      t.plan.seal({cutToken:t.cut.contentToken,feedback});t.plan.commit();t.plan=null;metadataChanges(t);
-      for(const out of t.outputs){out.sources.forEach(i=>ownedSources.add(i));out.probes.forEach(i=>ownedProbes.add(i));}for(const [i,bits]of t.requirements)if(bits&READY.GLOW)ownedGlow.add(i);
+      // In slices (worldSlices.js): a reset or disposal between two (the only
+      // calls an accepting transaction admits) stops it, and clears what it adopted.
+      const current=()=>active===t&&!dead;
+      t.plan.seal({cutToken:t.cut.contentToken,feedback});if(!await t.plan.commitSliced({live:current}))return false;t.plan=null;metadataChanges(t);
+      const full=worldSliceMeter();
+      for(const out of t.outputs){for(const [list,owned] of [[out.sources,ownedSources],[out.probes,ownedProbes]])for(const i of list){owned.add(i);if(full(COST.member)){await pause();if(!current())return false;}}}
+      for(const [i,bits]of t.requirements)if(bits&READY.GLOW)ownedGlow.add(i);
       const old=accepted;accepted={bundle:t.bundle.retain(),cut:t.cut.retain(),frame:t.frame,fieldTick:t.fieldTick};await retire(t);active=null;if(old){old.bundle.release();old.cut.release();}next();return true;},
     async retry(){live();const t=active;if(!t||t.state!=='rejected')throw new Error('only definitively rejected WORLD work can retry');t.state='retrying';try{await fence();}catch(e){rejected(t,e);throw e;}if(active!==t||dead)return null;t.error=null;t.state='building';t.work=runRetry(t);t.work.catch(()=>{});return t.work;},
     async discard(candidate=null){live();const t=active;if(t?.state==='accepting')throw new Error('wait for final Post confirmation before discarding WORLD');if(!t||!['probe-ready','rejected'].includes(t.state)||(t.bundle?candidate?.identity!==t.bundle.identity:t.state!=='rejected'))throw new Error('foreign WORLD discard');t.state='retiring';await retire(t);if(active!==t||dead)return;active=null;next();},
