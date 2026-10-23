@@ -37,6 +37,7 @@ ${fallWGSL}
 @group(2) @binding(1) var<storage, read_write> act2: array<atomic<u32>>;
 const FLOW_LIST: u32 = ${a.list}u;                                  // the awake bricks (v2ActLayout list)
 const FLOW_USE_AWAKE: u32 = ${a.count + CNT.USE_AWAKE}u;  // ... and how many this tick's passes use
+const FLOW_CHANGED: u32 = ${a.changed}u;                         // the bricks the tick wrote (v2ActLayout changed: World's source)
 const FLOW_LIQUID = array<bool, ${ELEMENTS.length}>(${ELEMENTS.map(e => String(e.kind === K.LIQUID)).join(',')});
 const FLOW_POWDER = array<bool, ${ELEMENTS.length}>(${ELEMENTS.map(e => String(e.kind === K.POWDER)).join(',')});   // only grains topple
 const FLOW_SPEED_SI: f32 = ${WEATHER_SPEED_SI};     // m/s per cell per V1 step
@@ -56,7 +57,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   let old = flow[s];
   let oldZ = unpack2x16float(old[1]);
   if (FLOW_POWDER[c.x & 255u] && oldZ.y == FLOW_TOPPLE_MARK) { w = vec2u(old[0], pack2x16float(vec2f(oldZ.x, 0.0))); }
-  if (any(flow[s] != w)) { flow[s] = w; }
+  if (any(flow[s] != w)) { flow[s] = w; atomicStore(&act2[FLOW_CHANGED + (s >> 6u)], 1u); }
 }
 `;
 }

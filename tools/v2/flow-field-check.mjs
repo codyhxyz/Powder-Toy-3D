@@ -54,6 +54,7 @@ assert.deepEqual(FLOW_LAYOUT.map(e => e.buffer.type), ['storage'], 'group 1: the
 const act = v2ActLayout(g);
 assert.equal(constOf(flowCode, 'FLOW_LIST'), act.list, 'reads the awake list');
 assert.equal(constOf(flowCode, 'FLOW_USE_AWAKE'), act.count + CNT.USE_AWAKE, '... and the count this tick\'s passes use');
+assert.equal(constOf(flowCode, 'FLOW_CHANGED'), act.changed, 'notes the bricks whose flow it wrote (the tick\'s change: World\'s source)');
 assert.equal(constOf(flowCode, 'FLOW_SPEED_SI'), WEATHER_SPEED_SI, 'V1 units as nativeB gives them (m/s per cell/step)');
 assert.equal(constOf(flowCode, 'FLOW_SPEED_FLUX'), WEATHER_SPEED_FLUX, '... and face flux per cell/step');
 const liquidRow = flowCode.match(/const FLOW_LIQUID = array<bool, \d+>\(([^)]*)\);/);
@@ -61,7 +62,7 @@ assert(liquidRow, 'the kernel has its liquid rows');
 const FLOW_LIQUID = liquidRow[1].split(',').map(v => v === 'true');
 assert.deepEqual(FLOW_LIQUID, ELEMENTS.map(e => e.kind === K.LIQUID));
 const ctx = {
-  FLOW_LIST: act.list, FLOW_USE_AWAKE: act.count + CNT.USE_AWAKE, FLOW_SPEED_SI: WEATHER_SPEED_SI, FLOW_SPEED_FLUX: WEATHER_SPEED_FLUX, FLOW_LIQUID,
+  FLOW_LIST: act.list, FLOW_USE_AWAKE: act.count + CNT.USE_AWAKE, FLOW_CHANGED: act.changed, FLOW_SPEED_SI: WEATHER_SPEED_SI, FLOW_SPEED_FLUX: WEATHER_SPEED_FLUX, FLOW_LIQUID,
   FLOW_TOPPLE_MARK: constOf(flowCode, 'FLOW_TOPPLE_MARK'), FLOW_POWDER: flowCode.match(/const FLOW_POWDER = array<bool, \d+>\(([^)]*)\);/)[1].split(',').map(v => v === 'true'),
   fallVelocity: c => fallVelocity(c),   // the CPU twin of fallWGSL's (tools/v2/fall-check.mjs holds them together)
   vec3f: (a, b, c) => (typeof a === 'object' ? vec3(a.x, a.y, b) : vec3(a, b, c)), vec2f: (x, y) => ({ x, y }), vec2u: (x, y) => [x >>> 0, y >>> 0],
@@ -75,6 +76,7 @@ const mainText = rewrite(scalar(body(flowCode, 'main')), [
   ['cells[s]', 'cellAt(s)'],
   ['vec3f(unpack2x16float(c[2]), unpack2x16float(c[3] & 65535).x) / FLOW_SPEED_FLUX', 'div3(vec3f(unpack2x16float(c[2]), unpack2x16float(c[3] & 65535).x), FLOW_SPEED_FLUX)'],
   ['let old = flow[s];', 'let old = flowAt(s);'], ['any(flow[s] != w)', 'differ(flowAt(s), w)'], ['flow[s] = w;', 'setFlow(s, w);'],
+  ['atomicStore(&act2[FLOW_CHANGED + (s >>> 6)], 1);', 'act2[FLOW_CHANGED + (s >>> 6)] = 1;'],
 ]);
 const flowMain = new Function('ctx', 'io', 'wg', 'li', `with (ctx) { with (io) { ${mainText} } }`);
 let flowRuns = 0;
@@ -163,6 +165,8 @@ assert(Math.abs(flowAt(falling)[1] * 32) > 0.01, 'enough for the flow map to mov
 assert.deepEqual(flowAt(resting), [0, 0, 0], 'a resting grain reads 0: motion that happened (move.js)');
 assert.deepEqual(flowAt(water), flux.map(q => f16(q / WEATHER_SPEED_FLUX)), 'water: its face flux');
 assert.deepEqual(flowAt(air), [0, 0, 0], 'air: 0, V1\'s stale word overwritten');
+// (v2invalidate is a spy here: the tick's change words stay as the flow left them)
+for (const p of [falling, water, air]) assert.equal(actWords[owner.layout.changed + (at(p) >> 6)], 1, 'a brick whose flow changed is noted as changed');
 // the grain lands: the next tick writes 0 while its brick is still awake (it sleeps a quiet cycle later)
 put(falling, setFall(fallingCore, 0, 0));
 owner.ticks(1);

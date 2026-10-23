@@ -1,4 +1,4 @@
-import { routeNativePOV, prepareNativePOVForces, nativePOVForcesReady, nativeLaser, nativeLaserReady } from '../v2/interactions.js';
+import { routeNativePOV, prepareNativePOVForces, nativePOVForcesReady, nativeLaser, nativeLaserReady, laserSegments } from '../v2/interactions.js';
 import { NativeTransfer } from '../v2/transfer.js';
 import { coupleNativeBody } from '../v2/body.js';
 // The first person's GPU work on WebGPU (docs/webgpu.md G2): every write to
@@ -274,7 +274,10 @@ class PovGpu {
     if (native) {
       sim._dispatch(reach, [1, 1, 1], { bind: [sim.tables, state, d.laserReachGroup], header: sim.readHeader({ physical: true }), params: { muzzle, dir, slot } });
       nativeLaser(sim, muzzle, dir, d.beam);   // (version and wake: the force driver's; World's source, as _wrote tells it)
-      sim.worldRenderSource?.noteContentChange();
+      // (its box: the beam's segments' union, inclusive grid cells, the force kernel's own: v2/interactions.js nativeLaser)
+      const parts = laserSegments(muzzle, dir), at = [sim.origin.x, sim.origin.y, sim.origin.z];
+      sim.worldRenderSource?.noteContentChange({ lo: [0, 1, 2].map(k => Math.min(...parts.map(q => q.box.lo[k])) + at[k]),
+        hi: [0, 1, 2].map(k => Math.max(...parts.map(q => q.box.hi[k])) + 1 + at[k]) });
     } else {
       const header = sim.header();
       sim._dispatch(reach, [1, 1, 1], { bind: [sim.tables, state, d.laserReachGroup], header: sim.readHeader({ physical: true }), params: { muzzle, dir, slot } });

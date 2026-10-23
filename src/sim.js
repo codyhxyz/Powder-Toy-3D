@@ -658,7 +658,9 @@ export class Simulation {
     if (kernel.apply) this._dispatch(kernel.apply, size, { bind: groups, header, params });
     this.version++;
     deco?.scrub?.(f, clipped);
-    if (!residency) this.worldRenderSource?.noteContentChange();
+    // (World's source: the box it wrote, in world cells; an edit writes only its own cells in the box)
+    const o = [this.origin.x, this.origin.y, this.origin.z];
+    if (!residency) this.worldRenderSource?.noteContentChange({ lo: a.map((v, k) => v + o[k]), hi: b.map((v, k) => v + 1 + o[k]) });
     this.wake();   // the next step rebuilds the map: the marked bricks are forced
   }
 

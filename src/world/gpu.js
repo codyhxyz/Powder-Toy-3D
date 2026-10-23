@@ -154,10 +154,12 @@ export function nativeWriteGroup(sim) {
 }
 // After a native write: as an edit notes itself (Simulation.edit): the version (V2 then looks for V1
 // writes to import: none; the write noted its own bricks), the derived passes, the source, a wake.
-export function nativeWritten(sim, { residency = false } = {}) {
+// box: the grid cells it wrote ({ lo, hi }, hi exclusive), when known; else the window.
+export function nativeWritten(sim, { residency = false, box = null } = {}) {
   sim.version++;
   sim.changedAll = true;
-  if (!residency) sim.worldRenderSource?.noteContentChange();
+  const at = [sim.origin.x, sim.origin.y, sim.origin.z];
+  if (!residency) sim.worldRenderSource?.noteContentChange(box ? { lo: box.lo.map((v, i) => v + at[i]), hi: box.hi.map((v, i) => v + at[i]) } : undefined);
   sim.compact.wake();
   sim.wake();
 }
@@ -250,7 +252,7 @@ export class WorldGenerator {
       this._sceneGroup = gpu.bindGroup(gpu.layout(`native scene ${JSON.stringify(this.res.has)}`, this.res.layout), this.res.entries(), 'native fill scene');
     }
     sim._dispatch(k, nativeFillSize(box.lo, box.hi), { bind: [sim.tables, write, this._sceneGroup], header: sim.header(), params: { origin, lo: box.lo, hi: box.hi } });
-    nativeWritten(sim, { residency });
+    nativeWritten(sim, { residency, box });
   }
 
   /**

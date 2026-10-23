@@ -232,7 +232,7 @@ fn notePacketTouch(slot: u32, touch: i32) {
 }`;
 export const decoStorageWGSL = /* wgsl */ `
 fn decoOf(slot: u32) -> u32 { return bitcast<u32>(banks[SLOTS + slot]); }
-fn setDeco(slot: u32, d: u32) { banks[SLOTS + slot] = bitcast<i32>(d); }
+fn setDeco(slot: u32, d: u32) { if (decoOf(slot) != d) { banks[SLOTS + slot] = bitcast<i32>(d); atomicStore(&act2[V2_CHANGED + slot / 64u], 1u); } }
 fn particleDecoOf(i: u32) -> u32 { return bitcast<u32>(banks[2u * SLOTS + i]); }
 fn setParticleDeco(i: u32, d: u32) { banks[2u * SLOTS + i] = bitcast<i32>(d); }
 `;

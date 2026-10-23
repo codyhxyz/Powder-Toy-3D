@@ -10,6 +10,7 @@ import { cellSlot, marksLayout } from '../shaders/common.js';
 import {
   v2BlockCompactLayout, v2BlockClassifyWGSL, v2BlockFinalizeWGSL, v2BlockWGSL, V2_BLOCK_FINALIZE_LAYOUT, V2_BLOCK_FLOW_LAYOUT,
   V2_KERNELS, V2Params, nativeDynamicsHead, v2DemandWords, V2_DYNAMICS_LAYOUT, V2_LAYOUT, V2_ARGS_LAYOUT, V2_STATE_LAYOUT, V2_MATERIAL_LAYOUT, V2_LIQUID_LAYOUT, V2_CONTACT_LAYOUT, V2_IMPORT_LAYOUT, V2_INVALIDATE_LAYOUT, v2ActLayout, v2Table, v2Rows, ARGS2, STATS,
+  v2ChangeLayout, v2ChangeBoxes, CHANGE_TILE,
   TICK_HZ, FULL, V2, QUIET_TICKS, BRIDGE, LEGACY_WORD,
 } from '../shaders/v2.js';
 import { pairOrder } from '../shaders/v2/columns.js';
@@ -18,6 +19,9 @@ import { V2_HEAT_KERNEL } from '../shaders/v2/heat.js';
 import { CONTACT_CONSTANTS } from './contact.js';
 import { auxLayout } from '../shaders/v2/state.js';
 import { PARTICLE_CAP } from './dynamics-reference.js';
+
+// The window [origin, origin + grid) in world cells (world/renderSource.js sourceBounds, at a given origin).
+const sourceBoundsAt = (sim, origin) => ({ lo: [...origin], hi: origin.map((v, i) => v + [sim.g.nx, sim.g.ny, sim.g.nz][i]) });
 
 // Opt-in box physics. Compact cells are authoritative; read-only presentation
 // consumes them directly. Legacy A/B are a lazy, lossy compatibility cache for
@@ -32,6 +36,14 @@ import { PARTICLE_CAP } from './dynamics-reference.js';
 // Ticks a frame may run at Speed 1×, at most: past them time dilates rather than the frame stretching
 // (docs/v2.md 5.1: Minecraft's lag).
 const CATCH_UP = 2;
+// What a batch of ticks changed, told to World's renderer (world/renderSource.js noteContentChange) when its
+// read comes back (_reportChanges): each tile's touched bricks (shaders/v2.js v2ChangeLayout) widened to whole
+// quanta of CHANGE_QUANTUM bricks (16 cells, the World fields' halo: shaders/../world/fields.js
+// WORLD_FIELD_HALO), and kept for CHANGE_LINGER batches after they last changed (two generations of it).
+// A report that is the last one again replaces it in the journal (renderSource.js), so steady motion (a
+// waterfall, a lava lake) adds no entry a tick. Both widen the report, never narrow it.
+const CHANGE_QUANTUM = 4;
+const CHANGE_LINGER = 30;
 // V1's electric steps a tick (v2/contact.js CT_ELEC_STEPS: NOMINAL_STEP_RATE / TICK_HZ)
 const ELEC_STEPS = CONTACT_CONSTANTS.CT_ELEC_STEPS[1];
 // The grid's longest cold compiles (dawn.node, Metal, cache-busted: v2block 3.2 s, v2runs 1.9 s, v2pairs
@@ -106,7 +118,15 @@ export class PhysicsV2 {
     this.contactReady = false;
     this.dynamics = null;
     this.act = buf('activity', this.layout.allocated * 4);
-    this.args = buf('args', ARGS2.allocated * 4, S | CS | CD | GPUBufferUsage.INDIRECT);
+    // (the tick's change tiles after the args: shaders/v2.js v2ChangeLayout)
+    this.changeLayout = v2ChangeLayout(g);
+    this.args = buf('args', this.changeLayout.allocated * 4, S | CS | CD | GPUBufferUsage.INDIRECT);
+    // World's change reports (_reportChanges): the next batch reports the whole window (a new owner,
+    // activated, its dynamics just built); the tiles of the generations kept (CHANGE_LINGER)
+    this.changeWhole = true;
+    this.changeGenerations = [new Uint32Array(this.changeLayout.count), new Uint32Array(this.changeLayout.count)];
+    this.changeBatches = 0;
+    this.changeDynamics = false;
     // every brick starts asleep (its quiet run full): only what the first import changes wakes, so a
     // settled box certifies idle after one tick instead of a whole offset cycle of every brick awake
     gpu.queue.writeBuffer(this.act, this.layout.quiet * 4, new Uint32Array(g.nbricks).fill(QUIET_TICKS));
@@ -142,7 +162,7 @@ export class PhysicsV2 {
     }
     this.nativeDynamics = { head: nativeDynamicsHead, layout: gpu.layout('V2_DYNAMICS', V2_DYNAMICS_LAYOUT) };
     this.nativeDynamics.group = gpu.bindGroup(this.nativeDynamics.layout, [b(0, this.cells), b(1, this.aux), b(2, this.act)], 'native dynamics state');
-    this.familyOf = name => ({ v2args: 'args', v2actArgs: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2support: 'contact', v2blockClassify: 'contact', v2blockFinalize: 'blockFinalize', v2block: 'contact', v2runs: 'liquid', v2pairs: 'liquid', v2elecGather: 'contact', v2elecArgs: 'args', v2elecCommit: 'contact', v2heat: 'contact' }[name] ?? 'v2');
+    this.familyOf = name => ({ v2args: 'args', v2actArgs: 'args', v2invalidate: 'args', v2import: 'material', v2column: 'contact', v2boundary: 'contact', v2externalEvents: 'contact', v2support: 'contact', v2blockClassify: 'contact', v2blockFinalize: 'blockFinalize', v2block: 'contact', v2runs: 'liquid', v2pairs: 'liquid', v2elecGather: 'contact', v2elecArgs: 'args', v2elecCommit: 'contact', v2heat: 'contact' }[name] ?? 'v2');
     const familyLayouts = { v2: L.V2, args: L.ARGS, material: L.MATERIAL, liquid: L.LIQUID, contact: L.CONTACT };
     this.kernels = {};
     const specs = this.blockCompact ? [...V2_KERNELS,
@@ -191,6 +211,7 @@ export class PhysicsV2 {
       this.contactReady = !!contactWGSL;
       sim.version++;
       sim.changedAll = true;
+      this.changeWhole = true;
     }, () => {});
     // the dynamics' first tick wakes the box, in case it rested meanwhile (a certified idle read
     // waits for them: _readIdle)
@@ -274,6 +295,7 @@ export class PhysicsV2 {
     this.gpu.write(this.act, this.layout.busy0 * 4, busy);
     this.gpu.write(this.act, this.layout.busy1 * 4, busy);
     this.noteAllCells({ summaries: false }); // edge and ambient enter the air source's faces and buoyancy
+    this.sim.worldRenderSource?.noteContentChange();   // (what the air reads of every brick changed: whole-grid)
     this.writtenSinceTick = true;
     this.dynamics?._work();
     this.wake();
@@ -300,14 +322,14 @@ export class PhysicsV2 {
 
   // The counts after the ticks recorded so far: certifies idle when no brick is awake and nothing wrote since.
   // (Not while the dynamics build: what they hold for later, a material request, keeps the box awake.)
-  _readIdle() {
+  _readIdle(read = null) {
     if (this.idleRead || this.certified || this.disposed || !this.dynamicsBuilt) return;
     const epoch = this.epoch;
     this.idleRead = Promise.all([
-      this.gpu.readback.buffer(this.args, ARGS2.STATS * 4, STATS.words * 4),
+      read ?? this.gpu.readback.buffer(this.args, ARGS2.STATS * 4, STATS.words * 4),
       this.dynamics?.readActivity(),
     ]).then(([bytes]) => {
-      this.stats = new Uint32Array(bytes);
+      this.stats = new Uint32Array(bytes, 0, STATS.words);
       if (!this.disposed && epoch === this.epoch && this.stats[STATS.AWAKE] === 0 && (!this.dynamics || this.dynamics.isIdle === true)) this.certified = true;
     }).catch(() => {}).finally(() => { this.idleRead = null; });
   }
@@ -384,6 +406,7 @@ export class PhysicsV2 {
     const legacyPlane = this.sim.compact ? null : this.sim.decoPlane;
     if (legacyPlane) this._takePlane(legacyPlane);
     this.flowField?.takeOver();
+    this.changeWhole = true;   // (World's source reads these cells from now on: _reportChanges)
     this.sim.compact = this;
     this.sim.pingPong?.(false);
     this.sync();
@@ -413,6 +436,7 @@ export class PhysicsV2 {
     gpu.write(this.act, this.layout.busy1 * 4, new Uint32Array(g.nbricks).fill(1));
     gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(LEGACY_WORD.STALE));
     this.noteAllCells(); // the copy above bypassed noteState; the requests are clear
+    sim.worldRenderSource?.noteContentChange();   // a whole-grid write (undo), not a tick's change
     this.importFull = this.importMarked = false;
     this.seenVersion = sim.version;
     this.seenWhole = sim.wholeWrites;
@@ -443,7 +467,7 @@ export class PhysicsV2 {
     this.writtenSinceTick = false;
     const header = sim.header();
     const own = [sim.tables, gpu.emptyGroup, groups.v2];
-    const invalidation = [sim.tables, groups.invalidate, groups.v2];
+    const invalidation = [sim.tables, groups.invalidate, groups.args];
     const run = (kernel, size, bind = [sim.tables, gpu.emptyGroup, groups[this.familyOf(kernel.name)]], p = params) => {
       kernel.dispatch(f, size, { bind, header, params: p });
       sim.onPass?.(kernel.name, { kind: 'compute', gpuMs: null });
@@ -494,7 +518,8 @@ export class PhysicsV2 {
     // the cells' motion, after every pass that moves them, into the renderer's flow field (v2/flow.js)
     this.flowField?.record(ind(ARGS2.BRICKS));
     dynamics?.advanceAir(this.tick);
-    run(k.v2invalidate, fold(Math.ceil(this.g.nbricks / 64)), invalidation);
+    // (full: the tick ran the air, so its live words say where the air may have changed: v2InvalidateWGSL)
+    run(k.v2invalidate, fold(Math.ceil(this.g.nbricks / 64)), invalidation, { ...params, full: dynamics ? 1 : 0 });
     this.legacyPending = true;
   }
 
@@ -511,12 +536,62 @@ export class PhysicsV2 {
     return n;
   }
 
-  // After ticks the authoritative state changed: advance the derived key, then read idle.
+  // After ticks the authoritative state changed: advance the derived key, read what changed, then read idle.
   _ran() {
     this.sim.version++;
-    this.sim.worldRenderSource?.noteContentChange();
     this.seenVersion = this.sim.version;
-    this._readIdle();
+    this._readIdle(this._reportChanges());
+  }
+
+  // World's renderer told what this batch of ticks changed (world/renderSource.js noteContentChange), in world
+  // cells: the tiles v2invalidate folded (shaders/v2.js v2ChangeLayout) are read back with the stats, after the
+  // batch, and cleared for the next; when the read comes back, its boxes are reported (nothing changed: no
+  // report), into the same source and epoch only (a new world or a reset re-derives everything anyway). The
+  // whole window, as before, for a batch the tiles can't describe: the first after a new owner, an activation
+  // or the dynamics' build (what the source reads of the cells changes with them), or a read that fails.
+  // Returns the read (the idle read's stats: _readIdle), or null.
+  _reportChanges() {
+    const sim = this.sim, source = sim.worldRenderSource, built = this.dynamicsBuilt;
+    if (built !== this.changeDynamics) { this.changeDynamics = built; this.changeWhole = true; }
+    if (!source) return null;
+    const c = this.changeLayout, origin = [sim.origin.x, sim.origin.y, sim.origin.z], epoch = source.epoch;
+    const whole = () => { if (!this.disposed && sim.worldRenderSource === source && source.epoch === epoch) source.noteContentChange(sourceBoundsAt(sim, origin)); };
+    if (this.changeWhole) { this.changeWhole = false; whole(); }
+    let read;
+    try {
+      read = this.gpu.readback.buffer(this.args, ARGS2.STATS * 4, (c.allocated - ARGS2.STATS) * 4);
+      this.gpu.frame.clear(this.args, c.base * 4, c.count * 4);
+    } catch { whole(); return null; }
+    const batch = this.changeBatches++;
+    read.then((bytes) => {
+      if (this.disposed || sim.worldRenderSource !== source || source.epoch !== epoch) return;
+      const boxes = this._changeBoxes(new Uint32Array(bytes, (c.base - ARGS2.STATS) * 4, c.count), batch, origin);
+      if (boxes.length) source.noteContentChange({ boxes });
+    }, whole);
+    return read;
+  }
+
+  // The boxes of a batch's tiles (its index, the window's origin at its ticks): each tile's touched bricks
+  // quantized (CHANGE_QUANTUM), with the tiles of this generation and the last (CHANGE_LINGER batches each).
+  _changeBoxes(words, batch, origin) {
+    const [now, last] = this.changeGenerations, q = CHANGE_TILE / CHANGE_QUANTUM;
+    if (Math.floor(batch / CHANGE_LINGER) !== this.changeGeneration) {
+      this.changeGeneration = Math.floor(batch / CHANGE_LINGER);
+      last.set(now); now.fill(0);
+    }
+    const kept = new Uint32Array(words.length);
+    for (let i = 0; i < words.length; i++) {
+      let w = words[i];
+      if (w) for (let k = 0; k < 3; k++) {
+        // a quantum's bit for every quantum the axis's bricks touch
+        let m = (w >>> (8 * k)) & 255, out = 0;
+        for (let j = 0; j < q; j++) if (m & (((1 << CHANGE_QUANTUM) - 1) << (j * CHANGE_QUANTUM))) out |= ((1 << CHANGE_QUANTUM) - 1) << (j * CHANGE_QUANTUM);
+        w = (w & ~(255 << (8 * k))) | (out << (8 * k));
+      }
+      now[i] |= w >>> 0;
+      kept[i] = now[i] | last[i];
+    }
+    return v2ChangeBoxes(this.changeLayout, kept, origin, [this.g.bx, this.g.by, this.g.bz]);
   }
 
   /**
@@ -579,6 +654,7 @@ export class PhysicsV2 {
     gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(legacyCurrent ? LEGACY_WORD.DIFFERS : LEGACY_WORD.STALE));
     // The cells above bypassed noteState; the requests are clear until a dynamics restore.
     this.noteAllCells();
+    sim.worldRenderSource?.noteContentChange();   // a whole-grid write (a load), not a tick's change
     const m = marksLayout(g);
     gpu.frame.clear(sim.marks, m.owned * 4, Math.ceil(g.slots / 32) * 4);
     this.tick = state.tick;

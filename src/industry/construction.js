@@ -119,8 +119,11 @@ export function createConstruction(app) {
         hearth: d.type === 'hearth' ? 1 : 0, pump: d.type === 'pump' ? 1 : 0, rotation: d.rotation };
       if (k.run) {
         // (its write counts its own change; it can't run only while the new physics swaps its world)
-        if (!k.run(constructionBox(d), params, ring.buffer)) throw new Error('The new physics is not ready to build yet');
-        if (mode) sim.worldRenderSource?.noteContentChange();
+        const box = constructionBox(d);
+        if (!k.run(box, params, ring.buffer)) throw new Error('The new physics is not ready to build yet');
+        // (World's source: the box its native writer wrote, in world cells)
+        const at = [sim.origin.x, sim.origin.y, sim.origin.z];
+        if (mode) sim.worldRenderSource?.noteContentChange({ lo: box.lo.map((v, i) => v + at[i]), hi: box.hi.map((v, i) => v + 1 + at[i]) });
       } else {
         sim._dispatch(k, [1, 1, 1], { bind: [sim.tables, sim.bindRW, group], header: sim.header(), params });
         if (mode) { sim.version++; sim.worldRenderSource?.noteContentChange(); sim.wake(); }

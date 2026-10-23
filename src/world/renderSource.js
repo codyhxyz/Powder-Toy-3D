@@ -84,8 +84,8 @@ const extentOf = (d) => ({ lo: d.origin, hi: d.origin.map((v, i) => v + [d.g.nx,
 
 // A content delta (WorldRenderSource.changesSince): the bricks the journal's entries since a token
 // cover, in the order the first entry that reached each one reached it (journal order, then z, y, x
-// in its box). V2 journals its whole window every step (v2/physics.js _ran), so a span is mostly one
-// box many times over: expanding every entry into a string-keyed Map was the World renderer's top
+// in its box). V2 journaled its whole window every step (now its tick's change: v2/physics.js
+// _reportChanges), so a span was mostly one box many times over: expanding every entry into a string-keyed Map was the World renderer's top
 // JS cost after load, 2.6 s of 20 s on Island and 3.9 s on Descent (2026-10-22). Here a span is its
 // distinct boxes (an entry inside an earlier one adds nothing), and changedBricks is built from them
 // once, when first read: membership (includes) and the 32-cell cores (coreKeys) read the boxes.
@@ -99,6 +99,25 @@ let deltaSeen = new Uint8Array(0);   // a span's bricks already listed (module s
 let deltaListed = { boxes: null, bricks: null };
 const sameBoxes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i] || x.every((v, k) => v === b[i][k]));
 export const changesSinceStats = { calls: 0, built: 0, entries: 0, boxes: 0, bricksVisited: 0, bricksListed: 0 };   // CPU check counters
+// A journal box (noteContentChange): { loX, loY, loZ, hiX, hiY, hiZ } of a { lo, hi } or { min, max }, or null if it isn't one.
+function boxRecord(change) {
+  const lo = change && !change.global && (change.lo || change.min);
+  const hi = change && (change.lo ? change.hi : change.max);
+  const bounded = Array.isArray(lo) && Array.isArray(hi) && lo.length === 3 && hi.length === 3 &&
+    Number.isFinite(lo[0]) && Number.isFinite(lo[1]) && Number.isFinite(lo[2]) &&
+    Number.isFinite(hi[0]) && Number.isFinite(hi[1]) && Number.isFinite(hi[2]) &&
+    lo[0] <= hi[0] && lo[1] <= hi[1] && lo[2] <= hi[2];
+  return bounded ? { loX: lo[0], loY: lo[1], loZ: lo[2], hiX: hi[0], hiY: hi[1], hiZ: hi[2] } : null;
+}
+const boundsOf = (parts) => parts.reduce((b, p) => ({ loX: Math.min(b.loX, p.loX), loY: Math.min(b.loY, p.loY), loZ: Math.min(b.loZ, p.loZ),
+  hiX: Math.max(b.hiX, p.hiX), hiY: Math.max(b.hiY, p.hiY), hiZ: Math.max(b.hiZ, p.hiZ) }));
+const sameBox = (a, b) => a.loX === b.loX && a.loY === b.loY && a.loZ === b.loZ && a.hiX === b.hiX && a.hiY === b.hiY && a.hiZ === b.hiZ;
+// Two journal entries that reach the same bricks in the same order: the same box, or the same boxes in order.
+function sameChange(a, b) {
+  if (!a.boxes !== !b.boxes) return false;
+  if (!a.boxes) return sameBox(a, b);
+  return a.boxes.length === b.boxes.length && a.boxes.every((x, i) => sameBox(x, b.boxes[i]));
+}
 function contentDelta(token, global, boxes) {
   let bricks = null, index = null;
   const list = () => {
@@ -165,18 +184,21 @@ function journalBoxes(journal, from, size) {
   for (let i = lo; i < journal.length; i++) {
     const entry = journal[i];
     if (entry.global) return null;
-    const loX = Math.max(0, entry.loX), loY = Math.max(0, entry.loY), loZ = Math.max(0, entry.loZ);
-    const hiX = Math.min(size[0], entry.hiX), hiY = Math.min(size[1], entry.hiY), hiZ = Math.min(size[2], entry.hiZ);
-    if (!(loX < hiX && loY < hiY && loZ < hiZ)) continue;
-    const box = [Math.floor(loX / BRICK), Math.floor(loY / BRICK), Math.floor(loZ / BRICK), Math.ceil(hiX / BRICK), Math.ceil(hiY / BRICK), Math.ceil(hiZ / BRICK)];
-    // (the first and the latest boxes: the window's, and where it walked to)
-    let inside = false;
-    const n = boxes.length, half = DELTA_BOXES_TESTED / 2;
-    for (let k = 0; k < n && !inside; k = k + 1 === half && n > DELTA_BOXES_TESTED ? n - half : k + 1) {
-      const b = boxes[k];
-      inside = box[0] >= b[0] && box[1] >= b[1] && box[2] >= b[2] && box[3] <= b[3] && box[4] <= b[4] && box[5] <= b[5];
+    // (an entry of several boxes, a V2 tick's: its boxes in order)
+    for (const part of entry.boxes ?? [entry]) {
+      const loX = Math.max(0, part.loX), loY = Math.max(0, part.loY), loZ = Math.max(0, part.loZ);
+      const hiX = Math.min(size[0], part.hiX), hiY = Math.min(size[1], part.hiY), hiZ = Math.min(size[2], part.hiZ);
+      if (!(loX < hiX && loY < hiY && loZ < hiZ)) continue;
+      const box = [Math.floor(loX / BRICK), Math.floor(loY / BRICK), Math.floor(loZ / BRICK), Math.ceil(hiX / BRICK), Math.ceil(hiY / BRICK), Math.ceil(hiZ / BRICK)];
+      // (the first and the latest boxes: the window's, and where it walked to)
+      let inside = false;
+      const n = boxes.length, half = DELTA_BOXES_TESTED / 2;
+      for (let k = 0; k < n && !inside; k = k + 1 === half && n > DELTA_BOXES_TESTED ? n - half : k + 1) {
+        const b = boxes[k];
+        inside = box[0] >= b[0] && box[1] >= b[1] && box[2] >= b[2] && box[3] <= b[3] && box[4] <= b[4] && box[5] <= b[5];
+      }
+      if (!inside) boxes.push(Object.freeze(box));
     }
-    if (!inside) boxes.push(Object.freeze(box));
   }
   changesSinceStats.boxes += boxes.length;
   return Object.freeze(boxes);
@@ -326,6 +348,9 @@ export class WorldRenderSource {
   nextRevision() { return ++this.revision; }
   // Semantic writes, never ownership transfers. Advance authority too so a
   // producer awaiting readiness cannot publish over an intervening user edit.
+  // change: a box ({ lo, hi } or { min, max }, world cells, hi exclusive), several
+  // as one change ({ boxes: [box, ...] }: a V2 tick's, v2/physics.js _reportChanges),
+  // or { global: true }; none is the live window.
   noteContentChange(change = sourceBounds(this.sim)) {
     if (this.ownedContext) throw new Error('An owned Source cut cannot accept current writes');
     if (this.disposed) return;
@@ -333,25 +358,22 @@ export class WorldRenderSource {
     this.nextRevision();
     // Engine writers without a smaller box write only the live simulation.
     // Scene/global writers must explicitly declare global, never origin moves.
-    const lo = change && !change.global && (change.lo || change.min);
-    const hi = change && (change.lo ? change.hi : change.max);
-    const bounded = Array.isArray(lo) && Array.isArray(hi) && lo.length === 3 && hi.length === 3 &&
-      Number.isFinite(lo[0]) && Number.isFinite(lo[1]) && Number.isFinite(lo[2]) &&
-      Number.isFinite(hi[0]) && Number.isFinite(hi[1]) && Number.isFinite(hi[2]) &&
-      lo[0] <= hi[0] && lo[1] <= hi[1] && lo[2] <= hi[2];
+    const many = !!change && !change.global && Array.isArray(change.boxes);
+    const parts = many ? change.boxes.map(boxRecord) : [change && !change.global ? boxRecord(change) : null];
+    const bounded = parts.length > 0 && parts.every(Boolean);
     const journal = this.changeJournal ??= [];
     // Flat primitive records need one freeze, own no caller arrays, and can be
     // shared by cuts that copy only journal membership.
-    const entry = Object.freeze(bounded ? { revision: this.contentRevision, global: false,
-      loX: lo[0], loY: lo[1], loZ: lo[2], hiX: hi[0], hiY: hi[1], hiZ: hi[2] } :
-      { revision: this.contentRevision, global: true });
-    // The same box as the latest entry replaces it: a span holds both or the
+    const entry = Object.freeze(!bounded ? { revision: this.contentRevision, global: true } :
+      !many ? { revision: this.contentRevision, global: false, ...parts[0] } :
+      { revision: this.contentRevision, global: false, ...boundsOf(parts), boxes: Object.freeze(parts.map(Object.freeze)) });
+    // The same change as the latest entry replaces it: a span holds both or the
     // newer alone, so it reaches the same bricks in the same place in journal
-    // order. V2 notes its whole window every step, and the journal grew by one
-    // entry a step for as long as a World ran (cuts that copied it keep theirs).
+    // order. V2 notes its change every tick (v2/physics.js _reportChanges), and the
+    // journal grew by one entry a tick for as long as a World ran (cuts that copied
+    // it keep theirs).
     const last = journal.at(-1);
-    if (bounded && last && !last.global && last.revision === entry.revision - 1 && last.loX === entry.loX && last.loY === entry.loY && last.loZ === entry.loZ &&
-        last.hiX === entry.hiX && last.hiY === entry.hiY && last.hiZ === entry.hiZ) journal[journal.length - 1] = entry;
+    if (bounded && last && !last.global && last.revision === entry.revision - 1 && sameChange(last, entry)) journal[journal.length - 1] = entry;
     else journal.push(entry);
   }
   // The bricks changed since token (contentToken), or global. Every caller in a

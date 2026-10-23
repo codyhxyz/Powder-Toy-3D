@@ -202,7 +202,41 @@ export function v2ActLayout(g) {
   const { nbricks: nb, bx, bz } = gridDims(g);
   const ledger = 10 * nb + bx * bz + 8, plive = ledger + 8 + 6 * nb + bx * bz, liveWords = PARTICLE_CAP / 32, jetGroups = plive + liveWords;
   const elecCount = jetGroups + brickGroups(g), elecFlag = elecCount + 2, elecList = elecFlag + nb, elecScratch = elecList + nb;
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, jets: ledger + 8 + 4 * nb, colAwake: ledger + 8 + 5 * nb, summary: ledger + 8 + 5 * nb + bx * bz, plive, liveWords, jetGroups, elecCount, elecFlag, elecList, elecScratch, allocated: elecScratch + 64 * nb };
+  const changed = elecScratch + 64 * nb;
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, jets: ledger + 8 + 4 * nb, colAwake: ledger + 8 + 5 * nb, summary: ledger + 8 + 5 * nb + bx * bz, plive, liveWords, jetGroups, elecCount, elecFlag, elecList, elecScratch, changed, allocated: changed + nb };
+}
+// changed: unsaved, last; a word a brick, set by every write of a cell's core (noteState), its decoration
+// (setDeco) or its flow (v2/flow.js) since the end of the last tick, which reads and clears it (v2invalidate).
+// The tick's change, for World's renderer (world/renderSource.js noteContentChange): v2invalidate folds each
+// brick whose cells, decoration, flow, drawn projection (visible) or air (air, while the air runs) the tick
+// wrote into a word per tile of TILE³ bricks after the args (ARGS2.allocated): bits 0-7 the tile's x bricks
+// it touched, 8-15 its y bricks, 16-23 its z bricks. The tick's driver reads the tiles back with the stats
+// and clears them after each batch of ticks (v2/physics.js _ran); v2ChangeBoxes turns them into world boxes.
+export const CHANGE_TILE = 8;
+export function v2ChangeLayout(g) {
+  const { bx, by, bz } = gridDims(g), tiles = [bx, by, bz].map(n => Math.ceil(n / CHANGE_TILE));
+  const count = tiles[0] * tiles[1] * tiles[2];
+  return { tiles, count, base: ARGS2.allocated, allocated: ARGS2.allocated + count };
+}
+// The world-cell boxes ({ lo, hi }, hi exclusive) of a read of the tile words (words[i]: tile i's, layout:
+// v2ChangeLayout), the window's origin at the ticks, each tile's touched bricks' bounding box widened to
+// whole quanta of `quantum` bricks (a divisor of CHANGE_TILE), clipped to the grid's bricks.
+export function v2ChangeBoxes(layout, words, origin, bricks, quantum = 1) {
+  const out = [], [tx, ty] = layout.tiles;
+  for (let i = 0; i < layout.count; i++) {
+    const w = words[i];
+    if (!w) continue;
+    const t = [i % tx, Math.floor(i / tx) % ty, Math.floor(i / (tx * ty))], lo = [0, 0, 0], hi = [0, 0, 0];
+    for (let k = 0; k < 3; k++) {
+      const m = (w >>> (8 * k)) & 255;
+      if (!m) { lo[k] = 0; hi[k] = CHANGE_TILE; continue; }   // (never: every fold sets a bit an axis)
+      lo[k] = Math.floor((31 - Math.clz32(m & -m)) / quantum) * quantum;
+      hi[k] = Math.ceil((32 - Math.clz32(m)) / quantum) * quantum;
+    }
+    const b0 = t.map((v, k) => v * CHANGE_TILE + lo[k]), b1 = t.map((v, k) => Math.min(bricks[k], v * CHANGE_TILE + hi[k]));
+    out.push({ lo: b0.map((v, k) => v * BRICK + origin[k]), hi: b1.map((v, k) => v * BRICK + origin[k]) });
+  }
+  return out;
 }
 // count words: appends (awake, cols), busy bricks last tick, the lengths this tick's passes use
 export const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
@@ -321,6 +355,7 @@ const V2_ELEC_COUNT: u32 = ${a.elecCount}u;
 const V2_ELEC_FLAG: u32 = ${a.elecFlag}u;
 const V2_ELEC_LIST: u32 = ${a.elecList}u;
 const V2_ELEC_SCRATCH: u32 = ${a.elecScratch}u;
+const V2_CHANGED: u32 = ${a.changed}u;
 // a brick summary's codes: all closed (solid, powder or gas), all air, all one liquid full and still
 const SUM_CLOSED: u32 = ${SUMMARY.CLOSED}u;
 const SUM_AIR: u32 = ${SUMMARY.AIR}u;
@@ -365,7 +400,7 @@ fn noteVisible(p: vec3i, before: vec4u, after: vec4u) {
 }
 // Every write that can change a cell's core goes through here (the air source
 // caches what it derives from a brick's cells until it or a face neighbour is noted).
-fn noteState(s: u32) { atomicStore(&act2[V2_STATE_DIRTY + s / 64u], 1u); atomicStore(&act2[V2_SUMMARY + s / 64u], 0u); }
+fn noteState(s: u32) { atomicStore(&act2[V2_STATE_DIRTY + s / 64u], 1u); atomicStore(&act2[V2_SUMMARY + s / 64u], 0u); atomicStore(&act2[V2_CHANGED + s / 64u], 1u); }
 // Every store of a nonzero material request: whole-grid request scans visit noted bricks only.
 fn noteEvents(s: u32, request: u32) { if (request != 0u) { atomicStore(&act2[V2_EVENTS + s / 64u], 1u); } }
 // Every write of a brick's air outside the air tick's source and substeps.
@@ -1548,17 +1583,36 @@ export const v2PairsWGSL = (g) => v2PairsKernel(v2Head(g, { state: false }, 'liq
 // The writers report changed projections, including distant column destinations
 // and offset-block neighbours. An awake halo alone must not invalidate the view.
 // Compatibility dirtiness is independent of presentation marks and survives sleep.
-export const v2InvalidateWGSL = (g) => /* wgsl */ `
+// Then the tick's change (v2ActLayout changed, v2ChangeLayout): a brick whose cells, decoration or
+// flow were written (changed), whose drawn projection changed (visible), or, while the air runs
+// (P.full here: the tick ran the air), whose air may have (air: the air source clears it only where
+// the brick's air ended the tick settled and unchanged; every other writer sets it), sets its bits
+// in its tile's word.
+export const v2InvalidateWGSL = (g) => {
+  const c = v2ChangeLayout(g);
+  return /* wgsl */ `
 ${v2Head(g, { state: false, marks: true })}
+@group(2) @binding(3) var<storage, read_write> args: array<atomic<u32>>;
 ${MAIN} {
   let b = foldThread(wg, nwg, li);
   if (b >= NBRICKS) { return; }
   // Read first: a clean brick's word stays untouched (no write of the zero it holds).
-  if (atomicLoad(&act2[V2_VISIBLE + b]) == 0u || atomicExchange(&act2[V2_VISIBLE + b], 0u) == 0u) { return; }
-  atomicOr(&marks[MARK_DERIVED + (b >> 5u)], 1u << (b & 31u));
-  atomicStore(&marks[MARK_FOAMS + b], 1u);
+  let visible = atomicLoad(&act2[V2_VISIBLE + b]) != 0u && atomicExchange(&act2[V2_VISIBLE + b], 0u) != 0u;
+  if (visible) {
+    atomicOr(&marks[MARK_DERIVED + (b >> 5u)], 1u << (b & 31u));
+    atomicStore(&marks[MARK_FOAMS + b], 1u);
+  }
+  let wrote = atomicLoad(&act2[V2_CHANGED + b]) != 0u && atomicExchange(&act2[V2_CHANGED + b], 0u) != 0u;
+  let aired = P.full != 0u && atomicLoad(&act2[V2_AIR_LIVE + b]) != 0u;
+  if (visible || wrote || aired) {
+    let bc = vec3u(brickCoord(b));
+    let at = ${c.base}u + bc.x / ${CHANGE_TILE}u + ${c.tiles[0]}u * (bc.y / ${CHANGE_TILE}u + ${c.tiles[1]}u * (bc.z / ${CHANGE_TILE}u));
+    let bits = (1u << (bc.x % ${CHANGE_TILE}u)) | (256u << (bc.y % ${CHANGE_TILE}u)) | (65536u << (bc.z % ${CHANGE_TILE}u));
+    if ((atomicLoad(&args[at]) & bits) != bits) { atomicOr(&args[at], bits); }
+  }
 }
 `;
+};
 export const V2_INVALIDATE_LAYOUT = stateLayout({ state: false, marks: true });
 
 // Lazy boundary export. Scan brick flags, never the current awake list: a brick
@@ -1626,7 +1680,7 @@ export const V2_KERNELS = [
   { name: 'v2block', code: v2BlockWGSL, layouts: block, dispatch: perBrick },
   { name: 'v2runs', code: v2RunsWGSL, layouts: liquid, dispatch: perBrick },
   { name: 'v2pairs', code: v2PairsWGSL, layouts: liquid, dispatch: perBrick },
-  { name: 'v2invalidate', code: v2InvalidateWGSL, layouts: () => [LAYOUT.TABLES, V2_INVALIDATE_LAYOUT, V2_LAYOUT], dispatch: perBrick },
+  { name: 'v2invalidate', code: v2InvalidateWGSL, layouts: () => [LAYOUT.TABLES, V2_INVALIDATE_LAYOUT, V2_ARGS_LAYOUT], dispatch: perBrick },
   { name: 'v2bridge', code: v2BridgeWGSL, layouts: withState, dispatch: perBrick },
 ];
 

@@ -227,7 +227,9 @@ export class Deco {
       this._run('decoPaintApply', size, params);
       this.active = true;
       this.sim.version++;   // the picture changed (gfx/pacing.js redraws on it)
-      this.sim.worldRenderSource?.noteContentChange();
+      // (World's source: the stroke's box, in world cells; the window may have moved since the call)
+      const o = this.sim.origin, at = [o.x, o.y, o.z];
+      this.sim.worldRenderSource?.noteContentChange({ lo: lo.map((v, k) => v + at[k]), hi: hi.map((v, k) => v + 1 + at[k]) });
     });
   }
 
