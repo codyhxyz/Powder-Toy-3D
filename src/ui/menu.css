@@ -52,6 +52,8 @@ body { color: var(--mm-text); font: 400 13px/1.4 var(--mm-ui); -webkit-font-smoo
 .mm-brand { display: flex; align-items: center; gap: 10px; }
 .mm-brand span { font-weight: 800; font-size: 20px; letter-spacing: -0.01em; font-variation-settings: 'wdth' 122;
   text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5); }
+/* what the game is, beside its name, for a first visit */
+.mm-tagline { margin: 0 0 0 8px; max-width: 520px; color: #c3c9d4; font-size: 13px; line-height: 1.35; text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6); }
 .mm-brand .mark { filter: drop-shadow(0 3px 6px rgba(0, 0, 0, 0.45)); overflow: visible; }
 .mm-resume {
   display: none;
@@ -84,6 +86,14 @@ body { color: var(--mm-text); font: 400 13px/1.4 var(--mm-ui); -webkit-font-smoo
   background: rgba(255, 255, 255, 0.06); color: #b9c1cf;
 }
 .mm-mode-name { flex: 1; min-width: 0; }
+/* a gamemode still being built (maps.js GAMEMODES beta) */
+.mm-beta {
+  padding: 3px 5px 2px; border-radius: 3px;
+  background: rgba(255, 179, 107, 0.16); color: #ffb36b;
+  font: 400 9px/1 var(--mm-pixel); letter-spacing: 0.04em; text-transform: uppercase;
+}
+.mm-beta-note { color: #ffb36b !important; font-size: 12px; }
+.mm-beta-note[hidden] { display: none; }
 .mm-mode small { color: var(--mm-muted); font-variant-numeric: tabular-nums; }
 .mm-mode:hover { background: rgba(255, 255, 255, 0.06); }
 .mm-mode:hover .mm-mode-ico { color: #fff; }
@@ -181,6 +191,14 @@ body { color: var(--mm-text); font: 400 13px/1.4 var(--mm-ui); -webkit-font-smoo
 .mm-load-step { margin-top: 10px; min-height: 1.4em; color: var(--mm-muted); font-size: 12px; }
 .mm-load-flag { margin-top: 8px; max-width: 520px; color: #ffb36b; font-size: 12px; line-height: 1.4; white-space: pre-wrap; }
 .mm-load-flag:empty { display: none; }
+/* first-game tips (menu.js TIPS), as TF2's and GMod's loading screens give them */
+.mm-tips { margin: 22px 0 0; padding: 0; list-style: none; display: grid; gap: 7px; color: #c3c9d4; font-size: 13px; }
+.mm-tips li { display: flex; align-items: center; gap: 10px; }
+.mm-tips kbd {
+  flex: none; width: 38px; padding: 4px 0 3px; border-radius: 4px; text-align: center;
+  background: rgba(255, 255, 255, 0.1); border: 1px solid var(--mm-line); color: #fff;
+  font: 400 10px/1 var(--mm-pixel);
+}
 
 /* "This is you.": public/you.webp (tools/you-portrait.mjs), in a soft blue
    light with a pool of it at his feet */
@@ -206,6 +224,8 @@ body { color: var(--mm-text); font: 400 13px/1.4 var(--mm-ui); -webkit-font-smoo
 @media (max-width: 720px) {
   .mm-shell { padding: 12px 16px 14px; gap: 12px; }
   .mm-brand span { display: none; }
+  .mm-tagline { margin: 0; font-size: 12px; }
+  .mm-tips { display: none; }
   .mm-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; gap: 10px; }
   .mm-modes { flex-direction: row; overflow-x: auto; padding: 6px; scrollbar-width: none; }
   .mm-label { display: none; }
