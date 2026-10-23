@@ -168,7 +168,7 @@ export function createLightning({ onReady = () => {} } = {}) {
       if (key === 0) return;
       const [x, y, z] = slotCell(sim.g, STORM_KEY.SLOT_MAX - (key & STORM_KEY.SLOT_MAX));
       pending.result = [x + 0.5, y + 0.5, z + 0.5];
-    }).catch(() => {}).finally(() => { pending.done = true; if (job === pending) onReady(); });
+    }).catch(() => {}).finally(() => { pending.done = true; if (job === pending && pending.result) onReady(); });
   }
 
   function scan(sim, origin, context) {
@@ -186,7 +186,7 @@ export function createLightning({ onReady = () => {} } = {}) {
       const hits = cols.map((c, i) => ({ x: c[0], z: c[1], top: buf[i * VEC4], id: Math.round(buf[i * VEC4 + 1]), ok: buf[i * VEC4 + 2] > 0 }))
         .filter((h) => h.ok);
       pending.result = pickStrike(origin, hits);
-    }).catch(() => {}).finally(() => { pending.done = true; if (job === pending) onReady(); });
+    }).catch(() => {}).finally(() => { pending.done = true; if (job === pending && pending.result) onReady(); });
   }
 
   // (the rings are the device's, its kernels cached by source: nothing of ours to free)

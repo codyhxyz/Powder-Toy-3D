@@ -268,7 +268,10 @@ export class NativeDynamics {
   }
   advanceParticles(tick) {
     // Rays spawn before clear samples the live count; hold neither spawns nor counts.
-    this._work(); this._rays(tick);
+    // (No _work() here: a tick of an idle state stays idle, and readActivity reads the state after
+    // the ticks recorded before it, so an unchanged serial still certifies. Bumping it every tick kept
+    // a GPU-bound page from ever certifying idle with frames in flight: it ticked, and rendered, forever.)
+    this._rays(tick);
     this._record('particles','clear',1,tick); this._hold(tick);
     for (const stage of RAY_STAGES) this._record('particles',stage,PARTICLE_CAP/64,tick);
     // V1 steps a ray RAY_STEPS_PER_TICK times a tick, at most one interaction a step (shaders/rays.js): the stages

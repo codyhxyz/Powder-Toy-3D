@@ -90,7 +90,7 @@ test('actual driver + actual owner + actual Post: pending/same-cut eye miss/acce
   const complete={incomplete:false,requirements:[],sun:[]},cuts=[];
   const state={data:f.owner,uses:new Set(),volume:{pointReady:Promise.resolve(),dispose(){}},opaque:{dispose(){}},unused:{destroy(){}},boundary:{destroy(){}},emptyArtwork:{destroy(){}}};
   const eyeGate=deferred();
-  const driver=createWorldFrameDriver(app,state,{
+  const driver=createWorldFrameDriver(app,state,{idlePerBusy:0,
     prewarm:async()=>{}, // Native kernel math and scenegraph encoding deliberately mocked.
     async probe(_app,_state,data,view){cuts.push(data.cut);probes++;if(probes===1)await eyeGate.promise;
       return {feedback:probes===1?{incomplete:true,requirements:[{brick:[0,0,0],channels:READY.GLOW}],sun:[]}:complete,position:view.values.cam};},

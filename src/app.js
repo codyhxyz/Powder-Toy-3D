@@ -1107,6 +1107,10 @@ function worldMutationReady() {
   // not. Hit-anchored operations still need their own in-window surface.
   return !hover.valid || syncWorldHover();
 }
+// The last World pick that came back ready: its ray is the displayed frame's (displayedWorldRay), so the
+// same frame, token and screen point read the same answer again. First person asked every tick (20-30
+// full world queries a second, each a feedback buffer, a compaction and a readback) for the same hit.
+let worldPickSeen=null;
 function requestWorldPick() {
   const driver=win?.renderFrame?.driver,display=driver?.displayedMainFrame;
   const fromPov=!!pov?.active;
@@ -1114,6 +1118,8 @@ function requestWorldPick() {
   syncWorldHover();
   if(!display){hover.valid=false;hover.worldReady=false;return;}
   const ndc=fromPov?[0,0]:pointer.toArray(),token=worldPickToken(),from=sim;
+  const seen=worldPickSeen;
+  if(seen && seen.display===display && seen.token===token && seen.sim===sim && seen.ndc[0]===ndc[0] && seen.ndc[1]===ndc[1]){pointerPickDirty=false;return;}
   pointerPickDirty=false;pickPending=true;
   driver.pick({ray:displayedWorldRay(display,ndc),skipLiquids:fromPov&&skipPickLiquids()}).then(hit=>{
     if(from!==sim || token!==worldPickToken() || driver.displayedMainFrame!==display
@@ -1124,6 +1130,7 @@ function requestWorldPick() {
       Object.assign(hover,{face:hit.face,id:hit.id,T:hit.T,P:hit.P,life:hit.life,raw:hit.raw,
         frameIdentity:hit.frameIdentity,worldToken:token,globalCell:new THREE.Vector3().fromArray(hit.cell)});
       syncWorldHover();
+      worldPickSeen={display,token,sim,ndc};
     }
     wakeLoop();
   },()=>{hover.valid=false;hover.worldReady=false;}).finally(()=>{pickPending=false;});
@@ -2868,6 +2875,19 @@ function updateFrameDetail() {
   return win ? gateVariants(settings).near : detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale);
 }
 
+// The canvas's page rect, read again only after a resize (the first-person readout sits at its centre)
+let canvasRectSeen = null;
+addEventListener('resize', () => { canvasRectSeen = null; });
+const canvasRect = () => (canvasRectSeen ??= canvas.getBoundingClientRect());
+
+// What a big map's last live frame showed (tick's World branch): the view key and the pacer's wakes.
+const worldLiveSeen = { key: null, wakes: -1 };
+// V2's matter in flight: drawn where the partial tick has carried it, so it moves every frame (as gfx/packetShadow.js reads it)
+function v2Flying() {
+  const d = physicsV2?.dynamics;
+  return !!d && !d.disposed && d.isIdle !== true && (d.stats?.particles ?? 0) > 0;
+}
+
 // One tick: input, the steps, and, when due, a presented frame. Returns
 // whether the loop should go on (false: nothing to do until something wakes it).
 function tick(now, renderOnly = false) {
@@ -3021,16 +3041,28 @@ function tick(now, renderOnly = false) {
     try{driver=wire('world').prepareRender(ctx);}
     catch(error){stopGraphics(error);throw error;}
     if(driver) {
+      // What the view shows, read once a presented tick: it starts a transaction (a camera-only one
+      // when it changed) and draws the live frame (worldRenderFrame.js liveLeft). The sun is in it:
+      // the live frame lights the shown world under this frame's sun.
+      const key=present ? viewKey(camera,scene,pixelRatio,innerWidth,innerHeight,`${brushKey(brush,toolById(settings.tool).color)}|${presentation.key}|${SUN.x},${SUN.y},${SUN.z}`,viewSettings,gfx,post.settings) : worldLiveSeen.key;
+      // (a wake: something outside the key, a vfx, a held tool's swing; V2's flying matter moves every frame)
+      const liveForce=present && (key!==worldLiveSeen.key || pacer.wakes!==worldLiveSeen.wakes || pacer.takeMeshWake() || wantFrame() || v2Flying());
+      if(present){worldLiveSeen.key=key;worldLiveSeen.wakes=pacer.wakes;}
       // Its tick throws once its work has failed, every frame after (worldRenderFrame.js): worldFailed.
       try {
-      runView=driver.tick({present,dt,
+      runView=driver.tick({present,dt,live:{force:liveForce,settle:pacer.viewSettle},
         reserve:()=>{
-          const derived=pacer.derived(`${sim.id}:${sim.version}|${SUN.toArray()}|${KEY_LIGHT}|${renderView}|${JSON.stringify(gfx)}|${settings.nearGI}:${settings.glowLights}:${settings.caustics}|${detailVersion}`);
-          const key=viewKey(camera,scene,pixelRatio,innerWidth,innerHeight,`${brushKey(brush,toolById(settings.tool).color)}|${presentation.key}`,viewSettings,gfx,post.settings);
-          return {runDerived:derived,runView:pacer.view(key,derived||wantFrame()||betweenTicks)};
+          // (the world's content revision, not sim.version: V2 bumps that every tick, changed or not, which
+          // made every transaction a full lighting tick; physics.js _reportChanges notes what really changed)
+          const derived=pacer.derived(`${sim.id}:${win.renderSource?.contentRevision ?? sim.version}|${SUN.toArray()}|${KEY_LIGHT}|${renderView}|${JSON.stringify(gfx)}|${settings.nearGI}:${settings.glowLights}:${settings.caustics}|${detailVersion}`);
+          // (no betweenTicks: a transaction carries the world's cells, which change only on a tick; the
+          // partial tick's flying matter is the live frame's)
+          return {runDerived:derived,runView:pacer.view(key,derived||wantFrame())};
         },capture:(reservation,state)=>captureWorldRequest(reservation,state,dt,driver.accepted)});
       } catch(error) { worldFailed(error); driver=null; }
-      if(driver && (present || runView))driver.presentLast();
+      // (no presentLast here: recording a scene never takes the canvas, a commit draws it whole, and a
+      // canvas nobody draws keeps its last image (gpu/present.js). It blitted the same picture every
+      // presented tick, with a submit and a fence readback, and over a commit deferred into this frame.)
       if(runView)viewClock(false); // Only an accepted WORLD transaction advances presentation clocks.
       if(driver && !renderOnly && (pointerPickDirty || runView || pov?.active))requestPick();
     }
@@ -3127,7 +3159,8 @@ function tick(now, renderOnly = false) {
 
   const povReadout = pov?.active ? pov.readout : null;   // the held tool's (the trowel's), else what the crosshair is on
   if (povReadout) {
-    const r = canvas.getBoundingClientRect();
+    // (the canvas's rect as the last resize left it: reading it here forced a layout every frame after the HUD's writes)
+    const r = canvasRect();
     hud.showReadout(r.left + r.width / 2, r.top + r.height / 2, povReadout);
   } else if (!pov?.active && pointerInside && !uiHover && hover.valid && hover.id >= 0 && !painting) {
     const el = ELEMENTS[hover.id];

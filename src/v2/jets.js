@@ -34,7 +34,7 @@ export class NativeJets {
       k.dispatch(o.gpu.frame, count, { bind: [o.nativeDynamics.group, this.group], header: o.sim.header(), params: d._params(tick) });
       o.sim.onPass?.(k.name, { kind: 'compute', gpuMs: null });
     }
-    d._work();
+    // (no d._work(): jets start from awake cells, which keep the box awake themselves: dynamics.js advanceParticles)
   }
   dispose() { this.disposed = true; this.isReady = false; }
 }

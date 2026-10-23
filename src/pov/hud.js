@@ -126,6 +126,8 @@ export function createPovHud() {
     if (prop.startsWith('--')) el.style.setProperty(prop, v);
     else if (prop === 'text') el.textContent = v;
     else if (prop.startsWith('.')) el.classList.toggle(prop.slice(1), v);
+    else if (prop.startsWith('@')) el.setAttribute(prop.slice(1), v);
+    else if (prop === 'hidden') el.hidden = v;
     else el.style[prop] = v;
   };
 
@@ -159,8 +161,8 @@ export function createPovHud() {
       set(vitals, '.show', live);
       set(pogo, '.show', live && s.pogo != null);
       set(pogoFill, 'transform', `scaleX(${s.pogo ?? 0})`);
-      pogo.setAttribute('aria-label', s.pogoLabel ?? 'Pogo charge');
-      pogo.setAttribute('aria-valuenow', Math.round((s.pogo ?? 0) * 100));
+      set(pogo, '@aria-label', s.pogoLabel ?? 'Pogo charge');
+      set(pogo, '@aria-valuenow', String(Math.round((s.pogo ?? 0) * 100)));
       // perks: an icon each, with its stacks, redrawn when the set changes
       if (s.perks && (s.perks !== perkSet || s.perks.version !== perkVersion)) {
         perkSet = s.perks; perkVersion = s.perks.version;
@@ -193,7 +195,7 @@ export function createPovHud() {
       if (s.buried) set(fx.buried, '--c', s.buried);
       set(fx.buried, 'opacity', live && s.buried ? '1' : '0');
       set(lock, '.show', live && !s.locked);
-      grappleHint.hidden = !s.grappleEnabled;
+      set(grappleHint, 'hidden', !s.grappleEnabled);
 
       // health, with a trail that shows what the last hit took
       const hp = Math.max(0, Math.min(1, s.health));

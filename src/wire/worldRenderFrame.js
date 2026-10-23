@@ -19,6 +19,12 @@ const requireReady = (ok, message) => { if (!ok) throw new Error(message); };
 const complete = f => f?.incomplete === false && !f.requirements.length && !f.sun.length;
 const LIVE_COMMIT_TRIES = 3;     // frames a live view frame may wait for Post to admit it (an older scene's submission pending)
 const LIVE_RETIRING_MAX = 2;     // live view frames recorded and not yet retired (Post's staged targets: post.js maxPendingScenes 3)
+// A loaded world's next transaction waits this many times as long as the last one took: its lighting
+// tick, restores and scene share the one GPU queue (and the main thread's slices) with every frame, and
+// back to back (V2's water changes the world every tick) they left the frames none of either. Minecraft
+// budgets its chunk rebuilds per frame the same way, so a world that changes everywhere still plays.
+const WORLD_IDLE_PER_BUSY = 1;
+const WORLD_IDLE_MAX_MS = 500;   // the longest a loaded world waits between two transactions
 
 // A real CELL publication bootstraps the subsequent eye/scene feedback loop.
 // Outside-world views seed the nearest valid brick, not an assumed empty page.
@@ -393,7 +399,8 @@ export function createWorldFrameDriver(app,state,execution={}) {
   // CPU fixtures replace native math/scenegraph encoding, never the data owner
   // or accepted-history protocol. Production always uses these concrete paths.
   const {prewarm=prewarmWorldFrame,probe=probeWorldFrameEye,createPreflight=createWorldMeshPreflight,
-    preflight=preflightWorldMeshes,record=recordWorldFrame,releasePreflight=releaseWorldMeshPreflight}=execution;
+    preflight=preflightWorldMeshes,record=recordWorldFrame,releasePreflight=releaseWorldMeshPreflight,
+    idlePerBusy=WORLD_IDLE_PER_BUSY}=execution;   // (protocol checks drive transactions back to back: 0)
   let pending=null, dead=false, order=0, accepted=null, failure=null, retirement=null;
   let displayedMainFrame=null, blockedPick=null, preferMain=false;
   // The live view: while a transaction loads, each presented frame draws the displayed (accepted) world
@@ -404,6 +411,12 @@ export function createWorldFrameDriver(app,state,execution={}) {
   // 2026-10-23: "even in god mode I can't move the camera"). Its own frames are never accepted:
   // no feedback, history, signs or hands baseline advance.
   let liveBusy=false, liveRetired=0, liveFailure=null;
+  // A live frame is drawn only when what it shows changed (the app's `live.force`: the camera, canvas,
+  // settings, meshes, flying matter) or a new world was accepted, then for `live.settle` frames while
+  // TAA converges, as the box's view (gfx/pacing.js view). Before, it redrew the whole world every frame.
+  let liveLeft=0, liveShown=null;
+  // when the next main transaction may start (WORLD_IDLE_PER_BUSY), and when the pending one did
+  let nextStartAt=0, startedAt=0;
   const pickDemands=new Map(), stills=[];
   const emptyFeedback=()=>({incomplete:false,requirements:[],sun:[]});
   const retiredStill=()=>app.win?.render!==state.data || (app.win?.renderSource &&
@@ -434,7 +447,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
   // then seconds behind again once a big map's pool filled, Island 2026-10-23.)
   const liveViewAllowed=p=>!dead && !failure && !liveFailure && !liveBusy && liveRetired<LIVE_RETIRING_MAX && displayedMainFrame?.eye
     && !displayedMainFrame.data.snapshot.expired
-    && !retiredStill() && p && !p.job && !stills.length && p.phase==='waiting' && p.waitTarget!=='finished';
+    && !retiredStill() && !stills.length && (!p || (!p.job && p.phase==='waiting' && p.waitTarget!=='finished'));
   // (a view whose program isn't built yet, as just after switching views, waits for the transaction)
   const viewBuilt=v=>state.volume?.pipelineState?.(v.view,v.detail,v.curved)?.state==='ready';
   const nextFrame=()=>new Promise(resolve=>requestAnimationFrame(()=>resolve()));
@@ -537,7 +550,8 @@ export function createWorldFrameDriver(app,state,execution={}) {
     get preparation(){const v=state.volume;return Object.freeze({views:v?.pipelineStates,
       point:v?.pointState?.state,signs:v?.signsState?.state,pick:v?.pickState?.state,
       post:app.post.isReady,uses:state.uses?.size});},
-    get busy(){return !!pending || !!pickDemands.size || !!stills.length;},get failure(){return failure;},get accepted(){return accepted;},
+    // (a live frame owed, or a transaction waiting its turn: the loop must keep ticking to start it)
+    get busy(){return !!pending || !!pickDemands.size || !!stills.length || (liveLeft>0 && !liveFailure && !!displayedMainFrame?.eye) || (!!displayedMainFrame && performance.now()<nextStartAt);},get failure(){return failure;},get accepted(){return accepted;},
     queueStill,requestStill:queueStill,
     get displayedMainFrame(){return displayedMainFrame;},queuePickDemand,
     pick(options){
@@ -553,8 +567,9 @@ export function createWorldFrameDriver(app,state,execution={}) {
         retireWorldUse(state,app.gpu,Promise.allSettled([ticket.submitted,read]),()=>{});
       }
     },
-    tick({present,reserve,capture,dt=0}) {
+    tick({present,reserve,capture,dt=0,live=null}) {
       if(dead)return false;if(failure)throw failure;
+      if(present && live && (live.force || displayedMainFrame!==liveShown)){liveShown=displayedMainFrame;liveLeft=live.settle;}
       try {
       if((pending?.job || stills.length) && retiredStill())throw new Error('reset WORLD owner before requesting stills');
       if(!pending && stills.length && !preferMain) {
@@ -563,10 +578,11 @@ export function createWorldFrameDriver(app,state,execution={}) {
         wait(pending,prepare(pending,state.data.request({...accepted.frame,advance:false},
           worldInitialCellDemand(job.view.values.cam,app.win.size))),'prepared');
       }
-      if(!pending && (present || pickDemands.size)) {
+      if(!pending && (present || pickDemands.size) && (!displayedMainFrame || pickDemands.size || performance.now()>=nextStartAt)) {
         const reservation={...reserve()};
         if(pickDemands.size)reservation.runView=true;
         if(reservation.runView){
+          startedAt=performance.now();
           const request=capture(reservation,state);
           const requirements=mergeWorldFrameFeedback({requirements:request.requirements??[],sun:[]},
             {requirements:[...pickDemands.values()],sun:[]}).requirements;
@@ -576,10 +592,12 @@ export function createWorldFrameDriver(app,state,execution={}) {
         }
       }
       if(!pending && preferMain) {preferMain=false;wake();}
-      const p=pending;if(!p)return false;
+      const p=pending;
       let liveView=null;
       const view=()=>liveView??=capture({runDerived:false,runView:true},state).view;
-      if(present && liveViewAllowed(p) && viewBuilt(view()))recordLive(view(),dt);
+      // (between transactions too: the camera keeps moving while the next one waits its turn)
+      if(present && liveLeft>0 && liveViewAllowed(p) && viewBuilt(view())){liveLeft--;recordLive(view(),dt);}
+      if(!p)return false;
       if(p.phase==='prepared') {
         // The transaction's own frame draws from the camera as it is now too, not as it was when it
         // started loading (seconds ago): its misses there extend it like any other.
@@ -617,6 +635,7 @@ export function createWorldFrameDriver(app,state,execution={}) {
       }
       if(p.phase==='released'){
         pending=null;preferMain=!!p.job;
+        if(!p.job){const now=performance.now();nextStartAt=now+Math.min(WORLD_IDLE_MAX_MS,(now-startedAt)*idlePerBusy);}
         if(p.job)p.job.resolve(true);
         wake();return !p.job;
       }

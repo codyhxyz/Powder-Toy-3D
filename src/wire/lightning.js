@@ -7,7 +7,9 @@ const lightning = {
   name: 'lightning',
   ready: true,
 
-  boot(app) { app.lightning = createLightning({ onReady: () => app.pacer.wake() }); },
+  // (a search that found a cloud needs a tick to scan or strike, not a redrawn view: the strike's own write
+  // draws it. pacer.wake here re-rendered the view's settle frames after every 4 Hz search, clear sky too.)
+  boot(app) { app.lightning = createLightning({ onReady: () => app.wakeLoop() }); },
   detach(app) { app.lightning?.reset(); },
   // storms: charged cloud strikes by itself (src/lightning.js)
   afterStep(app) {

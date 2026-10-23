@@ -244,7 +244,8 @@ assert(/steps: 4, gravity:/.test(app), 'app.js DEFAULTS.steps is 4');
     // the frames between ticks are drawn (the pacer would keep the last image until the tick)
     assert(/const betweenTicks = v2Box\(\) && v2Running && stepping && stepped === 0 && !physicsV2\.asleep;/.test(app));
     assert(/runView = present && pacer\.view\(viewV, runDerived \|\| wantFrame\(\) \|\| betweenTicks\);/.test(app), 'Box');
-    assert(/runView:pacer\.view\(key,derived\|\|wantFrame\(\)\|\|betweenTicks\)/.test(app), 'World');
+    // World: a transaction carries the cells (a tick's); the frames between draw the flying matter as live frames
+    assert(/const liveForce=present && \(.*v2Flying\(\)\);/.test(app), 'World');
   }
   // the app draws by it, the scene's animations run on it, the label shows the game's speed
   assert(/const now = viewStepClock\(sim\);/.test(app), 'app.js viewClock');

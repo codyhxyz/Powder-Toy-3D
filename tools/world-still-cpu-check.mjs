@@ -41,7 +41,7 @@ async function setup() {
       release(){input.snapshot.release();feedback.destroy();}};
   };
   app.signs={worldRequest(){counts.sign++;return null;}};
-  const driver=createWorldFrameDriver(app,state,{
+  const driver=createWorldFrameDriver(app,state,{idlePerBusy:0,
     async prewarm(_app,_state,_data){counts.prewarm++;state.volume.pointReady=controls.pointGate?.promise??Promise.resolve();if(controls.gate)await controls.gate.promise;},
     async probe(_app,_state,data){counts.probe++;cuts.push(data.cut);if(controls.probeGate)await controls.probeGate.promise;
       const miss=controls.eyeMiss;controls.eyeMiss=false;return {feedback:miss?{incomplete:true,requirements:[{brick:[1,0,0],channels:READY.GLOW}],sun:[]}:complete()};},
