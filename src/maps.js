@@ -136,7 +136,7 @@ export function sizeTag(m) {
   return x === y && y === z ? `${x}^3` : `${x}×${y}×${z}`;
 }
 
-// where a new player starts: Island in Sandbox, phones included (user request, 2026-10-22; app.js
-// MOBILE_DEFAULTS keeps phones on the plain look)
+// where a new player starts: Island in Sandbox, phones included (user request, 2026-10-22). Laptops pick
+// it on the menu; phones skip the menu straight into it (src/main.js) on the plain look (app.js MOBILE_DEFAULTS).
 export const DEFAULT_MAP = 'island';
 export const MOBILE_MAP = DEFAULT_MAP;

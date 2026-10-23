@@ -243,6 +243,10 @@ if (location.search) {
     linkMode(params);
     boot();
   }
+} else if (MOBILE && !TEST_PAGE) {
+  // Intentional (user request, 2026-10-23): phones skip the start menu and go straight into Sandbox on
+  // their last map (a new player: the Island); the toolbar's Maps still opens the menu.
+  start(firstMap, 'sandbox');
 } else {
   menu.open();
   // Network prefetch only. GPU compilation starts after an explicit Start.
