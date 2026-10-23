@@ -428,7 +428,12 @@ export function createWorldFrameDriver(app,state,execution={}) {
     return new Promise((resolve,reject)=>{stills.push({view,target,resolve,reject});wake();});
   };
   const wake=()=>app.wakeLoop();
+  // (an expired displayed world, its replaced pages taken back by a full pool (renderAtlas.js
+  // reclaim), can't be drawn: frames wait for the transaction until the next one is shown.
+  // Before, the throw stopped the live view for the rest of the session: smooth after a load,
+  // then seconds behind again once a big map's pool filled, Island 2026-10-23.)
   const liveViewAllowed=p=>!dead && !failure && !liveFailure && !liveBusy && liveRetired<LIVE_RETIRING_MAX && displayedMainFrame?.eye
+    && !displayedMainFrame.data.snapshot.expired
     && !retiredStill() && p && !p.job && !stills.length && p.phase==='waiting' && p.waitTarget!=='finished';
   // (a view whose program isn't built yet, as just after switching views, waits for the transaction)
   const viewBuilt=v=>state.volume?.pipelineState?.(v.view,v.detail,v.curved)?.state==='ready';

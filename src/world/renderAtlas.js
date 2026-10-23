@@ -557,9 +557,12 @@ export class WorldRenderAtlas {
   // Map physical pages, r.Shadow.Virtual.MaxPhysicalPages): when it is full,
   // the oldest cached pages are evicted, the pool never grows past its size.
   // Resolves once the freed pages are back in the pool's free list; how many it freed.
-  reclaim(kind, count) {
+  // spare (a snapshot handle, optional): its state is not expired (the frame on
+  // screen, which the live view draws again each frame: wire/worldRender.js reclaim).
+  reclaim(kind, count, spare = null) {
     this._alive(); check(['cell', 'light'].includes(kind), 'invalid pool');
-    const old = [...this.states].filter(s => s !== this.current && !s.producerOnly && !s.expired && s.late.some(p => p.kind === kind)).sort((a, b) => a.generation - b.generation);
+    const kept = spare ? this.snapshotStates.get(spare)?.s : null;
+    const old = [...this.states].filter(s => s !== this.current && s !== kept && !s.producerOnly && !s.expired && s.late.some(p => p.kind === kind)).sort((a, b) => a.generation - b.generation);
     const freed = [];
     for (const s of old) {
       if (freed.length >= count) break;
