@@ -59,18 +59,22 @@ export const MAPS = [
 
 // Sandbox first. Team modes follow src/game/rules.js MODES (names and order);
 // the menu shows them only in builds that have src/game.
+//   beta     still being built: the menu lists it under "In testing" with a Beta chip, so a new
+//            player starts on what works (Sandbox, the team modes) and knows what may be rough.
+//            Intentional (Claude's call, 2026-10-22, for new players): Factory, Cruelty Squad, Noita,
+//            Animal Crossing and Siege (Dam Valley's stalls) are beta; drop the flag once a mode is done.
 export const GAMEMODES = [
   { key: 'sandbox', name: 'Sandbox', defaultView: 'realistic', desc: 'Pour, build, burn and blow it up. Every map.' },
-  { key: 'factory', name: 'Factory', desc: 'Catch and sort real grains. Build miners, lifts, pumps and furnaces; ship gold and cooled metal to grow your quarry.' },
-  { key: 'crueltySquad', name: 'Cruelty Squad', desc: 'Eliminate every designated target, then reach extraction. Death fails the mission; retry from the beginning.' },
+  { key: 'factory', name: 'Factory', beta: true, desc: 'Catch and sort real grains. Build miners, lifts, pumps and furnaces; ship gold and cooled metal to grow your quarry.' },
+  { key: 'crueltySquad', name: 'Cruelty Squad', beta: true, desc: 'Eliminate every designated target, then reach extraction. Death fails the mission; retry from the beginning.' },
   // Intentional (gamemode: Noita; user request, 2026-10-18): Noita mode and Descent open in the Noita view; key 8 shows it anywhere.
-  { key: 'noita', name: 'Noita', defaultView: 'noita', desc: 'Wands only. Explore the source-derived 3D Descent, with Holy Mountains between biomes. Ends at the Sampo platform; no boss combat yet.' },
-  { key: 'animalCrossing', name: 'Animal Crossing', defaultView: 'cozy', effect: 'rollingLog', gravityScale: 0.5, desc: 'Settle into a furnished home, arrange your furniture, and meet animal neighbors in Tinker Creek.' },
+  { key: 'noita', name: 'Noita', beta: true, defaultView: 'noita', desc: 'Wands only. Explore the source-derived 3D Descent, with Holy Mountains between biomes. Ends at the Sampo platform; no boss combat yet.' },
+  { key: 'animalCrossing', name: 'Animal Crossing', beta: true, defaultView: 'cozy', effect: 'rollingLog', gravityScale: 0.5, desc: 'Settle into a furnished home, arrange your furniture, and meet animal neighbors in Tinker Creek.' },
   { key: 'slayer', name: 'Team Slayer', team: true, desc: 'Red against blue with bots on both sides. First to the kill limit wins.' },
   { key: 'ctf', name: 'Capture the Flag', team: true, desc: 'Take their flag from its stand and bring it home while yours is there.' },
   { key: 'koth', name: 'King of the Hill', team: true, desc: 'Hold the hill alone to score. It moves every minute.' },
   { key: 'infection', name: 'Infection', team: true, desc: 'One starts infected. Whoever they kill joins them. Survive the clock.' },
-  { key: 'siege', name: 'Siege', team: true, desc: 'TF2 attack/defend: take the control points in turn before time runs out, or hold them.' },
+  { key: 'siege', name: 'Siege', beta: true, team: true, desc: 'TF2 attack/defend: take the control points in turn before time runs out, or hold them.' },
 ];
 
 // (aliases: a renamed map's new name also opens it; the key stays for saves and old links)
