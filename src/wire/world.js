@@ -10,7 +10,7 @@ import { installWorldRender } from './worldRender.js';
 import { createMediaNoise } from '../gfx/mediaNoise.js';
 import { createWorldFrameState, createWorldFrameDriver, disposeWorldFrame, startWorldFrameView } from './worldRenderFrame.js';
 import { bakedAir } from '../constructions/runtime.js';
-import { beyondLevel } from '../world/far.js';
+import { beyondLevel, FarField } from '../world/far.js';
 import { createTorchLights } from '../world/torchLights.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
 import { isMaterialView } from '../views.js';
@@ -73,10 +73,27 @@ const world = {
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene });
     sim.origin.fromArray(world.worldStart(app));
     sim.resetNativeDynamics(); // initial native air coordinates match the world before any tick
-    // Preserve the original cumulus deck and its optical shadows without
-    // constructing the retired Far textures, kernels or detail queue.
+    // The cumulus deck overhead and its optical shadows.
     gfxUniforms.uClouds.value=true;
     gfxUniforms.uCloudSea.value=beyondLevel(win.scene,win.P);
+    // Its distance level of detail (world/far.js drawBehind): the far field's
+    // brick-resolution grid of the whole world, drawn behind the WORLD volume
+    // wherever that has nothing. Joined once its kernels are built, so it never
+    // holds up the load (win.whenReady waits on win.far), and built over the
+    // loaded window then. Its lighting is the window volume's group as before;
+    // vol.attachFar and derived.attachFar are not called: the WORLD renderer
+    // lights the near ground itself.
+    const far = new FarField(app.renderer, win, { sun: app.sun });
+    far.presentation = app.presentation;   // a gamemode's effect bends its view (gfx/presentation.js: the rolling log)
+    far.vol = app.vol;
+    far.behindOnly = true;   // (app.js frameValues: FU.far stays off)
+    far.onChange = () => app.wakeLoop();
+    far.whenReady().then(() => {
+      if (app.win !== win || win.far) { far.dispose(); return; }
+      win.far = far;
+      if (win.loaded) far.build();
+      app.wakeLoop();
+    }, error => { console.warn('World far field could not build', error); far.dispose(); });
   },
   buildFarView(app, far) {
     far.detail.build();
