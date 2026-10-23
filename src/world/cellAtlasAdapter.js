@@ -135,9 +135,16 @@ export class WorldCellAtlasAdapter {
           if(!r){const error=new Error('Unknown world Glow emission halo');error.requirements=[{brick,index,channels:READY.CELL}];throw error;}selected.push(r);
         }
         const buffer=make('original world emission div64',selected.length*16);
-        // Original classifier xyz are f32 emission /64; w is UINT info, not
-        // an emission component or half packing. Copy only xyz, clear padding.
-        selected.forEach((r,i)=>{frame.copy(r.buffer,r.byteOffset,buffer,i*16,12);frame.clear(buffer,i*16+12,4);});
+        // Original classifier xyz are f32 emission /64; w is UINT info, not an
+        // emission component, and glow reads .rgb only (shaders/worldGlow.js
+        // glowLoad), so whole records go in runs and w keeps the info word. A
+        // copy and a clear per record were two commands per brick of every glow
+        // region: Descent's lava froze the page 5-13 s at its glow stage (real
+        // Chrome, 2026-10-22).
+        for(let i=0;i<selected.length;){
+          let j=i+1;while(j<selected.length&&selected[j].buffer===selected[i].buffer&&selected[j].byteOffset===selected[i].byteOffset+(j-i)*CLASSIFICATION_RECORD_BYTES)j++;
+          frame.copy(selected[i].buffer,selected[i].byteOffset,buffer,i*CLASSIFICATION_RECORD_BYTES,(j-i)*CLASSIFICATION_RECORD_BYTES);i=j;
+        }
         return Object.freeze({complete:true,buffer,format:'xyz-linear-f32-vec4-emission-div64',min:Object.freeze([...min]),size:Object.freeze([...size]),byteLength:buffer.size,byteOffset:0});
       },
       release:()=>{if(!released){released=true;queueMicrotask(retire);}}

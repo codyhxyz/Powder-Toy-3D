@@ -350,11 +350,18 @@ test('submitted classification lease preserves original f32 emission/UINT info a
   for(const b of bricks){const i=brickIdOf(SOURCE_GRID,...b);f32(capture.classification).set([b[0]+.25,b[1]+.5,b[2]+.75,0],i*4);u32(capture.classification)[i*4+3]=0x8000;}
   const lease=adapter.acquireClassification({bricks}),metadata=lease.recordMetadata(f.gpu.frame);
   assert.throws(()=>lease.recordEmission(f.gpu.frame,{min:[0,0,0],size:[8,2,3]}),/region/);
-  const emission=lease.recordEmission(f.gpu.frame,{min:[0,0,0],size:[8,2,2]});
+  // One copy per run of neighbouring records (an x row of the core), no per-record clears:
+  // Descent's glow stage froze 5-13 s on two commands per brick (real Chrome, 2026-10-22).
+  const copy=f.gpu.frame.copy.bind(f.gpu.frame),clear=f.gpu.frame.clear.bind(f.gpu.frame);let copies=0,clears=0;
+  f.gpu.frame.copy=(...a)=>{copies++;return copy(...a);};f.gpu.frame.clear=(...a)=>{clears++;return clear(...a);};
+  let emission;try{emission=lease.recordEmission(f.gpu.frame,{min:[0,0,0],size:[8,2,2]});}finally{f.gpu.frame.copy=copy;f.gpu.frame.clear=clear;}
+  // (runs follow the classifier's brick order: 4 neighbours a run here; it was 32 copies and 32 clears)
+  assert(copies<=8&&clears===0,`emission of 32 bricks took ${copies} copies, ${clears} clears`);
   f.gpu.flush();await drain(f.gpu);
   for(let i=0;i<bricks.length;i++){
     assert.equal(u32(metadata)[i*4+3],0x8000);
-    assert.deepEqual([...f32(emission.buffer).slice(i*4,i*4+4)],[bricks[i][0]+.25,bricks[i][1]+.5,bricks[i][2]+.75,0]);
+    // glow reads .rgb (shaders/worldGlow.js glowLoad); w keeps the classifier's info word
+    assert.deepEqual([...f32(emission.buffer).slice(i*4,i*4+3)],[bricks[i][0]+.25,bricks[i][1]+.5,bricks[i][2]+.75]);
   }
   const incomplete=adapter.acquireClassification({bricks:[[0,0,0]]});
   assert.throws(()=>incomplete.recordEmission(f.gpu.frame,{min:[0,0,0],size:[2,1,1]}),e=>e.requirements[0].index===1);incomplete.release();await drain(f.gpu);
