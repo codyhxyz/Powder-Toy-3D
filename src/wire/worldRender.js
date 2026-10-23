@@ -533,7 +533,12 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   // (renderAtlas.js reclaim), and the pages already retiring (a cancelled
   // private closure's, a released snapshot's) waited for, a few GPU
   // completions at most (a released state's pages retire one completion after it).
+  // The accepted frame's snapshot goes last: it is the one on screen, which the live
+  // view draws again every frame (wire/worldRenderFrame.js recordLive), and an expired
+  // one can't be drawn, so the camera waits for the next transaction again.
   async function reclaim(kind,over) {
+    const shown=accepted?.bundle.snapshot;
+    if(shown)for(let k=0;k<WORLD_RECLAIM_ROUNDS&&over()>0;k++)if(!await atlas.reclaim(kind,over(),shown))break;
     for(let k=0;k<WORLD_RECLAIM_ROUNDS&&over()>0;k++)await atlas.reclaim(kind,over());
   }
   // Room for count more pages of a pool, its oldest snapshots' superseded pages
