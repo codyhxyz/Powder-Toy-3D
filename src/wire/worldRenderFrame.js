@@ -55,11 +55,12 @@ export function mergeWorldFrameFeedback(...feedback) {
     requirements:[...requirements.values()], sun:[...sun]};
 }
 
-// The caller holds candidate and returned native consumers through LAST use.
-function nativeCandidate(state, data, values, params, packedMesh) {
+// The caller holds candidate and returned native consumers through LAST use. feedbackKind:
+// the reader whose feedback this candidate reads back, compacted (gfx/worldFeedbackCompact.js).
+function nativeCandidate(state, data, values, params, packedMesh, feedbackKind=null) {
   return state.volume.prepare({snapshot:data.snapshot.retain(), tableBuffer:data.tables.buffer,
     appearance:data.appearance, frameUniforms:values, physicsOrigin:data.frame.physicsOrigin, params,
-    lighting:data.lighting, external:{...data.frame.external, packedMesh}});
+    lighting:data.lighting, external:{...data.frame.external, packedMesh}, feedbackKind});
 }
 function meshPublication(data) {
   const pin = data.retain(), t = data.snapshot.textures();
@@ -113,28 +114,30 @@ export async function prewarmWorldFrame(app, state, data, {view,detail={},curved
 
 // Real native point readback. Both feedback and all 80 output bytes belong to
 // this exact native publication. No BOX probe or outside-window substitute.
+// The feedback comes back as its readback (native.recordFeedback: compacted, or whole), then the output.
 export async function probeWorldFrameEye(app, state, data, frozenView = null) {
   requireReady(!state.dead && app.win?.render===state.data, 'WORLD eye request retired');
   const values = frozenView ? {...data.frame.values,...frozenView.values} : data.frame.values;
   const {gpu}=app, ticket=createWorldFeedbackProvider(gpu,{}).reserve(gpu.frame), pin=data.retain();
   let native,output,combined,count,read,recordingError;
   try {
-    native=nativeCandidate(state,data,values,data.frame.params,state.unused.createView());
+    native=nativeCandidate(state,data,values,data.frame.params,state.unused.createView(),'eye');
     output=gpu.device.createBuffer({label:'world eye output',size:80,usage:128|4});
-    count=native.feedback.size/4;
-    combined=gpu.device.createBuffer({label:'world eye and complete feedback',size:native.feedback.size+80,usage:4|8});
+    count=native.feedbackWords;
+    combined=gpu.device.createBuffer({label:'world eye and complete feedback',size:count*4+80,usage:4|8});
     requireReady(native.recordPointReady(gpu.frame,{position:values.cam,output}), 'WORLD point pipeline not ready');
     const encoder = gpu.frame.direct();
-    encoder.copyBufferToBuffer(native.feedback,0,combined,0,native.feedback.size);
-    encoder.copyBufferToBuffer(output,0,combined,native.feedback.size,80);
+    native.recordFeedback(encoder,combined,0);
+    encoder.copyBufferToBuffer(output,0,combined,count*4,80);
   } catch(error) {recordingError=error;} finally {
     // Even partial encoding closes the real normal-Frame final boundary.
     read = ticket.record(gpu.frame,combined??state.boundary);
   }
-  const result=read.then(words => {
+  const result=read.then(async words => {
     if(recordingError)throw recordingError;
+    const feedback=await native.readFeedback(words.subarray(0,count));
     return Object.freeze({publication:native.publication, position:Object.freeze([...values.cam]),
-      words:new Float32Array(words.slice(count).buffer), feedback:native.decodeFeedback(words.subarray(0,count))});
+      words:new Float32Array(words.slice(count).buffer), feedback});
   });
   // Register immediately: disposal also waits a blocked/unfinished read, not
   // merely already completed queries. Decode precedes native destruction.
@@ -192,7 +195,7 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
         const fv=worldSceneValues(values,camera,p.jitter);
         app.writeWorldFrame(fv,camera);
         if(!stillTarget)app.prepareWorldAfter(fv,camera);
-        native=nativeCandidate(state,data,fv,worldSceneParams(params,fv,p.inSize),p.sceneTarget.packedOpaque.createView());
+        native=nativeCandidate(state,data,fv,worldSceneParams(params,fv,p.inSize),p.sceneTarget.packedOpaque.createView(),'scene');
         context=meshContext(app,state,data,native,fv,state.noise.texture);context.bind();
         requireReady(guardMeshes(app.scene,camera,{skip:o=>o.name==='pov-viewmodel',onReady:()=>app.wakeLoop()})===0,
           'native WORLD material graphs must be prewarmed before scene');
@@ -221,11 +224,11 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
     if (!transferred) postPublication.release();
     if (native) {
       // Copy signs after ALL scene readers, then close ONE actual final suffix.
-      const bytes=native.feedback.size+(signOutput?2048:0);
+      const feedbackBytes=native.feedbackWords*4,bytes=feedbackBytes+(signOutput?2048:0);
       try {
         combined=gpu.device.createBuffer({label:'world scene feedback and signs',size:bytes,usage:4|8});
-        const encoder=gpu.frame.direct();encoder.copyBufferToBuffer(native.feedback,0,combined,0,native.feedback.size);
-        if(signOutput)encoder.copyBufferToBuffer(signOutput,0,combined,native.feedback.size,2048);
+        const encoder=gpu.frame.direct();native.recordFeedback(encoder,combined,0);
+        if(signOutput)encoder.copyBufferToBuffer(signOutput,0,combined,feedbackBytes,2048);
       } catch(error) {recordingError??=error;} finally {
         submittedRead=ticket.record(gpu.frame,combined??state.boundary);
       }
@@ -258,9 +261,13 @@ export async function finishWorldFrame(app, state, recorded, eyeFeedback) {
   const retiredStill=()=>recorded.stillTarget && (app.win?.render!==state.data ||
     app.win?.renderSource?.epoch!==data.identity.epoch);
   try {
-    const words=await recorded.read, count=native.feedback.size/4;
-    if(state.dead || retiredStill()) {app.post.discardScene(sceneTicket);return {accepted:false,feedback:{incomplete:false,requirements:[],sun:[]},restage:true};}
-    const merged=mergeWorldFrameFeedback(eyeFeedback,native.decodeFeedback(words.subarray(0,count)));
+    const words=await recorded.read, count=native.feedbackWords;
+    const retired=()=>state.dead || retiredStill();
+    const restage=()=>{app.post.discardScene(sceneTicket);return {accepted:false,feedback:{incomplete:false,requirements:[],sun:[]},restage:true};};
+    if(retired())return restage();
+    const decoded=await native.readFeedback(words.subarray(0,count));   // (an overflowed list maps its full copy)
+    if(retired())return restage();
+    const merged=mergeWorldFrameFeedback(eyeFeedback,decoded);
     // (budget-dropped misses are settled before the signs' own readiness: worldRender.js settle)
     const feedback={...(state.data.settle?.(merged)??merged)};
     const signs=signRequest ? new Float32Array(words.slice(count).buffer).slice(0,signRequest.count*8) : null;
@@ -274,8 +281,9 @@ export async function finishWorldFrame(app, state, recorded, eyeFeedback) {
     try {
       committed=app.post.commitScene(sceneTicket,{feedbackIdentity,feedback,submission:final});
     } finally {
-      // Always close tentative Post work, including exceptions and prefix failures.
-      await final.record(app.gpu.frame,native.feedback);
+      // Always close tentative Post work, including exceptions and prefix failures. One word:
+      // the read is the boundary's fence, its words unused (the whole feedback was 24 MiB on Descent).
+      await final.record(app.gpu.frame,native.feedback,1);
     }
     if(!committed) {
       app.post.discardScene(sceneTicket);return {accepted:false,feedback,restage:true};

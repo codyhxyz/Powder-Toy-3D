@@ -67,7 +67,7 @@ test('actual driver/owner/Post reaches 32 accepted GI advances and then idles wi
       const submission=createWorldFeedbackProvider(f.gpu,{}).reserve(f.gpu.frame),feedbackIdentity={};
       const sceneTicket=p.post.recordScene({},app.camera,{identity:data.identity,publication:data.retain(),feedbackIdentity,submission});
       const feedback=f.gpu.createBuffer({size:4,usage:128|4|8}),read=submission.record(f.gpu.frame,feedback);
-      return {data,sceneTicket,feedbackIdentity,hands:{},native:{feedback,decodeFeedback:()=>complete},read,
+      return {data,sceneTicket,feedbackIdentity,hands:{},native:{feedback,feedbackWords:1,readFeedback:async()=>complete},read,
         submitted:submission.submitted,releaseAfter:async()=>feedback.destroy()};
     },
   });

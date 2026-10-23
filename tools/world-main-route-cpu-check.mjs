@@ -101,7 +101,7 @@ test('actual driver + actual owner + actual Post: pending/same-cut eye miss/acce
       const feedback=f.gpu.createBuffer({size:4,usage:128|4|8});
       const read=submission.record(f.gpu.frame,feedback);
       return {data,sceneTicket,feedbackIdentity,hands:{lighting:{canCommit:()=>true,commit(){commits++;return true;},discard(){}}},
-        native:{feedback,decodeFeedback:()=>complete,publication:{}},read,submitted:submission.submitted,
+        native:{feedback,feedbackWords:1,readFeedback:async()=>complete,publication:{}},read,submitted:submission.submitted,
         releaseAfter:async()=>feedback.destroy()};
     },
   });

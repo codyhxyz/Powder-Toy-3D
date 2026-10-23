@@ -81,7 +81,7 @@ test('actual staged Post: scene/point/sign misses discard before TAA and data ac
     let released=0,discarded=0;
     const recorded={data:{},sceneTicket:item.ticket,feedbackIdentity:item.opts.feedbackIdentity,
       hands:{lighting:{discard(){discarded++;},canCommit(){return true;}}},
-      native:{feedback:{size:4},decodeFeedback:()=>kind==='scene'?missing:complete,publication:{}},
+      native:{feedback:{size:4},feedbackWords:1,readFeedback:async()=>kind==='scene'?missing:complete,publication:{}},
       signRequest:kind==='sign'?{count:1}:null,
       read:Promise.resolve(new Uint32Array(1+(kind==='sign'?8:0))),
       submitted:item.opts.submission.submitted,releaseAfter:async()=>{released++;}};
@@ -99,7 +99,7 @@ test('actual Post final normal ticket confirms before owner/hands commit',async(
   f.gpu.frame.direct=()=>({...originalDirect(),copyBufferToBuffer(a,ao,b,bo,n){new Uint8Array(b.bytes,bo,n).set(new Uint8Array(a.bytes,ao,n));}});
   f.gpu.device.createBuffer=({size})=>{const bytes=new ArrayBuffer(size);return {size,bytes,mapAsync:async()=>{},getMappedRange:()=>bytes,unmap(){},destroy(){}};};
   const complete={incomplete:false,requirements:[],sun:[]};let accepts=0,commits=0,discards=0,releases=0;
-  const native={feedback:{size:4,bytes:new ArrayBuffer(4)},decodeFeedback:()=>complete,publication:{}};
+  const native={feedback:{size:4,bytes:new ArrayBuffer(4)},feedbackWords:1,readFeedback:async()=>complete,publication:{}};
   const recorded={data:{identity:{}},sceneTicket:item.ticket,feedbackIdentity:item.opts.feedbackIdentity,
     hands:{lighting:{canCommit:()=>true,commit(){assert.equal(item.ticket.status,'committed');commits++;return true;},discard(){discards++;}}},
     native,read:Promise.resolve(new Uint32Array(1)),submitted:item.opts.submission.submitted,releaseAfter:async()=>{releases++;}};
