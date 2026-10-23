@@ -13,7 +13,7 @@ import { worldSunProjection, WORLD_SUN_PITCH } from '../world/worldSun.js';
 import { worldColumnTops, forecastSunCasters, forecastViewTiles, worldViewRays, forecastGatherSources, forecastSourceTiles } from '../world/worldSunForecast.js';
 import { worldSunRings, worldCoarseCasters, WORLD_SUN_SHARPEN_TILES } from '../world/worldSunRings.js';
 import { WORLD_GI_NEAR_RADIUS, worldGIReach } from '../world/worldGIRing.js';
-import { worldViewAirFloors, worldViewAirWords, worldPageBudget, worldBudgetDemandSteps, worldFarthestSteps, WORLD_VIEW_NEAR_RADIUS } from '../world/worldViewRing.js';
+import { worldViewAirFloors, worldViewAirWords, worldPageBudget, worldBudgetDemandSteps, worldFarthestSteps } from '../world/worldViewRing.js';
 import { worldGIGroundWords } from '../shaders/worldGI.js';
 import { worldRunSync, worldRunSliced, worldSliceMeter, worldPause, WORLD_SLICE_COST as COST } from '../world/worldSlices.js';
 
@@ -293,50 +293,6 @@ export async function worldBudgetPass(t,ids,{atlas,budget,cellCurrent,brick,owne
   }
   if(fresh.size>room)await evict(resident,()=>false);
   if(air!==current.air)setViewAir(air);
-}
-// The page budget is one of the pool's WORLD_PAGE_COPIES (worldViewRing.js
-// worldPageBudget): the other holds the pages the frame on screen still names
-// while a transaction re-packs theirs (renderAtlas.js _supersede). But
-// worldBudgetPass drops only bricks a transaction asked for, and its demand
-// holds every metadata row's brick, which only grow: as the camera roamed, the
-// book grew to the whole pool. A churning map (V2's water changes cells every
-// step) then re-packed into a full pool every transaction, which took the frame
-// on screen's pages back (reclaim) and expired it, and the live view cannot draw
-// an expired frame (wire/worldRenderFrame.js liveViewAllowed): the picture waited
-// seconds for each transaction again (Island, 2026-10-23; in
-// tools/world-pool-budget-cpu-check.mjs's churn, 6 frames on screen of 8 expired).
-// So the farthest resident pages past the view's near ring leave the book, those
-// outside the demand first, until what the transaction leaves resident fits one
-// copy: a demand brick's goes out of the demand too, settled as the budget's
-// other drops (worldSettleFeedback), at most once a transaction (t.squeezed), and
-// its column's floor lowers to it, so the view reads it as air past the ring
-// (the budget's far edge, worldBudgetDemand). Never a brick still to be packed
-// (its core's capture is gone: the metadata stage would only ask for it back),
-// a producer's pinned ask, an owned record's brick or a glow region's. The
-// evicted pages free once the frame on screen is replaced, so the next
-// transaction's re-packs fit beside it.
-export async function worldBudgetTrim(t,ids,{atlas,budget,brick,ownedSources,ownedProbes,viewAirFor,setViewAir,glow=new Set(),pause=worldPause}) {
-  const full=t.full??worldSliceMeter(),run=steps=>worldRunSliced(steps,{pause});
-  const eye=t.frame.values?.cam,cam=eye&&Array.from(eye).length===3&&Array.from(eye).every(Number.isFinite)?Array.from(eye):null;
-  if(!cam)return;
-  const live=atlas.live.cell,outside=await run(worldOutsideSteps(live.keys(),ids,full));
-  const over=outside+ids.size-budget.cell;
-  if(over<=0)return;
-  const out=[],drops=[],keeps=i=>!live.has(i)||t.pinned.has(i)||t.squeezed.has(i)||ownedSources.has(i)||ownedProbes.has(i)||glow.has(i);
-  await run(worldFarthestSteps(live.keys(),{eye:cam,brick,skip:i=>ids.has(i),radius:WORLD_VIEW_NEAR_RADIUS,visit:i=>out.push(i)>=over},full));
-  if(out.length<over)await run(worldFarthestSteps(ids,{eye:cam,brick,skip:keeps,radius:WORLD_VIEW_NEAR_RADIUS,visit:i=>drops.push(i)>=over-out.length},full));
-  if(!out.length&&!drops.length)return;
-  const bricks=await run((function*(){const b=[];for(const i of out){b.push(brick(i));if(full(COST.member))yield;}for(const i of drops){b.push(brick(i));if(full(COST.member))yield;}return b;})());
-  atlas.remove(bricks,READY.CELL);
-  if(drops.length){
-    const current=await viewAirFor();let floors=null;
-    await run((function*(){for(const i of drops){ids.delete(i);t.requirements.delete(i);t.support.delete(i);t.dropped.add(i);t.squeezed.add(i);
-      if(current.air){const b=brick(i),c=b[0]+current.air.dims[0]*b[2];floors??=Uint32Array.from(current.air.floors);floors[c]=Math.min(floors[c],b[1]);}
-      if(full(WORLD_BUDGET_DROP_OPS))yield;}})());
-    t.budgetDropped=t.dropped.size;
-    if(floors)setViewAir(Object.freeze({floors,dims:current.air.dims}));
-  }
-  console.warn(`WORLD book past its GPU page budget (${budget.cell} pages): ${out.length} farthest pages outside the demand and ${drops.length} of its own evicted, room kept for the frame on screen`);
 }
 // The bricks a transaction's metadata stage records (book indices): the
 // committed rows a cut may have changed (worldLightingRecords stale), and the
@@ -665,7 +621,6 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     if(!ids.size)throw new Error('WORLD requires explicit initial CELL demand');
     await advanceFields(t);
     await budgetDemand(t,ids);
-    await worldBudgetTrim(t,ids,{...budgetContext,glow:new Set(glowBricks)});
     await classify(t,ids);
     t.stage='metadata';
     // Only the bricks the last attempt's records lack: the cut, clock and
