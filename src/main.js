@@ -21,6 +21,7 @@ import { GAMEMODES, mapOf, mapByKey, mapsFor, DEFAULT_MAP, MOBILE_MAP } from './
 import { probeWebGPU } from './gpu/device.js';
 import { BOOT_RETRY, bootModuleRecovery } from './bootRecovery.js';
 import { loadSourceMapManifests } from './startupSafety.js';
+import { characterPicked, chooseCharacter } from './ui/characterPick.js';
 
 // The converted source levels (public/local-maps): their manifests register the
 // maps before the menu lists them, and each map's geometry loads when it is
@@ -233,6 +234,17 @@ async function boot() {
   }
 }
 
+// Network prefetch only. GPU compilation starts after an explicit Start.
+const prefetch = () => probe.then((p) => {
+  if (!p.ok || webgpuFailed) return;
+  launch.adapter = p.adapter;
+  preloadGame();
+});
+// Intentional (user request, 2026-10-23): a new player chooses their character first, before the
+// menu or any loading screen, on every way in (ui/characterPick.js). Tests and automated
+// browsers keep their settings' body.
+const choosing = TEST_PAGE || navigator.webdriver || characterPicked() ? null : chooseCharacter();
+
 if (location.search) {
   const params = new URLSearchParams(location.search);
   if (params.get('map') && !mapByKey(params.get('map'))) {
@@ -240,19 +252,17 @@ if (location.search) {
     showError(`${sourceMapError ? `${sourceMapError.message}\n` : ''}`
       + `The requested map "${params.get('map')}" is unavailable. Select another map from the home page.`);
   } else {
+    await choosing;
     linkMode(params);
     boot();
   }
 } else if (MOBILE && !TEST_PAGE) {
   // Intentional (user request, 2026-10-23): phones skip the start menu and go straight into Sandbox on
   // their last map (a new player: the Island); the toolbar's Maps still opens the menu.
+  if (choosing) { prefetch(); await choosing; }
   start(firstMap, 'sandbox');
 } else {
+  prefetch();
+  await choosing;
   menu.open();
-  // Network prefetch only. GPU compilation starts after an explicit Start.
-  probe.then((p) => {
-    if (!p.ok || webgpuFailed) return;
-    launch.adapter = p.adapter;
-    preloadGame();
-  });
 }

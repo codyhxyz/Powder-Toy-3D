@@ -11,6 +11,18 @@ export function previewCharacter(mode, choice = 'real', village = 'boy') {
   return characterForMode(mode, choice);
 }
 
+// The player's gender, picked once on the first visit (ui/characterPick.js) and kept with the
+// settings. It is what's remembered: every world dresses
+// the player from it, the male or female wizard here, the village boy or girl in Animal Crossing.
+export const GENDERS = ['male', 'female'];
+export const genderOf = (character) => character === 'woman' ? 'female' : 'male';
+// The bodies a gender wears. The paper-bag guy is the male wizard in a bag, so a man keeps it.
+export function bodiesFor(gender, character = 'real') {
+  return gender === 'female'
+    ? { gender, character: 'woman', villageCharacter: 'girl' }
+    : { gender: 'male', character: character === 'stick' ? 'stick' : 'real', villageCharacter: 'boy' };
+}
+
 // Skyrim's loading screen: the wheel moves the camera in and out. 1 is the framed distance;
 // scroll down (positive deltaY) moves out.
 export const YOU_ZOOM_MIN = 0.34;

@@ -4,6 +4,7 @@ import { HOMES, FLOOR, HOME_Z, HOME_ENTRY, ITEMS, RESIDENTS, DRESSER, initialSta
 import { residentFurniture, createConversation, advanceConversation, hydrateMemory } from './residents.js';
 import { resolveCharacterMotion } from './characterCollision.js';
 import { povEvents } from '../events.js';
+import { bodiesFor } from '../character.js';
 import { character, furniture, nameplate, speechBubble, dispose } from './models.js';
 import { createSpeech } from './speech.js';
 import { createVillageUi } from './ui.js';
@@ -392,7 +393,7 @@ export function createVillage({ app, getPlayer, live, freeMouse, releaseInput, r
       if (!context().active || buildingRuntime?.room(islandPlayer()) !== speaking.building) { ui.close(); return; }
       const service = choiceId, spec = speaking.spec;
       if (service === 'catalogue') { ui.close(); ui.open('catalogue'); return; }
-      if (['boy', 'girl'].includes(service)) { app.settings.villageCharacter = service; app.save?.(); }
+      if (['boy', 'girl'].includes(service)) { Object.assign(app.settings, bodiesFor(service === 'girl' ? 'female' : 'male', app.settings.character)); app.save?.(); }
       const lines = {
         coffee: 'Here is your freshly brewed cup. Warm paws, a quiet minute, and the sound of the creek. Stay for a seat if you like.',
         fish: 'These little creek fish shelter among the reeds. Clear water and shady banks make a good nursery.',

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { characterForMode, previewCharacter, nextYouZoom, YOU_ZOOM_MIN, YOU_ZOOM_MAX } from '../src/pov/character.js';
+import { characterForMode, previewCharacter, nextYouZoom, YOU_ZOOM_MIN, YOU_ZOOM_MAX, bodiesFor, genderOf } from '../src/pov/character.js';
 
 for (const mode of ['slayer', 'ctf', 'koth', 'infection']) {
   for (const choice of [undefined, 'real', 'woman', 'stick', 'invalid']) {
@@ -23,6 +23,13 @@ assert.equal(previewCharacter('animalCrossing', 'real', 'nope'), 'boy');
 assert.equal(previewCharacter('slayer', 'stick', 'girl'), 'spartan');
 assert.equal(previewCharacter('sandbox', 'woman', 'girl'), 'woman');
 assert.equal(previewCharacter('siege', 'stick'), 'stick');
+// the remembered gender dresses the player in every world: the wizard here, the village boy or girl
+for (const [gender, character, want] of [['female', 'stick', 'woman'], ['male', 'woman', 'real'], ['male', 'stick', 'stick'], ['nope', undefined, 'real']]) {
+  const b = bodiesFor(gender, character);
+  assert.equal(b.character, want, `${gender}/${character}`);
+  assert.equal(previewCharacter('animalCrossing', b.character, b.villageCharacter), b.gender === 'female' ? 'girl' : 'boy');
+  assert.equal(genderOf(b.character), b.gender);
+}
 assert.equal(nextYouZoom(1, 0), 1);
 assert.ok(nextYouZoom(1, 100) > 1);
 assert.ok(nextYouZoom(1, -100) < 1);

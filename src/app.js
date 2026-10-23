@@ -85,6 +85,7 @@ import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
 import { inventory } from './pov/tools/inventory.js';
 import { gearByKey, SLOTS } from './pov/tools/catalog.js';
 import { finishSignIn, account, accountsEnabled } from './account.js';
+import { GENDERS, genderOf, bodiesFor } from './pov/character.js';
 import { accountSection } from './ui/account-section.js';
 import { launch, mark, physicsEngine } from './launch.js';
 import { createLoadWatch } from './loadWatch.js';
@@ -159,7 +160,7 @@ const DEFAULTS = {
   specificDelete: false, replaceTarget: -1, propField: 'temp', propText: '',
   steps: 4, gravity: 0.025, paused: false,
   view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: true,
-  character: 'real', villageCharacter: 'boy', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
+  gender: 'male', character: 'real', villageCharacter: 'boy', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   sprintBlur: true, sprintMusic: true,
   nearGI: true, glowLights: true, caustics: true,
   ...detailDefaults(),
@@ -188,7 +189,7 @@ const DEFAULT_CHANGES = [
 const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
 const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'propField', 'propText', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', 'character', 'villageCharacter', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
+  'camSpeed', 'upscale', 'dockCollapsed', 'gender', 'character', 'villageCharacter', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
@@ -286,6 +287,10 @@ if (!VIEWS.some((v) => v.id === settings.view)) settings.view = 0;
 // (a saved 'wizard', the Castle Crashers body that was the default, falls back to it too)
 if (!['real', 'woman', 'stick'].includes(settings.character)) settings.character = DEFAULTS.character;
 if (!['boy', 'girl'].includes(settings.villageCharacter)) settings.villageCharacter = DEFAULTS.villageCharacter;
+// The gender is what's remembered (pov/character.js): settings saved before it take it from the body,
+// and the bodies follow it, so Animal Crossing's boy or girl matches the wizard.
+if (!GENDERS.includes(settings.gender)) settings.gender = genderOf(settings.character);
+Object.assign(settings, bodiesFor(settings.gender, settings.character));
 settings.paused = params.get('paused') === '1' || testMode === 'manual' || testMode === 'ui';
 // Physics V2 is the only engine (launch.js physicsEngine). Worlds/POV use explicit readiness while its
 // pipelines build. Multiplayer guests are deliberately render-only: a guest's owner holds the host's frames.
@@ -1748,10 +1753,11 @@ const settingsPanel = createSettings({
     // The body you see in third person and when you die. The wizards wear a hat;
     // the third body is the same guy with a marker-drawn paper bag over his head.
     { title: 'Character body', rows: [
+      // Either row sets the gender, and the other follows it (pov/character.js bodiesFor).
       { type: 'seg', key: 'character', options: [['real', 'Male wizard'], ['woman', 'Female wizard'], ['stick', 'Paper bag']],
-        onChange: (v) => { settings.character = v; save(); pacer.wake(); } },
+        onChange: (v) => { settings.character = v; setGender(genderOf(v)); } },
       { type: 'seg', key: 'villageCharacter', options: [['boy', 'Animal Crossing: Boy'], ['girl', 'Girl']],
-        onChange: (v) => { settings.villageCharacter = v; save(); pacer.wake(); } },
+        onChange: (v) => setGender(v === 'girl' ? 'female' : 'male') },
       { type: 'custom', el: h('p.row-note', { text: 'Changes your body and first-person arms.' }) },
     ] },
     { title: 'First-person controls', rows: [
@@ -1801,10 +1807,17 @@ function applyDetail() {
 const signInResult = finishSignIn();
 if (signInResult.error) hud.toast(signInResult.error);
 account().then((user) => { if (signInResult.signedIn && user) hud.toast(`Signed in as ${user.name}`); });
+// The player's gender (pov/character.js) and the bodies it wears, kept with the settings.
+function setGender(gender) {
+  Object.assign(settings, bodiesFor(gender, settings.character));
+  save();
+  pacer.wake();
+}
 
 function resetSettings() {
   weather.reset();
-  const keep = { size: settings.size, preset: settings.preset, scene: settings.scene, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed };
+  const keep = { size: settings.size, preset: settings.preset, scene: settings.scene, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed,
+    ...bodiesFor(settings.gender) };   // the player's own gender stays
   Object.assign(settings, DEFAULTS, keep);
   applyGravity();
   rig.setSpeed(settings.camSpeed);
