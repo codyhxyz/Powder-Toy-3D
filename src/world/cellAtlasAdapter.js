@@ -16,7 +16,9 @@ export const CELL_BATCH_WRITES = 1024;   // a raw and a fields write per page
 let dependencyID = 1;
 
 export class WorldCellAtlasAdapter {
-  constructor({gpu,source,producer,atlas,tables,worldBounds}={}) {
+  // fieldBudget: the workgroups a field tick may record (fields.js
+  // WORLD_FIELD_TICK_WORKGROUPS by default; Infinity: every tick whole).
+  constructor({gpu,source,producer,atlas,tables,worldBounds,fieldBudget}={}) {
     if (!gpu || !source || !producer || !atlas || !tables || !worldBounds) throw new TypeError('Concrete Source/Producer/Atlas/tables/bounds required');
     if (worldBounds.min.some(v=>v!==0) || worldBounds.max.some((v,i)=>v!==source.win.size[i] || v!==atlas.bookLayout.worldSize[i])) throw new Error('CELL source/atlas/world bounds mismatch');
     Object.assign(this,{gpu,source,producer,atlas,tables});
@@ -31,7 +33,7 @@ export class WorldCellAtlasAdapter {
     // Keep that publication debt until a successful atomic Atlas patch.
     this.unpublishedInvalidations=new Set();this.unpublishedLists=[];this.lightingDirty=false;this.prepared=null;
     this.batchWrites=CELL_BATCH_WRITES;
-    this.fields=new WorldFields(gpu,{worldBounds,tables,publisher:this});
+    this.fields=new WorldFields(gpu,{worldBounds,tables,publisher:this,...(fieldBudget!==undefined?{budget:fieldBudget}:{})});
     if(this.fields.history.epoch<source.epoch)this.fields.reset(source.epoch);
     const layout=gpu.layout('world owned classifier',WORLD_CLASSIFIER_LAYOUT);
     this.classifierLayout=layout;
@@ -150,8 +152,10 @@ export class WorldCellAtlasAdapter {
       release:()=>{if(!released){released=true;queueMicrotask(retire);}}
     });
   }
-  _options({fieldTick,requirements=[],changedBricks=[],smoothing=1,full=false}){
+  // eye: the view's position in cells (or null), for the field budget's order (fields.js _admit).
+  _options({fieldTick,requirements=[],changedBricks=[],smoothing=1,full=false,eye=null}){
     const cores=new Map(), normalized=[];
+    eye=Array.isArray(eye)&&eye.length===3&&eye.every(Number.isFinite)?Object.freeze([...eye]):null;
     for(const r of requirements){
       const brick=Array.isArray(r)?r:r.brick, channels=Array.isArray(r)?READY.CELL:r.channels;
       worldBrickIndex(this.atlas.bookLayout,brick);
@@ -162,13 +166,13 @@ export class WorldCellAtlasAdapter {
     const delta=this.source.changesSince(this.lastSourceToken);
     // The source's own frozen list as it stands when nothing joins it: a V2 step
     // changes the whole window, every brick of it keyed and copied per demand.
-    if(!delta.global&&!changedBricks.length)return Object.freeze({fieldTick,requirements:Object.freeze(normalized),wantedCores:Object.freeze([...cores.values()].map(c=>Object.freeze(c))),changedBricks:delta.changedBricks,smoothing,full});
+    if(!delta.global&&!changedBricks.length)return Object.freeze({fieldTick,requirements:Object.freeze(normalized),wantedCores:Object.freeze([...cores.values()].map(c=>Object.freeze(c))),changedBricks:delta.changedBricks,smoothing,full,eye});
     const changed=new Map(changedBricks.map(b=>[brickKey(b),[...b]]));
     if(delta.global){
       for(const owner of this.fields.history.owners.values())changed.set(brickKey(owner.brick),owner.brick);
       for(const core of cores.values())for(let z=core[2]/4;z<Math.min((core[2]+32)/4,this.bounds.max[2]/4);z++)for(let y=core[1]/4;y<Math.min((core[1]+32)/4,this.bounds.max[1]/4);y++)for(let x=core[0]/4;x<Math.min((core[0]+32)/4,this.bounds.max[0]/4);x++)changed.set(`${x},${y},${z}`,[x,y,z]);
     }else for(const b of delta.changedBricks)changed.set(brickKey(b),b);
-    return Object.freeze({fieldTick,requirements:Object.freeze(normalized),wantedCores:Object.freeze([...cores.values()].map(c=>Object.freeze(c))),changedBricks:Object.freeze([...changed.values()].map(b=>Object.freeze([...b]))),smoothing,full});
+    return Object.freeze({fieldTick,requirements:Object.freeze(normalized),wantedCores:Object.freeze([...cores.values()].map(c=>Object.freeze(c))),changedBricks:Object.freeze([...changed.values()].map(b=>Object.freeze([...b]))),smoothing,full,eye});
   }
   // The changed bricks of records not yet in a publication, kept as their
   // lists (_options makes each frozen and without repeats). One list, a

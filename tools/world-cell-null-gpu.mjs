@@ -3,17 +3,22 @@
 // byte-backed fakes (cell-adapter-test-gpu.mjs) execute every copy on the CPU,
 // which dominated a profile of the code they host. Only buffers mapped at
 // creation get bytes (the code writes them); everything else is a handle.
+// workgroups: every direct dispatch's workgroups by kernel name (a native
+// pass's under 'native'), for a tick's GPU work (tools/world-field-budget-cpu-check.mjs).
+const groupsOf = (size) => (Array.isArray(size) ? size[0] * (size[1] ?? 1) * (size[2] ?? 1) : 0);
 export class NullGPU {
   constructor() {
     globalThis.GPUBufferUsage ??= { STORAGE: 128, COPY_SRC: 4, COPY_DST: 8, INDIRECT: 256, UNIFORM: 64 };
     globalThis.GPUTextureUsage ??= { TEXTURE_BINDING: 4, STORAGE_BINDING: 8, COPY_SRC: 1, COPY_DST: 2 };
     this.counts = { buffers: 0, textures: 0, submits: 0, commands: 0, dispatches: 0, writes: 0, flushes: 0, bindGroups: 0 };
+    this.workgroups = new Map();
+    const count = (name, n) => this.workgroups.set(name, (this.workgroups.get(name) ?? 0) + n);
     this.L = {}; this.open = 0; this.testMode = true;
     const c = this.counts, self = this;
     const encoder = () => ({
       copyTextureToBuffer() { c.commands++; }, copyBufferToTexture() { c.commands++; }, copyTextureToTexture() { c.commands++; },
       copyBufferToBuffer() { c.commands++; }, clearBuffer() { c.commands++; },
-      beginComputePass: () => ({ setPipeline() {}, setBindGroup() {}, dispatchWorkgroups() { c.dispatches++; }, end() {} }),
+      beginComputePass: () => ({ setPipeline() {}, setBindGroup() {}, dispatchWorkgroups(x, y = 1, z = 1) { c.dispatches++; count('native', x * y * z); }, end() {} }),
       finish: () => ({}),
     });
     this.queue = {
@@ -45,7 +50,8 @@ export class NullGPU {
     // Params pack into one reused view, as the real ring's push does (gpu/params.js
     // ParamRing): a new ArrayBuffer a dispatch cost more than the code it hosts.
     self.paramView ??= new DataView(new ArrayBuffer(64 * 1024));
-    return { ...desc, state: 'ready', ready: Promise.resolve(), dispatch(frame, size, opts = {}) { if (opts.params) desc.params?.pack?.(opts.params, self.paramView); self.counts.dispatches++; self.open++; } };
+    return { ...desc, state: 'ready', ready: Promise.resolve(), dispatch(frame, size, opts = {}) { if (opts.params) desc.params?.pack?.(opts.params, self.paramView); self.counts.dispatches++; self.open++;
+      self.workgroups.set(desc.name, (self.workgroups.get(desc.name) ?? 0) + groupsOf(size)); } };
   }
   flush() { if (this.open) { this.counts.flushes++; this.counts.submits++; this.open = 0; } }
   retire(b) { b.destroy?.(); }

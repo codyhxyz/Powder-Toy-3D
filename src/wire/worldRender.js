@@ -137,9 +137,11 @@ async function recordCells(gpu,cells,options,label) {
 // they change, before any page is judged current (worldCellCurrent). A record
 // of no bricks; nothing to do on a restart or a camera-only birth of the
 // accepted cut. Whether it recorded.
-export async function worldAdvanceFields(gpu,cells,{fieldTick,smoothing=1}) {
+// eye: the view's position in cells, or null: the cores nearest it advance
+// first when the tick's field work is over its budget (world/fields.js _admit).
+export async function worldAdvanceFields(gpu,cells,{fieldTick,smoothing=1,eye=null}) {
   if(!cells.behind(fieldTick))return false;
-  await recordCells(gpu,cells,{fieldTick,requirements:[],smoothing},'WORLD Fields tick');
+  await recordCells(gpu,cells,{fieldTick,requirements:[],smoothing,eye},'WORLD Fields tick');
   return true;
 }
 // A brick's CELL page is current while the book holds it: after
@@ -293,7 +295,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     return {version:atlas.generation+1,sets:[{id:p.dependencySetID,version:p.dependencyVersion}]};
   }
   const cellOptions=t=>({fieldTick:t.fieldTick,smoothing:t.frame.params.smoothing??1});
-  async function advanceFields(t) {cells.bindCut(t.cut);await worldAdvanceFields(gpu,cells,cellOptions(t));}
+  async function advanceFields(t) {cells.bindCut(t.cut);const cam=t.frame.values?.cam,eye=cam&&Array.from(cam);await worldAdvanceFields(gpu,cells,{...cellOptions(t),eye:eye?.length===3&&eye.every(Number.isFinite)?eye:null});}
   const cellCurrent=i=>worldCellCurrent(atlas,i);
   const captureOf=b=>cells.classificationBuffer(b);
   async function classify(t,ids) {await worldClassify(gpu,cells,atlas,ids,cellOptions(t),brick);}
