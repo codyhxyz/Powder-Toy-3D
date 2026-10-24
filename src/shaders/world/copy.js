@@ -14,7 +14,9 @@
 //            dilation derives the low bits from
 //   wcOcc    the occupancy levels: a bit per 16³-cell node (level 1), then a bit per 64³-cell node (level 2), x
 //            fastest, set where a brick in it has BRICK_MATTER
-// Writers only: wcCtrl (the allocator's counters), wcFree (its free list), the chunk's cells, the jobs.
+// Writers only: wcAlloc (the allocator's counters, then its free list) and wcScratch (the jobs' ring, then the
+// chunk's cells or a writeback's words). A writer binds at most 8 storage buffers a stage: the decode, with the
+// tables and V2's two, takes five of these (no occupancy).
 import { prelude, STATE_OPTS, stateLayout } from '../common.js';
 import { cellWordWGSL, WC_BRICK, WC_BRICK_CELLS, WC_AUX_MAX } from './cellWord.js';
 import { BRICK_INFO, AIR } from '../bindings.js';
@@ -149,30 +151,33 @@ fn wcOccupied(level: u32, c: vec3i) -> bool {
 
 // ---------------------------------------------------------------- the writers
 // Their group 2 (one layout for every writer, a dummy where a kernel binds nothing): the copy's buffers read_write.
-export const WC_WRITE = { table: 0, pool: 1, info: 2, occ: 3, ctrl: 4, free: 5, jobs: 6, scratch: 7 };
-export const WC_WRITE_LAYOUT = Object.values(WC_WRITE).map((binding) => ({
-  binding, visibility: STAGE.COMPUTE, buffer: { type: binding === WC_WRITE.jobs ? 'read-only-storage' : 'storage' },
-}));
-// wcCtrl's words: the bump (slots ever handed out), the free list's length, slots that didn't fit (never, by
-// world/worldCopy.js's capacity rule: a nonzero count is a bug the tools report), the capacity.
+export const WC_WRITE = { table: 0, pool: 1, info: 2, occ: 3, alloc: 4, scratch: 5 };
+export const WC_WRITE_LAYOUT = Object.values(WC_WRITE).map((binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }));
+export const WC_DECODE_LAYOUT = WC_WRITE_LAYOUT.filter((e) => e.binding !== WC_WRITE.occ);
+export const WC_JOB_RING = 1 << 19;   // wcScratch's first words: the jobs (world/worldCopy.js writes them a writeback at a time)
+// wcAlloc's words: the bump (slots ever handed out), the free list's length, slots that didn't fit (never, by
+// world/worldCopy.js's capacity rule: a nonzero count is a bug the tools report), a spare; then the free list.
 export const WC_CTRL = { BUMP: 0, FREE: 1, OVER: 2, CAP: 3, WORDS: 4 };
 export const WcWriteParams = uniformStruct('WcWriteParams', {
   origin: 'vec3i', count: 'u32',      // world cells of the window's corner (writeback) or the chunk's; jobs
   chunk: 'vec3i', first: 'u32',       // the chunk's size in cells (build); the first job of the dispatch
   airT: 'f32', capacity: 'u32', dilate: 'i32', level: 'u32',
 });
-const writerDecls = (L) => /* wgsl */ `
+const writerDecls = (L, { occ = true } = {}) => /* wgsl */ `
 ${wcCommonWGSL}
 ${WcWriteParams.wgsl}
 @group(3) @binding(1) var<uniform> P: WcWriteParams;
 @group(2) @binding(${WC_WRITE.table}) var<storage, read_write> wcTable: array<u32>;
 @group(2) @binding(${WC_WRITE.pool}) var<storage, read_write> wcPool: array<u32>;
 @group(2) @binding(${WC_WRITE.info}) var<storage, read_write> wcInfoBuf: array<u32>;
-@group(2) @binding(${WC_WRITE.occ}) var<storage, read_write> wcOcc: array<atomic<u32>>;
-@group(2) @binding(${WC_WRITE.ctrl}) var<storage, read_write> wcCtrl: array<atomic<u32>>;
-@group(2) @binding(${WC_WRITE.free}) var<storage, read_write> wcFree: array<u32>;
-@group(2) @binding(${WC_WRITE.jobs}) var<storage, read> wcJobs: array<u32>;
-@group(2) @binding(${WC_WRITE.scratch}) var<storage, read_write> wcScratch: array<u32>;
+${occ ? `@group(2) @binding(${WC_WRITE.occ}) var<storage, read_write> wcOcc: array<atomic<u32>>;` : ''}
+@group(2) @binding(${WC_WRITE.alloc}) var<storage, read_write> wcAlloc: array<atomic<u32>>;
+@group(2) @binding(${WC_WRITE.scratch}) var<storage, read_write> wcScratchBuf: array<u32>;
+const WC_SCRATCH_AT: u32 = ${WC_JOB_RING}u;
+const WC_FREE_AT: u32 = ${WC_CTRL.WORDS}u;
+fn wcJob(i: u32) -> u32 { return wcScratchBuf[i]; }
+fn wcScratchGet(i: u32) -> u32 { return wcScratchBuf[WC_SCRATCH_AT + i]; }
+fn wcScratchSet(i: u32, v: u32) { wcScratchBuf[WC_SCRATCH_AT + i] = v; }
 const WC_B: vec3i = vec3i(${L.bricks.join(', ')});
 const WC_N1: vec3i = vec3i(${L.n1.join(', ')});
 const WC_N2: vec3i = vec3i(${L.n2.join(', ')});
@@ -261,15 +266,15 @@ fn wcOwnInfo() -> u32 {
 }
 // pop a free slot, else bump one (no push runs in the same dispatch: see wcRelease); ~0u when none fits
 fn wcAllocSlot() -> u32 {
-  let n = i32(atomicSub(&wcCtrl[${WC_CTRL.FREE}], 1u));
-  if (n > 0) { return wcFree[n - 1]; }
-  atomicAdd(&wcCtrl[${WC_CTRL.FREE}], 1u);
-  let s = atomicAdd(&wcCtrl[${WC_CTRL.BUMP}], 1u);
-  if (s >= P.capacity) { atomicAdd(&wcCtrl[${WC_CTRL.OVER}], 1u); return 0xffffffffu; }
+  let n = i32(atomicSub(&wcAlloc[${WC_CTRL.FREE}], 1u));
+  if (n > 0) { return atomicLoad(&wcAlloc[WC_FREE_AT + u32(n - 1)]); }
+  atomicAdd(&wcAlloc[${WC_CTRL.FREE}], 1u);
+  let s = atomicAdd(&wcAlloc[${WC_CTRL.BUMP}], 1u);
+  if (s >= P.capacity) { atomicAdd(&wcAlloc[${WC_CTRL.OVER}], 1u); return 0xffffffffu; }
   return s;
 }
 // give slot s back (no pop runs in the same dispatch)
-fn wcRelease(s: u32) { wcFree[atomicAdd(&wcCtrl[${WC_CTRL.FREE}], 1u)] = s; }
+fn wcRelease(s: u32) { atomicStore(&wcAlloc[WC_FREE_AT + atomicAdd(&wcAlloc[${WC_CTRL.FREE}], 1u)], s); }
 `;
 
 // One thread per job of a 1-D job list (fold), x jobs at P.first on.
@@ -417,7 +422,7 @@ ${brickWorkgroup(/* wgsl */ `
 `;
 
 // The chunk's bricks committed (bump-only: the build frees nothing), each brick's own info written.
-// The chunk's cells are bound as the scratch.
+// The chunk's cells are the scratch's (after the jobs' ring).
 export const wcCommitChunkFrag = (g, L) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${writerDecls(L)}
@@ -426,7 +431,7 @@ ${brickWorkgroup(/* wgsl */ `
   let k = i32(job);
   let lb = vec3i(k % cb.x, (k / cb.x) % cb.y, k / (cb.x * cb.y));
   let c = lb * BS + l;
-  let w = wcScratch[u32(c.x + P.chunk.x * (c.y + P.chunk.y * c.z))];
+  let w = wcScratchGet(u32(c.x + P.chunk.x * (c.y + P.chunk.y * c.z)));
   wcGather(li, w);
   let b = (P.origin >> vec3u(2u)) + lb;
   if (any(b >= WC_B)) { return; }
@@ -451,11 +456,11 @@ ${brickWorkgroup(/* wgsl */ `
 // mixed, and leave the words of a brick that needs a slot in the scratch (64 a job, then a flag a job:
 // wcScratch[count · 64 + job], 1 where it needs one).
 const unpackJob = /* wgsl */ `
-  let jw = wcJobs[job];
+  let jw = wcJob(job);
   let wb = vec3i(i32(jw & 1023u), i32((jw >> 10u) & 1023u), i32(jw >> 20u));`;
 export const wcDecodeFrag = (g, L) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
-${writerDecls(L)}
+${writerDecls(L, { occ: false })}
 // cell p of the window: its word (compactA's fields, undithered, at full precision: shaders/compact.js)
 fn wcCoreWord(p: vec3i) -> u32 {
   let c = fetchNativeCore(p);
@@ -481,19 +486,19 @@ ${brickWorkgroup(/* wgsl */ `${unpackJob}
     if (atomicLoad(&wgDiff) == 0u) {
       wcTable[bi] = wgW[0];
       if ((old & WC_MIXED) != 0u) { wcRelease(old & ~WC_MIXED); }
-      wcScratch[flag] = 0u;
+      wcScratchSet(flag, 0u);
       wgSlot = 0xffffffffu;
     } else if ((old & WC_MIXED) != 0u) {
-      wcScratch[flag] = 0u;
+      wcScratchSet(flag, 0u);
       wgSlot = old & ~WC_MIXED;
     } else {
-      wcScratch[flag] = 1u;
+      wcScratchSet(flag, 1u);
       wgSlot = 0xffffffffu;
     }
   }
   let s = workgroupUniformLoad(&wgSlot);
   if (s != 0xffffffffu) { wcPool[s * WC_BRICK_CELLS + li] = w; }
-  wcScratch[j * 64u + li] = w;`)}
+  wcScratchSet(j * 64u + li, w);`)}
 `;
 // Pass 2: a slot for each brick that became mixed (pops only), its words from the scratch.
 export const wcAllocFrag = (g, L) => /* wgsl */ `
@@ -503,13 +508,13 @@ ${brickWorkgroup(/* wgsl */ `${unpackJob}
   let bi = wcBi((P.origin >> vec3u(2u)) + wb);
   if (li == 0u) {
     wgSlot = 0xffffffffu;
-    if (wcScratch[P.count * 64u + j] != 0u) {
+    if (wcScratchGet(P.count * 64u + j) != 0u) {
       wgSlot = wcAllocSlot();
       if (wgSlot != 0xffffffffu) { wcTable[bi] = WC_MIXED | wgSlot; }
     }
   }
   let s = workgroupUniformLoad(&wgSlot);
-  if (s != 0xffffffffu) { wcPool[s * WC_BRICK_CELLS + li] = wcScratch[j * 64u + li]; }`)}
+  if (s != 0xffffffffu) { wcPool[s * WC_BRICK_CELLS + li] = wcScratchGet(j * 64u + li); }`)}
 `;
 
 // ---- the info's dilation: a brick's SURF, MEDIA, OPAQUE and LIQUID_INTERIOR from its own bits and its
@@ -521,7 +526,7 @@ ${prelude(g, { state: false })}
 ${writerDecls(L)}
 ${jobThread(/* wgsl */ `
   var bi = job;
-  if (P.level != 1u) { bi = wcJobs[job]; }
+  if (P.level != 1u) { bi = wcJob(job); }
   let b = wcBrickOf(bi);
   let me = wcInfoBuf[bi];
   var near = 0u;
@@ -561,7 +566,7 @@ fn wcOccSet(i: u32, on: bool) {
 }
 ${jobThread(/* wgsl */ `
   var ni = job;
-  if (P.dilate != -1) { ni = wcJobs[job]; }
+  if (P.dilate != -1) { ni = wcJob(job); }
   var on = false;
   if (P.level == 1u) {
     let n = vec3i(i32(ni) % WC_N1.x, (i32(ni) / WC_N1.x) % WC_N1.y, i32(ni) / (WC_N1.x * WC_N1.y));
@@ -589,7 +594,7 @@ ${jobThread(/* wgsl */ `
 export const WC_KERNELS = { wcCommitChunkFrag, wcDecodeFrag, wcAllocFrag, wcDilateFrag, wcOccFrag, wcStampFrag, wcOverlayFrag };
 const CHECK_WORLD = wcLayout([256, 128, 256]);
 const CHECK_STATE = { wcDecodeFrag: 'STATE_RO' };
-const CHECK_GROUP2 = { wcStampFrag: WC_STAMP_LAYOUT, wcOverlayFrag: WC_OVERLAY_LAYOUT };
+const CHECK_GROUP2 = { wcStampFrag: WC_STAMP_LAYOUT, wcOverlayFrag: WC_OVERLAY_LAYOUT, wcDecodeFrag: WC_DECODE_LAYOUT };
 export const WGSL_CHECK = () => Object.entries(WC_KERNELS).map(([name, frag]) => ({
   name: `world copy ${name}`, kind: 'compute', grids: ['128'], warm: false, code: (g) => frag(g, CHECK_WORLD), params: WcWriteParams,
   layouts: () => [[{ binding: 0, visibility: READ, buffer: { type: 'read-only-storage' } }], CHECK_STATE[name] ? stateLayoutOf(CHECK_STATE[name]) : 'EMPTY', CHECK_GROUP2[name] ?? WC_WRITE_LAYOUT],

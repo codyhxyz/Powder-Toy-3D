@@ -1,5 +1,5 @@
 import {
-  WorldCopyUniforms, WORLD_COPY_LAYOUT, WC_WRITE, WC_WRITE_LAYOUT, WC_CTRL, WcWriteParams, WC_CHUNK, WC_DILATE,
+  WorldCopyUniforms, WORLD_COPY_LAYOUT, WC_WRITE, WC_WRITE_LAYOUT, WC_DECODE_LAYOUT, WC_JOB_RING, WC_CTRL, WcWriteParams, WC_CHUNK, WC_DILATE,
   WC_SCENE_CELLS_BINDING, WC_STAMP_LAYOUT, WC_STAMP_WORDS, WC_OVERLAY_LAYOUT, WC_NODE1, WC_NODE2,
   wcLayout, wcSceneFrag, wcStampFrag, wcOverlayFrag, wcCommitChunkFrag, wcDecodeFrag, wcAllocFrag, wcDilateFrag, wcOccFrag,
   jobDispatch, brickDispatch,
@@ -46,7 +46,6 @@ export const POOL_HEADROOM = 1.5;        // the pool after the build: this many 
 const POOL_START_SHARE = 1 / 8;          // the build's first guess at the share of bricks that are mixed (the census: Island 11 %)
 const POOL_GROW = 1.5;                   // a growth multiplies the capacity by at least this
 const BUILD_FENCE_CHUNKS = 8;            // chunks recorded between the build's waits on the queue
-const JOB_RING = 1 << 18;                // job words a frame's writebacks share before an ordered write flushes
 const DILATE_SPAN = 1 << 20;             // bricks a full dilation pass covers per dispatch
 const CHANGES_KEPT = 512;                // change boxes kept for changesSince (older revisions get the whole world)
 const STAMP_GROW = 1.5;
@@ -88,14 +87,14 @@ export class WorldCopy {
     this.L = wcLayout(size);
     this.layout = gpu.layout('WORLD_COPY', WORLD_COPY_LAYOUT);
     this.writeLayout = gpu.layout('WORLD_COPY_WRITE', WC_WRITE_LAYOUT);
+    this.decodeLayout = gpu.layout('WORLD_COPY_DECODE', WC_DECODE_LAYOUT);
     this.uniforms = gpu.uniforms(WorldCopyUniforms, 'world copy');
     const L = this.L, buf = (label, size, usage = RW) => gpu.createBuffer({ label, size: Math.max(16, Math.ceil(size / 16) * 16), usage });
     this.buf = {
       table: buf('world copy table', L.nBricks * 4),
       info: buf('world copy info', L.nBricks * 4),
       occ: buf('world copy occupancy', L.occWords * 4),
-      ctrl: buf('world copy allocator', WC_CTRL.WORDS * 4),
-      pool: null, free: null, jobs: null, scratch: null,
+      pool: null, alloc: null, scratch: null,
     };
     this.capacity = 0;
     this.bumpRead = 0;          // the bump as last read back
@@ -116,7 +115,6 @@ export class WorldCopy {
     this.disposed = false;
     this._groups = null;
     this._allocPool(0);
-    this._ensureJobs(JOB_RING);
     this._ensureScratch(0);
   }
 
@@ -137,22 +135,23 @@ export class WorldCopy {
     return Math.min(l.maxStorageBufferBindingSize, l.maxBufferSize);
   }
 
-  // The pool and free list at `capacity` slots, the old contents copied over (never dropped).
+  // The pool and the allocator (its counters, then the free list) at `capacity` slots, the old contents copied
+  // over (never dropped).
   _allocPool(capacity) {
     const gpu = this.gpu, bytes = Math.max(16, capacity * WC_BRICK_CELLS * 4);
     if (bytes > this._limit()) throw new Error(`world copy: ${capacity} mixed bricks (${(bytes / 2 ** 20).toFixed(0)} MiB) pass the device's storage buffer limit`);
     const pool = gpu.createBuffer({ label: 'world copy pool', size: bytes, usage: RW });
-    const free = gpu.createBuffer({ label: 'world copy free list', size: Math.max(16, capacity * 4), usage: RW });
+    const alloc = gpu.createBuffer({ label: 'world copy allocator', size: Math.ceil((WC_CTRL.WORDS + capacity) / 4) * 16, usage: RW });
     const old = this.buf;
-    if (old.pool && this.capacity) {
+    if (old.pool) {
       const keep = Math.min(this.capacity, capacity);
-      gpu.frame.copy(old.pool, 0, pool, 0, keep * WC_BRICK_CELLS * 4);
-      gpu.frame.copy(old.free, 0, free, 0, keep * 4);
+      if (keep) gpu.frame.copy(old.pool, 0, pool, 0, keep * WC_BRICK_CELLS * 4);
+      gpu.frame.copy(old.alloc, 0, alloc, 0, Math.min(old.alloc.size, alloc.size));
       this._retire(old.pool);
-      this._retire(old.free);
+      this._retire(old.alloc);
     }
     old.pool = pool;
-    old.free = free;
+    old.alloc = alloc;
     this.capacity = capacity;
     this._groups = null;
     this._writeUniforms();
@@ -178,7 +177,7 @@ export class WorldCopy {
     if (this.reading || this.disposed) return null;
     this.reading = true;
     const since = this.jobsSince;
-    const p = this.gpu.readback.buffer(this.buf.ctrl, 0, WC_CTRL.WORDS * 4).then((ab) => {
+    const p = this.gpu.readback.buffer(this.buf.alloc, 0, WC_CTRL.WORDS * 4).then((ab) => {
       const w = new Uint32Array(ab);
       this.bumpRead = w[WC_CTRL.BUMP];
       this.jobsSince -= since;
@@ -191,30 +190,27 @@ export class WorldCopy {
     return p;
   }
 
-  _ensureJobs(words) {
-    if (this.buf.jobs && this.buf.jobs.size >= words * 4) return;
-    this._retire(this.buf.jobs);
-    this.buf.jobs = this.gpu.createBuffer({ label: 'world copy jobs', size: Math.max(words, JOB_RING) * 4, usage: RW });
+  // The scratch: the jobs' ring (WC_JOB_RING words), then the build's chunk cells or a writeback's words (64 a
+  // job) and flags (1 a job).
+  _ensureScratch(words) {
+    const need = (WC_JOB_RING + Math.max(words, WC_CHUNK * this.size[1] * WC_CHUNK)) * 4;
+    if (this.buf.scratch && this.buf.scratch.size >= need) return;
+    this._retire(this.buf.scratch);
+    this.buf.scratch = this.gpu.createBuffer({ label: 'world copy scratch', size: need, usage: RW });
     this.jobCursor = 0;
     this._groups = null;
   }
+  // the scratch's cells (after the ring), as a binding
+  get _cells() { return { buffer: this.buf.scratch, offset: WC_JOB_RING * 4, size: this.buf.scratch.size - WC_JOB_RING * 4 }; }
 
-  // The scratch: the build's chunk cells, or a writeback's words (64 a job) and flags (1 a job).
-  _ensureScratch(words) {
-    if (this.buf.scratch && this.buf.scratch.size >= words * 4) return;
-    this._retire(this.buf.scratch);
-    this.buf.scratch = this.gpu.createBuffer({ label: 'world copy scratch', size: Math.max(words, WC_CHUNK * this.size[1] * WC_CHUNK) * 4, usage: RW });
-    this._groups = null;
-  }
-
-  // Job words into the ring (no flush while the frame's earlier writebacks still read theirs); their first word.
+  // Job words into the scratch's ring (no flush while the frame's earlier writebacks still read theirs); their first word.
   _putJobs(words) {
     const gpu = this.gpu;
-    this._ensureJobs(words.length);
+    if (words.length > WC_JOB_RING) throw new Error(`world copy: ${words.length} job words, the ring holds ${WC_JOB_RING}`);
     if (this.jobFlushes !== gpu.stats.flushes) { this.jobFlushes = gpu.stats.flushes; this.jobCursor = 0; }
     let at = this.jobCursor;
-    if (at + words.length > this.buf.jobs.size / 4) { at = 0; gpu.write(this.buf.jobs, 0, words); this.jobFlushes = gpu.stats.flushes; }
-    else gpu.write(this.buf.jobs, at * 4, words, { ordered: false });
+    if (at + words.length > WC_JOB_RING) { at = 0; gpu.write(this.buf.scratch, 0, words); this.jobFlushes = gpu.stats.flushes; }
+    else gpu.write(this.buf.scratch, at * 4, words, { ordered: false });
     this.jobCursor = at + words.length;
     return at;
   }
@@ -234,6 +230,7 @@ export class WorldCopy {
         { binding: 0, resource: res(this.uniforms.buffer) }, { binding: 1, resource: res(b.table) }, { binding: 2, resource: res(b.pool) },
         { binding: 3, resource: res(b.info) }, { binding: 4, resource: res(b.occ) }], 'world copy'),
       write: gpu.bindGroup(this.writeLayout, Object.entries(WC_WRITE).map(([k, binding]) => ({ binding, resource: res(b[k]) })), 'world copy write'),
+      decode: gpu.bindGroup(this.decodeLayout, Object.entries(WC_WRITE).filter(([k]) => k !== 'occ').map(([k, binding]) => ({ binding, resource: res(b[k]) })), 'world copy decode'),
     };
     return this._groups;
   }
@@ -248,7 +245,7 @@ export class WorldCopy {
     const gpu = this.gpu, L = this.L, T = sim.L.TABLES, W = this.writeLayout;
     const kernel = (name, code, layouts) => gpu.kernel({ name: `world copy ${name}`, code, layouts, params: WcWriteParams });
     k = {
-      decode: kernel('decode', wcDecodeFrag(g, L), [T, sim.L.STATE_RO, W]),
+      decode: kernel('decode', wcDecodeFrag(g, L), [T, sim.L.STATE_RO, this.decodeLayout]),
       alloc: kernel('alloc', wcAllocFrag(g, L), [T, gpu.L.EMPTY, W]),
       dilate: kernel('dilate', wcDilateFrag(g, L), [T, gpu.L.EMPTY, W]),
       occ: kernel('occupancy', wcOccFrag(g, L), [T, gpu.L.EMPTY, W]),
@@ -288,7 +285,7 @@ export class WorldCopy {
     this._sim = sim;
     const scene = source.scene ?? null;
     if (scene && OUT_OF_SCOPE.test(scene.key)) { this.skipped = true; return this; }
-    gpu.frame.clear(this.buf.ctrl);
+    gpu.frame.clear(this.buf.alloc, 0, WC_CTRL.WORDS * 4);
     gpu.frame.clear(this.buf.occ);
     gpu.frame.clear(this.buf.info);
     this.bumpRead = 0; this.jobsSince = 0;
@@ -344,7 +341,7 @@ export class WorldCopy {
   // The scene's chunks, nearest the window's centre first (the first frame's view has its ground soonest).
   async _buildScene(win, k) {
     const gpu = this.gpu, sim = win.sim, scene = win.scene, P = win.P, res = win.gen.res, L = this.L, [X, H, Z] = this.size;
-    const sceneGroup = gpu.bindGroup(k.sceneLayout, res.entries([{ binding: WC_SCENE_CELLS_BINDING, resource: { buffer: this.buf.scratch } }]), 'world copy scene');
+    const sceneGroup = gpu.bindGroup(k.sceneLayout, res.entries([{ binding: WC_SCENE_CELLS_BINDING, resource: this._cells }]), 'world copy scene');
     const saved = this._savedByChunk(win);
     const order = [];
     for (let z = 0; z < Z; z += WC_CHUNK) for (let x = 0; x < X; x += WC_CHUNK) order.push([x, z]);
@@ -406,7 +403,7 @@ export class WorldCopy {
     let at = 0;
     for (const p of parts) { all.set(p, at); at += p.length; }
     gpu.write(vx, 0, all);
-    const group = gpu.bindGroup(k.stampLayout, [this.buf.scratch, st, vx].map((buffer, binding) => ({ binding, resource: { buffer } })), 'world copy stamps');
+    const group = gpu.bindGroup(k.stampLayout, [this._cells, { buffer: st }, { buffer: vx }].map((resource, binding) => ({ binding, resource })), 'world copy stamps');
     k.stamp.dispatch(gpu.frame, jobDispatch(cw * cd), { bind: [win.sim.tables, null, group], params: this._params({ chunk, count: stamps.length / WC_STAMP_WORDS }) });
   }
 
@@ -445,7 +442,7 @@ export class WorldCopy {
     for (let i = 0; i < n; i++) { words[i * 65] = list[i * 2]; words.set(list[i * 2 + 1], i * 65 + 1); }
     const b = this._stampBuf('saved', words.byteLength);
     gpu.write(b, 0, words);
-    const group = gpu.bindGroup(k.overlayLayout, [this.buf.scratch, b].map((buffer, binding) => ({ binding, resource: { buffer } })), 'world copy saved');
+    const group = gpu.bindGroup(k.overlayLayout, [this._cells, { buffer: b }].map((resource, binding) => ({ binding, resource })), 'world copy saved');
     k.overlay.dispatch(gpu.frame, brickDispatch(n), { bind: [this._tables, null, group], params: this._params({ chunk, count: n }) });
   }
 
@@ -516,7 +513,7 @@ export class WorldCopy {
     this._reserve(nj);
     const at = this._putJobs(words);
     const W = this.groups.write, t = sim.tables, origin = O;
-    k.decode.dispatch(frame, brickDispatch(nj), { bind: [t, sim.bindRO, W], header: sim.readHeader(), params: this._params({ origin, first: at, count: nj }) });
+    k.decode.dispatch(frame, brickDispatch(nj), { bind: [t, sim.bindRO, this.groups.decode], header: sim.readHeader(), params: this._params({ origin, first: at, count: nj }) });
     k.alloc.dispatch(frame, brickDispatch(nj), { bind: [t, null, W], params: this._params({ origin, first: at, count: nj }) });
     k.dilate.dispatch(frame, jobDispatch(dil.size), { bind: [t, null, W], params: this._params({ first: at + nj, count: dil.size }) });
     k.occ.dispatch(frame, jobDispatch(n1.size), { bind: [t, null, W], params: this._params({ first: at + nj + dil.size, count: n1.size, level: 1 }) });

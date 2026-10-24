@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>World copy check</title>
+<style>
+  body { font: 13px/1.45 ui-monospace, monospace; margin: 16px; background: #111; color: #ddd; }
+</style>
+</head>
+<body>
+<!-- tools/world-copy-gpu-check.mjs drives this page: the world copy (src/world/worldCopy.js) built from a
+     scene and written back from a V2 window on this page's WebGPU device, no app. -->
+<pre id="log"></pre>
+<script type="module" src="./world-copy-check.js"></script>
+</body>
+</html>
