@@ -425,7 +425,6 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .material-brush input::-webkit-slider-runnable-track { height: 3px; }
 .material-brush input::-moz-range-track { height: 3px; }
 .material-brush input::-moz-range-progress { height: 3px; }
-.material-shapes { display: flex; gap: 2px; }
 .material-control {
   display: flex; align-items: center; justify-content: center; gap: 6px;
   min-width: 32px; height: 32px; padding: 0 7px;
@@ -442,7 +441,7 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 /* the deco tools (TPT's DECO menu, ui/decoPicker.js): their colour instead of flow and replace */
 .material-brush .deco-only { display: none; flex: 1 1 100%; flex-direction: column; align-items: stretch; gap: 8px; }
 .material-brush.deco .deco-only { display: flex; }
-.material-brush.deco > .material-range.paint-only, .material-brush.deco > div.paint-only:not(.material-shapes) { display: none; }
+.material-brush.deco > .paint-only { display: none; }
 .deco-color { width: 100%; height: 22px; padding: 0; border: 0; background: none; cursor: pointer; }
 .deco-swatch {
   justify-self: end; width: 22px; height: 22px; border-radius: 4px;
@@ -451,11 +450,67 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .deco-only .material-control { justify-content: flex-start; }
 .deco-only kbd { margin-left: auto; }
 /* replace mode, specific delete and their target element (TPT's Ctrl+Alt-click tool) */
-.material-modes { display: flex; flex-wrap: wrap; gap: 2px; }
-.material-target { color: var(--faint, var(--muted)); }
-.material-target.set { color: #dedfe2; }
 .material-target-chip { width: 12px; height: 12px; border-radius: 3px; background: transparent; box-shadow: inset 0 0 0 1px #ffffff33; }
 .dock .material-swatch.target { outline: 2px dashed #eee9df; outline-offset: 2px; }
+
+/* the brush options, Photoshop's options bar (ui/dock.js): compact buttons that
+   say their value (the brush tip and size, the flow, the mode), each with a caret
+   that drops a small pop-up, then the eyedropper */
+.material-brush > .opt-btn, .material-brush > .opt-group { order: -2; }
+.material-brush > .opt-dropper { order: -1; }
+.opt-group { display: flex; gap: 2px; }
+.material-control.opt-btn { gap: 4px; padding: 0 4px 0 6px; }
+.opt-value { min-width: 2ch; color: #dedfe2; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: left; }
+.opt-icon, .opt-tip { display: grid; place-items: center; }
+.dock .opt-tip svg { width: 14px; height: 14px; fill: currentColor; stroke: none; }
+.dock .opt-caret svg { width: 10px; height: 10px; stroke-width: 2.2; opacity: 0.65; }
+.opt-dot { width: 8px; height: 8px; border-radius: 2px; box-shadow: inset 0 0 0 1px #00e5e5; }
+.material-control.opt-btn[aria-expanded=true] { color: #f4eee0; background: #343b45; }
+.material-control.opt-btn.on { color: #ffd28a; }   /* a mode other than Paint, as the stats' [REPLACE MODE] */
+
+.bar-pop {
+  position: fixed; z-index: 25; display: flex; flex-direction: column; gap: 10px;
+  min-width: 200px; padding: 10px 12px;
+  color: #e9e7e2; background: #1b2027; border: 0; border-radius: 10px;
+  box-shadow: 0 16px 40px #0009, inset 0 1px 0 #ffffff12;
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+  --muted: #a9afb8; --accent: #a9afb8;
+}
+.bar-pop[hidden] { display: none; }
+.bar-pop.build .paint-only { display: none; }
+.bar-pop svg { width: 16px; height: 16px; display: block; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.pop-range { display: grid; grid-template-columns: 34px 150px 36px; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+.pop-range output { color: #dedfe2; font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
+.pop-shapes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.pop-shape {
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 4px 6px;
+  border: 0; border-radius: 6px; background: #ffffff08; color: var(--muted); font-size: 11px; cursor: pointer;
+}
+.pop-shape svg { width: 26px; height: 26px; fill: currentColor; stroke: none; }
+.pop-shape:hover { background: #ffffff12; color: #fff; }
+.pop-shape[aria-pressed=true] { background: #343b45; color: #f4eee0; box-shadow: inset 0 0 0 1px #ffffff30; }
+.pop-menu { display: flex; flex-direction: column; gap: 2px; margin: -4px -6px 0; }
+.pop-item {
+  display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 10px; padding: 6px 8px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--muted); text-align: left; cursor: pointer;
+}
+.pop-item b { display: block; color: #e9e7e2; font-size: 12px; font-weight: 600; }
+.pop-item small { font-size: 11px; }
+.pop-item:hover { background: #ffffff0c; }
+.pop-item[aria-checked=true] { background: #343b45; }
+.pop-target {
+  display: flex; align-items: center; gap: 6px; margin: 0 -6px; padding: 8px 8px 2px;
+  border: 0; border-top: 1px solid #ffffff12; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer;
+}
+.pop-target.set { color: #dedfe2; }
+.pop-target.set .material-target-chip { box-shadow: inset 0 0 0 1px #00e5e5; }   /* the target tile's cyan (TPT's) */
+.pop-hint { margin: -6px 0 0; color: var(--faint); font-size: 11px; }
+@media (hover: none) and (pointer: coarse) {
+  .pop-hint, .pop-item kbd { display: none; }
+  .pop-item, .pop-shape { min-height: 44px; }
+  .bar-pop input[type="range"] { min-height: 32px; }
+  .material-control.opt-btn { min-width: 44px; }
+}
 /* the Property tool's window (TPT's PropertyTool.cpp), only while it is picked */
 .material-brush .prop-only { display: none; flex: 1 1 100%; flex-direction: column; gap: 6px; }
 .material-brush.prop .prop-only { display: flex; }
@@ -758,15 +813,8 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
 }
 .dock.bar .material-detail { display: none; }   /* TPT's tooltip names what's hovered (.bar-tip) */
 .dock.bar .material-brush { flex-wrap: nowrap; align-items: center; gap: 2px 4px; padding: 0; border: 0; }
-.dock.bar .material-brush > * { order: 2; flex: 0 0 auto; }
-.dock.bar .material-brush > .material-range { order: 0; }
-.dock.bar .material-brush > .material-shapes, .dock.bar .material-brush > .material-control { order: 1; }   /* shape, then the eyedropper */
-.dock.bar .material-range { grid-template-columns: auto 64px 30px; gap: 6px; padding-right: 4px; }
+.dock.bar .material-brush > * { flex: 0 0 auto; }
 .dock.bar .material-control { min-width: 30px; height: 30px; padding: 0 6px; }
-.dock.bar .material-modes { flex-wrap: nowrap; }
-.dock.bar .material-modes > .material-control:not(.material-target) > span + span { display: none; }   /* icons; their tooltips name them */
-.dock.bar .material-target { max-width: 110px; }
-.dock.bar .material-target > span { overflow: hidden; text-overflow: ellipsis; }
 .dock.bar .material-brush .build-only, .dock.bar .prop-note { display: none !important; }
 .dock.bar .material-brush.prop .prop-only { flex-direction: row; align-items: center; gap: 6px; }
 .dock.bar .prop-row { grid-template-columns: auto 96px; gap: 6px; }
