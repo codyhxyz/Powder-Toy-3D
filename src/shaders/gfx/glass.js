@@ -20,19 +20,22 @@ import { glf } from '../../glsl.js';
 
 // Window glass is 3-6 mm; 4 mm is the commonest single glazing.
 export const PANE_M = 0.004;
-// Soda-lime float glass's absorption from its iron (Fe2O3 ~0.1 wt%), natural
-// log per cm, RGB. Fe2+ absorbs a broad band centred near 1050 nm whose tail
-// reaches into the red; Fe3+ absorbs near 380 nm, its tail into the blue; so
-// the transmission peaks in the green (~530 nm), which is why a glass edge
-// looks green. Clear float glass loses a few percent of its light per cm of
-// path beyond the faces' Fresnel loss (float-glass data sheets: light
-// transmittance falls from ~90% at 4 mm to ~81-83% at 19-25 mm); split here by
-// the iron bands' shape (Rubin 1985, "Optical properties of soda lime silica
-// glasses", Solar Energy Materials 12), at the low end of that range: 2% of
-// the green per cm, 5% of the red, 3% of the blue. A 4 mm pane lets ~99% of
-// the green through; a 30 cm path (a cell) 55% green, 22% red: clearly green
-// edges; a 1.8 m lump is dark bottle green, as such a lump of window glass is.
-export const GLASS_ALPHA_PER_CM = [0.05, 0.02, 0.03];
+// Window glass's absorption from its iron, natural log per cm, RGB. Fe2+
+// absorbs a broad band centred near 1050 nm whose tail reaches into the red;
+// Fe3+ absorbs near 380 nm, its tail into the blue; so transmission peaks in
+// the green (~530 nm), which is why a glass edge looks green. The level is
+// low-iron float glass's (Fe2O3 ~0.01-0.02 wt%, Pilkington Optiwhite class):
+// its light transmittance is ~91.5% at 4 mm and ~90.5% at 19 mm, against the
+// ~91.7% the two faces' Fresnel loss alone allows (n = 1.52), so ~0.7% per cm
+// luminous: ln(91.5 / 90.5) / 1.5 cm. Standard clear float (Fe2O3 ~0.1 wt%,
+// Optifloat Clear: ~89% at 6 mm, ~83% at 19 mm) absorbs several times more,
+// ~4% per cm, which turns a lump of a metre or more nearly black. The split
+// follows the iron bands' shape (Rubin 1985, "Optical properties of soda lime
+// silica glasses", Solar Energy Materials 12, its Fe2+ and Fe3+ absorption
+// spectra): red ~2.7x and blue ~1.7x the green. A 4 mm pane passes ~99.8%; a
+// cell (30 cm) 84% green, 62% red; 60 cm a light green; 1.8 m deep bottle
+// green, 34% green against 6% red, the background still seen through it.
+export const GLASS_ALPHA_PER_CM = [0.016, 0.006, 0.010];
 const CM_PER_M = 100;
 // The faces' waviness: float glass's roller wave and old glass's ripple,
 // GLASS_WAVE_M across, slope GLASS_WAVE_SLOPE (radians, rms). Tempered float
@@ -64,36 +67,36 @@ const PANE_WEDGE_SHARE = 1.0;
 // turn it away from the eye), and the pane's path is cut at this cosine.
 const GLASS_COS_MIN = 0.05;
 
-export const glassWGSL = /* wgsl */ `
-const PANE_CELLS: f32 = ${glf(PANE_M)} / CELL_M;
+// Glass's body extinction (glassSigma), for every program that reads glass's
+// tint: the view, the sun's shadow map (meanSigma, gfx/lighting.js) and its readers.
+export const glassSigmaWGSL = /* wgsl */ `
 const GLASS_SODA_SIGMA: vec3f = vec3f(${GLASS_ALPHA_PER_CM.map(glf).join(', ')}) * (CELL_M * ${glf(CM_PER_M)});
-const GLASS_WAVE_SCALE: f32 = CELL_M / ${glf(GLASS_WAVE_M)};   // noise lattice units per cell
-const GLASS_WAVE_GAIN: f32 = ${glf(GLASS_WAVE_SLOPE / Math.sqrt(VNOISE_GRAD_VAR))};   // slope per unit gradient of value noise (rms ${GLASS_WAVE_SLOPE})
-const GLASS_SMUDGE_SCALE: f32 = CELL_M / ${glf(GLASS_SMUDGE_M)};
-const GLASS_SMUDGE_COVER: f32 = ${glf(GLASS_SMUDGE_COVER)};
-const GLASS_SMUDGE_SOFT: f32 = ${glf(GLASS_SMUDGE_SOFT)};
-const GLASS_SMUDGE_ROUGH: f32 = ${glf(GLASS_SMUDGE_ROUGH)};
-const GLASS_SMUDGE_HAZE: f32 = ${glf(GLASS_SMUDGE_HAZE)};
-const PANE_EDGE_CELLS: f32 = ${glf(PANE_EDGE_M)} / CELL_M;
-const PANE_EDGE_PATH: f32 = ${glf(PANE_EDGE_PATH)};
-const PANE_EDGE_COVER: f32 = ${glf(PANE_EDGE_COVER)};
-const PANE_EDGE_GAIN: f32 = ${glf(PANE_EDGE_GAIN)};
-const PANE_WEDGE_SHARE: f32 = ${glf(PANE_WEDGE_SHARE)};
-const GLASS_COS_MIN: f32 = ${glf(GLASS_COS_MIN)};
-// the smudge's offset in the noise lattice, away from the waviness's
-const GLASS_SMUDGE_SALT: vec3f = vec3f(17.3, 41.9, 5.7);
-
-// Glass's body extinction per cell: soda-lime's iron for E_GLASS, the element's own for the rest.
+// Glass's body extinction per cell: window glass's iron for E_GLASS, the element's own for the rest.
 fn glassSigma(id: i32) -> vec3f { return select(SIGMA(id), max(SIGMA(id), GLASS_SODA_SIGMA), id == E_GLASS); }
+`;
 
-// Which face neighbours of cell c are the same glass: bit 2a for -a, 2a + 1 for +a.
+// What shape a cell of glass is drawn as (the view, render.js) and casts its
+// shadow as (gfx/shadowOptics.js). Needs the prelude (outside, eid, fetchA) and NO_HIT.
+export const glassShapeWGSL = /* wgsl */ `
+const PANE_CELLS: f32 = ${glf(PANE_M)} / CELL_M;
+
+// Which face neighbours of cell c are the same glass: bit 2a for -a, 2a + 1
+// for +a; and, 6 bits up, which are something else a pane's end can stand on
+// or against (the floor, anything opaque, other glass, liquid), where no edge
+// shows: an edge is where the glass ends in air.
+const GLASS_TOUCH_SHIFT: u32 = 6u;
 fn glassNeighbours(c: vec3i, id: i32) -> u32 {
   var m = 0u;
   for (var a = 0; a < 3; a++) {
     for (var s = 0; s < 2; s++) {
       var nc = c;
       nc[a] += select(-1, 1, s == 1);
-      if (!outside(nc) && eid(fetchA(nc)) == id) { m |= 1u << u32(2 * a + s); }
+      let bit = 1u << u32(2 * a + s);
+      if (nc.y < 0) { m |= bit << GLASS_TOUCH_SHIFT; continue; }
+      if (outside(nc)) { continue; }
+      let n = eid(fetchA(nc));
+      if (n == id) { m |= bit; }
+      else if (n != E_EMPTY && !isGasLike(n)) { m |= bit << GLASS_TOUCH_SHIFT; }
     }
   }
   return m;
@@ -144,7 +147,8 @@ fn sheetHit(ro: vec3f, rd: vec3f, tMin: f32, c: vec3i, a: i32, r: i32, rs: f32) 
   return t;
 }
 // How far point q of cell c's sheet (axis a, half along r) is from the sheet's nearest free edge, cells (1: none).
-fn paneEdgeDist(q: vec3f, c: vec3i, a: i32, r: i32, m: u32) -> f32 {
+fn paneEdgeDist(q: vec3f, c: vec3i, a: i32, r: i32, m0: u32) -> f32 {
+  let m = m0 | (m0 >> GLASS_TOUCH_SHIFT);
   var d = 1.0;
   for (var k = 1; k < 3; k++) {
     let b = (a + k) % 3;
@@ -155,7 +159,24 @@ fn paneEdgeDist(q: vec3f, c: vec3i, a: i32, r: i32, m: u32) -> f32 {
   }
   return max(d, 0.0);
 }
+`;
 
+export const glassWGSL = /* wgsl */ `
+const GLASS_WAVE_SCALE: f32 = CELL_M / ${glf(GLASS_WAVE_M)};   // noise lattice units per cell
+const GLASS_WAVE_GAIN: f32 = ${glf(GLASS_WAVE_SLOPE / Math.sqrt(VNOISE_GRAD_VAR))};   // slope per unit gradient of value noise (rms ${GLASS_WAVE_SLOPE})
+const GLASS_SMUDGE_SCALE: f32 = CELL_M / ${glf(GLASS_SMUDGE_M)};
+const GLASS_SMUDGE_COVER: f32 = ${glf(GLASS_SMUDGE_COVER)};
+const GLASS_SMUDGE_SOFT: f32 = ${glf(GLASS_SMUDGE_SOFT)};
+const GLASS_SMUDGE_ROUGH: f32 = ${glf(GLASS_SMUDGE_ROUGH)};
+const GLASS_SMUDGE_HAZE: f32 = ${glf(GLASS_SMUDGE_HAZE)};
+const PANE_EDGE_CELLS: f32 = ${glf(PANE_EDGE_M)} / CELL_M;
+const PANE_EDGE_PATH: f32 = ${glf(PANE_EDGE_PATH)};
+const PANE_EDGE_COVER: f32 = ${glf(PANE_EDGE_COVER)};
+const PANE_EDGE_GAIN: f32 = ${glf(PANE_EDGE_GAIN)};
+const PANE_WEDGE_SHARE: f32 = ${glf(PANE_WEDGE_SHARE)};
+const GLASS_COS_MIN: f32 = ${glf(GLASS_COS_MIN)};
+// the smudge's offset in the noise lattice, away from the waviness's
+const GLASS_SMUDGE_SALT: vec3f = vec3f(17.3, 41.9, 5.7);
 // The smudge at grid point p: 0 clean .. 1 smudged (see GLASS_SMUDGE_M).
 fn glassSmudge(p: vec3f) -> f32 {
   let v = mNoiseD(worldPos(p) * GLASS_SMUDGE_SCALE + GLASS_SMUDGE_SALT).x;

@@ -4,6 +4,7 @@ import { LAMP_UNIT, LAMP_FIXED_PAD } from '../../gfx/lamps.js';
 import { WAND_LIGHTS } from '../bindings.js';
 import { libChecks } from './lib.js';
 import { lighthouseGLSL } from './lighthouse.js';
+import { glassSigmaWGSL } from './glass.js';
 
 // The count lives in shaders/bindings.js beside the uniform arrays it sizes
 // (gfx/uniforms.js imports it from here).
@@ -18,7 +19,9 @@ export const SKYVIS_OPEN_DC = 0.5;      // SH_Y0 * c0.a of the open sky: the sph
 export const GI_OFFSET_CELLS = 3;
 // The sun shadow map's layout and its test inside volumes (sunBasis, sunMapShadow
 // below), for CPU readers of the map too (pov/viewmodel.js: the sun on the hands).
-export const meanSigmaWGSL = 'fn meanSigma(id: i32) -> f32 { return dot(SIGMA(id), vec3f(1.0 / 3.0)); }';
+// (glass's body extinction is glassSigma: window glass's iron tint, gfx/glass.js)
+export const meanSigmaWGSL = `${glassSigmaWGSL}
+fn meanSigma(id: i32) -> f32 { return dot(glassSigma(id), vec3f(1.0 / 3.0)); }`;
 export const SHADOW_TINT_ID_SCALE = 256;   // w = tint element id * this + optical depth (see below)
 export const SHADOW_PAD = 1;               // voxels the map's disc reaches past the box's bounding sphere
 export const VOLUME_SHADOW_BIAS = 0.6;     // depth bias (voxels) for points inside volumes (no normal)
@@ -330,7 +333,7 @@ fn shadowTexelAtt(sm: vec4f, d: f32) -> vec3f {
   if (tid > 0 && d > sm.y) {
     let tau = sm.w - f32(tid) * SHADOW_TINT_ID_SCALE;
     let frac = clamp((d - sm.y) / max(sm.z - sm.y, 1e-3), 0.0, 1.0);
-    let tint = SIGMA(tid) / max(meanSigma(tid), 1e-4);
+    let tint = glassSigma(tid) / max(meanSigma(tid), 1e-4);
     att = exp(-tint * tau * frac);
   }
   return att;

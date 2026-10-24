@@ -15,7 +15,7 @@ import { grainsGLSL, GRAINS_ANY } from './gfx/grains.js';
 import { volumeHazeGLSL } from './farShared.js';
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY, meshCutGLSL } from '../gfx/meshCut.js';
 import { decoViewGLSL, decoSurfGLSL, DECO_PLANE_ENTRY } from './gfx/deco.js';
-import { glassWGSL } from './gfx/glass.js';
+import { glassWGSL, glassShapeWGSL } from './gfx/glass.js';
 import { presentationNearWGSL } from './gfx/presentation.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE } from '../gpu/kernels.js';
@@ -1599,6 +1599,7 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
     surfaceGLSL(d, { sourceAppearance: lit && g.sourceAppearance === true }), decoViewGLSL,
     liquidGLSL,
     decoSurfGLSL,
+    glassShapeWGSL,
     glassWGSL,
     liquidDetailGLSL(d, { fixedReadFormat }),
     mediaGLSL(d),
@@ -1774,6 +1775,7 @@ export const shadowRes = (g) => Math.min(1024, 4 * Math.max(g.nx, g.ny, g.nz));
  */
 export const shadowFrag = (g) => /* wgsl */ `
 ${lib(g, { variant: 'LIGHTING_SHADOW', aeration: false })}
+${glassShapeWGSL}
 ${shadowOpticsWGSL().slice(1)}${shadowTilesWGSL(g)}
 // A workgroup per tile of the list src/derived.js shadowTiles made (the tiles
 // whose rays crossed a change, or all of them), a thread per texel.
