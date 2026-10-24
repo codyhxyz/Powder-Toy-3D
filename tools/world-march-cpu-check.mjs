@@ -4,7 +4,9 @@
 // No GPU, no browser. node tools/world-march-cpu-check.mjs [--dump DIR]
 import assert from 'node:assert/strict';
 import { writeFileSync, mkdirSync } from 'node:fs';
-import { worldMarchFrag, WORLD_MARCH_LAYOUTS, MarchParams } from '../src/shaders/world/march.js';
+import { worldMarchFrag, WORLD_MARCH_LAYOUTS, MarchParams, physParams, physSlotOf } from '../src/shaders/world/march.js';
+import { cellSlot } from '../src/shaders/common.js';
+import { MAPS } from '../src/maps.js';
 import { REALISTIC_LEVELS } from '../src/shaders/render.js';
 import { VIEWS, isMaterialView } from '../src/views.js';
 import { nagaSpawn } from './naga.mjs';
@@ -46,4 +48,26 @@ for (const [gname, g] of Object.entries(grids)) {
   }
 }
 assert(MarchParams.size > 0);
+
+// physSlot (the march's run-time slot in physics' window) is the prelude's slotOf, for every map's window
+// at an origin in its world
+let rnd = 12345;
+const rand = (n) => { rnd = (Math.imul(rnd, 1103515245) + 12345) >>> 0; return rnd % n; };
+const windows = [[64, 64, 64], [128, 128, 128], [256, 96, 128], [128, 384, 128], [128, 64, 128], [32, 32, 32]];
+let slots = 0;
+for (const [nx, ny, nz] of windows) {
+  const g = { nx, ny, nz }, origin = { x: 16 * rand(64), y: 0, z: 16 * rand(64) };
+  const pp = physParams({ origin, g });
+  for (let i = 0; i < 4000; i++) {
+    const c = [rand(nx), rand(ny), rand(nz)];
+    assert.equal(physSlotOf(pp, [c[0] + origin.x, c[1] + origin.y, c[2] + origin.z]), cellSlot(g, ...c), `physSlot ${nx}x${ny}x${nz} at ${c}`);
+    slots++;
+  }
+}
+// every map's world fits the march's brick key (x and z: 11 bits of bricks, y: 10)
+for (const m of MAPS.filter((x) => x.dims)) {
+  const [x, y, z] = m.dims;
+  assert(x / 4 <= 2048 && z / 4 <= 2048 && y / 4 <= 1024, `${m.key}: ${m.dims} fits the brick key`);
+}
+console.log(`PASS physSlot = slotOf on ${slots} cells of ${windows.length} windows; every map's world fits the brick key`);
 console.log(`PASS ${n} world march modules validate (naga), bind budget holds; no GPU/browser`);

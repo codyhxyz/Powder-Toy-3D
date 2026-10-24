@@ -31,7 +31,7 @@
 //   group 1  W's world copy
 //   group 2  F, L and M (shaders/world/bindings.js)
 //   group 3  the header (origin 0: render kernels are in world cells) and MarchParams (P)
-import { prelude, LAYOUT } from '../common.js';
+import { prelude, LAYOUT, SUPER, SUPER_CELLS } from '../common.js';
 import { frameBindings, brickInfoWGSL, RENDER_LAYOUT } from '../bindings.js';
 import { materialsGLSL } from '../../gfx/materials.js';
 import { glslMod } from '../../gpu/wgsl.js';
@@ -62,8 +62,31 @@ export const MarchParams = uniformStruct('MarchParams', {
   marchNear: 'f32',     // cells: nothing nearer the camera is drawn (first person's eye clip)
   aerCopy: 'u32',       // (gfx/liquidDetail.js gAerCopy; V2 reads the aeration from its cells)
   deco: 'u32',          // the decoration is drawn (src/deco.js decoShown)
-  physOrigin: 'vec3i',  // physics' window in the world (sim.origin): flow, foam and paint are read inside it
+  physOrigin: 'vec3i',  // physics' window in the world (sim.origin): flow, foam and paint are read inside it ...
+  physSize: 'vec3i',    // ... its size in cells ...
+  physSuper: 'vec3i',   // ... and in supertiles (shaders/common.js gridDims stx, sty, stz): its slot layout
 });
+/** MarchParams' physics-window fields for a simulation (physics' window, at its origin in the world). */
+export const physParams = (sim) => {
+  const o = sim.origin, g = sim.g;
+  return {
+    physOrigin: [o?.x ?? 0, o?.y ?? 0, o?.z ?? 0], physSize: [g.nx, g.ny, g.nz],
+    physSuper: [g.nx / SUPER_CELLS.x, g.ny / SUPER_CELLS.y, g.nz / SUPER_CELLS.z],
+  };
+};
+/**
+ * JS twin of the march's physSlot (tools/world-march-cpu-check.mjs compares it with
+ * shaders/common.js cellSlot): world cell c's slot in physics' window, from run-time values.
+ */
+export function physSlotOf({ physOrigin, physSuper }, c) {
+  const p = c.map((v, i) => v - physOrigin[i]);
+  const b = p.map((v) => v >> 2);
+  const s = [Math.trunc(b[0] / SUPER.x), Math.trunc(b[1] / SUPER.y), Math.trunc(b[2] / SUPER.z)];
+  const k = [b[0] - s[0] * SUPER.x, b[1] - s[1] * SUPER.y, b[2] - s[2] * SUPER.z];
+  const st = s[0] + physSuper[0] * (s[2] + physSuper[2] * s[1]);
+  const ly = p[1] & 3;
+  return (Math.imul(st * 16 + k[0] + 4 * (k[2] + 2 * k[1]), 64) + (p[0] & 3) + 4 * (ly & 1) + 8 * ((p[2] & 3) + 4 * (ly >> 1))) >>> 0;
+}
 
 /** Group 2's list: F's, L's and M's bindings (shaders/world/bindings.js). */
 export const WORLD_GROUP2 = () => worldGroup2(FIELDS_BINDINGS, LIGHT_BINDINGS);
@@ -104,12 +127,22 @@ fn tClosest(c: vec3i, ro: vec3f, rd: vec3f, ta: f32, tb: f32) -> f32 {
   return clamp(dot(vec3f(c) + 0.5 - ro, rd), ta, tb);
 }
 
-// ---- physics' window (P.physOrigin, the prelude's NX × NY × NZ) ----
+// ---- physics' window (P.physOrigin, P.physSize), indexed at run time ----
+// (its slot layout from P.physSuper, as the prelude's slotOf has it from its constants: the
+// march's own reads bake in no window size)
 fn inPhys(c: vec3i) -> bool {
   let q = c - P.physOrigin;
-  return all(q >= vec3i(0)) && all(q < vec3i(NX, NY, NZ));
+  return all(q >= vec3i(0)) && all(q < P.physSize);
 }
-fn physSlot(c: vec3i) -> u32 { return slotOf(c - P.physOrigin); }
+fn physSlot(c: vec3i) -> u32 {
+  let p = c - P.physOrigin;
+  let b = p >> vec3u(2u);
+  let s = b / SUPER_B;
+  let k = b - s * SUPER_B;
+  let st = s.x + P.physSuper.x * (s.z + P.physSuper.z * s.y);
+  let l = p & vec3i(3);
+  return u32(st * 16 + k.x + 4 * (k.z + 2 * k.y)) * 64u + u32(l.x + 4 * (l.y & 1) + 8 * (l.z + 4 * (l.y >> 1u)));
+}
 fn cellFlow(c: vec3i) -> vec3f {
   if (!inPhys(c)) { return vec3f(0.0); }
   let w = flow[physSlot(c)];

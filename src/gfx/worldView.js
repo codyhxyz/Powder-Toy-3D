@@ -19,7 +19,7 @@ import { DETAIL, SOFTWARE_UNDRAWABLE, drawableDetail } from './detail.js';
 import { decoShown } from '../deco.js';
 import { isMaterialView } from '../views.js';
 import {
-  worldMarchFrag, worldMarchPipeline, MarchParams, WORLD_MARCH_LAYOUTS, WORLD_GROUP2, WORLD_MARCH_VERTICES, WORLD_MARCH_LAYOUT_NAMES,
+  worldMarchFrag, worldMarchPipeline, MarchParams, physParams, WORLD_MARCH_LAYOUTS, WORLD_GROUP2, WORLD_MARCH_VERTICES, WORLD_MARCH_LAYOUT_NAMES,
 } from '../shaders/world/march.js';
 import { worldGroup2Entries } from '../shaders/world/bindings.js';
 // The owners' classes. Until W, F and L land these are the stand-ins (shaders/world/stubs.js); the
@@ -164,7 +164,7 @@ export function createWorldView(gpu, sim, { volume }) {
         bind: [frameGroup(depth), copy, group2()], header: { ...sim.readHeader(), origin: [0, 0, 0] },
         params: {
           meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
-          deco: decoShown(sim) && sim.decoPlane ? 1 : 0, physOrigin: xyz(sim.origin),
+          deco: decoShown(sim) && sim.decoPlane ? 1 : 0, ...physParams(sim),
         },
         count: WORLD_MARCH_VERTICES,
       });
