@@ -176,13 +176,23 @@ const LIGHTING_BINDINGS = [
   [19, 'aeration', 'array<vec2u>', readBuffer],         // whitewater's aeration, both copies (G4)
 ];
 const FAR_BINDINGS = new Set([11, 12, 13]);
+// L.LIGHTING's own: the material textures (one 2d array: gfx/materialTextures.js)
+// and their sampler (repeat, trilinear). Past every variant's additions (20, 21),
+// so no variant's number means two things.
+export const MAT_TEX_BINDING = 22;
+export const MAT_TEX_SAMPLER_BINDING = 23;
 const storageTex = (format, viewDimension) => ({ storageTexture: { access: 'write-only', format, viewDimension } });
 // The writer variants (docs/webgpu.md F6): the same numbers with the bindings
 // the kernel writes as storage. A texture is never sampled and storage-written
 // in one dispatch.
 const VARIANTS = {
-  // the volume (fragment) and the read-only probes (compute)
-  LIGHTING: { stages: STAGE.FRAGMENT | STAGE.COMPUTE, swap: {} },
+  // the volume (fragment) and the read-only probes (compute); and the scanned
+  // material textures and their sampler (gfx/materialTextures.js), which only
+  // the views that draw materials read (shaders/gfx/surface.js matTex*)
+  LIGHTING: { stages: STAGE.FRAGMENT | STAGE.COMPUTE, swap: {}, add: [
+    [MAT_TEX_BINDING, 'tMatTex', 'texture_2d_array<f32>', { texture: { sampleType: 'float', viewDimension: '2d-array' } }],
+    [MAT_TEX_SAMPLER_BINDING, 'matTexSampler', 'sampler', { sampler: { type: 'filtering' } }],
+  ] },
   // the shadow kernel: the map and its .x copy, written in one dispatch
   LIGHTING_SHADOW: { stages: STAGE.COMPUTE, swap: {
     8: ['texture_storage_2d<rgba32float, write>', storageTex('rgba32float', '2d')],

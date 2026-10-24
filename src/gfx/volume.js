@@ -43,7 +43,8 @@ import { createMediaNoise } from './mediaNoise.js';
 import { DETAIL, SOFTWARE_UNDRAWABLE, drawableDetail } from './detail.js';
 import { decoShown } from '../deco.js';
 import { isMaterialView } from '../views.js';
-import { RENDER_LAYOUT } from '../shaders/bindings.js';
+import { RENDER_LAYOUT, MAT_TEX_BINDING, MAT_TEX_SAMPLER_BINDING } from '../shaders/bindings.js';
+import { materialTextures } from './materialTextures.js';
 import { createPacketShadow, packetShadowSource, packetShadowKey } from './packetShadow.js';
 
 // slots of the pick ring: a hover pick every frame plus a few one-off rays in flight
@@ -118,6 +119,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
   const shadowMap = gpu.createTexture({ label: label('shadow map'), size: [res, res], format: 'rgba32float', usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
   const shadowX = gpu.createTexture({ label: label('shadow map x'), size: [res, res], format: 'r32float', usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
   const noise = createMediaNoise(gpu);
+  const matTex = materialTextures(gpu);   // (loads in the background: the dummy until then)
   const samplers = gpu._volumeSamplers ??= {
     clamp: gpu.device.createSampler({ label: 'linearClamp', magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge', addressModeW: 'clamp-to-edge' }),
     repeat: gpu.device.createSampler({ label: 'linearRepeat', magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', addressModeW: 'repeat' }),
@@ -146,9 +148,11 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
   const lightingCache = new Map();
   // group 2: derived's resources (fields, light, GI, bricks), ours (the shadow
   // map, the noise, the far field or its dummies, the samplers) and the sim's
-  // (flow, aeration). Derived's entries win where both name a binding.
+  // (flow, aeration). Derived's entries win where both name a binding. L.LIGHTING
+  // alone holds the material textures (made again when they finish loading).
   function lightingGroup(layout) {
-    const key = `${layout.label}|${idOf(far)}|${idOf(aeration)}`;
+    const lit = layout === L.LIGHTING;
+    const key = `${layout.label}|${idOf(far)}|${idOf(aeration)}|${lit ? matTex.version : ''}`;
     let group = lightingCache.get(key);
     if (!group) {
       const byBinding = new Map();
@@ -163,6 +167,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
         { binding: 19, resource: { buffer: aeration ?? dummy.buffer } },
         ...derived.lightingEntries(),
         ...(layout === L.LIGHTING_SHADOW_PACKETS ? [{ binding: 20, resource: { buffer: packets.buffer } }] : []),
+        ...(lit ? [{ binding: MAT_TEX_BINDING, resource: matTex.view }, { binding: MAT_TEX_SAMPLER_BINDING, resource: matTex.sampler }] : []),
       ]) byBinding.set(e.binding, e);
       lightingCache.set(key, group = gpu.bindGroup(layout, [...byBinding.values()], `${label('lighting')} ${layout.label}`));
     }

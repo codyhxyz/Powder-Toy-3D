@@ -36,6 +36,8 @@ import { bandGlow, LUMA_709 } from './incandescence.js';
 import { FLAME_COLOR } from './lamps.js';
 import { accessorsWGSL } from '../shaders/hostStruct.js';
 import { glf as f } from '../glsl.js';
+import { CELL_M } from '../scale.js';
+import { TEXTURE_SET } from './textureSet.js';
 
 // sRGB decoding (IEC 61966-2-1)
 const SRGB_LINEAR_MAX = 0.04045;   // encoded value where the linear segment ends
@@ -196,6 +198,17 @@ export const MEDIA_NOISE_CELLS = 64;
 //          albedo swing, warm/cool hue swing, roughness swing (each per unit
 //          of a centred noise, p5..p95 about ±0.8) and the size of its patches as a
 //          multiple of MACRO_M there. Defaults by kind: MACRO_DEFAULT
+//   tex    a scanned texture (gfx/textureSet.js TEXTURE_SET id; Poly Haven,
+//          public/textures/CREDITS.md): the realistic view draws the photo
+//          (albedo, normal map, roughness), projected triplanar in the world,
+//          in place of the element's procedural pattern (shaders/gfx/surface.js
+//          matTextured), once the textures have loaded (gfx/materialTextures.js;
+//          until then, the procedural look). The photo is scaled so its mean is
+//          alb, the look's albedo (what the far view, GI and reflections draw
+//          the element with), and its roughness so its mean is rough; with no
+//          alb, alb is the photo's own mean.
+//   texM   metres one tile of the texture covers (default: the scan's real size)
+//   texN   the normal map's strength (default 1: as scanned)
 // Albedo sources (approximate, visible band): dry quartz sand 0.35-0.55, fresh
 // snow 0.85-0.95, concrete 0.25-0.4, wood ash 0.3-0.4, black powder ~0.04,
 // bark 0.05-0.15, leaves ~0.05/0.15/0.03, basalt 0.08-0.15, tan sandstone
@@ -223,8 +236,8 @@ const MACRO_ROCK = { tone: 0.12, hue: 0.06, rough: 0.06, size: 1.5 };  // the CR
 const MACRO_NONE = { tone: 0, hue: 0, rough: 0, size: 1 };            // lava, crystal, void: their look is their own
 const MACRO_PARAMS = ['tone', 'hue', 'rough', 'size'];
 const LOOKS = {
-  WALL: { rough: 0.85, alb: '#8f8c87' },
-  SAND: { rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55, macro: { tone: 0.16, hue: 0.12, rough: 0.06, size: 1 } },
+  WALL: { rough: 0.85, alb: '#8f8c87', tex: 'concrete_wall_008' },
+  SAND: { rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55, macro: { tone: 0.16, hue: 0.12, rough: 0.06, size: 1 }, tex: 'dense_sand' },
   STONE: { rough: 0.75, alb: '#7f7c77', macro: { tone: 0.2, hue: 0.06, rough: 0.08, size: 1 } },
   SNOW: { rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8, macro: { tone: 0.04, hue: 0, rough: 0.12, size: 1 } },   // wind crust and drifts: gloss varies more than colour
   GUNPOWDER: { rough: 0.6, alb: '#38383d', glint: 0.7 },   // graphite glaze: a soft sheen, many glints
@@ -243,7 +256,7 @@ const LOOKS = {
   LAVA: { ch: 'MOLTEN', rough: 0.35, alb: '#2a2522', macro: MACRO_NONE },   // its crust and glow are its own
   SMOKE: { media: 'SMOKE' },
   FIRE: { media: 'FIRE' },
-  WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637', macro: { tone: 0.2, hue: 0.1, rough: 0.08, size: 0.6 } },
+  WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637', macro: { tone: 0.2, hue: 0.1, rough: 0.08, size: 0.6 }, tex: 'bark_brown_02' },   // bark (end grain stays procedural)
   PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25, macro: { tone: 0.3, hue: 0.45, rough: 0.1, size: 1 } },   // lush .. sun-dried patches
   METAL: { rough: 0.32, metal: 1, alb: STEEL_F0, surf: 'BRUSHED' },
   GLASS: { ior: 1.5, rough: 0.02, scatter: [0.005, 0.003, 0.004] },
@@ -451,6 +464,27 @@ const familyParams = (l) => {
   const v = f ? f.names.map((k) => (l[f.key] ?? f.def)[k] ?? f.def[k]) : [];
   return [...v, ...Array(SURF_P_LEN - v.length).fill(0)];
 };
+// A look's scanned texture (LOOKS tex): texMap (its first layer in the texture
+// array, or NO_TEX; tiles per cell; the photo's mean roughness; the normal
+// map's strength) and texTint (what scales the photo's albedo to the look's
+// mean, rgb; w unused). TEX_LAYERS: array layers per texture (albedo, surface:
+// gfx/materialTextures.js).
+export const TEX_LAYERS = 2;
+const NO_TEX = -1;
+const DEFAULT_TEX_NORMAL = 1;
+const texOf = (key) => {
+  const i = TEXTURE_SET.findIndex((t) => t.id === key);
+  if (i < 0) throw new Error(`LOOKS tex: no texture ${key} (gfx/textureSet.js)`);
+  return { i, t: TEXTURE_SET[i] };
+};
+const texFields = (l, alb) => {
+  if (!l.tex) return { texMap: [NO_TEX, 0, 0, 0], texTint: [1, 1, 1, 0] };
+  const { i, t } = texOf(l.tex);
+  return {
+    texMap: [i * TEX_LAYERS, +(CELL_M / (l.texM ?? t.tileM)).toFixed(ROUND_DIGITS), t.roughMean, l.texN ?? DEFAULT_TEX_NORMAL],
+    texTint: [...alb.map((v, k) => +(v / t.mean[k]).toFixed(ROUND_DIGITS)), 0],
+  };
+};
 const macroOf = (e, l) => {
   const m = l.macro ?? (l.metal ? MACRO_METAL : MACRO_DEFAULT[e.kind] ?? MACRO_NONE);
   return MACRO_PARAMS.map((k) => m[k] ?? MACRO_NONE[k]);
@@ -474,9 +508,12 @@ const mediaIndex = (k) => (k ? MEDIA.findIndex((m) => m.key === k) : -1);
 
 export const LOOK = ELEMENTS.map((e) => {
   const l = { ...KIND_LOOK[e.kind], ...LOOKS[e.key] };
+  // a textured look without its own albedo takes the photo's mean
+  const alb = linearOf(l.alb ?? (l.tex ? texOf(l.tex).t.mean : e.color)).map((v) => +v.toFixed(ROUND_DIGITS));
   return {
+    ...texFields(l, alb),
     ch: chIndex(l.ch), media: mediaIndex(l.media), haze: l.haze ?? 1, rough: l.rough ?? DEFAULT_ROUGH, metal: l.metal ?? 0, ior: l.ior ?? DEFAULT_IOR,
-    alb: linearOf(l.alb ?? e.color).map((v) => +v.toFixed(ROUND_DIGITS)), sss: l.sss ?? 0, glint: l.glint ?? 0,
+    alb, sss: l.sss ?? 0, glint: l.glint ?? 0,
     bevel: l.bevel ?? 1,
     emit: (l.emit ?? [0, 0, 0]).map((v) => +v.toFixed(ROUND_DIGITS)),
     shed: l.shed ?? 1,
@@ -565,6 +602,8 @@ const look = (e) => {
 export const MATERIAL_FIELDS = [
   { name: 'surfP', type: 'vec4f', fn: 'SURFP', get: (e) => look(e).surfP },   // the texture family's parameters (FAMILY_PARAMS)
   { name: 'macroVar', type: 'vec4f', fn: 'MACRO', get: (e) => look(e).macro },   // play-distance variation (tone, hue, rough, size)
+  { name: 'texMap', type: 'vec4f', fn: 'TEXMAP', get: (e) => look(e).texMap },   // scanned texture: first layer (-1: none), tiles per cell, mean roughness, normal strength
+  { name: 'texTint', type: 'vec4f', fn: 'TEXTINT', get: (e) => look(e).texTint },   // ...its albedo scale to the look's mean (rgb)
   { name: 'albedo', type: 'vec3f', fn: 'ALBEDO', get: (e) => look(e).alb },
   { name: 'surfCh', type: 'i32', fn: 'SURFCH', get: (e) => look(e).ch },
   { name: 'scatAlb', type: 'vec3f', fn: 'SCATALB', get: (e) => look(e).scatAlb },

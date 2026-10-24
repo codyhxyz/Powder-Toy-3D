@@ -10,6 +10,7 @@ import { lib, libLayouts } from './lib.js';
 import { fullscreenVert } from '../../gpu/wgsl.js';
 import { DETAIL, DETAIL_FADE_LO, DETAIL_FADE_HI, COST } from '../../gfx/detail.js';
 import { glf as f } from '../../glsl.js';
+import { TEX_LAYERS } from '../../gfx/materials.js';
 
 // Opaque surfaces: per-element solid textures (world-space, so nothing
 // reveals the grid), bevelled crisp voxels, and energy-conserving PBR shading.
@@ -762,8 +763,8 @@ fn vnoise3(p: vec3f) -> vec3f {
              mix(mix(hash33(i + vec3f(0.0, 0.0, 1.0)), hash33(i + vec3f(1.0, 0.0, 1.0)), u.x),
                  mix(hash33(i + vec3f(0.0, 1.0, 1.0)), hash33(i + vec3f(1.0, 1.0, 1.0)), u.x), u.y), u.z);
 }
-fn matMacro(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32) {
-  let mv = MACRO(id);   // (tone, hue, rough, size)
+fn matMacro(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32, keep: f32) {
+  let mv = MACRO(id) * vec4f(keep, keep, keep, 1.0);   // (tone, hue, rough, size), the amplitudes × keep
   let cv = COLORVAR(id);
   if (mv.x == 0.0 && mv.y == 0.0 && mv.z == 0.0 && cv == 0.0) { return; }
   // macro patches: (tone, hue, rough) noise, centred, about ±1
@@ -781,9 +782,84 @@ fn matMacro(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32) {
   var c: f32;
   if (SURFCH(id) < 0) { c = 2.0 * hash13(floor(p - 0.5 * n) + CELL_VAR_SALT) - 1.0; }
   else { c = 2.0 * vnoise(M_ROT * p + CELL_VAR_SMOOTH_SALT) - 1.0; }
-  c *= cv * lodFade(CELL_VAR_F, fp);
+  c *= cv * keep * lodFade(CELL_VAR_F, fp);
   (*m).alb *= max((1.0 + mv.x * s.x + c) * (1.0 + mv.y * s.y * MACRO_HUE_AXIS), vec3f(0.0));
   (*m).rough += mv.z * s.z;
+}
+
+// ---- scanned textures (gfx/materialTextures.js; gfx/materials.js LOOKS tex) ----
+// A photo-scanned material (Poly Haven's CC0 scans) instead of the procedural
+// pattern: albedo, normal map and roughness from the material texture array
+// (L.LIGHTING's tMatTex: two layers a texture, TEXMAP(id).x the first),
+// projected triplanar in the world (Geiss 2007, GPU Gems 3 ch. 1; Golus 2017,
+// "Normal Mapping for a Triplanar Shader"): on each axis plane in metres
+// through TEXMAP(id).y (tiles per cell, the scan's real size), anchored in the
+// world (p is worldPos: nothing swims when a big map's window moves), the
+// three blended by the surface normal. The normal map tilts the normal in each
+// projection's own frame (u, v and the axis), and the blend of those tilts
+// bends the normal as matOf's bumps do (Golus's UDN blend). There are no
+// implicit derivatives after the march: the mip level is the pixel's footprint
+// in texels (fp, which carries FU.pixScale: surfView), the mipmap rule
+// gfx/lodFade.js's fades follow, read with textureSampleLevel.
+const TEX_LAYERS: i32 = ${TEX_LAYERS};
+const TEX_TRI_SHARP: f32 = 4.0;     // the blend: weights ∝ |n|^this, so a face reads one projection and the seams between them stay narrow (Golus's 4-8)
+const TEX_TRI_MIN: f32 = 0.02;      // a projection weighted under this share is skipped (two reads saved) and the rest renormalised
+const TEX_LOD_BIAS: f32 = 0.0;      // mip levels added to the footprint's (0: one texel a pixel, the mipmap rule)
+const TEX_TEXELS_MIN: f32 = 1e-6;   // floor on texels a pixel (keeps log2 finite)
+const TEX_ALB_MAX: f32 = 0.95;      // ceiling of a photo's albedo once scaled to its look's mean (nothing reflects more than fresh snow)
+// Share of matMacro's play-distance variation a textured material keeps: the
+// photo carries its own tone, but repeats every tile; the broad patches
+// (3.2-0.6 m) still break up that repeat over a heap or a wall.
+const TEX_MACRO_KEEP: f32 = 0.5;
+const TEX_ALL_PLANES: vec3f = vec3f(1.0);   // matTextured's planes: every projection
+// sRGB decoding of the albedo layers (IEC 61966-2-1, gfx/materials.js's)
+const TEX_SRGB_LINEAR_MAX: f32 = 0.04045;
+const TEX_SRGB_SLOPE: f32 = 12.92;
+const TEX_SRGB_OFFSET: f32 = 0.055;
+const TEX_SRGB_GAMMA: f32 = 2.4;
+fn texSrgb(c: vec3f) -> vec3f {
+  return select(pow((c + TEX_SRGB_OFFSET) / (1.0 + TEX_SRGB_OFFSET), vec3f(TEX_SRGB_GAMMA)), c / TEX_SRGB_SLOPE, c <= vec3f(TEX_SRGB_LINEAR_MAX));
+}
+// The textures are in (gfx/materialTextures.js: the dummy has one layer) and element id has one.
+fn matTexReady() -> bool { return i32(textureNumLayers(tMatTex)) >= TEX_LAYERS; }
+fn hasMatTex(id: i32) -> bool { return TEXMAP(id).x >= 0.0 && matTexReady(); }
+// Element id's scanned look at world point p (grid units) with surface normal n
+// and footprint fp, into m (matBase's values): the photo's albedo scaled to the
+// look's mean (TEXTINT), its roughness about the look's, its normal map as m.g.
+// planes: which projections may be read (1: x, y, z), so bark keeps off the
+// top faces its end grain takes.
+fn matTextured(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32, planes: vec3f) {
+  let tm = TEXMAP(id);   // (first layer, tiles per cell, mean roughness, normal strength)
+  let layer = i32(tm.x);
+  let q = p * tm.y;      // in tiles
+  let lod = log2(max(fp * tm.y * f32(textureDimensions(tMatTex).x), TEX_TEXELS_MIN)) + TEX_LOD_BIAS;
+  var w = pow(abs(n), vec3f(TEX_TRI_SHARP)) * planes;
+  w = select(vec3f(0.0), w, w >= vec3f(TEX_TRI_MIN * (w.x + w.y + w.z)));
+  w /= max(w.x + w.y + w.z, TEX_TEXELS_MIN);
+  let sg = select(vec3f(-1.0), vec3f(1.0), n >= vec3f(0.0));
+  var alb = vec3f(0.0);
+  var rough = 0.0;
+  var d = vec3f(0.0);
+  for (var k = 0; k < 3; k++) {
+    let wk = w[k];
+    if (wk <= 0.0) { continue; }
+    // the projection's frame, seen from outside the face it lies on (unmirrored):
+    // u along t, v along b (down the image: up the image is up the world on the sides)
+    var t = vec3f(sg.z, 0.0, 0.0);
+    var b = vec3f(0.0, -1.0, 0.0);
+    if (k == 0) { t = vec3f(0.0, 0.0, -sg.x); }
+    else if (k == 1) { t = vec3f(1.0, 0.0, 0.0); b = vec3f(0.0, 0.0, sg.y); }
+    let uv = vec2f(dot(q, t), dot(q, b));
+    let a = textureSampleLevel(tMatTex, matTexSampler, uv, layer, lod);
+    let sf = textureSampleLevel(tMatTex, matTexSampler, uv, layer + 1, lod);
+    alb += wk * a.rgb;
+    rough += wk * sf.b;
+    let tn = sf.xy * 2.0 - 1.0;   // the normal map: x along u, y up the image (OpenGL), unit-scaled
+    d += wk * (t * tn.x - b * tn.y);
+  }
+  (*m).alb = min(texSrgb(alb) * TEXTINT(id).rgb, vec3f(TEX_ALB_MAX));
+  (*m).rough += rough - tm.z;
+  (*m).g = -tm.w * d;   // bumpNormal tilts the normal by minus the gradient's tangential part
 }
 
 // Element id's table values, untextured and not glowing.
@@ -828,11 +904,16 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
   if (FU.materialStyle == 2.0 && noitaSupported(id, ctype)) { return noitaMat(id, p, n, T, ctype, fp); }
   if (FU.materialStyle == 1.0 && cozySupported(id, ctype)) { return cozyMat(id, p, n, T, ctype, fp); }
   var m = matBase(id);
+  // A scanned texture replaces the element's procedural pattern (bark keeps its
+  // end grain: the E_WOOD branch reads it on the sides alone).
+  let textured = hasMatTex(id);
 
   // Scale: a cell is CELL_M (src/scale.js). Frequencies below are cycles (or
   // lattice cells) per cell; the *_H / *_DEPTH bump amplitudes are heights in
   // cells. The natural materials give their sizes in metres (*_M) and convert.
-  if (id == E_SAND) {
+  if (textured && id != E_WOOD) {
+    matTextured(&m, id, p, n, fp, TEX_ALL_PLANES);
+  } else if (id == E_SAND) {
     // Dry sand. Its grains (~0.3 mm) are far below a pixel, so it reads as a
     // matte surface with soft mottling (sorting, damp patches), shallow
     // dimples, a faint grain-scale mottle and, up close, scattered dark
@@ -1055,8 +1136,11 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     const FLAKE_SALT: vec3f = vec3f(13.1);    // noise offsets (decorrelate the layers)
     const FIB_SALT: vec3f = vec3f(5.7);
     let top = woodEndGrain(n);
+    const TEX_SIDES: vec3f = vec3f(1.0, 0.0, 1.0);   // the photo's bark on the side projections only
     // Fully sawn faces replace every bark result below. Avoid generating it.
-    if (top < 1.0) {
+    if (top < 1.0 && textured) {
+      matTextured(&m, id, p, n, fp, TEX_SIDES);
+    } else if (top < 1.0) {
       var mv: vec4f;
       var c: vec4f;
       var fr: f32;   // 0 down a fissure .. 1 on a ridge
@@ -1416,7 +1500,7 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
         + (1.0 - solid) * LAVA_SKIN_BUMP * sk.yzw;
     m.cav = mix(1.0, mix(LAVA_CRACK_CAV, 1.0, smoothstep(0.0, LAVA_PLATE_EDGE, c.y)), solid * lwc);
   }
-  matMacro(&m, id, p, n, fp);   // play-distance variation (every material; its amplitudes are data)
+  matMacro(&m, id, p, n, fp, select(1.0, TEX_MACRO_KEEP, textured));   // play-distance variation (every material; its amplitudes are data)
   if (id != E_LAVA && SURF(id) != SURF_BRUSHED && id != E_CRYSTAL) { m.emit = hotEmit(m, id, T); }
   m.emit += sparkEmit(id, ctype);   // a live conductor (src/electricity.js)
   return m;
