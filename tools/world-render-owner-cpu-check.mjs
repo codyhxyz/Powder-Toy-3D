@@ -424,6 +424,35 @@ test('a final publish keeps the pages its restore made resident; the book is the
   assert(again.every(r=>r.kept===0));
   assert.deepEqual(kept.map(r=>r.book),again.map(r=>r.book),'the same book, tick after tick');
 });
+// An attempt clears only the light pages its restore would not write the same: a restart in
+// one transaction kept none of them before, and restored every owned SOURCE and probe again
+// (~78k pages on Island, each attempt). The book each attempt reads and publishes is the same.
+test('a restart keeps the light pages its earlier restore wrote; the book is the same',async()=>{
+  const demand=[0,1,2,8].map(x=>({brick:[x,0,0],channels:READY.GI_SOURCE|READY.GI})),bricks=demand.map(r=>r.brick);
+  const run=async keepResident=>{
+    const f=await setup({size:[64,8,8],feedback:false,ownerOptions:{keepResident}}),out=[];
+    for(let k=0;k<GI_SETTLE+4;k++){
+      if(k===GI_SETTLE+2)f.sim.version++;
+      let c=await settle(f.gpu,f.owner.request(f.frame,demand));
+      // the scene asks for a glow, then for nothing new: the same transaction's attempts
+      for(const requirements of [[{brick:[0,0,0],channels:READY.GLOW}],[{brick:[1,0,0],channels:READY.GLOW}]]){
+        const next=await settle(f.gpu,f.owner.extend(c,{incomplete:true,requirements,sun:[]}));c.release();c=next;
+      }
+      const p=f.owner.progress,book=bricks.map(b=>{const l=c.snapshot.lightingProvenance(b),look=f.owner.atlas.lookup(b,READY.GI_SOURCE|READY.GI);
+        const read=x=>x?[...words(x.nativeBuffer).subarray(x.ranges[0].from/4,x.ranges[0].from/4+x.ranges[0].size/4)]:null;
+        return {known:look.known,source:read(l?.source),gi:read(l?.gi)};});
+      out.push({attempts:p.attempts,light:p.lightKept,book});
+      await settle(f.gpu,f.owner.accept(c,post(c)));c.release();
+    }
+    await f.close();return out;
+  };
+  const kept=await run(true),again=await run(false);
+  assert(kept.every(r=>r.attempts===3));
+  // (past the load's settle ticks: before them every tick computes every SOURCE and probe anew)
+  assert(kept.slice(GI_SETTLE+1).every(r=>r.light>0),`restarts keep light pages (${kept.map(r=>r.light)})`);
+  assert(again.every(r=>r.light===0));
+  assert.deepEqual(kept.map(r=>r.book),again.map(r=>r.book),'the same book, tick after tick');
+});
 // Only the bricks a gather reads at full detail are SOURCES: the eye's ring
 // and every probe's (world/worldGIRing.js worldGIReach). A brick the view asked
 // for past them was a SOURCE before (Island: ~78k a restart, 2026-10-22).

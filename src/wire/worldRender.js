@@ -329,6 +329,29 @@ export function* worldRestoreResidentSteps(all,{resident,live,leases,fresh},full
   }
   return out;
 }
+// The light pages an attempt's public restore can keep (wire/worldRender.js attempt): those the
+// book still holds (live: index -> page) as the very job an earlier restore made (restored: index
+// -> its job and the SOURCE and probe tokens it restored), at this cut's source revision, with the
+// same retained outputs this restore's leases name. Such a page holds the bytes, readiness, ticks
+// and provenance the restore would write again (worldRestoreResident's rule, one restore earlier).
+// Every other page the book holds is invalidated, as every one was before: each attempt cleared
+// the whole light book and restored every owned SOURCE and probe again, ~78k pages on Island,
+// though within a transaction (one cut) they were the same. Only restored pages are kept: their
+// channels are checked by provenance, never by a dependency manifest a later publish replaces.
+// Returns {kept: index -> restored entry, invalidations}; restored loses every entry not kept.
+export const worldLightKeep=(live,leases,options)=>worldRunSync(worldLightKeepSteps(live,leases,options));
+export function* worldLightKeepSteps(live,leases,{restored,sourceRevision},full=()=>false) {
+  const named=new Map(),kept=new Map(),invalidations=[];
+  for(const l of leases){if(!named.has(l.index))named.set(l.index,{source:null,gi:null});named.get(l.index)[l.kind]=l.token;if(full(COST.member))yield;}
+  for(const [i,page]of live){
+    const r=restored.get(i),n=named.get(i);
+    if(r&&n&&page.job===r.job&&r.job.sourceRevision===sourceRevision&&n.source===r.source&&n.gi===r.gi)kept.set(i,r);
+    else{invalidations.push({brick:[...page.brick],channels:READY.LIGHT});restored.delete(i);}
+    if(full(COST.record))yield;
+  }
+  for(const i of restored.keys()){if(!kept.has(i))restored.delete(i);if(full(COST.member))yield;}
+  return {kept,invalidations};
+}
 // A frame's feedback whose only misses are budget-dropped bricks (and Sun tiles it
 // already has), settled as complete; any other feedback unchanged (owner.settle).
 // idle (past WORLD_IDLE_EXTENDS reruns): any feedback that asks for nothing new
@@ -382,6 +405,8 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   const budget=worldPageBudget({deviceMemoryGB:globalThis.navigator?.deviceMemory,limits:gpu.device?.limits??{}});
   atlas.setPageBudget(budget.pool);
   const ownedSources=new Set(),ownedProbes=new Set(),ownedGlow=new Set();
+  // The book's light pages a restore wrote, by index: {job, source, gi} (worldLightKeep).
+  const lightRestored=new Map();
   const brick=i=>[i%dims[0],Math.floor(i/dims[0])%dims[1],Math.floor(i/(dims[0]*dims[1]))];
   const index=b=>worldBrickIndex(atlas.bookLayout,b);
   const live=()=>{if(dead)throw new Error('WORLD data owner disposed');if(resetting)throw new Error('WORLD reset pending');const error=failure??metadataFeedback.failure??active?.feedback?.failure??gpu.failure??gpu.pipelines?.failure;if(error)throw error;};
@@ -600,9 +625,10 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     while(pool.free.length+atlas.resources.layout[key]-pool.nextID<count)atlas.growPool(kind);
   }
   // (its per-page loops in slices, worldSlices.js: a restore covers every owned SOURCE)
-  async function restoreJobs(t,bundle,{privatePhase=false}={}) {
+  // kept (public only): the pages worldLightKeep kept, not restored again.
+  async function restoreJobs(t,bundle,{privatePhase=false,kept=null}={}) {
     const byIndex=new Map(),full=t.full??worldSliceMeter();let probesHeld=0;
-    for(const lease of bundle.leases){if(!byIndex.has(lease.index))byIndex.set(lease.index,{});byIndex.get(lease.index)[lease.kind]=lease;if(lease.kind==='gi')probesHeld++;if(full(COST.member))await pause();}
+    for(const lease of bundle.leases){if(kept?.has(lease.index)){if(full(COST.member))await pause();continue;}if(!byIndex.has(lease.index))byIndex.set(lease.index,{});byIndex.get(lease.index)[lease.kind]=lease;if(lease.kind==='gi')probesHeld++;if(full(COST.member))await pause();}
     const jobs=[];
     await capacity('light',byIndex.size);await capacity('probe',probesHeld);
     try{
@@ -613,7 +639,8 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       if(privatePhase){t.privateJobs=jobs;t.privateSnapshot=atlas.prepareProducerSnapshot({lightJobs:jobs,sourcePhaseToken:bundle.publication.sourcePhaseToken,dependencyToken:dependency(t)});}
       else{atlas.publish({lightJobs:jobs,dependencyToken:dependency(t)});
         // what this attempt's public restore made resident, for publishFinal (worldRestoreResident)
-        t.resident=new Map();for(const job of jobs){const l=byIndex.get(index(job.brick));t.resident.set(index(job.brick),{job,source:l.source?.token??null,gi:l.gi?.token??null});}}
+        // and the next attempt's (worldLightKeep): the kept pages too
+        t.resident=new Map(kept??[]);for(const job of jobs){const i=index(job.brick),l=byIndex.get(i),r={job,source:l.source?.token??null,gi:l.gi?.token??null};t.resident.set(i,r);lightRestored.set(i,r);}}
     }catch(e){for(const j of jobs)try{atlas.cancel(j);}catch{}throw e;}
   }
   // Before the CELL stage: ask for the casters of every sun tile in the demand
@@ -701,11 +728,17 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     else t.plan=await history.beginBirthSliced({cutToken:t.cut.contentToken,sourceBricks:[...new Map([...requestedSources,...never.filter(r=>!ownedSources.has(index(r.brick))).map(r=>r.brick)].map(b=>[index(b),b])).values()],probeBricks:never.map(r=>r.brick),records},{full:t.full});
     // Every owned offscreen record remains a causal input. BUILDING is never
     // returned by probe(); the previous accepted bundle remains independently pinned.
-    const invalidations=atlas.bookPages('light').map(p=>({brick:[...p.brick],channels:READY.LIGHT}));
-    atlas.publish({invalidations,sunManifest:null});
+    // The book's light pages cleared but those an earlier restore wrote as this one
+    // would (worldLightKeep), and only the rest restored.
     const previousProbes=[...ownedProbes].filter(i=>t.frame.advance||history.birth(i)?.birthTick<t.tick);
     const previous=await t.plan.captureRestoreSliced({cut:t.cut,configVersion:t.frame.configVersion,sourceIndices:ownedSources,probeIndices:previousProbes},{full:t.full});
-    try{if(previous.leases.length)await restoreJobs(t,previous);}finally{previous.release();}
+    try{
+      if(!keepResident)lightRestored.clear();
+      const {kept,invalidations}=await worldRunSliced(worldLightKeepSteps(atlas.live.light,previous.leases,{restored:lightRestored,sourceRevision:t.cut.contentToken.sourceRevision},t.full));
+      atlas.publish({invalidations,sunManifest:null});
+      t.lightKept=(t.lightKept??0)+kept.size;
+      if(previous.leases.length)await restoreJobs(t,previous,{kept});
+    }finally{previous.release();}
     t.stage='sun';
     // A tile the feedback added after this attempt's forecast (none is, with
     // the view's tiles forecast) is full detail, its casters asked for by its pass.
@@ -772,6 +805,10 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       const s=t.sunHandle.bindings(),token=t.sunHandle.token;
       atlas.publish({lightJobs:jobs,dependencyToken:dependency(t),sunManifest:{...token,...s,dependencySetID:cells.publication.dependencySetID,dependencyVersion:cells.publication.dependencyVersion}});
       const snapshot=atlas.snapshot();
+      // a page wholly restored from held outputs is one a later restore can keep (worldLightKeep)
+      for(const job of jobs){const i=index(job.brick),held=leases.get(i)??{};
+        if(sourceOutputs.has(i)||probeOutputs.has(i)||glowOf(job.brick))lightRestored.delete(i);
+        else lightRestored.set(i,{job,source:held.source?.token??null,gi:held.gi?.token??null});}
       // This is PROBE-READY, not scene-admitted: unknown scene dependencies
       // must still be checked by every real native consumer and staged Post.
       let refs=1;const sunPin=t.sun.snapshot();t.bundlePins++;
@@ -832,7 +869,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
   function next() {if(queued&&!dead){const q=queued;queued=null;try{start(q.frame,q.requirements).then(q.resolve,q.reject);}catch(e){releaseFrame(q.frame);q.reject(e);}}wake();}
   const api={atlas,cells,metadata,
     // Passive counters only: inspecting readiness must never advance work.
-    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,support:t.support.size,sunTiles:t.sunTiles.size,coarseTiles:t.coarseTiles?.size??0,budgetDropped:t.budgetDropped??0,pageBudget:budget.cell,forecastBricks:t.forecastBricks??0,sourcePasses:t.sourcePasses??0,sourceJobs:t.sourceJobs??0,carriedSources:t.carriedSources??0,metadataBricks:t.metadataBricks??0,residentKept:t.residentKept??0,forgotten:t.forgotten??0,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
+    get progress(){const t=active;return t?Object.freeze({stage:t.state==='probe-ready'?t.state:t.stage,attempts:t.attempts??0,requirements:t.requirements.size,support:t.support.size,sunTiles:t.sunTiles.size,coarseTiles:t.coarseTiles?.size??0,budgetDropped:t.budgetDropped??0,pageBudget:budget.cell,forecastBricks:t.forecastBricks??0,sourcePasses:t.sourcePasses??0,sourceJobs:t.sourceJobs??0,carriedSources:t.carriedSources??0,metadataBricks:t.metadataBricks??0,residentKept:t.residentKept??0,lightKept:t.lightKept??0,forgotten:t.forgotten??0,sources:t.plan?.sourceBricks.length??0,gathers:t.plan?.gatherBricks.length??0,outputs:t.outputs.length,fieldOwners:cells.fields.history.owners.size,cellPages:atlas.cell.pages.size}):null;},
     get busy(){return !!active||!!queued;},get failure(){return failure??metadataFeedback.failure??active?.feedback?.failure??active?.error??null;},get state(){return dead?'disposed':resetting?'resetting':metadataFeedback.failure||active?.feedback?.failure?'blocked':active?.state??'idle';},
     request(frame,requirements=[]){live();const f=captureFrame(frame);if(active){if(queued){releaseFrame(queued.frame);queued.resolve(null);}return new Promise((resolve,reject)=>{queued={frame:f,requirements:frozen(requirements),resolve,reject};});}try{return start(f,requirements);}catch(e){releaseFrame(f);throw e;}},
     probe(){live();return active?.state==='probe-ready'?active.bundle.retain():null;},
@@ -861,7 +898,7 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
       resetWork=(async()=>{
         if(queued){releaseFrame(queued.frame);queued.resolve(null);queued=null;}
         const t=active;active=null;if(t){await t.work.catch(()=>{});await retire(t);}await fence();
-        accepted?.bundle.release();accepted?.cut.release();accepted=null;history?.dispose();history=null;metadata.reset();residency.clear();ownedSources.clear();ownedProbes.clear();ownedGlow.clear();forecastTiles.clear();shellTiles.clear();forecastGrid=null;viewAir=null;
+        accepted?.bundle.release();accepted?.cut.release();accepted=null;history?.dispose();history=null;metadata.reset();residency.clear();lightRestored.clear();ownedSources.clear();ownedProbes.clear();ownedGlow.clear();forecastTiles.clear();shellTiles.clear();forecastGrid=null;viewAir=null;
         const cut=source.recordCut(gpu.frame,{sceneVersion,configVersion:schemaVersion});
         try{gpu.flush('WORLD reset cut capture');await fence();cells.bindCut(cut);cells.reset();}finally{cut.release();}
         failure=null;wake();
