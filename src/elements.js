@@ -251,6 +251,23 @@ const ACID_BOIL = {
 // 0.917 g/cm³, so what it leaves by volume is:
 // Its electrical conductivity (CRC, aqueous NaCl at 20 °C) is ~22 S/m, ~4×
 // sea water's 5: ions carry the current, so it conducts, but nothing like a metal.
+// Clean water's colour (render only: sigma below, gfx/materials.js LOOKS
+// scatter), from measured coefficients rather than a look. Absorption of pure
+// water at the sRGB primaries' bands, ~640, 550 and 460 nm (Pope & Fry 1997,
+// Appl. Opt. 36, 8710: 0.329, 0.0565, 0.0098 per metre): red goes first. Its
+// scattering is molecular, b = 0.00288·(500/λ)^4.32 per metre (Morel 1974),
+// so a body of it glows faintly blue. A cell (CELL_M) of it lets 90 %, 98 %
+// and 99.6 % of red, green and blue through: a puddle is clear, a pool metres
+// deep goes blue-green and a deep one dark blue, as real water does.
+export const WATER_ABSORB_M = [0.329, 0.0565, 0.0098];   // 1/m
+export const WATER_SCATTER_M = [0.001, 0.0019, 0.0041];  // 1/m
+export const WATER_SCATTER = WATER_SCATTER_M.map((b) => +(b * CELL_M).toPrecision(3));   // 1/cell
+const WATER_SIGMA = WATER_ABSORB_M.map((a, i) => +((a + WATER_SCATTER_M[i]) * CELL_M).toPrecision(3));   // 1/cell
+// Dissolved salt leaves water's absorption as it is (the sea's colours are
+// what lives and floats in it) and raises its scattering by ~30 % (Morel
+// 1974: b_seawater = 1.30 b_pure water).
+export const SALT_SCATTER_GAIN = 1.3;
+
 const BRINE = { rho: 1.197, water: 0.881, salt: 0.316, cp: 3.3, k: 0.57, boilT: 108.7, elec: 22 };
 const SALT_PILE = 1.3;                       // g/cm³: halite's 2.165 packed as sand is (60 % solid: 2.65 → SAND's 1.6)
 const ICE_RHO = 0.917;
@@ -405,7 +422,7 @@ const defs = [
     // fresh water conducts, weakly: ~0.005-0.05 S/m from its dissolved ions
     // (USGS, Specific conductance; pure water 5.5·10⁻⁶), 10⁸ times less than steel
     elec: 0.05,
-    sigma: [0.052, 0.014, 0.01], desc: 'Water. Conducts electricity, weakly. Flows and levels out. Freezes at 0 °C and boils at 100 °C, with real latent heat.' },
+    sigma: WATER_SIGMA, desc: 'Water. Conducts electricity, weakly. Flows and levels out. Freezes at 0 °C and boils at 100 °C, with real latent heat.' },
   { key: 'OIL', abbr: 'OIL', name: 'Oil', kind: K.LIQUID, render: R.LIQUID, color: '#5a3c12',
     dens: 8, cond: 0.008, cap: 0.45, drag: 0.03, flow: 0.55, ignite: 220, burnRate: 0.008,
     burnHeat: 5, flameT: 1000, life: 1, spawn: 0.35, ash: false,
@@ -750,7 +767,7 @@ const defs = [
   { key: 'SALTWATER', abbr: 'SLTW', name: 'Saltwater', kind: K.LIQUID, render: R.LIQUID, color: '#3f8ccc',
     dens: +(BRINE.rho * 10).toFixed(2), cond: condOf(BRINE.k), cap: capOf(BRINE.rho, BRINE.cp), drag: 0.012, flow: 0.85,
     spawn: 0.35, acidProof: true, conducts: true, elec: BRINE.elec, cold: BRINE_FREEZE, hot: BRINE_BOIL,
-    sigma: [0.052, 0.014, 0.01],
+    sigma: WATER_SIGMA.map((x, i) => +(x + (SALT_SCATTER_GAIN - 1) * WATER_SCATTER[i]).toPrecision(3)),
     desc: 'Saltwater, conducts electricity, difficult to freeze: only at −21 °C. Heavier than water. Boiling it leaves the salt behind.' },
   // Carbon dioxide: 1.52× air, so it sinks and pools in low places, and puts
   // out flames where it makes up CO2_SMOTHER of the air (react.js). Below

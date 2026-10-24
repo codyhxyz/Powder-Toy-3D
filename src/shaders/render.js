@@ -1182,7 +1182,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         else if (SURFCH(id) == CH_LIQUID) { liq = id; }
         mediumLight = lightRef * exp(-SIGMA(liq) * max(lightY - pm.y, 0.0) / max(FU.sun.y, LIQ_SUN_Y_MIN));
         let own = SURFCH(id) == CH_LIQUID;
-        // (painted liquid: gfx/deco.js; drops and pours show their colour: gfx/liquid.js thinBodySeg)
+        // (painted liquid: gfx/deco.js; drops absorb along their real length: gfx/liquid.js thinBodySeg)
         var tOwn = AMBIENT;   // (the cell's temperature where it is the liquid's own)
         if (own) { tOwn = fetchA(cell).y; }
         absorbDeco(liq, select(vec3i(-1), cell, own), ro + rd * tEnter, thinBodySeg(pm, tEv - tEnter), mediumLight, tOwn, &col, &trans);

@@ -122,20 +122,16 @@ fn interiorScatter(id: i32, p: vec3f, sunVis: vec3f, T: f32) -> vec3f {
   return SCATALB(id) * interiorLight(p, sunVis) + emission(id, T);
 }
 
-// Liquid in the air shows its colour. Water is clear (elements.js sigma: a
-// cell of it lets 95-99% through), so a lone drop, a pour or spray, drawn
-// truly, is a clear bead against the sky: from a player's view nearly
-// invisible, a cloud of glass bubbles. Noita and The Powder Toy draw every
-// liquid pixel in its body colour, however small, which is why their pours
-// always read. So where the fields mark liquid a thin feature (the thin mask,
-// shaders/fields.js: drops, streams, spray; never a pool's bulk), the light
-// crossing it is absorbed and scattered as through THIN_BODY_CELLS of it: the
-// blue-green a pool shows a few metres deep. Pools are left as they are.
-const THIN_BODY_CELLS: f32 = 24.0;   // cells (7 m): water's body colour, the depth a deep pool shows
+// Liquid in the air is absorbed along the length it really is. Water is
+// clear (elements.js WATER_ABSORB_M: a cell of it lets 90-99.6 % through), so
+// a drop or spray is a clear bead that shows itself by its glints and what it
+// bends, as real spray does, and a pour by its whitewater (gfx/foam.js). (It
+// was drawn in the body colour of 7 m of water, Noita's and The Powder Toy's
+// rule that every liquid pixel shows its colour, which made each splash a
+// scatter of opaque blue balls.) Absorbing liquids (oil, blood, acid) colour
+// even a drop on their own. p: unused, kept for the callers' shape.
 fn thinBodySeg(p: vec3f, seg: f32) -> f32 {
-  var thin = 0.0;
-  if (gThin) { thin = fieldTex(tFT, p)[CH_LIQUID]; }
-  return mix(seg, max(seg, THIN_BODY_CELLS), thin);
+  return seg;
 }
 
 // Beer–Lambert through a segment of length seg inside element id.

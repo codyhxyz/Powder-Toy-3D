@@ -31,7 +31,7 @@
 //          white ≈ 1.2): what a body of it shows. It adds to the thermal glow
 //          wherever matter's light is used (emission(), below).
 
-import { ELEMENTS, K } from '../elements.js';
+import { ELEMENTS, K, WATER_SCATTER, SALT_SCATTER_GAIN } from '../elements.js';
 import { bandGlow, LUMA_709 } from './incandescence.js';
 import { FLAME_COLOR } from './lamps.js';
 import { accessorsWGSL } from '../shaders/hostStruct.js';
@@ -229,15 +229,15 @@ const LOOKS = {
   SNOW: { rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8, macro: { tone: 0.04, hue: 0, rough: 0.12, size: 1 } },   // wind crust and drifts: gloss varies more than colour
   GUNPOWDER: { rough: 0.6, alb: '#38383d', glint: 0.7 },   // graphite glaze: a soft sheen, many glints
   ASH: { rough: 0.98, alb: '#a29e97', sss: 0.3 },
-  // Liquids. Clean water absorbs red most (real ratios ~1 : 0.2 : 0.1 with a
-  // little dissolved matter) and scatters a little, mostly blue: clear when
-  // shallow, blue-green with depth. Both are exaggerated several-fold over
-  // real water so a tank-sized body still shows them. Oil is amber (absorbs
+  // Liquids. Clean water absorbs red most and scatters a little, mostly
+  // blue: clear when shallow, blue-green with depth, at its measured strength
+  // (elements.js WATER_ABSORB_M, WATER_SCATTER_M); brine scatters a little
+  // more (SALT_SCATTER_GAIN) and absorbs the same. Oil is amber (absorbs
   // blue hardest), dark when thick. Acid is Noita's (elements.js ACID): it
   // scatters nearly all the green it stops (albedo ~0.95) and almost none of
   // the red and blue, so a body of it is a saturated, near-opaque lime; a
   // little rougher than water, so its sheen is broader and less of a mirror.
-  WATER: { ior: 1.333, rough: 0.02, scatter: [0.002, 0.003, 0.004] },
+  WATER: { ior: 1.333, rough: 0.02, scatter: WATER_SCATTER },
   OIL: { ior: 1.47, rough: 0.03, scatter: [0.012, 0.008, 0.003] },
   ACID: { ior: 1.36, rough: 0.1, scatter: [0.09, 0.47, 0.02], emit: tintGlow(ACID_GLOW_TINT, ACID_GLOW_LUM) },
   LAVA: { ch: 'MOLTEN', rough: 0.35, alb: '#2a2522', macro: MACRO_NONE },   // its crust and glow are its own
@@ -348,7 +348,7 @@ const LOOKS = {
   // colourless, n = 1.199 (CRC); its boiling fills it with bubbles that
   // scatter a little. Saturated brine is water with n = 1.378 (CRC, 26 % NaCl).
   LIQUID_NITROGEN: { ior: 1.199, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
-  SALTWATER: { ior: 1.378, rough: 0.02, scatter: [0.002, 0.003, 0.004] },
+  SALTWATER: { ior: 1.378, rough: 0.02, scatter: WATER_SCATTER.map((b) => +(b * SALT_SCATTER_GAIN).toPrecision(3)) },
   // Salt: clear halite cubes (n = 1.544) crushed white, albedo ~0.8, light
   // wrapping into the grains and glinting off their cube faces.
   SALT: { rough: 0.55, ior: 1.544, alb: '#e2e0da', sss: 0.35, glint: 0.7 },
@@ -514,6 +514,22 @@ export const THIN_MIN_PEAK = 0.01;
 // ~0.05 cells of its cubic surface anyway, so shallow water stays cheap.
 export const THIN_MASK_LO = 1.8;
 export const THIN_MASK_HI = 3.0;
+
+// Liquid features as big as the water they hold (shaders/fields.js). V2
+// keeps each liquid cell's exact fill, so the boost sizes a thin liquid
+// feature by the most any cell of its 3³ holds instead of blowing every one
+// up to THIN_RADIUS: a cell in the air with fill f is a drop of its own
+// volume, radius cbrt(3f / 4π) cells (a lone full cell 0.62, capped at
+// THIN_RADIUS; a 1 % parcel 0.13 cells, 4 cm), and one resting on something
+// (the floor, matter, other liquid) is a film whose top sits f above its
+// cell's base, f - 1/2 from its centre (a signed radius: under the centre the
+// boost's peak goes below ISO). Over a floor the field reads at most ~1.09x
+// a film's centre (the box's edge clamps it, a crisp bed counts neither way),
+// so a film thinner than FILM_MIN_CELLS would fall under ISO everywhere and
+// vanish: it keeps that thickness.
+export const DROP_RADIUS_K = Math.cbrt(3 / (4 * Math.PI));   // cells per cube root of fill: a sphere of the fill's volume
+export const FILM_MIN_CELLS = 0.7;   // cells (21 cm): the thinnest film the field shows over a floor (at 0.5 its peak sits on ISO)
+export const FILL_EPS = 1 / 255;
 
 // The local peak at or above which a feature needs no boost, for a blur with
 // 5-tap weights w. Along an axis the trilinear field falls from a lone cell's
@@ -704,6 +720,11 @@ export function materialsGLSL() {
     `const THIN_MIN_PEAK: f32 = ${f(THIN_MIN_PEAK)};`,
     `const THIN_MASK_LO: f32 = ${f(THIN_MASK_LO)};`,
     `const THIN_MASK_HI: f32 = ${f(THIN_MASK_HI)};`,
+    `const ISO_LEVEL: f32 = ${f(ISO)};`,
+    `const THIN_RADIUS: f32 = ${f(THIN_RADIUS)};`,
+    `const DROP_RADIUS_K: f32 = ${f(DROP_RADIUS_K)};`,
+    `const FILM_MIN_CELLS: f32 = ${f(FILM_MIN_CELLS)};`,
+    `const FILL_EPS: f32 = ${f(FILL_EPS)};`,
     `const SPARK_GLOW: vec3f = ${vec3(SPARK_GLOW.map((v) => +v.toFixed(ROUND_DIGITS)))};`,
     `const LAMP_ROOM_GAIN: f32 = ${f(LAMP_ROOM_GAIN)};`,
     `const LAMP_GLOW: vec3f = ${vec3(LAMP_GLOW.map((v) => +v.toFixed(ROUND_DIGITS)))};`,
