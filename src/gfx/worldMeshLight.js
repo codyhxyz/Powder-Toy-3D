@@ -40,6 +40,28 @@ export function createWorldMeshLightNodes(shared, L) {
   return {nodes:W,terms,normal:n=>normalFn({n,normalToGrid:W.normalToGrid})};
 }
 const check=(p,message)=>{if(!p)throw new TypeError(message);};
+// Three's wrappers of a publication's native textures and buffers, shared by every context that
+// binds the same ones, counted, and disposed with the last: a context is made twice a frame (the
+// frame's mesh preflight and its scene, wire/worldRenderFrame.js), and new wrappers each time gave
+// every lit mesh a new texture record and bind group every frame, though the atlas, sun and noise
+// textures change only when a pool grows or the sun is published again. A wrapper of a native
+// object pins nothing: each context still pins its publication, so the native outlives its users.
+const sharedWrappers=new WeakMap();   // renderer -> Map(native -> Map(variant -> {value, refs}))
+function acquireWrapper(renderer,native,variant,make,held) {
+  let byNative=sharedWrappers.get(renderer),byVariant=byNative?.get(native),entry=byVariant?.get(variant);
+  if(!entry){
+    entry={value:make(),refs:0};   // (first: a make that throws leaves no empty map behind)
+    if(!byNative)sharedWrappers.set(renderer,byNative=new Map());
+    if(!byVariant)byNative.set(native,byVariant=new Map());
+    byVariant.set(variant,entry);
+  }
+  entry.refs++;held.push({byNative,byVariant,native,variant,entry});return entry.value;
+}
+function releaseWrapper({byNative,byVariant,native,variant,entry}) {
+  if(--entry.refs>0)return;
+  byVariant.delete(variant);if(!byVariant.size)byNative.delete(native);
+  if(entry.value.isTexture)entry.value.dispose();   // (a storage attribute, as before, is just dropped: three never owned its buffer)
+}
 /** Takes ownership of publication even on validation failure. It must implement
  * release(), and own atlas + optical Sun resources (not merely their views).
  * worldSize and frozen frameValues are from the same admitted candidate.
@@ -47,7 +69,7 @@ const check=(p,message)=>{if(!p)throw new TypeError(message);};
  */
 export function createWorldMeshLightContext(gpu,{publication,worldSize,frameValues,feedback,noise,isCompatible,install}={}) {
   let released=false,used=false,retiring=false;const wrappers=[];
-  const release=()=>{if(!released){released=true;try{wrappers.forEach(t=>t.dispose());}finally{publication?.release?.();}}};
+  const release=()=>{if(!released){released=true;try{wrappers.splice(0).forEach(releaseWrapper);}finally{publication?.release?.();}}};
   try {
     const renderer=gpu?.three?.renderer,device=gpu?.device;
     check(publication?.release&&publication.atlas&&publication.sun,'owned atlas/Sun scene publication required');
@@ -72,14 +94,16 @@ export function createWorldMeshLightContext(gpu,{publication,worldSize,frameValu
     for(const key of ['sun','sunCol','caveAmbient','cloudShift'])check(values[key].every(Number.isFinite),'finite frozen lighting values');
     check(values.model.length===16&&values.model.every(Number.isFinite),'finite global world model');
     const model=new Matrix4().fromArray(values.model);check(model.determinant()!==0,'invertible global world model');
-    const wrap=(view,dimension)=>{const native=view?.texture??view;check(native?.format,'native texture reference required');const t=externalTexture(native,{dimension});if(dimension==='3d')t.wrapS=t.wrapT=t.wrapR=RepeatWrapping;wrappers.push(t);return t;};
+    const wrap=(view,dimension)=>{const native=view?.texture??view;check(native?.format,'native texture reference required');
+      return acquireWrapper(renderer,native,dimension,()=>{const t=externalTexture(native,{dimension});if(dimension==='3d')t.wrapS=t.wrapT=t.wrapR=RepeatWrapping;return t;},wrappers);};
+    const adopt=(buffer,count)=>acquireWrapper(renderer,buffer,count,()=>externalStorageAttribute(renderer,buffer,count),wrappers);
     // Callers supply texture references because GPUTextureView has no public
     // backlink. Atlas views in real bundles accompany their native textures.
     const textures=publication.textures,nativeSun=publication.sun.textures?.().sun0??textures?.sunOptical;
     check(textures?.aux&&textures.gi?.length===4&&textures.glow&&nativeSun&&noise,'native texture references required');
     check(!textures.sunOptical||textures.sunOptical===nativeSun,'Sun texture differs from pinned handle');
     const owned={aux:wrap(textures.aux,'2d-array'),gi:textures.gi.map(t=>wrap(t,'2d-array')),glow:wrap(textures.glow,'2d-array'),sun:wrap(nativeSun,'2d-array'),noise:wrap(noise,'3d'),
-      book:externalStorageAttribute(renderer,A.lightBook,count),sunBook:externalStorageAttribute(renderer,S.book,sunCount*8),requests:externalStorageAttribute(renderer,feedback,feedbackWords),
+      book:adopt(A.lightBook,count),sunBook:adopt(S.book,sunCount*8),requests:adopt(feedback,feedbackWords),
       world:[...book.bricks,A.epoch],light:[layout.descriptorBase,layout.lightCapacity,layout.probeCapacity,A.generation],geometry:[layout.aux.width,layout.aux.height,layout.probes.width,layout.probes.height],
       feedback:[book.planeWords,book.statusWord,book.sunWord,WORLD_ATLAS_ABI],normalToGrid:model.clone().transpose(),projection:array(S.params.worldToLight),depth:array(S.params.depth),tiles:array(S.params.tiles),physical:array(S.params.physical),version:array(S.params.version),values,worldToGrid:model.invert()};
     // V2's packet draw (gfx/nativeParticles.js worldLightGroup, particleRender.js particleWorldLightWGSL): the same

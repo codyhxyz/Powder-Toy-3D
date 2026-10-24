@@ -174,7 +174,10 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
   // Acquire the default only after checking disposal, inside the cleanup scope.
   // feedbackKind: read this candidate's feedback compacted (recordFeedback/readFeedback), with
   // that kind's capacity; omitted, its feedback is read whole (decodeFeedback) or not at all.
-  function prepare({snapshot,frameUniforms,physicsOrigin,params,external,tableBuffer=tables,appearance:cutAppearance=appearance,lighting:light=lighting,feedbackKind=null}={}) {
+  // unread: a caller-owned feedback buffer of at least atlas.feedbackBytes for a candidate whose
+  // feedback nobody reads (a live view frame, wire/worldRenderFrame.js): its readers' requests
+  // land there, and no buffer of the feedback's size is allocated for it (one a frame before).
+  function prepare({snapshot,frameUniforms,physicsOrigin,params,external,tableBuffer=tables,appearance:cutAppearance=appearance,lighting:light=lighting,feedbackKind=null,unread=null}={}) {
     const owned=[]; let released=false;
     const buffer=(label,bytes,usage=BU.UNIFORM|BU.COPY_DST)=>{
       const b=device.createBuffer({label,size:bytes.byteLength,usage}); owned.push(b); queue.writeBuffer(b,0,bytes); return b;
@@ -203,7 +206,8 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       // A new buffer is zeros (WebGPU zero-initializes every buffer, on the GPU): uploading
       // 24 MiB of zeros from a fresh array a candidate was 1.7 s of writeBuffer and much of
       // 2.5 s of GC in 40 s of Descent (real Chrome, 2026-10-22).
-      const feedback=device.createBuffer({label:'world candidate feedback',size:atlas.feedbackBytes,usage:BU.STORAGE|BU.COPY_SRC|BU.COPY_DST}); owned.push(feedback);
+      if (unread && (feedbackKind!==null || !(unread.size>=atlas.feedbackBytes) || (unread.usage!==undefined && !(unread.usage&BU.STORAGE)))) throw new Error('unread feedback must be an uncompacted storage buffer of the whole feedback');
+      const feedback=unread ?? device.createBuffer({label:'world candidate feedback',size:atlas.feedbackBytes,usage:BU.STORAGE|BU.COPY_SRC|BU.COPY_DST}); if (!unread) owned.push(feedback);
       const fu=buffer('world candidate frame',fuBytes), header=buffer('world zero origin',headerBytes), sunParams=buffer('world sun publication',sunBytes);
       const p=buffer('world view params',VolumeParams.pack(params));
       const b=(binding,buffer)=>({binding,resource:{buffer}});

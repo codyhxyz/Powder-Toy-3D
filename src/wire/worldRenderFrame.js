@@ -65,10 +65,20 @@ export function mergeWorldFrameFeedback(...feedback) {
 
 // The caller holds candidate and returned native consumers through LAST use. feedbackKind:
 // the reader whose feedback this candidate reads back, compacted (gfx/worldFeedbackCompact.js).
-function nativeCandidate(state, data, values, params, packedMesh, feedbackKind=null) {
+// unread: the state's unread feedback (unreadFeedback) for a candidate whose feedback nobody reads.
+function nativeCandidate(state, data, values, params, packedMesh, feedbackKind=null, unread=null) {
   return state.volume.prepare({snapshot:data.snapshot.retain(), tableBuffer:data.tables.buffer,
     appearance:data.appearance, frameUniforms:values, physicsOrigin:data.frame.physicsOrigin, params,
-    lighting:data.lighting, external:{...data.frame.external, packedMesh}, feedbackKind});
+    lighting:data.lighting, external:{...data.frame.external, packedMesh}, feedbackKind, unread});
+}
+// One feedback buffer for every reader whose requests nobody reads back: a live view frame's scene
+// and each frame's mesh preflight. Before, each made its own candidate with a feedback buffer of
+// the whole atlas's size (1.5 MiB on Island), plus, for the scene's, a compacted list and a full
+// copy to map: two candidates and up to three such buffers a frame while the camera moved
+// (2026-10-23 audit). Its words are never cleared or read; requests only OR bits into it.
+function unreadFeedback(app, state) {
+  return state.unreadFeedback ??= app.gpu.device.createBuffer({label:'WORLD unread frame feedback',
+    size:state.data.atlas.feedbackBytes, usage:128});
 }
 function meshPublication(data) {
   const pin = data.retain(), t = data.snapshot.textures();
@@ -76,10 +86,10 @@ function meshPublication(data) {
     sun:{...data.lighting, textures:() => data.sunTextures},
     textures:{aux:t.aux, gi:[t.gi0,t.gi1,t.gi2,t.gi3], glow:t.glow}, release:() => pin.release()};
 }
-function meshContext(app, state, data, native, values, noise) {
+function meshContext(app, state, data, feedback, values, noise) {
   return createNativeWorldMeshLightContext(app.gpu, {publication:meshPublication(data),
     worldSize:app.win.size, frameValues:worldFrameValues(values, data.frame.physicsOrigin),
-    feedback:native.feedback, noise,
+    feedback, noise,
     isCompatible:() => app.win?.render === state.data && data.identity.epoch === app.win.renderSource.epoch});
 }
 
@@ -235,8 +245,10 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
         app.writeWorldFrame(fv,camera);
         // The wires' per-frame hooks, the same dispatch as a small map's frame (src/wire/frameWires.js).
         if(!stillTarget)app.frameWires.beforeView(dt);
-        native=nativeCandidate(state,data,fv,worldSceneParams(params,fv,p.inSize),p.sceneTarget.packedOpaque.createView(),'scene');
-        context=meshContext(app,state,data,native,fv,state.noise.texture);context.bind();
+        // (a live view frame's feedback is never read: no compaction, and the shared unread buffer)
+        native=nativeCandidate(state,data,fv,worldSceneParams(params,fv,p.inSize),p.sceneTarget.packedOpaque.createView(),
+          liveView?null:'scene',liveView?unreadFeedback(app,state):null);
+        context=meshContext(app,state,data,native.feedback,fv,state.noise.texture);context.bind();
         requireReady(guardMeshes(app.scene,camera,{skip:o=>o.name==='pov-viewmodel',onReady:()=>app.wakeLoop()})===0,
           'native WORLD material graphs must be prewarmed before scene');
         if (signRequest) {
@@ -351,13 +363,12 @@ export async function finishWorldFrame(app, state, recorded, eyeFeedback) {
 }
 // A preflight owns the actual native graph bindings until every compilation
 // (including repeated checks of an already parked mesh) and queued use settles.
+// Its meshes only compile against these bindings, so their requests go to the unread
+// feedback: no volume candidate of its own (one a frame, its own feedback buffer, before).
 export function createWorldMeshPreflight(app,state,data,frozenView) {
   const values={...data.frame.values,...frozenView.values};
-  const native=nativeCandidate(state,data,values,data.frame.params,state.unused.createView());
-  let context;
-  try { context=meshContext(app,state,data,native,values,state.noise.texture); }
-  catch(error) {native.release();throw error;}
-  return {native,context,pending:new Set(),failure:null,dead:false};
+  const context=meshContext(app,state,data,unreadFeedback(app,state),values,state.noise.texture);
+  return {context,pending:new Set(),failure:null,dead:false};
 }
 function trackWorldCompilation(app,p,work) {
   if(p.pending.has(work))return;
@@ -378,7 +389,7 @@ export async function releaseWorldMeshPreflight(app,p) {
   p.dead=true;
   await Promise.allSettled([...p.pending]);
   await p.context.retireAfter(Promise.resolve());
-  p.native.release();
+  p.native?.release();
 }
 
 // Capture VIEW only. Publication-owned time/lighting/artwork/physics-origin are
@@ -718,5 +729,5 @@ export function createWorldFrameDriver(app,state,execution={}) {
 
 export async function disposeWorldFrame(state) {
   state.dead=true;state.volume?.dispose();state.opaque.dispose();
-  await Promise.allSettled([...state.uses]);state.unused.destroy();state.boundary.destroy();state.emptyArtwork.destroy();
+  await Promise.allSettled([...state.uses]);state.unused.destroy();state.boundary.destroy();state.emptyArtwork.destroy();state.unreadFeedback?.destroy();
 }
