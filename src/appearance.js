@@ -1,7 +1,7 @@
 import { E } from './elements.js';
 import { PHYS } from './physics.js';
 
-// Authored appearance, not a physical element. Only wood/plant's unused ctype,
+// Authored appearance, not a physical element. Only wood/planks/plant's unused ctype,
 // a bounded, reversible cedar-moss damp encoding and the VARIANT_* source
 // labels of non-conducting terrain carry these labels. All fit the existing
 // byte ctype in stamps, saved state and network cells.
@@ -34,6 +34,7 @@ export function resolveAppearance(value) {
 function allowed(id, a) {
   if (id === E.PLANT) return a === Appearance.GRASS || a === Appearance.LEAVES || a === Appearance.PLAIN;
   if (id === E.WOOD) return a >= Appearance.LOG_X && a <= Appearance.BARK;
+  if (id === E.PLANKS) return a >= Appearance.PLANK_X && a <= Appearance.PLANK_Z;   // which way its boards run
   if (VARIANT_ELEMENTS.includes(id)) return a >= Appearance.VARIANT_1 && a <= Appearance.VARIANT_5;
   return id === E.MOSS && a === Appearance.LEAVES;
 }
@@ -93,6 +94,7 @@ const AP_CEDAR_BASE: i32 = ${CEDAR_BASE};
 fn appearanceAllowed(id: i32, a: i32) -> bool {
   if (id == E_PLANT) { return a == AP_GRASS || a == AP_LEAVES || a == AP_PLAIN; }
   if (id == E_WOOD) { return a >= AP_LOG_X && a <= AP_BARK; }
+  if (id == E_PLANKS) { return a >= AP_PLANK_X && a <= AP_PLANK_Z; }
   if (${VARIANT_ELEMENTS_WGSL}) { return a >= AP_VARIANT_1 && a <= AP_VARIANT_5; }
   return id == E_MOSS && a == AP_LEAVES;
 }

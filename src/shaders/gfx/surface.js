@@ -558,6 +558,22 @@ fn woodPlates(p: vec3f, fp: f32, mv: ptr<function, vec4f>, c: ptr<function, vec4
 }
 // share of sawn end grain (no bark) on a face with normal n
 fn woodEndGrain(n: vec3f) -> f32 { return smoothstep(WOOD_TOP_EDGE.x, WOOD_TOP_EDGE.y, abs(n.y)); }
+// Sawn boards (PLANKS; a WOOD cell labelled PLANK_* is drawn the same): the
+// axis they run along, from the cell's plank label (0 x, 1 y, 2 z), or -1 for
+// a cell that isn't boards. Unlabelled planks run along x.
+const PLANK_AXIS_DEFAULT: i32 = 0;
+fn plankAxis(id: i32, ctype: f32) -> i32 {
+  if (id != E_PLANKS && id != E_WOOD) { return -1; }
+  let a = appearanceOf(id, ctype);
+  if (a >= AP_PLANK_X && a <= AP_PLANK_Z) { return a - AP_PLANK_X; }
+  return select(-1, PLANK_AXIS_DEFAULT, id == E_PLANKS);
+}
+// a vector in the boards' frame (x along them) and back: each is its own inverse
+fn plankFrame(v: vec3f, axis: i32) -> vec3f {
+  if (axis == 1) { return v.yxz; }
+  if (axis == 2) { return v.zyx; }
+  return v;
+}
 
 // Rubble (E_STONE): rock broken by a pick, a blast or a fall (ROCK breaks
 // into it). Its chips' tones and look, shared by the texture (matOf) and the
@@ -1025,6 +1041,88 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     m.rough = mix(m.rough, CHARCOAL_ROUGH, fl.x);
     m.g = ASH_LUMP_H * lo.yzw + FINE_H * gr.yzw;
     m.cav = 1.0 + LUMP_CAV * lo.x;
+  } else if (plankAxis(id, ctype) >= 0) {
+    // Sawn boards: Minecraft's planks to WOOD's log (elements.js TIMBER).
+    // The cell is a bundle of square-section boards PLANK_W wide laid along
+    // their axis, two to a cell so the seams meet the cells' edges as
+    // Minecraft's four boards meet a block's. Each board has its own shade,
+    // a faint grain along it and butt joints staggered along it; seams
+    // between boards are dark grooves; a board's sawn end shows end grain
+    // (woodEndGrain's edge, turned to the boards' axis). No bark.
+    const PER_CELL: f32 = 2.0;                // boards across a cell: 15 cm boards (CELL_M 0.30 m)
+    const BUTT_M: f32 = 1.8;                  // m between butt joints along a board
+    const BUTT_L: f32 = BUTT_M / CELL_M;      // ... in cells
+    const SEAM_W: f32 = 0.002 / CELL_M;       // half-width of the gap between boards (4 mm gap), in cells
+    const SEAM_EDGE: f32 = 0.006 / CELL_M;    // the eased edge each side of it (6 mm), in cells
+    const SEAM_DEPTH: f32 = 0.004 / CELL_M;   // how far the edges round down into the gap (4 mm), in cells
+    const SEAM_ALB: f32 = 0.3;                // albedo down in a gap, relative to the board
+    const SEAM_CAV: f32 = 0.35;               // cavity term down in a gap
+    const SEAM_F: f32 = 1.0 / (2.0 * (SEAM_W + SEAM_EDGE));   // the seam profile's frequency (per cell)
+    // the area share a seam darkens (its gap and half its edges, each side of a board), drawn once seams are sub-pixel
+    const SEAM_SHARE: f32 = 2.0 * (SEAM_W + 0.5 * SEAM_EDGE) * PER_CELL;
+    const INSET: f32 = 0.01;                  // cells: nudges a face point into its own board
+    const SHADE_RANGE: f32 = 0.3;             // board-to-board albedo swing about 1
+    const HUE: vec3f = vec3f(0.06, 0.0, -0.08);   // ... and a warm/cool drift
+    const ROUGH_RANGE: f32 = 0.1;             // board-to-board roughness swing
+    const GRAIN_W_M: f32 = 0.004;             // m: grain lines across, ...
+    const GRAIN_L_M: f32 = 0.15;              // ... along
+    const GRAIN_FH: f32 = CELL_M / GRAIN_W_M;
+    const GRAIN_FV: f32 = CELL_M / GRAIN_L_M;
+    const GRAIN_ALB: f32 = 0.18;              // faint
+    const GRAIN_H: f32 = 0.0002 / CELL_M;     // 0.2 mm raised grain, in cells
+    const FIGURE_W_M: f32 = 0.03;             // m: broader figure across a board (flat-sawn arcs), ...
+    const FIGURE_L_M: f32 = 0.5;              // ... along
+    const FIGURE_FH: f32 = CELL_M / FIGURE_W_M;
+    const FIGURE_FV: f32 = CELL_M / FIGURE_L_M;
+    const FIGURE_ALB: f32 = 0.2;
+    const END_ALB: f32 = 0.7;                 // a board's sawn end: darker, ...
+    const END_ROUGH: f32 = 0.65;              // ... as WOOD's end grain
+    const BOARD_SALT: f32 = 11.3;             // decorrelates the boards' hashes and grain
+    let ax = plankAxis(id, ctype);
+    m.alb = ALBEDO(E_PLANKS);                 // a labelled WOOD cell takes the planks' colour too
+    m.rough = ROUGH(E_PLANKS);
+    let q = plankFrame(p, ax);                // q.x along the boards
+    let qn = plankFrame(n, ax);
+    let qn2 = qn * qn;
+    let qb = (q - INSET * qn) * PER_CELL;     // in board widths, nudged into the board under the face
+    let bi = floor(qb.yz);
+    let h0 = hash33(vec3f(bi, BOARD_SALT));
+    // butt joints: each board's own offset along it, so neighbours' joints stagger
+    let ul = q.x / BUTT_L + h0.x;
+    let ui = floor(ul - INSET * qn.x / BUTT_L);
+    let h = hash33(vec3f(bi + ui, BOARD_SALT + ui));
+    // seams: distance (cells) to the nearest gap across each axis, drawn on the faces it crosses
+    let sv = fract(qb.yz + 0.5) - 0.5;
+    let dv = abs(sv) / PER_CELL;
+    let du = abs(fract(ul + 0.5) - 0.5) * BUTT_L;
+    let gy = (1.0 - smoothstep(SEAM_W, SEAM_W + SEAM_EDGE, dv.x)) * (1.0 - qn2.y);
+    let gz = (1.0 - smoothstep(SEAM_W, SEAM_W + SEAM_EDGE, dv.y)) * (1.0 - qn2.z);
+    let gx = (1.0 - smoothstep(SEAM_W, SEAM_W + SEAM_EDGE, du)) * (1.0 - qn2.x);
+    let seam = max(max(gx, gy), gz);
+    let sw = lodFade(SEAM_F, fp);
+    let bw = lodFade(PER_CELL, fp);
+    // rounded edges: the height falls SEAM_DEPTH into a gap (gradient in the boards' frame)
+    let gq = SEAM_DEPTH * sw * vec3f(
+      dSmooth(SEAM_W, SEAM_W + SEAM_EDGE, du) * sign(fract(ul + 0.5) - 0.5) * (1.0 - qn2.x),
+      dSmooth(SEAM_W, SEAM_W + SEAM_EDGE, dv.x) * sign(sv.x) * (1.0 - qn2.y),
+      dSmooth(SEAM_W, SEAM_W + SEAM_EDGE, dv.y) * sign(sv.y) * (1.0 - qn2.z));
+    // grain and figure along the board, each board's its own (offset by its hash)
+    let go = BOARD_SALT * h;
+    let lwG = lodFade(GRAIN_FH, fp);
+    let lwF = lodFade(FIGURE_FH, fp);
+    var gr = vec4f(0.5, 0.0, 0.0, 0.0);
+    var fg = vec4f(0.5, 0.0, 0.0, 0.0);
+    if (lwG > 0.0) { gr = mNoiseJ(q, mat3x3f(GRAIN_FV, 0.0, 0.0, 0.0, GRAIN_FH, 0.0, 0.0, 0.0, GRAIN_FH), go); }
+    if (lwF > 0.0) { fg = mNoiseJ(q, mat3x3f(FIGURE_FV, 0.0, 0.0, 0.0, FIGURE_FH, 0.0, 0.0, 0.0, FIGURE_FH), go.zxy); }
+    let endF = woodEndGrain(qn.yxz);          // the boards' sawn ends (normal along the boards)
+    let side = 1.0 - endF;
+    let shade = mix(vec3f(1.0), (1.0 + SHADE_RANGE * (h.x - 0.5)) * (1.0 + HUE * (h.y - 0.5)), bw);
+    let seamAlb = mix(mix(1.0, SEAM_ALB, SEAM_SHARE), mix(1.0, SEAM_ALB, seam), sw);
+    m.alb *= shade * seamAlb * mix(1.0, END_ALB, endF)
+           * (1.0 + side * (GRAIN_ALB * lwG * (gr.x - 0.5) + FIGURE_ALB * lwF * (fg.x - 0.5)));
+    m.rough = mix(m.rough + ROUGH_RANGE * bw * (h.z - 0.5), END_ROUGH, endF);
+    m.g = plankFrame(gq + side * lwG * GRAIN_H * gr.yzw, ax);
+    m.cav = mix(1.0, SEAM_CAV, seam * sw);
   } else if (id == E_WOOD) {
     // Bark: long corky plates split by deep V furrows. The plates are
     // cellular cells stretched along y (and turned about it so nothing lines

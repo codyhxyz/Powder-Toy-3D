@@ -114,7 +114,7 @@ fn farOpaque(id: i32) -> bool { return !isGasLike(id) && RCLASS(id) != R_LIQUID;
 fn farLiquid(id: i32) -> bool { return RCLASS(id) == R_LIQUID; }
 struct FarCount {
   w: array<f32, NE>,   // weights of the brick's own cells by element: opaque (their dominant one) and liquid
-  roles: array<array<f32, 11>, 3>, // WOOD, PLANT, cedar MOSS; never split physical votes
+  roles: array<array<f32, 11>, 4>, // WOOD, PLANT, cedar MOSS, PLANKS (its boards' axis); never split physical votes
   open: f32,           // its open opaque cells...
   heat: f32,           // ...and their degrees above the glow's start
   s: f32,              // opaque and liquid cells of its cube
@@ -125,6 +125,7 @@ fn farRoleSlot(id: i32) -> i32 {
   if (id == E_WOOD) { return 0; }
   if (id == E_PLANT) { return 1; }
   if (id == E_MOSS) { return 2; }
+  if (id == E_PLANKS) { return 3; }
   return -1;
 }
 fn farVote(c: ptr<function, FarCount>, id: i32, appearance: i32, weight: f32) {

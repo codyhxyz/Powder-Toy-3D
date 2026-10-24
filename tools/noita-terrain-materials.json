@@ -184,9 +184,9 @@
     "water_ice": "ICE",
     "water_swamp": "WATER",
     "wood_player": "WOOD",
-    "wood_prop": "WOOD",
-    "wood_static": "WOOD",
-    "wood_static_vertical": "WOOD",
+    "wood_prop": "PLANKS",
+    "wood_static": "PLANKS",
+    "wood_static_vertical": "PLANKS",
     "wood_tree": "WOOD"
   },
   "solidSupportElements": [
@@ -197,6 +197,7 @@
     "WALL",
     "ROCK",
     "WOOD",
+    "PLANKS",
     "METAL",
     "GLASS",
     "ICE",

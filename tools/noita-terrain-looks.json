@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Which Noita material a Descent cell stands for, when several share one element: an src/appearance.js label carried in the cell's unused ctype (VARIANT_* only on non-conducting ROCK/SANDSTONE/NOITA_TEMPLE; WOOD reuses its LOG/PLANK labels). The Noita view (src/shaders/gfx/noita.js NOITA_ELEMENT_LOOKS) draws each label. Unlisted native materials take their element's default look. tools/check-noita-materials.mjs checks every entry.",
+  "note": "Which Noita material a Descent cell stands for, when several share one element: an src/appearance.js label carried in the cell's unused ctype (VARIANT_* only on non-conducting ROCK/SANDSTONE/NOITA_TEMPLE; WOOD reuses its LOG labels, PLANKS its PLANK labels). The Noita view (src/shaders/gfx/noita.js NOITA_ELEMENT_LOOKS) draws each label. Unlisted native materials take their element's default look. tools/check-noita-materials.mjs checks every entry.",
   "nativeAppearance": {
     "rock_hard": "variant-1",
     "rock_box2d_hard": "variant-1",

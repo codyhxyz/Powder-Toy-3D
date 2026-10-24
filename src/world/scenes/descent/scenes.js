@@ -350,7 +350,7 @@ int dsTunnelMaterial(int x, int y, int z) {
   if (k < 0 || k >= DS_LAYERS) return -1;
   // a shaft from the layer above, down through this one's rock to its floor, a ledge halfway
   bool inShaft = abs(dx) < DS_SHAFT_HALF && abs(dz) < DS_SHAFT_HALF;
-  if (inShaft && dsShaft(k + 1, i, j)) return yl == DS_LEDGE_Y && dx < 0 ? materialWord(E_WOOD, AP_PLANK_X) : E_EMPTY;
+  if (inShaft && dsShaft(k + 1, i, j)) return yl == DS_LEDGE_Y && dx < 0 ? materialWord(E_PLANKS, AP_PLANK_X) : E_EMPTY;
   bool inX = abs(dz) < DS_TUN_HALF;
   bool inZ = abs(dx) < DS_TUN_HALF;
   int sx = dx < 0 ? i - 1 : i;
@@ -376,7 +376,7 @@ int dsTunnelMaterial(int x, int y, int z) {
   if (DS_LEVEL == 0) {
     // timber frames: posts at the walls and a lintel, every BEAM cells; a crystal lantern under the middle one
     if (thMod(rel, DS_BEAM) == 0) {
-      if (abs(side) == DS_TUN_HALF - 1 || yl == DS_TUN_H - 1) return materialWord(E_WOOD, yl == DS_TUN_H - 1 ? (inX ? AP_PLANK_Z : AP_PLANK_X) : AP_PLANK_Y);
+      if (abs(side) == DS_TUN_HALF - 1 || yl == DS_TUN_H - 1) return materialWord(E_PLANKS, yl == DS_TUN_H - 1 ? (inX ? AP_PLANK_Z : AP_PLANK_X) : AP_PLANK_Y);
       if (rel == DS_LANTERN_REL && side == 0 && yl == DS_TUN_H - 2) return E_CRYSTAL;
     }
     return E_EMPTY;

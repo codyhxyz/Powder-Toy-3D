@@ -12,6 +12,8 @@ import { STRUCTURES } from './structures.js';
 import { light } from './lights.js';
 
 // Minecraft's log rule: rings follow the member's axis, not its upward face.
+// And its log/planks split: trees, logs and log-cabin walls are WOOD (bark,
+// rings); anything sawn and built (boards, furniture, staves) is PLANKS.
 const LOG_X = { appearance: 'log-x' }, LOG_Y = { appearance: 'log-y' }, LOG_Z = { appearance: 'log-z' };
 const PLANK_X = { appearance: 'plank-x' }, PLANK_Y = { appearance: 'plank-y' }, PLANK_Z = { appearance: 'plank-z' };
 const BARK = { appearance: 'bark' }, LEAVES = { appearance: 'leaves' }, PLAIN = { appearance: 'plain' };
@@ -39,8 +41,9 @@ export function house({ put, box, footing, rnd, T }, variant) {
   const hw = (W - 1) / 2, hd = (D - 1) / 2;
   const H = Math.max(4, Math.round(HUMAN.ROOM_H * T)); // wall height above the slab
   const green = variant === 'greenhouse', cabin = variant === 'cabin';
-  const wall = variant === 'brick' ? 'BRICK' : green ? 'GLASS' : 'WOOD';
-  const roof = green ? 'GLASS' : 'WOOD';
+  const wall = variant === 'brick' ? 'BRICK' : green ? 'GLASS' : cabin ? 'WOOD' : 'PLANKS';
+  const roof = green ? 'GLASS' : 'PLANKS';
+  const timber = (el) => el === 'WOOD' || el === 'PLANKS';
   const dw = odd(HUMAN.DOOR_W * T), dh = Math.min(H - 1, Math.max(3, Math.round(HUMAN.DOOR_H * T)));
   const cz = -Math.round(hd * HOUSE.CHIMNEY_Z);
   footing();
@@ -64,7 +67,7 @@ export function house({ put, box, footing, rnd, T }, variant) {
         for (let x = -hw; x <= hw; x++) {
           const o = cabin ? (Math.abs(z) === hd && (Math.abs(x) !== hw || y % 2) ? LOG_X : LOG_Z) : PLANK_Y;
           put(x, y, z, !edge(x, z) ? 'AIR' : green ? frame(x, y, z) : wall,
-            edge(x, z) && wall === 'WOOD' ? o : undefined);
+            edge(x, z) && timber(wall) ? o : undefined);
         }
   }
 
@@ -87,8 +90,8 @@ export function house({ put, box, footing, rnd, T }, variant) {
       const zr = hd + 1 - i, y = H + 1 + i;
       for (let z = -zr; z <= zr; z++)
         for (let x = -hw - 1; x <= hw + 1; x++) {
-          if (Math.abs(z) >= zr - 1) put(x, y, z, slope(x, zr), roof === 'WOOD' ? PLANK_X : undefined);
-          else if (Math.abs(x) === hw) put(x, y, z, gable, gable === 'WOOD' ? (cabin ? LOG_Z : PLANK_Y) : undefined);
+          if (Math.abs(z) >= zr - 1) put(x, y, z, slope(x, zr), roof === 'PLANKS' ? PLANK_X : undefined);
+          else if (Math.abs(x) === hw) put(x, y, z, gable, timber(gable) ? (cabin ? LOG_Z : PLANK_Y) : undefined);
           else if (Math.abs(x) < hw) put(x, y, z, 'AIR');
         }
     }
@@ -136,13 +139,13 @@ export function house({ put, box, footing, rnd, T }, variant) {
     const [bl, bw] = HOUSE.BED.map((n) => Math.round(n * T)), [tl, tw] = HOUSE.TABLE.map((n) => Math.round(n * T));
     const x0 = -hw + 1, bz = -hd + 1, th = 1 + Math.round(HOUSE.TABLE_H * T) - 1;
     if (bl > hw || bw + tw + 2 > 2 * hd - 1) return; // too small a room to furnish
-    box(x0, 1, bz, x0 + bl - 1, 1, bz + bw - 1, 'WOOD', PLANK_X);       // frame
-    box(x0, 2, bz, x0, 1 + Math.round(HOUSE.BED_HEAD * T), bz + bw - 1, 'WOOD', PLANK_Z); // headboard
+    box(x0, 1, bz, x0 + bl - 1, 1, bz + bw - 1, 'PLANKS', PLANK_X);     // frame
+    box(x0, 2, bz, x0, 1 + Math.round(HOUSE.BED_HEAD * T), bz + bw - 1, 'PLANKS', PLANK_Z); // headboard
     box(x0 + 1, 2, bz, x0 + bl - 1, 2, bz + bw - 1, 'PLANT', PLAIN);    // quilt, not vegetation
     const tz = hd - 1 - tw;                                             // a step clear of the front wall
-    box(x0 + 1, th, tz, x0 + tl, th, tz + tw - 1, 'WOOD', PLANK_X);
+    box(x0 + 1, th, tz, x0 + tl, th, tz + tw - 1, 'PLANKS', PLANK_X);
     for (const [lx, lz] of [[x0 + 1, tz], [x0 + tl, tz], [x0 + 1, tz + tw - 1], [x0 + tl, tz + tw - 1]])
-      box(lx, 1, lz, lx, th - 1, lz, 'WOOD', PLANK_Y);
+      box(lx, 1, lz, lx, th - 1, lz, 'PLANKS', PLANK_Y);
   }
 
   // an electric wall light high on the back wall, between its windows: lamps
@@ -424,7 +427,7 @@ const BARREL = {
 export function barrel({ put, T }, variant) {
   const keg = variant === 'keg';
   const R0 = Math.max(BARREL.R_MIN, BARREL.R * T), H = Math.round(R0 * (keg ? BARREL.KEG_H : BARREL.DRUM_H));
-  const shell = keg ? 'WOOD' : 'METAL', fill = keg ? 'GUNPOWDER' : 'OIL';
+  const shell = keg ? 'PLANKS' : 'METAL', fill = keg ? 'GUNPOWDER' : 'OIL';
   // steel hoops on the keg, rolling rims on the drum (flush with the shell)
   const hoops = keg ? [1, ...BARREL.KEG_HOOPS.map((f) => Math.round(H * f)), H - 2] : BARREL.DRUM_RIMS.map((f) => Math.round(H * f));
   const B = Math.ceil(R0 * (1 + BARREL.BULGE)) + 1;
@@ -438,7 +441,7 @@ export function barrel({ put, T }, variant) {
         // a shell band 1.5 cells wide is face-connected, so nothing seeps out diagonally
         if (y === 0 || y === H - 1) put(x, y, z, shell, keg ? PLANK_X : undefined);
         else put(x, y, z, d > R - BARREL.SHELL ? band : fill,
-          keg && d > R - BARREL.SHELL && band === 'WOOD' ? PLANK_Y : undefined);
+          keg && d > R - BARREL.SHELL && band === 'PLANKS' ? PLANK_Y : undefined);
       }
   }
 }

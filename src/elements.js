@@ -378,6 +378,16 @@ const WHISKEY_BOIL = {
   puff: vapourVolumes(WHISKEY_MIX.ethanol / WHISKEY_MIX.ethanolM + WHISKEY_MIX.water / WATER_M, WHISKEY_MIX.boilT),
 };
 
+// Timber: what wood is, standing or sawn. WOOD (the tree: logs, trunks, roots,
+// bark) and PLANKS (sawn lumber: houses, docks, crates) are the same stuff,
+// Minecraft's log and planks: one material, two looks, so they burn, break,
+// rot, dig and sound alike and only the renderer tells them apart.
+const TIMBER = {
+  kind: K.SOLID, tool: 'axe', render: R.OPAQUE, var: 0.12,
+  cond: 0.008, cap: 0.3, ignite: 300, burnRate: 0.0018, burnHeat: 3, flameT: 900, life: 1,
+  hard: 20, breakInto: 'SAWDUST', sound: 'thunk', rots: true,
+};
+
 const defs = [
   { key: 'EMPTY', abbr: 'AIR', name: 'Air', kind: K.EMPTY, render: R.NONE, color: '#000000',
     dens: 1, cond: 0.0005, cap: 0.02, drag: 0.1, jitter: 0.02, desc: 'Air. Carries heat and pressure; hot air rises.' },
@@ -432,9 +442,8 @@ const defs = [
     dens: 0.5, cond: 0.04, cap: 0.3, grav: -1.4, drag: 0.08, jitter: 0.25, temp: 1000, life: 1,
     rad: 0.01, spawn: 0.3, desc: 'Fire. Ignites flammable materials. Heats air. Hot, short-lived and rising.' },
 
-  { key: 'WOOD', abbr: 'WOOD', name: 'Wood', kind: K.SOLID, tool: 'axe', render: R.OPAQUE, color: '#7a4a26', var: 0.12,
-    cond: 0.008, cap: 0.3, ignite: 300, burnRate: 0.0018, burnHeat: 3, flameT: 900, life: 1,
-    hard: 20, breakInto: 'SAWDUST', sound: 'thunk', rots: true, desc: 'Wood, flammable. Burns slowly above 300 °C and leaves ash behind.' },
+  { key: 'WOOD', abbr: 'WOOD', name: 'Wood', ...TIMBER, color: '#7a4a26',
+    desc: 'Wood, flammable. Burns slowly above 300 °C and leaves ash behind.' },
   { key: 'PLANT', abbr: 'PLNT', name: 'Plant', kind: K.SOLID, tool: 'shovel', dig: 'soil', render: R.OPAQUE, color: '#3da236', var: 0.25,
     cond: 0.008, cap: 0.5, ignite: 250, burnRate: 0.004, burnHeat: 2, flameT: 800, life: 1,
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk', rots: true, desc: 'Plant, drinks water and grows: neighbouring water turns into plant. Burns easily.' },
@@ -1165,6 +1174,11 @@ const defs = [
   { key: 'NOITA_LUSH', abbr: 'NSOL', name: 'Noita lush soil', kind: K.SOLID, render: R.OPAQUE, color: '#6d8d32', var: 0.14,
     cond: 0.03, cap: 0.5, hard: 15, breakInto: 'SAND', mossBed: true,
     desc: 'Green soil from Noita’s Jungle. Solid ground, not loose sand.' },
+  // Planks: sawn lumber, Minecraft's planks to WOOD's log (TIMBER above): the
+  // same timber, cut into boards, with no bark. What houses, docks, bridges,
+  // crates and fences are built of. Its colour is sawn softwood's.
+  { key: 'PLANKS', abbr: 'PLNK', name: 'Planks', ...TIMBER, color: '#a8794a',
+    desc: 'Planks, sawn wood. Flammable: burns slowly above 300 °C and leaves ash behind. What houses, docks and crates are built of.' },
 ];
 
 // σ (S/m) of a conductor given as conducts: true with no elec: a metal. The
@@ -1380,7 +1394,7 @@ export const PALETTE = [
   // Noita's magical liquids
   { name: 'Potions', items: ['TELEPORTATIUM', 'LEVITATIUM', 'HEALTHIUM', 'BERSERKIUM', 'POLYMORPHINE', 'PHEROMONE'] },
   { name: 'Gases', items: ['STEAM', 'CLOUD', 'HYDROGEN', 'OXYGEN', 'CO2', 'PROPANE', 'CAUSTIC_GAS', 'SMOKE', 'FIRE', 'PLASMA', 'MERCURY_VAPOR'] },
-  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'BASALT', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
+  { name: 'Solids', items: ['WALL', 'COAL', 'ROCK', 'BASALT', 'LIMESTONE', 'SANDSTONE', 'METAL', 'GLASS', 'CERAMIC', 'ICE', 'DRY_ICE', 'CRYSTAL', 'WOOD', 'PLANKS', 'FUNGUS', 'PLANT', 'MOSS', 'CLONE', 'BRICK', 'TITANIUM', 'TUNGSTEN', 'GOLD', 'SOLID_MERCURY', 'DIAMOND', 'VOID'] },
   // TPT's Explosives menu (propane stays a gas)
   { name: 'Explosives', items: ['GUNPOWDER', 'FUSE', 'THERMITE', 'NITRO', 'TNT', 'C4'] },
   { name: 'Electronics', items: ['SPARK', 'BATTERY', 'METAL', 'LAMP', 'PSCN', 'NSCN', 'SWITCH', 'INSULATOR', 'TSNS', 'PCLN'] },
