@@ -880,9 +880,8 @@ for (const m of MAPS) {
   if (!ok) console.error(`maps.js: map '${m.key}' doesn't match app.js (size '${m.size}', ${m.dims.join('×')})`);
 }
 if (WORLD_DIMS.some((n, i) => n !== WORLD_SIZE[i])) console.error('maps.js: WORLD_DIMS is not shaders/farShared.js WORLD_SIZE');
-// cells [nx, ny, nz] for a toast: '128^3' (as maps.js sizeTag), '160 × 96 × 160'; for the HUD: '2.1M'
+// cells [nx, ny, nz] for a toast: '128^3' (as maps.js sizeTag), '160 × 96 × 160'
 const dimsName = (d) => (d.every((n) => n === d[0]) ? `${d[0]}^3` : d.join(' × '));
-const millions = (d) => `${(d[0] * d[1] * d[2] / 1e6).toFixed(1)}M`;
 
 // what undoing a scene load names: its map ('Undone Lab'), and the Empty map, TPT's Clear
 function sceneLabel(preset) { return preset === 'empty' ? 'Clear' : MAPS.find((m) => m.preset === preset)?.name ?? preset; }
@@ -2183,7 +2182,11 @@ addEventListener('resize', () => {
 // gfx/profiler.js measures (gpu.timing in split mode) and ui/profiler.js shows.
 const profPanel = createProfilerPanel({ onClose: () => { settings.profiler = false; save(); applyProfiler(); } });
 const prof = createProfiler(gpu, {
-  describe: () => ({ sim, renderScale: post.renderScale, canvas: [canvas.width, canvas.height], pixelRatio, bytes: post.threeBytes }),
+  describe: () => ({ sim, renderScale: post.renderScale, canvas: [canvas.width, canvas.height], pixelRatio, bytes: post.threeBytes,
+    // (the HUD's old line) steps/s as the simulation runs them, preview's draw rate apart; a big map's
+    // whole world beside its window; auto resolution's share of the screen's pixels across, as the presets
+    stepsPerSec: settings.paused || mp.isGuest ? 0 : stepRate, world: mapKind.streamed ? win.size : null,
+    screenShare: autoRes.enabled ? post.renderScale * pixelRatio / DEVICE_RATIO : null }),
   onSample: profPanel.update,
   onFrame: profPanel.frame,
 });
@@ -2200,9 +2203,13 @@ function applyProfiler() {
 const clock = new THREE.Timer();
 clock.connect(document);   // hidden-tab time is not rendering cost
 let animTime = 0;   // s the simulation has run: the scene's own animations (perk orbs, arena banners)
-// The fps readout is the rate frames are drawn while drawing: a paused, still
-// scene draws nothing (render on demand) and reads as idle, not as a low rate.
-let frames = 0, fpsTime = 0, fps = 60, idleTime = 0, lastDrawAt = null;
+// The fps readout: the frames the canvas presented (gpu/present.js counts them, on big maps and small,
+// post-only frames too) over the time spent presenting them. Render on demand draws nothing once the
+// view has settled, and deep idle stops the loop: that time is not frame time (counted, it would read
+// as a low rate), so the readout keeps its last rate meanwhile; it used to read "idle". A slow frame is
+// frame time however long it takes: frames 330 ms apart read 3 fps (a gap over FPS_WINDOW used to
+// restart the count).
+let fps = null, fpsFrames = 0, fpsTime = 0, presentedSeen = 0, loopSlept = false;
 let stepTime = 0, stepCount = 0, stepRate = 0;
 // Render on demand (gfx/pacing.js). The derived passes settle once the slowest
 // field EMA and the GI blend (each probe is traced every other frame) have
@@ -2228,19 +2235,19 @@ const CAP_NOTICE = 'Your browser is holding this page at 30 fps. In Chrome, turn
 const CAP_NOTICE_MS = 9000;
 const DT_MAX = 0.1;      // s: longer gaps (a hidden tab, a sleeping loop) count as this, so animations don't jump
 const FPS_WINDOW = 0.5;  // s over which the fps readout averages
-// The HUD's fps and steps/s, once a frame whichever renderer drew it (World's driver or the box's
-// volume). Preview draws are not adjacent app ticks; report draw and step rates separately.
-function countHudRates(drew, now, dt, legacyStepped) {
-  if (drew) {
-    if (lastDrawAt != null && now - lastDrawAt <= FPS_WINDOW * 1000) { frames++; fpsTime += (now - lastDrawAt) / 1000; }
-    else { frames = 0; fpsTime = 0; }
-    lastDrawAt = now;
-  }
-  if (fpsTime > FPS_WINDOW) { fps = frames / fpsTime; frames = 0; fpsTime = 0; }
+// The HUD's fps and the profiler's steps/s, once a counted tick. resting: a presentable tick that drew
+// nothing (the view settled); frameDt: s since the last counted tick, a hidden tab's time left out
+// (clock.connect). Draw and step rates are separate.
+function countHudRates(resting, frameDt, dt, legacyStepped) {
+  const presented = presenter.frames - presentedSeen;
+  presentedSeen = presenter.frames;
+  // (the first tick after the loop slept: its frameDt is the sleep)
+  if (!loopSlept && (presented || !resting)) { fpsFrames += presented; fpsTime += frameDt; }
+  loopSlept = false;
+  if (fpsTime > FPS_WINDOW && fpsFrames) { fps = fpsFrames / fpsTime; fpsFrames = 0; fpsTime = 0; }
   stepTime += dt;
   stepCount += legacyStepped;
   if (stepTime > FPS_WINDOW) { stepRate = stepCount / stepTime; stepTime = stepCount = 0; }
-  idleTime = drew ? 0 : idleTime + dt;
 }
 const invVol = new THREE.Matrix4();
 const autoRes = createAutoResolution();
@@ -2582,9 +2589,10 @@ let settledSleep = false;   // the last tick stopped the loop because the page h
 // The animation frame: false stops the loop (deep idle, or graphics stopped, or a parked test page).
 function frame(now) {
   loopCallbacks++;
-  if (graphicsFailure || testParked) return false;   // (resume() wakes it; nothing restarts a stopped GPU)
+  if (graphicsFailure || testParked) { loopSlept = true; return false; }   // (resume() wakes it; nothing restarts a stopped GPU)
   try {
     const keep = tick(now);
+    loopSlept ||= !keep;   // (the fps readout leaves the sleep out: countHudRates)
     gpuLoss.settle();
     if (!keep && settledSleep) gpuLoss.sleep();   // (a loss from here on happened to a page with nothing to draw)
     return keep;
@@ -2829,7 +2837,7 @@ function tick(now, renderOnly = false) {
     prof.phase('other');
   }
   // The HUD's rates
-  if (!renderOnly) countHudRates(runView, now, dt, legacyStepped);
+  if (!renderOnly) countHudRates(present && !runView, frameDt, dt, legacyStepped);
   gpu.endFrame();   // this tick's command buffer, if it recorded anything (B3)
   // a map switched in-game is on screen: its load watch ends (loadWatch.js)
   if (loadWatch.active && runView) loadWatch.onScreen();
@@ -2859,15 +2867,7 @@ function tick(now, renderOnly = false) {
   const wantsSteps = !mp.replica && (!settings.paused || stepOnce) && !simAsleep();
   const busy = wantsSteps || painting || wantFrame() || post.adapting || prof.on || live.some((w) => w.busy?.(ctx));
   settledSleep = present && !runView && pacer.settled && !busy;
-  const g = sim.g;
-  hud.setStats({
-    // null: idle (and a sleeping loop is idle until it wakes: it ticks no idle time meanwhile)
-    fpsV: settledSleep || idleTime > FPS_WINDOW ? null : fps,
-    stepsV: settings.paused || mp.isGuest ? 0 : stepRate, // preview fps is not the simulation rate
-    // the cells simulated (a world's window), and the world's
-    cellsV: `${millions([g.nx, g.ny, g.nz])}${mapKind.streamed ? ` of ${millions(win.size)}` : ''}`,
-    resV: autoRes.enabled ? `${Math.round(post.renderScale * pixelRatio / DEVICE_RATIO * 100)}% res` : '',   // of the screen's pixels across, as the presets
-  });
+  hud.setStats({ fpsV: fps });   // (null only before the first measured window)
   prof.endFrame(legacyStepped);
   lastIdle = !runView && !stepping && performance.now() - t0 < CAP_IDLE_MS;
   return !settledSleep;

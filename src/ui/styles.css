@@ -621,7 +621,6 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
 
 @media (max-width: 640px) {
   .brand { display: none; }
-  .stats span:nth-child(2), .stats span:nth-child(3) { display: none; }
   .toasts { top: calc(max(12px, env(safe-area-inset-top)) + 78px); width: calc(100vw - 32px); }
   .toast { text-align: center; }
 

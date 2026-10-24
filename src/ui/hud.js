@@ -4,12 +4,11 @@ import { CLASSES_ENABLED } from '../pov/classes.js';
 import { createNotices } from './notices.js';
 
 export function createHud({ onTogglePause }) {
-  // Playback shares the bottom-right performance strip.
-  const fps = h('b'), cells = h('b'), steps = h('b'), res = h('b');
-  const fpsUnit = document.createTextNode(' fps');
+  // Playback shares the bottom-right fps strip (steps/s, cells and resolution are the profiler's).
+  const fps = h('b', { text: '–' });
   // replace mode or specific delete, as TPT's HUD line says [REPLACE MODE] (GameView.cpp)
   const editMode = h('span.edit-mode');
-  const stats = h('div.stats', {}, h('span', {}, fps, fpsUnit), h('span', {}, steps, ' steps/s'), h('span', {}, cells, ' cells'), h('span', {}, res), editMode);
+  const stats = h('div.stats', {}, h('span', {}, fps, ' fps'), editMode);
   const pause = h('button.icon-btn.pause-btn', { type: 'button', on: {
     click: onTogglePause,
     keydown: e => { if (e.code === 'Space' || e.code === 'Enter') e.stopPropagation(); },
@@ -46,13 +45,9 @@ export function createHud({ onTogglePause }) {
       pause.classList.toggle('on', paused);
     },
     // called every frame: only touch the DOM when a value changes (each write re-lays out the HUD)
-    setStats({ fpsV, stepsV, cellsV, resV }) {
-      // null fps: nothing is being drawn (a paused, still scene)
-      setText(fps, fpsV == null ? 'idle' : fpsV.toFixed(0));
-      setText(fpsUnit, fpsV == null ? '' : ' fps');
-      setText(steps, stepsV.toFixed(0));
-      setText(cells, cellsV);
-      setText(res, resV);
+    // fpsV: the last measured rate, kept while nothing draws (app.js countHudRates); null before the first
+    setStats({ fpsV }) {
+      setText(fps, fpsV == null ? '–' : fpsV.toFixed(0));
     },
     showReadout(x, y, info) {
       if (!info) { readout.style.display = 'none'; return; }

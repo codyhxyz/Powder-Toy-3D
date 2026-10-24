@@ -243,9 +243,8 @@ assert(/steps: 4, gravity:/.test(app), 'app.js DEFAULTS.steps is 4');
     assert(/lag: this\.view\?\.lag \?\? 0/.test(src('gfx/nativeParticles.js')), "the pick's params carry it");
     // the frames between ticks are drawn (the pacer would keep the last image until the tick)
     assert(/const betweenTicks = v2Box\(\) && v2Running && stepping && stepped === 0 && !physicsV2\.asleep;/.test(app));
-    assert(/runView = present && pacer\.view\(viewV, runDerived \|\| wantFrame\(\) \|\| betweenTicks\);/.test(app), 'Box');
-    // World: a transaction carries the cells (a tick's); the frames between draw the flying matter as live frames
-    assert(/const liveForce=present && \(.*v2Flying\(\)\);/.test(app), 'World');
+    // (big maps and small: one frame since big maps draw through the small maps')
+    assert(/runView = present && pacer\.view\(viewV, runDerived \|\| wantFrame\(\) \|\| betweenTicks\);/.test(app), 'the frame');
   }
   // the app draws by it, the scene's animations run on it, the label shows the game's speed
   assert(/const now = viewStepClock\(sim\);/.test(app), 'app.js viewClock');
@@ -264,21 +263,29 @@ assert(/steps: 4, gravity:/.test(app), 'app.js DEFAULTS.steps is 4');
   assert(/const legacyStepped = !stepping \? 0 : stepped \* LEGACY_STEPS_PER_TICK;/.test(app));
   assert(/stepCount \+= legacyStepped;/.test(app), 'the HUD\'s steps/s');
   assert(/prof\.endFrame\(legacyStepped\);/.test(app), 'the profiler\'s per-step costs');
-  // World maps: the rates are counted after the renderer branch (if(win) {...} else {...}), not inside the
-  // box's, where a World frame never reached them and the HUD kept its boot fps and 0 steps/s
-  const branch = app.indexOf('if(win) {\n    // The WORLD renderer failing');
-  assert(branch > 0, 'tick\'s World/box renderer branch');
-  const blockEnd = (open) => { let depth = 0, i = open; do { if (app[i] === '{') depth++; else if (app[i] === '}') depth--; i++; } while (depth); return i; };
-  const ifEnd = blockEnd(app.indexOf('{', branch));
-  assert(/^\s*else \{/.test(app.slice(ifEnd)), 'the box\'s else branch');
-  const at = blockEnd(app.indexOf('{', ifEnd));
-  const call = app.indexOf('countHudRates(runView, now, dt, legacyStepped)', branch);
-  assert(call > at && call < app.indexOf('gpu.endFrame();', branch), 'the HUD\'s rates are counted for World frames too (after the renderer branch)');
-  const rates = vm.createContext({ FPS_WINDOW: 0.5, frames: 0, fpsTime: 0, fps: 60, idleTime: 0, lastDrawAt: null, stepTime: 0, stepCount: 0, stepRate: 0 });
+  // big maps and small draw through one frame: the rates are counted after it, once a counted tick
+  const tickAt = app.indexOf('function tick(');
+  const call = app.indexOf('countHudRates(present && !runView, frameDt, dt, legacyStepped)', tickAt);
+  assert(call > app.indexOf('post.render(frameHooks', tickAt) && call < app.indexOf('gpu.endFrame();', tickAt), 'the HUD\'s rates are counted after the frame');
+  // The fps readout: the canvas's presented frames over frame time. A settled view and a sleeping loop
+  // keep the last rate (it read "idle"); a slow frame is frame time (a gap over FPS_WINDOW restarted it).
+  const presenter = { frames: 0 };
+  const rates = vm.createContext({ FPS_WINDOW: 0.5, fps: null, fpsFrames: 0, fpsTime: 0, presentedSeen: 0, loopSlept: false, presenter, stepTime: 0, stepCount: 0, stepRate: 0 });
   const fnText = app.slice(app.indexOf('function countHudRates('), app.indexOf('\n}\n', app.indexOf('function countHudRates(')) + 2);
   vm.runInContext(fnText, rates);
-  for (let i = 0; i < 61; i++) vm.runInContext(`countHudRates(true, ${i * 1000 / 30}, ${1 / 30}, ${2 * LEGACY_STEPS_PER_TICK})`, rates);
-  assert(Math.abs(rates.fps - 30) < 1 && Math.abs(rates.stepRate - 240) < 5, `a World frame's rates: ${rates.fps} fps, ${rates.stepRate} steps/s`);
+  const ticks = (n, s, { draw = true, resting = false } = {}) => {
+    for (let i = 0; i < n; i++) { if (draw) presenter.frames++; vm.runInContext(`countHudRates(${resting}, ${s}, ${Math.min(s, 0.1)}, ${draw ? 2 * LEGACY_STEPS_PER_TICK : 0})`, rates); }
+  };
+  ticks(61, 1 / 30);
+  assert(Math.abs(rates.fps - 30) < 1 && Math.abs(rates.stepRate - 240) < 5, `the rates: ${rates.fps} fps, ${rates.stepRate} steps/s`);
+  ticks(120, 1 / 60, { draw: false, resting: true });
+  assert(Math.abs(rates.fps - 30) < 1, `a settled view keeps the last rate: ${rates.fps}`);
+  rates.loopSlept = true; ticks(1, 30); ticks(30, 1 / 30);
+  assert(Math.abs(rates.fps - 30) < 1, `a sleep is not a slow frame: ${rates.fps}`);
+  ticks(13, 0.33);   // (the first closes the 30 fps window it finishes)
+  assert(Math.abs(rates.fps - 1 / 0.33) < 0.2, `frames 330 ms apart read 3 fps: ${rates.fps}`);
+  ticks(1, 2);
+  assert(Math.abs(rates.fps - 0.5) < 0.05, `a 2 s frame reads 0.5 fps: ${rates.fps}`);
   assert.equal(legacySteps({ compact: {} }, 1), 4);
   // the profiler: frames of one tick (4 V1 steps), samples a second apart; V2's activity from readStats
   let passes = 0, now = 0, sample = null;
