@@ -15,7 +15,7 @@
 //   wcOcc    the occupancy levels: a bit per 16³-cell node (level 1), then a bit per 64³-cell node (level 2), x
 //            fastest, set where a brick in it has BRICK_MATTER
 // Writers only: wcCtrl (the allocator's counters), wcFree (its free list), the chunk's cells, the jobs.
-import { prelude, STATE_OPTS } from '../common.js';
+import { prelude, STATE_OPTS, stateLayout } from '../common.js';
 import { cellWordWGSL, WC_BRICK, WC_BRICK_CELLS, WC_AUX_MAX } from './cellWord.js';
 import { BRICK_INFO, AIR } from '../bindings.js';
 import { FIELDS_DILATE } from '../fields.js';
@@ -584,5 +584,21 @@ ${jobThread(/* wgsl */ `
   }`)}
 `;
 
-// tools/check-wgsl.mjs-style checks (naga): every module, for a small world (tools/world-copy-cpu-check.mjs).
+// Every writer, for a small world (tools/world-copy-cpu-check.mjs runs naga on them; tools/check-wgsl.mjs and
+// tools/check-wgsl-operators.mjs find them here). Built on entering a world: the warm-up leaves them out.
 export const WC_KERNELS = { wcCommitChunkFrag, wcDecodeFrag, wcAllocFrag, wcDilateFrag, wcOccFrag, wcStampFrag, wcOverlayFrag };
+const CHECK_WORLD = wcLayout([256, 128, 256]);
+const CHECK_STATE = { wcDecodeFrag: 'STATE_RO' };
+const CHECK_GROUP2 = { wcStampFrag: WC_STAMP_LAYOUT, wcOverlayFrag: WC_OVERLAY_LAYOUT };
+export const WGSL_CHECK = () => Object.entries(WC_KERNELS).map(([name, frag]) => ({
+  name: `world copy ${name}`, kind: 'compute', grids: ['128'], warm: false, code: (g) => frag(g, CHECK_WORLD), params: WcWriteParams,
+  layouts: () => [[{ binding: 0, visibility: READ, buffer: { type: 'read-only-storage' } }], CHECK_STATE[name] ? stateLayoutOf(CHECK_STATE[name]) : 'EMPTY', CHECK_GROUP2[name] ?? WC_WRITE_LAYOUT],
+  dispatch: () => [1, 1, 1],
+})).concat([{
+  // the readers, as a render kernel includes them
+  name: 'world copy readers', kind: 'compute', grids: ['128'], warm: false, layouts: () => [[{ binding: 0, visibility: READ, buffer: { type: 'read-only-storage' } }], WORLD_COPY_LAYOUT, [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }]],
+  code: (g) => `${prelude(g, { state: false })}\n${worldCopyWGSL}\n@group(2) @binding(0) var<storage, read_write> out: array<f32>;
+@compute @workgroup_size(1) fn main() { let c = vec3i(1); out[0] = wcA(c).x + f32(wcCell(c) + wcInfo(c) + u32(wcOccupied(2u, c))); }`,
+  dispatch: () => [1, 1, 1],
+}]);
+const stateLayoutOf = (k) => stateLayout(STATE_OPTS[k]);
