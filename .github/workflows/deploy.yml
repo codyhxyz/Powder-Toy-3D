@@ -53,6 +53,7 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
       - run: node tools/check-imports.mjs   # shader/gfx/gpu modules import without a GPU or DOM at load time
       - run: node tools/check-sampler-budget.mjs   # no program binds more than 16 textures (a black screen otherwise)
+      - run: node tools/check-wgsl-operators.mjs   # no operators mixed without parentheses: Chrome rejects what naga accepts (the site stopped, 2026-10-24)
       - run: node tools/check-world-fit.mjs && node tools/check-load-watch.mjs   # big maps fit the renderer; a stalled/failed load is flagged, never spins
       - run: node tools/check-frame-wires.mjs   # big maps run every wire hook small maps do (src/wire/frameWires.js)
       - run: node tools/check-map-previews.mjs   # every menu map has a square preview
