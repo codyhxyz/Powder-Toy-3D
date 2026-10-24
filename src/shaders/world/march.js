@@ -108,10 +108,13 @@ const worldCoreWGSL = () => {
   const core = coreGLSL({ nx: 4, ny: 4, nz: 4 }, { flow: false });
   const cut = core.slice(core.indexOf('// ---- the opaque meshes\' cut'));
   return /* wgsl */ `
-// ---- the world's grid (W's WC.size, set by the fragment entry) ----
-var<private> GRID: vec3i = vec3i(1);
-var<private> MAX_STEPS: i32 = 0;
+// ---- the world's grid: W's WC.size, read from the uniform wherever the pasted code names the grid (RENAMES) ----
+// Not a private var the entry writes: Tint keeps a module's private vars in one per-thread struct,
+// and the march reads the grid in its hottest helpers (outside, the DDA's clamps, the step cap),
+// so a uniform read is cheaper (GPU timing 2026-10-24, Island landDown: the grid as constants
+// instead of private vars took the frame from 445 to 392 ms).
 const MARCH_SPARE_STEPS: i32 = ${DDA_SPARE_STEPS};
+fn marchMaxSteps() -> i32 { return WC.size.x + WC.size.y + WC.size.z + MARCH_SPARE_STEPS; }
 var<private> gFragCoord: vec2f;
 fn outside(c: vec3i) -> bool { return any(c < vec3i(0)) || any(c >= GRID); }
 // World position of grid point p: render kernels are in world cells (H.origin is 0).
@@ -272,8 +275,6 @@ struct MarchFrag {
 @fragment fn fs(v: MarchVarying) -> MarchFrag {
   gFragCoord = v.position.xy;
   gAerCopy = P.aerCopy;
-  GRID = WC.size;
-  MAX_STEPS = GRID.x + GRID.y + GRID.z + MARCH_SPARE_STEPS;
   let ro = FU.cam;
   let rd = safeDir(normalize(v.far.xyz / v.far.w - FU.cam));
   surfView(FU.cam, rd);   // pixel footprint for material LOD, the floor lines and F's level (uniform control flow)
@@ -293,7 +294,8 @@ struct MarchFrag {
 // Names the pasted code calls by their box-era spelling (the clouds' and media's repeat sampler
 // is F's wrapLinear; bricks are keyed by coordinate). Not applied to the prelude or W's module,
 // which index physics' window and W's own buffers.
-const RENAMES = [[/(?<![\w.])brickId\(/g, 'wcBrickKey('], [/\blinearRepeat\b/g, 'wrapLinear']];
+const RENAMES = [[/(?<![\w.])brickId\(/g, 'wcBrickKey('], [/\blinearRepeat\b/g, 'wrapLinear'],
+  [/\bGRID\b/g, 'WC.size'], [/\bMAX_STEPS\b/g, 'marchMaxSteps()']];
 const renamed = (code) => RENAMES.reduce((s, [re, to]) => s.replace(re, to), code);
 
 /**
