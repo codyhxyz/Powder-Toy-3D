@@ -26,7 +26,7 @@ export function exchangeHelpers(code, P) {
 export function motionSource(code) {
   return motionJS(code.slice(code.indexOf('  // R2 topple'), code.indexOf('  // Obligations follow')))
     .replace(/array<u32, 3>\(([^)]+)\)/g, '[$1]').replace(/array<f32, 3>\(([^)]+)\)/g, '[$1]')
-    .replaceAll('pt + down*i32(dd)', 'add(pt,down.map(v=>v*dd))').replaceAll('rnd(&rs)', '(rs=pcg(rs), unit(rs))');
+    .replaceAll('pt + down*I32(dd)', 'add(pt,down.map(v=>v*dd))').replaceAll('rnd(&rs)', '(rs=pcg(rs), unit(rs))');
 }
 
 // ---- the column pass's fast movers (v2.js colMoverWGSL, R1b), executed from the emitted WGSL. `env` supplies the

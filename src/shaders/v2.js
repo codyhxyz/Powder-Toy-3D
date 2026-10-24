@@ -15,7 +15,7 @@ import { lifeScale } from '../v2/layout.js';
 import { CELL_M } from '../scale.js';
 import { MODE_FIELDS } from '../v2/modes.js';
 import { modeWGSL } from './v2/modes.js';
-import { CONTACT_ROWS, CONTACT_REACTIONS } from '../v2/contact.js';
+import { CONTACT_ROWS, CONTACT_REACTIONS, CONTACT_HEAT_CELL, CONTACT_HEAT_RX, HEAT_RX_WORDS, HEAT_MATTER, HEAT_EMITS } from '../v2/contact.js';
 import { appendContactTable } from '../v2/contactTable.js';
 import { contactWGSL as productionContactWGSL, requestMergeWGSL, outsideFacesWGSL, outsideSiteWGSL } from './v2/contact.js';
 import { v2RunsKernel, v2PairsKernel, COLUMN, columnImportFallWGSL } from './v2/columns.js';
@@ -243,12 +243,14 @@ export const CNT = { AWAKE: 0, COLS: 1, BUSY: 2, USE_AWAKE: 3, USE_COLS: 4 };
 // the indirect args and the stats the driver reads back (u32 words)
 // ACT, the activity pass's (v2actArgs), follows the saved words. Words 20-31 are reserved (the
 // retired liquid list's args): saves keep their length.
-// ELEC, the electric pass's (v2elecArgs), follows it.
-export const ARGS2 = { COLS: 0, BRICKS: 3, BLOCKS: 6, COMPACT: 9, STATS: 12, words: 32, ACT: 32, ELEC: 36, allocated: 40 };
+// ELEC, the electric pass's (v2elecArgs), follows it; then HEAT_ONLY, the heat-only cubes' (v2BlockFinalizeWGSL).
+export const ARGS2 = { COLS: 0, BRICKS: 3, BLOCKS: 6, COMPACT: 9, STATS: 12, words: 32, ACT: 32, ELEC: 36, HEAT_ONLY: 40, allocated: 44 };
 // jetMask: the pair stages' face demands, two words a cell (x, z)
 export const v2DemandWords = (g) => 2 * gridDims(g).slots;
 // Scratch's original slots*16 bytes are ALL live (including support atmosphere).
-// The production-only tail is a 16-byte counter header, then original u32 IDs.
+// The production-only tail is a 16-byte counter header, then original u32 IDs: the block pass's from the
+// list's start, the heat-only cubes' from its end (v2BlockClassifyWGSL; together at most one an awake cube).
+// The header: [block count, its published copy, heat-only count, its published copy] (v2BlockFinalizeWGSL).
 export function v2BlockCompactLayout(g, limits = {}) {
   const { slots, nbricks } = gridDims(g);
   const capacity = 8 * nbricks, header = slots * 16, list = header + 16;
@@ -1522,13 +1524,55 @@ ${MAIN} {
 `;
 };
 
+// The heat-only test (v2/contact.js contactHeatOnlyCube, which says what it proves) on the classify kernel's cube:
+// its cores, positions, requests and cell count. Its element tables are that module's.
+const NE_HEAT = ELEMENTS.length;
+const heatOnlyWGSL = /* wgsl */ `
+const HEAT_CELL = array<u32, ${NE_HEAT}>(${CONTACT_HEAT_CELL.map(v => `${v}u`).join(',')});
+const HEAT_RX = array<u32, ${CONTACT_HEAT_RX.length}>(${Array.from(CONTACT_HEAT_RX, v => `${v}u`).join(',')});
+const HEAT_RX_WORDS: u32 = ${HEAT_RX_WORDS}u;
+const HEAT_MATTER: u32 = ${HEAT_MATTER}u;
+const HEAT_EMITS: u32 = ${HEAT_EMITS}u;
+fn heatRx(a: u32, b: u32) -> bool { return ((HEAT_RX[a * HEAT_RX_WORDS + (b >> 5u)] >> (b & 31u)) & 1u) != 0u; }
+fn heatOnlyCube(cs: array<vec4u, 8>, positions: array<vec3i, 8>, pending: array<u32, 8>, count: u32) -> bool {
+  var ok = count == 8u;
+  var liquid = ${NE_HEAT}u;   // the cube's liquid's id (none: past the table)
+  var powder = false;
+  for (var i = 0u; i < count; i++) {
+    let c = cs[i];
+    let id = cid(c);
+    let p = positions[i];
+    // a face past a void edge trades with the open air (the block pass's contactBoundary)
+    let border = P.edge == 1u && (p.x == 0 || p.x == NX - 1 || p.y == 0 || p.y == NY - 1 || p.z == 0 || p.z == NZ - 1);
+    if (!inGrid(p) || border || pending[i] != 0u || id >= ${NE_HEAT}u) { ok = false; }
+    else if ((HEAT_CELL[id] & HEAT_MATTER) == 0u) { ok = false; }
+    else {
+      let k = cls(id);
+      if (k == C_POWDER) { powder = true; if (fallVelocity(c) > 0.0) { ok = false; } }
+      if (k == C_LIQUID) {
+        let ct = c.y >> 24u;
+        if (cFill(c) != FULLU || (liquid != ${NE_HEAT}u && liquid != id)) { ok = false; }
+        if (id == ${E.LAVA}u && ct > 0u && ct < ${NE_HEAT}u && (HEAT_CELL[ct] & HEAT_EMITS) != 0u) { ok = false; }
+        liquid = id;
+      }
+      for (var bit = 0u; bit < 3u; bit++) {
+        let j = i ^ (1u << bit);
+        if (j > i && j < count && cid(cs[j]) < ${NE_HEAT}u && heatRx(id, cid(cs[j]))) { ok = false; }
+      }
+    }
+  }
+  return ok && !(powder && liquid != ${NE_HEAT}u);
+}`;
 // No production contact helpers/private contact frame in this small scan. The
 // atomic word view avoids vec4 component RMW races between adjacent appends.
+// A cube past the identity test is the block pass's, or, heat-only (heatOnlyWGSL), the cheap heat-only pass's
+// (shaders/v2/heat.js v2heatOnly), listed from the list's end.
 export const v2BlockClassifyWGSL = g => {
   const tail = v2BlockCompactLayout(g);
   return /* wgsl */ `
 ${v2Head(g, { state: false }, 'contact').replace('liquidScratch: array<vec4u>', 'liquidScratch: array<atomic<u32>>')}
 fn off8(i: u32) -> vec3i { return vec3i(i32(i & 1u), i32(i >> 2u), i32((i >> 1u) & 1u)); }
+${heatOnlyWGSL}
 ${outsideSiteWGSL}// (the support pass's outside word: a slot's .y, in this kernel's word view)
 fn ctOutsideAt(s: u32) -> u32 { return atomicLoad(&liquidScratch[4u * s + 1u]); }
 ${MAIN} {
@@ -1550,6 +1594,11 @@ ${MAIN} {
     if (inGrid(p)) { bs[i] = banks[slotOf(p)]; pending[i] = events[slotOf(p)]; }
   }
 ${blockIdentityWGSL}
+  if (heatOnlyCube(cs, positions, pending, blockCount)) {
+    let heat = atomicAdd(&liquidScratch[${tail.header / 4 + 2}u], 1u);
+    atomicStore(&liquidScratch[${tail.list / 4 + tail.capacity - 1}u - heat], t);
+    return;
+  }
   let index = atomicAdd(&liquidScratch[${tail.header / 4}u], 1u);
   atomicStore(&liquidScratch[${tail.list / 4}u + index], t);
 }
@@ -1572,6 +1621,14 @@ export const v2BlockFinalizeWGSL = g => {
   args[${ARGS2.COMPACT}u] = (groups + y - 1u) / y;
   args[${ARGS2.COMPACT + 1}u] = y;
   args[${ARGS2.COMPACT + 2}u] = 1u;
+  // ...and the heat-only list's (header .w, .z restarted) for the cheap pass
+  let heat = scratch[${tail.header / 4 + 2}u];
+  scratch[${tail.header / 4 + 3}u] = heat; scratch[${tail.header / 4 + 2}u] = 0u;
+  let heatGroups = (heat + 63u) / 64u;
+  let heatY = max(1u, (heatGroups + 65534u) / 65535u);
+  args[${ARGS2.HEAT_ONLY}u] = (heatGroups + heatY - 1u) / heatY;
+  args[${ARGS2.HEAT_ONLY + 1}u] = heatY;
+  args[${ARGS2.HEAT_ONLY + 2}u] = 1u;
 }
 `;
 };

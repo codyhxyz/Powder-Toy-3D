@@ -172,14 +172,22 @@ const finalizeBody = finalizeCode.slice(finalizeCode.indexOf('fn main() {') + 11
   .replaceAll('let ', 'const ').replace(/\b(\d+)u\b/g, '$1').replaceAll('max(', 'Math.max(')
   .replace('const groups = (count + 63) / 64;', 'const groups = Math.floor((count + 63) / 64);')
   .replace('(groups + 65534) / 65535', 'Math.floor((groups + 65534) / 65535)')
-  .replace('(groups + y - 1) / y', 'Math.floor((groups + y - 1) / y)');
+  .replace('(groups + y - 1) / y', 'Math.floor((groups + y - 1) / y)')
+  .replace('const heatGroups = (heat + 63) / 64;', 'const heatGroups = Math.floor((heat + 63) / 64);')
+  .replace('(heatGroups + 65534) / 65535', 'Math.floor((heatGroups + 65534) / 65535)')
+  .replace('(heatGroups + heatY - 1) / heatY', 'Math.floor((heatGroups + heatY - 1) / heatY)');
 const finalize = new Function('scratch', 'args', finalizeBody);
+const H = ARGS2.HEAT_ONLY;
 for (const count of [0, 1, 7, 8, 63, 64, 65, tail.capacity, 65535 * 64, 65535 * 64 + 1, 9000000]) {
-  const scratch = { [tail.header / 4]: count }, args = new Uint32Array(32).fill(0xaabbccdd);
+  // (the heat-only list's count beside it: the two lists share the tail, from its two ends)
+  const heat = Math.max(0, tail.capacity - count);
+  const scratch = { [tail.header / 4]: count, [tail.header / 4 + 2]: heat }, args = new Uint32Array(ARGS2.allocated).fill(0xaabbccdd);
   finalize(scratch, args); assert.deepEqual([...args.slice(9, 12)], fold(Math.ceil(count / 64)));
+  assert.deepEqual([...args.slice(H, H + 3)], fold(Math.ceil(heat / 64)));
   // published to block (header .y) and restarted for the next tick's classify: no tail clear
   assert.equal(scratch[tail.header / 4 + 1], count); assert.equal(scratch[tail.header / 4], 0);
-  assert(args.every((v, i) => (i >= 9 && i < 12) || v === 0xaabbccdd));
+  assert.equal(scratch[tail.header / 4 + 3], heat); assert.equal(scratch[tail.header / 4 + 2], 0);
+  assert(args.every((v, i) => (i >= 9 && i < 12) || (i >= H && i < H + 3) || v === 0xaabbccdd));
   const [x, y, z] = args.slice(9, 12); assert(x <= 65535 && y <= 65535 && z === 1);
   assert(x * y * 64 >= count && x * y * 64 - count < y * 64);
 }
@@ -238,7 +246,8 @@ async function record(contact, limits = {}, expectCompact = contact === contactW
   const supportAt = commands.findIndex(c => c.name === 'v2support');
   if (expectCompact) {
     // no tail clear between them: finalize restarts classify's count (no pass split)
-    assert.deepEqual(commands.slice(supportAt, supportAt + 4).map(c => c.name), ['v2support', 'v2blockClassify', 'v2blockFinalize', 'v2block']);
+    assert.deepEqual(commands.slice(supportAt, supportAt + 5).map(c => c.name), ['v2support', 'v2blockClassify', 'v2blockFinalize', 'v2block', 'v2heatOnly']);
+    assert.equal(commands[supportAt + 4].size.offset, ARGS2.HEAT_ONLY * 4); assert.equal(commands[supportAt + 4].size.indirect, engine.args);
     assert.ok(!commands.some(c => c.name === 'clear'), 'a tick records no clear');
     const [support, classify, final, block] = commands.slice(supportAt, supportAt + 4);
     assert.equal(support.size.offset, ARGS2.BRICKS * 4);
@@ -286,12 +295,23 @@ const helpers = { add, pcg, seed3, unit: s => f(f(f(s >>> 8) * 256) + f(s & 255)
   noteTopple: () => {} };   // (the renderer's flow field: presentation, tools/v2/flow-field-check.mjs)
 const move = new Function(...Object.keys(helpers), 'cs', 'bs', 'positions', 'pending', 'P', 'down', 'supportAt', 'markBusy', `const gravityOn=down.some(v=>v!==0),blockCount=8,columnCount=4;let fromCell=[0,1,2,3,4,5,6,7];${motion}`);
 const clone = a => a.map(c => new Uint32Array(c));
-function replay(compact, order, ticks, edge, down, awake = allAwake, startTick = 1) {
+// The heat-only cubes (v2/contact.js contactHeatOnlyCube) the compact replays ran on the cheap pass's rules
+// (contactHeatOnlyReference), and the cells among them a phase change made something else.
+const heatOnlyRun = { cubes: 0, phased: 0 };
+// A heat fixture: a hot metal slab, molten metal, ice, warm water, snow on stone, layered so whole cubes of each
+// trade heat, melt, boil and set (shaders/v2/heat.js v2heatOnly).
+const HEAT_LAYERS = [[E.METAL, 1400], [E.METAL, 1400], [E.ICE, -30], [E.ICE, -5], [E.WATER, 60], [E.WATER, 95], [E.STONE, 300], [E.SNOW, -10]];
+function replay(compact, order, ticks, edge, down, awake = allAwake, startTick = 1, fixture = 'mixed') {
   const cores = Array.from({ length: g.slots }, () => makeMaterial(E.EMPTY).core), banks = new Int32Array(g.slots), events = new Uint32Array(g.slots);
   // Dense enough to exercise motion/contact, sparse enough to keep identity
   // blocks. Include opaque SMOKE history and carry the replay through tick48.
   for (let y = 4; y < 12; y++) for (let z = 4; z < 12; z++) for (let x = 4; x < 12; x++) {
     const s = index([x, y, z]), ids = [E.SMOKE, E.WATER, E.SAND, E.OIL, E.WOOD, E.EMPTY];
+    if (fixture === 'heat') {
+      const [id, t] = x === 9 && z < 8 ? [E.LAVA, 1700] : HEAT_LAYERS[y - 4];
+      const m = id === E.LAVA ? makeMaterial(id, t, 65536, E.METAL) : makeMaterial(id, t); cores[s] = m.core; banks[s] = m.bank;
+      continue;
+    }
     const m = makeMaterial(ids[(x + 3 * y + z) % ids.length], 20); cores[s] = m.core; banks[s] = (s % 17) - 8;
     if ((cores[s][0] & 255) === E.SMOKE) { cores[s][2] = 0xaabbccdd; cores[s][3] = 0x12345678; }
     if (s % 37 === 0) events[s] = 1;
@@ -321,8 +341,15 @@ function replay(compact, order, ticks, edge, down, awake = allAwake, startTick =
         return counts;
       });
       const markBusy = p => { const q = edgeCell(p, dims, edge); if (q) marks[index(q)] = 1; };
-      move(...Object.values(helpers), cs, bs, ps, pending, params, down, supportAt, markBusy);
-      const out = C.contactReference(cs, bs, tick, ps, pending, vs, outside);
+      const border = ps.map(p => edge === EDGE.VOID && p.some((v, a) => v === 0 || v === dims[a] - 1));
+      let out;
+      if (compact && C.contactHeatOnlyCube(before, pending, vs, border)) {
+        out = C.contactHeatOnlyReference(cs, bs, tick, ps);
+        heatOnlyRun.cubes++; heatOnlyRun.phased += out.cores.filter((c, i) => (c[0] & 255) !== (before[i][0] & 255)).length;
+      } else {
+        move(...Object.values(helpers), cs, bs, ps, pending, params, down, supportAt, markBusy);
+        out = C.contactReference(cs, bs, tick, ps, pending, vs, outside);
+      }
       for (const i of out.busy) if (vs[i]) markBusy(ps[i]);
       for (let i = 0; i < 8; i++) if (vs[i]) {
         let core = out.cores[i], bank = out.banks[i]; source += out.sources[i]; sink += out.sinks[i];
@@ -356,6 +383,15 @@ assert.deepEqual(replay(true, 'shuffle', 48, EDGE.LOOP, [0, -1, 0]), expected48)
 assert.deepEqual(replay(true, 'reverse', 48, EDGE.LOOP, [0, -1, 0]), expected48);
 assert(expected48.cores.some(c => (c[0] & 255) === E.SMOKE), 'SMOKE included through tick48');
 console.log('Full production contact + emitted motion replay: shuffled/reversed original IDs, exact cores/banks/requests/opaque/marks/ledgers through SMOKE tick48');
+// Heat-only cubes on the cheap pass's rules give the block pass's result exactly: conduction, melting, boiling,
+// setting, ambient cooling and their ledgers, every edge and pull, through 96 ticks of the heat fixture.
+heatOnlyRun.cubes = heatOnlyRun.phased = 0;
+for (const edge of Object.values(EDGE)) for (const down of [[0, -1, 0], [1, 0, 0]]) {
+  const expected = replay(false, 'forward', 96, edge, down, allAwake, 1, 'heat');
+  assert.deepEqual(replay(true, 'shuffle', 96, edge, down, allAwake, 1, 'heat'), expected);
+}
+assert(heatOnlyRun.cubes > 1000 && heatOnlyRun.phased > 100, `heat-only cubes ${heatOnlyRun.cubes}, phase changes ${heatOnlyRun.phased}`);
+console.log(`Heat-only replay: ${heatOnlyRun.cubes} cheap cubes, ${heatOnlyRun.phased} phase changes among them, exact against the block pass`);
 
 // Initial CPU import census of the real benchmark fixture; NOT evolved or GPU
 // coverage. Only non-AIR imported bricks wake, with the original 3^3 dilation.

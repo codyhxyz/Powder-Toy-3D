@@ -400,6 +400,53 @@ export const CONTACT_REACTIONS = REACTIONS.map(r => ({
 const mech = mechanisms();
 export const CONTACT_RX_INDEX = mech.lookup;
 
+// The heat-only cube (shaders/v2.js v2BlockClassifyWGSL; contactHeatOnlyReference): one whose cells no rule of the
+// block pass can change but conduction, a phase change and ambient cooling, so the cheap pass (shaders/v2/heat.js
+// v2heatOnly) runs those alone, as The Powder Toy runs heat transfer apart from its other particle updates. Its
+// matter (CONTACT_HEAT_CELL bit HEAT_MATTER): solid, powder or liquid with no per-tick rule of its own in
+// ctStepAtmosphere (no fuel, charge, emitter, acid, rot) and none read off a partner (void drains, plants grow).
+// Gas and air move by their heat (R3, R4) and take the flames' rules: never.
+const HEAT_RULED = ['FIRE', 'SMOKE', 'PLASMA', 'CLOUD', 'DUST', 'SINGULARITY', 'VOID', 'MOSS', 'FUNGUS', 'CLONE', 'PCLN', 'PLANT', 'FUSE'].map(k => E[k]);
+export const HEAT_MATTER = 1;
+// ...and an emitter (bit HEAT_EMITS): molten fissile metal keeps its nuclear identity (ctNuclearId), so a lava
+// whose ctype emits is not heat-only matter either
+export const HEAT_EMITS = 2;
+export const CONTACT_HEAT_CELL = CONTACT_ROWS.map((r, id) => (r.kind >= K.SOLID && r.kind <= K.LIQUID && r.burn === 0 && r.blast === 0 &&
+  r.emitter === 0 && r.acid === 0 && r.rots === 0 && !HEAT_RULED.includes(id) ? HEAT_MATTER : 0) | (r.emitter > 0 ? HEAT_EMITS : 0));
+// A pair that may react either way round (ctReaction), a bit a partner: words of 32 a row
+export const HEAT_RX_WORDS = Math.ceil(ELEMENTS.length / 32);
+export const CONTACT_HEAT_RX = (() => {
+  const n = ELEMENTS.length, out = new Uint32Array(n * HEAT_RX_WORDS);
+  for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) {
+    if (CONTACT_RX_INDEX[a * n + b] || CONTACT_RX_INDEX[b * n + a]) out[a * HEAT_RX_WORDS + (b >> 5)] |= 1 << (b & 31);
+  }
+  return out;
+})();
+// Whether the block pass's cube (its cores and requests, valid: inside the grid, border: a face past a void edge,
+// where contactBoundary trades) is heat-only. Beyond its matter: no request, every cell inside and none on a void
+// border, no reacting pair of partners, a liquid full, one liquid id (R3 trades unlike liquids), no liquid with a
+// powder (R2 topples a grain into it, R3 floats one up through it), no grain still falling (R2b scatters it).
+// The classify kernel's WGSL (shaders/v2.js heatOnlyCube) is this test.
+export function contactHeatOnlyCube(cores, pending, valid, border) {
+  let liquid = -1, powder = false;
+  for (let i = 0; i < 8; i++) {
+    const c = cores[i], id = c[0] & 255, kind = ctRow(id)?.kind;
+    if (!valid[i] || border[i] || pending[i] !== 0 || id >= ELEMENTS.length || !(CONTACT_HEAT_CELL[id] & HEAT_MATTER)) return false;
+    if (kind === K.POWDER) { powder = true; if (fallVelocity(c) > 0) return false; }
+    if (kind === K.LIQUID) {
+      const ct = c[1] >>> 24;
+      if ((c[1] & 0xffffff) !== CONTACT_FULL || (liquid >= 0 && liquid !== id)) return false;
+      if (id === E.LAVA && ct > 0 && ct < ELEMENTS.length && (CONTACT_HEAT_CELL[ct] & HEAT_EMITS)) return false;
+      liquid = id;
+    }
+    for (const j of [i ^ 1, i ^ 2, i ^ 4]) {
+      const b = cores[j][0] & 255;
+      if (j > i && b < ELEMENTS.length && (CONTACT_HEAT_RX[id * HEAT_RX_WORDS + (b >> 5)] >>> (b & 31)) & 1) return false;
+    }
+  }
+  return !(powder && liquid >= 0);
+}
+
 const ctI = value => Math.trunc(value) + 0;
 export const ctF = Math.fround;
 export const ctDiv = (a, b) => Math.trunc(a / b) + 0;
@@ -1598,6 +1645,37 @@ export function contactHeatReference(cores, banks, valid = Array(8).fill(true), 
     cores[i] = out.core; banks[i] = out.bank; busy.push(i);
   }
   return { cores, banks, busy };
+}
+// The heat-only pass (shaders/v2/heat.js v2heatOnly) on a heat-only cube (contactHeatOnlyCube): contactReference's
+// rules that can act there, in its order and with its seeds: each pair's conduction (no reaction, acid or swallow
+// can fire), each cell's own step, of which only its phase change applies (ctStepAtmosphere's first rule, whose
+// surface count matters to steam alone), the phase changes still pending, ambient cooling. The same result.
+export function contactHeatOnlyReference(cores, banks, tick = 0, positions = CONTACT_POSITIONS, modes = CONTACT_DEFAULT_MODES, deferred = false) {
+  const ambientQ = contactAmbientQ(modes.ambient), airHeat = +!!modes.ambientHeat;
+  let cells = cores.map((core, i) => unpackContact(core, banks[i]));
+  let initial = 0n;
+  for (const c of cells) initial += ctEnergy(c);
+  const requests = new Uint32Array(8), busy = [];
+  ctLedgerDeferred = !!deferred;
+  try {
+    const seedAt = i => (Math.imul(positions[i][0], 73856093) ^ Math.imul(positions[i][1], 19349663) ^ Math.imul(positions[i][2], 83492791) ^ Math.imul(tick, 2654435761)) | 0;
+    for (const [i, j] of CONTACT_PAIRS) { const heat = ctConduct(cells[i], cells[j], airHeat); cells[i] = heat.a; cells[j] = heat.b; }
+    cells = cells.map((c, i) => ctPhase(c, 0, ctRoll(seedAt(i), 3)));
+    for (const [i, j] of CONTACT_PAIRS) {
+      let pair = ctResolvePhase(cells[i], cells[j]);
+      if (!pair.changed) { const reverse = ctResolvePhase(pair.b, pair.a); pair = ctPairValue(reverse.b, reverse.a, reverse.changed); }
+      cells[i] = pair.a; cells[j] = pair.b;
+    }
+    for (let i = 0; i < 8; i++) {
+      cells[i] = ctAmbient(cells[i], ambientQ, airHeat);
+      const out = packContact(cells[i], cores[i]);
+      cores[i] = out.core; banks[i] = out.bank; requests[i] = cells[i].request;
+      if (cells[i].busy) busy.push(i);
+    }
+  } finally { ctLedgerDeferred = false; }
+  let final = 0n;
+  for (const c of cells) final += ctEnergy(c);
+  return { cores, banks, requests, busy, sources: cells.map(c => c.source), sinks: cells.map(c => c.sink), net: final - initial };
 }
 // V1 react.js lit: an explosive at its ignition point, or touching matter (not gas) that hot, goes off the
 // step it is, after one step's conduction. A face trades a tick's steps of heat (ctFluxTick, block or heat pass)
