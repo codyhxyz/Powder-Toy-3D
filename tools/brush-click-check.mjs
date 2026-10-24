@@ -58,8 +58,9 @@ try {
   await page.mouse.move(450, 300);
   const start = await state();
   await page.mouse.down({ button: 'right' });
-  await page.mouse.move(490, 320, { steps: 4 });
+  await page.mouse.move(530, 340, { steps: 8 });
   const looked = await state();
+  console.log(`right-drag: eye moved ${Math.hypot(...looked.camera.map((v, i) => v - start.camera[i]))}, view turned ${angle(looked.dir, start.dir)} rad`);
   assert(Math.hypot(...looked.camera.map((v, i) => v - start.camera[i])) < 1e-6, 'right-drag keeps the eye in place');
   assert(angle(looked.dir, start.dir) > 0.05, 'right-drag turns the view');
   const locked = await page.evaluate(() => document.pointerLockElement === __app.canvas);
