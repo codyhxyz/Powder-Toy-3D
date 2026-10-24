@@ -12,8 +12,11 @@
 // the word: id, ctype and temperature from it, a liquid's fill from aux, and matter's life as aux times the
 // element's spawn life (ELEMENTS[id].life). The exact store then overrides every edited brick.
 //
-// Groups: 0 the element tables, 1 the world copy (W's worldCopyWGSL: wcCell), 2 the scene's resources and
-// V2's cores, banks and activity after them, 3 the params.
+// Two passes, so neither binds more than 8 storage buffers (W's copy alone is 4, V2's write 3):
+//   gather  0 the element tables, 1 the world copy (W's worldCopyWGSL: wcCell), 2 the box's words, 3 params
+//   fill    0 the element tables, 1 V2's cores, banks and activity (shaders/worldWrite.js NATIVE_WRITE_LAYOUT),
+//           2 the scene's resources and the box's words after them, 3 params
+// The box's words are its cells' in the fill's order: brick k of the box (x fastest), cell li of the brick.
 import { prelude, SALT } from '../common.js';
 import { nativeImportHelpersWGSL, importAWGSL } from '../v2/leave.js';
 import { nativeWriteCoreWGSL, NativeFillParams, nativeFillSize } from '../worldWrite.js';
@@ -24,29 +27,57 @@ import { v2Rows, V2, FULL } from '../v2.js';
 import { glf } from '../../glsl.js';
 
 export { NativeFillParams as CopyFillParams, nativeFillSize as copyFillSize };
-// The bindings of V2's cores, banks and activity in group 2, after the scene's.
-export const COPY_FILL_WRITE_AT = SCENE_BINDING.next;
+// The binding of the box's words in the fill's group 2, after the scene's.
+export const COPY_FILL_WORDS_AT = SCENE_BINDING.next;
 const WORD_LOOK_MASK = 0xffffff;   // a word's id, ctype and temperature code (cellWord.js bits 0-23)
 const AUX_SHIFT = 24;
 
 // The world copy's decoders come with its module once W lands (cellWord.js); declared here otherwise.
 const withDecoders = (copyWGSL) => (/fn\s+wcId\s*\(/.test(copyWGSL) ? copyWGSL : `${cellWordWGSL}\n${copyWGSL}`);
-// A scene's own names that the world copy's module also declares are renamed in the scene's text: Tinker
-// Creek's generator has a wcCell of its own (world/scenes/willowCove.js, "wc" for Willow Cove).
-function sceneBeside(copyWGSL, sceneGLSL) {
-  const taken = new Set([...copyWGSL.matchAll(/\b(?:fn|const|var|struct|alias)\s*(?:<[^>]*>\s*)?([A-Za-z_]\w*)/g)].map((m) => m[1]));
-  const clash = [...new Set([...sceneGLSL.matchAll(/\b(?:fn|const|struct|alias)\s+([A-Za-z_]\w*)/g)].map((m) => m[1]))].filter((n) => taken.has(n));
+// A scene's own names that the decoders also declare are renamed in the scene's text (Tinker Creek's
+// generator has wc* helpers of its own, "wc" for Willow Cove: world/scenes/willowCove.js wcCell).
+function sceneBeside(taken, sceneGLSL) {
+  const names = new Set([...taken.matchAll(/\b(?:fn|const|var|struct|alias)\s*(?:<[^>]*>\s*)?([A-Za-z_]\w*)/g)].map((m) => m[1]));
+  const clash = [...new Set([...sceneGLSL.matchAll(/\b(?:fn|const|struct|alias)\s+([A-Za-z_]\w*)/g)].map((m) => m[1]))].filter((n) => names.has(n));
   return clash.reduce((code, n) => code.replace(new RegExp(`\\b${n}\\b`, 'g'), `scene_${n}`), sceneGLSL);
 }
+// A workgroup a brick of the box [P.lo, P.hi) (shaders/worldWrite.js nativeFillWGSL's walk): p, the cell,
+// and at, its word in the box's words; returns early off the box.
+const BOX_WALK = /* wgsl */ `@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let base = (P.lo >> vec3u(2u)) * BS;
+  let nb = vec3u((P.hi - base + BS - 1) / BS);
+  let k = foldId(wg, nwg);
+  if (k >= nb.x * nb.y * nb.z) { return; }
+  let p = base + vec3i(vec3u(k % nb.x, (k / nb.x) % nb.y, k / (nb.x * nb.y))) * BS + vec3i(i32(li & 3u), i32((li >> 2u) & 3u), i32(li >> 4u));
+  if (any(p < P.lo) || any(p >= P.hi) || !inGrid(p)) { return; }
+  let at = k * 64u + li;`;
+/** Words the box [lo, hi) takes (copyFillSize's workgroups, 64 each). */
+export const copyWordsFor = (lo, hi) => {
+  const base = lo.map((v) => Math.floor(v / 4) * 4);
+  return 64 * hi.reduce((n, v, i) => n * Math.ceil((v - base[i]) / 4), 1);
+};
 
-/** WGSL of the fill: copyWGSL W's world copy module (group 1, wcCell), sceneGLSL the scene's sceneCell. */
-export const copyFillWGSL = (g, copyWGSL, sceneGLSL) => /* wgsl */ `
+/** WGSL of the gather: the copy's word at each cell of the box (copyWGSL: W's world copy module, wcCell). */
+export const copyGatherWGSL = (g, copyWGSL) => /* wgsl */ `
+${prelude(g, { state: false })}
+${withDecoders(copyWGSL)}
+@group(2) @binding(0) var<storage, read_write> words: array<u32>;
+${NativeFillParams.wgsl}
+@group(3) @binding(1) var<uniform> P: NativeFillParams;
+${BOX_WALK}
+  words[at] = wcCell(P.origin + p);
+}`;
+
+/** WGSL of the fill: the box's words decoded into V2's cores, the scene's (sceneGLSL) cell where they agree. */
+export const copyFillWGSL = (g, sceneGLSL) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${nativeImportHelpersWGSL}
 ${importAWGSL(g)}
-${withDecoders(copyWGSL)}
-${sceneBeside(withDecoders(copyWGSL), sceneGLSL)}
-${nativeWriteCoreWGSL(g, 2, COPY_FILL_WRITE_AT)}
+${cellWordWGSL}
+${sceneBeside(cellWordWGSL, sceneGLSL)}
+${nativeWriteCoreWGSL(g, 1, 0)}
+@group(2) @binding(${COPY_FILL_WORDS_AT}) var<storage, read> words: array<u32>;
 ${NativeFillParams.wgsl}
 @group(3) @binding(1) var<uniform> P: NativeFillParams;
 const WC_LIFE_FULL = array<f32, ${ELEMENTS.length}>(${ELEMENTS.map((e) => glf(Math.max(0, e.life ?? 0))).join(',')});
@@ -67,16 +98,9 @@ fn wcFillCore(word: u32, gen: vec4f, w: vec3i) -> vec4u {
   if (liquid) { c.y = (c.y & 0xff000000u) | max(1u, u32(round(wcAux(word) * f32(FULLU)))); }
   return c;
 }
-@compute @workgroup_size(64)
-fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
-  let base = (P.lo >> vec3u(2u)) * BS;
-  let nb = vec3u((P.hi - base + BS - 1) / BS);
-  let k = foldId(wg, nwg);
-  if (k >= nb.x * nb.y * nb.z) { return; }
-  let p = base + vec3i(vec3u(k % nb.x, (k / nb.x) % nb.y, k / (nb.x * nb.y))) * BS + vec3i(i32(li & 3u), i32((li >> 2u) & 3u), i32(li >> 4u));
-  if (any(p < P.lo) || any(p >= P.hi) || !inGrid(p)) { return; }
+${BOX_WALK}
   let w = P.origin + p;
-  nativeWriteCore(slotOf(p), wcFillCore(wcCell(w), sceneCell(w).A, w));
+  nativeWriteCore(slotOf(p), wcFillCore(words[at], sceneCell(w).A, w));
 }`;
 
 // ---- The same rule in JS (tools/world-move-cpu-check.mjs): which cells take the generator's import.

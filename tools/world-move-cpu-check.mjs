@@ -10,8 +10,8 @@
 //      the old one-shot code did: the kept and banked bricks coded, bit for bit, the rest dropped; then a
 //      walk away and back restores those bricks at the right slab indices (WorldWindow.restoreNative)
 //   4. the fill's rule (copyFillKeepsGenerator): which cells take the generator's import over the word
-//   5. naga: the world-copy fill for every world scene, against a synthetic world copy module (W's
-//      worldCopyWGSL stands in: wcCell over a brick table and pool of cellWord.js words); V2's own fill
+//   5. naga: the world-copy fill for every world scene, and its gather against a synthetic world copy
+//      module (tools/world-copy-stub.mjs stands in for W's worldCopyWGSL); V2's own fill
 //      and tree apply after their shared write moved into nativeWriteCoreWGSL
 //   6. cost, CPU side, on a deterministic slab (seeded): the leaving slab's coding as one block (today's
 //      landing microtask) vs its longest slice, and the Island's tree placing and baking a move visits
@@ -24,7 +24,7 @@ import {
 import { WorldWindow, WIN_STEP } from '../src/world/window.js';
 import { NativeBrickStore, encodeNativeBrick, NATIVE_BRICK_BYTES } from '../src/world/nativeStore.js';
 import { BrickStore, BRICK_FLOATS } from '../src/world/store.js';
-import { copyFillWGSL, copyFillKeepsGenerator, copyFillLiquid } from '../src/shaders/world/physicsFill.js';
+import { copyGatherWGSL, copyFillWGSL, copyFillKeepsGenerator, copyFillLiquid } from '../src/shaders/world/physicsFill.js';
 import { nativeFillWGSL, nativeApplyWGSL } from '../src/shaders/worldWrite.js';
 import { wcWord } from '../src/shaders/world/cellWord.js';
 import { WORLD_SCENES } from '../src/world/scenes/index.js';
@@ -34,6 +34,7 @@ import { ELEMENTS } from '../src/elements.js';
 import { WORLD_SEED } from '../src/world/generator.js';
 import { FULL } from '../src/shaders/v2.js';
 import { nagaSpawn } from './naga.mjs';
+import { STUB_COPY_WGSL } from './world-copy-stub.mjs';
 
 const QUICK = process.argv.includes('--quick');
 let bad = 0;
@@ -179,27 +180,15 @@ for (const exact of [true, false]) {
 }
 
 // ---------------------------------------------------------------- 5. naga
-const STUB_COPY = /* wgsl */ `
-struct WorldCopyU { size: vec3i, pad0: i32, bricks: vec3i, pad1: i32 }
-@group(1) @binding(0) var<uniform> WC: WorldCopyU;
-@group(1) @binding(1) var<storage, read> wcTable: array<u32>;
-@group(1) @binding(2) var<storage, read> wcPool: array<u32>;
-@group(1) @binding(3) var<storage, read> wcInfoWords: array<u32>;
-@group(1) @binding(4) var<storage, read> wcOcc: array<u32>;
-fn wcCell(c: vec3i) -> u32 {
-  if (any(c < vec3i(0)) || any(c >= WC.size)) { return 0u; }
-  let b = c >> vec3u(2u);
-  let e = wcTable[u32(b.x + WC.bricks.x * (b.y + WC.bricks.y * b.z))];
-  if ((e & WC_MIXED) == 0u) { return e; }
-  return wcPool[(e & ~WC_MIXED) * WC_BRICK_CELLS + wcLocal(c & vec3i(3))];
-}`;
+const STUB_COPY = STUB_COPY_WGSL;
 const g128 = gridLayout(128, 128, 128);
 const naga = (code, name) => { const r = nagaSpawn(code, name); if (r.status !== 0) fail(`naga ${name}: ${(r.stdout + r.stderr).slice(0, 800)}`); };
 const CENSUS = ['island', 'labWorld', 'volcanoWorld', 'giantVolcano', 'willowCove'];
 for (const s of WORLD_SCENES.filter((s) => !QUICK || CENSUS.includes(s.key))) {
   const g = s.key === 'giantVolcano' ? gridLayout(128, 384, 128) : g128;
-  naga(copyFillWGSL(g, STUB_COPY, s.glsl(g)), `copy-fill-${s.key}.wgsl`);
+  naga(copyFillWGSL(g, s.glsl(g)), `copy-fill-${s.key}.wgsl`);
 }
+naga(copyGatherWGSL(g128, STUB_COPY), 'copy-gather.wgsl');
 naga(nativeFillWGSL(g128, island.glsl(g128)), 'island-native-fill.wgsl');
 naga(nativeApplyWGSL(g128, { ...g128, nx: 64, nz: 64, slots: 64 * g128.ny * 64 }), 'native-tree-apply.wgsl');
 
