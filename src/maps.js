@@ -29,7 +29,7 @@ export const WORLD_DIMS = [1024, 128, 1024];   // shaders/far.js WORLD_SIZE (app
 const TEAM_MODES = ['slayer', 'ctf', 'koth', 'infection', 'siege'];
 
 export const MAPS = [
-  { key: 'island', name: 'Island', size: 'world', scene: 'island', dims: WORLD_DIMS,
+  { key: 'island', viewPreviewVersion: 1, name: 'Island', size: 'world', scene: 'island', dims: WORLD_DIMS,
     desc: 'Beaches, forest, cliffs and caves, a lighthouse and old mines. The world loads around you as you go.' },
   { key: 'willowCove', aliases: ['tinkerCreek'], name: 'Tinker Creek', size: 'world', scene: 'willowCove', dims: [3072, 128, 1024], modes: ['animalCrossing'], defaultView: 'cozy', previewVersion: 2,
     desc: 'A wide island village with cottages, an orchard and a kilometre-long running circuit across river bridges. Inspired by Animal Crossing.' },
@@ -45,17 +45,17 @@ export const MAPS = [
     scenes: terrainRoute.regions.map((r) => r.key),
     dims: createFold(terrainRoute.fold).size, modes: ['noita'], defaultView: 'noita', previewVersion: 6,
     desc: 'A fresh Noita world folded into a continuous 3D arc, its caves rounded out in depth, from the start mountain and the Mines down to Kolmi. Original Holy Mountain portals connect the main biomes; vertical bands load around the player.' },
-  { key: 'damValley', viewPreviewVersion: 1, name: 'Dam Valley', size: 'valley', preset: 'damValley', dims: [256, 96, 128], modes: TEAM_MODES,
+  { key: 'damValley', viewPreviewVersion: 2, name: 'Dam Valley', size: 'valley', preset: 'damValley', dims: [256, 96, 128], modes: TEAM_MODES,
     desc: 'Two bases across a dammed river, with vehicles and shrines. Blow the sluice gate to flood the tunnel.' },
-  { key: 'quarry', viewPreviewVersion: 1, name: 'Open-Cut Quarry', size: '128', preset: 'quarry', dims: [128, 128, 128], modes: ['factory'],
+  { key: 'quarry', viewPreviewVersion: 2, name: 'Open-Cut Quarry', size: '128', preset: 'quarry', dims: [128, 128, 128], modes: ['factory'],
     desc: 'Sort gold-bearing sand, automate exposed ore faces, pump a finite reservoir and smelt metal. Physical grains, real spills.' },
-  { key: 'lab', viewPreviewVersion: 1, name: 'Lab', size: '128', preset: 'lab', dims: [128, 128, 128], modes: TEAM_MODES,
+  { key: 'lab', viewPreviewVersion: 2, name: 'Lab', size: '128', preset: 'lab', dims: [128, 128, 128], modes: TEAM_MODES,
     desc: 'A water tank with an oil slick, a lava pit, a gunpowder tower and a sand pile about to fall.' },
-  { key: 'volcano', viewPreviewVersion: 1, name: 'Volcano', size: '128', preset: 'volcano', dims: [128, 128, 128],
+  { key: 'volcano', viewPreviewVersion: 2, name: 'Volcano', size: '128', preset: 'volcano', dims: [128, 128, 128],
     desc: 'A volcano island with a lava source on its summit, snow and trees on its flanks.' },
-  { key: 'islet', viewPreviewVersion: 1, name: 'Islet', size: '128', preset: 'island', dims: [128, 128, 128],
+  { key: 'islet', viewPreviewVersion: 2, name: 'Islet', size: '128', preset: 'island', dims: [128, 128, 128],
     desc: 'A piece of the Island\'s shore in a box.' },
-  { key: 'empty', viewPreviewVersion: 1, name: 'Empty', size: '128', preset: 'empty', dims: [128, 128, 128],
+  { key: 'empty', viewPreviewVersion: 2, name: 'Empty', size: '128', preset: 'empty', dims: [128, 128, 128],
     desc: 'Nothing but air. Build from scratch.' },
 ];
 
