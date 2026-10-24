@@ -3,7 +3,9 @@ import {
   WC_SCENE_CELLS_BINDING, WC_STAMP_LAYOUT, WC_STAMP_WORDS, WC_OVERLAY_LAYOUT, WC_NODE1, WC_NODE2,
   wcLayout, wcSceneFrag, wcStampFrag, wcOverlayFrag, wcCommitChunkFrag, wcDecodeFrag, wcAllocFrag, wcDilateFrag, wcOccFrag,
   jobDispatch, brickDispatch,
+  WC_GPU, WC_ARGS, WC_MODE, WC_V2_LAYOUT, WC_ARGS_LAYOUT, wcGpuLayout, wcGatherFrag, wcSeedFrag, wcArgsFrag,
 } from '../shaders/world/copy.js';
+import { CHANGE_TILE } from '../shaders/v2.js';
 import { WC_BRICK, WC_BRICK_CELLS, wcTempCode } from '../shaders/world/cellWord.js';
 import { wcWordOf, wcWordOfCore } from './worldCopyTwin.js';
 import { decodeNativeBrick, legacyBrickToNative, NATIVE_BRICK_BYTES } from './nativeStore.js';
@@ -31,16 +33,29 @@ import { PHYS } from '../physics.js';
 //                   physics' changed boxes (window cells) decoded from V2's native cores into the copy. The GPU
 //                   allocates and frees pool slots (a free-list pop, else a bump; a brick that turns uniform
 //                   gives its slot back); wcInfo and wcOcc follow for the bricks it touched. In proportion to
-//                   the changed bricks, never the window.
+//                   the changed bricks, never the window. boxes null (the app's every frame): what physics
+//                   changed, found on the GPU from V2's own record of change (copy.js wcGatherFrag), every list
+//                   built and dispatched on the GPU: no CPU loop over bricks, and a brick written as it was
+//                   counts as no change. Writes outside V2's tick (strokes, fills, explosions, digging,
+//                   sim.noteWrite) reach it through V2: they are imported into its cores (sync, here and at
+//                   every tick), which notes their bricks `changed`; writes that bypass that note (an undo, a
+//                   save's restore, a mode change) note every brick (PhysicsV2.noteAllCells). Before a window
+//                   move (sim.onBeforeShift) it writes back where the window still is, so nothing physics
+//                   changed leaves unwritten and V2's change record never spans two origins. A move itself
+//                   writes nothing back: its slab came from the copy, so the compare finds it unchanged.
 //   changesSince(rev)
-//                   the world-cell boxes changed since revision rev (F's and L's updates).
+//                   the world-cell boxes changed since revision rev (F's and L's updates). A GPU-driven
+//                   writeback's are its changed level-1 nodes (16³ cells), read back without blocking
+//                   (mapAsync, one read in flight) and noted at the next writeback, a frame or two late.
+//                   Intentional (docs/seamless-world.md, "W"): fields and lighting follow the world over
+//                   frames anyway; the picture's cells themselves are current the frame physics wrote them.
 //
 // Capacity: the build starts the pool at an estimate and grows it ahead of every chunk; when it is done the
 // pool is reallocated to POOL_HEADROOM × what it holds. A writeback grows it first whenever the bump could
 // pass the capacity (the bump's last readback plus every job recorded since), so a brick is never dropped
 // (wcCtrl's OVER counts a breach; the tools read it).
 
-const BUFFER = { MAP_READ: 0x01, COPY_SRC: 0x04, COPY_DST: 0x08, UNIFORM: 0x40, STORAGE: 0x80 };   // (GPUBufferUsage's bits)
+const BUFFER = { MAP_READ: 0x01, COPY_SRC: 0x04, COPY_DST: 0x08, UNIFORM: 0x40, STORAGE: 0x80, INDIRECT: 0x100 };   // (GPUBufferUsage's bits)
 const RW = BUFFER.STORAGE | BUFFER.COPY_SRC | BUFFER.COPY_DST;
 export const POOL_HEADROOM = 1.5;        // the pool after the build: this many times the mixed bricks it holds
 const POOL_START_SHARE = 1 / 8;          // the build's first guess at the share of bricks that are mixed (the census: Island 11 %)
@@ -51,6 +66,8 @@ const CHANGES_KEPT = 512;                // change boxes kept for changesSince (
 const STAMP_GROW = 1.5;
 const MAX_JOB_COORD = 1023;              // a window brick coordinate packs in 10 bits (copy.js unpackJob)
 const OUT_OF_SCOPE = /^(descent|noitaTerrain)/;   // Descent's scenes (Intentional: user, out of scope for now)
+const GPU_HEADROOM_SHARE = 1 / 4;        // a GPU-driven writeback keeps this share of the window's bricks free in the pool...
+const GPU_HEADROOM_MIN = 4096;           // ...and at least this many slots (a miss is retried, never dropped: WC_CTRL.RETRY)
 
 // a stored brick's cells are in slot order (shaders/common.js slotOf's in-brick order); the copy's x + 4 (y + 4 z)
 const SLOT_TO_LOCAL = Array.from({ length: 64 }, (_, t) => {
@@ -94,7 +111,20 @@ export class WorldCopy {
       table: buf('world copy table', L.nBricks * 4),
       meta: buf('world copy info + occupancy', L.metaWords * 4),
       pool: null, alloc: null, scratch: null,
+      args: buf('world copy indirect args', WC_ARGS.WORDS * 4, BUFFER.STORAGE | BUFFER.INDIRECT | BUFFER.COPY_DST),
     };
+    // the GPU-driven writeback (recordWriteback with boxes null)
+    this.G = null;              // its block of the scratch (copy.js wcGpuLayout), once the window is known
+    this.stamp = 0;             // writebacks recorded (the lists' dedupe marks)
+    this.landed = [];           // change lists read back, not yet noted
+    this.chgReading = false;
+    this.chgDirty = false;      // writebacks since the change list was last copied out
+    this.gpuAll = false;        // the next one compares every window brick (a retry, kernels late)
+    this.retrySeen = 0;
+    this.growNeed = 0;          // slots the pool must hold at the next writeback (the last read's bump + headroom)
+    this.seen = null;           // what V2 had done at the last one ({ sig, origin }): unchanged, nothing to gather
+    this.gpuStats = null;       // the last read's sums (tools): { writebacks, cand, changed, seeds, dil }
+    this.gpuWritebacks = 0;
     this.capacity = 0;
     this.bumpRead = 0;          // the bump as last read back
     this.jobsSince = 0;         // jobs recorded since that read was issued (each may bump a slot)
@@ -183,6 +213,12 @@ export class WorldCopy {
       this.used = w[WC_CTRL.BUMP] - w[WC_CTRL.FREE];
       this.overflow = w[WC_CTRL.OVER];
       if (this.overflow) console.error(`world copy: ${this.overflow} bricks found no pool slot (a capacity bug)`);
+      // a GPU-driven writeback's misses: the pool grows and the next one compares every window brick
+      if (w[WC_CTRL.RETRY] !== this.retrySeen) { this.retrySeen = w[WC_CTRL.RETRY]; this.gpuAll = true; this.retries = (this.retries ?? 0) + 1; }
+      if (this.G) {
+        const room = Math.max(GPU_HEADROOM_MIN, Math.ceil(this.G.nb * GPU_HEADROOM_SHARE));
+        if (this.capacity - w[WC_CTRL.BUMP] < room) this.growNeed = Math.max(this.growNeed, w[WC_CTRL.BUMP] + room);
+      }
       return w;
     }).finally(() => { this.reading = false; });
     p.catch(() => {});
@@ -191,16 +227,22 @@ export class WorldCopy {
 
   // The scratch: the jobs' ring (WC_JOB_RING words), then the build's chunk cells or a writeback's words (64 a
   // job) and flags (1 a job).
+  // job) and flags (1 a job), after the GPU-driven writeback's block (G) once the window is known: sized then
+  // for the whole window's jobs, so it is never made again while that block holds anything.
   _ensureScratch(words) {
-    const need = (WC_JOB_RING + Math.max(words, WC_CHUNK * this.size[1] * WC_CHUNK)) * 4;
-    if (this.buf.scratch && this.buf.scratch.size >= need) return;
+    const G = this.G, at = WC_JOB_RING + (G?.words ?? 0);
+    const need = (at + Math.max(words, WC_CHUNK * this.size[1] * WC_CHUNK, G?.cells ?? 0)) * 4;
+    if (this.buf.scratch && this.buf.scratch.size >= need && this.cellsAt === at) return;
+    if (this.chgDirty || this.chgReading) this.chgLost = true;   // (a change list it held: the window's noted whole)
     this._retire(this.buf.scratch);
     this.buf.scratch = this.gpu.createBuffer({ label: 'world copy scratch', size: need, usage: RW });
+    this.cellsAt = at;
     this.jobCursor = 0;
     this._groups = null;
+    this._argsGroup = null;
   }
-  // the scratch's cells (after the ring), as a binding
-  get _cells() { return { buffer: this.buf.scratch, offset: WC_JOB_RING * 4, size: this.buf.scratch.size - WC_JOB_RING * 4 }; }
+  // the scratch's cells (after the ring and the GPU block), as a binding
+  get _cells() { return { buffer: this.buf.scratch, offset: this.cellsAt * 4, size: this.buf.scratch.size - this.cellsAt * 4 }; }
 
   // Job words into the scratch's ring (no flush while the frame's earlier writebacks still read theirs); their first word.
   _putJobs(words) {
@@ -243,14 +285,17 @@ export class WorldCopy {
     const g = sim.g, key = `${g.nx},${g.ny},${g.nz}|${scene?.key ?? ''}`;
     let k = this.kernels.get(key);
     if (k) return k;
+    const G = wcGpuLayout(g);
+    if (!this.G || this.G.words !== G.words || this.G.nb !== G.nb) { this.G = G; this._ensureScratch(0); }
     const gpu = this.gpu, L = this.L, T = sim.L.TABLES, W = this.writeLayout;
-    const kernel = (name, code, layouts) => gpu.kernel({ name: `world copy ${name}`, code, layouts, params: WcWriteParams });
+    const kernel = (name, code, layouts, extra = {}) => gpu.kernel({ name: `world copy ${name}`, code, layouts, params: WcWriteParams, ...extra });
     k = {
       decode: kernel('decode', wcDecodeFrag(g, L), [T, sim.L.STATE_RO, this.decodeLayout]),
       alloc: kernel('alloc', wcAllocFrag(g, L), [T, gpu.L.EMPTY, W]),
       dilate: kernel('dilate', wcDilateFrag(g, L), [T, gpu.L.EMPTY, W]),
       occ: kernel('occupancy', wcOccFrag(g, L), [T, gpu.L.EMPTY, W]),
     };
+
     if (scene) {
       const has = { data: !!scene.data };
       const sceneL = gpu.layout(`world copy scene ${JSON.stringify(has)}`, [
@@ -270,8 +315,30 @@ export class WorldCopy {
     return k;
   }
 
+  // The GPU-driven writeback's kernels, where V2 keeps its record of change (every map's physics; not a CPU
+  // fixture's): k.gpu, with its own readiness (a physics owner made after the copy's first kernels gets them then).
+  _gpuKernels(k, sim) {
+    if (k.gpu) return k.gpu;
+    const v2 = sim.compactOwner;
+    if (v2?.layout?.changed === undefined || !v2.changeLayout || !v2.act || !v2.args) return null;
+    const gpu = this.gpu, g = sim.g, L = this.L, T = sim.L.TABLES, W = this.writeLayout, c = v2.changeLayout;
+    const kernel = (name, code, layouts, extra = {}) => gpu.kernel({ name: `world copy ${name}`, code, layouts, params: WcWriteParams, ...extra });
+    this.v2Layout ??= gpu.layout('WORLD_COPY_V2', WC_V2_LAYOUT);
+    this.argsLayout ??= gpu.layout('WORLD_COPY_ARGS', WC_ARGS_LAYOUT);
+    const v = { changed: v2.layout.changed, visible: v2.layout.visible, tilesAt: c.base, tiles: c.tiles, tile: CHANGE_TILE };
+    const kg = {
+      v2,
+      gather: kernel('gather', wcGatherFrag(g, L, v), [T, this.v2Layout, W]),
+      seeds: kernel('seeds', wcSeedFrag(g, L), [T, gpu.L.EMPTY, W]),
+      args: kernel('args', wcArgsFrag(), [gpu.L.EMPTY, gpu.L.EMPTY, this.argsLayout], { workgroupSize: [1, 1, 1] }),
+      isReady: false,
+    };
+    Promise.all([kg.gather.ready, kg.seeds.ready, kg.args.ready]).then(() => { kg.isReady = true; }, () => {});
+    return (k.gpu = kg);
+  }
+
   _params(extra = {}) {
-    return { origin: [0, 0, 0], count: 0, chunk: [0, 0, 0], first: 0, airT: this.airT, capacity: this.capacity, dilate: WC_DILATE, level: 0, ...extra };
+    return { origin: [0, 0, 0], count: 0, chunk: [0, 0, 0], first: 0, airT: this.airT, capacity: this.capacity, dilate: WC_DILATE, level: 0, src: 0, stamp: 0, mode: WC_MODE.CPU, ...extra };
   }
 
   // ---------------------------------------------------------------- the build
@@ -465,8 +532,9 @@ export class WorldCopy {
 
   // ---------------------------------------------------------------- physics' writeback
   /**
-   * Physics' changed boxes, in window cells ({ lo, hi }, hi exclusive; null: the whole window), decoded from
-   * V2's native cores into the copy, recorded into `frame`. Costs in proportion to the changed bricks.
+   * Physics' changed boxes, in window cells ({ lo, hi }, hi exclusive), decoded from V2's native cores into
+   * the copy, recorded into `frame`. Costs in proportion to the changed bricks. boxes null: what physics
+   * changed, from V2's own record of change on the GPU (the app's call, every frame: _gpuWriteback).
    * @param {object} frame gpu.frame
    * @param {import('../sim.js').Simulation} sim
    * @param {{ lo: number[], hi: number[] }[] | null} boxes
@@ -474,11 +542,22 @@ export class WorldCopy {
   recordWriteback(frame, sim, boxes) {
     if (!this.built || this.skipped || this.disposed || !sim.compact?.isReady) return false;
     this._sim = sim;
+    this._drain();
     const k = this._kernelsFor(sim), g = sim.g;
     if (!k.isReady) { this.allDirty = true; return false; }
     const whole = [{ lo: [0, 0, 0], hi: [g.nx, g.ny, g.nz] }];
-    if (this.allDirty) { boxes = whole; this.allDirty = false; }
-    boxes ??= whole;
+    if (!boxes) {
+      const kg = this._gpuKernels(k, sim);
+      if (kg?.isReady) return this._gpuWriteback(frame, sim, k, kg);
+      if (kg) { this.allDirty = true; return false; }   // (its kernels build: the first GPU one compares every brick)
+      boxes = whole;   // no record of change to read (a CPU fixture's physics): the window
+    }
+    if (this.allDirty && !this._gpuKernels(k, sim)) { boxes = whole; this.allDirty = false; }
+    return this._cpuWriteback(frame, sim, k, boxes);
+  }
+
+  _cpuWriteback(frame, sim, k, boxes) {
+    const g = sim.g;
     const o = sim.origin, O = [o.x, o.y, o.z], WB = this.L.bricks, GB = [g.nx, g.ny, g.nz].map((n) => n / WC_BRICK);
     if (O.some((v) => v % WC_BRICK) || GB.some((n) => n - 1 > MAX_JOB_COORD)) throw new Error('world copy: the window must sit on bricks and pack in 10 bits a coordinate');
     const ob = O.map((v) => v / WC_BRICK);
@@ -524,6 +603,103 @@ export class WorldCopy {
     return true;
   }
 
+  // Before a window move: what physics changed, written back where the window still is (sim.onBeforeShift).
+  _hookShift(sim) {
+    if (this._hooked === sim || !sim.onBeforeShift) return;
+    this._unhook?.();
+    this._hooked = sim;
+    this._unhook = sim.onBeforeShift(() => this.recordWriteback(this.gpu.frame, sim, null));
+  }
+
+  /**
+   * The GPU-driven writeback (boxes null): V2's record of change gathered into the jobs, the changed bricks
+   * written, their dilation and occupancy, their level-1 nodes into the change list, every list's dispatch
+   * indirect. The CPU's part is the dispatches: none at all while V2 has done nothing since the last one.
+   */
+  _gpuWriteback(frame, sim, k, kg) {
+    const gpu = this.gpu, G = this.G, v2 = kg.v2, AT = WC_JOB_RING;
+    this._hookShift(sim);
+    v2.sync?.();   // writes not imported yet (a stroke while paused): into V2's cores, noted `changed`
+    const o = sim.origin, O = [o.x, o.y, o.z];
+    if (O.some((v) => v % WC_BRICK) || G.gb.some((n) => n - 1 > MAX_JOB_COORD)) throw new Error('world copy: the window must sit on bricks and pack in 10 bits a coordinate');
+    const all = this.gpuAll || this.allDirty;
+    // what V2 has done: its ticks, every write's version and wake (a tick, an edit, an import, an undo)
+    const sig = `${sim.version}|${sim.wholeWrites ?? 0}|${v2.tick}|${v2.epoch}`, key = `${sig}|${O}`;
+    if (!all && this.seen === key) { this._readChanges(O); return false; }
+    this.seen = key;
+    this.gpuAll = this.allDirty = false;
+    if (this.growNeed > this.capacity) this._grow(this.growNeed);
+    const stamp = ++this.stamp, mode = all ? WC_MODE.ALL : WC_MODE.GPU, t = sim.tables, W = this.groups.write;
+    const p = (extra) => this._params({ origin: O, stamp, mode, ...extra });
+    const ind = (a) => ({ indirect: this.buf.args, offset: a * 4 });
+    const argsGroup = this._argsGroup ??= gpu.bindGroup(this.argsLayout, [{ binding: 0, resource: { buffer: this.buf.scratch } }, { binding: 1, resource: { buffer: this.buf.args } }], 'world copy args');
+    if (this._v2Group?.v2 !== v2 || this._v2Group.act !== v2.act || this._v2Group.args !== v2.args) {
+      this._v2Group = { v2, act: v2.act, args: v2.args, group: gpu.bindGroup(this.v2Layout, [{ binding: 0, resource: { buffer: v2.act } }, { binding: 1, resource: { buffer: v2.args } }], 'world copy v2 record') };
+    }
+    frame.clear(this.buf.scratch, AT * 4, (WC_GPU.NOCC2 + 1) * 4);   // this writeback's counts
+    // the bricks V2 may have changed (then its tiles cleared: they accumulate until read)
+    kg.gather.dispatch(frame, jobDispatch(v2.g.nbricks), { bind: [t, this._v2Group.group, W], params: p({ count: v2.g.nbricks }) });
+    frame.clear(v2.args, v2.changeLayout.base * 4, v2.changeLayout.count * 4);
+    kg.args.dispatch(frame, [1, 1, 1], { bind: [null, null, argsGroup], params: p({ level: 0 }) });
+    const jobs = p({ first: AT + G.jobs, src: AT + WC_GPU.NJOBS });
+    k.decode.dispatch(frame, ind(WC_ARGS.DECODE), { bind: [t, sim.bindRO, this.groups.decode], header: sim.readHeader(), params: jobs });
+    k.alloc.dispatch(frame, ind(WC_ARGS.DECODE), { bind: [t, null, W], params: jobs });
+    kg.args.dispatch(frame, [1, 1, 1], { bind: [null, null, argsGroup], params: p({ level: 1 }) });
+    kg.seeds.dispatch(frame, ind(WC_ARGS.SEED), { bind: [t, null, W], params: p({}) });
+    kg.args.dispatch(frame, [1, 1, 1], { bind: [null, null, argsGroup], params: p({ level: 2 }) });
+    k.dilate.dispatch(frame, ind(WC_ARGS.DIL), { bind: [t, null, W], params: p({ first: AT + G.dil, src: AT + WC_GPU.NDIL, level: 0 }) });
+    k.occ.dispatch(frame, ind(WC_ARGS.OCC1), { bind: [t, null, W], params: p({ first: AT + G.occ1, src: AT + WC_GPU.NOCC1, level: 1 }) });
+    k.occ.dispatch(frame, ind(WC_ARGS.OCC2), { bind: [t, null, W], params: p({ first: AT + G.occ2, src: AT + WC_GPU.NOCC2, level: 2 }) });
+    this.gpuWritebacks++;
+    this.chgDirty = true;
+    this._readCtrl();
+    this._readChanges(O);
+    return true;
+  }
+
+  // The change list (and the sums), copied out when no read is in flight, then restarted; noted at a later
+  // writeback (_drain), so changesSince's callers see it at a writeback as before, a frame or two late.
+  _readChanges(origin) {
+    if (this.chgReading || !this.chgDirty || this.disposed) return;
+    this.chgReading = true;
+    this.chgDirty = false;
+    const G = this.G, gpu = this.gpu, AT = WC_JOB_RING;
+    const read = gpu.readback.buffer(this.buf.scratch, AT * 4, G.readWords * 4);
+    gpu.frame.clear(this.buf.scratch, (AT + WC_GPU.NCHG) * 4, 8);   // (recorded after the copy)
+    const scratch = this.buf.scratch, writebacks = this.gpuWritebacks;
+    read.then((ab) => {
+      if (scratch !== this.buf.scratch) return;   // (made again since: chgLost noted the window)
+      const w = new Uint32Array(ab);
+      this.landed.push({ w, origin: [...origin] });
+      this.gpuStats = { writebacks, cand: w[WC_GPU.SUM_CAND], changed: w[WC_GPU.SUM_CHANGED], seeds: w[WC_GPU.SUM_SEEDS], dil: w[WC_GPU.SUM_DIL] };
+    }).catch(() => { this.chgLost = true; }).finally(() => { this.chgReading = false; });
+  }
+
+  // The change lists read back since the last writeback, noted as world-cell boxes: a run of level-1 nodes
+  // along x a box (16³ cells a node); a list that overflowed, the window where it was.
+  _drain() {
+    if (!this.landed.length && !this.chgLost) return;
+    const G = this.G, L = this.L, N = WC_BRICK * WC_NODE1, [AX, AY] = L.n1, boxes = [];
+    const windowBox = (O) => {
+      const g = this._sim.g;
+      return { lo: O.map((v) => Math.floor(v / N) * N), hi: [O[0] + g.nx, O[1] + g.ny, O[2] + g.nz].map((v, i) => Math.min(this.size[i], Math.ceil(v / N) * N)) };
+    };
+    if (this.chgLost && this._sim) { boxes.push(windowBox([this._sim.origin.x, this._sim.origin.y, this._sim.origin.z])); this.chgLost = false; }
+    for (const { w, origin } of this.landed.splice(0)) {
+      const n = w[WC_GPU.NCHG];
+      if (n > G.chgCap || w[WC_GPU.CHG_OVER]) { boxes.push(windowBox(origin)); continue; }
+      const nodes = [...new Set(w.subarray(G.chg, G.chg + n))].sort((a, b) => a - b);
+      for (let i = 0; i < nodes.length;) {
+        let j = i + 1;
+        while (j < nodes.length && nodes[j] === nodes[j - 1] + 1 && nodes[j] % AX !== 0) j++;
+        const a = nodes[i], x = a % AX, y = Math.floor(a / AX) % AY, z = Math.floor(a / (AX * AY)), run = j - i;
+        boxes.push({ lo: [x * N, y * N, z * N], hi: [Math.min(this.size[0], (x + run) * N), Math.min(this.size[1], (y + 1) * N), Math.min(this.size[2], (z + 1) * N)] });
+        i = j;
+      }
+    }
+    if (boxes.length) this._note(boxes);
+  }
+
   // ---------------------------------------------------------------- changes
   _note(boxes) {
     this.revision++;
@@ -557,6 +733,7 @@ export class WorldCopy {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    this._unhook?.();
     for (const b of [...Object.values(this.buf), ...Object.values(this._build ?? {}), this.uniforms.buffer]) this._retire(b);
   }
 }

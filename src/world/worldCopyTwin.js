@@ -5,7 +5,7 @@
 // dense worlds. Pure JS: no WebGPU.
 import { wcWord, wcUnword, wcTempOf, WC_MIXED, WC_BRICK, WC_BRICK_CELLS, WC_AUX_MAX } from '../shaders/world/cellWord.js';
 import { BRICK_INFO, AIR } from '../shaders/bindings.js';
-import { WC_OWN, WC_OWN_ONLY, WC_AIR_SNAP, WC_GAS_IDS, WC_NODE1, WC_NODE2, WC_DILATE, wcLayout, wcLifeFull } from '../shaders/world/copy.js';
+import { WC_OWN, WC_OWN_ONLY, WC_AIR_SNAP, WC_GAS_IDS, WC_NODE1, WC_NODE2, WC_DILATE, wcLayout, wcLifeFull, wcGpuLayout } from '../shaders/world/copy.js';
 import { ELEMENTS, K, R, E } from '../elements.js';
 import { LOOK, CHANNELS } from '../gfx/materials.js';
 import { lifeScale, cTq, isLiquid, isConductor } from '../v2/layout.js';
@@ -172,6 +172,76 @@ export class WorldCopyTwin {
     const s = level === 1 ? 4 : 6, n = level === 1 ? L.n1 : L.n2;
     const i = (level === 1 ? 0 : L.occ2Rel * 32) + (x >> s) + n[0] * ((y >> s) + n[1] * (z >> s));
     return ((this.occ[i >> 5] >>> (i & 31)) & 1) !== 0;
+  }
+  /** Brick b's 64 words as the copy holds them. */
+  words(b) {
+    const e = this.table[this.bi(b)];
+    if (!(e & WC_MIXED)) return new Uint32Array(64).fill(e);
+    const s = ((e & ~WC_MIXED) >>> 0) * WC_BRICK_CELLS;
+    return this.pool.slice(s, s + 64);
+  }
+  /**
+   * The GPU-driven writeback (copy.js wcGatherFrag → decode → alloc → wcSeedFrag → dilate → occupancy) for a
+   * window of grid g at world-cell origin O: cand, the window bricks V2's record names (any superset of what
+   * changed), wordsOf(windowBrick) their 64 words now. Follows the kernels' lists and stamp marks over the
+   * padded window (wcGpuLayout). Returns { changed: world bricks written, nodes: changed level-1 nodes (world
+   * indices, the change list), seeds, dil, occ1, occ2 } (each list as the GPU's, deduped by its marks).
+   */
+  gpuWriteback(g, O, cand, wordsOf) {
+    const G = (this._G?.g === g ? this._G : (this._G = { g, ...wcGpuLayout(g), marks: null })), L = this.L, D = WC_DILATE;
+    G.marks ??= { dil: new Uint32Array(G.padB[0] * G.padB[1] * G.padB[2]), occ1: new Uint32Array(G.padN1[0] * G.padN1[1] * G.padN1[2]),
+      occ2: new Uint32Array(G.padN2[0] * G.padN2[1] * G.padN2[2]), chg: new Uint32Array(G.chgN[0] * G.chgN[1] * G.chgN[2]) };
+    const stamp = (this._stamp = (this._stamp ?? 0) + 1), ob = O.map((v) => v / WC_BRICK);
+    const mark = (arr, i) => { if (i < 0 || i >= arr.length) throw new Error(`gpuWriteback: mark ${i} outside ${arr.length}`); const was = arr[i]; arr[i] = Math.max(was, stamp); return was !== stamp; };
+    const idx = (r, n) => { if (r.some((v, k) => v < 0 || v >= n[k])) throw new Error(`gpuWriteback: ${r} outside ${n}`); return r[0] + n[0] * (r[1] + n[1] * r[2]); };
+    const OWN_BITS = Object.values(WC_OWN).reduce((a, b) => a | b, 0) >>> 0;
+    const out = { changed: [], nodes: [], seeds: [], dil: [], occ1: [], occ2: [] };
+    // decode + alloc
+    for (const wb of cand) {
+      const b = wb.map((v, k) => v + ob[k]), bi = this.bi(b), w = wordsOf(wb), was = this.words(b);
+      if (w.every((v, i) => v === was[i])) continue;
+      const own = wcOwnInfo(w, this.airT), prev = this.info[bi];
+      if (((prev ^ own) & OWN_BITS) === 0) this.info[bi] = ((prev & ~WC_OWN_ONLY) | (own & WC_OWN_ONLY)) >>> 0;
+      else { this.info[bi] = own; out.seeds.push(wb); }
+      out.changed.push(b);
+      const n = b.map((v) => v >> 2), r = n.map((v, k) => v - (ob[k] >> 2));
+      if (mark(G.marks.chg, idx(r, G.chgN))) out.nodes.push(n[0] + L.n1[0] * (n[1] + L.n1[1] * n[2]));
+      // the table and pool as commit's (the info above instead of its own)
+      const old = this.table[bi];
+      if (w.every((v) => v === w[0])) { this.table[bi] = w[0]; if (old & WC_MIXED) this.free.push((old & ~WC_MIXED) >>> 0); continue; }
+      const slot = old & WC_MIXED ? (old & ~WC_MIXED) >>> 0 : this.alloc();
+      this.table[bi] = (WC_MIXED | slot) >>> 0;
+      this.pool.set(w, slot * WC_BRICK_CELLS);
+    }
+    // seeds: the dilation's bricks and nodes
+    const lo = ob.map((v) => v - D);
+    for (const wb of out.seeds) for (let dz = -D; dz <= D; dz++) for (let dy = -D; dy <= D; dy++) for (let dx = -D; dx <= D; dx++) {
+      const q = [wb[0] + ob[0] + dx, wb[1] + ob[1] + dy, wb[2] + ob[2] + dz];
+      if (q.some((v, k) => v < 0 || v >= L.bricks[k])) continue;
+      if (mark(G.marks.dil, idx(q.map((v, k) => v - lo[k]), G.padB))) out.dil.push(q);
+      const n1 = q.map((v) => v >> 2), n2 = q.map((v) => v >> 4);
+      if (mark(G.marks.occ1, idx(n1.map((v, k) => v - (lo[k] >> 2)), G.padN1))) out.occ1.push(n1);
+      if (mark(G.marks.occ2, idx(n2.map((v, k) => v - (lo[k] >> 4)), G.padN2))) out.occ2.push(n2);
+    }
+    // the dilation (reads own bits only: any order), then the occupancy, level 1 before level 2
+    const dilated = out.dil.map((q) => wcDilated(this.info, L, q));
+    out.dil.forEach((q, i) => { this.info[this.bi(q)] = dilated[i]; });
+    const setBit = (i, on) => { if (on) this.occ[i >> 5] |= 1 << (i & 31); else this.occ[i >> 5] &= ~(1 << (i & 31)); };
+    for (const n of out.occ1) {
+      let on = false;
+      for (let z = n[2] * 4; z < Math.min(n[2] * 4 + 4, L.bricks[2]); z++) for (let y = n[1] * 4; y < Math.min(n[1] * 4 + 4, L.bricks[1]); y++) for (let x = n[0] * 4; x < Math.min(n[0] * 4 + 4, L.bricks[0]); x++)
+        if (this.info[this.bi([x, y, z])] & BRICK_INFO.MATTER) on = true;
+      setBit(n[0] + L.n1[0] * (n[1] + L.n1[1] * n[2]), on);
+    }
+    for (const n of out.occ2) {
+      let on = false;
+      for (let z = n[2] * 4; z < Math.min(n[2] * 4 + 4, L.n1[2]); z++) for (let y = n[1] * 4; y < Math.min(n[1] * 4 + 4, L.n1[1]); y++) for (let x = n[0] * 4; x < Math.min(n[0] * 4 + 4, L.n1[0]); x++) {
+        const i = x + L.n1[0] * (y + L.n1[1] * z);
+        if ((this.occ[i >> 5] >>> (i & 31)) & 1) on = true;
+      }
+      setBit(L.occ2Rel * 32 + n[0] + L.n2[0] * (n[1] + L.n2[1] * n[2]), on);
+    }
+    return out;
   }
   /** Bytes the GPU copy of this would hold: table, pool at capacity, info, occupancy, free list. */
   bytes(capacity = this.capacity) { return 4 * (this.L.nBricks + this.L.metaWords) + capacity * (WC_BRICK_CELLS + 1) * 4; }

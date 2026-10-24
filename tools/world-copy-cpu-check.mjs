@@ -236,6 +236,73 @@ function synthetic(seed) {
   return bad;
 }
 
+// ---------------------------------------------------------------- 2b. the GPU-driven writeback's twin
+// A window over a synthetic world moves about; random edits inside it; the writeback runs over V2's record as a
+// superset (the edited bricks, random untouched ones, sometimes the whole window). After each: every cell equals
+// the dense world, the info equals a full dilation, the occupancy a full rebuild; exactly the bricks whose words
+// changed were written and their nodes recorded; a writeback of the same record again changes nothing.
+function gpuPath(seed) {
+  let bad = 0;
+  const fail = (m) => { if (bad++ < 20) console.error('FAIL gpu path:', m); };
+  const r = rng(seed), size = [64, 32, 48], [X, Y, Z] = size, at = (x, y, z) => x + X * (y + Y * z);
+  const air = wcWordOf(E.EMPTY, 20, 0, 0, 0);
+  const pick = [E.STONE, E.SAND, E.WATER, E.WOOD, E.PLANT, E.STEAM, E.SMOKE, E.LAVA, E.OIL];
+  const dense = new Uint32Array(X * Y * Z);
+  for (let z = 0; z < Z; z++) for (let x = 0; x < X; x++) for (let y = 0; y < Y; y++)
+    dense[at(x, y, z)] = y < 6 ? spawnWord(E.STONE) : y < 9 ? wcWordOf(E.WATER, 20, 0, 0, 1) : air;
+  const brick = (b) => { const w = new Uint32Array(64); for (let i = 0; i < 64; i++) w[i] = dense[at(b[0] * 4 + (i & 3), b[1] * 4 + ((i >> 2) & 3), b[2] * 4 + (i >> 4))]; return w; };
+  const twin = new WorldCopyTwin(size, { capacity: 16 }), [BX, BY, BZ] = twin.L.bricks;
+  for (let bz = 0; bz < BZ; bz++) for (let by = 0; by < BY; by++) for (let bx = 0; bx < BX; bx++) twin.commit([bx, by, bz], brick([bx, by, bz]));
+  twin.dilateAll();
+  twin.occupancy();
+  const g = { nx: 32, ny: 32, nz: 24 }, GB = [8, 8, 6];
+  let changedTotal = 0, candTotal = 0, nodesTotal = 0, seedsTotal = 0;
+  for (let round = 0; round < 80; round++) {
+    const O = [16 * Math.floor(r() * 3), 0, 8 * Math.floor(r() * 4)];
+    const before = new Map();
+    const edited = new Set();
+    for (let e = 0, n = 1 + Math.floor(r() * 4); e < n; e++) {
+      const lo = [0, 1, 2].map((k) => O[k] + Math.floor(r() * [g.nx, g.ny, g.nz][k])), hi = lo.map((v, k) => Math.min(O[k] + [g.nx, g.ny, g.nz][k], v + 1 + Math.floor(r() * 6)));
+      const kind = Math.floor(r() * 4), id = pick[Math.floor(r() * pick.length)];
+      for (let z = lo[2]; z < hi[2]; z++) for (let y = lo[1]; y < hi[1]; y++) for (let x = lo[0]; x < hi[0]; x++) {
+        const b = `${(x >> 2) - O[0] / 4},${y >> 2},${(z >> 2) - O[2] / 4}`;
+        if (!edited.has(b)) edited.add(b);
+        // 3: rewritten exactly as it was (a write that changes nothing)
+        dense[at(x, y, z)] = kind === 0 ? air : kind === 1 ? spawnWord(id) : kind === 2 ? wcWordOf(E.WATER, 20, 0, 0, r() < 0.5 ? 1 : 0.5) : dense[at(x, y, z)];
+      }
+    }
+    // the record: the edited bricks plus untouched ones (a tile's box, the air's), or every window brick
+    const cand = new Map();
+    for (const k of edited) cand.set(k, k.split(',').map(Number));
+    if (r() < 0.15) { for (let z = 0; z < GB[2]; z++) for (let y = 0; y < GB[1]; y++) for (let x = 0; x < GB[0]; x++) cand.set(`${x},${y},${z}`, [x, y, z]); }
+    else for (let i = 0; i < 20; i++) { const b = [0, 1, 2].map((k) => Math.floor(r() * GB[k])); cand.set(b.join(), b); }
+    const ob = O.map((v) => v / 4), expect = new Set();
+    for (const wb of cand.values()) { const b = wb.map((v, k) => v + ob[k]); const now = brick(b), was = twin.words(b); if (now.some((v, i) => v !== was[i])) expect.add(b.join()); }
+    void before;
+    let out;
+    try { out = twin.gpuWriteback(g, O, [...cand.values()], (wb) => brick(wb.map((v, k) => v + ob[k]))); } catch (e) { fail(`round ${round}: ${e.message}`); break; }
+    candTotal += cand.size; changedTotal += out.changed.length; nodesTotal += out.nodes.length; seedsTotal += out.seeds.length;
+    const got = new Set(out.changed.map((b) => b.join()));
+    if (got.size !== expect.size || [...expect].some((k) => !got.has(k))) fail(`round ${round}: wrote ${got.size} bricks, ${expect.size} changed`);
+    const nodeOf = (k) => { const b = k.split(',').map(Number).map((v) => v >> 2); return b[0] + twin.L.n1[0] * (b[1] + twin.L.n1[1] * b[2]); };
+    const wantNodes = new Set([...expect].map(nodeOf));
+    if (out.nodes.length !== wantNodes.size || out.nodes.some((n) => !wantNodes.has(n))) fail(`round ${round}: ${out.nodes.length} change nodes, ${wantNodes.size} expected`);
+    // the same record again: nothing changed, nothing recorded
+    const again = twin.gpuWriteback(g, O, [...cand.values()], (wb) => brick(wb.map((v, k) => v + ob[k])));
+    if (again.changed.length || again.nodes.length || again.seeds.length) fail(`round ${round}: an unchanged writeback wrote ${again.changed.length} bricks`);
+  }
+  // cells, info, occupancy against the dense world rebuilt from scratch
+  for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) if (twin.cell(x, y, z) !== dense[at(x, y, z)]) { fail(`cell ${x},${y},${z}`); z = Z; break; }
+  const ref = new WorldCopyTwin(size, { capacity: 16 });
+  for (let bz = 0; bz < BZ; bz++) for (let by = 0; by < BY; by++) for (let bx = 0; bx < BX; bx++) ref.commit([bx, by, bz], brick([bx, by, bz]));
+  ref.dilateAll();
+  for (let i = 0; i < ref.info.length; i++) if (ref.info[i] !== twin.info[i]) { fail(`info of brick ${i}: ${twin.info[i].toString(16)} != ${ref.info[i].toString(16)}`); break; }
+  const occ = twin.occ.slice(), full = ref.occupancy();
+  for (let i = 0; i < full.length; i++) if (occ[i] !== full[i]) { fail(`occupancy word ${i}`); break; }
+  console.log(`gpu path: 80 writebacks over ${candTotal} candidate bricks, ${changedTotal} changed (${seedsTotal} own bits changed), ${nodesTotal} change nodes; repeats changed nothing`);
+  return bad;
+}
+
 // V2 cores and stored bricks to words
 function cores() {
   let bad = 0;
@@ -265,6 +332,7 @@ if (isMain) {
   bad += await naga();
   bad += synthetic(+opt('seed', 7));
   bad += cores();
+  bad += gpuPath(+opt('seed', 7) + 1);
   if (opt('census', null) === 'island') await census(+opt('stride', 4));
   console.log(bad ? `world-copy-cpu-check: ${bad} failures` : 'world-copy-cpu-check: ok');
   process.exit(bad ? 1 : 0);
