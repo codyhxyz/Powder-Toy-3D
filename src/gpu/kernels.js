@@ -33,18 +33,9 @@ export const PIPELINE_CONCURRENCY_MIN = 2;
 /**
  * The most. Past four at once each compile slows sharply (an M5, four performance cores of ten, one
  * cold v2block each: +6% two at once, +13% four, +50% six, +86% eight), and that stretches the longest
- * pipeline, the World's volume (~24 s cold), which is a World load's floor and has a 30 s deadline.
+ * pipeline, which has a 30 s deadline.
  */
 export const PIPELINE_CONCURRENCY_MAX = 4;
-/**
- * The bound's slots a World view pipeline's build takes while it compiles (outside), the longest
- * single build of a big map's load, its first frame's floor. Metal compiles a pipeline on one core,
- * and Chrome's copy of it (Tint's MSL, 8.8 s alone on an M5, 2026-10-22) slows with the compiles
- * beside it: 9.9 s three at once, 11.0 s four, 14.2 s six. A boot's main thread and the GPU
- * process take cores too (the user's cold Island: 20.2 s beside the boot's builds), so the
- * view's build leaves one slot more free: three compiles at once with it on a four-slot machine.
- */
-export const OUTSIDE_VIEW_SLOTS = 2;
 /** Cores left to the page's main thread, the browser's GPU process and the compositor while shaders compile. */
 export const PIPELINE_SPARE_CORES = 4;
 /**
@@ -145,8 +136,6 @@ export class PipelineCache {
     this.pumping = false;
     /** native compilations at once, foreground and idle builds alike (pipelineConcurrency) */
     this.concurrency = PIPELINE_CONCURRENCY;
-    /** native builds made outside this cache and still compiling (outside()) */
-    this.outsideBuilds = 0;
     /** @type {Map<string, number>} ms each named pipeline took to create */
     this.times = new Map();
   }
@@ -317,24 +306,9 @@ export class PipelineCache {
     }
   }
 
-  /**
-   * The cache's slots now: its bound less the builds made outside it (the World's volume:
-   * src/gfx/worldVolume.js), so the compiles at once stay within the bound; never under the floor.
-   */
-  get slots() { return Math.max(PIPELINE_CONCURRENCY_MIN, this.concurrency - this.outsideBuilds); }
 
-  /**
-   * Counts a native build made outside this cache against its bound while it compiles (a World
-   * volume's ~24 s cold build would otherwise share the performance cores with a full bound's).
-   * `slots`: the bound's slots it takes (OUTSIDE_VIEW_SLOTS for a World view's).
-   * @template T @param {Promise<T>} promise @param {number} [slots] @returns {Promise<T>} the same promise
-   */
-  outside(promise, slots = 1) {
-    this.outsideBuilds += slots;
-    const done = () => { this.outsideBuilds -= slots; this.pump(); };
-    Promise.resolve(promise).then(done, done);
-    return promise;
-  }
+  /** The cache's slots now: its bound, never under the floor. */
+  get slots() { return Math.max(PIPELINE_CONCURRENCY_MIN, this.concurrency); }
 
   pump() {
     // (a build an idle job starts below queues itself and pumps again: this loop starts it)

@@ -67,25 +67,21 @@ for (const dims of [[32, 32, 32], [128, 128, 128]]) {
   assert.equal(calls(sends, 'colPour'), 1, 'colSends: one colPour');
   assert.equal(calls(sends, 'colTransfer'), 1, 'colSends: one colTransfer');
   assert.equal(calls(sends, 'colSend'), 0, 'colSends: colSend\'s rule inline, not a second colPour');
-  for (const backend of ['box', 'world']) {
-    const caustic = body(volumeFrag({ nx: 32, ny: 32, nz: 32 }, { backend, view: 'realistic', detail: {} }), 'causticGain');
-    assert.equal(calls(caustic, 'rippleH'), 1, `${backend} causticGain: one rippleH in its taps' loop`);
-  }
+  const caustic = body(volumeFrag({ nx: 32, ny: 32, nz: 32 }, { view: 'realistic', detail: {} }), 'causticGain');
+  assert.equal(calls(caustic, 'rippleH'), 1, 'causticGain: one rippleH in its taps\' loop');
 }
 
-// 1c. the realistic volume's tracer (render.js traceView; the Box and World volume shaders, every material
-// view, detail level and the curved twin): one inlined copy of each big helper. matOf through planMat's one
+// 1c. the realistic volume's tracer (render.js traceView; every material view, detail level and the
+// curved twin): one inlined copy of each big helper. matOf through planMat's one
 // call (gfx/surface.js MatPlan), the reflection march through reflectResolve's (gfx/liquid.js reflectDefer),
-// one liquidInterface for the box wall and every bend, one shadeHit for a hit or the floor, and World's
-// probes read their four bands per tap lookup (worldAccess.js worldProbe). Cold Metal compile, CPU-timed
+// one liquidInterface for the box wall and every bend, one shadeHit for a hit or the floor. Cold Metal compile, CPU-timed
 // 2026-10-20 (medians of 3): World base 23.4 -> 9.9 s, Box base 5.3 -> 3.3 s. (The gate's base level is gone,
 // 2026-10-23: balanced, the default, stands in for it.)
 {
   const { volumeFrag, REALISTIC_LEVELS } = await import('../../src/shaders/render.js');
-  for (const backend of ['box', 'world']) for (const view of ['realistic', 'cozy']) for (const level of ['off', 'balanced', 'full']) for (const curved of [false, true]) {
-    const tag = `${backend} ${view} ${level}${curved ? ' curved' : ''}`;
-    const g = backend === 'world' ? { nx: 3072, ny: 384, nz: 1024 } : { nx: 32, ny: 32, nz: 32 };
-    const code = volumeFrag(g, { backend, view, detail: REALISTIC_LEVELS[level](), curved }).replace(/\/\/[^\n]*/g, '');   // (calls, not comments)
+  for (const view of ['realistic', 'cozy']) for (const level of ['off', 'balanced', 'full']) for (const curved of [false, true]) {
+    const tag = `${view} ${level}${curved ? ' curved' : ''}`;
+    const code = volumeFrag({ nx: 32, ny: 32, nz: 32 }, { view, detail: REALISTIC_LEVELS[level](), curved }).replace(/\/\/[^\n]*/g, '');   // (calls, not comments)
     const trace = body(code, 'traceView');
     assert.equal(calls(trace, 'planMat'), 1, `${tag}: traceView evaluates materials at one planMat call`);
     for (const f of ['crispSurf', 'gatherSurf', 'shadeSurf', 'shadeFloor', 'shadeFloorFw']) assert.equal(calls(trace, f), 0, `${tag}: traceView calls no ${f}`);
@@ -95,12 +91,6 @@ for (const dims of [[32, 32, 32], [128, 128, 128]]) {
     assert.equal(calls(trace, 'reflectResolve'), 1, `${tag}: the reflection is marched once`);
     assert.equal(calls(code, 'reflectHit'), 1, `${tag}: reflectHit's one call is reflectResolve's`);
     for (const f of ['liquidInterface', 'crystalInterface']) assert.equal(calls(body(code, f), 'reflectHit'), 0, `${tag}: ${f} defers its reflection`);
-    if (backend === 'world') {
-      const probe = body(code, 'probeAt');
-      assert.equal(calls(probe, 'worldProbe'), 1, `${tag}: probeAt reads the four bands together`);
-      assert.equal(calls(probe, 'probeTex'), 0, `${tag}: probeAt does no lookup per band`);
-      assert.equal(calls(body(code, 'worldProbe'), 'worldLightDescriptor'), 1, `${tag}: one descriptor lookup per tap`);
-    }
   }
 }
 

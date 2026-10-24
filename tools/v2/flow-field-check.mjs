@@ -209,11 +209,10 @@ assert.equal(snapshotSource(sim).flow, sim.flow, 'World\'s live copies take V2\'
 // ---- 1c. the ripples read no flow: the view clock's, the same text in V1's and V2's programs
 const rippleFns = ['liquidRipple', 'liquidCapillary', 'rippleH'];
 const programs = [0, 2].map(fixedReadFormat => volumeFrag(g, { fixedReadFormat, detail: { DETAIL_LIQ_RIPPLES: 1 } }));
-programs.push(volumeFrag(g, { backend: 'world', detail: { DETAIL_LIQ_RIPPLES: 1 } }));
 for (const name of rippleFns) {
   const texts = programs.map(code => body(code, name));
   for (const t of texts) {
-    assert.equal(t, texts[0], `${name}: the same in V1's, V2's and World's programs`);
+    assert.equal(t, texts[0], `${name}: the same in V1's and V2's programs`);
     assert(!/cellFlow|worldFlow|fetchB|flow\[|aeration|fetchNative/.test(t), `${name} reads no motion field`);
   }
 }

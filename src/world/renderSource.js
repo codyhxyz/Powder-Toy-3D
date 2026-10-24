@@ -1,14 +1,10 @@
 import { copyRuns } from '../gpu/copyRuns.js';
 import { BRICK, cellSlot, slotCell, gridDims } from '../shaders/common.js';
 import { decodeBrick, BRICK_FLOATS } from './store.js';
-import { recordWorldSourceCut } from './sourceCut.js';
 import { nativePackWGSL, NATIVE_PACK_LAYOUT, NativePackParams } from '../shaders/renderSource.js';
 import { fold } from '../gpu/kernels.js';
 
-export const SOURCE_CORE = 32;
-export const SOURCE_BRICK = BRICK;
 export const SOURCE_RANK = Object.freeze({ unknown: 0, generated: 1, saved: 2, captured: 3, live: 4 });
-const RANK_NAMES = Object.freeze(Object.keys(SOURCE_RANK).reduce((names, k) => { names[SOURCE_RANK[k]] ??= k; return names; }, []));
 export const SOURCE_GRID = Object.freeze(gridDims({ nx: 32, ny: 32, nz: 32 }));
 const USAGE = 0x80 | 0x08 | 0x04;
 const MAX_BINDING = 128 * 1024 * 1024;
@@ -22,16 +18,13 @@ export function intersectBounds(a, b) {
   const lo = a.lo.map((v, i) => Math.max(v, b.lo[i])), hi = a.hi.map((v, i) => Math.min(v, b.hi[i]));
   return lo.every((v, i) => v < hi[i]) ? { lo, hi } : null;
 }
-// Physics V2 running the window: World's source reads V2's cells natively. Its live and leaving
-// copies (and the tree producer's read of the live cells) pack the window's cores, with the air and
-// foam the Box's draw reads beside them, straight into the source's targets through the read group
-// (v2/physics.js readGroup: format 2, the cells and dynamics' current coarse air), by the decoders
-// Box's format-2 draw reads them with (shaders/renderSource.js nativePackWGSL: compactA, viewRead.js
-// nativeMotionB, fetchNativeAeration). Nothing is exported to V1's state for it: before, every V2
-// tick exported V2's cells into V1's A (v2/physics.js exportLegacy), wrote the air and the foam
-// into two more window-sized buffers, and copied the three into the source. Different code, the
-// same words, so the same picture (CLAUDE.md "Same features in every world"; the GPU pixel
-// comparison in the v2f/worldnative report). V1's copies below are V1's alone.
+// Physics V2 running the window: the source reads V2's cells natively. Its leaving copies (and the
+// tree producer's read of the live cells) pack the window's cores straight into the source's
+// targets through the read group (v2/physics.js readGroup: format 2), by the decoders the volume's
+// format-2 draw reads them with (shaders/renderSource.js nativePackWGSL). The source keeps a big
+// map's cells past the window (store, captured slabs, generated trees) for the window's moves and
+// the tree producer; the live window is not copied into it (nothing reads it there since the
+// big-map renderer went, 2026-10-24). V1's copies below are V1's alone.
 const NATIVE_FOAM = Object.freeze({ label: 'V2 foam (packed by the native source pack)' });   // a native source's aeration: packed, never copied
 const nativePacks = new WeakMap();   // sim → { kernel, layout, groups, dummy }
 /** Whether the source reads sim's cells natively: V2 runs it (sim.compact, built). */
@@ -83,134 +76,6 @@ function recordNativePack(frame, src, dst, box) {
 }
 const extentOf = (d) => ({ lo: d.origin, hi: d.origin.map((v, i) => v + [d.g.nx, d.g.ny, d.g.nz][i]) });
 
-// A content delta (WorldRenderSource.changesSince): the bricks the journal's entries since a token
-// cover, in the order the first entry that reached each one reached it (journal order, then z, y, x
-// in its box). V2 journaled its whole window every step (now its tick's change: v2/physics.js
-// _reportChanges), so a span was mostly one box many times over: expanding every entry into a string-keyed Map was the World renderer's top
-// JS cost after load, 2.6 s of 20 s on Island and 3.9 s on Descent (2026-10-22). Here a span is its
-// distinct boxes (an entry inside an earlier one adds nothing), and changedBricks is built from them
-// once, when first read: membership (includes) and the 32-cell cores (coreKeys) read the boxes.
-const DELTA_BOXES_TESTED = 64;   // earlier boxes an entry is tested against for containment (bounds the scan; the stamp keeps the result exact)
-const DELTA_BOXES_SCANNED = 16;  // boxes includes() scans directly; past this many it indexes the bricks once
-const CORE_BRICKS = SOURCE_CORE / BRICK;
-let deltaSeen = new Uint8Array(0);   // a span's bricks already listed (module scratch: a delta builds synchronously, then clears it)
-// The last built brick list and its boxes: a later span of the same boxes (V2's window, tick after tick)
-// lists the same bricks, so it is that frozen list again, not 80k new arrays (Descent, 2026-10-22), and
-// WorldFields finds it the change it planned last (fields.js _owners).
-let deltaListed = { boxes: null, bricks: null };
-const sameBoxes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i] || x.every((v, k) => v === b[i][k]));
-export const changesSinceStats = { calls: 0, built: 0, entries: 0, boxes: 0, bricksVisited: 0, bricksListed: 0 };   // CPU check counters
-// A native source's live refresh (WorldRenderSource.refreshLiveCopy) packs only what V2 journaled since its
-// last copy: the whole window's pack every frame V2 ticked cost 1.5 ms of JS a frame and a window-sized GPU
-// pack while anything moved (a pool on Pharmakokinetiks, 2026-10-23). Past LIVE_DELTA_BOXES boxes, or boxes
-// holding more than LIVE_DELTA_SHARE of the window, one whole copy is recorded instead (fewer dispatches).
-const LIVE_DELTA_BOXES = 64;
-const LIVE_DELTA_SHARE = 0.5;
-export const liveDeltaStats = { entries: 0, boxes: 0 };   // CPU check counters (kept apart from changesSince's)
-// A journal box (noteContentChange): { loX, loY, loZ, hiX, hiY, hiZ } of a { lo, hi } or { min, max }, or null if it isn't one.
-function boxRecord(change) {
-  const lo = change && !change.global && (change.lo || change.min);
-  const hi = change && (change.lo ? change.hi : change.max);
-  const bounded = Array.isArray(lo) && Array.isArray(hi) && lo.length === 3 && hi.length === 3 &&
-    Number.isFinite(lo[0]) && Number.isFinite(lo[1]) && Number.isFinite(lo[2]) &&
-    Number.isFinite(hi[0]) && Number.isFinite(hi[1]) && Number.isFinite(hi[2]) &&
-    lo[0] <= hi[0] && lo[1] <= hi[1] && lo[2] <= hi[2];
-  return bounded ? { loX: lo[0], loY: lo[1], loZ: lo[2], hiX: hi[0], hiY: hi[1], hiZ: hi[2] } : null;
-}
-const boundsOf = (parts) => parts.reduce((b, p) => ({ loX: Math.min(b.loX, p.loX), loY: Math.min(b.loY, p.loY), loZ: Math.min(b.loZ, p.loZ),
-  hiX: Math.max(b.hiX, p.hiX), hiY: Math.max(b.hiY, p.hiY), hiZ: Math.max(b.hiZ, p.hiZ) }));
-const sameBox = (a, b) => a.loX === b.loX && a.loY === b.loY && a.loZ === b.loZ && a.hiX === b.hiX && a.hiY === b.hiY && a.hiZ === b.hiZ;
-// Two journal entries that reach the same bricks in the same order: the same box, or the same boxes in order.
-function sameChange(a, b) {
-  if (!a.boxes !== !b.boxes) return false;
-  if (!a.boxes) return sameBox(a, b);
-  return a.boxes.length === b.boxes.length && a.boxes.every((x, i) => sameBox(x, b.boxes[i]));
-}
-function contentDelta(token, global, boxes) {
-  let bricks = null, index = null;
-  const list = () => {
-    if (bricks) return bricks;
-    if (deltaListed.boxes && sameBoxes(deltaListed.boxes, boxes)) return (bricks = deltaListed.bricks);
-    const out = [];
-    if (boxes.length === 1) {
-      const [x0, y0, z0, x1, y1, z1] = boxes[0];
-      for (let z = z0; z < z1; z++) for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) out.push(Object.freeze([x, y, z]));
-      changesSinceStats.bricksVisited += out.length;
-    } else if (boxes.length) {
-      // Overlapping boxes: stamp each brick of their bounding box the first time a box reaches it.
-      const lo = boxes[0].slice(0, 3), hi = boxes[0].slice(3);
-      for (const b of boxes) for (let k = 0; k < 3; k++) { lo[k] = Math.min(lo[k], b[k]); hi[k] = Math.max(hi[k], b[k + 3]); }
-      const w = hi[0] - lo[0], h = hi[1] - lo[1], volume = w * h * (hi[2] - lo[2]);
-      if (deltaSeen.length < volume) deltaSeen = new Uint8Array(volume);
-      const seen = deltaSeen;
-      for (const [x0, y0, z0, x1, y1, z1] of boxes) {
-        for (let z = z0; z < z1; z++) for (let y = y0; y < y1; y++) {
-          const row = w * ((y - lo[1]) + h * (z - lo[2])) - lo[0];
-          for (let x = x0; x < x1; x++) if (!seen[row + x]) { seen[row + x] = 1; out.push(Object.freeze([x, y, z])); }
-        }
-        changesSinceStats.bricksVisited += (x1 - x0) * (y1 - y0) * (z1 - z0);
-      }
-      seen.fill(0, 0, volume);
-    }
-    changesSinceStats.bricksListed += out.length;
-    bricks = Object.freeze(out);
-    deltaListed = { boxes, bricks };
-    return bricks;
-  };
-  const inBox = (b, x, y, z) => x >= b[0] && x < b[3] && y >= b[1] && y < b[4] && z >= b[2] && z < b[5];
-  const delta = { token, global };
-  Object.defineProperty(delta, 'changedBricks', { enumerable: true, get: list });
-  // Non-enumerable: a delta still compares equal to {token, global, changedBricks}.
-  Object.defineProperties(delta, {
-    // Whether brick [x, y, z] is one of changedBricks (a global delta lists none).
-    includes: { value: (brick) => {
-      const x = brick[0], y = brick[1], z = brick[2];
-      if (!Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(z)) return false;
-      if (boxes.length <= DELTA_BOXES_SCANNED) { for (let i = 0; i < boxes.length; i++) if (inBox(boxes[i], x, y, z)) return true; return false; }
-      index ??= new Set(list().map(brickKeyOf));
-      return index.has(`${x},${y},${z}`);
-    } },
-    // The keys ('x,y,z' of their cell origins) of the 32-cell cores changedBricks touch.
-    coreKeys: { value: () => {
-      const keys = new Set(), c = (v) => Math.floor(v / CORE_BRICKS);
-      for (const [x0, y0, z0, x1, y1, z1] of boxes)
-        for (let z = c(z0); z <= c(z1 - 1); z++) for (let y = c(y0); y <= c(y1 - 1); y++) for (let x = c(x0); x <= c(x1 - 1); x++)
-          keys.add(`${x * SOURCE_CORE},${y * SOURCE_CORE},${z * SOURCE_CORE}`);
-      return keys;
-    } },
-  });
-  return Object.freeze(delta);
-}
-const brickKeyOf = (b) => `${b[0]},${b[1]},${b[2]}`;
-// The span's distinct brick boxes [x0, y0, z0, x1, y1, z1] (journal order), or null when an entry is global.
-function journalBoxes(journal, from, size, stats = changesSinceStats) {
-  // Revisions rise along the journal (noteContentChange): the span starts at the first one past from.
-  let lo = 0, hi = journal.length;
-  while (lo < hi) { const mid = (lo + hi) >>> 1; if (journal[mid].revision > from) hi = mid; else lo = mid + 1; }
-  const boxes = [];
-  stats.entries += journal.length - lo;
-  for (let i = lo; i < journal.length; i++) {
-    const entry = journal[i];
-    if (entry.global) return null;
-    // (an entry of several boxes, a V2 tick's: its boxes in order)
-    for (const part of entry.boxes ?? [entry]) {
-      const loX = Math.max(0, part.loX), loY = Math.max(0, part.loY), loZ = Math.max(0, part.loZ);
-      const hiX = Math.min(size[0], part.hiX), hiY = Math.min(size[1], part.hiY), hiZ = Math.min(size[2], part.hiZ);
-      if (!(loX < hiX && loY < hiY && loZ < hiZ)) continue;
-      const box = [Math.floor(loX / BRICK), Math.floor(loY / BRICK), Math.floor(loZ / BRICK), Math.ceil(hiX / BRICK), Math.ceil(hiY / BRICK), Math.ceil(hiZ / BRICK)];
-      // (the first and the latest boxes: the window's, and where it walked to)
-      let inside = false;
-      const n = boxes.length, half = DELTA_BOXES_TESTED / 2;
-      for (let k = 0; k < n && !inside; k = k + 1 === half && n > DELTA_BOXES_TESTED ? n - half : k + 1) {
-        const b = boxes[k];
-        inside = box[0] >= b[0] && box[1] >= b[1] && box[2] >= b[2] && box[3] <= b[3] && box[4] <= b[4] && box[5] <= b[5];
-      }
-      if (!inside) boxes.push(Object.freeze(box));
-    }
-  }
-  stats.boxes += boxes.length;
-  return Object.freeze(boxes);
-}
 // A native source's cells over runs (planSourceCopies' plan from src into dst over box): the pack
 // writes every cell of box ∩ src ∩ dst, so the plan must hold all of them (a live or leaving copy's
 // does: nothing outranks it); then the aux the pack doesn't write (flow, decoration) by copy.
@@ -294,22 +159,6 @@ export function planSourceCopies(src, dst, bounds, accept = ACCEPT_ALL, acceptBr
   }
   return merged;
 }
-// Copy plans of whole cores (no unknown rank) by their geometry relative to
-// the destination: runs are slot offsets, the same at any common translation.
-// A field scratch (fields.js, 64 cells at a core - 16) meets 27 offsets; other
-// geometry is bounded by forgetting them all past this many.
-const WHOLE_PLANS_KEPT = 1024;
-const wholePlans = new Map();
-function wholeCopies(src, dst, bounds) {
-  const rel = (v) => v.map((n, i) => n - dst.origin[i]);
-  const key = `${src.g.nx},${src.g.ny},${src.g.nz};${dst.g.nx},${dst.g.ny},${dst.g.nz};${rel(src.origin)};${rel(bounds.lo)};${rel(bounds.hi)}`;
-  let runs = wholePlans.get(key);
-  if (!runs) {
-    if (wholePlans.size >= WHOLE_PLANS_KEPT) wholePlans.clear();
-    wholePlans.set(key, runs = Object.freeze(planSourceCopies(src, dst, bounds).map(Object.freeze)));
-  }
-  return runs;
-}
 function destinationSpans(runs) {
   const out = [];
   for (const r of [...runs].sort((a, b) => a.dst - b.dst)) {
@@ -350,62 +199,16 @@ export class WorldRenderSource {
   constructor(win, { context = null } = {}) {
     this.win = win; this.context = context ?? win; this.ownedContext = context;
     this.sim = win.sim; this.gpu = win.gpu;
-    this.chunks = new Map(); this.epoch = win.epoch; this.revision = 0; this.contentRevision = 0;
-    this.disposed = false; this.liveVersion = -1; this.minimumStaticRevision = 0;
+    this.chunks = new Map(); this.epoch = win.epoch; this.revision = 0;
+    this.disposed = false; this.minimumStaticRevision = 0;
     this.unsubscribeData = !context && win.scene.subscribeData?.(() => this.invalidateGenerated());
     this.auxContract = Object.freeze({ flow: 'original vec2u/slot', aeration: 'original vec2u/slot; captured current copy',
       deco: 'original RGBA8 u32/slot', persistence: 'A/B only; aux remains GPU-owned after store commit',
       histories: 'EMA/GI are renderer-owned; phase 2 must supply persistent world ownership',
       sourceStyle: 'scene importManifest/appearanceWords remain scene-owned; SourceStyle is view policy, not residency'  });
   }
-  token() { return Object.freeze({ epoch: this.epoch, revision: this.revision, contentRevision: this.contentRevision }); }
+  token() { return Object.freeze({ epoch: this.epoch, revision: this.revision }); }
   nextRevision() { return ++this.revision; }
-  // Semantic writes, never ownership transfers. Advance authority too so a
-  // producer awaiting readiness cannot publish over an intervening user edit.
-  // change: a box ({ lo, hi } or { min, max }, world cells, hi exclusive), several
-  // as one change ({ boxes: [box, ...] }: a V2 tick's, v2/physics.js _reportChanges),
-  // or { global: true }; none is the live window.
-  noteContentChange(change = sourceBounds(this.sim)) {
-    if (this.ownedContext) throw new Error('An owned Source cut cannot accept current writes');
-    if (this.disposed) return;
-    this.contentRevision++;
-    this.nextRevision();
-    // Engine writers without a smaller box write only the live simulation.
-    // Scene/global writers must explicitly declare global, never origin moves.
-    const many = !!change && !change.global && Array.isArray(change.boxes);
-    const parts = many ? change.boxes.map(boxRecord) : [change && !change.global ? boxRecord(change) : null];
-    const bounded = parts.length > 0 && parts.every(Boolean);
-    const journal = this.changeJournal ??= [];
-    // Flat primitive records need one freeze, own no caller arrays, and can be
-    // shared by cuts that copy only journal membership.
-    const entry = Object.freeze(!bounded ? { revision: this.contentRevision, global: true } :
-      !many ? { revision: this.contentRevision, global: false, ...parts[0] } :
-      { revision: this.contentRevision, global: false, ...boundsOf(parts), boxes: Object.freeze(parts.map(Object.freeze)) });
-    // The same change as the latest entry replaces it: a span holds both or the
-    // newer alone, so it reaches the same bricks in the same place in journal
-    // order. V2 notes its change every tick (v2/physics.js _reportChanges), and the
-    // journal grew by one entry a tick for as long as a World ran (cuts that copied
-    // it keep theirs).
-    const last = journal.at(-1);
-    if (bounded && last && !last.global && last.revision === entry.revision - 1 && sameChange(last, entry)) journal[journal.length - 1] = entry;
-    else journal.push(entry);
-  }
-  // The bricks changed since token (contentToken), or global. Every caller in a
-  // transaction may ask for the same span: the latest answer is kept until the
-  // journal or the token moves (the delta is frozen; its bricks are shared).
-  changesSince(token) {
-    changesSinceStats.calls++;
-    if (!token || token.epoch !== this.epoch || token.sourceRevision > this.contentRevision) return contentDelta(this.contentToken(), true, []);
-    const journal = this.changeJournal ?? [], size = this.context.size, m = this._changesSinceMemo;
-    if (m && m.journal === journal && m.length === journal.length && m.last === journal.at(-1) && m.from === token.sourceRevision &&
-        m.epoch === this.epoch && m.contentRevision === this.contentRevision && m.size[0] === size[0] && m.size[1] === size[1] && m.size[2] === size[2]) return m.delta;
-    changesSinceStats.built++;
-    const boxes = journalBoxes(journal, token.sourceRevision, size);
-    const delta = contentDelta(this.contentToken(), !boxes, boxes ?? []);
-    this._changesSinceMemo = { journal, length: journal.length, last: journal.at(-1), from: token.sourceRevision, epoch: this.epoch,
-      contentRevision: this.contentRevision, size: [...size], delta };
-    return delta;
-  }
   recordUpload(frame, target, offset, data) {
     const buffer = this.gpu.createBuffer({ label: 'immutable world source upload', size: data.byteLength, usage: 4, mappedAtCreation: true });
     new Uint8Array(buffer.getMappedRange()).set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
@@ -413,105 +216,7 @@ export class WorldRenderSource {
     try { frame.copy(buffer, 0, target, offset, data.byteLength); }
     finally { this._retire(buffer); }
   }
-  assertBoundedWake(regions) {
-    // The cores each region touches, not every cached chunk per region (a
-    // batched World load checks once per batch, 2026-10-21).
-    // A core's whole-trust scan once per check, not once per region: a batch's
-    // ~50 field regions overlap the same cores (Island, 2026-10-22). Never kept
-    // between checks: trust is read as it is now.
-    const trusted = new Map();
-    for (const region of regions) for (const c of this._chunksIn(region)) {
-      let all = trusted.get(c);
-      if (all === undefined) trusted.set(c, all = !c.wakeTrusted.includes(0));
-      if (all) continue;
-      const box = intersectBounds(region, { lo: c.origin, hi: c.origin.map(v => v + 32) });
-      if (!box) continue;
-      for (let z = box.lo[2]; z < box.hi[2]; z++) for (let y = box.lo[1]; y < box.hi[1]; y++) for (let x = box.lo[0]; x < box.hi[0]; x++) {
-        const slot = cellSlot(c.g, x - c.origin[0], y - c.origin[1], z - c.origin[2]);
-        if ((c.aux[slot] & 2) && !c.wakeTrusted[slot]) throw new Error('Untrusted world aeration producer');
-      }
-    }
-  }
-  contentToken() { return Object.freeze({ epoch: this.epoch, sourceRevision: this.contentRevision }); }
-  recordCut(frame, options) {
-    if (this.ownedContext) throw new Error('Capture cuts from the authoritative mutable Source');
-    return recordWorldSourceCut(this, frame, options);
-  }
   _retire(buffer) { return this.ownedContext ? this.ownedContext.retire(buffer) : this.sim._retire(buffer); }
-  // Provider adapter contract. jetValidity must be attested by the adapter
-  // after checking wake provenance; raw storage alone cannot prove bounded jets.
-  snapshotForFields({ jetValidity, refreshLive = true } = {}) {
-    if (refreshLive) this.refreshLiveCopy(this.gpu.frame);
-    const token = this.contentToken();
-    const isCurrent = () => !this.disposed && (this.ownedContext ? this.ownedContext.isValid() : token.epoch === this.epoch && token.sourceRevision === this.contentRevision);
-    const assertCurrent = () => { if (!isCurrent()) throw new Error('Stale world content snapshot'); };
-    // World auxiliary ownership is not the local simulation's enable switch:
-    // captured outside foam remains authoritative, absent cells gather zero.
-    return Object.freeze({ ...token, jetValidity, aerationActive: true,
-      scene: this.context.scene, appearanceWords: this.context.scene.appearanceWords ?? null,
-      importManifest: this.context.scene.importManifest ?? null, auxContract: this.auxContract,
-      isCurrent,
-      assertComplete: (regions) => { assertCurrent(); return this.assertComplete(regions); },
-      recordGatherRaw: (frame, request) => {
-        assertCurrent();
-        if (request.sourceRevision !== token.sourceRevision) throw new Error('Mismatched world content revision');
-        return this.recordGatherRaw(frame, request);
-      } });
-  }
-  assertComplete(regions) {
-    if(this.ownedContext&&!this.ownedContext.isValid())throw new Error('Invalid owned Source cut');
-    for (const region of regions) {
-      const box = intersectBounds(region, { lo: [0, 0, 0], hi: this.context.size });
-      if (!box) continue;
-      // Ownership is stable during this synchronous preflight. Check the cut
-      // once above, then scan the exact per-cell ranks without lookup objects.
-      for(const origin of this._cores(box)){
-        const c=this.chunks.get(origin.join(','));
-        if(!c)throw new Error('Incomplete in-world raw source');
-        // A core without one unknown rank holds every box in it. A rank turns
-        // unknown only at the core's birth and in invalidateGenerated, which
-        // clears c.whole, so a core found whole stays whole: scanning every
-        // core per check took 1.7 s of a Descent load (2026-10-21).
-        if(c.whole||!c.rank.includes(SOURCE_RANK.unknown)){c.whole=true;continue;}
-        const lo=box.lo.map((n,k)=>Math.max(0,n-origin[k]));
-        const hi=box.hi.map((n,k)=>Math.min(SOURCE_CORE,n-origin[k]));
-        if(lo.every(n=>n===0)&&hi.every(n=>n===SOURCE_CORE)){
-          throw new Error('Incomplete in-world raw source');
-        }else if(lo.every(n=>n%BRICK===0)&&hi.every(n=>n%BRICK===0)){
-          // Field halos cut cores at brick boundaries: scan all 64 exact ranks,
-          // not a cell address calculation per rank.
-          for(let z=lo[2];z<hi[2];z+=BRICK)for(let y=lo[1];y<hi[1];y+=BRICK)for(let x=lo[0];x<hi[0];x+=BRICK){
-            const slot=cellSlot(c.g,x,y,z);
-            if(c.rank.subarray(slot,slot+64).includes(SOURCE_RANK.unknown))throw new Error('Incomplete in-world raw source');
-          }
-        }else for(let z=lo[2];z<hi[2];z++)for(let y=lo[1];y<hi[1];y++)for(let x=lo[0];x<hi[0];x++){
-          if(c.rank[cellSlot(c.g,x,y,z)]===SOURCE_RANK.unknown)throw new Error('Incomplete in-world raw source');
-        }
-      }
-    }
-    return true;
-  }
-  recordGatherRaw(frame, { resources, g, scratchOrigin, sourceRevision, stateCopy = 0, aerationCopy = 0 }) {
-    if(this.ownedContext&&!this.ownedContext.isValid())throw new Error('Invalid owned Source cut');
-    if (sourceRevision !== this.contentRevision) throw new Error('Stale world content gather');
-    const bounds = { lo: scratchOrigin, hi: scratchOrigin.map((v, i) => v + [g.nx, g.ny, g.nz][i]) };
-    this.assertComplete([bounds]); // preflight before encoding ANY work
-    const dst = { ...resources, g, origin: [...scratchOrigin], copy: stateCopy, aerCopy: aerationCopy };
-    // Outside-world scratch and explicitly absent aux are zero, not stale data.
-    for (const name of ['A', 'B']) frame.clear(resources[name], stateCopy * g.slots * 16, g.slots * 16);
-    if (resources.aeration) frame.clear(resources.aeration, aerationCopy * g.slots * 8, g.slots * 8);
-    for (const c of this._chunksIn(bounds)) {
-      // A core with no unknown rank copies every cell the box holds: its plan
-      // is the box's geometry alone, shared by every gather at that offset.
-      // Planning each anew was a fifth of a World load's CELL JS (2026-10-22).
-      const runs = c.whole ? wholeCopies(c, dst, bounds) : planSourceCopies(c, dst, bounds, (_d, p) => c.rank[cellSlot(c.g, ...p.map((v, i) => v - c.origin[i]))] !== SOURCE_RANK.unknown, (_d,p)=>{
-        const slot=cellSlot(c.g,p[0]-c.origin[0],p[1]-c.origin[1],p[2]-c.origin[2]);
-        const ranks=c.rank.subarray(slot,slot+64);
-        return !ranks.includes(SOURCE_RANK.unknown)?true:ranks.some(n=>n!==SOURCE_RANK.unknown)?null:false;
-      });
-      recordSourceCopies(frame, c, dst, runs);
-    }
-  }
   _buffer(label, bytes) {
     if (bytes > Math.min(MAX_BINDING, this.gpu.device?.limits?.maxStorageBufferBindingSize ?? MAX_BINDING)) throw new Error('raw source buffer exceeds default storage binding limit');
     return this.gpu.createBuffer({ label: `world source ${label}`, size: bytes, usage: USAGE });
@@ -604,58 +309,6 @@ export class WorldRenderSource {
     }
     return cells;
   }
-  recordLiveCopy(frame, sim = this.sim, bounds = sourceBounds(sim)) {
-    if (this.ownedContext) throw new Error('A Source cut cannot read newer live state');
-    // (V2: until its pack is built nothing is copied, and the copy stays wanted: needsLiveCopy)
-    if (isNativeSource(sim) && !nativeSourceReady(sim)) return 0;
-    const revision = this.nextRevision(), src = liveSource(sim, sim.origin);
-    this._record(frame, src, bounds, SOURCE_RANK.live, revision);
-    this.liveVersion = sim.version; this.liveContentRevision = this.contentRevision; this.liveSnapshot = src;
-    return revision;
-  }
-  // The live copy brought up to date for a reader (the window's frame, a CELL batch, a cut, a fields
-  // snapshot). A native source whose window and buffers are the last copy's packs only the boxes
-  // journaled since it (_liveDelta); anything else, the whole window (recordLiveCopy).
-  refreshLiveCopy(frame = this.gpu.frame, sim = this.sim) {
-    if (!this.needsLiveCopy(sim)) return 0;
-    const boxes = this._liveDelta(sim);
-    if (!boxes) return this.recordLiveCopy(frame, sim);
-    const src = liveSource(sim, sim.origin), revision = boxes.length ? this.nextRevision() : 0;
-    for (const box of boxes) this._record(frame, src, box, SOURCE_RANK.live, revision);
-    this.liveVersion = sim.version; this.liveContentRevision = this.contentRevision; this.liveSnapshot = src;
-    return revision;
-  }
-  // What a native source's live refresh must pack: the window's part of the boxes journaled since the
-  // last live copy ([] for none), or null for the whole window (a new window, owner or buffers, a
-  // global change, or a change past LIVE_DELTA_BOXES boxes or LIVE_DELTA_SHARE of the window). V2's
-  // ticks journal every brick they write (v2/physics.js _reportChanges), so a tick alone needs nothing.
-  _liveDelta(sim) {
-    const a = this.liveSnapshot;
-    if (!a?.nativeSim || !isNativeSource(sim) || !nativeSourceReady(sim)) return null;
-    const b = snapshotSource(sim);
-    if (a.nativeSim !== b.nativeSim || a.nativeOwner !== b.nativeOwner || a.edit !== b.edit || a.flow !== b.flow ||
-        a.g.nx !== b.g.nx || a.g.ny !== b.g.ny || a.g.nz !== b.g.nz || a.origin.some((v, i) => v !== b.origin[i]) ||
-        a.deco?.buffer !== b.deco?.buffer || a.deco?.offset !== b.deco?.offset) return null;
-    if (this.liveContentRevision === this.contentRevision) return [];
-    const bricks = journalBoxes(this.changeJournal ?? [], this.liveContentRevision, this.context.size, liveDeltaStats);
-    if (!bricks || bricks.length > LIVE_DELTA_BOXES) return null;
-    const window = sourceBounds(sim), boxes = [];
-    let cells = 0;
-    for (const [x0, y0, z0, x1, y1, z1] of bricks) {
-      const box = intersectBounds({ lo: [x0 * BRICK, y0 * BRICK, z0 * BRICK], hi: [x1 * BRICK, y1 * BRICK, z1 * BRICK] }, window);
-      if (!box) continue;
-      boxes.push(box); cells += box.hi.reduce((n, v, i) => n * (v - box.lo[i]), 1);
-    }
-    return cells > LIVE_DELTA_SHARE * sim.g.nx * sim.g.ny * sim.g.nz ? null : boxes;
-  }
-  needsLiveCopy(sim = this.sim) {
-    if (this.ownedContext) return false;
-    const a = this.liveSnapshot, b = snapshotSource(sim);
-    return this.liveContentRevision !== this.contentRevision || this.liveVersion !== sim.version || !a || a.A !== b.A || a.B !== b.B || a.copy !== b.copy ||
-      a.nativeOwner !== b.nativeOwner ||
-      a.origin.some((v, i) => v !== b.origin[i]) || a.flow !== b.flow || a.aeration !== b.aeration ||
-      a.aerCopy !== b.aerCopy || a.aerGeneration !== b.aerGeneration || a.deco?.buffer !== b.deco?.buffer || a.deco?.offset !== b.deco?.offset;
-  }
   recordLeavingCopy(frame, sim, bounds, oldOrigin = sim.origin) {
     if (this.ownedContext) throw new Error('A Source cut cannot transfer current authority');
     if (isNativeSource(sim) && !nativeSourceReady(sim)) throw new Error('native world source pack is not ready');
@@ -693,7 +346,7 @@ export class WorldRenderSource {
   invalidateGenerated() {
     if (this.ownedContext) throw new Error('A Source cut freezes generator inputs');
     if (this.disposed) return;
-    this.noteContentChange({ global: true });
+    this.nextRevision();
     this.minimumStaticRevision = this.revision;
     for (const c of this.chunks.values()) {
       for (let i = 0; i < c.rank.length; i++) if (c.rank[i] === SOURCE_RANK.generated) {
@@ -734,18 +387,6 @@ export class WorldRenderSource {
       for (const r of runs) this.recordUpload(this.gpu.frame, c.deco.buffer, r.dst * 4, words.subarray(r.src, r.src + r.cells));
     }
   }
-  getSource(cell) {
-    if(this.ownedContext&&!this.ownedContext.isValid())throw new Error('Invalid owned Source cut');
-    // (a lighting record reads two a row: no arrays, joins or key search per read)
-    const x = cell[0], y = cell[1], z = cell[2];
-    const c = this.chunks.get(`${Math.floor(x / 32) * 32},${Math.floor(y / 32) * 32},${Math.floor(z / 32) * 32}`);
-    if (!c) return { kind: 'unknown', epoch: this.epoch };
-    const slot = cellSlot(c.g, x - c.origin[0], y - c.origin[1], z - c.origin[2]), rank = c.rank[slot];
-    return { kind: RANK_NAMES[rank], chunk: c, slot, revision: c.revisions[slot],
-      pending: !!c.pending[slot], aux: c.aux[slot], epoch: this.epoch };
-  }
-  get bindings() { return { epoch: this.epoch, revision: this.revision, contentRevision: this.contentRevision, chunks: this.chunks, auxContract: this.auxContract,
-    importManifest: this.context.scene.importManifest ?? null, appearanceWords: this.context.scene.appearanceWords ?? null, scene: this.context.scene }; }
   // Restore captured cells (including already committed exact source) AFTER
   // fill/store and BEFORE publishing live authority. No CPU readback.
   restoreCaptured(frame, sim, bounds) {
@@ -761,13 +402,13 @@ export class WorldRenderSource {
     // Native A/B restore bypasses edit writers' F updates. Reclassify with
     // the existing prewarmed fresh pass; stale generated flags must not make
     // captured live matter inert on its next physical step.
-    if (count) sim.freshFlags({ residency: true });
+    if (count) sim.freshFlags();
     return count;
   }
   reset(epoch = this.epoch + 1) {
     if (this.ownedContext) throw new Error('Release the owning Source cut instead of resetting it');
     for (const c of this.chunks.values()) for (const b of [c.A, c.B, c.flow, c.aeration, c.deco?.buffer]) if (b) this._retire(b);
-    this.chunks.clear(); this.changeJournal = []; this._changesSinceMemo = null; this.epoch = epoch; this.revision = 0; this.contentRevision = 0; this.liveVersion = -1; this.liveSnapshot = null; this.minimumStaticRevision = 0;
+    this.chunks.clear(); this.epoch = epoch; this.revision = 0; this.minimumStaticRevision = 0;
   }
   dispose() { if (this.disposed) return; this.unsubscribeData?.(); this.reset(); this.disposed = true; }
 }

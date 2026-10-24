@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createGpu } from '../src/gpu/device.js';
 import { GraphicsFailure } from '../src/gpu/errors.js';
-import { OptionalShaderFailure, PIPELINE_BUDGET_MS, PIPELINE_CONCURRENCY, PIPELINE_CONCURRENCY_MIN, PIPELINE_CONCURRENCY_MAX, pipelineConcurrency, BUILD_RANK, OUTSIDE_VIEW_SLOTS } from '../src/gpu/kernels.js';
+import { OptionalShaderFailure, PIPELINE_BUDGET_MS, PIPELINE_CONCURRENCY, PIPELINE_CONCURRENCY_MIN, PIPELINE_CONCURRENCY_MAX, pipelineConcurrency, BUILD_RANK } from '../src/gpu/kernels.js';
 // The fixtures below count slots as a weak machine has them (pipelineConcurrency's floor); the
 // scaled bound has its own tests at the end.
 const SLOTS = PIPELINE_CONCURRENCY_MIN;
@@ -686,27 +686,6 @@ await test('at the scaled bound, foreground and idle builds share its slots, and
   stopped(f);
 });
 
-await test('a build made outside the cache (the World volume) counts against the bound while it compiles, never under the floor', async (t) => {
-  const f = await fixture(t, { concurrency: PIPELINE_CONCURRENCY_MAX });
-  const outsideBuild = deferred();
-  assert.equal(f.gpu.pipelines.outside(outsideBuild.promise), outsideBuild.promise);
-  const pipes = Array.from({ length: 6 }, (_, i) => pipe(f.gpu, 300 + i));
-  await drain();
-  assert.equal(f.calls.length, PIPELINE_CONCURRENCY_MAX - 1, 'one slot is the outside build\'s');
-  outsideBuild.resolve({});
-  await drain();
-  assert.equal(f.calls.length, PIPELINE_CONCURRENCY_MAX, 'its slot returns when it settles');
-  const many = Array.from({ length: 4 }, () => deferred());
-  for (const d of many) f.gpu.pipelines.outside(d.promise);
-  for (const c of f.calls) c.resolve({});
-  await drain();
-  assert.ok(f.counts.active >= PIPELINE_CONCURRENCY_MIN, 'outside builds never take the cache under the floor');
-  for (const d of many) d.reject(new Error('outside failure is its owner\'s to report'));
-  for (let i = 0; i < 4; i++) { for (const c of f.calls) c.resolve({}); await drain(); }
-  await Promise.all(pipes.map((p) => p.ready));
-  assert.equal(f.gpu.pipelines.outsideBuilds, 0);
-  liveAndDrained(f);
-});
 
 // V2's boot (src/v2/physics.js, src/v2/dynamics.js): the long poles start first, the rest of what
 // the first frame waits for next, and an idle build never ahead of either, whenever it arrived.
@@ -836,19 +815,3 @@ await test("a 'later' long pole starts ahead of the other 'later' builds, still 
   liveAndDrained(f);
 });
 
-await test('a World view build takes OUTSIDE_VIEW_SLOTS of the bound while it compiles, never under the floor', async (t) => {
-  assert.ok(Number.isInteger(OUTSIDE_VIEW_SLOTS) && OUTSIDE_VIEW_SLOTS >= 1);
-  const f = await fixture(t, { concurrency: PIPELINE_CONCURRENCY_MAX });
-  const view = deferred();
-  f.gpu.pipelines.outside(view.promise, OUTSIDE_VIEW_SLOTS);
-  const pipes = Array.from({ length: 6 }, (_, i) => pipe(f.gpu, 500 + i));
-  await drain();
-  assert.equal(f.calls.length, Math.max(PIPELINE_CONCURRENCY_MIN, PIPELINE_CONCURRENCY_MAX - OUTSIDE_VIEW_SLOTS));
-  view.resolve({});
-  await drain();
-  assert.equal(f.calls.length, PIPELINE_CONCURRENCY_MAX, 'its slots return when it settles');
-  for (let i = 0; i < 3; i++) { for (const c of f.calls) c.resolve({}); await drain(); }
-  await Promise.all(pipes.map((p) => p.ready));
-  assert.equal(f.gpu.pipelines.outsideBuilds, 0);
-  liveAndDrained(f);
-});

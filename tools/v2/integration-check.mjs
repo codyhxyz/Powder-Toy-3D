@@ -11,7 +11,6 @@ import { NativeBrickStore, encodeNativeBrick, decodeNativeBrick, validateNativeW
 import { WorldWindow } from '../../src/world/window.js';
 import { BrickStore } from '../../src/world/store.js';
 import { TerrainEditCache } from '../../src/world/terrainEditCache.js';
-import { WorldRenderSource } from '../../src/world/renderSource.js';
 import { cellSlot, slotCell, marksLayout } from '../../src/shaders/common.js';
 import { cellOf, Load, createTransfer } from '../../src/pov/tools/transfer.js';
 import { decodeNativeTransfer, nativeCargo, NativeTransfer } from '../../src/v2/transfer.js';
@@ -258,13 +257,10 @@ assert.deepEqual(bank, originalBank, 'round-trip window preserves negative/arbit
     act[A.quiet + b] = 1000 + b; act[A.summary + b] = 7 + b; act[A.occ + 2 * b] = b; act[A.occ + 2 * b + 1] = ~b >>> 0;
     for (let k = 0; k < 8; k++) faces[8 * b + k] = b * 8 + k;
   }
-  const before = act.slice(), facesBefore = faces.slice(), notes = [];
-  sim.worldRenderSource = { noteContentChange: change => notes.push(change) };
+  const before = act.slice(), facesBefore = faces.slice();
   const leaving = await sim.nativeIntegration.captureSlab([0, 0, 16], [8, 8, 4]);   // (the slab that leaves: +z)
   calls.length = 0;
   shiftNative(0, -16);   // the window moves -z: cell p takes p - 16 z, the slab [0, 4) bricks is uncovered
-  delete sim.worldRenderSource;
-  assert.deepEqual(notes, [], 'a move tells World\'s renderer of no whole-window change');
   assert(calls.some(c => c.name === 'nativeWindowactShift'), 'the activity moves on the GPU with the cells');
   for (let b = 0; b < g.nbricks; b++) {
     const bc = coordOf(b), z = bc[2];
@@ -677,33 +673,9 @@ assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouc
   assert.equal(cache.native.size, 0);
 }
 
-// main's World renderer keeps its own copy of the cells (src/world/renderSource.js). On a V2
-// world it reads V2's cells natively: each tick's copy packs the window's cores, air and foam
-// through V2's read group straight into the source (renderSource.js nativePack), and exports
-// nothing to V1's state (v2/physics.js exportLegacy) and copies none of it.
+// Planted trees are a bounded write: V2 imports the marked bricks, not the window.
 {
-  const realCopy = gpu.frame.copy;
-  gpu.frame.copy = function (...args) { calls.push({ name: 'copy', args }); return realCopy.apply(this, args); };
-  const win = { sim, gpu, epoch: 1, size: [sim.origin.x + g.nx, g.ny, sim.origin.z + g.nz], scene: {} };
-  const source = sim.worldRenderSource = new WorldRenderSource(win);
-  source.recordLiveCopy(gpu.frame);
-  assert.equal(source.needsLiveCopy(), false);
-  owner.ticks(1);
-  assert(source.needsLiveCopy(), 'a V2 tick is a live content change');
-  calls.length = 0;
-  source.recordLiveCopy(gpu.frame);
-  assert(!calls.some(c => ['v2bridge', 'worldNativeAir', 'nativeAeration'].includes(c.name)), 'no export to V1\'s state, no window-sized air or foam pass');
-  const packs = calls.filter(c => c.name === 'worldNativePack');
-  assert(packs.length > 0, 'the source packs V2\'s cells');
-  assert(packs.every(c => c.opts.bind[1] === owner.readGroup() && c.opts.header.format === 2), 'through V2\'s read group, format 2 (the Box draw\'s)');
-  assert.equal(packs.reduce((n, c) => n + c.opts.params.hi.reduce((m, v, i) => m * (v - c.opts.params.lo[i]), 1), 0), g.slots, 'every window cell, once');
-  for (const name of ['A', 'B']) assert(!calls.some(c => c.name === 'copy' && c.args[0] === sim.state[name]), `V1's ${name} is never read`);
-  assert(calls.some(c => c.name === 'copy' && c.args[0] === sim.flow), 'V2\'s flow field is copied as before');
-  calls.length = 0;
-  assert.equal(source.needsLiveCopy(), false);
-  source.recordLiveCopy(gpu.frame);
-  assert(!calls.some(c => c.name === 'v2bridge'), 'nothing exported');
-  // Planted trees are a bounded write: V2 imports the marked bricks, not the window.
+  const win = { size: [sim.origin.x + g.nx, g.ny, sim.origin.z + g.nz] };
   const whole = sim.wholeWrites, version = sim.version;
   const planter = { sim, gpu, wb: [win.size[0] / 4, 1, win.size[2] / 4], planted: new Uint8Array(win.size[0] * win.size[2] / 16), plantCost: null,
     renderSource: { token: () => ({}) }, sourceProducer: { record: () => ({ trees: 1 }) } };
@@ -711,7 +683,6 @@ assert.deepEqual([...core.subarray(other * 4, other * 4 + 4)], material, 'untouc
   assert.equal(sim.wholeWrites, whole); assert.equal(sim.version, version + 1);
   calls.length = 0; owner.sync();
   assert.equal(calls.find(c => c.name === 'v2import').opts.params.full, 0, 'a tree stamp never reimports the whole window');
-  sim.worldRenderSource = null; source.dispose(); gpu.frame.copy = realCopy;
 }
 
 const app = readFileSync('src/app.js', 'utf8');

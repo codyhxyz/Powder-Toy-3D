@@ -47,7 +47,7 @@ const consts = (code) => {
 };
 
 // 1. the same deck, the same constants
-const lighting = { box: lightingGLSL(), world: lightingGLSL({ backend: 'world' }) };
+const lighting = { box: lightingGLSL() };
 assert.ok(sky.includes(cloudDeckGLSL), 'the sky shader holds the deck (cloudDensity, cloudShadow, their constants) verbatim');
 for (const [backend, code] of Object.entries(lighting)) assert.ok(code.includes(cloudDeckGLSL), `the ${backend} lighting holds the same deck`);
 const skyConsts = consts(sky), lightConsts = consts(lighting.box);

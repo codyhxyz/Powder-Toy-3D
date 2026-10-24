@@ -2,9 +2,8 @@
 // copyBufferToBuffer is one command Chrome's GPU process validates and encodes
 // on its own CPU; the big-map render source recorded ~37,000 a second of a few
 // cells each (renderSource.js recordSourceCopies, Island in first person,
-// 2026-10-23), so the GPU sat half idle behind its own command stream. The
-// same fix the field history got (world/fieldHistory.js): a job list and one
-// workgroup a job.
+// 2026-10-23), so the GPU sat half idle behind its own command stream. So: a
+// job list and one workgroup a job.
 //
 // The call itself runs 600-900 times a second, so it creates nothing per call:
 // job lists are suballocated from per-frame ring buffers (written with

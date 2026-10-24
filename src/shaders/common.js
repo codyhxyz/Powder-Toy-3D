@@ -362,16 +362,6 @@ export function stateLayout(opts) {
     ...(o.act ? [buf(4, o.act === 'read_write')] : []),
   ];
 }
-// The World render source's chunk words (world/renderSource.js: a drawn copy of state A and B per chunk,
-// in the World's render interchange format), declared here with their accessors, as the state is
-// (tools/check-state-access.mjs). Raw u32 words: never loaded as floats, so no NaN payload is
-// canonicalized. The CELL pack reads them (shaders/worldCellAdapter.js worldCellPackWGSL).
-export const sourceChunkWGSL = (group, bindingA, bindingB) => /* wgsl */ `
-@group(${group}) @binding(${bindingA}) var<storage,read> A: array<vec4u>;
-@group(${group}) @binding(${bindingB}) var<storage,read> B: array<vec4u>;
-fn sourceWordsA(s: u32) -> vec4u { return A[s]; }
-fn sourceWordsB(s: u32) -> vec4u { return B[s]; }`;
-
 // The state layouts every family builds on (docs/webgpu.md C4), and the
 // prelude options that declare them: prelude(g, STATE_OPTS.STATE_RW) with
 // layouts [L.TABLES, L.STATE_RW, ...].
@@ -525,41 +515,6 @@ export const nativeSlotAccessWGSL = /* wgsl */ `
 fn fetchNativeCoreS(s: u32) -> vec4u { return A[s]; }
 fn fetchNativeAirS(s: u32) -> vec4f { return B[(s >> 6u) * 2u]; }`;
 
-// ---- the World view's run-time grid ----
-// The World's view module (shaders/render.js volumeFrag, backend 'world') reads its
-// world's extent at run time, from the atlas's parameters (WA.world and WA.bricks:
-// world/renderAtlas.js), so one module draws every world. With the size spelt into it,
-// each world size was a cold native compile of its own (~6 s in Metal, ~10 s in Chrome),
-// after every deploy and again on each map of another size. The shared library's
-// size-named words (NX…BZ, GRID, MAX_STEPS) become the world's own (worldRuntimeGrid,
-// over the whole module); the Box layout's supertiles, slots and marks mean nothing in
-// a world and are left out, so a use of one fails validation instead of reading some
-// other world's size. A bounds test against a uniform costs what it did against a literal.
-/** The grid a World view module is generated for: none of its sizes (prelude g.runtimeGrid). */
-export const WORLD_RUNTIME_GRID = Object.freeze({ runtimeGrid: true });
-/**
- * Bits of a World brick number per axis (x, y, z): it packs the brick's coordinates
- * (2048 × 1024 × 2048 bricks, 8192 × 4096 × 8192 cells), so it needs no world size and
- * unpacks with shifts. The view keeps it only to read its brick back (brickInfoOf).
- */
-export const WORLD_BRICK_BITS = Object.freeze([11, 10, 11]);
-/** Whether a world of `size` cells has brick coordinates WORLD_BRICK_BITS can pack. */
-export const worldBricksFit = (size) => size.every((n, i) => n / BRICK <= 2 ** WORLD_BRICK_BITS[i]);
-const worldRuntimeGridWGSL = () => `// the world's extent, cells and bricks, read at run time (WORLD_RUNTIME_GRID)
-fn worldGrid() -> vec3i { return vec3i(WA.world.xyz); }
-fn worldBricks() -> vec3i { return vec3i(WA.bricks.xyz); }`;
-const worldRuntimeBrickWGSL = () => {
-  const [x, y] = WORLD_BRICK_BITS, mask = (n) => `${2 ** n - 1}u`;
-  return `fn brickId(b: vec3i) -> u32 { return u32(b.x) | (u32(b.y) << ${x}u) | (u32(b.z) << ${x + y}u); }
-fn brickCoord(id: u32) -> vec3i { return vec3i(i32(id & ${mask(x)}), i32((id >> ${x}u) & ${mask(y)}), i32(id >> ${x + y}u)); }`;
-};
-const WORLD_RUNTIME_WORDS = Object.freeze({
-  NX: 'worldGrid().x', NY: 'worldGrid().y', NZ: 'worldGrid().z', GRID: 'worldGrid()',
-  BX: 'worldBricks().x', BY: 'worldBricks().y', BZ: 'worldBricks().z', MAX_STEPS: 'worldMaxSteps()',
-});
-const WORLD_RUNTIME_WORD = new RegExp(`\\b(${Object.keys(WORLD_RUNTIME_WORDS).join('|')})\\b`, 'g');
-/** A World view module's size-named words as its world's run-time ones (WORLD_RUNTIME_GRID). */
-export const worldRuntimeGrid = (code) => code.replace(WORLD_RUNTIME_WORD, (word) => WORLD_RUNTIME_WORDS[word]);
 
 const saltConsts = () => Object.entries(SALT).map(([k, v]) => `const SALT_${k}: u32 = 0x${v.toString(16)}u;`).join('\n');
 const flagConsts = () => Object.entries(FLAG).map(([k, v]) => `const FLAG_${k}: u32 = ${v}u;`).join('\n');
@@ -569,39 +524,34 @@ const flagConsts = () => Object.entries(FLAG).map(([k, v]) => `const FLAG_${k}: 
 // and their accessors, the header, the state bindings opts asks for (see
 // stateOpts), the slot layout, the state accessors, hashing and random
 // streams, and the shared physics tests. g needs only nx, ny, nz (and may
-// carry sleepUnit), or, for the World's view, runtimeGrid (WORLD_RUNTIME_GRID).
+// carry sleepUnit).
 export function prelude(g, opts = {}) {
-  const backend = opts.backend ?? 'box';
-  if (!['box', 'world'].includes(backend)) throw new Error(`prelude: backend ${backend}`);
-  const runtime = g.runtimeGrid === true;
-  if (runtime && backend !== 'world') throw new Error('prelude: only the World backend reads its grid at run time');
-  const o = stateOpts(opts), d = runtime ? null : gridDims(g), m = runtime ? null : marksLayout(g), u = g.sleepUnit ?? SLEEP_UNIT;
-  if (backend === 'world' && (o.state || o.flags || o.marks || o.act)) throw new Error('world prelude is render metadata only');
+  const o = stateOpts(opts), d = gridDims(g), m = marksLayout(g), u = g.sleepUnit ?? SLEEP_UNIT;
   return /* wgsl */ `
 // ---- the grid ----
-${runtime ? worldRuntimeGridWGSL() : `const NX: i32 = ${d.nx};
+const NX: i32 = ${d.nx};
 const NY: i32 = ${d.ny};
-const NZ: i32 = ${d.nz};`}
+const NZ: i32 = ${d.nz};
 const CELL_M: f32 = ${CELL_M.toFixed(4)};   // metres per cell (src/scale.js)
 const BS: i32 = ${BRICK};                  // cells per brick edge
-${runtime ? '' : `const BX: i32 = ${d.bx};
+const BX: i32 = ${d.bx};
 const BY: i32 = ${d.by};
 const BZ: i32 = ${d.bz};
 const STX: i32 = ${d.stx};                 // supertiles along x, y, z
 const STY: i32 = ${d.sty};
-const STZ: i32 = ${d.stz};`}
+const STZ: i32 = ${d.stz};
 const SUPER_B: vec3i = vec3i(${SUPER.x}, ${SUPER.y}, ${SUPER.z});   // bricks per supertile
-${runtime ? '' : `const SLOTS: u32 = ${d.slots}u;            // cells: one copy of the state
+const SLOTS: u32 = ${d.slots}u;            // cells: one copy of the state
 const NBRICKS: u32 = ${d.nbricks}u;
-const NSUPER: u32 = ${d.nsuper}u;`}
+const NSUPER: u32 = ${d.nsuper}u;
 const SLEEP_UNIT: vec3i = vec3i(${u.x}, ${u.y}, ${u.z});   // bricks per sleeping unit (docs/webgpu.md W12)
-${runtime ? '' : `// the marks buffer, in words (docs/webgpu.md C1, D6; shaders/common.js marksLayout)
+// the marks buffer, in words (docs/webgpu.md C1, D6; shaders/common.js marksLayout)
 const MARK_ACT: u32 = ${m.act}u;
 const MARK_DERIVED: u32 = ${m.derived}u;
 const MARK_FOAMS: u32 = ${m.foams}u;
 const MARK_DBG: u32 = ${m.dbg}u;
 const MARK_OWNED: u32 = ${m.owned}u;
-const MARK_WORDS: u32 = ${m.words}u;`}
+const MARK_WORDS: u32 = ${m.words}u;
 ${physicsGLSL()}
 const SEED_MAX: f32 = ${SEED_MAX};   // a cell's random seed (the fraction in state A's w) stays below this
 ${flagConsts()}
@@ -623,14 +573,13 @@ fn airT() -> f32 { return TB.airT; }
 
 // ---- the header and the state (docs/webgpu.md B4, C1, C4) ----
 ${Header.wgsl}
-@group(${backend === 'world' ? 0 : 3}) @binding(${backend === 'world' ? 1 : 0}) var<uniform> H: Header;
+@group(3) @binding(0) var<uniform> H: Header;
 ${stateBindings(o)}
 
 // ---- the layout (docs/webgpu.md C2) ----
 // Brick b's number: its supertile's (x fastest, then z, then y) times 16, plus
 // its tile's row-major place in the supertile's 4×4-tile square.
-${runtime ? worldRuntimeBrickWGSL() : backend === 'world' ? `fn brickId(b: vec3i) -> u32 { return u32(b.x + BX * (b.y + BY * b.z)); }
-fn brickCoord(id: u32) -> vec3i { return vec3i(i32(id % u32(BX)), i32(id / u32(BX) % u32(BY)), i32(id / u32(BX * BY))); }` : `fn brickId(b: vec3i) -> u32 {
+fn brickId(b: vec3i) -> u32 {
   let s = b / SUPER_B;
   let k = b - s * SUPER_B;
   let st = s.x + STX * (s.z + STZ * s.y);
@@ -641,8 +590,8 @@ fn brickCoord(id: u32) -> vec3i {
   let t = i32(id & 15u);
   let s = vec3i(st % STX, st / (STX * STZ), (st / STX) % STZ);
   return s * SUPER_B + vec3i(t & 3, t >> 3u, (t >> 2u) & 1);
-}`}
-${runtime ? '' : `// Cell p's slot: its brick's 64-cell run, in the brick tile's row-major order
+}
+// Cell p's slot: its brick's 64-cell run, in the brick tile's row-major order
 // (x + BS·(y & 1) across, z + BS·(y >> 1) down). Outside the grid it is
 // another cell's (bounds are the caller's, H1.29).
 fn slotOf(p: vec3i) -> u32 {
@@ -654,10 +603,10 @@ fn cellOf(s: u32) -> vec3i {
   let u = t & 7;
   let v = t >> 3u;
   return brickCoord(s >> 6u) * BS + vec3i(u & 3, (u >> 2u) | ((v >> 2u) << 1u), v & 3);
-}`}
+}
 fn inGrid(p: vec3i) -> bool { return all(p >= vec3i(0)) && all(p < vec3i(NX, NY, NZ)); }
-${runtime ? '' : `// the supertile of brick b (its 16 bricks are one run of brick numbers)
-fn supertileOf(b: vec3i) -> u32 { return brickId(b) >> 4u; }`}
+// the supertile of brick b (its 16 bricks are one run of brick numbers)
+fn supertileOf(b: vec3i) -> u32 { return brickId(b) >> 4u; }
 // A folded dispatch's flat workgroup index (src/gpu/kernels.js fold(n):
 // [ceil(n / y), y, 1]): past the end on its last row, so check it.
 fn foldId(wg: vec3u, nwg: vec3u) -> u32 { return wg.x + wg.y * nwg.x; }

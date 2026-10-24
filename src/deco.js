@@ -227,9 +227,6 @@ export class Deco {
       this._run('decoPaintApply', size, params);
       this.active = true;
       this.sim.version++;   // the picture changed (gfx/pacing.js redraws on it)
-      // (World's source: the stroke's box, in world cells; the window may have moved since the call)
-      const o = this.sim.origin, at = [o.x, o.y, o.z];
-      this.sim.worldRenderSource?.noteContentChange({ lo: lo.map((v, k) => v + at[k]), hi: hi.map((v, k) => v + 1 + at[k]) });
     });
   }
 
@@ -286,7 +283,6 @@ export class Deco {
     this._whenReady(() => {
       this._run('decoUndo', fold(Math.ceil(this.sim.g.slots / 64)), { shift: [dx, 0, dz], blank: had ? 0 : 1 }, { source: had ?? this.dummy });
       this.active = true;
-      this.sim.worldRenderSource?.noteContentChange();
       this._spend(t);
     });
   }
@@ -313,7 +309,6 @@ export class Deco {
     this.store.clear();
     this.storeRevisions.clear();
     this.epoch++;
-    this.sim.worldRenderSource?.noteContentChange();
     this.active = false;
   }
 
@@ -388,7 +383,6 @@ export class Deco {
     this.gpu.write(p.buffer, p.offset, words);
     this.active = words.some((v) => v);
     this.sim.version++;
-    this.sim.worldRenderSource?.noteContentChange();
   }
 
   dispose() {

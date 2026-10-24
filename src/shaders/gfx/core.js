@@ -3,7 +3,6 @@ import { ddaWalk } from '../dda.js';
 import { CUBIC_ERR, CUBIC_ERR_PX_NONE, CUBIC_ERR_PX_FULL } from '../../gfx/detail.js';
 import { glf as f } from '../../glsl.js';
 import { occupancyReadWGSL } from '../occupancy.js';
-import { renderBackend, worldOccupancyWGSL, worldFieldWGSL } from './worldCore.js';
 
 /** DDA steps past the corner-to-corner count (NX + NY + NZ) a march may take (MAX_STEPS). */
 export const DDA_SPARE_STEPS = 8;
@@ -39,8 +38,8 @@ export const DDA_SPARE_STEPS = 8;
 // (binding 17, brickDistAt), not one of the 16 sampled textures, and the
 // light blur copied the same integer, so skipEmpty reads it from brickDist in
 // every view.
-export const coreGLSL = (g, { flow = true, detail = {}, backend = 'box', physicalRays = false } = {}) => /* wgsl */ `
-${ddaGLSL(g, { backend, physicalRays })}
+export const coreGLSL = (g, { flow = true, detail = {} } = {}) => /* wgsl */ `
+${ddaGLSL(g)}
 // The pixel whose noise a function draws (ign, pixRand, the glow candidates,
 // the clouds' jitter): what gl_FragCoord.xy was. Every entry point sets it
 // first: a fragment shader to @builtin(position).xy (pixel centres, top-left
@@ -51,8 +50,8 @@ ${flow ? `
 // the move's flow field, one vec2u per slot holding x, y and z as f16
 // (pack2x16float) and a zero (docs/webgpu.md C1).
 fn cellFlow(c: vec3i) -> vec3f {
-  ${backend === 'world' ? 'return worldFlow(c);' : `let w = flow[slotOf(c)];
-  return vec3f(unpack2x16float(w.x), unpack2x16float(w.y).x);`}
+  let w = flow[slotOf(c)];
+  return vec3f(unpack2x16float(w.x), unpack2x16float(w.y).x);
 }` : ''}
 // ---- bricks (the brick map: shaders/bindings.js BrickInfo) ----
 // Brick bc's info word: 0 empty; with BRICK_MATTER (brickMatter) it holds
@@ -65,7 +64,7 @@ fn brickInfo(bc: vec3i) -> u32 { return brickInfoOf(brickId(bc)); }
 // The same by brick number (brickId), for a march that keeps it for the
 // brick's occupancy too (occMaskOf, occIdOf).
 fn brickInfoOf(id: u32) -> u32 {
-  let w = ${backend === 'world' ? 'brickAt(brickCoord(id))' : 'brick[id]'}.info;
+  let w = brick[id].info;
   return select(0u, w, brickMatter(w));
 }
 fn brickHas(f: u32, bit: u32) -> bool { return (f & bit) != 0u; }
@@ -74,8 +73,8 @@ fn brickSurf(f: u32) -> bool { return brickHas(f, BRICK_SURF); }
 fn brickOpaque(f: u32) -> bool { return brickHas(f, BRICK_OPAQUE); }   // crisp or opaque smooth matter
 fn brickThin(f: u32) -> bool { return brickHas(f, BRICK_THIN); }       // thin cubic matter (drops, grains): read cubic
 fn brickMixed(f: u32) -> bool { return brickHas(f, BRICK_MIXED); }     // more than one liquid
-${backend === 'world' ? worldOccupancyWGSL : occupancyReadWGSL}
-${backend === 'world' ? '' : `
+${occupancyReadWGSL}
+
 // Certify the entire brick's sampling support, not just its cells. At a brick
 // face, trilinear reaches one neighbouring texel; cubic B-splines reach two.
 // Both are convex combinations, as is their thin/close blend. The 3³ brick
@@ -94,7 +93,7 @@ fn liquidInterior(bc: vec3i) -> bool {
   }
   return true;
 }
-`}
+
 // ---- brick skipping (the brick map and brickDist; skipBrick: shaders/dda.js) ----
 // Jump the DDA out of the empty region around empty brick bc: every brick
 // within (distance - 1) of it is empty (brickDistAt, built by the derived
@@ -117,8 +116,7 @@ fn skipEmpty(bc: vec3i, ro: vec3f, rd: vec3f, istp: vec3i,
 const SURF_ISO: f32 = 0.5;
 // Field t at grid point p, hardware trilinear (one tap; the 2D atlas took two
 // and a lerp). p is held to the edge cells' centres: the grid extends by its edge.
-${backend === 'world' ? `${worldFieldWGSL}
-fn fieldCubicGrad(t: texture_2d_array<f32>, p: vec3f, ch: i32) -> vec3f { return worldFieldCubicGrad(t, p, ch); }` : `fn fieldTex(t: texture_3d<f32>, p: vec3f) -> vec4f {
+fn fieldTex(t: texture_3d<f32>, p: vec3f) -> vec4f {
   let q = clamp(p, vec3f(0.5), vec3f(GRID) - 0.5);
   return textureSampleLevel(t, linearClamp, q / vec3f(GRID), 0.0);
 }
@@ -200,7 +198,7 @@ fn fieldCubicGrad(t: texture_3d<f32>, p: vec3f, ch: i32) -> vec3f {
   let gy = cubicFetch8(t, vec3f(a.x, da.y, a.z), vec3f(b.x, db.y, b.z), vec3f(g0.x, dg.y, g0.z), vec3f(g1.x, -dg.y, g1.z));
   let gz = cubicFetch8(t, vec3f(a.xy, da.z), vec3f(b.xy, db.z), vec3f(g0.xy, dg.z), vec3f(g1.xy, -dg.z));
   return vec3f(gx[ch], gy[ch], gz[ch]);
-}`}
+}
 
 // The cubic channels (gfx/materials.js CHANNELS cubic: liquids, powders) read
 // cubic for thin features, blended in by the thin mask; bulk surfaces (pools,
@@ -254,8 +252,7 @@ fn surfSample(p: vec3f) -> vec4f {
   return mix(s, fieldCubic(tFS, p), w);
 }
 // One channel, at the surface (root finding). Each reading has one call site:
-// Metal inlines every call, and in the World a cubic reading is 64 page
-// lookups (shaders/worldAccess.js worldFieldCubic), so the two that the
+// Metal inlines every call, so the two that the
 // full-weight and blended branches held were two copies of it. Surface fields
 // are finite (fields.js: floored normalisation and peak denominators), so at
 // full weight mix(0, cubic, 1) is the cubic reading exactly and needs no
@@ -374,10 +371,9 @@ fn meshCutAt(d: f32, clipToGrid: mat4x4f, res: vec2f, rd: vec3f) -> f32 {
 // table accessors, so a kernel that walks the state alone (pick, the POV
 // trace: docs/webgpu.md F5, G2) pastes prelude(g) + materialsGLSL() +
 // ddaGLSL(g) and binds no lighting group. coreGLSL includes it.
-export const ddaGLSL = (g, { backend = 'box', physicalRays = false } = {}) => /* wgsl */ `${renderBackend(backend) && ''}
-${g.runtimeGrid ? `// (the World view's grid, read at run time: shaders/common.js WORLD_RUNTIME_GRID)
-fn worldMaxSteps() -> i32 { let n = worldGrid(); return n.x + n.y + n.z + ${DDA_SPARE_STEPS}; }` : `const GRID: vec3i = vec3i(NX, NY, NZ);
-const MAX_STEPS: i32 = ${backend === 'world' ? g.nx + g.ny + g.nz + DDA_SPARE_STEPS : g.maxSteps ?? g.nx + g.ny + g.nz + DDA_SPARE_STEPS};   // DDA steps that cross the box corner to corner`}
+export const ddaGLSL = (g) => /* wgsl */ `
+const GRID: vec3i = vec3i(NX, NY, NZ);
+const MAX_STEPS: i32 = ${g.maxSteps ?? g.nx + g.ny + g.nz + DDA_SPARE_STEPS};   // DDA steps that cross the box corner to corner
 
 // Whether cell c lies outside the grid.
 fn outside(c: vec3i) -> bool { return any(c < vec3i(0)) || any(c >= GRID); }
@@ -388,35 +384,19 @@ fn outside(c: vec3i) -> bool { return any(c < vec3i(0)) || any(c >= GRID); }
 // textures (fields, bricks, probes, the shadow map) stays in grid space. In a
 // box the header's origin is 0. (Always compiled, so a box and a world share
 // every pipeline.)
-fn worldPos(p: vec3f) -> vec3f { return ${backend === 'world' ? 'p' : 'p + vec3f(H.origin)'}; }
+fn worldPos(p: vec3f) -> vec3f { return p + vec3f(H.origin); }
 
 // Crisp elements are drawn as voxels; everything else is a field.
 fn isCrisp(id: i32) -> bool { return id != E_EMPTY && SURFCH(id) < 0 && MEDIACH(id) < 0; }
 
 // ---- the DDA (shaders/dda.js: safeDir, argmin3, the walk's steps) ----
-${ddaWalk({ physicalDirection: backend === 'world' || physicalRays })}
+${ddaWalk()}
 // Ray (ro, rd) against the box [0, GRID]: (tNear, tFar, entry axis 0..2). A miss has tFar <= tNear.
 fn boxHit(ro: vec3f, rd: vec3f) -> vec3f {
-  ${backend === 'world' || physicalRays ? `// Parallel rays belong to the half-open voxel extent [0, GRID), not
-  // the clamped last cell of a tangent ray on an outer maximum face.
-  var tn = vec3f(-1e30);
-  var tf = vec3f(1e30);
-  var moving = false;
-  for (var k = 0; k < 3; k++) {
-    if (rd[k] == 0.0) {
-      if (ro[k] < 0.0 || ro[k] >= f32(GRID[k])) { return vec3f(0.0, -1.0, 0.0); }
-    } else {
-      moving = true;
-      let a = -ro[k] / rd[k];
-      let b = (f32(GRID[k]) - ro[k]) / rd[k];
-      tn[k] = min(a, b);
-      tf[k] = max(a, b);
-    }
-  }
-  if (!moving) { return vec3f(0.0, -1.0, 0.0); }` : `let t0 = (vec3f(0.0) - ro) / rd;
+  let t0 = (vec3f(0.0) - ro) / rd;
   let t1 = (vec3f(GRID) - ro) / rd;
   let tn = min(t0, t1);
-  let tf = max(t0, t1);`}
+  let tf = max(t0, t1);
   let n = max(max(tn.x, tn.y), tn.z);
   var axis = 2.0;
   if (tn.x >= tn.y && tn.x >= tn.z) { axis = 0.0; } else if (tn.y >= tn.z) { axis = 1.0; }

@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { gridLayout } from '../../src/sim.js';
 import { volumeFrag } from '../../src/shaders/render.js';
 import { allDetailDefines, detailDefines, detailDefaults } from '../../src/gfx/detail.js';
-import { liquidDetailGLSL, WORLD_NATIVE } from '../../src/shaders/gfx/liquidDetail.js';
+import { liquidDetailGLSL } from '../../src/shaders/gfx/liquidDetail.js';
 import { nativePackWGSL } from '../../src/shaders/renderSource.js';
 import { assertNaga } from './wgsl-grouping.mjs';
 
@@ -36,20 +36,7 @@ test('actual realistic renderer compiles both liquid channels at off/default/ful
   }
 });
 
-test('WORLD under V2 draws the same foam and air: its programs compile the foam and the molten layer, its source carries V2 air',()=>{
-  const g={nx:3072,ny:128,nz:1024,sourceAppearance:false,sourceGrid:[128,0,128]}, molten=/if \(stop && true && hitK == HIT_SMOOTH && s.ch == CH_MOLTEN && KIND\(s.id\) == K_LIQUID\)/;
-  for(const enabled of [false,true]) {
-    const v1=volumeFrag(g,{backend:'world',detail:{DETAIL_LIQ_FOAM:+enabled}});
-    const v2=volumeFrag(g,{backend:'world',detail:{DETAIL_LIQ_FOAM:+enabled,[WORLD_NATIVE]:true}});
-    assert.equal(/fn liquidFoam\(/.test(v1),enabled,'V1 World foam stays behind Whitewater');
-    assert.doesNotMatch(v1,/s.ch == CH_MOLTEN/,'V1 has no molten foam');
-    assert.match(v2,/let f = worldAeration\(c\);/,'World reads its atlas');
-    assert.match(v2,/liquidFoam\(hp, &n, id, col, trans\);/,'liquid surfaces foam');
-    assert.match(v2,molten,'molten liquids foam, without a format test');
-    assert.match(v2,/foamTrans \* \(c - s.emit\) \+ s.emit/,'incandescence retained');
-    assertNaga(v2,`world v2 whitewater ${enabled}`);
-  }
-  // (its foam and air: the source's native pack, tools/v2/world-native-foam-check.mjs)
+test('the big-map source pack carries V2 air',()=>{
   const pack=nativePackWGSL(gridLayout(32,32,32));
   // V1's B as V2 holds it: a grain's fall and a liquid's flux in their cells, the air elsewhere (shaders/v2/viewRead.js)
   assert.match(pack,/nativeMotionB\(core, nativeAirB\(s\)\)/);

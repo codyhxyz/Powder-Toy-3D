@@ -179,8 +179,6 @@ export class WorldWindow {
     sim.fieldReset = sim.giReset = true;
     sim.stillFlow();
     this.loaded = true;
-    sim.worldRenderSource = this.renderSource;
-    this.renderSource.recordLiveCopy(this.gpu.frame, sim);
   }
 
   // A saved world back (saves/game.js): the window at `origin`, its cells
@@ -209,8 +207,6 @@ export class WorldWindow {
     sim.dropHistory();
     sim.fieldReset = sim.giReset = true;
     this.loaded = true;
-    sim.worldRenderSource = this.renderSource;
-    this.renderSource.recordLiveCopy(this.gpu.frame, sim);
   }
 
   // Acquire synchronously before save preparation can yield. Existing shifts
@@ -248,7 +244,6 @@ export class WorldWindow {
   // move made, [dx, dz] world cells, or null.
   update(fx, fz) {
     if (!this.loaded || this.persistenceError || this.sim.nativeTransition || this.historyReaders) return null;
-    if (this.renderSource.needsLiveCopy(this.sim)) this.renderSource.refreshLiveCopy(this.gpu.frame, this.sim);
     this.far?.tick();
     if (this.capturing || this.pending || this.sim.deco?.pending) return null;
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) return null;
@@ -382,7 +377,7 @@ export class WorldWindow {
     if (sim.compactOwner) trackLanding(this, sim.nativeIntegration?.landing);
     // 3.
     const o = sim.origin;
-    this.gen.fill(this.P, [o.x, o.y, o.z], enterLo, enterHi, { residency: true });
+    this.gen.fill(this.P, [o.x, o.y, o.z], enterLo, enterHi);
     const incoming = { lo: enterLo.map((v, i) => v + [o.x, o.y, o.z][i]), hi: enterHi.map((v, i) => v + [o.x, o.y, o.z][i]) };
     // Preserve exact saved words BEFORE restore's floating equality can skip
     // signed-zero-only changes and before it drops the store entries.
@@ -399,8 +394,6 @@ export class WorldWindow {
     // Import only generator-owned coordinates, then restore exact retained
     // material after all legacy stamps. Untouched overlap is never imported.
     this.restoreNative(enterLo, bricks);
-    this.renderSource.recordLiveCopy(this.gpu.frame, sim);
-    // Fill/restore/plant transferred residency, not world contents.
     this.last = { dx, dz, ms: performance.now() - t0, restored, trees, ...this.plantCost, readbackMs: null, kept: null };
   }
 
@@ -548,7 +541,7 @@ export class WorldWindow {
     for (const k of fresh) this.planted[k] = 1;
     // The apply marks the bricks it wrote, so V2 imports only those. A whole-grid
     // write would make it reimport its lossy projection over every cell.
-    sim.noteWrite({ residency: true, replaceState: !sim.compactOwner });
+    sim.noteWrite({ replaceState: !sim.compactOwner });
     if (this.plantCost) this.plantCost.bakeMs += performance.now() - t0;
     return trees;
   }
@@ -571,7 +564,6 @@ export class WorldWindow {
     if (this.sim.worldWindow === this) this.sim.worldWindow = null;
     this.epoch++;
     this.far?.dispose();
-    if (this.sim.worldRenderSource === this.renderSource) this.sim.worldRenderSource = null;
     this.sourceProducer.dispose();
     this.renderSource.dispose();
     dropNativeWorldSource(this.sim);   // (V2's cells as the World's source reads them)

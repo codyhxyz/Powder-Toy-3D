@@ -240,7 +240,7 @@ test('real save codec preserves an in-flight pose, damage, logical direction and
   const bytes=await saves.capture('midpose'); assert.deepEqual((await decodeSave(bytes)).sections.get('worldInteractions'),expected);
   assert.equal(f.world.historyReaders,0,'save preparation releases the actual world read lock');
   f.scene.reset(); await saves.apply(bytes); assert.deepEqual(f.scene.interactionState.snapshot(),expected);
-  assert.deepEqual(sourceEvents,[['reset',1],['state'],['live']]);
+  assert.deepEqual(sourceEvents,[['reset',1],['state']]);
 });
 
 test('epoch/world/dispose guards reject stale async commits and retire buffers',async()=>{

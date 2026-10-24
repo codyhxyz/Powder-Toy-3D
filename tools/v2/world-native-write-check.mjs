@@ -66,7 +66,7 @@ test('(2) a world\'s load under V2 notes no whole-grid write; V1\'s cache is rew
   Object.assign(sim, { resetNativeDynamics() {}, dropHistory() {}, stillFlow() {} });
   owner.legacyNative = false;
   win.load([0, 0, 0]);
-  assert.deepEqual(order, ['fill', 'live']);
+  assert.deepEqual(order, ['fill']);
   assert.equal(sim.wholeWrites, 0, 'no whole-grid write: V2 would reimport V1\'s cache over its cells');
   assert.equal(owner.legacyNative, undefined, 'V1\'s cache (the old origin\'s projection) is stale everywhere');
 });

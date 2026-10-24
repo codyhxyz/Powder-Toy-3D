@@ -207,11 +207,11 @@ export function v2ActLayout(g) {
 }
 // changed: unsaved, last; a word a brick, set by every write of a cell's core (noteState), its decoration
 // (setDeco) or its flow (v2/flow.js) since the end of the last tick, which reads and clears it (v2invalidate).
-// The tick's change, for World's renderer (world/renderSource.js noteContentChange): v2invalidate folds each
-// brick whose cells, decoration, flow, drawn projection (visible) or air (air, while the air runs) the tick
-// wrote into a word per tile of TILE³ bricks after the args (ARGS2.allocated): bits 0-7 the tile's x bricks
-// it touched, 8-15 its y bricks, 16-23 its z bricks. The tick's driver reads the tiles back with the stats
-// and clears them after each batch of ticks (v2/physics.js _ran); v2ChangeBoxes turns them into world boxes.
+// The tick's change: v2invalidate folds each brick whose cells, decoration, flow, drawn projection (visible)
+// or air (air, while the air runs) the tick wrote into a word per tile of TILE³ bricks after the args
+// (ARGS2.allocated): bits 0-7 the tile's x bricks it touched, 8-15 its y bricks, 16-23 its z bricks;
+// v2ChangeBoxes turns them into world boxes (tools/v2/change-bounds-check.mjs). Nothing reads them back
+// since the big-map renderer that did went (2026-10-24).
 export const CHANGE_TILE = 8;
 export function v2ChangeLayout(g) {
   const { bx, by, bz } = gridDims(g), tiles = [bx, by, bz].map(n => Math.ceil(n / CHANGE_TILE));

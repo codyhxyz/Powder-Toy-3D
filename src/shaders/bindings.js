@@ -87,11 +87,11 @@ export const FrameUniforms = hostStruct('FrameUniforms', FRAME_UNIFORM_FIELDS, {
 
 // WGSL of group 0 binding 1 (L.FRAME): the struct, its binding as FU, and the
 // sizes of its arrays. After the prelude (which binds the tables at binding 0).
-export const frameBindings = ({ backend = 'box' } = {}) => /* wgsl */ `
+export const frameBindings = () => /* wgsl */ `
 const LAMP_MAX: i32 = ${LAMP_MAX};
 const WAND_LIGHTS: i32 = ${WAND_LIGHTS};
 ${FrameUniforms.wgsl}
-@group(0) @binding(${backend === 'world' ? 2 : 1}) var<uniform> FU: FrameUniforms;`;
+@group(0) @binding(1) var<uniform> FU: FrameUniforms;`;
 
 // ---------------------------------------------------------------- the brick map
 // What a brick holds (the brick kernel writes it, shaders/passes.js; the

@@ -167,7 +167,7 @@ export class RawWorldSourceProducer {
           if (this.nativeApply?.state !== 'ready') throw new Error('the native tree apply is not built yet');
           sim.compact.sync();
           this.nativeApply.dispatch(frame, fold(Math.ceil(sim.g.slots / 64)), { bind: [sim.tables, nativeWriteGroup(sim), this.readGroup], header: sim.header(), params });
-          nativeWritten(sim, { residency: true });
+          nativeWritten(sim);
         } else this.apply.dispatch(frame, fold(Math.ceil(sim.g.slots / 64)), { bind: [sim.tables, this._applyState(), this.readGroup], header: sim.header(), params });
       }
     }

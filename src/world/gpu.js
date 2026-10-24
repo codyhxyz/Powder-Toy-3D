@@ -153,13 +153,10 @@ export function nativeWriteGroup(sim) {
   return w.group;
 }
 // After a native write: as an edit notes itself (Simulation.edit): the version (V2 then looks for V1
-// writes to import: none; the write noted its own bricks), the derived passes, the source, a wake.
-// box: the grid cells it wrote ({ lo, hi }, hi exclusive), when known; else the window.
-export function nativeWritten(sim, { residency = false, box = null } = {}) {
+// writes to import: none; the write noted its own bricks), the derived passes, a wake.
+export function nativeWritten(sim) {
   sim.version++;
   sim.changedAll = true;
-  const at = [sim.origin.x, sim.origin.y, sim.origin.z];
-  if (!residency) sim.worldRenderSource?.noteContentChange(box ? { lo: box.lo.map((v, i) => v + at[i]), hi: box.hi.map((v, i) => v + at[i]) } : undefined);
   sim.compact.wake();
   sim.wake();
 }
@@ -218,12 +215,12 @@ export class WorldGenerator {
    * whole grid by default), the grid sitting at world cell `origin` (P must be
    * the generator's world). An edit over that box.
    */
-  fill(P = this.P, origin = [0, 0, 0], min = [0, 0, 0], max = null, { residency = false } = {}) {
+  fill(P = this.P, origin = [0, 0, 0], min = [0, 0, 0], max = null) {
     if (P !== this.P && JSON.stringify(P) !== JSON.stringify(this.P)) throw new Error('WorldGenerator.fill: another world than its own (make a generator for it)');
     const g = this.sim.g, hi = max ?? [g.nx, g.ny, g.nz];
     this.res.prepassFor(min.map((v, i) => v + origin[i]), hi.map((v, i) => v + origin[i]));
-    if (this.sim.compact?.isReady) return this._nativeFill(origin, min, hi, { residency });
-    this.sim.edit(this.kernels.fill, { lo: min, hi: hi.map((v) => v - 1) }, { origin }, { bind: this.res.resources, residency });
+    if (this.sim.compact?.isReady) return this._nativeFill(origin, min, hi);
+    this.sim.edit(this.kernels.fill, { lo: min, hi: hi.map((v) => v - 1) }, { origin }, { bind: this.res.resources });
   }
 
   /** V2's fill kernel (shaders/worldWrite.js; made on the first call); resolves when it is built. */
@@ -239,7 +236,7 @@ export class WorldGenerator {
   // While V2 runs the grid the scene's cells go straight into V2's cores (shaders/worldWrite.js): the
   // import of the V1 edit's cells, without the edit (the edit, an export of V1's cache before it, and
   // the import after it). The same cores either way: V2's terrain is importA of the scene's cell.
-  _nativeFill(origin, lo, hi, { residency }) {
+  _nativeFill(origin, lo, hi) {
     const sim = this.sim, owner = sim.compact, gpu = sim.gpu, k = this.kernels.nativeFill;
     if (sim.nativeTransitionKind === 'shift' && !sim.nativeCommitting) return false;
     if (k?.state !== 'ready') { this.prepareNativeFill(); throw new Error('the native world fill is not built yet'); }
@@ -252,7 +249,7 @@ export class WorldGenerator {
       this._sceneGroup = gpu.bindGroup(gpu.layout(`native scene ${JSON.stringify(this.res.has)}`, this.res.layout), this.res.entries(), 'native fill scene');
     }
     sim._dispatch(k, nativeFillSize(box.lo, box.hi), { bind: [sim.tables, write, this._sceneGroup], header: sim.header(), params: { origin, lo: box.lo, hi: box.hi } });
-    nativeWritten(sim, { residency, box });
+    nativeWritten(sim);
   }
 
   /**
@@ -316,9 +313,9 @@ export function generatorFor(sim, P = worldParams({ size: [sim.g.nx, sim.g.ny, s
   }
   return current;
 }
-// The simulation is going away: so do its generator, if it has one, and its stamper's pool.
+// The simulation is going away: so does its generator, if it has one. (Its V1 stamper's pool went
+// with the stamper, 80852699, but this call to it stayed: every big map threw leaving, 2026-10-22 to 24.)
 export function releaseGenerator(sim) {
-  stampers.get(sim)?.dispose();
   if (current?.sim !== sim) return;
   current.dispose();
   current = null;

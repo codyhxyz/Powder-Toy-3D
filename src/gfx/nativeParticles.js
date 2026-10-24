@@ -2,7 +2,6 @@ import { Matrix4, Vector3 } from 'three';
 import { frameUniformsOf } from './uniforms.js';
 import {
   PARTICLE_BYTES, NativeParticleParams, NATIVE_PARTICLE_LAYOUT, NATIVE_PARTICLE_ARGS_LAYOUT, NATIVE_PARTICLE_AIR_LAYOUT, NATIVE_PARTICLE_LIGHT_LAYOUT,
-  NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT, ParticleWorldLight,
   nativeParticleWGSL, nativeParticlePipeline, nativeParticleArgsWGSL,
   ParticlePickParams, PARTICLE_PICK_LAYOUT, PICK_RAYS, particlePickWGSL,
 } from '../shaders/v2/particleRender.js';
@@ -13,7 +12,7 @@ const vector = p => Array.isArray(p) || ArrayBuffer.isView(p) ? Array.from(p) : 
 
 /**
  * The Box volume's light for the matter draw (particleRender.js particleLightWGSL): its sun map, the derived GI
- * probes' four bands, its media noise and samplers, or null where none is bound (World: its own readers).
+ * probes' four bands, its media noise and samplers, or null where none is bound.
  * @param {object} volume gfx/volume.js createVolume's (shadowTextures, mediaNoiseView)
  * @param {object} derived src/derived.js's (views.gi)
  */
@@ -125,59 +124,6 @@ export class NativeParticles {
     return { group, target, params: { grid, supers: g ? [g.stx, g.stz, 0, 0] : [0, 0, 0, 0] } };
   }
   /**
-   * World's matter pipe (particleRender.js particleWorldLightWGSL: World's atlas and sun, as its figures read them),
-   * made when a World first asks (wire/worldRenderFrame.js prewarmWorldFrame waits for it, so a World frame never
-   * draws its packets in another light); a Box never compiles it.
-   */
-  worldPipe() {
-    if (this.disposed) return null;
-    if (!this._worldPipe) {
-      this.worldLightLayout = this.gpu.layout('NATIVE_PARTICLES_WORLD_LIGHT', NATIVE_PARTICLE_WORLD_LIGHT_LAYOUT);
-      this._worldPipe = this.gpu.renderPipeline({ name: 'nativeParticleMatterWorld', code: nativeParticleWGSL(false, true),
-        layouts: [this.fu.layout, this.layout, this.worldLightLayout], params: NativeParticleParams, ...nativeParticlePipeline(false) });
-    }
-    return this._worldPipe;
-  }
-  worldReady() { return this.worldPipe()?.ready; }
-  // The World light's values (particleRender.js ParticleWorldLight) in a buffer of their own, made when they change (a
-  // new publication's epoch or pages: nothing recorded reads a new buffer, so its write needs no flush); the one it
-  // replaces goes once the frames that read it are done (sim.js _retire's rule)
-  worldParams(params) {
-    const key = JSON.stringify(params);
-    if (this.worldParamsBuffer?.key === key) return this.worldParamsBuffer.buffer;
-    const gpu = this.gpu, old = this.worldParamsBuffer?.buffer;
-    const buffer = gpu.createBuffer({ label: 'native particle world light', size: ParticleWorldLight.size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    gpu.write(buffer, 0, new Uint8Array(ParticleWorldLight.pack(params)), { ordered: false });
-    this.worldParamsBuffer = { key, buffer };
-    if (old) {
-      const done = () => gpu.queue.onSubmittedWorkDone().then(() => old.destroy(), () => old.destroy());
-      const flushes = gpu.stats?.flushes;
-      const wait = () => (!gpu.frame?.open || gpu.stats?.flushes !== flushes || gpu.failure ? done() : setTimeout(wait, 0));
-      queueMicrotask(wait);
-    }
-    return buffer;
-  }
-  // World's group 2 for this frame's light (gfx/worldMeshLight.js context.particleLight): the air, its resources and
-  // values, kept while the same ones come again (a new publication makes a new group)
-  worldLightGroup(air, light) {
-    const values = this.worldParams(light.params);
-    const key = [air.target, light.aux, ...light.gi, light.sun, light.noise, light.book, light.sunBook, light.requests, values];
-    if (this.worldGroup?.key.every((x, i) => x === key[i])) return this.worldGroup.group;
-    const arr = t => (t?.texture ?? t).createView({ dimension: '2d-array' });
-    // (the volume's linearRepeat where a box made it, else the same sampler: the clouds' noise)
-    const repeat = this.gpu._volumeSamplers?.repeat ?? (this.gpu._particleRepeat ??= this.gpu.device.createSampler({ label: 'linearRepeat',
-      magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', addressModeW: 'repeat' }));
-    const group = this.gpu.bindGroup(this.worldLightLayout, [
-      { binding: 0, resource: { buffer: air.target } }, { binding: 1, resource: arr(light.aux) },
-      ...light.gi.map((t, i) => ({ binding: 2 + i, resource: arr(t) })), { binding: 6, resource: arr(light.sun) },
-      { binding: 7, resource: (light.noise?.texture ?? light.noise).createView({ dimension: '3d' }) }, { binding: 8, resource: repeat },
-      { binding: 9, resource: { buffer: light.book } }, { binding: 10, resource: { buffer: light.sunBook } },
-      { binding: 11, resource: { buffer: light.requests } }, { binding: 12, resource: { buffer: values } },
-    ], 'native particle world light');
-    this.worldGroup = { key, group };
-    return group;
-  }
-  /**
    * The matter draw's group 2: the air (air()) and the volume's light (boxParticleLight), or stand-ins never
    * read (P.light 0) without it, per air buffer and light.
    */
@@ -225,8 +171,7 @@ export class NativeParticles {
     this.preparedFrame = frame;
     return true;
   }
-  // light: the Box volume's (boxParticleLight) or World's (light.world: gfx/worldMeshLight.js context.particleLight),
-  // lighting the matter as V1's flying cells are lit; null: the open sky's
+  // light: the volume's (boxParticleLight), lighting the matter as V1's flying cells are lit; null: the open sky's
   draw(rp, { width, height }, light = null) {
     if (!this.isReady || !this.view || this.preparedFrame !== rp.frame || !this.preparedFrame
       || this.source.isIdle === true || this.source.active === false) return false;
@@ -237,11 +182,7 @@ export class NativeParticles {
     const options = { bind: [this.fu.group,this.group,air.group], indirect: { buffer: this.args, offset: 0 },
       params: { ...this.view, ...air.params, capacity: s.capacity, viewport: [width,height], deco: s.deco && s.decoActive && decoView.show ? 1 : 0, light: light ? 1 : 0 } };
     const [matter, rays] = this.pipes;
-    if (light?.world) {
-      // (World: its pipe, built before its frames start; until then, as the pick, the packets wait for it)
-      const pipe = this.worldPipe();
-      if (pipe?.state === 'ready') pipe.draw(rp,{ ...options, bind: [this.fu.group,this.group,this.worldLightGroup(air,light)] });
-    } else matter.draw(rp,{ ...options, bind: [this.fu.group,this.group,this.lightGroup(air,light)] });
+    matter.draw(rp,{ ...options, bind: [this.fu.group,this.group,this.lightGroup(air,light)] });
     rays.draw(rp,options);
     return true; // Recorded, not a claim of a nonzero GPU count.
   }
@@ -253,8 +194,7 @@ export class NativeParticles {
    * @param {{ ring: GPUBuffer, ro: number[][], rd: number[][], slot: number[][], n: number, origin: number[] }} rays
    * @returns {boolean} recorded (false: nothing flies, or the pass is building)
    */
-  // shift: the rays' frame less the window's cells (World's pick: its origin, the rays and cells being
-  // world cells there); transient: a one-pick output buffer (World's), whose group isn't kept
+  // shift: the rays' frame less the window's cells; transient: a one-pick output buffer, whose group isn't kept
   recordPick(frame, { ring, ro, rd, slot, n, origin, shift = [0, 0, 0], transient = false }) {
     if (!this.isReady || this.pickPipe.state !== 'ready' || this.source.isIdle === true || this.source.active === false || !(n > 0)) return false;
     if (n > PICK_RAYS) throw new RangeError('native particle pick batch too large');
@@ -280,7 +220,6 @@ export class NativeParticles {
     if (!this.gpu.failure) this.gpu.flush('native particles dispose');
     this.args.destroy();
     this.group = this.countGroup = this.view = null;
-    this.pickGroups.clear(); this.airGroups.clear(); this.lightGroups.clear(); this.worldGroup = null;
-    this.worldParamsBuffer?.buffer.destroy(); this.worldParamsBuffer = null;
+    this.pickGroups.clear(); this.airGroups.clear(); this.lightGroups.clear();
   }
 }

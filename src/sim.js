@@ -615,16 +615,14 @@ export class Simulation {
    * @param {ReturnType<Simulation['editKernel']>} kernel
    * @param {{ lo: number[], hi: number[] }} box inclusive grid cells (clipped to the grid)
    * @param {object} [values] the params' other fields
-   * @param {{ bind?: GPUBindingResource[], scrub?: boolean, residency?: boolean }} [opts] bind: the kernel's own group-2
+   * @param {{ bind?: GPUBindingResource[], scrub?: boolean }} [opts] bind: the kernel's own group-2
    *   resources: one per entry of editKernel's `layout`, in order ({ buffer, offset?, size? } for a
    *   buffer); the sim adds the two-phase scratch and makes the bind group once per set of resources (a
    *   buffer's range included). Bind long-lived buffers (B6): a kernel keeps at most EDIT_GROUPS_MAX
    *   groups. scrub: the cells it gives a new element lose their decoration, as TPT's create_part
    *   resets dcolour (the brush, a stamp, the console's script: main's scrubDeco callers).
-   *   residency: internal exact world refill/restore only; suppresses this writer's semantic
-   *   content notification, never unrelated edits or callbacks.
    */
-  edit(kernel, { lo, hi }, values = {}, { bind = [], scrub = false, residency = false } = {}) {
+  edit(kernel, { lo, hi }, values = {}, { bind = [], scrub = false } = {}) {
     if ((this.nativeTransitionKind === 'shift' && !this.nativeCommitting) || this.nativeTransitionError) return false;
     const box = this._clip(lo, hi);
     if (!box) return;
@@ -650,9 +648,6 @@ export class Simulation {
     if (kernel.apply) this._dispatch(kernel.apply, size, { bind: groups, header, params });
     this.version++;
     deco?.scrub?.(f, clipped);
-    // (World's source: the box it wrote, in world cells; an edit writes only its own cells in the box)
-    const o = [this.origin.x, this.origin.y, this.origin.z];
-    if (!residency) this.worldRenderSource?.noteContentChange({ lo: a.map((v, k) => v + o[k]), hi: b.map((v, k) => v + 1 + o[k]) });
     this.wake();   // the next step rebuilds the map: the marked bricks are forced
   }
 
@@ -777,9 +772,8 @@ export class Simulation {
    * semantic content notification for this write only (never across an await).
    * A flags-only refresh (replaceState false) keeps V2's imported state current.
    */
-  noteWrite({ residency = false, replaceState = true } = {}) {
+  noteWrite({ replaceState = true } = {}) {
     this.version++;
-    if (!residency) this.worldRenderSource?.noteContentChange();
     if (replaceState) this.wholeWrites++;
     this.changedAll = true;
     this.wake();
@@ -953,7 +947,6 @@ export class Simulation {
   // The state was replaced: nothing is moving until the next step says so.
   stillFlow() {
     this.gpu.frame.clear(this.flow);
-    this.worldRenderSource?.noteContentChange();
   }
 
   /**

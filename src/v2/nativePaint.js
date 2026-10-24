@@ -343,10 +343,6 @@ export function createNativeEditKernel(sim, name, spec, params) {
     }
     o.legacyPending = o.writtenSinceTick = true;
     sim.version++; o.seenVersion = sim.version; sim.changedAll = true;
-    // a semantic write, as V1's sim.edit notes one (the World's render source): its box, in world cells
-    // (the flying matter it edits is drawn by the particle renderer, not from the source)
-    const at = [sim.origin.x, sim.origin.y, sim.origin.z];
-    sim.worldRenderSource?.noteContentChange?.(grid ? { lo: box.lo.map((v, k) => v + at[k]), hi: box.hi.map((v, k) => v + 1 + at[k]) } : undefined);
     d._externalWork(); sim.wake();
     return true;
   }
@@ -373,7 +369,6 @@ export function createNativeEditKernel(sim, name, spec, params) {
     sim._retire(results);
     o.legacyPending = o.writtenSinceTick = true;
     sim.version++; o.seenVersion = sim.version; sim.changedAll = true;
-    sim.worldRenderSource?.noteContentChange?.();
     d._externalWork(); sim.wake();
     return true;
   }

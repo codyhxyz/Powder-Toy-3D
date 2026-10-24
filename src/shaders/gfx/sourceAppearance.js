@@ -26,7 +26,7 @@ fn sourceShade(p: vec3f, n: vec3f, rd: vec3f, alb: vec3f, rough: f32, metal: f32
 
 // Renderer adapter for the versioned importer ABI, shared by the live volume
 // and distant cell meshes. No appearance is inferred from an element name.
-export const sourceAppearanceWGSL = (far = true, grid = null, { backend = 'box' } = {}) => /* wgsl */ `
+export const sourceAppearanceWGSL = (far = true, grid = null) => /* wgsl */ `
 fn sourceEnabled() -> bool { return ${far ? 'FU.sourceStyle != 0u && FU.sourceAppearance.y >= 64u' : 'false'}; }
 fn sourcePair(t: u32) -> vec2u {
   ${far ? `if (t >= (FU.sourceAppearance.y + 1u) / 2u) { return vec2u(0u); }
@@ -35,7 +35,7 @@ fn sourcePair(t: u32) -> vec2u {
   let row = t / x;
   let plane = row / z;
   let p = vec3u(t - row * x, FU.sourceAppearance.x + plane, row - plane * z);
-  let v = textureLoad(${backend === 'world' ? 'worldSourceAppearance' : 'tFarGrid'}, vec3i(p), 0);
+  let v = textureLoad(tFarGrid, vec3i(p), 0);
   return vec2u(v.x | (v.y << 16u), v.z | (v.w << 16u));` : 'return vec2u(0u);'}
 }
 fn sourceWord(i: u32) -> u32 {

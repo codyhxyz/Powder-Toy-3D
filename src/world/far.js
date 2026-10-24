@@ -465,19 +465,11 @@ export class FarField {
   }
 
   /**
-   * Big maps' distance level of detail (the WORLD renderer: wire/worldRenderFrame.js,
-   * app.js drawWorldSky): the view drawn behind the WORLD volume, after the sky,
-   * without writing depth, so the volume draws over it wherever it hits and the
-   * coarse grid shows only where the volume has nothing (a brick not loaded yet,
-   * one the GPU page budget dropped, or past what it asks for), never the sky
-   * through the ground. The rule of every engine's LOD and of virtual texturing:
-   * a missing fine page falls back to a coarser one that is always resident
-   * (UE5 virtual textures, Nanite's root pages; Tanner et al. 1998, "The Clipmap").
-   * The far field was the big maps' coarse level until 2026-10-15 (dc480f4f);
-   * the WORLD renderer had none since, so a missing brick drew the sky's grey.
-   * Its ground is the far grid's coarse surface (9fef2822 had left opaque
-   * terrain to detail meshes that were never drawn behind the WORLD volume:
-   * the fallback showed sea and sky where land was; 2026-10-23).
+   * Big maps' distance level of detail (app.js drawSkyFor): the view drawn behind
+   * the window's volume, after the sky, without writing depth, marched past the
+   * window's box, so the volume draws the window and the coarse grid the world past
+   * it. The rule of every engine's LOD: a coarser level past the fine one (Tanner
+   * et al. 1998, "The Clipmap"). Its ground is the far grid's coarse surface.
    * @param {GPURenderPassEncoder} rp
    * @returns {boolean} whether it drew
    */

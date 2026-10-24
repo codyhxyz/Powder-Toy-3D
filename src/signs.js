@@ -1,6 +1,5 @@
 import * as THREE from 'three/webgpu';
 import { signProbeFrag, MAX_SIGNS, SignParams, SIGN_LAYOUT } from './shaders/probe.js';
-import { warp, effectParameters } from './gfx/presentationMath.js';
 import { ELEMENTS } from './elements.js';
 import './signs.css';
 
@@ -43,11 +42,6 @@ export class Signs {
     this.onChange = onChange;
     this.list = [];
     this.visible = true;
-    this.worldOwner = false;
-    this._worldRequests = new WeakSet();
-    this._worldFrames = new WeakMap();
-    this._worldSerial = 0;
-    this._worldAccepted = null;
     this.probeInterval = PROBE_MS;
     // backdrop blur costs ~0.3 ms per plate in the compositor; drop it when crowded
     this.blurLimit = 8;
@@ -125,16 +119,12 @@ export class Signs {
       occluded: false,
       isNew: edit,
     };
-    if (sim && !this.worldOwner) this._locate(sign, sim);
+    if (sim) this._locate(sign, sim);
     this._buildDom(sign);
     this.list.push(sign);
     this.dataDirty = true;
     this._renderText(sign);
-    if (!this.worldOwner) this._place(sign, this._frameInfo());
-    else if (edit && this._worldAccepted) {
-      const info=this._worldFrames.get(this._worldAccepted.frame);
-      this._place(sign,{...info,anchor:c.toArray().map((v,i)=>v+0.5+n.getComponent(i)*0.5)});
-    } else if (!edit) { sign.dom.root.style.display = 'none'; sign.dom.shown = false; }
+    this._place(sign, this._frameInfo());
     this.onChange(this.list);
     if (edit) this.edit(sign);
     return sign;
@@ -148,7 +138,6 @@ export class Signs {
     this._edit = sign;
     sign.before = sign.text;
     d.root.classList.add('is-editing');
-    if (this.worldOwner) { d.root.style.display = ''; d.shown = true; }
     d.input.value = sign.text;
     d.edit.dataset.value = sign.text;
     if (this._buttons) this._focusPending = sign;
@@ -180,14 +169,12 @@ export class Signs {
     this.list = [];
     this.dataDirty = true;
     this.generation++;
-    this._worldAccepted = null;
     if (had) this.onChange(this.list);
   }
 
   // The sim/volume were recreated: recompile the probe for the new grid layout.
   rebuild() {
     this.generation++;
-    this._worldAccepted = null;
     this.probe = null;
     this.gridKey = '';
     this.dataDirty = true;
@@ -221,94 +208,8 @@ export class Signs {
     this.onChange(this.list);
   }
 
-  // Explicit owner: no BOX probe, relocation, or physical-window membership.
-  setWorldOwner(active = true) {
-    if (this.worldOwner === active) return;
-    this.worldOwner = active;
-    this.generation++; // retire queued BOX/world results when ownership changes
-    this._worldAccepted = null;
-    if (!active) { this.at.set(NaN, NaN, NaN); this.dataDirty = true; }
-    if (active) for (const s of this.list) if (s!==this._edit) { s.dom.root.style.display = 'none'; s.dom.shown = false; }
-  }
-
-  worldRequest(bounds) {
-    const size = Array.from(bounds ?? []);
-    if (size.length !== 3 || !size.every(n => Number.isInteger(n) && n > 0)) throw new RangeError('global world bounds required');
-    const records = this.list.map(s => {
-      const cell = s.world.toArray(), normal = s.normal.toArray();
-      const anchor = cell.map((n,i) => n + 0.5 + normal[i] * 0.5);
-      const sample = cell.slice();
-      if (cell.some((n,i) => n < 0 || n >= size[i])) for (let i=0;i<3;i++) sample[i] += normal[i];
-      return Object.freeze({id:s.id, text:s.text, cell:Object.freeze(cell), normal:Object.freeze(normal), anchor:Object.freeze(anchor), sample:Object.freeze(sample)});
-    });
-    const request = Object.freeze({generation:this.generation, token:Object.freeze({}), bounds:Object.freeze(size), records:Object.freeze(records),
-      anchors:Object.freeze(records.map(r=>r.anchor)), cells:Object.freeze(records.map(r=>r.sample)), count:records.length});
-    this._worldRequests.add(request);
-    return request;
-  }
-
-  _matchesWorldRequest(request) {
-    return this._worldRequests.has(request) && request.generation === this.generation && request.records.length === this.list.length &&
-      request.records.every((r,i) => { const s=this.list[i]; return r.id===s.id && r.text===s.text && r.cell.every((v,k)=>v===s.world.getComponent(k)) && r.normal.every((v,k)=>v===s.normal.getComponent(k)); });
-  }
-
-  // Capture BEFORE native encoding. The matrices, viewport, presentation and
-  // request must be the same scene cut as candidate.publication and Post's pixels.
-  captureWorldFrame({request,camera,model,publication,identity,presentation={k:0,anchor:[0,0],dir:[0,1]}}) {
-    if (!this.worldOwner || !this._matchesWorldRequest(request) || !publication || !identity) throw new Error('current world sign scene cut required');
-    const cam=camera.clone(), matrix=model.clone();
-    const finite=a=>a.every(Number.isFinite);
-    if (!finite(cam.matrixWorld.elements) || !finite(cam.matrixWorldInverse.elements) || !finite(cam.projectionMatrix.elements) || !finite(matrix.elements) || Math.abs(matrix.determinant())<1e-20) throw new RangeError('finite captured sign matrices required');
-    const effect=effectParameters(presentation.k,presentation.anchor,presentation.dir);
-    const canvas=this.renderer.domElement.getBoundingClientRect(),host=this.layer.getBoundingClientRect();
-    const camWorld=new THREE.Vector3().setFromMatrixPosition(cam.matrixWorld);
-    const camGrid=camWorld.clone().applyMatrix4(matrix.clone().invert());
-    const frame=Object.freeze({request,publication,identity,serial:++this._worldSerial,
-      camera:Object.freeze(camGrid.toArray()), model:Object.freeze(matrix.toArray()),
-      presentation:Object.freeze({k:effect.k,anchor:Object.freeze(effect.anchor),dir:Object.freeze(effect.dir)})});
-    this._worldFrames.set(frame,{camera:cam,model:matrix,camWorld,camGrid,presentation:frame.presentation,
-      w:canvas.width,h:canvas.height,ox:canvas.left-host.left,oy:canvas.top-host.top,world:true});
-    return frame;
-  }
-
-  // Only an ACCEPTED, completed scene can install live values or camera state.
-  // Caller supplies identity references from the recorded frame, never live atlas.
-  commitWorldFrame({frame,results,publication,identity,feedback,completed,accepted}={}) {
-    if (!this.worldOwner || this.disposed || !this._worldFrames.has(frame) || !this._matchesWorldRequest(frame.request) ||
-      publication!==frame.publication || identity!==frame.identity || completed!==true || accepted!==true || feedback?.incomplete!==false ||
-      (this._worldAccepted && frame.serial<=this._worldAccepted.frame.serial)) return false;
-    if (!(results instanceof Float32Array) || results.length!==frame.request.count*8 || !Array.from(results).every(Number.isFinite)) return false;
-    for(let i=0;i<frame.request.count;i++) {
-      const o=i*8;
-      if(results[o+4]!==1 || results[o]<0 || results[o]>1 || !Number.isInteger(results[o+1]) || results[o+1]<-1) return false;
-    }
-    const captured=results.slice();
-    this._worldAccepted={frame,results:captured};
-    for(let i=0;i<this.list.length;i++) {
-      const s=this.list[i],o=i*8;
-      s.live={transmittance:captured[o],id:captured[o+1],T:captured[o+2],P:captured[o+3]};
-      s.occluded=captured[o]<OCCLUDED_BELOW;this._renderValues(s);
-    }
-    this.updateWorld();
-    return true;
-  }
-
-  updateWorld(signFrame) {
-    if (signFrame) this.commitWorldFrame(signFrame);
-    if (!this.visible || !this._worldAccepted) return;
-    const {frame}=this._worldAccepted,info=this._worldFrames.get(frame);
-    let shown=0;
-    for (const s of this.list) {
-      const r=frame.request.records.find(r=>r.id===s.id);
-      if (r) shown+=this._place(s,{...info,anchor:r.anchor})?1:0;
-    }
-    const crowded=shown>this.blurLimit;
-    if(crowded!==this._crowded){this.layer.classList.toggle('is-crowded',crowded);this._crowded=crowded;}
-  }
-
   // Call every frame after the main render.
   update() {
-    if (this.worldOwner) { this.updateWorld(); return; }
     const sim = this.getSim();
     const volume = this.getVolume();
     if (!sim || !volume || !this.visible || this.list.length === 0) return;
@@ -451,14 +352,12 @@ export class Signs {
 
   _place(s, info) {
     const d = s.dom;
-    if (!info.world && !info.volume) return false;
-    const cam = info.world ? info.camera : this.camera;
-    const v = info.world
-      ? this._v.fromArray(warp(info.anchor, info.presentation)).applyMatrix4(info.model)
-      : this._v.copy(s.anchor).applyMatrix4(info.volume.matrixWorld);
+    if (!info.volume) return false;
+    const cam = this.camera;
+    const v = this._v.copy(s.anchor).applyMatrix4(info.volume.matrixWorld);
     const dist = v.distanceTo(info.camWorld);
     v.applyMatrix4(cam.matrixWorldInverse);
-    let show = (info.world || s.inside) && v.z < -cam.near;   // (outside the window: hidden)
+    let show = s.inside && v.z < -cam.near;   // (outside the window: hidden)
     let x = 0, y = 0;
     if (show) {
       v.applyMatrix4(cam.projectionMatrix);
@@ -569,9 +468,6 @@ export class Signs {
   _endEdit(sign) {
     if (this._edit === sign) this._edit = null;
     sign.dom.root.classList.remove('is-editing');
-    if (this.worldOwner && !this._worldAccepted?.frame.request.records.some(r=>r.id===sign.id)) {
-      sign.dom.root.style.display = 'none'; sign.dom.shown = false;
-    }
   }
 
   _commit(sign, blur = true) {

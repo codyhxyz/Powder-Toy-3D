@@ -52,14 +52,6 @@ export class NativeTransfer {
       params: { ...values, items: values.items?.map(c => c.slice(0, 4)) ?? [], slot: 0 } });
     if (throws) { d._allocate(o.tick + 1, { mode: NATIVE_LAUNCH_MODE }); d._externalWork?.(); }
     sim.nativeIntegration.changed();
-    // World's source: the slots' cells (each acting slot writes its own: shaders/transfer.js), in world cells.
-    // Its kernel writes them behind the tick's change notes (v2/physics.js _reportChanges), so it says so here.
-    const cells = (values.cells ?? []).slice(0, values.count ?? 0).map(c => [0, 1, 2].map(k => Math.floor(c[k] + 0.5)));
-    if (cells.length) {
-      const at = [sim.origin.x, sim.origin.y, sim.origin.z];
-      sim.worldRenderSource?.noteContentChange({ lo: [0, 1, 2].map(k => Math.min(...cells.map(c => c[k])) + at[k]),
-        hi: [0, 1, 2].map(k => Math.max(...cells.map(c => c[k])) + 1 + at[k]) });
-    }
     return gpu.readback.buffer(out, 0, values.count * 9 * 4).then(bytes => decodeNativeTransfer(bytes, values.count))
       .finally(() => { sim._retire(buf); sim._retire(out); });
   }

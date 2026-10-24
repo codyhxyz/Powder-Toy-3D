@@ -110,7 +110,7 @@ function gatherShape() {
 }
 gatherShape();
 
-/** The gather's step count on grid g, either backend: every ray leaves the grid first (GI.STEP_SLACK). */
+/** The gather's step count on grid g: every ray leaves the grid first (GI.STEP_SLACK). */
 export const giSteps = (g) => Math.ceil((g.nx + g.ny + g.nz) / BRICK) + GI.STEP_SLACK;
 
 /**
@@ -197,8 +197,7 @@ fn giSrcDir(s: vec4u) -> vec3f {
 const paramsWGSL = `${GiParams.wgsl}@group(3) @binding(1) var<uniform> P: GiParams;`;
 
 /** The open ground's light, its sunlit share `sun` (a WGSL f32 expression): the
- * floor past a ray's end (giGatherFrag beyond), and World's stand-in for
- * ground it has not loaded (shaders/worldGI.js worldGIProxy). */
+ * floor past a ray's end (giGatherFrag beyond). */
 export const giGroundLightWGSL = (sun) => `GROUND_ALB * (FU.sunCol * max(FU.sun.y, 0.0) * ${sun} + FU.skyUp)`;
 
 /**
@@ -209,11 +208,11 @@ export const giGroundLightWGSL = (sun) => `GROUND_ALB * (FU.sunCol * max(FU.sun.
  * (the GLSL's one fragment summed the cells in turn).
  * @param {{ nx: number, ny: number, nz: number }} g
  */
-export const giSourceFrag = (g, { backend = 'box', worldWGSL = '' } = {}) => /* wgsl */ `
-${lib(g, { variant: 'LIGHTING_GISRC', aeration: false, backend })}
+export const giSourceFrag = (g) => /* wgsl */ `
+${lib(g, { variant: 'LIGHTING_GISRC', aeration: false })}
 ${giSrcWGSL}
-${backend === 'world' ? worldWGSL : paramsWGSL}
-${backend === 'world' ? '' : giListsWGSL(g)}
+${paramsWGSL}
+${giListsWGSL(g)}
 var<workgroup> wEntry: u32;   // P.list: the list's entry, the same for the whole workgroup
 
 const GI_METAL_DIFFUSE: f32 = ${glf(GI.METAL_DIFFUSE)};
@@ -256,22 +255,18 @@ fn giReduce(li: u32) {
 
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
-  ${backend === 'world' ? `let job = foldId(wg, nwg);
-  if (job >= WGI.counts.x) { return; }
-  worldBeginQuery();
-  let id = worldGIJobs[job].x;
-  if (WGI.config.x != WA.world.w || id >= NBRICKS) { worldIncomplete = true; worldGIReport(job); return; }` : `var id = foldId(wg, nwg);
+  var id = foldId(wg, nwg);
   if (P.list != 0u) {
     if (li == 0u) { wEntry = select(NBRICKS, gsWord(GS_SRC + id), id < gsWord(GS_SRC_LAST)); }
     id = workgroupUniformLoad(&wEntry);
   }
-  if (id >= NBRICKS) { return; }`}
+  if (id >= NBRICKS) { return; }
   let bc = brickCoord(id);
   gFragCoord = vec2f(f32(id) + 0.5, 0.5);   // (nothing GI calls reads it: no per-pixel jitter here)
   // a brick without matter blocks nothing and sends nothing (the brick map is
   // read-only, so this is the same for the whole workgroup)
   if (!brickMatter(brickOcc(bc))) {
-    if (li == 0u) { ${backend === 'world' ? 'worldGISources[job]' : 'giSrc[id]'} = giSrcPack(vec3f(0.0), vec3f(0.0), vec3f(0.0)); }${backend === 'world' ? '\n    worldGIReport(job);' : ''}
+    if (li == 0u) { giSrc[id] = giSrcPack(vec3f(0.0), vec3f(0.0), vec3f(0.0)); }
     return;
   }
   let l = vec3i(i32(li & 3u), i32((li >> 2u) & 3u), i32(li >> 4u));
@@ -305,13 +300,13 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   let trans = exp(-bitcast<f32>(head[5]) * f32(BS) / f32(BRICK_CELLS));
   let covOut = 1.0 - (1.0 - cov) * trans;
   if (all(m == vec2u(0u)) && head[6] == 0u) {
-    if (li == 0u) { ${backend === 'world' ? 'worldGISources[job]' : 'giSrc[id]'} = giSrcPack(vec3f(0.0), covOut, vec3f(0.0)); }${backend === 'world' ? '\n    worldGIReport(job);' : ''}
+    if (li == 0u) { giSrc[id] = giSrcPack(vec3f(0.0), covOut, vec3f(0.0)); }
     return;
   }
 
   // pass 2: light leaving the exposed faces (neighbours inside the brick come
   // from the mask). Last frame's light here: sky and bounce on the faces.
-  ${backend === 'world' ? 'let pr = worldGIPreviousProbe(job, bc);' : 'let pr = Probe(textureLoad(tGI0, bc, 0), textureLoad(tGI1, bc, 0), textureLoad(tGI2, bc, 0), textureLoad(tGI3, bc, 0));'}
+  let pr = Probe(textureLoad(tGI0, bc, 0), textureLoad(tGI1, bc, 0), textureLoad(tGI2, bc, 0), textureLoad(tGI3, bc, 0));
   var rad = vec3f(0.0);
   var dir = vec3f(0.0);
   var nf = 0.0;
@@ -366,8 +361,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
       let lum = dot(s.xyz, vec3f(1.0 / 3.0));
       if (lum > 0.0) { dirOut = wB[0].xyz / lum; }
     }
-    ${backend === 'world' ? 'worldGISources[job]' : 'giSrc[id]'} = giSrcPack(radOut, covOut, dirOut);
-  }${backend === 'world' ? '\n  worldGIReport(job);' : ''}
+    giSrc[id] = giSrcPack(radOut, covOut, dirOut);
+  }
 }
 `;
 
@@ -395,32 +390,20 @@ fn giPast(k: i32, r: i32) -> i32 {
  * (giGatherDispatch); the probes off this frame's checkerboard aren't
  * dispatched at all, and keep their history and textures.
  *
- * Box and World (parity audit 2026-10-20): the probe lists, the history and
- * the sources' addressing differ only in where they live. Past the end of a
- * ray, World takes beyond() at the world's real bounds, as a box does at its
- * own. And a ray runs to
- * the edge of its grid on both (giSteps; user's decision, 2026-10-20: small
+ * A ray runs to
+ * the edge of its grid (giSteps; user's decision, 2026-10-20: small
  * maps bounce light as far as big maps do, where a Box ray used to stop at 18
  * bricks, 72 cells, and take beyond() inside the box).
  * The Box march also leaps the empty bricks brickDistAt vouches for (giPast):
  * a brick without matter has a zero giSrc (giSource), so the leap gives the
- * light and sky of reading each one, for fewer steps. World's march reads every
- * brick still: different code, the same light (not a deviation).
- * World's gather asks for a missing SOURCE only within the light bounce's near
- * ring of the eye, and past it reads the resident SOURCE or the ground twin's
- * stand-in (worldGI.js worldGISourceRing; world/worldGIRing.js), and its
- * beyond() looks the floor's sun up only inside the ring (past it a sun tile
- * is not asked for, and the floor is lit as the stand-in's ground is). Box
- * holds every brick's SOURCE, so its gather reads full detail everywhere:
- * the light World's converges to inside its ring (not a deviation).
+ * light and sky of reading each one, for fewer steps.
  * @param {{ nx: number, ny: number, nz: number }} g
- * @param {{ backend?: string, worldWGSL?: string }} [opts]
  */
-export const giGatherFrag = (g, { backend = 'box', worldWGSL = '' } = {}) => (gatherShape(), /* wgsl */ `
-${lib(g, { variant: 'LIGHTING_GI', aeration: false, backend })}
+export const giGatherFrag = (g) => (gatherShape(), /* wgsl */ `
+${lib(g, { variant: 'LIGHTING_GI', aeration: false })}
 ${giSrcWGSL}
-${backend === 'world' ? worldWGSL : paramsWGSL}
-${backend === 'world' ? '' : giListsWGSL(g)}
+${paramsWGSL}
+${giListsWGSL(g)}
 
 const GI_RAYS: i32 = ${GI.RAYS};   // a power of two (gatherShape)
 const GI_STEPS: i32 = ${giSteps(g)};
@@ -429,7 +412,7 @@ const GI_FAR_STRIDE: f32 = ${glf(GI.FAR_STRIDE)};
 const GI_BURIED: f32 = ${glf(GI.BURIED)};
 const GI_T_MIN: f32 = ${glf(GI.T_MIN)};
 const GI_FACING: f32 = ${glf(GI.FACING)};
-const GI_PER_GROUP: u32 = ${GI.PER_GROUP}u;   // GI_RAYS × GI_PER_GROUP = 64, the workgroup${backend === 'world' ? '' : giLeapWGSL}
+const GI_PER_GROUP: u32 = ${GI.PER_GROUP}u;   // GI_RAYS × GI_PER_GROUP = 64, the workgroup${giLeapWGSL}
 
 // Ray i of GI_RAYS spread evenly over the sphere (Fibonacci lattice, y up).
 fn giDir(i: i32) -> vec3f {
@@ -446,7 +429,7 @@ fn beyond(p: vec3f, d: vec3f) -> vec3f {
   if (d.y >= 0.0) { return skyColor(d); }
   let pf = p + d * (-p.y / d.y);
   let grid = vec3f(GRID);
-  let onFloor = pf.x >= 0.0 && pf.z >= 0.0 && pf.x < grid.x && pf.z < grid.z${backend === 'world' ? ' && worldGIRingNear(vec3i(floor(vec3f(pf.x, 0.0, pf.z) / f32(BS))))' : ''};
+  let onFloor = pf.x >= 0.0 && pf.z >= 0.0 && pf.x < grid.x && pf.z < grid.z;
   var sun = 1.0;
   if (P.shadows != 0u && onFloor) { sun = dot(sunShadowAt(vec3f(pf.x, 0.0, pf.z)), vec3f(1.0 / 3.0)); }
   return ${giGroundLightWGSL('sun')};
@@ -466,11 +449,11 @@ fn giProbe(i: u32) -> vec3i {
 // build's blend did): into the history, and the halves it now holds are what
 // the band's texture gets.
 fn giBlend(k: u32, id: u32, sh: vec4f, blend: f32) -> vec4f {
-  let i = k * ${backend === 'world' ? 'WGI.counts.y' : 'NBRICKS'} + id;
-  let h = ${backend === 'world' ? 'worldGIHistory' : 'giHist'}[i];
+  let i = k * NBRICKS + id;
+  let h = giHist[i];
   let v = mix(vec4f(unpack2x16float(h.x), unpack2x16float(h.y)), sh, blend);
   let w = vec2u(giHalf2(v.xy), giHalf2(v.zw));
-  ${backend === 'world' ? 'worldGIHistory' : 'giHist'}[i] = w;
+  giHist[i] = w;
   return vec4f(unpack2x16float(w.x), unpack2x16float(w.y));
 }
 
@@ -486,15 +469,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   var live = false;
   var bc = vec3i(0);
   var blend = P.blend;
-  ${backend === 'world' ? `worldBeginQuery();
-  live = probe < WGI.counts.y;
-  if (live) {
-    let entry = worldGIJobs[WGI.counts.x + probe];
-    bc = brickCoord(entry.x);
-    if ((entry.y & 1u) != 0u) { blend = P.blendBg; }
-    blend = worldGIJobBlend(blend, entry.y);
-    if (entry.x >= NBRICKS || WGI.config.x != WA.world.w) { worldIncomplete = true; }
-  }` : `if (P.list != 0u) {
+  if (P.list != 0u) {
     live = probe < gsWord(GS_PRB_LAST);
     if (live) {
       let w = gsWord(GS_PRB + probe);
@@ -504,17 +479,17 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   } else {
     live = probe < P.count;
     if (live) { bc = giProbe(probe); }
-  }`}
+  }
   gFragCoord = vec2f(f32(brickId(bc)) + 0.5, 0.5);   // (nothing GI calls reads it: no per-pixel jitter here)
   let bmax = vec3i(BX, BY, BZ);
   var blk = 1.0;
-  ${backend === 'world' ? 'if (live) { ' : ''}for (var k = 0; k < 7; k++) {
+  for (var k = 0; k < 7; k++) {
     var b = bc;
     if (k > 0) { b[(k - 1) >> 1u] += select(-1, 1, (k & 1) == 1); }
     if (any(b < vec3i(0)) || any(b >= bmax)) { blk = 0.0; break; }
-    let cv = giSrcCov(${backend === 'world' ? 'worldGISourceRing(b)' : 'giSrc[brickId(b)]'});
+    let cv = giSrcCov(giSrc[brickId(b)]);
     blk = min(blk, min(cv.x, min(cv.y, cv.z)));
-  }${backend === 'world' ? ' }' : ''}
+  }
   var sh = array<vec4f, 4>(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));
   // a buried probe gathers nothing: its light fades out of the history
   if (live && blk <= GI_BURIED) {
@@ -526,12 +501,12 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     var q = pc;
     // the probe's own brick is skipped: surfaces read the probes from in front of them
     for (var k = 0; k < GI_STEPS; k++) {
-      ${backend === 'world' ? 'if (k < GI_NEAR_STEPS) { q += d; } else { q += d * GI_FAR_STRIDE; }' : 'q = pc + d * f32(giAlong(k));'}
+      q = pc + d * f32(giAlong(k));
       let b = vec3i(floor(q));
-      if (any(b < vec3i(0)) || any(b >= bmax)) { break; }${backend === 'world' ? '' : `
+      if (any(b < vec3i(0)) || any(b >= bmax)) { break; }
       let r = brickDistAt(b);
-      if (r >= 0) { k = giPast(k, r) - 1; continue; }   // no matter within r bricks: on to the first step past them`}
-      let s = ${backend === 'world' ? 'worldGISourceRing(b)' : 'giSrc[brickId(b)]'};
+      if (r >= 0) { k = giPast(k, r) - 1; continue; }   // no matter within r bricks: on to the first step past them
+      let s = giSrc[brickId(b)];
       var a = dot(giSrcCov(s), d2);
       if (a <= 0.0) { continue; }
       let nd = giSrcDir(s);
@@ -541,8 +516,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
       if (T < GI_T_MIN) { break; }
     }
     if (T >= GI_T_MIN) {
-      ${backend === 'world' ? `if (all(q >= vec3f(0.0)) && all(q < vec3f(bmax))) { worldIncomplete = true; }
-      else { L += T * beyond(pc * f32(BS), d); }` : 'L += T * beyond(pc * f32(BS), d);'}
+      L += T * beyond(pc * f32(BS), d);
     }
     var vis = 0.0;
     if (d.y > 0.0) { vis = T; }
@@ -556,15 +530,12 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   }
   if (ray == 0u && live) {
     let w = 4.0 * PI_L / f32(GI_RAYS);   // Monte Carlo weight: sphere area per ray
-    let id = ${backend === 'world' ? 'probe' : 'brickId(bc)'};
-    ${backend === 'world' ? `giBlend(0u, id, wSH[li][0] * w, blend);
-    giBlend(1u, id, wSH[li][1] * w, blend);
-    giBlend(2u, id, wSH[li][2] * w, blend);
-    giBlend(3u, id, wSH[li][3] * w, blend);` : `textureStore(tGI0, bc, giBlend(0u, id, wSH[li][0] * w, blend));
+    let id = brickId(bc);
+    textureStore(tGI0, bc, giBlend(0u, id, wSH[li][0] * w, blend));
     textureStore(tGI1, bc, giBlend(1u, id, wSH[li][1] * w, blend));
     textureStore(tGI2, bc, giBlend(2u, id, wSH[li][2] * w, blend));
-    textureStore(tGI3, bc, giBlend(3u, id, wSH[li][3] * w, blend));`}
-  }${backend === 'world' ? '\n  if (live) { worldGIReport(WGI.counts.x + probe); }' : ''}
+    textureStore(tGI3, bc, giBlend(3u, id, wSH[li][3] * w, blend));
+  }
 }
 `);
 
@@ -766,9 +737,7 @@ export const GI_LAYOUT_NAMES = {
 /**
  * tools/check-wgsl.mjs, and the menu's warm-up (B5): both kernels, for a
  * session in the realistic view (the only one with GI, as the WebGL app ran it;
- * warm() says so). The gather's code(g, { world }) takes the world the grid is
- * a window of, as derived.giKernels() builds it (a box: WORLD_SIZE's), so a
- * warm-up for a world session builds the very module the session then asks for.
+ * warm() says so).
  */
 export const WGSL_CHECK = () => [
   {
@@ -777,7 +746,7 @@ export const WGSL_CHECK = () => [
     dispatch: (g) => giSourceDispatch(g), warm: ({ view }) => isMaterialView(view),
   },
   {
-    name: 'giGather', kind: 'compute', code: (g, { world } = {}) => giGatherFrag(g, { world }), layouts: () => libLayouts('LIGHTING_GI'),
+    name: 'giGather', kind: 'compute', code: (g) => giGatherFrag(g), layouts: () => libLayouts('LIGHTING_GI'),
     layoutNames: GI_LAYOUT_NAMES.giGather, params: GiParams, workgroupSize: [64, 1, 1],
     dispatch: (g) => [giGatherDispatch(g, -1), giGatherDispatch(g, 0)], warm: ({ view }) => isMaterialView(view),
   },
