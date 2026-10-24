@@ -1027,7 +1027,6 @@ export function createPov(app) {
       dead: deadSeen, cause: player.cause, respawnIn: (match?.delay ?? RESPAWN_DELAY) - deadTime,
       mission: mission.engaged,
       locked: isLocked() || touch.enabled, swooping: mode !== 'on',
-      grappleEnabled: canGrapple(),
       aimValid: aim.valid, aimInReach: aim.valid && aim.dist <= HAND_REACH, third: povCam.third,
       buried: mode === 'on' && !deadSeen && inEyes && player.buriedId >= 0 ? BURIED_COLOR[player.buriedId] : null,
     });
