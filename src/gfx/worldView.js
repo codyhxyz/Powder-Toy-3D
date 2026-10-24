@@ -15,7 +15,7 @@
 // positions moved by sim.origin. A small map's origin is 0: both copies are equal.
 import { Matrix4 } from 'three/webgpu';
 import { FrameUniformsStruct, frameUniformValues, worldModelMatrix, frameUniformsOf } from './uniforms.js';
-import { DETAIL, SOFTWARE_UNDRAWABLE, drawableDetail } from './detail.js';
+import { drawableDetail } from './detail.js';
 import { decoShown } from '../deco.js';
 import { isMaterialView } from '../views.js';
 import {
@@ -27,8 +27,8 @@ import { worldGroup2Entries } from '../shaders/world/bindings.js';
 // gfx/worldLight.js WorldLight at integration (same constructors and methods).
 import { WorldCopyStub as WorldCopy, WorldFieldsStub as WorldFields, WorldLightStub as WorldLight } from '../shaders/world/stubs.js';
 
-const TEX = { TEXTURE_BINDING: 0x04 };
-export const detailKey = (d = {}) => Object.keys(d).filter((k) => d[k]).sort().join(',');
+const TEX = { TEXTURE_BINDING: 0x04 };   // (GPUTextureUsage's bit, importable in Node)
+const detailKey = (d = {}) => Object.keys(d).filter((k) => d[k]).sort().join(',');
 const xyz = (o) => [o?.x ?? 0, o?.y ?? 0, o?.z ?? 0];
 
 /**
@@ -183,6 +183,3 @@ export function createWorldView(gpu, sim, { volume }) {
   };
   return view;
 }
-
-/** The software adapter's undrawable detail, as gfx/volume.js leaves it out. */
-export const WORLD_VIEW_UNDRAWABLE = DETAIL.filter((f) => SOFTWARE_UNDRAWABLE.includes(f.define)).map((f) => f.key);
