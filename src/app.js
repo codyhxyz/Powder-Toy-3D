@@ -2409,7 +2409,7 @@ function drawVolume(rp) {
   // Same look (data views, Plain and the rolling log, docs/seamless-world.md): heat, pressure,
   // flow and X-ray, Plain (gfx/blocks.js) and the rolling log's curved variant keep the box's
   // march of physics' window for now.
-  const world = worldView?.draws(view, curved);
+  const world = !testBoxMarch && worldView?.draws(view, curved);
   const drew = !testNoVolume && (world
     ? worldView.draw(rp, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0 })
     : vol.draw(rp, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, warp }));
@@ -2422,6 +2422,7 @@ function drawVolume(rp) {
   return drew;
 }
 let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
+let testBoxMarch = false;  // test.renderOnce({ boxMarch: true }): the box's march in place of the world's (A/B shots)
 // The sea past a World's edge where its water reaches it (gfx/edgeSea.js), for
 // the sky pass, in the window's grid cells; the edge's mask is found once a world.
 const edgeSeas = new WeakMap();
@@ -3181,17 +3182,22 @@ try {
       // frame presented it ({ width, height, data }: RGBA bytes). volume:
       // false draws the frame without the volume (the smoke test's reference
       // for what the volume adds); __app.view.volumeDrawn says whether it drew.
-      async renderOnce({ capture = false, volume = true } = {}) {
+      // boxMarch: the material view through the box's march of physics' window instead of the
+      // world march (gfx/worldView.js): the seamless world's A/B shot on a small map.
+      async renderOnce({ capture = false, volume = true, boxMarch = false } = {}) {
         await coreWait;
         if (graphicsFailure) throw graphicsFailure;
+        if (boxMarch) await vol.viewReady(viewKeyOf(renderView), frameDetail);
         pacer.wake();
         let shot = null;
         if (capture) captureNext = (p) => { shot = p; };
         testNoVolume = !volume;
+        testBoxMarch = boxMarch;
         try {
           tick(performance.now(), true);
         } finally {
           testNoVolume = false;
+          testBoxMarch = false;
           captureNext = null;
         }
         await gpu.fence();
