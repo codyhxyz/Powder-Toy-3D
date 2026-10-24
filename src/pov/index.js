@@ -47,7 +47,7 @@ import { gridSpace } from './space.js';
 import { SMALL_MAP, kindOfGrid } from '../mapKind.js';
 
 // First-person (POV) mode: drop into the world with V (Garry's Mod's noclip
-// key; F drops in too), walk around in it, pop back out to the god view's
+// key), walk around in it, pop back out to the god view's
 // free camera with V. This module is the shell: input, the camera, the
 // figure, the HUD and the per-frame wiring between the body (player.js) and
 // the toolbelt (tools/index.js), plus the gunplay feedback that listens to

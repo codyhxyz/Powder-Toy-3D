@@ -43,14 +43,25 @@ const CATEGORY_ICONS = {
   Exotic: ICON.exotic, Tools: ICON.tools, Entities: ICON.person, Constructions: ICON.constructions, Deco: ICON.deco,
 };
 
-// The element menu, Garry's Mod's spawn menu copied: closed until T (GMod's Q),
-// then a panel under the toolbar with a tab strip of categories, a grid of big
-// icons, and the tool-options pane on the right (what's selected, the brush).
-// Picking an element or clicking the world closes it, like letting go of Q.
+// The element menu has two layouts, picked by the camera:
+// - God view: The Powder Toy's element bar, open from the start and left open.
+//   TPT keeps a column of category buttons down the right edge (GameView.cpp
+//   NotifyMenuListChanged: MenuButtons at WINDOWW-16) and the open category's
+//   element buttons beside them. Ours are both on the right edge, the elements
+//   in a slim column just left of the categories, so the bottom of the screen
+//   stays clear (a bottom dock got in the way, 68e09c8). Brush options sit at the
+//   top of that column. Picking an element or painting closes nothing; hovering a
+//   category opens it, as TPT's MenuButton does unless "sticky categories" is on
+//   (its Deco section needs a click: needsClick). The chevron at the top, or T,
+//   hides it; the tab that takes its place brings it back (settings.spawnBar).
+// - First person: Garry's Mod's spawn menu, shut until Q (pov/index.js setMenu),
+//   then a panel under the toolbar with a tab strip of categories, a grid of big
+//   icons and the tool-options pane on the right. It starts shut on every entry
+//   and never changes the god-view bar.
 // onTarget(id): an element tile Alt-clicked, the replace / delete target (TPT's
 // Ctrl+Alt-click on an element button, GameView.cpp; Alt alone works too: a
-// Mac's Ctrl-click is a right click).
-export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedropper, onDecoToggle, onTarget }) {
+// Mac's Ctrl-click is a right click). onLayout(): settings.spawnBar changed, to save.
+export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedropper, onDecoToggle, onTarget, onLayout }) {
   setTileSettings(settings);
   let category = Math.max(0, PALETTE.findIndex((g) => g.items.some((key) => itemByKey(key).id === settings.tool)));
   let lastTool = settings.tool;
@@ -86,23 +97,33 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
     }
   });
 
+  const openCategory = (i) => {
+    category = i;
+    search.value = '';
+    filter();
+    preview();
+  };
   const categories = PALETTE.map((g, i) => h('button.material-category', {
     type: 'button', title: g.name, 'aria-label': g.name, 'aria-controls': 'material-collection',
     style: { '--category-color': itemByKey(g.items[0]).color },
-    on: { click: () => {
-      category = i;
-      search.value = '';
-      filter();
-      preview();
-    } },
+    on: {
+      click: () => openCategory(i),
+      // TPT's bar opens a category when the mouse passes over its button (GameView.cpp
+      // MenuButton mouseEnterCallback), except Deco, which needs a click, and not
+      // while a button is held. Not over a search being typed, which it would clear.
+      pointerenter: (e) => {
+        if (bar && e.pointerType === 'mouse' && !e.buttons && g.name !== 'Deco' && !search.value && i !== category) openCategory(i);
+      },
+    },
   }, h('span', { html: CATEGORY_ICONS[g.name] ?? ICON.cube }), h('span.category-name', { text: g.name })));
   const rail = h('div.material-categories', { role: 'group', 'aria-label': 'Material categories' }, categories);
+  const RAIL_KEYS = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 };   // the tab strip runs across, the bar's column down
   rail.addEventListener('keydown', (e) => {
     const i = categories.indexOf(document.activeElement);
-    if (i < 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+    if (i < 0 || !(e.key in RAIL_KEYS || e.key === 'Home' || e.key === 'End')) return;
     e.preventDefault();
     const next = e.key === 'Home' ? 0 : e.key === 'End' ? categories.length - 1
-      : (i + (e.key === 'ArrowRight' ? 1 : -1) + categories.length) % categories.length;
+      : (i + RAIL_KEYS[e.key] + categories.length) % categories.length;
     categories[next].focus();
     categories[next].click();
   });
@@ -139,8 +160,9 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
   propValue.addEventListener('input', () => onBrushChange({ propText: propValue.value }));
   propValue.addEventListener('keydown', (e) => {
     // Enter is TPT's OK: back to the world, if the value reads
-    if (e.key === 'Enter' && propParsed().ok) { propValue.blur(); setCollapsed(true); }
-    if (e.key === 'Escape') { propValue.blur(); setCollapsed(true); }
+    // (the god-view bar stays open: only the pop-up menu closes)
+    if (e.key === 'Enter' && propParsed().ok) { propValue.blur(); if (!bar) setCollapsed(true); }
+    if (e.key === 'Escape') { propValue.blur(); if (!bar) setCollapsed(true); }
     e.stopPropagation();
   });
   const propParsed = () => parseProp(propIndex(settings.propField), settings.propText);
@@ -186,42 +208,59 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
   });
   const find = h('label.material-find', {}, h('span', { html: ICON.search }), search, h('kbd', { text: '/' }));
   const collapse = iconButton(ICON.chevUp, 'Hide elements', 'Hide elements (T)', () => setCollapsed(true));
+  // phones: the bar is one tile wide, so its search and brush options open beside it
+  const optsButton = iconButton(ICON.sphere, 'Brush options', 'Search and brush options', () => {
+    dock.classList.toggle('opts');
+    optsButton.setAttribute('aria-pressed', String(dock.classList.contains('opts')));
+  });
+  optsButton.classList.add('material-opts');
+  optsButton.setAttribute('aria-pressed', 'false');
+  const top = h('div.material-top', {}, rail, find, collapse, optsButton);
+  const side = h('aside.material-side', {}, detail, brush);
   const dock = h('section.dock.panel', { 'aria-label': 'Element picker' },
-    h('div.material-top', {}, rail, find, collapse),
+    top,
     h('div.material-body', {},
       h('div.material-library#material-collection', {},
         h('div.material-heading', { 'aria-live': 'polite', 'aria-atomic': 'true' }, categoryName, count),
         collection, empty),
-      h('aside.material-side', {}, detail, brush)));
+      side));
 
   const tabTile = h('span.dock-tab-swatch', { 'aria-hidden': 'true' });
   const tabName = h('b');
+  const tabChev = h('span', { html: ICON.chevDown });
   const tab = h('button.dock-tab.panel', { type: 'button', title: 'Show elements (T)', on: { click: () => setCollapsed(false) } },
-    tabTile, tabName, h('span', { html: ICON.chevDown }), h('kbd', { text: 'Q' }));
+    tabTile, tabName, tabChev, h('kbd', { text: 'T' }));
   // Space activates a focused control, not the simulation's global pause shortcut.
   for (const el of [dock, tab]) el.addEventListener('keydown', (e) => {
     if (e.code === 'Space') e.stopPropagation();
   });
+  // The bar stays open, so a button clicked on it mustn't keep the focus, or Space
+  // (pause) would press it again. TPT's buttons never hold the keyboard. Typing fields keep it.
+  dock.addEventListener('pointerup', () => {
+    const el = document.activeElement;
+    if (bar && dock.contains(el) && !el.matches('input[type=search], input[type=text], input[type=color], select')) requestAnimationFrame(() => el.blur());
+  });
   document.body.append(dock, tab);
-  // --dock-bottom (styles.css): the tab's bottom edge, which what sits under it
-  // clears. The open menu is an overlay, so it doesn't count.
-  const edge = () => document.documentElement.style.setProperty('--dock-bottom', `${tab.offsetTop + tab.offsetHeight}px`);
+  // --dock-bottom (styles.css): the pop-up menu tab's bottom edge, which what sits
+  // under it clears (the open menu is an overlay, so it doesn't count); the bar
+  // and its tab sit on the right, so there it is the toolbar's.
+  // --spawn-bar-w: how much of the right edge the open bar takes, which the
+  // frame stats, notices, killfeed and data legend step left of.
+  const BAR_GAP_PX = 10;
+  const root = document.documentElement.style;
+  const edge = () => {
+    root.setProperty('--dock-bottom', bar ? 'var(--bar-bottom)' : `${tab.offsetTop + tab.offsetHeight}px`);
+    root.setProperty('--spawn-bar-w', bar && !hidden() ? `${dock.offsetWidth + BAR_GAP_PX}px` : '0px');
+  };
   new ResizeObserver(edge).observe(tab);
-  // a click on the world closes the menu and is spent doing it, as no stray paint
-  // lands under where the menu was (first person runs its own Q menu: pov-menu)
-  addEventListener('pointerdown', (e) => {
-    if (settings.dockCollapsed || document.body.classList.contains('pov-on') || !e.target.closest?.('#app')) return;
-    e.preventDefault();
-    e.stopPropagation();
-    setCollapsed(true);
-  }, true);
+  new ResizeObserver(edge).observe(dock);
 
   function select(it) {
     onSelect(it.id);
     if (document.body.classList.contains('pov-on')) return;
-    // TPT opens the Property tool's window when it is picked (PropertyTool::Select)
+    // TPT opens the Property tool's window when it is picked (PropertyTool::Select);
+    // anything else leaves the bar as it is, as TPT's does
     if (it.id === PROP_TOOL) openProp();
-    else setCollapsed(true);
   }
   function openProp() {
     setCollapsed(false);
@@ -256,9 +295,22 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
   }
 
   let spawnLocked = false;
+  // bar: the god view's TPT bar (else first person's pop-up). Each layout keeps
+  // its own open state: the bar's is a setting, the pop-up's starts shut each time.
+  let bar = false;
+  let popupOpen = false;
+  const hidden = () => spawnLocked || (bar ? !settings.spawnBar : !popupOpen);
   function setCollapsed(c) {
-    if (!c && spawnLocked) return;
+    if (spawnLocked && (bar || !c)) return;   // (a locked bar keeps the player's choice for later)
     const moveFocus = (c ? dock : tab).contains(document.activeElement);
+    if (bar) {
+      if (settings.spawnBar === c) { settings.spawnBar = !c; onLayout?.(); }
+    } else popupOpen = !c;
+    apply();
+    if (moveFocus && !tab.hidden) (c ? tab : categories[category]).focus({ preventScroll: true });
+  }
+  function apply() {
+    const c = hidden();
     settings.dockCollapsed = c;
     dock.classList.toggle('collapsed', c);
     tab.classList.toggle('show', c);
@@ -266,10 +318,24 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
     tab.inert = !c;
     tab.setAttribute('aria-expanded', String(!c));
     tab.hidden = spawnLocked;
-    if (moveFocus && !tab.hidden) (c ? tab : categories[category]).focus({ preventScroll: true });
-    if (c) preview();
+    if (c) { preview(); dock.classList.remove('opts'); optsButton.setAttribute('aria-pressed', 'false'); }
     edge();
   }
+  // which layout: the bar unless the body (first person) is on
+  function layout() {
+    const next = !document.body.classList.contains('pov-on');
+    if (next === bar) return;
+    bar = next;
+    popupOpen = false;   // first person's menu starts shut on every entry
+    dock.classList.toggle('bar', bar);
+    tab.classList.toggle('bar', bar);
+    if (bar) side.prepend(find); else top.insertBefore(find, collapse);   // the bar's search tops its options
+    collapse.firstChild.innerHTML = bar ? ICON.chevRight : ICON.chevUp;
+    search.placeholder = bar ? 'Search' : 'Find an element';   // (the bar's field is narrow)
+    tabChev.innerHTML = bar ? ICON.chevLeft : ICON.chevDown;
+    apply();
+  }
+  new MutationObserver(layout).observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
   function sync() {
     for (const { el, it } of tiles) {
@@ -322,21 +388,25 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
   filter();
   sync();
   setEyedropper(false);
-  setCollapsed(true);   // GMod starts with its spawn menu shut
+  bar = document.body.classList.contains('pov-on');   // so layout() runs once now
+  layout();
   return {
     sync,
     setCollapsed,
     setEyedropper,
     setSpawnLocked(locked) {
       spawnLocked = !!locked;
-      tab.hidden = spawnLocked;
-      if (spawnLocked) setCollapsed(true);
+      apply();
     },
-    toggle: () => setCollapsed(!settings.dockCollapsed),
+    toggle: () => setCollapsed(!hidden()),
+    // first person's Q menu closing (wire/pov.js): only ever the pop-up, even if
+    // the body has already left (the bar keeps its own state)
+    closeMenu() { popupOpen = false; if (!bar) apply(); },
     focusSearch: () => { if (spawnLocked) return; setCollapsed(false); search.focus(); search.select(); },
     openProp,
     // Q in first person opens the category containing the requested tool (false if no tile is it).
     reveal(pick) {
+      layout();   // (the body may have come on this same task)
       if (spawnLocked) return false;
       const match = tiles.find(({ it }) => pick(it));
       if (!match) return false;
@@ -347,6 +417,6 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
       match.el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       return true;
     },
-    get collapsed() { return !!settings.dockCollapsed; },
+    get collapsed() { return hidden(); },
   };
 }

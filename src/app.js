@@ -47,7 +47,7 @@ import { sceneByKey } from './world/scenes/index.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
 import { createBrushCursor } from './brush.js';
 import { bindBrushEraseClick } from './brushInput.js';
-import { createCameraRig } from './camera.js';
+import { createCameraRig, bindCameraMouse } from './camera.js';
 import { createMeshCut } from './gfx/meshCut.js';
 import { createMeshFrames } from './gfx/meshFrames.js';
 import { createBrand, createToolbar } from './ui/topbar.js';
@@ -150,7 +150,9 @@ const DEFAULTS = {
   // aren't), and its Property tool's last property and value (kept, as TPT's prefs)
   specificDelete: false, replaceTarget: -1, propField: 'temp', propText: '',
   steps: 4, gravity: 0.025, paused: false,
-  view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: true,
+  // spawnBar: the god view's element bar is showing (ui/dock.js; TPT's is always there);
+  // dockCollapsed: whether the menu in use is hidden right now, kept by the dock
+  view: 0, camSpeed: 1, upscale: 'quality', spawnBar: true, dockCollapsed: false,
   gender: 'male', character: 'real', villageCharacter: 'boy', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   sprintBlur: true, sprintMusic: true,
   nearGI: true, glowLights: true, caustics: true,
@@ -180,7 +182,7 @@ const DEFAULT_CHANGES = [
 const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
 const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'propField', 'propText', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', 'gender', 'character', 'villageCharacter', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
+  'camSpeed', 'upscale', 'spawnBar', 'gender', 'character', 'villageCharacter', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
@@ -453,7 +455,9 @@ const camera = useWebGPUCamera(new THREE.PerspectiveCamera(40, innerWidth / inne
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.dampingFactor = 0.12;
-controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+// the left button paints; the right one looks around and Alt + left orbits (camera.js bindCameraMouse);
+// Shift + right pans (bindCameraMouse sets RIGHT per press: OrbitControls turns Shift + rotate into a pan)
+controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.PAN, RIGHT: null };
 controls.zoomToCursor = true;
 controls.touches = { ONE: null, TWO: THREE.TOUCH.DOLLY_ROTATE };   // one finger paints (touchDown)
 // What gpu.three.prepare(object) compiles a new kind of mesh for (B5, F8):
@@ -496,7 +500,11 @@ const isTyping = () => {
   return !!(signs?.editing || (a && (a.tagName === 'TEXTAREA' || a.isContentEditable ||
     (a.tagName === 'INPUT' && !['range', 'checkbox', 'button'].includes(a.type)))));
 };
-const rig = createCameraRig(camera, controls, isTyping);
+const rig = createCameraRig(camera, controls, isTyping, { sensitivity: () => settings.sensitivity, povFov: () => settings.povFov });
+// The god view's fly speed, settings.camSpeed (Settings → Camera → Move speed)
+const CAM_SPEED_MIN = 0.25, CAM_SPEED_MAX = 3;   // × the distance-scaled speed (camera.js)
+const CAM_SPEED_NOTCH = 1.25;                    // × per wheel notch
+const CAM_SPEED_STEP = 0.05;                     // the slider's step: a notch lands on one
 
 // the subsystems the wires fill in (src/wire), null while theirs isn't ready
 let pov = null, mp = OFFLINE, signs = null, builds = null, spawners = null, perkOrbs = null, arenaMarkers = null;
@@ -1424,6 +1432,7 @@ const dock = createDock({
   onEyedropper: () => setEyedropper(!eyedropper),
   onDecoToggle: () => toggleDeco(),
   onTarget: setTarget,
+  onLayout: () => save(),
 });
 hud.setEditMode(editModeText());
 
@@ -1592,7 +1601,7 @@ const settingsPanel = createSettings({
     // Balanced = each feature's cost-tier default; Customize has a switch per feature with its cost (gfx/detail.js)
     ...(DETAIL.length ? [{ title: 'Detail up close', rows: detailRows(settings, () => { applyDetail(); save(); }) }] : []),
     { title: 'Camera', rows: [
-      { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: 0.25, max: 3, step: 0.05, def: DEFAULTS.camSpeed,
+      { type: 'slider', key: 'camSpeed', label: 'Move speed (WASD)', min: CAM_SPEED_MIN, max: CAM_SPEED_MAX, step: CAM_SPEED_STEP, def: DEFAULTS.camSpeed,
         fmt: (v) => `${v.toFixed(2)}×`, onChange: (v) => { rig.setSpeed(v); save(); } },
     ] },
     // The body you see in third person and when you die. The wizards wear a hat;
@@ -1656,7 +1665,7 @@ function setGender(gender) {
 
 function resetSettings() {
   weather.reset();
-  const keep = { size: settings.size, preset: settings.preset, scene: settings.scene, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed,
+  const keep = { size: settings.size, preset: settings.preset, scene: settings.scene, tool: settings.tool, paused: settings.paused, spawnBar: settings.spawnBar, dockCollapsed: settings.dockCollapsed,
     ...bodiesFor(settings.gender) };   // the player's own gender stays
   Object.assign(settings, DEFAULTS, keep);
   applyGravity();
@@ -1883,6 +1892,37 @@ function warmThumb(viewId) {
 const canvasEl = canvas;
 const canEraseClick = () => !pov?.active && selectedMode !== 'factory' && !ctx.industry?.building
   && !signs?.editing && !painting && !shapeDrag;
+// A grid cell's centre in the scene, where the view shows it.
+const cellInScene = (cell) => presentationPoint(cell.clone().addScalar(0.5)).applyMatrix4(volume.matrixWorld);
+// The wheel with the right button held steps the god view's fly speed (the Camera section's
+// Move speed), Unreal's viewport camera speed, and says it a moment.
+let speedToast = null;
+function stepFlySpeed(notches) {
+  const v = THREE.MathUtils.clamp(Math.round(settings.camSpeed * CAM_SPEED_NOTCH ** notches / CAM_SPEED_STEP) * CAM_SPEED_STEP,
+    CAM_SPEED_MIN, CAM_SPEED_MAX);
+  settings.camSpeed = v;
+  rig.setSpeed(v);
+  save();
+  const text = `Move speed ${v.toFixed(2)}×`;
+  if (speedToast?.isConnected) speedToast.querySelector('.nt-text').textContent = text;
+  else speedToast = hud.toast(text);
+}
+// F: fly to what's under the cursor (Roblox Studio's and Unreal's focus), this many cells short of it
+const FOCUS_CELLS = 32;
+async function focusCursor() {
+  const from = sim, ray = gridRay();
+  const hit = await pickRay(ray.origin, ray.direction, true);
+  if (from !== sim || pov?.active) return;
+  if (!hit.valid) { hud.toast('Nothing under the cursor to fly to', { kind: 'error' }); return; }
+  rig.focus(cellInScene(hit.cell), FOCUS_CELLS * volume.matrixWorld.getMaxScaleOnAxis());
+  pacer.wake();
+}
+// Alt + left drag orbits the point under the cursor (the hovered cell)
+bindCameraMouse(canvasEl, rig, controls, {
+  enabled: () => !pov?.active,
+  pivot: () => (hover.valid && pointerInside ? cellInScene(hover.cell) : null),
+  flySpeed: stepFlySpeed,
+});
 bindBrushEraseClick(canvasEl, {
   canErase: canEraseClick,
   erase: e => eraseClick(e).catch(err => { console.error('Erase click failed', err); hud.toast('Could not erase here. Try again.'); }),
@@ -2110,8 +2150,6 @@ const wantFrame = () => wantShot || frameWaiters.length > 0;
 
 addEventListener('keydown', (e) => {
   if (pov?.editingWand) return;
-  if (e.key === 'Alt') controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
-  if (e.key === 'Shift') controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE; // OrbitControls turns Shift+rotate into pan
   if (isTyping()) return;
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); return; }
@@ -2127,9 +2165,14 @@ addEventListener('keydown', (e) => {
   if (mod && e.key.toLowerCase() === 'p' && !e.shiftKey) { e.preventDefault(); if (!pov?.active) openProp(); return; }
   if (mod) return;
   const k = e.key;
-  // V switches between the god view and the body (Garry's Mod's noclip key). F drops
-  // in too, from the god view only: in the body F is the kick.
-  if (k === 'v' || k === 'V' || ((k === 'f' || k === 'F') && !pov?.active)) { if (!e.repeat) actions.firstPerson(); return; }
+  // V switches between the god view and the body (Garry's Mod's noclip key). In the
+  // god view F flies to what's under the cursor (focusCursor); in the body F is the kick.
+  if (k === 'v' || k === 'V') { if (!e.repeat) actions.firstPerson(); return; }
+  if ((k === 'f' || k === 'F') && !pov?.active) {
+    if (!e.repeat) focusCursor().catch((err) => console.error('Focus failed', err));
+    return;
+  }
+  // Intentional (lead decision, 2026-10-24): T is chat when playing together; the spawn menu's button toggles it then
   if ((k === 't' || k === 'T') && mp.chatAvailable) { e.preventDefault(); mp.openChat(); return; } // Minecraft's chat key, POV included
   if (pov?.blocksKey(e)) return;   // POV owns movement, Space and the digits while active
   if (e.code === 'Space') { e.preventDefault(); setPaused(!settings.paused); }
@@ -2144,8 +2187,9 @@ addEventListener('keydown', (e) => {
   else if (Object.hasOwn(MODE_KEYS, k.toLowerCase())) { const key = MODE_KEYS[k.toLowerCase()]; setSimMode(key, nextMode(key, settings[key]), true); }   // TPT's Y, U
   else if (k === 'i' || k === 'I') { if (!(pointerInside && !uiHover && pickHovered())) setEyedropper(!eyedropper); }
   else if (k === 'r' || k === 'R') actions.resetCamera();
-  // Q is Garry's Mod's spawn-menu key, the same key as in the body; T stays as the old key (chat when playing together)
-  else if (k === 'q' || k === 'Q' || k === 't' || k === 'T') dock.toggle();
+  // T: the spawn menu (chat when playing together). Q and E fly down and up here (camera.js);
+  // in the body Q is Garry's Mod's spawn-menu key (pov/index.js)
+  else if (k === 't' || k === 'T') dock.toggle();
   else if (k === '/') { e.preventDefault(); dock.focusSearch(); }
   else if (k === ',') actions.toggleSettings();
   else if (k === '?') actions.toggleHelp();
@@ -2160,13 +2204,7 @@ addEventListener('keydown', (e) => {
   }
   else if (/^[0-9]$/.test(k)) { const v = VIEWS.find((x) => x.hotkey === k); if (v && !e.repeat) setView(v.id); }
 });
-addEventListener('keyup', (e) => {
-  if (e.key === 'Alt') controls.mouseButtons.LEFT = null;
-  if (e.key === 'Shift') controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
-});
 addEventListener('blur', () => {
-  controls.mouseButtons.LEFT = null;
-  controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
   painting = false;
   shapeDrag = null;
 });

@@ -1,5 +1,5 @@
 // CPU check of the real app/tool-gun handlers: outside click erases on release,
-// drag orbits, and first-person right-click keeps its held erase stroke.
+// a drag is the camera's (looking around: tools/check-camera-turn.mjs), and first-person right-click keeps its held erase stroke.
 // node tools/check-brush-controls.mjs
 import assert from 'node:assert/strict';
 import { SMALL_MAP } from '../src/mapKind.js';
@@ -62,7 +62,7 @@ const before = snapshots;
 c.press({ button: 2 });
 assert.equal(snapshots, before, 'outside right-button press never paints or erases');
 vm.runInContext(app.match(/^controls\.mouseButtons = .*;$/m)[0], c);
-assert.equal(c.controls.mouseButtons.RIGHT, THREE.MOUSE.ROTATE, 'outside right-drag orbits');
+assert.equal(c.controls.mouseButtons.RIGHT, null, 'outside, OrbitControls leaves the right drag to camera.js (it looks around)');
 assert.equal(c.controls.mouseButtons.MIDDLE, THREE.MOUSE.PAN);
 // The released click's own pick, not a stale hover, supplies the erase centre.
 const paints = [];

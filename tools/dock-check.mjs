@@ -70,19 +70,23 @@ try {
   await category('Powders').click();
   await dock.getByRole('button', { name: 'Sand', exact: true }).click();
   assert(await dock.getByRole('slider', { name: 'Flow', exact: true }).isVisible());
+  assert.equal(await dock.evaluate((el) => el.inert), false, 'picking keeps the god-view bar open (TPT)');
+  await page.mouse.click(400, 450);
+  assert.equal(await dock.evaluate((el) => el.inert), false, 'painting keeps the god-view bar open');
   await dock.getByRole('button', { name: 'Hide elements', exact: true }).click();
   assert(await dock.evaluate((el) => el.inert));
   assert(await page.locator('.dock-tab').evaluate((el) => el === document.activeElement));
   await page.keyboard.press('Space');
   assert.equal(await dock.evaluate((el) => el.inert), false);
   assert(await page.locator('.dock-tab').evaluate((el) => el.inert));
-  await page.keyboard.press('f');
+  await page.keyboard.press('v');   // (V drops into the body; F focuses the camera in the god view)
   await page.waitForFunction(() => window.__app.pov.mode === 'on');
   await page.keyboard.press('q');
   await page.waitForFunction(() => document.body.classList.contains('pov-menu'));
   assert.equal(await category('Tools').getAttribute('aria-pressed'), 'true', 'Q reveals the first-person tools category');
   assert.equal(await dock.evaluate((el) => el.inert), false);
   assert(await dock.getByRole('button', { name: 'Pickaxe', exact: true }).isVisible());
+  assert.equal(await page.evaluate(() => window.__app.settings.spawnBar), true, 'the first-person menu leaves the bar setting alone');
   assert.deepEqual(errors, []);
   await page.close();
 
@@ -104,14 +108,16 @@ try {
       assert.equal(await mobile.locator('.material-heading h4').textContent(), name);
     }
     const tile = await mobile.locator('.material-swatch:visible').first().boundingBox();
-    assert(tile.width > tile.height && tile.height >= 44, 'touch swatches remain rectangles with 44px targets');
+    assert(tile.width >= 44 && tile.height >= 44, 'touch swatches keep 44px targets');
     await mobile.locator('.material-swatch:visible').last().scrollIntoViewIfNeeded();
     const list = await mobile.locator('.material-swatches').boundingBox();
     const last = await mobile.locator('.material-swatch:visible').last().boundingBox();
     assert(last.y + last.height <= list.y + list.height, 'the last row is reachable without clipping');
   }
   await mobile.locator('.dock').getByRole('button', { name: 'Sand', exact: true }).tap();
-  assert(await mobile.locator('.dock').evaluate((el) => el.inert), 'touch selection closes the picker');
+  assert.equal(await mobile.locator('.dock').evaluate((el) => el.inert), false, 'the god-view bar stays open after a pick (TPT)');
+  await mobile.locator('.dock').getByRole('button', { name: 'Hide elements', exact: true }).tap();
+  assert(await mobile.locator('.dock').evaluate((el) => el.inert));
   await mobile.locator('.dock-tab').tap();
   assert.equal(await mobile.locator('.dock').evaluate((el) => el.inert), false);
   assert.deepEqual(errors, []);
