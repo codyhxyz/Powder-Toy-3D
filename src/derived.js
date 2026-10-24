@@ -533,9 +533,10 @@ export class Derived {
   // Group 2 of a GI kernel (shaders/bindings.js L.LIGHTING_GISRC or
   // L.LIGHTING_GI): this module's resources (the fields, light, the bands,
   // the brick map, giSrc, the history), the shadow map (stand-ins without one:
-  // never read then), the media noise (the clouds' shadow), the samplers, and
-  // for the source the flow and a stand-in for the aeration, which no GI code
-  // reads. One per variant and shadow map.
+  // never read then), the media noise (the clouds' shadow), stand-ins for the
+  // far textures the shared layouts hold (shaders/bindings.js 11-13: only the
+  // far view reads them), the samplers, and for the source the flow and a
+  // stand-in for the aeration, which no GI code reads. One per variant and shadow map.
   _giGroup(variant, shadow) {
     const gpu = this.gpu, sim = this.sim;
     if (!this._gi) {
@@ -543,6 +544,8 @@ export class Derived {
       const dummy = (gpu._giDummies ??= {
         map: gpu.createTexture({ label: 'GI shadow map (none)', size: [1, 1], format: 'rgba32float', usage: T }),
         x: gpu.createTexture({ label: 'GI shadow map x (none)', size: [1, 1], format: 'r32float', usage: T }),
+        grid: gpu.createTexture({ label: 'GI far grid (none)', size: [1, 1, 1], dimension: '3d', format: 'rgba16uint', usage: T }),
+        flat: gpu.createTexture({ label: 'GI far 2d (none)', size: [1, 1], format: 'rgba16float', usage: T }),
       });
       const sampler = (address) => gpu.device.createSampler({
         label: `GI linear ${address}`, magFilter: 'linear', minFilter: 'linear', addressModeU: address, addressModeV: address, addressModeW: address,
@@ -559,7 +562,7 @@ export class Derived {
       if (!v) r.views.set(t, v = t.createView({ label: t.label, ...(t.dimension === '3d' ? { dimension: '3d' } : {}) }));
       return v;
     };
-    const parts = [shadow?.map ?? r.dummy.map, shadow?.x ?? r.dummy.x];
+    const parts = [shadow?.map ?? r.dummy.map, shadow?.x ?? r.dummy.x, r.dummy.grid, r.dummy.flat, r.dummy.flat];
     const idOf = (o) => { let id = r.ids.get(o); if (!id) r.ids.set(o, id = r.next++); return id; };
     const key = `${variant}|${parts.map(idOf).join('|')}`;
     let group = r.groups.get(key);
@@ -572,7 +575,7 @@ export class Derived {
       // needs no change here)
       const entries = [
         ...this.lightingEntries(),
-        ...parts.map((t, i) => ({ binding: [8, 9][i], resource: view(t) })),
+        ...parts.map((t, i) => ({ binding: [8, 9, 11, 12, 13][i], resource: view(t) })),
         { binding: 10, resource: r.noise.view }, { binding: 14, resource: r.clamp }, { binding: 15, resource: r.repeat },
         b(18, sim.state.flow), b(19, this.noAer), b(20, this.giSrc), b(21, this.giHist),
       ].filter((e) => has.has(e.binding));

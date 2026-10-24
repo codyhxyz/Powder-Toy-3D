@@ -542,7 +542,10 @@ class Pipe {
   // Binds groups 0–2 and the params group on a pass encoder.
   bind(f, pass, bind, header, params) {
     const gpu = this.gpu;
-    if (pass.__pipeline !== this.pipeline) { pass.setPipeline(this.pipeline); pass.__pipeline = this.pipeline; }
+    // Always: a frame's compute pass is shared, and raw dispatches into it (gpu/copyRuns.js, the World
+    // passes) set pipelines of their own; a cached "already set" ran a kernel on the copy kernel's
+    // pipeline (2026-10-23, big maps' first frame: "copy runs" layout vs the "tables" group).
+    pass.setPipeline(this.pipeline);
     for (let i = 0; i < 3; i++) {
       const g = bind[i] ?? (this.groups[i] === gpu.L.EMPTY ? gpu.emptyGroup : null);
       if (!g) throw new Error(`${this.name}: no bind group for group ${i}`);
