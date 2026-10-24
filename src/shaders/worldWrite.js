@@ -20,15 +20,16 @@ import { WORLD_SCENES } from '../world/scenes/index.js';
 export const NATIVE_WRITE_LAYOUT = [0, 1, 2].map((binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }));
 export const NativeFillParams = uniformStruct('NativeFillParams', { origin: 'vec3i', lo: 'vec3i', hi: 'vec3i' });
 
-const head = (g, a = v2ActLayout(g)) => /* wgsl */ `
-${prelude(g, { state: false })}
-${nativeImportHelpersWGSL}
-${importAWGSL(g)}
-@group(1) @binding(0) var<storage, read_write> cores: array<vec4u>;
-@group(1) @binding(1) var<storage, read_write> banks: array<i32>;
-@group(1) @binding(2) var<storage, read_write> act: array<atomic<u32>>;
-fn nativeWrite(s: u32, a: vec4f) {
-  let n = importA(a);
+/**
+ * V2's world write over the owner's cores, banks and activity bound at @group(group) @binding(at, at + 1,
+ * at + 2): nativeWriteCore(s, n) stores core n at slot s as the import stores it (above). Shared with the
+ * physics region's world-copy fill (shaders/world/physicsFill.js), which binds its world copy at group 1.
+ */
+export const nativeWriteCoreWGSL = (g, group = 1, at = 0, a = v2ActLayout(g)) => /* wgsl */ `
+@group(${group}) @binding(${at}) var<storage, read_write> cores: array<vec4u>;
+@group(${group}) @binding(${at + 1}) var<storage, read_write> banks: array<i32>;
+@group(${group}) @binding(${at + 2}) var<storage, read_write> act: array<atomic<u32>>;
+fn nativeWriteCore(s: u32, n: vec4u) {
   let c = cores[s];
   let bank = banks[s];
   if (all(n == c) && bank == 0) { return; }
@@ -44,6 +45,13 @@ fn nativeWrite(s: u32, a: vec4f) {
     atomicStore(&act[${a.busy1}u + b], 1u);
   }
 }
+`;
+const head = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
+${nativeImportHelpersWGSL}
+${importAWGSL(g)}
+${nativeWriteCoreWGSL(g)}
+fn nativeWrite(s: u32, a: vec4f) { nativeWriteCore(s, importA(a)); }
 `;
 const MAIN = /* wgsl */ `@compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {`;

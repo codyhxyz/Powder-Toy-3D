@@ -70,6 +70,7 @@ export const SALT = {
   BOLT: 0x11e7,            // the lightning bolt's edit (lightning.js)
   FOLIAGE: 0x6c656166,     // the foliage clump lattice ('leaf', fields.js)
   CODEC: 0x5eed,           // a decoded snapshot's cell seeds (net/codec.js)
+  WC_FILL: 0x77cf,         // a physics cell decoded from the world copy's word: its colour seed (shaders/world/physicsFill.js)
 };
 {
   const seen = new Map();

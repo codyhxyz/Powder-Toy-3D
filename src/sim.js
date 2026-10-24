@@ -965,7 +965,9 @@ export class Simulation {
   // only before the owner presents the window. The flow field moves with the
   // cells; the derived passes move their own (onShift). Undo snapshots keep the
   // window where they were taken (undo maps them across).
-  shift(dx, dz) {
+  // picture: false on a physics-only move (world/physicsRegion.js PHYSICS_ONLY_MOVE): the picture reads
+  // the world copy, so the derived passes' and occupancy's onShift are not run and nothing re-ages.
+  shift(dx, dz, { picture = true } = {}) {
     if (dx % SUPER_CELLS.x || dz % SUPER_CELLS.z) {
       throw new Error(`shift ${dx}, ${dz}: must be whole supertiles (${SUPER_CELLS.x} × ${SUPER_CELLS.z} cells)`);
     }
@@ -994,7 +996,7 @@ export class Simulation {
     f.copy(this.flowTmp, 0, this.flow, 0, this.flow.size);
     this.origin.x += dx;
     this.origin.z += dz;
-    for (const fn of this._shiftListeners) fn(dx, dz, f);
+    if (picture) for (const fn of this._shiftListeners) fn(dx, dz, f);
     this.deco?.shift?.(dx, dz, f);   // the decoration moves with its cells (src/deco.js)
     if (!this.shiftKeepsHistory) {
       this.fieldReset = this.giReset = true;
@@ -1005,7 +1007,7 @@ export class Simulation {
     native?.shifted();
     // the derived passes shift their own history by whole bricks and re-age
     // only the slab and the edges (docs/webgpu.md E); without that, all of it
-    if (!this.derived?.shiftsBricks) this.changedAll = true;
+    if (picture && !this.derived?.shiftsBricks) this.changedAll = true;
     this.wake();
   }
 

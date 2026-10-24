@@ -141,8 +141,21 @@ export class NativeIntegration {
       return Array.from({ length: n }, (_, i) => encodeNativeBrick(cores, banks, i));
     }).finally(() => { sim._retire(core); sim._retire(bank); });
   }
+  // The leaving slab's exact cells raw (cores, banks: brick i's 64 cells at i·64), unencoded: the physics
+  // region codes only the bricks it keeps, a slice at a time outside the frame (world/window.js readBack).
+  captureSlabRaw(lo, bricks) {
+    const { owner: o, gpu, sim } = this;
+    o.sync();
+    const n = bricks.reduce((a, b) => a * b, 1), count = n * 64;
+    const core = this.buffer('leaving cores', count * 16), bank = this.buffer('leaving banks', count * 4);
+    this.run('gather', count, this.group(o.cells, o.aux, core, bank), { lo, bricks });
+    const read = Promise.all([gpu.readback.buffer(core, 0, core.size), gpu.readback.buffer(bank, 0, bank.size)]);
+    return read.then(([c, b]) => ({ n, cores: new Uint32Array(c), banks: new Int32Array(b) }))
+      .finally(() => { sim._retire(core); sim._retire(bank); });
+  }
   restoreBrick(lo, bytes) { this.restoreBricks(lo, [1, 1, 1], [{ index: 0, bytes }]); }
-  restoreBricks(lo, bricks, entries) {
+  // derived: false on a physics-only move (world/physicsRegion.js): the derived passes don't re-age.
+  restoreBricks(lo, bricks, entries, { derived = true } = {}) {
     if (!entries.length) return;
     const { owner: o, sim, gpu } = this;
     o.sync(); // consume bounded generator writes before overriding retained bricks
@@ -155,7 +168,7 @@ export class NativeIntegration {
     const core = this.buffer('returning cores', cores.byteLength), bank = this.buffer('returning banks', banks.byteLength);
     gpu.write(core, 0, cores); gpu.write(bank, 0, banks);
     this.run('scatter', count, this.group(o.cells, o.aux, core, bank), { lo, bricks, preserve: 1 });
-    this.changed({ all: false }); // (the scatter noted the bricks it wrote: shaders/v2/window.js)
+    this.changed({ all: false, derived }); // (the scatter noted the bricks it wrote: shaders/v2/window.js)
     sim._retire(core); sim._retire(bank);
   }
   // Called after Simulation.shift advanced legacy bookkeeping. The projected
