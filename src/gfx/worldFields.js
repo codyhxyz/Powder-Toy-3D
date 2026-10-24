@@ -237,9 +237,12 @@ export class WorldFields {
    *   (sim.tables, LAYOUT.TABLES)
    */
   constructor(gpu, worldCopy, opts = {}) {
-    const { copyWGSL = worldCopy?.wgsl, size = worldCopy?.size, tables = null, smoothing = 1, budget = FIELD_BRICKS_PER_FRAME,
-      texels, rows } = opts;
-    if (!copyWGSL) throw new Error('WorldFields: no world copy WGSL (opts.copyWGSL: shaders/world/copy.js worldCopyWGSL)');
+    // W's WGSL and the element tables' group: opts, the world copy, or set once on the class
+    // (WorldFields.copyWGSL = worldCopyWGSL), so (gpu, worldCopy) is enough once wired
+    const { copyWGSL = worldCopy?.wgsl ?? worldCopy?.copyWGSL ?? WorldFields.copyWGSL, size = worldCopy?.size,
+      tables = worldCopy?.tables ?? gpu.tables ?? null, smoothing = 1, budget = FIELD_BRICKS_PER_FRAME, texels, rows } = opts;
+    if (!copyWGSL) throw new Error('WorldFields: no world copy WGSL (WorldFields.copyWGSL = shaders/world/copy.js worldCopyWGSL)');
+    if (!size) throw new Error('WorldFields: no world size (worldCopy.size)');
     Object.assign(this, { gpu, worldCopy, tables, smoothing, budget, size: [...size] });
     const plan = (this.plan = fieldClipPlan(this.size, { texels, rows }));
     const lay = (this.layout = fieldWorkLayout(plan, budget));
@@ -289,6 +292,7 @@ export class WorldFields {
    *   default the world copy's changesSince(this.rev)
    */
   update(frame, cameraWorldCell, changes = undefined) {
+    cameraWorldCell = Array.isArray(cameraWorldCell) ? cameraWorldCell : [cameraWorldCell.x, cameraWorldCell.y, cameraWorldCell.z];
     if (changes === undefined && this.worldCopy?.changesSince) {
       const got = this.worldCopy.changesSince(this.rev);
       this.rev = got?.rev ?? this.worldCopy.rev ?? this.rev;

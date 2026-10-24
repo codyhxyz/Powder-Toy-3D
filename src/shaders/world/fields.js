@@ -115,8 +115,9 @@ export const fieldsBindingsWGSL = (group = 2) => FIELDS_BINDINGS.map(([b, name, 
 // opts.detail: gfx/detail.js's defines (DETAIL_CUBIC_CLOSE), as coreGLSL takes them.
 // Declares: FieldClip, gFieldLevel, gFieldBlend, fieldLevelFor, fieldTex, surfField, mediaField,
 // fieldCubic, fieldCubicGrad, cubicClose, cubicShare, surfSample, surfChannel, surfNormal, CUBIC_LO,
-// CUBIC_HI, gCubicEye, gCubicPixAng, NORMAL_STEP (and their helpers, prefixed field*). Not SURF_ISO,
-// gThin, surfRoot, surfCross: the march's.
+// CUBIC_HI, gThin, gCubicEye, gCubicPixAng, SURF_ISO, NO_HIT, surfRoot, surfCross, NORMAL_STEP (and
+// their helpers, prefixed field*): core.js's field section, in world cells. Not the group-2
+// declarations (FIELDS_BINDINGS: shaders/world/bindings.js makes them).
 export const worldFieldsWGSL = ({ detail = {} } = {}) => /* wgsl */ `
 ${FieldClip.wgsl}
 const FIELD_CLIP_TEXELS: f32 = ${f(FIELD_CLIP_TEXELS)};
@@ -271,8 +272,11 @@ fn fieldCubicGrad(t: texture_3d<f32>, p: vec3f, ch: i32) -> vec3f {
 
 // The cubic channels' share (core.js: the thin mask, or being close), and the readings built on it,
 // as core.js has them.
+const SURF_ISO: f32 = 0.5;   // a smooth surface is where its field crosses this (core.js)
 const CUBIC_LO: f32 = 0.3;
 const CUBIC_HI: f32 = 0.85;
+// The march's hint for extra midpoint probes (core.js gThin), not a surface-sampling gate.
+var<private> gThin: bool = true;
 var<private> gCubicEye: vec3f = vec3f(0.0);
 var<private> gCubicPixAng: f32 = 0.0;
 ${detail.DETAIL_CUBIC_CLOSE ? `
@@ -307,6 +311,36 @@ fn surfChannel(p: vec3f, ch: i32) -> f32 {
   var c = v;
   if (w > 0.0) { c = fieldCubic(tFS, p)[ch]; }
   return mix(v, c, w);
+}
+// Root of φ_ch(t) = SURF_ISO in [ta, tb] (core.js surfRoot: clamped regula falsi), and the first
+// crossing of channel ch's surface along [ta, tb] (core.js surfCross), as core.js has them.
+const SURF_ROOT_STEPS: i32 = 5;
+const SURF_ROOT_SPLIT_LO: f32 = 0.15;
+const SURF_ROOT_SPLIT_HI: f32 = 0.85;
+fn surfRoot(ro: vec3f, rd: vec3f, ch: i32, ta0: f32, tb0: f32, fa0: f32, fb0: f32) -> f32 {
+  var ta = ta0;
+  var tb = tb0;
+  var fa = fa0;
+  var fb = fb0;
+  for (var k = 0; k < SURF_ROOT_STEPS; k++) {
+    let tm = mix(ta, tb, clamp(fa / (fa - fb), SURF_ROOT_SPLIT_LO, SURF_ROOT_SPLIT_HI));
+    let fm = surfChannel(ro + rd * tm, ch) - SURF_ISO;
+    if ((fm < 0.0) == (fa < 0.0)) { ta = tm; fa = fm; } else { tb = tm; fb = fm; }
+  }
+  return mix(ta, tb, clamp(fa / (fa - fb), 0.0, 1.0));
+}
+const NO_HIT: f32 = 1e9;
+fn surfCross(ro: vec3f, rd: vec3f, ch: i32, into: bool, ta: f32, tm: f32, tb: f32,
+             phiA: f32, phiM: f32, phiB: f32) -> f32 {
+  let a = phiA - SURF_ISO;
+  let m = phiM - SURF_ISO;
+  let b = phiB - SURF_ISO;
+  var first: bool;
+  var second: bool;
+  if (into) { first = a < 0.0 && m >= 0.0; second = m < 0.0 && b >= 0.0; }
+  else { first = a >= 0.0 && m < 0.0; second = m >= 0.0 && b < 0.0; }
+  if (!first && !(tm < tb && second)) { return NO_HIT; }
+  return surfRoot(ro, rd, ch, select(tm, ta, first), select(tb, tm, first), select(m, a, first), select(b, m, first));
 }
 // Outward normal (core.js surfNormal). The differences' step grows with the level's texel, so a
 // coarse level's lattice creases are ironed out the same way level 0's are (a step under a texel
