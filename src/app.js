@@ -616,7 +616,7 @@ function build(savedWorldSize = null) {
   // What a frame draws with. V2's native owner holds the cells a big map's renderer reads, so it is
   // one of them; V1's step kernels (s.ready: move, react) are not, only stepping is (worldDrawReady).
   const draw = [...(nativeOwner ? [nativeOwner.ready, nativeOwner.integrationReady] : []), derived?.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready,
-    blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())];
+    blocks ? blocks.ready : viewReadyOf(viewKeyOf(settings.view), baseDetail(), !!warpNow()), ...(worldView ? [worldView.ready] : [])];
   const core = coreWait = Promise.all([s.ready, ...draw]).then(() => {
     if (coreWait === core) { coreReady = true; wakeLoop(); }
   });
@@ -1877,13 +1877,19 @@ async function renderThumb(viewId, out, { build = true } = {}) {
   return true;
 }
 
+// The pipeline a view draws with, built now: the world march's for the material views (gfx/worldView.js),
+// the box's for the data views and the rolling log's curved variant.
+function viewReadyOf(view, detail, curved = false) {
+  return worldView?.draws(view, curved) ? worldView.pipeline(view, detail).ready : vol.viewReady(view, detail, curved);
+}
+
 // Starts building a view's shader for its card (the Shaders menu builds every card's at once,
 // not one after another as each card's turn comes).
 function warmThumb(viewId) {
   if (graphicsFailure || !coreReady) return;
   const view = viewKeyOf(viewId), detail = isMaterialView(view) ? detailDefines(settings) : {};
   if (view === 'plain' || !vol) return;
-  vol.viewReady(view, detail).catch(() => {});
+  viewReadyOf(view, detail).catch(() => {});
   if (viewShadows(view)) vol.shadowReady().catch(() => {});
 }
 
@@ -3034,7 +3040,7 @@ async function allReady() {
     syncRenderResolution(autoRes.scale);
     const detail = baseDetail();
     const curved = !!warpNow()?.k, format = v.format;
-    await Promise.all([v.viewReady(view, detail, curved),
+    await Promise.all([viewReadyOf(view, detail, curved),
       ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
       // (and the flying matter's, which the first frame doesn't wait for: v2/physics.js dynamicsReady)
       ...(physicsV2 ? [physicsV2.ready, physicsV2.integrationReady, physicsV2.dynamicsReady] : [])]);

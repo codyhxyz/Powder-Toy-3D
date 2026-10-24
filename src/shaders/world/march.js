@@ -319,7 +319,7 @@ export const WORLD_MARCH_LAYOUT_NAMES = ['WORLD_MARCH_FRAME', 'WORLD_COPY', 'WOR
 // at the cost tiers' defaults. warm: false until the menu's warm-up (src/preload.js) builds the
 // world march in place of the box's realistic volume.
 const marchCheck = (name, view, detail) => ({
-  name, view, detail, kind: 'render', warm: () => false,
+  name, view, detail, kind: 'render', warm: false,
   code: (g) => worldMarchFrag(g, { view, detail }),
   layouts: () => WORLD_MARCH_LAYOUTS(),
   layoutNames: WORLD_MARCH_LAYOUT_NAMES,
@@ -327,3 +327,13 @@ const marchCheck = (name, view, detail) => ({
   ...worldMarchPipeline(),
 });
 export const WGSL_CHECK = () => ['off', 'balanced', 'full'].map((k) => marchCheck(`world.realistic.${k}`, 'realistic', REALISTIC_LEVELS[k]()));
+
+/**
+ * The menu's warm-up entry (src/preload.js) for a session drawing material view `view` with the
+ * drawable detail `detail` (the box volume's warm entry's): the march's pipeline as gfx/worldView.js
+ * makes it, same name, code, layouts and params, so Start finds it built. Built on physics' grid.
+ */
+export const warmMarchCheck = (view, detail) => ({
+  ...marchCheck(`world.${view}(${Object.keys(detail).filter((k) => detail[k]).sort().join(',') || 'off'})`, view, detail),
+  physicsGrid: true,
+});
