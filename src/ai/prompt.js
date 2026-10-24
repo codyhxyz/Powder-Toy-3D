@@ -47,13 +47,14 @@ Scale every dimension with T (\`const W = Math.round(17 * T)\`) so the size slid
 
 const PHYSICS = `Once placed, every cell is simulated. Build with that in mind:
 
-- Solids (WALL, ROCK, METAL, GLASS, ICE, WOOD, PLANT, CLONE) never move, even unsupported. Anything that must keep its shape is solid.
+- Solids (WALL, ROCK, METAL, GLASS, ICE, WOOD, PLANKS, PLANT, CLONE) never move, even unsupported. Anything that must keep its shape is solid.
+- WOOD is a tree's wood (trunks, logs, branches, drawn with bark); PLANKS is the same timber sawn into boards, for anything built: walls, floors, decks, furniture, crates. They burn and break alike.
 - Powders fall, pile into slopes and topple diagonally. Rest every powder cell on something, or contain it.
 - Liquids flow sideways and down until level. Containers must be watertight with face-connected walls: the sim moves matter in 2×2×2 blocks, so liquid escapes through gaps that touch only at an edge or a corner. A curved wall needs a band at least 1.5 cells thick.
 - Gases rise and drift away. FIRE lives only moments and needs AIR next to it. To make something burn, place the fuel above its ignition temperature with { temp } next to air.
 - PLANT grows into neighbouring WATER within seconds. A CLONE emits its ctype forever into empty neighbours, so a CLONE spring floods eventually.
 - WALL is indestructible and insulating: right for masonry that should survive a fire. ROCK is natural stone, drawn smooth like terrain. GLASS is clear and acid-proof.
-- Heat is real: lava melts metal, ice keeps water cold, steam rises from boiling water. Pick materials as a builder would: glass windows, a stone chimney, a wooden frame that burns.`;
+- Heat is real: lava melts metal, ice keeps water cold, steam rises from boiling water. Pick materials as a builder would: glass windows, a stone chimney, a plank frame that burns.`;
 
 const QUALITY = `What makes a good construction: it is recognizable from any angle; it has real depth, not boxes with features painted on; its proportions are right; detail is concentrated on the silhouette, openings and joints; and its materials make physical sense. Carve interiors, doors and windows with AIR. Before writing code, picture the subject from every side and list its parts, their sizes in cells at T = 1, and their materials.`;
 

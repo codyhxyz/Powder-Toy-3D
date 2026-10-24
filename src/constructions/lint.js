@@ -151,7 +151,7 @@ export function lint(cells, { maxSpan } = {}) {
     'Fine for a loose pile that should settle. To hold powder in place, contain it or support every cell from below and diagonally below.');
   const { falling, sourceless, burning } = cellProblems(g);
   add('unsupported_powder', 'error', falling, `${falling.length} powder cells have nothing under them and will fall.`,
-    'Rest powders on something, or build that part from a solid such as WALL, ROCK, WOOD or METAL.');
+    'Rest powders on something, or build that part from a solid such as WALL, ROCK, PLANKS or METAL.');
   add('clone_no_source', 'warning', sourceless, `${sourceless.length} CLONE cells have no source element.`,
     "Give clones a source, e.g. put(x, y, z, 'CLONE', { ctype: 'WATER' }); otherwise they copy whatever touches them first.");
   add('ignites_on_place', 'info', burning, `${burning.length} cells start above their ignition temperature and will burn immediately.`,
