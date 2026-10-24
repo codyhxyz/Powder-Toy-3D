@@ -23,7 +23,7 @@ export function createHud({ onTogglePause }) {
   const TOUCH_FIRST = matchMedia('(hover: none) and (pointer: coarse)').matches;
   const hint = h('div.hint.panel', { html: TOUCH_FIRST
     ? '<b>Drag</b> to pour. <b>Two fingers</b> to turn and zoom.'
-    : '<b>Drag</b> to pour. <b>Right-click</b> to erase; <b>right-drag</b> to look around. Press <b>?</b> for shortcuts.' });
+    : '<b>Drag</b> to pour. <b>Right-click</b> to erase, <b>hold right</b> to look around, <b>W A S D</b> to fly. Press <b>?</b> for shortcuts.' });
 
   // colour key for data views (heat, pressure, ...); hidden in the realistic view
   const legendBox = h('div.legend-box.panel', { 'aria-live': 'polite' });
@@ -86,7 +86,7 @@ export function createHelp(onClose) {
       h('div.cols', {},
         h('h3', { text: 'Painting' }),
         row('Paint', 'Left drag'),
-        row('Erase on release (drag instead to orbit)', 'Right click'),
+        row('Erase on release (drag instead to look around)', 'Right click'),
         row('Brush size', '[', ']'),
         row('Brush size', 'Shift', 'Scroll'),
         row('Sphere or cube brush', 'B'),
@@ -103,13 +103,13 @@ export function createHelp(onClose) {
         row('Undo last change', '⌘', 'Z'),
         row('Find an element', '/'),
         h('h3', { text: 'Camera' }),
-        row('Orbit', 'Right drag'),
-        row('Orbit (trackpad)', '⌥', 'Drag'),
+        row('Look around (hold; Roblox Studio\'s)', 'Right drag'),
+        row('Fly where you look (Garry\'s Mod\'s noclip)', 'W', 'A', 'S', 'D'),
+        row('Fly faster', 'Shift'),
+        row('Orbit around what you click (Blender\'s; trackpad too)', '⌥', 'Drag'),
         row('Pan', 'Shift', 'Right drag'),
+        row('Pan', 'Middle drag'),
         row('Zoom', 'Scroll'),
-        row('Move', 'W', 'A', 'S', 'D'),
-        row('Turn left / right. In Factory, E turns and Q opens Build', 'E', 'Q'),
-        row('Move faster', 'Shift'),
         row('Reset camera', 'R'),
         h('h3', { text: 'First person' }),
         row('God view, or back in the body', 'V'),
@@ -122,7 +122,7 @@ export function createHelp(onClose) {
         row('Zoom (hold; scroll to zoom further)', 'Z'),
         row('Use tool / its other action', 'Left', 'Right'),
         row('Pick a tool slot; again for the next in it', '1', '–', '6'),
-        row('Spawn menu. In Factory, Q opens Build instead', 'Q'),
+        row('Spawn menu (in Factory, Build)', 'Q'),
         row('Tool gun: pick up what you aim at', 'Middle'),
         row('Tool gun: erase under the crosshair', 'Right'),
         row('Drink from the flask', 'H'),
@@ -137,7 +137,7 @@ export function createHelp(onClose) {
         row('Air mode: on, pressure off, velocity off, off, no update', 'Y'),
         row('Ambient heat on or off (gravity and edges: Settings)', 'U'),
         row('Switch view', '1', '–', '5'),
-        row('Show or hide elements', 'Q'),
+        row('Spawn menu (in Factory, Build)', 'Q'),
         row('Chat, when playing together', 'T'),
         row(CLASSES_ENABLED ? 'Settings (in Siege, the gear)' : 'Settings', ','),
         row('Screenshot', 'F2'),

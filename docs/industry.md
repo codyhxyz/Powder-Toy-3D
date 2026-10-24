@@ -11,10 +11,10 @@ The starter line separates gold from sand and ships the gold for credits.
 - **Rotate:** turn the preview by 90°.
 - **Dismantle:** switch to removal mode. Click a machine to remove it for a full refund.
 - **Done:** close construction. Escape also closes it.
-- **Right-drag:** move the construction camera.
+- **Hold right mouse:** look around; `W` `A` `S` `D` fly the construction camera.
 - **God / 1st / 3rd:** choose a camera from the toolbar.
 
-Machines do not use E. There are no B or Shift+B construction shortcuts. In the god view, E still turns the camera; Q opens Build.
+Machines do not use E. There are no B or Shift+B construction shortcuts. Q opens Build, Factory's spawn menu, in every view.
 The illustrated catalog scrolls on small screens.
 The preview requires clear space; its arrows show the material flow.
 Refractory blocks stack into platforms, catch walls, and chutes.

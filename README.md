@@ -32,7 +32,7 @@ Press `?` in the app for the full list.
 | Painting | |
 |---|---|
 | Left-drag | paint with the selected element or tool (the brush stays at the height where you clicked) |
-| Right-click | erase on release; moving 6 pixels or more turns it into a camera drag and erases nothing |
+| Right-click | erase on release; moving 6 pixels or more looks around instead and erases nothing |
 | `[` `]` or Shift + scroll | brush size |
 | Shift + left-drag | a line: the brush swept from where you pressed to where you let go (TPT's Shift-drag) |
 | ⌘ + left-drag (Ctrl on Windows) | a box between the two corners, as tall as the brush (TPT's Ctrl-drag) |
@@ -48,19 +48,20 @@ Press `?` in the app for the full list.
 
 | Camera | |
 |---|---|
-| Right-drag or ⌥-drag | orbit |
+| Hold right mouse and move | look around, as in first person (Roblox Studio's and Unreal's editor camera) |
+| `W` `A` `S` `D` | fly where you look (Garry's Mod's noclip; hold Shift to go faster) |
+| ⌥ + drag | orbit around the point you click (Blender's and Maya's; also the trackpad orbit) |
 | Shift + right-drag or middle-drag | pan |
 | Scroll | zoom |
-| `W` `A` `S` `D`, `Q` `E` | move, turn left/right (hold Shift to go faster) |
 | `R` | reset the camera |
-| `F` | drop into the world as a person, or pop back out |
+| `V` | drop into the world as a person, or pop back out (Garry's Mod's noclip key; `F` drops in too) |
 
 | Everything else | |
 |---|---|
 | Space / `.` | pause / step one frame |
 | `Y` / `U` | cycle the air mode / turn ambient heat on or off (The Powder Toy's keys; see Simulation modes) |
 | `1`–`5` | switch view |
-| `T` | show or hide the element dock |
+| `Q` | the spawn menu, in every view (Garry's Mod's key; in Factory it opens Build) |
 | `,` | settings |
 | `F2` | save a screenshot (Minecraft's key; Fn+F2 on some keyboards) |
 | ⌘S / Ctrl+S | save the game (in first person ⌘ only, Ctrl being the camera key there) |
