@@ -14,13 +14,14 @@ const out = args[0] ?? 'artifacts/world-march-ab';
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
 const query = opt('query', '?size=64&preset=lab&view=realistic');
 const DIFF = 8;
+const worldOnly = args.includes('--world-only');   // a big map: the world march alone (its boot leaves no time for the box's too)
 mkdirSync(out, { recursive: true });
 
 const vite = await startVite();
 let browser = null;
 try {
   browser = await launchBrowser();
-  const page = await newTestPage(browser, { mode: 'manual', viewport: { width: 640, height: 400 } });
+  const page = await newTestPage(browser, { mode: 'manual', viewport: { width: Number(opt('width', 640)), height: Number(opt('height', 400)) } });
   const errors = [];
   page.on('pageerror', (e) => errors.push(`pageerror: ${String(e.stack || e).slice(0, 600)}`));
   page.on('console', (m) => {
@@ -33,10 +34,23 @@ try {
   const failed = await page.evaluate(() => document.getElementById('error')?.textContent || null);
   if (failed) throw new Error(`boot failed: ${failed.slice(0, 800)}`);
   console.log('gpu', JSON.stringify((await gpuInfo(page))?.adapter ?? {}));
+  const stage = (what) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)} s] ${what}`);
+  stage('booted');
+  await page.evaluate(() => { window.__app.post.settings.taa = false; return window.__app.test.ready(); });
+  stage('test.ready');
+  if (worldOnly) {
+    const w = await page.evaluate(async () => {
+      const a = window.__app, t = performance.now();
+      for (let i = 0; i < 400 && !a.view.volumeDrawn; i++) { await a.test.renderOnce(); await new Promise((res) => setTimeout(res, 30)); if (performance.now() - t > 9000) break; }
+      return { drawn: a.view.volumeDrawn, ms: performance.now() - t, origin: a.sim.origin.toArray(), window: [a.sim.g.nx, a.sim.g.ny, a.sim.g.nz], world: a.sim.world ?? null };
+    });
+    stage(`world march: ${JSON.stringify(w)}`);
+    await page.screenshot({ path: join(out, 'world.png') });
+    stage(`errors: ${errors.length}`); for (const e of errors.slice(0, 8)) console.log(' ', e);
+    process.exitCode = w.drawn && !errors.some((e) => !/ERR_CONNECTION_REFUSED/.test(e)) ? 0 : 1;
+  } else {
   const r = await page.evaluate(async ({ DIFF }) => {
     const a = window.__app;
-    a.post.settings.taa = false;
-    await a.test.ready();
     const share = (x, y) => {
       let n = 0, sum = 0;
       for (let i = 0; i < x.data.length; i += 4) {
@@ -80,6 +94,7 @@ try {
   console.log(JSON.stringify(r, null, 1));
   console.log(`errors: ${errors.length}`); for (const e of errors.slice(0, 8)) console.log(' ', e);
   console.log(`slot ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+  }
 } finally {
   await browser?.close();
   await vite.close();
