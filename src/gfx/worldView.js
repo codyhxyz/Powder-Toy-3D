@@ -119,6 +119,8 @@ export function createWorldView(gpu, sim, { volume }) {
     ready,
     /** Builds the world copy from a loaded window (a big map), or a simulation (a small map). */
     build,
+    /** A scratch variant of the march's module for timing ({ name, filter(code) -> code }), or null: tests only. */
+    testVariant: null,
     /** Whether this module draws `view` (the material views; the data views and Plain keep their paths). */
     draws: (v, curved = false) => isMaterialView(v) && !curved,
     /**
@@ -127,12 +129,14 @@ export function createWorldView(gpu, sim, { volume }) {
      */
     pipeline(v, detail = {}, build = 'now') {
       const d = drawableDetail(detail, fallback);
-      const key = `${v}|${detailKey(d)}`;
+      const t = view.testVariant;   // (test.js-style hook: a scratch variant of the module, { name, filter(code) })
+      const key = `${v}|${detailKey(d)}${t ? `|${t.name}` : ''}`;
       let p = pipes.get(key);
       if (!p) {
+        const code = worldMarchFrag(sim.g, { view: v, detail: d });
         pipes.set(key, p = gpu.renderPipeline({
-          name: `world.${v}(${detailKey(d) || 'off'})`,
-          code: worldMarchFrag(sim.g, { view: v, detail: d }), layouts: [L.frame, L.copy, L.group2],
+          name: `world.${v}(${detailKey(d) || 'off'})${t ? `.${t.name}` : ''}`,
+          code: t ? t.filter(code) : code, layouts: [L.frame, L.copy, L.group2],
           params: MarchParams, ...worldMarchPipeline(), build, first: build === 'now',
         }));
       } else if (build === 'now' && (p.state === 'idle' || p.state === 'pending')) p.build();
