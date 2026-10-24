@@ -92,8 +92,13 @@ export const GLOW = Object.freeze({
 });
 // Where the tags live past lcBuf's texels (u32 words): shadow tiles a slot, then probe chunks, glow chunks.
 const shadowTilesSide = SHADOW.RES / SHADOW.TILE;
+// (lcWrap masks: each wrapped side must be a power of two)
+const isPow2 = (n) => Number.isInteger(n) && n > 0 && (n & (n - 1)) === 0;
 const probeChunksSide = PROBE.N / PROBE.CHUNK;
 const glowChunksSide = GLOW.N / GLOW.CHUNK;
+for (const [what, n] of Object.entries({ 'SHADOW.RES': SHADOW.RES, shadowTilesSide, 'PROBE.N': PROBE.N, probeChunksSide, 'GLOW.N': GLOW.N, glowChunksSide })) {
+  if (!isPow2(n)) throw new Error(`world light: ${what} = ${n} must be a power of two (lcWrap masks)`);
+}
 export const TAGS = Object.freeze({
   SHADOW: 0,
   PROBE: SHADOW.SLOTS * shadowTilesSide ** 2,
@@ -241,8 +246,10 @@ fn lcTag(c: vec3i) -> u32 {
   let m = vec3u(c) & vec3u(${TAG_MASK}u);
   return TAG_VALID | m.x | (m.y << 10u) | (m.z << 20u);
 }
-fn lcWrap(a: vec3i, n: i32) -> vec3i { return ((a % n) + n) % n; }
-fn lcWrap2(a: vec2i, n: i32) -> vec2i { return ((a % n) + n) % n; }
+// (n is a power of two: every clip's side, checked below; a mask wraps negatives too, in two's complement.
+// Two integer modulos per axis at every shadow tap were a large share of the march's cost: lead, 2026-10-24.)
+fn lcWrap(a: vec3i, n: i32) -> vec3i { return a & vec3i(n - 1); }
+fn lcWrap2(a: vec2i, n: i32) -> vec2i { return a & vec2i(n - 1); }
 // Point p's place in cascade k: lattice coordinates (texels, continuous: texel i spans [i, i + 1)) and depth.
 fn shPlace(k: u32, p: vec3f, d: ptr<function, f32>) -> vec2f {
   let q = p - LC.centre.xyz;
@@ -452,23 +459,30 @@ const PCSS_SEARCH_MAX: f32 = 6.0;
 var<private> VOGEL: array<vec2f, ${PCSS_TAPS}> = array<vec2f, ${PCSS_TAPS}>(${vogel(PCSS_TAPS)});
 // The finest cascade that holds p with its 2×2 taps and PCSS's reach (the last holds the world:
 // no margin), its tiles traced: SH_CASCADES if none.
+// The cascade p reads, single exit and no loads to pick it: the finest whose texels hold p with its 2×2 taps
+// and PCSS's reach (the last holds the world), by geometry alone. Whether its tiles are traced yet is one
+// tag pair (shTraced), read beside the texels, not a chain of reads per cascade before them. The pick's
+// old loop (an early exit and two tag reads a cascade, inlined at each of the tracer's sun lookups, ~100
+// a pixel over foliage) was most of the world march's per-pixel cost (lead, 2026-10-24).
 fn shCascadeFor(p: vec3f) -> u32 {
-  for (var k = 0u; k < SH_CASCADES; k++) {
-    if (LC.shO[k].z == 0) { continue; }
+  var best = SH_CASCADES - 1u;
+  for (var j = 1u; j < SH_CASCADES; j++) {
+    let k = SH_CASCADES - 1u - j;
     var d: f32;
-    let f = shPlace(k, p, &d) - 0.5;
-    let i0 = vec2i(floor(f));
+    let i0 = vec2i(floor(shPlace(k, p, &d) - 0.5));
     let o = LC.shO[k].xy;
-    let m = select(SH_MARGIN, 0, k + 1u == SH_CASCADES);
-    if (any(i0 < o + m) || any(i0 + 1 > o + SH_RES - 1 - m)) { continue; }
-    let slot = u32(LC.shV[k].w);
-    let t0 = i0 >> vec2u(${Math.log2(SHADOW.TILE)}u);
-    let t1 = (i0 + 1) >> vec2u(${Math.log2(SHADOW.TILE)}u);
-    let ep = i32(LC.shS[k].w);
-    if (lcTagAt(shTagIndex(slot, t0)) != lcTag(vec3i(t0, ep)) || lcTagAt(shTagIndex(slot, t1)) != lcTag(vec3i(t1, ep))) { continue; }
-    return k;
+    best = select(best, k, LC.shO[k].z != 0 && all(i0 >= o + SH_MARGIN) && all(i0 + 1 <= o + SH_RES - 1 - SH_MARGIN));
   }
-  return SH_CASCADES;
+  return best;
+}
+// Cascade k's tiles under texels i0 and i0 + 1 are traced (else the texels are another place's: the reader
+// takes p as lit, as when nothing is traced yet, a frame or two after a jump).
+fn shTraced(k: u32, i0: vec2i) -> bool {
+  let slot = u32(LC.shV[k].w);
+  let t0 = i0 >> vec2u(${Math.log2(SHADOW.TILE)}u);
+  let t1 = (i0 + 1) >> vec2u(${Math.log2(SHADOW.TILE)}u);
+  let ep = i32(LC.shS[k].w);
+  return LC.shO[k].z != 0 && lcTagAt(shTagIndex(slot, t0)) == lcTag(vec3i(t0, ep)) && lcTagAt(shTagIndex(slot, t1)) == lcTag(vec3i(t1, ep));
 }
 fn shTexel(k: u32, ij: vec2i) -> vec4f {
   let o = LC.shO[k].xy;
@@ -488,7 +502,6 @@ fn shadowTexelAtt(sm: vec4f, d: f32) -> vec3f {
 fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
   let p = hp + n * SHADOW_NORMAL_OFFSET;
   let k = shCascadeFor(p);
-  if (k >= SH_CASCADES) { return vec3f(1.0); }   // nothing traced here yet: lit (a frame or two after a jump)
   let u = LC.shU[k].xyz;
   let v = LC.shV[k].xyz;
   let sun = LC.shS[k].xyz;
@@ -503,6 +516,7 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
   var nLit = 0.0;
   var cD = 0.0;
   var cW = 0.0;
+  let traced = shTraced(k, i0);
   for (var j = 0; j < 4; j++) {
     let o = vec2i(j & 1, j >> 1u);
     let sm = shTexel(k, i0 + o);
@@ -520,6 +534,7 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
     acc *= cg;
     tr *= cg;
   }
+  if (!traced) { return vec3f(1.0); }   // nothing traced here yet: lit (a frame or two after a jump)
   if (nLit == 4.0) { return acc; }
   let ns = max(dot(n, sun), PCSS_NS_MIN);
   let slope = vec2f(dot(n, u), dot(n, v)) / ns;
@@ -547,7 +562,6 @@ fn sunMapShadow(hp: vec3f, n: vec3f) -> vec3f {
 }
 fn sunMapShadowAt(p: vec3f) -> vec3f {
   let k = shCascadeFor(p);
-  if (k >= SH_CASCADES) { return vec3f(1.0); }
   var d: f32;
   let f = shPlace(k, p, &d) - 0.5;
   let i0 = vec2i(floor(f));
@@ -565,7 +579,7 @@ fn sunMapShadowAt(p: vec3f) -> vec3f {
     acc += lit * wk;
   }
   if (${causticsOn} && cW > 0.0) { acc *= mix(1.0, causticGain(p, cD / cW), cW); }
-  return acc;
+  return select(vec3f(1.0), acc, shTraced(k, i0));
 }
 // The clouds' shadow (world cells: H.origin is 0, so worldPos(p) is p), then the cascades.
 fn sunShadow(hp: vec3f, n: vec3f) -> vec3f {

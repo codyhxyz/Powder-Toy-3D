@@ -161,6 +161,13 @@ export class WorldLight {
    */
   update(frame, camera, sun, changes, { frameGroup = this.frameGroup } = {}) {
     if (!frameGroup) return;   // nothing to light with yet (the frame's tables)
+    // its kernels build in the background ('later'): until all are built the frame's jobs wait (their
+    // bookkeeping too, so no tile or chunk is marked traced that wasn't). A dispatch before a pipeline was
+    // ready threw on a cold load (lead, 2026-10-24).
+    if (!this.kernelsReady) {
+      if (!Object.values(this.kernels).every((k) => k.state === 'ready')) return;
+      this.kernelsReady = true;
+    }
     const cam = v3(camera), s = v3(sun);
     if (!changes) {
       changes = this.worldCopy.changesSince?.(this.rev) ?? [];
@@ -196,6 +203,9 @@ export class WorldLight {
       this.kernels.glowFinal.dispatch(frame, glowFinalDispatch(gJobs.length), { bind: [E, E, this.groups.glowFinal] });
     }
   }
+
+  /** Resolves when every writer kernel is built (the first frame waits for it: gfx/worldView.js). */
+  get ready() { return (this._ready ??= Promise.all(Object.values(this.kernels).map((k) => k.ready))); }
 
   get bytes() { return Object.values(worldLightBytes()).reduce((a, b) => a + b, 0); }
 

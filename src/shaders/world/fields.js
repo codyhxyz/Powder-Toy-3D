@@ -118,7 +118,13 @@ export const fieldsBindingsWGSL = (group = 2) => FIELDS_BINDINGS.map(([b, name, 
 // CUBIC_HI, fieldLevelAt, fieldCellsAt, gThin, gCubicEye, gCubicPixAng, SURF_ISO, NO_HIT, surfRoot, surfCross, NORMAL_STEP (and
 // their helpers, prefixed field*): core.js's field section, in world cells. Not the group-2
 // declarations (FIELDS_BINDINGS: shaders/world/bindings.js makes them).
-export const worldFieldsWGSL = ({ detail = {} } = {}) => /* wgsl */ `
+// cachedPick (the march's): fieldPick reads the level its caller picked once per brick (fieldPickAt, which
+// the march calls as its ray enters a brick: marchLod) instead of walking the levels at every sample. The
+// walk, inlined at each of the shading library's many field reads, was most of the march's compiled size:
+// Metal pipeline compile 4.1 s against 2.9 s without it (the box's volume: 2.6 s), and its per-pixel cost
+// 40-70× the box's (lead, 2026-10-24). A sample outside the picked level's region reads the coarsest level,
+// which holds the whole world. Other modules (L's writers) keep the walk.
+export const worldFieldsWGSL = ({ detail = {}, cachedPick = false } = {}) => /* wgsl */ `
 ${FieldClip.wgsl}
 const FIELD_CLIP_TEXELS: f32 = ${f(FIELD_CLIP_TEXELS)};
 const FIELD_LEVEL_BLEND: f32 = ${f(FIELD_LEVEL_BLEND)};
@@ -145,7 +151,7 @@ fn fieldIn(L: u32, p: vec3f) -> f32 {
 // The level p reads and the share of the next one blended in: gFieldLevel, or the first coarser
 // level that holds p; blending toward the next one over the footprint's octave (gFieldBlend) or the
 // region's transition band, whichever is more, and only into a level that holds p too.
-fn fieldPick(p: vec3f) -> vec2f {
+fn fieldPick${cachedPick ? 'Walk' : ''}(p: vec3f) -> vec2f {
   let n = u32(FC.world.w);
   var L = min(gFieldLevel, n - 1u);
   var a = select(0.0, gFieldBlend, L == gFieldLevel);
@@ -160,6 +166,14 @@ fn fieldPick(p: vec3f) -> vec2f {
   }
   return vec2f(f32(L), 0.0);
 }
+${cachedPick ? `// The level and blend fieldPickAt picked for the brick the march is in (single exit, no loop).
+var<private> gPickL: u32 = 0u;
+var<private> gPickA: f32 = 0.0;
+fn fieldPickAt(p: vec3f) { let k = fieldPickWalk(p); gPickL = u32(k.x); gPickA = k.y; }
+fn fieldPick(p: vec3f) -> vec2f {
+  let coarsest = u32(FC.world.w) - 1u;
+  return select(vec2f(f32(coarsest), 0.0), vec2f(f32(gPickL), gPickA), fieldIn(gPickL, p) > 0.0 || gPickL >= coarsest);
+}` : ''}
 // The level p really reads (gFieldLevel, or coarser where the finer levels don't hold p), and its
 // texel in cells: what a march's step through the field may be sized by.
 fn fieldLevelAt(p: vec3f) -> u32 { return u32(fieldPick(p).x); }

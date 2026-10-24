@@ -49,7 +49,7 @@ export function createWorldView(gpu, sim, { volume }) {
   // (wire/world.js calls build(win)), so the whole map is in before the first frame (app.js waits on ready)
   let settle;
   const ready = new Promise((resolve) => { settle = resolve; });
-  const build = (source) => worldCopy.build(source).then(async (c) => { await fields.ready; primed = false; settle(c); return c; }, (err) => {
+  const build = (source) => worldCopy.build(source).then(async (c) => { await Promise.all([fields.ready, light.ready]); primed = false; settle(c); return c; }, (err) => {
     console.error('world copy: the build failed', err);
     settle(null);
     throw err;

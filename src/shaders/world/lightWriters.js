@@ -287,7 +287,7 @@ const PR_N: i32 = ${PROBE.N};
 const PR_CHUNK: i32 = ${PROBE.CHUNK};
 const PR_CHUNKS: i32 = ${PROBE.N / PROBE.CHUNK};
 const TAG_PROBE: u32 = ${TAGS.PROBE}u;
-fn lcWrap(a: vec3i, n: i32) -> vec3i { return ((a % n) + n) % n; }
+fn lcWrap(a: vec3i, n: i32) -> vec3i { return a & vec3i(n - 1); }   // (n a power of two: light.js lcWrap)
 fn lcTag(c: vec3i) -> u32 { let m = vec3u(c) & vec3u(1023u); return 0x80000000u | m.x | (m.y << 10u) | (m.z << 20u); }
 ${probeIndexWGSL}
 fn put(t: u32, x: vec3i, v: vec4f) {
@@ -443,7 +443,7 @@ const GL_N: i32 = ${GLOW.N};
 const GL_CHUNKS: i32 = ${GLOW.N / GLOW.CHUNK};
 const TAG_GLOW: u32 = ${TAGS.GLOW}u;
 const GL_HALF_MAX: f32 = ${glf(HALF_MAX)};
-fn lcWrap(a: vec3i, n: i32) -> vec3i { return ((a % n) + n) % n; }
+fn lcWrap(a: vec3i, n: i32) -> vec3i { return a & vec3i(n - 1); }   // (n a power of two: light.js lcWrap)
 fn lcTag(c: vec3i) -> u32 { let m = vec3u(c) & vec3u(1023u); return 0x80000000u | m.x | (m.y << 10u) | (m.z << 20u); }
 @compute @workgroup_size(64) fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
   if (wg.y >= J.count) { return; }

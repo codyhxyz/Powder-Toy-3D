@@ -225,7 +225,7 @@ fn skipEmpty(bc: vec3i, ro: vec3f, rd: vec3f, istp: vec3i,
 fn brickDistAt(b: vec3i) -> i32 { return 0; }
 
 // ---- level of detail: F's clip level for the pixel's footprint at p (cells per pixel) ----
-fn marchLod(p: vec3f) { gFieldLevel = fieldLevelFor(footprint(p)); }
+fn marchLod(p: vec3f) { gFieldLevel = fieldLevelFor(footprint(p)); fieldPickAt(p); }
 ${cut}`;
 };
 
@@ -314,7 +314,7 @@ export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixe
     glslMod,
     materialsGLSL(),
     worldCoreWGSL(),
-    worldFieldsWGSL({ detail }),
+    worldFieldsWGSL({ detail, cachedPick: true }),
     noiseGLSL,
     sourceAppearanceFallbackWGSL,
     worldLightWGSL(),
