@@ -19,7 +19,7 @@ assert.equal(mapLoadingUrl('tinkerCreek'), mapPreviewUrl('willowCove'), 'loading
 const crossing = geometry(32), cozy = shader(32);
 assert.equal(crossing.hits.length, 32 * 32 * 12);
 assert(crossing.hits.every(Number.isFinite));
-assert(crossing.materials.has(E.WOOD) && crossing.materials.has(E.BRICK) && crossing.materials.has(E.WATER));
+assert(crossing.materials.has(E.PLANKS) && crossing.materials.has(E.BRICK) && crossing.materials.has(E.WATER));
 assert(cozy.includes(cozySurfaceWGSL) && cozy.includes(cozyWaterWGSL), 'use current production Cozy artwork, never plain palette colours');
 assert.equal(new WgslReflect(cozy).entry.compute[0].name, 'main');
 
@@ -81,6 +81,6 @@ assert.deepEqual(trace([2.5, 1.5, 1.5], [-1, 0, 0], [3, 3, 3], cell).normal, [1,
 assert.equal(trace([0.5, 0.5, 0.5], [-1, 0, 0], [3, 3, 3], cell), null);
 assert.equal(trace([-1, 1, 1], [0, 1, 0], [3, 3, 3], cell), null);
 const sample = renderDescent(32);
-assert.ok(sample.materials.has(E.WOOD) && sample.materials.has(E.ROCK), 'actual source-derived Coal Pits geometry, not the legacy Mines');
+assert.ok(sample.materials.has(E.PLANKS) && sample.materials.has(E.ROCK), 'actual source-derived Coal Pits geometry, not the legacy Mines');
 assert.ok(new Set(sample.rgb).size > 32, 'shaded scene has image detail');
 console.log(`PASS ${MAPS.length} square map previews; current Crossing geometry, production Cozy WGSL, cache revisions and CPU Descent render.`);

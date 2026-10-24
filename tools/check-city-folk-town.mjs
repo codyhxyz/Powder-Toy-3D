@@ -63,7 +63,7 @@ assert.equal(cell(-424, 36, 22, 24), E.LIMESTONE, 'striped tailor awning');
 assert.equal(cell(-423, 29, 8, 24), E.METAL, 'tailor workbench');
 assert.equal(cell(310, 42, -92, 36), E.BASALT, 'museum display');
 assert.equal(cell(307, 43, -64, 36), E.LIMESTONE, 'museum civic column');
-assert.equal(cell(264, 38, -87, 36), E.WOOD, 'café counter');
+assert.equal(cell(264, 38, -87, 36), E.PLANKS, 'café counter');
 assert.equal(cell(-326, 31, 1, 24), E.CERAMIC, 'bulletin notice panel');
 for (let x = -336; x < -316; x++) for (let z = 6; z < 22; z++) {
   assert([E.BRICK, E.LIMESTONE].includes(cell(x, 23, z, 24)));
@@ -71,7 +71,7 @@ for (let x = -336; x < -316; x++) for (let z = 6; z < 22; z++) {
 }
 for (const m of M.plots) {
   assert.equal(cell(...[m.at[0], m.floor - 1, m.at[1], m.floor]), E.BRICK);
-  assert.equal(cell(m.at[0] + 14, m.floor + 2, m.at[1] + 14, m.floor), E.WOOD, 'survey stake');
+  assert.equal(cell(m.at[0] + 14, m.floor + 2, m.at[1] + 14, m.floor), E.PLANKS, 'survey stake');
   for (let y = m.floor; y < m.floor + 10; y++) assert.equal(cell(m.at[0], y, m.at[1], m.floor), E.EMPTY);
 }
 for (let x = -263; x < -257; x++) for (let z = -128; z <= -120; z++) {
