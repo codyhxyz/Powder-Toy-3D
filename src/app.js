@@ -3095,6 +3095,7 @@ try {
     // the loaded arena's layout (spawns, flags, hills, siege core, shrines, vehicles: arenas/damValley.js), else null
     get arena() { return arenaLayout; },
     get win() { return win; },
+    get worldView() { return worldView; },   // the seamless world's march, its world copy, fields and light (gfx/worldView.js)
     get lastGpuFailure() { return gpuLoss.last; },   // the last GPU failure's report, kept across reloads (gfx/gpuLoss.js)
     get lastFrameError() { return lastFrameError(); },   // the last uncaught frame error's report, kept across reloads (gfx/gpuLoss.js)
     // world mode: start the world over with the window at `origin` (world cells)

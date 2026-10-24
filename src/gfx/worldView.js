@@ -26,7 +26,7 @@ import { worldGroup2Entries } from '../shaders/world/bindings.js';
 // lead swaps them for world/worldCopy.js WorldCopy, gfx/worldFields.js WorldFields and
 // gfx/worldLight.js WorldLight at integration (same constructors and methods).
 import { WorldLight } from './worldLight.js';
-import { worldFieldsWGSL, FIELDS_BINDINGS } from '../shaders/world/fields.js';
+import { worldFieldsWGSL, fieldsBindingsWGSL, FIELDS_BINDINGS } from '../shaders/world/fields.js';
 import { RENDER_LAYOUT } from '../shaders/bindings.js';
 import { WorldCopy } from '../world/worldCopy.js';
 import { WorldFields } from './worldFields.js';
@@ -49,7 +49,7 @@ export function createWorldView(gpu, sim, { volume }) {
   // (wire/world.js calls build(win)), so the whole map is in before the first frame (app.js waits on ready)
   let settle;
   const ready = new Promise((resolve) => { settle = resolve; });
-  const build = (source) => worldCopy.build(source).then((c) => { settle(c); return c; }, (err) => {
+  const build = (source) => worldCopy.build(source).then(async (c) => { await fields.ready; primed = false; settle(c); return c; }, (err) => {
     console.error('world copy: the build failed', err);
     settle(null);
     throw err;
@@ -57,7 +57,7 @@ export function createWorldView(gpu, sim, { volume }) {
   if (!sim.windowed && !sim.g?.windowed) build(sim).catch(() => {});
   const fields = new WorldFields(gpu, worldCopy, { copyWGSL: worldCopyWGSL(), tables: sim.tables, tablesLayout: sim.L?.TABLES });
   const light = new WorldLight(gpu, worldCopy, fields, {
-    copyWGSL: worldCopyWGSL(), fieldsWGSL: worldFieldsWGSL(), fieldsBindings: FIELDS_BINDINGS, mediaNoise: volume.mediaNoiseView,
+    copyWGSL: worldCopyWGSL(), fieldsWGSL: `${fieldsBindingsWGSL(2)}\n${worldFieldsWGSL()}`, fieldsBindings: FIELDS_BINDINGS, mediaNoise: volume.mediaNoiseView,
   });
 
   const list = WORLD_GROUP2();
@@ -109,6 +109,9 @@ export function createWorldView(gpu, sim, { volume }) {
   const meshInv = new Matrix4();
   let disposed = false;
   let lightFrame = null;
+  // F's levels are filled whole on the first update after a build (fields.prime), so the first frame
+  // has every level around the camera, not a few thousand bricks of them
+  let primed = true;
 
   const view = {
     worldCopy, fields, light,
@@ -162,7 +165,7 @@ export function createWorldView(gpu, sim, { volume }) {
       worldCopy.recordWriteback(frame, sim, boxes);
       const changes = worldCopy.changesSince ? worldCopy.changesSince(rev) : [];
       const eye = camera ? camera.position.clone().applyMatrix4(last.model.clone().invert()).toArray() : null;
-      fields.update(frame, eye, changes);
+      if (!primed && eye && worldCopy.bindGroup) { fields.prime(frame, eye); primed = true; } else if (eye) fields.update(frame, eye, changes);
       // L's writers read the tables and FrameUniforms in world cells (group 0 without the march's extras)
       lightFrame ??= gpu.bindGroup(gpu.layout('FRAME', RENDER_LAYOUT.FRAME), [
         { binding: 0, resource: { buffer: fu.tables } }, { binding: 1, resource: { buffer: uniforms.buffer } }], label('light frame'));
