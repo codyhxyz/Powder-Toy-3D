@@ -62,6 +62,10 @@ export const gfxUniforms = {
   uNearGI: { value: true },     // lighting upgrades (gfx/lighting.js), switched from Settings → Lighting
   uGlowLights: { value: true },
   uCaustics: { value: true },
+  // traced reflections and real refraction, else their cheap stand-ins (shaders/gfx/liquid.js
+  // reflectDefer, opticsBend): switched from Settings → Lighting (the user asked for both, 2026-10-24)
+  uReflections: { value: true },
+  uBending: { value: true },
   uLampCount: { value: 0 },   // hand lamps (gfx/lamps.js; src/pov/lamps.js sets them)
   uLampPos: { value: new Float32Array(4 * LAMP_MAX) },
   uLampCol: { value: new Float32Array(4 * LAMP_MAX) },
@@ -184,6 +188,7 @@ export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1
     lampCount: u.uLampCount.value, wandLightCount: u.uWandLightCount.value,
     beacon: u.uBeacon.value, beaconDir: u.uBeaconDir.value, beaconCell: u.uBeaconCell.value,
     shadows: !!shadows, nearGI: !!u.uNearGI.value, glowLights: !!u.uGlowLights.value, caustics: !!u.uCaustics.value,
+    reflections: !!u.uReflections.value, bending: !!u.uBending.value,
     clouds: !!u.uClouds.value, caveAmbient: u.uCaveAmbient.value, digMin: u.uDigMin.value, digMax: u.uDigMax.value,
   };
   return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, copyValue(value)]));

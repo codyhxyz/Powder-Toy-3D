@@ -1285,7 +1285,7 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
   r.y = abs(r.y);   // a ripple tilted past a grazing view shows the sky above, not the ground (dark specks)
   let rough = select(ROUGH(lid), COZY_WATER_ROUGH, cartoon);
   refl = (skyColor(r) + sunGlint(n, -rd, rough, vec3f(sunVis))) * sky;
-  rt = refract(rd, n, 1.0 / IOR(lid));
+  rt = select(cheapBend(rd, n), refract(rd, n, 1.0 / IOR(lid)), FU.bending != 0u);   // (Light bending off: liquid.js cheapBend)
   if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }
   }
   let body = farBody(p, rt, lid, sunVis, sky, bedY);
