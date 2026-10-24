@@ -61,9 +61,17 @@ try {
     const box = await a.test.renderOnce({ capture: true, boxMarch: true });
     const boxDrawn = a.view.volumeDrawn;
     const none = await a.test.renderOnce({ capture: true, volume: false });
+    // coverage: where each march drew (differs from the frame without it), and where only one did
+    let only = 0;
+    for (let i = 0; i < none.data.length; i += 4) {
+      const d = (x) => Math.max(Math.abs(x.data[i] - none.data[i]), Math.abs(x.data[i + 1] - none.data[i + 1]), Math.abs(x.data[i + 2] - none.data[i + 2])) > DIFF;
+      if (d(world) !== d(box)) only++;
+    }
+    const coverageMismatch = only / (none.width * none.height);
+    const where = { origin: a.sim.origin.toArray(), window: [a.sim.g.nx, a.sim.g.ny, a.sim.g.nz], world: a.sim.world ?? null };
     const toB64 = (s) => { const c = document.createElement('canvas'); c.width = s.width; c.height = s.height; c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(s.data), s.width, s.height), 0, 0); return c.toDataURL('image/png'); };
     return {
-      worldDrawn, boxDrawn, worldBuildMs, boxBuildMs, ab: share(world, box), worldVsNone: share(world, none), boxVsNone: share(box, none),
+      worldDrawn, boxDrawn, coverageMismatch, where, worldBuildMs, boxBuildMs, ab: share(world, box), worldVsNone: share(world, none), boxVsNone: share(box, none),
       pipelines: a.worldView?.pipelines ?? null, world: toB64(world), box: toB64(box),
     };
   }, { DIFF });

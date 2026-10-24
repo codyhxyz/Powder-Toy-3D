@@ -36,7 +36,8 @@ const sampler = { visibility: READERS, sampler: { type: 'filtering' } };
 
 // ---------------------------------------------------------------- W
 /** W's uniform (group 1 binding 0): the world's size in cells and in bricks. */
-export const WorldCopyUniforms = uniformStruct('WorldCopyUniforms', { size: 'vec3i', bricks: 'vec3i' });
+// (stubOrigin: the stand-in's own, where physics' window sits in the world; W's struct needs only size and bricks)
+export const WorldCopyUniforms = uniformStruct('WorldCopyUniforms', { size: 'vec3i', bricks: 'vec3i', stubOrigin: 'vec3i' });
 
 /**
  * W's WGSL: group 1 and its readers. Needs the prelude (slotOf, brickId, NBRICKS, the tables)
@@ -50,10 +51,11 @@ ${WorldCopyUniforms.wgsl}
 @group(1) @binding(1) var<storage, read> wcStubCells: array<vec4u>;      // (stub) the window's V2 cores
 @group(1) @binding(2) var<storage, read> wcStubBricks: array<BrickInfo>; // (stub) the window's brick map
 @group(1) @binding(3) var<storage, read> wcStubDist: array<u32>;         // (stub) its empty-space distance + 1
-fn wcStubIn(c: vec3i) -> bool { return all(c >= vec3i(0)) && all(c < WC.size); }
+// (the stand-in's world holds physics' window at WC.stubOrigin and nothing else)
+fn wcStubIn(c: vec3i) -> bool { let q = c - WC.stubOrigin; return all(q >= vec3i(0)) && all(q < vec3i(NX, NY, NZ)); }
 fn wcA(c: vec3i) -> vec4f {
   if (!wcStubIn(c)) { return vec4f(0.0, airT(), 0.0, 0.0); }
-  return compactA(c, wcStubCells[slotOf(c)]);
+  return compactA(c, wcStubCells[slotOf(c - WC.stubOrigin)]);
 }
 fn wcCell(c: vec3i) -> u32 {
   if (!wcStubIn(c)) { return 0u; }
@@ -63,8 +65,9 @@ fn wcCell(c: vec3i) -> u32 {
   return wcWord(id, u32(floor(a.w)) & 255u, a.y, clamp(a.z, 0.0, 1.0));
 }
 fn wcInfo(b: vec3i) -> u32 {
-  if (any(b < vec3i(0)) || any(b >= WC.bricks)) { return 0u; }
-  return wcStubBricks[brickId(b)].info;
+  let q = b - WC.stubOrigin / 4;
+  if (any(q < vec3i(0)) || any(q >= vec3i(BX, BY, BZ))) { return 0u; }
+  return wcStubBricks[brickId(q)].info;
 }
 // level 0: the brick holds matter; 1 and 2: the 16³ / 64³ node holds any (the stub proves a node
 // empty when the brick map's empty-space distance at its corner brick covers it: conservative)
@@ -73,8 +76,14 @@ fn wcOccupied(level: u32, c: vec3i) -> bool {
   if (level == 0u) { return brickMatter(wcInfo(b)); }
   let n = select(16, 4, level == 1u);   // bricks a node spans: 4 (16³ cells) or 16 (64³)
   let lo = (b / n) * n;
-  if (any(lo < vec3i(0)) || any(lo >= WC.bricks)) { return false; }
-  let r = i32(wcStubDist[brickId(lo)]) - 1;   // every brick within r of lo is empty
+  // a node wholly outside the window is empty; one reaching into it is held occupied unless
+  // brickDist at its corner brick (inside the window) clears it
+  let w0 = WC.stubOrigin / 4;
+  let w1 = w0 + vec3i(BX, BY, BZ);
+  if (any(lo + n <= w0) || any(lo >= w1)) { return false; }
+  let q = lo - w0;
+  if (any(q < vec3i(0)) || any(q + n > vec3i(BX, BY, BZ))) { return true; }
+  let r = i32(wcStubDist[brickId(q)]) - 1;   // every brick within r of q is empty
   return r < n;
 }
 `;
@@ -112,8 +121,8 @@ export class WorldCopyStub {
   /** Physics' changed boxes into the copy: the stand-in reads the window directly, so nothing to do. */
   recordWriteback(_frame, sim, _boxes) {
     this.sim = sim;
-    const [x, y, z] = [sim.g.nx, sim.g.ny, sim.g.nz];
-    this.uniforms.write({ size: [x, y, z], bricks: [x >> 2, y >> 2, z >> 2] });
+    const [x, y, z] = sim.world ?? [sim.g.nx, sim.g.ny, sim.g.nz], o = sim.origin;
+    this.uniforms.write({ size: [x, y, z], bricks: [x >> 2, y >> 2, z >> 2], stubOrigin: [o?.x ?? 0, o?.y ?? 0, o?.z ?? 0] });
     this.revision++;
   }
   get changes() { return []; }
