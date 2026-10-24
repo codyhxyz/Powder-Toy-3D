@@ -216,7 +216,7 @@ ${decoBindings}
 ${slotMain}
   let q = p + P.shift;
   if (!inGrid(q)) { return; }
-  if (P.blank != 0u) { plane[s] = 0u; } else { plane[s] = source[slotOf(q)]; }
+  if (P.blank != 0u) { plane[s] = 0u; } else { plane[s] = source[heldSlot(q, s)]; }
 }
 `;
 
@@ -231,7 +231,7 @@ ${decoBindings}
 ${slotMain}
   let q = p + P.shift;
   var w = 0u;
-  if (inGrid(q)) { w = plane[slotOf(q)]; }
+  if (inGrid(q)) { w = plane[heldSlot(q, s)]; }
   work[s] = w;
 }
 `;

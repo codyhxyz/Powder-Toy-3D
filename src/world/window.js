@@ -11,7 +11,7 @@ import { BrickStore, encodeBrick, BRICK_FLOATS } from './store.js';
 import { farLayout, farSceneLayout } from '../shaders/far.js';
 import { WorldRenderSource, dropNativeWorldSource, nativePackOf, nativeSourceReady } from './renderSource.js';
 import { RawWorldSourceProducer } from './renderSourceProducer.js';
-import { physicsOnlyFor, MOVE_CPU_BUDGET_MS, LeaveQueue, moveSlabs, movePlan, slabBase, slabBrick, slabsOverlap } from './physicsRegion.js';
+import { physicsOnlyFor, ringedFor, MOVE_CPU_BUDGET_MS, LeaveQueue, moveSlabs, movePlan, slabBase, slabBrick, slabsOverlap } from './physicsRegion.js';
 import { WorldCopyFill } from './copyFill.js';
 
 // The window over a massive world (docs/scaling.md D11, phases W1 and W2;
@@ -119,6 +119,7 @@ export class WorldWindow {
     this.held = null;                                             // a writer's transaction holding the window (pending =)
     this.leaveQueue = new LeaveQueue();                           // ...and their coding into the stores, once landed
     this.physicsOnly = physicsOnlyFor(scene);                     // a move records no picture work (physicsRegion.js)
+    sim.setRinged(ringedFor(scene));                              // ...and copies nothing (ring addressing: sim.js _shiftRing)
     this.worldCopy = null;                                        // W's world copy, once attached (attachWorldCopy)
     this.copyFill = null;                                         // its slab fill (world/copyFill.js)
     this.storeRevisions = new Map();

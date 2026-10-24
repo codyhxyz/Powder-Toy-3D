@@ -34,8 +34,20 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   var c = vec4u(u32(clamp(round((airT() + 273.25) * 4.0), 0.0, 65535.0)) << 8u, 0u, 0u, 0u);
   var bank = 0;
   if (P.preserve != 0u) { c = other[s]; bank = otherBanks[s]; }
-  if (inGrid(q)) { let source = slotOf(q); c = cores[source]; bank = banks[source]; }
+  if (inGrid(q)) { let source = heldSlot(q, s); c = cores[source]; bank = banks[source]; }
   other[s] = c; otherBanks[s] = bank;
+}
+`;
+// A ringed grid's move (v2/integration.js shiftRing; shaders/common.js ringOf): nothing moved, so the slab the
+// move uncovered (P.lo, P.bricks, under the new ring) still holds the leaving slab's words. Its cells take what
+// the shift gives a cell from outside the window: air at the ambient temperature, no energy bank.
+export const nativeEnterWGSL = g => `${declarations(g)}
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let i = foldThread(wg, nwg, li); if (i >= P.count) { return; }
+  let s = slabSlot(i);
+  cores[s] = vec4u(u32(clamp(round((airT() + 273.25) * 4.0), 0.0, 65535.0)) << 8u, 0u, 0u, 0u);
+  banks[s] = 0;
 }
 `;
 export const nativeGatherWGSL = g => `${declarations(g)}
@@ -105,7 +117,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   let bc = brickCoord(b);
   let q = bc + P.shift / BS;
   if (all(q >= vec3i(0)) && all(q < vec3i(BX, BY, BZ))) {
-    let src = brickId(q);
+    let src = heldBrick(q, b);
 ${carry('act', r.act)}
 ${carry('faces', r.faces)}
     let bared = ((P.shift > vec3i(0)) & (bc == vec3i(0))) | ((P.shift < vec3i(0)) & (bc == vec3i(BX, BY, BZ) - 1));
@@ -118,7 +130,7 @@ ${carry('faces', r.faces)}
 }
 `;
 export const WGSL_CHECK = [
-  ['nativeShift', nativeShiftWGSL], ['nativeGather', nativeGatherWGSL], ['nativeScatter', nativeScatterWGSL],
+  ['nativeShift', nativeShiftWGSL], ['nativeGather', nativeGatherWGSL], ['nativeScatter', nativeScatterWGSL], ['nativeEnter', nativeEnterWGSL],
 ].map(([name, code]) => ({ name, code, kind: 'compute', params: NativeWindowParams, warm: false,
   layouts: () => [LAYOUT.TABLES, 'EMPTY', NATIVE_WINDOW_LAYOUT], dispatch: g => fold(Math.ceil(g.slots / 64)) })).concat([
   { name: 'nativeActShift', code: nativeActShiftWGSL, kind: 'compute', params: NativeWindowParams, warm: false,

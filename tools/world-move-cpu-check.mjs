@@ -13,6 +13,9 @@
 //   5. naga: the world-copy fill for every world scene, and its gather against a synthetic world copy
 //      module (tools/world-copy-stub.mjs stands in for W's worldCopyWGSL); V2's own fill
 //      and tree apply after their shared write moved into nativeWriteCoreWGSL
+//   7. ring addressing (shaders/common.js ringOf): the JS mirrors invert under any ring, a world cell keeps
+//      its slot across moves, the uncovered slab lands on the leaving slab's slots, a toy walk matches the
+//      copying move cell for cell, and naga on the ring's kernels and every move/undo kernel's heldSlot
 //   6. cost, CPU side, on a deterministic slab (seeded): the leaving slab's coding as one block (today's
 //      landing microtask) vs its longest slice, and the Island's tree placing and baking a move visits
 //      (what the world copy takes off the move path)
@@ -34,6 +37,13 @@ import { ELEMENTS } from '../src/elements.js';
 import { WORLD_SEED } from '../src/world/generator.js';
 import { FULL } from '../src/shaders/v2.js';
 import { nagaSpawn } from './naga.mjs';
+import { ringOf, brickIdOf, brickCoordOf, cellSlot, slotCell } from '../src/shaders/common.js';
+import { nativeEnterWGSL, nativeShiftWGSL, nativeActShiftWGSL } from '../src/shaders/v2/window.js';
+import { windowWGSL } from '../src/shaders/v2/windowMove.js';
+import { slabZeroFrag, shiftFrag, undoShiftFrag, flowShiftFrag } from '../src/shaders/window.js';
+import { decoShiftFrag, decoUndoFrag } from '../src/shaders/deco.js';
+import { fieldShiftFrag } from '../src/shaders/fields.js';
+import { brickShiftFrag, giShiftFrag } from '../src/shaders/passes.js';
 import { STUB_COPY_WGSL } from './world-copy-stub.mjs';
 
 const QUICK = process.argv.includes('--quick');
@@ -209,6 +219,84 @@ for (const s of WORLD_SCENES.filter((s) => !QUICK || CENSUS.includes(s.key))) {
 naga(copyGatherWGSL(g128, STUB_COPY), 'copy-gather.wgsl');
 naga(nativeFillWGSL(g128, island.glsl(g128)), 'island-native-fill.wgsl');
 naga(nativeApplyWGSL(g128, { ...g128, nx: 64, nz: 64, slots: 64 * g128.ny * 64 }), 'native-tree-apply.wgsl');
+
+// ---------------------------------------------------------------- 7. ring addressing (shaders/common.js ringOf; src/sim.js _shiftRing)
+// The JS mirrors under a ring: brickIdOf/brickCoordOf and cellSlot/slotCell invert each other; a world cell
+// keeps its slot across every move (both windows hold it); the slab a move uncovers lands exactly on the
+// leaving slab's slots; and the changed kernels pass naga.
+{
+  const RNG = (() => { let x = 12345; return () => (x = (Math.imul(x, 1103515245) + 12345) >>> 0) / 2 ** 32; })();
+  for (const dims of [[128, 128, 128], [128, 384, 128], [64, 64, 64]]) {
+    const g = gridLayout(...dims), at = { x: 0, y: 0, z: 0 };
+    Object.defineProperty(g, 'ring', { get: () => ringOf(g, at) });
+    const origins = Array.from({ length: 6 }, () => [16 * Math.floor(RNG() * 40), 16 * Math.floor(RNG() * 40)]);
+    for (const [ox, oz] of origins) {
+      at.x = ox; at.z = oz;
+      for (let id = 0; id < g.nbricks; id += 7) { const c = brickCoordOf(g, id); if (brickIdOf(g, ...c) !== id) { fail(`ring ${dims} @${ox},${oz}: brick ${id} round trip`); break; } }
+      for (let k = 0; k < 4000; k++) {
+        const c = [Math.floor(RNG() * g.nx), Math.floor(RNG() * g.ny), Math.floor(RNG() * g.nz)], sl = cellSlot(g, ...c);
+        if (sl >= g.slots || !eq(slotCell(g, sl), c)) { fail(`ring ${dims} @${ox},${oz}: cell ${c} slot ${sl} round trip`); break; }
+      }
+      for (const [dx, dz] of [[WIN_STEP, 0], [-WIN_STEP, 0], [0, WIN_STEP], [0, -WIN_STEP]]) {
+        if (ox + dx < 0 || oz + dz < 0) continue;
+        const slotAt = (o, c) => { at.x = o[0]; at.z = o[1]; return cellSlot(g, ...c); };
+        // a world cell in both windows: one slot
+        let moved = 0;
+        for (let k = 0; k < 3000; k++) {
+          const w = [ox + Math.floor(RNG() * g.nx), Math.floor(RNG() * g.ny), oz + Math.floor(RNG() * g.nz)];
+          const c0 = [w[0] - ox, w[1], w[2] - oz], c1 = [w[0] - ox - dx, w[1], w[2] - oz - dz];
+          if (c1[0] < 0 || c1[0] >= g.nx || c1[2] < 0 || c1[2] >= g.nz) continue;
+          if (slotAt([ox, oz], c0) !== slotAt([ox + dx, oz + dz], c1)) moved++;
+        }
+        if (moved) fail(`ring ${dims} @${ox},${oz} move ${dx},${dz}: ${moved} kept cells change slot`);
+        // the uncovered slab's slots are the leaving slab's, brick for brick
+        const m = moveSlabs(g, dx, dz), slots = (o, lo) => { const set = new Set(); for (let x = 0; x < m.size[0]; x += 4) for (let y = 0; y < m.size[1]; y += 4) for (let z = 0; z < m.size[2]; z += 4) { at.x = o[0]; at.z = o[1]; set.add(brickIdOf(g, (lo[0] + x) / 4, (lo[1] + y) / 4, (lo[2] + z) / 4)); } return set; };
+        const left = slots([ox, oz], m.leaveLo), came = slots([ox + dx, oz + dz], m.enterLo);
+        if (left.size !== came.size || [...came].some((b) => !left.has(b))) fail(`ring ${dims} @${ox},${oz} move ${dx},${dz}: the uncovered slab is not the leaving slab's memory`);
+      }
+    }
+    if (ringOf(g, [0, 0, 0]) !== 0) fail('ring at origin 0 is not 0');
+  }
+  // a toy window walked out and back by ring moves holds what the copying move holds, cell for cell
+  const g = gridLayout(64, 64, 64), at = { x: 0, y: 0, z: 0 }, world = (w) => ((w[0] * 73856093) ^ (w[1] * 19349663) ^ (w[2] * 83492791)) >>> 0;
+  Object.defineProperty(g, 'ring', { get: () => ringOf(g, at) });
+  const ringed = new Uint32Array(g.slots), plain = new Uint32Array(g.slots), flat = { ...g };
+  at.x = 160; at.z = 96;
+  for (let s = 0; s < g.slots; s++) { const c = slotCell(g, s); ringed[s] = world([c[0] + at.x, c[1], c[2] + at.z]); }
+  for (let s = 0; s < g.slots; s++) { const c = slotCell(flat, s); plain[s] = world([c[0] + at.x, c[1], c[2] + at.z]); }
+  const walk = [[16, 0], [16, 0], [0, 16], [-16, 0], [0, -16], [0, 16], [16, 0], [-16, 0], [-16, 0], [0, -16]];
+  for (const [dx, dz] of walk) {
+    const m = moveSlabs(g, dx, dz);
+    // the copying move: cell p takes p + d, the uncovered slab the world's
+    const next = new Uint32Array(g.slots);
+    for (let s = 0; s < g.slots; s++) { const c = slotCell(flat, s), q = [c[0] + dx, c[1], c[2] + dz]; next[s] = q[0] >= 0 && q[0] < g.nx && q[2] >= 0 && q[2] < g.nz ? plain[cellSlot(flat, ...q)] : 0; }
+    plain.set(next);
+    at.x += dx; at.z += dz;
+    for (let x = m.enterLo[0]; x < m.enterHi[0]; x++) for (let y = 0; y < g.ny; y++) for (let z = m.enterLo[2]; z < m.enterHi[2]; z++) {
+      plain[cellSlot(flat, x, y, z)] = world([x + at.x, y, z + at.z]);
+      ringed[cellSlot(g, x, y, z)] = world([x + at.x, y, z + at.z]);   // the ring move: the slab alone
+    }
+  }
+  let differ = 0;
+  for (let s = 0; s < g.slots; s++) { const c = slotCell(flat, s); if (plain[s] !== ringed[cellSlot(g, ...c)]) differ++; }
+  if (differ) fail(`ring walk: ${differ} cells differ from the copying move`);
+  console.log(`ring addressing: mirrors invert, kept cells keep their slot, the uncovered slab is the leaving slab's memory; a ${walk.length}-move walk matches the copying move cell for cell${differ ? ' (NOT)' : ''}`);
+  // naga: the prelude's ring, the ring move's kernels, and every move/undo kernel given heldSlot
+  naga(nativeEnterWGSL(g128), 'native-enter.wgsl');
+  naga(nativeShiftWGSL(g128), 'native-shift.wgsl');
+  naga(nativeActShiftWGSL(g128), 'native-act-shift.wgsl');
+  naga(windowWGSL(g128, null, 'move'), 'v2-window-move.wgsl');
+  naga(slabZeroFrag(g128), 'slab-zero.wgsl');
+  naga(shiftFrag(g128), 'v1-shift.wgsl');
+  naga(undoShiftFrag(g128), 'v1-undo-shift.wgsl');
+  naga(flowShiftFrag(g128), 'flow-shift.wgsl');
+  naga(decoShiftFrag(g128), 'deco-shift.wgsl');
+  naga(decoUndoFrag(g128), 'deco-undo.wgsl');
+  naga(fieldShiftFrag(g128), 'field-shift.wgsl');
+  naga(brickShiftFrag(g128), 'brick-shift.wgsl');
+  naga(giShiftFrag(g128), 'gi-shift.wgsl');
+  naga(nativeShiftWGSL(gridLayout(128, 384, 128)), 'native-shift-tall.wgsl');
+}
 
 // ---------------------------------------------------------------- 6. cost (CPU)
 const ms = (fn, reps = 5) => { let best = Infinity; for (let r = 0; r < reps; r++) { const t0 = performance.now(); fn(); best = Math.min(best, performance.now() - t0); } return best; };

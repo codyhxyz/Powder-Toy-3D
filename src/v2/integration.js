@@ -1,6 +1,6 @@
 import { fold } from '../gpu/kernels.js';
 import { marksLayout } from '../shaders/common.js';
-import { NativeWindowParams, NATIVE_WINDOW_LAYOUT, nativeShiftWGSL, nativeGatherWGSL, nativeScatterWGSL, nativeActShiftWGSL, nativeMovedRuns } from '../shaders/v2/window.js';
+import { NativeWindowParams, NATIVE_WINDOW_LAYOUT, nativeShiftWGSL, nativeGatherWGSL, nativeScatterWGSL, nativeActShiftWGSL, nativeEnterWGSL, nativeMovedRuns } from '../shaders/v2/window.js';
 
 import { encodeNativeBrick, decodeNativeBrick } from '../world/nativeStore.js';
 export { encodeNativeBrick, decodeNativeBrick, NATIVE_BRICK_BYTES } from '../world/nativeStore.js';
@@ -41,7 +41,7 @@ export class NativeIntegration {
       if (owner.dynamics === dynamics) { this.dynamicsReady = true; sim.wake(); }
     }, () => {});
     this.layout = gpu.layout('NATIVE_WINDOW', NATIVE_WINDOW_LAYOUT);
-    this.kernels = Object.fromEntries([['shift', nativeShiftWGSL], ['gather', nativeGatherWGSL], ['scatter', nativeScatterWGSL], ['actShift', nativeActShiftWGSL]].map(([name, code]) =>
+    this.kernels = Object.fromEntries([['shift', nativeShiftWGSL], ['gather', nativeGatherWGSL], ['scatter', nativeScatterWGSL], ['actShift', nativeActShiftWGSL], ['enter', nativeEnterWGSL]].map(([name, code]) =>
       [name, gpu.kernel({ name: `nativeWindow${name}`, code: code(sim.g), layouts: [sim.L.TABLES, gpu.L.EMPTY, this.layout], params: NativeWindowParams })]));
     this.ready = Promise.all(Object.values(this.kernels).map(k => k.ready)).then(() => { this.isReady = true; });
   }
@@ -93,6 +93,47 @@ export class NativeIntegration {
     o.restore(...this.scratch, { moved: true });
     this.moveActivity(shift);
     moved.commit();
+    return (this.landing = moved.landed);
+  }
+  // A ringed window's move (src/sim.js _shiftRing; shaders/common.js ringOf), in two halves around the
+  // origin's move. Nothing is copied: a ringed grid's world cell keeps its slot, so the cores, banks and
+  // requests stay, and the slab the move uncovers is the leaving slab's memory, rewritten. ringLeave, under
+  // the old ring: the dynamics' leaving slab gathered (NativeDynamics.recordWindowRing). ringEnter, under
+  // the new one: the uncovered slab's cells made the shift's air, what the restore of a move resets reset
+  // (all of it as the copying move's restore does, but the cores, banks and requests), the activity carried
+  // with the bricks (moveActivity: a ringed brick's words are its own), its legacy words kept through it,
+  // then the dynamics' uncovered bricks. Returns the leaving slab's landing, as shift does.
+  ringLeave(dx, dz) {
+    const { owner: o, sim } = this, g = sim.g, shift = [dx, 0, dz];
+    if (!nativeCapabilities(sim).world) throw new Error('native world dynamics shift is unavailable');
+    o.sync();
+    this.scratch ??= [this.buffer('shift cores', g.slots * 16), this.buffer('shift banks', g.slots * 4)];
+    const width = Math.abs(dx || dz), axis = dx ? 0 : 2, dims = [g.nx, g.ny, g.nz];
+    const bricks = dims.map((n, a) => (a === axis ? width : n) / 4);
+    const lo = dims.map((n, a) => (a === axis && shift[a] > 0 ? n - width : 0));
+    return { shift, lo, bricks, moved: o.dynamics.recordWindowRing(shift) };
+  }
+  ringEnter({ shift, lo, bricks, moved }) {
+    const { owner: o, sim, gpu } = this, f = gpu.frame, g = sim.g, nb = g.nbricks;
+    this.run('enter', bricks[0] * bricks[1] * bricks[2] * 64, this.group(o.cells, o.aux, ...this.scratch), { lo, bricks });
+    // (v2/physics.js restore with moved: everything but the copy of the cores and banks, and the requests,
+    // which the copying move clears there only to copy the moved ones back)
+    o._clearPacketTouch();
+    f.clear(o.liquidScratch);
+    f.clear(o.jetMask);
+    const m = marksLayout(g);
+    f.clear(sim.marks, m.owned * 4, Math.ceil(g.slots / 32) * 4);
+    o.importFull = o.importMarked = false;
+    o.seenVersion = sim.version; o.seenWhole = sim.wholeWrites;
+    o.legacyPending = o.writtenSinceTick = true;
+    o.wake();
+    // the legacy words through moveActivity's clear of the activity (the copying move's commit writes them back)
+    const runs = (this.movedRuns ??= nativeMovedRuns(g)), keep = this.scratch[0], at = runs.words * 4;
+    if (at + nb * 4 > keep.size) throw new Error('native window move: the kept legacy words outgrow the scratch');
+    f.copy(o.act, o.layout.legacy * 4, keep, at, nb * 4);
+    this.moveActivity(shift);
+    f.copy(keep, at, o.act, o.layout.legacy * 4, nb * 4);
+    moved.enter();
     return (this.landing = moved.landed);
   }
   // The move's activity and the air source's cache, after the restore (which copied the cores' scratch

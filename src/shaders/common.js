@@ -139,15 +139,18 @@ export function atlasDims(g) {
 // i32 and u32 arithmetic: out-of-grid cells give some slot (docs/webgpu.md C2:
 // slotOf(-1, 6, 7) = 763), as the WGSL does. sim.js re-exports cellSlot and
 // slotCell (C2).
+// (g.ring: the grid's ring rotation in bricks, ringOf: a ringed window's grid carries it, world/physicsRegion.js)
 export function brickIdOf(g, bx, by, bz) {
   const stx = g.nx / SUPER_CELLS.x, stz = g.nz / SUPER_CELLS.z;
   const sx = Math.trunc(bx / SUPER.x), sy = Math.trunc(by / SUPER.y), sz = Math.trunc(bz / SUPER.z);
   const kx = bx - sx * SUPER.x, ky = by - sy * SUPER.y, kz = bz - sz * SUPER.z;
   const st = sx + stx * (sz + stz * sy);
-  return (st * 16 + kx + 4 * (kz + 2 * ky)) >>> 0;
+  const id = (st * 16 + kx + 4 * (kz + 2 * ky)) >>> 0;
+  return g.ring ? ((id + g.ring) % ringBricks(g)) >>> 0 : id;
 }
 export function brickCoordOf(g, id) {
   const stx = g.nx / SUPER_CELLS.x, stz = g.nz / SUPER_CELLS.z;
+  if (g.ring) { const n = ringBricks(g); id = (((id - g.ring) % n) + n) % n; }
   const st = id >>> 4, t = id & 15;
   return [(st % stx) * SUPER.x + (t & 3), Math.floor(st / (stx * stz)) * SUPER.y + (t >> 3), (Math.floor(st / stx) % stz) * SUPER.z + ((t >> 2) & 1)];
 }
@@ -159,6 +162,25 @@ export function slotCell(g, s) {
   const [bx, by, bz] = brickCoordOf(g, s >>> 6);
   const u = s & 7, v = (s >> 3) & 7;
   return [bx * BRICK + (u & 3), by * BRICK + ((u >> 2) | ((v >> 2) << 1)), bz * BRICK + (v & 3)];
+}
+
+// ---- Ring addressing (the physics region, world/physicsRegion.js; docs/seamless-world.md "P")
+// A window's move is whole supertiles (16 cells on x, 16 on z: Simulation.shift), and the slot order runs
+// supertile by supertile, x fastest, then z, then y. A move by one supertile column on x is then the whole
+// slot space rotated by one supertile (1024 slots), and on z by two supertile rows; what wraps round is
+// exactly the slab that left, landing on the slab the move uncovers. So a ringed grid rotates its slot space
+// by ringOf(origin) instead of moving its cells: brick id = (the window brick's id + ring) mod NBRICKS
+// (brickId, brickIdOf), a world cell keeps its slot wherever the window is, and a move rewrites only the
+// slab it uncovers. The toroidal update of clipmaps (Losasso & Hoppe 2004) and of a ring buffer, over the
+// slot order instead of per axis. Physical indices still come only from brickId, slotOf, brickCoord and
+// cellOf (and slot >> 6, slot >> 10): the rotation is whole supertiles, so those stay consistent.
+const ringBricks = (g) => g.nbricks ?? (g.nx * g.ny * g.nz) / 64;
+/** The ring rotation, in bricks, of grid g at window origin o ([x, y, z] or {x, y, z}; x on 16s, z on 8s). */
+export function ringOf(g, o) {
+  const ox = o.x ?? o[0], oz = o.z ?? o[2], stx = g.nx / SUPER_CELLS.x;
+  if (ox % SUPER_CELLS.x || oz % SUPER_CELLS.z || (o.y ?? o[1])) throw new Error(`ring origin ${ox}, ${oz}: whole supertiles on x and z, 0 on y`);
+  const n = ringBricks(g), r = (16 * (ox / SUPER_CELLS.x + stx * (oz / SUPER_CELLS.z))) % n;
+  return r < 0 ? r + n : r;
 }
 
 // The marks buffer (docs/webgpu.md C1, D6): one bit per brick a writer
@@ -322,7 +344,9 @@ const READ_STAGES = STAGE.COMPUTE | STAGE.FRAGMENT;
 // on where the window is) and the state copies a dispatch reads (src) and
 // writes (dst). Every pipeline has it at group 3 binding 0. The JS side packs
 // it from the same fields (src/gpu/params.js uniformStruct('Header', HEADER_FIELDS)).
-export const HEADER_FIELDS = { origin: 'vec3i', src: 'u32', dst: 'u32', format: 'u32', capture: 'u32' };
+// ring and ringed: the physics region's ring addressing (ringOf below; world/physicsRegion.js), the
+// slot space's rotation in bricks and whether the grid is laid out by it at all.
+export const HEADER_FIELDS = { origin: 'vec3i', src: 'u32', dst: 'u32', format: 'u32', capture: 'u32', ring: 'u32', ringed: 'u32' };
 export const Header = hostStruct('Header', HEADER_FIELDS, { space: 'uniform' });
 
 // Which state bindings a prelude declares (group 1, docs/webgpu.md C4):
@@ -580,13 +604,15 @@ ${stateBindings(o)}
 // ---- the layout (docs/webgpu.md C2) ----
 // Brick b's number: its supertile's (x fastest, then z, then y) times 16, plus
 // its tile's row-major place in the supertile's 4×4-tile square.
+// A ringed grid (H.ring, common.js ringOf) rotates the numbers by H.ring bricks.
 fn brickId(b: vec3i) -> u32 {
   let s = b / SUPER_B;
   let k = b - s * SUPER_B;
   let st = s.x + STX * (s.z + STZ * s.y);
-  return u32(st * 16 + k.x + 4 * (k.z + 2 * k.y));
+  return (u32(st * 16 + k.x + 4 * (k.z + 2 * k.y)) + H.ring) % NBRICKS;
 }
-fn brickCoord(id: u32) -> vec3i {
+fn brickCoord(rid: u32) -> vec3i {
+  let id = (rid + NBRICKS - H.ring) % NBRICKS;
   let st = i32(id >> 4u);
   let t = i32(id & 15u);
   let s = vec3i(st % STX, st / (STX * STZ), (st / STX) % STZ);
@@ -606,6 +632,11 @@ fn cellOf(s: u32) -> vec3i {
   return brickCoord(s >> 6u) * BS + vec3i(u & 3, (u >> 2u) | ((v >> 2u) << 1u), v & 3);
 }
 fn inGrid(p: vec3i) -> bool { return all(p >= vec3i(0)) && all(p < vec3i(NX, NY, NZ)); }
+// The grid is ringed (common.js ringOf): a world cell keeps its slot across moves, so a kernel carrying
+// cells across a move (an undo snapshot's) takes a shared cell from its own slot, s, not slotOf(cell + shift).
+fn ringed() -> bool { return H.ringed != 0u; }
+fn heldSlot(q: vec3i, s: u32) -> u32 { return select(slotOf(q), s, ringed()); }
+fn heldBrick(q: vec3i, b: u32) -> u32 { return select(brickId(q), b, ringed()); }
 // the supertile of brick b (its 16 bricks are one run of brick numbers)
 fn supertileOf(b: vec3i) -> u32 { return brickId(b) >> 4u; }
 // A folded dispatch's flat workgroup index (src/gpu/kernels.js fold(n):
