@@ -81,13 +81,17 @@ const runtime = new Function('helpers', `
   const settings = { view: 6 }, readyVolumeView = createReadyVolumeView();
   let volumeFormat;
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', resets = 0, volumeDrawn = false;
-  const blocks = null, blocksOn = false, testNoVolume = false, win = null, worldMode = null;
+  const blocks = null, blocksOn = false, testNoVolume = false, testBoxMarch = false, win = null, worldMode = null;
+  // the material views' world march (gfx/worldView.js), over the same fake pipelines: the retention rules are its too
+  const worldView = { draws: (v, curved) => isMaterialView(v) && !curved, pipeline: (v, d, b) => vol.pipeline(v, d, b, false),
+    draw: (rp, o) => vol.draw(rp, o), writeUniforms() {} };
   const mapKind = { ...SMALL_MAP, boxFrame: false };   // (no floor grid: its overlays are fixtures here)
   const post = { reset() { resets++; } }, meshFrames = { drop() {} }, sim = { g: {}, resetGI() {} };
   const frameWires = { lighting() {}, beforeView() {}, compute() {}, sceneBelow() {}, sceneAbove() {}, overlay() {}, hasOverlay: false }, brush = { draw() {} };
   const ctx = { get renderView() { return renderView; } };
   const warpNow = () => null, baseDetail = () => ({}), cut = { take() { return null; } }, pov = null;
   const coldShader = { watch() {} }, wakeWhen = promise => promise.catch(() => {});
+  const drawSkyFor = () => {}, overlays = { drawGrid() {}, drawEdges() {}, drawSky() {} }, boxSeaParams = () => null;   // (the sky pass: a fixture here)
   const detailGate = { setView() {} }, plainView = id => viewKeyOf(id) === 'plain';
   const setBlocks = () => {}, prepareGI = () => {}, pacer = { wake() {} };
   const settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {}, toast() {} }, save = () => {};
