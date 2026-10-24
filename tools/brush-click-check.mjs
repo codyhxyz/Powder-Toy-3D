@@ -58,7 +58,7 @@ try {
   await page.mouse.move(450, 300);
   const start = await state();
   await page.mouse.down({ button: 'right' });
-  await page.mouse.move(530, 340, { steps: 8 });
+  await page.mouse.move(530, 230, { steps: 8 });   // (up: the view starts at the pitch limit looking down, where a drag down only clamps)
   const looked = await state();
   console.log(`right-drag: eye moved ${Math.hypot(...looked.camera.map((v, i) => v - start.camera[i]))}, view turned ${angle(looked.dir, start.dir)} rad`);
   assert(Math.hypot(...looked.camera.map((v, i) => v - start.camera[i])) < 1e-6, 'right-drag keeps the eye in place');
