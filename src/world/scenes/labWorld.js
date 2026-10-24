@@ -260,7 +260,7 @@ int labTowersMaterial(uint h, int sw, int sd, int px, int py, int pz) {
   if (uz >= tw || py >= height) return E_EMPTY;
   bool core = ux >= LAB_CORE_INSET && uz >= LAB_CORE_INSET && ux < tw - LAB_CORE_INSET && uz < tw - LAB_CORE_INSET
            && py >= LAB_CORE_BASE && py < height - LAB_CORE_TOP;
-  return core ? E_GUNPOWDER : materialWord(E_WOOD, AP_PLANK_Y);
+  return core ? E_GUNPOWDER : materialWord(E_PLANKS, AP_PLANK_Y);
 }
 int labTowers(uint h, int sw, int sd, int px, int py, int pz) { return materialId(labTowersMaterial(h, sw, sd, px, py, pz)); }
 

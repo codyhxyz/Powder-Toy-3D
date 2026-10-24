@@ -270,6 +270,9 @@ const LOOKS = {
   SMOKE: { media: 'SMOKE' },
   FIRE: { media: 'FIRE' },
   WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637', macro: { tone: 0.2, hue: 0.1, rough: 0.08, size: 0.6 }, tex: 'bark_brown_02', texVary: true },   // bark (end grain stays procedural)
+  // Sawn softwood boards, a little weathered (planed pine ~0.35-0.45 reflectance; aged boards darker):
+  // the scanned boards (Poly Haven brown_planks_04) where the photo has loaded, else shaders/gfx/surface.js matOf's planks branch
+  PLANKS: { ch: 'ORGANIC', rough: 0.7, alb: '#8c6f54', macro: { tone: 0.15, hue: 0.08, rough: 0.08, size: 0.6 }, tex: 'brown_planks_04' },
   // (its photo is the meadows' grass alone, appearance GRASS: foliage stays procedural)
   PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25, macro: { tone: 0.3, hue: 0.45, rough: 0.1, size: 1 }, tex: 'leafy_grass', texVary: true, texHue: 0.6 },   // lush .. sun-dried patches
   METAL: { rough: 0.32, metal: 1, alb: STEEL_F0, surf: 'BRUSHED' },

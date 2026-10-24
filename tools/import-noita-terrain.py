@@ -62,7 +62,7 @@ def appearance_rules():
     variants = re.findall(r'E\.([A-Z_0-9]+)', text.split('export const VARIANT_ELEMENTS', 1)[1].split(';', 1)[0])
     if not codes or not variants:
         raise ValueError('Cannot read src/appearance.js appearance labels')
-    allowed = {'WOOD': range(codes['log-x'], codes['bark'] + 1)}
+    allowed = {'WOOD': range(codes['log-x'], codes['bark'] + 1), 'PLANKS': range(codes['plank-x'], codes['plank-z'] + 1)}
     allowed.update({key: range(codes['variant-1'], codes['variant-5'] + 1) for key in variants})
     return codes, allowed
 

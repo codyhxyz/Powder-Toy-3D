@@ -47,14 +47,20 @@ function checkBake(c) {
 }
 
 // Frozen physical output from 15e18b1, before labels, including order and RNG.
+// PLANKS hashes as WOOD: splitting sawn timber off the tree (elements.js
+// TIMBER) moved no cell and changed no physics, only which of the two it is.
+const timber = (id) => (id === E.PLANKS ? E.WOOD : id);
 const hash = createHash('sha256');
 let checked = 0;
 for (const [key, variant] of specs) for (const size of [1, 5, 10]) for (const seed of [1, 0xdeadbeef]) {
   const c = build(key, variant, size, seed);
   hash.update(JSON.stringify([key, variant, size, seed, c.n, c.foot]));
   for (let i = 0; i < c.n; i++) {
-    hash.update(JSON.stringify([c.x[i], c.y[i], c.z[i], c.id[i], c.temp[i], physicalCtype(c.id[i], c.ctype[i])]));
-    if (c.id[i] === E.WOOD || c.id[i] === E.PLANT) {
+    hash.update(JSON.stringify([c.x[i], c.y[i], c.z[i], timber(c.id[i]), c.temp[i], physicalCtype(c.id[i], c.ctype[i])]));
+    // sawn timber is PLANKS, a tree's wood (logs, bark, a coconut, a rope) WOOD
+    const plank = [A.PLANK_X, A.PLANK_Y, A.PLANK_Z].includes(role(c, i));
+    if (c.id[i] === E.WOOD || c.id[i] === E.PLANKS) assert.equal(c.id[i], plank ? E.PLANKS : E.WOOD, `${key}/${variant}: ${plank ? 'sawn' : 'natural'} timber`);
+    if (c.id[i] === E.WOOD || c.id[i] === E.PLANKS || c.id[i] === E.PLANT) {
       assert.notEqual(role(c, i), A.NONE, `${key}/${variant}/${size}/${seed}: unlabelled authored cell`);
       if (key === 'TREE' && c.id[i] === E.PLANT) assert.equal(role(c, i), A.LEAVES);
       if (key === 'HOUSE' && c.id[i] === E.PLANT) assert.equal(role(c, i), variant === 'greenhouse' ? A.LEAVES : A.PLAIN);
@@ -86,17 +92,17 @@ at(cabin, hw, 1, -hd, E.WOOD, A.LOG_X);
 at(cabin, hw, 2, -hd, E.WOOD, A.LOG_Z);
 at(cabin, hw, 1, -Math.round(hd * 0.35), E.WOOD, A.LOG_Z);
 at(cabin, -hw + 2, 2, -hd + 1, E.PLANT, A.PLAIN);
-at(build('DOCK', 'pier'), 0, 1, 4, E.WOOD, A.PLANK_X);
-at(build('DOCK', 'pier'), -2, 0, 4, E.WOOD, A.PLANK_Y);
-at(build('WELL'), -3, 4, 0, E.WOOD, A.PLANK_Y);
-at(build('WELL'), 1, 8, 0, E.WOOD, A.PLANK_X);
+at(build('DOCK', 'pier'), 0, 1, 4, E.PLANKS, A.PLANK_X);
+at(build('DOCK', 'pier'), -2, 0, 4, E.PLANKS, A.PLANK_Y);
+at(build('WELL'), -3, 4, 0, E.PLANKS, A.PLANK_Y);
+at(build('WELL'), 1, 8, 0, E.PLANKS, A.PLANK_X);
 at(build('WELL'), 0, 5, 0, E.WOOD, A.PLAIN);
-at(build('MINE'), 0, 0, -2, E.WOOD, A.PLANK_X);
-at(build('MINE'), 3, 2, -4, E.WOOD, A.PLANK_Y);
-at(build('MINE'), 2, 8, -4, E.WOOD, A.PLANK_X);
-at(build('BRIDGE', 'short'), 0, 1, 0, E.WOOD, A.PLANK_X);
-at(build('BRIDGE', 'short'), 3, 4, 0, E.WOOD, A.PLANK_Z);
-at(build('BRIDGE', 'short'), 3, 3, -10, E.WOOD, A.PLANK_Y);
+at(build('MINE'), 0, 0, -2, E.PLANKS, A.PLANK_X);
+at(build('MINE'), 3, 2, -4, E.PLANKS, A.PLANK_Y);
+at(build('MINE'), 2, 8, -4, E.PLANKS, A.PLANK_X);
+at(build('BRIDGE', 'short'), 0, 1, 0, E.PLANKS, A.PLANK_X);
+at(build('BRIDGE', 'short'), 3, 4, 0, E.PLANKS, A.PLANK_Z);
+at(build('BRIDGE', 'short'), 3, 3, -10, E.PLANKS, A.PLANK_Y);
 
 const legacy = runGenerator(({ put }) => { put(0, 0, 0, 'WOOD'); put(1, 0, 0, 'PLANT'); }, { size: 5, seed: 1 });
 assert.deepEqual(Array.from(legacy.ctype), [0, 0]);

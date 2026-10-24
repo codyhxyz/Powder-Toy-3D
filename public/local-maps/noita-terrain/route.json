@@ -3598,7 +3598,8 @@
       "name": "ceiling_plant_material"
     },
     {
-      "element": 14,
+      "appearance": 6,
+      "element": 95,
       "name": "cloth_box2d"
     },
     {
@@ -3820,7 +3821,8 @@
       "name": "plasma_fading_pink"
     },
     {
-      "element": 14,
+      "appearance": 6,
+      "element": 95,
       "name": "plastic_prop"
     },
     {
@@ -4121,17 +4123,17 @@
     },
     {
       "appearance": 6,
-      "element": 14,
+      "element": 95,
       "name": "wood_prop"
     },
     {
       "appearance": 6,
-      "element": 14,
+      "element": 95,
       "name": "wood_static"
     },
     {
       "appearance": 7,
-      "element": 14,
+      "element": 95,
       "name": "wood_static_vertical"
     },
     {

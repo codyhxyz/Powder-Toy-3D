@@ -90,7 +90,7 @@ const growth = ({ cover = GRASS_COVER, roots = ROOT_N, fungus = 0 } = {}) => [
 // a crate: a wooden box (4 cells) round what it holds (Noita's skull crates hold gunpowder)
 const CRATE_FILL = { GUNPOWDER: 4, NUGGETS: 2, COAL: 2, TNT: 1, RUBBLE: 1 };
 const crate = (fill = CRATE_FILL) => [
-  { box: [[0, 0, 0], [4, 4, 4]], m: 'WOOD', appearance: 'plank-x', only: 'AIR' },
+  { box: [[0, 0, 0], [4, 4, 4]], m: 'PLANKS', appearance: 'plank-x', only: 'AIR' },
   { box: [[1, 1, 1], [3, 3, 3]], m: fill },
 ];
 // an explosive barrel: an iron drum of oil or gunpowder (Noita's red barrels)
@@ -113,7 +113,7 @@ const onShelf = (x0, x1, z0, z1, top, n, put) => ({ scatter: [[x0 + 1, top, z0 +
 // a water tank: a timber basin standing on a surface at y, full (Noita's water tanks on shelves)
 const TANK_FILL = { WATER: 8, OIL: 2, BLOOD: 1, TOXIC: 1 };
 const tank = (x0, x1, z0, z1, y, h = 4, fill = TANK_FILL) => [
-  { box: [[x0, y, z0], [x1, y + h, z1]], m: 'WOOD', appearance: 'plank-x' },
+  { box: [[x0, y, z0], [x1, y + h, z1]], m: 'PLANKS', appearance: 'plank-x' },
   { box: [[x0 + 1, y + 1, z0 + 1], [x1 - 1, y + h, z1 - 1]], m: fill },
 ];
 // a mine cart on rails along x at y: an iron tub of ore
@@ -282,7 +282,7 @@ const tiles = [
       ...[[6, 4], [18, 4], [6, 14], [18, 14]].map(([x, z]) => ({ box: [[x, F, z], [x + 1, TOP, z + 1]], m: 'BEAM', appearance: 'plank-y' })),
       { capsule: [[6.5, F, 4.5], [18.5, HF - 1, 4.5], 0.5], m: 'BEAM', appearance: 'plank-x' }, { capsule: [[6.5, F, 14.5], [18.5, HF - 1, 14.5], 0.5], m: 'BEAM', appearance: 'plank-x' },
       { capsule: [[6.5, HF, 4.5], [18.5, TOP - 1, 4.5], 0.5], m: 'BEAM', appearance: 'plank-x' },
-      { box: [[6, HF - 1, 4], [19, HF, 15]], m: 'WOOD', appearance: 'plank-x' },                    // the platform
+      { box: [[6, HF - 1, 4], [19, HF, 15]], m: 'PLANKS', appearance: 'plank-x' },                    // the platform
       stairsX(19, 8, 11, F, HF, -1),
       onShelf(6, 19, 4, 15, HF, 2, [{ any: [crate(), barrel(), nuggets(), remains()] }]),
       ...shelf(28, 44, 12, 21, UPPER_TOP - 2), stairsX(28, 12, 15, F, UPPER_TOP - 2, -1),
@@ -302,7 +302,7 @@ const tiles = [
       ...shelf(26, 44, 3, 12, HF), stairsZ(13, 22, 25, F, HF, -1),
       { scatter: [[4, F, 3], [44, F + 1, 21]], n: 3, put: remains() },
       onShelf(26, 44, 3, 12, HF, 3, [{ any: [crate(), remains(), nuggets()] }]),
-      ...[0, 1].map((i) => ({ box: [[28 + i * 6, F, 15], [32 + i * 6, F + 4, 19]], m: 'WOOD', appearance: 'plank-x' })),   // crates by the wall
+      ...[0, 1].map((i) => ({ box: [[28 + i * 6, F, 15], [32 + i * 6, F + 4, 19]], m: 'PLANKS', appearance: 'plank-x' })),   // crates by the wall
       lantern(34, HF - SHELF_THICK, 6), lantern(10, TOP, 16),
       ...growth({ fungus: 0.2 }),
     ],
@@ -362,8 +362,8 @@ const tiles = [
     prims: [
       { box: [[10, F, 4], [42, 14, U - B]], m: 'AIR', rough: 2.2 },
       { box: [[10, F - 1, 4], [42, F, 15]], m: 'ROCK' },
-      { box: [[12, F, 5], [16, F + 4, 9]], m: 'WOOD', appearance: 'plank-x' }, { box: [[13, F + 1, 6], [15, F + 3, 8]], m: { GUNPOWDER: 1, NUGGETS: 1 } },
-      { box: [[12, F + 4, 5], [16, F + 7, 9]], m: 'WOOD', appearance: 'plank-x' },
+      { box: [[12, F, 5], [16, F + 4, 9]], m: 'PLANKS', appearance: 'plank-x' }, { box: [[13, F + 1, 6], [15, F + 3, 8]], m: { GUNPOWDER: 1, NUGGETS: 1 } },
+      { box: [[12, F + 4, 5], [16, F + 7, 9]], m: 'PLANKS', appearance: 'plank-x' },
       { box: [[18, F, 5], [21, F + 2, 7]], m: 'GOLD' },
       lantern(26, 13, 5),
       ...growth({ roots: 4 }),
@@ -384,7 +384,7 @@ export default {
   // (and on posts at a shelf's rim where no wall takes one), one every ~20 cells
   torches: { every: 20, max: 3, lights: ['TORCH'], posts: true },
   // Noita's Mines: brown earth and dark rock, timber, a lot of it diggable
-  palette: { ROCK: 'BASALT', SOFT: 'SANDSTONE', BEAM: 'WOOD', RAIL: 'METAL', RUBBLE: 'RUBBLE' },
+  palette: { ROCK: 'BASALT', SOFT: 'SANDSTONE', BEAM: 'PLANKS', RAIL: 'METAL', RUBBLE: 'RUBBLE' },
   geom: MINES_GEOM,
   loops: 0.7,          // Noita's Mines are one cavern: most neighbours open onto each other
   tiles,

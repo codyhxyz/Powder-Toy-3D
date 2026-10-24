@@ -136,7 +136,7 @@ test('scenery is expanded-only; original core/cottages and usable meadow stay un
     assert.equal(cell(x, y, z), twin.cfTerrainCell(x, y, z), 'original core unchanged');
   }
   for (const [x, z] of M.cottages) {
-    assert.equal(cell(x - 12, 24, z), E.WOOD);
+    assert.equal(cell(x - 12, 24, z), E.PLANKS);
     assert.equal(cell(x - 12, 28, z), E.GLASS);
     assert(body(x, z - 14), 'original cottage entrance');
   }

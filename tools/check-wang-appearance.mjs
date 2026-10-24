@@ -52,7 +52,7 @@ for (let level = 0; level < 3; level++) {
   const bytes = new Uint8Array(data.words.buffer, at * 4, W.atlas.data.length);
   for (let i = 0; i < bytes.length; i++) {
     assert.equal(bytes[i] & 63, W.atlas.data[i]);
-    if (W.elementJS(W.atlas.data[i]) === E.WOOD) { assert.ok(bytes[i] >> 6, `unlabelled timber: level ${level}, atlas ${i}`); timber++; }
+    if (W.elementJS(W.atlas.data[i]) === E.PLANKS) { assert.ok(bytes[i] >> 6, `unlabelled timber: level ${level}, atlas ${i}`); timber++; }
   }
   for (let tile = 0; tile < W.kit.tiles.length; tile++) for (let xf = 0; xf < 8; xf++) {
     const tr = xf & 4, units = tr ? [1, 3, 2] : [2, 3, 1];
@@ -83,7 +83,7 @@ for (let level = 0; level < 3; level++) {
       const tunnel = T.dsTunnelMaterial(x, y, z);
       assert.equal(tunnel < 0 ? -1 : materialId(tunnel), c === MAT.ROCK || c === WANG_OUT ? -1 : W.elementJS(c));
       assert.equal(materialId(T.dsCellMaterial(x, y, z)), T.dsCell(x, y, z));
-      if (W.elementJS(c) === E.WOOD && T.dsCell(x, y, z) === E.WOOD) { assert.ok(materialAppearance(T.dsCellMaterial(x, y, z))); checked++; }
+      if (W.elementJS(c) === E.PLANKS && T.dsCell(x, y, z) === E.PLANKS) { assert.ok(materialAppearance(T.dsCellMaterial(x, y, z))); checked++; }
     }
   }
   assert.ok(checked, `level ${level} must exercise actual placed timber`);
@@ -91,8 +91,8 @@ for (let level = 0; level < 3; level++) {
 }
 for (const [level, x, y, z] of [[0, 19, 46, 7], [2, 91, 47, 12], [1, 57, 46, 37]]) {
   const T = descentTwin(level), word = T.dsCellMaterial(x, y, z);
-  assert.equal(T.dsCell(x, y, z), E.WOOD);
-  assert.equal(materialId(word), E.WOOD);
+  assert.equal(T.dsCell(x, y, z), E.PLANKS);
+  assert.equal(materialId(word), E.PLANKS);
   assert.equal(materialAppearance(word), A.PLANK_Y);
 }
 for (let p = 0; p < 6; p++) for (const col of [1, 2, 3]) for (const lintel of [false, true]) {

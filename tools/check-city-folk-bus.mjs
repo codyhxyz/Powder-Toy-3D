@@ -34,7 +34,7 @@ for(const key of ['emporium','tailor','theatre']) {
 }
 for(const p of [C.landmarks.townArrival,C.landmarks.cityArrival]) solidFootprint(p[0],p[2]);
 assert.equal(stop(-236,59,-120,E.EMPTY),E.METAL,'real shelter roof');
-assert.equal(stop(-236,49,-125,E.EMPTY),E.WOOD,'real shelter bench');
+assert.equal(stop(-236,49,-125,E.EMPTY),E.PLANKS,'real shelter bench');
 for(let y=0;y<128;y++) {
   assert.equal(city(-236,y,-116,E.WATER),E.WATER,'city is strictly district-only');
   assert.equal(stop(-260,y,-124,E.WOOD),E.WOOD,'gate center untouched');
