@@ -13,7 +13,8 @@ import { join } from 'node:path';
 import { WGSLNodeBuilder, WebGPURenderer, Scene, PerspectiveCamera, Mesh, BoxGeometry, MeshBasicNodeMaterial } from 'three/webgpu';
 import { vec3 } from 'three/tsl';
 import { lightLookupWGSL, lightLookupFromMatsWGSL, packLightMats } from '../src/shaders/world/lightLookup.js';
-import { litColor, meshWorldLightWGSL } from '../src/gfx/meshLight.js';
+import { litColor, meshWorldLightWGSL, meshLight, updateMeshLight } from '../src/gfx/meshLight.js';
+import { ShadowCascades, probeLevels, glowLevels } from '../src/gfx/worldLightBook.js';
 import { nativeParticleWGSL } from '../src/shaders/v2/particleRender.js';
 import { worldEyeWGSL } from '../src/gfx/worldEyeLight.js';
 import { noiseGLSL } from '../src/shaders/gfx/noise.js';
@@ -80,6 +81,24 @@ ${lightLookupWGSL({ caustics: false })}
   assert.deepEqual(col(2, 0), lc.shS[0]); assert.deepEqual(col(2, 3), lc.glO[1]);
   assert.deepEqual(col(3, 0), lc.shO[0]); assert.deepEqual(col(3, 3), lc.glO[0]);
   assert.deepEqual(col(4, 2), lc.prO[2]);
+  // 5. updateMeshLight with a world light before and after its first update (no basis, then a sun)
+  const size = [256, 128, 256];
+  const backendData = new Map();
+  const app = { gpu: { _mediaNoise: { texture: null }, three: { renderer: { backend: { get: (o) => backendData.get(o) ?? backendData.set(o, {}).get(o) } } } }, sun: { x: 0.3, y: 0.9, z: 0.2 } };
+  const wl = { size, shadow: new ShadowCascades(size), probes: probeLevels(), glow: glowLevels(), bands: [], glowTex: null, buf: { lc: { label: 'lcBuf' } } };
+  app.worldLight = wl;
+  updateMeshLight(app);
+  assert.equal(meshLight.world.value.x, 1, 'world light on');
+  assert.equal(meshLight.lc[3].value.elements[2], 0, 'nothing traced before the first update: shO.z 0');
+  assert.equal(backendData.get(meshLight.lcBuf.value).buffer, wl.buf.lc, 'three binds L\'s lcBuf');
+  wl.shadow.update([128, 64, 128], [0.3, 0.9, 0.2], []);
+  for (const L of wl.probes) L.centre([128, 64, 128]);
+  for (const L of wl.glow) L.centre([128, 64, 128]);
+  updateMeshLight(app);
+  assert.ok(meshLight.lc[0].value.elements.slice(0, 3).some((x) => x !== 0), 'a sun basis once L has a sun');
+  app.worldLight = null;
+  updateMeshLight(app);
+  assert.equal(meshLight.world.value.x, 0, 'window light back');
   console.log('mesh-world-light-check: ok (lookups, lit material, particles, eye probe, LC packing)');
 } finally {
   rmSync(dir, { recursive: true, force: true });

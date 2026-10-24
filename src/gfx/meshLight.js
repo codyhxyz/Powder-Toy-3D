@@ -448,6 +448,13 @@ function lcAttribute(three, buffer) {
   return attr;
 }
 const lcMats = new Float32Array(80);
+// LC with nothing in it: no cascade holds anything (shO.z 0), every probe and glow chunk's tag misses
+// (the tags start invalid), spacings 1 (no division by zero)
+const LC_NONE = (() => {
+  const z = () => [0, 0, 0, 0], one = () => [0, 0, 0, 1];
+  return { shU: [one(), one(), one()], shV: [z(), z(), z()], shS: [z(), z(), z()], shO: [z(), z(), z()],
+    centre: z(), prO: [one(), one(), one()], glO: [one(), one()], size: z() };
+})();
 
 const sunV = new Vector3(), inv = new Matrix4();
 /**
@@ -472,7 +479,9 @@ export function updateMeshLight(app) {
     point('world glow', L.light, wl.glowTex, { dimension: '3d' });
     const attr = lcAttribute(app.gpu.three, wl.buf.lc);
     if (L.lcBuf.value !== attr) L.lcBuf.value = attr;
-    packLightMats(lightUniformValues(wl.size, wl.shadow, wl.probes, wl.glow), lcMats);
+    // (before L's first update its cascades have no basis yet: nothing traced, the open sky's light)
+    const traced = wl.shadow?.cascades?.every((c) => c.basis);
+    packLightMats(traced ? lightUniformValues(wl.size, wl.shadow, wl.probes, wl.glow) : LC_NONE, lcMats);
     L.lc.forEach((m, i) => m.value.fromArray(lcMats, 16 * i));
   } else {
     [0, 1, 2, 3].forEach((k) => point(`gi${k}`, L.gi[k], derived?.giTextures?.[k] ?? null, { dimension: '3d' }));

@@ -2488,10 +2488,11 @@ function drawScene(rp) {
 // keep its light (and windowLightStale has it rebuilt whole when they come back). Picks read
 // physics' state, not the derived brick map; signs' occlusion probe reads the brick map as it was.
 let windowLightStale = false;
+let testWindowLight = false;   // __app.test.windowLight: the A/B
 // whether `view` reads the window's sun shadow map (the world march's shadows are L's cascades)
 function windowShadows(view, curved) { return viewShadows(view) && !worldView?.draws(view, curved); }
 function worldLit() {
-  return !blocks && !testBoxMarch && !!worldView?.draws(viewKeyOf(renderView), !!warpNow()?.k);
+  return !testWindowLight && !blocks && !testBoxMarch && !!worldView?.draws(viewKeyOf(renderView), !!warpNow()?.k);
 }
 
 // This view frame's kind (gfx/meshFrames.js): 'full', or while only three's
@@ -3182,6 +3183,10 @@ try {
       },
       // Every pipeline the current settings need is built, ours and three's (B5).
       ready: allReady,
+      // true: world-march frames run and read the window's light too, as before one lighting
+      // system (worldLit): the A/B of what skipping it saves
+      set windowLight(v) { testWindowLight = !!v; pacer.wake(); },
+      get windowLight() { return testWindowLight; },
       // A converged snapshot: frames until the view settles, with no physics,
       // input, player or multiplayer updates, then the GPU done with them.
       async render() {
