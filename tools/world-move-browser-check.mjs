@@ -40,6 +40,11 @@
 // Hypothesis (P3 slot 3): with the brush built the seam's stroke is all stone in readState and in the world
 // copy, the pick agrees; ticks from a load are as deterministic as unringed ones, and their element counts
 // match an unringed page's (the ring changes no physics).
+// Slot 3: ticks ringed are as deterministic as V2 is (bit for bit no, element counts exact run to run and
+// after a walk); the unringed page ran out of the slot. The stroke used replace mode, which paints only
+// over what is there (TPT's), and the world copy's first writeback can come while its kernels build.
+// Hypothesis (P3 slot 4): with both fills and the writeback retried, the seam's stroke is all stone, every
+// changed cell's word in the world copy agrees with readState, and the pick agrees, ringed and unringed.
 // Segments, each N moves east then N back: old (switch off), physics only (switch on, generator fill),
 // world copy (switch on, a synthetic copy: tools/world-copy-stub.mjs; content is not the map's, timing only).
 // usage: node tools/world-move-browser-check.mjs [--map island] [--win 128] [--moves 4]
@@ -55,7 +60,8 @@ const SEGMENTS = new Set(opt('segments', 'old,physics,copy').split(','));
 const RING = args.includes('--ring'), TICKS = +opt('ticks', 40), BASELINE = args.includes('--baseline');
 // the focus stops within the stage's lead before each move (world/window.js stageAhead); --no-stage skips it
 const STAGE = !args.includes('--no-stage');
-const BASELINE_BY_MS = 14000;   // the unringed page starts only this soon after launch (its boot and ticks fit the slot)
+const BASELINE_BY_MS = 14000;
+const BASE_SEGS = opt('baseline-segments', 'ticks').split(',');   // the unringed page starts only this soon after launch (its boot and ticks fit the slot)
 const BOOT_MS = 16000;   // of the 25 s slot: past this the run gives up rather than overrun it
 
 // One page: boot (ringed or not), the segments, the results printed at once (a later page may run out the slot).
@@ -189,11 +195,20 @@ async function page(ring, SEG) {
         const c = [0, 1, 2].map((i) => (b1[i] + b2[i] + 1) * 2), r = 5;
         const { prepareNativeBrush } = await import('/src/v2/interactions.js');
         await prepareNativeBrush(sim);   // (a stroke before its kernels are built is refused)
-        const painted = sim.paint({ center: { x: c[0], y: c[1], z: c[2] }, radius: r, shape: 0, tool: STONE, rate: 1, replace: true });
+        const before = (await sim.readState())[0];
+        // (replace: true paints over what is there, TPT's replace mode; false fills the empty cells: both, all stone)
+        const painted = sim.paint({ center: { x: c[0], y: c[1], z: c[2] }, radius: r, shape: 0, tool: STONE, rate: 1, replace: false })
+          && sim.paint({ center: { x: c[0], y: c[1], z: c[2] }, radius: r, shape: 0, tool: STONE, rate: 1, replace: true });
         if (!painted) throw new Error(`the stroke was refused: ${JSON.stringify(sim.nativeInteractionResult)}`);
         a.test.step(1);   // (a stroke lands with the tick: V2's requests)
         await a.gpu.fence();
         const [A] = await sim.readState(), idAt = (x, y, z) => Math.round(A[sim.cellTexel(x, y, z) * 4]);
+        // where the stroke wrote: every cell whose element changed, and their box
+        let changed = 0; const lo = [1e9, 1e9, 1e9], hi = [-1, -1, -1];
+        for (let x = 0; x < g.nx; x++) for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) {
+          const t = sim.cellTexel(x, y, z) * 4;
+          if (Math.round(A[t]) !== Math.round(before[t])) { changed++; [x, y, z].forEach((v, i) => { lo[i] = Math.min(lo[i], v); hi[i] = Math.max(hi[i], v); }); }
+        }
         let inside = 0, bad = 0;
         for (let x = Math.floor(c[0] - r); x <= c[0] + r; x++) for (let y = Math.floor(c[1] - r); y <= c[1] + r; y++) for (let z = Math.floor(c[2] - r); z <= c[2] + r; z++) {
           if (x < 0 || y < 0 || z < 0 || x >= g.nx || y >= g.ny || z >= g.nz) continue;
@@ -205,22 +220,23 @@ async function page(ring, SEG) {
         let expect = null;
         for (let y = top; y >= 0 && expect === null; y--) { const id = idAt(col[0], y, col[1]); if (id && ELEMENTS[id]?.kind !== K.GAS) expect = y; }
         const hit = await a.pickRay([col[0] + 0.5, top + 0.5, col[1] + 0.5], [0, -1, 0]);
-        // the world copy's words over the stroke, after its writeback (W's)
-        let wcBad = 0, wcChecked = 0;
+        // the world copy's words over every changed cell, after its writeback (W's; retried while its kernels build)
+        let wcBad = 0, wcChecked = 0, wrote = [];
         const wc = w.worldCopy;
         if (wc?.recordWriteback) {
-          wc.recordWriteback(a.gpu.frame, sim, null); await a.gpu.fence();
+          for (let i = 0; i < 40; i++) { const r = wc.recordWriteback(a.gpu.frame, sim, null); wrote.push(r); await a.gpu.fence(); if (r) break; await new Promise((q) => setTimeout(q, 50)); }
           const WB = wc.L.bricks, table = new Uint32Array(await a.gpu.readback.buffer(wc.buf.table, 0, wc.buf.table.size));
           const pool = wc.buf.pool ? new Uint32Array(await a.gpu.readback.buffer(wc.buf.pool, 0, wc.buf.pool.size)) : null;
-          for (let x = Math.floor(c[0] - r + 1); x <= c[0] + r - 1; x++) for (let y = Math.floor(c[1] - 2); y <= c[1] + 2; y++) for (let z = Math.floor(c[2] - 2); z <= c[2] + 2; z++) {
-            if (Math.hypot(x + 0.5 - c[0], y + 0.5 - c[1], z + 0.5 - c[2]) > r - 1 || x < 0 || y < 0 || z < 0 || x >= g.nx || y >= g.ny || z >= g.nz) continue;
+          for (let x = lo[0]; x <= hi[0]; x++) for (let y = lo[1]; y <= hi[1]; y++) for (let z = lo[2]; z <= hi[2]; z++) {
+            const t = sim.cellTexel(x, y, z) * 4;
+            if (Math.round(A[t]) === Math.round(before[t])) continue;
             const wx = x + sim.origin.x, wy = y + sim.origin.y, wz = z + sim.origin.z, b = [wx >> 2, wy >> 2, wz >> 2];
             const e = table[b[0] + WB[0] * (b[1] + WB[1] * b[2])];
             const word = (e & WC_MIXED) ? pool[(e & ~WC_MIXED) * 64 + ((wx & 3) + 4 * ((wy & 3) + 4 * (wz & 3)))] : e;
-            wcChecked++; if ((word & 255) !== STONE) wcBad++;
+            wcChecked++; if ((word & 255) !== Math.round(A[t])) wcBad++;
           }
         }
-        return { label: 'seam', ring, b1, b2, c, inside, bad, expect, hit: hit.valid ? [hit.cell.x, hit.cell.y, hit.cell.z] : null, col, wcChecked, wcBad };
+        return { label: 'seam', ring, b1, b2, c, inside, bad, expect, changed, box: [lo, hi], result: sim.nativeInteractionResult, wrote: wrote.join(''), hit: hit.valid ? [hit.cell.x, hit.cell.y, hit.cell.z] : null, col, wcChecked, wcBad };
       });
       if (SEG.includes('copy')) try {
       const { syntheticWorldCopy, STUB_COPY_WGSL } = await import('/tools/world-copy-stub.mjs');
@@ -244,7 +260,7 @@ async function page(ring, SEG) {
       if (s.error) { failures++; console.log(`FAIL ${s.label}: ${s.error}`); continue; }
       if (s.label === 'seam') {
         const pickOk = s.hit && s.hit[0] === s.col[0] && s.hit[2] === s.col[1] && s.hit[1] === s.expect;
-        console.log(`seam (ring ${s.ring}: bricks ${s.b1} | ${s.b2}, stroke at ${s.c}): ${s.inside - s.bad}/${s.inside} cells stone; pick ${s.hit} vs ${s.col[0]},${s.expect},${s.col[1]}${pickOk ? ' (same)' : ' (DIFFER)'}; world copy ${s.wcChecked - s.wcBad}/${s.wcChecked} stone`);
+        console.log(`seam (ring ${s.ring}: bricks ${s.b1} | ${s.b2}, stroke at ${s.c}; ${JSON.stringify(s.result)}, ${s.changed} cells changed in ${JSON.stringify(s.box)}): ${s.inside - s.bad}/${s.inside} cells stone; pick ${s.hit} vs ${s.col[0]},${s.expect},${s.col[1]}${pickOk ? ' (same)' : ' (DIFFER)'}; world copy ${s.wcChecked - s.wcBad}/${s.wcChecked} changed cells agree (writebacks ${s.wrote})`);
         if (s.bad || !pickOk || s.wcBad || !s.wcChecked) { failures++; console.log('FAIL seam'); }
         continue;
       }
@@ -290,7 +306,8 @@ try {
   const res = await page(RING, [...SEGMENTS]);
   // the same ticks on an unringed page, when the slot has room: physics doesn't depend on the layout
   if (BASELINE && Date.now() - launched < BASELINE_BY_MS) {
-    const base = (await page(false, ['ticks'])).find((r) => r.label === 'ticks'), mine = res.find((r) => r.label === 'ticks');
+    const baseRes = await page(false, BASE_SEGS);
+    const base = baseRes.find((r) => r.label === 'ticks'), mine = res.find((r) => r.label === 'ticks');
     if (base?.h1 && mine?.h1) {
       const l1 = (x, y) => x.reduce((n, v, i) => n + Math.abs(v - y[i]), 0);
       console.log(`layout (ticks from ${base.origin} / ${mine.origin}): unringed run ${base.h1}, ringed run ${mine.h1}${base.h1 === mine.h1 ? ' (same physics)' : ' (DIFFER)'}; `
