@@ -572,7 +572,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   let q = cellOf(s) + P.shift;
   let inside = inGrid(q);
   var t = 0u;
-  if (inside) { t = slotOf(q); }
+  if (inside) { t = heldSlot(q, s); }
   for (var k = 0u; k < 3u; k++) {
     var w = 0u;
     if (inside) { w = src[k * SLOTS + t]; }

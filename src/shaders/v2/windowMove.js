@@ -26,7 +26,7 @@ import { PARTICLE_CAP } from '../../v2/dynamics-reference.js';
 // blastLo/blastHi (the shared world box, PARTICLES).
 export const WINDOW_LAYOUT = storageLayout(5);   // events, air (the source copy), control, work, particles
 export const WINDOW_STAGES = ['move'];
-export const WINDOW_MODE = Object.freeze({ SHIFT: 0, GATHER: 1, EVENTS: 2, PARTICLES: 3 });
+export const WINDOW_MODE = Object.freeze({ SHIFT: 0, GATHER: 1, EVENTS: 2, PARTICLES: 3, ENTER: 4 });
 
 // `work`'s regions, u32 words: the moved copies (written whole by SHIFT, then
 // copied back), then the slab's io (incoming air, leaving requests, leaving
@@ -100,11 +100,11 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     // cell t of the moved window takes the cell its world cell was at: t + shift in the source
     if (t >= SLOTS) { return; }
     let q = cellOf(t) + P.shift; let held = inGrid(q);
-    if (held) { work[W_EVENTS + t] = events[slotOf(q)]; } else if (!preserve) { work[W_EVENTS + t] = 0u; }
+    if (held) { work[W_EVENTS + t] = events[heldSlot(q, t)]; } else if (!preserve) { work[W_EVENTS + t] = 0u; }
     if (t % 64u != 0u) { return; }
     let b = t / 64u;
     if (held) {
-      let source = slotOf(q) / 64u;
+      let source = heldSlot(q, t) / 64u;
       for (var k = 0u; k < 8u; k++) { work[W_AIR + b * 8u + k] = air[source * 8u + k]; }
       // a restored brick's cells changed: its projection is stale; a moved one's moved with it
       if (preserve) { work[W_LEGACY + b] = W_STALE; }
@@ -124,6 +124,20 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     let s = slotOf(wSlabCell(t));
     work[W_IO + 8u * n + t] = events[s];
     if (t % 64u == 0u) { for (var k = 0u; k < 8u; k++) { work[W_IO + 72u * n + (t / 64u) * 8u + k] = air[(s / 64u) * 8u + k]; } }
+    return;
+  }
+  if (P.mode == ${WINDOW_MODE.ENTER}u) {
+    // A ringed grid's move (src/v2/dynamics.js recordWindowRing; shaders/common.js ringOf): nothing moved,
+    // so the slab the move uncovered still holds the leaving slab's words. Its cells' requests clear and its
+    // bricks take what SHIFT gives a brick it uncovers: the archived air (or quiet), a stale projection, no shock.
+    let n = wSlabBricks(); if (t >= n * 64u) { return; }
+    let s = slotOf(wSlabCell(t));
+    events[s] = 0u;
+    if (t % 64u != 0u) { return; }
+    let b = s / 64u; let e = t / 64u;
+    for (var k = 0u; k < 8u; k++) { air[b * 8u + k] = work[W_IO + e * 8u + k]; }
+    atomicStore(&act2[W_LEGACY_AT + b], W_STALE);
+    atomicStore(&control[W_SHOCK + b], 0u);
     return;
   }
   if (P.mode == ${WINDOW_MODE.EVENTS}u) {

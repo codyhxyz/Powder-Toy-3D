@@ -50,7 +50,7 @@ ${prelude(g, { ...STATE_OPTS.STATE_RW, debug })}
 ${slotMain}
   var a = vec4f(f32(E_EMPTY), airT(), 0.0, 0.0);
   var b = vec4f(0.0);
-  if (inGrid(q)) { a = fetchA(q); b = fetchB(q); }
+  if (inGrid(q)) { a = fetchAs(heldSlot(q, s)); b = fetchBs(heldSlot(q, s)); }
   writeStateS(s, a, b, freshFlags(a, b));
 }
 `;
@@ -70,8 +70,8 @@ ${prelude(g, { ...STATE_OPTS.STATE_RW, debug })}
 @group(2) @binding(1) var<storage, read> snapB: array<vec4f>;
 ${slotMain}
   if (!inGrid(q)) { return; }
-  let a = snapA[slotOf(q)];
-  let b = snapB[slotOf(q)];
+  let a = snapA[heldSlot(q, s)];
+  let b = snapB[heldSlot(q, s)];
   writeStateS(s, a, b, freshFlags(a, b));
 }
 `;
@@ -90,12 +90,32 @@ ${prelude(g, { state: false })}
 @group(2) @binding(1) var<storage, read_write> dst: array<vec2u>;
 ${slotMain}
   var w = vec2u(0u);
-  if (inGrid(q)) { w = src[slotOf(q)]; }
+  if (inGrid(q)) { w = src[heldSlot(q, s)]; }
   dst[s] = w;
 }
 `;
 
 // (Stored bricks come back natively: v2/integration.js restoreBricks; V1's restore edit went with V1.)
+// A ringed grid's move (src/sim.js _shiftRing; common.js ringOf): words a slot of a slot-ordered buffer
+// (`words` u32s from word `base`: the flow, the decoration's plane) zeroed over the slab the move uncovered,
+// grid cells [lo, lo + 4·bricks) under the new ring, as the shift zeroes a cell from outside the window.
+export const SlabZeroParams = uniformStruct('SlabZeroParams', { lo: 'vec3i', bricks: 'vec3i', count: 'u32', base: 'u32', words: 'u32' });
+export const SLAB_ZERO_LAYOUT = [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }];
+export const slabZeroFrag = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
+${SlabZeroParams.wgsl}
+@group(3) @binding(1) var<uniform> P: SlabZeroParams;
+@group(2) @binding(0) var<storage, read_write> buf: array<u32>;
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let i = foldThread(wg, nwg, li);
+  if (i >= P.count) { return; }
+  let b = i32(i / 64u); let l = i32(i % 64u);
+  let bc = vec3i(b % P.bricks.x, (b / P.bricks.x) % P.bricks.y, b / (P.bricks.x * P.bricks.y));
+  let s = slotOf(P.lo + bc * 4 + vec3i(l % 4, (l / 4) % 4, l / 16));
+  for (var k = 0u; k < P.words; k++) { buf[P.base + s * P.words + k] = 0u; }
+}
+`;
 
 const rw = () => [LAYOUT.TABLES, LAYOUT.STATE_RW];
 /**
@@ -107,6 +127,7 @@ export const WGSL_CHECK = [
   { name: 'shift', kind: 'compute', code: (g) => shiftFrag(g), layouts: rw, dispatch: perSlot, windowed: true },
   { name: 'undoShift', kind: 'compute', code: (g) => undoShiftFrag(g), layouts: () => [...rw(), UNDO_LAYOUT], dispatch: perSlot },
   { name: 'flowShift', kind: 'compute', code: flowShiftFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', FLOW_SHIFT_LAYOUT], dispatch: perSlot, windowed: true },
+  { name: 'slabZero', kind: 'compute', code: slabZeroFrag, params: SlabZeroParams, layouts: () => [LAYOUT.TABLES, 'EMPTY', SLAB_ZERO_LAYOUT], dispatch: perSlot, windowed: true },
   // slabGLSL on its own (its kernels are U10's and U17's): validated, never warmed
   { name: 'slabProbe', kind: 'compute', tool: true, layouts: () => [LAYOUT.TABLES], dispatch: () => [1, 1, 1],
     code: (g) => `${prelude(g, { state: false })}

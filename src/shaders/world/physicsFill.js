@@ -103,6 +103,26 @@ ${BOX_WALK}
   nativeWriteCore(slotOf(p), wcFillCore(words[at], sceneCell(w).A, w));
 }`;
 
+// The fill ahead of its move (world/copyFill.js stage, commitStaged; world/window.js update): the slab a move
+// is about to uncover lies outside the window, where nothing writes to the world copy, so its cores can be
+// worked out in an earlier frame. The stage is the fill with its cores kept in a buffer of the box's (the
+// words' order), the commit, in the move's frame, the fill's own write of them, so the cores, banks and
+// activity come out as the fill's. Group 1 of the stage: the staged cores; of the commit: V2's write, as
+// the fill's, with the staged cores at group 2.
+export const copyStageWGSL = (g, sceneGLSL) => copyFillWGSL(g, sceneGLSL)
+  .replace(nativeWriteCoreWGSL(g, 1, 0), '@group(1) @binding(0) var<storage, read_write> staged: array<vec4u>;\n')
+  .replace('nativeWriteCore(slotOf(p), wcFillCore(words[at], sceneCell(w).A, w));', 'staged[at] = wcFillCore(words[at], sceneCell(w).A, w);');
+export const copyCommitWGSL = (g) => /* wgsl */ `
+${prelude(g, { state: false })}
+${nativeImportHelpersWGSL}
+${nativeWriteCoreWGSL(g, 1, 0)}
+@group(2) @binding(0) var<storage, read> staged: array<vec4u>;
+${NativeFillParams.wgsl}
+@group(3) @binding(1) var<uniform> P: NativeFillParams;
+${BOX_WALK}
+  nativeWriteCore(slotOf(p), staged[at]);
+}`;
+
 // ---- The same rule in JS (tools/world-move-cpu-check.mjs): which cells take the generator's import.
 const ROWS = v2Rows();
 /** The generator's state A (id, °C, life, ctype + seed) as a word's look (bits 0-23). */

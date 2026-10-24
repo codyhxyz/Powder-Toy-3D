@@ -661,6 +661,66 @@ export class NativeDynamics {
     };
     return {commit,landed};
   }
+  /** One axis of a ringed window's move (src/sim.js _shiftRing; shaders/common.js ringOf): nothing moves,
+   * since a ringed grid's world cell keeps its slot. Now, with the old origin: the slab that leaves is
+   * gathered and read back as recordWindowShift's is, and the uncovered bricks' archived air uploaded.
+   * enter(), once the window's origin has moved (the header's ring is the new one) and after the owner's
+   * activity is carried (NativeIntegration.shiftRing): the uncovered slab's requests cleared, its bricks'
+   * air, legacy word and shocks set as recordWindowShift's SHIFT sets them (WINDOW_MODE.ENTER), every air
+   * copy made the same, the outside obligations now inside written, and the per-move scratch reset. */
+  recordWindowRing(delta) {
+    this._checkWindow(); const d=this._windowDelta(delta),g=this.g,dims=[g.nx,g.ny,g.nz];
+    const axis=d.findIndex(v=>v!==0);
+    if(axis<0) return {enter(){},landed:Promise.resolve()};
+    if(d.some((v,a)=>v && a!==axis)) throw new Error('Native window moves are one axis at a time');
+    const old=[...this.origin],next=old.map((v,a)=>v+d[a]),width=Math.min(Math.abs(d[axis]),dims[axis]);
+    const bricks=dims.map((n,a)=>(a===axis?width:n)/4),n=bricks[0]*bricks[1]*bricks[2];
+    const leaveLo=dims.map((m,a)=>a===axis && d[a]<0 ? m-width : 0),enterLo=dims.map((m,a)=>a===axis && d[a]>0 ? m-width : 0);
+    const brickAt=(lo,e)=>[e%bricks[0],Math.floor(e/bricks[0])%bricks[1],Math.floor(e/(bricks[0]*bricks[1]))].map((v,a)=>lo[a]+v*4);
+    const incoming=new Uint32Array(n*8);
+    for(let e=0;e<n;e++) {
+      const k=key(brickAt(enterLo,e).map((v,a)=>v+next[a])),words=this.airArchive.get(k);
+      if(words) { incoming.set(words,e*8); this.airArchive.delete(k); } else incoming.set(QUIET_AIR,e*8);
+    }
+    const inside=[];
+    for(const [k,bits] of this.pendingOutside) {
+      const p=k.split(',').map((v,a)=>Number(v)-next[a]);
+      if(isInside(p,g)) { inside.push([p,bits]); this.pendingOutside.delete(k); }
+    }
+    const W=this.windowLayout,slab=W.slab(n),work=this._windowWork(W.words(n,inside.length));
+    this._writeWork(slab.incoming*4,incoming);
+    const p={shift:d,boxSize:bricks};
+    this._recordWindow(this.groups.window[this.airIndex],n*64,{...p,mode:WINDOW_MODE.GATHER,boxStart:leaveLo});
+    const epoch=this.windowEpoch,read=this.gpu.readback.buffer(work,slab.leaveEvents*4,n*72*4);
+    const landed=Promise.resolve(read).then(buf=>{
+      const w=new Uint32Array(buf),out={air:[],events:[]};
+      for(let e=0;e<n;e++) {
+        const words=w.slice(64*n+e*8,64*n+e*8+8);
+        if(!quietAir(words)) out.air.push([key(brickAt(leaveLo,e).map((v,a)=>v+old[a])),words]);
+      }
+      for(let i=0;i<64*n;i++) if(w[i]) {
+        const b=Math.floor(i/64),l=i%64,at=brickAt(leaveLo,b);
+        out.events.push([key([at[0]+l%4,at[1]+Math.floor(l/4)%4,at[2]+Math.floor(l/16)].map((v,a)=>v+old[a])),w[i]]);
+      }
+      if(epoch===this.windowEpoch && !this.disposed) this._land(out);
+      return out;
+    });
+    this.leaving.add(landed);
+    landed.then(()=>this.leaving.delete(landed),()=>this.leaving.delete(landed));
+    const enter=()=>{
+      const f=this.gpu.frame,cur=this.air[this.airIndex];
+      this._recordWindow(this.groups.window[this.airIndex],n*64,{...p,mode:WINDOW_MODE.ENTER,boxStart:enterLo});
+      for(const b of this.air) if(b!==cur) f.copy(cur,0,b,0,g.nbricks*32);
+      if(inside.length) {
+        // (slots under the new ring: the header the caller moved first)
+        const list=inside.flatMap(([q,bits])=>[cellSlot(g,...q),bits]);
+        this._writeWork(slab.list*4,Uint32Array.from(list));
+        this._recordWindow(this.groups.window[0],inside.length,{mode:WINDOW_MODE.EVENTS,boxSize:bricks,substep:inside.length});
+      }
+      this._moved(next,{noted:true});
+    };
+    return {enter,landed};
+  }
   // A leaving slab's readback merged into the archive and the outside obligations.
   // A cell back inside the window by then (never, while the window waits for its slab: world/window.js) is the grid's.
   _land(out,into=this) {
