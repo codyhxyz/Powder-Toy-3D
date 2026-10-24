@@ -115,7 +115,7 @@ export const fieldsBindingsWGSL = (group = 2) => FIELDS_BINDINGS.map(([b, name, 
 // opts.detail: gfx/detail.js's defines (DETAIL_CUBIC_CLOSE), as coreGLSL takes them.
 // Declares: FieldClip, gFieldLevel, gFieldBlend, fieldLevelFor, fieldTex, surfField, mediaField,
 // fieldCubic, fieldCubicGrad, cubicClose, cubicShare, surfSample, surfChannel, surfNormal, CUBIC_LO,
-// CUBIC_HI, gThin, gCubicEye, gCubicPixAng, SURF_ISO, NO_HIT, surfRoot, surfCross, NORMAL_STEP (and
+// CUBIC_HI, fieldLevelAt, fieldCellsAt, gThin, gCubicEye, gCubicPixAng, SURF_ISO, NO_HIT, surfRoot, surfCross, NORMAL_STEP (and
 // their helpers, prefixed field*): core.js's field section, in world cells. Not the group-2
 // declarations (FIELDS_BINDINGS: shaders/world/bindings.js makes them).
 export const worldFieldsWGSL = ({ detail = {} } = {}) => /* wgsl */ `
@@ -160,6 +160,10 @@ fn fieldPick(p: vec3f) -> vec2f {
   }
   return vec2f(f32(L), 0.0);
 }
+// The level p really reads (gFieldLevel, or coarser where the finer levels don't hold p), and its
+// texel in cells: what a march's step through the field may be sized by.
+fn fieldLevelAt(p: vec3f) -> u32 { return u32(fieldPick(p).x); }
+fn fieldCellsAt(p: vec3f) -> f32 { return f32(FC.band[fieldLevelAt(p)].z); }
 // Level L's texel coordinates of world point p, held to the world's edge texel centres (the world
 // extends by its edge, as fieldTex held the window's).
 fn fieldQ(p: vec3f, L: u32) -> vec3f {

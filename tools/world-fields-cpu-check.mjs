@@ -69,7 +69,7 @@ ${F.worldFieldsWGSL({ detail })}
   var acc = fieldTex(tFT, p) + surfField(p) + mediaField(p) + fieldCubic(tFM, p) + surfSample(p);
   acc += vec4f(fieldCubicGrad(tFS, p, CH_LIQUID), surfChannel(p, 1)) + vec4f(surfNormal(p, 0, vec3f(0.0, 1.0, 0.0)), cubicShare(p, 2));
   let t = surfCross(p, vec3f(0.0, -1.0, 0.0), 0, true, 0.0, 0.5, 1.0, 0.2, 0.4, 0.7);
-  probe[0] = acc + vec4f(t, surfRoot(p, vec3f(1.0, 0.0, 0.0), 1, 0.0, 1.0, -0.2, 0.3), select(0.0, 1.0, gThin), SURF_ISO + NO_HIT);
+  probe[0] = acc + vec4f(t, surfRoot(p, vec3f(1.0, 0.0, 0.0), 1, 0.0, 1.0, -0.2, 0.3), select(0.0, 1.0, gThin), SURF_ISO + NO_HIT + fieldCellsAt(p) + f32(fieldLevelAt(p)));
 }`);
   }
 }
