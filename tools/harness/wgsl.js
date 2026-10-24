@@ -4,7 +4,7 @@
 // 10 but not a user's 8 fails here. Raw device calls, not gpu.kernel: a
 // failure is a result to report, not a reason to stop graphics.
 
-import { compilationInfo, withVisibility } from '/src/gpu/index.js';
+import { compilationInfo, withVisibility, hoistDirectives } from '/src/gpu/index.js';
 import { boot, ready, test } from './harness.js';
 
 const h = await boot({ label: 'check-wgsl' });
@@ -22,7 +22,7 @@ test('validate', async (items) => {
   for (const { key, code } of items) {
     const t0 = performance.now();
     device.pushErrorScope('validation');
-    const module = device.createShaderModule({ label: key, code });
+    const module = device.createShaderModule({ label: key, code: hoistDirectives(code) });
     const scope = await device.popErrorScope();
     const info = await compilationInfo(module);
     out.push({ key, ms: performance.now() - t0, messages: messages(info), scope: scope?.message ?? null });
@@ -45,7 +45,7 @@ function groupLayouts(groups, label) {
 test('build', async (item, budgetMs) => {
   const t0 = performance.now();
   device.pushErrorScope('validation');
-  const module = device.createShaderModule({ label: item.name, code: item.code });
+  const module = device.createShaderModule({ label: item.name, code: hoistDirectives(item.code) });
   const layouts = groupLayouts(item.groups, item.name);
   const layout = device.createPipelineLayout({ label: item.name, bindGroupLayouts: layouts });
   const setup = await device.popErrorScope();

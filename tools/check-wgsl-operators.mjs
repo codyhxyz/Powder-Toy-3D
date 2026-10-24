@@ -9,7 +9,8 @@
 //
 // Every module under src/ that exports WGSL_CHECK (src/gpu/checks.js) is
 // generated for each check grid, as tools/check-wgsl.mjs does, and each
-// distinct text is tokenized and its expressions checked against those rules.
+// distinct text is tokenized and its expressions checked against those rules,
+// for the core path and with every optional shader feature on (src/gpu/features.js).
 //
 // usage: node tools/check-wgsl-operators.mjs [--file part]
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -135,21 +136,26 @@ const files = walk(join(ROOT, 'src')).filter((f) => /export\s+(const|let|functio
   .filter((f) => !FILE || relative(ROOT, f).includes(FILE));
 let failures = 0;
 const seen = new Set();
-for (const f of files) {
-  const rel = relative(ROOT, f);
-  let mod;
-  try { mod = await import(pathToFileURL(f)); } catch (e) { console.log(`FAIL ${rel}: doesn't import in Node: ${e.message.split('\n')[0]}`); failures++; continue; }
-  const list = typeof mod.WGSL_CHECK === 'function' ? mod.WGSL_CHECK() : mod.WGSL_CHECK;
-  for (const entry of list ?? []) {
-    const keys = entry.grids === false ? [null] : (Array.isArray(entry.grids) ? entry.grids : Object.keys(GRIDS));
-    for (const k of keys) {
-      let code;
-      try { code = entry.code(k ? grids[k] : null); } catch { continue; }   // (tools/check-wgsl.mjs reports generators that throw)
-      if (seen.has(code)) continue;
-      seen.add(code);
-      for (const p of moduleProblems(code)) { failures++; console.log(`FAIL ${entry.name}@${k ?? '-'} (${rel}): ${p}`); }
+const { setShaderFeatures, CORE_FEATURES } = await import(pathToFileURL(join(ROOT, 'src/gpu/features.js')));
+for (const features of [CORE_FEATURES, { f16: true, subgroups: true }]) {
+  setShaderFeatures(features);
+  for (const f of files) {
+    const rel = relative(ROOT, f);
+    let mod;
+    try { mod = await import(pathToFileURL(f)); } catch (e) { console.log(`FAIL ${rel}: doesn't import in Node: ${e.message.split('\n')[0]}`); failures++; continue; }
+    const list = typeof mod.WGSL_CHECK === 'function' ? mod.WGSL_CHECK() : mod.WGSL_CHECK;
+    for (const entry of list ?? []) {
+      const keys = entry.grids === false ? [null] : (Array.isArray(entry.grids) ? entry.grids : Object.keys(GRIDS));
+      for (const k of keys) {
+        let code;
+        try { code = entry.code(k ? grids[k] : null); } catch { continue; }   // (tools/check-wgsl.mjs reports generators that throw)
+        if (seen.has(code)) continue;
+        seen.add(code);
+        for (const p of moduleProblems(code)) { failures++; console.log(`FAIL ${entry.name}@${k ?? '-'}${features.subgroups ? ' (features)' : ''} (${rel}): ${p}`); }
+      }
     }
   }
 }
+setShaderFeatures(CORE_FEATURES);
 console.log(`wgsl operators: ${seen.size} distinct modules, ${failures} problem(s)`);
 process.exit(failures ? 1 : 0);

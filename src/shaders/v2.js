@@ -9,6 +9,7 @@ import { compactDecodeWGSL } from './compact.js';
 import { prelude, gridDims, LAYOUT, stateLayout, SEED_MAX, STAGE, BRICK } from './common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
+import { shaderFeatures, subgroupsWGSL, appendWGSL } from '../gpu/features.js';
 import { E, ELEMENTS, K } from '../elements.js';
 import { ELEC } from '../electricity.js';
 import { lifeScale } from '../v2/layout.js';
@@ -624,10 +625,11 @@ ${MAIN} {
 // awake. An asleep brick still counting toward QUIET_CAP counts on here instead, with no claim and
 // no pass: it stays asleep and its busy word is clear, and a near claim above starts its run over
 // in the pass whatever it counted to here. After a load or a restore every brick counts for ~4 s;
-// a claim each would contend on the list's one count (tools/v2/activity-list-check.mjs).
-export const v2ActScanWGSL = (g) => /* wgsl */ `
+// a claim each would contend on the list's one count (tools/v2/activity-list-check.mjs): with
+// subgroups the scan's own claims (every brick's, then) share one count per subgroup (appendWGSL).
+export const v2ActScanWGSL = (g, f = shaderFeatures()) => /* wgsl */ `
 ${v2Head(g)}
-fn actClaim(b: u32, bits: u32) {
+${subgroupsWGSL(f)}fn actClaim(b: u32, bits: u32) {
   if ((atomicOr(&act2[V2_NEAR + b], bits) & 2u) == 0u) { atomicStore(&act2[V2_PLIST + 2u + atomicAdd(&act2[V2_PLIST], 1u)], b); }
 }
 ${MAIN} {
@@ -648,7 +650,10 @@ ${MAIN} {
     }
   }
   let q = atomicLoad(&act2[V2_QUIET + b]);
-  if (q < QUIET_TICKS) { actClaim(b, 2u); } else if (q < QUIET_CAP) { atomicStore(&act2[V2_QUIET + b], q + 1u); }
+${f.subgroups ? `  var claim = false;
+  if (q < QUIET_TICKS) { claim = (atomicOr(&act2[V2_NEAR + b], 2u) & 2u) == 0u; } else if (q < QUIET_CAP) { atomicStore(&act2[V2_QUIET + b], q + 1u); }
+  ${appendWGSL({ when: 'claim', counter: 'act2[V2_PLIST]', put: (i) => `atomicStore(&act2[V2_PLIST + 2u + ${i}], b)` }, f)}`
+    : '  if (q < QUIET_TICKS) { actClaim(b, 2u); } else if (q < QUIET_CAP) { atomicStore(&act2[V2_QUIET + b], q + 1u); }'}
 }
 `;
 
@@ -667,9 +672,9 @@ fn main() {
 
 // ---- activity: a thread a listed brick. Busy in its 3³ neighbourhood last tick → its quiet run starts over;
 // awake while the run is under QUIET_TICKS (one offset cycle); awake bricks into the list
-export const v2ActivityWGSL = (g) => /* wgsl */ `
+export const v2ActivityWGSL = (g, f = shaderFeatures()) => /* wgsl */ `
 ${v2Head(g)}
-${MAIN} {
+${subgroupsWGSL(f)}${MAIN} {
   let i = foldThread(wg, nwg, li);
   if (i >= atomicLoad(&act2[V2_PLIST + 1u])) { return; }
   let b = atomicLoad(&act2[V2_PLIST + 2u + i]);
@@ -685,7 +690,7 @@ ${MAIN} {
   if ((nearBits & 4u) != 0u) { mq = 0u; } else { mq = min(mq + 1u, QUIET_CAP); }
   atomicStore(&act2[V2_MOVE_QUIET + b], mq);
   atomicStore(&act2[V2_AWAKE + b], select(0u, 1u, awake) | select(0u, 2u, awake && mq < QUIET_TICKS));
-  if (awake) { atomicStore(&act2[V2_LIST + atomicAdd(&act2[V2_COUNT + CNT_AWAKE], 1u)], b); }
+  ${appendWGSL({ when: 'awake', counter: 'act2[V2_COUNT + CNT_AWAKE]', put: (i) => `atomicStore(&act2[V2_LIST + ${i}], b)` }, f)}
   atomicStore(&act2[P.busyOut + b], 0u);
 }
 `;

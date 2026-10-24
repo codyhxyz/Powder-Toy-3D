@@ -311,36 +311,47 @@ for (const f of files) {
 }
 console.log(`check-wgsl: ${entries.length} pipeline(s) in ${files.length} module(s); grids ${GRID_KEYS.join(', ')}`);
 
-// variants and the Node-side checks
+// variants and the Node-side checks: the core path first; the page's device's optional shader
+// features (src/gpu/features.js) add the texts they change once the page is open
+const { setShaderFeatures, CORE_FEATURES } = await import(pathToFileURL(join(ROOT, 'src/gpu/features.js')));
 const variants = [];
-for (const entry of entries) {
-  const keys = entry.grids === false ? [null] : (Array.isArray(entry.grids) ? entry.grids : Object.keys(GRIDS)).filter((k) => GRID_KEYS.includes(k));
-  entry.variants = [];
-  for (const k of keys) {
-    const g = k ? grids[k] : null;
-    let code, groups;
-    try {
-      code = entry.code(g);
-      groups = normalizeGroups(entry.layouts?.(g));
-    } catch (e) {
-      fail(`${entry.name}@${k ?? '-'} (${entry.file}): generator threw: ${e.message.split('\n')[0]}`);
-      continue;
+function addVariants(features) {
+  setShaderFeatures(features);
+  const tag = features === CORE_FEATURES ? '' : `+${Object.keys(features).filter((k) => features[k]).join('+')}`;
+  for (const entry of entries) {
+    const keys = entry.grids === false ? [null] : (Array.isArray(entry.grids) ? entry.grids : Object.keys(GRIDS)).filter((k) => GRID_KEYS.includes(k));
+    entry.variants ??= [];
+    const known = new Set(entry.variants.map((v) => v.code));
+    for (const k of keys) {
+      const g = k ? grids[k] : null;
+      let code, groups;
+      try {
+        code = entry.code(g);
+        groups = normalizeGroups(entry.layouts?.(g));
+      } catch (e) {
+        fail(`${entry.name}@${k ?? '-'}${tag} (${entry.file}): generator threw: ${e.message.split('\n')[0]}`);
+        continue;
+      }
+      if (tag && known.has(code)) continue;
+      const v = { entry, grid: k, key: `${entry.name}@${k ?? '-'}${tag}`, code, groups, lines: code.split('\n').length, features: Boolean(tag) };
+      v.problems = bindingProblems(code, groups);
+      v.counts = stageCounts(groups, entry.kind);
+      for (const [s, c] of Object.entries(v.counts)) {
+        if (c.sb > LIMITS.storageBuffers) v.problems.push(`${s} stage: ${c.sb} storage buffers > ${LIMITS.storageBuffers}`);
+        if (c.st > LIMITS.storageTextures) v.problems.push(`${s} stage: ${c.st} storage textures > ${LIMITS.storageTextures}`);
+        if (c.tex > LIMITS.sampledTextures) v.problems.push(`${s} stage: ${c.tex} sampled textures > ${LIMITS.sampledTextures}`);
+      }
+      entry.variants.push(v);
+      variants.push(v);
     }
-    const v = { entry, grid: k, key: `${entry.name}@${k ?? '-'}`, code, groups, lines: code.split('\n').length };
-    v.problems = bindingProblems(code, groups);
-    v.counts = stageCounts(groups, entry.kind);
-    for (const [s, c] of Object.entries(v.counts)) {
-      if (c.sb > LIMITS.storageBuffers) v.problems.push(`${s} stage: ${c.sb} storage buffers > ${LIMITS.storageBuffers}`);
-      if (c.st > LIMITS.storageTextures) v.problems.push(`${s} stage: ${c.st} storage textures > ${LIMITS.storageTextures}`);
-      if (c.tex > LIMITS.sampledTextures) v.problems.push(`${s} stage: ${c.tex} sampled textures > ${LIMITS.sampledTextures}`);
-    }
-    entry.variants.push(v);
-    variants.push(v);
+    if (tag) continue;
+    const d = dispatchProblems(entry, grids);
+    entry.dispatchProblems = d.problems;
+    entry.giant = d.giant;
   }
-  const d = dispatchProblems(entry, grids);
-  entry.dispatchProblems = d.problems;
-  entry.giant = d.giant;
+  setShaderFeatures(CORE_FEATURES);
 }
+addVariants(CORE_FEATURES);
 
 const vite = await startVite({ harness: true });
 const log = [];
@@ -371,6 +382,12 @@ try {
   await open();
   const info = await gpuInfo(page);
   console.log(`gpu: ${info.vendor} ${info.architecture}${info.isFallbackAdapter ? ' (fallback adapter)' : ''}; budget ${BUDGET} ms`);
+  const features = await page.evaluate(() => window.__harness.gpu.shaderFeatures);
+  if (features && Object.values(features).some(Boolean)) {
+    const before = variants.length;
+    addVariants(features);
+    console.log(`shader features ${JSON.stringify(features)}: ${variants.length - before} more variant(s)`);
+  }
 
   // (a) validate every distinct text
   const unique = new Map();
@@ -405,8 +422,7 @@ try {
     console.log(`\n(b) build at the smallest grid, budget ${BUDGET} ms${TIME ? '' : ' (--time prints each)'}`);
     const built = new Set();
     let n = 0, total = 0;
-    for (const entry of entries) {
-      const v = entry.variants[0];
+    for (const entry of entries) for (const v of [entry.variants[0], entry.variants.find((x) => x.features)]) {
       if (!v) continue;
       if (entry.macOnly) { console.log(`skip ${v.key}: WGSL_MAC_ONLY: ${entry.macOnly}`); continue; }
       const id = `${v.code}|${entry.entry ?? ''}|${JSON.stringify([entry.vertex, entry.fragment, entry.depthStencil, entry.constants])}`;
