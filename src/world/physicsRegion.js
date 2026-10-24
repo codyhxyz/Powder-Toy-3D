@@ -22,8 +22,9 @@ export const MOVE_CPU_BUDGET_MS = 2;
 export const LEAVE_SLICE_MS = 1;
 // An idle callback's deadline: a slice runs within this even if the page is never idle (a busy loop).
 export const LEAVE_IDLE_TIMEOUT_MS = 50;
-// Bricks a slice handles between clock reads (a brick is ~10 µs: a clock read each brick is waste).
-export const LEAVE_SLICE_BRICKS = 16;
+// Bricks a slice handles between clock reads: a kept brick's validation and coding is ~40 µs, a clock
+// read ~0.05 µs, so 4 keeps a slice within ~0.2 ms of its budget.
+export const LEAVE_SLICE_BRICKS = 4;
 
 /**
  * The slabs of a move by (dx, 0, dz) cells (one of them 0) of a grid g: the one that leaves (grid cells
