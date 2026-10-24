@@ -54,33 +54,35 @@ export function slabsOverlap(a, b) {
  * A move's steps, in the order the window records them (world/window.js _shiftCommitted).
  * physicsOnly: the switch (PHYSICS_ONLY_MOVE). worldCopy: one is attached, so the slab is filled from it
  * and its trees with it. native: Physics V2 runs the window (its exact store is laid over the fill).
- *   leaveCapture   the leaving slab's cells gathered (V2's exact bricks) and its diff, read back later
- *   leaveSource    the render source's copy of the slab (old picture)
+ *   leaveSource    the render source's copy of the slab (old picture: before the capture, which it versions)
+ *   leaveCapture   the leaving slab's cells gathered (V2's exact bricks) and its diff, read back and coded later
  *   leaveDeco      its decoration into the decoration's store (state, not picture: src/deco.js)
  *   leaveFar       the far field summarizes it (old picture)
- *   shift          Simulation.shift: V2's cells, its dynamics, the flow
- *   shiftPicture   ...and the derived passes' and occupancy's onShift (old picture)
+ *   shift          Simulation.shift: V2's cells, its dynamics, the flow (and, old picture only, the derived
+ *                  passes' and occupancy's onShift); then the coding of any earlier leaving slab the new
+ *                  one overlaps is finished, so the store holds everything the move brings back
  *   fillCopy       the slab from the world copy (and the generator where they agree: physicsFill.js)
  *   fillGenerator  the slab from the generator (no world copy)
+ *   sourceStore    the render source keeps the stored bricks' exact words (old picture: before restoreLegacy drops them)
  *   restoreLegacy  V1-format stored bricks, decoded into the native store
- *   restoreSource  the render source's stored and captured copies (old picture)
  *   enterDeco      the slab's decoration back
- *   plant          the scene's trees, baked on the CPU (no world copy)
+ *   sourceCaptured the render source's captured copies written back (old picture, a V1 grid only)
+ *   plant          the scene's trees, baked on the CPU (no world copy: the copy holds its trees)
  *   restoreNative  the exact native store over all of it: last, so nothing writes over exact state
  */
 export function movePlan({ physicsOnly = PHYSICS_ONLY_MOVE, worldCopy = false, native = true, trees = true } = {}) {
   const picture = !physicsOnly;
   return [
-    'leaveCapture',
     picture && 'leaveSource',
+    'leaveCapture',
     'leaveDeco',
     picture && 'leaveFar',
     'shift',
-    picture && 'shiftPicture',
     worldCopy ? 'fillCopy' : 'fillGenerator',
+    picture && 'sourceStore',
     'restoreLegacy',
-    picture && 'restoreSource',
     'enterDeco',
+    picture && !native && 'sourceCaptured',
     !worldCopy && trees && 'plant',
     native && 'restoreNative',
   ].filter(Boolean);
