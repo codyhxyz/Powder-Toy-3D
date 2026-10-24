@@ -47,8 +47,8 @@ async function appStage(browser) {
         await new Promise((r) => setTimeout(r, 1000));
         return { submits: a.gpu.stats.submits - s0, callbacks: a.loop.callbacks - c0, asleep: a.loop.asleep, hud: document.querySelector('.stats b')?.textContent };
       });
-      ok(m.submits === 0 && m.callbacks === 0 && m.asleep && m.hud === 'idle',
-        `${after}: asleep, then ${m.submits} submits and ${m.callbacks} animation frames over 1 s, the HUD reading '${m.hud}' (${secs()})`);
+      ok(m.submits === 0 && m.callbacks === 0 && m.asleep && /^\d+$/.test(m.hud),
+        `${after}: asleep, then ${m.submits} submits and ${m.callbacks} animation frames over 1 s, the HUD keeping its last rate '${m.hud}' (${secs()})`);
     };
     await settled('the box settled');
     const wakers = [
@@ -115,8 +115,8 @@ async function runStage(browser) {
           paused: a.settings.paused, certified: v2.asleep, hud: document.querySelector('.stats b')?.textContent,
         };
       });
-      ok(m.submits === 0 && m.callbacks === 0 && m.steps === 0 && m.asleep && !m.paused && m.certified && m.hud === 'idle',
-        `${after}: running, certified idle, asleep after ${((Date.now() - t) / 1000).toFixed(0)} s; then ${m.submits} submits, ${m.callbacks} animation frames, ${m.steps} steps over 1 s, the HUD reading '${m.hud}' (${secs()})`);
+      ok(m.submits === 0 && m.callbacks === 0 && m.steps === 0 && m.asleep && !m.paused && m.certified && /^\d+$/.test(m.hud),
+        `${after}: running, certified idle, asleep after ${((Date.now() - t) / 1000).toFixed(0)} s; then ${m.submits} submits, ${m.callbacks} animation frames, ${m.steps} steps over 1 s, the HUD keeping its last rate '${m.hud}' (${secs()})`);
     };
     ok(await page.evaluate(() => window.__app.physics.mode === 'v2' && window.__app.physics.active), 'the box runs Physics V2');
     await asleep('the empty box');

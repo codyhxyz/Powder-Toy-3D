@@ -1,9 +1,10 @@
 // Everything that differs between small maps and big maps, in one table.
 //
-// A small map (a box scene: maps.js `preset`) is simulated whole in one grid and
-// drawn by app.js's own frame. A big map (a world scene: maps.js `scene`) is a
-// window of cells that follows the player over a world too big to simulate at
-// once (docs/scaling.md D11), drawn by the WORLD renderer (wire/worldRender.js).
+// A small map (a box scene: maps.js `preset`) is simulated whole in one grid. A
+// big map (a world scene: maps.js `scene`) is a window of cells that follows the
+// player over a world too big to simulate at once (docs/scaling.md D11). Both
+// draw through app.js's one frame: a big map's window as a small map's grid, and
+// past it the distance pass (world/far.js drawBehind).
 // Every tool, element, look and rule not listed here is the same on both
 // (CLAUDE.md, "Same features in every world").
 //
@@ -13,7 +14,7 @@
 // difference is a new row, with who decided it and why: `// Intentional (...)`
 // (a deviation the player sees), or `// Same look (...)` (different code that
 // looks and plays the same). tools/check-frame-wires.mjs reports a big/small
-// test anywhere else (the WORLD renderer's own files, src/world and the shaders aside).
+// test anywhere else (src/world and the shaders aside).
 import { EDGE } from './simModes.js';
 
 // WASD over a big map: no faster than the window can follow the orbit target
@@ -83,30 +84,13 @@ const DIFFERENCES = {
   camSpeedMax:      [Infinity, WORLD_CAM_SPEED_MAX],
 
   // --- Drawing ---
-  // Same look (wire/worldRender.js): the WORLD renderer draws a big map's frame, its
-  // lighting, distance detail, picks and stills; a small map draws through app.js's own
-  // frame (src/wire/frameWires.js runs the same wire hooks in both). The rows below
-  // are what that renderer does its own way. One more it brings: Intentional (decided under
-  // the user's delegation, 2026-10-22): flying particles cast no sun shadows on a big map
-  // (wire/rays.js; its sun map is published read-only tiles).
-  worldRenderer:    [false, true],
   // Intentional (a box stands on a floor): the floor grid, the box's edge lines, the
-  // blocks floor and the lit sky behind the box are a small map's; a world has its own ground and sky.
+  // blocks floor and the lit sky behind the box are a small map's; a world has its own ground,
+  // its sky and, past its window, the distance pass (app.js drawSkyFor).
   boxFrame:         [true, false],
-  // Same look (the WORLD renderer lights itself): the box volume's shadow map and the box's
-  // derived passes (src/derived.js: its render fields, brick map, glow and GI probes, ~175 MB
-  // at 128³) are a small map's; the WORLD renderer derives, shades and lights its own.
-  volumeShadows:    [true, false],
-  boxDerived:       [true, false],
-  // Same look (world/worldLightingHistory.js): a big map's lighting history settles over
-  // shaders/gi.js GI_SETTLE frames more before the loop sleeps.
-  settleWorldGI:    [false, true],
-  // Same look (the WORLD renderer draws Plain): the Plain view's blocks renderer
-  // (gfx/blocks.js) draws a small map's grid.
-  plainBlocks:      [true, false],
 
   // --- Loading ---
-  // Intentional (user request, 2026-10-20, "MAKE IT LOAD FAST"): a big map's World load and
+  // Intentional (user request, 2026-10-20, "MAKE IT LOAD FAST"): a big map's load and
   // first frame go on while the simulation's step kernels build (cold, move alone took
   // 5.4 s: 2026-10-22, Island); a small map waits for them.
   stepKernelsLater: [false, true],

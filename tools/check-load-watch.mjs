@@ -1,6 +1,6 @@
 // CPU only: a stalled or failed map load is flagged, never left spinning (src/loadWatch.js),
-// and app.js keeps it wired: the boot's loading screen, a map switched in-game, and the
-// WORLD renderer failing (2026-10-20: Descent spun for over a minute on a thrown error).
+// and app.js keeps it wired: the boot's loading screen, a map switched in-game, and a
+// graphics failure (2026-10-20: Descent spun for over a minute on a thrown error).
 // Run: node tools/check-load-watch.mjs
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -84,23 +84,13 @@ try {
   console.error = quiet;
 }
 
-// app.js keeps the watch on every load and stops graphics when the WORLD renderer fails.
+// app.js keeps the watch on every load and flags a graphics failure during one.
 const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
 const body = (name) => app.slice(app.indexOf(`function ${name}(`), app.indexOf('\n}\n', app.indexOf(`function ${name}(`)));
 assert.match(body('bootReady'), /loadWatch\.start\(/, 'the boot watches its load');
 assert.match(body('bootReady'), /loadWatch\.done\(\);\s*launch\.ready/, 'the boot ends its watch as its screen comes down');
 assert.match(body('openMap'), /loadWatch\.start\([^)]*onScreen: true/, 'a map switched in-game is watched to its first frame');
-assert.match(app, /try\{driver=wire\('world'\)\.prepareRender\(ctx\);\}\s*catch\(error\)\{stopGraphics\(error\);/,
-  "the WORLD renderer's failure stops graphics on screen");
 assert.match(body('stopGraphics'), /loadWatch\.error\(error\);[^\n]*\n\s*loadWatch\.stop\(\);/, 'a graphics failure during a load is flagged and recorded');
 assert.match(app, /loadWatch\.onScreen\(\)/, 'frames end in-game watches');
-// A failed WORLD driver throws every tick after: it is rebuilt once a page load, else graphics stop on screen;
-// either way the failure is kept (the user's frozen "map crashed" had no record, 2026-10-23).
-assert.match(app, /runView=driver\.tick\([\s\S]{0,900}?\}\);\s*\} catch\(error\) \{ worldFailed\(error\); driver=null; \}/, "a failed WORLD driver's tick goes to worldFailed");
-assert.match(body('worldFailed'), /restartRender\(ctx\)\) throw stopGraphics\(/, 'past its restarts graphics stop with the failure on screen');
-assert.match(body('worldFailed'), /gpuLoss\.record\(\{ kind: 'worldRestarted'/, 'a restart is kept for the bug report');
 assert.match(body('frame'), /recordFrameError\(error, loadBuild\); throw error;/, 'an uncaught frame error is kept');
-const worldWire = readFileSync(new URL('../src/wire/world.js', import.meta.url), 'utf8');
-assert.match(worldWire, /previous\.epoch!==win\.renderSource\.epoch \|\| previous\.restart/, 'a restart retires the driver as a map switch does');
-assert.match(worldWire, /worldRestarts>=WORLD_RESTARTS\)return false;/, 'restarts are bounded');
-console.log(`PASS load watch: flags past ${LOAD_FLAG_MS / 1000} s and on errors, records bounded; app.js wires the boot, map switches and WORLD failures`);
+console.log(`PASS load watch: flags past ${LOAD_FLAG_MS / 1000} s and on errors, records bounded; app.js wires the boot, map switches and graphics failures`);

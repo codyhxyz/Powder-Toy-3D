@@ -114,9 +114,8 @@ test('the matter draw lights its sphere with the Box volume\'s map and GI where 
     nativeParticles: { isReady: true, draw: (_rp, _t, l) => got.push(l) }, volume: { matrixWorld: new Matrix4() }, vol: volume, derived };
   raysWire.scene(app, { frame: g.frame });
   assert.equal(got[0]?.map, volume.shadowTextures.map, 'the Box draw lights its packets with the volume\'s map');
-  const worldLight = { world: true };
-  raysWire.scene({ ...app, worldMode: {} }, { frame: g.frame }, worldLight);
-  assert.equal(got[1], worldLight, 'World: the frame\'s own light (frameWires.sceneAbove\'s)');
+  raysWire.scene({ ...app, worldMode: {} }, { frame: g.frame });
+  assert.equal(got[1]?.map, volume.shadowTextures.map, 'a big map\'s window lights them the same way');
 });
 
 test('World lights its packets with its atlas and paged sun, as its figures (not the open sky)', async () => {
@@ -159,10 +158,6 @@ test('World lights its packets with its atlas and paged sun, as its figures (not
   assert.deepEqual(Array.from(u32), [9, 9, 9, 1], 'its book\'s bricks and epoch');
   a.prepareDraw(g.frame); a.draw({ frame: g.frame }, { width: 640, height: 360 }, { ...light, params: { ...light.params } });
   assert.equal(calls.filter(c => c.name === 'nativeParticleMatterWorld').at(-1).o.bind[2], matter.o.bind[2], 'equal values, equal sources: the group kept');
-  // the World frame hands its mesh context's light to the after wires, and waits for the pipe before its frames
-  const frame = readFileSync(new URL('../../src/wire/worldRenderFrame.js', import.meta.url), 'utf8');
-  assert.match(frame, /app\.frameWires\.sceneAbove\(rp,context\.particleLight\)/);
-  assert.match(frame, /app\.sim\?\.compact \? app\.nativeParticles\?\.worldReady\(\) : null\]\);/);
 });
 
 // The CPU WGSL interpreter tools/world-mesh-light-cpu-check.mjs runs World's readers with (its adapters, copied)

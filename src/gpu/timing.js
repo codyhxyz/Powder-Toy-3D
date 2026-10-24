@@ -3,7 +3,12 @@
 // Queries belong to an encoder until its command buffer is submitted and
 // read back: independent encoders may finish and submit in a different order.
 export const MAX_TIMED_PASSES = 512;
-const POOLS_KEPT = 16;
+// Query pools (a timestamp query set and its two buffers), made once when timing first
+// turns on and reused: an encoder that finds none free goes untimed. Made per encoder
+// as needed before, the profiler on through a big map's load ran Metal out of counter
+// sample buffers ("Cannot allocate sample buffer"), and that error stopped graphics
+// (2026-10-24).
+export const QUERY_POOLS = 8;
 
 export class GpuTiming {
   constructor(gpu) {
@@ -23,7 +28,9 @@ export class GpuTiming {
     this._epoch = 0;
     this._parts = [];
     this._pendingFrames = new Set();
-    this._idle = [];
+    this._idle = [];        // pools ready and free
+    this._pools = null;     // every pool made (QUERY_POOLS), once timing first turns on
+    this.onUnavailable = null;   // (message): the device couldn't make the query pools; timing is off for good
     const commands = new WeakMap();
     const device = gpu.device;
     const createEncoder = device.createCommandEncoder.bind(device);
@@ -44,8 +51,8 @@ export class GpuTiming {
           if (descriptor.timestampWrites) pass.error = 'foreign timestamp owner';
           else if (record.used >= MAX_TIMED_PASSES) pass.error = 'query capacity exceeded';
           else if (record.epoch !== this._epoch) pass.error = 'capture changed during encoder';
+          else if (!(record.pool ??= this._idle.pop() ?? null)) pass.error = 'no query pool free';
           else {
-            record.pool ??= this._pool();
             pass.index = record.used++;
             return begin({ ...descriptor, timestampWrites: {
               querySet: record.pool.queries,
@@ -94,6 +101,7 @@ export class GpuTiming {
     this._epoch++;
     this._parts = [];
     if (!on) return; // Keep completed results inspectable after stopping a capture.
+    this._makePools();
     this.last = {};
     this.lastPasses = [];
     this.lastCoverage = null;
@@ -101,17 +109,43 @@ export class GpuTiming {
     this.frameMs = null;
   }
 
-  _pool() {
-    if (this._idle.length) return this._idle.pop();
-    const size = MAX_TIMED_PASSES * 16;
-    return {
-      queries: this.gpu.device.createQuerySet({ label: 'profile queries', type: 'timestamp', count: MAX_TIMED_PASSES * 2 }),
-      // Keep scratch buffers out of the app's strong resource registry.
-      // Abandoned encoders/command buffers must remain garbage-collectable.
-      resolve: this.gpu.device.createBuffer({ label: 'profile resolve', size, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }),
-      staging: this.gpu.device.createBuffer({ label: 'profile readback', size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }),
-    };
+  // The pools, each inside error scopes: one the device can't make (out of memory) turns
+  // timing off instead of stopping graphics, and a pool is used only once its scopes came
+  // back clean (a failed query set in a pass would be a validation error of its own).
+  _makePools() {
+    if (this._pools) return;
+    const device = this.gpu.device, size = MAX_TIMED_PASSES * 16;
+    this._pools = [];
+    for (let i = 0; i < QUERY_POOLS; i++) {
+      const scoped = typeof device.pushErrorScope === 'function';
+      if (scoped) { device.pushErrorScope('out-of-memory'); device.pushErrorScope('validation'); }
+      const pool = {
+        queries: device.createQuerySet({ label: 'profile queries', type: 'timestamp', count: MAX_TIMED_PASSES * 2 }),
+        // Keep scratch buffers out of the app's strong resource registry.
+        // Abandoned encoders/command buffers must remain garbage-collectable.
+        resolve: device.createBuffer({ label: 'profile resolve', size, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }),
+        staging: device.createBuffer({ label: 'profile readback', size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }),
+      };
+      this._pools.push(pool);
+      if (!scoped) { this._idle.push(pool); continue; }   // (a device without error scopes: nothing to wait for)
+      Promise.all([device.popErrorScope(), device.popErrorScope()]).then(([validation, memory]) => {
+        const error = validation ?? memory;
+        if (error) this._unavailable(error.message);
+        else if (this.supported) this._idle.push(pool);
+      }, (e) => this._unavailable(String(e?.message ?? e)));
+    }
   }
+
+  _unavailable(message) {
+    if (!this.supported) return;
+    this.supported = false;
+    this.enabled = false;
+    for (const p of this._idle.splice(0)) this._destroy(p);
+    console.warn(`GPU timing unavailable: ${message}`);
+    this.onUnavailable?.(message);
+  }
+
+  _destroy(pool) { pool.queries.destroy(); pool.resolve.destroy(); pool.staging.destroy(); }
 
   async _read(record) {
     const { pool, passes, used } = record;
@@ -132,8 +166,8 @@ export class GpuTiming {
       for (const pass of passes) if (pass.index !== null) pass.error = 'timestamp readback failed';
     } finally {
       pool.staging.unmap();
-      if (!this.gpu.lost && this._idle.length < POOLS_KEPT) this._idle.push(pool);
-      else { pool.queries.destroy(); pool.resolve.destroy(); pool.staging.destroy(); }
+      if (!this.gpu.lost && this.supported) this._idle.push(pool);
+      else this._destroy(pool);
     }
     return result;
   }

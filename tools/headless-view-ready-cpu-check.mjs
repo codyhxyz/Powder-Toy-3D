@@ -170,10 +170,6 @@ try {
   const dp = dependencies.ready(), dd = watch(dp); await turn(); assert.equal(dd(), false);
   shadow.resolve(); await turn(); assert.equal(dd(), false, 'GI readiness is retained');
   gi.resolve(); await dp;
-  // In a World (app.js allReady's worldRenderer branch) readiness is the GPU's settling alone.
-  const world = context(); world.win = {};
-  const settles = world.settles; await world.ready(); assert.equal(world.settles, settles + 1, 'World readiness waits on the GPU');
-  assert.equal(world.vol.requests.length, 0);
 
   const curvature = context({ close: true }), kp = curvature.ready(), kd = watch(kp);
   await turn(); curvature.curved = true; curvature.vol.view(curvature.settings).resolve(); await turn();

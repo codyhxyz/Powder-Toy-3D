@@ -66,7 +66,7 @@ The user plays on this Mac while agents work. Headless tests can disrupt the gam
 
 ## Same features in every world — all agents
 
-A feature, fix or look applies everywhere the player can meet it: every map and scene, both renderers (Box and World, including World's far field), and every view.
+A feature, fix or look applies everywhere the player can meet it: every map and scene, small and big (a big map's window and the distance pass past it), and every view.
 
 - Ship it everywhere in the same task. "Box only for now", "World later" and "V2 not yet" are unfinished work, not a scope choice, and the task isn't done until they're closed.
 - Every small-map vs big-map difference is a row in `src/mapKind.js`, and code reads its row instead of testing the map kind itself (`tools/check-frame-wires.mjs` reports strays). A new difference is a new row there.

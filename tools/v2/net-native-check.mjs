@@ -55,7 +55,7 @@ console.log('ok native section: round trip, bounds, lying counts, newer builds f
   const { readFileSync } = await import('node:fs');
   const app = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
   const slice = (from, to) => { const a = app.indexOf(from); const b = app.indexOf(to, a); assert.ok(a >= 0 && b > a, `app.js: ${from}`); return app.slice(a, b); };
-  const construct = slice('  sim = new Simulation(gpu, nx, ny, nz,', '  derived = mapKind.boxDerived ? new Derived(sim) : null;');
+  const construct = slice('  sim = new Simulation(gpu, nx, ny, nz,', '  derived = new Derived(sim);');
   const built = new Function('physicsModeArg', 'mp', `
     let physicsMode = physicsModeArg, physicsV2 = null, sim = null, worldMode = null, mapKind = { streamed: false }; const gpu = {}, nx = 64, ny = 64, nz = 64, made = [];
     class Simulation { constructor(...a) { this.opts = a[4]; this.prepareNative = () => Promise.resolve(); } }

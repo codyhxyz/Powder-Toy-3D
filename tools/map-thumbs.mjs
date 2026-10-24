@@ -116,7 +116,7 @@ try {
       if (VIEW_SHOTS) {
         const shots = await p.evaluate(async ([views, size, quality, tries, retryMs]) => {
           const a = window.__app, start = a.settings.view, out = {};
-          a.test.resume();   // (a big map's stills are transactions its loop runs: wire/worldRenderFrame.js queueStill)
+          a.test.resume();
           try {
             for (const v of views) {   // (Plain last: from another view its card needs Plain on: app.js renderThumb)
               if (v.key === 'plain') a.setView(v.id);
