@@ -641,7 +641,7 @@ fn glChunkTag(level: u32, chunk: vec3i) -> u32 {
 }
 ${clipSampleWGSL('glTex', 'tGlow', 'GL_N', 'GL_TEX')}
 // The glow at world point p: the finest level whose chunks hold it, else none.
-fn glowAt(p: vec3f) -> vec3f {
+fn glowClipAt(p: vec3f) -> vec3f {
   for (var k = 0u; k < GL_LEVELS; k++) {
     let q = p / f32(LC.glO[k].w) - 0.5;
     let o = vec3f(LC.glO[k].xyz);
@@ -654,8 +654,8 @@ fn glowAt(p: vec3f) -> vec3f {
   }
   return vec3f(0.0);
 }
-fn sampleLight(gp: vec3f) -> vec3f { return glowAt(gp) + wandLight(gp); }
-fn glowLum(gp: vec3f) -> f32 { return dot(glowAt(gp), LUMA_709); }`;
+fn sampleLight(gp: vec3f) -> vec3f { return glowClipAt(gp) + wandLight(gp); }
+fn glowLum(gp: vec3f) -> f32 { return dot(glowClipAt(gp), LUMA_709); }`;
 
 // AO, the near field, traced rays, the glow's direction, GGX, the hand lamps and the beacon:
 // gfx/lighting.js's, reading the world copy where they read the window's state.

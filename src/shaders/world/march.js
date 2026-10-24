@@ -54,7 +54,8 @@ import { materialStyleForView, isMaterialView } from '../../views.js';
 import { worldGroup2, worldGroup2WGSL, worldGroup2Layout } from './bindings.js';
 // The owners' modules. Until W, F and L land these are the stand-ins (shaders/world/stubs.js);
 // the lead swaps this import for './copy.js', './fields.js' and './light.js' at integration.
-import { worldCopyWGSL, worldLightWGSL, LIGHT_BINDINGS, WorldCopyStub } from './stubs.js';
+import { worldLightWGSL, LIGHT_BINDINGS } from './light.js';
+import { worldCopyWGSL, WORLD_COPY_LAYOUT as COPY_LAYOUT } from './copy.js';
 import { worldFieldsWGSL, FIELDS_BINDINGS } from './fields.js';
 
 /** The march's own values (group 3 binding 1): the box volume's (shaders/render.js VolumeParams) and physics' window. */
@@ -331,8 +332,8 @@ export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixe
 export const WORLD_MARCH_LAYOUTS = (worldCopyLayout = WORLD_COPY_LAYOUT) => [
   [...RENDER_LAYOUT.FRAME, MESH_DEPTH_ENTRY, DECO_PLANE_ENTRY], worldCopyLayout, worldGroup2Layout(WORLD_GROUP2()), LAYOUT.PARAMS,
 ];
-// W's group 1 layout entries (the stand-in's until W lands; the real class carries its own)
-export const WORLD_COPY_LAYOUT = WorldCopyStub.LAYOUT;
+// W's group 1 layout entries (shaders/world/copy.js)
+export const WORLD_COPY_LAYOUT = COPY_LAYOUT;
 
 // premultiplied colour over what is there
 const OVER = { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } };

@@ -25,7 +25,9 @@ import { worldGroup2Entries } from '../shaders/world/bindings.js';
 // The owners' classes. Until W, F and L land these are the stand-ins (shaders/world/stubs.js); the
 // lead swaps them for world/worldCopy.js WorldCopy, gfx/worldFields.js WorldFields and
 // gfx/worldLight.js WorldLight at integration (same constructors and methods).
-import { WorldLightStub as WorldLight } from '../shaders/world/stubs.js';
+import { WorldLight } from './worldLight.js';
+import { worldFieldsWGSL, FIELDS_BINDINGS } from '../shaders/world/fields.js';
+import { RENDER_LAYOUT } from '../shaders/bindings.js';
 import { WorldCopy } from '../world/worldCopy.js';
 import { WorldFields } from './worldFields.js';
 import { worldCopyWGSL } from '../shaders/world/copy.js';
@@ -54,7 +56,9 @@ export function createWorldView(gpu, sim, { volume }) {
   });
   if (!sim.windowed && !sim.g?.windowed) build(sim).catch(() => {});
   const fields = new WorldFields(gpu, worldCopy, { copyWGSL: worldCopyWGSL(), tables: sim.tables, tablesLayout: sim.L?.TABLES });
-  const light = new WorldLight(gpu, worldCopy, fields, { shadowTextures: volume.shadowTextures });
+  const light = new WorldLight(gpu, worldCopy, fields, {
+    copyWGSL: worldCopyWGSL(), fieldsWGSL: worldFieldsWGSL(), fieldsBindings: FIELDS_BINDINGS, mediaNoise: volume.mediaNoiseView,
+  });
 
   const list = WORLD_GROUP2();
   const [frameEntries, , group2Entries] = WORLD_MARCH_LAYOUTS(worldCopy.layoutEntries ?? WorldCopy.LAYOUT);
@@ -104,6 +108,7 @@ export function createWorldView(gpu, sim, { volume }) {
   const fallback = !!gpu.adapterInfo?.isFallbackAdapter;
   const meshInv = new Matrix4();
   let disposed = false;
+  let lightFrame = null;
 
   const view = {
     worldCopy, fields, light,
@@ -158,7 +163,10 @@ export function createWorldView(gpu, sim, { volume }) {
       const changes = worldCopy.changesSince ? worldCopy.changesSince(rev) : [];
       const eye = camera ? camera.position.clone().applyMatrix4(last.model.clone().invert()).toArray() : null;
       fields.update(frame, eye, changes);
-      light.update(frame, camera, sun, changes);
+      // L's writers read the tables and FrameUniforms in world cells (group 0 without the march's extras)
+      lightFrame ??= gpu.bindGroup(gpu.layout('FRAME', RENDER_LAYOUT.FRAME), [
+        { binding: 0, resource: { buffer: fu.tables } }, { binding: 1, resource: { buffer: uniforms.buffer } }], label('light frame'));
+      if (eye) light.update(frame, eye, sun, changes, { frameGroup: lightFrame });
     },
     /**
      * Draws the march into the scene pass. Returns false (draws nothing) while its pipeline builds
