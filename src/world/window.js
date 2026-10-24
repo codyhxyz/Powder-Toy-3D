@@ -81,6 +81,10 @@ function trackLanding(win, landing) {
 const FRAME_MS = 1000 / 60;            // a frame at 60 Hz: what a streaming loop waits when nothing else says when to look again
 export const WIN_STEP = 16;          // cells: how far the window moves at a time (whole supertiles along x and z)
 export const WIN_HYSTERESIS = 4;     // cells past WIN_STEP from the centre the focus goes before a move
+// cells short of a move's threshold the focus comes before the move's fill is staged (stageAhead): a
+// walker crosses 8 cells in seconds, so the stage lands frames before the move; a faster focus can reach
+// the move first, which then fills in its own frame as before
+export const STAGE_LEAD = 8;
 const BAKED_KEEP = 256;              // baked trees kept: a tree straddling slabs is stamped once per slab
 const READ_MIN = 64;                 // bricks of a leaving slab's cells read with its count at least...
 const READ_AHEAD = 1.5;              // ...or this many times the last move's (a second read fetches the rest)
@@ -314,10 +318,30 @@ export class WorldWindow {
       const fits = at[axis] + d >= 0 && at[axis] + d + span[axis] <= world[axis];
       if (excess > 0 && fits && (!best || excess > best.excess)) best = { axis, d, excess };
     }
-    if (!best) return null;
+    if (!best) { this.stageAhead(off, at, span, world); return null; }
     const move = best.axis ? [0, best.d] : [best.d, 0];
     this.shift(...move);
     return move;
+  }
+
+  // The fill of the move the focus nears, worked out now (world/copyFill.js stage), in a frame without a
+  // move, so the move's own frame only writes it (commitStaged): within STAGE_LEAD cells of a move's
+  // threshold, the nearest such move. off: the focus from the window's centre; at, span, world: the
+  // window's x/z origin and size and the world's (update's).
+  stageAhead(off, at, span, world) {
+    const fill = this.copyFill;
+    if (!fill?.stageReady || !this.physicsOnly || !this.sim.compact?.isReady) return false;
+    const lim = WIN_STEP + WIN_HYSTERESIS;
+    let near = null;
+    for (const axis of [0, 1]) {
+      const excess = Math.abs(off[axis]) - lim, d = Math.sign(off[axis]) * WIN_STEP;
+      const fits = d && at[axis] + d >= 0 && at[axis] + d + span[axis] <= world[axis];
+      if (fits && excess > -STAGE_LEAD && (!near || excess > near.excess)) near = { axis, d, excess };
+    }
+    if (!near) return false;
+    const [dx, dz] = near.axis ? [0, near.d] : [near.d, 0], { enterLo, enterHi } = moveSlabs(this.sim.g, dx, dz);
+    const o = this.sim.origin;
+    return fill.stage([o.x + dx, o.y, o.z + dz], enterLo, enterHi);
   }
 
   // Capture every resident brick through the existing bounded slab diff/readback,
@@ -408,7 +432,7 @@ export class WorldWindow {
     const { leaveLo, enterLo, enterHi, bricks } = moveSlabs(g, dx, dz);
     const oldOrigin = [sim.origin.x, sim.origin.y, sim.origin.z], leaveB = slabBase(oldOrigin, leaveLo);
     const plan = movePlan({ physicsOnly: this.physicsOnly, worldCopy: !!this.copyFill?.isReady, native: !!sim.compactOwner, trees: !!this.scene.trees });
-    let capture = null, o = null, incoming = null, restored = 0, trees = 0;
+    let capture = null, o = null, incoming = null, restored = 0, trees = 0, staged = false;
     this.plantCost = { placeMs: 0, bakeMs: 0 };
     for (const step of plan) switch (step) {
       case 'leaveSource':
@@ -441,7 +465,11 @@ export class WorldWindow {
         break;
       }
       // 3.
-      case 'fillCopy': this.copyFill.fill(o, enterLo, enterHi, { picture }); this.markPlanted(enterLo, enterHi); break;
+      case 'fillCopy':   // (staged a frame or more ahead when the focus neared the move: update, stageAhead)
+        if (this.copyFill.commitStaged(o, enterLo, enterHi, { picture })) staged = true;
+        else this.copyFill.fill(o, enterLo, enterHi, { picture });
+        this.markPlanted(enterLo, enterHi);
+        break;
       case 'fillGenerator': this.gen.fill(this.P, o, enterLo, enterHi); break;
       // Preserve exact saved words BEFORE restore's floating equality can skip
       // signed-zero-only changes and before it drops the store entries.
@@ -461,7 +489,7 @@ export class WorldWindow {
       default: throw new Error(`world move: unknown step ${step}`);
     }
     const ms = performance.now() - t0;
-    this.last = { dx, dz, ms, overBudget: ms > MOVE_CPU_BUDGET_MS, plan, restored, trees, ...this.plantCost, readbackMs: null, kept: null };
+    this.last = { dx, dz, ms, overBudget: ms > MOVE_CPU_BUDGET_MS, plan, restored, trees, staged, ...this.plantCost, readbackMs: null, kept: null };
   }
 
   // The leaving slab's diff (step 1), into out: V2's (its head picks what both stores keep) when the

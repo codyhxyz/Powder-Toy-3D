@@ -27,7 +27,7 @@ import {
 import { WorldWindow, WIN_STEP } from '../src/world/window.js';
 import { NativeBrickStore, encodeNativeBrick, NATIVE_BRICK_BYTES } from '../src/world/nativeStore.js';
 import { BrickStore, BRICK_FLOATS } from '../src/world/store.js';
-import { copyGatherWGSL, copyFillWGSL, copyFillKeepsGenerator, copyFillLiquid } from '../src/shaders/world/physicsFill.js';
+import { copyGatherWGSL, copyFillWGSL, copyStageWGSL, copyCommitWGSL, copyFillKeepsGenerator, copyFillLiquid } from '../src/shaders/world/physicsFill.js';
 import { nativeFillWGSL, nativeApplyWGSL } from '../src/shaders/worldWrite.js';
 import { wcWord } from '../src/shaders/world/cellWord.js';
 import { WORLD_SCENES } from '../src/world/scenes/index.js';
@@ -215,7 +215,11 @@ const CENSUS = ['island', 'labWorld', 'volcanoWorld', 'giantVolcano', 'willowCov
 for (const s of WORLD_SCENES.filter((s) => !QUICK || CENSUS.includes(s.key))) {
   const g = s.key === 'giantVolcano' ? gridLayout(128, 384, 128) : g128;
   naga(copyFillWGSL(g, s.glsl(g)), `copy-fill-${s.key}.wgsl`);
+  const stage = copyStageWGSL(g, s.glsl(g));
+  if (!stage.includes('staged[at] = wcFillCore(') || /fn nativeWriteCore/.test(stage)) fail(`copy stage ${s.key}: the fill's write was not replaced by the staged store`);
+  naga(stage, `copy-stage-${s.key}.wgsl`);
 }
+naga(copyCommitWGSL(g128), 'copy-commit.wgsl');
 naga(copyGatherWGSL(g128, STUB_COPY), 'copy-gather.wgsl');
 naga(nativeFillWGSL(g128, island.glsl(g128)), 'island-native-fill.wgsl');
 naga(nativeApplyWGSL(g128, { ...g128, nx: 64, nz: 64, slots: 64 * g128.ny * 64 }), 'native-tree-apply.wgsl');

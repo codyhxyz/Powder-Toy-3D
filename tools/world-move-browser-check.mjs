@@ -33,6 +33,8 @@ const SEGMENTS = new Set(opt('segments', 'old,physics,copy').split(','));
 // --ring: the page boots with the physics-only switch on (?physicsOnly=1), so its grid is ringed from
 // construction (world/physicsRegion.js ringedFor); 'old' then has no meaning and is skipped.
 const RING = args.includes('--ring'), TICKS = +opt('ticks', 40), BASELINE = args.includes('--baseline');
+// the focus stops within the stage's lead before each move (world/window.js stageAhead); --no-stage skips it
+const STAGE = !args.includes('--no-stage');
 const BASELINE_BY_MS = 12000;   // the unringed page starts only this soon after launch (its boot and ticks fit the slot)
 const BOOT_MS = 16000;   // of the 25 s slot: past this the run gives up rather than overrun it
 
@@ -50,7 +52,7 @@ async function page(ring, SEG) {
     const failed = await p.evaluate(() => document.getElementById('error')?.textContent || null);
     if (failed) throw new Error(`boot: ${failed.slice(0, 300)}`);
     console.log(`booted in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
-    const res = await p.evaluate(async ({ N, SEG, TICKS }) => {
+    const res = await p.evaluate(async ({ N, SEG, TICKS, STAGE }) => {
       const a = window.__app, w = a.win, sim = a.sim, g = sim.g;
       const settle = async () => { for (let i = 0; i < 100; i++) { const bl = w.blocker(); if (!bl) return; await bl; } throw new Error('window stays blocked'); };
       const cells = async () => (await sim.readState())[0];
@@ -65,7 +67,17 @@ async function page(ring, SEG) {
         // (manual mode never ends a frame: close the timing frame by hand, so a move's passes are one frame)
         if (timed) { T._endFrame(a.gpu.frameNo); await T.settled(); }
         await new Promise((r) => setTimeout(r, 20)); frames = [];
-        const f = [sim.origin.x + g.nx / 2 + (axis ? 0 : dir * 21), sim.origin.z + g.nz / 2 + (axis ? dir * 21 : 0)];
+        // the focus first comes within the stage's lead (world/window.js stageAhead), a frame of its own
+      let stageMs = null;
+      if (STAGE) {
+        const n = [sim.origin.x + g.nx / 2 + (axis ? 0 : dir * 14), sim.origin.z + g.nz / 2 + (axis ? dir * 14 : 0)];
+        if (w.update(n[0], n[1])) throw new Error('a move inside the stage lead');
+        await a.gpu.fence();
+        if (timed) { T._endFrame(a.gpu.frameNo); await T.settled(); }
+        stageMs = frames.reduce((n, fr) => n + fr.passes.reduce((m, ps) => m + (ps.gpu ?? 0), 0), 0);
+        frames = [];
+      }
+      const f = [sim.origin.x + g.nx / 2 + (axis ? 0 : dir * 21), sim.origin.z + g.nz / 2 + (axis ? dir * 21 : 0)];
         const t0 = performance.now(), m = w.update(f[0], f[1]), t1 = performance.now();
         if (!m) throw new Error(`no move from ${sim.origin.x}`);
         await a.gpu.fence();
@@ -92,7 +104,7 @@ async function page(ring, SEG) {
           for (const ps of fr.passes) if (ps.gpu !== null) passes[ps.name] = (passes[ps.name] ?? 0) + ps.gpu;
         }
         const gpuMs = Object.entries(passes).filter(([n]) => !n.startsWith('(between')).reduce((x, [, y]) => x + y, 0);
-        return { cpu: t1 - t0, synced: t2 - t0, land: t3 - t2, code: t4 - t3, trees: L.trees, bakeMs: L.bakeMs, kept: L.kept, longest: w.leaveQueue.longestMs, gpuMs, spanMs, untimed, frames: frames.length, passes };
+        return { cpu: t1 - t0, synced: t2 - t0, land: t3 - t2, code: t4 - t3, trees: L.trees, bakeMs: L.bakeMs, kept: L.kept, longest: w.leaveQueue.longestMs, gpuMs, spanMs, untimed, frames: frames.length, passes, stageMs, staged: L.staged };
       };
       const walk = async (axis = 0) => { const out = [], back = []; for (let i = 0; i < N; i++) out.push(await step(1, axis)); for (let i = 0; i < N; i++) back.push(await step(-1, axis)); return { out, back }; };
       const segment = async (label, physicsOnly, axis = 0) => {
@@ -149,7 +161,7 @@ async function page(ring, SEG) {
       out.push(await segment('world copy', true));
       } catch (e) { out.push({ label: 'world copy', error: String(e.message ?? e).slice(0, 400) }); }
       return out;
-    }, { N, SEG, TICKS });
+    }, { N, SEG, TICKS, STAGE });
     const med = (v) => { const s = [...v].sort((x, y) => x - y); return s[s.length >> 1]; };
     const f = (v) => v.toFixed(2);
     for (const s of res) {
@@ -167,7 +179,8 @@ async function page(ring, SEG) {
         + `synced median ${f(med(all.map((m) => m.synced)))} ms (max ${f(Math.max(...all.map((m) => m.synced)))}), `
         + `landing ${f(med(all.map((m) => m.land)))} ms, coding ${f(med(all.map((m) => m.code)))} ms, trees ${all.reduce((n, m) => n + (m.trees ?? 0), 0)}, `
         + `bake ${f(med(all.map((m) => m.bakeMs ?? 0)))} ms, kept ${all.map((m) => m.kept).join(' ')}`
-        + (s.diffFloats !== undefined ? `; out and back: ${s.diffFloats} floats, ${s.diffWords} V2 words differ` : ''));
+        + (s.diffFloats !== undefined ? `; out and back: ${s.diffFloats} floats, ${s.diffWords} V2 words differ` : '')
+      + (all.some((m) => m.stageMs !== null) ? `; staged ${all.filter((m) => m.staged).length}/${all.length}, stage frame GPU median ${f(med(all.map((m) => m.stageMs ?? 0)))} ms` : ''));
       const names = [...new Set(all.flatMap((m) => Object.keys(m.passes ?? {})))];
       const top = names.map((n) => [n, med(all.map((m) => m.passes?.[n] ?? 0))]).sort((x, y) => y[1] - x[1]).slice(0, TOP);
       console.log(`  GPU median ${f(med(all.map((m) => m.gpuMs ?? 0)))} ms in passes (max ${f(Math.max(...all.map((m) => m.gpuMs ?? 0)))}), `
