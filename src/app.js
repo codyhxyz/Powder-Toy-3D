@@ -2915,6 +2915,7 @@ function tick(now, renderOnly = false) {
   hover, day, sun: SUN, keyLight: KEY_LIGHT, toolGun, camGrid, sceneByKey,
   threeMeshes,
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
+  get worldView() { return worldView; },
   // the engine, as __app reports it (src/wire/saves.js captures and restores it)
   get physics() { return window.__app?.physics; },
   get renderView() { return renderView; },

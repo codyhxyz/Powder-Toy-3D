@@ -25,7 +25,10 @@ import { worldGroup2Entries } from '../shaders/world/bindings.js';
 // The owners' classes. Until W, F and L land these are the stand-ins (shaders/world/stubs.js); the
 // lead swaps them for world/worldCopy.js WorldCopy, gfx/worldFields.js WorldFields and
 // gfx/worldLight.js WorldLight at integration (same constructors and methods).
-import { WorldCopyStub as WorldCopy, WorldFieldsStub as WorldFields, WorldLightStub as WorldLight } from '../shaders/world/stubs.js';
+import { WorldLightStub as WorldLight } from '../shaders/world/stubs.js';
+import { WorldCopy } from '../world/worldCopy.js';
+import { WorldFields } from './worldFields.js';
+import { worldCopyWGSL } from '../shaders/world/copy.js';
 
 const TEX = { TEXTURE_BINDING: 0x04 };   // (GPUTextureUsage's bit, importable in Node)
 const detailKey = (d = {}) => Object.keys(d).filter((k) => d[k]).sort().join(',');
@@ -40,8 +43,17 @@ export function createWorldView(gpu, sim, { volume }) {
   const label = (x) => `sim${sim.id} world ${x}`;
   const size = [sim.world?.[0] ?? sim.g.nx, sim.world?.[1] ?? sim.g.ny, sim.world?.[2] ?? sim.g.nz];
   const worldCopy = new WorldCopy(gpu, { size });
-  const ready = worldCopy.build(sim);
-  const fields = new WorldFields(gpu, worldCopy);
+  // W's build: a small map's from its box's cells now; a big map's from its window once that has loaded
+  // (wire/world.js calls build(win)), so the whole map is in before the first frame (app.js waits on ready)
+  let settle;
+  const ready = new Promise((resolve) => { settle = resolve; });
+  const build = (source) => worldCopy.build(source).then((c) => { settle(c); return c; }, (err) => {
+    console.error('world copy: the build failed', err);
+    settle(null);
+    throw err;
+  });
+  if (!sim.windowed && !sim.g?.windowed) build(sim).catch(() => {});
+  const fields = new WorldFields(gpu, worldCopy, { copyWGSL: worldCopyWGSL(), tables: sim.tables, tablesLayout: sim.L?.TABLES });
   const light = new WorldLight(gpu, worldCopy, fields, { shadowTextures: volume.shadowTextures });
 
   const list = WORLD_GROUP2();
@@ -97,6 +109,8 @@ export function createWorldView(gpu, sim, { volume }) {
     worldCopy, fields, light,
     /** W's build (the whole map, before the first frame). */
     ready,
+    /** Builds the world copy from a loaded window (a big map), or a simulation (a small map). */
+    build,
     /** Whether this module draws `view` (the material views; the data views and Plain keep their paths). */
     draws: (v, curved = false) => isMaterialView(v) && !curved,
     /**

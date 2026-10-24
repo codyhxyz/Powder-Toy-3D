@@ -7,7 +7,8 @@ import { structureClear, shrineAltars as worldShrineAltars } from '../world/stru
 import { loadIsland, releaseGenerator } from '../world/gpu.js';
 import { WorldWindow, WIN_STEP } from '../world/window.js';
 import { bakedAir } from '../constructions/runtime.js';
-import { beyondLevel, FarField } from '../world/far.js';
+import { beyondLevel } from '../world/far.js';
+import { worldCopyWGSL } from '../shaders/world/copy.js';
 import { createTorchLights } from '../world/torchLights.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
 import '../world/bakeClient.js';   // the World's build-time bake (world/bake.js), before any world is made
@@ -57,22 +58,7 @@ const world = {
     // The cumulus deck overhead and its optical shadows.
     gfxUniforms.uClouds.value=true;
     gfxUniforms.uCloudSea.value=beyondLevel(win.scene,win.P);
-    // Its distance level of detail (world/far.js drawBehind): the far field's
-    // brick-resolution grid of the whole world, drawn behind the window's volume
-    // past the window. Joined once its kernels are built, so it never
-    // holds up the load (win.whenReady waits on win.far), and built over the
-    // loaded window then. Its lighting group is the window volume's, with the
-    // far grid in it (attachVolume).
-    const far = new FarField(app.renderer, win, { sun: app.sun });
-    far.presentation = app.presentation;   // a gamemode's effect bends its view (gfx/presentation.js: the rolling log)
-    far.attachVolume(app.vol);
-    far.onChange = () => app.wakeLoop();
-    far.whenReady().then(() => {
-      if (app.win !== win || win.far) { far.dispose(); return; }
-      win.far = far;
-      if (win.loaded) far.build();
-      app.wakeLoop();
-    }, error => { console.warn('World far field could not build', error); far.dispose(); });
+    // No distance pass: the whole map is drawn from the world copy (gfx/worldView.js, built at loadScene).
   },
   detach(app) {
     releaseGenerator(app.sim);   // the Island scene's, made for this grid
@@ -139,6 +125,7 @@ const world = {
       if (app.mp.replica || app.win !== w || app.sim !== sim || w.epoch !== epoch) return;   // rebuilt or loaded meanwhile (load bumps the epoch)
       if (!w.loaded) sim.clear();   // (the blank window it fills, as a box's load starts from)
       w.load(world.worldStart(app));
+      world.buildWorldCopy(app, w);
       app.placeVolume();
       app.post.reset();
       app.pov?.worldReplaced();
@@ -152,9 +139,21 @@ const world = {
     if (app.mp.replica) return;
     app.resetWeather?.();
     app.win.load(origin);
+    world.buildWorldCopy(app, app.win);
     app.placeVolume();
     app.post.reset();
     app.pov?.worldReplaced();
+  },
+
+  // The whole map into the world copy (docs/seamless-world.md, W), then the window's moves fill from it
+  // (P: attachWorldCopy), trees and all. Descent's scenes are skipped by the copy (out of scope: user).
+  buildWorldCopy(app, w) {
+    const view = app.worldView;
+    if (!view) return;
+    view.build(w).then((copy) => {
+      if (app.win !== w || !copy?.bindGroup) return;
+      return w.attachWorldCopy(copy, { wgsl: worldCopyWGSL });
+    }).then(() => app.wakeLoop(), (err) => console.error('world copy: not attached', err));
   },
 
   // World: the window's first origin (world cells): centred on the column its
