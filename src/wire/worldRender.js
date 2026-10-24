@@ -13,7 +13,7 @@ import { worldSunProjection, WORLD_SUN_PITCH } from '../world/worldSun.js';
 import { worldColumnTops, forecastSunCasters, forecastViewTiles, worldViewRays, forecastGatherSources, forecastSourceTiles } from '../world/worldSunForecast.js';
 import { worldSunRings, worldCoarseCasters, WORLD_SUN_SHARPEN_TILES } from '../world/worldSunRings.js';
 import { WORLD_GI_NEAR_RADIUS, worldGIReach } from '../world/worldGIRing.js';
-import { worldViewAirFloors, worldViewAirWords, worldPageBudget, worldBudgetDemandSteps, worldFarthestSteps } from '../world/worldViewRing.js';
+import { worldViewAirFloors, worldViewAirWords, worldPageBudget, worldBudgetDemandSteps, worldFarthestSteps, WORLD_VIEW_NEAR_RADIUS } from '../world/worldViewRing.js';
 import { createWorldResidency, worldResidentView, WORLD_RESIDENT_SHARE } from '../world/worldResidency.js';
 import { worldGIGroundWords } from '../shaders/worldGI.js';
 import { worldRunSync, worldRunSliced, worldSliceMeter, worldPause, WORLD_SLICE_COST as COST } from '../world/worldSlices.js';
@@ -524,6 +524,18 @@ export function installWorldRender(win, {gpu=win.gpu,source=win.renderSource,pro
     const shown=accepted?.requirements,keep=i=>held(i)||!!shown?.has(i);
     const out=await worldRunSliced(residency.forgetSteps({count,held:keep,seen},t.full));
     if(out.length<room)out.push(...await worldRunSliced(residency.forgetSteps({count:room-out.length,held,seen},t.full)));
+    // Still short: the rows in view go too, farthest first, never inside the near
+    // ring. Looking along the ground (first person) the frustum holds most of the
+    // island, so it kept every row, the budget found no room, and the pool-full
+    // rule dropped the newest asks, the ground around the player: read as air,
+    // black with the grey ground twin under it, following the player (Island,
+    // live 2026-10-24). Past the ring the far field draws coarse land behind the
+    // volume (world/far.js drawBehind), the virtual-texture pool's rule: farthest out first.
+    if(out.length<room){
+      const eye=Array.from(t.frame.values.cam),gone=new Set(out),far=[];
+      await worldRunSliced(worldFarthestSteps(metadata.keys(),{eye,brick,radius:WORLD_VIEW_NEAR_RADIUS,skip:i=>gone.has(i)||held(i),visit:i=>far.push(i)>=room-out.length},t.full));
+      residency.untrack(far);out.push(...far);
+    }
     if(!out.length)return;
     metadata.forget(out);history.forget(out);
     for(const i of out){ownedSources.delete(i);ownedProbes.delete(i);}

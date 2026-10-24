@@ -40,6 +40,8 @@ export function createWorldResidency({ capacity }) {
     touch(i) { lru.set(i, true); evicted.delete(i); },
     clear() { lru.clear(); evicted.clear(); },
     get size() { return lru.size; },
+    // Rows the caller forgot by its own rule (wire/worldRender.js forgetUnused's farthest pass).
+    untrack(list) { for (const i of list) { lru.delete(i); evicted.delete(i); } },
     // Up to `count` rows to forget, least recently used first: never one held(i)
     // (a load's ask, an owned light record, a glow region) or seen(i) (in the
     // view now, which counts as a use). Returns the indices, already untracked.
