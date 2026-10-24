@@ -19,6 +19,7 @@ const SLOTS:u32=32768u;
 fn slotOf(p:vec3i)->u32{return u32(p.x+32*p.y+1024*p.z);}
 fn inGrid(p:vec3i)->bool{return all(p>=vec3i(0))&&all(p<vec3i(32));}
 fn markBusy(p:vec3i){}
+fn markChange(p:vec3i,before:vec4u,after:vec4u){}
 fn noteEnergySource(p:vec3i,energy:vec2u){}
 fn noteEnergySink(p:vec3i,energy:vec2u){}
 ${fallWGSL}
