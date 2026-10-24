@@ -121,7 +121,6 @@ export class WorldWindow {
     this.physicsOnly = PHYSICS_ONLY_MOVE;                         // a move records no picture work (physicsRegion.js)
     this.worldCopy = null;                                        // W's world copy, once attached (attachWorldCopy)
     this.copyFill = null;                                         // its slab fill (world/copyFill.js)
-    this.localRevision = 0;                                       // the stores' revisions when no render source versions them
     this.storeRevisions = new Map();
     this.readbackError = null;
     this.capturing = false;
@@ -166,8 +165,8 @@ export class WorldWindow {
   }
 
   // The version a leaving slab's bricks go into the stores at (later ones win): the render source's
-  // revision while it follows the window, else the window's own count.
-  _token() { return this.physicsOnly ? { revision: ++this.localRevision } : this.renderSource.token(); }
+  // revision (on a physics-only move only its counter, which stays monotonic if the switch flips).
+  _token() { return this.physicsOnly ? { revision: this.renderSource.nextRevision() } : this.renderSource.token(); }
 
   // Mark the brick columns of grid cells [lo, hi) planted: their trees came with the world copy.
   markPlanted(lo, hi) {
@@ -201,7 +200,7 @@ export class WorldWindow {
     const sim = this.sim, g = sim.g;
     this.historyIdentity = {};
     this.epoch++;   // a slab of the old world still being read back is dropped
-    this.leaveQueue.clear();
+    this.leaveQueue?.clear();
     this.renderSource.reset(this.epoch);
     this.storeRevisions.clear();
     this.store.clear();
@@ -246,7 +245,7 @@ export class WorldWindow {
     this.scene.interactionState?.restore(interactions);
     this.historyIdentity = {};
     this.epoch++;
-    this.leaveQueue.clear();
+    this.leaveQueue?.clear();
     this.persistenceError = null;
     this.renderSource.reset(this.epoch);
     this.storeRevisions.clear();
@@ -643,7 +642,7 @@ export class WorldWindow {
   dispose() {
     if (this.sim.worldWindow === this) this.sim.worldWindow = null;
     this.epoch++;
-    this.leaveQueue.clear();
+    this.leaveQueue?.clear();
     this.far?.dispose();
     this.sourceProducer.dispose();
     this.renderSource.dispose();
