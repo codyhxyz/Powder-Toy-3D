@@ -162,13 +162,56 @@ export const WC_DECODE_LAYOUT = WC_WRITE_LAYOUT;   // (the decode binds the tabl
 export const WC_JOB_RING = 1 << 19;   // wcScratch's first words: the jobs (world/worldCopy.js writes them a writeback at a time)
 // wcAlloc's words: the bump (slots ever handed out), the free list's length, slots that didn't fit (never, by
 // world/worldCopy.js's capacity rule: a nonzero count is a bug the tools report), a spare; then the free list.
-export const WC_CTRL = { BUMP: 0, FREE: 1, OVER: 2, CAP: 3, WORDS: 4 };
+// RETRY: slots a GPU-driven writeback (P.mode != 0) didn't find; recoverable, unlike OVER: world/worldCopy.js
+// grows the pool and runs the next writeback over the whole window (every brick compared, the changed ones
+// written).
+export const WC_CTRL = { BUMP: 0, FREE: 1, OVER: 2, RETRY: 3, WORDS: 4 };
 export const WcWriteParams = uniformStruct('WcWriteParams', {
   origin: 'vec3i', count: 'u32',      // world cells of the window's corner (writeback) or the chunk's; jobs
   chunk: 'vec3i', first: 'u32',       // the chunk's size in cells (build); the first job of the dispatch
   airT: 'f32', capacity: 'u32', dilate: 'i32', level: 'u32',
+  src: 'u32',                         // the scratch word holding the job count (a GPU-driven pass), 0: count
+  stamp: 'u32',                       // the writeback's number (the GPU lists' dedupe marks)
+  mode: 'u32',                        // WC_MODE
 });
-const writerDecls = (L) => /* wgsl */ `
+// A writeback's mode: CPU, the jobs and the dilation's and occupancy's lists from world/worldCopy.js's sets; GPU,
+// all of it from V2's record of change (wcGatherFrag), every list built and dispatched on the GPU; ALL, the GPU's
+// over every window brick (a retry, a writeback before the kernels were ready).
+export const WC_MODE = { CPU: 0, GPU: 1, ALL: 2 };
+
+// ---- the GPU-driven writeback's block of the scratch (after the jobs' ring): its counters, the change list F
+// and L read back, the lists and the dedupe marks. The indirect args live in their own buffer (wcArgs: a buffer
+// can't be an indirect source and a writable binding in one dispatch).
+// Counters 0-4 restart every writeback; NCHG and CHG_OVER when the change list is read back; SUM_* never (tools).
+export const WC_GPU = {
+  NJOBS: 0, NSEEDS: 1, NDIL: 2, NOCC1: 3, NOCC2: 4, NCHG: 5, CHG_OVER: 6,
+  SUM_CAND: 7, SUM_CHANGED: 8, SUM_SEEDS: 9, SUM_DIL: 10, LIST: 16,
+};
+// wcArgs: [x, y, z] workgroups a pass, 4 words apart
+export const WC_ARGS = { DECODE: 0, SEED: 4, DIL: 8, OCC1: 12, OCC2: 16, WORDS: 20 };
+const WC_CHG_CAP_MIN = 4096;   // change-list entries kept between two reads at least
+const vcount = (v) => v[0] * v[1] * v[2];
+/**
+ * The GPU-driven writeback's block for a window of grid g: words from the ring's end (WC_JOB_RING). Its lists:
+ * chg (changed level-1 nodes, world indices: F's and L's change record), jobs (window bricks V2 may have changed,
+ * packed as the ring's), seeds (changed bricks whose own bits changed), dil (world bricks the dilation redoes),
+ * occ1, occ2 (nodes); then a stamp mark a padded window brick or node, for each list's dedupe.
+ */
+export function wcGpuLayout(g) {
+  const gb = [g.nx, g.ny, g.nz].map((n) => Math.ceil(n / WC_BRICK)), D = WC_DILATE, nb = vcount(gb);
+  const padB = gb.map((n) => n + 2 * D);
+  const padN1 = gb.map((n) => Math.floor((n + 2 * D - 1) / WC_NODE1) + 2);
+  const padN2 = gb.map((n) => Math.floor((n + 2 * D - 1) / (WC_NODE1 * WC_NODE2)) + 2);
+  const chgN = gb.map((n) => Math.floor((n - 1) / WC_NODE1) + 2);
+  const chgCap = Math.max(WC_CHG_CAP_MIN, 4 * vcount(chgN));
+  let at = WC_GPU.LIST;
+  const take = (n) => { const a = at; at += n; return a; };
+  const chg = take(chgCap), jobs = take(nb), seeds = take(nb), dil = take(vcount(padB)), occ1 = take(vcount(padN1)), occ2 = take(vcount(padN2));
+  const dilMark = take(vcount(padB)), occ1Mark = take(vcount(padN1)), occ2Mark = take(vcount(padN2)), chgMark = take(vcount(chgN));
+  return { gb, nb, padB, padN1, padN2, chgN, chgCap, chg, jobs, seeds, dil, occ1, occ2, dilMark, occ1Mark, occ2Mark, chgMark,
+    readWords: chg + chgCap, words: Math.ceil(at / 64) * 64, cells: nb * 65 };
+}
+const writerDecls = (L, g) => { const G = wcGpuLayout(g); return /* wgsl */ `
 ${wcCommonWGSL}
 ${WcWriteParams.wgsl}
 @group(3) @binding(1) var<uniform> P: WcWriteParams;
@@ -178,12 +221,31 @@ ${WcWriteParams.wgsl}
 fn wcInfoGet(bi: u32) -> u32 { return atomicLoad(&wcMeta[bi]); }
 fn wcInfoPut(bi: u32, v: u32) { atomicStore(&wcMeta[bi], v); }
 @group(2) @binding(${WC_WRITE.alloc}) var<storage, read_write> wcAlloc: array<atomic<u32>>;
-@group(2) @binding(${WC_WRITE.scratch}) var<storage, read_write> wcScratchBuf: array<u32>;
-const WC_SCRATCH_AT: u32 = ${WC_JOB_RING}u;
+@group(2) @binding(${WC_WRITE.scratch}) var<storage, read_write> wcScratchBuf: array<atomic<u32>>;
+const WC_G_AT: u32 = ${WC_JOB_RING}u;                // the GPU-driven writeback's block (wcGpuLayout)
+const WC_SCRATCH_AT: u32 = ${WC_JOB_RING + G.words}u;   // the chunk's cells, or a writeback's words and flags
+const WC_MAX_JOBS: u32 = ${G.nb}u;                   // a GPU-driven writeback's jobs at most (the window's bricks)
 const WC_FREE_AT: u32 = ${WC_CTRL.WORDS}u;
-fn wcJob(i: u32) -> u32 { return wcScratchBuf[i]; }
-fn wcScratchGet(i: u32) -> u32 { return wcScratchBuf[WC_SCRATCH_AT + i]; }
-fn wcScratchSet(i: u32, v: u32) { wcScratchBuf[WC_SCRATCH_AT + i] = v; }
+fn wcJob(i: u32) -> u32 { return atomicLoad(&wcScratchBuf[i]); }
+fn wcScratchGet(i: u32) -> u32 { return atomicLoad(&wcScratchBuf[WC_SCRATCH_AT + i]); }
+fn wcScratchSet(i: u32, v: u32) { atomicStore(&wcScratchBuf[WC_SCRATCH_AT + i], v); }
+fn wcG(i: u32) -> u32 { return atomicLoad(&wcScratchBuf[WC_G_AT + i]); }
+fn wcGAdd(i: u32, v: u32) -> u32 { return atomicAdd(&wcScratchBuf[WC_G_AT + i], v); }
+fn wcGSet(i: u32, v: u32) { atomicStore(&wcScratchBuf[WC_G_AT + i], v); }
+// a stamp mark of the block: true the first time this writeback (P.stamp) reaches it
+fn wcGMark(i: u32) -> bool { return atomicMax(&wcScratchBuf[WC_G_AT + i], P.stamp) != P.stamp; }
+// the dispatch's jobs: P.count, or a GPU-driven pass's count word
+fn wcCount() -> u32 { if (P.src != 0u) { return atomicLoad(&wcScratchBuf[P.src]); } return P.count; }
+// where the decode leaves its flags (after the jobs' 64 words each)
+fn wcFlagsAt() -> u32 { return select(P.count, WC_MAX_JOBS, P.src != 0u) * 64u; }
+${Object.entries(WC_GPU).map(([k, v]) => `const WC_G_${k}: u32 = ${v}u;`).join('\n')}
+${Object.entries({ chg: G.chg, jobs: G.jobs, seeds: G.seeds, dil: G.dil, occ1: G.occ1, occ2: G.occ2, dilMark: G.dilMark, occ1Mark: G.occ1Mark, occ2Mark: G.occ2Mark, chgMark: G.chgMark, chgCap: G.chgCap }).map(([k, v]) => `const WC_GL_${k.toUpperCase()}: u32 = ${v}u;`).join('\n')}
+const WC_PAD_B: vec3i = vec3i(${G.padB.join(', ')});
+const WC_PAD_N1: vec3i = vec3i(${G.padN1.join(', ')});
+const WC_PAD_N2: vec3i = vec3i(${G.padN2.join(', ')});
+const WC_CHG_N: vec3i = vec3i(${G.chgN.join(', ')});
+const WC_MODE_CPU: u32 = ${WC_MODE.CPU}u;
+const WC_MODE_ALL: u32 = ${WC_MODE.ALL}u;
 const WC_B: vec3i = vec3i(${L.bricks.join(', ')});
 const WC_N1: vec3i = vec3i(${L.n1.join(', ')});
 const WC_N2: vec3i = vec3i(${L.n2.join(', ')});
@@ -196,6 +258,7 @@ const WC_GAS_B: i32 = ${WC_GAS_IDS[1]};
 const WC_GAS_C: i32 = ${WC_GAS_IDS[2]};
 ${Object.entries(WC_OWN).map(([k, v]) => `const WC_OWN_${k}: u32 = ${v >>> 0}u;`).join('\n')}
 const WC_OWN_ONLY: u32 = ${WC_OWN_ONLY}u;
+const WC_OWN_BITS: u32 = ${Object.values(WC_OWN).reduce((a, b) => a | b, 0) >>> 0}u;
 const WC_I_MEDIA: u32 = ${BRICK_INFO.MEDIA}u;
 const WC_I_SURF: u32 = ${BRICK_INFO.SURF}u;
 const WC_I_OPAQUE: u32 = ${BRICK_INFO.OPAQUE}u;
@@ -241,13 +304,15 @@ var<workgroup> wgNotWhole: atomic<u32>;  // a cell that isn't a whole liquid cel
 var<workgroup> wgLiqHi: atomic<u32>;     // 1 + the highest liquid-channel id (0: none), as passes.js's
 var<workgroup> wgLiqLo: atomic<u32>;     // NE - the lowest
 var<workgroup> wgSlot: u32;
-fn wcGather(li: u32, w: u32) {
+var<workgroup> wgChanged: atomic<u32>;   // cells whose word differs from the copy's (was)
+fn wcGather(li: u32, w: u32, was: u32) {
   if (li == 0u) {
     atomicStore(&wgDiff, 0u); atomicStore(&wgLow, 0u); atomicStore(&wgOwn, 0u); atomicStore(&wgNotWhole, 0u);
-    atomicStore(&wgLiqHi, 0u); atomicStore(&wgLiqLo, 0u);
+    atomicStore(&wgLiqHi, 0u); atomicStore(&wgLiqLo, 0u); atomicStore(&wgChanged, 0u);
   }
   workgroupBarrier();
   wgW[li] = w;
+  if (w != was) { atomicAdd(&wgChanged, 1u); }
   let o = wcCellOwn(w);
   let gas = o.x >> WC_I_GAS_SHIFT;
   if (gas != 0u) { atomicAdd(&wgLow, 1u << WC_I_GAS_SHIFT); }
@@ -277,28 +342,38 @@ fn wcAllocSlot() -> u32 {
   if (n > 0) { return atomicLoad(&wcAlloc[WC_FREE_AT + u32(n - 1)]); }
   atomicAdd(&wcAlloc[${WC_CTRL.FREE}], 1u);
   let s = atomicAdd(&wcAlloc[${WC_CTRL.BUMP}], 1u);
-  if (s >= P.capacity) { atomicAdd(&wcAlloc[${WC_CTRL.OVER}], 1u); return 0xffffffffu; }
+  if (s >= P.capacity) {
+    // a GPU-driven writeback's miss is retried (RETRY), and its bump given back: the bump only passes the
+    // capacity while misses are in flight, so the slots it hands out stay unique
+    if (P.mode != WC_MODE_CPU) { atomicSub(&wcAlloc[${WC_CTRL.BUMP}], 1u); atomicAdd(&wcAlloc[${WC_CTRL.RETRY}], 1u); }
+    else { atomicAdd(&wcAlloc[${WC_CTRL.OVER}], 1u); }
+    return 0xffffffffu;
+  }
   return s;
 }
 // give slot s back (no pop runs in the same dispatch)
 fn wcRelease(s: u32) { atomicStore(&wcAlloc[WC_FREE_AT + atomicAdd(&wcAlloc[${WC_CTRL.FREE}], 1u)], s); }
-`;
+`; };
 
 // One thread per job of a 1-D job list (fold), x jobs at P.first on.
 const jobThread = (body) => /* wgsl */ `
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
   let j = foldThread(wg, nwg, li);
-  if (j >= P.count) { return; }
+  if (j >= wcCount()) { return; }
   let job = P.first + j;
 ${body}
 }`;
 // One workgroup per job (a brick), thread li its cell.
+// (the count through a workgroup variable: a GPU-driven pass's count is a storage read, and the barriers after
+// need uniform control flow)
 const brickWorkgroup = (body) => /* wgsl */ `
+var<workgroup> wgCount: u32;
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
   let j = foldId(wg, nwg);
-  if (j >= P.count) { return; }
+  if (li == 0u) { wgCount = wcCount(); }
+  if (j >= workgroupUniformLoad(&wgCount)) { return; }
   let job = P.first + j;
   let l = vec3i(i32(li & 3u), i32((li >> 2u) & 3u), i32(li >> 4u));
 ${body}
@@ -419,6 +494,7 @@ ${WcWriteParams.wgsl}
 @group(3) @binding(1) var<uniform> P: WcWriteParams;
 @group(2) @binding(0) var<storage, read_write> cells: array<u32>;
 @group(2) @binding(1) var<storage, read> wcSaved: array<u32>;
+fn wcCount() -> u32 { return P.count; }
 ${brickWorkgroup(/* wgsl */ `
   let o = job * 65u;
   let cb = vec3i(P.chunk / BS);
@@ -432,14 +508,14 @@ ${brickWorkgroup(/* wgsl */ `
 // The chunk's cells are the scratch's (after the jobs' ring).
 export const wcCommitChunkFrag = (g, L) => /* wgsl */ `
 ${prelude(g, { state: false })}
-${writerDecls(L)}
+${writerDecls(L, g)}
 ${brickWorkgroup(/* wgsl */ `
   let cb = P.chunk / BS;
   let k = i32(job);
   let lb = vec3i(k % cb.x, (k / cb.x) % cb.y, k / (cb.x * cb.y));
   let c = lb * BS + l;
   let w = wcScratchGet(u32(c.x + P.chunk.x * (c.y + P.chunk.y * c.z)));
-  wcGather(li, w);
+  wcGather(li, w, w);
   let b = (P.origin >> vec3u(2u)) + lb;
   if (any(b >= WC_B)) { return; }
   let bi = wcBi(b);
@@ -461,13 +537,19 @@ ${brickWorkgroup(/* wgsl */ `
 // Pass 1: decode the cores (V2's native cells, shaders/compact.js's decode, through the sim's read group),
 // commit uniform bricks, release the slots of bricks that became uniform, keep the slot of a brick that stays
 // mixed, and leave the words of a brick that needs a slot in the scratch (64 a job, then a flag a job:
-// wcScratch[count · 64 + job], 1 where it needs one).
+// wcScratch[wcFlagsAt() + job], 1 where it needs one).
+// A brick written exactly as the copy holds it changes nothing: no table, pool or info write, and (GPU-driven)
+// no change record, no dilation. A GPU-driven writeback (P.mode != CPU) also builds its own lists: a changed
+// brick's level-1 node into the change list (F's and L's record, deduped by the stamp marks), and a changed
+// brick whose own bits changed into the seeds (its neighbourhood's dilation and occupancy). A changed brick
+// whose own bits didn't change keeps its dilated bits: only its own-only low bits are new (THIN, MIXED, air,
+// gas), and no neighbour's info can change (the dilation reads own bits only).
 const unpackJob = /* wgsl */ `
   let jw = wcJob(job);
   let wb = vec3i(i32(jw & 1023u), i32((jw >> 10u) & 1023u), i32(jw >> 20u));`;
 export const wcDecodeFrag = (g, L) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
-${writerDecls(L)}
+${writerDecls(L, g)}
 // cell p of the window: its word (compactA's fields, undithered, at full precision: shaders/compact.js)
 fn wcCoreWord(p: vec3i) -> u32 {
   let c = fetchNativeCore(p);
@@ -482,14 +564,43 @@ fn wcCoreWord(p: vec3i) -> u32 {
   let ct = select((c.y >> 16u) & 255u, c.w & 4095u, cond);
   return wcWordOf(id, T, f32(c.y & 65535u) / COMPACT_LIFE_SCALE[u32(id)], ct & 255u, 1.0);
 }
+var<workgroup> wgSame: u32;
 ${brickWorkgroup(/* wgsl */ `${unpackJob}
   let w = wcCoreWord(wb * BS + l);
-  wcGather(li, w);
-  let bi = wcBi((P.origin >> vec3u(2u)) + wb);
-  let flag = P.count * 64u + j;
+  let ob = P.origin >> vec3u(2u);
+  let bi = wcBi(ob + wb);
+  // the copy's word of this cell as it is (read before any thread writes the brick)
+  let old = wcTable[bi];
+  var was = old;
+  if ((old & WC_MIXED) != 0u) { was = wcPool[(old & ~WC_MIXED) * WC_BRICK_CELLS + li]; }
+  wcGather(li, w, was);
+  let flag = wcFlagsAt() + j;
+  if (li == 0u) { wgSame = select(0u, 1u, atomicLoad(&wgChanged) == 0u); }
+  if (workgroupUniformLoad(&wgSame) != 0u) {
+    if (li == 0u) {
+      wcScratchSet(flag, 0u);
+      if (P.mode == WC_MODE_CPU) { wcInfoPut(bi, wcOwnInfo()); }   // (the CPU's dilation list redoes it)
+    }
+    return;
+  }
   if (li == 0u) {
-    wcInfoPut(bi, wcOwnInfo());
-    let old = wcTable[bi];
+    let own = wcOwnInfo();
+    let prev = wcInfoGet(bi);
+    if (P.mode != WC_MODE_CPU && ((prev ^ own) & WC_OWN_BITS) == 0u) { wcInfoPut(bi, (prev & ~WC_OWN_ONLY) | (own & WC_OWN_ONLY)); }
+    else {
+      wcInfoPut(bi, own);
+      if (P.mode != WC_MODE_CPU) { atomicStore(&wcScratchBuf[WC_G_AT + WC_GL_SEEDS + wcGAdd(WC_G_NSEEDS, 1u)], jw); }
+    }
+    if (P.mode != WC_MODE_CPU) {
+      wcGAdd(WC_G_SUM_CHANGED, 1u);
+      let n = (ob + wb) >> vec3u(2u);
+      let r = n - (ob >> vec3u(2u));
+      if (wcGMark(WC_GL_CHGMARK + u32(r.x + WC_CHG_N.x * (r.y + WC_CHG_N.y * r.z)))) {
+        let i = wcGAdd(WC_G_NCHG, 1u);
+        if (i < WC_GL_CHGCAP) { wcGSet(WC_GL_CHG + i, u32(n.x + WC_N1.x * (n.y + WC_N1.y * n.z))); }
+        else { wcGAdd(WC_G_CHG_OVER, 1u); }
+      }
+    }
     if (atomicLoad(&wgDiff) == 0u) {
       wcTable[bi] = wgW[0];
       if ((old & WC_MIXED) != 0u) { wcRelease(old & ~WC_MIXED); }
@@ -510,12 +621,12 @@ ${brickWorkgroup(/* wgsl */ `${unpackJob}
 // Pass 2: a slot for each brick that became mixed (pops only), its words from the scratch.
 export const wcAllocFrag = (g, L) => /* wgsl */ `
 ${prelude(g, { state: false })}
-${writerDecls(L)}
+${writerDecls(L, g)}
 ${brickWorkgroup(/* wgsl */ `${unpackJob}
   let bi = wcBi((P.origin >> vec3u(2u)) + wb);
   if (li == 0u) {
     wgSlot = 0xffffffffu;
-    if (wcScratchGet(P.count * 64u + j) != 0u) {
+    if (wcScratchGet(wcFlagsAt() + j) != 0u) {
       wgSlot = wcAllocSlot();
       if (wgSlot != 0xffffffffu) { wcTable[bi] = WC_MIXED | wgSlot; }
     }
@@ -524,13 +635,117 @@ ${brickWorkgroup(/* wgsl */ `${unpackJob}
   if (s != 0xffffffffu) { wcPool[s * WC_BRICK_CELLS + li] = wcScratchGet(j * 64u + li); }`)}
 `;
 
+// ---- the GPU-driven writeback (world/worldCopy.js recordWriteback with boxes null), all of it from V2's own
+// record of change, no CPU loop over bricks:
+//   wcGatherFrag   a thread a window brick: the bricks V2 may have changed (below) into the jobs list
+//   wcArgsFrag     the next pass's indirect args from its list's count (P.level: 0 the decode's, 1 the seeds',
+//                  2 the dilation's and the occupancy's)
+//   decode, alloc  over the jobs (indirect): only the bricks whose words changed are written (above)
+//   wcSeedFrag     a thread a (seed, neighbour): the dilation's bricks and their occupancy nodes, deduped
+//   dilate, occ    over those lists (indirect)
+// V2's record (shaders/v2.js): `changed` (a brick a core, decoration or flow write touched since the last tick's
+// v2invalidate) and `visible` (its drawn projection changed) for writes not yet folded; and the tick's change
+// tiles (v2ChangeLayout: per 8³ bricks, the x, y and z bricks touched, folded by v2invalidate every tick from
+// those two and the air), which accumulate over the frame's ticks until this reads and clears them. Both are
+// conservative (a tile's bits are a box; the air's adds bricks no cell of changed): the decode's compare keeps
+// the copy's writes and the change record exact. Touchstone: GPU-driven rendering's indirect compaction
+// (Wihlidal 2016, "Optimizing the Graphics Pipeline with Compute").
+export const WC_V2_LAYOUT = [0, 1].map((binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'read-only-storage' } }));
+export const wcGatherFrag = (g, L, v2) => /* wgsl */ `
+${prelude(g, { state: false })}
+${writerDecls(L, g)}
+@group(1) @binding(0) var<storage, read> v2act: array<u32>;
+@group(1) @binding(1) var<storage, read> v2args: array<u32>;
+const V2_CHANGED_AT: u32 = ${v2.changed}u;
+const V2_VISIBLE_AT: u32 = ${v2.visible}u;
+const V2_TILES_AT: u32 = ${v2.tilesAt}u;
+const V2_TILES: vec3u = vec3u(${v2.tiles.join('u, ')}u);
+const V2_TILE: u32 = ${v2.tile}u;
+const WC_GB: vec3i = vec3i(${wcGpuLayout(g).gb.join(', ')});
+${jobThread(/* wgsl */ `
+  let bc = brickCoord(job);
+  if (any(bc >= WC_GB)) { return; }
+  var hit = P.mode == WC_MODE_ALL || v2act[V2_CHANGED_AT + job] != 0u || v2act[V2_VISIBLE_AT + job] != 0u;
+  if (!hit) {
+    let u = vec3u(bc);
+    let t = u / V2_TILE;
+    let m = u % V2_TILE;
+    let w = v2args[V2_TILES_AT + t.x + V2_TILES.x * (t.y + V2_TILES.y * t.z)];
+    hit = ((w >> m.x) & (w >> (8u + m.y)) & (w >> (16u + m.z)) & 1u) != 0u;
+  }
+  if (hit) { wcGSet(WC_GL_JOBS + wcGAdd(WC_G_NJOBS, 1u), u32(bc.x) | (u32(bc.y) << 10u) | (u32(bc.z) << 20u)); }`)}
+`;
+// The next pass's indirect args (one thread), and the tools' sums.
+export const WC_ARGS_LAYOUT = [0, 1].map((binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }));
+const WC_SEED_SPAN = (2 * WC_DILATE + 1) ** 3;   // threads a seed: its dilation neighbourhood
+export const wcArgsFrag = () => /* wgsl */ `
+${WcWriteParams.wgsl}
+@group(3) @binding(1) var<uniform> P: WcWriteParams;
+@group(2) @binding(0) var<storage, read_write> scr: array<u32>;
+@group(2) @binding(1) var<storage, read_write> wcArgs: array<u32>;
+const G: u32 = ${WC_JOB_RING}u;
+fn put(at: u32, groups: u32) {
+  let y = max(1u, (groups + 65534u) / 65535u);
+  wcArgs[at] = (groups + y - 1u) / y; wcArgs[at + 1u] = y; wcArgs[at + 2u] = 1u;
+}
+@compute @workgroup_size(1)
+fn main() {
+  if (P.level == 0u) {
+    let n = scr[G + ${WC_GPU.NJOBS}u];
+    put(${WC_ARGS.DECODE}u, n);
+    scr[G + ${WC_GPU.SUM_CAND}u] += n;
+  } else if (P.level == 1u) {
+    let n = scr[G + ${WC_GPU.NSEEDS}u];
+    put(${WC_ARGS.SEED}u, (n * ${WC_SEED_SPAN}u + 63u) / 64u);
+    scr[G + ${WC_GPU.SUM_SEEDS}u] += n;
+  } else {
+    let n = scr[G + ${WC_GPU.NDIL}u];
+    put(${WC_ARGS.DIL}u, (n + 63u) / 64u);
+    scr[G + ${WC_GPU.SUM_DIL}u] += n;
+    put(${WC_ARGS.OCC1}u, (scr[G + ${WC_GPU.NOCC1}u] + 63u) / 64u);
+    put(${WC_ARGS.OCC2}u, (scr[G + ${WC_GPU.NOCC2}u] + 63u) / 64u);
+  }
+}`;
+// A thread a (seed, neighbour within WC_DILATE): the neighbour's world brick into the dilation's list, its
+// level-1 and level-2 nodes into the occupancy's, each once a writeback (stamp marks over the padded window).
+export const wcSeedFrag = (g, L) => /* wgsl */ `
+${prelude(g, { state: false })}
+${writerDecls(L, g)}
+const WC_D: i32 = ${WC_DILATE};
+const WC_SIDE: i32 = ${2 * WC_DILATE + 1};
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let t = foldThread(wg, nwg, li);
+  if (t >= wcG(WC_G_NSEEDS) * ${WC_SEED_SPAN}u) { return; }
+  let jw = wcJob(WC_G_AT + WC_GL_SEEDS + t / ${WC_SEED_SPAN}u);
+  let wb = vec3i(i32(jw & 1023u), i32((jw >> 10u) & 1023u), i32(jw >> 20u));
+  let k = i32(t % ${WC_SEED_SPAN}u);
+  let d = vec3i(k % WC_SIDE, (k / WC_SIDE) % WC_SIDE, k / (WC_SIDE * WC_SIDE)) - vec3i(WC_D);
+  let ob = P.origin >> vec3u(2u);
+  let q = ob + wb + d;
+  if (any(q < vec3i(0)) || any(q >= WC_B)) { return; }
+  let lo = ob - vec3i(WC_D);
+  let r = q - lo;
+  if (wcGMark(WC_GL_DILMARK + u32(r.x + WC_PAD_B.x * (r.y + WC_PAD_B.y * r.z)))) { wcGSet(WC_GL_DIL + wcGAdd(WC_G_NDIL, 1u), wcBi(q)); }
+  let n1 = q >> vec3u(2u);
+  let r1 = n1 - (lo >> vec3u(2u));
+  if (wcGMark(WC_GL_OCC1MARK + u32(r1.x + WC_PAD_N1.x * (r1.y + WC_PAD_N1.y * r1.z)))) {
+    wcGSet(WC_GL_OCC1 + wcGAdd(WC_G_NOCC1, 1u), u32(n1.x + WC_N1.x * (n1.y + WC_N1.y * n1.z)));
+  }
+  let n2 = q >> vec3u(4u);
+  let r2 = n2 - (lo >> vec3u(4u));
+  if (wcGMark(WC_GL_OCC2MARK + u32(r2.x + WC_PAD_N2.x * (r2.y + WC_PAD_N2.y * r2.z)))) {
+    wcGSet(WC_GL_OCC2 + wcGAdd(WC_G_NOCC2, 1u), u32(n2.x + WC_N2.x * (n2.y + WC_N2.y * n2.z)));
+  }
+}`;
+
 // ---- the info's dilation: a brick's SURF, MEDIA, OPAQUE and LIQUID_INTERIOR from its own bits and its
 // neighbours' within P.dilate bricks (their fields reach it: shaders/fields.js FIELD_REACH), BRICK_MATTER where
 // it holds matter or a field (passes.js: occ || hasSurf || hasMedia). Idempotent: it reads only own bits.
 // Jobs: world brick indices (P.count of them from P.first), or with P.level == 1 every brick from P.first.
 export const wcDilateFrag = (g, L) => /* wgsl */ `
 ${prelude(g, { state: false })}
-${writerDecls(L)}
+${writerDecls(L, g)}
 ${jobThread(/* wgsl */ `
   var bi = job;
   if (P.level != 1u) { bi = wcJob(job); }
@@ -565,7 +780,7 @@ ${jobThread(/* wgsl */ `
 // their level-1 nodes. Jobs: node indices (P.count from P.first); with P.dilate == -1 every node from P.first.
 export const wcOccFrag = (g, L) => /* wgsl */ `
 ${prelude(g, { state: false })}
-${writerDecls(L)}
+${writerDecls(L, g)}
 // bit i of the level starting at word at of wcMeta
 fn wcOccGet(at: u32, i: u32) -> bool { return ((atomicLoad(&wcMeta[at + (i >> 5u)]) >> (i & 31u)) & 1u) != 0u; }
 fn wcOccSet(at: u32, i: u32, on: bool) {
@@ -599,13 +814,18 @@ ${jobThread(/* wgsl */ `
 
 // Every writer, for a small world (tools/world-copy-cpu-check.mjs runs naga on them; tools/check-wgsl.mjs and
 // tools/check-wgsl-operators.mjs find them here). Built on entering a world: the warm-up leaves them out.
-export const WC_KERNELS = { wcCommitChunkFrag, wcDecodeFrag, wcAllocFrag, wcDilateFrag, wcOccFrag, wcStampFrag, wcOverlayFrag };
+// (the gather's V2 offsets, for the check: a 128³ grid's)
+const CHECK_V2 = { changed: 1 << 20, visible: 1 << 19, tilesAt: 44, tiles: [4, 4, 4], tile: 8 };
+const wcGatherCheck = (g, L) => wcGatherFrag(g, L, CHECK_V2);
+const wcArgsCheck = () => wcArgsFrag();
+export const WC_KERNELS = { wcCommitChunkFrag, wcDecodeFrag, wcAllocFrag, wcDilateFrag, wcOccFrag, wcStampFrag, wcOverlayFrag, wcGatherFrag: wcGatherCheck, wcSeedFrag, wcArgsFrag: wcArgsCheck };
 const CHECK_WORLD = wcLayout([256, 128, 256]);
 const CHECK_STATE = { wcDecodeFrag: 'STATE_RO' };
-const CHECK_GROUP2 = { wcStampFrag: WC_STAMP_LAYOUT, wcOverlayFrag: WC_OVERLAY_LAYOUT, wcDecodeFrag: WC_DECODE_LAYOUT };
+const CHECK_GROUP1 = { wcGatherFrag: WC_V2_LAYOUT };
+const CHECK_GROUP2 = { wcStampFrag: WC_STAMP_LAYOUT, wcOverlayFrag: WC_OVERLAY_LAYOUT, wcDecodeFrag: WC_DECODE_LAYOUT, wcArgsFrag: WC_ARGS_LAYOUT };
 export const WGSL_CHECK = () => Object.entries(WC_KERNELS).map(([name, frag]) => ({
   name: `world copy ${name}`, kind: 'compute', grids: ['128'], warm: false, code: (g) => frag(g, CHECK_WORLD), params: WcWriteParams,
-  layouts: () => [[{ binding: 0, visibility: READ, buffer: { type: 'read-only-storage' } }], CHECK_STATE[name] ? stateLayoutOf(CHECK_STATE[name]) : 'EMPTY', CHECK_GROUP2[name] ?? WC_WRITE_LAYOUT],
+  layouts: () => [[{ binding: 0, visibility: READ, buffer: { type: 'read-only-storage' } }], CHECK_STATE[name] ? stateLayoutOf(CHECK_STATE[name]) : CHECK_GROUP1[name] ?? 'EMPTY', CHECK_GROUP2[name] ?? WC_WRITE_LAYOUT],
   dispatch: () => [1, 1, 1],
 })).concat([{
   // the readers, as a render kernel includes them
