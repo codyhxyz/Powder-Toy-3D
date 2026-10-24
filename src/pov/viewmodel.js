@@ -6,6 +6,7 @@ import { updateViewmodelArms } from './viewmodelArms.js';
 import { createFlapAnimation } from './flapPose.js';
 import { useWebGPUCamera, gpuTextureOf } from '../gpu/three.js';
 import { guardMeshes, PENDING_MASK } from '../gfx/meshLight.js';
+import { readWorldEye } from '../gfx/worldEyeLight.js';
 import { BRICK } from '../shaders/common.js';
 import { SH_Y0, SH_Y1, SKYVIS_OPEN_DC, SHADOW_TINT_ID_SCALE, SHADOW_PAD, VOLUME_SHADOW_BIAS } from '../shaders/gfx/lighting.js';
 
@@ -428,9 +429,28 @@ function eyeLight(camera, eye, sky) {
   const p = sim && volume ? volume.worldToLocal(camera.getWorldPosition(eye.pos)) : null;
   const g = sim?.g;
   const b = p && [Math.floor(p.x / BRICK), Math.floor(p.y / BRICK), Math.floor(p.z / BRICK)];
-  const inside = b && b[0] >= 0 && b[1] >= 0 && b[2] >= 0 && b[0] < g.nx / BRICK && b[1] < g.ny / BRICK && b[2] < g.nz / BRICK;
+  // on frames the world march draws, L's light at the eye in world cells (gfx/worldEyeLight.js), anywhere
+  // in the world: its probe cascades hand over to the open sky past them, as the world's surfaces' do
+  const wl = app?.worldLight ?? null;
+  const inside = wl ? !!p : b && b[0] >= 0 && b[1] >= 0 && b[2] >= 0 && b[0] < g.nx / BRICK && b[1] < g.ny / BRICK && b[2] < g.nz / BRICK;
   const sun = app?.SUN, gpu = app?.gpu;
-  if (inside && derived?.readProbe && vol && sun && gpu && !eye.pending && now - eye.readAt >= EYE_READ_S) {
+  if (wl && p && gpu && !eye.pending && now - eye.readAt >= EYE_READ_S) {
+    const o = sim.origin;
+    eye.pending = true;
+    eye.readAt = now;
+    readWorldEye(gpu, wl, [p.x + (o?.x ?? 0), p.y + (o?.y ?? 0), p.z + (o?.z ?? 0)],
+      { skyUp: gfxUniforms.uSkyUp.value, ground: gfxUniforms.uGround.value })
+      .then((r) => {
+        if (!r) return;
+        eye.read.set(r.probe);
+        eye.sunRead = r.sun;
+        if (!eye.have) { eye.cur.set(eye.read); eye.sunCur = eye.sunRead; }
+        eye.have = true;
+        app.requestRender?.();
+      })
+      .catch(() => {})   // (a light replaced or the device lost under the read: the next one)
+      .finally(() => { eye.pending = false; });
+  } else if (!wl && inside && derived?.readProbe && vol && sun && gpu && !eye.pending && now - eye.readAt >= EYE_READ_S) {
     // (no shadow map yet, or none in this view: the sun as the volume has it, unshadowed)
     const st = vol.shadowState === 'ready' ? shadowTexel(g, sim.origin, sun, vol.shadowRes, p) : null;
     eye.pending = true;

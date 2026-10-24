@@ -1,7 +1,8 @@
 // CPU-only: the meshes' and V2 particles' world light (docs/seamless-world.md, "one lighting
 // system"; shaders/world/lightLookup.js). The lookups validate under naga standalone; a lit TSL
 // material's generated fragment shader (three's WGSLNodeBuilder, no device) declares lcBuf under
-// the name the lookups read and validates under naga; the particle draw validates with L bound;
+// the name the lookups read and validates under naga; the particle draw and the hands' eye probe
+// validate with L bound;
 // packLightMats lays LC out as lmSetMats reads it.
 // node tools/mesh-world-light-check.mjs
 import assert from 'node:assert/strict';
@@ -14,6 +15,7 @@ import { vec3 } from 'three/tsl';
 import { lightLookupWGSL, lightLookupFromMatsWGSL, packLightMats } from '../src/shaders/world/lightLookup.js';
 import { litColor, meshWorldLightWGSL } from '../src/gfx/meshLight.js';
 import { nativeParticleWGSL } from '../src/shaders/v2/particleRender.js';
+import { worldEyeWGSL } from '../src/gfx/worldEyeLight.js';
 import { noiseGLSL } from '../src/shaders/gfx/noise.js';
 import { glslMod } from '../src/gpu/wgsl.js';
 
@@ -62,6 +64,8 @@ ${lightLookupWGSL({ caustics: false })}
 
   // 3. the particle draw with L's bindings
   naga('particles', nativeParticleWGSL(false));
+  // and the hands' eye probe (pov/viewmodel.js eyeLight)
+  naga('eye', worldEyeWGSL());
 
   // 4. packLightMats: LC's fields where lmSetMats reads them (column j of mat i at 16i + 4j)
   const lc = {
@@ -76,7 +80,7 @@ ${lightLookupWGSL({ caustics: false })}
   assert.deepEqual(col(2, 0), lc.shS[0]); assert.deepEqual(col(2, 3), lc.glO[1]);
   assert.deepEqual(col(3, 0), lc.shO[0]); assert.deepEqual(col(3, 3), lc.glO[0]);
   assert.deepEqual(col(4, 2), lc.prO[2]);
-  console.log('mesh-world-light-check: ok (lookups, lit material, particles, LC packing)');
+  console.log('mesh-world-light-check: ok (lookups, lit material, particles, eye probe, LC packing)');
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

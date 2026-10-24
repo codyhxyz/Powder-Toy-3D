@@ -3,8 +3,9 @@ import { frameUniformsOf } from './uniforms.js';
 import {
   PARTICLE_BYTES, NativeParticleParams, NATIVE_PARTICLE_LAYOUT, NATIVE_PARTICLE_ARGS_LAYOUT, NATIVE_PARTICLE_AIR_LAYOUT, NATIVE_PARTICLE_LIGHT_LAYOUT,
   nativeParticleWGSL, nativeParticlePipeline, nativeParticleArgsWGSL,
-  ParticlePickParams, PARTICLE_PICK_LAYOUT, PICK_RAYS, particlePickWGSL,
+  ParticlePickParams, PARTICLE_PICK_LAYOUT, PICK_RAYS, particlePickWGSL, PARTICLE_WORLD_LIGHT,
 } from '../shaders/v2/particleRender.js';
+import { LightUniforms } from '../shaders/world/light.js';
 import { decoView } from '../deco.js';
 import { CELL_M } from '../scale.js';
 
@@ -20,6 +21,19 @@ export function boxParticleLight(volume, derived, gpu) {
   const map = volume?.shadowTextures?.map, gi = derived?.views?.gi, noise = volume?.mediaNoiseView, samplers = gpu?._volumeSamplers;
   if (!map || !noise || !samplers || gi?.length !== 4) return null;
   return { map, gi, noise, clamp: samplers.clamp, repeat: samplers.repeat };
+}
+
+/**
+ * L's world light for the matter draw (docs/seamless-world.md: one lighting system), on frames the
+ * world march draws: its probe bands, LC and lcBuf (gfx/worldLight.js), the volume's media noise
+ * and samplers, or null. The window's map isn't read then (a stand-in is bound in its place).
+ * @param {object | null} light gfx/worldLight.js's WorldLight (app.worldLight)
+ * @param {object} volume gfx/volume.js createVolume's (mediaNoiseView)
+ */
+export function worldParticleLight(light, volume, gpu) {
+  const noise = volume?.mediaNoiseView, samplers = gpu?._volumeSamplers;
+  if (!light?.bandViews || !noise || !samplers) return null;
+  return { world: true, gi: light.bandViews, lc: light.lc.buffer, lcBuf: light.buf.lc, noise, clamp: samplers.clamp, repeat: samplers.repeat };
 }
 
 /** CPU view data only: physics world coordinates are never rebased or copied.
@@ -128,7 +142,7 @@ export class NativeParticles {
    * read (P.light 0) without it, per air buffer and light.
    */
   lightGroup(air, light) {
-    const target = air.target, key = light ? [light.map, light.noise, ...light.gi] : null;
+    const target = air.target, key = light ? [light.map ?? light.lcBuf, light.lc, light.noise, ...light.gi] : null;
     const byAir = this.lightGroups.get(target) ?? new Map();
     this.lightGroups.set(target, byAir);
     const k = key ? key[0] : null;
@@ -139,12 +153,16 @@ export class NativeParticles {
       map: gpu.createTexture({ label: 'particle light map (none)', size: [1, 1], format: 'rgba32float', usage: 4 }),
       vol: gpu.createTexture({ label: 'particle light volume (none)', size: [1, 1, 1], dimension: '3d', format: 'rgba16float', usage: 4 }),
       sampler: gpu.device.createSampler({ label: 'particle light (none)' }),
+      lc: gpu.createBuffer({ label: 'particle world light LC (none)', size: LightUniforms.size, usage: GPUBufferUsage.UNIFORM }),
+      lcBuf: gpu.createBuffer({ label: 'particle world light lcBuf (none)', size: 16, usage: GPUBufferUsage.STORAGE }),
     };
-    const l = light ?? { map: none.map, gi: [none.vol, none.vol, none.vol, none.vol], noise: none.vol, clamp: none.sampler, repeat: none.sampler };
+    const l = { map: none.map, lc: none.lc, lcBuf: none.lcBuf,
+      ...(light ?? { gi: [none.vol, none.vol, none.vol, none.vol], noise: none.vol, clamp: none.sampler, repeat: none.sampler }) };
     const group = gpu.bindGroup(this.lightLayout, [
       { binding: 0, resource: { buffer: target } }, { binding: 1, resource: view(l.map, {}) },
       ...l.gi.map((t, i) => ({ binding: 2 + i, resource: view(t, { dimension: '3d' }) })),
       { binding: 6, resource: view(l.noise, { dimension: '3d' }) }, { binding: 7, resource: l.clamp }, { binding: 8, resource: l.repeat },
+      { binding: 9, resource: { buffer: l.lc } }, { binding: 10, resource: { buffer: l.lcBuf } },
     ], 'native particle light');
     byAir.set(k, { key: key ?? [], group });
     return group;
@@ -171,7 +189,8 @@ export class NativeParticles {
     this.preparedFrame = frame;
     return true;
   }
-  // light: the volume's (boxParticleLight), lighting the matter as V1's flying cells are lit; null: the open sky's
+  // light: the volume's (boxParticleLight), lighting the matter as V1's flying cells are lit, or L's world light
+  // (worldParticleLight: frames the world march draws); null: the open sky's
   draw(rp, { width, height }, light = null) {
     if (!this.isReady || !this.view || this.preparedFrame !== rp.frame || !this.preparedFrame
       || this.source.isIdle === true || this.source.active === false) return false;
@@ -180,7 +199,7 @@ export class NativeParticles {
     if (!(width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height))) throw new RangeError('invalid particle viewport');
     const air = this.air();
     const options = { bind: [this.fu.group,this.group,air.group], indirect: { buffer: this.args, offset: 0 },
-      params: { ...this.view, ...air.params, capacity: s.capacity, viewport: [width,height], deco: s.deco && s.decoActive && decoView.show ? 1 : 0, light: light ? 1 : 0 } };
+      params: { ...this.view, ...air.params, capacity: s.capacity, viewport: [width,height], deco: s.deco && s.decoActive && decoView.show ? 1 : 0, light: light ? (light.world ? PARTICLE_WORLD_LIGHT : 1) : 0 } };
     const [matter, rays] = this.pipes;
     matter.draw(rp,{ ...options, bind: [this.fu.group,this.group,this.lightGroup(air,light)] });
     rays.draw(rp,options);
