@@ -103,6 +103,11 @@ export class WorldCopyFill {
     sim._dispatch(this.kernels.commit, copyFillSize(box.lo, box.hi), { bind: [sim.tables, nativeWriteGroup(sim), this.stageGroups[1]], header: sim.header(),
       params: { origin, lo: box.lo, hi: box.hi } });
     sim.version++;
+    // V2's own write, noted by the commit itself (nativeWriteCore): the owner has nothing of V1's to import
+    // for it, as NativeIntegration.changed tells it after its scatter. (The move's next sync, the exact
+    // store's restore, otherwise ran a whole window's import for nothing: 1.6 ms of the move's GPU,
+    // P2's slot 3, 2026-10-24.)
+    owner.seenVersion = sim.version;
     if (picture) sim.changedAll = true;
     owner.wake();
     sim.wake();
