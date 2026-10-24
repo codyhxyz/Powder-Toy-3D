@@ -15,7 +15,7 @@ const gpu = h.gpu;
 
 async function snapshot(wc, samples) {
   const st = await wc.stats();
-  const u32 = async (b, size = b.size) => new Uint32Array(await gpu.readback.buffer(b, 0, size));
+  const u32 = async (b, offset = 0, size = b.size - offset) => new Uint32Array(await gpu.readback.buffer(b, offset, size));
   const table = await u32(wc.buf.table), info = await u32(wc.buf.meta, 0, Math.ceil(wc.L.nBricks / 4) * 16);
   const pool = await u32(wc.buf.pool, 0, Math.max(16, Math.min(wc.buf.pool.size, st.bump * 256)));
   const [BX, BY] = wc.L.bricks;
