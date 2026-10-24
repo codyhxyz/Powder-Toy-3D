@@ -305,10 +305,11 @@ var<workgroup> wgLiqHi: atomic<u32>;     // 1 + the highest liquid-channel id (0
 var<workgroup> wgLiqLo: atomic<u32>;     // NE - the lowest
 var<workgroup> wgSlot: u32;
 var<workgroup> wgChanged: atomic<u32>;   // cells whose word differs from the copy's (was)
+var<workgroup> wgThin: atomic<u32>;      // a thin liquid cell: air on both sides along an axis, inside the brick
 fn wcGather(li: u32, w: u32, was: u32) {
   if (li == 0u) {
     atomicStore(&wgDiff, 0u); atomicStore(&wgLow, 0u); atomicStore(&wgOwn, 0u); atomicStore(&wgNotWhole, 0u);
-    atomicStore(&wgLiqHi, 0u); atomicStore(&wgLiqLo, 0u); atomicStore(&wgChanged, 0u);
+    atomicStore(&wgLiqHi, 0u); atomicStore(&wgLiqLo, 0u); atomicStore(&wgChanged, 0u); atomicStore(&wgThin, 0u);
   }
   workgroupBarrier();
   wgW[li] = w;
@@ -323,6 +324,25 @@ fn wcGather(li: u32, w: u32, was: u32) {
   if (SURFCH(id) == WC_CH_LIQUID) { atomicMax(&wgLiqHi, u32(id) + 1u); atomicMax(&wgLiqLo, u32(NE - id)); }
   workgroupBarrier();
   if (w != wgW[0]) { atomicAdd(&wgDiff, 1u); }
+  // THIN as the box's thin-feature pass means it (passes.js: a drop or a thin stream, fieldThin > 0), from the
+  // brick's own cells: a liquid cell with no liquid on both sides along an axis. A flat surface has liquid
+  // below, so the sea's whole surface isn't thin (it was, when any part-liquid brick was: lead, 2026-10-24).
+  if (SURFCH(id) == WC_CH_LIQUID) {
+    let l = vec3i(i32(li & 3u), i32((li >> 2u) & 3u), i32(li >> 4u));
+    var thin = false;
+    for (var ax = 0; ax < 3; ax++) {
+      var e = vec3i(0);
+      e[ax] = 1;
+      let a = l - e;
+      let b = l + e;
+      if (all(a >= vec3i(0)) && all(b <= vec3i(3))) {
+        let wa = wgW[wcLocal(a)];
+        let wb = wgW[wcLocal(b)];
+        thin = thin || (SURFCH(wcId(wa)) != WC_CH_LIQUID && SURFCH(wcId(wb)) != WC_CH_LIQUID);
+      }
+    }
+    if (thin) { atomicOr(&wgThin, 1u); }
+  }
   workgroupBarrier();
 }
 // the brick's info word before the dilation: its own low bits (THIN, MIXED, air, gas) and own bits
@@ -332,8 +352,7 @@ fn wcOwnInfo() -> u32 {
   var low = atomicLoad(&wgLow);
   let hi = atomicLoad(&wgLiqHi);
   if (hi != 0u && hi - 1u != u32(NE) - atomicLoad(&wgLiqLo)) { low |= WC_I_MIXED; }
-  // a liquid's free surface or stream: the thin-feature pass may find thin liquid here (conservative)
-  if (hi != 0u && (own & WC_OWN_LIQ_WHOLE) == 0u) { low |= WC_I_THIN; }
+  if (atomicLoad(&wgThin) != 0u) { low |= WC_I_THIN; }
   return (low & WC_OWN_ONLY) | own;
 }
 // pop a free slot, else bump one (no push runs in the same dispatch: see wcRelease); ~0u when none fits

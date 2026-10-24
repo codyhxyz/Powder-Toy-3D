@@ -71,7 +71,20 @@ export function wcOwnInfo(words, airT = PHYS.AMBIENT) {
   }
   if (whole) own |= WC_OWN.LIQ_WHOLE;
   if (hi !== 0 && hi - 1 !== NE - lo) low |= BRICK_INFO.MIXED;
-  if (hi !== 0 && !(own & WC_OWN.LIQ_WHOLE)) low |= BRICK_INFO.THIN;
+  // THIN: a liquid cell with no liquid on both sides along an axis, inside the brick (copy.js wcGather)
+  const liq = (i) => LOOK[words[i] & 255].ch === CH_LIQUID;
+  const at = (x, y, z) => x + 4 * (y + 4 * z);
+  let thin = false;
+  for (let i = 0; i < WC_BRICK_CELLS && !thin; i++) {
+    if (!liq(i)) continue;
+    const l = [i & 3, (i >> 2) & 3, i >> 4];
+    for (let ax = 0; ax < 3 && !thin; ax++) {
+      const a = [...l], b = [...l];
+      a[ax]--; b[ax]++;
+      if (a[ax] >= 0 && b[ax] <= 3 && !liq(at(...a)) && !liq(at(...b))) thin = true;
+    }
+  }
+  if (thin) low |= BRICK_INFO.THIN;
   return ((low & WC_OWN_ONLY) | own) >>> 0;
 }
 
