@@ -119,7 +119,13 @@ try {
           a.test.resume();
           try {
             for (const v of views) {   // (Plain last: from another view its card needs Plain on: app.js renderThumb)
-              if (v.key === 'plain') a.setView(v.id);
+              if (v.key === 'plain') {
+                // (its blocks renderer builds its bricks over frames after the switch: draw it converged first)
+                a.setView(v.id);
+                await a.test.ready();
+                await a.test.render();
+                a.test.resume();
+              }
               const c = document.createElement('canvas');
               [c.width, c.height] = size;
               let ok = false;
