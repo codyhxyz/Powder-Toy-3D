@@ -29,6 +29,12 @@
 // the ring's seam is all stone in readState and in the world copy and the pick finds what readState shows;
 // the CPU by step shows where P2's 4.8 ms went (suspect: the leaving capture's readback setup or the
 // before-shift writeback, which the ring path did not run until now).
+// Slot 1 found the 4.8 ms: the leaving diff V2 reads exactly builds idle after boot, and until it does every
+// leaving brick is kept and restored (restoreNative 9.9 ms CPU over 4096 bricks); P2's synthetic copy made
+// ~1290 bricks a move differ for the same reason. And a stroke lands with the next tick.
+// Hypothesis (P3 slot 2): with the native diff built, kept falls to the bricks the copy's trees or edits
+// make differ, the move's CPU to ~2 ms, its GPU span to ~2.7 ms (the restore's clears ~1, the commit ~0.5,
+// the leave ~0.6); the stroke across the seam is all stone in readState and the world copy, the pick agrees.
 // Segments, each N moves east then N back: old (switch off), physics only (switch on, generator fill),
 // world copy (switch on, a synthetic copy: tools/world-copy-stub.mjs; content is not the map's, timing only).
 // usage: node tools/world-move-browser-check.mjs [--map island] [--win 128] [--moves 4]
@@ -130,8 +136,11 @@ async function page(ring, SEG) {
         const [c, b] = await Promise.all([a.gpu.readback.buffer(v2.cells, 0, v2.cells.size), a.gpu.readback.buffer(v2.aux, 0, g.slots * 4)]);
         const out = new Uint32Array(c.byteLength / 4 + g.slots); out.set(new Uint32Array(c)); out.set(new Uint32Array(b), c.byteLength / 4); return out;
       };
+      // V2's leaving diff (built idle after boot: until it is, every leaving brick is kept and restored)
+      const diffReady = async () => { for (let i = 0; i < 200 && w.gen.kernels.nativeDiff?.state !== 'ready'; i++) await new Promise((r) => setTimeout(r, 25)); return w.gen.kernels.nativeDiff?.state; };
+      const nativeDiff = await diffReady();
       const out = [];
-      out.push({ label: 'fence', fenceMs, timed, ringed: sim.ringed, ring: g.ring });
+      out.push({ label: 'fence', fenceMs, timed, ringed: sim.ringed, ring: g.ring, nativeDiff });
       // the logical state's hash (readState: atlas order, whatever the ring), for runs to compare
       // (and the cells of each element, for runs that aren't bit for bit: last holds the last hash's)
       let last = null;
@@ -174,6 +183,7 @@ async function page(ring, SEG) {
         const b1 = brickCoordOf(plain, (L0 + nb - 1) % nb), b2 = brickCoordOf(plain, L0);
         const c = [0, 1, 2].map((i) => (b1[i] + b2[i] + 1) * 2), r = 5;
         sim.paint({ center: { x: c[0], y: c[1], z: c[2] }, radius: r, shape: 0, tool: STONE, rate: 1, replace: true });
+        a.test.step(1);   // (a stroke lands with the tick: V2's requests)
         await a.gpu.fence();
         const [A] = await sim.readState(), idAt = (x, y, z) => Math.round(A[sim.cellTexel(x, y, z) * 4]);
         let inside = 0, bad = 0;
@@ -222,7 +232,7 @@ async function page(ring, SEG) {
     const med = (v) => { const s = [...v].sort((x, y) => x - y); return s[s.length >> 1]; };
     const f = (v) => v.toFixed(2);
     for (const s of res) {
-      if (s.label === 'fence') { console.log(`empty fence: median ${f(med(s.fenceMs))} ms; GPU timestamps ${s.timed ? 'on' : 'unsupported'}; ringed ${s.ringed} (ring ${s.ring})`); continue; }
+      if (s.label === 'fence') { console.log(`empty fence: median ${f(med(s.fenceMs))} ms; GPU timestamps ${s.timed ? 'on' : 'unsupported'}; ringed ${s.ringed} (ring ${s.ring}); native leave diff ${s.nativeDiff}`); continue; }
       if (s.error) { failures++; console.log(`FAIL ${s.label}: ${s.error}`); continue; }
       if (s.label === 'seam') {
         const pickOk = s.hit && s.hit[0] === s.col[0] && s.hit[2] === s.col[1] && s.hit[1] === s.expect;
