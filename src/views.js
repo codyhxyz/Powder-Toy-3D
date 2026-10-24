@@ -158,6 +158,9 @@ export const VIEWS = [
   },
 ];
 
+/** The Shaders menu's cards, px: live stills (app.js renderThumb) and baked ones (tools/map-thumbs.mjs --views). */
+export const THUMB_SIZE = [320, 200];
+
 /** A view's key (its shader module in src/shaders/render.js) from its id; unknown ids are the realistic view. */
 export const viewKey = (id) => VIEWS.find((v) => v.id === id)?.key ?? 'realistic';
 

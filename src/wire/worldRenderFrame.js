@@ -619,6 +619,9 @@ export function createWorldFrameDriver(app,state,execution={}) {
     // (a live frame owed, or a transaction waiting its turn: the loop must keep ticking to start it)
     get busy(){return !!pending || !!pickDemands.size || !!stills.length || (liveLeft>0 && !liveFailure && !!displayedMainFrame?.eye) || (!!displayedMainFrame && performance.now()<nextStartAt);},get failure(){return failure;},get accepted(){return accepted;},
     queueStill,requestStill:queueStill,
+    // (the Shaders menu: a view's shader is built, and starting one's build, ui/shaders.js)
+    viewBuilt:(view,detail={})=>!!state.volume?.viewBuilt(view,detail,false),
+    warmView:(view,detail={})=>{if(!dead && state.volume)state.volume.viewReady(view,detail,false).catch(()=>{});},
     get displayedMainFrame(){return displayedMainFrame;},queuePickDemand,
     pick(options){
       const display=displayedMainFrame;

@@ -287,6 +287,11 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
     prefetch(view, detail = {}, curved = false) { const p = volume.pipeline(view, detail, 'idle', curved); return p.ready; },
     /** Builds a view's pipeline now; resolves when it is ready. */
     viewReady(view, detail = {}, curved = false) { return volume.pipeline(view, detail, 'now', curved).ready; },
+    /** Whether a view's pipeline is built, without queueing one (the Shaders menu's kept previews: ui/shaders.js). */
+    viewBuilt(view, detail = {}, curved = false, format = volumeReadFormat(sim, gpu)) {
+      const d = isMaterialView(view) ? drawable(detail) : {};
+      return pipes.get(`${view}|${detailKey(d)}${curved ? '|curved' : ''}|format${format}`)?.state === 'ready';
+    },
 
     /**
      * Draws the view into the scene pass (post's draw hook). Draws nothing and

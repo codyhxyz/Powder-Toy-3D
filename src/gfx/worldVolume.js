@@ -158,8 +158,9 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
       get error(){return [...states,pick].find(s=>s.state==='failed')?.error??null;},ready,
     });
   }
+  const pipeKey=(view,detail,curved)=>JSON.stringify([view,Object.keys(detail).filter(k=>detail[k]).sort(),curved]);
   function pipelineState(view='realistic',detail={},curved=false) {
-    alive(); const key=JSON.stringify([view,Object.keys(detail).filter(k=>detail[k]).sort(),curved]);
+    alive(); const key=pipeKey(view,detail,curved);
     if (!pipes.has(key)) {
       const builds=viewBuilds(gpu,grid,view,detail,curved).map(own);
       pipes.set(key,view==='plain'?aggregate(builds,plainPickState):builds[0]);
@@ -167,6 +168,8 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
     return pipes.get(key);
   }
   const viewReady=(view,detail,curved)=>pipelineState(view,detail,curved).ready;
+  // (without building it: the Shaders menu redraws a baked preview only when its view is built, ui/shaders.js)
+  const viewBuilt=(view='realistic',detail={},curved=false)=>pipes.get(pipeKey(view,detail,curved))?.state==='ready';
   const pipeline=viewReady;
   // Parameters/resources are immutable per candidate, and caller pins the
   // external lighting/appearance/mesh/noise publication through final submission.
@@ -352,7 +355,7 @@ export function createWorldVolume(gpu, {g,atlas,tables,lighting,appearance} = {}
     } catch(e) {snapshot?.release();owned.forEach(b=>b.destroy());throw e;}
   }
   return Object.freeze({get pipelineStates(){return Object.freeze([...pipes].map(([key,p])=>Object.freeze({key,state:p.state,error:p.error?.message??null})));},
-    g:grid,layouts,pickLayouts,pointLayouts,pipeline,pipelineState,viewReady,pickState,plainPickState,pickPipelineState,
+    g:grid,layouts,pickLayouts,pointLayouts,pipeline,pipelineState,viewReady,viewBuilt,pickState,plainPickState,pickPipelineState,
     pointState,pointReady,signsState,signsReady,signsLayouts,prepare,ready:pickReady,
     // Aggregate readiness is fail-fast; only these native leaves prove drainage.
     get compilationSettled(){return Promise.allSettled(compilations);},
