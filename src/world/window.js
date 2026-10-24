@@ -339,9 +339,13 @@ export class WorldWindow {
       if (fits && excess > -STAGE_LEAD && (!near || excess > near.excess)) near = { axis, d, excess };
     }
     if (!near) return false;
-    const [dx, dz] = near.axis ? [0, near.d] : [near.d, 0], { enterLo, enterHi } = moveSlabs(this.sim.g, dx, dz);
-    const o = this.sim.origin;
-    return fill.stage([o.x + dx, o.y, o.z + dz], enterLo, enterHi);
+    const [dx, dz] = near.axis ? [0, near.d] : [near.d, 0], { enterLo, enterHi, leaveLo, size } = moveSlabs(this.sim.g, dx, dz);
+    const o = this.sim.origin, O = [o.x, o.y, o.z];
+    if (!fill.stage([o.x + dx, o.y, o.z + dz], enterLo, enterHi)) return false;
+    // and the leaving slab's diff's prepass (WorldGenerator.diff), which the move then finds done
+    // (SceneGpu.prepass keeps the box it holds)
+    this.gen.res.prepassFor(leaveLo.map((v, i) => v + O[i]), leaveLo.map((v, i) => v + O[i] + size[i]));
+    return true;
   }
 
   // Capture every resident brick through the existing bounded slab diff/readback,

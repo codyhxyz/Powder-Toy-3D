@@ -86,6 +86,7 @@ export class SceneGpu {
       // than per frame. Ordered writes preserve earlier fill/diff commands.
       this.unsubscribeData = scene.subscribeData?.((at, words) => {
         if (!this.disposed) gpu.write(this.data, (d.at + at) * 4, words, { ordered: true });
+        this.preKey = null;   // (the prepass reads the scene's data: its region is out of date)
       });
       this.writeGroup = (this.bakeKernel || this.preKernel) && gpu.bindGroup(gpu.L['scene write'], [
         { binding: SCENE_BINDING.uniforms, resource: { buffer: this.uniforms.buffer } },
@@ -108,7 +109,12 @@ export class SceneGpu {
     if (!this.preKernel) return;
     const n = dims[0] * dims[1] * dims[2];
     if (n > this.preCells) throw new Error(`${this.scene.key} prepass: ${n} cells, room for ${this.preCells}`);
+    // The region already holds this box (only the prepass writes it, and the scene's data hasn't changed
+    // since): the physics region stages a move's leaving box ahead of it (world/window.js stageAhead).
+    const key = `${lo.join()}|${dims.join()}`;
+    if (key === this.preKey && this.preData === this.data) return;
     this.preKernel.dispatch(this.gpu.frame, fold(Math.ceil(n / 64)), { bind: [this.sim.tables, this.gpu.emptyGroup, this.writeGroup], params: { lo, dims } });
+    this.preKey = key; this.preData = this.data;
   }
 
   /** The prepass for a sceneCell kernel over world cells [lo, hi) (the scene's margin added). */
