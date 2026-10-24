@@ -150,7 +150,9 @@ const DEFAULTS = {
   // aren't), and its Property tool's last property and value (kept, as TPT's prefs)
   specificDelete: false, replaceTarget: -1, propField: 'temp', propText: '',
   steps: 4, gravity: 0.025, paused: false,
-  view: 0, camSpeed: 1, upscale: 'quality', dockCollapsed: true,
+  // spawnBar: the god view's element bar is showing (ui/dock.js; TPT's is always there);
+  // dockCollapsed: whether the menu in use is hidden right now, kept by the dock
+  view: 0, camSpeed: 1, upscale: 'quality', spawnBar: true, dockCollapsed: false,
   gender: 'male', character: 'real', villageCharacter: 'boy', povFov: POV_FOV, sensitivity: 1, viewBobbing: true, sprintMode: 'hold',
   sprintBlur: true, sprintMusic: true,
   nearGI: true, glowLights: true, caustics: true,
@@ -180,7 +182,7 @@ const DEFAULT_CHANGES = [
 const REV_KEY = 'rev';
 const LEGACY_MOBILE_KEY = 'mobileLite';   // rev 1's flag before REV_KEY
 const PERSIST = ['size', 'preset', 'scene', 'tool', 'radius', 'shape', 'rate', 'replace', 'propField', 'propText', 'steps', 'gravity', 'view',
-  'camSpeed', 'upscale', 'dockCollapsed', 'gender', 'character', 'villageCharacter', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
+  'camSpeed', 'upscale', 'spawnBar', 'gender', 'character', 'villageCharacter', 'povFov', 'sensitivity', 'viewBobbing', 'sprintMode', 'sprintBlur', 'sprintMusic',
   'nearGI', 'glowLights', 'caustics', ...DETAIL.map(settingKey), 'profiler'];
 const STORE = 'powder-toy-3d:settings';
 // Fixed look: glow is heat-driven light (×uLightGain); smoothing, TAA, bloom and
@@ -1430,6 +1432,7 @@ const dock = createDock({
   onEyedropper: () => setEyedropper(!eyedropper),
   onDecoToggle: () => toggleDeco(),
   onTarget: setTarget,
+  onLayout: () => save(),
 });
 hud.setEditMode(editModeText());
 
@@ -1662,7 +1665,7 @@ function setGender(gender) {
 
 function resetSettings() {
   weather.reset();
-  const keep = { size: settings.size, preset: settings.preset, scene: settings.scene, tool: settings.tool, paused: settings.paused, dockCollapsed: settings.dockCollapsed,
+  const keep = { size: settings.size, preset: settings.preset, scene: settings.scene, tool: settings.tool, paused: settings.paused, spawnBar: settings.spawnBar, dockCollapsed: settings.dockCollapsed,
     ...bodiesFor(settings.gender) };   // the player's own gender stays
   Object.assign(settings, DEFAULTS, keep);
   applyGravity();
