@@ -1,5 +1,5 @@
 import { emitNativeRay, isRayShape, emitHeldNativeRays, releaseHeldNativeRays } from './v2/tools.js';
-import { nativeHostSteps, nativeHostTick, nativeReadiness, viewStepClock, frameTicks, legacyStepHooks, brushPace, HOST_HZ, LEGACY_STEPS_PER_TICK } from './v2/host.js';
+import { nativeHostSteps, nativeHostTick, nativeReadiness, viewStepClock, frameTicks, legacyStepHooks, brushPace, createPhysicsGovernor, HOST_HZ, LEGACY_STEPS_PER_TICK } from './v2/host.js';
 // The game (docs/webgpu.md J1 U8): the settings, the grid and its scene, the
 // UI and input, and the frame loop, on one WebGPU device (src/gpu, B1).
 //
@@ -2250,6 +2250,7 @@ function countHudRates(resting, frameDt, dt, legacyStepped) {
   if (stepTime > FPS_WINDOW) { stepRate = stepCount / stepTime; stepTime = stepCount = 0; }
 }
 const invVol = new THREE.Matrix4();
+const physicsGovernor = createPhysicsGovernor(gpu);   // physics' share of the GPU a frame (v2/host.js)
 const autoRes = createAutoResolution();
 autoRes.enabled = !testMode || testMode === 'visual'; // intentional preview caps are not GPU slowness
 post.onRead = wakeLoop;   // an eye-adaptation reading landed: the view may have more adapting to do
@@ -2711,9 +2712,15 @@ function tick(now, renderOnly = false) {
     if (v2Active()) {
       if (!v2Running) { physicsV2.activate(); v2Running = true; }
       // (a resting box ticks its clock and hooks and records nothing, as V1's idle steps: v2/host.js)
-      stepped = nativeHostSteps(physicsV2, dt, { speed: settings.steps / DEFAULTS.steps, once: stepOnce && settings.paused,
-        before: nativeBeforeStep,
-        after: nativeAfterStep,
+      // (the governor: past physics' share of the frame, fewer ticks and slower game time: v2/host.js)
+      const max = physicsGovernor.allow(dt);
+      physicsGovernor.measure(() => {
+        stepped = nativeHostSteps(physicsV2, dt, { speed: settings.steps / DEFAULTS.steps, once: stepOnce && settings.paused,
+          before: nativeBeforeStep,
+          after: nativeAfterStep,
+          max,
+        });
+        return stepped ? physicsV2.recordedTicks : 0;
       });
     }
     if (DAY.running) day.clock += stepped * LEGACY_STEPS_PER_TICK; // the day is tuned in V1 steps
