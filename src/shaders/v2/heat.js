@@ -53,7 +53,7 @@ ${MAIN} {
   for (var i = 0u; i < count; i++) {
     if (!moved[i]) { continue; }
     storeMaterial(slotOf(positions[i]), Material(cores[i], banksIn[i]), Material(ctPack(cs[i], cores[i]), cs[i].bank));
-    markBusy(positions[i]);
+    markHeat(positions[i]);
   }
 }
 `;
@@ -119,7 +119,7 @@ ${MAIN} {
     after = energyAdd(after, ctEnergy(cells[i]));
     let s = slotOf(positions[i]);
     let core = ctPack(cells[i], cores[i]);
-    if (cells[i].busy != 0) { markBusy(positions[i]); }
+    if (cells[i].busy != 0) { markChange(positions[i], cores[i], core); }
     // (air holds no decoration: the block pass's carry, for a phase change into it)
     if (P.deco != 0u && cid(core) == 0u && decoOf(s) != 0u) { setDeco(s, 0u); }
     storeMaterial(s, Material(cores[i], banksIn[i]), Material(core, cells[i].bank));

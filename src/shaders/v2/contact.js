@@ -370,8 +370,9 @@ fn contactBlock(cores:ptr<function,array<vec4u,8>>,banks:ptr<function,array<i32,
   if(cells[i].valid==0){continue;}
   cells[i]=ctAmbient(cells[i],contactAmbientQ(),i32(P.ambientHeat));
   after=energyAdd(after,ctEnergy(cells[i]));
-  (*cores)[i]=ctPack(cells[i],(*cores)[i]);(*banks)[i]=cells[i].bank;(*requests)[i]=ctMergeRequest((*requests)[i],u32(cells[i].request));
-  if(cells[i].busy!=0){markBusy(positions[i]);}
+  let before=(*cores)[i];
+  (*cores)[i]=ctPack(cells[i],before);(*banks)[i]=cells[i].bank;(*requests)[i]=ctMergeRequest((*requests)[i],u32(cells[i].request));
+  if(cells[i].busy!=0){markChange(positions[i],before,(*cores)[i]);}
  }
  ctLedgerDeferred=false;
  // (a negative change notes a sink: noteEnergySource)

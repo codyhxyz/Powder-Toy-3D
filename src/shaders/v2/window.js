@@ -75,7 +75,7 @@ export function nativeMovedRuns(g, a = v2ActLayout(g)) {
   const nb = gridDims(g).nbricks;
   let at = 0;
   const place = ([offset, words]) => { const run = { offset, words, at }; at += words * nb; return run; };
-  const act = [a.busy0, a.busy1, a.quiet, a.awake, a.visible, a.state, a.events, a.air, a.summary, a.changed].map(o => [o, 1]).concat([[a.occ, 2]]).map(place);
+  const act = [a.busy0, a.busy1, a.quiet, a.awake, a.visible, a.state, a.events, a.air, a.summary, a.changed, a.moveQuiet].map(o => [o, 1]).concat([[a.occ, 2]]).map(place);
   const faces = [[0, 4], [4 * nb, 4]].map(place);
   return { act, faces, words: at };
 }

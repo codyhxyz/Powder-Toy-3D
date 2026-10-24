@@ -101,12 +101,16 @@ for (const [what, variant, loop] of [['no quiet-run seeding', { noWarm: true }, 
 // The generated scan and pass are the twins above.
 const g = gridLayout(16, 8, 8), scan = v2ActScanWGSL(g), act = v2ActivityWGSL(g), L = v2ActLayout(g);
 assert.match(scan, /let n = mEdge\(\(bc \+ vec3i\(-dx, -dy, -dz\)\)\*BS\)\/BS;/);
-assert.match(scan, /if \(atomicLoad\(&act2\[P\.busyIn \+ b\]\) != 0u\)/);
+assert.match(scan, /let busy = atomicLoad\(&act2\[P\.busyIn \+ b\]\);\s*if \(busy != 0u\)/);
+// a change beyond heat alone (busy bit 0) also claims the column passes' bit (shaders/v2.js BUSY_HEAT)
+assert.match(scan, /let bits = select\(3u, 7u, \(busy & 1u\) != 0u\);/);
 assert.match(scan, /let q = atomicLoad\(&act2\[V2_QUIET \+ b\]\);\s*if \(q < QUIET_TICKS\) \{ actClaim\(b, 2u\); \} else if \(q < QUIET_CAP\) \{ atomicStore\(&act2\[V2_QUIET \+ b\], q \+ 1u\); \}/);
 // the scan's count follows the scatter: a busy brick's near claim on itself is in place before its pass
-assert.ok(scan.indexOf('actClaim(brickId(n), 3u)') < scan.indexOf('atomicStore(&act2[V2_QUIET + b], q + 1u)'));
+assert.ok(scan.indexOf('actClaim(brickId(n), bits)') < scan.indexOf('atomicStore(&act2[V2_QUIET + b], q + 1u)'));
 assert.match(scan, /if \(\(atomicOr\(&act2\[V2_NEAR \+ b\], bits\) & 2u\) == 0u\)/);
-assert.match(act, /let near = \(atomicExchange\(&act2\[V2_NEAR \+ b\], 0u\) & 1u\) != 0u;/);
+assert.match(act, /let nearBits = atomicExchange\(&act2\[V2_NEAR \+ b\], 0u\);\s*let near = \(nearBits & 1u\) != 0u;/);
+assert.match(act, /if \(\(nearBits & 4u\) != 0u\) \{ mq = 0u; \} else \{ mq = min\(mq \+ 1u, QUIET_CAP\); \}/);
+assert.ok(L.moveQuiet >= L.words, 'the column passes quiet run is not saved');
 assert.match(act, /if \(near\) \{ q = 0u; \} else \{ q = min\(q \+ 1u, QUIET_CAP\); \}/);
 assert.ok(L.near >= L.words && L.plist >= L.words, 'the scan words are not saved');
 console.log(`activity list: ${runs} runs of 300 ticks identical to the all-brick pass (quiet, awake, busy words, awake set, busy count); 6 red variants caught`);

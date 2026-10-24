@@ -183,7 +183,7 @@ const V2_JET_GROUPS: u32 = ${v2ActLayout(g).jetGroups}u;`;
 // nonzero material request (noteEvents); clear means every request word in it is zero.
 // air: unsaved too. Clear means the brick's air ended its last air tick settled and unchanged,
 // in both ping-pong copies (the air source clears it); every other writer sets it (noteAir).
-// colAwake: unsaved; a brick column holds an awake brick this tick (v2cols writes every one).
+// colAwake: unsaved; a brick column holds a brick awake for more than heat this tick (v2cols writes every one).
 // summary: unsaved; what every cell of a brick is, for the runs pass's scan (columns.js colProbe): 0 unknown,
 // else written by support from its cells and cleared by noteState at any change since.
 // jets: unsaved; a brick holds a deposited cell marked to launch (columns.js colMarkJet; the jets pass clears it).
@@ -203,9 +203,11 @@ export function v2ActLayout(g) {
   const ledger = 10 * nb + bx * bz + 8, plive = ledger + 8 + 6 * nb + bx * bz, liveWords = PARTICLE_CAP / 32, jetGroups = plive + liveWords;
   const elecCount = jetGroups + brickGroups(g), elecFlag = elecCount + 2, elecList = elecFlag + nb, elecScratch = elecList + nb;
   const changed = elecScratch + 64 * nb;
-  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, jets: ledger + 8 + 4 * nb, colAwake: ledger + 8 + 5 * nb, summary: ledger + 8 + 5 * nb + bx * bz, plive, liveWords, jetGroups, elecCount, elecFlag, elecList, elecScratch, changed, allocated: changed + nb };
+  return { busy0: 0, busy1: nb, quiet: 2 * nb, awake: 3 * nb, list: 4 * nb, occ: 5 * nb, cols: 7 * nb, legacy: 7 * nb + bx * bz + 8, visible: 8 * nb + bx * bz + 8, count: 7 * nb + bx * bz, state: 9 * nb + bx * bz + 8, energySource: ledger, energySink: ledger + 3, boundaryMass: 7 * nb + bx * bz + 6, words: ledger + 6, events: ledger + 6, air: ledger + 6 + nb, near: ledger + 6 + 2 * nb, plist: ledger + 6 + 3 * nb, jets: ledger + 8 + 4 * nb, colAwake: ledger + 8 + 5 * nb, summary: ledger + 8 + 5 * nb + bx * bz, plive, liveWords, jetGroups, elecCount, elecFlag, elecList, elecScratch, changed, moveQuiet: changed + nb, allocated: changed + 2 * nb };
 }
-// changed: unsaved, last; a word a brick, set by every write of a cell's core (noteState), its decoration
+// moveQuiet: unsaved, last; a brick's quiet run counted from its last change other than heat alone (BUSY_HEAT):
+// the column passes (liquid and powder, which never read a cell's temperature) run where it is under QUIET_TICKS.
+// changed: unsaved; a word a brick, set by every write of a cell's core (noteState), its decoration
 // (setDeco) or its flow (v2/flow.js) since the end of the last tick, which reads and clears it (v2invalidate).
 // The tick's change: v2invalidate folds each brick whose cells, decoration, flow, drawn projection (visible)
 // or air (air, while the air runs) the tick wrote into a word per tile of TILE³ bricks after the args
@@ -358,6 +360,7 @@ const V2_ELEC_FLAG: u32 = ${a.elecFlag}u;
 const V2_ELEC_LIST: u32 = ${a.elecList}u;
 const V2_ELEC_SCRATCH: u32 = ${a.elecScratch}u;
 const V2_CHANGED: u32 = ${a.changed}u;
+const V2_MOVE_QUIET: u32 = ${a.moveQuiet}u;
 // a brick summary's codes: all closed (solid, powder or gas), all air, all one liquid full and still
 const SUM_CLOSED: u32 = ${SUMMARY.CLOSED}u;
 const SUM_AIR: u32 = ${SUMMARY.AIR}u;
@@ -477,6 +480,14 @@ fn fluidC(c: vec4u) -> bool { let k = clsOf(c); return k == C_AIR || k == C_GAS 
 // ---- activity ----
 fn brickOfCell(p: vec3i) -> u32 { return brickId(p >> vec3u(2u)); }
 fn markBusy(p: vec3i) { let q=mEdge(p); if (inGrid(q)) { atomicStore(&act2[P.busyOut + brickOfCell(q)], 1u); } }
+// A busy word holds 1 for any change (every writer's), BUSY_HEAT for one to cells' temperatures alone: that wakes
+// the bricks for every pass but the column passes, which never read a temperature (V2_MOVE_QUIET).
+const BUSY_HEAT: u32 = 2u;
+fn markHeat(p: vec3i) { let q=mEdge(p); if (inGrid(q)) { atomicOr(&act2[P.busyOut + brickOfCell(q)], BUSY_HEAT); } }
+// (a cell's temperature: its x bits 8-23, cRawTq)
+fn markChange(p: vec3i, before: vec4u, after: vec4u) {
+  if (any(((before ^ after) & vec4u(0xff0000ffu, 0xffffffffu, 0xffffffffu, 0xffffffffu)) != vec4u(0u))) { markBusy(p); } else { markHeat(p); }
+}
 fn awakeCell(p: vec3i) -> bool { return atomicLoad(&act2[V2_AWAKE + brickOfCell(p)]) != 0u; }
 fn useAwake() -> u32 { return atomicLoad(&act2[V2_COUNT + CNT_USE_AWAKE]); }
 fn axisV(a: i32) -> vec3i { var d = vec3i(0); d[a] = 1; return d; }
@@ -622,13 +633,16 @@ fn actClaim(b: u32, bits: u32) {
 ${MAIN} {
   let b = foldThread(wg, nwg, li);
   if (b >= NBRICKS) { return; }
-  if (atomicLoad(&act2[P.busyIn + b]) != 0u) {
+  let busy = atomicLoad(&act2[P.busyIn + b]);
+  if (busy != 0u) {
+    // bit 2: near a brick busy with more than heat (V2_MOVE_QUIET)
+    let bits = select(3u, 7u, (busy & 1u) != 0u);
     let bc = brickCoord(b);
     for (var dz = -1; dz <= 1; dz++) {
       for (var dy = -1; dy <= 1; dy++) {
         for (var dx = -1; dx <= 1; dx++) {
           let n = mEdge((bc + vec3i(-dx, -dy, -dz))*BS)/BS;
-          if (all(n >= vec3i(0)) && all(n < vec3i(BX, BY, BZ))) { actClaim(brickId(n), 3u); }
+          if (all(n >= vec3i(0)) && all(n < vec3i(BX, BY, BZ))) { actClaim(brickId(n), bits); }
         }
       }
     }
@@ -659,19 +673,24 @@ ${MAIN} {
   let i = foldThread(wg, nwg, li);
   if (i >= atomicLoad(&act2[V2_PLIST + 1u])) { return; }
   let b = atomicLoad(&act2[V2_PLIST + 2u + i]);
-  let near = (atomicExchange(&act2[V2_NEAR + b], 0u) & 1u) != 0u;
+  let nearBits = atomicExchange(&act2[V2_NEAR + b], 0u);
+  let near = (nearBits & 1u) != 0u;
   if (atomicLoad(&act2[P.busyIn + b]) != 0u) { atomicAdd(&act2[V2_COUNT + CNT_BUSY], 1u); }
   var q = atomicLoad(&act2[V2_QUIET + b]);
   if (near) { q = 0u; } else { q = min(q + 1u, QUIET_CAP); }
   atomicStore(&act2[V2_QUIET + b], q);
   let awake = q < QUIET_TICKS;
-  atomicStore(&act2[V2_AWAKE + b], select(0u, 1u, awake));
+  // the run since a change other than heat alone: bit 1 of the awake word, the column passes' (v2cols)
+  var mq = atomicLoad(&act2[V2_MOVE_QUIET + b]);
+  if ((nearBits & 4u) != 0u) { mq = 0u; } else { mq = min(mq + 1u, QUIET_CAP); }
+  atomicStore(&act2[V2_MOVE_QUIET + b], mq);
+  atomicStore(&act2[V2_AWAKE + b], select(0u, 1u, awake) | select(0u, 2u, awake && mq < QUIET_TICKS));
   if (awake) { atomicStore(&act2[V2_LIST + atomicAdd(&act2[V2_COUNT + CNT_AWAKE], 1u)], b); }
   atomicStore(&act2[P.busyOut + b], 0u);
 }
 `;
 
-// ---- columns: a thread a brick column; one with an awake brick goes into the column list
+// ---- columns: a thread a brick column; one with a brick awake for more than heat goes into the column list
 export const v2ColsWGSL = (g) => /* wgsl */ `
 ${v2Head(g)}
 ${MAIN} {
@@ -680,7 +699,7 @@ ${MAIN} {
   let bx = i32(col % u32(BX));
   let bz = i32(col / u32(BX));
   var any_ = false;
-  for (var by = 0; by < BY; by++) { if (atomicLoad(&act2[V2_AWAKE + brickId(vec3i(bx, by, bz))]) != 0u) { any_ = true; } }
+  for (var by = 0; by < BY; by++) { if ((atomicLoad(&act2[V2_AWAKE + brickId(vec3i(bx, by, bz))]) & 2u) != 0u) { any_ = true; } }
   if (any_) { atomicStore(&act2[V2_COLS + atomicAdd(&act2[V2_COUNT + CNT_COLS], 1u)], col); }
   // the column water's one-word test of it (columns.js colAwake); written only when it changes
   let flag = select(0u, 1u, any_);
@@ -1761,7 +1780,7 @@ export function nativeDynamicsHead(g, { busyOut = false } = {}) {
   let shared = v2Head(g).slice(v2Head(g).indexOf('const V2_BUSY0:'));
   if (!shared.includes(NOTE_UNSEEN)) throw new Error('nativeDynamicsHead: noteVisible has no early out to replace');
   shared = shared.replace(NOTE_UNSEEN, 'if (all(before == after)) { return; }');
-  if (!busyOut) shared = shared.replace('P.busyOut', 'select(V2_BUSY0, V2_BUSY0 + NBRICKS, (P.tick & 1u) == 0u)');
+  if (!busyOut) shared = shared.replaceAll('P.busyOut', 'select(V2_BUSY0, V2_BUSY0 + NBRICKS, (P.tick & 1u) == 0u)');
   // Dynamics needs only the original finite-f32 prefix, never the contact tail.
   const rows = new Uint32Array(v2Table().buffer, 0, ELEMENTS.length * 8);
   const ev = Array.from({ length: rows.length / 4 }, (_, i) => `vec4u(${Array.from(rows.subarray(i * 4, i * 4 + 4), word => `${word}u`).join(',')})`);
