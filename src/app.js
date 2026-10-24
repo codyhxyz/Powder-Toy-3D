@@ -1733,7 +1733,7 @@ function setView(id) {
   setBlocks(plainView(id));
   prepareGI();
   const key = viewKeyOf(id);
-  if (!blocksOn && viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
+  if (!blocksOn && windowShadows(key, !!warpNow()?.k) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
   settingsPanel.sync();
   shaderPanel.sync();
   hud.setLegend(VIEWS.find((v) => v.id === id));
@@ -1824,8 +1824,9 @@ async function renderThumb(viewId, out, { build = true } = {}) {
   if (view === 'plain' && !b) return false;
   const wv = worldView?.draws(view) ? worldView : null;   // (the material views: the world march, as a frame draws them)
   const built = wv ? wv.pipeline(view, detail, 'manual').state === 'ready' : v.viewBuilt(view, detail);
-  if (!build && !b && !(built && (!viewShadows(view) || v.shadowState === 'ready'))) return false;
-  await (b ? b.ready : Promise.all([wv ? wv.pipeline(view, detail).ready : v.viewReady(view, detail), ...(viewShadows(view) ? [v.shadowReady()] : [])]));
+  const shadows = viewShadows(view) && !wv;   // (the march's are L's: windowShadows)
+  if (!build && !b && !(built && (!shadows || v.shadowState === 'ready'))) return false;
+  await (b ? b.ready : Promise.all([wv ? wv.pipeline(view, detail).ready : v.viewReady(view, detail), ...(shadows ? [v.shadowReady()] : [])]));
   if (graphicsFailure || v !== vol || format !== v.format || (b && b !== blocks)) return false;
   thumbTarget ??= gpu.createTexture({
     label: 'view thumbnail', size: THUMB_SIZE, format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
@@ -2393,7 +2394,7 @@ function selectRenderView() {
       : vol.pipeline(next.view, next.detail, 'now', next.curved);
     const required = [pipe];
     if (pipe.state !== 'ready') { coldShader.watch(pipe); wakeWhen(pipe.ready); }
-    if (viewShadows(next.view)) {
+    if (windowShadows(next.view, next.curved)) {
       if (vol.shadowState !== 'ready') wakeWhen(vol.shadowReady());
       required.push({ state: vol.shadowState });
     }
@@ -2479,6 +2480,21 @@ function drawScene(rp) {
   brush.draw(rp);
 }
 
+// One lighting system (docs/seamless-world.md): a frame whose view the world march draws is lit by
+// L's world lighting alone (gfx/worldLight.js), its meshes, flying matter and hands too
+// (gfx/meshLight.js, gfx/nativeParticles.js, pov/viewmodel.js read app.worldLight). The window's
+// derived passes, sun shadow map and GI would run for nothing drawn: the compute hook skips them.
+// Same look (data views, Plain, the rolling log's curved view): those still march the window and
+// keep its light (and windowLightStale has it rebuilt whole when they come back). Picks read
+// physics' state, not the derived brick map; signs' occlusion probe reads the brick map as it was.
+let windowLightStale = false;
+let testWindowLight = false;   // __app.test.windowLight: the A/B
+// whether `view` reads the window's sun shadow map (the world march's shadows are L's cascades)
+function windowShadows(view, curved) { return viewShadows(view) && !worldView?.draws(view, curved); }
+function worldLit() {
+  return !testWindowLight && !blocks && !testBoxMarch && !!worldView?.draws(viewKeyOf(renderView), !!warpNow()?.k);
+}
+
 // This view frame's kind (gfx/meshFrames.js): 'full', or while only three's
 // meshes move, 'capture' (the scene drawn without them first, and kept) and
 // then 'meshes' (the kept scene, the meshes over it: no volume, no far field)
@@ -2499,7 +2515,11 @@ const frameHooks = {
       // nothing that only feeds the march: the faces again if the state or the window moved
       prof.phase('blocks');
       blocks.update({ sun: SUN });
+    } else if (frameDerived && worldLit()) {
+      windowLightStale = true;   // (L lights this frame and everything in it: worldLit)
     } else if (frameDerived) {
+      // back on the window's light after frames without it: every brick, tile and probe over
+      if (windowLightStale) { windowLightStale = false; sim.changedAll = true; if (derived) derived.shadowFull = true; sim.resetGI(); }
       prof.phase('derived');
       sim.updateBricks();
       if (viewShadows(viewKeyOf(renderView))) {
@@ -2916,6 +2936,7 @@ function tick(now, renderOnly = false) {
   threeMeshes,
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
   get worldView() { return worldView; },
+  get worldLight() { return worldLit() ? worldView.light : null; },   // L, on frames it lights alone (worldLit)
   // the engine, as __app reports it (src/wire/saves.js captures and restores it)
   get physics() { return window.__app?.physics; },
   get renderView() { return renderView; },
@@ -3096,6 +3117,7 @@ try {
     get arena() { return arenaLayout; },
     get win() { return win; },
     get worldView() { return worldView; },   // the seamless world's march, its world copy, fields and light (gfx/worldView.js)
+    get worldLight() { return worldLit() ? worldView.light : null; },   // L, on frames it lights alone (worldLit)
     get lastGpuFailure() { return gpuLoss.last; },   // the last GPU failure's report, kept across reloads (gfx/gpuLoss.js)
     get lastFrameError() { return lastFrameError(); },   // the last uncaught frame error's report, kept across reloads (gfx/gpuLoss.js)
     // world mode: start the world over with the window at `origin` (world cells)
@@ -3161,6 +3183,10 @@ try {
       },
       // Every pipeline the current settings need is built, ours and three's (B5).
       ready: allReady,
+      // true: world-march frames run and read the window's light too, as before one lighting
+      // system (worldLit): the A/B of what skipping it saves
+      set windowLight(v) { testWindowLight = !!v; pacer.wake(); },
+      get windowLight() { return testWindowLight; },
       // A converged snapshot: frames until the view settles, with no physics,
       // input, player or multiplayer updates, then the GPU done with them.
       async render() {

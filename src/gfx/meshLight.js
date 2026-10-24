@@ -28,9 +28,9 @@
 // synchronously at the first draw).
 import {
   Vector3, Vector4, Matrix4, DataTexture, Data3DTexture, RGBAFormat, FloatType, HalfFloatType, UnsignedByteType,
-  NearestFilter, LinearFilter, ClampToEdgeWrapping, RepeatWrapping, NoColorSpace, MeshBasicNodeMaterial,
+  NearestFilter, LinearFilter, ClampToEdgeWrapping, RepeatWrapping, NoColorSpace, MeshBasicNodeMaterial, StorageBufferAttribute,
 } from 'three/webgpu';
-import { uniform, texture, texture3D, sampler, wgslFn, code, vec4, float, positionWorld, normalWorld, smoothstep, max, dot } from 'three/tsl';
+import { uniform, texture, texture3D, sampler, wgslFn, code, vec4, float, positionWorld, normalWorld, smoothstep, max, dot, storage } from 'three/tsl';
 import { externalTexture } from '../gpu/three.js';
 import { glslMod } from '../gpu/wgsl.js';
 import { gfxUniforms, WAND_LIGHTS } from './uniforms.js';
@@ -41,6 +41,8 @@ import { cloudDeckGLSL } from '../shaders/gfx/clouds.js';
 import { BRICK } from '../shaders/common.js';
 import { ELEMENTS, R } from '../elements.js';
 import { glf as f } from '../glsl.js';
+import { lightLookupWGSL, lightLookupFromMatsWGSL, packLightMats } from '../shaders/world/lightLookup.js';
+import { lightUniformValues } from './worldLightBook.js';
 
 // Figures sit in the window's light at these offsets (cells): shadow lookups
 // move toward the sun (off the body's own cells), GI probes are read out along
@@ -199,25 +201,61 @@ const lightCode = code(LIGHT_WGSL, [], 'wgsl');
 /** The figures' light WGSL as emitted (tools/bake-icons.mjs keys the baked sprites on it). */
 export const meshLightWGSL = LIGHT_WGSL;
 
+// The world's light (docs/seamless-world.md, "L"; shaders/world/lightLookup.js): on frames the
+// world march draws, the meshes read L's sun cascades, probe cascades and glow in world cells (a
+// grid point + the window's origin), the lookups the march's own readers make. lcBuf is bound as
+// three's storage buffer named LC_BUF_NAME (gfx/worldLight.js's GPUBuffer adopted by three:
+// adoptBuffer), LC comes in as five mat4 uniforms (lightLookup.js packLightMats).
+const LC_BUF_NAME = 'lcMeshBuf';
+const WORLD_WGSL = /* wgsl */ `
+fn lmLoad(i: u32) -> vec4u { return ${LC_BUF_NAME}.value[i]; }
+${lightLookupWGSL({ caustics: true })}
+${lightLookupFromMatsWGSL}
+`;
+const worldCode = code(WORLD_WGSL, [lightCode], 'wgsl');
+/** The world-light lookups the meshes carry, as emitted (tools/mesh-world-light-check.mjs). */
+export const meshWorldLightWGSL = WORLD_WGSL;
+
 // The sunlight falling on grid point p: FU.sunCol × sunShadowAt(p) (lighting.js:
 // the clouds' shadow, and the map if light gets through them), or the whole of
 // it without the map (sun.w: the shadows switch).
+// world.x: L's light (the frame's view is the world march's): the cascades at p + origin, world
+// cells (lightLookup.js lmSunMap, as light.js sunShadowAt). tag: lcBuf's first word, so three
+// declares the buffer the lookups read by name.
 const figSunFn = wgslFn(/* wgsl */ `
 fn figSun(p: vec3f, sm: texture_2d<f32>, sig: texture_2d<f32>, noise: texture_3d<f32>, rep: sampler,
-          sun: vec4f, sunCol: vec4f, grid: vec4f, origin: vec4f, cave: vec4f, cloud: vec4f) -> vec3f {
+          sun: vec4f, sunCol: vec4f, grid: vec4f, origin: vec4f, cave: vec4f, cloud: vec4f,
+          world: vec4f, mU: mat4x4f, mV: mat4x4f, mS: mat4x4f, mO: mat4x4f, mP: mat4x4f, tag: vec4u) -> vec3f {
+  _ = tag;
   if (sun.w < 0.5) { return sunCol.rgb; }
   let c = figCloudShadow(p + origin.xyz, sun.xyz, noise, rep, cloud);
   if (c <= FIG_CLOUD_SHADOW_SKIP) { return vec3f(0.0); }
+  if (world.x > 0.5) {
+    lmSetMats(mU, mV, mS, mO, mP);
+    return sunCol.rgb * c * lmSunMap(p + origin.xyz, vec3f(0.0), cave.w > 0.5, origin.w);
+  }
   return sunCol.rgb * c * figSunMapShadowAt(p, sm, sig, sun.xyz, grid, origin, cave.w > 0.5);
-}`, [lightCode]);
+}`, [lightCode, worldCode]);
 
 // The light from everything else at grid point p of a surface facing n: the GI
 // probes' irradiance read at q (lighting.js giIrradiance(probeAt(q), n), with the
 // scene's ambient floor), and the glow volume and wand lights at p (sampleLight)
 // × the glow's gain (sunCol.w).
+// world.x: L's light (the bands and the glow are L's then: updateMeshLight points the nodes at
+// them): its probe cascades at q + origin (light.js probeAt; the open sky past them: sky, ground)
+// and its glow at p + origin (glowClipAt), world cells. The wand lights stay in window cells.
 const figAmbientFn = wgslFn(/* wgsl */ `
 fn figAmbient(p: vec3f, q: vec3f, n: vec3f, gi0: texture_3d<f32>, gi1: texture_3d<f32>, gi2: texture_3d<f32>, gi3: texture_3d<f32>,
-              light: texture_3d<f32>, s: sampler, wand: texture_2d<f32>, wandCount: f32, sunCol: vec4f, grid: vec4f, cave: vec4f) -> vec3f {
+              light: texture_3d<f32>, s: sampler, wand: texture_2d<f32>, wandCount: f32, sunCol: vec4f, grid: vec4f, cave: vec4f,
+              origin: vec4f, world: vec4f, sky: vec4f, ground: vec4f,
+              mU: mat4x4f, mV: mat4x4f, mS: mat4x4f, mO: mat4x4f, mP: mat4x4f, tag: vec4u) -> vec3f {
+  _ = tag;
+  if (world.x > 0.5) {
+    lmSetMats(mU, mV, mS, mO, mP);
+    let g = lmProbeAt(q + origin.xyz, gi0, gi1, gi2, gi3, s, sky.rgb, ground.rgb);
+    let wl = lmGlowAt(p + origin.xyz, light, s) + figWandLight(p, wand, i32(wandCount));
+    return lmIrradiance(g, n) + cave.rgb + wl * sunCol.w;
+  }
   let c0 = figProbeTex(gi0, s, q, grid.xyz);
   let cx = figProbeTex(gi1, s, q, grid.xyz);
   let cy = figProbeTex(gi2, s, q, grid.xyz);
@@ -225,7 +263,7 @@ fn figAmbient(p: vec3f, q: vec3f, n: vec3f, gi0: texture_3d<f32>, gi1: texture_3
   let irr = max(FIG_SH_Y0 * c0.rgb + FIG_SH_COS1 * FIG_SH_Y1 * (cx.rgb * n.x + cy.rgb * n.y + cz.rgb * n.z), vec3f(0.0)) + cave.rgb;
   let local = figProbeTex(light, s, p, grid.xyz).rgb + figWandLight(p, wand, i32(wandCount));
   return irr + local * sunCol.w;
-}`, [lightCode]);
+}`, [lightCode, worldCode]);
 
 // three.js's getTangentFrame (normalmap_pars_fragment), as figure.js's GLSL
 // figNormalMapped had it: the tangent frame from screen-space derivatives of
@@ -291,6 +329,8 @@ const stand = {
   noise: data3D(UnsignedByteType, new Uint8Array([128, 128, 128, 128]), RepeatWrapping),
 };
 const wandData = new Float32Array(4 * WAND_LIGHTS * 2);
+// a storage buffer for lcBuf while no world light is bound (window frames: never read)
+const standLc = new StorageBufferAttribute(new Uint32Array(4), 4);
 
 /**
  * The light's nodes, shared by every lit material: texture nodes (their
@@ -311,6 +351,14 @@ export const meshLight = {
   cloud: uniform(new Vector4(0, 0, 0, 0)),      // clouds on, their sea level, their drift (x, z)
   wandCount: uniform(0),
   worldToGrid: uniform(new Matrix4()),          // scene → grid cells (the volume's matrixWorld, inverted)
+  // the world's light (L), on frames the world march draws: world.x 1; LC as five mat4s
+  // (lightLookup.js packLightMats); lcBuf (gfx/worldLight.js buf.lc, adopted); the open sky's
+  // colours above and below (FU.skyUp, FU.ground) past the probe cascades
+  world: uniform(new Vector4(0, 0, 0, 0)),
+  lc: [0, 1, 2, 3, 4].map(() => uniform(new Matrix4())),
+  lcBuf: storage(standLc, 'uvec4', 1).toReadOnly().setName(LC_BUF_NAME),
+  sky: uniform(new Vector4(0, 0, 0, 0)),
+  ground: uniform(new Vector4(0, 0, 0, 0)),
 };
 
 
@@ -346,13 +394,15 @@ export function litColor({ albedo, n = normalWorld, grid = null, emit = null, to
  */
 export function meshLightTerms({ p, q, n, glowAt = p }) {
   const L = meshLight;
+  const lc = { world: L.world, mU: L.lc[0], mV: L.lc[1], mS: L.lc[2], mO: L.lc[3], mP: L.lc[4], tag: L.lcBuf.element(0) };
   const sun = figSunFn({
     p, sm: L.shadow, sig: L.sigma, noise: L.noise, rep: sampler(L.noise),
-    sun: L.sun, sunCol: L.sunCol, grid: L.grid, origin: L.origin, cave: L.cave, cloud: L.cloud,
+    sun: L.sun, sunCol: L.sunCol, grid: L.grid, origin: L.origin, cave: L.cave, cloud: L.cloud, ...lc,
   });
   const ambient = figAmbientFn({
     p: glowAt, q, n, gi0: L.gi[0], gi1: L.gi[1], gi2: L.gi[2], gi3: L.gi[3], light: L.light, s: sampler(L.light),
     wand: L.wand, wandCount: L.wandCount, sunCol: L.sunCol, grid: L.grid, cave: L.cave,
+    origin: L.origin, sky: L.sky, ground: L.ground, ...lc,
   });
   return { sun, ambient };
 }
@@ -365,38 +415,83 @@ export const gridPosition = (worldToGrid = meshLight.worldToGrid) => worldToGrid
 
 // ---------------------------------------------------------------- per frame
 
-const ext = new Map();   // a node's key → { source: GPUTexture, tex: ExternalTexture }
-function point(key, node, source, opts) {
+const ext = new Map();      // a node's key → { source: GPUTexture, tex: ExternalTexture }
+const standOf = new Map();  // a node → its stand-in (the value it was made with)
+// the ExternalTexture wrapping source under key (made again when the source is: a new grid or light)
+function wrap(key, source, opts) {
   const had = ext.get(key);
-  if (had?.source === source && node.value === had.tex) return;
-  if (!source) {
-    if (had) { node.value = had.stand; had.tex.dispose(); ext.delete(key); }
-    return;
-  }
+  if (had?.source === source) return had.tex;
+  had?.tex.dispose();
+  ext.delete(key);
+  if (!source) return null;
   const tex = externalTexture(source, opts);
   if (opts?.wrap) tex.wrapS = tex.wrapT = tex.wrapR = opts.wrap;
-  const standIn = had?.stand ?? node.value;
-  node.value = tex;
-  had?.tex.dispose();
-  ext.set(key, { source, tex, stand: standIn });
+  ext.set(key, { source, tex });
+  return tex;
 }
+// points node at source's texture (its stand-in without one). A node read from two sources (the
+// window's GI bands or L's) keeps a key for each, so switching between them makes nothing again.
+function point(key, node, source, opts) {
+  if (!standOf.has(node)) standOf.set(node, node.value);
+  const v = wrap(key, source, opts) ?? standOf.get(node);
+  if (node.value !== v) node.value = v;
+}
+// three's storage attribute bound to L's lcBuf (its GPUBuffer adopted: three makes a buffer only
+// for an attribute it has none for, WebGPUAttributeUtils.createAttribute, and never destroys one
+// outside a geometry's), made again for a new world light
+let lcAdopted = { source: null, attr: null };
+function lcAttribute(three, buffer) {
+  if (lcAdopted.source === buffer) return lcAdopted.attr;
+  const attr = new StorageBufferAttribute(new Uint32Array(4), 4);
+  three.renderer.backend.get(attr).buffer = buffer;
+  lcAdopted = { source: buffer, attr };
+  return attr;
+}
+const lcMats = new Float32Array(80);
+// LC with nothing in it: no cascade holds anything (shO.z 0), every probe and glow chunk's tag misses
+// (the tags start invalid), spacings 1 (no division by zero)
+const LC_NONE = (() => {
+  const z = () => [0, 0, 0, 0], one = () => [0, 0, 0, 1];
+  return { shU: [one(), one(), one()], shV: [z(), z(), z()], shS: [z(), z(), z()], shO: [z(), z(), z()],
+    centre: z(), prO: [one(), one(), one()], glO: [one(), one()], size: z() };
+})();
 
 const sunV = new Vector3(), inv = new Matrix4();
 /**
  * Brings the light's nodes up to this frame (src/wire/mesh.js beforeView):
  * the grid's textures (repointed when its shadow map, light or GI bands are
- * made again: a new grid), the sun and sky, the window, the wand lights.
+ * made again: a new grid), the sun and sky, the window, the wand lights. On
+ * a frame the world march draws (app.worldLight: gfx/worldLight.js's
+ * WorldLight, else null), the bands and the glow are L's and the lookups
+ * L's cascades (docs/seamless-world.md: one lighting system).
  * @param {{ gpu: object, sim: object, derived?: object, vol?: object, volume?: object, sun: object,
- *   viewTimeUniform?: { value: number } }} app
+ *   viewTimeUniform?: { value: number }, worldLight?: object | null }} app
  */
 export function updateMeshLight(app) {
   const L = meshLight, u = gfxUniforms;
   const { sim, vol, volume } = app;
   const derived = app.derived ?? sim?.derived;
-  const shadows = vol?.shadowState === 'ready';
-  point('shadow', L.shadow, shadows ? vol.shadowTextures.map : null, { dimension: '2d' });
-  derived?.giTextures?.forEach((t, k) => point(`gi${k}`, L.gi[k], t, { dimension: '3d' }));
-  point('light', L.light, derived?.light ?? null, { dimension: '3d' });
+  const wl = app.gpu?.three ? app.worldLight ?? null : null;
+  const shadows = wl ? true : vol?.shadowState === 'ready';
+  point('shadow', L.shadow, !wl && shadows ? vol.shadowTextures.map : null, { dimension: '2d' });
+  if (wl) {
+    wl.bands.forEach((t, k) => point(`world gi${k}`, L.gi[k], t, { dimension: '3d' }));
+    point('world glow', L.light, wl.glowTex, { dimension: '3d' });
+    const attr = lcAttribute(app.gpu.three, wl.buf.lc);
+    if (L.lcBuf.value !== attr) L.lcBuf.value = attr;
+    // (before L's first update its cascades have no basis yet: nothing traced, the open sky's light)
+    const traced = wl.shadow?.cascades?.every((c) => c.basis);
+    packLightMats(traced ? lightUniformValues(wl.size, wl.shadow, wl.probes, wl.glow) : LC_NONE, lcMats);
+    L.lc.forEach((m, i) => m.value.fromArray(lcMats, 16 * i));
+  } else {
+    [0, 1, 2, 3].forEach((k) => point(`gi${k}`, L.gi[k], derived?.giTextures?.[k] ?? null, { dimension: '3d' }));
+    point('light', L.light, derived?.light ?? null, { dimension: '3d' });
+    if (L.lcBuf.value !== standLc) L.lcBuf.value = standLc;
+  }
+  L.world.value.set(wl ? 1 : 0, 0, 0, 0);
+  const sky = u.uSkyUp.value, ground = u.uGround.value;
+  L.sky.value.set(sky[0], sky[1], sky[2], 0);
+  L.ground.value.set(ground[0], ground[1], ground[2], 0);
   const noise = app.gpu ? createMediaNoise(app.gpu).texture : null;
   point('noise', L.noise, noise, { dimension: '3d', wrap: RepeatWrapping });
 
