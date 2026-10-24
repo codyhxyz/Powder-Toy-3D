@@ -12,7 +12,7 @@ import { BRICK } from '../shaders/common.js';
 // The lead's switch (seamless world integration): true once the march reads the world copy (agent M),
 // so nothing on screen reads the physics window's derived data. A move then records no picture work.
 // False keeps today's move (derived, occupancy, far field and render source follow the window).
-export const PHYSICS_ONLY_MOVE = false;
+export const PHYSICS_ONLY_MOVE = true;
 // The maps the switch covers: the seamless world's census (docs/seamless-world.md). Intentional (user,
 // 2026-10-24: "don't worry about descent"): Descent's levels and the Noita source scenes keep the old
 // picture, and so the old move, until the march covers them.
@@ -26,7 +26,7 @@ export const physicsOnlyFor = (scene, on = PHYSICS_ONLY_MOVE || PAGE_SWITCH) => 
 // _shiftRing): a move copies nothing and rewrites only the slab it uncovers. Its whole-window copies (V2's
 // cores and banks out to a scratch and back, the requests, the flow) were ~6.6 of a move's ~8 ms of GPU
 // (P2's slot, 2026-10-24). False keeps the copying move under the switch.
-export const RING_MOVE = true;
+export const RING_MOVE = false;   // (lead, 2026-10-24: off until every physics reader is ring-aware: the writeback, the march's physSlot)
 /** Whether a window over this scene lays its grid out by ring addressing (world/window.js, at construction). */
 export const ringedFor = (scene, on = RING_MOVE) => on && physicsOnlyFor(scene);
 
