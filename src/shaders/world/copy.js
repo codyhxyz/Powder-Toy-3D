@@ -9,11 +9,12 @@
 // Buffers, all indexed in world bricks b = (x, y, z), bi = x + BX (y + BY z):
 //   wcTable  u32 per brick: a uniform brick's cell word, or WC_MIXED | its pool slot
 //   wcPool   64 u32 per slot: the brick's cells x + 4 (y + 4 z)
-//   wcInfo   u32 per brick: the BRICK_INFO bits of shaders/bindings.js (bits 0-16), derived from cells (no field
-//            textures: the world copy comes before them), then the brick's own bits (WC_OWN_*, bits 24-30) the
-//            dilation derives the low bits from
-//   wcOcc    the occupancy levels: a bit per 16³-cell node (level 1), then a bit per 64³-cell node (level 2), x
-//            fastest, set where a brick in it has BRICK_MATTER
+//   wcMeta   (one buffer: the render kernels' storage budget, the lead's contract change of 2026-10-24)
+//            words 0 .. bricks: a u32 per brick, the BRICK_INFO bits of shaders/bindings.js (bits 0-16), derived
+//            from cells (no field textures: the world copy comes before them), then the brick's own bits
+//            (WC_OWN_*, bits 24-30) the dilation derives the low bits from;
+//            from word WC.occ1At: the occupancy levels, a bit per 16³-cell node (level 1), then from WC.occ2At a
+//            bit per 64³-cell node (level 2), x fastest, set where a brick in it has BRICK_MATTER
 // Writers only: wcAlloc (the allocator's counters, then its free list) and wcScratch (the jobs' ring, then the
 // chunk's cells or a writeback's words). A writer binds at most 8 storage buffers a stage: the decode, with the
 // tables and V2's two, takes five of these (no occupancy).
@@ -65,7 +66,10 @@ export function wcLayout(size) {
   const n2 = n1.map((n) => Math.ceil(n / WC_NODE2));
   const count = (v) => v[0] * v[1] * v[2];
   const occ1Words = Math.ceil(count(n1) / 32), occ2Words = Math.ceil(count(n2) / 32);
-  return { size: [...size], bricks, n1, n2, nBricks: count(bricks), occ1Words, occ2At: occ1Words, occWords: occ1Words + occ2Words };
+  const nBricks = count(bricks);
+  // occ2Rel: level 2's first word among the occupancy's; occ1At, occ2At: their words in wcMeta (after the info)
+  return { size: [...size], bricks, n1, n2, nBricks, occ1Words, occ2Rel: occ1Words, occWords: occ1Words + occ2Words,
+    occ1At: nBricks, occ2At: nBricks + occ1Words, metaWords: nBricks + occ1Words + occ2Words };
 }
 
 // ---------------------------------------------------------------- group 1 of render kernels
@@ -73,14 +77,15 @@ export function wcLayout(size) {
 export const WorldCopyUniforms = uniformStruct('WorldCopyUniforms', {
   size: 'vec3i', air: 'u32',          // cells; the cell word wcCell returns outside the world
   bricks: 'vec3i', capacity: 'u32',   // bricks; pool slots (tools)
-  n1: 'vec3i', occ2At: 'u32',         // level-1 nodes; the word level 2 starts at in wcOcc
-  n2: 'vec3i', revision: 'u32',       // level-2 nodes; the copy's revision (tools)
+  n1: 'vec3i', occ1At: 'u32',         // level-1 nodes; the word of wcMeta level 1 starts at
+  n2: 'vec3i', occ2At: 'u32',         // level-2 nodes; the word level 2 starts at
+  revision: 'u32',                    // the copy's revision (tools)
 });
 const READ = STAGE.FRAGMENT | STAGE.COMPUTE;
-/** Group 1's layout entries (gpu.layout('WORLD_COPY', WORLD_COPY_LAYOUT)): 0 WC, 1 wcTable, 2 wcPool, 3 wcInfo, 4 wcOcc. */
+/** Group 1's layout entries (gpu.layout('WORLD_COPY', WORLD_COPY_LAYOUT)): 0 WC, 1 wcTable, 2 wcPool, 3 wcMeta (info, then occupancy). */
 export const WORLD_COPY_LAYOUT = [
   { binding: 0, visibility: READ, buffer: { type: 'uniform' } },
-  ...[1, 2, 3, 4].map((binding) => ({ binding, visibility: READ, buffer: { type: 'read-only-storage' } })),
+  ...[1, 2, 3].map((binding) => ({ binding, visibility: READ, buffer: { type: 'read-only-storage' } })),
 ];
 export const WORLD_COPY_GROUP = 1;
 
@@ -105,14 +110,13 @@ const WC_INFO_MATTER: u32 = ${BRICK_INFO.MATTER}u;
  *   wcInfo(b) -> u32          brick b's BRICK_INFO bits (0 outside)
  *   wcOccupied(level, c)      level 0: c's brick has matter; 1: its 16³ node; 2: its 64³ node (false outside)
  */
-export const worldCopyWGSL = /* wgsl */ `
+export const worldCopyWGSL = () => /* wgsl */ `
 ${wcCommonWGSL}
 ${WorldCopyUniforms.wgsl}
 @group(1) @binding(0) var<uniform> WC: WorldCopyUniforms;
 @group(1) @binding(1) var<storage, read> wcTable: array<u32>;
 @group(1) @binding(2) var<storage, read> wcPool: array<u32>;
-@group(1) @binding(3) var<storage, read> wcInfoBuf: array<u32>;
-@group(1) @binding(4) var<storage, read> wcOcc: array<u32>;
+@group(1) @binding(3) var<storage, read> wcMeta: array<u32>;   // the info a brick, then the occupancy (WC.occ1At, WC.occ2At)
 fn wcInWorld(c: vec3i) -> bool { return all(c >= vec3i(0)) && all(c < WC.size); }
 fn wcBrickIndex(b: vec3i) -> u32 { return u32(b.x + WC.bricks.x * (b.y + WC.bricks.y * b.z)); }
 fn wcCell(c: vec3i) -> u32 {
@@ -137,23 +141,24 @@ fn wcA(c: vec3i) -> vec4f {
 }
 fn wcInfo(b: vec3i) -> u32 {
   if (any(b < vec3i(0)) || any(b >= WC.bricks)) { return 0u; }
-  return wcInfoBuf[wcBrickIndex(b)];
+  return wcMeta[wcBrickIndex(b)];
 }
-fn wcOccBit(i: u32) -> bool { return ((wcOcc[i >> 5u] >> (i & 31u)) & 1u) != 0u; }
+// bit i of the occupancy level starting at word at
+fn wcOccBit(at: u32, i: u32) -> bool { return ((wcMeta[at + (i >> 5u)] >> (i & 31u)) & 1u) != 0u; }
 fn wcOccupied(level: u32, c: vec3i) -> bool {
   if (!wcInWorld(c)) { return false; }
   if (level == 0u) { return (wcInfo(c >> vec3u(2u)) & WC_INFO_MATTER) != 0u; }
-  if (level == 1u) { let n = c >> vec3u(4u); return wcOccBit(u32(n.x + WC.n1.x * (n.y + WC.n1.y * n.z))); }
+  if (level == 1u) { let n = c >> vec3u(4u); return wcOccBit(WC.occ1At, u32(n.x + WC.n1.x * (n.y + WC.n1.y * n.z))); }
   let n = c >> vec3u(6u);
-  return wcOccBit(WC.occ2At * 32u + u32(n.x + WC.n2.x * (n.y + WC.n2.y * n.z)));
+  return wcOccBit(WC.occ2At, u32(n.x + WC.n2.x * (n.y + WC.n2.y * n.z)));
 }
 `;
 
 // ---------------------------------------------------------------- the writers
 // Their group 2 (one layout for every writer, a dummy where a kernel binds nothing): the copy's buffers read_write.
-export const WC_WRITE = { table: 0, pool: 1, info: 2, occ: 3, alloc: 4, scratch: 5 };
+export const WC_WRITE = { table: 0, pool: 1, meta: 2, alloc: 3, scratch: 4 };
 export const WC_WRITE_LAYOUT = Object.values(WC_WRITE).map((binding) => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }));
-export const WC_DECODE_LAYOUT = WC_WRITE_LAYOUT.filter((e) => e.binding !== WC_WRITE.occ);
+export const WC_DECODE_LAYOUT = WC_WRITE_LAYOUT;   // (the decode binds the tables and V2's two besides: 8)
 export const WC_JOB_RING = 1 << 19;   // wcScratch's first words: the jobs (world/worldCopy.js writes them a writeback at a time)
 // wcAlloc's words: the bump (slots ever handed out), the free list's length, slots that didn't fit (never, by
 // world/worldCopy.js's capacity rule: a nonzero count is a bug the tools report), a spare; then the free list.
@@ -163,14 +168,15 @@ export const WcWriteParams = uniformStruct('WcWriteParams', {
   chunk: 'vec3i', first: 'u32',       // the chunk's size in cells (build); the first job of the dispatch
   airT: 'f32', capacity: 'u32', dilate: 'i32', level: 'u32',
 });
-const writerDecls = (L, { occ = true } = {}) => /* wgsl */ `
+const writerDecls = (L) => /* wgsl */ `
 ${wcCommonWGSL}
 ${WcWriteParams.wgsl}
 @group(3) @binding(1) var<uniform> P: WcWriteParams;
 @group(2) @binding(${WC_WRITE.table}) var<storage, read_write> wcTable: array<u32>;
 @group(2) @binding(${WC_WRITE.pool}) var<storage, read_write> wcPool: array<u32>;
-@group(2) @binding(${WC_WRITE.info}) var<storage, read_write> wcInfoBuf: array<u32>;
-${occ ? `@group(2) @binding(${WC_WRITE.occ}) var<storage, read_write> wcOcc: array<atomic<u32>>;` : ''}
+@group(2) @binding(${WC_WRITE.meta}) var<storage, read_write> wcMeta: array<atomic<u32>>;   // info, then occupancy
+fn wcInfoGet(bi: u32) -> u32 { return atomicLoad(&wcMeta[bi]); }
+fn wcInfoPut(bi: u32, v: u32) { atomicStore(&wcMeta[bi], v); }
 @group(2) @binding(${WC_WRITE.alloc}) var<storage, read_write> wcAlloc: array<atomic<u32>>;
 @group(2) @binding(${WC_WRITE.scratch}) var<storage, read_write> wcScratchBuf: array<u32>;
 const WC_SCRATCH_AT: u32 = ${WC_JOB_RING}u;
@@ -181,6 +187,7 @@ fn wcScratchSet(i: u32, v: u32) { wcScratchBuf[WC_SCRATCH_AT + i] = v; }
 const WC_B: vec3i = vec3i(${L.bricks.join(', ')});
 const WC_N1: vec3i = vec3i(${L.n1.join(', ')});
 const WC_N2: vec3i = vec3i(${L.n2.join(', ')});
+const WC_OCC1_AT: u32 = ${L.occ1At}u;
 const WC_OCC2_AT: u32 = ${L.occ2At}u;
 const WC_CH_LIQUID: i32 = ${CH_LIQUID};
 const WC_AIR_SNAP: f32 = ${glf(WC_AIR_SNAP)};
@@ -437,7 +444,7 @@ ${brickWorkgroup(/* wgsl */ `
   if (any(b >= WC_B)) { return; }
   let bi = wcBi(b);
   if (li == 0u) {
-    wcInfoBuf[bi] = wcOwnInfo();
+    wcInfoPut(bi, wcOwnInfo());
     if (atomicLoad(&wgDiff) == 0u) { wcTable[bi] = wgW[0]; wgSlot = 0xffffffffu; }
     else {
       wgSlot = wcAllocSlot();
@@ -460,7 +467,7 @@ const unpackJob = /* wgsl */ `
   let wb = vec3i(i32(jw & 1023u), i32((jw >> 10u) & 1023u), i32(jw >> 20u));`;
 export const wcDecodeFrag = (g, L) => /* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
-${writerDecls(L, { occ: false })}
+${writerDecls(L)}
 // cell p of the window: its word (compactA's fields, undithered, at full precision: shaders/compact.js)
 fn wcCoreWord(p: vec3i) -> u32 {
   let c = fetchNativeCore(p);
@@ -481,7 +488,7 @@ ${brickWorkgroup(/* wgsl */ `${unpackJob}
   let bi = wcBi((P.origin >> vec3u(2u)) + wb);
   let flag = P.count * 64u + j;
   if (li == 0u) {
-    wcInfoBuf[bi] = wcOwnInfo();
+    wcInfoPut(bi, wcOwnInfo());
     let old = wcTable[bi];
     if (atomicLoad(&wgDiff) == 0u) {
       wcTable[bi] = wgW[0];
@@ -528,7 +535,7 @@ ${jobThread(/* wgsl */ `
   var bi = job;
   if (P.level != 1u) { bi = wcJob(job); }
   let b = wcBrickOf(bi);
-  let me = wcInfoBuf[bi];
+  let me = wcInfoGet(bi);
   var near = 0u;
   var whole = (me & WC_OWN_LIQ_WHOLE) != 0u;
   for (var dz = -P.dilate; dz <= P.dilate; dz++) {
@@ -536,7 +543,7 @@ ${jobThread(/* wgsl */ `
       for (var dx = -P.dilate; dx <= P.dilate; dx++) {
         let q = b + vec3i(dx, dy, dz);
         if (any(q < vec3i(0)) || any(q >= WC_B)) { continue; }   // past the world: nothing there (whole stays: the edge sea)
-        let o = wcInfoBuf[wcBi(q)];
+        let o = wcInfoGet(wcBi(q));
         near |= o;
         if ((o & WC_OWN_LIQ_WHOLE) == 0u) { whole = false; }
       }
@@ -551,7 +558,7 @@ ${jobThread(/* wgsl */ `
   if (whole) { low |= WC_I_LIQUID_INTERIOR; }
   if ((me & WC_OWN_MATTER) != 0u || surf || media) { low |= WC_INFO_MATTER; }
   else { low &= (7u << WC_I_AIR_SHIFT); }   // an empty brick: its air flags only (passes.js)
-  wcInfoBuf[bi] = (me & ~0x00ffffffu) | low;`)}
+  wcInfoPut(bi, (me & ~0x00ffffffu) | low);`)}
 `;
 
 // ---- the occupancy: level 1 nodes (P.level 1) from their bricks' BRICK_MATTER, level 2 (P.level 2) from
@@ -559,10 +566,11 @@ ${jobThread(/* wgsl */ `
 export const wcOccFrag = (g, L) => /* wgsl */ `
 ${prelude(g, { state: false })}
 ${writerDecls(L)}
-fn wcOccGet(i: u32) -> bool { return ((atomicLoad(&wcOcc[i >> 5u]) >> (i & 31u)) & 1u) != 0u; }
-fn wcOccSet(i: u32, on: bool) {
+// bit i of the level starting at word at of wcMeta
+fn wcOccGet(at: u32, i: u32) -> bool { return ((atomicLoad(&wcMeta[at + (i >> 5u)]) >> (i & 31u)) & 1u) != 0u; }
+fn wcOccSet(at: u32, i: u32, on: bool) {
   let bit = 1u << (i & 31u);
-  if (on) { atomicOr(&wcOcc[i >> 5u], bit); } else { atomicAnd(&wcOcc[i >> 5u], ~bit); }
+  if (on) { atomicOr(&wcMeta[at + (i >> 5u)], bit); } else { atomicAnd(&wcMeta[at + (i >> 5u)], ~bit); }
 }
 ${jobThread(/* wgsl */ `
   var ni = job;
@@ -574,18 +582,18 @@ ${jobThread(/* wgsl */ `
     let lo = n * ${WC_NODE1};
     let hi = min(lo + ${WC_NODE1}, WC_B);
     for (var z = lo.z; z < hi.z && !on; z++) { for (var y = lo.y; y < hi.y && !on; y++) { for (var x = lo.x; x < hi.x; x++) {
-      if ((wcInfoBuf[wcBi(vec3i(x, y, z))] & WC_INFO_MATTER) != 0u) { on = true; break; }
+      if ((wcInfoGet(wcBi(vec3i(x, y, z))) & WC_INFO_MATTER) != 0u) { on = true; break; }
     } } }
-    wcOccSet(ni, on);
+    wcOccSet(WC_OCC1_AT, ni, on);
   } else {
     let n = vec3i(i32(ni) % WC_N2.x, (i32(ni) / WC_N2.x) % WC_N2.y, i32(ni) / (WC_N2.x * WC_N2.y));
     if (n.z >= WC_N2.z) { return; }
     let lo = n * ${WC_NODE2};
     let hi = min(lo + ${WC_NODE2}, WC_N1);
     for (var z = lo.z; z < hi.z && !on; z++) { for (var y = lo.y; y < hi.y && !on; y++) { for (var x = lo.x; x < hi.x; x++) {
-      if (wcOccGet(u32(x + WC_N1.x * (y + WC_N1.y * z)))) { on = true; break; }
+      if (wcOccGet(WC_OCC1_AT, u32(x + WC_N1.x * (y + WC_N1.y * z)))) { on = true; break; }
     } } }
-    wcOccSet(WC_OCC2_AT * 32u + ni, on);
+    wcOccSet(WC_OCC2_AT, ni, on);
   }`)}
 `;
 
@@ -602,7 +610,7 @@ export const WGSL_CHECK = () => Object.entries(WC_KERNELS).map(([name, frag]) =>
 })).concat([{
   // the readers, as a render kernel includes them
   name: 'world copy readers', kind: 'compute', grids: ['128'], warm: false, layouts: () => [[{ binding: 0, visibility: READ, buffer: { type: 'read-only-storage' } }], WORLD_COPY_LAYOUT, [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }]],
-  code: (g) => `${prelude(g, { state: false })}\n${worldCopyWGSL}\n@group(2) @binding(0) var<storage, read_write> out: array<f32>;
+  code: (g) => `${prelude(g, { state: false })}\n${worldCopyWGSL()}\n@group(2) @binding(0) var<storage, read_write> out: array<f32>;
 @compute @workgroup_size(1) fn main() { let c = vec3i(1); out[0] = wcA(c).x + f32(wcCell(c) + wcInfo(c) + u32(wcOccupied(2u, c))); }`,
   dispatch: () => [1, 1, 1],
 }]);

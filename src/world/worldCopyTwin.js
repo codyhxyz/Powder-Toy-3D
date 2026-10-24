@@ -160,7 +160,7 @@ export class WorldCopyTwin {
       if (!(this.info[x + BX * (y + BY * z)] & BRICK_INFO.MATTER)) continue;
       const n1 = (x >> 2) + AX * ((y >> 2) + AY * (z >> 2));
       occ[n1 >> 5] |= 1 << (n1 & 31);
-      const n2 = L.occ2At * 32 + (x >> 4) + CX * ((y >> 4) + CY * (z >> 4));
+      const n2 = L.occ2Rel * 32 + (x >> 4) + CX * ((y >> 4) + CY * (z >> 4));
       occ[n2 >> 5] |= 1 << (n2 & 31);
     }
     return occ;
@@ -170,10 +170,10 @@ export class WorldCopyTwin {
     if (x < 0 || y < 0 || z < 0 || x >= X || y >= Y || z >= Z) return false;
     if (level === 0) return (this.info[this.bi([x >> 2, y >> 2, z >> 2])] & BRICK_INFO.MATTER) !== 0;
     const s = level === 1 ? 4 : 6, n = level === 1 ? L.n1 : L.n2;
-    const i = (level === 1 ? 0 : L.occ2At * 32) + (x >> s) + n[0] * ((y >> s) + n[1] * (z >> s));
+    const i = (level === 1 ? 0 : L.occ2Rel * 32) + (x >> s) + n[0] * ((y >> s) + n[1] * (z >> s));
     return ((this.occ[i >> 5] >>> (i & 31)) & 1) !== 0;
   }
   /** Bytes the GPU copy of this would hold: table, pool at capacity, info, occupancy, free list. */
-  bytes(capacity = this.capacity) { return 4 * (2 * this.L.nBricks + this.L.occWords) + capacity * (WC_BRICK_CELLS + 1) * 4; }
+  bytes(capacity = this.capacity) { return 4 * (this.L.nBricks + this.L.metaWords) + capacity * (WC_BRICK_CELLS + 1) * 4; }
 }
 export { wcUnword };

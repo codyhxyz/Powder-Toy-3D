@@ -92,8 +92,7 @@ export class WorldCopy {
     const L = this.L, buf = (label, size, usage = RW) => gpu.createBuffer({ label, size: Math.max(16, Math.ceil(size / 16) * 16), usage });
     this.buf = {
       table: buf('world copy table', L.nBricks * 4),
-      info: buf('world copy info', L.nBricks * 4),
-      occ: buf('world copy occupancy', L.occWords * 4),
+      meta: buf('world copy info + occupancy', L.metaWords * 4),
       pool: null, alloc: null, scratch: null,
     };
     this.capacity = 0;
@@ -218,7 +217,7 @@ export class WorldCopy {
   _writeUniforms() {
     const L = this.L;
     this.uniforms.write({
-      size: L.size, air: this.airWord, bricks: L.bricks, capacity: this.capacity, n1: L.n1, occ2At: L.occ2At, n2: L.n2, revision: this.revision,
+      size: L.size, air: this.airWord, bricks: L.bricks, capacity: this.capacity, n1: L.n1, occ1At: L.occ1At, n2: L.n2, occ2At: L.occ2At, revision: this.revision,
     });
   }
 
@@ -228,14 +227,16 @@ export class WorldCopy {
     this._groups = {
       read: gpu.bindGroup(this.layout, [
         { binding: 0, resource: res(this.uniforms.buffer) }, { binding: 1, resource: res(b.table) }, { binding: 2, resource: res(b.pool) },
-        { binding: 3, resource: res(b.info) }, { binding: 4, resource: res(b.occ) }], 'world copy'),
+        { binding: 3, resource: res(b.meta) }], 'world copy'),
       write: gpu.bindGroup(this.writeLayout, Object.entries(WC_WRITE).map(([k, binding]) => ({ binding, resource: res(b[k]) })), 'world copy write'),
-      decode: gpu.bindGroup(this.decodeLayout, Object.entries(WC_WRITE).filter(([k]) => k !== 'occ').map(([k, binding]) => ({ binding, resource: res(b[k]) })), 'world copy decode'),
+      decode: gpu.bindGroup(this.decodeLayout, Object.entries(WC_WRITE).map(([k, binding]) => ({ binding, resource: res(b[k]) })), 'world copy decode'),
     };
     return this._groups;
   }
-  /** Group 1 of render kernels (WORLD_COPY_LAYOUT). Made again when the pool grows: read it each frame. */
-  get bindGroup() { return this.groups.read; }
+  /** Group 1 of render kernels (WORLD_COPY_LAYOUT); null until built. Made again when the pool grows: read it each frame. */
+  get bindGroup() { return this.built && !this.skipped ? this.groups.read : null; }
+  /** Group 1's layout entries (the class's: shaders/world/copy.js WORLD_COPY_LAYOUT). */
+  static get LAYOUT() { return WORLD_COPY_LAYOUT; }
 
   // ---------------------------------------------------------------- kernels
   _kernelsFor(sim, scene = null) {
@@ -275,19 +276,19 @@ export class WorldCopy {
 
   // ---------------------------------------------------------------- the build
   /**
-   * Build the whole map. source: the WorldWindow of a big map (its scene, world P, generator resources,
-   * stores and simulation), or { sim } for a small map (its box, from its current cells).
+   * Build the whole map. source: a Simulation (a big map's: its worldWindow; a small map's: its box, from its
+   * current cells), a WorldWindow (its scene, world P, generator resources, stores and simulation) or { sim }.
    * Resolves when it is recorded and submitted (the first frame may draw it).
    * @param {object} source
    */
   async build(source) {
+    if (source?.g && source?.gpu && !source.sim) source = source.worldWindow ?? { sim: source };   // a Simulation
     const t0 = performance.now(), gpu = this.gpu, sim = source.sim;
     this._sim = sim;
     const scene = source.scene ?? null;
     if (scene && OUT_OF_SCOPE.test(scene.key)) { this.skipped = true; return this; }
     gpu.frame.clear(this.buf.alloc, 0, WC_CTRL.WORDS * 4);
-    gpu.frame.clear(this.buf.occ);
-    gpu.frame.clear(this.buf.info);
+    gpu.frame.clear(this.buf.meta);
     this.bumpRead = 0; this.jobsSince = 0;
     let chunks = 0;
     if (scene) {

@@ -24,7 +24,13 @@ for (let i = 0; i < N; i++) {
 }
 // a sample in the first window's region (its cells are the window's: the fill, no trees planted there)
 const inWin = ([x, , z]) => x >= ORIGIN[0] && x < ORIGIN[0] + WIN && z >= ORIGIN[2] && z < ORIGIN[2] + WIN;
-for (let i = 0; i < 400; i++) samples.push([ORIGIN[0] + Math.floor(r() * WIN), Math.floor(r() * H), ORIGIN[2] + Math.floor(r() * WIN)]);
+const PAIRS = 1200, pairAt = samples.length;
+for (let i = 0; i < PAIRS; i++) {
+  const d = [Math.floor(r() * WIN), 0, Math.floor(r() * WIN)], x = ORIGIN2[0] + d[0], z = ORIGIN2[2] + d[2];
+  d[1] = i % 2 ? Math.floor(r() * H) : Math.max(0, Math.min(H - 1, A.top(x, z) - 8 + Math.floor(r() * 12)));
+  samples.push([ORIGIN[0] + d[0], d[1], ORIGIN[2] + d[2]]);   // the window: after the writeback, the fill of ORIGIN2 + d
+}
+for (let i = 0; i < PAIRS; i++) { const [x, y, z] = samples[pairAt + i]; samples.push([x - ORIGIN[0] + ORIGIN2[0], y, z - ORIGIN[2] + ORIGIN2[2]]); }   // its twin cell, built from the scene
 const t0 = Date.now();
 const expect = samples.map(([x, y, z]) => A.cell(x, y, z));
 const expectBare = samples.map(([x, y, z]) => A.column(x, z)(y));   // no trees: the window's fill
@@ -68,6 +74,20 @@ try {
     const wb = cmp(res.after.words, inWin, moved);
     console.log(`after writeback, inside the window: ${wb.n} cells, ${wb.bad} differ ${wb.ex.join('; ')}`);
     ok(wb.bad <= wb.n * 0.005, 'writeback: the window\'s new cells are in the copy');
+    // the game's own fill (V2 cores, decoded by the writeback) against the build's scene kernel at the same world cells
+    let pn = 0, pbad = 0, ptree = 0;
+    const pex = [];
+    for (let i = 0; i < PAIRS; i++) {
+      const a = res.after.words[pairAt + i] & 255, b = res.after.words[pairAt + PAIRS + i] & 255, q = samples[pairAt + PAIRS + i];
+      pn++;
+      if (a !== b) { const tree = expect[pairAt + PAIRS + i] !== expectBare[pairAt + PAIRS + i]; if (tree) ptree++; else { pbad++; if (pex.length < 6) pex.push(`${q}: fill ${a} build ${b}`); } }
+    }
+    console.log(`the game's fill against the build's scene cells: ${pn} cells, ${pbad} differ off trees (${ptree} on the twin's trees) ${pex.join('; ')}`);
+    ok(pbad <= pn * 0.002, 'build: the scene kernel makes the game generator\'s cells');
+    // what the twin gets wrong, by kind
+    const kinds = new Map();
+    samples.forEach((p, i) => { if (i < pairAt && !inWin(p) && (res.built.words[i] & 255) !== expect[i]) { const k = `${res.built.words[i] & 255}<-${expect[i]}`; kinds.set(k, (kinds.get(k) ?? 0) + 1); } });
+    console.log(`gpu<-twin differences: ${[...kinds].sort((a, b) => b[1] - a[1]).slice(0, 10).map(([k, n]) => `${k} ${n}`).join(', ')}`);
     const still = res.after.words.filter((w, i) => !inWin(samples[i]) && w !== res.built.words[i]).length;
     ok(still === 0, `writeback: nothing outside the window changed (${still})`);
     if (res.failures.length) { failures++; console.log(`FAIL graphics: ${res.failures.join(' | ')}`); }
