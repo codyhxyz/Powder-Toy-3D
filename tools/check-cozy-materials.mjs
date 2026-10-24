@@ -19,8 +19,7 @@ import { cozyFixture, SWATCHES } from './cozy-fixture.mjs';
 import { E } from '../src/elements.js';
 import { VIEWS, viewKey, viewForMode, isMaterialView, materialStyleForView } from '../src/views.js';
 import { GAMEMODES, mapByKey, mapOf, modeByKey, resolveMode } from '../src/maps.js';
-import { createDetailGate, gateVariants } from '../src/gfx/detailGate.js';
-import { detailDefaults } from '../src/gfx/detail.js';
+import { detailDefaults, detailDefines } from '../src/gfx/detail.js';
 import { VOLUME_VIEWS, viewShadows, warmChecks, WGSL_CHECK as renderChecks } from '../src/shaders/render.js';
 import { WGSL_CHECK as giChecks } from '../src/shaders/gi.js';
 import { nagaSpawn } from './naga.mjs';
@@ -187,10 +186,10 @@ assert.doesNotMatch(app, /key:\s*['"]materialStyle['"]|['"]Material style['"]/, 
 assert.match(app.slice(app.indexOf('const PERSIST'), app.indexOf('const STORE')), /'view'/);
 assert.match(app, /view: 0, camSpeed/, 'Realistic remains the default');
 const runtime = app.slice(app.indexOf('function setView(id)'), app.indexOf('// The blocks renderer on or off'));
-for (const text of ['settings.view = id', 'post.reset()', 'meshFrames.drop()', 'sim.resetGI()', 'detailGate.setView(id)', 'save()']) assert.ok(runtime.includes(text), text);
+for (const text of ['settings.view = id', 'post.reset()', 'meshFrames.drop()', 'sim.resetGI()', 'save()']) assert.ok(runtime.includes(text), text);
 const selectView = new Function('settings', 'VIEWS', 'isMaterialView', 'mapKind', `
   const worldMode = null;
-  const post = { reset() {} }, meshFrames = { drop() {} }, sim = { resetGI() {} }, detailGate = { setView() {} };
+  const post = { reset() {} }, meshFrames = { drop() {} }, sim = { resetGI() {} };
   const setBlocks = () => {}, plainView = () => false, prepareGI = () => {}, viewKeyOf = () => 'cozy';
   const blocksOn = true, settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {}, toast() {} }, save = () => {};
   ${runtime}
@@ -215,37 +214,17 @@ const detail = detailDefaults();
 for (const shader of ['realistic', 'cozy', 'noita']) {
   assert(isMaterialView(shader));
   const warm = warmChecks(shader, detail);
-  assert.deepEqual(warm[0].detail, gateVariants(detail).base);
+  // one variant per view: every switched-on feature, in the view's own pipeline (no Realistic reuse)
+  assert.deepEqual(warm[0].detail, detailDefines(detail));
+  assert.equal(warm[0].view, shader);
+  assert.equal(warm.filter(e => e.name.startsWith('volume.')).length, 1, `${shader}: one volume variant, no idle near one`);
   assert(warm.some(e => e.name === 'shadow'));
   assert(giChecks().every(e => e.warm({ view: shader })), 'lit material views preload GI');
   assert(warmChecks(shader, detail, { curved: true })[0].curved);
 }
 assert(!isMaterialView('plain'));
 assert(giChecks().every(e => !e.warm({ view: 'heat' })));
-const requests = [];
-const volume = { pipeline(shader, defines) {
-  requests.push({ shader, defines });
-  return { state: 'ready', ready: Promise.resolve(), build() {} };
-} };
-const gate = createDetailGate(null);
-try {
-  gate.configure(volume, detail, 0);
-  gate.update(camera, [0, 0, 0], [32, 32, 32], 640);
-  assert(requests.every(r => r.shader === 'realistic'));
-  requests.length = 0;
-  gate.setView(cozy.id);
-  gate.update(camera, [0, 0, 0], [32, 32, 32], 640);
-  assert.equal(gate.view, 'cozy');
-  // a near variant exists only while a switched-on feature is gated by distance
-  const { base, near } = gateVariants(detail), gated = Object.keys(near).length > Object.keys(base).length;
-  assert(requests.length >= (gated ? 2 : 1), 'Cozy builds its own base (and near) variants');
-  assert(requests.every(r => r.shader === 'cozy'), 'cannot reuse a Realistic near pipeline');
-  requests.length = 0;
-  gate.setView(1);
-  gate.update(camera, [0, 0, 0], [32, 32, 32], 640);
-  assert.equal(requests.length, 0, 'data views do not compile material detail');
-  assert.equal(gate.pending, 0);
-} finally { gate.dispose(); }
+assert.deepEqual(warmChecks('heat', detail)[0].detail, {}, 'data views do not compile material detail');
 
 assert.match(cozySurfaceWGSL, /m\.emit = cellEmission\(id, T, ctype\) \+ sparkEmit\(id, ctype\)/);
 assert.match(cozySurfaceWGSL, /let wp = p \* CELL_M/);

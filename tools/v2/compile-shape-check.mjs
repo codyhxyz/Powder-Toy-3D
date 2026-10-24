@@ -78,10 +78,11 @@ for (const dims of [[32, 32, 32], [128, 128, 128]]) {
 // call (gfx/surface.js MatPlan), the reflection march through reflectResolve's (gfx/liquid.js reflectDefer),
 // one liquidInterface for the box wall and every bend, one shadeHit for a hit or the floor, and World's
 // probes read their four bands per tap lookup (worldAccess.js worldProbe). Cold Metal compile, CPU-timed
-// 2026-10-20 (medians of 3): World base 23.4 -> 9.9 s, Box base 5.3 -> 3.3 s.
+// 2026-10-20 (medians of 3): World base 23.4 -> 9.9 s, Box base 5.3 -> 3.3 s. (The gate's base level is gone,
+// 2026-10-23: balanced, the default, stands in for it.)
 {
   const { volumeFrag, REALISTIC_LEVELS } = await import('../../src/shaders/render.js');
-  for (const backend of ['box', 'world']) for (const view of ['realistic', 'cozy']) for (const level of ['off', 'base', 'full']) for (const curved of [false, true]) {
+  for (const backend of ['box', 'world']) for (const view of ['realistic', 'cozy']) for (const level of ['off', 'balanced', 'full']) for (const curved of [false, true]) {
     const tag = `${backend} ${view} ${level}${curved ? ' curved' : ''}`;
     const g = backend === 'world' ? { nx: 3072, ny: 384, nz: 1024 } : { nx: 32, ny: 32, nz: 32 };
     const code = volumeFrag(g, { backend, view, detail: REALISTIC_LEVELS[level](), curved }).replace(/\/\/[^\n]*/g, '');   // (calls, not comments)

@@ -2,8 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {gateVariants} from '../src/gfx/detailGate.js';
-import {DETAIL,settingKey} from '../src/gfx/detail.js';
+import {DETAIL,settingKey,detailDefines} from '../src/gfx/detail.js';
 import {VIEWS,isMaterialView} from '../src/views.js';
 import {createLoadWatch,LOAD_FLAG_MS} from '../src/loadWatch.js';
 import {kindOf} from '../src/mapKind.js';
@@ -75,15 +74,17 @@ test('actual core startup retains physics/picks but never warms a BOX view for W
   }
 });
 
-test('WORLD never requests legacy GI, detail variants or block pipelines; BOX still does',()=>{
+test('WORLD never requests legacy GI or block pipelines; BOX still does (no detail gate on either)',()=>{
+  assert.match(source,/derived = mapKind\.boxDerived \? new Derived\(sim\) : null;/);
   for(const worldMode of [{size:[1024,128,1024]},null]){
     const calls=[],settings={view};
-    const env={worldMode,mapKind:kindOf(!!worldMode),blocksOn:false,settings,isMaterialView,derived:{prepareGI(){calls.push('GI');return Promise.resolve();}},
+    // (build makes a big map no box derived passes: derived = mapKind.boxDerived ? new Derived(sim) : null)
+    const env={worldMode,mapKind:kindOf(!!worldMode),blocksOn:false,settings,isMaterialView,
+      derived:kindOf(!!worldMode).boxDerived?{prepareGI(){calls.push('GI');return Promise.resolve();}}:null,
       giWait:Promise.resolve(),giBuilt:0,wakeLoop(){},live:[],ctx:{},vol:{},detailVersion:0,
-      detailGate:{dispose(){calls.push('dispose gate');},configure(){calls.push('configure gate');}},
       post:{reset(){calls.push('reset');}}};
     appFunction('prepareGI',env)();appFunction('applyDetail',env)();
-    assert.deepEqual(calls,worldMode?['dispose gate','reset']:['GI','configure gate','reset']);
+    assert.deepEqual(calls,worldMode?['reset']:['GI','reset']);
     let blocks=0;
     appFunction('setBlocks',{worldMode,mapKind:kindOf(!!worldMode),blocksOn:false,graphicsFailure:null,createBlocks(){blocks++;return {ready:Promise.resolve()};},
       gpu:{},sim:{},blocks:null,pacer:{wake(){}},post:{reset(){}}})(true);
@@ -91,14 +92,14 @@ test('WORLD never requests legacy GI, detail variants or block pipelines; BOX st
   }
 });
 
-test('WORLD view selection cannot build the retired shadow or detail variant',()=>{
+test('WORLD view selection cannot build the retired shadow variant',()=>{
   for(const worldMode of [{size:[1024,128,1024]},null]){
     const calls=[],settings={view};
     appFunction('setView',{worldMode,mapKind:kindOf(!!worldMode),VIEWS,settings,isMaterialView,post:{reset(){}},meshFrames:{drop(){}},sim:{resetGI(){}},
-      detailGate:{setView(){calls.push('detail');}},setBlocks(){},plainView:()=>false,prepareGI(){},viewKeyOf:()=> 'realistic',
+      setBlocks(){},plainView:()=>false,prepareGI(){},viewKeyOf:()=> 'realistic',
       blocksOn:false,vol:{shadowState:'idle',shadowReady(){calls.push('shadow');return Promise.resolve();}},
       viewShadows:()=>true,pacer:{wake(){}},settingsPanel:{sync(){}},shaderPanel:{sync(){}},hud:{setLegend(){}},save(){}})(view);
-    assert.deepEqual(calls,worldMode?[]:['detail','shadow']);
+    assert.deepEqual(calls,worldMode?[]:['shadow']);
   }
 });
 
@@ -108,25 +109,26 @@ test('actual WORLD readiness waits core/queue without unrelated local view, GI o
     await appFunction('allReady',{win,mapKind:kindOf(!!win),sim,vol,coreWait:Promise.resolve(),coreReady:true,graphicsFailure:null,
       gpu:{async settled(){calls.push('queue');}},viewKeyOf:()=> 'realistic',settings:{view},blocksOn:false,blocks:null,
       warpNow:()=>null,viewShadows:()=>true,baseDetail:()=>({}),giWait:Promise.resolve(),physicsV2:null,
-      // the BOX checkpoint's footprint (syncRenderResolution, updateFrameDetail): not under test here
-      applyOutputRatio(){},syncRenderResolution(){},updateFrameDetail(){},autoRes:{scale:1},detailGate:{level:0},gateVariants,isMaterialView,detailKey:d=>JSON.stringify(d)})();
+      // the BOX checkpoint's render resolution (syncRenderResolution): not under test here
+      applyOutputRatio(){},syncRenderResolution(){},autoRes:{scale:1},isMaterialView,detailKey:d=>JSON.stringify(d)})();
     assert.deepEqual(calls,win?['queue']:['view','shadow','queue']);
   }
 });
 
-test('WORLD frame detail uses all selected defines, never camera distance from physics',()=>{
-  // updateFrameDetail (app.js) returns it for the frame and the parked checkpoints alike.
-  const code=`frameDetail = ${source.match(/function updateFrameDetail\(\) \{[\s\S]*?return (mapKind\.detailGate \? .*);\n\}/)[1]};`;
-  const settings=Object.fromEntries(DETAIL.map(f=>[settingKey(f),true])),all=gateVariants(settings).near;
+test('frame detail uses all selected defines on every map, never camera distance',()=>{
+  // updateFrameDetail (app.js) returns it for the frame and the parked checkpoints alike;
+  // there is no distance gate (2026-10-23): small and big maps draw one variant.
+  const settings=Object.fromEntries(DETAIL.map(f=>[settingKey(f),true])),all=detailDefines(settings);
+  settings.view=view;
   assert(Object.keys(all).length>0);
-  const detailGate={update(){throw Error('WORLD must not query the local detail gate');}};
-  const actual=new Function('mapKind','gateVariants','settings','detailGate','camera','camGrid','sim','canvas','post',
-    `let frameDetail;${code}return frameDetail;`)(kindOf(true),gateVariants,settings,detailGate);
-  assert.deepEqual(actual,all);
-  const box={legacy:1};
-  const result=new Function('mapKind','gateVariants','settings','detailGate','camera','camGrid','sim','canvas','post',
-    `let frameDetail;${code}return frameDetail;`)(kindOf(false),gateVariants,settings,{update:()=>box},null,null,{g:{nx:128,ny:128,nz:128}},{height:200},{renderScale:1});
-  assert.equal(result,box);
+  assert.doesNotMatch(source,/detailGate|gateVariants/);
+  const baseDetail=expression(source.match(/const baseDetail = (\(\) => .*);\n/)[1],{isMaterialView,settings,detailDefines});
+  for(const win of [{size:[1024,128,1024]},null]){
+    const volume={updateMatrixWorld(){},matrixWorld:{}},invVol={copy(){return {invert:()=>({})};}};
+    const camGrid={copy(){return {applyMatrix4(){}};}},camera={position:{}};
+    const frame=appFunction('updateFrameDetail',{volume,camGrid,camera,invVol,baseDetail,mapKind:kindOf(!!win)});
+    assert.deepEqual(frame(),all,`${win?'WORLD':'BOX'}: every selected define`);
+  }
 });
 
 test('loading never declares WORLD ready before a confirmed MAIN, even past old timeout',async()=>{

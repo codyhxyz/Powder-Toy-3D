@@ -20,9 +20,9 @@
 // reads the map (shadows: B5 builds it at boot only then); otherwise it
 // builds on the first recordShadow() or shadowReady() (a switch to a view with
 // shadows). A view's module builds on first use (build: 'now'), or ahead of it
-// when prefetch() queues it for idle time (the detail gate's near variant,
-// B5). draw() draws nothing while its pipeline is pending (the caller keeps
-// the previous variant meanwhile: gfx/detailGate.js).
+// when prefetch() queues it for idle time (B5). draw() draws nothing while its
+// pipeline is pending (the caller keeps the previous variant meanwhile:
+// gfx/readyVolumeView.js).
 //
 // The rolling log (gfx/presentation.js; docs/webgpu.md Sync log, Sync 4):
 // while a gamemode's effect bends the view, draw() and pick() take its
@@ -89,7 +89,9 @@ export function volumeReadFormat(sim, gpu, header, physical = false) {
 
 /**
  * @param {object} gpu
- * @param {import('../sim.js').Simulation} sim with its derived passes attached (sim.derived)
+ * @param {import('../sim.js').Simulation} sim with its derived passes attached (sim.derived), or none: a big
+ *   map's (mapKind boxDerived), whose volume only picks and lends its lighting group to the far view
+ *   (world/far.js), its fields, glow, GI and brick map then 1×1 stand-ins (zeros, as never-run passes left them)
  * @param {{ shadows?: boolean, sourceAppearance?: boolean }} [opts] sourceAppearance:
  *   the selected world's imported manifest has source artwork (not a view setting).
  *   shadows: the session's view reads the
@@ -102,7 +104,6 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
   // repeating Metal's variable-integer-division expansion at every lookup.
   const g = volumeShaderGrid(sim.g, sim.world, sourceAppearance);
   const derived = sim.derived;
-  if (!derived) throw new Error('createVolume: the simulation has no derived passes (new Derived(sim) first)');
   const fu = frameUniformsOf(gpu);
   // the layouts under the names WGSL_CHECK gives them (shaders/render.js LAYOUT_NAMES)
   const L = {};
@@ -128,7 +129,13 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
     flat: gpu.createTexture({ label: 'far 2d (none)', size: [1, 1], format: 'rgba16float', usage: TEX.TEXTURE_BINDING }),
     buffer: gpu.createBuffer({ label: 'aeration (none)', size: 16, usage: GPUBufferUsage.STORAGE }),
     depth: gpu.createTexture({ label: 'mesh depth (none)', size: [1, 1], format: 'depth32float', usage: TEX.TEXTURE_BINDING }),
+    field: gpu.createTexture({ label: 'derived field (none)', size: [1, 1, 1], dimension: '3d', format: 'rgba16float', usage: TEX.TEXTURE_BINDING }),
   };
+  // without derived passes: their lighting entries (fields 0-2, glow 3, GI 4-7, the brick map 16 and its distances 17)
+  const standInEntries = () => [
+    ...[0, 1, 2, 3, 4, 5, 6, 7].map((binding) => ({ binding, resource: viewOf(dummy.field) })),
+    { binding: 16, resource: { buffer: dummy.buffer } }, { binding: 17, resource: { buffer: dummy.buffer } },
+  ];
   const views = new WeakMap();
   const viewOf = (t, desc) => {
     if (!(t instanceof GPUTexture)) return t;   // (a view already)
@@ -161,7 +168,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
         { binding: 14, resource: samplers.clamp }, { binding: 15, resource: samplers.repeat },
         { binding: 18, resource: { buffer: sim.state.flow } },
         { binding: 19, resource: { buffer: aeration ?? dummy.buffer } },
-        ...derived.lightingEntries(),
+        ...(derived ? derived.lightingEntries() : standInEntries()),
         ...(layout === L.LIGHTING_SHADOW_PACKETS ? [{ binding: 20, resource: { buffer: packets.buffer } }] : []),
       ]) byBinding.set(e.binding, e);
       lightingCache.set(key, group = gpu.bindGroup(layout, [...byBinding.values()], `${label('lighting')} ${layout.label}`));
@@ -325,6 +332,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      * @returns {boolean}
      */
     recordShadow() {
+      if (!derived) throw new Error('volume.recordShadow: no derived passes (a big map\'s volume draws no shadow map: mapKind volumeShadows)');
       // Under V2 its flying packets cast as V1's flying cells do (gfx/packetShadow.js): the splat, then V2's
       // kernel, V1's trace with them folded in. Until it is built, V1's kernel traces the map without them.
       const source = packetShadowSource(sim);

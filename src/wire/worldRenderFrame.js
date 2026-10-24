@@ -12,7 +12,7 @@ import { queryWorldPick, worldPickNotReady } from './worldPick.js';
 import { READY } from '../world/renderAtlas.js';
 import { WORLD_NATIVE } from '../shaders/gfx/liquidDetail.js';
 import { viewKey } from '../views.js';
-import { gateVariants } from '../gfx/detailGate.js';
+import { detailDefines } from '../gfx/detail.js';
 
 const array = v => Array.from(v?.elements ?? (v?.toArray ? v.toArray() : v));
 const requireReady = (ok, message) => { if (!ok) throw new Error(message); };
@@ -389,7 +389,7 @@ export const worldViewDetail=(sim,detail={})=>sim?.compact ? {...detail,[WORLD_N
 // The view a World frame asks for, as app.js captureWorldRequest freezes it (the settings'
 // view, every detail feature they switch on: updateFrameDetail; the gamemode's bend:
 // warpNow), for gfx/worldVolume.js startWorldView before the world exists.
-export const worldViewOf=app=>({view:viewKey(app.settings.view),detail:worldViewDetail(app.sim,gateVariants(app.settings).near),
+export const worldViewOf=app=>({view:viewKey(app.settings.view),detail:worldViewDetail(app.sim,detailDefines(app.settings)),
   curved:!!(app.presentation?.active && app.presentation.parameters?.k)});
 /** Starts the World view pipeline a big map of `scene` draws first (gfx/worldVolume.js
  * startWorldView), before its world exists: wire/world.js attach, in the map's build, so the

@@ -184,8 +184,6 @@ const wgslArray = (xs) => `array<f32, ${xs.length}>(${xs.map(g).join(', ')})`;
 // h0/λm (0.18 for water) and falling, at the cost of a neighbour lookup on
 // every pixel that straddles a cell face, most of which find no wall.
 export const meniscusLambdaM = (p) => 2 * Math.PI * capLen(p);   // m
-// The widest liquid's λm, which gfx/detail.js's fadeM mirrors.
-export const MENISCUS_LAMBDA_MAX_M = Math.max(...Object.values(MENISCUS_PROPS).map(meniscusLambdaM));
 // A wall face is looked up only while the pixel's near edge is within
 // MEN_REACH capillary lengths of it: past that the rise is under MEN_TAIL of
 // h0, and its slope (h0/lc·MEN_TAIL ≤ 0.005) under an 8-bit normal map's
@@ -273,7 +271,7 @@ ${meniscus ? `
 // over the pixel's footprint [d − fp/2, d + fp/2] (exactly: the height
 // difference across it over its width), tilts the normal away from the wall:
 // a thin bright or dark line where water meets glass. It fades by the
-// footprint (lodFade at 1/λm, MENISCUS_LAMBDA_MAX_M above), so past a few
+// footprint (lodFade at 1/λm, meniscusLambdaM above), so past a few
 // metres nothing is looked up.
 // Only the nearer face on each axis can be in reach (reach < half a cell
 // wherever the fade lets it draw), and only faces in reach are looked up,

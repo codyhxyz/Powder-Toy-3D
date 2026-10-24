@@ -63,8 +63,7 @@ import { freezeWorldView, worldInitialCellDemand } from './wire/worldRenderFrame
 import { GI_SETTLE } from './shaders/gi.js';
 import { displayedWorldRay, transportWorldRay, localWorldHover, worldPickNotReady } from './wire/worldPick.js';
 import { cloudShift } from './shaders/gfx/clouds.js';
-import { DETAIL, settingKey, detailDefaults, detailRows } from './gfx/detail.js';
-import { createDetailGate, gateVariants } from './gfx/detailGate.js';
+import { DETAIL, settingKey, detailDefaults, detailRows, detailDefines, normalizeDetail } from './gfx/detail.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
 import { createGpuLossTracker, failureKind, lossDetails, recordFrameError, lastFrameError } from './gfx/gpuLoss.js';
 import { createPost, createAutoResolution, UPSCALE, UPSCALE_FLOOR } from './gfx/post.js';
@@ -215,6 +214,7 @@ try {
   for (const change of DEFAULT_CHANGES.slice(rev)) Object.assign(settings, change);
   if (!VIEWS.some((v) => v.id === settings.view)) settings.view = DEFAULTS.view;   // a removed view (Test, id 7, 2026-10-23)
 } catch { /* storage unavailable */ }
+normalizeDetail(settings);   // (a saved mix of the old per-feature switches: the nearest level)
 const params = new URLSearchParams(location.search);
 // ?shot=<name>: a shot of the side-by-side sheet (src/shot.js), its scene's parameters set here, played once booted
 const shotLink = params.has('shot') ? await import('./shot.js') : null;
@@ -562,7 +562,7 @@ function build(savedWorldSize = null) {
     vol.dispose();
     blocks?.dispose();
     blocks = null;
-    derived.dispose?.();
+    derived?.dispose();
     physicsV2?.dispose();
     physicsV2 = null;
     v2Running = false;
@@ -595,7 +595,7 @@ function build(savedWorldSize = null) {
   const owner = physicsV2;
   owner.integrationReady = sim.prepareNative(owner);
   owner.integrationReady.then(() => wakeLoop(), () => {});
-  derived = new Derived(sim);
+  derived = mapKind.boxDerived ? new Derived(sim) : null;
   // WORLD uses its native frame wire. Keep local picks, not unused BOX views.
   blocksOn = mapKind.plainBlocks && plainView();
   vol = createVolume(gpu, sim, { shadows: mapKind.volumeShadows && !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !mapKind.presets && !!sceneByKey(settings.scene).importManifest?.appearance });
@@ -623,7 +623,7 @@ function build(savedWorldSize = null) {
   const nativeOwner = physicsV2;
   // What a frame draws with. V2's native owner holds the cells a big map's renderer reads, so it is
   // one of them; V1's step kernels (s.ready: move, react) are not, only stepping is (worldDrawReady).
-  const draw = [...(nativeOwner ? [nativeOwner.ready, nativeOwner.integrationReady] : []), derived.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready,
+  const draw = [...(nativeOwner ? [nativeOwner.ready, nativeOwner.integrationReady] : []), derived?.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready,
     mapKind.worldRenderer ? null : blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())];
   const core = coreWait = Promise.all([s.ready, ...draw]).then(() => {
     if (coreWait === core) { coreReady = true; wakeLoop(); }
@@ -670,8 +670,8 @@ function whenSimReady(fn) {
   s.ready.then(() => { if (s === sim && !graphicsFailure) fn(); }, () => {});
 }
 
-// Lit material views draw the gate's base variant first (gfx/detailGate.js).
-const baseDetail = () => (isMaterialView(settings.view) ? gateVariants(settings).base : {});
+// Lit material views draw every switched-on close-up feature (gfx/detail.js), on every map.
+const baseDetail = () => (isMaterialView(settings.view) ? detailDefines(settings) : {});
 
 // The GI's kernels (derived.prepareGI, U9) build with lit material views
 // (B5: at boot in one, or on switching to it). Until they
@@ -681,7 +681,7 @@ const baseDetail = () => (isMaterialView(settings.view) ? gateVariants(settings)
 let giWait = Promise.resolve(), giBuilt = 0;
 function prepareGI() {
   const d = derived;
-  if (!mapKind.boxGI || blocksOn || !isMaterialView(settings.view) || !d?.prepareGI) return;
+  if (!d || blocksOn || !isMaterialView(settings.view)) return;
   const p = giWait = Promise.resolve(d.prepareGI()).then(() => { if (d === derived) { giBuilt++; wakeLoop(); } });
   p.catch(() => {});   // (a kernel that fails stops graphics: stopGraphics says why)
 }
@@ -1714,20 +1714,15 @@ const settingsPanel = createSettings({
   footer: [['Reset all settings', resetSettings]],
 });
 
-// Close-up detail features compile in only when switched on (gfx/detail.js),
-// and into the view only while the camera is near enough for them to show
-// (gfx/detailGate.js). The shadow map sees every switched-on feature.
+// Close-up detail features compile in only when switched on (gfx/detail.js), one
+// variant on every map (each feature fades itself out by its own footprint rule).
+// The shadow map sees every switched-on feature.
 let detailVersion = 0;
 // Pending material views retain the last complete variant (readyVolumeView).
 // At initial load without one, coldShader reports the wait; readiness wakes the loop.
-// Headless checkpoints request their actual view explicitly: an unfired prefetch
-// timer is invisible to gpu.settled() and could start compiling during a sample.
-const detailGate = createDetailGate(gpu, () => pacer.wake(), () => hud.toast('Preparing close-up detail… the first time after an update this can take several seconds'), { prefetch: testMode == null });
 const coldShader = createColdShaderGuard(() => { hud.toast('Loading something cool, please be patient'); launch.progress?.('cold'); });
 function applyDetail() {
   for (const w of live) w.detail?.(ctx);   // whitewater's per-step field (src/wire/foam.js)
-  if(!mapKind.detailGate)detailGate.dispose();
-  else detailGate.configure(vol, settings, settings.view);
   detailVersion++;   // the shadow map is a derived pass: redo it
   post.reset();
 }
@@ -1813,7 +1808,6 @@ function setView(id) {
     sim.resetGI();
   }
   settings.view = id;
-  if(mapKind.detailGate)detailGate.setView(id);
   setBlocks(plainView(id));
   prepareGI();
   const key = viewKeyOf(id);
@@ -1901,7 +1895,7 @@ let thumbTarget = null;
 async function renderThumb(viewId, out) {
   if(mapKind.worldRenderer)return renderWorldThumb(viewId,out);
   if (graphicsFailure || !coreReady) return false;
-  const view = viewKeyOf(viewId), detail = isMaterialView(view) ? gateVariants(settings).base : {};
+  const view = viewKeyOf(viewId), detail = isMaterialView(view) ? detailDefines(settings) : {};
   // (Plain is the blocks renderer's, which only the Plain view keeps: from another view its card stays
   // blank; the volume's views from Plain draw the bricks as they were when Plain began)
   const v = vol, format = v.format, b = view === 'plain' ? blocks : null;
@@ -1965,7 +1959,7 @@ async function renderWorldThumb(viewId,out) {
   const retired=()=>win!==world || world.renderFrame!==slot || slot.dead ||
     (world.renderSource && world.renderSource.epoch!==slot.epoch);
   if(graphicsFailure || !coreReady || slot?.dead || !driver?.accepted || !driver.displayedMainFrame || retired())return false;
-  const view=viewKeyOf(viewId),detail=isMaterialView(view) ? gateVariants(settings).base : {};
+  const view=viewKeyOf(viewId),detail=isMaterialView(view) ? detailDefines(settings) : {};
   const ownCamera=useWebGPUCamera(new THREE.PerspectiveCamera());
   camera.updateMatrixWorld();ownCamera.copy(camera,false);
   // Detach from any POV rig without turning its world pose into a local pose.
@@ -2770,8 +2764,7 @@ function syncRenderResolution(resolutionScale = post.settings.resolutionScale) {
 function updateFrameDetail() {
   volume.updateMatrixWorld();
   camGrid.copy(camera.position).applyMatrix4(invVol.copy(volume.matrixWorld).invert());
-  // WORLD enables every selected feature; the physics box is not a detail gate.
-  return mapKind.detailGate ? detailGate.update(camera, camGrid, [sim.g.nx, sim.g.ny, sim.g.nz], canvas.height * post.renderScale) : gateVariants(settings).near;
+  return baseDetail();
 }
 
 // The canvas's page rect, read again only after a resize (the first-person readout sits at its centre)
@@ -3250,26 +3243,18 @@ async function allReady() {
     if (s !== sim || v !== vol || !coreReady) continue;
     applyOutputRatio();
     syncRenderResolution(autoRes.scale);
-    updateFrameDetail();
-    // level is demand, unlike the shown fallback while a near shader is pending.
-    const near = isMaterialView(view) && detailGate.level === 1;
-    const detail = near ? gateVariants(settings).near : baseDetail();
-    const curved = !!warpNow()?.k, far = win?.far, format = v.format;
+    const detail = baseDetail();
+    const curved = !!warpNow()?.k, format = v.format;
     await Promise.all([v.viewReady(view, detail, curved),
-      // update() uses flat-near readiness even when the drawn view is curved.
-      ...(near && curved ? [v.viewReady(view, detail, false)] : []),
       ...(viewShadows(view) ? [v.shadowReady()] : []), giWait,
       // (and the flying matter's, which the first frame doesn't wait for: v2/physics.js dynamicsReady)
-      ...(physicsV2 ? [physicsV2.ready, physicsV2.integrationReady, physicsV2.dynamicsReady] : []),
-      ...(far && !far.behindOnly && isMaterialView(view) ? [far.buildView()] : [])]);
+      ...(physicsV2 ? [physicsV2.ready, physicsV2.integrationReady, physicsV2.dynamicsReady] : [])]);
     await gpu.settled();
     if (graphicsFailure) throw graphicsFailure;
     if (s !== sim || v !== vol || format !== v.format || !coreReady || blocksOn || view !== viewKeyOf(settings.view) || curved !== !!warpNow()?.k) continue;
     applyOutputRatio();
     syncRenderResolution(autoRes.scale);
-    updateFrameDetail();
-    if (near === (isMaterialView(view) && detailGate.level === 1) &&
-        detailKey(detail) === detailKey(near ? gateVariants(settings).near : baseDetail())) return;
+    if (detailKey(detail) === detailKey(baseDetail())) return;
     // Camera, resolution, switches or grid changed while awaiting compilation.
   }
 }
@@ -3346,7 +3331,7 @@ try {
     // volumeDrawn: the last presented frame drew the volume (material transitions retain a ready view)
     // meshFrames: the last view frame's kind ('full', 'capture', 'meshes': gfx/meshFrames.js) and the kept scene's state
     view: {
-      get time() { return viewTime; }, get frame() { return gfxUniforms.uFrame.value; }, get detailShown() { return detailGate.shown; }, get volumeDrawn() { return volumeDrawn; },
+      get time() { return viewTime; }, get frame() { return gfxUniforms.uFrame.value; }, get detailShown() { return detailKey(frameDetail); }, get volumeDrawn() { return volumeDrawn; },
       get renderView() { return renderView; },
       get meshFrames() { return { mode: lastFrameMode, ...meshFrames.state }; },
     },
@@ -3357,7 +3342,6 @@ try {
     },
     wires: Object.fromEntries(WIRES.map((w) => [w.name, w.ready])),   // which subsystems are ported (src/wire)
     applyDetail,   // after changing settings.detail_* by hand
-    detailGate,    // .level / .shown: which close-up features the view has compiled in
     THREE,         // for tools
     requestRender: () => pacer.wake(),   // for changes the frame loop can't see (async results)
     // Manual mode parks only this app loop. Browser/UI callbacks remain live.

@@ -11,7 +11,7 @@
 // warm browser rarely sees it.
 
 // ms between showing a message and the work it announces, so the page paints
-// it first (gfx/detailGate.js waited the same for its variants)
+// it first
 export const WARN_PAINT_MS = 100;
 // a pipeline still building this long after the view wanted it gets the message
 export const COLD_TOAST_MS = 250;

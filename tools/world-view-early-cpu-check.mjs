@@ -18,8 +18,7 @@ import { WORLD_APPEARANCE_GRID } from '../src/gfx/worldAppearance.js';
 import { worldViewOf, startWorldFrameView } from '../src/wire/worldRenderFrame.js';
 import { WORLD_NATIVE } from '../src/shaders/gfx/liquidDetail.js';
 import { VIEWS } from '../src/views.js';
-import { gateVariants } from '../src/gfx/detailGate.js';
-import { detailDefaults } from '../src/gfx/detail.js';
+import { detailDefaults, detailDefines } from '../src/gfx/detail.js';
 import { nagaSpawn } from './naga.mjs';
 
 // Every World world: the registered scenes and the converted source levels (as check-world-fit.mjs).
@@ -109,7 +108,7 @@ test('the early build is the pipeline every world\'s first frame draws with', as
 
 test('the early build asks for the view the first frame asks for', () => {
   const settings = { view: VIEWS.find((v) => v.key === 'noita').id, ...detailDefaults() };
-  const near = gateVariants(settings).near;
+  const near = detailDefines(settings);   // the one variant: every switched-on feature (app.js baseDetail)
   const v2 = worldViewOf({ settings, sim: { compact: {} }, presentation: { active: true, parameters: { k: 1e-4 } } });
   assert.deepEqual(v2, { view: 'noita', detail: { ...near, [WORLD_NATIVE]: true }, curved: true });
   const v1 = worldViewOf({ settings, sim: { compact: null }, presentation: { active: false, parameters: { k: 1e-4 } } });

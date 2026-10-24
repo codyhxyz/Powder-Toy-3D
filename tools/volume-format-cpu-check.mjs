@@ -159,7 +159,7 @@ await Promise.resolve(); assert.equal(done, false); assert(c.descs.every(d => d.
 context.physicsV2 = null; ready.resolve(); await Promise.resolve(); assert.equal(done, false, 'captured integration still blocks');
 integration.resolve(); await cp; assert.equal(context.coreReady, true);
 const thumbGate = deferred(), thumbVol = { format: 2, viewReady: () => thumbGate.promise };
-const thumbState = { graphicsFailure: null, coreReady: true, viewKeyOf: v => v, isMaterialView, gateVariants: () => ({ base: {} }),
+const thumbState = { graphicsFailure: null, coreReady: true, viewKeyOf: v => v, isMaterialView, detailDefines: () => ({}),
   settings: {}, vol: thumbVol, blocks: null, viewShadows: () => false, win: null, mapKind: SMALL_MAP };   // (win: a Box session's thumbnail, not a World's)
 const thumb = new Function('state', `with(state) { return ${block(app, 'async function renderThumb(')}; }`)(thumbState);
 const tp = thumb('realistic', null); thumbVol.format = 0; thumbGate.resolve(); assert.equal(await tp, false, 'stale thumbnail cancels before GPU draw');

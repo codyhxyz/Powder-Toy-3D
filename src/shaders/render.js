@@ -18,8 +18,7 @@ import { decoViewGLSL, decoViewWGSL, decoSurfGLSL, DECO_PLANE_ENTRY } from './gf
 import { presentationNearWGSL } from './gfx/presentation.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE } from '../gpu/kernels.js';
-import { DETAIL, COST, detailDefaults, SOFTWARE_UNDRAWABLE, drawableDetail } from '../gfx/detail.js';
-import { gateVariants } from '../gfx/detailGate.js';
+import { DETAIL, COST, detailDefines, SOFTWARE_UNDRAWABLE, drawableDetail } from '../gfx/detail.js';
 import { glf } from '../glsl.js';
 import { shadowTilesWGSL, SHADOW_TILE } from './passes.js';
 import { shadowOpticsWGSL } from './gfx/shadowOptics.js';
@@ -1775,16 +1774,14 @@ export const shadowDispatch = (res) => [Math.ceil(res / SHADOW_WORKGROUP), Math.
 export { lib };
 
 // ---- check-wgsl (docs/webgpu.md I1) and the menu's warm-up (B5) ----
-// The realistic view at the settings' detail levels: none, the default
-// settings' two variants (gfx/detailGate.js: base, which the view draws
-// first, and near, which is the cost-tier defaults, Balanced), every switch;
-// and alone, each feature a software adapter can't draw (gfx/detail.js
+// The realistic view at the settings' detail levels: none, the cost-tier
+// defaults (Balanced), every switch; and alone, each feature a software
+// adapter can't draw (gfx/detail.js
 // SOFTWARE_UNDRAWABLE). Each detail combination of the materials alone is
 // validated by tools/material-lod-check.mjs; these are the whole tracer.
 const levelDefines = (keep) => Object.fromEntries(DETAIL.filter(keep).map((f) => [f.define, 1]));
 export const REALISTIC_LEVELS = {
   off: () => ({}),
-  base: () => gateVariants(detailDefaults()).base,
   balanced: () => levelDefines((f) => COST[f.cost].on),
   full: () => levelDefines(() => true),
   ...Object.fromEntries(DETAIL.filter((f) => SOFTWARE_UNDRAWABLE.includes(f.define)).map((f) => [f.key, () => ({ [f.define]: 1 })])),
@@ -1806,13 +1803,10 @@ export const viewShadows = (view) => SHADOWED_VIEWS.includes(view);
 const keyOf = (d) => Object.keys(d).filter((k) => d[k]).sort().join(',');
 // the grids the curved variants are checked at: the tests' and the world window's (the gamemode's map is a world)
 const CURVED_GRIDS = ['64', '128'];
-// The realistic variants the view draws for these detail settings: the gate's
-// base (drawn first) and near (prefetched), as gfx/volume.js builds them
-// (fallback: a software adapter, which leaves SOFTWARE_UNDRAWABLE out).
-const gateDetails = (settings, fallback) => {
-  const { base, near } = gateVariants(settings);
-  return { base: drawableDetail(base, fallback), near: drawableDetail(near, fallback) };
-};
+// The realistic variant the view draws for these detail settings, as
+// gfx/volume.js builds it (fallback: a software adapter, which leaves
+// SOFTWARE_UNDRAWABLE out).
+const sessionDetail = (settings, fallback) => drawableDetail(detailDefines(settings), fallback);
 // A volume entry; view and detail say what it draws, and warm({ view,
 // settings, fallback }) whether the session's view and detail settings use it
 // (the warm-up's selector: below). A curved one (the rolling log's variant)
@@ -1831,12 +1825,9 @@ const volumeCheck = (name, view, detail = {}, warm = (s) => s.view === view, cur
   params: VolumeParams,
   ...volumePipeline(),
 });
-// a realistic level's entry is used when it is the settings' base or near variant
-const materialWarm = (shader, detail) => ({ view, settings, fallback = false }) => {
-  if (view !== shader || !settings) return false;
-  const { base, near } = gateDetails(settings, fallback);
-  return keyOf(detail) === keyOf(base) || keyOf(detail) === keyOf(near);
-};
+// a realistic level's entry is used when it is the settings' variant
+const materialWarm = (shader, detail) => ({ view, settings, fallback = false }) =>
+  view === shader && !!settings && keyOf(detail) === keyOf(sessionDetail(settings, fallback));
 const SHADOW_CHECK = {
   name: 'shadow', kind: 'compute', code: (g) => shadowFrag(g), layouts: () => SHADOW_LAYOUTS(), layoutNames: LAYOUT_NAMES.shadow,
   workgroupSize: [SHADOW_WORKGROUP, SHADOW_WORKGROUP, 1], dispatch: (g) => shadowDispatch(shadowRes(g)),
@@ -1869,9 +1860,8 @@ export const WGSL_CHECK = () => [
 
 /**
  * What the warm-up builds for a session (docs/webgpu.md B5): the view's module
- * (for the realistic view the detail gate's base variant), the near variant
- * marked idle (the gate prefetches it), the shadow kernel if the view reads
- * it, the pick kernel. Entries are WGSL_CHECK-shaped (code(g), layouts,
+ * (for a lit material view with its switched-on detail), the shadow kernel if
+ * the view reads it, the pick kernel. Entries are WGSL_CHECK-shaped (code(g), layouts,
  * layoutNames, the pipeline description), so the warm-up builds them as
  * check-wgsl does; their sources are the ones gfx/volume.js then builds.
  * @param {string} view a VOLUME_VIEWS key
@@ -1887,9 +1877,8 @@ export function warmChecks(view, settings, { fallback = false, curved = false, f
   const out = [];
   const tag = curved ? '.curved' : '';
   if (isMaterialView(view)) {
-    const { base, near } = gateDetails(settings, fallback);
-    out.push(volumeCheck(`volume.${view}(${keyOf(base) || 'off'})${tag}`, view, base, undefined, curved));
-    if (keyOf(near) !== keyOf(base)) out.push({ ...volumeCheck(`volume.${view}(${keyOf(near)})${tag}`, view, near, undefined, curved), idle: true });
+    const detail = sessionDetail(settings, fallback);
+    out.push(volumeCheck(`volume.${view}(${keyOf(detail) || 'off'})${tag}`, view, detail, undefined, curved));
   } else if (VOLUME_VIEWS.includes(view)) out.push(volumeCheck(`volume.${view}${tag}`, view, {}, undefined, curved));   // (plain: the blocks renderer's)
   if (SHADOWED_VIEWS.includes(view)) out.push(SHADOW_CHECK);
   out.push(PICK_CHECK);

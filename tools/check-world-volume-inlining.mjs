@@ -27,10 +27,9 @@ import { volumeFrag, REALISTIC_LEVELS } from '../src/shaders/render.js';
 import { WORLD_SHADER_GRIDS } from '../src/shaders/worldRender.js';
 
 // Inlined copies allowed in the fragment entry, per detail level the menu
-// warms (shaders/render.js REALISTIC_LEVELS: base is drawn first, balanced is
-// the default near variant, full every switch).
+// warms (shaders/render.js REALISTIC_LEVELS: balanced is the default, full
+// every switch; the distance gate's base level is gone, 2026-10-23).
 const CEILINGS = {
-  base: { traceNearSteps: 3, worldFieldLinear: 71, worldFieldCubic: 12, worldPage: 177 },
   balanced: { traceNearSteps: 3, worldFieldLinear: 71, worldFieldCubic: 12, worldPage: 177 },
   full: { traceNearSteps: 3, worldFieldLinear: 75, worldFieldCubic: 12, worldPage: 227 },
 };

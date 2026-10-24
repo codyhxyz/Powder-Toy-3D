@@ -251,11 +251,13 @@ async function startWarmer() {
 }
 
 // The app's view and detail switches (app.js DEFAULTS, then its stored settings).
-function savedSettings({ detailDefaults, DETAIL, settingKey }) {
+function savedSettings({ detailDefaults, DETAIL, settingKey, normalizeDetail }) {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(SETTINGS_STORE) || '{}'); } catch { /* storage unavailable */ }
   const mobile = MOBILE ? Object.fromEntries(DETAIL.map((f) => [settingKey(f), false])) : {};
-  return { view: 0, ...detailDefaults(), ...mobile, ...saved };
+  const settings = { view: 0, ...detailDefaults(), ...mobile, ...saved };
+  normalizeDetail(settings);   // (as app.js loads them: a saved mix of switches takes the nearest level)
+  return settings;
 }
 
 // The names the game makes its bind group layouts under (sim.js simLayouts,

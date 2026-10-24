@@ -93,13 +93,11 @@ const DIFFERENCES = {
   // Intentional (a box stands on a floor): the floor grid, the box's edge lines, the
   // blocks floor and the lit sky behind the box are a small map's; a world has its own ground and sky.
   boxFrame:         [true, false],
-  // Same look (the WORLD renderer lights itself): the box volume's shadow map, its GI
-  // probes (derived.prepareGI) and close-up detail's distance gate (gfx/detailGate.js)
-  // are a small map's; the WORLD renderer shades, lights and enables every selected
-  // detail feature itself (gateVariants near).
+  // Same look (the WORLD renderer lights itself): the box volume's shadow map and the box's
+  // derived passes (src/derived.js: its render fields, brick map, glow and GI probes, ~175 MB
+  // at 128³) are a small map's; the WORLD renderer derives, shades and lights its own.
   volumeShadows:    [true, false],
-  boxGI:            [true, false],
-  detailGate:       [true, false],
+  boxDerived:       [true, false],
   // Same look (world/worldLightingHistory.js): a big map's lighting history settles over
   // shaders/gi.js GI_SETTLE frames more before the loop sleeps.
   settleWorldGI:    [false, true],

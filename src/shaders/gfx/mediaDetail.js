@@ -57,8 +57,8 @@
 // copies of the noise, half a cycle apart, are each carried along the flow for
 // FLOW_PERIOD steps and then restarted at a new place; each fades out before
 // its restart. Their blend is rescaled to keep the noise's contrast (and so
-// its mean 0.5 and spread). It has no distance fade: gfx/detail.js derives
-// where it would end (fadeM) and that lies past any media the view marches. Only the base
+// its mean 0.5 and spread). It has no distance fade: where it would end lies
+// past any media the view marches. Only the base
 // noise rides the flow, and always at the local velocity: blending toward any
 // other velocity over space (by distance or transmittance), or advecting the
 // fine octaves, shears the noise into rings and streaks.
@@ -119,13 +119,13 @@ export const MEDIA_STEP_PX = TAA_HISTORY_FRAMES / (2 * DETAIL_FADE_LO);   // pix
 // footprint-scaled samples.)
 const MEDIA_STEP_MIN_M = FILAMENT_2_M / 2;
 const STEP_MIN_CELLS = MEDIA_STEP_MIN_M / CELL_M;
-// The rule in m per pixel (the units of gfx/detail.js fadeM): at the finest
+// The rule in m per pixel: at the finest
 // step below MEDIA_STEP_FINE_M, at the base step (1 cell) from
 // MEDIA_STEP_BASE_M on. At 1080p and a 75° vertical field of view (1.42 mrad
 // per pixel) those footprints are 0.44 m and 5.3 m away.
 export const MEDIA_STEP_FINE_M = MEDIA_STEP_MIN_M / MEDIA_STEP_PX;   // 0.6 mm per pixel
 export const MEDIA_STEP_BASE_M = CELL_M / MEDIA_STEP_PX;             // 7.5 mm per pixel
-// Flow advection (DETAIL_MEDIA_FLOW); gfx/detail.js derives its fadeM from these two.
+// Flow advection (DETAIL_MEDIA_FLOW).
 export const MEDIA_FLOW_PERIOD = 16;   // sim steps a noise copy rides the flow (whole, so it divides the clock wrap)
 export const FLOW_MAX = 1;             // cells/step: the sim moves a particle at most one cell a step
 

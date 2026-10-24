@@ -53,7 +53,7 @@
 
 import { GEOM_ERR_PX_NONE, GEOM_ERR_PX_FULL } from '../../gfx/lodFade.js';
 
-/** A clod's lump: longest semi-axis, cells (CLOD_LUMP_R below; gfx/detail.js derives the clods' fadeM from it). */
+/** A clod's lump: longest semi-axis, cells. */
 export const CLOD_LUMP_R = 0.17;
 const f = (x) => (Number.isInteger(x) ? x.toFixed(1) : String(x));
 // The pebbles' hand-off (see "hand-off by footprint" below), shared with
