@@ -31,6 +31,7 @@ import { Simulation, GI_BLEND } from './sim.js';
 import { seedWaveDemo } from './world/waveDemo.js';
 import { Derived } from './derived.js';
 import { createVolume, detailKey } from './gfx/volume.js';
+import { createWorldView } from './gfx/worldView.js';
 import { createBlocks } from './gfx/blocks.js';
 import { viewShadows } from './shaders/render.js';
 import { createOverlays, FLOOR_SPAN, FLOOR_Y } from './gfx/overlays.js';
@@ -371,6 +372,8 @@ function applyOutputRatio() {
 
 // the grid: the simulation, its derived passes and its volume (made per grid: build)
 let sim, derived, vol, scale;
+// The material views' march in world cells, on every map (gfx/worldView.js, docs/seamless-world.md)
+let worldView = null;
 // The blocks renderer (gfx/blocks.js) draws the Plain view (src/views.js):
 // the world as its cells' visible faces, Minecraft's way, and nothing that
 // only feeds the volume's march runs (the derived passes, GI, the volume's
@@ -546,6 +549,8 @@ function build(savedWorldSize = null) {
   if (sim) {
     for (const w of live) w.detach?.(ctx);
     // (what is recorded on the old grid goes out first: each dispose flushes)
+    worldView?.dispose();
+    worldView = null;
     vol.dispose();
     blocks?.dispose();
     blocks = null;
@@ -585,6 +590,7 @@ function build(savedWorldSize = null) {
   derived = new Derived(sim);
   blocksOn = plainView();
   vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !mapKind.presets && !!sceneByKey(settings.scene).importManifest?.appearance });
+  worldView = createWorldView(gpu, sim, { volume: vol });
   if (blocksOn) blocks = createBlocks(gpu, sim, { world: mapKind.streamed });
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
   const s = sim, simWake = s.wake.bind(s);
@@ -1816,8 +1822,10 @@ async function renderThumb(viewId, out, { build = true } = {}) {
   // blank; the volume's views from Plain draw the bricks as they were when Plain began)
   const v = vol, format = v.format, b = view === 'plain' ? blocks : null;
   if (view === 'plain' && !b) return false;
-  if (!build && !b && !(v.viewBuilt(view, detail) && (!viewShadows(view) || v.shadowState === 'ready'))) return false;
-  await (b ? b.ready : Promise.all([v.viewReady(view, detail), ...(viewShadows(view) ? [v.shadowReady()] : [])]));
+  const wv = worldView?.draws(view) ? worldView : null;   // (the material views: the world march, as a frame draws them)
+  const built = wv ? wv.pipeline(view, detail, 'manual').state === 'ready' : v.viewBuilt(view, detail);
+  if (!build && !b && !(built && (!viewShadows(view) || v.shadowState === 'ready'))) return false;
+  await (b ? b.ready : Promise.all([wv ? wv.pipeline(view, detail).ready : v.viewReady(view, detail), ...(viewShadows(view) ? [v.shadowReady()] : [])]));
   if (graphicsFailure || v !== vol || format !== v.format || (b && b !== blocks)) return false;
   thumbTarget ??= gpu.createTexture({
     label: 'view thumbnail', size: THUMB_SIZE, format: 'rgba8unorm', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
@@ -1832,7 +1840,7 @@ async function renderThumb(viewId, out, { build = true } = {}) {
   try {
     // flat, as main's stills are: a presentation effect is the play view's (gfx/presentation.js neutral)
     const drawStill = () => presentation.neutral(() => post.renderStill({
-      prepare() { writeFrameUniforms(gpu, frameValues(thumbCam, viewId, [0, 0])); },
+      prepare() { writeFrameUniforms(gpu, frameValues(thumbCam, viewId, [0, 0])); wv?.writeUniforms(frameValues(thumbCam, viewId, [0, 0])); },
       // the meshes too, as a frame draws them (the stills' target is post's still one)
       opaque: (p) => (threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false),
       draw(rp) {
@@ -1842,7 +1850,7 @@ async function renderThumb(viewId, out, { build = true } = {}) {
         if (b) {
           b.drawOpaque(rp, { marchNear: pov?.marchNear ?? 0, floor: mapKind.boxFrame });
           b.drawTranslucent(rp, { marchNear: pov?.marchNear ?? 0 });
-        } else vol.draw(rp, { view, detail, meshDepth: cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: 0 });
+        } else (wv ?? vol).draw(rp, { view, detail, meshDepth: cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: 0 });
         if (mapKind.boxFrame) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], lit });
       },
       meshes: (p) => { threeMeshes(p, true, thumbCam); },
@@ -2375,7 +2383,8 @@ function selectRenderView() {
   } else {
     if (next.curved && isMaterialView(next.view)
       && vol.pipeline(next.view, next.detail, 'idle', true).state !== 'ready') next.detail = baseDetail();
-    const pipe = vol.pipeline(next.view, next.detail, 'now', next.curved);
+    const pipe = worldView?.draws(next.view, next.curved) ? worldView.pipeline(next.view, next.detail, 'now')
+      : vol.pipeline(next.view, next.detail, 'now', next.curved);
     const required = [pipe];
     if (pipe.state !== 'ready') { coldShader.watch(pipe); wakeWhen(pipe.ready); }
     if (viewShadows(next.view)) {
@@ -2396,12 +2405,17 @@ function drawVolume(rp) {
   const view = viewKeyOf(renderView), detail = frameDetail;
   const meshDepth = cut.take();
   const warp = warpNow(), curved = !!warp && warp.k !== 0;
-  const drew = !testNoVolume && vol.draw(rp, {
-    view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, warp,
-  });
+  // The material views march the world in world cells (gfx/worldView.js), on every map.
+  // Same look (data views, Plain and the rolling log, docs/seamless-world.md): heat, pressure,
+  // flow and X-ray, Plain (gfx/blocks.js) and the rolling log's curved variant keep the box's
+  // march of physics' window for now.
+  const world = worldView?.draws(view, curved);
+  const drew = !testNoVolume && (world
+    ? worldView.draw(rp, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0 })
+    : vol.draw(rp, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, warp }));
   if (!drew && !testNoVolume) {
     // (its pipeline is building: the frame goes without it, and the toast says why after a moment)
-    const pipe = vol.pipeline(view, detail, 'now', curved);
+    const pipe = world ? worldView.pipeline(view, detail, 'now') : vol.pipeline(view, detail, 'now', curved);
     coldShader.watch(pipe);
     wakeWhen(pipe.ready);
   }
@@ -2422,15 +2436,14 @@ function boxSeaParams() {
   if (!mapKind.edgeSeaFromCells || !sim) return null;
   return edgeSeaParams(boxSea, [sim.g.nx, sim.g.ny, sim.g.nz], sim.origin);
 }
-// The realistic views' sky, first in the scene pass, behind the volume and meshes. A small map's
-// box stands under it, with the sea past its walls (sea: boxSeaParams); a big map's world stands
-// under it with the sea past the world's edge (worldSea), and, behind the volume, the distance
-// pass (world/far.js drawBehind): the far grid's coarse land past the window the volume draws.
+// The realistic views' sky, first in the scene pass, behind the world's march and the meshes. A
+// small map's box stands under it, with the sea past its walls (sea: boxSeaParams); a big map's
+// world stands under it with the sea past the world's edge (worldSea). Rays that leave the world
+// show it. (No distance pass: the march draws the whole world, docs/seamless-world.md.)
 function drawSkyFor(rp, view, sea) {
   if (!isMaterialView(view)) return;
   if (mapKind.boxFrame) { overlays.drawSky(rp, sea); return; }
   overlays.drawSky(rp, worldSea(), sim.origin.toArray());
-  win?.far?.drawBehind(rp);
 }
 function drawScene(rp) {
   const g = sim.g, view = viewKeyOf(renderView);
@@ -2469,7 +2482,7 @@ const frameHooks = {
     // (the kept scene is for other targets: post's sizes changed with this frame's settings)
     if (frameMode === 'meshes' && !meshFrames.fits(p)) { meshFrames.drop(); frameMode = 'full'; }
     writeFrameUniforms(gpu, frameValues(camera, renderView, p.jitter));
-    win?.far?.viewBehind(isMaterialView(renderView));   // a big map's distance pass, drawn behind the volume (drawSkyFor)
+    worldView?.writeUniforms(frameValues(camera, renderView, p.jitter));   // (the same values in world cells: gfx/worldView.js)
   },
   // E1's work that reads FrameUniforms, after it is written: the derived
   // passes, the shadow map (views that read it), GI (the realistic view), the
@@ -2490,6 +2503,12 @@ const frameHooks = {
         prof.phase('gi');
         sim.updateGI(SUN, vol.shadowTextures, vol.shadowRes);
       }
+    }
+    // the world after physics' step: W writes back what physics changed, then F's fields and L's
+    // lighting update for it, before the march draws (docs/seamless-world.md, "frame order")
+    if (!blocks && worldView?.draws(viewKeyOf(renderView), !!warpNow()?.k)) {
+      prof.phase('derived');
+      worldView.update(gpu.frame, { boxes: null, camera, sun: SUN });
     }
     prof.phase('view');
     // (a mesh-only frame keeps what the wires drew into the scene pass: their upkeep for it too, the far field's prepass)

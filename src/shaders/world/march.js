@@ -49,7 +49,7 @@ import { volumeHazeGLSL } from '../farShared.js';
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY } from '../../gfx/meshCut.js';
 import { ddaWalk } from '../dda.js';
 import { uniformStruct } from '../../gpu/params.js';
-import { tracerCommonWGSL, realisticTraceWGSL, SCENE_FORMATS } from '../render.js';
+import { tracerCommonWGSL, realisticTraceWGSL, SCENE_FORMATS, REALISTIC_LEVELS } from '../render.js';
 import { materialStyleForView, isMaterialView } from '../../views.js';
 import { worldGroup2, worldGroup2WGSL, worldGroup2Layout } from './bindings.js';
 // The owners' modules. Until W, F and L land these are the stand-ins (shaders/world/stubs.js);
@@ -313,3 +313,17 @@ export const worldMarchPipeline = () => ({
 export const WORLD_MARCH_VERTICES = 3;
 /** The gpu.layout names the march's groups are made under (a warm-up making them alike finds its pipelines cached). */
 export const WORLD_MARCH_LAYOUT_NAMES = ['WORLD_MARCH_FRAME', 'WORLD_COPY', 'WORLD_GROUP2'];
+
+// ---- check-wgsl (and its operator gate, tools/check-wgsl-operators.mjs) ----
+// The realistic view at the detail levels shaders/render.js checks, and the other material views
+// at the cost tiers' defaults. warm: false until the menu's warm-up (src/preload.js) builds the
+// world march in place of the box's realistic volume.
+const marchCheck = (name, view, detail) => ({
+  name, view, detail, kind: 'render', warm: () => false,
+  code: (g) => worldMarchFrag(g, { view, detail }),
+  layouts: () => WORLD_MARCH_LAYOUTS(),
+  layoutNames: WORLD_MARCH_LAYOUT_NAMES,
+  params: MarchParams,
+  ...worldMarchPipeline(),
+});
+export const WGSL_CHECK = () => ['off', 'balanced', 'full'].map((k) => marchCheck(`world.realistic.${k}`, 'realistic', REALISTIC_LEVELS[k]()));
