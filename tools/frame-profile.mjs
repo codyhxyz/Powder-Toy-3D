@@ -2,7 +2,9 @@
 // The entire slot (startup, compilation, capture, cleanup) is at most 10 s.
 // The launcher refuses a busy player GPU; never bypass its lock.
 // node tools/frame-profile.mjs [--url https://tpt3d.codyh.xyz] [--map lab]
-//   [--ms 1000] [--out /tmp/tpt-frame-profile.json]
+//   [--ms 1000] [--out /tmp/tpt-frame-profile.json] [--arg <chrome switch>]...
+// --arg adds a Chrome switch, e.g. --enable-dawn-features=disable_robustness
+// to price Chrome's shader bounds checks against a plain run.
 import { writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { launchBrowser, newTestPage, ready, gpuInfo } from './browser.mjs';
@@ -51,9 +53,10 @@ const url = new URL(opt('url', 'https://tpt3d.codyh.xyz'));
 url.searchParams.set('map', opt('map', 'lab'));
 url.searchParams.set('test', 'manual');
 const out = opt('out', '/tmp/tpt-frame-profile.json');
+const chromeArgs = args.flatMap((a, i) => (a === '--arg' ? [args[i + 1]] : []));
 let browser;
 try {
-  browser = await launchBrowser({ lifetimeMs: 10000 });
+  browser = await launchBrowser({ lifetimeMs: 10000, args: chromeArgs });
   const page = await newTestPage(browser, { mode: 'manual', viewport: { width: 1280, height: 800 } });
   const errors = [], requests = [];
   page.on('pageerror', e => errors.push(String(e)));
@@ -129,7 +132,7 @@ try {
     scope: 'GPU pass sum, not wall time; intervals can overlap. Copies/uploads and compositor excluded. Split profiling adds overhead.',
   };
   await writeFile(out, JSON.stringify({ summary, data, errors, requests }, null, 2));
-  console.log(JSON.stringify({ ...summary, grid: data.grid, canvas: data.canvas, renderScale: data.renderScale, gpu: data.gpu, errors, requests, artifact: out }, null, 2));
+  console.log(JSON.stringify({ ...summary, chromeArgs, grid: data.grid, canvas: data.canvas, renderScale: data.renderScale, gpu: data.gpu, errors, requests, artifact: out }, null, 2));
   if (!summary.fullyDrawn) {
     throw new Error('Capture failed coverage/rendering checks; inspect the artifact');
   }
