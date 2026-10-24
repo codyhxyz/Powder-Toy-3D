@@ -53,7 +53,9 @@ const detail = { DETAIL_LIQ_FOAM: 1, DETAIL_LIQ_MENISCUS: 1, DETAIL_LIQ_RIPPLES:
 // V1's (format 0) volume, every view, flat and curved: pinned at origin/main 19a98c9e.
 const v1 = createHash('sha256');
 for (const view of VOLUME_VIEWS) for (const curved of [false, true]) v1.update(volumeFrag(g, { view, detail, curved, fixedReadFormat: 0 }));
-assert.equal(v1.digest('hex'), '1ccdc46bb28d77e6196c8358223825c0b3460d3e4bdb7cfa086bca31ab5bbaf6', 'V1 draw byte-identical');
+// Re-pinned 2026-10-23: FrameUniforms lost its far switch, the volume its FU.far branches, the Test view went
+// (VOLUME_VIEWS one fewer); diffed against origin/main c3c11576.
+assert.equal(v1.digest('hex'), '00d39e6a2752ba620e0e52ddd22437b2fbe31d8e0e21b5bab356a16e9b1a8600', 'V1 draw byte-identical');
 checks++;
 const calls = (code, name) => (code.match(new RegExp(`(?<![\\w.])${name}\\(`, 'g')) ?? []).length - (code.match(new RegExp(`fn ${name}\\(`, 'g')) ?? []).length;
 for (const format of [2, 3]) for (const view of VOLUME_VIEWS) for (const curved of [false, true]) {

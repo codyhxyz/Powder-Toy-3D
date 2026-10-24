@@ -31,7 +31,7 @@ for (const key of ['id', 'key', 'hotkey']) assert.equal(new Set(VIEWS.map((v) =>
 assert.equal(materialStyleForView('noita'), 2);
 assert.equal(materialStyleForView(noita.id), 2);
 assert(isMaterialView('noita') && VOLUME_VIEWS.includes('noita') && viewShadows('noita'));
-assert.deepEqual(VIEWS.filter((v) => v.materialStyle !== undefined).map((v) => v.materialStyle).sort(), [0, 0, 1, 2], 'one view per artwork, plus Test');
+assert.deepEqual(VIEWS.filter((v) => v.materialStyle !== undefined).map((v) => v.materialStyle).sort(), [0, 1, 2], 'one view per artwork');
 assert.equal(modeByKey('noita').defaultView, 'noita');
 assert.equal(mapByKey('descent').defaultView, 'noita');
 assert.equal(viewForMode(modeByKey('noita'), 0, mapByKey('descent')), noita.id, 'Descent in the Noita gamemode starts in the Noita view');

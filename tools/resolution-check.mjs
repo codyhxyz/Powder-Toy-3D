@@ -279,7 +279,7 @@ const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
 const handoff = app.slice(app.indexOf('  if (!renderOnly) clock.update(now);'),
   app.indexOf('  // Set before pacing'));
 assert.ok(handoff.includes('autoRes.update'), 'exercise the live app timing handoff');
-const frameTiming = new Function('clock', 'now', 'renderOnly', 'renderedLast', 'post', 'autoRes', 'DT_MAX', 'hybrid',
+const frameTiming = new Function('clock', 'now', 'renderOnly', 'renderedLast', 'post', 'autoRes', 'DT_MAX',
   `${handoff}\nreturn dt;`);
 {
   const slow = createAutoResolution();
@@ -305,9 +305,6 @@ const frameTiming = new Function('clock', 'now', 'renderOnly', 'renderedLast', '
   post.settings.taa = false;
   frameTiming(clock, now * 1000, false, true, post, probe, 0.1);
   assert.equal(samples, 1, 'render-only, undrawn, and non-TAA frames do not feed adaptation');
-  post.settings.taa=true;
-  frameTiming(clock, now * 1000, false, true, post, probe, 0.1,{enabled:true});
-  assert.equal(samples,1,'hybrid rendering must not also feed the legacy resolution controller');
 }
 console.log('PASS: app feeds real slow-frame timing to resolution, capped timing to gameplay');
 

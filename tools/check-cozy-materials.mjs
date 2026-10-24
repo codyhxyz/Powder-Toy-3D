@@ -17,7 +17,7 @@ import { farLayout, WORLD_SIZE } from '../src/shaders/farShared.js';
 import { WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { cozyFixture, SWATCHES } from './cozy-fixture.mjs';
 import { E } from '../src/elements.js';
-import { VIEWS, viewKey, viewForMode, isMaterialView, isTestView, materialStyleForView } from '../src/views.js';
+import { VIEWS, viewKey, viewForMode, isMaterialView, materialStyleForView } from '../src/views.js';
 import { GAMEMODES, mapByKey, mapOf, modeByKey, resolveMode } from '../src/maps.js';
 import { createDetailGate, gateVariants } from '../src/gfx/detailGate.js';
 import { detailDefaults } from '../src/gfx/detail.js';
@@ -188,14 +188,14 @@ assert.match(app.slice(app.indexOf('const PERSIST'), app.indexOf('const STORE'))
 assert.match(app, /view: 0, camSpeed/, 'Realistic remains the default');
 const runtime = app.slice(app.indexOf('function setView(id)'), app.indexOf('// The blocks renderer on or off'));
 for (const text of ['settings.view = id', 'post.reset()', 'meshFrames.drop()', 'sim.resetGI()', 'detailGate.setView(id)', 'save()']) assert.ok(runtime.includes(text), text);
-const selectView = new Function('settings', 'VIEWS', 'isMaterialView', 'isTestView', 'mapKind', `
-  const hybridUnavailable = false, worldMode = null;
+const selectView = new Function('settings', 'VIEWS', 'isMaterialView', 'mapKind', `
+  const worldMode = null;
   const post = { reset() {} }, meshFrames = { drop() {} }, sim = { resetGI() {} }, detailGate = { setView() {} };
   const setBlocks = () => {}, plainView = () => false, prepareGI = () => {}, viewKeyOf = () => 'cozy';
-  const blocksOn = true, settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {}, toast() {} }, save = () => {}, ensureHybrid = () => {};
+  const blocksOn = true, settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {}, toast() {} }, save = () => {};
   ${runtime}
   return setView;
-`)(modeSettings, VIEWS, isMaterialView, isTestView, SMALL_MAP);
+`)(modeSettings, VIEWS, isMaterialView, SMALL_MAP);
 for (const view of VIEWS) {
   selectView(view.id);
   await startMode('sandbox');
@@ -212,7 +212,7 @@ for (const file of ['src/app.js', 'src/wire/world.js', 'src/wire/weather.js']) {
 }
 
 const detail = detailDefaults();
-for (const shader of ['realistic', 'cozy', 'test']) {
+for (const shader of ['realistic', 'cozy', 'noita']) {
   assert(isMaterialView(shader));
   const warm = warmChecks(shader, detail);
   assert.deepEqual(warm[0].detail, gateVariants(detail).base);

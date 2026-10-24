@@ -106,9 +106,6 @@ const DIFFERENCES = {
   // Same look (the WORLD renderer draws Plain): the Plain view's blocks renderer
   // (gfx/blocks.js) draws a small map's grid.
   plainBlocks:      [true, false],
-  // Intentional (experimental Test view; user decision 2026-10-20): on a big map the Test
-  // renderer (gfx/hybrid) falls back to Realistic.
-  testView:         [true, false],
 
   // --- Loading ---
   // Intentional (user request, 2026-10-20, "MAKE IT LOAD FAST"): a big map's World load and

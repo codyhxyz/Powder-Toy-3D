@@ -106,12 +106,12 @@ export class FieldDeriver {
     this.kernels[name].dispatch(frame, size, { ...opts, params: { ...opts.params, ...domain } });
     this.onPass?.(name, { kind: 'compute', gpuMs: null });
   }
-  recordEMA(frame, { sourceGroup, header, reset = false, particleSplit = 0, world = 0, emaS = CHANNELS.map((c) => c.ema), emaM = MEDIA.map((m) => m.ema),
+  recordEMA(frame, { sourceGroup, header, reset = false, emaS = CHANNELS.map((c) => c.ema), emaM = MEDIA.map((m) => m.ema),
     domain, size = this._over(DIRTY.EMA) }) {
     this._dispatch(frame, 'fieldEma', size, { bind: [this.tables, sourceGroup, this.groups.ema], header,
-      params: { emaS, emaM, reset, aer: this.aer, particleSplit, world } }, domain);
+      params: { emaS, emaM, reset, aer: this.aer } }, domain);
   }
-  recordSpatial(frame, { sourceGroup, header, smoothing, particleSplit = 0, world = 0, domainFor = () => undefined,
+  recordSpatial(frame, { sourceGroup, header, smoothing, domainFor = () => undefined,
     sizeFor = (stage) => this._over(stage.startsWith('boost') ? DIRTY.WORK : DIRTY.FIELDS), onStage = null }) {
     const { w, bulk, s } = fieldWeights(smoothing), empty = this.gpu.emptyGroup, gr = this.groups;
     for (let axis = 0; axis < 3; axis++) {
@@ -123,7 +123,7 @@ export class FieldDeriver {
     for (let axis = 0; axis < 3; axis++) {
       const stage = `boost${axis}`;
       const bind = axis ? [this.tables, empty, gr.boost[axis]] : [this.tables, sourceGroup, gr.boost[0]];
-      this._dispatch(frame, axis ? 'fieldBoost' : 'fieldBoost0', sizeFor(stage), { bind, header, params: { s, axis, aer: this.aer, particleSplit, world } }, domainFor(stage));
+      this._dispatch(frame, axis ? 'fieldBoost' : 'fieldBoost0', sizeFor(stage), { bind, header, params: { s, axis, aer: this.aer } }, domainFor(stage));
       onStage?.(stage, frame, this.resources);
     }
     this._dispatch(frame, 'fieldPeak', sizeFor('peak'), { bind: [this.tables, sourceGroup, gr.peak], header,

@@ -1,24 +1,11 @@
 import { h } from './dom.js';
 import { ICON } from './icons.js';
 
-export function testFailureMessage(error) {
-  const message = String(error?.message ?? error);
-  const [first, next] = message.split('\n', 2);
-  const shader = first.replace(/^GPU shader failed:\s*/, '').replace(/\.$/, '').slice(0, 96);
-  const reason = message.includes('XPC_ERROR_CONNECTION_INTERRUPTED')
-    ? 'Metal compiler connection interrupted' : next?.trim().slice(0, 160);
-  return `Test failed: ${shader}.${reason ? ` ${reason}.` : ''} Showing Realistic. Select Test to retry.`;
-}
-
 export function createShaderPicker({ settings, views, renderThumb, onChange, onClose, trigger }) {
   const cards = views.map(v => {
-    const canvas = v.experimental ? null : h('canvas', { width: 320, height: 200, 'aria-hidden': 'true' });
-    const status = h('span.preview-status', { text: v.experimental ? 'Experimental renderer' : 'Loading preview…' });
-    const description = v.experimental ? h('span.desc', {
-      id: `view-status-${v.key}`, 'aria-live': 'polite', text: v.desc,
-    }) : null;
+    const canvas = h('canvas', { width: 320, height: 200, 'aria-hidden': 'true' });
+    const status = h('span.preview-status', { text: 'Loading preview…' });
     const card = h('button.view-card', { type: 'button', title: v.desc, 'aria-label': v.name,
-      ...(description ? { 'aria-describedby': `view-status-${v.key}` } : {}),
       on: {
         click: () => { onChange(v.id); sync(); },
         keydown: e => {
@@ -28,9 +15,8 @@ export function createShaderPicker({ settings, views, renderThumb, onChange, onC
       },
     }, h('span.thumb', {}, canvas, status),
     h('span.name', {}, v.name, h('kbd', { text: v.hotkey })),
-    description,
     v.legend ? h('span.legend', { style: { background: v.legend.css } }) : null);
-    return { v, card, canvas, status, description };
+    return { v, card, canvas, status };
   });
   const close = h('button.icon-btn', { type: 'button', title: 'Close shaders', 'aria-label': 'Close shaders',
     html: ICON.close, on: { click: onClose } });
@@ -62,7 +48,6 @@ export function createShaderPicker({ settings, views, renderThumb, onChange, onC
     queue = queue.then(async () => {
       for (const c of cards) {
         if (run !== generation) return;
-        if (c.v.experimental) continue; // Legacy thumbnails cannot represent Test.
         try {
           const rendered = await renderThumb(c.v.id, c.canvas);
           c.status.hidden = !!rendered || c.canvas.dataset.rendered === '1';
@@ -88,12 +73,5 @@ export function createShaderPicker({ settings, views, renderThumb, onChange, onC
   setOpen(false);
   return {
     el, sync, setOpen, get isOpen() { return isOpen; },
-    setTestStatus(text = 'Experimental renderer', detail) {
-      const c = cards.find(c => c.v.key === 'test');
-      if (!c) return;
-      c.status.textContent = text;
-      c.description.textContent = detail ?? c.v.desc;
-      c.card.title = detail ?? c.v.desc;
-    },
   };
 }

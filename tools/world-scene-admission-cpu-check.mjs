@@ -239,22 +239,6 @@ test('shared Post work remains resize-protected through reset, identity replacem
     retry.s.resolve();await b.ticket.confirmation;await f.completeAll();f.post.dispose();await turn();
   }
 });
-test('WORLD admission clears prior immediate motion, but recording and rejection leave it alone',async()=>{
-  const f=fixture();await f.post.sceneReady;f.post.setSceneIdentity(f.identity);
-  const motion=f.gpu.createTexture({label:'prior hybrid motion'});
-  f.post.settings.taa=false;
-  f.post.render({prepare(post){post.setTemporalInputs({motion});}},f.camera);
-  assert.equal(f.post.temporalInputs.motion,motion);
-  f.post.settings.taa=true;
-  const rejected=f.record();assert.equal(f.post.temporalInputs.motion,motion);
-  await f.submit(rejected.opts);assert.equal(f.admit(rejected,{feedback:{incomplete:true}}).accepted,false);
-  assert.equal(f.post.temporalInputs.motion,motion);
-  const accepted=f.record();await f.submit(accepted.opts);motion.destroy();
-  const result=f.admit(accepted);assert(result.accepted);
-  assert.equal(f.post.temporalInputs.motion,null);
-  assert.equal(f.draws.filter(d=>d.name==='motion').at(-1).params.explicitMotion,false);
-  result.s.resolve();await accepted.ticket.confirmation;await f.completeAll();f.post.dispose();await f.completeAll();
-});
 // Re-pinned 2026-10-23: FrameUniforms lost its far switch (one u32; 1168 → 1152 bytes), nothing else moved.
 test('BOX frame packing matches the pre-edit 2cafd380 byte fixture',()=>{
   const camera=new PerspectiveCamera(60,1.5,.25,4096);camera.coordinateSystem=WebGPUCoordinateSystem;

@@ -1,5 +1,5 @@
 import { BRICK, brickIdOf } from './shaders/common.js';
-import { particleAgeFrag, FIELD_FORMAT, DIRTY, dirtyLists } from './shaders/fields.js';
+import { FIELD_FORMAT, DIRTY, dirtyLists } from './shaders/fields.js';
 import { FIELD_RESOURCES, createFieldResources, createFieldLayouts, createFieldKernels, createFieldHelpers, createFieldGroups, bindFieldAeration, FieldDeriver } from './gfx/fieldDeriver.js';
 import {
   ageFrag, dirtyFrag, dirtyArgsFrag, brickFrag, brickDistFrag, blurFrag, brickShiftFrag, giShiftFrag, brickBitsFrag, boxArgsFrag,
@@ -117,7 +117,6 @@ export class Derived {
     this.sim = sim;
     this.g = sim.g;
     this.world = world;
-    this.particleSplit = false;
     this.shiftsBricks = true;     // sim.shift: this keeps the history across a move (no changedAll)
     // test only (gpu.testMode): dropFold leaves the changes pending at a shift
     // where they are, dropJetToggle doesn't rebuild every brick when the
@@ -178,8 +177,6 @@ export class Derived {
     const dist = (name, src, dst) => gpu.bindGroup(L.DIST, [b(0, src), b(1, dst), b(2, this.boxes)], name);
     const v = this.views;
     this.groups = {
-      particleAges: gpu.bindGroup(L.BOOK, [b(0, this.age), b(1, this.scratchB)], 'particle ages'),
-      particleBook: gpu.bindGroup(L.BOOK, [b(0, this.scratchB), b(1, this.dlist)], 'particle book'),
       book: gpu.bindGroup(L.BOOK, [b(0, this.age), b(1, this.dlist)], 'derived book'),
       ...createFieldGroups(gpu, L, this),
       brick: gpu.bindGroup(L.BRICK, [b(0, this.dlist), t(1, v.fieldSurf), t(2, v.fieldMedia), t(3, v.fieldThin), b(4, this.brick),
@@ -204,7 +201,6 @@ export class Derived {
     const kernel = (name, code, group1, group2, params = null) => gpu.kernel({ name, code, layouts: [SL.TABLES, group1, group2], params, workgroupSize: [64, 1, 1] });
     this.kernels = {
       age: kernel('age', ageFrag(g), SL.STATE_BUILD, L.BOOK, AgeParams),
-      particleAges: kernel('particleAges', particleAgeFrag(g), E, L.BOOK),
       dirty: kernel('dirty', dirtyFrag(g), E, L.BOOK),
       dirtyArgs: kernel('dirtyArgs', dirtyArgsFrag(g), E, L.BOOK),
       ...createFieldKernels(gpu, g, { tablesLayout: SL.TABLES, stateLayout: SL.STATE_RO, layouts: L }),
@@ -313,10 +309,7 @@ export class Derived {
     });
     sim.changedAll = false;
     sim.actNoted = false;
-    if (this.particleSplit) {
-      this._dispatch(this.kernels.particleAges, this._perBrick, { bind: [tables, this.gpu.emptyGroup, this.groups.particleAges] });
-    }
-    this._dispatch(dirty, this._perBrick, { bind: [tables, this.gpu.emptyGroup, this.particleSplit ? this.groups.particleBook : book] });
+    this._dispatch(dirty, this._perBrick, { bind: [tables, this.gpu.emptyGroup, book] });
     this._dispatch(dirtyArgs, [1, 1, 1], { bind: [tables, this.gpu.emptyGroup, book] });
   }
 
@@ -338,12 +331,11 @@ export class Derived {
    */
   updateFields() {
     const sim = this.sim;
-    const particleSplit = this.particleSplit ? 1 : 0, world = this.world ? 1 : 0;
     const reset = sim.fieldReset;
     sim.fieldReset = false;
     this._jet();
-    this.fields.recordEMA(this.gpu.frame, { sourceGroup: sim.bindRO, header: sim.readHeader(), reset, particleSplit, world });
-    this.fields.recordSpatial(this.gpu.frame, { sourceGroup: sim.bindRO, header: sim.readHeader(), smoothing: sim.smoothing, particleSplit, world });
+    this.fields.recordEMA(this.gpu.frame, { sourceGroup: sim.bindRO, header: sim.readHeader(), reset });
+    this.fields.recordSpatial(this.gpu.frame, { sourceGroup: sim.bindRO, header: sim.readHeader(), smoothing: sim.smoothing });
   }
 
   /**

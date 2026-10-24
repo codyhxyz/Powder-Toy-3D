@@ -91,7 +91,6 @@ function context({ close = false, curved = false, ratio = 1 } = {}) {
     coreWait: Promise.resolve(), coreReady: true, blocksOn: false, blocks: null,
     graphicsFailure: null, giWait: Promise.resolve(), physicsV2: null, win: null,
     get mapKind() { return kindOf(!!this.win); },   // (app.js: follows the window, as build() sets it)
-    hybridLoad: null, hybrid: null, hybridWait: Promise.resolve(),   // the hybrid renderer off (app.js)
     curved, isMaterialView, gateVariants, detailKey, UPSCALE_FLOOR,
     viewKeyOf: v => v, viewShadows: v => isMaterialView(v),
     post: { settings: { taa: true, upscale: 0.1, resolutionScale: 0.1 } }, updates: [], settles: 0 };

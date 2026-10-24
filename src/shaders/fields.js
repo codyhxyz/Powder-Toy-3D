@@ -1,4 +1,3 @@
-import { particleOwnershipWGSL } from './hybrid/particles.js';
 import { prelude, STATE_OPTS, LAYOUT, STAGE, BRICK, gridDims } from './common.js';
 import { materialsGLSL, CHANNELS, MEDIA } from '../gfx/materials.js';
 import { blendFixedFrames } from '../gfx/pacing.js';
@@ -336,7 +335,7 @@ fn jetAt(p: vec3i) -> bool {
 // emaS, emaM: each channel's blend weight (CHANNELS[i].ema, MEDIA[i].ema);
 // reset: every cell starts over at its target (a load, a new smoothing:
 // sim.fieldReset), as the cells of FRESH bricks do. aer: jetWGSL's.
-export const EmaParams = uniformStruct('EmaParams', { emaS: 'vec4f', emaM: 'vec4f', reset: 'u32', aer: 'u32', particleSplit: 'u32', world: 'u32' });
+export const EmaParams = uniformStruct('EmaParams', { emaS: 'vec4f', emaM: 'vec4f', reset: 'u32', aer: 'u32' });
 export const fieldEmaFrag = (g, domain = 'box') => fieldDomain(/* wgsl */ `
 ${prelude(g, STATE_OPTS.STATE_RO)}
 ${materialsGLSL()}
@@ -347,7 +346,6 @@ ${dirtyListsWGSL(g)}
 // surface bulges over the full cells and dips over the sparse ones.
 const RUBBLE_LUMP: f32 = 0.45;        // most a rubble cell's occupancy falls short of 1
 const RUBBLE_LUMP_HASH: f32 = 7.13;   // spreads the seed (a.w) into a fresh uniform
-${particleOwnershipWGSL}
 ${EmaParams.wgsl}
 @group(3) @binding(1) var<uniform> P: EmaParams;
 @group(2) @binding(0) var<storage, read> dlist: array<u32>;
@@ -364,8 +362,7 @@ ${listMainWGSL('LIST_EMA')}
   let ch = SURFCH(id);
   let md = MEDIACH(id);
   let crisp = id != E_EMPTY && ch < 0 && md < 0;
-  let particleOwned = P.particleSplit != 0u && hybridParticleOwns(p, P.world != 0u);
-  if (ch >= 0 && !particleOwned) {
+  if (ch >= 0) {
     var v = 1.0;
     if (id == E_STONE) { v = 1.0 - RUBBLE_LUMP * fract(fract(a.w) * RUBBLE_LUMP_HASH); }
     sv[ch] = v;
@@ -383,8 +380,7 @@ ${listMainWGSL('LIST_EMA')}
     m = mix(unpack4x8unorm(ema[SLOTS + s]), m, P.emaM);
   }
   // Ownership wins over old bulk history, before any spatial blur.
-  if (particleOwned) { sv[ch] = 0.0; }
-  if (jetAt(p) && !particleOwned) { sv.x = 1.0; }   // ownership wins over jet boost
+  if (jetAt(p)) { sv.x = 1.0; }
   ema[s] = pack4x8unorm(sv);
   ema[SLOTS + s] = pack4x8unorm(m);
   var weight = vec4f(select(1.0, 0.0, crisp));
@@ -448,11 +444,11 @@ ${final ? `  // normalise; deep inside crisp solids there is nothing to normalis
 // (fieldBoostFrag(g, 1), axis 1 then 2).
 // s: per-channel centre weight of the lattice smoothing (1 = none). aer:
 // jetWGSL's (stage 0 reads it: a pour's wake is current liquid).
-export const BoostParams = uniformStruct('BoostParams', { s: 'vec4f', axis: 'u32', aer: 'u32', particleSplit: 'u32', world: 'u32' });
+export const BoostParams = uniformStruct('BoostParams', { s: 'vec4f', axis: 'u32', aer: 'u32' });
 export const fieldBoostFrag = (g, stage, domain = 'box') => fieldDomain(/* wgsl */ `
 ${prelude(g, stage === 0 ? STATE_OPTS.STATE_RO : { state: false })}
 ${dirtyListsWGSL(g)}
-${stage === 0 ? `${materialsGLSL()}\n${particleOwnershipWGSL}` : ''}
+${stage === 0 ? materialsGLSL() : ''}
 ${BoostParams.wgsl}
 @group(3) @binding(1) var<uniform> P: BoostParams;
 @group(2) @binding(0) var<storage, read> dlist: array<u32>;
@@ -473,8 +469,8 @@ ${listMainWGSL('LIST_WORK')}${coverWGSL('boost')}
     if (i == 0) { w = P.s; }
 ${stage === 0 ? `    acc += w * vec4f(unpack2x16float(src[t]), unpack2x16float(src[SLOTS + t]));
     let ch = SURFCH(eid(fetchAs(t)));
-    if (ch >= 0 && !(P.particleSplit != 0u && hybridParticleOwns(q, P.world != 0u))) { occ[ch] = 1.0; }
-    if (jetAt(q) && !(P.particleSplit != 0u && hybridParticleOwns(q, P.world != 0u))) { occ.x = 1.0; }` : `    acc += w * unpack4x8unorm(src[t]);
+    if (ch >= 0) { occ[ch] = 1.0; }
+    if (jetAt(q)) { occ.x = 1.0; }` : `    acc += w * unpack4x8unorm(src[t]);
     occ = max(occ, unpack4x8unorm(src[SLOTS + t]));`}
   }
   dst[s] = pack4x8unorm(acc);
@@ -590,30 +586,6 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 }
 `;
 
-// Ownership reads a 26-neighbour stencil, so a changed brick can change the
-// ownership of cells in adjacent bricks. Dilate ages into existing scratch,
-// never back into age (which would recursively spread dirtiness every frame).
-export const particleAgeFrag = (g) => `
-${prelude(g, { state: false })}
-${dirtyListsWGSL(g)}
-@group(2) @binding(0) var<storage, read_write> age: array<u32>;
-@group(2) @binding(1) var<storage, read_write> expanded: array<u32>;
-@compute @workgroup_size(64)
-fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u,
-  @builtin(local_invocation_index) li: u32) {
-  let b = foldThread(wg, nwg, li);
-  if (b >= NBRICKS) { return; }
-  let p = brickCoord(b);
-  var recent = age[b] & AGE_MASK;
-  for (var z = -1; z <= 1; z++) { for (var y = -1; y <= 1; y++) { for (var x = -1; x <= 1; x++) {
-    let q = p + vec3i(x,y,z);
-    if (all(q >= vec3i(0)) && all(q < vec3i(BX,BY,BZ))) {
-      recent = min(recent, age[brickId(q)] & AGE_MASK);
-    }
-  } } }
-  expanded[b] = (age[b] & ~AGE_MASK) | recent;
-}`;
-
 // windowed: a world's grid only; tool: built only by the tools that run it
 // (docs/webgpu.md B5; src/derived.js builds them on first use otherwise).
 const perList = (g) => fold(gridDims(g).nbricks);   // the longest list: every brick
@@ -623,7 +595,6 @@ const fieldLayouts = (state, group = FIELD_LAYOUT.FIELD) => () => [LAYOUT.TABLES
  * start menu's warm-up, docs/webgpu.md B5).
  */
 export const WGSL_CHECK = [
-  { name: 'particleAges', kind: 'compute', code: particleAgeFrag, layouts: () => [LAYOUT.TABLES, 'EMPTY', [0, 1].map(binding => ({ binding, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }))], dispatch: (g) => fold(Math.ceil(gridDims(g).nbricks / 64)) },
   { name: 'fieldEma', kind: 'compute', code: fieldEmaFrag, layouts: fieldLayouts(true, FIELD_LAYOUT.JET), dispatch: perList },
   { name: 'fieldBlur', kind: 'compute', code: (g) => fieldBlurFrag(g, false), layouts: fieldLayouts(false), dispatch: perList },
   { name: 'fieldFinal', kind: 'compute', code: (g) => fieldBlurFrag(g, true), layouts: fieldLayouts(false), dispatch: perList },

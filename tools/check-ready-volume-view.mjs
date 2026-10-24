@@ -4,7 +4,7 @@ import { SMALL_MAP } from '../src/mapKind.js';
 import { readFileSync } from 'node:fs';
 import { Matrix4, PerspectiveCamera, Vector3 } from 'three/webgpu';
 import { createReadyVolumeView } from '../src/gfx/readyVolumeView.js';
-import { VIEWS, viewKey as viewKeyOf, isMaterialView, isTestView } from '../src/views.js';
+import { VIEWS, viewKey as viewKeyOf, isMaterialView } from '../src/views.js';
 import { viewShadows } from '../src/shaders/render.js';
 import { writeFrameUniforms } from '../src/gfx/uniforms.js';
 import { createPacer } from '../src/gfx/pacing.js';
@@ -77,11 +77,10 @@ const gpu = { _frameUniforms: {
 } };
 const camera = new PerspectiveCamera();
 const runtime = new Function('helpers', `
-  const { createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows, writeFrameUniforms, vol, gpu, camera, Matrix4, Vector3, SMALL_MAP } = helpers;
+  const { createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, viewShadows, writeFrameUniforms, vol, gpu, camera, Matrix4, Vector3, SMALL_MAP } = helpers;
   const settings = { view: 6 }, readyVolumeView = createReadyVolumeView();
   let volumeFormat;
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', resets = 0, volumeDrawn = false;
-  let hybrid=null;
   const blocks = null, blocksOn = false, testNoVolume = false, win = null, worldMode = null;
   const mapKind = { ...SMALL_MAP, boxFrame: false };   // (no floor grid: its overlays are fixtures here)
   const post = { reset() { resets++; } }, meshFrames = { drop() {} }, sim = { g: {}, resetGI() {} };
@@ -91,18 +90,17 @@ const runtime = new Function('helpers', `
   const coldShader = { watch() {} }, wakeWhen = promise => promise.catch(() => {});
   const detailGate = { setView() {} }, plainView = id => viewKeyOf(id) === 'plain';
   const setBlocks = () => {}, prepareGI = () => {}, pacer = { wake() {} };
-  const hybridUnavailable = false;
-  const settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {}, toast() {} }, save = () => {}, ensureHybrid = () => {};
+  const settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {}, toast() {} }, save = () => {};
   const frameValues = (cam, view) => ({ camera: cam, model: new Matrix4(), sun: new Vector3(0, 1, 0), view });
   ${setCode}\n${selectCode}\n${drawCode}\n${sceneCode}\n${hooksCode}
-  return { setView, settings, setHybrid(value){hybrid=value;}, frame(detail = {}) {
+  return { setView, settings, frame(detail = {}) {
     frameDetail = detail;
     selectRenderView();
     frameHooks.prepare({ jitter: [0, 0] });
     drawScene({});
     return { draw: vol.lastDraw, volumeDrawn, renderView, contextView: ctx.renderView, resets };
   } };
-`)({ createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows, writeFrameUniforms,
+`)({ createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, viewShadows, writeFrameUniforms,
   vol: fakeVolume, gpu, camera, Matrix4, Vector3, SMALL_MAP });
 function check(expected, detail = {}) {
   const f = runtime.frame(detail);
@@ -140,10 +138,6 @@ check(0, requestedDetail);
 failedDetail.fail();
 await failedDetail.ready.catch(() => {});
 assert.deepEqual(check(0, requestedDetail).draw.detail, {}, 'failed replacement retains ready detail');
-const indirect={buffer:{},offset:32};
-runtime.setHybrid({enabled:true,legacyIndirect:indirect});
-assert.equal(runtime.frame().draw.indirect,indirect,'hybrid retains only the GPU-controlled exceptional legacy draw');
-runtime.setHybrid(null);
 runtime.setView(6);
 check(6);
 assert(app.indexOf('selectRenderView();') < app.indexOf('frameWires.beforeView(dt);'), 'select before any presentation hooks');
@@ -155,7 +149,7 @@ const resolutionCode = app.slice(app.indexOf('function syncRenderResolution('), 
 // Execute the actual BOX branch. WORLD has a separate admitted-frame driver.
 const scheduleBegin = app.indexOf('  const present = renderOnly || pacer.present(');
 const worldSplit = app.indexOf('  let runDerived=false, runView=false;', scheduleBegin);
-const localBegin = app.indexOf('  const hybridScale = hybrid?.adapt(', worldSplit);
+const localBegin = app.indexOf('  runDerived = present && pacer.derived(', worldSplit);
 assert(scheduleBegin>=0&&worldSplit>scheduleBegin&&localBegin>worldSplit);
 const scheduleCode = app.slice(scheduleBegin,worldSplit)+'  let runDerived=false, runView=false;\n'+app.slice(localBegin,app.indexOf('  const viewV = present ?'));
 const viewScheduleCode = app.match(/  runView = present && pacer\.view\(viewV, runDerived \|\| wantFrame\(\) \|\| betweenTicks\);/)[0];
@@ -168,10 +162,9 @@ const settlingVolume = {
   pipeline: view => view === 'cozy' ? ready : latePipe,
 };
 const paused = new Function('helpers', `
-  const { createReadyVolumeView, createPacer, canPostFrame, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows,
+  const { createReadyVolumeView, createPacer, canPostFrame, VIEWS, viewKeyOf, isMaterialView, viewShadows,
     writeFrameUniforms, Matrix4, Vector3, camera, gpu, vol, SMALL_MAP } = helpers;
   const settings = { view: 6, paused: true }, readyVolumeView = createReadyVolumeView();
-  const hybrid=null;
   const pacer = createPacer({ derivedSettle: 3, viewSettle: 2 });
   let volumeFormat;
   let renderView = settings.view, frameDetail = {}, frameMode = 'full', frameDerived = false, gi = 1;
@@ -190,8 +183,7 @@ const paused = new Function('helpers', `
   const warpNow = () => null, baseDetail = () => ({}), coldShader = { watch() {} };
   const detailGate = { setView() {}, update: () => ({}) }, plainView = id => viewKeyOf(id) === 'plain';
   const setBlocks = () => {}, prepareGI = () => {}, settingsPanel = { sync() {} }, shaderPanel = { sync() {} };
-  const hybridUnavailable = false;
-  const hud = { setLegend() {}, toast() {} }, save = () => {}, ensureHybrid = () => {};
+  const hud = { setLegend() {}, toast() {} }, save = () => {};
   const volume = { matrixWorld: new Matrix4(), updateMatrixWorld() {} };
   const camGrid = new Vector3(), invVol = new Matrix4(), canvas = { height: 600 };
   const presetOf = () => 1, DEVICE_RATIO = 1, pixelRatio = 1, UPSCALE_FLOOR = 0.5;
@@ -217,7 +209,7 @@ const paused = new Function('helpers', `
       painting: false, povActive: false, busy: false });
     return { runDerived, runView, renderView, gi, events: [...events], settled: pacer.settled, postOnlyEligible };
   } };
-`)({ createReadyVolumeView, createPacer, canPostFrame, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows,
+`)({ createReadyVolumeView, createPacer, canPostFrame, VIEWS, viewKeyOf, isMaterialView, viewShadows,
   writeFrameUniforms, Matrix4, Vector3, camera, gpu, vol: settlingVolume, SMALL_MAP });
 for (let i = 0; i < 12; i++) paused.tick();
 let settled = paused.tick();

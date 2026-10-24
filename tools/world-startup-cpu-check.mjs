@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {gateVariants} from '../src/gfx/detailGate.js';
 import {DETAIL,settingKey} from '../src/gfx/detail.js';
-import {VIEWS,isMaterialView,isTestView} from '../src/views.js';
+import {VIEWS,isMaterialView} from '../src/views.js';
 import {createLoadWatch,LOAD_FLAG_MS} from '../src/loadWatch.js';
 import {kindOf} from '../src/mapKind.js';
 const source=readFileSync(new URL('../src/app.js',import.meta.url),'utf8');
@@ -63,7 +63,7 @@ test('actual core startup retains physics/picks but never warms a BOX view for W
     const calls=[],physical=Promise.resolve('physics'),pick=Promise.resolve('pick');
     const vol={ready:pick,noiseReady:Promise.resolve(),viewReady(){calls.push('view');return Promise.resolve();}};
     const env={s:{ready:physical},derived:{ready:Promise.resolve()},vol,post:{ready:Promise.resolve()},
-      overlays:{ready:Promise.resolve()},brush:{ready:Promise.resolve()},hybridWait:Promise.resolve(),worldMode,mapKind:kindOf(!!worldMode),blocks:null,
+      overlays:{ready:Promise.resolve()},brush:{ready:Promise.resolve()},worldMode,mapKind:kindOf(!!worldMode),blocks:null,
       viewKeyOf:()=> 'realistic',settings:{view},baseDetail:()=>({}),warpNow:()=>null,nativeOwner:null};
     const draw=expression(code,env),waits=[env.s.ready,...draw];
     assert(!draw.includes(physical),'a frame never waits on the step kernels');
@@ -94,7 +94,7 @@ test('WORLD never requests legacy GI, detail variants or block pipelines; BOX st
 test('WORLD view selection cannot build the retired shadow or detail variant',()=>{
   for(const worldMode of [{size:[1024,128,1024]},null]){
     const calls=[],settings={view};
-    appFunction('setView',{worldMode,mapKind:kindOf(!!worldMode),VIEWS,settings,isMaterialView,isTestView,hybridUnavailable:false,ensureHybrid(){},post:{reset(){}},meshFrames:{drop(){}},sim:{resetGI(){}},
+    appFunction('setView',{worldMode,mapKind:kindOf(!!worldMode),VIEWS,settings,isMaterialView,post:{reset(){}},meshFrames:{drop(){}},sim:{resetGI(){}},
       detailGate:{setView(){calls.push('detail');}},setBlocks(){},plainView:()=>false,prepareGI(){},viewKeyOf:()=> 'realistic',
       blocksOn:false,vol:{shadowState:'idle',shadowReady(){calls.push('shadow');return Promise.resolve();}},
       viewShadows:()=>true,pacer:{wake(){}},settingsPanel:{sync(){}},shaderPanel:{sync(){}},hud:{setLegend(){}},save(){}})(view);
@@ -105,19 +105,12 @@ test('WORLD view selection cannot build the retired shadow or detail variant',()
 test('actual WORLD readiness waits core/queue without unrelated local view, GI or shadows',async()=>{
   for(const win of [{size:[1024,128,1024]},null]){
     const calls=[],sim={},vol={viewReady(){calls.push('view');return Promise.resolve();},shadowReady(){calls.push('shadow');return Promise.resolve();}};
-    await appFunction('allReady',{win,mapKind:kindOf(!!win),sim,vol,coreWait:Promise.resolve(),coreReady:true,graphicsFailure:null,hybridLoad:null,hybrid:null,hybridWait:Promise.resolve(),
+    await appFunction('allReady',{win,mapKind:kindOf(!!win),sim,vol,coreWait:Promise.resolve(),coreReady:true,graphicsFailure:null,
       gpu:{async settled(){calls.push('queue');}},viewKeyOf:()=> 'realistic',settings:{view},blocksOn:false,blocks:null,
       warpNow:()=>null,viewShadows:()=>true,baseDetail:()=>({}),giWait:Promise.resolve(),physicsV2:null,
       // the BOX checkpoint's footprint (syncRenderResolution, updateFrameDetail): not under test here
       applyOutputRatio(){},syncRenderResolution(){},updateFrameDetail(){},autoRes:{scale:1},detailGate:{level:0},gateVariants,isMaterialView,detailKey:d=>JSON.stringify(d)})();
     assert.deepEqual(calls,win?['queue']:['view','shadow','queue']);
-  }
-});
-
-test('WORLD Test fallback never allocates unused local hybrid pipelines',()=>{
-  for(const hybridOptIn of [false,true]){
-    appFunction('ensureHybrid',{worldMode:{},mapKind:kindOf(true),hybridOptIn,isTestView,settings:{view:VIEWS.find(v=>v.key==='test').id},hybrid:null,
-      hybridModule:{createHybridRenderer(){throw Error('WORLD must use its global data wire');}}})();
   }
 });
 

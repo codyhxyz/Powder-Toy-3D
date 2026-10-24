@@ -152,7 +152,7 @@ c.sim.compact = { isReady: false };
 const context = { physicsV2: { ready: ready.promise, integrationReady: integration.promise }, coreWait: null, coreReady: false,
   s: { ready: Promise.resolve() }, derived: { ready: Promise.resolve() }, vol: Object.assign(c.volume, { ready: Promise.resolve(), noiseReady: Promise.resolve(), viewReady(v,d,b) { return this.pipeline(v,d,'now',b).ready; } }),
   post: { ready: Promise.resolve() }, overlays: { ready: Promise.resolve() }, brush: { ready: Promise.resolve() }, blocks: null,
-  hybridWait: Promise.resolve(), worldMode: false, mapKind: SMALL_MAP,   // (app.js since: the hybrid engine's load, and a World session draws no Box view)
+  worldMode: false, mapKind: SMALL_MAP,   // (a World session draws no Box view)
   settings: { view: 'realistic' }, viewKeyOf: v => v, baseDetail: () => ({}), warpNow: () => null, wakeLoop() {} };
 const cp = makeCore(context)(); let done = false; cp.then(() => { done = true; });
 await Promise.resolve(); assert.equal(done, false); assert(c.descs.every(d => d.name.endsWith('format2')));
