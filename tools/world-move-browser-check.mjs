@@ -24,6 +24,11 @@
 // before (stage ~1 ms there) and the leaving diff's prepass found done, a ringed world-copy move's frame is
 // ~1.5-2 ms of GPU: the native leave ~0.6, the commit ~0.1, the gathers ~0.2, the ring's enter, actShift and
 // the restore's clears ~0.6; walks leave 0 V2 words different, ticks deterministic and unchanged by a walk.
+// Hypothesis (P3 slot 1, ring on by default, the map's own world copy): a staged move's frame is ~2.5 ms of
+// GPU with no V2 import passes left in it; walks out and back leave 0 V2 words different; a stroke across
+// the ring's seam is all stone in readState and in the world copy and the pick finds what readState shows;
+// the CPU by step shows where P2's 4.8 ms went (suspect: the leaving capture's readback setup or the
+// before-shift writeback, which the ring path did not run until now).
 // Segments, each N moves east then N back: old (switch off), physics only (switch on, generator fill),
 // world copy (switch on, a synthetic copy: tools/world-copy-stub.mjs; content is not the map's, timing only).
 // usage: node tools/world-move-browser-check.mjs [--map island] [--win 128] [--moves 4]
@@ -50,7 +55,7 @@ async function page(ring, SEG) {
     p.on('console', (m) => { if (m.type() === 'error' && !/ERR_CONNECTION_REFUSED/.test(m.text())) errs.push(m.text().slice(0, 400)); });
     p.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e.stack || e).slice(0, 600)));
     const t0 = Date.now();
-    await p.goto(vite.url(`/?map=${MAP}&view=plain&win=${WIN}${ring ? '&physicsOnly=1' : ''}`));
+    await p.goto(vite.url(`/?map=${MAP}&view=plain&win=${WIN}${ring ? '&physicsOnly=1' : '&ring=0'}`));
     await p.waitForFunction(() => window.__app?.win?.loaded && window.__app.sim.nativeCapabilities?.world && !window.__app.win.blocker()
       || document.getElementById('error')?.textContent, null, { polling: 100, timeout: BOOT_MS });
     const failed = await p.evaluate(() => document.getElementById('error')?.textContent || null);
@@ -108,7 +113,7 @@ async function page(ring, SEG) {
           for (const ps of fr.passes) if (ps.gpu !== null) passes[ps.name] = (passes[ps.name] ?? 0) + ps.gpu;
         }
         const gpuMs = Object.entries(passes).filter(([n]) => !n.startsWith('(between')).reduce((x, [, y]) => x + y, 0);
-        return { cpu: t1 - t0, synced: t2 - t0, land: t3 - t2, code: t4 - t3, trees: L.trees, bakeMs: L.bakeMs, kept: L.kept, longest: w.leaveQueue.longestMs, gpuMs, spanMs, untimed, frames: frames.length, passes, stageMs, staged: L.staged };
+        return { cpu: t1 - t0, synced: t2 - t0, land: t3 - t2, code: t4 - t3, trees: L.trees, bakeMs: L.bakeMs, kept: L.kept, longest: w.leaveQueue.longestMs, gpuMs, spanMs, untimed, frames: frames.length, passes, stageMs, staged: L.staged, stepMs: L.stepMs };
       };
       const walk = async (axis = 0) => { const out = [], back = []; for (let i = 0; i < N; i++) out.push(await step(1, axis)); for (let i = 0; i < N; i++) back.push(await step(-1, axis)); return { out, back }; };
       const segment = async (label, physicsOnly, axis = 0) => {
@@ -151,6 +156,54 @@ async function page(ring, SEG) {
         await fresh(); await walk(0); const hw = await hash(), h3 = await run(), c3 = last;
         return { label: 'ticks', h0, h1, h2, hw, h3, c1, c2, c3, origin: o };
       });
+      if (SEG.includes('real')) await tryPush('world copy (real)', async () => {
+        // the map's own world copy (W's, attached at boot: wire/world.js), the window loaded from it
+        if (!w.copyFill?.isReady) throw new Error('no world copy attached');
+        w.physicsOnly = true; await settle(); w.load([sim.origin.x, 0, sim.origin.z]); await a.gpu.fence();
+        return segment('world copy (real)', true);
+      });
+      if (SEG.includes('seam')) await tryPush('seam', async () => {
+        // A stroke and a pick across the ring's seam: the bricks whose slot numbers wrap round (brick id
+        // NBRICKS - 1 and 0 under the ring, shaders/common.js ringOf), painted in one stroke, read back by
+        // readState, picked from above, and written back into the world copy.
+        const { brickCoordOf } = await import('/src/shaders/common.js');
+        const { ELEMENTS, K } = await import('/src/elements.js');
+        const { WC_MIXED } = await import('/src/shaders/world/cellWord.js');
+        const STONE = ELEMENTS.findIndex((e) => e.key === 'STONE'), nb = g.nbricks, ring = g.ring;
+        const plain = { nx: g.nx, ny: g.ny, nz: g.nz }, L0 = (nb - ring) % nb;
+        const b1 = brickCoordOf(plain, (L0 + nb - 1) % nb), b2 = brickCoordOf(plain, L0);
+        const c = [0, 1, 2].map((i) => (b1[i] + b2[i] + 1) * 2), r = 5;
+        sim.paint({ center: { x: c[0], y: c[1], z: c[2] }, radius: r, shape: 0, tool: STONE, rate: 1, replace: true });
+        await a.gpu.fence();
+        const [A] = await sim.readState(), idAt = (x, y, z) => Math.round(A[sim.cellTexel(x, y, z) * 4]);
+        let inside = 0, bad = 0;
+        for (let x = Math.floor(c[0] - r); x <= c[0] + r; x++) for (let y = Math.floor(c[1] - r); y <= c[1] + r; y++) for (let z = Math.floor(c[2] - r); z <= c[2] + r; z++) {
+          if (x < 0 || y < 0 || z < 0 || x >= g.nx || y >= g.ny || z >= g.nz) continue;
+          if (Math.hypot(x + 0.5 - c[0], y + 0.5 - c[1], z + 0.5 - c[2]) > r - 1) continue;
+          inside++; if (idAt(x, y, z) !== STONE) bad++;
+        }
+        // the pick, straight down the stroke's centre column, against the first cell readState shows there
+        const col = [Math.floor(c[0]), Math.floor(c[2])], top = Math.min(g.ny - 1, Math.floor(c[1] + r + 2));
+        let expect = null;
+        for (let y = top; y >= 0 && expect === null; y--) { const id = idAt(col[0], y, col[1]); if (id && ELEMENTS[id]?.kind !== K.GAS) expect = y; }
+        const hit = await a.pickRay([col[0] + 0.5, top + 0.5, col[1] + 0.5], [0, -1, 0]);
+        // the world copy's words over the stroke, after its writeback (W's)
+        let wcBad = 0, wcChecked = 0;
+        const wc = w.worldCopy;
+        if (wc?.recordWriteback) {
+          wc.recordWriteback(a.gpu.frame, sim, null); await a.gpu.fence();
+          const WB = wc.L.bricks, table = new Uint32Array(await a.gpu.readback.buffer(wc.buf.table, 0, wc.buf.table.size));
+          const pool = wc.buf.pool ? new Uint32Array(await a.gpu.readback.buffer(wc.buf.pool, 0, wc.buf.pool.size)) : null;
+          for (let x = Math.floor(c[0] - r + 1); x <= c[0] + r - 1; x++) for (let y = Math.floor(c[1] - 2); y <= c[1] + 2; y++) for (let z = Math.floor(c[2] - 2); z <= c[2] + 2; z++) {
+            if (Math.hypot(x + 0.5 - c[0], y + 0.5 - c[1], z + 0.5 - c[2]) > r - 1 || x < 0 || y < 0 || z < 0 || x >= g.nx || y >= g.ny || z >= g.nz) continue;
+            const wx = x + sim.origin.x, wy = y + sim.origin.y, wz = z + sim.origin.z, b = [wx >> 2, wy >> 2, wz >> 2];
+            const e = table[b[0] + WB[0] * (b[1] + WB[1] * b[2])];
+            const word = (e & WC_MIXED) ? pool[(e & ~WC_MIXED) * 64 + ((wx & 3) + 4 * ((wy & 3) + 4 * (wz & 3)))] : e;
+            wcChecked++; if ((word & 255) !== STONE) wcBad++;
+          }
+        }
+        return { label: 'seam', ring, b1, b2, c, inside, bad, expect, hit: hit.valid ? [hit.cell.x, hit.cell.y, hit.cell.z] : null, col, wcChecked, wcBad };
+      });
       if (SEG.includes('copy')) try {
       const { syntheticWorldCopy, STUB_COPY_WGSL } = await import('/tools/world-copy-stub.mjs');
       const { wcWord } = await import('/src/shaders/world/cellWord.js');
@@ -171,6 +224,12 @@ async function page(ring, SEG) {
     for (const s of res) {
       if (s.label === 'fence') { console.log(`empty fence: median ${f(med(s.fenceMs))} ms; GPU timestamps ${s.timed ? 'on' : 'unsupported'}; ringed ${s.ringed} (ring ${s.ring})`); continue; }
       if (s.error) { failures++; console.log(`FAIL ${s.label}: ${s.error}`); continue; }
+      if (s.label === 'seam') {
+        const pickOk = s.hit && s.hit[0] === s.col[0] && s.hit[2] === s.col[1] && s.hit[1] === s.expect;
+        console.log(`seam (ring ${s.ring}: bricks ${s.b1} | ${s.b2}, stroke at ${s.c}): ${s.inside - s.bad}/${s.inside} cells stone; pick ${s.hit} vs ${s.col[0]},${s.expect},${s.col[1]}${pickOk ? ' (same)' : ' (DIFFER)'}; world copy ${s.wcChecked - s.wcBad}/${s.wcChecked} stone`);
+        if (s.bad || !pickOk || s.wcBad || !s.wcChecked) { failures++; console.log('FAIL seam'); }
+        continue;
+      }
       if (s.label === 'ticks') {
         console.log(`ticks (${TICKS} from a load at ${s.origin}): loaded ${s.h0}, run 1 ${s.h1}, run 2 ${s.h2}${s.h1 === s.h2 ? ' (deterministic)' : ' (NOT deterministic)'}; `
           + `after a walk out and back ${s.hw}${s.hw === s.h0 ? ' (= loaded)' : ' (≠ loaded)'}, its run ${s.h3}${s.h3 === s.h1 ? ' (= run 1)' : ' (≠ run 1)'}; `
@@ -190,6 +249,8 @@ async function page(ring, SEG) {
       console.log(`  GPU median ${f(med(all.map((m) => m.gpuMs ?? 0)))} ms in passes (max ${f(Math.max(...all.map((m) => m.gpuMs ?? 0)))}), `
         + `span median ${f(med(all.map((m) => m.spanMs ?? NaN)))} ms, frames ${all.map((m) => m.frames).join(' ')}, untimed passes ${all.reduce((n, m) => n + (m.untimed ?? 0), 0)}`);
       for (const [n, v] of top) console.log(`    ${f(v).padStart(7)}  ${n}`);
+      const steps = [...new Set(all.flatMap((m) => Object.keys(m.stepMs ?? {})))].map((n) => [n, med(all.map((m) => m.stepMs?.[n] ?? 0))]).sort((x, y) => y[1] - x[1]);
+      if (steps.length) console.log(`  CPU by step (median ms): ${steps.map(([n, v]) => `${n} ${f(v)}`).join(', ')}`);
     }
     for (const s of res) if (s.label !== 'fence' && s.label !== 'old' && !s.error && (s.diffFloats || s.diffWords)) {
       failures++; console.log(`FAIL ${s.label}: the walk out and back changed ${s.diffFloats} floats, ${s.diffWords} V2 words`);
