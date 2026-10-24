@@ -172,14 +172,12 @@ try {
   await p.keyboard.press('v');
   check('V pops out again', await until(() => window.__app.pov.mode === 'off', 15000), await mode());
 
-  // ---- the shortcut sheet and the POV hint teach the new keys
+  // ---- the shortcut sheet teaches the new keys
   const texts = await ev(() => ({
     help: [...document.querySelectorAll('.help .key')].map((r) => r.textContent).join(' | '),
-    hint: document.querySelector('.pov-hint')?.textContent ?? '',
   }));
   check('shortcut sheet: V god view, F5 view, Z zoom, C crouch',
     /God view[^|]*V/.test(texts.help) && /First or third person\s*F5/.test(texts.help) && /Zoom[^|]*Z/.test(texts.help) && /Crouch[^|]*C/.test(texts.help), texts.help.slice(0, 0));
-  check('POV hint: Z zoom, F5 third person, V god view, C crouch, F kick', /Z zoom/.test(texts.hint) && /F5 third person/.test(texts.hint) && /V god view/.test(texts.hint) && /C crouch/.test(texts.hint) && /F kick/.test(texts.hint), texts.hint);
   check('settings offer Realistic and Stickman only', await ev(() => !document.querySelector('.drawer button[data-value="wizard"]') && !!document.querySelector('.drawer button[data-value="real"]')));
 } finally {
   if (errs.length) { console.log('page errors:'); errs.slice(0, 8).forEach((e) => console.log('  ' + e)); }

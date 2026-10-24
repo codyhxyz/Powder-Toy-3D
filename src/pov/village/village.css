@@ -126,7 +126,7 @@ body.village-on, .village-panel, .village-hud {
 .village-controls .action-button:disabled .action-key { background: #8b7462; }
 .village-action-hint { max-width: 29ch; padding: 6px 13px; border-radius: 18px; background: var(--v-cream); font-size: 12px; }
 .village-action-hint[hidden] { display: none; }
-body.village-on .game-hud, body.village-on .hotbar, body.village-on .hb-held, body.village-on .pov-vitals, body.village-on .pov-hint, body.village-on .pov-lock, body.village-on .pov-use, body.village-on .touch-tool-name, body.village-on .touch-actions .touch-row:not(:last-child) { display: none !important; }
+body.village-on .game-hud, body.village-on .hotbar, body.village-on .hb-held, body.village-on .pov-vitals, body.village-on .pov-lock, body.village-on .pov-use, body.village-on .touch-tool-name, body.village-on .touch-actions .touch-row:not(:last-child) { display: none !important; }
 body.village-menu-open .village-hud, body.village-menu-open .pov-touch, body.village-menu-open .toolbar, body.village-menu-open .brand, body.village-menu-open .stats { visibility: hidden; }
 body.village-on .toolbar { background: #fff9e6ed; color: var(--v-ink); border-color: transparent; box-shadow: 0 4px 15px #33452620; border-radius: 19px; font-family: var(--v-font); }
 body.village-on .toolbar .icon-btn, body.village-on .camera-select { color: #6a6550; }

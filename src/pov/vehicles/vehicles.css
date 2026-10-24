@@ -23,7 +23,7 @@ body.pov-nohud .veh-hud { display: none; }
 .veh-touch-help { display: none; }
 
 /* Presentation only: leave the underlying on-foot visibility/state untouched. */
-body.pov-driving :is(.industry, .pov-hint, .hotbar, .hb-held, .pov-use, .pov-cross, .pov-nades, .readout) { display: none !important; }
+body.pov-driving :is(.industry, .hotbar, .hb-held, .pov-use, .pov-cross, .pov-nades, .readout) { display: none !important; }
 body.pov-nohud .industry { display: none !important; }
 body.pov-driving:has(.prof.show) .stats { display: none; }
 @media (min-width: 761px) {

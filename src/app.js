@@ -860,7 +860,7 @@ async function startMode(mode, { fresh = false } = {}) {
     }
     if (epoch !== modeEpoch) return false;
     const at = new THREE.Vector3(...map.mission.spawn).sub(sim.origin);
-    await pov.enter({ at, swoop: 0, hint: false, valid: () => epoch === modeEpoch });
+    await pov.enter({ at, swoop: 0, valid: () => epoch === modeEpoch });
     if (epoch !== modeEpoch || !pov.player) return false;
     pov.setLook(map.mission.spawnYaw ?? 0, 0);
     return pov.mission.start(map);
@@ -875,7 +875,7 @@ async function startMode(mode, { fresh = false } = {}) {
   // gesture (a drop-in from the god view asks for it itself)
   if (pov.active && !pov.locked) try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch { /* not allowed here */ }
   // Halo puts you in your eyes at a spawn: no swoop down from the god view, no sandbox key hint
-  await pov.enter({ swoop: 0, hint: false });
+  await pov.enter({ swoop: 0 });
   mark('entered');
   if (epoch !== modeEpoch || !pov.player) return false;   // (a later map/mode took over, or it couldn't drop in: pov.enter said why)
   return game.start(chosen.key, { fresh });

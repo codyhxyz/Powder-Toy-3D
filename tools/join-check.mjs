@@ -60,8 +60,8 @@ try {
   // the click that would capture the mouse (headless can't lock the pointer)
   await p.evaluate(() => { window.__app.pov.test.assumeLocked = true; });
   await p.waitForFunction(() => performance.getEntriesByName('join:control').length > 0, null, { timeout: 10000 });
-  const s2 = await p.evaluate(() => ({ play: !!document.querySelector('.game-play.on'), card: !!document.querySelector('.game-card.on'), hint: getComputedStyle(document.querySelector('.pov-hint')).display }));
-  check('captured: the prompt goes, the controls card shows, the sandbox hint is hidden', !s2.play && s2.card && s2.hint === 'none', JSON.stringify(s2));
+  const s2 = await p.evaluate(() => ({ play: !!document.querySelector('.game-play.on'), card: !!document.querySelector('.game-card.on') }));
+  check('captured: the prompt goes, the controls card shows', !s2.play && s2.card, JSON.stringify(s2));
   await shot(p, '3-in-match');
 
   // the timing marks, from the click

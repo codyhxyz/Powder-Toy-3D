@@ -262,21 +262,6 @@ body:has(.pov-use.source-use.imported-use.show) .readout { visibility: hidden; }
 .pov-death.show .pov-died, .pov-death.show .pov-cause { animation: pov-rise 900ms 250ms var(--ease) both; }
 @keyframes pov-rise { from { opacity: 0; transform: translateY(10px); } }
 
-/* ---- entry hint */
-.pov-hint {
-  position: absolute; left: 50%; top: 18%;
-  transform: translate(-50%, -6px);
-  display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px;
-  padding: 8px 14px; border-radius: 999px;
-  max-width: calc(100vw - 32px);
-  font-size: 12.5px; color: var(--muted);
-  opacity: 0; transition: opacity 500ms, transform 400ms var(--ease);
-}
-.pov-hint.show { opacity: 1; transform: translate(-50%, 0); }
-.pov-hint span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
-.pov-hint span[hidden] { display: none; }
-.pov-hint kbd { color: var(--text); }
-
 /* ---- hitmarker: four short diagonal ticks around the centre (feel.js drives opacity) */
 .pov-hitmark {
   --hm-size: 22px; --hm-w: 2px; --hm-cut: 36%;
@@ -385,7 +370,6 @@ body.pov-on.pov-menu .pov-lock { display: none; }
 
   /* the vitals sit above the move stick (112px), out of the thumbs' way */
   .pov-vitals { bottom: calc(var(--touch-lift) + 124px); left: max(12px, env(safe-area-inset-left)); width: 160px; padding: 8px; }
-  .pov-hint { top: 40%; border-radius: var(--r-panel); font-size: 12px; }
   .pov-respawn { flex-wrap: wrap; justify-content: center; padding: 0 16px; }
   body.pov-on.pov-nohud .pov-touch { visibility: hidden; }
 }
@@ -396,5 +380,5 @@ body.pov-on.pov-menu .pov-lock { display: none; }
   .pov-touch button { min-width: 56px; padding: 8px; font-size: 12px; }
 }
 @media (hover: none) and (pointer: coarse) and (max-height: 500px) {
-  .pov-hint, .touch-tool-name { display: none; }
+  .touch-tool-name { display: none; }
 }

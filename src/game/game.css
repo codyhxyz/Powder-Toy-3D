@@ -11,7 +11,7 @@
 /* the first-person HUD's own prompts give way to the match's (game/hud.js): the
    sandbox key hint (it sat over the objective line), "Click to look around", and
    the death screen's drop-point line and cause */
-body.game-on .pov-hint, body.game-on .pov-lock { display: none; }
+body.game-on .pov-lock { display: none; }
 body.game-live .pov-respawn, body.game-live .pov-cause { display: none; }
 /* the carnage report has the screen: the weapon bar (z-index above the HUD's) would cover Leave */
 body.game-reporting .hotbar, body.game-reporting .hb-held { display: none !important; }
