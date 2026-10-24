@@ -54,7 +54,8 @@ import { materialStyleForView, isMaterialView } from '../../views.js';
 import { worldGroup2, worldGroup2WGSL, worldGroup2Layout } from './bindings.js';
 // The owners' modules. Until W, F and L land these are the stand-ins (shaders/world/stubs.js);
 // the lead swaps this import for './copy.js', './fields.js' and './light.js' at integration.
-import { worldCopyWGSL, worldFieldsWGSL, worldLightWGSL, FIELDS_BINDINGS, LIGHT_BINDINGS, WorldCopyStub } from './stubs.js';
+import { worldCopyWGSL, worldLightWGSL, LIGHT_BINDINGS, WorldCopyStub } from './stubs.js';
+import { worldFieldsWGSL, FIELDS_BINDINGS } from './fields.js';
 
 /** The march's own values (group 3 binding 1): the box volume's (shaders/render.js VolumeParams) and physics' window. */
 export const MarchParams = uniformStruct('MarchParams', {
