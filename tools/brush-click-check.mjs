@@ -1,4 +1,5 @@
-// Real pointer/OrbitControls + GPU erase/undo integration.
+// Real pointer + GPU erase/undo integration, and the god camera (src/camera.js): right-drag looks
+// around in place, Q/E fly down/up without turning, W flies where you look.
 // node tools/brush-click-check.mjs [--url http://localhost:54923]
 import assert from 'node:assert/strict';
 import { launchBrowser, newTestPage, ready } from './browser.mjs';
@@ -32,7 +33,9 @@ try {
   await page.waitForFunction(wall => __app.hover.valid && __app.hover.id === wall, E.WALL);
   const state = () => page.evaluate(() => ({
     undo: __app.sim.history.length, camera: __app.camera.position.toArray(), tool: __app.settings.tool,
+    dir: __app.controls.target.clone().sub(__app.camera.position).normalize().toArray(),
   }));
+  const angle = (a, b) => Math.acos(Math.min(1, a.reduce((s, v, i) => s + v * b[i], 0)));
   const cell = await page.evaluate(() => __app.hover.cell.toArray());
   const id = () => page.evaluate(async p => Math.round((await __app.sim.readCell(...p))[0][0]), cell);
   const before = await state();
@@ -49,19 +52,40 @@ try {
   assert.equal((await state()).tool, E.SAND, 'selection remains unchanged');
   await page.evaluate(() => __app.undo());
   assert.equal(await id(), E.WALL, 'undo restores the erased cells');
+  await page.evaluate(() => __app.test.resume());   // the flights below need frames
 
   // A drag back to its start must not become a click on release.
   await page.mouse.move(450, 300);
   const start = await state();
   await page.mouse.down({ button: 'right' });
   await page.mouse.move(490, 320, { steps: 4 });
-  assert.notDeepEqual((await state()).camera, start.camera, 'right-drag rotates the real OrbitControls camera');
+  const looked = await state();
+  assert(Math.hypot(...looked.camera.map((v, i) => v - start.camera[i])) < 1e-6, 'right-drag keeps the eye in place');
+  assert(angle(looked.dir, start.dir) > 0.05, 'right-drag turns the view');
+  const locked = await page.evaluate(() => document.pointerLockElement === __app.canvas);
   await page.mouse.move(450, 300, { steps: 4 });
   await page.mouse.up({ button: 'right' });
+  assert.equal(await page.evaluate(() => document.pointerLockElement), null, 'letting go frees the cursor');
   assert.equal((await state()).undo, start.undo, 'camera drag creates no erase snapshot');
   assert.equal(await id(), E.WALL, 'dragging never erases');
+
+  // Q flies straight down, E up, neither turns; W flies where you look (down here, as the view looks down)
+  const hold = async (k) => { await page.keyboard.down(k); await page.waitForTimeout(300); await page.keyboard.up(k); await page.waitForTimeout(50); };
+  for (const [k, sign] of [['q', -1], ['e', 1]]) {
+    const a = await state();
+    await hold(k);
+    const b = await state();
+    assert(angle(a.dir, b.dir) < 1e-6, `${k.toUpperCase()} doesn't turn the camera`);
+    assert(sign * (b.camera[1] - a.camera[1]) > 0.05, `${k.toUpperCase()} flies ${sign < 0 ? 'down' : 'up'}`);
+    assert(Math.hypot(b.camera[0] - a.camera[0], b.camera[2] - a.camera[2]) < 1e-6, `${k.toUpperCase()} moves straight`);
+  }
+  const w0 = await state();
+  assert(w0.dir[1] < -0.5, 'the view looks down');
+  await hold('w');
+  assert((await state()).camera[1] < w0.camera[1] - 0.05, 'W while looking down lowers the camera');
+  assert.equal((await state()).undo, start.undo, 'flying paints nothing');
   assert.deepEqual(errors, []);
-  console.log('ok: real right-click erases only on release, undo restores it, right-drag only orbits');
+  console.log(`ok: real right-click erases only on release, undo restores it; right-drag looks in place (pointer lock ${locked ? 'held' : 'refused, plain movement'}); Q/E straight down/up; W flies where you look`);
 } finally {
   await browser.close();
 }

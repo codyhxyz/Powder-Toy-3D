@@ -23,10 +23,10 @@ const ZOOM_RATE = 25;                   // 1/s: ...while zooming a scope in or o
 // Mouse look
 // rad per pixel of mouse movement at Mouse Sensitivity 100%. Pointer lock reports raw,
 // unaccelerated mouse motion, so this is set well above a desktop cursor's feel.
-const LOOK_SENSITIVITY = 0.006;
+export const LOOK_SENSITIVITY = 0.006;
 export const SENSITIVITY_RANGE = [0.25, 4];  // the Mouse Sensitivity setting's multiplier (25%–400%)
-const LOOK_MAX_PX = 250;                // px: bigger single jumps (a browser hiccup on lock) are clamped
-const PITCH_LIMIT = DEG(88);            // up and down from level
+export const LOOK_MAX_PX = 250;                // px: bigger single jumps (a browser hiccup on lock) are clamped
+export const PITCH_LIMIT = DEG(88);            // up and down from level
 export const ENTRY_PITCH = DEG(-8);     // dropping in, the view starts a little below the horizon
 
 // Head bob, while walking on the ground (the View Bobbing setting turns it off).
