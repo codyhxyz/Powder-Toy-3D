@@ -79,7 +79,7 @@ try {
   await page.keyboard.press('Space');
   assert.equal(await dock.evaluate((el) => el.inert), false);
   assert(await page.locator('.dock-tab').evaluate((el) => el.inert));
-  await page.keyboard.press('f');
+  await page.keyboard.press('v');   // (V drops into the body; F focuses the camera in the god view)
   await page.waitForFunction(() => window.__app.pov.mode === 'on');
   await page.keyboard.press('q');
   await page.waitForFunction(() => document.body.classList.contains('pov-menu'));
