@@ -209,6 +209,11 @@ export const MEDIA_NOISE_CELLS = 64;
 //          alb, alb is the photo's own mean.
 //   texM   metres one tile of the texture covers (default: the scan's real size)
 //   texN   the normal map's strength (default 1: as scanned)
+//   texHue the share of the photo's own hue kept (default 0: recoloured to alb
+//          channel by channel; 1: only its brightness is scaled to alb's).
+//          For a photo whose colours are the point (grass: dry and green
+//          blades), which a per-channel recolour turns into flat turf; the
+//          far view and GI keep drawing alb, so keep it small
 //   texVary  break up the tile's repeat (shaders/gfx/surface.js matTextured:
 //          a second, offset read blended in by a low-frequency noise, Quilez's
 //          "texture repetition"): for what covers big surfaces, where a 1-2 m
@@ -266,7 +271,7 @@ const LOOKS = {
   FIRE: { media: 'FIRE' },
   WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637', macro: { tone: 0.2, hue: 0.1, rough: 0.08, size: 0.6 }, tex: 'bark_brown_02', texVary: true },   // bark (end grain stays procedural)
   // (its photo is the meadows' grass alone, appearance GRASS: foliage stays procedural)
-  PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25, macro: { tone: 0.3, hue: 0.45, rough: 0.1, size: 1 }, tex: 'leafy_grass', texVary: true },   // lush .. sun-dried patches
+  PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25, macro: { tone: 0.3, hue: 0.45, rough: 0.1, size: 1 }, tex: 'leafy_grass', texVary: true, texHue: 0.6 },   // lush .. sun-dried patches
   METAL: { rough: 0.32, metal: 1, alb: STEEL_F0, surf: 'BRUSHED' },
   GLASS: { ior: 1.5, rough: 0.02, scatter: [0.005, 0.003, 0.004] },
   // Debris (elements.js breakInto): heaps of fragments, powders as TPT's BGLA,
@@ -308,7 +313,7 @@ const LOOKS = {
   LIMESTONE: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.8, ior: 1.6, alb: '#bcb8af', surf: 'CRAG',
     crag: { relief: 1, pits: 0.4, bands: 1.5, stain: 0.4 }, tex: 'marble_rock_01', texVary: true },   // sharp solution runnels and pits, bedded
   COAL: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.75, alb: '#3c3c3d', surf: 'CRAG',
-    crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 }, tex: 'rock_wall_10' },       // blocky cleat, bright and dull bands
+    crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 }, tex: 'rock_face_04' },       // blocky cleat, bright and dull bands
   BROKENCOAL: { rough: 0.75, alb: '#3c3c3d', glint: 0.5 },
   // Fluorite (elements.js CRYSTAL): n = 1.434, a vitreous luster from flat
   // growth faces (polished glass with faint growth marks). A cell
@@ -344,7 +349,7 @@ const LOOKS = {
   // Red brick reflects ~0.25 in the red, ~0.1 in the green and ~0.06 in the
   // blue (USGS spectral library, fired clay); built, so crisp like Wall.
   // Crushed, it is paler: the broken faces scatter more.
-  BRICK: { rough: 0.9, alb: [0.25, 0.1, 0.06], macro: { tone: 0.18, hue: 0.1, rough: 0.06, size: 1 }, tex: 'brick_wall_04' },   // weathered, sooted walls
+  BRICK: { rough: 0.9, alb: [0.25, 0.1, 0.06], macro: { tone: 0.18, hue: 0.1, rough: 0.06, size: 1 }, tex: 'red_brick' },   // weathered, sooted walls
   RUBBLE: { rough: 0.95, alb: [0.3, 0.14, 0.09], tex: 'brick_gravel' },
   // Metals: F0 from measured complex indices (n, k at 450/550/650 nm;
   // refractiveindex.info): titanium (0.54, 0.50, 0.45), tungsten ~0.5 grey,
@@ -391,13 +396,14 @@ const LOOKS = {
   // Kaolin is as white (ISO brightness 80-90%); mud is darker, as any wet
   // soil is (water in the pores cuts the scattering: about half the
   // reflectance; Lekner & Dorf, Appl. Opt. 27, 1988) and wet-glossy, drawn
-  // with lava's opaque-liquid surface. Ceramic is matte white bisque.
+  // with lava's opaque-liquid surface. Ceramic is fired and glazed: white tiles
+  // (its photo), glossy where a bisque would be matte.
   // Antimatter is a game substance: a pale lilac powder with a sheen, so it
   // reads apart from the other powders. The singularity reflects nothing.
   DUST: { rough: 0.95, alb: '#ebe2cc', sss: 0.35 },
   CLAY: { rough: 0.95, alb: '#e2dccf', sss: 0.2, macro: { tone: 0.12, hue: 0.1, rough: 0.06, size: 1 }, tex: 'clay_plaster' },
   MUD: { ch: 'MOLTEN', rough: 0.3, alb: '#a49b8a', macro: { tone: 0.15, hue: 0.08, rough: 0.2, size: 0.6 }, tex: 'brown_mud_02' },   // wetter: darker and glossier patches
-  CERAMIC: { rough: 0.6, alb: '#efeae0', tex: 'white_plaster_02' },
+  CERAMIC: { rough: 0.3, alb: '#efeae0', tex: 'long_white_tiles' },
   ANTIMATTER: { rough: 0.4, alb: '#b9b0d9', glint: 0.6 },
   SINGULARITY: { rough: 1, alb: '#000000', macro: MACRO_NONE },
   // Explosives (elements.js). C-4 is an off-white putty, moulded smooth, a
@@ -486,6 +492,8 @@ const familyParams = (l) => {
 export const TEX_LAYERS = 2;
 export const NO_TEX = -1;
 const DEFAULT_TEX_NORMAL = 1;
+const luma = (c) => c.reduce((s, v, k) => s + v * LUMA_709[k], 0);
+const mix = (a, b, t) => a + (b - a) * t;
 const texOf = (key) => {
   const i = TEXTURE_SET.findIndex((t) => t.id === key);
   if (i < 0) throw new Error(`LOOKS tex: no texture ${key} (gfx/textureSet.js)`);
@@ -497,7 +505,7 @@ const texFields = (l, alb) => {
   return {
     texAsset: i,
     texMap: [NO_TEX, +(CELL_M / (l.texM ?? t.tileM)).toFixed(ROUND_DIGITS), t.roughMean, l.texN ?? DEFAULT_TEX_NORMAL],
-    texTint: [...alb.map((v, k) => +(v / t.mean[k]).toFixed(ROUND_DIGITS)), l.texVary ? 1 : 0],
+    texTint: [...alb.map((v, k) => +(mix(v / t.mean[k], luma(alb) / luma(t.mean), l.texHue ?? 0)).toFixed(ROUND_DIGITS)), l.texVary ? 1 : 0],
   };
 };
 const macroOf = (e, l) => {

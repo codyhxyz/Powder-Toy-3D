@@ -38,16 +38,16 @@ const ASSETS = [
   'dark_rock',          // BASALT: near-black, rough volcanic rock
   'sandstone_cracks',   // SANDSTONE: tan, crazed natural sandstone
   'marble_rock_01',     // LIMESTONE: pale grey, cracked
-  'rock_wall_10',       // COAL: dark, blocky, layered
+  'rock_face_04',       // COAL: dark, cracked, layered rock face
   'gray_rocks',         // STONE: angular grey rubble
   'snow_02',            // SNOW: wind-crusted snow
   'brown_mud_02',       // MUD: wet brown mud
   'clay_plaster',       // CLAY: smooth fine clay
   'burned_ground_01',   // ASH: burnt, ashy ground
-  'brick_wall_04',      // BRICK: red brick in mortar
+  'red_brick',          // BRICK: red clay brick in mortar (21.5 cm bricks: the scan's own size)
   'brick_gravel',       // RUBBLE: crushed brick
   'rusty_metal_02',     // SCRAP: scuffed, rust-spotted steel
-  'white_plaster_02',   // CERAMIC: matte white bisque
+  'long_white_tiles',   // CERAMIC: glazed white tiles
   'leafy_grass',        // PLANT's grass (the big maps' meadows: appearance GRASS)
 ];
 // WebP quality (cwebp -q) of each image: the albedo hides compression in its
