@@ -35,6 +35,11 @@
 // Hypothesis (P3 slot 2): with the native diff built, kept falls to the bricks the copy's trees or edits
 // make differ, the move's CPU to ~2 ms, its GPU span to ~2.7 ms (the restore's clears ~1, the commit ~0.5,
 // the leave ~0.6); the stroke across the seam is all stone in readState and the world copy, the pick agrees.
+// Slot 2: the move's CPU 2.2 ms (kept ~100 bricks), GPU span 3.9 ms of which 1.6 in passes, the rest the
+// restore's clears and copies between them; the stroke was refused (its brush kernels build on first use).
+// Hypothesis (P3 slot 3): with the brush built the seam's stroke is all stone in readState and in the world
+// copy, the pick agrees; ticks from a load are as deterministic as unringed ones, and their element counts
+// match an unringed page's (the ring changes no physics).
 // Segments, each N moves east then N back: old (switch off), physics only (switch on, generator fill),
 // world copy (switch on, a synthetic copy: tools/world-copy-stub.mjs; content is not the map's, timing only).
 // usage: node tools/world-move-browser-check.mjs [--map island] [--win 128] [--moves 4]
@@ -50,7 +55,7 @@ const SEGMENTS = new Set(opt('segments', 'old,physics,copy').split(','));
 const RING = args.includes('--ring'), TICKS = +opt('ticks', 40), BASELINE = args.includes('--baseline');
 // the focus stops within the stage's lead before each move (world/window.js stageAhead); --no-stage skips it
 const STAGE = !args.includes('--no-stage');
-const BASELINE_BY_MS = 12000;   // the unringed page starts only this soon after launch (its boot and ticks fit the slot)
+const BASELINE_BY_MS = 14000;   // the unringed page starts only this soon after launch (its boot and ticks fit the slot)
 const BOOT_MS = 16000;   // of the 25 s slot: past this the run gives up rather than overrun it
 
 // One page: boot (ringed or not), the segments, the results printed at once (a later page may run out the slot).
@@ -182,7 +187,10 @@ async function page(ring, SEG) {
         const plain = { nx: g.nx, ny: g.ny, nz: g.nz }, L0 = (nb - ring) % nb;
         const b1 = brickCoordOf(plain, (L0 + nb - 1) % nb), b2 = brickCoordOf(plain, L0);
         const c = [0, 1, 2].map((i) => (b1[i] + b2[i] + 1) * 2), r = 5;
-        sim.paint({ center: { x: c[0], y: c[1], z: c[2] }, radius: r, shape: 0, tool: STONE, rate: 1, replace: true });
+        const { prepareNativeBrush } = await import('/src/v2/interactions.js');
+        await prepareNativeBrush(sim);   // (a stroke before its kernels are built is refused)
+        const painted = sim.paint({ center: { x: c[0], y: c[1], z: c[2] }, radius: r, shape: 0, tool: STONE, rate: 1, replace: true });
+        if (!painted) throw new Error(`the stroke was refused: ${JSON.stringify(sim.nativeInteractionResult)}`);
         a.test.step(1);   // (a stroke lands with the tick: V2's requests)
         await a.gpu.fence();
         const [A] = await sim.readState(), idAt = (x, y, z) => Math.round(A[sim.cellTexel(x, y, z) * 4]);
