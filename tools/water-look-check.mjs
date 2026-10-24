@@ -2,7 +2,7 @@
 // a shallow puddle at a few centimetres of fill, and a deep pool whose top
 // cell is part full. The cells are V2's own (exact fills), written straight
 // into the engine's state, so the fixture is the same on every build.
-// node tools/water-look-check.mjs --out <dir> --label before|after [--port 18617]
+// node tools/water-look-check.mjs --out <dir> --label before|after [--prefix water] [--port 18617]
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
@@ -10,7 +10,7 @@ import { launchBrowser, newTestPage, ready, render } from './browser.mjs';
 
 const args = process.argv.slice(2);
 const opt = (key, fallback) => args.includes(`--${key}`) ? args[args.indexOf(`--${key}`) + 1] : fallback;
-const port = Number(opt('port', '18617')), out = opt('out', '/tmp/tpt-water-look'), label = opt('label', 'after');
+const port = Number(opt('port', '18617')), out = opt('out', '/tmp/tpt-water-look'), label = opt('label', 'after'), prefix = opt('prefix', 'water');
 mkdirSync(out, { recursive: true });
 // Ticks the splash falls and spreads before each of its shots (the blob drops
 // SPLASH_DROP cells, ~7 m: about a second and a half at 60 Hz, then lands).
@@ -19,6 +19,7 @@ const SPLASH_TICKS = [90, 140];
 const VIEWS = {
   puddle: [[80, 9, 70], [80, 0, 32]],
   pool: [[26, 30, 66], [26, 16, 24]],
+  seam: [[104, 10, 92], [104, 0, 66]],
   splash: [[79, 12, 116], [79, 0, 86]],
 };
 const server = await createServer({
@@ -50,7 +51,9 @@ try {
     // The scene as whole cells (sim.load, as the presets do), one tick for V2
     // to take it in and wake, then V2's own cells with their exact fills.
     const P0 = 8, P1 = 44, PH = 20, POOL_TOP_FILL = 0.6;   // a wall basin 6 m deep, its top row 60 % full
-    const C = [80, 30], R = 18, MID = 0.15, RIM = 0.03;    // a puddle 4.5 cm deep in the middle, 1 cm at its rim
+    const C = [80, 30], R = 18, MID = 0.13, RIM = 0.066;   // a puddle 4 cm deep in the middle, 2 cm at its rim
+    // a pool 3 cells deep (its top half full) standing in a 3 cm film: where a puddle meets deeper water
+    const S = [104, 66], SR = 4, SH = 3, SEAM_TOP = 0.5, FR = 9, SEAM_FILM = 0.1;
     const scene = (put) => {
       for (let y = 0; y <= PH + 1; y++) for (let z = P0; z < P1; z++) for (let x = P0; x < P1; x++) {
         const rim = x === P0 || z === P0 || x === P1 - 1 || z === P1 - 1;
@@ -60,6 +63,11 @@ try {
       for (let z = C[1] - R - 2; z <= C[1] + R + 2; z++) for (let x = C[0] - R - 2; x <= C[0] + R + 2; x++) {
         const d = Math.hypot(x - C[0], z - C[1]) / R;
         put(x, 0, z, d <= 1 ? E.WATER : E.EMPTY, MID + (RIM - MID) * d);
+      }
+      for (let z = S[1] - FR; z <= S[1] + FR; z++) for (let x = S[0] - FR; x <= S[0] + FR; x++) {
+        const deep = Math.max(Math.abs(x - S[0]), Math.abs(z - S[1])) <= SR, d = Math.hypot(x - S[0], z - S[1]);
+        if (deep) for (let y = 0; y < SH; y++) put(x, y, z, E.WATER, y === SH - 1 ? SEAM_TOP : 1);
+        else if (d <= FR) put(x, 0, z, E.WATER, SEAM_FILM);
       }
     };
     const [A, B] = a.sim.blankState();
@@ -92,11 +100,12 @@ try {
       a.camera.updateMatrixWorld(); a.post.reset();
     }, [pos, tgt]);
     await render(page);
-    await page.screenshot({ path: `${out}/water-${label}-${name}.png` });
+    await page.screenshot({ path: `${out}/${prefix}-${label}-${name}.png` });
   };
   await shoot('puddle');
   console.log('puddle fields (surface/thin, y = 0 1 2):', JSON.stringify(await probe()));
   await shoot('pool');
+  await shoot('seam');
   let done = 0;
   for (const [i, n] of SPLASH_TICKS.entries()) {
     const info = await page.evaluate(async n => {

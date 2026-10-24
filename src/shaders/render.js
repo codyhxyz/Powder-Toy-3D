@@ -1,4 +1,5 @@
 import { STATE_OPTS, LAYOUT, prelude, readFormatWGSL } from './common.js';
+import { filmCellsWGSL, filmTraceWGSL } from './gfx/film.js';
 import { compactDrawWGSL } from './compact.js';
 import { nativeMotionWGSL } from './v2/viewRead.js';
 import { RENDER_LAYOUT } from './bindings.js';
@@ -855,7 +856,9 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var ifEnter = false;
   var ifLid = E_EMPTY;
   var ifMirror = false;
-  var ifT = 0.0;${grains ? `
+  var ifT = 0.0;
+  var ifTint = vec3f(1.0);   // a film's: what the floor under it keeps (gfx/film.js filmTint), after the refraction
+  var filmCell = vec3i(-1);  // the cell whose film the ray went into: not met again from inside (the restart sits on its top)${grains ? `
   var altRefl = false;   // the hand-off band's stored path (gAltCol) came after a traced reflection` : ''}
 
   var lastB = vec3i(-1);
@@ -916,6 +919,8 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       ifPend = false;
       // the scene shows in the reflection only off the first surface the eye ray meets (ifMirror)
       let inside = liquidInterface(ifP, ifN, ifG, ifEnter, ifLid, ifMirror, &ro, &rd, &col, &trans, &mediumLight);
+      trans *= ifTint;
+      ifTint = vec3f(1.0);
       tCut -= ifT;
       rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
       tEnter = 0.0;
@@ -1102,6 +1107,9 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       var tEv = tExit;
       var evN = vec3f(0.0);   // forced normal (else from the field)
       var phiB = vec4f(0.0);
+      var film = false;       // the event is a film's top (gfx/film.js): its normal is evN
+      var filmLid = E_EMPTY;
+      var filmH = 0.0;
       // In certified liquid, keep every DDA segment, absorption, mixed ID,
       // paint, mesh cut and grain test. Only omit impossible surface events.
       // The else marks phi stale so leaving the certificate resamples the
@@ -1160,6 +1168,13 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         phiStale = true;
       }
 
+      // a film on the floor, thinner than the fields show (gfx/film.js): only
+      // from air, and only nearer than what the fields found
+      if (liq == E_EMPTY && brickSurf(flags) && ev != EV_OPAQUE && any(cell != filmCell)) {
+        var fN = vec3f(0.0, 1.0, 0.0);
+        let tF = filmHit(cell, ro, rd, tEnter, tEv, &fN, &filmLid, &filmH);
+        if (tF < tEv) { tEv = tF; ev = EV_ENTER; evCh = CH_LIQUID; evN = fN; film = true; }
+      }
       if (tCut < tEv) { tEv = tCut; ev = EV_NONE; cut = true; }${grains ? `
       // grains (gfx/grains.js), not past the cut either: geometry in front of it may still end the segment
       // (grainEvent reads the cell's state only for a grain element's cell: its cand)
@@ -1206,10 +1221,12 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           break;
         } else {
           // liquid surface: refract in or out
-          let geometric = surfNormal(hp, CH_LIQUID, select(rd, -rd, ev == EV_ENTER));
+          var geometric = evN;
+          if (!film) { geometric = surfNormal(hp, CH_LIQUID, select(rd, -rd, ev == EV_ENTER)); }
           var n = liquidRipple(hp, geometric);
           var lid = liq;
-          if (ev == EV_ENTER) { lid = liquidIdAt(hp - geometric * IFACE_PROBE, E_WATER); }
+          if (ev == EV_ENTER) { lid = select(liquidIdAt(hp - geometric * IFACE_PROBE, E_WATER), filmLid, film); }
+          if (film) { ifTint = filmTint(lid, filmH, rd); filmCell = cell; }
           n = liquidDetail(hp, n, lid, &col, &trans);   // close-up detail (gfx/liquidDetail.js)
           if (bends < MAX_BENDS) {
             bends++;
@@ -1218,6 +1235,8 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
             continue;
           }
           // out of bends: switch medium, keep straight
+          trans *= ifTint;
+          ifTint = vec3f(1.0);
           liq = select(E_EMPTY, lid, ev == EV_ENTER);
           if (ev == EV_ENTER) {
             lightRef = vec3f(1.0);
@@ -1504,6 +1523,7 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
     liquidGLSL,
     decoSurfGLSL,
     liquidDetailGLSL(d, { fixedReadFormat }),
+    filmCellsWGSL, filmTraceWGSL,
     mediaGLSL(d),
     grainsGLSL(d),
   ];

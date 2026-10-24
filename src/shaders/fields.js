@@ -5,6 +5,7 @@ import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { JOIN_REACH } from './gfx/liquidDetail.js';
 import { FULL } from '../v2/layout.js';
+import { filmCellsWGSL } from './gfx/film.js';
 
 // Render fields: continuous versions of the blocky state, rebuilt once per
 // frame for the renderer only (the simulation never reads them).
@@ -41,7 +42,8 @@ import { FULL } from '../v2/layout.js';
 // any of its cells holds (gfx/materials.js DROP_RADIUS_K, FILM_MIN_CELLS),
 // so a parcel in the air is a drop of its own volume, not a cell-sized bead.
 // Liquid in the air stays whole in the EMA (the boost sizes it), so pours and
-// streams read as before.
+// streams read as before. A film (liquid on a floor thinner than the fields
+// can show, shaders/gfx/film.js) is left out of them: the tracer draws it.
 //
 // Pours (jetWGSL): the sim pours a stream as parcels a few cells apart along
 // one path, which drawn as they are make a dotted line of glass beads. While
@@ -364,7 +366,8 @@ fn restsOn(p: vec3i) -> bool {
   if (liquidAt(q).y > 0.0) { return true; }
   let id = eid(fetchA(q));
   return id != E_EMPTY && MEDIACH(id) < 0;
-}`;
+}
+${filmCellsWGSL}`;
 
 // ---- 1. the EMA ----
 // emaS, emaM: each channel's blend weight (CHANNELS[i].ema, MEDIA[i].ema);
@@ -407,6 +410,7 @@ ${listMainWGSL('LIST_EMA')}
     // crosses ISO within ~0.03 cells of the true level (tools/water-look-check.mjs's
     // fixtures; the Gaussian is symmetric about a half-full cell)
     if (liq.y > 0.0 && restsOn(p)) { v = min(liq.y, 1.0); }
+    if (filmAt(p).y > 0.0) { v = 0.0; }   // (a film: the tracer's, gfx/film.js)
     sv[ch] = v;
   }
   if (md == MD_SMOKE) { m.x = clamp(a.z, 0.0, 1.0); }
@@ -515,7 +519,7 @@ ${stage === 0 ? `    acc += w * vec4f(unpack2x16float(src[t]), unpack2x16float(s
     let lq = liquidAt(q);
     var cid = eid(fetchAs(t));
     var share = 1.0;
-    if (lq.y > 0.0) { cid = i32(lq.x); share = min(lq.y, 1.0); }
+    if (lq.y > 0.0) { cid = i32(lq.x); share = select(min(lq.y, 1.0), 0.0, filmAt(q).y > 0.0); }
     let ch = SURFCH(cid);
     if (ch >= 0) { occ[ch] = max(occ[ch], share); }
     if (jetAt(q)) { occ.x = 1.0; }` : `    acc += w * unpack4x8unorm(src[t]);

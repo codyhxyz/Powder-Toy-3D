@@ -525,8 +525,9 @@ export const THIN_MASK_HI = 3.0;
 // cell's base, f - 1/2 from its centre (a signed radius: under the centre the
 // boost's peak goes below ISO). Over a floor the field reads at most ~1.09x
 // a film's centre (the box's edge clamps it, a crisp bed counts neither way),
-// so a film thinner than FILM_MIN_CELLS would fall under ISO everywhere and
-// vanish: it keeps that thickness.
+// so the fields draw resting water from FILM_MIN_CELLS up; a film thinner
+// than that, on a floor, is left out of them and drawn by the tracer at its
+// true thickness (shaders/gfx/film.js).
 export const DROP_RADIUS_K = Math.cbrt(3 / (4 * Math.PI));   // cells per cube root of fill: a sphere of the fill's volume
 export const FILM_MIN_CELLS = 0.7;   // cells (21 cm): the thinnest film the field shows over a floor (at 0.5 its peak sits on ISO)
 export const FILL_EPS = 1 / 255;

@@ -8,6 +8,7 @@ import { brickInfoWGSL, frameBindings, RENDER_LAYOUT } from './bindings.js';
 import { SHADOW_PAD } from './gfx/lighting.js';
 import { occupancyWords } from './occupancy.js';
 import { materialsGLSL } from '../gfx/materials.js';
+import { filmCellsWGSL } from './gfx/film.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold, MAX_WORKGROUPS } from '../gpu/kernels.js';
 import { propGLSL } from '../editing.js';
@@ -795,6 +796,8 @@ var<workgroup> wgEm: array<vec4f, 64>;    // emission (rgb), summed
 var<workgroup> wgMax: array<vec4f, 64>;   // surface field, opaque, thin mask, media field
 var<workgroup> wgAir: array<vec4f, 64>;   // |pressure|, speed² (core cells), liquid-interior violation (all cells)
 var<workgroup> wgOcc: atomic<u32>;        // a cell holds matter
+var<workgroup> wgFilm: atomic<u32>;       // a cell holds a film the tracer draws (gfx/film.js): a smooth surface no field shows
+${filmCellsWGSL}
 var<workgroup> wgGas: atomic<u32>;        // steam and smoke cells
 var<workgroup> wgFlags: atomic<u32>;      // air flags
 var<workgroup> wgLiqHi: atomic<u32>;      // 1 + the highest liquid-channel element id (0: none)
@@ -809,6 +812,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   let a = fetchAs(s);
   let id = eid(a);
   if (id != E_EMPTY) { atomicOr(&wgOcc, 1u); }
+  if (filmAt(p).y > 0.0) { atomicOr(&wgOcc, 1u); atomicOr(&wgFilm, 1u); }
   else if (abs(a.y - airT()) > AIR_FLAG_T) { atomicOr(&wgFlags, AIR_HOT); }
   if (id == E_STEAM || id == E_CLOUD || id == E_SMOKE) { atomicAdd(&wgGas, 1u); }
   let sf = textureLoad(tFS, p, 0);
@@ -865,7 +869,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     var flags = atomicLoad(&wgFlags);
     if (wgAir[0].x > AIR_FLAG_P) { flags |= AIR_PRESSURE; }
     if (wgAir[0].y > AIR_FLAG_V * AIR_FLAG_V) { flags |= AIR_FLOW; }
-    let hasSurf = mx.x > FIELD_HERE;
+    let hasSurf = mx.x > FIELD_HERE || atomicLoad(&wgFilm) != 0u;
     let hasMedia = mx.w > MEDIA_FLOOR;
     let hasOpaque = mx.y > FIELD_HERE;
     let hi = atomicLoad(&wgLiqHi);
