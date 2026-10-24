@@ -612,17 +612,6 @@ body.eyedropper canvas { cursor: crosshair; }
   100% { opacity: 0; }
 }
 
-.hint {
-  position: fixed; left: 50%; bottom: 24px; z-index: 6;
-  transform: translateX(-50%);
-  padding: 8px 14px; border-radius: 999px;
-  color: var(--text); font-size: 13px;
-  transition: opacity 600ms;
-  pointer-events: none;
-}
-.hint b { font-weight: 640; }
-.hint.gone { opacity: 0; }
-
 /* ------------------------------------------------------------------ help */
 .modal-scrim {
   position: fixed; inset: 0; z-index: 50;
@@ -677,8 +666,7 @@ body.eyedropper canvas { cursor: crosshair; }
   bottom: calc(max(14px, env(safe-area-inset-bottom)) + var(--spawn-bar-h, 0px));
 }
 .legend-box { right: calc(14px + var(--spawn-bar-w, 0px)); }
-.toasts, .hint { left: calc((100vw - var(--spawn-bar-w, 0px)) / 2); }
-.hint { bottom: calc(24px + var(--spawn-bar-h, 0px)); }
+.toasts { left: calc((100vw - var(--spawn-bar-w, 0px)) / 2); }
 
 /* ------------------------------------------------------------------ touch and phones */
 /* clear the notch and home bar (index.html: viewport-fit=cover) */
@@ -718,7 +706,6 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
   .material-side { border-radius: 0 0 10px 10px; padding: 10px 12px; gap: 8px; max-height: 45%; }
   .material-detail > span { display: none; }
 
-  .hint { bottom: calc(max(8px, env(safe-area-inset-bottom)) + 16px + var(--spawn-bar-h, 0px)); width: max-content; max-width: calc(100vw - 32px - var(--spawn-bar-w, 0px)); text-align: center; }
   .help .cols { grid-template-columns: 1fr; }
 
 }
@@ -744,10 +731,6 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
 }
 @media (hover: none) and (pointer: coarse) and (max-width: 640px) {
   .material-range { height: 32px; }
-  .hint { font-size: 12px; }
-}
-@media (hover: none) and (pointer: coarse) and (max-height: 500px) {
-  .hint { display: none; }
 }
 
 /* Desktop: the dock owns the top centre, so notices and the frame stats move to

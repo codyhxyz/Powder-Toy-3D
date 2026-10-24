@@ -20,22 +20,16 @@ export function createHud({ onTogglePause }) {
   const readout = h('div.readout', {}, chip, name, temp, pres);
 
   const toasts = h('div.toasts');
-  const TOUCH_FIRST = matchMedia('(hover: none) and (pointer: coarse)').matches;
-  const hint = h('div.hint.panel', { html: TOUCH_FIRST
-    ? '<b>Drag</b> to pour. <b>Two fingers</b> to turn and zoom.'
-    : '<b>Drag</b> to pour. <b>Right-click</b> to erase, <b>hold right</b> to look around, <b>W A S D</b> to fly. Press <b>?</b> for shortcuts.' });
 
   // colour key for data views (heat, pressure, ...); hidden in the realistic view
   const legendBox = h('div.legend-box.panel', { 'aria-live': 'polite' });
 
-  document.body.append(stats, readout, toasts, hint, legendBox);
+  document.body.append(stats, readout, toasts, legendBox);
   const notices = createNotices(toasts);
 
   const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; };
   const READOUT_DX = 16, READOUT_DY = 14;   // px: the hover readout sits below-right of the pointer
   const PRESSURE_SHOWN = 0.05;              // the readout lists pressure from this much on
-
-  let hintTimer = setTimeout(() => hint.classList.add('gone'), 12000);
 
   return {
     setPaused(paused) {
@@ -62,7 +56,6 @@ export function createHud({ onTogglePause }) {
     // a notice, GMod's (notices.js): opts { kind: 'generic' | 'error' | 'undo' | 'hint' | 'cleanup',
     // ms (default: the kind's length), icon }, or a number: ms
     toast(text, opts) { return notices.add(text, typeof opts === 'number' ? { ms: opts } : opts); },
-    dismissHint() { clearTimeout(hintTimer); hint.classList.add('gone'); },
     setEditMode(text) { setText(editMode, text ?? ''); },
     setLegend(view) {
       const bars = [view?.legend, view?.legend2].filter(Boolean);

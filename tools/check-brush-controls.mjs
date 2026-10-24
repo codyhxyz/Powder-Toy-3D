@@ -28,7 +28,7 @@ const c = vm.createContext({
   tmpV: new THREE.Vector3(), povRay: { origin: new THREE.Vector3(32, 30, 32) },
   aimScreenRay: () => true, presentationPoint: (p, out) => out.copy(p),
   mp: { isGuest: false }, sim: { snapshot: () => snapshots++ },
-  toolbar: { setUndoEnabled() {} }, hud: { dismissHint() {} }, pacer: { wake() {} },
+  toolbar: { setUndoEnabled() {} }, hud: {}, pacer: { wake() {} },
   toolById: id => ({ name: String(id) }), clickTool: () => { clicks++; return null; },
   // Only the model/animation shell is stubbed; button dispatch is the real tool.
   gear: () => ({}), attachModel: () => ({ dispose() {} }),

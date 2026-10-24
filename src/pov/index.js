@@ -605,7 +605,6 @@ export function createPov(app) {
     camera.updateProjectionMatrix();
     mode = 'entering';
     document.body.classList.add('pov-on');
-    hud.dismissHint();
     povHud.show(true);
     if (firstEntry && hint) { povHud.showHint(); firstEntry = false; }
     app.requestRender();

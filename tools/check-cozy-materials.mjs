@@ -109,7 +109,7 @@ const makeMode = new Function('settings', 'helpers', `
   const { resolveMode, mapOf, viewForMode } = helpers;
   let selectedMode = 'sandbox', modeEpoch = 0, villageFocus = null;
   const win = null, mapKind = helpers.SMALL_MAP, pov = null, mp = { role: 'solo' }, ctx = {};
-  const hud = { toast() {}, dismissHint() {} }, presentation = { select() {} }, pacer = { wake() {} };
+  const hud = { toast() {} }, presentation = { select() {} }, pacer = { wake() {} };
   const applyGravity = () => {}, setView = id => { settings.view = id; };
   ${modeCode}
   return startMode;

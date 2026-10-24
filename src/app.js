@@ -815,7 +815,6 @@ async function startMode(mode, { fresh = false } = {}) {
     if (modeView !== settings.view) setView(modeView);
   }
   selectedMode = chosen.key;
-  if (chosen.key === 'factory') hud.dismissHint(); // Sandbox's free-pouring hint is wrong here.
   applyGravity();
   ctx.industry?.modeChanged();
   presentation.select(chosen.effect ?? null);
@@ -1129,7 +1128,6 @@ function startShape(kind) {
   if (!planePoint(start)) return false;
   clampToGrid(start);
   shapeDrag = { kind, start, end: start.clone(), sim, origin: sim.origin.clone() };
-  hud.dismissHint();
   return true;
 }
 // the line or box ghost while dragging (TPT's RenderLine and RenderRect previews)
@@ -1293,7 +1291,6 @@ function fillAt() {
   if(mapKind.streamed && !inWindow(cell))return;
   const req = { cell: cell.toArray(), id, maxY, stroke: { ...st, rate: oneShotRate(tool, settings.rate) } };
   delete req.stroke.center;
-  hud.dismissHint();
   if (mp.isGuest) { mp.fill(req); return; }
   runFill(sim, req, { openSides: mapKind.fillOpenSides, before: () => { sim.snapshot(`${toolById(tool)?.name ?? 'Flood'} fill`); toolbar.setUndoEnabled(true); } })
     .then((r) => { pacer.wake(); hud.toast(r.error ? FILL_REFUSED[r.error] : `Filled ${r.count.toLocaleString()} cells`, { kind: r.error ? 'error' : 'generic' }); })
@@ -1939,7 +1936,6 @@ async function eraseClick(e) {
   }
   paintStroke({ ...stroke, center: cell.addScalar(0.5) });
   pacer.wake();
-  hud.dismissHint();
 }
 canvasEl.addEventListener('pointermove', (e) => {
   pointerPickDirty = true;
@@ -2005,7 +2001,6 @@ function clickTool() {
     toolbar.setUndoEnabled(true);
     lightning.strikeTool(sim, hover, settings.radius);
     pacer.wake();
-    hud.dismissHint();
     return true;
   }
   if (isSpawnerTool(settings.tool)) {
@@ -2029,7 +2024,6 @@ function clickTool() {
     builds.place();
     // a shrine's orbs go with its snapshot: undoing it takes them away (undo)
     if (lastShrine) { sim.history.at(-1).note = { shrine: lastShrine }; hud.toast('Shrine set: in first person (V), take one perk and the others vanish', { kind: 'hint' }); }
-    hud.dismissHint();
     return true;
   }
   return null;
@@ -2046,7 +2040,6 @@ function startStroke(tool) {
   painting = true;
   strokePainted = releasePending = false;
   windFromValid = false;
-  hud.dismissHint();
   pacer.wake();
 }
 

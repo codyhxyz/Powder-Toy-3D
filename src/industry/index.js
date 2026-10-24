@@ -495,7 +495,6 @@ export function createIndustry(app) {
     get hasMachines() { return devices.length > 0; },
     get pending() { return pending || !!physics.pending || !!gatePhysics.pending || !!controlParts.pending; },
     reset({ starters = false } = {}) {
-      if (factory()) app.hud.dismissHint?.(); // The Sandbox pouring hint is false on the initial Factory boot too.
       epoch++; physics.reset(); gatePhysics.reset(); controlParts.reset(); diagnostics.reset();
       devices = []; progression = null; paid.clear(); factoryRun = false; assisted = false;
       pending = false; building = false; dismantling = false; part = null; partThreshold = 200; inspectMode = false;
