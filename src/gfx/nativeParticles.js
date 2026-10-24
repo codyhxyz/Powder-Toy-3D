@@ -135,7 +135,7 @@ export class NativeParticles {
     let group = this.airGroups.get(target);
     if (!group) this.airGroups.set(target, group = this.gpu.bindGroup(this.airLayout,[{ binding: 0, resource: { buffer: target } }],'native particle air'));
     const grid = g ? [g.nx, g.ny, g.nz, buffer ? 1 : 0] : [0, 0, 0, 0];
-    return { group, target, params: { grid, supers: g ? [g.stx, g.stz, 0, 0] : [0, 0, 0, 0] } };
+    return { group, target, params: { grid, supers: g ? [g.stx, g.stz, g.ring ?? 0, g.ring ? g.nbricks : 0] : [0, 0, 0, 0] } };
   }
   /**
    * The matter draw's group 2: the air (air()) and the volume's light (boxParticleLight), or stand-ins never

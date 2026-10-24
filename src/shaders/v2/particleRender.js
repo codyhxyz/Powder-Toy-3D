@@ -31,7 +31,7 @@ export const PARTICLE_WORDS = 12;
 // deco: draw each particle's decoration (src/deco.js decoShown: painted, display on)
 // grid: the window's cells (xyz) and whether its coarse air is bound (w: group 2, the
 // Pressure view's paint and the pick's P); supers: its supertiles along x and z (the
-// brick numbering, shaders/common.js brickId), for the particle's brick's air
+// brick numbering, shaders/common.js brickId), for the particle's brick's air; z, w: its ring and bricks
 // lag: how far behind its record a particle is drawn, cells per m/s of its velocity (the seconds
 // behind over CELL_M: gfx/nativeParticles.js nativeParticleView, v2/host.js particleLagSeconds)
 export const NativeParticleParams = uniformStruct('NativeParticleParams', {
@@ -96,7 +96,10 @@ fn particleAirAt(p: vec3f) -> vec4f {
   let s = b / PARTICLE_SUPER;
   let k = b - s * PARTICLE_SUPER;
   let st = s.x + i32(P.supers.x) * (s.z + i32(P.supers.y) * s.y);
-  let air = particleAir[u32(st * ${SUPER.x * SUPER.y * SUPER.z} + k.x + ${SUPER.x} * (k.z + ${SUPER.z} * k.y)) * 2u];
+  // (supers.z: the window's ring in bricks, shaders/common.js ringOf; supers.w its bricks, the ring's modulus)
+  var id = u32(st * ${SUPER.x * SUPER.y * SUPER.z} + k.x + ${SUPER.x} * (k.z + ${SUPER.z} * k.y));
+  if (P.supers.w != 0u) { id = (id + P.supers.z) % P.supers.w; }
+  let air = particleAir[id * 2u];
   return vec4f(air.xyz / V1_CELLS_PER_STEP_MS, air.w / LEGACY_PRESSURE_PA);
 }
 // Where the ray (grid cells) enters the box, 0 from inside (the data views' t0).

@@ -1,5 +1,6 @@
 import { captureNativeSnapshot, encodeDynamicState, decodeDynamicState, emptyDynamicState } from '../v2/dynamicState.js';
 import { validateNativeWorldStore } from '../world/nativeStore.js';
+import { ringDelta, relayoutV2State, relayoutDynamics } from '../world/ringSave.js';
 // Saves (src/saves; docs/webgpu.md Sync log S4, U12): ⌘S or the toolbar's
 // Save keeps the game in the Saves list, with a picture; the map menu's Saves
 // (Esc, ⌘O) loads one, exports it as a .tpt3d file or opens one. Garry's
@@ -76,7 +77,9 @@ const savesWire = {
         await v2.ready;
         await v2.integrationReady;
         v2.activate();   // (it presents the box from here: the frame loop's tick would, a frame later)
-        v2.restoreState(data, { legacyCurrent: state.mode === 'v1' });
+        // (saved under another ring, or none: its raw words rotated to this grid's slot order, world/ringSave.js)
+        const delta = ringDelta(h, app.sim.g);
+        v2.restoreState(delta ? relayoutV2State(data, h.dims, delta) : data, { legacyCurrent: state.mode === 'v1' });
         // Saved while V1 ran (before the V2 cutover): its legacy cells are the current ones (saves/game.js
         // loaded them), so V2 imports them whole (shaders/v2.js v2import): element, T, life, ctype, and a
         // falling grain's speed; liquid starts full and still, as V1's cells carry no fill.
@@ -104,7 +107,7 @@ const savesWire = {
         if (!d?.isReady) throw new Error('Native dynamics restore owner is unavailable');
         const o = app.sim.origin;
         const snapshot = decodeDynamicState(data, { dims: h.dims, origin: [o.x, o.y, o.z] });
-        d.restoreDynamicState(snapshot);
+        d.restoreDynamicState(relayoutDynamics(snapshot, app.sim.g.nbricks, ringDelta(h, app.sim.g)));
       },
       absent: () => {
         const d = app.physics.v2?.dynamics, sim = app.sim;
@@ -123,6 +126,8 @@ const savesWire = {
           // Runtime refusal must not erase the saved Factory/Sandbox mode.
           industryMode: app.industry && app.mapKind.industry && ['sandbox', 'factory'].includes(app.gamemode) ? app.gamemode : undefined,
           nativeDynamicsVersion: app.physics.v2?.dynamics ? 1 : undefined,
+          // the ring (bricks) the native words' slot order is rotated by (world/ringSave.js; absent: 0)
+          slotRing: app.sim.g.ring || undefined,
           guestCopy: app.mp.isGuest || undefined,   // a guest's copy of the host's world (no velocity or pressure: net/codec.js)
         };
       },

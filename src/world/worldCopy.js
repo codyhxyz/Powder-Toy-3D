@@ -638,7 +638,8 @@ export class WorldCopy {
     }
     frame.clear(this.buf.scratch, AT * 4, (WC_GPU.NOCC2 + 1) * 4);   // this writeback's counts
     // the bricks V2 may have changed (then its tiles cleared: they accumulate until read)
-    kg.gather.dispatch(frame, jobDispatch(v2.g.nbricks), { bind: [t, this._v2Group.group, W], params: p({ count: v2.g.nbricks }) });
+    // (the sim's header: a thread's brick is V2's slot-order brick, its window coordinates through the ring)
+    kg.gather.dispatch(frame, jobDispatch(v2.g.nbricks), { bind: [t, this._v2Group.group, W], header: sim.header(), params: p({ count: v2.g.nbricks }) });
     frame.clear(v2.args, v2.changeLayout.base * 4, v2.changeLayout.count * 4);
     kg.args.dispatch(frame, [1, 1, 1], { bind: [null, null, argsGroup], params: p({ level: 0 }) });
     const jobs = p({ first: AT + G.jobs, src: AT + WC_GPU.NJOBS });

@@ -67,28 +67,30 @@ export const MarchParams = uniformStruct('MarchParams', {
   floorLines: 'u32',    // the floor's grid lines (a small map's: mapKind.boxFrame); a big map's world floor is its plain ground
   physOrigin: 'vec3i',  // physics' window in the world (sim.origin): flow, foam and paint are read inside it ...
   physSize: 'vec3i',    // ... its size in cells ...
-  physSuper: 'vec3i',   // ... and in supertiles (shaders/common.js gridDims stx, sty, stz): its slot layout
+  physSuper: 'vec3i',   // ... and in supertiles (shaders/common.js gridDims stx, sty, stz): its slot layout ...
+  physRing: 'u32',      // ... rotated by its ring, in bricks (shaders/common.js ringOf; sim.g.ring, 0 unringed)
 });
 /** MarchParams' physics-window fields for a simulation (physics' window, at its origin in the world). */
 export const physParams = (sim) => {
   const o = sim.origin, g = sim.g;
   return {
     physOrigin: [o?.x ?? 0, o?.y ?? 0, o?.z ?? 0], physSize: [g.nx, g.ny, g.nz],
-    physSuper: [g.nx / SUPER_CELLS.x, g.ny / SUPER_CELLS.y, g.nz / SUPER_CELLS.z],
+    physSuper: [g.nx / SUPER_CELLS.x, g.ny / SUPER_CELLS.y, g.nz / SUPER_CELLS.z], physRing: g.ring ?? 0,
   };
 };
 /**
  * JS twin of the march's physSlot (tools/world-march-cpu-check.mjs compares it with
  * shaders/common.js cellSlot): world cell c's slot in physics' window, from run-time values.
  */
-export function physSlotOf({ physOrigin, physSuper }, c) {
+export function physSlotOf({ physOrigin, physSuper, physRing = 0 }, c) {
   const p = c.map((v, i) => v - physOrigin[i]);
   const b = p.map((v) => v >> 2);
   const s = [Math.trunc(b[0] / SUPER.x), Math.trunc(b[1] / SUPER.y), Math.trunc(b[2] / SUPER.z)];
   const k = [b[0] - s[0] * SUPER.x, b[1] - s[1] * SUPER.y, b[2] - s[2] * SUPER.z];
   const st = s[0] + physSuper[0] * (s[2] + physSuper[2] * s[1]);
   const ly = p[1] & 3;
-  return (Math.imul(st * 16 + k[0] + 4 * (k[2] + 2 * k[1]), 64) + (p[0] & 3) + 4 * (ly & 1) + 8 * ((p[2] & 3) + 4 * (ly >> 1))) >>> 0;
+  const n = 16 * physSuper[0] * physSuper[1] * physSuper[2], id = st * 16 + k[0] + 4 * (k[2] + 2 * k[1]);
+  return (Math.imul(physRing ? (id + physRing) % n : id, 64) + (p[0] & 3) + 4 * (ly & 1) + 8 * ((p[2] & 3) + 4 * (ly >> 1))) >>> 0;
 }
 
 /** Group 2's list: F's, L's and M's bindings (shaders/world/bindings.js). */
@@ -144,7 +146,10 @@ fn physSlot(c: vec3i) -> u32 {
   let k = b - s * SUPER_B;
   let st = s.x + P.physSuper.x * (s.z + P.physSuper.z * s.y);
   let l = p & vec3i(3);
-  return u32(st * 16 + k.x + 4 * (k.z + 2 * k.y)) * 64u + u32(l.x + 4 * (l.y & 1) + 8 * (l.z + 4 * (l.y >> 1u)));
+  // (a ringed window's brick numbers rotate by its ring: shaders/common.js brickId)
+  let n = u32(16 * P.physSuper.x * P.physSuper.y * P.physSuper.z);
+  let id = (u32(st * 16 + k.x + 4 * (k.z + 2 * k.y)) + P.physRing) % n;
+  return id * 64u + u32(l.x + 4 * (l.y & 1) + 8 * (l.z + 4 * (l.y >> 1u)));
 }
 fn cellFlow(c: vec3i) -> vec3f {
   if (!inPhys(c)) { return vec3f(0.0); }
