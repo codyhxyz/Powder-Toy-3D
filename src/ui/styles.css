@@ -494,6 +494,77 @@ body.eyedropper canvas { cursor: crosshair; }
   .dock, .dock-tab, .material-category { transition: none; }
 }
 
+/* ------------------------------------------------------------------ god-view bar */
+/* The Powder Toy's element bar (ui/dock.js): TPT's column of category buttons down
+   the right edge, and the open category's element buttons in a slim column just
+   left of it (TPT runs those along the bottom; ours stay off it, 68e09c8). The
+   search and brush options top the element column. It stays open while you
+   play, so it is as narrow as three tiles and only as tall as it needs. */
+.dock.bar {
+  --bar-tile: 44px;   /* = TILE_PX in dock.js: live tiles draw at this size */
+  --bar-panel: calc(3 * var(--bar-tile) + 2 * 4px + 2 * 8px + 6px);   /* three tiles, gaps, padding, a thin scrollbar */
+  left: auto; right: max(14px, env(safe-area-inset-right)); top: calc(var(--bar-bottom) + 6px);
+  transform: none; width: auto; max-width: none;
+  max-height: calc(100dvh - var(--bar-bottom) - 6px - max(14px, env(safe-area-inset-bottom)));
+  display: grid; grid-template-columns: var(--bar-panel) auto;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas: "side rail" "lib rail";
+  box-shadow: 0 10px 30px #0006, inset 0 1px 0 #ffffff12;
+}
+.dock.bar.collapsed { transform: translateX(16px); }
+.dock.bar .material-body { display: contents; }
+/* the category column, icons only (TPT's are 15 px icons with the name on hover) */
+.dock.bar .material-top {
+  grid-area: rail; min-height: 0; overflow-y: auto; scrollbar-width: none;
+  flex-direction: column; align-items: stretch; gap: 2px;
+  padding: 4px; border-radius: 0 10px 10px 0;
+}
+.dock.bar .material-top > .material-control { order: -1; margin: 0 0 4px; border-bottom: 1px solid #ffffff12; border-radius: 5px 5px 0 0; }
+.dock.bar .material-categories { flex: 0 0 auto; flex-direction: column; flex-wrap: nowrap; }
+.dock.bar .material-category { justify-content: center; width: 34px; height: 32px; padding: 0; border-radius: 6px 0 0 6px; }
+.dock.bar .material-category .category-name { display: none; }
+.dock.bar .material-category svg { width: 17px; height: 17px; }
+.dock.bar .material-category[aria-pressed=true] { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--category-color) 70%, #eae6dd); }
+/* the options: search, what's selected, the brush */
+.dock.bar .material-side {
+  grid-area: side; gap: 8px; overflow: visible;
+  padding: 8px; border-radius: 10px 0 0 0; border-bottom: 1px solid #ffffff12;
+}
+.dock.bar .material-find { width: auto; margin: 0; }
+.dock.bar .material-detail b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dock.bar .material-detail > span { display: none; }   /* the element card has it (ui/card.js), and each tile's tooltip */
+.dock.bar .material-brush { padding-top: 0; border-top: 0; gap: 6px 2px; }
+.dock.bar .material-range { grid-template-columns: 30px 1fr 28px; gap: 6px; }
+.dock.bar .material-brush > * { order: 2; }
+.dock.bar .material-brush > .material-range { order: 0; }
+.dock.bar .material-brush > .material-shapes, .dock.bar .material-brush > .material-control { order: 1; }   /* shape and eyedropper share a row */
+.dock.bar .material-control { min-width: 30px; height: 30px; padding: 0 6px; }
+.dock.bar .material-modes { flex: 1 1 100%; flex-wrap: nowrap; }
+.dock.bar .material-modes > .material-control:not(.material-target) > span + span { display: none; }   /* icons; the tooltips name them */
+.dock.bar .material-target { flex: 1 1 0; min-width: 0; justify-content: flex-start; }
+.dock.bar .material-target > span { overflow: hidden; text-overflow: ellipsis; }
+.dock.bar .deco-only .material-control { width: 100%; }
+/* the element tiles, TPT's buttons: 44 px, three across */
+.dock.bar .material-library { grid-area: lib; padding: 8px 4px 8px 8px; scrollbar-gutter: stable; }
+.dock.bar .material-heading {
+  position: static; width: auto; height: auto; overflow: visible; clip: auto;
+  display: flex; justify-content: space-between; align-items: baseline; margin: 0 4px 6px 0;
+  color: var(--muted); font-size: 11px; font-weight: 620; letter-spacing: 0.02em;
+}
+.dock.bar .material-heading h4 { margin: 0; font: inherit; color: #dedfe2; }
+.dock.bar .material-count { font-variant-numeric: tabular-nums; }
+.dock.bar .material-swatches { grid-template-columns: repeat(3, var(--bar-tile)); gap: 4px; }
+.dock.bar .material-swatch { width: var(--bar-tile); height: var(--bar-tile); font-size: 10px; }
+.dock.bar .material-swatch .tile-icon { width: 34px; height: 34px; }
+.dock.bar .material-section { margin-top: 4px; font-size: 10px; }
+.material-opts { display: none !important; }   /* phones only, below */
+/* hidden, the bar leaves a tab at the top of the right edge: what's selected, and the way back */
+.dock-tab.bar { left: auto; right: max(14px, env(safe-area-inset-right)); top: calc(var(--bar-bottom) + 6px); transform: none; }
+@media (max-width: 900px) {
+  /* no element card here (it hides under 900 px): the bar names the element in two lines */
+  .dock.bar .material-detail > span { display: -webkit-box; -webkit-line-clamp: 2; min-height: 2.9em; font-size: 11px; line-height: 1.3; }
+}
+
 /* ------------------------------------------------------------------ element card */
 .card {
   position: fixed; left: 14px; top: 62px; z-index: 8;
@@ -607,6 +678,13 @@ body.eyedropper canvas { cursor: crosshair; }
 .legend-box .legend { height: 8px; margin: 0; border-radius: 4px; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08); }
 .legend-box .legend-labels { padding: 0; color: var(--muted); }
 
+/* ------------------------------------------------------------------ beside the bar */
+/* what else lives on the right edge steps left of the god view's open element bar
+   (--spawn-bar-w, ui/dock.js; 0 in first person and while it is hidden) */
+.stats { right: calc(max(14px, env(safe-area-inset-right)) + var(--spawn-bar-w, 0px)); }
+.legend-box { right: calc(14px + var(--spawn-bar-w, 0px)); }
+.toasts, .hint { left: calc((100vw - var(--spawn-bar-w, 0px)) / 2); }
+
 /* ------------------------------------------------------------------ touch and phones */
 /* clear the notch and home bar (index.html: viewport-fit=cover) */
 .toolbar { top: max(12px, env(safe-area-inset-top)); right: max(14px, env(safe-area-inset-right)); }
@@ -621,10 +699,10 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
 
 @media (max-width: 640px) {
   .brand { display: none; }
-  .toasts { top: calc(max(12px, env(safe-area-inset-top)) + 78px); width: calc(100vw - 32px); }
+  .toasts { top: calc(max(12px, env(safe-area-inset-top)) + 78px); width: calc(100vw - 32px - var(--spawn-bar-w, 0px)); }
   .toast { text-align: center; }
 
-  .legend-box { right: 8px; top: calc(max(12px, env(safe-area-inset-top)) + 72px); width: min(230px, calc(100vw - 16px)); }
+  .legend-box { right: calc(8px + var(--spawn-bar-w, 0px)); top: calc(max(12px, env(safe-area-inset-top)) + 72px); width: min(230px, calc(100vw - 16px - var(--spawn-bar-w, 0px))); }
 
   .drawer { left: 8px; right: 8px; width: auto; top: calc(max(12px, env(safe-area-inset-top)) + 50px); bottom: max(8px, env(safe-area-inset-bottom)); }
 
@@ -645,8 +723,30 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
   .material-side { border-radius: 0 0 10px 10px; padding: 10px 12px; gap: 8px; max-height: 45%; }
   .material-detail > span { display: none; }
 
-  .hint { bottom: calc(max(8px, env(safe-area-inset-bottom)) + 16px); width: max-content; max-width: calc(100vw - 32px); text-align: center; }
+  .hint { bottom: calc(max(8px, env(safe-area-inset-bottom)) + 16px); width: max-content; max-width: calc(100vw - 32px - var(--spawn-bar-w, 0px)); text-align: center; }
   .help .cols { grid-template-columns: 1fr; }
+
+  /* the god-view bar on a phone: one tile wide; its search and brush options open
+     beside it from the brush button (.material-opts) */
+  .dock.bar {
+    right: max(8px, env(safe-area-inset-right)); left: auto;
+    max-height: calc(100dvh - var(--bar-bottom) - 6px - max(8px, env(safe-area-inset-bottom)));
+    grid-template-columns: auto auto; grid-template-rows: minmax(0, 1fr); grid-template-areas: "lib rail";
+  }
+  .dock.bar.collapsed { transform: translateX(16px); }
+  .dock.bar .material-opts { display: flex !important; }
+  .dock.bar .material-side { display: none; }
+  .dock.bar.opts .material-side {
+    display: flex; position: absolute; right: calc(100% + 6px); top: 0;
+    width: min(240px, calc(100vw - 150px)); max-height: 100%; overflow-y: auto;
+    border-radius: 10px; border: 0; background: #1b2027; box-shadow: 0 10px 30px #0008;
+  }
+  .dock.bar .material-library { padding: 6px; }
+  .dock.bar .material-heading { display: none; }
+  .dock.bar .material-swatches { grid-template-columns: var(--bar-tile); }
+  .dock.bar .material-swatch { width: var(--bar-tile); }
+  .dock.bar .material-detail > span { display: none; }
+  .dock-tab.bar { right: max(8px, env(safe-area-inset-right)); }
 }
 @media (max-width: 400px) {
   .icon-btn { width: 32px; }
@@ -667,6 +767,8 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
   .material-control { min-width: 44px; height: 44px; }
   .dock input[type="range"] { min-height: 32px; }
   .dock-tab { min-height: 52px; }
+  .dock.bar { --bar-tile: 48px; }
+  .dock.bar .material-category { width: 44px; height: 44px; }
 }
 @media (hover: none) and (pointer: coarse) and (max-width: 640px) {
   .material-range { height: 32px; }

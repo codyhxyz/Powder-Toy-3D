@@ -6,7 +6,7 @@
    which takes the top right here. */
 .killfeed {
   position: fixed; z-index: 5; pointer-events: none;
-  left: var(--kf-x); top: calc(var(--bar-bottom) + var(--kf-y));
+  left: calc(var(--kf-x) - var(--spawn-bar-w, 0px)); top: calc(var(--bar-bottom) + var(--kf-y));   /* (left of the god view's element bar: ui/dock.js) */
   width: 0; height: 0;
 }
 body.pov-nohud .killfeed { display: none; }

@@ -49,7 +49,7 @@ const pov = {
       toolGun: app.toolGun,   // the tool gun's click at the crosshair
       // Q in first person: the spawn menu where it was left (at first, at what's selected)
       showToolsMenu: () => app.dock.reveal((it) => it.id === (app.menuPick ?? app.settings.tool)) || app.dock.reveal((it) => isGearTool(it.id)),
-      hideToolsMenu: () => app.dock.setCollapsed(true),
+      hideToolsMenu: () => app.dock.closeMenu(),
     });
     if (!app.mp.replica) p.vehicles.spawnLayout(app.arenaLayout);   // the scene loaded before the POV shell existed
     p.game.useLayout(app.arenaLayout);
