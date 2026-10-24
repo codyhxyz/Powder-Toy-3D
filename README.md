@@ -50,18 +50,21 @@ Press `?` in the app for the full list.
 |---|---|
 | Hold right mouse and move | look around, as in first person (Roblox Studio's and Unreal's editor camera) |
 | `W` `A` `S` `D` | fly where you look (Garry's Mod's noclip; hold Shift to go faster) |
+| `E` / `Q` | fly up / down (Roblox Studio's keys) |
+| Scroll while holding right mouse | fly speed (Unreal's) |
+| `F` | fly to what's under the cursor (Roblox Studio's focus key; in the body `F` kicks) |
 | ⌥ + drag | orbit around the point you click (Blender's and Maya's; also the trackpad orbit) |
 | Shift + right-drag or middle-drag | pan |
-| Scroll | zoom |
+| Scroll | zoom toward the cursor (Roblox Studio's and Blender's) |
 | `R` | reset the camera |
-| `V` | drop into the world as a person, or pop back out (Garry's Mod's noclip key; `F` drops in too) |
+| `V` | drop into the world as a person, or pop back out (Garry's Mod's noclip key) |
 
 | Everything else | |
 |---|---|
 | Space / `.` | pause / step one frame |
 | `Y` / `U` | cycle the air mode / turn ambient heat on or off (The Powder Toy's keys; see Simulation modes) |
 | `1`–`5` | switch view |
-| `Q` | the spawn menu, in every view (Garry's Mod's key; in Factory it opens Build) |
+| `T` or the spawn menu's button | hide or show the spawn menu, open by default like The Powder Toy's element bar; in first person `Q` opens it (Garry's Mod's key). In Factory it's Build |
 | `,` | settings |
 | `F2` | save a screenshot (Minecraft's key; Fn+F2 on some keyboards) |
 | ⌘S / Ctrl+S | save the game (in first person ⌘ only, Ctrl being the camera key there) |
