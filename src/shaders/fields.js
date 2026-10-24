@@ -605,3 +605,39 @@ export const WGSL_CHECK = [
     layoutNames: [null, null, 'DERIVED_SHIFT'], dispatch: (g) => fold(Math.ceil(gridDims(g).slots / 64)), windowed: true },
   { name: 'fieldMax', kind: 'compute', code: fieldMaxFrag, layouts: fieldLayouts(false), dispatch: perList, tool: true },
 ];
+
+// ---- for the world fields (shaders/world/fields.js; docs/seamless-world.md, F) ----
+// The EMA pass's per-cell target, the same arithmetic fieldEmaFrag runs inline (kept apart so the
+// box kernels' text, which tools/field-box-shader-hashes.json pins, stays as it was):
+// tools/world-fields-cpu-check.mjs holds both against tools/field-reference.mjs emaWords.
+export const FIELD_RUBBLE = Object.freeze({ LUMP: 0.45, HASH: 7.13 });   // fieldEmaFrag RUBBLE_LUMP, RUBBLE_LUMP_HASH
+export const FIELD_NORM_FLOOR = 0.02;                                     // fieldBlurFrag NORM_FLOOR
+// After materialsGLSL(). a: volumeA's layout (id, °C, life, ctype + seed). Returns the surface
+// occupancy, the media and the non-crisp weight (fieldEmaFrag's sv, m, weight), before the EMA.
+export const fieldTargetWGSL = /* wgsl */ `
+const RUBBLE_LUMP: f32 = ${FIELD_RUBBLE.LUMP};
+const RUBBLE_LUMP_HASH: f32 = ${FIELD_RUBBLE.HASH};
+const NORM_FLOOR: f32 = ${FIELD_NORM_FLOOR};
+struct FieldTarget { sv: vec4f, m: vec4f, weight: vec4f }
+fn fieldTarget(a: vec4f) -> FieldTarget {
+  let id = eid(a);
+  var sv = vec4f(0.0);
+  var m = vec4f(0.0);
+  let ch = SURFCH(id);
+  let md = MEDIACH(id);
+  let crisp = id != E_EMPTY && ch < 0 && md < 0;
+  if (ch >= 0) {
+    var v = 1.0;
+    if (id == E_STONE) { v = 1.0 - RUBBLE_LUMP * fract(fract(a.w) * RUBBLE_LUMP_HASH); }
+    sv[ch] = v;
+  }
+  if (md == MD_SMOKE) { m.x = clamp(a.z, 0.0, 1.0); }
+  else if (md == MD_STEAM) { m.y = HAZE(id); }
+  else if (md == MD_FIRE) {
+    m.z = mix(FIRE_BASE, 1.0, clamp(a.z, 0.0, 1.0));
+    m.w = m.z * clamp((a.y - AMBIENT) / HEAT_RANGE, 0.0, 1.0);
+  }
+  var weight = vec4f(select(1.0, 0.0, crisp));
+  if (ch > CH_LIQUID) { weight.x = 0.0; }
+  return FieldTarget(sv, m, weight);
+}`;
