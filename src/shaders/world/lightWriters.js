@@ -60,7 +60,9 @@ export const shadowTraceFrag = ({ fields = true } = {}) => /* wgsl */ `
 ${worldLightWGSL({ shadow: false, probes: false, glow: false, fields, writerFrame: true, sky: false })}
 ${lightDeclsWGSL({ skip: LIGHT_BINDINGS.map(([n]) => n).filter((n) => n !== 14) })}
 ${jobsDecl(ShadowJobs)}
-@group(2) @binding(${LW.B}) var<storage, read_write> lcOut: array<vec4u>;   // lcBuf: the texels, then the tags
+// lcBuf as words: a tag's u32 alone (a vec4u component store may be a whole-vector read-modify-write,
+// racing the workgroups of the neighbouring tiles: measured, tools/world-light-gpu-check.mjs)
+@group(2) @binding(${LW.B}) var<storage, read_write> lcOut: array<u32>;   // lcBuf: the texels, then the tags
 const SHADOW_TAU_MAX: f32 = SHADOW_TINT_ID_SCALE - 1.0;
 const SHADOW_NO_HIT: f32 = 1e5;
 const SHADOW_MEDIA_MIN_K: f32 = 1e-4;
@@ -152,8 +154,10 @@ fn shadowTexelWorld(ro: vec3f, rd: vec3f) -> vec4f {
   let s = J.s[tgt].xyz;
   let ro = J.centre.xyz + s * J.centre.w + J.u[tgt].xyz * a.x + J.v[tgt].xyz * a.y;
   let w = lcWrap2(ij, SH_RES);
-  lcOut[slot * u32(SH_RES * SH_RES) + u32(w.x + SH_RES * w.y)] = bitcast<vec4u>(shadowTexelWorld(ro, lcSafeDir(-s)));
-  if (li == 0u) { let tw = shTagIndex(slot, job.xy); lcOut[LC_TAGS_AT + (tw >> 2u)][tw & 3u] = lcTag(vec3i(job.xy, i32(J.s[tgt].w))); }
+  let texel = bitcast<vec4u>(shadowTexelWorld(ro, lcSafeDir(-s)));
+  let at = (slot * u32(SH_RES * SH_RES) + u32(w.x + SH_RES * w.y)) * 4u;
+  for (var c = 0u; c < 4u; c++) { lcOut[at + c] = texel[c]; }
+  if (li == 0u) { lcOut[LC_TAGS_AT * 4u + shTagIndex(slot, job.xy)] = lcTag(vec3i(job.xy, i32(J.s[tgt].w))); }
 }
 `;
 // Its dispatch for n jobs: [16, ceil(n / 16)] workgroups (a job a workgroup, 16 a row).
@@ -275,9 +279,9 @@ export const probeUpdateDispatch = (n) => [PROBE.CHUNK ** 3, n, 1];
 export const probePublishFrag = () => /* wgsl */ `
 ${jobsDecl(ClipJobs)}
 @group(2) @binding(${LW.A}) var<storage, read> hist: array<vec2u>;
-@group(2) @binding(${LW.B}) var<storage, read_write> lcOut: array<vec4u>;   // lcBuf: its tags (past the texels)
+@group(2) @binding(${LW.B}) var<storage, read_write> lcOut: array<u32>;   // lcBuf as words: its tags (past the texels), one u32 each
 const LC_TAGS_AT: u32 = ${SHADOW_TEXELS}u;
-fn putTag(w: u32, t: u32) { lcOut[LC_TAGS_AT + (w >> 2u)][w & 3u] = t; }
+fn putTag(w: u32, t: u32) { lcOut[LC_TAGS_AT * 4u + w] = t; }
 ${[0, 1, 2, 3].map((k) => `@group(2) @binding(${LW.TEX + k}) var band${k}: texture_storage_3d<rgba16float, write>;`).join('\n')}
 const PR_N: i32 = ${PROBE.N};
 const PR_CHUNK: i32 = ${PROBE.CHUNK};
@@ -431,9 +435,9 @@ export const glowBlurDispatch = (axis, n) => [Math.ceil((axis === 0 ? GLOW.CHUNK
 export const glowFinalFrag = () => /* wgsl */ `
 ${glowCommonWGSL}
 @group(2) @binding(${LW.A}) var<storage, read> scr: array<vec4f>;
-@group(2) @binding(${LW.B}) var<storage, read_write> lcOut: array<vec4u>;   // lcBuf: its tags (past the texels)
+@group(2) @binding(${LW.B}) var<storage, read_write> lcOut: array<u32>;   // lcBuf as words: its tags (past the texels), one u32 each
 const LC_TAGS_AT: u32 = ${SHADOW_TEXELS}u;
-fn putTag(w: u32, t: u32) { lcOut[LC_TAGS_AT + (w >> 2u)][w & 3u] = t; }
+fn putTag(w: u32, t: u32) { lcOut[LC_TAGS_AT * 4u + w] = t; }
 @group(2) @binding(${LW.TEX}) var glowOut: texture_storage_3d<rgba16float, write>;
 const GL_N: i32 = ${GLOW.N};
 const GL_CHUNKS: i32 = ${GLOW.N / GLOW.CHUNK};

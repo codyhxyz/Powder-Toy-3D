@@ -21,6 +21,10 @@ import {
 import { ShadowCascades, probeLevels, glowLevels, clipJobs, sunBasis } from '../src/gfx/worldLightBook.js';
 import { ELEMENTS, E, R } from '../src/elements.js';
 import { nagaSpawn } from './naga.mjs';
+import {
+  SIZE, put, idOf, casc, traceJobs, cascadeFor, shadowAt, bruteSun, sun0, safeDir, slots, tags,
+} from './world-light-twin.mjs';
+const TL = SHADOW.TILE, TILES = SHADOW.RES / SHADOW.TILE;
 
 let bad = 0;
 const fail = (m) => { bad++; console.error('FAIL', m); };
@@ -48,7 +52,7 @@ fn surfField(p: vec3f) -> vec4f { return textureSampleLevel(tFS, wrapLinear, p /
 fn surfSample(p: vec3f) -> vec4f { return surfField(p); }
 fn mediaField(p: vec3f) -> vec4f { return textureSampleLevel(tFM, wrapLinear, p / 64.0, 0.0); }`;
 const head = (fields) => [prelude({ nx: 16, ny: 8, nz: 8 }, { state: false }), frameBindings(), glslMod, materialsGLSL(), noiseGLSL,
-  W_STUB, fields ? F_STUB : F_STUB.replace(/@group\(2\) @binding\(\d\) /g, '@group(2) @binding(30) ').replace(/var tFM/, 'var tFM_unused') .replace(/30\) var wrapLinear/, '31) var wrapLinear').replace(/30\) var tFS/, '30) var tFS'),
+  W_STUB, fields ? F_STUB : '// (no F: the cell model must not call it)',
   'var<private> gFragCoord: vec2f;'].join('\n');
 // every reader the march calls, from one probe kernel
 const CALLS = /* wgsl */ `
@@ -76,12 +80,12 @@ const CALLS = /* wgsl */ `
 const M_DECLS = '@group(2) @binding(16) var tMediaNoise: texture_3d<f32>;\n@group(2) @binding(17) var linearClamp: sampler;';
 const MODULES = [
   ['readers', () => `${head(true)}\n${worldLightWGSL()}\n${lightDeclsWGSL()}\n${M_DECLS}\n${CALLS}`],
-  ['readers (no fields in the writers\' model)', () => `${head(true)}\n${worldLightWGSL({ fields: false })}\n${lightDeclsWGSL()}\n${M_DECLS}\n${CALLS}`],
+  ['readers (no fields in the writers\' model)', () => `${head(false)}\n@group(2) @binding(6) var wrapLinear: sampler;   // (F's, which the clouds\' deck samples with)\n${worldLightWGSL({ fields: false })}\n${lightDeclsWGSL()}\n${M_DECLS}\n${CALLS}`],
   ['shadowTrace (fields)', () => `${head(true)}\n${shadowTraceFrag({ fields: true })}`],
-  ['shadowTrace (cells)', () => `${head(true)}\n${shadowTraceFrag({ fields: false })}`],
+  ['shadowTrace (cells)', () => `${head(false)}\n${shadowTraceFrag({ fields: false })}`],
   ['probeUpdate', () => `${head(true)}\n${probeUpdateFrag({ fields: true })}`],
   ['probePublish', () => probePublishFrag()],
-  ['glowSeed', () => `${head(true)}\n${glowSeedFrag()}`],
+  ['glowSeed', () => `${head(false)}\n${glowSeedFrag()}`],
   ['glowBlurX', () => glowBlurFrag(0)],
   ['glowBlurY', () => glowBlurFrag(1)],
   ['glowFinal', () => glowFinalFrag()],
@@ -150,6 +154,20 @@ function operatorProblems(code) {
   flush();
   return out;
 }
+// W's and F's real readers, once they are on this branch (until then the stand-ins above)
+const realW = await import('../src/shaders/world/copy.js').catch(() => null);
+const realF = await import('../src/shaders/world/fields.js').catch(() => null);
+if (realW && realF) {
+  const { lightAssembly } = await import('../src/gfx/worldLight.js');
+  const copyWGSL = typeof realW.worldCopyWGSL === 'function' ? realW.worldCopyWGSL() : realW.worldCopyWGSL;
+  const hF = lightAssembly({ copyWGSL, fieldsWGSL: realF.worldFieldsWGSL() }) + '\n' + realF.fieldsBindingsWGSL(2);
+  const hC = lightAssembly({ copyWGSL });
+  MODULES.push(
+    ['readers (real W, F)', () => `${hF}\n${worldLightWGSL()}\n${lightDeclsWGSL()}\n${M_DECLS}\n${CALLS}`],
+    ['shadowTrace (real W, F)', () => `${hF}\n${shadowTraceFrag({ fields: true })}`],
+    ['probeUpdate (real W, F)', () => `${hF}\n${probeUpdateFrag({ fields: true })}`],
+    ['glowSeed (real W)', () => `${hC}\n${glowSeedFrag()}`]);
+} else console.log('  (W\'s and F\'s modules not on this branch: their stand-ins only)');
 for (const [name, make] of MODULES) {
   let code;
   try { code = make(); } catch (e) { fail(`${name}: generating: ${e.message}`); continue; }
@@ -159,189 +177,13 @@ for (const [name, make] of MODULES) {
   if (ops.length) fail(`${name}: operators mixed without parentheses (Tint rejects): ${ops.slice(0, 5).join('; ')}`);
 }
 
-// ---------------------------------------------------------------- 2. the shadow twin
-// A synthetic world: a stone floor, a floating stone slab, a glass pane, a water pool, a sand pile.
-const SIZE = [64, 32, 48];
-const cells = new Uint32Array(SIZE[0] * SIZE[1] * SIZE[2]);
-const at = (x, y, z) => x + SIZE[0] * (y + SIZE[1] * z);
-const put = (x0, x1, y0, y1, z0, z1, id, aux = 1) => {
-  for (let z = z0; z < z1; z++) for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) cells[at(x, y, z)] = wcWord(id, 0, 20, aux);
-};
-put(0, 64, 0, 4, 0, 48, E.STONE);
-put(8, 18, 16, 18, 8, 18, E.STONE);        // the slab
-put(30, 40, 14, 15, 8, 18, E.GLASS);       // a glass pane, one cell thick
-put(44, 56, 4, 8, 28, 40, E.WATER);        // a pool on the floor
-put(10, 14, 4, 10, 30, 34, E.SAND);        // a sand pile (smooth, opaque: blocks as its cells here)
-const word = (c) => (c[0] < 0 || c[1] < 0 || c[2] < 0 || c[0] >= SIZE[0] || c[1] >= SIZE[1] || c[2] >= SIZE[2] ? 0 : cells[at(...c)]);
-const idOf = (c) => word(c) & 255;
-// the occupancy levels: a brick (4³), a 16³ and a 64³ node hold anything
-const occ = [4, 16, 64].map((S) => {
-  const m = new Set();
-  for (let z = 0; z < SIZE[2]; z++) for (let y = 0; y < SIZE[1]; y++) for (let x = 0; x < SIZE[0]; x++) {
-    if (cells[at(x, y, z)] & 255) m.add(`${x >> Math.log2(S)},${y >> Math.log2(S)},${z >> Math.log2(S)}`);
-  }
-  return m;
-});
-const occupied = (lvl, c) => c.every((v, i) => v >= 0 && v < SIZE[i]) && occ[lvl].has(c.map((v) => v >> [2, 4, 6][lvl]).join(','));
-const SIGMA = (id) => ELEMENTS[id].sigma;
-const RCLASS = (id) => ELEMENTS[id].render;
-const meanSigma = (id) => (SIGMA(id)[0] + SIGMA(id)[1] + SIGMA(id)[2]) / 3;
-const isCrisp = (id) => id !== 0 && LOOK[id].ch < 0 && LOOK[id].media < 0;
-const isGasLike = (id) => id === 0 || RCLASS(id) === R.GAS || RCLASS(id) === R.FIRE;
-const LC_EPS = 1e-3, LC_DIR_MIN = 1e-6, TINT = 256, NO_HIT = 1e5;
-const safeDir = (d) => d.map((v) => (Math.abs(v) < LC_DIR_MIN ? (v >= 0 ? 1 : -1) * LC_DIR_MIN : v));
-function worldHit(ro, inv) {
-  let lo = -Infinity, hi = Infinity;
-  for (let i = 0; i < 3; i++) {
-    const a = (0 - ro[i]) * inv[i], b = (SIZE[i] - ro[i]) * inv[i];
-    lo = Math.max(lo, Math.min(a, b)); hi = Math.min(hi, Math.max(a, b));
-  }
-  return [lo, hi];
-}
-function exitOf(ro, inv, c, S) {
-  let best = Infinity, ax = 0;
-  for (let i = 0; i < 3; i++) {
-    const lo = c[i] & ~(S - 1);
-    const t = Math.max((lo - ro[i]) * inv[i], (lo + S - ro[i]) * inv[i]);
-    if (t < best) { best = t; ax = i; }
-  }
-  return [best, ax];
-}
-// lcNext's twin (shaders/world/light.js marchWGSL)
-function next(ro, rd, inv, t0, tLim, state) {
-  let t = t0, lastB = null, bOcc = false;
-  while (state.steps > 0 && t <= tLim) {
-    state.steps--;
-    const c = ro.map((v, i) => Math.floor(v + rd[i] * (t + LC_EPS)));
-    if (!c.every((v, i) => v >= 0 && v < SIZE[i])) break;
-    const b = c.map((v) => v >> 2).join(',');
-    if (b !== lastB) {
-      lastB = b;
-      if (!occupied(2, c)) { t = exitOf(ro, inv, c, 64)[0]; lastB = null; continue; }
-      if (!occupied(1, c)) { t = exitOf(ro, inv, c, 16)[0]; lastB = null; continue; }
-      bOcc = occupied(0, c);
-    }
-    const e1 = exitOf(ro, inv, c, 1);
-    if (!bOcc) { t = exitOf(ro, inv, c, 4)[0]; continue; }
-    const w = word(c);
-    if (w & 255) return { c, t, tOut: Math.min(e1[0], tLim), w, ok: true };
-    t = e1[0];
-  }
-  return { ok: false };
-}
-// shadowTexelWorld's twin, the cell model (lightWriters.js shadowTraceFrag({ fields: false }))
-function shadowTexel(ro, rd) {
-  const o = [NO_HIT, NO_HIT, NO_HIT, 0];
-  const inv = rd.map((v) => 1 / v);
-  const [a, b] = worldHit(ro, inv);
-  let t = Math.max(a, 0), tid = 0, tau = 0, hit = false;
-  const state = { steps: SHADOW.MAX_STEPS };
-  if (b > t) {
-    for (;;) {
-      const h = next(ro, rd, inv, t, b, state);
-      if (!h.ok) break;
-      const id = h.w & 255;
-      t = h.tOut;
-      if (isCrisp(id)) {
-        if (RCLASS(id) !== R.GLASS && id !== E.CRYSTAL) { o[0] = h.t; hit = true; break; }
-        if (tid === 0 || RCLASS(tid) === R.GAS) { if (tid === 0) o[1] = h.t; tid = id; }
-        tau += meanSigma(id) * (h.tOut - h.t); o[2] = h.tOut;
-        continue;
-      }
-      if (RCLASS(id) === R.LIQUID) {
-        if (tid === 0 || RCLASS(tid) === R.GAS) { if (tid === 0) o[1] = h.t; tid = id; }
-        tau += meanSigma(id) * (h.tOut - h.t) * wcUnword(h.w).aux; o[2] = h.tOut;
-      } else if (RCLASS(id) !== R.GAS && !isGasLike(id)) { o[0] = h.t; hit = true; break; }
-    }
-  }
-  if (!hit && rd[1] < 0) o[0] = ro[1] / -rd[1];
-  o[3] = tid * TINT + Math.min(tau, TINT - 1);
-  return o;
-}
-// The cascades, traced frame by frame through the bookkeeping, into JS slots.
-const sun0 = [0.45, 0.8, 0.3];
-const casc = new ShadowCascades(SIZE);
-const slots = Array.from({ length: SHADOW.SLOTS }, () => new Map());   // wrapped texel index → texel
-const tags = new Map();   // `${slot},${wrapped tile}` → tag
-const R2 = SHADOW.RES, TL = SHADOW.TILE, TILES = R2 / TL;
-const wrap = (a, n) => ((a % n) + n) % n;
-const targets = () => [...casc.cascades, casc.spare];
-function traceJobs(jobs) {
-  const ts = targets();
-  for (const j of jobs) {
-    const tg = ts[j.target];
-    const { u, v, s } = tg.basis, f = casc.frame;
-    for (let ly = 0; ly < TL; ly++) for (let lx = 0; lx < TL; lx++) {
-      const i = j.tile[0] * TL + lx, jj = j.tile[1] * TL + ly;
-      const a = (i + 0.5) * tg.texel, b = (jj + 0.5) * tg.texel;
-      const ro = [0, 1, 2].map((k) => f.centre[k] + s[k] * f.Rw + u[k] * a + v[k] * b);
-      slots[j.slot].set(wrap(i, R2) + R2 * wrap(jj, R2), shadowTexel(ro, safeDir(s.map((x) => -x))));
-    }
-    tags.set(`${j.slot},${wrap(j.tile[0], TILES) + TILES * wrap(j.tile[1], TILES)}`, lcTag(j.tile[0], j.tile[1], tg.epoch));
-  }
-}
+// ---------------------------------------------------------------- 2. the shadow twin (tools/world-light-twin.mjs)
 function frame(cam, sun, changes = []) {
   casc.update(cam, sun, changes);
   const jobs = casc.jobs();
   ok(jobs.length <= SHADOW.TILES_PER_FRAME, `a frame traced ${jobs.length} tiles, past the budget ${SHADOW.TILES_PER_FRAME}`);
   traceJobs(jobs);
   return jobs;
-}
-const place = (k, p) => {
-  const c = casc.cascades[k], f = casc.frame, q = p.map((x, i) => x - f.centre[i]);
-  const d = f.Rw - (q[0] * c.basis.s[0] + q[1] * c.basis.s[1] + q[2] * c.basis.s[2]);
-  return { f: [(q[0] * c.basis.u[0] + q[1] * c.basis.u[1] + q[2] * c.basis.u[2]) / c.texel, (q[0] * c.basis.v[0] + q[1] * c.basis.v[1] + q[2] * c.basis.v[2]) / c.texel], d };
-};
-// shCascadeFor + sunMapShadowAt's twin (the hard 2×2 test inside volumes, no clouds or caustics)
-function cascadeFor(p) {
-  for (let k = 0; k < SHADOW.CASCADES; k++) {
-    const c = casc.cascades[k];
-    if (!c.origin) continue;
-    const { f } = place(k, p);
-    const i0 = f.map((x) => Math.floor(x - 0.5));
-    const m = k + 1 === SHADOW.CASCADES ? 0 : SHADOW.MARGIN;
-    if (i0.some((x, a) => x < c.origin[a] + m || x + 1 > c.origin[a] + R2 - 1 - m)) continue;
-    const tg = (t) => tags.get(`${c.slot},${wrap(t[0], TILES) + TILES * wrap(t[1], TILES)}`) === lcTag(t[0], t[1], c.epoch);
-    if (!tg(i0.map((x) => Math.floor(x / TL))) || !tg(i0.map((x) => Math.floor((x + 1) / TL)))) continue;
-    return k;
-  }
-  return SHADOW.CASCADES;
-}
-function shadowAt(p, kForce = -1) {
-  const k = kForce >= 0 ? kForce : cascadeFor(p);
-  if (k >= SHADOW.CASCADES) return [1, 1, 1];
-  const c = casc.cascades[k];
-  const { f, d } = place(k, p);
-  const g = f.map((x) => x - 0.5), i0 = g.map(Math.floor), w = g.map((x, i) => x - i0[i]);
-  const acc = [0, 0, 0];
-  for (let j = 0; j < 4; j++) {
-    const o = [j & 1, j >> 1];
-    const ij = [i0[0] + o[0], i0[1] + o[1]].map((x, a) => Math.min(Math.max(x, c.origin[a]), c.origin[a] + R2 - 1));
-    const sm = slots[c.slot].get(wrap(ij[0], R2) + R2 * wrap(ij[1], R2));
-    const wk = (o[0] ? w[0] : 1 - w[0]) * (o[1] ? w[1] : 1 - w[1]);
-    const lit = d < sm[0] + 0.6 ? 1 : 0;
-    const tid = Math.floor(sm[3] / TINT);
-    let att = [1, 1, 1];
-    if (tid > 0 && d > sm[1]) {
-      const tau = sm[3] - tid * TINT, frac = Math.min(Math.max((d - sm[1]) / Math.max(sm[2] - sm[1], 1e-3), 0), 1);
-      att = SIGMA(tid).map((x) => Math.exp(-x / Math.max(meanSigma(tid), 1e-4) * tau * frac));
-    }
-    for (let i = 0; i < 3; i++) acc[i] += lit * att[i] * wk;
-  }
-  return acc;
-}
-// a brute-force sun ray from p, cell by cell (no hierarchy): [visibility of opaque, transmittance rgb]
-function bruteSun(p, sun) {
-  const s = sunBasis(sun).s, tr = [1, 1, 1];
-  for (let t = 0.05; t < 200; t += 0.05) {
-    const c = p.map((v, i) => Math.floor(v + s[i] * t));
-    if (c[1] >= SIZE[1] || c.some((v, i) => v < 0 || v >= SIZE[i])) break;
-    const id = idOf(c);
-    if (!id) continue;
-    if (RCLASS(id) === R.GLASS || RCLASS(id) === R.LIQUID) { for (let i = 0; i < 3; i++) tr[i] *= Math.exp(-SIGMA(id)[i] * 0.05 * (RCLASS(id) === R.LIQUID ? wcUnword(word(c)).aux : 1)); continue; }
-    if (!isGasLike(id)) return [0, tr];
-  }
-  return [1, tr];
 }
 // trace until nothing is pending (the first frames after load)
 let cam = [32, 10, 24];
@@ -392,7 +234,6 @@ ok(frame(cam, sun0).length === 0, 'a still frame traced shadow tiles');
 {
   const lo = [40, 20, 30], hi = [44, 22, 34];
   put(lo[0], hi[0], lo[1], hi[1], lo[2], hi[2], E.STONE);
-  for (const [l, S] of [[0, 4], [1, 16], [2, 64]]) for (let z = lo[2]; z < hi[2]; z++) for (let y = lo[1]; y < hi[1]; y++) for (let x = lo[0]; x < hi[0]; x++) occ[l].add(`${x >> Math.log2(S)},${y >> Math.log2(S)},${z >> Math.log2(S)}`);
   // which tiles a brute-force test says the box shadows (any texel ray of the tile passing through it)
   const want = casc.cascades.map((c, k) => {
     const set = new Set(), f = casc.frame, { u, v, s } = c.basis;

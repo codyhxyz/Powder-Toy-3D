@@ -66,7 +66,8 @@ export class WorldLight {
     this.glow = glowLevels();
     this.rev = worldCopy.revision ?? 0;
     this._makeResources();
-    this._makeKernels(lightAssembly({ copyWGSL, fieldsWGSL: this.useFields ? fieldsWGSL : '' }));
+    // F's readers only where F's bindings are (the shadow and probe writers); the glow reads cells
+    this._makeKernels(lightAssembly({ copyWGSL, fieldsWGSL: this.useFields ? fieldsWGSL : '' }), lightAssembly({ copyWGSL }));
   }
 
   _makeResources() {
@@ -99,7 +100,7 @@ export class WorldLight {
     gpu.write(this.buf.lc, SHADOW_TEXELS * 16, new Uint32Array(LC_BUF_VEC4S * 4 - SHADOW_TEXELS * 4), { ordered: false });
   }
 
-  _makeKernels(head) {
+  _makeKernels(head, headCells) {
     const { gpu } = this;
     const fieldEntries = this.fieldsBindings.map(([binding, , , body]) => ({ binding, ...body, visibility: GPUShaderStage.COMPUTE }));
     const frameLayout = gpu.layout('FRAME', RENDER_LAYOUT.FRAME);
@@ -118,7 +119,7 @@ export class WorldLight {
       shadow: k('worldLightShadow', `${head}\n${shadowTraceFrag({ fields: F })}`, [frameLayout, copy, this.layouts.shadow], [SHADOW.TILE, SHADOW.TILE, 1]),
       probeUpdate: k('worldLightProbe', `${head}\n${probeUpdateFrag({ fields: F })}`, [frameLayout, copy, this.layouts.probeUpdate], [PROBE.RAYS, 1, 1]),
       probePublish: k('worldLightPublish', probePublishFrag(), [E, E, this.layouts.probePublish], [PROBE.CHUNK ** 3, 1, 1]),
-      glowSeed: k('worldLightGlowSeed', `${head}\n${glowSeedFrag()}`, [frameLayout, copy, this.layouts.glowWork], [64, 1, 1]),
+      glowSeed: k('worldLightGlowSeed', `${headCells}\n${glowSeedFrag()}`, [frameLayout, copy, this.layouts.glowWork], [64, 1, 1]),
       glowBlurX: k('worldLightGlowX', glowBlurFrag(0), [E, E, this.layouts.glowWork], [64, 1, 1]),
       glowBlurY: k('worldLightGlowY', glowBlurFrag(1), [E, E, this.layouts.glowWork], [64, 1, 1]),
       glowFinal: k('worldLightGlowZ', glowFinalFrag(), [E, E, this.layouts.glowFinal], [64, 1, 1]),

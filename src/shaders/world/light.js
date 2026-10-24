@@ -295,10 +295,13 @@ ${shadow || probes || glow ? '// tag word w (TAGS), four to a vec4u past the tex
 // Smooth fields where F holds them (fields), else the cell's own class.
 const LC_SURF_ISO: f32 = 0.5;      // shaders/gfx/core.js SURF_ISO: inside > it > outside
 fn lcIsCrisp(id: i32) -> bool { return id != E_EMPTY && SURFCH(id) < 0 && MEDIACH(id) < 0; }
-fn lcSmoothOpaqueAt(p: vec3f, id: i32) -> bool {${fields ? `
-  let s = surfField(p);
-  return max(s.y, max(s.z, s.w)) >= LC_SURF_ISO;` : `
-  return RCLASS(id) == R_OPAQUE;`}
+// The smooth-surface fields at p: F's (fields), else the cell's own channel at full strength.
+fn lcSurfField(p: vec3f) -> vec4f {${fields ? `
+  return surfField(p);` : `
+  let c = vec3i(floor(p));
+  if (!lcInWorld(c)) { return vec4f(0.0); }
+  let ch = SURFCH(wcId(wcCell(c)));
+  return select(vec4f(0.0), vec4f(f32(ch == 0), f32(ch == 1), f32(ch == 2), f32(ch == 3)), ch >= 0);`}
 }
 // What the world holds at p for the light (no field): its element (-1 the floor below the world).
 fn lcIdAt(c: vec3i) -> i32 {
@@ -360,7 +363,7 @@ fn causticGain(p: vec3f, D: f32) -> f32 {
 const SUN_RAY_SMOOTH_SKIP: f32 = 0.5;
 const SUN_RAY_STEPS: i32 = ${SHADOW.MAX_STEPS};
 fn smoothOpaque(p: vec3f) -> f32 {${fields ? `
-  let s = surfField(p);
+  let s = lcSurfField(p);
   return max(s.y, max(s.z, s.w));` : `
   return select(0.0, 1.0, RCLASS(lcIdAt(vec3i(floor(p)))) == R_OPAQUE);`}
 }
@@ -688,7 +691,7 @@ fn faceAO(cell: vec3i, n: vec3i, hp: vec3f) -> f32 {
 const AO_LIQUID_SOLIDITY: f32 = 0.6;
 fn solidity(p: vec3f) -> f32 {
   if (p.y < 0.0) { return 1.0; }
-  let s = surfField(p);
+  let s = lcSurfField(p);
   var o = max(max(s.y, s.z), max(s.w, s.x * AO_LIQUID_SOLIDITY));
   if (lcIsCrisp(lcIdAt(vec3i(floor(p))))) { o = 1.0; }
   return clamp(o, 0.0, 1.0);
@@ -709,7 +712,7 @@ fn fieldAO(p: vec3f, n: vec3f) -> f32 {
 // ---- traced rays over the world copy (the lamps', the beacon's, sunRayClear) ----
 const NEAR_MAX_STEPS: i32 = 48;
 fn nearSmoothIn(p: vec3f, opaqueOnly: bool) -> bool {
-  let s = surfField(p);
+  let s = lcSurfField(p);
   return max(max(s.y, s.z), max(s.w, select(s.x, 0.0, opaqueOnly))) >= LC_SURF_ISO;
 }
 // First matter the ray from ro along rd0 enters within tLim cells (opaqueOnly: only matter that
@@ -809,7 +812,7 @@ fn nearSolid(q: vec3f, hid: ptr<function, i32>, ha: ptr<function, vec4f>) -> f32
   if (q.y < 0.0) { *hid = -1; return 1.0; }
   let c = vec3i(floor(q));
   if (!lcInWorld(c)) { return 0.0; }
-  let sf = surfField(q);
+  let sf = lcSurfField(q);
   var o = max(smoothstep(NEAR_ISO.x, NEAR_ISO.y, max(sf.y, max(sf.z, sf.w))), NEAR_LIQUID * smoothstep(NEAR_ISO.x, NEAR_ISO.y, sf.x));
   let a = wcA(c);
   let id = eid(a);
@@ -906,7 +909,7 @@ fn glowLightScale(p: vec3f, ng: vec3f, n: vec3f) -> f32 {
     let q = ro + L * tapD[i];
     let c = vec3i(floor(q));
     if (q.y < 0.0 || !lcInWorld(c)) { break; }
-    let sf = surfField(q);
+    let sf = lcSurfField(q);
     var o = smoothstep(GLOW_ISO.x, GLOW_ISO.y, max(sf.z, sf.w));
     let a = wcA(c);
     let id = eid(a);
