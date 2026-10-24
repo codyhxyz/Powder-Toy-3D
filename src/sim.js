@@ -1038,6 +1038,7 @@ export class Simulation {
     // the derived passes shift their own history by whole bricks and re-age
     // only the slab and the edges (docs/webgpu.md E); without that, all of it
     if (picture && !this.derived?.shiftsBricks) this.changedAll = true;
+    if (!picture) this.changedAll = this.giReset = true;   // (the data views derive again whole: _shiftRing)
     this.wake();
   }
 
@@ -1055,6 +1056,8 @@ export class Simulation {
     const width = Math.abs(dx || dz), axis = dx ? 0 : 2, dims = [g.nx, g.ny, g.nz];
     const bricks = dims.map((n, a) => (a === axis ? width : n) / 4), lo = dims.map((n, a) => (a === axis && shift[a] > 0 ? n - width : 0));
     const count = bricks[0] * bricks[1] * bricks[2] * 64, size = fold(Math.ceil(g.slots / 64));
+    // (before anything moves, under the old ring: the world copy's writeback of what physics changed, W's)
+    for (const fn of this._beforeShift ?? []) fn(dx, dz);
     const leave = native?.ringLeave(dx, dz);
     this.origin.x += dx;
     this.origin.z += dz;
@@ -1093,6 +1096,10 @@ export class Simulation {
     this.wholeWrites++;
     native?.shifted();
     if (picture && !this.derived?.shiftsBricks) this.changedAll = true;
+    // A physics-only move doesn't carry the derived passes' history (the world march reads the world copy):
+    // the data views, which still draw from them (app.js: frames the march doesn't light), derive it again
+    // whole the next time they run, as coming back to the window's light does.
+    if (!picture) this.changedAll = this.giReset = true;
     this.wake();
   }
 

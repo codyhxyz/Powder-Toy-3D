@@ -438,7 +438,8 @@ export class WorldWindow {
     const plan = movePlan({ physicsOnly: this.physicsOnly, worldCopy: !!this.copyFill?.isReady, native: !!sim.compactOwner, trees: !!this.scene.trees });
     let capture = null, o = null, incoming = null, restored = 0, trees = 0, staged = false;
     this.plantCost = { placeMs: 0, bakeMs: 0 };
-    for (const step of plan) switch (step) {
+    const stepMs = {};   // (each step's CPU, tools: world-move-browser-check.mjs)
+    for (const step of plan) { const ts = performance.now(); switch (step) {
       case 'leaveSource':
         // Source capture MUST precede diff/readback and sim.shift's mutation of
         // origin/cur. Its immutable offsets also cover a delayed-save return.
@@ -491,9 +492,9 @@ export class WorldWindow {
       // material after all legacy stamps. Untouched overlap is never imported.
       case 'restoreNative': this.restoreNative(enterLo, bricks, { picture }); break;
       default: throw new Error(`world move: unknown step ${step}`);
-    }
+    } stepMs[step] = performance.now() - ts; }
     const ms = performance.now() - t0;
-    this.last = { dx, dz, ms, overBudget: ms > MOVE_CPU_BUDGET_MS, plan, restored, trees, staged, ...this.plantCost, readbackMs: null, kept: null };
+    this.last = { dx, dz, ms, overBudget: ms > MOVE_CPU_BUDGET_MS, plan, restored, trees, staged, stepMs, ...this.plantCost, readbackMs: null, kept: null };
   }
 
   // The leaving slab's diff (step 1), into out: V2's (its head picks what both stores keep) when the

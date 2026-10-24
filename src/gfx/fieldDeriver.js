@@ -117,7 +117,7 @@ export class FieldDeriver {
     for (let axis = 0; axis < 3; axis++) {
       const stage = `blur${axis}`;
       this._dispatch(frame, axis === 2 ? 'fieldFinal' : 'fieldBlur', sizeFor(stage),
-        { bind: [this.tables, empty, gr.blur[axis]], params: { w, axis } }, domainFor(stage));
+        { bind: [this.tables, empty, gr.blur[axis]], header, params: { w, axis } }, domainFor(stage));   // (the header: a ringed grid's brick numbers)
       onStage?.(stage, frame, this.resources);
     }
     for (let axis = 0; axis < 3; axis++) {

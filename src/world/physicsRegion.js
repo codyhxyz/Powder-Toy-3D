@@ -26,9 +26,13 @@ export const physicsOnlyFor = (scene, on = PHYSICS_ONLY_MOVE || PAGE_SWITCH) => 
 // _shiftRing): a move copies nothing and rewrites only the slab it uncovers. Its whole-window copies (V2's
 // cores and banks out to a scratch and back, the requests, the flow) were ~6.6 of a move's ~8 ms of GPU
 // (P2's slot, 2026-10-24). False keeps the copying move under the switch.
-export const RING_MOVE = false;   // (lead, 2026-10-24: off until every physics reader is ring-aware: the writeback, the march's physSlot)
+// Every reader of physics state is ring-aware since P3 (2026-10-24): the march's physSlot, the world copy's
+// writeback, the particles' air, the derived passes' dispatches and saves' native words (world/ringSave.js).
+export const RING_MOVE = true;
+// Test only: ?ring=0 lays a page's grid out unringed (tools/world-move-browser-check.mjs compares the two).
+const PAGE_UNRINGED = typeof location !== 'undefined' && new URLSearchParams(location.search).get('ring') === '0';
 /** Whether a window over this scene lays its grid out by ring addressing (world/window.js, at construction). */
-export const ringedFor = (scene, on = RING_MOVE) => on && physicsOnlyFor(scene);
+export const ringedFor = (scene, on = RING_MOVE && !PAGE_UNRINGED) => on && physicsOnlyFor(scene);
 
 // What a move may cost in its own frame (docs/seamless-world.md, P's budget); the rest spreads over frames.
 export const MOVE_GPU_BUDGET_MS = 2;
