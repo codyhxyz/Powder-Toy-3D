@@ -59,6 +59,7 @@ export function createPresenter(gpu, canvas, { alpha = false, hdr = hdrDisplay()
   let hdrNow = config !== sdr && hdrDisplay();
   if (config !== sdr) matchMedia(HDR_QUERY).addEventListener('change', (e) => { hdrNow = e.matches; });
   let current = null, view = null;
+  let frames = 0;   // canvas textures taken: the browser hands out a new one each frame that presents
   return {
     canvas,
     context,
@@ -77,9 +78,11 @@ export function createPresenter(gpu, canvas, { alpha = false, hdr = hdrDisplay()
      */
     texture() {
       const t = context.getCurrentTexture();
-      if (t !== current) { current = t; view = t.createView({ label: 'canvas' }); }
+      if (t !== current) { current = t; view = t.createView({ label: 'canvas' }); frames++; }
       return t;
     },
+    /** Frames presented so far, whichever renderer drew them (the HUD's fps: app.js countHudRates). */
+    get frames() { return frames; },
     /** A view of this frame's canvas texture. @returns {GPUTextureView} */
     view() { this.texture(); return view; },
     /**

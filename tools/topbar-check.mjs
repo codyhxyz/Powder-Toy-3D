@@ -38,7 +38,7 @@ try {
       let panel, shaders;
       const hud = createHud({ onTogglePause: () => { settings.paused = !settings.paused; hud.setPaused(settings.paused); } });
       hud.setPaused(false);
-      hud.setStats({ fpsV: 60, stepsV: 120, cellsV: '64³', resV: '1440 × 900' });
+      hud.setStats({ fpsV: 60 });
       const calls = [];
       let renders = 0, inFlight = 0, maxInFlight = 0;
       const toolbar = createToolbar({ actions: {

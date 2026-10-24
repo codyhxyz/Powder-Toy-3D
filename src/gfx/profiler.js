@@ -61,11 +61,14 @@ function watchTimedPasses(timing) {
 
 /**
  * @param {object} gpu the gpu from createGpu (src/gpu/device.js)
- * @param {{ describe: () => { sim?: object | null, renderScale: number, canvas?: number[], pixelRatio?: number, bytes?: number },
+ * @param {{ describe: () => { sim?: object | null, renderScale: number, canvas?: number[], pixelRatio?: number, bytes?: number,
+ *             stepsPerSec?: number, world?: number[] | null, screenShare?: number | null },
  *           onSample: (sample: object | null) => void, onFrame?: (ring: object) => void }} opts
  *   describe: called once per sample for what the report shows besides timings
  *   (canvas: the drawing buffer [w, h]; bytes: GPU memory gpu.memory() doesn't
- *   count, such as three's scene targets); onSample: gets each sample, or null
+ *   count, such as three's scene targets; stepsPerSec: the app's measured rate,
+ *   else per drawn frame; world: a big map's whole world [x, y, z]; screenShare:
+ *   the scene's share of the screen's pixels across); onSample: gets each sample, or null
  *   when rendering went idle; onFrame: called as each frame's time is known
  *   (the frame ring, see `ring`).
  */
@@ -163,7 +166,7 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
       totals.push(gpuAt);
       if (totals.length > HISTORY) totals.shift();
     }
-    const { sim = null, renderScale = 1, canvas = [0, 0], pixelRatio = 1, bytes = 0 } = describe() ?? {};
+    const { sim = null, renderScale = 1, canvas = [0, 0], pixelRatio = 1, bytes = 0, stepsPerSec = null, world = null, screenShare = null } = describe() ?? {};
     readShares(sim);
     const fps = drawN ? drawN / (drawDt / MS_PER_S) : null;
     const sample = {
@@ -177,11 +180,13 @@ export function createProfiler(gpu, { describe, onSample, onFrame }) {
       cpu: cpuFrames ? cpuSum.reduce((s, x) => s + x, 0) / cpuFrames : null,
       steps: rec?.steps ?? 0,
       fps,
-      stepsPerSec: fps != null && workedFrames ? (steps / workedFrames) * fps : null,
+      stepsPerSec: stepsPerSec ?? (fps != null && workedFrames ? (steps / workedFrames) * fps : null),
       awake: maps.awake,
       drawn: maps.drawn,
       memory: gpu.memory().bytes + canvas[0] * canvas[1] * CANVAS_BYTES + bytes,
       grid: sim?.g ? [sim.g.nx, sim.g.ny, sim.g.nz] : null,
+      world,
+      screenShare,
       canvas: [...canvas],
       pixelRatio,
       renderScale,

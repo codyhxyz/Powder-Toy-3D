@@ -37,6 +37,11 @@ const pct = (v) => `${v * PCT}%`;
 const share = (v) => `${Math.round(v * PCT)}%`;
 const gridText = (g) => (!g ? 'no grid' : g[0] === g[1] && g[1] === g[2] ? `${g[0]}^3` : g.join('×'));
 const sceneSize = (s) => s.canvas.map((n) => Math.max(1, Math.round(n * s.renderScale))).join('×');
+const millions = (g) => `${(g.reduce((a, b) => a * b, 1) / MILLION).toFixed(1)}M`;
+// the cells simulated (a big map's window), and its whole world's
+const cellsText = (s) => (!s.grid ? '' : `${millions(s.grid)}${s.world ? ` of ${millions(s.world)}` : ''} cells`);
+// auto resolution's share of the screen's pixels across, as the presets say it
+const resText = (s) => (s.screenShare == null ? '' : `${share(s.screenShare)} res`);
 const perStep = (s, v) => (s.steps && v != null ? v / s.steps : null);
 const simPhase = (s) => s.phases.find((p) => p.id === 'sim');
 const drawnText = (s, label) => (s.drawn == null ? '' : `${label}${share(s.drawn)}`);   // bricks the step's kernels run over
@@ -74,8 +79,8 @@ function report(s) {
   const lines = [
     `Powder Toy 3D profile, ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`,
     `GPU       ${s.gpuName}`,
-    `grid      ${s.grid ? `${s.grid.join('×')} (${(s.grid.reduce((a, b) => a * b, 1) / MILLION).toFixed(2)}M cells)` : 'none'}, awake bricks ${s.awake == null ? '–' : share(s.awake)}${drawnText(s, ', bricks drawn ')}`,
-    `canvas    ${s.canvas.join('×')} at pixel ratio ${s.pixelRatio.toFixed(2)}; scene ${sceneSize(s)} (render scale ${s.renderScale.toFixed(2)})`,
+    `grid      ${s.grid ? `${s.grid.join('×')} (${cellsText(s)})` : 'none'}, awake bricks ${s.awake == null ? '–' : share(s.awake)}${drawnText(s, ', bricks drawn ')}`,
+    `canvas    ${s.canvas.join('×')} at pixel ratio ${s.pixelRatio.toFixed(2)}; scene ${sceneSize(s)} (render scale ${s.renderScale.toFixed(2)}${s.screenShare == null ? '' : `, ${resText(s)}`})`,
     `rate      ${s.fps == null ? '–' : s.fps.toFixed(1)} fps, ${s.stepsPerSec == null ? '–' : s.stepsPerSec.toFixed(0)} steps/s; ${s.steps} steps in the sampled frame`,
     `sim step  ${ms(perStep(s, simPhase(s).gpu))} ms GPU, ${ms(perStep(s, simPhase(s).cpu))} ms CPU`,
     `memory    ${(s.memory / MB).toFixed(0)} MB in our buffers and textures, three's targets and the canvas`,
@@ -281,9 +286,9 @@ export function createProfilerPanel({ onClose } = {}) {
       tGpu.el.classList.toggle('warn', s.gpu != null && s.gpu > BUDGET_MS);
       lastRates = rateText(s);
       rates.textContent = lastRates;
-      state.textContent = `awake ${s.awake == null ? '–' : share(s.awake)}${drawnText(s, ' · drawn ')} · ${(s.memory / MB).toFixed(0)} MB · ${gridText(s.grid)}`;
+      state.textContent = `awake ${s.awake == null ? '–' : share(s.awake)}${drawnText(s, ' · drawn ')} · ${(s.memory / MB).toFixed(0)} MB · ${gridText(s.grid)}${s.grid ? ` · ${cellsText(s)}` : ''}`;
       // (its own line: a Retina canvas and its scene size no longer fit beside the rest)
-      size.textContent = `canvas ${s.canvas.join('×')}${s.renderScale < 1 ? ` → scene ${sceneSize(s)}` : ''}`;
+      size.textContent = `canvas ${s.canvas.join('×')}${s.renderScale < 1 ? ` → scene ${sceneSize(s)}` : ''}${s.screenShare == null ? '' : ` · ${resText(s)}`}`;
       const span = Math.max(s.coverage?.spanMs ?? 0, BUDGET_MS);
       rows.forEach((r, i) => {
         const p = s.phases[i];

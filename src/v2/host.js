@@ -146,7 +146,50 @@ export function tickCounter() {
   return since;
 }
 
-export function nativeHostSteps(owner, dt, { speed = 1, once = false, before, after } = {}) {
+// The physics time governor: physics may take PHYSICS_BUDGET_MS of the GPU's time a 60 Hz frame
+// (its share of wall time). Each frame earns that share of its own time as credit and each tick
+// spends its measured GPU cost; a frame without the credit for a tick runs none, and game time
+// slows instead of the frame rate (The Powder Toy's and Minecraft's lag: the world slows, the
+// screen keeps moving), never more ticks to catch up. The cost is timed on the queue: the work
+// before the ticks and the ticks go as submissions of their own, and a tick's cost is from the
+// earlier work's completion to its own.
+export const PHYSICS_BUDGET_MS = 10;
+const PHYSICS_SHARE = PHYSICS_BUDGET_MS * HOST_HZ / 1000;   // of wall time
+const COST_WEIGHT = 0.2;   // a new tick's weight in the running cost
+export function createPhysicsGovernor(gpu) {
+  let ms = 0, credit = 0;
+  return {
+    /** A recording tick's GPU cost, ms (0: not measured yet). */
+    get ms() { return ms; },
+    /** The recording ticks a frame of dt seconds may run. Credit holds a frame's budget at most (or one
+     * tick, when a tick costs more), so a quiet spell doesn't bank a burst. */
+    allow(dt) {
+      credit = Math.min(credit + Math.max(0, dt) * 1000 * PHYSICS_SHARE, Math.max(ms, PHYSICS_BUDGET_MS));
+      return ms > 0 ? Math.floor(credit / ms) : Infinity;
+    },
+    /** Runs record() (it returns the ticks it recorded), timed on the queue, and charges them. */
+    measure(record) {
+      gpu.frame.flush('physics governor: before the ticks');
+      let start = performance.now();
+      gpu.queue.onSubmittedWorkDone().then(() => { start = Math.max(start, performance.now()); }, () => {});
+      const n = record();
+      if (n > 0) {
+        credit -= n * ms;
+        gpu.frame.flush('physics governor: the ticks');
+        gpu.queue.onSubmittedWorkDone().then(() => {
+          const each = (performance.now() - start) / n;
+          ms = ms > 0 ? ms + COST_WEIGHT * (each - ms) : each;
+        }, () => {});
+      }
+      return n;
+    },
+  };
+}
+
+// max: the recording ticks the governor allows this frame (createPhysicsGovernor allow); past it the
+// frame runs fewer and the accumulator starts over (game time slows). owner.recordedTicks: the ticks
+// this call recorded (a resting box's cost nothing).
+export function nativeHostSteps(owner, dt, { speed = 1, once = false, before, after, max = Infinity } = {}) {
   if (!owner?.isReady || owner.disposed || owner.sim.nativeTransition || owner.sim.nativeTransitionError) return 0;
   if (!Number.isFinite(dt) || !Number.isFinite(speed) || speed < 0) throw new Error('Invalid native host time');
   owner.activate();
@@ -156,25 +199,30 @@ export function nativeHostSteps(owner, dt, { speed = 1, once = false, before, af
   // machines) and the clocks keyed on its steps go on while it records nothing (nativeHostTick rest).
   const due = frameTicks(owner.acc, dt, speed);
   owner.acc = due.acc;
-  const n = once ? Math.max(1, due.n) : due.n;
-  for (let i = 0; i < n; i++) nativeHostTick(owner, { before, after, rest: true });
+  let n = once ? Math.max(1, due.n) : due.n;
+  if (!once && !owner.asleep && n > max) { n = max; owner.acc = 0; }
+  let recorded = 0;
+  for (let i = 0; i < n; i++) recorded += nativeHostTick(owner, { before, after, rest: true });
+  owner.recordedTicks = recorded;
   return n;
 }
 /**
  * One host tick: before(), the native tick, after(). rest: a box still certified idle after before()
  * records nothing (V1's idle step, sim.js step()), and only its clock advances; without it the tick
- * always records (explicit steps: scripts, tests).
+ * always records (explicit steps: scripts, tests). Returns 1 if it recorded GPU work.
  */
 export function nativeHostTick(owner, { before, after, rest = false } = {}) {
   if (owner.sim.nativeTransition || owner.sim.nativeTransitionError) return 0;
   before?.();
   const frame = owner.sim.frame;
-  if (!rest || !owner.asleep) owner.ticks(1);
+  const records = !rest || !owner.asleep;
+  if (records) owner.ticks(1);
   // Old prototype drivers didn't advance the host counter. New drivers may;
   // either way sources and tools observe exactly one counter increment/tick.
   if (owner.sim.frame === frame) owner.sim.frame++;
   owner.sim.nativeTicks = (owner.sim.nativeTicks ?? 0) + 1;
   after?.();
+  return records ? 1 : 0;
 }
 export function nativeReadiness(sim, { world = false, pov = false, guest = false } = {}) {
   if (guest) return { ready: false, reason: 'render-only guest' };
