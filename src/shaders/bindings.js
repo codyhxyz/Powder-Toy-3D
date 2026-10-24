@@ -77,6 +77,9 @@ export const FRAME_UNIFORMS = [
   ['materialStyle', 'f32', 'Artwork derived from view: 0 Realistic, 1 Cozy, 2 Noita'],
   ['sourceAppearance', 'vec4u', 'far grid appearance tail: first Y plane, word count, width, depth'],
   ['sourceStyle', 'u32', 'source appearance enabled for the Cruelty Squad material view'],
+  // appended: Settings → Lighting's Reflections and Light bending (gfx/liquid.js reflectDefer, opticsBend)
+  ['reflections', 'u32', 'uReflections (bool): traced reflections, else the environment'],
+  ['bending', 'u32', 'uBending (bool): real refraction, else a straight look with a nudge'],
 ];
 // { name: type }, the field list src/gpu/params.js uniformStruct takes.
 export const FRAME_UNIFORM_FIELDS = Object.fromEntries(FRAME_UNIFORMS.map(([n, t]) => [n, t]));
