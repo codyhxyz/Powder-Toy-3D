@@ -150,7 +150,7 @@ export function brickIdOf(g, bx, by, bz) {
 }
 export function brickCoordOf(g, id) {
   const stx = g.nx / SUPER_CELLS.x, stz = g.nz / SUPER_CELLS.z;
-  if (g.ring) { const n = ringBricks(g); id = (((id - g.ring) % n) + n) % n; }
+  if (g.ring && id < ringBricks(g)) { const n = ringBricks(g); id = (((id - g.ring) % n) + n) % n; }
   const st = id >>> 4, t = id & 15;
   return [(st % stx) * SUPER.x + (t & 3), Math.floor(st / (stx * stz)) * SUPER.y + (t >> 3), (Math.floor(st / stx) % stz) * SUPER.z + ((t >> 2) & 1)];
 }
@@ -604,15 +604,17 @@ ${stateBindings(o)}
 // ---- the layout (docs/webgpu.md C2) ----
 // Brick b's number: its supertile's (x fastest, then z, then y) times 16, plus
 // its tile's row-major place in the supertile's 4×4-tile square.
-// A ringed grid (H.ring, common.js ringOf) rotates the numbers by H.ring bricks.
+// A ringed grid (H.ringed, H.ring: common.js ringOf) rotates the numbers by H.ring bricks; an unringed one's
+// are as they always were, a brick outside the grid's (whatever number it gives) included.
 fn brickId(b: vec3i) -> u32 {
   let s = b / SUPER_B;
   let k = b - s * SUPER_B;
   let st = s.x + STX * (s.z + STZ * s.y);
-  return (u32(st * 16 + k.x + 4 * (k.z + 2 * k.y)) + H.ring) % NBRICKS;
+  let id = u32(st * 16 + k.x + 4 * (k.z + 2 * k.y));
+  return select(id, (id + H.ring) % NBRICKS, H.ringed != 0u);
 }
 fn brickCoord(rid: u32) -> vec3i {
-  let id = (rid + NBRICKS - H.ring) % NBRICKS;
+  let id = select(rid, (rid + NBRICKS - H.ring) % NBRICKS, H.ringed != 0u && rid < NBRICKS);
   let st = i32(id >> 4u);
   let t = i32(id & 15u);
   let s = vec3i(st % STX, st / (STX * STZ), (st / STX) % STZ);
