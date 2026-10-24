@@ -177,7 +177,7 @@ export function createWorldView(gpu, sim, { volume }) {
      * @param {GPURenderPassEncoder} rp
      * @param {{ view?: string, detail?: object, meshDepth?: GPUTexture | null, marchNear?: number, aerCopy?: number }} [opts]
      */
-    draw(rp, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0 } = {}) {
+    draw(rp, { view: v = 'realistic', detail = {}, meshDepth = null, marchNear = 0, aerCopy = 0, floorLines = true } = {}) {
       if (disposed) return false;
       const pipe = view.pipeline(v, detail, 'now');
       if (pipe.state !== 'ready') return false;
@@ -189,7 +189,7 @@ export function createWorldView(gpu, sim, { volume }) {
         bind: [frameGroup(depth), copy, group2()], header: { ...sim.readHeader(), origin: [0, 0, 0] },
         params: {
           meshInv, meshRes: [depth.width, depth.height], meshCut: meshDepth ? 1 : 0, marchNear, aerCopy,
-          deco: decoShown(sim) && sim.decoPlane ? 1 : 0, ...physParams(sim),
+          deco: decoShown(sim) && sim.decoPlane ? 1 : 0, floorLines: floorLines ? 1 : 0, ...physParams(sim),
         },
         count: WORLD_MARCH_VERTICES,
       });

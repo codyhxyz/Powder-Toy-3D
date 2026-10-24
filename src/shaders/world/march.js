@@ -64,6 +64,7 @@ export const MarchParams = uniformStruct('MarchParams', {
   marchNear: 'f32',     // cells: nothing nearer the camera is drawn (first person's eye clip)
   aerCopy: 'u32',       // (gfx/liquidDetail.js gAerCopy; V2 reads the aeration from its cells)
   deco: 'u32',          // the decoration is drawn (src/deco.js decoShown)
+  floorLines: 'u32',    // the floor's grid lines (a small map's: mapKind.boxFrame); a big map's world floor is its plain ground
   physOrigin: 'vec3i',  // physics' window in the world (sim.origin): flow, foam and paint are read inside it ...
   physSize: 'vec3i',    // ... its size in cells ...
   physSuper: 'vec3i',   // ... and in supertiles (shaders/common.js gridDims stx, sty, stz): its slot layout
@@ -234,6 +235,11 @@ const decoWorld = () => rewrite(decoViewGLSL, [
   ['outside(c)) { return vec4f(0.0); }', '!inPhys(c)) { return vec4f(0.0); }'],
   ['decoPlane[slotOf(c)]', 'decoPlane[physSlot(c)]'],
 ], 'gfx/deco.js decoAt');
+// The floor's grid lines are a small map's (mapKind.boxFrame); under a big map's sea the world's
+// floor is plain ground (Same look as the box era: its floor lines were never drawn on a big map).
+const floorWorld = (code) => rewrite(code, [
+  ['return mix(GROUND_ALB, FLOOR_LINE_ALB, line);', 'return mix(GROUND_ALB, FLOOR_LINE_ALB, line * f32(P.floorLines));'],
+], 'gfx/surface.js floorAlb');
 // The tracer sets F's level at every brick it enters (and keys its bricks by coordinate).
 const traceWorld = (detail, format) => rewrite(realisticTraceWGSL(detail, format), [
   ['      bid = brickId(bc);\n', '      bid = brickId(bc);\n      marchLod(ro + rd * tEnter);\n'],
@@ -307,7 +313,7 @@ export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixe
     worldLightWGSL(),
     crystalGLSL,
     tracerCommonWGSL(MarchParams),
-    surfaceGLSL(detail, { sourceAppearance: false }), decoWorld(),
+    floorWorld(surfaceGLSL(detail, { sourceAppearance: false })), decoWorld(),
     liquidGLSL,
     decoSurfGLSL,
     liquidDetailGLSL(detail, { fixedReadFormat }),
