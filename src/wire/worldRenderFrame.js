@@ -76,9 +76,11 @@ function nativeCandidate(state, data, values, params, packedMesh, feedbackKind=n
 // the whole atlas's size (1.5 MiB on Island), plus, for the scene's, a compacted list and a full
 // copy to map: two candidates and up to three such buffers a frame while the camera moved
 // (2026-10-23 audit). Its words are never cleared or read; requests only OR bits into it.
+// A pool that grew makes a new one at its size (the old one is collected once nothing references it).
 function unreadFeedback(app, state) {
-  return state.unreadFeedback ??= app.gpu.device.createBuffer({label:'WORLD unread frame feedback',
-    size:state.data.atlas.feedbackBytes, usage:128});
+  const size=state.data.atlas.feedbackBytes;
+  if(state.unreadFeedback?.size!==size)state.unreadFeedback=app.gpu.device.createBuffer({label:'WORLD unread frame feedback',size,usage:128});
+  return state.unreadFeedback;
 }
 function meshPublication(data) {
   const pin = data.retain(), t = data.snapshot.textures();
