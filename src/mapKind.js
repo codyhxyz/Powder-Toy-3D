@@ -47,10 +47,10 @@ const DIFFERENCES = {
   // arena its layout and grid, the Quarry its starter machines and drop point. A big
   // map's come from its world scene (world/scenes), generated as you explore.
   presets:          [true, false],
-  // Intentional (a world is generated around you, never one grid's snapshot): Undo
+  // Intentional (user, 2026-10-23: keep; a world is generated around you, never one grid's snapshot): Undo
   // takes back a small map's scene load; a big map has no whole-map snapshot to restore.
   sceneUndo:        [true, false],
-  // Intentional (the map's content): a box is a room at PHYS.AMBIENT; a world scene
+  // Intentional (user, 2026-10-23: keep; the map's content): a box is a room at PHYS.AMBIENT; a world scene
   // sets its own air temperature (scene airT).
   sceneAir:         [false, true],
   // Same look (each map's own sea): a box has no sea, so its clouds and weather count
@@ -59,7 +59,8 @@ const DIFFERENCES = {
   // Same look (each map's own sea): a box's sea past its walls is read from its cells
   // at each load (gfx/edgeSea.js boxEdgeSea); a world's from its scene (app.js worldSea).
   edgeSeaFromCells: [true, false],
-  // Intentional (perks, 2026-10-10): every world gets a shrine in a felled clearing near
+  // Intentional (user, 2026-10-23: big maps only; a world has room to walk to one, a box
+  // is a sandbox you build in): every world gets a shrine in a felled clearing near
   // its start (wire/world.js worldShrine); a small map's shrines are its preset's.
   autoShrine:       [false, true],
   // Intentional (gamemode: Factory): machines are built only in Factory, on the Quarry, a
@@ -119,11 +120,13 @@ const DIFFERENCES = {
   // Intentional (gamemode: team modes are built for their own maps; user decision
   // 2026-10-20): co-op on a big map runs only Sandbox.
   coopSandboxOnly:  [false, true],
-  // Intentional (co-op on a big map shares terrain and exploring bodies): signs,
+  // Intentional (user, 2026-10-23: a known gap, left for now, no big jobs; co-op on a
+  // big map shares terrain and exploring bodies): signs,
   // decoration, NPCs, vehicles, weapons, perks and progression are solo there
   // (net/multiplayer.js guardEntities, pov/index.js coop).
   coopEntities:     [true, false],
-  // Intentional (a guest holds only the host's window): when the session ends a small
+  // Intentional (user, 2026-10-23: a known gap, left for now, no big jobs; a guest holds
+  // only the host's window): when the session ends a small
   // map's guest plays on alone; a big map's guest is frozen till it reloads or picks a map.
   guestPlaysOn:     [true, false],
 };
