@@ -120,7 +120,7 @@ export function createWorldView(gpu, sim, { volume }) {
     /** Builds the world copy from a loaded window (a big map), or a simulation (a small map). */
     build,
     /** A scratch variant of the march's module for timing ({ name, filter(code) -> code }), or null: tests only. */
-    testVariant: null,
+    testVariant: globalThis.__worldTestVariant ?? null,   // (a test page may set it before boot: its first build is the variant)
     /** Whether this module draws `view` (the material views; the data views and Plain keep their paths). */
     draws: (v, curved = false) => isMaterialView(v) && !curved,
     /**
