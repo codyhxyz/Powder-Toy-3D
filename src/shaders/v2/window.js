@@ -108,7 +108,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     let src = brickId(q);
 ${carry('act', r.act)}
 ${carry('faces', r.faces)}
-    let bared = (P.shift > vec3i(0) & bc == vec3i(0)) | (P.shift < vec3i(0) & bc == vec3i(BX, BY, BZ) - 1);
+    let bared = ((P.shift > vec3i(0)) & (bc == vec3i(0))) | ((P.shift < vec3i(0)) & (bc == vec3i(BX, BY, BZ) - 1));
     if (!any(bared)) { return; }
   } else {
     act[${a.events}u + b] = 1u; act[${a.changed}u + b] = 1u;
