@@ -425,7 +425,6 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .material-brush input::-webkit-slider-runnable-track { height: 3px; }
 .material-brush input::-moz-range-track { height: 3px; }
 .material-brush input::-moz-range-progress { height: 3px; }
-.material-shapes { display: flex; gap: 2px; }
 .material-control {
   display: flex; align-items: center; justify-content: center; gap: 6px;
   min-width: 32px; height: 32px; padding: 0 7px;
@@ -442,7 +441,7 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 /* the deco tools (TPT's DECO menu, ui/decoPicker.js): their colour instead of flow and replace */
 .material-brush .deco-only { display: none; flex: 1 1 100%; flex-direction: column; align-items: stretch; gap: 8px; }
 .material-brush.deco .deco-only { display: flex; }
-.material-brush.deco > .material-range.paint-only, .material-brush.deco > div.paint-only:not(.material-shapes) { display: none; }
+.material-brush.deco > .paint-only { display: none; }
 .deco-color { width: 100%; height: 22px; padding: 0; border: 0; background: none; cursor: pointer; }
 .deco-swatch {
   justify-self: end; width: 22px; height: 22px; border-radius: 4px;
@@ -451,11 +450,67 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .deco-only .material-control { justify-content: flex-start; }
 .deco-only kbd { margin-left: auto; }
 /* replace mode, specific delete and their target element (TPT's Ctrl+Alt-click tool) */
-.material-modes { display: flex; flex-wrap: wrap; gap: 2px; }
-.material-target { color: var(--faint, var(--muted)); }
-.material-target.set { color: #dedfe2; }
 .material-target-chip { width: 12px; height: 12px; border-radius: 3px; background: transparent; box-shadow: inset 0 0 0 1px #ffffff33; }
 .dock .material-swatch.target { outline: 2px dashed #eee9df; outline-offset: 2px; }
+
+/* the brush options, Photoshop's options bar (ui/dock.js): compact buttons that
+   say their value (the brush tip and size, the flow, the mode), each with a caret
+   that drops a small pop-up, then the eyedropper */
+.material-brush > .opt-btn, .material-brush > .opt-group { order: -2; }
+.material-brush > .opt-dropper { order: -1; }
+.opt-group { display: flex; gap: 2px; }
+.material-control.opt-btn { gap: 4px; padding: 0 4px 0 6px; }
+.opt-value { min-width: 2ch; color: #dedfe2; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: left; }
+.opt-icon, .opt-tip { display: grid; place-items: center; }
+.dock .opt-tip svg { width: 14px; height: 14px; fill: currentColor; stroke: none; }
+.dock .opt-caret svg { width: 10px; height: 10px; stroke-width: 2.2; opacity: 0.65; }
+.opt-dot { width: 8px; height: 8px; border-radius: 2px; box-shadow: inset 0 0 0 1px #00e5e5; }
+.material-control.opt-btn[aria-expanded=true] { color: #f4eee0; background: #343b45; }
+.material-control.opt-btn.on { color: #ffd28a; }   /* a mode other than Paint, as the stats' [REPLACE MODE] */
+
+.bar-pop {
+  position: fixed; z-index: 25; display: flex; flex-direction: column; gap: 10px;
+  min-width: 200px; padding: 10px 12px;
+  color: #e9e7e2; background: #1b2027; border: 0; border-radius: 10px;
+  box-shadow: 0 16px 40px #0009, inset 0 1px 0 #ffffff12;
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+  --muted: #a9afb8; --accent: #a9afb8;
+}
+.bar-pop[hidden] { display: none; }
+.bar-pop.build .paint-only { display: none; }
+.bar-pop svg { width: 16px; height: 16px; display: block; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.pop-range { display: grid; grid-template-columns: 34px 150px 36px; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+.pop-range output { color: #dedfe2; font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
+.pop-shapes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.pop-shape {
+  display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 4px 6px;
+  border: 0; border-radius: 6px; background: #ffffff08; color: var(--muted); font-size: 11px; cursor: pointer;
+}
+.pop-shape svg { width: 26px; height: 26px; fill: currentColor; stroke: none; }
+.pop-shape:hover { background: #ffffff12; color: #fff; }
+.pop-shape[aria-pressed=true] { background: #343b45; color: #f4eee0; box-shadow: inset 0 0 0 1px #ffffff30; }
+.pop-menu { display: flex; flex-direction: column; gap: 2px; margin: -4px -6px 0; }
+.pop-item {
+  display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 10px; padding: 6px 8px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--muted); text-align: left; cursor: pointer;
+}
+.pop-item b { display: block; color: #e9e7e2; font-size: 12px; font-weight: 600; }
+.pop-item small { font-size: 11px; }
+.pop-item:hover { background: #ffffff0c; }
+.pop-item[aria-checked=true] { background: #343b45; }
+.pop-target {
+  display: flex; align-items: center; gap: 6px; margin: 0 -6px; padding: 8px 8px 2px;
+  border: 0; border-top: 1px solid #ffffff12; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer;
+}
+.pop-target.set { color: #dedfe2; }
+.pop-target.set .material-target-chip { box-shadow: inset 0 0 0 1px #00e5e5; }   /* the target tile's cyan (TPT's) */
+.pop-hint { margin: -6px 0 0; color: var(--faint); font-size: 11px; }
+@media (hover: none) and (pointer: coarse) {
+  .pop-hint, .pop-item kbd { display: none; }
+  .pop-item, .pop-shape { min-height: 44px; }
+  .bar-pop input[type="range"] { min-height: 32px; }
+  .material-control.opt-btn { min-width: 44px; }
+}
 /* the Property tool's window (TPT's PropertyTool.cpp), only while it is picked */
 .material-brush .prop-only { display: none; flex: 1 1 100%; flex-direction: column; gap: 6px; }
 .material-brush.prop .prop-only { display: flex; }
@@ -492,77 +547,6 @@ body.eyedropper canvas { cursor: crosshair; }
 .dock-tab.show { opacity: 1; pointer-events: auto; }
 @media (prefers-reduced-motion: reduce) {
   .dock, .dock-tab, .material-category { transition: none; }
-}
-
-/* ------------------------------------------------------------------ god-view bar */
-/* The Powder Toy's element bar (ui/dock.js): TPT's column of category buttons down
-   the right edge, and the open category's element buttons in a slim column just
-   left of it (TPT runs those along the bottom; ours stay off it, 68e09c8). The
-   search and brush options top the element column. It stays open while you
-   play, so it is as narrow as three tiles and only as tall as it needs. */
-.dock.bar {
-  --bar-tile: 44px;   /* = TILE_PX in dock.js: live tiles draw at this size */
-  --bar-panel: calc(3 * var(--bar-tile) + 2 * 4px + 2 * 8px + 6px);   /* three tiles, gaps, padding, a thin scrollbar */
-  left: auto; right: max(14px, env(safe-area-inset-right)); top: calc(var(--bar-bottom) + 6px);
-  transform: none; width: auto; max-width: none;
-  max-height: calc(100dvh - var(--bar-bottom) - 6px - max(14px, env(safe-area-inset-bottom)));
-  display: grid; grid-template-columns: var(--bar-panel) auto;
-  grid-template-rows: auto minmax(0, 1fr);
-  grid-template-areas: "side rail" "lib rail";
-  box-shadow: 0 10px 30px #0006, inset 0 1px 0 #ffffff12;
-}
-.dock.bar.collapsed { transform: translateX(16px); }
-.dock.bar .material-body { display: contents; }
-/* the category column, icons only (TPT's are 15 px icons with the name on hover) */
-.dock.bar .material-top {
-  grid-area: rail; min-height: 0; overflow-y: auto; scrollbar-width: none;
-  flex-direction: column; align-items: stretch; gap: 2px;
-  padding: 4px; border-radius: 0 10px 10px 0;
-}
-.dock.bar .material-top > .material-control { order: -1; margin: 0 0 4px; border-bottom: 1px solid #ffffff12; border-radius: 5px 5px 0 0; }
-.dock.bar .material-categories { flex: 0 0 auto; flex-direction: column; flex-wrap: nowrap; }
-.dock.bar .material-category { justify-content: center; width: 34px; height: 32px; padding: 0; border-radius: 6px 0 0 6px; }
-.dock.bar .material-category .category-name { display: none; }
-.dock.bar .material-category svg { width: 17px; height: 17px; }
-.dock.bar .material-category[aria-pressed=true] { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--category-color) 70%, #eae6dd); }
-/* the options: search, what's selected, the brush */
-.dock.bar .material-side {
-  grid-area: side; gap: 8px; overflow: visible;
-  padding: 8px; border-radius: 10px 0 0 0; border-bottom: 1px solid #ffffff12;
-}
-.dock.bar .material-find { width: auto; margin: 0; }
-.dock.bar .material-detail b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dock.bar .material-detail > span { display: none; }   /* the element card has it (ui/card.js), and each tile's tooltip */
-.dock.bar .material-brush { padding-top: 0; border-top: 0; gap: 6px 2px; }
-.dock.bar .material-range { grid-template-columns: 30px 1fr 28px; gap: 6px; }
-.dock.bar .material-brush > * { order: 2; }
-.dock.bar .material-brush > .material-range { order: 0; }
-.dock.bar .material-brush > .material-shapes, .dock.bar .material-brush > .material-control { order: 1; }   /* shape and eyedropper share a row */
-.dock.bar .material-control { min-width: 30px; height: 30px; padding: 0 6px; }
-.dock.bar .material-modes { flex: 1 1 100%; flex-wrap: nowrap; }
-.dock.bar .material-modes > .material-control:not(.material-target) > span + span { display: none; }   /* icons; the tooltips name them */
-.dock.bar .material-target { flex: 1 1 0; min-width: 0; justify-content: flex-start; }
-.dock.bar .material-target > span { overflow: hidden; text-overflow: ellipsis; }
-.dock.bar .deco-only .material-control { width: 100%; }
-/* the element tiles, TPT's buttons: 44 px, three across */
-.dock.bar .material-library { grid-area: lib; padding: 8px 4px 8px 8px; scrollbar-gutter: stable; }
-.dock.bar .material-heading {
-  position: static; width: auto; height: auto; overflow: visible; clip: auto;
-  display: flex; justify-content: space-between; align-items: baseline; margin: 0 4px 6px 0;
-  color: var(--muted); font-size: 11px; font-weight: 620; letter-spacing: 0.02em;
-}
-.dock.bar .material-heading h4 { margin: 0; font: inherit; color: #dedfe2; }
-.dock.bar .material-count { font-variant-numeric: tabular-nums; }
-.dock.bar .material-swatches { grid-template-columns: repeat(3, var(--bar-tile)); gap: 4px; }
-.dock.bar .material-swatch { width: var(--bar-tile); height: var(--bar-tile); font-size: 10px; }
-.dock.bar .material-swatch .tile-icon { width: 34px; height: 34px; }
-.dock.bar .material-section { margin-top: 4px; font-size: 10px; }
-.material-opts { display: none !important; }   /* phones only, below */
-/* hidden, the bar leaves a tab at the top of the right edge: what's selected, and the way back */
-.dock-tab.bar { left: auto; right: max(14px, env(safe-area-inset-right)); top: calc(var(--bar-bottom) + 6px); transform: none; }
-@media (max-width: 900px) {
-  /* no element card here (it hides under 900 px): the bar names the element in two lines */
-  .dock.bar .material-detail > span { display: -webkit-box; -webkit-line-clamp: 2; min-height: 2.9em; font-size: 11px; line-height: 1.3; }
 }
 
 /* ------------------------------------------------------------------ element card */
@@ -679,11 +663,17 @@ body.eyedropper canvas { cursor: crosshair; }
 .legend-box .legend-labels { padding: 0; color: var(--muted); }
 
 /* ------------------------------------------------------------------ beside the bar */
-/* what else lives on the right edge steps left of the god view's open element bar
-   (--spawn-bar-w, ui/dock.js; 0 in first person and while it is hidden) */
-.stats { right: calc(max(14px, env(safe-area-inset-right)) + var(--spawn-bar-w, 0px)); }
+/* what else lives along the bottom sits above the god view's open element bar
+   (--spawn-bar-h), and what's on the right edge steps left of its category column
+   (--spawn-bar-w, or the tab's width while it is hidden). Both ui/dock.js; 0 in
+   first person. */
+.stats {
+  right: calc(max(14px, env(safe-area-inset-right)) + var(--spawn-bar-w, 0px));
+  bottom: calc(max(14px, env(safe-area-inset-bottom)) + var(--spawn-bar-h, 0px));
+}
 .legend-box { right: calc(14px + var(--spawn-bar-w, 0px)); }
 .toasts, .hint { left: calc((100vw - var(--spawn-bar-w, 0px)) / 2); }
+.hint { bottom: calc(24px + var(--spawn-bar-h, 0px)); }
 
 /* ------------------------------------------------------------------ touch and phones */
 /* clear the notch and home bar (index.html: viewport-fit=cover) */
@@ -723,30 +713,9 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
   .material-side { border-radius: 0 0 10px 10px; padding: 10px 12px; gap: 8px; max-height: 45%; }
   .material-detail > span { display: none; }
 
-  .hint { bottom: calc(max(8px, env(safe-area-inset-bottom)) + 16px); width: max-content; max-width: calc(100vw - 32px - var(--spawn-bar-w, 0px)); text-align: center; }
+  .hint { bottom: calc(max(8px, env(safe-area-inset-bottom)) + 16px + var(--spawn-bar-h, 0px)); width: max-content; max-width: calc(100vw - 32px - var(--spawn-bar-w, 0px)); text-align: center; }
   .help .cols { grid-template-columns: 1fr; }
 
-  /* the god-view bar on a phone: one tile wide; its search and brush options open
-     beside it from the brush button (.material-opts) */
-  .dock.bar {
-    right: max(8px, env(safe-area-inset-right)); left: auto;
-    max-height: calc(100dvh - var(--bar-bottom) - 6px - max(8px, env(safe-area-inset-bottom)));
-    grid-template-columns: auto auto; grid-template-rows: minmax(0, 1fr); grid-template-areas: "lib rail";
-  }
-  .dock.bar.collapsed { transform: translateX(16px); }
-  .dock.bar .material-opts { display: flex !important; }
-  .dock.bar .material-side { display: none; }
-  .dock.bar.opts .material-side {
-    display: flex; position: absolute; right: calc(100% + 6px); top: 0;
-    width: min(240px, calc(100vw - 150px)); max-height: 100%; overflow-y: auto;
-    border-radius: 10px; border: 0; background: #1b2027; box-shadow: 0 10px 30px #0008;
-  }
-  .dock.bar .material-library { padding: 6px; }
-  .dock.bar .material-heading { display: none; }
-  .dock.bar .material-swatches { grid-template-columns: var(--bar-tile); }
-  .dock.bar .material-swatch { width: var(--bar-tile); }
-  .dock.bar .material-detail > span { display: none; }
-  .dock-tab.bar { right: max(8px, env(safe-area-inset-right)); }
 }
 @media (max-width: 400px) {
   .icon-btn { width: 32px; }
@@ -767,8 +736,6 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
   .material-control { min-width: 44px; height: 44px; }
   .dock input[type="range"] { min-height: 32px; }
   .dock-tab { min-height: 52px; }
-  .dock.bar { --bar-tile: 48px; }
-  .dock.bar .material-category { width: 44px; height: 44px; }
 }
 @media (hover: none) and (pointer: coarse) and (max-width: 640px) {
   .material-range { height: 32px; }
@@ -781,8 +748,150 @@ button { touch-action: manipulation; }   /* no double-tap zoom on fast taps */
 /* Desktop: the dock owns the top centre, so notices and the frame stats move to
    the bottom, where GMod keeps its notifications and net_graph. */
 @media (min-width: 761px) and (hover: hover) {
-  .toasts { top: auto; bottom: 64px; flex-direction: column-reverse; }
-  .stats { top: auto; bottom: 14px; transition: right 260ms var(--ease); }
+  .toasts { top: auto; bottom: calc(64px + var(--spawn-bar-h, 0px)); flex-direction: column-reverse; }
+  .stats { top: auto; bottom: calc(14px + var(--spawn-bar-h, 0px)); transition: right 260ms var(--ease), bottom 260ms var(--ease); }
   /* the open settings drawer covers the bottom right: stats step left of it */
   body:has(.drawer.open) .stats { right: calc(14px + 320px + 10px); }
+}
+
+/* ------------------------------------------------------------------ god-view bar */
+/* The Powder Toy's layout (ui/dock.js has the GameView.cpp references): the
+   category column down the right edge, stacked up from the bottom with search
+   under it; the open category's elements in one row along the bottom, starting
+   at the right and running left, sliding when too long; the brush options at the
+   row's left end. TPT's buttons are 30×18 one pixel apart; ours keep the shape
+   at about twice the size. The dock box itself is see-through and lets clicks
+   through: only the column and the row are solid. */
+.dock.bar {
+  --bar-tile-w: 50px;   /* TPT's 30×18 element button, 5:3 */
+  --bar-tile-h: 30px;
+  --bar-row-h: calc(var(--bar-tile-h) + 14px);   /* the tiles, padding, TPT's 2 px scroll bar */
+  --rail-w: 40px;
+  left: max(14px, env(safe-area-inset-left)); right: max(14px, env(safe-area-inset-right));
+  top: auto; bottom: max(14px, env(safe-area-inset-bottom));
+  transform: none; width: auto; max-width: none; max-height: none;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) var(--rail-w);
+  grid-template-rows: auto var(--bar-row-h);
+  grid-template-areas: ". . rail" "side lib rail";
+  background: none; box-shadow: none; border-radius: 0;
+  pointer-events: none;
+}
+.dock.bar > .material-top, .dock.bar .material-side, .dock.bar .material-library, .dock.bar .material-find { pointer-events: auto; }
+.dock.bar.collapsed { transform: translateY(16px); }
+.dock.bar.collapsed :is(.material-top, .material-side, .material-library, .material-find) { pointer-events: none; }
+.dock.bar .material-body { display: contents; }
+/* the category column: TPT's MenuButtons, icons only, the name in a tooltip */
+.dock.bar .material-top {
+  grid-area: rail; align-self: end;
+  max-height: calc(100dvh - var(--bar-bottom) - 20px); overflow-y: auto; scrollbar-width: none;
+  flex-direction: column; align-items: center; gap: 2px;
+  padding: 4px; background: #1b2027; border-radius: 10px 10px 10px 0;
+  box-shadow: 0 10px 30px #0006, inset 0 1px 0 #ffffff12;
+}
+.dock.bar .material-top > .material-control { flex: 0 0 auto; width: 32px; min-width: 0; height: 28px; padding: 0; }
+.dock.bar .material-top > .material-control:first-of-type { order: -1; }   /* hide, on top */
+.dock.bar .material-railsearch, .dock.bar .material-opts { order: 1; }    /* search, at the bottom as TPT's */
+.material-railsearch, .material-opts { display: none !important; }
+.dock.bar .material-railsearch { display: flex !important; }
+.dock.bar .material-categories { flex: 0 0 auto; flex-direction: column; flex-wrap: nowrap; gap: 2px; padding: 2px 0; border-block: 1px solid #ffffff12; }
+.dock.bar .material-category { justify-content: center; width: 32px; height: 30px; padding: 0; border-radius: 6px; }
+.dock.bar .material-category .category-name { display: none; }
+.dock.bar .material-category svg { width: 17px; height: 17px; }
+.dock.bar .material-category[aria-pressed=true] { background: #343b45; box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--category-color) 70%, #eae6dd); }
+/* search: TPT's button opens a search; ours a field over the row's right end */
+.dock.bar .material-find {
+  position: absolute; right: calc(var(--rail-w) + 8px); bottom: calc(var(--bar-row-h) + 6px);
+  display: none; width: 220px; margin: 0; padding: 4px; border-radius: 8px;
+  background: #1b2027; box-shadow: 0 10px 30px #0008;
+}
+.dock.bar.searching .material-find { display: flex; }
+/* the brush options, at the left end of the row (TPT keeps its deco presets there) */
+.dock.bar .material-side {
+  grid-area: side; flex-direction: row; align-items: center; gap: 0; overflow: visible;
+  padding: 0 8px; background: #1b2027; border-radius: 10px 0 0 10px;
+  border-right: 1px solid #ffffff12; box-shadow: 0 10px 30px #0006;
+}
+.dock.bar .material-detail { display: none; }   /* TPT's tooltip names what's hovered (.bar-tip) */
+.dock.bar .material-brush { flex-wrap: nowrap; align-items: center; gap: 2px 4px; padding: 0; border: 0; }
+.dock.bar .material-brush > * { flex: 0 0 auto; }
+.dock.bar .material-control { min-width: 30px; height: 30px; padding: 0 6px; }
+.dock.bar .material-brush .build-only, .dock.bar .prop-note { display: none !important; }
+.dock.bar .material-brush.prop .prop-only { flex-direction: row; align-items: center; gap: 6px; }
+.dock.bar .prop-row { grid-template-columns: auto 96px; gap: 6px; }
+.dock.bar .material-brush.deco .deco-only { flex-direction: row; align-items: center; gap: 6px; }
+.dock.bar .deco-only .material-range { grid-template-columns: auto 48px 22px; }
+.dock.bar .deco-only kbd { display: none; }
+/* the row of elements: TPT's tool buttons, the first by the categories */
+.dock.bar .material-library {
+  grid-area: lib; position: relative; min-width: 0; overflow: hidden;
+  padding: 5px 6px 9px; background: #1b2027; box-shadow: 0 10px 30px #0006;
+}
+.dock.bar .material-swatches {
+  display: flex; gap: 2px; height: var(--bar-tile-h);
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; overscroll-behavior-x: contain;
+}
+.dock.bar .material-swatches::-webkit-scrollbar { display: none; }
+/* an empty first item takes the spare width, so a short row sits at the right
+   (justify-content: flex-end would put an overflowing row's start out of reach) */
+.dock.bar .material-swatches::before { content: ''; flex: 1 0 0; order: -100000; }
+.dock.bar .material-section { display: none !important; }   /* TPT's row has no headings */
+.dock.bar .material-swatch {
+  order: calc(-1 * var(--i));   /* the first element at the right, the rest running left */
+  flex: 0 0 auto; width: var(--bar-tile-w); height: var(--bar-tile-h);
+  border-radius: 2px; font-size: 10px; box-shadow: none;
+}
+.dock.bar .material-swatch canvas { object-fit: cover; }
+.dock.bar .material-swatch .tile-icon { width: 26px; height: 26px; }
+/* TPT's button borders: white under the mouse, red on the selected element
+   (ToolButton::SetSelectionState 0), cyan on the replace target (state 3) */
+.dock.bar .material-swatch:hover { filter: none; box-shadow: inset 0 0 0 2px #fff; }
+.dock.bar .material-swatch.on { box-shadow: inset 0 0 0 2px #ff2a2a, inset 0 0 0 3px #0009; }
+.dock.bar .material-swatch.target { outline: 0; box-shadow: inset 0 0 0 2px #00e5e5, inset 0 0 0 3px #0009; }
+.dock.bar .material-empty { line-height: var(--bar-tile-h); text-align: right; }
+/* TPT's scroll bar: two pixels under the row, showing where it has slid to */
+.bar-scroll { display: none; }
+.dock.bar .bar-scroll { display: block; position: absolute; left: 6px; right: 6px; bottom: 4px; height: 2px; }
+.dock.bar .bar-scroll[hidden] { display: none; }
+.bar-scroll i { position: absolute; top: 0; height: 2px; border-radius: 1px; background: #c8c8c8; }
+/* TPT's tooltip (GameView::ToolTip): plain outlined text, right-aligned left of the
+   category column, an element's just above the bar */
+.bar-tip {
+  position: fixed; z-index: 12; pointer-events: none;
+  max-width: min(640px, 60vw); text-align: right;
+  color: #fff; font: 500 13px/1.35 var(--ui);
+  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 6px #000a;
+  opacity: 0; transition: opacity 120ms;
+}
+.bar-tip.show { opacity: 1; }
+body.pov-on .bar-tip { display: none; }
+/* while the bar is open, TPT's tooltip names elements: the card steps aside */
+body.spawn-bar .card { opacity: 0; pointer-events: none; }
+/* hidden, the bar leaves a tab in the bottom right corner: what's selected, and the way back */
+.dock-tab.bar {
+  left: auto; top: auto; transform: none;
+  right: max(14px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom));
+}
+
+/* phones: the options open above the row from the brush button in the column */
+@media (max-width: 640px) {
+  .dock.bar {
+    left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right));
+    bottom: max(8px, env(safe-area-inset-bottom));
+    grid-template-columns: minmax(0, 1fr) var(--rail-w); grid-template-areas: ". rail" "lib rail";
+  }
+  .dock.bar .material-library { border-radius: 10px 0 0 10px; }
+  .dock.bar .material-opts { display: flex !important; }
+  .dock.bar .material-side { display: none; }
+  .dock.bar.opts .material-side {
+    display: flex; position: absolute; left: 0; bottom: calc(var(--bar-row-h) + 6px);
+    width: min(320px, calc(100% - var(--rail-w) - 8px)); padding: 10px; border: 0; border-radius: 10px;
+  }
+  .dock.bar.opts .material-brush { flex-wrap: wrap; }
+  .dock.bar .material-find { width: min(220px, calc(100% - var(--rail-w) - 16px)); }
+  .dock-tab.bar { right: max(8px, env(safe-area-inset-right)); bottom: max(8px, env(safe-area-inset-bottom)); }
+}
+@media (hover: none) and (pointer: coarse) {
+  .dock.bar { --bar-tile-w: 64px; --bar-tile-h: 44px; --rail-w: 52px; }
+  .dock.bar .material-top > .material-control, .dock.bar .material-category { width: 44px; height: 44px; }
+  .dock.bar .material-control { min-width: 44px; height: 44px; }
 }

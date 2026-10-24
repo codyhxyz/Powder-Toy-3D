@@ -30,6 +30,9 @@ export const ICON = {
   save: svg('<path d="M5 4h11l3 3v13H5z"/><path d="M8 4v5h7V4"/><rect x="8" y="13" width="8" height="5" rx="0.5"/>'),
   chevDown: '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
   chevUp: svg('<path d="M6 15l6-6 6 6"/>'),
+  // the options bar's Flow (an airbrush nozzle's spray) and Paint mode (a pencil): ui/dock.js
+  flow: svg('<path d="M3 12h6"/><path d="M9 9.5v5l3.5-2.5z"/><circle cx="16" cy="9" r="0.9"/><circle cx="17.5" cy="12" r="0.9"/><circle cx="16" cy="15" r="0.9"/><circle cx="20.5" cy="10" r="0.7"/><circle cx="20.5" cy="14" r="0.7"/>'),
+  paint: svg('<path d="M4.5 19.5l1-4L16 5l3 3L8.5 18.5z"/><path d="M14 7l3 3"/>'),
   chevLeft: svg('<path d="M15 6l-6 6 6 6"/>'),
   chevRight: svg('<path d="M9 6l6 6-6 6"/>'),
   reset: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v4h4"/></svg>',

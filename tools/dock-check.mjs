@@ -49,27 +49,38 @@ try {
   assert.equal(await swatches.count(), 4);
 
   await category('Solids').click();
-  const size = dock.getByRole('slider', { name: 'Brush size', exact: true });
+  // the brush options are Photoshop's options bar: buttons with pop-ups (ui/dock.js)
+  await dock.getByRole('button', { name: 'Brush', exact: true }).click();
+  const size = page.getByRole('slider', { name: 'Brush size', exact: true });
   await size.focus();
   await size.press('ArrowRight');
   assert.equal(await page.evaluate(() => window.__app.settings.radius), 6);
+  assert.equal(await dock.getByRole('button', { name: 'Brush', exact: true }).textContent(), '6', 'the brush button shows the size live');
   assert.equal(await category('Solids').getAttribute('aria-pressed'), 'true', 'brush adjustment preserves browsing');
-  await dock.getByRole('button', { name: 'Cube brush', exact: true }).click();
+  await page.getByRole('button', { name: 'Cube brush', exact: true }).click();
   assert.equal(await page.evaluate(() => window.__app.settings.shape), 1);
-  await dock.getByRole('button', { name: 'Replace mode', exact: true }).focus();
+  assert.equal(await size.isVisible(), false, 'picking a tip closes the pop-up');
+  await dock.getByRole('button', { name: 'Mode', exact: true }).focus();
   await page.keyboard.press('Space');
-  assert.equal(await page.evaluate(() => window.__app.settings.replace), true);
   assert.equal(await page.evaluate(() => window.__app.settings.paused), true, 'Space on a control does not pause/unpause');
+  await page.getByRole('menuitemradio', { name: 'Replace', exact: true }).click();
+  assert.equal(await page.evaluate(() => window.__app.settings.replace), true);
+  await dock.getByRole('button', { name: 'Flow', exact: true }).click();
+  assert(await page.getByRole('slider', { name: 'Flow', exact: true }).isVisible());
+  await page.keyboard.press('Escape');
+  assert.equal(await page.getByRole('slider', { name: 'Flow', exact: true }).isVisible(), false, 'Esc closes a pop-up');
   await dock.getByRole('button', { name: 'Eyedropper', exact: true }).click();
   assert.equal(await dock.getByRole('button', { name: 'Eyedropper', exact: true }).getAttribute('aria-pressed'), 'true');
 
   await category('Constructions').click();
-  await dock.getByRole('button', { name: 'House', exact: true }).click();
-  assert(await dock.getByRole('slider', { name: 'Construction size', exact: true }).isVisible());
-  assert.equal(await dock.getByRole('slider', { name: 'Flow', exact: true }).count(), 0);
+  await dock.getByRole('button', { name: 'House', exact: true }).evaluate((el) => el.click());   // (the bar's row slides with the mouse, TPT's way)
+  await dock.getByRole('button', { name: 'Brush', exact: true }).click();
+  assert(await page.getByRole('slider', { name: 'Construction size', exact: true }).isVisible());
+  assert.equal(await dock.getByRole('button', { name: 'Flow', exact: true }).isVisible(), false);
+  await page.keyboard.press('Escape');
   await category('Powders').click();
-  await dock.getByRole('button', { name: 'Sand', exact: true }).click();
-  assert(await dock.getByRole('slider', { name: 'Flow', exact: true }).isVisible());
+  await dock.getByRole('button', { name: 'Sand', exact: true }).evaluate((el) => el.click());   // (the bar's row slides with the mouse, TPT's way)
+  assert(await dock.getByRole('button', { name: 'Flow', exact: true }).isVisible());
   assert.equal(await dock.evaluate((el) => el.inert), false, 'picking keeps the god-view bar open (TPT)');
   await page.mouse.click(400, 450);
   assert.equal(await dock.evaluate((el) => el.inert), false, 'painting keeps the god-view bar open');
