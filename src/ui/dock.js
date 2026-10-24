@@ -226,7 +226,8 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
 
   // 2. Flow: a Photoshop percentage field, its slider dropping from the caret
   const flowValue = h('b.opt-value');
-  const flowButton = optButton('Flow', 'Flow', h('span.opt-icon', { html: ICON.flow }), flowValue);
+  const flowButton = optButton('Flow', 'Flow', h('span.opt-icon.opt-gauge', { html: ICON.flow }), flowValue);
+  const GAUGE_SWEEP_DEG = 240;   // the gauge icon's arc: its needle sweeps it from 0 to 100% flow
   const flowOut = h('output');
   const flow = h('input', { type: 'range', min: 0.05, max: 1, step: 0.05, 'aria-label': 'Flow' });
   flow.addEventListener('input', () => onBrushChange({ rate: +flow.value }));
@@ -243,8 +244,9 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
   ];
   const modeOf = () => (settings.specificDelete ? MODES[2] : settings.replace ? MODES[1] : MODES[0]);
   const modeIcon = h('span.opt-icon');
+  const modeName = h('b.opt-value.opt-name');   // named, as Photoshop's Mode: Normal is, so it doesn't read as a tool
   const modeDot = h('i.opt-dot');
-  const modeButton = optButton('Mode', 'Mode: Paint, Replace (X) or Delete only (Delete)', modeIcon, modeDot);
+  const modeButton = optButton('Mode', 'Mode: Paint, Replace (X) or Delete only (Delete)', modeIcon, modeName, modeDot);
   const modeItems = MODES.map((m) => h('button.pop-item', {
     type: 'button', role: 'menuitemradio', 'aria-label': m.name,
     on: { click: () => { onBrushChange(m.patch); closePop(); } },
@@ -533,11 +535,13 @@ export function createDock({ settings, onSelect, onBrushChange, onHover, onEyedr
     brushButton.title = build ? 'Construction scale: [ ] or Shift+scroll' : 'Brush: size [ ] or Shift+scroll, shape B';
     const pct = `${Math.round(settings.rate * 100)}%`;
     flow.value = settings.rate; flowOut.textContent = pct; fill(flow); flowValue.textContent = pct;
+    flowButton.style.setProperty('--flow-turn', `${(settings.rate - 0.5) * GAUGE_SWEEP_DEG}deg`);
     shapeSphere.setAttribute('aria-pressed', String(settings.shape === 0));
     shapeCube.setAttribute('aria-pressed', String(settings.shape === 1));
     const mode = modeOf();
     const tgt = ELEMENTS[settings.replaceTarget];
     modeIcon.innerHTML = mode.icon;
+    modeName.textContent = mode.name;
     modeItems.forEach((el, i) => el.setAttribute('aria-checked', String(MODES[i] === mode)));
     modeDot.hidden = !tgt;
     modeDot.style.background = tgt?.color ?? '';

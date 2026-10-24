@@ -31,7 +31,8 @@ export const ICON = {
   chevDown: '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>',
   chevUp: svg('<path d="M6 15l6-6 6 6"/>'),
   // the options bar's Flow (an airbrush nozzle's spray) and Paint mode (a pencil): ui/dock.js
-  flow: svg('<path d="M3 12h6"/><path d="M9 9.5v5l3.5-2.5z"/><circle cx="16" cy="9" r="0.9"/><circle cx="17.5" cy="12" r="0.9"/><circle cx="16" cy="15" r="0.9"/><circle cx="20.5" cy="10" r="0.7"/><circle cx="20.5" cy="14" r="0.7"/>'),
+  // a gauge (Lucide's): its needle turns with the flow (ui/dock.js --flow-turn)
+  flow: svg('<path d="M3.3 19a10 10 0 1 1 17.4 0"/><path class="gauge-needle" d="M12 14V7.5"/><circle cx="12" cy="14" r="1.3" fill="currentColor" stroke="none"/>'),
   paint: svg('<path d="M4.5 19.5l1-4L16 5l3 3L8.5 18.5z"/><path d="M14 7l3 3"/>'),
   chevLeft: svg('<path d="M15 6l-6 6 6 6"/>'),
   chevRight: svg('<path d="M9 6l6 6-6 6"/>'),
