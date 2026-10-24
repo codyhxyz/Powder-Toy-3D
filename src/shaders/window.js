@@ -1,4 +1,4 @@
-import { prelude, STATE_OPTS, LAYOUT, STAGE, gridDims, EDIT_FIELDS, editKernelWGSL } from './common.js';
+import { prelude, STATE_OPTS, LAYOUT, STAGE, gridDims } from './common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 

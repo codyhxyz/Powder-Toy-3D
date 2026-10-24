@@ -23,14 +23,14 @@ export function packetShadowKey(sim, state) {
   return `${state}:${flying ? d.owner?.tick ?? 0 : '-'}`;
 }
 
-export function createPacketShadow(gpu, { g, res, world, layouts, derived }) {
+export function createPacketShadow(gpu, { g, res, layouts, derived }) {
   const words = packetShadowWords(res);
   const buffer = gpu.createBuffer({ label: 'packet shadow', size: words * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   // every texel empty, no tile to trace again
   const init = new Uint32Array(words); init.fill(PACKET_SHADOW_EMPTY, 0, res * res);
   gpu.queue.writeBuffer(buffer, 0, init);
   const splatLayout = gpu.layout('PACKET_SPLAT', PACKET_SPLAT_LAYOUT);
-  const kernel = gpu.kernel({ name: 'shadowPackets', code: packetShadowFrag(g, res, { world }), layouts: layouts.shadow,
+  const kernel = gpu.kernel({ name: 'shadowPackets', code: packetShadowFrag(g, res), layouts: layouts.shadow,
     workgroupSize: [SHADOW_WORKGROUP, SHADOW_WORKGROUP, 1], build: 'idle' });
   const splat = gpu.kernel({ name: 'packetShadowSplat', code: packetShadowSplatWGSL(g, res), layouts: [layouts.frame, splatLayout],
     params: PacketShadowParams, workgroupSize: [64, 1, 1], build: 'idle' });

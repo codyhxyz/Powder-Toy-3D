@@ -27,7 +27,7 @@ const g = gridLayout(32, 32, 32), hash = s => createHash('sha256').update(s).dig
 // Then (wave 4, 2026-10-20) the volume and its detail variant: the distance haze (farShared.js volumeHaze), over origin/main bb37db6e.
 // Re-pinned 2026-10-21 (cold compile): only the lamp and beacon shadow rays moved (lighting.js lampLights/lampShade/lampSpecSeen, lighthouse.js beaconRay/beaconFarClear/beaconMaxSteps/beaconVisible; one traceNearSteps call site, crystals skip the beam), diffed against origin/main 186cefd7; the volume and its detail variant only.
 // Re-pinned 2026-10-23 (the far switch removed): FrameUniforms lost `far`, the volume its FU.far liquid
-// branches and LIQ_WINDOW_FADE, lighthouse.js its beaconFarClear; diffed against origin/main 9472db0f, the volume
+// branches and LIQ_WINDOW_FADE, lighthouse.js its beaconFarClear; diffed against origin/main c3c11576, the volume
 // and its detail variant only.
 const baseline = {
   ro: 'd92592ba9576e9c02a65919e3badf678beb30dc58576e8fa22d4bf520d9174ed',

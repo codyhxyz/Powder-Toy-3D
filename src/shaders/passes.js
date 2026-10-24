@@ -2,7 +2,7 @@ import {
   prelude, STATE_OPTS, LAYOUT, STAGE, BRICK, TILE, SUPER, SUPER_TEX, gridDims, atlasDims, stateLayout, EDIT_FIELDS, EDIT_SCRATCH_BINDING, editKernelWGSL,
 } from './common.js';
 import {
-  AGE, FIELDS_DILATE, WORK_DILATE, FIELD_LAYOUT, LAYOUT_ENTRY, dirtyListsWGSL, listMainWGSL, FIELD_REACH, FIELD_SCRATCH_REACH,
+  AGE, FIELDS_DILATE, WORK_DILATE, FIELD_LAYOUT, LAYOUT_ENTRY, dirtyListsWGSL, listMainWGSL,
 } from './fields.js';
 import { brickInfoWGSL, frameBindings, RENDER_LAYOUT } from './bindings.js';
 import { SHADOW_PAD } from './gfx/lighting.js';

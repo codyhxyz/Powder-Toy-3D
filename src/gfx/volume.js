@@ -329,7 +329,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
       // kernel, V1's trace with them folded in. Until it is built, V1's kernel traces the map without them.
       const source = packetShadowSource(sim);
       if (source && !packets) {
-        packets = createPacketShadow(gpu, { g, res, world: sim.world ?? WORLD_SIZE, derived,
+        packets = createPacketShadow(gpu, { g, res, derived,
           layouts: { shadow: [L.FRAME, L.STATE_RO, L.LIGHTING_SHADOW_PACKETS], frame: L.FRAME } });
       }
       if (source) packets.build();

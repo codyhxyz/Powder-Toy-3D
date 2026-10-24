@@ -29,8 +29,8 @@ const opaqueIds = ELEMENTS.filter(e => e.id > 0 && e.kind !== K.GAS && e.render 
 const castWGSL = `fn packetCasts(id: u32) -> bool { switch id { case ${opaqueIds.map(i => `${i}u`).join(', ')}: { return true; } default: { return false; } } }`;
 
 /** The V2 shadow kernel: V1's (shaders/render.js shadowFrag), its texel's trace folded with the packets'. */
-export function packetShadowFrag(g, res, opts = {}) {
-  const v1 = shadowFrag(g, opts);
+export function packetShadowFrag(g, res) {
+  const v1 = shadowFrag(g);
   const store = /\n  let oC = shadowTexel\(ro, safeDir\(-FU\.sun\)\);\n  textureStore\(tShadow, id\.xy, oC\);\n/;
   if (!store.test(v1)) throw new Error('packetShadow: shaders/render.js shadowFrag no longer stores its texel as the fold expects');
   return v1.replace(store, `

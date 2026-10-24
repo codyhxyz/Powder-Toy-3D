@@ -135,7 +135,6 @@ const BEND_EXTRA_STEPS = 128;
 
 // BOX volume modules. WORLD additionally accepts the explicit 'plain' variant.
 export const VOLUME_VIEWS = VIEWS.map((v) => v.key).filter((k) => k !== 'plain');
-const DATA_VIEWS = ['heat', 'pressure', 'flow', 'xray'];
 
 // The decoration layer (TPT's deco colour, src/deco.js) in the view: every
 // view pastes shaders/gfx/deco.js, its lookups (decoAt, decoLinear, decoTint

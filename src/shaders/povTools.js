@@ -4,7 +4,6 @@ import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { BODY_WIDTH, BODY_HEIGHT } from '../pov/constants.js';
 import { ELEMENTS, E } from '../elements.js';
-import { PHYS as ENGINE } from '../physics.js';
 import { consts } from '../glsl.js';
 
 // GPU work for the POV axe, pickaxe, physgun, flamethrower, torch and rocket (src/pov/tools/*.tool.js),

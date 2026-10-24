@@ -6,7 +6,6 @@ import { liquidGLSL } from './gfx/liquid.js';
 import { cloudsGLSL } from './gfx/clouds.js';
 import { uniformStruct } from '../gpu/params.js';
 import { STAGE, fold } from '../gpu/kernels.js';
-import { CELL_M } from '../scale.js';
 import { SUN_DISC, SUN_DISC_EDGE } from '../gfx/sky.js';
 import { TREE, MID_TREES, HIGH_TREES } from '../world/generator.js';
 import { scaleFor } from '../constructions/runtime.js';
@@ -16,7 +15,7 @@ import { presentationWGSL } from '../gfx/presentationMath.js';
 // The parts the window's own pipelines read (the layout, haze, casters and GI)
 // live in farShared.js (docs/webgpu.md G1, J3); re-exported for their importers.
 import {
-  FAR, FAR_NODE, WORLD_SIZE, farLayout, farLayoutGLSL, FAR_SHADOW_SOFT, FAR_SHADOW_BIAS, FAR_HAZE, farHazeFor, farSkyGLSL, FAR_SKY,
+  FAR, WORLD_SIZE, farLayout, farLayoutGLSL, FAR_HAZE, farHazeFor, farSkyGLSL, FAR_SKY,
 } from './farShared.js';
 import { glf } from '../glsl.js';
 export {

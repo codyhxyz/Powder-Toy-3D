@@ -1,7 +1,6 @@
 import { decodeWorldState } from './persistence.js';
 import { NativeBrickStore, nativeBrickBanked, legacyBrickToNative } from './nativeStore.js';
 import { BRICK } from '../shaders/common.js';
-import { BRICK_CELLS } from '../shaders/window.js';
 import { leaveHeadBytes, LEAVE_BRICK_BYTES } from '../shaders/generate.js';
 import { WorldGenerator } from './gpu.js';
 import { WORLD_SEED } from './generator.js';

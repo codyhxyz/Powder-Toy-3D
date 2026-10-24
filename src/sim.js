@@ -5,8 +5,8 @@ import { emitNativeRay, nativeRayKind } from './v2/tools.js';
 import { NativeIntegration, nativeCapabilities } from './v2/integration.js';
 import { nativeRectToAtlasWGSL, nativeIdsWGSL, NATIVE_ID_ROWS } from './v2/nativeRead.js';
 import {
-  BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, LAYOUT, STATE_OPTS, gridDims, atlasDims,
-  marksLayout, actLayout, tablesBuffer, tablesAirTOffset, cellSlot, slotCell, brickIdOf, brickCoordOf,
+  BRICK, SEED_MAX, TILE, SUPER, SUPER_TEX, SUPER_CELLS, LAYOUT, gridDims, atlasDims,
+  marksLayout, actLayout, tablesBuffer, tablesAirTOffset, cellSlot, slotCell, brickCoordOf,
   editKernelWGSL, EDIT_FIELDS, EDIT_SCRATCH_BINDING,
 } from './shaders/common.js';
 import {

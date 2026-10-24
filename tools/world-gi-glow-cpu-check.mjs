@@ -3,7 +3,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
 import { WgslExec, WgslParser, VectorData, ScalarData } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { giSourceFrag, giGatherFrag, giKeyFrag, giSelectFrag, giArgsFrag, giSrcWGSL } from '../src/shaders/gi.js';
 import { blurFrag } from '../src/shaders/passes.js';
@@ -84,7 +83,7 @@ test('seven independent production GI/key/select/args and glow emissions remain 
   // Re-pinned 2026-10-21 (cold compile): only the lamp and beacon shadow rays moved (lighting.js lampLights/lampShade/lampSpecSeen, lighthouse.js beaconRay/beaconFarClear/beaconMaxSteps/beaconVisible; one traceNearSteps call site, crystals skip the beam), diffed against origin/main 186cefd7; source and gather only, the other five unchanged.
   // Re-pinned 2026-10-23 (the far switch removed): FrameUniforms lost `far` (every module but the blurs),
   // the gather's farBeyond branch, its far textures and farGIGLSL, the key's far word (KEY_WORDS 22 → 21),
-  // the beacon's beaconFarClear; diffed against origin/main 9472db0f, nothing else moved.
+  // the beacon's beaconFarClear; diffed against origin/main c3c11576, nothing else moved.
   const hashes = ['cd20a89e14e7066780d7b36a1cf019a6edc451b4bf35a1b445c67c860d0163f3', '6563a4df465f2991e6342f885e58cfe196fc07088d4bd687ad927f3f7a3c72b0', '759a843e6235e51e0702507efc6ca000145f5cb53ade2665a1d243692d15c786', '6c2a4a04183311ec50071ada6086b806717873458727563a82d6d8a914925358', 'ef926c5e480e51e6f43d4b7b2c48acc3fa57476c5bf5e0191ef5cf3ad33176a7', 'b7f2b431e07d44a6aeab03f55db2a30f28a3eff1643a6db5e6aaa0fe58e982c6', '8ebdc6e328ec9e086242a31194be0fd9e088fffe3f7cef3507552398c373796e'];
   [giSourceFrag(g), giGatherFrag(g), giKeyFrag(g), giSelectFrag(g), giArgsFrag(g), blurFrag(g), blurFrag(g, { last: true })].forEach((code, i) => assert.equal(createHash('sha256').update(code).digest('hex'), hashes[i]));
 });
@@ -132,7 +131,7 @@ test('world gather is the original generated module minus unused texture mirrors
   // ground, worldGISourceStaged became worldGIStagedJob + worldGISourceRing (both reads), beyond()'s
   // floor sun is looked up inside the ring only; diffed against b48dd7e4, nothing else moved.
   // Re-pinned 2026-10-23 (the far switch removed): FrameUniforms lost `far` and lighthouse.js its
-  // beaconFarClear; diffed against origin/main 9472db0f, nothing else moved.
+  // beaconFarClear; diffed against origin/main c3c11576, nothing else moved.
   const hashes = ['190aa637d160eb3b63d5e759eb04b5903ff14254c9170e93e3545b828df68c95', 'b8e9bd602e338e0c671c5875c50c251a0ca0e939a82711975a2b603333a1d8fc', 'acb641dbaa02ca8f005f253c656594a16a57e18f7d323d0a185ed4d5d2ed9a00', '41c840c33464f51ea90186ac33d1bdc2d9fd995158a2ac65354372325fc25253'];
   const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
   gathers.forEach((c, i) => {

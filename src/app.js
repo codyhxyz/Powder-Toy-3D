@@ -1,5 +1,5 @@
 import { emitNativeRay, isRayShape, emitHeldNativeRays, releaseHeldNativeRays } from './v2/tools.js';
-import { nativeHostSteps, nativeHostTick, nativeReadiness, viewStepClock, frameTicks, partialTick, legacyStepHooks, brushPace, HOST_HZ, LEGACY_STEPS_PER_TICK } from './v2/host.js';
+import { nativeHostSteps, nativeHostTick, nativeReadiness, viewStepClock, frameTicks, legacyStepHooks, brushPace, HOST_HZ, LEGACY_STEPS_PER_TICK } from './v2/host.js';
 // The game (docs/webgpu.md J1 U8): the settings, the grid and its scene, the
 // UI and input, and the frame loop, on one WebGPU device (src/gpu, B1).
 //
