@@ -6,7 +6,7 @@ import { CELL_M } from '../scale.js';
 export const LIGHTHOUSE = Object.freeze({
   period: 16, range: 300 / CELL_M, intensity: 1800, radius: 2,
   inner: Math.cos(7 * Math.PI / 180), outer: Math.cos(12 * Math.PI / 180),
-  color: [1, 0.72, 0.38], captureInterval: 0.25, farSamples: 24,
+  color: [1, 0.72, 0.38], captureInterval: 0.25,
 });
 export function lighthouseNight(phase) {
   if (!Number.isFinite(phase)) return 0;

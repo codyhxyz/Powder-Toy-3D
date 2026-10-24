@@ -13,7 +13,6 @@ import { scaleFor } from '../constructions/runtime.js';
 import { sceneLayout, SCENE_BINDING } from '../world/scenes/sceneGpu.js';
 import { WORLD_SCENES } from '../world/scenes/index.js';
 import { presentationWGSL } from '../gfx/presentationMath.js';
-import { meshPadding } from '../world/surfaceMesh.js';
 // The parts the window's own pipelines read (the layout, haze, casters and GI)
 // live in farShared.js (docs/webgpu.md G1, J3); re-exported for their importers.
 import {
@@ -22,7 +21,7 @@ import {
 import { glf } from '../glsl.js';
 export {
   FAR, FAR_NODE, WORLD_SIZE, farLayout, farLayoutGLSL, FAR_SHADOW_SOFT, FAR_SHADOW_BIAS, FAR_HAZE, farHazeGLSL,
-  FAR_CASTER_STEPS, farCastersGLSL, FAR_GI_STEPS, FAR_GI_STEP0, farGIGLSL, FAR_SKY, farSkyGLSL, farHazeFor,
+  FAR_SKY, farSkyGLSL, farHazeFor,
 } from './farShared.js';
 
 // The far field (docs/scaling.md D11, "Far field"; phase W4; docs/webgpu.md
@@ -77,9 +76,7 @@ export {
 // from those the height below which the sun is blocked (farShadowFrag): a
 // shadow height field, the max over the columns toward the sun of their top
 // less the sun ray's drop on the way. Along a sun ray the height above it
-// can only fall, so a point is lit or not by one lookup, and the window's own
-// shadow map finds where its texel rays first go under it by bisection
-// (farShared.js farCastersGLSL).
+// can only fall, so a point is lit or not by one lookup.
 //
 // Every kernel takes the region it writes in its params; a pass over a region
 // of the grid is a thread per brick of it, x fastest, then y, then z (its
@@ -599,8 +596,8 @@ export const sceneCellsDispatch = (S) => fold(Math.ceil(S.cells / 64));
 // sceneGLSL: the scene's glsl(g) (its group 2 from binding 0; the cells after
 // it). Only the prelude comes before it, so its names can't meet the far field's.
 export const SCENE_CELLS_BINDING = SCENE_BINDING.next;
-export const farSceneCellsFrag = (g, L, sceneGLSL, S, live = false) => /* wgsl */ `
-${prelude(g, live ? STATE_OPTS.STATE_RO : { state: false })}
+export const farSceneCellsFrag = (g, L, sceneGLSL, S) => /* wgsl */ `
+${prelude(g, { state: false })}
 ${sceneGLSL}
 ${sceneCellsLayoutGLSL(L, S)}
 ${SceneCellsParams.wgsl}
@@ -613,9 +610,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   if (i >= side * side * u32(FSC_WORLD_Y)) { return; }
   let c = vec3i(vec3u(i % side, i / (side * side), (i / side) % side));
   let col = clamp(P.chunkLo + c.xz, vec2i(0), vec2i(FSC_WORLD_X, FSC_WORLD_Z) - 1);
-  var A = sceneCell(vec3i(col.x, c.y, col.y)).A;${live ? `
-  let local = vec3i(col.x, c.y, col.y) - H.origin;
-  if (inGrid(local)) { A = fetchA(local); }` : ''}
+  let A = sceneCell(vec3i(col.x, c.y, col.y)).A;
   let id = eid(A);
   cells[i] = u32(materialWord(id, appearanceOf(id, A.w))) | (pack2x16float(vec2f(0.0, A.y)) & 0xffff0000u);
 }
@@ -736,23 +731,11 @@ export const nodeDispatch = (level) => fold(Math.ceil(level.n[0] * level.n[1] * 
 // The occupancy levels live in one buffer, a word a node (1: set), L1's
 // nodes then L2's, each x fastest, then y, then z (a buffer: the view's
 // fragment stage has no sampled texture left for them, W14's 16).
-/** Words of the occupancy buffer for layout L (the levels, then the detail mask: detailMaskAt). */
-export const occupancyWords = (L) => detailMaskAt(L) + detailChunks(L)[0] * detailChunks(L)[1];
-// The detail meshes' chunks (world/detail.js): DETAIL_CHUNK² world columns,
-// every height, a word of the occupancy buffer each after the levels: 0 none,
-// 1 a dry mesh drawn there, 2 one with liquids. The view leaves a meshed
-// chunk's opaque field to its mesh (and crosses a dry one whole).
-export const DETAIL_CHUNK = 32;
-export const DETAIL_PAD = meshPadding(1);   // cells of the chunk's neighbours its cells take in (the mesh's seams and smoothed normals: world/surfaceMesh.js)
-export const detailChunks = (L) => [Math.ceil(L.size[0] / DETAIL_CHUNK), Math.ceil(L.size[2] / DETAIL_CHUNK)];
-/** The detail mask's first word in the occupancy buffer. */
-export const detailMaskAt = (L) => L.l1.n[0] * L.l1.n[1] * L.l1.n[2] + L.l2.n[0] * L.l2.n[1] * L.l2.n[2];
+/** Words of the occupancy buffer for layout L (L1's nodes, then L2's). */
+export const occupancyWords = (L) => L.l1.n[0] * L.l1.n[1] * L.l1.n[2] + L.l2.n[0] * L.l2.n[1] * L.l2.n[2];
 const occupancyGLSL = (access) => /* wgsl */ `
 @group(${access === 'read' ? 0 : 2}) @binding(${access === 'read' ? 3 : 1}) var<storage, ${access}> farOcc: array<u32>;
 const FAR_OCC2_AT: i32 = F1X * F1Y * F1Z;   // L2's first word
-const FAR_DETAIL_AT: i32 = FAR_OCC2_AT + F2X * F2Y * F2Z;   // the detail mask's
-const DETAIL_CHUNK: i32 = ${DETAIL_CHUNK};
-const DETAIL_NX: i32 = (WORLD_X + DETAIL_CHUNK - 1) / DETAIL_CHUNK;
 fn farOcc1At(n: vec3i) -> i32 { return n.x + F1X * (n.y + F1Y * n.z); }
 fn farOcc2At(n: vec3i) -> i32 { return FAR_OCC2_AT + n.x + F2X * (n.y + F2Y * n.z); }`;
 
@@ -858,8 +841,7 @@ ${columnMain(/* wgsl */ `
 // blocked, by the columns toward it: max over them of their top less the sun
 // ray's drop from there, the tops read bilinearly along the sun's ray (read
 // per column they alias into streaks). x: every column; y: columns outside the
-// window only (winCols: its brick columns [x0, z0) .. [x1, z1)), which the
-// window's shadow map adds to its own (farCastersGLSL). Starts a column away (a
+// window only (winCols: its brick columns [x0, z0) .. [x1, z1)). Starts a column away (a
 // column's own top is its surface). A column's top is the higher of its ground
 // seen from below and from above (FAR_SKY): the rock over a cave casts, so the
 // sun doesn't shine down the caves and tunnels under it.
@@ -972,19 +954,17 @@ export const FarViewParams = uniformStruct('FarViewParams', {
   sea: 'f32',               // sea level (cells): the open sea beyond the world (0: none, a plain instead)
   winLo: 'vec3i',           // the window's low corner (world cells): the volume draws [winLo, winLo + GRID)
   floor: 'f32',             // the sea floor beyond the world, or the plain (cells)
-  detailDepth: 'u32',       // 1: the detail meshes' depth (tDetailDepth) was drawn for this frame and target
-  // the rolling log (gfx/presentation.js parameters: world cells; k 0: flat): the view's curved variant and the meshes read it
+  // the rolling log (gfx/presentation.js parameters: world cells; k 0: flat): the view's curved variant reads it
   warpK: 'f32',
   warpAnchor: 'vec2f',
   warpDir: 'vec2f',
 });
 
-// The view (docs/webgpu.md G1): a full-screen triangle in our scene pass,
-// drawn before the volume (its wire's order), depth test less-equal against
-// the opaque meshes three drew first (Sync log S1), frag_depth written, so the
-// window's volume and the meshes composite with it. Sky, the open sea beyond
-// the world and the far grid, marched past the window's box, which the volume
-// draws. Everything here is in world cells: its header's origin is 0, so the
+// The view (docs/webgpu.md G1): a full-screen triangle drawn behind a big
+// map's volume (world/far.js drawBehind), depth tested, frag_depth computed
+// but not written, so the volume draws over it wherever it has cells. Sky,
+// the open sea beyond the world and the far grid (its ground, its liquids),
+// marched past the window's box, which the volume draws. Everything here is in world cells: its header's origin is 0, so the
 // looks' worldPos() is the identity, and what reads the window (the GI probes'
 // sky share and light) takes p - winLo.
 //
@@ -992,10 +972,8 @@ export const FarViewParams = uniformStruct('FarViewParams', {
 // own (a template switch, as the volume's: docs/webgpu.md F2), whose rays are
 // the displayed rays' parabolas in the flat world (gFarRay) and whose window
 // and world are their spans (gFarWindow, gFarWorld); x and z stay linear
-// along them, so the chunk and slab crossings of x and z are the flat ones.
-// The detail meshes bend in their vertex stage and shade along the displayed
-// ray, switched by P.warpK (a few lines, both variants of the mesh pass).
-export const farFrag = (g, L, mesh = false, { curved = false, sourceAppearance = false } = {}) => {
+// along them, so the slab crossings of x and z are the flat ones.
+export const farFrag = (g, L, { curved = false, sourceAppearance = false } = {}) => {
   return /* wgsl */ `
 // far view${curved ? ', curved' : ''}
 ${lib({ ...g, sourceGrid: L.bricks.n, sourceAppearance }, { variant: 'LIGHTING', far: true, aeration: false })}
@@ -1023,8 +1001,6 @@ ${occupancyGLSL('read')}
 ${farSkyGLSL}
 ${FarViewParams.wgsl}
 @group(3) @binding(1) var<uniform> P: FarViewParams;
-${mesh ? '' : `// the detail meshes' rasterized depth at each pixel (0: none), drawn before the scene pass (farDetailDepthFrag)
-@group(0) @binding(4) var tDetailDepth: texture_2d<f32>;`}
 // the air's sky share at window point q: the probes in the window, the far field's sky past it
 fn farAirSky(q: vec3f) -> f32 {
   if (all(q >= vec3f(0.0)) && all(q < vec3f(GRID))) { return giAirSkyVis(q); }
@@ -1032,20 +1008,9 @@ fn farAirSky(q: vec3f) -> f32 {
 }
 ${farHazeFor('farAirSky')}
 ${cloudsGLSL}
-// the detail mesh state of the chunk holding world point p (0: none, 1: dry, 2: with liquids)
-fn detailAt(p: vec3f) -> u32 {
-  if (!farInWorld(p.xz)) { return 0u; }
-  let c = vec2i(p.xz) / DETAIL_CHUNK;
-  return farOcc[FAR_DETAIL_AT + c.x + DETAIL_NX * c.y];
-}
-// Only liquid-bearing crossings stop the fullscreen ray. Opaque terrain is
-// ALWAYS the cell mesh's, ready or not. Keep the combined shallow-water field
-// (opaque .3 + liquid .4), but never stop in opaque-dominant matter.
-fn farTraceMatter(p: vec3f) -> f32 {
-  let v = farSample(p);
-  if (v.r >= v.g) { return 0.0; }
-  return v.r + v.g;
-}
+// The field a ray stops at: everything (opaque + liquid), shallow water
+// included (opaque .3 + liquid .4).
+fn farTraceMatter(p: vec3f) -> f32 { return farMatter(p); }
 
 const FAR_MAX_STEPS: i32 = ${L.size.reduce((n, side) => n + side / BRICK, 16)};
 const FAR_NUDGE: f32 = ${glf(FAR_VIEW.NUDGE)};
@@ -1113,11 +1078,7 @@ fn farRoot(ro: vec3f, rd: vec3f, ta0: f32, tb0: f32, fa0: f32, fb0: f32) -> f32 
     let fm = farTraceMatter(farPath(ro, rd, tm));
     if (fm < FAR_ISO) { ta = tm; fa = fm; } else { tb = tm; fb = fm; }
   }
-  // Keep the continuous liquid field's interpolated root, but the liquid
-  // gate can jump at an opaque/water transition: never interpolate into opaque.
-  let hit = mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
-  if (farTraceMatter(farPath(ro, rd, hit)) > 0.0) { return hit; }
-  return tb;
+  return mix(ta, tb, clamp((FAR_ISO - fa) / max(fb - fa, FAR_FLAT_EPS), 0.0, 1.0));
 }
 
 // The first point along ro + rd t, t in [t0, t1], where the matter field
@@ -1137,7 +1098,6 @@ fn farMarch(ro: vec3f, rd: vec3f, t0: f32, t1: f32, w0: f32, w1: f32, cut: ptr<f
   var n1Last = vec3i(-1);
   var o2 = false;
   var o1 = false;
-  var lastDetail = 0xffffffffu;
   for (var i = 0; i < FAR_MAX_STEPS; i++) {${curved ? `
     // past the world's first span, its second (the parabola can come back down
     // into it); the window's second span is the volume's, as its first is
@@ -1148,16 +1108,6 @@ fn farMarch(ro: vec3f, rd: vec3f, t0: f32, t1: f32, w0: f32, w1: f32, cut: ptr<f
     if (t >= t1) { break; }
     if (t >= w0 && t < w1) { t = w1 + FAR_NUDGE; f = -1.0; continue; }
     let p = farPath(ro, rd, t);
-    // a dry meshed chunk is the mesh's: crossed whole
-    let detail = detailAt(p);
-    if (detail != lastDetail) { f = -1.0; lastDetail = detail; }
-    if (detail == 1u) {
-      let lo = floor(p.xz / f32(DETAIL_CHUNK)) * f32(DETAIL_CHUNK);
-      ${curved ? `t = warpExit(gFarRay, vec3f(lo.x, 0.0, lo.y), vec3f(lo.x + f32(DETAIL_CHUNK), f32(WORLD.y), lo.y + f32(DETAIL_CHUNK)), t).x + FAR_NUDGE;` : `let tf = (lo + step(vec2f(0.0), inv.xz) * f32(DETAIL_CHUNK) - ro.xz) * inv.xz;
-      t = min(tf.x, tf.y) + FAR_NUDGE;`}
-      f = -1.0;
-      continue;
-    }
     let c = clamp(vec3i(floor(p)), vec3i(0), WORLD - 1);
     let n2 = c / FAR_L2_CELLS;
     if (any(n2 != n2Last)) { n2Last = n2; o2 = farOcc2(n2); }
@@ -1217,8 +1167,11 @@ fn farAO(p: vec3f, n: vec3f) -> f32 {
   return clamp(1.0 - FAR_AO_K * o, FAR_AO_MIN, 1.0);
 }
 
-// Underwater bed lookup only: unwarped brick IDs just inside, outside or
-// deeper under the surface. Visible mesh materials use their vertex IDs.
+// The opaque element at surface point p (normal n): the brick holding the
+// cells just under the surface. The surface is within a fraction of a cell of
+// the matter's top, but that top can be in the brick above or below: the first
+// of the brick just inside, the one outside and the one deeper that holds open
+// cells (its element is the surface's, not what lies buried under it).
 fn farElement(p: vec3f, n: vec3f) -> i32 {
   let q = p;
   var a = farUnpack(textureLoad(tFarGrid, farBrickOf(q - n * FAR_ID_INSET), 0));
@@ -1254,7 +1207,7 @@ fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, word: i32) -> ve
   let dSun = sunDiffuse(kD, nl, nv, dot(FU.sun, v), rough, m.sss, m.sssCol);
   let cav = clamp(m.cav, 0.0, 1.0);
   let c = sunTerm(vec3f(sunVis), dSun, cav, ggxSpec(ns, v, FU.sun, rough, F0));
-  let ambient = skyAmbient(ns) * ${mesh ? '1.0' : 'farAO(p, n)'} * cav * farSkyOpen(p + n * FAR_SKY_LIFT);
+  let ambient = skyAmbient(ns) * farAO(p, n) * cav * farSkyOpen(p + n * FAR_SKY_LIFT);
   // Far surfaces use world cells; the shared local-light API uses grid cells.
   var beacon = vec3f(0.0);
   if (FU.beaconDir.w > 0.0) { beacon = beaconDiffuse(p - vec3f(H.origin), n, ns); }
@@ -1392,7 +1345,7 @@ fn farDepth(p: vec3f) -> f32 {
   return clipDepth(P.worldToClip * vec4f(${curved ? 'warpPoint(p)' : 'p'}, 1.0));   // (curved: where it is displayed)
 }
 
-${mesh ? FAR_MESH_ENTRY : `struct FarVarying {
+struct FarVarying {
   @builtin(position) position: vec4f,
   @location(0) ndc: vec2f,
 }
@@ -1429,38 +1382,21 @@ struct FarOut {
   tw = gFarWindow.xy;
   t0 = gFarWorld.x;
   t1 = select(gFarWorld.y, gFarWorld.w, gFarWorld.z < WARP_INF);` : ''}
-  // the detail meshes in front (world/detail.js): the march stops at them, so
-  // the coarse field (and the sea below) doesn't show through a meshed chunk.
-  // Their depth is the rasterized one (bent with the view when it is): its
-  // point through the inverse projection, at its distance along this ray.
-  var cached = 0.0;
-  if (P.detailDepth != 0u) {
-    cached = textureLoad(tDetailDepth, vec2i(v.position.xy), 0).r;
-    if (cached > 0.0) {
-      let uv = v.position.xy / vec2f(textureDimensions(tDetailDepth));
-      let q = P.clipToWorld * vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, cached, 1.0);
-      cached = length(q.xyz / q.w - ro);
-      t1 = min(t1, cached);
-    }
-  }
   var cut = false;
   var tHit = NO_HIT;
   if (t0 < t1) { tHit = farMarch(ro, rd, t0, t1, tw.x, tw.y, &cut); }
   // the open sea beyond the world (and a march that ran out of steps over it).
   // A world without one (sea 0: world/scenes) has an open plain beyond it at
-  // floor. Inside the world, missing opaque meshes remain loading gaps rather
-  // than being replaced by a fullscreen rock floor.
+  // floor, and inside it a ray that met nothing reaches the world's bottom
+  // (rock below it: the summaries' floor), not a sea.
   let plain = P.sea <= 0.0;
   let level = select(P.sea, P.floor, plain);
   var ps: vec3f;
   var seaOut: bool;
   var tSea = farSeaHit(ro, rd, level, &ps, &seaOut);
-  // Only the exterior backdrop uses the plane. In-world water must be an
-  // actual liquid hit; otherwise missing dry terrain would turn into sea.
-  let ocean = seaOut && tSea < NO_HIT && tSea < tHit && (cached <= 0.0 || tSea < cached);
-  // A nearer exterior ocean or plain still hides a meshed chunk; inside one, a
-  // dry pit below sea level isn't flooded by the coarse sea: the mesh shows.
-  if (cached > 0.0 && tHit == NO_HIT && !ocean) { discard; }
+  if (plain && !seaOut) { tSea = farSeaHit(ro, rd, 0.0, &ps, &seaOut); }
+  let seaWin = ${curved ? 'warpInside(tSea, gFarWindow)' : 'tSea >= tw.x && tSea <= tw.y'};
+  let ocean = tSea < NO_HIT && tSea < tHit && (seaOut || (tHit == NO_HIT && !seaWin));
 
   var col: vec3f;
   var o: FarOut;
@@ -1473,12 +1409,24 @@ struct FarOut {
   } else if (tHit < NO_HIT) {
     let p = farPath(ro, rd, tHit);
     let localRd = farDirection(rd, tHit);   // (curved: the parabola's direction where it hits)
+    let v = farSample(p);
     if (cut) {
-      // Leaving the window already inside liquid: carry its body and bed on
-      // past the wall. There is deliberately no opaque cut shading branch.
-      col = farBody(p, localRd, farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p), -1.0);
+      // came out of the window inside matter. Behind the window's ground: hidden
+      // (but for a dug-out side or a tunnel the window cuts), so flat, unlit by
+      // the sun, in the probes' light just inside the window (none in a cave).
+      // In its water: that water's body past the wall, so the window's water
+      // carries on past its side.
+      if (v.r >= v.g) { col = ALBEDO(farIds(p).x) * giIrradiance(probeAt(p - winLo - rd * GI_OFFSET), -rd); }
+      else { col = farBody(p, localRd, farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p), -1.0); }
     } else {
-      col = farLiquid(p, localRd, farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y), farSunLit(p, 0), -1.0);
+      let sunVis = farSunLit(p, 0);
+      if (v.g > v.r) { col = farLiquid(p, localRd, farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0); }
+      else {
+        let n = farNormal(p, 0);
+        var sv = sunVis;
+        if (sunVis > 0.0 && dot(n, FU.sun) > 0.0) { sv *= farSunRay(p, n); }
+        col = farShadeMaterial(p, n, localRd, sv, farElement(p, n));
+      }
     }
     col = farHaze(col, rd, tHit, farAirLit(ro - winLo, p - winLo));
     o.depth = farDepth(p);
@@ -1487,55 +1435,9 @@ struct FarOut {
   }
   o.color = vec4f(col, 1.0);
   return o;
-}`}
+}
 `;
 };
-
-// The detail meshes (world/detail.js): a chunk's surface, world cells, shaded
-// as the far view shades its surfaces (no field AO, no foliage clumps: the
-// mesh has the real cells), hazed, its depth the rasterized one. Inside the
-// window's columns the volume draws instead.
-const FAR_MESH_ENTRY = /* wgsl */ `
-struct MeshVarying {
-  @builtin(position) position: vec4f,
-  @location(0) world: vec3f,
-  @location(1) normal: vec3f,
-  @location(2) @interpolate(flat) element: u32,
-}
-@vertex fn vs(@location(0) pos: vec3f, @location(1) nor: vec3f, @location(2) element: u32) -> MeshVarying {
-  var o: MeshVarying;
-  warpUse(P.warpK, P.warpAnchor, P.warpDir);
-  o.position = P.worldToClip * vec4f(warpPoint(pos), 1.0);   // (bent with the view: the rolling log; k 0, flat)
-  o.world = pos;
-  o.normal = nor;
-  o.element = element;
-  return o;
-}
-@fragment fn fs(v: MeshVarying) -> @location(0) vec4f {
-  gFragCoord = v.position.xy;
-  let p = v.world;
-  let ro = P.eye;
-  var rd = safeDir(normalize(p - ro));
-  // bent (the rolling log): the eye sees p along the displayed ray, which
-  // arrives along its parabola's direction there
-  var displayRd = rd;
-  var displayDist = length(p - ro);
-  if (P.warpK != 0.0) {
-    warpUse(P.warpK, P.warpAnchor, P.warpDir);
-    let shown = warpPoint(p);
-    displayDist = length(shown - ro);
-    displayRd = (shown - ro) / max(displayDist, 1e-8);
-    rd = normalize(warpSlope(warpRay(ro, displayRd), displayDist));
-  }
-  surfView(ro, displayRd);   // pixel footprint for material LOD (uniform control flow)
-  let winLo = vec3f(P.winLo);
-  if (all(p.xz >= winLo.xz) && all(p.xz < winLo.xz + vec2f(GRID.xz))) { discard; }
-  let n = normalize(v.normal);
-  // the coarse crown's density is not this leaf's shadow: sampling it here
-  // would turn detailed branches black inside the old, inflated silhouette
-  let col = farShadeMaterial(p, n, rd, farSunLit(p, 0), i32(v.element));
-  return vec4f(farHaze(col, displayRd, displayDist, farAirLit(ro - winLo, p - winLo)), 1.0);
-}`;
 
 // What the view's materials need of the tracer's (shaders/render.js), which
 // the far view doesn't paste: none of it runs here (no grid state is read).
@@ -1552,161 +1454,18 @@ export const FAR_VIEW_FRAME = [
   ...RENDER_LAYOUT.FRAME,
   { binding: 2, visibility: STAGE.FRAGMENT, texture: { sampleType: 'float', viewDimension: '3d' } },
   { binding: 3, visibility: STAGE.FRAGMENT, buffer: { type: 'read-only-storage' } },
-  // the detail meshes' depth (r32float: textureLoad only); the view's 16th sampled texture, the stage's limit (B2)
-  { binding: 4, visibility: STAGE.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
 ];
 export const FAR_VIEW_LAYOUTS = () => {
   const [, state, lighting, params] = libLayouts('LIGHTING');
   return [FAR_VIEW_FRAME, state, lighting, params];
 };
-/** The view's render pipeline description: the scene target's formats, depth less-equal, frag_depth written, opaque. */
+/** The view's render pipeline description: the scene target's formats, depth less-equal, never written (drawn behind the volume), opaque. */
 export const farViewPipeline = () => ({
   vertex: { entry: 'vs' },
   fragment: { entry: 'fs', targets: [{ format: 'rgba16float' }] },
   primitive: { topology: 'triangle-list' },
-  depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
+  depthStencil: { format: 'depth32float', depthWriteEnabled: false, depthCompare: 'less-equal' },
 });
-
-/** The detail meshes' pipeline (farFrag's mesh variant): positions, normals (float32x3) and element (uint32) buffers. */
-export const farMeshPipeline = () => ({
-  vertex: {
-    entry: 'vs',
-    buffers: [
-      { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] },
-      { arrayStride: 12, attributes: [{ shaderLocation: 1, offset: 0, format: 'float32x3' }] },
-      { arrayStride: 4, attributes: [{ shaderLocation: 2, offset: 0, format: 'uint32' }] },
-    ],
-  },
-  fragment: { entry: 'fs', targets: [{ format: 'rgba16float' }] },
-  primitive: { topology: 'triangle-list', cullMode: 'none' },
-  depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less-equal' },
-});
-
-// The detail meshes' depth (docs/webgpu.md G1: their depth prepass, our
-// own depth-only pass, as the WebGL build's nested render was): each mesh's
-// rasterized depth, bent with the view as the meshes are (the rolling log),
-// into an r32float target the size of the scene target, the nearest kept by a
-// depth test, 0 where there is none, the window's columns left out (the
-// volume draws there). The view reconstructs its point through the inverse
-// projection, and its march stops there (farFrag: tDetailDepth). Its own
-// small module: positions only, no lighting, so it builds in a moment beside
-// the meshes' pipeline.
-export const FAR_DETAIL_DEPTH_FORMAT = 'r32float';
-
-// The volume first (world/far.js volumePass; docs/webgpu.md F1): in a world
-// the window's volume draws before the scene pass into a colour and a depth of
-// its own (cleared to 0 and 1), so the view can skip what the volume covers.
-// farOccluderFrag folds the volume's opaque hits into the detail meshes'
-// depth: per pixel the nearer of the two (0: none), which the view already
-// treats as where its march stops (tDetailDepth: past it, nothing of its own
-// shows, so it discards). There the view does no march and no sky (the
-// clouds' ~300 taps under the canopy), and where the volume is translucent or
-// missed it draws as it did. farUnderFrag then composites the volume's colour
-// over the view where the volume used to draw (premultiplied over, its
-// frag_depth, depth-tested against the view, the detail meshes and three's
-// meshes), the same blend and the same test as the volume's own draw: the
-// picture and the depth are what they were.
-const VOL_OPAQUE = 1.0;        // the volume's stored alpha (rgba16float) at which the over blend leaves nothing of what is under it (a ≥ 1 − 2⁻¹² rounds to 1)
-const VOL_CLEAR_DEPTH = 1.0;   // the volume depth's clear: the volume drew nothing at a pixel still holding it
-export const VOL_FORMATS = { color: 'rgba16float', depth: 'depth32float' };   // the volume's own targets: the scene target's formats (its pipelines draw into them as they are)
-const FULL_SCREEN_VS = /* wgsl */ `
-@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
-  // (-1, -1), (3, -1), (-1, 3): one triangle covering the screen
-  return vec4f(f32(i32(i & 1u) * 4 - 1), f32(i32(i >> 1u) * 4 - 1), 0.0, 1.0);
-}`;
-const VOL_TEXTURES = /* wgsl */ `
-@group(0) @binding(0) var tVolColor: texture_2d<f32>;   // the volume's premultiplied colour
-@group(0) @binding(1) var tVolDepth: texture_depth_2d;  // its frag_depth (VOL_CLEAR_DEPTH where it drew nothing)
-const VOL_OPAQUE: f32 = ${VOL_OPAQUE.toFixed(1)};
-const VOL_CLEAR_DEPTH: f32 = ${VOL_CLEAR_DEPTH.toFixed(1)};`;
-export const farOccluderFrag = () => /* wgsl */ `
-// far occluder
-${VOL_TEXTURES}
-@group(0) @binding(2) var tDetailDepth: texture_2d<f32>;   // the detail meshes' depth this frame, or a 1×1 0 (none)
-${FULL_SCREEN_VS}
-@fragment fn fs(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-  let px = vec2i(pos.xy);
-  var occ = textureLoad(tDetailDepth, min(px, vec2i(textureDimensions(tDetailDepth)) - 1), 0).r;
-  if (textureLoad(tVolColor, px, 0).a >= VOL_OPAQUE) {
-    let d = textureLoad(tVolDepth, px, 0);
-    if (occ <= 0.0 || d < occ) { occ = d; }
-  }
-  return vec4f(occ, 0.0, 0.0, 1.0);
-}`;
-export const farUnderFrag = () => /* wgsl */ `
-// far under: the volume over the view
-${VOL_TEXTURES}
-${FULL_SCREEN_VS}
-struct UnderOut {
-  @location(0) color: vec4f,
-  @builtin(frag_depth) depth: f32,
-}
-@fragment fn fs(@builtin(position) pos: vec4f) -> UnderOut {
-  let px = vec2i(pos.xy);
-  let depth = textureLoad(tVolDepth, px, 0);
-  if (depth >= VOL_CLEAR_DEPTH) { discard; }
-  var o: UnderOut;
-  o.color = textureLoad(tVolColor, px, 0);
-  o.depth = depth;
-  return o;
-}`;
-const VOL_ENTRIES = [
-  { binding: 0, visibility: STAGE.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },
-  { binding: 1, visibility: STAGE.FRAGMENT, texture: { sampleType: 'depth', viewDimension: '2d' } },
-];
-export const FAR_UNDER_LAYOUT = VOL_ENTRIES;
-export const FAR_OCCLUDER_LAYOUT = [...VOL_ENTRIES, { binding: 2, visibility: STAGE.FRAGMENT, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } }];
-/** The occluder pass's pipeline: full screen, r32float out (the view's tDetailDepth), no depth. */
-export const farOccluderPipeline = () => ({
-  vertex: { entry: 'vs' },
-  fragment: { entry: 'fs', targets: [{ format: FAR_DETAIL_DEPTH_FORMAT }] },
-  primitive: { topology: 'triangle-list' },
-});
-// premultiplied colour over what is there (the volume's own blend: shaders/render.js OVER)
-const VOL_OVER = { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } };
-/** The volume's composite into the scene pass: the volume pipeline's blend and depth state, full screen. */
-export const farUnderPipeline = () => ({
-  vertex: { entry: 'vs' },
-  fragment: { entry: 'fs', targets: [{ format: VOL_FORMATS.color, blend: VOL_OVER }] },
-  primitive: { topology: 'triangle-list' },
-  depthStencil: { format: VOL_FORMATS.depth, depthWriteEnabled: true, depthCompare: 'less-equal' },
-});
-export const farDetailDepthFrag = (g) => /* wgsl */ `
-// far detail depth
-${FarViewParams.wgsl}
-@group(3) @binding(1) var<uniform> P: FarViewParams;
-${presentationWGSL}
-const GRID_XZ: vec2f = vec2f(${glf(g.nx)}, ${glf(g.nz)});
-struct DepthVarying {
-  @builtin(position) position: vec4f,
-  @location(0) world: vec3f,
-}
-@vertex fn vs(@location(0) pos: vec3f) -> DepthVarying {
-  var o: DepthVarying;
-  warpUse(P.warpK, P.warpAnchor, P.warpDir);
-  o.position = P.worldToClip * vec4f(warpPoint(pos), 1.0);
-  o.world = pos;
-  return o;
-}
-@fragment fn fs(v: DepthVarying) -> @location(0) vec4f {
-  let winLo = vec3f(P.winLo);
-  if (all(v.world.xz >= winLo.xz) && all(v.world.xz < winLo.xz + GRID_XZ)) { discard; }
-  return vec4f(v.position.z, 0.0, 0.0, 1.0);
-}`;
-/** The detail depth pass's pipeline: the meshes' positions (float32x3), r32float out, its own depth32float (less, written). */
-export const farDetailDepthPipeline = () => ({
-  vertex: { entry: 'vs', buffers: [{ arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x3' }] }] },
-  fragment: { entry: 'fs', targets: [{ format: FAR_DETAIL_DEPTH_FORMAT }] },
-  primitive: { topology: 'triangle-list', cullMode: 'none' },
-  depthStencil: { format: 'depth32float', depthWriteEnabled: true, depthCompare: 'less' },
-});
-
-// WEBGPU-STUB (docs/webgpu.md J3): the WebGL region quads, full-screen pass
-// and the meshes' vertex stage; the far passes are compute kernels now, and
-// the view's and meshes' vertex stages are in farFrag's module
-export const farRegionVert = null;
-export const farVert = null;
-export const farMeshVert = null;
 
 // ---------------------------------------------------------------- check-wgsl
 // Every far pass for the one world size (WORLD_SIZE), the scene cells and
@@ -1715,7 +1474,6 @@ export const farMeshVert = null;
 // the volume's realistic pipeline (B5: built in the background; the far
 // field shows once it is ready).
 const Lw = farLayout(WORLD_SIZE);
-const DETAIL_S = (L) => farSceneLayout(L, DETAIL_CHUNK + 2 * DETAIL_PAD);
 const CHECK_LAYOUTS = (g2, state = 'EMPTY') => () => [LAYOUT.TABLES, state === 'EMPTY' ? 'EMPTY' : LAYOUT[state], g2];
 const SCENE_CELLS_LAYOUT = (s) => [...sceneLayout({ data: !!s.data }), buf(SCENE_CELLS_BINDING, 'storage')];
 export const SCENE_CELLS_LAYOUT_OF = SCENE_CELLS_LAYOUT;
@@ -1745,11 +1503,6 @@ export const WGSL_CHECK = () => [
         name: `${s.key} farSceneCells`, kind: 'compute', grids, warm: false, code: (g) => farSceneCellsFrag(g, L, s.glsl(g), S),
         layouts: CHECK_LAYOUTS(SCENE_CELLS_LAYOUT(s)), params: SceneCellsParams, dispatch: () => sceneCellsDispatch(S),
       },
-      {
-        // the detail meshes' cells (world/detail.js): the live window's state where it is
-        name: `${s.key} detailCells`, kind: 'compute', grids, warm: false, code: (g) => farSceneCellsFrag(g, L, s.glsl(g), DETAIL_S(L), true),
-        layouts: CHECK_LAYOUTS(SCENE_CELLS_LAYOUT(s), 'STATE_RO'), params: SceneCellsParams, dispatch: () => sceneCellsDispatch(DETAIL_S(L)),
-      },
       ...(s.trees ? [
         { name: `${s.key} farTreeCand`, kind: 'compute', grids, warm: false, code: (g) => farTreeCandFrag(g, L, null, s.trees.glsl()), layouts: CHECK_LAYOUTS(TREE_CAND_LAYOUT(s)), dispatch: () => columnDispatch(L) },
         { name: `${s.key} farTreeThin`, kind: 'compute', grids, warm: false, code: (g) => farTreeThinFrag(g, L, null, s.trees.glsl()), layouts: CHECK_LAYOUTS(TREE_THIN_LAYOUT(s)), dispatch: () => columnDispatch(L) },
@@ -1762,18 +1515,7 @@ export const WGSL_CHECK = () => [
   },
   {
     // the rolling log's (gfx/presentation.js): built when a gamemode's effect bends a world's view
-    name: 'far view curved', kind: 'render', grids: ['64', '128'], warm: false, code: (g) => farFrag(g, Lw, false, { curved: true }),
+    name: 'far view curved', kind: 'render', grids: ['64', '128'], warm: false, code: (g) => farFrag(g, Lw, { curved: true }),
     layouts: () => FAR_VIEW_LAYOUTS(), params: FarViewParams, ...farViewPipeline(),
   },
-  {
-    name: 'far detail', kind: 'render', grids: ['64'], warm: false, code: (g) => farFrag(g, Lw, true),
-    layouts: () => FAR_VIEW_LAYOUTS(), params: FarViewParams, ...farMeshPipeline(),
-  },
-  {
-    name: 'far detail depth', kind: 'render', grids: ['64', '128'], warm: false, code: (g) => farDetailDepthFrag(g),
-    layouts: () => [], params: FarViewParams, ...farDetailDepthPipeline(),
-  },
-  // the volume first (world/far.js volumePass): the occluder fold and the volume's composite
-  { name: 'far occluder', kind: 'render', grids: ['64'], warm: false, code: () => farOccluderFrag(), layouts: () => [FAR_OCCLUDER_LAYOUT], ...farOccluderPipeline() },
-  { name: 'far under', kind: 'render', grids: ['64'], warm: false, code: () => farUnderFrag(), layouts: () => [FAR_UNDER_LAYOUT], ...farUnderPipeline() },
 ];

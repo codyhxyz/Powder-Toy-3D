@@ -25,7 +25,7 @@ export { LAMP_MAX };
 // ---------------------------------------------------------------- FrameUniforms
 // [name, WGSL type, where the value comes from]: a gfxUniforms key (gfx/uniforms.js),
 // or the volume material's own uniform it replaces (app.js: uCam, uView,
-// uShadows, uTime, uLightGain, uShadowRes, uFar, uSun), or the camera. Bools
+// uShadows, uTime, uLightGain, uShadowRes, uSun), or the camera. Bools
 // are u32 (1 or 0, docs/webgpu.md H1.15). The order is the packing: matrices,
 // arrays, then each vec3 with a scalar after it.
 export const FRAME_UNIFORMS = [
@@ -65,7 +65,6 @@ export const FRAME_UNIFORMS = [
   ['glowLights', 'u32', 'uGlowLights (bool)'],
   ['caustics', 'u32', 'uCaustics (bool)'],
   ['clouds', 'u32', 'uClouds (bool)'],
-  ['far', 'u32', 'uFar (bool): a world\'s far field is drawn (box and world share pipelines, E)'],
   // appended (F6) at Sync 3: a world scene's ambient floor (Descent's caves), in giIrradiance and giRadiance
   ['caveAmbient', 'vec3f', 'uCaveAmbient'],
   // the dig tools' aimed bite (pov/tools/dig.js), drawn on the surface itself (surface.js digMark)

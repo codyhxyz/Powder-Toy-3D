@@ -18,8 +18,6 @@ import { sceneLayout, SCENE_BINDING } from '../world/scenes/sceneGpu.js';
 // The legacy tolerance exports remain for existing tools, not store selection.
 export const STORE_MATTER_T = 0.5;   // °C: drift a regenerated brick may lose (it is still quiet: well under AIR_REST_T)
 export const STORE_LIFE_TOL = 1e-4;  // life/latent/fuel units: float slop only (life changes by reactions)
-// WEBGPU-STUB (docs/webgpu.md J3): texels per row of the WebGL diff target; the leaving slab is one kernel now (G1)
-export const DIFF_W = null;
 export const cellDiffersWGSL = /* wgsl */ `
 fn cellDiffers(a: vec4f, b: vec4f, genA: vec4f, genB: vec4f) -> bool {
   return any(bitcast<vec4u>(a) != bitcast<vec4u>(genA)) || any(bitcast<vec4u>(b) != bitcast<vec4u>(genB));

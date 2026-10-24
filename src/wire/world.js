@@ -13,7 +13,6 @@ import { bakedAir } from '../constructions/runtime.js';
 import { beyondLevel, FarField } from '../world/far.js';
 import { createTorchLights } from '../world/torchLights.js';
 import { gfxUniforms } from '../gfx/uniforms.js';
-import { isMaterialView } from '../views.js';
 import '../world/bakeClient.js';   // the World's build-time bake (world/bake.js), before any world is made
 
 const torchLights = createTorchLights();
@@ -54,7 +53,6 @@ let worldRestarts = 0;
 const world = {
   name: 'world',
   ready: true,
-  order: -1,   // the far field draws before the volume (docs/webgpu.md F1)
 
   // A world's physical window. Rendering is installed separately from its
   // immutable Source, never from a second coarse/detailed representation.
@@ -80,13 +78,11 @@ const world = {
     // brick-resolution grid of the whole world, drawn behind the WORLD volume
     // wherever that has nothing. Joined once its kernels are built, so it never
     // holds up the load (win.whenReady waits on win.far), and built over the
-    // loaded window then. Its lighting is the window volume's group as before;
-    // vol.attachFar and derived.attachFar are not called: the WORLD renderer
-    // lights the near ground itself.
+    // loaded window then. Its lighting group is the window volume's, with the
+    // far grid in it (attachVolume).
     const far = new FarField(app.renderer, win, { sun: app.sun });
     far.presentation = app.presentation;   // a gamemode's effect bends its view (gfx/presentation.js: the rolling log)
-    far.vol = app.vol;
-    far.behindOnly = true;   // (app.js frameValues: FU.far stays off)
+    far.attachVolume(app.vol);
     far.onChange = () => app.wakeLoop();
     far.whenReady().then(() => {
       if (app.win !== win || win.far) { far.dispose(); return; }
@@ -94,11 +90,6 @@ const world = {
       if (win.loaded) far.build();
       app.wakeLoop();
     }, error => { console.warn('World far field could not build', error); far.dispose(); });
-  },
-  buildFarView(app, far) {
-    far.detail.build();
-    if (far.viewPipeline.state !== 'idle') return;
-    far.buildView().then(() => app.pacer?.wake(), () => {});
   },
   detach(app) {
     releaseGenerator(app.sim);   // the Island scene's, made for this grid
@@ -114,8 +105,7 @@ const world = {
   // Async detail waits have their own completion wake, so they need no polling.
   busy(app) {
     if(app.win?.renderFrame)return !app.win.renderFrame.driver || app.win.renderFrame.driver.busy;
-    const far = app.win?.far;
-    return !!far && (far.queue.length > 0 || far.detail.busy);
+    return (app.win?.far?.queue.length ?? 0) > 0;
   },
   follow(app) {
     if (!app.mapKind.streamed) return;
@@ -165,23 +155,11 @@ const world = {
     gfxUniforms.uCaveAmbient.value=app.win?.scene.ambient??NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)
     torchLights.update(app.win?.scene??null,app.camGrid,app.sim.origin);   // the nearest wall torches lit as lamps (world/torchLights.js)
   },
-  beforeView(app) {
-    const { win } = app;
-    // Intentional (the WORLD renderer lights and draws a big map's ground itself): no window far view.
-    if(win?.render)return;
-    if (win?.far && isMaterialView(app.renderView)) world.buildFarView(app, win.far);
-    win?.far?.view(app.volume, isMaterialView(app.renderView), app.camera);
-  },
-  // the detail meshes' distances, before the scene pass (world/far.js prepass: their own render pass)
-  // Intentional (the WORLD renderer owns a big map's frame): the window far field's prepass and draw are a small map's.
-  compute(app) { if(!app.win?.render)app.win?.far?.prepass(app.post?.sceneTarget); },
-  scene(app, rp) { if(!app.win?.render)app.win?.far?.draw?.(rp, app.post?.sceneTarget); },
   invalidate(app) {
     const { win } = app;
     if (win) {
       if(win.renderFrame){win.renderFrame.dead=true;win.renderFrame.driver?.dispose().catch(error=>{if(!app.gpu.failure)console.error('WORLD graphics retirement failed',error);});} // (once graphics stop, stopGraphics has said why)
       win.epoch++; // reject readbacks without clearing surviving CPU edits
-      if (win.far?.detail) win.far.detail.epoch++;
     }
   },
 

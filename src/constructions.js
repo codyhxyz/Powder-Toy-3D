@@ -90,10 +90,6 @@ function avatar(user) {
 // ---------------------------------------------------------------- ghost
 
 const GHOST_LIGHT = new THREE.Vector3(0.45, 0.8, 0.35).normalize();   // the ghost's own fixed light
-// WEBGPU-STUB (docs/webgpu.md J3): the ghost's GLSL; it is ghostMaterial's TSL now
-export const ghostVert = '';
-// WEBGPU-STUB (docs/webgpu.md J3)
-export const ghostFrag = '';
 
 // The ghost's cubes: one box geometry drawn once per cell, its instances
 // placed by the ghostAt attribute (cells are only translated: no instance

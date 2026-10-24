@@ -26,12 +26,15 @@ const g = gridLayout(32, 32, 32), hash = s => createHash('sha256').update(s).dig
 // and the Noita view's appearance variants (0da2ef45); move, pick and the volume with the V2 and render merges.
 // Then (wave 4, 2026-10-20) the volume and its detail variant: the distance haze (farShared.js volumeHaze), over origin/main bb37db6e.
 // Re-pinned 2026-10-21 (cold compile): only the lamp and beacon shadow rays moved (lighting.js lampLights/lampShade/lampSpecSeen, lighthouse.js beaconRay/beaconFarClear/beaconMaxSteps/beaconVisible; one traceNearSteps call site, crystals skip the beam), diffed against origin/main 186cefd7; the volume and its detail variant only.
+// Re-pinned 2026-10-23 (the far switch removed): FrameUniforms lost `far`, the volume its FU.far liquid
+// branches and LIQ_WINDOW_FADE, lighthouse.js its beaconFarClear; diffed against origin/main 9472db0f, the volume
+// and its detail variant only.
 const baseline = {
   ro: 'd92592ba9576e9c02a65919e3badf678beb30dc58576e8fa22d4bf520d9174ed',
   rw: '338e904f3a7cce43eab8e931d3610b2e9c36d58ac2f7a4bc2d5a94acf39380ea',
   pick: 'debfa4a3adc9ee44fb37c263209b75fc88f1427fc1b35c298af82f1acfc370c9',
-  volume: 'e4c3443f7527e6ca144e6a71a91f2b487f78bd93f0ea868a9cccbccd816cb9da',
-  detail: 'd3308a6d02042db7a009210a14ede172ffd936424cc35b90048884dd7f7dd03d',
+  volume: 'fe3fb433f4fbf10c7d87f04018be6baa20ddc9ea61f372d727f36ca83b94c6e4',
+  detail: '4966a7243f3085dc359ef2aa698cecfcd5b6cb7e0d768628aff32ce2a16aae1c',
 };
 const sources = { ro: prelude(g, STATE_OPTS.STATE_RO), rw: prelude(g, STATE_OPTS.STATE_RW), pick: pickFrag(g),
   volume: volumeFrag(g), detail: volumeFrag(g, { detail: { DETAIL_LIQ_FOAM: 1, DETAIL_LIQ_RIPPLES: 1 }, curved: true }) };

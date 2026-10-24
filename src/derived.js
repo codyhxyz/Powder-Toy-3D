@@ -5,7 +5,7 @@ import {
   ageFrag, dirtyFrag, dirtyArgsFrag, brickFrag, brickDistFrag, blurFrag, brickShiftFrag, giShiftFrag, brickBitsFrag, boxArgsFrag,
   shadowMarkFrag, shadowListFrag, shadowArgsFrag,
   AgeParams, BrickDistParams, BlurParams, BrickShiftParams, GiShiftParams, BoxParams, ShadowTileParams, DERIVED_LAYOUT,
-  LIGHT_BLUR_PASSES, DIST_PASSES, REGIONS, BOXES, SHADOW_TILE, SHADOW_SLICE, shadowTileWords,
+  LIGHT_BLUR_PASSES, DIST_PASSES, REGIONS, BOXES, SHADOW_TILE, shadowTileWords,
 } from './shaders/passes.js';
 import { RENDER_LAYOUT } from './shaders/bindings.js';
 import { fold } from './gpu/kernels.js';
@@ -15,7 +15,6 @@ import {
   giLists, giBgBlend, GI_BG_EVERY, GI_SRC_EVERY,
 } from './shaders/gi.js';
 import { libLayouts } from './shaders/gfx/lib.js';
-import { WORLD_SIZE } from './shaders/farShared.js';
 import { createMediaNoise } from './gfx/mediaNoise.js';
 import { GI_BLEND } from './sim.js';
 import { Occupancy } from './shaders/occupancy.js';
@@ -119,7 +118,6 @@ export class Derived {
     this.g = sim.g;
     this.world = world;
     this.particleSplit = false;
-    this.far = null;              // the far field's textures (attachFar; the GI's far branch)
     this.shiftsBricks = true;     // sim.shift: this keeps the history across a move (no changedAll)
     // test only (gpu.testMode): dropFold leaves the changes pending at a shift
     // where they are, dropJetToggle doesn't rebuild every brick when the
@@ -135,7 +133,6 @@ export class Derived {
     this._shadowAt = -Infinity;   // the derived frame the shadow map's tiles were last listed
     this._shadowMap = null;       // ...for this map
     this._giAt = -Infinity;       // ...and the GI's lists
-    this._shadowFrames = 0;       // shadow lists made (the far field's band of rows)
     const g = this.g, n = g.nbricks;
     this.lists = dirtyLists(g);
     this.shadowWords = shadowTileWords(g);
@@ -401,10 +398,9 @@ export class Derived {
    * recordShadow dispatches the shadow kernel over them; shaders/passes.js
    * shadowMark): those the FIELDS bricks of the last derived frame project
    * onto, or every tile when this is the first map since a derived frame
-   * went without one, or the first into this map (a volume's own), a far
-   * field was attached, or sim.incremental is off (and on the GPU when the
-   * sun, the map's size, the window's origin or the far field's switch
-   * moved). After updateBricks, with FrameUniforms written on this tick (B3:
+   * went without one, or the first into this map (a volume's own), or
+   * sim.incremental is off (and on the GPU when the sun, the map's size or
+   * the window's origin moved). After updateBricks, with FrameUniforms written on this tick (B3:
    * the sun and the map's size).
    * @param {number} res the map's texels a side (FrameUniforms.shadowRes)
    * @param {object} [map] the map traced (its identity: a second volume of the grid has its own)
@@ -423,7 +419,7 @@ export class Derived {
     this.shadowFull = false;
     this._shadowAt = this.frameNo;
     this._shadowMap = map;
-    const params = { res, full, phase: this._shadowFrames++ % SHADOW_SLICE };
+    const params = { res, full };
     const opts = { bind: [frame, this.gpu.emptyGroup, this.groups.shadow], header: sim.readHeader(), params };
     if (!full) this._dispatch(k.shadowMark, { indirect: this.dlist, offset: this.lists.threads * 4 }, opts);
     this._dispatch(k.shadowList, fold(Math.ceil((res / SHADOW_TILE) ** 2 / 64)), opts);
@@ -440,10 +436,10 @@ export class Derived {
    * alternating; elsewhere a slice at a background rate; all of them,
    * replacing, after a reset: sim.giReset; half of them for GI_SETTLE frames
    * after a global change, or one the GI missed: updateGI not called on the
-   * last derived frame, resetGI, a far field attached, sim.incremental off),
+   * last derived frame, resetGI, sim.incremental off),
    * blended into the history and the four band textures. FrameUniforms must
    * have been written on this tick (B3): the sun, the sky, the shadow map's
-   * size, the far field's switch, the lamps. The kernels build on the first
+   * size, the lamps. The kernels build on the first
    * call, or on prepareGI() (B5: no other view has GI); until they are ready
    * this records nothing and the probes stay as they are.
    *
@@ -506,9 +502,7 @@ export class Derived {
 
   /**
    * The GI's kernels, { giSource, giGather, giKey, giSelect, giArgs }
-   * (gpu.kernels, made on first use and built by prepareGI or updateGI). The
-   * gather holds the far layout of the world this grid is a window of (a box:
-   * WORLD_SIZE's, off), as the shadow kernel does.
+   * (gpu.kernels, made on first use and built by prepareGI or updateGI).
    */
   giKernels() {
     if (!this._giKernels) {
@@ -522,7 +516,7 @@ export class Derived {
       });
       this._giKernels = {
         giSource: kernel('giSource', giSourceFrag(g), 'LIGHTING_GISRC'),
-        giGather: kernel('giGather', giGatherFrag(g, { world: this.world ?? WORLD_SIZE }), 'LIGHTING_GI'),
+        giGather: kernel('giGather', giGatherFrag(g), 'LIGHTING_GI'),
         giKey: list('giKey', giKeyFrag(g), 1),
         giSelect: list('giSelect', giSelectFrag(g), 64),
         giArgs: list('giArgs', giArgsFrag(g), 1),
@@ -539,10 +533,9 @@ export class Derived {
   // Group 2 of a GI kernel (shaders/bindings.js L.LIGHTING_GISRC or
   // L.LIGHTING_GI): this module's resources (the fields, light, the bands,
   // the brick map, giSrc, the history), the shadow map (stand-ins without one:
-  // never read then), the media noise (the clouds' shadow), the far field's
-  // textures (attachFar; stand-ins in a box: FrameUniforms.far keeps them
-  // unread), the samplers, and for the source the flow and a stand-in for the
-  // aeration, which no GI code reads. One per variant, shadow map and far field.
+  // never read then), the media noise (the clouds' shadow), the samplers, and
+  // for the source the flow and a stand-in for the aeration, which no GI code
+  // reads. One per variant and shadow map.
   _giGroup(variant, shadow) {
     const gpu = this.gpu, sim = this.sim;
     if (!this._gi) {
@@ -550,8 +543,6 @@ export class Derived {
       const dummy = (gpu._giDummies ??= {
         map: gpu.createTexture({ label: 'GI shadow map (none)', size: [1, 1], format: 'rgba32float', usage: T }),
         x: gpu.createTexture({ label: 'GI shadow map x (none)', size: [1, 1], format: 'r32float', usage: T }),
-        grid: gpu.createTexture({ label: 'GI far grid (none)', size: [1, 1, 1], dimension: '3d', format: 'rgba16uint', usage: T }),
-        flat: gpu.createTexture({ label: 'GI far 2d (none)', size: [1, 1], format: 'rgba16float', usage: T }),
       });
       const sampler = (address) => gpu.device.createSampler({
         label: `GI linear ${address}`, magFilter: 'linear', minFilter: 'linear', addressModeU: address, addressModeV: address, addressModeW: address,
@@ -568,13 +559,12 @@ export class Derived {
       if (!v) r.views.set(t, v = t.createView({ label: t.label, ...(t.dimension === '3d' ? { dimension: '3d' } : {}) }));
       return v;
     };
-    const far = this.far;
-    const parts = [shadow?.map ?? r.dummy.map, shadow?.x ?? r.dummy.x, far?.grid ?? r.dummy.grid, far?.top ?? r.dummy.flat, far?.shadow ?? r.dummy.flat];
+    const parts = [shadow?.map ?? r.dummy.map, shadow?.x ?? r.dummy.x];
     const idOf = (o) => { let id = r.ids.get(o); if (!id) r.ids.set(o, id = r.next++); return id; };
     const key = `${variant}|${parts.map(idOf).join('|')}`;
     let group = r.groups.get(key);
     if (!group) {
-      if (r.groups.size >= 8) r.groups.clear();   // (shadow maps and far fields come and go with grids and worlds)
+      if (r.groups.size >= 8) r.groups.clear();   // (shadow maps come and go with grids)
       const b = (binding, buffer) => ({ binding, resource: { buffer } });
       const layout = libLayouts(variant)[2], has = new Set(layout.map((e) => e.binding));
       // every resource either variant can hold, kept where the layout has its
@@ -582,7 +572,7 @@ export class Derived {
       // needs no change here)
       const entries = [
         ...this.lightingEntries(),
-        ...parts.map((t, i) => ({ binding: [8, 9, 11, 12, 13][i], resource: view(t) })),
+        ...parts.map((t, i) => ({ binding: [8, 9][i], resource: view(t) })),
         { binding: 10, resource: r.noise.view }, { binding: 14, resource: r.clamp }, { binding: 15, resource: r.repeat },
         b(18, sim.state.flow), b(19, this.noAer), b(20, this.giSrc), b(21, this.giHist),
       ].filter((e) => has.has(e.binding));
@@ -625,16 +615,6 @@ export class Derived {
     for (const t of this.giTextures) {
       enc.copyBufferToTexture({ buffer: this.tmpB, bytesPerRow, rowsPerImage: g.by }, { texture: t }, [g.bx, g.by, g.bz]);
     }
-  }
-
-  /**
-   * The far field's textures for the GI's far branch (docs/webgpu.md E;
-   * src/wire/world.js calls it): shaders/gi.js binds them.
-   * @param {object | null} far
-   */
-  attachFar(far) {
-    this.far = far ?? null;
-    this.shadowFull = this.giFull = true;   // (its casters and its sky reach every texel and every probe)
   }
 
   /**

@@ -1,8 +1,5 @@
 // Shared full optical walk: Box sun writer and world tangent-ray fallback.
-// Box and World cast the same shadows (parity audit 2026-10-20): World's walk
-// covers the whole world, so it needs no far casters (farCasterDepth, the Box
-// window's shade from outside it, and FU.far is 0 everywhere now: the far
-// field was retired in dc480f4f). Its floor guards (ro.y >= 0) and the
+// Box and World cast the same shadows (parity audit 2026-10-20). World's floor guards (ro.y >= 0) and the
 // unfinished-walk latch only make a ray that starts anywhere in the world, or
 // misses resident data, safe; the Box writer's rays always start above its box.
 export const shadowOpticsWGSL = ({ backend = 'box' } = {}) => /* wgsl */ `
@@ -111,7 +108,6 @@ fn shadowTexel(ro: vec3f, rd: vec3f) -> vec4f {
     tMax[ax] += tDelta[ax];
   }
   ${backend === 'world' ? 'if (!hit && !outside(cell)) { worldIncomplete = true; }\n  ' : ''}if (!hit && rd.y < 0.0${backend === 'world' ? ' && ro.y >= 0.0' : ''}) { oC.x = ro.y / -rd.y; }   // floor
-  ${backend === 'world' ? '' : 'if (FU.far != 0u) { oC.x = min(oC.x, farCasterDepth(ro, rd, t, bh.y)); }   // shaded from outside the window'}
   oC.w = f32(tid) * SHADOW_TINT_ID_SCALE + min(tau, SHADOW_TAU_MAX);
   return oC;
 }

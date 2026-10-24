@@ -3,10 +3,7 @@ import { glf } from '../../glsl.js';
 
 // One directional local light, using the current renderer's falloff and DDA.
 // It creates neither density nor an overlay. Only real surfaces/media call it.
-// far: the Box window's coarse far-grid occlusion past its edge. World passes
-// false (gfx/lighting.js): its exact DDA already crosses the whole world, the
-// same occlusion without the coarse stand-in (parity audit 2026-10-20).
-export const lighthouseGLSL = ({ far = false } = {}) => /* wgsl */ `
+export const lighthouseGLSL = () => /* wgsl */ `
 fn beaconPosition() -> vec3f { return FU.beacon.xyz - vec3f(H.origin); }
 fn beaconPower(p: vec3f) -> vec3f {
   if (FU.beaconDir.w <= 0.0 || FU.beacon.w <= 0.0) { return vec3f(0.0); }
@@ -27,7 +24,7 @@ fn beaconPower(p: vec3f) -> vec3f {
 // lampShade marches it from its lamps' traceNearSteps call site, beaconVisible
 // from its own: Metal inlines every call, and each copy of the march cost
 // the World volume ~0.3 s of its cold build (2026-10-21).
-struct BeaconRay { o: vec3f, d: vec3f, len: f32, trace: bool, dist: f32, end: f32 }
+struct BeaconRay { o: vec3f, d: vec3f, len: f32, trace: bool }
 // Same DDA as local lamps, but a lighthouse crosses the whole window.
 // A ray crosses at most NX+NY+NZ faces; no whole-world voxel march. A
 // function, not a const: the World view reads NX..NZ at run time
@@ -41,39 +38,13 @@ fn beaconRay(p: vec3f) -> BeaconRay {
   let hit = boxHit(p, rd);
   let a = max(hit.x, 0.0);
   let b = min(hit.y, end);
-  return BeaconRay(p + rd * (a + 0.001), rd, b - a - 0.002, b > a + 0.002, d, end);
-}
-// The rest of beaconVisible past the window, along ray r from p.
-fn beaconFarClear(p: vec3f, r: BeaconRay) -> bool {
-  let rd = r.d;
-  let d = r.dist;
-  let end = r.end;
-  ${far ? `if (FU.far != 0u) {
-    // Actual far occupancy, not generated terrain/scenery. Bounded coarse
-    // shadow: narrow distant walls can fall between samples. The far field
-    // is smoothed over 8 cells, so avoid receiver/emitter self-shadow there.
-    var dims = vec3i(textureDimensions(tFarGrid));
-    if (FU.sourceAppearance.y > 0u) { dims.y = i32(FU.sourceAppearance.x); }
-    for (var i = 0; i < ${LIGHTHOUSE.farSamples}; i++) {
-      let t = mix(8.0, max(d - 8.0, 8.0), (f32(i) + 0.5) / ${glf(LIGHTHOUSE.farSamples)});
-      if (t >= end) { break; }
-      let q = p + rd * t;
-      if (inGrid(vec3i(floor(q)))) { continue; }
-      let bc = vec3i(floor((q + vec3f(H.origin)) / f32(BS)));
-      if (any(bc < vec3i(0)) || any(bc >= dims)) { continue; }
-      let packed = textureLoad(tFarGrid, bc, 0);
-      if ((packed.r & 255u) >= 128u) { return false; }
-    }
-  }` : ''}
-  return true;
+  return BeaconRay(p + rd * (a + 0.001), rd, b - a - 0.002, b > a + 0.002);
 }
 fn beaconVisible(p: vec3f) -> bool {
   let r = beaconRay(p);
   var hc: vec3i;
   var hn: vec3f;
-  var clear = !r.trace || !(traceNearSteps(r.o, r.d, r.len, true, LAMP_SELF_SKIP, beaconMaxSteps(), &hc, &hn) >= 0.0);
-  if (clear) { clear = beaconFarClear(p, r); }
-  return clear;
+  return !r.trace || !(traceNearSteps(r.o, r.d, r.len, true, LAMP_SELF_SKIP, beaconMaxSteps(), &hc, &hn) >= 0.0);
 }
 fn beaconIrradiance(p: vec3f) -> vec3f {
   let power = beaconPower(p);

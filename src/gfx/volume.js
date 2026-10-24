@@ -32,7 +32,7 @@
 // cut), a pipeline of its own that builds on first use like any variant; a
 // pick walks the displayed ray in the same pick kernel.
 import { Matrix4 } from 'three/webgpu';
-import { WORLD_SIZE, farLayout } from '../shaders/farShared.js';
+import { farLayout } from '../shaders/farShared.js';
 import {
   volumeFrag, volumePipeline, VOLUME_LAYOUTS, VolumeParams, VOLUME_VERTICES, VOLUME_SCREEN_VERTICES, VOLUME_VIEWS,
   shadowFrag, SHADOW_LAYOUTS, shadowRes as shadowResOf, SHADOW_WORKGROUP,
@@ -189,9 +189,8 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
   }
 
   // ---- pipelines ----
-  // (a world's far casters read its own layout: sim.world; a box's are off)
   const shadowKernel = gpu.kernel({
-    name: 'shadow', code: shadowFrag(g, { world: sim.world ?? WORLD_SIZE }), layouts: [L.FRAME, L.STATE_RO, L.LIGHTING_SHADOW],
+    name: 'shadow', code: shadowFrag(g), layouts: [L.FRAME, L.STATE_RO, L.LIGHTING_SHADOW],
     workgroupSize: [SHADOW_WORKGROUP, SHADOW_WORKGROUP, 1], build: shadows ? 'now' : 'manual',
   });
   const pickKernel = gpu.kernel({
@@ -417,9 +416,9 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
     },
 
     /**
-     * A world's far field for the shadow kernel's casters and the haze
-     * (null: none; a box's dummies). far: { grid, top, shadow }, textures or
-     * views (shaders/bindings.js 11-13).
+     * A big map's far grid, tops and shadow heights for the far view, which
+     * binds this lighting group (world/far.js attachVolume; null: a box's
+     * dummies). far: { grid, top, shadow }, textures or views (shaders/bindings.js 11-13).
      */
     attachFar(f) { far = f ?? null; },
     /** Whitewater's aeration buffer, both copies (null: none). */

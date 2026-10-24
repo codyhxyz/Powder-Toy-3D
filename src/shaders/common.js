@@ -41,10 +41,6 @@ export const TILE = 2 * BRICK;                    // texels per brick tile edge
 export const SUPER = { x: 4, y: 2, z: 2 };       // bricks per supertile along x, y, z
 export const SUPER_TEX = SUPER.x * TILE;          // texels per supertile edge (= SUPER.z · SUPER.y · TILE)
 export const SUPER_CELLS = { x: SUPER.x * BRICK, y: SUPER.y * BRICK, z: SUPER.z * BRICK };   // 16×8×8 cells
-// WEBGPU-STUB (docs/webgpu.md J3): the block atlas is gone (D2: the move runs
-// one thread per Margolus block); its tile is kept only for sim.js gridLayout,
-// which still sizes the old atlas, until U2 replaces it.
-export const BLOCK_TILE = { x: 4, y: 2 };
 // The sleeping unit, in bricks per axis (docs/webgpu.md W12, D5): a brick.
 // SUPER here reproduces docs/scaling.md D8's supertile rule, for an A/B; a
 // grid layout may carry its own (g.sleepUnit).
@@ -1027,18 +1023,3 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   layouts: () => [LAYOUT.TABLES, stateLayout(opts)],
 }));
 
-// ---------------------------------------------------------------- WebGL leftovers
-// WEBGPU-STUB (docs/webgpu.md J3): the WebGL passes' plumbing, kept so the
-// modules that import it still load until their units port them. Writers are
-// editMain kernels (D6); the state is A, B, F above.
-export const stateOutGLSL = '';
-// WEBGPU-STUB (docs/webgpu.md J3)
-export function copyThroughMain() {
-  throw new Error('copyThroughMain removed in the WebGPU port: docs/webgpu.md D6 (editMain)');
-}
-// WEBGPU-STUB (docs/webgpu.md J3)
-export function stateUniforms() {
-  throw new Error('stateUniforms removed in the WebGPU port: docs/webgpu.md C4 (LAYOUT.STATE_*)');
-}
-// WEBGPU-STUB (docs/webgpu.md J3)
-export const quadVert = '';

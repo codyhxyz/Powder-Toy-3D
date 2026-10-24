@@ -82,7 +82,10 @@ test('seven independent production GI/key/select/args and glow emissions remain 
   // Re-pinned 2026-10-20 (distance haze): the source gained lighting.js giAirSkyHeld only,
   // diffed against origin/main 6a056d8d; the other six unchanged.
   // Re-pinned 2026-10-21 (cold compile): only the lamp and beacon shadow rays moved (lighting.js lampLights/lampShade/lampSpecSeen, lighthouse.js beaconRay/beaconFarClear/beaconMaxSteps/beaconVisible; one traceNearSteps call site, crystals skip the beam), diffed against origin/main 186cefd7; source and gather only, the other five unchanged.
-  const hashes = ['741a25f89d3304545a9b9d413cfadd9a8003d53ea018eb3dd1c0e47372288b46', 'ebde1a6d3b80cc562112221ff13456799bea675bb3acc210146aafbdbcc8599f', '1c1c1466266457d229a0f1ed0d59e5b054b3f6b3e4306dc23f695c656d4f63a8', '49c243e0fecd677ad02a487aace986634f1f43785e3626f74240ec2e2a40d28f', 'e57f139d63b575e2d8b5b7dee20033283e73efb40fc19e4f9b52f2645237e4e7', 'b7f2b431e07d44a6aeab03f55db2a30f28a3eff1643a6db5e6aaa0fe58e982c6', '8ebdc6e328ec9e086242a31194be0fd9e088fffe3f7cef3507552398c373796e'];
+  // Re-pinned 2026-10-23 (the far switch removed): FrameUniforms lost `far` (every module but the blurs),
+  // the gather's farBeyond branch, its far textures and farGIGLSL, the key's far word (KEY_WORDS 22 → 21),
+  // the beacon's beaconFarClear; diffed against origin/main 9472db0f, nothing else moved.
+  const hashes = ['cd20a89e14e7066780d7b36a1cf019a6edc451b4bf35a1b445c67c860d0163f3', '6563a4df465f2991e6342f885e58cfe196fc07088d4bd687ad927f3f7a3c72b0', '759a843e6235e51e0702507efc6ca000145f5cb53ade2665a1d243692d15c786', '6c2a4a04183311ec50071ada6086b806717873458727563a82d6d8a914925358', 'ef926c5e480e51e6f43d4b7b2c48acc3fa57476c5bf5e0191ef5cf3ad33176a7', 'b7f2b431e07d44a6aeab03f55db2a30f28a3eff1643a6db5e6aaa0fe58e982c6', '8ebdc6e328ec9e086242a31194be0fd9e088fffe3f7cef3507552398c373796e'];
   [giSourceFrag(g), giGatherFrag(g), giKeyFrag(g), giSelectFrag(g), giArgsFrag(g), blurFrag(g), blurFrag(g, { last: true })].forEach((code, i) => assert.equal(createHash('sha256').update(code).digest('hex'), hashes[i]));
 });
 test('actual eight world GI/two glow modules validate Naga and default budgets', () => {
@@ -128,7 +131,9 @@ test('world gather is the original generated module minus unused texture mirrors
   // Re-pinned 2026-10-22 (light bounce near ring, world/worldGIRing.js): WorldGIParams gained ring and
   // ground, worldGISourceStaged became worldGIStagedJob + worldGISourceRing (both reads), beyond()'s
   // floor sun is looked up inside the ring only; diffed against b48dd7e4, nothing else moved.
-  const hashes = ['2a890de6af07c901adb9f07da4d03899813cf91dc8148d677fad6941da050693', '314c42d170b88ffccf7e934585a0830e07cb9cdb4f5f262eff5991c3f7f5da77', 'ce0a042c75e734169d8c3ce3af645c117aadd36a3a578e0e34678b61c4d74ca5', 'ac948eb4a0b948bd90bed2e7bd90857ae5f5a308b9d800f3dfa6554059f6e2f2'];
+  // Re-pinned 2026-10-23 (the far switch removed): FrameUniforms lost `far` and lighthouse.js its
+  // beaconFarClear; diffed against origin/main 9472db0f, nothing else moved.
+  const hashes = ['190aa637d160eb3b63d5e759eb04b5903ff14254c9170e93e3545b828df68c95', 'b8e9bd602e338e0c671c5875c50c251a0ca0e939a82711975a2b603333a1d8fc', 'acb641dbaa02ca8f005f253c656594a16a57e18f7d323d0a185ed4d5d2ed9a00', '41c840c33464f51ea90186ac33d1bdc2d9fd995158a2ac65354372325fc25253'];
   const gathers = GI_CHECK().filter(c => c.name.includes('gather'));
   gathers.forEach((c, i) => {
     const code = c.code(), groups = c.layouts();
@@ -199,9 +204,8 @@ test('executed production Box march runs to the box edge, and its empty-brick le
   const B = [40, 16, 40], g = { nx: B[0] * 4, ny: B[1] * 4, nz: B[2] * 4 }, production = giGatherFrag(g);
   const start = production.indexOf('    let pc = vec3f(bc) + 0.5;'), end = production.indexOf('    var vis = 0.0;', start);
   assert.ok(start > 0 && end > start);
-  // The far field's branch never runs (FrameUniforms.far is 0 everywhere since dc480f4f): the box's miss alone.
-  const far = 'if (FU.far != 0u) { L += T * farBeyond(pc * f32(BS), q * f32(BS), d, &open); } else { L += T * beyond(pc * f32(BS), d); }';
-  const trace = production.slice(start, end); assert.ok(trace.includes(far));
+  // A ray past its end takes the box's miss (beyond).
+  const trace = production.slice(start, end); assert.ok(trace.includes('L += T * beyond(pc * f32(BS), d);'));
   const constants = ['GI_RAYS', 'GI_STEPS', 'GI_NEAR_STEPS', 'GI_FAR_STRIDE', 'GI_T_MIN', 'GI_FACING', 'GOLDEN_ANGLE', 'GI_STRIDE'].map(name => production.match(new RegExp(`const ${name}:[^;]+;`))?.[0]).join('\n');
   assert.match(constants, new RegExp(`GI_STEPS: i32 = ${B[0] + B[1] + B[2] + 8};`));
   // A floor, a lit far wall 36 bricks from the near probes, and scattered partly blocking bricks (half-exact values).
@@ -219,7 +223,7 @@ test('executed production Box march runs to the box edge, and its empty-brick le
     dist[id(x, y, z)] = d;
   }
   const probes = [[2, 8, 20], [3, 2, 8], [2, 4, 30], [20, 12, 20], [36, 1, 1]];
-  const code = `${giSrcWGSL}\n${constants}\nconst BS: i32 = 4; struct FrameU { far: u32 } const FU = FrameU(0u);
+  const code = `${giSrcWGSL}\n${constants}\nconst BS: i32 = 4;
 @group(0) @binding(0) var<storage, read> giSrc: array<vec4u>;
 @group(0) @binding(1) var<storage, read> brickDist: array<u32>;
 @group(0) @binding(2) var<storage, read> probes: array<vec4i>;
@@ -234,7 +238,7 @@ ${fnBody(production, 'giAlong')}
 ${fnBody(production, 'giPast')}
 @compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid: vec3u) {
 let ray = gid.x % 32u; let bc = probes[gid.x / 32u].xyz; let bmax = vec3i(${B.join(', ')}); seen = 0u;
-${trace.replace(far, 'L += T * beyond(pc * f32(BS), d);')}
+${trace}
 out[gid.x] = vec4f(L, T); visits[gid.x] = seen;
 }`;
   naga(code, 'box.gi.leap');

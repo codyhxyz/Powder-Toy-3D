@@ -139,15 +139,6 @@ export function texelCell(g, t) {
 // buffers, and back (shaders/common.js mirrors brickId, slotOf, cellOf).
 export { cellSlot, slotCell };
 
-// WEBGPU-STUB (docs/webgpu.md J3): the brick atlas is gone (brick buffers run in brickId order).
-export function brickTexel() { throw new Error('brickTexel removed in the WebGPU port: docs/webgpu.md C2 (brickId)'); }
-// WEBGPU-STUB (docs/webgpu.md J3)
-export function makeFieldTarget() { throw new Error('makeFieldTarget removed in the WebGPU port: docs/webgpu.md C7 (gpu.createBuffer, gpu.createTexture)'); }
-// WEBGPU-STUB (docs/webgpu.md J3)
-export function rawMat() { throw new Error('rawMat removed in the WebGPU port: docs/webgpu.md C7 (gpu.kernel, sim.editKernel)'); }
-// WEBGPU-STUB (docs/webgpu.md J3): the reaction lookup is in the element tables (shaders/common.js rxAt).
-export function reactionTexture() { throw new Error('reactionTexture removed in the WebGPU port: docs/webgpu.md C6'); }
-
 // The window's place in the world (docs/scaling.md D11): a grid cell's world
 // cell is origin + the cell. The few Vector3 methods its readers use, so sim
 // code doesn't import three.
@@ -779,11 +770,6 @@ export class Simulation {
     return this.paintMask;
   }
 
-  // WEBGPU-STUB (docs/webgpu.md J3): main scrubbed after a writer's pass,
-  // against the other copy; the port's writes are in place, so the scrub rides
-  // on the write: sim.edit(kernel, box, values, { scrub: true }).
-  scrubDeco() { throw new Error('sim.scrubDeco removed in the WebGPU port: docs/webgpu.md Sync log S3 (sim.edit with { scrub: true })'); }
-
   /**
    * A whole-grid write that isn't a step (a load, an undo, the codec's unpack):
    * the next map rebuilds every inert bit and draws every unit, and the
@@ -1382,19 +1368,6 @@ export class Simulation {
   get brickDist() { return this.derived?.brickDist ?? null; }
   get giTextures() { return this.derived?.giTextures ?? null; }
   get flowTexture() { return this.flow; }
-
-  // WEBGPU-STUB (docs/webgpu.md J3): passes are dispatches (gpu.kernel, sim.edit).
-  run() { throw new Error('sim.run removed in the WebGPU port: docs/webgpu.md C7 (gpu.kernel, sim.edit)'); }
-  // WEBGPU-STUB (docs/webgpu.md J3)
-  pass() { throw new Error('sim.pass removed in the WebGPU port: docs/webgpu.md D6 (sim.edit)'); }
-  // WEBGPU-STUB (docs/webgpu.md J3)
-  makeStateTarget() { throw new Error('sim.makeStateTarget removed in the WebGPU port: docs/webgpu.md C7'); }
-  // WEBGPU-STUB (docs/webgpu.md J3): the state is sim.state's buffers.
-  get stateA() { throw new Error('sim.stateA removed in the WebGPU port: docs/webgpu.md C7 (sim.state, sim.bindRO)'); }
-  // WEBGPU-STUB (docs/webgpu.md J3)
-  get stateB() { throw new Error('sim.stateB removed in the WebGPU port: docs/webgpu.md C7 (sim.state, sim.bindRO)'); }
-  // WEBGPU-STUB (docs/webgpu.md J3)
-  get stateF() { throw new Error('sim.stateF removed in the WebGPU port: docs/webgpu.md C7 (sim.state, sim.bindRW)'); }
 
   dispose() {
     this.disposed = true;

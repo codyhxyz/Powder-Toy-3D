@@ -12,7 +12,7 @@ import { liquidGLSL } from './gfx/liquid.js';
 import { liquidDetailGLSL, LIQ_DETAIL, WORLD_NATIVE } from './gfx/liquidDetail.js';
 import { mediaGLSL } from './gfx/media.js';
 import { grainsGLSL, GRAINS_ANY } from './gfx/grains.js';
-import { volumeHazeGLSL, farCastersGLSL, farLayout, WORLD_SIZE } from './farShared.js';
+import { volumeHazeGLSL } from './farShared.js';
 import { MESH_CUT_FIELDS, MESH_DEPTH_ENTRY, meshCutGLSL } from '../gfx/meshCut.js';
 import { decoViewGLSL, decoViewWGSL, decoSurfGLSL, DECO_PLANE_ENTRY } from './gfx/deco.js';
 import { presentationNearWGSL } from './gfx/presentation.js';
@@ -762,12 +762,6 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 //   kernels write the bit (passes.js brickFrag; World's: worldCellAdapter.js).
 //   World leaves out the neighbour test (core.js liquidInterior, a 27-trip
 //   loop) to keep its cold-built volume small, and marches those cells in full.
-// - LIQ_WINDOW_FADE, the edge fade after shadeSurf and the submerged tail
-//   after the march: the Box window's edge, with the far field drawing what
-//   lies past it (FU.far). World's volume is the whole world, with real cells
-//   where that edge was. Nothing sets FU.far now (world maps draw with the
-//   WORLD renderer, and the far field was retired in dc480f4f), so neither
-//   renderer runs them.
 // - format: World's programs read World's atlas (worldFetchA/B, worldAeration),
 //   which holds the whole world's cells in World's own words, never a sim's
 //   buffers, so they have no read format. While V2 runs the window, the atlas's
@@ -813,9 +807,6 @@ const GLASS_IN_LIQUID_F: f32 = 0.3;
 // (reflectDefer, gfx/liquid.js); panes past them reflect the sky.
 const GLASS_TRACED_PANES: i32 = 2;
 const MAX_BENDS: i32 = 6;
-${backend === 'world' ? '' : `// Fade unresolved underwater scenery over two bricks at the simulation edge.
-// The window bounds data availability, not the extent of the water.
-const LIQ_WINDOW_FADE: f32 = 2.0 * f32(BS);`}
 const BEND_EXTRA_STEPS: i32 = ${BEND_EXTRA_STEPS};
 
 // The opaque hit that ends the ray is recorded and shaded once, after the
@@ -1361,15 +1352,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       gGrainSun = 1.0;   // (grainSurf set it for this shadeHit; the floor's is 1 already)` : ''}
     }
     if (sp == 0) {
-      if (stop) {
-        ${backend === 'world' ? '' : `if (FU.far != 0u && liq != E_EMPTY) {
-          // Match the continuation below instead of drawing a hard seam where
-          // a refracted ray just misses the last available bed/obstacle cell.
-          let edge = min(min(hitP.x, f32(NX) - hitP.x), min(hitP.z, f32(NZ) - hitP.z));
-          c = mix(interiorScatter(liq, hitP, mediumLight, AMBIENT), c, smoothstep(0.0, LIQ_WINDOW_FADE, edge));
-        }`}
-        col += trans * c; trans = vec3f(0.0);
-      }
+      if (stop) { col += trans * c; trans = vec3f(0.0); }
       if (floorLit) { col += trans * c; trans = vec3f(0.0); }
     }${grains ? ` else {
       let w = select(1.0 - gAltW, gAltW, gAltGeom);   // weight of the stored path
@@ -1377,16 +1360,6 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       trans *= 1.0 - w;
     }` : ''}
   }
-  ${backend === 'world' ? '' : `// A bent ray still submerged when it leaves the window must not reveal
-  // the original camera ray's sky via alpha blending (pale, blob-shaped holes).
-  // shortcut: homogeneous liquid beyond the local trace; replace with far-field
-  // transmission when that can fit the view's texture-unit budget.
-  // A finite mesh ends that tail too; never scatter an infinite column over it.
-  if (!cut && tCut >= MESH_CUT_NONE && FU.far != 0u && liq != E_EMPTY && outside(cell) && cell.y >= 0 && cell.y < NY) {
-    let p = clamp(ro + rd * tEnter, vec3f(0.5), vec3f(GRID) - 0.5);
-    col += trans * interiorScatter(liq, p, mediumLight, AMBIENT);
-    trans = vec3f(0.0);
-  }`}
   // only thin gas: keep it (and its glow), at its depth
   if (!anyHit && (mOp > MEDIA_KEEP_ALPHA || dot(col, vec3f(1.0)) > MEDIA_KEEP_RADIANCE)) { anyHit = true; }
   var o: VolumeHit;
@@ -1757,9 +1730,7 @@ export const PICK_LAYOUTS = ({ backend = 'box' } = {}) => {
 // Shadow map: one ray per texel, marching from the sun toward the box.
 // Opaque = crisp voxels and the smooth opaque surfaces (same root finding as
 // the camera rays, so shadows line up with what is drawn). Liquids, glass and
-// media add optical depth. A world's far field casts too (farCasterDepth,
-// shaders/farShared.js), switched by FrameUniforms.far: compiled into the
-// box's kernel as well, so box and world share it. The texel goes to both
+// media add optical depth. The texel goes to both
 // textures in one dispatch (docs/webgpu.md E, F5): the rgba32float map and
 // its .x as r32float, which the soft shadows' 16 taps read.
 // =====================================================================
@@ -1769,15 +1740,11 @@ export const SHADOW_WORKGROUP = SHADOW_TILE;   // 8×8 threads, a texel each: a 
 export const shadowRes = (g) => Math.min(1024, 4 * Math.max(g.nx, g.ny, g.nz));
 
 /**
- * The shadow kernel for grid g. world: the size of the world the grid is a
- * window of (sim.world), whose far layout the far casters read; a box takes
- * WORLD_SIZE's (its far branch is off, FrameUniforms.far).
+ * The shadow kernel for grid g.
  * @param {{ nx: number, ny: number, nz: number }} g
- * @param {{ world?: number[] }} [opts]
  */
-export const shadowFrag = (g, { world = WORLD_SIZE } = {}) => /* wgsl */ `
-${lib(g, { variant: 'LIGHTING_SHADOW', far: true, aeration: false })}
-${farCastersGLSL(farLayout(world))}
+export const shadowFrag = (g) => /* wgsl */ `
+${lib(g, { variant: 'LIGHTING_SHADOW', aeration: false })}
 ${shadowOpticsWGSL().slice(1)}${shadowTilesWGSL(g)}
 // A workgroup per tile of the list src/derived.js shadowTiles made (the tiles
 // whose rays crossed a change, or all of them), a thread per texel.

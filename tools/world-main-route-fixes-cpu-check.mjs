@@ -30,11 +30,11 @@ test('actual WORLD attachment adds the far field behind the volume without holdi
  // ...and its media noise, made on the map's device, before the window too
  const noise=gpu=>{assert.equal(gpu,app.gpu);order.push('noise');};
  let built,made=null;
- const Far=class{constructor(renderer,win){assert.equal(win,window);order.push('far');made=this;}whenReady(){return new Promise(r=>{built=r;});}build(){this.built=true;}dispose(){this.disposed=true;}};
+ const Far=class{constructor(renderer,win){assert.equal(win,window);order.push('far');made=this;}attachVolume(vol){this.vol=vol;}whenReady(){return new Promise(r=>{built=r;});}build(){this.built=true;}dispose(){this.disposed=true;}};
  const attach=new Function('WorldWindow','world','gfxUniforms','beyondLevel','startWorldFrameView','createMediaNoise','FarField',`return ({${source.slice(start,end)}}).attach;`)(Ordered,{worldStart:()=>[32,0,64]},uniforms,()=>42,early,noise,Far);
  attach(app);assert.equal(app.win,window);assert.deepEqual(sim.origin.value,[32,0,64]);assert.deepEqual(order,['view','noise','window','far']);
  assert.equal(window.far,undefined,'the load does not wait on the far field');
- assert.equal(made.vol,app.vol);assert.equal(made.behindOnly,true);
+ assert.equal(made.vol,app.vol,'its lighting group is the window volume\'s, the far grid in it');
  window.loaded=true;built();await new Promise(r=>setTimeout(r,0));
  assert.equal(window.far,made);assert.equal(made.built,true,'built over the loaded window');
  assert.equal(uniforms.uClouds.value,true);assert.equal(uniforms.uCloudSea.value,42);

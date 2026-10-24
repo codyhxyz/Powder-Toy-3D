@@ -590,19 +590,6 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 }
 `;
 
-// WEBGPU-STUB (docs/webgpu.md J3): the EMA is updated in place (each cell
-// reads only its own history), so nothing copies it back.
-export function fieldCopyFrag() { throw new Error('fieldCopyFrag removed in the WebGPU port: docs/webgpu.md E (fieldEmaFrag, in place)'); }
-// WEBGPU-STUB (docs/webgpu.md J3): the field passes run over brick lists, not
-// regions of a field atlas (docs/webgpu.md E).
-export const FIELD_REGION_BRICKS = null;
-// WEBGPU-STUB (docs/webgpu.md J3)
-export const FIELD_FULL_SHARE = null;
-// WEBGPU-STUB (docs/webgpu.md J3)
-export function fieldRegions() { throw new Error('fieldRegions removed in the WebGPU port: docs/webgpu.md E (brick lists)'); }
-// WEBGPU-STUB (docs/webgpu.md J3)
-export function fieldRegionsGLSL() { throw new Error('fieldRegionsGLSL removed in the WebGPU port: docs/webgpu.md E (brick lists)'); }
-
 // Ownership reads a 26-neighbour stencil, so a changed brick can change the
 // ownership of cells in adjacent bricks. Dilate ages into existing scratch,
 // never back into age (which would recursively spread dirtiness every frame).

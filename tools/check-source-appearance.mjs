@@ -117,10 +117,10 @@ const variants = [
     ordinary: volumeFrag(ordinaryGrid, { view, curved }),
     source: volumeFrag(sourceGrid, { view, curved }),
   }))),
-  ...[{ mesh: false }, { mesh: false, curved: true }, { mesh: true }].map(({ mesh, curved = false }) => ({
-    name: `far-${mesh ? 'detail' : 'view'}${curved ? '-curved' : ''}`,
-    ordinary: farFrag(g, L, mesh, { curved }),
-    source: farFrag(g, L, mesh, { curved, sourceAppearance: true }),
+  ...[false, true].map((curved) => ({
+    name: `far-view${curved ? '-curved' : ''}`,
+    ordinary: farFrag(g, L, { curved }),
+    source: farFrag(g, L, { curved, sourceAppearance: true }),
   })),
 ];
 const expensiveSource = /fn source(?:Pair|Word|Float|Vec4|Pixel|Texture|Environment|Diffuse)\(/;
@@ -179,12 +179,9 @@ test('source adapter retains shared near/far call sites behind the compile-time 
   const far = readFileSync(new URL('../src/shaders/far.js', import.meta.url), 'utf8');
   const app = readFileSync(new URL('../src/app.js', import.meta.url), 'utf8');
   const worldFar = readFileSync(new URL('../src/world/far.js', import.meta.url), 'utf8');
-  const worldDetail = readFileSync(new URL('../src/world/detail.js', import.meta.url), 'utf8');
   assert.match(app, /createVolume\(gpu, sim, \{[^\n]*sourceAppearance: !mapKind\.presets && !!sceneByKey\(settings.scene\).importManifest\?\.appearance/, 'near capability follows selected scene metadata, not mode/style');
   assert.match(worldFar, /this.sourceAppearance = SOURCE_APPEARANCE_ENABLED && !!win.scene.importManifest\?\.appearance/);
-  assert.match(worldFar, /farFrag\(g, L, false, \{ sourceAppearance: this.sourceAppearance \}\)/);
-  assert.match(worldFar, /farFrag\(this.sim.g, this.L, false, \{ curved: true, sourceAppearance: this.sourceAppearance \}\)/);
-  assert.match(worldDetail, /farFrag\(g, L, true, \{ sourceAppearance: far.sourceAppearance \}\)/);
+  assert.match(worldFar, /farFrag\(this.sim.g, this.L, \{ curved, sourceAppearance: this.sourceAppearance \}\)/);
   assert.match(surface, /sourceMaterial\(id, p, n\)/);
   assert(surface.indexOf('let original = sourceMaterial') < surface.indexOf('if (FU.matDetail < 0.5)'));
   assert.match(far, /sourceShade\(p, normalize\(m.sourceNormal\)/);

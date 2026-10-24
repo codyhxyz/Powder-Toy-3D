@@ -94,8 +94,6 @@ export const stampEdit = () => ({ update: STAMP_UPDATE, decls: STAMP_DECLS, para
 /** Its whole module (the names are the WebGL passes', docs/webgpu.md W2: one stamp a dispatch now, D6). */
 export const stampFrag = (g) => editKernelWGSL(g, stampEdit());
 export const stampManyFrag = stampFrag;
-// WEBGPU-STUB (docs/webgpu.md J3): stamps per WebGL pass; each stamp is its own edit now (D6)
-export const MAX_STAMPS = null;
 
 // tools/check-wgsl.mjs: the stamp's two entry points (sim.editKernel builds
 // 'stamp' and 'stamp apply'), on first use (a world's trees, the box's Island,

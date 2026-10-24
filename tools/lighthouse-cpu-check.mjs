@@ -84,7 +84,7 @@ const beaconAt = FRAME_UNIFORMS.findIndex(([n]) => n === 'beacon');
 assert.deepEqual(FRAME_UNIFORMS.slice(beaconAt, beaconAt + 3).map(([n, type]) => [n, type]), [['beacon', 'vec4f'], ['beaconDir', 'vec4f'], ['beaconCell', 'vec4f']]);
 assert(FrameUniforms.size < 65536);
 const g = { nx: 64, ny: 64, nz: 64 };
-const checks = [...renderChecks(), ...farChecks().filter((c) => /^(far view|far detail$)/.test(c.name)), ...libChecks('lib'), ...libChecks('lighting')];
+const checks = [...renderChecks(), ...farChecks().filter((c) => /^far view/.test(c.name)), ...libChecks('lib'), ...libChecks('lighting')];
 const dir = process.argv.includes('--wgsl') ? mkdtempSync(join(tmpdir(), 'tpt-beacon-wgsl-')) : null;
 let validated = 0;
 try {
@@ -94,7 +94,6 @@ try {
     if (check.name.includes('realistic')) {
       assert(code.includes('sum += E * gasPhase(mu, g0)'), 'actual gas scattering hook');
       assert(code.includes('NX + NY + NZ + 3'), 'resident geometry DDA budget');
-      assert(code.includes('textureLoad(tFarGrid, bc, 0)'), 'far shadow from actual occupancy');
     }
     for (const stage of [1, 2, 4]) {
       const bindings = check.layouts(g).flat().filter((e) => (e.visibility ?? 7) & stage);

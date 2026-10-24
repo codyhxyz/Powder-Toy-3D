@@ -6,7 +6,6 @@ import { WgslExec, WgslParser } from 'wgsl_reflect/wgsl_reflect.module.js';
 import { cozyFixture } from './cozy-fixture.mjs';
 import { Appearance as A, appearanceCtype, appearanceOf, materialWord, materialId, materialAppearance } from '../src/appearance.js';
 import { packFarTexel, unpackFarTexel, packFarSceneCell, unpackFarSceneCell, dominantFarMaterial, farLayout, farLayoutGLSL } from '../src/shaders/farShared.js';
-import { buildSurfaceMesh, meshPadding } from '../src/world/surfaceMesh.js';
 import { encodeBrick, decodeBrick, BRICK_FLOATS } from '../src/world/store.js';
 import { structureData, structureWords, structureMaterialAt, structureCellAt } from '../src/world/structures.js';
 
@@ -76,46 +75,6 @@ state.set([E.MOSS, 20, 0, appearanceCtype(E.MOSS, 4, A.LEAVES) + 0.375]);
 const restored = new Float32Array(BRICK_FLOATS), restoredB = new Float32Array(BRICK_FLOATS);
 decodeBrick(encodeBrick(state, 0, velocity, 0), restored, 0, restoredB, 0);
 assert.deepEqual(restored, state); assert.equal(appearanceOf(restored[0], restored[3]), A.LEAVES);
-
-// Geometry and normals stay identical; every coarse donor retains its label.
-for (const step of [1, 2, 4]) {
-  const pad = meshPadding(step), side = 8 + 2 * pad, size = [side, side, side], origin = [-pad, -pad, -pad], bounds = [0, 0, 0, 8, 8, 8];
-  const ids = new Uint8Array(side ** 3), appearances = new Uint8Array(ids.length);
-  for (let z = 0; z < side; z++) for (let y = 0; y < side; y++) for (let x = 0; x < side; x++) {
-    const i = x + side * (y + side * z);
-    if (y - pad < 4) { ids[i] = E.WOOD; appearances[i] = x - pad < 4 ? A.LOG_Y : A.PLANK_X; }
-  }
-  const opts = { size, origin, bounds, step };
-  const bare = buildSurfaceMesh(ids, opts), tagged = buildSurfaceMesh(ids, { ...opts, appearances });
-  const triangles = mesh => Array.from(mesh.indices, i => [...mesh.positions.subarray(i * 3, i * 3 + 3), ...mesh.normals.subarray(i * 3, i * 3 + 3)]);
-  assert.deepEqual(triangles(tagged), triangles(bare));
-  assert(tagged.appearances.includes(A.LOG_Y)); assert(tagged.appearances.includes(A.PLANK_X));
-  assert(tagged.ids.every(id => id === E.WOOD));
-  assert(bare.appearances.every(a => a === A.NONE));
-  for (let i = 0; i < tagged.indices.length; i += 3) assert.equal(new Set(Array.from(tagged.indices.subarray(i, i + 3), v => tagged.appearances[v])).size, 1);
-}
-
-// Actual detail worker: readback and parked edits, without a browser.
-const pad = meshPadding(), side = 8 + 2 * pad, height = 8;
-const raw = new Uint32Array(side * side * height);
-for (let y = 0; y < height; y++) for (let z = 0; z < side; z++) for (let x = 0; x < side; x++) {
-  raw[x + side * (z + side * y)] = packFarSceneCell(y < 4 ? E.WOOD : E.EMPTY, 20, y < 4 ? appearanceCtype(E.WOOD, 0, A.LOG_Y) : 0);
-}
-const parked = new Float32Array(BRICK_FLOATS);
-for (let i = 0; i < parked.length; i += 4) parked.set([E.WOOD, 20, 0, appearanceCtype(E.WOOD, 0, A.PLANK_Z) + 0.375], i);
-const oldSelf = globalThis.self;
-try {
-  let result;
-  globalThis.self = { postMessage: packet => { result = packet; } };
-  await import('../src/world/detail-worker.js');
-  globalThis.self.onmessage({ data: { token: { step: 1 }, raw, layout: { side }, origin: [-pad, -pad, -pad], height, pad,
-    bounds: [0, 0, 0, 8, 8, 8], live: [100, 100, 100, 110, 110, 110], planted: new Uint8Array(16 * 16), wb: [16, 2, 16], trees: [],
-    edits: [{ at: [0, 0, 0], bytes: encodeBrick(parked, 0, velocity, 0) }] } });
-  assert.equal(result.error, undefined);
-  assert(result.appearances.includes(A.LOG_Y)); assert(result.appearances.includes(A.PLANK_Z));
-} finally {
-  if (oldSelf === undefined) delete globalThis.self; else globalThis.self = oldSelf;
-}
 
 const P = { size: [64, 16, 64], seed: 991, structures: { start: [0, 0] } };
 const stamp = new Float32Array([

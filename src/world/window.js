@@ -401,9 +401,7 @@ export class WorldWindow {
     // material after all legacy stamps. Untouched overlap is never imported.
     this.restoreNative(enterLo, bricks);
     this.renderSource.recordLiveCopy(this.gpu.frame, sim);
-    // Fill/restore/plant transferred residency, not world contents. summarize
-    // already recorded real writes before the move; don't dirty meshes again.
-    if (this.far) this.far.detail.simVersion = sim.version;
+    // Fill/restore/plant transferred residency, not world contents.
     this.last = { dx, dz, ms: performance.now() - t0, restored, trees, ...this.plantCost, readbackMs: null, kept: null };
   }
 

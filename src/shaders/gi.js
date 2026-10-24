@@ -1,5 +1,4 @@
 import { lib, libLayouts } from './gfx/lib.js';
-import { farGIGLSL, farLayout, WORLD_SIZE } from './farShared.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 import { glf } from '../glsl.js';
@@ -144,7 +143,7 @@ const LAMP_MARGIN = 2;   // cells past a lamp's range a brick still counts as li
 // the inputs giKey compares (KEY_WORDS) and the lamps as they were (count,
 // then LAMP_MAX × pos, col, shape), then the lists: a source's entry is its
 // brick number; a probe's too, with bit 31 set for a far probe.
-const KEY_WORDS = 22;
+const KEY_WORDS = 21;
 export function giLists(g) {
   const n = gridDims(g).nbricks, at = 4 * n;
   const spheres = at + 16, key = spheres + 4 * 2 * LAMP_MAX, lamps = key + KEY_WORDS, src = lamps + 4 + 12 * LAMP_MAX;
@@ -211,7 +210,7 @@ export const giGroundLightWGSL = (sun) => `GROUND_ALB * (FU.sunCol * max(FU.sun.
  * @param {{ nx: number, ny: number, nz: number }} g
  */
 export const giSourceFrag = (g, { backend = 'box', worldWGSL = '' } = {}) => /* wgsl */ `
-${lib(g, { variant: 'LIGHTING_GISRC', far: false, aeration: false, backend })}
+${lib(g, { variant: 'LIGHTING_GISRC', aeration: false, backend })}
 ${giSrcWGSL}
 ${backend === 'world' ? worldWGSL : paramsWGSL}
 ${backend === 'world' ? '' : giListsWGSL(g)}
@@ -391,10 +390,7 @@ fn giPast(k: i32, r: i32) -> i32 {
 }`;
 
 /**
- * GI gather for grid g. world: the size of the world the grid is a window of
- * (sim.world), whose far field a ray reads past its end while FrameUniforms.far
- * is on (farBeyond, shaders/farShared.js); a box takes WORLD_SIZE's, off, so a
- * box and a world share the pipeline (docs/webgpu.md E). A thread per ray,
+ * GI gather for grid g (docs/webgpu.md E). A thread per ray,
  * PER_GROUP probes a workgroup, over giProbeCount(g, parity) probes
  * (giGatherDispatch); the probes off this frame's checkerboard aren't
  * dispatched at all, and keep their history and textures.
@@ -402,8 +398,7 @@ fn giPast(k: i32, r: i32) -> i32 {
  * Box and World (parity audit 2026-10-20): the probe lists, the history and
  * the sources' addressing differ only in where they live. Past the end of a
  * ray, World takes beyond() at the world's real bounds, as a box does at its
- * own; farBeyond is the Box window's far field, and FrameUniforms.far is 0
- * everywhere now (the far field was retired in dc480f4f). And a ray runs to
+ * own. And a ray runs to
  * the edge of its grid on both (giSteps; user's decision, 2026-10-20: small
  * maps bounce light as far as big maps do, where a Box ray used to stop at 18
  * bricks, 72 cells, and take beyond() inside the box).
@@ -419,11 +414,10 @@ fn giPast(k: i32, r: i32) -> i32 {
  * holds every brick's SOURCE, so its gather reads full detail everywhere:
  * the light World's converges to inside its ring (not a deviation).
  * @param {{ nx: number, ny: number, nz: number }} g
- * @param {{ world?: number[] }} [opts]
+ * @param {{ backend?: string, worldWGSL?: string }} [opts]
  */
-export const giGatherFrag = (g, { world = WORLD_SIZE, backend = 'box', worldWGSL = '' } = {}) => (gatherShape(), /* wgsl */ `
-${lib(g, { variant: 'LIGHTING_GI', far: backend !== 'world', aeration: false, backend })}
-${backend === 'world' ? '' : farGIGLSL(farLayout(world))}
+export const giGatherFrag = (g, { backend = 'box', worldWGSL = '' } = {}) => (gatherShape(), /* wgsl */ `
+${lib(g, { variant: 'LIGHTING_GI', aeration: false, backend })}
 ${giSrcWGSL}
 ${backend === 'world' ? worldWGSL : paramsWGSL}
 ${backend === 'world' ? '' : giListsWGSL(g)}
@@ -546,13 +540,12 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
       T *= 1.0 - a;
       if (T < GI_T_MIN) { break; }
     }
-    var open = 1.0;
     if (T >= GI_T_MIN) {
       ${backend === 'world' ? `if (all(q >= vec3f(0.0)) && all(q < vec3f(bmax))) { worldIncomplete = true; }
-      else { L += T * beyond(pc * f32(BS), d); }` : 'if (FU.far != 0u) { L += T * farBeyond(pc * f32(BS), q * f32(BS), d, &open); } else { L += T * beyond(pc * f32(BS), d); }'}
+      else { L += T * beyond(pc * f32(BS), d); }` : 'L += T * beyond(pc * f32(BS), d);'}
     }
     var vis = 0.0;
-    if (d.y > 0.0) { vis = T * open; }
+    if (d.y > 0.0) { vis = T; }
     let y = vec4f(SH_Y0, SH_Y1 * d);
     sh = array<vec4f, 4>(vec4f(L * y.x, vis * y.x), vec4f(L * y.y, vis * y.y), vec4f(L * y.z, vis * y.z), vec4f(L * y.w, vis * y.w));
   }
@@ -634,7 +627,7 @@ fn main() {
     bitcast<u32>(FU.ground.x), bitcast<u32>(FU.ground.y), bitcast<u32>(FU.ground.z),
     bitcast<u32>(FU.keyLight.x), bitcast<u32>(FU.keyLight.y), bitcast<u32>(FU.keyLight.z),
     bitcast<u32>(FU.caveAmbient.x), bitcast<u32>(FU.caveAmbient.y), bitcast<u32>(FU.caveAmbient.z),
-    FU.far, P.shadows, u32(FU.shadowRes), FU.clouds);
+    P.shadows, u32(FU.shadowRes), FU.clouds);
   var changed = P.mode != 0u;
   for (var k = 0u; k < ${KEY_WORDS}u; k++) {
     if (gsLoad(GS_KEY + k) != key[k]) { changed = true; }

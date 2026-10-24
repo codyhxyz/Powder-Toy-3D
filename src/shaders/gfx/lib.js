@@ -12,7 +12,7 @@ import { crystalGLSL } from './crystal.js';
 import { sourceAppearanceWGSL, sourceAppearanceFallbackWGSL } from './sourceAppearance.js';
 import { SOURCE_APPEARANCE_ENABLED } from '../../gfx/sourceAppearance.js';
 import { cloudsGLSL } from './clouds.js';
-import { farLayout, farLayoutGLSL, farSkyGLSL, farHazeFor, volumeHazeGLSL, farCastersGLSL, farGIGLSL, WORLD_SIZE } from '../farShared.js';
+import { farLayout, farLayoutGLSL, farSkyGLSL, farHazeFor, volumeHazeGLSL, WORLD_SIZE } from '../farShared.js';
 
 // The render library (docs/webgpu.md F2, F6): the WGSL every render kernel
 // starts with, assembled in the order the GLSL's lib(g) was (shaders/render.js):
@@ -55,8 +55,8 @@ export const LIB_VARIANTS = {
  * Source artwork is compiled only with explicit g.sourceAppearance === true;
  * ordinary grids and shader checks never include the source-data readers.
  *   variant   which L.LIGHTING layout the pipeline binds (LIB_VARIANTS)
- *   far       declare the far textures (11-13): needed by farCastersGLSL and
- *             farGIGLSL (shaders/farShared.js); the layout has them either way
+ *   far       declare the far textures (11-13) and read source artwork and its
+ *             sky (the far view's: shaders/far.js); the layout has them either way
  *   aeration  declare the aeration buffer (19), for the volume's foam
  *   debug     the prelude's accessors test inGrid (?gpudebug=1)
  *   detail    the close-up detail's defines (gfx/detail.js: { DETAIL_CUBIC_CLOSE: 1, … });
@@ -64,7 +64,7 @@ export const LIB_VARIANTS = {
  * @param {{ nx: number, ny: number, nz: number, maxSteps?: number }} g
  * @param {{ variant?: string, far?: boolean, aeration?: boolean, debug?: boolean, detail?: object, fixedReadFormat?: 0 | 2 | 3 }} [opts]
  */
-export function lib(g, { variant = 'LIGHTING', far = true, aeration = true, debug = false, detail = {}, backend = 'box', fixedReadFormat, viewRing = false } = {}) {
+export function lib(g, { variant = 'LIGHTING', far = false, aeration = true, debug = false, detail = {}, backend = 'box', fixedReadFormat, viewRing = false } = {}) {
   renderBackend(backend);
   if (backend === 'world' && variant === 'LIGHTING_SHADOW') {
     // Optical compute has no dependency on GI, sun readers, appearance, mesh,
@@ -193,16 +193,12 @@ const PROBE_CALLS = {
   clouds: () => `
   acc.x += cloudDensity(p, s) + cloudShadow(p) + hgPhase(d.y, s);
   acc += cloudLayer(p, d);`,
-  farShared: ({ casters = true, gi = true, probes = true } = {}) => `
+  farShared: ({ probes = true } = {}) => `
   let qft = farUnpack(vec4u(vec3u(ci), u32(ni.y)));
   acc += vec4f(farPackTexel(qft)) + vec4f(f32(qft.s + qft.l + qft.glow + qft.id + qft.liquid), select(0.0, 1.0, qft.open), 0.0, 0.0);
   acc += vec4f(farAir(d) + farHaze(p, d, s, n.y) + farHazeAir(p, d, s, n.y), farSkyOpen(p * 8.0));${probes ? `
   acc += vec4f(farHazePremul(p, s, p, n), farAirLit(p, n * s));
-  acc += vec4f(volumeHaze(p, s, p, n) + farHazeSeen(p, s, p, n, d.x), hazeAirLit(p, n * s));` : ''}${casters ? `
-  acc.x += select(0.0, 1.0, farUnder(p)) + farCasterDepth(p, d, 0.0, s);` : ''}${gi ? `
-  var qOpenSky = 1.0;
-  acc += vec4f(farGround(p, s) + farSea(d) + farPlain() + farBeyond(p, p, d, &qOpenSky), qOpenSky);
-  acc += vec4f(farBeyondOpen(p * 8.0, d, &qOpenSky), qOpenSky);` : ''}`,
+  acc += vec4f(volumeHaze(p, s, p, n) + farHazeSeen(p, s, p, n, d.x), hazeAirLit(p, n * s));` : ''}`,
 };
 
 // What each probe holds: the library's modules it calls, its variant, its
@@ -218,9 +214,9 @@ const PROBES = {
   'lib.crystal': { modules: ['crystal'] },
   'lib.clouds': { modules: ['clouds'] },
   farShared: { modules: ['farShared'] },
-  // the writer variants with everything they keep, and the far part each uses
-  'lib.shadow': { modules: ALL, variant: 'LIGHTING_SHADOW', casters: true, gi: false },
-  'lib.gi': { modules: ALL, variant: 'LIGHTING_GI', casters: false, gi: true },
+  // the writer variants with everything they keep
+  'lib.shadow': { modules: ALL, variant: 'LIGHTING_SHADOW' },
+  'lib.gi': { modules: ALL, variant: 'LIGHTING_GI' },
   'lib.gisrc': { modules: ['core', 'lighting'], variant: 'LIGHTING_GISRC' },
   // the volume's stage: the library in a fragment shader, with the close-up
   // detail core reads (DETAIL_CUBIC_CLOSE)
@@ -249,12 +245,12 @@ const bareHead = (g) => [prelude(g, STATE_OPTS.STATE_RO), materialsGLSL(), ddaGL
 export function libProbe(g, name) {
   const pr = PROBES[name];
   if (!pr) throw new Error(`libProbe: no probe ${name} (${LIB_PROBES.join(', ')})`);
-  const { modules, variant = 'LIGHTING', stage = 'compute', casters = true, gi = true, bare = false, detail = {} } = pr;
+  const { modules, variant = 'LIGHTING', stage = 'compute', bare = false, detail = {} } = pr;
   const v = LIB_VARIANTS[variant];
   const L = farLayout(WORLD_SIZE);
   const far = modules.includes('farShared');
   const haze = far || modules.includes('clouds');
-  const body = modules.map((m) => PROBE_CALLS[m]({ ...v, casters, gi })).join('\n');
+  const body = modules.map((m) => PROBE_CALLS[m](v)).join('\n');
   const prologue = `
   let p = a.xyz;
   let s = a.w;
@@ -288,8 +284,6 @@ ${gisrc ? '' : '@group(3) @binding(2) var<storage, read_write> probeIO: array<ve
     haze ? (v.probes ? volumeHazeGLSL : farHazeFor(null)) : '',
     modules.includes('clouds') ? cloudsGLSL : '',
     far ? farLayoutGLSL(L) + farSkyGLSL : '',
-    far && casters ? farCastersGLSL(L, { layout: false }) : '',
-    far && gi ? farGIGLSL(L, { layout: false, sky: false }) : '',
     entry,
   ].join('\n');
 }

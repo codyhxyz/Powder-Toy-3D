@@ -108,11 +108,6 @@ const approach = (rate, dt) => 1 - Math.exp(-rate * dt);
 
 // ---- the materials (docs/webgpu.md F8): TSL, lit by gfx/meshLight.js
 
-// WEBGPU-STUB (docs/webgpu.md J3): the GLSL vertex shader; figureMaterial builds the lit material
-export const figureVert = '';
-// WEBGPU-STUB (docs/webgpu.md J3)
-export function figureFrag() { throw new Error('figureFrag removed in the WebGPU port: docs/webgpu.md F8 (figure.js figureMaterial)'); }
-
 const NO_TINT = [0, 0, 0, 0];   // rgb, share: no stain
 
 /**
@@ -550,10 +545,6 @@ export function createFigure(build = buildStick) {
 
 // The stickman's albedo and heat glow, so another body matches it.
 export { ALBEDO as FIGURE_ALBEDO, HEAT_GLOW as FIGURE_HEAT_GLOW };
-
-// WEBGPU-STUB (docs/webgpu.md J3): the skinned GLSL vertex shader. A
-// SkinnedMesh takes figureMaterial as it is: three's node pipeline skins it.
-export const figureSkinnedVert = '';
 
 // The soft contact shadow the stickman stands on, for another body: a child
 // of the body's root (at the feet), drawn after the opaque meshes and the

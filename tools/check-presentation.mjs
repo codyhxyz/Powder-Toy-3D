@@ -23,7 +23,7 @@ import { createPresentation, installPresentation } from '../src/gfx/presentation
 import { MESH_EDGE_CELLS, subdividePresentation } from '../src/gfx/presentationGeometry.js';
 import { presentationNearWGSL, presentationNearGLSL } from '../src/shaders/gfx/presentation.js';
 import { volumeFrag, pickFrag, VOLUME_VIEWS, warmChecks } from '../src/shaders/render.js';
-import { farFrag, farDetailDepthFrag, farLayout, WORLD_SIZE } from '../src/shaders/far.js';
+import { farFrag, farLayout, WORLD_SIZE } from '../src/shaders/far.js';
 import { motionWGSL, WGSL_CHECK as postChecks } from '../src/gfx/post.js';
 import { gridLayout, Vec3 } from '../src/sim.js';
 import { mapByKey, mapsFor, resolveMode, modeByKey } from '../src/maps.js';
@@ -262,7 +262,7 @@ assert(!fns(presentationNearWGSL({ skip: false })).has('warpSkip'), 'the pick\'s
 const GLSL = /\buniform\s+(float|vec[234]|mat4|bool|int)\b|#define|gl_(FragColor|Position|FragDepth|FragCoord)|\bivec[234]\(|\bvec[234]\(|onBeforeCompile|texelFetch\(/;
 const g=gridLayout(64,64,64), Lw=farLayout(WORLD_SIZE);
 const modules = {
-  presentationWGSL, presentationNearGLSL, pick: pickFrag(g), motion: motionWGSL(), farDetailDepth: farDetailDepthFrag(g),
+  presentationWGSL, presentationNearGLSL, pick: pickFrag(g), motion: motionWGSL(),
   ...Object.fromEntries(VOLUME_VIEWS.flatMap((v) => [[`volume.${v}`, volumeFrag(g, { view: v })], [`volume.${v}.curved`, volumeFrag(g, { view: v, curved: true })]])),
 };
 for (const [name, code] of Object.entries(modules)) assert(!GLSL.test(code.replace(/\/\/[^\n]*/g, '')), `${name}: GLSL left`);
@@ -278,7 +278,7 @@ for (const call of ['warpSkip(&walk, bc, true)','warpRestart(&walk, ro, rd)','wa
 assert(/meshCutDepth\(h\.depth\)/.test(realisticCurved), 'curved: preserve the opaque mesh depth');
 for (const call of ['var tCut = meshCutT(rd)', 'meshBudget = warpArc(walk.ray, 0.0, max(tCut, 0.0))',
   'meshBudget - warpArc(walk.ray, 0.0, walk.t)', 'meshBudget = tCut;',
-  'warpArc(walk.ray, 0.0, floorT) < meshBudget', 'if (!cut && tCut >= MESH_CUT_NONE && FU.far'])
+  'warpArc(walk.ray, 0.0, floorT) < meshBudget'])
   assert(realisticCurved.includes(call), `curved mesh cut: ${call}`);
 assert(/meshCutDepth\(h\.depth\)/.test(modules['volume.realistic']), 'flat: the mesh cut');
 // A mesh depth is distance on the DISPLAYED ray, not on each cell's chord.
@@ -309,9 +309,7 @@ for (const v of ['realistic','heat']) {
   assert(vols(false).every((x) => !x.curved && !/warpWalk/.test(x.code(g))), `warmChecks ${v}: the flat ones`);
 }
 assert(modules.motion.includes('fn presentationReproject') && modules.motion.includes('warpPointWith(flatWorld, P.prevK'), 'motion pass: reprojection through the bend');
-const farCurved=farFrag(g,Lw,false,{curved:true}), farFlat=farFrag(g,Lw), farMesh=farFrag(g,Lw,true);
+const farCurved=farFrag(g,Lw,{curved:true}), farFlat=farFrag(g,Lw);
 for (const call of ['gFarRay = warpRay(ro, rd)','warpSpans(gFarRay','farPlaneHit(gFarRay','warpResume(t, gFarWorld)','warpArc(transmitted','warpPoint(p)']) assert(farCurved.includes(call), `far view curved: ${call}`);
 assert(!farFlat.includes('gFarRay'), 'far view: the flat variant has no parabola');
-assert(farMesh.includes('warpPoint(pos)') && modules.farDetailDepth.includes('warpPoint(pos)'), 'the detail meshes bend in their vertex stage, and their depth prepass with them');
-assert(modules.farDetailDepth.includes('v.position.z'), 'the depth prepass writes the rasterized depth');
-console.log('presentation: mapping, inverse, roots, turn/reentry, tangency, chord bound, TSL vertex bend (chained, idempotent, restored), lifecycle (opt-outs, overlays, layers, the guard\'s parked meshes, changed programs, neutral), mode resolution, motion reprojection algebra, mesh edge bound, WGSL twins (curved variants only, pick, motion pass, far view and meshes, no GLSL) OK');
+console.log('presentation: mapping, inverse, roots, turn/reentry, tangency, chord bound, TSL vertex bend (chained, idempotent, restored), lifecycle (opt-outs, overlays, layers, the guard\'s parked meshes, changed programs, neutral), mode resolution, motion reprojection algebra, mesh edge bound, WGSL twins (curved variants only, pick, motion pass, far view, no GLSL) OK');

@@ -2514,7 +2514,7 @@ function captureWorldRequest(reservation,state,dt,accepted) {
   post.settings.sprintBlur=sprintBlurNow(dt);
   gfxUniforms.uNearGI.value=settings.nearGI;gfxUniforms.uGlowLights.value=settings.glowLights;gfxUniforms.uCaustics.value=settings.caustics;
   const model=volume.matrixWorld.clone().multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray().map(v=>-v)));
-  const captured=frameUniformValues({...frameValues(camera,renderView,[0,0]),model,far:false,sourceAppearance:[0,0,0,0]});
+  const captured=frameUniformValues({...frameValues(camera,renderView,[0,0]),model,sourceAppearance:[0,0,0,0]});
   const values=Object.fromEntries(Object.entries(captured).map(([k,v])=>[k,v?.toArray?v.toArray():v]));
   const view=freezeWorldView(ctx,values,{view:viewKeyOf(renderView),detail:frameDetail,curved:!!warpNow()?.k});
   const warp=view.presentation.parameters;
@@ -2550,9 +2550,7 @@ function sprintBlurNow(dt) {
 function frameValues(cam, view, jitter) {
   return {
     camera: cam, model: volume.matrixWorld, sun: SUN, view, shadowRes: vol.shadowRes, time: viewTime, lightGain: GLOW_GAIN,
-    // (a far field only behind the WORLD volume, world/far.js drawBehind, lights nothing else: FU.far stays off)
-    shadows: true, far: !!win?.far && !win.far.behindOnly, sea: win?.P?.sea ?? 0, jitter,
-    sourceAppearance: (!win?.far?.behindOnly && win?.far?.appearance.uniform) || [0, 0, 0, 0],
+    shadows: true, sea: win?.P?.sea ?? 0, jitter,
     sourceStyle: selectedMode === 'crueltySquad' && isMaterialView(view),
   };
 }
@@ -2608,7 +2606,6 @@ function threeMeshes(p, transparent, cam = camera, clear = !transparent) {
 // so the grid and the box outline fade by the render scale to keep their weight.
 let volumeDrawn = false;   // the last presented frame drew the volume (__app.view.volumeDrawn)
 let volumeFormat;
-let volumeFirst = false;  // this frame's volume drew before the scene pass (the opaque hook: world/far.js volumePass)
 // Select once, before any presentation consumer writes uniforms or draws.
 // The far meshes discard live-window columns even without a local draw; a
 // pending shader must therefore keep the actual previous full-resolution view.
@@ -2628,11 +2625,6 @@ function selectRenderView() {
       if (vol.shadowState !== 'ready') wakeWhen(vol.shadowReady());
       required.push({ state: vol.shadowState });
     }
-    const far = win?.far;
-    if (far && !far.behindOnly && isMaterialView(next.view)) {
-      wire('world').buildFarView(ctx, far);
-      required.push(far.viewPipeline);
-    }
     next = readyVolumeView.select(vol, next, required);
   }
   const id = VIEWS.find((v) => v.key === next.view).id;
@@ -2640,7 +2632,7 @@ function selectRenderView() {
   renderView = id;
   frameDetail = next.detail;
 }
-// The volume's draw into rp (the scene pass, or its own pass first), its
+// The volume's draw into rp (the scene pass), its
 // options this frame's (cut.take(): the meshes' depth, once a frame).
 // Returns whether it drew.
 function drawVolume(rp) {
@@ -2659,21 +2651,6 @@ function drawVolume(rp) {
     wakeWhen(pipe.ready);
   }
   return drew;
-}
-// A world's volume first (world/far.js volumeFirst, docs/webgpu.md F1): into
-// its own colour and depth after three's opaque meshes (it marches to their
-// depth), then the occluder the far view stops at, so the view skips what the
-// volume covers opaquely; drawScene composites it where it used to draw.
-function drawVolumeFirst(p) {
-  volumeFirst = false;
-  const far = win?.far;
-  if (hybrid?.enabled) { far?.occlude(p.sceneTarget, false); return; }
-  if (blocks || !far?.volumeFirst(p.sceneTarget)) return;
-  const rp = far.volumePass(p.sceneTarget);
-  let drew = false;
-  try { drew = drawVolume(rp); } finally { rp.end(); }
-  far.occlude(p.sceneTarget, drew);
-  volumeFirst = true;
 }
 let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
 // The sea past a World's edge where its water reaches it (gfx/edgeSea.js), for
@@ -2711,9 +2688,7 @@ function drawScene(rp) {
     brush.draw(rp);
     return;
   }
-  // the volume: drawn first this frame (volumeFirst), it composites over the far field now; else drawn here
-  volumeDrawn = volumeFirst ? win.far.drawVolume(rp) : drawVolume(rp);
-  volumeFirst = false;
+  volumeDrawn = drawVolume(rp);
   frameWires.sceneAbove(rp);
   if (mapKind.boxFrame) overlays.drawEdges(rp, { size: [g.nx, g.ny, g.nz], scale: post.renderScale, lit });
   brush.draw(rp);
@@ -2773,11 +2748,10 @@ const frameHooks = {
     // the kept scene, then the opaque meshes over it, depth-tested against its depth
     if (frameMode === 'meshes' && meshFrames.restore(p)) { threeMeshes(p, false, camera, false); return true; }
     if (frameMode === 'meshes') frameMode = 'full';
-    if (frameMode === 'capture') { drawVolumeFirst(p); return false; }   // (the volume uncut: the meshes go over it in the meshes hook)
+    if (frameMode === 'capture') return false;   // (the volume uncut: the meshes go over it in the meshes hook)
     let drew = threeMeshes(p, false);
     if (hybrid?.drawOpaque(p, { load: drew })) drew = true;
     if (drew && !blocks) cut.capture(p.sceneTarget.depth);
-    drawVolumeFirst(p);
     return drew;
   },
   draw: (rp) => { if (frameMode !== 'meshes') drawScene(rp); },

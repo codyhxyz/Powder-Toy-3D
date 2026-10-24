@@ -17,10 +17,6 @@ import { fold } from '../gpu/kernels.js';
 // fastest, then y, then z (SLAB_CELL). world/store.js keeps bricks in the same
 // order.
 export const BRICK_CELLS = 64;                         // cells per 4³ brick
-// WEBGPU-STUB (docs/webgpu.md J3): the WebGL staging targets' layout (bricks a row, texels a row, slots a row)
-export const STAGE_BRICKS_PER_ROW = null;
-export const STAGE_W = null;
-export const SLOT_W = null;
 
 // A slab's cell order, for the kernels that exchange slabs with the store (the
 // world's stage and edit, U10; the decoration's, U17): local cell l of a brick
@@ -100,14 +96,6 @@ ${slotMain}
 `;
 
 // (Stored bricks come back natively: v2/integration.js restoreBricks; V1's restore edit went with V1.)
-
-const stub = (name, unit) => () => { throw new Error(`${name} removed in the WebGPU port: docs/webgpu.md G1 (${unit})`); };
-// WEBGPU-STUB (docs/webgpu.md J3): the leaving slab is one kernel (shaders/generate.js sceneDiffFrag, G1)
-export const stageFrag = stub('stageFrag', 'U10');
-// WEBGPU-STUB (docs/webgpu.md J3): the leaving slab is one kernel (shaders/generate.js sceneDiffFrag, G1)
-export const gatherFrag = stub('gatherFrag', 'U10');
-// WEBGPU-STUB (docs/webgpu.md J3): the GI probes' shift is the derived passes' (U4, E)
-export const giShiftFrag = stub('giShiftFrag', 'U4');
 
 const rw = () => [LAYOUT.TABLES, LAYOUT.STATE_RW];
 /**

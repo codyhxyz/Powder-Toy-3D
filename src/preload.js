@@ -232,11 +232,10 @@ async function startWarmer() {
       // the view's module (realistic: the detail gate's base variant, its near one last), the shadow kernel if it reads it, pick,
       // in the read format the session's engine draws it in: V2's packed cells (2, or 3 for the air views), not V1's A/B (0)
       const volume = render.warmChecks(view, settings, { fallback, curved, fixedReadFormat: sessionVolumeFormat(view, physicsEngine() === 'v2') });
-      const own = (e) => (e.name === 'shadow' ? { ...e, code: (gg) => render.shadowFrag(gg, world ? { world } : {}) } : e);
       // Match createVolume's specialization so menu warm-up is reused, not
       // a second, expensive variable-division version of the same shader.
       const volumeGrid = volumeShaderGrid(g, world, sourceAppearance);
-      for (const e of volume.filter((x) => !x.idle)) build(own(e), volumeGrid);
+      for (const e of volume.filter((x) => !x.idle)) build(e, volumeGrid);
       for (const e of volume.filter((x) => x.idle)) build(e, volumeGrid);
     },
   };

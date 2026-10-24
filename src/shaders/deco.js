@@ -1,5 +1,5 @@
 import { prelude, LAYOUT, STAGE, gridDims } from './common.js';
-import { slabGLSL, STAGE_W } from './window.js';
+import { slabGLSL } from './window.js';
 import { uniformStruct } from '../gpu/params.js';
 import { fold } from '../gpu/kernels.js';
 
@@ -261,17 +261,6 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
 `;
 /** The stage's dispatch for a slab of `bricks` ([x, y, z]) bricks. */
 export const stageDispatch = (bricks) => fold(bricks[0] * bricks[1] * bricks[2]);
-
-// WEBGPU-STUB (docs/webgpu.md J3): the move carries the plane itself (shaders/move.js).
-export function decoGatherFrag() { throw new Error('decoGatherFrag removed in the WebGPU port: docs/webgpu.md Sync log S3 (the move carries the plane)'); }
-// WEBGPU-STUB (docs/webgpu.md J3): snapshots are buffer copies, loads a write the CPU orders (src/deco.js).
-export function decoCopyFrag() { throw new Error('decoCopyFrag removed in the WebGPU port: docs/webgpu.md Sync log S3 (src/deco.js copies buffers)'); }
-// WEBGPU-STUB (docs/webgpu.md J3): stored bricks come back as writes into the plane (src/deco.js enter).
-export function decoEditFrag() { throw new Error('decoEditFrag removed in the WebGPU port: docs/webgpu.md Sync log S3 (src/deco.js enter)'); }
-// WEBGPU-STUB (docs/webgpu.md J3): the view reads the plane (shaders/gfx/deco.js).
-export function decoViewPackFrag() { throw new Error('decoViewPackFrag removed in the WebGPU port: docs/webgpu.md Sync log S3 (shaders/gfx/deco.js reads the plane)'); }
-
-export { STAGE_W };
 
 const layouts = () => [LAYOUT.TABLES, LAYOUT.STATE_RO, DECO_LAYOUT];
 // (a box as large as the grid at most)

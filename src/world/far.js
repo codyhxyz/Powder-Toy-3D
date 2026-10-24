@@ -8,16 +8,14 @@ import {
   FAR_WIN_LAYOUT, FAR_SCENE_LAYOUT, FAR_CLEAR_LAYOUT, FAR_BOOST_LAYOUT, FAR_MIP1_LAYOUT, FAR_MIP2_LAYOUT, FAR_TOP_LAYOUT,
   FAR_SHADOW_LAYOUT, FAR_TREE_BAND_LAYOUT, SCENE_CELLS_LAYOUT_OF, SCENE_CELLS_BINDING, TREE_CAND_LAYOUT, TREE_THIN_LAYOUT,
   TREE_CAND_BINDING, FAR_VIEW_FRAME, FarViewParams, farViewPipeline,
-  farOccluderFrag, farOccluderPipeline, farUnderFrag, farUnderPipeline, FAR_OCCLUDER_LAYOUT, FAR_UNDER_LAYOUT, VOL_FORMATS, FAR_DETAIL_DEPTH_FORMAT,
 } from '../shaders/far.js';
-import { gfxUniforms, frameUniformsOf } from '../gfx/uniforms.js';
-import { WorldDetail } from './detail.js';
+import { frameUniformsOf } from '../gfx/uniforms.js';
 import { appearanceRegion, uploadAppearance, uploadAppearanceRange, SOURCE_APPEARANCE_ENABLED } from '../gfx/sourceAppearance.js';
 
-// The far field of a massive world (docs/scaling.md D11, phase W4;
-// docs/webgpu.md G1; the WGSL and the far grid's layout are in
-// shaders/far.js): a brick-resolution grid of the whole world, lighting and
-// liquids beyond the window. Cell meshes own opaque terrain at every distance.
+// The far field of a big map (docs/scaling.md D11, phase W4; docs/webgpu.md
+// G1; the WGSL and the far grid's layout are in shaders/far.js): a
+// brick-resolution grid of the whole world, its distance level of detail,
+// drawn behind the big map's volume wherever that has nothing (drawBehind).
 //
 // Built from the world's scene (world/scenes), progressively: the window's
 // region from its state at once, then the rest a chunk at a time from the
@@ -39,46 +37,21 @@ import { appearanceRegion, uploadAppearance, uploadAppearanceRange, SOURCE_APPEA
 //   - a move summarizes the slab about to leave (world/window.js, before the
 //     shift), so what was built, burnt or dug there stays in the far view;
 //   - while the simulation changes the window, it is summarized too, a slab of
-//     SWEEP_CELLS a frame, a sweep at most every SWEEP_FRAMES frames: the far
-//     grid's copy of it casts the far field's shadows (and the field next to
-//     the window's sides blends into it);
+//     SWEEP_CELLS a frame, a sweep at most every SWEEP_FRAMES frames;
 //   - after these the occupancy levels, the brick-column tops and the shadow
 //     heights are rebuilt (refresh: after a leaving slab, at the next view,
 //     since the view marches it; after a sweep, at its end), and the shadow
 //     heights again when the sun or the window moves.
 // Everything records into the open frame (docs/webgpu.md B3).
 //
-// The window takes three things from the far field (attach): its shadow map
-// the far field's shadows (a mountain outside shades the window, and its GI),
-// its GI the far field past where its rays end (distant hills block the low
-// sky and light it back), and its volume the same aerial perspective, so the
-// window doesn't stand out crisper than the land around it at the same
-// distance: the grid, the tops and the shadow heights go into the lighting
-// group (gfx/volume.js and src/derived.js attachFar), and FrameUniforms.far
-// turns their branches on.
-//
-// The view is one full-screen pass drawn in our scene pass before the volume
-// (src/wire/world.js: draw; the volume itself draws first, into its own
-// targets, and composites over the view: volumePass, so the view stops at
-// its opaque hits and skips them), in the realistic view only: sky, the open sea
-// beyond the world and the far grid, with depth, so the window's volume
-// composites over it, depth-tested against the meshes three drew first. It
-// marches the far grid past the window's box, which the volume draws. Its
-// pipeline builds the first time the realistic view shows the world (it is
-// as big as the volume's; B5: the data views never build it): the far field
-// shows once it is ready.
-//
-// Throughout the view the detail meshes (world/detail.js, docs/world-lod.md:
-// render-only meshes of the chunks' cells) own opaque terrain: drawn
-// just before the view, which never draws coarse opaque terrain, and
-// before the scene pass their depth (prepass), where the view's march stops.
+// The view is one full-screen pass (shaders/far.js farFrag), in the realistic
+// view only: sky, the open sea beyond the world and the far grid. Its lighting
+// group is the volume's with the far grid, tops and shadow heights in it
+// (attachVolume): its ground's elements and the sun's shadow on it.
 //
 // The rolling log (gfx/presentation.js: `presentation`, set by
 // src/wire/world.js): while a gamemode's effect bends the view, the view draws
-// its curved variant (shaders/far.js farFrag's: its own pipeline, built the
-// first time it is wanted, the far field showing once it is ready) and the
-// detail meshes bend in their vertex stage, both from the effect's parameters
-// in the view's params.
+// its curved variant (its own pipeline, built the first time it is wanted).
 
 const SWEEP_FRAMES = 120;        // frames between sweeps over the window's own region while the sim changes it (its copy only casts the far shadows and feeds the window's GI)
 const SWEEP_CELLS = 16;          // ...summarizing this many cells of it along x per frame
@@ -89,8 +62,7 @@ const SCENE_REFRESH_FRAMES = 8;     // ...and frames between rebuilding the leve
 const SOFTWARE_CHUNKS_PER_FRAME = 1;   // on a software adapter (SwiftShader: the container, ?software=1) a chunk is
                                        // seconds of CPU: one a frame, whatever the scene says
 const EDGE_SAMPLES = 256;           // columns along the world's edge whose ground a sea-less world's plain beyond it is the median of
-const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08, RENDER_ATTACHMENT: 0x10 };   // (GPUTextureUsage's bits)
-const NO_DETAIL_DEPTH = new WeakMap();   // per device: a 1×1 r32float the view binds while there is no meshes' depth
+const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08 };   // (GPUTextureUsage's bits)
 const BUFFER = { STORAGE: 0x80, COPY_DST: 0x08, COPY_SRC: 0x04 };                                // (GPUBufferUsage's bits)
 
 // The open level beyond a world's edge (cells): its sea, or for a world
@@ -118,8 +90,6 @@ export class FarField {
     this.sim = win.sim;
     this.gpu = win.sim.gpu;
     const sim = this.sim, gpu = this.gpu, g = sim.g, L = this.L = farLayout(win.size);
-    // the shadow and GI pipelines have the simulation's world's far layout compiled in (attach)
-    if (sim.world && win.size.some((n, i) => n !== sim.world[i])) throw new Error(`far field: world ${win.size}, but the pipelines are built for ${sim.world}`);
     const [bx, by, bz] = L.bricks.n;
     const tex3 = (label, format) => gpu.createTexture({ label, size: [bx, by, bz], dimension: '3d', format, usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
     const tex2 = (label, format) => gpu.createTexture({ label, size: [bx, bz], format, usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
@@ -131,7 +101,7 @@ export class FarField {
     this.field = tex3('far field', FAR_FORMATS.field);   // what the view draws (farBoostFrag)
     this.top = tex2('far tops', FAR_FORMATS.top);
     this.shadow = tex2('far shadow heights', FAR_FORMATS.shadow);
-    this.occ = gpu.createBuffer({ label: 'far occupancy', size: occupancyWords(L) * 4, usage: BUFFER.STORAGE | BUFFER.COPY_SRC | BUFFER.COPY_DST });   // (written: the detail mask, world/detail.js)
+    this.occ = gpu.createBuffer({ label: 'far occupancy', size: occupancyWords(L) * 4, usage: BUFFER.STORAGE | BUFFER.COPY_SRC });
     this.views = {
       grid: this.grid.createView({ label: 'far grid', dimension: '3d' }),
       field: this.field.createView({ label: 'far field', dimension: '3d' }),
@@ -155,9 +125,8 @@ export class FarField {
     this.chunksDrawn = 0;        // ...and how many it has drawn (the app redraws the view as it grows)
     this.cells = null;           // the scene cells of a chunk while a build runs
     this.trees = null;           // the tree map and bands while a build with trees runs
-    this.visible = false;
-    this.vol = null;
-    this.derived = null;
+    this.vol = null;             // the volume whose lighting group the view binds (attachVolume)
+    this.behind = false;         // drawBehind draws this frame (viewBehind)
 
     // the kernels (built while the window's are: whenReady)
     const S = this.cellsLayout = farSceneLayout(L);
@@ -195,37 +164,20 @@ export class FarField {
     };
     this.g = null;
 
-    // the view: its pipeline built when the realistic view first draws the world (view), shown once it is ready
+    // the view: its pipeline built the first time drawBehind wants it
     const P = win.P;
     this.level = beyondLevel(this.scene, P);
     this.sea = P.sea;
     this.floor = P.sea > 0 ? P.floor : this.level;
     this.fu = frameUniformsOf(gpu);
     this.viewFrameLayout = layout('FAR_VIEW_FRAME', FAR_VIEW_FRAME);
-    this.viewPipe = gpu.renderPipeline({
-      name: 'far view', code: farFrag(g, L, false, { sourceAppearance: this.sourceAppearance }), layouts: [this.viewFrameLayout, tl.STATE_RO, gpu.L.LIGHTING],
-      params: FarViewParams, ...farViewPipeline(), build: 'manual',
-    });
-    // the rolling log's view (made the first time it is wanted)
-    this.viewPipeCurved = null;
+    this.viewFrameGroup = null;
     this.presentation = null;
-    if (!NO_DETAIL_DEPTH.has(gpu)) {
-      NO_DETAIL_DEPTH.set(gpu, gpu.createTexture({ label: 'far no detail depth', size: [1, 1], format: 'r32float', usage: TEX.TEXTURE_BINDING }).createView());
-    }
-    this.viewFrameGroup = null;   // (_frameGroup: it holds the detail meshes' depth)
-    this.viewFrameDepth = null;
-    this.depthFor = null;         // the scene target the meshes' depth was drawn for this frame (prepass), else null
-    // the volume first (volumePass): its own colour and depth, the occluder the view stops at, at the scene target's size
-    this.under = { pipe: gpu.renderPipeline({ name: 'far under', code: farUnderFrag(), layouts: [layout('FAR_UNDER', FAR_UNDER_LAYOUT)], ...farUnderPipeline(), build: 'idle' }) };
-    this.under.occPipe = gpu.renderPipeline({ name: 'far occluder', code: farOccluderFrag(), layouts: [layout('FAR_OCCLUDER', FAR_OCCLUDER_LAYOUT)], ...farOccluderPipeline(), build: 'idle' });
-    this.frameFor = null;         // the scene target this frame's prepass ran for (the view draws into it), else null
-    this.occFor = false;          // this frame's view stops at the occluder (the volume drew first)
     this.viewParams = {
-      clipToWorld: new Matrix4(), worldToClip: new Matrix4(), eye: [0, 0, 0], sea: this.sea, winLo: [0, 0, 0], floor: this.floor, detailDepth: 0,
+      clipToWorld: new Matrix4(), worldToClip: new Matrix4(), eye: [0, 0, 0], sea: this.sea, winLo: [0, 0, 0], floor: this.floor,
       warpK: 0, warpAnchor: [0, 0], warpDir: [0, 1],
     };
-    this._m = { toWorld: new Matrix4(), eye: new Vector3(), worldToScene: new Matrix4() };
-    this.detail = new WorldDetail(this);
+    this._m = { toWorld: new Matrix4(), eye: new Vector3() };
     this.ready = false;   // (the build kernels: whenReady)
     this.disposed = false;
   }
@@ -233,36 +185,16 @@ export class FarField {
   // Whether the rolling log bends the view now (gfx/presentation.js).
   get curved() { return !!this.presentation?.active && this.presentation.parameters.k !== 0; }
 
-  // The view's pipeline for the view as it is now (flat, or the rolling log's).
-  get viewPipeline() {
-    if (!this.curved) return this.viewPipe;
-    return (this.viewPipeCurved ??= this.gpu.renderPipeline({
-      name: 'far view curved', code: farFrag(this.sim.g, this.L, false, { curved: true, sourceAppearance: this.sourceAppearance }),
-      layouts: [this.viewFrameLayout, this.sim.L.STATE_RO, this.gpu.L.LIGHTING],
-      params: FarViewParams, ...farViewPipeline(), build: 'manual',
-    }));
-  }
-
-  // The view's pipeline is ready (the far field shows once it is).
-  get viewReady() { return this.viewPipeline.state === 'ready'; }
-
-  /** Starts building the view's pipeline (once: the realistic view draws it; curved, the rolling log's); resolves when it is ready. */
-  buildView() { return this.viewPipeline.build(); }
-
-  /** Resolves when the build's kernels are ready (the window's whenReady waits for it); the view builds when it is first drawn (view). */
+  /** Resolves when the build's kernels are ready (the window's whenReady waits for it); the view builds when it is first drawn (drawBehind). */
   whenReady() {
     return (this._ready ??= Promise.all(Object.values(this.k).map((k) => k.ready)).then(() => { this.ready = true; return this; }));
   }
 
-  // The view's group 0 (FrameUniforms, the field, the occupancy, the detail
-  // meshes' depth or the occluder: `view`), made again when that texture is.
-  _frameGroup(view = null) {
-    const depth = view ?? this.detail.depthView ?? NO_DETAIL_DEPTH.get(this.gpu);
-    if (this.viewFrameGroup && this.viewFrameDepth === depth) return this.viewFrameGroup;
-    this.viewFrameDepth = depth;
-    return (this.viewFrameGroup = this.gpu.bindGroup(this.viewFrameLayout, [
+  // The view's group 0: FrameUniforms, the field, the occupancy.
+  _frameGroup() {
+    return (this.viewFrameGroup ??= this.gpu.bindGroup(this.viewFrameLayout, [
       { binding: 0, resource: { buffer: this.fu.tables } }, { binding: 1, resource: { buffer: this.fu.uniforms.buffer } },
-      { binding: 2, resource: this.views.field }, { binding: 3, resource: { buffer: this.occ } }, { binding: 4, resource: depth },
+      { binding: 2, resource: this.views.field }, { binding: 3, resource: { buffer: this.occ } },
     ], 'far view frame'));
   }
 
@@ -324,7 +256,6 @@ export class FarField {
   // last (tick draws them from the end).
   sceneBuild() {
     if (!this.ready) throw new Error('far field: build before its kernels are ready (await whenReady)');
-    this.detail.reset();
     const t0 = performance.now();
     const L = this.L, [bx, , bz] = L.bricks.n, C = FAR_SCENE.CHUNK;
     this.groups();
@@ -430,11 +361,9 @@ export class FarField {
   // aligned; bricks along x, y, z) into the far grid, at the window's origin:
   // the slab about to leave on a move (before the shift), a slab of a sweep,
   // or all of it. derive: rebuild what derives from the grid before the next view.
-  // Keep cached detail until changed cells have a replacement mesh.
   summarize(lo, bricks, derive = true) {
     if (!this.built) return;
     const sim = this.sim, o = sim.origin;
-    this.detail.stale([o.x + lo[0], o.y + lo[1], o.z + lo[2]], bricks.map((n) => n * BRICK));
     const at = [(o.x + lo[0]) / BRICK, (o.z + lo[2]) / BRICK], size = [bricks[0], bricks[2]];
     this.region(this.k.win, this.groupsFixed.win, at, size, { state: sim.bindRO, header: sim.readHeader() });
     this.boost(at, size);
@@ -470,7 +399,6 @@ export class FarField {
       this.summarize([x, 0, 0], [SWEEP_CELLS / BRICK, g.ny / BRICK, g.nz / BRICK], last);
       this.sweep = last ? -1 : this.sweep + 1;
     }
-    this.detail.tick(); // submit after staleness checks, not just before invalidating the job
   }
 
   // Rebuild what derives from the far grid (after it changed) and the shadow
@@ -500,31 +428,13 @@ export class FarField {
     if (what) this.last = { ...this.last, refreshMs: performance.now() - t0 };
   }
 
-  // The window's volume (its shadow kernel's casters, its haze) and its GI
-  // (src/derived.js) take the far field: the grid, the tops and the shadow
-  // heights in the lighting group, their far branches on (FrameUniforms.far,
-  // the app's: win.far), and the cumulus deck overhead.
-  attach(vol, derived) {
-    const far = { grid: this.views.grid, top: this.views.top, shadow: this.views.shadow };
+  // The volume whose lighting group the view binds, the far grid, tops and
+  // shadow heights put in it (nothing else of the volume reads them), so the
+  // view's ground has its elements and the sun's shadow.
+  attachVolume(vol) {
+    if (this.vol && this.vol !== vol) this.vol.attachFar(null);
     this.vol = vol;
-    this.derived = derived;
-    vol?.attachFar(far);
-    derived?.attachFar(far);
-    gfxUniforms.uClouds.value = true;   // the cumulus deck overhead, and its shadows (shaders/gfx/clouds.js)
-    gfxUniforms.uCloudSea.value = this.level;   // (the sea's, or a sea-less world's plain's)
-  }
-
-  // Before the scene draws: whether the view draws this frame, and what
-  // derives from the grid brought up to date. visible: the realistic view (the
-  // data views draw the window alone). (volume and camera: the WebGL view's
-  // transforms; draw reads FrameUniforms' camera.)
-  view(volume, visible, camera) {
-    if (visible && this.built) this.buildView();   // (once: the first time the realistic view shows the world)
-    this.visible = visible && this.built && this.viewReady;
-    const o = this.sim.origin, m = this._m;
-    if (volume?.matrixWorld) m.worldToScene.copy(volume.matrixWorld).multiply(m.toWorld.makeTranslation(-o.x, -o.y, -o.z));
-    this.detail.view(camera, this.visible, volume?.matrixWorld ? m.worldToScene : null);
-    if (this.built) this.refresh();
+    vol?.attachFar({ grid: this.views.grid, top: this.views.top, shadow: this.views.shadow });
   }
 
   // The view's params for the camera FrameUniforms holds now (the frame's
@@ -547,45 +457,6 @@ export class FarField {
   }
 
   /**
-   * Before the scene pass, after FrameUniforms is written (the world wire's
-   * compute hook): the detail meshes' depth, for the scene target the
-   * frame draws into (post.sceneTarget: { width, height }), in a render pass
-   * of their own (world/detail.js depth). The view of this frame then stops
-   * its march at them; a still (renderStill: no compute hook) goes without.
-   */
-  prepass(target) {
-    this.depthFor = this.frameFor = null;
-    if (!this.visible || !this.viewReady || !this.vol || !target) return;
-    this.frameFor = { target, width: target.width, height: target.height };
-    if (this.detail.depth(target, { ...this._params(), detailDepth: 0 })) this.depthFor = { target, width: target.width, height: target.height };
-  }
-
-  /**
-   * Draws the view into our scene pass (the world wire's scene hook, before
-   * the volume), the detail meshes first, after FrameUniforms is written this
-   * frame: its camera is the view's. Nothing while it isn't visible (view) or
-   * its pipeline builds.
-   * @param {GPURenderPassEncoder} rp
-   * @param {{ width: number, height: number }} [target] the scene target it draws into (post.sceneTarget)
-   * @returns {boolean} whether it drew
-   */
-  draw(rp, target = null) {
-    const d = this.depthFor, occ = this.occFor;
-    this.depthFor = this.frameFor = null;   // (this frame's only)
-    this.occFor = false;
-    if (!this.visible || !this.viewReady || !this.vol) return false;
-    const sim = this.sim, p = this._params();
-    p.detailDepth = occ || (d && d.target === target && d.width === target.width && d.height === target.height) ? 1 : 0;
-    const bind = [this._frameGroup(occ ? this.under.occView : null), sim.bindRO, this.vol.lightingGroup];
-    this.detail.draw(rp, p, bind);   // (first: the view depth-tests against the meshes)
-    this.viewPipeline.draw(rp, {
-      bind, header: { ...sim.readHeader(), origin: [0, 0, 0] },   // (world cells throughout: worldPos() is the identity)
-      params: p, count: 3,
-    });
-    return true;
-  }
-
-  /**
    * Big maps' distance level of detail (the WORLD renderer: wire/worldRenderFrame.js,
    * app.js drawWorldSky): the view drawn behind the WORLD volume, after the sky,
    * without writing depth, so the volume draws over it wherever it hits and the
@@ -596,7 +467,9 @@ export class FarField {
    * (UE5 virtual textures, Nanite's root pages; Tanner et al. 1998, "The Clipmap").
    * The far field was the big maps' coarse level until 2026-10-15 (dc480f4f);
    * the WORLD renderer had none since, so a missing brick drew the sky's grey.
-   * No detail meshes (the volume draws the near ground) and no occluder.
+   * Its ground is the far grid's coarse surface (9fef2822 had left opaque
+   * terrain to detail meshes that were never drawn behind the WORLD volume:
+   * the fallback showed sea and sky where land was; 2026-10-23).
    * @param {GPURenderPassEncoder} rp
    * @returns {boolean} whether it drew
    */
@@ -604,10 +477,8 @@ export class FarField {
     if (!this.behind || !this.vol) return false;
     const pipe = this.behindPipeline;
     if (pipe.state !== 'ready') { if (pipe.state === 'idle') pipe.build().then(() => this.onChange?.(), () => {}); return false; }
-    const p = this._params();
-    p.detailDepth = 0;
-    pipe.draw(rp, { bind: [this._frameGroup(NO_DETAIL_DEPTH.get(this.gpu)), this.sim.bindRO, this.vol.lightingGroup],
-      header: { ...this.sim.readHeader(), origin: [0, 0, 0] }, params: p, count: 3 });
+    pipe.draw(rp, { bind: [this._frameGroup(), this.sim.bindRO, this.vol.lightingGroup], params: this._params(),
+      header: { ...this.sim.readHeader(), origin: [0, 0, 0] }, count: 3 });
     return true;
   }
 
@@ -618,114 +489,22 @@ export class FarField {
     if (this.built) this.refresh();
   }
 
-  // drawBehind's pipeline: the view's (flat or the rolling log's), its depth tested but never written.
+  // drawBehind's pipeline: the view's, flat or the rolling log's.
   get behindPipeline() {
-    const curved = this.curved, key = curved ? 'behindCurved' : 'behindFlat', base = farViewPipeline();
+    const curved = this.curved, key = curved ? 'behindCurved' : 'behindFlat';
     return (this[key] ??= this.gpu.renderPipeline({
-      name: curved ? 'far view behind curved' : 'far view behind', code: farFrag(this.sim.g, this.L, false, { curved, sourceAppearance: this.sourceAppearance }),
+      name: curved ? 'far view behind curved' : 'far view behind', code: farFrag(this.sim.g, this.L, { curved, sourceAppearance: this.sourceAppearance }),
       layouts: [this.viewFrameLayout, this.sim.L.STATE_RO, this.gpu.L.LIGHTING],
-      params: FarViewParams, ...base, depthStencil: { ...base.depthStencil, depthWriteEnabled: false }, build: 'manual',
+      params: FarViewParams, ...farViewPipeline(), build: 'manual',
     }));
-  }
-
-  /**
-   * The volume first (docs/webgpu.md F1, shaders/far.js farOccluderFrag):
-   * whether this frame draws the window's volume before the scene pass, into
-   * `target` (post.sceneTarget): the view draws this frame and the prepass ran
-   * for that target (a still goes without: the volume draws in the scene pass).
-   * @param {{ width: number, height: number }} target
-   */
-  volumeFirst(target) {
-    const f = this.frameFor, u = this.under;
-    return !!f && !!target && this.visible && this.viewReady && !!this.vol && f.target === target && f.width === target.width && f.height === target.height
-      && u.pipe.state === 'ready' && u.occPipe.state === 'ready';
-  }
-
-  /**
-   * The volume's own pass at `target`'s size (its colour cleared to 0, its
-   * depth to 1: the volume's pipelines draw into it as into the scene pass),
-   * after three's opaque meshes (the volume marches to their depth). The
-   * caller draws the volume, ends it, then calls occlude.
-   * @param {{ width: number, height: number }} target
-   * @returns {GPURenderPassEncoder}
-   */
-  volumePass(target) {
-    const u = this.under, gpu = this.gpu, w = target.width, h = target.height;
-    if (!u.color || u.color.width !== w || u.color.height !== h) {
-      this._dropUnder();
-      const usage = TEX.RENDER_ATTACHMENT | TEX.TEXTURE_BINDING;
-      u.color = gpu.createTexture({ label: 'volume first colour', size: [w, h], format: VOL_FORMATS.color, usage });
-      u.depth = gpu.createTexture({ label: 'volume first depth', size: [w, h], format: VOL_FORMATS.depth, usage });
-      u.occ = gpu.createTexture({ label: 'far occluder', size: [w, h], format: FAR_DETAIL_DEPTH_FORMAT, usage });
-      u.colorView = u.color.createView();
-      u.depthView = u.depth.createView();
-      u.occView = u.occ.createView();
-      u.group = gpu.bindGroup(gpu.layout('FAR_UNDER', FAR_UNDER_LAYOUT), [{ binding: 0, resource: u.colorView }, { binding: 1, resource: u.depthView }], 'far under');
-      u.occGroups = new Map();   // (per detail depth view)
-    }
-    u.drew = false;
-    return gpu.frame.render({
-      colorAttachments: [{ view: u.colorView, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }],
-      depthStencilAttachment: { view: u.depthView, depthLoadOp: 'clear', depthClearValue: 1, depthStoreOp: 'store' },
-    }, 'volume first');
-  }
-
-  /**
-   * After the volume's pass: the occluder (the nearer of the detail meshes'
-   * depth and the volume's opaque hits) in a pass of its own, which this
-   * frame's view stops at; drew: whether the volume drew (its pipeline
-   * building: the view draws as it did, and nothing composites).
-   * @param {{ width: number, height: number }} target
-   * @param {boolean} drew
-   */
-  occlude(target, drew) {
-    const u = this.under, d = this.depthFor;
-    u.drew = drew;
-    if (!drew) return;
-    const detail = (d && d.target === target && d.width === target.width && d.height === target.height && this.detail.depthView) || NO_DETAIL_DEPTH.get(this.gpu);
-    let group = u.occGroups.get(detail);
-    if (!group) {
-      group = this.gpu.bindGroup(this.gpu.layout('FAR_OCCLUDER', FAR_OCCLUDER_LAYOUT), [
-        { binding: 0, resource: u.colorView }, { binding: 1, resource: u.depthView }, { binding: 2, resource: detail },
-      ], 'far occluder');
-      u.occGroups.clear();   // (one detail depth at a time)
-      u.occGroups.set(detail, group);
-    }
-    const rp = this.gpu.frame.render({ colorAttachments: [{ view: u.occView, loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }] }, 'far occluder');
-    try { u.occPipe.draw(rp, { bind: [group], count: 3 }); } finally { rp.end(); }
-    this.occFor = true;
-  }
-
-  /**
-   * The volume drawn first, composited into the scene pass where the volume
-   * used to draw (after the view): its blend and its depth test. Returns
-   * whether it drew this frame.
-   * @param {GPURenderPassEncoder} rp
-   */
-  drawVolume(rp) {
-    const u = this.under;
-    if (!u.drew) return false;
-    u.drew = false;
-    u.pipe.draw(rp, { bind: [u.group], count: 3 });
-    return true;
-  }
-
-  _dropUnder() {
-    const u = this.under;
-    for (const t of [u.color, u.depth, u.occ]) if (t) this.sim._retire(t);
-    u.color = u.depth = u.occ = u.colorView = u.depthView = u.occView = u.group = null;
-    u.drew = false;
   }
 
   dispose() {
     this.disposed = true;
     this.unsubscribeAppearance?.();
     this.unsubscribeAppearance = null;
-    this._dropUnder();
-    this.detail.dispose();
     this.queue = [];
     this.vol?.attachFar(null);
-    this.derived?.attachFar(null);
     const retire = (b) => b && this.sim._retire(b);
     for (const t of [this.grid, this.field, this.top, this.shadow, this.occ, this.winMaskBuf, this.cells]) retire(t);
     this.cells = null;

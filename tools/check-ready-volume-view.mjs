@@ -52,8 +52,7 @@ assert.equal(gate.select(volume, realistic, [{ state: 'pending' }]), realistic, 
 // are fixtures, while FrameUniforms uses the real writer and style selection.
 const app = source('src/app.js');
 const selectCode = app.slice(app.indexOf('function selectRenderView()'), app.indexOf("// The volume's draw into rp"));
-const drawCode = app.slice(app.indexOf('function drawVolume(rp)'), app.indexOf("// A world's volume first"));
-const volumeFirstCode = app.slice(app.indexOf('function drawVolumeFirst(p)'), app.indexOf('let testNoVolume ='));
+const drawCode = app.slice(app.indexOf('function drawVolume(rp)'), app.indexOf('let testNoVolume ='));
 const sceneCode = app.slice(app.indexOf('function drawScene(rp)'), app.indexOf("// This view frame's kind"));
 const setCode = app.slice(app.indexOf('function setView(id)'), app.indexOf('// The blocks renderer on or off'));
 const hooksCode = app.slice(app.indexOf('const frameHooks ='), app.indexOf('// Mesh-only frames (gfx/meshFrames.js;'));
@@ -71,11 +70,6 @@ const fakeVolume = {
     return true;
   },
 };
-const far = {
-  viewPipeline: ready, volumeFirst: () => true, volumePass: () => ({ end() {} }),
-  occlude(target, drew) { this.lastOcclusion=drew;this.drew = drew; },
-  drawVolume() { const drew = this.drew; this.drew = false; return drew; },
-};
 let written;
 const gpu = { _frameUniforms: {
   uniforms: { write(values) { written = values; } },
@@ -83,17 +77,16 @@ const gpu = { _frameUniforms: {
 } };
 const camera = new PerspectiveCamera();
 const runtime = new Function('helpers', `
-  const { createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows, writeFrameUniforms, vol, far, gpu, camera, Matrix4, Vector3, SMALL_MAP } = helpers;
+  const { createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows, writeFrameUniforms, vol, gpu, camera, Matrix4, Vector3, SMALL_MAP } = helpers;
   const settings = { view: 6 }, readyVolumeView = createReadyVolumeView();
   let volumeFormat;
-  let renderView = settings.view, frameDetail = {}, frameMode = 'full', resets = 0, volumeFirst = false, volumeDrawn = false;
+  let renderView = settings.view, frameDetail = {}, frameMode = 'full', resets = 0, volumeDrawn = false;
   let hybrid=null;
-  const blocks = null, blocksOn = false, testNoVolume = false, win = { far }, worldMode = null;
-  const mapKind = { ...SMALL_MAP, boxFrame: false };   // (a box view with a far field in front: no floor grid, as \`win\` hid it)
+  const blocks = null, blocksOn = false, testNoVolume = false, win = null, worldMode = null;
+  const mapKind = { ...SMALL_MAP, boxFrame: false };   // (no floor grid: its overlays are fixtures here)
   const post = { reset() { resets++; } }, meshFrames = { drop() {} }, sim = { g: {}, resetGI() {} };
   const frameWires = { lighting() {}, beforeView() {}, compute() {}, sceneBelow() {}, sceneAbove() {}, overlay() {}, hasOverlay: false }, brush = { draw() {} };
   const ctx = { get renderView() { return renderView; } };
-  const wire = () => ({ buildFarView() {} });
   const warpNow = () => null, baseDetail = () => ({}), cut = { take() { return null; } }, pov = null;
   const coldShader = { watch() {} }, wakeWhen = promise => promise.catch(() => {});
   const detailGate = { setView() {} }, plainView = id => viewKeyOf(id) === 'plain';
@@ -101,21 +94,19 @@ const runtime = new Function('helpers', `
   const hybridUnavailable = false;
   const settingsPanel = { sync() {} }, shaderPanel = { sync() {} }, hud = { setLegend() {}, toast() {} }, save = () => {}, ensureHybrid = () => {};
   const frameValues = (cam, view) => ({ camera: cam, model: new Matrix4(), sun: new Vector3(0, 1, 0), view });
-  ${setCode}\n${selectCode}\n${drawCode}\n${volumeFirstCode}\n${sceneCode}\n${hooksCode}
+  ${setCode}\n${selectCode}\n${drawCode}\n${sceneCode}\n${hooksCode}
   return { setView, settings, setHybrid(value){hybrid=value;}, frame(detail = {}) {
     frameDetail = detail;
     selectRenderView();
     frameHooks.prepare({ jitter: [0, 0] });
-    drawVolumeFirst({ sceneTarget: {} });
     drawScene({});
     return { draw: vol.lastDraw, volumeDrawn, renderView, contextView: ctx.renderView, resets };
   } };
 `)({ createReadyVolumeView, VIEWS, viewKeyOf, isMaterialView, isTestView, viewShadows, writeFrameUniforms,
-  vol: fakeVolume, far, gpu, camera, Matrix4, Vector3, SMALL_MAP });
+  vol: fakeVolume, gpu, camera, Matrix4, Vector3, SMALL_MAP });
 function check(expected, detail = {}) {
   const f = runtime.frame(detail);
-  assert.equal(far.lastOcclusion,true,'legacy local opaque coverage exists before far ownership clipping');
-  assert.equal(f.volumeDrawn, true, 'volume-first pass composites uninterrupted local terrain');
+  assert.equal(f.volumeDrawn, true, 'the volume draws in the scene pass');
   assert.equal(f.renderView, expected);
   assert.equal(f.contextView, expected, 'world/weather see the same retained view');
   assert.equal(f.draw.view, viewKeyOf(expected));
@@ -135,11 +126,8 @@ realisticPipe.finish();
 await realisticPipe.ready;
 check(6);
 runtime.setView(0);
-far.viewPipeline = pipeline();
-check(6); // Local ready but far pending.
-far.viewPipeline.finish();
 fakeVolume.shadowState = 'pending';
-check(6); // Far ready but required shadow pending.
+check(6); // Volume ready but required shadow pending.
 fakeVolume.shadowState = 'ready';
 assert.equal(check(0).resets, initial.resets + 1, 'reset only on complete-view promotion');
 runtime.setView(6);
@@ -155,14 +143,11 @@ assert.deepEqual(check(0, requestedDetail).draw.detail, {}, 'failed replacement 
 const indirect={buffer:{},offset:32};
 runtime.setHybrid({enabled:true,legacyIndirect:indirect});
 assert.equal(runtime.frame().draw.indirect,indirect,'hybrid retains only the GPU-controlled exceptional legacy draw');
-assert.equal(far.lastOcclusion,false,'hybrid clears the legacy far-field volume-first occluder');
 runtime.setHybrid(null);
 runtime.setView(6);
 check(6);
 assert(app.indexOf('selectRenderView();') < app.indexOf('frameWires.beforeView(dt);'), 'select before any presentation hooks');
-assert.match(source('src/wire/world.js'), /far\?\.view\(app\.volume, isMaterialView\(app\.renderView\)/);
 assert.match(source('src/wire/weather.js'), /enabled\(app\) && isMaterialView\(app\.renderView\)/);
-assert.match(source('src/shaders/far.js'), /if \(all\(v\.world\.xz >= winLo\.xz\) && all\(v\.world\.xz < winLo\.xz \+ GRID_XZ\)\) \{ discard; \}/, 'actual live-window ownership unchanged');
 // Paused, settled BOX: requested Realistic stays pending long enough for
 // all earlier keys to settle. Pipeline completion only wakes VIEW pacing;
 // the actual selected view must re-key DERIVED pacing after resetting GI.

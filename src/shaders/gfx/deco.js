@@ -42,12 +42,6 @@ const DECO_LUM_MIN = 1e-3;
 export const DECO_PLANE_BINDING = 3;
 export const DECO_PLANE_ENTRY = { binding: DECO_PLANE_BINDING, visibility: STAGE.FRAGMENT, buffer: { type: 'read-only-storage' } };
 
-// WEBGPU-STUB (docs/webgpu.md J3): the view reads the plane's 8 bits a
-// channel; nothing packs the paint into the flow field any more.
-export const DECO_PACK_LEVELS = null;
-// WEBGPU-STUB (docs/webgpu.md J3)
-export const decoPackGLSL = '';
-
 // The binding, the lookups and the albedo tint (the realistic
 // tracer calls them). Needs the render library (slotOf, outside) and the
 // volume's params P (shaders/render.js VolumeParams: deco).

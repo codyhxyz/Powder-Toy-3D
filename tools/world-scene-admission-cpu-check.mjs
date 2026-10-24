@@ -255,13 +255,14 @@ test('WORLD admission clears prior immediate motion, but recording and rejection
   assert.equal(f.draws.filter(d=>d.name==='motion').at(-1).params.explicitMotion,false);
   result.s.resolve();await accepted.ticket.confirmation;await f.completeAll();f.post.dispose();await f.completeAll();
 });
+// Re-pinned 2026-10-23: FrameUniforms lost its far switch (one u32; 1168 → 1152 bytes), nothing else moved.
 test('BOX frame packing matches the pre-edit 2cafd380 byte fixture',()=>{
   const camera=new PerspectiveCamera(60,1.5,.25,4096);camera.coordinateSystem=WebGPUCoordinateSystem;
   camera.position.set(3,4,5);camera.updateProjectionMatrix();camera.updateMatrixWorld();
   const frame={camera,model:new Matrix4().makeTranslation(10,0,20),sun:new Vector3(1,0,0),shadowRes:512,time:1.25,view:0,jitter:[.25,-.125]};
   const bytes=FrameUniformsStruct.pack(frameUniformValues(frame));
-  assert.equal(bytes.byteLength,1168);
-  assert.equal(createHash('sha256').update(new Uint8Array(bytes)).digest('hex'),'639ff16a95ada95d48d340b56115f7145a9b494a6ab1f1bd663a6c8e8ac979a2');
+  assert.equal(bytes.byteLength,1152);   // (1168 until 2026-10-23: FrameUniforms lost its far switch)
+  assert.equal(createHash('sha256').update(new Uint8Array(bytes)).digest('hex'),'e7f3d94224fee65a882ecf60075d9629e555e5fa480bb48f2e4d116a95a5b330');
 });
 test('pure frame values own every mutable input; global model/camera and local lights convert exactly once',()=>{
   const camera=new PerspectiveCamera();camera.position.set(3,4,5);camera.updateMatrixWorld();

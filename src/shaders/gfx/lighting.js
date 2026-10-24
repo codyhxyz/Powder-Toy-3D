@@ -1151,7 +1151,7 @@ fn lampLights(p: vec3f, ng: vec3f, n: vec3f, soft: bool, view: LampSpecIn, beamO
     // (traceNear: the lamps' NEAR_MAX_STEPS)
     if (${giUniforms ? '' : 'trace && '}traceNearSteps(o, rd, len, true, LAMP_SELF_SKIP, steps, &hc, &hn) >= 0.0) { continue; }${giUniforms ? '' : `
     if (beam) {
-      if (beaconFarClear(ro, ray)) { sum += power * nl; }
+      sum += power * nl;
       break;
     }`}
     let E = FU.lampCol[i].rgb * lampFall(d2, R, r);
@@ -1167,7 +1167,7 @@ fn lampSum(p: vec3f, ng: vec3f, n: vec3f, soft: bool) -> vec3f {
   return lampShade(p, ng, n, soft, LampSpecIn(vec3f(0.0), 1.0, vec3f(0.0), vec3f(1.0, 0.0, 0.0), 0.0, false)).diff;
 }
 fn lampLight(p: vec3f, ng: vec3f, n: vec3f) -> vec3f { return lampSum(p, ng, n, true); }
-${lighthouseGLSL({ far: backend === 'world' ? false : far })}
+${lighthouseGLSL()}
 `;
 };
 

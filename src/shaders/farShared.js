@@ -19,13 +19,9 @@ import { Appearance, appearanceOf, materialWord, materialId, materialAppearance 
 //   farHazeGLSL         aerial perspective (the far view's; volumeHazeGLSL the volume's on
 //                       every map, farAirWGSL the sky pass's sea past a world's edge),
 //                       its in-scatter taken by the air's sky share (farHazeFor picks the reader)
-//   farCastersGLSL(L)   far casters in the window's sun shadow map
-//   farGIGLSL(L)        what a GI probe's ray sees past the window
-// The sky, casters and GI read the far textures of the lighting group
-// (shaders/bindings.js L.LIGHTING 11-13: tFarGrid, tFarTop, tFarShadow; lib()
-// declares them with far: true); in a box they are dummies and the callers'
-// branches on FrameUniforms.far keep them unread, so a box and a world share
-// every pipeline (docs/webgpu.md E: "GI far branch").
+// The sky reads the far textures of the lighting group (shaders/bindings.js
+// L.LIGHTING 11-13: tFarGrid, tFarTop, tFarShadow; lib() declares them with
+// far: true, the far view's: shaders/far.js).
 
 // The far field's numbers (shaders/far.js has what they mean in full).
 export const FAR = {
@@ -61,10 +57,8 @@ function sliceCols(n, w, h) {
   return root;
 }
 
-// The one world size (app.js WORLDS). Its far layout is compiled into the
-// box's view, shadow and GI pipelines too, their far parts off (FrameUniforms.far):
-// a box and a world then share every big pipeline, so switching to a world
-// compiles none.
+// The one world size (app.js WORLDS): the far layout the check kernels are
+// generated for (tools/check-wgsl.mjs).
 export const WORLD_SIZE = [1024, 128, 1024];
 
 // The far grid's layout for a world of `size` cells: bricks (n: per axis), the
@@ -347,119 +341,6 @@ fn volumeHaze(col: vec3f, alpha: f32, eye: vec3f, p: vec3f) -> vec3f {
   return farHazeSeen(col, alpha, eye, p, hazeAirLit(eye, p));
 }
 `;
-
-// ---------------------------------------------------------------- casters
-// Far casters in the window's sun shadow map (the shadow kernel): where
-// along a texel's ray (grid cells, [t0, t1]: its stretch through the box) it
-// first goes under the shadow height of the columns outside the window
-// (tFarShadow's y). Along a sun ray the height above it can only fall (see
-// shaders/far.js), so one read at the ray's end says whether it ever does,
-// and bisection finds where. A column casts from the higher of its ground seen
-// from below and from above (FAR_SKY): the rock over a cave casts, so the sun
-// doesn't shine down the caves and tunnels under it (farShadowFrag).
-export const FAR_CASTER_STEPS = 10;   // bisection steps (a box diagonal of ~220 cells to ~0.2 cells)
-const castersWGSL = /* wgsl */ `
-const FAR_CASTER_STEPS: i32 = ${FAR_CASTER_STEPS};
-// Whether grid point p lies below the far casters' shadow height.
-fn farUnder(p: vec3f) -> bool {
-  let w = p + vec3f(H.origin);
-  // past the world's edge nothing casts (the heights hold only its columns: clamped, an edge wall's shade ran on forever)
-  if (!farInWorld(w.xz)) { return false; }
-  return w.y + FAR_SHADOW_BIAS < textureSampleLevel(tFarShadow, linearClamp, w.xz / vec2f(WORLD.xz), 0.0).y;
-}
-// The first t in [t0, t1] where ray (ro, rd) is under it, or NO_HIT.
-fn farCasterDepth(ro: vec3f, rd: vec3f, t0: f32, t1: f32) -> f32 {
-  if (!farUnder(ro + rd * t1)) { return NO_HIT; }
-  if (farUnder(ro + rd * t0)) { return t0; }
-  var a = t0;
-  var b = t1;
-  for (var i = 0; i < FAR_CASTER_STEPS; i++) {
-    let m = 0.5 * (a + b);
-    if (farUnder(ro + rd * m)) { b = m; } else { a = m; }
-  }
-  return b;
-}
-`;
-/**
- * The casters' WGSL (after lib()); with the layout (farLayoutGLSL(L)) unless
- * layout is false (a module that pastes the layout itself, or farGIGLSL too).
- * @param {ReturnType<typeof farLayout>} L
- * @param {{ layout?: boolean }} [opts]
- */
-export const farCastersGLSL = (L, { layout = true } = {}) => `${layout ? farLayoutGLSL(L) : ''}${castersWGSL}`;
-
-// ---------------------------------------------------------------- GI
-// The far field in the window's GI (shaders/gi.js, the gather): a probe's ray
-// that has marched its bricks without being stopped reads the far field past
-// where it ended, at doubling distances: the brick-column tops (the window's
-// own region included, from its summary), so distant hills block the low sky
-// and send back the light of their ground (its element's albedo, the sun
-// through the shadow heights, the sky over it); a ray going down past the
-// coast meets the sea (the sky in it by Fresnel, and its body); else the sky.
-// A column's top is the higher of its ground seen from below and from above
-// (FAR_SKY: the rock over a cave). A ray that leaves the window under the
-// ground (a tunnel or cave its side cuts) gets what the sky leaves there
-// (farSkyOpen): none deep under it.
-export const FAR_GI_STEPS = 6;       // reads along the ray past its end...
-export const FAR_GI_STEP0 = 8;       // ...the first this many cells out, each next twice as far (~500 cells in all)
-const giWGSL = /* wgsl */ `
-const FAR_GI_STEPS: i32 = ${FAR_GI_STEPS};
-const FAR_GI_STEP0: f32 = ${glf(FAR_GI_STEP0)};
-const FAR_SEA_F0: f32 = 0.02;   // water's reflectance face on ((1.333 - 1) / (1.333 + 1))²
-// The sunlit, sky-lit ground of the column at world point r whose top is top.
-fn farGround(r: vec3f, top: f32) -> vec3f {
-  let b = clamp(vec3i(floor(vec3f(r.x, top - 1.0, r.z) / f32(FAR_BRICK))), vec3i(0), WB - 1);   // the brick under the top
-  let id = farUnpack(textureLoad(tFarGrid, b, 0)).id;
-  let s = textureSampleLevel(tFarShadow, linearClamp, r.xz / vec2f(WORLD.xz), 0.0).x;
-  let sun = farShadowLit(top, s) * cloudShadow(vec3f(r.x, top, r.z));
-  return ALBEDO(select(id, E_ROCK, id == E_EMPTY)) * (FU.sunCol * max(FU.sun.y, 0.0) * sun + FU.skyUp);
-}
-// The open sea seen toward unit d (going down).
-fn farSea(d: vec3f) -> vec3f {
-  let F = FAR_SEA_F0 + (1.0 - FAR_SEA_F0) * pow(1.0 - clamp(-d.y, 0.0, 1.0), 5.0);
-  return F * skyColor(reflect(d, vec3f(0.0, 1.0, 0.0))) + (1.0 - F) * SCATALB(E_WATER) * FU.skyUp;
-}
-// a world without a sea (FU.sea 0: world/scenes) has a rock plain past its edge (the far view's)
-fn farPlain() -> vec3f { return ALBEDO(E_ROCK) * (FU.sunCol * max(FU.sun.y, 0.0) + FU.skyUp); }
-// What a ray from world point w sees toward unit d past the window, under the
-// open sky; *open becomes 0 where the far field blocks the sky that way.
-fn farBeyondOpen(w: vec3f, d: vec3f, open: ptr<function, f32>) -> vec3f {
-  var s = FAR_GI_STEP0;
-  for (var i = 0; i < FAR_GI_STEPS; i++) {
-    let r = w + d * s;
-    if (!farInWorld(r.xz)) { break; }
-    let t = textureSampleLevel(tFarTop, linearClamp, r.xz / vec2f(WORLD.xz), 0.0).xy;
-    let top = max(t.x, t.y);   // the ground seen from below or above (the rock over a cave)
-    if (r.y < max(top, FU.sea)) {
-      *open = 0.0;
-      if (top >= FU.sea) { return farGround(r, top); }
-      return farSea(d);
-    }
-    s *= 2.0;
-  }
-  if (d.y >= 0.0) { return skyColor(d); }
-  if (FU.sea > 0.0) { return farSea(d); }
-  return farPlain();
-}
-// What a ray from grid point P that ended at Q sees past it toward unit d,
-// scaled by the sky's share where it leaves (*open with it).
-fn farBeyond(P: vec3f, Q: vec3f, d: vec3f, open: ptr<function, f32>) -> vec3f {
-  let w = Q + vec3f(H.origin);
-  let sky = farSkyOpen(w);
-  *open *= sky;
-  if (sky > 0.0) { return sky * farBeyondOpen(w, d, open); }
-  return vec3f(0.0);
-}
-`;
-/**
- * The GI's far WGSL (after lib(g, { variant: 'LIGHTING_GI' }) or any variant
- * with the far textures), with the sky (farSkyGLSL) as the GLSL had it; with
- * the layout unless layout is false, the sky unless sky is false (a module
- * that pastes farSkyGLSL itself).
- * @param {ReturnType<typeof farLayout>} L
- * @param {{ layout?: boolean, sky?: boolean }} [opts]
- */
-export const farGIGLSL = (L, { layout = true, sky = true } = {}) => `${layout ? farLayoutGLSL(L) : ''}${sky ? farSkyGLSL : ''}${giWGSL}`;
 
 /** tools/check-wgsl.mjs: a probe kernel calling every function above (shaders/gfx/lib.js libChecks) */
 export const WGSL_CHECK = () => libChecks('farShared');

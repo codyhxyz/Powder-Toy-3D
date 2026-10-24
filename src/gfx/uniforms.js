@@ -158,16 +158,16 @@ const copyValue = v => ArrayBuffer.isView(v) ? v.slice() : Array.isArray(v) ? v.
  * current graphics settings. The camera matrices must already be current:
  * jittered during scene recording, unjittered on a derived-only tick.
  * @param {{ camera: object, model: object, sun: object, view?: number, shadowRes?: number, time?: number,
- *   lightGain?: number, shadows?: boolean, far?: boolean, sea?: number, jitter?: number[] }} frame
+ *   lightGain?: number, shadows?: boolean, sea?: number, jitter?: number[] }} frame
  *   model: the volume's matrixWorld (grid cells → scene); sun: unit vector toward
  *   the key light; view: src/views.js id; shadowRes: the shadow map's texels per
  *   side (gfx/volume.js); time: the animation clock (uTime: it runs with the
- *   simulation); lightGain: the glow's gain (uLightGain); far: a world's far
- *   field is drawn; sea: its sea level; jitter: post.jitter
+ *   simulation); lightGain: the glow's gain (uLightGain); sea: a world's sea
+ *   level; jitter: post.jitter
  */
 // Pure value construction: the caller updates camera matrices first. Returned
 // matrices, vectors and arrays are owned snapshots; no GPU or shared-last write.
-export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1, time = 0, lightGain = 1, shadows = true, far = false, sea = 0, jitter = [0, 0], sourceAppearance = [0, 0, 0, 0], sourceStyle = false }) {
+export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1, time = 0, lightGain = 1, shadows = true, sea = 0, jitter = [0, 0], sourceAppearance = [0, 0, 0, 0], sourceStyle = false }) {
   const viewProj = new Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
   const invViewProj = viewProj.clone().invert();
   const cam = new Vector3().setFromMatrixPosition(camera.matrixWorld).applyMatrix4(model.clone().invert());
@@ -184,7 +184,7 @@ export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1
     lampCount: u.uLampCount.value, wandLightCount: u.uWandLightCount.value,
     beacon: u.uBeacon.value, beaconDir: u.uBeaconDir.value, beaconCell: u.uBeaconCell.value,
     shadows: !!shadows, nearGI: !!u.uNearGI.value, glowLights: !!u.uGlowLights.value, caustics: !!u.uCaustics.value,
-    clouds: !!u.uClouds.value, far: !!far, caveAmbient: u.uCaveAmbient.value, digMin: u.uDigMin.value, digMax: u.uDigMax.value,
+    clouds: !!u.uClouds.value, caveAmbient: u.uCaveAmbient.value, digMin: u.uDigMin.value, digMax: u.uDigMax.value,
   };
   return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, copyValue(value)]));
 }

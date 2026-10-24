@@ -24,9 +24,6 @@ import { propGLSL } from '../editing.js';
 // Air flags (bits): air worth showing in the heat, pressure and flow views
 // (the brick map's info word, shaders/bindings.js BRICK_INFO).
 export const AIR_FLAGS = { HOT: 1, PRESSURE: 2, FLOW: 4 };
-// WEBGPU-STUB (docs/webgpu.md J3): the brick map's float encoding is the
-// BrickInfo record now (shaders/bindings.js).
-export const brickGLSL = '';
 
 // ---- the brush ----
 // Spawns elements or applies tools inside a sphere or cube: an edit that reads
@@ -229,9 +226,6 @@ fn update(p: vec3i, a: vec4f, b: vec4f, oA: ptr<function, vec4f>, oB: ptr<functi
     else if (P.prop == PROP_VZ) { (*oB).z = v; }
   }
 }`;
-// WEBGPU-STUB (docs/webgpu.md J3): the brush is an edit (sim.editKernel with
-// paintUpdateWGSL), not a full-screen copy-through pass.
-export function paintFrag() { throw new Error('paintFrag removed in the WebGPU port: docs/webgpu.md D6 (paintUpdateWGSL)'); }
 
 // ---- whole-grid passes: one thread per slot ----
 const perSlot = (g) => fold(Math.ceil(gridDims(g).slots / 64));
@@ -375,8 +369,6 @@ ${slotMain}
 // FIELDS, the empty-space distance around the bricks whose matter bit flipped
 // and the glow volume around those whose light changed (REGIONS below).
 export const BRICK_DIST_MAX = 8;          // bricks; also the half-width of each pass's window
-// WEBGPU-STUB (docs/webgpu.md J3): brickDist holds the distance itself, a u32 per brick (bindings.js brickDistAt).
-export const BRICK_DIST_SCALE = null;
 export const AGE_MAX = AGE.MAX;           // frames an age counts up to
 export { FIELDS_DILATE, WORK_DILATE };
 
@@ -980,13 +972,10 @@ ${glowBlurWGSL({ store: last ? 'textureStore(dstTex, bc, vec4f(s * LIGHT_BLUR_GA
 // the shadow kernel's workgroup): those the FIELDS bricks project onto, each
 // brick's box grown by SHADOW_MARGIN cells (the fields' trilinear and cubic
 // samples reach into the bricks around) and a texel. Every tile when the
-// map's key changes (the sun, its size, the window's origin, the far field's
-// switch: shadowList compares FrameUniforms and the header with what the last
-// list was made for) or src/derived.js says so (full: a derived frame went
-// without a map since the last, a far field attached, sim.incremental off).
-// With a world's far field (FrameUniforms.far) a band of rows each frame too
-// (one in SHADOW_SLICE): its casters change as the world streams in, not with
-// the window's bricks.
+// map's key changes (the sun, its size, the window's origin: shadowList
+// compares FrameUniforms and the header with what the last list was made for)
+// or src/derived.js says so (full: a derived frame went without a map since
+// the last, sim.incremental off).
 //   shadowMark  a thread per FIELDS brick (the lists' DL_THREADS): its tiles' bits
 //   shadowList  a thread per tile: the list of those to trace; clears the bits
 //   shadowArgs  one thread: the list's length, the indirect arguments, the key
@@ -997,8 +986,7 @@ export const SHADOW_TILE = 8;         // texels a tile's side: shaders/render.js
 const SHADOW_RES_MAX = 1024;          // texels a side at most (shaders/render.js shadowRes)
 export const SHADOW_TILES_MAX = (SHADOW_RES_MAX / SHADOW_TILE) ** 2;
 const SHADOW_MARGIN = 2;              // cells: a cubic sample's reach
-export const SHADOW_SLICE = 16;       // with a far field, a row of tiles in this many each frame
-const SHADOW_KEY_WORDS = 8;           // sun xyz, res, origin xyz, far
+const SHADOW_KEY_WORDS = 7;           // sun xyz, res, origin xyz
 export function shadowTileWords(g) {
   // (after the distances and the march's occupancy, shaders/occupancy.js)
   const at = occupancyWords(g), key = at + 4, args = key + SHADOW_KEY_WORDS, bits = args + 4, list = bits + SHADOW_TILES_MAX / 32;
@@ -1020,9 +1008,8 @@ fn shadowTileAt(e: u32, corner: ptr<function, vec2u>) -> bool {
   return true;
 }`;
 };
-// res: the map's texels a side (FrameUniforms.shadowRes); full: every tile;
-// phase: the far field's band of rows this frame (a frame count % SHADOW_SLICE).
-export const ShadowTileParams = uniformStruct('ShadowTileParams', { res: 'u32', full: 'bool', phase: 'u32' });
+// res: the map's texels a side (FrameUniforms.shadowRes); full: every tile.
+export const ShadowTileParams = uniformStruct('ShadowTileParams', { res: 'u32', full: 'bool' });
 const shadowBookWGSL = (g) => {
   const w = shadowTileWords(g);
   return /* wgsl */ `
@@ -1037,14 +1024,13 @@ const SH_ARGS: u32 = ${w.args}u;
 const SH_BITS: u32 = ${w.bits}u;
 const SH_LIST: u32 = ${w.list}u;
 const SH_MARGIN: f32 = ${SHADOW_MARGIN.toFixed(1)};
-const SH_SLICE: u32 = ${SHADOW_SLICE}u;
 const SH_PAD: f32 = ${SHADOW_PAD.toFixed(1)};   // shaders/gfx/lighting.js SHADOW_PAD
 @group(2) @binding(0) var<storage, read> dlist: array<u32>;
 @group(2) @binding(1) var<storage, read_write> sh: array<atomic<u32>>;   // brickDist's buffer
 // the map's key as FrameUniforms and the header have it now
 fn shadowKey() -> array<u32, ${SHADOW_KEY_WORDS}> {
   let o = bitcast<vec3u>(H.origin);
-  return array<u32, ${SHADOW_KEY_WORDS}>(bitcast<u32>(FU.sun.x), bitcast<u32>(FU.sun.y), bitcast<u32>(FU.sun.z), P.res, o.x, o.y, o.z, FU.far);
+  return array<u32, ${SHADOW_KEY_WORDS}>(bitcast<u32>(FU.sun.x), bitcast<u32>(FU.sun.y), bitcast<u32>(FU.sun.z), P.res, o.x, o.y, o.z);
 }`;
 };
 export const shadowMarkFrag = (g) => /* wgsl */ `
@@ -1106,8 +1092,7 @@ ${brickMain}
     let x = t % side;
     let y = t / side;
     let marked = ((atomicLoad(&sh[SH_BITS + (t >> 5u)]) >> (t & 31u)) & 1u) != 0u;
-    let band = FU.far != 0u && y % SH_SLICE == P.phase;
-    on = full || marked || band;
+    on = full || marked;
     entry = x | (y << 16u);
   }
   appendTile(on, entry, li);
@@ -1225,11 +1210,6 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   decoded[id.x] = vec4u(brickBits(w), brickAir(w), bitcast<u32>(brickGas(w)), select(0u, 1u, brickMatter(w)));
 }
 `;
-
-// WEBGPU-STUB (docs/webgpu.md J3): region maps are gone (the derived kernels run over brick lists)
-export function fieldRegionMapFrag() { throw new Error('fieldRegionMapFrag removed in the WebGPU port: docs/webgpu.md E (brick lists)'); }
-// WEBGPU-STUB (docs/webgpu.md J3)
-export function regionShareFrag() { throw new Error('regionShareFrag removed in the WebGPU port: docs/webgpu.md E (brick lists)'); }
 
 const rw = () => [LAYOUT.TABLES, LAYOUT.STATE_RW];
 // The brush's kernel as sim.editKernel assembles it (Mix's: reads 'neighbours').
