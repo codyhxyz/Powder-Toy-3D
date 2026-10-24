@@ -895,10 +895,6 @@ export const FAR_VIEW = {
   NORMAL_STEP: 2.0,        // the normal's difference step (half a brick)
   ID_INSET: 0.6,           // the element is read this far inside the surface (in the top cell)...
   ID_DEEPER: 3.0,          // ...or this far inside, if that brick holds no open cells
-  SUN_RAY: [2.5, 7.0, 15.0], // cells toward the sun of the short shadow ray's samples (crowns shading
-                           // each other and the ground under them: the height field leaves crowns out)
-  SUN_RAY_LIFT: 1.0,       // cells off the surface along its normal the short ray starts
-  SUN_RAY_EDGE: [0.35, 0.65],   // field values over which a sample goes from clear to blocking
   AO_D1: 4.0, AO_D2: 10.0, // AO samples out along the normal...
   AO_K: 0.7,               // ...darkening per unit of field found there...
   AO_MIN: 0.35,            // ...down to this
@@ -1018,11 +1014,6 @@ const FAR_ROOT_STEPS: i32 = ${FAR_VIEW.ROOT_STEPS};
 const FAR_NORMAL_STEP: f32 = ${glf(FAR_VIEW.NORMAL_STEP)};
 const FAR_ID_INSET: f32 = ${glf(FAR_VIEW.ID_INSET)};
 const FAR_ID_DEEPER: f32 = ${glf(FAR_VIEW.ID_DEEPER)};
-const FAR_SUN_RAY_N: i32 = ${FAR_VIEW.SUN_RAY.length};
-var<private> FAR_SUN_RAY: array<f32, ${FAR_VIEW.SUN_RAY.length}> = array<f32, ${FAR_VIEW.SUN_RAY.length}>(${FAR_VIEW.SUN_RAY.map(glf).join(', ')});
-const FAR_SUN_RAY_LIFT: f32 = ${glf(FAR_VIEW.SUN_RAY_LIFT)};
-const FAR_SUN_RAY_LO: f32 = ${glf(FAR_VIEW.SUN_RAY_EDGE[0])};
-const FAR_SUN_RAY_HI: f32 = ${glf(FAR_VIEW.SUN_RAY_EDGE[1])};
 const FAR_AO_D1: f32 = ${glf(FAR_VIEW.AO_D1)};
 const FAR_AO_D2: f32 = ${glf(FAR_VIEW.AO_D2)};
 const FAR_AO_K: f32 = ${glf(FAR_VIEW.AO_K)};
@@ -1148,18 +1139,6 @@ fn farNormal(p: vec3f, ch: i32) -> vec3f {
   return select(vec3f(0.0, 1.0, 0.0), -gr / max(l, FAR_FLAT_EPS), l > FAR_FLAT_EPS);
 }
 
-// Sunlight past what's near (crowns, the ground's bumps): a short coarse ray
-// toward the sun through the field, which the height field's shadows (the
-// ground, from far) multiply.
-fn farSunRay(p: vec3f, n: vec3f) -> f32 {
-  let o = p + n * FAR_SUN_RAY_LIFT;
-  var vis = 1.0;
-  for (var i = 0; i < FAR_SUN_RAY_N; i++) {
-    vis *= 1.0 - smoothstep(FAR_SUN_RAY_LO, FAR_SUN_RAY_HI, farMatter(o + FU.sun * FAR_SUN_RAY[i]));
-  }
-  return vis;
-}
-
 // Open sky around the surface: two field samples out along the normal.
 fn farAO(p: vec3f, n: vec3f) -> f32 {
   let o = farSample(p + n * FAR_AO_D1).r + farSample(p + n * FAR_AO_D2).r;
@@ -1187,30 +1166,20 @@ fn farGlowT(p: vec3f, n: vec3f) -> f32 {
   return select(AMBIENT, INCAND_T0 + a * FAR_GLOW_SPAN, a > 0.0);
 }
 
-// A lit opaque far surface: its material (matOf, at the pixel's footprint, so
-// texture fades to its far look), the sun through the shadow heights, the sky
-// over its open share (none under the ground: FAR_SKY), its own glow.
-fn farShadeMaterial(p: vec3f, n: vec3f, rd: vec3f, sunVis: f32, word: i32) -> vec3f {
+// A lit opaque far surface, kept coarse: the view runs on every pixel before
+// the WORLD volume overdraws nearly all of them (drawBehind), so its land is
+// the element's flat albedo (an imported map's own colour where it has one),
+// the sun through the shadow heights, the sky over its open share and its own
+// glow: no material texture, bump or specular. A coarse LOD level shades
+// coarsely (UE's HLOD proxies bake to flat-shaded materials the same way).
+fn farShadeCoarse(p: vec3f, n: vec3f, sunVis: f32, word: i32) -> vec3f {
   let id = materialId(word);
-  let fp = footprint(p);
-  var m = matOf(id, p, n, farGlowT(p, n), appearanceCtype(id, 0.0, materialAppearance(word)), fp);
-  if (m.sourceKind != 0u) { return sourceShade(p, normalize(m.sourceNormal), rd, m.alb, m.rough, m.metal, m.f0, m.sourceKind, m.sourceFlags) + m.emit; }
-  // the material's bump tilts the normal (applyMat), kept facing the eye (shadeSurf)
-  let v = -rd;
-  let ns = faceView(bumpNormal(n, m.g), v);
-  let nv = clamp(dot(ns, v), 1e-4, 1.0);
-  let nl = dot(ns, FU.sun);
-  let rough = clamp(aaRough(clamp(m.rough, MAT_ROUGH_MIN, 1.0), m.slopeVar), MAT_ROUGH_MIN, 1.0);   // (specular AA)
-  let F0 = mix(vec3f(m.f0), m.alb, m.metal);
-  let kD = m.alb * (1.0 - m.metal);
-  let dSun = sunDiffuse(kD, nl, nv, dot(FU.sun, v), rough, m.sss, m.sssCol);
-  let cav = clamp(m.cav, 0.0, 1.0);
-  let c = sunTerm(vec3f(sunVis), dSun, cav, ggxSpec(ns, v, FU.sun, rough, F0));
-  let ambient = skyAmbient(ns) * farAO(p, n) * cav * farSkyOpen(p + n * FAR_SKY_LIFT);
-  // Far surfaces use world cells; the shared local-light API uses grid cells.
-  var beacon = vec3f(0.0);
-  if (FU.beaconDir.w > 0.0) { beacon = beaconDiffuse(p - vec3f(H.origin), n, ns); }
-  return c + kD * (ambient + beacon) + m.emit;
+  var alb = ALBEDO(id);
+  let src = sourceMaterial(id, p, n);
+  if (src.kind != 0u) { alb = src.albedo; }
+  let sun = FU.sunCol * sunVis * max(dot(n, FU.sun), 0.0);
+  let sky = skyAmbient(n) * farAO(p, n) * farSkyOpen(p + n * FAR_SKY_LIFT);
+  return alb * (sun + sky) + cellEmission(id, farGlowT(p, n), appearanceCtype(id, 0.0, materialAppearance(word)));
 }
 
 // Light scattered toward the eye inside liquid lid, per unit (1 - transmittance) (interiorScatter, without the glow volume);
@@ -1422,9 +1391,7 @@ struct FarOut {
       if (v.g > v.r) { col = farLiquid(p, localRd, farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0); }
       else {
         let n = farNormal(p, 0);
-        var sv = sunVis;
-        if (sunVis > 0.0 && dot(n, FU.sun) > 0.0) { sv *= farSunRay(p, n); }
-        col = farShadeMaterial(p, n, localRd, sv, farElement(p, n));
+        col = farShadeCoarse(p, n, sunVis, farElement(p, n));
       }
     }
     col = farHaze(col, rd, tHit, farAirLit(ro - winLo, p - winLo));

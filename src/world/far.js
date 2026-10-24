@@ -61,6 +61,11 @@ const SCENE_CHUNKS_PER_FRAME = 1;   // a scene's far build: chunks a frame (each
 const SCENE_REFRESH_FRAMES = 8;     // ...and frames between rebuilding the levels, tops and shadows while it runs
 const SOFTWARE_CHUNKS_PER_FRAME = 1;   // on a software adapter (SwiftShader: the container, ?software=1) a chunk is
                                        // seconds of CPU: one a frame, whatever the scene says
+// The shadow heights are rebuilt once the sun has turned this many bricks' worth since (or the window moved):
+// a column h cells tall moves its shadow's edge by about h·angle cells, so at the world's full height the edge
+// moves less than this share of a brick. The day cycle turns the sun every frame; rebuilding the whole world's
+// shadows each frame was most of the far field's upkeep.
+const SHADOW_TURN_BRICKS = 0.5;
 const EDGE_SAMPLES = 256;           // columns along the world's edge whose ground a sea-less world's plain beyond it is the median of
 const TEX = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, STORAGE_BINDING: 0x08 };   // (GPUTextureUsage's bits)
 const BUFFER = { STORAGE: 0x80, COPY_DST: 0x08, COPY_SRC: 0x04 };                                // (GPUBufferUsage's bits)
@@ -115,7 +120,8 @@ export class FarField {
     this.sun = sun;
     this.built = false;
     this.dirty = false;          // the far grid changed since the levels, tops and shadows were built
-    this.shadowKey = '';         // the sun and window the shadow heights were built for
+    this.shadowKey = '';         // the window the shadow heights were built for...
+    this.shadowSun = null;       // ...and the sun (SHADOW_TURN_BRICKS)
     this.age = 0;                // frames since the last sweep over the window's region began
     this.version = -1;           // the simulation's version then
     this.sweep = -1;             // the next slab of the sweep under way (-1: none)
@@ -416,13 +422,15 @@ export class FarField {
       this.shadowKey = '';
       what++;
     }
-    const key = `${s.x},${s.y},${s.z}|${o.x},${o.z}`;
-    if (key !== this.shadowKey) {
+    const key = `${o.x},${o.z}`, d = this.shadowSun;
+    const turned = !d || d[0] * s.x + d[1] * s.y + d[2] * s.z < Math.cos(SHADOW_TURN_BRICKS * BRICK / this.L.size[1]);
+    if (key !== this.shadowKey || turned) {
       this.k.shadow.dispatch(f, columnDispatch(this.L), {
         bind: [t, null, F.shadow],
         params: { sun: [s.x, s.y, s.z], winCols: [o.x / BRICK, o.z / BRICK, (o.x + g.nx) / BRICK, (o.z + g.nz) / BRICK] },
       });
       this.shadowKey = key;
+      this.shadowSun = [s.x, s.y, s.z];
       what++;
     }
     if (what) this.last = { ...this.last, refreshMs: performance.now() - t0 };
