@@ -22,7 +22,7 @@ maps repacked by tools/bake-material-textures.mjs: `albedo.webp` (diffuse) and
 | snow_02 | [Snow 02](https://polyhaven.com/a/snow_02) | Rob Tuytel |
 | brown_mud_02 | [Brown Mud 02](https://polyhaven.com/a/brown_mud_02) | Rob Tuytel |
 | clay_plaster | [Clay Plaster](https://polyhaven.com/a/clay_plaster) | Amal Kumar |
-| burned_ground_01 | [Burned Ground 01](https://polyhaven.com/a/burned_ground_01) | Rob Tuytel |
+| moon_dusted_04 | [Moon Dusted 04](https://polyhaven.com/a/moon_dusted_04) | Greg Zaal, Rico Cilliers, Jenelle van Heerden |
 | red_brick | [Red Brick](https://polyhaven.com/a/red_brick) | Rob Tuytel |
 | brick_gravel | [Brick Gravel](https://polyhaven.com/a/brick_gravel) | Dimitrios Savva |
 | rusty_metal_02 | [Rusty Metal 02](https://polyhaven.com/a/rusty_metal_02) | Rob Tuytel |

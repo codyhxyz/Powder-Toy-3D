@@ -879,6 +879,7 @@ fn matTextured(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32, plan
   let sg = select(vec3f(-1.0), vec3f(1.0), n >= vec3f(0.0));
   var alb = vec3f(0.0);
   var rough = 0.0;
+  var metalMask = 0.0;   // the albedo's alpha: 1 bare metal (and every photo without a mask), 0 not (scrap's rust)
   var d = vec3f(0.0);
   for (var k = 0; k < 3; k++) {
     let wk = w[k];
@@ -901,12 +902,14 @@ fn matTextured(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32, plan
       sf += fade * textureSampleLevel(tMatTex, matTexSampler, uv + ob, layer + 1, lod);
     }
     alb += wk * a.rgb;
+    metalMask += wk * a.a;
     rough += wk * sf.b;
     let tn = sf.xy * 2.0 - 1.0;   // the normal map: x along u, y up the image (OpenGL), unit-scaled
     d += wk * (t * tn.x - b * tn.y);
   }
   (*m).alb = min(texSrgb(alb) * TEXTINT(id).rgb, vec3f(TEX_ALB_MAX));
   (*m).rough += rough - tm.z;
+  (*m).metal *= metalMask;
   (*m).g = -tm.w * d;   // bumpNormal tilts the normal by minus the gradient's tangential part
 }
 

@@ -213,7 +213,10 @@ export const MEDIA_NOISE_CELLS = 64;
 //          channel by channel; 1: only its brightness is scaled to alb's).
 //          For a photo whose colours are the point (grass: dry and green
 //          blades), which a per-channel recolour turns into flat turf; the
-//          far view and GI keep drawing alb, so keep it small
+//          far view and GI keep drawing alb, so keep it small (scrap: 1, so
+//          its rust stays orange and its steel grey; its photo's alpha is
+//          a metal mask, tools/bake-material-textures.mjs METAL_MASK, that
+//          makes the rust a dielectric)
 //   texVary  break up the tile's repeat (shaders/gfx/surface.js matTextured:
 //          a second, offset read blended in by a low-frequency noise, Quilez's
 //          "texture repetition"): for what covers big surfaces, where a 1-2 m
@@ -229,6 +232,10 @@ export const MEDIA_NOISE_CELLS = 64;
 // (USGS spectral library, Clark et al. 2007). Metal F0 from measured complex
 // IORs (iron/steel 0.56-0.58, gold 1.0/0.77/0.34).
 const STEEL_F0 = [0.56, 0.57, 0.58];
+const SCRAP_ALB = [0.3, 0.27, 0.24];   // scrap's mean: scuffed steel and rust (SCRAP below)
+// Snow's photo keeps old footprints and tracks in its relief; fresh snow shows
+// them faintly at most (its albedo is flattened at the bake for the same reason).
+const SNOW_TEX_N = 0.5;
 // Play-distance variation (macro, above). Nothing was authored at the 0.3-4 m
 // the player looks at, so past a few metres every opaque material read as one
 // flat albedo (docs/v2/evidence/audit-render.md 2.1-2.3). The rule is
@@ -252,9 +259,9 @@ const LOOKS = {
   WALL: { rough: 0.85, alb: '#8f8c87', tex: 'concrete_wall_008' },
   SAND: { rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55, macro: { tone: 0.16, hue: 0.12, rough: 0.06, size: 1 }, tex: 'dense_sand', texVary: true },
   STONE: { rough: 0.75, alb: '#7f7c77', macro: { tone: 0.2, hue: 0.06, rough: 0.08, size: 1 }, tex: 'gray_rocks' },
-  SNOW: { rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8, macro: { tone: 0.04, hue: 0, rough: 0.12, size: 1 }, tex: 'snow_02', texVary: true },   // wind crust and drifts: gloss varies more than colour
+  SNOW: { rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8, macro: { tone: 0.04, hue: 0, rough: 0.12, size: 1 }, tex: 'snow_02', texVary: true, texN: SNOW_TEX_N },   // wind crust and drifts: gloss varies more than colour
   GUNPOWDER: { rough: 0.6, alb: '#38383d', glint: 0.7 },   // graphite glaze: a soft sheen, many glints
-  ASH: { rough: 0.98, alb: '#a29e97', sss: 0.3, tex: 'burned_ground_01' },
+  ASH: { rough: 0.98, alb: '#a29e97', sss: 0.3, tex: 'moon_dusted_04', texVary: true },
   // Liquids. Clean water absorbs red most (real ratios ~1 : 0.2 : 0.1 with a
   // little dissolved matter) and scatters a little, mostly blue: clear when
   // shallow, blue-green with depth. Both are exaggerated several-fold over
@@ -287,8 +294,11 @@ const LOOKS = {
   // Scrap is the same steel, torn and scuffed, glinting off its torn edges.
   SHARDS: { rough: 0.4, ior: 1.5, alb: '#dce8e6', sss: 0.45, glint: 0.9 },
   SAWDUST: { rough: 0.95, sss: 0.25 },
-  SCRAP: { rough: 0.5, metal: 1, alb: STEEL_F0, glint: 0.6, surf: 'BRUSHED',
-    brushed: { aniso: 0.35, scale: 1, wear: 2.5 }, macro: { tone: 0.12, hue: 0.03, rough: 0.2, size: 0.25 }, tex: 'rusty_metal_02' },   // torn and scuffed: the brushing broken up, dull patches
+  // Its photo is rust-spotted steel: the rust is no metal (the photo's metal
+  // mask) and keeps its own colour (texHue 1), so alb is the heap's mean, dull
+  // steel and rust together (rust's ~0.2 drags it under bare steel's 0.56).
+  SCRAP: { rough: 0.5, metal: 1, alb: SCRAP_ALB, glint: 0.6, surf: 'BRUSHED',
+    brushed: { aniso: 0.35, scale: 1, wear: 2.5 }, macro: { tone: 0.12, hue: 0.03, rough: 0.2, size: 0.25 }, tex: 'rusty_metal_02', texHue: 1 },   // torn and scuffed: the brushing broken up, dull patches
   // Ice shares the liquid surface: a clear surface between ice and water is
   // nearly invisible in real life too (n = 1.31 vs 1.33). Frozen ice is
   // cloudy (trapped air), so it scatters white and stays visible.

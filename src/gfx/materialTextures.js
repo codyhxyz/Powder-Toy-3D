@@ -2,7 +2,8 @@
 // public/textures/CREDITS.md) on the GPU: one rgba8unorm 2d array, two layers
 // per texture, with its whole mip chain:
 //   layer 2k      albedo, rgb, sRGB-encoded (the view decodes after filtering:
-//                 one array holds both kinds of layer, so it can't be an -srgb format)
+//                 one array holds both kinds of layer, so it can't be an -srgb format);
+//                 a: metal mask (1 where the look's metalness holds: opaque photos are all 1)
 //   layer 2k + 1  normal x and y (OpenGL convention), roughness
 // bound at L.LIGHTING's MAT_TEX_BINDING with a repeating trilinear sampler
 // (shaders/bindings.js), read by shaders/gfx/surface.js matTextured.

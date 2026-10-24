@@ -40,13 +40,13 @@ const ASSETS = [
   'marble_rock_01',     // LIMESTONE: pale grey, cracked
   'rock_face_04',       // COAL: dark, cracked, layered rock face
   'gray_rocks',         // STONE: angular grey rubble
-  'snow_02',            // SNOW: wind-crusted snow
+  'snow_02',            // SNOW: wind-crusted snow (flattened: ALBEDO_FLATTEN)
   'brown_mud_02',       // MUD: wet brown mud
   'clay_plaster',       // CLAY: smooth fine clay
-  'burned_ground_01',   // ASH: burnt, ashy ground
+  'moon_dusted_04',     // ASH: fine grey dust (lunar regolith: as fine and as grey as wood ash)
   'red_brick',          // BRICK: red clay brick in mortar (21.5 cm bricks: the scan's own size)
   'brick_gravel',       // RUBBLE: crushed brick
-  'rusty_metal_02',     // SCRAP: scuffed, rust-spotted steel
+  'rusty_metal_02',     // SCRAP: scuffed, rust-spotted steel (its rust non-metal: METAL_MASK)
   'long_white_tiles',   // CERAMIC: glazed white tiles
   'leafy_grass',        // PLANT's grass (the big maps' meadows: appearance GRASS)
 ];
@@ -54,7 +54,22 @@ const ASSETS = [
 // own grain; the normals show blocking as faceted light, so they keep more.
 const ALBEDO_Q = 80;
 const SURFACE_Q = 85;
+const MASK_Q = 60;    // the metal mask (alpha): lossy, as smooth as the rust it follows
 const MM_PER_M = 1000;
+// Albedos flattened before packing: desaturated, and every texel's departure
+// from the mean scaled by `contrast`. Snow is calibrated ~2.4x brighter than
+// the scan (its look's albedo 0.9 against the photo's 0.38), which made the
+// photo's dark track marks stand out; real fresh snow barely varies in tone,
+// so its relief is left to the normal map.
+const ALBEDO_FLATTEN = { snow_02: { contrast: 0.35 } };
+const PERCENT = 100;
+// Metal masks, in the albedo's alpha (1: bare metal, 0: not; an asset without
+// one is opaque: all as its look says). Rust is iron oxide, a dielectric: drawn
+// as metal it mirrored the sky in orange and read as gold flecks. Where the
+// scan is saturated (rust's orange against the grey steel), the mask falls
+// from 1 at saturation lo to 0 at hi (HSL saturation, 0-1). The view
+// multiplies the look's metalness by it (shaders/gfx/surface.js matTextured).
+const METAL_MASK = { rusty_metal_02: { lo: 0.2, hi: 0.35 } };
 const DECIMALS = 4;   // of the means written to textureSet.js
 
 const API = 'https://api.polyhaven.com';
@@ -85,10 +100,24 @@ try {
     const surfPng = join(dir, 'surface.png');
     // normal x, y and roughness into one rgb image
     magick(nor, '-separate', '(', rough, '-channel', 'R', '-separate', ')', '-delete', '2', '-set', 'colorspace', 'sRGB', '-combine', surfPng);
-    execFileSync('cwebp', ['-quiet', '-q', String(ALBEDO_Q), '-m', '6', '-sharp_yuv', diff, '-o', join(dest, 'albedo.webp')]);
+    const flat = ALBEDO_FLATTEN[id];
+    const metalMask = METAL_MASK[id];
+    const albedo = flat || metalMask ? join(dir, 'albedo.png') : diff;
+    if (flat) {
+      // grey, then u -> mean + (u - mean) * contrast; PNG24 keeps three channels (a grey png reads as one)
+      const m = +magick(diff, '-colorspace', 'Gray', '-format', '%[fx:mean]', 'info:');
+      magick(diff, '-colorspace', 'Gray', '-evaluate', 'multiply', String(flat.contrast),
+        '-evaluate', 'add', `${m * (1 - flat.contrast) * PERCENT}%`, '-colorspace', 'sRGB', `PNG24:${albedo}`);
+    }
+    if (metalMask) {
+      magick(diff, '(', '+clone', '-colorspace', 'HSL', '-channel', 'G', '-separate', '+channel',
+        '-level', `${metalMask.lo * PERCENT}%,${metalMask.hi * PERCENT}%`, '-negate', ')',
+        '-alpha', 'off', '-compose', 'CopyOpacity', '-composite', `PNG32:${albedo}`);
+    }
+    execFileSync('cwebp', ['-quiet', '-q', String(ALBEDO_Q), '-m', '6', '-sharp_yuv', '-exact', '-alpha_q', String(MASK_Q), albedo, '-o', join(dest, 'albedo.webp')]);
     execFileSync('cwebp', ['-quiet', '-q', String(SURFACE_Q), '-m', '6', '-exact', surfPng, '-o', join(dest, 'surface.webp')]);
     // means: albedo decoded to linear (ImageMagick's RGB is linear), roughness as stored
-    const mean = magick(diff, '-colorspace', 'RGB', '-format', '%[fx:mean.r] %[fx:mean.g] %[fx:mean.b]', 'info:').split(/\s+/).map((v) => +(+v).toFixed(DECIMALS));
+    const mean = magick(albedo, '-colorspace', 'RGB', '-format', '%[fx:mean.r] %[fx:mean.g] %[fx:mean.b]', 'info:').split(/\s+/).map((v) => +(+v).toFixed(DECIMALS));
     const roughMean = +(+magick(rough, '-colorspace', 'Gray', '-format', '%[fx:mean]', 'info:')).toFixed(DECIMALS);
     const [w, h] = info.dimensions;
     const bytes = ['albedo.webp', 'surface.webp'].reduce((s, f) => s + statSync(join(dest, f)).size, 0);
