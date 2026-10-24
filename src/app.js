@@ -86,10 +86,10 @@ import { launch, mark, physicsEngine } from './launch.js';
 import { createLoadWatch } from './loadWatch.js';
 import { HOMES as VILLAGE_HOMES, FLOOR as VILLAGE_FLOOR, HOME_Z as VILLAGE_Z, HOME_ENTRY } from './pov/village/state.js';
 import { withCityBusFocus } from './pov/village/bus.js';
-import { MAPS, mapByKey, mapOf, sizeTag, WORLD_DIMS, resolveMode, modeByKey } from './maps.js';
+import { MAPS, mapByKey, mapOf, sizeTag, WORLD_DIMS, resolveMode, modeByKey, viewPreviewUrl } from './maps.js';
 import { kindOf, kindOfMap } from './mapKind.js';
 import { SIM_MODE_DEFAULTS, simModeRows, applySimModes, sanitizeModes, modeToast, MODE_KEYS, nextMode } from './simModes.js';
-import { VIEWS, viewKey as viewKeyOf, isMaterialView, viewForMode } from './views.js';
+import { VIEWS, viewKey as viewKeyOf, isMaterialView, viewForMode, THUMB_SIZE } from './views.js';
 import { createReadyVolumeView } from './gfx/readyVolumeView.js';
 import { WIRES, wireNamed } from './wire/index.js';
 import { createFrameWires } from './wire/frameWires.js';
@@ -1546,7 +1546,9 @@ function waveDemoRow() {
   return { type: 'custom', el: h('div', {}, h('div.seg', { role: 'group', 'aria-label': 'Create a physical wave' }, buttons), note), sync };
 }
 const shaderPanel = createShaderPicker({
-  settings, views: VIEWS, renderThumb, onChange: setView,
+  settings, views: VIEWS, renderThumb, warmThumb, onChange: setView,
+  // (baked in Sandbox's look: Cruelty Squad restyles the material views, so its cards render live)
+  thumbUrl: (id) => (selectedMode === 'crueltySquad' ? null : viewPreviewUrl(mapOf(settings)?.key, viewKeyOf(id))),
   onClose: () => setShadersOpen(false), trigger: toolbar.shaderButton,
 });
 const settingsPanel = createSettings({
@@ -1804,16 +1806,18 @@ for (const el of document.querySelectorAll('.panel, .dock-tab')) {
 // last adaptation, its alpha kept) into a 320×200 target, read back, made
 // straight (un-premultiplied) and put on the card's canvas (F5). A view not
 // drawn yet this session builds its pipeline first: the menu is its first use.
-const THUMB_SIZE = [320, 200];
 const thumbCam = useWebGPUCamera(new THREE.PerspectiveCamera());
 let thumbTarget = null;
-async function renderThumb(viewId, out) {
+// `build: false` (a card showing its kept still, ui/thumbCache.js) skips a view whose shader isn't
+// built yet instead of building it: resolves false at once.
+async function renderThumb(viewId, out, { build = true } = {}) {
   if (graphicsFailure || !coreReady) return false;
   const view = viewKeyOf(viewId), detail = isMaterialView(view) ? detailDefines(settings) : {};
   // (Plain is the blocks renderer's, which only the Plain view keeps: from another view its card stays
   // blank; the volume's views from Plain draw the bricks as they were when Plain began)
   const v = vol, format = v.format, b = view === 'plain' ? blocks : null;
   if (view === 'plain' && !b) return false;
+  if (!build && !b && !(v.viewBuilt(view, detail) && (!viewShadows(view) || v.shadowState === 'ready'))) return false;
   await (b ? b.ready : Promise.all([v.viewReady(view, detail), ...(viewShadows(view) ? [v.shadowReady()] : [])]));
   if (graphicsFailure || v !== vol || format !== v.format || (b && b !== blocks)) return false;
   thumbTarget ??= gpu.createTexture({
@@ -1866,6 +1870,15 @@ async function renderThumb(viewId, out) {
   return true;
 }
 
+// Starts building a view's shader for its card (the Shaders menu builds every card's at once,
+// not one after another as each card's turn comes).
+function warmThumb(viewId) {
+  if (graphicsFailure || !coreReady) return;
+  const view = viewKeyOf(viewId), detail = isMaterialView(view) ? detailDefines(settings) : {};
+  if (view === 'plain' || !vol) return;
+  vol.viewReady(view, detail).catch(() => {});
+  if (viewShadows(view)) vol.shadowReady().catch(() => {});
+}
 
 // ---------------------------------------------------------------- input
 const canvasEl = canvas;

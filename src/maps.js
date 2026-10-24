@@ -18,6 +18,7 @@
 //   scenes   optional: every world scene that is this map (Descent's levels), scene the one it starts on
 //   modes    the gamemodes it is built for besides Sandbox
 //   defaultView optional authored shader, overriding the gamemode's starting view
+//   viewPreviewVersion optional: its Shaders-menu previews are baked (public/views/<key>/, viewPreviewUrl)
 import terrainRoute from './world/scenes/descent/terrainRoute.json' with { type: 'json' };
 import { createFold } from './world/scenes/descent/terrainFold.js';
 import { kindOfMap } from './mapKind.js';
@@ -117,6 +118,12 @@ export const isWorld = (m) => kindOfMap(m).streamed;   // (a big map: mapKind.js
 export function mapPreviewUrl(key) {
   const map = mapByKey(key), revision = map?.previewVersion;
   return `/maps/${map?.key ?? key}.webp${revision ? `?v=${revision}` : ''}`;
+}
+// The Shaders menu's preview of a map in a view (public/views/<key>/<view>.webp: tools/map-thumbs.mjs
+// --views bakes them, then sets the map's viewPreviewVersion), or null for a map without them.
+export function viewPreviewUrl(key, view) {
+  const map = mapByKey(key), revision = map?.viewPreviewVersion;
+  return revision ? `/views/${map.key}/${view}.webp?v=${revision}` : null;
 }
 export function mapLoadingUrl(key) {
   const map = mapByKey(key);
