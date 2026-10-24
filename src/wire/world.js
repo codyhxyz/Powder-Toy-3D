@@ -6,9 +6,6 @@ import * as THREE from 'three';
 import { structureClear, shrineAltars as worldShrineAltars } from '../world/structures.js';
 import { loadIsland, releaseGenerator } from '../world/gpu.js';
 import { WorldWindow, WIN_STEP } from '../world/window.js';
-import { installWorldRender } from './worldRender.js';
-import { createMediaNoise } from '../gfx/mediaNoise.js';
-import { createWorldFrameState, createWorldFrameDriver, disposeWorldFrame, startWorldFrameView } from './worldRenderFrame.js';
 import { bakedAir } from '../constructions/runtime.js';
 import { beyondLevel, FarField } from '../world/far.js';
 import { createTorchLights } from '../world/torchLights.js';
@@ -43,31 +40,17 @@ const SHRINE_HEADROOM = 16;        // cells of window it needs above its floor (
 const SHRINE_GLADE = 10;           // cells around its footprint the clearing reaches (trunks within it are felled)
 const SHRINE_TREE_COST = 2;        // a spot's score: cells of rise, plus this per tree to fell...
 const SHRINE_FAR_COST = 0.05;      // ...plus this per cell from the window's middle (lowest wins)
-// A WORLD driver whose work failed throws every tick after it (worldRenderFrame.js failure): the
-// picture froze, with nothing on screen and nothing kept (the user's "map crashed", 2026-10-23). It
-// is retired and a new one built over the same world and source, as a map switch retires one, this
-// many times a page load; past them the failure stops graphics with its message (app.js worldFailed).
-const WORLD_RESTARTS = 1;
-let worldRestarts = 0;
 
 const world = {
   name: 'world',
   ready: true,
 
-  // A world's physical window. Rendering is installed separately from its
-  // immutable Source, never from a second coarse/detailed representation.
-  // The window's size is the simulation's: build() made it worldMode.win, ?win= applied.
+  // A world's physical window, drawn as a small map's grid is (app.js drawScene), and past
+  // it the distance pass. The window's size is the simulation's: build() made it worldMode.win, ?win= applied.
   attach(app) {
     const { sim } = app;
     if (!app.mapKind.streamed) return;
     const scene = app.sceneByKey(app.settings.scene);
-    // The World view's pipeline starts building first, beside the world's generation, not
-    // once the world has generated and streamed in: cold (after a deploy) it is a big map's
-    // longest single build, ~10 s (wire/worldRenderFrame.js startWorldFrameView).
-    startWorldFrameView(app, scene);
-    // ...and its media noise (one per device), which the World frame state awaits
-    // (worldRenderFrame.js createWorldFrameState): it is made in idle slices, a boot's scarcest time.
-    createMediaNoise(app.gpu);
     const win = app.win = new WorldWindow(app.renderer, sim, { size: app.worldMode.size, seed: app.worldSeed, scene });
     sim.origin.fromArray(world.worldStart(app));
     sim.resetNativeDynamics(); // initial native air coordinates match the world before any tick
@@ -75,8 +58,8 @@ const world = {
     gfxUniforms.uClouds.value=true;
     gfxUniforms.uCloudSea.value=beyondLevel(win.scene,win.P);
     // Its distance level of detail (world/far.js drawBehind): the far field's
-    // brick-resolution grid of the whole world, drawn behind the WORLD volume
-    // wherever that has nothing. Joined once its kernels are built, so it never
+    // brick-resolution grid of the whole world, drawn behind the window's volume
+    // past the window. Joined once its kernels are built, so it never
     // holds up the load (win.whenReady waits on win.far), and built over the
     // loaded window then. Its lighting group is the window volume's, with the
     // far grid in it (attachVolume).
@@ -93,18 +76,12 @@ const world = {
   },
   detach(app) {
     releaseGenerator(app.sim);   // the Island scene's, made for this grid
-    const win=app.win;
+    const win = app.win;
     app.win = null;
-    if(win?.renderFrame) {
-      win.renderFrame.dead=true;
-      Promise.resolve(win.renderFrame.ready).then(()=>win.renderFrame.driver?.dispose())
-        .then(()=>win.render?.dispose()).then(()=>win.dispose()).catch(error=>console.error('WORLD retirement failed',error));
-    } else win?.dispose();
+    win?.dispose();
   },
-  // Keep runnable streaming work alive after the coarse lighting queue ends.
-  // Async detail waits have their own completion wake, so they need no polling.
+  // The far field's chunks still to build keep the loop running.
   busy(app) {
-    if(app.win?.renderFrame)return !app.win.renderFrame.driver || app.win.renderFrame.driver.busy;
     return (app.win?.far?.queue.length ?? 0) > 0;
   },
   follow(app) {
@@ -114,53 +91,14 @@ const world = {
     if (app.mp.replica) app.win.far?.tick();
     else world.moveWindow(app);
   },
-  // A failed driver retired for a new one (prepareRender, next frame); false when there is none to
-  // retire, it is already going, or the page has had its WORLD_RESTARTS.
-  restartRender(app) {
-    const slot=app.win?.renderFrame;
-    if(!slot || slot.dead || slot.restart || worldRestarts>=WORLD_RESTARTS)return false;
-    worldRestarts++;slot.restart=true;app.wakeLoop();
-    return true;
-  },
-  // Installation and completion only store state; SceneAttempt remains in App.tick.
-  prepareRender(app) {
-    const win=app.win;
-    if(!win?.loaded)return null;
-    const previous=win.renderFrame;
-    if(previous && (previous.epoch!==win.renderSource.epoch || previous.restart)) {
-      if(!previous.dead) {
-        previous.dead=true;
-        previous.ready=Promise.resolve(previous.ready).then(()=>previous.driver?.dispose()).then(()=>win.render?.dispose())
-          .then(()=>{if(app.win===win){delete win.renderFrame;app.wakeLoop();}})
-          .catch(error=>{previous.error=error;app.wakeLoop();});
-      }
-      if(previous.error)throw previous.error;
-      return null;
-    }
-    if(!win.renderFrame) {
-      const slot=win.renderFrame={epoch:win.renderSource.epoch,dead:false,driver:null,error:null,ready:null};
-      let data;
-      try{data=installWorldRender(win,{wake:()=>app.wakeLoop()});}catch(error){slot.error=error;throw error;}   // (app.js stops graphics on it)
-      app.signs?.setWorldOwner(true);
-      slot.ready=createWorldFrameState(app,data,createMediaNoise(app.gpu)).then(async state=>{
-        if(slot.dead){await data.dispose();await disposeWorldFrame(state);return;}
-        slot.driver=createWorldFrameDriver(app,state);app.wakeLoop();
-      }).catch(error=>{slot.error=error;app.wakeLoop();});
-    }
-    if(win.renderFrame.error)throw win.renderFrame.error;
-    return win.renderFrame.driver;
-  },
-  // (every map's frame: wire/frameWires.js lighting; a big map's once a WORLD request)
+  // (every map's frame: wire/frameWires.js lighting)
   lighting(app) {
     gfxUniforms.uCaveAmbient.value=app.win?.scene.ambient??NO_AMBIENT;   // a world scene's ambient floor (Descent's caves)
     torchLights.update(app.win?.scene??null,app.camGrid,app.sim.origin);   // the nearest wall torches lit as lamps (world/torchLights.js)
   },
   invalidate(app) {
     const { win } = app;
-    if (win) {
-      if(win.renderFrame){win.renderFrame.dead=true;win.renderFrame.driver?.dispose().catch(error=>{if(!app.gpu.failure)console.error('WORLD graphics retirement failed',error);});} // (once graphics stop, stopGraphics has said why)
-      win.epoch++; // reject readbacks without clearing surviving CPU edits
-    }
+    if (win) win.epoch++; // reject readbacks without clearing surviving CPU edits
   },
 
   // The Island box scene (presets: 'island'): world/gpu.js's generator on the
@@ -305,16 +243,9 @@ const world = {
       if (app.sim !== sim || app.win !== win) return;
       app.placeVolume();
       pov?.windowShifted(dx, dz);
-      if(hover.globalCell){
-        // Streaming the physical window does not invalidate a displayed global
-        // hit. Physical tools check their own current-window bounds.
-        hover.cell.copy(hover.globalCell).sub(sim.origin);
-        if(hover.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity)hover.valid=false;
-      }else{
-        hover.cell.x -= dx; // Legacy local picks retain their original behavior.
-        hover.cell.z -= dz;
-        if(hover.valid&&!app.inWindow(hover.cell))hover.valid=false;
-      }
+      hover.cell.x -= dx;
+      hover.cell.z -= dz;
+      if (hover.valid && !app.inWindow(hover.cell)) hover.valid = false;
       app.pacer?.wake();
       return [dx, dz];
     };

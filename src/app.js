@@ -59,9 +59,6 @@ import { createHud, createHelp } from './ui/hud.js';
 import { createScoreboard } from './ui/scoreboard.js';
 import { h, inkFor, luminance } from './ui/dom.js';
 import { gfx, gfxUniforms, updateGfxUniforms, writeFrameUniforms, frameUniformValues, frameUniformsOf } from './gfx/uniforms.js';
-import { freezeWorldView, worldInitialCellDemand } from './wire/worldRenderFrame.js';
-import { GI_SETTLE } from './shaders/gi.js';
-import { displayedWorldRay, transportWorldRay, localWorldHover, worldPickNotReady } from './wire/worldPick.js';
 import { cloudShift } from './shaders/gfx/clouds.js';
 import { DETAIL, settingKey, detailDefaults, detailRows, detailDefines, normalizeDetail } from './gfx/detail.js';
 import { createColdShaderGuard } from './gfx/coldShader.js';
@@ -419,16 +416,6 @@ function stopGraphics(error, { kind = failureKind(error.message) } = {}) {
   return graphicsFailure;
 }
 gpu.onFailure((error) => stopGraphics(error));
-// The WORLD driver's work failed (its tick throws every frame after: wire/worldRenderFrame.js). Before,
-// the picture froze with no message and no record (the user's "map crashed", 2026-10-23). It is kept
-// for the bug report and the driver rebuilt over the same world (wire/world.js restartRender); past its
-// restarts, or with the GPU itself gone, graphics stop with the failure on screen.
-function worldFailed(error) {
-  if (gpu.failure || graphicsFailure || !wire('world').restartRender(ctx)) throw stopGraphics(error, gpu.failure ? {} : { kind: 'worldFailed' });
-  gpuLoss.record({ kind: 'worldRestarted', message: error.message.slice(0, 2000), stack: String(error.stack ?? '').slice(0, 1500), ...gpuLoss.snapshot() });
-  console.error('World renderer failed; restarting it:', error);
-  hud.toast('Something went wrong drawing the map. Restarting it.', { kind: 'error' });
-}
 // A gamemode's presentation effect (gfx/presentation.js; maps.js GAMEMODES.effect:
 // Animal Crossing's rolling log): the displayed world bends, physics stays flat.
 // Selecting one drops TAA's history, ends a stroke and wakes the view.
@@ -595,10 +582,9 @@ function build(savedWorldSize = null) {
   const owner = physicsV2;
   owner.integrationReady = sim.prepareNative(owner);
   owner.integrationReady.then(() => wakeLoop(), () => {});
-  derived = mapKind.boxDerived ? new Derived(sim) : null;
-  // WORLD uses its native frame wire. Keep local picks, not unused BOX views.
-  blocksOn = mapKind.plainBlocks && plainView();
-  vol = createVolume(gpu, sim, { shadows: mapKind.volumeShadows && !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !mapKind.presets && !!sceneByKey(settings.scene).importManifest?.appearance });
+  derived = new Derived(sim);
+  blocksOn = plainView();
+  vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !mapKind.presets && !!sceneByKey(settings.scene).importManifest?.appearance });
   if (blocksOn) blocks = createBlocks(gpu, sim, { world: mapKind.streamed });
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
   const s = sim, simWake = s.wake.bind(s);
@@ -624,7 +610,7 @@ function build(savedWorldSize = null) {
   // What a frame draws with. V2's native owner holds the cells a big map's renderer reads, so it is
   // one of them; V1's step kernels (s.ready: move, react) are not, only stepping is (worldDrawReady).
   const draw = [...(nativeOwner ? [nativeOwner.ready, nativeOwner.integrationReady] : []), derived?.ready, vol.ready, vol.noiseReady, post.ready, overlays.ready, brush.ready,
-    mapKind.worldRenderer ? null : blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())];
+    blocks ? blocks.ready : vol.viewReady(viewKeyOf(settings.view), baseDetail(), !!warpNow())];
   const core = coreWait = Promise.all([s.ready, ...draw]).then(() => {
     if (coreWait === core) { coreReady = true; wakeLoop(); }
   });
@@ -1027,51 +1013,7 @@ function screenPlane(ray, height, out) {
   const r = screenCurve(ray), t = planeRoots(r, 1, height).find((x) => x >= 0);
   return t == null ? null : out.fromArray(rayPoint(r, t));
 }
-const worldPickToken = () => `${modeEpoch}:${presentation.revision}:${settings.tool}:${!!pov?.active}:${pov?.toolbelt?.selectedKey}:${skipPickLiquids()}`;
-function syncWorldHover() {
-  if(!mapKind.worldRenderer)return hover.valid;
-  return localWorldHover(hover,sim.origin,inWindow,identity=>
-    win.renderFrame?.driver?.displayedMainFrame?.frameIdentity===identity && hover.worldToken===worldPickToken());
-}
-function worldMutationReady() {
-  if(!mapKind.worldRenderer)return true;
-  if(!hover.worldReady || hover.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity ||
-    hover.worldToken!==worldPickToken())return false;
-  // A certified sky miss permits air placement. An unknown/stale query does
-  // not. Hit-anchored operations still need their own in-window surface.
-  return !hover.valid || syncWorldHover();
-}
-// The last World pick that came back ready: its ray is the displayed frame's (displayedWorldRay), so the
-// same frame, token and screen point read the same answer again. First person asked every tick (20-30
-// full world queries a second, each a feedback buffer, a compaction and a readback) for the same hit.
-let worldPickSeen=null;
-function requestWorldPick() {
-  const driver=win?.renderFrame?.driver,display=driver?.displayedMainFrame;
-  const fromPov=!!pov?.active;
-  if(pickPending || (!pointerInside && !fromPov))return;
-  syncWorldHover();
-  if(!display){hover.valid=false;hover.worldReady=false;return;}
-  const ndc=fromPov?[0,0]:pointer.toArray(),token=worldPickToken(),from=sim;
-  const seen=worldPickSeen;
-  if(seen && seen.display===display && seen.token===token && seen.sim===sim && seen.ndc[0]===ndc[0] && seen.ndc[1]===ndc[1]){pointerPickDirty=false;return;}
-  pointerPickDirty=false;pickPending=true;
-  driver.pick({ray:displayedWorldRay(display,ndc),skipLiquids:fromPov&&skipPickLiquids()}).then(hit=>{
-    if(from!==sim || token!==worldPickToken() || driver.displayedMainFrame!==display
-      || (!fromPov && (ndc[0]!==pointer.x || ndc[1]!==pointer.y)))return;
-    hover.valid=hit.ready && hit.valid;
-    hover.worldReady=hit.ready===true;
-    if(hit.ready){
-      Object.assign(hover,{face:hit.face,id:hit.id,T:hit.T,P:hit.P,life:hit.life,raw:hit.raw,
-        frameIdentity:hit.frameIdentity,worldToken:token,globalCell:new THREE.Vector3().fromArray(hit.cell)});
-      syncWorldHover();
-      worldPickSeen={display,token,sim,ndc};
-    }
-    wakeLoop();
-  },()=>{hover.valid=false;hover.worldReady=false;}).finally(()=>{pickPending=false;});
-}
 function requestPick() {
-  if(mapKind.worldRenderer){requestWorldPick();return;}
-  hover.globalCell=null;
   const fromPov = !!aimScreenRay();
   if (pickPending || (!pointerInside && !fromPov)) return;
   pointerPickDirty = false;
@@ -1100,20 +1042,6 @@ function requestPick() {
 // (from the eye through a pixel), which a presentation effect bends: it walks the
 // displayed ray then. Physics' rays (the ground, the body) keep the flat path.
 function pickRay(ro, rd, visible = false) {
-  if(mapKind.worldRenderer && visible){
-    const driver=win.renderFrame?.driver,display=driver?.displayedMainFrame;
-    if(!display)return Promise.resolve(worldPickNotReady());
-    const from=sim,token=worldPickToken();
-    const ray=transportWorldRay(display,ro,rd,volume.matrixWorld,camera);
-    return driver.pick({ray}).then(hit=>{
-      if(from!==sim || token!==worldPickToken() || display!==driver.displayedMainFrame)return worldPickNotReady('WORLD_PICK_OBSOLETE');
-      if(!hit.ready)return hit;
-      const globalCell=new THREE.Vector3().fromArray(hit.cell),cell=globalCell.clone().sub(sim.origin);
-      // This App interface serves physical tools. The native driver and hover
-      // retain global visual validity, but tool cells keep their local ABI.
-      return {...hit,globalValid:hit.valid,valid:hit.valid&&inWindow(cell),globalCell,cell,worldToken:token};
-    });
-  }
   const o = sim.origin.clone(), from = sim, revision = presentation.revision;
   return vol.pick(ro, rd, visible ? warpNow() : null).then((hit) => {
     const cell = pickedNow(new THREE.Vector3().fromArray(hit.cell), o);
@@ -1121,16 +1049,6 @@ function pickRay(ro, rd, visible = false) {
   });
 }
 
-function physicalPickCell(hit) {
-  if(!hit.valid)return null;
-  if(mapKind.worldRenderer&&hit.globalCell){
-    if(hit.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity ||
-      hit.worldToken!==worldPickToken())return null;
-    const cell=hit.globalCell.clone().sub(sim.origin);
-    return inWindow(cell)?cell:null;
-  }
-  return hit.cell.clone();
-}
 
 const isTool = () => settings.tool < 0;
 
@@ -1146,7 +1064,6 @@ function hoverBrushCenter(out, tool = settings.tool) {
 const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 const tmpV = new THREE.Vector3();
 function updateBrush() {
-  syncWorldHover();
   brushValid = false;
   if (ctx.industry?.building || selectedMode === 'factory') {
     brush.set({ visible: false });
@@ -1158,7 +1075,7 @@ function updateBrush() {
     if (painting || shapeDrag) {
       // a box's brush stops at its walls; a world's window has none, so beyond it there's no brush
       if (planePoint(tmpV)) { brushCenter.copy(tmpV); brushValid = true; }
-    } else if (hover.valid && (!mapKind.worldRenderer || syncWorldHover())) {
+    } else if (hover.valid) {
       hoverBrushCenter(brushCenter);
       brushValid = true;
     }
@@ -1177,7 +1094,7 @@ function updateBrush() {
     shape: settings.shape,
     color: toolById(settings.tool).color,
   });
-  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper && (!mapKind.worldRenderer || syncWorldHover()) });
+  builds?.update({ hover, active: isBuild(settings.tool) && pointerInside && !uiHover && !eyedropper });
 }
 
 const clampToGrid = (v) => v.set(THREE.MathUtils.clamp(v.x, 0, sim.g.nx), THREE.MathUtils.clamp(v.y, 0, sim.g.ny), THREE.MathUtils.clamp(v.z, 0, sim.g.nz));
@@ -1352,7 +1269,6 @@ const FILL_REFUSED = {
   gone: 'The world changed before the fill: try again',
 };
 function fillAt() {
-  if(mapKind.worldRenderer && !syncWorldHover())return;
   if (mp.replica && !mp.isGuest) { mp.guard(); return; }
   if (!hover.valid) { hud.toast('Click a surface to fill from', { kind: 'error' }); return; }
   const tool = settings.tool, st = brushStroke(tool);
@@ -1386,7 +1302,6 @@ const isBrush = (id) => id !== SIGN_TOOL && !isBuild(id) && !isSpawnerTool(id);
 // stays on its drag plane, so a held pour doesn't climb up its own heap toward
 // you; a brush tool's (erase, heat) follows the crosshair into what it works on.
 function updateGunBrush() {
-  syncWorldHover();
   const g = sim.g;
   const out = toolGunOut;
   toolGunOut = false;   // the gun says so again next frame (toolGun.aim), while it's in hand
@@ -1398,7 +1313,7 @@ function updateGunBrush() {
         screenAt(povRay, strokeDist, brushCenter);   // (along the displayed aim: the rolling log bends it)
         brushValid = !mapKind.streamed || inWindow(brushCenter);
       }
-    } else if (hover.valid && (!mapKind.worldRenderer || syncWorldHover())) {
+    } else if (hover.valid) {
       hoverBrushCenter(brushCenter, tool);
       brushValid = true;
     }
@@ -1416,7 +1331,7 @@ function updateGunBrush() {
     shape: settings.shape,
     color: toolById(tool).color,
   });
-  builds?.update({ hover, active: out && isBuild(settings.tool) && (!mapKind.worldRenderer || syncWorldHover()), crosshair: true });
+  builds?.update({ hover, active: out && isBuild(settings.tool), crosshair: true });
 }
 
 // ---------------------------------------------------------------- UI
@@ -1811,7 +1726,7 @@ function setView(id) {
   setBlocks(plainView(id));
   prepareGI();
   const key = viewKeyOf(id);
-  if (mapKind.volumeShadows && !blocksOn && viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
+  if (!blocksOn && viewShadows(key) && vol.shadowState === 'idle') vol.shadowReady().then(() => pacer.wake(), () => {});
   settingsPanel.sync();
   shaderPanel.sync();
   hud.setLegend(VIEWS.find((v) => v.id === id));
@@ -1821,7 +1736,7 @@ function setView(id) {
 // The blocks renderer on or off (setView: on in the Plain view). Off again,
 // the derived passes it skipped rebuild every brick.
 function setBlocks(on) {
-  on = !!on && mapKind.plainBlocks;
+  on = !!on;
   if (on === blocksOn || graphicsFailure) return;
   blocksOn = on;
   if (on) {
@@ -1893,7 +1808,6 @@ const THUMB_SIZE = [320, 200];
 const thumbCam = useWebGPUCamera(new THREE.PerspectiveCamera());
 let thumbTarget = null;
 async function renderThumb(viewId, out) {
-  if(mapKind.worldRenderer)return renderWorldThumb(viewId,out);
   if (graphicsFailure || !coreReady) return false;
   const view = viewKeyOf(viewId), detail = isMaterialView(view) ? detailDefines(settings) : {};
   // (Plain is the blocks renderer's, which only the Plain view keeps: from another view its card stays
@@ -1919,8 +1833,8 @@ async function renderThumb(viewId, out) {
       // the meshes too, as a frame draws them (the stills' target is post's still one)
       opaque: (p) => (threeMeshes(p, false, thumbCam) ? (b ? true : cut.capture(p.sceneTarget.depth)) : false),
       draw(rp) {
-        const lit = mapKind.boxFrame && isMaterialView(view), sea = lit ? boxSeaParams() : null;   // under the sky that lights it (gfx/overlays.js drawSky), the sea past its walls
-        if (lit) overlays.drawSky(rp, sea);
+        const lit = mapKind.boxFrame && isMaterialView(view), sea = lit ? boxSeaParams() : null;   // the sea past its walls
+        drawSkyFor(rp, view, sea);
         if (mapKind.boxFrame) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: 1, lit, sea });
         if (b) {
           b.drawOpaque(rp, { marchNear: pov?.marchNear ?? 0, floor: mapKind.boxFrame });
@@ -1952,54 +1866,6 @@ async function renderThumb(viewId, out) {
   return true;
 }
 
-// Each WORLD card owns its camera and RGBA8 target through final readback.
-// Only the frozen view is captured here; actors are selected by the normal tick.
-async function renderWorldThumb(viewId,out) {
-  const world=win,slot=world?.renderFrame,driver=slot?.driver;
-  const retired=()=>win!==world || world.renderFrame!==slot || slot.dead ||
-    (world.renderSource && world.renderSource.epoch!==slot.epoch);
-  if(graphicsFailure || !coreReady || slot?.dead || !driver?.accepted || !driver.displayedMainFrame || retired())return false;
-  const view=viewKeyOf(viewId),detail=isMaterialView(view) ? detailDefines(settings) : {};
-  const ownCamera=useWebGPUCamera(new THREE.PerspectiveCamera());
-  camera.updateMatrixWorld();ownCamera.copy(camera,false);
-  // Detach from any POV rig without turning its world pose into a local pose.
-  ownCamera.matrix.copy(camera.matrixWorld);ownCamera.matrixWorld.copy(camera.matrixWorld);
-  ownCamera.matrixWorldInverse.copy(camera.matrixWorldInverse);
-  ownCamera.matrix.decompose(ownCamera.position,ownCamera.quaternion,ownCamera.scale);
-  ownCamera.aspect=THUMB_SIZE[0]/THUMB_SIZE[1];
-  useWebGPUCamera(ownCamera);
-  const frame=driver.accepted.frame;
-  // Source/time/light/artwork stay in accepted data; only view style changes.
-  const model=volume.matrixWorld.clone().multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray().map(v=>-v)));
-  const style=frameUniformValues({camera:ownCamera,model,
-    view:viewId,sourceStyle:selectedMode==='crueltySquad' && isMaterialView(view)});
-  const frozen=presentation.neutral(()=>freezeWorldView({camera:ownCamera,presentation,settings,post,pov,sim},
-    {...frame.values,model:model.toArray(),view:style.view,materialStyle:style.materialStyle,sourceStyle:style.sourceStyle},
-    {view,detail,curved:false}));
-  frozen.settings.view=viewId;
-  frozen.post.raw=view==='plain' ? false : !isMaterialView(view);
-  frozen.post.cruelty=selectedMode==='crueltySquad' && isMaterialView(view);
-  frozen.params.warpK=0;
-  const target=gpu.createTexture({label:'WORLD view thumbnail',size:THUMB_SIZE,format:'rgba8unorm',
-    usage:GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC});
-  try {
-    await driver.queueStill({view:frozen,target});
-    if(retired())return false;
-    const px=await gpu.readback.texture(target);
-    if(retired())return false;
-    const [w,h]=THUMB_SIZE,ctx2d=out.getContext('2d'),img=ctx2d.createImageData(w,h);
-    for(let i=0;i<w*h*4;i+=4) {
-      const a=px[i+3]/255 || 1;
-      img.data[i]=Math.min(255,px[i]/a);img.data[i+1]=Math.min(255,px[i+1]/a);
-      img.data[i+2]=Math.min(255,px[i+2]/a);img.data[i+3]=px[i+3];
-    }
-    ctx2d.putImageData(img,0,0);out.dataset.rendered='1';return true;
-  } finally {
-    // A rejected job has already drained its native prefix/compilation. Keep
-    // the UI-owned target alive through readback's own queue use as well.
-    await gpu.device.queue.onSubmittedWorkDone();target.destroy();
-  }
-}
 
 // ---------------------------------------------------------------- input
 const canvasEl = canvas;
@@ -2013,7 +1879,7 @@ async function eraseClick(e) {
   pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
   const from = sim, ray = gridRay(), stroke = brushStroke(ERASE_TOOL);
   const hit = await pickRay(ray.origin, ray.direction, true);
-  const cell=physicalPickCell(hit);
+  const cell = hit.valid ? hit.cell.clone() : null;
   if (from !== sim || !cell || hit.id < 0 || !canEraseClick()) return;
   if (!mp.isGuest) {
     sim.snapshot(toolById(ERASE_TOOL).name);
@@ -2071,7 +1937,6 @@ function press(e) {
 // tool gun. true if it did something, false if it couldn't (it says why),
 // null if the tool paints a stroke instead.
 function clickTool() {
-  if(mapKind.worldRenderer && !worldMutationReady())return false;
   if ((settings.tool === SIGN_TOOL || isDecoTool(settings.tool) || isSpawnerTool(settings.tool)) && mp.guardEntities?.()) return false;
   if (selectedMode === 'factory' || ctx.industry?.building) return false;
   if (isDecoTool(settings.tool) && mp.guard()) return false;   // decoration isn't in the host's stream yet (src/deco.js)
@@ -2192,12 +2057,8 @@ function touchDown(e) {
   Promise.all([pickRay(ray.origin, ray.direction, true), new Promise((r) => setTimeout(r, TOUCH_PRESS_DELAY_MS))]).then(([hit]) => {
     if (touchPress !== id) return;
     touchPress = 0;
-    const cell=mapKind.worldRenderer?(hit.globalValid?physicalPickCell(hit):hit.cell):hit.cell;
-    if(mapKind.worldRenderer&&(!hit.ready || !cell || hit.frameIdentity!==win.renderFrame?.driver?.displayedMainFrame?.frameIdentity ||
-      hit.worldToken!==worldPickToken()))return;
-    Object.assign(hover, { valid: hit.valid, face: hit.face, id: hit.id, T: hit.T, P: hit.P,
-      globalCell:hit.globalCell??null,frameIdentity:hit.frameIdentity,worldToken:hit.worldToken,worldReady:hit.ready===true });
-    hover.cell.copy(cell);
+    Object.assign(hover, { valid: hit.valid, face: hit.face, id: hit.id, T: hit.T, P: hit.P });
+    hover.cell.copy(hit.cell);
     press(e);
     if (painting && !touchesDown.size) setTimeout(() => { if (!touchesDown.size) painting = false; }, TOUCH_TAP_MS);
   }).catch(() => { if (touchPress === id) touchPress = 0; });
@@ -2336,7 +2197,7 @@ let stepTime = 0, stepCount = 0, stepRate = 0;
 // longer), or at once without TAA (tools turn it off: no history to converge).
 const GI_PROBE_EVERY = 2;
 const pacer = createPacer({
-  derivedSettle: () => Math.max(...[...CHANNELS, ...MEDIA].map((c) => settleFrames(c.ema)), settleFrames(GI_BLEND, GI_PROBE_EVERY), mapKind.settleWorldGI ? GI_SETTLE : 0),
+  derivedSettle: () => Math.max(...[...CHANNELS, ...MEDIA].map((c) => settleFrames(c.ema)), settleFrames(GI_BLEND, GI_PROBE_EVERY)),
   viewSettle: () => (post.settings.taa ? settleFrames(post.settleWeight) : 1),
   presentHz: testMode === 'preview' ? PREVIEW_HZ : MAX_FPS,
   onWake: wakeLoop,
@@ -2413,50 +2274,9 @@ function saveScreenshot() {
   });
 }
 
-// A World owner's scene never changes under it: a new map builds a new window
-// and owner (wire/world.js attach), and a gamemode's look is render-only
-// (gfx/presentation.js). So its scene version is one constant per window, not
-// modeEpoch: Sandbox starting after the first frame bumped modeEpoch, and the
-// owner then refused every later frame ("reset WORLD owner before changing
-// scene", never called by the app), freezing Island after it loaded (2026-10-22).
-const WORLD_SCENE_VERSION = 1;
-// A WORLD request captures source/lighting once, independently of the view.
-function captureWorldRequest(reservation,state,dt,accepted) {
-  updateGfxUniforms(sim,SUN,KEY_LIGHT);
-  frameWires.lighting();   // (as a small map's presented frame: tick's runView)
-  post.settings.raw=!isMaterialView(renderView);
-  post.settings.upscale=presetOf()*DEVICE_RATIO/pixelRatio;
-  post.settings.adaptive=presetOf()<1;
-  post.settings.floor=UPSCALE_FLOOR*DEVICE_RATIO/pixelRatio;
-  post.settings.sprintBlur=sprintBlurNow(dt);
-  gfxUniforms.uNearGI.value=settings.nearGI;gfxUniforms.uGlowLights.value=settings.glowLights;gfxUniforms.uCaustics.value=settings.caustics;
-  const model=volume.matrixWorld.clone().multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray().map(v=>-v)));
-  const captured=frameUniformValues({...frameValues(camera,renderView,[0,0]),model,sourceAppearance:[0,0,0,0]});
-  const values=Object.fromEntries(Object.entries(captured).map(([k,v])=>[k,v?.toArray?v.toArray():v]));
-  const view=freezeWorldView(ctx,values,{view:viewKeyOf(renderView),detail:frameDetail,curved:!!warpNow()?.k});
-  const warp=view.presentation.parameters;
-  // Exact uint words, no hash. Camera/origin/time are not global EMA resets.
-  const key=Array.from(new Uint32Array(new Float32Array([...values.sun,...values.sunCol,...values.keyLight,
-    ...values.caveAmbient,...values.skyUp,values.lightGain,values.cloudSea,values.clouds?1:0,
-    values.nearGI?1:0,values.glowLights?1:0,values.caustics?1:0]).buffer));
-  const rows=values.lampPos, origin=sim.origin.toArray();
-  const lamps=Array.from({length:values.lampCount},(_,i)=>({pos:Array.from(rows[i],(v,k)=>k<3?v+origin[k]:v),
-    col:[...values.lampCol[i]],shape:[...values.lampShape[i]]}));
-  const frame={values,physicsOrigin:origin,params:{marchNear:pov?.marchNear??0,warpK:warp.k,warpAnchor:warp.anchor,warpDir:warp.dir},
-    globalKey:key,lamps,sun:{direction:[...values.sun],basisRevision:1},
-    sceneVersion:WORLD_SCENE_VERSION,schemaVersion:1,configVersion:1,advance:reservation.runDerived||!accepted,
-    external:{mediaNoise:state.noise.view,packedMesh:state.unused.createView(),sourceAppearance:state.emptyArtwork.createView()}};
-  // Reuse source settings only when they really remain compatible. Camera or
-  // physics-origin changes alone must not turn a new light setting into stale data.
-  if(accepted && (JSON.stringify(key)!==JSON.stringify(accepted.frame.globalKey)
-    || JSON.stringify(lamps)!==JSON.stringify(accepted.frame.lamps)))frame.advance=true;
-  if(!frame.advance && accepted)Object.assign(frame,{...accepted.frame,advance:false,external:frame.external});
-  return {frame,view,requirements:worldInitialCellDemand(view.values.cam,win.size)};
-}
 
 // ---------------------------------------------------------------- a presented frame
-// The sprint blur's strength this frame (gfx/sprintBlur.js), eased from the last: small maps'
-// frames and big maps' WORLD requests alike (it was 0 on big maps until 2026-10-23).
+// The sprint blur's strength this frame (gfx/sprintBlur.js), eased from the last.
 function sprintBlurNow(dt) {
   const allowed = settings.sprintBlur && !REDUCED_MOTION.matches && pov?.mode === 'on'
     && !pov.player?.dead && !pov.vehicles.seated && pov.camera.zoom === 1;
@@ -2483,8 +2303,7 @@ function wakeWhen(promise) {
   waited.add(promise);
   promise.then(() => pacer.wake(), () => {});
 }
-// The wires' per-frame hooks (src/wire/frameWires.js): this frame and a big map's WORLD frame
-// (wire/worldRenderFrame.js, captureWorldRequest) both run them through these dispatchers, never by hand.
+// The wires' per-frame hooks (src/wire/frameWires.js), run through these dispatchers, never by hand.
 const frameWires = createFrameWires(live, () => ctx);
 
 // three.js's meshes of one kind into the scene target, seen by `cam`: the
@@ -2582,13 +2401,23 @@ function boxSeaParams() {
   if (!mapKind.edgeSeaFromCells || !sim) return null;
   return edgeSeaParams(boxSea, [sim.g.nx, sim.g.ny, sim.g.nz], sim.origin);
 }
+// The realistic views' sky, first in the scene pass, behind the volume and meshes. A small map's
+// box stands under it, with the sea past its walls (sea: boxSeaParams); a big map's world stands
+// under it with the sea past the world's edge (worldSea), and, behind the volume, the distance
+// pass (world/far.js drawBehind): the far grid's coarse land past the window the volume draws.
+function drawSkyFor(rp, view, sea) {
+  if (!isMaterialView(view)) return;
+  if (mapKind.boxFrame) { overlays.drawSky(rp, sea); return; }
+  overlays.drawSky(rp, worldSea(), sim.origin.toArray());
+  win?.far?.drawBehind(rp);
+}
 function drawScene(rp) {
   const g = sim.g, view = viewKeyOf(renderView);
   // the realistic view's box stands under the sky that lights it (B1: the page's navy gradient behind a
   // daylit scene disagreed with what its water and metal mirrored); the data views keep the page's sky
   // (and the sea past its walls where its water reaches them: boxSeaParams; the floor's seams don't show through it)
   const lit = mapKind.boxFrame && isMaterialView(view), sea = lit ? boxSeaParams() : null;
-  if (lit) overlays.drawSky(rp, sea);
+  drawSkyFor(rp, view, sea);
   if (mapKind.boxFrame) overlays.drawGrid(rp, { model: floorGrid.matrixWorld, opacity: Math.min(1, post.renderScale * pixelRatio), lit, sea });   // one scene pixel wide: fade as it widens past a CSS pixel
   frameWires.sceneBelow(rp);
   if (blocks) {
@@ -2619,13 +2448,12 @@ const frameHooks = {
     // (the kept scene is for other targets: post's sizes changed with this frame's settings)
     if (frameMode === 'meshes' && !meshFrames.fits(p)) { meshFrames.drop(); frameMode = 'full'; }
     writeFrameUniforms(gpu, frameValues(camera, renderView, p.jitter));
+    win?.far?.viewBehind(isMaterialView(renderView));   // a big map's distance pass, drawn behind the volume (drawSkyFor)
   },
   // E1's work that reads FrameUniforms, after it is written: the derived
   // passes, the shadow map (views that read it), GI (the realistic view), the
   // wires' upkeep, the picks asked for this tick
   compute: () => {
-    // Intentional (the WORLD renderer owns a big map's frame; its wires' compute runs in it: worldRenderFrame.js)
-    if(win?.render)return; // WORLD has its own owned native transaction; no local union upkeep.
     if (blocks) {
       // nothing that only feeds the march: the faces again if the state or the window moved
       prof.phase('blocks');
@@ -2772,13 +2600,6 @@ let canvasRectSeen = null;
 addEventListener('resize', () => { canvasRectSeen = null; });
 const canvasRect = () => (canvasRectSeen ??= canvas.getBoundingClientRect());
 
-// What a big map's last live frame showed (tick's World branch): the view key and the pacer's wakes.
-const worldLiveSeen = { key: null, wakes: -1 };
-// V2's matter in flight: drawn where the partial tick has carried it, so it moves every frame (as gfx/packetShadow.js reads it)
-function v2Flying() {
-  const d = physicsV2?.dynamics;
-  return !!d && !d.disposed && d.isIdle !== true && (d.stats?.particles ?? 0) > 0;
-}
 
 // One tick: input, the steps, and, when due, a presented frame. Returns
 // whether the loop should go on (false: nothing to do until something wakes it).
@@ -2835,7 +2656,7 @@ function tick(now, renderOnly = false) {
 
     prof.phase('paint');
     if (selectedMode === 'factory' || ctx.industry?.building) painting = false;
-  if (painting && brushValid && (!mapKind.streamed || (inWindow(brushCenter) && worldMutationReady()))) {
+  if (painting && brushValid && (!mapKind.streamed || inWindow(brushCenter))) {
       const paints = brushPaints();
       if (paints > 0) {
         tmpV.copy(brushCenter).add(sim.origin);   // world cells
@@ -2916,8 +2737,7 @@ function tick(now, renderOnly = false) {
     // Uniform uploads and scene hooks stay draw-only for post-only reuse.
     syncRenderResolution();
     frameDetail = updateFrameDetail();
-    if(mapKind.worldRenderer)renderView=settings.view;
-    else selectRenderView();
+    selectRenderView();
   }
   // Set before viewKey: changing source style invalidates the cached image.
   const crueltyDisplay = selectedMode === 'crueltySquad' && isMaterialView(renderView);
@@ -2925,42 +2745,7 @@ function tick(now, renderOnly = false) {
     post.settings.cruelty = crueltyDisplay;
     post.reset(); // Never blend temporal history across source-style transitions.
   }
-  let runDerived=false, runView=false;
-  if(mapKind.worldRenderer) {
-    // The WORLD renderer failing (e.g. a world over its book's binding limit) stops graphics with
-    // its message on screen, never a loading screen waiting on a frame that can't come.
-    let driver=null;
-    try{driver=wire('world').prepareRender(ctx);}
-    catch(error){stopGraphics(error);throw error;}
-    if(driver) {
-      // What the view shows, read once a presented tick: it starts a transaction (a camera-only one
-      // when it changed) and draws the live frame (worldRenderFrame.js liveLeft). The sun is in it:
-      // the live frame lights the shown world under this frame's sun.
-      const key=present ? viewKey(camera,scene,pixelRatio,innerWidth,innerHeight,`${brushKey(brush,toolById(settings.tool).color)}|${presentation.key}|${SUN.x},${SUN.y},${SUN.z}`,viewSettings,gfx,post.settings) : worldLiveSeen.key;
-      // (a wake: something outside the key, a vfx, a held tool's swing; V2's flying matter moves every frame)
-      const liveForce=present && (key!==worldLiveSeen.key || pacer.wakes!==worldLiveSeen.wakes || pacer.takeMeshWake() || wantFrame() || v2Flying());
-      if(present){worldLiveSeen.key=key;worldLiveSeen.wakes=pacer.wakes;}
-      // Its tick throws once its work has failed, every frame after (worldRenderFrame.js): worldFailed.
-      // reserve: the derived key reads the world's content revision, not sim.version (V2 bumps that every
-      // tick, changed or not, which made every transaction a full lighting tick; physics.js _reportChanges
-      // notes what really changed). No betweenTicks: a transaction carries the cells, which change only on
-      // a tick; the partial tick's flying matter is the live frame's.
-      try {
-      runView=driver.tick({present,dt,live:{force:liveForce,settle:pacer.viewSettle},
-        reserve:()=>{
-          const derived=pacer.derived(`${sim.id}:${win.renderSource?.contentRevision ?? sim.version}|${SUN.toArray()}|${KEY_LIGHT}|${renderView}|${JSON.stringify(gfx)}|${settings.nearGI}:${settings.glowLights}:${settings.caustics}|${detailVersion}`);
-          return {runDerived:derived,runView:pacer.view(key,derived||wantFrame())};
-        },capture:(reservation,state)=>captureWorldRequest(reservation,state,dt,driver.accepted)});
-      } catch(error) { worldFailed(error); driver=null; }
-      // (no presentLast here: recording a scene never takes the canvas, a commit draws it whole, and a
-      // canvas nobody draws keeps its last image (gpu/present.js). It blitted the same picture every
-      // presented tick, with a submit and a fence readback, and over a commit deferred into this frame.)
-      if(runView)viewClock(false); // Only an accepted WORLD transaction advances presentation clocks.
-      if(driver && !renderOnly && (pointerPickDirty || runView || pov?.active))requestPick();
-    }
-    lastFrameMode='world';
-    if(runView && captureNext){const c=captureNext;captureNext=null;c(post.capture());}
-  } else {
+  let runDerived = false, runView = false;
   runDerived = present && pacer.derived(
     `${sim.id}:${sim.version}|${SUN.x},${SUN.y},${SUN.z}|${KEY_LIGHT}|${renderView}|${gfx.smoothing}|${detailVersion}|${vol.shadowState}|${giBuilt}|${blocksOn}|${vol.format}|${vol.packetShadowKey}`);
   const viewV = present ? viewKey(camera, scene, pixelRatio, innerWidth, innerHeight,
@@ -3002,7 +2787,7 @@ function tick(now, renderOnly = false) {
     frameMode = renderOnly ? 'full' : planMeshFrame(runDerived);
     meshesMoved = false;
     viewClock(frameMode !== 'full');   // (before the wires read it: the meshes' light under the clouds)
-    frameWires.lighting();   // a world scene's ambient and torches (as a big map's WORLD request: captureWorldRequest)
+    frameWires.lighting();   // a world scene's ambient and torches
     frameWires.beforeView(dt);   // the world's far field, signs, the held tool
     // (the blocks' faces are radiance, as the material views'; data views are finished colours)
     post.settings.raw = blocks ? false : !isMaterialView(renderView);
@@ -3030,12 +2815,11 @@ function tick(now, renderOnly = false) {
     if (captureNext) { const c = captureNext; captureNext = null; c(post.capture()); }
     prof.phase('other');
   }
-  }
-  // The HUD's rates, for a World frame as for a box's (the World branch above draws through its driver)
+  // The HUD's rates
   if (!renderOnly) countHudRates(runView, now, dt, legacyStepped);
   gpu.endFrame();   // this tick's command buffer, if it recorded anything (B3)
   // a map switched in-game is on screen: its load watch ends (loadWatch.js)
-  if (loadWatch.active && (mapKind.worldRenderer ? win.renderFrame?.driver?.displayedMainFrame : runView)) loadWatch.onScreen();
+  if (loadWatch.active && runView) loadWatch.onScreen();
   if (runView) {
     if (wantShot) { wantShot = false; saveScreenshot(); }
     for (const fn of frameWaiters.splice(0)) fn();
@@ -3084,28 +2868,6 @@ function tick(now, renderOnly = false) {
   gpu, three: renderer, renderer, pacer, canvas, post, presenter, cut, overlays, brush, scene, camera, controls, rig, settings, DEFAULTS, SIZES, WORLDS,
   hover, day, sun: SUN, keyLight: KEY_LIGHT, toolGun, camGrid, sceneByKey,
   threeMeshes,
-  // The shared FrameUniforms at this WORLD frame's view (the sky, sprites and
-  // cursors read them), stills too: as a box's thumbnail writes its own (thumbnails).
-  writeWorldFrame(values,cam) {
-    // Local sprites/cursors retain their existing coordinate ABI; source lamp
-    // conversion remains based on data.frame.physicsOrigin, not this origin.
-    const model=new THREE.Matrix4().fromArray(values.model).multiply(new THREE.Matrix4().makeTranslation(...sim.origin.toArray()));
-    const local={...values,model:model.toArray(),cam:values.cam.map((v,i)=>v-sim.origin.toArray()[i])};
-    const fu=frameUniformsOf(gpu);fu.uniforms.write(local);
-    fu.last.viewProj.fromArray(values.viewProj);fu.last.model.copy(model);fu.last.invViewProj.fromArray(values.invViewProj);
-    fu.last.eye.setFromMatrixPosition(cam.matrixWorld);fu.last.written=true;
-    win?.far?.viewBehind(isMaterialView(renderView));   // its distance level of detail, drawn behind the volume (drawWorldSky)
-  },
-  // The wires' per-frame hooks, as this app's own frame runs them (src/wire/frameWires.js).
-  frameWires,
-  // A world stands under the sky that lights it, as a box does (drawScene's lit):
-  // the realistic views draw it first, behind the volume and meshes, with the
-  // sea past the edge where the world's water reaches it (worldSea).
-  // ...and behind the volume, its distance level of detail: the far field's coarse
-  // grid wherever the volume has nothing (world/far.js drawBehind).
-  drawWorldSky(rp,view){if(isMaterialView(view)){overlays.drawSky(rp,worldSea(),sim.origin.toArray());win?.far?.drawBehind(rp);}},
-  // the brush, last in the scene pass, as drawScene draws it
-  drawWorldBrush(rp){brush.draw(rp);},
   get sim() { return sim; }, get derived() { return derived; }, get vol() { return vol; }, get volume() { return volume; },
   // the engine, as __app reports it (src/wire/saves.js captures and restores it)
   get physics() { return window.__app?.physics; },
@@ -3191,13 +2953,6 @@ function bootReady(pending = null) {
   const check = async () => {
     if (graphicsFailure || launch.startupError) return;   // (stopGraphics flagged a failure; a cancelled start isn't one)
     // (and, a big map's, the simulation's step kernels: till then its loop ticks render-only)
-    if(mapKind.worldRenderer&&(!win.renderFrame?.driver?.displayedMainFrame||!coreReady)){
-      // (its install failing is caught where the frame loop calls it: graphics stop, so this ends)
-      loadWatch.step('the World renderer\'s first frame');
-      launch.progress?.('world');
-      setTimeout(check,READY_POLL_MS);
-      return;
-    }
     loadWatch.step('generating the world');
     if (((mapKind.streamed && !win.loaded) || !settled) && performance.now() - t0 < READY_WAIT_MS) {
       if (mapKind.streamed && !win.loaded) launch.progress?.('world');   // (the loading screen's step: its passes compile, then it generates)
@@ -3226,12 +2981,6 @@ async function allReady() {
     const s = sim, v = vol;
     await coreWait;
     if (s !== sim || v !== vol) continue;
-    if(mapKind.worldRenderer){
-      await gpu.settled();
-      if(graphicsFailure)throw graphicsFailure;
-      if(s===sim&&v===vol&&coreReady)return;
-      continue;
-    }
     const view = viewKeyOf(settings.view);
     if (blocksOn) {
       if (blocks) await blocks.ready;
@@ -3371,24 +3120,6 @@ try {
         if (graphicsFailure) throw graphicsFailure;
         // Two initial frames observe post-setting and spawner-transform changes.
         pacer.wake(); // also covers direct setting edits that aren't in the view key
-        if(mapKind.worldRenderer){
-          const world=win;let n=0,lastImageAt=performance.now();
-          while(n<2||!pacer.settled||world.renderFrame?.driver?.busy){
-            if(n>pacer.settleLimit)throw new Error('Test render did not converge');
-            const before=world.renderFrame?.driver?.displayedMainFrame?.frameIdentity;
-            tick(performance.now(),true);
-            await gpu.fence();
-            // Native preparation/readback continuations need a browser task.
-            // Count confirmed MAIN images, not ticks spent waiting for them.
-            await new Promise(resolve=>setTimeout(resolve,0));
-            if(graphicsFailure)throw graphicsFailure;
-            if(win!==world)throw new Error('World changed during test render');
-            const after=world.renderFrame?.driver?.displayedMainFrame?.frameIdentity;
-            if(after&&after!==before){n++;lastImageAt=performance.now();}
-            else if(performance.now()-lastImageAt>=10000)throw new Error('Test render received no MAIN image for 10 seconds');
-          }
-          return n;
-        }
         let n = 0;
         // The first render applies the requested upscale, which changes the limit.
         do { tick(performance.now(), true); n++; } while ((n < 2 || !pacer.settled) && n < pacer.settleLimit);
