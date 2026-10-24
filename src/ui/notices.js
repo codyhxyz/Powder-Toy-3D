@@ -45,8 +45,11 @@ const MS_PER_S = 1000;
 const FADE_LEAD_MS = 100;    // the narrow layout's fade-out ends this long before the notice is removed
 const DESKTOP = '(min-width: 761px) and (hover: hover)';   // styles.css: where the notices sit bottom right
 
-// the god view's open element bar on the right edge (ui/dock.js --spawn-bar-w): notices sit left of it
-const barW = () => parseFloat(document.documentElement.style.getPropertyValue('--spawn-bar-w')) || 0;
+// the god view's open element bar (ui/dock.js): notices sit left of its category
+// column (--spawn-bar-w) and above its row (--spawn-bar-h)
+const barPx = (name) => parseFloat(document.documentElement.style.getPropertyValue(name)) || 0;
+const barW = () => barPx('--spawn-bar-w');
+const barH = () => barPx('--spawn-bar-h');
 const textH = () => Math.max(TEXT_H_MIN, Math.ceil(TEXT_H * innerHeight / TEXT_H_LINES));
 
 function iconSvg(key) {
@@ -92,7 +95,7 @@ export function createNotices(root) {
     let total = 0;
     for (const n of list) {
       const h = n.h + pad;
-      const idealY = innerHeight * ANCHOR_Y - h - total;
+      const idealY = Math.min(innerHeight * ANCHOR_Y, innerHeight - barH()) - h - total;
       let idealX = innerWidth - barW() - n.w - innerWidth * GAP_X;
       const left = (n.at + n.ms) / MS_PER_S - now;
       if (left < CHARGE_S) idealX -= innerWidth * CHARGE_X;

@@ -64,11 +64,11 @@ try {
   assert.equal(await dock.getByRole('button', { name: 'Eyedropper', exact: true }).getAttribute('aria-pressed'), 'true');
 
   await category('Constructions').click();
-  await dock.getByRole('button', { name: 'House', exact: true }).click();
+  await dock.getByRole('button', { name: 'House', exact: true }).evaluate((el) => el.click());   // (the bar's row slides with the mouse, TPT's way)
   assert(await dock.getByRole('slider', { name: 'Construction size', exact: true }).isVisible());
   assert.equal(await dock.getByRole('slider', { name: 'Flow', exact: true }).count(), 0);
   await category('Powders').click();
-  await dock.getByRole('button', { name: 'Sand', exact: true }).click();
+  await dock.getByRole('button', { name: 'Sand', exact: true }).evaluate((el) => el.click());   // (the bar's row slides with the mouse, TPT's way)
   assert(await dock.getByRole('slider', { name: 'Flow', exact: true }).isVisible());
   assert.equal(await dock.evaluate((el) => el.inert), false, 'picking keeps the god-view bar open (TPT)');
   await page.mouse.click(400, 450);
