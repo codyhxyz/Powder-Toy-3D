@@ -20,6 +20,10 @@
 // the slab's (the scene's prepass ~1.3, the native leave ~0.6, the copy fill ~0.4, the gathers, the enter
 // kernels, actShift, the restore's clears). Walks out and back leave 0 V2 words different; ticks are
 // deterministic, a walk doesn't change them, and their hash is an unringed page's (slot 3).
+// Hypothesis (slot 3, --ring, staged): slot 2 died on a missing argument. With the fill staged in the frame
+// before (stage ~1 ms there) and the leaving diff's prepass found done, a ringed world-copy move's frame is
+// ~1.5-2 ms of GPU: the native leave ~0.6, the commit ~0.1, the gathers ~0.2, the ring's enter, actShift and
+// the restore's clears ~0.6; walks leave 0 V2 words different, ticks deterministic and unchanged by a walk.
 // Segments, each N moves east then N back: old (switch off), physics only (switch on, generator fill),
 // world copy (switch on, a synthetic copy: tools/world-copy-stub.mjs; content is not the map's, timing only).
 // usage: node tools/world-move-browser-check.mjs [--map island] [--win 128] [--moves 4]
