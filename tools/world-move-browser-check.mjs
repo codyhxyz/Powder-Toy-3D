@@ -112,7 +112,14 @@ async function page(ring, SEG) {
       const out = [];
       out.push({ label: 'fence', fenceMs, timed, ringed: sim.ringed, ring: g.ring });
       // the logical state's hash (readState: atlas order, whatever the ring), for runs to compare
-      const hash = async () => { const [A, B] = await sim.readState(); let h = 0x811c9dc5; for (const f of [A, B]) { const u = new Uint32Array(f.buffer, f.byteOffset, f.length); for (let k = 0; k < u.length; k++) h = Math.imul(h ^ u[k], 16777619) >>> 0; } return h.toString(16); };
+      // (and the cells of each element, for runs that aren't bit for bit: last holds the last hash's)
+      let last = null;
+      const hash = async () => {
+        const [A, B] = await sim.readState(); let h = 0x811c9dc5;
+        for (const f of [A, B]) { const u = new Uint32Array(f.buffer, f.byteOffset, f.length); for (let k = 0; k < u.length; k++) h = Math.imul(h ^ u[k], 16777619) >>> 0; }
+        const counts = new Array(256).fill(0); for (let k = 0; k < A.length; k += 4) counts[Math.max(0, Math.min(255, Math.round(A[k])))]++;
+        last = counts; return h.toString(16);
+      };
       const tryPush = async (label, fn) => { try { out.push(await fn()); } catch (e) { out.push({ label, error: String(e.message ?? e).slice(0, 400) }); } };
       if (SEG.includes('old')) await tryPush('old', () => segment('old', false));
       if (SEG.includes('physics')) await tryPush('physics only', () => segment('physics only', true, 1));   // (along z: columns no move has planted yet)
@@ -123,10 +130,10 @@ async function page(ring, SEG) {
         w.physicsOnly = true;
         const o = [sim.origin.x, 0, sim.origin.z], fresh = async () => { await settle(); w.load(o); await a.gpu.fence(); };
         const run = async () => { a.test.step(TICKS); await a.gpu.fence(); return hash(); };
-        await fresh(); const h0 = await hash(), h1 = await run();
-        await fresh(); const h2 = await run();
-        await fresh(); await walk(0); const hw = await hash(), h3 = await run();
-        return { label: 'ticks', h0, h1, h2, hw, h3, origin: o };
+        await fresh(); const h0 = await hash(), h1 = await run(), c1 = last;
+        await fresh(); const h2 = await run(), c2 = last;
+        await fresh(); await walk(0); const hw = await hash(), h3 = await run(), c3 = last;
+        return { label: 'ticks', h0, h1, h2, hw, h3, c1, c2, c3, origin: o };
       });
       if (SEG.includes('copy')) try {
       const { syntheticWorldCopy, STUB_COPY_WGSL } = await import('/tools/world-copy-stub.mjs');
@@ -150,7 +157,8 @@ async function page(ring, SEG) {
       if (s.error) { failures++; console.log(`FAIL ${s.label}: ${s.error}`); continue; }
       if (s.label === 'ticks') {
         console.log(`ticks (${TICKS} from a load at ${s.origin}): loaded ${s.h0}, run 1 ${s.h1}, run 2 ${s.h2}${s.h1 === s.h2 ? ' (deterministic)' : ' (NOT deterministic)'}; `
-          + `after a walk out and back ${s.hw}${s.hw === s.h0 ? ' (= loaded)' : ' (≠ loaded)'}, its run ${s.h3}${s.h3 === s.h1 ? ' (= run 1)' : ' (≠ run 1)'}`);
+          + `after a walk out and back ${s.hw}${s.hw === s.h0 ? ' (= loaded)' : ' (≠ loaded)'}, its run ${s.h3}${s.h3 === s.h1 ? ' (= run 1)' : ' (≠ run 1)'}; `
+          + `element counts differ run to run by ${s.c1.reduce((n, v, i) => n + Math.abs(v - s.c2[i]), 0)}, after the walk by ${s.c1.reduce((n, v, i) => n + Math.abs(v - s.c3[i]), 0)}`);
         if (s.h1 === s.h2 && (s.h3 !== s.h1 || s.hw !== s.h0)) { failures++; console.log('FAIL ticks: a walk out and back changed what physics does'); }
         continue;
       }
@@ -188,7 +196,9 @@ try {
   if (BASELINE && Date.now() - launched < BASELINE_BY_MS) {
     const base = (await page(false, ['ticks'])).find((r) => r.label === 'ticks'), mine = res.find((r) => r.label === 'ticks');
     if (base?.h1 && mine?.h1) {
-      console.log(`layout (ticks from ${base.origin} / ${mine.origin}): unringed run ${base.h1}, ringed run ${mine.h1}${base.h1 === mine.h1 ? ' (same physics)' : ' (DIFFER)'}`);
+      const l1 = (x, y) => x.reduce((n, v, i) => n + Math.abs(v - y[i]), 0);
+      console.log(`layout (ticks from ${base.origin} / ${mine.origin}): unringed run ${base.h1}, ringed run ${mine.h1}${base.h1 === mine.h1 ? ' (same physics)' : ' (DIFFER)'}; `
+        + `cells that changed element, unringed vs ringed ${l1(base.c1, mine.c1)}, unringed run to run ${l1(base.c1, base.c2)}, ringed run to run ${l1(mine.c1, mine.c2)}, ringed after a walk ${l1(mine.c1, mine.c3)}`);
       if (base.h1 !== mine.h1 && base.h1 === base.h2 && mine.h1 === mine.h2) { failures++; console.log('FAIL ring addressing changed what physics does'); }
     }
   } else if (BASELINE) console.log(`(no room left in the slot for the unringed page: ${((Date.now() - launched) / 1000).toFixed(1)} s in)`);

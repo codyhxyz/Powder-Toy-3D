@@ -1060,11 +1060,21 @@ export class Simulation {
     const zero = this.passOf('slabZero'), groupOf = (buffer) => this.gpu.bindGroup(this._slabZeroLayout, [{ binding: 0, resource: { buffer } }], 'slab zero');
     const zeroSlab = (group, base, words) => this._dispatch(zero, fold(Math.ceil(count / 64)), {
       bind: [this.tables, this.gpu.emptyGroup, group], header: this.header(), params: { lo, bricks, count, base, words } });
-    zeroSlab((this._flowZeroGroup ??= groupOf(this.flow)), 0, 2);   // (the flow: vec2u a slot)
     const deco = this.deco;
-    if (deco?.active) {
-      if (!deco.kernelsReady) { console.warn('deco: the window moved before the decoration\'s kernels were built; its paint is dropped'); deco.reset(); }
-      else zeroSlab(groupOf(deco.plane.buffer), deco.plane.offset / 4, 1);
+    if (zero.state === 'ready') {
+      zeroSlab((this._flowZeroGroup ??= groupOf(this.flow)), 0, 2);   // (the flow: vec2u a slot)
+      if (deco?.active) {
+        if (!deco.kernelsReady) { console.warn('deco: the window moved before the decoration\'s kernels were built; its paint is dropped'); deco.reset(); }
+        else zeroSlab(groupOf(deco.plane.buffer), deco.plane.offset / 4, 1);
+      }
+    } else {
+      // (its kernel still building: the whole-window moves, each kept word from its own slot under the ring)
+      this.flowTmp ??= this.gpu.createBuffer({ label: `sim${this.id} flow shift`, size: this.flow.size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      this._flowShiftGroup ??= this.gpu.bindGroup(this.L.FLOW_SHIFT, [
+        { binding: 0, resource: { buffer: this.flow } }, { binding: 1, resource: { buffer: this.flowTmp } }], 'flow shift');
+      this._dispatch(this.passOf('flowShift'), size, { bind: [this.tables, this.gpu.emptyGroup, this._flowShiftGroup], header: this.header(), params: { shift } });
+      f.copy(this.flowTmp, 0, this.flow, 0, this.flow.size);
+      deco?.shift?.(dx, dz, f);
     }
     if (picture) for (const fn of this._shiftListeners) fn(dx, dz, f);
     if (!this.shiftKeepsHistory) {
