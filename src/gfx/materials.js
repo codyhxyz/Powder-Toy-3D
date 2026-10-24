@@ -209,6 +209,14 @@ export const MEDIA_NOISE_CELLS = 64;
 //          alb, alb is the photo's own mean.
 //   texM   metres one tile of the texture covers (default: the scan's real size)
 //   texN   the normal map's strength (default 1: as scanned)
+//   texVary  break up the tile's repeat (shaders/gfx/surface.js matTextured:
+//          a second, offset read blended in by a low-frequency noise, Quilez's
+//          "texture repetition"): for what covers big surfaces, where a 1-2 m
+//          tile repeats visibly across a slope or up a trunk. Costs two more
+//          reads per projection, so only those that need it
+// A textured look's photo downloads once the element is in the map (the
+// census: gfx/materialCensus.js), not with the page; until then the
+// procedural look stands in.
 // Albedo sources (approximate, visible band): dry quartz sand 0.35-0.55, fresh
 // snow 0.85-0.95, concrete 0.25-0.4, wood ash 0.3-0.4, black powder ~0.04,
 // bark 0.05-0.15, leaves ~0.05/0.15/0.03, basalt 0.08-0.15, tan sandstone
@@ -237,11 +245,11 @@ const MACRO_NONE = { tone: 0, hue: 0, rough: 0, size: 1 };            // lava, c
 const MACRO_PARAMS = ['tone', 'hue', 'rough', 'size'];
 const LOOKS = {
   WALL: { rough: 0.85, alb: '#8f8c87', tex: 'concrete_wall_008' },
-  SAND: { rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55, macro: { tone: 0.16, hue: 0.12, rough: 0.06, size: 1 }, tex: 'dense_sand' },
-  STONE: { rough: 0.75, alb: '#7f7c77', macro: { tone: 0.2, hue: 0.06, rough: 0.08, size: 1 } },
-  SNOW: { rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8, macro: { tone: 0.04, hue: 0, rough: 0.12, size: 1 } },   // wind crust and drifts: gloss varies more than colour
+  SAND: { rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55, macro: { tone: 0.16, hue: 0.12, rough: 0.06, size: 1 }, tex: 'dense_sand', texVary: true },
+  STONE: { rough: 0.75, alb: '#7f7c77', macro: { tone: 0.2, hue: 0.06, rough: 0.08, size: 1 }, tex: 'gray_rocks' },
+  SNOW: { rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8, macro: { tone: 0.04, hue: 0, rough: 0.12, size: 1 }, tex: 'snow_02', texVary: true },   // wind crust and drifts: gloss varies more than colour
   GUNPOWDER: { rough: 0.6, alb: '#38383d', glint: 0.7 },   // graphite glaze: a soft sheen, many glints
-  ASH: { rough: 0.98, alb: '#a29e97', sss: 0.3 },
+  ASH: { rough: 0.98, alb: '#a29e97', sss: 0.3, tex: 'burned_ground_01' },
   // Liquids. Clean water absorbs red most (real ratios ~1 : 0.2 : 0.1 with a
   // little dissolved matter) and scatters a little, mostly blue: clear when
   // shallow, blue-green with depth. Both are exaggerated several-fold over
@@ -256,8 +264,9 @@ const LOOKS = {
   LAVA: { ch: 'MOLTEN', rough: 0.35, alb: '#2a2522', macro: MACRO_NONE },   // its crust and glow are its own
   SMOKE: { media: 'SMOKE' },
   FIRE: { media: 'FIRE' },
-  WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637', macro: { tone: 0.2, hue: 0.1, rough: 0.08, size: 0.6 }, tex: 'bark_brown_02' },   // bark (end grain stays procedural)
-  PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25, macro: { tone: 0.3, hue: 0.45, rough: 0.1, size: 1 } },   // lush .. sun-dried patches
+  WOOD: { ch: 'ORGANIC', rough: 0.8, alb: '#5a4637', macro: { tone: 0.2, hue: 0.1, rough: 0.08, size: 0.6 }, tex: 'bark_brown_02', texVary: true },   // bark (end grain stays procedural)
+  // (its photo is the meadows' grass alone, appearance GRASS: foliage stays procedural)
+  PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25, macro: { tone: 0.3, hue: 0.45, rough: 0.1, size: 1 }, tex: 'leafy_grass', texVary: true },   // lush .. sun-dried patches
   METAL: { rough: 0.32, metal: 1, alb: STEEL_F0, surf: 'BRUSHED' },
   GLASS: { ior: 1.5, rough: 0.02, scatter: [0.005, 0.003, 0.004] },
   // Debris (elements.js breakInto): heaps of fragments, powders as TPT's BGLA,
@@ -271,14 +280,15 @@ const LOOKS = {
   SHARDS: { rough: 0.4, ior: 1.5, alb: '#dce8e6', sss: 0.45, glint: 0.9 },
   SAWDUST: { rough: 0.95, sss: 0.25 },
   SCRAP: { rough: 0.5, metal: 1, alb: STEEL_F0, glint: 0.6, surf: 'BRUSHED',
-    brushed: { aniso: 0.35, scale: 1, wear: 2.5 }, macro: { tone: 0.12, hue: 0.03, rough: 0.2, size: 0.25 } },   // torn and scuffed: the brushing broken up, dull patches
+    brushed: { aniso: 0.35, scale: 1, wear: 2.5 }, macro: { tone: 0.12, hue: 0.03, rough: 0.2, size: 0.25 }, tex: 'rusty_metal_02' },   // torn and scuffed: the brushing broken up, dull patches
   // Ice shares the liquid surface: a clear surface between ice and water is
   // nearly invisible in real life too (n = 1.31 vs 1.33). Frozen ice is
   // cloudy (trapped air), so it scatters white and stays visible.
   ICE: { ch: 'LIQUID', ior: 1.31, rough: 0.06, scatter: [0.025, 0.025, 0.025] },
   CLONE: { rough: 0.25, metal: 1, alb: [1.0, 0.766, 0.336], surf: 'POLISHED' },   // polished gold
   // natural rock (terrain): weathered basalt, part of the natural-solids surface
-  ROCK: { ch: 'ORGANIC', rough: 0.85, alb: '#4e4b48', surf: 'CRAG', macro: MACRO_ROCK },
+  // The rocks' photos (tex) replace the CRAG pattern once loaded, as bark's does.
+  ROCK: { ch: 'ORGANIC', rough: 0.85, alb: '#4e4b48', surf: 'CRAG', macro: MACRO_ROCK, tex: 'dark_rock_02', texVary: true },
   // The other rocks share it (and its texture: surf CRAG, crag below).
   // Sandstone: quartz grains (n = 1.54, they glint like sand's) in a tan,
   // iron-stained cement, linear albedo ~0.45/0.33/0.2. Limestone: calcite
@@ -289,16 +299,16 @@ const LOOKS = {
   // (Glossier, it outshone the basalt beside it under a low sun.) Broken coal
   // shows the same faces fresh, glinting where they catch the sun.
   SANDSTONE: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.9, ior: 1.54, alb: '#b39c7c', glint: 0.25, surf: 'CRAG',
-    crag: { relief: 0.6, pits: 0, bands: 2.5, stain: 1.5 } },   // rounded by weathering, bedded, iron-stained
+    crag: { relief: 0.6, pits: 0, bands: 2.5, stain: 1.5 }, tex: 'sandstone_cracks', texVary: true },   // rounded by weathering, bedded, iron-stained
   // Basalt: fresh lava rock, darker than ROCK's weathered face, its gas
   // bubbles frozen in as pits (vesicles), clinkery and unbedded (fresh flows
   // ~0.03-0.05 albedo, below the weathered 0.08-0.15).
   BASALT: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.9, alb: '#353331', surf: 'CRAG',
-    crag: { relief: 1, pits: 1, bands: 0, stain: 0.2 } },
+    crag: { relief: 1, pits: 1, bands: 0, stain: 0.2 }, tex: 'dark_rock', texVary: true },
   LIMESTONE: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.8, ior: 1.6, alb: '#bcb8af', surf: 'CRAG',
-    crag: { relief: 1, pits: 0.4, bands: 1.5, stain: 0.4 } },   // sharp solution runnels and pits, bedded
+    crag: { relief: 1, pits: 0.4, bands: 1.5, stain: 0.4 }, tex: 'marble_rock_01', texVary: true },   // sharp solution runnels and pits, bedded
   COAL: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.75, alb: '#3c3c3d', surf: 'CRAG',
-    crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 } },       // blocky cleat, bright and dull bands
+    crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 }, tex: 'rock_wall_10' },       // blocky cleat, bright and dull bands
   BROKENCOAL: { rough: 0.75, alb: '#3c3c3d', glint: 0.5 },
   // Fluorite (elements.js CRYSTAL): n = 1.434, a vitreous luster from flat
   // growth faces (polished glass with faint growth marks). A cell
@@ -334,8 +344,8 @@ const LOOKS = {
   // Red brick reflects ~0.25 in the red, ~0.1 in the green and ~0.06 in the
   // blue (USGS spectral library, fired clay); built, so crisp like Wall.
   // Crushed, it is paler: the broken faces scatter more.
-  BRICK: { rough: 0.9, alb: [0.25, 0.1, 0.06], macro: { tone: 0.18, hue: 0.1, rough: 0.06, size: 1 } },   // weathered, sooted walls
-  RUBBLE: { rough: 0.95, alb: [0.3, 0.14, 0.09] },
+  BRICK: { rough: 0.9, alb: [0.25, 0.1, 0.06], macro: { tone: 0.18, hue: 0.1, rough: 0.06, size: 1 }, tex: 'brick_wall_04' },   // weathered, sooted walls
+  RUBBLE: { rough: 0.95, alb: [0.3, 0.14, 0.09], tex: 'brick_gravel' },
   // Metals: F0 from measured complex indices (n, k at 450/550/650 nm;
   // refractiveindex.info): titanium (0.54, 0.50, 0.45), tungsten ~0.5 grey,
   // gold as Clone's, mercury ~0.75 flat (a liquid mirror).
@@ -385,9 +395,9 @@ const LOOKS = {
   // Antimatter is a game substance: a pale lilac powder with a sheen, so it
   // reads apart from the other powders. The singularity reflects nothing.
   DUST: { rough: 0.95, alb: '#ebe2cc', sss: 0.35 },
-  CLAY: { rough: 0.95, alb: '#e2dccf', sss: 0.2, macro: { tone: 0.12, hue: 0.1, rough: 0.06, size: 1 } },
-  MUD: { ch: 'MOLTEN', rough: 0.3, alb: '#a49b8a', macro: { tone: 0.15, hue: 0.08, rough: 0.2, size: 0.6 } },   // wetter: darker and glossier patches
-  CERAMIC: { rough: 0.6, alb: '#efeae0' },
+  CLAY: { rough: 0.95, alb: '#e2dccf', sss: 0.2, macro: { tone: 0.12, hue: 0.1, rough: 0.06, size: 1 }, tex: 'clay_plaster' },
+  MUD: { ch: 'MOLTEN', rough: 0.3, alb: '#a49b8a', macro: { tone: 0.15, hue: 0.08, rough: 0.2, size: 0.6 }, tex: 'brown_mud_02' },   // wetter: darker and glossier patches
+  CERAMIC: { rough: 0.6, alb: '#efeae0', tex: 'white_plaster_02' },
   ANTIMATTER: { rough: 0.4, alb: '#b9b0d9', glint: 0.6 },
   SINGULARITY: { rough: 1, alb: '#000000', macro: MACRO_NONE },
   // Explosives (elements.js). C-4 is an off-white putty, moulded smooth, a
@@ -465,12 +475,16 @@ const familyParams = (l) => {
   return [...v, ...Array(SURF_P_LEN - v.length).fill(0)];
 };
 // A look's scanned texture (LOOKS tex): texMap (its first layer in the texture
-// array, or NO_TEX; tiles per cell; the photo's mean roughness; the normal
-// map's strength) and texTint (what scales the photo's albedo to the look's
-// mean, rgb; w unused). TEX_LAYERS: array layers per texture (albedo, surface:
-// gfx/materialTextures.js).
+// array, or NO_TEX while its photo isn't there; tiles per cell; the photo's
+// mean roughness; the normal map's strength) and texTint (what scales the
+// photo's albedo to the look's mean, rgb; w: 1 to break up the repeat,
+// texVary). TEX_LAYERS: array layers per texture (albedo, surface:
+// gfx/materialTextures.js). The layer is the only value that changes after
+// the page loads: gfx/materialTextures.js places a photo when its element
+// shows up, then sets it here (setTexLayer, so tables built later carry it)
+// and in the element tables on the GPU.
 export const TEX_LAYERS = 2;
-const NO_TEX = -1;
+export const NO_TEX = -1;
 const DEFAULT_TEX_NORMAL = 1;
 const texOf = (key) => {
   const i = TEXTURE_SET.findIndex((t) => t.id === key);
@@ -478,11 +492,12 @@ const texOf = (key) => {
   return { i, t: TEXTURE_SET[i] };
 };
 const texFields = (l, alb) => {
-  if (!l.tex) return { texMap: [NO_TEX, 0, 0, 0], texTint: [1, 1, 1, 0] };
+  if (!l.tex) return { texAsset: NO_TEX, texMap: [NO_TEX, 0, 0, 0], texTint: [1, 1, 1, 0] };
   const { i, t } = texOf(l.tex);
   return {
-    texMap: [i * TEX_LAYERS, +(CELL_M / (l.texM ?? t.tileM)).toFixed(ROUND_DIGITS), t.roughMean, l.texN ?? DEFAULT_TEX_NORMAL],
-    texTint: [...alb.map((v, k) => +(v / t.mean[k]).toFixed(ROUND_DIGITS)), 0],
+    texAsset: i,
+    texMap: [NO_TEX, +(CELL_M / (l.texM ?? t.tileM)).toFixed(ROUND_DIGITS), t.roughMean, l.texN ?? DEFAULT_TEX_NORMAL],
+    texTint: [...alb.map((v, k) => +(v / t.mean[k]).toFixed(ROUND_DIGITS)), l.texVary ? 1 : 0],
   };
 };
 const macroOf = (e, l) => {
@@ -524,6 +539,16 @@ export const LOOK = ELEMENTS.map((e) => {
     scatAlb: (l.scatter ?? [0, 0, 0]).map((s, i) => +(e.sigma[i] > 0 ? Math.min(1, s / e.sigma[i]) : 0).toFixed(ROUND_DIGITS)),
   };
 });
+
+// The texture asset (gfx/textureSet.js index) element id draws from, or NO_TEX.
+export const texAssetOf = (id) => LOOK[id]?.texAsset ?? NO_TEX;
+// Asset `asset`'s photo now sits from array layer `layer` on (NO_TEX: gone):
+// every look drawing from it takes the layer. Returns the elements changed.
+export function setTexLayer(asset, layer) {
+  const ids = [];
+  LOOK.forEach((l, id) => { if (l.texAsset === asset) { l.texMap[0] = layer; ids.push(id); } });
+  return ids;
+}
 
 // 5-tap Gaussian weights (offsets -2..2), normalised.
 export function gauss5(sigma) {

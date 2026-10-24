@@ -2494,6 +2494,7 @@ const frameHooks = {
     prof.phase('view');
     // (a mesh-only frame keeps what the wires drew into the scene pass: their upkeep for it too, the far field's prepass)
     frameWires.compute((w) => frameMode === 'meshes' && !!w.scene);
+    if (!blocks) vol.recordCensus(renderView);   // (the scanned textures of what is in the grid: gfx/materialCensus.js)
     vol.recordPicks();
   },
   // (the blocks' faces are depth-tested against the meshes: no copy of their depth for the volume's cut)

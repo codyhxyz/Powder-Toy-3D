@@ -812,6 +812,19 @@ const TEX_ALB_MAX: f32 = 0.95;      // ceiling of a photo's albedo once scaled t
 // (3.2-0.6 m) still break up that repeat over a heap or a wall.
 const TEX_MACRO_KEEP: f32 = 0.5;
 const TEX_ALL_PLANES: vec3f = vec3f(1.0);   // matTextured's planes: every projection
+// Breaking up the repeat (LOOKS texVary: TEXTINT(id).w), Quilez's "texture
+// repetition", technique 3 (iquilezles.org/articles/texturerepetition): a
+// low-frequency noise through the world picks, wherever it is, one of
+// TEX_VARY_N copies of the tile shifted by its own offset (sin(i × his (3, 7)),
+// no rotation, so the normal map's frame holds), and fades into the next copy
+// where the noise crosses a step. A trunk or a slope then never shows the same
+// patch twice in a row. Two reads per layer only inside the fades, one
+// elsewhere.
+const TEX_VARY_F: f32 = 1.3;                      // the noise's frequency, per tile (his noise lookup steps about once a tile)
+const TEX_VARY_N: f32 = 8.0;                      // copies the noise steps through
+const TEX_VARY_OFFSET: vec2f = vec2f(3.0, 7.0);   // copy i is the tile shifted by sin(i × this) tiles
+const TEX_VARY_EDGE: vec2f = vec2f(0.2, 0.8);     // the share of a step over which one copy fades into the next
+const TEX_VARY_SALT: f32 = 17.3;                  // decorrelates its noise from the other lattices
 // sRGB decoding of the albedo layers (IEC 61966-2-1, gfx/materials.js's)
 const TEX_SRGB_LINEAR_MAX: f32 = 0.04045;
 const TEX_SRGB_SLOPE: f32 = 12.92;
@@ -832,6 +845,17 @@ fn matTextured(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32, plan
   let tm = TEXMAP(id);   // (first layer, tiles per cell, mean roughness, normal strength)
   let layer = i32(tm.x);
   let q = p * tm.y;      // in tiles
+  // the copies this point reads (TEX_VARY_*): offsets oa, ob and the fade between them
+  var oa = vec2f(0.0);
+  var ob = vec2f(0.0);
+  var fade = 0.0;
+  if (TEXTINT(id).w > 0.0) {
+    let k = vnoise(q * TEX_VARY_F + TEX_VARY_SALT) * TEX_VARY_N;
+    let ia = floor(k);
+    oa = sin(TEX_VARY_OFFSET * ia);
+    ob = sin(TEX_VARY_OFFSET * (ia + 1.0));
+    fade = smoothstep(TEX_VARY_EDGE.x, TEX_VARY_EDGE.y, k - ia);
+  }
   let lod = log2(max(fp * tm.y * f32(textureDimensions(tMatTex).x), TEX_TEXELS_MIN)) + TEX_LOD_BIAS;
   var w = pow(abs(n), vec3f(TEX_TRI_SHARP)) * planes;
   w = select(vec3f(0.0), w, w >= vec3f(TEX_TRI_MIN * (w.x + w.y + w.z)));
@@ -850,8 +874,16 @@ fn matTextured(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32, plan
     if (k == 0) { t = vec3f(0.0, 0.0, -sg.x); }
     else if (k == 1) { t = vec3f(1.0, 0.0, 0.0); b = vec3f(0.0, 0.0, sg.y); }
     let uv = vec2f(dot(q, t), dot(q, b));
-    let a = textureSampleLevel(tMatTex, matTexSampler, uv, layer, lod);
-    let sf = textureSampleLevel(tMatTex, matTexSampler, uv, layer + 1, lod);
+    var a = vec4f(0.0);
+    var sf = vec4f(0.0);
+    if (fade < 1.0) {
+      a = (1.0 - fade) * textureSampleLevel(tMatTex, matTexSampler, uv + oa, layer, lod);
+      sf = (1.0 - fade) * textureSampleLevel(tMatTex, matTexSampler, uv + oa, layer + 1, lod);
+    }
+    if (fade > 0.0) {
+      a += fade * textureSampleLevel(tMatTex, matTexSampler, uv + ob, layer, lod);
+      sf += fade * textureSampleLevel(tMatTex, matTexSampler, uv + ob, layer + 1, lod);
+    }
     alb += wk * a.rgb;
     rough += wk * sf.b;
     let tn = sf.xy * 2.0 - 1.0;   // the normal map: x along u, y up the image (OpenGL), unit-scaled
@@ -905,14 +937,17 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
   if (FU.materialStyle == 1.0 && cozySupported(id, ctype)) { return cozyMat(id, p, n, T, ctype, fp); }
   var m = matBase(id);
   // A scanned texture replaces the element's procedural pattern (bark keeps its
-  // end grain: the E_WOOD branch reads it on the sides alone).
-  let textured = hasMatTex(id);
+  // end grain: the E_WOOD branch reads it on the sides alone). Plant's photo is
+  // the meadows' grass: foliage (leaves, unlabelled plant) keeps its own.
+  let textured = hasMatTex(id) && (id != E_PLANT || appearanceOf(id, ctype) == AP_GRASS);
 
   // Scale: a cell is CELL_M (src/scale.js). Frequencies below are cycles (or
   // lattice cells) per cell; the *_H / *_DEPTH bump amplitudes are heights in
   // cells. The natural materials give their sizes in metres (*_M) and convert.
   if (textured && id != E_WOOD) {
     matTextured(&m, id, p, n, fp, TEX_ALL_PLANES);
+    // The sand photo is a flat bed: a heap's slumps (sandSlumps, ~27 cm) go back on top of its normal map.
+    if (id == E_SAND) { m.g += SAND_SLUMP_H * sandSlumps(p, fp).yzw; }
   } else if (id == E_SAND) {
     // Dry sand. Its grains (~0.3 mm) are far below a pixel, so it reads as a
     // matte surface with soft mottling (sorting, damp patches), shallow
@@ -1501,7 +1536,8 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     m.cav = mix(1.0, mix(LAVA_CRACK_CAV, 1.0, smoothstep(0.0, LAVA_PLATE_EDGE, c.y)), solid * lwc);
   }
   matMacro(&m, id, p, n, fp, select(1.0, TEX_MACRO_KEEP, textured));   // play-distance variation (every material; its amplitudes are data)
-  if (id != E_LAVA && SURF(id) != SURF_BRUSHED && id != E_CRYSTAL) { m.emit = hotEmit(m, id, T); }
+  // (the brushed branch sets its own glow; a scanned brushed metal, scrap, skips that branch)
+  if (id != E_LAVA && (SURF(id) != SURF_BRUSHED || textured) && id != E_CRYSTAL) { m.emit = hotEmit(m, id, T); }
   m.emit += sparkEmit(id, ctype);   // a live conductor (src/electricity.js)
   return m;
 }

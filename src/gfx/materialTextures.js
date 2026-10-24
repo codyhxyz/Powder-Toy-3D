@@ -1,29 +1,36 @@
 // The scanned material textures (gfx/textureSet.js; Poly Haven, CC0:
 // public/textures/CREDITS.md) on the GPU: one rgba8unorm 2d array, two layers
 // per texture, with its whole mip chain:
-//   layer 2i      albedo, rgb, sRGB-encoded (the view decodes after filtering:
+//   layer 2k      albedo, rgb, sRGB-encoded (the view decodes after filtering:
 //                 one array holds both kinds of layer, so it can't be an -srgb format)
-//   layer 2i + 1  normal x and y (OpenGL convention), roughness
+//   layer 2k + 1  normal x and y (OpenGL convention), roughness
 // bound at L.LIGHTING's MAT_TEX_BINDING with a repeating trilinear sampler
 // (shaders/bindings.js), read by shaders/gfx/surface.js matTextured.
 //
-// Nothing waits for it: until the images are in, the binding holds a one-layer
-// dummy, which the view reads as "not loaded" (surface.js matTexReady: fewer
-// layers than one texture's) and draws the procedural looks as before. The
-// images download at low fetch priority once the first view is made, decode off
-// the main thread (createImageBitmap) and go into a new texture, which then
-// replaces the dummy: `version` moves, and the bind groups that hold the view
-// (gfx/volume.js lightingGroup) are made again. One per device.
+// Only what is wanted downloads: a map's photos once the census sees their
+// elements in it (gfx/materialCensus.js), an element placed later once it
+// shows up. A wanted photo downloads at low fetch priority and decodes off the
+// main thread (createImageBitmap). Each batch that arrives goes into a new,
+// larger array: the photos already there are copied across on the GPU (no
+// second download or decode), the new ones uploaded after them, and the new
+// array replaces the old, whose bind groups are made again (`version` moves:
+// gfx/volume.js lightingGroup). Each photo's layer is then written into the
+// tables (gfx/materials.js setTexLayer; the element tables' texMap.x on the
+// GPU), which until then hold NO_TEX: the view draws an element's procedural
+// look until its photo is in. Nothing waits for any of it. One per device.
 //
-//   const mt = materialTextures(gpu);   // starts the load (once)
+//   const mt = materialTextures(gpu);   // makes the (empty) array; loads nothing yet
+//   mt.wantElements([E.SAND, …])        // asks for those elements' photos (again is free)
 //   bind { binding: MAT_TEX_BINDING, resource: mt.view }, { binding: MAT_TEX_SAMPLER_BINDING, resource: mt.sampler }
-//   mt.version                          // 0 until loaded, then 1
-//   await mt.ready                      // true once loaded, false if it failed (the procedural looks stay)
+//   mt.version                          // moves with each new array
+//   await mt.idle()                     // resolves once nothing is loading
+//   mt.resident                         // the asset indices in the array
 import { TEXTURE_SET } from './textureSet.js';
-import { TEX_LAYERS } from './materials.js';
+import { TEX_LAYERS, NO_TEX, texAssetOf, setTexLayer } from './materials.js';
+import { tableLayout } from '../shaders/common.js';
 
 const FORMAT = 'rgba8unorm';
-const USAGE = { COPY_DST: 0x02, TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };   // (GPUTextureUsage's bits)
+const USAGE = { COPY_SRC: 0x01, COPY_DST: 0x02, TEXTURE_BINDING: 0x04, RENDER_ATTACHMENT: 0x10 };   // (GPUTextureUsage's bits)
 // each texture's images, in its layer order
 const IMAGES = ['albedo.webp', 'surface.webp'];
 const BASE = (() => { try { return import.meta.env?.BASE_URL ?? '/'; } catch { return '/'; } })();
@@ -33,68 +40,153 @@ const MIP_QUALITY = 'high';
 // The image as stored: no colour management (the normals and roughness are
 // data; the albedo is decoded in the shader) and no premultiplying.
 const DECODE = { colorSpaceConversion: 'none', premultiplyAlpha: 'none' };
+// An array a new one replaced is destroyed this long after (frames recorded
+// before the swap may still bind it until they are submitted).
+const RETIRE_MS = 5000;
 
 const mipCount = (n) => Math.floor(Math.log2(n)) + 1;
 
-async function bitmapOf(url, signal) {
-  const res = await fetch(url, { priority: 'low', signal });
+async function bitmapOf(url) {
+  const res = await fetch(url, { priority: 'low' });
   if (!res.ok) throw new Error(`${url}: ${res.status}`);
   return createImageBitmap(await res.blob(), DECODE);
 }
 
-// Every image's mip chain into a new array texture; resolves with it.
-async function load(gpu) {
-  const urls = TEXTURE_SET.flatMap((t) => IMAGES.map((f) => `${BASE}textures/${t.id}/${f}`));
-  if (urls.length !== TEXTURE_SET.length * TEX_LAYERS) throw new Error('materialTextures: images per texture differ from TEX_LAYERS');
-  const bitmaps = await Promise.all(urls.map((u) => bitmapOf(u)));
-  const size = bitmaps[0].width;
-  for (const [i, b] of bitmaps.entries()) {
-    if (b.width !== size || b.height !== size) throw new Error(`materialTextures: ${urls[i]} is ${b.width}×${b.height}, not ${size}² as the first`);
+// An asset's images, decoded (resolves with [albedo, surface] bitmaps).
+const imagesOf = (asset) => Promise.all(IMAGES.map((f) => bitmapOf(`${BASE}textures/${TEXTURE_SET[asset].id}/${f}`)));
+
+// The element tables' texMap.x of element id, as a byte offset into the
+// tables' buffer (shaders/common.js tablesBuffer).
+let texMapAt = null;
+function texMapOffset(id) {
+  if (!texMapAt) {
+    const { Tables, Material } = tableLayout();
+    const mat = Tables.offsetOf('mat'), field = Material.offsetOf('texMap');
+    texMapAt = (i) => mat + i * Material.size + field;
   }
-  const mips = mipCount(size);
-  const texture = gpu.createTexture({
-    label: 'material textures', size: [size, size, bitmaps.length], format: FORMAT, mipLevelCount: mips,
-    usage: USAGE.TEXTURE_BINDING | USAGE.COPY_DST | USAGE.RENDER_ATTACHMENT,
-  });
-  const queue = gpu.device.queue;
-  await Promise.all(bitmaps.map(async (full, layer) => {
-    for (let level = 0; level < mips; level++) {
-      const s = Math.max(1, size >> level);
-      const src = level === 0 ? full : await createImageBitmap(full, { ...DECODE, resizeWidth: s, resizeHeight: s, resizeQuality: MIP_QUALITY });
-      queue.copyExternalImageToTexture({ source: src }, { texture, mipLevel: level, origin: [0, 0, layer] }, [s, s]);
-      if (src !== full) src.close();
-    }
-    full.close();
-  }));
-  return texture;
+  return texMapAt(id);
 }
 
 /**
- * The device's material textures (made, and their load started, on first call).
+ * The device's material textures (made on first call; loads what is wanted).
  * @param {object} gpu
- * @returns {{ readonly view: GPUTextureView, sampler: GPUSampler, readonly version: number, ready: Promise<boolean> }}
+ * @returns {{ readonly view: GPUTextureView, sampler: GPUSampler, readonly version: number,
+ *   want(assets: number[]): void, wantElements(ids: number[]): void, idle(): Promise<void>, readonly resident: number[] }}
  */
 export function materialTextures(gpu) {
   if (gpu._materialTextures) return gpu._materialTextures;
-  const dummy = gpu.createTexture({ label: 'material textures (loading)', size: [1, 1, 1], format: FORMAT, usage: USAGE.TEXTURE_BINDING });
-  let view = dummy.createView({ dimension: '2d-array' });
+  const device = gpu.device;
+  let texture = gpu.createTexture({ label: 'material textures (none)', size: [1, 1, 1], format: FORMAT, usage: USAGE.TEXTURE_BINDING });
+  let view = texture.createView({ dimension: '2d-array' });
+  let size = 0;              // the photos' edge, texels (all alike: the first sets it)
   let version = 0;
-  const sampler = gpu.device.createSampler({
+  const resident = [];       // asset indices, in layer order (asset resident[k] is layers 2k, 2k + 1)
+  const wanted = new Set();  // asked for, not yet loading
+  const pending = new Set(); // loading now
+  const failed = new Set();  // didn't load: asked for again only on a reload
+  let loading = null;        // the batch in flight (a promise)
+  const sampler = device.createSampler({
     label: 'material textures', magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear',
     addressModeU: 'repeat', addressModeV: 'repeat',
   });
+
+  // The element tables on this device (the simulation's, and the render's own
+  // copy where there is one: gfx/uniforms.js), patched where a photo's layer moved.
+  function patchTables(ids, layer) {
+    const word = new Float32Array([layer]);
+    for (const buffer of [gpu._simTables?.buffer, gpu._renderTables]) {
+      if (!buffer) continue;
+      for (const id of ids) device.queue.writeBuffer(buffer, texMapOffset(id), word, 0, 1);
+    }
+  }
+
+  // A batch of decoded assets into a new array after the resident ones.
+  function place(batch) {
+    const s = size || batch[0].images[0].width;
+    for (const { asset, images } of batch) {
+      for (const b of images) if (b.width !== s || b.height !== s) throw new Error(`materialTextures: ${TEXTURE_SET[asset].id} is ${b.width}×${b.height}, not ${s}²`);
+    }
+    size = s;
+    const mips = mipCount(s);
+    const oldLayers = resident.length * TEX_LAYERS;
+    const layers = oldLayers + batch.length * TEX_LAYERS;
+    const next = gpu.createTexture({
+      label: `material textures (${layers / TEX_LAYERS})`, size: [s, s, layers], format: FORMAT, mipLevelCount: mips,
+      usage: USAGE.TEXTURE_BINDING | USAGE.COPY_DST | USAGE.COPY_SRC | USAGE.RENDER_ATTACHMENT,
+    });
+    if (oldLayers) {
+      const enc = device.createCommandEncoder({ label: 'material textures: grow' });
+      for (let level = 0; level < mips; level++) {
+        const m = Math.max(1, s >> level);
+        enc.copyTextureToTexture({ texture, mipLevel: level }, { texture: next, mipLevel: level }, [m, m, oldLayers]);
+      }
+      device.queue.submit([enc.finish()]);
+    }
+    return { next, mips, oldLayers };
+  }
+
+  async function upload(next, mips, layer, full) {
+    for (let level = 0; level < mips; level++) {
+      const m = Math.max(1, size >> level);
+      const src = level === 0 ? full : await createImageBitmap(full, { ...DECODE, resizeWidth: m, resizeHeight: m, resizeQuality: MIP_QUALITY });
+      device.queue.copyExternalImageToTexture({ source: src }, { texture: next, mipLevel: level, origin: [0, 0, layer] }, [m, m]);
+      if (src !== full) src.close();
+    }
+    full.close();
+  }
+
+  async function loadBatch(assets) {
+    const got = await Promise.all(assets.map((asset) => imagesOf(asset).then((images) => ({ asset, images }), (e) => {
+      console.warn(`material textures: ${TEXTURE_SET[asset].id} not loaded, its procedural look stays (${e.message})`);
+      failed.add(asset);
+      return null;
+    })));
+    const batch = got.filter(Boolean);
+    if (!batch.length) return;
+    // the mips are resized before the swap, so the new array is whole when it replaces the old
+    const { next, mips, oldLayers } = place(batch);
+    await Promise.all(batch.flatMap(({ images }, k) => images.map((full, j) => upload(next, mips, oldLayers + k * TEX_LAYERS + j, full))));
+    const old = texture;
+    texture = next;
+    view = next.createView({ label: next.label, dimension: '2d-array' });
+    version++;
+    batch.forEach(({ asset }, k) => {
+      const layer = oldLayers + k * TEX_LAYERS;
+      resident.push(asset);
+      patchTables(setTexLayer(asset, layer), layer);
+    });
+    setTimeout(() => old.destroy(), RETIRE_MS);
+  }
+
+  // Starts a batch of everything wanted, if none is in flight (another follows while more is wanted).
+  function pump() {
+    if (loading || !wanted.size) return;
+    const assets = [...wanted];
+    wanted.clear();
+    for (const a of assets) pending.add(a);
+    loading = loadBatch(assets).catch((e) => {
+      for (const a of assets) if (!resident.includes(a)) failed.add(a);
+      console.warn(`material textures: not loaded, the procedural looks stay (${e.message})`);
+    }).finally(() => { pending.clear(); loading = null; pump(); });
+  }
+
   const mt = {
     get view() { return view; },
     sampler,
     get version() { return version; },
-    ready: load(gpu).then((texture) => {
-      view = texture.createView({ label: texture.label, dimension: '2d-array' });
-      version++;
-      return true;
-    }, (e) => {
-      console.warn(`material textures: not loaded, the procedural looks stay (${e.message})`);
-      return false;
-    }),
+    get resident() { return [...resident]; },
+    /** Asks for these assets (gfx/textureSet.js indices); those resident, loading or failed are skipped. */
+    want(assets) {
+      for (const a of assets) {
+        if (a === NO_TEX || resident.includes(a) || pending.has(a) || failed.has(a)) continue;
+        wanted.add(a);
+      }
+      pump();
+    },
+    /** Asks for the photos these elements draw from (LOOKS tex). */
+    wantElements(ids) { mt.want(ids.map(texAssetOf)); },
+    /** Resolves once nothing is loading or wanted. */
+    async idle() { while (loading) await loading; },
   };
   return (gpu._materialTextures = mt);
 }

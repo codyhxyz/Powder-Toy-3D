@@ -9,7 +9,7 @@
 //   await volume.ready;                             // pick (and shadow); views build on first use
 //   post.render({
 //     prepare(p) { writeFrameUniforms(gpu, { camera, model, sun, shadowRes: volume.shadowRes, … }); },
-//     compute() { sim.updateBricks(); volume.recordShadow(); volume.recordPicks(); },
+//     compute() { sim.updateBricks(); volume.recordShadow(); volume.recordCensus(view); volume.recordPicks(); },
 //     opaque(p) { …three's opaque meshes…; return cut.capture(p.sceneTarget.depth); },
 //     draw(rp) { grid; volume.draw(rp, { view: 'realistic', detail, meshDepth: cut.take() }); edges; brush },
 //   }, camera);
@@ -42,9 +42,10 @@ import { frameUniformsOf } from './uniforms.js';
 import { createMediaNoise } from './mediaNoise.js';
 import { DETAIL, SOFTWARE_UNDRAWABLE, drawableDetail } from './detail.js';
 import { decoShown } from '../deco.js';
-import { isMaterialView } from '../views.js';
+import { isMaterialView, materialStyleForView } from '../views.js';
 import { RENDER_LAYOUT, MAT_TEX_BINDING, MAT_TEX_SAMPLER_BINDING } from '../shaders/bindings.js';
 import { materialTextures } from './materialTextures.js';
+import { materialCensus } from './materialCensus.js';
 import { createPacketShadow, packetShadowSource, packetShadowKey } from './packetShadow.js';
 
 // slots of the pick ring: a hover pick every frame plus a few one-off rays in flight
@@ -119,7 +120,10 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
   const shadowMap = gpu.createTexture({ label: label('shadow map'), size: [res, res], format: 'rgba32float', usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
   const shadowX = gpu.createTexture({ label: label('shadow map x'), size: [res, res], format: 'r32float', usage: TEX.STORAGE_BINDING | TEX.TEXTURE_BINDING | TEX.COPY_SRC });
   const noise = createMediaNoise(gpu);
-  const matTex = materialTextures(gpu);   // (loads in the background: the dummy until then)
+  const matTex = materialTextures(gpu);   // (loads in the background what the census asks for)
+  // the elements in this grid, so their scanned textures load (gfx/materialCensus.js)
+  const census = materialCensus(gpu, sim, (ids) => matTex.wantElements(ids));
+  const SCANNED_STYLE = 0;   // views.js materialStyle of the views that draw the scans (the realistic look)
   const samplers = gpu._volumeSamplers ??= {
     clamp: gpu.device.createSampler({ label: 'linearClamp', magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge', addressModeW: 'clamp-to-edge' }),
     repeat: gpu.device.createSampler({ label: 'linearRepeat', magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', addressModeW: 'repeat' }),
@@ -386,6 +390,15 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
       return p;
     },
     /**
+     * Records the material census into the open frame when one is due, while
+     * `view` draws the scanned textures (gfx/materialCensus.js): from the
+     * frame's compute hook, outside any render pass.
+     * @param {string} view the view drawn this frame
+     */
+    recordCensus(view) {
+      if (materialStyleForView(view) === SCANNED_STYLE) census.tick();
+    },
+    /**
      * Records the queued pick rays into the open frame (PICK_BATCH per
      * dispatch). If the pick kernel failed, or recording throws (a
      * GraphicsFailure after the device is gone), every queued pick rejects
@@ -446,6 +459,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
       shadowMap.destroy();
       shadowX.destroy();
       packets?.dispose();
+      census.dispose();
       lightingCache.clear();
     },
   };
