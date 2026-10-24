@@ -600,8 +600,11 @@ export class NativeDynamics {
    * gathered and read back, and the moved requests, air, shocks and legacy words written into work.
    * commit(), after the cores' move (src/v2/integration.js shift: its restore clears the requests and
    * the activity), copies them in. legacy: the bricks' legacy words move with them (the integrated move:
-   * V1's shift moves A/B with the cells, so only the uncovered bricks' projection is stale). */
-  recordWindowShift(delta,{legacy=false}={}) {
+   * V1's shift moves A/B with the cells, so only the uncovered bricks' projection is stale). activity: the
+   * caller moved the bricks' activity and this air source's cache with them (NativeIntegration.moveActivity,
+   * which notes the uncovered bricks and the bared face), so commit notes no brick itself; otherwise every
+   * brick is noted, the derived caches read again whole. */
+  recordWindowShift(delta,{legacy=false,activity=false}={}) {
     this._checkWindow(); const d=this._windowDelta(delta),g=this.g,dims=[g.nx,g.ny,g.nz];
     const axis=d.findIndex(v=>v!==0);
     if(axis<0) return {commit(){},landed:Promise.resolve()};
@@ -654,7 +657,7 @@ export class NativeDynamics {
         this._writeWork(slab.list*4,Uint32Array.from(list));
         this._recordWindow(this.groups.window[0],list.length/2,{mode:WINDOW_MODE.EVENTS,boxSize:bricks,substep:list.length/2});
       }
-      this._moved(next);
+      this._moved(next,{noted:activity});
     };
     return {commit,landed};
   }
@@ -666,12 +669,13 @@ export class NativeDynamics {
     for(const [k,bits] of out.events) if(!inside(k)) into.pendingOutside.set(k,(into.pendingOutside.get(k)??0)|bits);
   }
   // After a move's or a merge's copies: per-tick scratch starts over (restoreDynamicState's), the
-  // derived brick caches are read again (the air source's faces, the event census).
-  _moved(origin) {
+  // derived brick caches are read again (the air source's faces, the event census), unless the move
+  // noted its own bricks (noted: recordWindowShift's activity).
+  _moved(origin,{noted=false}={}) {
     const f=this.gpu.frame;
     f.clear(this.flight); f.clear(this.claims); f.clear(this.plans);
     this.airIndex=0; this.origin=[...origin];
-    this.owner.noteAllCells?.({events:true});
+    if(!noted) this.owner.noteAllCells?.({events:true});
     this._externalWork(); this.stats=null;
   }
   /** An undo entry's dynamics (src/sim.js snapshot): GPU copies recorded beside the cores', no readback,

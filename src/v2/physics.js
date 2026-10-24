@@ -416,8 +416,10 @@ export class PhysicsV2 {
     this.seenVersion = this.sim.version;
   }
 
-  // Undo restores every compact word, including fill, face flux and fall state.
-  restore(snapshot, aux = null) {
+  // Undo restores every compact word, including fill, face flux and fall state. moved: a World window move's
+  // cores and banks (v2/integration.js shift), whose caller moves the activity with its bricks instead
+  // (moveActivity): the activity, its whole-grid notes and the content change are left to it.
+  restore(snapshot, aux = null, { moved = false } = {}) {
     const { sim, gpu, g } = this;
     if (aux && !this.aux) throw new Error('v2 state: auxiliary owner is unavailable');
     if (this.aux) {
@@ -430,14 +432,16 @@ export class PhysicsV2 {
     gpu.frame.clear(this.liquidScratch);
     gpu.frame.clear(this.jetMask);
     gpu.frame.clear(this.events);
-    gpu.frame.clear(this.act);
     const m = marksLayout(g);
     gpu.frame.clear(sim.marks, m.owned * 4, Math.ceil(g.slots / 32) * 4);
-    gpu.write(this.act, this.layout.busy0 * 4, new Uint32Array(g.nbricks).fill(1));
-    gpu.write(this.act, this.layout.busy1 * 4, new Uint32Array(g.nbricks).fill(1));
-    gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(LEGACY_WORD.STALE));
-    this.noteAllCells(); // the copy above bypassed noteState; the requests are clear
-    sim.worldRenderSource?.noteContentChange();   // a whole-grid write (undo), not a tick's change
+    if (!moved) {
+      gpu.frame.clear(this.act);
+      gpu.write(this.act, this.layout.busy0 * 4, new Uint32Array(g.nbricks).fill(1));
+      gpu.write(this.act, this.layout.busy1 * 4, new Uint32Array(g.nbricks).fill(1));
+      gpu.write(this.act, this.layout.legacy * 4, new Uint32Array(g.nbricks).fill(LEGACY_WORD.STALE));
+      this.noteAllCells(); // the copy above bypassed noteState; the requests are clear
+      sim.worldRenderSource?.noteContentChange();   // a whole-grid write (undo), not a tick's change
+    }
     this.importFull = this.importMarked = false;
     this.seenVersion = sim.version;
     this.seenWhole = sim.wholeWrites;

@@ -21,6 +21,7 @@ import { nativeHostSteps as hostSteps } from '../../src/v2/host.js';
 import { E, K, TOOLS, ELEMENTS } from '../../src/elements.js';
 import { readFileSync } from 'node:fs';
 import { v2ActLayout, LEGACY_WORD, BRIDGE } from '../../src/shaders/v2.js';
+import { nativeMovedRuns } from '../../src/shaders/v2/window.js';
 import { resetNativeDynamics } from '../../src/v2/dynamicState.js';
 import { physicsEngine } from '../../src/launch.js';
 
@@ -73,6 +74,25 @@ function referenceDispatch(name, opts) {
   if (!name.startsWith('nativeWindow')) return;
   const [core, bank, other, otherBank] = opts.bind[2].entries.map(e => e.resource.buffer).map(words);
   const p = opts.params;
+  if (name === 'nativeWindowactShift') {
+    // The move's activity (shaders/v2/window.js nativeActShiftWGSL): a brick that stays takes its source
+    // brick's moved runs (from the scratch, binding 2) in the cleared activity and the faces (binding 0); an
+    // uncovered brick is noted whole and its change reported; the face the move bares wakes; every live bit set.
+    const [faces, moved, act] = [core, other, words(opts.bind[2].entries[4].resource.buffer)], A = v2ActLayout(g), runs = nativeMovedRuns(g);
+    const sb = p.shift.map(v => v / 4), bricks = [g.nx / 4, g.ny / 4, g.nz / 4];
+    act.fill(0xffffffff, A.plive, A.plive + A.liveWords);
+    for (let b = 0; b < g.nbricks; b++) {
+      const bc = slotCell(g, b * 64).map(v => v / 4), q = bc.map((v, a) => v + sb[a]);
+      if (q.every((v, a) => v >= 0 && v < bricks[a])) {
+        const src = cellSlot(g, ...q.map(v => v * 4)) / 64;
+        for (const [into, list] of [[act, runs.act], [faces, runs.faces]])
+          for (const r of list) for (let k = 0; k < r.words; k++) into[r.offset + r.words * b + k] = moved[r.at + r.words * src + k];
+        if (!bc.some((v, a) => (sb[a] > 0 && v === 0) || (sb[a] < 0 && v === bricks[a] - 1))) continue;
+      } else { act[A.events + b] = act[A.changed + b] = 1; }
+      act[A.busy0 + b] = act[A.busy1 + b] = act[A.state + b] = act[A.air + b] = 1; act[A.quiet + b] = 0;
+    }
+    return;
+  }
   const slabCell = i => {
     const b = Math.floor(i / 64), l = i % 64;
     return [p.lo[0] + 4 * (b % p.bricks[0]) + l % 4,
@@ -135,6 +155,7 @@ const adapter = owner.nativeDynamics;
 assert(adapter.head && adapter.layout && adapter.group, 'foundation nativeDynamics is the immutable shader adapter');
 owner.contactReady = true;
 owner.dynamics = { isReady: true, windowReady: true, isIdle: true, air: [0, 1].map(() => buffer({ size: g.nbricks * 32 })), airIndex: 0,   // (its coarse air: two vec4s a brick, two copies)
+  faces: buffer({ size: g.nbricks * 32 }),   // (the air source's cache: faces, then vacuum, a vec4f a brick each)
   advanceParticles: () => calls.push({ name: 'native-particle-tick' }),
   consumeMaterialEvents: () => calls.push({ name: 'native-event-tick' }),
   advanceAir: () => calls.push({ name: 'native-air-tick' }), ready: Promise.resolve(), capabilities: { physicsReady: true, drawReady: true, impulse: true, photon: true, neutron: true },
@@ -223,6 +244,54 @@ assert.equal(window.restoreNative([0, 0, 0], [4, 8, 8]), 256);
 assert.equal(stored.size, 0);
 assert.deepEqual(core, originalCore, 'round-trip window preserves every fractional/flux/payload word');
 assert.deepEqual(bank, originalBank, 'round-trip window preserves negative/arbitrary energy banks');
+
+// A move carries each brick's activity and air cache with it: a brick that stays keeps its quiet run,
+// notes and occupancy, so only the uncovered slab and the face the move bares wake and are read again,
+// and World's renderer is told nothing whole-window (every move used to wake and relight all of it).
+{
+  const A = v2ActLayout(g), act = words(owner.act), faces = words(owner.dynamics.faces), dims = [g.nx / 4, g.ny / 4, g.nz / 4];
+  const brickOf = c => cellSlot(g, ...c.map(v => v * 4)) / 64, coordOf = b => slotCell(g, b * 64).map(v => v / 4);
+  const PER_BRICK = ['busy0', 'busy1', 'quiet', 'awake', 'visible', 'state', 'events', 'air', 'summary', 'changed', 'legacy'];
+  // a settled window: every brick asleep (its quiet run full), nothing noted; a few distinct words to follow
+  for (let b = 0; b < g.nbricks; b++) {
+    for (const k of PER_BRICK) act[A[k] + b] = 0;
+    act[A.quiet + b] = 1000 + b; act[A.summary + b] = 7 + b; act[A.occ + 2 * b] = b; act[A.occ + 2 * b + 1] = ~b >>> 0;
+    for (let k = 0; k < 8; k++) faces[8 * b + k] = b * 8 + k;
+  }
+  const before = act.slice(), facesBefore = faces.slice(), notes = [];
+  sim.worldRenderSource = { noteContentChange: change => notes.push(change) };
+  const leaving = await sim.nativeIntegration.captureSlab([0, 0, 16], [8, 8, 4]);   // (the slab that leaves: +z)
+  calls.length = 0;
+  shiftNative(0, -16);   // the window moves -z: cell p takes p - 16 z, the slab [0, 4) bricks is uncovered
+  delete sim.worldRenderSource;
+  assert.deepEqual(notes, [], 'a move tells World\'s renderer of no whole-window change');
+  assert(calls.some(c => c.name === 'nativeWindowactShift'), 'the activity moves on the GPU with the cells');
+  for (let b = 0; b < g.nbricks; b++) {
+    const bc = coordOf(b), z = bc[2];
+    assert.equal(act[A.plive], 0xffffffff, 'the pool\'s live bits all set, as a restore sets them');
+    if (z < 4) {
+      assert.equal(act[A.busy0 + b] && act[A.busy1 + b] && act[A.state + b] && act[A.air + b] && act[A.events + b] && act[A.changed + b], 1, `uncovered brick ${bc} noted whole`);
+      assert.equal(act[A.quiet + b] + act[A.summary + b] + act[A.occ + 2 * b], 0, `uncovered brick ${bc} starts over`);
+      continue;
+    }
+    const src = brickOf([bc[0], bc[1], z - 4]);
+    assert.equal(act[A.summary + b], before[A.summary + src], `brick ${bc} keeps its summary`);
+    assert.deepEqual([act[A.occ + 2 * b], act[A.occ + 2 * b + 1]], [before[A.occ + 2 * src], before[A.occ + 2 * src + 1]], `brick ${bc} keeps its occupancy`);
+    assert.deepEqual(faces.subarray(4 * b, 4 * b + 4), facesBefore.subarray(4 * src, 4 * src + 4), `brick ${bc} keeps its faces`);
+    assert.deepEqual(faces.subarray(4 * (g.nbricks + b), 4 * (g.nbricks + b) + 4), facesBefore.subarray(4 * (g.nbricks + src), 4 * (g.nbricks + src) + 4), `brick ${bc} keeps its vacuum`);
+    if (z === dims[2] - 1) {
+      assert.equal(act[A.busy0 + b] && act[A.busy1 + b] && act[A.state + b] && act[A.air + b], 1, `bared face brick ${bc} wakes, its air read again`);
+      assert.equal(act[A.quiet + b], 0);
+    } else {
+      assert.equal(act[A.quiet + b], before[A.quiet + src], `brick ${bc} keeps its quiet run`);
+      for (const k of ['busy0', 'busy1', 'state', 'air', 'events', 'changed', 'visible', 'awake'])
+        assert.equal(act[A[k] + b], 0, `brick ${bc} stays asleep and unnoted (${k}): a move costs its slab, not the window`);
+    }
+  }
+  shiftNative(0, 16);
+  sim.nativeIntegration.restoreBricks([0, 0, 16], [8, 8, 4], leaving.map((bytes, index) => ({ index, bytes })));
+  assert.deepEqual(core, originalCore); assert.deepEqual(bank, originalBank);
+}
 
 // Every signed world axis uses the same exact out-of-place mapping.
 for (const [dx, dz] of [[-16, 0], [0, 16], [0, -16]]) {

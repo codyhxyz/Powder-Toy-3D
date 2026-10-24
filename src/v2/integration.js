@@ -1,6 +1,6 @@
 import { fold } from '../gpu/kernels.js';
 import { marksLayout } from '../shaders/common.js';
-import { NativeWindowParams, NATIVE_WINDOW_LAYOUT, nativeShiftWGSL, nativeGatherWGSL, nativeScatterWGSL } from '../shaders/v2/window.js';
+import { NativeWindowParams, NATIVE_WINDOW_LAYOUT, nativeShiftWGSL, nativeGatherWGSL, nativeScatterWGSL, nativeActShiftWGSL, nativeMovedRuns } from '../shaders/v2/window.js';
 
 import { encodeNativeBrick, decodeNativeBrick } from '../world/nativeStore.js';
 export { encodeNativeBrick, decodeNativeBrick, NATIVE_BRICK_BYTES } from '../world/nativeStore.js';
@@ -41,7 +41,7 @@ export class NativeIntegration {
       if (owner.dynamics === dynamics) { this.dynamicsReady = true; sim.wake(); }
     }, () => {});
     this.layout = gpu.layout('NATIVE_WINDOW', NATIVE_WINDOW_LAYOUT);
-    this.kernels = Object.fromEntries([['shift', nativeShiftWGSL], ['gather', nativeGatherWGSL], ['scatter', nativeScatterWGSL]].map(([name, code]) =>
+    this.kernels = Object.fromEntries([['shift', nativeShiftWGSL], ['gather', nativeGatherWGSL], ['scatter', nativeScatterWGSL], ['actShift', nativeActShiftWGSL]].map(([name, code]) =>
       [name, gpu.kernel({ name: `nativeWindow${name}`, code: code(sim.g), layouts: [sim.L.TABLES, gpu.L.EMPTY, this.layout], params: NativeWindowParams })]));
     this.ready = Promise.all(Object.values(this.kernels).map(k => k.ready)).then(() => { this.isReady = true; });
   }
@@ -79,18 +79,37 @@ export class NativeIntegration {
   // A World window move, recorded into the frame as V1's is (src/sim.js shift), never awaited: no tick,
   // tool or stroke waits on it. The cores and banks move out of place; the dynamics' requests, air and
   // shocks and the bricks' legacy words move with them (NativeDynamics.recordWindowShift), so only the
-  // bricks the move uncovers are converted again. Returns the leaving slab's landing (the window holds
-  // its next move until it has: world/window.js).
+  // bricks the move uncovers are converted again; their activity and air cache too (moveActivity), so
+  // only those and the face the move bares wake, and only they are reported to World's renderer: a move
+  // costs its slab, not the window. Returns the leaving slab's landing (the window holds its next move
+  // until it has: world/window.js).
   shift(dx, dz) {
-    const { owner: o, sim } = this;
+    const { owner: o, sim } = this, shift = [dx, 0, dz];
     if (!nativeCapabilities(sim).world) throw new Error('native world dynamics shift is unavailable');
     o.sync();
     this.scratch ??= [this.buffer('shift cores', sim.g.slots * 16), this.buffer('shift banks', sim.g.slots * 4)];
-    this.run('shift', sim.g.slots, this.group(o.cells, o.aux, ...this.scratch), { shift: [dx, 0, dz] });
-    const moved = o.dynamics.recordWindowShift([dx, 0, dz], { legacy: true });
-    o.restore(...this.scratch);
+    this.run('shift', sim.g.slots, this.group(o.cells, o.aux, ...this.scratch), { shift });
+    const moved = o.dynamics.recordWindowShift(shift, { legacy: true, activity: true });
+    o.restore(...this.scratch, { moved: true });
+    this.moveActivity(shift);
     moved.commit();
     return (this.landing = moved.landed);
+  }
+  // The move's activity and the air source's cache, after the restore (which copied the cores' scratch
+  // back, so it holds them now: nativeMovedRuns' runs) and before the dynamics' commit (the legacy words):
+  // each brick that stays takes its own words where it lands, the rest of the activity starts over as a
+  // restore's does (shaders/v2/window.js nativeActShiftWGSL). It used to start over whole: every brick
+  // busy, its cells and air noted, so each move woke the whole grid for an offset cycle and its air
+  // reported every brick changed, a relight of the whole window (2026-10-23 perf audit).
+  moveActivity(shift) {
+    const { owner: o, sim, gpu } = this, f = gpu.frame, nb = sim.g.nbricks, faces = o.dynamics.faces;
+    const runs = (this.movedRuns ??= nativeMovedRuns(sim.g)), [moved, spare] = this.scratch;
+    if (runs.words * 4 > moved.size) throw new Error('native window move: the moved activity outgrows its scratch');
+    for (const r of runs.act) f.copy(o.act, r.offset * 4, moved, r.at * 4, r.words * nb * 4);
+    for (const r of runs.faces) f.copy(faces, r.offset * 4, moved, r.at * 4, r.words * nb * 4);
+    f.clear(o.act);
+    // (bindings 1 and 3 unread: any buffer of their own, no writable alias)
+    this.run('actShift', nb, this.group(faces, spare, moved, o.aux), { shift });
   }
   // An undo entry across a move (src/sim.js undo, V1's undoShift): the shared cells take the entry's
   // words, the rest keep theirs; with the entry's dynamics (NativeDynamics.captureUndo), its requests,
@@ -141,7 +160,8 @@ export class NativeIntegration {
   }
   // Called after Simulation.shift advanced legacy bookkeeping. The projected
   // legacy shift is not an edit; discard its ownership bits, not native state.
-  // The move noted its bricks (shift: the restore wakes them all, the legacy words moved with them).
+  // The move noted its bricks (shift: moveActivity notes the uncovered ones and the bared face, the
+  // legacy words moved with them).
   shifted() {
     const { sim, gpu } = this, m = marksLayout(sim.g);
     gpu.frame.clear(sim.marks, m.owned * 4, Math.ceil(sim.g.slots / 32) * 4);
