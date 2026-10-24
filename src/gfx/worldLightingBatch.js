@@ -106,6 +106,13 @@ export function completeLightingBatch({ frame, queue, feedbackBuffer, wordCount,
   });
 }
 
+// One texel from buffer to the scoped destination: the Atlas's batched
+// copyTexel (one dispatch a buffer and texture, gpu/copyTexels.js) when it
+// offers one, else a native copy.
+function copyTexel(encoder, bindings, buffer, offset, destination) {
+  if (bindings.copyTexel) bindings.copyTexel(buffer, offset, destination);
+  else encoder.copyBufferToTexture({ buffer, offset }, destination, [1, 1, 1]);
+}
 // All outputs are already native texels; transport only records scoped copies.
 export function createLightingTransport(device) {
   // One page's copy, checked against its Atlas job's provenance.
@@ -121,7 +128,7 @@ export function createLightingTransport(device) {
     const stride = kind === 'gi' ? 8 : 16;
     if (copies.length !== (kind === 'gi' ? 4 : 1) || copies.some((c, i) => c.to !== i * stride || c.size !== stride)) throw new Error('exact packed lighting ranges required');
     return { job, kind, record(encoder, bindings) {
-      copies.forEach((c, i) => encoder.copyBufferToTexture({ buffer: source, offset: c.from }, bindings.destinations[i], [1, 1, 1]));
+      copies.forEach((c, i) => copyTexel(encoder, bindings, source, c.from, bindings.destinations[i]));
     } };
   }
   async function write({ atlas, job, kind, token, source, copies, origin, retain }) {
@@ -171,7 +178,7 @@ export function createLightingTransport(device) {
         validateWorldLightingRestore(lease,{job});
         const {buffer:source,ranges}=pin.bindings();
         return {job,kind:lease.kind,restoreDeclaration:lease,record(encoder,bindings){
-          ranges.forEach((c,i)=>encoder.copyBufferToTexture({buffer:source,offset:c.from},bindings.destinations[i],[1,1,1]));
+          ranges.forEach((c,i)=>copyTexel(encoder,bindings,source,c.from,bindings.destinations[i]));
         }};
       });
       if(writes.length)atlas.recordLightWrites(writes);

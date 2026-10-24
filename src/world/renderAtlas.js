@@ -2,6 +2,7 @@
 // Public snapshots are immutable. Providers upload COMPLETE replacement pages;
 // publication is a queue-ordered transaction, not an incremental readiness mask.
 import { validateWorldLightingRestore } from './worldLightingRestore.js';
+import { createTexelCopies } from '../gpu/copyTexels.js';
 export const WORLD_ATLAS_ABI = 2;
 export const READY = Object.freeze({ RAW: 1, FIELD: 2, AUX: 4, GI_SOURCE: 8, GI: 16, GLOW: 32, CELL: 7, LIGHT: 56, ALL: 63 });
 export const LIGHT_RECORDS = 5;
@@ -708,6 +709,8 @@ export class WorldRenderAtlas {
     this._alive(); check(Array.isArray(writes), 'page writes must be an array');
     if (!writes.length) return [];
     const encoder = this.device.createCommandEncoder({ label: 'world provider pages' }), staged = [];
+    // Writers' single-texel buffer copies, one dispatch a (buffer, texture) at the end (gpu/copyTexels.js).
+    const texels = createTexelCopies(this.device), copyTexel = (buffer, offset, destination) => texels.add(buffer, offset, destination);
     for (const { job, kind, auxMetadata, record } of writes) {
       const p = this._job(job), bindings = this.writerBindings(job, kind);
       check(typeof record === 'function' && record.constructor.name !== 'AsyncFunction', 'writer must be synchronous');
@@ -718,14 +721,15 @@ export class WorldRenderAtlas {
         const destinations = kind === 'fields' ? WRITER_CHANNELS.fields.map(name => ({ texture: p.resources.textures[name], origin: pageTexel(p.id, 0, p.resources.layout) }))
           : kind === 'source' ? [{ texture: p.resources.textures.aux, origin: lightTexel(p.id, 4, p.resources.layout) }]
           : kind === 'gi' || kind === 'glow' ? WRITER_CHANNELS[kind].map(name => ({ texture: p.resources.textures[name], origin: probeTexel(p.probeID, p.resources.layout) })) : null;
-        const scoped = destinations ? frozen({ ...bindings, destinations: frozen(destinations.map(d => frozen({ ...d, origin: frozen(d.origin) }))) }) : bindings;
+        const scoped = destinations ? frozen({ ...bindings, copyTexel, destinations: frozen(destinations.map(d => frozen({ ...d, origin: frozen(d.origin) }))) }) : bindings;
         const result = record(encoder, scoped); check(!result?.then, 'writer must be synchronous');
       }
       finally { this.recording = false; }
       staged.push({ job, p, kind });
     }
+    const texelJobs = texels.flush(encoder);
     for (const { job } of staged) this._job(job);
-    this.queue.submit([encoder.finish()]);
+    try { this.queue.submit([encoder.finish()]); } finally { texelJobs?.destroy(); }
     for (const { p, kind } of staged) (kind === 'source' ? ['source'] : WRITER_CHANNELS[kind]).forEach(n => p.written.add(n));
     return staged.map(({ job }) => job);
   }
