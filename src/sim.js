@@ -956,6 +956,13 @@ export class Simulation {
    */
   onShift(fn) { this._shiftListeners.push(fn); return () => { this._shiftListeners = this._shiftListeners.filter((x) => x !== fn); }; }
 
+  /**
+   * Called at the start of every window move, before anything moves (the world copy writes back what physics
+   * changed while the window is still where it changed it: world/worldCopy.js): fn(dx, dz).
+   * @param {(dx: number, dz: number) => void} fn
+   */
+  onBeforeShift(fn) { (this._beforeShift ??= []).push(fn); return () => { this._beforeShift = this._beforeShift.filter((x) => x !== fn); }; }
+
   // Move the window over the world (docs/scaling.md D11) by (dx, 0, dz) world
   // cells, whole supertiles: cell p takes the state of p + (dx, 0, dz), so the
   // content moves the other way and stays put in the world. Cells shifted in
@@ -980,6 +987,7 @@ export class Simulation {
     // (exportLegacy with no projection current: BRIDGE.ALL) before anything reads it. Moving it cost
     // a second copy of V1's state (36 B a slot) and a whole-window copy of it every move.
     const v2 = this.compact?.isReady ? this.compact : null;
+    for (const fn of this._beforeShift ?? []) fn(dx, dz);
     native?.shift(dx, dz);
     const f = this.gpu.frame, size = fold(Math.ceil(this.g.slots / 64)), shift = [dx, 0, dz];
     if (v2) v2.legacyNative = undefined;

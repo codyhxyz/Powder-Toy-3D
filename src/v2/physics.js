@@ -248,6 +248,9 @@ export class PhysicsV2 {
     const ones = new Uint32Array(this.g.nbricks).fill(1);
     this.gpu.write(this.act, this.layout.state * 4, ones);
     this.gpu.write(this.act, this.layout.air * 4, ones);
+    // ...and changed, the tick's record of change (v2invalidate's tiles): what reads it (the world copy's
+    // writeback, world/worldCopy.js) compares every brick against these writes
+    this.gpu.write(this.act, this.layout.changed * 4, ones);
     // the brick summaries describe cells these writes bypassed: unknown again (a mode change keeps them)
     if (summaries) this.gpu.write(this.act, this.layout.summary * 4, new Uint32Array(this.g.nbricks));
     if (events) this.gpu.write(this.act, this.layout.events * 4, ones);
