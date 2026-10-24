@@ -18,7 +18,7 @@ const array = v => Array.from(v?.elements ?? (v?.toArray ? v.toArray() : v));
 const requireReady = (ok, message) => { if (!ok) throw new Error(message); };
 const complete = f => f?.incomplete === false && !f.requirements.length && !f.sun.length;
 const LIVE_COMMIT_TRIES = 3;     // frames a live view frame may wait for Post to admit it (an older scene's submission pending)
-const LIVE_RETIRING_MAX = 2;     // live view frames recorded and not yet retired (Post's staged targets: post.js maxPendingScenes 3)
+const LIVE_RETIRING_MAX = 2;     // live view frames recorded and not yet submitted (frames still on the GPU: Post's staged targets, post.js maxPendingScenes 3)
 // A loaded world's next transaction waits this many times as long as the last one took: its lighting
 // tick, restores and scene share the one GPU queue (and the main thread's slices) with every frame, and
 // back to back (V2's water changes the world every tick) they left the frames none of either. Minecraft
@@ -155,6 +155,28 @@ export async function probeWorldFrameEye(app, state, data, frozenView = null) {
 }
 // The native point's last word: 1 when every probe and Sun tile it read was loaded.
 const eyeLit=eye=>eye?.words?.length===20 && eye.words[19]===1;
+// A live view frame's final boundary: closes the frame's encoder like the feedback provider's ticket
+// (gfx/worldLightingInputs.js reserve), with no staging copy, map or feedback pass. Live frames read
+// nothing back; before, each one copied and mapped the whole feedback twice (24 MiB on Descent),
+// and big maps presented 3-5 frames/s with the GPU and main thread idle (2026-10-23).
+// Post needs only `submitted` (post.js sceneFence): resolved on CPU submission.
+const LIVE_NO_WORDS=new Uint32Array(0);
+function createLiveSubmission(gpu) {
+  const frame=gpu.frame;
+  let resolve, reject, recorded=false;
+  const submitted=new Promise((a,z)=>{resolve=a;reject=z;});submitted.catch(()=>{});
+  return Object.freeze({submitted,record(target) {
+    if(recorded || target!==frame)throw new Error('final ticket already consumed or foreign Frame');
+    recorded=true;
+    try {gpu.flush('world live view boundary');}
+    catch(error) {
+      // (an encoder still open has an unknown disposition: as the provider, it never settles)
+      if(!frame.open)reject(error);
+      const read=Promise.reject(error);read.catch(()=>{});return read;
+    }
+    resolve();return Promise.resolve(LIVE_NO_WORDS);
+  }});
+}
 function retireWorldUse(state,gpu,submitted,release) {
   const done = Promise.resolve(submitted).catch(() => {}).then(() => gpu.device.queue.onSubmittedWorkDone()).finally(release);
   state.uses.add(done);done.then(() => state.uses.delete(done),() => state.uses.delete(done));
@@ -168,7 +190,7 @@ function retireWorldUse(state,gpu,submitted,release) {
  * stillTarget uses the same scene readers, but no MAIN eye/VM/sign/UI readers.
  */
 export function recordWorldFrame(app, state, data, {camera, view, detail={}, curved=false,
-  eye, identity, order, signRequest=null, dt=0, frozenView=null, preflight=null, stillTarget=null}) {
+  eye, identity, order, signRequest=null, dt=0, frozenView=null, preflight=null, stillTarget=null, liveView=false}) {
   requireReady(!state.dead && app.win?.loaded && app.win.render===state.data, 'live WORLD frame required');
   requireReady(['threeMeshes','writeWorldFrame','drawWorldSky','drawWorldBrush'].every(k=>typeof app[k]==='function') && app.frameWires,
     'actual App opaque/after/overlay functions must be connected before recording');
@@ -188,7 +210,9 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
       sunDirection:values.sun,sunColor:values.sunCol,keyLight:values.keyLight,
       settings:{exposure:post.settings.exposure,raw:post.settings.raw}},
     sample:{identity:eye,publication:eye.publication,frameIdentity:identity,position:eye.position,words:eye.words}};
-  const ticket=createWorldFeedbackProvider(gpu,{}).reserve(gpu.frame), feedbackIdentity=Object.freeze({identity});
+  if(liveView){requireReady(!stillTarget,'a live view frame is never a still');signRequest=null;}
+  // (liveView: no feedback is recorded or read; its `read` resolves to no words)
+  const ticket=liveView ? createLiveSubmission(gpu) : createWorldFeedbackProvider(gpu,{}).reserve(gpu.frame), feedbackIdentity=Object.freeze({identity});
   let hands;
   try {hands=!lit ? {ready:true} : app.presentation.neutral(() => renderViewmodels(app.renderer,app.scene,camera,post,{
     worldLighting,onReady:()=>app.wakeLoop(),onPending:work=>trackWorldCompilation(app,preflight,work)}));}
@@ -245,7 +269,7 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
     recordingError=error;
   } finally {
     if (!transferred) postPublication.release();
-    if (native) {
+    if (native && !liveView) {
       // Copy signs after ALL scene readers, then close ONE actual final suffix.
       const feedbackBytes=native.feedbackWords*4,bytes=feedbackBytes+(signOutput?2048:0);
       try {
@@ -256,7 +280,8 @@ export function recordWorldFrame(app, state, data, {camera, view, detail={}, cur
         submittedRead=ticket.record(gpu.frame,combined??state.boundary);
       }
     } else {
-      // Even Post pool backpressure follows a VM draw. Close that suffix too.
+      // Even Post pool backpressure follows a VM draw. Close that suffix too. (A live view frame
+      // closes here with no readback.)
       submittedRead=ticket.record(gpu.frame,state.boundary);
     }
   }
@@ -481,25 +506,30 @@ export function createWorldFrameDriver(app,state,execution={}) {
         if(!preflight(app,pf,view.camera))return null;
         app.post.setSceneIdentity(data.identity);
         const identity=Object.freeze({order:++order});
-        return record(app,state,data,{...view,frozenView:view,preflight:pf,eye:shown.eye,identity,order,dt,stillTarget:null,signRequest:null});
+        return record(app,state,data,{...view,frozenView:view,preflight:pf,eye:shown.eye,identity,order,dt,stillTarget:null,signRequest:null,liveView:true});
       });
     } catch(error) {
       liveFailure=error;console.error('WORLD live view stopped; frames wait for each transaction again',error);
     }
     if(!recorded){Promise.allSettled([releasePreflight(app,pf)]).finally(()=>data.release());return;}
     liveBusy=true;liveRetired++;
-    const {sceneTicket,feedbackIdentity,hands,native}=recorded;
+    const {sceneTicket,feedbackIdentity,hands}=recorded;
     recorded.read.catch(()=>{});
-    let finalSubmission=recorded.submitted;
+    let finalSubmission=recorded.submitted, slotFreed=false;
+    // A live frame's slot frees on CPU submission of its commit; frames still on the GPU are bounded
+    // by Post's staged targets (a busy slot makes recordScene return null). Its snapshot pin, native
+    // candidate and preflight still wait for GPU completion (releaseAfter, releasePreflight).
+    // Before, the slot also waited for that GPU round trip (~200 ms), capping big maps at 3-5 frames/s.
+    const freeSlot=()=>{if(!slotFreed){slotFreed=true;liveRetired--;wake();}};
     (async()=>{
       try {
         await recorded.submitted;
         for(let tries=0;tries<LIVE_COMMIT_TRIES && !dead && sceneTicket.status==='recorded';tries++) {
-          const final=createWorldFeedbackProvider(app.gpu,{}).reserve(app.gpu.frame);
+          const final=createLiveSubmission(app.gpu);
           finalSubmission=final.submitted;
           let committed=false;
           try {committed=app.post.commitScene(sceneTicket,{feedbackIdentity,feedback:{incomplete:false,requirements:[],sun:[]},submission:final});}
-          finally {final.record(app.gpu.frame,native.feedback,1).catch(()=>{});}
+          finally {final.record(app.gpu.frame).catch(()=>{});}
           if(committed)break;
           await nextFrame();
         }
@@ -508,9 +538,11 @@ export function createWorldFrameDriver(app,state,execution={}) {
       } finally {
         liveBusy=false;wake();
         hands.lighting?.discard();app.post.discardScene(sceneTicket);
+        await Promise.allSettled([finalSubmission]);
+        freeSlot();
         await Promise.allSettled([recorded.releaseAfter(finalSubmission)]);
         await Promise.allSettled([releasePreflight(app,pf)]);
-        data.release();liveRetired--;
+        data.release();
       }
     })();
   };
