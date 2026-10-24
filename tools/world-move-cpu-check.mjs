@@ -19,7 +19,7 @@
 // usage: node tools/world-move-cpu-check.mjs [--quick] (skips the naga sweep past the five census maps)
 import { gridLayout } from '../src/sim.js';
 import {
-  moveSlabs, movePlan, slabBase, slabBrick, slabsOverlap, LeaveQueue, LEAVE_SLICE_MS, LEAVE_SLICE_BRICKS, MOVE_CPU_BUDGET_MS,
+  moveSlabs, movePlan, slabBase, slabBrick, slabsOverlap, LeaveQueue, physicsOnlyFor, SEAMLESS_SCENES, LEAVE_SLICE_MS, LEAVE_SLICE_BRICKS, MOVE_CPU_BUDGET_MS,
 } from '../src/world/physicsRegion.js';
 import { WorldWindow, WIN_STEP } from '../src/world/window.js';
 import { NativeBrickStore, encodeNativeBrick, NATIVE_BRICK_BYTES } from '../src/world/nativeStore.js';
@@ -164,6 +164,24 @@ for (const exact of [true, false]) {
   if (sent[0]?.opts?.derived !== false) fail('a physics-only restore re-ages the derived passes');
   if (win.nativeStore.size !== 0) fail(`exact=${exact}: the store keeps ${win.nativeStore.size} bricks after they came back`);
 }
+
+// a save or a capture reads the stores after `await win.pending`: once the readbacks have landed, the
+// getter finishes the queued coding (saves/game.js capture), and a writer's hold blocks moves as before
+{
+  const desc = Object.getOwnPropertyDescriptor(WorldWindow.prototype, 'pending'), wait = Object.getOwnPropertyDescriptor(WorldWindow.prototype, '_moveWait');
+  const win = { ...fakeWindow(wb), storeReads: new Set(), held: null, leaveQueue: new LeaveQueue({ schedule: () => {} }) };
+  win.leaveQueue.add({ steps: WorldWindow.prototype._codeSlab.call(win, 1, base, bricks, words, keptIdx.length, floats, native, true, { revision: 1 }) });
+  const landing = new Promise(() => {}); win.storeReads.add(landing);
+  if (desc.get.call(win) !== landing || !win.leaveQueue.busy) fail('pending: a readback in flight is not what a save waits on');
+  win.storeReads.clear();
+  if (desc.get.call(win) !== null || win.leaveQueue.busy || win.nativeStore.size !== expectNative(true).size) fail('pending: landed coding is not finished for a reader');
+  const hold = Promise.resolve(); desc.set.call(win, hold);
+  if (desc.get.call(win) !== hold || wait.get.call(win) !== hold) fail('pending: a writer\'s hold does not block moves');
+  desc.set.call(win, null);
+  if (wait.get.call(win) !== null) fail('pending: a released hold still blocks moves');
+}
+for (const s of WORLD_SCENES) if (physicsOnlyFor(s, true) !== SEAMLESS_SCENES.has(s.key) || physicsOnlyFor(s, false)) fail(`physicsOnlyFor ${s.key}`);
+if ([...SEAMLESS_SCENES].some((k) => !WORLD_SCENES.some((s) => s.key === k))) fail('SEAMLESS_SCENES names a scene that is not a world scene');
 
 // ---------------------------------------------------------------- 4. the fill's rule
 {

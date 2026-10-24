@@ -11,7 +11,7 @@ import { BrickStore, encodeBrick, BRICK_FLOATS } from './store.js';
 import { farLayout, farSceneLayout } from '../shaders/far.js';
 import { WorldRenderSource, dropNativeWorldSource, nativePackOf, nativeSourceReady } from './renderSource.js';
 import { RawWorldSourceProducer } from './renderSourceProducer.js';
-import { PHYSICS_ONLY_MOVE, MOVE_CPU_BUDGET_MS, LeaveQueue, moveSlabs, movePlan, slabBase, slabBrick, slabsOverlap } from './physicsRegion.js';
+import { physicsOnlyFor, MOVE_CPU_BUDGET_MS, LeaveQueue, moveSlabs, movePlan, slabBase, slabBrick, slabsOverlap } from './physicsRegion.js';
 import { WorldCopyFill } from './copyFill.js';
 
 // The window over a massive world (docs/scaling.md D11, phases W1 and W2;
@@ -62,7 +62,7 @@ import { WorldCopyFill } from './copyFill.js';
 // far field around it. Until load the window doesn't move.
 //
 // The seamless world (docs/seamless-world.md, world/physicsRegion.js): with PHYSICS_ONLY_MOVE (the lead's
-// switch) a move records no picture work (no derived, occupancy, far field or render source), and with a
+// switch; physicsOnlyFor: the census maps) a move records no picture work (no derived, occupancy, far field or render source), and with a
 // world copy attached (attachWorldCopy) the slab is filled from the copy, trees and all, with no CPU
 // baking. Either way the leaving slab is read back as before and its bricks coded into the stores outside
 // the frame, in budgeted slices (LeaveQueue); a move waits only for the readback to land, and finishes
@@ -118,7 +118,7 @@ export class WorldWindow {
     this.storeReads = new Set();                                  // the leaving slabs' readbacks in flight (pending)
     this.held = null;                                             // a writer's transaction holding the window (pending =)
     this.leaveQueue = new LeaveQueue();                           // ...and their coding into the stores, once landed
-    this.physicsOnly = PHYSICS_ONLY_MOVE;                         // a move records no picture work (physicsRegion.js)
+    this.physicsOnly = physicsOnlyFor(scene);                     // a move records no picture work (physicsRegion.js)
     this.worldCopy = null;                                        // W's world copy, once attached (attachWorldCopy)
     this.copyFill = null;                                         // its slab fill (world/copyFill.js)
     this.storeRevisions = new Map();

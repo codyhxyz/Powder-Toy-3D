@@ -13,6 +13,12 @@ import { BRICK } from '../shaders/common.js';
 // so nothing on screen reads the physics window's derived data. A move then records no picture work.
 // False keeps today's move (derived, occupancy, far field and render source follow the window).
 export const PHYSICS_ONLY_MOVE = false;
+// The maps the switch covers: the seamless world's census (docs/seamless-world.md). Intentional (user,
+// 2026-10-24: "don't worry about descent"): Descent's levels and the Noita source scenes keep the old
+// picture, and so the old move, until the march covers them.
+export const SEAMLESS_SCENES = new Set(['island', 'labWorld', 'volcanoWorld', 'giantVolcano', 'willowCove']);
+/** Whether a window over this world scene moves physics only (world/window.js reads it at construction). */
+export const physicsOnlyFor = (scene, on = PHYSICS_ONLY_MOVE) => on && SEAMLESS_SCENES.has(scene?.key);
 
 // What a move may cost in its own frame (docs/seamless-world.md, P's budget); the rest spreads over frames.
 export const MOVE_GPU_BUDGET_MS = 2;
