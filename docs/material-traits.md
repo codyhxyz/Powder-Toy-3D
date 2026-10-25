@@ -60,6 +60,11 @@ and controlled effect sources are not implemented/validated here.
 
 Existing fields remain authoritative: `kind`, `hot`, `cold`, `melt`, `ignite`,
 `burnRate`, `blast`, `acid`, `acidProof`, `cond`, `elec`, and `REACTIONS`.
+Impact sensitivity derives from `blast.shock`; pressure sensitivity from
+`blast.crushP` or `crush.P`. Annihilation derives from a wildcard reaction
+that consumes both participants. These are distinct from ordinary flammability.
+Reaction fuels also derive flammability from their heat-releasing reactions
+with air or oxygen; hydrogen does not need a duplicate ignition constant.
 Nuclear-fuel tags derive from positive `NUCLEAR` fission cross-sections;
 spontaneous-neutron tags derive from positive `EMITTERS` rates in `rays.js`.
 Water's neutron scattering does **not** make it nuclear fuel. Uranium is not
@@ -118,6 +123,8 @@ zero-buoyancy cloud gets no blanket “Rises” claim.
    | `replicating` | `src/v2/contact.js`: clone and powered-clone rules |
    | `matter-consuming` | `src/v2/contact.js`: void deletion and singularity absorption |
    | `airborne-explosive` | `src/v2/contact.js` dust-cloud ignition/burst; airborne contact wiring in `src/shaders/v2/particles.js` |
+   | `oxidizer` | `src/v2/contact.js`: oxygen accelerates burning and raises flame temperature |
+   | `pressure-anomaly` | `src/v2/contact.js`: singularity suction and its mass-dependent burst; composes with decay and matter consumption |
    | `biological` | `src/pov/stains.js`, `src/pov/potions.js`, `src/pov/vitals.js`: verified special body statuses/ingestion (not every generic thermal injury) |
    | `potion` | `src/pov/potions.js`: registered potion effects; not an unimplemented sheep transformation claim |
 

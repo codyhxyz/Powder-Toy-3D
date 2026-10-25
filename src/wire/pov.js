@@ -8,9 +8,11 @@
 import { createPov } from '../pov/index.js';
 import { isGearTool } from '../elements.js';
 import { QUARRY_SPAWN } from '../industry/catalog.js';
+import { LAB_STUDIES_SPAWN } from '../lab/studies/index.js';
 import { Vector3 } from 'three';
 
 const FACTORY_TOOLS = ['SHOVEL', 'PICKAXE', 'AXE', 'BUCKET', 'HOOK'];
+const PRESET_SPAWNS = { quarry: QUARRY_SPAWN, labStudies: LAB_STUDIES_SPAWN };
 let factoryBelt = null;
 
 const pov = {
@@ -39,7 +41,8 @@ const pov = {
       getArena: () => app.arenaLayout,                      // the loaded arena's layout, for the team games (src/game)
       // Tinker Creek's Animal Crossing: you start in front of your cottage (pov/village/state.js);
       // a Descent level: you start (and respawn) at its spawn
-      dropAt: () => app.settings.preset === 'quarry' && app.mapKind.presets ? new Vector3(...QUARRY_SPAWN) : app.villageSpawn() ?? app.descentSpawn?.(),
+      dropAt: () => PRESET_SPAWNS[app.settings.preset] && app.mapKind.presets
+        ? new Vector3(...PRESET_SPAWNS[app.settings.preset]) : app.villageSpawn() ?? app.descentSpawn?.(),
       getMode: () => app.gamemode, getWorld: () => app.win,   // the village switches on in Animal Crossing on Tinker Creek
       withVillageFocus: (at, valid, visit) => app.withVillageFocus(at, valid, visit),
       requestRender: () => app.requestRender(),

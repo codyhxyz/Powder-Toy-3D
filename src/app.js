@@ -42,6 +42,7 @@ import { SPAWNER, feetOnHit } from './spawners.js';
 import { HAND_REACH } from './pov/constants.js';
 import { faceNormal } from './pov/grid.js';
 import { buildPreset, ARENA_PRESETS } from './presets.js';
+import { labStudiesPlaques } from './lab/studies/index.js';
 import { DAM_VALLEY_BANNERS, shrineAltars } from './arenas/damValley.js';
 import { sceneByKey } from './world/scenes/index.js';
 import { WORLD_SIZE } from './shaders/farShared.js';
@@ -53,6 +54,7 @@ import { createMeshFrames } from './gfx/meshFrames.js';
 import { createBrand, createToolbar } from './ui/topbar.js';
 import { createDock } from './ui/dock.js';
 import { createCard } from './ui/card.js';
+import { createElementInspector } from './lab/inspector.js';
 import { createSettings } from './ui/settings.js';
 import { createShaderPicker } from './ui/shaders.js';
 import { createHud, createHelp } from './ui/hud.js';
@@ -99,11 +101,10 @@ import { weatherSection } from './ui/weather.js';
 
 const SIZES = { '64': [64, 64, 64], '96': [96, 96, 96], '128': [128, 128, 128], wide: [160, 96, 160],
   valley: ARENA_PRESETS.damValley.size };
-// Arena scenes (presets.js ARENA_PRESETS) are built for one grid each: picking
-// one switches the grid to it, and any other box scene switches back. Their
-// grids aren't in the Grid size row.
-const ARENA_GRID = { damValley: 'valley' };
-const ARENA_GRIDS = new Set(Object.values(ARENA_GRID));
+// Authored fixed-size presets switch to their grid; ordinary box scenes
+// switch back. Their grids aren't in the Grid size row.
+const FIXED_PRESET_GRID = { damValley: 'valley', labStudies: 'valley' };
+const FIXED_PRESET_GRIDS = new Set(Object.values(FIXED_PRESET_GRID));
 // an arena's team banners (arenas/markers.js), by preset
 const ARENA_BANNERS = { damValley: DAM_VALLEY_BANNERS };
 // Massive worlds (docs/scaling.md D11): a world scene (world/scenes,
@@ -262,11 +263,11 @@ const gridRefusal = (dims) => gpu.fitsReason({ nx: dims[0], ny: dims[1], nz: dim
 let worldSeed = params.has('seed') ? Number(params.get('seed')) >>> 0 : undefined;
 if (!knownSize(settings.size)) settings.size = DEFAULTS.size;
 // the box size the Scene row goes back to from World
-let boxSize = settings.size in SIZES && !ARENA_GRIDS.has(settings.size) ? settings.size : BOX_DEFAULT;
+let boxSize = settings.size in SIZES && !FIXED_PRESET_GRIDS.has(settings.size) ? settings.size : BOX_DEFAULT;
 // a scene named in the URL is a box scene (World has its own), as in the Scene row
 if (params.get('preset') && !params.get('size') && settings.size in WORLDS) settings.size = boxSize;
 // an arena named in the URL brings its grid
-if (params.get('preset') in ARENA_GRID && !params.get('size')) settings.size = ARENA_GRID[params.get('preset')];
+if (params.get('preset') in FIXED_PRESET_GRID && !params.get('size')) settings.size = FIXED_PRESET_GRID[params.get('preset')];
 // a map (maps.js): the start menu's pick (src/main.js), or ?map= — its scene at its own size
 const bootMap = mapByKey(params.get('map') ?? launch.map);
 if (bootMap) useMap(bootMap);
@@ -652,7 +653,7 @@ function build(savedWorldSize = null) {
   rig.setMaxSpeed(mapKind.camSpeedMax);
   rig.reset(true);
   // an arena only fits its own grid: in another, the lab
-  if (mapKind.presets && settings.preset in ARENA_GRID && ARENA_GRID[settings.preset] !== settings.size) settings.preset = 'lab';
+  if (mapKind.presets && settings.preset in FIXED_PRESET_GRID && FIXED_PRESET_GRID[settings.preset] !== settings.size) settings.preset = 'lab';
   loadPreset(settings.preset, false);   // (once the simulation's pipelines are ready: whenSimReady)
 }
 
@@ -742,7 +743,7 @@ function setSize(size, savedWorldSize = null) {
   // a grid that is no longer the gamemode's map (or a mode the map doesn't have): Sandbox
   const resolved = resolveMode(mapOf(settings), selectedMode);
   if (resolved.key !== selectedMode || mapOf(settings)?.size !== size) startMode('sandbox');
-  if (size in SIZES && !ARENA_GRIDS.has(size)) boxSize = size;
+  if (size in SIZES && !FIXED_PRESET_GRIDS.has(size)) boxSize = size;
   build(savedWorldSize);
   save();
   return true;
@@ -928,11 +929,19 @@ function loadPreset(name, undoable = true) {
     // the walls comes from that scene's CPU twin, as a big map's does, once the cells land)
     else if (name === 'island') wire('world').loadIsland(ctx)?.then((P) => { if (P && mapKind.edgeSeaFromCells) boxSea = sceneEdgeSea(sceneByKey('island'), P); });
     else arenaLayout = buildPreset(name, sim);
-    if (!mapKind.presets || !(name in ARENA_GRID)) arenaLayout = null;
+    if (!mapKind.presets || !(name in ARENA_PRESETS)) arenaLayout = null;
     resetSimModes();
     ctx.industry?.reset({ starters: name === 'quarry' && mapKind.presets });
     post.reset();
     signs?.clear();
+    elementInspector.close();
+    // Intentional (user request, 2026-10-25): these are hand-built vibe studies,
+    // not the future generated collection. Regeneration restores their plaques.
+    if (name === 'labStudies' && mapKind.presets && signs) {
+      for (const p of labStudiesPlaques()) signs.add({
+        ...p, cell: new THREE.Vector3(...p.cell), normal: new THREE.Vector3(...p.normal), edit: false,
+      });
+    }
     resetSpawners(name);
     pov?.worldReplaced();
   });
@@ -1343,6 +1352,7 @@ let uiHover = false;
 let eyedropper = false; // armed by the dock's Eyedropper or by I away from any element
 createBrand();
 const card = createCard();
+const elementInspector = createElementInspector();
 const hud = createHud({ onTogglePause: () => setPaused(!settings.paused) });
 hud.setPaused(settings.paused);
 const help = createHelp(() => help.setOpen(false));
@@ -2975,6 +2985,7 @@ function tick(now, renderOnly = false) {
   get scoreboard() { return scoreboard; }, get prof() { return prof; }, actions,
   // the app's own
   build, setSize, setGrid, openMap, loadPreset, resetSpawners, placeVolume, homeOver, inWindow, pickedNow, pickRay,
+  inspectElement: (key) => elementInspector.show(key),
   // the presentation effect (gfx/presentation.js: wires bend their draws with it) and a grid point where it shows it
   presentation, presentationPoint,
   setMode: startMode,

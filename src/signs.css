@@ -76,6 +76,9 @@
   border-color: var(--accent, #dcbc74);
 }
 
+.tpt-sign.is-specimen .tpt-sign-plate { cursor: pointer; }
+.tpt-sign.is-specimen .tpt-sign-text::after { content: ' ⓘ'; color: var(--accent, #dcbc74); }
+
 .tpt-sign:hover,
 .tpt-sign.is-editing {
   z-index: 100001 !important;

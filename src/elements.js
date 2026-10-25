@@ -785,7 +785,7 @@ const defs = [
   // Oxygen: 32.00 g/mol, 1.105× air (which is 21 % oxygen); c_p,m 29.4 J/(mol·K),
   // k 0.0266 W/(m·K), 0.20 cm²/s. It doesn't burn by itself, but fuel next to
   // it burns faster and hotter (react.js, physics.js O2_PER_AIR).
-  { key: 'OXYGEN', abbr: 'OXYG', name: 'Oxygen', kind: K.GAS, render: R.GAS, color: '#accbff',
+  { key: 'OXYGEN', traits: ['oxidizer'], abbr: 'OXYG', name: 'Oxygen', kind: K.GAS, render: R.GAS, color: '#accbff',
     dens: gasDensOf(32.0), cond: gasCondOf(0.0266), cap: gasCapOf(29.4), grav: buoyancy(gasDensOf(32.0)), drag: 0.05,
     jitter: jitterOf(0.2), rad: PHYS.AIR_AMBIENT_PULL, spawn: 0.3,
     sigma: [0.015, 0.015, 0.015],
@@ -843,7 +843,7 @@ const defs = [
   // it, gaining its mass (life, in cells of water), and bursts when it is
   // full; starved, it evaporates and winks out. Denser than anything, it
   // sinks through every liquid. Nothing gets out: it conducts no heat.
-  { key: 'SINGULARITY', traits: ['matter-consuming'], abbr: 'SING', name: 'Singularity', kind: K.POWDER, render: R.OPAQUE, color: '#1c1c20',
+  { key: 'SINGULARITY', traits: ['matter-consuming', 'decaying', 'pressure-anomaly'], abbr: 'SING', name: 'Singularity', kind: K.POWDER, render: R.OPAQUE, color: '#1c1c20',
     dens: 1000, cond: 0, cap: 1, drag: 0.04, life: PHYS.SING_MASS0, spawn: 0.02, acidProof: true, singProof: true, antimatterProof: true,   // it swallows acid instead
     desc: 'Singularity. A tiny black hole: creates huge amounts of negative pressure, so air and matter rush in. Swallows what it touches and grows; full, it bursts. Starved, it evaporates.' },
   // Clay: kaolin, white china clay. Grains of kaolinite are 2.6 g/cm³; a dry
@@ -1024,7 +1024,7 @@ const defs = [
   // quarter (burnHeat / burnRate), with no soot (ash: false). It burns low:
   // the water in it holds the flame cooler than ethanol's 1900 °C. It boils
   // at ~84 °C and freezes near -23 °C (WHISKEY_MIX).
-  { key: 'WHISKEY', abbr: 'WHSK', name: 'Whiskey', kind: K.LIQUID, render: R.LIQUID, color: '#c27a2c',
+  { key: 'WHISKEY', traits: ['biological'], abbr: 'WHSK', name: 'Whiskey', kind: K.LIQUID, render: R.LIQUID, color: '#c27a2c',
     dens: 9.48, cond: 0.022, cap: 0.89, ...viscous(2.8), flash: 26, ignite: 363, burnRate: 0.008, burnHeat: 1.3,
     flameT: 700, life: 1, spawn: 0.35, ash: false,
     cold: freezeOf(WHISKEY_MIX.freezeT, WHISKEY_MIX.water), hot: WHISKEY_BOIL,

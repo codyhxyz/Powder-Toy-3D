@@ -51,6 +51,8 @@ export const MAPS = [
     desc: 'Sort gold-bearing sand, automate exposed ore faces, pump a finite reservoir and smelt metal. Physical grains, real spills.' },
   { key: 'lab', viewPreviewVersion: 2, name: 'Lab', size: '128', preset: 'lab', dims: [128, 128, 128], modes: TEAM_MODES,
     desc: 'A water tank with an oil slick, a lava pit, a gunpowder tower and a sand pile about to fall.' },
+  { key: 'labStudies', name: 'Lab Studies', size: 'valley', preset: 'labStudies', dims: [256, 96, 128],
+    desc: 'Three hand-built indoor exhibit studies: an aquarium gallery, catwalks over vats and a powder hopper, and isolated containment bays. Press V to walk.' },
   { key: 'volcano', viewPreviewVersion: 2, name: 'Volcano', size: '128', preset: 'volcano', dims: [128, 128, 128],
     desc: 'A volcano island with a lava source on its summit, snow and trees on its flanks.' },
   { key: 'islet', viewPreviewVersion: 2, name: 'Islet', size: '128', preset: 'island', dims: [128, 128, 128],

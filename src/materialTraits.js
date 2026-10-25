@@ -14,11 +14,16 @@ export const MATERIAL_TAGS = Object.freeze({
   flammable: tag('hazard', 'Flammable', 'Has a modeled ignition or fuel-burning rule.'),
   'airborne-explosive': tag('hazard', 'Explosive when airborne', 'Its active special rule can ignite a suspended dust cloud explosively.'),
   explosive: tag('hazard', 'Explosive', 'Has a modeled blast rule.'),
+  'impact-sensitive': tag('hazard', 'Impact sensitive', 'An impact above its modeled energy threshold can trigger detonation.'),
+  'pressure-sensitive': tag('hazard', 'Pressure sensitive', 'Pressure above its modeled threshold can trigger detonation or a material change.'),
+  oxidizer: tag('hazard', 'Supports combustion', 'Its special combustion rule accelerates burning and raises flame temperature.'),
+  annihilating: tag('hazard', 'Annihilating', 'Its wildcard contact reaction consumes both participants, except explicitly compatible materials.'),
   corrosive: tag('hazard', 'Corrosive', 'Consumes susceptible matter through the acid rule.'),
   radioactive: tag('hazard', 'Nuclear fuel', 'Has modeled neutron fission cross-sections; not a general radiation-dose model.'),
   'neutron-emitter': tag('hazard', 'Emits neutrons', 'Spontaneously emits neutron packets in the active simulation.'),
   reactive: tag('hazard', 'Contact reactions', 'Participates in a shared contact-reaction row.'),
   'pressure-producing': tag('hazard', 'Pressure source', 'A modeled transition, reaction or blast releases pressure.'),
+  'pressure-anomaly': tag('hazard', 'Pressure anomaly', 'Its special rule creates suction and can release a pressure burst.'),
   hot: tag('hazard', 'Hot start', 'Spawn temperature is above modeled ambient; not a burn-dose threshold.'),
   cold: tag('hazard', 'Cold start', 'Spawn temperature is below modeled ambient; not a frostbite threshold.'),
   cryogenic: tag('hazard', 'Cryogenic start', 'Spawn temperature is at or below −150 °C, a descriptive cryogenic convention, not a safety limit.'),
@@ -33,7 +38,7 @@ export const MATERIAL_TAGS = Object.freeze({
   biological: tag('behavior', 'Biological effect', 'Has a verified body-contact or ingestion effect, not just a biological name.'),
   potion: tag('behavior', 'Potion', 'Applies a modeled magical body status.'),
 });
-const SEMANTIC = new Set(['decaying', 'growing', 'replicating', 'matter-consuming', 'biological', 'potion', 'airborne-explosive']);
+const SEMANTIC = new Set(['decaying', 'growing', 'replicating', 'matter-consuming', 'biological', 'potion', 'airborne-explosive', 'oxidizer', 'pressure-anomaly']);
 const KINDS = { [K.EMPTY]: 'air', [K.SOLID]: 'solid', [K.POWDER]: 'powder', [K.LIQUID]: 'liquid', [K.GAS]: 'gas' };
 
 export function describeTag(key) {
@@ -66,8 +71,14 @@ export function materialTags(element) {
   // A wildcard's victim is susceptible, not inherently reactive. The source
   // and explicitly named chemistry partners carry the reactive facet.
   const reactions = REACTIONS.filter(r => r.a === element.key || r.b === element.key);
-  add(element.ignite > 0 || element.burnRate > 0, 'flammable');
+  const reactionFuel = reactions.some(r => r.a === element.key &&
+    (r.b === 'EMPTY' || r.b === 'OXYGEN') && r.heat > 0);
+  add(element.ignite > 0 || element.burnRate > 0 || reactionFuel, 'flammable');
   add(element.blast, 'explosive');
+  add(element.blast?.shock > 0, 'impact-sensitive');
+  add(element.blast?.crushP > 0 || element.crush?.P > 0, 'pressure-sensitive');
+  add(reactions.some(r => r.a === element.key && r.b === '*' &&
+    r.into?.[0] === 'EMPTY' && r.into?.[1] === 'EMPTY'), 'annihilating');
   add(element.acid, 'corrosive');
   add(element.acidProof, 'acid-resistant');
   add(element.elec > 0 || element.conducts, 'conductive');

@@ -142,3 +142,29 @@ test('actual ambient transition instability requires control, unlike a remote th
   assert.equal(entry.status, 'plaque-only');
   for (const kind of [999, '__proto__', '3', null]) assert.throws(() => materialTags({ ...unstable, kind }), /unsupported material kind/);
 });
+
+test('impact, pressure, oxidizing and annihilation hazards remain distinct', () => {
+  assert(materialTags(el('NITRO')).includes('impact-sensitive'));
+  assert(materialTags(el('C4')).includes('impact-sensitive'));
+  assert(!materialTags(el('GUNPOWDER')).includes('impact-sensitive'));
+  assert(materialTags(el('TNT')).includes('pressure-sensitive'));
+  assert(materialTags(el('OXYGEN')).includes('oxidizer'));
+  assert(!materialTags(el('OXYGEN')).includes('flammable'));
+  assert(materialTags(el('ANTIMATTER')).includes('annihilating'));
+  assert(!materialTags(el('SAND')).includes('annihilating'));
+  const nitro = createExhibitCatalog().find(e => e.key === 'NITRO');
+  assert(nitro.requirements.includes('mechanical-isolation'));
+  assert(nitro.requirements.includes('pressure-shielding'));
+});
+
+test('special combustion, singularity lifetime/pressure and ingestion compose requirements', () => {
+  const byKey = new Map(createExhibitCatalog().map(entry => [entry.key, entry]));
+  assert(byKey.get('HYDROGEN').tags.includes('flammable'));
+  assert(byKey.get('HYDROGEN').requirements.includes('ignition-separation'));
+  const singularity = byKey.get('SINGULARITY');
+  for (const key of ['matter-isolation', 'replenishment', 'pressure-shielding']) {
+    assert(singularity.requirements.includes(key), key);
+  }
+  assert(byKey.get('WHISKEY').tags.includes('biological'));
+  assert(byKey.get('WHISKEY').requirements.includes('body-isolation'));
+});
