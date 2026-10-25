@@ -400,7 +400,7 @@ export class FarField {
 
   // The view's params for the camera FrameUniforms holds now (the frame's
   // jittered one, or a still's): world cells → clip and back, the eye.
-  _params() {
+  _params(winLo = null) {
     const o = this.sim.origin, last = this.fu.last, p = this.viewParams, m = this._m;
     // world cells → clip: the volume's model (grid → scene) after world → grid
     m.toWorld.makeTranslation(-o.x, -o.y, -o.z);
@@ -408,7 +408,7 @@ export class FarField {
     p.clipToWorld.copy(p.worldToClip).invert();
     m.eye.copy(last.eye).applyMatrix4(m.toWorld.copy(last.model).invert());
     p.eye = [m.eye.x + o.x, m.eye.y + o.y, m.eye.z + o.z];
-    p.winLo = [o.x, o.y, o.z];
+    p.winLo = winLo ?? [o.x, o.y, o.z];   // (the world march's box: where the window comes to rest, drawOrigin)
     // the rolling log's parameters (world cells, as these are), or flat
     const w = this.curved ? this.presentation.parameters : null;
     p.warpK = w ? w.k : 0;
@@ -423,14 +423,16 @@ export class FarField {
    * frame (its light isn't the window's: shaders/far.js FarViewParams.march), else the box volume does.
    * The rule of every engine's LOD: a coarser level past the fine one (Tanner et al. 1998, "The Clipmap").
    * Its ground is the far grid's coarse surface.
+   * winLo: the world march's box (world/window.js drawOrigin) on its frames; the box volume's is physics' window.
    * @param {GPURenderPassEncoder} rp
-   * @param {{ march?: boolean }} [opts]
+   * @param {{ march?: boolean, winLo?: number[] | null }} [opts]
    * @returns {boolean} whether it drew
    */
-  drawBehind(rp, { march = false } = {}) {
+  drawBehind(rp, { march = false, winLo = null } = {}) {
     if (!this.drawable) return false;
-    const params = this._params();
-    params.march = march && !this.curved ? 1 : 0;   // (the rolling log's view is the box volume's)
+    const marched = march && !this.curved;   // (the rolling log's view is the box volume's)
+    const params = this._params(marched ? winLo : null);
+    params.march = marched ? 1 : 0;
     this.behindPipeline.draw(rp, { bind: [this._frameGroup(), this.sim.bindRO, this.vol.lightingGroup], params,
       header: { ...this.sim.readHeader(), origin: [0, 0, 0] }, count: 3 });
     return true;
@@ -441,9 +443,9 @@ export class FarField {
    * pass: colour and depth cleared, or loaded (load: three's opaque meshes are in them), and stored for
    * the scene pass to load. Returns whether it drew (nothing recorded if not).
    * @param {object} frame gpu.frame
-   * @param {{ color: GPUTexture, depth: GPUTexture, load?: boolean, march?: boolean }} opts
+   * @param {{ color: GPUTexture, depth: GPUTexture, load?: boolean, march?: boolean, winLo?: number[] | null }} opts
    */
-  drawPass(frame, { color, depth, load = false, march = false }) {
+  drawPass(frame, { color, depth, load = false, march = false, winLo = null }) {
     if (!this.drawable) return false;
     const views = (this._targetViews ??= new WeakMap());   // the scene target's views, by texture
     const view = (t) => { let v = views.get(t); if (!v) views.set(t, v = t.createView()); return v; };
@@ -451,7 +453,7 @@ export class FarField {
       colorAttachments: [{ view: view(color), loadOp: load ? 'load' : 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
       depthStencilAttachment: { view: view(depth), depthClearValue: 1, depthLoadOp: load ? 'load' : 'clear', depthStoreOp: 'store' },
     }, 'far view');
-    try { return this.drawBehind(rp, { march }); } finally { rp.end(); }
+    try { return this.drawBehind(rp, { march, winLo }); } finally { rp.end(); }
   }
 
   /** Whether the view draws this frame (viewBehind said so, it is built, its pipeline is ready); asks for the pipeline when it isn't. */

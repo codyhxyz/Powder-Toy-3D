@@ -357,7 +357,7 @@ export function formatReport(r) {
 }
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const PHASE_HUE = { paint: 30, sim: 200, derived: 150, blocks: 120, shadow: 260, gi: 300, view: 10, post: 45, other: 0 };
+const PHASE_HUE = { paint: 30, sim: 200, derived: 150, worldCopy: 165, worldFields: 135, worldLight: 180, blocks: 120, shadow: 260, gi: 300, view: 10, post: 45, other: 0 };
 
 /** A self-contained HTML page: verdict, setup, the median frame's waterfall, the ranked passes, the heatmap. */
 export function reportHtml(r, { heatmap = null, title = 'Profile' } = {}) {

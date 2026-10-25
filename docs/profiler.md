@@ -20,6 +20,8 @@ One action shows what is wrong with performance, in one run.
 
 `--compare old/profile.json` prints the per-pass deltas. It says "NOT comparable" with the reasons when the setups differ.
 
+`--knockout N`, after the timed frames, drops the draws or dispatches of the N longest passes, one at a time for a few frames each (`gpu/timing.js knockout`), and prints the frame interval and GPU span without each. Use it when the timestamps and Metal disagree (Apple's tilers can put a whole submission in every render pass; Metal's trace drops intervals under load): the pass whose knockout gives the frame back is the one holding it. The picture is wrong while a pass is knocked out. `--no-cost` skips the cost view, whose compiles take ~10 s, so a big map fits its 25 s slot.
+
 ## Reading the report
 
 The header says `PROFILE (trusted)`, or `UNTRUSTED:` followed by every reason. Below it come the setup, the pose and the compile state.

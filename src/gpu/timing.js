@@ -15,6 +15,18 @@ export const MAX_TIMED_PASSES = 1024;   // timed passes per frame (a split big-m
 // before post began (tools/profile.mjs, Lab, 2026-10-25). Pools are per frame now.
 export const QUERY_POOLS = 8;
 const RESOLVE_ALIGN_SLOTS = 16;   // 256 bytes of resolved timestamps (2 × 8 bytes a slot)
+// A knocked-out pass's work (GpuTiming.knockout): these encoder calls are dropped, everything else
+// (its attachments' load and store, its bindings) still runs.
+const KNOCKOUT_CALLS = {
+  render: new Set(['draw', 'drawIndexed', 'drawIndirect', 'drawIndexedIndirect', 'executeBundles']),
+  compute: new Set(['dispatchWorkgroups', 'dispatchWorkgroupsIndirect']),
+};
+const NOOP = () => {};
+// The pass encoder with its draws or dispatches dropped.
+function knockedOut(pass, kind) {
+  const drop = KNOCKOUT_CALLS[kind];
+  return new Proxy(pass, { get(t, k) { if (drop.has(k)) return NOOP; const v = t[k]; return typeof v === 'function' ? v.bind(t) : v; } });
+}
 
 export class GpuTiming {
   constructor(gpu) {
@@ -25,6 +37,10 @@ export class GpuTiming {
     // appended to the Metal encoder label only (tools/profile.mjs: "@<pose>" while a pose's frames are timed,
     // "@-" outside them), so tools/gpu-counters.mjs's per-encoder times split by pose; pass names don't change
     this.labelTag = '';
+    // Pass names whose draws and dispatches are dropped (tools/profile.mjs --knockout): the frame
+    // interval without a pass's work names the pass that holds the frame back, when neither the
+    // timestamps (whole submissions on Apple's tilers) nor Metal's trace (drops intervals) can
+    this.knockout = null;
     this.onPass = null;
     this.onFrame = null;
     this.passCount = 0;
@@ -73,7 +89,12 @@ export class GpuTiming {
       let record = null;
       for (const [method, kind] of [['beginRenderPass', 'render'], ['beginComputePass', 'compute']]) {
         const begin = enc[method].bind(enc);
+        // (the pass by the name the profiler reports, knocked out when it is asked to be)
         enc[method] = (descriptor = {}) => {
+          const pass = hooked(descriptor);
+          return this.knockout?.has(this.scope || descriptor.label || `(unlabelled ${kind})`) ? knockedOut(pass, kind) : pass;
+        };
+        const hooked = (descriptor) => {
           this.passCount++;
           if (!this.enabled) return begin(descriptor);
           if (!record) {
