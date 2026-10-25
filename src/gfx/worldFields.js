@@ -42,6 +42,7 @@ export const FIELD_GROW_SEED = 4;
 /** Jobs a frame may record (each is ~9 dispatches): a frame of small jobs stops here. */
 export const FIELD_JOBS_PER_FRAME = 16;
 const STAMP_MAX = 0xffff;   // the slot map's stamp is 16 bits
+const JOB_STAMP_MAX = 0xffffffff;   // JobBuilder's stamps (a Uint32Array)
 const FIELD_TRANSITION_NONE = 1e-3;   // cells: a level without a transition band (fieldPick divides by its width)
 
 // ---- boxes, in level bricks, hi exclusive ----
@@ -124,19 +125,53 @@ export class ClipLevel {
   }
 }
 
-// A job's entries: each brick once (by the clip's key), its flags or'ed.
+// A job's entries: each brick once (by the clip's key), its flags or'ed. The index is a typed array
+// over the clip's slot map, kept on the level and stamped a job at a time: planFrame adds a few
+// hundred thousand bricks a frame on a busy map (each changed brick's 5³), and a Map of them cost
+// 13–30 ms of CPU a frame (lab, 2026-10-25).
 class JobBuilder {
-  constructor(clip) { this.clip = clip; this.at = new Map(); this.bricks = []; this.flags = []; }
+  constructor(clip) {
+    const c = clip.clip, w = clip.world, n = clip.layout.slotMap;
+    this.clip = clip;
+    this.lo = c.lo.map((v, i) => Math.max(v, w.lo[i]));
+    this.hi = c.hi.map((v, i) => Math.min(v, w.hi[i]));
+    if (!clip.jobAt || clip.jobAt.length !== n) { clip.jobAt = new Int32Array(n); clip.jobStamp = new Uint32Array(n); clip.jobNo = 0; }
+    if (++clip.jobNo > JOB_STAMP_MAX) { clip.jobStamp.fill(0); clip.jobNo = 1; }
+    this.stamp = clip.jobNo;
+    this.bricks = []; this.flags = [];
+  }
   get count() { return this.bricks.length; }
-  add(b, flags) {
-    const C = this.clip;
-    if (!boxHas(C.clip, b) || !boxHas(C.world, b)) return;
-    const k = C.key(b);
-    let i = this.at.get(k);
-    if (i === undefined) { this.at.set(k, i = this.bricks.length); this.bricks.push(b); this.flags.push(0); }
+  add(b, flags) { this.addAt(b[0], b[1], b[2], flags); }
+  addAt(x, y, z, flags) {
+    const { lo, hi } = this;
+    if (x < lo[0] || y < lo[1] || z < lo[2] || x >= hi[0] || y >= hi[1] || z >= hi[2]) return;
+    const C = this.clip, { cb, rbMax } = C.layout, k = (x % cb) + cb * ((y % C.level.clipBricks[1]) + rbMax * (z % cb));
+    let i;
+    if (C.jobStamp[k] !== this.stamp) {
+      C.jobStamp[k] = this.stamp;
+      C.jobAt[k] = i = this.bricks.length;
+      this.bricks.push([x, y, z]); this.flags.push(0);
+    } else i = C.jobAt[k];
     this.flags[i] |= flags;
   }
   entries() { return Uint32Array.from(this.bricks, (b, i) => packEntry(b, this.flags[i])); }
+}
+
+// The bricks within `reach` of a changed one, with the flags each takes: [dx, dy, dz, in valid, outside it] five
+// numbers an offset. Within reach - 1 and in valid: FINAL; level 0 also EMA at the brick itself, and EMA | FRESH
+// outside valid (no history there: it starts at its targets).
+const OFFSETS = new Map();
+function reachOffsets(reach, coarse) {
+  const key = `${reach}|${coarse}`;
+  let offs = OFFSETS.get(key);
+  if (offs) return offs;
+  const out = [];
+  for (let dz = -reach; dz <= reach; dz++) for (let dy = -reach; dy <= reach; dy++) for (let dx = -reach; dx <= reach; dx++) {
+    const d = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)), self = !coarse && d === 0 ? FE.EMA : 0;
+    out.push(dx, dy, dz, (d <= reach - 1 ? FE.FINAL : 0) | self, coarse ? 0 : self | FE.EMA | FE.FRESH);
+  }
+  OFFSETS.set(key, offs = Int32Array.from(out));
+  return offs;
 }
 
 /**
@@ -184,28 +219,32 @@ export function planFrame(levels, { frame, cam, changes = [], budget = FIELD_BRI
     if (jobs.length >= maxJobs) break;
     const V = L.valid, U = L.usable, c = L.camBrick(cam), coarse = L.level.k > 0;
     const set = coarse ? L.dirty : L.active;
-    const todo = [];
+    // nearest first, by the brick's (whole) distance: a bucket a distance, in the set's order (a stable sort's)
+    const buckets = [];
     for (const [k, v] of set) {
       const b = coarse ? v : v[0];
       // settled, or never to be finished here (outside the usable box: the margin, gone past)
       if ((!coarse && frame - v[1] >= FIELD_EMA_SETTLE) || !boxHas(U, b)) { set.delete(k); continue; }
       if (!boxHas(V, b)) continue;   // (a slab still to come computes it from what is there then)
-      todo.push([boxDist({ lo: b, hi: b.map((x) => x + 1) }, c), k, b]);
+      const d = Math.max(Math.abs(b[0] - c[0]), Math.abs(b[1] - c[1]), Math.abs(b[2] - c[2]));
+      (buckets[d] ??= []).push(k, b);
     }
-    todo.sort((a, b) => a[0] - b[0]);
     // Level 0: the EMA over the set, the fields over a brick around it (FIELD_REACH is a brick),
     // their ring a brick further; a brick outside valid holds no history: it starts at its targets.
     // A coarse level: the dirty brick (its texels already cover the blur's reach), its ring.
     const reach = coarse ? 1 : 2, need = (2 * reach + 1) ** 3, job = new JobBuilder(L);
-    for (const [, k, b] of todo) {
-      if (left - job.count < need) break;
-      for (let dz = -reach; dz <= reach; dz++) for (let dy = -reach; dy <= reach; dy++) for (let dx = -reach; dx <= reach; dx++) {
-        const q = [b[0] + dx, b[1] + dy, b[2] + dz], d = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)), inV = boxHas(V, q);
-        let flags = d <= reach - 1 && inV ? FE.FINAL : 0;
-        if (!coarse) flags |= (d === 0 ? FE.EMA : 0) | (inV ? 0 : FE.EMA | FE.FRESH);
-        job.add(q, flags);
+    const [vx0, vy0, vz0] = V.lo, [vx1, vy1, vz1] = V.hi, offs = reachOffsets(reach, coarse);
+    fill: for (const bucket of buckets) {
+      if (!bucket) continue;
+      for (let i = 0; i < bucket.length; i += 2) {
+        const k = bucket[i], b = bucket[i + 1];
+        if (left - job.count < need) break fill;
+        for (let o = 0; o < offs.length; o += 5) {
+          const x = b[0] + offs[o], y = b[1] + offs[o + 1], z = b[2] + offs[o + 2];
+          job.addAt(x, y, z, x >= vx0 && y >= vy0 && z >= vz0 && x < vx1 && y < vy1 && z < vz1 ? offs[o + 3] : offs[o + 4]);
+        }
+        if (coarse) set.delete(k);
       }
-      if (coarse) set.delete(k);
     }
     if (job.count) push(L, job);
   }
@@ -220,8 +259,12 @@ export function fieldClipValues(plan, levels, world) {
     if (!L) { band.push([0, 1, 1, 0]); lo.push([FIELD_FAR, FIELD_FAR, FIELD_FAR, 1]); hi.push([-FIELD_FAR, -FIELD_FAR, -FIELD_FAR, 0]); continue; }
     const { s, rows, band: row, worldBricks } = L.level, V = L.valid, cells = WC_BRICK * s, m = FIELD_FILTER_MARGIN * s;
     band.push([row, rows, s, 0]);
-    // (level 0 sized to physics' window has none: fieldClipFor; FIELD_TRANSITION_NONE keeps fieldPick's divide finite)
-    const width = Math.max((k === 0 ? plan.transition0 ?? FIELD_TRANSITION : FIELD_TRANSITION) * plan.texels * s, FIELD_TRANSITION_NONE);
+    // (level 0 sized to physics' window has none once it holds the window: fieldClipFor; FIELD_TRANSITION_NONE
+    // keeps fieldPick's divide finite. While it fills in after a move it has the band: its valid box's faces are
+    // then inside the window, and a hard cut to level 1 there drew a seam on the sea, a dark line along a face
+    // of the box filled so far. Losasso & Hoppe 2004's transition region, at the box's faces.)
+    const banded = k > 0 || !L.complete ? FIELD_TRANSITION : plan.transition0 ?? FIELD_TRANSITION;
+    const width = Math.max(banded * plan.texels * s, FIELD_TRANSITION_NONE);
     if (boxEmpty(V)) { lo.push([FIELD_FAR, FIELD_FAR, FIELD_FAR, width]); hi.push([-FIELD_FAR, -FIELD_FAR, -FIELD_FAR, 0]); continue; }
     lo.push([...V.lo.map((v) => (v <= 0 ? -FIELD_FAR : v * cells + m)), width]);
     hi.push([...V.hi.map((v, i) => (v >= worldBricks[i] ? FIELD_FAR : v * cells - m)), 0]);

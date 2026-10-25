@@ -45,6 +45,9 @@ export const PHASES = [
   { id: 'paint', label: 'Paint' },       // the brush
   { id: 'sim', label: 'Sim' },           // the steps: activity build (inertList, inert, quiet, drawn, move1, args), move, react, aeration
   { id: 'derived', label: 'Derived' },   // render fields, bricks, empty-space distance, glow volume
+  { id: 'worldCopy', label: 'World copy' },     // the world march's upkeep (gfx/worldView.js update): physics' writeback into the copy
+  { id: 'worldFields', label: 'World fields' }, // ... the field clipmaps' plan and jobs
+  { id: 'worldLight', label: 'World light' },   // ... the light's bookkeeping and jobs
   { id: 'blocks', label: 'Blocks' },     // the plain view's faces (instead of the derived passes)
   { id: 'shadow', label: 'Shadow' },     // the sun's shadow map
   { id: 'gi', label: 'GI' },             // GI probes

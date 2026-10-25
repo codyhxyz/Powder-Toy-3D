@@ -1902,7 +1902,7 @@ async function renderThumb(viewId, out, { build = true } = {}) {
         if (b) {
           b.drawOpaque(rp, { marchNear: pov?.marchNear ?? 0, floor: mapKind.boxFrame });
           b.drawTranslucent(rp, { marchNear: pov?.marchNear ?? 0 });
-        } else (wv ?? vol).draw(rp, { view, detail, meshDepth: prepassed ? null : cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: 0, boxed: frameBoxed });
+        } else (wv ?? vol).draw(rp, { view, detail, meshDepth: prepassed ? null : cut.take(), marchNear: pov?.marchNear ?? 0, aerCopy: 0, boxed: frameBoxed, drawLo: frameDrawLo });
         prepassed = false;
         if (mapKind.boxFrame) overlays.drawEdges(rp, { size: [sim.g.nx, sim.g.ny, sim.g.nz], lit });
       },
@@ -2512,7 +2512,7 @@ function drawVolume(rp) {
   // march of physics' window for now.
   const world = !testBoxMarch && worldView?.draws(view, curved);
   const drew = !testNoVolume && (world
-    ? worldView.draw(rp, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, boxed: frameBoxed })
+    ? worldView.draw(rp, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, boxed: frameBoxed, drawLo: frameDrawLo })
     : vol.draw(rp, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, warp }));
   if (!drew && !testNoVolume) {
     // (its pipeline is building: the frame goes without it, and the toast says why after a moment)
@@ -2530,7 +2530,7 @@ function worldPrepass(p, view = viewKeyOf(renderView), detail = frameDetail, war
   if (blocks || testNoVolume || testBoxMarch || !worldView?.draws(view, !!warp && warp.k !== 0) || !worldView.splits(detail)) return;
   const meshDepth = cut.take();
   prepassed = true;
-  worldView.prepass(gpu.frame, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, boxed: frameBoxed, target: p.sceneTarget.color });
+  worldView.prepass(gpu.frame, { view, detail, meshDepth, marchNear: pov?.marchNear ?? 0, aerCopy: 0, floorLines: mapKind.boxFrame, boxed: frameBoxed, drawLo: frameDrawLo, target: p.sceneTarget.color });
 }
 // Whether the world march draws `view` this frame (else the box volume or the blocks do).
 function worldMarchFrame(view, curved) { return !blocks && !testBoxMarch && !!worldView?.draws(view, curved); }
@@ -2540,6 +2540,8 @@ function worldMarchFrame(view, curved) { return !blocks && !testBoxMarch && !!wo
 // (prepare) so the march and the far view agree. Intentional (small maps): no far view, the march draws
 // the whole world, as live's box.
 let frameBoxed = false;
+// the box it draws at full detail: where physics' window comes to rest (world/window.js drawOrigin), latched with it
+let frameDrawLo = null;
 function marchBoxed(view, curved) {
   return !mapKind.boxFrame && worldMarchFrame(view, curved) && !!win?.far?.drawable;
 }
@@ -2553,7 +2555,7 @@ function farPass(p, drew, view = viewKeyOf(renderView), curved = !!warpNow()?.k)
   farDrawn = false;
   const far = win?.far;
   if (!far || mapKind.boxFrame || !isMaterialView(view) || (worldMarchFrame(view, curved) && !frameBoxed)) return drew;
-  farDrawn = far.drawPass(gpu.frame, { color: p.sceneTarget.color, depth: p.sceneTarget.depth, load: drew, march: frameBoxed });
+  farDrawn = far.drawPass(gpu.frame, { color: p.sceneTarget.color, depth: p.sceneTarget.depth, load: drew, march: frameBoxed, winLo: frameDrawLo });
   return drew || farDrawn;
 }
 let testNoVolume = false;  // test.renderOnce({ volume: false }): a frame without it, the smoke test's reference
@@ -2640,6 +2642,7 @@ const frameHooks = {
     worldView?.writeUniforms(frameValues(camera, renderView, p.jitter));   // (the same values in world cells: gfx/worldView.js)
     win?.far?.viewBehind(isMaterialView(renderView));   // a big map's far view (farPass), its derived levels brought up to date
     frameBoxed = marchBoxed(viewKeyOf(renderView), !!warpNow()?.k);
+    frameDrawLo = win?.drawOrigin ?? null;
   },
   // E1's work that reads FrameUniforms, after it is written: the derived
   // passes, the shadow map (views that read it), GI (the realistic view), the
@@ -2668,8 +2671,7 @@ const frameHooks = {
     // the world after physics' step: W writes back what physics changed, then F's fields and L's
     // lighting update for it, before the march draws (docs/seamless-world.md, "frame order")
     if (!blocks && worldView?.draws(viewKeyOf(renderView), !!warpNow()?.k)) {
-      prof.phase('derived');
-      worldView.update(gpu.frame, { boxes: null, camera, sun: SUN });
+      worldView.update(gpu.frame, { boxes: null, camera, sun: SUN, drawLo: win?.drawOrigin ?? null, phase: prof.phase });
     }
     prof.phase('view');
     // (a mesh-only frame keeps what the wires drew into the scene pass: their upkeep for it too, the far field's prepass)
