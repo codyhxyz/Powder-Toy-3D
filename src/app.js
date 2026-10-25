@@ -734,7 +734,9 @@ function setGrid(dims, meta = null) {
     settings.size = boxSize = size;
   }
   replicaMap = meta ? { ...meta, dims } : null;
-  build();
+  // a host on a scene's older saved world size (legacySize): the guest's world is built at that size too
+  const legacy = meta?.mode === 'world' ? sceneByKey(meta.scene)?.legacySize : null;
+  build(legacy?.every((n, i) => n === meta.size[i]) ? legacy : null);
   return true;
 }
 
