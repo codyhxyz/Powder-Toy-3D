@@ -115,6 +115,12 @@ A resource that's missing binds a dummy, never a gap.
 - The data views (heat, pressure, flow, X-ray) may keep marching physics' window for now. Mark it
   `// Same look (...)`.
 - M may stub F's and L's exports in `src/shaders/world/stubs.js` until they land, never in their files.
+- The march is split into GPU passes (`march.js`, "The split march"): `world march` (the loop, into a G-buffer:
+  hit point, gathered colour and transmittance, hit kind and ids, F's level), `world reflect` (the deferred
+  reflection trace) and `world shade` (the tracer's shading tail, unchanged), recorded by `worldView.prepass`
+  before the scene pass; the scene pass composites their colour and depth over the sky. 100 B a pixel at the
+  scene target's size. The grain detail variants draw as one pass (their hand-off band keeps a second path
+  in flight across the cut). `worldView.split = false` is the A/B.
 
 **P — `src/world/window.js`, `src/sim.js` shift, the derived/occupancy `onShift` hooks, `src/v2/integration.js` shift**
 - A move is physics only:

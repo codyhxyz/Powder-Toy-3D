@@ -4,7 +4,7 @@
 // No GPU, no browser. node tools/world-march-cpu-check.mjs [--dump DIR]
 import assert from 'node:assert/strict';
 import { writeFileSync, mkdirSync } from 'node:fs';
-import { worldMarchFrag, WORLD_MARCH_LAYOUTS, MarchParams, physParams, physSlotOf, MARCH_STAGES, marchSplits, compositeWGSL, COMPOSITE_LAYOUT, GBUF_BYTES_PER_PIXEL } from '../src/shaders/world/march.js';
+import { worldMarchFrag, WORLD_MARCH_LAYOUTS, MarchParams, physParams, physSlotOf, MARCH_STAGES, marchSplits, compositeWGSL, COMPOSITE_LAYOUT, GBUF_BYTES_PER_PIXEL, worldMarchLayoutNames } from '../src/shaders/world/march.js';
 import { cellSlot, ringOf } from '../src/shaders/common.js';
 import { MAPS } from '../src/maps.js';
 import { REALISTIC_LEVELS } from '../src/shaders/render.js';
@@ -52,6 +52,11 @@ for (const [gname, g] of Object.entries(grids)) {
   }
 }
 assert(MarchParams.size > 0);
+// each stage's group 0 is made under its own name (gpu.layout refuses one name with two entry lists)
+{
+  const names = ['whole', ...MARCH_STAGES].map((st) => worldMarchLayoutNames(st)[0]);
+  assert.equal(new Set(names).size, names.length, `group 0 layout names clash: ${names}`);
+}
 {
   const run = nagaSpawn(compositeWGSL(), 'composite.wgsl');
   if (run.error || run.status !== 0) { console.error(`composite:\n${run.stderr || run.stdout}`); process.exit(1); }

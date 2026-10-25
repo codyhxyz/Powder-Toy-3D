@@ -118,10 +118,15 @@ export function createWorldView(gpu, sim, { volume }) {
   }
 
   // ---- the split march's G-buffer (shaders/world/march.js GBUF), the scene target's size ----
+  // (two kept, by size: a still's target, a thumbnail's, doesn't make the frame's over each time)
   let gb = null;
+  const gbs = [];
+  const GBUF_KEPT = 2;
+  const destroyGb = (b) => { gpu.flush('world gbuffer'); Object.values(b.tex).forEach((t) => t.destroy?.()); };
   function gbuffer(w, h) {
-    if (gb && gb.w === w && gb.h === h) return gb;
-    if (gb) { const old = gb; gpu.flush('world gbuffer resize'); Object.values(old.tex).forEach((t) => t.destroy?.()); }
+    const i = gbs.findIndex((b) => b.w === w && b.h === h);
+    if (i >= 0) { gb = gbs[i]; gbs.splice(i, 1); gbs.unshift(gb); return gb; }
+    if (gbs.length >= GBUF_KEPT) destroyGb(gbs.pop());
     const storage = new Set(stageTextures('march').filter(([, , wr]) => wr).map(([, k]) => k));
     const tex = {}, views = {};
     for (const [k, format] of Object.entries(GBUF)) {
@@ -130,6 +135,7 @@ export function createWorldView(gpu, sim, { volume }) {
       views[k] = tex[k].createView();
     }
     gb = { w, h, tex, views };
+    gbs.unshift(gb);
     return gb;
   }
   const CLEAR = { D: { r: GBUF_NO_DEPTH, g: 0, b: 0, a: 0 } };
@@ -212,6 +218,8 @@ export function createWorldView(gpu, sim, { volume }) {
           get buildMs() { const ms = all.map((p) => p.buildMs); return ms.some((x) => x == null) ? null : Math.max(...ms); },
         };
         pipes.set(key, set);
+        // (an A/B test page: the whole march built beside the stages, __worldWarmWhole before boot)
+        if (globalThis.__worldWarmWhole) { view.split = false; view.pipeline(v, d, build); view.split = true; }
       } else if (build === 'now' && (set.state === 'idle' || set.state === 'pending')) set.build();
       return set;
     },
@@ -323,7 +331,7 @@ export function createWorldView(gpu, sim, { volume }) {
       disposed = true;
       gpu.flush('world view dispose');
       groups.clear();
-      if (gb) Object.values(gb.tex).forEach((t) => t.destroy?.());
+      gbs.splice(0).forEach((b) => Object.values(b.tex).forEach((t) => t.destroy?.()));
       gb = null;
       worldCopy.dispose?.();
       fields.dispose?.();

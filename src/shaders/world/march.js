@@ -675,7 +675,7 @@ export const WORLD_MARCH_VERTICES = 3;
 export const WORLD_MARCH_LAYOUT_NAMES = ['WORLD_MARCH_FRAME', 'WORLD_COPY', 'WORLD_GROUP2'];
 /** The same for a split stage (its own group 0). */
 export const worldMarchLayoutNames = (stage = 'whole') => (stage === 'whole' ? WORLD_MARCH_LAYOUT_NAMES
-  : [`WORLD_${stage.toUpperCase()}_FRAME`, ...WORLD_MARCH_LAYOUT_NAMES.slice(1)]);
+  : [`WORLD_SPLIT_${stage.toUpperCase()}_FRAME`, ...WORLD_MARCH_LAYOUT_NAMES.slice(1)]);
 
 // ---- check-wgsl (and its operator gate, tools/check-wgsl-operators.mjs) ----
 // The realistic view at the detail levels shaders/render.js checks, and the other material views
