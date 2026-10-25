@@ -220,8 +220,12 @@ export function fieldClipValues(plan, levels, world) {
     if (!L) { band.push([0, 1, 1, 0]); lo.push([FIELD_FAR, FIELD_FAR, FIELD_FAR, 1]); hi.push([-FIELD_FAR, -FIELD_FAR, -FIELD_FAR, 0]); continue; }
     const { s, rows, band: row, worldBricks } = L.level, V = L.valid, cells = WC_BRICK * s, m = FIELD_FILTER_MARGIN * s;
     band.push([row, rows, s, 0]);
-    // (level 0 sized to physics' window has none: fieldClipFor; FIELD_TRANSITION_NONE keeps fieldPick's divide finite)
-    const width = Math.max((k === 0 ? plan.transition0 ?? FIELD_TRANSITION : FIELD_TRANSITION) * plan.texels * s, FIELD_TRANSITION_NONE);
+    // (level 0 sized to physics' window has none once it holds the window: fieldClipFor; FIELD_TRANSITION_NONE
+    // keeps fieldPick's divide finite. While it fills in after a move it has the band: its valid box's faces are
+    // then inside the window, and a hard cut to level 1 there drew a seam on the sea, a dark line along a face
+    // of the box filled so far. Losasso & Hoppe 2004's transition region, at the box's faces.)
+    const banded = k > 0 || !L.complete ? FIELD_TRANSITION : plan.transition0 ?? FIELD_TRANSITION;
+    const width = Math.max(banded * plan.texels * s, FIELD_TRANSITION_NONE);
     if (boxEmpty(V)) { lo.push([FIELD_FAR, FIELD_FAR, FIELD_FAR, width]); hi.push([-FIELD_FAR, -FIELD_FAR, -FIELD_FAR, 0]); continue; }
     lo.push([...V.lo.map((v) => (v <= 0 ? -FIELD_FAR : v * cells + m)), width]);
     hi.push([...V.hi.map((v, i) => (v >= worldBricks[i] ? FIELD_FAR : v * cells - m)), 0]);
