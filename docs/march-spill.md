@@ -75,6 +75,8 @@ Do these first. They are small and exact:
 Expected gain together: an estimated 100–250 B of spill and ≤1 ms of the march (≤5% fps on Lab). The ms are too
 noisy to promise more, so measure each change on its own with `--compare`, in back-to-back runs.
 
+**Done (2026-10-25), see "The three exact fixes" below: 752 → 544 B.**
+
 The big lever is the 576 B ceiling. A run without the heavy bodies drew Lab at 60 fps instead of 30, with a
 different picture. Reaching it exactly takes **splitting the stage**:
 
@@ -86,6 +88,51 @@ different picture. Reaching it exactly takes **splitting the stage**:
 A ray that meets several events needs either a bounded loop of these passes or an event queue. This is a
 design change in the march itself. It belongs to the march's owner (the big-map lead is editing march.js and
 worldView.js now) and is not part of this investigation.
+
+## The three exact fixes (2026-10-25)
+
+Base origin/main a03e50b0, Lab default pose, `tools/profile.mjs --map lab --no-cost`, four runs back to back
+(base, then each fix on top of the one before), every one `PROFILE (trusted)`. Spill is Metal's compiler spill
+event for `world march@0`. The shade stage stayed at 704 B and the scene pass at 320 B in all four.
+
+| state | march spill | march Metal ms [p10–p90] | frame GPU span |
+|---|---|---|---|
+| base | 752 B | 9.33 [8.87–11.10] | 28.7 ms |
+| 1. crystal piece a local (f0dd21d2) | **656 B (−96)** | 6.73 [1.02–8.74] | 25.4 ms |
+| 2. one sunShadowAt for lightRef (c8a23737) | 656 B (0) | 10.55 [9.31–13.63] | 30.4 ms |
+| 3. liquid event's bodies at the loop head (e77fa291) | **544 B (−112)** | 6.03 [0.00–8.88] | 25.1 ms |
+
+- **Spill: 752 → 544 B (−208 B, −28%)**, exactly the doc's estimates for the crystal (96 B) and liquid (112 B)
+  paths.
+- **The ms are noise.** The runs alternate slow, fast, slow, fast (9.3, 6.7, 10.5, 6.0 ms) with fix 2 changing no
+  spill, which is the run-to-run drift above, not the fixes. In runs 1 and 3 a few march encoders read about
+  0 ms, which pulls those means down. Compare the p90s instead: 11.1, 8.7, 13.6, 8.9 ms. No ms gain is claimed.
+- **Fix 2 removed no spill.** `lightRef`'s three points (the box wall, a quiet entry into liquid, a surface met
+  with the bends spent) now keep the point and look it up once, in the liquid segment that reads it. That takes
+  two of the ten inlined `sunShadowAt` copies out of the march stage (its fully inlined size goes 471 k → 455 k
+  characters). Kept for the smaller module, and because fix 3 builds on it.
+- **Exactness.** The checks were same-pose `test.render()` converged frames, TAA off, view clocks reset, and one
+  captured frame each, at 960×600. Lab (map home and looking down): fixes 1+2, and all three, are byte-identical to base.
+  Island (home): both differ from base only inside the shrine's display (meshes whose items vary
+  run to run). A repeat of the same frame within one run already differs by about 2.8 kB there. The march's
+  pixels match.
+- **One trap.** The first version of fix 3 resampled the event's `phiB` at the head (`surfSample` at the same
+  point, in the same brick). That drew a 4-pixel orange line on Lab's pool edge. Keeping the event's own `phiB`
+  (and setting the resume at the event) made it byte-identical. Treat a "recompute the same value" step at a
+  grazing surface as not exact.
+- **Stage text.** Only the tracer changed: the march stage, the whole march and the box's volume. The reflect and
+  shade stages' WGSL is byte-identical, so their pipelines stay cached. No box WGSL hash check needed a rebaseline
+  (`field-deriver-cpu-check` passes). `volume-format-cpu-check` already failed on base (its prelude `ro` hash).
+  Text-pinned CPU checks updated: `check-crystal-transmission`, `check-opaque-surface`, `v2/foam-render-check`,
+  `v2/liquid-interior-check`.
+
+What is left (544 B) is the structural split's: glass and source panes (two `sunShadowAt` copies with their
+consumers right after), `mediaSegment` (two), `liquidInterface`, `crystalInterface` and `liquidDetail` (one each),
+and the state carried round the loop. A lean traversal pass plus an event pass would take all of them out of the
+loop, as "Recommendation" above says.
+
+Cost: 9 headless slots, about 94 s of GPU occupancy (4 profiles of about 9 s, 5 shot runs of 7–21 s; one shot run
+hit the slot deadline on Island's look-down pose, which the later runs dropped).
 
 ## Cost of this investigation
 
