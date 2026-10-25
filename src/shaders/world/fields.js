@@ -193,7 +193,7 @@ var<private> gPickA: f32 = 0.0;
 fn fieldPickAt(p: vec3f) { let k = fieldPickWalk(p); gPickL = u32(k.x); gPickA = k.y; }
 fn fieldPick(p: vec3f) -> vec2f {
   let coarsest = u32(FC.world.w) - 1u;
-  return select(vec2f(f32(coarsest), 0.0), vec2f(f32(gPickL), gPickA), fieldIn(gPickL, p) > 0.0 || gPickL >= coarsest);
+  return select(vec2f(f32(coarsest), 0.0), vec2f(f32(gPickL), gPickA), (fieldIn(gPickL, p) > 0.0) | (gPickL >= coarsest));
 }` : ''}
 // The level p really reads (gFieldLevel, or coarser where the finer levels don't hold p), and its
 // texel in cells: what a march's step through the field may be sized by.

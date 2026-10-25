@@ -153,7 +153,7 @@ Twenty-four per pixel, 16 bits each (`src/shaders/costView.js` `COST_COUNTERS`):
 
 | key | counts |
 | --- | --- |
-| `march` | iterations of `traceView`'s main loop (refraction restarts included) |
+| `march` | iterations of `traceView`'s main loop (refraction restarts included), and the trips of its runs of empty bricks (each jump a trip of the count) |
 | `brickSkips` | `traceView`'s empty-region jumps (`skipEmpty`; curved: `warpSkip`) |
 | `cellSteps` | `traceView`'s DDA advances (the crisp-only fast path, `ddaStep`; curved: `warpAdvance`) |
 | `shadowSteps` | iterations of `sunRayClear` (secondary sun rays) |
@@ -388,3 +388,9 @@ GPU capture replay (serial: one pass at a time on the GPU, GPU state high; Apple
 ```
 
 What stops it on the game: under the capture layer, Lab took 12 s to boot (3.6 s without) and still had 8 pipelines compiling, so the 25 s slot ended before the pipelines settled and no frame was captured. Agents can't use the long slot; the lead can: `TPT_LEAD_LONG_SLOT=1 node tools/profile.mjs --map lab --capture --no-cost --frames 12 --warmup 4`. It needs one such run before it goes to main.
+
+### What a shader compiled to (`tools/capture-remarks.mjs`, CPU only)
+
+A capture also keeps, for every pipeline, Apple's compile statistics with the GPU compiler's remarks, and the MSL source Dawn/Tint gave it (Tint's symbols renamed `v_N`). `node tools/capture-remarks.mjs <out>/frame.gputrace` lists the shaders (stage, instructions, registers, spill); `--instructions N` (a shader's count from `capture.json`) joins one shader's remarks to its source and prints the static instruction count per source function (each basic block counted at its first instruction's line, so an inlined body counts where it sits), the register copies, spills and reloads the allocator put in each loop, and the loop-invariant loads it could not hoist (they sit under a branch). `--msl out.metal` saves the source. No GPU and no replay: it reads the trace's files.
+
+What it showed on the Lab's lean world march (2026-10-25, a capture of the tree just before a6ff8ede): 7,536 instructions, 3,282 of them the field reads (fieldQ's blocks: 33 a trilinear level, 206 an 8-tap cubic level); an empty-brick jump (`skipEmpty`) of 175 in one block, most of it the three i32 divisions by its node size (`(c / n) * n`, a run-time n: Tint's divide is a real one); Tint's u32 division (`a * Q / 127` in `wcShownId`) adds a volatile zero to the dividend, so even a constant divisor is a full divide (34–37 instructions, 6 inlined copies); the main loop carries 334–432 register copies a trip and 28 spills; and the grid's size (`WC.size`) and the field clip's level count are loaded inside the loop 12 times each, because every read sits behind a short-circuit `||`/`&&` (Tint lowers each to a branch).

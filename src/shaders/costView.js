@@ -32,7 +32,7 @@ const BOX_BIG_SKIP_BRICKS = 16;
  * where: what is counted, by the module's own names.
  */
 export const COST_COUNTERS = [
-  { key: 'march', label: 'main march steps', where: "iterations of traceView's main loop (refraction restarts included)" },
+  { key: 'march', label: 'main march steps', where: "iterations of traceView's main loop (refraction restarts included), and the trips of its runs of empty bricks" },
   { key: 'brickSkips', label: 'empty-region jumps', where: "traceView's jumps over empty bricks (skipEmpty; curved: warpSkip)" },
   { key: 'cellSteps', label: 'cells stepped', where: "traceView's DDA advances (the crisp-only fast path, ddaStep; curved: warpAdvance)" },
   { key: 'shadowSteps', label: 'sun-ray walk steps', where: 'iterations of sunRayClear (secondary shadow rays)' },
@@ -181,7 +181,9 @@ function stmtStarts(code, [a, b], stmt) {
 // when: a test of the function's text. text: the span (a plain bump of k by default); counts: what
 // it counts (k by default). costify throws if a required counter counts nowhere.
 const RULES = [
-  { k: 'march', loop: 'traceView', header: /BEND_EXTRA_STEPS/ },
+  { k: 'march', loop: 'traceView', header: /\bstepCap\b/ },
+  // (a trip of a run of empty bricks: shaders/render.js, the loop's brick entry)
+  { k: 'march', after: 'traceView', stmt: 'i += 1;' },
   // the main march's jumps: counted, marked for skipEmpty's size split, measured
   { k: 'brickSkips', after: 'traceView', stmt: 'ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);' },
   { k: 'brickSkips', after: 'traceView', stmt: 'warpSkip(&walk, bc, true);' },

@@ -153,7 +153,8 @@ ${WorldCopyUniforms.wgsl}
 @group(1) @binding(1) var<storage, read> wcTable: array<u32>;
 @group(1) @binding(2) var<storage, read> wcPool: array<u32>;
 @group(1) @binding(3) var<storage, read> wcMeta: array<u32>;   // the info a brick, then the occupancy (WC.occ1At, WC.occ2At)
-fn wcInWorld(c: vec3i) -> bool { return all(c >= vec3i(0)) && all(c < WC.size); }
+// (one unsigned compare: a negative component wraps past the size; no short-circuit branch)
+fn wcInWorld(c: vec3i) -> bool { return all(vec3u(c) < vec3u(WC.size)); }
 // brick b's entry (b inside the world): dense, or a sparse table's column's first entry plus y (one read more;
 // a column no matter is in reads the air column)
 fn wcBrickIndex(b: vec3i) -> u32 {
@@ -172,7 +173,9 @@ fn wcShownId(w: u32, c: vec3i) -> i32 {
   let k = KIND(id);
   if (k == K_EMPTY) { return E_EMPTY; }
   let a = (w >> 24u) & 127u;
-  if (k == K_LIQUID && a < WC_AUX_WHOLE && a * WC_FULL_Q / WC_AUX_WHOLE <= (seedWorld(c, 0u, 4243u) >> 16u)) { return E_EMPTY; }
+  // (floor(a·Q / WHOLE) <= r as a·Q < WHOLE·(r + 1), the same test on integers without the divide: Tint's u32
+  // divide is a full one even by a constant, its dividend made volatile; at most 126·65536 and 127·65536, no overflow)
+  if (((k == K_LIQUID) & (a < WC_AUX_WHOLE)) && a * WC_FULL_Q < WC_AUX_WHOLE * ((seedWorld(c, 0u, 4243u) >> 16u) + 1u)) { return E_EMPTY; }
   return id;
 }
 // Cell c's word in the brick whose table entry is e (a uniform brick's word, or its pool slot): one read at most
@@ -194,7 +197,7 @@ fn wcA(c: vec3i) -> vec4f {
   return vec4f(f32(id), T, life, f32(wcCtype(w)) + seed);
 }
 fn wcInfo(b: vec3i) -> u32 {
-  if (any(b < vec3i(0)) || any(b >= WC.bricks)) { return 0u; }
+  if (any(vec3u(b) >= vec3u(WC.bricks))) { return 0u; }   // (outside the world's bricks: as wcInWorld)
   return wcMeta[wcBrickIndex(b)];
 }
 // bit i of the occupancy level starting at word at

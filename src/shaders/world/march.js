@@ -33,7 +33,7 @@
 //   group 1  W's world copy
 //   group 2  F, L and M (shaders/world/bindings.js)
 //   group 3  the header (origin 0: render kernels are in world cells) and MarchParams (P)
-import { prelude, LAYOUT, SUPER, SUPER_CELLS, STAGE } from '../common.js';
+import { prelude, LAYOUT, SUPER, SUPER_CELLS, STAGE, BRICK } from '../common.js';
 import { frameBindings, brickInfoWGSL, RENDER_LAYOUT } from '../bindings.js';
 import { materialsGLSL } from '../../gfx/materials.js';
 import { glslMod } from '../../gpu/wgsl.js';
@@ -123,7 +123,8 @@ const worldCoreWGSL = () => {
 const MARCH_SPARE_STEPS: i32 = ${DDA_SPARE_STEPS};
 fn marchMaxSteps() -> i32 { return WC.size.x + WC.size.y + WC.size.z + MARCH_SPARE_STEPS; }
 var<private> gFragCoord: vec2f;
-fn outside(c: vec3i) -> bool { return any(c < vec3i(0)) || any(c >= GRID); }
+// (one unsigned compare: a negative component wraps past the grid; no short-circuit branch)
+fn outside(c: vec3i) -> bool { return any(vec3u(c) >= vec3u(GRID)); }
 // World position of grid point p: render kernels are in world cells (H.origin is 0).
 fn worldPos(p: vec3f) -> vec3f { return p + vec3f(H.origin); }
 fn isCrisp(id: i32) -> bool { return id != E_EMPTY && SURFCH(id) < 0 && MEDIACH(id) < 0; }
@@ -235,7 +236,7 @@ fn skipEmpty(bc: vec3i, ro: vec3f, rd: vec3f, istp: vec3i,
   let c = bc * BS;
   var n = BS;
   if (!wcOccupied(2u, c)) { n = OCC_NODE_2; } else if (!wcOccupied(1u, c)) { n = OCC_NODE_1; }
-  let lo = (c / n) * n;
+  let lo = c & vec3i(-n);   // ((c / n) * n: n is a power of two and c >= 0, as every caller's brick is in the grid; a mask, not a divide)
   let bmin = vec3f(max(lo, vec3i(0)));
   let bmax = vec3f(min(lo + n, GRID));
   return ddaJumpBox(bmin, bmax, ro, rd, istp, cell, tMax, tEnter);
@@ -284,30 +285,39 @@ const decoWorld = () => rewrite(decoViewGLSL, [
 const floorWorld = (code) => rewrite(code, [
   ['return mix(floorGround(hp, fw), FLOOR_LINE_ALB, line);', 'return mix(floorGround(hp, fw), FLOOR_LINE_ALB, line * f32(P.floorLines));'],
 ], 'gfx/surface.js floorAlb');
-// The tracer picks F's level at every brick it enters (and keys its bricks by coordinate), and stops at
-// physics' window's far face (marchSpan: gMarchExit) as it stops at the meshes' cut: nothing past it is
-// drawn, a ray that met nothing before it draws nothing (the far view's pixel stands).
+// The tracer picks F's level at every brick with something in it it enters (and keys its bricks by
+// coordinate), and stops at physics' window's far face (marchSpan: gMarchExit) as it stops at the meshes'
+// cut: nothing past it is drawn, a ray that met nothing before it draws nothing (the far view's pixel stands).
+// An empty brick's pick is owed, not taken: only a sample reads the pick (the fields' level, and
+// brickSurfCert, which an empty brick's flags leave at once), and an empty brick is jumped, sampling
+// nothing, so its pick (gPickL, gPickA) is read only if the ray ends past it (the floor, the trip cap):
+// taken after the loop then, at the same point (its entry), before anything after the loop reads it.
 const traceWorld = (detail, format, optics, split = null) => rewrite(realisticTraceWGSL(detail, format, optics, split), [
-  ['      bid = brickId(bc);\n', '      bid = brickId(bc);\n      fieldPickAt(ro + rd * tEnter);\n'],
-  // F's certificate (brickSurfCert), for a ray in air (and, with grains, not inside the gravel's surface:
-  // gfx/grains.js re-reads gPebInside in the first empty cell the body passes)
-  ['      flags = brickInfoOf(bid);\n      gThin = brickThin(flags);\n',
-    `      flags = brickInfoOf(bid);\n      if (liq == E_EMPTY${GRAINS_ANY(detail) ? ' && !gPebInside' : ''}) { flags = brickSurfCert(bc, flags); }\n      gThin = brickThin(flags);\n`],
+  ['  var lastB = vec3i(-1);\n', '  var lastB = vec3i(-1);\n  var pickOwed = false;   // (the last brick entered was empty: its pick is taken after the loop, at pickT)\n  var pickT = 0.0;\n'],
+  // F's pick, and its certificate (brickSurfCert), for a ray in air (and, with grains, not inside the
+  // gravel's surface: gfx/grains.js re-reads gPebInside in the first empty cell the body passes)
+  ['        flags = brickInfoOf(bid);\n        gThin = brickThin(flags);\n',
+    `        flags = brickInfoOf(bid);
+        pickOwed = flags == 0u;
+        pickT = tEnter;
+        if (!pickOwed) { fieldPickAt(ro + rd * tEnter); }
+        if (liq == E_EMPTY${GRAINS_ANY(detail) ? ' && !gPebInside' : ''}) { flags = brickSurfCert(bc, flags); }
+        gThin = brickThin(flags);\n`],
+  [SPLIT_AT, `  if (pickOwed) { fieldPickAt(ro + rd * pickT); }   // (the last brick entered was empty)\n\n${SPLIT_AT}`],
   // airWalk: in a brick of air alone (no cell of its own) the fast path holds for every cell until the ray
   // leaves the brick or reaches the cut, so its cells are passed here, as the loop's later trips would pass
   // them through the fast path (after the head's checks: the trip cap, the world's edge, the cut), each one
   // still a trip of the count (i), without the loop's head and body around each
-  ['      tMax[ax] += tDelta[ax];\n      continue;\n    }',
-    `      tMax[ax] += tDelta[ax];
+  ['      ax = ddaStep(istp, tDelta, &cell, &tMax);\n      continue;\n    }',
+    `      ax = ddaStep(istp, tDelta, &cell, &tMax);
       if ((flags & WC_INFO_OWN_MATTER) == 0u) {
         loop {
           let tw = min(tMax.x, min(tMax.y, tMax.z));
-          if (i + 1 >= MAX_STEPS + BEND_EXTRA_STEPS || outside(cell) || any(cell / BS != bc) || tEnter >= tCut || tw >= tCut) { break; }
+          // (\`|\`: one test, not a branch per term; a cell past the grid's edge breaks on outside())
+          if ((i + 1 >= stepCap) | outside(cell) | any((cell >> vec3u(${Math.log2(BRICK)}u)) != bc) | (tEnter >= tCut) | (tw >= tCut)) { break; }
           i++;
-          ax = argmin3(tMax);
           tEnter = tw;
-          cell[ax] += istp[ax];
-          tMax[ax] += tDelta[ax];
+          ax = ddaStep(istp, tDelta, &cell, &tMax);
         }
       }
       continue;

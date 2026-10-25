@@ -1,4 +1,4 @@
-import { STATE_OPTS, LAYOUT, prelude, readFormatWGSL } from './common.js';
+import { STATE_OPTS, LAYOUT, prelude, readFormatWGSL, BRICK } from './common.js';
 import { filmCellsWGSL, filmTraceWGSL } from './gfx/film.js';
 import { compactDrawWGSL } from './compact.js';
 import { nativeMotionWGSL } from './v2/viewRead.js';
@@ -769,6 +769,9 @@ const rsResumeWGSL = /* wgsl */ `
     gThin = brickThin(flags);
     if (flags != 0u) { occM = occMaskOf(bid); }
   }`;
+// a brick's cells per edge as a shift (the march's cell / BS for a cell in the grid)
+const BS_SHIFT = Math.log2(BRICK);
+if (!Number.isInteger(BS_SHIFT)) throw new Error('render: the brick edge is no power of two');
 const realistic = (detail, curved = false, fixedReadFormat, richOptics = true, split = null) => {
   const format = readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
@@ -988,12 +991,14 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     }
   }
 `}
-  // (one trip more than the march's steps: a surface met on the last step still refracts)${split ? `
+  // (one trip more than the march's steps: a surface met on the last step still refracts; the cap
+  // once, not read from a uniform every trip)
+  let stepCap = ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'} + BEND_EXTRA_STEPS;${split ? `
   var i = 0;   // (outside the loop: the lean loop leaves it, the resume starts from it)${resume ? rsResumeWGSL : ''}
-  for (; i <= MAX_STEPS + BEND_EXTRA_STEPS; i++) {` : `
-  for (var i = 0; i <= ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'} + BEND_EXTRA_STEPS; i++) {`}${!hasLiq ? `
+  for (; i <= stepCap; i++) {` : `
+  for (var i = 0; i <= stepCap; i++) {`}${!hasLiq ? `
     // (the box wall into liquid, or the eye in it: a liquid kernel traces the ray from its start)
-    if (ifPend || liq != E_EMPTY) { ${lean ? `evK = EVK_START; evB = ${RICH_BODIES.indexOf('liquid') + 1}u;` : 'evK = EVK_ABORT;'} break; }` : `
+    if (ifPend | (liq != E_EMPTY)) { ${lean ? `evK = EVK_START; evB = ${RICH_BODIES.indexOf('liquid') + 1}u;` : 'evK = EVK_ABORT;'} break; }` : `
     if (ifPend) {`}${!hasLiq ? '' : `
       ifPend = false;
       var ifN = ifG;
@@ -1047,7 +1052,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         }`}
       }
     }`}
-    if (i == ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'} + BEND_EXTRA_STEPS) { break; }${curved ? `
+    if (i == stepCap) { break; }${curved ? `
     // the next chord, as a ray of its own from its start (t restarts there, as at a bend)
     var fp: vec3f;
     var ft: f32;
@@ -1063,26 +1068,50 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     tMax[exitAxis] = chord;
     phiA = surfSample(ro);
     phiStale = true;` : ''}
-    if (stop || outside(cell)) { break; }
-    if (tEnter >= tCut) { cut = true; break; }
+    if (stop | outside(cell)) { break; }
+    if (tEnter >= tCut) { cut = true; break; }${curved ? `
     let bc = cell / BS;
     if (any(bc != lastB)) {
       lastB = bc;
       bid = brickId(bc);
       flags = brickInfoOf(bid);
       gThin = brickThin(flags);
-      if (flags != 0u) { occM = occMaskOf(bid); }${interior ? `
-      interiorLiquid = false;
-      if (liq != E_EMPTY && (flags & BRICK_LIQUID_INTERIOR) != 0u${brickStep ? ' && brickMixed(flags)' : ''}) {
-        interiorLiquid = liquidInterior(bc);${brickStep ? '   // (an unmixed one is crossed in one step: deep liquid, below)' : ''}
-      }` : ''}
+      if (flags != 0u) { occM = occMaskOf(bid); }
     }
     if (flags == 0u) {
-      ${curved ? 'warpSkip(&walk, bc, true);' : 'ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);'}
+      warpSkip(&walk, bc, true);
       prevCrisp = E_EMPTY;
       phiStale = true;
       continue;
-    }${!curved && hasMedia && MEDIA_EFFICIENT(detail) ? `
+    }` : `
+    var bc = cell >> vec3u(${BS_SHIFT}u);   // (cell / BS: the cell is in the grid)
+    // A run of empty bricks: each one jumped (skipEmpty), and the brick the jump lands in entered
+    // here, a trip of the count (i) as the loop's next trip would enter it, after the next trip's
+    // head checks (the trip cap, the grid's edge, the cut; the rest of the head can't fire after a
+    // jump: nothing pends, nothing stopped), without the loop's head and body around each. The run
+    // ends at a brick with something in it, entered, or where the next trip's head would stop the
+    // march, which it then does.
+    loop {
+      if (any(bc != lastB)) {
+        lastB = bc;
+        bid = brickId(bc);
+        flags = brickInfoOf(bid);
+        gThin = brickThin(flags);
+        if (flags != 0u) { occM = occMaskOf(bid); }${interior ? `
+        interiorLiquid = false;
+        if (liq != E_EMPTY && (flags & BRICK_LIQUID_INTERIOR) != 0u${brickStep ? ' && brickMixed(flags)' : ''}) {
+          interiorLiquid = liquidInterior(bc);${brickStep ? '   // (an unmixed one is crossed in one step: deep liquid, below)' : ''}
+        }` : ''}
+      }
+      if (flags != 0u) { break; }
+      ax = skipEmpty(bc, ro, rd, istp, &cell, &tMax, &tEnter);
+      prevCrisp = E_EMPTY;
+      phiStale = true;
+      if ((i + 1 >= stepCap) | outside(cell) | (tEnter >= tCut)) { break; }
+      i += 1;
+      bc = cell >> vec3u(${BS_SHIFT}u);
+    }
+    if (flags == 0u) { continue; }`}${!curved && hasMedia && MEDIA_EFFICIENT(detail) ? `
     // The efficient media march (gfx/mediaDetail.js): a brick of gas alone (no
     // smooth surface, opaque matter, glass, film or cubic field: every gas has a
     // media channel, so none of its cells is crisp), out of liquid, holds nothing
@@ -1118,15 +1147,14 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     // with grains, look for the gravel's pebbles in it, gPebInside). Pass it
     // here as the body would, with the same DDA arithmetic and the same loop
     // count, so every hit is the one the full march finds, at the same t.
-    if (id == E_EMPTY && (flags & (BRICK_SURF | BRICK_MEDIA)) == 0u && liq == E_EMPTY && tExit < tCut${grains ? ' && !gPebInside' : ''}) {
+    // (\`&\`: one test, not a branch per term)
+    if ((id == E_EMPTY) & ((flags & (BRICK_SURF | BRICK_MEDIA)) == 0u) & (liq == E_EMPTY) & (tExit < tCut)${grains ? ' & !gPebInside' : ''}) {
       prevCrisp = E_EMPTY;
       phiStale = true;
       phiA = vec4f(0.0);   // (the body's phiB: no smooth surface here)
       if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) { break; }
-      ax = argmin3(tMax);
       tEnter = tExit;
-      cell[ax] += istp[ax];
-      tMax[ax] += tDelta[ax];
+      ax = ddaStep(istp, tDelta, &cell, &tMax);
       continue;
     }`}${brickStep ? `
     // ---- deep liquid, a brick at a time (gfx/detail.js waterSteps off: Off and Balanced) ----

@@ -20,8 +20,12 @@ const DDA_DIR_MIN: f32 = 1e-6;
 
 // rd with every component at least DDA_DIR_MIN away from 0.
 fn safeDir(rd: vec3f) -> vec3f { return select(rd, vec3f(DDA_DIR_MIN), abs(rd) < vec3f(DDA_DIR_MIN)); }
-// The axis of v's smallest component (ties: x, then y).
-fn argmin3(v: vec3f) -> i32 { return select(select(2, 1, v.y <= v.z), 0, v.x <= v.y && v.x <= v.z); }
+// The axis of v's smallest component (ties: x, then y). (\`&\`, not \`&&\`: Tint turns a short-circuit
+// into a branch, and this runs every step.)
+fn argmin3(v: vec3f) -> i32 { return select(select(2, 1, v.y <= v.z), 0, (v.x <= v.y) & (v.x <= v.z)); }
+// Axis ax as a mask (true on that component alone): a step updates its vectors by select, not by a
+// dynamic index (a GPU compiler lowers \`v[ax] += d\` on a vector to a chain of selects, or the stack).
+fn axisMask(ax: i32) -> vec3<bool> { return vec3i(ax) == vec3i(0, 1, 2); }
 // Where ray (ro, rd) crosses each axis's next cell boundary out of cell c (t).
 fn ddaNext(ro: vec3f, rd: vec3f, c: vec3i) -> vec3f { return (vec3f(c) + step(vec3f(0.0), rd) - ro) / rd; }
 
@@ -43,8 +47,9 @@ fn ddaStart(ro: vec3f, rd: vec3f, t0: f32, istp: ptr<function, vec3i>, tDelta: p
 // (callers that track it read it first).
 fn ddaStep(istp: vec3i, tDelta: vec3f, cell: ptr<function, vec3i>, tMax: ptr<function, vec3f>) -> i32 {
   let ax = argmin3(*tMax);
-  (*cell)[ax] += istp[ax];
-  (*tMax)[ax] += tDelta[ax];
+  let m = axisMask(ax);
+  *cell = select(*cell, *cell + istp, m);
+  *tMax = select(*tMax, *tMax + tDelta, m);
   return ax;
 }
 // Jump the walk out of the box [bmin, bmax] (grid units, cell-aligned) the ray
@@ -55,14 +60,14 @@ fn ddaJumpBox(bmin: vec3f, bmax: vec3f, ro: vec3f, rd: vec3f, istp: vec3i,
               cell: ptr<function, vec3i>, tMax: ptr<function, vec3f>, tEnter: ptr<function, f32>) -> i32 {
   let tb = (mix(bmin, bmax, step(vec3f(0.0), rd)) - ro) / rd;
   let ax = argmin3(tb);
-  let tx = tb[ax];
+  let tx = min(tb.x, min(tb.y, tb.z));   // (tb[ax])
   var c = vec3i(floor(ro + rd * tx));
   // Never back along any axis. Where the ray crosses a brick's edge (two faces at one t), the rounded
   // exit point can floor behind the cell it leaves on the other axis; the jump out of that brick then
   // lands in the first one's diagonal neighbour, whose jump lands back: two empty bricks traded until the
   // step cap (a world's x + y + z cells: 5577 steps a pixel on Descent, specks all over the cost view).
   c = select(min(c, *cell), max(c, *cell), istp > vec3i(0));
-  c[ax] = select(i32(bmin[ax]) - 1, i32(bmax[ax]), istp[ax] > 0);
+  c = select(c, select(vec3i(bmin) - 1, vec3i(bmax), istp > vec3i(0)), axisMask(ax));
   *cell = c;
   *tMax = ddaNext(ro, rd, c);
   *tEnter = tx;

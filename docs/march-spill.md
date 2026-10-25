@@ -321,3 +321,46 @@ What Balanced gives up, visible in TAA-off stills: texture and material boundari
 clouds are two pixels soft (TAA's jitter sharpens them live); edges between surfaces stay full resolution.
 Not done: skipping far shading where the window's march covers the pixel (the window's G-buffer depth would need a
 binding the view no longer has: its fragment stage holds WebGPU's 16 sampled textures and its 8 storage buffers).
+
+## The lean loop's cost per step (2026-10-25, perf/lean-loop)
+
+Base origin/main 729778e1. The lean march was 26–31 % of the frame (Xcode capture replay: 7,536 instructions, 126
+registers, top limiters Integer & Conditional 71 %, Control Flow 50 %). `tools/capture-remarks.mjs` (docs/profiler.md)
+read what that shader compiled to from the capture's own compiler remarks. The Lab's cost view put 19 of a pixel's 35
+loop trips in empty-brick jumps (`brickSkips`), and a jump was the costliest trip there is:
+
+- **An integer divide in every jump.** `skipEmpty` rounded the cell down to its empty node with `(c / n) * n`, n a
+  run-time 4, 16 or 64: three real i32 divides (Tint's divide, with its zero/overflow selects). Now `c & -n` (n a
+  power of two, c in the grid at every caller).
+- **The loop's head and its carried state around every jump.** The main loop carries 334–432 register copies a trip
+  (the remarks' `LoopSpillReloadCopies`). A run of empty bricks is now walked in a small loop of its own at the brick
+  entry (shaders/render.js, the twin of the world march's airWalk): jump, then enter the next brick, each a trip of
+  the count (`i`), after the next trip's head checks (cap, edge, cut); it ends at a brick with something in it,
+  entered, or where the head would stop the march, which it then does.
+- **F's pick at every empty brick.** `fieldPickAt` ran at every brick entered. Only a field sample reads the pick, and
+  an empty brick samples nothing, so it is owed (`pickOwed`, `pickT`): taken after the loop at the same point when the
+  ray ends past the empty brick (the floor, the cap), and never otherwise (shaders/world/march.js traceWorld).
+- **Branches for every `||` and `&&`.** Tint lowers a short-circuit to a branch, and the compiler then cannot hoist
+  the loads behind it (the remarks: the grid's size loaded 12 times in the loop). The hot tests are now one compare
+  each (`outside`, `wcInWorld`, `wcInfo`: one unsigned compare; the fast path, the airWalk and the head: `&`/`|`), and
+  the step cap is read once before the loop.
+- **Dynamic vector indexing.** `cell[ax] += istp[ax]` and its kin (ddaStep, the fast path, the airWalk, ddaJumpBox)
+  are now selects on the axis mask (`axisMask`).
+- **Tint's u32 divide.** It makes the dividend volatile, so even `a * Q / 127` (a part-full liquid's dither in
+  `wcShownId`, 6 inlined copies of 34–37 instructions) is a full divide: now the same test as `a·Q < 127·(r + 1)`.
+
+Per-trip work, counted on the generated WGSL (operations, not Metal instructions; Tint's loop guard left out):
+an empty-brick jump about 430 → 250, a crisp-only cell step about 130 → 100, an airWalk step about 70 → 45. The
+surface trips (field samples: 33 instructions a trilinear level, 206 a cubic one) are unchanged.
+
+Exactness: the DDA helpers against base on 400 random rays × 24 steps and jumps (wgsl_reflect's interpreter, ties
+included; a tie flipped as a negative control changes 192 values): identical. Converged same-pose frames (TAA off,
+view clocks reset, frozen from boot, 960×600): Lab default and looking down, Island looking down byte-identical;
+Island default differs in 85 px, all on the shrine's display items, which vary run to run. (A first run of base
+against a second run of base differed in 59,453 Lab px by 1/255, in the tank; the branch matched the second
+exactly.)
+
+Time (`tools/profile.mjs --no-cost --no-counters --frozen`, base 729778e1 and the branch back to back, on battery,
+one run each; per-pass timestamps were untrusted, whole submissions): whole-frame GPU span Lab default 17.35 →
+16.77 ms (−3 %), Island default 20.14 → 19.97 ms (−1 %, within noise). Less than the per-trip counts promised: the
+jumps' arithmetic was not the bulk of the frame. The 12 ms target needs the shade, reflect and event stages too.
