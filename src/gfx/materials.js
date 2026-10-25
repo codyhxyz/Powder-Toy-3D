@@ -244,6 +244,11 @@ const GRASS_TEX_HUE = 0.15;
 // Sawdust is finer than the wood chips in its photo: the tile drawn at half its
 // scanned 2 m, so the chips are a few millimetres.
 const SAWDUST_TEX_M = 1;
+// The fuse's woven cord: its threads' relief drawn deeper than the scan's (its
+// albedo's contrast is raised 2.5x at the bake: ALBEDO_FLATTEN) and the tar a little
+// glossy, so the weave reads on so dark a cord.
+const FUSE_TEX_N = 2.5;
+const FUSE_ROUGH = 0.45;
 // An element's UI colour (elements.js color), for a textured look that keeps
 // it as its albedo (a textured look without alb takes its photo's mean).
 const uiColour = (key) => ELEMENTS.find((e) => e.key === key).color;
@@ -447,7 +452,7 @@ const LOOKS = {
   NITRO: { ior: 1.479, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
   TNT: { rough: 0.7, alb: '#b9975a', tex: 'clay_plaster' },
   THERMITE: { rough: 0.8, alb: '#6f4436', glint: 0.35, tex: 'rust_coarse_01' },
-  FUSE: { ch: 'ORGANIC', rough: 0.6, alb: '#2a4424', tex: 'hessian_230' },
+  FUSE: { ch: 'ORGANIC', rough: FUSE_ROUGH, alb: '#2a4424', tex: 'hessian_230', texN: FUSE_TEX_N },
   // Noita's liquids (elements.js), each tinted by its sigma and scatter: the
   // scattered share sets the colour a deep body shows. Blood is near opaque
   // (haemoglobin absorbs blue and green within a millimetre; red cells
@@ -589,14 +594,14 @@ export const LOOK = ELEMENTS.map((e) => {
 });
 
 // The small maps' floor (shaders/gfx/surface.js floorAlb), a scanned look that
-// is no element's: studded anti-slip concrete, a lab or workshop floor, scaled
+// is no element's: plain sealed concrete, scuffed, a lab or workshop floor, scaled
 // in the shader to the floor's albedo (gfx/sky.js groundAlb, which GI and the
 // open ground around the box keep drawing). tiles: tiles per cell (the scan's
 // real size); mean: the photo's mean albedo; layer: its first layer in the
 // texture array, NO_TEX until it loads (the frame uniforms' floorTex:
 // gfx/uniforms.js), the flat floor until then. Wanted once a small map's view
 // draws scanned looks (gfx/volume.js recordCensus).
-const FLOOR_TEX_ID = 'anti_slip_concrete';
+const FLOOR_TEX_ID = 'concrete_floor_worn_001';
 export const FLOOR_TEX = (() => {
   const { i, t } = texOf(FLOOR_TEX_ID);
   return { asset: i, layer: NO_TEX, tiles: +(CELL_M / t.tileM).toFixed(ROUND_DIGITS), mean: t.mean };

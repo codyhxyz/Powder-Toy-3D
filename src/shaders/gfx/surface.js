@@ -2416,8 +2416,8 @@ fn shadeFloor(hp: vec3f, rd: vec3f) -> vec3f { return shadeFloorFw(hp, floorFwid
 // to the floor's mean (GROUND_ALB); the mip from the pixel's footprint, as
 // matTextured's. The flat GROUND_ALB until the photo is in (FU.floorTex).
 const FLOOR_TEX_TILES: f32 = ${f(FLOOR_TEX.tiles)};   // tiles per cell
-// The studs calm sooner than the grass's blotches (texFarKeep): from ~3 m to
-// ~10 m, so the grid's seams, a pixel or two wide there, aren't lost among them.
+// The scuffs and stains calm sooner than the grass's blotches (texFarKeep): from
+// ~3 m to ~10 m, so the grid's seams, a pixel or two wide there, aren't lost among them.
 const FLOOR_TEX_FAR_LOD: vec2f = vec2f(1.0, 3.5);
 const FLOOR_TEX_MEAN: vec3f = vec3f(${FLOOR_TEX.mean.map(f).join(', ')});   // the photo's mean albedo, linear
 fn floorGround(hp: vec3f, fw: vec2f) -> vec3f {
@@ -2426,12 +2426,12 @@ fn floorGround(hp: vec3f, fw: vec2f) -> vec3f {
   let lod = matTexLod(FLOOR_TEX_TILES, max(fw.x, fw.y));
   let a = textureSampleLevel(tMatTex, matTexSampler, uv, i32(FU.floorTex), lod).rgb;
   let alb = min(texSrgb(a) * (GROUND_ALB / FLOOR_TEX_MEAN), vec3f(TEX_ALB_MAX));
-  return mix(GROUND_ALB, alb, texFarKeepOver(lod, FLOOR_TEX_FAR_LOD));   // (the studs calm down with distance, so the grid's seams still read)
+  return mix(GROUND_ALB, alb, texFarKeepOver(lod, FLOOR_TEX_FAR_LOD));   // (the scuffs calm down with distance, so the grid's seams still read)
 }
 // fw: the grid lines' fwidth there (floorFwidth, or floorFwidthMirror in a reflection)
 // the floor's albedo at hp: concrete with grid lines (fw: their fwidth there)
 // The grid's seams are at least this wide up close, so they read over the
-// photo's studs and stains (a 1.5 cm joint), and FLOOR_LINE_PX pixels wide
+// photo's scuffs and stains (a 1.5 cm joint), and FLOOR_LINE_PX pixels wide
 // past that (the open ground's seams beyond the box are one-pixel lines on a
 // plain colour; these lie over the photo).
 const FLOOR_LINE_MIN_CELLS: f32 = 0.05;

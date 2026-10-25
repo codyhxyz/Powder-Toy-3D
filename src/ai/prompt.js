@@ -48,7 +48,7 @@ Scale every dimension with T (\`const W = Math.round(17 * T)\`) so the size slid
 const PHYSICS = `Once placed, every cell is simulated. Build with that in mind:
 
 - Solids (WALL, ROCK, METAL, GLASS, ICE, WOOD, PLANKS, PLANT, CLONE) never move, even unsupported. Anything that must keep its shape is solid.
-- WOOD (shown to the player as "Tree") is a tree's wood (trunks, logs, branches, drawn with bark); PLANKS is the same timber sawn into boards, for anything built: walls, floors, decks, furniture, crates. They burn and break alike.
+- WOOD (shown to the player as "Tree"; the "Grow tree" construction grows whole trees of it) is a tree's wood (trunks, logs, branches, drawn with bark); PLANKS is the same timber sawn into boards, for anything built: walls, floors, decks, furniture, crates. They burn and break alike.
 - Powders fall, pile into slopes and topple diagonally. Rest every powder cell on something, or contain it.
 - Liquids flow sideways and down until level. Containers must be watertight with face-connected walls: the sim moves matter in 2×2×2 blocks, so liquid escapes through gaps that touch only at an edge or a corner. A curved wall needs a band at least 1.5 cells thick.
 - Gases rise and drift away. FIRE lives only moments and needs AIR next to it. To make something burn, place the fuel above its ignition temperature with { temp } next to air.

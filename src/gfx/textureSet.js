@@ -29,7 +29,7 @@ export const TEXTURE_SET = [
   { id: 'blue_metal_plate', tileM: 2.5, mean: [0.0442, 0.0442, 0.0442], roughMean: 0.2845, bytes: 32982 },
   { id: 'wood_chips', tileM: 2, mean: [0.0907, 0.0455, 0.0133], roughMean: 0.8781, bytes: 823046 },
   { id: 'rust_coarse_01', tileM: 2.2, mean: [0.129, 0.0436, 0.0152], roughMean: 0.7771, bytes: 281042 },
-  { id: 'hessian_230', tileM: 0.2688, mean: [0.2773, 0.1976, 0.1067], roughMean: 0.5845, bytes: 470892 },
+  { id: 'hessian_230', tileM: 0.2688, mean: [0.2572, 0.2572, 0.2572], roughMean: 0.5845, bytes: 622088 },
   { id: 'forest_leaves_02', tileM: 3.001, mean: [0.2945, 0.1788, 0.057], roughMean: 0.9335, bytes: 895264 },
-  { id: 'anti_slip_concrete', tileM: 2.5, mean: [0.1659, 0.1317, 0.0953], roughMean: 0.9396, bytes: 526346 },
+  { id: 'concrete_floor_worn_001', tileM: 3, mean: [0.0932, 0.0943, 0.0891], roughMean: 0.5411, bytes: 95926 },
 ];

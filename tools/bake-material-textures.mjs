@@ -55,7 +55,7 @@ const ASSETS = [
   'rust_coarse_01',     // THERMITE: coarse iron oxide
   'hessian_230',        // FUSE: coarse woven jute cord
   'forest_leaves_02',   // MOSS, NOITA_LUSH: moss clumps over a forest floor
-  'anti_slip_concrete', // the small maps' floor (shaders/gfx/surface.js floorAlb): studded concrete
+  'concrete_floor_worn_001', // the small maps' floor (shaders/gfx/surface.js floorAlb): plain sealed concrete, scuffed
 ];
 // WebP quality (cwebp -q) of each image: the albedo hides compression in its
 // own grain; the normals show blocking as faceted light, so they keep more.
@@ -73,7 +73,10 @@ const SQUARE_JPG_Q = 95;   // JPEG quality of a scan's maps re-saved square (bel
 // look paints it its own colour channel by channel without the blue showing
 // through; the diamond plate's green paint and rust are greyed and calmed, as
 // it stands for bare steel.
-const ALBEDO_FLATTEN = { snow_02: { contrast: 0.35 }, metal_plate: { contrast: 0.7 }, blue_metal_plate: { contrast: 1 } };
+// The fuse's jute weave is drawn ~10x darker than the scan (tarred cord), where
+// its threads' tone barely showed: its departures are scaled 2.5x (its look keeps
+// the mean).
+const ALBEDO_FLATTEN = { snow_02: { contrast: 0.35 }, metal_plate: { contrast: 0.7 }, blue_metal_plate: { contrast: 1 }, hessian_230: { contrast: 2.5 } };
 const PERCENT = 100;
 // Metal masks, in the albedo's alpha (1: bare metal, 0: not; an asset without
 // one is opaque: all as its look says). Rust is iron oxide, a dielectric: drawn

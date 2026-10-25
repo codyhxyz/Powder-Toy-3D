@@ -1336,9 +1336,10 @@ export const BUILDS = [
   { id: -100, key: 'HOUSE', abbr: 'HOUS', name: 'House', color: '#b9774b',
     variants: [['cottage', 'Cottage'], ['cabin', 'Log cabin'], ['brick', 'Brick'], ['greenhouse', 'Greenhouse']],
     desc: 'House. Built from real materials: wooden walls burn, windows are glass, and the chimney draws smoke up from the fireplace.' },
-  { id: -101, key: 'TREE', abbr: 'TREE', name: 'Tree', color: '#4f9a3c', shuffle: true,
+  // "Grow tree" (2026-10-24): "Tree" is the WOOD element's name now. Its key and abbr stay TREE.
+  { id: -101, key: 'TREE', abbr: 'TREE', name: 'Grow tree', color: '#4f9a3c', shuffle: true,
     variants: [['oak', 'Oak'], ['pine', 'Pine'], ['birch', 'Birch'], ['palm', 'Palm'], ['willow', 'Willow'], ['dead', 'Dead']],
-    desc: 'Tree. A wooden trunk and plant leaves, grown from a new seed every time. Pick a kind or shuffle between them.' },
+    desc: 'Grow tree. A trunk of Tree and leaves of plant, grown from a new seed every time. Pick a kind or shuffle between them.' },
   { id: -102, key: 'CAMPFIRE', abbr: 'CAMP', name: 'Campfire', color: '#c75b30',
     variants: [['lit', 'Lit'], ['unlit', 'Unlit']],
     desc: 'Campfire. A teepee of logs in a ring of stones. The lit one is already burning.' },

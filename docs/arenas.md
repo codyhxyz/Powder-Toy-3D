@@ -65,7 +65,7 @@ chip the stone.
 
 **The forest** stands between each base and the dam, on a grass (PLANT) floor
 that carries fire from tree to tree. The plateaus are bare rock, a firebreak:
-a forest fire stops at the bases. The trees are the Tree construction's oaks,
+a forest fire stops at the bases. The trees are the Grow tree construction's oaks,
 birches and pines, seeded, and mirrored between the two sides.
 
 **Blowing the dam.** The dam is indestructible masonry except for the pump

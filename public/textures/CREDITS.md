@@ -34,4 +34,4 @@ maps repacked by tools/bake-material-textures.mjs: `albedo.webp` (diffuse) and
 | rust_coarse_01 | [Rust Coarse 01](https://polyhaven.com/a/rust_coarse_01) | Dimitrios Savva, Rico Cilliers |
 | hessian_230 | [Hessian 230](https://polyhaven.com/a/hessian_230) | colormass, Rico Cilliers |
 | forest_leaves_02 | [Forest Leaves 02](https://polyhaven.com/a/forest_leaves_02) | Rob Tuytel |
-| anti_slip_concrete | [Anti Slip Concrete](https://polyhaven.com/a/anti_slip_concrete) | Charlotte Baglioni |
+| concrete_floor_worn_001 | [Concrete Floor Worn 001](https://polyhaven.com/a/concrete_floor_worn_001) | Dimitrios Savva, Rico Cilliers |
