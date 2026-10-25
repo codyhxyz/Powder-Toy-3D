@@ -169,7 +169,10 @@ async function main() {
     url.searchParams.set('view', o.view);
     url.searchParams.set('profile', '1');
     slot.busyBefore = await gpuBusyPct();
-    browser = await launchBrowser({ lifetimeMs: SLOT_MS });   // (waits for the slot; the slot starts inside it)
+    // --counters: the GPU counters need our pass labels to reach Metal (tools/gpu-counters.mjs COUNTER_CHROME_ARGS)
+    const counterArgs = o.counters && existsSync(join(HERE, 'gpu-counters.mjs'))
+      ? (await import(pathToFileURL(join(HERE, 'gpu-counters.mjs')).href)).COUNTER_CHROME_ARGS : [];
+    browser = await launchBrowser({ lifetimeMs: SLOT_MS, args: counterArgs });   // (waits for the slot; the slot starts inside it)
     const t0 = Date.now();
     const page = await newTestPage(browser, { mode: 'visual', viewport: o.viewport, deviceScaleFactor: o.dpr });
     const errors = [];

@@ -448,6 +448,33 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   main().catch(e => { console.error(e instanceof CountersError ? e.message : e); process.exit(1); });
 }
 
+/** The report's text (printReport's lines). */
+export function reportText(result) {
+  const lines = [];
+  const log = console.log;
+  console.log = (...a) => lines.push(a.join(' '));
+  try { printReport(result); } finally { console.log = log; }
+  return lines.join('\n');
+}
+
+/**
+ * tools/profile.mjs's hook (--counters): the GPU counters around its timed frames, for the browser it
+ * launched (this process's Chrome: findGpuProcess by parent pid). stop() returns { text, summary, byEncoder }.
+ * Launch that browser with COUNTER_CHROME_ARGS so the encoders carry our pass labels.
+ */
+export async function start({ frames = 60, fps = 30 } = {}) {
+  const gpu = findGpuProcess({ parentPid: process.pid });
+  const pid = gpu?.pid ?? gpu;
+  const seconds = Math.min(MAX_SECONDS, Math.max(DEFAULT_SECONDS, Math.ceil(frames / fps) + 2));
+  const h = await startCounters({ pid, seconds });
+  return {
+    async stop() {
+      const r = await h.stop();
+      return { text: reportText(r), summary: r.summary, byEncoder: r.byEncoder };
+    },
+  };
+}
+
 export function printReport({ byEncoder, summary }) {
   const ms = v => (v == null ? '-' : v.toFixed(3));
   console.log(`GPU counters: pid ${summary.pid} (${summary.mode}), ${summary.encoders} encoders over ${ms(summary.windowMs)} ms, GPU busy ${ms(summary.gpuBusyMs)} ms${summary.labelled ? '' : ' — encoders unlabelled: add ' + COUNTER_CHROME_ARGS.join(' ')}`);

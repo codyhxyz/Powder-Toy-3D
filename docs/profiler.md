@@ -72,7 +72,6 @@ The header says `PROFILE (trusted)`, or `UNTRUSTED:` followed by every reason. B
 - `node tools/check-profiler-coverage.mjs`: no GPU. Covers the timing hooks themselves.
 - `node tools/profile.mjs --self-test`: no GPU. Covers argument parsing.
 
-# Profiler
 
 ## Cost view
 

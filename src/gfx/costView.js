@@ -3,7 +3,7 @@
 //
 //   kinds                       the counters (shaders/costView.js COST_COUNTERS)
 //   capture({ kind? })          one frame's counts: { counters: { key: { mean, p50, p95, max, sum } }, image, … }
-//   show(on?, { kind? })        the false-colour overlay with its legend (F9 toggles it)
+//   show(on?, { kind? })        the false-colour overlay with its legend (the profiler panel's Cost button)
 //
 // What a capture does. The live loop draws a frame; gfx/volume.js keeps that
 // draw's options and pipeline (volume.lastDraw). Then, on the frame state the
@@ -43,7 +43,6 @@ const SCALE_PERCENTILE = 0.99;
 const FRAME_WAIT_MS = 3000;
 // the overlay's heatmap opacity over the game
 const OVERLAY_ALPHA = 0.85;
-const TOGGLE_KEY = 'F9';
 
 // inferno (matplotlib's, CC0), 9 stops: dark = little work, bright = a lot
 const INFERNO = [[0, 0, 4], [31, 12, 72], [85, 15, 109], [136, 34, 106], [186, 54, 85], [227, 89, 51], [249, 140, 10], [249, 201, 50], [252, 255, 164]];
@@ -290,11 +289,6 @@ export function attachCostView(app) {
       throw e;
     }
   }
-  addEventListener('keydown', (e) => {
-    if (e.code !== TOGGLE_KEY || e.repeat || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName ?? '')) return;
-    e.preventDefault();
-    show().catch((err) => console.warn(err));
-  });
 
   const cost = { kinds: COST_COUNTERS, capture, show };
   if (app.prof) app.prof.cost = cost;
