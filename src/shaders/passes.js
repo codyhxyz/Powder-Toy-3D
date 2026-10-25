@@ -796,8 +796,24 @@ var<workgroup> wgEm: array<vec4f, 64>;    // emission (rgb), summed
 var<workgroup> wgMax: array<vec4f, 64>;   // surface field, opaque, thin mask, media field
 var<workgroup> wgAir: array<vec4f, 64>;   // |pressure|, speed² (core cells), liquid-interior violation (all cells)
 var<workgroup> wgOcc: atomic<u32>;        // a cell holds matter
-var<workgroup> wgFilm: atomic<u32>;       // a cell holds a film the tracer draws (gfx/film.js): a smooth surface no field shows
+var<workgroup> wgFilm: atomic<u32>;       // a cell holds a film the tracer draws (gfx/film.js): a smooth surface no field shows (WG_FILM_*)
 ${filmCellsWGSL}
+const WG_FILM_OWN: u32 = 1u;    // a film in the brick: a smooth surface (BRICK_SURF)
+const WG_FILM_NEAR: u32 = 2u;   // ... or a cell filmHit may draw in (BRICK_FILM: the view's film test runs only there)
+// Cell p is dry floor filmHit may draw a film's lip in (gfx/film.js: air over
+// a floor with a film, or deeper liquid, in the 3×3 around it). Its own tests
+// (solid; liquid of its own; no floor) come first, as filmHit's do.
+fn filmLipCell(p: vec3i) -> bool {
+  let k = KIND(eid(fetchA(p)));
+  if (k == K_SOLID || k == K_POWDER || filmLiquid(p).y > 0.0 || !filmFloorUnder(p)) { return false; }
+  for (var dz = -1; dz <= 1; dz++) {
+    for (var dx = -1; dx <= 1; dx++) {
+      let q = p + vec3i(dx, 0, dz);
+      if ((dx != 0 || dz != 0) && inGrid(q) && filmLiquid(q).y > 0.0) { return true; }
+    }
+  }
+  return false;
+}
 var<workgroup> wgGas: atomic<u32>;        // steam and smoke cells
 var<workgroup> wgFlags: atomic<u32>;      // air flags
 var<workgroup> wgLiqHi: atomic<u32>;      // 1 + the highest liquid-channel element id (0: none)
@@ -812,8 +828,9 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   let a = fetchAs(s);
   let id = eid(a);
   if (id != E_EMPTY) { atomicOr(&wgOcc, 1u); }
-  if (filmAt(p).y > 0.0) { atomicOr(&wgOcc, 1u); atomicOr(&wgFilm, 1u); }
   else if (abs(a.y - airT()) > AIR_FLAG_T) { atomicOr(&wgFlags, AIR_HOT); }
+  if (filmAt(p).y > 0.0) { atomicOr(&wgOcc, 1u); atomicOr(&wgFilm, WG_FILM_OWN | WG_FILM_NEAR); }
+  else if (filmLipCell(p)) { atomicOr(&wgFilm, WG_FILM_NEAR); }
   if (id == E_STEAM || id == E_CLOUD || id == E_SMOKE) { atomicAdd(&wgGas, 1u); }
   let sf = textureLoad(tFS, p, 0);
   let mf = textureLoad(tFM, p, 0);
@@ -869,14 +886,15 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
     var flags = atomicLoad(&wgFlags);
     if (wgAir[0].x > AIR_FLAG_P) { flags |= AIR_PRESSURE; }
     if (wgAir[0].y > AIR_FLAG_V * AIR_FLAG_V) { flags |= AIR_FLOW; }
-    let hasSurf = mx.x > FIELD_HERE || atomicLoad(&wgFilm) != 0u;
+    let film = atomicLoad(&wgFilm);
+    let hasSurf = mx.x > FIELD_HERE || (film & WG_FILM_OWN) != 0u;
     let hasMedia = mx.w > MEDIA_FLOOR;
     let hasOpaque = mx.y > FIELD_HERE;
     let hi = atomicLoad(&wgLiqHi);
     let mixed = hi != 0u && hi - 1u != u32(NE) - atomicLoad(&wgLiqLo);
     let bits = select(0u, BRICK_MEDIA, hasMedia) | select(0u, BRICK_SURF, hasSurf) | select(0u, BRICK_OPAQUE, hasOpaque)
              | select(0u, BRICK_THIN, mx.z > 0.0) | select(0u, BRICK_MIXED, mixed)
-             | select(0u, BRICK_LIQUID_INTERIOR, wgAir[0].z < 0.499);
+             | select(0u, BRICK_LIQUID_INTERIOR, wgAir[0].z < 0.499) | select(0u, BRICK_FILM, (film & WG_FILM_NEAR) != 0u);
     var info = brickInfoWord(0u, flags, 0u, false);
     if (atomicLoad(&wgOcc) != 0u || hasSurf || hasMedia) { info = brickInfoWord(bits, flags, atomicLoad(&wgGas), true); }
     let rec = BrickInfo(wgEm[0].xyz / f32(BS * BS * BS), info);

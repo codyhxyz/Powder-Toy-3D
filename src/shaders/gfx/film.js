@@ -154,6 +154,8 @@ fn filmHit(cell: vec3i, ro: vec3f, rd: vec3f, ta: f32, tb: f32,
   *h = hh;
   return t;
 }
+// A cell's one-number key (the tracer keeps the film it went into as one, not a vec3i).
+fn filmCellKey(c: vec3i) -> i32 { return c.x + NX * (c.y + NY * c.z); }
 // What the floor seen through a film keeps: the film's own absorption down
 // and back up through thickness h along rd, and the wet floor's darkening.
 fn filmTint(lid: i32, h: f32, rd: vec3f) -> vec3f {

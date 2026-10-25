@@ -827,9 +827,11 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var paneEnv = vec3f(0.0);   // what the current pane's front face reflects ...
   var paneAx = -1;            // ... and the axis of that face
   var paneRefl = false;       // ... and whether that is the pixel's traced reflection (reflectDefer)
-  var paneS = GlassShape(0, -1, -1, 0.0, -1, -1, 0.0);   // the glass cell's shape (gfx/glass.js glassShape; n 0: a block) ...
-  var paneM = 0u;             // ... its same-glass neighbours (glassNeighbours) ...
-  var paneCell = vec3i(-1);   // ... and the cell they are of
+  // The glass run the ray is in is a block (gfx/glass.js glassShape n 0), its
+  // shape fixed where it went in; a pane's is looked up again cell by cell.
+  // (One bool across the march, not the shape: every value the loop carries
+  // costs every pixel registers, glass or not.)
+  var glassBlock = false;
   var mediumLight = vec3f(1.0);
   // sun visibility inside liquid: read at a reference point (where the ray
   // got in), then faded with depth below it
@@ -861,8 +863,8 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   var ifLid = E_EMPTY;
   var ifMirror = false;
   var ifT = 0.0;
-  var ifTint = vec3f(1.0);   // a film's: what the floor under it keeps (gfx/film.js filmTint), after the refraction
-  var filmCell = vec3i(-1);  // the cell whose film the ray went into: not met again from inside (the restart sits on its top)${grains ? `
+  var ifFilmH = 0.0;         // a film's depth (0: the interface is no film's): the floor under it keeps filmTint (gfx/film.js), after the refraction
+  var filmKey = -1;          // the cell whose film the ray went into (filmCellKey): not met again from inside (the restart sits on its top)${grains ? `
   var altRefl = false;   // the hand-off band's stored path (gAltCol) came after a traced reflection` : ''}
 
   var lastB = vec3i(-1);
@@ -922,9 +924,10 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
     if (ifPend) {
       ifPend = false;
       // the scene shows in the reflection only off the first surface the eye ray meets (ifMirror)
+      var tint = vec3f(1.0);
+      if (ifFilmH > 0.0) { tint = filmTint(ifLid, ifFilmH, rd); ifFilmH = 0.0; }   // (rd: still the way the ray met the film)
       let inside = liquidInterface(ifP, ifN, ifG, ifEnter, ifLid, ifMirror, &ro, &rd, &col, &trans, &mediumLight);
-      trans *= ifTint;
-      ifTint = vec3f(1.0);
+      trans *= tint;
       tCut -= ifT;
       rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
       tEnter = 0.0;
@@ -1071,10 +1074,12 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         let ior = IOR(id);
         let inAir = liq == E_EMPTY;
         // (a block's run keeps its shape; a pane's is looked up again cell by cell)
-        if (id != prevCrisp || (paneS.n > 0 && any(cell != paneCell))) {
+        var paneS = GlassShape(0, -1, -1, 0.0, -1, -1, 0.0);
+        var paneM = 0u;
+        if (id != prevCrisp || !glassBlock) {
           paneM = glassNeighbours(cell, id);
-          paneCell = cell;
           paneS = glassShape(cell, id, paneM);
+          glassBlock = paneS.n == 0;
         }
         if (paneS.n > 0) {
           // ---- a pane (Minecraft's glass panes, Teardown's windows): a sheet through the cell's middle, or an L corner's two half sheets ----
@@ -1265,8 +1270,10 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       }
 
       // a film on the floor, thinner than the fields show (gfx/film.js): only
-      // from air, and only nearer than what the fields found
-      if (liq == E_EMPTY && brickSurf(flags) && ev != EV_OPAQUE && any(cell != filmCell)) {
+      // from air, only nearer than what the fields found, and only in a brick
+      // the brick pass found a film's cells in (BRICK_FILM: everywhere else
+      // filmHit's 3×3 of reads finds nothing)
+      if (liq == E_EMPTY && brickSurf(flags) && brickFilm(flags) && ev != EV_OPAQUE && filmCellKey(cell) != filmKey) {
         var fN = vec3f(0.0, 1.0, 0.0);
         let tF = filmHit(cell, ro, rd, tEnter, tEv, &fN, &filmLid, &filmH);
         if (tF < tEv) { tEv = tF; ev = EV_ENTER; evCh = CH_LIQUID; evN = fN; film = true; }
@@ -1322,7 +1329,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           var n = liquidRipple(hp, geometric);
           var lid = liq;
           if (ev == EV_ENTER) { lid = select(liquidIdAt(hp - geometric * IFACE_PROBE, E_WATER), filmLid, film); }
-          if (film) { ifTint = filmTint(lid, filmH, rd); filmCell = cell; }
+          if (film) { ifFilmH = filmH; filmKey = filmCellKey(cell); }
           n = liquidDetail(hp, n, lid, &col, &trans);   // close-up detail (gfx/liquidDetail.js)
           if (bends < MAX_BENDS) {
             bends++;
@@ -1331,8 +1338,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
             continue;
           }
           // out of bends: switch medium, keep straight
-          trans *= ifTint;
-          ifTint = vec3f(1.0);
+          if (film) { trans *= filmTint(lid, filmH, rd); ifFilmH = 0.0; }
           liq = select(E_EMPTY, lid, ev == EV_ENTER);
           if (ev == EV_ENTER) {
             lightRef = vec3f(1.0);
