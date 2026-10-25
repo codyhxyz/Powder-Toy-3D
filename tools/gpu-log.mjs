@@ -1,15 +1,25 @@
 #!/usr/bin/env node
 // One machine-wide log of who uses the GPU, why and for how long. Every
 // session, subagent and worktree writes to the same file, so anyone can see
-// who holds the GPU right now and who has been on it today. It only records:
-// nothing here refuses a run (the slot rules live in browser.mjs).
+// who holds the GPU right now and who has been on it today.
 //
 //   node tools/gpu-log.mjs                 who holds the GPU now + recent runs
 //   node tools/gpu-log.mjs --since 6h      totals per session over that window
-//   node tools/gpu-log.mjs note "why" [--secs 60]
-//                                          log GPU use the launcher can't see
-//                                          (windowed Chrome, Claude in Chrome)
+//   node tools/gpu-log.mjs claim "why" [--exclusive] -- <command...>
+//   node tools/gpu-log.mjs claim "why" [--exclusive] [--secs 120]   (then: release)
+//                                          register GPU use the launcher can't
+//                                          see: windowed Chrome, Claude in
+//                                          Chrome, a dev page left open
+//   node tools/gpu-log.mjs note "why" [--secs 60]   after the fact, no claim
 //   node tools/gpu-log.mjs --json          the raw entries
+//
+// Timing-critical work gets the GPU to itself. An exclusive run (a profiler
+// or bench script, launchBrowser({ exclusive: true }), TPT_GPU_EXCLUSIVE=1,
+// claim --exclusive) waits out or refuses while any other registered GPU use
+// is live, and everything else waits out or refuses while it runs. Ordinary
+// headless tests and ordinary claims may overlap each other; headless tests
+// never overlap one another (the slot). The user's own play is not
+// registered: the launcher's busy check covers it.
 //
 // launchBrowser() writes a `start` line for every run and a `refused` line
 // when it can't get the slot; the deadline guard's runs/<pid>-<guard>.json
@@ -27,7 +37,14 @@ export const LOG_DIR = path.join(os.homedir(), '.cache', 'tpt-headless');
 export const LOG_FILE = path.join(LOG_DIR, 'log.jsonl');
 const SLOT_FILE = path.join(LOG_DIR, 'slot');
 const RUNS_DIR = path.join(LOG_DIR, 'runs');
+const CLAIMS_DIR = path.join(LOG_DIR, 'claims');
 const RECENT = 15;                  // runs listed by default
+const CLAIM_SECS = 120;             // a timed claim's default length
+const CLAIM_WAIT_MS = 30000;        // a claim waits out one 25 s headless slot, then gives up
+const POLL_MS = 1000;
+const FOREVER_MS = 864e5;           // a command claim ends with its command; this is only a backstop
+/** Scripts whose numbers are timings: they run exclusive without being told. */
+export const TIMING_TOOLS = /^(profile|frame-profile|app-compile-probe|[\w-]*bench)\.mjs$/;
 const RUN_TIMEOUT_MS = 500;
 const LSOF_TIMEOUT_MS = 2000;     // lsof walks every open file first
 // Process names that start an agent session, nearest ancestor wins.
@@ -112,6 +129,41 @@ function worktreeOf(pid) {
   return cwd ? path.basename(run('git', ['rev-parse', '--show-toplevel'], cwd) || cwd) : '';
 }
 
+/** Live claims (claims/<id>.json): the claimant's process is alive and its time hasn't run out. Stale ones are removed. */
+export function liveClaims() {
+  let files = [];
+  try { files = fs.readdirSync(CLAIMS_DIR).filter(f => f.endsWith('.json')); } catch {}
+  const out = [];
+  for (const f of files) {
+    const file = path.join(CLAIMS_DIR, f);
+    let c = null;
+    try { c = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+    if (c && alive(c.pid) && Date.now() < c.until) out.push({ ...c, file });
+    else try { fs.rmSync(file, { force: true }); } catch {}
+  }
+  return out.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+}
+const describeClaim = c => `${label(c)}: ${c.why}${c.exclusive ? ' (exclusive)' : ''}, for ${secs(Date.now() - Date.parse(c.at))}`;
+
+/** The headless slot's holder: its pid and its start line, if it logged one. */
+function slotHolder(log = readLog()) {
+  let pid = 0;
+  try { pid = Number(fs.readFileSync(SLOT_FILE, 'utf8').trim()); } catch {}
+  if (!pid) return null;
+  return { pid, entry: [...log].reverse().find(x => x.event === 'start' && (x.guardPid === pid || x.pid === pid)) };
+}
+
+/**
+ * What stops an `exclusive` (or ordinary) run starting now, besides the
+ * headless slot itself: claims an exclusive run can't share the GPU with, or
+ * an exclusive claim. `self` skips the caller's own claim. Older claims only,
+ * when `olderThan` is set, so two waiting claimants can't block each other.
+ * @returns {string[]} one line per blocker; empty when clear
+ */
+export function gpuBlockers({ exclusive = false, self = '', olderThan = Infinity } = {}) {
+  return liveClaims().filter(c => c.id !== self && Date.parse(c.at) < olderThan && (exclusive || c.exclusive)).map(describeClaim);
+}
+
 /** One line about whoever holds the slot, for the launcher's "held by" message. */
 export function describeHolder(holderPid, log = readLog()) {
   const e = [...log].reverse().find(x => x.event === 'start' && (x.guardPid === holderPid || x.pid === holderPid));
@@ -129,13 +181,18 @@ const parseSince = s => { const m = /^(\d+(?:\.\d+)?)([smhd])$/.exec(s ?? ''); r
 function now(log) {
   let holder = null;
   try { holder = Number(fs.readFileSync(SLOT_FILE, 'utf8').trim()); } catch {}
-  if (!holder) return 'GPU slot: free';
-  return `GPU slot: held by ${describeHolder(holder, log)}${alive(holder) ? '' : ' (holder is DEAD: the lease needs cleanup, see docs/headless-testing-cost.md)'}`;
+  const slot = !holder ? 'Headless slot: free'
+    : `Headless slot: ${describeHolder(holder, log)}${alive(holder) ? '' : ' (holder is dead: the next launch sets it aside if no browser of it is left)'}`;
+  const claims = liveClaims().map(c => `Claim: ${describeClaim(c)}`);
+  return [slot, ...claims].join('\n');
 }
 
 function row(e) {
   const what = e.why || e.command || '';
   if (e.event === 'refused') return `${when(e.at)}  refused   ${label(e)}  ${what}\n${' '.repeat(24)}${e.reason}`;
+  if (e.event === 'claim') return `${when(e.at)}  ${(e.ms == null ? 'now' : 'claim').padEnd(6)}${secs(e.ms).padStart(6)}  ${label(e)}  ${what}${e.exclusive ? ' (exclusive)' : ''}`;
+  if (e.event === 'recovered') return `${when(e.at)}  recovered dead lease of pid ${e.holder}`;
+  if (e.event === 'release') return null;
   if (e.event === 'note') return `${when(e.at)}  note ${secs(e.ms).padStart(7)}  ${label(e)}  ${what}`;
   const branch = e.branch && e.branch !== '?' ? ` (${e.branch})` : '';
   return `${when(e.at)}  ${(e.status === 'running' ? 'now' : ['forced', 'stale'].includes(e.status) ? e.status : '').padEnd(6)}${secs(e.ms).padStart(6)}  ${label(e)}${branch}  ${what}`;
@@ -143,7 +200,7 @@ function row(e) {
 
 function totals(log, sinceMs) {
   const from = Date.now() - sinceMs, by = new Map();
-  for (const e of log.filter(x => Date.parse(x.at) >= from && x.event !== 'refused')) {
+  for (const e of log.filter(x => Date.parse(x.at) >= from && ['start', 'claim', 'note'].includes(x.event))) {
     const k = label(e), t = by.get(k) ?? { runs: 0, ms: 0, refused: 0 };
     t.runs++; t.ms += e.ms ?? 0; by.set(k, t);
   }
@@ -157,7 +214,15 @@ function totals(log, sinceMs) {
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   const args = process.argv.slice(2);
   const opt = name => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
-  if (args[0] === 'note') {
+  if (args[0] === 'claim') process.exit(await claim(args));
+  else if (args[0] === 'release') {
+    let table = [];
+    try { table = processTable(); } catch {}
+    const { agentPid } = whoAmI(table), owner = agentPid || process.ppid;
+    const mine = liveClaims().filter(c => c.pid === owner);
+    for (const c of mine) { fs.rmSync(c.file, { force: true }); logGpu({ event: 'release', id: c.id, ms: Date.now() - Date.parse(c.at) }); }
+    console.log(mine.length ? `released: ${mine.map(c => c.why).join('; ')}` : 'no claim of this session to release');
+  } else if (args[0] === 'note') {
     const why = args[1];
     if (!why) { console.error('usage: gpu-log.mjs note "why" [--secs N]'); process.exit(2); }
     const s = Number(opt('--secs'));
@@ -169,7 +234,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     console.log(`logged: ${label(who)}: ${why}`);
   } else {
     const logged = readLog();
-    const log = [...logged.map(withReport), ...unlogged(logged)].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    const released = new Map(logged.filter(e => e.event === 'release').map(e => [e.id, e.ms]));
+    const log = [...logged.map(withReport).map(e => e.event === 'claim' ? { ...e, ms: released.get(e.id) ?? e.ms } : e), ...unlogged(logged)].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
     if (args.includes('--json')) console.log(JSON.stringify(log, null, 2));
     else {
       console.log(now(log));
@@ -179,8 +245,65 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
         console.log(totals(log, since).join('\n') || '  (none)');
       } else {
         console.log(`\nRecent (${LOG_FILE}):`);
-        console.log(log.slice(-RECENT).map(row).join('\n') || '  (no runs logged yet)');
+        console.log(log.slice(-RECENT).map(row).filter(Boolean).join('\n') || '  (no runs logged yet)');
       }
     }
   }
+}
+
+// Registers GPU use the launcher can't see. The claim is written first, then
+// it waits for the GPU to suit it, so a launcher that checks after taking the
+// slot always sees it (no window where both start).
+async function claim(args) {
+  const dash = args.indexOf('--'), command = dash >= 0 ? args.slice(dash + 1) : [];
+  const own = dash >= 0 ? args.slice(1, dash) : args.slice(1);
+  const why = own.find((a, i) => !a.startsWith('--') && own[i - 1] !== '--secs');
+  const exclusive = own.includes('--exclusive');
+  const s = Number(own[own.indexOf('--secs') + 1]);
+  if (!why || (dash >= 0 && !command.length)) {
+    console.error('usage: gpu-log.mjs claim "why" [--exclusive] [--secs N] [-- command...]');
+    return 2;
+  }
+  let table = [];
+  try { table = processTable(); } catch {}
+  const who = { ...whoAmI(table), command: command.join(' ').slice(0, 300) };
+  // A command claim lives as long as this process; a timed one as long as the session, or its time.
+  const pid = command.length ? process.pid : who.agentPid || process.ppid;
+  const at = new Date().toISOString(), id = `${process.pid}-${Date.now()}`;
+  const until = Date.now() + (command.length ? FOREVER_MS : (Number.isFinite(s) && s > 0 ? s : CLAIM_SECS) * 1000);
+  fs.mkdirSync(CLAIMS_DIR, { recursive: true });
+  const file = path.join(CLAIMS_DIR, `${id}.json`);
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify({ id, at, pid, until, why, exclusive, ...who }));
+  fs.renameSync(`${file}.tmp`, file);
+  const drop = () => { try { fs.rmSync(file, { force: true }); } catch {} };
+  const giveUp = Date.now() + CLAIM_WAIT_MS;
+  let said = '';
+  for (;;) {
+    const holder = slotHolder();
+    const slotBlocks = holder && alive(holder.pid) && (exclusive || holder.entry?.exclusive);
+    const blockers = [...(slotBlocks ? [`headless run ${describeHolder(holder.pid)}`] : []),
+      ...gpuBlockers({ exclusive, self: id, olderThan: Date.parse(at) })];
+    if (!blockers.length) break;
+    if (Date.now() > giveUp) {
+      drop();
+      console.error(`GPU busy, claim given up after ${CLAIM_WAIT_MS / 1000} s:\n  ${blockers.join('\n  ')}`);
+      logGpu({ event: 'refused', why, ...who, reason: `claim: ${blockers.join('; ')}`.slice(0, 300) });
+      return 3;
+    }
+    if (blockers.join('; ') !== said) console.error(`[gpu] waiting: ${said = blockers.join('; ')}`);
+    await new Promise(r => setTimeout(r, POLL_MS));
+  }
+  logGpu({ event: 'claim', id, why, exclusive, ...who, ms: command.length ? null : until - Date.now() });
+  if (!command.length) {
+    console.log(`GPU claimed${exclusive ? ' exclusively' : ''} until ${new Date(until).toLocaleTimeString()}: ${why}\n` +
+      'Run `node tools/gpu-log.mjs release` when done; it also ends with this session.');
+    return 0;
+  }
+  const { spawn } = await import('node:child_process');
+  const child = spawn(command[0], command.slice(1), { stdio: 'inherit' });
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => child.kill(sig));
+  const code = await new Promise(r => { child.on('exit', (c, sig) => r(c ?? (sig ? 1 : 0))); child.on('error', e => { console.error(e.message); r(127); }); });
+  drop();
+  logGpu({ event: 'release', id, ms: Date.now() - Date.parse(at) });
+  return code;
 }

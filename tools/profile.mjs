@@ -297,7 +297,11 @@ async function main() {
     console.error('[profile] parsing the GPU counter trace (after the browser closed)');
     try { gpuCounters = await countersDone; } catch (e) { gpuCounters = { text: `gpu-counters failed: ${e?.message ?? e}` }; }
   }
-  const shared = slot.busyAfter >= SHARED_BUSY_PCT ? `GPU ${slot.busyAfter}% busy right after the capture` : null;
+  // The run was exclusive (gpu-log.mjs TIMING_TOOLS), so whatever is busy now is
+  // either a claim that started as the slot ended or nothing registered at all.
+  const others = slot.busyAfter >= SHARED_BUSY_PCT ? (await import('./gpu-log.mjs')).gpuBlockers({ exclusive: true }) : [];
+  const shared = slot.busyAfter >= SHARED_BUSY_PCT ? `GPU ${slot.busyAfter}% busy right after the capture (${others.length
+    ? `registered: ${others.join('; ')}` : 'nothing registered in tools/gpu-log.mjs: the player, or a session that did not claim'})` : null;
   if (shared || gpuCounters) {
     // (the report printed inside the slot lacked these: the final one, in full)
     console.log(`\n---- final report (${[shared && 'the GPU was shared', gpuCounters && 'Metal encoder times and GPU counters'].filter(Boolean).join(', ')}) ----`);

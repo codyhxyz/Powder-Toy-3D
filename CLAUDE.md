@@ -48,8 +48,10 @@ The user plays on this Mac while agents work. Headless tests can disrupt the gam
 - `tools/browser.mjs` rejects budgets over 25 seconds. Its independent watchdog stops only the test's own process tree.
 - The launcher releases its slot if the player uses the GPU. It does not hold the slot while waiting for the player.
 - Never set `TPT_IGNORE_PLAYER` without explicit user approval.
-- `node tools/gpu-log.mjs` is the shared GPU log: who holds the GPU now (session, worktree, what for, how long) and every recent run; `--since 6h` totals per session. Check it before a GPU run instead of guessing from pids.
-- Say why a run exists: `TPT_GPU_WHY="island cold-load timing" node tools/...` (or `launchBrowser({ why })`). Optional; without it the log shows the command. GPU use outside the launcher (windowed Chrome, Claude in Chrome) gets one line: `node tools/gpu-log.mjs note "why" --secs 60`.
+- `node tools/gpu-log.mjs` is the shared GPU log: who is on the GPU now (session, worktree, what for, how long) and every recent run; `--since 6h` totals per session. Check it before a GPU run instead of guessing from pids.
+- Say why a run exists: `TPT_GPU_WHY="island cold-load timing" node tools/...` (or `launchBrowser({ why })`). Optional; without it the log shows the command.
+- Register GPU use the launcher can't see (a windowed or Claude-in-Chrome probe, a dev page left open with the game running): `node tools/gpu-log.mjs claim "why" -- <command>`, or `claim "why" --secs 120` then `release`.
+- Timing-critical work gets the GPU alone. Profiler and bench scripts (`profile`, `frame-profile`, `app-compile-probe`, `*-bench`) are exclusive automatically; elsewhere use `launchBrowser({ exclusive: true })`, `TPT_GPU_EXCLUSIVE=1` or `claim --exclusive`. An exclusive run refuses while any claim is live, and new claims and headless tests wait for it. Refusals name who is on the GPU.
 - If another test holds the slot, the refusal and `gpu-log` name its owner; require compliance. Do not kill unrelated processes.
 
 - Use `launchBrowser` and `newTestPage` / `newTestContext` from `tools/browser.mjs`, not another raw Chromium launcher. The deploy enforces it: `tools/check-browser-launch.mjs` fails on any script in `tools/` or `scripts/` that launches a browser itself, except the legacy list in that file, which only shrinks.

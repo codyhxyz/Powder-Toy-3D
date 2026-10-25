@@ -15,7 +15,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { MAX_SLOT_MS, CLEANUP_MS, budgetMs, slotCeiling, processTable } from './gpu-deadline.mjs';
-import { logGpu, whoAmI, describeHolder } from './gpu-log.mjs';
+import { logGpu, whoAmI, describeHolder, gpuBlockers, TIMING_TOOLS } from './gpu-log.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -111,6 +111,34 @@ function releaseSlot() {
   if (slotStarted && !slotGuardPid) console.error(`[browser] total GPU slot occupancy ${Date.now() - slotStarted} ms`);
   slotStarted = slotDeadline = 0; slotInode = null; slotToken = ''; slotGuardPid = 0;
 }
+// A lease whose holder is dead and whose browser is gone (no process carries a
+// --tpt-gpu-lease switch, and the run report's test is dead too) is set aside
+// as slot.verified-dead-<pid>-<ms>, the name sessions used when they did this
+// by hand, so a crashed run no longer blocks every later one. Anything less
+// certain leaves the lease for takeSlot to refuse, as before.
+const START_SLACK_MS = 2000;
+const LEASE_ARG = /--tpt-gpu-lease=[0-9a-f-]{36}(\s|$)/; // a launched browser's switch, not a shell line naming it
+function recoverStaleSlot() {
+  let before, holder;
+  try { before = fs.statSync(SLOT_FILE); holder = Number(fs.readFileSync(SLOT_FILE, 'utf8').trim()); } catch { return; }
+  if (!Number.isSafeInteger(holder) || holder <= 1 || alive(holder)) return;
+  let table;
+  try { table = processTable(); } catch { return; }
+  // Any lease-marked process started after the lease may be its orphan; one
+  // older than the lease can't be (ps start times are whole seconds).
+  const since = before.birthtimeMs - START_SLACK_MS;
+  if (table.some(p => LEASE_ARG.test(p.args) && !(Date.parse(p.start) < since))) return;
+  const report = (() => { try { return fs.readdirSync(path.join(BUDGET_DIR, 'runs')).find(f => f.endsWith(`-${holder}.json`)); } catch { return null; } })();
+  const owner = Number(report?.split('-')[0]);
+  if (owner && alive(owner)) return;
+  try {
+    if (fs.statSync(SLOT_FILE).ino !== before.ino || Number(fs.readFileSync(SLOT_FILE, 'utf8').trim()) !== holder) return;
+    fs.renameSync(SLOT_FILE, `${SLOT_FILE}.verified-dead-${holder}-${Date.now()}`);
+  } catch { return; }
+  console.error(`[browser] set aside the dead GPU lease of pid ${holder} (no browser of it left)`);
+  logGpu({ event: 'recovered', holder, owner: owner || null });
+}
+
 // A failed close must not cancel the independent hard kill or release the
 // lock while our browser is still alive.
 process.on('exit', () => { if (!browsers.size && !launching) releaseSlot(); });
@@ -274,24 +302,41 @@ function hookBrowserLog(fn) {
  * (LEAD_SLOT_MS with TPT_LEAD_LONG_SLOT=1: gpu-deadline.mjs, the lead session only).
  * `browserLog(line)` receives the browser's stderr, GPU process included
  * (adds --enable-logging=stderr). `why` (or TPT_GPU_WHY) is what the shared
- * GPU log (tools/gpu-log.mjs) says this run is for; optional.
- * @param {{ lifetimeMs?: number, args?: string[], browserLog?: (line: string) => void, why?: string } & object} [options] Playwright launch options
+ * GPU log (tools/gpu-log.mjs) says this run is for; optional. `exclusive`
+ * (TPT_GPU_EXCLUSIVE=1; on by default for TIMING_TOOLS) is for timings: the
+ * run refuses while any claimed GPU use is live, and claims wait for it.
+ * @param {{ lifetimeMs?: number, args?: string[], browserLog?: (line: string) => void, why?: string, exclusive?: boolean } & object} [options] Playwright launch options
  * @returns {Promise<import('playwright').Browser>}
  */
 /** When this process's GPU slot ends (ms since the epoch; 0 before launchBrowser takes one): a tool's own deadlines race this, not its own clock. */
 export const slotDeadlineAt = () => slotDeadline;
 export async function launchBrowser(options = {}) {
-  const { lifetimeMs = Number(process.env.TPT_TEST_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS), args = [], browserLog, why = process.env.TPT_GPU_WHY ?? '', ...launch } = options;
+  const { lifetimeMs = Number(process.env.TPT_TEST_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS), args = [], browserLog, why = process.env.TPT_GPU_WHY ?? '',
+    exclusive = process.env.TPT_GPU_EXCLUSIVE === '1' || TIMING_TOOLS.test(path.basename(process.argv[1] ?? '')), ...launch } = options;
   budgetMs(lifetimeMs);
   if (attempted) throw new Error('One browser launch per test process. Reuse contexts; do not retry or renew the GPU slot.');
   attempted = true; launching = true;
   const logArgs = browserLog && hookBrowserLog(browserLog) ? ['--enable-logging=stderr', '--v=0'] : [];
   let browser, logged = false;
   const who = () => { try { return whoAmI(processTable()); } catch { return whoAmI(); } };
+  // Claims are checked before and again after taking the slot: a claimant
+  // registers first and then waits for the slot, so one of the two always sees the other.
+  const blocked = async () => {
+    for (const until = Date.now() + SLOT_WAIT_MS; ;) {
+      const b = gpuBlockers({ exclusive });
+      if (!b.length) return;
+      if (Date.now() > until) throw new Error(`GPU claimed${exclusive ? ' (this timing run needs it alone)' : ' exclusively'} by ${b.join('; ')}. Do a CPU check instead, or retry after.`);
+      await sleep(SLOT_POLL_MS);
+    }
+  };
   try {
+    recoverStaleSlot();
+    await blocked();
     await takeSlot();
+    const late = gpuBlockers({ exclusive });
+    if (late.length) { releaseSlot(); throw new Error(`GPU claimed by ${late.join('; ')} just as this run started. Retry after.`); }
     await guardSlot(lifetimeMs);
-    logGpu({ event: 'start', why, ...who(), guardPid: slotGuardPid, budgetMs: lifetimeMs });
+    logGpu({ event: 'start', why, exclusive, ...who(), guardPid: slotGuardPid, budgetMs: lifetimeMs });
     logged = true;
     const remaining = slotDeadline - Date.now() - CLEANUP_MS;
     if (remaining <= 0) throw new Error('GPU slot budget exhausted before browser launch');
