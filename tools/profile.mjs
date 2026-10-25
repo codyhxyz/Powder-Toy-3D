@@ -97,6 +97,8 @@ function installInPage({ frames, warmup, autores, paused, deadline }) {
   const state = { stage: 'start', stages: [] };
   const why = () => ({ stage: state.stage, at: Math.round(performance.now() - t0), prof: !!a.prof?.on, landed: a.prof?.landed?.length ?? null,
     supported: a.gpu.timing.supported, compiling: a.gpu.timing.pipelines ?? null, cache: { pending: a.gpu.pipelines?.pending?.size, queue: a.gpu.pipelines?.queue?.length, idle: a.gpu.pipelines?.idleQueue?.length },
+    // the builds still running, by name and age: which kernels hold a stalled run
+    building: [...(a.gpu.pipelines?.active ?? [])].map((j) => `${j.name} ${Math.round(performance.now() - (j.t0 ?? performance.now()))} ms`),
     frameNo: a.gpu.frameNo, asleep: a.loop?.asleep, parked: a.test?.parked, failure: a.gpu.failure?.message ?? null });
   const step = (name, p) => {
     state.stage = name; state.stages.push([name, Math.round(performance.now() - t0)]);
