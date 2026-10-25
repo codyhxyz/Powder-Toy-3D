@@ -36,12 +36,12 @@ export const POSES = ['default', 'landDown', 'sky', 'horizon'];
 
 const HELP = `node tools/profile.mjs --map <key> [--pose ${POSES.join('|')}|x,y,z,tx,ty,tz] [--view realistic]
   [--frames 60] [--warmup 30] [--counters] [--out dir] [--url URL] [--port N] [--size WxH] [--dpr N]
-  [--autores] [--paused] [--compare profile.json] [--allow-battery] [--self-test]`;
+  [--autores] [--paused] [--compare profile.json] [--shot] [--allow-battery] [--self-test]`;
 
 export function parseArgs(argv) {
   const o = { map: 'lab', pose: 'default', view: 'realistic', frames: 60, warmup: 30, counters: false, out: null, url: null,
-    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, allowBattery: false, selfTest: false, help: false };
-  const flags = { '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
+    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, shot: false, allowBattery: false, selfTest: false, help: false };
+  const flags = { '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
   const values = ['map', 'pose', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare'];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -157,7 +157,7 @@ async function main() {
   if (o.selfTest) { await selfTest(); return; }
   if (onBattery() && !o.allowBattery) throw new Error('On battery: no GPU runs (docs/profiler.md). Plug in, or --allow-battery when the user allows it.');
   const { launchBrowser, newTestPage, gpuInfo, gpuBusyPct } = await import('./browser.mjs');
-  let vite = null, browser = null, counters = null, countersDone = null, result, info, slot = {};
+  let vite = null, browser = null, counters = null, countersDone = null, result, info, slot = {}, shot = null;
   const url = new URL(o.url ?? 'http://127.0.0.1/');
   try {
     if (!o.url) {
@@ -205,6 +205,8 @@ async function main() {
       throw new Error(`${e.message.split('\n')[0]}\npage errors/warnings: ${errors.slice(0, 8).join('\n  ') || 'none'}`);
     }
     log('captured');
+    // --shot: the frame as the player sees it after the capture (frame.png: a picture pair for a change's A/B)
+    if (o.shot) shot = await page.screenshot();
     // the GPU counters: end the recording now, but parse the trace (10-60 s of CPU) only after the browser
     // has closed, so the GPU slot isn't held during it (tools/gpu-counters.mjs)
     if (counters) { countersDone = counters.stop(); countersDone.catch(() => {}); counters = null; }
@@ -231,6 +233,7 @@ async function main() {
   if (result.console?.length) report.notes.push(`console (not timing): ${[...new Set(result.console)].slice(0, 3).join(' | ')}`);
   delete report.text;
   mkdirSync(o.out, { recursive: true });
+  if (shot) writeFileSync(join(o.out, 'frame.png'), shot);
   let heatmap = null;
   if (result.cost?.image?.startsWith('data:image/')) {
     writeFileSync(join(o.out, 'cost.png'), Buffer.from(result.cost.image.split(',')[1], 'base64'));
