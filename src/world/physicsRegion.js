@@ -8,15 +8,16 @@
 // The pure parts live here (the move's slabs, the order of its steps, the slicing), so
 // tools/world-move-cpu-check.mjs runs them without a GPU. world/window.js runs them.
 import { BRICK } from '../shaders/common.js';
+import descentRoute from './scenes/descent/terrainRoute.json' with { type: 'json' };
 
 // The lead's switch (seamless world integration): true once the march reads the world copy (agent M),
 // so nothing on screen reads the physics window's derived data. A move then records no picture work.
 // False keeps today's move (derived, occupancy, far field and render source follow the window).
 export const PHYSICS_ONLY_MOVE = true;
-// The maps the switch covers: the seamless world's census (docs/seamless-world.md). Intentional (user,
-// 2026-10-24: "don't worry about descent"): Descent's levels and the Noita source scenes keep the old
-// picture, and so the old move, until the march covers them.
-export const SEAMLESS_SCENES = new Set(['island', 'labWorld', 'volcanoWorld', 'giantVolcano', 'willowCove']);
+// The maps the switch covers: the seamless world's census (docs/seamless-world.md), Descent's bands among
+// them (the world copy holds its ring: world/worldCopy.js; their band switches capture and restore through
+// the move's own slab paths, ring-aware).
+export const SEAMLESS_SCENES = new Set(['island', 'labWorld', 'volcanoWorld', 'giantVolcano', 'willowCove', ...descentRoute.regions.map((r) => r.key)]);
 // Test only: ?physicsOnly=1 turns the switch on for a page (tools/world-move-browser-check.mjs), as the
 // lead's flip would; nothing else reads it.
 const PAGE_SWITCH = typeof location !== 'undefined' && new URLSearchParams(location.search).get('physicsOnly') === '1';

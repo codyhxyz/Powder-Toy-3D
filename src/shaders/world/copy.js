@@ -6,8 +6,12 @@
 // (tools/world-copy-cpu-check.mjs runs them). A sparse brick map: Laine & Karras 2010, "Efficient Sparse Voxel
 // Octrees", at one level, as Teardown and Minecraft's palette chunks keep uniform sections as one value.
 //
-// Buffers, all indexed in world bricks b = (x, y, z), bi = x + BX (y + BY z):
-//   wcTable  u32 per brick: a uniform brick's cell word, or WC_MIXED | its pool slot
+// Buffers, all indexed by a brick's index bi (wcBrickIndex): dense, x + BX (y + BY z) of world brick b = (x, y, z);
+// sparse (a scene that says which columns may hold matter: wcLayout's columns), its column's first entry plus y:
+//   wcTable  u32 per brick: a uniform brick's cell word, or WC_MIXED | its pool slot; a sparse table's column
+//            index after the bricks (from word WC.cols: a column's first entry, a word per brick column x + BX z,
+//            0 for a column no matter is in: the air column, entries 0 .. BY - 1, all air with info 0, never
+//            written), then its columns' (x, z) (x | z << 16 an entry: wcBrickOf)
 //   wcPool   64 u32 per slot: the brick's cells x + 4 (y + 4 z)
 //   wcMeta   (one buffer: the render kernels' storage budget, the lead's contract change of 2026-10-24)
 //            words 0 .. bricks: a u32 per brick, the BRICK_INFO bits of shaders/bindings.js (bits 0-16), derived
@@ -61,18 +65,43 @@ export const wcLifeFull = (id) => {
   return Math.max(1, e.life ?? 0);
 };
 
-/** The world's layout in bricks and occupancy nodes, for world size [x, y, z] in cells. */
-export function wcLayout(size) {
+/**
+ * The world's layout in bricks and occupancy nodes, for world size [x, y, z] in cells.
+ * columns(bx, bz): optional, false for a brick column no matter can be in (a scene's conservative proof:
+ * Descent's ring, scenes/index.js mayContainCellsXZ): the table is then sparse over the others, a column index
+ * in front of the bricks (the sparse brick map's two levels: Laine & Karras 2010 at a column, as Minecraft
+ * leaves empty chunk sections out). Its JS twins: bi(b), tabled(bi), brickOf(bi).
+ */
+export function wcLayout(size, { columns = null } = {}) {
   const bricks = size.map((n) => Math.ceil(n / WC_BRICK));
   const n1 = bricks.map((n) => Math.ceil(n / WC_NODE1));
   const n2 = n1.map((n) => Math.ceil(n / WC_NODE2));
   const count = (v) => v[0] * v[1] * v[2];
   const occ1Words = Math.ceil(count(n1) / 32), occ2Words = Math.ceil(count(n2) / 32);
-  const nBricks = count(bricks);
+  const [BX, BY, BZ] = bricks;
+  let nBricks = count(bricks), colBase = null, rev = null, colAt = 0, revAt = 0, tableWords = nBricks;
+  if (columns) {
+    if (BX > WC_COL_MAX || BZ > WC_COL_MAX) throw new Error(`wcLayout: ${BX} x ${BZ} brick columns pass the reverse map's 16 bits`);
+    colBase = new Uint32Array(BX * BZ);   // 0: the air column
+    const list = [0];
+    for (let bz = 0; bz < BZ; bz++) for (let bx = 0; bx < BX; bx++) if (columns(bx, bz)) { colBase[bx + BX * bz] = list.length * BY; list.push(bx | (bz << 16)); }
+    rev = Uint32Array.from(list);
+    nBricks = list.length * BY;
+    colAt = nBricks;
+    revAt = colAt + BX * BZ;
+    tableWords = revAt + list.length;
+  }
   // occ2Rel: level 2's first word among the occupancy's; occ1At, occ2At: their words in wcMeta (after the info)
+  const bi = colBase ? (b) => colBase[b[0] + BX * b[2]] + b[1] : (b) => b[0] + BX * (b[1] + BY * b[2]);
+  const tabled = colBase ? (i) => i >= BY : () => true;
+  const brickOf = colBase ? (i) => { const r = rev[Math.floor(i / BY)]; return [r & 0xffff, i % BY, r >>> 16]; }
+    : (i) => [i % BX, Math.floor(i / BX) % BY, Math.floor(i / (BX * BY))];
+  // nBricks: the table's brick entries (a sparse table's air column among them); tableWords: all its words
   return { size: [...size], bricks, n1, n2, nBricks, occ1Words, occ2Rel: occ1Words, occWords: occ1Words + occ2Words,
-    occ1At: nBricks, occ2At: nBricks + occ1Words, metaWords: nBricks + occ1Words + occ2Words };
+    occ1At: nBricks, occ2At: nBricks + occ1Words, metaWords: nBricks + occ1Words + occ2Words,
+    sparse: !!colBase, colBase, rev, colAt, revAt, tableWords, tabledColumns: rev ? rev.length - 1 : BX * BZ, bi, tabled, brickOf };
 }
+const WC_COL_MAX = 1 << 16;   // brick columns along x or z a sparse table's reverse map packs (16 bits each)
 
 // ---------------------------------------------------------------- group 1 of render kernels
 // The WC uniform: the world's size in cells and bricks, the air word outside it, the occupancy's layout.
@@ -82,6 +111,7 @@ export const WorldCopyUniforms = uniformStruct('WorldCopyUniforms', {
   n1: 'vec3i', occ1At: 'u32',         // level-1 nodes; the word of wcMeta level 1 starts at
   n2: 'vec3i', occ2At: 'u32',         // level-2 nodes; the word level 2 starts at
   revision: 'u32',                    // the copy's revision (tools)
+  cols: 'u32',                        // a sparse table's column index: its first word in wcTable (0: dense)
 });
 const READ = STAGE.FRAGMENT | STAGE.COMPUTE;
 /** Group 1's layout entries (gpu.layout('WORLD_COPY', WORLD_COPY_LAYOUT)): 0 WC, 1 wcTable, 2 wcPool, 3 wcMeta (info, then occupancy). */
@@ -120,7 +150,12 @@ ${WorldCopyUniforms.wgsl}
 @group(1) @binding(2) var<storage, read> wcPool: array<u32>;
 @group(1) @binding(3) var<storage, read> wcMeta: array<u32>;   // the info a brick, then the occupancy (WC.occ1At, WC.occ2At)
 fn wcInWorld(c: vec3i) -> bool { return all(c >= vec3i(0)) && all(c < WC.size); }
-fn wcBrickIndex(b: vec3i) -> u32 { return u32(b.x + WC.bricks.x * (b.y + WC.bricks.y * b.z)); }
+// brick b's entry (b inside the world): dense, or a sparse table's column's first entry plus y (one read more;
+// a column no matter is in reads the air column)
+fn wcBrickIndex(b: vec3i) -> u32 {
+  if (WC.cols == 0u) { return u32(b.x + WC.bricks.x * (b.y + WC.bricks.y * b.z)); }
+  return wcTable[WC.cols + u32(b.x + WC.bricks.x * b.z)] + u32(b.y);
+}
 fn wcCell(c: vec3i) -> u32 {
   if (!wcInWorld(c)) { return WC.air; }
   let e = wcTable[wcBrickIndex(c >> vec3u(2u))];
@@ -163,11 +198,13 @@ export const WC_WRITE_LAYOUT = Object.values(WC_WRITE).map((binding) => ({ bindi
 export const WC_DECODE_LAYOUT = WC_WRITE_LAYOUT;   // (the decode binds the tables and V2's two besides: 8)
 export const WC_JOB_RING = 1 << 19;   // wcScratch's first words: the jobs (world/worldCopy.js writes them a writeback at a time)
 // wcAlloc's words: the bump (slots ever handed out), the free list's length, slots that didn't fit (never, by
-// world/worldCopy.js's capacity rule: a nonzero count is a bug the tools report), a spare; then the free list.
+// world/worldCopy.js's capacity rule: a nonzero count is a bug the tools report), RETRY, LOST; then the free list.
 // RETRY: slots a GPU-driven writeback (P.mode != 0) didn't find; recoverable, unlike OVER: world/worldCopy.js
 // grows the pool and runs the next writeback over the whole window (every brick compared, the changed ones
 // written).
-export const WC_CTRL = { BUMP: 0, FREE: 1, OVER: 2, RETRY: 3, WORDS: 4 };
+// LOST: bricks holding matter written to a sparse table's column no matter was proved to be in (physics' matter
+// off Descent's ring): the copy keeps them air (Intentional: the scene's proof is the table's; physics keeps them).
+export const WC_CTRL = { BUMP: 0, FREE: 1, OVER: 2, RETRY: 3, LOST: 4, WORDS: 5 };
 export const WcWriteParams = uniformStruct('WcWriteParams', {
   origin: 'vec3i', count: 'u32',      // world cells of the window's corner (writeback) or the chunk's; jobs
   chunk: 'vec3i', first: 'u32',       // the chunk's size in cells (build); the first job of the dispatch
@@ -270,8 +307,15 @@ const WC_I_LIQUID_INTERIOR: u32 = ${BRICK_INFO.LIQUID_INTERIOR}u;
 const WC_I_AIR_SHIFT: u32 = ${BRICK_INFO.AIR_SHIFT}u;
 const WC_I_GAS_SHIFT: u32 = ${BRICK_INFO.GAS_SHIFT}u;
 const WC_AIR_HOT: u32 = ${AIR.HOT}u;
+${L.sparse ? /* wgsl */ `// a sparse table (wcLayout's columns): brick b's entry through its column; the air column's are never written
+const WC_COL_AT: u32 = ${L.colAt}u;
+const WC_REV_AT: u32 = ${L.revAt}u;
+fn wcBi(b: vec3i) -> u32 { return wcTable[WC_COL_AT + u32(b.x + WC_B.x * b.z)] + u32(b.y); }
+fn wcTabled(bi: u32) -> bool { return bi >= u32(WC_B.y); }
+fn wcBrickOf(bi: u32) -> vec3i { let r = wcTable[WC_REV_AT + bi / u32(WC_B.y)]; return vec3i(i32(r & 0xffffu), i32(bi % u32(WC_B.y)), i32(r >> 16u)); }` : /* wgsl */ `
 fn wcBi(b: vec3i) -> u32 { return u32(b.x + WC_B.x * (b.y + WC_B.y * b.z)); }
-fn wcBrickOf(bi: u32) -> vec3i { let i = i32(bi); return vec3i(i % WC_B.x, (i / WC_B.x) % WC_B.y, i / (WC_B.x * WC_B.y)); }
+fn wcTabled(bi: u32) -> bool { return true; }
+fn wcBrickOf(bi: u32) -> vec3i { let i = i32(bi); return vec3i(i % WC_B.x, (i / WC_B.x) % WC_B.y, i / (WC_B.x * WC_B.y)); }`}
 // A cell's word from its decoded state (world/worldCopyTwin.js wcWordOf): air (and what reads as air) at the
 // scene's ambient when within WC_AIR_SNAP of it, a liquid's aux its fill, matter's its life fraction.
 ${wcWordOfOnly}
@@ -542,9 +586,13 @@ ${brickWorkgroup(/* wgsl */ `
   if (any(b >= WC_B)) { return; }
   let bi = wcBi(b);
   if (li == 0u) {
-    wcInfoPut(bi, wcOwnInfo());
-    if (atomicLoad(&wgDiff) == 0u) { wcTable[bi] = wgW[0]; wgSlot = 0xffffffffu; }
+    if (!wcTabled(bi)) {
+      // a column the scene proved empty (a sparse table): nothing to write
+      if ((atomicLoad(&wgOwn) & WC_OWN_MATTER) != 0u) { atomicAdd(&wcAlloc[${WC_CTRL.LOST}], 1u); }
+      wgSlot = 0xffffffffu;
+    } else if (atomicLoad(&wgDiff) == 0u) { wcInfoPut(bi, wcOwnInfo()); wcTable[bi] = wgW[0]; wgSlot = 0xffffffffu; }
     else {
+      wcInfoPut(bi, wcOwnInfo());
       wgSlot = wcAllocSlot();
       // never dropped: world/worldCopy.js keeps capacity ahead of every job it records (OVER counts a breach)
       if (wgSlot != 0xffffffffu) { wcTable[bi] = WC_MIXED | wgSlot; }
@@ -597,11 +645,16 @@ ${brickWorkgroup(/* wgsl */ `${unpackJob}
   if ((old & WC_MIXED) != 0u) { was = wcPool[(old & ~WC_MIXED) * WC_BRICK_CELLS + li]; }
   wcGather(li, w, was);
   let flag = wcFlagsAt() + j;
-  if (li == 0u) { wgSame = select(0u, 1u, atomicLoad(&wgChanged) == 0u); }
+  // (a brick of a column the scene proved empty is never written: its matter, if any, is counted LOST)
+  let tabled = wcTabled(bi);
+  if (li == 0u) {
+    wgSame = select(0u, 1u, atomicLoad(&wgChanged) == 0u || !tabled);
+    if (!tabled && (atomicLoad(&wgOwn) & WC_OWN_MATTER) != 0u) { atomicAdd(&wcAlloc[${WC_CTRL.LOST}], 1u); }
+  }
   if (workgroupUniformLoad(&wgSame) != 0u) {
     if (li == 0u) {
       wcScratchSet(flag, 0u);
-      if (P.mode == WC_MODE_CPU) { wcInfoPut(bi, wcOwnInfo()); }   // (the CPU's dilation list redoes it)
+      if (P.mode == WC_MODE_CPU && tabled) { wcInfoPut(bi, wcOwnInfo()); }   // (the CPU's dilation list redoes it)
     }
     return;
   }
@@ -748,7 +801,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(num_workgroups) nwg: vec3u, @
   if (any(q < vec3i(0)) || any(q >= WC_B)) { return; }
   let lo = ob - vec3i(WC_D);
   let r = q - lo;
-  if (wcGMark(WC_GL_DILMARK + u32(r.x + WC_PAD_B.x * (r.y + WC_PAD_B.y * r.z)))) { wcGSet(WC_GL_DIL + wcGAdd(WC_G_NDIL, 1u), wcBi(q)); }
+  let qi = wcBi(q);
+  if (wcTabled(qi) && wcGMark(WC_GL_DILMARK + u32(r.x + WC_PAD_B.x * (r.y + WC_PAD_B.y * r.z)))) { wcGSet(WC_GL_DIL + wcGAdd(WC_G_NDIL, 1u), qi); }
   let n1 = q >> vec3u(2u);
   let r1 = n1 - (lo >> vec3u(2u));
   if (wcGMark(WC_GL_OCC1MARK + u32(r1.x + WC_PAD_N1.x * (r1.y + WC_PAD_N1.y * r1.z)))) {
@@ -771,6 +825,7 @@ ${writerDecls(L, g)}
 ${jobThread(/* wgsl */ `
   var bi = job;
   if (P.level != 1u) { bi = wcJob(job); }
+  if (!wcTabled(bi)) { return; }   // (a sparse table's air column)
   let b = wcBrickOf(bi);
   let me = wcInfoGet(bi);
   var near = 0u;
@@ -842,14 +897,15 @@ const wcGatherCheck = (g, L) => wcGatherFrag(g, L, CHECK_V2);
 const wcArgsCheck = () => wcArgsFrag();
 export const WC_KERNELS = { wcCommitChunkFrag, wcDecodeFrag, wcAllocFrag, wcDilateFrag, wcOccFrag, wcStampFrag, wcOverlayFrag, wcGatherFrag: wcGatherCheck, wcSeedFrag, wcArgsFrag: wcArgsCheck };
 const CHECK_WORLD = wcLayout([256, 128, 256]);
+const CHECK_SPARSE = wcLayout([256, 128, 256], { columns: (bx, bz) => (bx + bz) % 3 !== 0 });   // (a sparse table's writers)
 const CHECK_STATE = { wcDecodeFrag: 'STATE_RO' };
 const CHECK_GROUP1 = { wcGatherFrag: WC_V2_LAYOUT };
 const CHECK_GROUP2 = { wcStampFrag: WC_STAMP_LAYOUT, wcOverlayFrag: WC_OVERLAY_LAYOUT, wcDecodeFrag: WC_DECODE_LAYOUT, wcArgsFrag: WC_ARGS_LAYOUT };
-export const WGSL_CHECK = () => Object.entries(WC_KERNELS).map(([name, frag]) => ({
-  name: `world copy ${name}`, kind: 'compute', grids: ['128'], warm: false, code: (g) => frag(g, CHECK_WORLD), params: WcWriteParams,
+export const WGSL_CHECK = () => [['', CHECK_WORLD], [' sparse', CHECK_SPARSE]].flatMap(([tag, world]) => Object.entries(WC_KERNELS).map(([name, frag]) => ({
+  name: `world copy ${name}${tag}`, kind: 'compute', grids: ['128'], warm: false, code: (g) => frag(g, world), params: WcWriteParams,
   layouts: () => [[{ binding: 0, visibility: READ, buffer: { type: 'read-only-storage' } }], CHECK_STATE[name] ? stateLayoutOf(CHECK_STATE[name]) : CHECK_GROUP1[name] ?? 'EMPTY', CHECK_GROUP2[name] ?? WC_WRITE_LAYOUT],
   dispatch: () => [1, 1, 1],
-})).concat([{
+}))).concat([{
   // the readers, as a render kernel includes them
   name: 'world copy readers', kind: 'compute', grids: ['128'], warm: false, layouts: () => [[{ binding: 0, visibility: READ, buffer: { type: 'read-only-storage' } }], WORLD_COPY_LAYOUT, [{ binding: 0, visibility: STAGE.COMPUTE, buffer: { type: 'storage' } }]],
   code: (g) => `${prelude(g, { state: false })}\n${worldCopyWGSL()}\n@group(2) @binding(0) var<storage, read_write> out: array<f32>;

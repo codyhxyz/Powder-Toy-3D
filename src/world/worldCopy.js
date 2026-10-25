@@ -27,8 +27,11 @@ import { PHYS } from '../physics.js';
 //                   its treesIn places, baked as the window bakes them), the window's saved bricks over it,
 //                   then the window's own cells (a writeback of all of it). A chunk of WC_CHUNK² columns
 //                   a submit, a fence every BUILD_FENCE_CHUNKS of them, so no submit is long. A small map is
-//                   built from its box's cells. Descent is left on its current path (Intentional: the user,
-//                   2026-10-24: "don't worry about descent").
+//                   built from its box's cells. A scene that proves which columns may hold matter
+//                   (mayContainCellsXZ: Descent's folded ring) gets a sparse table over those columns only
+//                   (copy.js wcLayout), and its chunks with none are skipped. A scene's editsPending (saved
+//                   edits a handoff restores into the window after its load: Descent's band switches,
+//                   wire/descent.js) is waited for, so they are in before the first frame.
 //   recordWriteback(frame, sim, boxes)
 //                   physics' changed boxes (window cells) decoded from V2's native cores into the copy. The GPU
 //                   allocates and frees pool slots (a free-list pop, else a bump; a brick that turns uniform
@@ -57,7 +60,8 @@ import { PHYS } from '../physics.js';
 
 const BUFFER = { MAP_READ: 0x01, COPY_SRC: 0x04, COPY_DST: 0x08, UNIFORM: 0x40, STORAGE: 0x80, INDIRECT: 0x100 };   // (GPUBufferUsage's bits)
 const RW = BUFFER.STORAGE | BUFFER.COPY_SRC | BUFFER.COPY_DST;
-export const POOL_HEADROOM = 1.5;        // the pool after the build: this many times the mixed bricks it holds
+export const POOL_HEADROOM = 1.5;        // the pool after the build: this many times the mixed bricks it holds, the slack
+                                         // at most the window's bricks (_buildTarget)
 const POOL_START_SHARE = 1 / 8;          // the build's first guess at the share of bricks that are mixed (the census: Island 11 %)
 const POOL_GROW = 1.5;                   // a growth multiplies the capacity by at least this
 const BUILD_FENCE_CHUNKS = 8;            // chunks recorded between the build's waits on the queue
@@ -65,7 +69,15 @@ const DILATE_SPAN = 1 << 20;             // bricks a full dilation pass covers p
 const CHANGES_KEPT = 512;                // change boxes kept for changesSince (older revisions get the whole world)
 const STAMP_GROW = 1.5;
 const MAX_JOB_COORD = 1023;              // a window brick coordinate packs in 10 bits (copy.js unpackJob)
-const OUT_OF_SCOPE = /^(descent|noitaTerrain)/;   // Descent's scenes (Intentional: user, out of scope for now)
+// A sparse table's columns: those within this many cells of where the scene says matter may be (its
+// mayContainCellsXZ padding): a level-1 node, so matter physics spills just past Descent's ring caps is drawn
+// (further out the copy holds air: WC_CTRL.LOST counts it; physics and its stores keep it).
+const COLUMN_PAD = WC_BRICK * WC_NODE1;
+/** A scene's sparse table columns (copy.js wcLayout's columns(bx, bz)), or null for a dense table. */
+export function sceneColumns(scene) {
+  const may = scene?.mayContainCellsXZ;
+  return may ? (bx, bz) => may([bx * WC_BRICK, bz * WC_BRICK], [(bx + 1) * WC_BRICK, (bz + 1) * WC_BRICK], COLUMN_PAD) : null;
+}
 const GPU_HEADROOM_SHARE = 1 / 4;        // a GPU-driven writeback keeps this share of the window's bricks free in the pool...
 const GPU_HEADROOM_MIN = 4096;           // ...and at least this many slots (a miss is retried, never dropped: WC_CTRL.RETRY)
 
@@ -106,12 +118,10 @@ export class WorldCopy {
     this.writeLayout = gpu.layout('WORLD_COPY_WRITE', WC_WRITE_LAYOUT);
     this.decodeLayout = gpu.layout('WORLD_COPY_DECODE', WC_DECODE_LAYOUT);
     this.uniforms = gpu.uniforms(WorldCopyUniforms, 'world copy');
-    const L = this.L, buf = (label, size, usage = RW) => gpu.createBuffer({ label, size: Math.max(16, Math.ceil(size / 16) * 16), usage });
+    // (the table and meta are made by the build, once it knows the scene's columns: _layout)
     this.buf = {
-      table: buf('world copy table', L.nBricks * 4),
-      meta: buf('world copy info + occupancy', L.metaWords * 4),
-      pool: null, alloc: null, scratch: null,
-      args: buf('world copy indirect args', WC_ARGS.WORDS * 4, BUFFER.STORAGE | BUFFER.INDIRECT | BUFFER.COPY_DST),
+      table: null, meta: null, pool: null, alloc: null, scratch: null,
+      args: this._buffer('world copy indirect args', WC_ARGS.WORDS * 4, BUFFER.STORAGE | BUFFER.INDIRECT | BUFFER.COPY_DST),
     };
     // the GPU-driven writeback (recordWriteback with boxes null)
     this.G = null;              // its block of the scratch (copy.js wcGpuLayout), once the window is known
@@ -130,6 +140,8 @@ export class WorldCopy {
     this.jobsSince = 0;         // jobs recorded since that read was issued (each may bump a slot)
     this.reading = false;
     this.overflow = 0;          // wcCtrl's OVER as last read (must stay 0)
+    this.lost = 0;              // wcCtrl's LOST as last read (matter off a sparse table's columns)
+    this.buildGen = 0;          // builds started (a newer one supersedes an older one at its next wait)
     this.used = 0;              // mixed bricks, as last read (bump less the free list)
     this.revision = 0;
     this.log = [];              // { rev, lo, hi } world-cell boxes
@@ -138,7 +150,6 @@ export class WorldCopy {
     this.jobFlushes = -1;
     this.kernels = new Map();   // by grid (the prelude's constants) and scene
     this.built = false;
-    this.skipped = false;       // a scene left on its current path (Descent)
     this.allDirty = false;      // a writeback came before its kernels were ready: the next one does the window
     this.last = null;           // what the build cost (tools)
     this.disposed = false;
@@ -157,6 +168,25 @@ export class WorldCopy {
     if (gpu.failure) { b.destroy(); return; }
     gpu.flush('world copy retire');
     gpu.queue.onSubmittedWorkDone().then(() => b.destroy(), () => b.destroy());
+  }
+
+  _buffer(label, size, usage = RW) { return this.gpu.createBuffer({ label, size: Math.max(16, Math.ceil(size / 16) * 16), usage }); }
+
+  // The table and meta for layout L (a scene's sparse columns, or dense), made again only when it differs;
+  // a sparse table's column index and reverse map written.
+  _layout(L) {
+    const same = this.buf.table && L.tableWords === this.L.tableWords && L.metaWords === this.L.metaWords
+      && (!L.sparse || (this.L.sparse && L.colBase.every((v, i) => v === this.L.colBase[i])));
+    if (same) return;
+    this._retire(this.buf.table);
+    this._retire(this.buf.meta);
+    this.L = L;
+    this.buf.table = this._buffer('world copy table', L.tableWords * 4);
+    this.buf.meta = this._buffer('world copy info + occupancy', L.metaWords * 4);
+    if (L.sparse) { this.gpu.write(this.buf.table, L.colAt * 4, L.colBase); this.gpu.write(this.buf.table, L.revAt * 4, L.rev); }
+    this.kernels.clear();   // (the writers are compiled for their layout)
+    this._groups = null;
+    this._writeUniforms();
   }
 
   _limit() {
@@ -212,6 +242,7 @@ export class WorldCopy {
       this.jobsSince -= since;
       this.used = w[WC_CTRL.BUMP] - w[WC_CTRL.FREE];
       this.overflow = w[WC_CTRL.OVER];
+      this.lost = w[WC_CTRL.LOST];
       if (this.overflow) console.error(`world copy: ${this.overflow} bricks found no pool slot (a capacity bug)`);
       // a GPU-driven writeback's misses: the pool grows and the next one compares every window brick
       if (w[WC_CTRL.RETRY] !== this.retrySeen) { this.retrySeen = w[WC_CTRL.RETRY]; this.gpuAll = true; this.retries = (this.retries ?? 0) + 1; }
@@ -260,6 +291,7 @@ export class WorldCopy {
     const L = this.L;
     this.uniforms.write({
       size: L.size, air: this.airWord, bricks: L.bricks, capacity: this.capacity, n1: L.n1, occ1At: L.occ1At, n2: L.n2, occ2At: L.occ2At, revision: this.revision,
+      cols: L.colAt,
     });
   }
 
@@ -276,7 +308,7 @@ export class WorldCopy {
     return this._groups;
   }
   /** Group 1 of render kernels (WORLD_COPY_LAYOUT); null until built. Made again when the pool grows: read it each frame. */
-  get bindGroup() { return this.built && !this.skipped ? this.groups.read : null; }
+  get bindGroup() { return this.built ? this.groups.read : null; }
   /** Group 1's layout entries (the class's: shaders/world/copy.js WORLD_COPY_LAYOUT). */
   static get LAYOUT() { return WORLD_COPY_LAYOUT; }
 
@@ -350,41 +382,47 @@ export class WorldCopy {
    */
   async build(source) {
     if (source?.g && source?.gpu && !source.sim) source = source.worldWindow ?? { sim: source };   // a Simulation
-    const t0 = performance.now(), gpu = this.gpu, sim = source.sim;
+    const t0 = performance.now(), gpu = this.gpu, sim = source.sim, gen = ++this.buildGen;
+    const stale = () => this.disposed || gen !== this.buildGen;
     this._sim = sim;
     const scene = source.scene ?? null;
-    if (scene && OUT_OF_SCOPE.test(scene.key)) { this.skipped = true; return this; }
+    if (scene?.editsPending) { await scene.editsPending.catch(() => {}); if (stale()) return this; }
+    // the table: sparse over the columns the scene says may hold matter (Descent's ring), else dense
+    this._layout(wcLayout(this.size, { columns: sceneColumns(scene) }));
     gpu.frame.clear(this.buf.alloc, 0, WC_CTRL.WORDS * 4);
     gpu.frame.clear(this.buf.meta);
+    // a sparse table's air column (what a column the scene proved empty reads)
+    if (this.L.sparse) gpu.write(this.buf.table, 0, new Uint32Array(this.L.bricks[1]).fill(this.airWord));
     this.bumpRead = 0; this.jobsSince = 0;
     let chunks = 0;
     if (scene) {
       const k = this._kernelsFor(sim, scene);
       await Promise.all([k.ready, source.gen?.ready]);
-      if (this.disposed) return this;
+      if (stale()) return this;
       const est = Math.ceil(this.L.nBricks * POOL_START_SHARE);
       if (this.capacity < est) this._allocPool(est);
-      chunks = await this._buildScene(source, k);
-      if (this.disposed) return this;
+      chunks = await this._buildScene(source, k, stale);
+      if (stale()) return this;
       // the info's dilation and the occupancy, everywhere
       this._dilateAll(k);
       this._occAll(k);
       // the pool at its headroom over what it holds
       const w = await this._readCtrl() ?? await this._waitCtrl();
-      const target = Math.max(64, Math.ceil(this.used * POOL_HEADROOM));
+      if (stale()) return this;
+      const target = this._buildTarget(sim);
       if (target !== this.capacity && target >= w[WC_CTRL.BUMP]) this._allocPool(target);
     } else {
       if (this.capacity < 64) this._allocPool(Math.max(64, Math.ceil(this.L.nBricks * POOL_START_SHARE)));
       const k = this._kernelsFor(sim);
       await k.ready;
-      if (this.disposed) return this;
+      if (stale()) return this;
       gpu.frame.clear(this.buf.table);
     }
-    this.built = true;
     // the window's (or the box's) own cells over it: physics' current state
     const k = this._kernelsFor(sim);
     await k.ready;
-    if (this.disposed) return this;
+    if (stale()) return this;
+    this.built = true;
     const g = sim.g;
     if (sim.compact?.isReady) this.recordWriteback(gpu.frame, sim, [{ lo: [0, 0, 0], hi: [g.nx, g.ny, g.nz] }]);
     if (!scene) {
@@ -392,13 +430,22 @@ export class WorldCopy {
       this._dilateAll(k);
       this._occAll(k);
       await this._readCtrl();
-      const target = Math.max(64, Math.ceil(this.used * POOL_HEADROOM));
+      if (stale()) return this;
+      const target = this._buildTarget(sim);
       if (target > this.capacity) this._allocPool(target);
     }
     this._note([{ lo: [0, 0, 0], hi: [...this.size] }]);
     await gpu.fence();
-    this.last = { buildMs: performance.now() - t0, chunks, capacity: this.capacity, used: this.used, bytes: this.bytes };
+    this.last = { buildMs: performance.now() - t0, chunks, capacity: this.capacity, used: this.used, bytes: this.bytes, sparse: this.L.sparse, columns: this.L.tabledColumns };
     return this;
+  }
+
+  // The pool after the build: what it holds and POOL_HEADROOM's slack, the slack at most every brick of the
+  // window turning mixed (what writebacks can take before the next growth; Descent's band: 0.7-1.5 M mixed
+  // bricks, a window of 82 k, so 1.5 × would hold 90-190 MB more than any writeback needs).
+  _buildTarget(sim) {
+    const g = sim.g, windowBricks = (g.nx * g.ny * g.nz) / WC_BRICK_CELLS;
+    return Math.max(64, this.used + Math.min(Math.ceil(this.used * (POOL_HEADROOM - 1)), Math.max(GPU_HEADROOM_MIN, windowBricks)));
   }
 
   async _waitCtrl() {
@@ -406,19 +453,26 @@ export class WorldCopy {
     return this._readCtrl();
   }
 
-  // The scene's chunks, nearest the window's centre first (the first frame's view has its ground soonest).
-  async _buildScene(win, k) {
+  // The scene's chunks, nearest the window's centre first (the first frame's view has its ground soonest); a
+  // sparse table's chunks with no column of it skipped (the scene proved them air).
+  async _buildScene(win, k, stale) {
     const gpu = this.gpu, sim = win.sim, scene = win.scene, P = win.P, res = win.gen.res, L = this.L, [X, H, Z] = this.size;
     const sceneGroup = gpu.bindGroup(k.sceneLayout, res.entries([{ binding: WC_SCENE_CELLS_BINDING, resource: this._cells }]), 'world copy scene');
     const saved = this._savedByChunk(win);
-    const order = [];
-    for (let z = 0; z < Z; z += WC_CHUNK) for (let x = 0; x < X; x += WC_CHUNK) order.push([x, z]);
+    const order = [], [BX] = L.bricks, CB = WC_CHUNK / WC_BRICK;
+    const anyColumn = (x, z) => {
+      if (!L.sparse) return true;
+      for (let bz = z / WC_BRICK; bz < Math.min(z / WC_BRICK + CB, L.bricks[2]); bz++)
+        for (let bx = x / WC_BRICK; bx < Math.min(x / WC_BRICK + CB, BX); bx++) if (L.colBase[bx + BX * bz]) return true;
+      return false;
+    };
+    for (let z = 0; z < Z; z += WC_CHUNK) for (let x = 0; x < X; x += WC_CHUNK) if (anyColumn(x, z)) order.push([x, z]);
     const o = sim.origin, mid = [o.x + sim.g.nx / 2, o.z + sim.g.nz / 2];
     order.sort((a, b) => Math.hypot(a[0] + WC_CHUNK / 2 - mid[0], a[1] + WC_CHUNK / 2 - mid[1]) - Math.hypot(b[0] + WC_CHUNK / 2 - mid[0], b[1] + WC_CHUNK / 2 - mid[1]));
     const baked = new Map();
     let n = 0;
     for (const [x, z] of order) {
-      if (this.disposed) return n;
+      if (stale()) return n;
       const cw = Math.min(WC_CHUNK, X - x), cd = Math.min(WC_CHUNK, Z - z), chunk = [cw, H, cd];
       const bricks = (cw / WC_BRICK) * (H / WC_BRICK) * (cd / WC_BRICK);
       // the scene's cells (its prepass over the chunk first)
@@ -434,7 +488,7 @@ export class WorldCopy {
       k.commit.dispatch(gpu.frame, brickDispatch(bricks), { bind: [sim.tables, null, this.groups.write], params: this._params({ origin: [x, 0, z], chunk, count: bricks }) });
       n++;
       gpu.flush('world copy chunk');
-      if (n % BUILD_FENCE_CHUNKS === 0) { await gpu.fence(); this._readCtrl(); }
+      if (n % BUILD_FENCE_CHUNKS === 0) { await gpu.fence(); if (stale()) return n; this._readCtrl(); }
     }
     return n;
   }
@@ -540,7 +594,7 @@ export class WorldCopy {
    * @param {{ lo: number[], hi: number[] }[] | null} boxes
    */
   recordWriteback(frame, sim, boxes) {
-    if (!this.built || this.skipped || this.disposed || !sim.compact?.isReady) return false;
+    if (!this.built || this.disposed || !sim.compact?.isReady) return false;
     this._sim = sim;
     this._drain();
     const k = this._kernelsFor(sim), g = sim.g;
@@ -577,7 +631,8 @@ export class WorldCopy {
       for (let dz = -D; dz <= D; dz++) for (let dy = -D; dy <= D; dy++) for (let dx = -D; dx <= D; dx++) {
         const x = b[0] + dx, y = b[1] + dy, z = b[2] + dz;
         if (x < 0 || y < 0 || z < 0 || x >= BX || y >= BY || z >= BZ) continue;
-        dil.add(x + BX * (y + BY * z));
+        const bi = L.bi([x, y, z]);
+        if (L.tabled(bi)) dil.add(bi);   // (a sparse table's air column is never written)
         const a = [Math.floor(x / WC_NODE1), Math.floor(y / WC_NODE1), Math.floor(z / WC_NODE1)];
         n1.add(a[0] + L.n1[0] * (a[1] + L.n1[1] * a[2]));
         n2.add(Math.floor(a[0] / WC_NODE2) + L.n2[0] * (Math.floor(a[1] / WC_NODE2) + L.n2[1] * Math.floor(a[2] / WC_NODE2)));
@@ -728,7 +783,8 @@ export class WorldCopy {
   /** For tools: the allocator's counters now ({ bump, free, over, capacity, used }). */
   async stats() {
     await this._waitCtrl();
-    return { bump: this.bumpRead, used: this.used, over: this.overflow, capacity: this.capacity, bytes: this.bytes, revision: this.revision };
+    return { bump: this.bumpRead, used: this.used, over: this.overflow, lost: this.lost, capacity: this.capacity, bytes: this.bytes, revision: this.revision,
+      sparse: this.L.sparse, columns: this.L.tabledColumns };
   }
 
   dispose() {

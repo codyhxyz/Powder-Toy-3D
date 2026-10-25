@@ -163,7 +163,7 @@ const world = {
   },
 
   // The whole map into the world copy (docs/seamless-world.md, W), then the window's moves fill from it
-  // (P: attachWorldCopy), trees and all. Descent's scenes are skipped by the copy (out of scope: user).
+  // (P: attachWorldCopy), trees and all; Descent's bands too, over its ring's columns (world/worldCopy.js).
   buildWorldCopy(app, w) {
     const view = app.worldView;
     if (!view) return;
