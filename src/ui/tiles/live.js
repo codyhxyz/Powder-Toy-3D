@@ -42,7 +42,7 @@ class LiveTile {
     this.el = el;
     this.item = item;
     this.canvas = canvas;
-    this.scene = makeScene(item, seedOf(item));
+    this.own = null; // this tile's private scene, built on first hover; until then it draws the shared resting one
     this.inside = false;
     this.pointer = { x: TILE / 2, y: TILE / 2, px: TILE / 2, py: TILE / 2, speed: 0 };
     this.activity = 0;
@@ -50,6 +50,10 @@ class LiveTile {
     el.addEventListener('pointermove', (e) => this.track(e));
     el.addEventListener('pointerleave', () => this.reset());
   }
+  // what the tile draws: its own scene once it has run, else the shared resting one (same seed, same pixels)
+  get scene() { return this.own ?? restScene(this.item); }
+  // the scene the tile steps: always its own, so the shared resting scene is never mutated
+  sim() { return (this.own ??= makeScene(this.item, seedOf(this.item))); }
   track(e) {
     const r = this.el.getBoundingClientRect();
     this.pointer.x = ((e.clientX - r.left) / r.width) * TILE;
@@ -60,20 +64,21 @@ class LiveTile {
     const p = this.pointer;
     p.px = p.x; p.py = p.y; p.speed = 0;
     this.inside = true;
+    this.sim();
     wake(this);
   }
   // the cursor left: stop the effect and show the resting frame right away
   reset() {
     this.inside = false;
     running.delete(this);
-    this.scene.world.copyFrom(this.scene.rest);
+    if (this.own) this.own.world.copyFrom(this.own.rest);
     this.activity = 0;
     this.render();
   }
   // the game's frame: apply the tool once, then run `steps` engine steps
   tool() {
-    const w = this.scene.world, p = this.pointer;
-    const cx = p.x / CELL, cy = this.scene.y0 + (TILE - p.y) / CELL;
+    const s = this.sim(), w = s.world, p = this.pointer;
+    const cx = p.x / CELL, cy = s.y0 + (TILE - p.y) / CELL;
     if (this.item.kind === K.SOLID) w.heat(cx, cy, RUN.CURSOR_RADIUS);
     else if (this.item.kind === K.GAS) w.paint(cx, cy, RUN.GAS_BRUSH_RADIUS, this.item.id, settings.rate);
     else w.pressure(cx, cy, RUN.CURSOR_RADIUS, Math.min(1, RUN.PRESS_HOLD + p.speed / RUN.CURSOR_FULL_SPEED));
@@ -86,7 +91,7 @@ class LiveTile {
     p.px = p.x; p.py = p.y;
     this.activity += (1 - this.activity) * (1 - Math.exp(-RUN.WAKE_RATE * FRAME_DT));
     this.tool();
-    const w = this.scene.world;
+    const w = this.sim().world;
     // the game's gravity and its mode (simModes.js; settings carries the world's)
     w.gravityMode = settings.gravityMode ?? GRAV.VERTICAL;
     w.gravity = w.gravityMode === GRAV.OFF ? 0 : settings.gravity;
