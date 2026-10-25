@@ -27,7 +27,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { formatReport, reportHtml, annotate, compareReports } from '../src/gfx/profileReport.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-export const SLOT_MS = 25000;          // the whole headless slot (CLAUDE.md), boot to close
+// the whole headless slot (CLAUDE.md), boot to close; the lead's long slot (tools/gpu-deadline.mjs: TPT_LEAD_LONG_SLOT=1, never in agent briefs) for big maps' full boot
+export const SLOT_MS = process.env.TPT_LEAD_LONG_SLOT === '1' ? 120000 : 25000;
 const BOOT_TIMEOUT_MS = 15000;         // the page's own boot, inside the slot
 const PAGE_MARGIN_MS = 6000;           // the page gives up this long before the slot ends (the launcher's cleanup is 4 s)
 const SHARED_BUSY_PCT = 25;            // GPU busy % right after our browser closed: someone else was using it
@@ -156,7 +157,7 @@ async function main() {
   if (o.selfTest) { await selfTest(); return; }
   if (onBattery() && !o.allowBattery) throw new Error('On battery: no GPU runs (docs/profiler.md). Plug in, or --allow-battery when the user allows it.');
   const { launchBrowser, newTestPage, gpuInfo, gpuBusyPct } = await import('./browser.mjs');
-  let vite = null, browser = null, counters = null, result, info, slot = {};
+  let vite = null, browser = null, counters = null, countersDone = null, result, info, slot = {};
   const url = new URL(o.url ?? 'http://127.0.0.1/');
   try {
     if (!o.url) {
@@ -204,7 +205,9 @@ async function main() {
       throw new Error(`${e.message.split('\n')[0]}\npage errors/warnings: ${errors.slice(0, 8).join('\n  ') || 'none'}`);
     }
     log('captured');
-    if (counters) { try { result.gpuCounters = await counters.stop(); } catch (e) { result.gpuCounters = { text: `gpu-counters failed: ${e?.message ?? e}` }; } counters = null; }
+    // the GPU counters: end the recording now, but parse the trace (10-60 s of CPU) only after the browser
+    // has closed, so the GPU slot isn't held during it (tools/gpu-counters.mjs)
+    if (counters) { countersDone = counters.stop(); countersDone.catch(() => {}); counters = null; }
     result.errors = errors;
     result.console = consoleLines;
     slot.ms = Date.now() - t0;
@@ -215,6 +218,10 @@ async function main() {
   }
   // the GPU right after our browser closed: busy means someone else (the player) was on it
   slot.busyAfter = await gpuBusyPct();
+  if (countersDone) {
+    console.error('[profile] parsing the GPU counter trace (after the browser closed)');
+    try { result.gpuCounters = await countersDone; } catch (e) { result.gpuCounters = { text: `gpu-counters failed: ${e?.message ?? e}` }; }
+  }
   const shared = slot.busyAfter >= SHARED_BUSY_PCT ? `GPU ${slot.busyAfter}% busy right after the capture` : null;
   const report = annotate(result.report, { cost: result.cost, gpuCounters: result.gpuCounters, gpuShared: shared });
   Object.assign(report.setup, { url: url.href.replace(/\?.*/, ''), viewport: o.viewport, dpr: o.dpr, slot,
