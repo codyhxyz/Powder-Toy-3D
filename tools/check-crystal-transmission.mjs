@@ -120,7 +120,7 @@ for (let i = 0; i < 7; i++) for (let c = 0; c < 3; c++) {
 
 for (const curved of [false, true]) {
   const view = volumeFrag({ nx: 64, ny: 64, nz: 64 }, { curved });
-  assert.match(view, /let path = crystalInterface\(gCrys/);
+  assert.match(view, /let path = crystalInterface\(shard/);
   assert.match(view, /ro = path\.p;/);
   assert.match(view, /rd = safeDir\(path\.d\);/);
   assert.match(view, /tCut -= th \+ path\.distance;/);

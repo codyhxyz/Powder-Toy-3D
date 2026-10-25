@@ -1018,11 +1018,17 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
       if (id == E_CRYSTAL) {
         var th = tEnter;
         var nh = nFace;
-        if (crystalHit(cell, ro, rd, tEnter, tExit, &th, &nh)) {
+        // crystalHit (gfx/crystal.js) without its gCrys* record: the piece and
+        // the face it was hit on stay locals handed to crystalInterface (no
+        // shading after the loop reads them, and a private record stays live
+        // around the loop: docs/march-spill.md). A miss leaves th, nh unread.
+        let shard = crysShard(cell);
+        var face: i32;
+        if (shardHit(shard, ro, rd, &th, tExit, &nh, &face)) {
           if (th > tCut) { cut = true; break; }
           let hp = ro + rd * th;
           if (!anyHit) { anyHit = true; hitPos = hp; }
-          let path = crystalInterface(gCrys, hp, nh, rd, gCrysKind == CRYS_CUT, liq, bends < MAX_BENDS && FU.bending != 0u,
+          let path = crystalInterface(shard, hp, nh, rd, face == CRYS_CUT, liq, bends < MAX_BENDS && FU.bending != 0u,
                                       max(tCut - th, 0.0), fetchA(cell).y, &col, &trans);
           if (path.clipped != 0u) { cut = true; break; }
           if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) { break; }
