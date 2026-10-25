@@ -313,7 +313,7 @@ export function formatReport(r) {
     : `pass (ranked by ms/frame)                 phase    ms/frame  median [p10–p90]       ×/frame  share`);
   for (const p of r.passes.slice(0, TEXT_PASSES)) {
     const flags = [p.noisy ? 'noisy' : '', p.failed ? `untimed:${p.error}` : '', p.presence < 1 ? `in ${Math.round(p.presence * PCT)}%` : ''].filter(Boolean).join(' ');
-    if (metal) { out.push(`${pad(p.name.slice(0, 41), 41)} ${pad(p.phase, 8)} ${lpad(f(p.ms, 3), 8)}  ${lpad(f(p.timestampMs, 3), 8) } [${f(p.p10, 3)}–${f(p.p90, 3)}]${' '.repeat(Math.max(1, 16 - `${f(p.p10, 3)}–${f(p.p90, 3)}`.length))}${lpad(f(p.count, 0), 4)}  ${flags}`); continue; }
+    if (metal) { out.push(`${pad(p.name.slice(0, 41), 41)} ${pad(p.phase, 8)} ${lpad(f(p.ms, 3), 8)}  ${lpad(f(p.timestampMs, 3), 8) } [${f(p.p10, 3)}–${f(p.p90, 3)}]${' '.repeat(Math.max(1, 16 - `${f(p.p10, 3)}–${f(p.p90, 3)}`.length))}${lpad(f(p.count, 0), 4)}  ${flags}${p.ms === null && p.msSource ? ` ${p.msSource}` : p.msSource === 'timestamps' ? ' (timestamp)' : ''}`); continue; }
     out.push(`${pad(p.name.slice(0, 41), 41)} ${pad(p.phase, 8)} ${lpad(f(p.perFrame, 3), 8)}  ${lpad(f(p.median, 3), 6)} [${f(p.p10, 3)}–${f(p.p90, 3)}]${' '.repeat(Math.max(1, 14 - `${f(p.p10, 3)}–${f(p.p90, 3)}`.length))}${lpad(f(p.count, 0), 4)}  ${lpad(p.share === null ? '–' : `${Math.round(p.share * PCT)}%`, 4)} ${flags}`);
   }
   if (metal && r.metal) out.push(`Metal: ${f(r.metal.total)} ms/frame of GPU time over ${f(r.metal.frames, 1)} frames in the window${r.metal.unattributed.length ? `; unlabelled: ${r.metal.unattributed.slice(0, 4).map((u) => `${u.label} ${f(u.ms, 2)}`).join(', ')}` : ''}`);

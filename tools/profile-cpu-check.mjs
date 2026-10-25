@@ -209,7 +209,15 @@ const FRAME = [['sim', 'move', 2], ['view', 'scene', 6], ['post', 'taa', 1]];
   assert.match(formatReport(r), /Metal ms/);
   // frame estimates that disagree: not trusted
   const bad = metalTimes(r, [{ label: 'scene@0', count: 40, totalMs: 1 }, { label: 'canvas@0', count: 10, totalMs: 1 }, { label: 'move@0', count: 25, totalMs: 1 }], 0);
-  assert.equal(bad.trusted, false);
+  assert.ok(bad.disagree.length >= 1, 'passes whose encoder counts are off the frames lose their Metal ms');
+  for (const n of bad.disagree) assert.equal(bad.perPass[n], undefined);
+  // a render pass Metal didn't name, with untrusted timestamps: no ms, said why, report untrusted
+  const r2 = buildReport({ frames: Array.from({ length: 12 }, (_, i) => fr(i)), phases: PHASES });
+  applyMetal(r2, metalTimes(r2, rows.filter((x) => !x.label.startsWith('scene')), 0));
+  const sc = r2.passes.find((p) => p.name === 'scene');
+  assert.equal(sc.ms, null);
+  assert.match(sc.msSource, /no labelled Metal encoder \(render pass\)/);
+  assert.ok(!r2.trusted && r2.untrusted.some((u) => /no trusted ms \(scene/.test(u)), r2.untrusted.join('; '));
 }
 {
   // ms per cause: a planted cost per unit is recovered; collinear or too few observations refuse

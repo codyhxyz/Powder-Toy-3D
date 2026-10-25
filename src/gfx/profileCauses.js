@@ -79,15 +79,21 @@ export function metalTimes(report, byEncoder, pose) {
   estimates.sort((a, b) => a - b);
   const frames = estimates.length ? estimates[Math.floor((estimates.length - 1) / 2)] : null;
   const agree = frames ? estimates.filter((x) => Math.abs(x - frames) <= FRAME_AGREE * frames).length / estimates.length : 0;
-  const perPass = {}, unattributed = [];
+  const perPass = {}, unattributed = [], disagree = [];
   for (const e of rows) {
     const ms = frames ? e.totalMs / frames : null;
-    if (ours.has(e.name)) perPass[e.name] = (perPass[e.name] ?? 0) + ms;
-    else if (!/^cost view/.test(e.name)) unattributed.push({ label: e.label, ms, count: e.count });
+    const p = ours.get(e.name);
+    if (p) {
+      // a pass whose encoder count doesn't fit the window's frames (by its own count per frame): its Metal ms is unknown
+      const implied = p.presence === 1 && p.count ? e.count / p.count : null;
+      if (implied !== null && frames && Math.abs(implied - frames) > FRAME_AGREE * frames) { disagree.push(e.name); continue; }
+      perPass[e.name] = (perPass[e.name] ?? 0) + ms;
+    } else if (!/^cost view/.test(e.name)) unattributed.push({ label: e.label, ms, count: e.count });
   }
+  for (const n of disagree) delete perPass[n];
   const total = Object.values(perPass).reduce((a, b) => a + b, 0) + unattributed.reduce((a, b) => a + (b.ms ?? 0), 0);
-  return { frames, agree, perPass, unattributed: unattributed.sort((a, b) => (b.ms ?? 0) - (a.ms ?? 0)), total,
-    trusted: !!frames && agree >= 0.8 && rows.length > 0 };
+  return { frames, agree, perPass, disagree, unattributed: unattributed.sort((a, b) => (b.ms ?? 0) - (a.ms ?? 0)), total,
+    trusted: !!frames && rows.length > 0 };
 }
 
 /**
@@ -95,24 +101,33 @@ export function metalTimes(report, byEncoder, pose) {
  * demotes timestamp-only distrust to a note (the times no longer come from timestamps).
  */
 export function applyMetal(report, metal) {
-  report.metal = { frames: metal.frames, agree: metal.agree, unattributed: metal.unattributed.slice(0, 12), total: metal.total, trusted: metal.trusted };
+  report.metal = { frames: metal.frames, agree: metal.agree, disagree: metal.disagree ?? [], unattributed: metal.unattributed.slice(0, 12), total: metal.total, trusted: metal.trusted };
   if (!metal.trusted) {
-    report.untrusted.push(`Metal encoder times don't line up with the captured frames (frame estimates agree ${Math.round(metal.agree * 100)}%)`);
+    report.untrusted.push(`no Metal encoder carries this pose's tag: per-pass Metal times unavailable`);
     report.trusted = false;
     for (const p of report.passes) p.ms = p.perFrame;
     report.timeSource = 'timestamps';
     return report;
   }
   report.timeSource = 'metal';
-  for (const p of report.passes) {
-    p.timestampMs = p.perFrame;
-    p.ms = metal.perPass[p.name] ?? null;
-  }
   const TS = /timestamps|whole submissions|passes overlap|whole timeline/;
   const ts = report.untrusted.filter((u) => TS.test(u));
+  const stampsOk = ts.length === 0;
+  for (const p of report.passes) {
+    p.timestampMs = p.perFrame;
+    const m = metal.perPass[p.name];
+    // Metal's when it has the pass; else the timestamp only when timestamps are trusted; else unknown, said why
+    if (m !== undefined) { p.ms = m; p.msSource = 'metal'; }
+    else if (stampsOk) { p.ms = p.perFrame; p.msSource = 'timestamps'; }
+    else { p.ms = null; p.msSource = metal.disagree?.includes(p.name) ? 'none: Metal encoder count off the frames' : `none: no labelled Metal encoder${p.kind === 'render' ? ' (render pass)' : ''}`; }
+  }
+  const unknown = report.passes.filter((p) => p.ms === null && (p.timestampMs ?? 0) > 0);
+  const unknownMs = unknown.reduce((s, p) => s + p.timestampMs, 0), stampSum = report.passes.reduce((s, p) => s + (p.timestampMs ?? 0), 0);
   if (ts.length) {
     report.untrusted = report.untrusted.filter((u) => !TS.test(u));
     report.notes.push(`timestamps untrusted (${ts.join('; ')}); per-pass ms come from Metal's encoder times`);
+    // passes Metal didn't name stay unknown: the report is untrusted while they hold real time
+    if (unknown.length && unknownMs > 0.05 * stampSum) report.untrusted.push(`${unknown.length} passes have no trusted ms (${unknown.slice(0, 5).map((p) => p.name).join(', ')}: ${unknown[0].msSource}); their timestamps (${unknownMs.toFixed(1)} ms) are not trusted on this GPU`);
     report.trusted = report.untrusted.length === 0;
   }
   report.passes.sort((a, b) => (b.ms ?? -1) - (a.ms ?? -1));
@@ -185,11 +200,11 @@ export function estimateCauses(observations) {
 
 function fitLevel(observations) {
   const obs = observations.filter((o) => Number.isFinite(o.ms) && o.ms > 0 && o.sums && Object.keys(o.sums).length);
-  const cats = [...new Set(obs.flatMap((o) => Object.keys(o.sums)))].filter((c) => obs.some((o) => (o.sums[c] ?? 0) > 0));
+  const cats = [...new Set(observations.filter((o) => o.sums).flatMap((o) => Object.keys(o.sums)))].filter((c) => observations.some((o) => (o.sums?.[c] ?? 0) > 0));
   const need = cats.length + FIT_MIN_EXTRA;
   const propose = `capture ≥ ${need} (pose, pass) observations whose counter mixes differ: node tools/profile.mjs --poses default,landDown,sky,horizon[,x,y,z,tx,ty,tz…]`
     + ` on the map, or knock a category out (its detail switch off) and compare the two reports`;
-  if (obs.length < need) return { ok: false, categories: cats, n: obs.length, why: `${obs.length} observations for ${cats.length} categories (need ${need})`, propose };
+  if (obs.length < need) return { ok: false, categories: cats, n: obs.length, why: `${obs.length} observations with a trusted ms for ${cats.length} categories (need ${need})`, propose };
   // scale columns (counts are ~1e6–1e9) so the fit is well conditioned
   const scale = cats.map((c) => Math.max(...obs.map((o) => o.sums[c] ?? 0)) || 1);
   const X = obs.map((o) => cats.map((c, j) => (o.sums[c] ?? 0) / scale[j]));

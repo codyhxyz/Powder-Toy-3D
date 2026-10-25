@@ -68,8 +68,8 @@ The user plays on this Mac while agents work. Headless tests can disrupt the gam
 
 For any performance question, run the profiler. Don't write your own timing.
 
-- `node tools/profile.mjs --map <key> [--pose default|landDown|sky|horizon|x,y,z,tx,ty,tz] [--view realistic] [--frames 60] [--counters] [--out dir]`. One 25 s slot prints a ranked waterfall (GPU ms per pass with median and spread, CPU ms per phase, frame interval, compiles in flight, GPU memory, what bounds the frame) and writes JSON and HTML. In the browser, use `?profile=1` or `__app.prof.report()`.
-- Trust only a report that says `PROFILE (trusted)`. An UNTRUSTED report names its reasons (compiles, a shared GPU, missing timestamps, too few frames).
+- `node tools/profile.mjs --map <key> [--poses "default;landDown;sky;horizon"] [--target ms | --compare old/profile.json] [--view realistic] [--frames 30] [--out dir]`. One 25 s slot prints a ranked waterfall (GPU ms per pass with median and spread, CPU ms per phase, frame interval, compiles in flight, GPU memory, what bounds the frame) and writes JSON and HTML. On a Mac it also records Metal's per-encoder times (tools/gpu-counters.mjs), which become the trusted per-pass ms; `--no-counters` skips them. With several poses it fits ms per counter category (an estimate, or the reason it can't). With a target it says what must drop to reach it. In the browser, use `?profile=1` or `__app.prof.report()`.
+- Trust only a report that says `PROFILE (trusted)`. An UNTRUSTED report names its reasons (compiles, a shared GPU, missing timestamps, too few frames, pass times past the frame, passes with no trusted ms). A pass with no trusted ms shows `–` and says why. Never read its timestamp instead.
 - If the report lacks what you need, improve the profiler (a pass label, a counter, a report line) so every later agent gets it. Don't work around it. See `docs/profiler.md`.
 
 ## Same features in every world — all agents
