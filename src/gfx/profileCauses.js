@@ -87,7 +87,7 @@ export function metalTimes(report, byEncoder, pose) {
   const estimates = renderEst.length ? renderEst : estimatesOf(null);
   const frames = estimates.length ? estimates[Math.floor((estimates.length - 1) / 2)] : null;
   const agree = frames ? estimates.filter((x) => Math.abs(x - frames) <= FRAME_AGREE * frames).length / estimates.length : 0;
-  const perPass = {}, unattributed = [], disagree = [];
+  const perPass = {}, spread = {}, unattributed = [], disagree = [];
   for (const e of rows) {
     const p = ours.get(e.name);
     if (p) {
@@ -98,12 +98,14 @@ export function metalTimes(report, byEncoder, pose) {
       const perFrame = (p.count ?? 0) * (p.presence ?? 0);
       if (!(e.count > 0) || !(perFrame > 0)) continue;
       perPass[e.name] = (perPass[e.name] ?? 0) + (e.totalMs / e.count) * perFrame;
+      // the encoders' [p10, p90] (tools/gpu-counters.mjs), per frame the same way: one row a pass, else unknown
+      if (Number.isFinite(e.gpuMsP10) && Number.isFinite(e.gpuMsP90)) spread[e.name] = spread[e.name] === undefined ? [e.gpuMsP10 * perFrame, e.gpuMsP90 * perFrame] : null;
       const implied = p.presence === 1 && p.count ? e.count / p.count : null;
       if (implied !== null && frames && Math.abs(implied - frames) > FRAME_AGREE * frames) disagree.push(e.name);   // (said, not dropped)
     } else if (!/^cost view/.test(e.name)) unattributed.push({ label: e.label, ms: frames ? e.totalMs / frames : null, count: e.count });
   }
   const total = Object.values(perPass).reduce((a, b) => a + b, 0) + unattributed.reduce((a, b) => a + (b.ms ?? 0), 0);
-  return { frames, agree, perPass, disagree, unattributed: unattributed.sort((a, b) => (b.ms ?? 0) - (a.ms ?? 0)), total,
+  return { frames, agree, perPass, spread, disagree, unattributed: unattributed.sort((a, b) => (b.ms ?? 0) - (a.ms ?? 0)), total,
     trusted: !!frames && rows.length > 0 };
 }
 
@@ -128,7 +130,7 @@ export function applyMetal(report, metal) {
     p.timestampMs = p.perFrame;
     const m = metal.perPass[p.name];
     // Metal's when it has the pass; else the timestamp only when timestamps are trusted; else unknown, said why
-    if (m !== undefined) { p.ms = m; p.msSource = 'metal'; }
+    if (m !== undefined) { p.ms = m; p.msSource = 'metal'; const sp = metal.spread?.[p.name]; if (sp) [p.msP10, p.msP90] = sp; }
     else if (stampsOk) { p.ms = p.perFrame; p.msSource = 'timestamps'; }
     else { p.ms = null; p.msSource = metal.disagree?.includes(p.name) ? 'none: Metal encoder count off the frames' : `none: no labelled Metal encoder${p.kind === 'render' ? ' (render pass)' : ''}`; }
   }

@@ -80,6 +80,8 @@ The header says `PROFILE (trusted)`, or `UNTRUSTED:` followed by every reason. B
 
 Render passes (Lab, M5, 2026-10-25): under load the trace's app-side encoder list misses about half the encoders, most render work among them. Those intervals showed as "GPU Execution" or "Render Command N". `tools/gpu-counters.mjs` now labels them from Metal's object-label table, which uses the same encoder id. A pass's Metal ms is its mean GPU ms per run times the runs per timed frame the report counted. The trace drops whole intervals but not parts of them, so its run counts are low (GI and shadow at half) while its durations hold. Encoder ms are shares of the GPU's busy time: overlapping work is split evenly, so the passes sum to the busy time. A report whose Metal ms sum past the frame's GPU span is untrusted. On one Lab pose: scene 44.8 ms Metal against 45.6 ms timestamp, 91 of 110 passes with Metal ms, summing to 53.6 ms against a 59.3 ms span.
 
+The Metal column also shows `[p10–p90]` over the pass's encoders in the timed frames (`gpuMsP10`/`gpuMsP90` in `tools/gpu-counters.mjs`, `msP10`/`msP90` on the pass). That is one run's spread. Runs differ by more: two plain Lab runs 25 minutes apart put the world march at 10.5 and 6.7 ms (docs/march-spill.md). For an A/B, profile both sides back to back and treat a delta inside either side's spread as no change.
+
 **ms per cause (an estimate).** With `--poses`, each pose gives one observation per counted pass: its trusted ms, plus agent C's counter totals by category (`CATEGORIES`, e.g. `march`, `cellStepsOwn`, `skips`, `fieldReads`). `estimateCauses` fits ms ≈ Σ cost per unit × count by non-negative least squares. It prints the fit only when it is honest:
 
 - at least categories + 2 observations;

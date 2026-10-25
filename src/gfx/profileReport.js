@@ -316,11 +316,11 @@ export function formatReport(r) {
   // the authoritative ms: Metal's encoder times when the run has them (gfx/profileCauses.js applyMetal)
   const metal = r.timeSource === 'metal';
   out.push(metal
-    ? `pass (ranked by Metal ms/frame)            phase    Metal ms  timestamp ms/frame [p10–p90]   ×/frame`
+    ? `pass (ranked by Metal ms/frame)            phase    Metal ms [p10–p90]       timestamp ms/frame [p10–p90]   ×/frame`
     : `pass (ranked by ms/frame)                 phase    ms/frame  median [p10–p90]       ×/frame  share`);
   for (const p of r.passes.slice(0, TEXT_PASSES)) {
     const flags = [p.noisy ? 'noisy' : '', p.failed ? `untimed:${p.error}` : '', p.presence < 1 ? `in ${Math.round(p.presence * PCT)}%` : ''].filter(Boolean).join(' ');
-    if (metal) { out.push(`${pad(p.name.slice(0, 41), 41)} ${pad(p.phase, 8)} ${lpad(f(p.ms, 3), 8)}  ${lpad(f(p.timestampMs, 3), 8) } [${f(p.p10, 3)}–${f(p.p90, 3)}]${' '.repeat(Math.max(1, 16 - `${f(p.p10, 3)}–${f(p.p90, 3)}`.length))}${lpad(f(p.count, 0), 4)}  ${flags}${p.ms === null && p.msSource ? ` ${p.msSource}` : p.msSource === 'timestamps' ? ' (timestamp)' : ''}`); continue; }
+    if (metal) { const ms = p.msP10 != null ? `[${f(p.msP10, 3)}–${f(p.msP90, 3)}]` : ''; out.push(`${pad(p.name.slice(0, 41), 41)} ${pad(p.phase, 8)} ${lpad(f(p.ms, 3), 8)} ${pad(ms, 15)}  ${lpad(f(p.timestampMs, 3), 8) } [${f(p.p10, 3)}–${f(p.p90, 3)}]${' '.repeat(Math.max(1, 16 - `${f(p.p10, 3)}–${f(p.p90, 3)}`.length))}${lpad(f(p.count, 0), 4)}  ${flags}${p.ms === null && p.msSource ? ` ${p.msSource}` : p.msSource === 'timestamps' ? ' (timestamp)' : ''}`); continue; }
     out.push(`${pad(p.name.slice(0, 41), 41)} ${pad(p.phase, 8)} ${lpad(f(p.perFrame, 3), 8)}  ${lpad(f(p.median, 3), 6)} [${f(p.p10, 3)}–${f(p.p90, 3)}]${' '.repeat(Math.max(1, 14 - `${f(p.p10, 3)}–${f(p.p90, 3)}`.length))}${lpad(f(p.count, 0), 4)}  ${lpad(p.share === null ? '–' : `${Math.round(p.share * PCT)}%`, 4)} ${flags}`);
   }
   if (metal && r.metal) out.push(`Metal: ${f(r.metal.total)} ms/frame of GPU time over ${f(r.metal.frames, 1)} frames in the window${r.metal.unattributed.length ? `; unlabelled: ${r.metal.unattributed.slice(0, 4).map((u) => `${u.label} ${f(u.ms, 2)}`).join(', ')}` : ''}`);

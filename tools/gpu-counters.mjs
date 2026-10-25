@@ -351,6 +351,13 @@ export function exclusiveShares(work) {
   return { share, unionNs };
 }
 
+const SPREAD_LO = 0.1, SPREAD_HI = 0.9;   // the per-encoder spread's quantiles (as the timestamps' [p10–p90])
+function quantile(xs, q) {
+  if (!xs.length) return null;
+  const v = [...xs].sort((x, y) => x - y);
+  return v[Math.min(v.length - 1, Math.floor(q * (v.length - 1) + 0.5))];
+}
+
 function summarize({ encoders, work, spills, counterNames, counterTotals, samples, windowNs }, meta) {
   const { share, unionNs } = exclusiveShares(work);
   const groups = new Map();
@@ -360,12 +367,13 @@ function summarize({ encoders, work, spills, counterNames, counterTotals, sample
     // a Dawn-given label from either table first, then Metal's default names
     const named = [e?.label, w.objectLabel, w.fallback].filter(Boolean);
     const label = (named.find(l => DAWN_PREFIX.test(l)) ?? named[0] ?? `encoder ${id}`).replace(DAWN_PREFIX, '') || '(unlabelled)';
-    const g = groups.get(label) ?? { label, count: 0, totalNs: 0, ownNs: 0, channels: {}, spillEvents: 0, spilledBytesMax: 0, spilledBytesPerEncoder: 0, ids: [] };
+    const g = groups.get(label) ?? { label, count: 0, totalNs: 0, ownNs: 0, channels: {}, spillEvents: 0, spilledBytesMax: 0, spilledBytesPerEncoder: 0, ids: [], shares: [] };
     g.count++; g.ids.push(id);
     let busy = 0;
     for (const [ch, ns] of Object.entries(w.channels)) { g.channels[ch] = (g.channels[ch] ?? 0) + ns; busy = Math.max(busy, ns); }
     // its share of the GPU's busy time (exclusiveShares); its own span, overlaps and all, beside it
     g.totalNs += share.get(id) ?? 0;
+    g.shares.push(share.get(id) ?? 0);   // (each encoder's: the spread of a pass's Metal ms, quantile below)
     g.ownNs += busy;
     const s = spills.get(id);
     if (s) { g.spillEvents += s.events; g.spilledBytesMax = Math.max(g.spilledBytesMax, s.max); g.spilledBytesPerEncoder = Math.max(g.spilledBytesPerEncoder, s.total); }
@@ -391,6 +399,8 @@ function summarize({ encoders, work, spills, counterNames, counterTotals, sample
       // share of the GPU's busy time (exclusiveShares): these sum to the busy time, so per-pass ms add up
       gpuMs: g.totalNs / g.count / NS_PER_MS,      // mean per encoder (≈ per frame for once-a-frame passes)
       totalMs: g.totalNs / NS_PER_MS,
+      // the spread of that over the encoders (p10, p90): how steady the pass's Metal ms is, for an A/B's noise
+      gpuMsP10: quantile(g.shares, SPREAD_LO) / NS_PER_MS, gpuMsP90: quantile(g.shares, SPREAD_HI) / NS_PER_MS,
       // its own duration (longest channel), counting time it shared with concurrent encoders
       ownMs: g.ownNs / g.count / NS_PER_MS,
       channels: Object.fromEntries(Object.entries(g.channels).map(([k, ns]) => [k, ns / g.count / NS_PER_MS])),
