@@ -10,8 +10,6 @@
 //                                          register GPU use the launcher can't
 //                                          see: windowed Chrome, Claude in
 //                                          Chrome, a dev page left open
-//   node tools/gpu-log.mjs note "why" [--secs 60]   after the fact, no claim
-//   node tools/gpu-log.mjs --json          the raw entries
 //
 // Timing-critical work gets the GPU to itself. An exclusive run (a profiler
 // or bench script, launchBrowser({ exclusive: true }), TPT_GPU_EXCLUSIVE=1,
@@ -23,7 +21,8 @@
 //
 // launchBrowser() writes a `start` line for every run and a `refused` line
 // when it can't get the slot; the deadline guard's runs/<pid>-<guard>.json
-// report supplies the end time, so a killed test still gets its occupancy.
+// report supplies the end time, so a killed test still gets its occupancy
+// (runs from launchers older than this log don't appear).
 // Say why with launchBrowser({ why }) or TPT_GPU_WHY="..."; without one the
 // log shows the script and its arguments.
 import { execFileSync } from 'node:child_process';
@@ -46,7 +45,6 @@ const FOREVER_MS = 864e5;           // a command claim ends with its command; th
 /** Scripts whose numbers are timings: they run exclusive without being told. */
 export const TIMING_TOOLS = /^(profile|frame-profile|app-compile-probe|[\w-]*bench)\.mjs$/;
 const RUN_TIMEOUT_MS = 500;
-const LSOF_TIMEOUT_MS = 2000;     // lsof walks every open file first
 // Process names that start an agent session, nearest ancestor wins.
 const AGENT_RE = /(^|\/)(claude|pi|codex|cursor-agent|aider|gemini)( |$)/;
 
@@ -73,7 +71,6 @@ export function whoAmI(table = []) {
   return {
     worktree: path.basename(top),
     branch: run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], top),
-    commit: run('git', ['rev-parse', '--short', 'HEAD'], top),
     command: [script, ...process.argv.slice(2)].join(' ').slice(0, 300),
     session: process.env.CLAUDE_CODE_SESSION_ID?.slice(0, 8) ?? '',
     ...agentOf(table),
@@ -101,32 +98,6 @@ function withReport(e) {
   const running = report ? report.status === 'running' && alive(e.guardPid) : alive(e.pid);
   return { ...e, ms: report?.occupancyMs ?? (running ? Date.now() - Date.parse(e.at) : null),
     status: running ? 'running' : report?.status === 'running' ? 'stale' : report?.forced ? 'forced' : report?.status ?? 'ended', forced: report?.forced };
-}
-
-// Guard reports with no start line: runs from worktrees whose launcher predates
-// this log. Listed so the log still counts every headless run on the machine.
-function unlogged(log) {
-  const seen = new Set(log.filter(e => e.event === 'start').map(e => `${e.pid}-${e.guardPid}.json`));
-  let files = [];
-  try { files = fs.readdirSync(RUNS_DIR).filter(f => f.endsWith('.json') && !seen.has(f)); } catch {}
-  return files.map(f => { try { return JSON.parse(fs.readFileSync(path.join(RUNS_DIR, f), 'utf8')); } catch { return null; } })
-    .filter(r => r?.startedAt).map(r => {
-      const running = r.status === 'running' && alive(r.guardPid);
-      return {
-        event: 'start', at: r.startedAt, pid: r.ownerPid, guardPid: r.guardPid, branch: '?',
-        worktree: running ? worktreeOf(r.ownerPid) : '',
-        command: !running ? '(older launcher: no who/why)'
-          : alive(r.ownerPid) ? `(older launcher) ${run('ps', ['-o', 'args=', '-p', String(r.ownerPid)]).slice(0, 160)}`
-          : '(older launcher: test exited, guard cleaning up)',
-        ms: r.occupancyMs ?? (running ? Date.now() - Date.parse(r.startedAt) : null),
-        status: running ? 'running' : r.status === 'running' ? 'stale' : r.forced ? 'forced' : r.status,
-      };
-    });
-}
-// A live process's worktree, from its working directory.
-function worktreeOf(pid) {
-  const cwd = run('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], undefined, LSOF_TIMEOUT_MS).split('\n').find(l => l.startsWith('n'))?.slice(1);
-  return cwd ? path.basename(run('git', ['rev-parse', '--show-toplevel'], cwd) || cwd) : '';
 }
 
 /** Live claims (claims/<id>.json): the claimant's process is alive and its time hasn't run out. Stale ones are removed. */
@@ -193,14 +164,12 @@ function row(e) {
   if (e.event === 'claim') return `${when(e.at)}  ${(e.ms == null ? 'now' : 'claim').padEnd(6)}${secs(e.ms).padStart(6)}  ${label(e)}  ${what}${e.exclusive ? ' (exclusive)' : ''}`;
   if (e.event === 'recovered') return `${when(e.at)}  recovered dead lease of pid ${e.holder}`;
   if (e.event === 'release') return null;
-  if (e.event === 'note') return `${when(e.at)}  note ${secs(e.ms).padStart(7)}  ${label(e)}  ${what}`;
-  const branch = e.branch && e.branch !== '?' ? ` (${e.branch})` : '';
-  return `${when(e.at)}  ${(e.status === 'running' ? 'now' : ['forced', 'stale'].includes(e.status) ? e.status : '').padEnd(6)}${secs(e.ms).padStart(6)}  ${label(e)}${branch}  ${what}`;
+  return `${when(e.at)}  ${(e.status === 'running' ? 'now' : ['forced', 'stale'].includes(e.status) ? e.status : '').padEnd(6)}${secs(e.ms).padStart(6)}  ${label(e)} (${e.branch})  ${what}`;
 }
 
 function totals(log, sinceMs) {
   const from = Date.now() - sinceMs, by = new Map();
-  for (const e of log.filter(x => Date.parse(x.at) >= from && ['start', 'claim', 'note'].includes(x.event))) {
+  for (const e of log.filter(x => Date.parse(x.at) >= from && ['start', 'claim'].includes(x.event))) {
     const k = label(e), t = by.get(k) ?? { runs: 0, ms: 0, refused: 0 };
     t.runs++; t.ms += e.ms ?? 0; by.set(k, t);
   }
@@ -222,31 +191,18 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
     const mine = liveClaims().filter(c => c.pid === owner);
     for (const c of mine) { fs.rmSync(c.file, { force: true }); logGpu({ event: 'release', id: c.id, ms: Date.now() - Date.parse(c.at) }); }
     console.log(mine.length ? `released: ${mine.map(c => c.why).join('; ')}` : 'no claim of this session to release');
-  } else if (args[0] === 'note') {
-    const why = args[1];
-    if (!why) { console.error('usage: gpu-log.mjs note "why" [--secs N]'); process.exit(2); }
-    const s = Number(opt('--secs'));
-    // The note's own process is this CLI; the agent and worktree are what matter.
-    let table = [];
-    try { table = processTable(); } catch {}
-    const who = whoAmI(table);
-    logGpu({ event: 'note', why, ...who, command: '', ms: Number.isFinite(s) ? s * 1000 : null });
-    console.log(`logged: ${label(who)}: ${why}`);
   } else {
     const logged = readLog();
     const released = new Map(logged.filter(e => e.event === 'release').map(e => [e.id, e.ms]));
-    const log = [...logged.map(withReport).map(e => e.event === 'claim' ? { ...e, ms: released.get(e.id) ?? e.ms } : e), ...unlogged(logged)].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-    if (args.includes('--json')) console.log(JSON.stringify(log, null, 2));
-    else {
-      console.log(now(log));
-      const since = parseSince(opt('--since'));
-      if (since) {
-        console.log(`\nGPU time per session, last ${opt('--since')}:`);
-        console.log(totals(log, since).join('\n') || '  (none)');
-      } else {
-        console.log(`\nRecent (${LOG_FILE}):`);
-        console.log(log.slice(-RECENT).map(row).filter(Boolean).join('\n') || '  (no runs logged yet)');
-      }
+    const log = logged.map(withReport).map(e => e.event === 'claim' ? { ...e, ms: released.get(e.id) ?? e.ms } : e);
+    console.log(now(log));
+    const since = parseSince(opt('--since'));
+    if (since) {
+      console.log(`\nGPU time per session, last ${opt('--since')}:`);
+      console.log(totals(log, since).join('\n') || '  (none)');
+    } else {
+      console.log(`\nRecent (${LOG_FILE}):`);
+      console.log(log.slice(-RECENT).map(row).filter(Boolean).join('\n') || '  (no runs logged yet)');
     }
   }
 }
