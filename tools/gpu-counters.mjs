@@ -443,6 +443,11 @@ export async function startCounters({ pid, seconds = DEFAULT_SECONDS, dir = proc
   const busy = otherRecording();
   if (busy) fail(`another xctrace recording is running (pid ${busy.pid}); only one GPU trace at a time. Wait for it or stop it.`);
   fs.mkdirSync(dir, { recursive: true });
+  // Instruments' own scratch (instruments*.ktrace in the temp dir, up to GBs a recording) outlives the saved
+  // trace: 63 left behind came to 82 GB and filled the disk (2026-10-25). Only one recording runs at a time
+  // (otherRecording above), so the ones that appear while this one runs are its own, removed with its trace.
+  const scratchBefore = new Set(instrumentsScratch());
+  const removeScratch = () => { for (const f of instrumentsScratch()) if (!scratchBefore.has(f)) fs.rmSync(f, { force: true }); };
   const template = makeTemplate(dir, COUNTER_PROFILE_LIMITERS);
   const trace = path.join(dir, `gpu-${pid}-${Date.now()}.trace`);
   // the hard limit is a backstop: stop() normally ends the recording first
@@ -467,7 +472,7 @@ export async function startCounters({ pid, seconds = DEFAULT_SECONDS, dir = proc
   // itself, --time-limit as the backstop), else xctrace is killed and its partial trace removed
   const onExit = () => {
     if (keep) { try { rec.child.kill('SIGINT'); } catch {} return; }
-    kill(); fs.rmSync(trace, { recursive: true, force: true }); fs.rmSync(template, { force: true });
+    kill(); fs.rmSync(trace, { recursive: true, force: true }); fs.rmSync(template, { force: true }); removeScratch();
   };
   process.once('exit', onExit);
   const startedAt = Date.now();
@@ -485,10 +490,16 @@ export async function startCounters({ pid, seconds = DEFAULT_SECONDS, dir = proc
       return summarize(parsed, { pid, mode, recordedMs, trace: keep ? trace : null, device: os.cpus()[0]?.model });
     } finally {
       if (!keep) fs.rmSync(trace, { recursive: true, force: true });
-      fs.rmSync(template, { force: true });
+      fs.rmSync(template, { force: true }); removeScratch();
     }
   })();
   return { pid, mode, trace, stop };
+}
+
+// Instruments' scratch files in the temp dir (where xctrace records before it saves the .trace)
+function instrumentsScratch() {
+  const tmp = os.tmpdir();
+  try { return fs.readdirSync(tmp).filter((f) => /^instruments\w*\.ktrace$/.test(f)).map((f) => path.join(tmp, f)); } catch { return []; }
 }
 
 /** Parses a kept trace (TPT_XCTRACE_KEEP, --keep) for `pid` without recording. */
