@@ -259,7 +259,7 @@ function costFindings(c, passes, context) {
 }
 
 const setupKeys = ['map', 'mode', 'view', 'detail', 'canvas', 'renderScale', 'pixelRatio', 'taa', 'upscale', 'adaptive', 'autoRes',
-  'pose', 'grid', 'world', 'gpuName', 'shaderFeatures', 'split', 'testMode', 'paused', 'pov'];
+  'pose', 'grid', 'world', 'gpuName', 'shaderFeatures', 'chromeArgs', 'split', 'testMode', 'paused', 'pov'];
 // setup keys added after reports were already kept: compared only when both reports have them
 const LATER_KEYS = ['shaderFeatures'];
 
@@ -268,7 +268,8 @@ export function compareReports(a, b) {
   const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
   // (a key a report predates, such as shaderFeatures before 2026-10-25, is unknown there, not a difference)
   const known = (k) => !LATER_KEYS.includes(k) || (a.setup?.[k] != null && b.setup?.[k] != null);
-  const differences = setupKeys.filter((k) => known(k) && !same(a.setup?.[k], b.setup?.[k])).map((k) => ({ key: k, a: a.setup?.[k] ?? null, b: b.setup?.[k] ?? null }));
+  // (missing and null are the same setup: chromeArgs is null without --chrome-arg, and absent in older reports)
+  const differences = setupKeys.filter((k) => known(k) && !same(a.setup?.[k] ?? null, b.setup?.[k] ?? null)).map((k) => ({ key: k, a: a.setup?.[k] ?? null, b: b.setup?.[k] ?? null }));
   const names = new Set([...a.passes.map((p) => p.name), ...b.passes.map((p) => p.name)]);
   const get = (r, n) => { const p = r.passes.find((x) => x.name === n); return p ? (p.ms ?? p.perFrame ?? null) : null; };
   const passes = [...names].map((name) => {
@@ -289,6 +290,7 @@ const setupLine = (s) => [
   `map ${s.map ?? '?'}${s.mode ? `/${s.mode}` : ''}`, `view ${s.view ?? '?'}`, `detail ${s.detail ?? '?'}`,
   `canvas ${(s.canvas ?? []).join('×')} @${f(s.pixelRatio, 2)}x`, `scene ×${f(s.renderScale, 3)}`,
   `TAA ${s.taa ? 'on' : 'off'}`, `upscale ${f(s.upscale, 3)}${s.adaptive ? ' adaptive' : ''}`, `autoRes ${s.autoRes ? 'on' : 'off'}`,
+  ...(s.chromeArgs?.length ? [`chrome ${s.chromeArgs.join(' ')}`] : []),
   ...(s.shaderFeatures ? [`shaders ${Object.entries(s.shaderFeatures).filter(([, on]) => on).map(([k]) => k).join('+') || 'core'}`] : []),
 ].join(' · ');
 
