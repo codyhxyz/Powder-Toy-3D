@@ -752,6 +752,15 @@ const realistic = (detail, curved = false, fixedReadFormat, richOptics = true) =
   // Certified liquid interiors (passes.js brickFrag: the brick and its 26 neighbours are inside
   // liquid, docs/v2/liquid-interior-optimization.md): skips surface tests that cannot find a crossing.
   const interior = !curved;
+  // A step's end: on to the next cell (the loop's end; and the head's bend-less liquid surface, for
+  // the cell it was met in)
+  const stepOn = (pad) => (curved ? `
+mNext -= tExit;
+warpAdvance(&walk);
+if (walk.boundary) { cell = warpCellAfter(walk.ray, walk.t, walk.axis); } else { cell = warpCell(walk.ray, walk.t); }
+if (cell.y < 0) { break; }   // opaque physical floor; do not draw the second span through it` : `
+tEnter = tExit;
+ax = ddaStep(istp, tDelta, &cell, &tMax);`).replaceAll('\n', `\n${pad}`);
   // Intentional (V2 design, docs/v2.md §4.3): under V2 molten liquids (lava) carry foam as
   // every liquid row does, so the format-2/3 branch below layers it; V1 has no foam on them.
   return /* wgsl */ `
@@ -858,10 +867,16 @@ fn traceView(ro0: vec3f, rd0: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
   // A liquid surface the ray refracts at (liquidInterface), handled at the top
   // of the march's next step: the box wall the ray enters liquid through and
   // every bend share its one call site (a GPU compiler inlines each call).
+  // A surface the march met takes its normal, ripple and close-up detail
+  // there too, where the loop body's values are dead (docs/march-spill.md),
+  // and so does one met with the bends spent (ifStraight: it only switches
+  // medium, and the march goes on in the cell it was met in).
   var ifPend = false;
-  var ifEntry = false;   // (the box wall: its restart keeps the march's brick and axis)
+  var ifEntry = false;   // (the box wall: its restart keeps the march's brick and axis; ifG is its face)
+  var ifStraight = false;
+  var ifStepOn = false;  // (ifStraight: the event's cell is done, the march steps on from it)
+  var ifFilm = false;    // (a film's top: ifG is its normal, ifLid its liquid)
   var ifP = vec3f(0.0);
-  var ifN = vec3f(0.0);
   var ifG = vec3f(0.0);
   var ifEnter = false;
   var ifLid = E_EMPTY;
@@ -914,7 +929,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
           gSkyIn = skyInAt(probeAt(hp));
         } else {
           // refracted in at the march's first step (liquidInterface(hp, n0, n0, true, lid, false, ...))
-          ifPend = true; ifEntry = true; ifP = hp; ifN = n0; ifG = n0; ifEnter = true; ifLid = lid; ifMirror = false; ifT = tEnter;
+          ifPend = true; ifEntry = true; ifStraight = false; ifFilm = false; ifP = hp; ifG = n0; ifEnter = true; ifLid = lid; ifMirror = false; ifT = tEnter;
         }
         lightRef = select(hp - n0 * IFACE_PROBE, hp, t0 > bh.x); lightRefAt = true;   // inside: the map carries the liquid above
         lightY = hp.y;
@@ -926,32 +941,56 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
   for (var i = 0; i <= ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'} + BEND_EXTRA_STEPS; i++) {
     if (ifPend) {
       ifPend = false;
-      // the scene shows in the reflection only off the first surface the eye ray meets (ifMirror)
-      var tint = vec3f(1.0);
-      if (ifFilmH > 0.0) { tint = filmTint(ifLid, ifFilmH, rd); ifFilmH = 0.0; }   // (rd: still the way the ray met the film)
-      let inside = liquidInterface(ifP, ifN, ifG, ifEnter, ifLid, ifMirror, &ro, &rd, &col, &trans, &mediumLight);
-      trans *= tint;
-      tCut -= ifT;
-      rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
-      tEnter = 0.0;
-      phiA = surfSample(ro);${curved ? '' : `
-      if (ifEntry) {
-        if (inside) { liq = ifLid; }
-      } else {`}
-        liq = select(E_EMPTY, ifLid, inside);
-        if (ifEnter) { lightRef = mediumLight; lightRefAt = false; lightY = ifP.y; }
-        lastB = vec3i(-1); ax = 1;
-        gThin = brickThin(brickInfo(clamp(cell, vec3i(0), GRID - 1) / BS));
-        phiStale = false;${curved ? `
-        meshBudget = tCut;
-        warpRestart(&walk, ro, rd);` : ''}
-        // restarted inside something opaque (sand under the water line)
-        let oc = surfInsideOpaque(phiA);
-        if (oc > 0) {
-          hitK = HIT_SMOOTH; stop = true; hitP = ro; hitN = vec3f(0.0); hitCh = oc;
-          break;
-        }${curved ? '' : `
-      }`}
+      var ifN = ifG;
+      if (!ifEntry) {
+        // the surface's normal (a film's is its own), ripple, liquid and close-up detail (gfx/liquidDetail.js)
+        if (!ifFilm) { ifG = surfNormal(ifP, CH_LIQUID, select(rd, -rd, ifEnter)); }
+        ifN = liquidRipple(ifP, ifG);
+        if (ifEnter && !ifFilm) { ifLid = liquidIdAt(ifP - ifG * IFACE_PROBE, E_WATER); }
+        ifN = liquidDetail(ifP, ifN, ifLid, &col, &trans);
+      }
+      if (ifStraight) {
+        // out of bends: switch medium, keep straight
+        if (ifFilm) { trans *= filmTint(ifLid, ifFilmH, rd); ifFilmH = 0.0; }
+        liq = select(E_EMPTY, ifLid, ifEnter);
+        if (ifEnter) {
+          lightRef = ifP + ifN * IFACE_PROBE; lightRefAt = true;
+          lightY = ifP.y;
+          gSkyIn = skyInAt(surfProbe(ifP, ifN));
+        }
+        // (the event set the march to resume in its cell, else its cell is done)
+        if (ifStepOn) {
+          let tExit = min(tMax.x, min(tMax.y, tMax.z));   // (the event's: the DDA is as it left it)
+          if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) { break; }${stepOn('          ')}
+        }
+      } else {
+        // the scene shows in the reflection only off the first surface the eye ray meets (ifMirror)
+        var tint = vec3f(1.0);
+        if (ifFilmH > 0.0) { tint = filmTint(ifLid, ifFilmH, rd); ifFilmH = 0.0; }   // (rd: still the way the ray met the film)
+        let inside = liquidInterface(ifP, ifN, ifG, ifEnter, ifLid, ifMirror, &ro, &rd, &col, &trans, &mediumLight);
+        trans *= tint;
+        tCut -= ifT;
+        rd = safeDir(rd); cell = vec3i(floor(ro)); ddaInit(ro, rd, cell, &istp, &tDelta, &tMax);
+        tEnter = 0.0;
+        phiA = surfSample(ro);${curved ? '' : `
+        if (ifEntry) {
+          if (inside) { liq = ifLid; }
+        } else {`}
+          liq = select(E_EMPTY, ifLid, inside);
+          if (ifEnter) { lightRef = mediumLight; lightRefAt = false; lightY = ifP.y; }
+          lastB = vec3i(-1); ax = 1;
+          gThin = brickThin(brickInfo(clamp(cell, vec3i(0), GRID - 1) / BS));
+          phiStale = false;${curved ? `
+          meshBudget = tCut;
+          warpRestart(&walk, ro, rd);` : ''}
+          // restarted inside something opaque (sand under the water line)
+          let oc = surfInsideOpaque(phiA);
+          if (oc > 0) {
+            hitK = HIT_SMOOTH; stop = true; hitP = ro; hitN = vec3f(0.0); hitCh = oc;
+            break;
+          }${curved ? '' : `
+        }`}
+      }
     }
     if (i == ${curved ? '2 * MAX_STEPS' : 'MAX_STEPS'} + BEND_EXTRA_STEPS) { break; }${curved ? `
     // the next chord, as a ray of its own from its start (t restarts there, as at a bend)
@@ -1380,53 +1419,40 @@ ${richOptics ? `
           hitK = HIT_SMOOTH; stop = true; hitP = hp; hitN = evN; hitCh = evCh;
           break;
         } else {
-          // liquid surface: refract in or out
-          var geometric = evN;
-          if (!film) { geometric = surfNormal(hp, CH_LIQUID, select(rd, -rd, ev == EV_ENTER)); }
-          var n = liquidRipple(hp, geometric);
-          var lid = liq;
-          if (ev == EV_ENTER) { lid = select(liquidIdAt(hp - geometric * IFACE_PROBE, E_WATER), filmLid, film); }
+          // liquid surface: at the top of the next step (the loop's head:
+          // ifPend), its normal and detail, then refract in or out and
+          // restart there, or with the bends spent go on straight
           if (film) { ifFilmH = filmH; filmKey = filmCellKey(cell); }
-          n = liquidDetail(hp, n, lid, &col, &trans);   // close-up detail (gfx/liquidDetail.js)
-          if (bends < MAX_BENDS) {
-            bends++;
-            // refract here, at the top of the next step (the loop's head: ifPend), and restart there
-            ifPend = true; ifEntry = false; ifP = hp; ifN = n; ifG = geometric; ifEnter = ev == EV_ENTER; ifLid = lid; ifMirror = bends == 1; ifT = tEv;
-            continue;
+          ifStraight = bends >= MAX_BENDS;
+          if (!ifStraight) { bends++; }
+          ifPend = true; ifEntry = false; ifFilm = film; ifP = hp; ifG = evN; ifEnter = ev == EV_ENTER;
+          ifLid = select(liq, filmLid, film && ifEnter); ifMirror = bends == 1; ifT = tEv;
+          if (ifStraight) {
+            // Out of bends it only switches medium (at the head), and the
+            // march keeps the remainder of this cell: an opaque crossing may
+            // follow the liquid interface even when the optical bend budget
+            // is spent. Else the head steps on from it.
+            let resume = min(tEv + IFACE_NUDGE, min(tExit, tCut));
+            ifStepOn = resume >= tExit;
+            if (!ifStepOn) {${curved ? `
+              mNext -= resume;
+              walk.t = mix(walk.t, walk.end, resume / tExit);
+              walk.boundary = false;
+              walk.axis = warpEntryAxis(walk.ray, walk.t);` : `
+              tEnter = resume;
+              phiA = surfSample(ro + rd * tEnter);
+              phiStale = false;`}
+            } else {
+              phiA = phiB;
+            }
           }
-          // out of bends: switch medium, keep straight
-          if (film) { trans *= filmTint(lid, filmH, rd); ifFilmH = 0.0; }
-          liq = select(E_EMPTY, lid, ev == EV_ENTER);
-          if (ev == EV_ENTER) {
-            lightRef = hp + n * IFACE_PROBE; lightRefAt = true;
-            lightY = hp.y;
-            gSkyIn = skyInAt(surfProbe(hp, n));
-          }
-          // Keep the remainder of this cell: an opaque crossing may follow
-          // the liquid interface even when the optical bend budget is spent.
-          let resume = min(tEv + IFACE_NUDGE, min(tExit, tCut));
-          if (resume < tExit) {${curved ? `
-            mNext -= resume;
-            walk.t = mix(walk.t, walk.end, resume / tExit);
-            walk.boundary = false;
-            walk.axis = warpEntryAxis(walk.ray, walk.t);` : `
-            tEnter = resume;
-            phiA = surfSample(ro + rd * tEnter);
-            phiStale = false;`}
-            continue;
-          }
+          continue;
         }
       }
       phiA = phiB;
     }
 
-    if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) { break; }${curved ? `
-    mNext -= tExit;
-    warpAdvance(&walk);
-    if (walk.boundary) { cell = warpCellAfter(walk.ray, walk.t, walk.axis); } else { cell = warpCell(walk.ray, walk.t); }
-    if (cell.y < 0) { break; }   // opaque physical floor; do not draw the second span through it` : `
-    tEnter = tExit;
-    ax = ddaStep(istp, tDelta, &cell, &tMax);`}
+    if (max(trans.x, max(trans.y, trans.z)) < RAY_MIN_TRANS) { break; }${stepOn('    ')}
   }
 
   // ---- the pixel's traced reflection, marched once for whichever surface asked (gfx/liquid.js reflectDefer) ----

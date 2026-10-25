@@ -30,7 +30,7 @@ assert(render.indexOf('absorbDeco(liq,') > render.indexOf('if (tCut < tEv)'));
 assert.match(render, /thinBodySeg\(pm, tEv - tEnter\)/);
 assert.match(render, /if \(brickMixed\(flags\)\)/);
 // the box wall's refraction goes through the march's one liquidInterface call (its head: ifPend)
-assert.match(strip(render), /ifPend = true; ifEntry = true; ifP = hp; ifN = n0; ifG = n0; ifEnter = true;/);
+assert.match(strip(render), /ifPend = true; ifEntry = true; ifStraight = false; ifFilm = false; ifP = hp; ifG = n0; ifEnter = true;/);
 assert.match(strip(render), /let inside = liquidInterface\(ifP, ifN, ifG, ifEnter, ifLid, ifMirror,/);
 assert.match(strip(render), /tEnter = 0\.0;\s*phiA = surfSample\(ro\);[\s\S]*?phiStale = false;/, 'a refraction restart samples the fields at its origin, fresh');
 

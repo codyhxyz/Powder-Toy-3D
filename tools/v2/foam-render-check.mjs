@@ -27,7 +27,7 @@ test('actual realistic renderer compiles both liquid channels at off/default/ful
   const variants=[['off',{},false],['default',detailDefines(detailDefaults()),false],['full',allDetailDefines(),false],['curved',{},true]];
   for(const dims of [[32,32,32],[48,16,32]]) for(const [name,detail,curved] of variants) {
     const source=volumeFrag(gridLayout(...dims),{detail,curved});
-    assert.match(source,/n = liquidDetail\(hp, n, lid, &col, &trans\)/,'CH_LIQUID smooth interface');
+    assert.match(source,/ifN = liquidDetail\(ifP, ifN, ifLid, &col, &trans\)/,'CH_LIQUID smooth interface');
     assert.match(source,/s.ch == CH_MOLTEN && KIND\(s.id\) == K_LIQUID/,'native molten only');
     assert.match(source,/c = shadeHit\(s, shadeRd, floorLit, floorHp, floorFw\)/,'base material optics retained (shadeSurf\'s, through the hit or floor\'s one shadeHit)');
     assert.match(source,/foamTrans \* \(c - s.emit\) \+ s.emit/,'incandescence retained');
