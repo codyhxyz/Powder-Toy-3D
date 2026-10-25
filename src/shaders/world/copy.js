@@ -21,7 +21,7 @@
 import { prelude, STATE_OPTS, stateLayout } from '../common.js';
 import { cellWordWGSL, WC_BRICK, WC_BRICK_CELLS, WC_AUX_MAX } from './cellWord.js';
 import { BRICK_INFO, AIR } from '../bindings.js';
-import { FIELDS_DILATE } from '../fields.js';
+import { FIELDS_DILATE, FIELD_REACH } from '../fields.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { STAGE, fold } from '../../gpu/kernels.js';
 import { ELEMENTS, E } from '../../elements.js';
@@ -63,10 +63,12 @@ export const wcLifeFull = (id) => {
 // for fast, accurate, and scalable dynamic height field rendering"), for the march to cross the air above
 // the ground in long jumps (shaders/world/march.js hfSkip). Level 0: a column's top, the height of its
 // highest non-air cell plus one (0: an empty column). Level 1 (4 × 4 columns, a brick column): the highest
-// top within HPAD cells of its columns, plus VPAD, so that no smooth surface (its iso-surface lies within a
-// cell or two of the cells it is drawn from: fields' blur and the cubic reading) and no cell reaches above a
-// level-1 value inside its region. Levels 2 (16 × 16) and 3 (64 × 64): the maxima of their 16 children.
-export const WC_HF = Object.freeze({ LEVELS: 4, HPAD: 2, VPAD: 2 });
+// top within HPAD cells of its columns, plus VPAD: the fields' whole reach (shaders/fields.js FIELD_REACH,
+// the surfaces' blur and the media's), so no cell, smooth surface or wisp of gas reaches above a level-1
+// value inside its region. Levels 2 (16 × 16) and 3 (64 × 64): the maxima of their 16 children. (HPAD at
+// most a brick: a changed column's level-1 values are its brick column's and the 8 around it.)
+export const WC_HF = Object.freeze({ LEVELS: 4, HPAD: FIELD_REACH, VPAD: FIELD_REACH });
+if (WC_HF.HPAD > WC_BRICK) throw new Error('WC_HF: HPAD past a brick (the writeback redoes the 3 × 3 brick columns around a change)');
 
 /** The world's layout in bricks, occupancy nodes and heightfield levels, for world size [x, y, z] in cells. */
 export function wcLayout(size) {
