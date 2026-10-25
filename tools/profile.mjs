@@ -4,7 +4,7 @@
 //   node tools/profile.mjs --map island [--pose default|landDown|sky|horizon|x,y,z,tx,ty,tz]
 //     [--view realistic] [--frames 60] [--warmup 30] [--counters] [--out dir]
 //     [--url https://tpt3d.codyh.xyz] [--port N] [--size 1280x800] [--dpr 2]
-//     [--autores] [--paused] [--compare old/profile.json] [--knockout N] [--no-cost]
+//     [--autores] [--paused] [--compare old/profile.json] [--knockout N] [--no-cost] [--gpufeatures core|subgroups|f16,…]
 //   node tools/profile.mjs --self-test     # CPU only: arguments and the report path
 //
 // What it does, in one 25 s headless GPU slot (tools/browser.mjs):
@@ -53,15 +53,15 @@ const MAX_KNOCKOUTS = 8;
 
 const HELP = `node tools/profile.mjs --map <key> [--pose ${POSES.join('|')}|x,y,z,tx,ty,tz] [--poses "p1;p2;…"] [--view realistic]
   [--frames 30] [--warmup 10] [--no-counters] [--target ms] [--compare profile.json] [--out dir] [--url URL] [--port N]
-  [--size WxH] [--dpr N] [--autores] [--paused] [--shot] [--knockout N] [--no-cost] [--allow-battery] [--self-test]`;
+  [--size WxH] [--dpr N] [--autores] [--paused] [--shot] [--knockout N] [--no-cost] [--gpufeatures core|LIST] [--allow-battery] [--self-test]`;
 
 export function parseArgs(argv) {
   // Metal's encoder times (tools/gpu-counters.mjs) by default on a Mac: render-pass timestamps on Apple's tilers can
   // span whole submissions, the encoder times don't (docs/profiler.md "Trusted ms")
   const o = { map: 'lab', pose: 'default', poses: null, view: 'realistic', frames: 30, warmup: 10, counters: process.platform === 'darwin', out: null, url: null,
-    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, target: null, knockout: 0, cost: true, shot: false, allowBattery: false, selfTest: false, help: false };
+    port: null, size: '1280x800', dpr: 2, autores: false, paused: false, compare: null, target: null, knockout: 0, cost: true, gpufeatures: null, shot: false, allowBattery: false, selfTest: false, help: false };
   const flags = { '--shot': 'shot', '--counters': 'counters', '--autores': 'autores', '--paused': 'paused', '--allow-battery': 'allowBattery', '--self-test': 'selfTest', '--help': 'help' };
-  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout'];
+  const values = ['map', 'pose', 'poses', 'view', 'frames', 'warmup', 'out', 'url', 'port', 'size', 'dpr', 'compare', 'target', 'knockout', 'gpufeatures'];
   argv = argv.filter((a) => { if (a === '--no-counters') { o.counters = false; return false; } if (a === '--no-cost') { o.cost = false; return false; } return true; });
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -215,6 +215,7 @@ async function selfTest() {
   assert.throws(() => parseArgs(['--pose', 'upside']));
   assert.throws(() => parseArgs(['--port', '5173']));
   assert.throws(() => parseArgs(['--bogus']));
+  assert.equal(parseArgs(['--gpufeatures', 'subgroups']).gpufeatures, 'subgroups');
   console.log('PASS: profile.mjs arguments (the report path: node tools/profile-cpu-check.mjs)');
 }
 
@@ -240,6 +241,8 @@ async function main() {
     url.searchParams.set('map', o.map);
     url.searchParams.set('view', o.view);
     url.searchParams.set('profile', '1');
+    // only these optional shader features (gpu/features.js): `core`, or a list such as `subgroups` (f16 off), to A/B one feature
+    if (o.gpufeatures !== null) url.searchParams.set('gpufeatures', o.gpufeatures);
     slot.busyBefore = await gpuBusyPct();
     // the GPU counters need our pass labels to reach Metal (tools/gpu-counters.mjs COUNTER_CHROME_ARGS)
     browser = await launchBrowser({ lifetimeMs: SLOT_MS, args: countersMod?.COUNTER_CHROME_ARGS ?? [] });   // (waits for the slot; the slot starts inside it)
