@@ -768,9 +768,11 @@ export function createPov(app) {
         if (s.oneShot) s.snapshot = () => ({ consumed: n.body.dead,
           world: [n.body.pos.x + sim.origin.x, n.body.pos.y, n.body.pos.z + sim.origin.z] });
       }
-      // a spawner taken away takes its NPC with it
+      // a spawner taken away takes its NPC with it (one id lookup per pass; the first home per id, as find gave)
+      const homeById = new Map();
+      for (const s of homes) if (!homeById.has(s.id)) homeById.set(s.id, s);
       for (const [id, n] of npcs) {
-        const home = homes.find((s) => s.id === id);
+        const home = homeById.get(id);
         if (!n.finished && (home || (npcsWanted === false && sp?.list.some((s) => s.id === id)))) continue;
         if (home?.oneShot) sp.remove(home);   // the corpse finished; no invisible body keeps the editor awake
         scene.remove(n.root); n.dispose(); npcs.delete(id);
