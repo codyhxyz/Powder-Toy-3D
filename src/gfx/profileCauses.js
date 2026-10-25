@@ -329,8 +329,9 @@ export function compareCauses(a, b) {
 
 /**
  * Which passes read what a pass rendered: { name: [dependant names] }, from gpu/timing.js depLog entries
- * ({ name, frame, writes, reads }: texture ids). Within each frame, in order, a pass that binds a texture
- * depends on the last pass that rendered to it before (a later rewrite takes over). A pass whose draws are
+ * ({ name, frame, writes, reads }: texture ids). Within each frame, in order, a pass that binds or loads a
+ * texture depends on the passes whose output it holds: the last one that cleared it and every one since that
+ * loaded it and rendered on top. A pass whose draws are
  * knocked out leaves its targets cleared (or stale), so its dependants run on nothing: the world march's
  * empty G-buffer makes world reflect and world shade discard every pixel (shaders/world/march.js).
  * Compute passes' storage writes are not seen (their bind groups count as reads): knocking a kernel out
@@ -341,13 +342,14 @@ export function passDependants(log) {
   for (const e of log ?? []) { if (!byFrame.has(e.frame)) byFrame.set(e.frame, []); byFrame.get(e.frame).push(e); }
   const deps = new Map();
   for (const passes of byFrame.values()) {
-    const writer = new Map();
+    // per texture, the passes whose output it holds: a pass that clears it takes over; one that loads it and
+    // renders on top (the event kernels on the lean march's G-buffer and depth gate) joins the ones before
+    const writers = new Map();
     for (const e of passes) {
-      for (const t of e.reads) {
-        const w = writer.get(t);
-        if (w !== undefined && w !== e.name) { if (!deps.has(w)) deps.set(w, new Set()); deps.get(w).add(e.name); }
+      for (const t of e.reads) for (const w of writers.get(t) ?? []) {
+        if (w !== e.name) { if (!deps.has(w)) deps.set(w, new Set()); deps.get(w).add(e.name); }
       }
-      for (const t of e.writes) writer.set(t, e.name);
+      for (const t of e.writes) writers.set(t, e.reads.includes(t) ? new Set([...(writers.get(t) ?? []), e.name]) : new Set([e.name]));
     }
   }
   return Object.fromEntries([...deps].map(([k, v]) => [k, [...v]]));

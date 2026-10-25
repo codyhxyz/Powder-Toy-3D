@@ -32,12 +32,14 @@ Knockout accounts for **dependants**. A pass whose draws are dropped leaves its 
 
 ```
 knockout (pose 0: …)
-  base: GPU span 27.58 ms · interval 33.30 ms. Savings are GPU span ms (interval ms in brackets: it moves in whole refreshes).
-  world march                          out: −21.13 [−0.00] · its dependants out: −3.38 [−0.00] · both out: −20.84 [−16.60]
-                                       → its own cost ≈ 17.46 ms [16.60]; 3.67 ms [-16.60] of "out" is its dependants (world reflect, world shade) idling without it
+  base: GPU span 37.08 ms · interval 33.40 ms. Savings are GPU span ms (interval ms in brackets: it moves in whole refreshes).
+  world march                          out: −22.11 [−16.70] · its dependants out: −19.17 [−16.70] · both out: −22.10 [−16.70]
+                                       → its own cost ≈ 2.93 ms [0.00]; 19.18 ms [16.70] of "out" is its dependants (world ev_liquid, world regate, world event, world reflect, world shade) idling without it
 ```
 
-own = saved(pass + dependants) − saved(dependants); the rest of "out" is the dependants idling. Read the GPU span: the frame interval moves in whole display refreshes or the fps cap, so it only says whether a refresh was gained (above: 0 ms for the march alone, 16.6 for all three). Compute passes' storage writes are not seen as writes: knocking out a kernel leaves its data stale, not empty, so its readers keep their cost. `profile.json` keeps the graph (`knockout.dependants`), the sets measured and the rows.
+(Lab, 2026-10-25, origin/main f90d36dc: a plain knockout would have charged the lean march 22 ms; it costs 2.9, inside its Metal bounds of 1.87–3.64 ms. A pass that loads a target and renders on top, like the event kernels on the lean march's G-buffer and depth gate, passes the earlier pass's output on, so passes reading it later depend on both.)
+
+own = saved(pass + dependants) − saved(dependants); the rest of "out" is the dependants idling. Read the GPU span: the frame interval moves in whole display refreshes or the fps cap, so it only says whether a refresh was gained (on another run: 0 ms for the march alone while the span fell 21 ms). Compute passes' storage writes are not seen as writes: knocking out a kernel leaves its data stale, not empty, so its readers keep their cost. `profile.json` keeps the graph (`knockout.dependants`), the sets measured and the rows.
 
 `--gpu-state min|med|max` asks the Metal trace for a GPU performance state (the template's `gpuperformancestate`). On this Mac (M5, Xcode 27.1, 2026-10-25) the request is recorded ("desired state Maximum") but not enforced ("consistent state" not enabled), so the report states what the GPU actually ran at either way.
 

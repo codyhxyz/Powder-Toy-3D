@@ -319,6 +319,14 @@ const FRAME = [['sim', 'move', 2], ['view', 'scene', 6], ['post', 'taa', 1]];
   assert.deepEqual(d['world march'], ['world reflect', 'world shade']);
   assert.deepEqual(d['world reflect'], ['world shade']);
   assert.deepEqual(d['clear G'], ['world reflect']);
+  // a pass that loads the G-buffer and renders on top (an event kernel) passes the march's output on
+  const chain = passDependants([
+    { name: 'world march', frame: 1, writes: [1, 5], reads: [] },
+    { name: 'world ev_liquid', frame: 1, writes: [1, 5], reads: [1, 5] },
+    { name: 'world shade', frame: 1, writes: [3], reads: [1] },
+  ]);
+  assert.deepEqual(chain['world march'], ['world ev_liquid', 'world shade']);
+  assert.deepEqual(chain['world ev_liquid'], ['world shade']);
   const plan = knockoutPlan(['world march', 'v2block'], d);
   assert.deepEqual(plan.sets, [['world march'], ['world reflect', 'world shade'], ['world march', 'world reflect', 'world shade'], ['v2block']]);
   // the march alone "saves" 14 ms, but reflect + shade alone save 6, all three 16: its own cost is 10

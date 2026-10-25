@@ -372,7 +372,8 @@ async function main() {
           const names = o.knockoutNames ?? run.report.passes.filter((p) => p.perFrame > 0).sort((x, y) => y.perFrame - x.perFrame).slice(0, o.knockout).map((p) => p.name);
           const plan = knockoutPlan(names, dependants);
           const base = { interval: run.report.frames.interval.median, span: run.report.frames.span.median };
-          run.report.knockout = { base, dependants, targets: plan.targets, measured: {} };
+          // (log: the resource log the dependants came from, so a rule change can be re-checked on it without a GPU)
+          run.report.knockout = { base, dependants, targets: plan.targets, measured: {}, log: run.depLog };
           delete run.depLog;
           run.report.knockout.measured = await answered(page.evaluate(([i, sets]) => window.__profTool.knock(i, sets), [i, plan.sets]));
         }
