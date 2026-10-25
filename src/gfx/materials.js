@@ -236,6 +236,17 @@ const SCRAP_ALB = [0.3, 0.27, 0.24];   // scrap's mean: scuffed steel and rust (
 // Snow's photo keeps old footprints and tracks in its relief; fresh snow shows
 // them faintly at most (its albedo is flattened at the bake for the same reason).
 const SNOW_TEX_N = 0.5;
+// The meadow grass keeps a little of its photo's own hue (dry blades among the
+// green): at 0.6 its mean drifted to a pale olive (0.15, 0.17, 0.05 against
+// PLANT's 0.07, 0.19, 0.03) and parted from the far view's and GI's green; at
+// this it stays within ~0.02 of it.
+const GRASS_TEX_HUE = 0.15;
+// Sawdust is finer than the wood chips in its photo: the tile drawn at half its
+// scanned 2 m, so the chips are a few millimetres.
+const SAWDUST_TEX_M = 1;
+// An element's UI colour (elements.js color), for a textured look that keeps
+// it as its albedo (a textured look without alb takes its photo's mean).
+const uiColour = (key) => ELEMENTS.find((e) => e.key === key).color;
 // Play-distance variation (macro, above). Nothing was authored at the 0.3-4 m
 // the player looks at, so past a few metres every opaque material read as one
 // flat albedo (docs/v2/evidence/audit-render.md 2.1-2.3). The rule is
@@ -260,7 +271,7 @@ const LOOKS = {
   SAND: { rough: 0.9, ior: 1.54, alb: '#c4a77c', glint: 0.55, macro: { tone: 0.16, hue: 0.12, rough: 0.06, size: 1 }, tex: 'dense_sand', texVary: true },
   STONE: { rough: 0.75, alb: '#7f7c77', macro: { tone: 0.2, hue: 0.06, rough: 0.08, size: 1 }, tex: 'gray_rocks' },
   SNOW: { rough: 0.55, ior: 1.31, alb: '#f3f6fb', sss: 0.55, glint: 0.8, macro: { tone: 0.04, hue: 0, rough: 0.12, size: 1 }, tex: 'snow_02', texVary: true, texN: SNOW_TEX_N },   // wind crust and drifts: gloss varies more than colour
-  GUNPOWDER: { rough: 0.6, alb: '#38383d', glint: 0.7 },   // graphite glaze: a soft sheen, many glints
+  GUNPOWDER: { rough: 0.6, alb: '#38383d', glint: 0.7, tex: 'dense_sand' },   // graphite glaze: a soft sheen, many glints (sand's grains, darkened)
   ASH: { rough: 0.98, alb: '#a29e97', sss: 0.3, tex: 'moon_dusted_04', texVary: true },
   // Liquids. Clean water absorbs red most and scatters a little, mostly
   // blue: clear when shallow, blue-green with depth, at its measured strength
@@ -281,8 +292,10 @@ const LOOKS = {
   // the scanned boards (Poly Haven brown_planks_04) where the photo has loaded, else shaders/gfx/surface.js matOf's planks branch
   PLANKS: { ch: 'ORGANIC', rough: 0.7, alb: '#8c6f54', macro: { tone: 0.15, hue: 0.08, rough: 0.08, size: 0.6 }, tex: 'brown_planks_04' },
   // (its photo is the meadows' grass alone, appearance GRASS: foliage stays procedural)
-  PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25, macro: { tone: 0.3, hue: 0.45, rough: 0.1, size: 1 }, tex: 'leafy_grass', texVary: true, texHue: 0.6 },   // lush .. sun-dried patches
-  METAL: { rough: 0.32, metal: 1, alb: STEEL_F0, surf: 'BRUSHED' },
+  PLANT: { ch: 'ORGANIC', rough: 0.5, alb: '#4b7a2f', sss: 0.25, macro: { tone: 0.3, hue: 0.45, rough: 0.1, size: 1 }, tex: 'leafy_grass', texVary: true, texHue: GRASS_TEX_HUE },   // lush .. sun-dried patches
+  // Steel diamond plate (its scan's paint and rust greyed at the bake, so it
+  // reads as bare steel), keeping the brushed highlight (surf BRUSHED)
+  METAL: { rough: 0.32, metal: 1, alb: STEEL_F0, surf: 'BRUSHED', tex: 'metal_plate' },
   GLASS: { ior: 1.5, rough: 0.02, scatter: [0.005, 0.003, 0.004] },
   // Debris (elements.js breakInto): heaps of fragments, powders as TPT's BGLA,
   // SAWD and BRMT are. Crushed glass is near-white, as crushed ice is snow and
@@ -293,7 +306,7 @@ const LOOKS = {
   // fibrous and matte, light wrapping into the thin chips as into leaves.
   // Scrap is the same steel, torn and scuffed, glinting off its torn edges.
   SHARDS: { rough: 0.4, ior: 1.5, alb: '#dce8e6', sss: 0.45, glint: 0.9 },
-  SAWDUST: { rough: 0.95, sss: 0.25 },
+  SAWDUST: { rough: 0.95, sss: 0.25, alb: uiColour('SAWDUST'), tex: 'wood_chips', texM: SAWDUST_TEX_M },
   // Its photo is rust-spotted steel: the rust is no metal (the photo's metal
   // mask) and keeps its own colour (texHue 1), so alb is the heap's mean, dull
   // steel and rust together (rust's ~0.2 drags it under bare steel's 0.56).
@@ -327,7 +340,7 @@ const LOOKS = {
     crag: { relief: 1, pits: 0.4, bands: 1.5, stain: 0.4 }, tex: 'marble_rock_01', texVary: true },   // sharp solution runnels and pits, bedded
   COAL: { ch: 'ORGANIC', macro: MACRO_ROCK, rough: 0.75, alb: '#3c3c3d', surf: 'CRAG',
     crag: { relief: 0.5, pits: 0, bands: 2, stain: 0 }, tex: 'rock_face_04' },       // blocky cleat, bright and dull bands
-  BROKENCOAL: { rough: 0.75, alb: '#3c3c3d', glint: 0.5 },
+  BROKENCOAL: { rough: 0.75, alb: '#3c3c3d', glint: 0.5, tex: 'rock_face_04' },   // coal's own face, broken
   // Fluorite (elements.js CRYSTAL): n = 1.434, a vitreous luster from flat
   // growth faces (polished glass with faint growth marks). A cell
   // is drawn as a cluster of pointed prisms (shaders/gfx/crystal.js); their
@@ -342,21 +355,24 @@ const LOOKS = {
   // Electronics (elements.js). A battery's printed steel can; silicon is
   // grey and mirror-like (n ≈ 3.9 in the visible: F0 ≈ 0.35), tinted as TPT
   // draws P and N; the switch a dark green relay; the insulator a pale,
-  // chalky aerogel blue; the sensor TPT's magenta.
-  BATTERY: { rough: 0.45, alb: '#6f6d1c' },
+  // chalky aerogel blue; the sensor TPT's magenta. The battery, switch and
+  // sensor are painted steel: one greyed scan of painted panels, painted each
+  // one's colour (the paint is no metal, so their metalness stays 0).
+  BATTERY: { rough: 0.45, alb: '#6f6d1c', tex: 'blue_metal_plate' },
   PSCN: { rough: 0.15, ior: 3.9, alb: '#5c4646' },
   NSCN: { rough: 0.15, ior: 3.9, alb: '#46465c' },
-  SWITCH: { rough: 0.4, alb: '#1d4a1f' },
+  SWITCH: { rough: 0.4, alb: '#1d4a1f', tex: 'blue_metal_plate' },
   INSULATOR: { rough: 0.95, alb: '#a7aec2', sss: 0.3 },
-  TSNS: { rough: 0.5, alb: '#c21aa6' },
+  TSNS: { rough: 0.5, alb: '#c21aa6', tex: 'blue_metal_plate' },
   LAMP: { rough: 0.5, ior: 1.5, alb: '#f4e6c4', sss: 0.5 },   // frosted bulb glass: its light is sparkEmit's (lampLit)
   PCLN: { rough: 0.35, metal: 1, alb: [0.45, 0.36, 0.14], surf: 'POLISHED', polished: { wave: 1, haze: 2 } },   // Clone's gold, tarnished: TPT draws it dark olive
   // Radioactive metals as powders: a metal powder is dark, since light is
   // trapped between the grains, with bright glints off the facets. Uranium
   // tarnishes to a dark grey-black oxide (UO₂ is black); plutonium's oxide
   // skin is dull olive-grey.
-  URANIUM: { rough: 0.55, alb: '#3f413b', glint: 0.5 },
-  PLUTONIUM: { rough: 0.6, alb: '#45493a', glint: 0.4 },
+  // Both draw sand's grains (dense_sand), darkened to their oxides.
+  URANIUM: { rough: 0.55, alb: '#3f413b', glint: 0.5, tex: 'dense_sand' },
+  PLUTONIUM: { rough: 0.6, alb: '#45493a', glint: 0.4, tex: 'dense_sand' },
   // Batch 3 (elements.js, el-mat). Void: matte black, a hole in the world.
   VOID: { rough: 1, alb: '#0d0809', macro: MACRO_NONE },
   // Red brick reflects ~0.25 in the red, ~0.1 in the green and ~0.06 in the
@@ -392,9 +408,10 @@ const LOOKS = {
   SALTWATER: { ior: 1.378, rough: 0.02, scatter: WATER_SCATTER.map((b) => +(b * SALT_SCATTER_GAIN).toPrecision(3)) },
   // Salt: clear halite cubes (n = 1.544) crushed white, albedo ~0.8, light
   // wrapping into the grains and glinting off their cube faces.
-  SALT: { rough: 0.55, ior: 1.544, alb: '#e2e0da', sss: 0.35, glint: 0.7 },
+  // The white powders (salt, dry ice, dust) draw snow's crust, as white and as fine.
+  SALT: { rough: 0.55, ior: 1.544, alb: '#e2e0da', sss: 0.35, glint: 0.7, tex: 'snow_02', texN: SNOW_TEX_N },
   // Dry ice: pressed CO₂ snow, white and porous (n ~1.4), light bleeding into it.
-  DRY_ICE: { rough: 0.8, ior: 1.4, alb: '#e4e8ec', sss: 0.5 },
+  DRY_ICE: { rough: 0.8, ior: 1.4, alb: '#e4e8ec', sss: 0.5, tex: 'snow_02', texN: SNOW_TEX_N },
   // Lithium is silvery cut, but dulls in air within minutes (nitride, hydroxide):
   // a grey, rough metal.
   LITHIUM: { rough: 0.55, metal: 1, alb: [0.55, 0.55, 0.56], surf: 'BRUSHED', brushed: { aniso: 0.3, scale: 0, wear: 2 } },
@@ -413,7 +430,7 @@ const LOOKS = {
   // (its photo), glossy where a bisque would be matte.
   // Antimatter is a game substance: a pale lilac powder with a sheen, so it
   // reads apart from the other powders. The singularity reflects nothing.
-  DUST: { rough: 0.95, alb: '#ebe2cc', sss: 0.35 },
+  DUST: { rough: 0.95, alb: '#ebe2cc', sss: 0.35, tex: 'snow_02', texN: SNOW_TEX_N },
   CLAY: { rough: 0.95, alb: '#e2dccf', sss: 0.2, macro: { tone: 0.12, hue: 0.1, rough: 0.06, size: 1 }, tex: 'clay_plaster' },
   MUD: { ch: 'MOLTEN', rough: 0.3, alb: '#a49b8a', macro: { tone: 0.15, hue: 0.08, rough: 0.2, size: 0.6 }, tex: 'brown_mud_02' },   // wetter: darker and glossier patches
   CERAMIC: { rough: 0.3, alb: '#efeae0', tex: 'long_white_tiles' },
@@ -424,12 +441,13 @@ const LOOKS = {
   // yellow oil, n = 1.479. Cast TNT is pale yellow-brown, dull and crystalline.
   // Thermite is rust-red iron oxide with flecks of aluminium that glint. A
   // safety fuse is a tarred cord. Propane is invisible: it borrows steam's
-  // haze so you can see where it pools (a liberty).
-  C4: { ch: 'ORGANIC', rough: 0.55, alb: '#d6d0bf', sss: 0.2 },
+  // haze so you can see where it pools (a liberty). The putty and cast TNT
+  // draw clay's smooth plaster; thermite coarse rust; the fuse woven jute.
+  C4: { ch: 'ORGANIC', rough: 0.55, alb: '#d6d0bf', sss: 0.2, tex: 'clay_plaster' },
   NITRO: { ior: 1.479, rough: 0.03, scatter: [0.004, 0.004, 0.004] },
-  TNT: { rough: 0.7, alb: '#b9975a' },
-  THERMITE: { rough: 0.8, alb: '#6f4436', glint: 0.35 },
-  FUSE: { ch: 'ORGANIC', rough: 0.6, alb: '#2a4424' },
+  TNT: { rough: 0.7, alb: '#b9975a', tex: 'clay_plaster' },
+  THERMITE: { rough: 0.8, alb: '#6f4436', glint: 0.35, tex: 'rust_coarse_01' },
+  FUSE: { ch: 'ORGANIC', rough: 0.6, alb: '#2a4424', tex: 'hessian_230' },
   // Noita's liquids (elements.js), each tinted by its sigma and scatter: the
   // scattered share sets the colour a deep body shows. Blood is near opaque
   // (haemoglobin absorbs blue and green within a millimetre; red cells
@@ -448,9 +466,10 @@ const LOOKS = {
   POLYMORPHINE: { ior: 1.34, rough: 0.02, scatter: [0.015, 0.006, 0.012], emit: tintGlow('#ee6fcf', MAGIC_GLOW_LUM) },
   PHEROMONE: { ior: 1.34, rough: 0.02, scatter: [0.015, 0.004, 0.006], emit: tintGlow('#ff3d62', MAGIC_GLOW_LUM) },
   // Moss: a dark, matte green mat (moss reflects ~0.05-0.1 in the visible,
-  // greenest near 550 nm); light wraps into its leaves. Fungus: pale buff
-  // mycelium over the wood, glowing green (foxfire).
-  MOSS: { ch: 'ORGANIC', rough: 0.95, alb: '#3e5a24', sss: 0.3, macro: { tone: 0.3, hue: 0.35, rough: 0.05, size: 0.5 } },
+  // greenest near 550 nm); light wraps into its leaves. Its photo is moss
+  // clumps over a forest floor. Fungus: pale buff mycelium over the wood,
+  // glowing green (foxfire).
+  MOSS: { ch: 'ORGANIC', rough: 0.95, alb: '#3e5a24', sss: 0.3, macro: { tone: 0.3, hue: 0.35, rough: 0.05, size: 0.5 }, tex: 'forest_leaves_02', texVary: true },
   FUNGUS: { ch: 'ORGANIC', rough: 0.75, alb: '#c9c3a0', sss: 0.35, emit: FOXFIRE_GLOW, macro: { tone: 0.2, hue: 0.15, rough: 0.08, size: 0.4 } },
   // Meat (elements.js MEAT, COOKED_MEAT): raw lean muscle is wet (a glossy
   // surface, water's n = 1.33) and translucent, red with myoglobin (light
@@ -459,6 +478,14 @@ const LOOKS = {
   // Saturated past the measured values, as the Castle Crashers look wants.
   MEAT: { rough: 0.35, ior: 1.33, alb: '#b8424a', sss: 0.5 },
   COOKED_MEAT: { rough: 0.7, alb: '#6e4126', sss: 0.15 },
+  // Noita's terrain (elements.js NOITA_*) in the realistic view, each its
+  // UI colour (the mean of Noita's own texture): the rock scans, and the
+  // jungle's lush soil the moss's forest floor. The Noita view keeps its own
+  // pixel art (shaders/gfx/noita.js), which returns before any of this.
+  NOITA_SNOWROCK: { alb: uiColour('NOITA_SNOWROCK'), tex: 'marble_rock_01', texVary: true },
+  NOITA_VAULT: { alb: uiColour('NOITA_VAULT'), tex: 'dark_rock', texVary: true },
+  NOITA_TEMPLE: { alb: uiColour('NOITA_TEMPLE'), tex: 'sandstone_cracks', texVary: true },
+  NOITA_LUSH: { alb: uiColour('NOITA_LUSH'), tex: 'forest_leaves_02', texVary: true },
 };
 
 // Shared texture families (LOOKS surf). NONE: an element's own (or none).
@@ -561,6 +588,20 @@ export const LOOK = ELEMENTS.map((e) => {
   };
 });
 
+// The small maps' floor (shaders/gfx/surface.js floorAlb), a scanned look that
+// is no element's: studded anti-slip concrete, a lab or workshop floor, scaled
+// in the shader to the floor's albedo (gfx/sky.js groundAlb, which GI and the
+// open ground around the box keep drawing). tiles: tiles per cell (the scan's
+// real size); mean: the photo's mean albedo; layer: its first layer in the
+// texture array, NO_TEX until it loads (the frame uniforms' floorTex:
+// gfx/uniforms.js), the flat floor until then. Wanted once a small map's view
+// draws scanned looks (gfx/volume.js recordCensus).
+const FLOOR_TEX_ID = 'anti_slip_concrete';
+export const FLOOR_TEX = (() => {
+  const { i, t } = texOf(FLOOR_TEX_ID);
+  return { asset: i, layer: NO_TEX, tiles: +(CELL_M / t.tileM).toFixed(ROUND_DIGITS), mean: t.mean };
+})();
+
 // The texture asset (gfx/textureSet.js index) element id draws from, or NO_TEX.
 export const texAssetOf = (id) => LOOK[id]?.texAsset ?? NO_TEX;
 // Asset `asset`'s photo now sits from array layer `layer` on (NO_TEX: gone):
@@ -568,6 +609,7 @@ export const texAssetOf = (id) => LOOK[id]?.texAsset ?? NO_TEX;
 export function setTexLayer(asset, layer) {
   const ids = [];
   LOOK.forEach((l, id) => { if (l.texAsset === asset) { l.texMap[0] = layer; ids.push(id); } });
+  if (asset === FLOOR_TEX.asset) FLOOR_TEX.layer = layer;
   return ids;
 }
 

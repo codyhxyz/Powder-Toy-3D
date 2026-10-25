@@ -45,6 +45,7 @@ import { decoShown } from '../deco.js';
 import { isMaterialView, materialStyleForView } from '../views.js';
 import { RENDER_LAYOUT, MAT_TEX_BINDING, MAT_TEX_SAMPLER_BINDING } from '../shaders/bindings.js';
 import { materialTextures } from './materialTextures.js';
+import { FLOOR_TEX } from './materials.js';
 import { materialCensus } from './materialCensus.js';
 import { createPacketShadow, packetShadowSource, packetShadowKey } from './packetShadow.js';
 
@@ -124,6 +125,7 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
   // the elements in this grid, so their scanned textures load (gfx/materialCensus.js)
   const census = materialCensus(gpu, sim, (ids) => matTex.wantElements(ids));
   const SCANNED_STYLE = 0;   // views.js materialStyle of the views that draw the scans (the realistic look)
+  let floorWanted = false;   // the floor's photo has been asked for (recordCensus)
   const samplers = gpu._volumeSamplers ??= {
     clamp: gpu.device.createSampler({ label: 'linearClamp', magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge', addressModeW: 'clamp-to-edge' }),
     repeat: gpu.device.createSampler({ label: 'linearRepeat', magFilter: 'linear', minFilter: 'linear', addressModeU: 'repeat', addressModeV: 'repeat', addressModeW: 'repeat' }),
@@ -396,7 +398,10 @@ export function createVolume(gpu, sim, { shadows = true, sourceAppearance = fals
      * @param {string} view the view drawn this frame
      */
     recordCensus(view) {
-      if (materialStyleForView(view) === SCANNED_STYLE) census.tick();
+      if (materialStyleForView(view) !== SCANNED_STYLE) return;
+      census.tick();
+      // a small map's floor photo (a big map's floor lies under its ground)
+      if (!sim.world && !floorWanted) { floorWanted = true; matTex.want([FLOOR_TEX.asset]); }
     },
     /**
      * Records the queued pick rays into the open frame (PICK_BATCH per

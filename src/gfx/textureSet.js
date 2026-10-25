@@ -25,4 +25,11 @@ export const TEXTURE_SET = [
   { id: 'rusty_metal_02', tileM: 1, mean: [0.4131, 0.2888, 0.1369], roughMean: 0.4226, bytes: 394358 },
   { id: 'long_white_tiles', tileM: 1.27, mean: [0.6222, 0.58, 0.4871], roughMean: 0.2422, bytes: 150978 },
   { id: 'leafy_grass', tileM: 2, mean: [0.3198, 0.2357, 0.1061], roughMean: 0.685, bytes: 839616 },
+  { id: 'metal_plate', tileM: 0.5, mean: [0.0338, 0.0338, 0.0338], roughMean: 0.5892, bytes: 190786 },
+  { id: 'blue_metal_plate', tileM: 2.5, mean: [0.0442, 0.0442, 0.0442], roughMean: 0.2845, bytes: 32982 },
+  { id: 'wood_chips', tileM: 2, mean: [0.0907, 0.0455, 0.0133], roughMean: 0.8781, bytes: 823046 },
+  { id: 'rust_coarse_01', tileM: 2.2, mean: [0.129, 0.0436, 0.0152], roughMean: 0.7771, bytes: 281042 },
+  { id: 'hessian_230', tileM: 0.2688, mean: [0.2773, 0.1976, 0.1067], roughMean: 0.5845, bytes: 470892 },
+  { id: 'forest_leaves_02', tileM: 3.001, mean: [0.2945, 0.1788, 0.057], roughMean: 0.9335, bytes: 895264 },
+  { id: 'anti_slip_concrete', tileM: 2.5, mean: [0.1659, 0.1317, 0.0953], roughMean: 0.9396, bytes: 526346 },
 ];

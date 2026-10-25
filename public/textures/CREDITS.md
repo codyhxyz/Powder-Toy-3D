@@ -28,3 +28,10 @@ maps repacked by tools/bake-material-textures.mjs: `albedo.webp` (diffuse) and
 | rusty_metal_02 | [Rusty Metal 02](https://polyhaven.com/a/rusty_metal_02) | Rob Tuytel |
 | long_white_tiles | [Long White Tiles](https://polyhaven.com/a/long_white_tiles) | Jenelle van Heerden, Sergej Majboroda |
 | leafy_grass | [Leafy Grass](https://polyhaven.com/a/leafy_grass) | Charlotte Baglioni |
+| metal_plate | [Metal Plate](https://polyhaven.com/a/metal_plate) | Rob Tuytel |
+| blue_metal_plate | [Blue Metal Plate](https://polyhaven.com/a/blue_metal_plate) | Rob Tuytel |
+| wood_chips | [Wood Chips](https://polyhaven.com/a/wood_chips) | eye-candy.xyz |
+| rust_coarse_01 | [Rust Coarse 01](https://polyhaven.com/a/rust_coarse_01) | Dimitrios Savva, Rico Cilliers |
+| hessian_230 | [Hessian 230](https://polyhaven.com/a/hessian_230) | colormass, Rico Cilliers |
+| forest_leaves_02 | [Forest Leaves 02](https://polyhaven.com/a/forest_leaves_02) | Rob Tuytel |
+| anti_slip_concrete | [Anti Slip Concrete](https://polyhaven.com/a/anti_slip_concrete) | Charlotte Baglioni |
