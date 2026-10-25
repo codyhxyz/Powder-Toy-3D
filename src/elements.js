@@ -459,8 +459,11 @@ const defs = [
     dens: 0.5, cond: 0.04, cap: 0.3, grav: -1.4, drag: 0.08, jitter: 0.25, temp: 1000, life: 1,
     rad: 0.01, spawn: 0.3, desc: 'Fire. Ignites flammable materials. Heats air. Hot, short-lived and rising.' },
 
-  { key: 'WOOD', abbr: 'WOOD', name: 'Wood', ...TIMBER, color: '#7a4a26',
-    desc: 'Wood, flammable. Burns slowly above 300 °C and leaves ash behind.' },
+  // Shown as "Tree" (the user's name for it, 2026-10-24): a trunk's wood with its
+  // bark, beside Planks, the sawn boards. The key and abbr stay WOOD, so saves,
+  // maps, constructions and the console's DEFAULT_PT_WOOD (TPT's) keep working.
+  { key: 'WOOD', abbr: 'WOOD', name: 'Tree', ...TIMBER, color: '#7a4a26',
+    desc: 'Tree, the wood of trunks and branches under its bark. Flammable: burns slowly above 300 °C and leaves ash behind.' },
   { key: 'PLANT', abbr: 'PLNT', name: 'Plant', kind: K.SOLID, tool: 'shovel', dig: 'soil', render: R.OPAQUE, color: '#3da236', var: 0.25,
     cond: 0.008, cap: 0.5, ignite: 250, burnRate: 0.004, burnHeat: 2, flameT: 800, life: 1,
     hard: 6, breakInto: 'SAWDUST', sound: 'thunk', rots: true, desc: 'Plant, drinks water and grows: neighbouring water turns into plant. Burns easily.' },
@@ -1333,9 +1336,10 @@ export const BUILDS = [
   { id: -100, key: 'HOUSE', abbr: 'HOUS', name: 'House', color: '#b9774b',
     variants: [['cottage', 'Cottage'], ['cabin', 'Log cabin'], ['brick', 'Brick'], ['greenhouse', 'Greenhouse']],
     desc: 'House. Built from real materials: wooden walls burn, windows are glass, and the chimney draws smoke up from the fireplace.' },
-  { id: -101, key: 'TREE', abbr: 'TREE', name: 'Tree', color: '#4f9a3c', shuffle: true,
+  // "Grow tree" (2026-10-24): "Tree" is the WOOD element's name now. Its key and abbr stay TREE.
+  { id: -101, key: 'TREE', abbr: 'TREE', name: 'Grow tree', color: '#4f9a3c', shuffle: true,
     variants: [['oak', 'Oak'], ['pine', 'Pine'], ['birch', 'Birch'], ['palm', 'Palm'], ['willow', 'Willow'], ['dead', 'Dead']],
-    desc: 'Tree. A wooden trunk and plant leaves, grown from a new seed every time. Pick a kind or shuffle between them.' },
+    desc: 'Grow tree. A trunk of Tree and leaves of plant, grown from a new seed every time. Pick a kind or shuffle between them.' },
   { id: -102, key: 'CAMPFIRE', abbr: 'CAMP', name: 'Campfire', color: '#c75b30',
     variants: [['lit', 'Lit'], ['unlit', 'Unlit']],
     desc: 'Campfire. A teepee of logs in a ring of stones. The lit one is already burning.' },

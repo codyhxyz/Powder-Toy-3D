@@ -49,6 +49,13 @@ const ASSETS = [
   'rusty_metal_02',     // SCRAP: scuffed, rust-spotted steel (its rust non-metal: METAL_MASK)
   'long_white_tiles',   // CERAMIC: glazed white tiles
   'leafy_grass',        // PLANT's grass (the big maps' meadows: appearance GRASS)
+  'metal_plate',        // METAL: steel diamond plate (its paint and rust greyed: ALBEDO_FLATTEN)
+  'blue_metal_plate',   // BATTERY, SWITCH, TSNS: painted steel panels (greyed, then painted each one's colour)
+  'wood_chips',         // SAWDUST: fine wood chips
+  'rust_coarse_01',     // THERMITE: coarse iron oxide
+  'hessian_230',        // FUSE: coarse woven jute cord
+  'forest_leaves_02',   // MOSS, NOITA_LUSH: moss clumps over a forest floor
+  'concrete_floor_worn_001', // the small maps' floor (shaders/gfx/surface.js floorAlb): plain sealed concrete, scuffed
 ];
 // WebP quality (cwebp -q) of each image: the albedo hides compression in its
 // own grain; the normals show blocking as faceted light, so they keep more.
@@ -56,12 +63,20 @@ const ALBEDO_Q = 80;
 const SURFACE_Q = 85;
 const MASK_Q = 60;    // the metal mask (alpha): lossy, as smooth as the rust it follows
 const MM_PER_M = 1000;
+const SQUARE_JPG_Q = 95;   // JPEG quality of a scan's maps re-saved square (below)
 // Albedos flattened before packing: desaturated, and every texel's departure
 // from the mean scaled by `contrast`. Snow is calibrated ~2.4x brighter than
 // the scan (its look's albedo 0.9 against the photo's 0.38), which made the
 // photo's dark track marks stand out; real fresh snow barely varies in tone,
 // so its relief is left to the normal map.
-const ALBEDO_FLATTEN = { snow_02: { contrast: 0.35 } };
+// Painted steel is greyed whole (contrast 1: only its colour goes), so each
+// look paints it its own colour channel by channel without the blue showing
+// through; the diamond plate's green paint and rust are greyed and calmed, as
+// it stands for bare steel.
+// The fuse's jute weave is drawn ~10x darker than the scan (tarred cord), where
+// its threads' tone barely showed: its departures are scaled 2.5x (its look keeps
+// the mean).
+const ALBEDO_FLATTEN = { snow_02: { contrast: 0.35 }, metal_plate: { contrast: 0.7 }, blue_metal_plate: { contrast: 1 }, hessian_230: { contrast: 2.5 } };
 const PERCENT = 100;
 // Metal masks, in the albedo's alpha (1: bare metal, 0: not; an asset without
 // one is opaque: all as its look says). Rust is iron oxide, a dielectric: drawn
@@ -95,6 +110,13 @@ try {
     mkdirSync(dir);
     const diff = join(dir, 'diff.jpg'), nor = join(dir, 'nor_gl.jpg'), rough = join(dir, 'rough.jpg');
     await Promise.all([download(url('Diffuse'), diff), download(url('nor_gl'), nor), download(url('Rough'), rough)]);
+    // The texture array's layers are square (gfx/materialTextures.js): a scan
+    // that isn't (hessian_230's 1024×1018) is stretched to its longer side,
+    // a fraction of a percent, and drawn at that side's real size (tileM).
+    for (const map of [diff, nor, rough]) {
+      const [mw, mh] = magick(map, '-format', '%w %h', 'info:').split(' ').map(Number);
+      if (mw !== mh) { const n = Math.max(mw, mh); magick(map, '-resize', `${n}x${n}!`, '-quality', String(SQUARE_JPG_Q), map); }
+    }
     const dest = join(ROOT, 'public', 'textures', id);
     mkdirSync(dest, { recursive: true });
     const surfPng = join(dir, 'surface.png');

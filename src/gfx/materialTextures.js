@@ -142,7 +142,16 @@ export function materialTextures(gpu) {
       failed.add(asset);
       return null;
     })));
-    const batch = got.filter(Boolean);
+    // a photo of another size than the array's is left out alone (its look stays procedural), not the batch
+    const s = size || got.find(Boolean)?.images[0].width;
+    const batch = got.filter((g) => {
+      if (!g) return false;
+      if (g.images.every((b) => b.width === s && b.height === s)) return true;
+      console.warn(`material textures: ${TEXTURE_SET[g.asset].id} is ${g.images[0].width}×${g.images[0].height}, not ${s}²: its procedural look stays`);
+      failed.add(g.asset);
+      g.images.forEach((b) => b.close());
+      return false;
+    });
     if (!batch.length) return;
     // the mips are resized before the swap, so the new array is whole when it replaces the old
     const { next, mips, oldLayers } = place(batch);

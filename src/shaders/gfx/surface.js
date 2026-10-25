@@ -10,7 +10,7 @@ import { lib, libLayouts } from './lib.js';
 import { fullscreenVert } from '../../gpu/wgsl.js';
 import { DETAIL, DETAIL_FADE_LO, DETAIL_FADE_HI, COST } from '../../gfx/detail.js';
 import { glf as f } from '../../glsl.js';
-import { TEX_LAYERS } from '../../gfx/materials.js';
+import { TEX_LAYERS, FLOOR_TEX } from '../../gfx/materials.js';
 
 // Opaque surfaces: per-element solid textures (world-space, so nothing
 // reveals the grid), bevelled crisp voxels, and energy-conserving PBR shading.
@@ -418,6 +418,12 @@ const LEAF_CLUMP_M: f32 = 0.6;               // m, the largest clumps' wavelengt
 const LEAF_CLUMP_F: f32 = CELL_M / LEAF_CLUMP_M;
 const LEAF_CLUMP_H: f32 = 0.15 / CELL_M;     // relief per unit of noise, cells
 const LEAF_CLUMP_CAV: f32 = 0.9;             // cavity swing per unit of noise: the hollows' shade
+const LEAF_DEEP_TINT: vec3f = vec3f(0.85, 1.15, 0.55);   // light that scattered through leaves (and grass blades)
+// The meadow grass's photo (matOf's textured branch): blades ~5 mm across,
+// tilted as much as foliage's leaves (its LEAF_SLOPE_VAR, ~0.18 per axis).
+const GRASS_BLADE_M: f32 = 0.005;
+const GRASS_BLADE_F: f32 = CELL_M / GRASS_BLADE_M;
+const GRASS_BLADE_SLOPE_VAR: f32 = 0.18;
 const LEAF_CLUMP_OCT: i32 = 3;
 fn leafClumps(p: vec3f, fp: f32) -> vec4f { return mFbmD(p, LEAF_CLUMP_F, LEAF_CLUMP_OCT, fp); }
 // Gunpowder: lumps of granules.
@@ -849,6 +855,19 @@ const TEX_SRGB_GAMMA: f32 = 2.4;
 fn texSrgb(c: vec3f) -> vec3f {
   return select(pow((c + TEX_SRGB_OFFSET) / (1.0 + TEX_SRGB_OFFSET), vec3f(TEX_SRGB_GAMMA)), c / TEX_SRGB_SLOPE, c <= vec3f(TEX_SRGB_LINEAR_MAX));
 }
+// The mip level of a photo drawn at tiles (per cell) over footprint fp (one texel a pixel).
+fn matTexLod(tiles: f32, fp: f32) -> f32 {
+  return log2(max(fp * tiles * f32(textureDimensions(tMatTex).x), TEX_TEXELS_MIN)) + TEX_LOD_BIAS;
+}
+// Where a photo's tile shrinks to a few texels a pixel its low mips hold only
+// the tile's broad blotches, which repeat across a meadow or a floor as
+// streaks; there the meadow and the floor keep TEX_FAR_KEEP of the photo's
+// departures from its mean, faded in over these mip levels (from ~5 m to ~30 m
+// for the grass), so they read as one even colour, the one the far view and GI draw.
+const TEX_FAR_LOD: vec2f = vec2f(2.0, 5.0);
+const TEX_FAR_KEEP: f32 = 0.35;
+fn texFarKeepOver(lod: f32, lods: vec2f) -> f32 { return mix(1.0, TEX_FAR_KEEP, smoothstep(lods.x, lods.y, lod)); }
+fn texFarKeep(lod: f32) -> f32 { return texFarKeepOver(lod, TEX_FAR_LOD); }
 // The textures are in (gfx/materialTextures.js: the dummy has one layer) and element id has one.
 fn matTexReady() -> bool { return i32(textureNumLayers(tMatTex)) >= TEX_LAYERS; }
 fn hasMatTex(id: i32) -> bool { return TEXMAP(id).x >= 0.0 && matTexReady(); }
@@ -872,7 +891,7 @@ fn matTextured(m: ptr<function, Mat>, id: i32, p: vec3f, n: vec3f, fp: f32, plan
     ob = sin(TEX_VARY_OFFSET * (ia + 1.0));
     fade = smoothstep(TEX_VARY_EDGE.x, TEX_VARY_EDGE.y, k - ia);
   }
-  let lod = log2(max(fp * tm.y * f32(textureDimensions(tMatTex).x), TEX_TEXELS_MIN)) + TEX_LOD_BIAS;
+  let lod = matTexLod(tm.y, fp);
   var w = pow(abs(n), vec3f(TEX_TRI_SHARP)) * planes;
   w = select(vec3f(0.0), w, w >= vec3f(TEX_TRI_MIN * (w.x + w.y + w.z)));
   w /= max(w.x + w.y + w.z, TEX_TEXELS_MIN);
@@ -956,17 +975,30 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
   if (FU.materialStyle == 1.0 && cozySupported(id, ctype)) { return cozyMat(id, p, n, T, ctype, fp); }
   var m = matBase(id);
   // A scanned texture replaces the element's procedural pattern (bark keeps its
-  // end grain: the E_WOOD branch reads it on the sides alone). Plant's photo is
-  // the meadows' grass: foliage (leaves, unlabelled plant) keeps its own.
+  // end grain: the E_WOOD branch reads it on the sides alone; a brushed metal
+  // its highlight and mill scale: the BRUSHED branch reads it in place of the
+  // streaks). Plant's photo is the meadows' grass: foliage (leaves, unlabelled
+  // plant) keeps its own.
   let textured = hasMatTex(id) && (id != E_PLANT || appearanceOf(id, ctype) == AP_GRASS);
 
   // Scale: a cell is CELL_M (src/scale.js). Frequencies below are cycles (or
   // lattice cells) per cell; the *_H / *_DEPTH bump amplitudes are heights in
   // cells. The natural materials give their sizes in metres (*_M) and convert.
-  if (textured && id != E_WOOD) {
+  if (textured && id != E_WOOD && SURF(id) != SURF_BRUSHED) {
     matTextured(&m, id, p, n, fp, TEX_ALL_PLANES);
     // The sand photo is a flat bed: a heap's slumps (sandSlumps, ~27 cm) go back on top of its normal map.
     if (id == E_SAND) { m.g += SAND_SLUMP_H * sandSlumps(p, fp).yzw; }
+    // The meadow grass is a mat of blades as foliage is a clump of leaves: the
+    // blades' tilt a pixel covers widens the sun's highlight (the photo's normal
+    // map resolves them only up close; without it a meadow toward the sun went
+    // a pale glare), light comes through them, and past a few metres the
+    // photo's blotches calm to the green the far view and GI draw (texFarKeep).
+    if (id == E_PLANT) {
+      m.slopeVar = GRASS_BLADE_SLOPE_VAR * unresolvedShare(GRASS_BLADE_F, lodFade(GRASS_BLADE_F, fp), fp);
+      m.sssCol = LEAF_DEEP_TINT;
+      m.trans = 1.0;
+      m.alb = mix(ALBEDO(id), m.alb, texFarKeep(matTexLod(TEXMAP(id).y, fp)));
+    }
   } else if (id == E_SAND) {
     // Dry sand. Its grains (~0.3 mm) are far below a pixel, so it reads as a
     // matte surface with soft mottling (sorting, damp patches), shallow
@@ -1361,7 +1393,6 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     const SHADE_MIN: f32 = 0.65;              // leaf-to-leaf shade
     const SHADE_RANGE: f32 = 0.7;
     const WAX_VAR: f32 = 0.25;                // leaf-to-leaf roughness spread
-    const DEEP_TINT: vec3f = vec3f(0.85, 1.15, 0.55);   // light that scattered through leaves
     const LEAF_LOD: f32 = 1.5;                // fade leaves at this multiple of LEAF_F
     // per-axis slope variance of the leaves: tilt and cupping, each about uniform over ±½ of its swing
     const LEAF_SLOPE_VAR: f32 = (LEAF_TILT * LEAF_TILT + LEAF_CURL * LEAF_F * LEAF_CURL * LEAF_F) / 12.0;
@@ -1403,7 +1434,7 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     m.cav *= 1.0 + LEAF_CLUMP_CAV * cl.x;
     // (specular AA: the leaves' and clumps' tilt a pixel covers widens the highlight instead of glittering)
     m.slopeVar = LEAF_SLOPE_VAR * unresolvedShare(LEAF_F, lw, fp) + fbmSlopeVar(LEAF_CLUMP_H, LEAF_CLUMP_F, LEAF_CLUMP_OCT, fp);
-    m.sssCol = DEEP_TINT;
+    m.sssCol = LEAF_DEEP_TINT;
     m.trans = 1.0;
   } else if (SURF(id) == SURF_BRUSHED) {
     // Brushed steel (and the worked metals that share it, gfx/materials.js
@@ -1433,17 +1464,24 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     const SMUDGE_ALB: f32 = 0.06;             // albedo swing per unit of each
     const BRUSH_ALB: f32 = 0.05;
     const BRUSH_ANISO: f32 = 0.7;             // anisotropy of the brushed highlight
-    let u = dot(p, t);
-    let w = dot(p, b);
-    let s1 = vnoise(vec3f(u * STREAK_F * STREAK_LEN, w * STREAK_F, STREAK_SLICE));
-    let s2 = vnoise(vec3f(u * GROOVE_F * STREAK_LEN, w * GROOVE_F, GROOVE_SLICE));
-    let l1 = lodFade(STREAK_F, fp);
-    let l2 = lodFade(GROOVE_F, fp);
-    let lo = mFbmD(p, SMUDGE_F, SMUDGE_OCT, fp);
-    let br = l1 * (s1 - 0.5) + GROOVE_W * l2 * (s2 - 0.5);
-    m.rough = ROUGH(id) + bp.z * SMUDGE_ROUGH * lo.x + BRUSH_ROUGH * br;
-    m.alb *= 1.0 + bp.z * SMUDGE_ALB * lo.x + BRUSH_ALB * br;
-    m.tang = t; m.aniso = bp.x * BRUSH_ANISO;
+    if (textured) {
+      // the photo carries its own wear and smudges; where its metal mask says
+      // paint or rust, the brushing's highlight goes with the metal
+      matTextured(&m, id, p, n, fp, TEX_ALL_PLANES);
+      m.tang = t; m.aniso = bp.x * BRUSH_ANISO * m.metal;
+    } else {
+      let u = dot(p, t);
+      let w = dot(p, b);
+      let s1 = vnoise(vec3f(u * STREAK_F * STREAK_LEN, w * STREAK_F, STREAK_SLICE));
+      let s2 = vnoise(vec3f(u * GROOVE_F * STREAK_LEN, w * GROOVE_F, GROOVE_SLICE));
+      let l1 = lodFade(STREAK_F, fp);
+      let l2 = lodFade(GROOVE_F, fp);
+      let lo = mFbmD(p, SMUDGE_F, SMUDGE_OCT, fp);
+      let br = l1 * (s1 - 0.5) + GROOVE_W * l2 * (s2 - 0.5);
+      m.rough = ROUGH(id) + bp.z * SMUDGE_ROUGH * lo.x + BRUSH_ROUGH * br;
+      m.alb *= 1.0 + bp.z * SMUDGE_ALB * lo.x + BRUSH_ALB * br;
+      m.tang = t; m.aniso = bp.x * BRUSH_ANISO;
+    }
     // Hot steel grows black mill scale (magnetite): a rough dielectric, no
     // longer a metal mirroring the sky. It is patchy; where it is thick it
     // blisters off the steel and runs cooler, so the glow is mottled with dark
@@ -1637,8 +1675,8 @@ fn matOf(id: i32, p: vec3f, n: vec3f, T: f32, ctype: f32, fp: f32) -> Mat {
     m.cav = mix(1.0, mix(LAVA_CRACK_CAV, 1.0, smoothstep(0.0, LAVA_PLATE_EDGE, c.y)), solid * lwc);
   }
   matMacro(&m, id, p, n, fp, select(1.0, TEX_MACRO_KEEP, textured));   // play-distance variation (every material; its amplitudes are data)
-  // (the brushed branch sets its own glow; a scanned brushed metal, scrap, skips that branch)
-  if (id != E_LAVA && (SURF(id) != SURF_BRUSHED || textured) && id != E_CRYSTAL) { m.emit = hotEmit(m, id, T); }
+  // (the brushed branch sets its own glow, scanned or not)
+  if (id != E_LAVA && SURF(id) != SURF_BRUSHED && id != E_CRYSTAL) { m.emit = hotEmit(m, id, T); }
   m.emit += sparkEmit(id, ctype);   // a live conductor (src/electricity.js)
   return m;
 }
@@ -2373,13 +2411,36 @@ fn floorFwidthMirror(hp: vec3f, rd: vec3f, m: vec3f) -> vec2f {
 // (FLOOR_LINE_ALB, the grid's seams: gfx/sky.js, which the backdrop's grid shares)
 const FLOOR_LINE_CELLS: f32 = 8.0;   // cells between the floor's grid lines
 fn shadeFloor(hp: vec3f, rd: vec3f) -> vec3f { return shadeFloorFw(hp, floorFwidth(hp, rd)); }
+// The floor's scanned concrete (gfx/materials.js FLOOR_TEX), its albedo alone
+// (the floor is lit flat), read from above at the scan's real size and scaled
+// to the floor's mean (GROUND_ALB); the mip from the pixel's footprint, as
+// matTextured's. The flat GROUND_ALB until the photo is in (FU.floorTex).
+const FLOOR_TEX_TILES: f32 = ${f(FLOOR_TEX.tiles)};   // tiles per cell
+// The scuffs and stains calm sooner than the grass's blotches (texFarKeep): from
+// ~3 m to ~10 m, so the grid's seams, a pixel or two wide there, aren't lost among them.
+const FLOOR_TEX_FAR_LOD: vec2f = vec2f(1.0, 3.5);
+const FLOOR_TEX_MEAN: vec3f = vec3f(${FLOOR_TEX.mean.map(f).join(', ')});   // the photo's mean albedo, linear
+fn floorGround(hp: vec3f, fw: vec2f) -> vec3f {
+  if (FU.floorTex < 0.0 || !matTexReady()) { return GROUND_ALB; }
+  let uv = worldPos(hp).xz * FLOOR_TEX_TILES;
+  let lod = matTexLod(FLOOR_TEX_TILES, max(fw.x, fw.y));
+  let a = textureSampleLevel(tMatTex, matTexSampler, uv, i32(FU.floorTex), lod).rgb;
+  let alb = min(texSrgb(a) * (GROUND_ALB / FLOOR_TEX_MEAN), vec3f(TEX_ALB_MAX));
+  return mix(GROUND_ALB, alb, texFarKeepOver(lod, FLOOR_TEX_FAR_LOD));   // (the scuffs calm down with distance, so the grid's seams still read)
+}
 // fw: the grid lines' fwidth there (floorFwidth, or floorFwidthMirror in a reflection)
 // the floor's albedo at hp: concrete with grid lines (fw: their fwidth there)
+// The grid's seams are at least this wide up close, so they read over the
+// photo's scuffs and stains (a 1.5 cm joint), and FLOOR_LINE_PX pixels wide
+// past that (the open ground's seams beyond the box are one-pixel lines on a
+// plain colour; these lie over the photo).
+const FLOOR_LINE_MIN_CELLS: f32 = 0.05;
+const FLOOR_LINE_PX: f32 = 1.5;
 fn floorAlb(hp: vec3f, fw: vec2f) -> vec3f {
   let q = worldPos(hp).xz / FLOOR_LINE_CELLS;
-  let gq = abs(fract(q - 0.5) - 0.5) / max(fw / FLOOR_LINE_CELLS, vec2f(1e-4));
+  let gq = abs(fract(q - 0.5) - 0.5) / max(max(fw * FLOOR_LINE_PX, vec2f(FLOOR_LINE_MIN_CELLS)) / FLOOR_LINE_CELLS, vec2f(1e-4));
   let line = 1.0 - min(min(gq.x, gq.y), 1.0);
-  return mix(GROUND_ALB, FLOOR_LINE_ALB, line);
+  return mix(floorGround(hp, fw), FLOOR_LINE_ALB, line);
 }
 // The floor of the box at hp, its grid lines fw wide: Lambert, its own probes
 // and lights at hp (shadeHit, onFloor). The view's tracer calls shadeHit itself.

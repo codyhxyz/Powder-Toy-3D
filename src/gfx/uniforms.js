@@ -19,6 +19,7 @@ import { tablesBuffer } from '../shaders/common.js';
 import { uniformStruct } from '../gpu/params.js';
 import { decoShown } from '../deco.js';
 import { materialStyleForView } from '../views.js';
+import { FLOOR_TEX } from './materials.js';
 import { viewStepClock } from '../v2/host.js';
 export { WAND_LIGHTS };
 
@@ -188,7 +189,7 @@ export function frameUniformValues({ camera, model, sun, view = 0, shadowRes = 1
     lampCount: u.uLampCount.value, wandLightCount: u.uWandLightCount.value,
     beacon: u.uBeacon.value, beaconDir: u.uBeaconDir.value, beaconCell: u.uBeaconCell.value,
     shadows: !!shadows, nearGI: !!u.uNearGI.value, glowLights: !!u.uGlowLights.value, caustics: !!u.uCaustics.value,
-    reflections: !!u.uReflections.value, bending: !!u.uBending.value,
+    reflections: !!u.uReflections.value, bending: !!u.uBending.value, floorTex: FLOOR_TEX.layer,
     clouds: !!u.uClouds.value, caveAmbient: u.uCaveAmbient.value, digMin: u.uDigMin.value, digMax: u.uDigMax.value,
   };
   return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, copyValue(value)]));
