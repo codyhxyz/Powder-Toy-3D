@@ -64,6 +64,14 @@ The user plays on this Mac while agents work. Headless tests can disrupt the gam
 - Direct browser URLs support `?test=manual|ui|preview|visual` and `&paused=1`. These flags are not persisted and normal gameplay is unchanged.
 - Existing worktrees and already-running scripts must adopt this revision before these defaults apply. See `docs/headless-testing-cost.md`; check with `node tools/headless-check.mjs --port YOUR_PORT`.
 
+## Profiler — all agents
+
+For any performance question, run the profiler. Don't write your own timing.
+
+- `node tools/profile.mjs --map <key> [--pose default|landDown|sky|horizon|x,y,z,tx,ty,tz] [--view realistic] [--frames 60] [--counters] [--out dir]`. One 25 s slot prints a ranked waterfall (GPU ms per pass with median and spread, CPU ms per phase, frame interval, compiles in flight, GPU memory, what bounds the frame) and writes JSON and HTML. In the browser, use `?profile=1` or `__app.prof.report()`.
+- Trust only a report that says `PROFILE (trusted)`. An UNTRUSTED report names its reasons (compiles, a shared GPU, missing timestamps, too few frames).
+- If the report lacks what you need, improve the profiler (a pass label, a counter, a report line) so every later agent gets it. Don't work around it. See `docs/profiler.md`.
+
 ## Same features in every world — all agents
 
 A feature, fix or look applies everywhere the player can meet it: every map and scene, small and big (a big map's window and the distance pass past it), and every view.
