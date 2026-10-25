@@ -1,5 +1,9 @@
 import * as THREE from 'three/webgpu';
 import { wgslFn, positionGeometry, time, uniform } from 'three/tsl';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
+import { isPrepared } from '../gfx/meshLight.js';
+import { CELL_M } from '../scale.js';
 
 // The POV tools' held models, in a RuneScape (RS2 / Old School) style: low-poly
 // primitives, no textures, one flat colour per face from Jagex's 16-bit HSL
@@ -476,18 +480,143 @@ function normalised(key, withArm = true) {
   return { obj: outer, size: size.multiplyScalar(k), grip: inner.position.clone(), unit: k };
 }
 
+// ---- scanned models: Poly Haven's CC0 scans of the real tools (public/models/tools/CREDITS.md,
+// baked by tools/bake-tool-models.mjs), drawn in place of a model's parts once loaded. The parts
+// stay the model's frame (MODELS' fit and anchor, the grip, the muzzle, the parts a tool reads:
+// the lantern's 'glow', the shovel's size) and show until the scan is in, so nothing waits on it:
+// a scan is fetched the first time its model is drawn (never at boot), and swapped in once its
+// pipelines are built (gfx/meshLight.js isPrepared), a frame of the two together, never a gap.
+//
+// A scan is placed by its grip: the point the hand closes round goes on the parts' origin (the
+// grip), turned so the scan's own axes go where `basis` says (where its +x and +y land in the
+// parts' frame: −z forward, +y up; +z follows), at the size that spans the model's MODELS.size
+// along its fit over `lengthM`, the scan's real length that way. So it is drawn as big as the
+// parts were in first person, and in third person (held.js) at its real size: scanHeldScale.
+// Points on it (grip, muzzle, left: the second hand on a two-handed tool, in third person) are in
+// the scan's own metres and axes, as tools/bake-tool-models.mjs --list prints them. `glow` names
+// the node drawn as the lamp (unlit, the parts' 'lamp' colour: the lantern's glass).
+export const SCANS = {
+  shovel: { id: 'rusted_spade_01', basis: ['+x', '+z'], lengthM: 1.101, grip: [0, 0.47, 0.008], left: [0, -0.02, 0.008] },
+  pickaxe: { id: 'picke_dirty_01', basis: ['-z', '+y'], lengthM: 1.115, grip: [0, -0.27, 0], left: [0, 0.2, 0] },
+  axe: { id: 'wooden_axe', basis: ['-x', '+y'], lengthM: 0.631, grip: [0, -0.15, 0] },
+  knife: { id: 'fish_knife', basis: ['+y', '-z'], lengthM: 0.215, grip: [0, -0.05, 0] },
+  trowel: { id: 'trowel_01', basis: ['-x', '+y'], lengthM: 0.347, grip: [0, 0.025, -0.08] },
+  bucket: { id: 'wooden_bucket_01', basis: ['+x', '+y'], lengthM: 0.55, grip: [0, 0.54, 0] },
+  pistol: { id: 'service_pistol', basis: ['-z', '+y'], lengthM: 0.222, grip: [-0.012, -0.012, 0], muzzle: [0.176, 0.065, 0] },
+  sniper: { id: 'bolt_action_rifle_7_62', basis: ['-z', '+y'], lengthM: 1.231, grip: [-0.37, -0.01, 0], muzzle: [0.598, 0.058, 0], left: [0.0, 0.01, 0] },
+  bomb: { id: 'stick_grenade', basis: ['+x', '-z'], lengthM: 0.379, grip: [0, -0.07, 0] },
+  lantern: { id: 'Lantern_01', basis: ['+x', '+y'], lengthM: 0.294, grip: [0, 0.285, 0], glow: 'Lantern_01_glass' },
+};
+// No reflection map lights the hands (the viewmodel pass has the sun and the eye's GI probe, both
+// diffuse), so bare metal, which has no diffuse colour, drew black out of the sun. Its metalness is
+// held under this: the scan's grey steel keeps some of its colour as diffuse.
+const SCAN_METALNESS_MAX = 0.4;
+
+const scanBasis = (key) => {
+  const axis = (s) => new THREE.Vector3(...'xyz'.split('').map((c) => (s[1] === c ? (s[0] === '-' ? -1 : 1) : 0)));
+  const [bx, by] = SCANS[key].basis.map(axis);
+  return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(bx, by, new THREE.Vector3().crossVectors(bx, by)));
+};
+// cells per metre of the scan in its model's frame
+const scanUnit = (key) => MODELS[key].size / SCANS[key].lengthM;
+/** The third-person size (× the first person's) at which the scan of model `key` is its real size; null: no scan. */
+export function scanHeldScale(key) {
+  return SCANS[key] ? SCANS[key].lengthM / CELL_M / MODELS[key].size : null;
+}
+// a point on the scan (its metres and axes) in the normalised model's frame (cells), given its grip there
+function scanPoint(key, p, grip, out = new THREE.Vector3()) {
+  const s = SCANS[key];
+  return out.set(p[0] - s.grip[0], p[1] - s.grip[1], p[2] - s.grip[2]).applyQuaternion(scanBasis(key))
+    .multiplyScalar(scanUnit(key)).add(grip);
+}
+
+const scans = new Map();   // model key → Promise of its loaded scan ({ scene, glow })
+let gltfLoader = null;
+function loadScan(key) {
+  if (!scans.has(key)) {
+    const { id, glow } = SCANS[key];
+    gltfLoader ??= new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+    scans.set(key, gltfLoader.loadAsync(`${BASE}models/tools/${id}/${id}.glb`).then((gltf) => {
+      const scene = gltf.scene;
+      scene.traverse((o) => {
+        if (!o.isMesh) return;
+        if (o.name === glow || o.parent?.name === glow) { o.material = material('lamp'); return; }
+        const m = o.material;
+        if (m.isMeshStandardMaterial) m.metalness = Math.min(m.metalness, SCAN_METALNESS_MAX);
+      });
+      return { scene };
+    }).catch((error) => { console.warn(`models.js: the ${key} scan failed to load; keeping its parts`, error); return null; }));
+  }
+  return scans.get(key);
+}
+
+/** Fetches model `key`'s scan ahead of its first draw (checks); resolves when loaded, null without one. */
+export const prefetchScan = (key) => (SCANS[key] ? loadScan(key) : Promise.resolve(null));
+
+// The scan of model `key` onto a normalised model (outer, its parts in `inner`): fetched when
+// the parts are first drawn, put on when loaded, the parts hidden once it is ready to draw.
+// onScan(scan) runs when it is put on (a caller's own materials: held.js, npc.js).
+function scanOnto(key, outer, inner, grip, onScan, isDisposed) {
+  const first = inner.children.find((o) => o.isMesh);
+  if (!first) return;
+  let state = 'idle', scan = null;
+  const meshes = [];
+  first.onBeforeRender = () => {
+    if (state === 'idle') {
+      state = 'loading';
+      loadScan(key).then((loaded) => {
+        if (!loaded || isDisposed()) { state = 'failed'; return; }
+        const s = SCANS[key];
+        scan = new THREE.Group();
+        scan.name = 'scan';
+        scan.position.copy(grip);
+        scan.quaternion.copy(scanBasis(key));
+        scan.scale.setScalar(scanUnit(key));
+        const body = loaded.scene.clone();
+        body.position.set(-s.grip[0], -s.grip[1], -s.grip[2]);
+        scan.add(body);
+        scan.traverse((o) => {
+          if (o !== scan) o.name = '';   // (named parts are the model's own: held.js pairs them up by order)
+          if (!o.isMesh) return;
+          o.userData.part = true;      // the model's own (not a tool's addition: held.js)
+          o.userData.shared = true;    // geometry the loaded scan owns: dispose() leaves it
+          meshes.push(o);
+        });
+        outer.add(scan);
+        onScan?.(scan);
+        state = 'on';
+        globalThis.__app?.requestRender?.();
+      });
+    } else if (state === 'on' && meshes.every(isPrepared)) {
+      inner.visible = false;   // (drawn this frame with the scan; hidden from the next)
+      state = 'shown';
+      globalThis.__app?.requestRender?.();
+    }
+  };
+}
+
 // Add model `key` to `parent`; onLoad(obj, info) runs before this returns.
-// opts.arm: false leaves the forearm off. Returns { dispose(), get obj(), info }.
-// info: { size, grip, unit }: grip is the parts' origin (the grip) in the
+// opts.arm: false leaves the forearm off. opts.onScan(scan): called when the
+// model's scanned look goes on (SCANS; later, once loaded), for a caller that
+// gives the model's meshes its own materials. Returns { dispose(), get obj(), info }.
+// info: { size, grip, unit, scan }: grip is the parts' origin (the grip) in the
 // model's space, unit the cells per PARTS unit (so a point given in PARTS
-// units p sits at grip + p × unit).
-export function attachModel(parent, key, onLoad, { arm: withArm = true } = {}) {
+// units p sits at grip + p × unit); scan(p) is a point on the model's scan
+// (SCANS: its own metres) in the model's space, or null when it has none.
+export function attachModel(parent, key, onLoad, { arm: withArm = true, onScan = null } = {}) {
   const { obj, ...info } = normalised(key, withArm);
+  info.scan = SCANS[key] ? (p) => scanPoint(key, p, info.grip) : null;
   obj.name = `viewmodel-${key}`;
+  let disposed = false;
+  if (SCANS[key]) {
+    const inner = obj.children[0];
+    const muzzle = obj.getObjectByName('muzzle');
+    if (muzzle && SCANS[key].muzzle) muzzle.position.copy(scanPoint(key, SCANS[key].muzzle, info.grip));
+    scanOnto(key, obj, inner, info.grip, onScan, () => disposed);
+  }
   parent.add(obj);
   onLoad?.(obj, info);
   globalThis.__app?.requestRender?.();
-  let disposed = false;
   return {
     get obj() { return obj; },
     info,
@@ -495,7 +624,7 @@ export function attachModel(parent, key, onLoad, { arm: withArm = true } = {}) {
       if (disposed) return;
       disposed = true;
       obj.removeFromParent();
-      obj.traverse((o) => o.geometry?.dispose());   // the materials are shared
+      obj.traverse((o) => { if (!o.userData.shared) o.geometry?.dispose(); });   // the materials are shared
     },
   };
 }
