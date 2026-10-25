@@ -299,6 +299,7 @@ async function parseTrace(xctrace, trace, pid) {
 }
 
 const LIMITER_NAMES = /limiter|utilization/i;
+export const DAWN_PREFIX = /^Dawn_(?:Compute|Render)PassEncoder_?/;
 const USEFUL_COUNTER = /limiter|utilization|occupancy|bandwidth|spill|cache|miss/i;
 const OCCUPANCY_NAMES = /occupancy/i;
 
@@ -306,7 +307,8 @@ function summarize({ encoders, work, spills, counterNames, counterTotals, sample
   const groups = new Map();
   for (const [id, w] of work) {
     const e = encoders.get(id);
-    const label = e?.label || w.fallback || `encoder ${id}`;
+    // Dawn names a labelled encoder "Dawn_ComputePassEncoder_<WebGPU label>"
+    const label = (e?.label || w.fallback || `encoder ${id}`).replace(DAWN_PREFIX, '') || '(unlabelled)';
     const g = groups.get(label) ?? { label, count: 0, totalNs: 0, channels: {}, spillEvents: 0, spilledBytesMax: 0, spilledBytesPerEncoder: 0, ids: [] };
     g.count++; g.ids.push(id);
     let busy = 0;
@@ -352,15 +354,15 @@ function summarize({ encoders, work, spills, counterNames, counterTotals, sample
       windowMs,
       gpuBusyMs: busyMs,
       encoders: work.size,
-      labelled: byEncoder.some(e => !/^(Compute|Render|Blit) Command \d+$/.test(e.label)),
+      labelled: [...encoders.values()].some(e => DAWN_PREFIX.test(e.label) && e.label.replace(DAWN_PREFIX, '')),
       top: byEncoder.slice(0, 5).map(e => ({ label: e.label, gpuMs: +e.gpuMs.toFixed(3), shareOfGpu: busyMs ? +(e.totalMs / busyMs).toFixed(3) : null })),
       spilling: byEncoder.filter(e => e.spills).sort((a, b) => b.spills.bytesMax - a.spills.bytesMax).slice(0, 10)
         .map(e => ({ label: e.label, bytesMax: e.spills.bytesMax, bytesPerEncoder: e.spills.bytesPerEncoder, gpuMs: +e.gpuMs.toFixed(3) })),
       counters: counterList.map(c => ({ name: c.name, mean: c.mean, max: c.max })),
       counterSamples: samples,
       counterNote: usable.some(c => LIMITER_NAMES.test(c.name) || OCCUPANCY_NAMES.test(c.name)) ? null
-        : `This Mac's xctrace streamed ${counterList.length ? counterList.map(c => `"${c.name}"`).join(', ') + (usable.length || !samples ? '' : ' (all zero)') : 'no counters'}`
-          + ' and no occupancy or limiter counters, though the template asked for Performance Limiters. Use Instruments.app'
+        : `This Mac's xctrace streamed ${counterList.length ? 'only ' + counterList.map(c => `"${c.name}"`).join(', ') : 'no GPU counters'}`
+          + ': no occupancy or limiter counters, though the template asked for Performance Limiters. Use Instruments.app'
           + ' (Metal System Trace, GPU > Counter Set: Performance Limiters) or an Xcode GPU capture for those; spills and channel times above are real.',
     },
   };

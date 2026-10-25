@@ -31,7 +31,7 @@ recording, or a start or save timeout. It kills xctrace and never hangs.
 
 | field | meaning |
 |---|---|
-| `label` | the Metal encoder label, which is the WebGPU pass label when the Dawn switch is on |
+| `label` | the WebGPU pass label. Dawn names the Metal encoder `Dawn_ComputePassEncoder_<label>` and the tool strips that prefix. Unlabelled passes show as `(unlabelled)`, and other Metal work as `Blit Command N` or `GPU Execution` |
 | `count` | how many times that encoder ran during the capture |
 | `gpuMs` | mean GPU time per run: the longest of its channels, because vertex and fragment work overlap on Apple's tiler |
 | `channels.Vertex / Fragment / Compute` | mean GPU ms per run in each hardware channel. A render pass whose Fragment time dwarfs Vertex is pixel-bound |
@@ -58,6 +58,18 @@ recording, or a start or save timeout. It kills xctrace and never hangs.
   Buffer / Memory read means bandwidth, and "Last Level Cache" means misses.
   If every limiter is low but the pass is slow, the shader is
   occupancy-bound or stalled.
+
+### Sample (lab map, prod, 3 s, attached to the GPU process)
+
+```
+label            count   gpuMs  fragment  compute  spill B
+v2block             73   9.093         -    9.093     2976
+scene               35  16.137    16.137        -     1552
+v2pairs           1460   0.100         -    0.100      288
+v2heat              73   1.589         -    1.589      816
+```
+
+In that run v2block (35 % of GPU time) and the scene render pass (30 %) both run shaders that spill registers.
 
 ### What this Mac can't give (M5, Xcode 27.1, 2026-10-24)
 
