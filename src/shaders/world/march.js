@@ -406,6 +406,8 @@ struct MarchFrag {
 //                    gathers along the way (liquid, media, glass: col, trans) and its end, into the
 //                    same G-buffer (see "The event stage" below)
 //   'world reflect'  the pixel's one deferred reflection trace (gfx/liquid.js reflectResolve)
+//   'world probe'    the bounce light's probe of every second pixel each way (a quarter of them), into P
+//                    (see "The probe at a quarter of the pixels" below)
 //   'world shade'    matOf / shadeHit / sun / probes / near field of the hit (the tail of the
 //                    tracer, unchanged), over the gathered colour, haze, depth
 // then the scene pass composites the result over the sky (compositeWGSL), as the whole march drew.
@@ -419,6 +421,7 @@ struct MarchFrag {
 //   R1  event → reflect                 its env (f16 × 3), weight K (f16 × 3), wf
 //   K   march → event                   the lean loop's state at its first rich event (rsStore), 3 layers
 //   O   reflect → shade          what the colour owes the reflection (rgba16float)
+//   P   probe → shade            the probe of every second pixel each way, half size (2 layers: its 16 values as f16)
 //   S,D shade → scene pass       premultiplied colour (rgba16float), depth (r32float, -1: no hit)
 // Intentional (grains): the grain switches' hand-off band keeps a second shading path in flight
 // across the cut (gfx/grains.js gAlt*), so those detail variants draw as one pass ('whole').
@@ -466,9 +469,10 @@ fn evGateZ(b: u32) -> f32 {
 ${RICH_BODIES.map((b, i) => { const k = EVENT_KINDS.find((x) => x.takes.includes(b)); return k ? `  if (b == ${i + 1}u) { return ${KIND_Z[k.key]}; }` : ''; }).filter(Boolean).join('\n')}
   return 0.0;
 }`;
-export const MARCH_STAGES = ['march', ...EVENT_KINDS.map(kindStage), 'regate', 'event', 'reflect', 'shade'];
-/** Whether the cost view counts a stage's work (the re-gate traces nothing: it runs as it is in the counted chain). */
-export const stageCounted = (stage) => stage !== 'regate';
+export const MARCH_STAGES = ['march', ...EVENT_KINDS.map(kindStage), 'regate', 'event', 'reflect', 'probe', 'shade'];
+/** Whether the cost view counts a stage's work (the re-gate traces nothing, the probe stage only looks probes up:
+ * they run as they are in the counted chain). */
+export const stageCounted = (stage) => stage !== 'regate' && stage !== 'probe';
 /** Whether a detail variant draws through the split stages (not the grain variants: see above). */
 export const marchSplits = (detail = {}) => !GRAINS_ANY(detail);
 const SPLIT_AT = "  // ---- the pixel's traced reflection, marched once";
@@ -484,11 +488,15 @@ function splitTrace(detail, format, optics, split = null) {
 // G-buffer formats, their textures' bytes per pixel (the report's memory column)
 export const GBUF = {
   G0: 'rgba32uint', G1: 'rgba32uint', G2: 'rgba32uint', R0: 'rgba32uint', R1: 'rgba32uint', O: 'rgba16float', S: 'rgba16float', D: 'r32float',
-  K: 'rgba32uint', Z: 'depth16unorm', M: 'r8uint',
+  K: 'rgba32uint', Z: 'depth16unorm', M: 'r8uint', P: 'rgba32uint',
 };
-/** The G-buffer's array textures, their layers (K: the event stage's record, one binding for its three texels). */
-export const GBUF_LAYERS = { K: 3 };
-export const GBUF_BYTES_PER_PIXEL = Object.entries(GBUF).reduce((n, [k, f]) => n + ({ rgba32uint: 16, rgba16float: 8, r32float: 4, depth16unorm: 2, r8uint: 1 })[f] * (GBUF_LAYERS[k] ?? 1), 0);
+/** The G-buffer's array textures, their layers (K: the event stage's record, one binding for its three texels; P: a probe's two). */
+export const GBUF_LAYERS = { K: 3, P: 2 };
+/** The G-buffer textures at half the scene target's size each way (rounded up): one texel per 2×2 pixels. */
+export const GBUF_HALF = new Set(['P']);
+/** A G-buffer texture's size for a w × h scene target: [width, height, layers]. */
+export const gbufSize = (k, w, h) => (GBUF_HALF.has(k) ? [Math.ceil(w / 2), Math.ceil(h / 2)] : [w, h]).concat(GBUF_LAYERS[k] ?? 1);
+export const GBUF_BYTES_PER_PIXEL = Object.entries(GBUF).reduce((n, [k, f]) => n + ({ rgba32uint: 16, rgba16float: 8, r32float: 4, depth16unorm: 2, r8uint: 1 })[f] * (GBUF_LAYERS[k] ?? 1) / (GBUF_HALF.has(k) ? 4 : 1), 0);
 // The event stage's gate (Z): the lean march writes depth 0 where it stopped at a rich event and leaves the
 // clear (1) elsewhere; the event stage draws at depth EVENT_GATE_Z, tested 'greater' without writing, so the
 // depth test before its fragment shader (early-z) launches it on those pixels only: the event pixels'
@@ -505,7 +513,8 @@ const STAGE_EXTRA = {
   regate: [['gbM', 'M']],
   event: KERNEL_EXTRA,
   reflect: [['gbG1', 'G1'], ['gbG2', 'G2'], ['gbR0', 'R0'], ['gbR1', 'R1']],
-  shade: [['gbG0', 'G0'], ['gbG1', 'G1'], ['gbG2', 'G2'], ['gbO', 'O']],
+  probe: [['gbG0', 'G0'], ['gbG1', 'G1'], ['gbG2', 'G2']],
+  shade: [['gbG0', 'G0'], ['gbG1', 'G1'], ['gbG2', 'G2'], ['gbO', 'O'], ['gbP', 'P']],
 };
 /** The G-buffer textures a stage's group 0 binds after the frame's four: [binding, texture key, write?]. */
 export const stageTextures = (stage) => (STAGE_EXTRA[stage] ?? []).map(([, k, w], i) => [GB_BASE + i, k, !!w]);
@@ -727,6 +736,73 @@ fn shadeView(ro0: vec3f, rd0: vec3f, px: vec2i) -> VolumeHit {
   let cut = false;   // (a cut ray has no floor: the march's test, gbFloor)
   let ro = ro0;
 `;
+// ---- The probe at a quarter of the pixels ----
+// The bounce light's probe (shaders/world/light.js probeAt: the finest clip level holding the point, its
+// four SH textures read trilinear) was ~0.8 ms of the shade stage's ~2.1 ms on the Lab (Apple M5, 2560×1600
+// at ×0.667, 2026-10-25: the stage with the lookup stubbed, against it whole, each knocked out in its own
+// run). It varies over the probes' spacing (4 cells near the eye, 16 and 64 further), tens to hundreds of
+// pixels on screen, so it is looked up once per 2×2 pixels: the probe stage (half size each way, P) takes
+// the top-left pixel of each block, its surface's point and normal as the shade's shadeHit takes them, and
+// the shade stage (shadeProbe) averages the 1, 2 or 4 blocks around a pixel whose looked-up point lies
+// within PR_UP_CELLS (or PR_UP_PX pixel footprints) of the pixel's own. Where none does (a silhouette, a
+// thin edge, a pixel whose block has no shaded surface) the pixel looks its own probe up, so no surface
+// borrows another's light. The mixed-resolution rule of Cantlay (GPU Gems 3 ch. 23: shade low, resolve
+// edges in full) with a geometry-aware upsample, as Frostbite and UE5 run their diffuse indirect at half
+// resolution and Teardown its diffuse at a quarter (research/voxel-traversal/KNOWLEDGE.md). The probe's
+// direction terms are still evaluated per pixel at its own bumped normal and reflection (giIrradiance,
+// giRadiance, giSkyVis), so normal-mapped detail in the bounce light is kept. Off and Balanced only: Full
+// (grains, the one-pass march, marchSplits) looks every pixel's probe up as before.
+const PROBE_WGSL = /* wgsl */ `
+const PR_UP_NONE: u32 = 0xffffffffu;   // P's first word where its block has no shaded surface (two f16 NaNs: no probe packs to it)
+const PR_UP_CELLS: f32 = 1.0;          // cells: a block's probe stands in within a quarter of level 0's probe spacing ...
+const PR_UP_PX: f32 = 4.0;             // ... or this many of the pixel's footprints, further off
+fn gbProbeOf(a: vec4u, b: vec4u) -> Probe {
+  return Probe(vec4f(unpack2x16float(a.x), unpack2x16float(a.y)), vec4f(unpack2x16float(a.z), unpack2x16float(a.w)),
+               vec4f(unpack2x16float(b.x), unpack2x16float(b.y)), vec4f(unpack2x16float(b.z), unpack2x16float(b.w)));
+}`;
+const shadeProbeWGSL = /* wgsl */ `
+${PROBE_WGSL}
+// The probe shadeHit lights point p (normal ng) with: P's blocks around the pixel (bilinear: a pixel at an
+// odd coordinate lies halfway between two blocks' pixels, so they weigh alike), those whose point is near p
+// only; else p's own (surfProbe).
+fn shadeProbe(p: vec3f, ng: vec3f) -> Probe {
+  let px = gbPix();
+  let lo = px >> vec2u(1u);
+  let odd = px & vec2i(1);
+  let lim = vec2i(textureDimensions(gbP).xy) - 1;
+  let full = vec2i(textureDimensions(gbG0)) - 1;
+  let tol = max(PR_UP_CELLS, PR_UP_PX * footprint(p));
+  var near = 0u;   // (the taps within tol, a bit each)
+  var best = vec2i(-1);
+  var bestD = 3.4e38;
+  for (var j = 0; j < 4; j++) {
+    let o = vec2i(j & 1, j >> 1u);
+    if (any(o > odd)) { continue; }   // (an even coordinate: its own block alone on that axis)
+    let q = min(lo + o, lim);
+    if (textureLoad(gbP, q, 0, 0).x == PR_UP_NONE) { continue; }
+    let d = distance(bitcast<vec3f>(textureLoad(gbG0, min(q * 2, full), 0).xyz), p);
+    if (d < bestD) { bestD = d; best = q; }
+    if (d <= tol) { near |= 1u << u32(j); }
+  }
+  if (best.x < 0) { return lcOpenProbe(); }
+  if (near == 0u) { return gbProbeOf(textureLoad(gbP, best, 0, 0), textureLoad(gbP, best, 1, 0)); }
+  var a = vec4f(0.0);
+  var b = vec4f(0.0);
+  var c = vec4f(0.0);
+  var e = vec4f(0.0);
+  for (var j = 0; j < 4; j++) {
+    if ((near & (1u << u32(j))) == 0u) { continue; }
+    let q = min(lo + vec2i(j & 1, j >> 1u), lim);
+    let g = gbProbeOf(textureLoad(gbP, q, 0, 0), textureLoad(gbP, q, 1, 0));
+    a += g.c0; b += g.cx; c += g.cy; e += g.cz;
+  }
+  let k = 1.0 / f32(countOneBits(near));
+  return Probe(a * k, b * k, c * k, e * k);
+}`;
+// shadeHit's probe (gfx/surface.js), in the shade stage's module only
+const SHADE_PROBE_AT = 'let gi = surfProbe(select(s.p, pf, onFloor), ng);';
+const shadeProbeAt = (code) => rewrite(code, [[SHADE_PROBE_AT, 'let gi = shadeProbe(select(s.p, pf, onFloor), ng);']], 'gfx/surface.js shadeHit');
+
 // The tail itself, three names changed: the owed reflection is the reflect stage's (O), and the
 // floor's test and point are the march's (GB_FLOOR, G0).
 const shadeTail = (tail) => rewrite(tail, [
@@ -849,6 +925,41 @@ ${vertexWGSL}
   if ((f & GB_REFL) == 0u) { discard; return vec4f(0.0); }
   return vec4f(reflectView(px, f), 0.0);
 }`,
+  // the probe stage: at each P texel, the top-left pixel of its 2×2 block, the probe its shadeHit would take
+  // (the floor's at its point on y = 0 and straight up; a surface's at its point and normal), else PR_UP_NONE
+  // (no shaded surface, or a smooth one whose normal the shade works out from the fields: GB_N0)
+  probe: () => /* wgsl */ `
+${PROBE_WGSL}
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+  return vec4f(select(-1.0, 3.0, i == 2u), select(-1.0, 3.0, i == 1u), 0.0, 1.0);
+}
+struct ProbeOut {
+  @location(0) a: vec4u,
+  @location(1) b: vec4u,
+}
+@fragment fn fs(@builtin(position) pos: vec4f) -> ProbeOut {
+  var o: ProbeOut;
+  o.a = vec4u(PR_UP_NONE);
+  let px = min(vec2i(floor(pos.xy)) * 2, vec2i(textureDimensions(gbG1)) - 1);
+  let g1 = textureLoad(gbG1, px, 0);
+  let f = g1.w;
+  let stop = (f & GB_STOP) != 0u;
+  let onFloor = !stop && (f & GB_FLOOR) != 0u;   // (the tail's floorLit: the floor only where nothing stopped the ray)
+  if ((f & GB_HIT) == 0u || !(stop || onFloor) || (!onFloor && (f & GB_N0) != 0u)) { return o; }
+  let hp = bitcast<vec3f>(textureLoad(gbG0, px, 0).xyz);
+  var p = vec3f(hp.x, 0.0, hp.z);
+  var ng = vec3f(0.0, 1.0, 0.0);
+  if (!onFloor) {
+    p = hp;
+    var nw = g1.x;   // (the lean march's hit: G2's words in G1)
+    if ((f & GB_LEAN) == 0u) { nw = textureLoad(gbG2, px, 0).x; }
+    ng = gbOctDec(nw);
+  }
+  let g = surfProbe(p, ng);
+  o.a = vec4u(pack2x16float(g.c0.xy), pack2x16float(g.c0.zw), pack2x16float(g.cx.xy), pack2x16float(g.cx.zw));
+  o.b = vec4u(pack2x16float(g.cy.xy), pack2x16float(g.cy.zw), pack2x16float(g.cz.xy), pack2x16float(g.cz.zw));
+  return o;
+}`,
   shade: () => /* wgsl */ `
 ${vertexWGSL}
 struct ShadeOut {
@@ -875,7 +986,8 @@ const stageTrace = (stage, detail, format, optics) => {
   }
   const t = splitTrace(detail, format, optics);
   if (stage === 'reflect') return `${t.before}${reflectWGSL}`;
-  return `${t.before}${shadePrologueWGSL}${shadeTail(t.tail)}`;
+  if (stage === 'probe') return '';   // (its entry looks probes up only)
+  return `${t.before}${shadeProbeWGSL}${shadePrologueWGSL}${shadeTail(t.tail)}`;
 };
 
 /** The scene pass's composite of the shade stage's colour and depth (S, D): over, at its depth, nothing where -1. */
@@ -944,7 +1056,7 @@ export function worldMarchFrag(physGrid, { view = 'realistic', detail = {}, fixe
     worldLightWGSL(),
     crystalGLSL,
     tracerCommonWGSL(MarchParams),
-    floorWorld(surfaceGLSL(detail, { sourceAppearance: false })), decoWorld(),
+    (stage === 'shade' ? shadeProbeAt : (x) => x)(floorWorld(surfaceGLSL(detail, { sourceAppearance: false }))), decoWorld(),
     liquidGLSL,
     decoSurfGLSL,
     glassShapeWGSL,
@@ -998,8 +1110,9 @@ export const worldMarchPipeline = (stage = 'whole') => {
   return { vertex: { entry: 'vs' }, fragment: { entry: 'fs', targets }, primitive, ...(gate ? { depthStencil: gate } : {}) };
 };
 /** The color targets each split stage renders into (GBUF keys, in location order). */
+// (a key named twice is the texture's layers in turn: the probe stage's P, layers 0 and 1)
 export const STAGE_TARGETS = { march: ['G0', 'G1', 'M'], ...Object.fromEntries(EVENT_KINDS.map((k) => [kindStage(k), ['G0', 'G1', 'G2', 'R0', 'R1', 'M']])),
-  regate: [], event: ['G0', 'G1', 'G2', 'R0', 'R1'], reflect: ['O'], shade: ['S', 'D'] };
+  regate: [], event: ['G0', 'G1', 'G2', 'R0', 'R1'], reflect: ['O'], probe: ['P', 'P'], shade: ['S', 'D'] };
 /** Colour bytes a pixel the widest gated stage writes (its targets'): the device limit the event kernels need. */
 export const EVENT_COLOR_BYTES = Math.max(...Object.values(STAGE_TARGETS).map((ks) => ks.reduce((n, k) => n + ({ rgba32uint: 16, rgba16float: 8, r32float: 4, r8uint: 1 })[GBUF[k]], 0)));
 /** The stages that draw over what an earlier stage left in their targets (loadOp 'load'), not a cleared target. */

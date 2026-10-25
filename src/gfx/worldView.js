@@ -30,7 +30,7 @@ import { decoShown } from '../deco.js';
 import { isMaterialView } from '../views.js';
 import {
   worldMarchFrag, worldMarchPipeline, MarchParams, physParams, WORLD_MARCH_LAYOUTS, WORLD_GROUP2, WORLD_MARCH_VERTICES, WORLD_MARCH_LAYOUT_NAMES,
-  MARCH_STAGES, marchSplits, EVENT_COLOR_BYTES, stageCounted, worldMarchLayoutNames, stageTextures, STAGE_TARGETS, STAGE_LOADS, STAGE_GATE, STORAGE_GBUF, GBUF, GBUF_LAYERS, gbufViewDim, GBUF_NO_DEPTH, compositeWGSL, COMPOSITE_LAYOUT,
+  MARCH_STAGES, marchSplits, EVENT_COLOR_BYTES, stageCounted, worldMarchLayoutNames, stageTextures, STAGE_TARGETS, STAGE_LOADS, STAGE_GATE, STORAGE_GBUF, GBUF, GBUF_LAYERS, gbufSize, gbufViewDim, GBUF_NO_DEPTH, compositeWGSL, COMPOSITE_LAYOUT,
   COMPOSITE_NAME, COMPOSITE_LAYOUT_NAMES, stagePipeName,
 } from '../shaders/world/march.js';
 import { worldGroup2Entries } from '../shaders/world/bindings.js';
@@ -149,15 +149,20 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     const tex = {}, views = {};
     for (const [k, format] of Object.entries(GBUF)) {
       const usage = GPUTextureUsage.TEXTURE_BINDING | (STORAGE_GBUF.has(k) ? GPUTextureUsage.STORAGE_BINDING : GPUTextureUsage.RENDER_ATTACHMENT);
-      tex[k] = gpu.createTexture({ label: label(`gbuffer ${k}`), size: [w, h, GBUF_LAYERS[k] ?? 1], format, usage });
+      tex[k] = gpu.createTexture({ label: label(`gbuffer ${k}`), size: gbufSize(k, w, h), format, usage });
       views[k] = tex[k].createView({ dimension: gbufViewDim(k) });
     }
-    gb = { w, h, tex, views };
+    gb = { w, h, tex, views, layers: layerViews(tex) };
     gbs.unshift(gb);
     return gb;
   }
   const CLEAR = { D: { r: GBUF_NO_DEPTH, g: 0, b: 0, a: 0 } };
-  const attach = (k, g = gb, load = false) => ({ view: g.views[k], loadOp: load ? 'load' : 'clear', storeOp: 'store', clearValue: CLEAR[k] ?? { r: 0, g: 0, b: 0, a: 0 } });
+  // (a layered texture a stage renders into: one 2d view a layer, shaders/world/march.js STAGE_TARGETS)
+  function layerViews(tex) {
+    return Object.fromEntries(Object.keys(GBUF_LAYERS).filter((k) => !STORAGE_GBUF.has(k) && tex[k])
+      .map((k) => [k, Array.from({ length: GBUF_LAYERS[k] }, (_, i) => tex[k].createView({ dimension: '2d', baseArrayLayer: i, arrayLayerCount: 1 }))]));
+  }
+  const attach = (k, g = gb, load = false, layer = 0) => ({ view: g.layers?.[k]?.[layer] ?? g.views[k], loadOp: load ? 'load' : 'clear', storeOp: 'store', clearValue: CLEAR[k] ?? { r: 0, g: 0, b: 0, a: 0 } });
   // the split stages into G-buffer g (the frame's, or the cost view's own), each a pass of its own
   function recordStages(frame, parts, g, depth, header, params, { names = (st) => `world ${st}`, cost = null } = {}) {
     const copy = worldCopy.bindGroup, g2 = group2();
@@ -167,7 +172,8 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
       const gate = STAGE_GATE[st] === 'write' ? { view: g.views.Z, depthClearValue: 1, depthLoadOp: 'clear', depthStoreOp: 'store' }
         : STAGE_GATE[st] === 'rewrite' ? { view: g.views.Z, depthLoadOp: 'load', depthStoreOp: 'store' }
           : STAGE_GATE[st] === 'test' ? { view: g.views.Z, depthReadOnly: true } : undefined;
-      const rp = frame.render({ colorAttachments: STAGE_TARGETS[st].map((k) => attach(k, g, STAGE_LOADS.has(st))), ...(gate ? { depthStencilAttachment: gate } : {}) }, names(st));
+      const rp = frame.render({ colorAttachments: STAGE_TARGETS[st].map((k, i, ks) => attach(k, g, STAGE_LOADS.has(st), ks.slice(0, i).filter((x) => x === k).length)),
+        ...(gate ? { depthStencilAttachment: gate } : {}) }, names(st));
       try {
         parts[st].draw(rp, { bind: [frameGroup(depth, st, g, stageCounted(st) ? cost?.[st] ?? null : null), copy, g2], header, params, count: WORLD_MARCH_VERTICES });
       } finally { rp.end(); }
@@ -471,11 +477,11 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
     costGbuffer(w, h) {
       const tex = {}, views = {};
       for (const [k, format] of Object.entries(GBUF)) {
-        tex[k] = gpu.createTexture({ label: label(`cost gbuffer ${k}`), size: [w, h, GBUF_LAYERS[k] ?? 1], format,
+        tex[k] = gpu.createTexture({ label: label(`cost gbuffer ${k}`), size: gbufSize(k, w, h), format,
           usage: TEX.TEXTURE_BINDING | TEX.COPY_SRC | (STORAGE_GBUF.has(k) ? TEX.STORAGE_BINDING : TEX.RENDER_ATTACHMENT) });
         views[k] = tex[k].createView({ dimension: gbufViewDim(k) });
       }
-      return { w, h, tex, views, destroy() { Object.values(tex).forEach((t) => t.destroy()); } };
+      return { w, h, tex, views, layers: layerViews(tex), destroy() { Object.values(tex).forEach((t) => t.destroy()); } };
     },
     /**
      * Replays the last recorded draw (lastRecorded) on the frame state it left: the split stages
