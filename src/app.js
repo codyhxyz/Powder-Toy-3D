@@ -2651,8 +2651,7 @@ const frameHooks = {
     // the world after physics' step: W writes back what physics changed, then F's fields and L's
     // lighting update for it, before the march draws (docs/seamless-world.md, "frame order")
     if (!blocks && worldView?.draws(viewKeyOf(renderView), !!warpNow()?.k)) {
-      prof.phase('derived');
-      worldView.update(gpu.frame, { boxes: null, camera, sun: SUN });
+      worldView.update(gpu.frame, { boxes: null, camera, sun: SUN, phase: prof.phase });
     }
     prof.phase('view');
     // (a mesh-only frame keeps what the wires drew into the scene pass: their upkeep for it too, the far field's prepass)

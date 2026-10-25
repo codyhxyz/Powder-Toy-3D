@@ -317,20 +317,24 @@ export function createWorldView(gpu, sim, { volume, onVariant = () => {} }) {
      * The frame's world upkeep, in the contract's order, after physics' step: W writes back the
      * boxes physics changed, then F updates its clip levels and L its lighting for those changes.
      * @param {object} frame gpu.frame
-     * @param {{ boxes?: object[], camera?: object, sun?: number[] }} [opts]
+     * @param {{ boxes?: object[], camera?: object, sun?: number[], phase?: (id: string) => void }} [opts] phase: the
+     *   profiler's (gfx/profiler.js PHASES: worldCopy, worldFields, worldLight), so its CPU and passes say whose they are
      */
-    update(frame, { boxes = [], camera = null, sun = null } = {}) {
+    update(frame, { boxes = [], camera = null, sun = null, phase = () => {} } = {}) {
       const rev = worldCopy.revision ?? 0;
+      phase('worldCopy');
       worldCopy.recordWriteback(frame, sim, boxes);
       const changes = worldCopy.changesSince ? worldCopy.changesSince(rev) : [];
       const eye = camera ? camera.position.clone().applyMatrix4(last.model.clone().invert()).toArray() : null;
       // F follows physics' window, not the eye: the march's full detail is the window's box (a god view's eye
       // is often past level 0's reach of it, which read the window's thin walls from coarse levels: gone)
       const focus = fieldFocus(xyz(sim.origin), win);
+      phase('worldFields');
       if (!primed && eye && worldCopy.bindGroup) { fields.prime(frame, focus); primed = true; } else if (eye) fields.update(frame, focus, changes);
       // L's writers read the tables and FrameUniforms in world cells (group 0 without the march's extras)
       lightFrame ??= gpu.bindGroup(gpu.layout('FRAME', RENDER_LAYOUT.FRAME), [
         { binding: 0, resource: { buffer: fu.tables } }, { binding: 1, resource: { buffer: uniforms.buffer } }], label('light frame'));
+      phase('worldLight');
       if (eye) light.update(frame, eye, sun, changes, { frameGroup: lightFrame });
     },
     /**
