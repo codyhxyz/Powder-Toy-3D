@@ -80,7 +80,7 @@ for (const bad of [[0, 0], [16, 16], [6, 0]]) { try { moveSlabs({ nx: 128, ny: 1
 { const bricks = [4, 32, 32], seen = new Set(); for (let i = 0; i < 4096; i++) seen.add(slabBrick(i, bricks).join()); if (seen.size !== 4096) fail('slabBrick is not one to one'); }
 
 // ---------------------------------------------------------------- 2. plan
-const PICTURE = ['leaveSource', 'leaveFar', 'sourceStore', 'sourceCaptured'];
+const PICTURE = ['leaveSource', 'sourceStore', 'sourceCaptured'];
 for (const physicsOnly of [false, true]) for (const worldCopy of [false, true]) for (const native of [false, true]) for (const trees of [false, true]) {
   const p = movePlan({ physicsOnly, worldCopy, native, trees }), at = (s) => p.indexOf(s), tag = JSON.stringify({ physicsOnly, worldCopy, native, trees });
   if (new Set(p).size !== p.length) fail(`plan repeats a step ${tag}`);

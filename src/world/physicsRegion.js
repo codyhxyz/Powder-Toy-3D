@@ -78,7 +78,6 @@ export function slabsOverlap(a, b) {
  *   leaveSource    the render source's copy of the slab (old picture: before the capture, which it versions)
  *   leaveCapture   the leaving slab's cells gathered (V2's exact bricks) and its diff, read back and coded later
  *   leaveDeco      its decoration into the decoration's store (state, not picture: src/deco.js)
- *   leaveFar       the far field summarizes it (old picture)
  *   shift          Simulation.shift: V2's cells, its dynamics, the flow (and, old picture only, the derived
  *                  passes' and occupancy's onShift); then the coding of any earlier leaving slab the new
  *                  one overlaps is finished, so the store holds everything the move brings back
@@ -97,7 +96,6 @@ export function movePlan({ physicsOnly = PHYSICS_ONLY_MOVE, worldCopy = false, n
     picture && 'leaveSource',
     'leaveCapture',
     'leaveDeco',
-    picture && 'leaveFar',
     'shift',
     worldCopy ? 'fillCopy' : 'fillGenerator',
     picture && 'sourceStore',

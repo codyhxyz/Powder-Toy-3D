@@ -1,4 +1,4 @@
-import { prelude, STATE_OPTS, LAYOUT, BRICK } from './common.js';
+import { prelude, LAYOUT, BRICK } from './common.js';
 import { lib, libLayouts } from './gfx/lib.js';
 import { RENDER_LAYOUT } from './bindings.js';
 import { surfaceGLSL } from './gfx/surface.js';
@@ -106,8 +106,10 @@ ${body}
 }`;
 /** A region kernel's dispatch over world bricks [lo, lo + size) (size along x, y, z). */
 export const regionDispatch = (size) => fold(Math.ceil(size[0] * size[1] * size[2] / 64));
+export { regionMain as farRegionMain };
 
-// Counting a brick's cells into its texel (both summaries: the generator's and the window's).
+// Counting a brick's cells into its texel (every summary: the scene's, farSceneFrag, and the world copy's,
+// shaders/world/farFromCopy.js, which imports it as FAR_COUNT_GLSL with regionMain as farRegionMain).
 const countGLSL = /* wgsl */ `
 // what stops light in the far field, and what is a transparent liquid
 fn farOpaque(id: i32) -> bool { return !isGasLike(id) && RCLASS(id) != R_LIQUID; }
@@ -169,6 +171,7 @@ fn farPack(c: ptr<function, FarCount>) -> vec4u {
   return farPackTexel(f);
 }
 `;
+export { countGLSL as FAR_COUNT_GLSL };
 
 // ---------------------------------------------------------------- trees
 // A scene with trees (scene.trees, world/scenes/index.js: the island's) has the
@@ -521,43 +524,6 @@ fn farTrees(c: ptr<function, FarCount>, b: vec3i, o: vec3i, y0: i32) {
 }
 `;
 
-// Window → far grid: the window's own state, brick by brick, for the region
-// being drawn (world bricks; H.origin the window's). Below the world counts as
-// rock, above it as air; a cube reaching past the window's sides repeats them.
-// Group 2: the grid, written.
-export const FAR_WIN_LAYOUT = [store(0, FAR_FORMATS.grid)];
-export const farWinFrag = (g, L) => /* wgsl */ `
-${prelude(g, STATE_OPTS.STATE_RO)}
-${farLayoutGLSL(L)}
-${countGLSL}
-@group(2) @binding(0) var farOut: texture_storage_3d<rgba16uint, write>;
-${regionMain(/* wgsl */ `
-  let gb = b - H.origin / BS;   // the grid's brick
-  if (any(gb < vec3i(0)) || any(gb >= vec3i(BX, BY, BZ))) { return; }
-  var c: FarCount;
-  let o = gb * BS;
-  for (var dz = -FAR_CUBE_LO; dz < BS + FAR_CUBE_LO; dz++) {
-    for (var dx = -FAR_CUBE_LO; dx < BS + FAR_CUBE_LO; dx++) {
-      let col = clamp(o.xz + vec2i(dx, dz), vec2i(0), vec2i(NX, NZ) - 1);
-      let own = dx >= 0 && dz >= 0 && dx < BS && dz < BS;
-      var above = E_EMPTY;
-      // top down through the cube [-lo, BS + lo)
-      for (var dy = BS + FAR_CUBE_LO - 1; dy >= -FAR_CUBE_LO; dy--) {
-        let y = o.y + dy;
-        var a = vec4f(f32(E_EMPTY), AMBIENT, 0.0, 0.0);
-        if (y < 0) { a = vec4f(f32(E_ROCK), AMBIENT, 0.0, 0.0); }
-        else if (y < NY) { a = fetchA(vec3i(col.x, y, col.y)); }
-        let id = eid(a);
-        if (farOpaque(id)) { c.s += 1.0; }
-        else if (farLiquid(id)) { c.l += 1.0; }
-        if (own && dy >= 0 && dy < BS) { farCell(&c, materialWord(id, appearanceOf(id, a.w)), above, a.y); }
-        above = id;
-      }
-    }
-  }
-  textureStore(farOut, b, farPack(&c));`)}
-`;
-
 // ---------------------------------------------------------------- scenes
 // A world scene's far grid (world/scenes/index.js) is summarized from its
 // sceneCell, a chunk of FAR_SCENE.CHUNK² brick columns at a time
@@ -568,8 +534,8 @@ ${regionMain(/* wgsl */ `
 //     buffer with low-16 material word and high-16 temperature half,
 //     its transient scene cells; saved bricks retain their original raw A/B.
 //   - farSceneFrag summarizes the chunk's bricks from those cells exactly as
-//     farWinFrag does from the window's state (below the world rock, above it
-//     air), and for a scene with trees joins the trees in reach (farTrees),
+//     the world copy's summary does from its cells (shaders/world/farFromCopy.js;
+//     below the world rock, above it air), and for a scene with trees joins the trees in reach (farTrees),
 //     leaving out the brick columns the window has already summarized: the
 //     window's state wins wherever it has been (the window mask, a bit per
 //     world brick column).
@@ -1446,10 +1412,6 @@ export const SCENE_CELLS_LAYOUT_OF = SCENE_CELLS_LAYOUT;
 export const TREE_CAND_LAYOUT = (s) => [...sceneLayout({ data: !!s.data }), buf(TREE_CAND_BINDING, 'storage')];
 export const TREE_THIN_LAYOUT = (s) => [...sceneLayout({ data: !!s.data }), buf(TREE_CAND_BINDING), buf(TREE_CAND_BINDING + 1, 'storage')];
 export const WGSL_CHECK = () => [
-  {
-    name: 'farWin', kind: 'compute', grids: ['64', '128'], warm: false, code: (g) => farWinFrag(g, Lw),
-    layouts: CHECK_LAYOUTS(FAR_WIN_LAYOUT, 'STATE_RO'), params: RegionParams, dispatch: () => regionDispatch([4, Lw.bricks.n[1], 32]),
-  },
   ...[false, true].map((trees) => ({
     name: `farScene${trees ? ' trees' : ''}`, kind: 'compute', grids: ['128'], warm: false, code: (g) => farSceneFrag(g, Lw, trees),
     layouts: CHECK_LAYOUTS(FAR_SCENE_LAYOUT(trees)), params: RegionParams, dispatch: () => regionDispatch([16, Lw.bricks.n[1], 16]),

@@ -50,8 +50,8 @@ import { WorldCopyFill } from './copyFill.js';
 // written again before they are read.
 //
 // The far field (world/far.js), when the app gives the window one (far), is
-// built on load, summarizes the slab about to leave in step 1, and sweeps over
-// the window's region while it changes (update).
+// built from the world copy and kept current from its changes, never from the
+// window: update only ticks it, and a move does nothing to it.
 //
 // What the world holds is its scene (world/scenes): P = scene.params. The
 // generator (world/gpu.js) runs the scene's sceneCell for the fill and the
@@ -110,7 +110,7 @@ export class WorldWindow {
     this.scene = scene;
     this.P = scene.params({ size, seed });
     // its own generator, not generatorFor's shared one: tools run two windows
-    // (its prepass room covers the far field's chunks too: world/far.js)
+    // (its prepass room: a far scene chunk's, which covers the world copy's build chunks: world/worldCopy.js)
     const S = farSceneLayout(farLayout(size));
     this.gen = new WorldGenerator(sim, scene, this.P, { regions: [[S.side, size[1], S.side]] });
     this.wb = size.map((n) => n / BRICK);                          // the world in bricks
@@ -228,7 +228,6 @@ export class WorldWindow {
     const v2 = sim.compact?.isReady ? sim.compact : null;
     if (v2) v2.legacyNative = undefined;
     sim.noteWrite({ replaceState: !v2 });
-    if (!this.physicsOnly) this.far?.build();
     sim.dropHistory();   // undo would bring back a window of the old world
     // a new scene: the render fields and GI start over instead of blending in, and nothing is moving
     sim.fieldReset = sim.giReset = true;
@@ -240,9 +239,7 @@ export class WorldWindow {
   // from fillState() (it loads the saved state into the simulation: a
   // whole-grid write), the stored bricks (BrickStore.toBytes) and the planted
   // brick columns as they were saved. Like load, it drops undo and starts the
-  // derived passes over. The far field is rebuilt from the scene and the
-  // window: stored edits outside the window show from afar once the window has
-  // passed over them.
+  // derived passes over. (The far field follows the world copy.)
   loadSaved(origin, fillState, storeBytes, planted, interactions = null, nativeBytes = null) {
     const sim = this.sim;
     const next = decodeWorldState({ size: this.size, origin }, [sim.g.nx, sim.g.ny, sim.g.nz], storeBytes, planted, nativeBytes);
@@ -259,7 +256,6 @@ export class WorldWindow {
     this.planted.set(next.planted);
     sim.origin.set(origin[0], 0, origin[2]);
     fillState();
-    if (!this.physicsOnly) this.far?.build();
     sim.dropHistory();
     sim.fieldReset = sim.giReset = true;
     this.loaded = true;
@@ -300,7 +296,7 @@ export class WorldWindow {
   // move made, [dx, dz] world cells, or null.
   update(fx, fz) {
     if (!this.loaded || this.persistenceError || this.sim.nativeTransition || this.historyReaders) return null;
-    if (!this.physicsOnly) this.far?.tick();
+    this.far?.tick();   // (the world copy's changes and the far build's chunks: nothing of the window)
     if (this.capturing || this._moveWait || this.sim.deco?.pending) return null;
     if (this.sim.compactOwner && !this.sim.nativeCapabilities.world) return null;
     // (V2: the leaving slab's copy reads its cells natively: renderSource.js nativePackOf)
@@ -458,7 +454,6 @@ export class WorldWindow {
       case 'leaveDeco':   // the decoration of the slab that leaves goes into its own store (src/deco.js)
         sim.deco?.leave(leaveLo, bricks, (x, y, z) => this.store.key(leaveB[0] + x, leaveB[1] + y, leaveB[2] + z));
         break;
-      case 'leaveFar': this.far?.summarize(leaveLo, bricks); break;
       case 'shift': {   // 2.
         sim.shift(dx, dz, { picture });
         if (sim.compactOwner) trackLanding(this, sim.nativeIntegration?.landing);

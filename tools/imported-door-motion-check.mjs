@@ -316,15 +316,15 @@ test('range uploads preserve exact u32 pairs, neighbours/padding, X/Z/Y boundari
   assert.throws(()=>uploadAppearanceRange({}, {},words,region,53,1),/Invalid/);
 });
 
-test('far scene builds upload fully once, stream only dirty art, replace subscriptions and unsubscribe on dispose',()=>{
+test('far builds upload fully once, stream only dirty art, replace subscriptions and unsubscribe on dispose',()=>{
   const calls=[],scene=()=>({appearanceWords:new Uint32Array(53),listeners:new Set(),subscribeAppearance(fn){this.listeners.add(fn);return()=>this.listeners.delete(fn);}}),a=scene(),b=scene();
-  const far={ready:true,detail:{reset(){},dispose(){}},L:{bricks:{n:[3,2,2]}},groups(){},appearance:appearanceRegion([3,2,2],53),scene:a,
-    gpu:{queue:{writeTexture(...args){calls.push(args);}}},grid:{},region(){},k:{clear:{}},groupsFixed:{clear:{}},winMask:new Uint32Array(1),summarizeWindow(){},
-    sim:{origin:{x:0,z:0},g:{nx:12,nz:8},_retire(){}},refresh(){},_dropUnder(){},disposeTreeMaps(){}};
-  FarField.prototype.sceneBuild.call(far); assert.equal(calls.length,1); assert.deepEqual(calls[0][3],[3,far.appearance.planes,2]);
+  const far={ready:true,L:{bricks:{n:[3,2,2]}},appearance:appearanceRegion([3,2,2],53),scene:a,queued:new Set(),copy:{revision:0},
+    gpu:{queue:{writeTexture(...args){calls.push(args);}}},grid:{},region(){},k:{clear:{}},groupsFixed:{clear:{}},
+    sim:{origin:{x:0,z:0},g:{nx:12,nz:8},_retire(){}},refresh(){},_enqueue:FarField.prototype._enqueue,_sortQueue:FarField.prototype._sortQueue};
+  FarField.prototype._startBuild.call(far); assert.equal(calls.length,1); assert.deepEqual(calls[0][3],[3,far.appearance.planes,2]);
   const stale=[...a.listeners][0]; a.appearanceWords[5]=123; stale(5,a.appearanceWords.subarray(5,6)); assert.equal(calls.length,2); assert.deepEqual(calls[1][3],[1,1,1]);
   far.scene=b; stale(5,a.appearanceWords.subarray(5,6)); assert.equal(calls.length,2);
-  FarField.prototype.sceneBuild.call(far); assert.equal(a.listeners.size,0); assert.equal(b.listeners.size,1);
+  FarField.prototype._startBuild.call(far); assert.equal(a.listeners.size,0); assert.equal(b.listeners.size,1);
   const last=[...b.listeners][0]; FarField.prototype.dispose.call(far); assert.equal(b.listeners.size,0);
   last(5,b.appearanceWords.subarray(5,6)); assert.equal(calls.length,3);
 });

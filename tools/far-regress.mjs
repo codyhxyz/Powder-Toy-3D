@@ -58,7 +58,7 @@ try {
     const a = window.__app, f = a.win.far;
     await a.test.ready();
     f.queue = f.queue.slice(-CHUNKS);
-    while (f.queue.length) { f.sceneChunks(1); await a.gpu.fence(); }
+    while (f.queue.length) { f.chunks(1); await a.gpu.fence(); }
     await f.viewPipe.build();
   }, CHUNKS);
   for (const [name, cam, tgt] of VIEWS.filter(([n]) => want.includes(n))) {
