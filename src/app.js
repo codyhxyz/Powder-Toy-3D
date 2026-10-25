@@ -74,6 +74,7 @@ import { createViewSettings, bindViewInputWake, brushKey } from './gfx/viewInput
 import { CHANNELS, MEDIA } from './gfx/materials.js';
 import { DAY, dayPhase, phaseSteps, keyLight } from './gfx/daylight.js';
 import { createProfiler } from './gfx/profiler.js';
+import { buildReport as buildProfileReport, formatReport as formatProfileReport } from './gfx/profileReport.js';
 import { PHYS } from './physics.js';
 import { createProfilerPanel } from './ui/profiler.js';
 import { POV_FOV, POV_FOV_RANGE, SENSITIVITY_RANGE } from './pov/camera.js';
@@ -287,6 +288,11 @@ if (!['boy', 'girl'].includes(settings.villageCharacter)) settings.villageCharac
 if (!GENDERS.includes(settings.gender)) settings.gender = genderOf(settings.character);
 Object.assign(settings, bodiesFor(settings.gender, settings.character));
 settings.paused = params.get('paused') === '1' || testMode === 'manual' || testMode === 'ui';
+// ?profile=1: the profiler on, as Settings → Developer → Profiler (docs/profiler.md), not saved:
+// the next plain visit keeps the stored choice (save() writes that, until the toggle is used)
+const profileParam = params.get('profile') === '1';
+let storedProfiler = settings.profiler;
+if (profileParam) settings.profiler = true;
 // Physics V2 is the only engine (launch.js physicsEngine). Worlds/POV use explicit readiness while its
 // pipelines build. Multiplayer guests are deliberately render-only: a guest's owner holds the host's frames.
 const physicsMode = physicsEngine();
@@ -304,7 +310,7 @@ let saveTimer = 0;
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, settings[k]])),
+    try { localStorage.setItem(STORE, JSON.stringify({ ...Object.fromEntries(PERSIST.map((k) => [k, k === 'profiler' && profileParam ? storedProfiler : settings[k]])),
       [REV_KEY]: DEFAULT_CHANGES.length })); } catch { /* storage unavailable */ }
   }, 300);
 }
@@ -1630,7 +1636,7 @@ const settingsPanel = createSettings({
     // for working on the app itself (the frame loop applies it)
     { title: 'Developer', rows: [
       { type: 'seg', key: 'profiler', options: [[false, 'Profiler off'], [true, 'Profiler on']],
-        onChange: (v) => { settings.profiler = v; save(); } },
+        onChange: (v) => { settings.profiler = storedProfiler = v; save(); } },
     ] },
   ],
   footer: [['Reset all settings', resetSettings]],
@@ -2211,7 +2217,7 @@ addEventListener('resize', () => {
 
 // ---------------------------------------------------------------- profiler (Settings → Developer)
 // gfx/profiler.js measures (gpu.timing in split mode) and ui/profiler.js shows.
-const profPanel = createProfilerPanel({ onClose: () => { settings.profiler = false; save(); applyProfiler(); } });
+const profPanel = createProfilerPanel({ onClose: () => { settings.profiler = storedProfiler = false; save(); applyProfiler(); } });
 const prof = createProfiler(gpu, {
   describe: () => ({ sim, renderScale: post.renderScale, canvas: [canvas.width, canvas.height], pixelRatio, bytes: post.threeBytes,
     // (the HUD's old line) steps/s as the simulation runs them, preview's draw rate apart; a big map's
@@ -2220,15 +2226,29 @@ const prof = createProfiler(gpu, {
     screenShare: autoRes.enabled ? post.renderScale * pixelRatio / DEVICE_RATIO : null }),
   onSample: profPanel.update,
   onFrame: profPanel.frame,
+  // prof.enable() from the console or a tool sticks: it is the setting (the frame loop applies the setting
+  // each tick, and used to switch a direct enable(true) straight back off before a frame was timed)
+  onChange: (on) => {
+    settings.profiler = on;
+    profPanel.show(on);
+    post.onPass = on ? postPass : null;
+  },
+  // what the report says was measured (gfx/profileReport.js): two reports compare only on equal setups
+  context: () => ({
+    ...currentMap(),
+    view: VIEWS.find((v) => v.id === renderView)?.key ?? String(renderView),
+    detail: detailKey(frameDetail) || 'none',
+    taa: !!post.settings.taa, upscale: post.settings.upscale, adaptive: !!post.settings.adaptive,
+    resolutionScale: post.settings.resolutionScale, autoRes: !!autoRes.enabled,
+    pose: { eye: camera.position.toArray(), target: controls.target.toArray(), fov: camera.fov, pov: !!pov?.active },
+    testMode: testMode ?? null, paused: !!settings.paused, pov: !!pov?.active,
+    sceneTarget: [Math.max(1, Math.round(canvas.width * post.renderScale)), Math.max(1, Math.round(canvas.height * post.renderScale))],
+  }),
+  buildReport: (input) => { const r = buildProfileReport(input); r.text = formatProfileReport(r); return r; },
 });
 // post's passes after the scene (the view's raymarch) are a phase of their own
 const postPass = (name) => { if (name === 'scene') prof.phase('post'); };
-function applyProfiler() {
-  const on = settings.profiler;
-  prof.enable(on);
-  profPanel.show(on);
-  post.onPass = on ? postPass : null;
-}
+function applyProfiler() { prof.enable(settings.profiler); }   // (onChange shows the panel and hooks post)
 
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Timer();

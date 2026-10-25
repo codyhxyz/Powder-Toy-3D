@@ -31,8 +31,29 @@ export class GpuTiming {
     this._idle = [];        // pools ready and free
     this._pools = null;     // every pool made (QUERY_POOLS), once timing first turns on
     this.onUnavailable = null;   // (message): the device couldn't make the query pools; timing is off for good
+    // Listeners for every landed frame (addFrameListener), beside the one-owner onFrame:
+    // the profiler samples on landing, so a frame nothing follows (a parked test's
+    // renderOnce) is still sampled.
+    this._frameListeners = new Set();
     const commands = new WeakMap();
     const device = gpu.device;
+    // Pipelines made on the device, ours and three's alike, counted at the device boundary
+    // (no list of clients): the profiler marks a capture untrusted while any is compiling.
+    this.pipelines = { created: 0, compiling: 0 };
+    for (const method of ['createComputePipeline', 'createRenderPipeline', 'createComputePipelineAsync', 'createRenderPipelineAsync']) {
+      if (typeof device[method] !== 'function') continue;
+      const make = device[method].bind(device);
+      const async = method.endsWith('Async');
+      device[method] = (...args) => {
+        this.pipelines.created++;
+        if (!async) return make(...args);
+        this.pipelines.compiling++;
+        const done = () => { this.pipelines.compiling--; };
+        const p = make(...args);
+        p.then(done, done);
+        return p;
+      };
+    }
     const createEncoder = device.createCommandEncoder.bind(device);
     device.createCommandEncoder = (...args) => {
       const enc = createEncoder(...args);
@@ -211,12 +232,17 @@ export class GpuTiming {
         this.lastFrame = frameNo;
         this.frameMs = frameMs;
       }
-      this.onFrame?.({ frame: frameNo, passes, coverage, gpu: frameMs });
+      const landed = { frame: frameNo, passes, coverage, gpu: frameMs };
+      this.onFrame?.(landed);
+      for (const fn of this._frameListeners) fn(landed);
     });
     this._pendingFrames.add(done);
     done.then(() => this._pendingFrames.delete(done), () => this._pendingFrames.delete(done));
     return done;
   }
+
+  /** fn(frame) for every landed frame ({ frame, passes, coverage, gpu }); returns the unsubscribe. */
+  addFrameListener(fn) { this._frameListeners.add(fn); return () => this._frameListeners.delete(fn); }
 
   // Park the app before awaiting this to drain a bounded profiling capture.
   async settled() { await Promise.all([...this._pendingFrames]); }
