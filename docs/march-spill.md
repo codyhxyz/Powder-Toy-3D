@@ -245,3 +245,49 @@ resume block and `var i` moved outside the loop. Also checked: naga on every sta
 Cost: 12 headless slots, about 165 s of GPU occupancy. 4 profiles of 9–13 s; 4 shot runs of 4–21 s
 (one failed on a first-load Vite reload); 2 `check-wgsl` runs, one of which was the full suite by
 mistake (21 s, hit the deadline).
+
+## Event kernels, and why the split's gate never gated (2026-10-25)
+
+Branch `arch/wavefront` (shaders/world/march.js "The event kernels"; Laine, Karras & Aila 2013).
+
+**The gate.** On the Apple M5 through Dawn/Metal, a fragment shader that may `discard`, or that writes a
+storage texture, gets its depth and stencil test after it runs (WGSL has no `early_fragment_tests`). The
+split's event stage did both, so it ran its whole loop on every pixel the full-screen triangle covered, and
+the depth gate only threw the results away. Measured on the Lab with the fat stage behind a stencil test
+that never passes: 14.7 ms with its storage writes and discards, 14.7 ms with the discards removed, 0.3 ms
+with neither. That is why the split above was slower, not the heavy bodies' register use alone.
+
+**The fix.** The gated stages (the kernels and the fat stage) write the G-buffer as colour targets
+(G0, G1, G2, R0, R1 and a kernel's abort mark M: 81 B a pixel, so the device asks for up to 128 B; a device
+with WebGPU's default 32 draws the one-pass march), and never discard. A kernel marks the rays it aborts
+(M); a re-gate pass of a few instructions moves those pixels' depth to the fat stage's. The lean march's
+depth per first-event body picks the kernel. `tools/world-march-cpu-check.mjs` refuses a gated stage that
+discards or writes storage.
+
+**Measured** (whole-frame GPU span and interval, `tools/profile.mjs --no-cost --no-counters`, main 115e72ee
+and the branch back to back, port 47913):
+
+| map, pose | main span / interval | branch span / interval |
+|---|---|---|
+| Lab default | 35.4 / 33.4 ms | **24.9** / 33.3 ms |
+| Island default | 27.0 / 33.3 ms | **22.1** / 33.3 ms |
+| Island landDown | 79.5 / 83.3 ms | **67.5** / 66.7 ms |
+
+Knockouts (bounds only): Island default, the liquid kernel 4.7 ms and the fat stage 0 (the sea is all
+liquid-first); Lab default, the fat stage 8.9 ms (the tank's rays meet glass first, smoke is media: no
+kernel takes them yet), the liquid kernel ~0.
+
+**Packing.** Half the Island default's liquid pixels sent to the fat stage as a block vs a checkerboard:
+span 22.0 vs 24.2 ms, the gated work ~3.2 vs ~4.5 ms. A gated fragment pass leaves rejected lanes idle
+in their groups: scattered pixels cost ~40 % more. Not decisive yet; a compute pass over a packed list
+(the paper's queues) would recover it, but the tracer uses dpdx/fwidth (7 sites) that compute lacks.
+
+**Exactness** (`test.renderOnce({ capture: true })`, TAA off, view reset, 960×600, main vs branch):
+Lab looking down and Island looking down byte-identical; Lab default 12 px off by 1/255 (sand, brick,
+snow: float noise); Island default 489 px, all in the shrine's display and two mesh specks, where main
+against main differs by 397 px (its items vary run to run).
+
+**Adding a kind:** one entry in `EVENT_KINDS` (key, takes: first-event bodies not taken by another kind,
+keep: the bodies its loop compiles). The stage, pipeline, layout, gate depth, cost twin and warm-up follow.
+Next by measured cost: a glass kernel (takes glass, keeps glass and liquid: the Lab tank) and a media
+kernel (takes media).
