@@ -226,6 +226,7 @@ async function main() {
     result.errors = errors;
     result.console = consoleLines;
     slot.ms = Date.now() - t0;
+    emit(o, result, { url, info, slot, shared: null });   // (now, inside the slot: closing the browser can take seconds)
   } finally {
     await counters?.stop?.().catch(() => {});
     await browser?.close().catch(() => {});
@@ -238,8 +239,22 @@ async function main() {
     try { result.gpuCounters = await countersDone; } catch (e) { result.gpuCounters = { text: `gpu-counters failed: ${e?.message ?? e}` }; }
   }
   const shared = slot.busyAfter >= SHARED_BUSY_PCT ? `GPU ${slot.busyAfter}% busy right after the capture` : null;
-  const report = annotate(result.report, { cost: result.cost, gpuCounters: result.gpuCounters, gpuShared: shared });
-  Object.assign(report.setup, { url: url.href.replace(/\?.*/, ''), viewport: o.viewport, dpr: o.dpr, slot,
+  if (shared || result.gpuCounters) {
+    // (the report printed inside the slot lacked these: the final one, in full)
+    console.log(`\n---- final report (${[shared && 'the GPU was shared', result.gpuCounters && 'GPU counters'].filter(Boolean).join(', ')}) ----`);
+    emit(o, result, { url, info, slot, shared });
+  } else {
+    emit(o, result, { url, info, slot, shared, quiet: true });
+    console.log(`GPU busy ${slot.busyAfter}% right after the capture: not shared · ${join(o.out, 'profile.json')} updated`);
+  }
+}
+
+// The report: written and printed as soon as the capture is back, inside the slot (closing the browser
+// can take seconds: a report that waited for it could be lost to the slot's deadline), and again with
+// what comes after the browser has closed (the GPU's busy share, the GPU counters).
+function emit(o, result, { url, info, slot, shared, quiet = false }) {
+  const report = annotate(structuredClone(result.report), { cost: result.cost, gpuCounters: result.gpuCounters, gpuShared: shared });
+  Object.assign(report.setup, { url: url.href.replace(/\?.*/, ''), viewport: o.viewport, dpr: o.dpr, slot: { ...slot },
     adapter: info && { vendor: info.vendor, architecture: info.architecture, description: info.description },
     pageErrors: result.errors, costError: result.costError ?? null });
   if (result.errors.length) { report.untrusted.push(`page errors: ${result.errors.slice(0, 3).join(' | ')}`); report.trusted = false; }
@@ -253,6 +268,7 @@ async function main() {
   }
   writeFileSync(join(o.out, 'profile.json'), JSON.stringify(report, null, 1));
   writeFileSync(join(o.out, 'profile.html'), reportHtml(report, { heatmap, title: `Profile: ${o.map} / ${o.poseSpec.name}` }));
+  if (quiet) return;
   let text = formatReport(report);
   if (o.compare) {
     const c = compareReports(JSON.parse(readFileSync(o.compare, 'utf8')), report);
@@ -261,7 +277,7 @@ async function main() {
       + c.passes.slice(0, 10).map((p) => `\n  ${p.name.padEnd(40)} ${p.a?.toFixed(3) ?? '–'} → ${p.b?.toFixed(3) ?? '–'} (${p.delta === null ? 'new/gone' : (p.delta >= 0 ? '+' : '') + p.delta.toFixed(3)})`).join('');
   }
   console.log(text);
-  console.log(`\nslot ${slot.ms} ms (GPU busy ${slot.busyBefore}% before, ${slot.busyAfter}% after) · wrote ${join(o.out, 'profile.json')}, ${join(o.out, 'profile.html')}${heatmap ? `, ${join(o.out, 'cost.png')}` : ''}`);
+  console.log(`\nslot ${slot.ms} ms (GPU busy ${slot.busyBefore}% before, ${slot.busyAfter ?? 'not yet measured'}% after) · wrote ${join(o.out, 'profile.json')}, ${join(o.out, 'profile.html')}${heatmap ? `, ${join(o.out, 'cost.png')}` : ''}`);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
