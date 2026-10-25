@@ -364,3 +364,40 @@ Time (`tools/profile.mjs --no-cost --no-counters --frozen`, base 729778e1 and th
 one run each; per-pass timestamps were untrusted, whole submissions): whole-frame GPU span Lab default 17.35 →
 16.77 ms (−3 %), Island default 20.14 → 19.97 ms (−1 %, within noise). Less than the per-trip counts promised: the
 jumps' arithmetic was not the bulk of the frame. The 12 ms target needs the shade, reflect and event stages too.
+
+## The shade stage: where its time goes, and a quarter-rate probe that didn't pay (2026-10-25, perf/shade-efficient)
+
+Base origin/main 5b46d837. Lab default, `--frozen --detail balanced`, 2560×1600 at ×0.667, Apple M5, on battery. The
+shade stage's own cost is what `--knock "world shade"` saves of the whole-frame GPU span, one run per row; the
+stubbed variants (local only, never merged) change the picture.
+
+| shade stage variant | span ms | shade knocked out saves |
+|---|---|---|
+| as on main | 15.56 | 2.07 |
+| Contact Shadows and Lava Lights off (settings: nearField, glowLightScale) | 16.01 | 1.66 |
+| material stubbed (planMat: flat albedo, no bump) | 14.38 | 0.83 |
+| lighting stubbed (sun shadow, probe, near field, glow, lamps) | 14.38 | 1.08 |
+| sun shadow stubbed | 14.93 | 1.78 |
+| surface probe stubbed (lcOpenProbe) | 15.12 | 1.26 |
+| everything stubbed (the G-buffer reads and the frame of the stage) | 13.42 | 0.17 |
+
+- **The materials are the larger half** (planMat: procedural noise, cellular chips, the scanned textures), the
+  lighting the rest. The near field and the glow's direction are within noise. The G-buffer itself is not the
+  cost (0.17 ms with everything stubbed).
+- **A knocked-out stage's saving moves ±0.4 ms from run to run** (the same build read 2.07, 2.33 and 2.23 ms), so
+  single-variant rows are rough; the probe row's 0.8 ms did not hold up (below).
+- **Tried: the surface probe at a quarter of the pixels** (branch `perf/shade-efficient`, d5305078). A half-size
+  `world probe` stage looks the probe up for the top-left pixel of each 2×2 block (P: rgba32uint, 2 layers, its 16
+  values as f16) and the shade averages the blocks around a pixel whose point lies within 1 cell (or 4 footprints)
+  of its own (Cantlay, GPU Gems 3 ch. 23). The picture matched main within 1/255 at Balanced (Lab default and
+  looking down); Full's WGSL is byte-identical. **No gain:** span Lab 15.26 → 15.52 ms, Island 17.38 → 17.22 ms
+  (back to back, noise); the shade still costs 2.2–2.3 ms knocked out, the probe stage 0.13 ms; dropping the
+  shade's own fallback lookup (one `probeAt` copy fewer) changed nothing either. The probe's texture reads were
+  never the cost; the stubbed row's gain was noise or the constant probe's folding. Not merged.
+- What is left to try, by these rows: the material plan's cost per pixel (mCell's 27-cell search is 5,345 of the
+  stage's 46,332 static instructions, `tools/capture-remarks.mjs`), and the stage's register pressure (126
+  registers, 704 B spill: `capture-remarks` puts 651 register copies in the lamps' loop and 210 in the loop at
+  the sun's soft-shadow taps). Measure each by its own A/B with several runs a side, not one knockout.
+
+Cost: 16 headless slots, about 230 s of GPU occupancy (5 variant runs lost to a slot held by another session or a
+cold compile past the deadline).
