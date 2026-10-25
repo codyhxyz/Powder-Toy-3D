@@ -2217,7 +2217,8 @@ addEventListener('resize', () => {
 
 // ---------------------------------------------------------------- profiler (Settings → Developer)
 // gfx/profiler.js measures (gpu.timing in split mode) and ui/profiler.js shows.
-const profPanel = createProfilerPanel({ onClose: () => { settings.profiler = storedProfiler = false; save(); applyProfiler(); } });
+const profPanel = createProfilerPanel({ onClose: () => { settings.profiler = storedProfiler = false; save(); applyProfiler(); },
+  fullReport: () => (prof.landed.length ? prof.report().text : null) });
 const prof = createProfiler(gpu, {
   describe: () => ({ sim, renderScale: post.renderScale, canvas: [canvas.width, canvas.height], pixelRatio, bytes: post.threeBytes,
     // (the HUD's old line) steps/s as the simulation runs them, preview's draw rate apart; a big map's

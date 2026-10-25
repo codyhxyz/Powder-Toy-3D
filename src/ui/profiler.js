@@ -100,12 +100,13 @@ function report(s) {
   return lines.join('\n');
 }
 
-export function createProfilerPanel({ onClose } = {}) {
+// fullReport: the agents' report text over the kept frames (gfx/profileReport.js), what Copy copies when there is one
+export function createProfilerPanel({ onClose, fullReport = null } = {}) {
   const status = h('span.status', { title: 'Once a second the latest frame whose GPU timestamps have come back is shown:'
     + ' Every pass on the shared GPU device is observed, including Three.js. Missing timings invalidate the total.'
     + ' Timings assume nothing else is using the GPU.' });
   const close = h('button.close', { type: 'button', title: 'Close the profiler', 'aria-label': 'Close the profiler', html: ICON.close, on: { click: () => onClose?.() } });
-  const copy = h('button.copy', { type: 'button', text: 'Copy', title: 'Copy a plain-text report' });
+  const copy = h('button.copy', { type: 'button', text: 'Copy', title: 'Copy the profiler report (the one tools/profile.mjs prints)' });
   const tile = (key, title) => {
     const v = h('b', { text: '–' });
     return { v, el: h('div.prof-tile', { title }, v, h('span', { text: key })) };
@@ -152,7 +153,9 @@ export function createProfilerPanel({ onClose } = {}) {
   let copyTimer = 0;
   copy.addEventListener('click', async () => {
     if (!last) return;
-    const text = report(last);
+    let text = null;
+    try { text = fullReport?.() ?? null; } catch { text = null; }
+    text ??= report(last);
     let ok = true;
     try { await navigator.clipboard.writeText(text); } catch { ok = false; console.info(text); }
     copy.textContent = ok ? 'Copied' : 'Copy failed (see console)';

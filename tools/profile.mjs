@@ -28,7 +28,8 @@ import { formatReport, reportHtml, annotate, compareReports } from '../src/gfx/p
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const SLOT_MS = 25000;          // the whole headless slot (CLAUDE.md), boot to close
-const BOOT_TIMEOUT_MS = 18000;         // the page's own boot and pipelines, inside the slot
+const BOOT_TIMEOUT_MS = 15000;         // the page's own boot, inside the slot
+const PAGE_MARGIN_MS = 6000;           // the page gives up this long before the slot ends (the launcher's cleanup is 4 s)
 const SHARED_BUSY_PCT = 25;            // GPU busy % right after our browser closed: someone else was using it
 export const POSES = ['default', 'landDown', 'sky', 'horizon'];
 
@@ -69,7 +70,7 @@ export function parsePose(p) {
 }
 
 // Runs in the page (serialized by page.evaluate: everything it uses is inside it).
-async function captureInPage({ pose, frames, warmup, autores, paused }) {
+async function captureInPage({ pose, frames, warmup, autores, paused, deadline }) {
   // In the page: the pose, applied to the orbit camera (three units). Named poses keep the
   // eye where the map put it and turn the view: down at the land, up at the sky, level at the horizon.
   function applyPose(spec) {
@@ -94,8 +95,19 @@ async function captureInPage({ pose, frames, warmup, autores, paused }) {
   }
   const a = window.__app;
   const t0 = performance.now();
-  await a.test.ready();
-  await a.gpu.settled();
+  // Every stage races the slot's deadline: a stalled run still says where it stalled and why.
+  const state = { stage: 'start', stages: [] };
+  const why = () => ({ stage: state.stage, at: Math.round(performance.now() - t0), prof: !!a.prof?.on, landed: a.prof?.landed?.length ?? null,
+    supported: a.gpu.timing.supported, compiling: a.gpu.timing.pipelines ?? null, cache: { pending: a.gpu.pipelines?.pending?.size, queue: a.gpu.pipelines?.queue?.length, idle: a.gpu.pipelines?.idleQueue?.length },
+    frameNo: a.gpu.frameNo, asleep: a.loop?.asleep, parked: a.test?.parked, failure: a.gpu.failure?.message ?? null });
+  const step = (name, p) => {
+    state.stage = name; state.stages.push([name, Math.round(performance.now() - t0)]);
+    let timer;
+    return Promise.race([p, new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`profile stalled at "${name}": ${JSON.stringify(why())}`)), Math.max(1, deadline - Date.now())); })])
+      .finally(() => clearTimeout(timer));
+  };
+  await step('test.ready', a.test.ready());
+  await step('pipelines.settled', a.gpu.settled());
   const readyWaitMs = performance.now() - t0;   // (page load to here is not in it)
   if (!autores) a.autoRes.enabled = false;   // frozen at the scale it has (the report says so)
   a.settings.paused = !!paused;
@@ -106,16 +118,17 @@ async function captureInPage({ pose, frames, warmup, autores, paused }) {
   requestAnimationFrame(pump);
   try {
     if (!a.prof.on) a.prof.enable(true);
-    if (warmup) await a.prof.capture({ frames: warmup });
+    if (warmup) await step('warmup', a.prof.capture({ frames: warmup }));
     // the pose (a big map's window moving) can start builds: wait them out before timing
-    await a.test.ready();
-    await a.gpu.settled();
-    const report = await a.prof.capture({ frames, extra: { pose: applied, readyWaitMs: Math.round(readyWaitMs) } });
+    await step('test.ready (after pose)', a.test.ready());
+    await step('pipelines.settled (after pose)', a.gpu.settled());
+    const report = await step('capture', a.prof.capture({ frames, extra: { pose: applied, readyWaitMs: Math.round(readyWaitMs) } }));
+    report.setup.stages = state.stages;
     keep = false;
     // outside the timed frames: agent C's cost view (a variant: shown as work, never as time)
     let cost = null, costError = null;
     if (typeof a.prof.cost?.capture === 'function') {
-      try { cost = await a.prof.cost.capture(); } catch (e) { costError = String(e?.message ?? e); }
+      try { cost = await step('cost.capture', a.prof.cost.capture()); } catch (e) { costError = String(e?.message ?? e); }
     }
     return { report, cost, costError };
   } finally { keep = false; }
@@ -156,20 +169,31 @@ async function main() {
     url.searchParams.set('view', o.view);
     url.searchParams.set('profile', '1');
     slot.busyBefore = await gpuBusyPct();
+    browser = await launchBrowser({ lifetimeMs: SLOT_MS });   // (waits for the slot; the slot starts inside it)
     const t0 = Date.now();
-    browser = await launchBrowser({ lifetimeMs: SLOT_MS });
     const page = await newTestPage(browser, { mode: 'visual', viewport: o.viewport, deviceScaleFactor: o.dpr });
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
+    page.on('console', (m) => { if (['error', 'warning'].includes(m.type())) errors.push(`console.${m.type()}: ${m.text().slice(0, 300)}`); });
+    const log = (msg) => console.error(`[profile] +${((Date.now() - t0) / 1000).toFixed(1)} s ${msg}`);
+    log('browser up');
     await page.goto(url.href);
     await page.waitForFunction(() => window.__app?.sim && window.__app?.prof, null, { polling: 100, timeout: BOOT_TIMEOUT_MS });
+    log('app booted');
     info = await gpuInfo(page);   // refuses a software adapter on a real-GPU run
     if (o.counters) {
       const mod = join(HERE, 'gpu-counters.mjs');
       if (existsSync(mod)) counters = await (await import(pathToFileURL(mod).href)).start({ browser, page, outDir: o.out, frames: o.frames });
       else console.error('[profile] --counters: tools/gpu-counters.mjs is not there yet (agent D); skipped');
     }
-    result = await page.evaluate(captureInPage, { pose: o.poseSpec, frames: o.frames, warmup: o.warmup, autores: o.autores, paused: o.paused });
+    // the page gives up (with where it stalled) before the launcher's own deadline closes it
+    const deadline = t0 + SLOT_MS - PAGE_MARGIN_MS;
+    try {
+      result = await page.evaluate(captureInPage, { pose: o.poseSpec, frames: o.frames, warmup: o.warmup, autores: o.autores, paused: o.paused, deadline });
+    } catch (e) {
+      throw new Error(`${e.message.split('\n')[0]}\npage errors/warnings: ${errors.slice(0, 8).join('\n  ') || 'none'}`);
+    }
+    log('captured');
     if (counters) { try { result.gpuCounters = await counters.stop(); } catch (e) { result.gpuCounters = { text: `gpu-counters failed: ${e?.message ?? e}` }; } counters = null; }
     result.errors = errors;
     slot.ms = Date.now() - t0;
