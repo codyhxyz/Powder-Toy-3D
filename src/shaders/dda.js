@@ -57,6 +57,11 @@ fn ddaJumpBox(bmin: vec3f, bmax: vec3f, ro: vec3f, rd: vec3f, istp: vec3i,
   let ax = argmin3(tb);
   let tx = tb[ax];
   var c = vec3i(floor(ro + rd * tx));
+  // Never back along any axis. Where the ray crosses a brick's edge (two faces at one t), the rounded
+  // exit point can floor behind the cell it leaves on the other axis; the jump out of that brick then
+  // lands in the first one's diagonal neighbour, whose jump lands back: two empty bricks traded until the
+  // step cap (a world's x + y + z cells: 5577 steps a pixel on Descent, specks all over the cost view).
+  c = select(min(c, *cell), max(c, *cell), istp > vec3i(0));
   c[ax] = select(i32(bmin[ax]) - 1, i32(bmax[ax]), istp[ax] > 0);
   *cell = c;
   *tMax = ddaNext(ro, rd, c);
