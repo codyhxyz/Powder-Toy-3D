@@ -31,7 +31,7 @@ Element ids must hold at least 256 elements everywhere: there are about 100 on t
 | 1 | Explosives (20) | Gunpowder, Fire | Batch 1. Pressure, breaking and guns already exist; first person wants charges. |
 | 2 | Liquids (20) | Water, Oil, Acid, Lava | Batch 2. Chemistry and phase changes are where real physics shows. |
 | 3 | Gases (12) | Steam, Smoke, Cloud | Batch 2. Oxygen, hydrogen, CO₂ and flammable gas are the reactions people try first. |
-| 4 | Solids (25) | Wall, Rock, Metal, Glass, Ice, Wood, Plant, Clone, rocks, Crystal | Batch 3. Building and mining materials. |
+| 4 | Solids (25) | Wall, Rock, Metal, Glass, Ice, Tree (key WOOD), Plant, Clone, rocks, Crystal | Batch 3. Building and mining materials. |
 | 5 | Powders (19) | Sand, Stone, Snow, Ash, debris, Coal | Batches 2 and 4: salt, dust, clay. The rest are byproducts. |
 | 6 | Special (16) | Clone, Erase, player, NPC, spawn | Void (batch 3). Portals are a later project. Stickman, Fighter and spawn are covered by first person. |
 | 7 | Electronics (20) | Metal | Electricity project. It gates Powered and Sensors. |
@@ -335,7 +335,7 @@ spawners, constructions, first-person gear and starter wands all use The Powder 
 particles. Melts into glass." / "Diamond. Indestructible." / "Stickman. Don't kill him! Control with the arrow keys."
 
 The rule:
-- **Name first.** The desc opens with the item's `name`, then a full stop, comma or colon: "Wood, flammable.",
+- **Name first.** The desc opens with the item's `name`, then a full stop, comma or colon: "Tree, the wood of trunks",
   "Battery. Generates infinite electricity." The gear and wand tiles add the name to their catalog's desc
   (`GEAR_ITEMS`, `WAND_STARTERS`), since the hotbar shows the name beside it.
 - **Flat facts.** Short sentences that say what it is and what it does. Instructions are facts too, as TPT gives

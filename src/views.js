@@ -101,7 +101,7 @@ function legend(cm, title, labels) {
 const xrayLegend = {
   title: 'Density',
   stops: [[0, '#15171c'], [0.25, '#2e3139'], [0.5, '#5a5f69'], [0.75, '#9ea3ad'], [1, '#f2f4f7']],
-  labels: [['Gas', 0], ['Wood', 0.25], ['Water', 0.5], ['Stone', 0.75], ['Metal', 1]],
+  labels: [['Gas', 0], ['Tree', 0.25], ['Water', 0.5], ['Stone', 0.75], ['Metal', 1]],
 };
 xrayLegend.css = legendCSS(xrayLegend);
 
