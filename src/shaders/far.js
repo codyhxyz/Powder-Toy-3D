@@ -1025,6 +1025,10 @@ const FAR_ROOT_SPLIT_LO: f32 = 0.15;   // regula falsi splits kept off the brack
 const FAR_ROOT_SPLIT_HI: f32 = 0.85;
 const FAR_FLAT_EPS: f32 = 1e-5;        // field differences below this count as flat
 const FAR_SUN_Y_MIN: f32 = 0.2;        // sun elevation sine floor for light fading down through liquid (LIQ_SUN_Y_MIN in render.js)
+const FAR_LQ_NONE: i32 = -1;           // farLiquid's modes: none (fs), a liquid surface, the body under one, the plain's bed
+const FAR_LQ_SURFACE: i32 = 0;
+const FAR_LQ_BODY: i32 = 1;
+const FAR_LQ_BED: i32 = 2;
 
 // Sunlight at world point p: the shadow heights (ch: farSunVis), under the clouds.
 fn farSunLit(p: vec3f, ch: i32) -> f32 { return farSunVis(p, ch) * cloudShadow(p); }
@@ -1201,7 +1205,9 @@ return alb * (FU.sunCol * sunVis * max(dot(n, FU.sun), 0.0) * down * focus + sky
 // Liquid lid's body seen from p along rt, under its surface: down to the bed
 // (the opaque field along rt when bedY < 0, else the plane y = bedY), dimmed
 // by the liquid on the way, plus the light it scatters toward the eye.
-fn farBody(p: vec3f, rt: vec3f, lid: i32, sunVis: f32, sky: f32, bedY: f32) -> vec3f {${curved ? `
+// bedOnly: just the bed at p itself (normal up, no depth: the open plain beyond the world), so that
+// farShadeBed (matOf, the whole material library) has this one call site (farLiquid's note).
+fn farBody(p: vec3f, rt: vec3f, lid: i32, sunVis: f32, sky: f32, bedY: f32, bedOnly: bool) -> vec3f {${curved ? `
   // the ray, displayed straight: a parabola under the surface too
   let transmitted = warpRay(warpPoint(p), normalize(warpVector(p, rt)));` : ''}
   var s = -1.0;
@@ -1210,7 +1216,9 @@ fn farBody(p: vec3f, rt: vec3f, lid: i32, sunVis: f32, sky: f32, bedY: f32) -> v
   var bedNormal = vec3f(0.0, 1.0, 0.0);
   var bedId = FAR_OCEAN_BED;
   var bedSun = sunVis;
-  if (bedY >= 0.0) {
+  if (bedOnly) {
+    s = 0.0;
+  } else if (bedY >= 0.0) {
     s = ${curved ? 'farPlaneHit(transmitted, bedY)' : '(p.y - bedY) / max(-rt.y, FAR_FLAT_EPS)'};
     bedPoint = ${curved ? 'warpAt(transmitted, s)' : 'p + rt * s'};
   } else {
@@ -1234,6 +1242,7 @@ fn farBody(p: vec3f, rt: vec3f, lid: i32, sunVis: f32, sky: f32, bedY: f32) -> v
   if (s >= 0.0) {
     bed = farShadeBed(bedId, bedPoint, bedNormal, p.y - bedPoint.y, lid, bedSun, sky);
   }
+  if (bedOnly) { return bed; }
 ${curved ? `  // optical distance is in flat material space, not display-ray t
   if (s >= 0.0 && s < WARP_INF) { s = warpArc(transmitted, 0.0, s); }
 ` : ''}  let att = select(vec3f(0.0), exp(-SIGMA(lid) * s), s >= 0.0);
@@ -1257,15 +1266,27 @@ fn cozyFarShore(p: vec3f) -> f32 {
 // the sun's glint off it (Fresnel), and through it the liquid's body down to
 // the bed: the opaque field along the refracted ray (bedY < 0), else the plane y = bedY.
 // Under the ground (a lake in a cave) the sky neither lights nor shows in it (FAR_SKY).
-fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
-  let original = sourceMaterial(lid, p, vec3f(0.0, 1.0, 0.0));
+// mode FAR_LQ_BODY: only the body seen from p along rd (under its surface), in sky share skyIn;
+// FAR_LQ_BED: only the bed at p (farBody's bedOnly), in sky share skyIn.
+// Every liquid, body and bed the view draws goes through this one call (fs), so it and
+// farBody, farShadeBed and the material library under them are compiled once: Metal
+// inlines every call site, and those were 5 copies of matOf, 93% of the module. One
+// site is also one copy for a SIMD group whose lanes reach liquid from different
+// branches (sea, a lake hit, water past the window) to run, not one each (the
+// "uber shader" divergence cost: Laine, Karras & Aila, "Megakernels Considered
+// Harmful", HPG 2013, sec. 1; research/gpu-architecture/KNOWLEDGE.md).
+fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32, mode: i32, skyIn: f32) -> vec3f {
   let geometric = vec3f(0.0, 1.0, 0.0);
-  var sky = farSkyOpen(p);
+  var original: SourceMaterial;
+  var sky = skyIn;
   var rt = rd;
   var refl = vec3f(0.0);
   var F = 0.0;
   var cartoon = false;
   var col = vec3f(0.0); var trans = vec3f(1.0);
+  if (mode == FAR_LQ_SURFACE) {
+  original = sourceMaterial(lid, p, vec3f(0.0, 1.0, 0.0));
+  sky = farSkyOpen(p);
   if (original.kind != 0u) {
     let alpha = select(1.0, original.alpha, (original.flags & 1u) != 0u);
     sourceBlend(sourceShade(p, original.normal, rd, original.albedo, original.roughness, original.metallic, original.f0, original.kind, original.flags) + original.emission, alpha, original.flags, &col, &trans);
@@ -1285,7 +1306,9 @@ fn farLiquid(p: vec3f, rd: vec3f, lid: i32, sunVis: f32, bedY: f32) -> vec3f {
   rt = select(cheapBend(rd, n), refract(rd, n, 1.0 / IOR(lid)), FU.bending != 0u);   // (Light bending off: liquid.js cheapBend)
   if (dot(rt, rt) < 1e-6) { rt = vec3f(0.0, -1.0, 0.0); }
   }
-  let body = farBody(p, rt, lid, sunVis, sky, bedY);
+  }
+  let body = farBody(p, rt, lid, sunVis, sky, bedY, mode == FAR_LQ_BED);
+  if (mode != FAR_LQ_SURFACE) { return body; }
   if (original.kind != 0u) { return col + trans * body; }
   if (cartoon) {
     let paint = cozyWaterPaint(p, footprint(p), cozyFarShore(p));
@@ -1370,11 +1393,26 @@ struct FarOut {
   var col: vec3f;
   var o: FarOut;
   o.depth = 1.0;
+  // What the pixel shows is picked first, then shaded once: the liquid (farLiquid's one call site:
+  // a liquid surface, a body or the plain's bed) and the haze each have one call below, whichever
+  // branch asked for them (farLiquid's note).
+  var lq = FAR_LQ_NONE;   // the liquid call's mode and arguments
+  var lqP: vec3f;
+  var lqRd: vec3f;
+  var lqId = E_WATER;
+  var lqSun = 0.0;
+  var lqBedY = -1.0;
+  var lqSky = 1.0;
+  var hit = false;        // a surface (not the sky): hazed over tAt to pAt, and its depth written
+  var tAt = 0.0;
+  var pAt: vec3f;
   if (ocean) {
-    if (plain) { col = farShadeBed(FAR_OCEAN_BED, ps, vec3f(0.0, 1.0, 0.0), 0.0, E_WATER, farSunLit(ps, 0), 1.0); }
-    else { col = farLiquid(ps, farDirection(rd, tSea), E_WATER, farSunLit(ps, 0), select(-1.0, P.floor, seaOut)); }
-    col = farHaze(col, rd, tSea, farAirLit(ro - winLo, ps - winLo));
-    o.depth = farDepth(ps);
+    lq = select(FAR_LQ_SURFACE, FAR_LQ_BED, plain);
+    lqP = ps;
+    lqRd = farDirection(rd, tSea);
+    lqSun = farSunLit(ps, 0);
+    lqBedY = select(-1.0, P.floor, seaOut && !plain);
+    hit = true; tAt = tSea; pAt = ps;
   } else if (tHit < NO_HIT) {
     let p = farPath(ro, rd, tHit);
     let localRd = farDirection(rd, tHit);   // (curved: the parabola's direction where it hits)
@@ -1392,21 +1430,25 @@ struct FarOut {
       // window water surface a hair under the flat sea, where the march stopped at the face (a thin dark line
       // along the window's far faces): that sea's surface, at the exit's depth, so the march's water stays in front)
       else if (P.march != 0u && !plain && seaWin && tSea < tHit && level - p.y <= FAR_SEA_SLIVER) {
-        col = farLiquid(ps, farDirection(rd, tSea), E_WATER, farSunLit(ps, 0), -1.0);
+        lq = FAR_LQ_SURFACE; lqP = ps; lqRd = farDirection(rd, tSea); lqSun = farSunLit(ps, 0);
       }
-      else { col = farBody(p, localRd, farLiquidOf(farIds(p).y), farSunLit(p, 0), farSkyOpen(p), -1.0); }
+      else { lq = FAR_LQ_BODY; lqP = p; lqRd = localRd; lqId = farLiquidOf(farIds(p).y); lqSun = farSunLit(p, 0); lqSky = farSkyOpen(p); }
     } else {
       let sunVis = farSunLit(p, 0);
-      if (v.g > v.r) { col = farLiquid(p, localRd, farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y), sunVis, -1.0); }
+      if (v.g > v.r) { lq = FAR_LQ_SURFACE; lqP = p; lqRd = localRd; lqId = farLiquidOf(farIds(p - vec3f(0.0, FAR_ID_INSET, 0.0)).y); lqSun = sunVis; }
       else {
         let n = farNormal(p, 0);
         col = farShadeCoarse(p, n, sunVis, farElement(p, n));
       }
     }
-    col = farHaze(col, rd, tHit, farAirLit(ro - winLo, p - winLo));
-    o.depth = farDepth(p);
+    hit = true; tAt = tHit; pAt = p;
   } else {
     col = farSky(ro, rd);
+  }
+  if (lq != FAR_LQ_NONE) { col = farLiquid(lqP, lqRd, lqId, lqSun, lqBedY, lq, lqSky); }
+  if (hit) {
+    col = farHaze(col, rd, tAt, farAirLit(ro - winLo, pAt - winLo));
+    o.depth = farDepth(pAt);
   }
   o.color = vec4f(col, 1.0);
   return o;
