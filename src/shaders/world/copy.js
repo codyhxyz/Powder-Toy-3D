@@ -21,7 +21,7 @@
 import { prelude, STATE_OPTS, stateLayout } from '../common.js';
 import { cellWordWGSL, WC_BRICK, WC_BRICK_CELLS, WC_AUX_MAX } from './cellWord.js';
 import { BRICK_INFO, AIR } from '../bindings.js';
-import { FIELDS_DILATE, FIELD_REACH } from '../fields.js';
+import { FIELDS_DILATE } from '../fields.js';
 import { uniformStruct } from '../../gpu/params.js';
 import { STAGE, fold } from '../../gpu/kernels.js';
 import { ELEMENTS, E } from '../../elements.js';
@@ -46,7 +46,7 @@ export const WC_OWN = {
   MATTER: 1 << 28,        // a cell that isn't air
   OPAQUE: 1 << 29,        // a cell that stops light (not gas, liquid or glass)
   CRISP: 1 << 30,         // a crisp cell (no smooth-surface or media channel: walls, metal, glass), which no
-                          // field draws: the march's distance blocks look for it cell by cell (march.js farStep)
+                          // field draws
 };
 // The low bits only a brick's own cells decide: kept as they are by the dilation.
 export const WC_OWN_ONLY = BRICK_INFO.THIN | BRICK_INFO.MIXED | (7 << BRICK_INFO.AIR_SHIFT) | (127 << BRICK_INFO.GAS_SHIFT);
@@ -61,18 +61,7 @@ export const wcLifeFull = (id) => {
   return Math.max(1, e.life ?? 0);
 };
 
-// The heightfield: a maximum mipmap of the world's column tops (Tevs, Ihrke & Seidel 2008, "Maximum mipmaps
-// for fast, accurate, and scalable dynamic height field rendering"), for the march to cross the air above
-// the ground in long jumps (shaders/world/march.js hfSkip). Level 0: a column's top, the height of its
-// highest non-air cell plus one (0: an empty column). Level 1 (4 × 4 columns, a brick column): the highest
-// top within HPAD cells of its columns, plus VPAD: the fields' whole reach (shaders/fields.js FIELD_REACH,
-// the surfaces' blur and the media's), so no cell, smooth surface or wisp of gas reaches above a level-1
-// value inside its region. Levels 2 (16 × 16) and 3 (64 × 64): the maxima of their 16 children. (HPAD at
-// most a brick: a changed column's level-1 values are its brick column's and the 8 around it.)
-export const WC_HF = Object.freeze({ LEVELS: 4, HPAD: FIELD_REACH, VPAD: FIELD_REACH });
-if (WC_HF.HPAD > WC_BRICK) throw new Error('WC_HF: HPAD past a brick (the writeback redoes the 3 × 3 brick columns around a change)');
-
-/** The world's layout in bricks, occupancy nodes and heightfield levels, for world size [x, y, z] in cells. */
+/** The world's layout in bricks and occupancy nodes, for world size [x, y, z] in cells. */
 export function wcLayout(size) {
   const bricks = size.map((n) => Math.ceil(n / WC_BRICK));
   const n1 = bricks.map((n) => Math.ceil(n / WC_NODE1));
@@ -80,15 +69,9 @@ export function wcLayout(size) {
   const count = (v) => v[0] * v[1] * v[2];
   const occ1Words = Math.ceil(count(n1) / 32), occ2Words = Math.ceil(count(n2) / 32);
   const nBricks = count(bricks);
-  // the heightfield (wcHfTop): level k's columns, 4^k cells a side, two u16 a word, after the occupancy
-  const hfDims = Array.from({ length: WC_HF.LEVELS }, (_, k) => [size[0], size[2]].map((n) => Math.ceil(n / 4 ** k)));
-  const hfWords = hfDims.map(([x, z]) => Math.ceil((x * z) / 2));
-  const hfAt = [];
-  let at = nBricks + occ1Words + occ2Words;
-  for (const w of hfWords) { hfAt.push(at); at += w; }
   // occ2Rel: level 2's first word among the occupancy's; occ1At, occ2At: their words in wcMeta (after the info)
   return { size: [...size], bricks, n1, n2, nBricks, occ1Words, occ2Rel: occ1Words, occWords: occ1Words + occ2Words,
-    occ1At: nBricks, occ2At: nBricks + occ1Words, hfDims, hfAt, hfWords: hfWords.reduce((a, b) => a + b, 0), metaWords: at };
+    occ1At: nBricks, occ2At: nBricks + occ1Words, metaWords: nBricks + occ1Words + occ2Words };
 }
 
 // ---------------------------------------------------------------- group 1 of render kernels
@@ -99,7 +82,6 @@ export const WorldCopyUniforms = uniformStruct('WorldCopyUniforms', {
   n1: 'vec3i', occ1At: 'u32',         // level-1 nodes; the word of wcMeta level 1 starts at
   n2: 'vec3i', occ2At: 'u32',         // level-2 nodes; the word level 2 starts at
   revision: 'u32',                    // the copy's revision (tools)
-  hfAt: 'vec4u',                      // the word each heightfield level starts at in wcMeta (wcHfTop)
 });
 const READ = STAGE.FRAGMENT | STAGE.COMPUTE;
 /** Group 1's layout entries (gpu.layout('WORLD_COPY', WORLD_COPY_LAYOUT)): 0 WC, 1 wcTable, 2 wcPool, 3 wcMeta (info, then occupancy). */
@@ -171,15 +153,6 @@ fn wcOccupied(level: u32, c: vec3i) -> bool {
   if (level == 1u) { let n = c >> vec3u(4u); return wcOccBit(WC.occ1At, u32(n.x + WC.n1.x * (n.y + WC.n1.y * n.z))); }
   let n = c >> vec3u(6u);
   return wcOccBit(WC.occ2At, u32(n.x + WC.n2.x * (n.y + WC.n2.y * n.z)));
-}
-// The heightfield (WC_HF): level k's value for its column region c (4^k cells a side, in x and z); 0 outside.
-fn wcHfDims(k: u32) -> vec2i { let s = 1 << (2u * k); return (WC.size.xz + s - 1) / s; }
-fn wcHfTop(k: u32, c: vec2i) -> u32 {
-  let n = wcHfDims(k);
-  let inside = all(c >= vec2i(0)) && all(c < n);
-  let i = u32(clamp(c.x, 0, n.x - 1) + n.x * clamp(c.y, 0, n.y - 1));
-  let v = (wcMeta[WC.hfAt[k] + (i >> 1u)] >> ((i & 1u) * 16u)) & 0xffffu;
-  return select(0u, v, inside);
 }
 `;
 
@@ -861,97 +834,13 @@ ${jobThread(/* wgsl */ `
   }`)}
 `;
 
-// ---- the heightfield (WC_HF; wcHfTop reads it): its levels in wcMeta, written two u16 a word by atomic and/or
-// (two jobs may write the two halves of a word; the same half, only with the same value)
-const hfDecls = (L) => /* wgsl */ `
-const WC_SIZE: vec3i = vec3i(${L.size.join(', ')});
-const WC_HF_HPAD: i32 = ${WC_HF.HPAD};
-const WC_HF_VPAD: u32 = ${WC_HF.VPAD}u;
-fn wcHfAt(k: u32) -> u32 { return select(select(select(${L.hfAt[3]}u, ${L.hfAt[2]}u, k == 2u), ${L.hfAt[1]}u, k == 1u), ${L.hfAt[0]}u, k == 0u); }
-fn wcHfN(k: u32) -> vec2i {
-  return select(select(select(vec2i(${L.hfDims[3].join(', ')}), vec2i(${L.hfDims[2].join(', ')}), k == 2u), vec2i(${L.hfDims[1].join(', ')}), k == 1u), vec2i(${L.hfDims[0].join(', ')}), k == 0u);
-}
-fn wcHfGet(k: u32, i: u32) -> u32 { return (atomicLoad(&wcMeta[wcHfAt(k) + (i >> 1u)]) >> ((i & 1u) * 16u)) & 0xffffu; }
-fn wcHfPut(k: u32, i: u32, v: u32) {
-  let at = wcHfAt(k) + (i >> 1u);
-  let sh = (i & 1u) * 16u;
-  atomicAnd(&wcMeta[at], ~(0xffffu << sh));
-  atomicOr(&wcMeta[at], min(v, 0xffffu) << sh);
-}`;
-// Level 0 (P.level 0): the tops of a brick column's 16 columns, scanned down from the world's top a brick at a
-// time; level 1 (P.level 1): the brick column's value, and in a writeback the 8 around it (their pads reach
-// it). Jobs: every brick column (P.dilate -1), or a writeback's changed bricks (their columns).
-export const wcHfColsFrag = (g, L) => /* wgsl */ `
-${prelude(g, { state: false })}
-${writerDecls(L, g)}
-${hfDecls(L)}
-fn wcColumnTop(x: i32, z: i32) -> u32 {
-  var top = 0u;
-  let b = vec2i(x >> 2u, z >> 2u);
-  let l = vec2i(x & 3, z & 3);
-  for (var by = WC_B.y - 1; by >= 0; by--) {
-    let e = wcTable[wcBi(vec3i(b.x, by, b.y))];
-    var ly = -1;
-    if ((e & WC_MIXED) == 0u) {
-      if (wcId(e) != E_EMPTY) { ly = 3; }
-    } else {
-      let base = (e & ~WC_MIXED) * WC_BRICK_CELLS;
-      for (var y = 3; y >= 0; y--) {
-        if (wcId(wcPool[base + wcLocal(vec3i(l.x, y, l.y))]) != E_EMPTY) { ly = y; break; }
-      }
-    }
-    if (ly >= 0) { top = u32(by * 4 + ly + 1); break; }
-  }
-  return top;
-}
-${brickWorkgroup(/* wgsl */ `
-  var bc: vec2i;
-  if (P.dilate == -1) {
-    bc = vec2i(i32(job) % WC_B.x, i32(job) / WC_B.x);
-  } else {${unpackJob}
-    bc = ((P.origin >> vec3u(2u)) + wb).xz;
-  }
-  if (P.level == 0u) {
-    let n0 = wcHfN(0u);
-    let c = bc * 4 + vec2i(i32(li & 3u), i32(li >> 2u));
-    if (li < 16u && c.x < n0.x && c.y < n0.y) { wcHfPut(0u, u32(c.x + n0.x * c.y), wcColumnTop(c.x, c.y)); }
-  } else {
-    let n0 = wcHfN(0u);
-    let n1 = wcHfN(1u);
-    let c = bc + select(vec2i(i32(li % 3u) - 1, i32(li / 3u) - 1), vec2i(0), P.dilate == -1);
-    if (li < select(9u, 1u, P.dilate == -1) && all(c >= vec2i(0)) && c.x < n1.x && c.y < n1.y) {
-      let lo = max(c * 4 - WC_HF_HPAD, vec2i(0));
-      let hi = min(c * 4 + 4 + WC_HF_HPAD, n0);
-      var m = 0u;
-      for (var z = lo.y; z < hi.y; z++) { for (var x = lo.x; x < hi.x; x++) { m = max(m, wcHfGet(0u, u32(x + n0.x * z))); } }
-      wcHfPut(1u, u32(c.x + n1.x * c.y), select(0u, m + WC_HF_VPAD, m > 0u));
-    }
-  }`)}
-`;
-// Levels 2 and 3 (P.level): each entry the maximum of its 16 children, every entry (P.count of them).
-export const wcHfUpFrag = (g, L) => /* wgsl */ `
-${prelude(g, { state: false })}
-${writerDecls(L, g)}
-${hfDecls(L)}
-${jobThread(/* wgsl */ `
-  let n = wcHfN(P.level);
-  let nc = wcHfN(P.level - 1u);
-  let c = vec2i(i32(job) % n.x, i32(job) / n.x);
-  var m = 0u;
-  for (var dz = 0; dz < 4; dz++) { for (var dx = 0; dx < 4; dx++) {
-    let q = c * 4 + vec2i(dx, dz);
-    if (q.x < nc.x && q.y < nc.y) { m = max(m, wcHfGet(P.level - 1u, u32(q.x + nc.x * q.y))); }
-  } }
-  wcHfPut(P.level, job, m);`)}
-`;
-
 // Every writer, for a small world (tools/world-copy-cpu-check.mjs runs naga on them; tools/check-wgsl.mjs and
 // tools/check-wgsl-operators.mjs find them here). Built on entering a world: the warm-up leaves them out.
 // (the gather's V2 offsets, for the check: a 128³ grid's)
 const CHECK_V2 = { changed: 1 << 20, visible: 1 << 19, tilesAt: 44, tiles: [4, 4, 4], tile: 8 };
 const wcGatherCheck = (g, L) => wcGatherFrag(g, L, CHECK_V2);
 const wcArgsCheck = () => wcArgsFrag();
-export const WC_KERNELS = { wcCommitChunkFrag, wcDecodeFrag, wcAllocFrag, wcDilateFrag, wcOccFrag, wcHfColsFrag, wcHfUpFrag, wcStampFrag, wcOverlayFrag, wcGatherFrag: wcGatherCheck, wcSeedFrag, wcArgsFrag: wcArgsCheck };
+export const WC_KERNELS = { wcCommitChunkFrag, wcDecodeFrag, wcAllocFrag, wcDilateFrag, wcOccFrag, wcStampFrag, wcOverlayFrag, wcGatherFrag: wcGatherCheck, wcSeedFrag, wcArgsFrag: wcArgsCheck };
 const CHECK_WORLD = wcLayout([256, 128, 256]);
 const CHECK_STATE = { wcDecodeFrag: 'STATE_RO' };
 const CHECK_GROUP1 = { wcGatherFrag: WC_V2_LAYOUT };
