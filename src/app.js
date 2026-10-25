@@ -593,7 +593,7 @@ function build(savedWorldSize = null) {
   derived = new Derived(sim);
   blocksOn = plainView();
   vol = createVolume(gpu, sim, { shadows: !blocksOn && viewShadows(viewKeyOf(settings.view)), sourceAppearance: !mapKind.presets && !!sceneByKey(settings.scene).importManifest?.appearance,
-    onVariant: () => pacer.wake() });   // (the film code's variant: gfx/filmScan.js)
+    onVariant: () => pacer.wake() });   // (the rich optics' variant: gfx/opticsScan.js)
   if (blocksOn) blocks = createBlocks(gpu, sim, { world: mapKind.streamed });
   // a write from anywhere (a tool's stroke, a load) wakes the frame loop (F7)
   const s = sim, simWake = s.wake.bind(s);

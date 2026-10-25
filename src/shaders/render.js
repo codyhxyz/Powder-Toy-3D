@@ -746,7 +746,7 @@ fn traceView(ro: vec3f, rd: vec3f, t0: f32, bh: vec3f) -> VolumeHit {
 // The realistic view (0).
 // =====================================================================
 
-const realistic = (detail, curved = false, fixedReadFormat, films = true) => {
+const realistic = (detail, curved = false, fixedReadFormat, richOptics = true) => {
   const format = readFormatWGSL(fixedReadFormat);
   const grains = GRAINS_ANY(detail);
   // Certified liquid interiors (passes.js brickFrag: the brick and its 26 neighbours are inside
@@ -1067,6 +1067,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
               alpha, original.flags, &col, &trans);
           }
         } else {
+${richOptics ? `
         // Glass (gfx/glass.js): a wall one cell thick is a pane through the
         // cell's middle; thicker glass is a block that bends light at its
         // faces. Every bend restarts the ray at one site, below.
@@ -1181,7 +1182,47 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
             }
           }
         }
+` : `
+        // (the lean view's glass: flat faces, no bending, base's; the rich view's below, once the grid holds glass: gfx/opticsScan.js)
+        if (id != prevCrisp) {
+          // glass interface (flat faces: no bending)
+          let F = fresnelSchlick(abs(dot(nFace, rd)), IOR(id)) * select(GLASS_IN_LIQUID_F, 1.0, liq == E_EMPTY);
+          mediumLight = vec3f(1.0);
+          if (FU.shadows != 0u) { mediumLight = sunShadowAt(hp + nFace * IFACE_PROBE); }
+          let gi = surfProbe(hp, nFace);
+          gSkyIn = skyInAt(gi);
+          let r = reflect(rd, nFace);
+          paneEnv = envReflectGI(gi, nFace, -rd, ROUGH(id), mediumLight);
+          paneRefl = panes < GLASS_TRACED_PANES && reflectDefer(hp + nFace * REFL_START, r, paneEnv);
+          paneAx = ax;
+          panes++;
+          col += trans * F * paneEnv;
+          if (paneRefl) { gReflK += trans * F; }
+          trans *= 1.0 - F;
         }
+        absorbDeco(id, cell, hp, min(tExit, tCut) - tEnter, mediumLight, fetchA(cell).y, &col, &trans);   // (stained glass: gfx/deco.js)
+        // Leaving the pane, its far face reflects as much again (into air; less
+        // into liquid; none against something opaque, which it touches, the
+        // floor included, nor behind a mesh). A face parallel to the front one
+        // reflects the same view.
+        let xa = argmin3(tMax);
+        var nc = cell;
+        nc[xa] += istp[xa];
+        var nid = E_EMPTY;
+        if (!outside(nc)) { nid = eid(fetchA(nc)); }
+        if (tExit < tCut && nc.y >= 0 && RCLASS(nid) != R_GLASS && RCLASS(nid) != R_OPAQUE) {
+          var nX = vec3f(0.0);
+          nX[xa] = f32(istp[xa]);
+          let hx = ro + rd * tExit;
+          let F = fresnelSchlick(abs(dot(nX, rd)), IOR(id)) * select(1.0, GLASS_IN_LIQUID_F, SURFCH(nid) == CH_LIQUID);
+          let r = reflect(rd, nX);
+          var env = paneEnv;
+          if (xa != paneAx) { env = envSky(surfProbe(hx, -nX), r); }   // (inside the pane: no sun highlight, as liquid.js's exit)
+          else if (paneRefl) { gReflK += trans * F; }   // (the front face's traced reflection again)
+          col += trans * F * env;
+          trans *= 1.0 - F;
+        }
+`}        }
         prevCrisp = id;
         phiStale = true;
         if (gNext) {
@@ -1269,7 +1310,7 @@ ${curved ? '' : `  // Entering the box inside a smooth material: the box wall cu
         phiStale = true;
       }
 
-${films ? `
+${richOptics ? `
       // a film on the floor, thinner than the fields show (gfx/film.js): only
       // from air, only nearer than what the fields found, and only in a brick
       // the brick pass found a film's cells in (BRICK_FILM: everywhere else
@@ -1611,16 +1652,18 @@ function nativeVolumeReads(code) {
  * @param {{ view?: string, detail?: object, curved?: boolean, debug?: boolean, fixedReadFormat?: 0 | 2 | 3 }} [opts]
  * @returns {string}
  */
-// films: draw thin water films (gfx/film.js). The view compiles without them
-// until a grid holds one (gfx/volume.js films: their code costs every pixel
-// registers, film or not).
-export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false, fixedReadFormat, films = true } = {}) => {
+// optics: the rich optics, thin water films (gfx/film.js) and glass as panes
+// and blocks that bend light (gfx/glass.js); without them no films and base's
+// flat glass. The view compiles without them until a grid holds a film or
+// glass (gfx/opticsScan.js, gfx/volume.js): their code costs every pixel
+// registers, on screen or not.
+export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false, debug = false, fixedReadFormat, optics = true } = {}) => {
   readFormatWGSL(fixedReadFormat);
   if (!VOLUME_VIEWS.includes(view)) throw new Error(`volumeFrag: no view ${view} (${VOLUME_VIEWS.join(', ')})`);
   const lit = isMaterialView(view), d = lit ? detail : {};
   const nativeIds = !debug && (fixedReadFormat === 2 || fixedReadFormat === 3);
   const parts = [
-    `// volume: ${view}${lit ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}${films ? '' : ', no films'}`,
+    `// volume: ${view}${lit ? `, detail ${Object.keys(d).sort().join(' ') || 'off'}` : ''}${curved ? ', curved' : ''}${optics ? '' : ', lean optics'}`,
     lib(g, { variant: 'LIGHTING', far: lit, aeration: true, debug, detail: d, fixedReadFormat }),
     ...(nativeIds ? [volumeIdWGSL(fixedReadFormat)] : []),
     tracerWGSL(),
@@ -1640,7 +1683,7 @@ export const volumeFrag = (g, { view = 'realistic', detail = {}, curved = false,
   // material views only; behind the rest is the page's painted gradient,
   // gfx/post.js), so they keep no haze, on every map alike. The data views'
   // colours are readings, not light.
-  if (lit) parts.push(volumeHazeGLSL, realistic(d, curved, fixedReadFormat, films));
+  if (lit) parts.push(volumeHazeGLSL, realistic(d, curved, fixedReadFormat, optics));
   else parts.push(DATA_COMMON, DATA_CODE[view](curved), dataView(view));
   parts.push(volumeVertOf(curved), volumeEntry(view, lit, curved));
   // Keep the heavier artwork out of Realistic's active shader path/registers.
