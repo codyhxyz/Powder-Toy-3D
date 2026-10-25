@@ -54,7 +54,7 @@ function inferno(x) {
 const LUT = Array.from({ length: 256 }, (_, i) => inferno(i / 255));
 
 // the 12 counts of every pixel from the two integer targets (shaders/costView.js costWrite)
-function decode(c0, c1, n) {
+export function decode(c0, c1, n) {
   const vals = COST_KINDS.map(() => new Uint16Array(n)), covered = new Uint8Array(n);
   let count = 0;
   for (let p = 0; p < n; p++) {
@@ -70,7 +70,7 @@ function decode(c0, c1, n) {
 }
 
 // mean, p50, p95, max, sum over the covered pixels, from a histogram (counts are 16-bit)
-function stats(v, covered, count, cap) {
+export function stats(v, covered, count, cap) {
   const hist = new Uint32Array(COST_MAX + 1);
   let sum = 0, max = 0, saturated = 0;
   for (let p = 0; p < v.length; p++) {
@@ -90,7 +90,7 @@ function stats(v, covered, count, cap) {
 }
 
 // the live pipeline's colour against the twin's, texel by texel (rgba16float bits)
-function compare(a, b, covered) {
+export function compare(a, b, covered) {
   let maxDiff = 0, differing = 0, exact = 0;
   const n = covered.length;
   for (let p = 0; p < n; p++) {

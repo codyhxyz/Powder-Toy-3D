@@ -1,7 +1,7 @@
 // Real-GPU check of the cost view (docs/profiler.md "Cost view"): one boot of a map in manual mode,
 // every pipeline ready, then __app.prof.cost.capture(). Prints the counters' stats and the honesty
 // fields, saves the heatmap. Fails if the capture isn't trusted or covers no pixel.
-// usage: node tools/cost-view-check.mjs [--map lab|island] [--out dir] [--port N] [--width W --height H]
+// usage: node tools/cost-view-check.mjs [--map lab|island] [--out dir [--overlay]] [--port N] [--width W --height H]
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { launchBrowser, newTestPage } from './browser.mjs';
@@ -9,7 +9,7 @@ import { startVite } from './vite-server.mjs';
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(`--${k}`); return i >= 0 ? args[i + 1] : d; };
-const MAP = opt('map', 'lab'), OUT = opt('out', null);
+const MAP = opt('map', 'lab'), OUT = opt('out', null), OVERLAY = args.includes('--overlay');
 const viewport = { width: +opt('width', 1280), height: +opt('height', 720) };
 
 const vite = await startVite({ warmupEntries: ['/src/main.js', '/src/app.js'] });
@@ -26,6 +26,8 @@ try {
   await page.waitForFunction(() => window.__app?.prof?.cost || document.getElementById('error')?.textContent, null, { polling: 100, timeout: 120000 });
   const bootErr = await page.evaluate(() => document.getElementById('error')?.textContent || null);
   if (bootErr) throw new Error(`boot: ${bootErr.slice(0, 400)}`);
+  // a big map: its world loaded around the window first
+  await page.waitForFunction(() => !window.__app.win || window.__app.win.loaded, null, { polling: 100, timeout: 120000 });
   await page.evaluate(() => window.__app.test.ready());
   console.log(`booted ${MAP} at ${secs()}`);
   const r = await page.evaluate(async () => {
@@ -44,6 +46,12 @@ try {
     mkdirSync(OUT, { recursive: true });
     writeFileSync(join(OUT, `cost-${MAP}-${r.kind}.png`), Buffer.from(image.split(',')[1], 'base64'));
     writeFileSync(join(OUT, `cost-${MAP}.json`), JSON.stringify({ ...rest, counters }, null, 1));
+  }
+  if (OVERLAY && OUT) {
+    // the person's view: the overlay over the canvas, its legend (a capture of its own)
+    await page.evaluate(() => window.__app.prof.cost.show(true));
+    await page.screenshot({ path: join(OUT, `cost-${MAP}-overlay.png`) });
+    await page.evaluate(() => window.__app.prof.cost.show(false));
   }
   if (errs.length) console.log(`page errors:\n${errs.join('\n')}`);
   if (!r.trusted || !r.covered) { failed = true; console.log(`FAIL trusted=${r.trusted} covered=${r.covered} ${r.reason ?? ''}`); }

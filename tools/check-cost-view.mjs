@@ -60,3 +60,31 @@ for (const v of variants) if (sha(v.code()) !== before.get(v.name)) fail(`${v.na
 if (argv.includes('--hashes')) console.log(JSON.stringify(Object.fromEntries(before), null, 1));
 console.log(`${variants.length} variants: cost = normal + counter spans${NAGA ? `, ${naga.size} distinct cost modules valid under naga` : ''}, normal hashes unchanged`);
 if (failed) { console.error(`${failed} failure(s)`); process.exit(1); }
+
+// 4. The readback's arithmetic on synthetic texels: the decode keeps exact integers and coverage, the
+// stats are over covered pixels only, and the picture comparison is not vacuous (it sees a change).
+{
+  const { decode, stats, compare } = await import('../src/gfx/costView.js');
+  const { COST_COVERED_BIT } = await import('../src/shaders/costView.js');
+  const n = 4;
+  const c0 = new Uint32Array(4 * n), c1 = new Uint32Array(2 * n);
+  // pixel 0: uncovered (counts there must be ignored); pixels 1-3 covered with march 1..3, cellReads 10..30
+  c0[0] = 99 | (5 << 16);
+  for (let p = 1; p < n; p++) { c0[4 * p] = COST_COVERED_BIT | p | ((p * 2) << 16); c1[2 * p + 1] = (p * 10) << 16; }
+  c0[4 * 3 + 3] = 0xffff0000 >>> 0;   // pixel 3: rootIters at the ceiling
+  const d = decode(c0, c1, n);
+  const want = (cond, what) => { if (!cond) fail(`readback: ${what}`); };
+  want(d.count === 3 && d.covered[0] === 0, 'coverage');
+  want(d.vals[0][1] === 1 && d.vals[0][3] === 3 && d.vals[1][2] === 4 && d.vals[11][3] === 30, 'exact counts in their slots');
+  const m = stats(d.vals[0], d.covered, d.count, 0x7fff);
+  want(m.sum === 6 && m.mean === 2 && m.max === 3 && m.p50 === 2, 'stats over covered pixels only');
+  want(stats(d.vals[7], d.covered, d.count, 0xffff).saturated === 1, 'saturation reported');
+  const a = new Uint16Array(4 * n).fill(0x3c00), b = a.slice();   // 1.0 everywhere
+  const same = compare(a, b, d.covered);
+  want(same.maxDiff === 0 && same.differing === 0 && same.exactShare === 1, 'identical pictures compare equal');
+  b[4 * 2] = 0x3e00;   // 1.5 in one texel
+  const diff = compare(a, b, d.covered);
+  want(diff.maxDiff === 0.5 && diff.differing === 1, 'a changed texel is seen');
+  console.log('readback arithmetic: exact decode, covered-only stats, comparison sees a change');
+}
+if (failed) { console.error(`${failed} failure(s)`); process.exit(1); }
