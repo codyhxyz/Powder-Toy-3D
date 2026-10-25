@@ -173,5 +173,16 @@ const FRAME = [['sim', 'move', 2], ['view', 'scene', 6], ['post', 'taa', 1]];
   const gpuBound = buildReport({ frames: Array.from({ length: 12 }, (_, i) => ({ ...mk(i, 30), rec: { ...mk(i, 30).rec, interval: 33 } })), phases: PHASES });
   assert.equal(gpuBound.bound, 'gpu');
 }
+{
+  // pass times past the frame interval: whole submissions, not passes; cost view passes are not timed
+  const fr = (i) => ({ frame: i, gpu: 120, coverage: { complete: true, timelineComplete: false, spanMs: null, missing: [] },
+    passes: [55, 55, 10].map((ms, k) => ({ name: `march${k}`, kind: 'compute', phase: 'view', error: null, start: null, gpu: ms }))
+      .concat([{ name: 'cost view live', kind: 'compute', phase: 'view', error: null, start: null, gpu: 99 }]),
+    rec: { wall: 2, interval: 60, cpu: null, steps: 0, compiling: 0, created: 1 } });
+  const r = buildReport({ frames: Array.from({ length: 12 }, (_, i) => fr(i)), phases: PHASES });
+  assert.ok(r.untrusted.some((u) => /whole submissions/.test(u)), r.untrusted.join('; '));
+  assert.ok(!r.passes.some((p) => /cost view/.test(p.name)), 'cost view passes are excluded');
+  assert.ok(r.notes.some((n) => /excluded from timings/.test(n)));
+}
 assert.deepEqual([stats([3, 1, 2]).median, stats([]).median], [2, null]);
 console.log('profile CPU check OK: enable sticks, renderOnce frames sample, capture(n), ranking/median/spread, untrusted reasons, work vs time, text/html/compare');

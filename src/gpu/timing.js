@@ -1,13 +1,18 @@
 // Observe the shared device, not a list of rendering clients. Three, our
 // frame wrapper and future clients all pass through the same encoder hooks.
-// Queries belong to an encoder until its command buffer is submitted and
-// read back: independent encoders may finish and submit in a different order.
-export const MAX_TIMED_PASSES = 512;
+// Every encoder of a frame takes its passes' query slots from that frame's
+// pool; each resolves and copies its own slots when it finishes (independent
+// encoders may finish and submit in a different order), and the pool is read
+// back once, after the frame has ended and every encoder that took a slot has
+// been submitted (or was dropped unsubmitted: abandoned, below).
+export const MAX_TIMED_PASSES = 1024;   // timed passes per frame (a split big-map frame runs a few hundred)
 // Query pools (a timestamp query set and its two buffers), made once when timing first
-// turns on and reused: an encoder that finds none free goes untimed. Made per encoder
+// turns on and reused: a frame that finds none free goes untimed. Made per encoder
 // as needed before, the profiler on through a big map's load ran Metal out of counter
 // sample buffers ("Cannot allocate sample buffer"), and that error stopped graphics
-// (2026-10-24).
+// (2026-10-24). One pool per encoder after that left post's passes untimed in every
+// frame: a frame's dozen encoders (flushes) × the frames in flight took all 8 pools
+// before post began (tools/profile.mjs, Lab, 2026-10-25). Pools are per frame now.
 export const QUERY_POOLS = 8;
 
 export class GpuTiming {
@@ -36,6 +41,10 @@ export class GpuTiming {
     // renderOnce) is still sampled.
     this._frameListeners = new Set();
     const commands = new WeakMap();
+    this._framePool = null;   // the pool this frame's encoders take slots from
+    // An encoder (or its command buffer) dropped without a submit gives its pool back its slot users.
+    const dropped = typeof FinalizationRegistry === 'function'
+      ? new FinalizationRegistry((record) => { if (!record.submitted) this._abandon(record); }) : null;
     const device = gpu.device;
     // Pipelines made on the device, ours and three's alike, counted at the device boundary
     // (no list of clients): the profiler marks a capture untrusted while any is compiling.
@@ -63,18 +72,22 @@ export class GpuTiming {
         enc[method] = (descriptor = {}) => {
           this.passCount++;
           if (!this.enabled) return begin(descriptor);
-          record ??= { epoch: this._epoch, recordedAt: performance.now(), passes: [], pool: null, used: 0 };
+          if (!record) {
+            record = { epoch: this._epoch, recordedAt: performance.now(), passes: [], pool: null, slots: [], submitted: false, abandoned: false, token: {} };
+            dropped?.register(enc, record, record.token);
+          }
           const name = this.scope || descriptor.label || `(unlabelled ${kind})`;
           const pass = { name, kind, phase: 'other', epoch: this._epoch, error: null, index: null };
           this.onPass?.(pass);
           record.passes.push(pass);
           // Do not overwrite another query owner or pretend an overflow is zero ms.
           if (descriptor.timestampWrites) pass.error = 'foreign timestamp owner';
-          else if (record.used >= MAX_TIMED_PASSES) pass.error = 'query capacity exceeded';
           else if (record.epoch !== this._epoch) pass.error = 'capture changed during encoder';
-          else if (!(record.pool ??= this._idle.pop() ?? null)) pass.error = 'no query pool free';
+          else if (!(record.pool ??= this._takeSlotPool(record))) pass.error = 'no query pool free';
+          else if (record.pool.cursor >= MAX_TIMED_PASSES) pass.error = 'query capacity exceeded';
           else {
-            pass.index = record.used++;
+            pass.index = record.pool.cursor++;
+            record.slots.push(pass.index);
             return begin({ ...descriptor, timestampWrites: {
               querySet: record.pool.queries,
               beginningOfPassWriteIndex: pass.index * 2,
@@ -86,13 +99,23 @@ export class GpuTiming {
       }
       const finish = enc.finish.bind(enc);
       enc.finish = (...rest) => {
-        if (record?.used) {
-          const { pool, used } = record;
-          enc.resolveQuerySet(pool.queries, 0, used * 2, pool.resolve, 0);
-          enc.copyBufferToBuffer(pool.resolve, 0, pool.staging, 0, used * 16);
+        if (record?.slots.length) {
+          // this encoder's own slots, in runs of consecutive indices
+          const { pool, slots } = record;
+          for (let i = 0; i < slots.length;) {
+            let j = i + 1;
+            while (j < slots.length && slots[j] === slots[j - 1] + 1) j++;
+            const first = slots[i], count = j - i;
+            enc.resolveQuerySet(pool.queries, first * 2, count * 2, pool.resolve, first * 16);
+            enc.copyBufferToBuffer(pool.resolve, first * 16, pool.staging, first * 16, count * 16);
+            i = j;
+          }
         }
         const buffer = finish(...rest);
-        if (record) commands.set(buffer, record);
+        if (record) {
+          commands.set(buffer, record);
+          if (dropped) { dropped.unregister(record.token); dropped.register(buffer, record, record.token); }
+        }
         return buffer;
       };
       return enc;
@@ -105,6 +128,9 @@ export class GpuTiming {
         const record = commands.get(buffer);
         if (!record) continue;
         commands.delete(buffer);
+        dropped?.unregister(record.token);
+        record.submitted = true;
+        if (record.pool) { record.pool.submitted++; this._maybeRead(record.pool); }
         // Only map this submission's copies. The app's readback service can
         // also hold copies from encoders that have not been submitted yet.
         const part = this._read(record);
@@ -168,32 +194,64 @@ export class GpuTiming {
 
   _destroy(pool) { pool.queries.destroy(); pool.resolve.destroy(); pool.staging.destroy(); }
 
-  async _read(record) {
-    const { pool, passes, used } = record;
-    const result = { passes, recordedAt: record.recordedAt };
-    if (!pool) return result;
-    try {
-      await pool.staging.mapAsync(GPUMapMode.READ, 0, used * 16);
-      const times = new BigUint64Array(pool.staging.getMappedRange(0, used * 16));
-      const elapsed = performance.now() - record.recordedAt;
-      for (const pass of passes) {
-        if (pass.index === null) continue;
-        pass.begin = times[pass.index * 2];
-        pass.end = times[pass.index * 2 + 1];
-        if (pass.end < pass.begin) pass.error = 'invalid timestamps';
-        else if (Number(pass.end - pass.begin) / 1e6 > elapsed + 2) pass.error = 'timestamp duration exceeds capture wall time';
-      }
-    } catch {
-      for (const pass of passes) if (pass.index !== null) pass.error = 'timestamp readback failed';
-    } finally {
+  // This frame's pool, taken on its first timed pass (null: none free). An encoder keeps
+  // the pool it took for all its passes, even past the frame's end.
+  _takeSlotPool(record) {
+    if (!this._framePool) {
+      const pool = this._idle.pop();
+      if (!pool) return null;
+      pool.cursor = 0; pool.users = 0; pool.submitted = 0; pool.closed = false; pool.reading = false;
+      pool.done = new Promise((resolve) => { pool.finish = resolve; });
+      this._framePool = pool;
+    }
+    this._framePool.users++;
+    return this._framePool;
+  }
+
+  _abandon(record) {
+    if (record.abandoned || !record.pool) return;
+    record.abandoned = true;
+    record.pool.users--;
+    this._maybeRead(record.pool);
+  }
+
+  // Read the pool once its frame has ended and every encoder that took a slot was submitted
+  // (or dropped); every record's _read waits on it.
+  _maybeRead(pool) {
+    if (!pool.closed || pool.reading || pool.submitted < pool.users) return;
+    pool.reading = true;
+    const bytes = Math.max(1, pool.cursor) * 16;
+    pool.staging.mapAsync(GPUMapMode.READ, 0, bytes).then(() => {
+      const times = new BigUint64Array(pool.staging.getMappedRange(0, bytes).slice(0));
       pool.staging.unmap();
+      return times;
+    }, () => null).then((times) => {
+      pool.finish(times);
       if (!this.gpu.lost && this.supported) this._idle.push(pool);
       else this._destroy(pool);
+    });
+  }
+
+  async _read(record) {
+    const { pool, passes } = record;
+    const result = { passes, recordedAt: record.recordedAt };
+    if (!pool) return result;
+    const times = await pool.done;
+    const elapsed = performance.now() - record.recordedAt;
+    for (const pass of passes) {
+      if (pass.index === null) continue;
+      if (!times) { pass.error = 'timestamp readback failed'; continue; }
+      pass.begin = times[pass.index * 2];
+      pass.end = times[pass.index * 2 + 1];
+      if (pass.end < pass.begin) pass.error = 'invalid timestamps';
+      else if (Number(pass.end - pass.begin) / 1e6 > elapsed + 2) pass.error = 'timestamp duration exceeds capture wall time';
     }
     return result;
   }
 
   _endFrame(frameNo) {
+    const pool = this._framePool;
+    if (pool) { this._framePool = null; pool.closed = true; this._maybeRead(pool); }
     const parts = this._parts, epoch = this._epoch;
     this._parts = [];
     if (!parts.length) return;

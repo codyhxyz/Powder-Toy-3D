@@ -21,6 +21,10 @@ export const CAP_FPS = 60;             // the app's frame cap (gfx/pacing.js MAX
 export const CAP_SLACK = 0.1;          // an interval within this share of the cap's is "at the cap"
 export const TOP_PASSES = 8;           // passes the text report ranks (the JSON keeps all)
 export const TEXT_PASSES = 24;         // …and lists in its table
+export const SUM_OVER_INTERVAL = 1.25; // GPU pass sum past this × the frame interval: passes can't all be that long (untrusted)
+export const SUM_OVER_SPAN = 1.5;      // …or past this × the frame's GPU span: the "passes" overlap, timing whole submissions
+// Agent C's cost view (variant passes, not the player's pipeline): never timed (docs/profiler.md)
+export const EXCLUDED_PASS = /^cost view (live|counted)/;
 export const VIEW_SHARE = 0.5;         // the traced pass alone over this share of a capped frame is "time high"
 const MS_PER_S = 1000;
 const NS_PER_MS = 1e6;
@@ -45,7 +49,14 @@ const phaseIndex = (phases, p) => (typeof p === 'number' ? p : Math.max(0, phase
  *   coverage: object, gpu: number|null, rec?: { wall?: number|null, interval?: number|null, cpu?: number[]|null, steps?: number, compiling?: number|null, created?: number|null, ended?: boolean } | null }>,
  *   phases: Array<{ id: string, label: string }>, context?: object }} input
  */
-export function buildReport({ frames, phases, context = {} }) {
+export function buildReport({ frames: input, phases, context = {} }) {
+  const excluded = new Set();
+  const frames = input.map((f) => {
+    if (!f.passes.some((p) => EXCLUDED_PASS.test(p.name))) return f;
+    const passes = f.passes.filter((p) => { const x = EXCLUDED_PASS.test(p.name); if (x) excluded.add(p.name); return !x; });
+    const missing = (f.coverage?.missing ?? []).filter((m) => !EXCLUDED_PASS.test(m.name));
+    return { ...f, passes, coverage: { ...f.coverage, missing, complete: missing.length === 0 && passes.every((p) => p.gpu !== null) } };
+  });
   const n = frames.length;
   const P = phases.length;
   const perFrame = frames.map((f) => {
@@ -144,6 +155,12 @@ export function buildReport({ frames, phases, context = {} }) {
     const why = [...new Set(frames.flatMap((f) => f.coverage?.missing ?? []).map((m) => m.error))].join(', ');
     untrusted.push(`${incomplete}/${n} frames missing timestamps (${why || 'unknown'})`);
   }
+  {
+    const sum = stats(perFrame.map((f) => f.gpu)).median, iv = stats(perFrame.map((f) => f.interval)).median, sp = stats(perFrame.map((f) => f.span)).median;
+    if (sum !== null && iv && sum > SUM_OVER_INTERVAL * iv) untrusted.push(`GPU pass times sum to ${sum.toFixed(1)} ms, past the ${iv.toFixed(1)} ms frame interval: timestamps likely measure whole submissions, not passes`);
+    else if (sum !== null && sp && sum > SUM_OVER_SPAN * sp) untrusted.push(`GPU pass times sum to ${sum.toFixed(1)} ms over a ${sp.toFixed(1)} ms GPU span: the passes overlap, so they likely time whole submissions`);
+  }
+  if (excluded.size) notes.push(`excluded from timings (cost view variants, not the player's pipeline): ${[...excluded].join(', ')}`);
   if (n < MIN_FRAMES) untrusted.push(`only ${n} frames (at least ${MIN_FRAMES} for a median and spread)`);
   if (/software|fallback|swiftshader/i.test(context.gpuName ?? '')) untrusted.push(`software adapter: ${context.gpuName}`);
   if (!candidates.length && n) untrusted.push('no frame with a whole timeline (no waterfall)');
